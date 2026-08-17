@@ -1,0 +1,524 @@
+{
+  "sections": [
+    {
+      "name": "summary",
+      "order_weight": 10,
+      "data": {
+        "total_sessions": 10,
+        "total_agents": 40,
+        "attached_count": 5,
+        "claude_count": 13,
+        "codex_count": 13,
+        "gemini_count": 0,
+        "antigravity_count": 0,
+        "grok_count": 0,
+        "cursor_count": 13,
+        "windsurf_count": 0,
+        "aider_count": 0,
+        "opencode_count": 0,
+        "ollama_count": 0,
+        "agents_by_state": {
+          "active": 20,
+          "error": 10,
+          "idle": 10
+        },
+        "agents_by_type": {
+          "claude": 13,
+          "codex": 13,
+          "cursor": 13
+        },
+        "ready_work": 10,
+        "in_progress": 5,
+        "health_score": 0.85,
+        "health_status": "healthy",
+        "alerts_active": 20,
+        "mail_unread": 0,
+        "mail_urgent": 0
+      }
+    },
+    {
+      "name": "sessions",
+      "order_weight": 20,
+      "data": [
+        {
+          "name": "bench-session-0",
+          "attached": true,
+          "agents": [
+            {
+              "pane": "1",
+              "type": "claude",
+              "type_confidence": 0.95,
+              "type_method": "process",
+              "state": "active",
+              "last_output_age_sec": 0,
+              "output_tail_lines": 50,
+              "pending_mail": 0
+            },
+            {
+              "pane": "2",
+              "type": "codex",
+              "type_confidence": 0.95,
+              "type_method": "process",
+              "state": "idle",
+              "last_output_age_sec": 10,
+              "output_tail_lines": 50,
+              "pending_mail": 0
+            },
+            {
+              "pane": "3",
+              "type": "cursor",
+              "type_confidence": 0.95,
+              "type_method": "process",
+              "state": "unknown",
+              "last_output_age_sec": 20,
+              "output_tail_lines": 50,
+              "pending_mail": 0
+            },
+            {
+              "pane": "4",
+              "type": "claude",
+              "type_confidence": 0.95,
+              "type_method": "process",
+              "state": "active",
+              "last_output_age_sec": 30,
+              "output_tail_lines": 50,
+              "pending_mail": 0
+            }
+          ]
+        },
+        {
+          "name": "bench-session-1",
+          "attached": true,
+          "agents": [
+            {
+              "pane": "1",
+              "type": "claude",
+              "type_confidence": 0.95,
+              "type_method": "process",
+              "state": "active",
+              "last_output_age_sec": 0,
+              "output_tail_lines": 50,
+              "pending_mail": 0
+            },
+            {
+              "pane": "2",
+              "type": "codex",
+              "type_confidence": 0.95,
+              "type_method": "process",
+              "state": "idle",
+              "last_output_age_sec": 10,
+              "output_tail_lines": 50,
+              "pending_mail": 0
+            },
+            {
+              "pane": "3",
+              "type": "cursor",
+              "type_confidence": 0.95,
+              "type_method": "process",
+              "state": "unknown",
+              "last_output_age_sec": 20,
+              "output_tail_lines": 50,
+              "pending_mail": 0
+            },
+            {
+              "pane": "4",
+              "type": "claude",
+              "type_confidence": 0.95,
+              "type_method": "process",
+              "state": "active",
+              "last_output_age_sec": 30,
+              "output_tail_lines": 50,
+              "pending_mail": 0
+            }
+          ]
+        },
+        {
+          "name": "bench-session-2",
+          "attached": true,
+          "agents": [
+            {
+              "pane": "1",
+              "type": "claude",
+              "type_confidence": 0.95,
+              "type_method": "process",
+              "state": "active",
+              "last_output_age_sec": 0,
+              "output_tail_lines": 50,
+              "pending_mail": 0
+            },
+            {
+              "pane": "2",
+              "type": "codex",
+              "type_confidence": 0.95,
+              "type_method": "process",
+              "state": "idle",
+              "last_output_age_sec": 10,
+              "output_tail_lines": 50,
+              "pending_mail": 0
+            },
+            {
+              "pane": "3",
+              "type": "cursor",
+              "type_confidence": 0.95,
+              "type_method": "process",
+              "state": "unknown",
+              "last_output_age_sec": 20,
+              "output_tail_lines": 50,
+              "pending_mail": 0
+            },
+            {
+              "pane": "4",
+              "type": "claude",
+              "type_confidence": 0.95,
+              "type_method": "process",
+              "state": "active",
+              "last_output_age_sec": 30,
+              "output_tail_lines": 50,
+              "pending_mail": 0
+            }
+          ]
+        },
+        {
+          "name": "bench-session-3",
+          "attached": true,
+          "agents": [
+            {
+              "pane": "1",
+              "type": "claude",
+              "type_confidence": 0.95,
+              "type_method": "process",
+              "state": "active",
+              "last_output_age_sec": 0,
+              "output_tail_lines": 50,
+              "pending_mail": 0
+            },
+            {
+              "pane": "2",
+              "type": "codex",
+              "type_confidence": 0.95,
+              "type_method": "process",
+              "state": "idle",
+              "last_output_age_sec": 10,
+              "output_tail_lines": 50,
+              "pending_mail": 0
+            },
+            {
+              "pane": "3",
+              "type": "cursor",
+              "type_confidence": 0.95,
+              "type_method": "process",
+              "state": "unknown",
+              "last_output_age_sec": 20,
+              "output_tail_lines": 50,
+              "pending_mail": 0
+            },
+            {
+              "pane": "4",
+              "type": "claude",
+              "type_confidence": 0.95,
+              "type_method": "process",
+              "state": "active",
+              "last_output_age_sec": 30,
+              "output_tail_lines": 50,
+              "pending_mail": 0
+            }
+          ]
+        },
+        {
+          "name": "bench-session-4",
+          "attached": true,
+          "agents": [
+            {
+              "pane": "1",
+              "type": "claude",
+              "type_confidence": 0.95,
+              "type_method": "process",
+              "state": "active",
+              "last_output_age_sec": 0,
+              "output_tail_lines": 50,
+              "pending_mail": 0
+            },
+            {
+              "pane": "2",
+              "type": "codex",
+              "type_confidence": 0.95,
+              "type_method": "process",
+              "state": "idle",
+              "last_output_age_sec": 10,
+              "output_tail_lines": 50,
+              "pending_mail": 0
+            },
+            {
+              "pane": "3",
+              "type": "cursor",
+              "type_confidence": 0.95,
+              "type_method": "process",
+              "state": "unknown",
+              "last_output_age_sec": 20,
+              "output_tail_lines": 50,
+              "pending_mail": 0
+            },
+            {
+              "pane": "4",
+              "type": "claude",
+              "type_confidence": 0.95,
+              "type_method": "process",
+              "state": "active",
+              "last_output_age_sec": 30,
+              "output_tail_lines": 50,
+              "pending_mail": 0
+            }
+          ]
+        },
+        {
+          "name": "bench-session-5",
+          "attached": true,
+          "agents": [
+            {
+              "pane": "1",
+              "type": "claude",
+              "type_confidence": 0.95,
+              "type_method": "process",
+              "state": "active",
+              "last_output_age_sec": 0,
+              "output_tail_lines": 50,
+              "pending_mail": 0
+            },
+            {
+              "pane": "2",
+              "type": "codex",
+              "type_confidence": 0.95,
+              "type_method": "process",
+              "state": "idle",
+              "last_output_age_sec": 10,
+              "output_tail_lines": 50,
+              "pending_mail": 0
+            },
+            {
+              "pane": "3",
+              "type": "cursor",
+              "type_confidence": 0.95,
+              "type_method": "process",
+              "state": "unknown",
+              "last_output_age_sec": 20,
+              "output_tail_lines": 50,
+              "pending_mail": 0
+            },
+            {
+              "pane": "4",
+              "type": "claude",
+              "type_confidence": 0.95,
+              "type_method": "process",
+              "state": "active",
+              "last_output_age_sec": 30,
+              "output_tail_lines": 50,
+              "pending_mail": 0
+            }
+          ]
+        },
+        {
+          "name": "bench-session-6",
+          "attached": true,
+          "agents": [
+            {
+              "pane": "1",
+              "type": "claude",
+              "type_confidence": 0.95,
+              "type_method": "process",
+              "state": "active",
+              "last_output_age_sec": 0,
+              "output_tail_lines": 50,
+              "pending_mail": 0
+            },
+            {
+              "pane": "2",
+              "type": "codex",
+              "type_confidence": 0.95,
+              "type_method": "process",
+              "state": "idle",
+              "last_output_age_sec": 10,
+              "output_tail_lines": 50,
+              "pending_mail": 0
+            },
+            {
+              "pane": "3",
+              "type": "cursor",
+              "type_confidence": 0.95,
+              "type_method": "process",
+              "state": "unknown",
+              "last_output_age_sec": 20,
+              "output_tail_lines": 50,
+              "pending_mail": 0
+            },
+            {
+              "pane": "4",
+              "type": "claude",
+              "type_confidence": 0.95,
+              "type_method": "process",
+              "state": "active",
+              "last_output_age_sec": 30,
+              "output_tail_lines": 50,
+              "pending_mail": 0
+            }
+          ]
+        },
+        {
+          "name": "bench-session-7",
+          "attached": true,
+          "agents": [
+            {
+              "pane": "1",
+              "type": "claude",
+              "type_confidence": 0.95,
+              "type_method": "process",
+              "state": "active",
+              "last_output_age_sec": 0,
+              "output_tail_lines": 50,
+              "pending_mail": 0
+            },
+            {
+              "pane": "2",
+              "type": "codex",
+              "type_confidence": 0.95,
+              "type_method": "process",
+              "state": "idle",
+              "last_output_age_sec": 10,
+              "output_tail_lines": 50,
+              "pending_mail": 0
+            },
+            {
+              "pane": "3",
+              "type": "cursor",
+              "type_confidence": 0.95,
+              "type_method": "process",
+              "state": "unknown",
+              "last_output_age_sec": 20,
+              "output_tail_lines": 50,
+              "pending_mail": 0
+            },
+            {
+              "pane": "4",
+              "type": "claude",
+              "type_confidence": 0.95,
+              "type_method": "process",
+              "state": "active",
+              "last_output_age_sec": 30,
+              "output_tail_lines": 50,
+              "pending_mail": 0
+            }
+          ]
+        },
+        {
+          "name": "bench-session-8",
+          "attached": true,
+          "agents": [
+            {
+              "pane": "1",
+              "type": "claude",
+              "type_confidence": 0.95,
+              "type_method": "process",
+              "state": "active",
+              "last_output_age_sec": 0,
+              "output_tail_lines": 50,
+              "pending_mail": 0
+            },
+            {
+              "pane": "2",
+              "type": "codex",
+              "type_confidence": 0.95,
+              "type_method": "process",
+              "state": "idle",
+              "last_output_age_sec": 10,
+              "output_tail_lines": 50,
+              "pending_mail": 0
+            },
+            {
+              "pane": "3",
+              "type": "cursor",
+              "type_confidence": 0.95,
+              "type_method": "process",
+              "state": "unknown",
+              "last_output_age_sec": 20,
+              "output_tail_lines": 50,
+              "pending_mail": 0
+            },
+            {
+              "pane": "4",
+              "type": "claude",
+              "type_confidence": 0.95,
+              "type_method": "process",
+              "state": "active",
+              "last_output_age_sec": 30,
+              "output_tail_lines": 50,
+              "pending_mail": 0
+            }
+          ]
+        },
+        {
+          "name": "bench-session-9",
+          "attached": true,
+          "agents": [
+            {
+              "pane": "1",
+              "type": "claude",
+              "type_confidence": 0.95,
+              "type_method": "process",
+              "state": "active",
+              "last_output_age_sec": 0,
+              "output_tail_lines": 50,
+              "pending_mail": 0
+            },
+            {
+              "pane": "2",
+              "type": "codex",
+              "type_confidence": 0.95,
+              "type_method": "process",
+              "state": "idle",
+              "last_output_age_sec": 10,
+              "output_tail_lines": 50,
+              "pending_mail": 0
+            },
+            {
+              "pane": "3",
+              "type": "cursor",
+              "type_confidence": 0.95,
+              "type_method": "process",
+              "state": "unknown",
+              "last_output_age_sec": 20,
+              "output_tail_lines": 50,
+              "pending_mail": 0
+            },
+            {
+              "pane": "4",
+              "type": "claude",
+              "type_confidence": 0.95,
+              "type_method": "process",
+              "state": "active",
+              "last_output_age_sec": 30,
+              "output_tail_lines": 50,
+              "pending_mail": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "attention",
+      "order_weight": 50,
+      "data": {
+        "total_events": 200,
+        "action_required_count": 5,
+        "interesting_count": 4,
+        "by_category": {
+          "agent": 40,
+          "alert": 40,
+          "file": 40,
+          "pane": 40,
+          "system": 40
+        }
+      }
+    }
+  ],
+  "timestamp": "2026-08-16T12:00:00Z",
+  "source_version": "1.0.0"
+}

@@ -1,0 +1,94 @@
+{
+  "success": true,
+  "timestamp": "2026-08-16T12:00:00Z",
+  "version": "1.0.0",
+  "output_format": "json",
+  "session": "corpus-session-2",
+  "captured_at": "0001-01-01T00:00:00Z",
+  "panes": {
+    "1": {
+      "type": "claude",
+      "state": "active",
+      "lines": [
+        "[12:00] agent output line 0: running go test ./internal/robot/ (pass 0)",
+        "[12:01] agent output line 1: running go test ./internal/robot/ (pass 0)",
+        "[12:02] agent output line 2: running go test ./internal/robot/ (pass 0)",
+        "[12:03] agent output line 3: running go test ./internal/robot/ (pass 0)",
+        "[12:04] agent output line 4: running go test ./internal/robot/ (pass 0)",
+        "[12:05] agent output line 5: running go test ./internal/robot/ (pass 0)",
+        "[12:06] agent output line 6: running go test ./internal/robot/ (pass 0)",
+        "[12:07] agent output line 7: running go test ./internal/robot/ (pass 0)"
+      ],
+      "truncated": false,
+      "observation_state": "observed",
+      "observation_freshness": "fresh",
+      "observation_confidence": 0.9,
+      "safe_to_dispatch": false,
+      "capture_collected_at": "2026-08-16T12:00:00Z",
+      "capture_provenance": "live"
+    },
+    "2": {
+      "type": "codex",
+      "state": "idle",
+      "lines": [
+        "[12:00] agent output line 0: running go test ./internal/robot/ (pass 1)",
+        "[12:01] agent output line 1: running go test ./internal/robot/ (pass 1)",
+        "[12:02] agent output line 2: running go test ./internal/robot/ (pass 1)",
+        "[12:03] agent output line 3: running go test ./internal/robot/ (pass 1)",
+        "[12:04] agent output line 4: running go test ./internal/robot/ (pass 1)",
+        "[12:05] agent output line 5: running go test ./internal/robot/ (pass 1)",
+        "[12:06] agent output line 6: running go test ./internal/robot/ (pass 1)",
+        "[12:07] agent output line 7: running go test ./internal/robot/ (pass 1)"
+      ],
+      "truncated": false,
+      "observation_state": "observed",
+      "observation_freshness": "fresh",
+      "observation_confidence": 0.9,
+      "safe_to_dispatch": true,
+      "capture_collected_at": "2026-08-16T12:00:00Z",
+      "capture_provenance": "live"
+    },
+    "3": {
+      "type": "user",
+      "state": "active",
+      "lines": [
+        "[12:00] agent output line 0: running go test ./internal/robot/ (pass 2)",
+        "[12:01] agent output line 1: running go test ./internal/robot/ (pass 2)",
+        "[12:02] agent output line 2: running go test ./internal/robot/ (pass 2)",
+        "[12:03] agent output line 3: running go test ./internal/robot/ (pass 2)",
+        "[12:04] agent output line 4: running go test ./internal/robot/ (pass 2)",
+        "[12:05] agent output line 5: running go test ./internal/robot/ (pass 2)",
+        "[12:06] agent output line 6: running go test ./internal/robot/ (pass 2)",
+        "[12:07] agent output line 7: running go test ./internal/robot/ (pass 2)"
+      ],
+      "truncated": false,
+      "observation_state": "observed",
+      "observation_freshness": "fresh",
+      "observation_confidence": 0.9,
+      "safe_to_dispatch": false,
+      "capture_collected_at": "2026-08-16T12:00:00Z",
+      "capture_provenance": "live"
+    },
+    "4": {
+      "type": "claude",
+      "state": "idle",
+      "lines": [
+        "[12:00] agent output line 0: running go test ./internal/robot/ (pass 3)",
+        "[12:01] agent output line 1: running go test ./internal/robot/ (pass 3)",
+        "[12:02] agent output line 2: running go test ./internal/robot/ (pass 3)",
+        "[12:03] agent output line 3: running go test ./internal/robot/ (pass 3)",
+        "[12:04] agent output line 4: running go test ./internal/robot/ (pass 3)",
+        "[12:05] agent output line 5: running go test ./internal/robot/ (pass 3)",
+        "[12:06] agent output line 6: running go test ./internal/robot/ (pass 3)",
+        "[12:07] agent output line 7: running go test ./internal/robot/ (pass 3)"
+      ],
+      "truncated": false,
+      "observation_state": "observed",
+      "observation_freshness": "fresh",
+      "observation_confidence": 0.9,
+      "safe_to_dispatch": true,
+      "capture_collected_at": "2026-08-16T12:00:00Z",
+      "capture_provenance": "live"
+    }
+  }
+}

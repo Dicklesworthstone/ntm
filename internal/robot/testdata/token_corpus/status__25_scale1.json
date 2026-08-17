@@ -1,0 +1,84 @@
+{
+  "success": true,
+  "timestamp": "2026-08-16T12:00:00Z",
+  "version": "1.0.0",
+  "output_format": "json",
+  "schema_id": "ntm:robot:status:v1",
+  "schema_version": "1.0.0",
+  "generated_at": "0001-01-01T00:00:00Z",
+  "overall_status": "degraded",
+  "system": {
+    "version": "1.24.0",
+    "commit": "abcdef1234567890",
+    "build_date": "2026-08-01T00:00:00Z",
+    "go_version": "go1.24",
+    "os": "darwin",
+    "arch": "arm64",
+    "tmux_available": true
+  },
+  "sessions": [
+    {
+      "name": "proj-a",
+      "attached": true,
+      "agent_count": 2,
+      "health": {
+        "status": "healthy"
+      }
+    },
+    {
+      "name": "proj-b",
+      "agent_count": 3,
+      "health": {
+        "status": "warning",
+        "reason": "agent idle \u003e10m with pending work"
+      }
+    },
+    {
+      "name": "proj-c",
+      "attached": true,
+      "agent_count": 4,
+      "health": {
+        "status": "critical",
+        "reason": "agent idle \u003e10m with pending work"
+      }
+    }
+  ],
+  "summary": {
+    "total_sessions": 3,
+    "total_agents": 9,
+    "attached_count": 2,
+    "claude_count": 6,
+    "codex_count": 3,
+    "gemini_count": 0,
+    "antigravity_count": 0,
+    "grok_count": 0,
+    "cursor_count": 0,
+    "windsurf_count": 0,
+    "aider_count": 0,
+    "opencode_count": 0,
+    "ollama_count": 0,
+    "agents_by_state": {
+      "active": 6,
+      "idle": 3
+    },
+    "agents_by_type": {
+      "claude": 6,
+      "codex": 3
+    },
+    "ready_work": 6,
+    "in_progress": 1,
+    "health_score": 0.88,
+    "health_status": "healthy",
+    "alerts_active": 0,
+    "mail_unread": 0,
+    "mail_urgent": 0
+  },
+  "beads": {
+    "available": true,
+    "project": "ntm",
+    "total": 110,
+    "open": 40,
+    "ready": 6,
+    "closed": 65
+  }
+}

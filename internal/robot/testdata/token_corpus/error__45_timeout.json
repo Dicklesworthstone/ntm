@@ -1,0 +1,9 @@
+{
+  "success": false,
+  "timestamp": "2026-08-16T12:00:00Z",
+  "version": "1.0.0",
+  "output_format": "json",
+  "error": "probe timed out after 10s",
+  "error_code": "TIMEOUT",
+  "hint": "Increase --probe-timeout or check agent responsiveness"
+}

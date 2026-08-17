@@ -1,0 +1,9 @@
+{
+  "success": false,
+  "timestamp": "2026-08-16T12:00:00Z",
+  "version": "1.0.0",
+  "output_format": "json",
+  "error": "pane 7 not found in session 'proj'",
+  "error_code": "PANE_NOT_FOUND",
+  "hint": "Use --robot-pane-address=proj to list panes"
+}

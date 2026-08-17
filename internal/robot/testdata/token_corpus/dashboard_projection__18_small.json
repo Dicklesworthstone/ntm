@@ -1,0 +1,110 @@
+{
+  "sections": [
+    {
+      "name": "summary",
+      "order_weight": 10,
+      "data": {
+        "total_sessions": 1,
+        "total_agents": 4,
+        "attached_count": 0,
+        "claude_count": 1,
+        "codex_count": 1,
+        "gemini_count": 0,
+        "antigravity_count": 0,
+        "grok_count": 0,
+        "cursor_count": 1,
+        "windsurf_count": 0,
+        "aider_count": 0,
+        "opencode_count": 0,
+        "ollama_count": 0,
+        "agents_by_state": {
+          "active": 2,
+          "error": 1,
+          "idle": 1
+        },
+        "agents_by_type": {
+          "claude": 1,
+          "codex": 1,
+          "cursor": 1
+        },
+        "ready_work": 10,
+        "in_progress": 5,
+        "health_score": 0.85,
+        "health_status": "healthy",
+        "alerts_active": 1,
+        "mail_unread": 0,
+        "mail_urgent": 0
+      }
+    },
+    {
+      "name": "sessions",
+      "order_weight": 20,
+      "data": [
+        {
+          "name": "bench-session-0",
+          "attached": true,
+          "agents": [
+            {
+              "pane": "1",
+              "type": "claude",
+              "type_confidence": 0.95,
+              "type_method": "process",
+              "state": "active",
+              "last_output_age_sec": 0,
+              "output_tail_lines": 50,
+              "pending_mail": 0
+            },
+            {
+              "pane": "2",
+              "type": "codex",
+              "type_confidence": 0.95,
+              "type_method": "process",
+              "state": "idle",
+              "last_output_age_sec": 10,
+              "output_tail_lines": 50,
+              "pending_mail": 0
+            },
+            {
+              "pane": "3",
+              "type": "cursor",
+              "type_confidence": 0.95,
+              "type_method": "process",
+              "state": "unknown",
+              "last_output_age_sec": 20,
+              "output_tail_lines": 50,
+              "pending_mail": 0
+            },
+            {
+              "pane": "4",
+              "type": "claude",
+              "type_confidence": 0.95,
+              "type_method": "process",
+              "state": "active",
+              "last_output_age_sec": 30,
+              "output_tail_lines": 50,
+              "pending_mail": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "attention",
+      "order_weight": 50,
+      "data": {
+        "total_events": 10,
+        "action_required_count": 3,
+        "interesting_count": 2,
+        "by_category": {
+          "agent": 2,
+          "alert": 2,
+          "file": 2,
+          "pane": 2,
+          "system": 2
+        }
+      }
+    }
+  ],
+  "timestamp": "2026-08-16T12:00:00Z",
+  "source_version": "1.0.0"
+}

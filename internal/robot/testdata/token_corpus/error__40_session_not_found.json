@@ -1,0 +1,9 @@
+{
+  "success": false,
+  "timestamp": "2026-08-16T12:00:00Z",
+  "version": "1.0.0",
+  "output_format": "json",
+  "error": "session 'myproject' not found",
+  "error_code": "SESSION_NOT_FOUND",
+  "hint": "Use 'ntm list' to see available sessions"
+}

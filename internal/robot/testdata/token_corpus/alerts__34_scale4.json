@@ -1,0 +1,81 @@
+{
+  "success": true,
+  "timestamp": "2026-08-16T12:00:00Z",
+  "version": "1.0.0",
+  "output_format": "json",
+  "generated_at": "0001-01-01T00:00:00Z",
+  "enabled": true,
+  "active": [
+    {
+      "id": "alert-4-0",
+      "source": "monitor",
+      "type": "agent_stuck",
+      "severity": "critical",
+      "message": "Pane 1 in session swarm-4 has produced no output for 5 minutes",
+      "session": "swarm-4",
+      "pane": "1",
+      "created_at": "2026-08-16T12:00:00Z",
+      "duration_ms": 60000,
+      "count": 1
+    },
+    {
+      "id": "alert-4-1",
+      "source": "monitor",
+      "type": "context_high",
+      "severity": "warning",
+      "message": "Pane 2 in session swarm-4 has produced no output for 6 minutes",
+      "session": "swarm-4",
+      "pane": "2",
+      "created_at": "2026-08-16T12:00:00Z",
+      "duration_ms": 120000,
+      "count": 2
+    },
+    {
+      "id": "alert-4-2",
+      "source": "monitor",
+      "type": "rate_limited",
+      "severity": "info",
+      "message": "Pane 3 in session swarm-4 has produced no output for 7 minutes",
+      "session": "swarm-4",
+      "pane": "3",
+      "created_at": "2026-08-16T12:00:00Z",
+      "duration_ms": 180000,
+      "count": 3
+    },
+    {
+      "id": "alert-4-3",
+      "source": "monitor",
+      "type": "disk_pressure",
+      "severity": "critical",
+      "message": "Pane 4 in session swarm-4 has produced no output for 8 minutes",
+      "session": "swarm-4",
+      "pane": "4",
+      "created_at": "2026-08-16T12:00:00Z",
+      "duration_ms": 240000,
+      "count": 4
+    },
+    {
+      "id": "alert-4-4",
+      "source": "monitor",
+      "type": "agent_stuck",
+      "severity": "warning",
+      "message": "Pane 1 in session swarm-4 has produced no output for 9 minutes",
+      "session": "swarm-4",
+      "pane": "1",
+      "created_at": "2026-08-16T12:00:00Z",
+      "duration_ms": 300000,
+      "count": 5
+    }
+  ],
+  "summary": {
+    "total_active": 5,
+    "by_severity": {
+      "critical": 1,
+      "info": 3,
+      "warning": 1
+    },
+    "by_type": {
+      "agent_stuck": 5
+    }
+  }
+}

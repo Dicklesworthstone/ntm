@@ -1,0 +1,1923 @@
+{
+  "success": true,
+  "timestamp": "2026-08-16T12:00:00Z",
+  "output_format": "json",
+  "version": "dev",
+  "commands": [
+    {
+      "name": "health",
+      "flag": "--robot-health",
+      "category": "state",
+      "summary": "Get session or project health status.",
+      "description": "Get session or project health status.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:health:v1",
+      "schema_type": "health",
+      "schema_source": "built_in",
+      "sections": [
+        "source_health",
+        "next_actions"
+      ],
+      "parameters": [
+        {
+          "name": "session",
+          "flag": "--robot-health",
+          "type": "string",
+          "required": false,
+          "description": "Session for per-agent health, empty for project health"
+        }
+      ],
+      "examples": [
+        "ntm --robot-health=myproject"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-health"
+        }
+      ]
+    },
+    {
+      "name": "health-oauth",
+      "flag": "--robot-health-oauth",
+      "category": "state",
+      "summary": "Get per-agent OAuth and rate-limit status for a session.",
+      "description": "Get per-agent OAuth and rate-limit status for a session.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:health-oauth:v1",
+      "schema_type": "health_oauth",
+      "schema_source": "built_in",
+      "sections": [
+        "source_health",
+        "quota"
+      ],
+      "parameters": [
+        {
+          "name": "session",
+          "flag": "--robot-health-oauth",
+          "type": "string",
+          "required": true,
+          "description": "Session name"
+        }
+      ],
+      "examples": [
+        "ntm --robot-health-oauth=myproject"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-health-oauth"
+        }
+      ]
+    },
+    {
+      "name": "status",
+      "flag": "--robot-status",
+      "category": "state",
+      "summary": "Get tmux sessions, panes, and agent states.",
+      "description": "Get tmux sessions, panes, and agent states. The primary entry point for understanding current system state.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:status:v1",
+      "schema_type": "status",
+      "schema_source": "built_in",
+      "sections": [
+        "summary",
+        "sessions"
+      ],
+      "parameters": [
+        {
+          "name": "robot-limit",
+          "flag": "--robot-limit",
+          "type": "int",
+          "required": false,
+          "default": "0",
+          "description": "Max sessions to return (alias: --limit)"
+        },
+        {
+          "name": "robot-offset",
+          "flag": "--robot-offset",
+          "type": "int",
+          "required": false,
+          "default": "0",
+          "description": "Pagination offset for sessions (alias: --offset)"
+        }
+      ],
+      "examples": [
+        "ntm --robot-status"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-status"
+        }
+      ]
+    },
+    {
+      "name": "watch-bead",
+      "flag": "--robot-watch-bead",
+      "category": "state",
+      "summary": "Capture recent mentions of a bead across panes and report current bead status.",
+      "description": "Capture recent mentions of a bead across panes and report current bead status.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:watch-bead:v1",
+      "schema_type": "watch_bead",
+      "schema_source": "built_in",
+      "sections": [
+        "work",
+        "events"
+      ],
+      "parameters": [
+        {
+          "name": "session",
+          "flag": "--robot-watch-bead",
+          "type": "string",
+          "required": true,
+          "description": "Session name"
+        },
+        {
+          "name": "bead",
+          "flag": "--bead",
+          "type": "string",
+          "required": true,
+          "description": "Bead ID to track"
+        },
+        {
+          "name": "panes",
+          "flag": "--panes",
+          "type": "string",
+          "required": false,
+          "description": "Comma-separated pane indices to filter"
+        },
+        {
+          "name": "lines",
+          "flag": "--lines",
+          "type": "int",
+          "required": false,
+          "default": "200",
+          "description": "Lines captured per pane"
+        },
+        {
+          "name": "interval",
+          "flag": "--interval",
+          "type": "string",
+          "required": false,
+          "default": "30s",
+          "description": "Status polling interval"
+        }
+      ],
+      "examples": [
+        "ntm --robot-watch-bead=myproject --bead=bd-abc123",
+        "ntm --robot-watch-bead=myproject --bead=bd-abc123 --panes=2,3 --lines=300 --interval=45s"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-watch-bead"
+        }
+      ]
+    },
+    {
+      "name": "digest",
+      "flag": "--robot-digest",
+      "category": "attention",
+      "summary": "Aggregated summary of recent attention events.",
+      "description": "Aggregated summary of recent attention events. Returns counts, top items, and category breakdown without waiting. Use for quick status checks; prefer --robot-attention for blocking operator loops.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:digest:v1",
+      "schema_type": "digest",
+      "schema_source": "built_in",
+      "sections": [
+        "attention",
+        "incidents",
+        "next_actions"
+      ],
+      "parameters": [
+        {
+          "name": "profile",
+          "flag": "--profile",
+          "type": "string",
+          "required": false,
+          "default": "operator",
+          "description": "Attention profile: operator, debug, minimal, alerts"
+        }
+      ],
+      "examples": [
+        "ntm --robot-digest",
+        "ntm --robot-digest --profile=minimal"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-digest"
+        }
+      ]
+    },
+    {
+      "name": "ensemble",
+      "flag": "--robot-ensemble",
+      "category": "ensemble",
+      "summary": "Get ensemble state for a session including modes, status, and synthesis readiness.",
+      "description": "Get ensemble state for a session including modes, status, and synthesis readiness.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:ensemble:v1",
+      "schema_type": "ensemble",
+      "schema_source": "built_in",
+      "parameters": [
+        {
+          "name": "session",
+          "flag": "--robot-ensemble",
+          "type": "string",
+          "required": true,
+          "description": "Session name to inspect"
+        }
+      ],
+      "examples": [
+        "ntm --robot-ensemble=myproject"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-ensemble"
+        }
+      ]
+    },
+    {
+      "name": "beads-list",
+      "flag": "--robot-beads-list",
+      "category": "beads",
+      "summary": "List beads with filtering options.",
+      "description": "List beads with filtering options.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:beads-list:v1",
+      "schema_type": "beads_list",
+      "schema_source": "built_in",
+      "sections": [
+        "work"
+      ],
+      "parameters": [
+        {
+          "name": "beads-status",
+          "flag": "--beads-status",
+          "type": "string",
+          "required": false,
+          "description": "Filter by status: open, in_progress, closed, blocked",
+          "deprecated": true,
+          "replaced_by": "--status"
+        },
+        {
+          "name": "beads-priority",
+          "flag": "--beads-priority",
+          "type": "string",
+          "required": false,
+          "description": "Filter by priority: 0-4 or P0-P4",
+          "deprecated": true,
+          "replaced_by": "--priority"
+        },
+        {
+          "name": "beads-assignee",
+          "flag": "--beads-assignee",
+          "type": "string",
+          "required": false,
+          "description": "Filter by assignee",
+          "deprecated": true,
+          "replaced_by": "--assignee"
+        },
+        {
+          "name": "beads-type",
+          "flag": "--beads-type",
+          "type": "string",
+          "required": false,
+          "description": "Filter by type: task, bug, feature, epic, chore"
+        },
+        {
+          "name": "beads-limit",
+          "flag": "--beads-limit",
+          "type": "int",
+          "required": false,
+          "default": "20",
+          "description": "Max beads to return",
+          "deprecated": true,
+          "replaced_by": "--limit"
+        }
+      ],
+      "examples": [
+        "ntm --robot-beads-list --beads-status=open --beads-priority=1"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-beads-list"
+        }
+      ]
+    },
+    {
+      "name": "cass-status",
+      "flag": "--robot-cass-status",
+      "category": "cass",
+      "summary": "Get CASS health and statistics.",
+      "description": "Get CASS health and statistics.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:cass-status:v1",
+      "schema_type": "cass_status",
+      "schema_source": "built_in",
+      "examples": [
+        "ntm --robot-cass-status"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-cass-status"
+        }
+      ]
+    },
+    {
+      "name": "pipeline-status",
+      "flag": "--robot-pipeline",
+      "category": "pipeline",
+      "summary": "Get pipeline status.",
+      "description": "Get pipeline status.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_source": "external",
+      "sections": [
+        "work",
+        "next_actions"
+      ],
+      "parameters": [
+        {
+          "name": "run-id",
+          "flag": "--robot-pipeline",
+          "type": "string",
+          "required": true,
+          "description": "Pipeline run ID"
+        }
+      ],
+      "examples": [
+        "ntm --robot-pipeline=run-20241230-123456-abcd"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-pipeline"
+        }
+      ]
+    },
+    {
+      "name": "account-status",
+      "flag": "--robot-account-status",
+      "category": "utility",
+      "summary": "Show CAAM account status, optionally filtered to one provider.",
+      "description": "Show CAAM account status, optionally filtered to one provider.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:account-status:v1",
+      "schema_type": "account_status",
+      "schema_source": "built_in",
+      "sections": [
+        "quota"
+      ],
+      "parameters": [
+        {
+          "name": "provider",
+          "flag": "--provider",
+          "type": "string",
+          "required": false,
+          "description": "Filter to a specific provider (alias: --account-status-provider)"
+        }
+      ],
+      "examples": [
+        "ntm --robot-account-status",
+        "ntm --robot-account-status --provider=claude"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-account-status"
+        }
+      ]
+    },
+    {
+      "name": "acfs-status",
+      "flag": "--robot-acfs-status",
+      "category": "utility",
+      "summary": "Get setup status via ACFS (core tool availability).",
+      "description": "Get setup status via ACFS (core tool availability).",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:acfs-status:v1",
+      "schema_type": "acfs_status",
+      "schema_source": "built_in",
+      "examples": [
+        "ntm --robot-acfs-status"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-acfs-status"
+        }
+      ]
+    },
+    {
+      "name": "dcg-status",
+      "flag": "--robot-dcg-status",
+      "category": "utility",
+      "summary": "Show DCG status and configuration.",
+      "description": "Show DCG status and configuration.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:dcg-status:v1",
+      "schema_type": "dcg_status",
+      "schema_source": "built_in",
+      "examples": [
+        "ntm --robot-dcg-status"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-dcg-status"
+        }
+      ]
+    },
+    {
+      "name": "jfp-status",
+      "flag": "--robot-jfp-status",
+      "category": "utility",
+      "summary": "Get JeffreysPrompts (JFP) health status.",
+      "description": "Get JeffreysPrompts (JFP) health status.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:jfp-status:v1",
+      "schema_type": "jfp_status",
+      "schema_source": "built_in",
+      "examples": [
+        "ntm --robot-jfp-status"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-jfp-status"
+        }
+      ]
+    },
+    {
+      "name": "mail-check",
+      "flag": "--robot-mail-check",
+      "category": "utility",
+      "summary": "Check Agent Mail inboxes with filtering by project, agent, thread, or urgency.",
+      "description": "Check Agent Mail inboxes with filtering by project, agent, thread, or urgency.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:mail-check:v1",
+      "schema_type": "mail_check",
+      "schema_source": "built_in",
+      "sections": [
+        "coordination",
+        "next_actions"
+      ],
+      "parameters": [
+        {
+          "name": "mail-project",
+          "flag": "--mail-project",
+          "type": "string",
+          "required": true,
+          "description": "Project name for the mail check"
+        },
+        {
+          "name": "mail-agent",
+          "flag": "--mail-agent",
+          "type": "string",
+          "required": false,
+          "description": "Filter to a specific agent inbox; omit to aggregate project agents"
+        },
+        {
+          "name": "thread",
+          "flag": "--thread",
+          "type": "string",
+          "required": false,
+          "description": "Filter to a specific thread"
+        },
+        {
+          "name": "mail-status",
+          "flag": "--mail-status",
+          "type": "string",
+          "required": false,
+          "description": "Filter by read status: read, unread, all"
+        },
+        {
+          "name": "include-bodies",
+          "flag": "--include-bodies",
+          "type": "bool",
+          "required": false,
+          "description": "Include full message bodies"
+        },
+        {
+          "name": "urgent-only",
+          "flag": "--urgent-only",
+          "type": "bool",
+          "required": false,
+          "description": "Only show urgent/high-priority messages"
+        },
+        {
+          "name": "mail-verbose",
+          "flag": "--mail-verbose",
+          "type": "bool",
+          "required": false,
+          "description": "Include extra diagnostic detail"
+        },
+        {
+          "name": "limit",
+          "flag": "--limit",
+          "type": "int",
+          "required": false,
+          "default": "20",
+          "description": "Max messages to return (deprecated alias: --cass-limit)"
+        },
+        {
+          "name": "mail-offset",
+          "flag": "--mail-offset",
+          "type": "int",
+          "required": false,
+          "default": "0",
+          "description": "Pagination offset"
+        },
+        {
+          "name": "since",
+          "flag": "--since",
+          "type": "string",
+          "required": false,
+          "description": "Filter to messages since date (YYYY-MM-DD; deprecated alias: --cass-since)"
+        },
+        {
+          "name": "mail-until",
+          "flag": "--mail-until",
+          "type": "string",
+          "required": false,
+          "description": "Filter to messages before a date"
+        }
+      ],
+      "examples": [
+        "ntm --robot-mail-check --mail-project=myproject",
+        "ntm --robot-mail-check --mail-project=myproject --mail-agent=cc_1 --urgent-only",
+        "ntm --robot-mail-check --mail-project=myproject --since=2025-01-01 --limit=20"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-mail-check"
+        }
+      ]
+    },
+    {
+      "name": "proxy-status",
+      "flag": "--robot-proxy-status",
+      "category": "utility",
+      "summary": "Get rust_proxy daemon status, route metrics, and failover history.",
+      "description": "Get rust_proxy daemon status, route metrics, and failover history.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:proxy-status:v1",
+      "schema_type": "proxy_status",
+      "schema_source": "built_in",
+      "sections": [
+        "source_health"
+      ],
+      "examples": [
+        "ntm --robot-proxy-status"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-proxy-status"
+        }
+      ]
+    },
+    {
+      "name": "quota-status",
+      "flag": "--robot-quota-status",
+      "category": "utility",
+      "summary": "Show caut quota status for all providers.",
+      "description": "Show caut quota status for all providers.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:quota-status:v1",
+      "schema_type": "quota_status",
+      "schema_source": "built_in",
+      "sections": [
+        "quota"
+      ],
+      "examples": [
+        "ntm --robot-quota-status"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-quota-status"
+        }
+      ]
+    },
+    {
+      "name": "rch-status",
+      "flag": "--robot-rch-status",
+      "category": "utility",
+      "summary": "Get RCH status summary including worker counts.",
+      "description": "Get RCH status summary including worker counts.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:rch-status:v1",
+      "schema_type": "rch_status",
+      "schema_source": "built_in",
+      "examples": [
+        "ntm --robot-rch-status"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-rch-status"
+        }
+      ]
+    },
+    {
+      "name": "rch-workers",
+      "flag": "--robot-rch-workers",
+      "category": "utility",
+      "summary": "List RCH workers with status details.",
+      "description": "List RCH workers with status details.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:rch-workers:v1",
+      "schema_type": "rch_workers",
+      "schema_source": "built_in",
+      "parameters": [
+        {
+          "name": "worker",
+          "flag": "--worker",
+          "type": "string",
+          "required": false,
+          "description": "Filter to a specific worker name"
+        }
+      ],
+      "examples": [
+        "ntm --robot-rch-workers",
+        "ntm --robot-rch-workers --worker=builder-1"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-rch-workers"
+        }
+      ]
+    },
+    {
+      "name": "safety-simulate",
+      "flag": "--robot-safety-simulate",
+      "category": "utility",
+      "summary": "Simulate a multi-step command plan against the NTM safety policy without executing any command.",
+      "description": "Simulate a multi-step command plan against the NTM safety policy without executing any command.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:safety-simulate:v1",
+      "schema_type": "safety_simulate",
+      "schema_source": "built_in",
+      "sections": [
+        "source_health",
+        "next_actions"
+      ],
+      "parameters": [
+        {
+          "name": "command",
+          "flag": "--command",
+          "type": "string",
+          "required": false,
+          "description": "Single command to simulate"
+        },
+        {
+          "name": "step",
+          "flag": "--step",
+          "type": "string",
+          "required": false,
+          "description": "Command step to simulate; repeat for multi-step plans"
+        }
+      ],
+      "examples": [
+        "ntm --robot-safety-simulate --command='git reset --hard HEAD~1'",
+        "ntm --robot-safety-simulate --step='git status' --step='git reset --hard HEAD~1'"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-safety-simulate"
+        }
+      ]
+    },
+    {
+      "name": "schema",
+      "flag": "--robot-schema",
+      "category": "utility",
+      "summary": "Generate JSON Schema for a robot response type.",
+      "description": "Generate JSON Schema for a robot response type. Use TYPE=all to emit every available schema.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:schema:v1",
+      "schema_type": "schema",
+      "schema_source": "built_in",
+      "sections": [
+        "command_catalog"
+      ],
+      "parameters": [
+        {
+          "name": "type",
+          "flag": "--robot-schema",
+          "type": "string",
+          "required": true,
+          "description": "Schema type name or all"
+        }
+      ],
+      "examples": [
+        "ntm --robot-schema=status",
+        "ntm --robot-schema=all"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-schema"
+        }
+      ]
+    },
+    {
+      "name": "setup-status",
+      "flag": "--robot-setup",
+      "category": "utility",
+      "summary": "Alias for --robot-acfs-status.",
+      "description": "Alias for --robot-acfs-status.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:setup-status:v1",
+      "schema_type": "setup_status",
+      "schema_source": "built_in",
+      "examples": [
+        "ntm --robot-setup"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-setup"
+        }
+      ]
+    },
+    {
+      "name": "tools",
+      "flag": "--robot-tools",
+      "category": "utility",
+      "summary": "Get tool inventory and health status.",
+      "description": "Get tool inventory and health status.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:tools:v1",
+      "schema_type": "tools",
+      "schema_source": "built_in",
+      "examples": [
+        "ntm --robot-tools"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-tools"
+        }
+      ]
+    },
+    {
+      "name": "xf-status",
+      "flag": "--robot-xf-status",
+      "category": "utility",
+      "summary": "Get XF installation and index health.",
+      "description": "Get XF installation and index health.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:xf-status:v1",
+      "schema_type": "xf_status",
+      "schema_source": "built_in",
+      "sections": [
+        "source_health"
+      ],
+      "examples": [
+        "ntm --robot-xf-status"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-xf-status"
+        }
+      ]
+    }
+  ],
+  "surfaces": [
+    {
+      "name": "health",
+      "flag": "--robot-health",
+      "category": "state",
+      "summary": "Get session or project health status.",
+      "description": "Get session or project health status.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:health:v1",
+      "schema_type": "health",
+      "schema_source": "built_in",
+      "sections": [
+        "source_health",
+        "next_actions"
+      ],
+      "parameters": [
+        {
+          "name": "session",
+          "flag": "--robot-health",
+          "type": "string",
+          "required": false,
+          "description": "Session for per-agent health, empty for project health"
+        }
+      ],
+      "examples": [
+        "ntm --robot-health=myproject"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-health"
+        }
+      ],
+      "consumer_guidance": {
+        "intended_use": "Quick health check for adapters and sources",
+        "polling_recommendation": "Suitable for periodic health monitoring",
+        "summary_hint": "Check source_health.status for overall health"
+      },
+      "action_handoff": {
+        "supports_actions": true,
+        "action_types": [
+          "remediation",
+          "restart"
+        ],
+        "remediation_format": "next_actions with suggested recovery commands"
+      }
+    },
+    {
+      "name": "health-oauth",
+      "flag": "--robot-health-oauth",
+      "category": "state",
+      "summary": "Get per-agent OAuth and rate-limit status for a session.",
+      "description": "Get per-agent OAuth and rate-limit status for a session.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:health-oauth:v1",
+      "schema_type": "health_oauth",
+      "schema_source": "built_in",
+      "sections": [
+        "source_health",
+        "quota"
+      ],
+      "parameters": [
+        {
+          "name": "session",
+          "flag": "--robot-health-oauth",
+          "type": "string",
+          "required": true,
+          "description": "Session name"
+        }
+      ],
+      "examples": [
+        "ntm --robot-health-oauth=myproject"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-health-oauth"
+        }
+      ]
+    },
+    {
+      "name": "status",
+      "flag": "--robot-status",
+      "category": "state",
+      "summary": "Get tmux sessions, panes, and agent states.",
+      "description": "Get tmux sessions, panes, and agent states. The primary entry point for understanding current system state.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:status:v1",
+      "schema_type": "status",
+      "schema_source": "built_in",
+      "sections": [
+        "summary",
+        "sessions"
+      ],
+      "parameters": [
+        {
+          "name": "robot-limit",
+          "flag": "--robot-limit",
+          "type": "int",
+          "required": false,
+          "default": "0",
+          "description": "Max sessions to return (alias: --limit)"
+        },
+        {
+          "name": "robot-offset",
+          "flag": "--robot-offset",
+          "type": "int",
+          "required": false,
+          "default": "0",
+          "description": "Pagination offset for sessions (alias: --offset)"
+        }
+      ],
+      "examples": [
+        "ntm --robot-status"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-status"
+        }
+      ],
+      "consumer_guidance": {
+        "intended_use": "Quick health check and session inventory",
+        "polling_recommendation": "Suitable for polling every 5-30 seconds",
+        "summary_hint": "Use session_count and active_agents for dashboards"
+      },
+      "boundedness": {
+        "supports_pagination": true,
+        "truncation_behavior": "Sessions beyond limit are omitted; use offset for more"
+      },
+      "follow_up": {
+        "inspect_surfaces": [
+          "inspect-session",
+          "inspect-agent"
+        ],
+        "related_surfaces": [
+          "snapshot",
+          "terse"
+        ],
+        "drill_down_pattern": "--robot-inspect-session=\u003csession_name\u003e"
+      }
+    },
+    {
+      "name": "watch-bead",
+      "flag": "--robot-watch-bead",
+      "category": "state",
+      "summary": "Capture recent mentions of a bead across panes and report current bead status.",
+      "description": "Capture recent mentions of a bead across panes and report current bead status.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:watch-bead:v1",
+      "schema_type": "watch_bead",
+      "schema_source": "built_in",
+      "sections": [
+        "work",
+        "events"
+      ],
+      "parameters": [
+        {
+          "name": "session",
+          "flag": "--robot-watch-bead",
+          "type": "string",
+          "required": true,
+          "description": "Session name"
+        },
+        {
+          "name": "bead",
+          "flag": "--bead",
+          "type": "string",
+          "required": true,
+          "description": "Bead ID to track"
+        },
+        {
+          "name": "panes",
+          "flag": "--panes",
+          "type": "string",
+          "required": false,
+          "description": "Comma-separated pane indices to filter"
+        },
+        {
+          "name": "lines",
+          "flag": "--lines",
+          "type": "int",
+          "required": false,
+          "default": "200",
+          "description": "Lines captured per pane"
+        },
+        {
+          "name": "interval",
+          "flag": "--interval",
+          "type": "string",
+          "required": false,
+          "default": "30s",
+          "description": "Status polling interval"
+        }
+      ],
+      "examples": [
+        "ntm --robot-watch-bead=myproject --bead=bd-abc123",
+        "ntm --robot-watch-bead=myproject --bead=bd-abc123 --panes=2,3 --lines=300 --interval=45s"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-watch-bead"
+        }
+      ],
+      "consumer_guidance": {
+        "intended_use": "Monitor a specific bead for changes",
+        "compression_semantics": "Events streamed as they occur"
+      }
+    },
+    {
+      "name": "digest",
+      "flag": "--robot-digest",
+      "category": "attention",
+      "summary": "Aggregated summary of recent attention events.",
+      "description": "Aggregated summary of recent attention events. Returns counts, top items, and category breakdown without waiting. Use for quick status checks; prefer --robot-attention for blocking operator loops.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:digest:v1",
+      "schema_type": "digest",
+      "schema_source": "built_in",
+      "sections": [
+        "attention",
+        "incidents",
+        "next_actions"
+      ],
+      "parameters": [
+        {
+          "name": "profile",
+          "flag": "--profile",
+          "type": "string",
+          "required": false,
+          "default": "operator",
+          "description": "Attention profile: operator, debug, minimal, alerts"
+        }
+      ],
+      "examples": [
+        "ntm --robot-digest",
+        "ntm --robot-digest --profile=minimal"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-digest"
+        }
+      ],
+      "consumer_guidance": {
+        "intended_use": "Non-blocking summary for background checks",
+        "polling_recommendation": "Use when full attention loop is not needed",
+        "summary_hint": "Focus on attention.items for urgent work"
+      },
+      "action_handoff": {
+        "supports_actions": true,
+        "action_types": [
+          "inspect",
+          "acknowledge"
+        ],
+        "remediation_format": "next_actions array with action_type and command fields"
+      }
+    },
+    {
+      "name": "ensemble",
+      "flag": "--robot-ensemble",
+      "category": "ensemble",
+      "summary": "Get ensemble state for a session including modes, status, and synthesis readiness.",
+      "description": "Get ensemble state for a session including modes, status, and synthesis readiness.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:ensemble:v1",
+      "schema_type": "ensemble",
+      "schema_source": "built_in",
+      "parameters": [
+        {
+          "name": "session",
+          "flag": "--robot-ensemble",
+          "type": "string",
+          "required": true,
+          "description": "Session name to inspect"
+        }
+      ],
+      "examples": [
+        "ntm --robot-ensemble=myproject"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-ensemble"
+        }
+      ]
+    },
+    {
+      "name": "beads-list",
+      "flag": "--robot-beads-list",
+      "category": "beads",
+      "summary": "List beads with filtering options.",
+      "description": "List beads with filtering options.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:beads-list:v1",
+      "schema_type": "beads_list",
+      "schema_source": "built_in",
+      "sections": [
+        "work"
+      ],
+      "parameters": [
+        {
+          "name": "beads-status",
+          "flag": "--beads-status",
+          "type": "string",
+          "required": false,
+          "description": "Filter by status: open, in_progress, closed, blocked",
+          "deprecated": true,
+          "replaced_by": "--status"
+        },
+        {
+          "name": "beads-priority",
+          "flag": "--beads-priority",
+          "type": "string",
+          "required": false,
+          "description": "Filter by priority: 0-4 or P0-P4",
+          "deprecated": true,
+          "replaced_by": "--priority"
+        },
+        {
+          "name": "beads-assignee",
+          "flag": "--beads-assignee",
+          "type": "string",
+          "required": false,
+          "description": "Filter by assignee",
+          "deprecated": true,
+          "replaced_by": "--assignee"
+        },
+        {
+          "name": "beads-type",
+          "flag": "--beads-type",
+          "type": "string",
+          "required": false,
+          "description": "Filter by type: task, bug, feature, epic, chore"
+        },
+        {
+          "name": "beads-limit",
+          "flag": "--beads-limit",
+          "type": "int",
+          "required": false,
+          "default": "20",
+          "description": "Max beads to return",
+          "deprecated": true,
+          "replaced_by": "--limit"
+        }
+      ],
+      "examples": [
+        "ntm --robot-beads-list --beads-status=open --beads-priority=1"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-beads-list"
+        }
+      ],
+      "consumer_guidance": {
+        "intended_use": "List work items from beads database",
+        "summary_hint": "Filter by status for ready work"
+      },
+      "boundedness": {
+        "default_limit": 50,
+        "max_limit": 500,
+        "supports_pagination": true,
+        "truncation_behavior": "Beads beyond limit omitted; use offset for more"
+      },
+      "follow_up": {
+        "inspect_surfaces": [
+          "inspect-work"
+        ],
+        "drill_down_pattern": "--robot-inspect-work=\u003cbead_id\u003e"
+      }
+    },
+    {
+      "name": "cass-status",
+      "flag": "--robot-cass-status",
+      "category": "cass",
+      "summary": "Get CASS health and statistics.",
+      "description": "Get CASS health and statistics.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:cass-status:v1",
+      "schema_type": "cass_status",
+      "schema_source": "built_in",
+      "examples": [
+        "ntm --robot-cass-status"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-cass-status"
+        }
+      ]
+    },
+    {
+      "name": "pipeline-status",
+      "flag": "--robot-pipeline",
+      "category": "pipeline",
+      "summary": "Get pipeline status.",
+      "description": "Get pipeline status.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_source": "external",
+      "sections": [
+        "work",
+        "next_actions"
+      ],
+      "parameters": [
+        {
+          "name": "run-id",
+          "flag": "--robot-pipeline",
+          "type": "string",
+          "required": true,
+          "description": "Pipeline run ID"
+        }
+      ],
+      "examples": [
+        "ntm --robot-pipeline=run-20241230-123456-abcd"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-pipeline"
+        }
+      ]
+    },
+    {
+      "name": "account-status",
+      "flag": "--robot-account-status",
+      "category": "utility",
+      "summary": "Show CAAM account status, optionally filtered to one provider.",
+      "description": "Show CAAM account status, optionally filtered to one provider.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:account-status:v1",
+      "schema_type": "account_status",
+      "schema_source": "built_in",
+      "sections": [
+        "quota"
+      ],
+      "parameters": [
+        {
+          "name": "provider",
+          "flag": "--provider",
+          "type": "string",
+          "required": false,
+          "description": "Filter to a specific provider (alias: --account-status-provider)"
+        }
+      ],
+      "examples": [
+        "ntm --robot-account-status",
+        "ntm --robot-account-status --provider=claude"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-account-status"
+        }
+      ]
+    },
+    {
+      "name": "acfs-status",
+      "flag": "--robot-acfs-status",
+      "category": "utility",
+      "summary": "Get setup status via ACFS (core tool availability).",
+      "description": "Get setup status via ACFS (core tool availability).",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:acfs-status:v1",
+      "schema_type": "acfs_status",
+      "schema_source": "built_in",
+      "examples": [
+        "ntm --robot-acfs-status"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-acfs-status"
+        }
+      ]
+    },
+    {
+      "name": "dcg-status",
+      "flag": "--robot-dcg-status",
+      "category": "utility",
+      "summary": "Show DCG status and configuration.",
+      "description": "Show DCG status and configuration.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:dcg-status:v1",
+      "schema_type": "dcg_status",
+      "schema_source": "built_in",
+      "examples": [
+        "ntm --robot-dcg-status"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-dcg-status"
+        }
+      ]
+    },
+    {
+      "name": "jfp-status",
+      "flag": "--robot-jfp-status",
+      "category": "utility",
+      "summary": "Get JeffreysPrompts (JFP) health status.",
+      "description": "Get JeffreysPrompts (JFP) health status.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:jfp-status:v1",
+      "schema_type": "jfp_status",
+      "schema_source": "built_in",
+      "examples": [
+        "ntm --robot-jfp-status"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-jfp-status"
+        }
+      ]
+    },
+    {
+      "name": "mail-check",
+      "flag": "--robot-mail-check",
+      "category": "utility",
+      "summary": "Check Agent Mail inboxes with filtering by project, agent, thread, or urgency.",
+      "description": "Check Agent Mail inboxes with filtering by project, agent, thread, or urgency.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:mail-check:v1",
+      "schema_type": "mail_check",
+      "schema_source": "built_in",
+      "sections": [
+        "coordination",
+        "next_actions"
+      ],
+      "parameters": [
+        {
+          "name": "mail-project",
+          "flag": "--mail-project",
+          "type": "string",
+          "required": true,
+          "description": "Project name for the mail check"
+        },
+        {
+          "name": "mail-agent",
+          "flag": "--mail-agent",
+          "type": "string",
+          "required": false,
+          "description": "Filter to a specific agent inbox; omit to aggregate project agents"
+        },
+        {
+          "name": "thread",
+          "flag": "--thread",
+          "type": "string",
+          "required": false,
+          "description": "Filter to a specific thread"
+        },
+        {
+          "name": "mail-status",
+          "flag": "--mail-status",
+          "type": "string",
+          "required": false,
+          "description": "Filter by read status: read, unread, all"
+        },
+        {
+          "name": "include-bodies",
+          "flag": "--include-bodies",
+          "type": "bool",
+          "required": false,
+          "description": "Include full message bodies"
+        },
+        {
+          "name": "urgent-only",
+          "flag": "--urgent-only",
+          "type": "bool",
+          "required": false,
+          "description": "Only show urgent/high-priority messages"
+        },
+        {
+          "name": "mail-verbose",
+          "flag": "--mail-verbose",
+          "type": "bool",
+          "required": false,
+          "description": "Include extra diagnostic detail"
+        },
+        {
+          "name": "limit",
+          "flag": "--limit",
+          "type": "int",
+          "required": false,
+          "default": "20",
+          "description": "Max messages to return (deprecated alias: --cass-limit)"
+        },
+        {
+          "name": "mail-offset",
+          "flag": "--mail-offset",
+          "type": "int",
+          "required": false,
+          "default": "0",
+          "description": "Pagination offset"
+        },
+        {
+          "name": "since",
+          "flag": "--since",
+          "type": "string",
+          "required": false,
+          "description": "Filter to messages since date (YYYY-MM-DD; deprecated alias: --cass-since)"
+        },
+        {
+          "name": "mail-until",
+          "flag": "--mail-until",
+          "type": "string",
+          "required": false,
+          "description": "Filter to messages before a date"
+        }
+      ],
+      "examples": [
+        "ntm --robot-mail-check --mail-project=myproject",
+        "ntm --robot-mail-check --mail-project=myproject --mail-agent=cc_1 --urgent-only",
+        "ntm --robot-mail-check --mail-project=myproject --since=2025-01-01 --limit=20"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-mail-check"
+        }
+      ]
+    },
+    {
+      "name": "proxy-status",
+      "flag": "--robot-proxy-status",
+      "category": "utility",
+      "summary": "Get rust_proxy daemon status, route metrics, and failover history.",
+      "description": "Get rust_proxy daemon status, route metrics, and failover history.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:proxy-status:v1",
+      "schema_type": "proxy_status",
+      "schema_source": "built_in",
+      "sections": [
+        "source_health"
+      ],
+      "examples": [
+        "ntm --robot-proxy-status"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-proxy-status"
+        }
+      ]
+    },
+    {
+      "name": "quota-status",
+      "flag": "--robot-quota-status",
+      "category": "utility",
+      "summary": "Show caut quota status for all providers.",
+      "description": "Show caut quota status for all providers.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:quota-status:v1",
+      "schema_type": "quota_status",
+      "schema_source": "built_in",
+      "sections": [
+        "quota"
+      ],
+      "examples": [
+        "ntm --robot-quota-status"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-quota-status"
+        }
+      ]
+    },
+    {
+      "name": "rch-status",
+      "flag": "--robot-rch-status",
+      "category": "utility",
+      "summary": "Get RCH status summary including worker counts.",
+      "description": "Get RCH status summary including worker counts.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:rch-status:v1",
+      "schema_type": "rch_status",
+      "schema_source": "built_in",
+      "examples": [
+        "ntm --robot-rch-status"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-rch-status"
+        }
+      ]
+    },
+    {
+      "name": "rch-workers",
+      "flag": "--robot-rch-workers",
+      "category": "utility",
+      "summary": "List RCH workers with status details.",
+      "description": "List RCH workers with status details.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:rch-workers:v1",
+      "schema_type": "rch_workers",
+      "schema_source": "built_in",
+      "parameters": [
+        {
+          "name": "worker",
+          "flag": "--worker",
+          "type": "string",
+          "required": false,
+          "description": "Filter to a specific worker name"
+        }
+      ],
+      "examples": [
+        "ntm --robot-rch-workers",
+        "ntm --robot-rch-workers --worker=builder-1"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-rch-workers"
+        }
+      ]
+    },
+    {
+      "name": "safety-simulate",
+      "flag": "--robot-safety-simulate",
+      "category": "utility",
+      "summary": "Simulate a multi-step command plan against the NTM safety policy without executing any command.",
+      "description": "Simulate a multi-step command plan against the NTM safety policy without executing any command.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:safety-simulate:v1",
+      "schema_type": "safety_simulate",
+      "schema_source": "built_in",
+      "sections": [
+        "source_health",
+        "next_actions"
+      ],
+      "parameters": [
+        {
+          "name": "command",
+          "flag": "--command",
+          "type": "string",
+          "required": false,
+          "description": "Single command to simulate"
+        },
+        {
+          "name": "step",
+          "flag": "--step",
+          "type": "string",
+          "required": false,
+          "description": "Command step to simulate; repeat for multi-step plans"
+        }
+      ],
+      "examples": [
+        "ntm --robot-safety-simulate --command='git reset --hard HEAD~1'",
+        "ntm --robot-safety-simulate --step='git status' --step='git reset --hard HEAD~1'"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-safety-simulate"
+        }
+      ],
+      "consumer_guidance": {
+        "intended_use": "Preflight command plans against the NTM safety policy without executing them",
+        "summary_hint": "Check safe_to_run and steps[].decision before running any proposed command"
+      },
+      "action_handoff": {
+        "supports_actions": true,
+        "action_types": [
+          "remediation"
+        ],
+        "remediation_format": "steps[].safer_alternatives lists safer replacements for unsafe commands"
+      },
+      "request_semantics": {
+        "supports_idempotency": true
+      },
+      "explainability": {
+        "has_evidence_summary": true,
+        "evidence_summary_field": "steps[].policy"
+      }
+    },
+    {
+      "name": "schema",
+      "flag": "--robot-schema",
+      "category": "utility",
+      "summary": "Generate JSON Schema for a robot response type.",
+      "description": "Generate JSON Schema for a robot response type. Use TYPE=all to emit every available schema.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:schema:v1",
+      "schema_type": "schema",
+      "schema_source": "built_in",
+      "sections": [
+        "command_catalog"
+      ],
+      "parameters": [
+        {
+          "name": "type",
+          "flag": "--robot-schema",
+          "type": "string",
+          "required": true,
+          "description": "Schema type name or all"
+        }
+      ],
+      "examples": [
+        "ntm --robot-schema=status",
+        "ntm --robot-schema=all"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-schema"
+        }
+      ],
+      "consumer_guidance": {
+        "intended_use": "JSON Schema for robot command outputs",
+        "summary_hint": "Use for validation and code generation"
+      }
+    },
+    {
+      "name": "setup-status",
+      "flag": "--robot-setup",
+      "category": "utility",
+      "summary": "Alias for --robot-acfs-status.",
+      "description": "Alias for --robot-acfs-status.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:setup-status:v1",
+      "schema_type": "setup_status",
+      "schema_source": "built_in",
+      "examples": [
+        "ntm --robot-setup"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-setup"
+        }
+      ]
+    },
+    {
+      "name": "tools",
+      "flag": "--robot-tools",
+      "category": "utility",
+      "summary": "Get tool inventory and health status.",
+      "description": "Get tool inventory and health status.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:tools:v1",
+      "schema_type": "tools",
+      "schema_source": "built_in",
+      "examples": [
+        "ntm --robot-tools"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-tools"
+        }
+      ]
+    },
+    {
+      "name": "xf-status",
+      "flag": "--robot-xf-status",
+      "category": "utility",
+      "summary": "Get XF installation and index health.",
+      "description": "Get XF installation and index health.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:xf-status:v1",
+      "schema_type": "xf_status",
+      "schema_source": "built_in",
+      "sections": [
+        "source_health"
+      ],
+      "examples": [
+        "ntm --robot-xf-status"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-xf-status"
+        }
+      ]
+    }
+  ],
+  "categories": [
+    "state",
+    "attention",
+    "ensemble",
+    "beads",
+    "cass",
+    "pipeline",
+    "utility"
+  ],
+  "attention": {
+    "contract_version": "1.2.0",
+    "default_profile": "operator",
+    "profiles": [
+      {
+        "name": "operator",
+        "description": "Default profile for operator agents. Shows actionable events and important state changes.",
+        "filters": {
+          "min_severity": "info",
+          "min_actionability": "interesting"
+        }
+      },
+      {
+        "name": "debug",
+        "description": "Full verbosity for debugging. Shows all events including debug level.",
+        "filters": {
+          "min_severity": "debug",
+          "min_actionability": "background"
+        }
+      },
+      {
+        "name": "minimal",
+        "description": "Only critical items requiring immediate action.",
+        "filters": {
+          "min_severity": "error",
+          "min_actionability": "action_required"
+        }
+      },
+      {
+        "name": "alerts",
+        "description": "Only synthesized alert events.",
+        "filters": {
+          "categories": [
+            "alert"
+          ]
+        }
+      }
+    ],
+    "features": {
+      "cursor_replay": {
+        "status": "available",
+        "note": "Replay uses monotonic cursors with explicit resync instructions on expiration."
+      },
+      "operator_boundary": {
+        "status": "available",
+        "note": "Attention feed remains a sensing/actuation surface only; it does not assign work, infer intent, or replace beads, bv, or Agent Mail."
+      },
+      "profile_presets": {
+        "status": "available",
+        "note": "Named attention profiles resolve first, then explicit filters narrow or override the effective filter set."
+      }
+    },
+    "signal_availability": {
+      "bead_orphaned": {
+        "status": "unavailable",
+        "note": "Unsupported: ntm cannot yet prove orphaned work from observable beads, bv, and agent state without inventing coordination conclusions."
+      }
+    },
+    "unsupported_conditions": [
+      {
+        "name": "bead_orphaned",
+        "status": "unavailable",
+        "reason": "ntm cannot prove work is orphaned from observable state alone. Agent silence may indicate compaction, deep thinking, rch compilation, or intentional pause — not abandonment. Emitting this signal would produce false positives that erode operator trust.",
+        "observables_available": [
+          "bead status (open/in_progress/closed) via br/bv",
+          "agent pane liveness (alive/stalled/dead)",
+          "time since last pane output",
+          "Agent Mail message history"
+        ],
+        "what_would_change": "Agent Mail gains explicit 'bead abandon' or 'bead handoff' messages, giving ntm positive evidence of intent rather than inferring abandonment from silence."
+      }
+    ],
+    "guardrails": [
+      {
+        "name": "nervous_system_not_planner",
+        "rule": "ntm emits observable state and executes commands, but it must not invent plans, hidden task graphs, or coordinator conclusions.",
+        "rationale": "The operator agent remains the decision-maker; ntm should sense and act, not pretend to think on the operator's behalf."
+      },
+      {
+        "name": "one_obvious_tending_loop",
+        "rule": "Prefer --robot-attention for the steady-state operator loop; use --robot-events for replay/debug and --robot-digest for non-blocking summaries.",
+        "rationale": "This keeps tending simpler than repeated snapshot polling and prevents multiple competing loop patterns."
+      },
+      {
+        "name": "cursor_resync_is_explicit",
+        "rule": "When replay is stale or CURSOR_EXPIRED occurs, resync with --robot-snapshot instead of guessing missed history.",
+        "rationale": "Cursor expiry is a retention boundary with explicit recovery semantics, not a reason to fabricate state."
+      },
+      {
+        "name": "unsupported_conditions_stay_explicit",
+        "rule": "Unsupported conditions such as bead_orphaned must stay explicit in help and capabilities until ntm can prove them from observable state.",
+        "rationale": "Honest unsupported markers prevent false positives and coordinator-style overreach."
+      }
+    ]
+  },
+  "filter": {
+    "query": "status"
+  }
+}

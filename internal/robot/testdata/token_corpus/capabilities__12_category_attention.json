@@ -1,0 +1,635 @@
+{
+  "success": true,
+  "timestamp": "2026-08-16T12:00:00Z",
+  "output_format": "json",
+  "version": "dev",
+  "commands": [
+    {
+      "name": "attention",
+      "flag": "--robot-attention",
+      "category": "attention",
+      "summary": "The canonical tending primitive: wait until attention is needed, then return a digest with wake reason and next cursor.",
+      "description": "The canonical tending primitive: wait until attention is needed, then return a digest with wake reason and next cursor. This is the one obvious way to implement an operator loop. Combines wait + digest semantics with cursor handoff for mechanical replay.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:attention:v1",
+      "schema_type": "attention",
+      "schema_source": "built_in",
+      "sections": [
+        "attention",
+        "incidents",
+        "next_actions",
+        "cursor"
+      ],
+      "parameters": [
+        {
+          "name": "attention-cursor",
+          "flag": "--attention-cursor",
+          "type": "int",
+          "required": false,
+          "default": "0",
+          "description": "Wait for attention after this cursor"
+        },
+        {
+          "name": "attention-session",
+          "flag": "--attention-session",
+          "type": "string",
+          "required": false,
+          "description": "Filter to a specific session"
+        },
+        {
+          "name": "attention-timeout",
+          "flag": "--attention-timeout",
+          "type": "string",
+          "required": false,
+          "default": "5m",
+          "description": "Maximum wait time before returning"
+        },
+        {
+          "name": "attention-poll",
+          "flag": "--attention-poll",
+          "type": "string",
+          "required": false,
+          "default": "1s",
+          "description": "Polling interval"
+        },
+        {
+          "name": "profile",
+          "flag": "--profile",
+          "type": "string",
+          "required": false,
+          "default": "operator",
+          "description": "Attention profile: operator, debug, minimal, alerts"
+        },
+        {
+          "name": "attention-condition",
+          "flag": "--attention-condition",
+          "type": "string",
+          "required": false,
+          "default": "attention",
+          "description": "Which condition to wait for: attention, action_required, mail_pending"
+        }
+      ],
+      "examples": [
+        "ntm --robot-attention",
+        "ntm --robot-attention --attention-cursor=42 --attention-timeout=2m",
+        "ntm --robot-attention --attention-session=proj --profile=debug --attention-condition=action_required"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-attention"
+        }
+      ]
+    },
+    {
+      "name": "digest",
+      "flag": "--robot-digest",
+      "category": "attention",
+      "summary": "Aggregated summary of recent attention events.",
+      "description": "Aggregated summary of recent attention events. Returns counts, top items, and category breakdown without waiting. Use for quick status checks; prefer --robot-attention for blocking operator loops.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:digest:v1",
+      "schema_type": "digest",
+      "schema_source": "built_in",
+      "sections": [
+        "attention",
+        "incidents",
+        "next_actions"
+      ],
+      "parameters": [
+        {
+          "name": "profile",
+          "flag": "--profile",
+          "type": "string",
+          "required": false,
+          "default": "operator",
+          "description": "Attention profile: operator, debug, minimal, alerts"
+        }
+      ],
+      "examples": [
+        "ntm --robot-digest",
+        "ntm --robot-digest --profile=minimal"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-digest"
+        }
+      ]
+    },
+    {
+      "name": "events",
+      "flag": "--robot-events",
+      "category": "attention",
+      "summary": "Raw event replay from the attention feed.",
+      "description": "Raw event replay from the attention feed. Returns events since the specified cursor with pagination support. Use this for full event history or debugging; prefer --robot-digest or --robot-attention for operator loops.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:events:v1",
+      "schema_type": "events",
+      "schema_source": "built_in",
+      "sections": [
+        "events",
+        "cursor"
+      ],
+      "parameters": [
+        {
+          "name": "since-cursor",
+          "flag": "--since-cursor",
+          "type": "int",
+          "required": false,
+          "default": "0",
+          "description": "Replay events after this cursor (0 = all)"
+        },
+        {
+          "name": "events-limit",
+          "flag": "--events-limit",
+          "type": "int",
+          "required": false,
+          "default": "100",
+          "description": "Max events to return"
+        },
+        {
+          "name": "events-incident",
+          "flag": "--events-incident",
+          "type": "string",
+          "required": false,
+          "description": "Bounded historical replay around a durable incident ID"
+        },
+        {
+          "name": "events-as-of",
+          "flag": "--events-as-of",
+          "type": "string",
+          "required": false,
+          "description": "Bounded historical reconstruction at or before an RFC3339 timestamp"
+        },
+        {
+          "name": "events-window-before",
+          "flag": "--events-window-before",
+          "type": "duration",
+          "required": false,
+          "default": "5m",
+          "description": "Context before incident start for incident replay"
+        },
+        {
+          "name": "events-window-after",
+          "flag": "--events-window-after",
+          "type": "duration",
+          "required": false,
+          "default": "1m",
+          "description": "Context after incident end for incident replay"
+        },
+        {
+          "name": "events-category",
+          "flag": "--events-category",
+          "type": "string",
+          "required": false,
+          "description": "Filter by event category"
+        },
+        {
+          "name": "events-session",
+          "flag": "--events-session",
+          "type": "string",
+          "required": false,
+          "description": "Filter by session name"
+        },
+        {
+          "name": "events-actionability",
+          "flag": "--events-actionability",
+          "type": "string",
+          "required": false,
+          "description": "Filter by actionability level"
+        },
+        {
+          "name": "profile",
+          "flag": "--profile",
+          "type": "string",
+          "required": false,
+          "default": "operator",
+          "description": "Attention profile: operator, debug, minimal, alerts"
+        }
+      ],
+      "examples": [
+        "ntm --robot-events",
+        "ntm --robot-events --since-cursor=42 --events-limit=50",
+        "ntm --robot-events --events-incident=inc-20260322-abc --events-window-before=5m --events-window-after=1m",
+        "ntm --robot-events --events-as-of=2026-03-22T03:50:00Z --events-limit=25",
+        "ntm --robot-events --events-category=agent --events-actionability=action_required",
+        "ntm --robot-events --profile=debug"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-events"
+        }
+      ]
+    }
+  ],
+  "surfaces": [
+    {
+      "name": "attention",
+      "flag": "--robot-attention",
+      "category": "attention",
+      "summary": "The canonical tending primitive: wait until attention is needed, then return a digest with wake reason and next cursor.",
+      "description": "The canonical tending primitive: wait until attention is needed, then return a digest with wake reason and next cursor. This is the one obvious way to implement an operator loop. Combines wait + digest semantics with cursor handoff for mechanical replay.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:attention:v1",
+      "schema_type": "attention",
+      "schema_source": "built_in",
+      "sections": [
+        "attention",
+        "incidents",
+        "next_actions",
+        "cursor"
+      ],
+      "parameters": [
+        {
+          "name": "attention-cursor",
+          "flag": "--attention-cursor",
+          "type": "int",
+          "required": false,
+          "default": "0",
+          "description": "Wait for attention after this cursor"
+        },
+        {
+          "name": "attention-session",
+          "flag": "--attention-session",
+          "type": "string",
+          "required": false,
+          "description": "Filter to a specific session"
+        },
+        {
+          "name": "attention-timeout",
+          "flag": "--attention-timeout",
+          "type": "string",
+          "required": false,
+          "default": "5m",
+          "description": "Maximum wait time before returning"
+        },
+        {
+          "name": "attention-poll",
+          "flag": "--attention-poll",
+          "type": "string",
+          "required": false,
+          "default": "1s",
+          "description": "Polling interval"
+        },
+        {
+          "name": "profile",
+          "flag": "--profile",
+          "type": "string",
+          "required": false,
+          "default": "operator",
+          "description": "Attention profile: operator, debug, minimal, alerts"
+        },
+        {
+          "name": "attention-condition",
+          "flag": "--attention-condition",
+          "type": "string",
+          "required": false,
+          "default": "attention",
+          "description": "Which condition to wait for: attention, action_required, mail_pending"
+        }
+      ],
+      "examples": [
+        "ntm --robot-attention",
+        "ntm --robot-attention --attention-cursor=42 --attention-timeout=2m",
+        "ntm --robot-attention --attention-session=proj --profile=debug --attention-condition=action_required"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-attention"
+        }
+      ],
+      "consumer_guidance": {
+        "intended_use": "Steady-state operator tending loop",
+        "polling_recommendation": "Primary loop surface; use cursor for incremental updates",
+        "summary_hint": "Attention items ranked by priority; process in order",
+        "compression_semantics": "Similar items may be aggregated; aggregation_key groups them"
+      },
+      "boundedness": {
+        "default_limit": 50,
+        "max_limit": 200,
+        "supports_pagination": true,
+        "truncation_behavior": "Lower-priority items dropped; cursor resumes position"
+      },
+      "follow_up": {
+        "inspect_surfaces": [
+          "inspect-incident",
+          "inspect-work"
+        ],
+        "drill_down_pattern": "--robot-inspect-incident=\u003cincident_id\u003e"
+      },
+      "action_handoff": {
+        "supports_actions": true,
+        "action_types": [
+          "acknowledge",
+          "snooze",
+          "pin",
+          "escalate",
+          "inspect"
+        ],
+        "remediation_format": "next_actions array with action_type, command, and reason fields"
+      },
+      "attention_ops": {
+        "supports_acknowledge": true,
+        "supports_snooze": true,
+        "supports_pin": true,
+        "supports_escalate": true,
+        "operator_state_field": "items[].operator_state"
+      },
+      "explainability": {
+        "has_diagnostic_entry_points": true,
+        "diagnostic_handle_field": "items[].diagnostic_handle",
+        "has_evidence_summary": true,
+        "evidence_summary_field": "items[].evidence_summary",
+        "aggregation_cues": "Aggregated items have aggregation_key; expand with inspect"
+      }
+    },
+    {
+      "name": "digest",
+      "flag": "--robot-digest",
+      "category": "attention",
+      "summary": "Aggregated summary of recent attention events.",
+      "description": "Aggregated summary of recent attention events. Returns counts, top items, and category breakdown without waiting. Use for quick status checks; prefer --robot-attention for blocking operator loops.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:digest:v1",
+      "schema_type": "digest",
+      "schema_source": "built_in",
+      "sections": [
+        "attention",
+        "incidents",
+        "next_actions"
+      ],
+      "parameters": [
+        {
+          "name": "profile",
+          "flag": "--profile",
+          "type": "string",
+          "required": false,
+          "default": "operator",
+          "description": "Attention profile: operator, debug, minimal, alerts"
+        }
+      ],
+      "examples": [
+        "ntm --robot-digest",
+        "ntm --robot-digest --profile=minimal"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-digest"
+        }
+      ],
+      "consumer_guidance": {
+        "intended_use": "Non-blocking summary for background checks",
+        "polling_recommendation": "Use when full attention loop is not needed",
+        "summary_hint": "Focus on attention.items for urgent work"
+      },
+      "action_handoff": {
+        "supports_actions": true,
+        "action_types": [
+          "inspect",
+          "acknowledge"
+        ],
+        "remediation_format": "next_actions array with action_type and command fields"
+      }
+    },
+    {
+      "name": "events",
+      "flag": "--robot-events",
+      "category": "attention",
+      "summary": "Raw event replay from the attention feed.",
+      "description": "Raw event replay from the attention feed. Returns events since the specified cursor with pagination support. Use this for full event history or debugging; prefer --robot-digest or --robot-attention for operator loops.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:events:v1",
+      "schema_type": "events",
+      "schema_source": "built_in",
+      "sections": [
+        "events",
+        "cursor"
+      ],
+      "parameters": [
+        {
+          "name": "since-cursor",
+          "flag": "--since-cursor",
+          "type": "int",
+          "required": false,
+          "default": "0",
+          "description": "Replay events after this cursor (0 = all)"
+        },
+        {
+          "name": "events-limit",
+          "flag": "--events-limit",
+          "type": "int",
+          "required": false,
+          "default": "100",
+          "description": "Max events to return"
+        },
+        {
+          "name": "events-incident",
+          "flag": "--events-incident",
+          "type": "string",
+          "required": false,
+          "description": "Bounded historical replay around a durable incident ID"
+        },
+        {
+          "name": "events-as-of",
+          "flag": "--events-as-of",
+          "type": "string",
+          "required": false,
+          "description": "Bounded historical reconstruction at or before an RFC3339 timestamp"
+        },
+        {
+          "name": "events-window-before",
+          "flag": "--events-window-before",
+          "type": "duration",
+          "required": false,
+          "default": "5m",
+          "description": "Context before incident start for incident replay"
+        },
+        {
+          "name": "events-window-after",
+          "flag": "--events-window-after",
+          "type": "duration",
+          "required": false,
+          "default": "1m",
+          "description": "Context after incident end for incident replay"
+        },
+        {
+          "name": "events-category",
+          "flag": "--events-category",
+          "type": "string",
+          "required": false,
+          "description": "Filter by event category"
+        },
+        {
+          "name": "events-session",
+          "flag": "--events-session",
+          "type": "string",
+          "required": false,
+          "description": "Filter by session name"
+        },
+        {
+          "name": "events-actionability",
+          "flag": "--events-actionability",
+          "type": "string",
+          "required": false,
+          "description": "Filter by actionability level"
+        },
+        {
+          "name": "profile",
+          "flag": "--profile",
+          "type": "string",
+          "required": false,
+          "default": "operator",
+          "description": "Attention profile: operator, debug, minimal, alerts"
+        }
+      ],
+      "examples": [
+        "ntm --robot-events",
+        "ntm --robot-events --since-cursor=42 --events-limit=50",
+        "ntm --robot-events --events-incident=inc-20260322-abc --events-window-before=5m --events-window-after=1m",
+        "ntm --robot-events --events-as-of=2026-03-22T03:50:00Z --events-limit=25",
+        "ntm --robot-events --events-category=agent --events-actionability=action_required",
+        "ntm --robot-events --profile=debug"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-events"
+        }
+      ],
+      "consumer_guidance": {
+        "intended_use": "Event replay and debugging",
+        "summary_hint": "Count events by type for activity summary",
+        "compression_semantics": "Events are not aggregated; cursor enables pagination"
+      },
+      "boundedness": {
+        "default_limit": 100,
+        "max_limit": 1000,
+        "supports_pagination": true,
+        "truncation_behavior": "Oldest events dropped; use cursor for continuation"
+      }
+    }
+  ],
+  "categories": [
+    "attention"
+  ],
+  "attention": {
+    "contract_version": "1.2.0",
+    "default_profile": "operator",
+    "profiles": [
+      {
+        "name": "operator",
+        "description": "Default profile for operator agents. Shows actionable events and important state changes.",
+        "filters": {
+          "min_severity": "info",
+          "min_actionability": "interesting"
+        }
+      },
+      {
+        "name": "debug",
+        "description": "Full verbosity for debugging. Shows all events including debug level.",
+        "filters": {
+          "min_severity": "debug",
+          "min_actionability": "background"
+        }
+      },
+      {
+        "name": "minimal",
+        "description": "Only critical items requiring immediate action.",
+        "filters": {
+          "min_severity": "error",
+          "min_actionability": "action_required"
+        }
+      },
+      {
+        "name": "alerts",
+        "description": "Only synthesized alert events.",
+        "filters": {
+          "categories": [
+            "alert"
+          ]
+        }
+      }
+    ],
+    "features": {
+      "cursor_replay": {
+        "status": "available",
+        "note": "Replay uses monotonic cursors with explicit resync instructions on expiration."
+      },
+      "operator_boundary": {
+        "status": "available",
+        "note": "Attention feed remains a sensing/actuation surface only; it does not assign work, infer intent, or replace beads, bv, or Agent Mail."
+      },
+      "profile_presets": {
+        "status": "available",
+        "note": "Named attention profiles resolve first, then explicit filters narrow or override the effective filter set."
+      }
+    },
+    "signal_availability": {
+      "bead_orphaned": {
+        "status": "unavailable",
+        "note": "Unsupported: ntm cannot yet prove orphaned work from observable beads, bv, and agent state without inventing coordination conclusions."
+      }
+    },
+    "unsupported_conditions": [
+      {
+        "name": "bead_orphaned",
+        "status": "unavailable",
+        "reason": "ntm cannot prove work is orphaned from observable state alone. Agent silence may indicate compaction, deep thinking, rch compilation, or intentional pause — not abandonment. Emitting this signal would produce false positives that erode operator trust.",
+        "observables_available": [
+          "bead status (open/in_progress/closed) via br/bv",
+          "agent pane liveness (alive/stalled/dead)",
+          "time since last pane output",
+          "Agent Mail message history"
+        ],
+        "what_would_change": "Agent Mail gains explicit 'bead abandon' or 'bead handoff' messages, giving ntm positive evidence of intent rather than inferring abandonment from silence."
+      }
+    ],
+    "guardrails": [
+      {
+        "name": "nervous_system_not_planner",
+        "rule": "ntm emits observable state and executes commands, but it must not invent plans, hidden task graphs, or coordinator conclusions.",
+        "rationale": "The operator agent remains the decision-maker; ntm should sense and act, not pretend to think on the operator's behalf."
+      },
+      {
+        "name": "one_obvious_tending_loop",
+        "rule": "Prefer --robot-attention for the steady-state operator loop; use --robot-events for replay/debug and --robot-digest for non-blocking summaries.",
+        "rationale": "This keeps tending simpler than repeated snapshot polling and prevents multiple competing loop patterns."
+      },
+      {
+        "name": "cursor_resync_is_explicit",
+        "rule": "When replay is stale or CURSOR_EXPIRED occurs, resync with --robot-snapshot instead of guessing missed history.",
+        "rationale": "Cursor expiry is a retention boundary with explicit recovery semantics, not a reason to fabricate state."
+      },
+      {
+        "name": "unsupported_conditions_stay_explicit",
+        "rule": "Unsupported conditions such as bead_orphaned must stay explicit in help and capabilities until ntm can prove them from observable state.",
+        "rationale": "Honest unsupported markers prevent false positives and coordinator-style overreach."
+      }
+    ]
+  },
+  "filter": {
+    "category": "attention"
+  }
+}

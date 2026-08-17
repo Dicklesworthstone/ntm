@@ -1,0 +1,164 @@
+{
+  "success": true,
+  "timestamp": "2026-08-16T12:00:00Z",
+  "version": "1.0.0",
+  "output_format": "json",
+  "schema_id": "ntm:robot:snapshot:v1",
+  "schema_version": "1.0.0",
+  "ts": "2026-08-16T12:00:00Z",
+  "attention_contract_version": "1.0",
+  "latest_cursor": 100,
+  "replay_window": {
+    "supported": true,
+    "oldest_cursor": 1,
+    "latest_cursor": 100,
+    "event_count": 100,
+    "oldest_timestamp": "2026-08-16T12:00:00Z",
+    "latest_timestamp": "2026-08-16T12:00:00Z",
+    "retention_period": "1h",
+    "resync_command": "ntm --robot-snapshot"
+  },
+  "sessions": [
+    {
+      "name": "corpus-session-0",
+      "attached": true,
+      "agents": [
+        {
+          "pane": "1",
+          "type": "claude",
+          "type_confidence": 0.95,
+          "type_method": "process",
+          "state": "active",
+          "last_output_age_sec": 5,
+          "output_tail_lines": 50,
+          "context_percent": 20,
+          "current_bead": "bd-corpus-00",
+          "pending_mail": 0
+        },
+        {
+          "pane": "2",
+          "type": "codex",
+          "variant": "opus",
+          "type_confidence": 0.95,
+          "type_method": "process",
+          "state": "idle",
+          "last_output_age_sec": 18,
+          "output_tail_lines": 50,
+          "context_percent": 27,
+          "pending_mail": 1
+        }
+      ]
+    }
+  ],
+  "active_incidents": [],
+  "summary": {
+    "total_sessions": 1,
+    "total_agents": 2,
+    "attached_count": 1,
+    "claude_count": 1,
+    "codex_count": 0,
+    "gemini_count": 0,
+    "antigravity_count": 0,
+    "grok_count": 0,
+    "cursor_count": 0,
+    "windsurf_count": 0,
+    "aider_count": 0,
+    "opencode_count": 0,
+    "ollama_count": 0,
+    "agents_by_state": {
+      "active": 1,
+      "idle": 0,
+      "waiting": 1
+    },
+    "agents_by_type": {
+      "claude": 1,
+      "codex": 0,
+      "gemini": 0
+    },
+    "ready_work": 2,
+    "in_progress": 0,
+    "health_score": 0.9,
+    "health_status": "healthy",
+    "alerts_active": 0,
+    "mail_unread": 0,
+    "mail_urgent": 0
+  },
+  "work": {
+    "ready": [
+      {
+        "id": "bd-ready-0",
+        "title": "Implement corpus work item 0 with realistic title text",
+        "priority": 1,
+        "type": "task",
+        "labels": [
+          "corpus",
+          "wave-0"
+        ]
+      },
+      {
+        "id": "bd-ready-1",
+        "title": "Implement corpus work item 1 with realistic title text",
+        "priority": 2,
+        "type": "bug",
+        "labels": [
+          "corpus",
+          "wave-1"
+        ]
+      }
+    ],
+    "blocked": [],
+    "in_progress": [
+      {
+        "id": "bd-ready-0",
+        "title": "Implement corpus work item 0 with realistic title text",
+        "priority": 1,
+        "type": "task",
+        "labels": [
+          "corpus",
+          "wave-0"
+        ]
+      }
+    ],
+    "available": true
+  },
+  "beads_summary": {
+    "available": true,
+    "project": "ntm",
+    "total": 40,
+    "open": 20,
+    "ready": 2,
+    "closed": 15
+  },
+  "alerts": [],
+  "alert_summary": {
+    "total_active": 0,
+    "by_severity": {
+      "critical": 0,
+      "info": 0,
+      "warning": 0
+    },
+    "by_type": {
+      "agent_stuck": 0,
+      "context_high": 0
+    }
+  },
+  "attention_summary": {
+    "total_events": 30,
+    "action_required_count": 0,
+    "interesting_count": 0,
+    "top_items": [
+      {
+        "cursor": 90,
+        "category": "agent",
+        "actionability": "action_required",
+        "severity": "warning",
+        "summary": "Agent idle with unread mail"
+      }
+    ],
+    "by_category": {
+      "agent": 10,
+      "alert": 0,
+      "system": 3
+    }
+  }
+}

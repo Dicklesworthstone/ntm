@@ -2021,8 +2021,8 @@ API Design Principles (see docs/robot-api-design.md):
 Output Formats:
 ---------------
 --robot-format=json     Full JSON (default)
---robot-format=toon     Token-efficient format
---robot-markdown        Markdown tables (~50% fewer tokens)
+--robot-format=toon     TOON format (~39% fewer tokens than JSON, measured)
+--robot-markdown        Markdown tables (~84% fewer tokens than JSON, measured)
 --robot-terse           Single-line state summary
 
 Common Modifiers:

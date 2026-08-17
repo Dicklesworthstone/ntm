@@ -1,0 +1,30 @@
+{
+  "success": true,
+  "timestamp": "2026-08-16T12:00:00Z",
+  "version": "1.0.0",
+  "output_format": "json",
+  "session": "corpus-session-1",
+  "agents": [
+    {
+      "name": "Alpha",
+      "pane": "1",
+      "agent_type": "claude"
+    },
+    {
+      "name": "Bravo",
+      "pane": "2",
+      "agent_type": "codex"
+    },
+    {
+      "name": "Charlie",
+      "pane": "3",
+      "agent_type": "gemini"
+    },
+    {
+      "name": "Delta",
+      "pane": "4",
+      "agent_type": "claude"
+    }
+  ],
+  "count": 4
+}

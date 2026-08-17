@@ -1,0 +1,595 @@
+{
+  "success": true,
+  "timestamp": "2026-08-16T12:00:00Z",
+  "version": "1.0.0",
+  "output_format": "json",
+  "schema_id": "ntm:robot:snapshot:v1",
+  "schema_version": "1.0.0",
+  "ts": "2026-08-16T12:00:00Z",
+  "attention_contract_version": "1.0",
+  "latest_cursor": 236,
+  "replay_window": {
+    "supported": true,
+    "oldest_cursor": 1,
+    "latest_cursor": 236,
+    "event_count": 236,
+    "oldest_timestamp": "2026-08-16T12:00:00Z",
+    "latest_timestamp": "2026-08-16T12:00:00Z",
+    "retention_period": "1h",
+    "resync_command": "ntm --robot-snapshot"
+  },
+  "sessions": [
+    {
+      "name": "corpus-session-0",
+      "attached": true,
+      "agents": [
+        {
+          "pane": "1",
+          "type": "claude",
+          "type_confidence": 0.95,
+          "type_method": "process",
+          "state": "active",
+          "last_output_age_sec": 5,
+          "output_tail_lines": 50,
+          "context_percent": 20,
+          "current_bead": "bd-corpus-00",
+          "pending_mail": 0
+        },
+        {
+          "pane": "2",
+          "type": "codex",
+          "variant": "opus",
+          "type_confidence": 0.95,
+          "type_method": "process",
+          "state": "idle",
+          "last_output_age_sec": 18,
+          "output_tail_lines": 50,
+          "context_percent": 27,
+          "pending_mail": 1
+        }
+      ]
+    },
+    {
+      "name": "corpus-session-1",
+      "attached": false,
+      "agents": [
+        {
+          "pane": "1",
+          "type": "codex",
+          "variant": "opus",
+          "type_confidence": 0.95,
+          "type_method": "process",
+          "state": "idle",
+          "last_output_age_sec": 5,
+          "output_tail_lines": 50,
+          "context_percent": 27,
+          "pending_mail": 1
+        },
+        {
+          "pane": "2",
+          "type": "gemini",
+          "variant": "gpt-5-codex",
+          "type_confidence": 0.95,
+          "type_method": "process",
+          "state": "waiting",
+          "last_output_age_sec": 18,
+          "output_tail_lines": 50,
+          "context_percent": 34,
+          "current_bead": "bd-corpus-11",
+          "pending_mail": 2
+        }
+      ]
+    },
+    {
+      "name": "corpus-session-2",
+      "attached": true,
+      "agents": [
+        {
+          "pane": "1",
+          "type": "gemini",
+          "variant": "gpt-5-codex",
+          "type_confidence": 0.95,
+          "type_method": "process",
+          "state": "waiting",
+          "last_output_age_sec": 5,
+          "output_tail_lines": 50,
+          "context_percent": 34,
+          "current_bead": "bd-corpus-20",
+          "pending_mail": 2
+        },
+        {
+          "pane": "2",
+          "type": "cursor",
+          "type_confidence": 0.95,
+          "type_method": "process",
+          "state": "active",
+          "last_output_age_sec": 18,
+          "output_tail_lines": 50,
+          "context_percent": 41,
+          "pending_mail": 0
+        }
+      ]
+    },
+    {
+      "name": "corpus-session-3",
+      "attached": false,
+      "agents": [
+        {
+          "pane": "1",
+          "type": "cursor",
+          "type_confidence": 0.95,
+          "type_method": "process",
+          "state": "active",
+          "last_output_age_sec": 5,
+          "output_tail_lines": 50,
+          "context_percent": 41,
+          "pending_mail": 0
+        },
+        {
+          "pane": "2",
+          "type": "claude",
+          "type_confidence": 0.95,
+          "type_method": "process",
+          "state": "idle",
+          "last_output_age_sec": 18,
+          "output_tail_lines": 50,
+          "context_percent": 48,
+          "current_bead": "bd-corpus-31",
+          "pending_mail": 1
+        }
+      ]
+    },
+    {
+      "name": "corpus-session-4",
+      "attached": true,
+      "agents": [
+        {
+          "pane": "1",
+          "type": "claude",
+          "type_confidence": 0.95,
+          "type_method": "process",
+          "state": "idle",
+          "last_output_age_sec": 5,
+          "output_tail_lines": 50,
+          "context_percent": 48,
+          "current_bead": "bd-corpus-40",
+          "pending_mail": 1
+        },
+        {
+          "pane": "2",
+          "type": "codex",
+          "variant": "opus",
+          "type_confidence": 0.95,
+          "type_method": "process",
+          "state": "waiting",
+          "last_output_age_sec": 18,
+          "output_tail_lines": 50,
+          "context_percent": 55,
+          "pending_mail": 2
+        }
+      ]
+    },
+    {
+      "name": "corpus-session-5",
+      "attached": false,
+      "agents": [
+        {
+          "pane": "1",
+          "type": "codex",
+          "variant": "opus",
+          "type_confidence": 0.95,
+          "type_method": "process",
+          "state": "waiting",
+          "last_output_age_sec": 5,
+          "output_tail_lines": 50,
+          "context_percent": 55,
+          "pending_mail": 2
+        },
+        {
+          "pane": "2",
+          "type": "gemini",
+          "variant": "gpt-5-codex",
+          "type_confidence": 0.95,
+          "type_method": "process",
+          "state": "active",
+          "last_output_age_sec": 18,
+          "output_tail_lines": 50,
+          "context_percent": 62,
+          "current_bead": "bd-corpus-51",
+          "pending_mail": 0
+        }
+      ]
+    },
+    {
+      "name": "corpus-session-6",
+      "attached": true,
+      "agents": [
+        {
+          "pane": "1",
+          "type": "gemini",
+          "variant": "gpt-5-codex",
+          "type_confidence": 0.95,
+          "type_method": "process",
+          "state": "active",
+          "last_output_age_sec": 5,
+          "output_tail_lines": 50,
+          "context_percent": 62,
+          "current_bead": "bd-corpus-60",
+          "pending_mail": 0
+        },
+        {
+          "pane": "2",
+          "type": "cursor",
+          "type_confidence": 0.95,
+          "type_method": "process",
+          "state": "idle",
+          "last_output_age_sec": 18,
+          "output_tail_lines": 50,
+          "context_percent": 69,
+          "pending_mail": 1
+        }
+      ]
+    },
+    {
+      "name": "corpus-session-7",
+      "attached": false,
+      "agents": [
+        {
+          "pane": "1",
+          "type": "cursor",
+          "type_confidence": 0.95,
+          "type_method": "process",
+          "state": "idle",
+          "last_output_age_sec": 5,
+          "output_tail_lines": 50,
+          "context_percent": 69,
+          "pending_mail": 1
+        },
+        {
+          "pane": "2",
+          "type": "claude",
+          "type_confidence": 0.95,
+          "type_method": "process",
+          "state": "waiting",
+          "last_output_age_sec": 18,
+          "output_tail_lines": 50,
+          "context_percent": 76,
+          "current_bead": "bd-corpus-71",
+          "pending_mail": 2
+        }
+      ]
+    },
+    {
+      "name": "corpus-session-8",
+      "attached": true,
+      "agents": [
+        {
+          "pane": "1",
+          "type": "claude",
+          "type_confidence": 0.95,
+          "type_method": "process",
+          "state": "waiting",
+          "last_output_age_sec": 5,
+          "output_tail_lines": 50,
+          "context_percent": 76,
+          "current_bead": "bd-corpus-80",
+          "pending_mail": 2
+        },
+        {
+          "pane": "2",
+          "type": "codex",
+          "variant": "opus",
+          "type_confidence": 0.95,
+          "type_method": "process",
+          "state": "active",
+          "last_output_age_sec": 18,
+          "output_tail_lines": 50,
+          "context_percent": 83,
+          "pending_mail": 0
+        }
+      ]
+    }
+  ],
+  "active_incidents": [],
+  "summary": {
+    "total_sessions": 9,
+    "total_agents": 18,
+    "attached_count": 5,
+    "claude_count": 9,
+    "codex_count": 4,
+    "gemini_count": 4,
+    "antigravity_count": 0,
+    "grok_count": 0,
+    "cursor_count": 0,
+    "windsurf_count": 0,
+    "aider_count": 0,
+    "opencode_count": 0,
+    "ollama_count": 0,
+    "agents_by_state": {
+      "active": 9,
+      "idle": 4,
+      "waiting": 5
+    },
+    "agents_by_type": {
+      "claude": 9,
+      "codex": 4,
+      "gemini": 4
+    },
+    "ready_work": 10,
+    "in_progress": 3,
+    "health_score": 0.66,
+    "health_status": "degraded",
+    "alerts_active": 8,
+    "mail_unread": 0,
+    "mail_urgent": 0
+  },
+  "work": {
+    "ready": [
+      {
+        "id": "bd-ready-0",
+        "title": "Implement corpus work item 0 with realistic title text",
+        "priority": 1,
+        "type": "task",
+        "labels": [
+          "corpus",
+          "wave-0"
+        ]
+      },
+      {
+        "id": "bd-ready-1",
+        "title": "Implement corpus work item 1 with realistic title text",
+        "priority": 2,
+        "type": "bug",
+        "labels": [
+          "corpus",
+          "wave-1"
+        ]
+      },
+      {
+        "id": "bd-ready-2",
+        "title": "Implement corpus work item 2 with realistic title text",
+        "priority": 3,
+        "type": "feature",
+        "labels": [
+          "corpus",
+          "wave-2"
+        ]
+      },
+      {
+        "id": "bd-ready-3",
+        "title": "Implement corpus work item 3 with realistic title text",
+        "priority": 4,
+        "type": "task",
+        "labels": [
+          "corpus",
+          "wave-0"
+        ]
+      },
+      {
+        "id": "bd-ready-4",
+        "title": "Implement corpus work item 4 with realistic title text",
+        "priority": 1,
+        "type": "bug",
+        "labels": [
+          "corpus",
+          "wave-1"
+        ]
+      },
+      {
+        "id": "bd-ready-5",
+        "title": "Implement corpus work item 5 with realistic title text",
+        "priority": 2,
+        "type": "feature",
+        "labels": [
+          "corpus",
+          "wave-2"
+        ]
+      },
+      {
+        "id": "bd-ready-6",
+        "title": "Implement corpus work item 6 with realistic title text",
+        "priority": 3,
+        "type": "task",
+        "labels": [
+          "corpus",
+          "wave-0"
+        ]
+      },
+      {
+        "id": "bd-ready-7",
+        "title": "Implement corpus work item 7 with realistic title text",
+        "priority": 4,
+        "type": "bug",
+        "labels": [
+          "corpus",
+          "wave-1"
+        ]
+      },
+      {
+        "id": "bd-ready-8",
+        "title": "Implement corpus work item 8 with realistic title text",
+        "priority": 1,
+        "type": "feature",
+        "labels": [
+          "corpus",
+          "wave-2"
+        ]
+      },
+      {
+        "id": "bd-ready-9",
+        "title": "Implement corpus work item 9 with realistic title text",
+        "priority": 2,
+        "type": "task",
+        "labels": [
+          "corpus",
+          "wave-0"
+        ]
+      }
+    ],
+    "blocked": [],
+    "in_progress": [
+      {
+        "id": "bd-ready-0",
+        "title": "Implement corpus work item 0 with realistic title text",
+        "priority": 1,
+        "type": "task",
+        "labels": [
+          "corpus",
+          "wave-0"
+        ]
+      },
+      {
+        "id": "bd-ready-1",
+        "title": "Implement corpus work item 1 with realistic title text",
+        "priority": 2,
+        "type": "bug",
+        "labels": [
+          "corpus",
+          "wave-1"
+        ]
+      },
+      {
+        "id": "bd-ready-2",
+        "title": "Implement corpus work item 2 with realistic title text",
+        "priority": 3,
+        "type": "feature",
+        "labels": [
+          "corpus",
+          "wave-2"
+        ]
+      }
+    ],
+    "available": true
+  },
+  "beads_summary": {
+    "available": true,
+    "project": "ntm",
+    "total": 96,
+    "open": 44,
+    "in_progress": 3,
+    "ready": 10,
+    "closed": 47
+  },
+  "alerts": [],
+  "alerts_detailed": [
+    {
+      "id": "alert-0",
+      "type": "agent_stuck",
+      "severity": "critical",
+      "message": "Agent in pane 1 of corpus-session-0 needs attention",
+      "session": "corpus-session-0",
+      "pane": "1",
+      "created_at": "2026-08-16T12:00:00Z",
+      "duration_ms": 1000,
+      "count": 1
+    },
+    {
+      "id": "alert-1",
+      "type": "context_high",
+      "severity": "warning",
+      "message": "Agent in pane 2 of corpus-session-1 needs attention",
+      "session": "corpus-session-1",
+      "pane": "2",
+      "created_at": "2026-08-16T12:00:00Z",
+      "duration_ms": 2000,
+      "count": 2
+    },
+    {
+      "id": "alert-2",
+      "type": "rate_limited",
+      "severity": "info",
+      "message": "Agent in pane 3 of corpus-session-2 needs attention",
+      "session": "corpus-session-2",
+      "pane": "3",
+      "created_at": "2026-08-16T12:00:00Z",
+      "duration_ms": 3000,
+      "count": 3
+    },
+    {
+      "id": "alert-3",
+      "type": "agent_stuck",
+      "severity": "critical",
+      "message": "Agent in pane 4 of corpus-session-3 needs attention",
+      "session": "corpus-session-3",
+      "pane": "4",
+      "created_at": "2026-08-16T12:00:00Z",
+      "duration_ms": 4000,
+      "count": 1
+    },
+    {
+      "id": "alert-4",
+      "type": "context_high",
+      "severity": "warning",
+      "message": "Agent in pane 1 of corpus-session-4 needs attention",
+      "session": "corpus-session-4",
+      "pane": "1",
+      "created_at": "2026-08-16T12:00:00Z",
+      "duration_ms": 5000,
+      "count": 2
+    },
+    {
+      "id": "alert-5",
+      "type": "rate_limited",
+      "severity": "info",
+      "message": "Agent in pane 2 of corpus-session-5 needs attention",
+      "session": "corpus-session-5",
+      "pane": "2",
+      "created_at": "2026-08-16T12:00:00Z",
+      "duration_ms": 6000,
+      "count": 3
+    },
+    {
+      "id": "alert-6",
+      "type": "agent_stuck",
+      "severity": "critical",
+      "message": "Agent in pane 3 of corpus-session-6 needs attention",
+      "session": "corpus-session-6",
+      "pane": "3",
+      "created_at": "2026-08-16T12:00:00Z",
+      "duration_ms": 7000,
+      "count": 1
+    },
+    {
+      "id": "alert-7",
+      "type": "context_high",
+      "severity": "warning",
+      "message": "Agent in pane 4 of corpus-session-7 needs attention",
+      "session": "corpus-session-7",
+      "pane": "4",
+      "created_at": "2026-08-16T12:00:00Z",
+      "duration_ms": 8000,
+      "count": 2
+    }
+  ],
+  "alert_summary": {
+    "total_active": 8,
+    "by_severity": {
+      "critical": 2,
+      "info": 4,
+      "warning": 2
+    },
+    "by_type": {
+      "agent_stuck": 4,
+      "context_high": 4
+    }
+  },
+  "attention_summary": {
+    "total_events": 118,
+    "action_required_count": 0,
+    "interesting_count": 1,
+    "top_items": [
+      {
+        "cursor": 98,
+        "category": "agent",
+        "actionability": "action_required",
+        "severity": "warning",
+        "summary": "Agent idle with unread mail"
+      }
+    ],
+    "by_category": {
+      "agent": 18,
+      "alert": 8,
+      "system": 3
+    }
+  }
+}

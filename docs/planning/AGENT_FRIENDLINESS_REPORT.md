@@ -36,7 +36,7 @@ NTM is exceptionally well-optimized for AI coding agent usage:
 | `json` | Pretty-printed JSON (default) |
 | `toon` | Token-efficient via tru binary |
 | `auto` | Auto-detect based on context |
-| `markdown` | Markdown tables (~50% token savings) |
+| `markdown` | Markdown tables (~84% token savings vs the JSON snapshot, measured on the committed corpus by `TestTokenCorpus_MarkdownFloor` in `internal/robot/token_corpus_test.go`) |
 | `terse` | Single-line minimal output |
 
 ### 1.3 Robot Command Categories

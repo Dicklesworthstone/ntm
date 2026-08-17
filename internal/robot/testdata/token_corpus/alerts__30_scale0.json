@@ -1,0 +1,33 @@
+{
+  "success": true,
+  "timestamp": "2026-08-16T12:00:00Z",
+  "version": "1.0.0",
+  "output_format": "json",
+  "generated_at": "0001-01-01T00:00:00Z",
+  "enabled": true,
+  "active": [
+    {
+      "id": "alert-0-0",
+      "source": "monitor",
+      "type": "agent_stuck",
+      "severity": "critical",
+      "message": "Pane 1 in session swarm-0 has produced no output for 5 minutes",
+      "session": "swarm-0",
+      "pane": "1",
+      "created_at": "2026-08-16T12:00:00Z",
+      "duration_ms": 60000,
+      "count": 1
+    }
+  ],
+  "summary": {
+    "total_active": 1,
+    "by_severity": {
+      "critical": 0,
+      "info": 1,
+      "warning": 0
+    },
+    "by_type": {
+      "agent_stuck": 1
+    }
+  }
+}

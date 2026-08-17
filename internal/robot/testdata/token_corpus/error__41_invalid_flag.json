@@ -1,0 +1,9 @@
+{
+  "success": false,
+  "timestamp": "2026-08-16T12:00:00Z",
+  "version": "1.0.0",
+  "output_format": "json",
+  "error": "unknown robot command \"statsu\"",
+  "error_code": "INVALID_FLAG",
+  "hint": "Use --robot-capabilities to inspect valid commands"
+}

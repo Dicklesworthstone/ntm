@@ -1,0 +1,1925 @@
+{
+  "success": true,
+  "timestamp": "2026-08-16T12:00:00Z",
+  "output_format": "json",
+  "version": "dev",
+  "commands": [
+    {
+      "name": "activity",
+      "flag": "--robot-activity",
+      "category": "state",
+      "summary": "Get agent activity state (idle/busy/error) for all agents in a session.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:activity:v1",
+      "schema_type": "activity",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "agent-health",
+      "flag": "--robot-agent-health",
+      "category": "state",
+      "summary": "Run a comprehensive per-agent health check using local state and provider data.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:agent-health:v1",
+      "schema_type": "agent_health",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "agent-names",
+      "flag": "--robot-agent-names",
+      "category": "state",
+      "summary": "Get stable agent-name mappings for a session.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:agent-names:v1",
+      "schema_type": "agent_names",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "context",
+      "flag": "--robot-context",
+      "category": "state",
+      "summary": "Get context window usage estimates for all agents in a session.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:context:v1",
+      "schema_type": "context",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "dashboard",
+      "flag": "--robot-dashboard",
+      "category": "state",
+      "summary": "Dashboard summary as markdown or JSON.",
+      "output_formats": [
+        "markdown",
+        "json"
+      ],
+      "default_output_format": "markdown",
+      "schema_id": "ntm:robot:dashboard:v1",
+      "schema_type": "dashboard",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "diagnose",
+      "flag": "--robot-diagnose",
+      "category": "state",
+      "summary": "Comprehensive health check with fix recommendations.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:diagnose:v1",
+      "schema_type": "diagnose",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "dialogs",
+      "flag": "--robot-dialogs",
+      "category": "state",
+      "summary": "Classify in-pane interactive dialogs per pane (trust_prompt, rate_limit_options, usage_overlay, paste_limbo, destructive_confirm, unknown_dialog) with the extracted option list.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:dialogs:v1",
+      "schema_type": "dialogs",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "diff",
+      "flag": "--robot-diff",
+      "category": "state",
+      "summary": "Compare agent activity and file changes over time.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:diff:v1",
+      "schema_type": "diff",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "errors",
+      "flag": "--robot-errors",
+      "category": "state",
+      "summary": "Filter pane output to show only errors and recent failure context.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:errors:v1",
+      "schema_type": "errors",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "files",
+      "flag": "--robot-files",
+      "category": "state",
+      "summary": "Get file changes with agent attribution and conflict detection.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:files:v1",
+      "schema_type": "files",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "health",
+      "flag": "--robot-health",
+      "category": "state",
+      "summary": "Get session or project health status.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:health:v1",
+      "schema_type": "health",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "health-oauth",
+      "flag": "--robot-health-oauth",
+      "category": "state",
+      "summary": "Get per-agent OAuth and rate-limit status for a session.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:health-oauth:v1",
+      "schema_type": "health_oauth",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "health-restart-stuck",
+      "flag": "--robot-health-restart-stuck",
+      "category": "state",
+      "summary": "Detect and restart agents stuck with no output for N minutes.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:health-restart-stuck:v1",
+      "schema_type": "auto_restart_stuck",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "incident-resolve",
+      "flag": "--robot-incident-resolve",
+      "category": "state",
+      "summary": "Mark a store-backed incident resolved with an audit note (idempotent).",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:incident-resolve:v1",
+      "schema_type": "incident_resolve",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "inspect-agent",
+      "flag": "--robot-inspect-agent",
+      "category": "state",
+      "summary": "Projection-backed agent drill-down with stable runtime agent identity.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:inspect-agent:v1",
+      "schema_type": "inspect_agent",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "inspect-coordination",
+      "flag": "--robot-inspect-coordination",
+      "category": "state",
+      "summary": "Projection-backed coordination drill-down keyed by Agent Mail identity.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:inspect-coordination:v1",
+      "schema_type": "inspect_coordination",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "inspect-incident",
+      "flag": "--robot-inspect-incident",
+      "category": "state",
+      "summary": "Store-backed incident drill-down keyed by stable incident id.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:inspect-incident:v1",
+      "schema_type": "inspect_incident",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "inspect-pane",
+      "flag": "--robot-inspect-pane",
+      "category": "state",
+      "summary": "Detailed pane inspection with state detection and optional code block parsing.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:inspect-pane:v1",
+      "schema_type": "inspect",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "inspect-quota",
+      "flag": "--robot-inspect-quota",
+      "category": "state",
+      "summary": "Projection-backed quota drill-down keyed by provider/account.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:inspect-quota:v1",
+      "schema_type": "inspect_quota",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "inspect-session",
+      "flag": "--robot-inspect-session",
+      "category": "state",
+      "summary": "Projection-backed session drill-down with stable session and agent detail.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:inspect-session:v1",
+      "schema_type": "inspect_session",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "inspect-work",
+      "flag": "--robot-inspect-work",
+      "category": "state",
+      "summary": "Projection-backed work-item drill-down with stable bead identity.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:inspect-work:v1",
+      "schema_type": "inspect_work",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "is-working",
+      "flag": "--robot-is-working",
+      "category": "state",
+      "summary": "Check if agents are actively working, idle, rate-limited, or safe to restart.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:is-working:v1",
+      "schema_type": "is_working",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "logs",
+      "flag": "--robot-logs",
+      "category": "state",
+      "summary": "Get aggregated logs from agent panes.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:logs:v1",
+      "schema_type": "logs",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "markdown",
+      "flag": "--robot-markdown",
+      "category": "state",
+      "summary": "System state as markdown tables.",
+      "output_formats": [
+        "markdown"
+      ],
+      "default_output_format": "markdown",
+      "schema_source": "none",
+      "schema_unavailable_reason": "Markdown projection is intentionally human-readable text"
+    },
+    {
+      "name": "metrics",
+      "flag": "--robot-metrics",
+      "category": "state",
+      "summary": "Session metrics export for analysis.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:metrics:v1",
+      "schema_type": "metrics",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "monitor",
+      "flag": "--robot-monitor",
+      "category": "state",
+      "summary": "Start proactive JSONL monitoring for context and provider-usage limits.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:monitor:v1",
+      "schema_type": "monitor",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "pane-address",
+      "flag": "--robot-pane-address",
+      "category": "state",
+      "summary": "Per-pane addressing cards: the canonical selector send/tail accept, the stable tmux %pane_id (immune to base-index and renumbering), physical topology, and a ready-to-paste tmux target.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:pane-address:v1",
+      "schema_type": "pane_address",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "probe",
+      "flag": "--robot-probe",
+      "category": "state",
+      "summary": "Active pane responsiveness probe using keystroke or interrupt methods.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:probe:v1",
+      "schema_type": "probe",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "productivity",
+      "flag": "--robot-productivity",
+      "category": "state",
+      "summary": "Return attributable commit, Beads, and live build/test evidence for whether a swarm should continue or has converged.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:productivity:v1",
+      "schema_type": "productivity",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "snapshot",
+      "flag": "--robot-snapshot",
+      "category": "state",
+      "summary": "Unified state query: sessions + beads + alerts + mail.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:snapshot:v1",
+      "schema_type": "snapshot",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "status",
+      "flag": "--robot-status",
+      "category": "state",
+      "summary": "Get tmux sessions, panes, and agent states.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:status:v1",
+      "schema_type": "status",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "summary",
+      "flag": "--robot-summary",
+      "category": "state",
+      "summary": "Get session activity summary with agent metrics.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:summary:v1",
+      "schema_type": "summary",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "tail",
+      "flag": "--robot-tail",
+      "category": "state",
+      "summary": "Capture recent output from panes.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:tail:v1",
+      "schema_type": "tail",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "terse",
+      "flag": "--robot-terse",
+      "category": "state",
+      "summary": "Single-line encoded state for minimal token usage.",
+      "output_formats": [
+        "text"
+      ],
+      "default_output_format": "text",
+      "schema_source": "none",
+      "schema_unavailable_reason": "Terse output is intentionally a compact single-line text protocol"
+    },
+    {
+      "name": "watch-bead",
+      "flag": "--robot-watch-bead",
+      "category": "state",
+      "summary": "Capture recent mentions of a bead across panes and report current bead status.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:watch-bead:v1",
+      "schema_type": "watch_bead",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "attention",
+      "flag": "--robot-attention",
+      "category": "attention",
+      "summary": "The canonical tending primitive: wait until attention is needed, then return a digest with wake reason and next cursor.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:attention:v1",
+      "schema_type": "attention",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "digest",
+      "flag": "--robot-digest",
+      "category": "attention",
+      "summary": "Aggregated summary of recent attention events.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:digest:v1",
+      "schema_type": "digest",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "events",
+      "flag": "--robot-events",
+      "category": "attention",
+      "summary": "Raw event replay from the attention feed.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:events:v1",
+      "schema_type": "events",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "ensemble",
+      "flag": "--robot-ensemble",
+      "category": "ensemble",
+      "summary": "Get ensemble state for a session including modes, status, and synthesis readiness.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:ensemble:v1",
+      "schema_type": "ensemble",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "ensemble-modes",
+      "flag": "--robot-ensemble-modes",
+      "category": "ensemble",
+      "summary": "List available reasoning modes with filtering by category and tier.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:ensemble-modes:v1",
+      "schema_type": "ensemble_modes",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "ensemble-presets",
+      "flag": "--robot-ensemble-presets",
+      "category": "ensemble",
+      "summary": "List available ensemble presets with their mode configurations and budgets.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:ensemble-presets:v1",
+      "schema_type": "ensemble_presets",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "ensemble-stop",
+      "flag": "--robot-ensemble-stop",
+      "category": "ensemble",
+      "summary": "Stop an ensemble session and optionally collect partial output.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:ensemble-stop:v1",
+      "schema_type": "ensemble_stop",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "ensemble-suggest",
+      "flag": "--robot-ensemble-suggest",
+      "category": "ensemble",
+      "summary": "Suggest the best ensemble preset for a question.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:ensemble-suggest:v1",
+      "schema_type": "ensemble_suggest",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "ensemble_spawn",
+      "flag": "--robot-ensemble-spawn",
+      "category": "ensemble",
+      "summary": "Spawn a reasoning ensemble session with mode assignments.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:ensemble-spawn:v1",
+      "schema_type": "ensemble_spawn",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "ack",
+      "flag": "--robot-ack",
+      "category": "control",
+      "summary": "Watch for agent responses after sending a message.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:ack:v1",
+      "schema_type": "ack",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "answer-dialog",
+      "flag": "--robot-answer-dialog",
+      "category": "control",
+      "summary": "Answer a classified dialog by label, verified after the keystrokes.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:answer-dialog:v1",
+      "schema_type": "answer_dialog",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "assign",
+      "flag": "--robot-assign",
+      "category": "control",
+      "summary": "Get work distribution recommendations for assigning beads to agents.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:assign:v1",
+      "schema_type": "assign",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "bulk-assign",
+      "flag": "--robot-bulk-assign",
+      "category": "control",
+      "summary": "Bulk assign beads across idle agents using bv triage or an explicit pane-to-bead map.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:bulk-assign:v1",
+      "schema_type": "bulk_assign",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "context-inject",
+      "flag": "--robot-context-inject",
+      "category": "control",
+      "summary": "Inject project context files such as AGENTS.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_source": "external"
+    },
+    {
+      "name": "exit-cli",
+      "flag": "--robot-exit-cli",
+      "category": "control",
+      "summary": "Gracefully exit agent CLIs (encapsulated double Ctrl+C choreography) without destroying panes; verifies via the pane's foreground command.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:exit-cli:v1",
+      "schema_type": "exit_cli",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "interrupt",
+      "flag": "--robot-interrupt",
+      "category": "control",
+      "summary": "Send Ctrl+C to stop agents, optionally send a new task.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:interrupt:v1",
+      "schema_type": "interrupt",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "kill-agent",
+      "flag": "--robot-kill-agent",
+      "category": "control",
+      "summary": "SIGTERM-then-SIGKILL the agent process tree under a pane's shell while preserving the pane and shell; structured per-pane evidence.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:kill-agent:v1",
+      "schema_type": "kill_agent",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "kill-pane",
+      "flag": "--robot-kill-pane",
+      "category": "control",
+      "summary": "Remove specific panes from a session; the session and sibling panes survive (recovery-ladder Rung 6).",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:kill-pane:v1",
+      "schema_type": "kill_pane",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "overlay",
+      "flag": "--robot-overlay",
+      "category": "control",
+      "summary": "Open the dashboard overlay for human handoff from an agent or operator loop.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:overlay:v1",
+      "schema_type": "overlay",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "restart-pane",
+      "flag": "--robot-restart-pane",
+      "category": "control",
+      "summary": "Restart pane processes with tmux respawn-pane -k, optionally scoped by pane or agent type.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:restart-pane:v1",
+      "schema_type": "restart_pane",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "route",
+      "flag": "--robot-route",
+      "category": "control",
+      "summary": "Get routing recommendation for work distribution.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:route:v1",
+      "schema_type": "route",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "send",
+      "flag": "--robot-send",
+      "category": "control",
+      "summary": "Send message to panes atomically.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:send:v1",
+      "schema_type": "send",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "send-receipt",
+      "flag": "--robot-send-receipt",
+      "category": "control",
+      "summary": "Query the durable receipt of an idempotent send by operation ID: binding digest, byte count, per-target admission states, and the recorded outcome.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:send-receipt:v1",
+      "schema_type": "send_receipt",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "smart-restart",
+      "flag": "--robot-smart-restart",
+      "category": "control",
+      "summary": "Safely restart panes after checking whether agents are actively working.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:smart-restart:v1",
+      "schema_type": "smart_restart",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "wait",
+      "flag": "--robot-wait",
+      "category": "control",
+      "summary": "Wait for pane-state, attention-feed, or evidence-backed convergence conditions and return a machine-usable wake result.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:wait:v1",
+      "schema_type": "wait",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "wait-cancel",
+      "flag": "--robot-wait-cancel",
+      "category": "control",
+      "summary": "Cancel one active robot wait by its durable wait handle.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:wait-cancel:v1",
+      "schema_type": "wait_cancel",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "controller-spawn",
+      "flag": "--robot-controller-spawn",
+      "category": "spawn",
+      "summary": "Launch a controller agent pane inside an existing session.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_source": "external"
+    },
+    {
+      "name": "recipes",
+      "flag": "--robot-recipes",
+      "category": "spawn",
+      "summary": "List available spawn recipes/presets.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:recipes:v1",
+      "schema_type": "recipes",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "spawn",
+      "flag": "--robot-spawn",
+      "category": "spawn",
+      "summary": "Create session with agents and optionally wait for readiness or assign initial work.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:spawn:v1",
+      "schema_type": "spawn",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "bead-claim",
+      "flag": "--robot-bead-claim",
+      "category": "beads",
+      "summary": "Claim a bead for work.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:bead-claim:v1",
+      "schema_type": "bead_claim",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "bead-close",
+      "flag": "--robot-bead-close",
+      "category": "beads",
+      "summary": "Close a bead.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:bead-close:v1",
+      "schema_type": "bead_close",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "bead-create",
+      "flag": "--robot-bead-create",
+      "category": "beads",
+      "summary": "Create a new bead.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:bead-create:v1",
+      "schema_type": "bead_create",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "bead-show",
+      "flag": "--robot-bead-show",
+      "category": "beads",
+      "summary": "Show bead details.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:bead-show:v1",
+      "schema_type": "bead_show",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "beads-list",
+      "flag": "--robot-beads-list",
+      "category": "beads",
+      "summary": "List beads with filtering options.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:beads-list:v1",
+      "schema_type": "beads_list",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "file-beads",
+      "flag": "--robot-file-beads",
+      "category": "bv",
+      "summary": "Get bead mappings for a file from bv.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:file-beads:v1",
+      "schema_type": "file_beads",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "file-hotspots",
+      "flag": "--robot-file-hotspots",
+      "category": "bv",
+      "summary": "Get file hotspot analysis from bv.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:file-hotspots:v1",
+      "schema_type": "file_hotspots",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "file-relations",
+      "flag": "--robot-file-relations",
+      "category": "bv",
+      "summary": "Get file co-change relations from bv.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:file-relations:v1",
+      "schema_type": "file_relations",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "forecast",
+      "flag": "--robot-forecast",
+      "category": "bv",
+      "summary": "Get ETA predictions from bv.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:forecast:v1",
+      "schema_type": "forecast",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "graph",
+      "flag": "--robot-graph",
+      "category": "bv",
+      "summary": "Get dependency graph insights.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:graph:v1",
+      "schema_type": "graph",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "impact",
+      "flag": "--robot-impact",
+      "category": "bv",
+      "summary": "Get file impact analysis from bv.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:impact:v1",
+      "schema_type": "impact",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "label-attention",
+      "flag": "--robot-label-attention",
+      "category": "bv",
+      "summary": "Get attention-ranked labels from bv.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:label-attention:v1",
+      "schema_type": "label_attention",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "label-flow",
+      "flag": "--robot-label-flow",
+      "category": "bv",
+      "summary": "Get cross-label dependency flow from bv.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:label-flow:v1",
+      "schema_type": "label_flow",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "label-health",
+      "flag": "--robot-label-health",
+      "category": "bv",
+      "summary": "Get per-label health metrics from bv.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:label-health:v1",
+      "schema_type": "label_health",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "plan",
+      "flag": "--robot-plan",
+      "category": "bv",
+      "summary": "Get bv execution plan with parallelizable tracks.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:plan:v1",
+      "schema_type": "plan",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "search",
+      "flag": "--robot-search",
+      "category": "bv",
+      "summary": "Run semantic search against beads via bv.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:search:v1",
+      "schema_type": "search",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "suggest",
+      "flag": "--robot-suggest",
+      "category": "bv",
+      "summary": "Get hygiene suggestions from bv.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:suggest:v1",
+      "schema_type": "suggest",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "triage",
+      "flag": "--robot-triage",
+      "category": "bv",
+      "summary": "Get bv triage analysis with recommendations, quick wins, and blockers.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:triage:v1",
+      "schema_type": "triage",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "cass-context",
+      "flag": "--robot-cass-context",
+      "category": "cass",
+      "summary": "Get relevant past context for a task.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:cass-context:v1",
+      "schema_type": "cass_context",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "cass-insights",
+      "flag": "--robot-cass-insights",
+      "category": "cass",
+      "summary": "Get aggregated CASS insights about topics, patterns, and agent activity.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:cass-insights:v1",
+      "schema_type": "cass_insights",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "cass-search",
+      "flag": "--robot-cass-search",
+      "category": "cass",
+      "summary": "Search past agent conversations.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:cass-search:v1",
+      "schema_type": "cass_search",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "cass-status",
+      "flag": "--robot-cass-status",
+      "category": "cass",
+      "summary": "Get CASS health and statistics.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:cass-status:v1",
+      "schema_type": "cass_status",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "pipeline-cancel",
+      "flag": "--robot-pipeline-cancel",
+      "category": "pipeline",
+      "summary": "Cancel a running pipeline.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_source": "external"
+    },
+    {
+      "name": "pipeline-list",
+      "flag": "--robot-pipeline-list",
+      "category": "pipeline",
+      "summary": "List all tracked pipelines.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_source": "external"
+    },
+    {
+      "name": "pipeline-run",
+      "flag": "--robot-pipeline-run",
+      "category": "pipeline",
+      "summary": "Run a workflow pipeline.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_source": "external"
+    },
+    {
+      "name": "pipeline-status",
+      "flag": "--robot-pipeline",
+      "category": "pipeline",
+      "summary": "Get pipeline status.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_source": "external"
+    },
+    {
+      "name": "sequence",
+      "flag": "--robot-sequence",
+      "category": "pipeline",
+      "summary": "Manage durable per-pane prompt sequences.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_source": "external"
+    },
+    {
+      "name": "account-status",
+      "flag": "--robot-account-status",
+      "category": "utility",
+      "summary": "Show CAAM account status, optionally filtered to one provider.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:account-status:v1",
+      "schema_type": "account_status",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "accounts-list",
+      "flag": "--robot-accounts-list",
+      "category": "utility",
+      "summary": "List CAAM accounts, optionally filtered to one provider.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:accounts-list:v1",
+      "schema_type": "accounts_list",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "acfs-status",
+      "flag": "--robot-acfs-status",
+      "category": "utility",
+      "summary": "Get setup status via ACFS (core tool availability).",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:acfs-status:v1",
+      "schema_type": "acfs_status",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "alerts",
+      "flag": "--robot-alerts",
+      "category": "utility",
+      "summary": "List active alerts with filtering.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:alerts:v1",
+      "schema_type": "alerts",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "capabilities",
+      "flag": "--robot-capabilities",
+      "category": "utility",
+      "summary": "Discover robot commands, optionally filtered or projected into a compact token-efficient catalog.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:capabilities:v1",
+      "schema_type": "capabilities",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "causality",
+      "flag": "--robot-causality",
+      "category": "utility",
+      "summary": "Get unified causality timeline across audit, Agent Mail, and pipeline/session state.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:causality:v1",
+      "schema_type": "causality",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "dcg-check",
+      "flag": "--robot-dcg-check",
+      "category": "utility",
+      "summary": "Preflight a shell command via DCG (no execution).",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:dcg-check:v1",
+      "schema_type": "dcg_check",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "dcg-status",
+      "flag": "--robot-dcg-status",
+      "category": "utility",
+      "summary": "Show DCG status and configuration.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:dcg-status:v1",
+      "schema_type": "dcg_status",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "default-prompts",
+      "flag": "--robot-default-prompts",
+      "category": "utility",
+      "summary": "Get configured per-agent-type default prompts.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_source": "external"
+    },
+    {
+      "name": "dismiss-alert",
+      "flag": "--robot-dismiss-alert",
+      "category": "utility",
+      "summary": "Dismiss an alert.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:dismiss-alert:v1",
+      "schema_type": "dismiss_alert",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "docs",
+      "flag": "--robot-docs",
+      "category": "utility",
+      "summary": "Get documentation for a topic in JSON format.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:docs:v1",
+      "schema_type": "docs",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "env",
+      "flag": "--robot-env",
+      "category": "utility",
+      "summary": "Get environment details for agent operation for a session or the global environment.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:env:v1",
+      "schema_type": "env",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "giil-fetch",
+      "flag": "--robot-giil-fetch",
+      "category": "utility",
+      "summary": "Download image from share URL via giil and return JSON metadata.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:giil-fetch:v1",
+      "schema_type": "giil_fetch",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "help",
+      "flag": "--robot-help",
+      "category": "utility",
+      "summary": "Get human-readable AI agent help documentation.",
+      "output_formats": [
+        "text"
+      ],
+      "default_output_format": "text",
+      "schema_source": "none",
+      "schema_unavailable_reason": "Robot help is intentionally human-readable text"
+    },
+    {
+      "name": "history",
+      "flag": "--robot-history",
+      "category": "utility",
+      "summary": "Get command history for a session.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:history:v1",
+      "schema_type": "history",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "jfp-bundles",
+      "flag": "--robot-jfp-bundles",
+      "category": "utility",
+      "summary": "List JFP bundles.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:jfp-bundles:v1",
+      "schema_type": "jfp_bundles",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "jfp-categories",
+      "flag": "--robot-jfp-categories",
+      "category": "utility",
+      "summary": "List JFP categories with counts.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:jfp-categories:v1",
+      "schema_type": "jfp_categories",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "jfp-export",
+      "flag": "--robot-jfp-export",
+      "category": "utility",
+      "summary": "Export JFP prompt(s) by ID.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:jfp-export:v1",
+      "schema_type": "jfp_export",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "jfp-install",
+      "flag": "--robot-jfp-install",
+      "category": "utility",
+      "summary": "Install JFP prompt(s) by ID.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:jfp-install:v1",
+      "schema_type": "jfp_install",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "jfp-installed",
+      "flag": "--robot-jfp-installed",
+      "category": "utility",
+      "summary": "List installed Claude Code skills from JFP.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:jfp-installed:v1",
+      "schema_type": "jfp_installed",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "jfp-list",
+      "flag": "--robot-jfp-list",
+      "category": "utility",
+      "summary": "List JFP prompts (optionally filtered by category/tag).",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:jfp-list:v1",
+      "schema_type": "jfp_list",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "jfp-search",
+      "flag": "--robot-jfp-search",
+      "category": "utility",
+      "summary": "Search JFP prompts by query.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:jfp-search:v1",
+      "schema_type": "jfp_search",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "jfp-show",
+      "flag": "--robot-jfp-show",
+      "category": "utility",
+      "summary": "Show a JFP prompt by ID.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:jfp-show:v1",
+      "schema_type": "jfp_show",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "jfp-status",
+      "flag": "--robot-jfp-status",
+      "category": "utility",
+      "summary": "Get JeffreysPrompts (JFP) health status.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:jfp-status:v1",
+      "schema_type": "jfp_status",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "jfp-suggest",
+      "flag": "--robot-jfp-suggest",
+      "category": "utility",
+      "summary": "Get JFP prompt suggestions for a task.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:jfp-suggest:v1",
+      "schema_type": "jfp_suggest",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "jfp-tags",
+      "flag": "--robot-jfp-tags",
+      "category": "utility",
+      "summary": "List JFP tags with counts.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:jfp-tags:v1",
+      "schema_type": "jfp_tags",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "jfp-update",
+      "flag": "--robot-jfp-update",
+      "category": "utility",
+      "summary": "Update JFP registry cache.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:jfp-update:v1",
+      "schema_type": "jfp_update",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "mail",
+      "flag": "--robot-mail",
+      "category": "utility",
+      "summary": "Get Agent Mail state.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:mail:v1",
+      "schema_type": "mail",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "mail-check",
+      "flag": "--robot-mail-check",
+      "category": "utility",
+      "summary": "Check Agent Mail inboxes with filtering by project, agent, thread, or urgency.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:mail-check:v1",
+      "schema_type": "mail_check",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "ms-search",
+      "flag": "--robot-ms-search",
+      "category": "utility",
+      "summary": "Search Meta Skill catalog.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:ms-search:v1",
+      "schema_type": "ms_search",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "ms-show",
+      "flag": "--robot-ms-show",
+      "category": "utility",
+      "summary": "Show Meta Skill details by ID.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:ms-show:v1",
+      "schema_type": "ms_show",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "palette",
+      "flag": "--robot-palette",
+      "category": "utility",
+      "summary": "Query palette commands.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:palette:v1",
+      "schema_type": "palette",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "profile-list",
+      "flag": "--robot-profile-list",
+      "category": "utility",
+      "summary": "List saved session profiles.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_source": "external"
+    },
+    {
+      "name": "profile-show",
+      "flag": "--robot-profile-show",
+      "category": "utility",
+      "summary": "Show a saved session profile by name.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_source": "external"
+    },
+    {
+      "name": "proxy-status",
+      "flag": "--robot-proxy-status",
+      "category": "utility",
+      "summary": "Get rust_proxy daemon status, route metrics, and failover history.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:proxy-status:v1",
+      "schema_type": "proxy_status",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "quota-check",
+      "flag": "--robot-quota-check",
+      "category": "utility",
+      "summary": "Check caut quota for a specific provider.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:quota-check:v1",
+      "schema_type": "quota_check",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "quota-status",
+      "flag": "--robot-quota-status",
+      "category": "utility",
+      "summary": "Show caut quota status for all providers.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:quota-status:v1",
+      "schema_type": "quota_status",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "rano-stats",
+      "flag": "--robot-rano-stats",
+      "category": "utility",
+      "summary": "Get per-agent network stats via rano.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:rano-stats:v1",
+      "schema_type": "rano_stats",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "rch-status",
+      "flag": "--robot-rch-status",
+      "category": "utility",
+      "summary": "Get RCH status summary including worker counts.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:rch-status:v1",
+      "schema_type": "rch_status",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "rch-workers",
+      "flag": "--robot-rch-workers",
+      "category": "utility",
+      "summary": "List RCH workers with status details.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:rch-workers:v1",
+      "schema_type": "rch_workers",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "replay",
+      "flag": "--robot-replay",
+      "category": "utility",
+      "summary": "Replay command from history.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:replay:v1",
+      "schema_type": "replay",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "restore",
+      "flag": "--robot-restore",
+      "category": "utility",
+      "summary": "Restore session from saved state.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:restore:v1",
+      "schema_type": "restore",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "ru-sync",
+      "flag": "--robot-ru-sync",
+      "category": "utility",
+      "summary": "Run ru sync and return JSON summary.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:ru-sync:v1",
+      "schema_type": "ru_sync",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "safety-simulate",
+      "flag": "--robot-safety-simulate",
+      "category": "utility",
+      "summary": "Simulate a multi-step command plan against the NTM safety policy without executing any command.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:safety-simulate:v1",
+      "schema_type": "safety_simulate",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "save",
+      "flag": "--robot-save",
+      "category": "utility",
+      "summary": "Save session state for later restore.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:save:v1",
+      "schema_type": "save",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "schema",
+      "flag": "--robot-schema",
+      "category": "utility",
+      "summary": "Generate JSON Schema for a robot response type.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:schema:v1",
+      "schema_type": "schema",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "setup-status",
+      "flag": "--robot-setup",
+      "category": "utility",
+      "summary": "Alias for --robot-acfs-status.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:setup-status:v1",
+      "schema_type": "setup_status",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "slb-approve",
+      "flag": "--robot-slb-approve",
+      "category": "utility",
+      "summary": "Approve an SLB request by ID.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:slb-approve:v1",
+      "schema_type": "slb_approve",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "slb-deny",
+      "flag": "--robot-slb-deny",
+      "category": "utility",
+      "summary": "Deny an SLB request by ID.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:slb-deny:v1",
+      "schema_type": "slb_deny",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "slb-pending",
+      "flag": "--robot-slb-pending",
+      "category": "utility",
+      "summary": "List pending SLB approval requests.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:slb-pending:v1",
+      "schema_type": "slb_pending",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "support-bundle",
+      "flag": "--robot-support-bundle",
+      "category": "utility",
+      "summary": "Generate a support bundle with diagnostic state, logs, and optional redaction controls.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:support-bundle:v1",
+      "schema_type": "support_bundle",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "switch-account",
+      "flag": "--robot-switch-account",
+      "category": "utility",
+      "summary": "Switch the active CAAM account globally for a provider.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:switch-account:v1",
+      "schema_type": "switch_account",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "tokens",
+      "flag": "--robot-tokens",
+      "category": "utility",
+      "summary": "Get token usage analytics.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:tokens:v1",
+      "schema_type": "tokens",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "tools",
+      "flag": "--robot-tools",
+      "category": "utility",
+      "summary": "Get tool inventory and health status.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:tools:v1",
+      "schema_type": "tools",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "version",
+      "flag": "--robot-version",
+      "category": "utility",
+      "summary": "Get ntm version, commit, and build info.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:version:v1",
+      "schema_type": "version",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "xf-search",
+      "flag": "--robot-xf-search",
+      "category": "utility",
+      "summary": "Search the X/Twitter archive through xf.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:xf-search:v1",
+      "schema_type": "xf_search",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "xf-status",
+      "flag": "--robot-xf-status",
+      "category": "utility",
+      "summary": "Get XF installation and index health.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:xf-status:v1",
+      "schema_type": "xf_status",
+      "schema_source": "built_in"
+    }
+  ],
+  "categories": [
+    "state",
+    "attention",
+    "ensemble",
+    "control",
+    "spawn",
+    "beads",
+    "bv",
+    "cass",
+    "pipeline",
+    "utility"
+  ],
+  "filter": {
+    "compact": true
+  }
+}

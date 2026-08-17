@@ -1,0 +1,9 @@
+{
+  "success": false,
+  "timestamp": "2026-08-16T12:00:00Z",
+  "version": "1.0.0",
+  "output_format": "json",
+  "error": "unexpected state while collecting panes",
+  "error_code": "INTERNAL_ERROR",
+  "hint": "Retry; if persistent file an issue"
+}

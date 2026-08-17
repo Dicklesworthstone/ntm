@@ -1,0 +1,60 @@
+{
+  "success": true,
+  "timestamp": "2026-08-16T12:00:00Z",
+  "version": "1.0.0",
+  "output_format": "json",
+  "session": "corpus-session-4",
+  "agents": [
+    {
+      "name": "Alpha",
+      "pane": "1",
+      "agent_type": "claude"
+    },
+    {
+      "name": "Bravo",
+      "pane": "2",
+      "agent_type": "codex"
+    },
+    {
+      "name": "Charlie",
+      "pane": "3",
+      "agent_type": "gemini"
+    },
+    {
+      "name": "Delta",
+      "pane": "4",
+      "agent_type": "claude"
+    },
+    {
+      "name": "Echo",
+      "pane": "5",
+      "agent_type": "codex"
+    },
+    {
+      "name": "Foxtrot",
+      "pane": "6",
+      "agent_type": "gemini"
+    },
+    {
+      "name": "Golf",
+      "pane": "7",
+      "agent_type": "claude"
+    },
+    {
+      "name": "Hotel",
+      "pane": "8",
+      "agent_type": "codex"
+    },
+    {
+      "name": "India",
+      "pane": "9",
+      "agent_type": "gemini"
+    },
+    {
+      "name": "Juliett",
+      "pane": "10",
+      "agent_type": "claude"
+    }
+  ],
+  "count": 10
+}
