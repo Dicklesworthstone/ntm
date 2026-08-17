@@ -313,14 +313,53 @@ func findRepoRoot() string {
 // REST vs CLI Parity for Specific Endpoints
 // =============================================================================
 
-// TestParityCLIvsRESTDeps compares CLI deps output with REST /api/v1/deps.
-// This requires the server to be running, so it's skipped by default.
-func TestParityCLIvsRESTDeps(t *testing.T) {
-	if os.Getenv("NTM_TEST_SERVER") == "" {
-		t.Skip("set NTM_TEST_SERVER=http://localhost:8080 to run REST parity tests")
+// requireTestServer returns the NTM_TEST_SERVER base URL or skips the test.
+// The hermetic-serve harness (scripts/parity_harness.sh / the CI parity-harness
+// job) always sets NTM_TEST_SERVER and independently asserts executed-count > 0,
+// so a skip here can never silently pass in CI.
+func requireTestServer(t *testing.T) string {
+	t.Helper()
+	serverURL := os.Getenv("NTM_TEST_SERVER")
+	if serverURL == "" {
+		t.Skip("set NTM_TEST_SERVER=http://localhost:7337 to run REST parity tests (see scripts/parity_harness.sh)")
+	}
+	return strings.TrimRight(serverURL, "/")
+}
+
+// getREST fetches a REST endpoint and returns the response body.
+func getREST(t *testing.T, url string) []byte {
+	t.Helper()
+	resp, err := http.Get(url)
+	if err != nil {
+		t.Fatalf("REST request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("REST %s returned %d", url, resp.StatusCode)
 	}
 
-	serverURL := os.Getenv("NTM_TEST_SERVER")
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("failed to read REST response: %v", err)
+	}
+	return body
+}
+
+// stripRESTEnvelope removes top-level fields that the REST transport envelope
+// (writeSuccessResponse) adds to every 200 response but that are not part of
+// the shared payload contract the CLI emits. This is an envelope difference by
+// design, not payload drift — parity is asserted on the payload.
+func stripRESTEnvelope(obj map[string]any) {
+	delete(obj, "success")
+	delete(obj, "request_id")
+}
+
+// TestParityCLIvsRESTDeps compares CLI deps output with REST /api/v1/deps.
+// Both surfaces run the same kernel command (core.deps), so the payloads must
+// match field-for-field after removing volatile fields and the REST envelope.
+func TestParityCLIvsRESTDeps(t *testing.T) {
+	serverURL := requireTestServer(t)
 	testutil.RequireNTMBinary(t)
 
 	// Get CLI output
@@ -328,61 +367,97 @@ func TestParityCLIvsRESTDeps(t *testing.T) {
 	cliOutput := testutil.AssertCommandSuccess(t, logger, "ntm", "deps", "--json")
 
 	// Get REST output
-	resp, err := http.Get(serverURL + "/api/v1/deps")
-	if err != nil {
-		t.Fatalf("REST request failed: %v", err)
-	}
-	defer resp.Body.Close()
-
-	restOutput, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("failed to read REST response: %v", err)
-	}
+	restOutput := getREST(t, serverURL+"/api/v1/deps")
 
 	// Normalize and compare
 	cliNorm := normalizeJSON(t, cliOutput)
 	restNorm := normalizeJSON(t, restOutput)
+	stripRESTEnvelope(restNorm)
 
 	if !compareNormalizedJSON(t, "deps", cliNorm, restNorm) {
 		t.Error("CLI and REST deps outputs differ")
 	}
 }
 
-// TestParityCLIvsRESTHealth compares CLI health output with REST /api/v1/health.
+// TestParityCLIvsRESTHealth verifies the REST /api/v1/health liveness contract.
+//
+// Drift repair (2026-08-16, WS4 harness promotion): this test originally
+// compared `ntm health --json` against /api/v1/health, but those were never
+// equivalent operations — `ntm health <session>` reports per-agent health for a
+// tmux session (and errors without a session argument), while /api/v1/health is
+// server liveness. The test could never have passed as written. There is no CLI
+// counterpart for server liveness (the CLI does not run the server), so this
+// now asserts the documented liveness contract; cross-surface payload parity is
+// covered by the deps/version/capabilities tests below.
 func TestParityCLIvsRESTHealth(t *testing.T) {
-	if os.Getenv("NTM_TEST_SERVER") == "" {
-		t.Skip("set NTM_TEST_SERVER=http://localhost:8080 to run REST parity tests")
+	serverURL := requireTestServer(t)
+
+	restOutput := getREST(t, serverURL+"/api/v1/health")
+
+	var health map[string]any
+	if err := json.Unmarshal(restOutput, &health); err != nil {
+		t.Fatalf("failed to parse health response: %v", err)
 	}
 
-	serverURL := os.Getenv("NTM_TEST_SERVER")
+	if got, ok := health["status"].(string); !ok || got != "healthy" {
+		t.Errorf("expected status=healthy, got %v", health["status"])
+	}
+	if got, ok := health["success"].(bool); !ok || !got {
+		t.Errorf("expected success=true, got %v", health["success"])
+	}
+	if _, ok := health["request_id"].(string); !ok {
+		t.Errorf("expected request_id string, got %v", health["request_id"])
+	}
+}
+
+// TestParityCLIvsRESTVersion compares `ntm version --json` with REST
+// /api/v1/version on the fields both surfaces share. Each surface carries
+// intentional extras (CLI: commit/built_at/platform; REST: api_version +
+// envelope), so parity is asserted per shared field rather than deep-equal.
+func TestParityCLIvsRESTVersion(t *testing.T) {
+	serverURL := requireTestServer(t)
 	testutil.RequireNTMBinary(t)
 
-	// Get CLI output
 	logger := testutil.NewTestLoggerStdout(t)
-	cliOutput := testutil.AssertCommandSuccess(t, logger, "ntm", "health", "--json")
+	cliOutput := testutil.AssertCommandSuccess(t, logger, "ntm", "version", "--json")
+	restOutput := getREST(t, serverURL+"/api/v1/version")
 
-	// Get REST output
-	resp, err := http.Get(serverURL + "/api/v1/health")
-	if err != nil {
-		t.Fatalf("REST request failed: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("REST health check returned %d", resp.StatusCode)
-	}
-
-	restOutput, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("failed to read REST response: %v", err)
-	}
-
-	// Normalize and compare
 	cliNorm := normalizeJSON(t, cliOutput)
 	restNorm := normalizeJSON(t, restOutput)
 
-	if !compareNormalizedJSON(t, "health", cliNorm, restNorm) {
-		t.Error("CLI and REST health outputs differ")
+	for _, field := range []string{"version", "go_version"} {
+		cliVal, cliOK := cliNorm[field]
+		restVal, restOK := restNorm[field]
+		if !cliOK || !restOK {
+			t.Errorf("%s: missing on a surface (CLI present=%v, REST present=%v)", field, cliOK, restOK)
+			continue
+		}
+		if cliVal != restVal {
+			t.Errorf("%s mismatch: CLI=%v REST=%v", field, cliVal, restVal)
+		}
+	}
+}
+
+// TestParityCLIvsRESTCapabilities compares `ntm --robot-capabilities` with REST
+// /api/v1/capabilities. Both surfaces serialize robot.GetCapabilities(), so the
+// full payload must match deep-equal after normalization.
+func TestParityCLIvsRESTCapabilities(t *testing.T) {
+	serverURL := requireTestServer(t)
+	testutil.RequireNTMBinary(t)
+
+	logger := testutil.NewTestLoggerStdout(t)
+	cliOutput := testutil.AssertCommandSuccess(t, logger, "ntm", "--robot-capabilities")
+	restOutput := getREST(t, serverURL+"/api/v1/capabilities")
+
+	cliNorm := normalizeJSON(t, cliOutput)
+	restNorm := normalizeJSON(t, restOutput)
+	stripRESTEnvelope(restNorm)
+	// The CLI envelope also carries success; strip from both sides so the
+	// comparison covers the capabilities payload itself.
+	delete(cliNorm, "success")
+
+	if !compareNormalizedJSON(t, "capabilities", cliNorm, restNorm) {
+		t.Error("CLI and REST capabilities outputs differ")
 	}
 }
 
