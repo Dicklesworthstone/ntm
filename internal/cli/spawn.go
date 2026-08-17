@@ -2582,6 +2582,15 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 	}
 	lifecycleSessionMayExist = true
 
+	// Make pane titles visible on stock tmux: pane-border-status defaults to
+	// "off", which hides every title NTM sets. Session-local only, and an
+	// existing user preference (top/bottom, local or inherited) is respected
+	// (bd-ws7-docs-ux-truth-tqh3l.8). Best-effort: cosmetic failure must not
+	// abort the spawn.
+	if err := tmux.EnsurePaneBorderStatusContext(ctx, opts.Session); err != nil && !IsJSONOutput() {
+		output.PrintWarningf("Could not enable pane-border-status: %v", err)
+	}
+
 	getPanesWithRetry := func(session string, attempts int, delay time.Duration) ([]tmux.Pane, error) {
 		var lastErr error
 		for i := 0; i < attempts; i++ {
@@ -2704,6 +2713,20 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 	startIdx := 0
 	if opts.UserPane {
 		startIdx = 1
+		// Title the reserved user pane. Without this the pane keeps the host's
+		// default title, so the "which pane is mine?" label never exists
+		// (bd-ws7-docs-ux-truth-tqh3l.8). Uses the canonical maker in
+		// internal/config/label.go. Best-effort: a title failure is cosmetic.
+		if len(panes) > 0 {
+			if err := tmux.SetPaneTitleContext(ctx, panes[0].ID, config.UserPaneTitle(opts.Session)); err != nil {
+				if !IsJSONOutput() {
+					output.PrintWarningf("Could not title user pane: %v", err)
+				}
+			} else {
+				lifecyclePartialMutation = true
+				lifecycleAffectedPaneIDs = append(lifecycleAffectedPaneIDs, panes[0].ID)
+			}
+		}
 	}
 	if err := validateSpawnPaneCapacity(panes, startIdx, len(opts.Agents)); err != nil {
 		return outputError(err)

@@ -5,12 +5,15 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"runtime"
 	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/output"
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 func newQuickCmd() *cobra.Command {
@@ -18,6 +21,7 @@ func newQuickCmd() *cobra.Command {
 		noGit          bool
 		noVSCode       bool
 		noClaudeConfig bool
+		noSession      bool
 		template       string
 		label          string
 	)
@@ -33,11 +37,13 @@ func newQuickCmd() *cobra.Command {
 	- Creates VSCode workspace settings
 	- Creates Claude Code configuration
 	- Creates basic .gitignore
+	- Creates a detached tmux session for the project (skip with --no-session)
 
 Examples:
-  ntm quick myproject           # Full setup
+  ntm quick myproject           # Full setup + tmux session
   ntm quick myproject --no-git  # Skip git init
   ntm quick api --template=go   # Use Go template
+  ntm quick myproject --no-session      # Scaffold only, no tmux session
   ntm quick myproject --label frontend  # Labeled session`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -60,6 +66,7 @@ Examples:
 				NoGit:          noGit,
 				NoVSCode:       noVSCode,
 				NoClaudeConfig: noClaudeConfig,
+				NoSession:      noSession,
 				Template:       template,
 			})
 		},
@@ -68,6 +75,7 @@ Examples:
 	cmd.Flags().BoolVar(&noGit, "no-git", false, "Skip git initialization")
 	cmd.Flags().BoolVar(&noVSCode, "no-vscode", false, "Skip VSCode settings")
 	cmd.Flags().BoolVar(&noClaudeConfig, "no-claude", false, "Skip Claude config")
+	cmd.Flags().BoolVar(&noSession, "no-session", false, "Skip tmux session creation")
 	cmd.Flags().StringVarP(&template, "template", "t", "", "Project template (go, python, node, rust)")
 	cmd.Flags().StringVarP(&label, "label", "l", "", "Goal label for multi-session support (e.g., --label frontend creates session PROJECT--frontend)")
 
@@ -78,12 +86,14 @@ type quickOptions struct {
 	NoGit          bool
 	NoVSCode       bool
 	NoClaudeConfig bool
+	NoSession      bool
 	Template       string
 }
 
 type quickResponse struct {
 	WorkingDirectory string   `json:"working_directory"`
 	Session          string   `json:"session"`
+	SessionCreated   bool     `json:"session_created"`
 	GitInitialized   bool     `json:"git_initialized"`
 	GitignoreCreated bool     `json:"gitignore_created"`
 	VSCodeCreated    bool     `json:"vscode_created"`
@@ -197,6 +207,25 @@ func runQuick(name string, opts quickOptions) error {
 		}
 	}
 
+	// Create the project's tmux session. The qps ("quick project session")
+	// alias always implied a session; quick now actually creates one
+	// (detached) so `ntm attach <name>` works immediately
+	// (bd-ws7-docs-ux-truth-tqh3l.8). Failures are warnings: the scaffolded
+	// project is still fully usable without tmux.
+	if !opts.NoSession {
+		if err := createQuickSession(name, projectDir); err != nil {
+			res.Warnings = append(res.Warnings, fmt.Sprintf("tmux session not created: %v", err))
+			if !IsJSONOutput() {
+				output.PrintWarningf("Tmux session not created: %v", err)
+			}
+		} else {
+			res.SessionCreated = true
+			if !IsJSONOutput() {
+				output.PrintSuccessf("Created tmux session '%s'", name)
+			}
+		}
+	}
+
 	if IsJSONOutput() {
 		return output.PrintJSON(res)
 	}
@@ -205,8 +234,37 @@ func runQuick(name string, opts quickOptions) error {
 	output.PrintSuccessf("Project ready at: %s", projectDir)
 
 	// Print "What's next?" suggestions
-	output.SuccessFooter(output.QuickSuggestions(projectDir, name)...)
+	suggestions := output.QuickSuggestions(projectDir, name)
+	if res.SessionCreated {
+		suggestions = append(suggestions, output.Suggestion{
+			Command:     fmt.Sprintf("ntm attach %s", name),
+			Description: "Attach to the new session",
+		})
+	}
+	output.SuccessFooter(suggestions...)
 
+	return nil
+}
+
+// createQuickSession creates the detached tmux session backing a quick
+// project, applying the same UX treatment as spawn: the (only) pane is titled
+// as the user pane via the canonical maker, and pane-border-status is enabled
+// session-locally so titles are visible once agents are added.
+func createQuickSession(name, projectDir string) error {
+	if !tmux.IsInstalled() {
+		return fmt.Errorf("tmux is not installed")
+	}
+	if tmux.SessionExists(name) {
+		return fmt.Errorf("session %q already exists", name)
+	}
+	if err := tmux.CreateSession(name, projectDir); err != nil {
+		return fmt.Errorf("creating session: %w", err)
+	}
+	// Cosmetic; best-effort by design (same policy as spawn).
+	if panes, err := tmux.GetPanes(name); err == nil && len(panes) > 0 {
+		_ = tmux.SetPaneTitle(panes[0].ID, config.UserPaneTitle(name))
+	}
+	_ = tmux.EnsurePaneBorderStatus(name)
 	return nil
 }
 
@@ -380,13 +438,38 @@ func applyTemplate(dir, template string) error {
 	}
 }
 
+// goVersionPattern validates a go.mod-style version directive value
+// (e.g. "1.26" or "1.26.5").
+var goVersionPattern = regexp.MustCompile(`^\d+\.\d+(\.\d+)?$`)
+
+// goTemplateVersion returns the Go version to pin in a generated go.mod.
+// It is DERIVED from the environment rather than hand-maintained (a hand
+// updated literal was exactly how the template staled at "go 1.25"):
+//  1. the user's installed toolchain (`go env GOVERSION`) — what the new
+//     project will actually be compiled with;
+//  2. the toolchain that built ntm (runtime.Version()) as fallback when no
+//     local `go` binary is on PATH.
+func goTemplateVersion() string {
+	if out, err := exec.Command("go", "env", "GOVERSION").Output(); err == nil {
+		if v := strings.TrimPrefix(strings.TrimSpace(string(out)), "go"); goVersionPattern.MatchString(v) {
+			return v
+		}
+	}
+	if v := strings.TrimPrefix(runtime.Version(), "go"); goVersionPattern.MatchString(v) {
+		return v
+	}
+	// Development toolchains ("devel gabc123...") carry no usable directive
+	// value; fall back to the language version ntm itself was compiled for.
+	return "1.26"
+}
+
 func applyGoTemplate(dir string) error {
 	// Create go.mod
 	projectName := filepath.Base(dir)
 	goMod := fmt.Sprintf(`module %s
 
-go 1.25
-`, projectName)
+go %s
+`, projectName, goTemplateVersion())
 
 	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(goMod), 0644); err != nil {
 		return err

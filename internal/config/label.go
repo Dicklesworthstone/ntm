@@ -118,6 +118,17 @@ func SessionLabel(sessionName string) string {
 	return label
 }
 
+// UserPaneTitle returns the canonical tmux pane title for a session's reserved
+// user pane (pane index 0 on spawn). It follows the same
+// {session}__{type}_{index} convention as agent panes (tmux.FormatPaneName),
+// using the "user" agent type so pane-title parsers classify it as AgentUser.
+//
+// This is the single maker for the user-pane title (WS0-G6): callers must not
+// re-derive the delimiter or the "user" suffix.
+func UserPaneTitle(session string) string {
+	return session + PaneTitleSeparator + "user_0"
+}
+
 // PaneDisplayLabel derives the human-friendly per-pane label from a tmux pane
 // title by stripping the "<session>__" prefix that the pane-title maker
 // (tmux.FormatPaneName) adds. If the title carries no usable label, it falls
