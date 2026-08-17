@@ -46,6 +46,13 @@ builds:
       - -X github.com/Dicklesworthstone/ntm/internal/cli.BuiltBy=goreleaser
     flags:
       - -trimpath
+      # Ship ensemble spawn (bd-ws5-ship-or-cut-jv0rc.3, F3): the
+      # ensemble_experimental gate passed the fakeagent live-tmux E2E bar
+      # (e2e/ensemble_spawn_e2e_test.go), so release binaries enable it.
+      # Untagged source builds keep the honest NOT_IMPLEMENTED stub.
+      # release_preflight's ntm-binary probe builds with this same tag and
+      # asserts the built artifact exposes a real `ensemble spawn`.
+      - -tags=ensemble_experimental
     mod_timestamp: "{{ .CommitTimestamp }}"
 
 universal_binaries:

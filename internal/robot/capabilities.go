@@ -1294,7 +1294,7 @@ func buildCommandRegistry() []RobotCommandInfo {
 			Flag:              "--robot-ensemble-spawn",
 			Category:          "ensemble",
 			Description:       "Spawn a reasoning ensemble session with mode assignments.",
-			Note:              "Requires build tag: ensemble_experimental. Default build returns NOT_IMPLEMENTED.",
+			Note:              "Gated by build tag: ensemble_experimental. Enabled in official release builds; untagged source builds return NOT_IMPLEMENTED.",
 			Unavailable:       !ensembleSpawnAvailable,
 			UnavailableReason: ensembleSpawnUnavailableReason,
 			Parameters: []RobotParameter{

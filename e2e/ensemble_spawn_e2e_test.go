@@ -115,14 +115,30 @@ func newEnsembleSpawnFixture(t *testing.T) *ensembleSpawnFixture {
 		"TMUX_TMPDIR":     tmuxRoot,
 		"PATH":            fakeBin + string(os.PathListSeparator) + os.Getenv("PATH"),
 		"SHELL":           "/bin/sh",
-		"NO_COLOR":        "1",
-		"TERM":            "xterm-256color",
+		// Pane shells write $HISTFILE into $HOME on exit, racing t.TempDir's
+		// RemoveAll after kill-server ("directory not empty" flake).
+		"HISTFILE": "/dev/null",
+		"NO_COLOR": "1",
+		"TERM":     "xterm-256color",
 	})
 
 	t.Cleanup(func() {
 		kill := exec.Command("tmux", "kill-server")
 		kill.Env = fixture.env
 		_ = kill.Run()
+		// kill-server returns before panes finish dying; wait for the server
+		// socket to go away so no pane process still writes under the temp
+		// HOME while t.TempDir cleanup removes it.
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			probe := exec.Command("tmux", "list-sessions")
+			probe.Env = fixture.env
+			if err := probe.Run(); err != nil {
+				break
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		time.Sleep(200 * time.Millisecond)
 	})
 
 	return fixture

@@ -21,9 +21,12 @@ schema = "1"
 
 [artifact.ntm-binary]
 kind = "binary"
-# Replicates the .goreleaser.yaml stamp (internal/cli.Version) with go build,
-# then asserts the stamped binary reports EXPECTED_VERSION.
-version_probe = 'go build -trimpath -ldflags "-s -w -X github.com/Dicklesworthstone/ntm/internal/cli.Version=${EXPECTED_VERSION}" -o "${PREFLIGHT_TMP}/ntm" ./cmd/ntm && "${PREFLIGHT_TMP}/ntm" version --short'
+# Replicates the .goreleaser.yaml build (internal/cli.Version stamp AND the
+# ensemble_experimental tag) with go build, asserts the built artifact
+# exposes a REAL `ensemble spawn` (the --dry-run flag exists only in the
+# tagged build; the untagged stub registers no spawn flags — F3,
+# bd-ws5-ship-or-cut-jv0rc.3), then asserts the stamped version.
+version_probe = 'go build -trimpath -tags ensemble_experimental -ldflags "-s -w -X github.com/Dicklesworthstone/ntm/internal/cli.Version=${EXPECTED_VERSION}" -o "${PREFLIGHT_TMP}/ntm" ./cmd/ntm && "${PREFLIGHT_TMP}/ntm" ensemble spawn --help | grep -q -- "--dry-run" && "${PREFLIGHT_TMP}/ntm" version --short'
 
 [artifact.install-sh]
 kind = "installer"
