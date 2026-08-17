@@ -13,6 +13,39 @@ NTM is a tmux session management tool for orchestrating multiple AI coding agent
 
 ## [Unreleased]
 
+- **Corrected commit provenance.** Commit `d08893d9`'s message incorrectly
+  attributed the fail-closed serve safety-policy change to its completion and
+  tmux diff. The actual safety-policy implementation is `dda4aae8`; history
+  is preserved and this note is the forward correction.
+
+---
+
+## [v1.25.0] -- 2026-08-17 [GitHub Release]
+
+**R2 of the reality-bridge program: the wiring release.** Waves W2+W3 wired every
+"engine built, never reachable" capability to a real user surface, shipped the
+never-released deliverables, and made the docs tell the truth — verified by
+independent review gates with proof-of-proof spot-reverts and the first scripted
+reality re-audit (10/10 probes against a release-style binary).
+
+### Features
+
+- **The web UI ships.** All 12 dashboard routes (including new memory and rebuilt agents pages) export statically, ride the binary via go:embed (+1.2 MB), and serve from `ntm web` / `ntm serve --web` with version lockstep and a weekly dependency-audit CI job.
+- **The VSCode extension ships.** Compiles in CI, packages as a release `.vsix` (pinned toolchain), documented install-from-vsix.
+- **Ensemble spawn ships.** The `ensemble_experimental` tag rides release builds after its fakeagent E2E bar went green live (mode-disjoint dispatch proven from fixture event logs).
+- **`ntm workflow run`** executes the previously-unreachable RuntimeCoordinator against live panes through gated dispatch — all four builtins plus user TOMLs, live-proven (red-green handoff transcript-asserted).
+- **`--with-cass` / `--no-cass`** wire send-time CASS context injection on both send surfaces, redacted and framed data-not-instructions, with a degraded skip path.
+- **Coordinator conflict negotiation** runs behind the persisted flag with published outcomes; **deadlock detection** is reachable via `locks --check-deadlocks`, the robot envelope, and the digest; **reservation-affinity scoring** populates from live Agent Mail data; **`--dist-strategy`** routes through real planners with propagated confidence; the **quota, ratelimit, and accounts panels** joined the dashboard.
+- **`ntm guards install`** writes a hook that actually checks staged files against reservations (visible fail-open, strict opt-in); **`ntm memory serve`** really supervises cm with an MCP-aware health probe.
+
+### Reliability
+
+- **Contract breadth is now enforced, not asserted:** arrays-never-null is an encoder invariant with a registry-walk test; pagination covers five formerly-unbounded surfaces with exact machine-checkable scope; Idempotency-Key covers all 73 mutating routes with single-flight and a bounded LRU; the jobs API dispatches three real operations (cancel actually cancels) and returns honest NOT_IMPLEMENTED elsewhere.
+- **OpenAPI and the parity matrix are generated from the served router** (158 paths/178 ops, deterministic, drift-gated in CI), replacing a stale hand-curated spec.
+- **Config knobs govern real behavior:** `[retry]` drives three retry loops, rotation thresholds bind, `[recovery]` aliases with deprecation warnings; token-efficiency claims are measured (markdown ~84%, TOON ~39%) with pinned floors.
+- **UX truth:** NDJSON under `--json` for watch surfaces; `chars_sent` equals delivered bytes; per-pane best-effort interrupt with `PARTIAL_INTERRUPT` envelopes; personas wired for gmi/agy with loud grok refusal; palette help generated from the keymap (dead keys gone, q-quits-while-typing fixed); installer checks tmux and PATH loudly; approve history returns every decision state; user panes titled with visible border-status; shell completion covers all 114 commands from the cobra tree.
+- **Docs truth:** every ORCHESTRATION example is real (skip-budget burned to zero), planned-but-shipped claims corrected under grep-gates, the vnext verification matrix cites only gates that exist.
+
 - **Arrays-never-null is now an encoder invariant, not a constructor
   convention.** (bd-ws3-contract-breadth-psvyu.2) Every robot envelope —
   success and failure terminals alike — is normalized through
