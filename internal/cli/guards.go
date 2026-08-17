@@ -14,6 +14,7 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/output"
+	"github.com/Dicklesworthstone/ntm/internal/state"
 )
 
 func newGuardsCmd() *cobra.Command {
@@ -36,6 +37,7 @@ Use 'ntm guards status' to check installation status.`,
 		newGuardsInstallCmd(),
 		newGuardsUninstallCmd(),
 		newGuardsStatusCmd(),
+		newGuardsCheckCmd(),
 	)
 
 	return cmd
@@ -200,24 +202,28 @@ func installFallbackGuard(hookPath, projectKey, repoPath string) error {
 
 	script := fmt.Sprintf(`#!/bin/bash
 # ntm-precommit-guard
-# Installed by: ntm guards install
+# Installed by: ntm guards install (fallback; Agent Mail MCP unavailable at install time)
 # Project: %s
 # Repository: %s
+#
+# Real reservation check (bd-ws1-truth-safety-l5ddi.1): delegates to
+# 'ntm guards check --staged', which queries Agent Mail for active exclusive
+# file reservations overlapping the staged paths and blocks the commit on
+# conflict, naming the holder + reservation. If Agent Mail is unreachable the
+# check fails OPEN with a visible WARN and a degraded-event row surfaced by
+# 'ntm doctor'; set NTM_GUARD_STRICT=1 to fail closed instead.
 
-set -e
-
-# Check for ntm command
-if ! command -v ntm &> /dev/null; then
-    exit 0  # NTM not installed, allow commit
+if ! command -v ntm >/dev/null 2>&1; then
+    if [ "${NTM_GUARD_STRICT:-}" = "1" ]; then
+        echo "[ntm-guard] BLOCKED: ntm not found on PATH and NTM_GUARD_STRICT=1 (fail-closed)" >&2
+        exit 1
+    fi
+    echo "[ntm-guard] WARN: ntm not found on PATH; skipping reservation check" >&2
+    exit 0
 fi
 
-# Check for active file reservations that might conflict
-# This is a fallback check - the full check requires Agent Mail MCP
-
-# For now, just log and pass (full implementation via Agent Mail) placebo-waiver: bd-ws1-truth-safety-l5ddi.1
-echo "[ntm-guard] Pre-commit check passed"
-exit 0
-`, safeProjectKey, safeRepoPath)
+exec ntm guards check --staged --project-key %s
+`, safeProjectKey, safeRepoPath, shellSingleQuote(projectKey))
 
 	return writeGuardHookFile(hookPath, script)
 }
@@ -343,13 +349,15 @@ func newGuardsStatusCmd() *cobra.Command {
 // GuardsStatusResponse is the JSON output for guards status.
 type GuardsStatusResponse struct {
 	output.TimestampedResponse
-	Installed    bool   `json:"installed"`
-	RepoPath     string `json:"repo_path"`
-	HookPath     string `json:"hook_path"`
-	ProjectKey   string `json:"project_key,omitempty"`
-	IsNTMGuard   bool   `json:"is_ntm_guard"`
-	OtherHook    bool   `json:"other_hook"`
-	MCPAvailable bool   `json:"mcp_available"`
+	Installed    bool                       `json:"installed"`
+	RepoPath     string                     `json:"repo_path"`
+	HookPath     string                     `json:"hook_path"`
+	ProjectKey   string                     `json:"project_key,omitempty"`
+	IsNTMGuard   bool                       `json:"is_ntm_guard"`
+	OtherHook    bool                       `json:"other_hook"`
+	MCPAvailable bool                       `json:"mcp_available"`
+	DegradedRuns int                        `json:"degraded_runs"`
+	LastDegraded []state.GuardDegradedEvent `json:"last_degraded_events,omitempty"`
 }
 
 func runGuardsStatus(cmd *cobra.Command, args []string) error {
@@ -410,6 +418,22 @@ func runGuardsStatus(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Degraded-mode visibility (bd-ws1-truth-safety-l5ddi.1): count of hook
+	// runs that failed open because Agent Mail was unreachable.
+	degradedRuns := 0
+	var lastDegraded []state.GuardDegradedEvent
+	if store, storeErr := state.Open(""); storeErr == nil {
+		if migrateErr := store.Migrate(); migrateErr == nil {
+			if stats, statsErr := store.GuardDegradedEventStats(time.Time{}); statsErr == nil {
+				degradedRuns = stats.Count
+			}
+			if degradedRuns > 0 {
+				lastDegraded, _ = store.ListGuardDegradedEvents(3)
+			}
+		}
+		_ = store.Close()
+	}
+
 	if IsJSONOutput() {
 		return output.PrintJSON(GuardsStatusResponse{
 			TimestampedResponse: output.NewTimestamped(),
@@ -420,6 +444,8 @@ func runGuardsStatus(cmd *cobra.Command, args []string) error {
 			IsNTMGuard:          isNTMGuard,
 			OtherHook:           otherHook,
 			MCPAvailable:        mcpAvailable,
+			DegradedRuns:        degradedRuns,
+			LastDegraded:        lastDegraded,
 		})
 	}
 
@@ -456,6 +482,15 @@ func runGuardsStatus(cmd *cobra.Command, args []string) error {
 		fmt.Printf("  %s Agent Mail MCP: available\n", okStyle.Render("✓"))
 	} else {
 		fmt.Printf("  %s Agent Mail MCP: not available\n", mutedStyle.Render("○"))
+	}
+
+	// Degraded-run visibility
+	if degradedRuns > 0 {
+		fmt.Println()
+		fmt.Printf("  %s Guard hook ran degraded %d time(s) — commits were allowed WITHOUT a reservation check\n", warnStyle.Render("⚠"), degradedRuns)
+		for _, ev := range lastDegraded {
+			fmt.Printf("    %s %s (%s)\n", mutedStyle.Render(ev.CreatedAt.Local().Format("2006-01-02 15:04:05")), ev.Reason, ev.RepoPath)
+		}
 	}
 
 	// Installation hint

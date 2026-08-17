@@ -674,6 +674,11 @@ func checkConfiguration() []ConfigCheck {
 		})
 	}
 
+	// Pre-commit guard degraded runs (bd-ws1-truth-safety-l5ddi.1): fail-open
+	// hook runs are recorded in the state DB precisely because a WARN in
+	// commit scrollback is unobserved; doctor is where they become visible.
+	checks = append(checks, guardDegradationCheck())
+
 	return checks
 }
 

@@ -2816,6 +2816,31 @@ func performDoctorCheckAPI(ctx context.Context) map[string]interface{} {
 	}
 	report["daemons"] = daemons
 
+	// Pre-commit guard degraded runs (bd-ws1-truth-safety-l5ddi.1): the guard
+	// hook fails open when Agent Mail is unreachable and records each such run
+	// in the state DB; the dashboard surfaces the count as a warning line.
+	guardCheck := map[string]interface{}{
+		"name":          "guard-hook",
+		"status":        "ok",
+		"degraded_runs": 0,
+	}
+	if store, err := state.Open(""); err == nil {
+		if migrateErr := store.Migrate(); migrateErr != nil {
+			log.Printf("doctor: state store migrate error=%v", migrateErr)
+		} else if stats, statsErr := store.GuardDegradedEventStats(time.Time{}); statsErr == nil && stats.Count > 0 {
+			guardCheck["status"] = "warning"
+			guardCheck["degraded_runs"] = stats.Count
+			guardCheck["since"] = stats.FirstAt.UTC().Format(time.RFC3339)
+			guardCheck["message"] = fmt.Sprintf("guard hook ran degraded %d time(s) since %s (commits allowed without a reservation check)",
+				stats.Count, stats.FirstAt.UTC().Format(time.RFC3339))
+			warnings++
+		}
+		if closeErr := store.Close(); closeErr != nil {
+			log.Printf("doctor: close state store error=%v", closeErr)
+		}
+	}
+	report["guard_hook"] = guardCheck
+
 	// Set overall status
 	if errors > 0 {
 		report["overall"] = "unhealthy"
