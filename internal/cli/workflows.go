@@ -118,6 +118,7 @@ Sources (in precedence order):
 Examples:
   ntm workflows list                # List all available templates
   ntm workflows show red-green      # Show details of a template
+  ntm workflow run red-green        # Execute a template's coordination loop
   ntm workflows list --json         # JSON output for scripts`,
 	}
 

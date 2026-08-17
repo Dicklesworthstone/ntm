@@ -1969,7 +1969,7 @@ Examples:
 	cmd.Flags().Var(&personaSpecs, "persona", "Persona-defined agents (name or name:count)")
 	cmd.Flags().BoolVar(&noUserPane, "no-user", false, "don't reserve a pane for the user")
 	cmd.Flags().StringVarP(&recipeName, "recipe", "r", "", "use a recipe for agent configuration")
-	cmd.Flags().StringVarP(&templateName, "template", "t", "", "use a workflow template for agent configuration")
+	cmd.Flags().StringVarP(&templateName, "template", "t", "", "size the session from a workflow template's agent counts (counts only; run the coordination with 'ntm workflow run')")
 	cmd.Flags().BoolVar(&autoRestart, "auto-restart", false, "monitor and auto-restart crashed agents")
 
 	// Goal label for multi-session support (bd-1933u)

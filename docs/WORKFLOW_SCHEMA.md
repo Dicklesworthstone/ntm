@@ -119,6 +119,58 @@ question = "Ticket or issue number?"
 required = true
 ```
 
+### Run a Template
+
+`ntm workflow run <name-or-path>` executes a template's coordination loop
+against a live session:
+
+```bash
+# Builtins by name (red-green, review-pipeline, specialist-team, parallel-explore)
+ntm workflow run red-green --var feature="parser rewrite"
+
+# User/project templates by name (same search order as `ntm workflows list`)
+ntm workflow run my-review-flow --session myproj --var ticket=BUG-123
+
+# Any workflow TOML by explicit path (a path separator or .toml suffix)
+ntm workflow run ./flows/my-flow.toml --session myproj
+
+# Drive manual transitions automatically (unattended runs)
+ntm workflow run specialist-team --var project="billing" --fire-manual
+```
+
+How a run works:
+
+1. The template resolves by explicit path when the argument contains a path
+   separator or ends in `.toml`; otherwise by name with the standard
+   precedence (builtin < `~/.config/ntm/workflows/` < `.ntm/workflows/`).
+   An unknown name is an error that lists the builtin names — there is no
+   fallback.
+2. Required setup prompts without defaults must be supplied with
+   `--var key=value`; defaults fill the rest.
+3. Template roles map onto the session's agent panes in pane order (the
+   session needs at least as many agent panes as the template declares).
+4. Each stage's prompt is delivered through the same gated dispatch path as
+   `ntm send` (dead-pane gate + composer-verified submission), and the
+   template's triggers advance the stages. A stage engages the role with the
+   same name; otherwise the role the routing table maps for the stage, the
+   role named by an outgoing transition's trigger, or the first declared
+   role. Parallel coordination (and `parallel_within_stage`) engages every
+   pane of the acting role.
+5. The run ends when the flow reaches a stage with no outgoing transitions,
+   after `--max-transitions` stage changes, or at `--timeout`. `--json`
+   emits a machine-readable result (stages visited, transitions, role→pane
+   mapping).
+
+Useful flags: `--fire-manual` fires `manual` triggers automatically,
+`--interval` sets the trigger poll cadence, `--trigger-timeout` bounds
+command triggers, `--project-root` anchors file/command triggers, and
+`--resume` clears a paused checkpoint recorded by the template's
+`error_handling` pause action.
+
+Note: `ntm spawn -t <template>` uses only the template's agent COUNTS to
+size a new session — it does not run the coordination. Spawn the session
+first, then `ntm workflow run <template>` inside it.
+
 ### Best Practices
 
 - Start with a built-in template and change one coordination concern at a time.
@@ -134,7 +186,8 @@ required = true
 
 - **Workflow not found:** ensure the file ends in `.toml` and is in
   `.ntm/workflows/` or `~/.config/ntm/workflows/`; use `ntm workflows list`
-  to see the effective source.
+  to see the effective source. `ntm workflow run` fails closed on an unknown
+  name and lists the builtin names in its error.
 - **Template fails to load:** use `ntm workflows show <name>` to surface TOML,
   unknown-field, or validation errors. Pipeline flows need stages and every
   flow needs at least one valid transition.

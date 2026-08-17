@@ -356,7 +356,7 @@ ntm approve deny abc123 --reason "wrong target branch"
 NTM supports several layers of reusable automation:
 
 - `recipes`: reusable session presets
-- `workflows`: orchestration patterns such as pipeline, ping-pong, and review-gate
+- `workflows`: runnable orchestration patterns such as pipeline, ping-pong, and review-gate — `ntm workflow run <name>` executes a template's coordination loop against a live session (`ntm spawn -t <name>` only uses a template's agent counts to size a session)
 - `template`: prompt templates and substitutions
 - `pipeline`: executable multi-step agent workflows with variables, dependencies, resume, and cleanup
 - `session-templates`: higher-level session layouts
@@ -366,6 +366,8 @@ ntm recipes list
 ntm recipes show full-stack
 ntm workflows list
 ntm workflows show red-green
+ntm workflow run red-green --var feature="parser rewrite"
+ntm workflow run ./my-flow.toml --session payments
 ntm template list
 ntm template show fix-bug
 
