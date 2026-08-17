@@ -182,6 +182,10 @@ type RetryConfig struct {
 	Completion RetryOverride `toml:"completion"`
 	DB         RetryOverride `toml:"db"`
 	Assign     RetryOverride `toml:"assign"`
+	// AgentMail governs the Agent Mail MCP busy-retry loop
+	// (internal/agentmail callToolWithBusyRetry). Defaults preserve the
+	// historical hardcoded behavior: 3 retries with a 500ms initial backoff.
+	AgentMail RetryOverride `toml:"agent_mail"`
 }
 
 // RetryOverride allows per-subsystem overrides of the global retry policy.
@@ -296,10 +300,15 @@ func DefaultRetryConfig() RetryConfig {
 		InitialDelayMs: 1000,
 		MaxDelayMs:     30000,
 		BackoffFactor:  2.0,
-		Jitter:         true,
-		Webhook:        RetryOverride{MaxAttempts: 5},
-		Scheduler:      RetryOverride{MaxAttempts: 5},
-		DB:             RetryOverride{MaxAttempts: 6},
+		// Jitter defaults to false: no shipped retry loop ever jittered while
+		// this section was reader-less, so wiring the knob (WS6-wire,
+		// bd-ws6-config-truth-ienmd.1) keeps default behavior identical and
+		// makes jitter strictly opt-in.
+		Jitter:    false,
+		Webhook:   RetryOverride{MaxAttempts: 5},
+		Scheduler: RetryOverride{MaxAttempts: 5},
+		DB:        RetryOverride{MaxAttempts: 6},
+		AgentMail: RetryOverride{MaxAttempts: 3, InitialDelayMs: 500},
 	}
 }
 
@@ -329,6 +338,8 @@ func (c *RetryConfig) RetryPolicyFor(subsystem string) (maxAttempts int, initial
 		override = c.DB
 	case "assign":
 		override = c.Assign
+	case "agent_mail":
+		override = c.AgentMail
 	}
 
 	if override.MaxAttempts > 0 {
@@ -2927,6 +2938,13 @@ func loadWithCWD(path, cwd string) (*Config, error) {
 			cfg.Rotation.Enabled = true
 			cfg.Rotation.AutoTrigger = true
 		}
+
+		// WS6-wire (bd-ws6-config-truth-ienmd.1): [recovery] is the single
+		// section for session-recovery tuning; the overlapping memory.* keys
+		// are aliased into it for one release with a deprecation warning and
+		// will be removed in v1.27.0. An explicit [recovery] key always wins
+		// over its memory.* alias.
+		applyMemoryRecoveryAliases(cfg, &md, os.Stderr)
 	} else if !os.IsNotExist(err) {
 		return nil, err
 	}

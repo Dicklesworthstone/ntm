@@ -232,15 +232,8 @@ integrations.xf.archive_path	bd-ws6-config-truth-ienmd.2	G-list dead knob: xf.* 
 integrations.xf.bin_path	bd-ws6-config-truth-ienmd.2	G-list dead knob: xf.* removed (WS6-remove)
 integrations.xf.default_mode	bd-ws6-config-truth-ienmd.2	G-list dead knob: xf.* removed (WS6-remove)
 integrations.xf.enabled	bd-ws6-config-truth-ienmd.2	G-list dead knob: xf.* removed (WS6-remove)
-memory.enabled	bd-ws6-config-truth-ienmd.1	G-list dead knob: memory.* shadowed by [recovery]; unified (WS6-wire)
-memory.include_anti_patterns	bd-ws6-config-truth-ienmd.1	G-list dead knob: memory.* shadowed by [recovery]; unified (WS6-wire)
-memory.include_history	bd-ws6-config-truth-ienmd.1	G-list dead knob: memory.* shadowed by [recovery]; unified (WS6-wire)
-memory.include_in_recovery	bd-ws6-config-truth-ienmd.1	G-list dead knob: memory.* shadowed by [recovery]; unified (WS6-wire)
-memory.max_rules	bd-ws6-config-truth-ienmd.1	G-list dead knob: memory.* shadowed by [recovery]; unified (WS6-wire)
-memory.query_timeout_seconds	bd-ws6-config-truth-ienmd.1	G-list dead knob: memory.* shadowed by [recovery]; unified (WS6-wire)
-memory.send_budget_tokens	bd-ws6-config-truth-ienmd.1	G-list dead knob: memory.* shadowed by [recovery]; unified (WS6-wire)
-memory.send_injection	bd-ws6-config-truth-ienmd.1	G-list dead knob: memory.* shadowed by [recovery]; unified (WS6-wire)
-memory.send_max_rules	bd-ws6-config-truth-ienmd.1	G-list dead knob: memory.* shadowed by [recovery]; unified (WS6-wire)
+memory.include_anti_patterns	bd-ws6-config-truth-ienmd.2	G-list dead knob: no substrate; staged removal (WS6-remove)
+memory.include_history	bd-ws6-config-truth-ienmd.2	G-list dead knob: no substrate; staged removal (WS6-remove)
 models.aider	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
 models.claude	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
 models.codex	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
@@ -325,23 +318,14 @@ resilience.rate_limit.detect	bd-g2-claims-backlog-o787y	live key awaiting a Regi
 resilience.rate_limit.notify	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
 resilience.rate_limit.patterns	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
 resilience.restart_delay_seconds	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
-retry.alerts.initial_delay_ms	bd-ws6-config-truth-ienmd.1	G-list dead knob: [retry] gains three real callers (WS6-wire)
-retry.alerts.max_attempts	bd-ws6-config-truth-ienmd.1	G-list dead knob: [retry] gains three real callers (WS6-wire)
-retry.assign.initial_delay_ms	bd-ws6-config-truth-ienmd.1	G-list dead knob: [retry] gains three real callers (WS6-wire)
-retry.assign.max_attempts	bd-ws6-config-truth-ienmd.1	G-list dead knob: [retry] gains three real callers (WS6-wire)
-retry.backoff_factor	bd-ws6-config-truth-ienmd.1	G-list dead knob: [retry] gains three real callers (WS6-wire)
-retry.completion.initial_delay_ms	bd-ws6-config-truth-ienmd.1	G-list dead knob: [retry] gains three real callers (WS6-wire)
-retry.completion.max_attempts	bd-ws6-config-truth-ienmd.1	G-list dead knob: [retry] gains three real callers (WS6-wire)
-retry.db.initial_delay_ms	bd-ws6-config-truth-ienmd.1	G-list dead knob: [retry] gains three real callers (WS6-wire)
-retry.db.max_attempts	bd-ws6-config-truth-ienmd.1	G-list dead knob: [retry] gains three real callers (WS6-wire)
-retry.initial_delay_ms	bd-ws6-config-truth-ienmd.1	G-list dead knob: [retry] gains three real callers (WS6-wire)
-retry.jitter	bd-ws6-config-truth-ienmd.1	G-list dead knob: [retry] gains three real callers (WS6-wire)
-retry.max_attempts	bd-ws6-config-truth-ienmd.1	G-list dead knob: [retry] gains three real callers (WS6-wire)
-retry.max_delay_ms	bd-ws6-config-truth-ienmd.1	G-list dead knob: [retry] gains three real callers (WS6-wire)
-retry.scheduler.initial_delay_ms	bd-ws6-config-truth-ienmd.1	G-list dead knob: [retry] gains three real callers (WS6-wire)
-retry.scheduler.max_attempts	bd-ws6-config-truth-ienmd.1	G-list dead knob: [retry] gains three real callers (WS6-wire)
-retry.webhook.initial_delay_ms	bd-ws6-config-truth-ienmd.1	G-list dead knob: [retry] gains three real callers (WS6-wire)
-retry.webhook.max_attempts	bd-ws6-config-truth-ienmd.1	G-list dead knob: [retry] gains three real callers (WS6-wire)
+retry.assign.initial_delay_ms	bd-ws6-config-truth-ienmd.2	G-list dead knob: no live retry loop for this subsystem; staged removal (WS6-remove)
+retry.assign.max_attempts	bd-ws6-config-truth-ienmd.2	G-list dead knob: no live retry loop for this subsystem; staged removal (WS6-remove)
+retry.completion.initial_delay_ms	bd-ws6-config-truth-ienmd.2	G-list dead knob: no live retry loop for this subsystem; staged removal (WS6-remove)
+retry.completion.max_attempts	bd-ws6-config-truth-ienmd.2	G-list dead knob: no live retry loop for this subsystem; staged removal (WS6-remove)
+retry.db.initial_delay_ms	bd-ws6-config-truth-ienmd.2	G-list dead knob: no live retry loop for this subsystem; staged removal (WS6-remove)
+retry.db.max_attempts	bd-ws6-config-truth-ienmd.2	G-list dead knob: no live retry loop for this subsystem; staged removal (WS6-remove)
+retry.scheduler.initial_delay_ms	bd-ws6-config-truth-ienmd.2	G-list dead knob: no live retry loop for this subsystem; staged removal (WS6-remove)
+retry.scheduler.max_attempts	bd-ws6-config-truth-ienmd.2	G-list dead knob: no live retry loop for this subsystem; staged removal (WS6-remove)
 robot.output.compress	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
 robot.output.format	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
 robot.output.pretty	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
@@ -363,10 +347,6 @@ rotation.dashboard.show_quota_bars	bd-ws6-config-truth-ienmd.2	G-list dead knob:
 rotation.dashboard.show_reset_timers	bd-ws6-config-truth-ienmd.2	G-list dead knob: rotation.dashboard.* removed (WS6-remove)
 rotation.enabled	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
 rotation.prefer_restart	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
-rotation.thresholds.critical_percent	bd-ws6-config-truth-ienmd.1	G-list dead knob: rotation.thresholds wired (WS6-wire)
-rotation.thresholds.restart_if_session_hours	bd-ws6-config-truth-ienmd.1	G-list dead knob: rotation.thresholds wired (WS6-wire)
-rotation.thresholds.restart_if_tokens_above	bd-ws6-config-truth-ienmd.1	G-list dead knob: rotation.thresholds wired (WS6-wire)
-rotation.thresholds.warning_percent	bd-ws6-config-truth-ienmd.1	G-list dead knob: rotation.thresholds wired (WS6-wire)
 rotation.usage_percent_threshold	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
 routing.affinity_bonus	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
 routing.affinity_enabled	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package

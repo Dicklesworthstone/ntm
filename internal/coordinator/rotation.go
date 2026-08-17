@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -38,6 +39,13 @@ import (
 // fire-time safety gates. The working/gate/composer detectors all operate on
 // bounded tails, so a moderate capture is sufficient and cheap.
 const rotationCaptureLines = 100
+
+func init() {
+	// G2 config-key liveness claims (WS6-wire): this package reads the
+	// [rotation.thresholds] restart triggers in newRotationChecker.
+	config.RegisterReader("rotation.thresholds.restart_if_tokens_above", newRotationChecker)
+	config.RegisterReader("rotation.thresholds.restart_if_session_hours", newRotationChecker)
+}
 
 // rotationDecision records one trigger decision for logging and tests.
 type rotationDecision struct {
@@ -61,6 +69,13 @@ type rotationChecker struct {
 	threshold   float64
 	autoConfirm bool
 
+	// [rotation.thresholds] restart triggers (WS6-wire,
+	// bd-ws6-config-truth-ienmd.1). Active only while the transcript-usage
+	// checker itself is enabled (usage_percent_threshold > 0); zero disables
+	// the individual trigger.
+	restartTokensAbove float64       // rotation.thresholds.restart_if_tokens_above
+	restartSessionAge  time.Duration // rotation.thresholds.restart_if_session_hours
+
 	rotator    *ntmctx.Rotator
 	ctxMonitor *ntmctx.ContextMonitor
 
@@ -70,6 +85,7 @@ type rotationChecker struct {
 	transcriptUsage func(agentType, cwd string) (*ntmctx.TranscriptUsage, bool)
 	capturePane     func(paneID string, lines int) (string, error)
 	contextLimit    func(model string) int
+	sessionCreated  func(session string) (time.Time, bool)
 	storedPending   func(agentID string) (*ntmctx.PendingRotation, error)
 	enqueue         func(agentID, paneID string, usagePct float64) *ntmctx.PendingRotation
 	confirm         func(agentID string) ntmctx.RotationResult
@@ -86,8 +102,10 @@ func newRotationChecker(session, workDir string, coordCfg CoordinatorConfig, ntm
 	}
 
 	rotCfg := config.DefaultContextRotationConfig()
+	thresholds := config.DefaultRotationConfig().Thresholds
 	if ntmCfg != nil {
 		rotCfg = ntmCfg.ContextRotation
+		thresholds = ntmCfg.Rotation.Thresholds
 	}
 	// The checker decides eligibility itself and only uses the Rotator's
 	// pending/confirm machinery; Enabled/RequireConfirm reflect that entry
@@ -107,9 +125,25 @@ func newRotationChecker(session, workDir string, coordCfg CoordinatorConfig, ntm
 		workDir:     workDir,
 		threshold:   coordCfg.RotationUsageThreshold,
 		autoConfirm: coordCfg.RotationAutoConfirm,
-		rotator:     rotator,
-		ctxMonitor:  ctxMonitor,
-		getPanes:    tmux.GetPanes,
+		// [rotation.thresholds] restart triggers ride the same enqueue/confirm
+		// machinery (WS6-wire): tokens above restart_if_tokens_above or a
+		// session older than restart_if_session_hours also trigger rotation.
+		restartTokensAbove: thresholds.RestartIfTokensAbove,
+		restartSessionAge:  time.Duration(thresholds.RestartIfSessionHours) * time.Hour,
+		rotator:            rotator,
+		ctxMonitor:         ctxMonitor,
+		getPanes:           tmux.GetPanes,
+		sessionCreated: func(session string) (time.Time, bool) {
+			out, err := tmux.DefaultClient.Run("display-message", "-p", "-t", session, "#{session_created}")
+			if err != nil {
+				return time.Time{}, false
+			}
+			secs, convErr := strconv.ParseInt(strings.TrimSpace(out), 10, 64)
+			if convErr != nil || secs <= 0 {
+				return time.Time{}, false
+			}
+			return time.Unix(secs, 0), true
+		},
 		paneCwd: func(paneID string) (string, bool) {
 			cwd, err := tmux.DefaultClient.Run("display-message", "-p", "-t", paneID, "#{pane_current_path}")
 			if err != nil {
@@ -205,7 +239,23 @@ func (rc *rotationChecker) checkPane(pane tmux.Pane, usage *ntmctx.TranscriptUsa
 		// wrong; cap at the safe rotation-triggering ceiling.
 		pct = 100
 	}
-	if pct <= rc.threshold {
+	// Trigger evaluation: transcript usage percent is the primary trigger;
+	// the [rotation.thresholds] restart knobs add two more (WS6-wire,
+	// bd-ws6-config-truth-ienmd.1): absolute transcript tokens above
+	// restart_if_tokens_above, and session age above
+	// restart_if_session_hours. Each individual trigger is disabled at zero.
+	triggerReason := ""
+	switch {
+	case pct > rc.threshold:
+		triggerReason = "usage_percent"
+	case rc.restartTokensAbove > 0 && float64(usage.Tokens) > rc.restartTokensAbove:
+		triggerReason = "tokens_above"
+	case rc.restartSessionAge > 0 && rc.sessionCreated != nil:
+		if created, ok := rc.sessionCreated(rc.session); ok && now.Sub(created) > rc.restartSessionAge {
+			triggerReason = "session_age"
+		}
+	}
+	if triggerReason == "" {
 		return rotationDecision{}, false
 	}
 
@@ -259,6 +309,7 @@ func (rc *rotationChecker) checkPane(pane tmux.Pane, usage *ntmctx.TranscriptUsa
 	decision.Action = "enqueued"
 	slog.Info("context rotation enqueued from transcript usage",
 		"session", rc.session, "pane", pane.ID, "agent", decision.AgentID,
+		"trigger", triggerReason,
 		"usage_percent", pct, "threshold", rc.threshold,
 		"tokens", usage.Tokens, "limit", limit,
 		"source", usage.Path, "confidence", decision.Confidence,

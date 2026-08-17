@@ -607,9 +607,10 @@ func (c *Client) callToolWithTimeout(ctx context.Context, toolName string, args 
 }
 
 // callToolWithBusyRetry wraps callTool with retry logic for ErrTransientBusy errors.
-// It retries up to maxRetries times with exponential backoff (500ms, 1s, 2s).
+// It retries up to maxRetries times with exponential backoff starting at the
+// configured [retry.agent_mail] initial delay (default 500ms: 500ms, 1s, 2s).
 func (c *Client) callToolWithBusyRetry(ctx context.Context, toolName string, args map[string]interface{}, perCallTimeout time.Duration, maxRetries int) (json.RawMessage, error) {
-	backoff := 500 * time.Millisecond
+	_, backoff := busyRetryPolicy()
 	var lastErr error
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		callCtx, cancel := context.WithTimeout(ctx, perCallTimeout)

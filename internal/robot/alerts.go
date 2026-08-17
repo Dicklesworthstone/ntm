@@ -15,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/config"
 )
 
 // AlertType categorizes alert events
@@ -403,22 +405,60 @@ func escapeAppleScript(s string) string {
 // WebhookChannel sends alerts via HTTP webhooks
 type WebhookChannel struct {
 	config     WebhookConfig
+	baseDelay  time.Duration
 	httpClient *http.Client
 }
 
-// NewWebhookChannel creates a webhook notification channel
-func NewWebhookChannel(config WebhookConfig) *WebhookChannel {
-	if config.MaxRetries <= 0 {
-		config.MaxRetries = 3 // Canonical default: config.RetryConfig.Alerts.MaxAttempts
+// Alert-delivery retry policy (WS6-wire, bd-ws6-config-truth-ienmd.1): the
+// alert webhook retry loop is governed by the central [retry] policy via
+// cfg.Retry.RetryPolicyFor("alerts") — globals plus the [retry.alerts]
+// override. ApplyAlertRetryPolicy is invoked once per process after config
+// load (internal/cli/root.go); compiled-in defaults preserve historical
+// behavior exactly (3 retries after the first call, 1s base doubling).
+var (
+	alertRetryMu           sync.RWMutex
+	alertRetryMaxRetries   = 3
+	alertRetryInitialDelay = time.Second
+)
+
+// ApplyAlertRetryPolicy configures the alert webhook retry defaults from
+// cfg.Retry.RetryPolicyFor("alerts"). Non-positive values keep the
+// compiled-in defaults.
+func ApplyAlertRetryPolicy(maxAttempts, initialDelayMs int) {
+	alertRetryMu.Lock()
+	defer alertRetryMu.Unlock()
+	if maxAttempts > 0 {
+		alertRetryMaxRetries = maxAttempts
 	}
-	if config.Timeout <= 0 {
-		config.Timeout = 10 * time.Second
+	if initialDelayMs > 0 {
+		alertRetryInitialDelay = time.Duration(initialDelayMs) * time.Millisecond
+	}
+}
+
+func init() {
+	// G2 config-key liveness claims: this package reads the [retry.alerts]
+	// override via ApplyAlertRetryPolicy at startup.
+	config.RegisterReader("retry.alerts.max_attempts", ApplyAlertRetryPolicy)
+	config.RegisterReader("retry.alerts.initial_delay_ms", ApplyAlertRetryPolicy)
+}
+
+// NewWebhookChannel creates a webhook notification channel
+func NewWebhookChannel(cfg WebhookConfig) *WebhookChannel {
+	alertRetryMu.RLock()
+	maxRetries, baseDelay := alertRetryMaxRetries, alertRetryInitialDelay
+	alertRetryMu.RUnlock()
+	if cfg.MaxRetries <= 0 {
+		cfg.MaxRetries = maxRetries // Central default: config.RetryConfig.RetryPolicyFor("alerts")
+	}
+	if cfg.Timeout <= 0 {
+		cfg.Timeout = 10 * time.Second
 	}
 
 	return &WebhookChannel{
-		config: config,
+		config:    cfg,
+		baseDelay: baseDelay,
 		httpClient: &http.Client{
-			Timeout: config.Timeout,
+			Timeout: cfg.Timeout,
 		},
 	}
 }
@@ -453,8 +493,12 @@ func (w *WebhookChannel) Send(ctx context.Context, alert *Alert) error {
 	var lastErr error
 	for attempt := 0; attempt <= w.config.MaxRetries; attempt++ {
 		if attempt > 0 {
-			// Backoff: 1s, 2s, 4s, ...
-			backoff := time.Duration(1<<(attempt-1)) * time.Second
+			// Backoff: base, 2*base, 4*base, ... (base from [retry] policy; 1s default)
+			base := w.baseDelay
+			if base <= 0 {
+				base = time.Second
+			}
+			backoff := time.Duration(1<<(attempt-1)) * base
 			select {
 			case <-ctx.Done():
 				return ctx.Err()

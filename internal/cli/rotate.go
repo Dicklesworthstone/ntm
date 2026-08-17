@@ -339,10 +339,17 @@ func rotateAllLimited(ctx context.Context, session, targetAccount string, dryRun
 			continue
 		}
 
-		if info.IsLimited {
-			fmt.Printf("LIMITED\n")
+		// [rotation.thresholds] governs the classification (WS6-wire): a pane
+		// is rotation-eligible when the provider reports a hard limit OR its
+		// usage is at/over critical_percent; warning_percent surfaces panes
+		// approaching the limit without rotating them.
+		switch quota.ClassifyRotation(info) {
+		case quota.RotationLimited:
+			fmt.Printf("LIMITED (usage %.0f%%)\n", info.HighestUsage())
 			limitedPanes = append(limitedPanes, p)
-		} else {
+		case quota.RotationWarning:
+			fmt.Printf("WARNING (usage %.0f%%)\n", info.HighestUsage())
+		default:
 			fmt.Printf("OK\n")
 		}
 	}

@@ -79,13 +79,16 @@ type RetryConfig struct {
 	MaxDelay   time.Duration `toml:"max_delay" json:"max_delay,omitempty"`
 }
 
-// DefaultRetryConfig returns the default retry configuration
+// DefaultRetryConfig returns the default retry configuration. The values
+// come from the central [retry] policy (ApplyRetryPolicy); compiled-in
+// defaults match the historical constants.
 func DefaultRetryConfig() RetryConfig {
+	p := currentRetryPolicy()
 	return RetryConfig{
 		Enabled:    true,
-		MaxRetries: DefaultMaxRetries,
-		BaseDelay:  DefaultBaseBackoff,
-		MaxDelay:   DefaultMaxBackoff,
+		MaxRetries: p.maxRetries,
+		BaseDelay:  p.baseDelay,
+		MaxDelay:   p.maxDelay,
 	}
 }
 
@@ -265,10 +268,10 @@ func (m *WebhookManager) Register(cfg WebhookConfig) error {
 		cfg.Retry = DefaultRetryConfig()
 	}
 	if cfg.Retry.BaseDelay <= 0 {
-		cfg.Retry.BaseDelay = DefaultBaseBackoff
+		cfg.Retry.BaseDelay = currentRetryPolicy().baseDelay
 	}
 	if cfg.Retry.MaxDelay <= 0 {
-		cfg.Retry.MaxDelay = DefaultMaxBackoff
+		cfg.Retry.MaxDelay = currentRetryPolicy().maxDelay
 	}
 	if cfg.Template == "" && cfg.Format != "" {
 		if _, err := buildBuiltInPayload(Event{}, cfg.Format); err != nil {
@@ -797,16 +800,11 @@ func (m *WebhookManager) shouldRetry(d *Delivery, statusCode int, err error) boo
 	return true
 }
 
-// calculateNextRetry determines when to retry with exponential backoff
+// calculateNextRetry determines when to retry with exponential backoff. The
+// backoff shape (factor, cap, jitter) follows the central [retry] policy;
+// per-webhook base/max delays take precedence when set.
 func (m *WebhookManager) calculateNextRetry(d *Delivery) time.Time {
-	delay := d.Webhook.Retry.BaseDelay
-	for i := 1; i < d.Attempt; i++ {
-		delay *= 2
-		if delay > d.Webhook.Retry.MaxDelay {
-			delay = d.Webhook.Retry.MaxDelay
-			break
-		}
-	}
+	delay := nextRetryDelay(d.Attempt, d.Webhook.Retry.BaseDelay, d.Webhook.Retry.MaxDelay)
 	return time.Now().Add(delay)
 }
 

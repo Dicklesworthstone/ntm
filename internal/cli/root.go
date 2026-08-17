@@ -627,6 +627,10 @@ Shell Integration:
 			}
 			theme.ApplyLipGlossDefaults(activeTheme)
 
+			// Thread [retry] and [rotation.thresholds] policies into their
+			// consuming packages (WS6-wire, bd-ws6-config-truth-ienmd.1).
+			applyConfiguredPolicies(cfg)
+
 			// Apply redaction flag overrides. Robot invocations must fail with
 			// one machine-readable envelope; the human CLI retains its historical
 			// warn-and-ignore behavior for an invalid override.
@@ -4369,13 +4373,13 @@ func init() {
 	rootCmd.Flags().BoolVar(&robotTerse, "robot-terse", false, "Single-line state: S:session|A:active/total|W:working|I:idle|E:errors|B:beads|M:mail|^:attention|!:alerts. Minimal tokens")
 
 	// Robot-format flag for output serialization format
-	rootCmd.Flags().StringVar(&robotFormat, "robot-format", "", "Output format for robot commands: json (default), toon (token-efficient), or auto. Env: NTM_ROBOT_FORMAT, NTM_OUTPUT_FORMAT, TOON_DEFAULT_FORMAT")
+	rootCmd.Flags().StringVar(&robotFormat, "robot-format", "", "Output format for robot commands: json (default), toon (~39% fewer tokens than JSON, measured by TestTokenCorpus_TOONFloor), or auto. Env: NTM_ROBOT_FORMAT, NTM_OUTPUT_FORMAT, TOON_DEFAULT_FORMAT")
 	// Deprecated alias for compatibility with older automation/scripts.
 	// Keep the backing variable shared so precedence behavior is unchanged.
 	rootCmd.Flags().StringVar(&robotFormat, "robot-output-format", "", "DEPRECATED: alias for --robot-format. Output format for robot commands: json, toon, or auto. Env: NTM_ROBOT_FORMAT, NTM_OUTPUT_FORMAT, TOON_DEFAULT_FORMAT")
 
 	// Robot-markdown flags for token-efficient markdown output
-	rootCmd.Flags().BoolVar(&robotMarkdown, "robot-markdown", false, "System state as markdown tables. LLM-friendly, ~50% fewer tokens than JSON")
+	rootCmd.Flags().BoolVar(&robotMarkdown, "robot-markdown", false, "System state as markdown tables. LLM-friendly, ~84% fewer tokens than the JSON snapshot (measured on the committed corpus by TestTokenCorpus_MarkdownFloor)")
 	rootCmd.Flags().BoolVar(&robotMarkdownCompact, "md-compact", false, "Ultra-compact markdown: abbreviations, minimal whitespace. Use with --robot-markdown")
 	rootCmd.Flags().StringVar(&robotMarkdownSession, "md-session", "", "Filter to one session. Optional with --robot-markdown. Example: --md-session=myproject")
 	rootCmd.Flags().StringVar(&robotMarkdownSections, "md-sections", "", "Include only specific sections: summary,sessions,work,alerts,attention. Example: --md-sections=summary,sessions")
