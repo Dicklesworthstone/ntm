@@ -69,7 +69,10 @@ type SendResult struct {
 	Failed               int                                 `json:"failed"`
 	RoutedTo             *SendRoutingResult                  `json:"routed_to,omitempty"`
 	DispatchPacing       *coordinator.DispatchPacingDecision `json:"dispatch_pacing,omitempty"`
-	Error                string                              `json:"error,omitempty"`
+	// CASSInjection reports send-time CASS context injection (--with-cass),
+	// using the same envelope block contract as --robot-send.
+	CASSInjection *robot.CASSInjectionInfo `json:"cass_injection,omitempty"`
+	Error         string                   `json:"error,omitempty"`
 }
 
 const (
@@ -347,6 +350,12 @@ type SendOptions struct {
 	CassCheck      bool
 	CassSimilarity float64
 	CassCheckDays  int
+
+	// CASS context injection (C10, bd-ws2-wire-or-delete-ykmcz.11).
+	// WithCASS/--with-cass turns injection on for this send; NoCASS/--no-cass
+	// forces it off, overriding [cass.context] enabled=true.
+	WithCASS bool
+	NoCASS   bool
 	// LoopMode permits periodic orchestration nudges without using timestamp
 	// suffixes to evade the advisory CASS duplicate-work prompt.
 	LoopMode bool
@@ -624,6 +633,8 @@ func newSendCmd() *cobra.Command {
 	var dryRun bool
 	var cassCheck bool
 	var noCassCheck bool
+	var withCASS bool
+	var noCASS bool
 	var loopMode bool
 	var forceNonInteractive bool
 	var cassSimilarity float64
@@ -831,6 +842,8 @@ func newSendCmd() *cobra.Command {
 					SmartRoute:          smartRoute,
 					RouteStrategy:       routeStrategy,
 					CassCheck:           cassCheck && !noCassCheck,
+					WithCASS:            withCASS,
+					NoCASS:              noCASS,
 					LoopMode:            loopMode,
 					CassSimilarity:      cassSimilarity,
 					CassCheckDays:       cassCheckDays,
@@ -867,6 +880,8 @@ func newSendCmd() *cobra.Command {
 				SmartRoute:          smartRoute,
 				RouteStrategy:       routeStrategy,
 				CassCheck:           cassCheck && !noCassCheck,
+				WithCASS:            withCASS,
+				NoCASS:              noCASS,
 				LoopMode:            loopMode,
 				CassSimilarity:      cassSimilarity,
 				CassCheckDays:       cassCheckDays,
@@ -950,6 +965,8 @@ func newSendCmd() *cobra.Command {
 	// CASS check flags
 	cmd.Flags().BoolVar(&cassCheck, "cass-check", true, "Check for duplicate work in CASS")
 	cmd.Flags().BoolVar(&noCassCheck, "no-cass-check", false, "Skip CASS duplicate check")
+	cmd.Flags().BoolVar(&withCASS, "with-cass", false, "Inject relevant CASS session context above the prompt before sending; degrades gracefully when cass is unavailable. Config: [cass.context] enabled/max_sessions/lookback_days/max_tokens/min_relevance/skip_if_context_above/prefer_same_project")
+	cmd.Flags().BoolVar(&noCASS, "no-cass", false, "Disable CASS context injection for this send, overriding [cass.context] enabled=true")
 	cmd.Flags().BoolVar(&loopMode, "loop-mode", false, "Allow repeated orchestration nudges without a CASS duplicate prompt")
 	cmd.Flags().BoolVar(&forceNonInteractive, "force-non-interactive", false,
 		"Bypass safe confirmation gates (currently the CASS duplicate prompt) for "+
@@ -2050,6 +2067,31 @@ func runSendInternal(opts SendOptions) (err error) {
 		fmt.Fprintf(os.Stderr, "Randomized send order (seed=%d): %v\n", seedUsed, targetPanes)
 	}
 
+	// Send-time CASS context injection (--with-cass / --no-cass, C10
+	// bd-ws2-wire-or-delete-ykmcz.11). Best-effort enrichment: cass being
+	// missing or wedged records a skip and the send proceeds unmodified.
+	var cassInjectionInfo *robot.CASSInjectionInfo
+	if cassEnabled, cassQuery, cassFilter, cassInject := sendCASSInjectionConfigs(opts.WithCASS, opts.NoCASS, cfg); cassEnabled {
+		if len(selectedPanes) > 0 {
+			cassInject.Format = cass.FormatForAgent(selectedPanes[0].Type.String())
+		}
+		injectRes, queryRes, filterRes := cass.InjectContextFromQuery(prompt, cassQuery, cassFilter, cassInject)
+		cassInjectionInfo = sendCASSInjectionInfo(injectRes, queryRes.Query, filterRes.Hits)
+		if injectRes.Success && injectRes.ModifiedPrompt != "" {
+			prompt = injectRes.ModifiedPrompt
+			opts.Prompt = prompt
+		}
+		if !jsonOutput && !silent {
+			switch {
+			case cassInjectionInfo.ItemsInjected > 0:
+				fmt.Printf("CASS context injected: %d item(s), ~%d tokens\n",
+					cassInjectionInfo.ItemsInjected, cassInjectionInfo.TokensAdded)
+			case cassInjectionInfo.SkippedReason != "":
+				fmt.Fprintf(os.Stderr, "CASS context injection skipped: %s\n", cassInjectionInfo.SkippedReason)
+			}
+		}
+	}
+
 	// Apply DCG safety check for non-Claude agents
 	if err := maybeBlockSendWithDCG(prompt, session, selectedPanes); err != nil {
 		return outputError(err)
@@ -2160,6 +2202,7 @@ func runSendInternal(opts SendOptions) (err error) {
 				Failed:               failed,
 				RoutedTo:             opts.routingResult,
 				DispatchPacing:       dispatchPacing,
+				CASSInjection:        cassInjectionInfo,
 				ErrorCode:            errorCode,
 				Error:                firstDeliveryErr.Error(),
 			}
@@ -2183,6 +2226,7 @@ func runSendInternal(opts SendOptions) (err error) {
 			Failed:               failed,
 			RoutedTo:             opts.routingResult,
 			DispatchPacing:       dispatchPacing,
+			CASSInjection:        cassInjectionInfo,
 		}
 		if jsonOutput || opts.executionPolicy == sendExecutionCollect {
 			return finishSendResult(opts, result, nil)
@@ -2243,6 +2287,7 @@ func runSendInternal(opts SendOptions) (err error) {
 		Failed:               failed,
 		RoutedTo:             opts.routingResult,
 		DispatchPacing:       dispatchPacing,
+		CASSInjection:        cassInjectionInfo,
 	}
 	if !result.Success {
 		result.ErrorCode = sendErrorCodeFailed

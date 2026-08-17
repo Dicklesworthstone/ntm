@@ -1980,6 +1980,7 @@ Shell Integration:
 					ackPollMs = int(pollDur.Milliseconds())
 				}
 				withMemory, memoryInject := robotSendMemoryOptions(robotSendWithMemory, cfg)
+				withCASS, cassQuery, cassFilter, cassInject := robotSendCASSOptions(robotSendWithCASS, robotSendNoCASS, cfg)
 				opts := robot.SendAndAckOptions{
 					SendOptions: robot.SendOptions{
 						Session:      session,
@@ -1994,6 +1995,10 @@ Shell Integration:
 						DryRun:       robotDryRunEffective,
 						ClearInput:   robotSendClearInput,
 						VerifyRender: robotSendVerifyRender,
+						WithCASS:     withCASS,
+						CASSConfig:   cassQuery,
+						FilterConfig: cassFilter,
+						InjectConfig: cassInject,
 						WithMemory:   withMemory,
 						MemoryInject: memoryInject,
 					},
@@ -2010,6 +2015,7 @@ Shell Integration:
 			}
 
 			withMemory, memoryInject := robotSendMemoryOptions(robotSendWithMemory, cfg)
+			withCASS, cassQuery, cassFilter, cassInject := robotSendCASSOptions(robotSendWithCASS, robotSendNoCASS, cfg)
 			opts := robot.SendOptions{
 				Session:        session,
 				Message:        robotSendMsg,
@@ -2024,6 +2030,10 @@ Shell Integration:
 				ClearInput:     robotSendClearInput,
 				VerifyRender:   robotSendVerifyRender,
 				IdempotencyKey: strings.TrimSpace(robotSendOpID),
+				WithCASS:       withCASS,
+				CASSConfig:     cassQuery,
+				FilterConfig:   cassFilter,
+				InjectConfig:   cassInject,
 				WithMemory:     withMemory,
 				MemoryInject:   memoryInject,
 			}
@@ -3623,6 +3633,8 @@ var (
 	robotSendOpID         string // durable idempotent operation ID for --robot-send (#245)
 	robotSendReceipt      string // operation ID for --robot-send-receipt (#245)
 	robotSendWithMemory   bool   // inject CM memory rules into the outgoing message (bd-3j6hm)
+	robotSendWithCASS     bool   // inject CASS session context into the outgoing message (bd-ws2-wire-or-delete-ykmcz.11)
+	robotSendNoCASS       bool   // force-disable CASS injection, overriding [cass.context] enabled=true
 
 	// Robot-assign flags for work distribution
 	robotAssign         string // session name for work assignment
@@ -4258,6 +4270,8 @@ func init() {
 	rootCmd.Flags().BoolVar(&robotSendClearInput, "clear-input", false, "Clear residual composer text (per-agent Escape ritual + C-u, verified) before typing. Optional with --robot-send; recommended after interrupts on codex panes")
 	rootCmd.Flags().BoolVar(&robotSendVerifyRender, "verify-render", false, "Capture bounded before/after pane output and require rendered delivery evidence. Optional with --robot-send")
 	rootCmd.Flags().BoolVar(&robotSendWithMemory, "with-memory", false, "Inject relevant CM (cass-memory) rules above the message before sending. Optional with --robot-send; degrades gracefully when cm is unavailable. Config: [memory] send_injection/send_max_rules/send_budget_tokens")
+	rootCmd.Flags().BoolVar(&robotSendWithCASS, "with-cass", false, "Inject relevant CASS session context above the message before sending. Optional with --robot-send; degrades gracefully when cass is unavailable. Config: [cass.context] enabled/max_sessions/lookback_days/max_tokens/min_relevance/skip_if_context_above/prefer_same_project")
+	rootCmd.Flags().BoolVar(&robotSendNoCASS, "no-cass", false, "Disable CASS context injection for this send, overriding [cass.context] enabled=true")
 	rootCmd.Flags().StringVar(&robotSendOpID, "op-id", "", "Durable idempotent operation ID for --robot-send: identical retries replay the recorded outcome, conflicting reuse is rejected. Example: ntm --robot-send=proj --msg='...' --op-id=deploy-42")
 	rootCmd.Flags().StringVar(&robotSendReceipt, "robot-send-receipt", "", "Query the durable receipt of an idempotent send by operation ID. Example: ntm --robot-send-receipt=deploy-42")
 

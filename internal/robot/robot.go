@@ -6267,6 +6267,12 @@ func NewCASSInjectionInfo(result InjectionResult, query string, hits []ScoredHit
 		SkippedReason: result.Metadata.SkippedReason,
 		Sources:       make([]CASSSource, 0, len(hits)),
 	}
+	// Degraded path (bd-ws2-wire-or-delete-ykmcz.11): a failed query (e.g.
+	// cass not installed) must leave a recorded skip in the envelope rather
+	// than a silent empty block — injection is enrichment, never a gate.
+	if !result.Success && info.SkippedReason == "" && result.Error != "" {
+		info.SkippedReason = result.Error
+	}
 
 	now := time.Now()
 	for _, hit := range hits {
