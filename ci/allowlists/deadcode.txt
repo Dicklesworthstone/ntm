@@ -46,7 +46,6 @@ internal/alerts/compaction.go:NewCompactionEventOutput	bd-g1-deadcode-backlog-2i
 internal/alerts/robot.go:formatAlertString	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/alerts/robot.go:GetAlertStrings	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/alerts/robot.go:PrintAlerts	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/alerts/rotation.go:EmitContextWarning	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/alerts/rotation.go:NewRotationEventOutput	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/alerts/tracker.go:cloneAlertPtr	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/alerts/tracker.go:Tracker.Clear	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
@@ -436,9 +435,6 @@ internal/config/scanner.go:mergeWithDefaults	bd-g1-deadcode-backlog-2ijy8	outsid
 internal/config/scanner.go:parseProjectScannerConfig	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/config/webhooks.go:WatchProjectWebhooks	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/config/webhooks.go:webhookNames	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/context/compact.go:CompactionResult.FormatForDisplay	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/context/compact.go:Compactor.PreRotationCheck	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/context/compact.go:Compactor.ShouldTryCompaction	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/context/handoff_trigger.go:DefaultHandoffTriggerConfig	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/context/handoff_trigger.go:HandoffTrigger.canTrigger	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/context/handoff_trigger.go:HandoffTrigger.Check	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
@@ -461,55 +457,21 @@ internal/context/history.go:NewRotationRecord	bd-g1-deadcode-backlog-2ijy8	outsi
 internal/context/history.go:RotationHistoryStore.Exists	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/context/history.go:RotationHistoryStore.Prune	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/context/history.go:RotationHistoryStore.PruneByTime	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/context/monitor.go:ContextMonitor.AgentsAboveThreshold	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/context/monitor.go:ContextMonitor.Clear	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/context/monitor.go:ContextMonitor.Count	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/context/monitor.go:ContextMonitor.GetAllEstimates	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/context/monitor.go:ContextMonitor.getEstimateLocked	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/context/monitor.go:ContextMonitor.RecordMessage	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/context/monitor.go:ContextMonitor.RegisterAgentWithTranscript	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/context/monitor.go:ContextMonitor.ShouldTriggerHandoff	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/context/monitor.go:ContextMonitor.UpdateFromRobotMode	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/context/monitor.go:ContextMonitor.UpdateFromTranscript	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/context/monitor.go:EstimateTokens	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/context/monitor.go:ParseRobotModeContext	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/context/monitor.go:ParseTokenCount	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/context/pack.go:ContextPackBuilder.SetAllocation	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/context/pack.go:truncateText	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/context/pending.go:NewPendingRotationStoreWithPath	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/context/pending.go:PendingRotationStoragePath	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/context/pending.go:PendingRotationStore.CleanExpired	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/context/pending.go:PendingRotationStore.Clear	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/context/pending.go:PendingRotationStore.Count	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/context/pending.go:PendingRotationStore.GetExpired	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/context/pending.go:PendingRotationStore.StoragePath	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/context/predictor.go:ContextPredictor.AddSample	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/context/predictor.go:ContextPredictor.AddSampleAt	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/context/predictor.go:ContextPredictor.calculateVelocityFromSamples	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/context/predictor.go:ContextPredictor.getSamplesInWindow	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/context/predictor.go:ContextPredictor.LatestSample	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/context/predictor.go:ContextPredictor.PredictExhaustion	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/context/predictor.go:ContextPredictor.Reset	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/context/predictor.go:ContextPredictor.SampleCount	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/context/predictor.go:ContextPredictor.VelocityTrend	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/context/predictor.go:DefaultPredictorConfig	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/context/predictor.go:NewContextPredictor	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/context/rotation.go:NewPendingRotationOutput	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/context/rotation.go:RotationResult.FormatForDisplay	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/context/rotation.go:Rotator.agentsEligibleForRotation	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/context/rotation.go:Rotator.CancelPendingRotation	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/context/rotation.go:Rotator.CheckAndRotate	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/context/rotation.go:Rotator.ClearHistory	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/context/rotation.go:Rotator.ClearPending	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/context/rotation.go:Rotator.GetHistory	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/context/rotation.go:Rotator.GetPendingRotations	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/context/rotation.go:Rotator.ManualRotate	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/context/rotation.go:Rotator.NeedsRotation	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/context/rotation.go:Rotator.NeedsWarning	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/context/rotation.go:Rotator.processExpiredPending	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/context/rotation.go:tmuxPaneInputSender.SendBuffer	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/context/rotation.go:tmuxPaneInputSender.SendKeys	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/context/rotation.go:validateAutomatedRotationBatch	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/context/summary.go:DefaultSummaryGeneratorConfig	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/context/trigger.go:CompactionTrigger.canCompact	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/context/trigger.go:CompactionTrigger.checkAgent	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
@@ -560,23 +522,9 @@ internal/coordinator/assign.go:selectQuality	bd-ws2-wire-or-delete-ykmcz.4	C4 gr
 internal/coordinator/assign.go:SessionCoordinator.GetAssignableWork	bd-ws2-wire-or-delete-ykmcz.4	C4 graph-aware planners; wired via --dist-strategy
 internal/coordinator/assign.go:SessionCoordinator.SuggestAssignment	bd-ws2-wire-or-delete-ykmcz.4	C4 graph-aware planners; wired via --dist-strategy
 internal/coordinator/assign.go:sortScoredAssignments	bd-ws2-wire-or-delete-ykmcz.4	C4 graph-aware planners; wired via --dist-strategy
-internal/coordinator/conflicts.go:ConflictDetector.CheckPathConflict	bd-ws2-wire-or-delete-ykmcz.1	C1 conflict-negotiation engine; RunCycle wires it behind the persisted flag
-internal/coordinator/conflicts.go:SessionCoordinator.formatConflictNotification	bd-ws2-wire-or-delete-ykmcz.1	C1 conflict-negotiation engine; RunCycle wires it behind the persisted flag
-internal/coordinator/conflicts.go:SessionCoordinator.formatNegotiationRequest	bd-ws2-wire-or-delete-ykmcz.1	C1 conflict-negotiation engine; RunCycle wires it behind the persisted flag
-internal/coordinator/conflicts.go:SessionCoordinator.NegotiateConflict	bd-ws2-wire-or-delete-ykmcz.1	C1 conflict-negotiation engine; RunCycle wires it behind the persisted flag
-internal/coordinator/conflicts.go:SessionCoordinator.NotifyConflict	bd-ws2-wire-or-delete-ykmcz.1	C1 conflict-negotiation engine; RunCycle wires it behind the persisted flag
 internal/coordinator/coordinator.go:SessionCoordinator.Events	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/coordinator/coordinator.go:SessionCoordinator.GetAgentByPaneID	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/coordinator/coordinator.go:SessionCoordinator.updateAgentStates	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/coordinator/deadlock.go:appendUnique	bd-ws2-wire-or-delete-ykmcz.8	C7 DetectDeadlocks; wired via ntm locks list --check-deadlocks
-internal/coordinator/deadlock.go:buildCycle	bd-ws2-wire-or-delete-ykmcz.8	C7 DetectDeadlocks; wired via ntm locks list --check-deadlocks
-internal/coordinator/deadlock.go:canonicalCycle	bd-ws2-wire-or-delete-ykmcz.8	C7 DetectDeadlocks; wired via ntm locks list --check-deadlocks
-internal/coordinator/deadlock.go:cycleKey	bd-ws2-wire-or-delete-ykmcz.8	C7 DetectDeadlocks; wired via ntm locks list --check-deadlocks
-internal/coordinator/deadlock.go:DetectDeadlocks	bd-ws2-wire-or-delete-ykmcz.8	C7 DetectDeadlocks; wired via ntm locks list --check-deadlocks
-internal/coordinator/deadlock.go:EdgesFromConflicts	bd-ws2-wire-or-delete-ykmcz.8	C7 DetectDeadlocks; wired via ntm locks list --check-deadlocks
-internal/coordinator/deadlock.go:pickLongestWaitingHolder	bd-ws2-wire-or-delete-ykmcz.8	C7 DetectDeadlocks; wired via ntm locks list --check-deadlocks
-internal/coordinator/deadlock.go:sortedKeys	bd-ws2-wire-or-delete-ykmcz.8	C7 DetectDeadlocks; wired via ntm locks list --check-deadlocks
-internal/coordinator/deadlock.go:suggestResolution	bd-ws2-wire-or-delete-ykmcz.8	C7 DetectDeadlocks; wired via ntm locks list --check-deadlocks
 internal/coordinator/detect_agent_type.go:detectAgentType	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/coordinator/monitor.go:activeReservationPatterns	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/coordinator/monitor.go:AgentMonitor.CheckAgentHealth	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
@@ -1654,7 +1602,6 @@ internal/serve/server.go:resolvePaneTargetByIndex	bd-g1-deadcode-backlog-2ijy8	o
 internal/serve/server.go:Server.authMiddleware	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/serve/server.go:Server.corsMiddleware	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/serve/server.go:Server.Port	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/serve/server.go:Server.Router	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/serve/server.go:Server.WSHub	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/serve/server.go:WSHub.ClientCount	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/serve/server.go:WSHub.GetRedactionConfig	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
@@ -1723,8 +1670,6 @@ internal/status/unified.go:FilterByState	bd-g1-deadcode-backlog-2ijy8	outside th
 internal/status/unified.go:GetStateSummary	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/status/unified.go:HasErrors	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/summary/generator.go:truncateAtRuneBoundary	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/supervisor/supervisor.go:snapshotDaemonLocked	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/supervisor/supervisor.go:Supervisor.GetDaemon	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/supervisor/supervisor.go:Supervisor.Status	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/supervisor/supervisor.go:Supervisor.Stop	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/supervisor/supervisor.go:Supervisor.StopAll	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
@@ -2416,77 +2361,6 @@ internal/webhook/manager.go:WebhookManager.ClearDeadLetters	bd-g1-deadcode-backl
 internal/webhook/manager.go:WebhookManager.DeadLetters	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/webhook/manager.go:WebhookManager.Stats	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/webhook/manager.go:WebhookManager.Unregister	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/workflow/coordinator.go:cloneTriggerContext	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
-internal/workflow/coordinator.go:matchesTaskPath	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
-internal/workflow/coordinator.go:NewCoordinator	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
-internal/workflow/coordinator.go:ParallelCoordinator.Agents	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
-internal/workflow/coordinator.go:ParallelCoordinator.Start	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
-internal/workflow/coordinator.go:ReviewGateCoordinator.Approve	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
-internal/workflow/coordinator.go:RuntimeCoordinator.CurrentStage	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
-internal/workflow/coordinator.go:RuntimeCoordinator.Evaluate	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
-internal/workflow/coordinator.go:RuntimeCoordinator.GetAgentForTask	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
-internal/workflow/coordinator.go:RuntimeCoordinator.Start	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
-internal/workflow/coordinator.go:RuntimeCoordinator.startStageLocked	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
-internal/workflow/coordinator.go:RuntimeCoordinator.Stop	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
-internal/workflow/coordinator.go:RuntimeCoordinator.stopTriggersLocked	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
-internal/workflow/coordinator.go:RuntimeCoordinator.Transition	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
-internal/workflow/coordinator.go:RuntimeCoordinator.transitionLocked	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
-internal/workflow/errors.go:ErrorHandler.action	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
-internal/workflow/errors.go:ErrorHandler.Handle	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
-internal/workflow/errors.go:NewErrorHandler	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
-internal/workflow/errors.go:NewTimeoutMonitor	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
-internal/workflow/errors.go:TimeoutMonitor.Start	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
-internal/workflow/errors.go:TimeoutMonitor.Stop	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
-internal/workflow/state.go:StateStore.Pause	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
-internal/workflow/state.go:StateStore.RecordStage	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
-internal/workflow/state.go:StateStore.Resume	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
-internal/workflow/state.go:StateStore.Save	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
-internal/workflow/template.go:ParseAndValidateWorkflow	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
-internal/workflow/template.go:ParseWorkflow	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
-internal/workflow/template.go:ParseWorkflows	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
-internal/workflow/trigger.go:addDirectoryTree	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
-internal/workflow/trigger.go:agentSaysTrigger.Check	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
-internal/workflow/trigger.go:agentSaysTrigger.Start	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
-internal/workflow/trigger.go:agentSaysTrigger.Stop	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
-internal/workflow/trigger.go:agentSaysTrigger.Type	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
-internal/workflow/trigger.go:allAgentsIdleTrigger.Check	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
-internal/workflow/trigger.go:allAgentsIdleTrigger.Start	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
-internal/workflow/trigger.go:allAgentsIdleTrigger.Stop	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
-internal/workflow/trigger.go:allAgentsIdleTrigger.Type	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
-internal/workflow/trigger.go:commandTrigger.Check	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
-internal/workflow/trigger.go:commandTrigger.SetTimeout	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
-internal/workflow/trigger.go:commandTrigger.Start	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
-internal/workflow/trigger.go:commandTrigger.Stop	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
-internal/workflow/trigger.go:commandTrigger.Type	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
-internal/workflow/trigger.go:fileTrigger.Check	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
-internal/workflow/trigger.go:fileTrigger.matches	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
-internal/workflow/trigger.go:fileTrigger.run	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
-internal/workflow/trigger.go:fileTrigger.Start	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
-internal/workflow/trigger.go:fileTrigger.Stop	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
-internal/workflow/trigger.go:fileTrigger.Type	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
-internal/workflow/trigger.go:ManualTrigger.Check	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
-internal/workflow/trigger.go:ManualTrigger.Fire	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
-internal/workflow/trigger.go:ManualTrigger.Label	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
-internal/workflow/trigger.go:ManualTrigger.Start	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
-internal/workflow/trigger.go:ManualTrigger.Stop	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
-internal/workflow/trigger.go:ManualTrigger.Type	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
-internal/workflow/trigger.go:matchPathPattern	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
-internal/workflow/trigger.go:newAgentSaysTrigger	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
-internal/workflow/trigger.go:newAllAgentsIdleTrigger	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
-internal/workflow/trigger.go:newCommandFailureTrigger	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
-internal/workflow/trigger.go:newCommandSuccessTrigger	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
-internal/workflow/trigger.go:newFileCreatedTrigger	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
-internal/workflow/trigger.go:newFileModifiedTrigger	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
-internal/workflow/trigger.go:newManualTrigger	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
-internal/workflow/trigger.go:newTimeElapsedTrigger	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
-internal/workflow/trigger.go:NewTriggerRegistry	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
-internal/workflow/trigger.go:timeElapsedTrigger.Check	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
-internal/workflow/trigger.go:timeElapsedTrigger.Start	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
-internal/workflow/trigger.go:timeElapsedTrigger.Stop	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
-internal/workflow/trigger.go:timeElapsedTrigger.Type	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
-internal/workflow/trigger.go:TriggerContext.now	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
-internal/workflow/trigger.go:TriggerRegistry.Create	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
-internal/workflow/trigger.go:TriggerRegistry.Register	bd-ws2-wire-or-delete-ykmcz.2	C2 workflow runtime coordinator; wired by ntm workflow run
 internal/worktrees/manager.go:WorktreeManager.worktreePath	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 pkg:internal/contentionforecast	bd-ws2-wire-or-delete-ykmcz.10	C9 orphaned package (one of the nine); DELETE (operator sign-off, RULE 1)
 pkg:internal/dispatchplan	bd-ws2-wire-or-delete-ykmcz.10	C9 orphaned package (one of the nine); DELETE (operator sign-off, RULE 1)
@@ -2505,4 +2379,9 @@ pkg:internal/supportbundle	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap r
 pkg:internal/tui	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 pkg:internal/updater	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/cli/root.go:RootCommand	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete (amd64-config dead only)
-internal/config/liveness.go:RegisterReader	bd-g2-claims-backlog-o787y	G2 claims API; gains callers when consuming packages register claims (first claim burns this line)
+internal/serve/openapi.go:GenerateOpenAPISpec	bd-ws4-openapi-parity-wpwck.3	deprecated kernel-registry generator; superseded by router walk, deleted with the kernel registry in the W4 sign-off batch
+internal/serve/openapi.go:buildDescription	bd-ws4-openapi-parity-wpwck.3	helper of deprecated kernel-registry generator; deleted in the W4 sign-off batch
+internal/serve/openapi.go:buildInputSchema	bd-ws4-openapi-parity-wpwck.3	helper of deprecated kernel-registry generator; deleted in the W4 sign-off batch
+internal/serve/openapi.go:buildResponseSchema	bd-ws4-openapi-parity-wpwck.3	helper of deprecated kernel-registry generator; deleted in the W4 sign-off batch
+internal/serve/openapi.go:ensureReferencedSchema	bd-ws4-openapi-parity-wpwck.3	helper of deprecated kernel-registry generator; deleted in the W4 sign-off batch
+internal/serve/openapi.go:normalizePathForOpenAPI	bd-ws4-openapi-parity-wpwck.3	helper of deprecated kernel-registry generator; deleted in the W4 sign-off batch

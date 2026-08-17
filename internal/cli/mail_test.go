@@ -1757,7 +1757,7 @@ func TestRunLocksUsesSessionProjectDir(t *testing.T) {
 	t.Setenv("AGENT_MAIL_URL", stub.server.URL+"/")
 	t.Chdir(canonicalTempDir(t))
 
-	if err := runLocks(t.Context(), session, false); err != nil {
+	if err := runLocks(t.Context(), session, false, false); err != nil {
 		t.Fatalf("runLocks: %v", err)
 	}
 	if len(stub.listCalls) != 1 {
@@ -1788,7 +1788,7 @@ func TestRunLocksRequiresSessionAgentUnlessAllAgents(t *testing.T) {
 	t.Setenv("AGENT_MAIL_URL", stub.server.URL+"/")
 	t.Chdir(canonicalTempDir(t))
 
-	err := runLocks(t.Context(), "mysession", false)
+	err := runLocks(t.Context(), "mysession", false, false)
 	if err == nil {
 		t.Fatal("expected missing session-agent identity error")
 	}
