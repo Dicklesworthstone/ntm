@@ -3,14 +3,19 @@ package cli
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"os/signal"
+	"path/filepath"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/Dicklesworthstone/ntm/internal/cm"
 	"github.com/Dicklesworthstone/ntm/internal/output"
+	"github.com/Dicklesworthstone/ntm/internal/supervisor"
 )
 
 func newMemoryCmd() *cobra.Command {
@@ -33,15 +38,111 @@ func newMemoryServeCmd() *cobra.Command {
 	var port int
 	cmd := &cobra.Command{
 		Use:   "serve",
-		Short: "Start CM HTTP server (manual)",
+		Short: "Run the CASS Memory (cm) daemon under NTM supervision (foreground)",
+		Long: `Run the CASS Memory (cm) daemon in the foreground under the NTM supervisor.
+
+The supervisor launches 'cm serve', restarts it on crashes with backoff, and
+health-checks it with an MCP JSON-RPC round-trip at the daemon root (cm speaks
+MCP only; it has no REST /health endpoint). State transitions are printed here
+and appended to .ntm/logs/. Stop with Ctrl-C.
+
+Note: 'ntm spawn' does NOT start the memory daemon; only 'ntm monitor' and this
+command run the supervisor. This is the one obvious way to run cm by hand.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Println("Use 'ntm spawn' to auto-start the memory daemon via supervisor.")
-			fmt.Println("To run manually: cm serve --port", port)
-			return nil
+			return runMemoryServe(cmd.Context(), cmd.OutOrStdout(), port)
 		},
 	}
-	cmd.Flags().IntVar(&port, "port", 8200, "Port to listen on")
+	cmd.Flags().IntVar(&port, "port", 8200, "Port for the cm daemon to listen on")
 	return cmd
+}
+
+// memoryServePollInterval is how often runMemoryServe samples supervisor state
+// for transition reporting. Package-level so tests can tighten it.
+var memoryServePollInterval = 500 * time.Millisecond
+
+// runMemoryServe supervises the cm daemon in the foreground until ctx is
+// cancelled (Ctrl-C) or the daemon exhausts its restart budget.
+func runMemoryServe(ctx context.Context, out io.Writer, port int) error {
+	// Fail fast and loud when cm is not installed: the most common real-world
+	// failure must not become a silent launch-retry loop.
+	if _, err := exec.LookPath("cm"); err != nil {
+		return fmt.Errorf("cm binary not found in PATH: %w\ninstall CASS Memory first (https://github.com/Dicklesworthstone/cass_memory), then re-run 'ntm memory serve'", err)
+	}
+
+	dir, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+
+	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	sessionID := fmt.Sprintf("memory-serve-%d", os.Getpid())
+	sup, err := supervisor.New(supervisor.Config{
+		SessionID:   sessionID,
+		ProjectDir:  dir,
+		MaxRestarts: supervisor.DefaultMaxRestarts,
+	})
+	if err != nil {
+		return fmt.Errorf("initialize supervisor: %w", err)
+	}
+	defer sup.Shutdown()
+
+	var spec supervisor.DaemonSpec
+	found := false
+	for _, s := range supervisor.DefaultSpecs() {
+		if s.Name == "cm" {
+			spec = s
+			found = true
+			break
+		}
+	}
+	if !found {
+		return fmt.Errorf("internal error: no 'cm' daemon spec in supervisor defaults")
+	}
+	if port > 0 {
+		spec.DefaultPort = port
+	}
+
+	if err := sup.Start(spec); err != nil {
+		return fmt.Errorf("start cm daemon: %w", err)
+	}
+
+	d, ok := sup.GetDaemon("cm")
+	if !ok {
+		return fmt.Errorf("internal error: cm daemon not tracked after start")
+	}
+	fmt.Fprintf(out, "Supervising cm daemon (pid=%d port=%d state=%s)\n", d.PID, d.Port, d.State)
+	fmt.Fprintf(out, "Logs: %s\n", filepath.Join(dir, ".ntm", "logs", fmt.Sprintf("cm-%s.log", sessionID)))
+	fmt.Fprintln(out, "Press Ctrl-C to stop.")
+
+	lastState := d.State
+	ticker := time.NewTicker(memoryServePollInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			fmt.Fprintln(out, "Shutting down cm daemon...")
+			if err := sup.Shutdown(); err != nil {
+				return fmt.Errorf("shutdown: %w", err)
+			}
+			fmt.Fprintln(out, "cm daemon stopped.")
+			return nil
+		case <-ticker.C:
+			d, ok := sup.GetDaemon("cm")
+			if !ok {
+				return fmt.Errorf("cm daemon disappeared from supervisor")
+			}
+			if d.State != lastState {
+				fmt.Fprintf(out, "cm daemon state: %s -> %s (pid=%d restarts=%d)\n", lastState, d.State, d.PID, d.Restarts)
+				lastState = d.State
+			}
+			if d.State == supervisor.StateFailed && d.Restarts > supervisor.DefaultMaxRestarts {
+				return fmt.Errorf("cm daemon failed permanently after %d restarts; see .ntm/logs/cm-%s.log", d.Restarts-1, sessionID)
+			}
+		}
+	}
 }
 
 func newMemoryContextCmd() *cobra.Command {

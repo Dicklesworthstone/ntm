@@ -58,7 +58,7 @@ func (c *Client) EnsureProject(ctx context.Context, projectKey string) (*Project
 
 	// Use retry logic for project creation as it's often the first call made
 	// by multiple agents starting simultaneously.
-	result, err := c.callToolWithBusyRetry(ctx, "ensure_project", args, 3*time.Second, 3)
+	result, err := c.callToolWithBusyRetry(ctx, "ensure_project", args, 3*time.Second, busyMaxRetries())
 	if err != nil {
 		return nil, err
 	}
@@ -91,7 +91,7 @@ func (c *Client) RegisterAgent(ctx context.Context, opts RegisterAgentOptions) (
 	// server returns a fresh token in the response.
 	c.attachTokenFromField(args, "registration_token", "name")
 
-	result, err := c.callToolWithBusyRetry(ctx, "register_agent", args, 3*time.Second, 3)
+	result, err := c.callToolWithBusyRetry(ctx, "register_agent", args, 3*time.Second, busyMaxRetries())
 	if err != nil {
 		return nil, err
 	}
@@ -119,7 +119,7 @@ func (c *Client) CreateAgentIdentity(ctx context.Context, opts RegisterAgentOpti
 		args["task_description"] = opts.TaskDescription
 	}
 
-	result, err := c.callToolWithBusyRetry(ctx, "create_agent_identity", args, 3*time.Second, 3)
+	result, err := c.callToolWithBusyRetry(ctx, "create_agent_identity", args, 3*time.Second, busyMaxRetries())
 	if err != nil {
 		return nil, err
 	}
