@@ -22,7 +22,6 @@ internal/auth/claude.go	bd-d7z7i	pre-existing "for now" markers (2); triage per 
 internal/tui/dashboard/panels/spawn.go	bd-d7z7i	pre-existing "for now" marker; triage per umbrella bead
 internal/cli/zoom.go	bd-d7z7i	pre-existing "for now" marker; triage per umbrella bead
 internal/cli/monitor.go	bd-d7z7i	pre-existing "for now" marker; triage per umbrella bead
-internal/cli/approve.go	bd-d7z7i	pre-existing "for now" marker; triage per umbrella bead
 internal/cli/worktree.go	bd-d7z7i	pre-existing "for now" marker; triage per umbrella bead
 internal/cli/summary.go	bd-d7z7i	pre-existing "for now" marker; triage per umbrella bead
 internal/cli/work.go	bd-d7z7i	pre-existing "for now" marker; triage per umbrella bead

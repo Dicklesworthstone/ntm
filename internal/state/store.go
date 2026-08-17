@@ -816,6 +816,35 @@ func (s *Store) ListPendingApprovals() ([]Approval, error) {
 	return approvals, rows.Err()
 }
 
+// ListApprovalHistory returns ALL approval records regardless of status —
+// pending, approved, denied, consumed, and expired — newest first. This is
+// the backing query for `ntm approve history` (bd-ws7-docs-ux-truth-tqh3l.9):
+// history means resolved records too, each row carrying its status, decider,
+// and decision timestamp, not a pending-only list relabeled as history.
+func (s *Store) ListApprovalHistory() ([]Approval, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := s.db.Query(`
+		SELECT id, action, resource, COALESCE(reason, ''), requested_by, COALESCE(correlation_id, ''), requires_slb, created_at, expires_at, status, COALESCE(approved_by, ''), approved_at, COALESCE(denied_reason, '')
+		FROM approvals
+		ORDER BY created_at DESC, id DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("list approval history: %w", err)
+	}
+	defer rows.Close()
+
+	var approvals []Approval
+	for rows.Next() {
+		var appr Approval
+		if err := rows.Scan(&appr.ID, &appr.Action, &appr.Resource, &appr.Reason, &appr.RequestedBy, &appr.CorrelationID, &appr.RequiresSLB, &appr.CreatedAt, &appr.ExpiresAt, &appr.Status, &appr.ApprovedBy, &appr.ApprovedAt, &appr.DeniedReason); err != nil {
+			return nil, fmt.Errorf("scan approval: %w", err)
+		}
+		approvals = append(approvals, appr)
+	}
+	return approvals, rows.Err()
+}
+
 // ListExpiredPendingApprovals returns pending approvals that have expired.
 func (s *Store) ListExpiredPendingApprovals() ([]Approval, error) {
 	s.mu.RLock()

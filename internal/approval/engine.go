@@ -496,6 +496,27 @@ func (e *Engine) ListPending(ctx context.Context) ([]state.Approval, error) {
 	return pending, nil
 }
 
+// History returns every approval record — pending, approved, denied,
+// consumed, and expired — newest first. Pending rows past their deadline are
+// transitioned to expired on the way out (same best-effort policy as
+// ListPending) so history reflects reality, not a stale pending status.
+func (e *Engine) History(ctx context.Context) ([]state.Approval, error) {
+	approvals, err := e.store.ListApprovalHistory()
+	if err != nil {
+		return nil, fmt.Errorf("list approval history: %w", err)
+	}
+
+	now := time.Now()
+	for i := range approvals {
+		if approvals[i].Status == state.ApprovalPending && now.After(approvals[i].ExpiresAt) {
+			// Best-effort: expireApproval updates the row's status in place
+			// (or reloads the record if a concurrent decision won the race).
+			_ = e.expireApproval(&approvals[i], now.UTC())
+		}
+	}
+	return approvals, nil
+}
+
 // ExpireStale marks all expired pending approvals as expired.
 func (e *Engine) ExpireStale(ctx context.Context) (int, error) {
 	// Use ListExpiredPendingApprovals which returns pending approvals where expires_at <= now

@@ -287,6 +287,109 @@ func TestListPending(t *testing.T) {
 	}
 }
 
+// TestHistoryThreeStates is the H9 close condition
+// (bd-ws7-docs-ux-truth-tqh3l.9): a fixture with one pending, one approved,
+// and one denied approval — plus a consumed one for the full resolved set —
+// against a REAL temp SQLite store. History must return every record with
+// correct status, decider, and decision timestamp; the pre-fix code returned
+// pending-only while self-labeling as history.
+func TestHistoryThreeStates(t *testing.T) {
+	store := setupTestStore(t)
+	engine := New(store, nil, nil, DefaultConfig())
+	ctx := context.Background()
+
+	mkReq := func(action string) string {
+		t.Helper()
+		appr, err := engine.Request(ctx, RequestParams{
+			Action:      action,
+			Resource:    "res-" + action,
+			RequestedBy: "requester",
+		})
+		if err != nil {
+			t.Fatalf("Request(%s) failed: %v", action, err)
+		}
+		return appr.ID
+	}
+
+	pendingID := mkReq("stay_pending")
+	approvedID := mkReq("get_approved")
+	deniedID := mkReq("get_denied")
+	consumedID := mkReq("get_consumed")
+
+	if err := engine.Approve(ctx, approvedID, "alice"); err != nil {
+		t.Fatalf("Approve failed: %v", err)
+	}
+	if err := engine.Deny(ctx, deniedID, "bob", "not safe"); err != nil {
+		t.Fatalf("Deny failed: %v", err)
+	}
+	if err := engine.Approve(ctx, consumedID, "carol"); err != nil {
+		t.Fatalf("Approve (for consume) failed: %v", err)
+	}
+	if err := engine.Consume(ctx, consumedID, "gate"); err != nil {
+		t.Fatalf("Consume failed: %v", err)
+	}
+
+	history, err := engine.History(ctx)
+	if err != nil {
+		t.Fatalf("History failed: %v", err)
+	}
+	if len(history) != 4 {
+		t.Fatalf("History returned %d records, want 4 (pending+approved+denied+consumed)", len(history))
+	}
+
+	byID := map[string]state.Approval{}
+	for _, a := range history {
+		byID[a.ID] = a
+	}
+
+	p, ok := byID[pendingID]
+	if !ok {
+		t.Fatalf("pending record %s missing from history", pendingID)
+	}
+	if p.Status != state.ApprovalPending {
+		t.Errorf("pending record status = %s, want pending", p.Status)
+	}
+
+	a, ok := byID[approvedID]
+	if !ok {
+		t.Fatalf("approved record %s missing from history — resolved records must be included", approvedID)
+	}
+	if a.Status != state.ApprovalApproved {
+		t.Errorf("approved record status = %s, want approved", a.Status)
+	}
+	if a.ApprovedBy != "alice" {
+		t.Errorf("approved record decider = %q, want alice", a.ApprovedBy)
+	}
+	if a.ApprovedAt == nil {
+		t.Error("approved record has no decision timestamp")
+	}
+
+	d, ok := byID[deniedID]
+	if !ok {
+		t.Fatalf("denied record %s missing from history — resolved records must be included", deniedID)
+	}
+	if d.Status != state.ApprovalDenied {
+		t.Errorf("denied record status = %s, want denied", d.Status)
+	}
+	if d.ApprovedBy != "bob" {
+		t.Errorf("denied record decider = %q, want bob", d.ApprovedBy)
+	}
+	if d.DeniedReason != "not safe" {
+		t.Errorf("denied record reason = %q, want %q", d.DeniedReason, "not safe")
+	}
+	if d.ApprovedAt == nil {
+		t.Error("denied record has no decision timestamp")
+	}
+
+	c, ok := byID[consumedID]
+	if !ok {
+		t.Fatalf("consumed record %s missing from history", consumedID)
+	}
+	if c.Status != state.ApprovalConsumed {
+		t.Errorf("consumed record status = %s, want consumed", c.Status)
+	}
+}
+
 func TestExpireStale(t *testing.T) {
 	store := setupTestStore(t)
 	engine := New(store, nil, nil, DefaultConfig())

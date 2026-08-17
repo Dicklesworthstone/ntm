@@ -356,22 +356,46 @@ func runApproveHistory(jsonOutput bool) error {
 	}
 	defer store.Close()
 
-	// For now, we can only list pending. Full history would need additional store methods. // placebo-waiver: bd-d7z7i
-	// This is a minimal implementation that shows we'd need to extend the store.
+	// Full history: pending AND resolved records (approved, denied,
+	// consumed, expired), each with status/decider/timestamps
+	// (bd-ws7-docs-ux-truth-tqh3l.9).
 	ctx := context.Background()
-	pending, _ := engine.ListPending(ctx)
+	history, err := engine.History(ctx)
+	if err != nil {
+		return outputError(err, jsonOutput)
+	}
 
 	if jsonOutput {
+		if history == nil {
+			history = []state.Approval{}
+		}
 		return json.NewEncoder(os.Stdout).Encode(map[string]interface{}{
-			"success": true,
-			"pending": pending,
-			"note":    "Full history requires additional state store methods",
+			"success":   true,
+			"approvals": history,
+			"count":     len(history),
 		})
 	}
 
 	fmt.Println("Approval History:")
-	fmt.Println("  (Full history tracking requires state store extension)")
-	fmt.Printf("  Currently pending: %d\n", len(pending))
+	if len(history) == 0 {
+		fmt.Println("  (no approval requests recorded)")
+		return nil
+	}
+	for _, appr := range history {
+		fmt.Printf("\n  %s [%s]\n", appr.ID, appr.Status)
+		fmt.Printf("    Action:    %s\n", appr.Action)
+		fmt.Printf("    Resource:  %s\n", appr.Resource)
+		fmt.Printf("    Requested: %s by %s\n", appr.CreatedAt.Format(time.RFC3339), appr.RequestedBy)
+		if appr.ApprovedBy != "" {
+			fmt.Printf("    Decided:   by %s\n", appr.ApprovedBy)
+		}
+		if appr.ApprovedAt != nil {
+			fmt.Printf("    Decided At: %s\n", appr.ApprovedAt.Format(time.RFC3339))
+		}
+		if appr.DeniedReason != "" {
+			fmt.Printf("    Deny Reason: %s\n", appr.DeniedReason)
+		}
+	}
 	return nil
 }
 
