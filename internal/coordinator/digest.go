@@ -24,6 +24,11 @@ type DigestSummary struct {
 	AgentStatuses []AgentDigestStatus `json:"agent_statuses"`
 	Alerts        []string            `json:"alerts,omitempty"`
 	WorkSummary   WorkDigestSummary   `json:"work_summary"`
+	// Deadlocks lists reservation wait-for cycles detected across the
+	// project's active file reservations (C7, bd-ws2-wire-or-delete-ykmcz.8).
+	// Empty/omitted when the graph is acyclic or Agent Mail is unreachable;
+	// the human-facing digest line is appended to Alerts alongside it.
+	Deadlocks []DeadlockCycle `json:"deadlocks,omitempty"`
 }
 
 // AgentDigestStatus summarizes a single agent's status.
@@ -58,6 +63,9 @@ func (c *SessionCoordinator) GenerateDigest() DigestSummary {
 	digest := c.generateAgentDigest()
 	// Outside the coordinator mutex: triage may shell out.
 	c.populateWorkSummary(&digest)
+	// Also outside the mutex: queries Agent Mail for reservation
+	// wait-for cycles (deadlock_digest.go).
+	c.populateDeadlockAlerts(context.Background(), &digest)
 	return digest
 }
 

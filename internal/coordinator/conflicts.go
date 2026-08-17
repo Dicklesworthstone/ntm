@@ -3,6 +3,7 @@ package coordinator
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	pathpkg "path"
 	"sort"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
+	"github.com/Dicklesworthstone/ntm/internal/events"
 )
 
 // Conflict represents a file reservation conflict between agents.
@@ -78,48 +80,6 @@ func (d *ConflictDetector) DetectConflicts(ctx context.Context) ([]Conflict, err
 	d.mu.Unlock()
 
 	return conflicts, nil
-}
-
-// CheckPathConflict checks if a specific path would conflict with existing reservations.
-func (d *ConflictDetector) CheckPathConflict(ctx context.Context, path, excludeAgent string) (*Conflict, error) {
-	if d.mailClient == nil {
-		return nil, nil
-	}
-
-	reservations, err := d.mailClient.ListReservations(ctx, d.projectKey, "", true)
-	if err != nil {
-		return nil, err
-	}
-
-	var holders []Holder
-	now := time.Now()
-	for _, r := range reservations {
-		if !reservationActiveAt(r, now) || !r.Exclusive {
-			continue
-		}
-		if r.AgentName == excludeAgent {
-			continue
-		}
-		if matchesPattern(path, r.PathPattern) {
-			holders = append(holders, Holder{
-				AgentName:  r.AgentName,
-				ReservedAt: r.CreatedTS.Time,
-				ExpiresAt:  r.ExpiresTS.Time,
-				Reason:     r.Reason,
-			})
-		}
-	}
-
-	if len(holders) == 0 {
-		return nil, nil
-	}
-
-	return &Conflict{
-		ID:         generateConflictID(path),
-		FilePath:   path,
-		Holders:    holders,
-		DetectedAt: time.Now(),
-	}, nil
 }
 
 func detectReservationConflictsAt(reservations []agentmail.FileReservation, now time.Time) []Conflict {
@@ -252,6 +212,248 @@ func sortHolders(holders []Holder) {
 		}
 		return holders[i].ExpiresAt.Before(holders[j].ExpiresAt)
 	})
+}
+
+// --- RunCycle wiring (bd-ws2-wire-or-delete-ykmcz.1) -----------------------
+//
+// The negotiation engine below was fully implemented and tested but never
+// invoked: `enable conflict-negotiate` persisted a flag that nothing read.
+// runConflictCycle is the wire — RunCycle calls it every tick, it consults the
+// persisted ConflictNotify / ConflictNegotiate flags, and it publishes a
+// negotiation OUTCOME (naming the conflicting holder pair and the engine's
+// resolution decision) on the coordinator event envelope, the event bus, and
+// the cycle log.
+
+const (
+	// maxConflictOutcomesPerCycle bounds per-tick conflict work so a
+	// pathological reservation set cannot stall the monitor loop.
+	maxConflictOutcomesPerCycle = 5
+	// conflictOutcomeCooldown suppresses re-negotiating/re-notifying the same
+	// conflicting pair on every poll tick.
+	conflictOutcomeCooldown = 5 * time.Minute
+)
+
+// ConflictOutcome records what the coordinator did about one detected
+// conflict during a cycle. It names the specific conflicting holder pair and
+// the engine's resolution decision — not merely that "negotiation ran".
+type ConflictOutcome struct {
+	ConflictID     string   `json:"conflict_id"`
+	Pattern        string   `json:"pattern"`
+	Holders        []string `json:"holders"`
+	Mode           string   `json:"mode"` // "negotiate" or "notify"
+	Requester      string   `json:"requester,omitempty"`
+	AskedToRelease string   `json:"asked_to_release,omitempty"`
+	Resolution     string   `json:"resolution"`
+	Error          string   `json:"error,omitempty"`
+}
+
+// runConflictCycle performs one bounded conflict detection + resolution pass.
+// DEFAULT BEHAVIOR PRESERVED: ConflictNegotiate defaults to false, so
+// negotiation only runs for sessions that persisted `enable
+// conflict-negotiate`; with ConflictNotify also disabled (or no Agent Mail
+// client) the engine is never invoked at all.
+func (c *SessionCoordinator) runConflictCycle(ctx context.Context) []ConflictOutcome {
+	c.mu.Lock()
+	notify := c.config.ConflictNotify
+	negotiate := c.config.ConflictNegotiate
+	if !notify && !negotiate {
+		c.mu.Unlock()
+		return nil
+	}
+	detect := c.detectConflictsFn
+	if detect == nil {
+		if c.conflictDetector == nil {
+			c.conflictDetector = NewConflictDetector(c.mailClient, c.projectKey)
+		}
+		detect = c.conflictDetector.DetectConflicts
+	}
+	if c.lastConflictOutcome == nil {
+		c.lastConflictOutcome = make(map[string]time.Time)
+	}
+	c.mu.Unlock()
+
+	conflicts, err := detect(ctx)
+	if err != nil {
+		slog.Warn("coordinator conflict detection failed",
+			"session", c.session, "error", err)
+		return nil
+	}
+	if len(conflicts) == 0 {
+		return nil
+	}
+
+	now := time.Now()
+	mode := "notify"
+	if negotiate {
+		mode = "negotiate"
+	}
+
+	var outcomes []ConflictOutcome
+	// DetectConflicts returns conflicts sorted by pattern, so the per-cycle
+	// bound selects a deterministic subset.
+	for i := range conflicts {
+		if len(outcomes) >= maxConflictOutcomesPerCycle {
+			slog.Info("coordinator conflict cycle reached per-tick bound",
+				"session", c.session, "bound", maxConflictOutcomesPerCycle,
+				"remaining", len(conflicts)-i)
+			break
+		}
+		conflict := &conflicts[i]
+		names := holderNames(conflict.Holders)
+		key := conflictCooldownKey(conflict.Pattern, names)
+
+		c.mu.Lock()
+		last, seen := c.lastConflictOutcome[key]
+		if seen && now.Sub(last) < conflictOutcomeCooldown {
+			c.mu.Unlock()
+			continue
+		}
+		c.lastConflictOutcome[key] = now
+		// Prune stale cooldown entries to keep the map bounded.
+		for k, ts := range c.lastConflictOutcome {
+			if now.Sub(ts) > 2*conflictOutcomeCooldown {
+				delete(c.lastConflictOutcome, k)
+			}
+		}
+		c.mu.Unlock()
+
+		outcome := ConflictOutcome{
+			ConflictID: conflict.ID,
+			Pattern:    conflict.Pattern,
+			Holders:    names,
+			Mode:       mode,
+		}
+
+		if negotiate {
+			requester, target := prioritizeHolders(conflict.Holders)
+			outcome.Requester = requester
+			outcome.AskedToRelease = target
+			if err := c.NegotiateConflict(ctx, conflict, requester); err != nil {
+				outcome.Error = err.Error()
+				outcome.Resolution = fmt.Sprintf(
+					"negotiation between %s failed: %v",
+					strings.Join(names, " and "), err)
+			} else {
+				outcome.Resolution = fmt.Sprintf(
+					"requested %s release %q in favor of %s (earliest reservation wins)",
+					target, conflict.Pattern, requester)
+			}
+		} else {
+			if err := c.NotifyConflict(ctx, conflict); err != nil {
+				outcome.Error = err.Error()
+				outcome.Resolution = fmt.Sprintf(
+					"notification to %s failed: %v",
+					strings.Join(names, " and "), err)
+			} else {
+				outcome.Resolution = fmt.Sprintf(
+					"notified %s of the reservation conflict on %q (notify-only: no release requested)",
+					strings.Join(names, " and "), conflict.Pattern)
+			}
+		}
+
+		c.publishConflictOutcome(outcome)
+		outcomes = append(outcomes, outcome)
+	}
+	return outcomes
+}
+
+// publishConflictOutcome surfaces one outcome on the cycle log, the
+// coordinator event envelope, and the process event bus.
+func (c *SessionCoordinator) publishConflictOutcome(outcome ConflictOutcome) {
+	slog.Info("coordinator conflict outcome",
+		"session", c.session,
+		"conflict_id", outcome.ConflictID,
+		"pattern", outcome.Pattern,
+		"holders", strings.Join(outcome.Holders, ","),
+		"mode", outcome.Mode,
+		"resolution", outcome.Resolution,
+		"error", outcome.Error)
+
+	eventType := EventConflictDetected
+	if outcome.Mode == "negotiate" && outcome.Error == "" {
+		eventType = EventConflictResolved
+	}
+	now := time.Now().UTC()
+	details := map[string]any{
+		"conflict_id": outcome.ConflictID,
+		"pattern":     outcome.Pattern,
+		"holders":     outcome.Holders,
+		"mode":        outcome.Mode,
+		"resolution":  outcome.Resolution,
+	}
+	if outcome.Requester != "" {
+		details["requester"] = outcome.Requester
+	}
+	if outcome.AskedToRelease != "" {
+		details["asked_to_release"] = outcome.AskedToRelease
+	}
+	if outcome.Error != "" {
+		details["error"] = outcome.Error
+	}
+
+	select {
+	case c.events <- CoordinatorEvent{
+		Type:      eventType,
+		Timestamp: now,
+		Details:   details,
+	}:
+	default:
+		// Channel full, drop event (matches emitEvent policy).
+	}
+
+	events.Publish(busCoordinatorEvent{
+		BaseEvent: events.BaseEvent{
+			Type:      "coordinator.conflict",
+			Timestamp: now,
+			Session:   c.session,
+		},
+		Details: details,
+	})
+}
+
+// holderNames extracts holder agent names preserving the engine's
+// deterministic holder ordering.
+func holderNames(holders []Holder) []string {
+	names := make([]string, 0, len(holders))
+	for _, h := range holders {
+		names = append(names, h.AgentName)
+	}
+	return names
+}
+
+// conflictCooldownKey identifies a conflicting pattern+holder-set so a
+// persisting conflict is acted on once per cooldown window, not once per
+// tick. Conflict IDs are freshly generated on every detection pass and so
+// cannot be used for this.
+func conflictCooldownKey(pattern string, names []string) string {
+	sorted := append([]string(nil), names...)
+	sort.Strings(sorted)
+	return pattern + "|" + strings.Join(sorted, ",")
+}
+
+// prioritizeHolders deterministically assigns negotiation priorities:
+// earliest reservation (ties broken by agent name) wins and becomes the
+// requester; the latest holder is the one the engine asks to release. It
+// mutates Holder.Priority in place so NegotiateConflict selects the same
+// target it reports.
+func prioritizeHolders(holders []Holder) (requester, target string) {
+	if len(holders) == 0 {
+		return "", ""
+	}
+	order := make([]*Holder, 0, len(holders))
+	for i := range holders {
+		order = append(order, &holders[i])
+	}
+	sort.SliceStable(order, func(i, j int) bool {
+		if !order[i].ReservedAt.Equal(order[j].ReservedAt) {
+			return order[i].ReservedAt.Before(order[j].ReservedAt)
+		}
+		return order[i].AgentName < order[j].AgentName
+	})
+	for rank, h := range order {
+		h.Priority = rank
+	}
+	return order[0].AgentName, order[len(order)-1].AgentName
 }
 
 // NegotiateConflict attempts to resolve a conflict by requesting release from lower-priority holders.

@@ -71,6 +71,14 @@ type SessionCoordinator struct {
 	// first cycle.
 	caamFailover *failoverChecker
 
+	// Conflict handling (bd-ws2-wire-or-delete-ykmcz.1). The detector is
+	// created lazily on the first cycle where a conflict flag is enabled;
+	// detectConflictsFn is a test seam. lastConflictOutcome implements the
+	// per-conflicting-pair cooldown.
+	conflictDetector    *ConflictDetector
+	detectConflictsFn   func(context.Context) ([]Conflict, error)
+	lastConflictOutcome map[string]time.Time
+
 	// Configuration
 	config CoordinatorConfig
 
@@ -430,6 +438,10 @@ func (c *SessionCoordinator) RunCycle(ctx context.Context) ([]AssignmentResult, 
 	c.nudgeUnreadMail(ctx)
 	c.maybeCheckContextRotation(ctx)
 	c.maybeCheckCaamFailover(ctx)
+	// Conflict detection + negotiation behind the persisted flags
+	// (bd-ws2-wire-or-delete-ykmcz.1): runs before the AutoAssign early
+	// return so notify/negotiate work even when auto-assignment is off.
+	c.runConflictCycle(ctx)
 	if !c.config.AutoAssign {
 		return nil, nil
 	}
