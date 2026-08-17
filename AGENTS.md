@@ -85,6 +85,14 @@ make build-all
 
 Create releases exclusively with DSR. Do not use or dispatch GitHub Actions for releases, and do not fall back to manual `gh release create` publication.
 
+**Step 0 — release-artifact pre-flight (mandatory, run BEFORE DSR publishes anything):**
+
+```bash
+bash scripts/release_preflight.sh vX.Y.Z
+```
+
+It verifies every deliverable declared in `release_artifacts.toml` is present and version-locked to the tag (binary stamp, install.sh contract, VERSION file), and FAILS if a buildable deliverable directory (`web/`, `vscode/`) has no manifest entry — finished-but-never-shipped is not allowed (WS0-G4, bd-ws0-guards-klz98.5). Do not publish on a red pre-flight; fix the drift (or register/defer the artifact bead-first in the manifest) and re-run.
+
 After creating a new release with DSR:
 
 1. **Verify install script works**: `curl -fsSL ".../install.sh" | bash -s -- --version=vX.Y.Z --dir=/tmp/test --no-shell`
