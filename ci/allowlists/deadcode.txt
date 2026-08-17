@@ -1413,7 +1413,6 @@ internal/robot/robot.go:RecordStateChange	bd-g1-deadcode-backlog-2ijy8	outside t
 internal/robot/routing.go:FilterByPanes	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/robot/routing.go:FilterByType	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/robot/routing.go:NewAgentScorerWithReservations	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/robot/routing.go:NewReservationCache	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/robot/sections.go:buildIncludedSet	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/robot/sections.go:CompactSectionLimits	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/robot/sections.go:DefaultSectionLimits	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete

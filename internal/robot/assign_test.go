@@ -332,15 +332,15 @@ func TestCalculateConfidence_PriorityDoesNotAdjustSimple(t *testing.T) {
 
 func TestGenerateReasoning_HighStrengthAgent(t *testing.T) {
 	bead := bv.BeadPreview{ID: "bd-test", Title: "Fix login bug", Priority: "P0"}
-	reasoning := generateReasoning("claude", bead, "balanced")
+	reasoning := generateReasoning("claude", bead)
 
 	if reasoning == "" {
 		t.Error("reasoning should not be empty")
 	}
 
-	// Should contain strategy reasoning
-	if !strings.Contains(reasoning, "balanced") {
-		t.Errorf("reasoning %q should mention balanced strategy", reasoning)
+	// Simple strategy names the sequential pairing honestly.
+	if !strings.Contains(reasoning, "simple sequential pairing") {
+		t.Errorf("reasoning %q should name the simple sequential pairing", reasoning)
 	}
 
 	// P0 should get "critical priority" reasoning
@@ -351,40 +351,20 @@ func TestGenerateReasoning_HighStrengthAgent(t *testing.T) {
 
 func TestGenerateReasoning_P1Priority(t *testing.T) {
 	bead := bv.BeadPreview{ID: "bd-test", Title: "Some task", Priority: "P1"}
-	reasoning := generateReasoning("claude", bead, "speed")
+	reasoning := generateReasoning("claude", bead)
 
 	if !strings.Contains(reasoning, "high priority") {
 		t.Errorf("reasoning %q should mention high priority for P1", reasoning)
 	}
-	if !strings.Contains(reasoning, "speed") {
-		t.Errorf("reasoning %q should mention speed strategy", reasoning)
-	}
-}
-
-func TestGenerateReasoning_AllStrategies(t *testing.T) {
-	bead := bv.BeadPreview{ID: "bd-test", Title: "Some task", Priority: "P2"}
-	strategies := []string{"balanced", "speed", "quality", "dependency"}
-
-	for _, strategy := range strategies {
-		t.Run(strategy, func(t *testing.T) {
-			reasoning := generateReasoning("claude", bead, strategy)
-			if reasoning == "" {
-				t.Error("reasoning should not be empty")
-			}
-			if !strings.Contains(reasoning, strategy) {
-				t.Errorf("reasoning %q should mention strategy %q", reasoning, strategy)
-			}
-		})
-	}
 }
 
 func TestGenerateReasoning_DefaultFallback(t *testing.T) {
-	// P2 bead with unknown strategy should still produce output
+	// P2 bead produces output without any priority callout.
 	bead := bv.BeadPreview{ID: "bd-test", Title: "Integration work", Priority: "P2"}
-	reasoning := generateReasoning("claude", bead, "unknown")
+	reasoning := generateReasoning("claude", bead)
 
 	if reasoning == "" {
-		t.Error("reasoning should not be empty even with unknown strategy")
+		t.Error("reasoning should not be empty for a P2 bead")
 	}
 }
 
@@ -670,19 +650,23 @@ func TestClassifyAssignableActionableRecommendationsExplainsExclusions(t *testin
 	}
 }
 
-func TestUnassignedBeadsForAgentCapacity(t *testing.T) {
+func TestUnassignedBeadsBeyondRecommendations(t *testing.T) {
 	ready := []bv.BeadPreview{
 		{ID: "bd-1", Title: "First"},
 		{ID: "bd-2", Title: "Second"},
 		{ID: "bd-3", Title: "Third"},
 	}
-	if got, want := unassignedBeadsForAgentCapacity(ready, 1), []UnassignableBead{
-		{ID: "bd-2", Title: "Second", Reason: "no idle agent available"},
+	// The planner may skip earlier beads: assigning only bd-2 leaves bd-1 and
+	// bd-3 unassigned, keyed by bead ID rather than position.
+	if got, want := unassignedBeadsBeyondRecommendations(ready, []AssignRecommend{{AssignBead: "bd-2"}}), []UnassignableBead{
+		{ID: "bd-1", Title: "First", Reason: "no idle agent available"},
 		{ID: "bd-3", Title: "Third", Reason: "no idle agent available"},
 	}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("unassignable capacity beads = %+v, want %+v", got, want)
 	}
-	if got := unassignedBeadsForAgentCapacity(ready, len(ready)); got != nil {
+	if got := unassignedBeadsBeyondRecommendations(ready, []AssignRecommend{
+		{AssignBead: "bd-1"}, {AssignBead: "bd-2"}, {AssignBead: "bd-3"},
+	}); got != nil {
 		t.Fatalf("unassignable capacity beads = %+v, want nil when every bead is recommended", got)
 	}
 }
