@@ -1,3 +1,479 @@
 # ci/allowlists/config.txt — G2 config-key liveness allowlist (bd-ws0-guards-klz98.3)
 # Format: <entry>\t<bead-id>\t<reason>  (see ci/allowlists/README.md)
 # Seeded by the G2 bead from the gap register (WS6 G-list + [cass] injection keys + tmux.palette_key).
+# Entry = dotted leaf-key path of the parsed Config struct (see internal/config/liveness_test.go).
+# Seeded 2026-08-16 from the first full liveness walk (472 unclaimed keys at zero claims):
+# G-list dead knobs carry their WS6/C10 bead; live keys await claims on bd-g2-claims-backlog-o787y.
+# A key passes by claim: config.RegisterReader(key, realReaderFunc) from the consuming package.
+accounts.aider.alias	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+accounts.aider.email	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+accounts.aider.priority	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+accounts.antigravity.alias	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+accounts.antigravity.email	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+accounts.antigravity.priority	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+accounts.auto_rotate	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+accounts.claude.alias	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+accounts.claude.email	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+accounts.claude.priority	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+accounts.codex.alias	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+accounts.codex.email	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+accounts.codex.priority	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+accounts.cursor.alias	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+accounts.cursor.email	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+accounts.cursor.priority	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+accounts.gemini.alias	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+accounts.gemini.email	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+accounts.gemini.priority	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+accounts.ollama.alias	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+accounts.ollama.email	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+accounts.ollama.priority	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+accounts.reset_buffer_minutes	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+accounts.state_file	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+accounts.windsurf.alias	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+accounts.windsurf.email	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+accounts.windsurf.priority	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+agent_mail.auto_register	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+agent_mail.enabled	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+agent_mail.program_name	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+agent_mail.supervisor_enabled	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+agent_mail.token	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+agent_mail.url	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+agents.aider	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+agents.antigravity	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+agents.claude	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+agents.claude_isolate_credentials	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+agents.claude_token_file	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+agents.codex	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+agents.cursor	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+agents.default_count	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+agents.gemini	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+agents.grok	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+agents.oc	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+agents.ollama	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+agents.plugins	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+agents.windsurf	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+alerts.agent_stuck_minutes	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+alerts.bead_stale_hours	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+alerts.context_warning_threshold	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+alerts.disk_full_horizon_hours	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+alerts.disk_low_threshold_gb	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+alerts.enabled	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+alerts.mail_backlog_threshold	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+alerts.resolved_prune_minutes	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+assign.idle_threshold	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+assign.operator_gated_labels	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+assign.prompt_template	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+assign.prompt_template_file	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+assign.strategy	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+bugs.cooldown_minutes	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+bugs.interval	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+bugs.push_routing	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+cass.binary_path	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+cass.context.enabled	bd-ws2-wire-or-delete-ykmcz.11	send-injection key; C10 registers the reader claim at wire time
+cass.context.lookback_days	bd-ws2-wire-or-delete-ykmcz.11	send-injection key; C10 registers the reader claim at wire time
+cass.context.max_sessions	bd-ws2-wire-or-delete-ykmcz.11	send-injection key; C10 registers the reader claim at wire time
+cass.context.max_tokens	bd-ws2-wire-or-delete-ykmcz.11	send-injection key; C10 registers the reader claim at wire time
+cass.context.min_relevance	bd-ws2-wire-or-delete-ykmcz.11	send-injection key; C10 registers the reader claim at wire time
+cass.context.prefer_same_project	bd-ws2-wire-or-delete-ykmcz.11	send-injection key; C10 registers the reader claim at wire time
+cass.context.skip_if_context_above	bd-ws2-wire-or-delete-ykmcz.11	send-injection key; C10 registers the reader claim at wire time
+cass.duplicates.enabled	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+cass.duplicates.lookback_days	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+cass.duplicates.prompt_on_match	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+cass.duplicates.similarity_threshold	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+cass.enabled	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+cass.search.default_fields	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+cass.search.default_limit	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+cass.search.include_meta	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+cass.show_install_hints	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+cass.timeout	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+cass.tui.show_activity_sparkline	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+cass.tui.show_status_indicator	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+checkpoints.auto_checkpoint_on_spawn	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+checkpoints.before_add_agents	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+checkpoints.before_broadcast	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+checkpoints.enabled	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+checkpoints.include_git	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+checkpoints.interval_minutes	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+checkpoints.max_auto_checkpoints	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+checkpoints.on_error	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+checkpoints.on_rotation	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+checkpoints.scrollback_lines	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+cleanup.auto_clean_on_startup	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+cleanup.max_age_hours	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+cleanup.verbose	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+command_hooks.command	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+command_hooks.continue_on_error	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+command_hooks.description	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+command_hooks.enabled	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+command_hooks.env	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+command_hooks.event	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+command_hooks.name	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+command_hooks.timeout	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+command_hooks.workdir	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+context_rotation.confirm_timeout_sec	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+context_rotation.default_confirm_action	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+context_rotation.enabled	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+context_rotation.min_session_age_sec	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+context_rotation.recovery.cooldown_seconds	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+context_rotation.recovery.enabled	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+context_rotation.recovery.include_bead_context	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+context_rotation.recovery.max_recoveries_per_pane	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+context_rotation.recovery.prompt	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+context_rotation.require_confirm	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+context_rotation.rotate_threshold	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+context_rotation.summary_max_tokens	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+context_rotation.try_compact_first	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+context_rotation.warning_threshold	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+context.ms_skills	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+coordinator.assign_only_idle	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+coordinator.auto_assign	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+coordinator.conflict_negotiate	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+coordinator.conflict_notify	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+coordinator.digest_interval	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+coordinator.human_agent	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+coordinator.idle_threshold	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+coordinator.mail_nudge	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+coordinator.poll_interval	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+coordinator.send_digests	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+encryption.active_key_id	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+encryption.enabled	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+encryption.key_command	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+encryption.key_env	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+encryption.key_file	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+encryption.key_format	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+encryption.key_source	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+encryption.keyring	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+ensemble.agent_mix	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+ensemble.allow_advanced	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+ensemble.assignment	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+ensemble.budget.context_pack	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+ensemble.budget.per_agent	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+ensemble.budget.synthesis	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+ensemble.budget.total	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+ensemble.cache.cache_dir	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+ensemble.cache.enabled	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+ensemble.cache.max_entries	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+ensemble.cache.share_across_modes	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+ensemble.cache.ttl_minutes	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+ensemble.default_ensemble	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+ensemble.early_stop.enabled	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+ensemble.early_stop.findings_threshold	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+ensemble.early_stop.min_agents	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+ensemble.early_stop.similarity_threshold	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+ensemble.early_stop.window_size	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+ensemble.mode_tier_default	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+ensemble.synthesis.conflict_resolution	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+ensemble.synthesis.include_raw_outputs	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+ensemble.synthesis.max_findings	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+ensemble.synthesis.min_confidence	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+ensemble.synthesis.strategy	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+file_reservation.auto_release_idle_minutes	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+file_reservation.auto_reserve	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+file_reservation.capture_lines	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+file_reservation.debug	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+file_reservation.default_ttl_minutes	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+file_reservation.enabled	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+file_reservation.extend_on_activity	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+file_reservation.notify_on_conflict	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+file_reservation.poll_interval_seconds	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+gemini_setup.auto_select_pro_model	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+gemini_setup.model_select_timeout_seconds	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+gemini_setup.ready_timeout_seconds	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+gemini_setup.verbose	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+help_verbosity	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+integrations.caam.account_cooldown	bd-ws6-config-truth-ienmd.2	G-list dead knob: caam knob removed (WS6-remove)
+integrations.caam.alert_threshold	bd-ws6-config-truth-ienmd.2	G-list dead knob: caam knob removed (WS6-remove)
+integrations.caam.auto_failover	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+integrations.caam.auto_rotate	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+integrations.caam.binary_path	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+integrations.caam.enabled	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+integrations.caam.failover_providers	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+integrations.caam.providers	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+integrations.caam.rate_limit_patterns	bd-ws6-config-truth-ienmd.2	G-list dead knob: caam knob removed (WS6-remove)
+integrations.caam.reset_horizon_minutes	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+integrations.caut.alert_threshold	bd-ws6-config-truth-ienmd.2	G-list dead knob: [integrations.caut] removed via C9 caut deletion cascade (WS6-remove)
+integrations.caut.binary_path	bd-ws6-config-truth-ienmd.2	G-list dead knob: [integrations.caut] removed via C9 caut deletion cascade (WS6-remove)
+integrations.caut.currency	bd-ws6-config-truth-ienmd.2	G-list dead knob: [integrations.caut] removed via C9 caut deletion cascade (WS6-remove)
+integrations.caut.enabled	bd-ws6-config-truth-ienmd.2	G-list dead knob: [integrations.caut] removed via C9 caut deletion cascade (WS6-remove)
+integrations.caut.per_agent_tracking	bd-ws6-config-truth-ienmd.2	G-list dead knob: [integrations.caut] removed via C9 caut deletion cascade (WS6-remove)
+integrations.caut.poll_interval	bd-ws6-config-truth-ienmd.2	G-list dead knob: [integrations.caut] removed via C9 caut deletion cascade (WS6-remove)
+integrations.caut.providers	bd-ws6-config-truth-ienmd.2	G-list dead knob: [integrations.caut] removed via C9 caut deletion cascade (WS6-remove)
+integrations.dcg.allow_override	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+integrations.dcg.audit_log	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+integrations.dcg.binary_path	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+integrations.dcg.custom_blocklist	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+integrations.dcg.custom_whitelist	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+integrations.dcg.enabled	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+integrations.process_triage.binary_path	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+integrations.process_triage.check_interval	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+integrations.process_triage.enabled	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+integrations.process_triage.idle_threshold	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+integrations.process_triage.on_stuck	bd-ws6-config-truth-ienmd.2	G-list dead knob: process_triage.on_stuck removed (WS6-remove)
+integrations.process_triage.stuck_threshold	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+integrations.process_triage.use_rano_data	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+integrations.proxy.bin_path	bd-ws6-config-truth-ienmd.2	G-list dead knob: proxy.* removed (WS6-remove)
+integrations.proxy.check_interval	bd-ws6-config-truth-ienmd.2	G-list dead knob: proxy.* removed (WS6-remove)
+integrations.proxy.enabled	bd-ws6-config-truth-ienmd.2	G-list dead knob: proxy.* removed (WS6-remove)
+integrations.rano.binary_path	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+integrations.rano.enabled	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+integrations.rano.history_days	bd-ws6-config-truth-ienmd.2	G-list dead knob: rano history knob removed (WS6-remove)
+integrations.rano.persist_history	bd-ws6-config-truth-ienmd.2	G-list dead knob: rano history knob removed (WS6-remove)
+integrations.rano.poll_interval_ms	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+integrations.rano.providers	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+integrations.rch.binary_path	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+integrations.rch.dcg_whitelist	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+integrations.rch.enabled	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+integrations.rch.fallback_local	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+integrations.rch.intercept_patterns	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+integrations.rch.min_build_time	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+integrations.rch.preferred_worker	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+integrations.rch.show_location	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+integrations.xf.archive_path	bd-ws6-config-truth-ienmd.2	G-list dead knob: xf.* removed (WS6-remove)
+integrations.xf.bin_path	bd-ws6-config-truth-ienmd.2	G-list dead knob: xf.* removed (WS6-remove)
+integrations.xf.default_mode	bd-ws6-config-truth-ienmd.2	G-list dead knob: xf.* removed (WS6-remove)
+integrations.xf.enabled	bd-ws6-config-truth-ienmd.2	G-list dead knob: xf.* removed (WS6-remove)
+memory.enabled	bd-ws6-config-truth-ienmd.1	G-list dead knob: memory.* shadowed by [recovery]; unified (WS6-wire)
+memory.include_anti_patterns	bd-ws6-config-truth-ienmd.1	G-list dead knob: memory.* shadowed by [recovery]; unified (WS6-wire)
+memory.include_history	bd-ws6-config-truth-ienmd.1	G-list dead knob: memory.* shadowed by [recovery]; unified (WS6-wire)
+memory.include_in_recovery	bd-ws6-config-truth-ienmd.1	G-list dead knob: memory.* shadowed by [recovery]; unified (WS6-wire)
+memory.max_rules	bd-ws6-config-truth-ienmd.1	G-list dead knob: memory.* shadowed by [recovery]; unified (WS6-wire)
+memory.query_timeout_seconds	bd-ws6-config-truth-ienmd.1	G-list dead knob: memory.* shadowed by [recovery]; unified (WS6-wire)
+memory.send_budget_tokens	bd-ws6-config-truth-ienmd.1	G-list dead knob: memory.* shadowed by [recovery]; unified (WS6-wire)
+memory.send_injection	bd-ws6-config-truth-ienmd.1	G-list dead knob: memory.* shadowed by [recovery]; unified (WS6-wire)
+memory.send_max_rules	bd-ws6-config-truth-ienmd.1	G-list dead knob: memory.* shadowed by [recovery]; unified (WS6-wire)
+models.aider	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+models.claude	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+models.codex	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+models.context_limits	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+models.cursor	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+models.default_claude	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+models.default_codex	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+models.default_gemini	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+models.default_grok	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+models.default_ollama	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+models.gemini	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+models.grok	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+models.ollama	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+models.opencode	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+models.windsurf	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+notifications.desktop.enabled	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+notifications.desktop.title	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+notifications.enabled	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+notifications.events	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+notifications.fallback	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+notifications.filebox.enabled	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+notifications.filebox.path	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+notifications.log.enabled	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+notifications.log.path	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+notifications.primary	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+notifications.routing	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+notifications.shell.command	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+notifications.shell.enabled	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+notifications.shell.pass_json	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+notifications.webhook.enabled	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+notifications.webhook.headers	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+notifications.webhook.method	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+notifications.webhook.template	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+notifications.webhook.url	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+palette_file	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+palette_state.favorites	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+palette_state.pinned	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+palette.category	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+palette.key	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+palette.label	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+palette.prompt	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+palette.tags	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+preflight.enabled	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+preflight.strict	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+privacy.disable_checkpoints	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+privacy.disable_event_logs	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+privacy.disable_prompt_history	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+privacy.disable_scrollback_capture	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+privacy.enabled	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+privacy.require_explicit_persist	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+projects_base	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+prompts.agy_default	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+prompts.agy_default_file	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+prompts.cc_default	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+prompts.cc_default_file	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+prompts.cod_default	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+prompts.cod_default_file	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+prompts.gmi_default	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+prompts.gmi_default_file	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+recovery.auto_inject_on_spawn	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+recovery.enabled	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+recovery.include_agent_mail	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+recovery.include_beads_context	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+recovery.include_cm_memories	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+recovery.max_cm_rules	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+recovery.max_cm_snippets	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+recovery.max_recovery_tokens	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+recovery.stale_threshold_hours	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+recovery.timeout_seconds	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+redaction.allowlist	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+redaction.disabled_categories	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+redaction.extra_patterns	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+redaction.mode	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+resilience.auto_restart	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+resilience.crash_threshold	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+resilience.health_check_seconds	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+resilience.max_restarts	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+resilience.notify_on_crash	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+resilience.notify_on_max_restarts	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+resilience.rate_limit.auto_rotate	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+resilience.rate_limit.detect	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+resilience.rate_limit.notify	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+resilience.rate_limit.patterns	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+resilience.restart_delay_seconds	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+retry.alerts.initial_delay_ms	bd-ws6-config-truth-ienmd.1	G-list dead knob: [retry] gains three real callers (WS6-wire)
+retry.alerts.max_attempts	bd-ws6-config-truth-ienmd.1	G-list dead knob: [retry] gains three real callers (WS6-wire)
+retry.assign.initial_delay_ms	bd-ws6-config-truth-ienmd.1	G-list dead knob: [retry] gains three real callers (WS6-wire)
+retry.assign.max_attempts	bd-ws6-config-truth-ienmd.1	G-list dead knob: [retry] gains three real callers (WS6-wire)
+retry.backoff_factor	bd-ws6-config-truth-ienmd.1	G-list dead knob: [retry] gains three real callers (WS6-wire)
+retry.completion.initial_delay_ms	bd-ws6-config-truth-ienmd.1	G-list dead knob: [retry] gains three real callers (WS6-wire)
+retry.completion.max_attempts	bd-ws6-config-truth-ienmd.1	G-list dead knob: [retry] gains three real callers (WS6-wire)
+retry.db.initial_delay_ms	bd-ws6-config-truth-ienmd.1	G-list dead knob: [retry] gains three real callers (WS6-wire)
+retry.db.max_attempts	bd-ws6-config-truth-ienmd.1	G-list dead knob: [retry] gains three real callers (WS6-wire)
+retry.initial_delay_ms	bd-ws6-config-truth-ienmd.1	G-list dead knob: [retry] gains three real callers (WS6-wire)
+retry.jitter	bd-ws6-config-truth-ienmd.1	G-list dead knob: [retry] gains three real callers (WS6-wire)
+retry.max_attempts	bd-ws6-config-truth-ienmd.1	G-list dead knob: [retry] gains three real callers (WS6-wire)
+retry.max_delay_ms	bd-ws6-config-truth-ienmd.1	G-list dead knob: [retry] gains three real callers (WS6-wire)
+retry.scheduler.initial_delay_ms	bd-ws6-config-truth-ienmd.1	G-list dead knob: [retry] gains three real callers (WS6-wire)
+retry.scheduler.max_attempts	bd-ws6-config-truth-ienmd.1	G-list dead knob: [retry] gains three real callers (WS6-wire)
+retry.webhook.initial_delay_ms	bd-ws6-config-truth-ienmd.1	G-list dead knob: [retry] gains three real callers (WS6-wire)
+retry.webhook.max_attempts	bd-ws6-config-truth-ienmd.1	G-list dead knob: [retry] gains three real callers (WS6-wire)
+robot.output.compress	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+robot.output.format	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+robot.output.pretty	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+robot.output.timestamps	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+robot.semantic.stamp	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+robot.semantic.window_minutes	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+robot.verbosity	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+rotation.accounts.alias	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+rotation.accounts.email	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+rotation.accounts.priority	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+rotation.accounts.provider	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+rotation.auto_confirm	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+rotation.auto_initiate	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+rotation.auto_open_browser	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+rotation.auto_trigger	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+rotation.continuation_prompt	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+rotation.dashboard.show_account_status	bd-ws6-config-truth-ienmd.2	G-list dead knob: rotation.dashboard.* removed (WS6-remove)
+rotation.dashboard.show_quota_bars	bd-ws6-config-truth-ienmd.2	G-list dead knob: rotation.dashboard.* removed (WS6-remove)
+rotation.dashboard.show_reset_timers	bd-ws6-config-truth-ienmd.2	G-list dead knob: rotation.dashboard.* removed (WS6-remove)
+rotation.enabled	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+rotation.prefer_restart	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+rotation.thresholds.critical_percent	bd-ws6-config-truth-ienmd.1	G-list dead knob: rotation.thresholds wired (WS6-wire)
+rotation.thresholds.restart_if_session_hours	bd-ws6-config-truth-ienmd.1	G-list dead knob: rotation.thresholds wired (WS6-wire)
+rotation.thresholds.restart_if_tokens_above	bd-ws6-config-truth-ienmd.1	G-list dead knob: rotation.thresholds wired (WS6-wire)
+rotation.thresholds.warning_percent	bd-ws6-config-truth-ienmd.1	G-list dead knob: rotation.thresholds wired (WS6-wire)
+rotation.usage_percent_threshold	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+routing.affinity_bonus	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+routing.affinity_enabled	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+routing.context_weight	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+routing.exclude_context_above	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+routing.exclude_if_error	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+routing.exclude_if_generating	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+routing.exclude_if_rate_limited	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+routing.recency_weight	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+routing.state_weight	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+safety.profile	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+scanner.beads.auto_close	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+scanner.beads.auto_create	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+scanner.beads.labels	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+scanner.beads.min_severity	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+scanner.defaults.exclude	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+scanner.defaults.languages	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+scanner.defaults.parallel	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+scanner.defaults.timeout	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+scanner.notifications.enabled	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+scanner.notifications.on_new_critical	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+scanner.notifications.summary_after_scan	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+scanner.thresholds.ci.block_critical	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+scanner.thresholds.ci.block_errors	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+scanner.thresholds.ci.fail_critical	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+scanner.thresholds.ci.fail_errors	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+scanner.thresholds.ci.show_info	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+scanner.thresholds.ci.show_warnings	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+scanner.thresholds.dashboard.block_critical	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+scanner.thresholds.dashboard.block_errors	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+scanner.thresholds.dashboard.fail_critical	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+scanner.thresholds.dashboard.fail_errors	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+scanner.thresholds.dashboard.show_info	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+scanner.thresholds.dashboard.show_warnings	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+scanner.thresholds.interactive.block_critical	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+scanner.thresholds.interactive.block_errors	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+scanner.thresholds.interactive.fail_critical	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+scanner.thresholds.interactive.fail_errors	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+scanner.thresholds.interactive.show_info	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+scanner.thresholds.interactive.show_warnings	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+scanner.thresholds.pre_commit.block_critical	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+scanner.thresholds.pre_commit.block_errors	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+scanner.thresholds.pre_commit.fail_critical	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+scanner.thresholds.pre_commit.fail_errors	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+scanner.thresholds.pre_commit.show_info	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+scanner.thresholds.pre_commit.show_warnings	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+scanner.tools.disabled	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+scanner.tools.enabled	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+scanner.ubs_path	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+send.base_prompt	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+send.base_prompt_file	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+spawn_pacing.agent_caps.claude_max_concurrent	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+spawn_pacing.agent_caps.claude_ramp_up_delay_ms	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+spawn_pacing.agent_caps.claude_rate_per_sec	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+spawn_pacing.agent_caps.codex_max_concurrent	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+spawn_pacing.agent_caps.codex_ramp_up_delay_ms	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+spawn_pacing.agent_caps.codex_rate_per_sec	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+spawn_pacing.agent_caps.cooldown_on_failure_ms	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+spawn_pacing.agent_caps.gemini_max_concurrent	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+spawn_pacing.agent_caps.gemini_ramp_up_delay_ms	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+spawn_pacing.agent_caps.gemini_rate_per_sec	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+spawn_pacing.agent_caps.recovery_successes	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+spawn_pacing.backoff.global_pause_duration_ms	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+spawn_pacing.backoff.initial_delay_ms	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+spawn_pacing.backoff.max_consecutive_failures	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+spawn_pacing.backoff.max_delay_ms	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+spawn_pacing.backoff.multiplier	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+spawn_pacing.backpressure_threshold	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+spawn_pacing.burst_size	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+spawn_pacing.default_retries	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+spawn_pacing.enabled	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+spawn_pacing.headroom.check_interval_ms	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+spawn_pacing.headroom.enabled	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+spawn_pacing.headroom.max_load_average	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+spawn_pacing.headroom.max_open_files	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+spawn_pacing.headroom.min_free_disk_mb	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+spawn_pacing.headroom.min_free_mb	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+spawn_pacing.max_concurrent_spawns	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+spawn_pacing.max_spawns_per_sec	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+spawn_pacing.retry_delay_ms	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+suggestions_enabled	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+swarm.auto_rotate_accounts	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+swarm.default_scan_dir	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+swarm.enabled	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+swarm.force_global_auth_clobber	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+swarm.limit_patterns	bd-ws6-config-truth-ienmd.2	G-list dead knob: swarm.limit_patterns removed (WS6-remove)
+swarm.marching_orders.default	bd-ws6-config-truth-ienmd.2	G-list dead knob: swarm.marching_orders removed (WS6-remove)
+swarm.marching_orders.review	bd-ws6-config-truth-ienmd.2	G-list dead knob: swarm.marching_orders removed (WS6-remove)
+swarm.panes_per_session	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+swarm.sessions_per_type	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+swarm.stagger_delay_ms	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+swarm.tier1_allocation.cc	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+swarm.tier1_allocation.cod	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+swarm.tier1_allocation.gmi	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+swarm.tier1_threshold	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+swarm.tier2_allocation.cc	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+swarm.tier2_allocation.cod	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+swarm.tier2_allocation.gmi	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+swarm.tier2_threshold	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+swarm.tier3_allocation.cc	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+swarm.tier3_allocation.cod	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+swarm.tier3_allocation.gmi	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+theme	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+tmux.activity_indicators.active_seconds	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+tmux.activity_indicators.enabled	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+tmux.activity_indicators.stalled_seconds	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+tmux.default_panes	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+tmux.history_limit	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
+tmux.palette_key	bd-ws6-config-truth-ienmd.2	G-list dead knob per H3 decision; removed (WS6-remove)
+tmux.pane_init_delay_ms	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
