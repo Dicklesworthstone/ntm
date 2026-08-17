@@ -13,6 +13,35 @@ NTM is a tmux session management tool for orchestrating multiple AI coding agent
 
 ## [Unreleased]
 
+- **Config truth (WS6-wire): `[retry]`, `rotation.thresholds`, and the
+  `memory.*`/`[recovery]` shadowing are now real.**
+  (bd-ws6-config-truth-ienmd.1)
+  - `[retry]` gains its first real readers. `config.RetryPolicyFor` now
+    governs three shipping retry loops: webhook event delivery
+    (`[retry.webhook]` + the global backoff shape knobs `max_delay_ms`,
+    `backoff_factor`, `jitter`), robot alert webhook delivery
+    (`[retry.alerts]`, inheriting globals), and Agent Mail MCP busy retries
+    (new `[retry.agent_mail]` override; defaults 3 retries / 500ms preserve
+    the historical hardcoded loop). Defaults are behavior-identical to the
+    previous hardcoded values; `retry.jitter` now defaults to `false`
+    because no shipped loop ever jittered while the section was dead —
+    jitter is strictly opt-in.
+  - `rotation.thresholds.*` now governs the rotation engine.
+    `warning_percent`/`critical_percent` classify quota readings in
+    `ntm rotate all-limited` (a pane at or above `critical_percent` is now
+    selected for rotation even before the provider hard-limits it;
+    `warning_percent` readings are surfaced without rotating).
+    `restart_if_tokens_above`/`restart_if_session_hours` add restart
+    triggers to the coordinator's context-rotation check (active only when
+    `rotation.usage_percent_threshold` > 0 enables that checker).
+  - `[recovery]` is now the single session-recovery section. The
+    overlapping deprecated `memory.*` keys (`include_in_recovery`,
+    `max_rules`, `query_timeout_seconds`, and the recovery side of
+    `enabled`) are aliased into their `[recovery]` counterparts for this
+    release with a loud per-key deprecation warning; the aliases are
+    removed in v1.27.0. Explicit `[recovery]` keys always win. The
+    send-scoped `memory.send_*` keys are unaffected and stay in `[memory]`.
+
 - **`ntm metrics snapshot list` now really lists saved snapshots.** The
   command previously returned an empty result unconditionally while
   `snapshot save` and `compare` genuinely persisted to the
