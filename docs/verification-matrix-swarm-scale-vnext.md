@@ -148,12 +148,12 @@ The previous revision carried rows for `bd-2mb03.1` (swarm pressure
 governor) and `bd-2mb03.6.1` (live bottleneck profiler dashboard).
 Both rows are removed in this regeneration: their only performance
 evidence (a benchmark and a load figure that never existed in the tree)
-was fictional, and the features themselves are slated for deletion under C8
-(`bd-ws2-wire-or-delete-ykmcz.9`, wave W4, operator sign-off pending).
-The packages' existing unit tests remain covered by the repo-wide
-`go test -short ./...` gate; if C8's deletion is vetoed, new matrix
-rows must cite real gates by name so the conformance test can resolve
-them.
+was fictional, and the features themselves were deleted under C8
+(`bd-ws2-wire-or-delete-ykmcz.9`, wave W4, operator sign-off recorded
+2026-08-17): the governor's `Gate()` path and the bottleneck profiler
+(`internal/profiler/bottleneck.go`, `backpressure.go`) are gone. The
+surviving pressure snapshot/admission code remains covered by the
+repo-wide `go test -short ./...` gate.
 
 ## Run sequencing
 

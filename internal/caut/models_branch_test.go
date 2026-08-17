@@ -185,42 +185,6 @@ func TestAgentTypeToProvider_AllCases(t *testing.T) {
 	}
 }
 
-// TestProviderToAgentType_AllCases covers all switch cases including cursor/windsurf/aider.
-func TestProviderToAgentType_AllCases(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		provider string
-		want     string
-	}{
-		{"claude", "cc"},
-		{"anthropic", "cc"},
-		{"claude-code", "cc"},
-		{"codex", "cod"},
-		{"openai", "cod"},
-		{"openai-codex", "cod"},
-		{"gemini", "gmi"},
-		{"google", "gmi"},
-		{"google-gemini", "gmi"},
-		{"cursor", "cursor"},
-		{"ws", "windsurf"},
-		{"windsurf", "windsurf"},
-		{"aider", "aider"},
-		{"unknown", ""},
-		{"", ""},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.provider, func(t *testing.T) {
-			t.Parallel()
-			if got := ProviderToAgentType(tt.provider); got != tt.want {
-				t.Errorf("ProviderToAgentType(%q) = %q, want %q", tt.provider, got, tt.want)
-			}
-		})
-	}
-}
-
-// TestIsRateLimited_NilUsedPercent tests PrimaryRateWindow non-nil but UsedPercent nil.
 func TestIsRateLimited_NilUsedPercent(t *testing.T) {
 	t.Parallel()
 

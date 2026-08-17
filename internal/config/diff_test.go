@@ -83,7 +83,6 @@ func TestDiff_TmuxSettings(t *testing.T) {
 
 	cfg := Default()
 	cfg.Tmux.DefaultPanes = 20
-	cfg.Tmux.PaletteKey = "F7"
 	cfg.Tmux.PaneInitDelayMs = 500
 
 	diffs := Diff(cfg)
@@ -95,7 +94,6 @@ func TestDiff_TmuxSettings(t *testing.T) {
 
 	for _, expected := range []string{
 		"tmux.default_panes",
-		"tmux.palette_key",
 		"tmux.pane_init_delay_ms",
 	} {
 		if !paths[expected] {

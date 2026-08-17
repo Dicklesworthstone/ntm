@@ -180,18 +180,6 @@ internal/bv/triage.go:GetTriageTopPicks	bd-g1-deadcode-backlog-2ijy8	outside the
 internal/bv/triage.go:SetTriageCacheTTL	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/cass/types.go:CASSError.Error	bd-g1-deadcode-backlog-2ijy8	outside the C10 injection-engine wire; typed-API surface with test-only callers; triage to wire-or-delete
 internal/cass/types.go:Message.TimestampTime	bd-g1-deadcode-backlog-2ijy8	outside the C10 injection-engine wire; typed-API surface with test-only callers; triage to wire-or-delete
-internal/caut/client.go:CachedClient.CacheStats	bd-ws2-wire-or-delete-ykmcz.10	C9 caut->CAAM coordinator; DELETE (operator sign-off, RULE 1)
-internal/caut/client.go:CachedClient.GetAgentUsage	bd-ws2-wire-or-delete-ykmcz.10	C9 caut->CAAM coordinator; DELETE (operator sign-off, RULE 1)
-internal/caut/client.go:CachedClient.Invalidate	bd-ws2-wire-or-delete-ykmcz.10	C9 caut->CAAM coordinator; DELETE (operator sign-off, RULE 1)
-internal/caut/client.go:CachedClient.InvalidateAll	bd-ws2-wire-or-delete-ykmcz.10	C9 caut->CAAM coordinator; DELETE (operator sign-off, RULE 1)
-internal/caut/client.go:CachedClient.IsInstalled	bd-ws2-wire-or-delete-ykmcz.10	C9 caut->CAAM coordinator; DELETE (operator sign-off, RULE 1)
-internal/caut/client.go:Client.FetchAllSupportedUsage	bd-ws2-wire-or-delete-ykmcz.10	C9 caut->CAAM coordinator; DELETE (operator sign-off, RULE 1)
-internal/caut/client.go:Client.GetAgentUsage	bd-ws2-wire-or-delete-ykmcz.10	C9 caut->CAAM coordinator; DELETE (operator sign-off, RULE 1)
-internal/caut/client.go:WithBinaryPath	bd-ws2-wire-or-delete-ykmcz.10	C9 caut->CAAM coordinator; DELETE (operator sign-off, RULE 1)
-internal/caut/client.go:WithExecutor	bd-ws2-wire-or-delete-ykmcz.10	C9 caut->CAAM coordinator; DELETE (operator sign-off, RULE 1)
-internal/caut/models.go:ProviderToAgentType	bd-ws2-wire-or-delete-ykmcz.10	C9 caut->CAAM coordinator; DELETE (operator sign-off, RULE 1)
-internal/caut/models.go:UsageResult.GetPayloadByProvider	bd-ws2-wire-or-delete-ykmcz.10	C9 caut->CAAM coordinator; DELETE (operator sign-off, RULE 1)
-internal/caut/models.go:UsageResult.HasErrors	bd-ws2-wire-or-delete-ykmcz.10	C9 caut->CAAM coordinator; DELETE (operator sign-off, RULE 1)
 internal/checkpoint/auto.go:AutoCheckpointer.GetLastAutoCheckpoint	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/checkpoint/auto.go:AutoCheckpointer.ListAutoCheckpoints	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/checkpoint/auto.go:AutoCheckpointer.TimeSinceLastAutoCheckpoint	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
@@ -820,19 +808,6 @@ internal/ideation/refinement.go:isReadyWorkExists	bd-g1-deadcode-backlog-2ijy8	o
 internal/ideation/refinement.go:refinementNextActions	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/ideation/refinement.go:renderedBeadRefs	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/ideation/renderer.go:RenderRoadmapJSON	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/integrations/caut/poller.go:InitGlobalPoller	bd-ws2-wire-or-delete-ykmcz.10	C9 caut->CAAM coordinator; DELETE (operator sign-off, RULE 1)
-internal/integrations/caut/poller.go:pollerLogger	bd-ws2-wire-or-delete-ykmcz.10	C9 caut->CAAM coordinator; DELETE (operator sign-off, RULE 1)
-internal/integrations/caut/poller.go:StartGlobalPoller	bd-ws2-wire-or-delete-ykmcz.10	C9 caut->CAAM coordinator; DELETE (operator sign-off, RULE 1)
-internal/integrations/caut/poller.go:StopGlobalPoller	bd-ws2-wire-or-delete-ykmcz.10	C9 caut->CAAM coordinator; DELETE (operator sign-off, RULE 1)
-internal/integrations/caut/poller.go:UsagePoller.checkAlerts	bd-ws2-wire-or-delete-ykmcz.10	C9 caut->CAAM coordinator; DELETE (operator sign-off, RULE 1)
-internal/integrations/caut/poller.go:UsagePoller.IsRunning	bd-ws2-wire-or-delete-ykmcz.10	C9 caut->CAAM coordinator; DELETE (operator sign-off, RULE 1)
-internal/integrations/caut/poller.go:UsagePoller.poll	bd-ws2-wire-or-delete-ykmcz.10	C9 caut->CAAM coordinator; DELETE (operator sign-off, RULE 1)
-internal/integrations/caut/poller.go:UsagePoller.pollLoop	bd-ws2-wire-or-delete-ykmcz.10	C9 caut->CAAM coordinator; DELETE (operator sign-off, RULE 1)
-internal/integrations/caut/poller.go:UsagePoller.PollNow	bd-ws2-wire-or-delete-ykmcz.10	C9 caut->CAAM coordinator; DELETE (operator sign-off, RULE 1)
-internal/integrations/caut/poller.go:UsagePoller.pollWithTimeout	bd-ws2-wire-or-delete-ykmcz.10	C9 caut->CAAM coordinator; DELETE (operator sign-off, RULE 1)
-internal/integrations/caut/poller.go:UsagePoller.SetInterval	bd-ws2-wire-or-delete-ykmcz.10	C9 caut->CAAM coordinator; DELETE (operator sign-off, RULE 1)
-internal/integrations/caut/poller.go:UsagePoller.Start	bd-ws2-wire-or-delete-ykmcz.10	C9 caut->CAAM coordinator; DELETE (operator sign-off, RULE 1)
-internal/integrations/caut/poller.go:UsagePoller.Stop	bd-ws2-wire-or-delete-ykmcz.10	C9 caut->CAAM coordinator; DELETE (operator sign-off, RULE 1)
 internal/integrations/dcg/audit.go:AuditLogger.Flush	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/integrations/dcg/audit.go:AuditLogger.Path	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/integrations/dcg/hooks.go:GenerateHookJSON	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
@@ -1042,9 +1017,6 @@ internal/policy/logger.go:BlockedLogger.LogBlocked	bd-g1-deadcode-backlog-2ijy8	
 internal/policy/logger.go:NewBlockedLogger	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/pressure/budget.go:MergeBudgets	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/pressure/budget.go:mergeMin	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/pressure/buildstorm.go:applyNoRCHDecision	bd-ws2-wire-or-delete-ykmcz.10	C9 rch build-storm integration; DELETE (operator sign-off, RULE 1)
-internal/pressure/buildstorm.go:buildStormReadings	bd-ws2-wire-or-delete-ykmcz.10	C9 rch build-storm integration; DELETE (operator sign-off, RULE 1)
-internal/pressure/buildstorm.go:EvaluateBuildStorm	bd-ws2-wire-or-delete-ykmcz.10	C9 rch build-storm integration; DELETE (operator sign-off, RULE 1)
 internal/pressure/calibration.go:CalibrateHostCapacity	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/pressure/calibration.go:clamp01	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/pressure/calibration.go:cloneThresholds	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
@@ -1064,9 +1036,6 @@ internal/pressure/calibration.go:sortedCalibrationSources	bd-g1-deadcode-backlog
 internal/pressure/calibration.go:syntheticRunReason	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/pressure/calibration.go:uniqueSortedStrings	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/pressure/calibration.go:warningCodeForRecommendationReason	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/pressure/governor.go:Governor.budgetFor	bd-ws2-wire-or-delete-ykmcz.9	C8 pressure governor; DELETE (fictional BenchmarkGate evidence)
-internal/pressure/governor.go:Governor.Gate	bd-ws2-wire-or-delete-ykmcz.9	C8 pressure governor; DELETE (fictional BenchmarkGate evidence)
-internal/pressure/governor.go:Governor.SetMode	bd-ws2-wire-or-delete-ykmcz.9	C8 pressure governor; DELETE (fictional BenchmarkGate evidence)
 internal/pressure/profile_trend.go:BuildHostProfileTrendRecord	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/pressure/profile_trend.go:EvaluateHostProfileTrend	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/pressure/profile_trend.go:firstNonEmpty	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
@@ -1093,27 +1062,6 @@ internal/privacy/privacy.go:DefaultManager	bd-g1-deadcode-backlog-2ijy8	outside 
 internal/privacy/privacy.go:Manager.GetState	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/privacy/privacy.go:Manager.RegisterSession	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/privacy/privacy.go:Manager.UnregisterSession	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/profiler/backpressure.go:BackpressureInputsFromBottlenecks	bd-ws2-wire-or-delete-ykmcz.9	C8 bottleneck profiler; DELETE (fictional BenchmarkGate evidence)
-internal/profiler/backpressure.go:roundFloatMS	bd-ws2-wire-or-delete-ykmcz.9	C8 bottleneck profiler; DELETE (fictional BenchmarkGate evidence)
-internal/profiler/backpressure.go:surfaceForHotspot	bd-ws2-wire-or-delete-ykmcz.9	C8 bottleneck profiler; DELETE (fictional BenchmarkGate evidence)
-internal/profiler/bottleneck.go:BottleneckCorrelation.IsZero	bd-ws2-wire-or-delete-ykmcz.9	C8 bottleneck profiler; DELETE (fictional BenchmarkGate evidence)
-internal/profiler/bottleneck.go:buildPhaseSet	bd-ws2-wire-or-delete-ykmcz.9	C8 bottleneck profiler; DELETE (fictional BenchmarkGate evidence)
-internal/profiler/bottleneck.go:ComputeHotspots	bd-ws2-wire-or-delete-ykmcz.9	C8 bottleneck profiler; DELETE (fictional BenchmarkGate evidence)
-internal/profiler/bottleneck.go:ComputeTrend	bd-ws2-wire-or-delete-ykmcz.9	C8 bottleneck profiler; DELETE (fictional BenchmarkGate evidence)
-internal/profiler/bottleneck.go:hotspotKey	bd-ws2-wire-or-delete-ykmcz.9	C8 bottleneck profiler; DELETE (fictional BenchmarkGate evidence)
-internal/profiler/bottleneck.go:itoa	bd-ws2-wire-or-delete-ykmcz.9	C8 bottleneck profiler; DELETE (fictional BenchmarkGate evidence)
-internal/profiler/bottleneck.go:LiveBottleneck	bd-ws2-wire-or-delete-ykmcz.9	C8 bottleneck profiler; DELETE (fictional BenchmarkGate evidence)
-internal/profiler/bottleneck.go:mergeCorrelationFromTags	bd-ws2-wire-or-delete-ykmcz.9	C8 bottleneck profiler; DELETE (fictional BenchmarkGate evidence)
-internal/profiler/bottleneck.go:tagString	bd-ws2-wire-or-delete-ykmcz.9	C8 bottleneck profiler; DELETE (fictional BenchmarkGate evidence)
-internal/profiler/profiler.go:Disable	bd-ws2-wire-or-delete-ykmcz.9	C8 bottleneck profiler; DELETE (fictional BenchmarkGate evidence)
-internal/profiler/profiler.go:GetSpans	bd-ws2-wire-or-delete-ykmcz.9	C8 bottleneck profiler; DELETE (fictional BenchmarkGate evidence)
-internal/profiler/profiler.go:Reset	bd-ws2-wire-or-delete-ykmcz.9	C8 bottleneck profiler; DELETE (fictional BenchmarkGate evidence)
-internal/profiler/profiler.go:StartChild	bd-ws2-wire-or-delete-ykmcz.9	C8 bottleneck profiler; DELETE (fictional BenchmarkGate evidence)
-internal/profiler/profiler.go:Time	bd-ws2-wire-or-delete-ykmcz.9	C8 bottleneck profiler; DELETE (fictional BenchmarkGate evidence)
-internal/profiler/profiler.go:TimePhase	bd-ws2-wire-or-delete-ykmcz.9	C8 bottleneck profiler; DELETE (fictional BenchmarkGate evidence)
-internal/profiler/profiler.go:TimeWithError	bd-ws2-wire-or-delete-ykmcz.9	C8 bottleneck profiler; DELETE (fictional BenchmarkGate evidence)
-internal/profiler/profiler.go:TotalDuration	bd-ws2-wire-or-delete-ykmcz.9	C8 bottleneck profiler; DELETE (fictional BenchmarkGate evidence)
-internal/profiler/recommendation.go:GetRecommendationReport	bd-ws2-wire-or-delete-ykmcz.9	C8 bottleneck profiler; DELETE (fictional BenchmarkGate evidence)
 internal/quota/claude.go:ParseClaudeUsageString	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/quota/quota.go:NewTracker	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/quota/quota.go:Tracker.ClearCache	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
@@ -1661,53 +1609,6 @@ internal/swarm/agent_launcher.go:NewAgentLauncher	bd-g1-deadcode-backlog-2ijy8	o
 internal/swarm/agent_launcher.go:NewAgentLauncherWithClient	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/swarm/agent_launcher.go:NewAgentLauncherWithLogger	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/swarm/agent_launcher.go:ValidateAgentType	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/swarm/auto_respawner.go:agentReadyPatterns	bd-ws2-wire-or-delete-ykmcz.5	C5 dead 1230-line auto-respawner; DELETE (operator sign-off, RULE 1)
-internal/swarm/auto_respawner.go:AutoRespawner.capturePaneOutput	bd-ws2-wire-or-delete-ykmcz.5	C5 dead 1230-line auto-respawner; DELETE (operator sign-off, RULE 1)
-internal/swarm/auto_respawner.go:AutoRespawner.cdToProject	bd-ws2-wire-or-delete-ykmcz.5	C5 dead 1230-line auto-respawner; DELETE (operator sign-off, RULE 1)
-internal/swarm/auto_respawner.go:AutoRespawner.clearPane	bd-ws2-wire-or-delete-ykmcz.5	C5 dead 1230-line auto-respawner; DELETE (operator sign-off, RULE 1)
-internal/swarm/auto_respawner.go:AutoRespawner.emitEvent	bd-ws2-wire-or-delete-ykmcz.5	C5 dead 1230-line auto-respawner; DELETE (operator sign-off, RULE 1)
-internal/swarm/auto_respawner.go:AutoRespawner.Events	bd-ws2-wire-or-delete-ykmcz.5	C5 dead 1230-line auto-respawner; DELETE (operator sign-off, RULE 1)
-internal/swarm/auto_respawner.go:AutoRespawner.forceKill	bd-ws2-wire-or-delete-ykmcz.5	C5 dead 1230-line auto-respawner; DELETE (operator sign-off, RULE 1)
-internal/swarm/auto_respawner.go:AutoRespawner.getAgentCommand	bd-ws2-wire-or-delete-ykmcz.5	C5 dead 1230-line auto-respawner; DELETE (operator sign-off, RULE 1)
-internal/swarm/auto_respawner.go:AutoRespawner.getMarchingOrders	bd-ws2-wire-or-delete-ykmcz.5	C5 dead 1230-line auto-respawner; DELETE (operator sign-off, RULE 1)
-internal/swarm/auto_respawner.go:AutoRespawner.getPanePID	bd-ws2-wire-or-delete-ykmcz.5	C5 dead 1230-line auto-respawner; DELETE (operator sign-off, RULE 1)
-internal/swarm/auto_respawner.go:AutoRespawner.GetRetryCount	bd-ws2-wire-or-delete-ykmcz.5	C5 dead 1230-line auto-respawner; DELETE (operator sign-off, RULE 1)
-internal/swarm/auto_respawner.go:AutoRespawner.isRetryLimitExceeded	bd-ws2-wire-or-delete-ykmcz.5	C5 dead 1230-line auto-respawner; DELETE (operator sign-off, RULE 1)
-internal/swarm/auto_respawner.go:AutoRespawner.isShellPrompt	bd-ws2-wire-or-delete-ykmcz.5	C5 dead 1230-line auto-respawner; DELETE (operator sign-off, RULE 1)
-internal/swarm/auto_respawner.go:AutoRespawner.killAgent	bd-ws2-wire-or-delete-ykmcz.5	C5 dead 1230-line auto-respawner; DELETE (operator sign-off, RULE 1)
-internal/swarm/auto_respawner.go:AutoRespawner.killWithFallback	bd-ws2-wire-or-delete-ykmcz.5	C5 dead 1230-line auto-respawner; DELETE (operator sign-off, RULE 1)
-internal/swarm/auto_respawner.go:AutoRespawner.logger	bd-ws2-wire-or-delete-ykmcz.5	C5 dead 1230-line auto-respawner; DELETE (operator sign-off, RULE 1)
-internal/swarm/auto_respawner.go:AutoRespawner.normalizeAgentType	bd-ws2-wire-or-delete-ykmcz.5	C5 dead 1230-line auto-respawner; DELETE (operator sign-off, RULE 1)
-internal/swarm/auto_respawner.go:AutoRespawner.processLimitEvents	bd-ws2-wire-or-delete-ykmcz.5	C5 dead 1230-line auto-respawner; DELETE (operator sign-off, RULE 1)
-internal/swarm/auto_respawner.go:AutoRespawner.projectForPane	bd-ws2-wire-or-delete-ykmcz.5	C5 dead 1230-line auto-respawner; DELETE (operator sign-off, RULE 1)
-internal/swarm/auto_respawner.go:AutoRespawner.promptInjector	bd-ws2-wire-or-delete-ykmcz.5	C5 dead 1230-line auto-respawner; DELETE (operator sign-off, RULE 1)
-internal/swarm/auto_respawner.go:AutoRespawner.recordRetryAttempt	bd-ws2-wire-or-delete-ykmcz.5	C5 dead 1230-line auto-respawner; DELETE (operator sign-off, RULE 1)
-internal/swarm/auto_respawner.go:AutoRespawner.ResetAllRetryCounts	bd-ws2-wire-or-delete-ykmcz.5	C5 dead 1230-line auto-respawner; DELETE (operator sign-off, RULE 1)
-internal/swarm/auto_respawner.go:AutoRespawner.ResetRetryCount	bd-ws2-wire-or-delete-ykmcz.5	C5 dead 1230-line auto-respawner; DELETE (operator sign-off, RULE 1)
-internal/swarm/auto_respawner.go:AutoRespawner.respawn	bd-ws2-wire-or-delete-ykmcz.5	C5 dead 1230-line auto-respawner; DELETE (operator sign-off, RULE 1)
-internal/swarm/auto_respawner.go:AutoRespawner.Respawn	bd-ws2-wire-or-delete-ykmcz.5	C5 dead 1230-line auto-respawner; DELETE (operator sign-off, RULE 1)
-internal/swarm/auto_respawner.go:AutoRespawner.spawnAgent	bd-ws2-wire-or-delete-ykmcz.5	C5 dead 1230-line auto-respawner; DELETE (operator sign-off, RULE 1)
-internal/swarm/auto_respawner.go:AutoRespawner.spawnAgentWithCodexHome	bd-ws2-wire-or-delete-ykmcz.5	C5 dead 1230-line auto-respawner; DELETE (operator sign-off, RULE 1)
-internal/swarm/auto_respawner.go:AutoRespawner.Start	bd-ws2-wire-or-delete-ykmcz.5	C5 dead 1230-line auto-respawner; DELETE (operator sign-off, RULE 1)
-internal/swarm/auto_respawner.go:AutoRespawner.Stop	bd-ws2-wire-or-delete-ykmcz.5	C5 dead 1230-line auto-respawner; DELETE (operator sign-off, RULE 1)
-internal/swarm/auto_respawner.go:AutoRespawner.tmuxClient	bd-ws2-wire-or-delete-ykmcz.5	C5 dead 1230-line auto-respawner; DELETE (operator sign-off, RULE 1)
-internal/swarm/auto_respawner.go:AutoRespawner.trySendEvent	bd-ws2-wire-or-delete-ykmcz.5	C5 dead 1230-line auto-respawner; DELETE (operator sign-off, RULE 1)
-internal/swarm/auto_respawner.go:AutoRespawner.waitForAgentReady	bd-ws2-wire-or-delete-ykmcz.5	C5 dead 1230-line auto-respawner; DELETE (operator sign-off, RULE 1)
-internal/swarm/auto_respawner.go:AutoRespawner.waitForExit	bd-ws2-wire-or-delete-ykmcz.5	C5 dead 1230-line auto-respawner; DELETE (operator sign-off, RULE 1)
-internal/swarm/auto_respawner.go:AutoRespawner.WithAccountRotator	bd-ws2-wire-or-delete-ykmcz.5	C5 dead 1230-line auto-respawner; DELETE (operator sign-off, RULE 1)
-internal/swarm/auto_respawner.go:AutoRespawner.WithCommandBuilder	bd-ws2-wire-or-delete-ykmcz.5	C5 dead 1230-line auto-respawner; DELETE (operator sign-off, RULE 1)
-internal/swarm/auto_respawner.go:AutoRespawner.WithConfig	bd-ws2-wire-or-delete-ykmcz.5	C5 dead 1230-line auto-respawner; DELETE (operator sign-off, RULE 1)
-internal/swarm/auto_respawner.go:AutoRespawner.WithLimitDetector	bd-ws2-wire-or-delete-ykmcz.5	C5 dead 1230-line auto-respawner; DELETE (operator sign-off, RULE 1)
-internal/swarm/auto_respawner.go:AutoRespawner.WithLogger	bd-ws2-wire-or-delete-ykmcz.5	C5 dead 1230-line auto-respawner; DELETE (operator sign-off, RULE 1)
-internal/swarm/auto_respawner.go:AutoRespawner.WithMarchingOrders	bd-ws2-wire-or-delete-ykmcz.5	C5 dead 1230-line auto-respawner; DELETE (operator sign-off, RULE 1)
-internal/swarm/auto_respawner.go:AutoRespawner.WithPaneSpawner	bd-ws2-wire-or-delete-ykmcz.5	C5 dead 1230-line auto-respawner; DELETE (operator sign-off, RULE 1)
-internal/swarm/auto_respawner.go:AutoRespawner.WithProjectPathLookup	bd-ws2-wire-or-delete-ykmcz.5	C5 dead 1230-line auto-respawner; DELETE (operator sign-off, RULE 1)
-internal/swarm/auto_respawner.go:AutoRespawner.WithPromptInjector	bd-ws2-wire-or-delete-ykmcz.5	C5 dead 1230-line auto-respawner; DELETE (operator sign-off, RULE 1)
-internal/swarm/auto_respawner.go:AutoRespawner.WithTmuxClient	bd-ws2-wire-or-delete-ykmcz.5	C5 dead 1230-line auto-respawner; DELETE (operator sign-off, RULE 1)
-internal/swarm/auto_respawner.go:DefaultAutoRespawnerConfig	bd-ws2-wire-or-delete-ykmcz.5	C5 dead 1230-line auto-respawner; DELETE (operator sign-off, RULE 1)
-internal/swarm/auto_respawner.go:NewAutoRespawner	bd-ws2-wire-or-delete-ykmcz.5	C5 dead 1230-line auto-respawner; DELETE (operator sign-off, RULE 1)
-internal/swarm/auto_respawner.go:sleepWithContext	bd-ws2-wire-or-delete-ykmcz.5	C5 dead 1230-line auto-respawner; DELETE (operator sign-off, RULE 1)
-internal/swarm/auto_respawner.go:validateAutoRespawnAgentType	bd-ws2-wire-or-delete-ykmcz.5	C5 dead 1230-line auto-respawner; DELETE (operator sign-off, RULE 1)
 internal/swarm/bead_scanner.go:WithBrPath	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/swarm/bead_scanner.go:WithLogger	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/swarm/bead_scanner.go:WithParallelism	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
@@ -2090,72 +1991,8 @@ internal/tui/dashboard/layout.go:RenderSparkline	bd-g1-deadcode-backlog-2ijy8	ou
 internal/tui/dashboard/layout.go:ViewportPosition.EnsureVisible	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/tui/dashboard/layout.go:ViewportPosition.ScrollIndicator	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/tui/dashboard/model.go:NewWithInterval	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/tui/dashboard/panels/compare.go:compareConfig	bd-ws2-wire-or-delete-ykmcz.7	C6-delete redundant panel; DELETE (operator sign-off, RULE 1)
-internal/tui/dashboard/panels/compare.go:ComparePanel.HasError	bd-ws2-wire-or-delete-ykmcz.7	C6-delete redundant panel; DELETE (operator sign-off, RULE 1)
-internal/tui/dashboard/panels/compare.go:ComparePanel.Init	bd-ws2-wire-or-delete-ykmcz.7	C6-delete redundant panel; DELETE (operator sign-off, RULE 1)
-internal/tui/dashboard/panels/compare.go:ComparePanel.Keybindings	bd-ws2-wire-or-delete-ykmcz.7	C6-delete redundant panel; DELETE (operator sign-off, RULE 1)
-internal/tui/dashboard/panels/compare.go:ComparePanel.renderConclusions	bd-ws2-wire-or-delete-ykmcz.7	C6-delete redundant panel; DELETE (operator sign-off, RULE 1)
-internal/tui/dashboard/panels/compare.go:ComparePanel.renderContributions	bd-ws2-wire-or-delete-ykmcz.7	C6-delete redundant panel; DELETE (operator sign-off, RULE 1)
-internal/tui/dashboard/panels/compare.go:ComparePanel.renderFindings	bd-ws2-wire-or-delete-ykmcz.7	C6-delete redundant panel; DELETE (operator sign-off, RULE 1)
-internal/tui/dashboard/panels/compare.go:ComparePanel.renderModes	bd-ws2-wire-or-delete-ykmcz.7	C6-delete redundant panel; DELETE (operator sign-off, RULE 1)
-internal/tui/dashboard/panels/compare.go:ComparePanel.renderSummary	bd-ws2-wire-or-delete-ykmcz.7	C6-delete redundant panel; DELETE (operator sign-off, RULE 1)
-internal/tui/dashboard/panels/compare.go:ComparePanel.renderTabs	bd-ws2-wire-or-delete-ykmcz.7	C6-delete redundant panel; DELETE (operator sign-off, RULE 1)
-internal/tui/dashboard/panels/compare.go:ComparePanel.SetData	bd-ws2-wire-or-delete-ykmcz.7	C6-delete redundant panel; DELETE (operator sign-off, RULE 1)
-internal/tui/dashboard/panels/compare.go:ComparePanel.Update	bd-ws2-wire-or-delete-ykmcz.7	C6-delete redundant panel; DELETE (operator sign-off, RULE 1)
-internal/tui/dashboard/panels/compare.go:ComparePanel.View	bd-ws2-wire-or-delete-ykmcz.7	C6-delete redundant panel; DELETE (operator sign-off, RULE 1)
-internal/tui/dashboard/panels/compare.go:NewComparePanel	bd-ws2-wire-or-delete-ykmcz.7	C6-delete redundant panel; DELETE (operator sign-off, RULE 1)
-internal/tui/dashboard/panels/compare.go:truncateString	bd-ws2-wire-or-delete-ykmcz.7	C6-delete redundant panel; DELETE (operator sign-off, RULE 1)
-internal/tui/dashboard/panels/context.go:contextAgentTypeColor	bd-ws2-wire-or-delete-ykmcz.7	C6-delete redundant panel; DELETE (operator sign-off, RULE 1)
-internal/tui/dashboard/panels/context.go:contextConfig	bd-ws2-wire-or-delete-ykmcz.7	C6-delete redundant panel; DELETE (operator sign-off, RULE 1)
-internal/tui/dashboard/panels/context.go:ContextPanel.HasCritical	bd-ws2-wire-or-delete-ykmcz.7	C6-delete redundant panel; DELETE (operator sign-off, RULE 1)
-internal/tui/dashboard/panels/context.go:ContextPanel.HasError	bd-ws2-wire-or-delete-ykmcz.7	C6-delete redundant panel; DELETE (operator sign-off, RULE 1)
-internal/tui/dashboard/panels/context.go:ContextPanel.HasWarning	bd-ws2-wire-or-delete-ykmcz.7	C6-delete redundant panel; DELETE (operator sign-off, RULE 1)
-internal/tui/dashboard/panels/context.go:ContextPanel.Init	bd-ws2-wire-or-delete-ykmcz.7	C6-delete redundant panel; DELETE (operator sign-off, RULE 1)
-internal/tui/dashboard/panels/context.go:ContextPanel.Keybindings	bd-ws2-wire-or-delete-ykmcz.7	C6-delete redundant panel; DELETE (operator sign-off, RULE 1)
-internal/tui/dashboard/panels/context.go:ContextPanel.SetData	bd-ws2-wire-or-delete-ykmcz.7	C6-delete redundant panel; DELETE (operator sign-off, RULE 1)
-internal/tui/dashboard/panels/context.go:ContextPanel.SetDataFromPredictions	bd-ws2-wire-or-delete-ykmcz.7	C6-delete redundant panel; DELETE (operator sign-off, RULE 1)
-internal/tui/dashboard/panels/context.go:ContextPanel.Update	bd-ws2-wire-or-delete-ykmcz.7	C6-delete redundant panel; DELETE (operator sign-off, RULE 1)
-internal/tui/dashboard/panels/context.go:ContextPanel.View	bd-ws2-wire-or-delete-ykmcz.7	C6-delete redundant panel; DELETE (operator sign-off, RULE 1)
-internal/tui/dashboard/panels/context.go:formatMinutes	bd-ws2-wire-or-delete-ykmcz.7	C6-delete redundant panel; DELETE (operator sign-off, RULE 1)
-internal/tui/dashboard/panels/context.go:NewContextPanel	bd-ws2-wire-or-delete-ykmcz.7	C6-delete redundant panel; DELETE (operator sign-off, RULE 1)
 internal/tui/dashboard/panels/cost.go:padLeft	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/tui/dashboard/panels/cost.go:padRight	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/tui/dashboard/panels/effectiveness.go:effectivenessConfig	bd-ws2-wire-or-delete-ykmcz.7	C6-delete redundant panel; DELETE (operator sign-off, RULE 1)
-internal/tui/dashboard/panels/effectiveness.go:EffectivenessPanel.HasData	bd-ws2-wire-or-delete-ykmcz.7	C6-delete redundant panel; DELETE (operator sign-off, RULE 1)
-internal/tui/dashboard/panels/effectiveness.go:EffectivenessPanel.HasError	bd-ws2-wire-or-delete-ykmcz.7	C6-delete redundant panel; DELETE (operator sign-off, RULE 1)
-internal/tui/dashboard/panels/effectiveness.go:EffectivenessPanel.Init	bd-ws2-wire-or-delete-ykmcz.7	C6-delete redundant panel; DELETE (operator sign-off, RULE 1)
-internal/tui/dashboard/panels/effectiveness.go:EffectivenessPanel.Keybindings	bd-ws2-wire-or-delete-ykmcz.7	C6-delete redundant panel; DELETE (operator sign-off, RULE 1)
-internal/tui/dashboard/panels/effectiveness.go:EffectivenessPanel.renderAgentDetails	bd-ws2-wire-or-delete-ykmcz.7	C6-delete redundant panel; DELETE (operator sign-off, RULE 1)
-internal/tui/dashboard/panels/effectiveness.go:EffectivenessPanel.renderEmptyState	bd-ws2-wire-or-delete-ykmcz.7	C6-delete redundant panel; DELETE (operator sign-off, RULE 1)
-internal/tui/dashboard/panels/effectiveness.go:EffectivenessPanel.renderRecommendations	bd-ws2-wire-or-delete-ykmcz.7	C6-delete redundant panel; DELETE (operator sign-off, RULE 1)
-internal/tui/dashboard/panels/effectiveness.go:EffectivenessPanel.renderScoreBar	bd-ws2-wire-or-delete-ykmcz.7	C6-delete redundant panel; DELETE (operator sign-off, RULE 1)
-internal/tui/dashboard/panels/effectiveness.go:EffectivenessPanel.renderSummaries	bd-ws2-wire-or-delete-ykmcz.7	C6-delete redundant panel; DELETE (operator sign-off, RULE 1)
-internal/tui/dashboard/panels/effectiveness.go:EffectivenessPanel.scoreColor	bd-ws2-wire-or-delete-ykmcz.7	C6-delete redundant panel; DELETE (operator sign-off, RULE 1)
-internal/tui/dashboard/panels/effectiveness.go:EffectivenessPanel.SetData	bd-ws2-wire-or-delete-ykmcz.7	C6-delete redundant panel; DELETE (operator sign-off, RULE 1)
-internal/tui/dashboard/panels/effectiveness.go:EffectivenessPanel.toggleExpanded	bd-ws2-wire-or-delete-ykmcz.7	C6-delete redundant panel; DELETE (operator sign-off, RULE 1)
-internal/tui/dashboard/panels/effectiveness.go:EffectivenessPanel.trendArrow	bd-ws2-wire-or-delete-ykmcz.7	C6-delete redundant panel; DELETE (operator sign-off, RULE 1)
-internal/tui/dashboard/panels/effectiveness.go:EffectivenessPanel.Update	bd-ws2-wire-or-delete-ykmcz.7	C6-delete redundant panel; DELETE (operator sign-off, RULE 1)
-internal/tui/dashboard/panels/effectiveness.go:EffectivenessPanel.View	bd-ws2-wire-or-delete-ykmcz.7	C6-delete redundant panel; DELETE (operator sign-off, RULE 1)
-internal/tui/dashboard/panels/effectiveness.go:NewEffectivenessPanel	bd-ws2-wire-or-delete-ykmcz.7	C6-delete redundant panel; DELETE (operator sign-off, RULE 1)
-internal/tui/dashboard/panels/effectiveness.go:truncate	bd-ws2-wire-or-delete-ykmcz.7	C6-delete redundant panel; DELETE (operator sign-off, RULE 1)
-internal/tui/dashboard/panels/ensemble.go:assignmentProgress	bd-ws2-wire-or-delete-ykmcz.7	C6-delete redundant panel; DELETE (operator sign-off, RULE 1)
-internal/tui/dashboard/panels/ensemble.go:assignmentStatusIcon	bd-ws2-wire-or-delete-ykmcz.7	C6-delete redundant panel; DELETE (operator sign-off, RULE 1)
-internal/tui/dashboard/panels/ensemble.go:ensembleConfig	bd-ws2-wire-or-delete-ykmcz.7	C6-delete redundant panel; DELETE (operator sign-off, RULE 1)
-internal/tui/dashboard/panels/ensemble.go:EnsemblePanel.countAdvanced	bd-ws2-wire-or-delete-ykmcz.7	C6-delete redundant panel; DELETE (operator sign-off, RULE 1)
-internal/tui/dashboard/panels/ensemble.go:EnsemblePanel.formatTimeAgo	bd-ws2-wire-or-delete-ykmcz.7	C6-delete redundant panel; DELETE (operator sign-off, RULE 1)
-internal/tui/dashboard/panels/ensemble.go:EnsemblePanel.Init	bd-ws2-wire-or-delete-ykmcz.7	C6-delete redundant panel; DELETE (operator sign-off, RULE 1)
-internal/tui/dashboard/panels/ensemble.go:EnsemblePanel.Keybindings	bd-ws2-wire-or-delete-ykmcz.7	C6-delete redundant panel; DELETE (operator sign-off, RULE 1)
-internal/tui/dashboard/panels/ensemble.go:EnsemblePanel.lookupMode	bd-ws2-wire-or-delete-ykmcz.7	C6-delete redundant panel; DELETE (operator sign-off, RULE 1)
-internal/tui/dashboard/panels/ensemble.go:EnsemblePanel.renderAssignmentLine	bd-ws2-wire-or-delete-ykmcz.7	C6-delete redundant panel; DELETE (operator sign-off, RULE 1)
-internal/tui/dashboard/panels/ensemble.go:EnsemblePanel.SetCatalog	bd-ws2-wire-or-delete-ykmcz.7	C6-delete redundant panel; DELETE (operator sign-off, RULE 1)
-internal/tui/dashboard/panels/ensemble.go:EnsemblePanel.SetSession	bd-ws2-wire-or-delete-ykmcz.7	C6-delete redundant panel; DELETE (operator sign-off, RULE 1)
-internal/tui/dashboard/panels/ensemble.go:EnsemblePanel.Update	bd-ws2-wire-or-delete-ykmcz.7	C6-delete redundant panel; DELETE (operator sign-off, RULE 1)
-internal/tui/dashboard/panels/ensemble.go:EnsemblePanel.View	bd-ws2-wire-or-delete-ykmcz.7	C6-delete redundant panel; DELETE (operator sign-off, RULE 1)
-internal/tui/dashboard/panels/ensemble.go:NewEnsemblePanel	bd-ws2-wire-or-delete-ykmcz.7	C6-delete redundant panel; DELETE (operator sign-off, RULE 1)
-internal/tui/dashboard/panels/ensemble.go:renderProgressBar	bd-ws2-wire-or-delete-ykmcz.7	C6-delete redundant panel; DELETE (operator sign-off, RULE 1)
-internal/tui/dashboard/panels/ensemble.go:renderTierBadge	bd-ws2-wire-or-delete-ykmcz.7	C6-delete redundant panel; DELETE (operator sign-off, RULE 1)
-internal/tui/dashboard/panels/ensemble.go:shortenPaneName	bd-ws2-wire-or-delete-ykmcz.7	C6-delete redundant panel; DELETE (operator sign-off, RULE 1)
-internal/tui/dashboard/panels/ensemble.go:summarizeAssignmentStatus	bd-ws2-wire-or-delete-ykmcz.7	C6-delete redundant panel; DELETE (operator sign-off, RULE 1)
 internal/tui/dashboard/panels/history.go:HistoryPanel.moveCursor	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/tui/dashboard/panels/panel.go:DefaultPanelConfig	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/tui/dashboard/panels/panel.go:PadToHeight	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
@@ -2271,16 +2108,6 @@ internal/webhook/manager.go:WebhookManager.DeadLetters	bd-g1-deadcode-backlog-2i
 internal/webhook/manager.go:WebhookManager.Stats	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/webhook/manager.go:WebhookManager.Unregister	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/worktrees/manager.go:WorktreeManager.worktreePath	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-pkg:internal/contentionforecast	bd-ws2-wire-or-delete-ykmcz.10	C9 orphaned package (one of the nine); DELETE (operator sign-off, RULE 1)
-pkg:internal/dispatchplan	bd-ws2-wire-or-delete-ykmcz.10	C9 orphaned package (one of the nine); DELETE (operator sign-off, RULE 1)
-pkg:internal/doctor	bd-ws2-wire-or-delete-ykmcz.10	C9 orphaned package (one of the nine); DELETE (operator sign-off, RULE 1)
-pkg:internal/driftaudit	bd-ws2-wire-or-delete-ykmcz.10	C9 orphaned package (one of the nine); DELETE (operator sign-off, RULE 1)
-pkg:internal/evidencebudget	bd-ws2-wire-or-delete-ykmcz.10	C9 orphaned package (one of the nine); DELETE (operator sign-off, RULE 1)
-pkg:internal/fairness	bd-ws2-wire-or-delete-ykmcz.10	C9 orphaned package (one of the nine); DELETE (operator sign-off, RULE 1)
-pkg:internal/faultharness	bd-ws2-wire-or-delete-ykmcz.10	C9 orphaned package (one of the nine); DELETE (operator sign-off, RULE 1)
-pkg:internal/identityhygiene	bd-ws2-wire-or-delete-ykmcz.10	C9 orphaned package (one of the nine); DELETE (operator sign-off, RULE 1)
-pkg:internal/integrations	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-pkg:internal/parity	bd-ws2-wire-or-delete-ykmcz.10	C9 orphaned package (one of the nine); DELETE (operator sign-off, RULE 1)
 pkg:internal/robot/contract	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 pkg:internal/safety/redaction	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 pkg:internal/scheduler	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
@@ -2288,11 +2115,6 @@ pkg:internal/supportbundle	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap r
 pkg:internal/tui	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 pkg:internal/updater	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/cli/root.go:RootCommand	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete (amd64-config dead only)
-internal/serve/openapi.go:GenerateOpenAPISpec	bd-ws4-openapi-parity-wpwck.3	deprecated kernel-registry generator; superseded by router walk, deleted with the kernel registry in the W4 sign-off batch
-internal/serve/openapi.go:buildDescription	bd-ws4-openapi-parity-wpwck.3	helper of deprecated kernel-registry generator; deleted in the W4 sign-off batch
-internal/serve/openapi.go:buildInputSchema	bd-ws4-openapi-parity-wpwck.3	helper of deprecated kernel-registry generator; deleted in the W4 sign-off batch
-internal/serve/openapi.go:buildResponseSchema	bd-ws4-openapi-parity-wpwck.3	helper of deprecated kernel-registry generator; deleted in the W4 sign-off batch
-internal/serve/openapi.go:ensureReferencedSchema	bd-ws4-openapi-parity-wpwck.3	helper of deprecated kernel-registry generator; deleted in the W4 sign-off batch
-internal/serve/openapi.go:normalizePathForOpenAPI	bd-ws4-openapi-parity-wpwck.3	helper of deprecated kernel-registry generator; deleted in the W4 sign-off batch
 # permanent: test-helper
 internal/cass/client.go:WithExecutor	permanent	test-only executor injection hook; reached by internal/cass/client_test.go and internal/tui/components/cass_search_test.go
+internal/caut/client.go:WithExecutor	permanent	test-only executor injection hook; reached by internal/caut/client_test.go

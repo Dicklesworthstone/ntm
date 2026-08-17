@@ -10,7 +10,7 @@
     "lint": "eslint .",
     "test": "vitest",
     "test:run": "vitest run",
-    "gen:api": "openapi-typescript ../docs/openapi-kernel.json -o src/lib/api/schema.d.ts"
+    "gen:api": "openapi-typescript ../docs/openapi.json -o src/lib/api/schema.d.ts"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.100.10",

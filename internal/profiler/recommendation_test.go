@@ -20,9 +20,9 @@ func TestDefaultThresholds(t *testing.T) {
 }
 
 func TestRecommendationsNoSpans(t *testing.T) {
-	Reset()
+	resetProfiler()
 	Enable()
-	defer Disable()
+	defer disableProfiler()
 
 	recs := GetRecommendations()
 
@@ -40,9 +40,9 @@ func TestRecommendationsNoSpans(t *testing.T) {
 }
 
 func TestRecommendationsGoodPerformance(t *testing.T) {
-	Reset()
+	resetProfiler()
 	Enable()
-	defer Disable()
+	defer disableProfiler()
 
 	// Use very permissive thresholds so fast spans don't trigger any warnings
 	th := Thresholds{
@@ -88,9 +88,9 @@ func TestRecommendationsGoodPerformance(t *testing.T) {
 }
 
 func TestRecommendationsSlowStartup(t *testing.T) {
-	Reset()
+	resetProfiler()
 	Enable()
-	defer Disable()
+	defer disableProfiler()
 
 	// Custom thresholds for testing
 	th := Thresholds{
@@ -121,9 +121,9 @@ func TestRecommendationsSlowStartup(t *testing.T) {
 }
 
 func TestRecommendationsSlowSpan(t *testing.T) {
-	Reset()
+	resetProfiler()
 	Enable()
-	defer Disable()
+	defer disableProfiler()
 
 	th := Thresholds{
 		StartupWarningMs:  1000,
@@ -155,68 +155,6 @@ func TestRecommendationsSlowSpan(t *testing.T) {
 	}
 }
 
-func TestRecommendationReport(t *testing.T) {
-	Reset()
-	Enable()
-	defer Disable()
-
-	// Create some spans
-	s := Start("test-op")
-	time.Sleep(5 * time.Millisecond)
-	s.End()
-
-	report := GetRecommendationReport()
-
-	if report.GeneratedAt.IsZero() {
-		t.Error("expected non-zero generated_at")
-	}
-	if report.SpanCount != 1 {
-		t.Errorf("expected span_count=1, got %d", report.SpanCount)
-	}
-	if report.Summary.Status == "" {
-		t.Error("expected non-empty status")
-	}
-}
-
-func TestRecommendationReportSummary(t *testing.T) {
-	Reset()
-	Enable()
-	defer Disable()
-
-	th := Thresholds{
-		StartupWarningMs:  1,
-		StartupCriticalMs: 2,
-		SlowSpanMs:        1,
-		VerySlowMs:        5,
-		PhasePercentWarn:  10,
-	}
-
-	// Create slow spans to trigger recommendations
-	s := StartWithPhase("slow1", "startup")
-	time.Sleep(10 * time.Millisecond)
-	s.End()
-
-	recs := GetRecommendationsWithThresholds(th)
-
-	// Count by severity
-	var critical, warning, info int
-	for _, r := range recs {
-		switch r.Severity {
-		case SeverityCritical:
-			critical++
-		case SeverityWarning:
-			warning++
-		case SeverityInfo:
-			info++
-		}
-	}
-
-	// Should have at least one critical (slow startup)
-	if critical == 0 {
-		t.Error("expected at least one critical recommendation")
-	}
-}
-
 func TestSeverityConstants(t *testing.T) {
 	// Ensure severity constants are defined correctly
 	if SeverityInfo != "info" {
@@ -231,9 +169,9 @@ func TestSeverityConstants(t *testing.T) {
 }
 
 func TestPhaseBalanceRecommendation(t *testing.T) {
-	Reset()
+	resetProfiler()
 	Enable()
-	defer Disable()
+	defer disableProfiler()
 
 	th := Thresholds{
 		StartupWarningMs:  1000,

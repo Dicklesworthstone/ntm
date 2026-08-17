@@ -93,7 +93,6 @@ func TestGetValue_Tmux(t *testing.T) {
 	}{
 		{"tmux"},
 		{"tmux.default_panes"},
-		{"tmux.palette_key"},
 		{"tmux.pane_init_delay_ms"},
 	}
 	for _, tt := range tests {
@@ -183,8 +182,6 @@ func TestGetValue_ConfigServiceRemainingSections(t *testing.T) {
 		{"robot.output.timestamps"},
 		{"integrations.caam.enabled"},
 		{"integrations.rch.preferred_worker"},
-		{"integrations.caut.currency"},
-		{"integrations.process_triage.on_stuck"},
 		{"models.codex"},
 		{"checkpoints.before_add_agents"},
 		{"notifications.webhook.method"},
@@ -208,7 +205,6 @@ func TestGetValue_ConfigServiceRemainingSections(t *testing.T) {
 		{"scanner.notifications.enabled"},
 		{"accounts.codex"},
 		{"rotation.auto_trigger"},
-		{"rotation.dashboard.show_reset_timers"},
 		{"gemini_setup.verbose"},
 	}
 	for _, tt := range tests {
@@ -311,8 +307,6 @@ func TestGetValue_MemoryPrivacySwarmAndRano(t *testing.T) {
 		{"memory.enabled"},
 		{"memory.include_in_recovery"},
 		{"memory.max_rules"},
-		{"memory.include_anti_patterns"},
-		{"memory.include_history"},
 		{"memory.query_timeout_seconds"},
 		{"privacy"},
 		{"privacy.enabled"},
@@ -333,15 +327,11 @@ func TestGetValue_MemoryPrivacySwarmAndRano(t *testing.T) {
 		{"swarm.panes_per_session"},
 		{"swarm.stagger_delay_ms"},
 		{"swarm.auto_rotate_accounts"},
-		{"swarm.limit_patterns"},
-		{"swarm.marching_orders"},
 		{"integrations.rano"},
 		{"integrations.rano.enabled"},
 		{"integrations.rano.binary_path"},
 		{"integrations.rano.poll_interval_ms"},
 		{"integrations.rano.providers"},
-		{"integrations.rano.persist_history"},
-		{"integrations.rano.history_days"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.path, func(t *testing.T) {
@@ -719,34 +709,6 @@ func TestValidateRanoConfig_PollIntervalBoundary(t *testing.T) {
 	}
 }
 
-func TestValidateRanoConfig_HistoryDaysBoundary(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name    string
-		days    int
-		wantErr bool
-	}{
-		{"negative", -1, true},
-		{"zero boundary", 0, false},
-		{"positive", 7, false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			cfg := &RanoConfig{
-				Enabled:        true,
-				PollIntervalMs: 200,
-				HistoryDays:    tt.days,
-			}
-			err := ValidateRanoConfig(cfg)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("ValidateRanoConfig(HistoryDays=%d) error = %v, wantErr %v", tt.days, err, tt.wantErr)
-			}
-		})
-	}
-}
-
 func TestValidateRanoConfig_BinaryPathNotExists(t *testing.T) {
 	t.Parallel()
 	cfg := &RanoConfig{
@@ -972,7 +934,6 @@ func TestValidateProcessTriageConfig_BinaryNotExists(t *testing.T) {
 		CheckInterval:  10,
 		IdleThreshold:  60,
 		StuckThreshold: 120,
-		OnStuck:        "alert",
 	}
 	err := ValidateProcessTriageConfig(cfg)
 	if err == nil {
@@ -989,7 +950,6 @@ func TestValidateProcessTriageConfig_BinaryIsDir(t *testing.T) {
 		CheckInterval:  10,
 		IdleThreshold:  60,
 		StuckThreshold: 120,
-		OnStuck:        "alert",
 	}
 	err := ValidateProcessTriageConfig(cfg)
 	if err == nil {
@@ -1004,7 +964,6 @@ func TestValidateProcessTriageConfig_CheckIntervalTooLow(t *testing.T) {
 		CheckInterval:  4, // below minimum of 5
 		IdleThreshold:  60,
 		StuckThreshold: 120,
-		OnStuck:        "alert",
 	}
 	err := ValidateProcessTriageConfig(cfg)
 	if err == nil {
@@ -1019,7 +978,6 @@ func TestValidateProcessTriageConfig_CheckIntervalBoundary(t *testing.T) {
 		CheckInterval:  5, // exactly at boundary
 		IdleThreshold:  30,
 		StuckThreshold: 60,
-		OnStuck:        "alert",
 	}
 	if err := ValidateProcessTriageConfig(cfg); err != nil {
 		t.Errorf("check_interval=5 should be valid: %v", err)
@@ -1033,7 +991,6 @@ func TestValidateProcessTriageConfig_IdleThresholdTooLow(t *testing.T) {
 		CheckInterval:  10,
 		IdleThreshold:  29, // below minimum of 30
 		StuckThreshold: 120,
-		OnStuck:        "alert",
 	}
 	err := ValidateProcessTriageConfig(cfg)
 	if err == nil {
@@ -1048,7 +1005,6 @@ func TestValidateProcessTriageConfig_IdleThresholdBoundary(t *testing.T) {
 		CheckInterval:  10,
 		IdleThreshold:  30, // exactly at boundary
 		StuckThreshold: 60,
-		OnStuck:        "alert",
 	}
 	if err := ValidateProcessTriageConfig(cfg); err != nil {
 		t.Errorf("idle_threshold=30 should be valid: %v", err)
@@ -1062,7 +1018,6 @@ func TestValidateProcessTriageConfig_StuckLessThanIdle(t *testing.T) {
 		CheckInterval:  10,
 		IdleThreshold:  60,
 		StuckThreshold: 50, // less than idle
-		OnStuck:        "alert",
 	}
 	err := ValidateProcessTriageConfig(cfg)
 	if err == nil {
@@ -1077,44 +1032,9 @@ func TestValidateProcessTriageConfig_StuckEqualIdle(t *testing.T) {
 		CheckInterval:  10,
 		IdleThreshold:  60,
 		StuckThreshold: 60, // equal to idle — valid (>=)
-		OnStuck:        "alert",
 	}
 	if err := ValidateProcessTriageConfig(cfg); err != nil {
 		t.Errorf("stuck_threshold=idle_threshold should be valid: %v", err)
-	}
-}
-
-func TestValidateProcessTriageConfig_InvalidOnStuck(t *testing.T) {
-	t.Parallel()
-	cfg := &ProcessTriageConfig{
-		Enabled:        true,
-		CheckInterval:  10,
-		IdleThreshold:  60,
-		StuckThreshold: 120,
-		OnStuck:        "restart", // not in valid set
-	}
-	err := ValidateProcessTriageConfig(cfg)
-	if err == nil {
-		t.Error("should error for invalid on_stuck action")
-	}
-}
-
-func TestValidateProcessTriageConfig_AllValidActions(t *testing.T) {
-	t.Parallel()
-	for _, action := range []string{"alert", "kill", "ignore"} {
-		t.Run(action, func(t *testing.T) {
-			t.Parallel()
-			cfg := &ProcessTriageConfig{
-				Enabled:        true,
-				CheckInterval:  10,
-				IdleThreshold:  60,
-				StuckThreshold: 120,
-				OnStuck:        action,
-			}
-			if err := ValidateProcessTriageConfig(cfg); err != nil {
-				t.Errorf("on_stuck=%q should be valid: %v", action, err)
-			}
-		})
 	}
 }
 
@@ -1131,7 +1051,6 @@ func TestValidateProcessTriageConfig_ValidBinary(t *testing.T) {
 		CheckInterval:  10,
 		IdleThreshold:  60,
 		StuckThreshold: 120,
-		OnStuck:        "alert",
 	}
 	if err := ValidateProcessTriageConfig(cfg); err != nil {
 		t.Errorf("valid config should pass: %v", err)
@@ -1920,7 +1839,7 @@ func TestDiff_RecentConfigServiceSections(t *testing.T) {
 	cfg.FileReservation.Debug = !defaults.FileReservation.Debug
 	cfg.Memory.MaxRules = defaults.Memory.MaxRules + 1
 	cfg.Privacy.Enabled = !defaults.Privacy.Enabled
-	cfg.Integrations.Rano.HistoryDays = defaults.Integrations.Rano.HistoryDays + 1
+	cfg.Integrations.Rano.PollIntervalMs = defaults.Integrations.Rano.PollIntervalMs + 100
 	cfg.Swarm.DefaultScanDir = "/tmp/swarm-scan"
 
 	diffs := Diff(cfg)
@@ -1929,7 +1848,7 @@ func TestDiff_RecentConfigServiceSections(t *testing.T) {
 		"file_reservation.debug",
 		"memory.max_rules",
 		"privacy.enabled",
-		"integrations.rano.history_days",
+		"integrations.rano.poll_interval_ms",
 		"swarm.default_scan_dir",
 	}
 	for _, want := range wantPaths {
@@ -1947,10 +1866,9 @@ func TestDiff_ConfigServiceRemainingSections(t *testing.T) {
 	cfg.PaletteState.Pinned = []string{"fresh_review"}
 	cfg.Tmux.HistoryLimit = defaults.Tmux.HistoryLimit + 100
 	cfg.Robot.Output.Timestamps = !defaults.Robot.Output.Timestamps
-	cfg.Integrations.CAAM.AlertThreshold = defaults.Integrations.CAAM.AlertThreshold + 1
+	cfg.Integrations.CAAM.ResetHorizonMinutes = defaults.Integrations.CAAM.ResetHorizonMinutes + 1
 	cfg.Integrations.RCH.PreferredWorker = "worker-2"
-	cfg.Integrations.Caut.Currency = "EUR"
-	cfg.Integrations.ProcessTriage.OnStuck = "ignore"
+	cfg.Integrations.ProcessTriage.UseRanoData = !defaults.Integrations.ProcessTriage.UseRanoData
 	cfg.Models.Codex = map[string]string{"max": "gpt-5.5-codex"}
 	cfg.Checkpoints.OnError = !defaults.Checkpoints.OnError
 	cfg.Notifications.Webhook.Headers = map[string]string{"X-Test": "1"}
@@ -1975,10 +1893,9 @@ func TestDiff_ConfigServiceRemainingSections(t *testing.T) {
 		"palette_state.pinned",
 		"tmux.history_limit",
 		"robot.output.timestamps",
-		"integrations.caam.alert_threshold",
+		"integrations.caam.reset_horizon_minutes",
 		"integrations.rch.preferred_worker",
-		"integrations.caut.currency",
-		"integrations.process_triage.on_stuck",
+		"integrations.process_triage.use_rano_data",
 		"models.codex",
 		"checkpoints.on_error",
 		"notifications.webhook.headers",

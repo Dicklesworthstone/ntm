@@ -175,13 +175,12 @@ type RetryConfig struct {
 	BackoffFactor  float64 `toml:"backoff_factor"`   // Exponential backoff multiplier (default: 2.0)
 	Jitter         bool    `toml:"jitter"`           // Add random jitter to delays (default: false; opt-in)
 
-	// Subsystem-specific overrides (inherit global values if zero/empty)
-	Webhook    RetryOverride `toml:"webhook"`
-	Alerts     RetryOverride `toml:"alerts"`
-	Scheduler  RetryOverride `toml:"scheduler"`
-	Completion RetryOverride `toml:"completion"`
-	DB         RetryOverride `toml:"db"`
-	Assign     RetryOverride `toml:"assign"`
+	// Subsystem-specific overrides (inherit global values if zero/empty).
+	// Only the subsystems with a live retry loop exist; the former
+	// scheduler/completion/db/assign overrides were removed in v1.26.0
+	// (bd-ws6-config-truth-ienmd.2) because no such retry loops ship.
+	Webhook RetryOverride `toml:"webhook"`
+	Alerts  RetryOverride `toml:"alerts"`
 	// AgentMail governs the Agent Mail MCP busy-retry loop
 	// (internal/agentmail callToolWithBusyRetry). Defaults preserve the
 	// historical hardcoded behavior: 3 retries with a 500ms initial backoff.
@@ -306,8 +305,6 @@ func DefaultRetryConfig() RetryConfig {
 		// makes jitter strictly opt-in.
 		Jitter:    false,
 		Webhook:   RetryOverride{MaxAttempts: 5},
-		Scheduler: RetryOverride{MaxAttempts: 5},
-		DB:        RetryOverride{MaxAttempts: 6},
 		AgentMail: RetryOverride{MaxAttempts: 3, InitialDelayMs: 500},
 	}
 }
@@ -330,14 +327,6 @@ func (c *RetryConfig) RetryPolicyFor(subsystem string) (maxAttempts int, initial
 		override = c.Webhook
 	case "alerts":
 		override = c.Alerts
-	case "scheduler":
-		override = c.Scheduler
-	case "completion":
-		override = c.Completion
-	case "db":
-		override = c.DB
-	case "assign":
-		override = c.Assign
 	case "agent_mail":
 		override = c.AgentMail
 	}
@@ -615,13 +604,6 @@ type RotationThresholds struct {
 	RestartIfSessionHours int     `toml:"restart_if_session_hours"` // Restart after N hours
 }
 
-// RotationDashboard defines dashboard display settings for rotation
-type RotationDashboard struct {
-	ShowQuotaBars     bool `toml:"show_quota_bars"`     // Show quota bars in dashboard
-	ShowAccountStatus bool `toml:"show_account_status"` // Show account status
-	ShowResetTimers   bool `toml:"show_reset_timers"`   // Show reset countdown
-}
-
 // RotationConfig holds account rotation configuration
 type RotationConfig struct {
 	Enabled            bool               `toml:"enabled"`             // Top-level toggle
@@ -632,7 +614,6 @@ type RotationConfig struct {
 	ContinuationPrompt string             `toml:"continuation_prompt"` // Prompt template on rotation
 	Accounts           []RotationAccount  `toml:"accounts"`            // Configured accounts per provider
 	Thresholds         RotationThresholds `toml:"thresholds"`
-	Dashboard          RotationDashboard  `toml:"dashboard"`
 
 	// UsagePercentThreshold enables the coordinator's context-rotation trigger
 	// (bd-rpmg8). When > 0, the session coordinator tick compares each agent
@@ -682,11 +663,6 @@ func DefaultRotationConfig() RotationConfig {
 			CriticalPercent:       95,
 			RestartIfTokensAbove:  100000,
 			RestartIfSessionHours: 8,
-		},
-		Dashboard: RotationDashboard{
-			ShowQuotaBars:     true,
-			ShowAccountStatus: true,
-			ShowResetTimers:   true,
 		},
 		UsagePercentThreshold: 0,     // Context-rotation trigger OFF by default (bd-rpmg8)
 		AutoConfirm:           false, // Enqueued rotations wait for manual confirm by default
@@ -1210,8 +1186,6 @@ type MemoryConfig struct {
 	Enabled             bool `toml:"enabled"`               // Top-level toggle for memory integration
 	IncludeInRecovery   bool `toml:"include_in_recovery"`   // Include memory context in session recovery
 	MaxRules            int  `toml:"max_rules"`             // Maximum number of rules to inject
-	IncludeAntiPatterns bool `toml:"include_anti_patterns"` // Include anti-patterns in context
-	IncludeHistory      bool `toml:"include_history"`       // Include historical snippets
 	QueryTimeoutSeconds int  `toml:"query_timeout_seconds"` // Timeout for cm command
 
 	// Per-task rule injection at send time (--with-memory, bd-3j6hm).
@@ -1230,8 +1204,6 @@ func DefaultMemoryConfig() MemoryConfig {
 		Enabled:             true,  // Enabled by default (when cm is available)
 		IncludeInRecovery:   true,  // Include in session recovery context
 		MaxRules:            10,    // Cap number of rules to inject
-		IncludeAntiPatterns: true,  // Include anti-patterns by default
-		IncludeHistory:      true,  // Include historical snippets
 		QueryTimeoutSeconds: 5,     // 5 second timeout for cm queries
 		SendInjection:       false, // Opt-in: --with-memory drives per-call injection
 		SendMaxRules:        5,     // Top-N rules injected per send
@@ -1317,10 +1289,9 @@ type PaletteState struct {
 
 // TmuxConfig holds tmux-specific settings
 type TmuxConfig struct {
-	DefaultPanes    int    `toml:"default_panes"`
-	PaletteKey      string `toml:"palette_key"`
-	PaneInitDelayMs int    `toml:"pane_init_delay_ms"` // Delay before sending keys to new panes
-	HistoryLimit    int    `toml:"history_limit"`      // Scrollback buffer lines per pane (default 50000)
+	DefaultPanes    int `toml:"default_panes"`
+	PaneInitDelayMs int `toml:"pane_init_delay_ms"` // Delay before sending keys to new panes
+	HistoryLimit    int `toml:"history_limit"`      // Scrollback buffer lines per pane (default 50000)
 	// ActivityIndicators control pane border activity coloring.
 	ActivityIndicators ActivityIndicatorConfig `toml:"activity_indicators"`
 }
@@ -1382,10 +1353,8 @@ type IntegrationsConfig struct {
 	DCG           DCGConfig           `toml:"dcg"`
 	CAAM          CAAMConfig          `toml:"caam"`           // CAAM (Coding Agent Account Manager) integration
 	RCH           RCHConfig           `toml:"rch"`            // RCH (Remote Compilation Helper) integration
-	Caut          CautConfig          `toml:"caut"`           // caut (Cloud API Usage Tracker) integration
 	ProcessTriage ProcessTriageConfig `toml:"process_triage"` // pt (process_triage) Bayesian health classification
 	Rano          RanoConfig          `toml:"rano"`           // rano network observer for per-agent API tracking
-	Proxy         ProxyConfig         `toml:"proxy"`          // rust_proxy (local HTTP proxy) integration
 	XF            XFConfig            `toml:"xf"`             // xf (X/Twitter archive search) integration
 }
 
@@ -1589,10 +1558,8 @@ func DefaultIntegrationsConfig() IntegrationsConfig {
 		},
 		CAAM:          DefaultCAAMConfig(),
 		RCH:           DefaultRCHConfig(),
-		Caut:          DefaultCautConfig(),
 		ProcessTriage: DefaultProcessTriageConfig(),
 		Rano:          DefaultRanoConfig(),
-		Proxy:         DefaultProxyConfig(),
 		XF:            DefaultXFConfig(),
 	}
 }
@@ -1600,13 +1567,10 @@ func DefaultIntegrationsConfig() IntegrationsConfig {
 // CAAMConfig holds configuration for CAAM (Coding Agent Account Manager) integration.
 // CAAM provides automatic account rotation when rate limits are hit.
 type CAAMConfig struct {
-	Enabled           bool     `toml:"enabled"`             // Enable CAAM account management
-	BinaryPath        string   `toml:"binary_path"`         // Path to caam binary (optional, defaults to PATH lookup)
-	AutoRotate        bool     `toml:"auto_rotate"`         // Enable automatic account rotation on rate limit
-	Providers         []string `toml:"providers"`           // Providers to manage (empty = all available)
-	RateLimitPatterns []string `toml:"rate_limit_patterns"` // Custom rate limit detection patterns
-	AccountCooldown   int      `toml:"account_cooldown"`    // Cooldown before retrying same account (seconds)
-	AlertThreshold    int      `toml:"alert_threshold"`     // Alert threshold (percentage of limit)
+	Enabled    bool     `toml:"enabled"`     // Enable CAAM account management
+	BinaryPath string   `toml:"binary_path"` // Path to caam binary (optional, defaults to PATH lookup)
+	AutoRotate bool     `toml:"auto_rotate"` // Enable automatic account rotation on rate limit
+	Providers  []string `toml:"providers"`   // Providers to manage (empty = all available)
 
 	// AutoFailover enables the coordinator's automatic account failover
 	// (bd-um3uy): when a coordinator tick observes a banner-verified rate
@@ -1637,13 +1601,10 @@ type CAAMConfig struct {
 // DefaultCAAMConfig returns sensible defaults for CAAM integration.
 func DefaultCAAMConfig() CAAMConfig {
 	return CAAMConfig{
-		Enabled:           true,                                   // Enabled by default (when caam is available)
-		BinaryPath:        "",                                     // Default to PATH lookup
-		AutoRotate:        true,                                   // Auto-rotate on rate limit by default
-		Providers:         []string{"claude", "openai", "gemini"}, // Manage all major providers
-		RateLimitPatterns: nil,                                    // Use built-in patterns
-		AccountCooldown:   300,                                    // 5 minute cooldown
-		AlertThreshold:    80,                                     // Alert at 80% of limit
+		Enabled:    true,                                   // Enabled by default (when caam is available)
+		BinaryPath: "",                                     // Default to PATH lookup
+		AutoRotate: true,                                   // Auto-rotate on rate limit by default
+		Providers:  []string{"claude", "openai", "gemini"}, // Manage all major providers
 
 		AutoFailover:        false, // Coordinator auto-failover OFF by default (bd-um3uy)
 		ResetHorizonMinutes: 30,    // Only fail over when the reset is > 30 minutes away
@@ -1694,31 +1655,6 @@ func DefaultRCHConfig() RCHConfig {
 	}
 }
 
-// CautConfig holds configuration for caut (Cloud API Usage Tracker) integration.
-// caut tracks API usage, quotas, and spending across cloud providers.
-type CautConfig struct {
-	Enabled          bool     `toml:"enabled"`            // Enable caut usage tracking integration
-	BinaryPath       string   `toml:"binary_path"`        // Path to caut binary (optional, defaults to PATH lookup)
-	PollInterval     int      `toml:"poll_interval"`      // Polling interval in seconds
-	AlertThreshold   int      `toml:"alert_threshold"`    // Alert threshold (percentage of quota)
-	Providers        []string `toml:"providers"`          // Providers to track (empty = all available)
-	PerAgentTracking bool     `toml:"per_agent_tracking"` // Enable per-agent usage attribution
-	Currency         string   `toml:"currency"`           // Cost display currency
-}
-
-// DefaultCautConfig returns sensible defaults for caut integration.
-func DefaultCautConfig() CautConfig {
-	return CautConfig{
-		Enabled:          true,  // Enabled by default (when caut is available)
-		BinaryPath:       "",    // Default to PATH lookup
-		PollInterval:     60,    // Poll every 60 seconds
-		AlertThreshold:   80,    // Alert at 80% quota usage
-		Providers:        nil,   // Track all available providers
-		PerAgentTracking: true,  // Enable per-agent tracking if supported
-		Currency:         "USD", // Default to USD
-	}
-}
-
 // ProcessTriageConfig holds configuration for process_triage (pt) integration.
 // pt uses Bayesian classification to identify useful, abandoned, and zombie processes.
 type ProcessTriageConfig struct {
@@ -1727,20 +1663,18 @@ type ProcessTriageConfig struct {
 	CheckInterval  int    `toml:"check_interval"`  // How often to check processes (seconds)
 	IdleThreshold  int    `toml:"idle_threshold"`  // Seconds of idle before considering abandoned
 	StuckThreshold int    `toml:"stuck_threshold"` // Seconds stuck before considering zombie
-	OnStuck        string `toml:"on_stuck"`        // Action when stuck: "alert", "kill", "ignore"
 	UseRanoData    bool   `toml:"use_rano_data"`   // Use rano network data to improve classification
 }
 
 // DefaultProcessTriageConfig returns sensible defaults for process_triage integration.
 func DefaultProcessTriageConfig() ProcessTriageConfig {
 	return ProcessTriageConfig{
-		Enabled:        true,    // Enabled by default (when pt is available)
-		BinaryPath:     "",      // Default to PATH lookup
-		CheckInterval:  30,      // Check every 30 seconds
-		IdleThreshold:  300,     // 5 minutes idle = abandoned candidate
-		StuckThreshold: 600,     // 10 minutes stuck = zombie candidate
-		OnStuck:        "alert", // Alert by default, don't auto-kill
-		UseRanoData:    true,    // Use rano data when available
+		Enabled:        true, // Enabled by default (when pt is available)
+		BinaryPath:     "",   // Default to PATH lookup
+		CheckInterval:  30,   // Check every 30 seconds
+		IdleThreshold:  300,  // 5 minutes idle = abandoned candidate
+		StuckThreshold: 600,  // 10 minutes stuck = zombie candidate
+		UseRanoData:    true, // Use rano data when available
 	}
 }
 
@@ -1751,7 +1685,7 @@ func ValidateProcessTriageConfig(cfg *ProcessTriageConfig) error {
 	}
 
 	// Skip validation for unconfigured/zero-valued configs (use defaults)
-	if !cfg.Enabled && cfg.CheckInterval == 0 && cfg.IdleThreshold == 0 && cfg.StuckThreshold == 0 && cfg.OnStuck == "" {
+	if !cfg.Enabled && cfg.CheckInterval == 0 && cfg.IdleThreshold == 0 && cfg.StuckThreshold == 0 {
 		return nil
 	}
 
@@ -1778,11 +1712,6 @@ func ValidateProcessTriageConfig(cfg *ProcessTriageConfig) error {
 		return fmt.Errorf("stuck_threshold (%d) must be >= idle_threshold (%d)", cfg.StuckThreshold, cfg.IdleThreshold)
 	}
 
-	validActions := map[string]bool{"alert": true, "kill": true, "ignore": true}
-	if !validActions[cfg.OnStuck] {
-		return fmt.Errorf("on_stuck must be 'alert', 'kill', or 'ignore', got %q", cfg.OnStuck)
-	}
-
 	return nil
 }
 
@@ -1793,8 +1722,6 @@ type RanoConfig struct {
 	BinaryPath     string   `toml:"binary_path"`      // Path to rano binary (optional, defaults to PATH lookup)
 	PollIntervalMs int      `toml:"poll_interval_ms"` // Polling interval in milliseconds
 	Providers      []string `toml:"providers"`        // Track these providers (empty = all known: anthropic, openai, google)
-	PersistHistory bool     `toml:"persist_history"`  // Persist historical network data
-	HistoryDays    int      `toml:"history_days"`     // Days to retain historical data
 }
 
 // DefaultRanoConfig returns sensible defaults for rano integration.
@@ -1804,8 +1731,6 @@ func DefaultRanoConfig() RanoConfig {
 		BinaryPath:     "",                                        // Default to PATH lookup
 		PollIntervalMs: 1000,                                      // Poll every second
 		Providers:      []string{"anthropic", "openai", "google"}, // Track major AI providers
-		PersistHistory: true,                                      // Keep historical data
-		HistoryDays:    7,                                         // Retain for a week
 	}
 }
 
@@ -1835,113 +1760,24 @@ func ValidateRanoConfig(cfg *RanoConfig) error {
 		return fmt.Errorf("poll_interval_ms must be at least 100ms, got %d", cfg.PollIntervalMs)
 	}
 
-	if cfg.HistoryDays < 0 {
-		return fmt.Errorf("history_days must be non-negative, got %d", cfg.HistoryDays)
-	}
-
-	return nil
-}
-
-// ProxyConfig holds configuration for rust_proxy integration.
-// rust_proxy provides a lightweight local HTTP proxy used by some workflows.
-type ProxyConfig struct {
-	Enabled       bool   `toml:"enabled"`        // Enable rust_proxy integration
-	BinPath       string `toml:"bin_path"`       // Path to rust_proxy binary (or command name in PATH)
-	CheckInterval string `toml:"check_interval"` // How often to poll health/status (duration string, e.g. "30s")
-}
-
-// DefaultProxyConfig returns sensible defaults for rust_proxy integration.
-func DefaultProxyConfig() ProxyConfig {
-	return ProxyConfig{
-		Enabled:       true,
-		BinPath:       "rust_proxy",
-		CheckInterval: "30s",
-	}
-}
-
-// ValidateProxyConfig validates the rust_proxy configuration.
-func ValidateProxyConfig(cfg *ProxyConfig) error {
-	if cfg == nil {
-		return nil
-	}
-
-	// Skip validation for unconfigured/zero-valued configs (use defaults).
-	if !cfg.Enabled && cfg.BinPath == "" && cfg.CheckInterval == "" {
-		return nil
-	}
-	if !cfg.Enabled {
-		return nil
-	}
-
-	if strings.TrimSpace(cfg.BinPath) == "" {
-		return fmt.Errorf("bin_path: must be non-empty when enabled")
-	}
-	if strings.TrimSpace(cfg.CheckInterval) == "" {
-		return fmt.Errorf("check_interval: must be non-empty when enabled")
-	}
-	d, err := time.ParseDuration(strings.TrimSpace(cfg.CheckInterval))
-	if err != nil {
-		return fmt.Errorf("check_interval: %w", err)
-	}
-	if d <= 0 {
-		return fmt.Errorf("check_interval: must be > 0, got %q", cfg.CheckInterval)
-	}
 	return nil
 }
 
 // XFConfig holds configuration for xf (X/Twitter archive search) integration.
 // xf enables querying local X/Twitter archives from NTM via robot/tool bridges.
+// Only the enabled toggle remains: it gates the built-in xf-search palette
+// entry (internal/robot GetPalette). The former bin_path/archive_path/
+// default_mode knobs were removed in v1.26.0 (bd-ws6-config-truth-ienmd.2) —
+// the shipped xf surfaces resolve the binary from PATH.
 type XFConfig struct {
-	Enabled     bool   `toml:"enabled"`      // Enable xf integration
-	BinPath     string `toml:"bin_path"`     // Path to xf binary (or command name in PATH)
-	ArchivePath string `toml:"archive_path"` // Path to xf archive directory (supports ~ expansion)
-	DefaultMode string `toml:"default_mode"` // keyword|semantic|hybrid
+	Enabled bool `toml:"enabled"` // Enable xf integration (gates the xf-search palette entry)
 }
 
 // DefaultXFConfig returns sensible defaults for xf integration.
 func DefaultXFConfig() XFConfig {
 	return XFConfig{
-		Enabled:     true,
-		BinPath:     "xf",
-		ArchivePath: "~/.xf/archive",
-		DefaultMode: "hybrid",
+		Enabled: true,
 	}
-}
-
-// ValidateXFConfig validates the xf configuration.
-func ValidateXFConfig(cfg *XFConfig) error {
-	if cfg == nil {
-		return nil
-	}
-
-	// Skip validation for unconfigured/zero-valued configs (use defaults).
-	if !cfg.Enabled && cfg.BinPath == "" && cfg.ArchivePath == "" && cfg.DefaultMode == "" {
-		return nil
-	}
-	if !cfg.Enabled {
-		return nil
-	}
-
-	if strings.TrimSpace(cfg.BinPath) == "" {
-		return fmt.Errorf("bin_path: must be non-empty when enabled")
-	}
-	if strings.TrimSpace(cfg.ArchivePath) == "" {
-		return fmt.Errorf("archive_path: must be non-empty when enabled")
-	}
-
-	if cfg.DefaultMode != "" {
-		mode := strings.ToLower(strings.TrimSpace(cfg.DefaultMode))
-		switch mode {
-		case "keyword", "semantic", "hybrid":
-			// ok
-		default:
-			return fmt.Errorf("default_mode: must be keyword, semantic, or hybrid, got %q", cfg.DefaultMode)
-		}
-	}
-
-	// Ensure ~ is expandable (and avoid storing unexpanded "~" surprises downstream).
-	_ = ExpandHome(cfg.ArchivePath)
-	return nil
 }
 
 // ModelsConfig holds model alias configuration for each agent type
@@ -2690,7 +2526,6 @@ func Default() *Config {
 		Agents:             DefaultAgentTemplates(),
 		Tmux: TmuxConfig{
 			DefaultPanes:       10,
-			PaletteKey:         "F6",
 			PaneInitDelayMs:    1000,
 			HistoryLimit:       50000,
 			ActivityIndicators: DefaultActivityIndicatorConfig(),
@@ -2918,7 +2753,14 @@ func loadWithCWD(path, cwd string) (*Config, error) {
 			return nil, fmt.Errorf("parsing config: %w", err)
 		}
 		if fields := undecodedConfigFields(md); len(fields) > 0 {
-			return nil, fmt.Errorf("parsing config: unknown field(s): %s", strings.Join(fields, ", "))
+			// WS6-remove (bd-ws6-config-truth-ienmd.2): keys removed in
+			// v1.26.0 warn loudly and are ignored (hard errors in v1.27.0);
+			// anything else unknown is still a hard error.
+			removed, unknown := classifyUndecodedKeys(fields)
+			if len(unknown) > 0 {
+				return nil, fmt.Errorf("parsing config: unknown field(s): %s", strings.Join(unknown, ", "))
+			}
+			warnRemovedKnobs(removed, os.Stderr)
 		}
 
 		// Canonicalize the profile string for stable downstream outputs (config show, robot status).
@@ -3935,7 +3777,6 @@ func Print(cfg *Config, w io.Writer) error {
 	fmt.Fprintln(w, "[tmux]")
 	fmt.Fprintln(w, "# Tmux-specific settings")
 	fmt.Fprintf(w, "default_panes = %d\n", cfg.Tmux.DefaultPanes)
-	fmt.Fprintf(w, "palette_key = %q\n", cfg.Tmux.PaletteKey)
 	fmt.Fprintf(w, "pane_init_delay_ms = %d  # Delay before send-keys to new panes\n", cfg.Tmux.PaneInitDelayMs)
 	fmt.Fprintf(w, "history_limit = %d       # Scrollback buffer lines per pane\n", cfg.Tmux.HistoryLimit)
 	fmt.Fprintln(w)
@@ -4027,9 +3868,6 @@ func Print(cfg *Config, w io.Writer) error {
 	}
 	fmt.Fprintf(w, "auto_rotate = %t\n", cfg.Integrations.CAAM.AutoRotate)
 	fmt.Fprintf(w, "providers = %s\n", renderTOMLStringArray(cfg.Integrations.CAAM.Providers))
-	fmt.Fprintf(w, "rate_limit_patterns = %s\n", renderTOMLStringArray(cfg.Integrations.CAAM.RateLimitPatterns))
-	fmt.Fprintf(w, "account_cooldown = %d\n", cfg.Integrations.CAAM.AccountCooldown)
-	fmt.Fprintf(w, "alert_threshold = %d\n", cfg.Integrations.CAAM.AlertThreshold)
 	fmt.Fprintln(w, "# Coordinator auto-failover on detected rate limits (bd-um3uy).")
 	fmt.Fprintln(w, "# Doubly opt-in: auto_failover must be true AND failover_providers non-empty.")
 	fmt.Fprintf(w, "auto_failover = %t\n", cfg.Integrations.CAAM.AutoFailover)
@@ -4053,21 +3891,6 @@ func Print(cfg *Config, w io.Writer) error {
 	fmt.Fprintf(w, "dcg_whitelist = %t\n", cfg.Integrations.RCH.DCGWhitelist)
 	fmt.Fprintln(w)
 
-	fmt.Fprintln(w, "[integrations.caut]")
-	fmt.Fprintln(w, "# Cloud API usage tracker (caut) settings")
-	fmt.Fprintf(w, "enabled = %t\n", cfg.Integrations.Caut.Enabled)
-	if cfg.Integrations.Caut.BinaryPath != "" {
-		fmt.Fprintf(w, "binary_path = %q\n", cfg.Integrations.Caut.BinaryPath)
-	} else {
-		fmt.Fprintln(w, "# binary_path = \"\"  # Auto-detect from PATH")
-	}
-	fmt.Fprintf(w, "poll_interval = %d\n", cfg.Integrations.Caut.PollInterval)
-	fmt.Fprintf(w, "alert_threshold = %d\n", cfg.Integrations.Caut.AlertThreshold)
-	fmt.Fprintf(w, "providers = %s\n", renderTOMLStringArray(cfg.Integrations.Caut.Providers))
-	fmt.Fprintf(w, "per_agent_tracking = %t\n", cfg.Integrations.Caut.PerAgentTracking)
-	fmt.Fprintf(w, "currency = %q\n", cfg.Integrations.Caut.Currency)
-	fmt.Fprintln(w)
-
 	fmt.Fprintln(w, "[integrations.process_triage]")
 	fmt.Fprintln(w, "# Process triage (pt) Bayesian process classification settings")
 	fmt.Fprintf(w, "enabled = %t\n", cfg.Integrations.ProcessTriage.Enabled)
@@ -4079,7 +3902,6 @@ func Print(cfg *Config, w io.Writer) error {
 	fmt.Fprintf(w, "check_interval = %d\n", cfg.Integrations.ProcessTriage.CheckInterval)
 	fmt.Fprintf(w, "idle_threshold = %d\n", cfg.Integrations.ProcessTriage.IdleThreshold)
 	fmt.Fprintf(w, "stuck_threshold = %d\n", cfg.Integrations.ProcessTriage.StuckThreshold)
-	fmt.Fprintf(w, "on_stuck = %q\n", cfg.Integrations.ProcessTriage.OnStuck)
 	fmt.Fprintf(w, "use_rano_data = %t\n", cfg.Integrations.ProcessTriage.UseRanoData)
 	fmt.Fprintln(w)
 
@@ -4093,43 +3915,12 @@ func Print(cfg *Config, w io.Writer) error {
 	}
 	fmt.Fprintf(w, "poll_interval_ms = %d\n", cfg.Integrations.Rano.PollIntervalMs)
 	fmt.Fprintf(w, "providers = %s\n", renderTOMLStringArray(cfg.Integrations.Rano.Providers))
-	fmt.Fprintf(w, "persist_history = %t\n", cfg.Integrations.Rano.PersistHistory)
-	fmt.Fprintf(w, "history_days = %d\n", cfg.Integrations.Rano.HistoryDays)
-	fmt.Fprintln(w)
-
-	fmt.Fprintln(w, "[integrations.proxy]")
-	fmt.Fprintln(w, "# rust_proxy (local HTTP proxy) settings")
-	fmt.Fprintf(w, "enabled = %t\n", cfg.Integrations.Proxy.Enabled)
-	if cfg.Integrations.Proxy.BinPath != "" {
-		fmt.Fprintf(w, "bin_path = %q\n", cfg.Integrations.Proxy.BinPath)
-	} else {
-		fmt.Fprintln(w, "# bin_path = \"rust_proxy\"  # Auto-detect from PATH")
-	}
-	if cfg.Integrations.Proxy.CheckInterval != "" {
-		fmt.Fprintf(w, "check_interval = %q\n", cfg.Integrations.Proxy.CheckInterval)
-	} else {
-		fmt.Fprintln(w, "# check_interval = \"30s\"")
-	}
 	fmt.Fprintln(w)
 
 	fmt.Fprintln(w, "[integrations.xf]")
 	fmt.Fprintln(w, "# X/Twitter archive search (xf) settings")
+	fmt.Fprintln(w, "# enabled gates the built-in xf-search palette entry; xf resolves from PATH")
 	fmt.Fprintf(w, "enabled = %t\n", cfg.Integrations.XF.Enabled)
-	if cfg.Integrations.XF.BinPath != "" {
-		fmt.Fprintf(w, "bin_path = %q\n", cfg.Integrations.XF.BinPath)
-	} else {
-		fmt.Fprintln(w, "# bin_path = \"xf\"  # Auto-detect from PATH")
-	}
-	if cfg.Integrations.XF.ArchivePath != "" {
-		fmt.Fprintf(w, "archive_path = %q\n", cfg.Integrations.XF.ArchivePath)
-	} else {
-		fmt.Fprintln(w, "# archive_path = \"~/.xf/archive\"")
-	}
-	if cfg.Integrations.XF.DefaultMode != "" {
-		fmt.Fprintf(w, "default_mode = %q\n", cfg.Integrations.XF.DefaultMode)
-	} else {
-		fmt.Fprintln(w, "# default_mode = \"hybrid\"  # keyword|semantic|hybrid")
-	}
 	fmt.Fprintln(w)
 
 	fmt.Fprintln(w, "[safety]")
@@ -4507,12 +4298,6 @@ func Print(cfg *Config, w io.Writer) error {
 	fmt.Fprintf(w, "restart_if_session_hours = %d   # Restart after N hours\n", cfg.Rotation.Thresholds.RestartIfSessionHours)
 	fmt.Fprintln(w)
 
-	fmt.Fprintln(w, "[rotation.dashboard]")
-	fmt.Fprintf(w, "show_quota_bars = %t       # Show quota bars in dashboard\n", cfg.Rotation.Dashboard.ShowQuotaBars)
-	fmt.Fprintf(w, "show_account_status = %t   # Show account status\n", cfg.Rotation.Dashboard.ShowAccountStatus)
-	fmt.Fprintf(w, "show_reset_timers = %t     # Show reset countdown\n", cfg.Rotation.Dashboard.ShowResetTimers)
-	fmt.Fprintln(w)
-
 	fmt.Fprintln(w, "[scanner]")
 	fmt.Fprintln(w, "# UBS scanner configuration")
 	if cfg.Scanner.UBSPath != "" {
@@ -4738,8 +4523,6 @@ func Print(cfg *Config, w io.Writer) error {
 	fmt.Fprintf(w, "enabled = %t\n", cfg.Memory.Enabled)
 	fmt.Fprintf(w, "include_in_recovery = %t\n", cfg.Memory.IncludeInRecovery)
 	fmt.Fprintf(w, "max_rules = %d\n", cfg.Memory.MaxRules)
-	fmt.Fprintf(w, "include_anti_patterns = %t\n", cfg.Memory.IncludeAntiPatterns)
-	fmt.Fprintf(w, "include_history = %t\n", cfg.Memory.IncludeHistory)
 	fmt.Fprintf(w, "query_timeout_seconds = %d\n", cfg.Memory.QueryTimeoutSeconds)
 	fmt.Fprintf(w, "send_injection = %t             # Inject rules on robot sends by default (--with-memory)\n", cfg.Memory.SendInjection)
 	fmt.Fprintf(w, "send_max_rules = %d\n", cfg.Memory.SendMaxRules)
@@ -4774,11 +4557,6 @@ func Print(cfg *Config, w io.Writer) error {
 	fmt.Fprintf(w, "cc = %d\n", cfg.Swarm.Tier3Allocation.CC)
 	fmt.Fprintf(w, "cod = %d\n", cfg.Swarm.Tier3Allocation.Cod)
 	fmt.Fprintf(w, "gmi = %d\n", cfg.Swarm.Tier3Allocation.Gmi)
-	fmt.Fprintln(w)
-
-	fmt.Fprintln(w, "[swarm.marching_orders]")
-	fmt.Fprintf(w, "default = %q\n", cfg.Swarm.MarchingOrders.Default)
-	fmt.Fprintf(w, "review = %q\n", cfg.Swarm.MarchingOrders.Review)
 	fmt.Fprintln(w)
 
 	fmt.Fprintln(w, "[ensemble]")
@@ -5078,8 +4856,6 @@ func GetValue(cfg *Config, path string) (interface{}, error) {
 		switch parts[1] {
 		case "default_panes":
 			return cfg.Tmux.DefaultPanes, nil
-		case "palette_key":
-			return cfg.Tmux.PaletteKey, nil
 		case "pane_init_delay_ms":
 			return cfg.Tmux.PaneInitDelayMs, nil
 		case "history_limit":
@@ -5173,10 +4949,6 @@ func GetValue(cfg *Config, path string) (interface{}, error) {
 				return cfg.Integrations.Rano.PollIntervalMs, nil
 			case "providers":
 				return cfg.Integrations.Rano.Providers, nil
-			case "persist_history":
-				return cfg.Integrations.Rano.PersistHistory, nil
-			case "history_days":
-				return cfg.Integrations.Rano.HistoryDays, nil
 			}
 		case "caam":
 			if len(parts) < 3 {
@@ -5191,12 +4963,6 @@ func GetValue(cfg *Config, path string) (interface{}, error) {
 				return cfg.Integrations.CAAM.AutoRotate, nil
 			case "providers":
 				return cfg.Integrations.CAAM.Providers, nil
-			case "rate_limit_patterns":
-				return cfg.Integrations.CAAM.RateLimitPatterns, nil
-			case "account_cooldown":
-				return cfg.Integrations.CAAM.AccountCooldown, nil
-			case "alert_threshold":
-				return cfg.Integrations.CAAM.AlertThreshold, nil
 			case "auto_failover":
 				return cfg.Integrations.CAAM.AutoFailover, nil
 			case "reset_horizon_minutes":
@@ -5226,26 +4992,6 @@ func GetValue(cfg *Config, path string) (interface{}, error) {
 			case "dcg_whitelist":
 				return cfg.Integrations.RCH.DCGWhitelist, nil
 			}
-		case "caut":
-			if len(parts) < 3 {
-				return cfg.Integrations.Caut, nil
-			}
-			switch parts[2] {
-			case "enabled":
-				return cfg.Integrations.Caut.Enabled, nil
-			case "binary_path":
-				return cfg.Integrations.Caut.BinaryPath, nil
-			case "poll_interval":
-				return cfg.Integrations.Caut.PollInterval, nil
-			case "alert_threshold":
-				return cfg.Integrations.Caut.AlertThreshold, nil
-			case "providers":
-				return cfg.Integrations.Caut.Providers, nil
-			case "per_agent_tracking":
-				return cfg.Integrations.Caut.PerAgentTracking, nil
-			case "currency":
-				return cfg.Integrations.Caut.Currency, nil
-			}
 		case "process_triage":
 			if len(parts) < 3 {
 				return cfg.Integrations.ProcessTriage, nil
@@ -5261,22 +5007,8 @@ func GetValue(cfg *Config, path string) (interface{}, error) {
 				return cfg.Integrations.ProcessTriage.IdleThreshold, nil
 			case "stuck_threshold":
 				return cfg.Integrations.ProcessTriage.StuckThreshold, nil
-			case "on_stuck":
-				return cfg.Integrations.ProcessTriage.OnStuck, nil
 			case "use_rano_data":
 				return cfg.Integrations.ProcessTriage.UseRanoData, nil
-			}
-		case "proxy":
-			if len(parts) < 3 {
-				return cfg.Integrations.Proxy, nil
-			}
-			switch parts[2] {
-			case "enabled":
-				return cfg.Integrations.Proxy.Enabled, nil
-			case "bin_path":
-				return cfg.Integrations.Proxy.BinPath, nil
-			case "check_interval":
-				return cfg.Integrations.Proxy.CheckInterval, nil
 			}
 		case "xf":
 			if len(parts) < 3 {
@@ -5285,12 +5017,6 @@ func GetValue(cfg *Config, path string) (interface{}, error) {
 			switch parts[2] {
 			case "enabled":
 				return cfg.Integrations.XF.Enabled, nil
-			case "bin_path":
-				return cfg.Integrations.XF.BinPath, nil
-			case "archive_path":
-				return cfg.Integrations.XF.ArchivePath, nil
-			case "default_mode":
-				return cfg.Integrations.XF.DefaultMode, nil
 			}
 		}
 	case "models":
@@ -5588,10 +5314,6 @@ func GetValue(cfg *Config, path string) (interface{}, error) {
 			return cfg.Memory.IncludeInRecovery, nil
 		case "max_rules":
 			return cfg.Memory.MaxRules, nil
-		case "include_anti_patterns":
-			return cfg.Memory.IncludeAntiPatterns, nil
-		case "include_history":
-			return cfg.Memory.IncludeHistory, nil
 		case "query_timeout_seconds":
 			return cfg.Memory.QueryTimeoutSeconds, nil
 		case "send_injection":
@@ -5814,10 +5536,6 @@ func GetValue(cfg *Config, path string) (interface{}, error) {
 			return cfg.Swarm.StaggerDelayMs, nil
 		case "auto_rotate_accounts":
 			return cfg.Swarm.AutoRotateAccounts, nil
-		case "limit_patterns":
-			return cfg.Swarm.LimitPatterns, nil
-		case "marching_orders":
-			return cfg.Swarm.MarchingOrders, nil
 		}
 	case "ensemble":
 		if len(parts) < 2 {
@@ -6128,18 +5846,6 @@ func GetValue(cfg *Config, path string) (interface{}, error) {
 			case "restart_if_session_hours":
 				return cfg.Rotation.Thresholds.RestartIfSessionHours, nil
 			}
-		case "dashboard":
-			if len(parts) < 3 {
-				return cfg.Rotation.Dashboard, nil
-			}
-			switch parts[2] {
-			case "show_quota_bars":
-				return cfg.Rotation.Dashboard.ShowQuotaBars, nil
-			case "show_account_status":
-				return cfg.Rotation.Dashboard.ShowAccountStatus, nil
-			case "show_reset_timers":
-				return cfg.Rotation.Dashboard.ShowResetTimers, nil
-			}
 		}
 	case "gemini_setup":
 		if len(parts) < 2 {
@@ -6233,7 +5939,6 @@ func Diff(cfg *Config) []ConfigDiff {
 
 	// Tmux
 	addDiff("tmux.default_panes", defaults.Tmux.DefaultPanes, cfg.Tmux.DefaultPanes)
-	addDiff("tmux.palette_key", defaults.Tmux.PaletteKey, cfg.Tmux.PaletteKey)
 	addDiff("tmux.pane_init_delay_ms", defaults.Tmux.PaneInitDelayMs, cfg.Tmux.PaneInitDelayMs)
 	addDiff("tmux.history_limit", defaults.Tmux.HistoryLimit, cfg.Tmux.HistoryLimit)
 	addDiff("tmux.activity_indicators.enabled", defaults.Tmux.ActivityIndicators.Enabled, cfg.Tmux.ActivityIndicators.Enabled)
@@ -6265,15 +5970,10 @@ func Diff(cfg *Config) []ConfigDiff {
 	addDiff("integrations.rano.binary_path", defaults.Integrations.Rano.BinaryPath, cfg.Integrations.Rano.BinaryPath)
 	addDiff("integrations.rano.poll_interval_ms", defaults.Integrations.Rano.PollIntervalMs, cfg.Integrations.Rano.PollIntervalMs)
 	addDiff("integrations.rano.providers", defaults.Integrations.Rano.Providers, cfg.Integrations.Rano.Providers)
-	addDiff("integrations.rano.persist_history", defaults.Integrations.Rano.PersistHistory, cfg.Integrations.Rano.PersistHistory)
-	addDiff("integrations.rano.history_days", defaults.Integrations.Rano.HistoryDays, cfg.Integrations.Rano.HistoryDays)
 	addDiff("integrations.caam.enabled", defaults.Integrations.CAAM.Enabled, cfg.Integrations.CAAM.Enabled)
 	addDiff("integrations.caam.binary_path", defaults.Integrations.CAAM.BinaryPath, cfg.Integrations.CAAM.BinaryPath)
 	addDiff("integrations.caam.auto_rotate", defaults.Integrations.CAAM.AutoRotate, cfg.Integrations.CAAM.AutoRotate)
 	addDiff("integrations.caam.providers", defaults.Integrations.CAAM.Providers, cfg.Integrations.CAAM.Providers)
-	addDiff("integrations.caam.rate_limit_patterns", defaults.Integrations.CAAM.RateLimitPatterns, cfg.Integrations.CAAM.RateLimitPatterns)
-	addDiff("integrations.caam.account_cooldown", defaults.Integrations.CAAM.AccountCooldown, cfg.Integrations.CAAM.AccountCooldown)
-	addDiff("integrations.caam.alert_threshold", defaults.Integrations.CAAM.AlertThreshold, cfg.Integrations.CAAM.AlertThreshold)
 	addDiff("integrations.caam.auto_failover", defaults.Integrations.CAAM.AutoFailover, cfg.Integrations.CAAM.AutoFailover)
 	addDiff("integrations.caam.reset_horizon_minutes", defaults.Integrations.CAAM.ResetHorizonMinutes, cfg.Integrations.CAAM.ResetHorizonMinutes)
 	addDiff("integrations.caam.failover_providers", defaults.Integrations.CAAM.FailoverProviders, cfg.Integrations.CAAM.FailoverProviders)
@@ -6285,19 +5985,11 @@ func Diff(cfg *Config) []ConfigDiff {
 	addDiff("integrations.rch.show_location", defaults.Integrations.RCH.ShowLocation, cfg.Integrations.RCH.ShowLocation)
 	addDiff("integrations.rch.preferred_worker", defaults.Integrations.RCH.PreferredWorker, cfg.Integrations.RCH.PreferredWorker)
 	addDiff("integrations.rch.dcg_whitelist", defaults.Integrations.RCH.DCGWhitelist, cfg.Integrations.RCH.DCGWhitelist)
-	addDiff("integrations.caut.enabled", defaults.Integrations.Caut.Enabled, cfg.Integrations.Caut.Enabled)
-	addDiff("integrations.caut.binary_path", defaults.Integrations.Caut.BinaryPath, cfg.Integrations.Caut.BinaryPath)
-	addDiff("integrations.caut.poll_interval", defaults.Integrations.Caut.PollInterval, cfg.Integrations.Caut.PollInterval)
-	addDiff("integrations.caut.alert_threshold", defaults.Integrations.Caut.AlertThreshold, cfg.Integrations.Caut.AlertThreshold)
-	addDiff("integrations.caut.providers", defaults.Integrations.Caut.Providers, cfg.Integrations.Caut.Providers)
-	addDiff("integrations.caut.per_agent_tracking", defaults.Integrations.Caut.PerAgentTracking, cfg.Integrations.Caut.PerAgentTracking)
-	addDiff("integrations.caut.currency", defaults.Integrations.Caut.Currency, cfg.Integrations.Caut.Currency)
 	addDiff("integrations.process_triage.enabled", defaults.Integrations.ProcessTriage.Enabled, cfg.Integrations.ProcessTriage.Enabled)
 	addDiff("integrations.process_triage.binary_path", defaults.Integrations.ProcessTriage.BinaryPath, cfg.Integrations.ProcessTriage.BinaryPath)
 	addDiff("integrations.process_triage.check_interval", defaults.Integrations.ProcessTriage.CheckInterval, cfg.Integrations.ProcessTriage.CheckInterval)
 	addDiff("integrations.process_triage.idle_threshold", defaults.Integrations.ProcessTriage.IdleThreshold, cfg.Integrations.ProcessTriage.IdleThreshold)
 	addDiff("integrations.process_triage.stuck_threshold", defaults.Integrations.ProcessTriage.StuckThreshold, cfg.Integrations.ProcessTriage.StuckThreshold)
-	addDiff("integrations.process_triage.on_stuck", defaults.Integrations.ProcessTriage.OnStuck, cfg.Integrations.ProcessTriage.OnStuck)
 	addDiff("integrations.process_triage.use_rano_data", defaults.Integrations.ProcessTriage.UseRanoData, cfg.Integrations.ProcessTriage.UseRanoData)
 
 	// Models
@@ -6406,8 +6098,6 @@ func Diff(cfg *Config) []ConfigDiff {
 	addDiff("memory.enabled", defaults.Memory.Enabled, cfg.Memory.Enabled)
 	addDiff("memory.include_in_recovery", defaults.Memory.IncludeInRecovery, cfg.Memory.IncludeInRecovery)
 	addDiff("memory.max_rules", defaults.Memory.MaxRules, cfg.Memory.MaxRules)
-	addDiff("memory.include_anti_patterns", defaults.Memory.IncludeAntiPatterns, cfg.Memory.IncludeAntiPatterns)
-	addDiff("memory.include_history", defaults.Memory.IncludeHistory, cfg.Memory.IncludeHistory)
 	addDiff("memory.query_timeout_seconds", defaults.Memory.QueryTimeoutSeconds, cfg.Memory.QueryTimeoutSeconds)
 	addDiff("memory.send_injection", defaults.Memory.SendInjection, cfg.Memory.SendInjection)
 	addDiff("memory.send_max_rules", defaults.Memory.SendMaxRules, cfg.Memory.SendMaxRules)
@@ -6555,9 +6245,6 @@ func Diff(cfg *Config) []ConfigDiff {
 	addDiff("rotation.thresholds.critical_percent", defaults.Rotation.Thresholds.CriticalPercent, cfg.Rotation.Thresholds.CriticalPercent)
 	addDiff("rotation.thresholds.restart_if_tokens_above", defaults.Rotation.Thresholds.RestartIfTokensAbove, cfg.Rotation.Thresholds.RestartIfTokensAbove)
 	addDiff("rotation.thresholds.restart_if_session_hours", defaults.Rotation.Thresholds.RestartIfSessionHours, cfg.Rotation.Thresholds.RestartIfSessionHours)
-	addDiff("rotation.dashboard.show_quota_bars", defaults.Rotation.Dashboard.ShowQuotaBars, cfg.Rotation.Dashboard.ShowQuotaBars)
-	addDiff("rotation.dashboard.show_account_status", defaults.Rotation.Dashboard.ShowAccountStatus, cfg.Rotation.Dashboard.ShowAccountStatus)
-	addDiff("rotation.dashboard.show_reset_timers", defaults.Rotation.Dashboard.ShowResetTimers, cfg.Rotation.Dashboard.ShowResetTimers)
 
 	// Gemini setup
 	addDiff("gemini_setup.auto_select_pro_model", defaults.GeminiSetup.AutoSelectProModel, cfg.GeminiSetup.AutoSelectProModel)
@@ -6577,8 +6264,6 @@ func Diff(cfg *Config) []ConfigDiff {
 	addDiff("swarm.panes_per_session", defaults.Swarm.PanesPerSession, cfg.Swarm.PanesPerSession)
 	addDiff("swarm.stagger_delay_ms", defaults.Swarm.StaggerDelayMs, cfg.Swarm.StaggerDelayMs)
 	addDiff("swarm.auto_rotate_accounts", defaults.Swarm.AutoRotateAccounts, cfg.Swarm.AutoRotateAccounts)
-	addDiff("swarm.limit_patterns", defaults.Swarm.LimitPatterns, cfg.Swarm.LimitPatterns)
-	addDiff("swarm.marching_orders", defaults.Swarm.MarchingOrders, cfg.Swarm.MarchingOrders)
 
 	// Spawn pacing
 	addDiff("spawn_pacing.enabled", defaults.SpawnPacing.Enabled, cfg.SpawnPacing.Enabled)
@@ -6646,16 +6331,6 @@ func Validate(cfg *Config) []error {
 	// Validate rano integration config
 	if err := ValidateRanoConfig(&cfg.Integrations.Rano); err != nil {
 		errs = append(errs, fmt.Errorf("integrations.rano: %w", err))
-	}
-
-	// Validate rust_proxy integration config
-	if err := ValidateProxyConfig(&cfg.Integrations.Proxy); err != nil {
-		errs = append(errs, fmt.Errorf("integrations.proxy: %w", err))
-	}
-
-	// Validate xf integration config
-	if err := ValidateXFConfig(&cfg.Integrations.XF); err != nil {
-		errs = append(errs, fmt.Errorf("integrations.xf: %w", err))
 	}
 
 	if err := ValidateCommandHooks(cfg.CommandHooks); err != nil {

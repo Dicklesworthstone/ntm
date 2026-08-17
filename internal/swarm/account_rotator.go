@@ -1575,7 +1575,7 @@ func (r *AccountRotator) runCaamCommand(ctx context.Context, args ...string) (st
 	return stdout.String(), stderr.String(), nil
 }
 
-// RotateAccount implements the AccountRotator interface used by AutoRespawner.
+// RotateAccount switches to the next available account for the agent type.
 // This is an alias for SwitchAccount that returns just the new account name.
 func (r *AccountRotator) RotateAccount(agentType string) (newAccount string, err error) {
 	record, err := r.SwitchAccount(agentType)
@@ -1585,8 +1585,7 @@ func (r *AccountRotator) RotateAccount(agentType string) (newAccount string, err
 	return record.ToAccount, nil
 }
 
-// CurrentAccount implements the AccountRotator interface used by AutoRespawner.
-// Returns the current account name for the agent type.
+// CurrentAccount returns the current account name for the agent type.
 func (r *AccountRotator) CurrentAccount(agentType string) string {
 	info, err := r.GetCurrentAccount(agentType)
 	if err != nil {

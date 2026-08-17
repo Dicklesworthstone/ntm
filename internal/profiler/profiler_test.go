@@ -8,10 +8,58 @@ import (
 	"time"
 )
 
+// resetProfiler clears all collected spans (test-only helper; the public
+// Reset API was deleted as dead code, bd-ws2-wire-or-delete-ykmcz.9).
+func resetProfiler() {
+	global.mu.Lock()
+	defer global.mu.Unlock()
+	global.spans = nil
+	global.start = time.Now()
+}
+
+// disableProfiler turns off profiling (test-only helper).
+func disableProfiler() {
+	global.mu.Lock()
+	defer global.mu.Unlock()
+	global.enabled = false
+}
+
+// recordedSpans returns snapshots of all recorded spans (test-only helper).
+func recordedSpans() []*Span {
+	global.mu.RLock()
+	defer global.mu.RUnlock()
+	result := make([]*Span, len(global.spans))
+	for i, span := range global.spans {
+		result[i] = cloneSpanSnapshot(span)
+	}
+	return result
+}
+
+// TestGetSpansByPhaseReturnsSnapshots verifies GetSpansByPhase returns clones,
+// not live span pointers.
+func TestGetSpansByPhaseReturnsSnapshots(t *testing.T) {
+	resetProfiler()
+	Enable()
+	defer disableProfiler()
+
+	span := StartWithPhase("snapshot-op", "startup")
+	span.Tag("session", "live")
+	span.End()
+
+	phaseSpans := GetSpansByPhase("startup")
+	if len(phaseSpans) != 1 {
+		t.Fatalf("expected 1 startup span, got %d", len(phaseSpans))
+	}
+	phaseSpans[0].Tags["session"] = "phase-mutated"
+	if again := GetSpansByPhase("startup"); again[0].Tags["session"] != "live" {
+		t.Error("GetSpansByPhase returned live tag map")
+	}
+}
+
 func TestEnableDisable(t *testing.T) {
 	// Start disabled
-	Disable()
-	Reset()
+	disableProfiler()
+	resetProfiler()
 
 	if IsEnabled() {
 		t.Error("expected profiler to be disabled initially")
@@ -22,16 +70,16 @@ func TestEnableDisable(t *testing.T) {
 		t.Error("expected profiler to be enabled after Enable()")
 	}
 
-	Disable()
+	disableProfiler()
 	if IsEnabled() {
-		t.Error("expected profiler to be disabled after Disable()")
+		t.Error("expected profiler to be disabled after disableProfiler")
 	}
 }
 
 func TestSpanCreation(t *testing.T) {
-	Reset()
+	resetProfiler()
 	Enable()
-	defer Disable()
+	defer disableProfiler()
 
 	span := Start("test-operation")
 	if span == nil {
@@ -50,9 +98,9 @@ func TestSpanCreation(t *testing.T) {
 }
 
 func TestSpanWithPhase(t *testing.T) {
-	Reset()
+	resetProfiler()
 	Enable()
-	defer Disable()
+	defer disableProfiler()
 
 	span := StartWithPhase("init-config", "startup")
 	span.End()
@@ -67,29 +115,10 @@ func TestSpanWithPhase(t *testing.T) {
 	}
 }
 
-func TestChildSpan(t *testing.T) {
-	Reset()
-	Enable()
-	defer Disable()
-
-	parent := StartWithPhase("parent-op", "command")
-	child := StartChild(parent, "child-op")
-
-	if child.Parent != "parent-op" {
-		t.Errorf("expected parent 'parent-op', got %q", child.Parent)
-	}
-	if child.Phase != "command" {
-		t.Errorf("expected inherited phase 'command', got %q", child.Phase)
-	}
-
-	child.End()
-	parent.End()
-}
-
 func TestSpanTags(t *testing.T) {
-	Reset()
+	resetProfiler()
 	Enable()
-	defer Disable()
+	defer disableProfiler()
 
 	span := Start("tagged-op")
 	span.Tag("session", "myproject")
@@ -105,24 +134,24 @@ func TestSpanTags(t *testing.T) {
 }
 
 func TestDisabledProfilingNoOps(t *testing.T) {
-	Reset()
-	Disable()
+	resetProfiler()
+	disableProfiler()
 
 	// Should not panic and return no-op spans
 	span := Start("should-not-record")
 	span.Tag("key", "value")
 	span.End()
 
-	spans := GetSpans()
+	spans := recordedSpans()
 	if len(spans) != 0 {
 		t.Errorf("expected no spans when disabled, got %d", len(spans))
 	}
 }
 
 func TestGetProfile(t *testing.T) {
-	Reset()
+	resetProfiler()
 	Enable()
-	defer Disable()
+	defer disableProfiler()
 
 	// Create some spans
 	s1 := StartWithPhase("op1", "startup")
@@ -163,52 +192,10 @@ func TestGetProfile(t *testing.T) {
 	}
 }
 
-func TestGetSpansReturnsSnapshots(t *testing.T) {
-	Reset()
-	Enable()
-	defer Disable()
-
-	span := StartWithPhase("snapshot-op", "startup")
-	span.Tag("session", "live")
-	span.End()
-
-	spans := GetSpans()
-	if len(spans) != 1 {
-		t.Fatalf("expected 1 span, got %d", len(spans))
-	}
-	spans[0].Name = "mutated"
-	spans[0].Duration = 0
-	spans[0].Tags["session"] = "mutated"
-	spans[0].Tag("extra", "ignored")
-
-	again := GetSpans()
-	if again[0].Name != "snapshot-op" {
-		t.Errorf("GetSpans returned live span pointer; name changed to %q", again[0].Name)
-	}
-	if again[0].Duration == 0 {
-		t.Error("GetSpans returned live span pointer; duration was mutated")
-	}
-	if again[0].Tags["session"] != "live" {
-		t.Errorf("GetSpans returned live tag map; session changed to %v", again[0].Tags["session"])
-	}
-	if _, ok := again[0].Tags["extra"]; ok {
-		t.Error("snapshot Tag call should not mutate tracked profiler span")
-	}
-
-	phaseSpans := GetSpansByPhase("startup")
-	if len(phaseSpans) != 1 {
-		t.Fatalf("expected 1 startup span, got %d", len(phaseSpans))
-	}
-	phaseSpans[0].Tags["session"] = "phase-mutated"
-	if GetSpans()[0].Tags["session"] != "live" {
-		t.Error("GetSpansByPhase returned live tag map")
-	}
-}
-
 func TestGetProfileReturnsSnapshotTags(t *testing.T) {
-	Reset()
+	resetProfiler()
 	Enable()
-	defer Disable()
+	defer disableProfiler()
 
 	span := Start("profile-snapshot")
 	span.Tag("session", "live")
@@ -227,9 +214,9 @@ func TestGetProfileReturnsSnapshotTags(t *testing.T) {
 }
 
 func TestWriteJSON(t *testing.T) {
-	Reset()
+	resetProfiler()
 	Enable()
-	defer Disable()
+	defer disableProfiler()
 
 	span := Start("json-test")
 	span.Tag("test", true)
@@ -252,9 +239,9 @@ func TestWriteJSON(t *testing.T) {
 }
 
 func TestWriteText(t *testing.T) {
-	Reset()
+	resetProfiler()
 	Enable()
-	defer Disable()
+	defer disableProfiler()
 
 	s := StartWithPhase("text-test", "startup")
 	time.Sleep(5 * time.Millisecond)
@@ -274,55 +261,10 @@ func TestWriteText(t *testing.T) {
 	}
 }
 
-func TestTimeHelper(t *testing.T) {
-	Reset()
-	Enable()
-	defer Disable()
-
-	called := false
-	Time("helper-test", func() {
-		called = true
-		time.Sleep(5 * time.Millisecond)
-	})
-
-	if !called {
-		t.Error("expected function to be called")
-	}
-
-	spans := GetSpans()
-	if len(spans) != 1 {
-		t.Errorf("expected 1 span, got %d", len(spans))
-	}
-	if spans[0].Name != "helper-test" {
-		t.Errorf("expected name 'helper-test', got %q", spans[0].Name)
-	}
-}
-
-func TestTimeWithError(t *testing.T) {
-	Reset()
-	Enable()
-	defer Disable()
-
-	err := TimeWithError("error-test", func() error {
-		return nil
-	})
-	if err != nil {
-		t.Errorf("expected no error, got %v", err)
-	}
-
-	spans := GetSpans()
-	if len(spans) != 1 {
-		t.Fatal("expected 1 span")
-	}
-	if _, ok := spans[0].Tags["error"]; ok {
-		t.Error("expected no error tag for successful operation")
-	}
-}
-
 func TestDoubleEnd(t *testing.T) {
-	Reset()
+	resetProfiler()
 	Enable()
-	defer Disable()
+	defer disableProfiler()
 
 	span := Start("double-end")
 	time.Sleep(5 * time.Millisecond)
@@ -338,29 +280,10 @@ func TestDoubleEnd(t *testing.T) {
 	}
 }
 
-func TestReset(t *testing.T) {
-	Reset()
-	Enable()
-	defer Disable()
-
-	Start("span1").End()
-	Start("span2").End()
-
-	if len(GetSpans()) != 2 {
-		t.Error("expected 2 spans before reset")
-	}
-
-	Reset()
-
-	if len(GetSpans()) != 0 {
-		t.Error("expected 0 spans after reset")
-	}
-}
-
 func TestWriteJSONIncludesRecommendations(t *testing.T) {
-	Reset()
+	resetProfiler()
 	Enable()
-	defer Disable()
+	defer disableProfiler()
 
 	// Create some spans to generate recommendations
 	span := Start("json-rec-test")
@@ -396,9 +319,9 @@ func TestWriteJSONIncludesRecommendations(t *testing.T) {
 }
 
 func TestWriteTextIncludesRecommendations(t *testing.T) {
-	Reset()
+	resetProfiler()
 	Enable()
-	defer Disable()
+	defer disableProfiler()
 
 	s := StartWithPhase("text-rec-test", "startup")
 	s.End()
@@ -419,9 +342,9 @@ func TestWriteTextIncludesRecommendations(t *testing.T) {
 }
 
 func TestWriteTextRecommendationSeverityIcons(t *testing.T) {
-	Reset()
+	resetProfiler()
 	Enable()
-	defer Disable()
+	defer disableProfiler()
 
 	// Create slow spans to trigger warnings
 	span := StartWithPhase("very-slow-op", "startup")
@@ -437,54 +360,5 @@ func TestWriteTextRecommendationSeverityIcons(t *testing.T) {
 	// Should contain warning icon for slow span
 	if !strings.Contains(output, "⚠") && !strings.Contains(output, "❌") {
 		t.Error("expected output to contain warning or critical icons for slow operation")
-	}
-}
-
-// =============================================================================
-// TotalDuration (bd-2fgaj)
-// =============================================================================
-
-func TestTotalDuration(t *testing.T) {
-	Reset()
-	Enable()
-	t.Cleanup(func() { Disable(); Reset() })
-
-	time.Sleep(10 * time.Millisecond)
-	d := TotalDuration()
-	if d < 10*time.Millisecond {
-		t.Errorf("TotalDuration = %v, expected >= 10ms", d)
-	}
-}
-
-// =============================================================================
-// TimePhase (bd-2fgaj)
-// =============================================================================
-
-func TestTimePhase(t *testing.T) {
-	Reset()
-	Enable()
-	t.Cleanup(func() { Disable(); Reset() })
-
-	executed := false
-	TimePhase("test-op", "startup", func() {
-		executed = true
-		time.Sleep(5 * time.Millisecond)
-	})
-	if !executed {
-		t.Error("TimePhase should have executed the function")
-	}
-
-	profile := GetProfile()
-	found := false
-	for _, span := range profile.Spans {
-		if span.Name == "test-op" && span.Phase == "startup" {
-			found = true
-			if span.DurationMs < 5 {
-				t.Errorf("span duration = %.2fms, expected >= 5ms", span.DurationMs)
-			}
-		}
-	}
-	if !found {
-		t.Error("expected to find test-op span with startup phase in profile")
 	}
 }

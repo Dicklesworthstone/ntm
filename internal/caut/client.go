@@ -66,18 +66,6 @@ type Client struct {
 // ClientOption configures the client
 type ClientOption func(*Client)
 
-// WithBinaryPath sets the path to the caut binary
-func WithBinaryPath(path string) ClientOption {
-	return func(c *Client) {
-		if path == "" {
-			return
-		}
-		if execImpl, ok := c.executor.(*DefaultExecutor); ok {
-			execImpl.BinaryPath = path
-		}
-	}
-}
-
 // WithTimeout sets the command timeout
 func WithTimeout(d time.Duration) ClientOption {
 	return func(c *Client) {
@@ -158,20 +146,6 @@ func (c *Client) GetProviderUsage(ctx context.Context, provider string) (*Provid
 	return &result.Payloads[0], nil
 }
 
-// GetAgentUsage fetches usage for an agent type (cc, cod, gmi)
-func (c *Client) GetAgentUsage(ctx context.Context, agentType string) (*ProviderPayload, error) {
-	provider := AgentTypeToProvider(agentType)
-	if provider == "" {
-		return nil, fmt.Errorf("unknown agent type: %s", agentType)
-	}
-	return c.GetProviderUsage(ctx, provider)
-}
-
-// FetchAllSupportedUsage fetches usage for all NTM-supported providers
-func (c *Client) FetchAllSupportedUsage(ctx context.Context) (*UsageResult, error) {
-	return c.FetchUsage(ctx, SupportedProviders())
-}
-
 // CachedClient wraps Client with caching to avoid excessive caut calls
 type CachedClient struct {
 	client   *Client
@@ -192,11 +166,6 @@ func NewCachedClient(client *Client, cacheTTL time.Duration) *CachedClient {
 		cache:    make(map[string]*cachedResult),
 		cacheTTL: cacheTTL,
 	}
-}
-
-// IsInstalled checks if caut is available
-func (c *CachedClient) IsInstalled() bool {
-	return c.client.IsInstalled()
 }
 
 // GetProviderUsage fetches usage with caching
@@ -224,54 +193,4 @@ func (c *CachedClient) GetProviderUsage(ctx context.Context, provider string) (*
 	}
 
 	return payload, nil
-}
-
-// GetAgentUsage fetches usage for an agent type with caching
-func (c *CachedClient) GetAgentUsage(ctx context.Context, agentType string) (*ProviderPayload, error) {
-	provider := AgentTypeToProvider(agentType)
-	if provider == "" {
-		return nil, fmt.Errorf("unknown agent type: %s", agentType)
-	}
-	return c.GetProviderUsage(ctx, provider)
-}
-
-// Invalidate clears cached data for a provider
-func (c *CachedClient) Invalidate(provider string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	delete(c.cache, provider)
-}
-
-// InvalidateAll clears all cached data
-func (c *CachedClient) InvalidateAll() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.cache = make(map[string]*cachedResult)
-}
-
-// CacheStats returns statistics about the cache
-func (c *CachedClient) CacheStats() map[string]interface{} {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	validEntries := 0
-	expiredEntries := 0
-	providers := make([]string, 0, len(c.cache))
-
-	for provider, cached := range c.cache {
-		providers = append(providers, provider)
-		if time.Since(cached.fetchedAt) < c.cacheTTL {
-			validEntries++
-		} else {
-			expiredEntries++
-		}
-	}
-
-	return map[string]interface{}{
-		"valid_entries":   validEntries,
-		"expired_entries": expiredEntries,
-		"total_entries":   len(c.cache),
-		"providers":       providers,
-		"ttl_seconds":     c.cacheTTL.Seconds(),
-	}
 }

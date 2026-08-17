@@ -174,23 +174,13 @@ gemini_setup.model_select_timeout_seconds	bd-g2-claims-backlog-o787y	live key aw
 gemini_setup.ready_timeout_seconds	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
 gemini_setup.verbose	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
 help_verbosity	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
-integrations.caam.account_cooldown	bd-ws6-config-truth-ienmd.2	G-list dead knob: caam knob removed (WS6-remove)
-integrations.caam.alert_threshold	bd-ws6-config-truth-ienmd.2	G-list dead knob: caam knob removed (WS6-remove)
 integrations.caam.auto_failover	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
 integrations.caam.auto_rotate	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
 integrations.caam.binary_path	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
 integrations.caam.enabled	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
 integrations.caam.failover_providers	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
 integrations.caam.providers	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
-integrations.caam.rate_limit_patterns	bd-ws6-config-truth-ienmd.2	G-list dead knob: caam knob removed (WS6-remove)
 integrations.caam.reset_horizon_minutes	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
-integrations.caut.alert_threshold	bd-ws6-config-truth-ienmd.2	G-list dead knob: [integrations.caut] removed via C9 caut deletion cascade (WS6-remove)
-integrations.caut.binary_path	bd-ws6-config-truth-ienmd.2	G-list dead knob: [integrations.caut] removed via C9 caut deletion cascade (WS6-remove)
-integrations.caut.currency	bd-ws6-config-truth-ienmd.2	G-list dead knob: [integrations.caut] removed via C9 caut deletion cascade (WS6-remove)
-integrations.caut.enabled	bd-ws6-config-truth-ienmd.2	G-list dead knob: [integrations.caut] removed via C9 caut deletion cascade (WS6-remove)
-integrations.caut.per_agent_tracking	bd-ws6-config-truth-ienmd.2	G-list dead knob: [integrations.caut] removed via C9 caut deletion cascade (WS6-remove)
-integrations.caut.poll_interval	bd-ws6-config-truth-ienmd.2	G-list dead knob: [integrations.caut] removed via C9 caut deletion cascade (WS6-remove)
-integrations.caut.providers	bd-ws6-config-truth-ienmd.2	G-list dead knob: [integrations.caut] removed via C9 caut deletion cascade (WS6-remove)
 integrations.dcg.allow_override	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
 integrations.dcg.audit_log	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
 integrations.dcg.binary_path	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
@@ -201,16 +191,10 @@ integrations.process_triage.binary_path	bd-g2-claims-backlog-o787y	live key awai
 integrations.process_triage.check_interval	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
 integrations.process_triage.enabled	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
 integrations.process_triage.idle_threshold	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
-integrations.process_triage.on_stuck	bd-ws6-config-truth-ienmd.2	G-list dead knob: process_triage.on_stuck removed (WS6-remove)
 integrations.process_triage.stuck_threshold	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
 integrations.process_triage.use_rano_data	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
-integrations.proxy.bin_path	bd-ws6-config-truth-ienmd.2	G-list dead knob: proxy.* removed (WS6-remove)
-integrations.proxy.check_interval	bd-ws6-config-truth-ienmd.2	G-list dead knob: proxy.* removed (WS6-remove)
-integrations.proxy.enabled	bd-ws6-config-truth-ienmd.2	G-list dead knob: proxy.* removed (WS6-remove)
 integrations.rano.binary_path	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
 integrations.rano.enabled	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
-integrations.rano.history_days	bd-ws6-config-truth-ienmd.2	G-list dead knob: rano history knob removed (WS6-remove)
-integrations.rano.persist_history	bd-ws6-config-truth-ienmd.2	G-list dead knob: rano history knob removed (WS6-remove)
 integrations.rano.poll_interval_ms	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
 integrations.rano.providers	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
 integrations.rch.binary_path	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
@@ -221,12 +205,6 @@ integrations.rch.intercept_patterns	bd-g2-claims-backlog-o787y	live key awaiting
 integrations.rch.min_build_time	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
 integrations.rch.preferred_worker	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
 integrations.rch.show_location	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
-integrations.xf.archive_path	bd-ws6-config-truth-ienmd.2	G-list dead knob: xf.* removed (WS6-remove)
-integrations.xf.bin_path	bd-ws6-config-truth-ienmd.2	G-list dead knob: xf.* removed (WS6-remove)
-integrations.xf.default_mode	bd-ws6-config-truth-ienmd.2	G-list dead knob: xf.* removed (WS6-remove)
-integrations.xf.enabled	bd-ws6-config-truth-ienmd.2	G-list dead knob: xf.* removed (WS6-remove)
-memory.include_anti_patterns	bd-ws6-config-truth-ienmd.2	G-list dead knob: no substrate; staged removal (WS6-remove)
-memory.include_history	bd-ws6-config-truth-ienmd.2	G-list dead knob: no substrate; staged removal (WS6-remove)
 models.aider	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
 models.claude	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
 models.codex	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
@@ -311,14 +289,6 @@ resilience.rate_limit.detect	bd-g2-claims-backlog-o787y	live key awaiting a Regi
 resilience.rate_limit.notify	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
 resilience.rate_limit.patterns	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
 resilience.restart_delay_seconds	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
-retry.assign.initial_delay_ms	bd-ws6-config-truth-ienmd.2	G-list dead knob: no live retry loop for this subsystem; staged removal (WS6-remove)
-retry.assign.max_attempts	bd-ws6-config-truth-ienmd.2	G-list dead knob: no live retry loop for this subsystem; staged removal (WS6-remove)
-retry.completion.initial_delay_ms	bd-ws6-config-truth-ienmd.2	G-list dead knob: no live retry loop for this subsystem; staged removal (WS6-remove)
-retry.completion.max_attempts	bd-ws6-config-truth-ienmd.2	G-list dead knob: no live retry loop for this subsystem; staged removal (WS6-remove)
-retry.db.initial_delay_ms	bd-ws6-config-truth-ienmd.2	G-list dead knob: no live retry loop for this subsystem; staged removal (WS6-remove)
-retry.db.max_attempts	bd-ws6-config-truth-ienmd.2	G-list dead knob: no live retry loop for this subsystem; staged removal (WS6-remove)
-retry.scheduler.initial_delay_ms	bd-ws6-config-truth-ienmd.2	G-list dead knob: no live retry loop for this subsystem; staged removal (WS6-remove)
-retry.scheduler.max_attempts	bd-ws6-config-truth-ienmd.2	G-list dead knob: no live retry loop for this subsystem; staged removal (WS6-remove)
 robot.output.compress	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
 robot.output.format	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
 robot.output.pretty	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
@@ -335,9 +305,6 @@ rotation.auto_initiate	bd-g2-claims-backlog-o787y	live key awaiting a RegisterRe
 rotation.auto_open_browser	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
 rotation.auto_trigger	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
 rotation.continuation_prompt	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
-rotation.dashboard.show_account_status	bd-ws6-config-truth-ienmd.2	G-list dead knob: rotation.dashboard.* removed (WS6-remove)
-rotation.dashboard.show_quota_bars	bd-ws6-config-truth-ienmd.2	G-list dead knob: rotation.dashboard.* removed (WS6-remove)
-rotation.dashboard.show_reset_timers	bd-ws6-config-truth-ienmd.2	G-list dead knob: rotation.dashboard.* removed (WS6-remove)
 rotation.enabled	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
 rotation.prefer_restart	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
 rotation.usage_percent_threshold	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
@@ -425,9 +392,6 @@ swarm.auto_rotate_accounts	bd-g2-claims-backlog-o787y	live key awaiting a Regist
 swarm.default_scan_dir	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
 swarm.enabled	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
 swarm.force_global_auth_clobber	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
-swarm.limit_patterns	bd-ws6-config-truth-ienmd.2	G-list dead knob: swarm.limit_patterns removed (WS6-remove)
-swarm.marching_orders.default	bd-ws6-config-truth-ienmd.2	G-list dead knob: swarm.marching_orders removed (WS6-remove)
-swarm.marching_orders.review	bd-ws6-config-truth-ienmd.2	G-list dead knob: swarm.marching_orders removed (WS6-remove)
 swarm.panes_per_session	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
 swarm.sessions_per_type	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
 swarm.stagger_delay_ms	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
@@ -448,5 +412,4 @@ tmux.activity_indicators.enabled	bd-g2-claims-backlog-o787y	live key awaiting a 
 tmux.activity_indicators.stalled_seconds	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
 tmux.default_panes	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
 tmux.history_limit	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
-tmux.palette_key	bd-ws6-config-truth-ienmd.2	G-list dead knob per H3 decision; removed (WS6-remove)
 tmux.pane_init_delay_ms	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package

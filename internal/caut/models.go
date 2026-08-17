@@ -1,7 +1,6 @@
 package caut
 
 import (
-	"strings"
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/agent"
@@ -138,21 +137,6 @@ func (p *ProviderPayload) IsOperational() bool {
 	return p.Status.Operational
 }
 
-// GetPayloadByProvider returns the payload for a specific provider
-func (r *UsageResult) GetPayloadByProvider(provider string) *ProviderPayload {
-	for i := range r.Payloads {
-		if r.Payloads[i].Provider == provider {
-			return &r.Payloads[i]
-		}
-	}
-	return nil
-}
-
-// HasErrors returns true if there were any errors during the fetch
-func (r *UsageResult) HasErrors() bool {
-	return len(r.Errors) > 0
-}
-
 // AgentTypeToProvider maps NTM agent type to caut provider
 func AgentTypeToProvider(agentType string) string {
 	switch agent.AgentType(agentType).Canonical() {
@@ -169,45 +153,6 @@ func AgentTypeToProvider(agentType string) string {
 	case agent.AgentTypeWindsurf:
 		return "windsurf"
 	case agent.AgentTypeAider:
-		return "aider"
-	default:
-		return ""
-	}
-}
-
-// ProviderToAgentType maps caut provider to NTM agent type
-func ProviderToAgentType(provider string) string {
-	switch agent.AgentType(provider).Canonical() {
-	case agent.AgentTypeClaudeCode:
-		return "cc"
-	case agent.AgentTypeCodex:
-		return "cod"
-	case agent.AgentTypeGemini:
-		return "gmi"
-	case agent.AgentTypeAntigravity:
-		return "agy"
-	case agent.AgentTypeCursor:
-		return "cursor"
-	case agent.AgentTypeWindsurf:
-		return "windsurf"
-	case agent.AgentTypeAider:
-		return "aider"
-	}
-
-	switch strings.ToLower(strings.TrimSpace(provider)) {
-	case "anthropic", "claude":
-		return "cc"
-	case "openai", "codex":
-		return "cod"
-	case "google", "gemini":
-		return "gmi"
-	case "antigravity", "agy":
-		return "agy"
-	case "cursor":
-		return "cursor"
-	case "windsurf":
-		return "windsurf"
-	case "aider":
 		return "aider"
 	default:
 		return ""

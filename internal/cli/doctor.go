@@ -679,6 +679,45 @@ func checkConfiguration() []ConfigCheck {
 	// commit scrollback is unobserved; doctor is where they become visible.
 	checks = append(checks, guardDegradationCheck())
 
+	// Removed config knobs (WS6-remove, bd-ws6-config-truth-ienmd.2): keys
+	// removed in v1.26.0 still load with a startup warning; doctor surfaces
+	// the same per-key warning so the migration runway is visible before the
+	// v1.27.0 flip to hard errors.
+	checks = append(checks, removedKnobChecks()...)
+
+	return checks
+}
+
+// removedKnobChecks reports every removed-in-v1.26.0 config key present in
+// the active config file, one warning per key, with the exact disposition
+// text the loader prints at startup.
+func removedKnobChecks() []ConfigCheck {
+	knobs, err := config.ScanRemovedKnobs(selectedConfigPath())
+	if err != nil {
+		return []ConfigCheck{{
+			Name:    "removed config keys",
+			Valid:   false,
+			Status:  "warning",
+			Message: fmt.Sprintf("could not scan config for removed keys: %v", err),
+		}}
+	}
+	if len(knobs) == 0 {
+		return []ConfigCheck{{
+			Name:    "removed config keys",
+			Valid:   true,
+			Status:  "ok",
+			Message: "no removed config keys present",
+		}}
+	}
+	checks := make([]ConfigCheck, 0, len(knobs))
+	for _, knob := range knobs {
+		checks = append(checks, ConfigCheck{
+			Name:    "removed config key: " + knob.Key,
+			Valid:   false,
+			Status:  "warning",
+			Message: fmt.Sprintf("%s; the key is ignored in v1.26.0 and becomes a config error in v1.27.0 — delete it from your config file", knob.Disposition),
+		})
+	}
 	return checks
 }
 

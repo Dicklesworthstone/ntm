@@ -402,13 +402,6 @@ func TestNormalizeProviderSharedAliases(t *testing.T) {
 	}
 }
 
-func TestAccountRotatorImplementsInterface(t *testing.T) {
-	// Verify AccountRotator implements the AccountRotator interface used by AutoRespawner
-	rotator := NewAccountRotator()
-
-	var _ AccountRotatorI = rotator
-}
-
 func TestCaamStatusStruct(t *testing.T) {
 	status := caamStatus{
 		Provider:      "claude",

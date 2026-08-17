@@ -47,26 +47,11 @@ func Enable() {
 	global.start = time.Now()
 }
 
-// Disable turns off profiling
-func Disable() {
-	global.mu.Lock()
-	defer global.mu.Unlock()
-	global.enabled = false
-}
-
 // IsEnabled returns whether profiling is active
 func IsEnabled() bool {
 	global.mu.RLock()
 	defer global.mu.RUnlock()
 	return global.enabled
-}
-
-// Reset clears all collected spans
-func Reset() {
-	global.mu.Lock()
-	defer global.mu.Unlock()
-	global.spans = nil
-	global.start = time.Now()
 }
 
 // Start begins a new span with the given name
@@ -101,32 +86,6 @@ func StartWithPhase(name, phase string) *Span {
 	return span
 }
 
-// StartChild creates a child span under a parent
-func StartChild(parent *Span, name string) *Span {
-	global.mu.Lock()
-	defer global.mu.Unlock()
-
-	if !global.enabled || parent == nil {
-		return &Span{Name: name}
-	}
-
-	if len(global.spans) >= MaxSpans {
-		return &Span{Name: name} // Untracked due to limit
-	}
-
-	span := &Span{
-		Name:      name,
-		Phase:     parent.Phase,
-		Parent:    parent.Name,
-		StartTime: time.Now(),
-		Tags:      make(Tags),
-		tracked:   true,
-	}
-	parent.children = append(parent.children, span)
-	global.spans = append(global.spans, span)
-	return span
-}
-
 // End finishes the span and records duration
 func (s *Span) End() {
 	if !s.tracked {
@@ -157,18 +116,6 @@ func (s *Span) Tag(key string, value interface{}) *Span {
 	}
 	s.Tags[key] = value
 	return s
-}
-
-// GetSpans returns all recorded spans
-func GetSpans() []*Span {
-	global.mu.RLock()
-	defer global.mu.RUnlock()
-
-	result := make([]*Span, len(global.spans))
-	for i, span := range global.spans {
-		result[i] = cloneSpanSnapshot(span)
-	}
-	return result
 }
 
 // GetSpansByPhase returns spans filtered by phase
@@ -211,13 +158,6 @@ func cloneTags(tags Tags) Tags {
 		out[k] = v
 	}
 	return out
-}
-
-// TotalDuration returns the total profiling duration
-func TotalDuration() time.Duration {
-	global.mu.RLock()
-	defer global.mu.RUnlock()
-	return time.Since(global.start)
 }
 
 // Profile is a timing summary for JSON output
@@ -365,29 +305,4 @@ func WriteText(w io.Writer) error {
 	}
 
 	return nil
-}
-
-// Time is a helper that times a function and records a span
-func Time(name string, fn func()) {
-	span := Start(name)
-	defer span.End()
-	fn()
-}
-
-// TimePhase is a helper that times a function with phase annotation
-func TimePhase(name, phase string, fn func()) {
-	span := StartWithPhase(name, phase)
-	defer span.End()
-	fn()
-}
-
-// TimeWithError times a function that returns an error
-func TimeWithError(name string, fn func() error) error {
-	span := Start(name)
-	defer span.End()
-	err := fn()
-	if err != nil {
-		span.Tag("error", err.Error())
-	}
-	return err
 }

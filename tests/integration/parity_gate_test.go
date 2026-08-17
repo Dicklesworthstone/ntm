@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -225,92 +224,6 @@ func TestParityKernelListOutput(t *testing.T) {
 	t.Logf("Commands with REST bindings: %d/%d", restCount, payload.Count)
 }
 
-// =============================================================================
-// OpenAPI Spec Drift Detection
-// =============================================================================
-
-func TestOpenAPISpecDrift(t *testing.T) {
-	testutil.RequireNTMBinary(t)
-
-	// Find repo root
-	repoRoot := findRepoRoot()
-	if repoRoot == "" {
-		t.Skip("could not find repo root")
-	}
-
-	checkedInPath := filepath.Join(repoRoot, "docs", "openapi-kernel.json")
-	if _, err := os.Stat(checkedInPath); os.IsNotExist(err) {
-		t.Skip("checked-in openapi-kernel.json not found")
-	}
-
-	// Generate new spec
-	logger := testutil.NewTestLoggerStdout(t)
-	tmpFile := filepath.Join(t.TempDir(), "openapi-new.json")
-	testutil.AssertCommandSuccess(t, logger, "ntm", "openapi", "generate", "-o", tmpFile)
-
-	// Read both specs
-	checkedIn, err := os.ReadFile(checkedInPath)
-	if err != nil {
-		t.Fatalf("failed to read checked-in spec: %v", err)
-	}
-
-	generated, err := os.ReadFile(tmpFile)
-	if err != nil {
-		t.Fatalf("failed to read generated spec: %v", err)
-	}
-
-	// Parse both
-	var checkedInJSON, generatedJSON map[string]any
-	if err := json.Unmarshal(checkedIn, &checkedInJSON); err != nil {
-		t.Fatalf("failed to parse checked-in spec: %v", err)
-	}
-	if err := json.Unmarshal(generated, &generatedJSON); err != nil {
-		t.Fatalf("failed to parse generated spec: %v", err)
-	}
-
-	// Compare path counts
-	checkedInPaths := countPaths(checkedInJSON)
-	generatedPaths := countPaths(generatedJSON)
-
-	t.Logf("Checked-in paths: %d, Generated paths: %d", checkedInPaths, generatedPaths)
-
-	if checkedInPaths != generatedPaths {
-		t.Errorf("OpenAPI path count drift: checked-in has %d, generated has %d",
-			checkedInPaths, generatedPaths)
-	}
-
-	// Note: Full byte-for-byte comparison is done in CI.
-	// This test catches structural changes.
-}
-
-func countPaths(spec map[string]any) int {
-	paths, ok := spec["paths"].(map[string]any)
-	if !ok {
-		return 0
-	}
-	return len(paths)
-}
-
-func findRepoRoot() string {
-	dir, err := os.Getwd()
-	if err != nil {
-		return ""
-	}
-
-	for {
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			return dir
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return ""
-		}
-		dir = parent
-	}
-}
-
-// =============================================================================
-// REST vs CLI Parity for Specific Endpoints
 // =============================================================================
 
 // requireTestServer returns the NTM_TEST_SERVER base URL or skips the test.

@@ -43,12 +43,6 @@ type SwarmConfig struct {
 	// safe-restore capability, and bypasses account pins. DANGEROUS escape hatch
 	// for #194; off by default. Maps to the --force-global-auth-clobber flag.
 	ForceGlobalAuthClobber bool `toml:"force_global_auth_clobber"`
-
-	// Limit detection patterns per agent type
-	LimitPatterns map[string][]string `toml:"limit_patterns"`
-
-	// Marching orders templates
-	MarchingOrders MarchingOrdersConfig `toml:"marching_orders"`
 }
 
 // AllocationSpec defines agent counts per type for a tier.
@@ -61,12 +55,6 @@ type AllocationSpec struct {
 // Total returns the total number of agents in this allocation.
 func (a AllocationSpec) Total() int {
 	return a.CC + a.Cod + a.Gmi
-}
-
-// MarchingOrdersConfig holds templates for initial agent instructions.
-type MarchingOrdersConfig struct {
-	Default string `toml:"default"` // Default marching orders template
-	Review  string `toml:"review"`  // Review-focused marching orders
 }
 
 // DefaultSwarmConfig returns SwarmConfig with sensible defaults.
@@ -94,15 +82,6 @@ func DefaultSwarmConfig() SwarmConfig {
 		SessionsPerType:    3,
 		StaggerDelayMs:     300,
 		AutoRotateAccounts: false,
-		LimitPatterns: map[string][]string{
-			"cc":  {"You've hit your limit", "usage limit", "rate limit"},
-			"cod": {"You've hit your usage limit", "rate limit exceeded"},
-			"gmi": {"quota exceeded", "rate limit"},
-		},
-		MarchingOrders: MarchingOrdersConfig{
-			Default: "",
-			Review:  "",
-		},
 	}
 }
 

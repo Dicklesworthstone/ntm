@@ -5759,7 +5759,6 @@ Examples:
 					},
 					"tmux": map[string]interface{}{
 						"default_panes":      effectiveCfg.Tmux.DefaultPanes,
-						"palette_key":        effectiveCfg.Tmux.PaletteKey,
 						"pane_init_delay_ms": effectiveCfg.Tmux.PaneInitDelayMs,
 					},
 					"checkpoints": map[string]interface{}{
@@ -5813,17 +5812,11 @@ Examples:
 							"enabled":        effectiveCfg.Integrations.RCH.Enabled,
 							"fallback_local": effectiveCfg.Integrations.RCH.FallbackLocal,
 						},
-						"caut": map[string]interface{}{
-							"enabled": effectiveCfg.Integrations.Caut.Enabled,
-						},
 						"process_triage": map[string]interface{}{
 							"enabled": effectiveCfg.Integrations.ProcessTriage.Enabled,
 						},
 						"rano": map[string]interface{}{
 							"enabled": effectiveCfg.Integrations.Rano.Enabled,
-						},
-						"proxy": map[string]interface{}{
-							"enabled": effectiveCfg.Integrations.Proxy.Enabled,
 						},
 						"xf": map[string]interface{}{
 							"enabled": effectiveCfg.Integrations.XF.Enabled,
@@ -5851,8 +5844,6 @@ Examples:
 						"enabled":               effectiveCfg.Memory.Enabled,
 						"include_in_recovery":   effectiveCfg.Memory.IncludeInRecovery,
 						"max_rules":             effectiveCfg.Memory.MaxRules,
-						"include_anti_patterns": effectiveCfg.Memory.IncludeAntiPatterns,
-						"include_history":       effectiveCfg.Memory.IncludeHistory,
 						"query_timeout_seconds": effectiveCfg.Memory.QueryTimeoutSeconds,
 						"send_injection":        effectiveCfg.Memory.SendInjection,
 						"send_max_rules":        effectiveCfg.Memory.SendMaxRules,

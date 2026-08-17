@@ -74,8 +74,7 @@ type AcquireResult struct {
 }
 
 // Simulator is the mutable model. Use NewSimulator and pass a Clock
-// for tests; production callers can supply RealClock or wire to the
-// existing internal/faultharness Clock implementations.
+// for tests; production callers can supply RealClock.
 type Simulator struct {
 	clock  Clock
 	leases []*Lease
@@ -83,9 +82,7 @@ type Simulator struct {
 }
 
 // Clock abstracts time.Now so tests can advance reservations without
-// burning real wall-clock. The reservationsim.Clock interface is
-// intentionally identical to internal/faultharness.Clock so the two
-// packages share the same FakeClock when paired.
+// burning real wall-clock.
 type Clock interface {
 	Now() time.Time
 }

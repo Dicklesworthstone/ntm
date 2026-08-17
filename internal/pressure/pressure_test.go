@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 )
@@ -308,101 +307,6 @@ func TestGovernor_RefreshLatestSnapshotIsDeterministic(t *testing.T) {
 	}
 }
 
-func TestGovernor_ObserveOnlyAlwaysAllows(t *testing.T) {
-	t.Parallel()
-	fp := NewFakeProvider("fake",
-		Reading{Source: SourceCPU, Value: 0.99, Unit: "ratio"}, // critical
-	)
-	g := newTestGovernor(t, ModeObserve, fp)
-	g.Refresh(context.Background())
-	res := g.Gate(ActionAgentSend, "proj1", false)
-	if res.Decision != DecisionAllow {
-		t.Fatalf("Decision = %s, want allow (observe)", res.Decision)
-	}
-	if !strings.HasPrefix(res.Reason, "observe_only:") {
-		t.Errorf("Reason = %q, want observe_only:* prefix", res.Reason)
-	}
-	if res.LevelText != "critical" {
-		t.Errorf("LevelText = %q, want critical", res.LevelText)
-	}
-}
-
-func TestGovernor_EnforceDefersAtHigh(t *testing.T) {
-	t.Parallel()
-	fp := NewFakeProvider("fake",
-		Reading{Source: SourceCPU, Value: 0.85, Unit: "ratio"}, // high
-	)
-	g := newTestGovernor(t, ModeEnforce, fp)
-	g.Refresh(context.Background())
-	res := g.Gate(ActionPipelineFanout, "", false)
-	if res.Decision != DecisionDefer {
-		t.Fatalf("Decision = %s, want defer", res.Decision)
-	}
-	if res.Hint == "" || !strings.Contains(res.Hint, "cpu") {
-		t.Errorf("Hint = %q, want a hint mentioning cpu", res.Hint)
-	}
-}
-
-func TestGovernor_EnforceDeniesAtCritical(t *testing.T) {
-	t.Parallel()
-	fp := NewFakeProvider("fake",
-		Reading{Source: SourceMemory, Value: 0.95, Unit: "ratio"}, // critical
-	)
-	g := newTestGovernor(t, ModeEnforce, fp)
-	g.Refresh(context.Background())
-	res := g.Gate(ActionBuildOrTest, "build", false)
-	if res.Decision != DecisionDeny {
-		t.Fatalf("Decision = %s, want deny", res.Decision)
-	}
-	if !strings.Contains(res.Hint, "rch") {
-		t.Errorf("Hint = %q, want rch offload suggestion for build", res.Hint)
-	}
-}
-
-func TestGovernor_UrgentBypassesGate(t *testing.T) {
-	t.Parallel()
-	fp := NewFakeProvider("fake",
-		Reading{Source: SourceCPU, Value: 0.99, Unit: "ratio"},
-	)
-	g := newTestGovernor(t, ModeEnforce, fp)
-	g.Refresh(context.Background())
-	res := g.Gate(ActionAgentInterrupt, "proj1", true)
-	if res.Decision != DecisionAllow {
-		t.Fatalf("Decision = %s, want allow (urgent)", res.Decision)
-	}
-	if res.Reason != "urgent" {
-		t.Errorf("Reason = %q, want urgent", res.Reason)
-	}
-}
-
-func TestGovernor_SessionBudgetOverridesGlobal(t *testing.T) {
-	t.Parallel()
-	fp := NewFakeProvider("fake",
-		Reading{Source: SourceCPU, Value: 0.70, Unit: "ratio"}, // elevated
-	)
-	g := New(Config{
-		Mode:      ModeEnforce,
-		Providers: []Provider{fp},
-		Now:       fixedClock(),
-		// Per-session: defer at elevated.
-		SessionBudget: map[string]Budget{
-			"strict": {
-				DeferAtLevel: LevelElevated,
-				DenyAtLevel:  LevelCritical,
-			},
-		},
-	})
-	g.Refresh(context.Background())
-
-	// Default global budget defers at high — elevated should still be allow.
-	if got := g.Gate(ActionAgentSend, "loose", false); got.Decision != DecisionAllow {
-		t.Errorf("loose session got Decision %s, want allow", got.Decision)
-	}
-	if got := g.Gate(ActionAgentSend, "strict", false); got.Decision != DecisionDefer {
-		t.Errorf("strict session got Decision %s, want defer", got.Decision)
-	}
-}
-
 func TestGovernor_ProviderErrorIsNonFatal(t *testing.T) {
 	t.Parallel()
 	good := NewFakeProvider("good",
@@ -511,96 +415,6 @@ func TestRobotSnapshot_NoRefreshIsEmptyButValid(t *testing.T) {
 	}
 	if rp.Sources != nil {
 		t.Errorf("Sources = %v, want nil for empty snapshot", rp.Sources)
-	}
-}
-
-func TestSetMode_Toggles(t *testing.T) {
-	t.Parallel()
-	g := newTestGovernor(t, ModeObserve)
-	if g.Mode() != ModeObserve {
-		t.Fatalf("initial Mode = %s, want observe", g.Mode())
-	}
-	g.SetMode(ModeEnforce)
-	if g.Mode() != ModeEnforce {
-		t.Errorf("after SetMode(enforce), Mode = %s", g.Mode())
-	}
-	g.SetMode(Mode("garbage"))
-	if g.Mode() != ModeObserve {
-		t.Errorf("after SetMode(garbage), Mode = %s, want observe (sanitized)", g.Mode())
-	}
-}
-
-// bd-qjt3s: SetMode + Gate + Mode + Refresh must be safe to call from
-// many goroutines concurrently. The Go race detector catches the
-// pre-fix unlocked g.mode reads and unlocked g.last access — running
-// this test under `go test -race` exercises the data path that
-// previously raced. The assertion is "no panic, race detector clean";
-// any data-race report from the runtime is a hard failure of the
-// concurrency contract.
-func TestGovernor_ModeAndGateAreRaceFreeUnderConcurrentAccess(t *testing.T) {
-	t.Parallel()
-	fp := NewFakeProvider("cpu",
-		Reading{Source: SourceCPU, Value: 0.5, Unit: "ratio"},
-	)
-	g := newTestGovernor(t, ModeObserve, fp)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// Seed a snapshot so Gate has something to read.
-	_ = g.Refresh(ctx)
-
-	const goroutines = 8
-	const iterations = 200
-	var wg sync.WaitGroup
-
-	// Mode flippers.
-	for i := 0; i < goroutines/2; i++ {
-		wg.Add(1)
-		go func(seed int) {
-			defer wg.Done()
-			for j := 0; j < iterations; j++ {
-				if (j+seed)%2 == 0 {
-					g.SetMode(ModeEnforce)
-				} else {
-					g.SetMode(ModeObserve)
-				}
-			}
-		}(i)
-	}
-
-	// Gate readers + Mode readers + Refreshers — all racing the
-	// flippers. Each acquires the same g.mu RWMutex, so the race
-	// detector verifies no unsynchronized read of g.mode or g.last.
-	for i := 0; i < goroutines/2; i++ {
-		wg.Add(3)
-		go func() {
-			defer wg.Done()
-			for j := 0; j < iterations; j++ {
-				_ = g.Gate(ActionSwarmSpawn, "session", false)
-			}
-		}()
-		go func() {
-			defer wg.Done()
-			for j := 0; j < iterations; j++ {
-				_ = g.Mode()
-			}
-		}()
-		go func() {
-			defer wg.Done()
-			for j := 0; j < iterations; j++ {
-				_ = g.Refresh(ctx)
-			}
-		}()
-	}
-
-	wg.Wait()
-
-	// After all the churn, the governor must still function — Gate
-	// returns a well-formed Result whose Mode is one of the two
-	// canonical values, never a torn read or zero value.
-	res := g.Gate(ActionSwarmSpawn, "session", false)
-	if res.Mode != ModeObserve && res.Mode != ModeEnforce {
-		t.Fatalf("post-race Gate Mode = %q, want observe or enforce", res.Mode)
 	}
 }
 

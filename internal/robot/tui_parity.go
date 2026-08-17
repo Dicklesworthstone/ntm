@@ -2891,6 +2891,14 @@ type PaletteOptions struct {
 	SearchQuery string // Filter commands by search term
 }
 
+func init() {
+	// G2 liveness claim (WS6-remove escalation, bd-ws6-config-truth-ienmd.2):
+	// integrations.xf.enabled is a LIVE knob, kept while the rest of
+	// [integrations.xf] was removed — it gates injection of the built-in
+	// xf-search entry into GetPalette output.
+	config.RegisterReader("integrations.xf.enabled", GetPalette)
+}
+
 // GetPalette returns palette information.
 // This function returns the data struct directly, enabling CLI/REST parity.
 func GetPalette(cfg *config.Config, opts PaletteOptions) (*PaletteOutput, error) {

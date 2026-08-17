@@ -12,7 +12,7 @@ import (
 // Config struct must be CLAIMED by the code that actually reads it:
 //
 //	func init() {
-//		config.RegisterReader("tmux.palette_key", palette.HandleKey)
+//		config.RegisterReader("integrations.xf.enabled", robot.GetPalette)
 //	}
 //
 // The second argument is a REAL function reference from the consuming package

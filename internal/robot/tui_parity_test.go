@@ -2679,3 +2679,38 @@ func TestDetectErrorsEdgeCases(t *testing.T) {
 		})
 	}
 }
+
+// TestGetPaletteXFEnabledKnob is the WS6 behavior proof for the KEPT
+// integrations.xf.enabled knob (bd-ws6-config-truth-ienmd.2 escalated it from
+// removal to keep): flipping the knob adds/removes the built-in xf-search
+// palette entry.
+func TestGetPaletteXFEnabledKnob(t *testing.T) {
+	hasXFSearch := func(out *PaletteOutput) bool {
+		for _, cmd := range out.Commands {
+			if cmd.Key == "xf-search" {
+				return true
+			}
+		}
+		return false
+	}
+
+	cfg := config.Default()
+	cfg.Integrations.XF.Enabled = true
+	out, err := GetPalette(cfg, PaletteOptions{})
+	if err != nil {
+		t.Fatalf("GetPalette(xf enabled): %v", err)
+	}
+	if !hasXFSearch(out) {
+		t.Fatal("xf.enabled=true must inject the xf-search palette entry")
+	}
+
+	cfg = config.Default()
+	cfg.Integrations.XF.Enabled = false
+	out, err = GetPalette(cfg, PaletteOptions{})
+	if err != nil {
+		t.Fatalf("GetPalette(xf disabled): %v", err)
+	}
+	if hasXFSearch(out) {
+		t.Fatal("xf.enabled=false must not inject the xf-search palette entry")
+	}
+}

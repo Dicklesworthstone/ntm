@@ -41,25 +41,6 @@ func TestNewAgentLauncherWithLogger_Nil(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// AutoRespawner.WithLogger — 0% → 100%
-// ---------------------------------------------------------------------------
-
-func TestAutoRespawner_WithLogger(t *testing.T) {
-	t.Parallel()
-
-	ar := NewAutoRespawner()
-	logger := slog.Default()
-
-	result := ar.WithLogger(logger)
-	if result != ar {
-		t.Error("expected WithLogger to return same pointer for chaining")
-	}
-	if ar.Logger != logger {
-		t.Error("expected logger to be set")
-	}
-}
-
-// ---------------------------------------------------------------------------
 // BeadScanner WithLogger option — 0% → 100%
 // ---------------------------------------------------------------------------
 

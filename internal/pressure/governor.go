@@ -17,19 +17,6 @@ const (
 	ModeEnforce Mode = "enforce"
 )
 
-// Result is the gating outcome for a single Gate call.
-type Result struct {
-	Decision  Decision `json:"decision"`
-	Reason    string   `json:"reason,omitempty"`
-	Hint      string   `json:"hint,omitempty"`
-	Limiting  []Source `json:"limiting,omitempty"`
-	Level     Level    `json:"-"`
-	LevelText string   `json:"level"`
-	Mode      Mode     `json:"mode"`
-	Action    Action   `json:"action"`
-	Session   string   `json:"session,omitempty"`
-}
-
 // Config configures a Governor.
 type Config struct {
 	Mode          Mode
@@ -41,7 +28,7 @@ type Config struct {
 	Now           func() time.Time
 }
 
-// Governor coordinates providers, snapshot computation, and gating.
+// Governor coordinates providers and snapshot computation.
 type Governor struct {
 	mode       Mode
 	thresholds map[Source]Thresholds
@@ -90,23 +77,13 @@ func New(cfg Config) *Governor {
 	}
 }
 
-// Mode returns the governor's mode. Read under RLock so a concurrent
-// SetMode call observes the Go memory-model happens-before edge
-// established by the matching write under g.mu.Lock (bd-qjt3s).
+// Mode returns the governor's mode. Read under RLock so concurrent
+// writers observe the Go memory-model happens-before edge established
+// by the matching write under g.mu.Lock (bd-qjt3s).
 func (g *Governor) Mode() Mode {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 	return g.mode
-}
-
-// SetMode flips between observe and enforce.
-func (g *Governor) SetMode(m Mode) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if m != ModeEnforce {
-		m = ModeObserve
-	}
-	g.mode = m
 }
 
 // Refresh polls all providers, builds a fresh Snapshot, stores it as
@@ -140,89 +117,6 @@ func (g *Governor) Latest() Snapshot {
 		return Snapshot{TakenAt: g.now()}
 	}
 	return *g.last
-}
-
-// budgetFor merges the global budget with any session override.
-func (g *Governor) budgetFor(session string) Budget {
-	if session == "" {
-		return g.global
-	}
-	if g.sessions == nil {
-		return g.global
-	}
-	override, ok := g.sessions[session]
-	if !ok {
-		return g.global
-	}
-	return MergeBudgets(g.global, override)
-}
-
-// Gate decides whether `action` may proceed for `session`. urgent=true
-// short-circuits defer/deny gates: urgent actions are always Allowed,
-// but the result still records the level the system is at so the caller
-// can log warnings. session may be "" for global-scope checks.
-func (g *Governor) Gate(action Action, session string, urgent bool) Result {
-	// Snapshot both mode and last under a single RLock so the gate
-	// decision is consistent and race-free against a concurrent
-	// SetMode + Refresh (bd-qjt3s). The write paths take Lock; this
-	// RLock establishes the matching happens-before edge so the
-	// observed values reflect the most recent ordered write.
-	g.mu.RLock()
-	mode := g.mode
-	var snap Snapshot
-	if g.last != nil {
-		snap = *g.last
-	} else {
-		snap = Snapshot{TakenAt: g.now()}
-	}
-	g.mu.RUnlock()
-
-	budget := g.budgetFor(session)
-	res := Result{
-		Action:    action,
-		Session:   session,
-		Mode:      mode,
-		Level:     snap.Overall,
-		LevelText: snap.Overall.String(),
-		Limiting:  snap.Limiting,
-	}
-	switch {
-	case urgent:
-		res.Decision = DecisionAllow
-		res.Reason = "urgent"
-	case snap.Overall >= budget.DenyAtLevel && budget.DenyAtLevel != 0:
-		res.Decision = DecisionDeny
-		res.Reason = "pressure_critical"
-		res.Hint = recommendation(action, snap.Limiting)
-	case snap.Overall >= budget.DeferAtLevel && budget.DeferAtLevel != 0:
-		res.Decision = DecisionDefer
-		res.Reason = "pressure_high"
-		res.Hint = recommendation(action, snap.Limiting)
-	default:
-		res.Decision = DecisionAllow
-	}
-	if mode == ModeObserve && res.Decision != DecisionAllow {
-		// In observe-only mode we record the decision in logs but the
-		// returned decision is downgraded to Allow so existing call
-		// sites are not throttled.
-		g.logger.Info("pressure governor (observe) would gate action",
-			slog.String("action", string(action)),
-			slog.String("session", session),
-			slog.String("would_decision", string(res.Decision)),
-			slog.String("level", res.LevelText),
-			slog.Any("limiting", limitingStrings(res.Limiting)))
-		res.Reason = "observe_only:" + res.Reason
-		res.Decision = DecisionAllow
-	} else if res.Decision != DecisionAllow {
-		g.logger.Warn("pressure governor gating action",
-			slog.String("action", string(action)),
-			slog.String("session", session),
-			slog.String("decision", string(res.Decision)),
-			slog.String("level", res.LevelText),
-			slog.String("hint", res.Hint),
-			slog.Any("limiting", limitingStrings(res.Limiting)))
-	}
-	return res
 }
 
 // recommendation picks a hint string based on the action and the

@@ -52,13 +52,6 @@ func TestDefaultSwarmConfig(t *testing.T) {
 		t.Errorf("expected stagger_delay_ms 300, got %d", cfg.StaggerDelayMs)
 	}
 
-	// Check limit patterns exist
-	if len(cfg.LimitPatterns) == 0 {
-		t.Error("expected default limit_patterns to be populated")
-	}
-	if _, ok := cfg.LimitPatterns["cc"]; !ok {
-		t.Error("expected limit_patterns to have 'cc' key")
-	}
 }
 
 func TestAllocationSpecTotal(t *testing.T) {
@@ -299,14 +292,6 @@ cc = 2
 cod = 2
 gmi = 1
 
-[limit_patterns]
-cc = ["limit reached", "rate limited"]
-cod = ["quota exceeded"]
-gmi = ["too many requests"]
-
-[marching_orders]
-default = "Read AGENTS.md first"
-review = "Review all code changes"
 `
 
 	var cfg SwarmConfig
@@ -335,13 +320,6 @@ review = "Review all code changes"
 	}
 	if !cfg.AutoRotateAccounts {
 		t.Error("expected auto_rotate_accounts=true")
-	}
-	if len(cfg.LimitPatterns["cc"]) != 2 {
-		t.Errorf("expected 2 cc patterns, got %d", len(cfg.LimitPatterns["cc"]))
-	}
-	if cfg.MarchingOrders.Default != "Read AGENTS.md first" {
-		t.Errorf("expected marching_orders.default='Read AGENTS.md first', got %s",
-			cfg.MarchingOrders.Default)
 	}
 }
 

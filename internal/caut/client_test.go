@@ -31,20 +31,15 @@ func TestNewClient(t *testing.T) {
 
 func TestNewClientWithOptions(t *testing.T) {
 	c := NewClient(
-		WithBinaryPath("/custom/caut"),
-		WithTimeout(10*time.Second),
+		WithTimeout(10 * time.Second),
 	)
 
 	if c.timeout != 10*time.Second {
 		t.Errorf("expected timeout 10s, got %v", c.timeout)
 	}
 
-	execImpl, ok := c.executor.(*DefaultExecutor)
-	if !ok {
+	if _, ok := c.executor.(*DefaultExecutor); !ok {
 		t.Fatal("executor is not DefaultExecutor")
-	}
-	if execImpl.BinaryPath != "/custom/caut" {
-		t.Errorf("expected binary path /custom/caut, got %s", execImpl.BinaryPath)
 	}
 }
 
@@ -130,10 +125,6 @@ func TestFetchUsageWithErrors(t *testing.T) {
 		t.Fatalf("FetchUsage failed: %v", err)
 	}
 
-	if !result.HasErrors() {
-		t.Error("expected HasErrors to return true")
-	}
-
 	if len(result.Errors) != 2 {
 		t.Errorf("expected 2 errors, got %d", len(result.Errors))
 	}
@@ -211,76 +202,6 @@ func TestGetProviderUsageNoData(t *testing.T) {
 	}
 }
 
-func TestGetAgentUsage(t *testing.T) {
-	mockResponse := `{
-		"schema_version": "caut.v1",
-		"command": "usage",
-		"timestamp": "2026-01-20T15:30:00Z",
-		"data": {
-			"payloads": [{
-				"provider": "claude",
-				"source": "web",
-				"usage": {
-					"primary_rate_window": {
-						"used_percent": 25.0
-					}
-				}
-			}]
-		},
-		"errors": []
-	}`
-
-	c := NewClient(WithExecutor(&MockExecutor{response: []byte(mockResponse)}))
-
-	payload, err := c.GetAgentUsage(context.Background(), "cc")
-	if err != nil {
-		t.Fatalf("GetAgentUsage failed: %v", err)
-	}
-
-	if payload.Provider != "claude" {
-		t.Errorf("expected provider 'claude', got %s", payload.Provider)
-	}
-}
-
-func TestGetAgentUsageAlias(t *testing.T) {
-	mockResponse := `{
-		"schema_version": "caut.v1",
-		"command": "usage",
-		"timestamp": "2026-01-20T15:30:00Z",
-		"data": {
-			"payloads": [{
-				"provider": "codex",
-				"source": "cli",
-				"usage": {
-					"primary_rate_window": {
-						"used_percent": 10.0
-					}
-				}
-			}]
-		},
-		"errors": []
-	}`
-
-	c := NewClient(WithExecutor(&MockExecutor{response: []byte(mockResponse)}))
-
-	payload, err := c.GetAgentUsage(context.Background(), "openai-codex")
-	if err != nil {
-		t.Fatalf("GetAgentUsage alias failed: %v", err)
-	}
-	if payload.Provider != "codex" {
-		t.Errorf("expected provider 'codex', got %s", payload.Provider)
-	}
-}
-
-func TestGetAgentUsageUnknownType(t *testing.T) {
-	c := NewClient(WithExecutor(&MockExecutor{}))
-
-	_, err := c.GetAgentUsage(context.Background(), "unknown")
-	if err == nil {
-		t.Fatal("expected error for unknown agent type, got nil")
-	}
-}
-
 func TestAgentTypeToProvider(t *testing.T) {
 	tests := []struct {
 		agentType string
@@ -302,32 +223,6 @@ func TestAgentTypeToProvider(t *testing.T) {
 			got := AgentTypeToProvider(tt.agentType)
 			if got != tt.expected {
 				t.Errorf("AgentTypeToProvider(%q) = %q, want %q", tt.agentType, got, tt.expected)
-			}
-		})
-	}
-}
-
-func TestProviderToAgentType(t *testing.T) {
-	tests := []struct {
-		provider string
-		expected string
-	}{
-		{"claude", "cc"},
-		{"anthropic", "cc"},
-		{"codex", "cod"},
-		{"openai", "cod"},
-		{"gemini", "gmi"},
-		{"google", "gmi"},
-		{"ws", "windsurf"},
-		{"unknown", ""},
-		{"", ""},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.provider, func(t *testing.T) {
-			got := ProviderToAgentType(tt.provider)
-			if got != tt.expected {
-				t.Errorf("ProviderToAgentType(%q) = %q, want %q", tt.provider, got, tt.expected)
 			}
 		})
 	}
@@ -405,28 +300,6 @@ func TestProviderPayloadNoData(t *testing.T) {
 	}
 }
 
-func TestUsageResultGetPayloadByProvider(t *testing.T) {
-	result := &UsageResult{
-		Payloads: []ProviderPayload{
-			{Provider: "claude"},
-			{Provider: "codex"},
-			{Provider: "gemini"},
-		},
-	}
-
-	got := result.GetPayloadByProvider("codex")
-	if got == nil {
-		t.Fatal("GetPayloadByProvider returned nil")
-	}
-	if got.Provider != "codex" {
-		t.Errorf("expected provider 'codex', got %s", got.Provider)
-	}
-
-	if result.GetPayloadByProvider("unknown") != nil {
-		t.Error("expected nil for unknown provider")
-	}
-}
-
 func TestCachedClient(t *testing.T) {
 	mockResponse := `{
 		"schema_version": "caut.v1",
@@ -468,56 +341,6 @@ func TestCachedClient(t *testing.T) {
 		t.Errorf("expected still 1 call (cached), got %d", mockExec.callCount)
 	}
 
-	// Check cache stats
-	stats := cachedClient.CacheStats()
-	if stats["valid_entries"].(int) != 1 {
-		t.Errorf("expected 1 valid entry, got %d", stats["valid_entries"])
-	}
-
-	// Invalidate and call again
-	cachedClient.Invalidate("claude")
-	_, err = cachedClient.GetProviderUsage(context.Background(), "claude")
-	if err != nil {
-		t.Fatalf("third call failed: %v", err)
-	}
-	if mockExec.callCount != 2 {
-		t.Errorf("expected 2 calls after invalidation, got %d", mockExec.callCount)
-	}
-}
-
-func TestCachedClientInvalidateAll(t *testing.T) {
-	mockResponse := `{
-		"schema_version": "caut.v1",
-		"command": "usage",
-		"timestamp": "2026-01-20T15:30:00Z",
-		"data": {
-			"payloads": [{
-				"provider": "claude",
-				"source": "web",
-				"usage": {}
-			}]
-		},
-		"errors": []
-	}`
-
-	client := NewClient(WithExecutor(&MockExecutor{response: []byte(mockResponse)}))
-	cachedClient := NewCachedClient(client, 5*time.Minute)
-
-	// Populate cache
-	_, _ = cachedClient.GetProviderUsage(context.Background(), "claude")
-
-	stats := cachedClient.CacheStats()
-	if stats["total_entries"].(int) != 1 {
-		t.Errorf("expected 1 entry before invalidation")
-	}
-
-	// Invalidate all
-	cachedClient.InvalidateAll()
-
-	stats = cachedClient.CacheStats()
-	if stats["total_entries"].(int) != 0 {
-		t.Errorf("expected 0 entries after InvalidateAll")
-	}
 }
 
 func TestSupportedProviders(t *testing.T) {

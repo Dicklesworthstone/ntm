@@ -13,6 +13,57 @@ NTM is a tmux session management tool for orchestrating multiple AI coding agent
 
 ## [Unreleased]
 
+### Removed (W4 deletion batch, operator-approved 2026-08-17)
+
+- **Dead auto-respawner deleted** (C5, `bd-ws2-wire-or-delete-ykmcz.5`): the
+  never-wired 1,227-line `internal/swarm/auto_respawner.go` and its dead-only
+  tests are gone; the shipped resilience/respawn path is unaffected. The live
+  graceful-exit key-sequence helpers it hosted moved to
+  `internal/swarm/graceful_exit.go`. Git history is the attic.
+- **Four redundant dashboard panels deleted** (C6-delete,
+  `bd-ws2-wire-or-delete-ykmcz.7`): the never-instantiated compare, context,
+  effectiveness, and ensemble panels duplicated `ntm compare`, the context
+  CLI, and the ensemble subcommands. The wired quota, ratelimit, and accounts
+  panels (and the history panel) stay.
+- **Pressure governor `Gate()` and the bottleneck profiler deleted** (C8,
+  `bd-ws2-wire-or-delete-ykmcz.9`): zero callers, and the vnext verification
+  matrix's cited `BenchmarkGate` evidence never existed. The live pressure
+  snapshot/admission path (`New`/`Refresh`/`Latest`/`RobotSnapshot`,
+  `EvaluateSpawnAdmission`) and the live profiler spans/recommendations
+  surface (`ntm --profile`) are untouched;
+  `internal/profiler/{bottleneck,backpressure}.go` and the unreachable
+  profiler report/timing helpers are gone.
+- **Reader-less config knobs removed — staged, with a one-release migration
+  runway** (WS6-remove, `bd-ws6-config-truth-ienmd.2`): every config key that
+  was parsed, validated, and printed but read by nothing is removed. In
+  v1.26.0 a config that still sets one of these keys **loads normally** and
+  the loader emits a loud per-key deprecation warning naming the key and its
+  disposition; `ntm doctor` lists the same warnings. In v1.27.0 the warnings
+  become strict-loader errors with identical text
+  (`bd-ws6-config-truth-ienmd.3`). One knob escalated to KEEP instead:
+  `integrations.xf.enabled` has a live reader (it gates the built-in
+  `xf-search` palette entry) and now carries a G2 liveness claim plus a
+  behavior test.
+
+  Migration table (all removed keys; disposition: removed, no replacement —
+  the key never had an effect):
+
+  | Removed key(s) | Notes |
+  |---|---|
+  | `tmux.palette_key` | dead knob (H3 decision) |
+  | `integrations.caam.rate_limit_patterns`, `.account_cooldown`, `.alert_threshold` | built-in behavior unchanged |
+  | `[integrations.caut].*` (whole section) | cascades from the C9 caut coordinator deletion |
+  | `[integrations.proxy].*` (whole section) | rust_proxy integration had no reader |
+  | `integrations.process_triage.on_stuck` | no stuck-action machinery ships |
+  | `integrations.rano.persist_history`, `.history_days` | no history persistence ships |
+  | `integrations.xf.bin_path`, `.archive_path`, `.default_mode` | xf resolves from PATH; use `--xf-mode` per invocation (`integrations.xf.enabled` KEPT) |
+  | `[rotation.dashboard].*` (whole section) | dashboard panels never read it |
+  | `[swarm.limit_patterns]`, `[swarm.marching_orders]` | never read by the swarm engine |
+  | `[retry.scheduler]`, `[retry.completion]`, `[retry.db]`, `[retry.assign]` | no such retry loops ship; live overrides are `[retry.webhook]`, `[retry.alerts]`, `[retry.agent_mail]` |
+  | `memory.include_anti_patterns`, `memory.include_history` | no substrate |
+
+  Genuinely unknown keys remain hard load errors, exactly as before.
+
 - **Corrected commit provenance.** Commit `d08893d9`'s message incorrectly
   attributed the fail-closed serve safety-policy change to its completion and
   tmux diff. The actual safety-policy implementation is `dda4aae8`; history

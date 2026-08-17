@@ -235,7 +235,6 @@ gemini = "custom-gemini-cmd"
 
 [tmux]
 default_panes = 5
-palette_key = "F5"
 pane_init_delay_ms = 1500
 
 [agent_mail]
@@ -266,9 +265,6 @@ supervisor_enabled = true
 	}
 	if cfg.Tmux.DefaultPanes != 5 {
 		t.Errorf("Expected default_panes 5, got %d", cfg.Tmux.DefaultPanes)
-	}
-	if cfg.Tmux.PaletteKey != "F5" {
-		t.Errorf("Expected palette_key F5, got %s", cfg.Tmux.PaletteKey)
 	}
 	if cfg.Tmux.PaneInitDelayMs != 1500 {
 		t.Errorf("Expected pane_init_delay_ms 1500, got %d", cfg.Tmux.PaneInitDelayMs)
@@ -430,9 +426,6 @@ func TestDefaultTmuxSettings(t *testing.T) {
 	if cfg.Tmux.DefaultPanes != 10 {
 		t.Errorf("Expected default_panes 10, got %d", cfg.Tmux.DefaultPanes)
 	}
-	if cfg.Tmux.PaletteKey != "F6" {
-		t.Errorf("Expected palette_key F6, got %s", cfg.Tmux.PaletteKey)
-	}
 	if cfg.Tmux.PaneInitDelayMs != 1000 {
 		t.Errorf("Expected pane_init_delay_ms 1000, got %d", cfg.Tmux.PaneInitDelayMs)
 	}
@@ -445,7 +438,6 @@ func TestCustomTmuxSettings(t *testing.T) {
 	content := `
 [tmux]
 default_panes = 20
-palette_key = "F12"
 pane_init_delay_ms = 2500
 `
 	path := createTempConfig(t, content)
@@ -455,9 +447,6 @@ pane_init_delay_ms = 2500
 	}
 	if cfg.Tmux.DefaultPanes != 20 {
 		t.Errorf("Expected default_panes 20, got %d", cfg.Tmux.DefaultPanes)
-	}
-	if cfg.Tmux.PaletteKey != "F12" {
-		t.Errorf("Expected palette_key F12, got %s", cfg.Tmux.PaletteKey)
 	}
 	if cfg.Tmux.PaneInitDelayMs != 2500 {
 		t.Errorf("Expected pane_init_delay_ms 2500, got %d", cfg.Tmux.PaneInitDelayMs)
@@ -479,9 +468,6 @@ func TestLoadDefaultsForMissingFields(t *testing.T) {
 	}
 	if cfg.Tmux.DefaultPanes != 10 {
 		t.Errorf("Missing default_panes should be 10, got %d", cfg.Tmux.DefaultPanes)
-	}
-	if cfg.Tmux.PaletteKey != "F6" {
-		t.Errorf("Missing palette_key should be F6, got %s", cfg.Tmux.PaletteKey)
 	}
 	if cfg.Tmux.PaneInitDelayMs != 1000 {
 		t.Errorf("Missing pane_init_delay_ms should be 1000, got %d", cfg.Tmux.PaneInitDelayMs)
@@ -1099,9 +1085,6 @@ func TestRotationDefaults(t *testing.T) {
 	if cfg.Rotation.Thresholds.CriticalPercent == 0 {
 		t.Error("Rotation.Thresholds.CriticalPercent should have a default")
 	}
-	if !cfg.Rotation.Dashboard.ShowQuotaBars {
-		t.Error("Rotation.Dashboard.ShowQuotaBars should default to true")
-	}
 }
 
 func TestAccountsFromTOML(t *testing.T) {
@@ -1160,11 +1143,6 @@ warning_percent = 70
 critical_percent = 90
 restart_if_tokens_above = 50000
 restart_if_session_hours = 4
-
-[rotation.dashboard]
-show_quota_bars = false
-show_account_status = true
-show_reset_timers = false
 `
 	configPath := createTempConfig(t, configContent)
 	cfg, err := Load(configPath)
@@ -1189,12 +1167,6 @@ show_reset_timers = false
 	}
 	if cfg.Rotation.Thresholds.CriticalPercent != 90 {
 		t.Errorf("Expected critical_percent = 90, got %d", cfg.Rotation.Thresholds.CriticalPercent)
-	}
-	if cfg.Rotation.Dashboard.ShowQuotaBars {
-		t.Error("Expected show_quota_bars = false")
-	}
-	if !cfg.Rotation.Dashboard.ShowAccountStatus {
-		t.Error("Expected show_account_status = true")
 	}
 }
 
@@ -2623,7 +2595,6 @@ func TestPrintIncludesRemainingLiveConfigSections(t *testing.T) {
 		"[robot.output]",
 		"[integrations.caam]",
 		"[integrations.rch]",
-		"[integrations.caut]",
 		"[integrations.process_triage]",
 		"[[accounts.codex]]",
 		"[[accounts.gemini]]",
@@ -2952,12 +2923,6 @@ func TestDefaultCAAMConfig(t *testing.T) {
 	if len(cfg.Providers) != 3 {
 		t.Errorf("Expected 3 default providers, got %d", len(cfg.Providers))
 	}
-	if cfg.AccountCooldown != 300 {
-		t.Errorf("Expected 300s account cooldown, got %d", cfg.AccountCooldown)
-	}
-	if cfg.AlertThreshold != 80 {
-		t.Errorf("Expected 80%% alert threshold, got %d", cfg.AlertThreshold)
-	}
 }
 
 func TestDefaultIntegrationsConfig(t *testing.T) {
@@ -2975,26 +2940,6 @@ func TestDefaultIntegrationsConfig(t *testing.T) {
 	if !cfg.XF.Enabled {
 		t.Error("Expected XF integration to be enabled by default")
 	}
-	if cfg.XF.BinPath != "xf" {
-		t.Errorf("Expected XF bin_path 'xf', got %q", cfg.XF.BinPath)
-	}
-	if cfg.XF.ArchivePath != "~/.xf/archive" {
-		t.Errorf("Expected XF archive_path '~/.xf/archive', got %q", cfg.XF.ArchivePath)
-	}
-	if cfg.XF.DefaultMode != "hybrid" {
-		t.Errorf("Expected XF default_mode 'hybrid', got %q", cfg.XF.DefaultMode)
-	}
-
-	// Verify Proxy config defaults are present
-	if !cfg.Proxy.Enabled {
-		t.Error("Expected Proxy integration to be enabled by default")
-	}
-	if cfg.Proxy.BinPath != "rust_proxy" {
-		t.Errorf("Expected Proxy bin_path 'rust_proxy', got %q", cfg.Proxy.BinPath)
-	}
-	if cfg.Proxy.CheckInterval != "30s" {
-		t.Errorf("Expected Proxy check_interval '30s', got %q", cfg.Proxy.CheckInterval)
-	}
 }
 
 func TestIntegrationsConfigInFullConfig(t *testing.T) {
@@ -3003,9 +2948,6 @@ func TestIntegrationsConfigInFullConfig(t *testing.T) {
 	// Verify integrations config is present and properly initialized
 	if !cfg.Integrations.CAAM.Enabled {
 		t.Error("Expected CAAM to be enabled in full config default")
-	}
-	if cfg.Integrations.CAAM.AccountCooldown != 300 {
-		t.Errorf("Expected 300s cooldown in full config, got %d", cfg.Integrations.CAAM.AccountCooldown)
 	}
 }
 
@@ -3016,8 +2958,6 @@ func TestCAAMConfigFromTOML(t *testing.T) {
 binary_path = "/usr/local/bin/caam"
 auto_rotate = false
 providers = ["claude"]
-account_cooldown = 600
-alert_threshold = 90
 `
 	configPath := createTempConfig(t, configContent)
 	cfg, err := Load(configPath)
@@ -3037,21 +2977,12 @@ alert_threshold = 90
 	if len(cfg.Integrations.CAAM.Providers) != 1 || cfg.Integrations.CAAM.Providers[0] != "claude" {
 		t.Errorf("Expected single 'claude' provider, got %v", cfg.Integrations.CAAM.Providers)
 	}
-	if cfg.Integrations.CAAM.AccountCooldown != 600 {
-		t.Errorf("Expected 600s cooldown, got %d", cfg.Integrations.CAAM.AccountCooldown)
-	}
-	if cfg.Integrations.CAAM.AlertThreshold != 90 {
-		t.Errorf("Expected 90%% threshold, got %d", cfg.Integrations.CAAM.AlertThreshold)
-	}
 }
 
 func TestXFConfigFromTOML(t *testing.T) {
 	configContent := `
 	[integrations.xf]
 	enabled = false
-	bin_path = "/usr/local/bin/xf"
-	archive_path = "~/.xf/custom-archive"
-	default_mode = "semantic"
 	`
 	configPath := createTempConfig(t, configContent)
 	cfg, err := Load(configPath)
@@ -3061,39 +2992,6 @@ func TestXFConfigFromTOML(t *testing.T) {
 
 	if cfg.Integrations.XF.Enabled {
 		t.Error("Expected XF to be disabled")
-	}
-	if cfg.Integrations.XF.BinPath != "/usr/local/bin/xf" {
-		t.Errorf("Expected bin_path '/usr/local/bin/xf', got %q", cfg.Integrations.XF.BinPath)
-	}
-	if cfg.Integrations.XF.ArchivePath != "~/.xf/custom-archive" {
-		t.Errorf("Expected archive_path '~/.xf/custom-archive', got %q", cfg.Integrations.XF.ArchivePath)
-	}
-	if cfg.Integrations.XF.DefaultMode != "semantic" {
-		t.Errorf("Expected default_mode 'semantic', got %q", cfg.Integrations.XF.DefaultMode)
-	}
-}
-
-func TestProxyConfigFromTOML(t *testing.T) {
-	configContent := `
-	[integrations.proxy]
-	enabled = false
-	bin_path = "/usr/local/bin/rust_proxy"
-	check_interval = "45s"
-	`
-	configPath := createTempConfig(t, configContent)
-	cfg, err := Load(configPath)
-	if err != nil {
-		t.Fatalf("Failed to load config: %v", err)
-	}
-
-	if cfg.Integrations.Proxy.Enabled {
-		t.Error("Expected Proxy to be disabled")
-	}
-	if cfg.Integrations.Proxy.BinPath != "/usr/local/bin/rust_proxy" {
-		t.Errorf("Expected bin_path '/usr/local/bin/rust_proxy', got %q", cfg.Integrations.Proxy.BinPath)
-	}
-	if cfg.Integrations.Proxy.CheckInterval != "45s" {
-		t.Errorf("Expected check_interval '45s', got %q", cfg.Integrations.Proxy.CheckInterval)
 	}
 }
 
@@ -3115,178 +3013,8 @@ func TestDefaultProcessTriageConfig(t *testing.T) {
 	if cfg.StuckThreshold != 600 {
 		t.Errorf("Expected 600s stuck threshold, got %d", cfg.StuckThreshold)
 	}
-	if cfg.OnStuck != "alert" {
-		t.Errorf("Expected 'alert' on_stuck action, got %q", cfg.OnStuck)
-	}
 	if !cfg.UseRanoData {
 		t.Error("Expected UseRanoData to be enabled by default")
-	}
-}
-
-func TestValidateXFConfig(t *testing.T) {
-	tests := []struct {
-		name    string
-		cfg     XFConfig
-		wantErr bool
-		errMsg  string
-	}{
-		{
-			name:    "valid default config",
-			cfg:     DefaultXFConfig(),
-			wantErr: false,
-		},
-		{
-			name: "disabled skips validation",
-			cfg: XFConfig{
-				Enabled: false,
-			},
-			wantErr: false,
-		},
-		{
-			name: "missing bin_path",
-			cfg: XFConfig{
-				Enabled:     true,
-				BinPath:     "",
-				ArchivePath: "~/.xf/archive",
-				DefaultMode: "hybrid",
-			},
-			wantErr: true,
-			errMsg:  "bin_path",
-		},
-		{
-			name: "missing archive_path",
-			cfg: XFConfig{
-				Enabled:     true,
-				BinPath:     "xf",
-				ArchivePath: "",
-				DefaultMode: "hybrid",
-			},
-			wantErr: true,
-			errMsg:  "archive_path",
-		},
-		{
-			name: "invalid default_mode",
-			cfg: XFConfig{
-				Enabled:     true,
-				BinPath:     "xf",
-				ArchivePath: "~/.xf/archive",
-				DefaultMode: "wat",
-			},
-			wantErr: true,
-			errMsg:  "default_mode",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := ValidateXFConfig(&tt.cfg)
-			if tt.wantErr {
-				if err == nil {
-					t.Fatalf("expected error, got nil")
-				}
-				if tt.errMsg != "" && !strings.Contains(err.Error(), tt.errMsg) {
-					t.Fatalf("expected error containing %q, got %v", tt.errMsg, err)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("expected nil error, got %v", err)
-			}
-		})
-	}
-}
-
-func TestValidateProxyConfig(t *testing.T) {
-	tests := []struct {
-		name    string
-		cfg     ProxyConfig
-		wantErr bool
-		errMsg  string
-	}{
-		{
-			name:    "valid default config",
-			cfg:     DefaultProxyConfig(),
-			wantErr: false,
-		},
-		{
-			name: "disabled skips validation",
-			cfg: ProxyConfig{
-				Enabled: false,
-			},
-			wantErr: false,
-		},
-		{
-			name: "missing bin_path",
-			cfg: ProxyConfig{
-				Enabled:       true,
-				BinPath:       "",
-				CheckInterval: "30s",
-			},
-			wantErr: true,
-			errMsg:  "bin_path",
-		},
-		{
-			name: "missing check_interval",
-			cfg: ProxyConfig{
-				Enabled:       true,
-				BinPath:       "rust_proxy",
-				CheckInterval: "",
-			},
-			wantErr: true,
-			errMsg:  "check_interval",
-		},
-		{
-			name: "invalid check_interval duration",
-			cfg: ProxyConfig{
-				Enabled:       true,
-				BinPath:       "rust_proxy",
-				CheckInterval: "nope",
-			},
-			wantErr: true,
-			errMsg:  "check_interval",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := ValidateProxyConfig(&tt.cfg)
-			if tt.wantErr {
-				if err == nil {
-					t.Fatalf("expected error, got nil")
-				}
-				if tt.errMsg != "" && !strings.Contains(err.Error(), tt.errMsg) {
-					t.Fatalf("expected error containing %q, got %v", tt.errMsg, err)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("expected nil error, got %v", err)
-			}
-		})
-	}
-}
-
-// =============================================================================
-// ValidateXFConfig — nil branch (bd-4b4zf)
-// =============================================================================
-
-func TestValidateXFConfig_NilConfig(t *testing.T) {
-	t.Parallel()
-	if err := ValidateXFConfig(nil); err != nil {
-		t.Errorf("ValidateXFConfig(nil) = %v, want nil", err)
-	}
-}
-
-func TestValidateXFConfig_DisabledWithFields(t *testing.T) {
-	t.Parallel()
-	// Disabled but has non-zero fields — exercises the second !cfg.Enabled branch.
-	cfg := &XFConfig{
-		Enabled:     false,
-		BinPath:     "xf",
-		ArchivePath: "~/.xf/archive",
-	}
-	if err := ValidateXFConfig(cfg); err != nil {
-		t.Errorf("ValidateXFConfig(disabled with fields) = %v, want nil", err)
 	}
 }
 
@@ -3375,9 +3103,6 @@ func TestProcessTriageInIntegrationsConfig(t *testing.T) {
 	if cfg.ProcessTriage.CheckInterval != 30 {
 		t.Errorf("Expected 30s check interval, got %d", cfg.ProcessTriage.CheckInterval)
 	}
-	if cfg.ProcessTriage.OnStuck != "alert" {
-		t.Errorf("Expected 'alert' on_stuck, got %q", cfg.ProcessTriage.OnStuck)
-	}
 }
 
 func TestProcessTriageInFullConfig(t *testing.T) {
@@ -3400,7 +3125,6 @@ binary_path = "/usr/local/bin/pt"
 check_interval = 60
 idle_threshold = 600
 stuck_threshold = 1200
-on_stuck = "kill"
 use_rano_data = false
 `
 	configPath := createTempConfig(t, configContent)
@@ -3423,9 +3147,6 @@ use_rano_data = false
 	}
 	if cfg.Integrations.ProcessTriage.StuckThreshold != 1200 {
 		t.Errorf("Expected 1200s stuck threshold, got %d", cfg.Integrations.ProcessTriage.StuckThreshold)
-	}
-	if cfg.Integrations.ProcessTriage.OnStuck != "kill" {
-		t.Errorf("Expected 'kill' on_stuck, got %q", cfg.Integrations.ProcessTriage.OnStuck)
 	}
 	if cfg.Integrations.ProcessTriage.UseRanoData {
 		t.Error("Expected UseRanoData to be disabled")
@@ -3452,7 +3173,6 @@ func TestValidateProcessTriageConfig(t *testing.T) {
 				CheckInterval:  60,
 				IdleThreshold:  300,
 				StuckThreshold: 600,
-				OnStuck:        "kill",
 				UseRanoData:    false,
 			},
 			wantErr: false,
@@ -3464,7 +3184,6 @@ func TestValidateProcessTriageConfig(t *testing.T) {
 				CheckInterval:  3,
 				IdleThreshold:  300,
 				StuckThreshold: 600,
-				OnStuck:        "alert",
 			},
 			wantErr: true,
 			errMsg:  "check_interval must be at least 5 seconds",
@@ -3476,7 +3195,6 @@ func TestValidateProcessTriageConfig(t *testing.T) {
 				CheckInterval:  30,
 				IdleThreshold:  20,
 				StuckThreshold: 600,
-				OnStuck:        "alert",
 			},
 			wantErr: true,
 			errMsg:  "idle_threshold must be at least 30 seconds",
@@ -3488,33 +3206,9 @@ func TestValidateProcessTriageConfig(t *testing.T) {
 				CheckInterval:  30,
 				IdleThreshold:  600,
 				StuckThreshold: 300,
-				OnStuck:        "alert",
 			},
 			wantErr: true,
 			errMsg:  "stuck_threshold (300) must be >= idle_threshold (600)",
-		},
-		{
-			name: "invalid on_stuck action",
-			cfg: ProcessTriageConfig{
-				Enabled:        true,
-				CheckInterval:  30,
-				IdleThreshold:  300,
-				StuckThreshold: 600,
-				OnStuck:        "invalid",
-			},
-			wantErr: true,
-			errMsg:  "on_stuck must be 'alert', 'kill', or 'ignore'",
-		},
-		{
-			name: "on_stuck ignore is valid",
-			cfg: ProcessTriageConfig{
-				Enabled:        true,
-				CheckInterval:  30,
-				IdleThreshold:  300,
-				StuckThreshold: 600,
-				OnStuck:        "ignore",
-			},
-			wantErr: false,
 		},
 	}
 
@@ -4447,17 +4141,12 @@ func TestValidateRanoConfig(t *testing.T) {
 		},
 		{
 			name:    "valid with providers",
-			cfg:     &RanoConfig{Enabled: true, PollIntervalMs: 1000, Providers: []string{"anthropic"}, HistoryDays: 7},
+			cfg:     &RanoConfig{Enabled: true, PollIntervalMs: 1000, Providers: []string{"anthropic"}},
 			wantErr: false,
 		},
 		{
 			name:    "poll interval too low",
 			cfg:     &RanoConfig{Enabled: true, PollIntervalMs: 50, Providers: []string{"anthropic"}},
-			wantErr: true,
-		},
-		{
-			name:    "negative history days",
-			cfg:     &RanoConfig{Enabled: true, PollIntervalMs: 1000, Providers: []string{"anthropic"}, HistoryDays: -1},
 			wantErr: true,
 		},
 	}
