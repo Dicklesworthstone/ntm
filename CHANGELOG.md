@@ -13,6 +13,25 @@ NTM is a tmux session management tool for orchestrating multiple AI coding agent
 
 ## [Unreleased]
 
+- **Corrected commit provenance.** Commit `d08893d9`'s message incorrectly
+  attributed the fail-closed serve safety-policy change to its completion and
+  tmux diff. The actual safety-policy implementation is `dda4aae8`; history
+  is preserved and this note is the forward correction.
+
+---
+
+## [v1.26.0] -- 2026-08-18 [GitHub Release]
+
+**R3 of the reality-bridge program: the deletion & config-truth release.** Wave
+W4 removed ~13,700 lines of dead sophistication under the operator's recorded
+sign-off ([77744bfe](https://github.com/Dicklesworthstone/ntm/commit/77744bfe)),
+moved every reader-less config knob into staged removal with a one-release
+migration runway, and closed the program's allowlist register down to
+backlog + permanent composition only (zero registered-item lines) — verified by
+an independent W4 review gate with spot-revert proof-of-proof and the scripted
+v1.26.0 reality re-audit (10/10 spot-probes WORKS against a release-style
+binary; `docs/reality/audit-v1.26.0.md`).
+
 ### Removed (W4 deletion batch, operator-approved 2026-08-17)
 
 - **Dead auto-respawner deleted** (C5, `bd-ws2-wire-or-delete-ykmcz.5`): the
@@ -33,6 +52,22 @@ NTM is a tmux session management tool for orchestrating multiple AI coding agent
   surface (`ntm --profile`) are untouched;
   `internal/profiler/{bottleneck,backpressure}.go` and the unreachable
   profiler report/timing helpers are gone.
+- **Nine orphaned packages, the caut coordinator, and the rch build-storm
+  advisory deleted** (C9, `bd-ws2-wire-or-delete-ykmcz.10`):
+  `internal/{contentionforecast,dispatchplan,doctor,driftaudit,evidencebudget,fairness,faultharness,identityhygiene,parity}`
+  had no importers outside their own tests; the caut→CAAM coordinator and the
+  rch build-storm advisory cascaded with them. Repo-wide reference sweep at
+  the W4 gate found zero live references to any deleted surface; the
+  survivors it verified by test (resilience monitor, quota/ratelimit/accounts
+  panels, `pressure` governor snapshot path, caut `CachedClient`,
+  `kernel.Run`) all stay.
+- **The kernel-registry OpenAPI generator and its TypeScript predecessor
+  deleted** (WS4-resolution, `bd-ws4-openapi-parity-wpwck`):
+  `docs/openapi-kernel.json` (a 13-path hand-mirror of a 263-handler router)
+  and `scripts/gen_openapi.ts` are gone. The served chi router is the single
+  source of truth — `ntm openapi generate` walks it hermetically, and the
+  `openapi-drift` CI job regenerates and diff-gates `docs/openapi.json` +
+  `docs/parity_matrix.json` on every build.
 - **Reader-less config knobs removed — staged, with a one-release migration
   runway** (WS6-remove, `bd-ws6-config-truth-ienmd.2`): every config key that
   was parsed, validated, and printed but read by nothing is removed. In
@@ -64,10 +99,20 @@ NTM is a tmux session management tool for orchestrating multiple AI coding agent
 
   Genuinely unknown keys remain hard load errors, exactly as before.
 
-- **Corrected commit provenance.** Commit `d08893d9`'s message incorrectly
-  attributed the fail-closed serve safety-policy change to its completion and
-  tmux diff. The actual safety-policy implementation is `dda4aae8`; history
-  is preserved and this note is the forward correction.
+### Infrastructure
+
+- **The allowlist register reached its end-state composition:** zero
+  registered-item lines remain; every surviving line is backlog-tagged
+  (`config` 408, `deadcode` 2058 + 49 C4 residue, `docs` 12, `placebo` 25)
+  or `# permanent:` (2 deadcode test hooks), with `contracts` at 0 —
+  enforced by `check_allowlists.sh`'s closed-bead and both-direction
+  ratchet checks.
+- **Reality re-audit v1.26.0 committed** (`docs/reality/audit-v1.26.0.md`):
+  10/10 seeded spot-probes WORKS against the release-style binary; the one
+  guard failure it caught (a selftest fixture pinning a bead that has since
+  closed) was root-caused and fixed in
+  `scripts/guards/allowlist_selftest.sh`, which now discovers a live open
+  bead instead of pinning one.
 
 ---
 

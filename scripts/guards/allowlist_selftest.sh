@@ -20,8 +20,18 @@ run_check() { # run_check <allowlist-dir> — runs check_allowlists.sh against a
 }
 
 # 1. A well-formed fixture must PASS (guards against a validator that fails everything).
+# The bead on the live line must be OPEN where br exists (check_allowlists.sh rejects
+# closed beads), so discover one dynamically instead of pinning an ID that will
+# eventually close (v1.26.0 audit finding: the pinned bd-ws0-guards-klz98 closed and
+# this fixture started failing). CI without br only shape-checks the ID, so the
+# static fallback keeps that path honest.
+open_id="bd-ws0-guards-klz98"
+if command -v br >/dev/null 2>&1; then
+  found_open="$(br list --status=open --limit=1 2>/dev/null | sed -n 's/.*\(bd-[a-z0-9][a-z0-9._-]*\).*/\1/p' | head -1)"
+  [ -n "$found_open" ] && open_id="$found_open"
+fi
 mkdir -p "$TMP/ok"
-printf '# comment\nentry-a\tbd-ws0-guards-klz98\tvalid open bead\n# permanent:\nentry-b\tpermanent\tcompensates reflection blind spot\n' > "$TMP/ok/one.txt"
+printf '# comment\nentry-a\t%s\tvalid open bead\n# permanent:\nentry-b\tpermanent\tcompensates reflection blind spot\n' "$open_id" > "$TMP/ok/one.txt"
 run_check "$TMP/ok" || fail "well-formed allowlist rejected"
 
 # 2. Malformed line (2 fields) must FAIL.
