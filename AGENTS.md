@@ -91,7 +91,7 @@ Create releases exclusively with DSR. Do not use or dispatch GitHub Actions for 
 bash scripts/release_preflight.sh vX.Y.Z
 ```
 
-It verifies every deliverable declared in `release_artifacts.toml` is present and version-locked to the tag (binary stamp, install.sh contract, VERSION file), and FAILS if a buildable deliverable directory (`web/`, `vscode/`) has no manifest entry — finished-but-never-shipped is not allowed (WS0-G4, bd-ws0-guards-klz98.5). Do not publish on a red pre-flight; fix the drift (or register/defer the artifact bead-first in the manifest) and re-run.
+It verifies every deliverable declared in `release_artifacts.toml` is present and version-locked to the tag (binary stamp, install.sh contract, VERSION file, VSCode extension vsix), and FAILS if a buildable deliverable directory (`web/`, `vscode/`) has no manifest entry — finished-but-never-shipped is not allowed (WS0-G4, bd-ws0-guards-klz98.5). Do not publish on a red pre-flight; fix the drift (or register/defer the artifact bead-first in the manifest) and re-run. The vscode-extension probe runs `scripts/build_vsix.sh`, which leaves `vscode/dist/ntm-vscode-<version>.vsix` behind — **attach that file to the DSR release as an asset** (F2, bd-ws5-ship-or-cut-jv0rc.2; marketplace publishing stays deferred per the Q1 ledger entry — install is `code --install-extension`, see `vscode/README.md`).
 
 After creating a new release with DSR:
 

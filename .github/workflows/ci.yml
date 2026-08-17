@@ -103,6 +103,35 @@ jobs:
         run: bash scripts/release_preflight.sh --dry-run
 
   # ============================================================================
+  # VSCODE EXTENSION - compile gate + vsix package build (F2,
+  # bd-ws5-ship-or-cut-jv0rc.2). The extension rotted silently for 8 minor
+  # versions because nothing compiled it; this job makes rot loud on every
+  # push. The DSR release attaches the .vsix built by scripts/build_vsix.sh
+  # (marketplace publishing deferred per the Q1 ledger entry on the bead).
+  # ============================================================================
+  vscode-extension:
+    name: VSCode Extension (tsc + vsix)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: vscode
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Typecheck (tsc --noEmit)
+        run: npx tsc -p . --noEmit
+
+      - name: Package .vsix (build check, version lockstep vs VERSION)
+        working-directory: .
+        run: bash scripts/build_vsix.sh
+
+  # ============================================================================
   # LINT - Static analysis and code quality
   # ============================================================================
   lint:
@@ -575,7 +604,7 @@ jobs:
     name: CI Success
     runs-on: ubuntu-24.04
     timeout-minutes: 5
-    needs: [reality-guards, reality-guards-go, lint, openapi-drift, test, coverage, build, security, goreleaser-check, integration, upgrade-check]
+    needs: [reality-guards, reality-guards-go, lint, openapi-drift, test, coverage, build, security, goreleaser-check, integration, upgrade-check, vscode-extension]
     if: always()
     steps:
       - name: Check all jobs passed
@@ -590,7 +619,8 @@ jobs:
              [ "${{ needs.security.result }}" != "success" ] || \
              [ "${{ needs.goreleaser-check.result }}" != "success" ] || \
              [ "${{ needs.integration.result }}" != "success" ] || \
-             [ "${{ needs.upgrade-check.result }}" != "success" ]; then
+             [ "${{ needs.upgrade-check.result }}" != "success" ] || \
+             [ "${{ needs.vscode-extension.result }}" != "success" ]; then
             echo "One or more jobs failed"
             exit 1
           fi

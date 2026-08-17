@@ -48,7 +48,11 @@ version_probe = 'grep -q "go:embed all:dist" internal/webui/webui.go && test -f 
 [artifact.vscode-extension]
 kind = "vsix"
 dir = "vscode"
-# Built but never shipped (F2). F2 ships the .vsix on DSR releases and MUST
-# replace this deferred line with a probe asserting vscode/package.json's
-# version equals the tag.
-deferred = "bd-ws5-ship-or-cut-jv0rc.2"
+# Shipped by F2 (bd-ws5-ship-or-cut-jv0rc.2): the DSR release attaches
+# vscode/dist/ntm-vscode-<version>.vsix (marketplace publishing stays deferred
+# per the Q1 ledger entry on the bead). The probe builds the vsix for real —
+# npm ci + tsc + `vsce package` via scripts/build_vsix.sh — and reports the
+# version baked into the packaged extension manifest, so a version bump
+# without the vscode/package.json lockstep bump, or any compile rot, fails
+# here (and in the ci.yml vscode-extension job on every push).
+version_probe = 'bash scripts/build_vsix.sh'

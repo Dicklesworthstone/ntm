@@ -19,7 +19,9 @@ web/coverage/
 web/out/
 vscode/node_modules/
 vscode/out/
-vscode/package-lock.json
+# vscode/package-lock.json is COMMITTED (F2, bd-ws5-ship-or-cut-jv0rc.2):
+# the ci.yml vscode-extension job and scripts/build_vsix.sh run `npm ci`,
+# which requires the lockfile. (vscode/dist/ is covered by the dist/ rule.)
 *.swp
 *.swo
 *~
