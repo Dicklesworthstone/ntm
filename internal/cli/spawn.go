@@ -422,6 +422,79 @@ func appendMissingCountMapAgentSpecs(agentSpecs *AgentSpecs, counts map[string]i
 	}
 }
 
+// mergeRecipeSettingsIntoExistingSpecs applies one recipe row's model,
+// reasoning effort, and persona to the CLI-provided specs of the same agent
+// type, without touching their counts. Per-field semantics: a CLI-explicit
+// model or effort wins; the recipe's value fills only empty fields. A recipe
+// persona always attaches (CLI count flags cannot carry a persona), with the
+// merged model — CLI's if set, else the recipe row's — becoming the persona's
+// model override, mirroring the append path below.
+func mergeRecipeSettingsIntoExistingSpecs(
+	agentSpecs *AgentSpecs,
+	personaMap map[string]*persona.Persona,
+	loadRegistry func() (*persona.Registry, error),
+	recipeName string,
+	rowIdx int,
+	agentType AgentType,
+	recipeAgent recipe.AgentSpec,
+) error {
+	recipeModel := strings.TrimSpace(recipeAgent.Model)
+	recipeEffort := strings.TrimSpace(recipeAgent.ReasoningEffort)
+	personaName := strings.TrimSpace(recipeAgent.Persona)
+	if recipeModel == "" && recipeEffort == "" && personaName == "" {
+		return nil
+	}
+
+	var recipePersona *persona.Persona
+	if personaName != "" {
+		if personaMap == nil {
+			return fmt.Errorf("recipe %q requires persona support for %q", recipeName, personaName)
+		}
+		reg, err := loadRegistry()
+		if err != nil {
+			return fmt.Errorf("loading persona registry for recipe %q: %w", recipeName, err)
+		}
+		p, found := reg.Get(personaName)
+		if !found {
+			return fmt.Errorf("recipe %q references unknown persona %q", recipeName, recipeAgent.Persona)
+		}
+		recipePersona = p
+	}
+
+	for si := range *agentSpecs {
+		spec := &(*agentSpecs)[si]
+		if spec.Type != agentType {
+			continue
+		}
+		if spec.ReasoningEffort == "" && recipeEffort != "" {
+			spec.ReasoningEffort = recipeEffort
+		}
+		if recipePersona == nil {
+			if spec.Model == "" && recipeModel != "" {
+				spec.Model = recipeModel
+			}
+			continue
+		}
+		model := spec.Model
+		if model == "" {
+			model = recipeModel
+		}
+		personaKey := strings.ToLower(personaName)
+		if model != "" {
+			// Unique key per merged spec: two CLI specs of the same type may
+			// merge with different models, so they need distinct overrides.
+			personaKey = fmt.Sprintf("__recipe_%s_%d_%d_%s", strings.ToLower(recipeName), rowIdx, si, personaKey)
+			override := *recipePersona
+			override.Model = model
+			personaMap[personaKey] = &override
+		} else if _, exists := personaMap[personaKey]; !exists {
+			personaMap[personaKey] = recipePersona
+		}
+		spec.Model = personaKey
+	}
+	return nil
+}
+
 func appendMissingRecipeAgentSpecs(agentSpecs *AgentSpecs, personaMap map[string]*persona.Persona, recipeName, projectDir string, recipeAgents []recipe.AgentSpec) error {
 	if agentSpecs == nil || len(recipeAgents) == 0 {
 		return nil
@@ -442,6 +515,7 @@ func appendMissingRecipeAgentSpecs(agentSpecs *AgentSpecs, personaMap map[string
 		return registry, nil
 	}
 
+	mergedTypes := make(map[AgentType]bool)
 	for i, recipeAgent := range recipeAgents {
 		if recipeAgent.Count <= 0 {
 			continue
@@ -452,6 +526,22 @@ func appendMissingRecipeAgentSpecs(agentSpecs *AgentSpecs, personaMap map[string
 			return fmt.Errorf("recipe %q uses unsupported agent type %q", recipeName, recipeAgent.Type)
 		}
 		if existing[agentType] {
+			// An explicit CLI count (--cc=N, ...) overrides the recipe's COUNT
+			// for this type, but must not silently drop the recipe row's other
+			// settings: the row's model/effort/persona still merge onto the
+			// CLI-provided specs (CLI-explicit model/effort win; recipe fills
+			// the gaps). Dropping the whole row meant `-r review-team --cc=3`
+			// quietly shed the recipe's persona and model with no signal
+			// (bd-ws7-docs-ux-truth-tqh3l.5). Only the first recipe row of an
+			// overridden type merges; later duplicate-type rows would fight
+			// over the same CLI specs.
+			if mergedTypes[agentType] {
+				continue
+			}
+			mergedTypes[agentType] = true
+			if err := mergeRecipeSettingsIntoExistingSpecs(agentSpecs, personaMap, loadRegistry, recipeName, i, agentType, recipeAgent); err != nil {
+				return err
+			}
 			continue
 		}
 
@@ -716,8 +806,16 @@ func spawnAgentCommandTemplate(agentType AgentType, pluginMap map[string]plugins
 // hardcodes -m with no {{.Model}} reference — aborts the spawn while there is
 // still nothing to clean up, instead of stranding a half-launched session
 // (ntm-akaq). Persona system-prompt files are not prepared yet at this stage,
-// so SystemPromptFile is left empty; templates only reference it inside
-// {{if}} guards, which renders identically for validation purposes.
+// so a stand-in path is substituted whenever the agent's persona carries a
+// system prompt: it exercises the same template branches (and the
+// silent-persona-drop guard — see config.GenerateAgentCommand) as the real
+// file will at launch, so a persona the template cannot deliver aborts the
+// spawn before any pane exists. The rendered preflight output is discarded.
+// personaPreflightPromptFile is the stand-in path preflight substitutes for
+// a persona's not-yet-written system-prompt file, purely to exercise the
+// template's {{if .SystemPromptFile}} branches and the silent-drop guard.
+const personaPreflightPromptFile = "/dev/null"
+
 func validateSpawnAgentCommands(opts SpawnOptions, ollamaHost string) error {
 	for _, agent := range opts.Agents {
 		tmpl, _, err := spawnAgentCommandTemplate(agent.Type, opts.PluginMap, ollamaHost)
@@ -728,12 +826,16 @@ func validateSpawnAgentCommands(opts SpawnOptions, ollamaHost string) error {
 		resolvedModel := resolveAgentModel(agent.Type, agent.Model, opts.PluginMap)
 		modelRequested := strings.TrimSpace(agent.Model) != ""
 		reasoningEffort := agent.ReasoningEffort
+		systemPromptPlaceholder := ""
 		if agent.Persona == nil && opts.PersonaMap != nil {
 			if p, ok := opts.PersonaMap[agent.Model]; ok {
 				modelRequested = strings.TrimSpace(p.Model) != ""
 				resolvedModel = resolveAgentModel(agent.Type, p.Model, opts.PluginMap)
 				if strings.TrimSpace(p.ReasoningEffort) != "" {
 					reasoningEffort = p.ReasoningEffort
+				}
+				if strings.TrimSpace(p.SystemPrompt) != "" {
+					systemPromptPlaceholder = personaPreflightPromptFile
 				}
 			}
 		}
@@ -745,16 +847,20 @@ func validateSpawnAgentCommands(opts SpawnOptions, ollamaHost string) error {
 			if strings.TrimSpace(agent.Persona.ReasoningEffort) != "" {
 				reasoningEffort = agent.Persona.ReasoningEffort
 			}
+			if strings.TrimSpace(agent.Persona.SystemPrompt) != "" {
+				systemPromptPlaceholder = personaPreflightPromptFile
+			}
 		}
 
 		if _, err := config.GenerateAgentCommand(tmpl, config.AgentTemplateVars{
-			Model:           resolvedModel,
-			ModelAlias:      agent.Model,
-			ModelRequested:  modelRequested,
-			SessionName:     opts.Session,
-			PaneIndex:       agent.Index,
-			AgentType:       string(agent.Type),
-			ReasoningEffort: reasoningEffort,
+			Model:            resolvedModel,
+			ModelAlias:       agent.Model,
+			ModelRequested:   modelRequested,
+			SessionName:      opts.Session,
+			PaneIndex:        agent.Index,
+			AgentType:        string(agent.Type),
+			ReasoningEffort:  reasoningEffort,
+			SystemPromptFile: systemPromptPlaceholder,
 		}); err != nil {
 			return fmt.Errorf("agent command preflight for %s agent %d: %w", agent.Type, agent.Index, err)
 		}

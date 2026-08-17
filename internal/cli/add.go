@@ -934,10 +934,18 @@ func executeAdd(ctx context.Context, opts AddOptions, emitResult bool) error {
 					paneID, err,
 				)))
 			}
+			// Account the delivered prompt bytes: analytics chars_sent must
+			// cover every send surface, including the added-pane prompt
+			// (bd-ws7-docs-ux-truth-tqh3l.4).
+			events.EmitPromptSend(session, 1, len(opts.Prompt), "", agentTypeStr, false)
 		}
 
-		// Emit agent_spawn event
-		events.Emit(events.EventAgentSpawn, session, events.AgentSpawnData{
+		// Emit agent_add event. `ntm add` registrations use the dedicated
+		// agent_add type (NOT agent_spawn, which analytics deliberately skips
+		// because spawn-created agents are already counted by the
+		// session_create provider counts) so added agents are counted exactly
+		// once (bd-ws7-docs-ux-truth-tqh3l.4).
+		events.Emit(events.EventAgentAdd, session, events.AgentSpawnData{
 			AgentType: agentTypeStr,
 			Model:     resolvedModel,
 			Variant:   agent.Model,

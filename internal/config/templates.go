@@ -139,6 +139,14 @@ func agyBinary() string {
 	return "agy"
 }
 
+// AntigravityBinary exposes the agy launch-binary resolution (agy-locked when
+// on PATH, else agy) to launch paths outside the template engine — e.g. the
+// swarm agent launcher — so every agy launch shares the same alias-safe
+// binary choice.
+func AntigravityBinary() string {
+	return agyBinary()
+}
+
 // templateFuncs contains custom functions available in templates
 var templateFuncs = template.FuncMap{
 	// agyBinary resolves the Antigravity CLI binary (agy-locked if on PATH,
@@ -294,14 +302,36 @@ func agentTypeConsumesReasoningEffort(agentType string) bool {
 	}
 }
 
+// personaDropError is the loud-refusal error for a persona system prompt that
+// the launch command cannot deliver. Silent drop is the sin, not the
+// limitation (bd-ws7-docs-ux-truth-tqh3l.5): a persona the operator asked for
+// must either reach the agent or fail the launch with a documented error.
+// Grok gets its own message because the omission there is BY DESIGN — the
+// Grok Build CLI has no system-prompt flag or env var — matching the
+// phase-one fail-closed pattern in validateGrokPhaseOneSpawn.
+func personaDropError(agentType, tmpl string) error {
+	if strings.ToLower(strings.TrimSpace(agentType)) == "grok" {
+		return fmt.Errorf(
+			"persona ignored: grok has no persona mechanism (the Grok Build CLI exposes no system-prompt flag or env var); "+
+				"remove the persona from the grok agent spec. Command: %s", tmpl)
+	}
+	return fmt.Errorf(
+		"persona system prompt was prepared but agent command template does not reference .SystemPromptFile; "+
+			"the persona would be silently ignored. Update the template or remove the persona. "+
+			"Command: %s", tmpl)
+}
+
 // GenerateAgentCommand renders an agent command template with the given variables.
 // Legacy commands without template syntax are returned as-is unless they would
 // silently drop an explicitly requested model selection.
 // Returns an error if template parsing or execution fails.
 func GenerateAgentCommand(tmpl string, vars AgentTemplateVars) (string, error) {
-	// Fast path: if no template syntax, return as-is unless an explicit model or
-	// effort override would be silently dropped.
+	// Fast path: if no template syntax, return as-is unless an explicit model,
+	// effort, or persona system prompt would be silently dropped.
 	if !strings.Contains(tmpl, "{{") {
+		if strings.TrimSpace(vars.SystemPromptFile) != "" {
+			return "", personaDropError(vars.AgentType, tmpl)
+		}
 		if !vars.ModelRequested && (strings.TrimSpace(vars.ReasoningEffort) == "" || !agentTypeConsumesReasoningEffort(vars.AgentType)) {
 			return tmpl, nil
 		}
@@ -357,6 +387,15 @@ func GenerateAgentCommand(tmpl string, vars AgentTemplateVars) (string, error) {
 				"Command: %s", vars.ReasoningEffort, tmpl)
 	}
 
+	// The same guard for persona system prompts. Personas for gmi/agy/grok
+	// used to be dropped silently because their templates never referenced
+	// .SystemPromptFile — the operator got a generic agent while the UI said
+	// a persona was applied (bd-ws7-docs-ux-truth-tqh3l.5).
+	if strings.TrimSpace(vars.SystemPromptFile) != "" &&
+		!templateReferencesAnyField(t, "SystemPromptFile") {
+		return "", personaDropError(vars.AgentType, tmpl)
+	}
+
 	var buf bytes.Buffer
 	if err := t.Execute(&buf, vars); err != nil {
 		return "", err
@@ -379,14 +418,24 @@ func DefaultAgentTemplates() AgentConfig {
 	return AgentConfig{
 		Claude: `{{memLimitPrefix}} claude --dangerously-skip-permissions{{if .Model}} --model {{shellQuote .Model}}{{end}} --effort {{shellQuote (.ReasoningEffort | default "` + DefaultClaudeReasoningEffort + `")}}{{if .SystemPromptFile}} --system-prompt-file {{shellQuote .SystemPromptFile}}{{end}}`,
 		Codex:  `{{if .SystemPromptFile}}CODEX_SYSTEM_PROMPT="$(cat {{shellQuote .SystemPromptFile}})" {{end}}codex --dangerously-bypass-approvals-and-sandbox -m {{shellQuote (.Model | default "` + DefaultCodexModel + `")}} -c model_reasoning_effort={{shellQuote (.ReasoningEffort | default "` + DefaultCodexReasoningEffort + `")}} -c model_reasoning_summary_format=experimental --search`,
-		Gemini: `gemini{{if .Model}} --model {{shellQuote .Model}}{{end}} --yolo`,
+		// Gemini has no --system-prompt flag; the CLI's documented persona
+		// mechanism is the GEMINI_SYSTEM_MD env var, a path whose file contents
+		// REPLACE the core system prompt (getCoreSystemPrompt resolves it via
+		// resolvePathFromEnv). Same env-prefix shape as the Codex template.
+		Gemini: `{{if .SystemPromptFile}}GEMINI_SYSTEM_MD={{shellQuote .SystemPromptFile}} {{end}}gemini{{if .Model}} --model {{shellQuote .Model}}{{end}} --yolo`,
 		// Antigravity (agy): the model is hard-pinned to "Gemini 3.1 Pro (High)"
 		// by ResolveModel, so --model is always injected. --dangerously-skip-permissions
 		// is agy's autonomous (auto-approve) flag — the equivalent of gemini's --yolo —
 		// which the dcg agy guard (F5) backstops. {{agyBinary}} resolves the real
 		// launch binary (agy-locked when present, else agy) because `agy` is often a
 		// shell alias that will not resolve in NTM's non-interactive launch shell.
-		Antigravity: `{{agyBinary}} --model {{shellQuote .Model}} --dangerously-skip-permissions`,
+		// Persona delivery: the Antigravity CLI has no system-prompt flag or
+		// env var (verified against `agy --help` and the binary), so the
+		// persona system prompt is prepended as the session's initial prompt
+		// via --prompt-interactive ("run an initial prompt interactively and
+		// continue the session") — the bead-designed prepend-to-first-prompt
+		// fallback for CLIs without a true system-prompt mechanism.
+		Antigravity: `{{agyBinary}} --model {{shellQuote .Model}} --dangerously-skip-permissions{{if .SystemPromptFile}} --prompt-interactive "$(cat {{shellQuote .SystemPromptFile}})"{{end}}`,
 		// Grok Build owns its default model selection. NTM only supplies --model
 		// for an explicit/configured override, avoiding stale built-in model IDs.
 		// --always-approve is the official autonomous approval flag exposed by

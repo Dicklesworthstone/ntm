@@ -456,6 +456,19 @@ func detectAgentFromCommand(command string) AgentType {
 		return AgentGrok
 	}
 
+	// Antigravity (agy) — checked before Gemini so an agy launch command whose
+	// pinned model name contains "Gemini" ("Gemini 3.1 Pro (High)") is never
+	// misread as a gemini pane. Like grok, "agy" is a short generic token, so
+	// it must be the command's executable basename, never a coincidental
+	// argument. Real launch shapes: `agy`, `agy-locked` (the un-aliased
+	// wrapper binary spawn actually execs — see config.agyBinary), and the
+	// spelled-out `antigravity` binary.
+	if commandExecutableIs(cmd, "agy") ||
+		commandExecutableIs(cmd, "agy-locked") ||
+		commandExecutableIs(cmd, "antigravity") {
+		return AgentAntigravity
+	}
+
 	// Helper to check if a command matches an agent
 	isAgent := func(name string) bool {
 		return cmd == name ||
@@ -531,12 +544,22 @@ func detectAgentFromArgv(argv []string) AgentType {
 		return AgentGrok
 	}
 
+	// Antigravity: same executable-only rule as grok. "agy" is a short
+	// generic token that shows up in unrelated argv elements (`rg agy`), so
+	// it may only classify via argv[0]; the fallback loops below therefore
+	// exclude AgentAntigravity the same way they exclude AgentGrok.
+	if commandExecutableIs(argv[0], "agy") ||
+		commandExecutableIs(argv[0], "agy-locked") ||
+		commandExecutableIs(argv[0], "antigravity") {
+		return AgentAntigravity
+	}
+
 	joined := strings.Join(argv, " ")
-	if t := detectAgentFromCommand(joined); t != AgentUser && t != AgentGrok {
+	if t := detectAgentFromCommand(joined); t != AgentUser && t != AgentGrok && t != AgentAntigravity {
 		return t
 	}
 	for _, arg := range argv {
-		if t := detectAgentFromCommand(arg); t != AgentUser && t != AgentGrok {
+		if t := detectAgentFromCommand(arg); t != AgentUser && t != AgentGrok && t != AgentAntigravity {
 			return t
 		}
 	}

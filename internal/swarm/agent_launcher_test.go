@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
@@ -1513,4 +1514,49 @@ func TestLaunchCommand_ToShellCommandCarriesEnv(t *testing.T) {
 			t.Fatalf("ToShellCommand() = %q, want malformed entries skipped", got)
 		}
 	})
+}
+
+// TestSwarmLaunch_AntigravityPinnedModelPassthrough is the
+// bd-ws7-docs-ux-truth-tqh3l.5 proof that the swarm launcher no longer falls
+// through to a bare `agy`: every swarm launch path must carry the hard-pinned
+// model (config.AntigravityRequiredModel) and the auto-approve flag.
+func TestSwarmLaunch_AntigravityPinnedModelPassthrough(t *testing.T) {
+	pinned := tmux.ShellQuote(config.AntigravityRequiredModel)
+
+	// agy is a recognized, launchable swarm agent type (previously it fell
+	// out of every switch and launched as a raw unpinned command).
+	if got := normalizedSwarmLaunchableAgentType("agy"); got != "agy" {
+		t.Fatalf("normalizedSwarmLaunchableAgentType(agy) = %q, want agy", got)
+	}
+	if got := normalizedSwarmLaunchableAgentType("antigravity"); got != "agy" {
+		t.Fatalf("normalizedSwarmLaunchableAgentType(antigravity) = %q, want agy", got)
+	}
+	if err := ValidateAgentType("agy"); err != nil {
+		t.Fatalf("ValidateAgentType(agy) = %v, want nil", err)
+	}
+
+	// Interactive launch path (LaunchAgent).
+	cmd := interactiveSwarmLaunchCommand("agy")
+	if !strings.Contains(cmd, "--model "+pinned) {
+		t.Errorf("interactiveSwarmLaunchCommand(agy) = %q, missing pinned model %s", cmd, pinned)
+	}
+	if !strings.Contains(cmd, "--dangerously-skip-permissions") {
+		t.Errorf("interactiveSwarmLaunchCommand(agy) = %q, missing auto-approve flag", cmd)
+	}
+	if cmd == "agy" {
+		t.Errorf("interactiveSwarmLaunchCommand(agy) fell through to bare agy")
+	}
+
+	// Builder path (BuildLaunchCommand / BuildSwarmCommands).
+	built := NewLaunchCommandBuilder().BuildLaunchCommand(PaneSpec{
+		Index:     1,
+		AgentType: "agy",
+	}, "/tmp/project")
+	shell := built.ToShellCommand()
+	if !strings.Contains(shell, "--model "+pinned) {
+		t.Errorf("BuildLaunchCommand(agy).ToShellCommand() = %q, missing pinned model %s", shell, pinned)
+	}
+	if !strings.Contains(shell, "--dangerously-skip-permissions") {
+		t.Errorf("BuildLaunchCommand(agy).ToShellCommand() = %q, missing auto-approve flag", shell)
+	}
 }

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/agent"
+	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
@@ -530,10 +531,10 @@ func (l *AgentLauncher) LaunchAgentWithContext(session string, pane int, agentTy
 // ValidateAgentType checks if the given agent type is valid.
 func ValidateAgentType(agentType string) error {
 	switch normalizedSwarmLaunchableAgentType(agentType) {
-	case AgentCC, AgentCOD, AgentGMI, "grok", "cursor", "windsurf", "aider", "ollama":
+	case AgentCC, AgentCOD, AgentGMI, "agy", "grok", "cursor", "windsurf", "aider", "ollama":
 		return nil
 	default:
-		return fmt.Errorf("invalid agent type %q: must resolve to one of %s, %s, %s, grok, cursor, windsurf, aider, ollama",
+		return fmt.Errorf("invalid agent type %q: must resolve to one of %s, %s, %s, agy, grok, cursor, windsurf, aider, ollama",
 			agentType, AgentCC, AgentCOD, AgentGMI)
 	}
 }
@@ -543,6 +544,7 @@ var DefaultAgentCommands = map[string]string{
 	"cc":       "claude",       // Claude Code CLI
 	"cod":      "codex",        // OpenAI Codex CLI
 	"gmi":      "gemini",       // Google Gemini CLI
+	"agy":      "agy",          // Antigravity CLI (resolved via config.AntigravityBinary at launch)
 	"grok":     "grok",         // xAI Grok Build CLI
 	"cursor":   "cursor-agent", // Cursor Agent CLI (not the GUI `cursor` launcher)
 	"windsurf": "windsurf",     // Windsurf CLI
@@ -557,9 +559,15 @@ var DefaultAgentCommands = map[string]string{
 // is used directly and the caller should supply arguments via
 // WithAgentArgs or a custom LaunchCommandBuilder.
 var DefaultAgentArgs = map[string][]string{
-	"cc":       {},
-	"cod":      {},
-	"gmi":      {},
+	"cc":  {},
+	"cod": {},
+	"gmi": {},
+	// agy's model is hard-pinned (config.AntigravityRequiredModel); the shell
+	// alias does NOT carry the pin, so it must ride the default args or a
+	// swarm-launched agy pane silently runs whatever model the CLI defaults
+	// to. The model is pre-quoted because ToShellCommand joins args with
+	// spaces straight into a shell command.
+	"agy":      {"--model", tmux.ShellQuote(config.AntigravityRequiredModel), "--dangerously-skip-permissions"},
 	"grok":     {"--always-approve"},
 	"cursor":   {"--yolo"},
 	"windsurf": {},
@@ -821,6 +829,7 @@ func normalizedSwarmLaunchableAgentType(agentType string) string {
 	case agent.AgentTypeClaudeCode,
 		agent.AgentTypeCodex,
 		agent.AgentTypeGemini,
+		agent.AgentTypeAntigravity,
 		agent.AgentTypeGrok,
 		agent.AgentTypeCursor,
 		agent.AgentTypeWindsurf,
@@ -834,6 +843,13 @@ func normalizedSwarmLaunchableAgentType(agentType string) string {
 
 func interactiveSwarmLaunchCommand(agentType string) string {
 	switch agent.AgentType(agentType).Canonical() {
+	case agent.AgentTypeAntigravity:
+		// Bare `agy` would lose the hard-pinned model
+		// (config.AntigravityRequiredModel) and the auto-approve flag; the
+		// alias-safe binary plus the full pinned invocation matches the spawn
+		// template in config.DefaultAgentTemplates().
+		return config.AntigravityBinary() + " --model " +
+			tmux.ShellQuote(config.AntigravityRequiredModel) + " --dangerously-skip-permissions"
 	case agent.AgentTypeGrok:
 		return "grok --always-approve"
 	case agent.AgentTypeCursor:
@@ -849,6 +865,11 @@ func interactiveSwarmLaunchCommand(agentType string) string {
 func swarmLaunchBinary(agentType string) string {
 	if agentType == "cursor" {
 		return DefaultAgentCommands[agentType]
+	}
+	if agentType == "agy" {
+		// `agy` is frequently a shell ALIAS for agy-locked; aliases do not
+		// resolve in non-interactive launch shells, so prefer the real binary.
+		return config.AntigravityBinary()
 	}
 	return agentType
 }

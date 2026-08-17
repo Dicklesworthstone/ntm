@@ -455,28 +455,22 @@ func TestDefaultAgentTemplates_ShellQuoting(t *testing.T) {
 		}
 	}
 
-	// checkModelOnly verifies shell-quoting of the model only — for agents where
-	// system-prompt-file injection is not supported via CLI flags (e.g. Gemini,
-	// which removed --system-instruction-file in v0.31.0).
-	checkModelOnly := func(name, tmpl string) {
-		cmd, err := GenerateAgentCommand(tmpl, vars)
-		if err != nil {
-			t.Fatalf("%s template: %v", name, err)
-		}
-		quotedModel := ShellQuote(vars.Model)
-		if !strings.Contains(cmd, quotedModel) {
-			t.Fatalf("%s template should contain quoted model %q, got: %s", name, quotedModel, cmd)
-		}
-		if strings.Contains(cmd, vars.Model) && !strings.Contains(cmd, quotedModel) {
-			t.Fatalf("%s template appears to include unquoted model: %s", name, cmd)
-		}
-	}
-
 	check("claude", templates.Claude)
 	check("codex", templates.Codex)
-	// Gemini dropped --system-instruction-file in v0.31.0; only model quoting applies.
-	checkModelOnly("gemini", templates.Gemini)
-	checkModelOnly("grok", templates.Grok)
+	// Gemini delivers the persona via the GEMINI_SYSTEM_MD env var, agy via
+	// --prompt-interactive; both must quote the file path (and the model).
+	check("gemini", templates.Gemini)
+	check("antigravity", templates.Antigravity)
+
+	// Grok has no persona mechanism: rendering with a SystemPromptFile must
+	// refuse loudly instead of silently dropping it
+	// (bd-ws7-docs-ux-truth-tqh3l.5).
+	if _, err := GenerateAgentCommand(templates.Grok, AgentTemplateVars{
+		AgentType:        "grok",
+		SystemPromptFile: vars.SystemPromptFile,
+	}); err == nil || !strings.Contains(err.Error(), "persona ignored: grok has no persona mechanism") {
+		t.Fatalf("grok template with persona: err = %v, want loud refusal", err)
+	}
 }
 
 // TestShellQuote_Branches tests both branches of ShellQuote.
