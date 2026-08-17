@@ -66,14 +66,6 @@ var commandKeys = commandKeyMap{
 	Compose:        key.NewBinding(key.WithKeys("ctrl+n"), key.WithHelp("ctrl+n", "custom msg")),
 }
 
-func (k commandKeyMap) handled() []key.Binding {
-	return []key.Binding{
-		k.Up, k.Down, k.PageUp, k.PageDown, k.HalfPageUp, k.HalfPageDown,
-		k.Home, k.End, k.Select, k.Back, k.Quit, k.Help,
-		k.TogglePin, k.ToggleFavorite, k.XFSearch, k.Compose,
-	}
-}
-
 // targetKeyMap covers PhaseTarget (no focused text input: rune keys are live).
 type targetKeyMap struct {
 	Target1      key.Binding
@@ -101,13 +93,6 @@ var targetKeys = targetKeyMap{
 	Quit:         key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
 }
 
-func (k targetKeyMap) handled() []key.Binding {
-	return []key.Binding{
-		k.Target1, k.Target2, k.Target3, k.Target4, k.Target5,
-		k.SelectAgents, k.Edit, k.Help, k.Back, k.Quit,
-	}
-}
-
 // selectAgentsKeyMap covers PhaseSelectAgents (#205; runes are live).
 type selectAgentsKeyMap struct {
 	Up     key.Binding
@@ -131,10 +116,6 @@ var selectAgentsKeys = selectAgentsKeyMap{
 	Quit:   key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
 }
 
-func (k selectAgentsKeyMap) handled() []key.Binding {
-	return []key.Binding{k.Up, k.Down, k.Toggle, k.All, k.None, k.Select, k.Back, k.Quit}
-}
-
 // editKeyMap covers PhaseEdit. The textarea is focused, so runes belong to the
 // text: Quit is ctrl+c ONLY (a `q` binding here used to quit the palette while
 // typing a prompt containing 'q').
@@ -150,10 +131,6 @@ var editKeys = editKeyMap{
 	Quit:        key.NewBinding(key.WithKeys("ctrl+c"), key.WithHelp("ctrl+c", "quit")),
 }
 
-func (k editKeyMap) handled() []key.Binding {
-	return []key.Binding{k.ConfirmEdit, k.Back, k.Quit}
-}
-
 // xfSearchKeyMap covers PhaseXFSearch. The query input is focused, so runes
 // belong to the query: Quit is ctrl+c ONLY (same 'q' trap as the edit phase).
 type xfSearchKeyMap struct {
@@ -166,10 +143,6 @@ var xfSearchKeys = xfSearchKeyMap{
 	Select: key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "search")),
 	Back:   key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back")),
 	Quit:   key.NewBinding(key.WithKeys("ctrl+c"), key.WithHelp("ctrl+c", "quit")),
-}
-
-func (k xfSearchKeyMap) handled() []key.Binding {
-	return []key.Binding{k.Select, k.Back, k.Quit}
 }
 
 // xfResultsKeyMap covers PhaseXFResults (no focused input: runes are live).
@@ -189,10 +162,6 @@ var xfResultsKeys = xfResultsKeyMap{
 	Help:   key.NewBinding(key.WithKeys("?", "f1"), key.WithHelp("?", "help")),
 	Back:   key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back")),
 	Quit:   key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
-}
-
-func (k xfResultsKeyMap) handled() []key.Binding {
-	return []key.Binding{k.Up, k.Down, k.Select, k.Help, k.Back, k.Quit}
 }
 
 // helpEntry documents one or more handled bindings under a single label in a

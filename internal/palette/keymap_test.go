@@ -69,30 +69,29 @@ func reflectBindings(t *testing.T, keymap any) []key.Binding {
 	return out
 }
 
-// phaseHonestyCase describes one phase's keymap, its handled() list, and every
-// help surface that advertises its keys.
+// phaseHonestyCase describes one phase's keymap struct and every help surface
+// that advertises its keys. The handled set is derived by reflection over the
+// keymap struct's binding fields — the same values the phase's Update handler
+// matches against — so a newly added binding is in the table by construction.
 type phaseHonestyCase struct {
 	name       string
 	keymap     any
-	handled    []key.Binding
 	advertised [][]helpEntry
 }
 
 func phaseHonestyCases() []phaseHonestyCase {
 	return []phaseHonestyCase{
 		{
-			name:    "command",
-			keymap:  commandKeys,
-			handled: commandKeys.handled(),
+			name:   "command",
+			keymap: commandKeys,
 			advertised: [][]helpEntry{
 				commandHelpEntries(layout.TierMega, true), // widest bar, scroll hint on
 				commandOverlayEntries(),
 			},
 		},
 		{
-			name:    "target",
-			keymap:  targetKeys,
-			handled: targetKeys.handled(),
+			name:   "target",
+			keymap: targetKeys,
 			advertised: [][]helpEntry{
 				targetHelpEntries(),
 				targetOverlayEntries(),
@@ -101,25 +100,21 @@ func phaseHonestyCases() []phaseHonestyCase {
 		{
 			name:       "select-agents",
 			keymap:     selectAgentsKeys,
-			handled:    selectAgentsKeys.handled(),
 			advertised: [][]helpEntry{selectAgentsHelpEntries()},
 		},
 		{
 			name:       "edit",
 			keymap:     editKeys,
-			handled:    editKeys.handled(),
 			advertised: [][]helpEntry{editHelpEntries()},
 		},
 		{
 			name:       "xf-search",
 			keymap:     xfSearchKeys,
-			handled:    xfSearchKeys.handled(),
 			advertised: [][]helpEntry{xfSearchHelpEntries()},
 		},
 		{
 			name:       "xf-results",
 			keymap:     xfResultsKeys,
-			handled:    xfResultsKeys.handled(),
 			advertised: [][]helpEntry{xfResultsHelpEntries()},
 		},
 	}
@@ -130,7 +125,8 @@ func phaseHonestyCases() []phaseHonestyCase {
 func TestPaletteHelpHonesty(t *testing.T) {
 	for _, tc := range phaseHonestyCases() {
 		t.Run(tc.name, func(t *testing.T) {
-			handledSet := bindingSet(tc.handled)
+			handled := reflectBindings(t, tc.keymap)
+			handledSet := bindingSet(handled)
 			advertisedBindings := entriesBindings(tc.advertised...)
 			advertisedSet := bindingSet(advertisedBindings)
 
@@ -143,31 +139,9 @@ func TestPaletteHelpHonesty(t *testing.T) {
 			}
 
 			// Direction 2: handled ⊆ advertised.
-			for _, b := range tc.handled {
+			for _, b := range handled {
 				if !advertisedSet[bindingID(b)] {
 					t.Errorf("%s phase handles binding %q (%s) that no help surface advertises",
-						tc.name, b.Help().Key, bindingID(b))
-				}
-			}
-		})
-	}
-}
-
-// TestKeymapHandledListsAreComplete reflection-walks each keymap struct and
-// asserts every binding field appears in handled(), so a newly added binding
-// cannot silently bypass the honesty table.
-func TestKeymapHandledListsAreComplete(t *testing.T) {
-	for _, tc := range phaseHonestyCases() {
-		t.Run(tc.name, func(t *testing.T) {
-			handledSet := bindingSet(tc.handled)
-			fields := reflectBindings(t, tc.keymap)
-			if len(tc.handled) != len(fields) {
-				t.Errorf("%s: handled() lists %d bindings but keymap struct has %d fields",
-					tc.name, len(tc.handled), len(fields))
-			}
-			for _, b := range fields {
-				if !handledSet[bindingID(b)] {
-					t.Errorf("%s: keymap struct binding %q (%s) missing from handled()",
 						tc.name, b.Help().Key, bindingID(b))
 				}
 			}
@@ -181,7 +155,7 @@ func TestKeymapHandledListsAreComplete(t *testing.T) {
 // 1-9/q/? advertisements lies.
 func TestCommandPhaseBindingsAvoidPrintableRunes(t *testing.T) {
 	printable := regexp.MustCompile(`^[\x20-\x7e]$`)
-	for _, b := range commandKeys.handled() {
+	for _, b := range reflectBindings(t, commandKeys) {
 		for _, k := range b.Keys() {
 			if printable.MatchString(k) {
 				t.Errorf("command-phase binding %q includes printable key %q, which the focused filter swallows",

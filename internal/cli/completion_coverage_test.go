@@ -1,7 +1,9 @@
 package cli
 
 import (
-	"bytes"
+	"fmt"
+	"os"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -20,24 +22,43 @@ import (
 // completion time by invoking `ntm __complete <words>...`; asserting that
 // output therefore asserts exactly what every generated shell script will
 // offer the user.
-func TestCompletionCoversEveryTopLevelCommand(t *testing.T) {
-	var buf bytes.Buffer
-	rootCmd.SetOut(&buf)
-	rootCmd.SetErr(&buf)
-	rootCmd.SetArgs([]string{cobra.ShellCompRequestCmd, ""})
-	t.Cleanup(func() {
-		rootCmd.SetOut(nil)
-		rootCmd.SetErr(nil)
-		rootCmd.SetArgs(nil)
-	})
+const completionCoverageChildEnv = "NTM_TEST_COMPLETION_COVERAGE_CHILD"
 
-	if err := rootCmd.Execute(); err != nil {
-		t.Fatalf("__complete execution failed: %v", err)
+func TestCompletionCoversEveryTopLevelCommand(t *testing.T) {
+	if os.Getenv(completionCoverageChildEnv) == "1" {
+		// Child mode: emit the completion candidates exactly as a shell's
+		// `ntm __complete ""` invocation would receive them, then exit before
+		// the test framework prints anything. Running Execute in a child
+		// process keeps rootCmd's package-global state (flags, config,
+		// output writers) isolated from the rest of the suite in both
+		// directions.
+		rootCmd.SetArgs([]string{cobra.ShellCompRequestCmd, ""})
+		rootCmd.SetOut(os.Stdout)
+		if err := rootCmd.Execute(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(3)
+		}
+		os.Exit(0)
 	}
 
-	// __complete emits one candidate per line as "name\tdescription".
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatalf("locate test binary: %v", err)
+	}
+	child := exec.Command(exe, "-test.run=^TestCompletionCoversEveryTopLevelCommand$")
+	child.Env = append(os.Environ(), completionCoverageChildEnv+"=1")
+	out, err := child.Output()
+	if err != nil {
+		t.Fatalf("__complete child execution failed: %v\noutput:\n%s", err, out)
+	}
+
+	// __complete emits one candidate per line as "name\tdescription", then a
+	// ":<directive>" trailer.
 	completed := make(map[string]bool)
-	for _, line := range strings.Split(buf.String(), "\n") {
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.HasPrefix(line, ":") {
+			continue
+		}
 		name, _, _ := strings.Cut(line, "\t")
 		if name != "" {
 			completed[name] = true

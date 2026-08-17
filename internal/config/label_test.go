@@ -533,3 +533,19 @@ func TestGetProjectDir_WithLabel(t *testing.T) {
 		t.Errorf("GetProjectDir(%q) = %q, want %q", "my-project--label", got, want)
 	}
 }
+
+// TestUserPaneTitle pins the canonical user-pane title maker (H8,
+// bd-ws7-docs-ux-truth-tqh3l.8): {session}__user_0, round-tripping through
+// PaneDisplayLabel like agent-pane titles do.
+func TestUserPaneTitle(t *testing.T) {
+	got := UserPaneTitle("myproj")
+	if got != "myproj__user_0" {
+		t.Errorf("UserPaneTitle(myproj) = %q, want %q", got, "myproj__user_0")
+	}
+	if label := PaneDisplayLabel("myproj", got, 0); label != "user_0" {
+		t.Errorf("PaneDisplayLabel of user pane title = %q, want %q", label, "user_0")
+	}
+	if labeled := UserPaneTitle("proj--front"); labeled != "proj--front__user_0" {
+		t.Errorf("UserPaneTitle(proj--front) = %q, want %q", labeled, "proj--front__user_0")
+	}
+}
