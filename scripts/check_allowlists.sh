@@ -44,6 +44,11 @@ else
 fi
 
 # check_bead <id> <context>
+# Memoized per bead ID: the seeded allowlists carry thousands of lines over a
+# handful of beads, so one `br show` per LINE turns this script from seconds
+# into >10 minutes locally (added by bd-ws0-guards-klz98.2 at G1/G2 seed time;
+# validation semantics unchanged).
+declare -A BEAD_STATUS_CACHE
 check_bead() {
   local id="$1" ctx="$2"
   if ! [[ "$id" =~ $BEAD_ID_RE ]]; then
@@ -52,15 +57,29 @@ check_bead() {
   fi
   if [ "$HAVE_BR" = 1 ]; then
     local json status
+    if [ -n "${BEAD_STATUS_CACHE[$id]:-}" ]; then
+      status="${BEAD_STATUS_CACHE[$id]}"
+      case "$status" in
+        missing) fail "$ctx: bead '$id' not found (waiver protocol requires an existing bead)" ;;
+        unparsed) fail "$ctx: could not parse status for bead '$id'" ;;
+        closed) fail "$ctx: bead '$id' is CLOSED but a live allowlist/waiver line references it — the gate, not the ledger, is the arbiter of closed" ;;
+      esac
+      return
+    fi
     if ! json="$(br show "$id" --json 2>/dev/null)"; then
+      BEAD_STATUS_CACHE[$id]=missing
       fail "$ctx: bead '$id' not found (waiver protocol requires an existing bead)"
       return
     fi
     status="$(printf '%s' "$json" | tr -d ' \n' | sed -n 's/.*"status":"\([a-z_]*\)".*/\1/p')"
     if [ -z "$status" ]; then
+      BEAD_STATUS_CACHE[$id]=unparsed
       fail "$ctx: could not parse status for bead '$id'"
     elif [ "$status" = "closed" ]; then
+      BEAD_STATUS_CACHE[$id]=closed
       fail "$ctx: bead '$id' is CLOSED but a live allowlist/waiver line references it — the gate, not the ledger, is the arbiter of closed"
+    else
+      BEAD_STATUS_CACHE[$id]="$status"
     fi
   fi
 }
