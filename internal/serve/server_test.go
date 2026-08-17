@@ -4321,7 +4321,7 @@ func TestListJobsEndpoint(t *testing.T) {
 func TestCreateJobEndpoint(t *testing.T) {
 	srv, _ := setupTestServer(t)
 
-	body := `{"type": "spawn", "session": "test-session"}`
+	body := `{"type": "pipeline_run", "params": {"workflow_file": "missing.yaml", "session": "endpointjob1"}}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/jobs/", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -4346,13 +4346,14 @@ func TestCreateJobEndpoint(t *testing.T) {
 		t.Fatal("Expected job object in response")
 	}
 
-	if job["type"] != "spawn" {
-		t.Errorf("Job type = %v, want spawn", job["type"])
+	if job["type"] != "pipeline_run" {
+		t.Errorf("Job type = %v, want pipeline_run", job["type"])
 	}
-	// Status can be "pending" or "running" due to the goroutine race
+	// The dispatched job races the assertion: it can still be pending/running,
+	// or already failed for real (the workflow file does not exist).
 	status, _ := job["status"].(string)
-	if status != "pending" && status != "running" {
-		t.Errorf("Job status = %v, want pending or running", job["status"])
+	if status != "pending" && status != "running" && status != "failed" {
+		t.Errorf("Job status = %v, want pending, running, or failed", job["status"])
 	}
 }
 
@@ -4366,8 +4367,9 @@ func TestCreateJobInvalidType(t *testing.T) {
 
 	srv.Router().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Errorf("Status = %d, want %d", rec.Code, http.StatusBadRequest)
+	// D5b: non-allow-listed job types are honestly NOT_IMPLEMENTED.
+	if rec.Code != http.StatusNotImplemented {
+		t.Errorf("Status = %d, want %d", rec.Code, http.StatusNotImplemented)
 	}
 }
 
@@ -4463,7 +4465,7 @@ func TestIdempotencyMiddleware(t *testing.T) {
 	srv, _ := setupTestServer(t)
 
 	// First request
-	body := `{"type": "spawn"}`
+	body := `{"type": "pipeline_run", "params": {"workflow_file": "missing.yaml", "session": "idemjob1"}}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/jobs/", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Idempotency-Key", "test-key-123")

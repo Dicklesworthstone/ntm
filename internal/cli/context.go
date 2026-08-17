@@ -255,6 +255,9 @@ type ContextInjectResult struct {
 
 func init() {
 	robot.MustRegisterSchemaCommand("context_inject", ContextInjectResult{})
+	robot.MustRegisterSchemaPagination("context_inject", robot.SchemaPaginationFlag{
+		Reason: "bounded: per-request injection echo (files/panes for one inject)",
+	})
 }
 
 // defaultContextFiles returns the default files to inject.

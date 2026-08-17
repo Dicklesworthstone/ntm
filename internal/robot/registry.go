@@ -26,24 +26,33 @@ type RobotRegistry struct {
 // RobotSurfaceDescriptor describes a robot surface and the metadata that
 // machine and human consumers need to reason about it.
 type RobotSurfaceDescriptor struct {
-	Name                    string               `json:"name"`
-	Flag                    string               `json:"flag"`
-	Category                string               `json:"category"`
-	Summary                 string               `json:"summary"`
-	Description             string               `json:"description"`
-	Note                    string               `json:"note,omitempty"`
-	Unavailable             bool                 `json:"unavailable,omitempty"`
-	UnavailableReason       string               `json:"unavailable_reason,omitempty"`
-	OutputFormats           []string             `json:"output_formats"`
-	DefaultOutputFormat     string               `json:"default_output_format"`
-	SchemaID                string               `json:"schema_id,omitempty"`
-	SchemaType              string               `json:"schema_type,omitempty"`
-	SchemaSource            string               `json:"schema_source"`
-	SchemaUnavailableReason string               `json:"schema_unavailable_reason,omitempty"`
-	Sections                []string             `json:"sections,omitempty"`
-	Parameters              []RobotParameter     `json:"parameters,omitempty"`
-	Examples                []string             `json:"examples,omitempty"`
-	Transports              []RobotTransportInfo `json:"transports,omitempty"`
+	Name                    string   `json:"name"`
+	Flag                    string   `json:"flag"`
+	Category                string   `json:"category"`
+	Summary                 string   `json:"summary"`
+	Description             string   `json:"description"`
+	Note                    string   `json:"note,omitempty"`
+	Unavailable             bool     `json:"unavailable,omitempty"`
+	UnavailableReason       string   `json:"unavailable_reason,omitempty"`
+	OutputFormats           []string `json:"output_formats"`
+	DefaultOutputFormat     string   `json:"default_output_format"`
+	SchemaID                string   `json:"schema_id,omitempty"`
+	SchemaType              string   `json:"schema_type,omitempty"`
+	SchemaSource            string   `json:"schema_source"`
+	SchemaUnavailableReason string   `json:"schema_unavailable_reason,omitempty"`
+	Sections                []string `json:"sections,omitempty"`
+	// Paginated is the exhaustive per-surface pagination flag (WS0-G6 /
+	// bd-ws3-contract-breadth-psvyu.1), derived from the single-declaration
+	// SchemaPagination map in schema_pagination.go. It is set for every
+	// list-shaped schema binding: true when the surface implements the
+	// offset/limit PaginationInfo contract, false when the list is
+	// unpaginated by design (PaginatedReason records why). Nil for surfaces
+	// whose output is not list-shaped.
+	Paginated       *bool                `json:"paginated,omitempty"`
+	PaginatedReason string               `json:"paginated_reason,omitempty"`
+	Parameters      []RobotParameter     `json:"parameters,omitempty"`
+	Examples        []string             `json:"examples,omitempty"`
+	Transports      []RobotTransportInfo `json:"transports,omitempty"`
 
 	// Consumer metadata for machine integrations
 	ConsumerGuidance *ConsumerGuidance   `json:"consumer_guidance,omitempty"`
@@ -249,6 +258,7 @@ func (r *RobotRegistry) Surface(name string) (RobotSurfaceDescriptor, bool) {
 	}
 	surface, ok := r.surfaceByName[name]
 	if ok {
+		surface.Paginated = cloneBoolPtr(surface.Paginated)
 		surface.OutputFormats = cloneStrings(surface.OutputFormats)
 		surface.Sections = cloneStrings(surface.Sections)
 		surface.Parameters = cloneRobotParameters(surface.Parameters)
@@ -340,6 +350,13 @@ func buildRobotRegistry() *RobotRegistry {
 			AttentionOps:            cloneAttentionOpsInfo(meta.AttentionOps),
 			Explainability:          cloneExplainabilityInfo(meta.Explainability),
 			Lifecycle:               cloneLifecycleInfo(meta.Lifecycle),
+		}
+		if schemaType != "" {
+			if flag, ok := SchemaPagination[schemaType]; ok {
+				paginated := flag.Paginated
+				surface.Paginated = &paginated
+				surface.PaginatedReason = flag.Reason
+			}
 		}
 		if len(surface.Transports) == 0 {
 			surface.Transports = []RobotTransportInfo{
@@ -460,8 +477,8 @@ func buildRobotSurfaceMetadata() map[string]robotSurfaceMetadata {
 			Boundedness: &BoundednessInfo{
 				DefaultLimit:       100,
 				MaxLimit:           1000,
-				SupportsPagination: true,
-				TruncationBehavior: "Oldest events dropped; use cursor for continuation",
+				SupportsPagination: false,
+				TruncationBehavior: "Oldest events dropped; cursor-based continuation, not offset pagination",
 			},
 		},
 		"digest": {
@@ -488,8 +505,8 @@ func buildRobotSurfaceMetadata() map[string]robotSurfaceMetadata {
 			Boundedness: &BoundednessInfo{
 				DefaultLimit:       50,
 				MaxLimit:           200,
-				SupportsPagination: true,
-				TruncationBehavior: "Lower-priority items dropped; cursor resumes position",
+				SupportsPagination: false,
+				TruncationBehavior: "Lower-priority items dropped; cursor resumes position (not offset pagination)",
 			},
 			FollowUp: &FollowUpInfo{
 				InspectSurfaces:  []string{"inspect-incident", "inspect-work"},
@@ -614,8 +631,8 @@ func buildRobotSurfaceMetadata() map[string]robotSurfaceMetadata {
 			Boundedness: &BoundednessInfo{
 				DefaultLimit:       50,
 				MaxLimit:           500,
-				SupportsPagination: true,
-				TruncationBehavior: "Beads beyond limit omitted; use offset for more",
+				SupportsPagination: false,
+				TruncationBehavior: "Beads beyond limit omitted; narrow with filters (no offset pagination)",
 			},
 			FollowUp: &FollowUpInfo{
 				InspectSurfaces:  []string{"inspect-work"},
@@ -1287,6 +1304,7 @@ func cloneRobotSurfaceDescriptors(surfaces []RobotSurfaceDescriptor) []RobotSurf
 	cloned := make([]RobotSurfaceDescriptor, len(surfaces))
 	for i, surface := range surfaces {
 		cloned[i] = surface
+		cloned[i].Paginated = cloneBoolPtr(surface.Paginated)
 		cloned[i].OutputFormats = cloneStrings(surface.OutputFormats)
 		cloned[i].Sections = cloneStrings(surface.Sections)
 		cloned[i].Parameters = cloneRobotParameters(surface.Parameters)
@@ -1344,6 +1362,7 @@ func cloneSurfaceDescriptorMap(src map[string]RobotSurfaceDescriptor) map[string
 	cloned := make(map[string]RobotSurfaceDescriptor, len(src))
 	for name, surface := range src {
 		copied := surface
+		copied.Paginated = cloneBoolPtr(surface.Paginated)
 		copied.OutputFormats = cloneStrings(surface.OutputFormats)
 		copied.Sections = cloneStrings(surface.Sections)
 		copied.Parameters = cloneRobotParameters(surface.Parameters)
@@ -1375,6 +1394,14 @@ func cloneSectionDescriptorMap(src map[string]RobotSectionDescriptor) map[string
 		cloned[name] = copied
 	}
 	return cloned
+}
+
+func cloneBoolPtr(src *bool) *bool {
+	if src == nil {
+		return nil
+	}
+	cloned := *src
+	return &cloned
 }
 
 func firstNonEmptyString(values ...string) string {

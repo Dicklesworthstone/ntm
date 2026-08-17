@@ -13,6 +13,61 @@ NTM is a tmux session management tool for orchestrating multiple AI coding agent
 
 ## [Unreleased]
 
+- **Arrays-never-null is now an encoder invariant, not a constructor
+  convention.** (bd-ws3-contract-breadth-psvyu.2) Every robot envelope —
+  success and failure terminals alike — is normalized through
+  `EnsureArraysNeverNull` before encoding, so slice fields marshal as `[]`
+  (or are omitted via `omitempty`), never as JSON `null`. A registry-walk
+  conformance test (`TestArraysNeverNullRegistryWalk`) zero-instantiates
+  every registered schema type and fails on any null-where-array, with an
+  empty exception list; new envelope types are covered at registration time.
+- **Pagination scope is exact, exhaustive, and machine-checkable; five
+  unbounded list surfaces gained real offset/limit paging.**
+  (bd-ws3-contract-breadth-psvyu.1)
+  - `ntm list`, `ntm history`, `ntm audit show/search`,
+    `ntm checkpoint list`, and `ntm approve list` accept `--limit/--offset`
+    and return `count`/`total_matches`/`has_more` plus
+    `_agent_hints.next_offset` in JSON mode (`ntm history` offsets count
+    back from the newest entry so the default stays "last N").
+  - The WS0-G6 single-declaration flag map
+    (`internal/robot/schema_pagination.go`) marks EVERY list-shaped schema
+    type `paginated: true/false` with a recorded reason; an unflagged list
+    type fails the registry-walk conformance test, and
+    `--robot-capabilities` exposes `paginated`/`paginated_reason` per
+    surface (plus a `pagination_contract_violations` self-check, empty on
+    healthy builds).
+  - Registry metadata that over-claimed offset pagination
+    (`attention`, `events`, `beads-list` Boundedness) was corrected to
+    cursor/limit truncation honesty, and
+    `docs/robot-ordering-pagination.md` now scopes the pagination claim to
+    the exact flagged surface table instead of implying list-wide support.
+- **Assignment strategies are real now: `--dist-strategy` / `--strategy`
+  route through the graph-aware planner.** (bd-ws2-wire-or-delete-ykmcz.4)
+  - Previously `--dist-strategy` (send `--distribute`) and `--strategy`
+    (`--robot-assign`) were cosmetic: beads were paired with idle agents
+    sequentially regardless of strategy, and only the printed reasoning
+    changed — the output claimed strategy behavior that never ran.
+  - `balanced`, `speed`, `quality`, and `dependency` now run the real
+    planner in `internal/assign`: pairings are scored against the agent
+    capability matrix, and `dependency` consumes the bead graph's
+    unblocks fan-out (blockers that unblock more work are assigned first).
+    Each strategy produces genuinely different assignments (proof:
+    `TestPlanAssignments_*` in `internal/robot`).
+  - Planner confidence is propagated instead of discarded: `--robot-assign`
+    recommendations carry the planner's confidence, and the distribute
+    envelope's recommendation objects gain a `confidence` field.
+  - **Behavior/name change for defaults:** the historical sequential
+    pairing keeps running under its honest name `simple`, which is the new
+    default for both flags (previously the default was *named* `balanced`
+    while *behaving* sequentially). Users who never pass the flag get
+    byte-identical pairing behavior, but envelopes now report
+    `"strategy": "simple"`, and the simple reasoning string honestly says
+    "simple sequential pairing" instead of claiming a strategy.
+    Explicitly passing `balanced`/`speed`/`quality`/`dependency` now
+    changes real assignment output. Defaults are pinned by
+    `TestAssignStrategyDefaultPinnedToSimple` and
+    `Test*StrategyFlagDefaultPinnedToSimple`.
+
 - **Config truth (WS6-wire): `[retry]`, `rotation.thresholds`, and the
   `memory.*`/`[recovery]` shadowing are now real.**
   (bd-ws6-config-truth-ienmd.1)

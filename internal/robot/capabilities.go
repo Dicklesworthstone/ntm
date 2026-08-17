@@ -19,6 +19,10 @@ type CapabilitiesOutput struct {
 	Categories []string                 `json:"categories"`
 	Attention  *AttentionCapabilities   `json:"attention,omitempty"`
 	Filter     *CapabilitiesFilter      `json:"filter,omitempty"`
+	// PaginationContractViolations self-reports drift between the registry
+	// and the WS0-G6 single-declaration pagination flags (schema_pagination.go).
+	// Always empty on a healthy build; conformance tests enforce emptiness.
+	PaginationContractViolations []string `json:"pagination_contract_violations,omitempty"`
 }
 
 // CapabilitiesOptions limits the discovery payload to the catalog slice an
@@ -124,13 +128,14 @@ func GetCapabilitiesWithOptions(opts CapabilitiesOptions) (*CapabilitiesOutput, 
 	}
 
 	return &CapabilitiesOutput{
-		RobotResponse: NewRobotResponse(true),
-		Version:       Version,
-		Commands:      commands,
-		Surfaces:      surfaces,
-		Categories:    categories,
-		Attention:     attention,
-		Filter:        capabilitiesFilter(normalized),
+		RobotResponse:                NewRobotResponse(true),
+		Version:                      Version,
+		Commands:                     commands,
+		Surfaces:                     surfaces,
+		Categories:                   categories,
+		Attention:                    attention,
+		Filter:                       capabilitiesFilter(normalized),
+		PaginationContractViolations: SchemaPaginationViolations(),
 	}, nil
 }
 

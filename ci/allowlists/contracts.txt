@@ -14,9 +14,3 @@
 # B4/B5 current-literal seeds burned by the W1 routing/spawn lane (bd-ws1-truth-safety-l5ddi.7 / .8).
 #
 # D1/D2 rollout exceptions (schema/pagination lane, wave W2):
-rollout:pagination:sessions	bd-ws3-contract-breadth-psvyu.1	D1: unbounded list surface not yet paginated via single-declaration registry flags
-rollout:pagination:history	bd-ws3-contract-breadth-psvyu.1	D1: unbounded list surface not yet paginated via single-declaration registry flags
-rollout:pagination:audit	bd-ws3-contract-breadth-psvyu.1	D1: unbounded list surface not yet paginated via single-declaration registry flags
-rollout:pagination:checkpoints	bd-ws3-contract-breadth-psvyu.1	D1: unbounded list surface not yet paginated via single-declaration registry flags
-rollout:pagination:approvals	bd-ws3-contract-breadth-psvyu.1	D1: unbounded list surface not yet paginated via single-declaration registry flags
-rollout:arrays-never-null:registry-walk	bd-ws3-contract-breadth-psvyu.2	D2: arrays-never-null enforced only for status/snapshot envelopes until the registry-walk conformance test lands

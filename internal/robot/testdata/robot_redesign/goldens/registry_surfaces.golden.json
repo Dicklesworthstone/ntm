@@ -702,8 +702,7 @@
       "name": "attention",
       "schema_id": "ntm:robot:attention:v1",
       "schema_type": "attention",
-      "supports_acknowledge": true,
-      "supports_pagination": true
+      "supports_acknowledge": true
     },
     {
       "category": "attention",
@@ -733,8 +732,7 @@
       "has_request_semantics": false,
       "name": "events",
       "schema_id": "ntm:robot:events:v1",
-      "schema_type": "events",
-      "supports_pagination": true
+      "schema_type": "events"
     },
     {
       "category": "ensemble",
@@ -1201,8 +1199,7 @@
       "has_request_semantics": false,
       "name": "beads-list",
       "schema_id": "ntm:robot:beads-list:v1",
-      "schema_type": "beads_list",
-      "supports_pagination": true
+      "schema_type": "beads_list"
     },
     {
       "category": "bv",

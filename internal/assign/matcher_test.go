@@ -333,12 +333,12 @@ func TestAssignTasksFunc(t *testing.T) {
 	}
 }
 
-func TestMatcher_WithConfig(t *testing.T) {
+func TestMatcherConfigFiltering(t *testing.T) {
 	config := MatcherConfig{
 		MaxContextUsage: 0.5, // More restrictive
 		MinConfidence:   0.7, // Higher threshold
 	}
-	m := NewMatcher().WithConfig(config)
+	m := &Matcher{matrix: GlobalMatrix(), config: config}
 
 	beads := []Bead{
 		{ID: "b1", Title: "Task", TaskType: TaskTask, Priority: 2},
@@ -362,7 +362,7 @@ func TestMatcher_WithCustomMatrix(t *testing.T) {
 	matrix := NewCapabilityMatrix()
 	matrix.SetOverride(tmux.AgentGemini, TaskBug, 0.99) // Boost Gemini for bugs
 
-	m := NewMatcherWithMatrix(matrix)
+	m := &Matcher{matrix: matrix, config: DefaultMatcherConfig()}
 
 	beads := []Bead{
 		{ID: "b1", Title: "Bug fix", TaskType: TaskBug, Priority: 1},
@@ -774,7 +774,7 @@ func TestMatcher_ContextUsageBoundary_Exactly0_9(t *testing.T) {
 	// With 0.9 usage, score becomes very low (capability * 0.1), which fails default 0.3 threshold
 	config := DefaultMatcherConfig()
 	config.MinConfidence = 0.0
-	m := NewMatcher().WithConfig(config)
+	m := &Matcher{matrix: GlobalMatrix(), config: config}
 
 	beads := []Bead{{ID: "b1", Title: "Test", TaskType: TaskFeature, Priority: 2}}
 
@@ -1181,7 +1181,7 @@ func TestMatcher_AgentAssignments_AffectsBalancedStrategy(t *testing.T) {
 	}
 }
 
-func TestNewMatcherWithMatrix_UsesProvidedMatrix(t *testing.T) {
+func TestMatcherCustomMatrix_UsesProvidedMatrix(t *testing.T) {
 	matrix := NewCapabilityMatrix()
 
 	// Override all agents to have very low score for TaskBug
@@ -1189,7 +1189,7 @@ func TestNewMatcherWithMatrix_UsesProvidedMatrix(t *testing.T) {
 	matrix.SetOverride(tmux.AgentCodex, TaskBug, 0.1)
 	matrix.SetOverride(tmux.AgentGemini, TaskBug, 0.99) // Only Gemini is good
 
-	m := NewMatcherWithMatrix(matrix)
+	m := &Matcher{matrix: matrix, config: DefaultMatcherConfig()}
 
 	beads := []Bead{{ID: "b1", TaskType: TaskBug, Priority: 2}}
 	agents := []Agent{
@@ -1210,13 +1210,13 @@ func TestNewMatcherWithMatrix_UsesProvidedMatrix(t *testing.T) {
 	}
 }
 
-func TestMatcher_WithConfig_MinConfidenceFiltering(t *testing.T) {
+func TestMatcherConfig_MinConfidenceFiltering(t *testing.T) {
 	// Test that MinConfidence properly filters low-score matches
 	config := MatcherConfig{
 		MaxContextUsage: 0.9,
 		MinConfidence:   0.8, // Very high threshold
 	}
-	m := NewMatcher().WithConfig(config)
+	m := &Matcher{matrix: GlobalMatrix(), config: config}
 
 	beads := []Bead{{ID: "b1", TaskType: TaskChore, Priority: 2}}
 	// Claude has 0.70 for TaskChore, so with 0.0 context, score = 0.70 < 0.8 threshold

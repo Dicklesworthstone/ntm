@@ -56,41 +56,26 @@ internal/approval/engine.go:Engine.ExpireStale	bd-g1-deadcode-backlog-2ijy8	outs
 internal/approval/engine.go:Engine.removeWaiter	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/approval/engine.go:Engine.WaitForApproval	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/archive/archiver.go:Archiver.Stats	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/assign/allocation.go:NewAllocationPlanner	bd-ws2-wire-or-delete-ykmcz.4	C4 graph-aware planners; wired via --dist-strategy
-internal/assign/capability.go:CapabilityMatrix.ClearLearned	bd-ws2-wire-or-delete-ykmcz.4	C4 graph-aware planners; wired via --dist-strategy
-internal/assign/capability.go:CapabilityMatrix.ClearOverrides	bd-ws2-wire-or-delete-ykmcz.4	C4 graph-aware planners; wired via --dist-strategy
-internal/assign/capability.go:CapabilityMatrix.SetLearned	bd-ws2-wire-or-delete-ykmcz.4	C4 graph-aware planners; wired via --dist-strategy
-internal/assign/capability.go:CapabilityMatrix.SetOverride	bd-ws2-wire-or-delete-ykmcz.4	C4 graph-aware planners; wired via --dist-strategy
-internal/assign/capability.go:GetAgentScore	bd-ws2-wire-or-delete-ykmcz.4	C4 graph-aware planners; wired via --dist-strategy
-internal/assign/effectiveness.go:DefaultEffectivenessConfig	bd-ws2-wire-or-delete-ykmcz.4	C4 graph-aware planners; wired via --dist-strategy
-internal/assign/effectiveness.go:DefaultIntegrator	bd-ws2-wire-or-delete-ykmcz.4	C4 graph-aware planners; wired via --dist-strategy
-internal/assign/effectiveness.go:EffectivenessConfig.EffectivenessWeight	bd-ws2-wire-or-delete-ykmcz.4	C4 graph-aware planners; wired via --dist-strategy
-internal/assign/effectiveness.go:EffectivenessIntegrator.GetEffectivenessBonus	bd-ws2-wire-or-delete-ykmcz.4	C4 graph-aware planners; wired via --dist-strategy
-internal/assign/effectiveness.go:EffectivenessIntegrator.GetEffectivenessScore	bd-ws2-wire-or-delete-ykmcz.4	C4 graph-aware planners; wired via --dist-strategy
-internal/assign/effectiveness.go:EffectivenessIntegrator.GetMode	bd-ws2-wire-or-delete-ykmcz.4	C4 graph-aware planners; wired via --dist-strategy
-internal/assign/effectiveness.go:EffectivenessIntegrator.RankAgentsForTask	bd-ws2-wire-or-delete-ykmcz.4	C4 graph-aware planners; wired via --dist-strategy
-internal/assign/effectiveness.go:EffectivenessIntegrator.RefreshCapabilities	bd-ws2-wire-or-delete-ykmcz.4	C4 graph-aware planners; wired via --dist-strategy
-internal/assign/effectiveness.go:EffectivenessIntegrator.SetMode	bd-ws2-wire-or-delete-ykmcz.4	C4 graph-aware planners; wired via --dist-strategy
-internal/assign/effectiveness.go:GetAssignmentMode	bd-ws2-wire-or-delete-ykmcz.4	C4 graph-aware planners; wired via --dist-strategy
-internal/assign/effectiveness.go:GetEffectivenessBonus	bd-ws2-wire-or-delete-ykmcz.4	C4 graph-aware planners; wired via --dist-strategy
-internal/assign/effectiveness.go:NewEffectivenessIntegrator	bd-ws2-wire-or-delete-ykmcz.4	C4 graph-aware planners; wired via --dist-strategy
-internal/assign/effectiveness.go:RefreshEffectivenessCapabilities	bd-ws2-wire-or-delete-ykmcz.4	C4 graph-aware planners; wired via --dist-strategy
-internal/assign/effectiveness.go:SetAssignmentMode	bd-ws2-wire-or-delete-ykmcz.4	C4 graph-aware planners; wired via --dist-strategy
-internal/assign/matcher.go:AssignTasksFunc	bd-ws2-wire-or-delete-ykmcz.4	C4 graph-aware planners; wired via --dist-strategy
-internal/assign/matcher.go:DefaultMatcherConfig	bd-ws2-wire-or-delete-ykmcz.4	C4 graph-aware planners; wired via --dist-strategy
-internal/assign/matcher.go:Matcher.assignBalanced	bd-ws2-wire-or-delete-ykmcz.4	C4 graph-aware planners; wired via --dist-strategy
-internal/assign/matcher.go:Matcher.assignDependency	bd-ws2-wire-or-delete-ykmcz.4	C4 graph-aware planners; wired via --dist-strategy
-internal/assign/matcher.go:Matcher.assignQuality	bd-ws2-wire-or-delete-ykmcz.4	C4 graph-aware planners; wired via --dist-strategy
-internal/assign/matcher.go:Matcher.assignRoundRobin	bd-ws2-wire-or-delete-ykmcz.4	C4 graph-aware planners; wired via --dist-strategy
-internal/assign/matcher.go:Matcher.assignSpeed	bd-ws2-wire-or-delete-ykmcz.4	C4 graph-aware planners; wired via --dist-strategy
-internal/assign/matcher.go:Matcher.AssignTasks	bd-ws2-wire-or-delete-ykmcz.4	C4 graph-aware planners; wired via --dist-strategy
-internal/assign/matcher.go:Matcher.buildReason	bd-ws2-wire-or-delete-ykmcz.4	C4 graph-aware planners; wired via --dist-strategy
-internal/assign/matcher.go:Matcher.filterAvailableAgents	bd-ws2-wire-or-delete-ykmcz.4	C4 graph-aware planners; wired via --dist-strategy
-internal/assign/matcher.go:Matcher.scoreAgentForBead	bd-ws2-wire-or-delete-ykmcz.4	C4 graph-aware planners; wired via --dist-strategy
-internal/assign/matcher.go:Matcher.WithConfig	bd-ws2-wire-or-delete-ykmcz.4	C4 graph-aware planners; wired via --dist-strategy
-internal/assign/matcher.go:NewMatcher	bd-ws2-wire-or-delete-ykmcz.4	C4 graph-aware planners; wired via --dist-strategy
-internal/assign/matcher.go:NewMatcherWithMatrix	bd-ws2-wire-or-delete-ykmcz.4	C4 graph-aware planners; wired via --dist-strategy
-internal/assign/matcher.go:ParseStrategy	bd-ws2-wire-or-delete-ykmcz.4	C4 graph-aware planners; wired via --dist-strategy
+internal/assign/allocation.go:NewAllocationPlanner	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
+internal/assign/capability.go:CapabilityMatrix.ClearLearned	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
+internal/assign/capability.go:CapabilityMatrix.ClearOverrides	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
+internal/assign/capability.go:CapabilityMatrix.SetLearned	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
+internal/assign/capability.go:CapabilityMatrix.SetOverride	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
+internal/assign/capability.go:GetAgentScore	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
+internal/assign/effectiveness.go:DefaultEffectivenessConfig	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
+internal/assign/effectiveness.go:DefaultIntegrator	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
+internal/assign/effectiveness.go:EffectivenessConfig.EffectivenessWeight	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
+internal/assign/effectiveness.go:EffectivenessIntegrator.GetEffectivenessBonus	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
+internal/assign/effectiveness.go:EffectivenessIntegrator.GetEffectivenessScore	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
+internal/assign/effectiveness.go:EffectivenessIntegrator.GetMode	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
+internal/assign/effectiveness.go:EffectivenessIntegrator.RankAgentsForTask	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
+internal/assign/effectiveness.go:EffectivenessIntegrator.RefreshCapabilities	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
+internal/assign/effectiveness.go:EffectivenessIntegrator.SetMode	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
+internal/assign/effectiveness.go:GetAssignmentMode	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
+internal/assign/effectiveness.go:GetEffectivenessBonus	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
+internal/assign/effectiveness.go:NewEffectivenessIntegrator	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
+internal/assign/effectiveness.go:RefreshEffectivenessCapabilities	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
+internal/assign/effectiveness.go:SetAssignmentMode	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
 internal/assignment/atomic.go:ReservationFunc.Reserve	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/audit/logger.go:AuditLogger.Flush	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/audit/query.go:NewSearcherWithPath	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
@@ -460,35 +445,35 @@ internal/context/trigger.go:CompactionTrigger.TriggerCompactionNow	bd-g1-deadcod
 internal/context/trigger.go:DefaultCompactionTriggerConfig	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/context/trigger.go:NewCompactionTrigger	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/context/trigger.go:validateCompactionPromptDelivery	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/coordinator/assign.go:applyStrategySelection	bd-ws2-wire-or-delete-ykmcz.4	C4 graph-aware planners; wired via --dist-strategy
-internal/coordinator/assign.go:AssignTasks	bd-ws2-wire-or-delete-ykmcz.4	C4 graph-aware planners; wired via --dist-strategy
-internal/coordinator/assign.go:buildAssignmentReason	bd-ws2-wire-or-delete-ykmcz.4	C4 graph-aware planners; wired via --dist-strategy
-internal/coordinator/assign.go:buildAssignments	bd-ws2-wire-or-delete-ykmcz.4	C4 graph-aware planners; wired via --dist-strategy
-internal/coordinator/assign.go:buildStrategyConfig	bd-ws2-wire-or-delete-ykmcz.4	C4 graph-aware planners; wired via --dist-strategy
-internal/coordinator/assign.go:computeAgentTypeBonus	bd-ws2-wire-or-delete-ykmcz.4	C4 graph-aware planners; wired via --dist-strategy
-internal/coordinator/assign.go:computeConfidence	bd-ws2-wire-or-delete-ykmcz.4	C4 graph-aware planners; wired via --dist-strategy
-internal/coordinator/assign.go:computeContextPenalty	bd-ws2-wire-or-delete-ykmcz.4	C4 graph-aware planners; wired via --dist-strategy
-internal/coordinator/assign.go:computeCriticalPathBonus	bd-ws2-wire-or-delete-ykmcz.4	C4 graph-aware planners; wired via --dist-strategy
-internal/coordinator/assign.go:computeFileOverlapPenalty	bd-ws2-wire-or-delete-ykmcz.4	C4 graph-aware planners; wired via --dist-strategy
-internal/coordinator/assign.go:computeFocusPatternBonus	bd-ws2-wire-or-delete-ykmcz.4	C4 graph-aware planners; wired via --dist-strategy
-internal/coordinator/assign.go:computeProfileTagBonus	bd-ws2-wire-or-delete-ykmcz.4	C4 graph-aware planners; wired via --dist-strategy
-internal/coordinator/assign.go:DefaultScoreConfig	bd-ws2-wire-or-delete-ykmcz.4	C4 graph-aware planners; wired via --dist-strategy
-internal/coordinator/assign.go:estimateTaskComplexity	bd-ws2-wire-or-delete-ykmcz.4	C4 graph-aware planners; wired via --dist-strategy
-internal/coordinator/assign.go:ExtractTaskTags	bd-ws2-wire-or-delete-ykmcz.4	C4 graph-aware planners; wired via --dist-strategy
-internal/coordinator/assign.go:filterAvailableAgents	bd-ws2-wire-or-delete-ykmcz.4	C4 graph-aware planners; wired via --dist-strategy
-internal/coordinator/assign.go:isAgentAvailable	bd-ws2-wire-or-delete-ykmcz.4	C4 graph-aware planners; wired via --dist-strategy
-internal/coordinator/assign.go:matchFocusPattern	bd-ws2-wire-or-delete-ykmcz.4	C4 graph-aware planners; wired via --dist-strategy
-internal/coordinator/assign.go:ParseStrategy	bd-ws2-wire-or-delete-ykmcz.4	C4 graph-aware planners; wired via --dist-strategy
-internal/coordinator/assign.go:scoreAllPairs	bd-ws2-wire-or-delete-ykmcz.4	C4 graph-aware planners; wired via --dist-strategy
-internal/coordinator/assign.go:ScoreAndSelectAssignments	bd-ws2-wire-or-delete-ykmcz.4	C4 graph-aware planners; wired via --dist-strategy
-internal/coordinator/assign.go:scoreAssignment	bd-ws2-wire-or-delete-ykmcz.4	C4 graph-aware planners; wired via --dist-strategy
-internal/coordinator/assign.go:selectBalanced	bd-ws2-wire-or-delete-ykmcz.4	C4 graph-aware planners; wired via --dist-strategy
-internal/coordinator/assign.go:selectDependency	bd-ws2-wire-or-delete-ykmcz.4	C4 graph-aware planners; wired via --dist-strategy
-internal/coordinator/assign.go:selectGreedy	bd-ws2-wire-or-delete-ykmcz.4	C4 graph-aware planners; wired via --dist-strategy
-internal/coordinator/assign.go:selectQuality	bd-ws2-wire-or-delete-ykmcz.4	C4 graph-aware planners; wired via --dist-strategy
-internal/coordinator/assign.go:SessionCoordinator.GetAssignableWork	bd-ws2-wire-or-delete-ykmcz.4	C4 graph-aware planners; wired via --dist-strategy
-internal/coordinator/assign.go:SessionCoordinator.SuggestAssignment	bd-ws2-wire-or-delete-ykmcz.4	C4 graph-aware planners; wired via --dist-strategy
-internal/coordinator/assign.go:sortScoredAssignments	bd-ws2-wire-or-delete-ykmcz.4	C4 graph-aware planners; wired via --dist-strategy
+internal/coordinator/assign.go:applyStrategySelection	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
+internal/coordinator/assign.go:AssignTasks	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
+internal/coordinator/assign.go:buildAssignmentReason	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
+internal/coordinator/assign.go:buildAssignments	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
+internal/coordinator/assign.go:buildStrategyConfig	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
+internal/coordinator/assign.go:computeAgentTypeBonus	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
+internal/coordinator/assign.go:computeConfidence	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
+internal/coordinator/assign.go:computeContextPenalty	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
+internal/coordinator/assign.go:computeCriticalPathBonus	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
+internal/coordinator/assign.go:computeFileOverlapPenalty	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
+internal/coordinator/assign.go:computeFocusPatternBonus	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
+internal/coordinator/assign.go:computeProfileTagBonus	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
+internal/coordinator/assign.go:DefaultScoreConfig	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
+internal/coordinator/assign.go:estimateTaskComplexity	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
+internal/coordinator/assign.go:ExtractTaskTags	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
+internal/coordinator/assign.go:filterAvailableAgents	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
+internal/coordinator/assign.go:isAgentAvailable	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
+internal/coordinator/assign.go:matchFocusPattern	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
+internal/coordinator/assign.go:ParseStrategy	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
+internal/coordinator/assign.go:scoreAllPairs	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
+internal/coordinator/assign.go:ScoreAndSelectAssignments	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
+internal/coordinator/assign.go:scoreAssignment	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
+internal/coordinator/assign.go:selectBalanced	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
+internal/coordinator/assign.go:selectDependency	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
+internal/coordinator/assign.go:selectGreedy	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
+internal/coordinator/assign.go:selectQuality	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
+internal/coordinator/assign.go:SessionCoordinator.GetAssignableWork	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
+internal/coordinator/assign.go:SessionCoordinator.SuggestAssignment	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
+internal/coordinator/assign.go:sortScoredAssignments	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
 internal/coordinator/coordinator.go:SessionCoordinator.Events	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/coordinator/coordinator.go:SessionCoordinator.GetAgentByPaneID	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/coordinator/coordinator.go:SessionCoordinator.updateAgentStates	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
@@ -835,15 +820,6 @@ internal/ideation/refinement.go:isReadyWorkExists	bd-g1-deadcode-backlog-2ijy8	o
 internal/ideation/refinement.go:refinementNextActions	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/ideation/refinement.go:renderedBeadRefs	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/ideation/renderer.go:RenderRoadmapJSON	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/integrations/caut/cache.go:UsageCache.Clear	bd-ws2-wire-or-delete-ykmcz.10	C9 caut->CAAM coordinator; DELETE (operator sign-off, RULE 1)
-internal/integrations/caut/cache.go:UsageCache.ClearError	bd-ws2-wire-or-delete-ykmcz.10	C9 caut->CAAM coordinator; DELETE (operator sign-off, RULE 1)
-internal/integrations/caut/cache.go:UsageCache.GetUpdateCount	bd-ws2-wire-or-delete-ykmcz.10	C9 caut->CAAM coordinator; DELETE (operator sign-off, RULE 1)
-internal/integrations/caut/cache.go:UsageCache.IsStale	bd-ws2-wire-or-delete-ykmcz.10	C9 caut->CAAM coordinator; DELETE (operator sign-off, RULE 1)
-internal/integrations/caut/cache.go:UsageCache.SetError	bd-ws2-wire-or-delete-ykmcz.10	C9 caut->CAAM coordinator; DELETE (operator sign-off, RULE 1)
-internal/integrations/caut/cache.go:UsageCache.Snapshot	bd-ws2-wire-or-delete-ykmcz.10	C9 caut->CAAM coordinator; DELETE (operator sign-off, RULE 1)
-internal/integrations/caut/cache.go:UsageCache.UpdateAllUsage	bd-ws2-wire-or-delete-ykmcz.10	C9 caut->CAAM coordinator; DELETE (operator sign-off, RULE 1)
-internal/integrations/caut/cache.go:UsageCache.UpdateStatus	bd-ws2-wire-or-delete-ykmcz.10	C9 caut->CAAM coordinator; DELETE (operator sign-off, RULE 1)
-internal/integrations/caut/cache.go:UsageCache.UpdateUsage	bd-ws2-wire-or-delete-ykmcz.10	C9 caut->CAAM coordinator; DELETE (operator sign-off, RULE 1)
 internal/integrations/caut/poller.go:InitGlobalPoller	bd-ws2-wire-or-delete-ykmcz.10	C9 caut->CAAM coordinator; DELETE (operator sign-off, RULE 1)
 internal/integrations/caut/poller.go:pollerLogger	bd-ws2-wire-or-delete-ykmcz.10	C9 caut->CAAM coordinator; DELETE (operator sign-off, RULE 1)
 internal/integrations/caut/poller.go:StartGlobalPoller	bd-ws2-wire-or-delete-ykmcz.10	C9 caut->CAAM coordinator; DELETE (operator sign-off, RULE 1)

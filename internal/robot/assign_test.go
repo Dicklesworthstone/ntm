@@ -471,7 +471,8 @@ func TestGenerateAssignments_BasicFlow(t *testing.T) {
 	}
 	idleAgents := []string{"%12", "%22"}
 
-	recs := generateAssignments(agents, beads, "balanced", idleAgents)
+	// "simple" pins the historical sequential pairing behavior.
+	recs := planAssignments(agents, beads, nil, "simple", idleAgents)
 
 	if len(recs) != 2 {
 		t.Fatalf("expected 2 recommendations, got %d", len(recs))
@@ -502,7 +503,7 @@ func TestGenerateAssignments_MoreAgentsThanBeads(t *testing.T) {
 	}
 	idleAgents := []string{"%12", "%13", "%14"}
 
-	recs := generateAssignments(agents, beads, "balanced", idleAgents)
+	recs := planAssignments(agents, beads, nil, "balanced", idleAgents)
 
 	if len(recs) != 1 {
 		t.Fatalf("expected 1 recommendation (only 1 bead), got %d", len(recs))
@@ -520,7 +521,7 @@ func TestGenerateAssignments_MoreBeadsThanAgents(t *testing.T) {
 	}
 	idleAgents := []string{"%12"}
 
-	recs := generateAssignments(agents, beads, "balanced", idleAgents)
+	recs := planAssignments(agents, beads, nil, "balanced", idleAgents)
 
 	if len(recs) != 1 {
 		t.Fatalf("expected 1 recommendation (only 1 idle agent), got %d", len(recs))
@@ -539,7 +540,7 @@ func TestGenerateAssignments_NoIdleAgents(t *testing.T) {
 	}
 	idleAgents := []string{} // None idle
 
-	recs := generateAssignments(agents, beads, "balanced", idleAgents)
+	recs := planAssignments(agents, beads, nil, "balanced", idleAgents)
 
 	if len(recs) != 0 {
 		t.Errorf("expected 0 recommendations with no idle agents, got %d", len(recs))
@@ -552,7 +553,7 @@ func TestGenerateAssignments_NoBeads(t *testing.T) {
 	}
 	idleAgents := []string{"%12"}
 
-	recs := generateAssignments(agents, nil, "balanced", idleAgents)
+	recs := planAssignments(agents, nil, nil, "balanced", idleAgents)
 
 	if len(recs) != 0 {
 		t.Errorf("expected 0 recommendations with no beads, got %d", len(recs))
@@ -568,7 +569,7 @@ func TestGenerateAssignments_RecommendationFields(t *testing.T) {
 	}
 	idleAgents := []string{"%25"}
 
-	recs := generateAssignments(agents, beads, "quality", idleAgents)
+	recs := planAssignments(agents, beads, nil, "quality", idleAgents)
 
 	if len(recs) != 1 {
 		t.Fatalf("expected 1 recommendation, got %d", len(recs))

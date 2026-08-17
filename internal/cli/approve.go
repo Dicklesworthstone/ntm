@@ -11,6 +11,7 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/approval"
 	"github.com/Dicklesworthstone/ntm/internal/audit"
+	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/state"
 )
 
@@ -53,13 +54,16 @@ operators on a trusted host, not as an authentication boundary.`,
 	}
 
 	// list - list pending approvals
+	var listLimit, listOffset int
 	listCmd := &cobra.Command{
 		Use:   "list",
 		Short: "List all pending approvals",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runApproveList(IsJSONOutput())
+			return runApproveList(IsJSONOutput(), listLimit, listOffset)
 		},
 	}
+	listCmd.Flags().IntVar(&listLimit, "limit", 0, "maximum approvals per page (0 = all)")
+	listCmd.Flags().IntVar(&listOffset, "offset", 0, "pagination offset (use _agent_hints.next_offset for the next page)")
 
 	// deny <token> - deny a request
 	denyCmd := &cobra.Command{
@@ -171,7 +175,39 @@ func runApprove(token string, jsonOutput bool) error {
 	return nil
 }
 
-func runApproveList(jsonOutput bool) error {
+// ApprovalsListOutput is the paginated JSON envelope for `ntm approve list`
+// (D1, bd-ws3-contract-breadth-psvyu.1).
+type ApprovalsListOutput struct {
+	Success      bool                        `json:"success"`
+	Pending      []state.Approval            `json:"pending"`
+	Count        int                         `json:"count"`
+	TotalMatches int                         `json:"total_matches"`
+	HasMore      bool                        `json:"has_more"`
+	Pagination   *robot.PaginationInfo       `json:"pagination,omitempty"`
+	AgentHints   *robot.PaginationAgentHints `json:"_agent_hints,omitempty"`
+}
+
+// buildApprovalsListOutput pages the pending-approvals inventory.
+func buildApprovalsListOutput(pending []state.Approval, limit, offset int) *ApprovalsListOutput {
+	out := &ApprovalsListOutput{
+		Success:      true,
+		TotalMatches: len(pending),
+	}
+	page, info := robot.ApplyPagination(pending, robot.PaginationOptions{Limit: limit, Offset: offset})
+	out.Pending = page
+	if out.Pending == nil {
+		out.Pending = []state.Approval{}
+	}
+	out.Count = len(page)
+	if info != nil {
+		out.Pagination = info
+		out.HasMore = info.HasMore
+		out.AgentHints = robot.PaginationHints(info)
+	}
+	return out
+}
+
+func runApproveList(jsonOutput bool, limit, offset int) error {
 	engine, store, err := getApprovalEngine()
 	if err != nil {
 		return outputError(err, jsonOutput)
@@ -188,11 +224,7 @@ func runApproveList(jsonOutput bool) error {
 	}
 
 	if jsonOutput {
-		return json.NewEncoder(os.Stdout).Encode(map[string]interface{}{
-			"success": true,
-			"pending": pending,
-			"count":   len(pending),
-		})
+		return json.NewEncoder(os.Stdout).Encode(buildApprovalsListOutput(pending, limit, offset))
 	}
 
 	if len(pending) == 0 {

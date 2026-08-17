@@ -61,6 +61,27 @@ func ApplyPagination[T any](items []T, opts PaginationOptions) ([]T, *Pagination
 	return paged, info
 }
 
+// PaginationAgentHints is the shared _agent_hints payload for paginated list
+// surfaces (D1, bd-ws3-contract-breadth-psvyu.1): next_offset tells an agent
+// exactly what --offset to pass for the next page.
+type PaginationAgentHints struct {
+	NextOffset     *int `json:"next_offset,omitempty"`
+	PagesRemaining *int `json:"pages_remaining,omitempty"`
+}
+
+// PaginationHints derives the shared agent hints from pagination state.
+// Returns nil when there is no further page to fetch.
+func PaginationHints(page *PaginationInfo) *PaginationAgentHints {
+	if page == nil || !page.HasMore {
+		return nil
+	}
+	next, pages := paginationHintOffsets(page)
+	if next == nil {
+		return nil
+	}
+	return &PaginationAgentHints{NextOffset: next, PagesRemaining: pages}
+}
+
 func paginationHintOffsets(page *PaginationInfo) (*int, *int) {
 	if page == nil || page.Limit <= 0 {
 		return nil, nil

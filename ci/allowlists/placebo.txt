@@ -5,7 +5,7 @@
 # an inline waiver pair absent here fails; a line here with no surviving inline waiver is stale).
 #
 # Register-known seeds (each burned by its own fix bead):
-internal/serve/server.go	bd-ws3-contract-breadth-psvyu.5	D5: executeJob simulator comment — real dispatcher in WS3-D5; regex `in production,? this would` must stop matching
+# (D5 executeJob simulator line burned by bd-ws3-contract-breadth-psvyu.5.2 — simulator deleted, real dispatcher in jobs_dispatch.go)
 #
 # Pre-existing hits outside the gap register, triaged under the G5 umbrella backlog bead:
 internal/metrics/collector.go	bd-d7z7i	pre-existing "for now" marker; triage per umbrella bead

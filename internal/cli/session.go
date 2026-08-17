@@ -24,6 +24,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/kernel"
 	"github.com/Dicklesworthstone/ntm/internal/output"
 	"github.com/Dicklesworthstone/ntm/internal/resilience"
+	"github.com/Dicklesworthstone/ntm/internal/robot"
 	sessionPkg "github.com/Dicklesworthstone/ntm/internal/session"
 	"github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
@@ -49,6 +50,8 @@ type statusOptions struct {
 type SessionListInput struct {
 	Tags    []string `json:"tags,omitempty"`
 	Project string   `json:"project,omitempty"` // Filter by base project name (bd-3cu02.14)
+	Limit   int      `json:"limit,omitempty"`   // Page size (0 = all)
+	Offset  int      `json:"offset,omitempty"`  // Page start (D1 pagination)
 }
 
 // SessionStatusInput is the kernel input for sessions.status.
@@ -153,7 +156,12 @@ func init() {
 				opts = *value
 			}
 		}
-		return buildSessionListResponse(opts.Tags, opts.Project)
+		resp, err := buildSessionListResponse(opts.Tags, opts.Project)
+		if err != nil {
+			return resp, err
+		}
+		paginateSessionList(&resp, opts.Limit, opts.Offset)
+		return resp, nil
 	})
 
 	kernel.MustRegister(kernel.Command{
@@ -369,24 +377,32 @@ func runAttach(ctx context.Context, session string) error {
 func newListCmd() *cobra.Command {
 	var tags []string
 	var project string
+	var limit, offset int
 	cmd := &cobra.Command{
 		Use:     "list",
 		Aliases: []string{"ls", "l"},
 		Short:   "List all tmux sessions",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runList(tags, project)
+			return runListPaged(tags, project, limit, offset)
 		},
 	}
 	cmd.Flags().StringSliceVar(&tags, "tag", nil, "filter sessions by agent tag (shows session if any agent matches)")
 	cmd.Flags().StringVarP(&project, "project", "p", "", "filter by base project name (shows all labeled sessions for the project)")
+	cmd.Flags().IntVar(&limit, "limit", 0, "maximum sessions per page (0 = all)")
+	cmd.Flags().IntVar(&offset, "offset", 0, "pagination offset (use _agent_hints.next_offset for the next page)")
 	return cmd
 }
 
 func runList(tags []string, project ...string) error {
-	input := SessionListInput{Tags: tags}
+	proj := ""
 	if len(project) > 0 {
-		input.Project = project[0]
+		proj = project[0]
 	}
+	return runListPaged(tags, proj, 0, 0)
+}
+
+func runListPaged(tags []string, project string, limit, offset int) error {
+	input := SessionListInput{Tags: tags, Project: project, Limit: limit, Offset: offset}
 	result, err := kernel.Run(context.Background(), "sessions.list", input)
 	if err != nil {
 		if IsJSONOutput() {
@@ -613,7 +629,28 @@ func buildSessionListResponse(tags []string, project string) (output.ListRespons
 		TimestampedResponse: output.NewTimestamped(),
 		Sessions:            items,
 		Count:               len(sessions),
+		TotalMatches:        len(sessions),
 	}, nil
+}
+
+// paginateSessionList applies the D1 offset/limit pagination contract
+// (bd-ws3-contract-breadth-psvyu.1) to a built session list response:
+// Sessions becomes one page, Count the page size, TotalMatches the pre-page
+// match count, HasMore/Pagination/_agent_hints.next_offset the continuation
+// state. limit<=0 with offset<=0 leaves the full list untouched.
+func paginateSessionList(resp *output.ListResponse, limit, offset int) {
+	if resp == nil {
+		return
+	}
+	resp.TotalMatches = len(resp.Sessions)
+	page, info := robot.ApplyPagination(resp.Sessions, robot.PaginationOptions{Limit: limit, Offset: offset})
+	resp.Sessions = page
+	resp.Count = len(page)
+	if info != nil {
+		resp.Pagination = info
+		resp.HasMore = info.HasMore
+		resp.AgentHints = robot.PaginationHints(info)
+	}
 }
 
 func coerceStatusResponse(result any) (output.StatusResponse, error) {

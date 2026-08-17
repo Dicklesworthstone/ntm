@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/Dicklesworthstone/ntm/internal/audit"
+	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
 )
 
@@ -51,6 +52,7 @@ func newAuditShowCmd() *cobra.Command {
 		until   string
 		evTypes string
 		limit   int
+		offset  int
 	)
 
 	cmd := &cobra.Command{
@@ -58,14 +60,15 @@ func newAuditShowCmd() *cobra.Command {
 		Short: "Display audit log for a session",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runAuditShow(args[0], since, until, evTypes, limit)
+			return runAuditShow(args[0], since, until, evTypes, limit, offset)
 		},
 	}
 
 	cmd.Flags().StringVar(&since, "since", "", "Show entries after this time (RFC3339 or duration like '1h', '7d')")
 	cmd.Flags().StringVar(&until, "until", "", "Show entries before this time (RFC3339 or duration like '1h')")
 	cmd.Flags().StringVar(&evTypes, "type", "", "Filter by event type (comma-separated: command,spawn,send,response,error,state_change)")
-	cmd.Flags().IntVar(&limit, "limit", 100, "Maximum entries to show")
+	cmd.Flags().IntVar(&limit, "limit", 100, "Maximum entries per page")
+	cmd.Flags().IntVar(&offset, "offset", 0, "Pagination offset (use _agent_hints.next_offset for the next page)")
 
 	return cmd
 }
@@ -78,6 +81,7 @@ func newAuditSearchCmd() *cobra.Command {
 		target   string
 		days     int
 		limit    int
+		offset   int
 	)
 
 	cmd := &cobra.Command{
@@ -91,7 +95,7 @@ Examples:
   ntm audit search --actor=system "state_change"`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runAuditSearch(args[0], sessions, evTypes, actors, target, days, limit)
+			return runAuditSearch(args[0], sessions, evTypes, actors, target, days, limit, offset)
 		},
 	}
 
@@ -100,7 +104,8 @@ Examples:
 	cmd.Flags().StringVar(&actors, "actor", "", "Filter by actor (comma-separated: user,agent,system)")
 	cmd.Flags().StringVar(&target, "target", "", "Filter by target (glob pattern, e.g. 'proj__cc_*')")
 	cmd.Flags().IntVar(&days, "days", 30, "Search logs from last N days")
-	cmd.Flags().IntVar(&limit, "limit", 50, "Maximum results")
+	cmd.Flags().IntVar(&limit, "limit", 50, "Maximum results per page")
+	cmd.Flags().IntVar(&offset, "offset", 0, "Pagination offset (use _agent_hints.next_offset for the next page)")
 
 	return cmd
 }
@@ -157,15 +162,57 @@ func newAuditListCmd() *cobra.Command {
 
 // --- Run functions ---
 
-func runAuditShow(session, since, until, evTypes string, limit int) error {
+// AuditQueryOutput is the paginated JSON envelope for `ntm audit show` and
+// `ntm audit search` (D1, bd-ws3-contract-breadth-psvyu.1). Entries holds one
+// page; TotalMatches counts all matches found in the scan window; HasMore
+// plus _agent_hints.next_offset drive continuation.
+type AuditQueryOutput struct {
+	Success      bool                        `json:"success"`
+	Entries      []audit.AuditEntry          `json:"entries"`
+	Count        int                         `json:"count"`
+	TotalMatches int                         `json:"total_matches"`
+	HasMore      bool                        `json:"has_more"`
+	Scanned      int                         `json:"scanned"`
+	ScanCapped   bool                        `json:"scan_capped,omitempty"`
+	DurationMs   int64                       `json:"duration_ms"`
+	Pagination   *robot.PaginationInfo       `json:"pagination,omitempty"`
+	AgentHints   *robot.PaginationAgentHints `json:"_agent_hints,omitempty"`
+}
+
+// buildAuditQueryOutput pages a full (scan-capped) audit query result. The
+// searcher is asked for every match (Query.Limit unset) so totals and
+// has_more are honest; paging happens here over the collected matches.
+func buildAuditQueryOutput(result *audit.QueryResult, limit, offset int) *AuditQueryOutput {
+	out := &AuditQueryOutput{
+		Success:      true,
+		Entries:      []audit.AuditEntry{},
+		TotalMatches: len(result.Entries),
+		Scanned:      result.Scanned,
+		ScanCapped:   result.Truncated,
+		DurationMs:   result.Duration.Milliseconds(),
+	}
+	page, info := robot.ApplyPagination(result.Entries, robot.PaginationOptions{Limit: limit, Offset: offset})
+	out.Entries = page
+	out.Count = len(page)
+	if info != nil {
+		out.Pagination = info
+		out.HasMore = info.HasMore
+		out.AgentHints = robot.PaginationHints(info)
+	}
+	return out
+}
+
+func runAuditShow(session, since, until, evTypes string, limit, offset int) error {
 	searcher, err := newAuditSearcherFunc()
 	if err != nil {
 		return fmt.Errorf("failed to create searcher: %w", err)
 	}
 
+	// Leave Query.Limit unset: the searcher collects every match (with its
+	// internal scan cap) and pagination happens envelope-side so totals and
+	// has_more are honest.
 	q := audit.Query{
 		Sessions: []string{session},
-		Limit:    limit,
 	}
 
 	if since != "" {
@@ -193,24 +240,36 @@ func runAuditShow(session, since, until, evTypes string, limit int) error {
 		return fmt.Errorf("search failed: %w", err)
 	}
 
+	out := buildAuditQueryOutput(result, limit, offset)
 	if IsJSONOutput() {
-		return json.NewEncoder(os.Stdout).Encode(result)
+		return json.NewEncoder(os.Stdout).Encode(out)
 	}
 
-	return renderAuditEntries(result)
+	return renderAuditEntries(auditPageForRender(out))
 }
 
-func runAuditSearch(pattern, sessions, evTypes, actors, target string, days, limit int) error {
+// auditPageForRender adapts one envelope page back into the QueryResult shape
+// the text renderer expects.
+func auditPageForRender(out *AuditQueryOutput) *audit.QueryResult {
+	return &audit.QueryResult{
+		Entries:    out.Entries,
+		TotalCount: out.TotalMatches,
+		Scanned:    out.Scanned,
+		Truncated:  out.HasMore || out.ScanCapped,
+	}
+}
+
+func runAuditSearch(pattern, sessions, evTypes, actors, target string, days, limit, offset int) error {
 	searcher, err := newAuditSearcherFunc()
 	if err != nil {
 		return fmt.Errorf("failed to create searcher: %w", err)
 	}
 
 	since := time.Now().AddDate(0, 0, -days)
+	// Query.Limit stays unset; see runAuditShow — pagination is envelope-side.
 	q := audit.Query{
 		Since:       &since,
 		GrepPattern: pattern,
-		Limit:       limit,
 	}
 
 	if sessions != "" {
@@ -235,17 +294,18 @@ func runAuditSearch(pattern, sessions, evTypes, actors, target string, days, lim
 		return fmt.Errorf("search failed: %w", err)
 	}
 
+	out := buildAuditQueryOutput(result, limit, offset)
 	if jsonOutput {
-		return json.NewEncoder(os.Stdout).Encode(result)
+		return json.NewEncoder(os.Stdout).Encode(out)
 	}
 
-	if result.TotalCount == 0 {
+	if out.TotalMatches == 0 {
 		fmt.Println("No matching entries found.")
 		return nil
 	}
 
-	fmt.Printf("Found %d entries (scanned %d in %s)\n\n", result.TotalCount, result.Scanned, result.Duration.Round(time.Millisecond))
-	return renderAuditEntries(result)
+	fmt.Printf("Found %d entries (scanned %d in %s)\n\n", out.TotalMatches, out.Scanned, result.Duration.Round(time.Millisecond))
+	return renderAuditEntries(auditPageForRender(out))
 }
 
 func runAuditVerify(session string) error {

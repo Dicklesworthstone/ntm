@@ -1,6 +1,10 @@
 package output
 
-import "time"
+import (
+	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/robot"
+)
 
 // ErrorResponse is the standard JSON error format
 type ErrorResponse struct {
@@ -204,11 +208,19 @@ type SendResponse struct {
 	FailedPanes   []int  `json:"failed_panes,omitempty"`
 }
 
-// ListResponse is the output format for list command
+// ListResponse is the output format for list command.
+// The session list is an unbounded-growth surface (D1,
+// bd-ws3-contract-breadth-psvyu.1): it supports offset/limit pagination via
+// `ntm list --limit/--offset`. Count is the number of sessions in this page;
+// TotalMatches is the number of sessions matching the filters before paging.
 type ListResponse struct {
 	TimestampedResponse
-	Sessions []SessionListItem `json:"sessions"`
-	Count    int               `json:"count"`
+	Sessions     []SessionListItem           `json:"sessions"`
+	Count        int                         `json:"count"`
+	TotalMatches int                         `json:"total_matches"`
+	HasMore      bool                        `json:"has_more"`
+	Pagination   *robot.PaginationInfo       `json:"pagination,omitempty"`
+	AgentHints   *robot.PaginationAgentHints `json:"_agent_hints,omitempty"`
 }
 
 // SessionListItem is a single session in list output

@@ -255,7 +255,7 @@ func TestAPIV1ValidationErrors(t *testing.T) {
 			method:     http.MethodPost,
 			path:       "/api/v1/jobs/",
 			body:       `{"type": "invalid_job_type"}`,
-			wantStatus: http.StatusBadRequest,
+			wantStatus: http.StatusNotImplemented,
 		},
 		{
 			name:       "create_job_invalid_json",

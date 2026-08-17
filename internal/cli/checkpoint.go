@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/Dicklesworthstone/ntm/internal/checkpoint"
+	"github.com/Dicklesworthstone/ntm/internal/robot"
 	sessionPkg "github.com/Dicklesworthstone/ntm/internal/session"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
@@ -204,7 +205,90 @@ Examples:
 	return cmd
 }
 
+// CheckpointListOutput is the paginated JSON envelope for
+// `ntm checkpoint list <session>` (D1, bd-ws3-contract-breadth-psvyu.1).
+type CheckpointListOutput struct {
+	Success                   bool                        `json:"success"`
+	Session                   string                      `json:"session"`
+	Checkpoints               []*checkpoint.Checkpoint    `json:"checkpoints"`
+	Count                     int                         `json:"count"`
+	TotalMatches              int                         `json:"total_matches"`
+	HasMore                   bool                        `json:"has_more"`
+	InvalidCheckpointsPresent bool                        `json:"invalid_checkpoints_present,omitempty"`
+	InvalidCheckpointIDs      []string                    `json:"invalid_checkpoint_ids"`
+	Pagination                *robot.PaginationInfo       `json:"pagination,omitempty"`
+	AgentHints                *robot.PaginationAgentHints `json:"_agent_hints,omitempty"`
+}
+
+// buildCheckpointListOutput pages a session's checkpoint inventory.
+func buildCheckpointListOutput(session string, cps []*checkpoint.Checkpoint, invalidIDs []string, invalidPresent bool, limit, offset int) *CheckpointListOutput {
+	out := &CheckpointListOutput{
+		Success:                   true,
+		Session:                   session,
+		TotalMatches:              len(cps),
+		InvalidCheckpointsPresent: invalidPresent,
+		InvalidCheckpointIDs:      invalidIDs,
+	}
+	if out.InvalidCheckpointIDs == nil {
+		out.InvalidCheckpointIDs = []string{}
+	}
+	page, info := robot.ApplyPagination(cps, robot.PaginationOptions{Limit: limit, Offset: offset})
+	out.Checkpoints = page
+	if out.Checkpoints == nil {
+		out.Checkpoints = []*checkpoint.Checkpoint{}
+	}
+	out.Count = len(page)
+	if info != nil {
+		out.Pagination = info
+		out.HasMore = info.HasMore
+		out.AgentHints = robot.PaginationHints(info)
+	}
+	return out
+}
+
+// CheckpointSessionsOutput is the paginated JSON envelope for
+// `ntm checkpoint list` across all sessions.
+type CheckpointSessionsOutput struct {
+	Success      bool                        `json:"success"`
+	Sessions     []CheckpointSessionInfo     `json:"sessions"`
+	Count        int                         `json:"count"`
+	TotalMatches int                         `json:"total_matches"`
+	HasMore      bool                        `json:"has_more"`
+	Pagination   *robot.PaginationInfo       `json:"pagination,omitempty"`
+	AgentHints   *robot.PaginationAgentHints `json:"_agent_hints,omitempty"`
+}
+
+// CheckpointSessionInfo is one session's checkpoint inventory row.
+type CheckpointSessionInfo struct {
+	Session                   string                   `json:"session"`
+	Checkpoints               []*checkpoint.Checkpoint `json:"checkpoints"`
+	InvalidCheckpointsPresent bool                     `json:"invalid_checkpoints_present,omitempty"`
+	InvalidCheckpointIDs      []string                 `json:"invalid_checkpoint_ids,omitempty"`
+}
+
+// buildCheckpointSessionsOutput pages the all-sessions checkpoint overview
+// (the outer sessions list is the unbounded dimension).
+func buildCheckpointSessionsOutput(rows []CheckpointSessionInfo, limit, offset int) *CheckpointSessionsOutput {
+	out := &CheckpointSessionsOutput{
+		Success:      true,
+		TotalMatches: len(rows),
+	}
+	page, info := robot.ApplyPagination(rows, robot.PaginationOptions{Limit: limit, Offset: offset})
+	out.Sessions = page
+	if out.Sessions == nil {
+		out.Sessions = []CheckpointSessionInfo{}
+	}
+	out.Count = len(page)
+	if info != nil {
+		out.Pagination = info
+		out.HasMore = info.HasMore
+		out.AgentHints = robot.PaginationHints(info)
+	}
+	return out
+}
+
 func newCheckpointListCmd() *cobra.Command {
+	var limit, offset int
 	cmd := &cobra.Command{
 		Use:   "list [session]",
 		Short: "List checkpoints",
@@ -212,7 +296,8 @@ func newCheckpointListCmd() *cobra.Command {
 
 Examples:
   ntm checkpoint list              # List all checkpoints
-  ntm checkpoint list myproject    # List checkpoints for session`,
+  ntm checkpoint list myproject    # List checkpoints for session
+  ntm checkpoint list myproject --limit=20 --offset=20`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			storage := checkpoint.NewStorage()
@@ -223,7 +308,7 @@ Examples:
 				if err != nil {
 					return err
 				}
-				return listSessionCheckpoints(storage, session)
+				return listSessionCheckpoints(storage, session, limit, offset)
 			}
 
 			// List all sessions with checkpoints
@@ -234,23 +319,14 @@ Examples:
 
 			if len(sessions) == 0 {
 				if jsonOutput {
-					return json.NewEncoder(os.Stdout).Encode(map[string]interface{}{
-						"sessions": []interface{}{},
-						"count":    0,
-					})
+					return json.NewEncoder(os.Stdout).Encode(buildCheckpointSessionsOutput(nil, limit, offset))
 				}
 				fmt.Println("No checkpoints found.")
 				return nil
 			}
 
 			if jsonOutput {
-				type sessionInfo struct {
-					Session                   string                   `json:"session"`
-					Checkpoints               []*checkpoint.Checkpoint `json:"checkpoints"`
-					InvalidCheckpointsPresent bool                     `json:"invalid_checkpoints_present,omitempty"`
-					InvalidCheckpointIDs      []string                 `json:"invalid_checkpoint_ids,omitempty"`
-				}
-				var result []sessionInfo
+				var result []CheckpointSessionInfo
 				for _, sess := range sessions {
 					cps, err := storage.List(sess)
 					if err != nil {
@@ -264,17 +340,14 @@ Examples:
 					if err != nil {
 						return fmt.Errorf("listing invalid checkpoints for session %q: %w", sess, err)
 					}
-					result = append(result, sessionInfo{
+					result = append(result, CheckpointSessionInfo{
 						Session:                   sess,
 						Checkpoints:               cps,
 						InvalidCheckpointsPresent: hasCandidates && len(cps) == 0,
 						InvalidCheckpointIDs:      invalidIDs,
 					})
 				}
-				return json.NewEncoder(os.Stdout).Encode(map[string]interface{}{
-					"sessions": result,
-					"count":    len(sessions),
-				})
+				return json.NewEncoder(os.Stdout).Encode(buildCheckpointSessionsOutput(result, limit, offset))
 			}
 
 			t := theme.Current()
@@ -328,6 +401,9 @@ Examples:
 		},
 	}
 
+	cmd.Flags().IntVar(&limit, "limit", 0, "maximum entries per page (0 = all)")
+	cmd.Flags().IntVar(&offset, "offset", 0, "pagination offset (use _agent_hints.next_offset for the next page)")
+
 	return cmd
 }
 
@@ -353,7 +429,7 @@ func listCheckpointSessions(storage *checkpoint.Storage) ([]string, error) {
 	return sessions, nil
 }
 
-func listSessionCheckpoints(storage *checkpoint.Storage, session string) error {
+func listSessionCheckpoints(storage *checkpoint.Storage, session string, limit, offset int) error {
 	cps, err := storage.List(session)
 	if err != nil {
 		return fmt.Errorf("listing checkpoints: %w", err)
@@ -369,13 +445,8 @@ func listSessionCheckpoints(storage *checkpoint.Storage, session string) error {
 			return fmt.Errorf("checking checkpoint candidates: %w", err)
 		}
 		if jsonOutput {
-			return json.NewEncoder(os.Stdout).Encode(map[string]interface{}{
-				"session":                     session,
-				"checkpoints":                 []interface{}{},
-				"count":                       0,
-				"invalid_checkpoints_present": hasCandidates,
-				"invalid_checkpoint_ids":      invalidIDs,
-			})
+			return json.NewEncoder(os.Stdout).Encode(
+				buildCheckpointListOutput(session, nil, invalidIDs, hasCandidates, limit, offset))
 		}
 		if hasCandidates {
 			fmt.Printf("Session %q has checkpoint entries on disk, but none could be loaded.\n", session)
@@ -389,12 +460,8 @@ func listSessionCheckpoints(storage *checkpoint.Storage, session string) error {
 	}
 
 	if jsonOutput {
-		return json.NewEncoder(os.Stdout).Encode(map[string]interface{}{
-			"session":                session,
-			"checkpoints":            cps,
-			"count":                  len(cps),
-			"invalid_checkpoint_ids": invalidIDs,
-		})
+		return json.NewEncoder(os.Stdout).Encode(
+			buildCheckpointListOutput(session, cps, invalidIDs, false, limit, offset))
 	}
 
 	t := theme.Current()

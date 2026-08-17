@@ -51,6 +51,9 @@ type SessionProfileShowOutput struct {
 func init() {
 	robot.MustRegisterSchemaCommand("profile_list", SessionProfileListOutput{})
 	robot.MustRegisterSchemaCommand("profile_show", SessionProfileShowOutput{})
+	robot.MustRegisterSchemaPagination("profile_list", robot.SchemaPaginationFlag{
+		Reason: "bounded: locally saved session profiles (small catalog)",
+	})
 }
 
 var validProfileName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)

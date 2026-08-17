@@ -130,11 +130,16 @@ func TestIdempotencyRouterCoverage(t *testing.T) {
 		canned := []byte(fmt.Sprintf(`{"replay_probe":%d}`, i))
 
 		// Compute the scoped key exactly as the middleware will see it: the
-		// hermetic server runs auth-mode local, so rbacMiddleware attaches
-		// RoleAdmin with no user ID.
+		// hermetic server runs auth-mode local, so rbacMiddleware attaches the
+		// role/user derived from empty claims (RoleAdmin + the anonymous user
+		// fallback). Derive both through the production helpers rather than
+		// hardcoding so key-scoping changes keep this test honest.
 		probe := httptest.NewRequest(rt.Method, path, nil)
 		probe.Header.Set("Idempotency-Key", key)
-		probe = probe.WithContext(withRoleContext(probe.Context(), &RoleContext{Role: RoleAdmin}))
+		probe = probe.WithContext(withRoleContext(probe.Context(), &RoleContext{
+			Role:   srv.extractRoleFromClaims(map[string]interface{}{}),
+			UserID: extractUserIDFromClaims(map[string]interface{}{}),
+		}))
 		scoped := scopedIdempotencyKey(probe)
 		if scoped == "" {
 			t.Fatalf("scoped key empty for %s %s", rt.Method, rt.Pattern)
@@ -187,7 +192,7 @@ func TestIdempotencyMiddlewareInertWithoutHeader(t *testing.T) {
 
 	createJob := func() string {
 		t.Helper()
-		body := bytes.NewBufferString(`{"type":"export"}`)
+		body := bytes.NewBufferString(`{"type":"pipeline_run","params":{"workflow_file":"missing.yaml","session":"walkjob1"}}`)
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/jobs", body)
 		req.Header.Set("Content-Type", "application/json")
 		rec := httptest.NewRecorder()
@@ -196,19 +201,17 @@ func TestIdempotencyMiddlewareInertWithoutHeader(t *testing.T) {
 			t.Fatalf("POST /api/v1/jobs = %d, want 202 (body=%s)", rec.Code, rec.Body.String())
 		}
 		var envelope struct {
-			Data struct {
-				Job struct {
-					ID string `json:"id"`
-				} `json:"job"`
-			} `json:"data"`
+			Job struct {
+				ID string `json:"id"`
+			} `json:"job"`
 		}
 		if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
 			t.Fatalf("decode job envelope: %v (body=%s)", err, rec.Body.String())
 		}
-		if envelope.Data.Job.ID == "" {
+		if envelope.Job.ID == "" {
 			t.Fatalf("job id missing in response: %s", rec.Body.String())
 		}
-		return envelope.Data.Job.ID
+		return envelope.Job.ID
 	}
 
 	first := createJob()
@@ -226,7 +229,7 @@ func TestIdempotencyOrganicReplayThroughRouter(t *testing.T) {
 	defer srv.Stop()
 
 	do := func() *httptest.ResponseRecorder {
-		body := bytes.NewBufferString(`{"type":"export"}`)
+		body := bytes.NewBufferString(`{"type":"pipeline_run","params":{"workflow_file":"missing.yaml","session":"walkjob1"}}`)
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/jobs", body)
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Idempotency-Key", "organic-replay-1")

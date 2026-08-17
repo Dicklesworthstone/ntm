@@ -14,6 +14,7 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/history"
 	"github.com/Dicklesworthstone/ntm/internal/output"
+	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
 	"github.com/Dicklesworthstone/ntm/internal/util"
 )
@@ -21,6 +22,7 @@ import (
 func newHistoryCmd() *cobra.Command {
 	var (
 		limit   int
+		offset  int
 		session string
 		since   string
 		until   string
@@ -47,11 +49,12 @@ Examples:
   ntm history export history.jsonl     # Export to file`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runHistoryList(cmd.Context(), limit, session, since, until, search, source, regex)
+			return runHistoryList(cmd.Context(), limit, offset, session, since, until, search, source, regex)
 		},
 	}
 
 	cmd.Flags().IntVarP(&limit, "limit", "n", 20, "Number of entries to show")
+	cmd.Flags().IntVar(&offset, "offset", 0, "Pagination offset counted back from the newest entry (use _agent_hints.next_offset for the next page)")
 	cmd.Flags().StringVarP(&session, "session", "s", "", "Filter by session name")
 	cmd.Flags().StringVar(&since, "since", "", "Start time filter (duration like 1h/1d or RFC3339 timestamp)")
 	cmd.Flags().StringVar(&until, "until", "", "End time filter (duration like 1h/1d or RFC3339 timestamp)")
@@ -71,11 +74,53 @@ Examples:
 	return cmd
 }
 
-// HistoryListResult contains the history list output
+// HistoryListResult contains the history list output.
+// The history list is an unbounded-growth surface (D1,
+// bd-ws3-contract-breadth-psvyu.1): it pages via --limit/--offset where
+// offset counts back from the newest entry (offset 0 = most recent page, so
+// the default behavior stays "last N"). Entries within a page remain in
+// chronological order.
 type HistoryListResult struct {
-	Entries    []history.HistoryEntry `json:"entries"`
-	TotalCount int                    `json:"total_count"`
-	Showing    int                    `json:"showing"`
+	Entries    []history.HistoryEntry      `json:"entries"`
+	TotalCount int                         `json:"total_count"`
+	Showing    int                         `json:"showing"`
+	HasMore    bool                        `json:"has_more"`
+	Pagination *robot.PaginationInfo       `json:"pagination,omitempty"`
+	AgentHints *robot.PaginationAgentHints `json:"_agent_hints,omitempty"`
+}
+
+// paginateHistoryTail pages entries from the newest end: offset 0 returns the
+// last `limit` entries, offset `limit` the page before those, and so on.
+// HasMore reports whether older entries remain beyond this page.
+func paginateHistoryTail(entries []history.HistoryEntry, limit, offset int) ([]history.HistoryEntry, *robot.PaginationInfo) {
+	total := len(entries)
+	if offset < 0 {
+		offset = 0
+	}
+	if limit <= 0 {
+		limit = total
+	}
+	end := total - offset
+	if end < 0 {
+		end = 0
+	}
+	start := end - limit
+	if start < 0 {
+		start = 0
+	}
+	page := entries[start:end]
+	info := &robot.PaginationInfo{
+		Limit:   limit,
+		Offset:  offset,
+		Count:   len(page),
+		Total:   total,
+		HasMore: start > 0,
+	}
+	if info.HasMore {
+		next := offset + len(page)
+		info.NextCursor = &next
+	}
+	return page, info
 }
 
 // MarshalJSON ensures new fields remain stable for JSON consumers.
@@ -167,15 +212,25 @@ func (r *HistoryListResult) JSON() interface{} {
 			DurationMs: e.DurationMs,
 		})
 	}
-	return struct {
-		Entries    []HistoryListEntry `json:"entries"`
-		TotalCount int                `json:"total_count"`
-		Showing    int                `json:"showing"`
-	}{
+	return HistoryListJSON{
 		Entries:    entries,
 		TotalCount: r.TotalCount,
 		Showing:    r.Showing,
+		HasMore:    r.HasMore,
+		Pagination: r.Pagination,
+		AgentHints: r.AgentHints,
 	}
+}
+
+// HistoryListJSON is the stable JSON projection of HistoryListResult; it is
+// the schema binding registered for the paginated history list surface.
+type HistoryListJSON struct {
+	Entries    []HistoryListEntry          `json:"entries"`
+	TotalCount int                         `json:"total_count"`
+	Showing    int                         `json:"showing"`
+	HasMore    bool                        `json:"has_more"`
+	Pagination *robot.PaginationInfo       `json:"pagination,omitempty"`
+	AgentHints *robot.PaginationAgentHints `json:"_agent_hints,omitempty"`
 }
 
 // HistoryListEntry is a pared-down view for JSON output to keep field names stable.
@@ -200,9 +255,12 @@ func resolveHistorySessionFilter(ctx context.Context, session string) (string, e
 	return normalizeProjectScopedSessionName(ctx, session, !IsJSONOutput())
 }
 
-func runHistoryList(ctx context.Context, limit int, session, since, until, search, source string, searchRegex bool) error {
+func runHistoryList(ctx context.Context, limit, offset int, session, since, until, search, source string, searchRegex bool) error {
 	if limit <= 0 {
 		return fmt.Errorf("--limit must be greater than 0")
+	}
+	if offset < 0 {
+		return fmt.Errorf("--offset must be >= 0")
 	}
 
 	resolvedSession, err := resolveHistorySessionFilter(ctx, session)
@@ -221,9 +279,9 @@ func runHistoryList(ctx context.Context, limit int, session, since, until, searc
 		} else {
 			entries, err = history.Search(search)
 		}
-	} else if since == "" && until == "" && source == "" {
-		entries, err = history.ReadRecent(limit)
 	} else {
+		// Read everything so pagination totals and has_more are honest
+		// (ReadRecent(limit) would make page 0 lie about older entries).
 		entries, err = history.ReadAll()
 	}
 	if err != nil {
@@ -270,17 +328,17 @@ func runHistoryList(ctx context.Context, limit int, session, since, until, searc
 
 	totalCount := len(entries)
 
-	// Apply limit (take last N)
-	showing := len(entries)
-	if len(entries) > limit {
-		entries = entries[len(entries)-limit:]
-		showing = limit
-	}
+	// D1 pagination: page from the newest end (offset 0 = last N entries,
+	// preserving the historical "take last N" behavior).
+	page, pageInfo := paginateHistoryTail(entries, limit, offset)
 
 	result := &HistoryListResult{
-		Entries:    entries,
+		Entries:    page,
 		TotalCount: totalCount,
-		Showing:    showing,
+		Showing:    len(page),
+		HasMore:    pageInfo.HasMore,
+		Pagination: pageInfo,
+		AgentHints: robot.PaginationHints(pageInfo),
 	}
 
 	formatter := output.New(output.WithJSON(jsonOutput))
@@ -309,6 +367,7 @@ func parseHistoryTimeFilter(value string) (time.Time, error) {
 func newHistorySearchCmd() *cobra.Command {
 	var (
 		limit   int
+		offset  int
 		session string
 		since   string
 		until   string
@@ -321,11 +380,12 @@ func newHistorySearchCmd() *cobra.Command {
 		Short: "Search prompt history",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runHistoryList(cmd.Context(), limit, session, since, until, args[0], source, regex)
+			return runHistoryList(cmd.Context(), limit, offset, session, since, until, args[0], source, regex)
 		},
 	}
 
 	cmd.Flags().IntVarP(&limit, "limit", "n", 20, "Number of entries to show")
+	cmd.Flags().IntVar(&offset, "offset", 0, "Pagination offset counted back from the newest entry (use _agent_hints.next_offset for the next page)")
 	cmd.Flags().StringVarP(&session, "session", "s", "", "Filter by session name")
 	cmd.Flags().StringVar(&since, "since", "", "Start time filter (duration like 1h/1d or RFC3339 timestamp)")
 	cmd.Flags().StringVar(&until, "until", "", "End time filter (duration like 1h/1d or RFC3339 timestamp)")

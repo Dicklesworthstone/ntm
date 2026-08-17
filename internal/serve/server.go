@@ -4266,50 +4266,25 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate job type
-	validTypes := map[string]bool{
-		"spawn":      true,
-		"scan":       true,
-		"checkpoint": true,
-		"import":     true,
-		"export":     true,
-	}
-	if !validTypes[req.Type] {
-		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid job type", map[string]interface{}{
-			"valid_types": []string{"spawn", "scan", "checkpoint", "import", "export"},
-		}, reqID)
+	// Only the three allow-listed async operations are implemented (D5,
+	// bd-ws3-contract-breadth-psvyu.5). Everything else is an honest
+	// NOT_IMPLEMENTED — never a fake acceptance for work that will not run.
+	if !isImplementedJobType(req.Type) {
+		writeErrorResponse(w, http.StatusNotImplemented, ErrCodeNotImplemented,
+			fmt.Sprintf("job type %q is not implemented", req.Type), map[string]interface{}{
+				"implemented_types": implementedJobTypes,
+			}, reqID)
 		return
 	}
 
 	job := s.jobStore.Create(req.Type)
 
-	// Start job execution in background
-	go s.executeJob(job.ID, req)
+	// Start real job execution in background
+	go s.dispatchJob(job.ID, req)
 
 	writeSuccessResponse(w, http.StatusAccepted, map[string]interface{}{
 		"job": job,
 	}, reqID)
-}
-
-// executeJob runs a job asynchronously.
-func (s *Server) executeJob(jobID string, req CreateJobRequest) {
-	defer func() {
-		if r := recover(); r != nil {
-			s.jobStore.Update(jobID, JobStatusFailed, 0, nil, fmt.Sprintf("panic: %v", r))
-		}
-	}()
-	s.jobStore.Update(jobID, JobStatusRunning, 0, nil, "")
-
-	// Simulate job execution - in production, this would dispatch to actual handlers // placebo-waiver: bd-ws3-contract-breadth-psvyu.5
-	time.Sleep(100 * time.Millisecond)
-
-	// Mark as completed
-	result := map[string]interface{}{
-		"type":    req.Type,
-		"params":  req.Params,
-		"session": req.Session,
-	}
-	s.jobStore.Update(jobID, JobStatusCompleted, 100, result, "")
 }
 
 // handleGetJob handles GET /api/v1/jobs/{id}.

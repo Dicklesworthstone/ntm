@@ -2209,8 +2209,10 @@ func TestHandleCreateJob_InvalidType(t *testing.T) {
 
 	srv.handleCreateJob(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400; body: %s", rec.Code, rec.Body.String())
+	// D5b: non-allow-listed job types are honestly NOT_IMPLEMENTED, never a
+	// fake acceptance.
+	if rec.Code != http.StatusNotImplemented {
+		t.Fatalf("status = %d, want 501; body: %s", rec.Code, rec.Body.String())
 	}
 
 	var resp map[string]interface{}
@@ -2218,8 +2220,11 @@ func TestHandleCreateJob_InvalidType(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	errMsg, _ := resp["error"].(string)
-	if !strings.Contains(errMsg, "invalid job type") {
-		t.Errorf("error = %q, want substring 'invalid job type'", errMsg)
+	if !strings.Contains(errMsg, "not implemented") {
+		t.Errorf("error = %q, want substring 'not implemented'", errMsg)
+	}
+	if code, _ := resp["error_code"].(string); code != ErrCodeNotImplemented {
+		t.Errorf("error_code = %q, want %q", code, ErrCodeNotImplemented)
 	}
 }
 
@@ -2227,7 +2232,7 @@ func TestHandleCreateJob_ValidType(t *testing.T) {
 	srv, _ := setupTestServer(t)
 
 	rec := httptest.NewRecorder()
-	body := `{"type":"scan","session":"test"}`
+	body := `{"type":"pipeline_run","params":{"workflow_file":"missing.yaml","session":"branchjob1"}}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/jobs", strings.NewReader(body))
 
 	srv.handleCreateJob(rec, req)

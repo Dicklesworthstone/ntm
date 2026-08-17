@@ -100,20 +100,6 @@ func NewMatcher() *Matcher {
 	}
 }
 
-// NewMatcherWithMatrix creates a Matcher with a custom capability matrix.
-func NewMatcherWithMatrix(matrix *CapabilityMatrix) *Matcher {
-	return &Matcher{
-		matrix: matrix,
-		config: DefaultMatcherConfig(),
-	}
-}
-
-// WithConfig sets the matcher configuration.
-func (m *Matcher) WithConfig(config MatcherConfig) *Matcher {
-	m.config = config
-	return m
-}
-
 // AssignTasks matches beads to agents based on the specified strategy.
 // Returns assignments sorted by score (highest first).
 func (m *Matcher) AssignTasks(beads []Bead, agents []Agent, strategy Strategy) []Assignment {

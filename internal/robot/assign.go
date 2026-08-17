@@ -670,13 +670,6 @@ func filterDurablyOccupiedAssignAgents(idleAgentPanes []string, activeAssignment
 	return available, nil
 }
 
-// generateAssignments creates assignment recommendations based on strategy.
-// It is a thin wrapper over planAssignments for callers without dependency
-// graph (unblocks) data.
-func generateAssignments(agents []assignAgentInfo, beads []bv.BeadPreview, strategy string, idleAgents []string) []AssignRecommend {
-	return planAssignments(agents, beads, nil, strategy, idleAgents)
-}
-
 // planAssignments routes assignment planning through the requested strategy.
 // The "simple" strategy is the honest name for sequential pairing (next ready
 // bead -> next idle agent, no scoring). Every other strategy runs the real
@@ -769,7 +762,7 @@ func plannerAssignments(idleAgentDetails []assignAgentInfo, beads []bv.BeadPrevi
 		})
 	}
 
-	planned := assign.NewMatcher().AssignTasks(planBeads, planAgents, assign.ParseStrategy(strategy))
+	planned := assign.AssignTasksFunc(planBeads, planAgents, strategy)
 
 	recommendations := make([]AssignRecommend, 0, len(planned))
 	usedAgents := make(map[string]struct{}, len(planAgents))

@@ -310,7 +310,7 @@ func TestListSessionCheckpoints_JSONMarksInvalidOnlySession(t *testing.T) {
 	os.Stdout = w
 	t.Cleanup(func() { os.Stdout = oldStdout })
 
-	callErr := listSessionCheckpoints(storage, sessionName)
+	callErr := listSessionCheckpoints(storage, sessionName, 0, 0)
 	if err := w.Close(); err != nil {
 		t.Fatalf("stdout close: %v", err)
 	}
@@ -382,7 +382,7 @@ func TestListSessionCheckpoints_JSONIncludesInvalidIDsAlongsideValidCheckpoints(
 	os.Stdout = w
 	t.Cleanup(func() { os.Stdout = oldStdout })
 
-	callErr := listSessionCheckpoints(storage, sessionName)
+	callErr := listSessionCheckpoints(storage, sessionName, 0, 0)
 	if err := w.Close(); err != nil {
 		t.Fatalf("stdout close: %v", err)
 	}
