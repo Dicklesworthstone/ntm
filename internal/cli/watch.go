@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/signal"
@@ -168,7 +169,9 @@ func runWatch(parent context.Context, session string, opts watchOptions) error {
 	go func() {
 		select {
 		case <-sigChan:
-			fmt.Println("\n\nWatch mode stopped.")
+			if !IsJSONOutput() {
+				fmt.Println("\n\nWatch mode stopped.")
+			}
 			cancel()
 		case <-done:
 		}
@@ -204,12 +207,49 @@ type paneState struct {
 	lastOutput string
 }
 
+// watchJSONFrame is one NDJSON event on the `ntm watch --json` stream.
+// Every frame is a single compact JSON object terminated by a newline.
+// Previously `ntm watch` had no --json handling at all and painted the
+// human stream regardless (bd-ws7-docs-ux-truth-tqh3l.4).
+type watchJSONFrame struct {
+	Event     string   `json:"event"` // watch_started | pane_output | bead_mention | bead_status | file_change | dispatch | dispatch_error
+	Timestamp string   `json:"timestamp"`
+	Session   string   `json:"session"`
+	Pane      string   `json:"pane,omitempty"`
+	PaneID    string   `json:"pane_id,omitempty"`
+	AgentType string   `json:"agent_type,omitempty"`
+	Lines     []string `json:"lines,omitempty"`
+	Bead      string   `json:"bead,omitempty"`
+	Text      string   `json:"text,omitempty"`
+	Status    string   `json:"status,omitempty"`
+	Path      string   `json:"path,omitempty"`
+	Delivered int      `json:"delivered,omitempty"`
+	Failed    int      `json:"failed,omitempty"`
+	Error     string   `json:"error,omitempty"`
+}
+
+// emitWatchJSONFrame stamps and writes one NDJSON frame to stdout.
+func emitWatchJSONFrame(frame watchJSONFrame) {
+	frame.Timestamp = time.Now().UTC().Format(time.RFC3339Nano)
+	_ = json.NewEncoder(os.Stdout).Encode(frame)
+}
+
+// watchPaneLabel matches the human stream's pane prefix.
+func watchPaneLabel(pane tmux.Pane) string {
+	if pane.Title != "" {
+		return pane.Title
+	}
+	return fmt.Sprintf("pane-%d", pane.Index)
+}
+
 func watchLoop(ctx context.Context, session string, opts watchOptions, t theme.Theme) error {
 	paneStates := make(map[string]*paneState)
 	firstRun := true
 
-	// Print header
-	if !opts.noColor {
+	// Print header (NDJSON mode announces the stream instead of chrome)
+	if IsJSONOutput() {
+		emitWatchJSONFrame(watchJSONFrame{Event: "watch_started", Session: session})
+	} else if !opts.noColor {
 		header := lipgloss.NewStyle().
 			Bold(true).
 			Foreground(t.Blue).
@@ -280,14 +320,14 @@ func watchLoop(ctx context.Context, session string, opts watchOptions, t theme.T
 
 			// On first run, show tail
 			if firstRun && output != "" {
-				printPaneOutput(pane, output, opts, t)
+				emitWatchPaneOutput(session, pane, output, opts, t)
 				state.lastOutput = output
 				continue
 			}
 
 			// Print new output if any
 			if newOutput != "" {
-				printPaneOutput(pane, newOutput, opts, t)
+				emitWatchPaneOutput(session, pane, newOutput, opts, t)
 				state.lastOutput = output
 			}
 		}
@@ -351,7 +391,9 @@ func runBeadWatch(ctx context.Context, session, projectDir string, opts watchOpt
 		statusPoll = opts.pollInterval
 	}
 
-	if !opts.noColor {
+	if IsJSONOutput() {
+		emitWatchJSONFrame(watchJSONFrame{Event: "watch_started", Session: session, Bead: opts.watchBead})
+	} else if !opts.noColor {
 		header := lipgloss.NewStyle().
 			Bold(true).
 			Foreground(t.Blue).
@@ -417,6 +459,18 @@ func runBeadWatch(ctx context.Context, session, projectDir string, opts watchOpt
 				continue
 			}
 			for _, mention := range extractBeadMentions(diff, mentionRE) {
+				if IsJSONOutput() {
+					emitWatchJSONFrame(watchJSONFrame{
+						Event:     "bead_mention",
+						Session:   session,
+						Pane:      watchPaneLabel(pane),
+						PaneID:    pane.ID,
+						AgentType: tmux.AgentType(pane.Type).Canonical().String(),
+						Bead:      opts.watchBead,
+						Text:      mention,
+					})
+					continue
+				}
 				printBeadMention(pane, mention, opts, t)
 			}
 		}
@@ -427,7 +481,20 @@ func runBeadWatch(ctx context.Context, session, projectDir string, opts watchOpt
 				status = "unknown"
 			}
 			if status != lastStatus {
-				printBeadStatus(status, statusErr, opts, t)
+				if IsJSONOutput() {
+					frame := watchJSONFrame{
+						Event:   "bead_status",
+						Session: session,
+						Bead:    opts.watchBead,
+						Status:  status,
+					}
+					if statusErr != nil {
+						frame.Error = statusErr.Error()
+					}
+					emitWatchJSONFrame(frame)
+				} else {
+					printBeadStatus(status, statusErr, opts, t)
+				}
 				lastStatus = status
 			}
 			lastStatusCheck = time.Now()
@@ -504,6 +571,36 @@ func computeDiff(old, new string) string {
 	// Return only new lines
 	newContent := strings.Join(newLines[startIdx:], "\n")
 	return strings.TrimRight(newContent, "\n")
+}
+
+// emitWatchPaneOutput routes one new-output chunk to the active surface:
+// an NDJSON pane_output frame under --json, the styled text stream otherwise.
+func emitWatchPaneOutput(session string, pane tmux.Pane, output string, opts watchOptions, t theme.Theme) {
+	if output == "" {
+		return
+	}
+	if IsJSONOutput() {
+		lines := make([]string, 0)
+		for _, line := range strings.Split(output, "\n") {
+			if strings.TrimSpace(line) == "" {
+				continue
+			}
+			lines = append(lines, line)
+		}
+		if len(lines) == 0 {
+			return
+		}
+		emitWatchJSONFrame(watchJSONFrame{
+			Event:     "pane_output",
+			Session:   session,
+			Pane:      watchPaneLabel(pane),
+			PaneID:    pane.ID,
+			AgentType: tmux.AgentType(pane.Type).Canonical().String(),
+			Lines:     lines,
+		})
+		return
+	}
+	printPaneOutput(pane, output, opts, t)
 }
 
 func printPaneOutput(pane tmux.Pane, output string, opts watchOptions, t theme.Theme) {
@@ -610,9 +707,18 @@ func runFileWatch(ctx context.Context, session, watchRoot string, opts watchOpti
 		return fmt.Errorf("preparing file-watch prompt dispatch: %w", err)
 	}
 
-	fmt.Printf("\nWatching files matching '%s' in %s...\n", opts.watchPattern, watchRoot)
-	fmt.Printf("Will run command: %s\n", opts.watchCommand)
-	fmt.Println("Press Ctrl+C to stop")
+	if IsJSONOutput() {
+		emitWatchJSONFrame(watchJSONFrame{
+			Event:   "watch_started",
+			Session: session,
+			Path:    watchRoot,
+			Text:    opts.watchPattern,
+		})
+	} else {
+		fmt.Printf("\nWatching files matching '%s' in %s...\n", opts.watchPattern, watchRoot)
+		fmt.Printf("Will run command: %s\n", opts.watchCommand)
+		fmt.Println("Press Ctrl+C to stop")
+	}
 
 	handler := func(events []watcher.Event) {
 		if ctx.Err() != nil {
@@ -622,7 +728,9 @@ func runFileWatch(ctx context.Context, session, watchRoot string, opts watchOpti
 		for _, e := range events {
 			if watchEventMatchesPattern(opts.watchPattern, watchRoot, e.Path) {
 				matched = true
-				if !opts.noColor {
+				if IsJSONOutput() {
+					emitWatchJSONFrame(watchJSONFrame{Event: "file_change", Session: session, Path: e.Path})
+				} else if !opts.noColor {
 					fmt.Printf("File changed: %s\n", e.Path)
 				}
 				break
@@ -636,28 +744,60 @@ func runFileWatch(ctx context.Context, session, watchRoot string, opts watchOpti
 				if ctx.Err() != nil {
 					return
 				}
-				fmt.Printf("Error getting panes: %v\n", err)
+				if IsJSONOutput() {
+					emitWatchJSONFrame(watchJSONFrame{Event: "dispatch_error", Session: session, Error: fmt.Sprintf("getting panes: %v", err)})
+				} else {
+					fmt.Printf("Error getting panes: %v\n", err)
+				}
 				return
 			}
 
 			targets := filterPanes(panes, opts)
 			if len(targets) == 0 {
-				fmt.Println("No target agents found")
+				if IsJSONOutput() {
+					emitWatchJSONFrame(watchJSONFrame{Event: "dispatch_error", Session: session, Error: "no target agents found"})
+				} else {
+					fmt.Println("No target agents found")
+				}
 				return
 			}
 
-			fmt.Printf("Triggering command on %d pane(s)...\n", len(targets))
+			if !IsJSONOutput() {
+				fmt.Printf("Triggering command on %d pane(s)...\n", len(targets))
+			}
 			result, dispatchErr := dispatchWatchCommand(ctx, promptService, session, panes, targets, opts.watchCommand)
 			if ctx.Err() != nil {
 				return
 			}
-			if dispatchErr != nil {
+			if dispatchErr != nil && !IsJSONOutput() {
 				fmt.Printf("File-watch dispatch completed with failures: %v\n", dispatchErr)
 			}
+			delivered, failed := 0, 0
 			for _, receipt := range result.Receipts {
 				if receipt.Status == dispatchsvc.ReceiptFailed || receipt.Status == dispatchsvc.ReceiptBlocked {
-					fmt.Printf("Failed to send to pane %s: %s\n", receipt.Target.Ref.ID, receipt.Error)
+					failed++
+					if IsJSONOutput() {
+						emitWatchJSONFrame(watchJSONFrame{
+							Event:   "dispatch_error",
+							Session: session,
+							PaneID:  receipt.Target.Ref.ID,
+							Error:   receipt.Error,
+						})
+					} else {
+						fmt.Printf("Failed to send to pane %s: %s\n", receipt.Target.Ref.ID, receipt.Error)
+					}
+				} else if receipt.Status == dispatchsvc.ReceiptDelivered {
+					delivered++
 				}
+			}
+			if IsJSONOutput() {
+				emitWatchJSONFrame(watchJSONFrame{
+					Event:     "dispatch",
+					Session:   session,
+					Text:      opts.watchCommand,
+					Delivered: delivered,
+					Failed:    failed,
+				})
 			}
 		}
 	}

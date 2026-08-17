@@ -396,19 +396,23 @@ func TestBuildSessionDetails_IncludesOllamaAgents(t *testing.T) {
 func TestUpdateAgentStats_Cumulative(t *testing.T) {
 	breakdown := make(map[string]AgentStats)
 
-	updateAgentStats(breakdown, "claude", 2, 0, 0)
-	updateAgentStats(breakdown, "claude", 0, 3, 150)
-	updateAgentStats(breakdown, "codex", 1, 1, 50)
+	updateAgentStats(breakdown, "claude", 2, 0, 0, 0)
+	updateAgentStats(breakdown, "claude", 0, 3, 500, 150)
+	updateAgentStats(breakdown, "claude", 0, 1, 250, 70)
+	updateAgentStats(breakdown, "codex", 1, 1, 175, 50)
 
 	claude := breakdown["claude"]
 	if claude.Count != 2 {
 		t.Errorf("claude.Count = %d, want 2", claude.Count)
 	}
-	if claude.Prompts != 3 {
-		t.Errorf("claude.Prompts = %d, want 3", claude.Prompts)
+	if claude.Prompts != 4 {
+		t.Errorf("claude.Prompts = %d, want 4", claude.Prompts)
 	}
-	if claude.TokensEst != 150 {
-		t.Errorf("claude.TokensEst = %d, want 150", claude.TokensEst)
+	if claude.CharsSent != 750 {
+		t.Errorf("claude.CharsSent = %d, want 750 (must accumulate)", claude.CharsSent)
+	}
+	if claude.TokensEst != 220 {
+		t.Errorf("claude.TokensEst = %d, want 220", claude.TokensEst)
 	}
 
 	codex := breakdown["codex"]

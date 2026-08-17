@@ -379,13 +379,32 @@ type AssignmentSummary struct {
 	AvgDurationSec float64                  `json:"avg_duration_seconds,omitempty"`
 }
 
-// InterruptResponse is the output format for interrupt command
+// InterruptPaneResult is one pane's outcome in a best-effort interrupt sweep.
+type InterruptPaneResult struct {
+	Pane      string `json:"pane"` // canonical pane target key (N or W.P)
+	Index     int    `json:"index"`
+	PaneID    string `json:"pane_id"`
+	AgentType string `json:"agent_type"`
+	Status    string `json:"status"` // "interrupted" | "failed"
+	Error     string `json:"error,omitempty"`
+}
+
+// InterruptResponse is the output format for interrupt command.
+// The sweep is best-effort: a tmux error on one pane no longer aborts the
+// remaining panes (bd-ws7-docs-ux-truth-tqh3l.6). Partial failure reports
+// success:false with error_code PARTIAL_INTERRUPT and per-pane results, and
+// the process exits non-zero per the repo exit-code contract (partial = 1).
 type InterruptResponse struct {
 	TimestampedResponse
-	Session       string `json:"session"`
-	Interrupted   int    `json:"interrupted"`
-	Skipped       int    `json:"skipped,omitempty"`
-	TargetedPanes []int  `json:"targeted_panes,omitempty"`
+	Success       bool                  `json:"success"`
+	Session       string                `json:"session"`
+	Interrupted   int                   `json:"interrupted"`
+	Failed        int                   `json:"failed,omitempty"`
+	Skipped       int                   `json:"skipped,omitempty"`
+	TargetedPanes []int                 `json:"targeted_panes,omitempty"`
+	Panes         []InterruptPaneResult `json:"panes"`
+	Error         string                `json:"error,omitempty"`
+	ErrorCode     string                `json:"error_code,omitempty"` // PARTIAL_INTERRUPT | INTERRUPT_FAILED
 }
 
 // KillResponse is the output format for kill command

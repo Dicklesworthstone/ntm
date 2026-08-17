@@ -170,35 +170,35 @@ func aggregateStats(eventList []events.Event, days int, since string, cutoff tim
 			// Count agents from session create data
 			if cc, ok := event.Data["claude_count"].(float64); ok {
 				stats.TotalAgents += int(cc)
-				updateAgentStats(stats.AgentBreakdown, "claude", int(cc), 0, 0)
+				updateAgentStats(stats.AgentBreakdown, "claude", int(cc), 0, 0, 0)
 			}
 			if cod, ok := event.Data["codex_count"].(float64); ok {
 				stats.TotalAgents += int(cod)
-				updateAgentStats(stats.AgentBreakdown, "codex", int(cod), 0, 0)
+				updateAgentStats(stats.AgentBreakdown, "codex", int(cod), 0, 0, 0)
 			}
 			if gmi, ok := event.Data["gemini_count"].(float64); ok {
 				stats.TotalAgents += int(gmi)
-				updateAgentStats(stats.AgentBreakdown, "gemini", int(gmi), 0, 0)
+				updateAgentStats(stats.AgentBreakdown, "gemini", int(gmi), 0, 0, 0)
 			}
 			if grok, ok := event.Data["grok_count"].(float64); ok {
 				stats.TotalAgents += int(grok)
-				updateAgentStats(stats.AgentBreakdown, "grok", int(grok), 0, 0)
+				updateAgentStats(stats.AgentBreakdown, "grok", int(grok), 0, 0, 0)
 			}
 			if cursor, ok := event.Data["cursor_count"].(float64); ok {
 				stats.TotalAgents += int(cursor)
-				updateAgentStats(stats.AgentBreakdown, "cursor", int(cursor), 0, 0)
+				updateAgentStats(stats.AgentBreakdown, "cursor", int(cursor), 0, 0, 0)
 			}
 			if windsurf, ok := event.Data["windsurf_count"].(float64); ok {
 				stats.TotalAgents += int(windsurf)
-				updateAgentStats(stats.AgentBreakdown, "windsurf", int(windsurf), 0, 0)
+				updateAgentStats(stats.AgentBreakdown, "windsurf", int(windsurf), 0, 0, 0)
 			}
 			if aider, ok := event.Data["aider_count"].(float64); ok {
 				stats.TotalAgents += int(aider)
-				updateAgentStats(stats.AgentBreakdown, "aider", int(aider), 0, 0)
+				updateAgentStats(stats.AgentBreakdown, "aider", int(aider), 0, 0, 0)
 			}
 			if ollama, ok := event.Data["ollama_count"].(float64); ok {
 				stats.TotalAgents += int(ollama)
-				updateAgentStats(stats.AgentBreakdown, "ollama", int(ollama), 0, 0)
+				updateAgentStats(stats.AgentBreakdown, "ollama", int(ollama), 0, 0, 0)
 			}
 
 		case events.EventAgentSpawn:
@@ -207,11 +207,25 @@ func aggregateStats(eventList []events.Event, days int, since string, cutoff tim
 				_ = agentType
 			}
 
+		case events.EventAgentAdd:
+			// Agents registered after session creation via `ntm add` are NOT
+			// covered by the session_create provider counts; they were the
+			// audit's named blind spot (bd-ws7-docs-ux-truth-tqh3l.4).
+			if agentType, ok := event.Data["agent_type"].(string); ok {
+				normalized := normalizeAgentType(agentType)
+				if isAnalyticsAgentType(normalized) {
+					stats.TotalAgents++
+					updateAgentStats(stats.AgentBreakdown, normalized, 1, 0, 0, 0)
+				}
+			}
+
 		case events.EventPromptSend:
 			stats.TotalPrompts++
 
+			var chars int
 			if length, ok := event.Data["prompt_length"].(float64); ok {
-				stats.TotalCharsSent += int(length)
+				chars = int(length)
+				stats.TotalCharsSent += chars
 			}
 
 			// Aggregate token estimates
@@ -224,16 +238,26 @@ func aggregateStats(eventList []events.Event, days int, since string, cutoff tim
 			}
 			stats.TotalTokensEst += tokenEst
 
-			// Update per-type stats based on target_types
+			// Update per-type stats based on target_types.
 			// When a prompt is sent to multiple agent types, divide the tokens
-			// proportionally to avoid over-counting in the per-agent breakdown
+			// and characters proportionally to avoid over-counting in the
+			// per-agent breakdown. Characters use exact-sum division (the
+			// remainder goes to the first target) so the per-agent chars_sent
+			// values always sum to the event's true payload byte count —
+			// chars_sent was previously never updated at all and stayed a
+			// hardcoded 0 (bd-ws7-docs-ux-truth-tqh3l.4).
 			if targetTypes, ok := event.Data["target_types"].(string); ok {
 				targets := parseTargetTypes(targetTypes)
 				if len(targets) > 0 {
-					// Divide tokens among targets to avoid overcounting
 					tokensPerTarget := tokenEst / len(targets)
-					for _, t := range targets {
-						updateAgentStats(stats.AgentBreakdown, t, 0, 1, tokensPerTarget)
+					charsPerTarget := chars / len(targets)
+					charsRemainder := chars % len(targets)
+					for i, t := range targets {
+						charsDelta := charsPerTarget
+						if i == 0 {
+							charsDelta += charsRemainder
+						}
+						updateAgentStats(stats.AgentBreakdown, t, 0, 1, charsDelta, tokensPerTarget)
 					}
 				}
 			}
@@ -250,10 +274,11 @@ func aggregateStats(eventList []events.Event, days int, since string, cutoff tim
 }
 
 // updateAgentStats updates or creates agent stats entry.
-func updateAgentStats(breakdown map[string]AgentStats, agentType string, countDelta, promptsDelta, tokensDelta int) {
+func updateAgentStats(breakdown map[string]AgentStats, agentType string, countDelta, promptsDelta, charsDelta, tokensDelta int) {
 	current := breakdown[agentType]
 	current.Count += countDelta
 	current.Prompts += promptsDelta
+	current.CharsSent += charsDelta
 	current.TokensEst += tokensDelta
 	breakdown[agentType] = current
 }
@@ -350,6 +375,8 @@ func buildSessionDetails(eventList []events.Event) []SessionSummary {
 			if ollama, ok := event.Data["ollama_count"].(float64); ok {
 				summary.AgentCount += int(ollama)
 			}
+		case events.EventAgentAdd:
+			summary.AgentCount++
 		case events.EventPromptSend:
 			summary.PromptCount++
 		}
@@ -435,6 +462,9 @@ func outputStatsCSV(stats AnalyticsStats) error {
 		if err := w.Write([]string{agentType + "_prompts", fmt.Sprintf("%d", agentStats.Prompts)}); err != nil {
 			return err
 		}
+		if err := w.Write([]string{agentType + "_chars_sent", fmt.Sprintf("%d", agentStats.CharsSent)}); err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -486,6 +516,13 @@ func outputStatsPrometheus(stats AnalyticsStats) error {
 		}
 		fmt.Println()
 
+		fmt.Println("# HELP ntm_agent_chars_sent Characters sent by agent type.")
+		fmt.Println("# TYPE ntm_agent_chars_sent gauge")
+		for agentType, as := range stats.AgentBreakdown {
+			fmt.Printf("ntm_agent_chars_sent{period=%q,agent_type=%q} %d\n", stats.Period, agentType, as.CharsSent)
+		}
+		fmt.Println()
+
 		fmt.Println("# HELP ntm_agent_tokens_estimated Estimated tokens by agent type.")
 		fmt.Println("# TYPE ntm_agent_tokens_estimated gauge")
 		for agentType, as := range stats.AgentBreakdown {
@@ -528,6 +565,7 @@ func outputStatsText(stats AnalyticsStats, showSessions bool) error {
 			fmt.Printf("  %s:\n", displayName)
 			fmt.Printf("    Spawned:      %d\n", agentStats.Count)
 			fmt.Printf("    Prompts:      %d\n", agentStats.Prompts)
+			fmt.Printf("    Characters:   %d\n", agentStats.CharsSent)
 			fmt.Printf("    Tokens (est): %s\n", formatTokenCount(agentStats.TokensEst))
 		}
 	}

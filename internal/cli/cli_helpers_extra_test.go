@@ -429,20 +429,20 @@ func TestUpdateAgentStats(t *testing.T) {
 	breakdown := make(map[string]AgentStats)
 
 	// First update creates entry
-	updateAgentStats(breakdown, "claude", 1, 5, 100)
-	if s := breakdown["claude"]; s.Count != 1 || s.Prompts != 5 || s.TokensEst != 100 {
+	updateAgentStats(breakdown, "claude", 1, 5, 350, 100)
+	if s := breakdown["claude"]; s.Count != 1 || s.Prompts != 5 || s.CharsSent != 350 || s.TokensEst != 100 {
 		t.Errorf("after first update: %+v", s)
 	}
 
 	// Second update accumulates
-	updateAgentStats(breakdown, "claude", 2, 3, 200)
-	if s := breakdown["claude"]; s.Count != 3 || s.Prompts != 8 || s.TokensEst != 300 {
+	updateAgentStats(breakdown, "claude", 2, 3, 700, 200)
+	if s := breakdown["claude"]; s.Count != 3 || s.Prompts != 8 || s.CharsSent != 1050 || s.TokensEst != 300 {
 		t.Errorf("after second update: %+v", s)
 	}
 
 	// Different agent type
-	updateAgentStats(breakdown, "codex", 1, 1, 50)
-	if s := breakdown["codex"]; s.Count != 1 || s.Prompts != 1 || s.TokensEst != 50 {
+	updateAgentStats(breakdown, "codex", 1, 1, 175, 50)
+	if s := breakdown["codex"]; s.Count != 1 || s.Prompts != 1 || s.CharsSent != 175 || s.TokensEst != 50 {
 		t.Errorf("codex entry: %+v", s)
 	}
 
@@ -889,5 +889,99 @@ func assertTerminalJSONFailureContains(t *testing.T, stdout string, runErr error
 	document := decodeSingleTerminalJSONMap(t, stdout)
 	if success, ok := document["success"].(bool); !ok || success {
 		t.Fatalf("success = %#v, want false", document["success"])
+	}
+}
+
+// bd-ws7-docs-ux-truth-tqh3l.5 proof: an explicit CLI count for a type no
+// longer DROPS the recipe's row for that type — the row's model, effort, and
+// persona merge onto the CLI-provided specs (CLI-explicit fields win, recipe
+// fills the gaps), while the CLI count stays authoritative.
+func TestAppendMissingRecipeAgentSpecs_CLICountMergesRecipeSettings(t *testing.T) {
+	specs := AgentSpecs{{Type: AgentTypeClaude, Count: 3}}
+	err := appendMissingRecipeAgentSpecs(&specs, map[string]*persona.Persona{}, "team", "", []recipe.AgentSpec{
+		{Type: "cc", Count: 1, Model: "sonnet", ReasoningEffort: "high"},
+		{Type: "cod", Count: 2, Model: "gpt-5"},
+	})
+	if err != nil {
+		t.Fatalf("appendMissingRecipeAgentSpecs error: %v", err)
+	}
+
+	claude := specs.ByType(AgentTypeClaude)
+	if len(claude) != 1 || claude[0].Count != 3 {
+		t.Fatalf("claude specs = %+v, want CLI count 3 preserved", claude)
+	}
+	if claude[0].Model != "sonnet" || claude[0].ReasoningEffort != "high" {
+		t.Fatalf("claude specs = %+v, want recipe model=sonnet effort=high merged (not dropped)", claude)
+	}
+
+	codex := specs.ByType(AgentTypeCodex)
+	if len(codex) != 1 || codex[0].Count != 2 || codex[0].Model != "gpt-5" {
+		t.Fatalf("codex specs = %+v, want appended count=2 model=gpt-5", codex)
+	}
+}
+
+func TestAppendMissingRecipeAgentSpecs_CLIExplicitFieldsWinOverRecipe(t *testing.T) {
+	specs := AgentSpecs{{Type: AgentTypeCodex, Count: 2, Model: "gpt4"}}
+	err := appendMissingRecipeAgentSpecs(&specs, map[string]*persona.Persona{}, "team", "", []recipe.AgentSpec{
+		{Type: "cod", Count: 5, Model: "gpt-5", ReasoningEffort: "high"},
+	})
+	if err != nil {
+		t.Fatalf("appendMissingRecipeAgentSpecs error: %v", err)
+	}
+
+	codex := specs.ByType(AgentTypeCodex)
+	if len(codex) != 1 || codex[0].Count != 2 {
+		t.Fatalf("codex specs = %+v, want CLI count 2 preserved over recipe count 5", codex)
+	}
+	if codex[0].Model != "gpt4" {
+		t.Fatalf("codex model = %q, want CLI-explicit gpt4 to win over recipe gpt-5", codex[0].Model)
+	}
+	if codex[0].ReasoningEffort != "high" {
+		t.Fatalf("codex effort = %q, want recipe effort high to fill the gap", codex[0].ReasoningEffort)
+	}
+}
+
+func TestAppendMissingRecipeAgentSpecs_CLICountMergesRecipePersona(t *testing.T) {
+	specs := AgentSpecs{{Type: AgentTypeClaude, Count: 2}}
+	personaMap := map[string]*persona.Persona{}
+	err := appendMissingRecipeAgentSpecs(&specs, personaMap, "review-team", "", []recipe.AgentSpec{
+		{Type: "cc", Count: 1, Persona: "architect", Model: "sonnet"},
+	})
+	if err != nil {
+		t.Fatalf("appendMissingRecipeAgentSpecs error: %v", err)
+	}
+
+	claude := specs.ByType(AgentTypeClaude)
+	if len(claude) != 1 || claude[0].Count != 2 {
+		t.Fatalf("claude specs = %+v, want CLI count 2 preserved", claude)
+	}
+	if claude[0].Model == "" {
+		t.Fatalf("claude specs = %+v, want persona-backed model key after merge", claude)
+	}
+	personaCfg, ok := personaMap[claude[0].Model]
+	if !ok {
+		t.Fatalf("personaMap missing key %q after merge", claude[0].Model)
+	}
+	if personaCfg.Name != "architect" {
+		t.Fatalf("persona name = %q, want architect", personaCfg.Name)
+	}
+	if personaCfg.Model != "sonnet" {
+		t.Fatalf("persona model = %q, want sonnet override from recipe row", personaCfg.Model)
+	}
+}
+
+func TestAppendMissingRecipeAgentSpecs_OnlyFirstDuplicateRowMerges(t *testing.T) {
+	specs := AgentSpecs{{Type: AgentTypeClaude, Count: 4}}
+	err := appendMissingRecipeAgentSpecs(&specs, map[string]*persona.Persona{}, "team", "", []recipe.AgentSpec{
+		{Type: "cc", Count: 1, Model: "sonnet"},
+		{Type: "cc", Count: 2, Model: "opus"},
+	})
+	if err != nil {
+		t.Fatalf("appendMissingRecipeAgentSpecs error: %v", err)
+	}
+
+	claude := specs.ByType(AgentTypeClaude)
+	if len(claude) != 1 || claude[0].Count != 4 || claude[0].Model != "sonnet" {
+		t.Fatalf("claude specs = %+v, want single spec count=4 model=sonnet (first row merges, second skipped)", claude)
 	}
 }

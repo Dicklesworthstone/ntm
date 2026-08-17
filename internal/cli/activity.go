@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"strings"
@@ -137,8 +138,14 @@ func runActivity(session string, opts activityOptions) error {
 		return fmt.Errorf("session '%s' not found", session)
 	}
 
-	// Watch mode
+	// Watch mode. Under --json the watch stream is NDJSON: one compact JSON
+	// frame per refresh tick (the same envelope shape as single-shot --json),
+	// with no ANSI control sequences — previously --watch silently ignored
+	// --json and painted the TUI (bd-ws7-docs-ux-truth-tqh3l.4).
 	if opts.watchMode {
+		if jsonOutput {
+			return runActivityWatchNDJSON(session, opts)
+		}
 		return runActivityWatch(session, opts)
 	}
 
@@ -378,28 +385,32 @@ func passesFilter(agentType string, pane tmux.Pane, opts activityOptions, multiW
 	return false
 }
 
-func outputActivityJSON(result *activityResult) error {
-	type jsonAgent struct {
-		Pane       int     `json:"pane"`
-		AgentType  string  `json:"agent_type"`
-		State      string  `json:"state"`
-		Confidence float64 `json:"confidence"`
-		Velocity   float64 `json:"velocity"`
-		Duration   string  `json:"duration"`
-		StateSince string  `json:"state_since,omitempty"`
-	}
+// activityJSONAgent is one agent row in the --json envelope.
+type activityJSONAgent struct {
+	Pane       int     `json:"pane"`
+	AgentType  string  `json:"agent_type"`
+	State      string  `json:"state"`
+	Confidence float64 `json:"confidence"`
+	Velocity   float64 `json:"velocity"`
+	Duration   string  `json:"duration"`
+	StateSince string  `json:"state_since,omitempty"`
+}
 
-	type jsonOutput struct {
-		Success    bool           `json:"success"`
-		Session    string         `json:"session"`
-		CapturedAt string         `json:"captured_at"`
-		Agents     []jsonAgent    `json:"agents"`
-		Summary    map[string]int `json:"summary"`
-	}
+// activityJSONEnvelope is the --json envelope for `ntm activity`. Watch mode
+// streams the same shape as NDJSON frames (one per refresh tick).
+type activityJSONEnvelope struct {
+	Success    bool                `json:"success"`
+	Session    string              `json:"session"`
+	CapturedAt string              `json:"captured_at"`
+	Agents     []activityJSONAgent `json:"agents"`
+	Summary    map[string]int      `json:"summary"`
+	Error      string              `json:"error,omitempty"`
+}
 
-	agents := make([]jsonAgent, len(result.Agents))
+func buildActivityJSONEnvelope(result *activityResult) activityJSONEnvelope {
+	agents := make([]activityJSONAgent, len(result.Agents))
 	for i, a := range result.Agents {
-		agents[i] = jsonAgent{
+		agents[i] = activityJSONAgent{
 			Pane:       a.Pane,
 			AgentType:  a.AgentType,
 			State:      a.State,
@@ -412,17 +423,91 @@ func outputActivityJSON(result *activityResult) error {
 		}
 	}
 
-	output := jsonOutput{
+	return activityJSONEnvelope{
 		Success:    true,
 		Session:    result.Session,
 		CapturedAt: result.CapturedAt.Format(time.RFC3339),
 		Agents:     agents,
 		Summary:    result.Summary,
 	}
+}
 
+func outputActivityJSON(result *activityResult) error {
 	encoder := json.NewEncoder(os.Stdout)
 	encoder.SetIndent("", "  ")
-	return encoder.Encode(output)
+	return encoder.Encode(buildActivityJSONEnvelope(result))
+}
+
+// runActivityWatchNDJSON streams activity snapshots as NDJSON: one compact,
+// newline-terminated JSON frame per refresh tick. Collection errors emit a
+// success:false frame and the stream continues (best-effort watch, matching
+// the text watch loop). The stream ends on SIGINT/SIGTERM with exit 0.
+func runActivityWatchNDJSON(session string, opts activityOptions) error {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sigChan)
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-sigChan:
+			cancel()
+		case <-done:
+		}
+	}()
+
+	return activityWatchNDJSONLoop(ctx, os.Stdout, session, opts)
+}
+
+// activityWatchNDJSONLoop emits one compact frame per tick until ctx is
+// canceled. Split from runActivityWatchNDJSON so tests can drive it with a
+// cancellable context and an in-memory writer.
+func activityWatchNDJSONLoop(ctx context.Context, w io.Writer, session string, opts activityOptions) error {
+	// Compact one-object-per-line framing: no SetIndent.
+	encoder := json.NewEncoder(w)
+
+	ticker := time.NewTicker(opts.interval)
+	defer ticker.Stop()
+
+	firstRun := true
+	for {
+		if !firstRun {
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-ticker.C:
+			}
+		} else {
+			select {
+			case <-ctx.Done():
+				return nil
+			default:
+			}
+		}
+		firstRun = false
+
+		result, err := collectActivityData(session, opts)
+		if err != nil {
+			frame := activityJSONEnvelope{
+				Success:    false,
+				Session:    session,
+				CapturedAt: time.Now().Format(time.RFC3339),
+				Agents:     []activityJSONAgent{},
+				Summary:    map[string]int{},
+				Error:      err.Error(),
+			}
+			if encErr := encoder.Encode(frame); encErr != nil {
+				return encErr
+			}
+			continue
+		}
+		if encErr := encoder.Encode(buildActivityJSONEnvelope(result)); encErr != nil {
+			return encErr
+		}
+	}
 }
 
 func outputActivityError(session string, err error) error {

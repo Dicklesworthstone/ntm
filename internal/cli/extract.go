@@ -72,6 +72,30 @@ Examples:
 }
 
 func runExtract(sessionName, paneIndex, language string, lastPane bool, lines int, copyFlag, applyFlag bool, selectBlock int) error {
+	// --copy/--apply are interactive side-effect modes; under --json the JSON
+	// envelope is the whole contract and those side effects do not run. They
+	// used to be silently dropped (the JSON path returned before the copy or
+	// apply handling) — now the combination fails loudly instead
+	// (bd-ws7-docs-ux-truth-tqh3l.4).
+	if IsJSONOutput() && (copyFlag || applyFlag) {
+		combo := "--copy"
+		if applyFlag && copyFlag {
+			combo = "--copy/--apply"
+		} else if applyFlag {
+			combo = "--apply"
+		}
+		cause := fmt.Errorf("%s is not supported with --json output", combo)
+		return emitJSONFailureEnvelopeWithCause(
+			output.NewErrorFull(
+				"UNSUPPORTED_COMBINATION",
+				cause.Error(),
+				"",
+				"Run without --json to use "+combo+", or parse blocks[] from the JSON output and act on it yourself",
+			),
+			cause,
+		)
+	}
+
 	sessionName = strings.TrimSpace(sessionName)
 	if err := tmux.ValidateSessionName(sessionName); err != nil {
 		cause := fmt.Errorf("invalid session name: %w", err)

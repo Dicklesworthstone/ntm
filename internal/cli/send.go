@@ -2477,7 +2477,16 @@ func runInterrupt(session string, tags []string) error {
 		if err != nil {
 			return emitJSONFailureEnvelopeWithCause(output.NewError(err.Error()), err)
 		}
-		return output.PrintJSON(result)
+		if printErr := output.PrintJSON(result); printErr != nil {
+			return printErr
+		}
+		// PARTIAL semantics: a success:false envelope (partial or total
+		// interrupt failure) must exit non-zero so shell callers can gate
+		// on $? (bd-ws7-docs-ux-truth-tqh3l.6).
+		if resp, ok := result.(*output.InterruptResponse); ok && !resp.Success {
+			return jsonFailureExit()
+		}
+		return nil
 	}
 
 	if err := tmux.EnsureInstalled(); err != nil {
@@ -2502,7 +2511,10 @@ func runInterrupt(session string, tags []string) error {
 		return err
 	}
 
+	// Best-effort sweep: a tmux error on one pane must not leave the
+	// remaining panes un-interrupted (bd-ws7-docs-ux-truth-tqh3l.6).
 	count := 0
+	var failures []string
 	for _, p := range panes {
 		// Only interrupt agent panes
 		if isInterruptibleAgentPane(p) {
@@ -2514,13 +2526,18 @@ func runInterrupt(session string, tags []string) error {
 			}
 
 			if err := tmux.SendInterrupt(p.ID); err != nil {
-				return fmt.Errorf("interrupting pane %d: %w", p.Index, err)
+				failures = append(failures, fmt.Sprintf("pane %d: %v", p.Index, err))
+				continue
 			}
 			count++
 		}
 	}
 
 	fmt.Printf("Sent Ctrl+C to %d agent pane(s)\n", count)
+	if len(failures) > 0 {
+		return fmt.Errorf("interrupt partially failed (%d interrupted, %d failed): %s",
+			count, len(failures), strings.Join(failures, "; "))
+	}
 	return nil
 }
 
@@ -2545,8 +2562,15 @@ func buildInterruptResponse(ctx context.Context, session string, tags []string) 
 		return nil, err
 	}
 
-	var targetedPanes []int
+	// Best-effort sweep with per-pane results: a tmux error on one pane no
+	// longer aborts the remaining panes, and the envelope reports exactly
+	// which panes were interrupted and which failed
+	// (bd-ws7-docs-ux-truth-tqh3l.6).
+	multiWindow := tmux.PanesSpanMultipleWindows(panes)
+	targetedPanes := make([]int, 0, len(panes))
+	paneResults := make([]output.InterruptPaneResult, 0, len(panes))
 	interrupted := 0
+	failed := 0
 	skipped := 0
 
 	for _, p := range panes {
@@ -2561,20 +2585,44 @@ func buildInterruptResponse(ctx context.Context, session string, tags []string) 
 			}
 
 			targetedPanes = append(targetedPanes, p.Index)
-			if err := tmux.SendInterrupt(p.ID); err != nil {
-				return nil, fmt.Errorf("interrupting pane %d: %w", p.Index, err)
+			result := output.InterruptPaneResult{
+				Pane:      tmux.PaneTargetKey(p, multiWindow),
+				Index:     p.Index,
+				PaneID:    p.ID,
+				AgentType: tmux.AgentType(p.Type).Canonical().String(),
 			}
-			interrupted++
+			if err := tmux.SendInterrupt(p.ID); err != nil {
+				result.Status = "failed"
+				result.Error = err.Error()
+				failed++
+			} else {
+				result.Status = "interrupted"
+				interrupted++
+			}
+			paneResults = append(paneResults, result)
 		}
 	}
 
-	return &output.InterruptResponse{
+	resp := &output.InterruptResponse{
 		TimestampedResponse: output.NewTimestamped(),
+		Success:             failed == 0,
 		Session:             session,
 		Interrupted:         interrupted,
+		Failed:              failed,
 		Skipped:             skipped,
 		TargetedPanes:       targetedPanes,
-	}, nil
+		Panes:               paneResults,
+	}
+	if failed > 0 {
+		if interrupted > 0 {
+			resp.ErrorCode = "PARTIAL_INTERRUPT"
+			resp.Error = fmt.Sprintf("interrupt partially failed: %d pane(s) interrupted, %d failed", interrupted, failed)
+		} else {
+			resp.ErrorCode = "INTERRUPT_FAILED"
+			resp.Error = fmt.Sprintf("interrupt failed on all %d targeted pane(s)", failed)
+		}
+	}
+	return resp, nil
 }
 
 func newKillCmd() *cobra.Command {
