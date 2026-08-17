@@ -104,6 +104,7 @@ steps:
 
 ### Usage
 
+<!-- ntm-docs: skip -->
 ```bash
 # Run the workflow
 ntm pipeline run design-implement-test.yaml \
@@ -263,6 +264,7 @@ same prompt rotation independently. The state is stored under the current
 project's `.ntm/workflows/sequences/` directory, so a restarted shell can read
 the next prompt without rebuilding state in `/tmp` or shell arrays.
 
+<!-- ntm-docs: skip -->
 ```bash
 # Create the ordered review rotation once from the project root.
 ntm --robot-sequence=review \
@@ -810,6 +812,7 @@ prompt: Hello ${vars.name | "User"}
 - Different workflow file
 
 **Solutions**:
+<!-- ntm-docs: skip -->
 ```bash
 # Check state file exists
 ls .ntm/pipeline-state/
@@ -822,6 +825,7 @@ ntm pipeline resume workflow.yaml --state-file .ntm/pipeline-state/run-xxx.json
 
 #### Enable Verbose Output
 
+<!-- ntm-docs: skip -->
 ```bash
 ntm pipeline run workflow.yaml --verbose
 ```
@@ -840,6 +844,7 @@ ntm pipeline status workflow.yaml
 
 #### View Execution State
 
+<!-- ntm-docs: skip -->
 ```bash
 # List recent runs
 ntm pipeline list
@@ -850,6 +855,7 @@ ntm pipeline show <run-id>
 
 #### Monitor Progress
 
+<!-- ntm-docs: skip -->
 ```bash
 # Real-time progress
 ntm pipeline run workflow.yaml --progress

@@ -58,6 +58,7 @@ Example: req_20260322035400_a1b2c3d4
 ### 2.3 Request ID Generation
 
 **CLI:**
+<!-- ntm-docs: skip -->
 ```bash
 # Auto-generated (recommended)
 ntm --robot-send --target="agent:ntm/myproject/0.2" --msg="Start work"
@@ -92,6 +93,7 @@ curl -X POST /api/robot/send \
 
 Clients can provide an idempotency key for deduplication:
 
+<!-- ntm-docs: skip -->
 ```bash
 ntm --robot-send --target="..." --msg="..." --idempotency-key="idem_task123_retry1"
 ```
@@ -203,6 +205,7 @@ REQUEST FAILED
 
 When retry safety is uncertain:
 
+<!-- ntm-docs: skip -->
 ```bash
 # Check if action was completed
 ntm --robot-action-status --request-id="req_20260322035400_a1b2c3d4"
@@ -229,6 +232,7 @@ ntm --robot-action-status --request-id="req_20260322035400_a1b2c3d4"
 
 Related requests share a correlation ID:
 
+<!-- ntm-docs: skip -->
 ```bash
 # Initial request
 ntm --robot-send --target="..." --msg="Start task" \
@@ -388,6 +392,7 @@ Clients SHOULD persist:
 
 After transport failure:
 
+<!-- ntm-docs: skip -->
 ```bash
 # Check pending requests
 for req_id in $(cat pending_requests.json | jq -r '.pending_requests[].request_id'); do
@@ -410,6 +415,7 @@ done
 The same request ID works across all transports:
 
 **CLI:**
+<!-- ntm-docs: skip -->
 ```bash
 ntm --robot-send --request-id="req_123" --target="..." --msg="..."
 ```
@@ -434,6 +440,7 @@ data: { "request_id": "req_123", ... }
 
 Outcomes are retrievable regardless of originating transport:
 
+<!-- ntm-docs: skip -->
 ```bash
 # Check outcome from any transport
 ntm --robot-action-status --request-id="req_123"

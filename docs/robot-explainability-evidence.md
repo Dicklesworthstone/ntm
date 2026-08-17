@@ -249,6 +249,7 @@ Surfaces default to appropriate levels:
 
 ### 4.3 Requesting Levels
 
+<!-- ntm-docs: skip -->
 ```bash
 # Force verbose explanations
 ntm --robot-snapshot --explain=verbose

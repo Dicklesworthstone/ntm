@@ -347,6 +347,7 @@ Errors include retry guidance:
 
 For non-idempotent commands, include request ID:
 
+<!-- ntm-docs: skip -->
 ```bash
 ntm --robot-send --target="..." --msg="..." --request-id="req_123"
 ```

@@ -402,6 +402,7 @@ All transports apply same disclosure rules:
 
 ### CLI
 
+<!-- ntm-docs: skip -->
 ```bash
 # Robot output includes disclosure metadata
 ntm snapshot --robot 2>/dev/null | jq '.panes[0].disclosure'

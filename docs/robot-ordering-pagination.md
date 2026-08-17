@@ -169,6 +169,7 @@ ntm --robot-status --limit=20 --offset=40
 
 For event streams where offset is unstable:
 
+<!-- ntm-docs: skip -->
 ```bash
 # Initial fetch
 ntm --robot-events
@@ -307,6 +308,7 @@ Surfaces support multiple detail levels to trade verbosity for tokens:
 
 ### 6.2 Specifying Detail Level
 
+<!-- ntm-docs: skip -->
 ```bash
 ntm --robot-status --verbosity=minimal
 ntm --robot-snapshot --verbosity=full

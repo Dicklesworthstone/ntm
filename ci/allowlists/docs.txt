@@ -1,3 +1,23 @@
 # ci/allowlists/docs.txt — G3 docs-example conformance allowlist (bd-ws0-guards-klz98.4)
 # Format: <entry>\t<bead-id>\t<reason>  (see ci/allowlists/README.md)
-# Seeded by the G3 bead (H1 skip-count budget + go.mod-badge waiver line -> H7).
+# Consumed by tests/docs_conformance_test.go (runs in the Go test CI job, not
+# the bare reality-guards job). Entry classes:
+#   skip-budget:<file>:<n>   exact count of `<!-- ntm-docs: skip -->`-waived
+#                            ntm examples in <file>; ratcheted BOTH directions
+#   badge-waiver:go-version  waives the go.mod-vs-README badge assert
+# docs/planning/** is excluded from the gate by design (proposals archive —
+# hypothetical examples; see the test header and the G3 bead close reason).
+skip-budget:docs/ORCHESTRATION_FEATURES.md:14	bd-ws7-docs-ux-truth-tqh3l.1	H1's stale orchestration examples (--with-cass/--no-cass, robot spawn stagger, robot-send --route, diff --panes/--last, --assign-work, --robot-activity) plus valid lines sharing their waived blocks
+skip-budget:docs/REDACTION_SPEC.md:1	bd-ws7-docs-ux-truth-tqh3l	help-text sample shows `ntm config redaction.mode=off` syntax the CLI does not accept
+skip-budget:docs/WORKFLOW_EXAMPLES.md:13	bd-ws7-docs-ux-truth-tqh3l	pipeline flags/subcommands (--progress/--verbose/--state-file, show/tail) and multi-line --robot-sequence examples not in the shipped tree
+skip-budget:docs/attention-feed-contract.md:8	bd-ws7-docs-ux-truth-tqh3l	designed --robot-events/--robot-digest cursor flags not wired
+skip-budget:docs/robot-action-errors.md:1	bd-ws7-docs-ux-truth-tqh3l	designed --request-id flag not wired
+skip-budget:docs/robot-auditability.md:3	bd-ws7-docs-ux-truth-tqh3l	designed `ntm audit --robot` query flags not wired
+skip-budget:docs/robot-explainability-evidence.md:2	bd-ws7-docs-ux-truth-tqh3l	designed --explain levels not wired
+skip-budget:docs/robot-historical-inspection.md:4	bd-ws7-docs-ux-truth-tqh3l	designed `ntm inspect`/`ntm export --robot` surfaces not wired
+skip-budget:docs/robot-ordering-pagination.md:4	bd-ws7-docs-ux-truth-tqh3l	designed --cursor/--verbosity flags not wired
+skip-budget:docs/robot-request-identity.md:9	bd-ws7-docs-ux-truth-tqh3l	designed --request-id/--idempotency-key/--correlation-id/--robot-action-status not wired
+skip-budget:docs/robot-resource-references.md:2	bd-ws7-docs-ux-truth-tqh3l	designed --robot-inspect --refs / --robot-events --entity not wired
+skip-budget:docs/robot-sensitivity-redaction.md:1	bd-ws7-docs-ux-truth-tqh3l	designed `ntm snapshot --robot` disclosure example not wired
+skip-budget:docs/robot-watch-subscription.md:1	bd-ws7-docs-ux-truth-tqh3l	designed `ntm watch --robot --filter` subscription flags not wired
+badge-waiver:go-version	bd-ws7-docs-ux-truth-tqh3l.7	README badge says go 1.26.3+ but go.mod is 1.26.5; H7 generates the badge from go.mod and deletes this line in the same PR

@@ -309,6 +309,7 @@ ntm --robot-snapshot --since=2026-03-21T00:00:00Z  # Delta since timestamp
 
 Incremental event stream since cursor.
 
+<!-- ntm-docs: skip -->
 ```bash
 ntm --robot-events --cursor=evt_20260321023045123456789
 ntm --robot-events --cursor=evt_... --limit=100
@@ -345,6 +346,7 @@ ntm --robot-events --cursor=evt_... --actionability=action_required
 
 Token-efficient summary of what changed since cursor.
 
+<!-- ntm-docs: skip -->
 ```bash
 ntm --robot-digest --cursor=evt_20260321023045123456789
 ntm --robot-digest --cursor=evt_... --format=terse
@@ -541,6 +543,7 @@ A **profile** is a named preset of filter/verbosity settings:
 
 ### 9.2 Profile Selection
 
+<!-- ntm-docs: skip -->
 ```bash
 ntm --robot-events --profile=quiet --cursor=evt_...
 ```
@@ -549,6 +552,7 @@ ntm --robot-events --profile=quiet --cursor=evt_...
 
 When explicit filters are provided alongside a profile, explicit filters win:
 
+<!-- ntm-docs: skip -->
 ```bash
 # Uses quiet profile but adds bead category
 ntm --robot-events --profile=quiet --category=bead --cursor=evt_...

@@ -240,6 +240,7 @@ Redacted: [REDACTED:JWT:5e6f7a8b]
 ## UX & Error Messaging
 
 ### Warning Message Format
+<!-- ntm-docs: skip -->
 ```
 WARNING: Sensitive content detected
 

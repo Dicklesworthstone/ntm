@@ -348,6 +348,7 @@ When output is truncated, references are preserved:
 
 ### 6.2 Reference-Based Fetching
 
+<!-- ntm-docs: skip -->
 ```bash
 # Fetch specific entities by reference
 ntm --robot-inspect --refs="session:ntm/c,session:ntm/d"

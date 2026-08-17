@@ -370,6 +370,7 @@ All transports expose audit trail consistently:
 
 ### CLI
 
+<!-- ntm-docs: skip -->
 ```bash
 # Query audit trail for target
 ntm audit --robot --target alert:agent_stuck:pane-abc123 --last 24h

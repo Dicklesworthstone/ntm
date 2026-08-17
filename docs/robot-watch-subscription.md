@@ -428,6 +428,7 @@ Watch semantics are consistent across transports.
 
 ### CLI
 
+<!-- ntm-docs: skip -->
 ```bash
 # Start watch with subscription
 ntm watch --robot --filter "event_class=attention" --filter "severity>=warning"

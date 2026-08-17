@@ -159,6 +159,7 @@ RETURN UNKNOWN, confidence=0.50
 ### API Design
 
 **Robot Mode:**
+<!-- ntm-docs: skip -->
 ```bash
 ntm --robot-activity=SESSION [--activity-panes=1,2] [--activity-type=claude]
 ```
@@ -527,6 +528,7 @@ ntm send myproject --cc --route=least-loaded "Fix the bug"
 ```
 
 **Robot Mode Send with Routing:**
+<!-- ntm-docs: skip -->
 ```bash
 ntm --robot-send=SESSION --msg="Fix bug" --type=claude --route=least-loaded
 ```
@@ -621,6 +623,7 @@ ntm --robot-diff=SESSION --since=10m
 ```
 
 **Human CLI:**
+<!-- ntm-docs: skip -->
 ```bash
 $ ntm conflicts myproject
 
@@ -694,6 +697,7 @@ max_age_days = 30           # Only consider recent history
 
 ### API Integration
 
+<!-- ntm-docs: skip -->
 ```bash
 # Enable for this send
 ntm send myproject --cc --with-cass "Implement rate limiting"
@@ -1109,6 +1113,7 @@ Enables:
 
 Instead of agents self-selecting, ntm can assign work:
 
+<!-- ntm-docs: skip -->
 ```bash
 # ntm picks work and assigns to each agent
 ntm spawn myproject --cc 3 --assign-work
@@ -1162,6 +1167,7 @@ form cannot be updated surgically while preserving the operator's source.
 
 ### API Design
 
+<!-- ntm-docs: skip -->
 ```bash
 # Stagger flags
 ntm spawn myproject --cc 3 --stagger          # default 90s

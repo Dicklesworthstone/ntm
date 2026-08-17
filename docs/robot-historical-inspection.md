@@ -421,6 +421,7 @@ Normative rules:
 
 ### CLI
 
+<!-- ntm-docs: skip -->
 ```bash
 # As-of inspection
 ntm inspect --robot --as-of "2026-03-22T03:50:00Z" --section quota,alerts

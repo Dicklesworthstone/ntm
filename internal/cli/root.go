@@ -3130,6 +3130,14 @@ Shell Integration:
 	},
 }
 
+// RootCommand exposes the real cobra command tree for the docs-example
+// conformance test (WS0-G3, bd-ws0-guards-klz98.4), which resolves every
+// fenced `ntm ...` doc example against it. Read-only: callers must not
+// mutate the tree or execute commands through it.
+func RootCommand() *cobra.Command {
+	return rootCmd
+}
+
 func Execute() error {
 	defer closeRobotPersistence()
 	robotProcessExit = nil
