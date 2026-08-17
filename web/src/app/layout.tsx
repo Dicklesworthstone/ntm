@@ -13,7 +13,15 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" suppressHydrationWarning>
-      <body className="antialiased">{children}</body>
+      <body className="antialiased">
+        {children}
+        <footer
+          data-ntm-version={process.env.NEXT_PUBLIC_APP_VERSION}
+          className="px-4 py-3 text-center text-xs text-gray-400 dark:text-gray-600"
+        >
+          NTM v{process.env.NEXT_PUBLIC_APP_VERSION}
+        </footer>
+      </body>
     </html>
   );
 }

@@ -938,7 +938,6 @@ internal/output/progress.go:Steps.SetIndent	bd-g1-deadcode-backlog-2ijy8	outside
 internal/output/progress.go:Steps.SetTotal	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/output/progress.go:Steps.Skip	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/output/progress.go:Steps.Status	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/output/schema.go:NewErrorFull	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/output/schema.go:NewErrorWithHint	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/output/success.go:FormatSuggestions	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/output/success.go:KillSuggestions	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete

@@ -1,6 +1,6 @@
 {
   "name": "ntm-web",
-  "version": "1.16.0",
+  "version": "1.24.4",
   "private": true,
   "type": "module",
   "scripts": {
@@ -32,12 +32,12 @@
     "eslint-config-next": "^16.2.6",
     "jsdom": "^29.1.1",
     "openapi-typescript": "^7.13.0",
-    "postcss": "8.5.14",
+    "postcss": "8.5.26",
     "tailwindcss": "^4.3.0",
     "typescript": "^5.9.3",
     "vitest": "^4.1.6"
   },
   "overrides": {
-    "postcss": "8.5.14"
+    "postcss": "8.5.26"
   }
 }

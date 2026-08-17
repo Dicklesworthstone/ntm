@@ -4,11 +4,14 @@
  * Session Detail Page
  *
  * Shows session overview, panes list, and live output viewer.
+ * The target session comes from the `?session=` query parameter so the
+ * route stays statically exportable (output: "export" forbids dynamic
+ * path segments without generateStaticParams).
  */
 
 import Link from "next/link";
-import { useParams } from "next/navigation";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiRequestSignal, getAuthHeaders, getBaseUrl } from "@/lib/api/client";
 import { useConnection } from "@/lib/hooks/use-query";
@@ -103,9 +106,45 @@ function getErrorMessage(error: unknown): string {
   return "Unexpected error";
 }
 
-export default function SessionDetailPage() {
-  const params = useParams();
-  const sessionId = decodeURIComponent(String(params.sessionId || ""));
+export default function SessionsPage() {
+  return (
+    <div className="space-y-6">
+      <h1 className="text-2xl font-semibold text-gray-900 dark:text-white">
+        Session Detail
+      </h1>
+      <Suspense
+        fallback={
+          <div className="flex items-center justify-center h-64">
+            <div className="animate-spin h-8 w-8 border-4 border-blue-500 border-t-transparent rounded-full" />
+          </div>
+        }
+      >
+        <SessionDetail />
+      </Suspense>
+    </div>
+  );
+}
+
+function SessionDetail() {
+  const searchParams = useSearchParams();
+  const sessionId = searchParams.get("session") || "";
+
+  if (!sessionId) {
+    return (
+      <div className="rounded-lg border border-gray-200 bg-white p-6 text-sm text-gray-600 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300">
+        No session selected. Pick one from the{" "}
+        <Link href="/" className="text-blue-600 dark:text-blue-400 hover:underline">
+          sessions list
+        </Link>
+        .
+      </div>
+    );
+  }
+
+  return <SessionDetailView sessionId={sessionId} />;
+}
+
+function SessionDetailView({ sessionId }: { sessionId: string }) {
   const queryClient = useQueryClient();
   const { isConnected } = useConnection();
   const outputRef = useRef<HTMLDivElement | null>(null);

@@ -2,6 +2,8 @@
 package serve
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"crypto"
 	"crypto/rand"
@@ -16,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"log/slog"
 	"math/big"
@@ -116,6 +119,9 @@ type Server struct {
 
 	// Redaction configuration for REST API
 	redactionCfg *RedactionConfig
+
+	// webUI is the embedded static dashboard; nil when not mounted.
+	webUI fs.FS
 }
 
 type attentionHeartbeatSourceSummary struct {
@@ -207,6 +213,10 @@ type Config struct {
 	// retention goroutine, and callers construct many servers in tests. Ownership
 	// stays with the caller, which is responsible for closing it.
 	AuditStore *AuditStore
+	// WebUI is the embedded static dashboard (internal/webui.FS()). Nil means
+	// no UI is mounted and non-API paths 404 as before (`ntm serve` default;
+	// `ntm web` and `ntm serve --web` set it).
+	WebUI fs.FS
 }
 
 const (
@@ -256,21 +266,44 @@ const (
 	ErrCodeJobPending       = "JOB_PENDING"
 )
 
+// Idempotency cache bounds (bd-vq37v). The 24h TTL alone left the cache
+// unbounded: a remote-auth caller sending unique keys could grow the map (and
+// full buffered response bodies) for a day. Entries are capped with
+// least-recently-used eviction, and oversized responses are never cached.
+const (
+	// idempotencyMaxEntries caps the number of cached responses.
+	idempotencyMaxEntries = 4096
+	// idempotencyMaxBodyBytes caps a single cached (and buffered) response body.
+	idempotencyMaxBodyBytes = 1 << 20 // 1 MiB
+	// idempotencyFingerprintLimit bounds how much of a request body is hashed
+	// for replay fingerprinting. Bodies larger than this are fingerprinted by
+	// prefix, which is still deterministic for mismatch detection.
+	idempotencyFingerprintLimit = 8 << 20 // 8 MiB
+)
+
 // IdempotencyStore caches responses by idempotency key.
 type IdempotencyStore struct {
-	mu        sync.RWMutex
-	entries   map[string]*idempotencyEntry
-	ttl       time.Duration
-	stop      chan struct{}
-	startOnce sync.Once
-	stopOnce  sync.Once
+	mu         sync.RWMutex
+	entries    map[string]*idempotencyEntry
+	flights    map[string]chan struct{}
+	ttl        time.Duration
+	maxEntries int
+	stop       chan struct{}
+	startOnce  sync.Once
+	stopOnce   sync.Once
 }
 
 type idempotencyEntry struct {
 	response     []byte
 	statusCode   int
 	createdAt    time.Time
+	lastAccess   time.Time
 	replayHeader http.Header
+	// fingerprint is a hash of the originating request body. Replays with the
+	// same key but a different body are rejected (422) instead of silently
+	// echoing the first response. Empty means "unknown" (legacy Set callers)
+	// and skips the check.
+	fingerprint string
 }
 
 // NewIdempotencyStore creates an idempotency cache with the given TTL.
@@ -279,9 +312,11 @@ func NewIdempotencyStore(ttl time.Duration) *IdempotencyStore {
 		ttl = 24 * time.Hour
 	}
 	return &IdempotencyStore{
-		entries: make(map[string]*idempotencyEntry),
-		ttl:     ttl,
-		stop:    make(chan struct{}),
+		entries:    make(map[string]*idempotencyEntry),
+		flights:    make(map[string]chan struct{}),
+		ttl:        ttl,
+		maxEntries: idempotencyMaxEntries,
+		stop:       make(chan struct{}),
 	}
 }
 
@@ -319,30 +354,87 @@ func (s *IdempotencyStore) cleanup() {
 	}
 }
 
-// Get returns a cached response for the idempotency key.
-func (s *IdempotencyStore) Get(key string) ([]byte, int, http.Header, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+// GetWithFingerprint returns a cached response plus the fingerprint of the
+// request body that produced it (empty when unknown).
+func (s *IdempotencyStore) GetWithFingerprint(key string) ([]byte, int, http.Header, string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	entry, ok := s.entries[key]
 	if !ok {
-		return nil, 0, nil, false
+		return nil, 0, nil, "", false
 	}
 	if time.Since(entry.createdAt) > s.ttl {
-		return nil, 0, nil, false
+		return nil, 0, nil, "", false
 	}
-	return entry.response, entry.statusCode, cloneReplayHeaders(entry.replayHeader), true
+	entry.lastAccess = time.Now()
+	return entry.response, entry.statusCode, cloneReplayHeaders(entry.replayHeader), entry.fingerprint, true
 }
 
-// Set stores a response for the idempotency key.
-func (s *IdempotencyStore) Set(key string, response []byte, statusCode int, replayHeader http.Header) {
+// SetWithFingerprint stores a response together with the request-body
+// fingerprint. Oversized responses are not cached (bounded memory, bd-vq37v);
+// when the cache is full the least-recently-used entry is evicted.
+func (s *IdempotencyStore) SetWithFingerprint(key, fingerprint string, response []byte, statusCode int, replayHeader http.Header) {
+	if len(response) > idempotencyMaxBodyBytes {
+		return
+	}
 	s.startCleanup()
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if _, exists := s.entries[key]; !exists && s.maxEntries > 0 && len(s.entries) >= s.maxEntries {
+		s.evictLRULocked()
+	}
+	now := time.Now()
 	s.entries[key] = &idempotencyEntry{
 		response:     response,
 		statusCode:   statusCode,
-		createdAt:    time.Now(),
+		createdAt:    now,
+		lastAccess:   now,
 		replayHeader: cloneReplayHeaders(replayHeader),
+		fingerprint:  fingerprint,
+	}
+}
+
+// evictLRULocked removes the least-recently-used entry. Caller holds s.mu.
+func (s *IdempotencyStore) evictLRULocked() {
+	var oldestKey string
+	var oldest time.Time
+	for key, entry := range s.entries {
+		if oldestKey == "" || entry.lastAccess.Before(oldest) {
+			oldestKey = key
+			oldest = entry.lastAccess
+		}
+	}
+	if oldestKey != "" {
+		delete(s.entries, oldestKey)
+	}
+}
+
+// BeginFlight registers the caller as the executor for key if no request with
+// that key is currently in flight. It returns (nil, true) for the leader; a
+// follower receives a channel that closes when the leader finishes, plus
+// false. This closes the Get-miss..Set window in which two concurrent POSTs
+// with the same Idempotency-Key both executed (bd-vq37v).
+func (s *IdempotencyStore) BeginFlight(key string) (<-chan struct{}, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if ch, ok := s.flights[key]; ok {
+		return ch, false
+	}
+	if s.flights == nil {
+		s.flights = make(map[string]chan struct{})
+	}
+	ch := make(chan struct{})
+	s.flights[key] = ch
+	return ch, true
+}
+
+// EndFlight releases the in-flight reservation for key, waking any followers.
+func (s *IdempotencyStore) EndFlight(key string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if ch, ok := s.flights[key]; ok {
+		delete(s.flights, key)
+		close(ch)
 	}
 }
 
@@ -1036,6 +1128,7 @@ func New(cfg Config) *Server {
 		stateStore:         cfg.StateStore,
 		auth:               cfg.Auth,
 		auditStore:         cfg.AuditStore,
+		webUI:              cfg.WebUI,
 		sseClients:         make(map[chan events.BusEvent]struct{}),
 		corsAllowedOrigins: cfg.AllowedOrigins,
 		jwksCache:          newJWKSCache(cfg.Auth.OIDC.CacheTTL),
@@ -1257,6 +1350,13 @@ func (s *Server) buildRouter() chi.Router {
 	// Swagger UI documentation (outside /api/v1, no auth required)
 	r.Get("/docs", s.handleSwaggerUI)
 	r.Get("/docs/", s.handleSwaggerUI)
+
+	// Embedded web UI (F1b): every non-API path falls through to the static
+	// export. Registered as the NotFound handler so it can never shadow an
+	// API route, and it runs behind the full middleware chain above.
+	if s.webUI != nil {
+		r.NotFound(s.webUIHandler())
+	}
 
 	return r
 }
@@ -1563,6 +1663,14 @@ func (s *Server) authMiddlewareFunc(next http.Handler) http.Handler {
 	})
 }
 
+// idempotencyHandledKey marks a request as already processed by
+// idempotencyMiddleware. Some routes stack the middleware a second time on
+// top of the global r.Use (e.g. beads /close); without this marker the inner
+// instance would wait on the outer instance's in-flight reservation forever.
+type idempotencyHandledKeyType struct{}
+
+var idempotencyHandledKey idempotencyHandledKeyType
+
 // idempotencyMiddleware handles Idempotency-Key header for mutating requests.
 func (s *Server) idempotencyMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1572,30 +1680,87 @@ func (s *Server) idempotencyMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
+		// Re-entrancy guard: an outer instance already owns this request.
+		if r.Context().Value(idempotencyHandledKey) != nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+		r = r.WithContext(context.WithValue(r.Context(), idempotencyHandledKey, true))
+
 		key := scopedIdempotencyKey(r)
 		if key == "" {
 			next.ServeHTTP(w, r)
 			return
 		}
 
-		// Check cache
-		if cached, status, replayHeader, ok := s.idempotencyStore.Get(key); ok {
-			applyReplayHeaders(w.Header(), replayHeader)
-			w.Header().Set("X-Idempotent-Replay", "true")
-			w.WriteHeader(status)
-			_, _ = w.Write(cached) // Best-effort: client may have disconnected
-			return
+		// Fingerprint the request body so a replay with the same key but a
+		// DIFFERENT payload is rejected instead of silently echoing the first
+		// response (bd-vq37v).
+		fingerprint := idempotencyRequestFingerprint(r)
+
+		// Single-flight per scoped key: concurrent duplicates wait for the
+		// first request instead of double-executing (bd-vq37v). The loop
+		// re-checks the cache after each leader finishes; if the leader failed
+		// (nothing cached), the woken follower becomes the new leader.
+		for {
+			if cached, status, replayHeader, storedFP, ok := s.idempotencyStore.GetWithFingerprint(key); ok {
+				if storedFP != "" && fingerprint != "" && storedFP != fingerprint {
+					reqID := requestIDFromContext(r.Context())
+					writeErrorResponse(w, http.StatusUnprocessableEntity, ErrCodeIdempotentReplay,
+						"Idempotency-Key reused with a different request body", nil, reqID)
+					return
+				}
+				applyReplayHeaders(w.Header(), replayHeader)
+				w.Header().Set("X-Idempotent-Replay", "true")
+				w.WriteHeader(status)
+				_, _ = w.Write(cached) // Best-effort: client may have disconnected
+				return
+			}
+			wait, leader := s.idempotencyStore.BeginFlight(key)
+			if leader {
+				break
+			}
+			select {
+			case <-wait:
+				continue
+			case <-r.Context().Done():
+				reqID := requestIDFromContext(r.Context())
+				writeErrorResponse(w, http.StatusRequestTimeout, ErrCodeTimeout,
+					"client canceled while waiting for in-flight idempotent request", nil, reqID)
+				return
+			}
 		}
+		defer s.idempotencyStore.EndFlight(key)
 
 		// Capture response
 		rec := &responseRecorder{ResponseWriter: w, statusCode: http.StatusOK}
 		next.ServeHTTP(rec, r)
 
-		// Cache successful responses
-		if rec.statusCode >= 200 && rec.statusCode < 300 {
-			s.idempotencyStore.Set(key, rec.body, rec.statusCode, rec.Header())
+		// Cache successful, non-hijacked, bounded responses
+		if rec.statusCode >= 200 && rec.statusCode < 300 && !rec.hijacked && !rec.overflow {
+			s.idempotencyStore.SetWithFingerprint(key, fingerprint, rec.body, rec.statusCode, rec.Header())
 		}
 	})
+}
+
+// idempotencyRequestFingerprint hashes the request body (bounded by
+// idempotencyFingerprintLimit) and restores r.Body for downstream handlers.
+// Returns a non-empty hash even for empty bodies so mismatch detection always
+// has something to compare.
+func idempotencyRequestFingerprint(r *http.Request) string {
+	h := sha256.New()
+	if r.Body != nil && r.Body != http.NoBody {
+		data, err := io.ReadAll(io.LimitReader(r.Body, idempotencyFingerprintLimit))
+		if err != nil {
+			// Body unreadable; hand the bytes read so far plus the original
+			// reader back to the handler, which will surface the read error.
+			r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(data), r.Body))
+			return ""
+		}
+		h.Write(data)
+		r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(data), r.Body))
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // responseRecorder captures the response for idempotency caching.
@@ -1603,6 +1768,12 @@ type responseRecorder struct {
 	http.ResponseWriter
 	statusCode int
 	body       []byte
+	// overflow is set when the response exceeds idempotencyMaxBodyBytes; the
+	// buffer stops growing and the response is not cached (bd-vq37v).
+	overflow bool
+	// hijacked is set when the handler took over the connection; nothing
+	// meaningful can be cached afterwards.
+	hijacked bool
 }
 
 func (r *responseRecorder) WriteHeader(code int) {
@@ -1611,12 +1782,43 @@ func (r *responseRecorder) WriteHeader(code int) {
 }
 
 func (r *responseRecorder) Write(b []byte) (int, error) {
-	r.body = append(r.body, b...)
+	if !r.overflow {
+		if len(r.body)+len(b) > idempotencyMaxBodyBytes {
+			r.overflow = true
+			r.body = nil
+		} else {
+			r.body = append(r.body, b...)
+		}
+	}
 	return r.ResponseWriter.Write(b)
 }
 
 func (r *responseRecorder) Bytes() []byte {
 	return r.body
+}
+
+// Flush forwards http.Flusher so streaming mutating handlers keep working
+// when an Idempotency-Key is present (bd-vq37v).
+func (r *responseRecorder) Flush() {
+	if f, ok := r.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// Hijack forwards http.Hijacker (e.g. websocket upgrades behind a mutating
+// route). A hijacked response is never cached.
+func (r *responseRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h, ok := r.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, errors.New("serve: underlying ResponseWriter does not support hijacking")
+	}
+	r.hijacked = true
+	return h.Hijack()
+}
+
+// Unwrap supports http.ResponseController pass-through.
+func (r *responseRecorder) Unwrap() http.ResponseWriter {
+	return r.ResponseWriter
 }
 
 func scopedIdempotencyKey(r *http.Request) string {
@@ -1685,11 +1887,26 @@ func cloneReplayHeaders(src http.Header) http.Header {
 	return clone
 }
 
+// idempotencyOriginalRequestIDHeader carries the request ID of the request
+// that produced a cached response. The replay keeps the CURRENT request's
+// X-Request-ID (bd-vq37v: overwriting it corrupted audit correlation) and
+// exposes the original one here for cross-referencing.
+const idempotencyOriginalRequestIDHeader = "X-Idempotency-Original-Request-Id"
+
 func applyReplayHeaders(dst, src http.Header) {
 	if len(src) == 0 {
 		return
 	}
 	for key, values := range src {
+		// Do not clobber the live request's X-Request-ID with the first
+		// request's; surface the original under a dedicated header instead.
+		if http.CanonicalHeaderKey(key) == http.CanonicalHeaderKey(requestIDHeader) {
+			dst.Del(idempotencyOriginalRequestIDHeader)
+			for _, value := range values {
+				dst.Add(idempotencyOriginalRequestIDHeader, value)
+			}
+			continue
+		}
 		dst.Del(key)
 		for _, value := range values {
 			dst.Add(key, value)

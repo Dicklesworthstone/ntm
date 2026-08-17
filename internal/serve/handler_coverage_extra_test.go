@@ -27,7 +27,7 @@ import (
 
 func TestIdempotencyStoreStop(t *testing.T) {
 	store := NewIdempotencyStore(time.Hour)
-	store.Set("key1", []byte(`{"ok":true}`), 200, nil)
+	store.SetWithFingerprint("key1", "", []byte(`{"ok":true}`), 200, nil)
 
 	// Stop should be safe to call multiple times
 	store.Stop()
@@ -35,7 +35,7 @@ func TestIdempotencyStoreStop(t *testing.T) {
 	store.Stop()
 
 	// After stop, Get should still work (just no cleanup goroutine)
-	data, code, _, ok := store.Get("key1")
+	data, code, _, _, ok := store.GetWithFingerprint("key1")
 	if !ok {
 		t.Fatal("expected key1 to still be available after Stop")
 	}
@@ -51,10 +51,10 @@ func TestIdempotencyStoreExpiry(t *testing.T) {
 	store := NewIdempotencyStore(10 * time.Millisecond)
 	defer store.Stop()
 
-	store.Set("ephemeral", []byte(`{}`), 200, nil)
+	store.SetWithFingerprint("ephemeral", "", []byte(`{}`), 200, nil)
 	time.Sleep(20 * time.Millisecond)
 
-	_, _, _, ok := store.Get("ephemeral")
+	_, _, _, _, ok := store.GetWithFingerprint("ephemeral")
 	if ok {
 		t.Error("expected expired entry to not be found")
 	}
@@ -393,14 +393,20 @@ func TestIdempotencyMiddlewarePreservesReplayRequestID(t *testing.T) {
 	if rec2.Header().Get("X-Idempotent-Replay") != "true" {
 		t.Fatal("expected replay header on second request")
 	}
-	if got := rec2.Header().Get(requestIDHeader); got != "req-original" {
-		t.Fatalf("replay %s = %q, want req-original", requestIDHeader, got)
+	// bd-vq37v: the replay keeps the CURRENT request's X-Request-ID for audit
+	// correlation; the originating request's ID is surfaced separately.
+	if got := rec2.Header().Get(requestIDHeader); got != "req-second" {
+		t.Fatalf("replay %s = %q, want req-second", requestIDHeader, got)
+	}
+	if got := rec2.Header().Get(idempotencyOriginalRequestIDHeader); got != "req-original" {
+		t.Fatalf("replay %s = %q, want req-original", idempotencyOriginalRequestIDHeader, got)
 	}
 
 	var replayBody map[string]interface{}
 	if err := json.NewDecoder(rec2.Body).Decode(&replayBody); err != nil {
 		t.Fatalf("decode replay body: %v", err)
 	}
+	// The cached body is replayed verbatim, so it still carries the original ID.
 	if got := replayBody["request_id"]; got != "req-original" {
 		t.Fatalf("replay body request_id = %v, want req-original", got)
 	}

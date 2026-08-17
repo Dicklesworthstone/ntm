@@ -22,6 +22,7 @@ const navItems = [
   { href: "/agents", label: "Agents" },
   { href: "/beads", label: "Beads" },
   { href: "/mail", label: "Mail" },
+  { href: "/memory", label: "Memory" },
 ];
 
 function ConnectionIndicator({ state }: { state: ConnectionState }) {

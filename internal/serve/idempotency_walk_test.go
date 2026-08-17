@@ -144,7 +144,7 @@ func TestIdempotencyRouterCoverage(t *testing.T) {
 		if scoped == "" {
 			t.Fatalf("scoped key empty for %s %s", rt.Method, rt.Pattern)
 		}
-		srv.idempotencyStore.Set(scoped, canned, http.StatusOK, http.Header{"Content-Type": {"application/json"}})
+		srv.idempotencyStore.SetWithFingerprint(scoped, "", canned, http.StatusOK, http.Header{"Content-Type": {"application/json"}})
 
 		req := httptest.NewRequest(rt.Method, path, nil)
 		req.Header.Set("Idempotency-Key", key)

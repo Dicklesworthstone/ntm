@@ -35,10 +35,15 @@ version_probe = 'bash -n install.sh && grep -q "REPO_OWNER=\"Dicklesworthstone\"
 [artifact.web]
 kind = "web-embed"
 dir = "web"
-# Built but never shipped (F1). F1b lands go:embed + `ntm web` + the ldflags
-# version stamp and MUST replace this deferred line with a real version_probe
-# in the same PR (release_artifacts.toml registration is in its exit criteria).
-deferred = "bd-ws5-ship-or-cut-jv0rc.1.2"
+# Shipped by F1b (bd-ws5-ship-or-cut-jv0rc.1.2): the static export is
+# go:embed-ed from internal/webui/dist and served by `ntm web` / `ntm serve
+# --web`. The probe asserts (1) the embed directive is live, (2) the embedded
+# export is present, and (3) BOTH the source package.json version and the
+# baked data-ntm-version stamp in the embedded index.html equal the tag —
+# version skew between UI and binary is exactly how the dashboard froze at
+# v1.16.0. A stale embed (version bump without scripts/build_web.sh) fails
+# here and in the internal/webui lockstep test.
+version_probe = 'grep -q "go:embed all:dist" internal/webui/webui.go && test -f internal/webui/dist/index.html && grep -q "\"version\": \"${EXPECTED_VERSION}\"" web/package.json && grep -q "data-ntm-version=\"${EXPECTED_VERSION}\"" internal/webui/dist/index.html && echo "${EXPECTED_VERSION}"'
 
 [artifact.vscode-extension]
 kind = "vsix"

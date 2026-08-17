@@ -5041,6 +5041,7 @@ func init() {
 		newGuardsCmd(),
 		newApproveCmd(),
 		newServeCmd(),
+		newWebCmd(),
 		newSetupCmd(),
 		newActivityCmd(),
 		newHistoryCmd(),

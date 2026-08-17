@@ -61,25 +61,6 @@ export default function SessionsPage() {
     });
   }, [filter, sessionList]);
 
-  if (isLoading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <div className="animate-spin h-8 w-8 border-4 border-blue-500 border-t-transparent rounded-full" />
-      </div>
-    );
-  }
-
-  if (error) {
-    const message = error instanceof Error ? error.message : "Unknown error";
-    return (
-      <div className="p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-md">
-        <p className="text-red-700 dark:text-red-400">
-          Error loading sessions: {message}
-        </p>
-      </div>
-    );
-  }
-
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -91,6 +72,21 @@ export default function SessionsPage() {
           {filteredSessions.length !== 1 ? "s" : ""}
         </span>
       </div>
+
+      {isLoading && (
+        <div className="flex items-center justify-center h-64">
+          <div className="animate-spin h-8 w-8 border-4 border-blue-500 border-t-transparent rounded-full" />
+        </div>
+      )}
+
+      {error && (
+        <div className="p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-md">
+          <p className="text-red-700 dark:text-red-400">
+            Error loading sessions:{" "}
+            {error instanceof Error ? error.message : "Unknown error"}
+          </p>
+        </div>
+      )}
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="text-sm text-gray-500 dark:text-gray-400">
@@ -104,7 +100,7 @@ export default function SessionsPage() {
         />
       </div>
 
-      {filteredSessions.length === 0 ? (
+      {!isLoading && !error && filteredSessions.length === 0 ? (
         <div className="text-center py-12">
           <p className="text-gray-500 dark:text-gray-400">
             No sessions found. Create one with{" "}
@@ -136,7 +132,7 @@ function SessionCard({ session }: { session: SessionRecord }) {
 
   return (
     <Link
-      href={`/sessions/${encodeURIComponent(sessionName)}`}
+      href={`/sessions?session=${encodeURIComponent(sessionName)}`}
       className="group bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4 hover:border-blue-300 dark:hover:border-blue-500 transition-colors"
     >
       <div className="flex items-start justify-between">

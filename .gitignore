@@ -2,6 +2,8 @@
 /ntm
 *.exe
 dist/
+# ...except the committed web-UI embed source (go:embed all:dist in internal/webui)
+!internal/webui/dist/
 
 # Test coverage
 coverage.out
@@ -13,6 +15,8 @@ coverage.html
 web/node_modules/
 web/.next/
 web/coverage/
+# next build (output: 'export') scratch output; the committed copy lives in internal/webui/dist
+web/out/
 vscode/node_modules/
 vscode/out/
 vscode/package-lock.json

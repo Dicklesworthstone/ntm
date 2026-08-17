@@ -17,6 +17,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/serve"
 	"github.com/Dicklesworthstone/ntm/internal/state"
+	"github.com/Dicklesworthstone/ntm/internal/webui"
 )
 
 func newServeCmd() *cobra.Command {
@@ -65,11 +66,46 @@ Examples:
 	cmd.Flags().StringVar(&opts.MTLSCA, "mtls-ca", "", "Client CA bundle for mtls auth mode")
 	cmd.Flags().StringArrayVar(&opts.CORSAllowOrigins, "cors-allow-origin", nil, "Allowed CORS origins (repeatable). Defaults to localhost only.")
 	cmd.Flags().StringVar(&opts.PublicBaseURL, "public-base-url", "", "Public base URL for external clients (optional)")
+	cmd.Flags().BoolVar(&opts.Web, "web", false, "Also serve the embedded web dashboard at / (same as `ntm web`)")
+
+	return cmd
+}
+
+func newWebCmd() *cobra.Command {
+	opts := serveOptions{
+		Host:     "127.0.0.1",
+		Port:     serve.DefaultPort,
+		AuthMode: "local",
+		Web:      true,
+	}
+
+	cmd := &cobra.Command{
+		Use:   "web",
+		Short: "Start the NTM server with the embedded web dashboard",
+		Long: `Start the HTTP server (identical to ` + "`ntm serve`" + `) with the embedded
+web dashboard mounted at /. The dashboard is the static export of web/,
+compiled into the binary at build time, so its version is always in lockstep
+with the binary.
+
+Examples:
+  ntm web                    # Dashboard + API on http://127.0.0.1:7337
+  ntm web --port 8080        # Custom port`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runServe(opts)
+		},
+	}
+
+	cmd.Flags().StringVar(&opts.Host, "host", opts.Host, "HTTP bind host (default 127.0.0.1)")
+	cmd.Flags().IntVar(&opts.Port, "port", opts.Port, "HTTP server port")
+	cmd.Flags().StringVar(&opts.AuthMode, "auth-mode", opts.AuthMode, "Auth mode: local|api_key|oidc|mtls")
+	cmd.Flags().StringVar(&opts.APIKey, "api-key", "", "API key for api_key auth mode")
 
 	return cmd
 }
 
 type serveOptions struct {
+	Web              bool
 	Host             string
 	Port             int
 	PublicBaseURL    string
@@ -177,6 +213,13 @@ func runServe(opts serveOptions) error {
 				ClientCAFile: opts.MTLSCA,
 			},
 		},
+	}
+	if opts.Web {
+		ui, err := webui.FS()
+		if err != nil {
+			return fmt.Errorf("embedded web UI unavailable: %w", err)
+		}
+		serverCfg.WebUI = ui
 	}
 	if err := serve.ValidateConfig(serverCfg); err != nil {
 		return err

@@ -4441,9 +4441,9 @@ func TestIdempotencyStore(t *testing.T) {
 	store := NewIdempotencyStore(time.Hour)
 
 	// Test set and get
-	store.Set("key1", []byte(`{"test": true}`), 200, nil)
+	store.SetWithFingerprint("key1", "", []byte(`{"test": true}`), 200, nil)
 
-	resp, status, _, ok := store.Get("key1")
+	resp, status, _, _, ok := store.GetWithFingerprint("key1")
 	if !ok {
 		t.Fatal("Expected to find key1")
 	}
@@ -4455,7 +4455,7 @@ func TestIdempotencyStore(t *testing.T) {
 	}
 
 	// Test non-existent key
-	_, _, _, ok = store.Get("nonexistent")
+	_, _, _, _, ok = store.GetWithFingerprint("nonexistent")
 	if ok {
 		t.Error("Expected not to find nonexistent key")
 	}

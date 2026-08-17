@@ -54,25 +54,16 @@ function DashboardContent({ children }: DashboardLayoutProps) {
 
 export default function DashboardLayout({ children }: DashboardLayoutProps) {
   const router = useRouter();
-  const [isChecking, setIsChecking] = useState(true);
 
   useEffect(() => {
-    // Check if we have connection config
+    // Redirect to /connect when no connection config is saved. The content
+    // renders unconditionally so the static export carries each route's real
+    // markup (the F1 non-stub proof asserts on the exported HTML).
     const config = getConnectionConfig();
     if (!config) {
       router.replace("/connect");
-      return;
     }
-    setIsChecking(false);
   }, [router]);
-
-  if (isChecking) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-900">
-        <div className="animate-spin h-8 w-8 border-4 border-blue-500 border-t-transparent rounded-full" />
-      </div>
-    );
-  }
 
   return (
     <NtmQueryProvider>

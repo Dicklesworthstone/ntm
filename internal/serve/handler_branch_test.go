@@ -446,10 +446,10 @@ func TestIdempotencyStore_CleanupExpiry(t *testing.T) {
 	store := NewIdempotencyStore(50 * time.Millisecond)
 	defer store.Stop()
 
-	store.Set("ephemeral", []byte(`{"ok":true}`), 200, nil)
+	store.SetWithFingerprint("ephemeral", "", []byte(`{"ok":true}`), 200, nil)
 
 	// Verify it's there
-	_, _, _, ok := store.Get("ephemeral")
+	_, _, _, _, ok := store.GetWithFingerprint("ephemeral")
 	if !ok {
 		t.Fatal("expected ephemeral key to be present initially")
 	}
@@ -459,7 +459,7 @@ func TestIdempotencyStore_CleanupExpiry(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Get should now return false due to TTL check
-	_, _, _, ok = store.Get("ephemeral")
+	_, _, _, _, ok = store.GetWithFingerprint("ephemeral")
 	if ok {
 		t.Error("expected ephemeral key to have expired")
 	}
@@ -5211,8 +5211,8 @@ func TestNewIdempotencyStore_DefaultTTL(t *testing.T) {
 	defer store.Stop()
 
 	// Should not panic; TTL defaults to 24h
-	store.Set("key1", []byte(`{"ok":true}`), 200, nil)
-	data, code, _, ok := store.Get("key1")
+	store.SetWithFingerprint("key1", "", []byte(`{"ok":true}`), 200, nil)
+	data, code, _, _, ok := store.GetWithFingerprint("key1")
 	if !ok {
 		t.Fatal("expected key1 to be found")
 	}
@@ -5230,8 +5230,8 @@ func TestNewIdempotencyStore_NegativeTTL(t *testing.T) {
 	store := NewIdempotencyStore(-5 * time.Second)
 	defer store.Stop()
 
-	store.Set("k", []byte("v"), 201, nil)
-	_, code, _, ok := store.Get("k")
+	store.SetWithFingerprint("k", "", []byte("v"), 201, nil)
+	_, code, _, _, ok := store.GetWithFingerprint("k")
 	if !ok || code != 201 {
 		t.Errorf("expected key found with code 201, got ok=%v code=%d", ok, code)
 	}
@@ -5243,10 +5243,10 @@ func TestIdempotencyStore_Get_Expired(t *testing.T) {
 	store := NewIdempotencyStore(1 * time.Millisecond)
 	defer store.Stop()
 
-	store.Set("ephemeral", []byte("data"), 200, nil)
+	store.SetWithFingerprint("ephemeral", "", []byte("data"), 200, nil)
 	time.Sleep(5 * time.Millisecond) // Wait for TTL to expire
 
-	_, _, _, ok := store.Get("ephemeral")
+	_, _, _, _, ok := store.GetWithFingerprint("ephemeral")
 	if ok {
 		t.Error("expected expired entry to not be found")
 	}
