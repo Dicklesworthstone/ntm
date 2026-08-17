@@ -32,6 +32,23 @@ NTM is a tmux session management tool for orchestrating multiple AI coding agent
 
 ---
 
+## [v1.24.4] -- 2026-08-16 [GitHub Release]
+
+**R1 of the reality-bridge program** -- a project-wide reality check (code vs documented promises) produced systemic CI guards and this first truth-and-bugs wave.
+
+### Reliability
+
+- **Placebo surfaces made real.** `ntm metrics snapshot list` runs an actual session-scoped query instead of unconditionally returning an empty list; `work queue-dry --create-beads` resolves the roadmap parent from the *target* project (flag, then a single open epic, never a hardcoded foreign epic) and reports `dry_run` truthfully from what actually happened.
+- **Live bugs fixed.** Worktree merge/sync detect the repository's default branch instead of assuming `main`; a failed quota fetch reads UNKNOWN instead of healthy; `--robot-dcg-status` reports the real `[integrations.dcg]` config and counts actual check cycles; session labels split on the canonical `--` helper (three copy-paste extractors unified); robot-mode spawns now start the same resilience monitor CLI spawns get, with envelope-visible best-effort semantics; `random` routing is genuinely random and sticky/round-robin persist per-session state (migration 019).
+- **Review-gate catches.** Monitor manifests record live `%N` pane IDs (the physical-address form would have read every robot-spawned agent as crashed); dry-run routing no longer advances persisted cursors.
+
+### Verification And Release
+
+- **Seven systemic CI guards** now make the audited gap classes unrepresentable: a dead-code gate (deadcode over `cmd/ntm`, multi-GOOS), a config-key liveness test, a docs-example conformance test (which found 80 broken examples on its first run), a release-artifact lockstep preflight, a placebo lint, single-definition contract lints, and both-direction allowlist ratchets with mandatory firing canaries. The hermetic serve parity harness runs in CI with an executed-count>0 assertion -- which immediately exposed that the integration test package had silently never run in CI (bd-zaarm).
+- The One Reachable Implementation rule is now an ADR in AGENTS.md; a scripted 90-minute re-audit ritual (`scripts/reality_audit.sh`) becomes the release gate.
+
+---
+
 ## [v1.24.3] -- 2026-08-16 [GitHub Release]
 
 **6 commits since v1.24.2** -- a fourth fresh-eyes pass: the released contract smoke-verified live, the E2E backlog triaged to root cause, and two small shipped defects corrected.
