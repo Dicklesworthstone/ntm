@@ -20,7 +20,7 @@
 #   - If something is destructive (rm/git reset), make it opt-in and ask for confirmation.
 #   - Include one concrete “next command” when possible.
 #
-# NOTE: Recents/favorites/pinning are planned but may not be available in all builds yet.
+# NOTE: Recents, favorites (`ctrl+f`), and pinning (`ctrl+p`) are shipped palette features.
 
 ## Analysis & Review
 

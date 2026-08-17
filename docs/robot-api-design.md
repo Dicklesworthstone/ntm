@@ -81,12 +81,12 @@ Tool bridges are **optional**. When a tool is missing, robot commands return `DE
 - **MS** (Meta Skill): `--robot-ms-search`, `--robot-ms-show`
 - **DCG** (Destructive Command Guard): `--robot-dcg-status`
 - **SLB** (two-person approvals): `--robot-slb-pending`, `--robot-slb-approve`, `--robot-slb-deny`
+- **RU** (repo updater): `--robot-ru-sync` — shipped
+- **GIIL** (image fetch): `--robot-giil-fetch` — shipped
+- **XF** (archive search): `--robot-xf-search`, `--robot-xf-status` — shipped
 
 **Planned / rolling out** (names follow `--robot-<tool>-<action>`; confirm via `--robot-capabilities`)
-- **RU** (repo updater): `--robot-ru-*`
-- **UBS** (Ultimate Bug Scanner): `--robot-ubs-*`
-- **GIIL** (image fetch): `--robot-giil-*`
-- **XF** (archive search): `--robot-xf-*`
+- **UBS** (Ultimate Bug Scanner): `--robot-ubs-*` (the human CLI already ships `ntm scan` / `ntm bugs`)
 
 ### 1.4 Resource Lookups
 

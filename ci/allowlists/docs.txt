@@ -7,7 +7,6 @@
 #   badge-waiver:go-version  waives the go.mod-vs-README badge assert
 # docs/planning/** is excluded from the gate by design (proposals archive —
 # hypothetical examples; see the test header and the G3 bead close reason).
-skip-budget:docs/ORCHESTRATION_FEATURES.md:14	bd-ws7-docs-ux-truth-tqh3l.1	H1's stale orchestration examples (--with-cass/--no-cass, robot spawn stagger, robot-send --route, diff --panes/--last, --assign-work, --robot-activity) plus valid lines sharing their waived blocks
 skip-budget:docs/REDACTION_SPEC.md:1	bd-ws7-docs-ux-truth-tqh3l	help-text sample shows `ntm config redaction.mode=off` syntax the CLI does not accept
 skip-budget:docs/WORKFLOW_EXAMPLES.md:13	bd-ws7-docs-ux-truth-tqh3l	pipeline flags/subcommands (--progress/--verbose/--state-file, show/tail) and multi-line --robot-sequence examples not in the shipped tree
 skip-budget:docs/attention-feed-contract.md:8	bd-ws7-docs-ux-truth-tqh3l	designed --robot-events/--robot-digest cursor flags not wired
