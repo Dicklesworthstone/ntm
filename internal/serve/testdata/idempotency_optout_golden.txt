@@ -1,0 +1,13 @@
+# Idempotency opt-out golden list (D4, bd-ws3-contract-breadth-psvyu.4).
+#
+# Every non-GET route served by the router MUST be replay-verified by
+# TestIdempotencyRouterCoverage (internal/serve/idempotency_walk_test.go)
+# UNLESS it is enumerated here with a justification. The test enforces the
+# ratchet in BOTH directions:
+#   - a non-GET route neither replay-verified nor listed here fails the test;
+#   - an entry here that no longer resolves to a served route fails the test.
+# Adding an opt-out is therefore always a visible, reviewed diff.
+#
+# Format (tab-separated): METHOD<TAB>chi-route-pattern<TAB>one-line justification
+#
+# (intentionally empty — every mutating route currently supports replay)

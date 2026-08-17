@@ -1062,6 +1062,20 @@ func (s *Server) buildRouter() chi.Router {
 		r.Use(s.AuditMiddleware(s.auditStore))
 	}
 	r.Use(s.redactionMiddleware) // Redact sensitive content in requests/responses
+	// Idempotency-Key replay for EVERY mutating route — the single mount point
+	// (D4, bd-ws3-contract-breadth-psvyu.4). Deleting this one line disables the
+	// feature (rollback lever). The middleware is inert for requests without an
+	// Idempotency-Key header and for non-mutating methods.
+	//
+	// Replay ordering note: this sits ABOVE the per-route RequirePermission
+	// chains, so a cache-hit replay returns without re-running the permission
+	// check. That is sound because scopedIdempotencyKey embeds the caller's
+	// role and user ID: a cached entry can only exist for the same principal
+	// whose original request already passed RequirePermission (only 2xx
+	// responses are cached), and the role→permission mapping is static.
+	// TestIdempotencyReplayStillEnforcesPermission covers the cross-principal
+	// case; TestIdempotencyRouterCoverage covers every mutating route.
+	r.Use(s.idempotencyMiddleware)
 
 	// Health check (no versioning)
 	r.Get("/health", s.handleHealth)
@@ -1155,17 +1169,12 @@ func (s *Server) buildRouter() chi.Router {
 		})
 
 		// Jobs API - read requires PermReadJobs, write requires PermWriteJobs.
-		//
-		// idempotencyMiddleware must sit AFTER RequirePermission in each chain, not
-		// on the sub-router. Chi applies a sub-router's Use middlewares before
-		// routing, hence before an inline With chain, and a cached replay returns
-		// from the middleware without calling next — so the permission check never
-		// ran for a replayed request.
+		// Idempotency replay is provided by the router-level mount above.
 		r.Route("/jobs", func(r chi.Router) {
 			r.With(s.RequirePermission(PermReadJobs)).Get("/", s.handleListJobs)
-			r.With(s.RequirePermission(PermWriteJobs), s.idempotencyMiddleware).Post("/", s.handleCreateJob)
+			r.With(s.RequirePermission(PermWriteJobs)).Post("/", s.handleCreateJob)
 			r.With(s.RequirePermission(PermReadJobs)).Get("/{id}", s.handleGetJob)
-			r.With(s.RequirePermission(PermWriteJobs), s.idempotencyMiddleware).Delete("/{id}", s.handleCancelJob)
+			r.With(s.RequirePermission(PermWriteJobs)).Delete("/{id}", s.handleCancelJob)
 		})
 
 		// Pipeline API
