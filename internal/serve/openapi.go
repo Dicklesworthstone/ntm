@@ -125,6 +125,11 @@ type SecurityScheme struct {
 }
 
 // GenerateOpenAPISpec generates an OpenAPI 3.1 spec from the kernel registry.
+//
+// Deprecated: the served chi router is the single OpenAPI source of truth
+// (bd-ws4-openapi-parity-wpwck); use GenerateOpenAPISpecFromRouter. This
+// kernel-registry generator is retained only until the kernel registry's
+// route descriptions are deleted in the sign-off-gated W4 batch.
 func GenerateOpenAPISpec(version, serverURL string) *OpenAPISpec {
 	commands := kernel.List()
 
@@ -426,9 +431,22 @@ func ensureReferencedSchema(components *OpenAPIComponents, schema *Schema, sourc
 	}
 }
 
-// handleOpenAPISpec serves the OpenAPI JSON specification.
+// handleOpenAPISpec serves the OpenAPI JSON specification, generated from
+// this server's own router (the single source of truth — see openapi_router.go).
 func (s *Server) handleOpenAPISpec(w http.ResponseWriter, r *http.Request) {
-	spec := GenerateOpenAPISpec(s.version, s.documentationBaseURL(r))
+	router := s.router
+	if router == nil {
+		// Server constructed without New() (tests); walk a hermetic router
+		// so the document still describes the served route table.
+		hermetic := NewHermeticServer(s.version)
+		defer hermetic.Stop()
+		router = hermetic.Router()
+	}
+	spec, err := buildRouterOpenAPISpec(router, s.version, s.documentationBaseURL(r))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 
 	specBytes, err := json.Marshal(spec)
 	if err != nil {
