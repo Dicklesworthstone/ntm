@@ -75,7 +75,7 @@ func TestRenderEmptyState(t *testing.T) {
 		out := RenderEmptyState(EmptyStateOptions{
 			Icon:        IconExternal,
 			Title:       "Not initialized",
-			Description: "Run 'bd init' in your project",
+			Description: "Run 'br init' in your project",
 			Width:       40,
 			Centered:    true,
 		})

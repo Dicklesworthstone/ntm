@@ -525,3 +525,88 @@ func TestReadmeGoVersionBadge(t *testing.T) {
 			goVersion, docsAllowlistRel, badgeWaiverEntry)
 	}
 }
+
+// TestReadmeGhcrImageMatchesCI is the H7 ghcr grep-gate
+// (bd-ws7-docs-ux-truth-tqh3l.7): the release workflow pushes multi-arch
+// images to ${REGISTRY}/${github.repository}; the README must reference
+// EXACTLY that image coordinate (with a docker-pull example), so the docs
+// cannot cite a wrong image name. G3's example executor cannot cover this —
+// docker lines are not `ntm ` commands — hence this dedicated gate. The
+// coordinate is DERIVED (registry from release.yml, owner/repo from go.mod's
+// module path, lowercased per docker naming), never hardcoded.
+func TestReadmeGhcrImageMatchesCI(t *testing.T) {
+	root := docsRepoRoot(t)
+
+	workflow, err := os.ReadFile(filepath.Join(root, ".github/workflows/release.yml"))
+	if err != nil {
+		t.Fatalf("reading release.yml: %v", err)
+	}
+	wf := string(workflow)
+
+	// Registry host from the workflow env block.
+	registry := ""
+	for _, line := range strings.Split(wf, "\n") {
+		if v, ok := strings.CutPrefix(strings.TrimSpace(line), "REGISTRY:"); ok {
+			registry = strings.TrimSpace(v)
+			break
+		}
+	}
+	if registry == "" {
+		t.Fatal("release.yml has no `REGISTRY:` env entry — if the docker push moved, update this gate in the same PR")
+	}
+
+	// The workflow must still push to REGISTRY/IMAGE_NAME with
+	// IMAGE_NAME = github.repository; anchor the derivation to reality.
+	if !strings.Contains(wf, "IMAGE_NAME: ${{ github.repository }}") {
+		t.Fatal("release.yml no longer sets IMAGE_NAME from github.repository — update this gate's coordinate derivation in the same PR")
+	}
+	if !strings.Contains(wf, "images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}") {
+		t.Fatal("release.yml docker metadata no longer uses REGISTRY/IMAGE_NAME — update this gate in the same PR")
+	}
+
+	// Owner/repo from go.mod's module path (github.com/<owner>/<repo>),
+	// lowercased: docker image names are lowercase even when the GitHub
+	// repository is not.
+	gomod, err := os.ReadFile(filepath.Join(root, "go.mod"))
+	if err != nil {
+		t.Fatalf("reading go.mod: %v", err)
+	}
+	repoPath := ""
+	for _, line := range strings.Split(string(gomod), "\n") {
+		if v, ok := strings.CutPrefix(strings.TrimSpace(line), "module "); ok {
+			repoPath = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(v), "github.com/"))
+			break
+		}
+	}
+	if repoPath == "" || strings.Count(repoPath, "/") != 1 {
+		t.Fatalf("could not derive <owner>/<repo> from go.mod module path (got %q)", repoPath)
+	}
+
+	image := registry + "/" + repoPath // e.g. ghcr.io/dicklesworthstone/ntm
+
+	readme, err := os.ReadFile(filepath.Join(root, "README.md"))
+	if err != nil {
+		t.Fatalf("reading README.md: %v", err)
+	}
+	rd := string(readme)
+
+	if !strings.Contains(rd, image) {
+		t.Errorf("README.md never references the CI-pushed image coordinate %q — the release workflow pushes multi-arch images there; document them (Installation → Docker)", image)
+	}
+	if !strings.Contains(rd, "docker pull "+image) {
+		t.Errorf("README.md has no `docker pull %s` example matching the image CI pushes", image)
+	}
+
+	// The platforms CI builds must be the platforms the README claims.
+	for _, line := range strings.Split(wf, "\n") {
+		if v, ok := strings.CutPrefix(strings.TrimSpace(line), "platforms:"); ok {
+			for _, plat := range strings.Split(strings.TrimSpace(v), ",") {
+				plat = strings.TrimSpace(plat)
+				if plat != "" && !strings.Contains(rd, plat) {
+					t.Errorf("release.yml builds platform %q but README.md never mentions it in the Docker section", plat)
+				}
+			}
+			break
+		}
+	}
+}

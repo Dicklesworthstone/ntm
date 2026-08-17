@@ -3718,7 +3718,7 @@ func getBeadRecommendations(limit int) ([]BeadAction, []string) {
 func getReadyIssueIDs() map[string]bool {
 	ready := make(map[string]bool)
 
-	// Try to run bd ready --json to get ready issues
+	// Try to run br ready --json to get ready issues
 	output, err := bv.RunBd("", "ready", "--json")
 	if err != nil {
 		return ready

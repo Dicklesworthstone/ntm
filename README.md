@@ -7,7 +7,7 @@
 <div align="center">
 
 ![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS-blue.svg)
-![Go Version](https://img.shields.io/badge/go-1.26.3+-00ADD8.svg)
+![Go Version](https://img.shields.io/badge/go-1.26.5+-00ADD8.svg)
 ![License](https://img.shields.io/badge/License-MIT%2BOpenAI%2FAnthropic%20Rider-blue.svg)
 ![Release](https://img.shields.io/github/v/release/Dicklesworthstone/ntm?include_prereleases)
 
@@ -594,6 +594,17 @@ brew install dicklesworthstone/tap/ntm
 ```
 
 ### Docker
+
+Multi-arch images (`linux/amd64`, `linux/arm64`) are pushed to GitHub Container
+Registry by the release workflow, tagged by semver (`1`, `1.22`, `1.22.0`) and
+commit SHA:
+
+```bash
+docker pull ghcr.io/dicklesworthstone/ntm:1
+docker run --rm -it ghcr.io/dicklesworthstone/ntm:1
+```
+
+Or build locally:
 
 ```bash
 docker build -t ntm .

@@ -19,4 +19,3 @@ skip-budget:docs/robot-request-identity.md:9	bd-ws7-docs-ux-truth-tqh3l	designed
 skip-budget:docs/robot-resource-references.md:2	bd-ws7-docs-ux-truth-tqh3l	designed --robot-inspect --refs / --robot-events --entity not wired
 skip-budget:docs/robot-sensitivity-redaction.md:1	bd-ws7-docs-ux-truth-tqh3l	designed `ntm snapshot --robot` disclosure example not wired
 skip-budget:docs/robot-watch-subscription.md:1	bd-ws7-docs-ux-truth-tqh3l	designed `ntm watch --robot --filter` subscription flags not wired
-badge-waiver:go-version	bd-ws7-docs-ux-truth-tqh3l.7	README badge says go 1.26.3+ but go.mod is 1.26.5; H7 generates the badge from go.mod and deletes this line in the same PR

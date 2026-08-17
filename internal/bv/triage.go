@@ -202,7 +202,7 @@ func GetTriageNoCache(dir string) (*TriageResponse, error) {
 }
 
 // InvalidateTriageCache clears the triage cache.
-// Call this when beads data changes (e.g., after bd sync).
+// Call this when beads data changes (e.g., after br sync --flush-only).
 func InvalidateTriageCache() {
 	triageCacheMu.Lock()
 	triageCache = nil

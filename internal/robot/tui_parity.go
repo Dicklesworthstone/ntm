@@ -3651,8 +3651,8 @@ func GetBeadsList(opts BeadsListOptions) (*BeadsListOutput, error) {
 		}, nil
 	}
 
-	// Parse bd list output
-	// Note: bd list returns issue_type (not type), and doesn't include blocked_by
+	// Parse br list output
+	// Note: br list returns issue_type (not type), and doesn't include blocked_by
 	// The status field already indicates if a bead is blocked
 	var rawBeads []struct {
 		ID              string   `json:"id"`
@@ -4247,7 +4247,7 @@ func GetBeadClose(opts BeadCloseOptions) (*BeadCloseOutput, error) {
 			RobotResponse: NewErrorResponse(
 				fmt.Errorf("bead '%s' not found: %w", opts.BeadID, err),
 				ErrCodeInvalidFlag,
-				"Use 'bd list' to see available beads",
+				"Use 'br list' to see available beads",
 			),
 			BeadID: opts.BeadID,
 		}, nil
@@ -4308,7 +4308,7 @@ func GetBeadClose(opts BeadCloseOptions) (*BeadCloseOutput, error) {
 	output.Closed = true
 	output.AgentHints = &AgentHints{
 		Summary: fmt.Sprintf("Closed bead %s: %s", opts.BeadID, truncateString(output.Title, 40)),
-		Notes:   []string{"Remember to run 'bd sync' to push changes"},
+		Notes:   []string{"Remember to run 'br sync --flush-only' to push changes"},
 	}
 
 	return output, nil

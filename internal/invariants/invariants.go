@@ -92,7 +92,7 @@ func Definitions() map[InvariantID]Invariant {
 			Examples: []string{
 				"bv missing: ntm work uses manual priorities",
 				"agent-mail unavailable: skip coordination, warn user",
-				"bd missing: TodoWrite only, no beads sync",
+				"br missing: TodoWrite only, no beads sync",
 			},
 		},
 		InvariantIdempotentOrchestration: {
