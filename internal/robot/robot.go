@@ -3916,6 +3916,10 @@ func detectModel(agentType, title string) string {
 // Despite the name (kept for backward compatibility), this now supports
 // multiple formats: json, toon, or auto (default).
 func encodeJSON(v interface{}) error {
+	// Arrays-never-null contract: normalize nil slices to [] before encoding
+	// so every terminal envelope honors the documented array contract
+	// (bd-ws3-contract-breadth-psvyu.2).
+	EnsureArraysNeverNull(v)
 	return Output(applyVerbosity(v, GetOutputVerbosity()), GetOutputFormat())
 }
 

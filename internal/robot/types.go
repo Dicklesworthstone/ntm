@@ -680,6 +680,8 @@ func encodeRobotFailureJSON(output any) error {
 		return fmt.Errorf("robot failure payload %T does not expose RobotResponse", output)
 	}
 	carrier.robotResponse().OutputFormat = string(FormatJSON)
+	// Arrays-never-null contract: failure envelopes honor it too.
+	EnsureArraysNeverNull(output)
 	return json.NewEncoder(os.Stdout).Encode(output)
 }
 
