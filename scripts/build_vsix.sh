@@ -33,9 +33,12 @@ npm run compile >&2 # tsc -p ./ — the same compile the ci.yml vscode-extension
 
 mkdir -p "$DIST_DIR"
 vsix="$DIST_DIR/ntm-vscode-$pkg_version.vsix"
-# vsce pinned to major 3; --skip-license: the repo LICENSE is copied into
-# vscode/LICENSE, but keep packaging non-interactive regardless.
-npx --yes @vscode/vsce@3 package --out "$vsix" >&2
+# vsce pinned to an EXACT version (W3 gate finding: a floating @3 major let
+# the release toolchain drift with every upstream vsce publish — a
+# release-time supply-chain hole). Bump deliberately; the structural fix
+# (vendor vsce into vscode/package-lock.json so npm ci covers it and no
+# network fetch happens at package time) is tracked on its own bead.
+npx --yes @vscode/vsce@3.9.2 package --out "$vsix" >&2
 
 # Verify the packaged manifest really carries the expected version.
 baked="$(unzip -p "$vsix" extension/package.json | node -p 'JSON.parse(require("fs").readFileSync(0, "utf8")).version')"
