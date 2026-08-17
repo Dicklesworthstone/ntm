@@ -4,12 +4,102 @@ package robot
 
 import (
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 
 	"github.com/Dicklesworthstone/ntm/internal/config"
+	"github.com/Dicklesworthstone/ntm/internal/state"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
+
+// RoutingStateStore is the persistence port for per-session routing state
+// (bd-ws1-truth-safety-l5ddi.10). *state.Store implements it.
+type RoutingStateStore interface {
+	GetRoutingState(session string) (*state.RoutingState, error)
+	SaveRoutingState(*state.RoutingState) error
+}
+
+// openRoutingStateStore opens (and migrates) the state DB for routing state.
+// Best-effort: callers proceed without persistence when it fails.
+func openRoutingStateStore() (*state.Store, error) {
+	store, err := state.Open("")
+	if err != nil {
+		return nil, err
+	}
+	if err := store.Migrate(); err != nil {
+		_ = store.Close()
+		return nil, err
+	}
+	return store, nil
+}
+
+// routingStrategyIsStateful reports whether a strategy consumes/advances
+// per-session routing history.
+func routingStrategyIsStateful(strategy StrategyName) bool {
+	switch strategy {
+	case StrategySticky, StrategyRoundRobin, StrategyRoundRobinAvailable:
+		return true
+	}
+	return false
+}
+
+// routeWithSessionState is the single routing entry used by both the route
+// surface and the send path. It loads persisted per-session routing state
+// (LastAgent + rotation cursor) into the routing context, routes, and — when
+// persist is true (the send path) — advances the persisted state to the
+// selected pane so sticky and round-robin are REAL across sequential CLI
+// invocations (bd-ws1-truth-safety-l5ddi.10). Persistence is best-effort and
+// never fails the routing decision.
+func routeWithSessionState(agents []ScoredAgent, opts RouteOptions, store RoutingStateStore, persist bool) RoutingResult {
+	router := NewRouter()
+	ctx := RoutingContext{
+		Prompt:       opts.Prompt,
+		LastAgent:    opts.LastAgent,
+		ExcludePanes: opts.ExcludePanes,
+		ExplicitPane: -1,
+	}
+	if store != nil && ctx.LastAgent == "" {
+		rs, err := store.GetRoutingState(opts.Session)
+		switch {
+		case err != nil:
+			slog.Warn("[robot.route] cannot load persisted routing state", "session", opts.Session, "error", err)
+		case rs != nil:
+			ctx.LastAgent = rs.LastAgent
+			if rs.RotationCursor >= 0 {
+				ctx.RotationCursor = rs.RotationCursor
+				ctx.HasRotationCursor = true
+			}
+		}
+	}
+
+	result := router.Route(agents, opts.Strategy, ctx)
+
+	if persist && store != nil && result.Selected != nil && routingStrategyIsStateful(opts.Strategy) {
+		cursor := -1
+		for i := range agents {
+			if agents[i].PaneID == result.Selected.PaneID {
+				cursor = i
+				break
+			}
+		}
+		rs := &state.RoutingState{
+			SessionName:    opts.Session,
+			LastAgent:      result.Selected.PaneID,
+			RotationCursor: cursor,
+		}
+		if err := store.SaveRoutingState(rs); err != nil {
+			slog.Warn("[robot.route] cannot persist routing state",
+				"session", opts.Session, "strategy", opts.Strategy, "error", err)
+		} else {
+			slog.Info("[robot.route] routing state persisted",
+				"session", opts.Session, "strategy", opts.Strategy,
+				"pane_id", result.Selected.PaneID, "pane_index", result.Selected.PaneIndex,
+				"rotation_cursor", cursor)
+		}
+	}
+	return result
+}
 
 // RouteOptions configures the routing recommendation request.
 type RouteOptions struct {
@@ -209,16 +299,16 @@ func GetRoute(opts RouteOptions) (*RouteOutput, int) {
 		}
 	}
 
-	// Create router and get recommendation
-	router := NewRouter()
-	ctx := RoutingContext{
-		Prompt:       opts.Prompt,
-		LastAgent:    opts.LastAgent,
-		ExcludePanes: opts.ExcludePanes,
-		ExplicitPane: -1,
+	// Route with persisted per-session state loaded (advisory surface: the
+	// state is read, not advanced — only real sends advance it).
+	var stateStore RoutingStateStore
+	if store, err := openRoutingStateStore(); err == nil {
+		defer store.Close()
+		stateStore = store
+	} else {
+		slog.Warn("[robot.route] routing state store unavailable", "session", opts.Session, "error", err)
 	}
-
-	result := router.Route(agents, opts.Strategy, ctx)
+	result := routeWithSessionState(agents, opts, stateStore, false)
 	output.FallbackUsed = result.FallbackUsed
 
 	if result.Selected != nil {
@@ -405,16 +495,17 @@ func GetRouteRecommendation(opts RouteOptions) (*RouteRecommendation, error) {
 		agents = ExcludePanes(agents, opts.ExcludePanes)
 	}
 
-	// Create router and get recommendation
-	router := NewRouter()
-	ctx := RoutingContext{
-		Prompt:       opts.Prompt,
-		LastAgent:    opts.LastAgent,
-		ExcludePanes: opts.ExcludePanes,
-		ExplicitPane: -1,
+	// Route with persisted per-session state, ADVANCING it on selection: this
+	// is the send path, so sticky and round-robin must be real across
+	// sequential CLI invocations (bd-ws1-truth-safety-l5ddi.10).
+	var stateStore RoutingStateStore
+	if store, err := openRoutingStateStore(); err == nil {
+		defer store.Close()
+		stateStore = store
+	} else {
+		slog.Warn("[robot.route] routing state store unavailable", "session", opts.Session, "error", err)
 	}
-
-	result := router.Route(agents, opts.Strategy, ctx)
+	result := routeWithSessionState(agents, opts, stateStore, true)
 	if result.Selected == nil {
 		return nil, nil // No agent available
 	}

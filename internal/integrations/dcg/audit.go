@@ -100,6 +100,23 @@ func (l *AuditLogger) LogBlocked(command, pane, session, rule, dcgOutput string)
 	return l.writeEntry(entry)
 }
 
+// LogChecked logs a completed check-cycle event. Exactly one entry is written
+// per command run through a DCG check, regardless of outcome, so consumers
+// (e.g. ntm --robot-dcg-status) can report a real commands-checked counter.
+func (l *AuditLogger) LogChecked(command, pane, session, rule, dcgOutput string) error {
+	entry := AuditEntry{
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+		Event:     "command_checked",
+		Command:   command,
+		Pane:      pane,
+		Session:   session,
+		Rule:      rule,
+		DCGOutput: dcgOutput,
+	}
+
+	return l.writeEntry(entry)
+}
+
 // writeEntry marshals and writes an entry to the log
 func (l *AuditLogger) writeEntry(entry AuditEntry) error {
 	l.mu.Lock()

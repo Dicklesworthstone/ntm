@@ -13,6 +13,18 @@ NTM is a tmux session management tool for orchestrating multiple AI coding agent
 
 ## [Unreleased]
 
+- **`ntm metrics snapshot list` now really lists saved snapshots.** The
+  command previously returned an empty result unconditionally while
+  `snapshot save` and `compare` genuinely persisted to the
+  `metric_snapshots` table, telling users their saved snapshots did not
+  exist. The missing List query is now implemented
+  (`Collector.ListSnapshots`): snapshots are returned oldest-first, scoped
+  to the session, and the `--json` envelope's `snapshots` array is always
+  present (empty array, never null). Proof tests:
+  `TestMetricsSnapshotList_SaveTwoThenListJSON`,
+  `TestMetricsSnapshotList_EmptyDBJSON`,
+  `TestCollectorWithStore_ListSnapshots` (bd-ws1-truth-safety-l5ddi.3).
+
 - **Corrected commit provenance.** Commit `d08893d9`'s message incorrectly
   attributed the fail-closed serve safety-policy change to its completion and
   tmux diff. The actual safety-policy implementation is `dda4aae8`; history

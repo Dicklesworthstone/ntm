@@ -53,7 +53,7 @@ func TestCollectBRUsesNewestClosedWorkForOverlap(t *testing.T) {
 		"br list --status open --limit 0 --json --no-auto-flush --no-auto-import":        []byte(`[]`),
 		"br list --status in_progress --limit 0 --json --no-auto-flush --no-auto-import": []byte(`[]`),
 		"br list --status closed --all --limit 80 --sort updated_at --json --no-auto-flush --no-auto-import": []byte(`[{
-			"id":"bd-e7xm1",
+			"id":"bd-8kglp",
 			"title":"Idea Wizard: queue-dry ideation pipeline vNext",
 			"description":"duplicate-aware ranking, dry-run roadmap rendering, novelty guard, gated bead creation, docs, and effectiveness feedback loop are complete",
 			"status":"closed",
@@ -66,13 +66,13 @@ func TestCollectBRUsesNewestClosedWorkForOverlap(t *testing.T) {
 	}}
 	snapshot := NewIdeaEvidenceSnapshot(t.TempDir())
 	Collector{Runner: runner}.CollectBR(context.Background(), &snapshot, CollectorOptions{ProjectDir: snapshot.Project})
-	if !hasExistingWork(snapshot.ExistingWork, "bd-e7xm1", "bd-e7xm1") {
+	if !hasExistingWork(snapshot.ExistingWork, "bd-8kglp", "bd-8kglp") {
 		t.Fatalf("existing work missing newest closed queue-dry family: %+v", snapshot.ExistingWork)
 	}
 
 	result := RankCandidates(snapshot, DefaultRankOptions())
 	if len(result.Selected) != 0 {
-		t.Fatalf("selected=%v, want generated queue-dry plan suppressed after bd-e7xm1 closeout", result.Selected)
+		t.Fatalf("selected=%v, want generated queue-dry plan suppressed after bd-8kglp closeout", result.Selected)
 	}
 	if result.Decision != RankingDecisionReviewRecentWork {
 		t.Fatalf("decision=%q, want review_recent_work", result.Decision)
@@ -80,8 +80,8 @@ func TestCollectBRUsesNewestClosedWorkForOverlap(t *testing.T) {
 	if len(result.Suppressed) != 1 || result.Suppressed[0].Candidate.ID != "generated-queue-dry-plan" {
 		t.Fatalf("suppressed=%v, want generated queue-dry plan", result.Suppressed)
 	}
-	if result.Suppressed[0].Candidate.Overlap.FamilyID != "bd-e7xm1" {
-		t.Fatalf("suppressed family=%q, want bd-e7xm1", result.Suppressed[0].Candidate.Overlap.FamilyID)
+	if result.Suppressed[0].Candidate.Overlap.FamilyID != "bd-8kglp" {
+		t.Fatalf("suppressed family=%q, want bd-8kglp", result.Suppressed[0].Candidate.Overlap.FamilyID)
 	}
 }
 

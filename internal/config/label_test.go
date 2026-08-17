@@ -14,7 +14,7 @@ func TestParseSessionLabel(t *testing.T) {
 		{"myproject", "myproject", ""},
 		{"myproject--frontend", "myproject", "frontend"},
 		{"my-project--frontend", "my-project", "frontend"},
-		{"foo--bar--baz", "foo", "bar--baz"},
+		{"foo--bar--baz", "foo--bar", "baz"}, // collision rule: split on LAST "--"
 		{"proj--my-label", "proj", "my-label"},
 		{"--frontend", "", "frontend"},     // degenerate: empty base
 		{"myproject--", "myproject", ""},   // degenerate: empty label
@@ -103,7 +103,7 @@ func TestSessionBase(t *testing.T) {
 		{"myproject", "myproject"},
 		{"myproject--frontend", "myproject"},
 		{"my-project--frontend", "my-project"},
-		{"foo--bar--baz", "foo"},
+		{"foo--bar--baz", "foo--bar"}, // collision rule: LAST "--" separates
 		{"a--b", "a"},
 	}
 	for _, tt := range tests {
@@ -186,7 +186,7 @@ func TestFormatSessionName_RoundTrip_Extended(t *testing.T) {
 		"simple",
 		"a--b",
 		"my-project--backend",
-		"foo--bar--baz",          // multi-separator preserves as label="bar--baz"
+		"foo--bar--baz",          // multi-separator: base="foo--bar", label="baz" (LAST-split rule)
 		"x--y-z",                 // label with single dash
 		"proj--label_underscore", // label with underscore
 	}
@@ -259,7 +259,7 @@ func TestSessionBase_Extended(t *testing.T) {
 		{"", ""},                     // empty string
 		{"--frontend", ""},           // degenerate: empty base
 		{"myproject--", "myproject"}, // degenerate: trailing separator
-		{"---", ""},                  // triple dash: first "--" at index 0
+		{"---", "-"},                 // triple dash: LAST "--" at index 1
 	}
 	for _, tt := range tests {
 		name := tt.input
@@ -379,7 +379,7 @@ func TestSessionLabel(t *testing.T) {
 		{"myproject", ""},
 		{"myproject--frontend", "frontend"},
 		{"my-project--backend", "backend"},
-		{"foo--bar--baz", "bar--baz"},
+		{"foo--bar--baz", "baz"}, // collision rule: LAST "--" separates
 		{"a--b", "b"},
 		{"simple", ""},
 	}
@@ -426,6 +426,67 @@ func TestGetProjectDir_WithLabel_TableDriven(t *testing.T) {
 		if got := c.GetProjectDir(v); got != first {
 			t.Errorf("GetProjectDir(%q) = %q, want same as %q (%q)", v, got, variants[0], first)
 		}
+	}
+}
+
+// TestSessionLabel_DelimiterCollision pins the WS0-G6 collision rule (bead
+// bd-ws1-truth-safety-l5ddi.7): a base name that itself contains "--" must
+// round-trip make -> extract exactly, which forces the LAST-"--" split.
+func TestSessionLabel_DelimiterCollision(t *testing.T) {
+	base := "my--project--fix" // pathological base with TWO internal separators
+	label := "frontend"
+
+	name := FormatSessionName(base, label)
+	if want := "my--project--fix--frontend"; name != want {
+		t.Fatalf("FormatSessionName(%q, %q) = %q, want %q", base, label, name, want)
+	}
+	gotBase, gotLabel := ParseSessionLabel(name)
+	if gotBase != base || gotLabel != label {
+		t.Errorf("ParseSessionLabel(%q) = (%q, %q), want (%q, %q)", name, gotBase, gotLabel, base, label)
+	}
+
+	// Simpler collision fixture from the bead: my--project + fix
+	gotBase, gotLabel = ParseSessionLabel(FormatSessionName("my--project", "fix"))
+	if gotBase != "my--project" || gotLabel != "fix" {
+		t.Errorf("collision round-trip = (%q, %q), want (%q, %q)", gotBase, gotLabel, "my--project", "fix")
+	}
+
+	// Unlabeled and labeled round-trips through the same canonical pair.
+	for _, tc := range []struct{ base, label string }{
+		{"myproject", ""},
+		{"myproject", "frontend"},
+		{"my-project", "fix-1"},
+	} {
+		b, l := ParseSessionLabel(FormatSessionName(tc.base, tc.label))
+		if b != tc.base || l != tc.label {
+			t.Errorf("round-trip (%q, %q) = (%q, %q)", tc.base, tc.label, b, l)
+		}
+	}
+}
+
+func TestPaneDisplayLabel(t *testing.T) {
+	tests := []struct {
+		session string
+		title   string
+		index   int
+		want    string
+	}{
+		{"myproject", "myproject__cc_1", 2, "cc_1"},        // canonical make -> extract
+		{"myproject", "  myproject__cod_1  ", 0, "cod_1"},  // whitespace trimmed
+		{"myproject", "custom title", 1, "custom title"},   // non-canonical title passes through
+		{"myproject", "", 3, "pane 3"},                     // empty title falls back
+		{"myproject", "myproject__", 7, "pane 7"},          // empty label falls back
+		{"other", "myproject__cc_1", 4, "myproject__cc_1"}, // prefix only stripped for own session
+	}
+	for _, tt := range tests {
+		if got := PaneDisplayLabel(tt.session, tt.title, tt.index); got != tt.want {
+			t.Errorf("PaneDisplayLabel(%q, %q, %d) = %q, want %q", tt.session, tt.title, tt.index, got, tt.want)
+		}
+	}
+
+	// Round-trip: maker-shaped title (session + PaneTitleSeparator + label) -> PaneDisplayLabel.
+	if got := PaneDisplayLabel("s", "s"+PaneTitleSeparator+"agent_2", 0); got != "agent_2" {
+		t.Errorf("pane-title round-trip = %q, want %q", got, "agent_2")
 	}
 }
 

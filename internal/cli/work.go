@@ -264,6 +264,7 @@ func newWorkQueueDryCmd() *cobra.Command {
 		createBeads     bool
 		confirmCreate   bool
 		planVersion     string
+		parentID        string
 	)
 
 	cmd := &cobra.Command{
@@ -289,6 +290,7 @@ Examples:
 				CreateBeads:     createBeads,
 				ConfirmCreate:   confirmCreate,
 				PlanVersion:     planVersion,
+				Parent:          parentID,
 			})
 		},
 	}
@@ -304,6 +306,7 @@ Examples:
 	cmd.Flags().BoolVar(&createBeads, "create-beads", false, "Create proposed beads through br after preview gates pass")
 	cmd.Flags().BoolVar(&confirmCreate, "yes", false, "Confirm mutating bead creation for --create-beads")
 	cmd.Flags().StringVar(&planVersion, "plan-version", "", "Plan version or review token recorded in creation output")
+	cmd.Flags().StringVar(&parentID, "parent", "", "Parent bead ID for proposed beads (overrides open-epic detection in the target project)")
 
 	return cmd
 }
@@ -827,24 +830,27 @@ type QueueDryIdeationOptions struct {
 	CreateBeads     bool
 	ConfirmCreate   bool
 	PlanVersion     string
+	// Parent overrides target-project epic detection for created beads.
+	Parent string
 }
 
-// QueueDryIdeationReport embeds the bd-e7xm1 dry-run planning pipeline in queue-dry output.
+// QueueDryIdeationReport embeds the idea-wizard dry-run planning pipeline in queue-dry output.
 type QueueDryIdeationReport struct {
-	Requested     bool                               `json:"requested"`
-	DryRun        bool                               `json:"dry_run"`
-	Forced        bool                               `json:"forced,omitempty"`
-	Status        string                             `json:"status"`
-	Reason        string                             `json:"reason"`
-	Snapshot      *ideaplan.IdeaEvidenceSnapshot     `json:"snapshot,omitempty"`
-	Ranking       *ideaplan.RankingResult            `json:"ranking,omitempty"`
-	Guard         *ideaplan.NoveltyGuardAssessment   `json:"guard,omitempty"`
-	Effectiveness *ideaplan.EffectivenessReport      `json:"effectiveness,omitempty"`
-	Refinement    *ideaplan.CreationRefinementReport `json:"refinement,omitempty"`
-	Roadmap       *ideaplan.RoadmapPlan              `json:"roadmap,omitempty"`
-	Creation      *ideaplan.BeadCreationReport       `json:"creation,omitempty"`
-	NextActions   []QueueDryRecommendation           `json:"next_actions"`
-	Warnings      []string                           `json:"warnings,omitempty"`
+	Requested        bool                               `json:"requested"`
+	DryRun           bool                               `json:"dry_run"`
+	Forced           bool                               `json:"forced,omitempty"`
+	Status           string                             `json:"status"`
+	Reason           string                             `json:"reason"`
+	Snapshot         *ideaplan.IdeaEvidenceSnapshot     `json:"snapshot,omitempty"`
+	Ranking          *ideaplan.RankingResult            `json:"ranking,omitempty"`
+	Guard            *ideaplan.NoveltyGuardAssessment   `json:"guard,omitempty"`
+	Effectiveness    *ideaplan.EffectivenessReport      `json:"effectiveness,omitempty"`
+	Refinement       *ideaplan.CreationRefinementReport `json:"refinement,omitempty"`
+	Roadmap          *ideaplan.RoadmapPlan              `json:"roadmap,omitempty"`
+	Creation         *ideaplan.BeadCreationReport       `json:"creation,omitempty"`
+	ParentResolution *ideaplan.ParentResolution         `json:"parent_resolution,omitempty"`
+	NextActions      []QueueDryRecommendation           `json:"next_actions"`
+	Warnings         []string                           `json:"warnings,omitempty"`
 }
 
 // QueueDryEvidence stores collected evidence for queue-dry analysis.
@@ -1499,8 +1505,10 @@ func skippedQueueDryIdeationReport(report QueueDryResponse, opts QueueDryIdeatio
 		reason = "ready or actionable work exists; work that queue before ideating, or pass --force for a preview"
 	}
 	return QueueDryIdeationReport{
-		Requested:   true,
-		DryRun:      !opts.CreateBeads,
+		Requested: true,
+		// The skipped path never executes bead creation, so it is always a
+		// dry run regardless of what was requested.
+		DryRun:      true,
 		Forced:      opts.Force,
 		Status:      status,
 		Reason:      reason,
@@ -1548,9 +1556,16 @@ func buildQueueDryIdeationReport(report QueueDryResponse, snapshot ideaplan.Idea
 		ActiveReservationCount:  report.Evidence.Reservations.Count,
 		StaleInProgressIDs:      queueDryStaleIDs(report.Evidence.StaleInProgress),
 	})
+	// Parent resolution order: explicit --parent flag > exactly one open epic
+	// in the TARGET project's beads DB > no parent. Never guess among
+	// multiple epics; surface the ambiguity as an envelope warning instead.
+	parentResolution := ideaplan.ResolveRoadmapParent(context.Background(), ideaplan.ParentResolutionOptions{
+		ProjectDir:     report.Project,
+		ExplicitParent: opts.Parent,
+	})
 	roadmap := ideaplan.RenderRoadmap(ranking, ideaplan.RoadmapRenderOptions{
 		PlanID:          "queue-dry-ideation-dry-run",
-		ParentID:        "bd-e7xm1",
+		ParentID:        parentResolution.ParentID,
 		IncludeNextBest: opts.IncludeNextBest,
 		VerificationCommands: []string{
 			"gofmt -l <touched-go-files>",
@@ -1589,21 +1604,32 @@ func buildQueueDryIdeationReport(report QueueDryResponse, snapshot ideaplan.Idea
 		reason = "creation requested, but creation gate did not pass"
 	}
 
+	// dry_run reflects what actually happened: it is false only when the
+	// executed branch mutated the tracker (br create commands ran), never a
+	// mirror of the requested flag.
+	executedCreation := len(creation.ExecutedCommands) > 0 || len(creation.Created) > 0
+
+	warnings := queueDryIdeationWarnings(snapshot, report)
+	if parentResolution.Warning != "" {
+		warnings = sortedUniqueStrings(append(warnings, parentResolution.Warning))
+	}
+
 	return QueueDryIdeationReport{
-		Requested:     true,
-		DryRun:        true,
-		Forced:        opts.Force,
-		Status:        status,
-		Reason:        reason,
-		Snapshot:      &snapshot,
-		Ranking:       &ranking,
-		Guard:         &guard,
-		Effectiveness: &effectiveness,
-		Refinement:    &refinement,
-		Roadmap:       &refinedRoadmap,
-		Creation:      &creation,
-		NextActions:   queueDryIdeationNextActions(report, guard, refinedRoadmap, creation),
-		Warnings:      queueDryIdeationWarnings(snapshot, report),
+		Requested:        true,
+		DryRun:           !executedCreation,
+		Forced:           opts.Force,
+		Status:           status,
+		Reason:           reason,
+		Snapshot:         &snapshot,
+		Ranking:          &ranking,
+		Guard:            &guard,
+		Effectiveness:    &effectiveness,
+		Refinement:       &refinement,
+		Roadmap:          &refinedRoadmap,
+		Creation:         &creation,
+		ParentResolution: &parentResolution,
+		NextActions:      queueDryIdeationNextActions(report, guard, refinedRoadmap, creation),
+		Warnings:         warnings,
 	}
 }
 

@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/integrations/dcg"
 	"github.com/Dicklesworthstone/ntm/internal/tools"
 )
@@ -84,22 +86,24 @@ func GetDCGStatus() (*DCGStatusOutput, error) {
 		status.Version = availability.Version.String()
 	}
 
+	// Resolve the real DCG integration config (global + project overlay),
+	// rather than reporting hardcoded defaults.
+	dcgCfg, auditLogPath := resolveDCGSettings()
+
 	// Get audit log stats
 	stats := DCGStatsStatus{}
-	auditLogPath := getDefaultAuditLogPath()
-
-	// Try to read audit log for stats
 	if auditLogPath != "" {
-		blockedCount, lastBlocked := readAuditLogStats(auditLogPath)
+		checkedCount, blockedCount, lastBlocked := readAuditLogStats(auditLogPath)
+		stats.CommandsChecked = checkedCount
 		stats.CommandsBlocked = blockedCount
 		stats.LastBlocked = lastBlocked
 	}
 
 	status.Config = DCGConfigStatus{
 		AuditLog:             auditLogPath,
-		AllowOverride:        false, // Default
-		CustomBlocklistCount: 0,
-		CustomWhitelistCount: 0,
+		AllowOverride:        dcgCfg.AllowOverride,
+		CustomBlocklistCount: len(dcgCfg.CustomBlocklist),
+		CustomWhitelistCount: len(dcgCfg.CustomWhitelist),
 	}
 	status.Stats = stats
 
@@ -250,6 +254,10 @@ func GetDCGCheckWithOptions(opts DCGCheckOptions) (*DCGCheckOutput, error) {
 		return output, nil
 	}
 
+	// Record the completed check cycle so --robot-dcg-status can report a real
+	// commands_checked counter (one audit entry per check, regardless of outcome).
+	logDCGCheckAudit(command, checkResult)
+
 	if checkResult != nil && checkResult.Blocked {
 		output.Allowed = false
 		output.Rationale = checkResult.Reason
@@ -293,15 +301,77 @@ func getDefaultAuditLogPath() string {
 	return filepath.Join(homeDir, ".local", "share", "ntm", "dcg-audit.jsonl")
 }
 
-// readAuditLogStats reads the audit log and returns statistics
-func readAuditLogStats(logPath string) (int, *LastBlockedCommand) {
+// resolveDCGSettings loads the real NTM configuration (global + project
+// overlay) and returns the DCG integration settings plus the effective audit
+// log path. On config load failure it falls back to built-in defaults so the
+// status surface still reports the true default posture rather than failing.
+func resolveDCGSettings() (config.DCGConfig, string) {
+	dcgCfg := config.Default().Integrations.DCG
+
+	wd, err := os.Getwd()
+	if err != nil {
+		wd = ""
+	}
+	cfg, err := config.LoadMerged(wd, config.DefaultPath())
+	if err != nil {
+		slog.Debug("dcg status: config load failed; reporting built-in defaults", "error", err)
+	} else if cfg != nil {
+		dcgCfg = cfg.Integrations.DCG
+	}
+
+	auditLogPath := strings.TrimSpace(dcgCfg.AuditLog)
+	if auditLogPath == "" {
+		auditLogPath = getDefaultAuditLogPath()
+	}
+	return dcgCfg, auditLogPath
+}
+
+// logDCGCheckAudit records one completed robot check cycle in the DCG audit
+// log so `dcg status` reports a real commands_checked counter. Best-effort:
+// failures are logged at debug level and never fail the check itself.
+func logDCGCheckAudit(command string, result *tools.ExtendedCheckResult) {
+	_, auditLogPath := resolveDCGSettings()
+	if auditLogPath == "" {
+		return
+	}
+
+	logger, err := dcg.NewAuditLogger(&dcg.AuditLoggerConfig{Path: auditLogPath})
+	if err != nil {
+		slog.Debug("dcg check: audit log unavailable; commands_checked will undercount", "path", auditLogPath, "error", err)
+		return
+	}
+	defer func() {
+		_ = logger.Close()
+	}()
+
+	rule := ""
+	outcome := "allowed"
+	if result != nil && result.Blocked {
+		outcome = "blocked"
+		rule = result.RuleMatched
+		if rule == "" {
+			rule = strings.TrimSpace(result.Reason)
+		}
+	}
+
+	if err := logger.LogChecked(command, "robot-dcg-check", "", rule, outcome); err != nil {
+		slog.Debug("dcg check: failed to record check cycle in audit log", "path", auditLogPath, "error", err)
+	}
+}
+
+// readAuditLogStats reads the audit log and returns the number of recorded
+// check cycles (command_checked plus command_blocked entries — each entry
+// represents exactly one command run through a DCG check), the number of
+// blocked commands, and the most recently blocked command.
+func readAuditLogStats(logPath string) (int, int, *LastBlockedCommand) {
 	file, err := os.Open(logPath)
 	if err != nil {
-		return 0, nil
+		return 0, 0, nil
 	}
 	defer file.Close()
 
-	var count int
+	var checked int
+	var blocked int
 	var lastEntry *dcg.AuditEntry
 
 	scanner := bufio.NewScanner(file)
@@ -316,17 +386,21 @@ func readAuditLogStats(logPath string) (int, *LastBlockedCommand) {
 			continue
 		}
 
-		if entry.Event == "command_blocked" {
-			count++
+		switch entry.Event {
+		case "command_checked":
+			checked++
+		case "command_blocked":
+			checked++
+			blocked++
 			lastEntry = &entry
 		}
 	}
 
 	if lastEntry == nil {
-		return count, nil
+		return checked, blocked, nil
 	}
 
-	return count, &LastBlockedCommand{
+	return checked, blocked, &LastBlockedCommand{
 		Command:   lastEntry.Command,
 		Timestamp: lastEntry.Timestamp,
 		Pane:      lastEntry.Pane,

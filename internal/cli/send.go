@@ -40,6 +40,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/process"
 	"github.com/Dicklesworthstone/ntm/internal/prompt"
 	"github.com/Dicklesworthstone/ntm/internal/redaction"
+	"github.com/Dicklesworthstone/ntm/internal/resilience"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	sessionPkg "github.com/Dicklesworthstone/ntm/internal/session"
 	"github.com/Dicklesworthstone/ntm/internal/state"
@@ -2845,7 +2846,7 @@ func runKill(ctx context.Context, w io.Writer, session string, force bool, tags 
 	orphanCandidates := collectPaneDescendants(panePIDs)
 
 	// Kill the monitor process before destroying the session
-	if output, err := exec.Command("pkill", "-f", monitorProcessPattern(session)).CombinedOutput(); err != nil {
+	if output, err := exec.Command("pkill", "-f", resilience.MonitorProcessPattern(session)).CombinedOutput(); err != nil {
 		// Monitor may not be running — that's fine
 		_ = output
 	}
@@ -3215,7 +3216,7 @@ func buildKillResponse(ctx context.Context, session string, force bool, tags []s
 		_ = state.EndSessionTimeline(session) // Ignore error - not critical
 
 		// Kill the monitor process before destroying the session (same as runKill)
-		if output, err := exec.Command("pkill", "-f", monitorProcessPattern(session)).CombinedOutput(); err != nil {
+		if output, err := exec.Command("pkill", "-f", resilience.MonitorProcessPattern(session)).CombinedOutput(); err != nil {
 			_ = output // Monitor may not be running — that's fine
 		}
 

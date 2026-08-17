@@ -4,6 +4,7 @@ package quota
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 	"time"
 )
@@ -44,16 +45,44 @@ func (q *QuotaInfo) IsStale(maxAge time.Duration) bool {
 	return time.Since(q.FetchedAt) > maxAge
 }
 
-// IsHealthy returns true if quota usage is within safe limits
-func (q *QuotaInfo) IsHealthy() bool {
-	if q == nil {
-		return false
+// HealthState describes the trustworthiness of a quota reading.
+type HealthState string
+
+const (
+	// HealthUnknown means there is no trustworthy reading: the info is
+	// missing or the fetch recorded an error, so the (possibly all-zero)
+	// usage numbers cannot be trusted. Absence of data is never evidence
+	// of health.
+	HealthUnknown HealthState = "unknown"
+	// HealthUnhealthy means a successful reading shows the account rate
+	// limited or at/over the safe usage threshold.
+	HealthUnhealthy HealthState = "unhealthy"
+	// HealthHealthy means a successful reading shows usage within safe limits.
+	HealthHealthy HealthState = "healthy"
+)
+
+// Health classifies the quota reading. A failed fetch (Error set) or nil
+// info yields HealthUnknown, never HealthHealthy — a fetch failure leaves
+// usage fields at zero, and those zeros must not read as good news.
+func (q *QuotaInfo) Health() HealthState {
+	if q == nil || q.Error != "" {
+		return HealthUnknown
 	}
 	if q.IsLimited {
-		return false
+		return HealthUnhealthy
 	}
-	// Consider unhealthy if any quota exceeds 90%
-	return q.SessionUsage < 90 && q.WeeklyUsage < 90 && q.PeriodUsage < 90
+	// Consider unhealthy if any quota reaches 90%
+	if q.SessionUsage >= 90 || q.WeeklyUsage >= 90 || q.PeriodUsage >= 90 {
+		return HealthUnhealthy
+	}
+	return HealthHealthy
+}
+
+// IsHealthy returns true only for a successful reading with quota usage
+// within safe limits. A failed fetch reads HealthUnknown and is therefore
+// not healthy; a successful fetch at 0% usage is healthy.
+func (q *QuotaInfo) IsHealthy() bool {
+	return q.Health() == HealthHealthy
 }
 
 // HighestUsage returns the highest usage percentage across all quota types
@@ -174,6 +203,13 @@ func (t *Tracker) QueryQuota(ctx context.Context, paneID string, provider Provid
 	info, err := t.fetcher.FetchQuota(ctx, paneID, provider)
 	if err != nil {
 		return nil, err
+	}
+
+	if info != nil && info.Error != "" {
+		slog.Debug("quota fetch recorded an error; health reads unknown",
+			"pane_id", paneID,
+			"provider", string(provider),
+			"error", info.Error)
 	}
 
 	t.updateCache(paneID, info)

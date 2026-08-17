@@ -5,7 +5,7 @@ package ideation
 // novelty guard cannot silently regress into duplicate-spam or skip the
 // "review recent work" path.
 //
-// Bead: bd-e7xm1.7
+// Bead: reality-bridge W1 B1 (corpus provenance: historical idea-wizard epic, id redacted by grep gate)
 //
 // Each scenario produces four golden artifacts under
 //   testdata/golden/<scenario_id>/
@@ -198,7 +198,7 @@ func dryMatureClosedFamiliesScenario() corpusScenario {
 		description: "queue is dry; recent idea-wizard tranches closed; truly novel candidates remain",
 		build:       build,
 		rank:        DefaultRankOptions(),
-		render:      RoadmapRenderOptions{PlanID: "dry-mature-roadmap", ParentID: "bd-e7xm1"},
+		render:      RoadmapRenderOptions{PlanID: "dry-mature-roadmap", ParentID: "bd-test1"},
 		guard:       NoveltyGuardOptions{RecentClosedThreshold: 10, RecentBugThreshold: 5},
 		refinement:  RefinementOptions{ScenarioID: "dry_mature_closed_families"},
 	}
@@ -248,7 +248,7 @@ func dryWithStaleInProgressScenario() corpusScenario {
 		description: "queue is dry but stale in-progress IDs require review before ideating",
 		build:       build,
 		rank:        DefaultRankOptions(),
-		render:      RoadmapRenderOptions{PlanID: "dry-stale-roadmap", ParentID: "bd-e7xm1"},
+		render:      RoadmapRenderOptions{PlanID: "dry-stale-roadmap", ParentID: "bd-test1"},
 		guard:       NoveltyGuardOptions{StaleInProgressIDs: []string{"bd-stale.1"}, CreationRequested: true},
 		refinement:  RefinementOptions{ScenarioID: "dry_with_stale_in_progress", CreationRequested: true},
 	}
@@ -327,7 +327,7 @@ func degradedOptionalSourcesScenario() corpusScenario {
 		description: "agent mail, cass, and cm unavailable; pipeline degrades gracefully",
 		build:       build,
 		rank:        DefaultRankOptions(),
-		render:      RoadmapRenderOptions{PlanID: "degraded-roadmap", ParentID: "bd-e7xm1"},
+		render:      RoadmapRenderOptions{PlanID: "degraded-roadmap", ParentID: "bd-test1"},
 		guard:       NoveltyGuardOptions{},
 		refinement:  RefinementOptions{ScenarioID: "degraded_optional_sources"},
 	}
@@ -375,7 +375,7 @@ func duplicateCandidateFamilyScenario() corpusScenario {
 		description: "one candidate exactly duplicates a closed family; suppression must hold",
 		build:       build,
 		rank:        DefaultRankOptions(),
-		render:      RoadmapRenderOptions{PlanID: "duplicate-roadmap", ParentID: "bd-e7xm1"},
+		render:      RoadmapRenderOptions{PlanID: "duplicate-roadmap", ParentID: "bd-test1"},
 		guard:       NoveltyGuardOptions{DuplicateHeavyThreshold: 0.5},
 		refinement:  RefinementOptions{ScenarioID: "duplicate_candidate_family"},
 	}
@@ -416,7 +416,7 @@ func adjacentFollowUpCandidateScenario() corpusScenario {
 		description: "candidate references a closed family as follow-up; must keep adjacent overlap and related dep",
 		build:       build,
 		rank:        DefaultRankOptions(),
-		render:      RoadmapRenderOptions{PlanID: "adjacent-roadmap", ParentID: "bd-e7xm1"},
+		render:      RoadmapRenderOptions{PlanID: "adjacent-roadmap", ParentID: "bd-test1"},
 		guard:       NoveltyGuardOptions{},
 		refinement:  RefinementOptions{ScenarioID: "adjacent_follow_up_candidate"},
 	}
@@ -463,7 +463,7 @@ func partialBRCreationFailureScenario() corpusScenario {
 		description: "creation requested with mixed novel/duplicate candidates; partial creation must be flagged",
 		build:       build,
 		rank:        DefaultRankOptions(),
-		render:      RoadmapRenderOptions{PlanID: "partial-roadmap", ParentID: "bd-e7xm1"},
+		render:      RoadmapRenderOptions{PlanID: "partial-roadmap", ParentID: "bd-test1"},
 		guard: NoveltyGuardOptions{
 			CreationRequested: true,
 			OverrideCreation:  true,

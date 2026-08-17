@@ -341,6 +341,55 @@ func (c *Collector) LoadSnapshot(name string) (*MetricsReport, error) {
 	return &report, nil
 }
 
+// SnapshotInfo describes one saved metrics snapshot row (metadata only,
+// without the JSON metrics blob).
+type SnapshotInfo struct {
+	ID        int64     `json:"id"`
+	SessionID string    `json:"session_id"`
+	Name      string    `json:"name"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// ListSnapshots returns the saved snapshots for this collector's session,
+// ordered oldest-first (created_at, then id for same-timestamp ties).
+// Returns an empty (non-nil) slice when no snapshots exist.
+func (c *Collector) ListSnapshots() ([]SnapshotInfo, error) {
+	if c.store == nil {
+		return nil, fmt.Errorf("no store configured")
+	}
+
+	snapshots := make([]SnapshotInfo, 0)
+
+	db := c.getDB()
+	if db == nil {
+		return nil, fmt.Errorf("no database connection")
+	}
+
+	rows, err := db.Query(`
+		SELECT id, COALESCE(session_id, ''), snapshot_name, created_at
+		FROM metric_snapshots
+		WHERE session_id = ?
+		ORDER BY created_at ASC, id ASC`,
+		c.sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("query snapshots: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var info SnapshotInfo
+		if err := rows.Scan(&info.ID, &info.SessionID, &info.Name, &info.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan snapshot row: %w", err)
+		}
+		snapshots = append(snapshots, info)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate snapshot rows: %w", err)
+	}
+
+	return snapshots, nil
+}
+
 // CompareSnapshots compares two snapshots and returns the differences.
 func (c *Collector) CompareSnapshots(baseline, current *MetricsReport) *ComparisonResult {
 	if baseline == nil || current == nil {

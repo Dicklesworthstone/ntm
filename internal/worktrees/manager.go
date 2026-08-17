@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/git"
 )
 
 // gitTimeout is the maximum duration for any git command in the worktrees package.
@@ -434,9 +436,14 @@ func (m *WorktreeManager) MergeBack(ctx context.Context, agentName string) error
 	}
 	branchName := info.BranchName
 
-	// Switch to the canonical main branch in the primary worktree.
-	if err := gitRun(ctx, m.projectPath, "checkout", "main"); err != nil {
-		return fmt.Errorf("failed to checkout main branch: %w", err)
+	// Switch to the repository's actual default branch in the primary
+	// worktree — never a hardcoded 'main'.
+	defaultBranch, err := git.DefaultBranch(ctx, m.projectPath)
+	if err != nil {
+		return fmt.Errorf("failed to determine default branch: %w", err)
+	}
+	if err := gitRun(ctx, m.projectPath, "checkout", defaultBranch); err != nil {
+		return fmt.Errorf("failed to checkout default branch %s: %w", defaultBranch, err)
 	}
 
 	// Merge the agent's branch

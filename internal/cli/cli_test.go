@@ -3862,8 +3862,23 @@ func TestSpawnValidation(t *testing.T) {
 func TestSessionsCreateKernelHandlerDecodesMapInputAndValidatesLabelShape(t *testing.T) {
 	resetFlags()
 
+	// Under the canonical LAST-"--" split (internal/config/label.go), the base
+	// of "project--bad--label" is "project--bad", which trips the reserved
+	// project-name validation.
 	_, err := kernel.Run(context.Background(), "sessions.create", map[string]interface{}{
 		"session": "project--bad--label",
+		"panes":   1,
+	})
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+	if !strings.Contains(err.Error(), "reserved") {
+		t.Fatalf("expected reserved-separator project-name error, got %v", err)
+	}
+
+	// A malformed label (bad shape, no extra separator) still fails label validation.
+	_, err = kernel.Run(context.Background(), "sessions.create", map[string]interface{}{
+		"session": "project--bad!label",
 		"panes":   1,
 	})
 	if err == nil {

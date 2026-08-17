@@ -6,7 +6,6 @@
 #
 # Register-known seeds (each burned by its own fix bead):
 internal/cli/guards.go	bd-ws1-truth-safety-l5ddi.1	A1: pre-commit hook template "For now, just log and pass" — real reservation check lands in WS1-A1
-internal/git/worktree.go	bd-ws1-truth-safety-l5ddi.5	B2: "For now, assume 'main'" — DefaultBranch() lands in WS1-B2, removes comment + waiver
 internal/serve/server.go	bd-ws3-contract-breadth-psvyu.5	D5: executeJob simulator comment — real dispatcher in WS3-D5; regex `in production,? this would` must stop matching
 #
 # Pre-existing hits outside the gap register, triaged under the G5 umbrella backlog bead:
@@ -29,7 +28,6 @@ internal/cli/worktree.go	bd-d7z7i	pre-existing "for now" marker; triage per umbr
 internal/cli/summary.go	bd-d7z7i	pre-existing "for now" marker; triage per umbrella bead
 internal/cli/work.go	bd-d7z7i	pre-existing "for now" marker; triage per umbrella bead
 internal/cli/rotate.go	bd-d7z7i	pre-existing "for now" markers (2); triage per umbrella bead
-internal/cli/metrics_cmd.go	bd-d7z7i	pre-existing "for now" marker; triage per umbrella bead
 internal/robot/markdown.go	bd-d7z7i	pre-existing "for now" marker; triage per umbrella bead
 internal/robot/spawn.go	bd-d7z7i	pre-existing "for now" marker; triage per umbrella bead
 internal/robot/smart_restart.go	bd-d7z7i	pre-existing "for now" marker; triage per umbrella bead

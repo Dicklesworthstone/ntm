@@ -22,12 +22,13 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/persona"
 	"github.com/Dicklesworthstone/ntm/internal/plugins"
+	"github.com/Dicklesworthstone/ntm/internal/resilience"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/tests/testutil"
 )
 
 func TestShouldStartInternalMonitor_IsDisabledUnderGoTest(t *testing.T) {
-	if shouldStartInternalMonitor() {
+	if resilience.ShouldStartInternalMonitor() {
 		t.Fatal("expected internal monitor to be disabled under go test")
 	}
 }
@@ -367,7 +368,7 @@ func TestSpawnAssignCommandOptionsReusesVerifiedAdmissionSnapshot(t *testing.T) 
 }
 
 func TestMonitorProcessPattern_MatchesExactSessionOnly(t *testing.T) {
-	pattern := regexp.MustCompile(monitorProcessPatternForExecutable("/usr/local/bin/ntm-dev", "proj"))
+	pattern := regexp.MustCompile(resilience.MonitorProcessPatternForExecutable("/usr/local/bin/ntm-dev", "proj"))
 
 	if !pattern.MatchString("/usr/local/bin/ntm-dev internal-monitor proj") {
 		t.Fatal("expected exact executable/session monitor command to match")
@@ -841,9 +842,9 @@ func TestRunSpawnAssignmentTextContextFailuresAreTerminal(t *testing.T) {
 
 func TestNewInternalMonitorCommand_ValidatesSessionAndExecutable(t *testing.T) {
 
-	cmd, err := newInternalMonitorCommand("proj")
+	cmd, err := resilience.NewInternalMonitorCommand("proj")
 	if err != nil {
-		t.Fatalf("newInternalMonitorCommand(valid) error = %v", err)
+		t.Fatalf("resilience.NewInternalMonitorCommand(valid) error = %v", err)
 	}
 	if !filepath.IsAbs(cmd.Path) {
 		t.Fatalf("command path = %q, want absolute path", cmd.Path)
@@ -852,7 +853,7 @@ func TestNewInternalMonitorCommand_ValidatesSessionAndExecutable(t *testing.T) {
 		t.Fatalf("command args = %#v, want %#v", got, want)
 	}
 
-	if _, err := newInternalMonitorCommand("bad:name"); err == nil {
+	if _, err := resilience.NewInternalMonitorCommand("bad:name"); err == nil {
 		t.Fatal("expected invalid session name to be rejected")
 	}
 }

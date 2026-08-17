@@ -71,7 +71,10 @@ check_bead() {
       fail "$ctx: bead '$id' not found (waiver protocol requires an existing bead)"
       return
     fi
-    status="$(printf '%s' "$json" | tr -d ' \n' | sed -n 's/.*"status":"\([a-z_]*\)".*/\1/p')"
+    # Take the FIRST status field: br show --json embeds dependency/dependent
+    # rows whose own "status" fields follow the bead's top-level one, and a
+    # greedy match would report a closed child as the bead's status.
+    status="$(printf '%s' "$json" | tr -d ' \n' | grep -o '"status":"[a-z_]*"' | head -1 | cut -d'"' -f4)"
     if [ -z "$status" ]; then
       BEAD_STATUS_CACHE[$id]=unparsed
       fail "$ctx: could not parse status for bead '$id'"

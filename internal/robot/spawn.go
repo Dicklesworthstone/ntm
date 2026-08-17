@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -21,6 +23,8 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/pressure"
 	"github.com/Dicklesworthstone/ntm/internal/process"
 	"github.com/Dicklesworthstone/ntm/internal/recovery"
+	"github.com/Dicklesworthstone/ntm/internal/resilience"
+	"github.com/Dicklesworthstone/ntm/internal/state"
 	statuspkg "github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
@@ -97,6 +101,10 @@ type SpawnLifecycleDependencies struct {
 	ApplyTiledLayout func(context.Context, string) error
 	LaunchAgent      func(context.Context, tmux.Pane, string, string, int, string, string) (SpawnedAgent, error)
 	WaitForReady     func(context.Context, *SpawnOutput, time.Duration) error
+	// StartSessionMonitor is the shared manifest-writer + monitor-launcher
+	// port (resilience.StartSessionMonitor in production; WS0-G6 single
+	// code path with CLI spawn, bd-ws1-truth-safety-l5ddi.8).
+	StartSessionMonitor func(context.Context, resilience.SpawnMonitorRequest) (*resilience.SpawnMonitorResult, error)
 }
 
 // SpawnAssignmentDependencies exposes assignment side-effect ports for focused
@@ -151,6 +159,13 @@ type SpawnOutput struct {
 	Recovery            *SpawnRecovery    `json:"recovery,omitempty"`
 	// Admission is the pre-spawn resource-pressure admission result.
 	Admission *pressure.SpawnAdmission `json:"admission,omitempty"`
+	// MonitorStarted reports whether the resilience session monitor was
+	// launched for this spawn (bd-ws1-truth-safety-l5ddi.8). Monitor startup
+	// is best-effort: a false value never fails the spawn; MonitorError
+	// carries the cause and a degraded-event row is recorded.
+	MonitorStarted bool   `json:"monitor_started"`
+	MonitorError   string `json:"monitor_error,omitempty"`
+	MonitorPID     int    `json:"monitor_pid,omitempty"`
 }
 
 func setSpawnCancellation(output *SpawnOutput, err error) {
@@ -267,15 +282,16 @@ func validateExistingGrokSpawnPaneBaselines(panes []tmux.Pane, opts SpawnOptions
 
 func spawnLifecycleDeps(custom *SpawnLifecycleDependencies) SpawnLifecycleDependencies {
 	deps := SpawnLifecycleDependencies{
-		IsTMUXInstalled:  tmux.IsInstalled,
-		GetAllPanes:      tmux.GetAllPanesContext,
-		SessionExists:    tmux.SessionExistsContext,
-		CreateSession:    tmux.CreateSessionWithHistoryLimitContext,
-		GetPanes:         tmux.GetPanesContext,
-		SplitWindow:      tmux.SplitWindowContext,
-		ApplyTiledLayout: tmux.ApplyTiledLayoutContext,
-		LaunchAgent:      launchAgent,
-		WaitForReady:     waitForAgentsReady,
+		IsTMUXInstalled:     tmux.IsInstalled,
+		GetAllPanes:         tmux.GetAllPanesContext,
+		SessionExists:       tmux.SessionExistsContext,
+		CreateSession:       tmux.CreateSessionWithHistoryLimitContext,
+		GetPanes:            tmux.GetPanesContext,
+		SplitWindow:         tmux.SplitWindowContext,
+		ApplyTiledLayout:    tmux.ApplyTiledLayoutContext,
+		LaunchAgent:         launchAgent,
+		WaitForReady:        waitForAgentsReady,
+		StartSessionMonitor: resilience.StartSessionMonitor,
 	}
 	if custom == nil {
 		return deps
@@ -306,6 +322,9 @@ func spawnLifecycleDeps(custom *SpawnLifecycleDependencies) SpawnLifecycleDepend
 	}
 	if custom.WaitForReady != nil {
 		deps.WaitForReady = custom.WaitForReady
+	}
+	if custom.StartSessionMonitor != nil {
+		deps.StartSessionMonitor = custom.StartSessionMonitor
 	}
 	return deps
 }
@@ -995,6 +1014,15 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 			launchErrors = append(launchErrors, fmt.Errorf("%s agent %d: %w", request.agentType, request.number, launchErr))
 		}
 	}
+
+	// Start the resilience session monitor through the shared spawn code path
+	// (same manifest writer + monitor launcher as CLI spawn; WS0-G6,
+	// bd-ws1-truth-safety-l5ddi.8). BEST-EFFORT: a monitor/manifest failure
+	// must never fail the spawn itself — on failure the envelope carries
+	// monitor_started:false plus the error, and a degraded-event row is
+	// recorded so the degradation stays visible.
+	startSpawnSessionMonitor(ctx, deps, output, opts, cfg, dir, agentCommands)
+
 	if len(launchErrors) > 0 {
 		launchErr := errors.Join(launchErrors...)
 		output.Error = fmt.Sprintf("%d of %d agent launches failed: %v", len(launchErrors), totalAgents, launchErr)
@@ -1056,6 +1084,103 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 	}
 
 	return output, nil
+}
+
+// startSpawnSessionMonitor runs the shared manifest+monitor path for a robot
+// spawn and records the outcome on the envelope. Best-effort by contract: it
+// never returns an error to the spawn flow. On failure (other than the
+// explicit disabled guard) it writes a degraded-event row to the state DB so
+// the missing monitoring is operator-visible (same posture as A1's visible
+// fail-open).
+func startSpawnSessionMonitor(
+	ctx context.Context,
+	deps SpawnLifecycleDependencies,
+	output *SpawnOutput,
+	opts SpawnOptions,
+	cfg *config.Config,
+	dir string,
+	agentCommands map[string]string,
+) {
+	if deps.StartSessionMonitor == nil {
+		return
+	}
+	autoRestart := cfg != nil && cfg.Resilience.AutoRestart
+	agents := make([]resilience.AgentConfig, 0, len(output.Agents))
+	for _, agent := range output.Agents {
+		if agent.Type == "user" || agent.Error != "" {
+			continue
+		}
+		paneIndex := 0
+		if idx := strings.LastIndex(agent.Pane, "."); idx >= 0 {
+			if n, convErr := strconv.Atoi(agent.Pane[idx+1:]); convErr == nil {
+				paneIndex = n
+			}
+		}
+		agents = append(agents, resilience.AgentConfig{
+			PaneID:    agent.Pane,
+			PaneIndex: paneIndex,
+			Type:      agent.Type,
+			Model:     agent.Variant,
+			Command:   agentCommands[agent.Type],
+		})
+	}
+
+	result, err := deps.StartSessionMonitor(ctx, resilience.SpawnMonitorRequest{
+		Session:     opts.Session,
+		ProjectDir:  dir,
+		AutoRestart: autoRestart,
+		Agents:      agents,
+	})
+	if err == nil && result != nil {
+		output.MonitorStarted = result.MonitorStarted
+		output.MonitorPID = result.MonitorPID
+		slog.Info("[robot.spawn] session monitor started",
+			"session", opts.Session, "pid", result.MonitorPID, "agents", len(agents))
+		return
+	}
+	output.MonitorStarted = false
+	if err == nil {
+		err = errors.New("session monitor did not start")
+	}
+	output.MonitorError = err.Error()
+	if errors.Is(err, resilience.ErrInternalMonitorDisabled) {
+		// Explicitly disabled (test binary or NTM_DISABLE_INTERNAL_MONITOR):
+		// not a degradation, just report it on the envelope.
+		slog.Info("[robot.spawn] session monitor disabled", "session", opts.Session)
+		return
+	}
+	slog.Warn("[robot.spawn] session monitor unavailable (spawn still succeeded)",
+		"session", opts.Session, "error", err)
+	recordSpawnMonitorDegraded(opts.Session, err)
+}
+
+// recordSpawnMonitorDegraded writes the visible-degradation row for a robot
+// spawn whose resilience monitor could not be started.
+func recordSpawnMonitorDegraded(session string, cause error) {
+	store, err := state.Open("")
+	if err != nil {
+		slog.Warn("[robot.spawn] cannot record monitor degradation", "session", session, "error", err)
+		return
+	}
+	defer store.Close()
+	if err := store.Migrate(); err != nil {
+		slog.Warn("[robot.spawn] cannot record monitor degradation", "session", session, "error", err)
+		return
+	}
+	if _, err := store.AppendAttentionEvent(&state.StoredAttentionEvent{
+		Ts:            time.Now().UTC(),
+		SessionName:   session,
+		Category:      "alert",
+		EventType:     "spawn_monitor_unavailable",
+		Source:        "robot_spawn",
+		Actionability: state.ActionabilityActionRequired,
+		Severity:      state.SeverityWarning,
+		ReasonCode:    "spawn_monitor_unavailable",
+		Summary:       fmt.Sprintf("robot spawn %q has NO resilience monitoring: %v", session, cause),
+		DedupKey:      "robot_spawn:monitor_unavailable:" + session,
+	}); err != nil {
+		slog.Warn("[robot.spawn] cannot record monitor degradation", "session", session, "error", err)
+	}
 }
 
 // PrintSpawn creates a session with agents and outputs structured JSON.

@@ -6,10 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"os/signal"
-	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"syscall"
@@ -26,6 +23,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/handoff"
 	"github.com/Dicklesworthstone/ntm/internal/kernel"
 	"github.com/Dicklesworthstone/ntm/internal/output"
+	"github.com/Dicklesworthstone/ntm/internal/resilience"
 	sessionPkg "github.com/Dicklesworthstone/ntm/internal/session"
 	"github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
@@ -1149,7 +1147,7 @@ func runStatusOnce(ctx context.Context, w io.Writer, session string, opts status
 	// Monitor status (best-effort check via pgrep)
 	monitorLabel := "not running"
 	monitorColor := subtext
-	if isMonitorAlive(session) {
+	if resilience.IsMonitorAlive(session) {
 		monitorLabel = "running"
 		monitorColor = success
 	}
@@ -1776,14 +1774,10 @@ func modelNameForPane(p tmux.Pane) string {
 	}
 }
 
+// paneLabel derives the display label for a pane via the canonical pane-title
+// helper (internal/config/label.go, WS0-G6 single-definition contract).
 func paneLabel(session string, pane tmux.Pane) string {
-	label := strings.TrimSpace(pane.Title)
-	prefix := session + "__"
-	label = strings.TrimPrefix(label, prefix)
-	if label == "" {
-		label = fmt.Sprintf("pane %d", pane.Index)
-	}
-	return label
+	return config.PaneDisplayLabel(session, pane.Title, pane.Index)
 }
 
 func renderProgressBar(percent float64, width int) string {
@@ -1811,29 +1805,5 @@ func maxInt(a, b int) int {
 	return b
 }
 
-// isMonitorAlive checks whether the resilience monitor process is running
-// for the given session by looking for the "internal-monitor <session>" process.
-func monitorProcessPatternForExecutable(executablePath, session string) string {
-	execName := strings.TrimSpace(filepath.Base(executablePath))
-	if execName == "" {
-		execName = "ntm"
-	}
-	return `(?:^|[[:space:]])(?:[^[:space:]]*/)?` + regexp.QuoteMeta(execName) + `[[:space:]]+internal-monitor[[:space:]]+` + regexp.QuoteMeta(session) + `(?:[[:space:]]|$)`
-}
-
-func monitorProcessPattern(session string) string {
-	executablePath, err := os.Executable()
-	if err != nil {
-		executablePath = "ntm"
-	}
-	return monitorProcessPatternForExecutable(executablePath, session)
-}
-
-func isMonitorAlive(session string) bool {
-	// Use an anchored regex pattern to avoid false positives from processes
-	// whose paths or arguments happen to contain "ntm". The pattern matches
-	// the binary name at a word boundary followed by the exact subcommand
-	// and session name.
-	err := exec.Command("pgrep", "-f", monitorProcessPattern(session)).Run()
-	return err == nil
-}
+// Monitor process detection lives in internal/resilience (shared with robot
+// spawn); see resilience.IsMonitorAlive / resilience.MonitorProcessPattern.

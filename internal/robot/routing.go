@@ -6,6 +6,7 @@ import (
 	"context"
 	"log/slog"
 	"math"
+	"math/rand"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -936,6 +937,13 @@ type RoutingContext struct {
 	LastAgent    string // For sticky routing (pane ID of last used agent)
 	ExcludePanes []int  // Pane indices to exclude
 	ExplicitPane int    // For explicit routing (-1 = not set)
+	// RotationCursor is the persisted round-robin cursor from session routing
+	// state (bd-ws1-truth-safety-l5ddi.10): the agent index the PREVIOUS send
+	// rotated to. It only counts as routing history when HasRotationCursor is
+	// true (guarding the zero-value trap: index 0 is a valid cursor). It
+	// anchors the rotation when LastAgent's pane no longer resolves.
+	RotationCursor    int
+	HasRotationCursor bool
 }
 
 // RoutingStrategy defines the interface for routing strategies.
@@ -1031,6 +1039,12 @@ func rotationAnchorIndex(agents []ScoredAgent, ctx RoutingContext, cursor int, r
 				return i, true
 			}
 		}
+	}
+	// Persisted rotation cursor from session routing state: genuine routing
+	// history that survives process boundaries even when the previously
+	// routed pane no longer resolves (bd-ws1-truth-safety-l5ddi.10).
+	if ctx.HasRotationCursor && ctx.RotationCursor >= 0 && ctx.RotationCursor < len(agents) {
+		return ctx.RotationCursor, true
 	}
 	if routed && cursor >= 0 && cursor < len(agents) {
 		return cursor, true
@@ -1157,13 +1171,15 @@ func (s *RandomStrategy) Select(agents []ScoredAgent, ctx RoutingContext) *Score
 		return nil
 	}
 
-	// Use injected random function or simple modulo
+	// Use the injected random function (tests inject a seeded source), or
+	// real randomness. The old nil-randFunc fallback was len/2 — a
+	// deterministic "random" strategy that always picked the middle agent
+	// (bd-ws1-truth-safety-l5ddi.10).
 	idx := 0
 	if s.randFunc != nil {
 		idx = s.randFunc(len(available))
 	} else {
-		// Deterministic fallback for testing
-		idx = len(available) / 2
+		idx = rand.Intn(len(available))
 	}
 
 	return available[idx]

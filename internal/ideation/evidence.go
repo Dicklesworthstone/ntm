@@ -61,7 +61,7 @@ const (
 	RelationshipAdjacent  = "adjacent"
 )
 
-var knownClosedIdeaWizardFamilies = []string{"bd-2mb03", "bd-3v1gs", "bd-fxj4f", "bd-8kglp", "bd-e7xm1"}
+var knownClosedIdeaWizardFamilies = []string{"bd-2mb03", "bd-3v1gs", "bd-fxj4f", "bd-8kglp"}
 
 // IdeaEvidenceSnapshot is the pure, serializable input contract for queue-dry
 // ideation. Collectors populate this shape; rankers and renderers consume it.

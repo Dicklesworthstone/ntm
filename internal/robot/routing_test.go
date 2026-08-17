@@ -823,7 +823,11 @@ func TestRandomStrategy(t *testing.T) {
 		}
 	})
 
-	t.Run("deterministic fallback", func(t *testing.T) {
+	t.Run("nil randFunc selects a valid available agent", func(t *testing.T) {
+		// The old nil-randFunc behavior was a deterministic middle pick
+		// (len/2) — a fake "random" strategy (bd-ws1-truth-safety-l5ddi.10).
+		// Now nil means real randomness; distribution is pinned by
+		// TestRandomStrategy_DefaultIsReallyRandom.
 		strat := &RandomStrategy{} // No randFunc
 		agents := []ScoredAgent{
 			{PaneID: "cc_1", Excluded: false},
@@ -831,13 +835,13 @@ func TestRandomStrategy(t *testing.T) {
 			{PaneID: "cc_3", Excluded: false},
 		}
 
-		// Without randFunc, uses len(available)/2 = 1
 		selected := strat.Select(agents, RoutingContext{})
 		if selected == nil {
 			t.Fatal("Select() returned nil")
 		}
-		if selected.PaneID != "cc_2" {
-			t.Errorf("Select() = %s, want cc_2 (middle element)", selected.PaneID)
+		valid := map[string]bool{"cc_1": true, "cc_2": true, "cc_3": true}
+		if !valid[selected.PaneID] {
+			t.Errorf("Select() = %s, want one of the available agents", selected.PaneID)
 		}
 	})
 }

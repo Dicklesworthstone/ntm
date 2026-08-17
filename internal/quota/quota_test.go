@@ -48,6 +48,76 @@ func TestQuotaInfoIsStale(t *testing.T) {
 	}
 }
 
+func TestQuotaInfoHealth(t *testing.T) {
+	tests := []struct {
+		name     string
+		info     *QuotaInfo
+		expected HealthState
+	}{
+		{
+			name:     "nil info is unknown",
+			info:     nil,
+			expected: HealthUnknown,
+		},
+		{
+			name: "failed fetch with all-zero usage is unknown, not healthy",
+			info: &QuotaInfo{
+				Error: "timeout waiting for usage data",
+			},
+			expected: HealthUnknown,
+		},
+		{
+			name: "failed fetch with nonzero usage is still unknown",
+			info: &QuotaInfo{
+				SessionUsage: 95,
+				Error:        "context cancelled",
+			},
+			expected: HealthUnknown,
+		},
+		{
+			name:     "successful fetch at 0% usage is healthy",
+			info:     &QuotaInfo{},
+			expected: HealthHealthy,
+		},
+		{
+			name: "limited is unhealthy",
+			info: &QuotaInfo{
+				IsLimited: true,
+			},
+			expected: HealthUnhealthy,
+		},
+		{
+			name: "usage at 90% threshold is unhealthy",
+			info: &QuotaInfo{
+				PeriodUsage: 90,
+			},
+			expected: HealthUnhealthy,
+		},
+		{
+			name: "usage just under threshold is healthy",
+			info: &QuotaInfo{
+				SessionUsage: 89.9,
+				WeeklyUsage:  89.9,
+				PeriodUsage:  89.9,
+			},
+			expected: HealthHealthy,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.info.Health()
+			if got != tt.expected {
+				t.Errorf("Health() = %v, want %v", got, tt.expected)
+			}
+			wantHealthy := tt.expected == HealthHealthy
+			if gotHealthy := tt.info.IsHealthy(); gotHealthy != wantHealthy {
+				t.Errorf("IsHealthy() = %v, want %v", gotHealthy, wantHealthy)
+			}
+		})
+	}
+}
+
 func TestQuotaInfoIsHealthy(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -57,6 +127,13 @@ func TestQuotaInfoIsHealthy(t *testing.T) {
 		{
 			name:     "nil info is unhealthy",
 			info:     nil,
+			expected: false,
+		},
+		{
+			name: "failed all-zero fetch is not healthy",
+			info: &QuotaInfo{
+				Error: "failed to capture initial output: exit 1",
+			},
 			expected: false,
 		},
 		{

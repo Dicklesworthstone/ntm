@@ -13,7 +13,7 @@ func TestRenderRoadmapJSONGoldenStable(t *testing.T) {
 	}
 	got := string(data)
 	for _, want := range []string{
-		`"plan_id": "bd-e7xm1-dry-run"`,
+		`"plan_id": "bd-test1-dry-run"`,
 		`"dry_run": true`,
 		`"title": "Operator's adjacent follow-up"`,
 		`"priority": 1`,
@@ -38,11 +38,11 @@ func TestRenderRoadmapJSONGoldenStable(t *testing.T) {
 func TestRenderRoadmapMarkdownGolden(t *testing.T) {
 	plan := fixtureRoadmapPlan(t)
 	got := RenderRoadmapMarkdown(plan)
-	want := "# bd-e7xm1-dry-run\n\n" +
+	want := "# bd-test1-dry-run\n\n" +
 		"- Dry run: true\n" +
 		"- Decision: ideate\n" +
 		"- Rendered candidates: 1\n" +
-		"- Parent: bd-e7xm1\n" +
+		"- Parent: bd-test1\n" +
 		"- Summary: selected 1 candidate\n" +
 		"\n## Proposed Beads\n" +
 		"\n### 1. Operator's adjacent follow-up\n\n" +
@@ -50,7 +50,7 @@ func TestRenderRoadmapMarkdownGolden(t *testing.T) {
 		"- Candidate: adj\n" +
 		"- Priority: P1\n" +
 		"- Labels: idea-wizard, operator, queue-dry\n" +
-		"- Dependencies: parent-child:bd-e7xm1, related:bd-2mb03.5\n"
+		"- Dependencies: parent-child:bd-test1, related:bd-2mb03.5\n"
 	if !strings.HasPrefix(got, want) {
 		t.Fatalf("markdown prefix mismatch\n got:\n%s\nwant prefix:\n%s", got, want)
 	}
@@ -77,7 +77,7 @@ func TestRenderRoadmapDependencyPreview(t *testing.T) {
 	if len(plan.DependencyPreview) != 2 {
 		t.Fatalf("dependency preview len=%d, want 2: %v", len(plan.DependencyPreview), plan.DependencyPreview)
 	}
-	if plan.DependencyPreview[0] != "br dep add --type 'parent-child' '${BEAD_ID_ADJ}' 'bd-e7xm1'" {
+	if plan.DependencyPreview[0] != "br dep add --type 'parent-child' '${BEAD_ID_ADJ}' 'bd-test1'" {
 		t.Fatalf("first dependency command=%q", plan.DependencyPreview[0])
 	}
 	if plan.DependencyPreview[1] != "br dep add --type 'related' '${BEAD_ID_ADJ}' 'bd-2mb03.5'" {
@@ -165,8 +165,8 @@ func fixtureRoadmapPlan(t *testing.T) RoadmapPlan {
 		Suppressed: []RankedCandidate{{Candidate: IdeaCandidate{ID: "dup"}}},
 	}
 	return RenderRoadmap(result, RoadmapRenderOptions{
-		PlanID:   "bd-e7xm1-dry-run",
-		ParentID: "bd-e7xm1",
+		PlanID:   "bd-test1-dry-run",
+		ParentID: "bd-test1",
 		AcceptanceCriteria: []string{
 			"candidate is self-contained",
 			"duplicate evidence is visible",

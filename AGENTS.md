@@ -128,6 +128,15 @@ If you want to change something or add a feature, **revise existing code files i
 
 New files are reserved for **genuinely new functionality** that makes zero sense to include in any existing file. The bar for creating new files is **incredibly high**.
 
+### ADR: One Reachable Implementation (ORI)
+
+A capability may have **at most one implementation reachable from `cmd/ntm`**.
+
+- Any PR that lands an engine must, **in the same PR**, land the user surface (CLI/robot/serve) and an E2E or behavioral test exercising the feature **through that surface**. Surface-first; engine-only PRs do not merge.
+- A second implementation of an existing capability may only merge if the same PR **deletes or subsumes the first**.
+
+Enforcement is mechanical, not aspirational: the G1 dead-code gate (`scripts/guards/deadcode_gate.sh`, allowlist `ci/allowlists/deadcode.txt`) fails CI on any function unreachable from the `cmd/ntm` call graph — "impressive but unreachable" is a build failure, not an audit finding. (Adopted via WS0-G7, bd-ws0-guards-klz98.8; context: five separate engines were built, unit-tested, and never wired to any user surface.)
+
 ---
 
 ## Backwards Compatibility

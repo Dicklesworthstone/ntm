@@ -1091,19 +1091,6 @@ func codexCooldownRemaining(tracker *ratelimit.RateLimitTracker, alreadyWaited b
 	return tracker.CooldownRemaining("openai"), true
 }
 
-func shouldStartInternalMonitor() bool {
-	// When spawnSessionLogic is invoked from package tests, os.Executable() points at a
-	// `*.test` binary. Spawning "internal-monitor" via that binary re-runs the entire
-	// test suite recursively (detached), which can quickly fork-bomb the machine.
-	if flag.Lookup("test.v") != nil {
-		return false
-	}
-	if os.Getenv("NTM_DISABLE_INTERNAL_MONITOR") != "" {
-		return false
-	}
-	return true
-}
-
 // SpawnOptions configures session creation and agent spawning
 type SpawnOptions struct {
 	Session            string
@@ -3249,77 +3236,41 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 	// Always started regardless of auto-restart config
 	// Note: Started BEFORE waiting for staggered prompts so that resilience is active
 	// even if the user interrupts the wait.
-	if shouldStartInternalMonitor() {
-		// Save manifest for the monitor process
-		manifest := &resilience.SpawnManifest{
-			Session:     opts.Session,
-			ProjectDir:  dir,
-			AutoRestart: opts.AutoRestart || cfg.Resilience.AutoRestart,
-		}
-		for _, agent := range launchedAgents {
-			if agent.agentType == string(AgentTypeGrok) {
-				// Restart remains unsupported until an authenticated Grok Build
-				// TUI lifecycle fixture proves the necessary semantics.
-				continue
-			}
-			manifest.Agents = append(manifest.Agents, resilience.AgentConfig{
-				PaneID:    agent.paneID,
-				PaneIndex: agent.paneIndex,
-				Type:      agent.agentType,
-				Model:     agent.model,
-				Command:   agent.command,
-			})
-		}
-		if err := resilience.SaveManifest(manifest); err != nil {
-			if !IsJSONOutput() {
-				output.PrintWarningf("Failed to save resilience manifest: %v", err)
-			}
-		} else {
-			// Launch monitor in background
-			if isMonitorAlive(opts.Session) {
-				if err := killExistingMonitorProcess(opts.Session); err == nil {
-					if err := waitContextDelay(ctx, 500*time.Millisecond); err != nil {
-						return outputError(fmt.Errorf("session monitor replacement canceled: %w", err))
-					}
-				} else if !IsJSONOutput() {
-					output.PrintWarningf("Failed to stop existing session monitor: %v", err)
-				}
-			}
-
-			cmd, err := newInternalMonitorCommand(opts.Session)
-			if err != nil {
-				if !IsJSONOutput() {
-					output.PrintWarningf("Failed to prepare session monitor: %v", err)
-				}
+	// Manifest construction + monitor launch go through the ONE shared code
+	// path (resilience.StartSessionMonitor) also used by robot spawn
+	// (WS0-G6 single-definition contract, bd-ws1-truth-safety-l5ddi.8).
+	monitorAgents := make([]resilience.AgentConfig, 0, len(launchedAgents))
+	for _, agent := range launchedAgents {
+		monitorAgents = append(monitorAgents, resilience.AgentConfig{
+			PaneID:    agent.paneID,
+			PaneIndex: agent.paneIndex,
+			Type:      agent.agentType,
+			Model:     agent.model,
+			Command:   agent.command,
+		})
+	}
+	monitorResult, monitorErr := resilience.StartSessionMonitor(ctx, resilience.SpawnMonitorRequest{
+		Session:     opts.Session,
+		ProjectDir:  dir,
+		AutoRestart: opts.AutoRestart || cfg.Resilience.AutoRestart,
+		Agents:      monitorAgents,
+	})
+	switch {
+	case monitorErr == nil:
+		if !IsJSONOutput() && monitorResult != nil {
+			if monitorResult.Manifest != nil && monitorResult.Manifest.AutoRestart {
+				output.PrintInfof("Session monitor started (auto-restart enabled, pid: %d)", monitorResult.MonitorPID)
 			} else {
-				// Setup logging
-				logDir := resilience.LogDir()
-				if err := os.MkdirAll(logDir, 0755); err == nil {
-					logPath := filepath.Join(logDir, fmt.Sprintf("%s-monitor.log", opts.Session))
-					if logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644); err == nil {
-						// Ensure file is closed after spawn
-						defer logFile.Close()
-						cmd.Stdout = logFile
-						cmd.Stderr = logFile
-					}
-				}
-
-				// Detach from terminal so it survives when ntm spawn exits
-				setDetachedProcess(cmd)
-				if err := cmd.Start(); err != nil {
-					if !IsJSONOutput() {
-						output.PrintWarningf("Failed to start session monitor: %v", err)
-					}
-				} else {
-					if !IsJSONOutput() {
-						if manifest.AutoRestart {
-							output.PrintInfof("Session monitor started (auto-restart enabled, pid: %d)", cmd.Process.Pid)
-						} else {
-							output.PrintInfof("Session monitor started (pid: %d)", cmd.Process.Pid)
-						}
-					}
-				}
+				output.PrintInfof("Session monitor started (pid: %d)", monitorResult.MonitorPID)
 			}
+		}
+	case errors.Is(monitorErr, resilience.ErrInternalMonitorDisabled):
+		// Disabled by env/test guard: silent, matching prior behavior.
+	case ctx.Err() != nil:
+		return outputError(fmt.Errorf("session monitor replacement canceled: %w", monitorErr))
+	default:
+		if !IsJSONOutput() {
+			output.PrintWarningf("Failed to start session monitor: %v", monitorErr)
 		}
 	}
 
@@ -3945,47 +3896,6 @@ func waitContextDelay(ctx context.Context, delay time.Duration) error {
 	case <-timer.C:
 		return nil
 	}
-}
-
-func currentExecutablePath() (string, error) {
-	exe, err := os.Executable()
-	if err != nil {
-		return "", fmt.Errorf("resolve current executable: %w", err)
-	}
-	exe = filepath.Clean(exe)
-	if !filepath.IsAbs(exe) {
-		return "", fmt.Errorf("current executable path must be absolute: %q", exe)
-	}
-	info, err := os.Stat(exe)
-	if err != nil {
-		return "", fmt.Errorf("stat current executable: %w", err)
-	}
-	if info.IsDir() {
-		return "", fmt.Errorf("current executable path is a directory: %q", exe)
-	}
-	return exe, nil
-}
-
-func newInternalMonitorCommand(session string) (*exec.Cmd, error) {
-	if err := tmux.ValidateSessionName(session); err != nil {
-		return nil, fmt.Errorf("invalid session name: %w", err)
-	}
-	exe, err := currentExecutablePath()
-	if err != nil {
-		return nil, err
-	}
-	return exec.Command(exe, "internal-monitor", session), nil
-}
-
-func killExistingMonitorProcess(session string) error {
-	if err := tmux.ValidateSessionName(session); err != nil {
-		return fmt.Errorf("invalid session name: %w", err)
-	}
-	pattern := monitorProcessPattern(session)
-	if strings.TrimSpace(pattern) == "" {
-		return errors.New("empty monitor process pattern")
-	}
-	return exec.Command("pkill", "-f", pattern).Run()
 }
 
 func waitForSpawnSetupCompletionContext(ctx context.Context, setupDone <-chan struct{}, sigChan <-chan os.Signal, isJSON bool) error {

@@ -1409,3 +1409,204 @@ func containsCommitReadyFinding(items []commitlint.Finding, target string) bool 
 	}
 	return false
 }
+
+// --- reality-bridge W1 lane B1: target-project parent resolution + truthful
+// dry_run (queue-dry --create-beads). These tests use throwaway br workspaces
+// under t.TempDir() and never touch this repository's own .beads database.
+
+// bannedQueueDryParentLiteral is NTM's own historical idea-wizard epic id,
+// assembled at runtime so the repo-wide grep gate for the literal stays clean
+// while these tests still pin its ABSENCE from queue-dry output.
+var bannedQueueDryParentLiteral = strings.Join([]string{"bd", "e7xm1"}, "-")
+
+func newQueueDryParentWorkspace(t *testing.T) (string, string) {
+	t.Helper()
+	requireQueueDryGateCommand(t, "br")
+	requireQueueDryGateCommand(t, "git")
+	projectDir := t.TempDir()
+	failurePath := filepath.Join(projectDir, "failure.txt")
+	runQueueDryGateCommand(t, projectDir, failurePath, "git", "init")
+	runQueueDryGateCommand(t, projectDir, failurePath, "br", "init", "--json")
+	return projectDir, failurePath
+}
+
+func createQueueDryParentEpic(t *testing.T, dir, failurePath, title string) string {
+	t.Helper()
+	output := runQueueDryGateCommand(t, dir, failurePath, "br", "create", title, "-t", "epic", "-p", "1", "--json")
+	id, err := parseQueueDryGateCreatedID(output)
+	if err != nil {
+		t.Fatalf("parse created epic: %v\noutput:\n%s", err, string(output))
+	}
+	return id
+}
+
+func countQueueDryWorkspaceBeads(t *testing.T, dir, failurePath string) int {
+	t.Helper()
+	output := runQueueDryGateCommand(t, dir, failurePath, "br", "list", "--status", "all", "--all", "--limit", "0", "--json")
+	var issues []struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(output, &issues); err != nil {
+		var wrapped struct {
+			Issues []struct {
+				ID string `json:"id"`
+			} `json:"issues"`
+		}
+		if err := json.Unmarshal(output, &wrapped); err != nil {
+			t.Fatalf("parse br list JSON: %v\noutput:\n%s", err, string(output))
+		}
+		return len(wrapped.Issues)
+	}
+	return len(issues)
+}
+
+func mustMarshalQueueDryIdeation(t *testing.T, report QueueDryIdeationReport) string {
+	t.Helper()
+	data, err := json.Marshal(report)
+	if err != nil {
+		t.Fatalf("marshal ideation report: %v", err)
+	}
+	return string(data)
+}
+
+func TestQueueDryIdeationParentDetectedFromTargetProjectEpic(t *testing.T) {
+	projectDir, failurePath := newQueueDryParentWorkspace(t)
+	epicID := createQueueDryParentEpic(t, projectDir, failurePath, "Target project epic")
+
+	report := fixtureQueueDryDiagnostic(true)
+	report.Project = projectDir
+
+	got := buildQueueDryIdeationReport(report, fixtureQueueDryIdeationSnapshot(), QueueDryIdeationOptions{Requested: true})
+
+	if got.ParentResolution == nil || got.ParentResolution.Source != ideaplan.ParentSourceDetectedEpic || got.ParentResolution.ParentID != epicID {
+		t.Fatalf("parent resolution=%+v, want detected_epic %s from the TARGET project", got.ParentResolution, epicID)
+	}
+	if got.Roadmap == nil || got.Roadmap.ParentID != epicID {
+		t.Fatalf("roadmap parent=%+v, want %s", got.Roadmap, epicID)
+	}
+	for _, bead := range got.Roadmap.ProposedBeads {
+		if bead.Parent != epicID {
+			t.Fatalf("proposed bead parent=%q, want target-project epic %s", bead.Parent, epicID)
+		}
+	}
+	if payload := mustMarshalQueueDryIdeation(t, got); strings.Contains(payload, bannedQueueDryParentLiteral) {
+		t.Fatalf("ideation report references banned NTM epic literal %q", bannedQueueDryParentLiteral)
+	}
+}
+
+func TestQueueDryIdeationParentAmbiguousWithTwoOpenEpics(t *testing.T) {
+	projectDir, failurePath := newQueueDryParentWorkspace(t)
+	epicA := createQueueDryParentEpic(t, projectDir, failurePath, "Epic candidate A")
+	epicB := createQueueDryParentEpic(t, projectDir, failurePath, "Epic candidate B")
+
+	report := fixtureQueueDryDiagnostic(true)
+	report.Project = projectDir
+
+	got := buildQueueDryIdeationReport(report, fixtureQueueDryIdeationSnapshot(), QueueDryIdeationOptions{Requested: true})
+
+	if got.ParentResolution == nil || got.ParentResolution.Source != ideaplan.ParentSourceAmbiguous || got.ParentResolution.ParentID != "" {
+		t.Fatalf("parent resolution=%+v, want ambiguous with no parent guessed", got.ParentResolution)
+	}
+	if got.Roadmap == nil || got.Roadmap.ParentID != "" {
+		t.Fatalf("roadmap parent=%+v, want empty parent when epics are ambiguous", got.Roadmap)
+	}
+	for _, bead := range got.Roadmap.ProposedBeads {
+		if bead.Parent != "" {
+			t.Fatalf("proposed bead parent=%q, want none when ambiguous", bead.Parent)
+		}
+	}
+	warning := got.ParentResolution.Warning
+	for _, want := range []string{epicA, epicB, "--parent"} {
+		if !strings.Contains(warning, want) {
+			t.Fatalf("ambiguity warning=%q, want it to mention %q", warning, want)
+		}
+	}
+	if !containsWarning(got.Warnings, "parent_resolution") {
+		t.Fatalf("envelope warnings=%v, want the parent_resolution ambiguity warning", got.Warnings)
+	}
+}
+
+func TestQueueDryIdeationParentFlagOverridesDetection(t *testing.T) {
+	projectDir, failurePath := newQueueDryParentWorkspace(t)
+	createQueueDryParentEpic(t, projectDir, failurePath, "Epic that must not win A")
+	createQueueDryParentEpic(t, projectDir, failurePath, "Epic that must not win B")
+
+	report := fixtureQueueDryDiagnostic(true)
+	report.Project = projectDir
+
+	got := buildQueueDryIdeationReport(report, fixtureQueueDryIdeationSnapshot(), QueueDryIdeationOptions{
+		Requested: true,
+		Parent:    "bd-flag99",
+	})
+
+	if got.ParentResolution == nil || got.ParentResolution.Source != ideaplan.ParentSourceFlag || got.ParentResolution.ParentID != "bd-flag99" {
+		t.Fatalf("parent resolution=%+v, want explicit --parent flag to win", got.ParentResolution)
+	}
+	if got.Roadmap == nil || got.Roadmap.ParentID != "bd-flag99" {
+		t.Fatalf("roadmap parent=%+v, want bd-flag99", got.Roadmap)
+	}
+}
+
+func TestQueueDryIdeationDryRunReflectsWhatHappened(t *testing.T) {
+	projectDir, failurePath := newQueueDryParentWorkspace(t)
+	epicID := createQueueDryParentEpic(t, projectDir, failurePath, "Truthful dry-run epic")
+	rowsBefore := countQueueDryWorkspaceBeads(t, projectDir, failurePath)
+
+	report := fixtureQueueDryDiagnostic(true)
+	report.Project = projectDir
+
+	// Without --create-beads: dry_run:true and ZERO database writes.
+	preview := buildQueueDryIdeationReport(report, fixtureQueueDryIdeationSnapshot(), QueueDryIdeationOptions{Requested: true})
+	if !preview.DryRun {
+		t.Fatalf("preview DryRun=false, want true when nothing was executed")
+	}
+	if preview.Creation == nil || len(preview.Creation.Created) != 0 {
+		t.Fatalf("preview creation=%+v, want zero created beads", preview.Creation)
+	}
+	if rows := countQueueDryWorkspaceBeads(t, projectDir, failurePath); rows != rowsBefore {
+		t.Fatalf("row count after preview=%d, want unchanged %d (dry run must not write)", rows, rowsBefore)
+	}
+
+	// Creation requested but unconfirmed: blocked, nothing executed, so the
+	// envelope must still say dry_run:true instead of lying about a mutation.
+	blocked := buildQueueDryIdeationReport(report, fixtureQueueDryIdeationSnapshot(), QueueDryIdeationOptions{
+		Requested:   true,
+		CreateBeads: true,
+	})
+	if blocked.Status != "creation_blocked" || !blocked.DryRun {
+		t.Fatalf("blocked status=%q DryRun=%v, want creation_blocked with truthful dry_run:true", blocked.Status, blocked.DryRun)
+	}
+	if rows := countQueueDryWorkspaceBeads(t, projectDir, failurePath); rows != rowsBefore {
+		t.Fatalf("row count after blocked create=%d, want unchanged %d", rows, rowsBefore)
+	}
+
+	// With --create-beads --yes: dry_run:false accompanies ACTUAL creation
+	// (created IDs present and the row count grew by exactly that many).
+	created := buildQueueDryIdeationReport(report, fixtureQueueDryIdeationSnapshot(), QueueDryIdeationOptions{
+		Requested:     true,
+		CreateBeads:   true,
+		ConfirmCreate: true,
+	})
+	if created.Creation == nil || !created.Creation.Success || len(created.Creation.Created) == 0 {
+		t.Fatalf("creation=%+v, want successful bead creation", created.Creation)
+	}
+	if created.DryRun {
+		t.Fatalf("DryRun=true after actual creation of %d bead(s), want false", len(created.Creation.Created))
+	}
+	rowsAfter := countQueueDryWorkspaceBeads(t, projectDir, failurePath)
+	if rowsAfter != rowsBefore+len(created.Creation.Created) {
+		t.Fatalf("row count after create=%d, want %d (before=%d + created=%d)", rowsAfter, rowsBefore+len(created.Creation.Created), rowsBefore, len(created.Creation.Created))
+	}
+	for _, bead := range created.Creation.Created {
+		show := runQueueDryGateCommand(t, projectDir, failurePath, "br", "show", bead.BeadID, "--json")
+		if !strings.Contains(string(show), epicID) {
+			t.Fatalf("created bead %s does not reference target-project epic %s:\n%s", bead.BeadID, epicID, string(show))
+		}
+		if strings.Contains(string(show), bannedQueueDryParentLiteral) {
+			t.Fatalf("created bead %s references banned NTM epic literal %q", bead.BeadID, bannedQueueDryParentLiteral)
+		}
+	}
+	if payload := mustMarshalQueueDryIdeation(t, created); strings.Contains(payload, bannedQueueDryParentLiteral) {
+		t.Fatalf("creation report references banned NTM epic literal %q", bannedQueueDryParentLiteral)
+	}
+}

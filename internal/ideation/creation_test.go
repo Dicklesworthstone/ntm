@@ -209,7 +209,7 @@ func fixtureCreationPlan() RoadmapPlan {
 				IssueType:            "task",
 				Priority:             2,
 				Labels:               []string{"queue-dry"},
-				Parent:               "bd-e7xm1",
+				Parent:               "bd-test1",
 				Description:          "First candidate.",
 				AcceptanceCriteria:   []string{"accepted"},
 				VerificationCommands: []string{"rch exec -- go test -short ./internal/ideation/..."},

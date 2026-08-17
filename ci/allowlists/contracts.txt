@@ -11,11 +11,7 @@
 #                                           class); consumed by the WS3 registry-walk conformance tests,
 #                                           validated here only for format + open bead.
 #
-# B4/B5 current-literal seeds (burned by the W1 routing/spawn lane):
-label-split:internal/robot/tmux_adapter.go:extractSessionLabel:__	bd-ws1-truth-safety-l5ddi.7	B4: extractSessionLabel splits on __ instead of canonical -- helper (internal/config/label.go)
-label-split:internal/cli/session.go:paneLabel:__	bd-ws1-truth-safety-l5ddi.7	B4 lane: duplicated pane-title `session + "__"` maker (copy of formatPaneLabel); fold into the canonical delimiter helper when the W1 lane births it
-label-split:internal/tui/dashboard/dashboard_view.go:formatPaneLabel:__	bd-ws1-truth-safety-l5ddi.7	B4 lane: duplicated pane-title `session + "__"` maker (copy of paneLabel); fold into the canonical delimiter helper when the W1 lane births it
-manifest-writer:internal/cli/spawn.go	bd-ws1-truth-safety-l5ddi.8	B5: CLI-side SpawnManifest literal; W1 lane moves construction into ONE shared writer called by CLI and robot spawn
+# B4/B5 current-literal seeds burned by the W1 routing/spawn lane (bd-ws1-truth-safety-l5ddi.7 / .8).
 #
 # D1/D2 rollout exceptions (schema/pagination lane, wave W2):
 rollout:pagination:sessions	bd-ws3-contract-breadth-psvyu.1	D1: unbounded list surface not yet paginated via single-declaration registry flags

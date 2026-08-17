@@ -500,3 +500,70 @@ func TestCollectorWithStore_FullCycle(t *testing.T) {
 		t.Errorf("file_conflicts rows = %d, want 1", conflictRows)
 	}
 }
+
+func TestCollectorWithStore_ListSnapshots(t *testing.T) {
+	t.Parallel()
+	store := setupTestStore(t)
+	createTestSession(t, store, "db-list-snap-test")
+	createTestSession(t, store, "db-list-snap-other")
+
+	c := NewCollector(store, "db-list-snap-test")
+	defer c.Close()
+
+	// Empty DB: empty non-nil slice, no error.
+	snaps, err := c.ListSnapshots()
+	if err != nil {
+		t.Fatalf("ListSnapshots (empty): %v", err)
+	}
+	if snaps == nil {
+		t.Fatal("ListSnapshots (empty) returned nil slice, want empty non-nil")
+	}
+	if len(snaps) != 0 {
+		t.Fatalf("ListSnapshots (empty) len = %d, want 0", len(snaps))
+	}
+
+	// Save two for this session and one for another session.
+	if err := c.SaveSnapshot("first"); err != nil {
+		t.Fatalf("SaveSnapshot first: %v", err)
+	}
+	if err := c.SaveSnapshot("second"); err != nil {
+		t.Fatalf("SaveSnapshot second: %v", err)
+	}
+	other := NewCollector(store, "db-list-snap-other")
+	defer other.Close()
+	if err := other.SaveSnapshot("foreign"); err != nil {
+		t.Fatalf("SaveSnapshot foreign: %v", err)
+	}
+
+	snaps, err = c.ListSnapshots()
+	if err != nil {
+		t.Fatalf("ListSnapshots: %v", err)
+	}
+	if len(snaps) != 2 {
+		t.Fatalf("ListSnapshots len = %d, want 2 (session-scoped)", len(snaps))
+	}
+	if snaps[0].Name != "first" || snaps[1].Name != "second" {
+		t.Errorf("order = [%q, %q], want [first, second]", snaps[0].Name, snaps[1].Name)
+	}
+	for i, s := range snaps {
+		if s.SessionID != "db-list-snap-test" {
+			t.Errorf("snaps[%d].SessionID = %q, want db-list-snap-test", i, s.SessionID)
+		}
+		if s.CreatedAt.IsZero() {
+			t.Errorf("snaps[%d].CreatedAt is zero", i)
+		}
+	}
+	if snaps[0].ID >= snaps[1].ID {
+		t.Errorf("ids not ascending: %d then %d", snaps[0].ID, snaps[1].ID)
+	}
+}
+
+func TestCollectorNoStore_ListSnapshots(t *testing.T) {
+	t.Parallel()
+	c := NewCollector(nil, "no-store")
+	defer c.Close()
+
+	if _, err := c.ListSnapshots(); err == nil {
+		t.Fatal("ListSnapshots with nil store: want error, got nil")
+	}
+}

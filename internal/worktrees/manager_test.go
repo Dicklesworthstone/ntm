@@ -1107,3 +1107,65 @@ func TestSessionHasWorktrees(t *testing.T) {
 	}
 	t.Logf("decision: the surviving worktree root is the previous-isolation-mode record used for transition detection (persists across ntm kill)")
 }
+
+// runWorktreeE2EGit runs a git command in dir for the merge round-trip test.
+func runWorktreeE2EGit(t *testing.T, dir string, args ...string) []byte {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v failed: %v\n%s", args, err, out)
+	}
+	return out
+}
+
+// TestMergeBack_MasterDefaultRepo proves the worktree merge round-trip works
+// in a repo whose default branch is 'master' (bd-ws1-truth-safety-l5ddi.5):
+// before DefaultBranch(), MergeBack hardcoded `git checkout main` and was
+// unusable on master-default repos.
+func TestMergeBack_MasterDefaultRepo(t *testing.T) {
+	// Keep host-level init.defaultBranch out of the resolution chain.
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
+
+	tmp := t.TempDir()
+	for _, args := range [][]string{
+		{"init", "-b", "master"},
+		{"config", "user.email", "test@test.com"},
+		{"config", "user.name", "Test"},
+		{"commit", "--allow-empty", "-m", "init"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = tmp
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Skipf("git %v failed: %v\n%s", args, err, out)
+		}
+	}
+
+	manager := NewManager(tmp, "merge-sess")
+	info, err := manager.CreateForAgent(t.Context(), "cc-1")
+	if err != nil {
+		t.Fatalf("CreateForAgent: %v", err)
+	}
+
+	// Commit agent work in the isolated worktree.
+	if err := os.WriteFile(filepath.Join(info.Path, "agent.txt"), []byte("agent work\n"), 0o644); err != nil {
+		t.Fatalf("write agent file: %v", err)
+	}
+	runWorktreeE2EGit(t, info.Path, "add", "agent.txt")
+	runWorktreeE2EGit(t, info.Path, "commit", "-m", "agent work")
+
+	if err := manager.MergeBack(t.Context(), "cc-1"); err != nil {
+		t.Fatalf("MergeBack: %v", err)
+	}
+
+	// The primary checkout must be on master with the agent's work merged.
+	branch := strings.TrimSpace(string(runWorktreeE2EGit(t, tmp, "rev-parse", "--abbrev-ref", "HEAD")))
+	if branch != "master" {
+		t.Fatalf("primary checkout on %q after merge, want master", branch)
+	}
+	if _, err := os.Stat(filepath.Join(tmp, "agent.txt")); err != nil {
+		t.Fatalf("agent work not merged into master: %v", err)
+	}
+}

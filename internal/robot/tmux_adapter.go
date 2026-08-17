@@ -10,9 +10,9 @@ package robot
 
 import (
 	"fmt"
-	"strings"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/state"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
@@ -403,14 +403,12 @@ func (a *TmuxAdapter) computeTypeConfidence(agent *Agent) (float64, string) {
 // Helpers
 // =============================================================================
 
-// extractSessionLabel extracts a human-friendly label from session name.
-// For example: "myproject" from "myproject" or "myproject" from "myproject__cc_1"
+// extractSessionLabel extracts the session label (the part after the canonical
+// "--" separator) from a session name via the single-definition helper in
+// internal/config/label.go (WS0-G6). Returns "" for unlabeled sessions.
+// For example: "" from "myproject", "frontend" from "myproject--frontend".
 func extractSessionLabel(name string) string {
-	// Strip NTM pane suffix if present
-	if idx := strings.Index(name, "__"); idx > 0 {
-		return name[:idx]
-	}
-	return name
+	return config.SessionLabel(name)
 }
 
 // =============================================================================

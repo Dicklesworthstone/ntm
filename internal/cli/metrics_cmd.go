@@ -4,6 +4,7 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 
@@ -169,6 +170,17 @@ Examples:
 	listCmd := &cobra.Command{
 		Use:   "list",
 		Short: "List saved snapshots",
+		Long: `List metrics snapshots saved with 'ntm metrics snapshot save'.
+
+Snapshots are read from the metric_snapshots table in the state store and
+printed oldest-first. With --json the envelope is
+{"session": ..., "count": N, "snapshots": [...]} and the snapshots array is
+always present (empty array when there are none, never null).
+
+Examples:
+  ntm metrics snapshot list                   # snapshots for the default session
+  ntm metrics snapshot list --session proj    # snapshots for a specific session
+  ntm metrics snapshot list --json            # machine-readable listing`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runMetricsSnapshotList(sessionID)
 		},
@@ -428,18 +440,53 @@ func runMetricsSnapshotSave(sessionID, name string) error {
 	return nil
 }
 
-// runMetricsSnapshotList lists saved snapshots.
+// runMetricsSnapshotList lists saved snapshots from the metric_snapshots table.
 func runMetricsSnapshotList(sessionID string) error {
-	// For now, just indicate this feature needs the database // placebo-waiver: bd-d7z7i
+	if sessionID == "" {
+		sessionID = "default" // keep in sync with getMetricsCollector's default
+	}
+	store, collector, err := getMetricsCollector(sessionID)
+	if err != nil {
+		return err
+	}
+	if store != nil {
+		defer store.Close()
+	}
+	if collector != nil {
+		defer collector.Close()
+	}
+	if store == nil {
+		// state.Open failed, so there is no metric_snapshots table to query.
+		// Be honest about it instead of pretending an empty result.
+		return fmt.Errorf("listing snapshots: state store unavailable")
+	}
+
+	snapshots, err := collector.ListSnapshots()
+	if err != nil {
+		return fmt.Errorf("listing snapshots: %w", err)
+	}
+
+	slog.Debug("metrics snapshot list",
+		"session", sessionID,
+		"count", len(snapshots))
+
 	if IsJSONOutput() {
 		return output.PrintJSON(map[string]interface{}{
-			"snapshots": []string{},
-			"message":   "Snapshot listing requires active session with state store",
+			"session":   sessionID,
+			"count":     len(snapshots),
+			"snapshots": snapshots, // ListSnapshots returns a non-nil slice (arrays-never-null)
 		})
 	}
 
 	fmt.Println("Saved snapshots:")
-	fmt.Println("  (requires active session with state store)")
+	if len(snapshots) == 0 {
+		fmt.Println("  (none)")
+		return nil
+	}
+	for _, s := range snapshots {
+		fmt.Printf("  %-30s %s  (session: %s)\n",
+			s.Name, s.CreatedAt.Format("2006-01-02 15:04:05"), s.SessionID)
+	}
 	return nil
 }
 
