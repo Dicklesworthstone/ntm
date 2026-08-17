@@ -42,6 +42,67 @@ jobs:
         run: bash scripts/guards/run_all.sh
 
   # ============================================================================
+  # REALITY GUARDS (GO) - the Go-toolchain-needing WS0 gates
+  # The bare reality-guards job (no Go, by design) runs only the allowlist
+  # format side of these guards; this job guarantees the full analyses run in
+  # CI: the G1 dead-code gate (bd-ws0-guards-klz98.2: pinned deadcode tool,
+  # GOOS={linux,darwin,windows} intersection, orphan-package check, canary)
+  # and the G2 config-key liveness test (bd-ws0-guards-klz98.3).
+  # ============================================================================
+  reality-guards-go:
+    name: Reality Guards (Go)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: G1 dead-code gate (deadcode multi-GOOS intersect + canary + ratchet)
+        run: bash scripts/guards/deadcode_gate.sh
+
+      - name: G2 config-key liveness (RegisterReader claims + canary + ratchet)
+        run: bash scripts/guards/config_liveness.sh
+
+  # ============================================================================
+  # RELEASE PREFLIGHT (dry-run) - WS0-G4 release-artifact lockstep
+  # (bd-ws0-guards-klz98.5). Releases are DSR-only (AGENTS.md), so this job is
+  # a DRY-RUN of scripts/release_preflight.sh against the VERSION file: every
+  # artifact declared in release_artifacts.toml must be present and
+  # version-locked, and any buildable deliverable dir (web/, vscode/) without
+  # a manifest entry fails — "finished but never shipped" is structurally
+  # impossible. The --self-test step is the merge-blocking canary (skewed
+  # fixture must fail) and runs in CI forever. The same script is STEP 0 of
+  # the DSR release checklist in AGENTS.md.
+  # ============================================================================
+  release-preflight:
+    name: Release Preflight (dry-run)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Self-test (canaries must fire)
+        run: bash scripts/release_preflight.sh --self-test
+
+      - name: Dry-run pre-flight against release_artifacts.toml
+        run: bash scripts/release_preflight.sh --dry-run
+
+  # ============================================================================
   # LINT - Static analysis and code quality
   # ============================================================================
   lint:
@@ -177,6 +238,34 @@ jobs:
           name: coverage-report
           path: coverage.out
           retention-days: 7
+
+  # ============================================================================
+  # PARITY HARNESS - Hermetic-serve CLI-vs-REST parity (WS4, un-skipped)
+  # Boots `ntm serve` hermetically, sets NTM_TEST_SERVER, and runs the parity
+  # suite in tests/integration/parity_gate_test.go. The script asserts
+  # executed-count > 0 and skipped-count == 0: a skipped parity test is a
+  # FAILURE (bd-ws4-openapi-parity-wpwck.1).
+  # ============================================================================
+  parity-harness:
+    name: Hermetic Serve Parity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Install tmux
+        run: sudo apt-get update && sudo apt-get install -y tmux
+
+      - name: Run hermetic-serve parity harness
+        run: bash scripts/parity_harness.sh
 
   # ============================================================================
   # COVERAGE - Enforce coverage thresholds
@@ -482,12 +571,13 @@ jobs:
     name: CI Success
     runs-on: ubuntu-24.04
     timeout-minutes: 5
-    needs: [reality-guards, lint, test, coverage, build, security, goreleaser-check, integration, upgrade-check]
+    needs: [reality-guards, reality-guards-go, lint, test, coverage, build, security, goreleaser-check, integration, upgrade-check]
     if: always()
     steps:
       - name: Check all jobs passed
         run: |
           if [ "${{ needs.reality-guards.result }}" != "success" ] || \
+             [ "${{ needs.reality-guards-go.result }}" != "success" ] || \
              [ "${{ needs.lint.result }}" != "success" ] || \
              [ "${{ needs.test.result }}" != "success" ] || \
              [ "${{ needs.coverage.result }}" != "success" ] || \
