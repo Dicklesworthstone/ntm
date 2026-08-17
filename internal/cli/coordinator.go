@@ -531,7 +531,14 @@ func loadCoordinatorRuntimeConfig() coordinator.CoordinatorConfig {
 func loadCoordinatorRuntimeConfigWithNTM() (coordinator.CoordinatorConfig, *config.Config) {
 	coordConfig := coordinator.DefaultCoordinatorConfig()
 	var ntmConfig *config.Config
-	if loaded, err := config.Load(selectedConfigPath()); err == nil && loaded != nil {
+	loaded, err := config.Load(selectedConfigPath())
+	switch {
+	case err != nil:
+		// Falling back to defaults silently would also silently drop
+		// persisted flags like [coordinator] conflict_negotiate — say so.
+		fmt.Fprintf(os.Stderr,
+			"Warning: could not load config (%v); coordinator running with DEFAULTS — persisted [coordinator] settings (e.g. conflict_negotiate) are NOT in effect\n", err)
+	case loaded != nil:
 		ntmConfig = loaded
 		coordConfig = coordinatorConfigFromTOML(loaded.Coordinator, coordConfig)
 		coordConfig.RotationUsageThreshold = loaded.Rotation.UsagePercentThreshold

@@ -140,15 +140,22 @@ func guardStrictMode() bool {
 }
 
 // stagedFiles lists the paths staged for commit, relative to the repo root.
+// --no-renames decomposes staged renames into A+D so the OLD path of a
+// `git mv` still hits the reservation predicate (with rename detection,
+// --name-only emits only the destination and a reserved source path would
+// escape the guard entirely). Output is NUL-delimited; entries are used
+// verbatim (no trimming) so legal names with leading/trailing whitespace
+// still match their reservations — only the terminating empty element is
+// dropped.
 func stagedFiles(repoPath string) ([]string, error) {
-	cmd := exec.Command("git", "-C", repoPath, "diff", "--cached", "--name-only", "--diff-filter=ACDMR", "-z")
+	cmd := exec.Command("git", "-C", repoPath, "diff", "--cached", "--name-only", "--no-renames", "--diff-filter=ACDM", "-z")
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("git diff --cached: %w", err)
 	}
 	var paths []string
 	for _, p := range strings.Split(string(out), "\x00") {
-		if p = strings.TrimSpace(p); p != "" {
+		if p != "" {
 			paths = append(paths, p)
 		}
 	}

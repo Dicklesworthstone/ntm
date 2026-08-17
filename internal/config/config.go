@@ -173,7 +173,7 @@ type RetryConfig struct {
 	InitialDelayMs int     `toml:"initial_delay_ms"` // Initial delay between retries in ms (default: 1000)
 	MaxDelayMs     int     `toml:"max_delay_ms"`     // Maximum delay cap in ms (default: 30000)
 	BackoffFactor  float64 `toml:"backoff_factor"`   // Exponential backoff multiplier (default: 2.0)
-	Jitter         bool    `toml:"jitter"`           // Add random jitter to delays (default: true)
+	Jitter         bool    `toml:"jitter"`           // Add random jitter to delays (default: false; opt-in)
 
 	// Subsystem-specific overrides (inherit global values if zero/empty)
 	Webhook    RetryOverride `toml:"webhook"`

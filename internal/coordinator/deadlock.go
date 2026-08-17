@@ -154,6 +154,11 @@ func DetectDeadlocks(edges []WaitEdge, opts DetectDeadlockOptions) DeadlockRepor
 	sort.Slice(cycles, func(i, j int) bool {
 		return cycleKey(cycles[i].Participants) < cycleKey(cycles[j].Participants)
 	})
+	if cycles == nil {
+		// Arrays-never-null contract: the acyclic report must encode as
+		// "cycles": [] on the robot surface, never "cycles": null.
+		cycles = []DeadlockCycle{}
+	}
 
 	return DeadlockReport{
 		Success:   true,

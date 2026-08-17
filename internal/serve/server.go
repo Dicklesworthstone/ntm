@@ -371,14 +371,41 @@ const (
 
 // JobStore manages asynchronous jobs.
 type JobStore struct {
-	mu   sync.RWMutex
-	jobs map[string]*Job
+	mu      sync.RWMutex
+	jobs    map[string]*Job
+	cancels map[string]context.CancelFunc
 }
 
 // NewJobStore creates a new job store.
 func NewJobStore() *JobStore {
 	return &JobStore{
-		jobs: make(map[string]*Job),
+		jobs:    make(map[string]*Job),
+		cancels: make(map[string]context.CancelFunc),
+	}
+}
+
+// SetCancel registers the dispatch goroutine's cancel func so a user-facing
+// cancel actually stops the underlying work, not just the bookkeeping row.
+func (s *JobStore) SetCancel(id string, cancel context.CancelFunc) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cancels[id] = cancel
+}
+
+// ClearCancel drops the registered cancel func once dispatch has finished.
+func (s *JobStore) ClearCancel(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.cancels, id)
+}
+
+// Cancel invokes the job's registered cancel func, if any.
+func (s *JobStore) Cancel(id string) {
+	s.mu.RLock()
+	cancel := s.cancels[id]
+	s.mu.RUnlock()
+	if cancel != nil {
+		cancel()
 	}
 }
 
@@ -415,6 +442,12 @@ func (s *JobStore) Update(id string, status JobStatus, progress float64, result 
 	defer s.mu.Unlock()
 	job, ok := s.jobs[id]
 	if !ok {
+		return
+	}
+	// Terminal states are final: a cancelled job must not later flip to
+	// completed/failed when its (now-cancelled) dispatch goroutine returns.
+	switch job.Status {
+	case JobStatusCompleted, JobStatusFailed, JobStatusCancelled:
 		return
 	}
 	job.Status = status
@@ -458,6 +491,7 @@ func (s *JobStore) Delete(id string) bool {
 		return false
 	}
 	delete(s.jobs, id)
+	delete(s.cancels, id)
 	return true
 }
 
@@ -1839,6 +1873,11 @@ func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 
 // toJSONMap converts any value to map[string]interface{} via JSON round-trip.
 func toJSONMap(v any) (map[string]interface{}, error) {
+	// Arrays-never-null holds on the REST surface too: the CLI encode paths
+	// normalize through EnsureArraysNeverNull, and every robot envelope
+	// served over HTTP funnels through here (bd-ws3-contract-breadth-psvyu.2).
+	// No-op for unaddressable (non-pointer) payloads, same as the CLI path.
+	robot.EnsureArraysNeverNull(v)
 	b, err := json.Marshal(v)
 	if err != nil {
 		return nil, err
@@ -4323,6 +4362,9 @@ func (s *Server) handleCancelJob(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.jobStore.Update(jobID, JobStatusCancelled, job.Progress, nil, "cancelled by user")
+	// Stop the real work, not just the bookkeeping: cancel the dispatch
+	// goroutine's context (no-op for jobs that already finished).
+	s.jobStore.Cancel(jobID)
 
 	writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
 		"job": s.jobStore.Get(jobID),

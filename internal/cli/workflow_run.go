@@ -803,7 +803,12 @@ func resolveWorkflowForRun(ref string) (*workflow.WorkflowTemplate, error) {
 	loader := workflow.NewLoader()
 	tmpl, err := loader.Get(ref)
 	if err != nil {
-		return nil, workflowNotFoundError(ref)
+		if errors.Is(err, workflow.ErrWorkflowNotFound) {
+			return nil, workflowNotFoundError(ref)
+		}
+		// A malformed user TOML aborts LoadAll wholesale; surface the parse
+		// error instead of lying that the requested workflow doesn't exist.
+		return nil, fmt.Errorf("loading workflow templates: %w", err)
 	}
 	return tmpl, nil
 }

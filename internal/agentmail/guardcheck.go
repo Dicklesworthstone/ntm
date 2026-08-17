@@ -12,7 +12,6 @@ package agentmail
 import (
 	"context"
 	"sort"
-	"strings"
 	"time"
 )
 
@@ -38,7 +37,9 @@ func (c *Client) CheckStagedReservations(ctx context.Context, projectKey, selfAg
 	now := time.Now()
 	var conflicts []StagedReservationConflict
 	for _, path := range paths {
-		path = strings.TrimSpace(path)
+		// No TrimSpace: filenames with leading/trailing whitespace are legal
+		// on Unix, and trimming them would silently fail-open against their
+		// exact-path reservations.
 		if path == "" {
 			continue
 		}

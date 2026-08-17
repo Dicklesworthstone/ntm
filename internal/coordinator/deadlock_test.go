@@ -2,6 +2,7 @@ package coordinator
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -22,6 +23,15 @@ func TestDetectDeadlocks_EmptyGraph(t *testing.T) {
 	}
 	if r.NodeCount != 0 || r.EdgeCount != 0 {
 		t.Errorf("NodeCount=%d EdgeCount=%d, want 0/0", r.NodeCount, r.EdgeCount)
+	}
+	// Arrays-never-null: the acyclic report must ENCODE with "cycles": [],
+	// not "cycles": null — this envelope reaches the robot surface raw.
+	raw, err := json.Marshal(r)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if want := `"cycles":[]`; !strings.Contains(string(raw), want) {
+		t.Errorf("acyclic report JSON %s missing %s", raw, want)
 	}
 }
 

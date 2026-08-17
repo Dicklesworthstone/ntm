@@ -56,6 +56,11 @@ func (s *Server) dispatchJob(jobID string, req CreateJobRequest) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), jobExecutionTimeout)
 	defer cancel()
+	// Register the cancel func so DELETE /api/v1/jobs/{id} stops the real
+	// work; the terminal-state guard in JobStore.Update keeps the cancelled
+	// status from being overwritten when this goroutine unwinds.
+	s.jobStore.SetCancel(jobID, cancel)
+	defer s.jobStore.ClearCancel(jobID)
 
 	s.jobStore.Update(jobID, JobStatusRunning, 0, nil, "")
 

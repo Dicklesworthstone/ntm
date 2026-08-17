@@ -2448,7 +2448,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, m.fetchWorkflowState())
 		}
 		// C6-wire panels refresh only while visible, at their configured
-		// cadence; an errored panel retries faster so recovery is visible.
+		// cadence. On error, slow panels (quota 30s, accounts) retry faster
+		// (5s) so recovery is visible; ratelimit already polls at 5s, so it
+		// instead backs off to 2x to avoid hammering a failing source.
 		// [reality-bridge: bd-ws2-wire-or-delete-ykmcz.6]
 		if m.showQuotaPanel && m.quotaPanel != nil && !m.fetchingQuota {
 			interval := m.quotaPanel.Config().RefreshInterval

@@ -13,9 +13,13 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/config"
 )
 
+// Anchored to the wall clock, not absolute dates: runLocks evaluates
+// reservations at real time.Now(), so fixed dates plus the fixtures'
+// created+24h expiry turn these tests into a time bomb once that date
+// passes (every reservation filters as expired and no cycle is found).
 var (
-	locksDeadlockT0 = time.Date(2026, 8, 16, 10, 0, 0, 0, time.UTC)
-	locksDeadlockT1 = time.Date(2026, 8, 16, 10, 5, 0, 0, time.UTC)
+	locksDeadlockT0 = time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+	locksDeadlockT1 = locksDeadlockT0.Add(5 * time.Minute)
 )
 
 func locksDeadlockReservation(id int, agent, pattern string, created time.Time) agentmail.FileReservation {

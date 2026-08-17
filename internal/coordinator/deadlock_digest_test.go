@@ -13,10 +13,15 @@ import (
 )
 
 // deadlockFixtureTimes gives the fixtures a strict creation order:
-// t0 (earlier holder) < t1 (later claimant => waiter).
+// t0 (earlier holder) < t1 (later claimant => waiter). They are anchored
+// to the current wall clock (not absolute dates) because
+// populateDeadlockAlerts evaluates reservations at real time.Now():
+// with fixed dates the fixtures' created+24h expiry eventually passes,
+// detectReservationConflictsAt filters every reservation as expired,
+// and the digest test silently becomes a time bomb.
 var (
-	deadlockT0 = time.Date(2026, 8, 16, 10, 0, 0, 0, time.UTC)
-	deadlockT1 = time.Date(2026, 8, 16, 10, 5, 0, 0, time.UTC)
+	deadlockT0 = time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+	deadlockT1 = deadlockT0.Add(5 * time.Minute)
 )
 
 func deadlockReservation(id int, agent, pattern string, created time.Time) agentmail.FileReservation {

@@ -214,6 +214,12 @@ func installFallbackGuard(hookPath, projectKey, repoPath string) error {
 # 'ntm doctor'; set NTM_GUARD_STRICT=1 to fail closed instead.
 
 if ! command -v ntm >/dev/null 2>&1; then
+    # Accept the same truthy spellings as ntm's guardStrictMode (1/true/yes/on)
+    # so an operator's strict intent is honored on this path too.
+    case "$(printf '%%s' "${NTM_GUARD_STRICT:-}" | tr '[:upper:]' '[:lower:]')" in
+    1 | true | yes | on) NTM_GUARD_STRICT=1 ;;
+    *) NTM_GUARD_STRICT="" ;;
+    esac
     if [ "${NTM_GUARD_STRICT:-}" = "1" ]; then
         echo "[ntm-guard] BLOCKED: ntm not found on PATH and NTM_GUARD_STRICT=1 (fail-closed)" >&2
         exit 1
