@@ -156,6 +156,50 @@ has_cmd() {
     command -v "$1" >/dev/null 2>&1
 }
 
+# Print the platform-appropriate tmux install command
+tmux_install_hint() {
+    local os
+    os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+
+    if [ "$os" = "darwin" ]; then
+        echo "brew install tmux"
+        return
+    fi
+
+    if has_cmd apt-get || has_cmd apt; then
+        echo "sudo apt install tmux"
+    elif has_cmd dnf; then
+        echo "sudo dnf install tmux"
+    elif has_cmd pacman; then
+        echo "sudo pacman -S tmux"
+    elif has_cmd brew; then
+        echo "brew install tmux"
+    else
+        echo "install tmux with your system package manager"
+    fi
+}
+
+# tmux is NTM's one hard runtime dependency. Check for it and print the exact
+# install command for this platform. Deliberately warn-and-continue: the
+# binary install itself does not need tmux, and package-manager side effects
+# are not an installer's call — so we do NOT auto-install.
+check_tmux() {
+    if has_cmd tmux; then
+        print_info "Found tmux: $(command -v tmux)"
+        return 0
+    fi
+
+    print_warn "tmux not found — NTM requires tmux to run (it is the one hard dependency)."
+    echo ""
+    echo "  Install it with:"
+    echo "    $(tmux_install_hint)"
+    echo ""
+    echo "  Then re-run 'ntm doctor' to verify your setup."
+    echo ""
+    print_warn "Continuing the install; ntm will not work until tmux is installed."
+    return 0
+}
+
 is_release_version() {
     local version="${1#v}"
     [[ "$version" =~ ^[0-9]+[.][0-9]+[.][0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?([+][0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]
@@ -477,6 +521,38 @@ ensure_install_dir() {
     sudo mkdir -p "$dir"
 }
 
+# Easy-mode PATH setup: append the install dir to existing shell rc files.
+# When NO writable rc file exists this must never silently no-op — it prints
+# the exact export line the user has to add by hand.
+easy_mode_path_setup() {
+    local install_dir="$1"
+    local path_updated=0
+    local rc
+    for rc in "$HOME/.zshrc" "$HOME/.bashrc"; do
+        if [ -e "$rc" ] && [ -w "$rc" ]; then
+            if ! grep -F "$install_dir" "$rc" >/dev/null 2>&1; then
+                {
+                    echo ""
+                    echo "# Added by ntm installer"
+                    echo "export PATH=\"\$PATH:${install_dir}\""
+                } >> "$rc"
+                path_updated=1
+            fi
+        fi
+    done
+    if [ "$path_updated" -eq 1 ]; then
+        print_info "PATH updated in shell rc files; restart shell to use ntm"
+    elif ! grep -F "$install_dir" "$HOME/.zshrc" >/dev/null 2>&1 \
+        && ! grep -F "$install_dir" "$HOME/.bashrc" >/dev/null 2>&1; then
+        print_warn "Could not update PATH automatically: no writable ~/.zshrc or ~/.bashrc found."
+        echo ""
+        echo "  ${install_dir} is not in your PATH."
+        echo "  Add this line to your shell rc file (create it if needed):"
+        echo "    export PATH=\"\$PATH:${install_dir}\""
+        echo ""
+    fi
+}
+
 # Main installation function
 install_ntm() {
     local platform version install_dir tmp_dir asset_name download_url download_path binary_path checksum_path
@@ -486,6 +562,9 @@ install_ntm() {
     # Detect platform
     platform=$(detect_platform) || exit 1
     print_info "Detected platform: $platform"
+
+    # Check the one hard runtime dependency up front (warn-and-continue)
+    check_tmux
 
     # Determine install directory
     install_dir=$(default_install_dir)
@@ -630,23 +709,7 @@ install_ntm() {
     # Check PATH
     if ! echo "$PATH" | grep -q "$install_dir"; then
         if [ "$EASY_MODE" = true ]; then
-            # Auto-add to PATH in easy-mode
-            local path_updated=0
-            for rc in "$HOME/.zshrc" "$HOME/.bashrc"; do
-                if [ -e "$rc" ] && [ -w "$rc" ]; then
-                    if ! grep -F "$install_dir" "$rc" >/dev/null 2>&1; then
-                        {
-                            echo ""
-                            echo "# Added by ntm installer"
-                            echo "export PATH=\"\$PATH:${install_dir}\""
-                        } >> "$rc"
-                        path_updated=1
-                    fi
-                fi
-            done
-            if [ "$path_updated" -eq 1 ]; then
-                print_info "PATH updated in shell rc files; restart shell to use ntm"
-            fi
+            easy_mode_path_setup "$install_dir"
         else
             print_warn "${install_dir} is not in your PATH"
             echo ""
@@ -857,5 +920,8 @@ setup_shell_integration() {
     fi
 }
 
-# Run installation
-install_ntm
+# Run installation (skipped when sourced under NTM_INSTALL_SH_NO_MAIN=1,
+# which the shell-function test harness uses to exercise the guidance paths)
+if [ "${NTM_INSTALL_SH_NO_MAIN:-0}" != "1" ]; then
+    install_ntm
+fi
