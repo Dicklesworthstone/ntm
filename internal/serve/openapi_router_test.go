@@ -252,6 +252,78 @@ func TestRouterSpecAllRefsResolve(t *testing.T) {
 	}
 }
 
+// TestParityMatrixGeneratedFromRouter verifies the generated parity matrix
+// (bd-ws4-openapi-parity-wpwck.2.2): deterministic byte output, count equal
+// to the chi.Walk route count, sorted rows, no timestamps, and the verified
+// robot-schema joins present.
+func TestParityMatrixGeneratedFromRouter(t *testing.T) {
+	m1, err := GenerateParityMatrixFromRouter("test")
+	if err != nil {
+		t.Fatalf("generate matrix: %v", err)
+	}
+	m2, err := GenerateParityMatrixFromRouter("test")
+	if err != nil {
+		t.Fatalf("generate matrix again: %v", err)
+	}
+	d1, err := json.MarshalIndent(m1, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal m1: %v", err)
+	}
+	d2, err := json.MarshalIndent(m2, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal m2: %v", err)
+	}
+	if !bytes.Equal(d1, d2) {
+		t.Fatal("parity matrix generation is not deterministic")
+	}
+	if bytes.Contains(d1, []byte("generated_at")) {
+		t.Fatal("parity matrix embeds a timestamp; output must be reproducible")
+	}
+
+	srv := NewHermeticServer("test")
+	defer srv.Stop()
+	walkCount := 0
+	err = chi.Walk(srv.Router(), func(method, route string, handler http.Handler, mws ...func(http.Handler) http.Handler) error {
+		walkCount++
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("chi.Walk: %v", err)
+	}
+	if m1.Count != walkCount || len(m1.Endpoints) != walkCount {
+		t.Errorf("matrix count=%d endpoints=%d, want chi.Walk count %d", m1.Count, len(m1.Endpoints), walkCount)
+	}
+	if m1.Source != "chi-router-walk" {
+		t.Errorf("matrix source=%q, want chi-router-walk", m1.Source)
+	}
+
+	for i := 1; i < len(m1.Endpoints); i++ {
+		a, b := m1.Endpoints[i-1], m1.Endpoints[i]
+		if a.Pattern > b.Pattern || (a.Pattern == b.Pattern && a.Method > b.Method) {
+			t.Fatalf("endpoints not sorted at %d: %v %v then %v %v", i, a.Method, a.Pattern, b.Method, b.Pattern)
+		}
+	}
+
+	joins := make(map[string]string)
+	for _, ep := range m1.Endpoints {
+		if ep.RobotSchema != "" {
+			joins[ep.Method+" "+ep.Pattern] = ep.RobotSchema
+		}
+	}
+	for route, want := range map[string]string{
+		"GET /api/v1/robot/status":                       "status",
+		"GET /api/v1/robot/attention":                    "digest",
+		"POST /api/v1/sessions/{sessionId}/agents/spawn": "spawn",
+	} {
+		if got := joins[route]; got != want {
+			t.Errorf("matrix join for %s = %q, want %q", route, got, want)
+		}
+	}
+	if len(joins) < 15 {
+		t.Errorf("matrix has %d robot-schema joins, want >=15 (verified join table)", len(joins))
+	}
+}
+
 // TestRouterSpecOperationBasics verifies every operation carries an
 // operationId, summary, path parameters, and a 200 response, and that
 // operationIds are unique.

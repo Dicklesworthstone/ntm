@@ -2,7 +2,6 @@
   "name": "ntm",
   "private": true,
   "scripts": {
-    "gen:openapi": "bun scripts/gen_openapi.ts",
     "lint:openapi": "go run github.com/getkin/kin-openapi/cmd/validate@v0.142.0 docs/openapi.json",
     "web:dev": "cd web && npm run dev",
     "web:build": "cd web && npm run build",

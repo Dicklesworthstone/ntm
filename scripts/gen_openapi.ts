@@ -1,3 +1,17 @@
+// DEPRECATED — DO NOT RUN (bd-ws4-openapi-parity-wpwck.2.2, 2026-08-16).
+//
+// This script is RETIRED. docs/openapi.json and docs/parity_matrix.json are
+// now GENERATED from the served chi router by:
+//
+//   ntm openapi generate --parity-matrix docs/parity_matrix.json
+//
+// (implementation: internal/serve/openapi_router.go). Running this script
+// would overwrite the generated artifacts with a stale hand-curated route
+// inventory that never matched the served router's path space. It is invoked
+// from no build path (the package.json gen:openapi script and the CI drift
+// step that called it are removed); the file itself is deleted in the
+// sign-off-gated W4 deletion batch per AGENTS.md RULE 1 (Deferred Question Q3).
+
 const fs = require("fs");
 const path = require("path");
 
