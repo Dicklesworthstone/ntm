@@ -17,6 +17,7 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/audit"
+	"github.com/Dicklesworthstone/ntm/internal/coordinator"
 	"github.com/Dicklesworthstone/ntm/internal/policy"
 	"github.com/Dicklesworthstone/ntm/internal/reservationsim"
 	"github.com/Dicklesworthstone/ntm/internal/worktrees"
@@ -457,7 +458,10 @@ func newLocksCheckAuditToken(projectKey, path, observedAt string) string {
 }
 
 func newLocksListCmd() *cobra.Command {
-	var allAgents bool
+	var (
+		allAgents      bool
+		checkDeadlocks bool
+	)
 
 	cmd := &cobra.Command{
 		Use:   "list <session>",
@@ -465,17 +469,19 @@ func newLocksListCmd() *cobra.Command {
 		Long: `Display file path reservations for this session or all agents in the project.
 
 Examples:
-  ntm locks list myproject               # Show session's reservations
-  ntm locks list myproject --all-agents  # Show all project reservations
-  ntm locks list myproject --json        # JSON output for scripts`,
+  ntm locks list myproject                    # Show session's reservations
+  ntm locks list myproject --all-agents       # Show all project reservations
+  ntm locks list myproject --json             # JSON output for scripts
+  ntm locks list myproject --check-deadlocks  # Detect reservation wait-for cycles`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			session := args[0]
-			return runLocks(cmd.Context(), session, allAgents)
+			return runLocks(cmd.Context(), session, allAgents, checkDeadlocks)
 		},
 	}
 
 	cmd.Flags().BoolVar(&allAgents, "all-agents", false, "Show reservations for all agents")
+	cmd.Flags().BoolVar(&checkDeadlocks, "check-deadlocks", false, "Analyze all project reservations for deadlock cycles (adds 'deadlocks' to --json output)")
 
 	return cmd
 }
@@ -757,6 +763,11 @@ type LocksResult struct {
 	// tell an Agent Mail lock-list *timeout* apart from an auth failure or a
 	// down server — without scraping the human-readable Error string.
 	ReasonCode string `json:"reason_code,omitempty"`
+	// Deadlocks is populated only when --check-deadlocks was passed: the
+	// stable robot-readable DeadlockReport over the project's active
+	// reservations (C7, bd-ws2-wire-or-delete-ykmcz.8). Additive and
+	// omitempty so existing envelope consumers are unaffected.
+	Deadlocks *coordinator.DeadlockReport `json:"deadlocks,omitempty"`
 }
 
 // classifyLocksFailure maps a lock-list failure to a stable reason_code.
@@ -784,7 +795,7 @@ func classifyLocksFailure(err error) string {
 	}
 }
 
-func runLocks(ctx context.Context, session string, allAgents bool) error {
+func runLocks(ctx context.Context, session string, allAgents, checkDeadlocks bool) error {
 	session, projectKey, err := resolveAgentMailScope(ctx, session)
 	if err != nil {
 		return err
@@ -847,6 +858,24 @@ func runLocks(ctx context.Context, session string, allAgents bool) error {
 		result.Success = true
 	}
 
+	if checkDeadlocks && result.Success {
+		// Deadlock cycles span agents, so the analysis always runs over
+		// the full project scope even when the listing is session-scoped.
+		analysisReservations := reservations
+		if !allAgents {
+			analysisReservations, err = fetchActiveReservations(ctx, client, projectKey, "", true)
+			if err != nil {
+				result.Success = false
+				result.Error = err.Error()
+				result.ReasonCode = classifyLocksFailure(err)
+			}
+		}
+		if result.Success {
+			report := locksDeadlockReport(analysisReservations, time.Now())
+			result.Deadlocks = &report
+		}
+	}
+
 	if IsJSONOutput() {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
@@ -860,6 +889,22 @@ func runLocks(ctx context.Context, session string, allAgents bool) error {
 	}
 
 	return printLocksResult(result, allAgents)
+}
+
+// locksDeadlockReport runs the coordinator's deadlock detector over raw
+// reservations: derive the wait-for graph, then find every cycle. Pure
+// and deterministic given (reservations, now) so tests and the robot
+// envelope get byte-stable output.
+func locksDeadlockReport(reservations []agentmail.FileReservation, now time.Time) coordinator.DeadlockReport {
+	edges := coordinator.WaitEdgesFromReservations(reservations, now)
+	return coordinator.DetectDeadlocks(edges, coordinator.DetectDeadlockOptions{
+		Now: func() time.Time { return now },
+		Sources: []coordinator.SourceStatus{{
+			Name:      "agentmail_reservations",
+			Available: true,
+			Edges:     len(edges),
+		}},
+	})
 }
 
 func fetchActiveReservations(ctx context.Context, client *agentmail.Client, projectKey, agentName string, allAgents bool) ([]agentmail.FileReservation, error) {
@@ -889,6 +934,7 @@ func printLocksResult(result LocksResult, allAgents bool) error {
 			fmt.Printf("   Agent: %s\n", result.Agent)
 		}
 		fmt.Printf("   Project: %s\n", result.ProjectKey)
+		printLocksDeadlockSection(result.Deadlocks)
 		fmt.Println("\nTip: Use 'ntm lock <session> <pattern>' to reserve files")
 		return nil
 	}
@@ -913,7 +959,38 @@ func printLocksResult(result LocksResult, allAgents bool) error {
 		fmt.Println(strings.Repeat("-", 60))
 	}
 
+	printLocksDeadlockSection(result.Deadlocks)
+
 	return nil
+}
+
+// printLocksDeadlockSection renders the --check-deadlocks analysis for
+// humans. Nil report means the check did not run; an empty cycle list is
+// an explicit all-clear.
+func printLocksDeadlockSection(report *coordinator.DeadlockReport) {
+	if report == nil {
+		return
+	}
+	fmt.Println()
+	if len(report.Cycles) == 0 {
+		fmt.Printf("Deadlock check: no reservation cycles detected (%d nodes, %d edges)\n",
+			report.NodeCount, report.EdgeCount)
+		return
+	}
+	fmt.Printf("DEADLOCK DETECTED: %d reservation cycle(s)\n", len(report.Cycles))
+	for _, c := range report.Cycles {
+		cycle := strings.Join(c.Participants, " -> ")
+		if len(c.Participants) > 1 {
+			cycle += " -> " + c.Participants[0]
+		}
+		fmt.Printf("   Cycle: %s\n", cycle)
+		if len(c.Resources) > 0 {
+			fmt.Printf("   Contested: %s\n", strings.Join(c.Resources, ", "))
+		}
+		if c.Suggestion != "" {
+			fmt.Printf("   Suggestion: %s\n", c.Suggestion)
+		}
+	}
 }
 
 func formatLockDuration(d time.Duration) string {
