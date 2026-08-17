@@ -110,6 +110,7 @@ type RouteOptions struct {
 	Prompt       string         // Optional: prompt for affinity matching
 	LastAgent    string         // Optional: last used agent pane ID for sticky routing
 	Config       *config.Config // Optional: loaded routing configuration
+	NoPersist    bool           // Optional: preview only — never advance persisted routing state (e.g. send --dry-run)
 }
 
 // RouteOutput is the structured output for --robot-route.
@@ -505,7 +506,7 @@ func GetRouteRecommendation(opts RouteOptions) (*RouteRecommendation, error) {
 	} else {
 		slog.Warn("[robot.route] routing state store unavailable", "session", opts.Session, "error", err)
 	}
-	result := routeWithSessionState(agents, opts, stateStore, true)
+	result := routeWithSessionState(agents, opts, stateStore, !opts.NoPersist)
 	if result.Selected == nil {
 		return nil, nil // No agent available
 	}

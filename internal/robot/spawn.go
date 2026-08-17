@@ -983,6 +983,11 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 	}
 
 	launchErrors := make([]error, 0)
+	// Map each launched agent's envelope pane address ("w.p") to the tmux
+	// pane ID ("%N"). The resilience monitor matches manifest entries against
+	// live pane IDs, so the manifest must carry "%N", never the physical
+	// address (W1 gate finding on bd-ws1-truth-safety-l5ddi.8).
+	monitorPaneIDs := make(map[string]string, len(launchRequests))
 	for i, request := range launchRequests {
 		if err := ctx.Err(); err != nil {
 			setSpawnCancellation(output, err)
@@ -1002,6 +1007,9 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 			agent.Title = fmt.Sprintf("%s__%s_%d", opts.Session, agentTypeShort(request.agentType), request.number)
 		}
 		agent.Name = nameMap.AssignNew(request.agentType, agent.Pane)
+		if pane.ID != "" {
+			monitorPaneIDs[agent.Pane] = pane.ID
+		}
 		if launchErr != nil && agent.Error == "" {
 			agent.Error = launchErr.Error()
 		}
@@ -1021,7 +1029,7 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 	// must never fail the spawn itself — on failure the envelope carries
 	// monitor_started:false plus the error, and a degraded-event row is
 	// recorded so the degradation stays visible.
-	startSpawnSessionMonitor(ctx, deps, output, opts, cfg, dir, agentCommands)
+	startSpawnSessionMonitor(ctx, deps, output, opts, cfg, dir, agentCommands, monitorPaneIDs)
 
 	if len(launchErrors) > 0 {
 		launchErr := errors.Join(launchErrors...)
@@ -1100,6 +1108,7 @@ func startSpawnSessionMonitor(
 	cfg *config.Config,
 	dir string,
 	agentCommands map[string]string,
+	monitorPaneIDs map[string]string,
 ) {
 	if deps.StartSessionMonitor == nil {
 		return
@@ -1116,8 +1125,15 @@ func startSpawnSessionMonitor(
 				paneIndex = n
 			}
 		}
+		// The monitor matches manifest entries against live tmux pane IDs
+		// ("%N"); the envelope's physical "w.p" address never matches and
+		// would make every robot-spawned agent read as crashed.
+		paneID := monitorPaneIDs[agent.Pane]
+		if paneID == "" {
+			paneID = agent.Pane
+		}
 		agents = append(agents, resilience.AgentConfig{
-			PaneID:    agent.Pane,
+			PaneID:    paneID,
 			PaneIndex: paneIndex,
 			Type:      agent.Type,
 			Model:     agent.Variant,

@@ -79,7 +79,10 @@ func TestGetSpawn_MonitorStartedEnvelope(t *testing.T) {
 	if len(captured.Agents) != 2 {
 		t.Fatalf("request.Agents = %+v, want 2 launched agent panes", captured.Agents)
 	}
-	wantPanes := map[string]string{"0.1": "claude", "0.2": "codex"}
+	// Manifest entries must carry the tmux pane ID ("%N") — the monitor
+	// matches these against live pane IDs; a physical "w.p" address would
+	// make every robot-spawned agent read as crashed (W1 gate finding).
+	wantPanes := map[string]string{"%1": "claude", "%2": "codex"}
 	for _, agent := range captured.Agents {
 		if wantPanes[agent.PaneID] != agent.Type {
 			t.Fatalf("unexpected manifest agent %+v (want panes %v)", agent, wantPanes)

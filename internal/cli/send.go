@@ -1787,6 +1787,9 @@ func runSendInternal(opts SendOptions) (err error) {
 			Strategy: strategy,
 			Prompt:   prompt,
 			Config:   loadSelectedConfigOrDefault(),
+			// A dry-run previews the route; it must not advance the persisted
+			// sticky/round-robin state or repeated previews burn rotation slots.
+			NoPersist: dryRun,
 		}
 
 		// Filter by agent type if specified (only when exactly one type is set)

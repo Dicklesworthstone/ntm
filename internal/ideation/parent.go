@@ -3,7 +3,6 @@ package ideation
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -23,8 +22,8 @@ const (
 // ParentResolution reports how the roadmap parent bead was chosen. The
 // resolver never guesses: an explicit flag wins, a single open epic in the
 // TARGET project's beads database is used, and anything else (zero epics,
-// multiple epics, or an unreadable database) yields no parent plus an
-// explanatory warning.
+// multiple epics, or an unreadable database) yields no parent; ambiguity and
+// resolution failures additionally carry an explanatory warning.
 type ParentResolution struct {
 	ParentID   string   `json:"parent_id,omitempty"`
 	Source     string   `json:"source"`
@@ -57,10 +56,12 @@ func ResolveRoadmapParent(ctx context.Context, opts ParentResolutionOptions) Par
 			Warning: "parent_resolution: no target project directory; creating beads without a parent (pass --parent to set one)",
 		}
 	}
-	if _, err := os.Stat(filepath.Join(dir, ".beads", "beads.db")); err != nil {
+	// br auto-discovers any .beads/*.db, not only the default beads.db, so
+	// gate on the same pattern (W1 gate finding on bd-ws1-truth-safety-l5ddi.4).
+	if matches, err := filepath.Glob(filepath.Join(dir, ".beads", "*.db")); err != nil || len(matches) == 0 {
 		return ParentResolution{
 			Source:  ParentSourceNone,
-			Warning: "parent_resolution: target project has no readable beads database (.beads/beads.db); creating beads without a parent (pass --parent to set one)",
+			Warning: "parent_resolution: target project has no readable beads database (.beads/*.db); creating beads without a parent (pass --parent to set one)",
 		}
 	}
 

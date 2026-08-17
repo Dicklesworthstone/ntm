@@ -137,13 +137,16 @@ func RunBeadCreation(ctx context.Context, plan RoadmapPlan, opts BeadCreationOpt
 		report.RemainingCommands = commands
 		return report
 	}
-	report.DryRun = false
 	if !opts.Confirmed {
 		return blockBeadCreation(report, "creation_confirmation_required", "pass the explicit confirmation flag before creating beads", commands)
 	}
 	if !opts.AllowCreate {
 		return blockBeadCreation(report, "creation_blocked_by_guard", "novelty guard did not allow mutating bead creation", commands)
 	}
+	// Only now do br create commands actually run: blocked paths above stay
+	// dry_run:true so the inner report can never contradict the envelope's
+	// truthful outer dry_run (W1 gate finding on bd-ws1-truth-safety-l5ddi.4).
+	report.DryRun = false
 
 	runner := opts.Runner
 	if runner == nil {
@@ -157,6 +160,11 @@ func RunBeadCreation(ctx context.Context, plan RoadmapPlan, opts BeadCreationOpt
 		args := beadCreateArgs(bead, false)
 		command := commandString("br", args)
 		output, err := runBeadCreateCommand(ctx, runner, opts, args)
+		// The command was invoked against the tracker regardless of outcome:
+		// record it as executed so a failure on the FIRST bead cannot report
+		// dry_run:true after a real mutation attempt (W1 gate finding on
+		// bd-ws1-truth-safety-l5ddi.4).
+		report.ExecutedCommands = append(report.ExecutedCommands, command)
 		if err != nil {
 			report.Success = false
 			report.PartialFailure = len(report.Created) > 0
@@ -184,7 +192,6 @@ func RunBeadCreation(ctx context.Context, plan RoadmapPlan, opts BeadCreationOpt
 			report.RemainingCommands = append(report.RemainingCommands, beadCreateCommands(RoadmapPlan{ProposedBeads: plan.ProposedBeads[i+1:]}, false)...)
 			return report
 		}
-		report.ExecutedCommands = append(report.ExecutedCommands, command)
 		report.Created = append(report.Created, CreatedBead{
 			CandidateID: bead.CandidateID,
 			Ref:         bead.Ref,
