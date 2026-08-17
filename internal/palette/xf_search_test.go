@@ -436,7 +436,7 @@ func TestXFSearchQuitFromResultsPhase(t *testing.T) {
 // Verify that the Ctrl+K key binding is properly declared.
 func TestXFSearchKeyBinding(t *testing.T) {
 	t.Parallel()
-	if !key.Matches(tea.KeyMsg{Type: tea.KeyCtrlK}, keys.XFSearch) {
+	if !key.Matches(tea.KeyMsg{Type: tea.KeyCtrlK}, commandKeys.XFSearch) {
 		t.Fatal("expected Ctrl+K to match XFSearch keybinding")
 	}
 }

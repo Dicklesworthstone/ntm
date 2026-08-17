@@ -544,37 +544,27 @@ func TestBuildVisualOrderEmpty(t *testing.T) {
 	}
 }
 
-func TestSelectByNumber(t *testing.T) {
-	m := New("test-session", testCommands)
-	m.buildVisualOrder()
+// TestDigitsTypeIntoFilterNotQuickSelect: 1-9 quick-select was removed (H3,
+// bd-ws7-docs-ux-truth-tqh3l.3 — REJECTED decision). The filter input is
+// always focused in the command phase, so digits must type into the search
+// box rather than selecting items.
+func TestDigitsTypeIntoFilterNotQuickSelect(t *testing.T) {
+	for _, digit := range []rune{'1', '5', '9'} {
+		m := New("test-session", testCommands)
 
-	// Select item 1 (first item)
-	if !m.selectByNumber(1) {
-		t.Error("selectByNumber(1) should return true")
-	}
+		msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{digit}}
+		newModel, _ := m.Update(msg)
+		m = newModel.(Model)
 
-	if m.selected == nil {
-		t.Error("Expected selected to be set")
-	}
-}
-
-func TestSelectByNumberOutOfRange(t *testing.T) {
-	m := New("test-session", testCommands)
-	m.buildVisualOrder()
-
-	// Try to select item 99 (out of range)
-	if m.selectByNumber(99) {
-		t.Error("selectByNumber(99) should return false for out of range")
-	}
-}
-
-func TestSelectByNumberZero(t *testing.T) {
-	m := New("test-session", testCommands)
-	m.buildVisualOrder()
-
-	// Zero is not a valid selection (1-indexed)
-	if m.selectByNumber(0) {
-		t.Error("selectByNumber(0) should return false")
+		if m.phase != PhaseCommand {
+			t.Errorf("digit %q: expected to stay in PhaseCommand, got %v", digit, m.phase)
+		}
+		if m.selected != nil {
+			t.Errorf("digit %q: expected no selection (quick-select is rejected), got %q", digit, m.selected.Key)
+		}
+		if m.filter.Value() != string(digit) {
+			t.Errorf("digit %q: expected filter value %q, got %q", digit, string(digit), m.filter.Value())
+		}
 	}
 }
 
@@ -1126,27 +1116,27 @@ func TestFetchRecentsFromHistory(t *testing.T) {
 
 func TestKeyMapBindings(t *testing.T) {
 	// Test that key bindings are properly configured
-	if !key.Matches(tea.KeyMsg{Type: tea.KeyUp}, keys.Up) {
+	if !key.Matches(tea.KeyMsg{Type: tea.KeyUp}, commandKeys.Up) {
 		t.Error("Up key should match")
 	}
 
-	if !key.Matches(tea.KeyMsg{Type: tea.KeyDown}, keys.Down) {
+	if !key.Matches(tea.KeyMsg{Type: tea.KeyDown}, commandKeys.Down) {
 		t.Error("Down key should match")
 	}
 
-	if !key.Matches(tea.KeyMsg{Type: tea.KeyEnter}, keys.Select) {
+	if !key.Matches(tea.KeyMsg{Type: tea.KeyEnter}, commandKeys.Select) {
 		t.Error("Enter key should match Select")
 	}
 
-	if !key.Matches(tea.KeyMsg{Type: tea.KeyEsc}, keys.Back) {
+	if !key.Matches(tea.KeyMsg{Type: tea.KeyEsc}, commandKeys.Back) {
 		t.Error("Esc key should match Back")
 	}
 
-	if !key.Matches(tea.KeyMsg{Type: tea.KeyCtrlP}, keys.TogglePin) {
+	if !key.Matches(tea.KeyMsg{Type: tea.KeyCtrlP}, commandKeys.TogglePin) {
 		t.Error("Ctrl+P should match TogglePin")
 	}
 
-	if !key.Matches(tea.KeyMsg{Type: tea.KeyCtrlF}, keys.ToggleFavorite) {
+	if !key.Matches(tea.KeyMsg{Type: tea.KeyCtrlF}, commandKeys.ToggleFavorite) {
 		t.Error("Ctrl+F should match ToggleFavorite")
 	}
 }

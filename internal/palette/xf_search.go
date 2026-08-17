@@ -72,17 +72,17 @@ func (m *Model) enterXFSearch() {
 // updateXFSearchPhase handles input in the xf search query phase.
 func (m *Model) updateXFSearchPhase(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
-	case key.Matches(msg, keys.Quit):
+	case key.Matches(msg, xfSearchKeys.Quit):
 		m.quitting = true
 		return *m, tea.Quit
 
-	case key.Matches(msg, keys.Back):
+	case key.Matches(msg, xfSearchKeys.Back):
 		m.phase = PhaseCommand
 		m.filter.Focus()
 		m.xfQuery.Blur()
 		return *m, nil
 
-	case key.Matches(msg, keys.Select):
+	case key.Matches(msg, xfSearchKeys.Select):
 		query := strings.TrimSpace(m.xfQuery.Value())
 		if query == "" {
 			return *m, nil
@@ -101,26 +101,26 @@ func (m *Model) updateXFSearchPhase(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // updateXFResultsPhase handles input when viewing xf search results.
 func (m *Model) updateXFResultsPhase(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
-	case key.Matches(msg, keys.Quit):
+	case key.Matches(msg, xfResultsKeys.Quit):
 		m.quitting = true
 		return *m, tea.Quit
 
-	case key.Matches(msg, keys.Back):
+	case key.Matches(msg, xfResultsKeys.Back):
 		m.phase = PhaseXFSearch
 		m.xfQuery.Focus()
 		return *m, nil
 
-	case key.Matches(msg, keys.Up):
+	case key.Matches(msg, xfResultsKeys.Up):
 		if m.xfCursor > 0 {
 			m.xfCursor--
 		}
 
-	case key.Matches(msg, keys.Down):
+	case key.Matches(msg, xfResultsKeys.Down):
 		if m.xfCursor < len(m.xfResults)-1 {
 			m.xfCursor++
 		}
 
-	case key.Matches(msg, keys.Select):
+	case key.Matches(msg, xfResultsKeys.Select):
 		if len(m.xfResults) > 0 && m.xfCursor < len(m.xfResults) {
 			result := m.xfResults[m.xfCursor]
 			prompt := formatXFResultPrompt(result)
@@ -186,9 +186,9 @@ func (m Model) viewXFSearchPhase() string {
 		b.WriteString("\n")
 	}
 
-	// Help
+	// Help (generated from the phase keymap; see keymap.go)
 	helpStyle := lipgloss.NewStyle().Foreground(t.Subtext).Padding(1, 2)
-	b.WriteString(helpStyle.Render("enter: search  esc: back  ctrl+c: quit"))
+	b.WriteString(helpStyle.Render(renderHelpEntriesPlain(xfSearchHelpEntries())))
 
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, b.String())
 }
@@ -288,9 +288,9 @@ func (m Model) viewXFResultsPhase() string {
 		b.WriteString("\n")
 	}
 
-	// Help
+	// Help (generated from the phase keymap; see keymap.go)
 	helpStyle := lipgloss.NewStyle().Foreground(t.Subtext).Padding(1, 2)
-	b.WriteString(helpStyle.Render("enter: send to agent  ↑↓: navigate  esc: back  ctrl+c: quit"))
+	b.WriteString(helpStyle.Render(renderHelpEntriesPlain(xfResultsHelpEntries())))
 
 	return b.String()
 }
