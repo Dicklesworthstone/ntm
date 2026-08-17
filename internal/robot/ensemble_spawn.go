@@ -28,6 +28,16 @@ const (
 	ensembleSpawnUnavailableReason = ""
 )
 
+func init() {
+	// The experimental build's EnsembleSpawnOutput is list-shaped (Modes,
+	// Warnings); the stub build's output has no list fields, so this flag is
+	// declared here rather than in schema_pagination.go to keep both build
+	// flavors violation-free.
+	MustRegisterSchemaPagination("ensemble_spawn", SchemaPaginationFlag{
+		Reason: "bounded: per-request spawn echo (one row per spawned mode)",
+	})
+}
+
 // EnsembleSpawnOptions configures --robot-ensemble-spawn.
 type EnsembleSpawnOptions struct {
 	Session       string
