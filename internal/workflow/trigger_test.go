@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -139,10 +140,30 @@ func TestFileModifiedTriggerWatchesNewNestedDirectories(t *testing.T) {
 	if err := os.WriteFile(path, []byte("package workflow\n"), 0o644); err != nil {
 		t.Fatalf("create nested file: %v", err)
 	}
-	if err := os.WriteFile(path, []byte("package workflow\n// modified\n"), 0o644); err != nil {
-		t.Fatalf("modify nested file: %v", err)
+	// On kqueue platforms the brand-new file's own watch registers
+	// asynchronously after its Create event, so a single immediate Write can
+	// land before the watch exists and never produce an event (load-dependent
+	// race). Keep modifying until the watcher observes one; the assertion —
+	// modifications inside a newly created nested directory fire the trigger
+	// — is unchanged.
+	deadline := time.Now().Add(triggerWaitDeadline)
+	for revision := 0; ; revision++ {
+		content := fmt.Sprintf("package workflow\n// modified %d\n", revision)
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatalf("modify nested file: %v", err)
+		}
+		fired, err := trigger.Check(ctx)
+		if err != nil {
+			t.Fatalf("Check(): %v", err)
+		}
+		if fired {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("trigger did not fire before deadline")
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
-	waitForTrigger(t, trigger, ctx)
 }
 
 func TestCommandTriggers(t *testing.T) {
@@ -259,9 +280,15 @@ func TestTimeElapsedTrigger(t *testing.T) {
 	}
 }
 
+// triggerWaitDeadline bounds the fsnotify-backed waits below. Filesystem
+// notification latency is load-dependent (multi-agent swarm hosts routinely
+// run at load averages where 2s was not enough); polling returns on the
+// first observation, so a generous bound only costs time on real failures.
+const triggerWaitDeadline = 15 * time.Second
+
 func waitForTrigger(t *testing.T, trigger RuntimeTrigger, ctx *TriggerContext) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(triggerWaitDeadline)
 	for time.Now().Before(deadline) {
 		fired, err := trigger.Check(ctx)
 		if err != nil {
@@ -281,7 +308,7 @@ func waitForDirectoryWatch(t *testing.T, trigger RuntimeTrigger, dir string) {
 	if !ok {
 		t.Fatalf("trigger type = %T, want *fileTrigger", trigger)
 	}
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(triggerWaitDeadline)
 	for time.Now().Before(deadline) {
 		file.mu.Lock()
 		watcher := file.watcher
