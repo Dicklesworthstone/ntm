@@ -27,6 +27,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	ntmctx "github.com/Dicklesworthstone/ntm/internal/context"
 	dispatchsvc "github.com/Dicklesworthstone/ntm/internal/dispatch"
+	ntmevents "github.com/Dicklesworthstone/ntm/internal/events"
 	"github.com/Dicklesworthstone/ntm/internal/git"
 	"github.com/Dicklesworthstone/ntm/internal/health"
 	"github.com/Dicklesworthstone/ntm/internal/models"
@@ -7421,11 +7422,49 @@ func GetSend(opts SendOptions) (*SendOutput, error) {
 		}
 	}
 
+	// Account delivered payload bytes in the analytics event stream so
+	// robot-mode sends accumulate into chars_sent alongside CLI sends
+	// (bd-ws7-docs-ux-truth-tqh3l.4). len(messageToSend) is the exact
+	// post-injection payload delivered to each successful pane.
+	if delivered := len(output.Successful); delivered > 0 {
+		ntmevents.EmitPromptSend(opts.Session, delivered, len(messageToSend), "",
+			robotSendObservedTargetTypes(targetPanes, targetKeys, output.Successful), false)
+	}
+
 	// Generate agent hints
 	output.AgentHints = generateSendHints(output)
 	publishSendActuationOutcome(trace, opts, output)
 
 	return &output, nil
+}
+
+// robotSendObservedTargetTypes joins the distinct agent types of the panes
+// whose delivery succeeded, for prompt_send attribution.
+func robotSendObservedTargetTypes(panes []tmux.Pane, keys, successful []string) string {
+	ok := make(map[string]struct{}, len(successful))
+	for _, key := range successful {
+		ok[key] = struct{}{}
+	}
+	seen := make(map[string]struct{})
+	types := make([]string, 0, len(panes))
+	for i, pane := range panes {
+		if i >= len(keys) {
+			break
+		}
+		if _, delivered := ok[keys[i]]; !delivered {
+			continue
+		}
+		agentType := paneAgentType(pane)
+		if agentType == "" || agentType == "unknown" || agentType == "user" {
+			continue
+		}
+		if _, dup := seen[agentType]; dup {
+			continue
+		}
+		seen[agentType] = struct{}{}
+		types = append(types, agentType)
+	}
+	return strings.Join(types, ",")
 }
 
 const sendRenderVerificationLines = 20
