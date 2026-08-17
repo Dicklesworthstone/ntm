@@ -64,26 +64,33 @@ func startFakeagentTeam(t *testing.T, count int) (string, []*fakeagentPane) {
 		return cmd, controlPath, logPath
 	}
 
+	// Track which pane ID runs which fixture instance: tmux inserts split
+	// panes by position, so launch order and topology order DIVERGE for 3+
+	// panes — the control/log paths must be joined on the pane ID tmux
+	// reports for each launch, never on enumeration order.
+	type fixtureFiles struct{ control, log string }
+	filesByPane := make(map[string]fixtureFiles, count)
+
 	cmd0, control0, log0 := launch(1)
-	if _, err := tmux.DefaultClient.Run("new-session", "-d", "-s", session,
-		"-x", "200", "-y", "50", cmd0); err != nil {
+	pane0, err := tmux.DefaultClient.Run("new-session", "-d", "-P", "-F", "#{pane_id}", "-s", session,
+		"-x", "200", "-y", "50", cmd0)
+	if err != nil {
 		t.Fatalf("create fakeagent team session: %v", err)
 	}
 	t.Cleanup(func() {
 		_, _ = tmux.DefaultClient.Run("kill-session", "-t", session)
 	})
+	filesByPane[strings.TrimSpace(pane0)] = fixtureFiles{control: control0, log: log0}
 
-	controls := []string{control0}
-	logs := []string{log0}
 	for i := 2; i <= count; i++ {
 		cmdN, controlN, logN := launch(i)
-		if _, err := tmux.DefaultClient.Run("split-window", "-d", "-t", session+":0", cmdN); err != nil {
+		paneN, err := tmux.DefaultClient.Run("split-window", "-d", "-P", "-F", "#{pane_id}", "-t", session+":0", cmdN)
+		if err != nil {
 			t.Fatalf("split fakeagent pane %d: %v", i, err)
 		}
 		// Rebalance so every fakeagent keeps a workable viewport.
 		_, _ = tmux.DefaultClient.Run("select-layout", "-t", session+":0", "even-vertical")
-		controls = append(controls, controlN)
-		logs = append(logs, logN)
+		filesByPane[strings.TrimSpace(paneN)] = fixtureFiles{control: controlN, log: logN}
 	}
 
 	panes, err := tmux.GetPanes(session)
@@ -98,13 +105,17 @@ func startFakeagentTeam(t *testing.T, count int) (string, []*fakeagentPane) {
 		if err := tmux.SetPaneTitle(pane.ID, title); err != nil {
 			t.Fatalf("title pane %s: %v", pane.ID, err)
 		}
+		files, ok := filesByPane[pane.ID]
+		if !ok {
+			t.Fatalf("no fixture files recorded for pane %s (recorded: %v)", pane.ID, filesByPane)
+		}
 		fp := &fakeagentPane{
 			t:           t,
 			Session:     session,
 			PaneID:      pane.ID,
 			Persona:     "claude",
-			controlPath: controls[i],
-			logPath:     logs[i],
+			controlPath: files.control,
+			logPath:     files.log,
 		}
 		if _, ok := fp.WaitForEvent("start", "", 10*time.Second); !ok {
 			capture, _ := tmux.CapturePaneOutput(pane.ID, 40)
