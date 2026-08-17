@@ -123,6 +123,7 @@ Examples:
 
 	cmd.AddCommand(newWorkflowsListCmd())
 	cmd.AddCommand(newWorkflowsShowCmd())
+	cmd.AddCommand(newWorkflowsRunCmd())
 
 	return cmd
 }
