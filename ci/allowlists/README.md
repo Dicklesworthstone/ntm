@@ -6,8 +6,8 @@ Shared allowlist infrastructure for the WS0 guards (epic bd-ws0-guards-klz98).
 
 | File           | Guard | Consumer script |
 |----------------|-------|-----------------|
-| `deadcode.txt` | G1 dead-code gate | seeded by bd-ws0-guards-klz98.2 |
-| `config.txt`   | G2 config-key liveness | seeded by bd-ws0-guards-klz98.3 |
+| `deadcode.txt` | G1 dead-code gate | `scripts/guards/deadcode_gate.sh` |
+| `config.txt`   | G2 config-key liveness | `scripts/guards/config_liveness.sh` + `internal/config/liveness_test.go` |
 | `docs.txt`     | G3 docs-example conformance | seeded by bd-ws0-guards-klz98.4 |
 | `placebo.txt`  | G5 placebo lint | `scripts/guards/placebo_lint.sh` |
 | `contracts.txt`| G6 single-definition contracts | `scripts/guards/contracts_lint.sh` |

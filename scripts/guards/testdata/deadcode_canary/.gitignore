@@ -1,0 +1,5 @@
+# Build artifacts of the canary fixture module — never commit these.
+# (The gate only ever builds the fixture in a temp dir / analysis cache;
+# a `go build ./cmd/canary` run manually drops a binary here.)
+/canary
+/canary.exe
