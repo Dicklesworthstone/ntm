@@ -340,39 +340,9 @@ func DashboardHelpBarHints(opts DashboardHelpOptions) []KeyHint {
 	}
 }
 
-// PaletteHelpSections returns help sections for the palette overlay.
-func PaletteHelpSections() []HelpSection {
-	return []HelpSection{
-		{
-			Title: "Navigation",
-			Hints: []KeyHint{
-				{Key: "↑ / k", Desc: "Move up"},
-				{Key: "↓ / j", Desc: "Move down"},
-				{Key: "1-9", Desc: "Quick select item"},
-			},
-		},
-		{
-			Title: "Actions",
-			Hints: []KeyHint{
-				{Key: "Enter", Desc: "Select command"},
-				{Key: "1-4", Desc: "Select target (in target phase)"},
-				{Key: "e", Desc: "Edit prompt before sending (in target phase)"},
-				{Key: "Ctrl+S", Desc: "Save edit and return to target selection"},
-				{Key: "Ctrl+P", Desc: "Pin / unpin command"},
-				{Key: "Ctrl+F", Desc: "Favorite / unfavorite command"},
-				{Key: "Type", Desc: "Filter commands"},
-			},
-		},
-		{
-			Title: "General",
-			Hints: []KeyHint{
-				{Key: "Esc", Desc: "Go back / Cancel"},
-				{Key: "q", Desc: "Quit palette"},
-				{Key: "Ctrl+C", Desc: "Force quit"},
-			},
-		},
-	}
-}
+// The palette overlay sections are generated in internal/palette/keymap.go
+// from the palette's phase keymaps (H3): a hardcoded copy here advertised dead
+// keys (1-9 quick-select, q, ?) that the always-focused filter swallowed.
 
 // DashboardHelpSections returns help sections for the dashboard overlay.
 func DashboardHelpSections(opts DashboardHelpOptions) []HelpSection {

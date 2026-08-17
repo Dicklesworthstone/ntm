@@ -496,13 +496,8 @@ func TestGenerateZsh(t *testing.T) {
 		"alias gmi=",
 		"alias cnt='ntm create'",
 		"alias sat='ntm spawn'",
-		"_ntm()",
-		"compdef _ntm ntm",
-		"ensemble:Manage reasoning ensembles",
-		"_ntm_complete_ensemble_presets",
-		"_ntm_complete_mode_ids",
-		"_ntm_complete_tiers",
-		"--robot-ensemble-modes",
+		"source <(ntm completion zsh)",
+		"compdef _ntm_complete_sessions",
 		"bindkey",
 	}
 
@@ -527,12 +522,8 @@ func TestGenerateBash(t *testing.T) {
 		"alias cod=",
 		"alias gmi=",
 		"alias cnt='ntm create'",
-		"_ntm_completions()",
-		"_ntm_list_ensemble_presets()",
-		"_ntm_list_mode_ids()",
-		"--robot-ensemble-modes",
-		"ensemble",
-		"complete -F _ntm_completions ntm",
+		"source <(ntm completion bash)",
+		"complete -F _ntm_alias_session_completions rnt",
 	}
 
 	for _, check := range checks {
@@ -556,12 +547,7 @@ func TestGenerateFish(t *testing.T) {
 		"alias cod",
 		"alias gmi",
 		"abbr -a cnt",
-		"complete -c ntm",
-		"__fish_ntm_sessions",
-		"__fish_ntm_ensemble_presets",
-		"__fish_ntm_mode_ids",
-		"robot-ensemble-modes",
-		"ensemble",
+		"ntm completion fish | source",
 	}
 
 	for _, check := range checks {

@@ -1406,26 +1406,8 @@ func TestDashboardHelpVerbosityMapping(t *testing.T) {
 }
 
 func TestHelpSections(t *testing.T) {
-	t.Run("palette sections", func(t *testing.T) {
-		sections := PaletteHelpSections()
-		if len(sections) == 0 {
-			t.Error("expected non-empty palette sections")
-		}
-		// Should have Navigation, Actions, General
-		titles := make(map[string]bool)
-		for _, s := range sections {
-			titles[s.Title] = true
-		}
-		if !titles["Navigation"] {
-			t.Error("expected Navigation section")
-		}
-		if !titles["Actions"] {
-			t.Error("expected Actions section")
-		}
-		if !titles["General"] {
-			t.Error("expected General section")
-		}
-	})
+	// Palette overlay sections moved to internal/palette/keymap.go (H3):
+	// they are generated from the palette phase keymaps and tested there.
 
 	t.Run("dashboard sections", func(t *testing.T) {
 		sections := DashboardHelpSections(DashboardHelpOptions{Verbosity: DashboardHelpVerbosityFull})
