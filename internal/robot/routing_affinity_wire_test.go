@@ -86,6 +86,7 @@ func scoreAffinityAgents(scorer *AgentScorer, prompt string) (holderScore, other
 func TestWireReservationAffinity_RankingFlip(t *testing.T) {
 	t.Setenv("AGENT_MAIL_URL", "")
 	t.Setenv("AGENT_MAIL_TOKEN", "")
+	resetSharedReservationCaches(t)
 
 	expires := time.Now().Add(1 * time.Hour).UTC().Format(time.RFC3339)
 	created := time.Now().Add(-1 * time.Hour).UTC().Format(time.RFC3339)
@@ -167,6 +168,7 @@ func TestWireReservationAffinity_GatedOff(t *testing.T) {
 func TestWireReservationAffinity_AgentMailAway(t *testing.T) {
 	t.Setenv("AGENT_MAIL_URL", "")
 	t.Setenv("AGENT_MAIL_TOKEN", "")
+	resetSharedReservationCaches(t)
 
 	// Reserved port with no listener: connection refused, fast.
 	cfg := affinityWireConfig("http://127.0.0.1:1/mcp/")

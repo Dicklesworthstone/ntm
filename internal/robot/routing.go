@@ -17,6 +17,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
+	"github.com/Dicklesworthstone/ntm/internal/util"
 )
 
 // AgentMailConfig holds configuration for Agent Mail integration in routing.
@@ -438,6 +439,84 @@ func (s *AgentScorer) SetReservationCache(cache *ReservationCache) {
 	s.reservationCache = cache
 }
 
+// resolveAffinityProjectKey resolves the Agent Mail project key for
+// reservation-affinity wiring with the same SESSION-FIRST precedence the CLI
+// uses (internal/cli resolveAgentMailProjectKey, bd-2rtl8): the session's
+// persisted Agent Mail registry/agent-info project key wins, then the
+// configured projects_base session directory, and only then the caller's
+// working directory. An orchestrator invoking --robot-send from OUTSIDE the
+// repo previously keyed ListReservations on its own cwd, silently degrading
+// the bonus to 0 or matching another project's identically-named patterns.
+func resolveAffinityProjectKey(cfg *config.Config, session string) string {
+	cwdProject := util.ResolveProjectDir("")
+
+	sessionProject := ""
+	if cfg != nil && strings.TrimSpace(session) != "" {
+		sessionProject = cfg.GetProjectDir(session)
+	}
+
+	savedProject := ""
+	if strings.TrimSpace(session) != "" {
+		if registry, err := agentmail.LoadBestSessionAgentRegistry(session, sessionProject, cwdProject); err == nil && registry != nil {
+			savedProject = registry.ProjectKey
+		}
+		if info, err := agentmail.LoadBestSessionAgent(session, savedProject, sessionProject, cwdProject); err == nil && info != nil {
+			savedProject = affinityProjectKeyPreference(savedProject, info.ProjectKey, "")
+		}
+	}
+
+	return affinityProjectKeyPreference(savedProject, sessionProject, cwdProject)
+}
+
+// affinityProjectKeyPreference returns the first USABLE candidate in
+// precedence order (session-saved, session-configured, cwd). Usability is
+// scored the same way the CLI scores project dirs so a placeholder like a
+// nonexistent projects_base/<session> directory never beats a real checkout.
+func affinityProjectKeyPreference(candidates ...string) string {
+	for _, c := range candidates {
+		if strings.TrimSpace(c) == "" {
+			continue
+		}
+		if util.ProjectDirScore(c) > 0 {
+			return c
+		}
+	}
+	return ""
+}
+
+// sharedReservationCaches holds one ReservationCache per project key for the
+// lifetime of the process, so the configured CacheTTL actually amortizes
+// Agent Mail round-trips: constructing a fresh cache per GetRoute /
+// GetRouteRecommendation call left lastFetch at zero, making NeedsRefresh
+// always true and every affinity-enabled send pay a blocking fetch (up to the
+// 3s timeout against a wedged-but-accepting server) — the "30s TTL" was
+// pretense (bd-2rtl8).
+var (
+	sharedReservationCachesMu sync.Mutex
+	sharedReservationCaches   = make(map[string]*ReservationCache)
+)
+
+// sharedReservationCache returns the process-wide reservation cache for a
+// project key, creating it on first use. An existing cache keeps its client
+// and fetch history; only the TTL is updated if configuration changed.
+func sharedReservationCache(client *agentmail.Client, projectKey string, ttl time.Duration) *ReservationCache {
+	if ttl == 0 {
+		ttl = 30 * time.Second
+	}
+	sharedReservationCachesMu.Lock()
+	defer sharedReservationCachesMu.Unlock()
+
+	if rc, ok := sharedReservationCaches[projectKey]; ok {
+		rc.mu.Lock()
+		rc.ttl = ttl
+		rc.mu.Unlock()
+		return rc
+	}
+	rc := NewReservationCache(client, projectKey, ttl)
+	sharedReservationCaches[projectKey] = rc
+	return rc
+}
+
 // reservationAffinityRefreshTimeout bounds the best-effort Agent Mail
 // reservation fetch at scorer setup. Affinity is enrichment, never a gate: an
 // absent or wedged Agent Mail server must not stall routing or a send — the
@@ -449,20 +528,23 @@ const reservationAffinityRefreshTimeout = 3 * time.Second
 // (bd-ws2-wire-or-delete-ykmcz.3, WIRE-MINIMAL).
 //
 // When [routing] affinity_enabled=true AND [agent_mail] enabled=true, it
-// constructs an Agent Mail client from the same config/env precedence the CLI
-// uses (env AGENT_MAIL_URL/AGENT_MAIL_TOKEN override config), seeds the
-// tested ReservationCache with one best-effort TTL-bounded refresh, and loads
-// the persisted pane→agent-name mapping from the session agent registry.
-// Everything is best-effort: any failure leaves the scorer exactly as it was
-// before wiring (bonus contributes 0), and affinity stays a SCORING BONUS
-// under existing strategies — `--route=affinity` remains an invalid strategy.
+// resolves the project key SESSION-FIRST with the same precedence the CLI
+// uses (persisted session registry, then configured session dir, then cwd —
+// bd-2rtl8), constructs an Agent Mail client from the same config/env
+// precedence the CLI uses (env AGENT_MAIL_URL/AGENT_MAIL_TOKEN override
+// config), attaches the process-shared TTL ReservationCache with one
+// best-effort TTL-bounded refresh, and loads the persisted pane→agent-name
+// mapping from the session agent registry. Everything is best-effort: any
+// failure leaves the scorer exactly as it was before wiring (bonus
+// contributes 0), and affinity stays a SCORING BONUS under existing
+// strategies — `--route=affinity` remains an invalid strategy.
 func (s *AgentScorer) wireReservationAffinity(cfg *config.Config, session string) {
 	if cfg == nil || !s.config.AffinityEnabled || !cfg.AgentMail.Enabled {
 		return
 	}
-	projectKey, err := os.Getwd()
-	if err != nil || projectKey == "" {
-		slog.Warn("[robot.route] affinity: cannot resolve project key; bonus degrades to 0", "error", err)
+	projectKey := resolveAffinityProjectKey(cfg, session)
+	if projectKey == "" {
+		slog.Warn("[robot.route] affinity: cannot resolve project key; bonus degrades to 0", "session", session)
 		return
 	}
 
@@ -479,7 +561,7 @@ func (s *AgentScorer) wireReservationAffinity(cfg *config.Config, session string
 	agentmail.HydrateClientTokensForProject(client, projectKey)
 
 	s.config.AgentMail.Enabled = true
-	s.SetReservationCache(NewReservationCache(client, projectKey, s.config.AgentMail.CacheTTL))
+	s.SetReservationCache(sharedReservationCache(client, projectKey, s.config.AgentMail.CacheTTL))
 	if loaded := s.LoadAgentMappingFromRegistry(session, projectKey); loaded == 0 {
 		slog.Debug("[robot.route] affinity: no persisted pane→agent mapping for session", "session", session)
 	}
@@ -993,10 +1075,13 @@ type RoutingContext struct {
 	ExcludePanes []int  // Pane indices to exclude
 	ExplicitPane int    // For explicit routing (-1 = not set)
 	// RotationCursor is the persisted round-robin cursor from session routing
-	// state (bd-ws1-truth-safety-l5ddi.10): the agent index the PREVIOUS send
-	// rotated to. It only counts as routing history when HasRotationCursor is
-	// true (guarding the zero-value trap: index 0 is a valid cursor). It
-	// anchors the rotation when LastAgent's pane no longer resolves.
+	// state (bd-ws1-truth-safety-l5ddi.10): the index the PREVIOUS send's
+	// selected pane held in its candidate list. It only counts as routing
+	// history when HasRotationCursor is true (guarding the zero-value trap:
+	// index 0 is a valid cursor). It anchors the rotation when LastAgent's
+	// pane no longer resolves: the vanished pane's successor now sits AT the
+	// cursor position, so the rotation starts there without advancing
+	// (bd-88um4).
 	RotationCursor    int
 	HasRotationCursor bool
 }
@@ -1074,13 +1159,28 @@ func (s *FirstAvailableStrategy) Select(agents []ScoredAgent, ctx RoutingContext
 }
 
 // rotationAnchorIndex resolves the index the next rotation step starts from,
-// and reports whether that anchor came from genuine ROUTING history.
+// and reports whether the rotation should ADVANCE one step past that anchor
+// (true = the anchor itself was already routed to; false = start AT the
+// anchor).
 //
 // Precedence matters. An explicit LastAgent (pane ID) wins because it survives
-// process boundaries. The in-process cursor comes next: once this Router has
-// actually routed, the cursor IS routing history. Only with neither does the
-// rotation fall back to observed pane activity — and that fallback is not
-// routing history at all, which is why it returns false.
+// process boundaries AND is immune to positional drift: panes inserted or
+// removed elsewhere in the candidate list cannot shift a pane-ID anchor.
+//
+// The persisted rotation cursor comes next, and it is reached only when the
+// previously routed pane no longer resolves in the current candidate list —
+// i.e. the pane vanished. The cursor was that pane's index at selection time,
+// so after the removal the list shrank at/before that index and the VANISHED
+// PANE'S SUCCESSOR now sits AT the cursor position. Advancing past it would
+// skip the successor (A,B,C,D with cursor on B; kill B -> D, starving C —
+// bd-88um4), so the cursor anchors WITHOUT advancing. A cursor past the end
+// (the vanished pane was last) wraps to index 0, which is likewise the
+// successor.
+//
+// The in-process cursor comes next: once this Router has actually routed, the
+// cursor IS routing history. Only with none of the above does the rotation
+// fall back to observed pane activity — and that fallback is not routing
+// history at all, so it starts AT the idlest agent.
 //
 // The old order preferred activity over the cursor, and used "most recently
 // ACTIVE" as a stand-in for "most recently ROUTED". Those are different facts:
@@ -1095,11 +1195,16 @@ func rotationAnchorIndex(agents []ScoredAgent, ctx RoutingContext, cursor int, r
 			}
 		}
 	}
-	// Persisted rotation cursor from session routing state: genuine routing
-	// history that survives process boundaries even when the previously
-	// routed pane no longer resolves (bd-ws1-truth-safety-l5ddi.10).
-	if ctx.HasRotationCursor && ctx.RotationCursor >= 0 && ctx.RotationCursor < len(agents) {
-		return ctx.RotationCursor, true
+	// Persisted rotation cursor from session routing state
+	// (bd-ws1-truth-safety-l5ddi.10): the previously routed pane vanished, so
+	// its successor sits AT the cursor position — anchor without advancing
+	// (bd-88um4).
+	if ctx.HasRotationCursor && ctx.RotationCursor >= 0 {
+		idx := ctx.RotationCursor
+		if idx >= len(agents) {
+			idx = 0
+		}
+		return idx, false
 	}
 	if routed && cursor >= 0 && cursor < len(agents) {
 		return cursor, true

@@ -1,6 +1,7 @@
 package robot
 
 import (
+	"fmt"
 	"math/rand"
 	"path/filepath"
 	"testing"
@@ -99,7 +100,7 @@ func TestRoundRobin_PersistedRotationAcrossInvocations(t *testing.T) {
 		}
 
 		// The MECHANISM, not just the symptom: the persisted cursor advanced.
-		rs, err := store.GetRoutingState("rrproj")
+		rs, err := store.GetRoutingState("rrproj", "")
 		if err != nil {
 			t.Fatalf("send %d: load routing state: %v", send+1, err)
 		}
@@ -117,9 +118,10 @@ func TestRoundRobin_PersistedRotationAcrossInvocations(t *testing.T) {
 }
 
 // TestRoundRobin_CursorAnchorsWhenPaneIDsChange pins the persisted-cursor
-// anchor: when the previously routed pane ID no longer resolves (e.g. panes
-// were recreated), the rotation continues from the persisted cursor instead of
-// falling back to activity heuristics.
+// anchor under the bd-88um4 successor semantics: when the previously routed
+// pane ID no longer resolves, the list shrank at/before the cursor, so the
+// vanished pane's SUCCESSOR now sits AT the cursor position — the rotation
+// starts there WITHOUT advancing (advancing skipped the successor).
 func TestRoundRobin_CursorAnchorsWhenPaneIDsChange(t *testing.T) {
 	store := routingStateTestStore(t)
 	if err := store.SaveRoutingState(&state.RoutingState{
@@ -133,9 +135,209 @@ func TestRoundRobin_CursorAnchorsWhenPaneIDsChange(t *testing.T) {
 	if result.Selected == nil {
 		t.Fatal("no selection")
 	}
-	// Cursor 2 anchors at index 2; the next rotation step wraps to index 0.
-	if result.Selected.PaneID != "%1" {
-		t.Fatalf("selected %s, want %%1 (cursor 2 -> wrap to index 0)", result.Selected.PaneID)
+	// %gone held index 2; whatever occupies index 2 now is its successor.
+	if result.Selected.PaneID != "%3" {
+		t.Fatalf("selected %s, want %%3 (vanished pane's successor AT cursor 2)", result.Selected.PaneID)
+	}
+}
+
+// TestRoundRobin_VanishedPaneDoesNotSkipSuccessor is the bd-88um4 canonical
+// off-by-one case, driven end-to-end through real persisted sends: with panes
+// A,B,C,D, route to A then B, then kill B. The next send must pick C — the
+// old code anchored at B's stale index and advanced +1 in the SHRUNK list,
+// selecting D and starving C.
+func TestRoundRobin_VanishedPaneDoesNotSkipSuccessor(t *testing.T) {
+	store := routingStateTestStore(t)
+	opts := RouteOptions{Session: "rrvanish", Strategy: StrategyRoundRobin}
+	full := []ScoredAgent{
+		{PaneID: "%A", PaneIndex: 1, AgentType: "claude", Score: 50},
+		{PaneID: "%B", PaneIndex: 2, AgentType: "claude", Score: 50},
+		{PaneID: "%C", PaneIndex: 3, AgentType: "claude", Score: 50},
+		{PaneID: "%D", PaneIndex: 4, AgentType: "claude", Score: 50},
+	}
+
+	for send, want := range []string{"%A", "%B"} {
+		agents := append([]ScoredAgent(nil), full...)
+		result := routeWithSessionState(agents, opts, store, true)
+		if result.Selected == nil || result.Selected.PaneID != want {
+			t.Fatalf("send %d selected %+v, want %s", send+1, result.Selected, want)
+		}
+		t.Logf("send %d: selected %s", send+1, result.Selected.PaneID)
+	}
+
+	// Kill B: the candidate list shrinks to A,C,D.
+	shrunk := []ScoredAgent{full[0], full[2], full[3]}
+	result := routeWithSessionState(shrunk, opts, store, true)
+	if result.Selected == nil {
+		t.Fatal("no selection after pane removal")
+	}
+	t.Logf("send 3 (B killed): selected %s", result.Selected.PaneID)
+	if result.Selected.PaneID != "%C" {
+		t.Fatalf("selected %s after killing %%B, want %%C (old bug skipped to %%D)", result.Selected.PaneID)
+	}
+
+	// And the rotation keeps going correctly: C resolves by pane ID -> D.
+	result = routeWithSessionState(append([]ScoredAgent(nil), shrunk...), opts, store, true)
+	if result.Selected == nil || result.Selected.PaneID != "%D" {
+		t.Fatalf("send 4 selected %+v, want %%D", result.Selected)
+	}
+}
+
+// TestRoundRobin_CursorRobustnessTopologies tables the anchor behavior across
+// pane-set mutations (bd-88um4): removals anchor on the successor, insertions
+// cannot shift a pane-ID anchor, and a cursor past the shrunk end wraps to
+// the head (which IS the vanished tail's successor).
+func TestRoundRobin_CursorRobustnessTopologies(t *testing.T) {
+	mk := func(ids ...string) []ScoredAgent {
+		agents := make([]ScoredAgent, len(ids))
+		for i, id := range ids {
+			agents[i] = ScoredAgent{PaneID: id, PaneIndex: i + 1, AgentType: "claude", Score: 50}
+		}
+		return agents
+	}
+
+	cases := []struct {
+		name       string
+		lastAgent  string
+		cursor     int
+		agents     []ScoredAgent
+		want       string
+		wantCursor int // persisted cursor after the send
+	}{
+		{
+			name:      "vanished middle pane anchors on successor",
+			lastAgent: "%B", cursor: 1,
+			agents: mk("%A", "%C", "%D"),
+			want:   "%C", wantCursor: 1,
+		},
+		{
+			name:      "vanished tail pane wraps to head",
+			lastAgent: "%D", cursor: 3,
+			agents: mk("%A", "%B", "%C"),
+			want:   "%A", wantCursor: 0,
+		},
+		{
+			name:      "insertion before last agent cannot shift the anchor",
+			lastAgent: "%B", cursor: 1,
+			agents: mk("%NEW", "%A", "%B", "%C"),
+			want:   "%C", wantCursor: 3,
+		},
+		{
+			name:      "surviving last agent ignores stale cursor entirely",
+			lastAgent: "%C", cursor: 0, // cursor lies; pane ID is authoritative
+			agents: mk("%A", "%B", "%C"),
+			want:   "%A", wantCursor: 0,
+		},
+		{
+			name:      "mass shrink clamps cursor to head",
+			lastAgent: "%F", cursor: 5,
+			agents: mk("%A"),
+			want:   "%A", wantCursor: 0,
+		},
+	}
+
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := routingStateTestStore(t)
+			session := fmt.Sprintf("topo%d", i)
+			if err := store.SaveRoutingState(&state.RoutingState{
+				SessionName: session, LastAgent: tc.lastAgent, RotationCursor: tc.cursor,
+			}); err != nil {
+				t.Fatalf("seed: %v", err)
+			}
+
+			result := routeWithSessionState(tc.agents,
+				RouteOptions{Session: session, Strategy: StrategyRoundRobin}, store, true)
+			if result.Selected == nil {
+				t.Fatal("no selection")
+			}
+			t.Logf("last=%s cursor=%d -> selected %s", tc.lastAgent, tc.cursor, result.Selected.PaneID)
+			if result.Selected.PaneID != tc.want {
+				t.Fatalf("selected %s, want %s", result.Selected.PaneID, tc.want)
+			}
+
+			rs, err := store.GetRoutingState(session, "")
+			if err != nil || rs == nil {
+				t.Fatalf("reload state: %+v, %v", rs, err)
+			}
+			if rs.LastAgent != tc.want || rs.RotationCursor != tc.wantCursor {
+				t.Fatalf("persisted state = %+v, want last=%s cursor=%d", rs, tc.want, tc.wantCursor)
+			}
+		})
+	}
+}
+
+// TestRoundRobin_FilterSetsRotateIndependently pins the bd-88um4 cross-filter
+// fix: alternating sends with different agent-type filters each keep their
+// OWN persisted rotation, so no pane in either filtered set is starved. With
+// the old session-only key, the cc and cod cursors corrupted each other.
+func TestRoundRobin_FilterSetsRotateIndependently(t *testing.T) {
+	store := routingStateTestStore(t)
+	ccAgents := func() []ScoredAgent {
+		return []ScoredAgent{
+			{PaneID: "%cc1", PaneIndex: 1, AgentType: "claude", Score: 50},
+			{PaneID: "%cc2", PaneIndex: 2, AgentType: "claude", Score: 50},
+		}
+	}
+	codAgents := func() []ScoredAgent {
+		return []ScoredAgent{
+			{PaneID: "%cod1", PaneIndex: 3, AgentType: "codex", Score: 50},
+			{PaneID: "%cod2", PaneIndex: 4, AgentType: "codex", Score: 50},
+		}
+	}
+	ccOpts := RouteOptions{Session: "filtproj", Strategy: StrategyRoundRobin, AgentType: "claude"}
+	codOpts := RouteOptions{Session: "filtproj", Strategy: StrategyRoundRobin, AgentType: "codex"}
+
+	// Interleaved sends: each filter must rotate through BOTH of its panes.
+	steps := []struct {
+		opts   RouteOptions
+		agents []ScoredAgent
+		want   string
+	}{
+		{ccOpts, ccAgents(), "%cc1"},
+		{codOpts, codAgents(), "%cod1"},
+		{ccOpts, ccAgents(), "%cc2"},
+		{codOpts, codAgents(), "%cod2"},
+		{ccOpts, ccAgents(), "%cc1"},
+		{codOpts, codAgents(), "%cod1"},
+	}
+	for i, step := range steps {
+		result := routeWithSessionState(step.agents, step.opts, store, true)
+		if result.Selected == nil {
+			t.Fatalf("step %d: no selection", i+1)
+		}
+		t.Logf("step %d (type=%s): selected %s", i+1, step.opts.AgentType, result.Selected.PaneID)
+		if result.Selected.PaneID != step.want {
+			t.Fatalf("step %d selected %s, want %s (filter cursors corrupted each other)",
+				i+1, result.Selected.PaneID, step.want)
+		}
+	}
+
+	// The mechanism: two independent rows, one per filter key.
+	cc, err := store.GetRoutingState("filtproj", routingStateFilterKey(ccOpts))
+	if err != nil || cc == nil || cc.LastAgent != "%cc1" {
+		t.Fatalf("cc filter state = %+v, %v; want last %%cc1", cc, err)
+	}
+	cod, err := store.GetRoutingState("filtproj", routingStateFilterKey(codOpts))
+	if err != nil || cod == nil || cod.LastAgent != "%cod1" {
+		t.Fatalf("cod filter state = %+v, %v; want last %%cod1", cod, err)
+	}
+}
+
+// TestRoutingStateFilterKey pins the key derivation: unfiltered sends map to
+// the legacy empty key, and exclude sets are order-insensitive.
+func TestRoutingStateFilterKey(t *testing.T) {
+	if got := routingStateFilterKey(RouteOptions{Session: "s"}); got != "" {
+		t.Fatalf("unfiltered key = %q, want empty (legacy row compatibility)", got)
+	}
+	a := routingStateFilterKey(RouteOptions{AgentType: "Claude", ExcludePanes: []int{3, 1}})
+	b := routingStateFilterKey(RouteOptions{AgentType: "claude", ExcludePanes: []int{1, 3}})
+	if a != b {
+		t.Fatalf("equivalent filter sets produced different keys: %q vs %q", a, b)
+	}
+	c := routingStateFilterKey(RouteOptions{AgentType: "codex", ExcludePanes: []int{1, 3}})
+	if a == c {
+		t.Fatalf("different agent types share filter key %q", a)
 	}
 }
 
@@ -154,7 +356,7 @@ func TestSticky_PersistedAcrossInvocations(t *testing.T) {
 	if result.Selected == nil || result.Selected.PaneID != "%2" {
 		t.Fatalf("send 1 selected %+v, want fallback to best-scored %%2", result.Selected)
 	}
-	rs, err := store.GetRoutingState("stickyproj")
+	rs, err := store.GetRoutingState("stickyproj", "")
 	if err != nil || rs == nil || rs.LastAgent != "%2" {
 		t.Fatalf("send 1 persisted state = %+v (err %v), want last_agent %%2", rs, err)
 	}
