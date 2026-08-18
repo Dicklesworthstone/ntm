@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# E2E Test: Spawn pacing + scheduler backoff (bd-azzp0)
-# Validates spawn throttling and deterministic scheduler backoff behavior.
+# E2E Test: Spawn pacing (bd-azzp0)
+# Validates spawn throttling behavior. (The scheduler backoff phases were
+# removed with internal/scheduler in the v1.27.0 dead-code sweep.)
 
 set -euo pipefail
 
@@ -30,12 +31,6 @@ main() {
 
     log_section "Spawn pacing (pane creation)"
     test_spawn_pacing
-
-    log_section "Scheduler pacing + no resource exhaustion"
-    test_scheduler_pacing
-
-    log_section "Scheduler EAGAIN backoff"
-    test_scheduler_eagain
 
     log_summary
 }
@@ -138,28 +133,6 @@ test_spawn_pacing() {
         fi
     else
         log_assert_eq "${#split_times[@]}" "2" "pane split timestamps recorded"
-    fi
-}
-
-test_scheduler_pacing() {
-    local cmd=(go test ./internal/scheduler -run 'TestScheduler_E2E_(PacedSpawning|NoResourceExhaustion)$' -count=1 -v)
-    if log_exec "${cmd[@]}"; then
-        log_assert_contains "$_LAST_OUTPUT" "E2E Timing Summary" "scheduler pacing logs present"
-        log_assert_contains "$_LAST_OUTPUT" "E2E Resource Test" "scheduler resource test logs present"
-    else
-        log_error "${E2E_TAG} scheduler pacing tests failed"
-        return 1
-    fi
-}
-
-test_scheduler_eagain() {
-    local cmd=(env ENABLE_E2E_TESTS=1 go test ./internal/scheduler -run TestScheduler_E2E_EAGAINBackoff -count=1 -v)
-    if log_exec "${cmd[@]}"; then
-        log_assert_contains "$_LAST_OUTPUT" "Backoff started" "scheduler backoff started"
-        log_assert_contains "$_LAST_OUTPUT" "Backoff ended" "scheduler backoff ended"
-    else
-        log_error "${E2E_TAG} scheduler EAGAIN test failed"
-        return 1
     fi
 }
 
