@@ -478,10 +478,17 @@ func TestRESTBeadsCreateAndUpdate(t *testing.T) {
 	if cfgResp := client.patch("/api/v1/config", map[string]interface{}{"project_dir": beadsDir}); cfgResp.StatusCode != http.StatusOK {
 		t.Fatalf("failed to point server at isolated beads workspace: status %d", cfgResp.StatusCode)
 	}
-	repoDB := repoBeadsRowCount(t)
+	// The leak probe is the test's own marker title rather than a raw row
+	// count: an external writer (e.g. a br auto-commit watcher flushing the
+	// repo workspace mid-test) may legitimately change the row count, but
+	// only THIS test can plant its marker bead in the repo JSONL.
+	const leakMarker = "REST Integration Test Bead"
+	if repoBeadsContainsMarker(t, leakMarker) {
+		t.Skipf("repo beads JSONL already contains marker %q; cannot prove isolation", leakMarker)
+	}
 	defer func() {
-		if after := repoBeadsRowCount(t); after != repoDB {
-			t.Errorf("ISOLATION LEAK: repo beads DB row count changed %d -> %d", repoDB, after)
+		if repoBeadsContainsMarker(t, leakMarker) {
+			t.Errorf("ISOLATION LEAK: marker bead %q appeared in the repo beads JSONL", leakMarker)
 		}
 	}()
 
@@ -944,10 +951,12 @@ func TestRESTFullSessionFlow(t *testing.T) {
 	logger.Log("Full REST session flow completed")
 }
 
-// repoBeadsRowCount counts issues in the repository's own beads JSONL so the
-// isolation guard in TestRESTBeadsCreateAndUpdate can prove no test bead
-// leaked into the real workspace (bd-w4fbk).
-func repoBeadsRowCount(t *testing.T) int {
+// repoBeadsContainsMarker reports whether the repository's own beads JSONL
+// contains the given marker string, so the isolation guard in
+// TestRESTBeadsCreateAndUpdate can prove no test bead leaked into the real
+// workspace (bd-w4fbk) without false-failing when a concurrent external
+// writer (e.g. a br auto-commit watcher) changes unrelated rows mid-test.
+func repoBeadsContainsMarker(t *testing.T, marker string) bool {
 	t.Helper()
 	root, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
 	if err != nil {
@@ -955,7 +964,7 @@ func repoBeadsRowCount(t *testing.T) int {
 	}
 	data, err := os.ReadFile(filepath.Join(strings.TrimSpace(string(root)), ".beads", "issues.jsonl"))
 	if err != nil {
-		return 0
+		return false
 	}
-	return strings.Count(string(data), "\n")
+	return strings.Contains(string(data), marker)
 }
