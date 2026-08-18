@@ -333,7 +333,13 @@ func (t *fileTrigger) Check(_ *TriggerContext) (bool, error) {
 		t.fired = true
 	}
 	for _, name := range settled {
-		delete(t.pending, name)
+		// Only drop the entry we actually judged: between the snapshot and
+		// this re-lock, run() may have recorded a FRESH baseline for the same
+		// name (file deleted and recreated), and deleting that would lose the
+		// very tracking the kqueue fallback exists to provide.
+		if current, ok := t.pending[name]; ok && current == pending[name] {
+			delete(t.pending, name)
+		}
 	}
 	return t.fired, nil
 }

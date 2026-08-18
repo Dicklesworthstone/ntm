@@ -362,5 +362,15 @@ func (c *ReviewGateCoordinator) ApproveFromRole(agentID, role string) (bool, err
 	if required > reviewerCount {
 		return false, fmt.Errorf("workflow review gate requires %d approvals but has only %d reviewer agents", required, reviewerCount)
 	}
-	return len(c.approvals) >= required, nil
+	// Count only approvals from agents holding THIS approver role: the
+	// approvals map is shared across roles, and with multiple approval
+	// triggers naming different roles, an approval recorded under one role
+	// must not satisfy another role's all/quorum threshold.
+	count := 0
+	for id := range c.approvals {
+		if _, ok := reviewers[id]; ok {
+			count++
+		}
+	}
+	return count >= required, nil
 }
