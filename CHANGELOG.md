@@ -13,7 +13,20 @@ NTM is a tmux session management tool for orchestrating multiple AI coding agent
 
 ## [Unreleased]
 
-### Changed — BREAKING (v1.27.0)
+- **Corrected commit provenance.** Commit `d08893d9`'s message incorrectly
+  attributed the fail-closed serve safety-policy change to its completion and
+  tmux diff. The actual safety-policy implementation is `dda4aae8`; history
+  is preserved and this note is the forward correction.
+
+---
+
+## [v1.27.0] -- 2026-08-18 [GitHub Release]
+
+**The bug-fix and backlog-burndown release.** Every open defect bead from the
+reality-bridge review gates is fixed, the pre-existing E2E debt is retired, and
+the staged config removal completes its second phase.
+
+### Changed — BREAKING
 
 - **Previously-deprecated config keys now fail the loader** (WS6-remove-finalize,
   `bd-ws6-config-truth-ienmd.3`): the config keys removed in v1.26.0
@@ -30,10 +43,16 @@ NTM is a tmux session management tool for orchestrating multiple AI coding agent
   listed keys from your config file — see the removed-key migration table in
   the v1.26.0 entry below for the full list and per-key dispositions.
 
-- **Corrected commit provenance.** Commit `d08893d9`'s message incorrectly
-  attributed the fail-closed serve safety-policy change to its completion and
-  tmux diff. The actual safety-policy implementation is `dda4aae8`; history
-  is preserved and this note is the forward correction.
+### Reliability
+
+- **Review-gate follow-ups, all closed.** cm refuses port-fallback duplicate daemons; the guard degraded-ledger splits unreachable-vs-error reasons, self-prunes, and doctor checks that `ntm` is on the hook's PATH; the MCP health probe rejects port squatters; conflict negotiation publishes honest `conflict_release_requested` outcomes with cooldown-after-success and deep-copied holder state; deadlock wording is honestly advisory; workflow runner state is race-clean with serialized dispatch, review gates cover every role/target shape, kqueue-missed file writes fire via a stat fallback, and tilde paths resolve.
+- **Routing hardened end-to-end.** Rotation state is keyed by `(session, filter)` with pane-anchored cursors that skip nothing when panes vanish; advisory routes take no write locks; stale rows purge; affinity resolves session-first project keys through a process-shared TTL cache; the coordinator's auto-assign selects by multi-factor score instead of first-fit (the redundant strategy layer is deleted).
+- **Truth in envelopes and jobs.** Job stores are bounded with deterministic listings; nested list-shaped schema types are flagged (28 caught); arrays-never-null covers by-value payloads and compact capabilities; assignment skip reasons are honest; mixed-target CASS injection uses neutral formatting and records config-disabled skips.
+- **Platform and test integrity.** Darwin liveness answers from one sysctl call (eliminating 42 subprocess spawns per status invocation); the integration test package fails loudly in CI instead of silently no-opping, and REST beads tests are provably isolated from the repository's own beads DB; `@vscode/vsce` is vendored so vsix builds fetch nothing at release time; the canonical-pane/replay/spawn E2E clusters pass against the hardened delivery gates via a new fakeshell fixture (14 tests un-stuck, all siblings green).
+
+### Verification And Release
+
+- The G1 dead-code backlog burned 607 allowlist lines (six orphan packages, eight dead files, sixteen partial strips — ~24k LOC); all 408 live config keys carry liveness claims with 153 reader-less knobs re-tagged for their own staged removal; all 12 waived designer docs are rewritten to shipped shapes and every legacy stub-marker comment is resolved; the audit ledger sampler is era-scoped.
 
 ---
 
