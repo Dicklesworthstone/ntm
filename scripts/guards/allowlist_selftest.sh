@@ -27,7 +27,10 @@ run_check() { # run_check <allowlist-dir> — runs check_allowlists.sh against a
 # static fallback keeps that path honest.
 open_id="bd-ws0-guards-klz98"
 if command -v br >/dev/null 2>&1; then
-  found_open="$(br list --status=open --limit=1 2>/dev/null | sed -n 's/.*\(bd-[a-z0-9][a-z0-9._-]*\).*/\1/p' | head -1)"
+  # First bead-shaped token on the line, NOT a greedy sed capture: greedy
+  # matching grabbed the LAST token, so an open bead whose TITLE mentions a
+  # closed bead id poisoned the "open" fixture and failed check 1.
+  found_open="$(br list --status=open --limit=1 2>/dev/null | grep -oE 'bd-[a-z0-9][a-z0-9._-]*' | head -1)"
   [ -n "$found_open" ] && open_id="$found_open"
 fi
 mkdir -p "$TMP/ok"
@@ -49,7 +52,9 @@ if command -v br >/dev/null 2>&1; then
   mkdir -p "$TMP/missing"
   printf 'entry-a\tbd-zzzz-does-not-exist\treason text\n' > "$TMP/missing/one.txt"
   run_check "$TMP/missing" && fail "missing bead accepted"
-  closed_id="$(br list --status=closed --limit=1 2>/dev/null | sed -n 's/.*\(bd-[a-z0-9][a-z0-9._-]*\).*/\1/p' | head -1)"
+  # Same first-token discipline as the open-id discovery above: a closed
+  # bead whose title mentions an OPEN bead id must not poison this fixture.
+  closed_id="$(br list --status=closed --limit=1 2>/dev/null | grep -oE 'bd-[a-z0-9][a-z0-9._-]*' | head -1)"
   if [ -n "$closed_id" ]; then
     mkdir -p "$TMP/closed"
     printf 'entry-a\t%s\treason text\n' "$closed_id" > "$TMP/closed/one.txt"
