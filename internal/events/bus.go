@@ -249,41 +249,11 @@ type HumanZoomEvent struct {
 	Cursor    int64  `json:"cursor,omitempty"`
 }
 
-// NewHumanZoomEvent creates a new human zoom event.
-func NewHumanZoomEvent(session string, paneIndex int, agentType string, cursor int64) HumanZoomEvent {
-	return HumanZoomEvent{
-		BaseEvent: BaseEvent{
-			Type:      EventHumanZoom,
-			Timestamp: time.Now().UTC(),
-			Session:   session,
-		},
-		PaneIndex: paneIndex,
-		AgentType: agentType,
-		Cursor:    cursor,
-	}
-}
-
 // HumanOverlayDismissEvent is emitted when a human dismisses the overlay.
 type HumanOverlayDismissEvent struct {
 	BaseEvent
 	DurationSeconds float64 `json:"duration_seconds,omitempty"`
 	Cursor          int64   `json:"cursor,omitempty"`
-}
-
-// NewHumanOverlayDismissEvent creates a new human overlay dismiss event.
-func NewHumanOverlayDismissEvent(session string, durationSeconds float64, cursor int64) HumanOverlayDismissEvent {
-	if durationSeconds < 0 {
-		durationSeconds = 0
-	}
-	return HumanOverlayDismissEvent{
-		BaseEvent: BaseEvent{
-			Type:      EventHumanOverlayDismiss,
-			Timestamp: time.Now().UTC(),
-			Session:   session,
-		},
-		DurationSeconds: durationSeconds,
-		Cursor:          cursor,
-	}
 }
 
 // ----------------------------------------------------------------
@@ -298,40 +268,12 @@ type ProfileAssignedEvent struct {
 	Previous string `json:"previous,omitempty"` // Empty if new
 }
 
-// NewProfileAssignedEvent creates a new profile assigned event
-func NewProfileAssignedEvent(session, agentID, profile, previous string) ProfileAssignedEvent {
-	return ProfileAssignedEvent{
-		BaseEvent: BaseEvent{
-			Type:      "profile_assigned",
-			Timestamp: time.Now().UTC(),
-			Session:   session,
-		},
-		AgentID:  agentID,
-		Profile:  profile,
-		Previous: previous,
-	}
-}
-
 // ProfileSwitchedEvent is emitted when an agent's profile is changed
 type ProfileSwitchedEvent struct {
 	BaseEvent
 	AgentID    string `json:"agent_id"`
 	OldProfile string `json:"old_profile"`
 	NewProfile string `json:"new_profile"`
-}
-
-// NewProfileSwitchedEvent creates a new profile switched event
-func NewProfileSwitchedEvent(session, agentID, oldProfile, newProfile string) ProfileSwitchedEvent {
-	return ProfileSwitchedEvent{
-		BaseEvent: BaseEvent{
-			Type:      "profile_switched",
-			Timestamp: time.Now().UTC(),
-			Session:   session,
-		},
-		AgentID:    agentID,
-		OldProfile: oldProfile,
-		NewProfile: newProfile,
-	}
 }
 
 // ----------------------------------------------------------------
@@ -421,39 +363,11 @@ type CheckpointCreatedEvent struct {
 	AgentCount int    `json:"agent_count"`
 }
 
-// NewCheckpointCreatedEvent creates a new checkpoint created event
-func NewCheckpointCreatedEvent(session, name, level string, sizeBytes int64, agentCount int) CheckpointCreatedEvent {
-	return CheckpointCreatedEvent{
-		BaseEvent: BaseEvent{
-			Type:      "checkpoint_created",
-			Timestamp: time.Now().UTC(),
-			Session:   session,
-		},
-		Name:       name,
-		Level:      level,
-		SizeBytes:  sizeBytes,
-		AgentCount: agentCount,
-	}
-}
-
 // CheckpointRestoredEvent is emitted when a checkpoint is restored
 type CheckpointRestoredEvent struct {
 	BaseEvent
 	Name       string `json:"name"`
 	AgentCount int    `json:"agent_count"`
-}
-
-// NewCheckpointRestoredEvent creates a new checkpoint restored event
-func NewCheckpointRestoredEvent(session, name string, agentCount int) CheckpointRestoredEvent {
-	return CheckpointRestoredEvent{
-		BaseEvent: BaseEvent{
-			Type:      "checkpoint_restored",
-			Timestamp: time.Now().UTC(),
-			Session:   session,
-		},
-		Name:       name,
-		AgentCount: agentCount,
-	}
 }
 
 // ----------------------------------------------------------------
@@ -468,20 +382,6 @@ type WorkflowStartedEvent struct {
 	Agents   []string `json:"agents"`
 }
 
-// NewWorkflowStartedEvent creates a new workflow started event
-func NewWorkflowStartedEvent(session, workflow, runID string, agents []string) WorkflowStartedEvent {
-	return WorkflowStartedEvent{
-		BaseEvent: BaseEvent{
-			Type:      "workflow_started",
-			Timestamp: time.Now().UTC(),
-			Session:   session,
-		},
-		Workflow: workflow,
-		RunID:    runID,
-		Agents:   cloneStringSlice(agents),
-	}
-}
-
 // StageTransitionEvent is emitted when workflow transitions between stages
 type StageTransitionEvent struct {
 	BaseEvent
@@ -492,42 +392,12 @@ type StageTransitionEvent struct {
 	Trigger   string `json:"trigger,omitempty"` // What caused the transition
 }
 
-// NewStageTransitionEvent creates a new stage transition event
-func NewStageTransitionEvent(session, workflow, runID, fromStage, toStage, trigger string) StageTransitionEvent {
-	return StageTransitionEvent{
-		BaseEvent: BaseEvent{
-			Type:      "stage_transition",
-			Timestamp: time.Now().UTC(),
-			Session:   session,
-		},
-		Workflow:  workflow,
-		RunID:     runID,
-		FromStage: fromStage,
-		ToStage:   toStage,
-		Trigger:   trigger,
-	}
-}
-
 // WorkflowPausedEvent is emitted when a workflow is paused
 type WorkflowPausedEvent struct {
 	BaseEvent
 	Workflow string `json:"workflow"`
 	RunID    string `json:"run_id"`
 	Reason   string `json:"reason"`
-}
-
-// NewWorkflowPausedEvent creates a new workflow paused event
-func NewWorkflowPausedEvent(session, workflow, runID, reason string) WorkflowPausedEvent {
-	return WorkflowPausedEvent{
-		BaseEvent: BaseEvent{
-			Type:      "workflow_paused",
-			Timestamp: time.Now().UTC(),
-			Session:   session,
-		},
-		Workflow: workflow,
-		RunID:    runID,
-		Reason:   reason,
-	}
 }
 
 // WorkflowCompletedEvent is emitted when a workflow completes
@@ -539,23 +409,6 @@ type WorkflowCompletedEvent struct {
 	StageCount  int    `json:"stage_count"`
 	Success     bool   `json:"success"`
 	Error       string `json:"error,omitempty"`
-}
-
-// NewWorkflowCompletedEvent creates a new workflow completed event
-func NewWorkflowCompletedEvent(session, workflow, runID string, durationSec, stageCount int, success bool, err string) WorkflowCompletedEvent {
-	return WorkflowCompletedEvent{
-		BaseEvent: BaseEvent{
-			Type:      "workflow_completed",
-			Timestamp: time.Now().UTC(),
-			Session:   session,
-		},
-		Workflow:    workflow,
-		RunID:       runID,
-		DurationSec: durationSec,
-		StageCount:  stageCount,
-		Success:     success,
-		Error:       err,
-	}
 }
 
 // ----------------------------------------------------------------
@@ -715,9 +568,4 @@ func Publish(event BusEvent) {
 // PublishSync sends an event to the default bus and waits for handlers
 func PublishSync(event BusEvent) {
 	DefaultBus.PublishSync(event)
-}
-
-// History returns recent events from the default bus
-func History(limit int) []BusEvent {
-	return DefaultBus.History(limit)
 }

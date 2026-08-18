@@ -367,8 +367,8 @@ func resolveTriageFormat(format string) string {
 	case "markdown", "md":
 		return "markdown"
 	case "auto", "":
-		// Auto-detect based on context (could check agent type in future)
-		// For now, default to terminal rendering (not json or markdown) // placebo-waiver: bd-d7z7i
+		// Auto resolves to human-oriented terminal rendering; machine
+		// consumers ask for json or markdown explicitly.
 		return "terminal"
 	default:
 		return "terminal"

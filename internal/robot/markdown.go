@@ -1024,9 +1024,17 @@ func renderMarkdownWork(sb *strings.Builder, section ProjectedSection, heading s
 		return
 	}
 
-	// Work section may contain various types depending on snapshot structure
-	// For now, render a generic representation // placebo-waiver: bd-d7z7i
-	sb.WriteString("Work data present.\n\n")
+	// Work section shapes vary by snapshot structure, so render the data as
+	// a compact JSON block rather than a content-free filler line.
+	if m, ok := toMapViaJSON(section.Data); ok && len(m) > 0 {
+		if encoded, err := json.MarshalIndent(m, "", "  "); err == nil {
+			sb.WriteString("```json\n")
+			sb.Write(encoded)
+			sb.WriteString("\n```\n\n")
+			return
+		}
+	}
+	sb.WriteString("_Work data format not recognized._\n\n")
 }
 
 func renderMarkdownAlerts(sb *strings.Builder, section ProjectedSection, heading string, compact bool) {

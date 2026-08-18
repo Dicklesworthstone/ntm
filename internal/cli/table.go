@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -238,51 +237,11 @@ func stripANSI(s string) string {
 	return result.String()
 }
 
-// SectionHeader renders a styled section header
-func SectionHeader(title string) string {
-	th := theme.Current()
-	style := lipgloss.NewStyle().
-		Foreground(th.Primary).
-		Bold(true)
-	return style.Render("┌─ " + title + " ─")
-}
-
-// SectionDivider renders a subtle divider line
-func SectionDivider(width int) string {
-	th := theme.Current()
-	style := lipgloss.NewStyle().Foreground(th.Surface2)
-	return style.Render(strings.Repeat("─", width))
-}
-
-// KeyValue renders a key-value pair with consistent styling
-func KeyValue(key, value string, keyWidth int) string {
-	th := theme.Current()
-	keyStyle := lipgloss.NewStyle().Foreground(th.Subtext)
-	valueStyle := lipgloss.NewStyle().Foreground(th.Text)
-
-	paddedKey := fmt.Sprintf("%-*s", keyWidth, key+":")
-	return keyStyle.Render(paddedKey) + " " + valueStyle.Render(value)
-}
-
-// SuccessMessage renders a success message with icon
-func SuccessMessage(msg string) string {
-	th := theme.Current()
-	style := lipgloss.NewStyle().Foreground(th.Success)
-	return style.Render("✓ " + msg)
-}
-
 // ErrorMessage renders an error message with icon
 func ErrorMessage(msg string) string {
 	th := theme.Current()
 	style := lipgloss.NewStyle().Foreground(th.Error)
 	return style.Render("✗ " + msg)
-}
-
-// WarningMessage renders a warning message with icon
-func WarningMessage(msg string) string {
-	th := theme.Current()
-	style := lipgloss.NewStyle().Foreground(th.Warning)
-	return style.Render("⚠ " + msg)
 }
 
 // InfoMessage renders an info message with icon
@@ -300,28 +259,5 @@ func Badge(text string, color lipgloss.Color) string {
 		Foreground(th.Base).
 		Padding(0, 1).
 		Bold(true)
-	return style.Render(text)
-}
-
-// SubtleText renders subtle/muted text
-func SubtleText(text string) string {
-	th := theme.Current()
-	style := lipgloss.NewStyle().Foreground(th.Subtext)
-	return style.Render(text)
-}
-
-// BoldText renders bold text
-func BoldText(text string) string {
-	th := theme.Current()
-	style := lipgloss.NewStyle().
-		Foreground(th.Text).
-		Bold(true)
-	return style.Render(text)
-}
-
-// AccentText renders accented/highlighted text
-func AccentText(text string) string {
-	th := theme.Current()
-	style := lipgloss.NewStyle().Foreground(th.Primary)
 	return style.Render(text)
 }

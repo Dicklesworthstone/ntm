@@ -806,9 +806,10 @@ func buildWaitInfo(status *PaneWorkStatus) *WaitInfo {
 		Suggestion: "Consider caam account switch",
 	}
 
-	// If we have rate limit info from indicators, use it
-	// For now, provide generic guidance // placebo-waiver: bd-d7z7i
-	info.WaitSeconds = 3600 // Default 1 hour estimate
+	// The is-working indicators are pattern names without a parsed reset
+	// timestamp, so give a conservative one-hour estimate (typical provider
+	// rate-limit window) rather than pretending to know the real reset time.
+	info.WaitSeconds = 3600
 
 	return info
 }

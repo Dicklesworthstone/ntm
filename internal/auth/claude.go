@@ -97,9 +97,9 @@ func (f *ClaudeAuthFlow) MonitorAuth(ctx context.Context, paneID string) (*AuthR
 					// In remote mode, we return the URL for the user/caller to handle
 					return &AuthResult{State: AuthNeedsBrowser, URL: url}, nil
 				}
-				// In local mode, Claude usually opens the browser automatically,
-				// but we might need to confirm or detect that state.
-				// For now, if we see a URL, we treat it as 'needs browser' if it's waiting. // placebo-waiver: bd-d7z7i
+				// In local mode Claude usually opens the browser itself, but
+				// a visible URL still means auth is pending, so report
+				// 'needs browser' with the URL either way.
 				return &AuthResult{State: AuthNeedsBrowser, URL: url}, nil
 			}
 		}
@@ -131,9 +131,8 @@ func (f *ClaudeAuthFlow) DetectBrowserURL(output string) (string, bool) {
 
 // DetectChallengeCode finds the challenge code prompt
 func (f *ClaudeAuthFlow) DetectChallengeCode(output string) (string, bool) {
-	// Pattern: "Enter the code displayed in your browser" or similar
-	// This might be context-dependent.
-	// For now, we look for the prompt asking for a code. // placebo-waiver: bd-d7z7i
+	// Detect the pane prompt asking for a code; the code itself is shown in
+	// the browser, not in the pane, so only the prompt is matched.
 	if strings.Contains(output, "Enter code:") || strings.Contains(output, "Enter the code") {
 		return "", true
 	}

@@ -4,7 +4,6 @@ package quota
 
 import (
 	"context"
-	"log/slog"
 	"sync"
 	"time"
 )
@@ -132,13 +131,6 @@ type Fetcher interface {
 // TrackerOption configures the Tracker
 type TrackerOption func(*Tracker)
 
-// WithCacheTTL sets the cache TTL
-func WithCacheTTL(ttl time.Duration) TrackerOption {
-	return func(t *Tracker) {
-		t.cacheTTL = ttl
-	}
-}
-
 // MinPollInterval is the minimum allowed poll interval to prevent ticker panics.
 // time.NewTicker requires a positive duration.
 const MinPollInterval = 100 * time.Millisecond
@@ -150,13 +142,6 @@ func WithPollInterval(interval time.Duration) TrackerOption {
 			t.pollInterval = interval
 		}
 		// If interval is too small, keep the default (2 minutes)
-	}
-}
-
-// WithFetcher sets a custom fetcher (for testing)
-func WithFetcher(f Fetcher) TrackerOption {
-	return func(t *Tracker) {
-		t.fetcher = f
 	}
 }
 
@@ -181,155 +166,9 @@ func NewTracker(opts ...TrackerOption) *Tracker {
 	return t
 }
 
-// GetQuota retrieves quota info for a pane, using cache if fresh
-func (t *Tracker) GetQuota(paneID string) *QuotaInfo {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-
-	cached, ok := t.cache[paneID]
-	if !ok {
-		return nil
-	}
-
-	if time.Now().After(cached.expiresAt) {
-		return nil // Expired
-	}
-
-	return cached.info
-}
-
-// QueryQuota fetches fresh quota info for a pane, bypassing cache
-func (t *Tracker) QueryQuota(ctx context.Context, paneID string, provider Provider) (*QuotaInfo, error) {
-	info, err := t.fetcher.FetchQuota(ctx, paneID, provider)
-	if err != nil {
-		return nil, err
-	}
-
-	if info != nil && info.Error != "" {
-		slog.Debug("quota fetch recorded an error; health reads unknown",
-			"pane_id", paneID,
-			"provider", string(provider),
-			"error", info.Error)
-	}
-
-	t.updateCache(paneID, info)
-	return info, nil
-}
-
-// updateCache stores quota info in the cache
-func (t *Tracker) updateCache(paneID string, info *QuotaInfo) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	t.cache[paneID] = &cachedQuota{
-		info:      info,
-		expiresAt: time.Now().Add(t.cacheTTL),
-	}
-}
-
-// StartPolling begins continuous quota polling for a pane.
-// Safe for concurrent calls — old pollers are cancelled before new ones start.
-func (t *Tracker) StartPolling(ctx context.Context, paneID string, provider Provider) {
-	t.mu.Lock()
-
-	// Cancel existing poller if any
-	if handle, ok := t.pollers[paneID]; ok {
-		handle.cancel()
-		delete(t.pollers, paneID)
-	}
-
-	// Create and register the new poller under the same lock to prevent
-	// concurrent StartPolling calls from leaking goroutines (the old code
-	// had a window between unlock and re-lock where a second call could
-	// overwrite the handle, losing the cancel function).
-	pollCtx, cancel := context.WithCancel(ctx)
-	handle := &pollerHandle{cancel: cancel}
-	t.pollers[paneID] = handle
-	t.mu.Unlock()
-
-	go func() {
-		defer cancel()
-		t.pollLoop(pollCtx, paneID, provider)
-
-		t.mu.Lock()
-		if t.pollers[paneID] == handle {
-			delete(t.pollers, paneID)
-		}
-		t.mu.Unlock()
-	}()
-}
-
-// StopPolling stops polling for a pane
-func (t *Tracker) StopPolling(paneID string) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	if handle, ok := t.pollers[paneID]; ok {
-		handle.cancel()
-		delete(t.pollers, paneID)
-	}
-}
-
-// StopAllPolling stops all active pollers
-func (t *Tracker) StopAllPolling() {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	for paneID, handle := range t.pollers {
-		handle.cancel()
-		delete(t.pollers, paneID)
-	}
-}
-
-// pollLoop continuously polls quota at the configured interval
-func (t *Tracker) pollLoop(ctx context.Context, paneID string, provider Provider) {
-	ticker := time.NewTicker(t.pollInterval)
-	defer ticker.Stop()
-
-	// Initial fetch
-	_, _ = t.QueryQuota(ctx, paneID, provider)
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			// If we were cancelled concurrently with the tick, avoid doing one last fetch.
-			if ctx.Err() != nil {
-				return
-			}
-			_, _ = t.QueryQuota(ctx, paneID, provider)
-		}
-	}
-}
-
-// GetAllQuotas returns all cached quota info
-func (t *Tracker) GetAllQuotas() map[string]*QuotaInfo {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-
-	result := make(map[string]*QuotaInfo)
-	now := time.Now()
-
-	for paneID, cached := range t.cache {
-		if !now.After(cached.expiresAt) {
-			result[paneID] = cached.info
-		}
-	}
-
-	return result
-}
-
 // ClearCache removes all cached quota info
 func (t *Tracker) ClearCache() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.cache = make(map[string]*cachedQuota)
-}
-
-// InvalidatePane removes cached quota for a specific pane
-func (t *Tracker) InvalidatePane(paneID string) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	delete(t.cache, paneID)
 }

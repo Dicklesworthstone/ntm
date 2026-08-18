@@ -7,15 +7,3 @@
 #   badge-waiver:go-version  waives the go.mod-vs-README badge assert
 # docs/planning/** is excluded from the gate by design (proposals archive —
 # hypothetical examples; see the test header and the G3 bead close reason).
-skip-budget:docs/REDACTION_SPEC.md:1	bd-qlfb2	help-text sample shows `ntm config redaction.mode=off` syntax the CLI does not accept
-skip-budget:docs/WORKFLOW_EXAMPLES.md:13	bd-qlfb2	pipeline flags/subcommands (--progress/--verbose/--state-file, show/tail) and multi-line --robot-sequence examples not in the shipped tree
-skip-budget:docs/attention-feed-contract.md:8	bd-qlfb2	designed --robot-events/--robot-digest cursor flags not wired
-skip-budget:docs/robot-action-errors.md:1	bd-qlfb2	designed --request-id flag not wired
-skip-budget:docs/robot-auditability.md:3	bd-qlfb2	designed `ntm audit --robot` query flags not wired
-skip-budget:docs/robot-explainability-evidence.md:2	bd-qlfb2	designed --explain levels not wired
-skip-budget:docs/robot-historical-inspection.md:4	bd-qlfb2	designed `ntm inspect`/`ntm export --robot` surfaces not wired
-skip-budget:docs/robot-ordering-pagination.md:4	bd-qlfb2	designed --cursor/--verbosity flags not wired
-skip-budget:docs/robot-request-identity.md:9	bd-qlfb2	designed --request-id/--idempotency-key/--correlation-id/--robot-action-status not wired
-skip-budget:docs/robot-resource-references.md:2	bd-qlfb2	designed --robot-inspect --refs / --robot-events --entity not wired
-skip-budget:docs/robot-sensitivity-redaction.md:1	bd-qlfb2	designed `ntm snapshot --robot` disclosure example not wired
-skip-budget:docs/robot-watch-subscription.md:1	bd-qlfb2	designed `ntm watch --robot --filter` subscription flags not wired

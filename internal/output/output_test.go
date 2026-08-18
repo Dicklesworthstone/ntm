@@ -39,18 +39,6 @@ func TestFormatterJSON(t *testing.T) {
 	}
 }
 
-func TestFormatterText(t *testing.T) {
-	buf := &bytes.Buffer{}
-	f := New(WithJSON(false), WithWriter(buf))
-
-	f.Textln("Hello, %s", "World")
-
-	got := buf.String()
-	if got != "Hello, World\n" {
-		t.Errorf("Text() = %q, want %q", got, "Hello, World\n")
-	}
-}
-
 func TestFormatterIsJSON(t *testing.T) {
 	tests := []struct {
 		opts []Option

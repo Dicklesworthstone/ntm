@@ -683,18 +683,19 @@ func checkConfiguration() []ConfigCheck {
 	// (bd-2c0yh.4): hook installed but `ntm` missing from PATH.
 	checks = append(checks, guardHookPathCheck())
 
-	// Removed config knobs (WS6-remove, bd-ws6-config-truth-ienmd.2): keys
-	// removed in v1.26.0 still load with a startup warning; doctor surfaces
-	// the same per-key warning so the migration runway is visible before the
-	// v1.27.0 flip to hard errors.
+	// Removed config knobs (WS6-remove-finalize, bd-ws6-config-truth-ienmd.3):
+	// keys removed in v1.26.0 are hard strict-loader errors since v1.27.0.
+	// Doctor scans the config file leniently (ScanRemovedKnobs), so it can
+	// still name each removed key + disposition even though the strict loader
+	// refuses to load such a config.
 	checks = append(checks, removedKnobChecks()...)
 
 	return checks
 }
 
 // removedKnobChecks reports every removed-in-v1.26.0 config key present in
-// the active config file, one warning per key, with the exact disposition
-// text the loader prints at startup.
+// the active config file, one error per key, with the exact disposition
+// text the strict loader uses in its load error.
 func removedKnobChecks() []ConfigCheck {
 	knobs, err := config.ScanRemovedKnobs(selectedConfigPath())
 	if err != nil {
@@ -718,8 +719,8 @@ func removedKnobChecks() []ConfigCheck {
 		checks = append(checks, ConfigCheck{
 			Name:    "removed config key: " + knob.Key,
 			Valid:   false,
-			Status:  "warning",
-			Message: fmt.Sprintf("%s; the key is ignored in v1.26.0 and becomes a config error in v1.27.0 — delete it from your config file", knob.Disposition),
+			Status:  "error",
+			Message: fmt.Sprintf("%s; the key fails config loading since v1.27.0 — delete it from your config file", knob.Disposition),
 		})
 	}
 	return checks

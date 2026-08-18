@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -33,6 +34,55 @@ import (
 // accepts it. The private tmux server prevents ambient sessions and tmux
 // options from changing selector meaning during parallel CI runs.
 
+var (
+	fakeshellBinOnce sync.Once
+	fakeshellBinPath string
+	fakeshellBinErr  error
+)
+
+// ensureFakeshellBin builds the e2e/fakeshell fixture once per test process.
+// The canonical fixtures run it as every pane's foreground process so
+// agent-titled panes pass the PANE_AGENT_DEAD liveness gate (ntm-0g0b) and
+// render their composer glyph for the bd-dp9oy visibility gate, while still
+// executing submitted shell lines so the exact-marker assertions observe real
+// side effects (see e2e/fakeshell/main.go).
+func ensureFakeshellBin() (string, error) {
+	fakeshellBinOnce.Do(func() {
+		wd, err := os.Getwd()
+		if err != nil {
+			fakeshellBinErr = fmt.Errorf("getwd: %w", err)
+			return
+		}
+		repoRoot, err := findRepoRoot(wd)
+		if err != nil {
+			fakeshellBinErr = err
+			return
+		}
+		outDir, err := os.MkdirTemp("", "ntm-fakeshell-bin-*")
+		if err != nil {
+			fakeshellBinErr = fmt.Errorf("mkdtemp: %w", err)
+			return
+		}
+		outPath := filepath.Join(outDir, "fakeshell")
+		cmd := exec.Command("go", "build", "-o", outPath, "./e2e/fakeshell")
+		cmd.Dir = repoRoot
+		if out, err := cmd.CombinedOutput(); err != nil {
+			fakeshellBinErr = fmt.Errorf("go build ./e2e/fakeshell: %w output=%s", err, string(out))
+			return
+		}
+		fakeshellBinPath = outPath
+	})
+	return fakeshellBinPath, fakeshellBinErr
+}
+
+// composer glyphs the delivery gate requires on non-empty Claude/codex pane
+// captures (bd-dp9oy). Gemini panes have no known composer marker, so their
+// prompt stays plain.
+const (
+	canonicalClaudeGlyph = "❯"
+	canonicalCodexGlyph  = "›"
+)
+
 type canonicalPaneEndpoint struct {
 	Address string
 	ID      string
@@ -46,8 +96,22 @@ type canonicalPaneFixture struct {
 	tmuxPath    string
 	session     string
 	runtimeRoot string
+	fakeshell   string // fakeshell fixture binary inside runtimeRoot/bin
 	env         []string
 	panes       map[string]canonicalPaneEndpoint
+}
+
+// paneShellCommand returns the tmux pane command for a fixture pane: the
+// fakeshell fixture (a non-shell foreground process that executes submitted
+// lines) rendering the given composer glyph in its prompt. An empty glyph
+// yields the plain historical "NTM_E2E> " prompt.
+func (f *canonicalPaneFixture) paneShellCommand(glyph string) string {
+	prompt := "NTM_E2E> "
+	if glyph != "" {
+		prompt = "NTM_E2E> " + glyph + " "
+	}
+	fakeAgentPath := filepath.Join(f.runtimeRoot, "bin") + string(os.PathListSeparator) + os.Getenv("PATH")
+	return fmt.Sprintf("env PATH=%q %q --prompt=%q", fakeAgentPath, f.fakeshell, prompt)
 }
 
 type robotProcessResult struct {
@@ -335,7 +399,12 @@ func canonicalSelectorCommands(fixture *canonicalPaneFixture) []selectorCommand 
 		{
 			name: "wait",
 			args: func(selector string) []string {
-				return []string{"--robot-wait=" + fixture.session, "--panes=" + selector, "--wait-until=rate_limited", "--timeout=200ms", "--poll=25ms"}
+				// These args only feed failure-path subtests (malformed and
+				// missing selectors), which terminate on selector resolution.
+				// The timeout must comfortably exceed pane-resolution latency
+				// on a loaded host, or the 200ms budget can expire before
+				// resolution and report TIMEOUT instead of PANE_NOT_FOUND.
+				return []string{"--robot-wait=" + fixture.session, "--panes=" + selector, "--wait-until=rate_limited", "--timeout=5s", "--poll=25ms"}
 			},
 		},
 		{
@@ -353,7 +422,9 @@ func canonicalSelectorCommands(fixture *canonicalPaneFixture) []selectorCommand 
 		{
 			name: "ack",
 			args: func(selector string) []string {
-				return []string{"--robot-ack=" + fixture.session, "--panes=" + selector, "--timeout=200ms", "--poll=25ms"}
+				// Same rationale as "wait": failure-path subtests only, and a
+				// roomy timeout keeps selector resolution ahead of the clock.
+				return []string{"--robot-ack=" + fixture.session, "--panes=" + selector, "--timeout=5s", "--poll=25ms"}
 			},
 		},
 		{
@@ -1133,7 +1204,10 @@ exec "$NTM_E2E_REAL_TMUX" "$@"
 				"--prompt="+promptMarker,
 			)
 			var output smartRestartProcessOutput
-			decodeRobotFailure(t, result, "INTERNAL_ERROR", &output)
+			// The ready-gate failure is typed CC_LAUNCH_FAILED: the restart
+			// launched the agent alias but the pane never reached a ready
+			// agent TUI (the fixture's `cod` is /usr/bin/true by design).
+			decodeRobotFailure(t, result, "CC_LAUNCH_FAILED", &output)
 			assertStringSlice(t, "failed smart-restart action keys", sortedMapKeys(output.Actions), []string{targetAddress})
 			action := output.Actions[targetAddress]
 			if action.Action != "FAILED" || !strings.Contains(action.Error, "did not become ready") {
@@ -1462,8 +1536,11 @@ exec "$NTM_E2E_REAL_TMUX" "$@"
 		if err := os.WriteFile(filepath.Join(fakeBin, "bv"), []byte(bvScript), 0o700); err != nil {
 			t.Fatalf("write deterministic distribute bv: %v", err)
 		}
+		// issue_type is mandatory: the actionable-work verifier fails closed
+		// when a plan item has no issue type in br ready / br list output
+		// (it cannot prove the item is not an epic container).
 		readyJSON := fmt.Sprintf(
-			`[{"id":%q,"title":%q,"priority":1},{"id":%q,"title":%q,"priority":1}]`,
+			`[{"id":%q,"title":%q,"priority":1,"issue_type":"task"},{"id":%q,"title":%q,"priority":1,"issue_type":"task"}]`,
 			targets[0].beadID, "Window zero assignment", targets[1].beadID, "Window one assignment",
 		)
 		fakeBR := fmt.Sprintf("#!/bin/sh\nif [ \"${1:-}\" = --lock-timeout ]; then shift 2; fi\ncase \"${1:-}\" in\n  ready) printf '%%s\\n' '%s' ;;\n  list|blocked) printf '[]\\n' ;;\n  *) echo \"unexpected br args: $*\" >&2; exit 64 ;;\nesac\n", readyJSON)
@@ -1565,7 +1642,9 @@ exec "$NTM_E2E_REAL_TMUX" "$@"
 		targetIDs := []string{"ntm-e2e-session-project-a", "ntm-e2e-session-project-b"}
 		decoyIDs := []string{"ntm-e2e-caller-project-a", "ntm-e2e-caller-project-b"}
 		readyRows := func(ids []string) string {
-			return fmt.Sprintf(`[{"id":%q,"title":%q,"priority":1},{"id":%q,"title":%q,"priority":1}]`,
+			// issue_type is mandatory for the fail-closed actionable-work
+			// verifier (see distribute_targets_duplicate_local_indexes).
+			return fmt.Sprintf(`[{"id":%q,"title":%q,"priority":1,"issue_type":"task"},{"id":%q,"title":%q,"priority":1,"issue_type":"task"}]`,
 				ids[0], "Session project A", ids[1], "Session project B")
 		}
 		fakeBin := filepath.Join(fixture.runtimeRoot, "bin")
@@ -2172,6 +2251,13 @@ func newCanonicalPaneFixture(t *testing.T) *canonicalPaneFixture {
 	}
 
 	runtimeRoot := t.TempDir()
+	// macOS t.TempDir() lives under /var, a symlink to /private/var, while
+	// tmux reports #{pane_current_path} in resolved /private/var form. The
+	// session-project subtest compares those paths verbatim, so the fixture
+	// must hold the resolved form.
+	if resolved, err := filepath.EvalSymlinks(runtimeRoot); err == nil {
+		runtimeRoot = resolved
+	}
 	tmuxRoot := testutil.ShortTmuxTempDir(t)
 	for _, path := range []string{
 		filepath.Join(runtimeRoot, "home"),
@@ -2186,14 +2272,18 @@ func newCanonicalPaneFixture(t *testing.T) *canonicalPaneFixture {
 	}
 
 	fakeBin := filepath.Join(runtimeRoot, "bin")
+	// The fake Claude prompt renders the real composer glyph ("❯") after the
+	// historical "claude>" marker: the bd-dp9oy delivery gate refuses to type
+	// into a Claude pane whose non-empty capture shows no glyph, while the
+	// existing waitForPaneContains("claude>") checks keep matching.
 	fakeClaude := strings.Join([]string{
 		"#!/bin/sh",
 		"trap 'exit 0' INT TERM HUP",
-		"printf 'Claude Code v0.0.0\\nclaude>\\n'",
+		"printf 'Claude Code v0.0.0\\nclaude> " + canonicalClaudeGlyph + "\\n'",
 		"while IFS= read -r line; do",
 		"  if [ \"$line\" = /exit ]; then exit 0; fi",
 		"  if [ -n \"$line\" ]; then printf 'RECEIVED:%s\\n' \"$line\"; eval \"$line\"; fi",
-		"  printf 'claude>\\n'",
+		"  printf 'claude> " + canonicalClaudeGlyph + "\\n'",
 		"done",
 		"",
 	}, "\n")
@@ -2208,12 +2298,31 @@ func newCanonicalPaneFixture(t *testing.T) *canonicalPaneFixture {
 		t.Fatalf("create non-ready Codex fake: %v", err)
 	}
 
+	// Build the fakeshell fixture and install it under the fixture bin with a
+	// stable non-shell name: tmux reports the binary name as
+	// pane_current_command, which is exactly what the ntm-0g0b liveness gate
+	// inspects. A bare bash pane (or a `#!/bin/sh` fake-agent script, which
+	// macOS also reports as "bash") is refused as PANE_AGENT_DEAD.
+	fakeshellBuilt, err := ensureFakeshellBin()
+	if err != nil {
+		t.Fatalf("build fakeshell fixture: %v", err)
+	}
+	fakeshellBytes, err := os.ReadFile(fakeshellBuilt)
+	if err != nil {
+		t.Fatalf("read fakeshell fixture: %v", err)
+	}
+	fakeshellPath := filepath.Join(fakeBin, "fakeshell")
+	if err := os.WriteFile(fakeshellPath, fakeshellBytes, 0o755); err != nil {
+		t.Fatalf("install fakeshell fixture: %v", err)
+	}
+
 	fixture := &canonicalPaneFixture{
 		t:           t,
 		ntmPath:     ntmPath,
 		tmuxPath:    tmuxPath,
 		session:     fmt.Sprintf("ntm-e2e-panes-%d-%d", os.Getpid(), time.Now().UnixNano()),
 		runtimeRoot: runtimeRoot,
+		fakeshell:   fakeshellPath,
 		panes:       make(map[string]canonicalPaneEndpoint),
 	}
 	fixture.env = isolatedProcessEnv(map[string]string{
@@ -2239,9 +2348,14 @@ func newCanonicalPaneFixture(t *testing.T) *canonicalPaneFixture {
 		t.Fatalf("write isolated tmux config: %v", err)
 	}
 
-	fakeAgentPath := fakeBin + string(os.PathListSeparator) + os.Getenv("PATH")
-	shell := fmt.Sprintf("env PATH=%q PS1='NTM_E2E> ' bash --noprofile --norc", fakeAgentPath)
-	fixture.mustTMUX(t, "-f", configPath, "new-session", "-d", "-s", fixture.session, "-x", "160", "-y", "48", "-n", "w0", shell)
+	// Pane foregrounds are fakeshell processes whose prompts carry the
+	// composer glyph matching each pane's agent title (0.0 cod, 0.1 cc,
+	// 1.0 gmi, 1.1 cod below), so both fail-closed dispatch gates pass while
+	// submitted lines still execute like they did under bash.
+	codexShell := fixture.paneShellCommand(canonicalCodexGlyph)
+	claudeShell := fixture.paneShellCommand(canonicalClaudeGlyph)
+	plainShell := fixture.paneShellCommand("")
+	fixture.mustTMUX(t, "-f", configPath, "new-session", "-d", "-s", fixture.session, "-x", "160", "-y", "48", "-n", "w0", codexShell)
 	t.Cleanup(func() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -2253,9 +2367,9 @@ func newCanonicalPaneFixture(t *testing.T) *canonicalPaneFixture {
 			t.Errorf("canonical tmux pane shutdown: %v", err)
 		}
 	})
-	fixture.mustTMUX(t, "split-window", "-d", "-t", fixture.session+":0", "-v", shell)
-	fixture.mustTMUX(t, "new-window", "-d", "-t", fixture.session+":1", "-n", "w1", shell)
-	fixture.mustTMUX(t, "split-window", "-d", "-t", fixture.session+":1", "-v", shell)
+	fixture.mustTMUX(t, "split-window", "-d", "-t", fixture.session+":0", "-v", claudeShell)
+	fixture.mustTMUX(t, "new-window", "-d", "-t", fixture.session+":1", "-n", "w1", plainShell)
+	fixture.mustTMUX(t, "split-window", "-d", "-t", fixture.session+":1", "-v", codexShell)
 
 	titles := map[string]struct {
 		title string
@@ -2415,8 +2529,10 @@ exec "$NTM_E2E_REAL_TMUX" "$@"
 
 func (f *canonicalPaneFixture) createSinglePaneAgentSession(t *testing.T, session string) string {
 	t.Helper()
-	fakeAgentPath := filepath.Join(f.runtimeRoot, "bin") + string(os.PathListSeparator) + os.Getenv("PATH")
-	shell := fmt.Sprintf("env PATH=%q PS1='NTM_E2E> ' bash --noprofile --norc", fakeAgentPath)
+	// The pane is titled "<session>__cc_1" below, so its foreground must be a
+	// non-shell process rendering the Claude composer glyph for dispatch to
+	// accept it (ntm-0g0b + bd-dp9oy).
+	shell := f.paneShellCommand(canonicalClaudeGlyph)
 	f.mustTMUX(t, "new-session", "-d", "-s", session, "-x", "120", "-y", "32", shell)
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -2629,8 +2745,12 @@ func (f *canonicalPaneFixture) sendPaneCommand(t *testing.T, paneID, command str
 
 func (f *canonicalPaneFixture) respawnUserShells(t *testing.T, workingDir string) {
 	t.Helper()
-	fakeAgentPath := filepath.Join(f.runtimeRoot, "bin") + string(os.PathListSeparator) + os.Getenv("PATH")
-	shell := fmt.Sprintf("env PATH=%q PS1='NTM_E2E> ' bash --noprofile --norc", fakeAgentPath)
+	// Respawned panes start as user shells (plain prompt), but tests retitle
+	// some of them as agents and launch the fake `cc` inside; the pane's
+	// process-group leader must therefore already be a non-shell process or
+	// the retitled pane stays PANE_AGENT_DEAD (tmux reports the group
+	// leader — not the fake-agent child — as pane_current_command).
+	shell := f.paneShellCommand("")
 	for address, endpoint := range f.panes {
 		args := []string{"respawn-pane", "-k"}
 		if workingDir != "" {

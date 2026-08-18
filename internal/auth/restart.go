@@ -119,8 +119,9 @@ func (o *Orchestrator) TerminateSession(paneID string, provider string) error {
 	}
 	o.sleep(1 * time.Second)
 
-	// Check if still active (heuristic: check process or output)
-	// For now, assume we need a second Ctrl+C or explicit exit // placebo-waiver: bd-d7z7i
+	// Send a second Ctrl+C unconditionally: agent CLIs commonly need two
+	// interrupts to exit, and the extra interrupt is harmless at a shell
+	// prompt (cheaper and more reliable than probing the pane process).
 	if err := o.sendInterrupt(paneID); err != nil {
 		return err
 	}

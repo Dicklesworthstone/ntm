@@ -3470,6 +3470,10 @@ func TestConfigShowJSONIncludesSafetyProfile(t *testing.T) {
 
 // TestDepsCmdExecutes tests the deps command runs
 func TestDepsCmdExecutes(t *testing.T) {
+	// Hermetic config: since v1.27.0 (WS6-remove-finalize) a real user config
+	// containing removed keys is a hard load error, so the test must not read
+	// the developer's ~/.config/ntm/config.toml.
+	isolateSessionAgentStorage(t)
 	fakeToolsDir := filepath.Join(repoRoot(t), "testdata", "faketools")
 	toolDir := t.TempDir()
 	writeFakeVersionTool(t, toolDir, "tmux", "tmux 3.4")
@@ -3492,6 +3496,8 @@ func TestDepsCmdExecutes(t *testing.T) {
 }
 
 func TestDepsCmdSmoke(t *testing.T) {
+	// Hermetic config: see TestDepsCmdExecutes.
+	isolateSessionAgentStorage(t)
 	fakeToolsDir := filepath.Join(repoRoot(t), "testdata", "faketools")
 	toolDir := t.TempDir()
 

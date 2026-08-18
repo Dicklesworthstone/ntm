@@ -950,13 +950,13 @@ type Approval struct {
 	ApprovedAt  time.Time `json:"approved_at,omitempty"`
 }
 
-// In-memory approval store (in production, this would be persisted). // placebo-waiver: bd-d7z7i
+// In-memory approval store (in production, this would be persisted). // placebo-waiver: bd-d2uxt
 //
 // bd-2y2on: this map is DISCONNECTED from the durable approval store
 // (internal/approval.Engine over state.db approvals) that `ntm approve` and
 // the `ntm locks force-release` gate use. Approvals created here are not
-// visible to the CLI workflow and vice versa; unifying the two is tracked
-// separately and deliberately out of scope for that fix.
+// visible to the CLI workflow and vice versa; unifying the two was
+// deliberately out of scope for that fix and is tracked in bd-d2uxt.
 var (
 	approvals     = make(map[string]*Approval)
 	approvalsLock sync.RWMutex

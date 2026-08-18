@@ -3819,65 +3819,6 @@ func TestAttentionItemStatePinAndEscalateSetFlags(t *testing.T) {
 	}
 }
 
-func TestCORSMiddleware(t *testing.T) {
-	srv := New(Config{})
-	handler := srv.corsMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-
-	// Test preflight OPTIONS request
-	req := httptest.NewRequest(http.MethodOptions, "/", nil)
-	req.Header.Set("Origin", "http://localhost:3000")
-	rec := httptest.NewRecorder()
-
-	handler.ServeHTTP(rec, req)
-
-	if rec.Header().Get("Access-Control-Allow-Origin") != "http://localhost:3000" {
-		t.Error("Expected CORS allowlist header")
-	}
-	if methods := rec.Header().Get("Access-Control-Allow-Methods"); !strings.Contains(methods, http.MethodPatch) {
-		t.Fatalf("expected PATCH in Access-Control-Allow-Methods, got %q", methods)
-	}
-	if headers := rec.Header().Get("Access-Control-Allow-Headers"); !strings.Contains(headers, "Idempotency-Key") {
-		t.Fatalf("expected Idempotency-Key in Access-Control-Allow-Headers, got %q", headers)
-	}
-	if rec.Code != http.StatusOK {
-		t.Errorf("OPTIONS Status = %d, want %d", rec.Code, http.StatusOK)
-	}
-}
-
-func TestCORSMiddlewareRejectsOrigin(t *testing.T) {
-	srv := New(Config{})
-	handler := srv.corsMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Header.Set("Origin", "http://evil.example.com")
-	rec := httptest.NewRecorder()
-
-	handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusForbidden {
-		t.Errorf("Status = %d, want %d", rec.Code, http.StatusForbidden)
-	}
-}
-
-func TestLoggingMiddleware(t *testing.T) {
-	handler := loggingMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-
-	req := httptest.NewRequest(http.MethodGet, "/test", nil)
-	rec := httptest.NewRecorder()
-
-	handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Errorf("Status = %d, want %d", rec.Code, http.StatusOK)
-	}
-}
-
 func TestAuthMiddlewareAPIKey(t *testing.T) {
 	srv := New(Config{
 		Auth: AuthConfig{
@@ -4553,24 +4494,6 @@ func TestRecovererMiddleware(t *testing.T) {
 // WebSocket Hub Tests
 // =============================================================================
 
-func TestWSHub(t *testing.T) {
-	hub := NewWSHub()
-	go hub.Run()
-	defer hub.Stop()
-
-	// Check initial state
-	if hub.ClientCount() != 0 {
-		t.Errorf("ClientCount = %d, want 0", hub.ClientCount())
-	}
-
-	// Test nextSeq
-	seq1 := hub.nextSeq()
-	seq2 := hub.nextSeq()
-	if seq2 != seq1+1 {
-		t.Errorf("nextSeq not incrementing: got %d, want %d", seq2, seq1+1)
-	}
-}
-
 func TestWSHubRegisterClientAfterStop(t *testing.T) {
 	hub := NewWSHub()
 	hub.Stop()
@@ -4608,35 +4531,6 @@ func TestWSHubUnregisterClientAfterStopDoesNotBlock(t *testing.T) {
 	case <-done:
 	case <-time.After(200 * time.Millisecond):
 		t.Fatal("UnregisterClient() blocked after hub stop")
-	}
-}
-
-func TestWSHubStopClosesClientChannelsAndClearsClients(t *testing.T) {
-	hub := NewWSHub()
-	client := &WSClient{
-		id:     "stop-client",
-		hub:    hub,
-		send:   make(chan []byte, 1),
-		topics: make(map[string]struct{}),
-	}
-
-	hub.clientsMu.Lock()
-	hub.clients[client] = struct{}{}
-	hub.clientsMu.Unlock()
-
-	hub.Stop()
-
-	if got := hub.ClientCount(); got != 0 {
-		t.Fatalf("ClientCount() after Stop = %d, want 0", got)
-	}
-
-	select {
-	case _, ok := <-client.send:
-		if ok {
-			t.Fatal("client send channel still open after Stop")
-		}
-	default:
-		t.Fatal("client send channel was not closed by Stop")
 	}
 }
 
@@ -5056,35 +4950,6 @@ func TestApprovals_WebSocketEvents(t *testing.T) {
 	srv.wsHub.UnregisterClient(testClient)
 }
 
-func TestHandleWebSocket_StartsHubWithoutStart(t *testing.T) {
-
-	srv := New(Config{})
-	defer srv.Stop()
-
-	httpSrv := httptest.NewServer(srv.Router())
-	defer httpSrv.Close()
-
-	wsURL := "ws" + strings.TrimPrefix(httpSrv.URL, "http") + "/api/v1/ws"
-	conn, resp, err := websocket.DefaultDialer.Dial(wsURL, nil)
-	if err != nil {
-		if resp != nil && resp.Body != nil {
-			resp.Body.Close()
-		}
-		t.Fatalf("dial websocket: %v", err)
-	}
-	defer conn.Close()
-
-	deadline := time.Now().Add(250 * time.Millisecond)
-	for time.Now().Before(deadline) {
-		if srv.WSHub().ClientCount() == 1 {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	t.Fatalf("expected hub client count 1, got %d", srv.WSHub().ClientCount())
-}
-
 func TestWSHubPublish(t *testing.T) {
 	hub := NewWSHub()
 	go hub.Run()
@@ -5142,62 +5007,6 @@ func TestWSHub_PaneOutputSequence(t *testing.T) {
 	}
 
 	t.Logf("WS_STREAMING_TEST: hub assigned sequences 1-%d for 10 pane output events", finalSeq)
-}
-
-func TestWSHub_MultiClientFanOut(t *testing.T) {
-	hub := NewWSHub()
-	go hub.Run()
-	defer hub.Stop()
-
-	time.Sleep(10 * time.Millisecond)
-
-	// Create simulated clients
-	clients := make([]*WSClient, 3)
-	for i := 0; i < 3; i++ {
-		clients[i] = &WSClient{
-			id:     "client-" + string(rune('A'+i)),
-			hub:    hub,
-			send:   make(chan []byte, 100),
-			topics: make(map[string]struct{}),
-		}
-		// Subscribe to pane output
-		clients[i].Subscribe([]string{"panes:*"})
-
-		// Register with hub
-		requireRegisterWSClient(t, hub, clients[i])
-	}
-
-	time.Sleep(20 * time.Millisecond)
-
-	// Verify client count
-	if hub.ClientCount() != 3 {
-		t.Errorf("expected 3 clients, got %d", hub.ClientCount())
-	}
-
-	// Publish an event
-	hub.Publish("panes:test:0", "pane.output", map[string]interface{}{
-		"lines": []string{"test output"},
-	})
-
-	time.Sleep(50 * time.Millisecond)
-
-	// Each client should receive the message
-	for i, client := range clients {
-		select {
-		case msg := <-client.send:
-			if len(msg) == 0 {
-				t.Errorf("client %d received empty message", i)
-			}
-			t.Logf("WS_STREAMING_TEST: client %s received %d bytes", client.id, len(msg))
-		default:
-			t.Errorf("client %d did not receive message", i)
-		}
-	}
-
-	// Cleanup
-	for _, client := range clients {
-		hub.UnregisterClient(client)
-	}
 }
 
 func TestWSHub_TopicFiltering(t *testing.T) {
@@ -5724,40 +5533,6 @@ func TestExtractAPIKey(t *testing.T) {
 			t.Errorf("extractAPIKey() = %q, want empty", got)
 		}
 	})
-}
-
-func TestIsWebSocketUpgrade(t *testing.T) {
-
-	tests := []struct {
-		name       string
-		upgrade    string
-		connection string
-		want       bool
-	}{
-		{"valid websocket", "websocket", "Upgrade", true},
-		{"case insensitive upgrade", "WebSocket", "upgrade", true},
-		{"missing upgrade header", "", "Upgrade", false},
-		{"wrong upgrade", "http2", "Upgrade", false},
-		{"missing connection", "websocket", "", false},
-		{"connection without upgrade", "websocket", "keep-alive", false},
-		{"connection with multiple values", "websocket", "keep-alive, Upgrade", true},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			r, _ := http.NewRequest("GET", "/ws", nil)
-			if tc.upgrade != "" {
-				r.Header.Set("Upgrade", tc.upgrade)
-			}
-			if tc.connection != "" {
-				r.Header.Set("Connection", tc.connection)
-			}
-			got := isWebSocketUpgrade(r)
-			if got != tc.want {
-				t.Errorf("isWebSocketUpgrade(upgrade=%q, connection=%q) = %v, want %v", tc.upgrade, tc.connection, got, tc.want)
-			}
-		})
-	}
 }
 
 func TestParseJWT(t *testing.T) {
@@ -6685,34 +6460,6 @@ func TestWriteErrorResponse_HintOnlyDetail(t *testing.T) {
 // ---------------------------------------------------------------------------
 // loggingMiddleware (75.0% → covers reqID branch)
 // ---------------------------------------------------------------------------
-
-func TestLoggingMiddleware_WithRequestID(t *testing.T) {
-	called := false
-	handler := loggingMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		called = true
-	}))
-	req := httptest.NewRequest(http.MethodGet, "/test", nil)
-	ctx := context.WithValue(req.Context(), requestIDKey, "test-req-id")
-	req = req.WithContext(ctx)
-	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, req)
-	if !called {
-		t.Error("next handler should be called")
-	}
-}
-
-func TestLoggingMiddleware_WithoutRequestID(t *testing.T) {
-	called := false
-	handler := loggingMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		called = true
-	}))
-	req := httptest.NewRequest(http.MethodGet, "/test", nil)
-	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, req)
-	if !called {
-		t.Error("next handler should be called")
-	}
-}
 
 type fakeAttentionStreamFeed struct {
 	stats        robot.JournalStats

@@ -370,16 +370,15 @@ All transports expose audit trail consistently:
 
 ### CLI
 
-<!-- ntm-docs: skip -->
 ```bash
-# Query audit trail for target
-ntm audit --robot --target alert:agent_stuck:pane-abc123 --last 24h
+# Query audit trail for target (machine-readable)
+ntm audit search --target='alert:agent_stuck:*' --days=1 --json "agent_stuck"
 
 # Query by actor
-ntm audit --robot --actor PeachPond --last 24h
+ntm audit search --actor=PeachPond --days=1 --json "."
 
 # Query by event type
-ntm audit --robot --type incident_opened --last 7d
+ntm audit search --type=incident_opened --days=7 --json "."
 ```
 
 ### REST

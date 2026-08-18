@@ -309,12 +309,11 @@ ntm --robot-snapshot --since=2026-03-21T00:00:00Z  # Delta since timestamp
 
 Incremental event stream since cursor.
 
-<!-- ntm-docs: skip -->
 ```bash
-ntm --robot-events --cursor=evt_20260321023045123456789
-ntm --robot-events --cursor=evt_... --limit=100
-ntm --robot-events --cursor=evt_... --category=agent,bead
-ntm --robot-events --cursor=evt_... --actionability=action_required
+ntm --robot-events --since-cursor=42
+ntm --robot-events --since-cursor=42 --events-limit=100
+ntm --robot-events --since-cursor=42 --events-category=agent
+ntm --robot-events --since-cursor=42 --events-actionability=action_required
 ```
 
 **Response:**
@@ -322,7 +321,7 @@ ntm --robot-events --cursor=evt_... --actionability=action_required
 {
   "success": true,
   "timestamp": "2026-03-21T02:31:00Z",
-  "cursor": "evt_20260321023100987654321",
+  "cursor": 54,
   "events": [
     { /* event envelope */ },
     { /* event envelope */ }
@@ -335,21 +334,19 @@ ntm --robot-events --cursor=evt_... --actionability=action_required
 **Parameters:**
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--cursor` | string | Required | Cursor from previous snapshot/events call |
-| `--limit` | int | 100 | Max events to return |
-| `--category` | string | all | Comma-separated category filter |
-| `--actionability` | string | all | Filter: `background`, `interesting`, `action_required` |
-| `--severity` | string | all | Filter: `debug`, `info`, `warning`, `error`, `critical` |
-| `--session` | string | all | Filter to specific session |
+| `--since-cursor` | int | 0 (beginning) | Cursor from previous snapshot/events call |
+| `--events-limit` | int | 100 | Max events to return |
+| `--events-category` | string | all | Event category filter |
+| `--events-actionability` | string | all | Filter: `background`, `interesting`, `action_required` |
+| `--events-session` | string | all | Filter to specific session |
 
 ### 7.3 `--robot-digest`
 
 Token-efficient summary of what changed since cursor.
 
-<!-- ntm-docs: skip -->
 ```bash
-ntm --robot-digest --cursor=evt_20260321023045123456789
-ntm --robot-digest --cursor=evt_... --format=terse
+ntm --robot-digest
+ntm --robot-digest --profile=minimal
 ```
 
 **Response:**
@@ -543,19 +540,20 @@ A **profile** is a named preset of filter/verbosity settings:
 
 ### 9.2 Profile Selection
 
-<!-- ntm-docs: skip -->
+The shipped profile names are `operator`, `debug`, `minimal`, and `alerts`
+(the `quiet`/`verbose` names above are this contract's design vocabulary).
+
 ```bash
-ntm --robot-events --profile=quiet --cursor=evt_...
+ntm --robot-events --profile=alerts --since-cursor=42
 ```
 
 ### 9.3 Explicit Filters Override Profile
 
 When explicit filters are provided alongside a profile, explicit filters win:
 
-<!-- ntm-docs: skip -->
 ```bash
-# Uses quiet profile but adds bead category
-ntm --robot-events --profile=quiet --category=bead --cursor=evt_...
+# Uses alerts profile but narrows to the bead category
+ntm --robot-events --profile=alerts --events-category=bead --since-cursor=42
 ```
 
 Response includes `filters_applied`:

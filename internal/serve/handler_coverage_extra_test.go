@@ -196,39 +196,6 @@ func TestBuildMTLSConfigValid(t *testing.T) {
 // requestIDMiddleware (deprecated package-level version) tests
 // ---------------------------------------------------------------------------
 
-func TestRequestIDMiddlewareDeprecated(t *testing.T) {
-
-	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		reqID := requestIDFromContext(r.Context())
-		w.Write([]byte(reqID))
-	})
-	handler := requestIDMiddleware(inner)
-
-	t.Run("generates ID when missing", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/", nil)
-		rec := httptest.NewRecorder()
-		handler.ServeHTTP(rec, req)
-
-		if rec.Header().Get(requestIDHeader) == "" {
-			t.Error("expected request ID in response header")
-		}
-		if rec.Body.Len() == 0 {
-			t.Error("expected request ID in body")
-		}
-	})
-
-	t.Run("preserves existing ID", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/", nil)
-		req.Header.Set(requestIDHeader, "test-req-123")
-		rec := httptest.NewRecorder()
-		handler.ServeHTTP(rec, req)
-
-		if got := rec.Header().Get(requestIDHeader); got != "test-req-123" {
-			t.Errorf("request ID = %q, want test-req-123", got)
-		}
-	})
-}
-
 // ---------------------------------------------------------------------------
 // idempotencyMiddleware tests
 // ---------------------------------------------------------------------------

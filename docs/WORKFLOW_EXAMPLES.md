@@ -104,17 +104,16 @@ steps:
 
 ### Usage
 
-<!-- ntm-docs: skip -->
 ```bash
 # Run the workflow
-ntm pipeline run design-implement-test.yaml \
+ntm pipeline run design-implement-test.yaml --session myproject \
   --var feature="Add rate limiting to the API endpoint" \
   --var target_file="internal/api/ratelimit.go"
 
-# Run with progress tracking
-ntm pipeline run design-implement-test.yaml \
+# Validate first without executing
+ntm pipeline run design-implement-test.yaml --session myproject \
   --var feature="Implement user authentication" \
-  --progress
+  --dry-run
 ```
 
 ---
@@ -264,16 +263,11 @@ same prompt rotation independently. The state is stored under the current
 project's `.ntm/workflows/sequences/` directory, so a restarted shell can read
 the next prompt without rebuilding state in `/tmp` or shell arrays.
 
-<!-- ntm-docs: skip -->
 ```bash
 # Create the ordered review rotation once from the project root.
 ntm --robot-sequence=review \
   --sequence-action=create \
-  --sequence-steps='[
-    "Inspect the changed files and identify concrete risks.",
-    "Challenge the proposed fix; look for missed edge cases.",
-    "Summarize findings with file and line evidence."
-  ]'
+  --sequence-steps='["Inspect the changed files and identify concrete risks.", "Challenge the proposed fix; look for missed edge cases.", "Summarize findings with file and line evidence."]'
 
 # Every pane starts at prompt zero independently.
 ntm --robot-sequence=review --sequence-pane=%12
@@ -812,22 +806,20 @@ prompt: Hello ${vars.name | "User"}
 - Different workflow file
 
 **Solutions**:
-<!-- ntm-docs: skip -->
 ```bash
-# Check state file exists
+# Check state files exist
 ls .ntm/pipeline-state/
 
-# Use explicit state file
-ntm pipeline resume workflow.yaml --state-file .ntm/pipeline-state/run-xxx.json
+# Resume the specific run by its ID
+ntm pipeline resume run-20241230-123456-abcd
 ```
 
 ### Debugging Tips
 
-#### Enable Verbose Output
+#### Enable Machine-Readable Output
 
-<!-- ntm-docs: skip -->
 ```bash
-ntm pipeline run workflow.yaml --verbose
+ntm pipeline run workflow.yaml --session myproject --json
 ```
 
 #### Dry Run First
@@ -844,22 +836,20 @@ ntm pipeline status workflow.yaml
 
 #### View Execution State
 
-<!-- ntm-docs: skip -->
 ```bash
 # List recent runs
 ntm pipeline list
 
 # Show specific run details
-ntm pipeline show <run-id>
+ntm pipeline status <run-id>
 ```
 
 #### Monitor Progress
 
-<!-- ntm-docs: skip -->
 ```bash
-# Real-time progress
-ntm pipeline run workflow.yaml --progress
+# Poll run status (JSON for scripting)
+ntm pipeline status <run-id> --json
 
-# Tail execution logs
-ntm pipeline tail <run-id>
+# Stream the session's agent output while the pipeline runs
+ntm watch <session>
 ```

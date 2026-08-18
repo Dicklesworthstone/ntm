@@ -240,7 +240,6 @@ Redacted: [REDACTED:JWT:5e6f7a8b]
 ## UX & Error Messaging
 
 ### Warning Message Format
-<!-- ntm-docs: skip -->
 ```
 WARNING: Sensitive content detected
 
@@ -249,9 +248,12 @@ Location: prompt (line 3, col 12-65)
 Content:  s k-abc1...xyz9 (truncated)
 
 To proceed anyway:
-  --allow-secret              Override for this command
-  ntm config redaction.mode=off   Disable globally
+  --allow-secret   Override for this command
+  --redact=off     Disable for this invocation
 ```
+
+To disable globally, set `redaction.mode = "off"` under the config file's
+redaction section (`ntm config edit`).
 
 ### Block Error Format
 ```

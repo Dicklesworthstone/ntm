@@ -13,6 +13,23 @@ NTM is a tmux session management tool for orchestrating multiple AI coding agent
 
 ## [Unreleased]
 
+### Changed — BREAKING (v1.27.0)
+
+- **Previously-deprecated config keys now fail the loader** (WS6-remove-finalize,
+  `bd-ws6-config-truth-ienmd.3`): the config keys removed in v1.26.0
+  (WS6-remove, `bd-ws6-config-truth-ienmd.2`) no longer load with a
+  deprecation warning — each one is now a hard strict-loader **error** with
+  the same key + disposition text the v1.26.0 warning carried. A single
+  failed load lists **every** removed key present (plus any genuinely unknown
+  fields), so one pass over the error tells you everything to delete.
+  `ntm config set`/persistence validation rejects the same keys with the same
+  disposition text. `ntm doctor` still names each removed key present in a
+  config file (now as an error check) because it scans the file leniently —
+  useful precisely when the strict loader refuses to start. The removal list
+  is frozen; this release adds no new removals. **Migration:** delete the
+  listed keys from your config file — see the removed-key migration table in
+  the v1.26.0 entry below for the full list and per-key dispositions.
+
 - **Corrected commit provenance.** Commit `d08893d9`'s message incorrectly
   attributed the fail-closed serve safety-policy change to its completion and
   tmux diff. The actual safety-policy implementation is `dda4aae8`; history

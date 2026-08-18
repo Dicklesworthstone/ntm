@@ -260,16 +260,6 @@ func TestGetFirstWindow_Error(t *testing.T) {
 	}
 }
 
-func TestGetDefaultPaneIndex_Error(t *testing.T) {
-	t.Parallel()
-	skipIfNoTmux(t)
-	acquireGlobalTmuxTestLock(t)
-	_, err := GetDefaultPaneIndex("nonexistent_session_12345")
-	if err == nil {
-		t.Error("GetDefaultPaneIndex should fail for non-existent session")
-	}
-}
-
 func TestZoomPane_Error(t *testing.T) {
 	t.Parallel()
 	skipIfNoTmux(t)
@@ -395,36 +385,6 @@ func TestFormatTags(t *testing.T) {
 			got := FormatTags(tt.tags)
 			if got != tt.want {
 				t.Errorf("FormatTags(%v) = %q, want %q", tt.tags, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestStripTags(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		input string
-		want  string
-	}{
-		{"session__cc_1", "session__cc_1"},
-		{"session__cc_1[frontend]", "session__cc_1"},
-		{"session__cc_1_opus[backend,api]", "session__cc_1_opus"},
-		{"session__cc_1[]", "session__cc_1"},
-		{"title_with[brackets]_in_middle[tags]", "title_with[brackets]_in_middle"},
-		{"no_tags_at_all", "no_tags_at_all"},
-		// Edge case: [ found but no closing ]
-		{"session__cc_1[incomplete", "session__cc_1[incomplete"},
-		// Edge case: [ at the end with nothing after
-		{"session__cc_1[", "session__cc_1["},
-		// Edge case: ] without matching [ at end
-		{"session__cc_1]", "session__cc_1]"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.input, func(t *testing.T) {
-			got := stripTags(tt.input)
-			if got != tt.want {
-				t.Errorf("stripTags(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
 	}

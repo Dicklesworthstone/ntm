@@ -404,16 +404,6 @@ func parseAgentFromTitle(title string) (AgentType, int, string, []string) {
 	return AgentUser, 0, "", nil
 }
 
-// tagsFromTitle extracts only tags from a pane title.
-// This is a convenience wrapper around parseAgentFromTitle.
-func tagsFromTitle(title string) []string {
-	matches := paneNameRegex.FindStringSubmatch(title)
-	if len(matches) < 5 {
-		return nil
-	}
-	return parseTags(matches[4])
-}
-
 // parseTags parses a comma-separated tag string into a slice.
 // Returns nil for empty input.
 func parseTags(tagStr string) []string {
@@ -1243,31 +1233,6 @@ func GetFirstWindowContext(ctx context.Context, session string) (int, error) {
 	return DefaultClient.GetFirstWindowContext(ctx, session)
 }
 
-// GetDefaultPaneIndex returns the default pane index (respects pane-base-index)
-func (c *Client) GetDefaultPaneIndex(session string) (int, error) {
-	firstWin, err := c.GetFirstWindow(session)
-	if err != nil {
-		return 0, err
-	}
-
-	output, err := c.Run("list-panes", "-t", fmt.Sprintf("%s:%d", session, firstWin), "-F", "#{pane_index}")
-	if err != nil {
-		return 0, err
-	}
-
-	lines := strings.Split(output, "\n")
-	if len(lines) == 0 {
-		return 0, errors.New("no panes found")
-	}
-
-	return strconv.Atoi(lines[0])
-}
-
-// GetDefaultPaneIndex returns the default pane index (default client)
-func GetDefaultPaneIndex(session string) (int, error) {
-	return DefaultClient.GetDefaultPaneIndex(session)
-}
-
 // SplitWindow creates a new pane in the session
 func (c *Client) SplitWindow(session string, directory string) (string, error) {
 	return c.SplitWindowContext(context.Background(), session, directory)
@@ -1390,164 +1355,6 @@ func GetPaneTitle(paneID string) (string, error) {
 	return DefaultClient.GetPaneTitle(paneID)
 }
 
-// GetPaneTags returns the tags for a pane parsed from its title.
-// Returns nil if no tags are found.
-func (c *Client) GetPaneTags(paneID string) ([]string, error) {
-	title, err := c.GetPaneTitle(paneID)
-	if err != nil {
-		return nil, err
-	}
-	return tagsFromTitle(title), nil
-}
-
-// GetPaneTags returns the tags for a pane (default client)
-func GetPaneTags(paneID string) ([]string, error) {
-	return DefaultClient.GetPaneTags(paneID)
-}
-
-// SetPaneTags sets the tags for a pane by updating its title.
-// Tags are appended to the title in the format [tag1,tag2,...].
-// This replaces any existing tags on the pane.
-func (c *Client) SetPaneTags(paneID string, tags []string) error {
-	// Validate tags
-	for _, tag := range tags {
-		if strings.ContainsAny(tag, "[]") {
-			return fmt.Errorf("tag %q contains invalid characters '[' or ']'", tag)
-		}
-	}
-
-	title, err := c.GetPaneTitle(paneID)
-	if err != nil {
-		return err
-	}
-
-	// Strip existing tags from title
-	baseTitle := stripTags(title)
-	newTitle := baseTitle + FormatTags(tags)
-
-	return c.SetPaneTitle(paneID, newTitle)
-}
-
-// SetPaneTags sets the tags for a pane (default client)
-func SetPaneTags(paneID string, tags []string) error {
-	return DefaultClient.SetPaneTags(paneID, tags)
-}
-
-// AddPaneTags adds tags to a pane without removing existing ones.
-// Duplicate tags are not added.
-func (c *Client) AddPaneTags(paneID string, newTags []string) error {
-	existing, err := c.GetPaneTags(paneID)
-	if err != nil {
-		return err
-	}
-
-	// Build set of existing tags
-	tagSet := make(map[string]bool)
-	for _, t := range existing {
-		tagSet[t] = true
-	}
-
-	// Add new tags
-	for _, t := range newTags {
-		if !tagSet[t] {
-			existing = append(existing, t)
-			tagSet[t] = true
-		}
-	}
-
-	return c.SetPaneTags(paneID, existing)
-}
-
-// AddPaneTags adds tags to a pane (default client)
-func AddPaneTags(paneID string, newTags []string) error {
-	return DefaultClient.AddPaneTags(paneID, newTags)
-}
-
-// RemovePaneTags removes specific tags from a pane.
-func (c *Client) RemovePaneTags(paneID string, tagsToRemove []string) error {
-	existing, err := c.GetPaneTags(paneID)
-	if err != nil {
-		return err
-	}
-
-	// Build set of tags to remove
-	removeSet := make(map[string]bool)
-	for _, t := range tagsToRemove {
-		removeSet[t] = true
-	}
-
-	// Filter out removed tags
-	var filtered []string
-	for _, t := range existing {
-		if !removeSet[t] {
-			filtered = append(filtered, t)
-		}
-	}
-
-	return c.SetPaneTags(paneID, filtered)
-}
-
-// RemovePaneTags removes specific tags from a pane (default client)
-func RemovePaneTags(paneID string, tagsToRemove []string) error {
-	return DefaultClient.RemovePaneTags(paneID, tagsToRemove)
-}
-
-// HasPaneTag returns true if the pane has the specified tag.
-func (c *Client) HasPaneTag(paneID, tag string) (bool, error) {
-	tags, err := c.GetPaneTags(paneID)
-	if err != nil {
-		return false, err
-	}
-	for _, t := range tags {
-		if t == tag {
-			return true, nil
-		}
-	}
-	return false, nil
-}
-
-// HasPaneTag returns true if the pane has the specified tag (default client)
-func HasPaneTag(paneID, tag string) (bool, error) {
-	return DefaultClient.HasPaneTag(paneID, tag)
-}
-
-// HasAnyPaneTag returns true if the pane has any of the specified tags (OR logic).
-func (c *Client) HasAnyPaneTag(paneID string, tags []string) (bool, error) {
-	paneTags, err := c.GetPaneTags(paneID)
-	if err != nil {
-		return false, err
-	}
-	tagSet := make(map[string]bool)
-	for _, t := range paneTags {
-		tagSet[t] = true
-	}
-	for _, t := range tags {
-		if tagSet[t] {
-			return true, nil
-		}
-	}
-	return false, nil
-}
-
-// HasAnyPaneTag returns true if the pane has any of the specified tags (default client)
-func HasAnyPaneTag(paneID string, tags []string) (bool, error) {
-	return DefaultClient.HasAnyPaneTag(paneID, tags)
-}
-
-// stripTags removes the [tags] suffix from a pane title.
-func stripTags(title string) string {
-	// Find last '[' that's followed by any characters and ']' at end
-	idx := strings.LastIndex(title, "[")
-	if idx == -1 {
-		return title
-	}
-	// Check if it ends with ']'
-	if strings.HasSuffix(title, "]") && idx < len(title)-1 {
-		return title[:idx]
-	}
-	return title
-}
-
 // PaneTitleSuffix returns the portion of an NTM pane title after the final
 // session separator "__". It preserves any variant or tag suffixes.
 func PaneTitleSuffix(title string) string {
@@ -1592,12 +1399,6 @@ func (c *Client) SendKeys(target, keys string, enter bool) error {
 // SendKeysContext sends keys to a pane with caller cancellation.
 func (c *Client) SendKeysContext(ctx context.Context, target, keys string, enter bool) error {
 	return c.SendKeysWithDelayContext(ctx, target, keys, enter, DefaultEnterDelay)
-}
-
-// SendKeysWithDelay sends keys to a pane with a configurable delay before Enter.
-// Use ShellEnterDelay for shell panes (bash, zsh) or DefaultEnterDelay for agent TUIs.
-func (c *Client) SendKeysWithDelay(target, keys string, enter bool, enterDelay time.Duration) error {
-	return c.SendKeysWithDelayContext(context.Background(), target, keys, enter, enterDelay)
 }
 
 // escapeTrailingSemicolon protects a payload whose last byte is an unescaped
@@ -1764,18 +1565,14 @@ func SendKeysContext(ctx context.Context, target, keys string, enter bool) error
 	return DefaultClient.SendKeysContext(ctx, target, keys, enter)
 }
 
-// SendKeysWithDelay sends keys to a pane with a configurable Enter delay (default client)
-func SendKeysWithDelay(target, keys string, enter bool, enterDelay time.Duration) error {
-	return DefaultClient.SendKeysWithDelay(target, keys, enter, enterDelay)
-}
-
 // SendKeysWithDelayContext sends keys with a cancellable Enter delay (default client).
 func SendKeysWithDelayContext(ctx context.Context, target, keys string, enter bool, enterDelay time.Duration) error {
 	return DefaultClient.SendKeysWithDelayContext(ctx, target, keys, enter, enterDelay)
 }
 
-// PasteKeys pastes content to a pane using tmux's paste mechanism.
-// This is an alias for SendKeys for now, but may be optimized for large content later. // placebo-waiver: bd-d7z7i
+// PasteKeys pastes content to a pane. It delegates to SendKeys, whose literal
+// (-l) chunked delivery already handles multi-line content safely; a tmux
+// paste-buffer implementation would be an optimization, not a behavior change.
 func (c *Client) PasteKeys(target, content string, enter bool) error {
 	return c.PasteKeysContext(context.Background(), target, content, enter)
 }
@@ -1833,11 +1630,6 @@ func (c *Client) SendBuffer(target, content string, enter bool) error {
 // SendBufferContext sends buffer content with caller cancellation.
 func (c *Client) SendBufferContext(ctx context.Context, target, content string, enter bool) error {
 	return c.SendBufferWithDelayContext(ctx, target, content, enter, DefaultEnterDelay)
-}
-
-// SendBufferWithDelay sends content using the buffer mechanism with a configurable Enter delay.
-func (c *Client) SendBufferWithDelay(target, content string, enter bool, enterDelay time.Duration) error {
-	return c.SendBufferWithDelayContext(context.Background(), target, content, enter, enterDelay)
 }
 
 // SendBufferWithDelayContext sends content using the buffer mechanism with
@@ -1948,11 +1740,6 @@ func SendBufferContext(ctx context.Context, target, content string, enter bool) 
 	return DefaultClient.SendBufferContext(ctx, target, content, enter)
 }
 
-// SendBufferWithDelay sends content using the buffer mechanism with delay (default client)
-func SendBufferWithDelay(target, content string, enter bool, enterDelay time.Duration) error {
-	return DefaultClient.SendBufferWithDelay(target, content, enter, enterDelay)
-}
-
 // SendBufferWithDelayContext sends buffer content with a cancellable delay (default client).
 func SendBufferWithDelayContext(ctx context.Context, target, content string, enter bool, enterDelay time.Duration) error {
 	return DefaultClient.SendBufferWithDelayContext(ctx, target, content, enter, enterDelay)
@@ -1970,11 +1757,6 @@ func (c *Client) SendKeysForAgent(target, keys string, enter bool, agentType Age
 // with caller cancellation.
 func (c *Client) SendKeysForAgentContext(ctx context.Context, target, keys string, enter bool, agentType AgentType) error {
 	return c.SendKeysForAgentWithDelayContext(ctx, target, keys, enter, DefaultEnterDelay, agentType)
-}
-
-// SendKeysForAgentWithDelay sends keys using the appropriate method with a configurable delay.
-func (c *Client) SendKeysForAgentWithDelay(target, keys string, enter bool, enterDelay time.Duration, agentType AgentType) error {
-	return c.SendKeysForAgentWithDelayContext(context.Background(), target, keys, enter, enterDelay, agentType)
 }
 
 // SendKeysForAgentWithDelayContext sends keys using the appropriate mechanism
@@ -2059,11 +1841,6 @@ func SendKeysForAgent(target, keys string, enter bool, agentType AgentType) erro
 // SendKeysForAgentContext sends keys with caller cancellation (default client).
 func SendKeysForAgentContext(ctx context.Context, target, keys string, enter bool, agentType AgentType) error {
 	return DefaultClient.SendKeysForAgentContext(ctx, target, keys, enter, agentType)
-}
-
-// SendKeysForAgentWithDelay sends keys using the appropriate method with delay (default client)
-func SendKeysForAgentWithDelay(target, keys string, enter bool, enterDelay time.Duration, agentType AgentType) error {
-	return DefaultClient.SendKeysForAgentWithDelay(target, keys, enter, enterDelay, agentType)
 }
 
 // SendKeysForAgentWithDelayContext sends keys with a cancellable delay (default client).
@@ -2865,8 +2642,8 @@ func (c *Client) GetCurrentSessionContext(ctx context.Context) (string, error) {
 			return "", nil
 		}
 	} else {
-		// Remote check logic might differ or be unsupported
-		// For now, assume unsupported or return empty // placebo-waiver: bd-d7z7i
+		// A remote client is never "inside" the remote tmux server, so a
+		// current-session lookup is not applicable; report no session.
 		return "", nil
 	}
 	output, err := c.RunContext(ctx, "display-message", "-p", "#{session_name}")
@@ -3096,56 +2873,4 @@ func GetPanesWithActivity(session string) ([]PaneActivity, error) {
 // GetPanesWithActivityContext returns all panes in a session with their activity times with cancellation support (default client).
 func GetPanesWithActivityContext(ctx context.Context, session string) ([]PaneActivity, error) {
 	return DefaultClient.GetPanesWithActivityContext(ctx, session)
-}
-
-// IsRecentlyActive checks if a pane has had activity within the threshold
-func (c *Client) IsRecentlyActive(paneID string, threshold time.Duration) (bool, error) {
-	lastActivity, err := c.GetPaneActivity(paneID)
-	if err != nil {
-		return false, err
-	}
-
-	return time.Since(lastActivity) <= threshold, nil
-}
-
-// IsRecentlyActive checks if a pane has had activity within the threshold (default client)
-func IsRecentlyActive(paneID string, threshold time.Duration) (bool, error) {
-	return DefaultClient.IsRecentlyActive(paneID, threshold)
-}
-
-// GetPaneLastActivityAge returns how long ago the pane was last active
-func (c *Client) GetPaneLastActivityAge(paneID string) (time.Duration, error) {
-	lastActivity, err := c.GetPaneActivity(paneID)
-	if err != nil {
-		return 0, err
-	}
-
-	return time.Since(lastActivity), nil
-}
-
-// GetPaneLastActivityAge returns how long ago the pane was last active (default client)
-func GetPaneLastActivityAge(paneID string) (time.Duration, error) {
-	return DefaultClient.GetPaneLastActivityAge(paneID)
-}
-
-// IsAttached checks if a session is currently attached
-func (c *Client) IsAttached(session string) bool {
-	// Validate session name to prevent tmux format string injection.
-	if err := ValidateSessionName(session); err != nil {
-		return false
-	}
-	output, err := c.Run("list-sessions", "-F", "#{session_name}:#{session_attached}", "-f", fmt.Sprintf("#{==:#{session_name},%s}", session))
-	if err != nil || output == "" {
-		return false
-	}
-	parts := strings.Split(output, ":")
-	if len(parts) < 2 {
-		return false
-	}
-	return parts[1] == "1"
-}
-
-// IsAttached checks if a session is currently attached (default client)
-func IsAttached(session string) bool {
-	return DefaultClient.IsAttached(session)
 }

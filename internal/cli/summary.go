@@ -161,8 +161,7 @@ func runSummary(ctx context.Context, args []string, sinceStr, format string, rec
 		return fmt.Errorf("session '%s' not found", session)
 	}
 
-	// We'll use the since duration to potentially filter logs (if we enhanced capture)
-	// For now, it's just validated. // placebo-waiver: bd-d7z7i
+	// For now, --since is only validated; wiring it into filtering is tracked in bd-gjo4k. // placebo-waiver: bd-gjo4k
 	_, err = util.ParseDurationWithDefault(sinceStr, 30*time.Minute, "since")
 	if err != nil {
 		return fmt.Errorf("invalid --since: %w", err)

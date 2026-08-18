@@ -285,7 +285,7 @@ func runPaneSelector(session string, panes []tmux.Pane) (int, error) {
 		return -1, fmt.Errorf("no panes available")
 	}
 
-	// For now, use a simple numbered list // placebo-waiver: bd-d7z7i
+	// Simple numbered-list selector (no TUI dependency needed here).
 	fmt.Printf("\n%sSelect pane to zoom:%s\n\n", "\033[1m", "\033[0m")
 
 	ic := icons.Current()

@@ -18,11 +18,6 @@ func (f *Formatter) Text(format string, args ...interface{}) {
 	fmt.Fprintf(f.writer, format, args...)
 }
 
-// Textln outputs plain text with a newline to the formatter's writer
-func (f *Formatter) Textln(format string, args ...interface{}) {
-	fmt.Fprintf(f.writer, format+"\n", args...)
-}
-
 // Line outputs a blank line
 func (f *Formatter) Line() {
 	fmt.Fprintln(f.writer)

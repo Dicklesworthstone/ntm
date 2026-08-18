@@ -2313,7 +2313,7 @@ func getWorkItemsForStrategy(triage *bv.TriageResponse, strategy string, count i
 		items = getDependencyAwareItems(triage, count)
 	case "skill-matched":
 		// This would ideally match agent types to task types
-		// For now, fall through to top-n // placebo-waiver: bd-d7z7i
+		// For now, fall through to top-n; tracked in bd-obkeb // placebo-waiver: bd-obkeb
 		fallthrough
 	case "top-n":
 		fallthrough

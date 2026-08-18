@@ -1,18 +1,21 @@
 package config
 
-// WS6-remove (bd-ws6-config-truth-ienmd.2): staged removal of every
-// reader-less config knob. The struct fields for these keys are GONE — the
-// strict loader would normally reject them as unknown fields. In v1.26.0 the
-// loader instead recognizes each removed key, emits a loud per-key
-// deprecation WARNING naming the key and its disposition, and keeps loading
-// (the value is ignored). In v1.27.0 the warnings flip to hard strict-loader
-// errors with identical text (bd-ws6-config-truth-ienmd.3).
+// WS6-remove (bd-ws6-config-truth-ienmd.2) + WS6-remove-finalize
+// (bd-ws6-config-truth-ienmd.3): staged removal of every reader-less config
+// knob. The struct fields for these keys are GONE — the strict loader would
+// normally reject them as unknown fields. v1.26.0 shipped a one-release
+// migration runway: each removed key produced a loud startup WARNING naming
+// the key and its disposition while the config still loaded. Since v1.27.0
+// each removed key is a hard strict-loader ERROR with the same key +
+// disposition text; every removed key present is listed in the single load
+// error so one failed load names everything to delete.
 //
-// `ntm doctor` surfaces the same warnings via ScanRemovedKnobs.
+// `ntm doctor` surfaces the same keys via ScanRemovedKnobs, which reads the
+// config file leniently — useful precisely because the strict loader now
+// refuses such configs.
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"sort"
 	"strings"
@@ -121,24 +124,33 @@ func hasStrictChild(key string, keys []string) bool {
 	return false
 }
 
-// warnRemovedKnobs writes one loud deprecation warning per removed knob.
-// The disposition sentence is IDENTICAL to the strict-loader error text that
-// replaces it in v1.27.0 (WS6-remove-finalize) — only the severity changes.
-func warnRemovedKnobs(removed []RemovedKnob, w io.Writer) {
-	if w == nil {
-		return
-	}
+// removedKnobErrorLine renders the strict-loader error line for one removed
+// knob. The key + disposition text is IDENTICAL to the v1.26.0 deprecation
+// warning it replaces (WS6-remove-finalize, bd-ws6-config-truth-ienmd.3) —
+// only the severity changed. The line tells the user exactly what to delete
+// and why, and points at the v1.26.0 migration table for the full list.
+func removedKnobErrorLine(knob RemovedKnob) string {
+	return fmt.Sprintf(
+		"config key %s was %s — delete it from your config file (removed in v1.26.0, a config error since v1.27.0; see the v1.26.0 removed-key migration table in CHANGELOG.md)",
+		knob.Key, knob.Disposition)
+}
+
+// removedKnobErrorLines renders one error line per removed knob, in input
+// order, so a single load failure lists every key the user must delete.
+func removedKnobErrorLines(removed []RemovedKnob) []string {
+	lines := make([]string, 0, len(removed))
 	for _, knob := range removed {
-		fmt.Fprintf(w,
-			"ntm: warning: config key %s was %s; the key is ignored in v1.26.0 and becomes a config error in v1.27.0 — delete it from your config file\n",
-			knob.Key, knob.Disposition)
+		lines = append(lines, removedKnobErrorLine(knob))
 	}
+	return lines
 }
 
 // ScanRemovedKnobs reports the removed config knobs present in the config
-// file at path (empty = DefaultPath). It is the `ntm doctor` surface for the
-// startup warnings: same classification, same disposition text. A missing
-// config file yields no knobs; an unparseable file yields an error.
+// file at path (empty = DefaultPath). It is the `ntm doctor` surface: same
+// classification and disposition text as the strict-loader error, but it
+// decodes leniently, so it works on exactly the configs the strict loader
+// refuses since v1.27.0. A missing config file yields no knobs; an
+// unparseable file yields an error.
 func ScanRemovedKnobs(path string) ([]RemovedKnob, error) {
 	if path == "" {
 		path = DefaultPath()

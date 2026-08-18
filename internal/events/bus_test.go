@@ -198,29 +198,6 @@ func TestEventBus_HistoryLimit(t *testing.T) {
 	}
 }
 
-func TestEventBus_EnableRobotMode(t *testing.T) {
-	t.Parallel()
-
-	bus := NewEventBus(10)
-	var buf bytes.Buffer
-
-	unsub := bus.EnableRobotMode(&buf)
-	defer unsub()
-
-	event := NewProfileAssignedEvent("test-session", "agent1", "architect", "")
-	bus.PublishSync(event)
-
-	// Parse JSON output
-	var decoded map[string]interface{}
-	if err := json.Unmarshal(buf.Bytes(), &decoded); err != nil {
-		t.Fatalf("failed to parse JSON output: %v", err)
-	}
-
-	if decoded["type"] != "profile_assigned" {
-		t.Errorf("expected type 'profile_assigned', got %v", decoded["type"])
-	}
-}
-
 func TestBaseEvent_Interface(t *testing.T) {
 	t.Parallel()
 
@@ -241,27 +218,6 @@ func TestBaseEvent_Interface(t *testing.T) {
 	if event.EventTimestamp().IsZero() {
 		t.Error("expected non-zero timestamp")
 	}
-}
-
-func TestProfileEvents(t *testing.T) {
-	t.Parallel()
-
-	t.Run("ProfileAssignedEvent", func(t *testing.T) {
-		event := NewProfileAssignedEvent("session1", "agent1", "architect", "")
-		if event.EventType() != "profile_assigned" {
-			t.Errorf("expected type 'profile_assigned', got %q", event.EventType())
-		}
-		if event.AgentID != "agent1" {
-			t.Errorf("expected agent_id 'agent1', got %q", event.AgentID)
-		}
-	})
-
-	t.Run("ProfileSwitchedEvent", func(t *testing.T) {
-		event := NewProfileSwitchedEvent("session1", "agent1", "architect", "implementer")
-		if event.EventType() != "profile_switched" {
-			t.Errorf("expected type 'profile_switched', got %q", event.EventType())
-		}
-	})
 }
 
 func TestRotationEvents(t *testing.T) {
@@ -295,77 +251,6 @@ func TestRotationEvents(t *testing.T) {
 	})
 }
 
-func TestCheckpointEvents(t *testing.T) {
-	t.Parallel()
-
-	t.Run("CheckpointCreatedEvent", func(t *testing.T) {
-		event := NewCheckpointCreatedEvent("session1", "checkpoint1", "full", 1024000, 3)
-		if event.EventType() != "checkpoint_created" {
-			t.Errorf("expected type 'checkpoint_created', got %q", event.EventType())
-		}
-		if event.SizeBytes != 1024000 {
-			t.Errorf("expected size 1024000, got %d", event.SizeBytes)
-		}
-	})
-
-	t.Run("CheckpointRestoredEvent", func(t *testing.T) {
-		event := NewCheckpointRestoredEvent("session1", "checkpoint1", 3)
-		if event.EventType() != "checkpoint_restored" {
-			t.Errorf("expected type 'checkpoint_restored', got %q", event.EventType())
-		}
-	})
-}
-
-func TestWorkflowEvents(t *testing.T) {
-	t.Parallel()
-
-	t.Run("WorkflowStartedEvent", func(t *testing.T) {
-		event := NewWorkflowStartedEvent("session1", "code-review", "run123", []string{"agent1", "agent2"})
-		if event.EventType() != "workflow_started" {
-			t.Errorf("expected type 'workflow_started', got %q", event.EventType())
-		}
-		if len(event.Agents) != 2 {
-			t.Errorf("expected 2 agents, got %d", len(event.Agents))
-		}
-	})
-
-	t.Run("StageTransitionEvent", func(t *testing.T) {
-		event := NewStageTransitionEvent("session1", "code-review", "run123", "design", "implement", "completion")
-		if event.EventType() != "stage_transition" {
-			t.Errorf("expected type 'stage_transition', got %q", event.EventType())
-		}
-	})
-
-	t.Run("WorkflowPausedEvent", func(t *testing.T) {
-		event := NewWorkflowPausedEvent("session1", "code-review", "run123", "user request")
-		if event.EventType() != "workflow_paused" {
-			t.Errorf("expected type 'workflow_paused', got %q", event.EventType())
-		}
-	})
-
-	t.Run("WorkflowCompletedEvent", func(t *testing.T) {
-		event := NewWorkflowCompletedEvent("session1", "code-review", "run123", 300, 5, true, "")
-		if event.EventType() != "workflow_completed" {
-			t.Errorf("expected type 'workflow_completed', got %q", event.EventType())
-		}
-		if event.DurationSec != 300 {
-			t.Errorf("expected duration 300, got %d", event.DurationSec)
-		}
-	})
-}
-
-func TestNewWorkflowStartedEvent_DefensiveCopiesAgents(t *testing.T) {
-	t.Parallel()
-
-	agents := []string{"agent1", "agent2"}
-	event := NewWorkflowStartedEvent("session1", "code-review", "run123", agents)
-	agents[0] = "mutated"
-
-	if got, want := event.Agents[0], "agent1"; got != want {
-		t.Fatalf("event.Agents[0] = %q, want %q", got, want)
-	}
-}
-
 func TestAgentEvents(t *testing.T) {
 	t.Parallel()
 
@@ -393,60 +278,6 @@ func TestAlertEvent(t *testing.T) {
 	}
 	if event.Severity != "warning" {
 		t.Errorf("expected severity 'warning', got %q", event.Severity)
-	}
-}
-
-func TestHumanOverlayEvents(t *testing.T) {
-	t.Parallel()
-
-	t.Run("HumanZoomEvent", func(t *testing.T) {
-		event := NewHumanZoomEvent("session1", 3, "codex", 42)
-		if event.EventType() != EventHumanZoom {
-			t.Fatalf("expected type %q, got %q", EventHumanZoom, event.EventType())
-		}
-		if event.EventSession() != "session1" {
-			t.Fatalf("expected session session1, got %q", event.EventSession())
-		}
-		if event.PaneIndex != 3 {
-			t.Fatalf("expected pane index 3, got %d", event.PaneIndex)
-		}
-		if event.AgentType != "codex" {
-			t.Fatalf("expected agent type codex, got %q", event.AgentType)
-		}
-		if event.Cursor != 42 {
-			t.Fatalf("expected cursor 42, got %d", event.Cursor)
-		}
-	})
-
-	t.Run("HumanOverlayDismissEvent", func(t *testing.T) {
-		event := NewHumanOverlayDismissEvent("session1", -1, 99)
-		if event.EventType() != EventHumanOverlayDismiss {
-			t.Fatalf("expected type %q, got %q", EventHumanOverlayDismiss, event.EventType())
-		}
-		if event.DurationSeconds != 0 {
-			t.Fatalf("expected negative durations to clamp to 0, got %.3f", event.DurationSeconds)
-		}
-		if event.Cursor != 99 {
-			t.Fatalf("expected cursor 99, got %d", event.Cursor)
-		}
-	})
-}
-
-func TestGlobalFunctions(t *testing.T) {
-	t.Parallel()
-
-	var received atomic.Int32
-
-	unsub := Subscribe("global_test", func(e BusEvent) {
-		received.Add(1)
-	})
-	defer unsub()
-
-	event := BaseEvent{Type: "global_test", Timestamp: time.Now()}
-	PublishSync(event)
-
-	if received.Load() != 1 {
-		t.Errorf("expected 1 event received, got %d", received.Load())
 	}
 }
 

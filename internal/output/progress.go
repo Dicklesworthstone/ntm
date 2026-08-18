@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strings"
 
 	"github.com/charmbracelet/lipgloss"
 	"golang.org/x/term"
@@ -62,20 +61,13 @@ func NewStepsWriter(w io.Writer) *Steps {
 	}
 }
 
-// SetTotal sets the expected total steps (for "1/N" display).
-func (s *Steps) SetTotal(n int) *Steps {
-	s.total = n
-	return s
-}
-
 // SetIndent sets the indentation prefix (default: "  ").
 func (s *Steps) SetIndent(indent string) *Steps {
 	s.indent = indent
 	return s
 }
 
-// Start begins a new step with the given name.
-// Prints "name..." and waits for Done/Fail/Skip.
+// Start begins a new named step, auto-completing any running step.
 func (s *Steps) Start(name string) *Steps {
 	// Auto-complete previous step if still running
 	if s.current != nil && s.current.status == StepRunning {
@@ -324,76 +316,3 @@ func PrintInfof(format string, args ...any) {
 // ===========================================================================
 // Multi-step operation helpers
 // ===========================================================================
-
-// Operation represents a multi-step CLI operation.
-// Provides consistent progress output for long operations.
-type Operation struct {
-	name     string
-	steps    *Steps
-	errors   []string
-	warnings []string
-}
-
-// NewOperation creates a named operation for tracking multi-step progress.
-func NewOperation(name string) *Operation {
-	return &Operation{
-		name:  name,
-		steps: NewSteps(),
-	}
-}
-
-// Start begins a step within this operation.
-func (o *Operation) Start(stepName string) *Steps {
-	return o.steps.Start(stepName)
-}
-
-// AddError records an error (for summary at end).
-func (o *Operation) AddError(msg string) {
-	o.errors = append(o.errors, msg)
-}
-
-// AddWarning records a warning (for summary at end).
-func (o *Operation) AddWarning(msg string) {
-	o.warnings = append(o.warnings, msg)
-}
-
-// HasErrors returns true if any errors were recorded.
-func (o *Operation) HasErrors() bool {
-	return len(o.errors) > 0
-}
-
-// HasWarnings returns true if any warnings were recorded.
-func (o *Operation) HasWarnings() bool {
-	return len(o.warnings) > 0
-}
-
-// Summary prints a summary of the operation outcome.
-func (o *Operation) Summary() {
-	p := Progress()
-
-	if len(o.errors) > 0 {
-		p.Error(fmt.Sprintf("%s completed with %d error(s)", o.name, len(o.errors)))
-		for _, e := range o.errors {
-			fmt.Printf("  - %s\n", e)
-		}
-	} else if len(o.warnings) > 0 {
-		p.Warning(fmt.Sprintf("%s completed with %d warning(s)", o.name, len(o.warnings)))
-		for _, w := range o.warnings {
-			fmt.Printf("  - %s\n", w)
-		}
-	} else {
-		p.Success(fmt.Sprintf("%s completed successfully", o.name))
-	}
-}
-
-// FormatStepList formats a list of step names for display.
-func FormatStepList(steps []string) string {
-	if len(steps) == 0 {
-		return ""
-	}
-	var lines []string
-	for i, step := range steps {
-		lines = append(lines, fmt.Sprintf("%d. %s", i+1, step))
-	}
-	return strings.Join(lines, "\n")
-}

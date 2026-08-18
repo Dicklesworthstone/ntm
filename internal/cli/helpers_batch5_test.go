@@ -452,33 +452,6 @@ func TestStyledTableBuilderOps(t *testing.T) {
 	})
 }
 
-func TestMessageAndStyleHelpers(t *testing.T) {
-
-	// Test that message helpers return non-empty strings containing the message
-	helpers := map[string]func(string) string{
-		"SuccessMessage": SuccessMessage,
-		"ErrorMessage":   ErrorMessage,
-		"WarningMessage": WarningMessage,
-		"InfoMessage":    InfoMessage,
-		"SubtleText":     SubtleText,
-		"BoldText":       BoldText,
-		"AccentText":     AccentText,
-	}
-
-	for name, fn := range helpers {
-		t.Run(name, func(t *testing.T) {
-			got := fn("test_content")
-			if got == "" {
-				t.Errorf("%s returned empty string", name)
-			}
-			// The content should be preserved (possibly with ANSI codes)
-			if stripped := stripANSI(got); stripped == "" {
-				t.Errorf("%s stripped to empty", name)
-			}
-		})
-	}
-}
-
 func TestMatchesLegacySendTypeFilterCanonicalizesAliases(t *testing.T) {
 
 	tests := []struct {

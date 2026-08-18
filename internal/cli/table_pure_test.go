@@ -126,26 +126,9 @@ func TestPadRight(t *testing.T) {
 // Message formatters — 0% → 100%
 // ---------------------------------------------------------------------------
 
-func TestSuccessMessage(t *testing.T) {
-	got := SuccessMessage("done")
-	if got == "" {
-		t.Error("expected non-empty")
-	}
-	if !strings.Contains(stripANSI(got), "done") {
-		t.Error("should contain message text")
-	}
-}
-
 func TestErrorMessage(t *testing.T) {
 	got := ErrorMessage("failed")
 	if !strings.Contains(stripANSI(got), "failed") {
-		t.Error("should contain message text")
-	}
-}
-
-func TestWarningMessage(t *testing.T) {
-	got := WarningMessage("caution")
-	if !strings.Contains(stripANSI(got), "caution") {
 		t.Error("should contain message text")
 	}
 }
@@ -157,56 +140,10 @@ func TestInfoMessage(t *testing.T) {
 	}
 }
 
-func TestSectionHeader(t *testing.T) {
-	got := SectionHeader("Overview")
-	if got == "" {
-		t.Error("expected non-empty")
-	}
-	if !strings.Contains(stripANSI(got), "Overview") {
-		t.Error("should contain title")
-	}
-}
-
-func TestSectionDivider(t *testing.T) {
-	got := SectionDivider(40)
-	if got == "" {
-		t.Error("expected non-empty divider")
-	}
-}
-
-func TestKeyValue(t *testing.T) {
-	got := KeyValue("Status", "running", 10)
-	stripped := stripANSI(got)
-	if !strings.Contains(stripped, "Status") || !strings.Contains(stripped, "running") {
-		t.Errorf("KeyValue output missing expected content: %q", stripped)
-	}
-}
-
 func TestBadge(t *testing.T) {
 	got := Badge("OK", "46")
 	if got == "" {
 		t.Error("expected non-empty badge")
-	}
-}
-
-func TestSubtleText(t *testing.T) {
-	got := SubtleText("muted")
-	if !strings.Contains(stripANSI(got), "muted") {
-		t.Error("should contain text")
-	}
-}
-
-func TestBoldText(t *testing.T) {
-	got := BoldText("important")
-	if !strings.Contains(stripANSI(got), "important") {
-		t.Error("should contain text")
-	}
-}
-
-func TestAccentText(t *testing.T) {
-	got := AccentText("highlight")
-	if !strings.Contains(stripANSI(got), "highlight") {
-		t.Error("should contain text")
 	}
 }
 

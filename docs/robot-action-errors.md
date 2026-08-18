@@ -345,32 +345,31 @@ Errors include retry guidance:
 
 ### 5.3 Request Correlation
 
-For non-idempotent commands, include request ID:
+For non-idempotent commands, include a durable operation ID (`--op-id`):
 
-<!-- ntm-docs: skip -->
 ```bash
-ntm --robot-send --target="..." --msg="..." --request-id="req_123"
+ntm --robot-send=myproject --msg="Fix auth" --op-id="deploy-42"
 ```
 
-Response confirms request ID:
+The response includes the recorded operation:
 ```json
 {
   "success": true,
-  "request_id": "req_123",
-  "idempotency_key": "idem_abc",
-  "duplicate": false
+  "operation": {
+    "operation_id": "deploy-42",
+    "status": "completed",
+    "payload_sha256": "...",
+    "payload_bytes": 8
+  }
 }
 ```
 
-Duplicate detection:
-```json
-{
-  "success": true,
-  "request_id": "req_123",
-  "idempotency_key": "idem_abc",
-  "duplicate": true,
-  "original_response": { ... }
-}
+An identical retry replays the recorded outcome (`"replayed": true` in
+`operation`); reusing the same `--op-id` with a different payload is rejected.
+Query the durable receipt later with:
+
+```bash
+ntm --robot-send-receipt=deploy-42
 ```
 
 ---

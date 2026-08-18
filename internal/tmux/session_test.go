@@ -1298,22 +1298,6 @@ func TestGetFirstWindow(t *testing.T) {
 	}
 }
 
-func TestGetDefaultPaneIndex(t *testing.T) {
-	skipIfNoTmux(t)
-
-	session := createTestSession(t)
-
-	paneIdx, err := GetDefaultPaneIndex(session)
-	if err != nil {
-		t.Fatalf("GetDefaultPaneIndex failed: %v", err)
-	}
-
-	// Pane index should be 0 or 1 depending on tmux config
-	if paneIdx < 0 || paneIdx > 1 {
-		t.Errorf("unexpected default pane index: %d", paneIdx)
-	}
-}
-
 func TestGetCurrentSession(t *testing.T) {
 	acquireGlobalTmuxTestLock(t)
 
@@ -1436,54 +1420,6 @@ func TestGetPanesWithActivity(t *testing.T) {
 		if p.LastActivity.IsZero() {
 			t.Errorf("pane %s should have activity timestamp", p.Pane.ID)
 		}
-	}
-}
-
-func TestIsRecentlyActive(t *testing.T) {
-	skipIfNoTmux(t)
-
-	session := createTestSession(t)
-
-	panes, _ := GetPanes(session)
-	paneID := panes[0].ID
-
-	// Generate recent activity
-	SendKeys(paneID, "echo recent", true)
-	time.Sleep(300 * time.Millisecond)
-
-	// Should be recently active (within 1 minute)
-	recent, err := IsRecentlyActive(paneID, time.Minute)
-	if err != nil {
-		// Some tmux versions may not support this - skip test
-		t.Skipf("IsRecentlyActive not supported: %v", err)
-	}
-
-	if !recent {
-		t.Error("pane should be recently active after generating output")
-	}
-}
-
-func TestGetPaneLastActivityAge(t *testing.T) {
-	skipIfNoTmux(t)
-
-	session := createTestSession(t)
-
-	panes, _ := GetPanes(session)
-	paneID := panes[0].ID
-
-	// Generate activity
-	SendKeys(paneID, "echo age test", true)
-	time.Sleep(300 * time.Millisecond)
-
-	age, err := GetPaneLastActivityAge(paneID)
-	if err != nil {
-		// Some tmux versions may not support this - skip test
-		t.Skipf("GetPaneLastActivityAge not supported: %v", err)
-	}
-
-	// Age should be small (just generated activity)
-	if age > 5*time.Second {
-		t.Errorf("pane activity age should be < 5s, got %v", age)
 	}
 }
 
@@ -1626,39 +1562,6 @@ func TestBinaryPathPreferredLocations(t *testing.T) {
 }
 
 // ============== Pure Function Tests ==============
-
-func TestTagsFromTitle(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name  string
-		title string
-		want  []string
-	}{
-		{"simple tags", "session__cc_1[frontend]", []string{"frontend"}},
-		{"multiple tags", "session__cc_1[frontend,api]", []string{"frontend", "api"}},
-		{"no tags", "session__cc_1", nil},
-		{"empty tags", "session__cc_1[]", nil},
-		{"not NTM format", "just_a_title", nil},
-		{"with variant and tags", "session__cc_1_opus[backend]", []string{"backend"}},
-		{"tags with spaces", "session__cc_1[tag1, tag2]", []string{"tag1", "tag2"}},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := tagsFromTitle(tt.title)
-			if len(got) != len(tt.want) {
-				t.Errorf("tagsFromTitle(%q) = %v, want %v", tt.title, got, tt.want)
-				return
-			}
-			for i := range got {
-				if got[i] != tt.want[i] {
-					t.Errorf("tagsFromTitle(%q)[%d] = %q, want %q", tt.title, i, got[i], tt.want[i])
-				}
-			}
-		})
-	}
-}
 
 func TestParseAgentFromTitleEdgeCases(t *testing.T) {
 	t.Parallel()

@@ -344,17 +344,17 @@ When output is truncated, references are preserved:
 
 **Properties:**
 - `truncated_refs` lists omitted entity references
-- Consumers can fetch specific refs: `--refs=session:ntm/c,session:ntm/d`
+- Consumers can drill into omitted entities with the `--robot-inspect-*` surfaces
 
 ### 6.2 Reference-Based Fetching
 
-<!-- ntm-docs: skip -->
 ```bash
-# Fetch specific entities by reference
-ntm --robot-inspect --refs="session:ntm/c,session:ntm/d"
+# Fetch specific entities via the inspect drill-downs
+ntm --robot-inspect-session=c
+ntm --robot-inspect-agent=myproject:%2
 
-# Filter events by entity reference
-ntm --robot-events --entity="agent:ntm/myproject/0.2"
+# Filter events by entity scope
+ntm --robot-events --events-session=myproject --events-category=agent
 ```
 
 ---

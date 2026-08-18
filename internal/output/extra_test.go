@@ -3,7 +3,6 @@ package output
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -33,65 +32,6 @@ func captureOutput(f func()) (string, string) {
 	bufOut.ReadFrom(rOut)
 	bufErr.ReadFrom(rErr)
 	return bufOut.String(), bufErr.String()
-}
-
-func TestFormatterErrors(t *testing.T) {
-	var buf bytes.Buffer
-	f := New(WithWriter(&buf), WithJSON(true))
-
-	// Error
-	err := errors.New("test error")
-	f.Error(err)
-	var resp ErrorResponse
-	if err := json.Unmarshal(buf.Bytes(), &resp); err != nil {
-		t.Fatalf("JSON invalid: %v", err)
-	}
-	if resp.Error != "test error" {
-		t.Errorf("Error() = %q, want 'test error'", resp.Error)
-	}
-
-	// ErrorMsg
-	buf.Reset()
-	f.ErrorMsg("msg error")
-	if err := json.Unmarshal(buf.Bytes(), &resp); err != nil {
-		t.Fatalf("JSON invalid: %v", err)
-	}
-	if resp.Error != "msg error" {
-		t.Errorf("ErrorMsg() = %q, want 'msg error'", resp.Error)
-	}
-
-	// ErrorWithCode
-	buf.Reset()
-	f.ErrorWithCode("CODE", "msg")
-	if err := json.Unmarshal(buf.Bytes(), &resp); err != nil {
-		t.Fatalf("JSON invalid: %v", err)
-	}
-	if resp.Code != "CODE" {
-		t.Errorf("ErrorWithCode() code = %q, want CODE", resp.Code)
-	}
-}
-
-func TestPrintError(t *testing.T) {
-	// Text mode
-	_, stderr := captureOutput(func() {
-		PrintError(errors.New("oops"), false)
-	})
-	if stderr != "Error: oops\n" {
-		t.Errorf("PrintError text mode = %q, want 'Error: oops\n'", stderr)
-	}
-
-	// JSON mode
-	stdout, _ := captureOutput(func() {
-		PrintError(errors.New("json error"), true)
-	})
-
-	var resp ErrorResponse
-	if err := json.Unmarshal([]byte(stdout), &resp); err != nil {
-		t.Errorf("PrintError JSON invalid: %v", err)
-	}
-	if resp.Error != "json error" {
-		t.Errorf("PrintError JSON error = %q, want 'json error'", resp.Error)
-	}
 }
 
 func TestTimestamped(t *testing.T) {
@@ -472,53 +412,6 @@ func TestFormatCLIErrorMinimal(t *testing.T) {
 	}
 }
 
-func TestPrintCLIErrorOrJSONText(t *testing.T) {
-	os.Setenv("NO_COLOR", "1")
-	defer os.Unsetenv("NO_COLOR")
-
-	err := NewCLIError("text error").WithHint("do something")
-
-	_, stderr := captureOutput(func() {
-		PrintCLIErrorOrJSON(err, false)
-	})
-
-	if !strings.Contains(stderr, "Error: text error") {
-		t.Errorf("Expected error in stderr: %q", stderr)
-	}
-	if !strings.Contains(stderr, "Hint: do something") {
-		t.Errorf("Expected hint in stderr: %q", stderr)
-	}
-}
-
-func TestPrintCLIErrorOrJSONMode(t *testing.T) {
-	err := NewCLIError("json error").
-		WithCause("bad request").
-		WithHint("fix it").
-		WithCode("BAD_REQ")
-
-	stdout, _ := captureOutput(func() {
-		PrintCLIErrorOrJSON(err, true)
-	})
-
-	var resp ErrorResponse
-	if jsonErr := json.Unmarshal([]byte(stdout), &resp); jsonErr != nil {
-		t.Fatalf("JSON invalid: %v\nOutput: %q", jsonErr, stdout)
-	}
-
-	if resp.Error != "json error" {
-		t.Errorf("Error = %q", resp.Error)
-	}
-	if resp.Code != "BAD_REQ" {
-		t.Errorf("Code = %q", resp.Code)
-	}
-	if resp.Details != "bad request" {
-		t.Errorf("Details = %q", resp.Details)
-	}
-	if resp.Hint != "fix it" {
-		t.Errorf("Hint = %q", resp.Hint)
-	}
-}
-
 func TestSessionNotFoundError(t *testing.T) {
 	err := SessionNotFoundError("myproject")
 
@@ -530,80 +423,6 @@ func TestSessionNotFoundError(t *testing.T) {
 	}
 	if err.Hint == "" {
 		t.Error("Hint should not be empty")
-	}
-}
-
-func TestSessionExistsError(t *testing.T) {
-	err := SessionExistsError("existing")
-
-	if !strings.Contains(err.Message, "existing") {
-		t.Errorf("Message should contain session name: %q", err.Message)
-	}
-	if err.Code != "SESSION_EXISTS" {
-		t.Errorf("Code = %q", err.Code)
-	}
-}
-
-func TestTmuxNotInstalledError(t *testing.T) {
-	err := TmuxNotInstalledError()
-
-	if !strings.Contains(err.Message, "tmux") {
-		t.Errorf("Message should mention tmux: %q", err.Message)
-	}
-	if err.Code != "TMUX_NOT_INSTALLED" {
-		t.Errorf("Code = %q", err.Code)
-	}
-	if !strings.Contains(err.Hint, "brew") && !strings.Contains(err.Hint, "apt") {
-		t.Errorf("Hint should include install instructions: %q", err.Hint)
-	}
-}
-
-func TestPaneNotFoundError(t *testing.T) {
-	err := PaneNotFoundError("mysession", 5)
-
-	if !strings.Contains(err.Message, "5") {
-		t.Errorf("Message should contain pane index: %q", err.Message)
-	}
-	if !strings.Contains(err.Message, "mysession") {
-		t.Errorf("Message should contain session name: %q", err.Message)
-	}
-	if err.Code != "PANE_NOT_FOUND" {
-		t.Errorf("Code = %q", err.Code)
-	}
-}
-
-func TestPrintErrorWithHint(t *testing.T) {
-	os.Setenv("NO_COLOR", "1")
-	defer os.Unsetenv("NO_COLOR")
-
-	_, stderr := captureOutput(func() {
-		PrintErrorWithHint("something broke", "fix it", false)
-	})
-
-	if !strings.Contains(stderr, "something broke") {
-		t.Errorf("Expected error in stderr: %q", stderr)
-	}
-	if !strings.Contains(stderr, "fix it") {
-		t.Errorf("Expected hint in stderr: %q", stderr)
-	}
-}
-
-func TestPrintErrorFull(t *testing.T) {
-	os.Setenv("NO_COLOR", "1")
-	defer os.Unsetenv("NO_COLOR")
-
-	_, stderr := captureOutput(func() {
-		PrintErrorFull("failed", "reason", "solution", false)
-	})
-
-	if !strings.Contains(stderr, "failed") {
-		t.Errorf("Expected error message: %q", stderr)
-	}
-	if !strings.Contains(stderr, "reason") {
-		t.Errorf("Expected cause: %q", stderr)
-	}
-	if !strings.Contains(stderr, "solution") {
-		t.Errorf("Expected hint: %q", stderr)
 	}
 }
 

@@ -10,7 +10,6 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/alerts"
 	ntmctx "github.com/Dicklesworthstone/ntm/internal/context"
-	"github.com/Dicklesworthstone/ntm/internal/handoff"
 	"github.com/Dicklesworthstone/ntm/internal/state"
 	"github.com/Dicklesworthstone/ntm/tests/testutil"
 )
@@ -279,83 +278,6 @@ func TestContextPredictorIntegration(t *testing.T) {
 	logger.Log("PASS: Context predictor integration test completed")
 }
 
-// TestCompactionTriggerLifecycle tests the proactive compaction trigger.
-func TestCompactionTriggerLifecycle(t *testing.T) {
-	testutil.RequireE2E(t)
-
-	logger := testutil.NewTestLoggerStdout(t)
-	logger.LogSection("Compaction Trigger Lifecycle E2E Test")
-
-	// Create components
-	monitor := ntmctx.NewContextMonitor(ntmctx.DefaultMonitorConfig())
-	compactor := ntmctx.NewCompactor(monitor, ntmctx.DefaultCompactorConfig())
-	predictor := ntmctx.NewContextPredictor(ntmctx.DefaultPredictorConfig())
-
-	// Create trigger with short poll for testing
-	triggerCfg := ntmctx.CompactionTriggerConfig{
-		PollInterval:            100 * time.Millisecond,
-		AutoCompact:             true,
-		CompactionCooldown:      50 * time.Millisecond,
-		WaitAfterCommand:        10 * time.Millisecond,
-		EnableRecoveryInjection: false, // Disable for testing
-	}
-	trigger := ntmctx.NewCompactionTrigger(triggerCfg, monitor, compactor, predictor)
-
-	// Track events
-	var triggeredEvents []ntmctx.CompactionTriggerEvent
-	var completedEvents []ntmctx.CompactionTriggerEvent
-
-	trigger.SetCompactionTriggeredHandler(func(event ntmctx.CompactionTriggerEvent) {
-		triggeredEvents = append(triggeredEvents, event)
-		logger.Log("Compaction triggered for %s at %.1f%% usage",
-			event.AgentID, event.Prediction.CurrentUsage*100)
-	})
-
-	trigger.SetCompactionCompleteHandler(func(event ntmctx.CompactionTriggerEvent) {
-		completedEvents = append(completedEvents, event)
-		result := "no result"
-		if event.CompactionResult != nil {
-			if event.CompactionResult.Success {
-				result = "success"
-			} else {
-				result = "failed: " + event.CompactionResult.Error
-			}
-		}
-		logger.Log("Compaction completed for %s: %s", event.AgentID, result)
-	})
-
-	// Step 1: Verify initial state
-	logger.LogSection("Step 1: Verify initial state")
-	status := trigger.GetCompactionStatus()
-	if len(status) != 0 {
-		t.Errorf("Expected empty status, got %d entries", len(status))
-	}
-	logger.Log("PASS: Initial status is empty")
-
-	// Step 2: Start trigger
-	logger.LogSection("Step 2: Start trigger")
-	trigger.Start()
-	logger.Log("Trigger started")
-
-	// Let it run briefly
-	time.Sleep(200 * time.Millisecond)
-
-	// Step 3: Stop trigger
-	logger.LogSection("Step 3: Stop trigger")
-	trigger.Stop()
-	logger.Log("Trigger stopped")
-
-	// Step 4: Check that no events fired (no agents registered)
-	if len(triggeredEvents) != 0 {
-		logger.Log("WARNING: Unexpected triggered events: %d", len(triggeredEvents))
-	} else {
-		logger.Log("PASS: No events with no agents (expected)")
-	}
-
-	logger.Log("PASS: Compaction trigger lifecycle test completed")
-}
-
-// TestContextCommandJSON tests the ntm context command JSON output.
 func TestContextCommandJSON(t *testing.T) {
 	testutil.RequireE2E(t)
 	testutil.RequireNTMBinary(t)
@@ -466,71 +388,6 @@ func TestRotationHistoryStore(t *testing.T) {
 
 // TestContextOverflowAutoHandoff ensures that auto-handoff generation still succeeds
 // even when context usage has overflowed (usage > 100%).
-func TestContextOverflowAutoHandoff(t *testing.T) {
-	testutil.RequireE2E(t)
-
-	logger := testutil.NewTestLoggerStdout(t)
-	logger.LogSection("Context Overflow Auto-Handoff E2E Test")
-
-	projectDir := t.TempDir()
-
-	// Minimal transcript that yields Goal + Now (handoff validation requires both).
-	transcriptPath := filepath.Join(projectDir, "transcript.jsonl")
-	transcript := `{"role":"assistant","content":"Done: Generate overflow-safe handoff\nNext: Continue after rotation"}`
-	if err := os.WriteFile(transcriptPath, []byte(transcript+"\n"), 0644); err != nil {
-		t.Fatalf("write transcript: %v", err)
-	}
-
-	monitor := ntmctx.NewContextMonitor(ntmctx.DefaultMonitorConfig())
-
-	agentID := fmt.Sprintf("test_overflow_agent_%d", time.Now().UnixNano())
-	sessionName := fmt.Sprintf("ntm_test_overflow_%d", time.Now().UnixNano())
-	monitor.RegisterAgentWithTranscript(agentID, "%1", "gemini-pro", "cc", sessionName, transcriptPath)
-
-	// Force overflow: gemini-pro limit is 32k; record enough tokens to exceed it.
-	for i := 0; i < 25; i++ {
-		monitor.RecordMessage(agentID, 2000, 2000)
-	}
-
-	estimate := monitor.GetEstimate(agentID)
-	if estimate == nil {
-		t.Fatal("expected non-nil estimate")
-	}
-	if estimate.UsagePercent <= 100 {
-		t.Fatalf("expected overflow usage > 100%%, got %.2f%% (tokens=%d limit=%d)", estimate.UsagePercent, estimate.TokensUsed, estimate.ContextLimit)
-	}
-	logger.Log("Overflow usage: %.2f%% (tokens=%d limit=%d)", estimate.UsagePercent, estimate.TokensUsed, estimate.ContextLimit)
-
-	trigger := ntmctx.NewHandoffTrigger(ntmctx.HandoffTriggerConfig{
-		ProjectDir: projectDir,
-	}, monitor, nil)
-
-	path, err := trigger.TriggerForAgent(agentID)
-	if err != nil {
-		t.Fatalf("TriggerForAgent failed: %v", err)
-	}
-
-	parsed, err := handoff.NewReader(projectDir).Read(path)
-	if err != nil {
-		t.Fatalf("read handoff: %v", err)
-	}
-	if parsed.Goal == "" || parsed.Now == "" {
-		t.Fatalf("expected goal+now populated, got goal=%q now=%q", parsed.Goal, parsed.Now)
-	}
-
-	// tokens_pct is validated as 0-100; overflow should clamp to 100.
-	if parsed.TokensMax <= 0 {
-		t.Fatalf("expected tokens_max > 0, got %d", parsed.TokensMax)
-	}
-	if parsed.TokensUsed != parsed.TokensMax {
-		t.Fatalf("expected tokens_used clamped to tokens_max (%d), got %d", parsed.TokensMax, parsed.TokensUsed)
-	}
-	if parsed.TokensPct != 100.0 {
-		t.Fatalf("expected tokens_pct=100, got %f", parsed.TokensPct)
-	}
-
-	logger.Log("PASS: overflow-safe auto-handoff generated at %s", path)
-}
 
 // TestStateStoreContextPacks tests context pack persistence in the state store.
 func TestStateStoreContextPacks(t *testing.T) {

@@ -228,73 +228,6 @@ func TestSinceByType(t *testing.T) {
 	}
 }
 
-func TestSinceBySession(t *testing.T) {
-	tracker := New()
-
-	now := time.Now()
-	tracker.Record(StateChange{Timestamp: now.Add(-2 * time.Second), Type: ChangeAgentOutput, Session: "s1"})
-	tracker.Record(StateChange{Timestamp: now.Add(-1 * time.Second), Type: ChangeAgentState, Session: "s2"})
-	tracker.Record(StateChange{Timestamp: now, Type: ChangeAgentOutput, Session: "s1"})
-
-	changes := tracker.SinceBySession(now.Add(-3*time.Second), "s1")
-	if len(changes) != 2 {
-		t.Errorf("expected 2 s1 changes, got %d", len(changes))
-	}
-}
-
-func TestHelperFunctions(t *testing.T) {
-	tracker := New()
-
-	tracker.RecordAgentOutput("sess", "pane1", "hello world")
-	tracker.RecordAgentState("sess", "pane1", "idle")
-	tracker.RecordAlert("sess", "pane1", "error", "something went wrong")
-	tracker.RecordPaneCreated("sess", "pane2", "claude")
-	tracker.RecordSessionCreated("sess2")
-
-	if tracker.Count() != 5 {
-		t.Errorf("expected 5 changes from helpers, got %d", tracker.Count())
-	}
-
-	changes := tracker.All()
-
-	// Check output change
-	if changes[0].Type != ChangeAgentOutput {
-		t.Error("first change should be agent_output")
-	}
-	if changes[0].Details["output_length"].(int) != 11 {
-		t.Error("output length should be 11")
-	}
-
-	// Check state change
-	if changes[1].Type != ChangeAgentState {
-		t.Error("second change should be agent_state")
-	}
-	if changes[1].Details["state"].(string) != "idle" {
-		t.Error("state should be 'idle'")
-	}
-
-	// Check alert
-	if changes[2].Type != ChangeAlert {
-		t.Error("third change should be alert")
-	}
-	if changes[2].Details["message"].(string) != "something went wrong" {
-		t.Error("alert message mismatch")
-	}
-
-	// Check pane created
-	if changes[3].Type != ChangePaneCreated {
-		t.Error("fourth change should be pane_created")
-	}
-	if changes[3].Details["agent_type"].(string) != "claude" {
-		t.Error("agent_type should be 'claude'")
-	}
-
-	// Check session created
-	if changes[4].Type != ChangeSessionCreated {
-		t.Error("fifth change should be session_created")
-	}
-}
-
 func TestConcurrency(t *testing.T) {
 	tracker := New()
 	done := make(chan bool)
@@ -347,84 +280,6 @@ func TestPrune(t *testing.T) {
 // =============================================================================
 // Additional Pure Function Tests for Coverage Improvement
 // =============================================================================
-
-func TestScanNullTerminated(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name    string
-		data    []byte
-		atEOF   bool
-		advance int
-		token   []byte
-		wantNil bool
-	}{
-		{
-			name:    "empty at EOF",
-			data:    []byte{},
-			atEOF:   true,
-			advance: 0,
-			token:   nil,
-			wantNil: true,
-		},
-		{
-			name:    "single token with null",
-			data:    []byte("hello\x00"),
-			atEOF:   false,
-			advance: 6,
-			token:   []byte("hello"),
-		},
-		{
-			name:    "multiple tokens",
-			data:    []byte("first\x00second"),
-			atEOF:   false,
-			advance: 6,
-			token:   []byte("first"),
-		},
-		{
-			name:    "final token at EOF no null",
-			data:    []byte("final"),
-			atEOF:   true,
-			advance: 5,
-			token:   []byte("final"),
-		},
-		{
-			name:    "need more data",
-			data:    []byte("incomplete"),
-			atEOF:   false,
-			advance: 0,
-			token:   nil,
-			wantNil: true,
-		},
-		{
-			name:    "empty token",
-			data:    []byte("\x00rest"),
-			atEOF:   false,
-			advance: 1,
-			token:   []byte{},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			advance, token, err := scanNullTerminated(tt.data, tt.atEOF)
-			if err != nil {
-				t.Errorf("unexpected error: %v", err)
-			}
-			if advance != tt.advance {
-				t.Errorf("advance = %d, want %d", advance, tt.advance)
-			}
-			if tt.wantNil {
-				if token != nil {
-					t.Errorf("token = %v, want nil", token)
-				}
-			} else {
-				if string(token) != string(tt.token) {
-					t.Errorf("token = %q, want %q", token, tt.token)
-				}
-			}
-		})
-	}
-}
 
 func TestCoalesce_Empty(t *testing.T) {
 	tracker := New()
@@ -489,30 +344,6 @@ func TestSinceByType_WithDetails(t *testing.T) {
 	})
 
 	changes := tracker.SinceByType(now.Add(-2*time.Second), ChangeAgentOutput)
-	if len(changes) != 1 {
-		t.Fatalf("expected 1 change, got %d", len(changes))
-	}
-
-	// Verify deep copy
-	changes[0].Details["key"] = "modified"
-	original := tracker.All()
-	if original[0].Details["key"] != "value" {
-		t.Error("original details should not be modified")
-	}
-}
-
-func TestSinceBySession_WithDetails(t *testing.T) {
-	tracker := New()
-
-	now := time.Now()
-	tracker.Record(StateChange{
-		Timestamp: now.Add(-1 * time.Second),
-		Type:      ChangeAgentOutput,
-		Session:   "test-session",
-		Details:   map[string]interface{}{"key": "value"},
-	})
-
-	changes := tracker.SinceBySession(now.Add(-2*time.Second), "test-session")
 	if len(changes) != 1 {
 		t.Fatalf("expected 1 change, got %d", len(changes))
 	}

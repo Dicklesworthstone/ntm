@@ -421,19 +421,19 @@ Normative rules:
 
 ### CLI
 
-<!-- ntm-docs: skip -->
 ```bash
-# As-of inspection
-ntm inspect --robot --as-of "2026-03-22T03:50:00Z" --section quota,alerts
+# As-of reconstruction (bounded historical event view)
+ntm --robot-events --events-as-of="2026-03-22T03:50:00Z"
 
-# Incident replay
-ntm inspect --robot --incident inc-20260322-abc --replay
+# Incident drill-down
+ntm --robot-inspect-incident=inc-20260322-abc
 
-# Range query
-ntm inspect --robot --from "2026-03-22T03:45:00Z" --to "2026-03-22T04:00:00Z"
+# Incident replay with context windows
+ntm --robot-events --events-incident=inc-20260322-abc \
+    --events-window-before=5m --events-window-after=1m
 
-# Post-mortem export
-ntm export --robot --incident inc-20260322-abc --format markdown
+# Post-mortem export of the audit trail
+ntm audit export myproject --format=json
 ```
 
 ### REST

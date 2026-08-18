@@ -540,8 +540,8 @@ func (c *Collector) querySnapshot(name string) (string, error) {
 // getDB returns the underlying database connection.
 // This is a workaround until state.Store exposes metrics methods.
 func (c *Collector) getDB() *sql.DB {
-	// Use reflection or interface assertion if needed
-	// For now, we'll use type assertion assuming Store exposes DB() // placebo-waiver: bd-d7z7i
+	// Interface assertion: returns the connection when Store exposes DB(),
+	// nil otherwise (callers treat nil as "metrics storage unavailable").
 	type dbGetter interface {
 		DB() *sql.DB
 	}

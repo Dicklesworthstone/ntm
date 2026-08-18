@@ -308,8 +308,8 @@ func (m *EnsembleManager) RunStage3(ctx context.Context, cfg *EnsembleConfig, ou
 		"strategy", cfg.Synthesis.Strategy,
 	)
 
-	// For now, create a basic mechanical synthesis // placebo-waiver: bd-d7z7i
-	// Full synthesis with synthesizer agent is in task bd-2qwm8
+	// For now, create a basic mechanical synthesis // placebo-waiver: bd-lzu08
+	// Full synthesis with a synthesizer agent is tracked in bd-lzu08
 	report, err := m.mechanicalSynthesis(outputs, cfg.Synthesis)
 	if err != nil {
 		return nil, fmt.Errorf("mechanical synthesis: %w", err)

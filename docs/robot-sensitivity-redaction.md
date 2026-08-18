@@ -402,13 +402,12 @@ All transports apply same disclosure rules:
 
 ### CLI
 
-<!-- ntm-docs: skip -->
 ```bash
-# Robot output includes disclosure metadata
-ntm snapshot --robot 2>/dev/null | jq '.panes[0].disclosure'
+# Robot output includes disclosure metadata alongside normalized fields
+ntm --robot-mail-check 2>/dev/null | jq '.messages[0].subject_disclosure'
 {
-  "state": "preview_only",
-  "preview_length": 500
+  "disclosure_state": "preview_only",
+  "preview": "Deploy plan for ..."
 }
 ```
 

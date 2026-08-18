@@ -578,8 +578,9 @@ func executeReauthRotation(session string, paneIdx int, paneID, provider string,
 	// Step 1: Send login command
 	fmt.Printf("Step 1/3: Sending %s command...\n", prov.LoginCommand())
 
-	// Only Claude has specialized auth flow implementation for now // placebo-waiver: bd-d7z7i
-	// For others, we might need generic flow or specific implementations
+	// Claude is the only provider with a specialized re-auth flow; other
+	// providers get an explicit pending error below and are covered by the
+	// restart strategy instead.
 	if prov.Name() != "Claude" {
 		return fmt.Errorf("re-auth flow implementation pending for %s", prov.Name())
 	}
@@ -643,9 +644,9 @@ func executeReauthRotation(session string, paneIdx int, paneID, provider string,
 	return nil
 }
 
-// openAccountsPage opens the Google accounts page in the default browser
+// openAccountsPage prints the Google accounts URL as a tip. Deliberately does
+// not auto-open a browser: rotation often runs over SSH or inside tmux where
+// stealing focus (or having no display) would be worse than a printed link.
 func openAccountsPage() {
-	// Use 'open' on macOS, 'xdg-open' on Linux
-	// For now, just print the URL // placebo-waiver: bd-d7z7i
 	fmt.Println("  Tip: Visit https://accounts.google.com to switch accounts")
 }

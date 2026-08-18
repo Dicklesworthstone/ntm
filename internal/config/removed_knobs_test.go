@@ -1,15 +1,16 @@
 package config
 
-// WS6-remove proof (bd-ws6-config-truth-ienmd.2): a config containing each
-// removed knob still LOADS, emits a loud per-key WARNING with the exact
-// disposition text, is surfaced by ScanRemovedKnobs (the `ntm doctor`
-// surface), and the value is provably ignored (behavior identical to a
-// config without the key). These same fixtures flip to hard-error assertions
-// in v1.27.0 (bd-ws6-config-truth-ienmd.3).
+// WS6-remove-finalize proof (bd-ws6-config-truth-ienmd.3): a config
+// containing any removed knob FAILS the strict loader with a hard error
+// naming the key + disposition (the exact v1.26.0 warning text, severity
+// flipped), every removed key present is listed in the one load error, the
+// keys stay visible to `ntm doctor` via ScanRemovedKnobs (which reads the
+// file leniently), and a clean config loads silently. Same fixtures as the
+// v1.26.0 warn-mode proof (bd-ws6-config-truth-ienmd.2) — only the
+// assertions changed severity.
 
 import (
 	"bytes"
-	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -17,7 +18,8 @@ import (
 )
 
 // removedKnobFixtures covers every removed knob family: TOML that sets the
-// key, the dotted key the warning must name, and its full disposition text.
+// key, the dotted key the load error must name, and its full disposition
+// text.
 var removedKnobFixtures = []struct {
 	name        string
 	toml        string
@@ -77,52 +79,38 @@ func loadCapturingStderr(t *testing.T, path string) (*Config, string, error) {
 	return cfg, buf.String(), loadErr
 }
 
-func printedConfig(t *testing.T, cfg *Config) string {
-	t.Helper()
-	var buf bytes.Buffer
-	if err := Print(cfg, &buf); err != nil {
-		t.Fatalf("Print: %v", err)
-	}
-	return buf.String()
-}
-
-// TestRemovedKnobsWarnAndLoad is the per-key proof: config still loads, the
-// warning names the key + disposition with the exact contract text, and the
-// loaded config is byte-identical (via Print) to one loaded without the key —
-// the value is ignored.
-func TestRemovedKnobsWarnAndLoad(t *testing.T) {
+// TestRemovedKnobsErrorAtLoad is the per-key proof (v1.27.0 flip): a config
+// containing a removed key FAILS to load, the error names the key +
+// disposition with the exact contract text, and the key stays visible to the
+// doctor surface via ScanRemovedKnobs.
+func TestRemovedKnobsErrorAtLoad(t *testing.T) {
 	base := "projects_base = \"/tmp/removed-knob-proof\"\n"
-	baselinePath := createTempConfig(t, base)
-	baseline, err := Load(baselinePath)
-	if err != nil {
-		t.Fatalf("baseline load: %v", err)
-	}
-	baselinePrinted := printedConfig(t, baseline)
 
 	for _, tt := range removedKnobFixtures {
 		t.Run(tt.name, func(t *testing.T) {
 			path := createTempConfig(t, base+tt.toml)
 			cfg, stderr, err := loadCapturingStderr(t, path)
-			if err != nil {
-				t.Fatalf("Load must succeed in v1.26.0 with removed key %s, got error: %v", tt.key, err)
+			if err == nil {
+				t.Fatalf("Load must FAIL since v1.27.0 with removed key %s, but it succeeded", tt.key)
+			}
+			if cfg != nil {
+				t.Fatalf("Load returned a non-nil config alongside the removed-key error for %s", tt.key)
 			}
 
-			want := fmt.Sprintf(
-				"ntm: warning: config key %s was %s; the key is ignored in v1.26.0 and becomes a config error in v1.27.0 — delete it from your config file\n",
-				tt.key, tt.disposition)
-			if !strings.Contains(stderr, want) {
-				t.Fatalf("warning text mismatch for %s.\nwant line: %q\ngot stderr: %q", tt.key, want, stderr)
+			want := removedKnobErrorLine(RemovedKnob{Key: tt.key, Disposition: tt.disposition})
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("error text mismatch for %s.\nwant line: %q\ngot error: %q", tt.key, want, err.Error())
+			}
+			// No leftover warning path: severity flipped, not duplicated.
+			if strings.Contains(stderr, "ntm: warning: config key") {
+				t.Errorf("removed key %s must not also emit the old deprecation warning; stderr: %q", tt.key, stderr)
 			}
 
-			// Value provably ignored: identical effective config.
-			if got := printedConfig(t, cfg); got != baselinePrinted {
-				t.Errorf("removed key %s changed the effective config; it must be ignored", tt.key)
-			}
-
-			// Doctor surface: same key + disposition via ScanRemovedKnobs.
-			knobs, err := ScanRemovedKnobs(path)
-			if err != nil {
-				t.Fatalf("ScanRemovedKnobs: %v", err)
+			// Doctor surface: same key + disposition via ScanRemovedKnobs,
+			// which must keep working on configs the strict loader refuses.
+			knobs, scanErr := ScanRemovedKnobs(path)
+			if scanErr != nil {
+				t.Fatalf("ScanRemovedKnobs: %v", scanErr)
 			}
 			found := false
 			for _, k := range knobs {
@@ -140,8 +128,25 @@ func TestRemovedKnobsWarnAndLoad(t *testing.T) {
 	}
 }
 
+// TestCleanConfigLoadsSilently: a config with no removed keys loads without
+// error and without any removed-key (or other) warning on stderr.
+func TestCleanConfigLoadsSilently(t *testing.T) {
+	path := createTempConfig(t, "projects_base = \"/tmp/removed-knob-proof\"\n")
+	cfg, stderr, err := loadCapturingStderr(t, path)
+	if err != nil {
+		t.Fatalf("clean config must load, got: %v", err)
+	}
+	if cfg == nil {
+		t.Fatal("clean config load returned nil config")
+	}
+	if strings.Contains(stderr, "ntm: warning") || strings.Contains(stderr, "config key") {
+		t.Fatalf("clean config must load silently, got stderr: %q", stderr)
+	}
+}
+
 // TestRemovedKnobsAllAtOnce loads a config setting every removed knob family
-// simultaneously: one warning per key, load still succeeds.
+// simultaneously: the load fails with ONE error listing every removed key
+// (not first-only).
 func TestRemovedKnobsAllAtOnce(t *testing.T) {
 	var sb strings.Builder
 	sb.WriteString("projects_base = \"/tmp/removed-knob-proof\"\n")
@@ -164,13 +169,13 @@ func TestRemovedKnobsAllAtOnce(t *testing.T) {
 	}
 
 	path := createTempConfig(t, sb.String())
-	_, stderr, err := loadCapturingStderr(t, path)
-	if err != nil {
-		t.Fatalf("Load must succeed with all removed keys present, got: %v", err)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load must fail with all removed keys present")
 	}
 	for _, tt := range removedKnobFixtures {
-		if !strings.Contains(stderr, "config key "+tt.key+" was ") {
-			t.Errorf("missing warning for %s in combined load", tt.key)
+		if !strings.Contains(err.Error(), "config key "+tt.key+" was ") {
+			t.Errorf("combined load error must list %s; got: %v", tt.key, err)
 		}
 	}
 }
@@ -184,15 +189,17 @@ func TestUnknownFieldStillErrors(t *testing.T) {
 		t.Fatalf("expected unknown-field error, got %v", err)
 	}
 
-	// A removed knob alongside an unknown key: still a hard error naming only
-	// the unknown key.
+	// A removed knob alongside an unknown key: one hard error naming BOTH —
+	// the unknown field as unknown, the removed knob with its disposition —
+	// so a single failed load lists everything to fix.
 	path = createTempConfig(t, "[tmux]\npalette_key = \"F5\"\n\n[bogus_section]\nx = 1\n")
 	_, err = Load(path)
 	if err == nil || !strings.Contains(err.Error(), "bogus_section") {
 		t.Fatalf("expected unknown-field error naming bogus_section, got %v", err)
 	}
-	if err != nil && strings.Contains(err.Error(), "palette_key") {
-		t.Fatalf("removed knob must not appear in the unknown-field error: %v", err)
+	wantRemoved := removedKnobErrorLine(RemovedKnob{Key: "tmux.palette_key", Disposition: noEffect})
+	if !strings.Contains(err.Error(), wantRemoved) {
+		t.Fatalf("error must also list the removed knob with its disposition.\nwant line: %q\ngot: %v", wantRemoved, err)
 	}
 }
 

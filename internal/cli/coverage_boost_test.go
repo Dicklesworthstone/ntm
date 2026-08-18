@@ -85,46 +85,6 @@ func TestPadRight_ZeroWidth(t *testing.T) {
 // Styled text helpers (SectionHeader, SectionDivider, etc.)
 // =============================================================================
 
-func TestSectionHeader_ContainsTitle(t *testing.T) {
-	got := SectionHeader("Status")
-	plain := stripANSI(got)
-	if !strings.Contains(plain, "Status") {
-		t.Errorf("SectionHeader(\"Status\") stripped = %q, want to contain \"Status\"", plain)
-	}
-}
-
-func TestSectionDivider_CorrectLength(t *testing.T) {
-	got := SectionDivider(20)
-	plain := stripANSI(got)
-	// Each "─" is 3 bytes in UTF-8 but 1 rune
-	runes := []rune(plain)
-	if len(runes) != 20 {
-		t.Errorf("SectionDivider(20) rune count = %d, want 20", len(runes))
-	}
-}
-
-func TestKeyValue_Format(t *testing.T) {
-	got := KeyValue("Name", "NTM", 10)
-	plain := stripANSI(got)
-	if !strings.Contains(plain, "Name:") {
-		t.Errorf("KeyValue() stripped = %q, should contain 'Name:'", plain)
-	}
-	if !strings.Contains(plain, "NTM") {
-		t.Errorf("KeyValue() stripped = %q, should contain 'NTM'", plain)
-	}
-}
-
-func TestSuccessMessage_ContainsIcon(t *testing.T) {
-	got := SuccessMessage("done")
-	plain := stripANSI(got)
-	if !strings.Contains(plain, "✓") {
-		t.Errorf("SuccessMessage() = %q, should contain ✓", plain)
-	}
-	if !strings.Contains(plain, "done") {
-		t.Errorf("SuccessMessage() = %q, should contain 'done'", plain)
-	}
-}
-
 func TestErrorMessage_ContainsIcon(t *testing.T) {
 	got := ErrorMessage("failed")
 	plain := stripANSI(got)
@@ -133,43 +93,11 @@ func TestErrorMessage_ContainsIcon(t *testing.T) {
 	}
 }
 
-func TestWarningMessage_ContainsIcon(t *testing.T) {
-	got := WarningMessage("caution")
-	plain := stripANSI(got)
-	if !strings.Contains(plain, "⚠") {
-		t.Errorf("WarningMessage() = %q, should contain ⚠", plain)
-	}
-}
-
 func TestInfoMessage_ContainsIcon(t *testing.T) {
 	got := InfoMessage("note")
 	plain := stripANSI(got)
 	if !strings.Contains(plain, "ℹ") {
 		t.Errorf("InfoMessage() = %q, should contain ℹ", plain)
-	}
-}
-
-func TestSubtleText_NonEmpty(t *testing.T) {
-	got := SubtleText("muted")
-	plain := stripANSI(got)
-	if plain != "muted" {
-		t.Errorf("SubtleText() stripped = %q, want \"muted\"", plain)
-	}
-}
-
-func TestBoldText_NonEmpty(t *testing.T) {
-	got := BoldText("important")
-	plain := stripANSI(got)
-	if plain != "important" {
-		t.Errorf("BoldText() stripped = %q, want \"important\"", plain)
-	}
-}
-
-func TestAccentText_NonEmpty(t *testing.T) {
-	got := AccentText("highlighted")
-	plain := stripANSI(got)
-	if plain != "highlighted" {
-		t.Errorf("AccentText() stripped = %q, want \"highlighted\"", plain)
 	}
 }
 

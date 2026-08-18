@@ -847,12 +847,6 @@ func encodeClaudeProjectDir(workDir string) string {
 	return claudeNonAlnumPattern.ReplaceAllString(cleaned, "-")
 }
 
-// discoverClaude locates the newest *.jsonl under
-// ~/.claude/projects/<encoded-cwd>/ and treats the filename stem as the id.
-func discoverClaude(home, workDir string) *Info {
-	return discoverClaudeContext(context.Background(), home, workDir)
-}
-
 func discoverClaudeContext(ctx context.Context, home, workDir string) *Info {
 	if ctx.Err() != nil {
 		return nil
@@ -873,13 +867,6 @@ func discoverClaudeContext(ctx context.Context, home, workDir string) *Info {
 		SourcePath: path,
 		UpdatedAt:  mod,
 	}
-}
-
-// discoverCodex is the native fallback when CASR is unavailable. It parses the
-// structured session_meta record instead of matching an arbitrary cwd
-// substring in the rollout body.
-func discoverCodex(home, workDir string, claimed map[string]bool) *Info {
-	return discoverCodexContext(context.Background(), home, workDir, claimed)
 }
 
 func discoverCodexContext(ctx context.Context, home, workDir string, claimed map[string]bool) *Info {
@@ -904,13 +891,6 @@ func discoverCodexContext(ctx context.Context, home, workDir string, claimed map
 	}
 }
 
-// discoverGemini is the native fallback when CASR is unavailable. It resolves
-// both the current projects.json workspace slug and the legacy SHA256 directory
-// instead of scanning chat bodies for a cwd substring.
-func discoverGemini(home, workDir string, processStartedAt int64, claimed map[string]bool) *Info {
-	return discoverGeminiContext(context.Background(), home, workDir, processStartedAt, claimed)
-}
-
 func discoverGeminiContext(ctx context.Context, home, workDir string, processStartedAt int64, claimed map[string]bool) *Info {
 	if ctx.Err() != nil {
 		return nil
@@ -933,21 +913,6 @@ func discoverGeminiContext(ctx context.Context, home, workDir string, processSta
 	}
 }
 
-// discoverAntigravity locates the newest agy conversation database under
-// ~/.gemini/antigravity-cli/conversations/<uuid>.db whose embedded cwd matches
-// workDir. agy stores one stock-SQLite database per conversation and records
-// the working directory inside it; the <uuid> filename stem is exactly the id
-// accepted by `agy --conversation <uuid>`.
-//
-// This path is kept strictly disjoint from discoverGemini: gmi lives in
-// ~/.gemini/tmp/<project>/chats/session-*.{json,jsonl}, agy lives in
-// ~/.gemini/antigravity-cli/conversations/<uuid>.db. The two scans never look in
-// each other's directory, so a gmi session is never reported as agy and vice
-// versa even though both hang off the shared ~/.gemini parent.
-func discoverAntigravity(home, workDir string) *Info {
-	return discoverAntigravityContext(context.Background(), home, workDir)
-}
-
 func discoverAntigravityContext(ctx context.Context, home, workDir string) *Info {
 	if ctx.Err() != nil {
 		return nil
@@ -968,12 +933,6 @@ func discoverAntigravityContext(ctx context.Context, home, workDir string) *Info
 		SourcePath: path,
 		UpdatedAt:  mod,
 	}
-}
-
-// newestFileWithExt returns the path and modtime of the most-recently-modified
-// file with the given extension directly inside dir.
-func newestFileWithExt(dir, ext string) (string, time.Time) {
-	return newestFileWithExtContext(context.Background(), dir, ext)
 }
 
 func newestFileWithExtContext(ctx context.Context, dir, ext string) (string, time.Time) {
@@ -1003,12 +962,6 @@ func newestFileWithExtContext(ctx context.Context, dir, ext string) (string, tim
 		}
 	}
 	return bestPath, bestMod
-}
-
-// newestCodexRolloutForCwd walks the date-sharded codex session tree and
-// returns the newest rollout whose session_meta workspace belongs to workDir.
-func newestCodexRolloutForCwd(root, workDir string, claimed map[string]bool) (string, time.Time) {
-	return newestCodexRolloutForCwdContext(context.Background(), root, workDir, claimed)
 }
 
 func newestCodexRolloutForCwdContext(ctx context.Context, root, workDir string, claimed map[string]bool) (string, time.Time) {
@@ -1074,14 +1027,6 @@ func readCodexSessionMeta(path string) (codexSessionMeta, bool) {
 		return codexSessionMeta{}, false
 	}
 	return meta, true
-}
-
-func codexSessionWorkspace(path string) string {
-	meta, ok := readCodexSessionMeta(path)
-	if !ok {
-		return ""
-	}
-	return codexMetaWorkspace(meta)
 }
 
 func codexMetaWorkspace(meta codexSessionMeta) string {
@@ -1169,10 +1114,6 @@ func geminiSessionStartedAtMillis(path string) int64 {
 	return startedAt.UnixMilli()
 }
 
-func geminiWorkspaceChatDirs(root, workDir string) []string {
-	return geminiWorkspaceChatDirsContext(context.Background(), root, workDir)
-}
-
 func geminiWorkspaceChatDirsContext(ctx context.Context, root, workDir string) []string {
 	if ctx.Err() != nil {
 		return nil
@@ -1201,14 +1142,6 @@ func geminiWorkspaceChatDirsContext(ctx context.Context, root, workDir string) [
 		dirs = append(dirs, legacy)
 	}
 	return dirs
-}
-
-// newestGeminiSessionForCwd resolves the current projects.json workspace slug
-// and the legacy SHA256 directory. When a provider-process start time is known,
-// it correlates the pane to the closest newly-started chat instead of assigning
-// every same-workspace pane the globally newest session.
-func newestGeminiSessionForCwd(root, workDir string, processStartedAt int64, claimed map[string]bool) (string, time.Time) {
-	return newestGeminiSessionForCwdContext(context.Background(), root, workDir, processStartedAt, claimed)
 }
 
 func newestGeminiSessionForCwdContext(ctx context.Context, root, workDir string, processStartedAt int64, claimed map[string]bool) (string, time.Time) {
@@ -1263,17 +1196,6 @@ func newestGeminiSessionForCwdContext(ctx context.Context, root, workDir string,
 	return bestPath, bestMod
 }
 
-// newestAntigravityConversationForCwd returns the newest *.db directly inside
-// ~/.gemini/antigravity-cli/conversations whose contents reference workDir. agy
-// conversation databases are stock SQLite files that embed the working directory
-// as plain text; we match on that substring as a cheap cwd-affinity check
-// rather than opening the SQLite file. The
-// embedded cwd can appear well past the first few KB, so the whole (small) file
-// is scanned instead of a capped prefix.
-func newestAntigravityConversationForCwd(root, workDir string) (string, time.Time) {
-	return newestAntigravityConversationForCwdContext(context.Background(), root, workDir)
-}
-
 func newestAntigravityConversationForCwdContext(ctx context.Context, root, workDir string) (string, time.Time) {
 	if ctx.Err() != nil {
 		return "", time.Time{}
@@ -1306,14 +1228,6 @@ func newestAntigravityConversationForCwdContext(ctx context.Context, root, workD
 		bestMod = info.ModTime()
 	}
 	return bestPath, bestMod
-}
-
-// fileContainsCwd reports whether the entire file contains the workDir string.
-// Used for agy conversation databases, where the embedded cwd may live past any
-// reasonable fixed prefix limit. agy conversation DBs are small (sub-MB), so
-// reading the whole file is cheap and avoids missing a deep match.
-func fileContainsCwd(path, workDir string) bool {
-	return fileContainsCwdContext(context.Background(), path, workDir)
 }
 
 func fileContainsCwdContext(ctx context.Context, path, workDir string) bool {

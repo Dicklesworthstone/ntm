@@ -2753,14 +2753,19 @@ func loadWithCWD(path, cwd string) (*Config, error) {
 			return nil, fmt.Errorf("parsing config: %w", err)
 		}
 		if fields := undecodedConfigFields(md); len(fields) > 0 {
-			// WS6-remove (bd-ws6-config-truth-ienmd.2): keys removed in
-			// v1.26.0 warn loudly and are ignored (hard errors in v1.27.0);
-			// anything else unknown is still a hard error.
+			// WS6-remove-finalize (bd-ws6-config-truth-ienmd.3): keys removed
+			// in v1.26.0 warned for one release; since v1.27.0 each is a hard
+			// strict-loader error with the same key + disposition text.
+			// Genuinely unknown fields remain a hard error as before. Both
+			// kinds are reported together in one error so a single failed
+			// load lists everything the user must fix.
 			removed, unknown := classifyUndecodedKeys(fields)
+			var msgs []string
 			if len(unknown) > 0 {
-				return nil, fmt.Errorf("parsing config: unknown field(s): %s", strings.Join(unknown, ", "))
+				msgs = append(msgs, "unknown field(s): "+strings.Join(unknown, ", "))
 			}
-			warnRemovedKnobs(removed, os.Stderr)
+			msgs = append(msgs, removedKnobErrorLines(removed)...)
+			return nil, fmt.Errorf("parsing config: %s", strings.Join(msgs, "\n"))
 		}
 
 		// Canonicalize the profile string for stable downstream outputs (config show, robot status).
@@ -3398,7 +3403,16 @@ func validateNTMConfigTOML(contents string) error {
 		return fmt.Errorf("parsing TOML: %w", err)
 	}
 	if fields := undecodedConfigFields(md); len(fields) > 0 {
-		return fmt.Errorf("unknown field(s): %s", strings.Join(fields, ", "))
+		// Same partition as the strict loader (WS6-remove-finalize): removed
+		// knobs get their disposition text (what to delete and why); genuinely
+		// unknown fields keep the unknown-field error.
+		removed, unknown := classifyUndecodedKeys(fields)
+		var msgs []string
+		if len(unknown) > 0 {
+			msgs = append(msgs, "unknown field(s): "+strings.Join(unknown, ", "))
+		}
+		msgs = append(msgs, removedKnobErrorLines(removed)...)
+		return fmt.Errorf("%s", strings.Join(msgs, "\n"))
 	}
 	return nil
 }

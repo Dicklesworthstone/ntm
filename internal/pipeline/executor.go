@@ -676,8 +676,8 @@ func (e *Executor) executeWorkflow(ctx context.Context, workflow *Workflow) erro
 		}
 
 		// Execute ready steps (potentially in parallel if they're independent)
-		// For now, execute one at a time for simplicity // placebo-waiver: bd-d7z7i
-		// TODO: Optimize with goroutine pool for truly parallel independent steps
+		// For now, execute one at a time for simplicity // placebo-waiver: bd-jio7h
+		// Concurrent execution of independent ready steps is tracked in bd-jio7h.
 		sort.SliceStable(ready, func(i, j int) bool {
 			_, _, insideI := findStepContainer(workflow, ready[i])
 			_, _, insideJ := findStepContainer(workflow, ready[j])

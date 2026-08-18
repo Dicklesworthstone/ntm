@@ -388,8 +388,8 @@ func getProjectDir(ctx context.Context) (string, error) {
 		return cwd, nil
 	}
 
-	// Could add more sophisticated project detection here
-	// For now, just require the command to be run from within a git repo // placebo-waiver: bd-d7z7i
+	// Deliberate: worktree commands must run from within a git repository —
+	// guessing a project root outside one would risk acting on the wrong repo.
 	return "", fmt.Errorf("not in a git repository (current dir: %s)", cwd)
 }
 

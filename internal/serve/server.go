@@ -982,13 +982,6 @@ func (h *WSHub) GetRedactionConfig() *RedactionConfig {
 	return h.redactionCfg
 }
 
-// ClientCount returns the number of connected clients.
-func (h *WSHub) ClientCount() int {
-	h.clientsMu.RLock()
-	defer h.clientsMu.RUnlock()
-	return len(h.clients)
-}
-
 // isSubscribed checks if a client is subscribed to a topic.
 func (c *WSClient) isSubscribed(topic string) bool {
 	c.topicsMu.RLock()
@@ -1601,20 +1594,6 @@ func (s *Server) maxBytesMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// requestIDMiddleware assigns a request ID and stores it in context and response headers.
-// Deprecated: Use requestIDMiddlewareFunc for chi router.
-func requestIDMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		reqID := sanitizeRequestID(r.Header.Get(requestIDHeader))
-		if reqID == "" {
-			reqID = generateRequestID()
-		}
-		w.Header().Set(requestIDHeader, reqID)
-		ctx := context.WithValue(r.Context(), requestIDKey, reqID)
-		next.ServeHTTP(w, r.WithContext(ctx))
-	})
-}
-
 // requestIDMiddlewareFunc is the chi middleware version of requestIDMiddleware.
 func (s *Server) requestIDMiddlewareFunc(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1983,47 +1962,6 @@ func sanitizeRequestID(id string) string {
 		}
 	}
 	return b.String()
-}
-
-// loggingMiddleware logs HTTP requests.
-func loggingMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
-		next.ServeHTTP(w, r)
-		reqID := requestIDFromContext(r.Context())
-		if reqID != "" {
-			log.Printf("%s %s %s request_id=%s", r.Method, r.URL.Path, time.Since(start), reqID)
-			return
-		}
-		log.Printf("%s %s %s", r.Method, r.URL.Path, time.Since(start))
-	})
-}
-
-// corsMiddleware adds CORS headers with an allowlist (default localhost).
-func (s *Server) corsMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		origin := r.Header.Get("Origin")
-		if origin != "" {
-			s.mu.RLock()
-			allowed := originAllowed(origin, s.corsAllowedOrigins)
-			s.mu.RUnlock()
-			if !allowed {
-				writeError(w, http.StatusForbidden, "origin not allowed")
-				return
-			}
-			w.Header().Set("Access-Control-Allow-Origin", origin)
-			w.Header().Set("Vary", "Origin")
-			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-API-Key, Idempotency-Key, "+requestIDHeader)
-		}
-
-		if r.Method == "OPTIONS" {
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-
-		next.ServeHTTP(w, r)
-	})
 }
 
 // authMiddleware enforces configured authentication for all routes.
@@ -2523,15 +2461,6 @@ func extractAPIKey(r *http.Request) string {
 		return key
 	}
 	return extractBearerToken(r)
-}
-
-func isWebSocketUpgrade(r *http.Request) bool {
-	upgrade := strings.ToLower(r.Header.Get("Upgrade"))
-	if upgrade != "websocket" {
-		return false
-	}
-	connection := strings.ToLower(r.Header.Get("Connection"))
-	return strings.Contains(connection, "upgrade")
 }
 
 func originAllowed(origin string, allowlist []string) bool {
@@ -5078,11 +5007,9 @@ func isValidTopic(topic string) bool {
 
 // canSubscribe checks if the client is authorized to subscribe to a topic.
 func (c *WSClient) canSubscribe(topic string) bool {
-	// For now, allow all authenticated clients to subscribe to any topic. // placebo-waiver: bd-d7z7i
-	// Future: implement RBAC based on auth claims.
-	// Example checks:
-	// - Check if user has access to specific session
-	// - Check if user has agent-type filter permissions
+	// Deliberate: every authenticated client may subscribe to any topic.
+	// ntm serve is a single-operator surface (auth gates the connection, not
+	// individual topics); per-topic RBAC is not part of the current design.
 	return true
 }
 
@@ -6701,14 +6628,6 @@ func resolvePaneByIndex(ctx context.Context, session string, paneIdx int) (tmux.
 		}
 	}
 	return tmux.Pane{}, fmt.Errorf("no pane with index %d in session %q", paneIdx, session)
-}
-
-func resolvePaneTargetByIndex(ctx context.Context, session string, paneIdx int) (string, error) {
-	pane, err := resolvePaneByIndex(ctx, session, paneIdx)
-	if err != nil {
-		return "", err
-	}
-	return pane.ID, nil
 }
 
 func (s *Server) resolvePaneForRequest(w http.ResponseWriter, r *http.Request, session string, paneIdx int, reqID string) (tmux.Pane, bool) {

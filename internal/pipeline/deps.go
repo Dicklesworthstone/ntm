@@ -217,9 +217,9 @@ func (g *DependencyGraph) detectCycles() [][]string {
 
 // findUnreachable finds steps that can never be executed
 func (g *DependencyGraph) findUnreachable() []string {
-	// A step is unreachable if it has dependencies that don't exist
-	// or if all paths to it go through a cycle
-	// For now, we check for missing dependencies (cycles detected separately) // placebo-waiver: bd-d7z7i
+	// A step is unreachable if it has dependencies that don't exist.
+	// Steps trapped behind a cycle are reported by the separate cycle
+	// detection pass, so this pass only checks missing dependencies.
 	var unreachable []string
 
 	for id, deps := range g.edges {

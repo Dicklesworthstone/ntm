@@ -3,9 +3,18 @@
 > **Authoritative reference** for request identification and safe retry across robot surfaces.
 > All actuation commands MUST follow this contract.
 
-**Status:** AUTHORITATIVE
+**Status:** DESIGN — PARTIALLY SHIPPED
 **Bead:** bd-j9jo3.1.10
 **Created:** 2026-03-22
+
+> **Shipping status:** the shipped CLI mechanism for request identity is the
+> durable idempotent send: `--robot-send ... --op-id=<ID>` plus
+> `--robot-send-receipt=<ID>` for outcome retrieval, and
+> `ntm --robot-causality --causality-chain=<ID>` for correlation queries.
+> The `request_id`/`idempotency_key`/`correlation_id` field family and the
+> `--robot-action-status`/`--robot-wait-request`/`--robot-cancel-request`
+> surfaces described below are design, not shipped; CLI examples in this
+> document use the shipped shapes.
 
 ---
 
@@ -57,15 +66,13 @@ Example: req_20260322035400_a1b2c3d4
 
 ### 2.3 Request ID Generation
 
-**CLI:**
-<!-- ntm-docs: skip -->
+**CLI (shipped shape — client-chosen durable operation ID):**
 ```bash
-# Auto-generated (recommended)
-ntm --robot-send --target="agent:ntm/myproject/0.2" --msg="Start work"
-# Returns: { "request_id": "req_20260322035400_a1b2c3d4", ... }
+# Plain send (no durable identity recorded)
+ntm --robot-send=myproject --msg="Start work"
 
-# Client-provided (for retry tracking)
-ntm --robot-send --target="..." --msg="..." --request-id="req_my_custom_id"
+# Client-provided operation ID (for retry tracking)
+ntm --robot-send=myproject --msg="Start work" --op-id="op_start_work_1"
 ```
 
 **REST:**
@@ -91,20 +98,22 @@ curl -X POST /api/robot/send \
 
 ### 3.1 Idempotency Key
 
-Clients can provide an idempotency key for deduplication:
+Clients provide a durable operation ID for deduplication (shipped as
+`--op-id`; the `idem_*` key family below is the design vocabulary):
 
-<!-- ntm-docs: skip -->
 ```bash
-ntm --robot-send --target="..." --msg="..." --idempotency-key="idem_task123_retry1"
+ntm --robot-send=myproject --msg="Start work" --op-id="idem_task123_retry1"
 ```
 
-**Response:**
+**Response (shipped shape):**
 ```json
 {
   "success": true,
-  "request_id": "req_20260322035400_a1b2c3d4",
-  "idempotency_key": "idem_task123_retry1",
-  "duplicate": false
+  "operation": {
+    "operation_id": "idem_task123_retry1",
+    "status": "completed",
+    "payload_sha256": "..."
+  }
 }
 ```
 
@@ -205,10 +214,9 @@ REQUEST FAILED
 
 When retry safety is uncertain:
 
-<!-- ntm-docs: skip -->
 ```bash
-# Check if action was completed
-ntm --robot-action-status --request-id="req_20260322035400_a1b2c3d4"
+# Check whether the send completed (durable receipt by operation ID)
+ntm --robot-send-receipt="op_start_work_1"
 ```
 
 **Response:**
@@ -230,17 +238,13 @@ ntm --robot-action-status --request-id="req_20260322035400_a1b2c3d4"
 
 ### 5.1 Correlation ID
 
-Related requests share a correlation ID:
+Related requests share a correlation ID. A per-send `--correlation-id` flag is
+design-not-shipped; the shipped correlation surface is the causality query,
+which filters events by correlation/chain ID:
 
-<!-- ntm-docs: skip -->
 ```bash
-# Initial request
-ntm --robot-send --target="..." --msg="Start task" \
-    --correlation-id="corr_workflow_abc123"
-
-# Follow-up request (same correlation)
-ntm --robot-send --target="..." --msg="Continue task" \
-    --correlation-id="corr_workflow_abc123"
+# Query all events on one correlation chain
+ntm --robot-causality --causality-chain="corr_workflow_abc123"
 ```
 
 ### 5.2 Correlation in Responses
@@ -392,11 +396,10 @@ Clients SHOULD persist:
 
 After transport failure:
 
-<!-- ntm-docs: skip -->
 ```bash
-# Check pending requests
-for req_id in $(cat pending_requests.json | jq -r '.pending_requests[].request_id'); do
-  ntm --robot-action-status --request-id="$req_id"
+# Check pending operations by their durable receipts
+for op_id in $(cat pending_requests.json | jq -r '.pending_requests[].request_id'); do
+  ntm --robot-send-receipt="$op_id"
 done
 ```
 
@@ -414,10 +417,9 @@ done
 
 The same request ID works across all transports:
 
-**CLI:**
-<!-- ntm-docs: skip -->
+**CLI (shipped shape):**
 ```bash
-ntm --robot-send --request-id="req_123" --target="..." --msg="..."
+ntm --robot-send=myproject --op-id="req_123" --msg="Start work"
 ```
 
 **REST:**
@@ -440,10 +442,9 @@ data: { "request_id": "req_123", ... }
 
 Outcomes are retrievable regardless of originating transport:
 
-<!-- ntm-docs: skip -->
 ```bash
 # Check outcome from any transport
-ntm --robot-action-status --request-id="req_123"
+ntm --robot-send-receipt="req_123"
 ```
 
 ### 8.3 Transport-Specific Behavior

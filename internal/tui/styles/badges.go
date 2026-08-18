@@ -51,16 +51,6 @@ type MedalPalette struct {
 	Bronze lipgloss.Color
 }
 
-// MedalColors returns the current theme's medal palette.
-func MedalColors() MedalPalette {
-	t := theme.Current()
-	return MedalPalette{
-		Gold:   t.Yellow,
-		Silver: t.Surface2,
-		Bronze: t.Maroon,
-	}
-}
-
 // MiniBarPalette controls the colors and glyphs for MiniBar rendering.
 type MiniBarPalette struct {
 	Low        lipgloss.Color // value < 0.60
@@ -112,21 +102,6 @@ func AgentBadge(agentType string, opts ...BadgeOptions) string {
 		text = icon + " " + label
 	}
 
-	return renderBadge(text, bgColor, t.Base, opt)
-}
-
-// AgentBadgeWithCount renders an agent badge with a count (e.g., "󰗣 3")
-func AgentBadgeWithCount(agentType string, count int, opts ...BadgeOptions) string {
-	t := theme.Current()
-	ic := icons.Current()
-	opt := DefaultBadgeOptions()
-	if len(opts) > 0 {
-		opt = opts[0]
-	}
-
-	_, bgColor, icon := agentBadgeMeta(agentType, t, ic)
-
-	text := fmt.Sprintf("%s %d", icon, count)
 	return renderBadge(text, bgColor, t.Base, opt)
 }
 
@@ -222,130 +197,6 @@ func StatusBadge(status string, opts ...BadgeOptions) string {
 	return renderBadge(text, bgColor, t.Base, opt)
 }
 
-// StatusBadgeIcon renders just a status icon as a small badge
-func StatusBadgeIcon(status string) string {
-	t := theme.Current()
-
-	var bgColor lipgloss.Color
-	var icon string
-
-	switch strings.ToLower(status) {
-	case "success", "ok", "done":
-		bgColor = t.Success
-		icon = "✓"
-	case "running", "active":
-		bgColor = t.Green
-		icon = "●"
-	case "idle", "waiting":
-		bgColor = t.Yellow
-		icon = "○"
-	case "warning", "warn":
-		bgColor = t.Warning
-		icon = "⚠"
-	case "error", "failed":
-		bgColor = t.Error
-		icon = "✗"
-	case "pending":
-		bgColor = t.Blue
-		icon = "◐"
-	case "blocked":
-		bgColor = t.Red
-		icon = "⊘"
-	default:
-		bgColor = t.Overlay
-		icon = "•"
-	}
-
-	return lipgloss.NewStyle().
-		Background(bgColor).
-		Foreground(t.Base).
-		Bold(true).
-		Width(3).
-		Align(lipgloss.Center).
-		Render(icon)
-}
-
-// RankBadge renders a compact numeric rank badge (1-based) with medal-like colors.
-// 1 → gold, 2 → silver, 3 → bronze, others → neutral surface.
-// Fixed width to avoid layout jitter in dense tables.
-func RankBadge(rank int, opts ...BadgeOptions) string {
-	t := theme.Current()
-	opt := DefaultBadgeOptions()
-	if len(opts) > 0 {
-		opt = opts[0]
-	}
-	if rank <= 0 {
-		return ""
-	}
-
-	medals := MedalColors()
-	bg := t.Surface1
-	switch rank {
-	case 1:
-		bg = medals.Gold
-	case 2:
-		bg = medals.Silver
-	case 3:
-		bg = medals.Bronze
-	}
-
-	label := fmt.Sprintf("#%d", rank)
-	content := label
-	if opt.ShowIcon {
-		content = "★ " + label
-	}
-
-	return lipgloss.NewStyle().
-		Background(bg).
-		Foreground(t.Base).
-		Bold(opt.Bold).
-		Width(5).
-		Align(lipgloss.Center).
-		Render(content)
-}
-
-// PriorityBadge renders a priority indicator badge (P0-P4)
-func PriorityBadge(priority int, opts ...BadgeOptions) string {
-	t := theme.Current()
-	opt := DefaultBadgeOptions()
-	if len(opts) > 0 {
-		opt = opts[0]
-	} else {
-		// Priority badges don't show icons by default (just "P0", "P1", etc.)
-		opt.ShowIcon = false
-	}
-
-	var bgColor lipgloss.Color
-	label := fmt.Sprintf("P%d", priority)
-
-	switch priority {
-	case 0:
-		bgColor = t.Red // Critical
-	case 1:
-		bgColor = t.Peach // High
-	case 2:
-		bgColor = t.Yellow // Medium
-	case 3:
-		bgColor = t.Blue // Low
-	case 4:
-		bgColor = t.Overlay // Backlog
-	default:
-		bgColor = t.Surface1
-	}
-
-	return renderBadge(label, bgColor, t.Base, opt)
-}
-
-// CountBadge renders a simple numeric count badge
-func CountBadge(count int, bgColor, fgColor lipgloss.Color) string {
-	return lipgloss.NewStyle().
-		Background(bgColor).
-		Foreground(fgColor).
-		Bold(true).
-		Padding(0, 1).
-		Render(fmt.Sprintf("%d", count))
-}
-
 // TextBadge renders a simple text badge with custom colors
 func TextBadge(text string, bgColor, fgColor lipgloss.Color, opts ...BadgeOptions) string {
 	opt := DefaultBadgeOptions()
@@ -353,93 +204,6 @@ func TextBadge(text string, bgColor, fgColor lipgloss.Color, opts ...BadgeOption
 		opt = opts[0]
 	}
 	return renderBadge(text, bgColor, fgColor, opt)
-}
-
-// HealthBadge renders a health status badge (for bv drift status)
-func HealthBadge(status string, opts ...BadgeOptions) string {
-	t := theme.Current()
-	opt := DefaultBadgeOptions()
-	if len(opts) > 0 {
-		opt = opts[0]
-	}
-
-	var bgColor lipgloss.Color
-	var icon string
-	var label string
-
-	switch strings.ToLower(status) {
-	case "ok", "healthy":
-		bgColor = t.Green
-		icon = "✓"
-		label = "healthy"
-	case "warning", "drift":
-		bgColor = t.Yellow
-		icon = "⚠"
-		label = "drift"
-	case "critical":
-		bgColor = t.Red
-		icon = "✗"
-		label = "critical"
-	case "no_baseline":
-		bgColor = t.Surface1
-		icon = "?"
-		label = "no baseline"
-	case "unavailable":
-		bgColor = t.Overlay
-		icon = "—"
-		label = "n/a"
-	default:
-		bgColor = t.Surface1
-		icon = "?"
-		label = status
-	}
-
-	text := label
-	if opt.ShowIcon {
-		text = icon + " " + label
-	}
-
-	return renderBadge(text, bgColor, t.Base, opt)
-}
-
-// IssueTypeBadge renders a badge for issue types (epic, feature, task, bug, chore)
-func IssueTypeBadge(issueType string, opts ...BadgeOptions) string {
-	t := theme.Current()
-	opt := DefaultBadgeOptions()
-	if len(opts) > 0 {
-		opt = opts[0]
-	}
-
-	var bgColor lipgloss.Color
-	var icon string
-
-	switch strings.ToLower(issueType) {
-	case "epic":
-		bgColor = t.Mauve
-		icon = "◆"
-	case "feature":
-		bgColor = t.Blue
-		icon = "★"
-	case "task":
-		bgColor = t.Green
-		icon = "●"
-	case "bug":
-		bgColor = t.Red
-		icon = "◉"
-	case "chore":
-		bgColor = t.Overlay
-		icon = "○"
-	default:
-		bgColor = t.Surface1
-		icon = "•"
-	}
-
-	text := issueType
-	if opt.ShowIcon {
-		text = icon + " " + issueType
-	}
-
-	return renderBadge(text, bgColor, t.Base, opt)
 }
 
 // ModelBadge renders a badge for a model/variant (Claude/OpenAI/Gemini).
@@ -614,54 +378,6 @@ func MemoryUsageBadge(bytes int64, opts ...BadgeOptions) string {
 	return renderBadge(label, bgColor, t.Base, opt)
 }
 
-// AlertSeverityBadge renders a badge for alert severity levels.
-// severity: critical|high|medium|low|info (case-insensitive)
-func AlertSeverityBadge(severity string, opts ...BadgeOptions) string {
-	t := theme.Current()
-	opt := DefaultBadgeOptions()
-	if len(opts) > 0 {
-		opt = opts[0]
-	}
-
-	lower := strings.ToLower(severity)
-
-	var (
-		bgColor lipgloss.Color
-		icon    string
-		label   string
-	)
-
-	switch lower {
-	case "critical", "crit", "sev0", "p0":
-		bgColor = t.Error
-		icon = "‼"
-		label = "critical"
-	case "high", "sev1", "p1":
-		bgColor = t.Warning
-		icon = "⚠"
-		label = "high"
-	case "medium", "med", "sev2", "p2":
-		bgColor = t.Yellow
-		icon = "▲"
-		label = "medium"
-	case "low", "sev3", "p3":
-		bgColor = t.Blue
-		icon = "▼"
-		label = "low"
-	default:
-		bgColor = t.Surface1
-		icon = "ℹ"
-		label = "info"
-	}
-
-	text := label
-	if opt.ShowIcon && icon != "" {
-		text = icon + " " + label
-	}
-
-	return renderBadge(text, bgColor, t.Base, opt)
-}
-
 // MiniBar renders a compact, fixed-width bar (typically 4–8 chars) for inline metrics.
 // Value is clamped to [0,1]. Palette can override default colors and glyphs.
 func MiniBar(value float64, width int, palettes ...MiniBarPalette) string {
@@ -774,9 +490,4 @@ func truncateToWidth(s string, maxWidth int) string {
 // BadgeGroup renders multiple badges in a horizontal group
 func BadgeGroup(badges ...string) string {
 	return strings.Join(badges, " ")
-}
-
-// BadgeBar renders badges separated by a consistent spacer
-func BadgeBar(badges ...string) string {
-	return strings.Join(badges, "  ")
 }

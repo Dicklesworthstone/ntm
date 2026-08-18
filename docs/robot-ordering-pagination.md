@@ -196,20 +196,19 @@ ntm --robot-status --limit=20 --offset=40
 
 For event streams where offset is unstable:
 
-<!-- ntm-docs: skip -->
 ```bash
 # Initial fetch
 ntm --robot-events
 
 # Continue from cursor
-ntm --robot-events --cursor=evt_20260322033000123456
+ntm --robot-events --since-cursor=42
 ```
 
 Response includes:
 ```json
 {
   "events": [...],
-  "cursor": "evt_20260322033000789012",
+  "cursor": 42,
   "has_more": true
 }
 ```
@@ -335,10 +334,13 @@ Surfaces support multiple detail levels to trade verbosity for tokens:
 
 ### 6.2 Specifying Detail Level
 
-<!-- ntm-docs: skip -->
+The shipped CLI knob is `--robot-verbosity` (env `NTM_ROBOT_VERBOSITY`), whose
+profiles are `terse`, `default`, and `debug`; the five-level ladder above is
+the conceptual model those profiles collapse into.
+
 ```bash
-ntm --robot-status --verbosity=minimal
-ntm --robot-snapshot --verbosity=full
+ntm --robot-status --robot-verbosity=terse
+ntm --robot-snapshot --robot-verbosity=debug
 ```
 
 ### 6.3 Detail Level Defaults

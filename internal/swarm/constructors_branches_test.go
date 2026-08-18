@@ -62,20 +62,6 @@ func TestBeadScannerWithLogger(t *testing.T) {
 // NewLimitDetectorWithClient — 0% → 100%
 // ---------------------------------------------------------------------------
 
-func TestNewLimitDetectorWithClient(t *testing.T) {
-	t.Parallel()
-
-	client := &tmux.Client{}
-	ld := NewLimitDetectorWithClient(client)
-
-	if ld == nil {
-		t.Fatal("expected non-nil LimitDetector")
-	}
-	if ld.TmuxClient != client {
-		t.Error("expected TmuxClient to be set")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // NewSessionOrchestratorWithClient — 0% → 100%
 // ---------------------------------------------------------------------------

@@ -197,9 +197,9 @@ func (s *Synthesizer) Synthesize(input *SynthesisInput) (*SynthesisResult, error
 		return s.mechanicalSynthesize(input)
 	}
 
-	// Agent-based strategies - for now, fall back to mechanical // placebo-waiver: bd-d7z7i
+	// Agent-based strategies - for now, fall back to mechanical // placebo-waiver: bd-lzu08
 	// Full agent synthesis would inject a synthesizer agent prompt
-	// and wait for its response. This is tracked separately.
+	// and wait for its response. Tracked in bd-lzu08.
 	return s.mechanicalSynthesize(input)
 }
 

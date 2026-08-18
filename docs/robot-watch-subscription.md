@@ -428,12 +428,18 @@ Watch semantics are consistent across transports.
 
 ### CLI
 
-<!-- ntm-docs: skip -->
-```bash
-# Start watch with subscription
-ntm watch --robot --filter "event_class=attention" --filter "severity>=warning"
+A dedicated `ntm watch --robot --filter` subscription flag set is design, not
+shipped; the shipped CLI consumption pattern is cursor-based polling of the
+attention feed (SSE streaming is served by `ntm serve`):
 
-# Output format (JSON lines)
+```bash
+# Replay/poll attention events from a cursor, filtered by profile
+ntm --robot-events --since-cursor=42 --profile=alerts
+
+# Block until something needs attention, then return a digest
+ntm --robot-attention --attention-cursor=42
+
+# Designed subscription stream output format (JSON lines)
 {"event_class":"control","event_type":"control:connected",...}
 {"event_class":"control","event_type":"control:replay_start",...}
 {"event_class":"attention","event_type":"attention:alert:agent_stuck",...}
