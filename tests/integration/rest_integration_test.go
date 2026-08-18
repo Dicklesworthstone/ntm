@@ -481,8 +481,19 @@ func TestRESTBeadsCreateAndUpdate(t *testing.T) {
 	// The leak probe is the test's own marker title rather than a raw row
 	// count: an external writer (e.g. a br auto-commit watcher flushing the
 	// repo workspace mid-test) may legitimately change the row count, but
-	// only THIS test can plant its marker bead in the repo JSONL.
-	const leakMarker = "REST Integration Test Bead"
+	// only THIS test can plant its marker bead in the repo JSONL. The marker
+	// carries a per-run nonce so (a) a leak from one historical or concurrent
+	// run can never permanently disarm the guard via the pre-existing-marker
+	// skip, and (b) concurrent CI runs sharing a checkout cannot misattribute
+	// each other's leaks.
+	const leakMarkerBase = "REST Integration Test Bead"
+	leakMarker := fmt.Sprintf("%s %d-%d", leakMarkerBase, os.Getpid(), time.Now().UnixNano())
+	if repoBeadsContainsMarker(t, leakMarkerBase) {
+		// A PRIOR run's marker in the repo JSONL is evidence of a real past
+		// leak. Surface it loudly, but keep this run's guard armed: the
+		// nonce keeps this run's verdict independent of historical dirt.
+		t.Logf("WARNING: repo beads JSONL already contains %q — a previous run leaked; this run still verifies isolation with unique marker %q", leakMarkerBase, leakMarker)
+	}
 	if repoBeadsContainsMarker(t, leakMarker) {
 		t.Skipf("repo beads JSONL already contains marker %q; cannot prove isolation", leakMarker)
 	}
@@ -494,7 +505,7 @@ func TestRESTBeadsCreateAndUpdate(t *testing.T) {
 
 	// Create a test bead
 	createReq := map[string]interface{}{
-		"title":       "REST Integration Test Bead",
+		"title":       leakMarker,
 		"description": "Created via REST API integration test",
 		"type":        "task",
 		"priority":    "P2",
