@@ -3344,6 +3344,16 @@ func buildKillResponse(ctx context.Context, session string, force bool, tags []s
 			return nil, err
 		}
 		auditKilled = true
+
+		// Drop persisted routing state for the killed session so a recreated
+		// session with the same name does not inherit a stale last_agent /
+		// rotation cursor (bd-88um4) — same cleanup as the plain-kill path
+		// (runKill). Best-effort: routing state is only a hint.
+		if st, err := state.Open(""); err == nil {
+			_ = st.DeleteRoutingState(session)
+			_ = st.Close()
+		}
+
 		message = fmt.Sprintf("Killed session '%s'", session)
 
 		events.DefaultEmitter().Emit(events.NewWebhookEvent(

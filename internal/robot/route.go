@@ -55,10 +55,19 @@ func openRoutingStateStoreReadOnly() (*state.Store, error) {
 // the FILTERED list, so alternating sends with different --cc/--cod filters
 // or --exclude sets must not share one cursor (bd-88um4). The empty key is
 // the unfiltered path (and matches pre-021 legacy rows).
+//
+// The agent type is canonicalized through the SAME alias resolver the
+// candidate filter uses (matchesAgentTypeFilter/ResolveAgentType): --type=cc,
+// --type=claude, and the send path's canonical "claude" all shape the
+// identical candidate list, so they must share one cursor rather than
+// diverging into per-spelling rows.
 func routingStateFilterKey(opts RouteOptions) string {
 	agentType := strings.ToLower(strings.TrimSpace(opts.AgentType))
 	if agentType == "" && len(opts.ExcludePanes) == 0 {
 		return ""
+	}
+	if agentType != "" {
+		agentType = strings.ToLower(ResolveAgentType(agentType))
 	}
 	excludes := append([]int(nil), opts.ExcludePanes...)
 	sort.Ints(excludes)

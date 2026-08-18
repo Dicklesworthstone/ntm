@@ -339,6 +339,15 @@ func TestRoutingStateFilterKey(t *testing.T) {
 	if a == c {
 		t.Fatalf("different agent types share filter key %q", a)
 	}
+	// Alias spellings select the IDENTICAL candidate list
+	// (matchesAgentTypeFilter resolves aliases), so they must share one
+	// cursor: --type=cc == --type=claude, --type=cod == --type=codex.
+	if cc := routingStateFilterKey(RouteOptions{AgentType: "cc", ExcludePanes: []int{3, 1}}); cc != a {
+		t.Fatalf("alias cc keyed %q, canonical claude keyed %q; cursors diverge", cc, a)
+	}
+	if cod := routingStateFilterKey(RouteOptions{AgentType: "cod", ExcludePanes: []int{1, 3}}); cod != c {
+		t.Fatalf("alias cod keyed %q, canonical codex keyed %q; cursors diverge", cod, c)
+	}
 }
 
 // TestSticky_PersistedAcrossInvocations is the sticky discriminator case: two
