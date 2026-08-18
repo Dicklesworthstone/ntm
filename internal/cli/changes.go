@@ -79,8 +79,9 @@ func runChanges(ctx context.Context, sessionFilter string) error {
 
 	changes := tracker.RecordedChanges()
 
-	// Filter and sort
-	var filtered []tracker.RecordedFileChange
+	// Filter and sort. Initialized non-nil so --json emits [] (never null)
+	// for empty results, per the arrays-never-null output convention.
+	filtered := []tracker.RecordedFileChange{}
 	for _, c := range changes {
 		if resolvedSessionFilter == "" || c.Session == resolvedSessionFilter {
 			filtered = append(filtered, c)
@@ -156,6 +157,10 @@ func runConflicts(ctx context.Context, sessionFilter, since string, limit int) e
 	}
 
 	conflicts := tracker.ConflictsSince(time.Now().Add(-window), resolvedSessionFilter)
+	if conflicts == nil {
+		// Arrays-never-null: --json must emit [] for empty results, not null.
+		conflicts = []tracker.Conflict{}
+	}
 	sortConflictsByLastAtThenPath(conflicts)
 	if limit > 0 && len(conflicts) > limit {
 		conflicts = conflicts[:limit]
