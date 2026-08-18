@@ -56,26 +56,6 @@ internal/approval/engine.go:Engine.ExpireStale	bd-g1-deadcode-backlog-2ijy8	outs
 internal/approval/engine.go:Engine.removeWaiter	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/approval/engine.go:Engine.WaitForApproval	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/archive/archiver.go:Archiver.Stats	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/assign/allocation.go:NewAllocationPlanner	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
-internal/assign/capability.go:CapabilityMatrix.ClearLearned	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
-internal/assign/capability.go:CapabilityMatrix.ClearOverrides	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
-internal/assign/capability.go:CapabilityMatrix.SetLearned	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
-internal/assign/capability.go:CapabilityMatrix.SetOverride	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
-internal/assign/capability.go:GetAgentScore	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
-internal/assign/effectiveness.go:DefaultEffectivenessConfig	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
-internal/assign/effectiveness.go:DefaultIntegrator	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
-internal/assign/effectiveness.go:EffectivenessConfig.EffectivenessWeight	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
-internal/assign/effectiveness.go:EffectivenessIntegrator.GetEffectivenessBonus	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
-internal/assign/effectiveness.go:EffectivenessIntegrator.GetEffectivenessScore	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
-internal/assign/effectiveness.go:EffectivenessIntegrator.GetMode	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
-internal/assign/effectiveness.go:EffectivenessIntegrator.RankAgentsForTask	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
-internal/assign/effectiveness.go:EffectivenessIntegrator.RefreshCapabilities	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
-internal/assign/effectiveness.go:EffectivenessIntegrator.SetMode	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
-internal/assign/effectiveness.go:GetAssignmentMode	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
-internal/assign/effectiveness.go:GetEffectivenessBonus	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
-internal/assign/effectiveness.go:NewEffectivenessIntegrator	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
-internal/assign/effectiveness.go:RefreshEffectivenessCapabilities	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
-internal/assign/effectiveness.go:SetAssignmentMode	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
 internal/assignment/atomic.go:ReservationFunc.Reserve	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/audit/logger.go:AuditLogger.Flush	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/audit/query.go:NewSearcherWithPath	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
@@ -433,35 +413,6 @@ internal/context/trigger.go:CompactionTrigger.TriggerCompactionNow	bd-g1-deadcod
 internal/context/trigger.go:DefaultCompactionTriggerConfig	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/context/trigger.go:NewCompactionTrigger	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/context/trigger.go:validateCompactionPromptDelivery	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/coordinator/assign.go:applyStrategySelection	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
-internal/coordinator/assign.go:AssignTasks	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
-internal/coordinator/assign.go:buildAssignmentReason	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
-internal/coordinator/assign.go:buildAssignments	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
-internal/coordinator/assign.go:buildStrategyConfig	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
-internal/coordinator/assign.go:computeAgentTypeBonus	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
-internal/coordinator/assign.go:computeConfidence	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
-internal/coordinator/assign.go:computeContextPenalty	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
-internal/coordinator/assign.go:computeCriticalPathBonus	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
-internal/coordinator/assign.go:computeFileOverlapPenalty	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
-internal/coordinator/assign.go:computeFocusPatternBonus	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
-internal/coordinator/assign.go:computeProfileTagBonus	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
-internal/coordinator/assign.go:DefaultScoreConfig	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
-internal/coordinator/assign.go:estimateTaskComplexity	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
-internal/coordinator/assign.go:ExtractTaskTags	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
-internal/coordinator/assign.go:filterAvailableAgents	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
-internal/coordinator/assign.go:isAgentAvailable	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
-internal/coordinator/assign.go:matchFocusPattern	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
-internal/coordinator/assign.go:ParseStrategy	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
-internal/coordinator/assign.go:scoreAllPairs	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
-internal/coordinator/assign.go:ScoreAndSelectAssignments	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
-internal/coordinator/assign.go:scoreAssignment	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
-internal/coordinator/assign.go:selectBalanced	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
-internal/coordinator/assign.go:selectDependency	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
-internal/coordinator/assign.go:selectGreedy	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
-internal/coordinator/assign.go:selectQuality	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
-internal/coordinator/assign.go:SessionCoordinator.GetAssignableWork	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
-internal/coordinator/assign.go:SessionCoordinator.SuggestAssignment	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
-internal/coordinator/assign.go:sortScoredAssignments	bd-v394r	C4 residue: coordinator planner (C1 RunCycle wire-in; robot->coordinator import cycle) + assign periphery
 internal/coordinator/coordinator.go:SessionCoordinator.Events	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/coordinator/coordinator.go:SessionCoordinator.GetAgentByPaneID	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/coordinator/coordinator.go:SessionCoordinator.updateAgentStates	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
@@ -1425,41 +1376,6 @@ internal/scanner/dedup.go:NewDedupIndex	bd-g1-deadcode-backlog-2ijy8	outside the
 internal/scanner/dedup.go:parseBeadForDedup	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/scanner/priority.go:GetTopPriority	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/scanner/scanner.go:QuickScan	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/scoring/metrics.go:CoreMetrics	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/scoring/metrics.go:DefaultWeights	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/scoring/metrics.go:EconomyFocusedWeights	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/scoring/metrics.go:EffectivenessScore.ComputeOverall	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/scoring/metrics.go:EffectivenessScore.WithWeights	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/scoring/metrics.go:LoadWeightsConfig	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/scoring/metrics.go:NewEffectivenessScore	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/scoring/metrics.go:QualityFocusedWeights	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/scoring/metrics.go:RawMetrics.ToEffectivenessScore	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/scoring/metrics.go:SpeedFocusedWeights	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/scoring/metrics.go:Weights.Normalize	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/scoring/metrics.go:Weights.Sum	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/scoring/metrics.go:WeightsConfig.GetWeights	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/scoring/tracker.go:DefaultTracker	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/scoring/tracker.go:DefaultTrackerOptions	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/scoring/tracker.go:exp2	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/scoring/tracker.go:minFloat	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/scoring/tracker.go:NewTracker	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/scoring/tracker.go:ScoreMetrics.ComputeOverall	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/scoring/tracker.go:sqrt	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/scoring/tracker.go:Tracker.AnalyzeTrend	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/scoring/tracker.go:Tracker.Close	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/scoring/tracker.go:Tracker.DecayedAverage	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/scoring/tracker.go:Tracker.Export	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/scoring/tracker.go:Tracker.Prune	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/scoring/tracker.go:Tracker.pruneAt	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/scoring/tracker.go:Tracker.pruneLocked	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/scoring/tracker.go:Tracker.QueryAllEffectiveness	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/scoring/tracker.go:Tracker.QueryEffectiveness	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/scoring/tracker.go:Tracker.QueryScores	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/scoring/tracker.go:Tracker.Record	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/scoring/tracker.go:Tracker.RecordSessionEnd	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/scoring/tracker.go:Tracker.RollingAverage	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/scoring/tracker.go:Tracker.SummarizeByAgent	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/scoring/tracker.go:Tracker.SummarizeByAgentList	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/serve/audit.go:AuditStore.Query	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/serve/audit.go:AuditStore.RecordApprovalAction	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/serve/audit.go:AuditStore.RecordWebSocketAction	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
@@ -2111,6 +2027,7 @@ internal/worktrees/manager.go:WorktreeManager.worktreePath	bd-g1-deadcode-backlo
 pkg:internal/robot/contract	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 pkg:internal/safety/redaction	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 pkg:internal/scheduler	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
+pkg:internal/scoring	bd-g1-deadcode-backlog-2ijy8	orphaned by the C4-residue deletion of its sole importer (internal/assign/effectiveness.go); triage to wire-or-delete
 pkg:internal/supportbundle	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 pkg:internal/tui	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 pkg:internal/updater	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
