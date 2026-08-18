@@ -4,7 +4,7 @@
 
 This document defines the canonical set of detection categories, patterns, and redaction strategies for NTM's secrets/PII protection engine.
 
-**Implementation:** `internal/redaction` (canonical). `internal/safety/redaction` is a compatibility wrapper.
+**Implementation:** `internal/redaction` (canonical).
 
 ## Design Goals
 
@@ -312,7 +312,7 @@ NTM_REDACTION_ALLOWLIST="s k-test-.*,EXAMPLE.*" ntm send ...
 
 Some fixtures use placeholders to avoid committing secret-looking strings
 (provider keys, cloud creds, and private keys). Unit tests expand these placeholders into synthetic values.
-See `internal/safety/redaction/redaction_test.go` for the exact expansion logic.
+See `internal/redaction/redaction_test.go` for the exact expansion logic.
 
 ### True Positives (should detect)
 

@@ -4,7 +4,7 @@ package dashboard
 // [reality-bridge: bd-ws2-wire-or-delete-ykmcz.6]
 //
 // Convention: model View()/renderSidebar() output assertions with fixture
-// data (see metrics_panel_test.go / TestDashboardWorkflowToggle...). Each
+// data (see panels/metrics_test.go / TestDashboardWorkflowToggle...). Each
 // test logs the panel's data-fetch result and rendered dimensions so a blank
 // panel is diagnosable from the CI log.
 

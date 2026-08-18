@@ -139,11 +139,6 @@ var placeholderAllowlist = map[string]map[string]string{
 		"placeholder (case-insensitive, standalone word)": "comment documenting Claude Code tool input placeholder",
 	},
 
-	// CLI init_wizard.go uses Bubble Tea text input Placeholder for default agent count.
-	"internal/cli/init_wizard.go": {
-		"placeholder (case-insensitive, standalone word)": "Bubble Tea text input Placeholder for default value",
-	},
-
 	// CLI mail.go uses "placeholder" in a comment about subject field being unchanged
 	// from the default — this is a conditional check, not stub code.
 	"internal/cli/mail.go": {

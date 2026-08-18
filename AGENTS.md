@@ -242,7 +242,6 @@ ntm/
 │   ├── swarm/              # Swarm coordination
 │   ├── coordinator/        # Agent coordination logic
 │   ├── assign/             # Task assignment engine
-│   ├── scheduler/          # Task scheduling
 │   ├── pipeline/           # Execution pipeline
 │   ├── context/            # Context window tracking
 │   ├── checkpoint/         # Session checkpoint/restore
@@ -264,7 +263,6 @@ ntm/
 │   ├── git/                # Git operations
 │   ├── audit/              # Audit logging
 │   ├── auth/               # Authentication
-│   ├── scoring/            # Agent scoring
 │   ├── watcher/            # File/process watching
 │   ├── webhook/            # Webhook dispatch
 │   ├── workflow/           # Workflow definitions
