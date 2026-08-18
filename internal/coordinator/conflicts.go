@@ -75,6 +75,10 @@ func (d *ConflictDetector) DetectConflicts(ctx context.Context) ([]Conflict, err
 	}
 	for i := range conflicts {
 		conflict := conflicts[i]
+		// Deep-copy Holders: the returned slice is handed to callers that
+		// mutate Holder.Priority in place (prioritizeHolders) outside d.mu,
+		// so the tracker must not share backing arrays with it (bd-izuqq.5).
+		conflict.Holders = append([]Holder(nil), conflicts[i].Holders...)
 		d.conflicts[conflict.ID] = &conflict
 	}
 	d.mu.Unlock()
@@ -308,7 +312,6 @@ func (c *SessionCoordinator) runConflictCycle(ctx context.Context) []ConflictOut
 			c.mu.Unlock()
 			continue
 		}
-		c.lastConflictOutcome[key] = now
 		// Prune stale cooldown entries to keep the map bounded.
 		for k, ts := range c.lastConflictOutcome {
 			if now.Sub(ts) > 2*conflictOutcomeCooldown {
@@ -351,6 +354,17 @@ func (c *SessionCoordinator) runConflictCycle(ctx context.Context) []ConflictOut
 			}
 		}
 
+		// Start the cooldown only AFTER a successful notify/negotiate
+		// (bd-izuqq.3). Recording it up front meant one transient send
+		// failure silenced the pair for the whole cooldown window; a failed
+		// attempt now retries on the next tick (bounded, as ever, by
+		// maxConflictOutcomesPerCycle).
+		if outcome.Error == "" {
+			c.mu.Lock()
+			c.lastConflictOutcome[key] = now
+			c.mu.Unlock()
+		}
+
 		c.publishConflictOutcome(outcome)
 		outcomes = append(outcomes, outcome)
 	}
@@ -369,9 +383,12 @@ func (c *SessionCoordinator) publishConflictOutcome(outcome ConflictOutcome) {
 		"resolution", outcome.Resolution,
 		"error", outcome.Error)
 
+	// A successful negotiate outcome means a release REQUEST was sent, not
+	// that the target released anything — publish it as release-requested,
+	// never "resolved" (bd-izuqq.2).
 	eventType := EventConflictDetected
 	if outcome.Mode == "negotiate" && outcome.Error == "" {
-		eventType = EventConflictResolved
+		eventType = EventConflictReleaseRequested
 	}
 	now := time.Now().UTC()
 	details := map[string]any{
@@ -500,21 +517,10 @@ func (c *SessionCoordinator) NegotiateConflict(ctx context.Context, conflict *Co
 		return fmt.Errorf("sending negotiation request: %w", err)
 	}
 
-	// Emit event
-	select {
-	case c.events <- CoordinatorEvent{
-		Type:      EventConflictDetected,
-		Timestamp: time.Now(),
-		Details: map[string]any{
-			"conflict_id": conflict.ID,
-			"pattern":     conflict.Pattern,
-			"holders":     len(conflict.Holders),
-			"requested":   lowestPriority.AgentName,
-		},
-	}:
-	default:
-	}
-
+	// No event here: publishConflictOutcome emits exactly one outcome event
+	// per negotiation. Emitting an extra EventConflictDetected from inside
+	// the engine produced a spurious Detected+outcome pair per cycle
+	// (bd-izuqq.2).
 	return nil
 }
 

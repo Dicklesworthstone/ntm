@@ -5,8 +5,10 @@ package robot
 import (
 	"fmt"
 	"log/slog"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/state"
@@ -14,14 +16,18 @@ import (
 )
 
 // RoutingStateStore is the persistence port for per-session routing state
-// (bd-ws1-truth-safety-l5ddi.10). *state.Store implements it.
+// (bd-ws1-truth-safety-l5ddi.10). *state.Store implements it. State is keyed
+// by (session, filter key) so differently filtered candidate lists rotate
+// independently (bd-88um4).
 type RoutingStateStore interface {
-	GetRoutingState(session string) (*state.RoutingState, error)
+	GetRoutingState(session, filterKey string) (*state.RoutingState, error)
 	SaveRoutingState(*state.RoutingState) error
+	PurgeRoutingStateOlderThan(maxAge time.Duration) (int64, error)
 }
 
 // openRoutingStateStore opens (and migrates) the state DB for routing state.
-// Best-effort: callers proceed without persistence when it fails.
+// Best-effort: callers proceed without persistence when it fails. This is the
+// SEND path's opener: it will write routing state, so migrating here is fine.
 func openRoutingStateStore() (*state.Store, error) {
 	store, err := state.Open("")
 	if err != nil {
@@ -33,6 +39,42 @@ func openRoutingStateStore() (*state.Store, error) {
 	}
 	return store, nil
 }
+
+// openRoutingStateStoreReadOnly opens the state DB WITHOUT migrating, for the
+// advisory route surface. 'ntm robot route' only READS routing state, and
+// Migrate previously took the DB's exclusive write reservation (BEGIN
+// IMMEDIATE) on every call — a polling swarm serialized on it, and past
+// busy_timeout the open failed and routing silently degraded (bd-88um4). An
+// unmigrated schema simply reads as "no routing history".
+func openRoutingStateStoreReadOnly() (*state.Store, error) {
+	return state.Open("")
+}
+
+// routingStateFilterKey derives the persistence key component for the filter
+// set that shaped the candidate list. The rotation cursor is an index into
+// the FILTERED list, so alternating sends with different --cc/--cod filters
+// or --exclude sets must not share one cursor (bd-88um4). The empty key is
+// the unfiltered path (and matches pre-021 legacy rows).
+func routingStateFilterKey(opts RouteOptions) string {
+	agentType := strings.ToLower(strings.TrimSpace(opts.AgentType))
+	if agentType == "" && len(opts.ExcludePanes) == 0 {
+		return ""
+	}
+	excludes := append([]int(nil), opts.ExcludePanes...)
+	sort.Ints(excludes)
+	parts := make([]string, 0, len(excludes))
+	for _, idx := range excludes {
+		parts = append(parts, strconv.Itoa(idx))
+	}
+	return "type=" + agentType + ";exclude=" + strings.Join(parts, ",")
+}
+
+// routingStateTTL bounds how long a routing-state row can sit untouched
+// before the send path purges it. Rows for dead sessions otherwise accumulate
+// forever, and a recreated session with the same name inherits a stale
+// last_agent/cursor (bd-88um4). Routing state is only a rotation hint; a week
+// of inactivity means the history is worthless anyway.
+const routingStateTTL = 7 * 24 * time.Hour
 
 // routingStrategyIsStateful reports whether a strategy consumes/advances
 // per-session routing history.
@@ -59,8 +101,9 @@ func routeWithSessionState(agents []ScoredAgent, opts RouteOptions, store Routin
 		ExcludePanes: opts.ExcludePanes,
 		ExplicitPane: -1,
 	}
+	filterKey := routingStateFilterKey(opts)
 	if store != nil && ctx.LastAgent == "" {
-		rs, err := store.GetRoutingState(opts.Session)
+		rs, err := store.GetRoutingState(opts.Session, filterKey)
 		switch {
 		case err != nil:
 			slog.Warn("[robot.route] cannot load persisted routing state", "session", opts.Session, "error", err)
@@ -85,6 +128,7 @@ func routeWithSessionState(agents []ScoredAgent, opts RouteOptions, store Routin
 		}
 		rs := &state.RoutingState{
 			SessionName:    opts.Session,
+			FilterKey:      filterKey,
 			LastAgent:      result.Selected.PaneID,
 			RotationCursor: cursor,
 		}
@@ -95,7 +139,12 @@ func routeWithSessionState(agents []ScoredAgent, opts RouteOptions, store Routin
 			slog.Info("[robot.route] routing state persisted",
 				"session", opts.Session, "strategy", opts.Strategy,
 				"pane_id", result.Selected.PaneID, "pane_index", result.Selected.PaneIndex,
-				"rotation_cursor", cursor)
+				"rotation_cursor", cursor, "filter_key", filterKey)
+			// Opportunistic TTL purge on the write path only: rows for dead
+			// sessions must not accumulate forever (bd-88um4). Best-effort.
+			if purged, err := store.PurgeRoutingStateOlderThan(routingStateTTL); err == nil && purged > 0 {
+				slog.Debug("[robot.route] purged stale routing state rows", "purged", purged)
+			}
 		}
 	}
 	return result
@@ -303,9 +352,11 @@ func GetRoute(opts RouteOptions) (*RouteOutput, int) {
 	}
 
 	// Route with persisted per-session state loaded (advisory surface: the
-	// state is read, not advanced — only real sends advance it).
+	// state is read, not advanced — only real sends advance it). The
+	// read-only opener skips Migrate so this path never takes the state DB's
+	// exclusive write reservation (bd-88um4).
 	var stateStore RoutingStateStore
-	if store, err := openRoutingStateStore(); err == nil {
+	if store, err := openRoutingStateStoreReadOnly(); err == nil {
 		defer store.Close()
 		stateStore = store
 	} else {

@@ -309,8 +309,17 @@ type ReviewGateCoordinator struct {
 	approvals map[string]struct{}
 }
 
-// Approve records a reviewer approval. Duplicate approvals are idempotent.
+// Approve records an approval from an agent holding the conventional
+// "reviewer" role. Duplicate approvals are idempotent.
 func (c *ReviewGateCoordinator) Approve(agentID string) (bool, error) {
+	return c.ApproveFromRole(agentID, "reviewer")
+}
+
+// ApproveFromRole records an approval from an agent holding the given
+// approver role; an empty role means any agent may approve, with the
+// any/all/quorum threshold counted against all agents. Duplicate approvals
+// are idempotent.
+func (c *ReviewGateCoordinator) ApproveFromRole(agentID, role string) (bool, error) {
 	if strings.TrimSpace(agentID) == "" {
 		return false, errors.New("reviewer agent ID is required")
 	}
@@ -325,12 +334,15 @@ func (c *ReviewGateCoordinator) Approve(agentID string) (bool, error) {
 
 	reviewers := make(map[string]struct{})
 	for _, agent := range c.agents {
-		if agent.Role == "reviewer" {
+		if role == "" || agent.Role == role {
 			reviewers[agent.ID] = struct{}{}
 		}
 	}
 	if _, ok := reviewers[agentID]; !ok {
-		return false, fmt.Errorf("agent %q is not a reviewer for this workflow", agentID)
+		if role == "" {
+			return false, fmt.Errorf("agent %q is not part of this workflow", agentID)
+		}
+		return false, fmt.Errorf("agent %q does not hold approver role %q for this workflow", agentID, role)
 	}
 	c.approvals[agentID] = struct{}{}
 	mode := c.template.Flow.ApprovalMode

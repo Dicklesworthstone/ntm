@@ -197,7 +197,7 @@ func TestRunCycle_ConflictNegotiate_PublishesOutcomeNamingPair(t *testing.T) {
 	}
 
 	// The envelope must carry the outcome: pair + resolution decision.
-	ev := findConflictOutcomeEvent(t, drainConflictEvents(c), EventConflictResolved)
+	ev := findConflictOutcomeEvent(t, drainConflictEvents(c), EventConflictReleaseRequested)
 	holders, ok := ev.Details["holders"].([]string)
 	if !ok {
 		t.Fatalf("outcome event holders missing or wrong type: %+v", ev.Details)
@@ -270,7 +270,7 @@ func TestRunCycle_ConflictFlagsOff_EngineNeverInvoked(t *testing.T) {
 		t.Fatalf("expected zero Agent Mail tool calls with both flags off, got %+v", calls)
 	}
 	for _, ev := range drainConflictEvents(c) {
-		if ev.Type == EventConflictDetected || ev.Type == EventConflictResolved {
+		if ev.Type == EventConflictDetected || ev.Type == EventConflictReleaseRequested {
 			t.Fatalf("unexpected conflict event with both flags off: %+v", ev)
 		}
 	}
@@ -362,6 +362,144 @@ func TestRunConflictCycle_BoundedPerTick(t *testing.T) {
 	outcomes := c.runConflictCycle(context.Background())
 	if len(outcomes) != maxConflictOutcomesPerCycle {
 		t.Fatalf("per-tick bound violated: got %d outcomes, want %d", len(outcomes), maxConflictOutcomesPerCycle)
+	}
+}
+
+// TestRunCycle_ConflictNegotiate_SingleOutcomeEvent (bd-izuqq.2): one
+// negotiation publishes exactly ONE conflict event — a release-requested
+// outcome — never a spurious Detected+outcome pair, and never a
+// "resolved" claim for a request that only asked the holder to release.
+func TestRunCycle_ConflictNegotiate_SingleOutcomeEvent(t *testing.T) {
+	const pattern = "internal/coordinator/deadlock.go"
+	client, _ := newConflictWireMailServer(t, conflictingPairReservationsJSON(pattern))
+
+	cfg := DefaultCoordinatorConfig()
+	cfg.ConflictNegotiate = true
+	c := newConflictWireCoordinator(t, client, cfg)
+
+	if _, err := c.RunCycle(context.Background()); err != nil {
+		t.Fatalf("RunCycle: %v", err)
+	}
+
+	var conflictEvents []CoordinatorEvent
+	for _, ev := range drainConflictEvents(c) {
+		if ev.Type == EventConflictDetected || ev.Type == EventConflictReleaseRequested {
+			conflictEvents = append(conflictEvents, ev)
+		}
+	}
+	if len(conflictEvents) != 1 {
+		t.Fatalf("one negotiation must emit exactly one conflict event, got %d: %+v", len(conflictEvents), conflictEvents)
+	}
+	if conflictEvents[0].Type != EventConflictReleaseRequested {
+		t.Fatalf("successful negotiation must publish %s, got %s", EventConflictReleaseRequested, conflictEvents[0].Type)
+	}
+}
+
+// TestRunConflictCycle_FailedSendRetriesNextTick (bd-izuqq.3): the cooldown
+// must start only after a SUCCESSFUL notify/negotiate. A transient send
+// failure must not silence the pair for the whole cooldown window; once a
+// send succeeds, the cooldown kicks in.
+func TestRunConflictCycle_FailedSendRetriesNextTick(t *testing.T) {
+	const pattern = "internal/coordinator/monitor.go"
+
+	var mu sync.Mutex
+	failuresLeft := 1
+	sendAttempts := 0
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		var rpc struct {
+			ID     any             `json:"id"`
+			Method string          `json:"method"`
+			Params json.RawMessage `json:"params"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&rpc); err != nil {
+			t.Errorf("decode request: %v", err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		idJSON, _ := json.Marshal(rpc.ID)
+		switch rpc.Method {
+		case "resources/read":
+			contents, _ := json.Marshal(map[string]any{
+				"contents": []map[string]any{{"text": conflictingPairReservationsJSON(pattern)}},
+			})
+			fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":%s}`, idJSON, contents)
+		case "tools/call":
+			var params struct {
+				Name string `json:"name"`
+			}
+			_ = json.Unmarshal(rpc.Params, &params)
+			if params.Name == "send_message" {
+				mu.Lock()
+				sendAttempts++
+				fail := failuresLeft > 0
+				if fail {
+					failuresLeft--
+				}
+				mu.Unlock()
+				if fail {
+					fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"error":{"code":-32000,"message":"transient outage"}}`, idJSON)
+					return
+				}
+			}
+			fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{"id":1}}`, idJSON)
+		default:
+			fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"error":{"code":-32601,"message":"unknown method"}}`, idJSON)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	cfg := DefaultCoordinatorConfig()
+	cfg.ConflictNegotiate = true
+	c := newConflictWireCoordinator(t, agentmail.NewClient(agentmail.WithBaseURL(server.URL)), cfg)
+
+	// Tick 1: send fails -> no cooldown recorded. Tick 2: retry succeeds ->
+	// cooldown starts. Tick 3: suppressed by cooldown.
+	for i := 0; i < 3; i++ {
+		if _, err := c.RunCycle(context.Background()); err != nil {
+			t.Fatalf("RunCycle #%d: %v", i+1, err)
+		}
+	}
+
+	mu.Lock()
+	got := sendAttempts
+	mu.Unlock()
+	if got != 2 {
+		t.Fatalf("send attempts = %d, want 2 (failed attempt retried once, then cooldown)", got)
+	}
+}
+
+// TestDetectConflicts_StoredConflictsDoNotShareHolderArrays (bd-izuqq.5):
+// callers of DetectConflicts mutate the returned Holders (prioritizeHolders
+// sets Priority) outside the detector's lock, so the tracker's stored copies
+// must not share backing arrays with the returned slice.
+func TestDetectConflicts_StoredConflictsDoNotShareHolderArrays(t *testing.T) {
+	const pattern = "internal/coordinator/digest.go"
+	client, _ := newConflictWireMailServer(t, conflictingPairReservationsJSON(pattern))
+	d := NewConflictDetector(client, "/test/project")
+
+	conflicts, err := d.DetectConflicts(context.Background())
+	if err != nil {
+		t.Fatalf("DetectConflicts: %v", err)
+	}
+	if len(conflicts) != 1 || len(conflicts[0].Holders) != 2 {
+		t.Fatalf("fixture must yield one conflict with two holders, got %+v", conflicts)
+	}
+
+	// Mutate the returned holders the way runConflictCycle does.
+	prioritizeHolders(conflicts[0].Holders)
+	conflicts[0].Holders[0].Priority = 99
+
+	d.mu.Lock()
+	stored := d.conflicts[conflicts[0].ID]
+	d.mu.Unlock()
+	if stored == nil {
+		t.Fatal("conflict not tracked by detector")
+	}
+	for _, h := range stored.Holders {
+		if h.Priority == 99 {
+			t.Fatal("stored conflict shares Holder backing array with the returned slice (unsynchronized mutation leaks into the tracker)")
+		}
 	}
 }
 

@@ -33,12 +33,11 @@ npm run compile >&2 # tsc -p ./ — the same compile the ci.yml vscode-extension
 
 mkdir -p "$DIST_DIR"
 vsix="$DIST_DIR/ntm-vscode-$pkg_version.vsix"
-# vsce pinned to an EXACT version (W3 gate finding: a floating @3 major let
-# the release toolchain drift with every upstream vsce publish — a
-# release-time supply-chain hole). Bump deliberately; the structural fix
-# (vendor vsce into vscode/package-lock.json so npm ci covers it and no
-# network fetch happens at package time) is tracked on its own bead.
-npx --yes @vscode/vsce@3.9.2 package --out "$vsix" >&2
+# vsce is a devDependency vendored in vscode/package-lock.json (bd-43ydf), so
+# `npm ci` above is the only network step and the tool is integrity-pinned by
+# the lockfile. --no-install makes any drift a hard failure instead of a
+# silent registry fetch of a floating version at release time.
+npx --no-install vsce package --out "$vsix" >&2
 
 # Verify the packaged manifest really carries the expected version.
 baked="$(unzip -p "$vsix" extension/package.json | node -p 'JSON.parse(require("fs").readFileSync(0, "utf8")).version')"

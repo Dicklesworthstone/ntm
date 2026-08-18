@@ -53,6 +53,9 @@ type RobotSequenceOutput struct {
 
 func init() {
 	robot.MustRegisterSchemaCommand("sequence", RobotSequenceOutput{})
+	robot.MustRegisterSchemaPagination("sequence", robot.SchemaPaginationFlag{
+		Reason: "bounded: one pane sequence echo with its nested step list",
+	})
 }
 
 func printRobotSequence(projectDir, name, action, pane, rawSteps string) error {

@@ -85,6 +85,12 @@ func IsAlive(pid int) bool {
 		return true
 	}
 
+	// Native snapshot (darwin): one sysctl lookup answers both existence and
+	// zombie state, replacing the kill(0)+`ps` probe below (bd-4479y).
+	if alive, ok := nativeIsAlive(pid); ok {
+		return alive
+	}
+
 	// Fallback: signal 0 check (works on all POSIX systems).
 	proc, err := os.FindProcess(pid)
 	if err != nil {
@@ -125,6 +131,12 @@ func IsAlive(pid int) bool {
 func HasChildAlive(shellPID int) bool {
 	if shellPID <= 0 {
 		return false
+	}
+	// Native single-syscall path (darwin): the portable fallback below costs
+	// one pgrep plus one ps per child, which robot status pays once per pane,
+	// serially (bd-4479y).
+	if alive, ok := nativeHasChildAlive(shellPID); ok {
+		return alive
 	}
 	for _, child := range getChildPIDs(shellPID) {
 		if IsAlive(child) {
@@ -191,6 +203,16 @@ func getChildPIDs(parentPID int) []int {
 					add(pid)
 				}
 			}
+		}
+	}
+
+	// Native snapshot (darwin): one sysctl call replaces the pgrep spawn.
+	if len(pids) == 0 {
+		if native, ok := nativeChildPIDs(parentPID); ok {
+			for _, pid := range native {
+				add(pid)
+			}
+			return pids
 		}
 	}
 
@@ -279,6 +301,19 @@ func GetChildPIDs(parentPID int, limit int) []int {
 	taskPath := fmt.Sprintf("/proc/%d/task/%d/children", parentPID, parentPID)
 	if data, err := os.ReadFile(taskPath); err == nil {
 		return collect(strings.Fields(string(data)))
+	}
+	if native, ok := nativeChildPIDs(parentPID); ok {
+		var out []int
+		for _, pid := range native {
+			if pid <= 0 {
+				continue
+			}
+			out = append(out, pid)
+			if len(out) >= limit {
+				break
+			}
+		}
+		return out
 	}
 	cmd := exec.Command("pgrep", "-P", strconv.Itoa(parentPID))
 	if out, err := cmd.Output(); err == nil {

@@ -70,6 +70,40 @@ func TestCheckHealthMCP(t *testing.T) {
 			want: false,
 		},
 		{
+			name: "200 with non-null result but no jsonrpc marker is unhealthy (squatter defense)",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				// A REST API that answers {"result": ...} without being a
+				// JSON-RPC server must not be blessed (bd-2c0yh.3).
+				w.Header().Set("Content-Type", "application/json")
+				fmt.Fprint(w, `{"result":{"serverInfo":{"name":"impostor"}}}`)
+			},
+			want: false,
+		},
+		{
+			name: "jsonrpc result without serverInfo is unhealthy (not an initialize answer)",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"ok":true}}`)
+			},
+			want: false,
+		},
+		{
+			name: "wrong jsonrpc version is unhealthy",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				fmt.Fprint(w, `{"jsonrpc":"1.0","id":1,"result":{"serverInfo":{"name":"old"}}}`)
+			},
+			want: false,
+		},
+		{
+			name: "non-object result is unhealthy",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":"pong"}`)
+			},
+			want: false,
+		},
+		{
 			name: "non-200 is unhealthy",
 			handler: func(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "not found", http.StatusNotFound)
@@ -359,6 +393,9 @@ func TestDefaultSpecsCMUsesMCPProbe(t *testing.T) {
 		}
 		if spec.HealthURL != "" {
 			t.Errorf("cm spec must not carry a REST HealthURL (cm has no REST /health); got %q", spec.HealthURL)
+		}
+		if !spec.NoPortFallback {
+			t.Error("cm spec must refuse random-port fallback (bd-2c0yh.1): a busy default port means another cm already serves this store, and a fallback would silently start a second daemon against the same database")
 		}
 		return
 	}

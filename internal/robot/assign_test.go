@@ -658,16 +658,25 @@ func TestUnassignedBeadsBeyondRecommendations(t *testing.T) {
 		{ID: "bd-3", Title: "Third"},
 	}
 	// The planner may skip earlier beads: assigning only bd-2 leaves bd-1 and
-	// bd-3 unassigned, keyed by bead ID rather than position.
-	if got, want := unassignedBeadsBeyondRecommendations(ready, []AssignRecommend{{AssignBead: "bd-2"}}), []UnassignableBead{
+	// bd-3 unassigned, keyed by bead ID rather than position. With exactly
+	// one idle agent (fully consumed), the honest reason is capacity.
+	if got, want := unassignedBeadsBeyondRecommendations(ready, []AssignRecommend{{AssignBead: "bd-2"}}, 1), []UnassignableBead{
 		{ID: "bd-1", Title: "First", Reason: "no idle agent available"},
 		{ID: "bd-3", Title: "Third", Reason: "no idle agent available"},
 	}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("unassignable capacity beads = %+v, want %+v", got, want)
 	}
+	// With idle agents to spare, the planner's confidence gate skipped the
+	// beads — "no idle agent available" would be a lie.
+	if got, want := unassignedBeadsBeyondRecommendations(ready, []AssignRecommend{{AssignBead: "bd-2"}}, 3), []UnassignableBead{
+		{ID: "bd-1", Title: "First", Reason: "skipped by planner: no agent matched above the confidence threshold"},
+		{ID: "bd-3", Title: "Third", Reason: "skipped by planner: no agent matched above the confidence threshold"},
+	}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("unassignable confidence-gated beads = %+v, want %+v", got, want)
+	}
 	if got := unassignedBeadsBeyondRecommendations(ready, []AssignRecommend{
 		{AssignBead: "bd-1"}, {AssignBead: "bd-2"}, {AssignBead: "bd-3"},
-	}); got != nil {
+	}, 3); got != nil {
 		t.Fatalf("unassignable capacity beads = %+v, want nil when every bead is recommended", got)
 	}
 }

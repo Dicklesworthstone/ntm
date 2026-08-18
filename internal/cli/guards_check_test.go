@@ -11,6 +11,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -20,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/state"
 )
 
@@ -336,5 +338,164 @@ func TestGuardDegradationCheck_SurfacesDegradedRuns(t *testing.T) {
 	}
 	if !strings.Contains(check.Message, "degraded 1 time") {
 		t.Errorf("doctor message should count degraded runs: %q", check.Message)
+	}
+}
+
+// TestGuardDegradationCheck_WindowsOldEvents (bd-2c0yh.2): doctor reports a
+// WINDOW, not an all-time count — an incident older than the window must not
+// keep the light red forever.
+func TestGuardDegradationCheck_WindowsOldEvents(t *testing.T) {
+	dbPath := isolateGuardState(t)
+
+	store, err := state.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open state DB: %v", err)
+	}
+	if err := store.Migrate(); err != nil {
+		t.Fatalf("migrate state DB: %v", err)
+	}
+	if err := store.RecordGuardDegradedEvent(&state.GuardDegradedEvent{
+		RepoPath: "/repo", ProjectKey: "/repo", Reason: guardReasonUnreachable,
+		Detail:    "old incident",
+		CreatedAt: time.Now().UTC().Add(-guardDegradedDoctorWindow - 24*time.Hour),
+	}); err != nil {
+		t.Fatalf("record degraded event: %v", err)
+	}
+	_ = store.Close()
+
+	check := guardDegradationCheck()
+	if check.Status != "ok" {
+		t.Fatalf("event outside the 7-day window must not warn, got %+v", check)
+	}
+}
+
+// TestGuardDegradationCheck_DistinguishesReasons (bd-2c0yh.2): the doctor
+// message must separate transport failures from application errors so an
+// unregistered repo does not masquerade as a down daemon.
+func TestGuardDegradationCheck_DistinguishesReasons(t *testing.T) {
+	dbPath := isolateGuardState(t)
+
+	store, err := state.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open state DB: %v", err)
+	}
+	if err := store.Migrate(); err != nil {
+		t.Fatalf("migrate state DB: %v", err)
+	}
+	for _, ev := range []state.GuardDegradedEvent{
+		{RepoPath: "/repo", Reason: guardReasonUnreachable, Detail: "dial refused"},
+		{RepoPath: "/repo", Reason: guardReasonAppError, Detail: "project not found"},
+	} {
+		ev := ev
+		if err := store.RecordGuardDegradedEvent(&ev); err != nil {
+			t.Fatalf("record degraded event: %v", err)
+		}
+	}
+	_ = store.Close()
+
+	check := guardDegradationCheck()
+	if check.Status != "warning" {
+		t.Fatalf("recent degraded runs must warn, got %+v", check)
+	}
+	if !strings.Contains(check.Message, "1 with Agent Mail unreachable") ||
+		!strings.Contains(check.Message, "1 with Agent Mail errors") {
+		t.Errorf("doctor message must break down reasons: %q", check.Message)
+	}
+}
+
+// TestRecordGuardDegradedEvent_PrunesPastRetention (bd-2c0yh.2): recording a
+// new degraded event prunes rows past retention, so the ledger is
+// self-limiting.
+func TestRecordGuardDegradedEvent_PrunesPastRetention(t *testing.T) {
+	dbPath := isolateGuardState(t)
+
+	store, err := state.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open state DB: %v", err)
+	}
+	if err := store.Migrate(); err != nil {
+		t.Fatalf("migrate state DB: %v", err)
+	}
+	if err := store.RecordGuardDegradedEvent(&state.GuardDegradedEvent{
+		RepoPath: "/repo", Reason: guardReasonUnreachable, Detail: "ancient",
+		CreatedAt: time.Now().UTC().Add(-guardDegradedRetention - 24*time.Hour),
+	}); err != nil {
+		t.Fatalf("seed old event: %v", err)
+	}
+	_ = store.Close()
+
+	var stderr bytes.Buffer
+	recordGuardDegradedEvent(&stderr, "/repo", "/repo", guardReasonAppError, nil)
+
+	store, err = state.Open(dbPath)
+	if err != nil {
+		t.Fatalf("reopen state DB: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+	events, err := store.ListGuardDegradedEvents(10)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("retention prune must leave exactly the fresh row, got %d rows", len(events))
+	}
+	if events[0].Reason != guardReasonAppError {
+		t.Errorf("surviving row reason = %q, want %q", events[0].Reason, guardReasonAppError)
+	}
+}
+
+// TestGuardTransportError pins the transport/application split (bd-2c0yh.2).
+func TestGuardTransportError(t *testing.T) {
+	if !guardTransportError(agentmail.ErrServerUnavailable) {
+		t.Error("ErrServerUnavailable must classify as transport")
+	}
+	if !guardTransportError(agentmail.ErrTimeout) {
+		t.Error("ErrTimeout must classify as transport")
+	}
+	if guardTransportError(errors.New("project not found")) {
+		t.Error("an application error from a healthy server is NOT a transport failure")
+	}
+}
+
+// TestGuardHookPathCheck_WarnsWhenNTMOffPath (bd-2c0yh.4): a repo with the
+// guard hook installed but no `ntm` on PATH is the one fail-open path that
+// can never record a ledger row — doctor must call it out.
+func TestGuardHookPathCheck_WarnsWhenNTMOffPath(t *testing.T) {
+	isolateGuardState(t)
+	repo := guardTestRepo(t)
+	hookPath := filepath.Join(repo, ".git", "hooks", "pre-commit")
+	if err := installFallbackGuard(hookPath, repo, repo); err != nil {
+		t.Fatalf("install hook: %v", err)
+	}
+	t.Chdir(repo)
+
+	// PATH with git but no ntm.
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Skipf("git not available: %v", err)
+	}
+	t.Setenv("PATH", filepath.Dir(gitPath))
+	if _, err := exec.LookPath("ntm"); err == nil {
+		t.Skip("ntm resolves inside git's own directory; cannot isolate PATH here")
+	}
+
+	check := guardHookPathCheck()
+	if check.Status != "warning" {
+		t.Fatalf("hook installed + ntm off PATH must warn, got %+v", check)
+	}
+	if !strings.Contains(check.Message, "PATH") {
+		t.Errorf("warning must explain the PATH problem: %q", check.Message)
+	}
+
+	// With ntm resolvable the check goes green.
+	binDir := t.TempDir()
+	fake := filepath.Join(binDir, "ntm")
+	if err := os.WriteFile(fake, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write fake ntm: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+filepath.Dir(gitPath))
+	check = guardHookPathCheck()
+	if check.Status != "ok" {
+		t.Fatalf("hook installed + ntm on PATH must be ok, got %+v", check)
 	}
 }

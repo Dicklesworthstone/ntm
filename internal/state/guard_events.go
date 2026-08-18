@@ -55,6 +55,28 @@ func (s *Store) RecordGuardDegradedEvent(ev *GuardDegradedEvent) error {
 	return nil
 }
 
+// PruneGuardDegradedEvents deletes degraded events recorded before the given
+// cutoff and reports how many rows were removed. The ledger must not be an
+// all-time monotone counter (bd-2c0yh.2): a permanently-red doctor light that
+// can never clear trains users to ignore it. Callers prune on every record so
+// the ledger is self-limiting without a new maintenance surface.
+func (s *Store) PruneGuardDegradedEvents(before time.Time) (int64, error) {
+	if before.IsZero() {
+		return 0, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	res, err := s.db.Exec(`DELETE FROM guard_degraded_events WHERE created_at < ?`, before)
+	if err != nil {
+		return 0, fmt.Errorf("prune guard degraded events: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, nil
+	}
+	return n, nil
+}
+
 // GuardDegradedEventStats returns the count plus first/last timestamps of
 // degraded events recorded at or after since (zero = all events).
 func (s *Store) GuardDegradedEventStats(since time.Time) (*GuardDegradedStats, error) {

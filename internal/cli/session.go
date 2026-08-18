@@ -611,18 +611,22 @@ func buildSessionListResponse(tags []string, project string) (output.ListRespons
 		items[i] = item
 	}
 
-	// Sort by base project, then unlabeled first, then label alphabetically (bd-3cu02.6)
+	// Sort by base project, then unlabeled first, then label alphabetically
+	// (bd-3cu02.6), then session name as a total-order tie-break. The
+	// unlabeled rule must compare BOTH sides: returning true whenever
+	// items[i].Label == "" violates strict weak ordering when two unlabeled
+	// sessions share a base project.
 	sort.Slice(items, func(i, j int) bool {
 		if items[i].BaseProject != items[j].BaseProject {
 			return items[i].BaseProject < items[j].BaseProject
 		}
-		if items[i].Label == "" {
-			return true
+		if (items[i].Label == "") != (items[j].Label == "") {
+			return items[i].Label == ""
 		}
-		if items[j].Label == "" {
-			return false
+		if items[i].Label != items[j].Label {
+			return items[i].Label < items[j].Label
 		}
-		return items[i].Label < items[j].Label
+		return items[i].Name < items[j].Name
 	})
 
 	return output.ListResponse{

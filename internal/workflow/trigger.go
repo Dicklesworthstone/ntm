@@ -109,6 +109,13 @@ func (r *TriggerRegistry) Create(config Trigger) (RuntimeTrigger, error) {
 	return factory(config)
 }
 
+// fileBaseline is the size/mtime of a just-created file, recorded so a write
+// that the notification backend never reports can still be detected by stat.
+type fileBaseline struct {
+	size    int64
+	modTime time.Time
+}
+
 type fileTrigger struct {
 	kind    TriggerType
 	pattern string
@@ -121,6 +128,12 @@ type fileTrigger struct {
 	watcher *fsnotify.Watcher
 	done    chan struct{}
 	wg      sync.WaitGroup
+	// pending tracks pattern-matching files whose Create event has been seen
+	// but whose first Write event may never arrive: on kqueue platforms
+	// (macOS/BSD) fsnotify registers the new file's own watch asynchronously
+	// after the Create event, so a create-then-write-once sequence can lose
+	// the write. Check falls back to stat-ing these files.
+	pending map[string]fileBaseline
 }
 
 func newFileCreatedTrigger(config Trigger) (RuntimeTrigger, error) {
@@ -158,6 +171,7 @@ func (t *fileTrigger) Start(ctx *TriggerContext) error {
 	t.root = root
 	t.fired = false
 	t.err = nil
+	t.pending = make(map[string]fileBaseline)
 	t.watcher = watcher
 	t.done = make(chan struct{})
 	done := t.done
@@ -179,12 +193,28 @@ func (t *fileTrigger) run(watcher *fsnotify.Watcher, done <-chan struct{}) {
 				return
 			}
 			if event.Op&fsnotify.Create != 0 {
-				if info, err := os.Stat(event.Name); err == nil && info.IsDir() {
+				info, statErr := os.Stat(event.Name)
+				if statErr == nil && info.IsDir() {
 					if err := addDirectoryTree(watcher, event.Name); err != nil {
 						t.mu.Lock()
 						t.err = fmt.Errorf("watch created directory %q: %w", event.Name, err)
 						t.mu.Unlock()
 					}
+				}
+				// kqueue write-loss fallback: fsnotify registers a brand-new
+				// file's own watch asynchronously after its Create event, so a
+				// write landing immediately after creation can produce no Write
+				// event at all. For write triggers, treat a matching file that
+				// already has content as written, and remember empty ones so
+				// Check can detect the write by stat.
+				if t.op&fsnotify.Write != 0 && statErr == nil && info.Mode().IsRegular() && t.matches(event.Name) {
+					t.mu.Lock()
+					if info.Size() > 0 {
+						t.fired = true
+					} else if t.pending != nil {
+						t.pending[event.Name] = fileBaseline{size: info.Size(), modTime: info.ModTime()}
+					}
+					t.mu.Unlock()
 				}
 			}
 			if event.Op&t.op == 0 || !t.matches(event.Name) {
@@ -265,9 +295,45 @@ func matchPathPattern(pattern, rel string) bool {
 
 func (t *fileTrigger) Check(_ *TriggerContext) (bool, error) {
 	t.mu.Lock()
-	defer t.mu.Unlock()
 	if t.err != nil {
-		return false, fmt.Errorf("watch filesystem: %w", t.err)
+		err := t.err
+		t.mu.Unlock()
+		return false, fmt.Errorf("watch filesystem: %w", err)
+	}
+	if t.fired {
+		t.mu.Unlock()
+		return true, nil
+	}
+	// Stat fallback for writes whose notification was lost (see run): compare
+	// each pending created file against its creation-time baseline.
+	pending := make(map[string]fileBaseline, len(t.pending))
+	for name, baseline := range t.pending {
+		pending[name] = baseline
+	}
+	t.mu.Unlock()
+
+	fired := false
+	var settled []string
+	for name, baseline := range pending {
+		info, err := os.Stat(name)
+		if err != nil {
+			// Removed (or unreadable): a future rewrite produces a fresh
+			// Create event, so stop tracking this instance.
+			settled = append(settled, name)
+			continue
+		}
+		if info.Size() != baseline.size || info.ModTime().After(baseline.modTime) {
+			fired = true
+			settled = append(settled, name)
+		}
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if fired {
+		t.fired = true
+	}
+	for _, name := range settled {
+		delete(t.pending, name)
 	}
 	return t.fired, nil
 }

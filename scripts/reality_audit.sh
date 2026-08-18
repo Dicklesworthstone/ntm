@@ -159,25 +159,64 @@ step_done "3-probes" 30
 # ---------------------------------------------------------------------------
 echo "=== step 4: ledger audit ==="
 LEDGER_ROWS=""
+LEDGER_SCOPE="all-recent (no previous audit found — era unclassified)"
 if command -v br >/dev/null 2>&1; then
-  # Closed beads, most recent window; seeded sample of 10. Skeleton uses the
-  # recently-closed set; refine to "closed since previous audit date" once two
-  # audits exist. H10's matrix-conformance gate automates the matrix half.
-  CLOSED_IDS="$(br list --status=closed --limit=200 2>/dev/null | grep -o 'bd-[a-z0-9][a-z0-9._-]*' | sort -u || true)"
+  # Sample scope (bd-yz3nb): only beads closed SINCE the previous committed
+  # audit's `generated:` timestamp. Pre-discipline closes (before proof-naming
+  # existed) are excluded instead of polluting the sample with known
+  # NO_PROOF_NAMED noise. Falls back to the recent-closed window on the first
+  # ever run. H10's matrix-conformance gate automates the matrix half.
+  PREV_AUDIT_DATE="$(sed -n 's/^generated: \([0-9TZ:.-]*\).*/\1/p' \
+      $(ls "$OUT_DIR"/audit-*.md 2>/dev/null | grep -vF "audit-$TAG.md" || true) /dev/null 2>/dev/null \
+    | sort | tail -1)"
+  if [ -n "$PREV_AUDIT_DATE" ]; then
+    LEDGER_SCOPE="closed since previous audit ($PREV_AUDIT_DATE) — post-discipline era only"
+    CLOSED_IDS="$(br list --status=closed --sort updated_at --limit=500 --format csv --fields id,closed_at 2>/dev/null \
+      | awk -F, -v d="$PREV_AUDIT_DATE" 'NR>1 && $1 ~ /^bd-/ { ca=$2; gsub(/\+00:00$/,"Z",ca); if (ca >= d) print $1 }' \
+      | sort -u || true)"
+  else
+    CLOSED_IDS="$(br list --status=closed --limit=200 2>/dev/null | grep -o 'bd-[a-z0-9][a-z0-9._-]*' | sort -u || true)"
+  fi
+  echo "ledger scope: $LEDGER_SCOPE ($(printf '%s\n' "$CLOSED_IDS" | sed '/^$/d' | wc -l | tr -d ' ') candidates)"
   SAMPLE_IDS="$(printf '%s\n' "$CLOSED_IDS" | sed '/^$/d' | seeded_sample 10)"
   TEST_LIST="$(go test ./... -list '.*' 2>/dev/null | grep -E '^(Test|Fuzz|Example)' | sort -u || true)"
+  # check_proofs <bead-id> — echo the first named (Test|Fuzz) function that
+  # `go test -list` confirms live, or "MISSING <first-named>" if names exist
+  # but none are live, or nothing if the close names no test at all.
+  check_proofs() {
+    local bid="$1" p first=""
+    while IFS= read -r p; do
+      [ -n "$p" ] || continue
+      [ -n "$first" ] || first="$p"
+      if printf '%s\n' "$TEST_LIST" | grep -qxF "$p"; then echo "$p"; return 0; fi
+    done < <(br show "$bid" 2>/dev/null | grep -oE '(Test|Fuzz)[A-Z_][A-Za-z0-9_]*' | sort -u)
+    [ -z "$first" ] || echo "MISSING $first"
+  }
   while IFS= read -r id; do
     [ -n "$id" ] || continue
-    proof="$(br show "$id" 2>/dev/null | grep -oE '(Test|Fuzz)[A-Z_][A-Za-z0-9_]*' | head -1 || true)"
-    if [ -z "$proof" ]; then
-      status="NO_PROOF_NAMED"
-      finding "ledger: closed bead $id names no Proof test"
-    elif printf '%s\n' "$TEST_LIST" | grep -qxF "$proof"; then
-      status="OK ($proof)"
-    else
-      status="PROOF_MISSING ($proof not in go test -list)"
-      finding "ledger: closed bead $id Proof test $proof not found by 'go test -list'"
-    fi
+    proof="$(check_proofs "$id")"
+    case "$proof" in
+      "")
+        # No Test function named verbatim. Accept an explicit delegated-proof
+        # pointer the grep can follow: "proof ... bd-xxxx" in the close text,
+        # where the SIBLING bead names a live Test function.
+        delegate="$(br show "$id" 2>/dev/null | grep -ioE 'proofs?[^.]*bd-[a-z0-9][a-z0-9._-]*' | grep -oE 'bd-[a-z0-9][a-z0-9._-]*' | head -1 || true)"
+        dproof=""
+        [ -z "$delegate" ] || dproof="$(check_proofs "$delegate")"
+        case "$dproof" in
+          ""|MISSING*)
+            status="NO_PROOF_NAMED"
+            finding "ledger: closed bead $id names no live Proof test (post-discipline close must name a Test function verbatim or a followable delegated-proof bead)"
+            ;;
+          *) status="OK (delegated to $delegate: $dproof)" ;;
+        esac
+        ;;
+      MISSING*)
+        status="PROOF_MISSING (${proof#MISSING } not in go test -list)"
+        finding "ledger: closed bead $id Proof test ${proof#MISSING } not found by 'go test -list'"
+        ;;
+      *) status="OK ($proof)" ;;
+    esac
     LEDGER_ROWS="$LEDGER_ROWS| $id | $status |"$'\n'
     echo "$id -> $status"
   done <<<"$SAMPLE_IDS"
@@ -236,6 +275,9 @@ TOTAL_MIN=$(( (RITUAL_END - RITUAL_START + 59) / 60 ))
   done <<<"$PROBE_ROWS"
   echo ""
   echo "## Ledger audit (10 seeded closed beads; Proof test must exist in go test -list)"
+  echo ""
+  echo "scope: $LEDGER_SCOPE"
+  echo ""
   echo "| bead | proof status |"
   echo "|------|--------------|"
   printf '%s' "$LEDGER_ROWS"

@@ -774,6 +774,20 @@ func QueryAndFilterCASS(prompt string, queryConfig CASSConfig, filterConfig Filt
 }
 
 func InjectContextFromQuery(prompt string, queryConfig CASSConfig, filterConfig FilterConfig, injectConfig InjectConfig) (InjectionResult, CASSQueryResult, FilterResult) {
+	// [cass] enabled=false with an explicit --with-cass degrades to a
+	// recorded skip. Record the honest reason — the query never ran — rather
+	// than the zero-hits path's "no relevant context found".
+	if !queryConfig.Enabled {
+		return InjectionResult{
+			Success:        true,
+			ModifiedPrompt: prompt,
+			Metadata: InjectionMetadata{
+				Enabled:       false,
+				FormatUsed:    injectConfig.Format,
+				SkippedReason: "cass disabled by config ([cass] enabled=false)",
+			},
+		}, CASSQueryResult{Success: true, Hits: []CASSHit{}}, FilterResult{}
+	}
 	queryResult, filterResult := QueryAndFilterCASS(prompt, queryConfig, filterConfig)
 	if !queryResult.Success {
 		return InjectionResult{

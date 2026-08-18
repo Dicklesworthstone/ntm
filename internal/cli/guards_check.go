@@ -19,6 +19,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -44,6 +45,36 @@ const guardStrictEnv = "NTM_GUARD_STRICT"
 // guardSelfAgentEnv optionally names the committing agent so its own
 // exclusive reservations do not block its commit.
 const guardSelfAgentEnv = "NTM_GUARD_AGENT"
+
+// Degraded-event reasons (bd-2c0yh.2). Transport failures — the daemon is
+// down, unreachable, or timing out — are a different fact from a HEALTHY
+// Agent Mail answering with an application error (e.g. "project not found"
+// for a repo never registered). Blurring them under one reason made the
+// doctor light permanently red for unregistered repos.
+const (
+	guardReasonUnreachable = "agent-mail-unreachable"
+	guardReasonAppError    = "agent-mail-error"
+)
+
+// guardDegradedRetention bounds how long degraded events are kept: recording
+// a new event prunes rows older than this, so the ledger is self-clearing
+// and can never become an all-time monotone counter (bd-2c0yh.2).
+const guardDegradedRetention = 30 * 24 * time.Hour
+
+// guardDegradedDoctorWindow is the reporting window for `ntm doctor`:
+// only degraded runs inside this window turn the check yellow, so a stale
+// incident stops warning once the window passes instead of forever.
+const guardDegradedDoctorWindow = 7 * 24 * time.Hour
+
+// guardTransportError reports whether the reservation-check failure was a
+// transport-level failure (server unreachable / request timed out) rather
+// than an application-level answer from a healthy server.
+func guardTransportError(err error) bool {
+	return agentmail.IsServerUnavailable(err) ||
+		agentmail.IsTimeout(err) ||
+		errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, context.Canceled)
+}
 
 func newGuardsCheckCmd() *cobra.Command {
 	var staged bool
@@ -110,10 +141,19 @@ func runGuardsCheckStaged(stdout, stderr io.Writer, projectKey string) error {
 			return fmt.Errorf("commit blocked: Agent Mail unreachable and %s=1 requires a completed reservation check", guardStrictEnv)
 		}
 		// Fail open, but VISIBLY: WARN now, and a degraded-event row that
-		// `ntm doctor` / the dashboard surface later.
-		fmt.Fprintf(stderr, "[ntm-guard] WARN: Agent Mail unreachable (%v) — allowing commit WITHOUT reservation check (degraded mode)\n", checkErr)
+		// `ntm doctor` / the dashboard surface later. Transport failures and
+		// application errors from a healthy server are recorded under
+		// distinct reasons (bd-2c0yh.2) so doctor can tell "daemon down at
+		// commit time" from "repo not registered with Agent Mail".
+		reason := guardReasonAppError
+		if guardTransportError(checkErr) {
+			reason = guardReasonUnreachable
+			fmt.Fprintf(stderr, "[ntm-guard] WARN: Agent Mail unreachable (%v) — allowing commit WITHOUT reservation check (degraded mode)\n", checkErr)
+		} else {
+			fmt.Fprintf(stderr, "[ntm-guard] WARN: Agent Mail answered with an error (%v) — allowing commit WITHOUT reservation check (degraded mode)\n", checkErr)
+		}
 		fmt.Fprintf(stderr, "[ntm-guard] WARN: degraded runs are recorded; see 'ntm doctor'. Set %s=1 to fail closed.\n", guardStrictEnv)
-		recordGuardDegradedEvent(stderr, repoPath, projectKey, checkErr)
+		recordGuardDegradedEvent(stderr, repoPath, projectKey, reason, checkErr)
 		return nil
 	}
 
@@ -165,7 +205,7 @@ func stagedFiles(repoPath string) ([]string, error) {
 // recordGuardDegradedEvent appends a fail-open row to the state DB. Best
 // effort: a bookkeeping failure must not block the commit, but it must not be
 // silent either.
-func recordGuardDegradedEvent(stderr io.Writer, repoPath, projectKey string, cause error) {
+func recordGuardDegradedEvent(stderr io.Writer, repoPath, projectKey, reason string, cause error) {
 	store, err := state.Open("")
 	if err != nil {
 		fmt.Fprintf(stderr, "[ntm-guard] WARN: could not record degraded event (state DB: %v)\n", err)
@@ -184,11 +224,15 @@ func recordGuardDegradedEvent(stderr io.Writer, repoPath, projectKey string, cau
 	if err := store.RecordGuardDegradedEvent(&state.GuardDegradedEvent{
 		RepoPath:   repoPath,
 		ProjectKey: projectKey,
-		Reason:     "agent-mail-unreachable",
+		Reason:     reason,
 		Detail:     detail,
 	}); err != nil {
 		fmt.Fprintf(stderr, "[ntm-guard] WARN: could not record degraded event: %v\n", err)
 	}
+	// Self-limiting ledger (bd-2c0yh.2): drop rows past retention so the
+	// ledger never becomes an all-time counter. Best effort; a prune failure
+	// must not block the commit.
+	_, _ = store.PruneGuardDegradedEvents(time.Now().UTC().Add(-guardDegradedRetention))
 }
 
 // guardDegradationCheck is the `ntm doctor` surface for degraded guard runs
@@ -209,19 +253,75 @@ func guardDegradationCheck() ConfigCheck {
 		return check
 	}
 
-	stats, err := store.GuardDegradedEventStats(time.Time{})
+	// Windowed, not all-time (bd-2c0yh.2): an incident from months ago must
+	// not keep the light red forever — users learn to ignore a lamp that
+	// cannot clear.
+	since := time.Now().UTC().Add(-guardDegradedDoctorWindow)
+	stats, err := store.GuardDegradedEventStats(since)
 	if err != nil {
 		check.Status = "warning"
 		check.Message = fmt.Sprintf("could not read guard degraded events: %v", err)
 		return check
 	}
 	if stats.Count > 0 {
+		transport, app := 0, 0
+		if recent, listErr := store.ListGuardDegradedEvents(200); listErr == nil {
+			for _, ev := range recent {
+				if ev.CreatedAt.Before(since) {
+					continue
+				}
+				if ev.Reason == guardReasonUnreachable {
+					transport++
+				} else {
+					app++
+				}
+			}
+		}
 		check.Valid = false
 		check.Status = "warning"
-		check.Message = fmt.Sprintf("guard hook ran degraded %d time(s) since %s (Agent Mail unreachable at commit time; commits were allowed unchecked)",
-			stats.Count, stats.FirstAt.Local().Format(time.RFC3339))
+		check.Message = fmt.Sprintf("guard hook ran degraded %d time(s) in the last 7 days (first %s; %d with Agent Mail unreachable, %d with Agent Mail errors; commits were allowed unchecked)",
+			stats.Count, stats.FirstAt.Local().Format(time.RFC3339), transport, app)
 		return check
 	}
-	check.Message = "no degraded (unchecked) guard runs recorded"
+	check.Message = "no degraded (unchecked) guard runs recorded in the last 7 days"
+	return check
+}
+
+// guardHookPathCheck is the `ntm doctor` surface for the one fail-open path
+// that can never record a ledger row (bd-2c0yh.4): the installed pre-commit
+// hook execs `ntm guards check --staged`, but when `ntm` itself is not on
+// PATH the hook prints a WARN into commit scrollback and exits 0 — no check,
+// no degraded event, nothing for doctor to count. Detect that combination
+// here, where `ntm` is definitionally runnable.
+func guardHookPathCheck() ConfigCheck {
+	check := ConfigCheck{Name: "guard-hook ntm on PATH", Valid: true, Status: "ok"}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		check.Message = "could not determine current directory"
+		return check
+	}
+	repoPath, err := findGitRoot(cwd)
+	if err != nil {
+		check.Message = "not in a git repository (guard hook not applicable)"
+		return check
+	}
+	hookPath, err := findGitHookPath(repoPath, "pre-commit")
+	if err != nil || !fileExists(hookPath) {
+		check.Message = "no pre-commit guard hook installed here"
+		return check
+	}
+	content, err := os.ReadFile(hookPath)
+	if err != nil || !strings.Contains(string(content), "ntm-precommit-guard") {
+		check.Message = "pre-commit hook is not an NTM guard"
+		return check
+	}
+	if _, err := exec.LookPath("ntm"); err != nil {
+		check.Valid = false
+		check.Status = "warning"
+		check.Message = "guard hook is installed but 'ntm' is not on PATH: the hook silently skips the reservation check on every commit (and cannot record a degraded event); add ntm to PATH or set NTM_GUARD_STRICT=1"
+		return check
+	}
+	check.Message = "guard hook installed and 'ntm' resolves on PATH"
 	return check
 }

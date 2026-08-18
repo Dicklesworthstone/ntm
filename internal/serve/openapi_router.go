@@ -354,6 +354,24 @@ func buildRouterOperation(rt RouterRoute, components *OpenAPIComponents) *Operat
 		},
 	}
 
+	// Document the codes the handler actually writes (WS4 contract
+	// fidelity): routes addressing one resource by path parameter can miss
+	// (404), and the async jobs surface accepts with 202, rejects unknown
+	// job types with 501, and refuses to cancel settled jobs with 409.
+	if strings.Contains(rt.Pattern, "{") {
+		op.Responses["404"] = errorResponse("Not found")
+	}
+	switch rt.Handler {
+	case "handleCreateJob":
+		accepted := op.Responses["200"]
+		accepted.Description = "Job accepted for asynchronous execution"
+		op.Responses["202"] = accepted
+		delete(op.Responses, "200")
+		op.Responses["501"] = errorResponse("Job type not implemented")
+	case "handleCancelJob":
+		op.Responses["409"] = errorResponse("Job is not cancellable in its current state")
+	}
+
 	if rt.Method == "POST" || rt.Method == "PUT" || rt.Method == "PATCH" {
 		op.RequestBody = &RequestBody{
 			Content: map[string]MediaType{

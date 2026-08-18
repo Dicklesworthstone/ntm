@@ -108,9 +108,11 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		switch req.Method {
 		case "initialize", "tools/list":
+			// serverInfo is mandatory in a real MCP initialize result; the
+			// probe requires it (bd-2c0yh.3), so the stub must send it too.
 			json.NewEncoder(w).Encode(map[string]any{
 				"jsonrpc": "2.0", "id": req.ID,
-				"result": map[string]any{"protocolVersion": "2024-11-05"},
+				"result": map[string]any{"protocolVersion": "2024-11-05", "serverInfo": map[string]string{"name": "stub-cm"}},
 			})
 		default:
 			json.NewEncoder(w).Encode(map[string]any{
@@ -250,6 +252,38 @@ func TestMemoryServeSupervisesStubCM(t *testing.T) {
 	if !stopped {
 		syscall.Kill(pid, syscall.SIGKILL)
 		t.Fatalf("supervised cm process %d still alive after shutdown", pid)
+	}
+}
+
+// TestMemoryServeRefusesOccupiedPort (bd-2c0yh.1): when the requested port is
+// already held — almost always by another cm serving the same store —
+// `ntm memory serve` must FAIL loudly instead of silently falling back to a
+// random port and starting a second cm against the same database.
+func TestMemoryServeRefusesOccupiedPort(t *testing.T) {
+	binDir := t.TempDir()
+	buildStubCMBinary(t, binDir)
+
+	projDir := t.TempDir()
+	t.Chdir(projDir)
+	t.Setenv("PATH", binDir)
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("occupy port: %v", err)
+	}
+	defer ln.Close()
+	port := ln.Addr().(*net.TCPAddr).Port
+
+	out := &syncBuffer{}
+	err = runMemoryServe(context.Background(), out, port)
+	if err == nil {
+		t.Fatalf("runMemoryServe must fail when the requested port is occupied\noutput:\n%s", out.String())
+	}
+	if !strings.Contains(err.Error(), "already in use") {
+		t.Errorf("error must say the port is already in use, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), fmt.Sprintf("%d", port)) {
+		t.Errorf("error must name the contested port %d, got: %v", port, err)
 	}
 }
 

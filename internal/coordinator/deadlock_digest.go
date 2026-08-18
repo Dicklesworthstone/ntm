@@ -97,7 +97,10 @@ func DeadlockDigestLine(report DeadlockReport) string {
 		}
 		parts = append(parts, cycle)
 	}
-	return fmt.Sprintf("Reservation deadlock detected (%d cycle(s)): %s",
+	// Hedged wording (bd-izuqq.4): the cycle comes from a creation-order
+	// heuristic over advisory reservations — it flags a POSSIBLE deadlock,
+	// with known false positives and negatives, not a proven one.
+	return fmt.Sprintf("Possible reservation deadlock (%d cycle(s), advisory heuristic): %s",
 		len(report.Cycles), strings.Join(parts, "; "))
 }
 

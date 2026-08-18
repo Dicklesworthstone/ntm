@@ -156,45 +156,7 @@ func TestCoordinatorWorkAssignedEventUsesOnlyDurableTitle(t *testing.T) {
 	}
 }
 
-func TestRemoveRecommendation(t *testing.T) {
-	recs := []bv.TriageRecommendation{
-		{ID: "ntm-001", Title: "First"},
-		{ID: "ntm-002", Title: "Second"},
-		{ID: "ntm-003", Title: "Third"},
-	}
-
-	result := removeRecommendation(recs, "ntm-002")
-
-	if len(result) != 2 {
-		t.Errorf("expected 2 recommendations after removal, got %d", len(result))
-	}
-	for _, r := range result {
-		if r.ID == "ntm-002" {
-			t.Error("expected ntm-002 to be removed")
-		}
-	}
-
-	// Test removing non-existent ID
-	result2 := removeRecommendation(recs, "ntm-999")
-	if len(result2) != 3 {
-		t.Errorf("expected 3 recommendations when removing non-existent, got %d", len(result2))
-	}
-
-	// Test empty slice (should not panic)
-	result3 := removeRecommendation(nil, "ntm-001")
-	if result3 != nil {
-		t.Errorf("expected nil for empty input, got %v", result3)
-	}
-
-	result4 := removeRecommendation([]bv.TriageRecommendation{}, "ntm-001")
-	if result4 != nil {
-		t.Errorf("expected nil for empty slice, got %v", result4)
-	}
-}
-
-func TestFindBestMatch(t *testing.T) {
-	c := New("test-session", "/tmp/test", nil, "TestAgent")
-
+func TestScoreAndSelectAssignmentsSkipsGatedRecommendations(t *testing.T) {
 	agent := &AgentState{
 		PaneID:        "%0",
 		AgentType:     "cc",
@@ -211,64 +173,35 @@ func TestFindBestMatch(t *testing.T) {
 		{ID: "ntm-003", Title: "Another Ready", Status: "open", Priority: 2, Score: 0.7},
 	}
 
-	assignment, rec := c.findBestMatch(agent, recs)
+	selected := ScoreAndSelectAssignments([]*AgentState{agent}, recs, DefaultScoreConfig(), nil)
 
-	if assignment == nil {
-		t.Fatal("expected assignment, got nil")
+	if len(selected) != 1 {
+		t.Fatalf("expected 1 assignment for 1 agent, got %d", len(selected))
 	}
-	if rec == nil {
-		t.Fatal("expected recommendation, got nil")
+	if selected[0].Assignment.BeadID != "ntm-002" {
+		t.Errorf("expected BeadID 'ntm-002' (highest-scoring ungated), got %q", selected[0].Assignment.BeadID)
 	}
-	if assignment.BeadID != "ntm-002" {
-		t.Errorf("expected BeadID 'ntm-002' (first non-blocked), got %q", assignment.BeadID)
-	}
-	if assignment.AgentMailName != "BlueFox" {
-		t.Errorf("expected AgentMailName 'BlueFox', got %q", assignment.AgentMailName)
+	if selected[0].Assignment.AgentMailName != "BlueFox" {
+		t.Errorf("expected AgentMailName 'BlueFox', got %q", selected[0].Assignment.AgentMailName)
 	}
 }
 
-func TestFindBestMatchAllBlocked(t *testing.T) {
-	c := New("test-session", "/tmp/test", nil, "TestAgent")
-
+func TestScoreAndSelectAssignmentsAllGated(t *testing.T) {
 	agent := &AgentState{
 		PaneID:    "%0",
 		AgentType: "cc",
 	}
 
 	recs := []bv.TriageRecommendation{
-		{ID: "ntm-001", Title: "Blocked 1", Status: "Blocked"},
-		{ID: "ntm-002", Title: "Dependency", Status: "open", BlockedBy: []string{"ntm-prerequisite"}},
-		{ID: "ntm-003", Title: "Operator", Status: "open", Labels: []string{"blocked-on-operator"}},
+		{ID: "ntm-001", Title: "Blocked 1", Status: "Blocked", Score: 0.9},
+		{ID: "ntm-002", Title: "Dependency", Status: "open", BlockedBy: []string{"ntm-prerequisite"}, Score: 0.9},
+		{ID: "ntm-003", Title: "Operator", Status: "open", Labels: []string{"blocked-on-operator"}, Score: 0.9},
 	}
 
-	assignment, rec := c.findBestMatch(agent, recs)
+	selected := ScoreAndSelectAssignments([]*AgentState{agent}, recs, DefaultScoreConfig(), nil)
 
-	if assignment != nil {
-		t.Error("expected nil assignment when all are blocked")
-	}
-	if rec != nil {
-		t.Error("expected nil recommendation when all are blocked")
-	}
-}
-
-func TestFindBestMatchEmpty(t *testing.T) {
-	c := New("test-session", "/tmp/test", nil, "TestAgent")
-
-	agent := &AgentState{
-		PaneID:    "%0",
-		AgentType: "cc",
-	}
-
-	assignment, rec := c.findBestMatch(agent, nil)
-
-	if assignment != nil || rec != nil {
-		t.Error("expected nil for empty recommendations")
-	}
-
-	assignment, rec = c.findBestMatch(agent, []bv.TriageRecommendation{})
-
-	if assignment != nil || rec != nil {
-		t.Error("expected nil for empty slice")
+	if len(selected) != 0 {
+		t.Errorf("expected no assignments when all recommendations are gated, got %d", len(selected))
 	}
 }
 
@@ -1927,6 +1860,51 @@ func TestAssignWorkConcurrentCyclesDoNotRaceOnSharedActionableRecommendations(t 
 	}
 }
 
+// TestAssignWorkSelectsByScoreNotFirstFit proves the bd-v394r wire: AssignWork
+// plans through ScoreAndSelectAssignments, so agent/task affinity decides the
+// pairing. The simple chore is listed FIRST — first-fit matching would hand it
+// to whichever agent iterated first — yet the Claude agent must end up on the
+// complex feature (+0.15 cc affinity) and the Codex agent on the chore (+0.15
+// cod affinity), regardless of map iteration order.
+func TestAssignWorkSelectsByScoreNotFirstFit(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	c := New("coordinator-score-based", t.TempDir(), &agentmail.Client{}, "CoordinatorAgent")
+	addEligibleCoordinatorAgent(c, "%1", "BlueLakeClaude")
+	c.agents["%1"].AgentType = "cc"
+	addEligibleCoordinatorAgent(c, "%2", "BlueLakeCodex")
+	c.agents["%2"].PaneIndex = 2
+
+	c.workItemStatusFn = func(context.Context, string) (string, error) { return "open", nil }
+	c.actionableRecommendationsFn = func(context.Context, string, int) ([]bv.TriageRecommendation, error) {
+		return []bv.TriageRecommendation{
+			{ID: "ntm-chore", Title: "Tidy workspace", Type: "chore", Status: "open", Priority: 2, Score: 0.5},
+			{ID: "ntm-feature", Title: "Ship new engine", Type: "feature", Status: "open", Priority: 2, Score: 0.5},
+		}, nil
+	}
+	c.atomicCoordinatorFactory = successfulCoordinatorAtomicFactory("mail-score-based")
+
+	results, err := c.AssignWork(t.Context())
+	if err != nil {
+		t.Fatalf("AssignWork error: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 assignments, got %d: %+v", len(results), results)
+	}
+	beadByPane := make(map[string]string)
+	for _, result := range results {
+		if !result.Success || result.Assignment == nil {
+			t.Fatalf("expected successful assignment, got %+v", result)
+		}
+		beadByPane[result.Assignment.AgentPaneID] = result.Assignment.BeadID
+	}
+	if beadByPane["%1"] != "ntm-feature" {
+		t.Errorf("expected cc agent %%1 to receive ntm-feature (complex-task affinity), got %q", beadByPane["%1"])
+	}
+	if beadByPane["%2"] != "ntm-chore" {
+		t.Errorf("expected cod agent %%2 to receive ntm-chore (simple-task affinity), got %q", beadByPane["%2"])
+	}
+}
+
 func successfulCoordinatorAtomicFactory(deliveryID string) func(*assignmentstore.AssignmentStore) *assignmentstore.AtomicCoordinator {
 	return func(store *assignmentstore.AssignmentStore) *assignmentstore.AtomicCoordinator {
 		claim := assignmentstore.ClaimFunc(func(_ context.Context, beadID, actor string) (assignmentstore.ClaimReceipt, error) {
@@ -2018,14 +1996,17 @@ func validCoordinatorSendResult() *agentmail.SendResult {
 	}
 }
 
-func TestFindBestMatchPropagatesPaneAndReservationPaths(t *testing.T) {
-	c := New("test-session", "/tmp/test", nil, "TestAgent")
+func TestScoreAndSelectAssignmentsPropagatesPaneAndReservationPaths(t *testing.T) {
 	agent := &AgentState{PaneID: "%9", PaneIndex: 4, AgentType: "cod", AgentMailName: "BlueFox"}
 	recommendations := []bv.TriageRecommendation{{
-		ID: "ntm-files", Title: "Update internal/coordinator/assign.go", Status: "open",
+		ID: "ntm-files", Title: "Update internal/coordinator/assign.go", Status: "open", Score: 0.8,
 		Reasons: []string{"also cover internal/coordinator/assign_test.go"},
 	}}
-	assignment, _ := c.findBestMatch(agent, recommendations)
+	selected := ScoreAndSelectAssignments([]*AgentState{agent}, recommendations, DefaultScoreConfig(), nil)
+	if len(selected) != 1 {
+		t.Fatalf("expected 1 assignment, got %d", len(selected))
+	}
+	assignment := selected[0].Assignment
 	if assignment == nil || assignment.AgentPaneID != "%9" || assignment.AgentPaneIndex != 4 {
 		t.Fatalf("assignment pane identity = %+v", assignment)
 	}
@@ -2325,16 +2306,12 @@ func TestScoreAndSelectAssignmentsWithAgentReservations(t *testing.T) {
 		{PaneID: "%2", AgentType: "cc", ContextUsage: 30, Status: robot.StateWaiting, Reservations: []string{"a.go", "b.go", "c.go"}},
 	}
 
-	triage := &bv.TriageResponse{
-		Triage: bv.TriageData{
-			Recommendations: []bv.TriageRecommendation{
-				{ID: "ntm-001", Title: "Task", Type: "task", Status: "open", Priority: 2, Score: 0.5},
-			},
-		},
+	recommendations := []bv.TriageRecommendation{
+		{ID: "ntm-001", Title: "Task", Type: "task", Status: "open", Priority: 2, Score: 0.5},
 	}
 
 	config := DefaultScoreConfig()
-	results := ScoreAndSelectAssignments(agents, triage, config, nil) // nil reservations map
+	results := ScoreAndSelectAssignments(agents, recommendations, config, nil) // nil reservations map
 
 	if len(results) != 1 {
 		t.Fatalf("expected 1 assignment, got %d", len(results))
@@ -2359,24 +2336,20 @@ func TestScoreAndSelectAssignments(t *testing.T) {
 		{PaneID: "%2", AgentType: "cod", ContextUsage: 50, Status: robot.StateWaiting},
 	}
 
-	triage := &bv.TriageResponse{
-		Triage: bv.TriageData{
-			Recommendations: []bv.TriageRecommendation{
-				{ID: "ntm-001", Title: "Feature work", Type: "feature", Status: "open", Priority: 2, Score: 0.8},
-				{ID: "ntm-002", Title: "Quick fix", Type: "chore", Status: "open", Priority: 2, Score: 0.6},
-				{ID: "ntm-003", Title: "Blocked", Type: "task", Status: "blocked", Priority: 2, Score: 0.9},
-				{ID: "ntm-004", Title: "Dependency gated", Type: "task", Status: "open", Priority: 1, Score: 1, BlockedBy: []string{"ntm-prerequisite"}},
-				{ID: "ntm-005", Title: "Operator gated", Type: "task", Status: "open", Priority: 1, Score: 1, Labels: []string{"operator-action"}},
-				// A container node ranked above everything else. Containers are
-				// grouping nodes, never implementation work, so this must not
-				// be dispatched no matter how highly triage scores it.
-				{ID: "ntm-006", Title: "Epic container", Type: "epic", Status: "open", Priority: 0, Score: 1},
-			},
-		},
+	recommendations := []bv.TriageRecommendation{
+		{ID: "ntm-001", Title: "Feature work", Type: "feature", Status: "open", Priority: 2, Score: 0.8},
+		{ID: "ntm-002", Title: "Quick fix", Type: "chore", Status: "open", Priority: 2, Score: 0.6},
+		{ID: "ntm-003", Title: "Blocked", Type: "task", Status: "blocked", Priority: 2, Score: 0.9},
+		{ID: "ntm-004", Title: "Dependency gated", Type: "task", Status: "open", Priority: 1, Score: 1, BlockedBy: []string{"ntm-prerequisite"}},
+		{ID: "ntm-005", Title: "Operator gated", Type: "task", Status: "open", Priority: 1, Score: 1, Labels: []string{"operator-action"}},
+		// A container node ranked above everything else. Containers are
+		// grouping nodes, never implementation work, so this must not
+		// be dispatched no matter how highly triage scores it.
+		{ID: "ntm-006", Title: "Epic container", Type: "epic", Status: "open", Priority: 0, Score: 1},
 	}
 
 	config := DefaultScoreConfig()
-	results := ScoreAndSelectAssignments(agents, triage, config, nil)
+	results := ScoreAndSelectAssignments(agents, recommendations, config, nil)
 
 	if len(results) != 2 {
 		t.Fatalf("expected 2 assignments, got %d", len(results))
@@ -2402,20 +2375,20 @@ func TestScoreAndSelectAssignments(t *testing.T) {
 
 func TestScoreAndSelectAssignmentsEmpty(t *testing.T) {
 	// Empty agents
-	result := ScoreAndSelectAssignments(nil, &bv.TriageResponse{}, DefaultScoreConfig(), nil)
+	result := ScoreAndSelectAssignments(nil, []bv.TriageRecommendation{{ID: "ntm-001"}}, DefaultScoreConfig(), nil)
 	if result != nil {
 		t.Error("expected nil for empty agents")
 	}
 
-	// Empty triage
+	// Nil recommendations
 	agents := []*AgentState{{PaneID: "%0", AgentType: "cc"}}
 	result = ScoreAndSelectAssignments(agents, nil, DefaultScoreConfig(), nil)
 	if result != nil {
-		t.Error("expected nil for nil triage")
+		t.Error("expected nil for nil recommendations")
 	}
 
 	// Empty recommendations
-	result = ScoreAndSelectAssignments(agents, &bv.TriageResponse{}, DefaultScoreConfig(), nil)
+	result = ScoreAndSelectAssignments(agents, []bv.TriageRecommendation{}, DefaultScoreConfig(), nil)
 	if result != nil {
 		t.Error("expected nil for empty recommendations")
 	}
@@ -2851,657 +2824,5 @@ func TestScoreAssignmentWithNilProfile(t *testing.T) {
 	}
 	if result.ScoreBreakdown.FocusPatternBonus != 0 {
 		t.Errorf("expected zero FocusPatternBonus with nil profile, got %f", result.ScoreBreakdown.FocusPatternBonus)
-	}
-}
-
-// Tests for AssignTasks function with strategies
-
-func TestAssignTasksBasic(t *testing.T) {
-	agents := []*AgentState{
-		{PaneID: "%1", AgentType: "cc", ContextUsage: 30, Status: robot.StateWaiting},
-		{PaneID: "%2", AgentType: "cod", ContextUsage: 50, Status: robot.StateWaiting},
-	}
-
-	beads := []*bv.TriageRecommendation{
-		{ID: "ntm-001", Title: "Epic task", Type: "epic", Status: "open", Priority: 2, Score: 0.8},
-		{ID: "ntm-002", Title: "Quick fix", Type: "chore", Status: "open", Priority: 2, Score: 0.6},
-	}
-
-	assignments := AssignTasks(beads, agents, StrategyBalanced, nil)
-
-	if len(assignments) != 2 {
-		t.Fatalf("expected 2 assignments, got %d", len(assignments))
-	}
-
-	// Verify each agent got exactly one task
-	agentTasks := make(map[string]string)
-	for _, a := range assignments {
-		if existing, ok := agentTasks[a.Agent.PaneID]; ok {
-			t.Errorf("agent %s assigned twice: %s and %s", a.Agent.PaneID, existing, a.Bead.ID)
-		}
-		agentTasks[a.Agent.PaneID] = a.Bead.ID
-	}
-
-	// Verify assignments have reasoning
-	for _, a := range assignments {
-		if a.Reason == "" {
-			t.Errorf("assignment for %s missing reason", a.Bead.ID)
-		}
-		if a.Confidence <= 0 || a.Confidence > 1 {
-			t.Errorf("assignment confidence %f out of range [0,1]", a.Confidence)
-		}
-	}
-}
-
-func TestAssignTasksMoreBeadsThanAgents(t *testing.T) {
-	agents := []*AgentState{
-		{PaneID: "%1", AgentType: "cc", ContextUsage: 30, Status: robot.StateWaiting},
-	}
-
-	beads := []*bv.TriageRecommendation{
-		{ID: "ntm-001", Title: "Task 1", Type: "task", Status: "open", Score: 0.8},
-		{ID: "ntm-002", Title: "Task 2", Type: "task", Status: "open", Score: 0.6},
-		{ID: "ntm-003", Title: "Task 3", Type: "task", Status: "open", Score: 0.4},
-	}
-
-	assignments := AssignTasks(beads, agents, StrategyBalanced, nil)
-
-	// Should only get 1 assignment (limited by agents)
-	if len(assignments) != 1 {
-		t.Fatalf("expected 1 assignment (limited by agents), got %d", len(assignments))
-	}
-}
-
-func TestAssignTasksMoreAgentsThanBeads(t *testing.T) {
-	agents := []*AgentState{
-		{PaneID: "%1", AgentType: "cc", ContextUsage: 30, Status: robot.StateWaiting},
-		{PaneID: "%2", AgentType: "cod", ContextUsage: 40, Status: robot.StateWaiting},
-		{PaneID: "%3", AgentType: "gmi", ContextUsage: 20, Status: robot.StateWaiting},
-	}
-
-	beads := []*bv.TriageRecommendation{
-		{ID: "ntm-001", Title: "Task 1", Type: "task", Status: "open", Score: 0.8},
-	}
-
-	assignments := AssignTasks(beads, agents, StrategyBalanced, nil)
-
-	// Should only get 1 assignment (limited by beads)
-	if len(assignments) != 1 {
-		t.Fatalf("expected 1 assignment (limited by beads), got %d", len(assignments))
-	}
-}
-
-func TestAssignTasksFiltersUnavailableAgents(t *testing.T) {
-	agents := []*AgentState{
-		{PaneID: "%1", AgentType: "cc", ContextUsage: 30, Status: robot.StateWaiting},
-		{PaneID: "%2", AgentType: "cc", ContextUsage: 95, Status: robot.StateWaiting},    // High context
-		{PaneID: "%3", AgentType: "cc", ContextUsage: 30, Status: robot.StateGenerating}, // Not idle
-	}
-
-	beads := []*bv.TriageRecommendation{
-		{ID: "ntm-001", Title: "Task 1", Type: "task", Status: "open", Score: 0.8},
-		{ID: "ntm-002", Title: "Task 2", Type: "task", Status: "open", Score: 0.6},
-	}
-
-	assignments := AssignTasks(beads, agents, StrategySpeed, nil)
-
-	// Should only assign to agent %1 (others unavailable)
-	if len(assignments) != 1 {
-		t.Fatalf("expected 1 assignment (only 1 available agent), got %d", len(assignments))
-	}
-
-	if assignments[0].Agent.PaneID != "%1" {
-		t.Errorf("expected agent %%1, got %s", assignments[0].Agent.PaneID)
-	}
-}
-
-func TestAssignTasksSkipsBlockedBeads(t *testing.T) {
-	agents := []*AgentState{
-		{PaneID: "%1", AgentType: "cc", ContextUsage: 30, Status: robot.StateWaiting},
-		{PaneID: "%2", AgentType: "cc", ContextUsage: 30, Status: robot.StateWaiting},
-	}
-
-	beads := []*bv.TriageRecommendation{
-		{ID: "ntm-001", Title: "Blocked", Type: "task", Status: "blocked", Score: 0.9},
-		{ID: "ntm-002", Title: "Open", Type: "task", Status: "open", Score: 0.8},
-	}
-
-	assignments := AssignTasks(beads, agents, StrategySpeed, nil)
-
-	// Should only assign the open bead
-	if len(assignments) != 1 {
-		t.Fatalf("expected 1 assignment (blocked bead skipped), got %d", len(assignments))
-	}
-
-	if assignments[0].Bead.ID != "ntm-002" {
-		t.Errorf("expected bead ntm-002, got %s", assignments[0].Bead.ID)
-	}
-}
-
-func TestAssignTasksEmpty(t *testing.T) {
-	// Empty agents
-	result := AssignTasks([]*bv.TriageRecommendation{{ID: "1"}}, nil, StrategyBalanced, nil)
-	if result != nil {
-		t.Error("expected nil for empty agents")
-	}
-
-	// Empty beads
-	result = AssignTasks(nil, []*AgentState{{PaneID: "%1", Status: robot.StateWaiting}}, StrategyBalanced, nil)
-	if result != nil {
-		t.Error("expected nil for empty beads")
-	}
-}
-
-func TestStrategySpeed(t *testing.T) {
-	agents := []*AgentState{
-		{PaneID: "%1", AgentType: "cc", ContextUsage: 30, Status: robot.StateWaiting},
-		{PaneID: "%2", AgentType: "cod", ContextUsage: 30, Status: robot.StateWaiting},
-	}
-
-	beads := []*bv.TriageRecommendation{
-		{ID: "ntm-001", Title: "Task 1", Type: "epic", Status: "open", Score: 0.5},
-		{ID: "ntm-002", Title: "Task 2", Type: "chore", Status: "open", Score: 0.8},
-	}
-
-	assignments := AssignTasks(beads, agents, StrategySpeed, nil)
-
-	// Speed strategy should assign quickly, not necessarily optimally
-	if len(assignments) != 2 {
-		t.Fatalf("expected 2 assignments, got %d", len(assignments))
-	}
-
-	// Verify reasons mention speed
-	for _, a := range assignments {
-		if !strings.Contains(a.Reason, "fastest") {
-			t.Logf("Speed strategy reason: %s", a.Reason)
-		}
-	}
-}
-
-func TestStrategyQuality(t *testing.T) {
-	// Create agents with profiles
-	testerProfile := &persona.Persona{Tags: []string{"testing"}}
-
-	agents := []*AgentState{
-		{PaneID: "%1", AgentType: "cc", ContextUsage: 30, Status: robot.StateWaiting, Profile: testerProfile},
-		{PaneID: "%2", AgentType: "cod", ContextUsage: 30, Status: robot.StateWaiting},
-	}
-
-	beads := []*bv.TriageRecommendation{
-		{ID: "ntm-001", Title: "Add unit tests", Type: "task", Status: "open", Score: 0.5},
-	}
-
-	assignments := AssignTasks(beads, agents, StrategyQuality, nil)
-
-	if len(assignments) != 1 {
-		t.Fatalf("expected 1 assignment, got %d", len(assignments))
-	}
-
-	// Quality strategy should pick the best-matching agent (agent 1 has testing profile)
-	if assignments[0].Agent.PaneID != "%1" {
-		t.Errorf("expected agent %%1 (with testing profile) for test task, got %s", assignments[0].Agent.PaneID)
-	}
-}
-
-func TestStrategyDependency(t *testing.T) {
-	agents := []*AgentState{
-		{PaneID: "%1", AgentType: "cc", ContextUsage: 30, Status: robot.StateWaiting},
-	}
-
-	beads := []*bv.TriageRecommendation{
-		{ID: "ntm-001", Title: "Low impact", Type: "task", Status: "open", Score: 0.9, UnblocksIDs: nil},
-		{ID: "ntm-002", Title: "High impact", Type: "task", Status: "open", Score: 0.5, UnblocksIDs: []string{"a", "b", "c"}},
-	}
-
-	assignments := AssignTasks(beads, agents, StrategyDependency, nil)
-
-	if len(assignments) != 1 {
-		t.Fatalf("expected 1 assignment, got %d", len(assignments))
-	}
-
-	// Dependency strategy should prioritize the blocker even though it has lower base score
-	if assignments[0].Bead.ID != "ntm-002" {
-		t.Errorf("expected bead ntm-002 (blocker), got %s", assignments[0].Bead.ID)
-	}
-
-	// Reason should mention unblocking
-	if !strings.Contains(assignments[0].Reason, "unblocks") {
-		t.Errorf("expected reason to mention unblocking, got: %s", assignments[0].Reason)
-	}
-}
-
-func TestParseStrategy(t *testing.T) {
-	tests := []struct {
-		input string
-		want  AssignmentStrategy
-	}{
-		{"balanced", StrategyBalanced},
-		{"BALANCED", StrategyBalanced},
-		{"speed", StrategySpeed},
-		{"fast", StrategySpeed},
-		{"quality", StrategyQuality},
-		{"best", StrategyQuality},
-		{"dependency", StrategyDependency},
-		{"deps", StrategyDependency},
-		{"blockers", StrategyDependency},
-		{"round-robin", StrategyRoundRobin},
-		{"roundrobin", StrategyRoundRobin},
-		{"rr", StrategyRoundRobin},
-		{"ROUND-ROBIN", StrategyRoundRobin},
-		{"unknown", StrategyBalanced}, // Default
-		{"", StrategyBalanced},        // Default
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.input, func(t *testing.T) {
-			got := ParseStrategy(tt.input)
-			if got != tt.want {
-				t.Errorf("ParseStrategy(%q) = %v, want %v", tt.input, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestBuildStrategyConfig(t *testing.T) {
-	t.Run("speed disables expensive features", func(t *testing.T) {
-		config := buildStrategyConfig(StrategySpeed)
-		if config.UseAgentProfiles {
-			t.Error("speed strategy should disable UseAgentProfiles")
-		}
-		if config.PenalizeFileOverlap {
-			t.Error("speed strategy should disable PenalizeFileOverlap")
-		}
-		if config.PreferCriticalPath {
-			t.Error("speed strategy should disable PreferCriticalPath")
-		}
-	})
-
-	t.Run("quality maximizes matching", func(t *testing.T) {
-		config := buildStrategyConfig(StrategyQuality)
-		if !config.UseAgentProfiles {
-			t.Error("quality strategy should enable UseAgentProfiles")
-		}
-		if config.ProfileTagBoostWeight < 0.2 {
-			t.Errorf("quality strategy should boost ProfileTagBoostWeight, got %f", config.ProfileTagBoostWeight)
-		}
-	})
-
-	t.Run("dependency weights critical path", func(t *testing.T) {
-		config := buildStrategyConfig(StrategyDependency)
-		if !config.PreferCriticalPath {
-			t.Error("dependency strategy should enable PreferCriticalPath")
-		}
-	})
-}
-
-func TestIsAgentAvailable(t *testing.T) {
-	tests := []struct {
-		name  string
-		agent *AgentState
-		want  bool
-	}{
-		{
-			name:  "idle with low context",
-			agent: &AgentState{Status: robot.StateWaiting, ContextUsage: 50},
-			want:  true,
-		},
-		{
-			name:  "idle at context threshold",
-			agent: &AgentState{Status: robot.StateWaiting, ContextUsage: 90},
-			want:  true,
-		},
-		{
-			name:  "idle over context threshold",
-			agent: &AgentState{Status: robot.StateWaiting, ContextUsage: 95},
-			want:  false,
-		},
-		{
-			name:  "generating",
-			agent: &AgentState{Status: robot.StateGenerating, ContextUsage: 30},
-			want:  false,
-		},
-		{
-			name:  "error state",
-			agent: &AgentState{Status: robot.StateError, ContextUsage: 30},
-			want:  false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := isAgentAvailable(tt.agent)
-			if got != tt.want {
-				t.Errorf("isAgentAvailable() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
-func TestComputeConfidence(t *testing.T) {
-	tests := []struct {
-		name    string
-		pair    scoredPair
-		wantMin float64
-		wantMax float64
-	}{
-		{
-			name: "high score high confidence",
-			pair: scoredPair{
-				score:     1.5,
-				breakdown: AssignmentScoreBreakdown{AgentTypeBonus: 0.1, ProfileTagBonus: 0.1},
-			},
-			wantMin: 0.8,
-			wantMax: 0.95,
-		},
-		{
-			name: "low score low confidence",
-			pair: scoredPair{
-				score:     0.2,
-				breakdown: AssignmentScoreBreakdown{},
-			},
-			wantMin: 0.1,
-			wantMax: 0.3,
-		},
-		{
-			name: "penalties reduce confidence",
-			pair: scoredPair{
-				score:     1.0,
-				breakdown: AssignmentScoreBreakdown{ContextPenalty: 0.1, FileOverlapPenalty: 0.1},
-			},
-			wantMin: 0.3,
-			wantMax: 0.6,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			confidence := computeConfidence(tt.pair)
-			if confidence < tt.wantMin || confidence > tt.wantMax {
-				t.Errorf("computeConfidence() = %f, want in [%f, %f]", confidence, tt.wantMin, tt.wantMax)
-			}
-		})
-	}
-}
-
-func TestBuildAssignmentReason(t *testing.T) {
-	tests := []struct {
-		name     string
-		pair     scoredPair
-		strategy AssignmentStrategy
-		contains string
-	}{
-		{
-			name:     "dependency with blockers",
-			pair:     scoredPair{bead: &bv.TriageRecommendation{UnblocksIDs: []string{"a", "b"}}},
-			strategy: StrategyDependency,
-			contains: "unblocks 2 tasks",
-		},
-		{
-			name:     "quality strategy",
-			pair:     scoredPair{bead: &bv.TriageRecommendation{}},
-			strategy: StrategyQuality,
-			contains: "best capability match",
-		},
-		{
-			name:     "agent type bonus",
-			pair:     scoredPair{bead: &bv.TriageRecommendation{}, breakdown: AssignmentScoreBreakdown{AgentTypeBonus: 0.15}},
-			strategy: StrategyBalanced,
-			contains: "agent type bonus",
-		},
-		{
-			name:     "profile tags",
-			pair:     scoredPair{bead: &bv.TriageRecommendation{}, breakdown: AssignmentScoreBreakdown{ProfileTagBonus: 0.1}},
-			strategy: StrategyBalanced,
-			contains: "matching profile tags",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			reason := buildAssignmentReason(tt.pair, tt.strategy)
-			if !strings.Contains(reason, tt.contains) {
-				t.Errorf("reason %q should contain %q", reason, tt.contains)
-			}
-		})
-	}
-}
-
-// Tests for selectBalanced with assignment tracking (bd-1g5t8)
-
-func TestSelectBalancedFewerAssignmentsFirst(t *testing.T) {
-	// Agent 1 has 3 active assignments, Agent 2 has 0
-	// Agent 2 should be preferred despite same score
-	agents := []*AgentState{
-		{PaneID: "%1", AgentType: "cc", Status: robot.StateWaiting, Assignments: 3},
-		{PaneID: "%2", AgentType: "cc", Status: robot.StateWaiting, Assignments: 0},
-	}
-
-	beads := []*bv.TriageRecommendation{
-		{ID: "ntm-001", Title: "Task 1", Type: "task", Status: "open", Score: 0.5},
-	}
-
-	// Build pairs with same score
-	pairs := []scoredPair{
-		{agent: agents[0], bead: beads[0], score: 1.0},
-		{agent: agents[1], bead: beads[0], score: 1.0},
-	}
-
-	selected := selectBalanced(pairs, 2, 1)
-
-	if len(selected) != 1 {
-		t.Fatalf("expected 1 selection, got %d", len(selected))
-	}
-
-	// Agent 2 (fewer assignments) should win
-	if selected[0].agent.PaneID != "%2" {
-		t.Errorf("expected agent %%2 (fewer assignments) to be selected, got %s", selected[0].agent.PaneID)
-	}
-}
-
-func TestSelectBalancedIdleStatusTieBreaker(t *testing.T) {
-	// Same assignment count, but agent 1 is idle, agent 2 is generating
-	agents := []*AgentState{
-		{PaneID: "%1", AgentType: "cc", Status: robot.StateWaiting, Assignments: 1},
-		{PaneID: "%2", AgentType: "cc", Status: robot.StateGenerating, Assignments: 1},
-	}
-
-	beads := []*bv.TriageRecommendation{
-		{ID: "ntm-001", Title: "Task 1", Type: "task", Status: "open", Score: 0.5},
-	}
-
-	pairs := []scoredPair{
-		{agent: agents[0], bead: beads[0], score: 1.0},
-		{agent: agents[1], bead: beads[0], score: 1.0},
-	}
-
-	selected := selectBalanced(pairs, 2, 1)
-
-	if len(selected) != 1 {
-		t.Fatalf("expected 1 selection, got %d", len(selected))
-	}
-
-	// Agent 1 (idle) should win
-	if selected[0].agent.PaneID != "%1" {
-		t.Errorf("expected agent %%1 (idle) to be selected, got %s", selected[0].agent.PaneID)
-	}
-}
-
-func TestSelectBalancedLastAssignedTimeTieBreaker(t *testing.T) {
-	now := time.Now()
-	// Same assignments and status, but agent 2 was assigned work more recently
-	agents := []*AgentState{
-		{PaneID: "%1", AgentType: "cc", Status: robot.StateWaiting, Assignments: 1, LastAssignedAt: now.Add(-1 * time.Hour)},
-		{PaneID: "%2", AgentType: "cc", Status: robot.StateWaiting, Assignments: 1, LastAssignedAt: now.Add(-5 * time.Minute)},
-	}
-
-	beads := []*bv.TriageRecommendation{
-		{ID: "ntm-001", Title: "Task 1", Type: "task", Status: "open", Score: 0.5},
-	}
-
-	pairs := []scoredPair{
-		{agent: agents[0], bead: beads[0], score: 1.0},
-		{agent: agents[1], bead: beads[0], score: 1.0},
-	}
-
-	selected := selectBalanced(pairs, 2, 1)
-
-	if len(selected) != 1 {
-		t.Fatalf("expected 1 selection, got %d", len(selected))
-	}
-
-	// Agent 1 (earlier LastAssignedAt) should win
-	if selected[0].agent.PaneID != "%1" {
-		t.Errorf("expected agent %%1 (least recently assigned) to be selected, got %s", selected[0].agent.PaneID)
-	}
-}
-
-func TestSelectBalancedScoreTieBreaker(t *testing.T) {
-	// Same assignments, status, and timestamp - higher score wins
-	agents := []*AgentState{
-		{PaneID: "%1", AgentType: "cc", Status: robot.StateWaiting, Assignments: 1},
-		{PaneID: "%2", AgentType: "cc", Status: robot.StateWaiting, Assignments: 1},
-	}
-
-	beads := []*bv.TriageRecommendation{
-		{ID: "ntm-001", Title: "Task 1", Type: "task", Status: "open", Score: 0.5},
-	}
-
-	pairs := []scoredPair{
-		{agent: agents[0], bead: beads[0], score: 0.8},
-		{agent: agents[1], bead: beads[0], score: 1.2},
-	}
-
-	selected := selectBalanced(pairs, 2, 1)
-
-	if len(selected) != 1 {
-		t.Fatalf("expected 1 selection, got %d", len(selected))
-	}
-
-	// Agent 2 (higher score) should win
-	if selected[0].agent.PaneID != "%2" {
-		t.Errorf("expected agent %%2 (higher score) to be selected, got %s", selected[0].agent.PaneID)
-	}
-}
-
-func TestSelectBalancedDeterministicOrdering(t *testing.T) {
-	// All tie-breakers equal - should use PaneID for deterministic ordering
-	agents := []*AgentState{
-		{PaneID: "%2", AgentType: "cc", Status: robot.StateWaiting, Assignments: 1},
-		{PaneID: "%1", AgentType: "cc", Status: robot.StateWaiting, Assignments: 1},
-	}
-
-	beads := []*bv.TriageRecommendation{
-		{ID: "ntm-001", Title: "Task 1", Type: "task", Status: "open", Score: 0.5},
-	}
-
-	pairs := []scoredPair{
-		{agent: agents[0], bead: beads[0], score: 1.0},
-		{agent: agents[1], bead: beads[0], score: 1.0},
-	}
-
-	// Run multiple times to verify determinism
-	for i := 0; i < 5; i++ {
-		selected := selectBalanced(pairs, 2, 1)
-
-		if len(selected) != 1 {
-			t.Fatalf("run %d: expected 1 selection, got %d", i, len(selected))
-		}
-
-		// Agent %1 should always win (lower PaneID)
-		if selected[0].agent.PaneID != "%1" {
-			t.Errorf("run %d: expected agent %%1 (deterministic by PaneID) to be selected, got %s", i, selected[0].agent.PaneID)
-		}
-	}
-}
-
-func TestSelectBalancedFallbackWhenTrackingUnavailable(t *testing.T) {
-	// Assignments = -1 means tracking unavailable, should fall back to 0
-	agents := []*AgentState{
-		{PaneID: "%1", AgentType: "cc", Status: robot.StateWaiting, Assignments: -1},
-		{PaneID: "%2", AgentType: "cc", Status: robot.StateWaiting, Assignments: -1},
-	}
-
-	beads := []*bv.TriageRecommendation{
-		{ID: "ntm-001", Title: "Task 1", Type: "task", Status: "open", Score: 0.5},
-		{ID: "ntm-002", Title: "Task 2", Type: "task", Status: "open", Score: 0.6},
-	}
-
-	pairs := []scoredPair{
-		{agent: agents[0], bead: beads[0], score: 1.0},
-		{agent: agents[1], bead: beads[0], score: 1.0},
-		{agent: agents[0], bead: beads[1], score: 1.0},
-		{agent: agents[1], bead: beads[1], score: 1.0},
-	}
-
-	// Should not panic and should select based on other tie-breakers
-	selected := selectBalanced(pairs, 2, 2)
-
-	if len(selected) != 2 {
-		t.Fatalf("expected 2 selections, got %d", len(selected))
-	}
-
-	// Both agents should get one task each
-	agentCounts := make(map[string]int)
-	for _, s := range selected {
-		agentCounts[s.agent.PaneID]++
-	}
-
-	if agentCounts["%1"] != 1 || agentCounts["%2"] != 1 {
-		t.Errorf("expected balanced distribution, got %v", agentCounts)
-	}
-}
-
-func TestSelectBalancedMultipleBeads(t *testing.T) {
-	// Test that balanced selection spreads work evenly
-	now := time.Now()
-	agents := []*AgentState{
-		{PaneID: "%1", AgentType: "cc", Status: robot.StateWaiting, Assignments: 0, LastAssignedAt: now.Add(-1 * time.Hour)},
-		{PaneID: "%2", AgentType: "cc", Status: robot.StateWaiting, Assignments: 2, LastAssignedAt: now.Add(-30 * time.Minute)},
-		{PaneID: "%3", AgentType: "cc", Status: robot.StateWaiting, Assignments: 1, LastAssignedAt: now.Add(-45 * time.Minute)},
-	}
-
-	beads := []*bv.TriageRecommendation{
-		{ID: "ntm-001", Title: "Task 1", Type: "task", Status: "open", Score: 0.5},
-		{ID: "ntm-002", Title: "Task 2", Type: "task", Status: "open", Score: 0.6},
-		{ID: "ntm-003", Title: "Task 3", Type: "task", Status: "open", Score: 0.7},
-	}
-
-	// Create all combinations
-	var pairs []scoredPair
-	for _, agent := range agents {
-		for _, bead := range beads {
-			pairs = append(pairs, scoredPair{agent: agent, bead: bead, score: 1.0})
-		}
-	}
-
-	selected := selectBalanced(pairs, 3, 3)
-
-	if len(selected) != 3 {
-		t.Fatalf("expected 3 selections, got %d", len(selected))
-	}
-
-	// Each agent should get exactly one task
-	agentCounts := make(map[string]int)
-	beadCounts := make(map[string]int)
-	for _, s := range selected {
-		agentCounts[s.agent.PaneID]++
-		beadCounts[s.bead.ID]++
-	}
-
-	for id, count := range agentCounts {
-		if count != 1 {
-			t.Errorf("agent %s got %d tasks, expected 1", id, count)
-		}
-	}
-
-	for id, count := range beadCounts {
-		if count != 1 {
-			t.Errorf("bead %s assigned %d times, expected 1", id, count)
-		}
-	}
-
-	// First selected should be agent %1 (fewest assignments)
-	if selected[0].agent.PaneID != "%1" {
-		t.Errorf("expected first selection to be agent %%1 (0 assignments), got %s", selected[0].agent.PaneID)
 	}
 }

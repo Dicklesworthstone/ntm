@@ -360,7 +360,7 @@ func TestMatcherConfigFiltering(t *testing.T) {
 func TestMatcher_WithCustomMatrix(t *testing.T) {
 	// Create custom matrix with boosted scores
 	matrix := NewCapabilityMatrix()
-	matrix.SetOverride(tmux.AgentGemini, TaskBug, 0.99) // Boost Gemini for bugs
+	matrix.base[tmux.AgentGemini][TaskBug] = 0.99 // Boost Gemini for bugs (test-local matrix)
 
 	m := &Matcher{matrix: matrix, config: DefaultMatcherConfig()}
 
@@ -1184,10 +1184,10 @@ func TestMatcher_AgentAssignments_AffectsBalancedStrategy(t *testing.T) {
 func TestMatcherCustomMatrix_UsesProvidedMatrix(t *testing.T) {
 	matrix := NewCapabilityMatrix()
 
-	// Override all agents to have very low score for TaskBug
-	matrix.SetOverride(tmux.AgentClaude, TaskBug, 0.1)
-	matrix.SetOverride(tmux.AgentCodex, TaskBug, 0.1)
-	matrix.SetOverride(tmux.AgentGemini, TaskBug, 0.99) // Only Gemini is good
+	// Override all agents to have very low score for TaskBug (test-local matrix)
+	matrix.base[tmux.AgentClaude][TaskBug] = 0.1
+	matrix.base[tmux.AgentCodex][TaskBug] = 0.1
+	matrix.base[tmux.AgentGemini][TaskBug] = 0.99 // Only Gemini is good
 
 	m := &Matcher{matrix: matrix, config: DefaultMatcherConfig()}
 

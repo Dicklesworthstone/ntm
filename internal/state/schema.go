@@ -236,6 +236,44 @@ func ReadMigration(filename string) (string, error) {
 	return string(data), nil
 }
 
+// migrationsPending reports whether any migration file has not been recorded
+// as applied, using plain reads only. A missing _migrations table (or any
+// read error) conservatively counts as pending — the write path re-checks
+// under the lock. This keeps fully-migrated opens (the overwhelmingly common
+// case, e.g. every advisory 'ntm robot route') from taking the exclusive
+// BEGIN IMMEDIATE write reservation just to discover there is nothing to do
+// (bd-88um4).
+func migrationsPending(ctx context.Context, db *sql.DB, files []string) bool {
+	rows, err := db.QueryContext(ctx, "SELECT version FROM _migrations")
+	if err != nil {
+		return true // table missing or unreadable: let the write path decide
+	}
+	defer rows.Close()
+
+	applied := make(map[int]bool)
+	for rows.Next() {
+		var version int
+		if err := rows.Scan(&version); err != nil {
+			return true
+		}
+		applied[version] = true
+	}
+	if rows.Err() != nil {
+		return true
+	}
+
+	for _, filename := range files {
+		var version int
+		if n, _ := fmt.Sscanf(filename, "%03d_", &version); n != 1 {
+			return true // malformed name: surface via the write path's error
+		}
+		if !applied[version] {
+			return true
+		}
+	}
+	return false
+}
+
 // ApplyMigrations applies all pending migrations to the database.
 func ApplyMigrations(db *sql.DB) error {
 	// Get list of migration files
@@ -245,6 +283,14 @@ func ApplyMigrations(db *sql.DB) error {
 	}
 
 	ctx := context.Background()
+
+	// Fast path: nothing pending means no write transaction at all. The
+	// re-read under BEGIN IMMEDIATE below stays authoritative for the slow
+	// path, so a concurrent migrator racing this check is still safe.
+	if !migrationsPending(ctx, db, files) {
+		return nil
+	}
+
 	conn, err := db.Conn(ctx)
 	if err != nil {
 		return fmt.Errorf("acquire migration connection: %w", err)

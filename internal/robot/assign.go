@@ -346,7 +346,7 @@ func GetAssign(ctx context.Context, opts AssignOptions) (*AssignOutput, error) {
 	// dependency graph (unblocks) signal for the graph-aware strategies.
 	recommendations := planAssignments(agents, readyBeads, unblocksIndex(assignable), strategy, idleAgentPanes)
 	output.Recommendations = recommendations
-	unassignable = append(unassignable, unassignedBeadsBeyondRecommendations(readyBeads, recommendations)...)
+	unassignable = append(unassignable, unassignedBeadsBeyondRecommendations(readyBeads, recommendations, len(idleAgentPanes))...)
 	output.UnassignableBeads = unassignable
 
 	// Add blocked beads (beads with unmet dependencies)
@@ -552,7 +552,10 @@ func classifyAssignableRecommendationsForProject(projectDir string, recommendati
 // unassignedBeadsBeyondRecommendations reports ready beads the planner left
 // unassigned. The planner may skip earlier beads in favor of better graph or
 // capability matches, so this is keyed by bead ID rather than by position.
-func unassignedBeadsBeyondRecommendations(readyBeads []bv.BeadPreview, recommendations []AssignRecommend) []UnassignableBead {
+// idleAgents is how many idle agents the planner had: when idle agents remain
+// beyond the recommendation count, the honest reason is that the planner's
+// confidence gate skipped the bead, not that no agent was available.
+func unassignedBeadsBeyondRecommendations(readyBeads []bv.BeadPreview, recommendations []AssignRecommend, idleAgents int) []UnassignableBead {
 	if len(recommendations) >= len(readyBeads) {
 		return nil
 	}
@@ -560,13 +563,17 @@ func unassignedBeadsBeyondRecommendations(readyBeads []bv.BeadPreview, recommend
 	for _, recommendation := range recommendations {
 		assigned[recommendation.AssignBead] = struct{}{}
 	}
+	reason := "no idle agent available"
+	if len(recommendations) < idleAgents {
+		reason = "skipped by planner: no agent matched above the confidence threshold"
+	}
 
 	unassignable := make([]UnassignableBead, 0, len(readyBeads)-len(recommendations))
 	for _, bead := range readyBeads {
 		if _, ok := assigned[bead.ID]; ok {
 			continue
 		}
-		unassignable = append(unassignable, UnassignableBead{ID: bead.ID, Title: bead.Title, Reason: "no idle agent available"})
+		unassignable = append(unassignable, UnassignableBead{ID: bead.ID, Title: bead.Title, Reason: reason})
 	}
 	return unassignable
 }

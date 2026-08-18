@@ -155,7 +155,7 @@ func TestPrintLocksResult_CheckDeadlocksNamesCycle(t *testing.T) {
 
 	out := captureLocksStdout(t, func() error { return printLocksResult(result, true) })
 	t.Logf("cli output:\n%s", out)
-	for _, want := range []string{"DEADLOCK DETECTED", "AgentA -> AgentB -> AgentA"} {
+	for _, want := range []string{"POSSIBLE DEADLOCK", "AgentA -> AgentB -> AgentA"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("cli output missing %q:\n%s", want, out)
 		}
@@ -176,7 +176,7 @@ func TestPrintLocksResult_CheckDeadlocksAcyclicAllClear(t *testing.T) {
 
 	out := captureLocksStdout(t, func() error { return printLocksResult(result, true) })
 	t.Logf("cli output:\n%s", out)
-	if strings.Contains(out, "DEADLOCK DETECTED") {
+	if strings.Contains(out, "POSSIBLE DEADLOCK") {
 		t.Fatalf("acyclic fixture must not report a deadlock:\n%s", out)
 	}
 	if !strings.Contains(out, "no reservation cycles detected") {

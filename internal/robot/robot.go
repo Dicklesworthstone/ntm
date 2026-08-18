@@ -3919,8 +3919,9 @@ func detectModel(agentType, title string) string {
 func encodeJSON(v interface{}) error {
 	// Arrays-never-null contract: normalize nil slices to [] before encoding
 	// so every terminal envelope honors the documented array contract
-	// (bd-ws3-contract-breadth-psvyu.2).
-	EnsureArraysNeverNull(v)
+	// (bd-ws3-contract-breadth-psvyu.2). Normalize returns a fixed copy for
+	// value payloads, which cannot be mutated in place.
+	v = NormalizeArraysNeverNull(v)
 	return Output(applyVerbosity(v, GetOutputVerbosity()), GetOutputFormat())
 }
 
@@ -7195,10 +7196,24 @@ func GetSend(opts SendOptions) (*SendOutput, error) {
 			injectConfig = *opts.InjectConfig
 		}
 
-		// If there are target panes, try to determine agent type for formatting
+		// If there are target panes, try to determine agent type for
+		// formatting. One prompt goes to every pane, so a mixed --cc/--cod
+		// send uses the neutral markdown format instead of formatting for
+		// whichever pane happens to be first.
 		if len(targetPanes) > 0 {
 			agentType := paneAgentType(targetPanes[0])
-			injectConfig.Format = FormatForAgent(agentType)
+			uniform := true
+			for _, pane := range targetPanes[1:] {
+				if paneAgentType(pane) != agentType {
+					uniform = false
+					break
+				}
+			}
+			if uniform {
+				injectConfig.Format = FormatForAgent(agentType)
+			} else {
+				injectConfig.Format = FormatMarkdown
+			}
 		}
 
 		// Perform CASS query and injection

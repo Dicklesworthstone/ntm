@@ -25,6 +25,9 @@ func init() {
 	robot.MustRegisterSchemaPagination("pipeline_run", robot.SchemaPaginationFlag{
 		Reason: "bounded: per-run stage results for one pipeline execution",
 	})
+	robot.MustRegisterSchemaPagination("pipeline_status", robot.SchemaPaginationFlag{
+		Reason: "bounded: nested stage rows for one pipeline execution",
+	})
 	robot.MustRegisterSchemaPagination("pipeline_list", robot.SchemaPaginationFlag{
 		Reason: "bounded: in-memory registry of recent pipeline executions",
 	})

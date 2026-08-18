@@ -12,13 +12,32 @@ import (
 	"github.com/Dicklesworthstone/ntm/tests/testutil"
 )
 
+// inCI reports whether we appear to be running under a CI system.
+func inCI() bool {
+	return os.Getenv("CI") != "" || os.Getenv("GITHUB_ACTIONS") != ""
+}
+
 func TestMain(m *testing.M) {
 	if os.Getenv("NTM_INTEGRATION_TESTS") == "" {
-		// Integration tests are opt-in to avoid long-running tmux workflows in default runs.
+		// Integration tests are opt-in to avoid long-running tmux workflows in
+		// default local runs — but a silent `return` here makes the whole
+		// package report "ok" with zero tests executed. Skip LOUDLY, and in CI
+		// refuse to no-op: CI jobs that run this package must explicitly set
+		// NTM_INTEGRATION_TESTS=1 (see .github/workflows/ci.yml).
+		if inCI() {
+			fmt.Fprintln(os.Stderr, "FAIL: tests/integration: NTM_INTEGRATION_TESTS is not set in a CI environment; refusing to silently skip the entire package (set NTM_INTEGRATION_TESTS=1 in the workflow)")
+			os.Exit(1)
+		}
+		fmt.Fprintln(os.Stderr, "SKIP: tests/integration: entire package skipped (0 tests executed); set NTM_INTEGRATION_TESTS=1 to run")
 		return
 	}
 	if !tmux.DefaultClient.IsInstalled() {
-		// tmux is required for these integration tests
+		// tmux is required for these integration tests.
+		if inCI() {
+			fmt.Fprintln(os.Stderr, "FAIL: tests/integration: NTM_INTEGRATION_TESTS is set but tmux is not installed in this CI environment; install tmux instead of silently skipping")
+			os.Exit(1)
+		}
+		fmt.Fprintln(os.Stderr, "SKIP: tests/integration: entire package skipped (0 tests executed); tmux is required but not installed")
 		return
 	}
 

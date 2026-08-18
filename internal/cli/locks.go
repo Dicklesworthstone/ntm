@@ -977,7 +977,12 @@ func printLocksDeadlockSection(report *coordinator.DeadlockReport) {
 			report.NodeCount, report.EdgeCount)
 		return
 	}
-	fmt.Printf("DEADLOCK DETECTED: %d reservation cycle(s)\n", len(report.Cycles))
+	// "Possible", not "DETECTED": the wait-for graph is built from a
+	// creation-order heuristic over ADVISORY reservations, which has known
+	// false positives (interleaved non-overlapping work) and false negatives
+	// (middle holders of 3+-holder groups) — over-claiming certainty here
+	// trains users to bulk-release healthy reservations (bd-izuqq.4).
+	fmt.Printf("POSSIBLE DEADLOCK: %d reservation wait cycle(s) (advisory creation-order heuristic; confirm with the holders before releasing)\n", len(report.Cycles))
 	for _, c := range report.Cycles {
 		cycle := strings.Join(c.Participants, " -> ")
 		if len(c.Participants) > 1 {

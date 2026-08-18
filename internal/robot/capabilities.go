@@ -157,9 +157,12 @@ func PrintCapabilitiesWithOptions(opts CapabilitiesOptions) error {
 	}
 	if opts.Compact && GetOutputFormat() != FormatTOON {
 		// Compact discovery is a context-budget contract, so indentation must
-		// not re-inflate the projection at the final stdout boundary.
+		// not re-inflate the projection at the final stdout boundary. The
+		// direct encoder still honors the arrays-never-null contract and the
+		// verbosity projection, exactly like the standard encode path.
 		output.OutputFormat = string(FormatJSON)
-		if err := json.NewEncoder(os.Stdout).Encode(applyVerbosity(output, GetOutputVerbosity())); err != nil {
+		payload := applyVerbosity(NormalizeArraysNeverNull(output), GetOutputVerbosity())
+		if err := json.NewEncoder(os.Stdout).Encode(payload); err != nil {
 			return fmt.Errorf("encode compact robot capabilities: %w", err)
 		}
 	} else {

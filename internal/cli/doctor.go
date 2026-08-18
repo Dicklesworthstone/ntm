@@ -679,6 +679,10 @@ func checkConfiguration() []ConfigCheck {
 	// commit scrollback is unobserved; doctor is where they become visible.
 	checks = append(checks, guardDegradationCheck())
 
+	// The one fail-open guard path that can never record a ledger row
+	// (bd-2c0yh.4): hook installed but `ntm` missing from PATH.
+	checks = append(checks, guardHookPathCheck())
+
 	// Removed config knobs (WS6-remove, bd-ws6-config-truth-ienmd.2): keys
 	// removed in v1.26.0 still load with a startup warning; doctor surfaces
 	// the same per-key warning so the migration runway is visible before the

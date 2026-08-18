@@ -17,6 +17,14 @@ func (a *recordingActions) add(s string) {
 	defer a.mu.Unlock()
 	a.calls = append(a.calls, s)
 }
+
+// snapshot reads calls under the same lock add uses: the TimeoutMonitor
+// invokes actions on its own goroutine.
+func (a *recordingActions) snapshot() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]string(nil), a.calls...)
+}
 func (a *recordingActions) RestartAgent(context.Context, string) error { a.add("restart"); return nil }
 func (a *recordingActions) Pause(context.Context, string) error        { a.add("pause"); return nil }
 func (a *recordingActions) SkipStage(context.Context) error            { a.add("skip"); return nil }
@@ -36,12 +44,13 @@ func TestErrorHandlerActionsAndRetries(t *testing.T) {
 		}
 	}
 	want := []string{"restart", "pause", "skip", "retry", "abort"}
-	if len(actions.calls) != len(want) {
-		t.Fatalf("calls=%v", actions.calls)
+	calls := actions.snapshot()
+	if len(calls) != len(want) {
+		t.Fatalf("calls=%v", calls)
 	}
 	for i := range want {
-		if actions.calls[i] != want[i] {
-			t.Fatalf("calls=%v", actions.calls)
+		if calls[i] != want[i] {
+			t.Fatalf("calls=%v", calls)
 		}
 	}
 }
@@ -50,8 +59,15 @@ func TestTimeoutMonitorFiresOnlyForCurrentStage(t *testing.T) {
 	h := NewErrorHandler(ErrorHandlingConfig{OnTimeout: ErrorActionNotify}, actions)
 	m := NewTimeoutMonitor(time.Millisecond, h, func() string { return "build" })
 	m.Start(context.Background(), "build")
-	time.Sleep(20 * time.Millisecond)
-	if len(actions.calls) != 1 || actions.calls[0] != "notify" {
-		t.Fatalf("calls=%v", actions.calls)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		calls := actions.snapshot()
+		if len(calls) == 1 && calls[0] == "notify" {
+			return
+		}
+		if len(calls) > 1 || time.Now().After(deadline) {
+			t.Fatalf("calls=%v", calls)
+		}
+		time.Sleep(2 * time.Millisecond)
 	}
 }

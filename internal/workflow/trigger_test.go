@@ -166,6 +166,82 @@ func TestFileModifiedTriggerWatchesNewNestedDirectories(t *testing.T) {
 	}
 }
 
+// The red-green pattern: a file_modified target is created and written once
+// in quick succession. On kqueue platforms the write notification can be lost
+// (the new file's own watch registers asynchronously after its Create event),
+// so the trigger's stat fallback must still fire — with NO further writes.
+func TestFileModifiedTriggerFiresOnCreateThenSingleWrite(t *testing.T) {
+	dir := t.TempDir()
+	trigger, err := NewTriggerRegistry().Create(Trigger{Type: TriggerFileModified, Pattern: "*.go"})
+	if err != nil {
+		t.Fatalf("Create(): %v", err)
+	}
+	t.Cleanup(func() {
+		if err := trigger.Stop(); err != nil {
+			t.Errorf("Stop(): %v", err)
+		}
+	})
+	ctx := &TriggerContext{ProjectRoot: dir}
+	if err := trigger.Start(ctx); err != nil {
+		t.Fatalf("Start(): %v", err)
+	}
+	// One create+write: os.WriteFile creates the file and writes its content
+	// immediately, before fsnotify can have watched the new file itself.
+	if err := os.WriteFile(filepath.Join(dir, "fresh.go"), []byte("package example\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(): %v", err)
+	}
+	waitForTrigger(t, trigger, ctx)
+}
+
+// A file created empty and written later must fire via the stat fallback even
+// if the write notification never arrives.
+func TestFileModifiedTriggerStatFallbackDetectsLaterWrite(t *testing.T) {
+	dir := t.TempDir()
+	raw, err := NewTriggerRegistry().Create(Trigger{Type: TriggerFileModified, Pattern: "*.go"})
+	if err != nil {
+		t.Fatalf("Create(): %v", err)
+	}
+	trigger := raw.(*fileTrigger)
+	t.Cleanup(func() {
+		if err := trigger.Stop(); err != nil {
+			t.Errorf("Stop(): %v", err)
+		}
+	})
+	ctx := &TriggerContext{ProjectRoot: dir}
+	if err := trigger.Start(ctx); err != nil {
+		t.Fatalf("Start(): %v", err)
+	}
+	path := filepath.Join(dir, "empty.go")
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatalf("create empty file: %v", err)
+	}
+	// Wait until the Create event has been processed (pending or watch-based
+	// firing are both acceptable observations of the event).
+	deadline := time.Now().Add(triggerWaitDeadline)
+	for {
+		trigger.mu.Lock()
+		_, tracked := trigger.pending[path]
+		fired := trigger.fired
+		trigger.mu.Unlock()
+		if tracked || fired {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("Create event was not observed before deadline")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if fired, err := trigger.Check(ctx); err != nil {
+		t.Fatalf("Check(): %v", err)
+	} else if fired {
+		return // platform delivered a Write for the empty create; fine
+	}
+	if err := os.WriteFile(path, []byte("package example\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	waitForTrigger(t, trigger, ctx)
+}
+
 func TestCommandTriggers(t *testing.T) {
 	registry := NewTriggerRegistry()
 	ctx := &TriggerContext{Context: context.Background(), ProjectRoot: t.TempDir()}

@@ -111,6 +111,12 @@ type workflowRunner struct {
 	errorHandler   *workflow.ErrorHandler
 	timeoutMonitor *workflow.TimeoutMonitor
 
+	// dispatchMu serializes whole-stage prompt deliveries: the error
+	// handler's RetryStage runs on the TimeoutMonitor goroutine, and without
+	// this lock its keystrokes could interleave with a concurrent
+	// dispatchStage from the main run loop.
+	dispatchMu sync.Mutex
+
 	mu           sync.Mutex
 	manuals      []*workflow.ManualTrigger
 	lastCapture  map[string]string
@@ -329,6 +335,8 @@ func stageLabel(stage string) string {
 
 // dispatchStage delivers the stage prompt through the gated dispatch port.
 func (r *workflowRunner) dispatchStage(ctx context.Context, stage string, targets []workflow.CoordinatorAgent) error {
+	r.dispatchMu.Lock()
+	defer r.dispatchMu.Unlock()
 	for _, agent := range targets {
 		r.mu.Lock()
 		r.turn++
@@ -383,9 +391,13 @@ func (r *workflowRunner) applyReviewGate(tctx *workflow.TriggerContext) *workflo
 		return tctx
 	}
 	stage := r.coordinator.CurrentStage()
+	// Every agent_says transition out of the current stage is an approval
+	// transition while require_approval is set — regardless of the trigger's
+	// role name or whether its target stage is terminal. The trigger's role
+	// names the approver role; an empty role lets any agent approve.
 	var approvalTriggers []workflow.Trigger
 	for _, tr := range r.template.Flow.Transitions {
-		if tr.From == stage && tr.Trigger.Type == workflow.TriggerAgentSays && tr.Trigger.Role == "reviewer" && r.stageIsTerminal(tr.To) {
+		if tr.From == stage && tr.Trigger.Type == workflow.TriggerAgentSays {
 			approvalTriggers = append(approvalTriggers, tr.Trigger)
 		}
 	}
@@ -395,28 +407,28 @@ func (r *workflowRunner) applyReviewGate(tctx *workflow.TriggerContext) *workflo
 	met := false
 	registry := workflow.NewTriggerRegistry()
 	for _, agent := range r.agents {
-		if agent.Role != "reviewer" {
-			continue
-		}
 		text := ""
 		r.mu.Lock()
 		text = r.lastCapture[agent.ID]
 		r.mu.Unlock()
 		for _, trigger := range approvalTriggers {
+			if trigger.Role != "" && agent.Role != trigger.Role {
+				continue
+			}
 			probe, err := registry.Create(trigger)
 			if err != nil {
 				continue
 			}
-			fired, err := probe.Check(&workflow.TriggerContext{Outputs: []workflow.AgentOutput{{Role: "reviewer", Text: text}}})
+			fired, err := probe.Check(&workflow.TriggerContext{Outputs: []workflow.AgentOutput{{Role: agent.Role, Text: text}}})
 			if err != nil || !fired {
 				continue
 			}
-			ok, err := gate.Approve(agent.ID)
+			ok, err := gate.ApproveFromRole(agent.ID, trigger.Role)
 			if err != nil {
 				r.ports.notify("workflow %s: approval from %s rejected: %v", r.template.Name, agent.ID, err)
 				continue
 			}
-			r.ports.notify("workflow %s: recorded approval from reviewer %s", r.template.Name, agent.ID)
+			r.ports.notify("workflow %s: recorded approval from %s (%s)", r.template.Name, agent.ID, agent.Role)
 			if ok {
 				met = true
 			}
@@ -425,22 +437,23 @@ func (r *workflowRunner) applyReviewGate(tctx *workflow.TriggerContext) *workflo
 	if met {
 		return tctx
 	}
-	// Threshold not reached: withhold reviewer outputs that would satisfy an
+	// Threshold not reached: withhold approver outputs that would satisfy an
 	// approval trigger so Evaluate cannot advance past the gate.
 	filtered := *tctx
 	filtered.Outputs = nil
 	for _, output := range tctx.Outputs {
 		blocked := false
-		if output.Role == "reviewer" {
-			for _, trigger := range approvalTriggers {
-				probe, err := registry.Create(trigger)
-				if err != nil {
-					continue
-				}
-				if fired, err := probe.Check(&workflow.TriggerContext{Outputs: []workflow.AgentOutput{output}}); err == nil && fired {
-					blocked = true
-					break
-				}
+		for _, trigger := range approvalTriggers {
+			if trigger.Role != "" && output.Role != trigger.Role {
+				continue
+			}
+			probe, err := registry.Create(trigger)
+			if err != nil {
+				continue
+			}
+			if fired, err := probe.Check(&workflow.TriggerContext{Outputs: []workflow.AgentOutput{output}}); err == nil && fired {
+				blocked = true
+				break
 			}
 		}
 		if !blocked {
@@ -479,14 +492,15 @@ func (a workflowRunActions) RestartAgent(_ context.Context, agentID string) erro
 }
 
 func (a workflowRunActions) Pause(_ context.Context, reason string) error {
+	// Hold r.mu across the store write: recordTransition mutates the same
+	// WorkflowState from the main run loop under the same lock.
 	a.r.mu.Lock()
-	state, store := a.r.state, a.r.store
-	a.r.mu.Unlock()
-	if store != nil && state != nil {
-		if err := store.Pause(state, reason, a.r.ports.now()); err != nil {
+	if a.r.store != nil && a.r.state != nil {
+		if err := a.r.store.Pause(a.r.state, reason, a.r.ports.now()); err != nil {
 			a.r.ports.notify("workflow %s: persist pause: %v", a.r.template.Name, err)
 		}
 	}
+	a.r.mu.Unlock()
 	a.r.stop("paused", fmt.Errorf("workflow paused: %s", reason))
 	return nil
 }
@@ -551,8 +565,12 @@ func (r *workflowRunner) stopped() (string, error) {
 	return r.stopReason, r.stopErr
 }
 
-// recordTransition persists the stage change to the state store.
+// recordTransition persists the stage change to the state store. It holds
+// r.mu for the duration: the TimeoutMonitor goroutine's Pause writes the same
+// WorkflowState under the same lock.
 func (r *workflowRunner) recordTransition(newStage string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if r.store == nil || r.state == nil {
 		return
 	}
@@ -634,7 +652,7 @@ func (r *workflowRunner) Run(ctx context.Context) (WorkflowRunResult, error) {
 		for _, agent := range r.agents {
 			paneRoles[agent.ID] = agent.Role
 		}
-		r.state = &workflow.WorkflowState{
+		state := &workflow.WorkflowState{
 			WorkflowName:   r.template.Name,
 			SessionName:    r.opts.Session,
 			CurrentStage:   stage,
@@ -642,9 +660,12 @@ func (r *workflowRunner) Run(ctx context.Context) (WorkflowRunResult, error) {
 			Agents:         paneRoles,
 			Variables:      r.opts.Vars,
 		}
+		r.mu.Lock()
+		r.state = state
 		if err := r.store.Save(r.state); err != nil {
 			r.ports.notify("workflow %s: save state: %v", r.template.Name, err)
 		}
+		r.mu.Unlock()
 	}
 
 	// Parallel workflows without a flow dispatch everyone and are done.
@@ -683,7 +704,13 @@ func (r *workflowRunner) Run(ctx context.Context) (WorkflowRunResult, error) {
 			if reason, stopErr := r.stopped(); reason != "" {
 				return fail(reason, stopErr)
 			}
-			return fail("timeout", fmt.Errorf("workflow run canceled: %w", context.Cause(ctx)))
+			// Distinguish the --timeout deadline from an operator cancel
+			// (Ctrl-C / parent context): only a deadline is a "timeout".
+			reason := "canceled"
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				reason = "timeout"
+			}
+			return fail(reason, fmt.Errorf("workflow run canceled: %w", context.Cause(ctx)))
 		}
 
 		r.ports.sleep(runCtx, r.opts.Interval)
@@ -776,7 +803,22 @@ func resolveWorkflowForRun(ref string) (*workflow.WorkflowTemplate, error) {
 		return nil, errors.New("workflow name or path is required")
 	}
 	if looksLikeWorkflowPath(ref) {
-		content, err := os.ReadFile(ref)
+		// A quoted "~" reaches us unexpanded by the shell; expand it here so
+		// `ntm workflow run "~/flows/x.toml"` works, and say so when it can't.
+		path := ref
+		if strings.HasPrefix(path, "~") {
+			if home, err := os.UserHomeDir(); err == nil && home != "" {
+				if path == "~" {
+					path = home
+				} else if strings.HasPrefix(path, "~/") || strings.HasPrefix(path, `~\`) {
+					path = filepath.Join(home, path[2:])
+				}
+			}
+			if strings.HasPrefix(path, "~") {
+				return nil, fmt.Errorf("workflow path %q starts with an unexpandable '~' (quoting prevents shell tilde expansion, and ~user paths are not supported); use an absolute path", ref)
+			}
+		}
+		content, err := os.ReadFile(path)
 		if err != nil {
 			if os.IsNotExist(err) {
 				return nil, workflowNotFoundError(ref)
@@ -790,14 +832,14 @@ func resolveWorkflowForRun(ref string) (*workflow.WorkflowTemplate, error) {
 			if err := tmpl.Validate(); err != nil {
 				return nil, fmt.Errorf("invalid workflow %s: %w", ref, err)
 			}
-			tmpl.Source = "file:" + ref
+			tmpl.Source = "file:" + path
 			return &tmpl, nil
 		}
 		tmpl, err := workflow.ParseAndValidateWorkflow(string(content))
 		if err != nil {
 			return nil, fmt.Errorf("invalid workflow %s: %w", ref, err)
 		}
-		tmpl.Source = "file:" + ref
+		tmpl.Source = "file:" + path
 		return tmpl, nil
 	}
 	loader := workflow.NewLoader()

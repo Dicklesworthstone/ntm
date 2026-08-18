@@ -209,6 +209,156 @@ func TestWorkflowRunnerReviewGateRequiresAllApprovals(t *testing.T) {
 	}
 }
 
+// require_approval must gate approval transitions whose trigger names a role
+// other than the conventional "reviewer" and whose target stage is not
+// terminal: one approver's verdict must not advance the gate in mode=all.
+func TestWorkflowRunnerReviewGateNonReviewerRoleNonTerminalTarget(t *testing.T) {
+	tmpl := &workflow.WorkflowTemplate{
+		Name: "rg-qa",
+		Agents: []workflow.WorkflowAgent{
+			{Profile: "impl", Role: "author"},
+			{Profile: "qa", Role: "qa", Count: 2},
+		},
+		Coordination: workflow.CoordReviewGate,
+		Flow: &workflow.FlowConfig{
+			Initial:         "implement",
+			RequireApproval: true,
+			ApprovalMode:    "all",
+			Transitions: []workflow.Transition{
+				{From: "implement", To: "verify", Trigger: workflow.Trigger{Type: workflow.TriggerManual, Label: "submit"}},
+				// Non-terminal target ("land" has an outgoing transition) and
+				// a non-"reviewer" approver role.
+				{From: "verify", To: "land", Trigger: workflow.Trigger{Type: workflow.TriggerAgentSays, Pattern: "QA-SHIP", Role: "qa"}},
+				{From: "land", To: "complete", Trigger: workflow.Trigger{Type: workflow.TriggerManual, Label: "land"}},
+			},
+		},
+	}
+	fake := newFakeWorkflowSession()
+	fake.onDispatch = func(pane, _ string) {
+		if pane == "%2" { // first qa approves as soon as it is engaged
+			fake.say("%2", "QA-SHIP")
+		}
+	}
+	var polls int
+	var pollMu sync.Mutex
+	agents := []workflow.CoordinatorAgent{{ID: "%1", Role: "author"}, {ID: "%2", Role: "qa"}, {ID: "%3", Role: "qa"}}
+	ports := fake.ports()
+	baseCapture := ports.capture
+	ports.capture = func(paneID string, lines int) (string, error) {
+		pollMu.Lock()
+		polls++
+		late := polls > 12
+		pollMu.Unlock()
+		if late {
+			fake.say("%3", "QA-SHIP") // second qa approves several rounds later
+		}
+		return baseCapture(paneID, lines)
+	}
+	runner, err := newWorkflowRunner(tmpl, agents,
+		workflowRunOptions{Session: "s", MaxTransitions: 5, Interval: 2 * time.Millisecond, FireManual: true}, ports)
+	if err != nil {
+		t.Fatalf("newWorkflowRunner: %v", err)
+	}
+	result, err := runner.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v (result=%+v)", err, result)
+	}
+	if !result.Completed || result.Reason != "completed" {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	wantStages := "implement,verify,land,complete"
+	if strings.Join(result.Stages, ",") != wantStages {
+		t.Fatalf("stages = %v, want %s", result.Stages, wantStages)
+	}
+}
+
+// recordTransition runs on the main loop while the TimeoutMonitor goroutine's
+// Pause action writes the same WorkflowState; both must synchronize on r.mu.
+// Run with -race: this test exists to catch the unlocked r.state access.
+func TestWorkflowRunnerPauseAndRecordTransitionAreRaceFree(t *testing.T) {
+	fake := newFakeWorkflowSession()
+	agents := []workflow.CoordinatorAgent{{ID: "%1", Role: "red"}, {ID: "%2", Role: "green"}}
+	runner, err := newWorkflowRunner(pingPongTemplate(), agents,
+		workflowRunOptions{Session: "s", StateDir: t.TempDir()}, fake.ports())
+	if err != nil {
+		t.Fatalf("newWorkflowRunner: %v", err)
+	}
+	runner.mu.Lock()
+	runner.state = &workflow.WorkflowState{
+		WorkflowName: "pp-test", SessionName: "s", CurrentStage: "red",
+		StageStartedAt: time.Now(), Agents: map[string]string{"%1": "red", "%2": "green"},
+	}
+	runner.mu.Unlock()
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 25; i++ {
+			runner.recordTransition("green")
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 25; i++ {
+			_ = workflowRunActions{r: runner}.Pause(context.Background(), "stage timeout")
+		}
+	}()
+	wg.Wait()
+	if reason, stopErr := runner.stopped(); reason != "paused" || stopErr == nil {
+		t.Fatalf("stopped() = (%q, %v), want paused reason with error", reason, stopErr)
+	}
+}
+
+// A stage timeout with on_timeout=pause must stop the run loop with the
+// "paused" reason (the monitor fires on its own goroutine mid-run).
+func TestWorkflowRunnerStageTimeoutPausesRun(t *testing.T) {
+	fake := newFakeWorkflowSession() // triggers never fire; stage stalls
+	agents := []workflow.CoordinatorAgent{{ID: "%1", Role: "red"}, {ID: "%2", Role: "green"}}
+	runner, err := newWorkflowRunner(pingPongTemplate(), agents,
+		workflowRunOptions{Session: "s", Interval: time.Millisecond, StateDir: t.TempDir()}, fake.ports())
+	if err != nil {
+		t.Fatalf("newWorkflowRunner: %v", err)
+	}
+	runner.errorHandler = workflow.NewErrorHandler(workflow.ErrorHandlingConfig{
+		OnTimeout: workflow.ErrorActionPause,
+	}, workflowRunActions{r: runner})
+	runner.timeoutMonitor = workflow.NewTimeoutMonitor(5*time.Millisecond, runner.errorHandler, runner.coordinator.CurrentStage)
+	defer runner.timeoutMonitor.Stop()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	result, err := runner.Run(ctx)
+	if err == nil || result.Reason != "paused" {
+		t.Fatalf("want paused result, got err=%v result=%+v", err, result)
+	}
+	// The pause must be persisted so a rerun fails closed without --resume.
+	store := &workflow.StateStore{Dir: runner.opts.StateDir}
+	state, loadErr := store.Load("s")
+	if loadErr != nil || state == nil || !state.Paused {
+		t.Fatalf("persisted state = %+v (err=%v), want Paused", state, loadErr)
+	}
+}
+
+// Operator cancellation (parent context canceled) must not be labeled a
+// timeout.
+func TestWorkflowRunnerCancelIsNotTimeout(t *testing.T) {
+	fake := newFakeWorkflowSession()
+	agents := []workflow.CoordinatorAgent{{ID: "%1", Role: "red"}, {ID: "%2", Role: "green"}}
+	runner, err := newWorkflowRunner(pingPongTemplate(), agents,
+		workflowRunOptions{Session: "s", Interval: 2 * time.Millisecond}, fake.ports())
+	if err != nil {
+		t.Fatalf("newWorkflowRunner: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
+	result, err := runner.Run(ctx)
+	if err == nil || result.Reason != "canceled" {
+		t.Fatalf("want canceled failure, got err=%v result=%+v", err, result)
+	}
+}
+
 // A run whose triggers never fire must classify the deadline as a timeout.
 func TestWorkflowRunnerTimesOut(t *testing.T) {
 	fake := newFakeWorkflowSession()
@@ -317,6 +467,36 @@ role = "worker"
 	}
 	if _, err := resolveWorkflowForRun(bad); err == nil {
 		t.Fatal("invalid workflow file must fail validation")
+	}
+}
+
+// A quoted tilde path reaches resolveWorkflowForRun unexpanded by the shell;
+// it must be expanded against the home directory rather than failing with a
+// misleading not-found error.
+func TestResolveWorkflowForRunExpandsTilde(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.WriteFile(filepath.Join(home, "tilde-flow.toml"), []byte(`
+name = "tilde-flow"
+coordination = "parallel"
+
+[[agents]]
+profile = "cc"
+role = "worker"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tmpl, err := resolveWorkflowForRun("~/tilde-flow.toml")
+	if err != nil {
+		t.Fatalf("resolve tilde path: %v", err)
+	}
+	if tmpl.Name != "tilde-flow" || !strings.Contains(tmpl.Source, home) {
+		t.Fatalf("unexpected template: %+v", tmpl)
+	}
+	// ~user form stays unsupported but must say why instead of "not found".
+	if _, err := resolveWorkflowForRun("~otheruser/flow.toml"); err == nil ||
+		!strings.Contains(err.Error(), "~") || strings.Contains(err.Error(), "not found") {
+		t.Fatalf("~user path must produce a tilde-specific error, got %v", err)
 	}
 }
 

@@ -186,10 +186,16 @@ const (
 	EventAgentError       CoordinatorEventType = "agent_error"
 	EventAgentRecovered   CoordinatorEventType = "agent_recovered"
 	EventConflictDetected CoordinatorEventType = "conflict_detected"
-	EventConflictResolved CoordinatorEventType = "conflict_resolved"
-	EventWorkAssigned     CoordinatorEventType = "work_assigned"
-	EventDigestSent       CoordinatorEventType = "digest_sent"
-	EventDigestFailed     CoordinatorEventType = "digest_failed"
+	// EventConflictReleaseRequested marks a negotiation request SENT: the
+	// engine asked the losing holder to release. It is NOT proof the holder
+	// complied — the reservation may stay held. The old name for this event
+	// ("conflict_resolved") over-claimed exactly that, so it was renamed
+	// (bd-izuqq.2); nothing currently verifies an actual release, and no
+	// event asserts one.
+	EventConflictReleaseRequested CoordinatorEventType = "conflict_release_requested"
+	EventWorkAssigned             CoordinatorEventType = "work_assigned"
+	EventDigestSent               CoordinatorEventType = "digest_sent"
+	EventDigestFailed             CoordinatorEventType = "digest_failed"
 )
 
 // CoordinatorEvent represents an event from the coordinator.

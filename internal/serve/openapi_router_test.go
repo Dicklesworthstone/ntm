@@ -354,7 +354,9 @@ func TestRouterSpecOperationBasics(t *testing.T) {
 				t.Errorf("%s: missing summary", key)
 			}
 			if _, ok := op.Responses["200"]; !ok {
-				t.Errorf("%s: missing 200 response", key)
+				if _, accepted := op.Responses["202"]; !accepted {
+					t.Errorf("%s: missing success (200/202) response", key)
+				}
 			}
 
 			declared := make(map[string]bool)

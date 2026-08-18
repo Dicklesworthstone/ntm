@@ -250,6 +250,10 @@ jobs:
         run: go build -v ./...
 
       - name: Test with Coverage
+        env:
+          # Opt in to tests/integration: its TestMain refuses to silently no-op
+          # the package in CI when this is unset (bd-zaarm).
+          NTM_INTEGRATION_TESTS: "1"
         run: |
           go test -v -race -timeout=15m -covermode=atomic -coverprofile=coverage.out ./...
 
@@ -323,6 +327,10 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y tmux
 
       - name: Run tests with coverage
+        env:
+          # Opt in to tests/integration: its TestMain refuses to silently no-op
+          # the package in CI when this is unset (bd-zaarm).
+          NTM_INTEGRATION_TESTS: "1"
         run: go test -covermode=atomic -coverprofile=coverage.out ./...
 
       - name: Enforce Project Coverage Threshold

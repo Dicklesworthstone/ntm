@@ -155,7 +155,7 @@ Operators and agents need to answer trust questions: "Who acknowledged this?", "
 │  reservation_created │ File reservation acquired             │
 │  reservation_released│ File reservation released             │
 │  conflict_detected   │ File conflict detected                │
-│  conflict_resolved   │ File conflict resolved                │
+│  conflict_release_requested │ Release requested (not verified) │
 └──────────────────────────────────────────────────────────────┘
 ```
 

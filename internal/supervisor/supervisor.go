@@ -510,12 +510,19 @@ func (s *Supervisor) monitorDaemon(d *ManagedDaemon) {
 			}
 
 			if healthURL == "" && len(healthCmd) == 0 {
-				// No health check configured, just check if process is running
-				d.mu.RLock()
-				cmd := d.cmd
-				d.mu.RUnlock()
-				if cmd != nil && cmd.ProcessState != nil && cmd.ProcessState.Exited() {
+				// No health check configured, just check if process is running.
+				// Reading cmd.ProcessState here would race with the
+				// waitForExit goroutine's cmd.Wait(), which writes it
+				// (bd-2c0yh.5) — so observe the done channel that waitForExit
+				// closes after Wait returns instead. waitForExit already calls
+				// handleDaemonFailure for unexpected exits; that call is
+				// idempotent per failure, so this monitor-side signal is a
+				// belt-and-suspenders no-op when the wait goroutine got there
+				// first.
+				select {
+				case <-d.done:
 					s.handleDaemonFailure(d)
+				default:
 				}
 				continue
 			}
@@ -749,19 +756,36 @@ func (s *Supervisor) checkHealthMCP(baseURL string) bool {
 		return false
 	}
 
-	var rpcResp struct {
+	var envelope struct {
 		JSONRPC string          `json:"jsonrpc"`
 		Result  json.RawMessage `json:"result"`
 		Error   json.RawMessage `json:"error"`
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&rpcResp); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&envelope); err != nil {
 		return false
 	}
-	if len(rpcResp.Error) > 0 && string(rpcResp.Error) != "null" {
+	if len(envelope.Error) > 0 && string(envelope.Error) != "null" {
 		return false // the 200-with-error trap
 	}
-	if len(rpcResp.Result) == 0 || string(rpcResp.Result) == "null" {
+	if len(envelope.Result) == 0 || string(envelope.Result) == "null" {
 		return false // not a JSON-RPC answer at all
+	}
+	// Squatter defense (bd-2c0yh.3): a 200 whose JSON merely has a non-null
+	// "result" is NOT proof of an MCP server. Require the JSON-RPC 2.0
+	// version marker AND an initialize-shaped result carrying serverInfo,
+	// which the MCP spec mandates — a REST server or proxy error page that
+	// happens to answer {"result": ...} no longer gets blessed.
+	if envelope.JSONRPC != "2.0" {
+		return false
+	}
+	var initResult struct {
+		ServerInfo json.RawMessage `json:"serverInfo"`
+	}
+	if err := json.Unmarshal(envelope.Result, &initResult); err != nil {
+		return false // result is not a JSON object (e.g. a bare string/number)
+	}
+	if len(initResult.ServerInfo) == 0 || string(initResult.ServerInfo) == "null" {
+		return false // no serverInfo: not an MCP initialize response
 	}
 	return true
 }
@@ -857,6 +881,12 @@ func DefaultSpecs() []DaemonSpec {
 			HealthMCP:   true,
 			PortFlag:    "--port",
 			DefaultPort: 8200,
+			// A busy default port almost always means ANOTHER cm is already
+			// serving this store. Falling back to a random port would silently
+			// start a SECOND cm against the same database — on first start and
+			// again on every supervised restart — so refuse instead and tell
+			// the operator which port is contested (bd-2c0yh.1).
+			NoPortFallback: true,
 		},
 		{
 			// This spec is used only when `[agent_mail].supervisor_enabled = true`.

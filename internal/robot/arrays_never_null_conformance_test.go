@@ -185,6 +185,43 @@ func recordNullArray(path string, violations *[]string, used map[string]bool) {
 // TestEnsureArraysNeverNullNormalizesNestedShapes proves the normalizer used
 // by the terminal encoder repairs nil slices behind pointers, maps, nested
 // structs, and slice elements — the shapes real envelopes use.
+// TestNormalizeArraysNeverNullValuePayloads proves the VALUE (unaddressable)
+// encode path honors the contract too: EnsureArraysNeverNull silently no-ops
+// on non-pointer payloads, so the terminal encoders route through
+// NormalizeArraysNeverNull, which must return a normalized copy. Every
+// registered envelope is exercised by value here.
+func TestNormalizeArraysNeverNullValuePayloads(t *testing.T) {
+	registry := GetRobotRegistry()
+	usedExceptions := make(map[string]bool)
+	for _, name := range registry.SchemaTypes {
+		binding, ok := registry.SchemaBinding(name)
+		if !ok {
+			t.Fatalf("schema type %q has no binding", name)
+		}
+		typ := reflect.TypeOf(binding)
+		for typ.Kind() == reflect.Ptr {
+			typ = typ.Elem()
+		}
+		t.Run(name, func(t *testing.T) {
+			zero := reflect.New(typ).Elem().Interface() // pass by value, not pointer
+			normalized := NormalizeArraysNeverNull(zero)
+			data, err := json.Marshal(normalized)
+			if err != nil {
+				t.Fatalf("marshal normalized value %s: %v", typ.Name(), err)
+			}
+			var doc interface{}
+			if err := json.Unmarshal(data, &doc); err != nil {
+				t.Fatalf("unmarshal normalized value %s: %v", typ.Name(), err)
+			}
+			var violations []string
+			checkNoNullArrays(typ, doc, typ.Name(), &violations, usedExceptions, make(map[reflect.Type]bool))
+			for _, v := range violations {
+				t.Errorf("null array via value payload (contract: arrays are never null): %s", v)
+			}
+		})
+	}
+}
+
 func TestEnsureArraysNeverNullNormalizesNestedShapes(t *testing.T) {
 	type inner struct {
 		Items []string `json:"items"`

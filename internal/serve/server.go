@@ -501,10 +501,16 @@ func (s *JobStore) Cancel(id string) {
 	}
 }
 
+// maxRetainedJobs bounds the job store over the server's lifetime: once the
+// map reaches this size, Create evicts the oldest terminal (completed /
+// failed / cancelled) jobs. Pending and running jobs are never evicted.
+const maxRetainedJobs = 1000
+
 // Create creates a new job.
 func (s *JobStore) Create(jobType string) *Job {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.evictTerminalLocked(maxRetainedJobs - 1)
 	id := generateRequestID()
 	now := time.Now().UTC().Format(time.RFC3339)
 	job := &Job{
@@ -564,7 +570,8 @@ func (s *JobStore) cloneJob(job *Job) *Job {
 	return &copy
 }
 
-// List returns all jobs.
+// List returns all jobs, newest first (CreatedAt descending, ID as a
+// deterministic tie-break) rather than random map order.
 func (s *JobStore) List() []*Job {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -572,7 +579,44 @@ func (s *JobStore) List() []*Job {
 	for _, job := range s.jobs {
 		jobs = append(jobs, s.cloneJob(job))
 	}
+	sort.Slice(jobs, func(i, j int) bool {
+		if jobs[i].CreatedAt != jobs[j].CreatedAt {
+			return jobs[i].CreatedAt > jobs[j].CreatedAt
+		}
+		return jobs[i].ID < jobs[j].ID
+	})
 	return jobs
+}
+
+// evictTerminalLocked removes the oldest terminal jobs until at most limit
+// jobs remain. Non-terminal jobs are never removed, so the store can exceed
+// the limit only while more than `limit` jobs are actually in flight.
+// Callers must hold s.mu.
+func (s *JobStore) evictTerminalLocked(limit int) {
+	if len(s.jobs) <= limit {
+		return
+	}
+	type victim struct{ id, createdAt string }
+	terminal := make([]victim, 0, len(s.jobs))
+	for id, job := range s.jobs {
+		switch job.Status {
+		case JobStatusCompleted, JobStatusFailed, JobStatusCancelled:
+			terminal = append(terminal, victim{id: id, createdAt: job.CreatedAt})
+		}
+	}
+	sort.Slice(terminal, func(i, j int) bool {
+		if terminal[i].createdAt != terminal[j].createdAt {
+			return terminal[i].createdAt < terminal[j].createdAt
+		}
+		return terminal[i].id < terminal[j].id
+	})
+	for _, v := range terminal {
+		if len(s.jobs) <= limit {
+			return
+		}
+		delete(s.jobs, v.id)
+		delete(s.cancels, v.id)
+	}
 }
 
 // Delete removes a job.
@@ -2091,10 +2135,10 @@ func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 // toJSONMap converts any value to map[string]interface{} via JSON round-trip.
 func toJSONMap(v any) (map[string]interface{}, error) {
 	// Arrays-never-null holds on the REST surface too: the CLI encode paths
-	// normalize through EnsureArraysNeverNull, and every robot envelope
+	// normalize through NormalizeArraysNeverNull, and every robot envelope
 	// served over HTTP funnels through here (bd-ws3-contract-breadth-psvyu.2).
-	// No-op for unaddressable (non-pointer) payloads, same as the CLI path.
-	robot.EnsureArraysNeverNull(v)
+	// Normalize returns a fixed copy for unaddressable (non-pointer) payloads.
+	v = robot.NormalizeArraysNeverNull(v)
 	b, err := json.Marshal(v)
 	if err != nil {
 		return nil, err

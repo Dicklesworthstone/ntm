@@ -216,11 +216,6 @@ type AllocationPlanner struct {
 	matrix *CapabilityMatrix
 }
 
-// NewAllocationPlanner creates a planner using the global capability matrix.
-func NewAllocationPlanner() *AllocationPlanner {
-	return &AllocationPlanner{matrix: GlobalMatrix()}
-}
-
 // NewAllocationPlannerWithMatrix creates a planner with an injected capability matrix.
 func NewAllocationPlannerWithMatrix(matrix *CapabilityMatrix) *AllocationPlanner {
 	if matrix == nil {

@@ -36,6 +36,30 @@ func EnsureArraysNeverNull(v interface{}) {
 	ensureValue(reflect.ValueOf(v), visited)
 }
 
+// NormalizeArraysNeverNull applies the arrays-never-null contract and returns
+// the value to encode. Pointer payloads are normalized in place (and returned
+// unchanged); value payloads — which EnsureArraysNeverNull cannot mutate
+// because they are unaddressable — are copied into an addressable temporary,
+// normalized there, and the normalized copy is returned. Terminal encode
+// paths must encode the RETURN value, not the argument.
+func NormalizeArraysNeverNull(v interface{}) interface{} {
+	if v == nil {
+		return v
+	}
+	rv := reflect.ValueOf(v)
+	if rv.Kind() == reflect.Ptr || rv.Kind() == reflect.Map {
+		EnsureArraysNeverNull(v)
+		return v
+	}
+	copied := reflect.New(rv.Type())
+	copied.Elem().Set(rv)
+	if elem := copied.Elem(); elem.Kind() == reflect.Slice && elem.IsNil() && !isByteSlice(elem.Type()) {
+		elem.Set(reflect.MakeSlice(elem.Type(), 0, 0))
+	}
+	EnsureArraysNeverNull(copied.Interface())
+	return copied.Elem().Interface()
+}
+
 func ensureValue(v reflect.Value, visited map[uintptr]bool) {
 	if !v.IsValid() {
 		return

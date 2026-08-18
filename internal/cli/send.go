@@ -2072,8 +2072,24 @@ func runSendInternal(opts SendOptions) (err error) {
 	// missing or wedged records a skip and the send proceeds unmodified.
 	var cassInjectionInfo *robot.CASSInjectionInfo
 	if cassEnabled, cassQuery, cassFilter, cassInject := sendCASSInjectionConfigs(opts.WithCASS, opts.NoCASS, cfg); cassEnabled {
+		// One prompt goes to every selected pane, so a mixed --cc/--cod send
+		// must not format for whichever pane happens to be first: use the
+		// agent-specific format only when all targets run the same agent
+		// type, else the neutral markdown format.
 		if len(selectedPanes) > 0 {
-			cassInject.Format = cass.FormatForAgent(selectedPanes[0].Type.String())
+			agentType := selectedPanes[0].Type.String()
+			uniform := true
+			for _, p := range selectedPanes[1:] {
+				if p.Type.String() != agentType {
+					uniform = false
+					break
+				}
+			}
+			if uniform {
+				cassInject.Format = cass.FormatForAgent(agentType)
+			} else {
+				cassInject.Format = cass.FormatMarkdown
+			}
 		}
 		injectRes, queryRes, filterRes := cass.InjectContextFromQuery(prompt, cassQuery, cassFilter, cassInject)
 		cassInjectionInfo = sendCASSInjectionInfo(injectRes, queryRes.Query, filterRes.Hits)
@@ -2954,6 +2970,14 @@ func runKill(ctx context.Context, w io.Writer, session string, force bool, tags 
 
 	// Reap any agent process subtrees that survived kill-session.
 	reapOrphanProcesses(orphanCandidates)
+
+	// Drop persisted routing state for the killed session so a recreated
+	// session with the same name does not inherit a stale last_agent /
+	// rotation cursor (bd-88um4). Best-effort: routing state is only a hint.
+	if st, err := state.Open(""); err == nil {
+		_ = st.DeleteRoutingState(session)
+		_ = st.Close()
+	}
 
 	fmt.Printf("Killed session '%s'\n", session)
 

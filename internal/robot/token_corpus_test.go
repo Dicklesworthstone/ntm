@@ -480,6 +480,39 @@ func TestGenerateTokenCorpus(t *testing.T) {
 	t.Logf("wrote %d corpus envelopes to %s", len(corpus), tokenCorpusDir)
 }
 
+// TestTokenCorpusFixturesMatchCurrentStructs is the staleness ratchet for the
+// committed corpus (D3, bd-ws3-contract-breadth-psvyu.3): it regenerates
+// every envelope in memory from the CURRENT output structs and production
+// renderer and asserts byte equality with the committed fixture. Without
+// this, an envelope shape change would silently leave the fixtures — and the
+// token floors measured on them — describing structs that no longer exist.
+func TestTokenCorpusFixturesMatchCurrentStructs(t *testing.T) {
+	const regenHint = "regenerate with NTM_UPDATE_TOKEN_CORPUS=1 go test -run TestGenerateTokenCorpus ./internal/robot/"
+	corpus := buildTokenCorpus(t)
+	for i, e := range corpus {
+		rendered, err := Render(e.Payload, FormatJSON)
+		if err != nil {
+			t.Fatalf("render %s/%s: %v", e.Surface, e.Name, err)
+		}
+		path := filepath.Join(tokenCorpusDir, corpusFileName(i, e))
+		committed, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("corpus fixture %s missing (%v); %s", path, err, regenHint)
+		}
+		if string(committed) != rendered {
+			t.Errorf("corpus fixture %s is stale relative to the current structs/renderer; %s", path, regenHint)
+		}
+	}
+	// Orphaned fixtures (renamed/removed envelopes) also mean staleness.
+	paths, err := filepath.Glob(filepath.Join(tokenCorpusDir, "*.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) != len(corpus) {
+		t.Errorf("corpus dir has %d fixtures but the generator builds %d; %s", len(paths), len(corpus), regenHint)
+	}
+}
+
 type corpusFile struct {
 	Surface string
 	Name    string

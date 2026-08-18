@@ -118,13 +118,44 @@ var SchemaPagination = map[string]SchemaPaginationFlag{
 	"send_receipt":     {Reason: "bounded: delivery receipt for one send"},
 	"spawn":            {Reason: "bounded: per-request spawned pane rows"},
 	"support_bundle":   {Reason: "bounded: bundle manifest for one collection run"},
-	"terse":            {Reason: "bounded: extreme-compression summary"},
-	"tokens":           {Reason: "bounded: per-pane token usage rows"},
-	"tools":            {Reason: "bounded: fixed tool catalog"},
-	"triage":           {Reason: "bounded: top-K triage recommendations"},
-	"wait":             {Reason: "bounded: wake reasons for one wait"},
-	"watch_bead":       {Reason: "bounded: events for one watched bead window"},
-	"xf_search":        {Reason: "bounded: top-K transcript search hits"},
+
+	// --- Unpaginated by design: nested list shapes ------------------------
+	// The classifier recurses into struct fields and map values, so these
+	// surfaces are list-shaped through nested arrays (query echoes, top-K
+	// sections, per-pane rows, _agent_hints) rather than unbounded rows.
+	"agent_health":    {Reason: "bounded: per-pane health rows with nested query echo and indicator lists"},
+	"bead_claim":      {Reason: "bounded: per-request claim echo; nested _agent_hints arrays only"},
+	"bead_close":      {Reason: "bounded: per-request close echo; nested _agent_hints arrays only"},
+	"ensemble":        {Reason: "bounded: one ensemble run echo with its nested mode list"},
+	"ensemble_stop":   {Reason: "bounded: per-request stop echo; nested _agent_hints arrays only"},
+	"file_beads":      {Reason: "bounded: top-K files with beads for one query window"},
+	"file_hotspots":   {Reason: "bounded: top-K hotspot files"},
+	"file_relations":  {Reason: "bounded: top-K related files for one target"},
+	"forecast":        {Reason: "bounded: forecast rows for one horizon"},
+	"graph":           {Reason: "bounded: top-K graph insight scores per section"},
+	"impact":          {Reason: "bounded: impact detail for one change set"},
+	"inspect":         {Reason: "bounded: single-pane inspection detail with capped last lines"},
+	"is_working":      {Reason: "bounded: per-pane work indicator rows"},
+	"label_attention": {Reason: "bounded: one row per label"},
+	"label_flow":      {Reason: "bounded: label-by-label flow matrix"},
+	"label_health":    {Reason: "bounded: one health row per label"},
+	"proxy_status":    {Reason: "bounded: configured proxy routes plus recent failover events"},
+	"rano_stats":      {Reason: "bounded: per-pane process stats rows"},
+	"restore":         {Reason: "bounded: one restored session state echo"},
+	"save":            {Reason: "bounded: one saved session state echo"},
+	"search":          {Reason: "bounded: top-K search hits"},
+	"smart_restart":   {Reason: "bounded: per-request restart actions for addressed panes"},
+	"suggest":         {Reason: "bounded: top-K suggestions"},
+	"summary":         {Reason: "bounded: per-agent summary rows for one session"},
+	"switch_account":  {Reason: "bounded: per-request switch echo for affected panes"},
+	"tail":            {Reason: "bounded: per-pane capture capped by the line limit"},
+	"terse":           {Reason: "bounded: extreme-compression summary"},
+	"tokens":          {Reason: "bounded: per-pane token usage rows"},
+	"tools":           {Reason: "bounded: fixed tool catalog"},
+	"triage":          {Reason: "bounded: top-K triage recommendations"},
+	"wait":            {Reason: "bounded: wake reasons for one wait"},
+	"watch_bead":      {Reason: "bounded: events for one watched bead window"},
+	"xf_search":       {Reason: "bounded: top-K transcript search hits"},
 }
 
 // MustRegisterSchemaPagination declares the pagination flag for a schema type
@@ -150,25 +181,37 @@ func MustRegisterSchemaPagination(name string, flag SchemaPaginationFlag) {
 var paginationInfoType = reflect.TypeOf(PaginationInfo{})
 
 // SchemaTypeListShaped reports whether a schema binding type has at least one
-// direct, JSON-visible slice field (excluding []byte). Such types must carry
-// a pagination flag.
+// JSON-visible slice (excluding []byte) reachable through its fields —
+// directly, or nested inside struct fields or map values. Such types must
+// carry a pagination flag: a nested unbounded slice inflates the envelope
+// exactly like a top-level one, so it must not escape the ratchet.
 func SchemaTypeListShaped(typ reflect.Type) bool {
+	return typeReachesUnboundedSlice(typ, make(map[reflect.Type]bool))
+}
+
+func typeReachesUnboundedSlice(typ reflect.Type, visited map[reflect.Type]bool) bool {
 	for typ.Kind() == reflect.Ptr {
 		typ = typ.Elem()
 	}
-	if typ.Kind() != reflect.Struct {
+	switch typ.Kind() {
+	case reflect.Slice:
+		return typ.Elem().Kind() != reflect.Uint8
+	case reflect.Map:
+		return typeReachesUnboundedSlice(typ.Elem(), visited)
+	case reflect.Struct:
+	default:
 		return false
 	}
+	if typ == paginationInfoType || visited[typ] {
+		return false
+	}
+	visited[typ] = true
 	for i := 0; i < typ.NumField(); i++ {
 		field := typ.Field(i)
 		if !field.IsExported() || field.Anonymous || field.Tag.Get("json") == "-" {
 			continue
 		}
-		ft := field.Type
-		for ft.Kind() == reflect.Ptr {
-			ft = ft.Elem()
-		}
-		if ft.Kind() == reflect.Slice && ft.Elem().Kind() != reflect.Uint8 {
+		if typeReachesUnboundedSlice(field.Type, visited) {
 			return true
 		}
 	}
