@@ -185,42 +185,6 @@ func (m *CapabilityMatrix) GetScore(agentType tmux.AgentType, taskType TaskType)
 	return 0.5 // Default for unknown combinations
 }
 
-// SetOverride sets a configuration override for a specific agent/task.
-func (m *CapabilityMatrix) SetOverride(agentType tmux.AgentType, taskType TaskType, score float64) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	if m.overrides[agentType] == nil {
-		m.overrides[agentType] = make(map[TaskType]float64)
-	}
-	m.overrides[agentType][taskType] = clampScore(score)
-}
-
-// SetLearned sets a learned score adjustment based on agent performance.
-func (m *CapabilityMatrix) SetLearned(agentType tmux.AgentType, taskType TaskType, score float64) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	if m.learned[agentType] == nil {
-		m.learned[agentType] = make(map[TaskType]float64)
-	}
-	m.learned[agentType][taskType] = clampScore(score)
-}
-
-// ClearLearned removes all learned scores.
-func (m *CapabilityMatrix) ClearLearned() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.learned = make(map[tmux.AgentType]map[TaskType]float64)
-}
-
-// ClearOverrides removes all configuration overrides.
-func (m *CapabilityMatrix) ClearOverrides() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.overrides = make(map[tmux.AgentType]map[TaskType]float64)
-}
-
 // clampScore ensures score is within [0.0, 1.0].
 func clampScore(s float64) float64 {
 	if s < 0.0 {
@@ -234,12 +198,6 @@ func clampScore(s float64) float64 {
 
 // Global matrix instance for convenience functions.
 var globalMatrix = NewCapabilityMatrix()
-
-// GetAgentScore returns the score for a given agent type and task type
-// using the global capability matrix.
-func GetAgentScore(agentType tmux.AgentType, taskType TaskType) float64 {
-	return globalMatrix.GetScore(agentType, taskType)
-}
 
 // GetAgentScoreByString returns the score using string identifiers,
 // useful for integration with existing code that uses strings.

@@ -1,7 +1,6 @@
 package assign
 
 import (
-	"sync"
 	"testing"
 
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
@@ -49,57 +48,12 @@ func TestCapabilityMatrix_GetScore(t *testing.T) {
 	}
 }
 
-func TestCapabilityMatrix_SetOverride(t *testing.T) {
-	m := NewCapabilityMatrix()
-
-	originalScore := m.GetScore(tmux.AgentClaude, TaskBug)
-	overrideScore := 0.99
-
-	m.SetOverride(tmux.AgentClaude, TaskBug, overrideScore)
-
-	newScore := m.GetScore(tmux.AgentClaude, TaskBug)
-	if newScore != overrideScore {
-		t.Errorf("After override, GetScore = %f, want %f", newScore, overrideScore)
-	}
-
-	m.ClearOverrides()
-	clearedScore := m.GetScore(tmux.AgentClaude, TaskBug)
-	if clearedScore != originalScore {
-		t.Errorf("After clear, GetScore = %f, want %f", clearedScore, originalScore)
-	}
-}
-
-func TestCapabilityMatrix_SetLearned(t *testing.T) {
-	m := NewCapabilityMatrix()
-
-	// Learned scores take priority over base and overrides
-	m.SetOverride(tmux.AgentCodex, TaskFeature, 0.70)
-	m.SetLearned(tmux.AgentCodex, TaskFeature, 0.95)
-
-	score := m.GetScore(tmux.AgentCodex, TaskFeature)
-	if score != 0.95 {
-		t.Errorf("Learned score should take priority, got %f, want 0.95", score)
-	}
-
-	m.ClearLearned()
-	score = m.GetScore(tmux.AgentCodex, TaskFeature)
-	if score != 0.70 {
-		t.Errorf("After clearing learned, override should apply, got %f, want 0.70", score)
-	}
-}
-
 func TestCapabilityMatrix_Clamp(t *testing.T) {
-	m := NewCapabilityMatrix()
-
-	// Test score clamping
-	m.SetOverride(tmux.AgentClaude, TaskTask, 1.5)
-	if score := m.GetScore(tmux.AgentClaude, TaskTask); score != 1.0 {
-		t.Errorf("Score should be clamped to 1.0, got %f", score)
+	if got := clampScore(1.5); got != 1.0 {
+		t.Errorf("clampScore(1.5) = %f, want 1.0", got)
 	}
-
-	m.SetOverride(tmux.AgentClaude, TaskTask, -0.5)
-	if score := m.GetScore(tmux.AgentClaude, TaskTask); score != 0.0 {
-		t.Errorf("Score should be clamped to 0.0, got %f", score)
+	if got := clampScore(-0.5); got != 0.0 {
+		t.Errorf("clampScore(-0.5) = %f, want 0.0", got)
 	}
 }
 
@@ -248,40 +202,6 @@ func TestParseTaskType(t *testing.T) {
 	}
 }
 
-func TestCapabilityMatrix_ConcurrentAccess(t *testing.T) {
-	m := NewCapabilityMatrix()
-	var wg sync.WaitGroup
-
-	// Concurrent reads
-	for i := 0; i < 100; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			_ = m.GetScore(tmux.AgentClaude, TaskRefactor)
-		}()
-	}
-
-	// Concurrent writes
-	for i := 0; i < 100; i++ {
-		wg.Add(1)
-		go func(n int) {
-			defer wg.Done()
-			m.SetOverride(tmux.AgentCodex, TaskBug, float64(n)/100.0)
-		}(i)
-	}
-
-	// Concurrent learned scores
-	for i := 0; i < 100; i++ {
-		wg.Add(1)
-		go func(n int) {
-			defer wg.Done()
-			m.SetLearned(tmux.AgentGemini, TaskDocs, float64(n)/100.0)
-		}(i)
-	}
-
-	wg.Wait() // Should complete without race conditions
-}
-
 func TestGlobalMatrix(t *testing.T) {
 	// Verify global matrix is accessible and functional
 	gm := GlobalMatrix()
@@ -289,10 +209,10 @@ func TestGlobalMatrix(t *testing.T) {
 		t.Fatal("GlobalMatrix() returned nil")
 	}
 
-	// Should match GetAgentScore results
-	score1 := GetAgentScore(tmux.AgentClaude, TaskRefactor)
+	// Should match the string-based convenience accessor
+	score1 := GetAgentScoreByString("claude", "refactor")
 	score2 := gm.GetScore(tmux.AgentClaude, TaskRefactor)
 	if score1 != score2 {
-		t.Errorf("GetAgentScore != GlobalMatrix().GetScore: %f vs %f", score1, score2)
+		t.Errorf("GetAgentScoreByString != GlobalMatrix().GetScore: %f vs %f", score1, score2)
 	}
 }
