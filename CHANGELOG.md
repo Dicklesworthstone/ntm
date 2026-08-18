@@ -18,6 +18,21 @@ NTM is a tmux session management tool for orchestrating multiple AI coding agent
   tmux diff. The actual safety-policy implementation is `dda4aae8`; history
   is preserved and this note is the forward correction.
 
+### Reliability
+
+- **Post-v1.27.0 follow-up fixes.** Routing state for killed sessions is
+  dropped and filter keys are canonicalized before lookup
+  ([c28737ee](https://github.com/Dicklesworthstone/ntm/commit/c28737ee));
+  workflow review gates count approvals per role and keep fresh kqueue
+  baselines after missed-write stat fallbacks
+  ([49ff8087](https://github.com/Dicklesworthstone/ntm/commit/49ff8087));
+  the guard scripts take the first bead id from `br list` output instead of
+  the last token
+  ([1b1259f4](https://github.com/Dicklesworthstone/ntm/commit/1b1259f4));
+  and the REST beads isolation test proves isolation with a marker title
+  rather than a row count
+  ([2979458b](https://github.com/Dicklesworthstone/ntm/commit/2979458b)).
+
 ---
 
 ## [v1.27.0] -- 2026-08-18 [GitHub Release]
