@@ -22,6 +22,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -461,6 +463,27 @@ func TestRESTBeadsCreateAndUpdate(t *testing.T) {
 
 	srv, _ := testRESTServer(t, t.TempDir())
 	client := newHTTPClient(t, logger, srv)
+
+	// Isolation (bd-w4fbk): the beads endpoints resolve the br workspace from
+	// the server's project dir, which defaults to the process cwd — the real
+	// repo. Point the server at a throwaway initialized br workspace so this
+	// test can never write to the repo's .beads DB, and prove it stayed
+	// untouched afterward.
+	beadsDir := t.TempDir()
+	initCmd := exec.Command("br", "init")
+	initCmd.Dir = beadsDir
+	if out, err := initCmd.CombinedOutput(); err != nil {
+		t.Skipf("br init failed in temp workspace: %v (%s)", err, out)
+	}
+	if cfgResp := client.patch("/api/v1/config", map[string]interface{}{"project_dir": beadsDir}); cfgResp.StatusCode != http.StatusOK {
+		t.Fatalf("failed to point server at isolated beads workspace: status %d", cfgResp.StatusCode)
+	}
+	repoDB := repoBeadsRowCount(t)
+	defer func() {
+		if after := repoBeadsRowCount(t); after != repoDB {
+			t.Errorf("ISOLATION LEAK: repo beads DB row count changed %d -> %d", repoDB, after)
+		}
+	}()
 
 	// Create a test bead
 	createReq := map[string]interface{}{
@@ -919,4 +942,20 @@ func TestRESTFullSessionFlow(t *testing.T) {
 	}
 
 	logger.Log("Full REST session flow completed")
+}
+
+// repoBeadsRowCount counts issues in the repository's own beads JSONL so the
+// isolation guard in TestRESTBeadsCreateAndUpdate can prove no test bead
+// leaked into the real workspace (bd-w4fbk).
+func repoBeadsRowCount(t *testing.T) int {
+	t.Helper()
+	root, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
+	if err != nil {
+		t.Skipf("cannot locate repo root: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(strings.TrimSpace(string(root)), ".beads", "issues.jsonl"))
+	if err != nil {
+		return 0
+	}
+	return strings.Count(string(data), "\n")
 }
