@@ -253,6 +253,8 @@
         "next_actions",
         "cursor"
       ],
+      "paginated": false,
+      "paginated_reason": "cursor-based continuation (attention cursor), not offset pagination",
       "parameters": [
         {
           "name": "attention-cursor",
@@ -322,8 +324,7 @@
       "boundedness": {
         "default_limit": 50,
         "max_limit": 200,
-        "supports_pagination": true,
-        "truncation_behavior": "Lower-priority items dropped; cursor resumes position"
+        "truncation_behavior": "Lower-priority items dropped; cursor resumes position (not offset pagination)"
       },
       "follow_up": {
         "inspect_surfaces": [
@@ -376,6 +377,8 @@
         "incidents",
         "next_actions"
       ],
+      "paginated": false,
+      "paginated_reason": "bounded: condensed attention digest, per-section capped",
       "parameters": [
         {
           "name": "profile",
@@ -427,6 +430,8 @@
         "events",
         "cursor"
       ],
+      "paginated": false,
+      "paginated_reason": "cursor-based continuation (event cursor + --limit), not offset pagination",
       "parameters": [
         {
           "name": "since-cursor",
@@ -526,8 +531,7 @@
       "boundedness": {
         "default_limit": 100,
         "max_limit": 1000,
-        "supports_pagination": true,
-        "truncation_behavior": "Oldest events dropped; use cursor for continuation"
+        "truncation_behavior": "Oldest events dropped; cursor-based continuation, not offset pagination"
       }
     }
   ],

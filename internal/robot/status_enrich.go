@@ -10,6 +10,8 @@ import (
 	"sync"
 	"time"
 
+	gopsprocess "github.com/shirou/gopsutil/v4/process"
+
 	"github.com/Dicklesworthstone/ntm/internal/process"
 	"github.com/Dicklesworthstone/ntm/internal/ratelimit"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
@@ -135,6 +137,16 @@ func getProcessMemoryMB(pid int) (int, error) {
 					return kb / 1024, nil
 				}
 			}
+		}
+	}
+
+	// Native path (darwin/windows): gopsutil answers RSS via libproc /
+	// process snapshot without spawning a subprocess. Robot status calls
+	// this once per pane, serially, so a ~300ms `ps` spawn per pane is a
+	// visible chunk of the canonical surface's wall time (bd-4479y).
+	if proc, err := gopsprocess.NewProcess(int32(pid)); err == nil {
+		if mem, err := proc.MemoryInfo(); err == nil && mem != nil && mem.RSS > 0 {
+			return int(mem.RSS / (1024 * 1024)), nil
 		}
 	}
 

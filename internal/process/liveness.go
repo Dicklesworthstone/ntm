@@ -364,6 +364,19 @@ func GetProcessState(pid int) (string, string, error) {
 		}
 	}
 
+	// Native snapshot (darwin): one sysctl lookup replaces the ps spawn,
+	// which robot status pays once per pane, serially (bd-4479y).
+	if state, ok := nativeProcessState(pid); ok {
+		name := processStateNames[state]
+		if name == "" && state == "I" {
+			name = "idle"
+		}
+		if name == "" {
+			name = "unknown"
+		}
+		return state, name, nil
+	}
+
 	// Fallback to ps (macOS and Linux)
 	// 'state' column provides the process state
 	cmd := exec.Command("ps", "-o", "state=", "-p", strconv.Itoa(pid))

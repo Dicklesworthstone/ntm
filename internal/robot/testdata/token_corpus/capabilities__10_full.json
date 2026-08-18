@@ -2132,7 +2132,7 @@
       "category": "ensemble",
       "summary": "Spawn a reasoning ensemble session with mode assignments.",
       "description": "Spawn a reasoning ensemble session with mode assignments.",
-      "note": "Requires build tag: ensemble_experimental. Default build returns NOT_IMPLEMENTED.",
+      "note": "Gated by build tag: ensemble_experimental. Enabled in official release builds; untagged source builds return NOT_IMPLEMENTED.",
       "unavailable": true,
       "unavailable_reason": "not available in this build: rebuild with -tags ensemble_experimental to enable --robot-ensemble-spawn",
       "output_formats": [
@@ -6896,6 +6896,8 @@
         "summary",
         "next_actions"
       ],
+      "paginated": false,
+      "paginated_reason": "bounded: one entry per live agent pane",
       "parameters": [
         {
           "name": "session",
@@ -6947,6 +6949,8 @@
         "source_health",
         "next_actions"
       ],
+      "paginated": false,
+      "paginated_reason": "bounded: per-pane health rows with nested query echo and indicator lists",
       "parameters": [
         {
           "name": "session",
@@ -7012,6 +7016,8 @@
       "sections": [
         "sessions"
       ],
+      "paginated": false,
+      "paginated_reason": "bounded: one entry per live agent pane",
       "parameters": [
         {
           "name": "session",
@@ -7044,6 +7050,8 @@
       "schema_id": "ntm:robot:context:v1",
       "schema_type": "context",
       "schema_source": "built_in",
+      "paginated": false,
+      "paginated_reason": "bounded: per-pane context usage rows",
       "parameters": [
         {
           "name": "session",
@@ -7084,6 +7092,8 @@
         "work",
         "alerts"
       ],
+      "paginated": false,
+      "paginated_reason": "bounded: dashboard sections are per-section capped",
       "examples": [
         "ntm --robot-dashboard"
       ],
@@ -7117,6 +7127,8 @@
         "incidents",
         "next_actions"
       ],
+      "paginated": false,
+      "paginated_reason": "bounded: diagnostic findings for one probe run",
       "parameters": [
         {
           "name": "session",
@@ -7190,6 +7202,8 @@
       "schema_id": "ntm:robot:dialogs:v1",
       "schema_type": "dialogs",
       "schema_source": "built_in",
+      "paginated": false,
+      "paginated_reason": "bounded: currently open dialogs across panes",
       "parameters": [
         {
           "name": "session",
@@ -7229,6 +7243,8 @@
       "schema_id": "ntm:robot:diff:v1",
       "schema_type": "diff",
       "schema_source": "built_in",
+      "paginated": false,
+      "paginated_reason": "bounded: pane-vs-pane comparison rows",
       "parameters": [
         {
           "name": "session",
@@ -7274,6 +7290,8 @@
         "events",
         "source_health"
       ],
+      "paginated": false,
+      "paginated_reason": "bounded: recent errors capped by --limit truncation",
       "parameters": [
         {
           "name": "session",
@@ -7329,6 +7347,8 @@
       "schema_id": "ntm:robot:files:v1",
       "schema_type": "files",
       "schema_source": "built_in",
+      "paginated": false,
+      "paginated_reason": "bounded: recent file activity capped per response",
       "parameters": [
         {
           "name": "session",
@@ -7385,6 +7405,8 @@
         "source_health",
         "next_actions"
       ],
+      "paginated": false,
+      "paginated_reason": "bounded: one row per source/adapter",
       "parameters": [
         {
           "name": "session",
@@ -7434,6 +7456,8 @@
         "source_health",
         "quota"
       ],
+      "paginated": false,
+      "paginated_reason": "bounded: one row per provider credential",
       "parameters": [
         {
           "name": "session",
@@ -7471,6 +7495,8 @@
         "incidents",
         "next_actions"
       ],
+      "paginated": false,
+      "paginated_reason": "bounded: per-request restart results for stuck panes",
       "parameters": [
         {
           "name": "session",
@@ -7562,6 +7588,8 @@
         "sessions",
         "next_actions"
       ],
+      "paginated": false,
+      "paginated_reason": "bounded: single-agent inspection detail",
       "parameters": [
         {
           "name": "agent_id",
@@ -7605,6 +7633,8 @@
         "coordination",
         "next_actions"
       ],
+      "paginated": false,
+      "paginated_reason": "bounded: coordination snapshot (reservations/messages) per-section capped",
       "parameters": [
         {
           "name": "agent_name",
@@ -7645,6 +7675,8 @@
         "incidents",
         "next_actions"
       ],
+      "paginated": false,
+      "paginated_reason": "bounded: single-incident evidence detail",
       "parameters": [
         {
           "name": "incident_id",
@@ -7699,6 +7731,8 @@
         "events",
         "next_actions"
       ],
+      "paginated": false,
+      "paginated_reason": "bounded: single-pane inspection detail with capped last lines",
       "parameters": [
         {
           "name": "session",
@@ -7772,6 +7806,8 @@
         "quota",
         "next_actions"
       ],
+      "paginated": false,
+      "paginated_reason": "bounded: single-scope quota detail",
       "parameters": [
         {
           "name": "quota_id",
@@ -7812,6 +7848,8 @@
         "sessions",
         "next_actions"
       ],
+      "paginated": false,
+      "paginated_reason": "bounded: one entry per pane in one session",
       "parameters": [
         {
           "name": "session",
@@ -7859,6 +7897,8 @@
         "work",
         "next_actions"
       ],
+      "paginated": false,
+      "paginated_reason": "bounded: single work-item detail",
       "parameters": [
         {
           "name": "bead_id",
@@ -7905,6 +7945,8 @@
       "sections": [
         "summary"
       ],
+      "paginated": false,
+      "paginated_reason": "bounded: per-pane work indicator rows",
       "parameters": [
         {
           "name": "session",
@@ -7956,6 +7998,8 @@
       "sections": [
         "events"
       ],
+      "paginated": false,
+      "paginated_reason": "bounded: recent log lines capped by --limit truncation",
       "parameters": [
         {
           "name": "session",
@@ -8075,6 +8119,8 @@
       "schema_id": "ntm:robot:metrics:v1",
       "schema_type": "metrics",
       "schema_source": "built_in",
+      "paginated": false,
+      "paginated_reason": "bounded: current metric snapshot rows",
       "parameters": [
         {
           "name": "session",
@@ -8130,6 +8176,8 @@
         "source_health",
         "next_actions"
       ],
+      "paginated": false,
+      "paginated_reason": "bounded: one row per monitored pane",
       "parameters": [
         {
           "name": "session",
@@ -8232,6 +8280,8 @@
       "schema_id": "ntm:robot:pane-address:v1",
       "schema_type": "pane_address",
       "schema_source": "built_in",
+      "paginated": false,
+      "paginated_reason": "bounded: address forms for one pane",
       "parameters": [
         {
           "name": "session",
@@ -8269,6 +8319,8 @@
         "incidents",
         "next_actions"
       ],
+      "paginated": false,
+      "paginated_reason": "bounded: probe findings for one session",
       "parameters": [
         {
           "name": "session",
@@ -8341,6 +8393,8 @@
       "schema_id": "ntm:robot:productivity:v1",
       "schema_type": "productivity",
       "schema_source": "built_in",
+      "paginated": false,
+      "paginated_reason": "bounded: per-agent productivity rows for one window",
       "parameters": [
         {
           "name": "session",
@@ -8393,6 +8447,8 @@
         "source_health",
         "next_actions"
       ],
+      "paginated": true,
+      "paginated_reason": "sessions array pages via --robot-offset/--limit",
       "parameters": [
         {
           "name": "since",
@@ -8499,6 +8555,8 @@
         "summary",
         "sessions"
       ],
+      "paginated": true,
+      "paginated_reason": "sessions array pages via --robot-offset/--limit",
       "parameters": [
         {
           "name": "robot-limit",
@@ -8560,6 +8618,8 @@
       "schema_id": "ntm:robot:summary:v1",
       "schema_type": "summary",
       "schema_source": "built_in",
+      "paginated": false,
+      "paginated_reason": "bounded: per-agent summary rows for one session",
       "parameters": [
         {
           "name": "session",
@@ -8601,6 +8661,8 @@
       "schema_id": "ntm:robot:tail:v1",
       "schema_type": "tail",
       "schema_source": "built_in",
+      "paginated": false,
+      "paginated_reason": "bounded: per-pane capture capped by the line limit",
       "parameters": [
         {
           "name": "session",
@@ -8697,6 +8759,8 @@
         "work",
         "events"
       ],
+      "paginated": false,
+      "paginated_reason": "bounded: events for one watched bead window",
       "parameters": [
         {
           "name": "session",
@@ -8770,6 +8834,8 @@
         "next_actions",
         "cursor"
       ],
+      "paginated": false,
+      "paginated_reason": "cursor-based continuation (attention cursor), not offset pagination",
       "parameters": [
         {
           "name": "attention-cursor",
@@ -8839,8 +8905,7 @@
       "boundedness": {
         "default_limit": 50,
         "max_limit": 200,
-        "supports_pagination": true,
-        "truncation_behavior": "Lower-priority items dropped; cursor resumes position"
+        "truncation_behavior": "Lower-priority items dropped; cursor resumes position (not offset pagination)"
       },
       "follow_up": {
         "inspect_surfaces": [
@@ -8893,6 +8958,8 @@
         "incidents",
         "next_actions"
       ],
+      "paginated": false,
+      "paginated_reason": "bounded: condensed attention digest, per-section capped",
       "parameters": [
         {
           "name": "profile",
@@ -8944,6 +9011,8 @@
         "events",
         "cursor"
       ],
+      "paginated": false,
+      "paginated_reason": "cursor-based continuation (event cursor + --limit), not offset pagination",
       "parameters": [
         {
           "name": "since-cursor",
@@ -9043,8 +9112,7 @@
       "boundedness": {
         "default_limit": 100,
         "max_limit": 1000,
-        "supports_pagination": true,
-        "truncation_behavior": "Oldest events dropped; use cursor for continuation"
+        "truncation_behavior": "Oldest events dropped; cursor-based continuation, not offset pagination"
       }
     },
     {
@@ -9060,6 +9128,8 @@
       "schema_id": "ntm:robot:ensemble:v1",
       "schema_type": "ensemble",
       "schema_source": "built_in",
+      "paginated": false,
+      "paginated_reason": "bounded: one ensemble run echo with its nested mode list",
       "parameters": [
         {
           "name": "session",
@@ -9092,6 +9162,8 @@
       "schema_id": "ntm:robot:ensemble-modes:v1",
       "schema_type": "ensemble_modes",
       "schema_source": "built_in",
+      "paginated": true,
+      "paginated_reason": "modes array pages via --limit/--offset",
       "parameters": [
         {
           "name": "category",
@@ -9151,6 +9223,8 @@
       "schema_id": "ntm:robot:ensemble-presets:v1",
       "schema_type": "ensemble_presets",
       "schema_source": "built_in",
+      "paginated": false,
+      "paginated_reason": "bounded: fixed preset catalog",
       "examples": [
         "ntm --robot-ensemble-presets"
       ],
@@ -9178,6 +9252,8 @@
         "sessions",
         "next_actions"
       ],
+      "paginated": false,
+      "paginated_reason": "bounded: per-request stop echo; nested _agent_hints arrays only",
       "parameters": [
         {
           "name": "session",
@@ -9228,6 +9304,8 @@
       "sections": [
         "next_actions"
       ],
+      "paginated": false,
+      "paginated_reason": "bounded: top-K suggestions",
       "parameters": [
         {
           "name": "question",
@@ -9261,7 +9339,7 @@
       "category": "ensemble",
       "summary": "Spawn a reasoning ensemble session with mode assignments.",
       "description": "Spawn a reasoning ensemble session with mode assignments.",
-      "note": "Requires build tag: ensemble_experimental. Default build returns NOT_IMPLEMENTED.",
+      "note": "Gated by build tag: ensemble_experimental. Enabled in official release builds; untagged source builds return NOT_IMPLEMENTED.",
       "unavailable": true,
       "unavailable_reason": "not available in this build: rebuild with -tags ensemble_experimental to enable --robot-ensemble-spawn",
       "output_formats": [
@@ -9375,6 +9453,8 @@
       "schema_id": "ntm:robot:ack:v1",
       "schema_type": "ack",
       "schema_source": "built_in",
+      "paginated": false,
+      "paginated_reason": "bounded: per-request acknowledgement results for addressed panes",
       "parameters": [
         {
           "name": "session",
@@ -9437,6 +9517,8 @@
       "schema_id": "ntm:robot:answer-dialog:v1",
       "schema_type": "answer_dialog",
       "schema_source": "built_in",
+      "paginated": false,
+      "paginated_reason": "bounded: per-request dialog answer results",
       "parameters": [
         {
           "name": "session",
@@ -9488,6 +9570,8 @@
         "work",
         "next_actions"
       ],
+      "paginated": false,
+      "paginated_reason": "bounded: per-request assignment results",
       "parameters": [
         {
           "name": "session",
@@ -9547,6 +9631,8 @@
         "work",
         "next_actions"
       ],
+      "paginated": false,
+      "paginated_reason": "bounded: per-request assignment plan echo",
       "parameters": [
         {
           "name": "session",
@@ -9720,6 +9806,8 @@
       "schema_id": "ntm:robot:exit-cli:v1",
       "schema_type": "exit_cli",
       "schema_source": "built_in",
+      "paginated": false,
+      "paginated_reason": "bounded: per-request exit results for addressed panes",
       "parameters": [
         {
           "name": "session",
@@ -9767,6 +9855,8 @@
       "schema_id": "ntm:robot:interrupt:v1",
       "schema_type": "interrupt",
       "schema_source": "built_in",
+      "paginated": false,
+      "paginated_reason": "bounded: per-request interrupt results for addressed panes",
       "parameters": [
         {
           "name": "session",
@@ -9857,6 +9947,8 @@
       "schema_id": "ntm:robot:kill-agent:v1",
       "schema_type": "kill_agent",
       "schema_source": "built_in",
+      "paginated": false,
+      "paginated_reason": "bounded: per-request kill results",
       "parameters": [
         {
           "name": "session",
@@ -9904,6 +9996,8 @@
       "schema_id": "ntm:robot:kill-pane:v1",
       "schema_type": "kill_pane",
       "schema_source": "built_in",
+      "paginated": false,
+      "paginated_reason": "bounded: per-request kill results",
       "parameters": [
         {
           "name": "session",
@@ -10003,6 +10097,8 @@
         "source_health",
         "next_actions"
       ],
+      "paginated": false,
+      "paginated_reason": "bounded: per-request restart echo",
       "parameters": [
         {
           "name": "session",
@@ -10094,6 +10190,8 @@
       "schema_id": "ntm:robot:route:v1",
       "schema_type": "route",
       "schema_source": "built_in",
+      "paginated": false,
+      "paginated_reason": "bounded: per-request routing decision echo",
       "parameters": [
         {
           "name": "session",
@@ -10156,6 +10254,8 @@
       "schema_id": "ntm:robot:send:v1",
       "schema_type": "send",
       "schema_source": "built_in",
+      "paginated": false,
+      "paginated_reason": "bounded: per-request send results for addressed panes",
       "parameters": [
         {
           "name": "session",
@@ -10315,6 +10415,8 @@
       "schema_id": "ntm:robot:send-receipt:v1",
       "schema_type": "send_receipt",
       "schema_source": "built_in",
+      "paginated": false,
+      "paginated_reason": "bounded: delivery receipt for one send",
       "parameters": [
         {
           "name": "operation-id",
@@ -10351,6 +10453,8 @@
         "source_health",
         "next_actions"
       ],
+      "paginated": false,
+      "paginated_reason": "bounded: per-request restart actions for addressed panes",
       "parameters": [
         {
           "name": "session",
@@ -10446,6 +10550,8 @@
         "next_actions",
         "cursor"
       ],
+      "paginated": false,
+      "paginated_reason": "bounded: wake reasons for one wait",
       "parameters": [
         {
           "name": "session",
@@ -10675,6 +10781,8 @@
       "schema_id": "ntm:robot:recipes:v1",
       "schema_type": "recipes",
       "schema_source": "built_in",
+      "paginated": false,
+      "paginated_reason": "bounded: fixed recipe catalog",
       "examples": [
         "ntm --robot-recipes"
       ],
@@ -10698,6 +10806,8 @@
       "schema_id": "ntm:robot:spawn:v1",
       "schema_type": "spawn",
       "schema_source": "built_in",
+      "paginated": false,
+      "paginated_reason": "bounded: per-request spawned pane rows",
       "parameters": [
         {
           "name": "session",
@@ -10835,6 +10945,8 @@
       "schema_id": "ntm:robot:bead-claim:v1",
       "schema_type": "bead_claim",
       "schema_source": "built_in",
+      "paginated": false,
+      "paginated_reason": "bounded: per-request claim echo; nested _agent_hints arrays only",
       "parameters": [
         {
           "name": "bead-id",
@@ -10874,6 +10986,8 @@
       "schema_id": "ntm:robot:bead-close:v1",
       "schema_type": "bead_close",
       "schema_source": "built_in",
+      "paginated": false,
+      "paginated_reason": "bounded: per-request close echo; nested _agent_hints arrays only",
       "parameters": [
         {
           "name": "bead-id",
@@ -10913,6 +11027,8 @@
       "schema_id": "ntm:robot:bead-create:v1",
       "schema_type": "bead_create",
       "schema_source": "built_in",
+      "paginated": false,
+      "paginated_reason": "bounded: per-request creation echo",
       "parameters": [
         {
           "name": "bead-title",
@@ -10982,6 +11098,8 @@
       "schema_id": "ntm:robot:bead-show:v1",
       "schema_type": "bead_show",
       "schema_source": "built_in",
+      "paginated": false,
+      "paginated_reason": "bounded: single bead detail with dependency arrays",
       "parameters": [
         {
           "name": "bead-id",
@@ -11017,6 +11135,8 @@
       "sections": [
         "work"
       ],
+      "paginated": false,
+      "paginated_reason": "bounded via --limit truncation; total reported, no offset paging",
       "parameters": [
         {
           "name": "beads-status",
@@ -11079,8 +11199,7 @@
       "boundedness": {
         "default_limit": 50,
         "max_limit": 500,
-        "supports_pagination": true,
-        "truncation_behavior": "Beads beyond limit omitted; use offset for more"
+        "truncation_behavior": "Beads beyond limit omitted; narrow with filters (no offset pagination)"
       },
       "follow_up": {
         "inspect_surfaces": [
@@ -11102,6 +11221,8 @@
       "schema_id": "ntm:robot:file-beads:v1",
       "schema_type": "file_beads",
       "schema_source": "built_in",
+      "paginated": false,
+      "paginated_reason": "bounded: top-K files with beads for one query window",
       "parameters": [
         {
           "name": "file",
@@ -11142,6 +11263,8 @@
       "schema_id": "ntm:robot:file-hotspots:v1",
       "schema_type": "file_hotspots",
       "schema_source": "built_in",
+      "paginated": false,
+      "paginated_reason": "bounded: top-K hotspot files",
       "parameters": [
         {
           "name": "limit",
@@ -11175,6 +11298,8 @@
       "schema_id": "ntm:robot:file-relations:v1",
       "schema_type": "file_relations",
       "schema_source": "built_in",
+      "paginated": false,
+      "paginated_reason": "bounded: top-K related files for one target",
       "parameters": [
         {
           "name": "file",
@@ -11227,6 +11352,8 @@
         "work",
         "next_actions"
       ],
+      "paginated": false,
+      "paginated_reason": "bounded: forecast rows for one horizon",
       "parameters": [
         {
           "name": "target",
@@ -11267,6 +11394,8 @@
       "sections": [
         "work"
       ],
+      "paginated": false,
+      "paginated_reason": "bounded: top-K graph insight scores per section",
       "examples": [
         "ntm --robot-graph"
       ],
@@ -11294,6 +11423,8 @@
       "schema_id": "ntm:robot:impact:v1",
       "schema_type": "impact",
       "schema_source": "built_in",
+      "paginated": false,
+      "paginated_reason": "bounded: impact detail for one change set",
       "parameters": [
         {
           "name": "file",
@@ -11326,6 +11457,8 @@
       "schema_id": "ntm:robot:label-attention:v1",
       "schema_type": "label_attention",
       "schema_source": "built_in",
+      "paginated": false,
+      "paginated_reason": "bounded: one row per label",
       "parameters": [
         {
           "name": "limit",
@@ -11359,6 +11492,8 @@
       "schema_id": "ntm:robot:label-flow:v1",
       "schema_type": "label_flow",
       "schema_source": "built_in",
+      "paginated": false,
+      "paginated_reason": "bounded: label-by-label flow matrix",
       "examples": [
         "ntm --robot-label-flow"
       ],
@@ -11382,6 +11517,8 @@
       "schema_id": "ntm:robot:label-health:v1",
       "schema_type": "label_health",
       "schema_source": "built_in",
+      "paginated": false,
+      "paginated_reason": "bounded: one health row per label",
       "examples": [
         "ntm --robot-label-health"
       ],
@@ -11409,6 +11546,8 @@
         "work",
         "next_actions"
       ],
+      "paginated": false,
+      "paginated_reason": "bounded: execution tracks for one plan request",
       "examples": [
         "ntm --robot-plan"
       ],
@@ -11443,6 +11582,8 @@
       "schema_id": "ntm:robot:search:v1",
       "schema_type": "search",
       "schema_source": "built_in",
+      "paginated": false,
+      "paginated_reason": "bounded: top-K search hits",
       "parameters": [
         {
           "name": "query",
@@ -11483,6 +11624,8 @@
       "schema_id": "ntm:robot:suggest:v1",
       "schema_type": "suggest",
       "schema_source": "built_in",
+      "paginated": false,
+      "paginated_reason": "bounded: top-K suggestions",
       "examples": [
         "ntm --robot-suggest"
       ],
@@ -11510,6 +11653,8 @@
         "work",
         "next_actions"
       ],
+      "paginated": false,
+      "paginated_reason": "bounded: top-K triage recommendations",
       "parameters": [
         {
           "name": "triage-limit",
@@ -11561,6 +11706,8 @@
       "schema_id": "ntm:robot:cass-context:v1",
       "schema_type": "cass_context",
       "schema_source": "built_in",
+      "paginated": false,
+      "paginated_reason": "bounded: top-K relevant sessions from CASS",
       "parameters": [
         {
           "name": "query",
@@ -11596,6 +11743,8 @@
       "sections": [
         "events"
       ],
+      "paginated": false,
+      "paginated_reason": "bounded: top-K insights from CASS",
       "examples": [
         "ntm --robot-cass-insights"
       ],
@@ -11619,6 +11768,8 @@
       "schema_id": "ntm:robot:cass-search:v1",
       "schema_type": "cass_search",
       "schema_source": "built_in",
+      "paginated": false,
+      "paginated_reason": "bounded: top-K search hits from CASS",
       "parameters": [
         {
           "name": "query",
@@ -11931,6 +12082,8 @@
       "sections": [
         "quota"
       ],
+      "paginated": false,
+      "paginated_reason": "bounded: configured provider accounts (handful)",
       "parameters": [
         {
           "name": "provider",
@@ -11987,6 +12140,8 @@
       "schema_id": "ntm:robot:alerts:v1",
       "schema_type": "alerts",
       "schema_source": "built_in",
+      "paginated": false,
+      "paginated_reason": "bounded: active alerts capped by alert engine retention",
       "parameters": [
         {
           "name": "alerts-severity",
@@ -12040,6 +12195,8 @@
       "sections": [
         "command_catalog"
       ],
+      "paginated": false,
+      "paginated_reason": "bounded: fixed command catalog",
       "parameters": [
         {
           "name": "capability-command",
@@ -12104,6 +12261,8 @@
       "schema_id": "ntm:robot:causality:v1",
       "schema_type": "causality",
       "schema_source": "built_in",
+      "paginated": false,
+      "paginated_reason": "bounded: causal chain for one incident window",
       "parameters": [
         {
           "name": "session",
@@ -12280,6 +12439,8 @@
       "schema_id": "ntm:robot:dismiss-alert:v1",
       "schema_type": "dismiss_alert",
       "schema_source": "built_in",
+      "paginated": false,
+      "paginated_reason": "bounded: per-request dismissal echo",
       "parameters": [
         {
           "name": "alert-id",
@@ -12334,6 +12495,8 @@
       "sections": [
         "command_catalog"
       ],
+      "paginated": false,
+      "paginated_reason": "bounded: fixed documentation topics",
       "parameters": [
         {
           "name": "topic",
@@ -12375,6 +12538,8 @@
       "sections": [
         "source_health"
       ],
+      "paginated": false,
+      "paginated_reason": "bounded: environment diagnostic rows",
       "parameters": [
         {
           "name": "target",
@@ -12468,6 +12633,8 @@
       "sections": [
         "events"
       ],
+      "paginated": true,
+      "paginated_reason": "entries array pages via --limit/--offset",
       "parameters": [
         {
           "name": "session",
@@ -12598,6 +12765,8 @@
       "schema_id": "ntm:robot:jfp-export:v1",
       "schema_type": "jfp_export",
       "schema_source": "built_in",
+      "paginated": false,
+      "paginated_reason": "bounded: per-request export file list",
       "parameters": [
         {
           "name": "ids",
@@ -12638,6 +12807,8 @@
       "schema_id": "ntm:robot:jfp-install:v1",
       "schema_type": "jfp_install",
       "schema_source": "built_in",
+      "paginated": false,
+      "paginated_reason": "bounded: per-request install results",
       "parameters": [
         {
           "name": "ids",
@@ -12916,6 +13087,8 @@
       "sections": [
         "coordination"
       ],
+      "paginated": false,
+      "paginated_reason": "bounded: unread mail summary capped per response",
       "examples": [
         "ntm --robot-mail"
       ],
@@ -12943,6 +13116,8 @@
         "coordination",
         "next_actions"
       ],
+      "paginated": false,
+      "paginated_reason": "bounded: per-session mail check rows",
       "parameters": [
         {
           "name": "mail-project",
@@ -13113,6 +13288,8 @@
       "schema_id": "ntm:robot:palette:v1",
       "schema_type": "palette",
       "schema_source": "built_in",
+      "paginated": false,
+      "paginated_reason": "bounded: fixed palette command catalog",
       "parameters": [
         {
           "name": "palette-session",
@@ -13225,6 +13402,8 @@
       "sections": [
         "source_health"
       ],
+      "paginated": false,
+      "paginated_reason": "bounded: configured proxy routes plus recent failover events",
       "examples": [
         "ntm --robot-proxy-status"
       ],
@@ -13310,6 +13489,8 @@
       "schema_id": "ntm:robot:rano-stats:v1",
       "schema_type": "rano_stats",
       "schema_source": "built_in",
+      "paginated": false,
+      "paginated_reason": "bounded: per-pane process stats rows",
       "parameters": [
         {
           "name": "panes",
@@ -13374,6 +13555,8 @@
       "schema_id": "ntm:robot:rch-workers:v1",
       "schema_type": "rch_workers",
       "schema_source": "built_in",
+      "paginated": false,
+      "paginated_reason": "bounded: one row per remote compilation worker",
       "parameters": [
         {
           "name": "worker",
@@ -13407,6 +13590,8 @@
       "schema_id": "ntm:robot:replay:v1",
       "schema_type": "replay",
       "schema_source": "built_in",
+      "paginated": false,
+      "paginated_reason": "bounded: replay window capped by ring buffer",
       "parameters": [
         {
           "name": "session",
@@ -13455,6 +13640,8 @@
       "schema_id": "ntm:robot:restore:v1",
       "schema_type": "restore",
       "schema_source": "built_in",
+      "paginated": false,
+      "paginated_reason": "bounded: one restored session state echo",
       "parameters": [
         {
           "name": "path",
@@ -13494,6 +13681,8 @@
       "schema_id": "ntm:robot:ru-sync:v1",
       "schema_type": "ru_sync",
       "schema_source": "built_in",
+      "paginated": false,
+      "paginated_reason": "bounded: per-repo sync results for one run",
       "parameters": [
         {
           "name": "dry-run",
@@ -13531,6 +13720,8 @@
         "source_health",
         "next_actions"
       ],
+      "paginated": false,
+      "paginated_reason": "bounded: per-request simulated command steps",
       "parameters": [
         {
           "name": "command",
@@ -13589,6 +13780,8 @@
       "schema_id": "ntm:robot:save:v1",
       "schema_type": "save",
       "schema_source": "built_in",
+      "paginated": false,
+      "paginated_reason": "bounded: one saved session state echo",
       "parameters": [
         {
           "name": "session",
@@ -13633,6 +13826,8 @@
       "sections": [
         "command_catalog"
       ],
+      "paginated": false,
+      "paginated_reason": "bounded: fixed schema catalog",
       "parameters": [
         {
           "name": "type",
@@ -13791,6 +13986,8 @@
         "source_health",
         "events"
       ],
+      "paginated": false,
+      "paginated_reason": "bounded: bundle manifest for one collection run",
       "parameters": [
         {
           "name": "session",
@@ -13888,6 +14085,8 @@
         "quota",
         "next_actions"
       ],
+      "paginated": false,
+      "paginated_reason": "bounded: per-request switch echo for affected panes",
       "parameters": [
         {
           "name": "target",
@@ -13921,6 +14120,8 @@
       "schema_id": "ntm:robot:tokens:v1",
       "schema_type": "tokens",
       "schema_source": "built_in",
+      "paginated": false,
+      "paginated_reason": "bounded: per-pane token usage rows",
       "parameters": [
         {
           "name": "tokens-days",
@@ -13993,6 +14194,8 @@
       "schema_id": "ntm:robot:tools:v1",
       "schema_type": "tools",
       "schema_source": "built_in",
+      "paginated": false,
+      "paginated_reason": "bounded: fixed tool catalog",
       "examples": [
         "ntm --robot-tools"
       ],
@@ -14042,6 +14245,8 @@
       "sections": [
         "events"
       ],
+      "paginated": false,
+      "paginated_reason": "bounded: top-K transcript search hits",
       "parameters": [
         {
           "name": "query",

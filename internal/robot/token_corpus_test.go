@@ -62,6 +62,9 @@ func fixedCorpusResponse(success bool) RobotResponse {
 func normalizeCorpusResponse(r *RobotResponse) {
 	r.Timestamp = fixedCorpusTimestamp
 	r.OutputFormat = "json"
+	// The envelope version is a process global other tests may set; pin it so
+	// corpus generation and the staleness ratchet are order-independent.
+	r.Version = "dev"
 }
 
 // buildCorpusSnapshot builds a deterministic SnapshotOutput at a given scale.
@@ -392,6 +395,9 @@ func buildTokenCorpus(t *testing.T) []corpusEnvelope {
 			t.Fatalf("GetCapabilitiesWithOptions(%s): %v", cv.name, err)
 		}
 		normalizeCorpusResponse(&out.RobotResponse)
+		// The catalog's own Version field mirrors the build-info global; pin
+		// it so corpus generation and the ratchet are order-independent.
+		out.Version = "dev"
 		corpus = append(corpus, corpusEnvelope{Surface: "capabilities", Name: cv.name, Payload: out})
 	}
 
@@ -499,8 +505,28 @@ func TestTokenCorpusFixturesMatchCurrentStructs(t *testing.T) {
 		if err != nil {
 			t.Fatalf("corpus fixture %s missing (%v); %s", path, err, regenHint)
 		}
-		if string(committed) != rendered {
-			t.Errorf("corpus fixture %s is stale relative to the current structs/renderer; %s", path, regenHint)
+		if got := string(committed); got != rendered {
+			// Show the first divergence to make the drift diagnosable.
+			i := 0
+			for i < len(got) && i < len(rendered) && got[i] == rendered[i] {
+				i++
+			}
+			lo := i - 60
+			if lo < 0 {
+				lo = 0
+			}
+			snip := func(s string) string {
+				hi := i + 60
+				if hi > len(s) {
+					hi = len(s)
+				}
+				if lo >= len(s) {
+					return ""
+				}
+				return s[lo:hi]
+			}
+			t.Errorf("corpus fixture %s is stale relative to the current structs/renderer; %s\n  fixture: …%s…\n  current: …%s…",
+				path, regenHint, snip(got), snip(rendered))
 		}
 	}
 	// Orphaned fixtures (renamed/removed envelopes) also mean staleness.

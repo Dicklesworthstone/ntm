@@ -882,6 +882,8 @@
         "source_health",
         "next_actions"
       ],
+      "paginated": false,
+      "paginated_reason": "bounded: one row per source/adapter",
       "parameters": [
         {
           "name": "session",
@@ -931,6 +933,8 @@
         "source_health",
         "quota"
       ],
+      "paginated": false,
+      "paginated_reason": "bounded: one row per provider credential",
       "parameters": [
         {
           "name": "session",
@@ -967,6 +971,8 @@
         "summary",
         "sessions"
       ],
+      "paginated": true,
+      "paginated_reason": "sessions array pages via --robot-offset/--limit",
       "parameters": [
         {
           "name": "robot-limit",
@@ -1032,6 +1038,8 @@
         "work",
         "events"
       ],
+      "paginated": false,
+      "paginated_reason": "bounded: events for one watched bead window",
       "parameters": [
         {
           "name": "session",
@@ -1104,6 +1112,8 @@
         "incidents",
         "next_actions"
       ],
+      "paginated": false,
+      "paginated_reason": "bounded: condensed attention digest, per-section capped",
       "parameters": [
         {
           "name": "profile",
@@ -1151,6 +1161,8 @@
       "schema_id": "ntm:robot:ensemble:v1",
       "schema_type": "ensemble",
       "schema_source": "built_in",
+      "paginated": false,
+      "paginated_reason": "bounded: one ensemble run echo with its nested mode list",
       "parameters": [
         {
           "name": "session",
@@ -1186,6 +1198,8 @@
       "sections": [
         "work"
       ],
+      "paginated": false,
+      "paginated_reason": "bounded via --limit truncation; total reported, no offset paging",
       "parameters": [
         {
           "name": "beads-status",
@@ -1248,8 +1262,7 @@
       "boundedness": {
         "default_limit": 50,
         "max_limit": 500,
-        "supports_pagination": true,
-        "truncation_behavior": "Beads beyond limit omitted; use offset for more"
+        "truncation_behavior": "Beads beyond limit omitted; narrow with filters (no offset pagination)"
       },
       "follow_up": {
         "inspect_surfaces": [
@@ -1437,6 +1450,8 @@
         "coordination",
         "next_actions"
       ],
+      "paginated": false,
+      "paginated_reason": "bounded: per-session mail check rows",
       "parameters": [
         {
           "name": "mail-project",
@@ -1546,6 +1561,8 @@
       "sections": [
         "source_health"
       ],
+      "paginated": false,
+      "paginated_reason": "bounded: configured proxy routes plus recent failover events",
       "examples": [
         "ntm --robot-proxy-status"
       ],
@@ -1618,6 +1635,8 @@
       "schema_id": "ntm:robot:rch-workers:v1",
       "schema_type": "rch_workers",
       "schema_source": "built_in",
+      "paginated": false,
+      "paginated_reason": "bounded: one row per remote compilation worker",
       "parameters": [
         {
           "name": "worker",
@@ -1655,6 +1674,8 @@
         "source_health",
         "next_actions"
       ],
+      "paginated": false,
+      "paginated_reason": "bounded: per-request simulated command steps",
       "parameters": [
         {
           "name": "command",
@@ -1716,6 +1737,8 @@
       "sections": [
         "command_catalog"
       ],
+      "paginated": false,
+      "paginated_reason": "bounded: fixed schema catalog",
       "parameters": [
         {
           "name": "type",
@@ -1776,6 +1799,8 @@
       "schema_id": "ntm:robot:tools:v1",
       "schema_type": "tools",
       "schema_source": "built_in",
+      "paginated": false,
+      "paginated_reason": "bounded: fixed tool catalog",
       "examples": [
         "ntm --robot-tools"
       ],
