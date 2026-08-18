@@ -730,7 +730,13 @@ func TestSendOutputMarshal(t *testing.T) {
 // ====================
 
 func TestPrintVersion(t *testing.T) {
-	// Set version info
+	// Set version info, restoring the package globals afterwards so the
+	// override cannot leak into order-dependent tests (the token-corpus
+	// staleness ratchet embeds the version in capabilities envelopes).
+	prevVersion, prevCommit, prevDate, prevBuiltBy := Version, Commit, Date, BuiltBy
+	t.Cleanup(func() {
+		Version, Commit, Date, BuiltBy = prevVersion, prevCommit, prevDate, prevBuiltBy
+	})
 	Version = "1.2.3"
 	Commit = "abc123"
 	Date = "2025-01-01"

@@ -1323,6 +1323,17 @@ func TestInjectContextFromQuery_Disabled(t *testing.T) {
 	if injectResult.Metadata.ItemsInjected != 0 {
 		t.Errorf("ItemsInjected = %d, want 0", injectResult.Metadata.ItemsInjected)
 	}
+	// [cass] enabled=false + explicit --with-cass must record the honest
+	// reason: the query never ran, so "no relevant context found" is a lie.
+	if !strings.Contains(injectResult.Metadata.SkippedReason, "cass disabled") {
+		t.Errorf("SkippedReason = %q, want a 'cass disabled' reason", injectResult.Metadata.SkippedReason)
+	}
+	if injectResult.Metadata.Enabled {
+		t.Error("Metadata.Enabled = true, want false when cass is config-disabled")
+	}
+	if injectResult.ModifiedPrompt != "test prompt" {
+		t.Errorf("ModifiedPrompt = %q, want the prompt unchanged", injectResult.ModifiedPrompt)
+	}
 }
 
 func TestInjectContextFromQuery_WithPrompt(t *testing.T) {

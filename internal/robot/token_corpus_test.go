@@ -62,9 +62,9 @@ func fixedCorpusResponse(success bool) RobotResponse {
 func normalizeCorpusResponse(r *RobotResponse) {
 	r.Timestamp = fixedCorpusTimestamp
 	r.OutputFormat = "json"
-	// The envelope version is a process global other tests may set; pin it so
-	// corpus generation and the staleness ratchet are order-independent.
-	r.Version = "dev"
+	// Pin the envelope version so corpus generation and the staleness
+	// ratchet are order-independent regardless of process-global build info.
+	r.Version = EnvelopeVersion
 }
 
 // buildCorpusSnapshot builds a deterministic SnapshotOutput at a given scale.

@@ -214,6 +214,69 @@ func TestJobStore_List(t *testing.T) {
 	}
 }
 
+// List order must be deterministic (newest first, ID tie-break), never
+// random map iteration order.
+func TestJobStore_ListDeterministicOrder(t *testing.T) {
+	store := NewJobStore()
+	for i := 0; i < 8; i++ {
+		store.Create("scan")
+	}
+	first := store.List()
+	for run := 0; run < 5; run++ {
+		again := store.List()
+		for i := range first {
+			if again[i].ID != first[i].ID {
+				t.Fatalf("List order changed between calls at index %d: %s vs %s", i, again[i].ID, first[i].ID)
+			}
+		}
+	}
+	for i := 1; i < len(first); i++ {
+		prev, cur := first[i-1], first[i]
+		if prev.CreatedAt < cur.CreatedAt {
+			t.Fatalf("List not newest-first at index %d: %s < %s", i, prev.CreatedAt, cur.CreatedAt)
+		}
+		if prev.CreatedAt == cur.CreatedAt && prev.ID >= cur.ID {
+			t.Fatalf("List tie-break not by ID at index %d: %s >= %s", i, prev.ID, cur.ID)
+		}
+	}
+}
+
+// The store must stay bounded: Create evicts the oldest terminal jobs at the
+// cap, and never evicts pending/running jobs.
+func TestJobStore_CreateEvictsOldestTerminalJobs(t *testing.T) {
+	store := NewJobStore()
+	running := store.Create("scan") // stays pending — must survive eviction
+	terminalIDs := make([]string, 0, maxRetainedJobs)
+	for i := 0; i < maxRetainedJobs; i++ {
+		job := store.Create("scan")
+		store.Update(job.ID, JobStatusCompleted, 1, nil, "")
+		terminalIDs = append(terminalIDs, job.ID)
+	}
+	// The next Create must evict terminal jobs down to the cap.
+	newest := store.Create("scan")
+	jobs := store.List()
+	if len(jobs) > maxRetainedJobs {
+		t.Fatalf("store has %d jobs, want <= %d after eviction", len(jobs), maxRetainedJobs)
+	}
+	if store.Get(running.ID) == nil {
+		t.Fatal("pending job was evicted; only terminal jobs may be")
+	}
+	if store.Get(newest.ID) == nil {
+		t.Fatal("newly created job missing")
+	}
+	// Both non-terminal jobs survived and the count is at the cap, so at
+	// least two terminal jobs must have been evicted.
+	surviving := 0
+	for _, id := range terminalIDs {
+		if store.Get(id) != nil {
+			surviving++
+		}
+	}
+	if surviving > maxRetainedJobs-2 {
+		t.Fatalf("%d terminal jobs survived; want <= %d after eviction", surviving, maxRetainedJobs-2)
+	}
+}
+
 // =============================================================================
 // WSClient: canSubscribe
 // =============================================================================

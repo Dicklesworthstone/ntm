@@ -848,6 +848,28 @@ func TestFormatContext(t *testing.T) {
 // InjectContext
 // =============================================================================
 
+// [cass] enabled=false with an explicit --with-cass records the honest skip
+// reason instead of the zero-hits path's "no relevant context found".
+func TestInjectContextFromQueryDisabledRecordsHonestSkip(t *testing.T) {
+	t.Parallel()
+	queryConfig := DefaultCASSConfig()
+	queryConfig.Enabled = false
+	injectResult, queryResult, _ := InjectContextFromQuery(
+		"test prompt", queryConfig, FilterConfig{}, DefaultInjectConfig())
+	if !injectResult.Success || !queryResult.Success {
+		t.Fatalf("disabled cass must degrade to a successful skip, got inject=%+v query=%+v", injectResult, queryResult)
+	}
+	if !strings.Contains(injectResult.Metadata.SkippedReason, "cass disabled") {
+		t.Errorf("SkippedReason = %q, want a 'cass disabled' reason", injectResult.Metadata.SkippedReason)
+	}
+	if injectResult.Metadata.Enabled {
+		t.Error("Metadata.Enabled = true, want false when cass is config-disabled")
+	}
+	if injectResult.ModifiedPrompt != "test prompt" {
+		t.Errorf("ModifiedPrompt = %q, want the prompt unchanged", injectResult.ModifiedPrompt)
+	}
+}
+
 func TestInjectContext(t *testing.T) {
 	t.Parallel()
 

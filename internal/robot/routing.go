@@ -470,7 +470,7 @@ func resolveAffinityProjectKey(cfg *config.Config, session string) string {
 
 // affinityProjectKeyPreference returns the first USABLE candidate in
 // precedence order (session-saved, session-configured, cwd). Usability is
-// scored the same way the CLI scores project dirs so a placeholder like a
+// scored the same way the CLI scores project dirs so a stand-in path like a
 // nonexistent projects_base/<session> directory never beats a real checkout.
 func affinityProjectKeyPreference(candidates ...string) string {
 	for _, c := range candidates {
