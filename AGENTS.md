@@ -97,6 +97,7 @@ After creating a new release with DSR:
 
 1. **Verify install script works**: `curl -fsSL ".../install.sh" | bash -s -- --version=vX.Y.Z --dir=/tmp/test --no-shell`
 2. **Check flywheel setup checksums**: If `install.sh` content changed, update the SHA256 in `/dp/agentic_coding_flywheel_setup/checksums.yaml` under the `ntm:` entry. If `install.sh` was not modified, no update is needed (the checksum pins the installer script, not the release binaries).
+3. **Update the Homebrew tap** (`Dicklesworthstone/homebrew-tap`, `Casks/ntm.rb` — hand-maintained since goreleaser retirement): bump `version` and all four `sha256` values (darwin/linux × amd64/arm64, hashes from the release's `SHA256SUMS`). Releases v1.23–v1.26 skipped this step and the advertised `brew install dicklesworthstone/tap/ntm` silently served a 5-release-old binary (bd-o82m7) — do not repeat that.
 
 ### Logging & Console Output
 

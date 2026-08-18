@@ -184,25 +184,26 @@ the session (`--activity-type` narrows by agent type).
   "session": "myproject",
   "agents": [
     {
-      "pane": "myproject__cc_1",
+      "pane": "1",
       "pane_idx": 1,
       "agent_type": "claude",
       "state": "GENERATING",
       "confidence": 0.92,
-      "velocity_cps": 45.2,
-      "last_output_at": "2025-01-15T10:30:00Z",
+      "velocity": 45.2,
       "state_since": "2025-01-15T10:29:30Z",
-      "state_duration_seconds": 30,
-      "detected_patterns": ["thinking_indicator"]
+      "pane_pid": 12345,
+      "capture_collected_at": "2025-01-15T10:30:00Z",
+      "capture_provenance": "live",
+      "observation_state": "generating",
+      "observation_freshness": "fresh",
+      "observation_confidence": 0.9,
+      "safe_to_dispatch": false,
+      "output_sequence": {"epoch": "ea378164557d3868", "sequence": 42}
     }
   ],
   "summary": {
-    "generating": 1,
-    "waiting": 2,
-    "thinking": 0,
-    "error": 0,
-    "stalled": 0,
-    "unknown": 0
+    "total_agents": 1,
+    "by_state": {"GENERATING": 1}
   },
   "_agent_hints": {
     "available_agents": ["myproject__cc_2", "myproject__cod_1"],
@@ -574,9 +575,11 @@ ntm --robot-send=myproject --msg="Fix bug" --pane=%12
 
 ### Integration with Health
 
-Skip unhealthy and rate-limited agents:
-- `health == unhealthy` → score = -100 (excluded)
-- `health == rate_limited` → score = -50 (excluded unless only option)
+Skip unhealthy and rate-limited agents (hard exclusions, not score penalties):
+- `health == unhealthy` → excluded when `exclude_if_error_state` is on (default: true)
+- `rate_limited` → excluded when `exclude_if_rate_limited` is on (default: true); there is no "unless only option" fallback
+
+(Implemented in `AgentScorer.checkExclusion`, internal/robot/routing.go.)
 
 ---
 
