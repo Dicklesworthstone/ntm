@@ -176,34 +176,6 @@ func TestPersonaSpecsSetAndType(t *testing.T) {
 //          matchesSendTarget, permutePanes
 // =============================================================================
 
-func TestIntsToStrings(t *testing.T) {
-
-	tests := []struct {
-		name string
-		ints []int
-		want []string
-	}{
-		{"nil", nil, []string{}},
-		{"empty", []int{}, []string{}},
-		{"single", []int{42}, []string{"42"}},
-		{"multiple", []int{1, 2, 3}, []string{"1", "2", "3"}},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got := intsToStrings(tc.ints)
-			if len(got) != len(tc.want) {
-				t.Fatalf("intsToStrings(%v) len = %d, want %d", tc.ints, len(got), len(tc.want))
-			}
-			for i := range got {
-				if got[i] != tc.want[i] {
-					t.Errorf("intsToStrings(%v)[%d] = %q, want %q", tc.ints, i, got[i], tc.want[i])
-				}
-			}
-		})
-	}
-}
-
 func TestShuffledPermutation(t *testing.T) {
 
 	t.Run("deterministic with seed", func(t *testing.T) {
@@ -359,98 +331,9 @@ func TestPermutePanes(t *testing.T) {
 // persona_spec.go: ToAgentSpecs
 // =============================================================================
 
-func TestToAgentSpecs(t *testing.T) {
-
-	t.Run("empty", func(t *testing.T) {
-		specs, names := ToAgentSpecs(nil)
-		if len(specs) != 0 {
-			t.Errorf("expected empty specs, got %+v", specs)
-		}
-		if len(names) != 0 {
-			t.Errorf("expected empty names, got %+v", names)
-		}
-	})
-
-	t.Run("groups by type and model", func(t *testing.T) {
-		resolved := []ResolvedPersonaAgent{
-			{Type: AgentTypeClaude, Model: "opus"},
-			{Type: AgentTypeClaude, Model: "opus"},
-			{Type: AgentTypeCodex, Model: "gpt4"},
-		}
-		specs, _ := ToAgentSpecs(resolved)
-		totalCount := 0
-		for _, s := range specs {
-			totalCount += s.Count
-		}
-		if totalCount != 3 {
-			t.Errorf("total count = %d, want 3", totalCount)
-		}
-	})
-}
-
 // =============================================================================
 // table.go: StyledTable builder, message helpers, text style helpers
 // =============================================================================
-
-func TestStyledTableBuilderOps(t *testing.T) {
-
-	t.Run("basic construction", func(t *testing.T) {
-		tbl := NewStyledTable("Name", "Age", "City")
-		if tbl.RowCount() != 0 {
-			t.Errorf("RowCount() = %d, want 0", tbl.RowCount())
-		}
-		tbl.AddRow("Alice", "30", "NYC")
-		tbl.AddRow("Bob", "25", "SF")
-		if tbl.RowCount() != 2 {
-			t.Errorf("RowCount() = %d, want 2", tbl.RowCount())
-		}
-	})
-
-	t.Run("builder methods return receiver", func(t *testing.T) {
-		tbl := NewStyledTable("A", "B")
-		ret := tbl.WithTitle("Test Title")
-		if ret != tbl {
-			t.Error("WithTitle did not return receiver")
-		}
-		ret = tbl.WithFooter("footer")
-		if ret != tbl {
-			t.Error("WithFooter did not return receiver")
-		}
-		ret = tbl.WithStyle(TableStyleSimple)
-		if ret != tbl {
-			t.Error("WithStyle did not return receiver")
-		}
-	})
-
-	t.Run("render non-empty", func(t *testing.T) {
-		tbl := NewStyledTable("Key", "Value")
-		tbl.AddRow("a", "1")
-		rendered := tbl.Render()
-		if rendered == "" {
-			t.Error("Render() returned empty string")
-		}
-		if tbl.String() != rendered {
-			t.Error("String() != Render()")
-		}
-	})
-
-	t.Run("render empty headers", func(t *testing.T) {
-		tbl := NewStyledTable()
-		if got := tbl.Render(); got != "" {
-			t.Errorf("Render() with no headers = %q, want empty", got)
-		}
-	})
-
-	t.Run("render all styles", func(t *testing.T) {
-		for _, style := range []TableStyle{TableStyleRounded, TableStyleSimple, TableStyleMinimal} {
-			tbl := NewStyledTable("A", "B").WithStyle(style)
-			tbl.AddRow("x", "y")
-			if tbl.Render() == "" {
-				t.Errorf("style %d rendered empty", style)
-			}
-		}
-	})
-}
 
 func TestMatchesLegacySendTypeFilterCanonicalizesAliases(t *testing.T) {
 

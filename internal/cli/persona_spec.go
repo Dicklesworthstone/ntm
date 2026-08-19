@@ -136,36 +136,6 @@ func ResolvePersonas(specs PersonaSpecs, projectDir string) ([]ResolvedPersonaAg
 	return agents, nil
 }
 
-// ToAgentSpecs converts resolved persona agents to AgentSpecs for spawning
-// Returns the agent specs and a map from agent index to persona name for pane naming
-func ToAgentSpecs(resolved []ResolvedPersonaAgent) (AgentSpecs, map[int]string) {
-	var specs AgentSpecs
-	personaNames := make(map[int]string)
-
-	// Group by type and model to create specs
-	type key struct {
-		agentType AgentType
-		model     string
-	}
-	groups := make(map[key]int)
-
-	for _, r := range resolved {
-		k := key{agentType: r.Type, model: r.Model}
-		groups[k]++
-	}
-
-	// Create specs from groups
-	for k, count := range groups {
-		specs = append(specs, AgentSpec{
-			Type:  k.agentType,
-			Count: count,
-			Model: k.model,
-		})
-	}
-
-	return specs, personaNames
-}
-
 // PersonaAgentInfo holds information about an agent spawned from a persona
 type PersonaAgentInfo struct {
 	PersonaName string

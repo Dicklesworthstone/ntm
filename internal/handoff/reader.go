@@ -79,19 +79,6 @@ func NewReader(projectDir string) *Reader {
 	}
 }
 
-// NewReaderWithOptions creates a Reader with custom options.
-func NewReaderWithOptions(projectDir string, cacheExpiry time.Duration, logger *slog.Logger) *Reader {
-	if logger == nil {
-		logger = slog.Default()
-	}
-	return &Reader{
-		baseDir:      filepath.Join(projectDir, ".ntm", "handoffs"),
-		logger:       logger.With("component", "handoff.reader"),
-		goalNowCache: make(map[string]goalNowEntry),
-		cacheExpiry:  cacheExpiry,
-	}
-}
-
 // FindLatest returns the most recent handoff for a session.
 // Returns (nil, "", nil) if no handoffs exist (not an error).
 func (r *Reader) FindLatest(sessionName string) (*Handoff, string, error) {

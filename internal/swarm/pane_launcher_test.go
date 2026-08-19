@@ -38,53 +38,6 @@ func TestNewPaneLauncher(t *testing.T) {
 	}
 }
 
-func TestPaneLauncherChaining(t *testing.T) {
-	launcher := NewPaneLauncher()
-
-	// Test WithCDDelay
-	result := launcher.WithCDDelay(200 * time.Millisecond)
-	if result != launcher {
-		t.Error("WithCDDelay should return the same launcher for chaining")
-	}
-	if launcher.CDDelay != 200*time.Millisecond {
-		t.Errorf("expected CDDelay of 200ms, got %v", launcher.CDDelay)
-	}
-
-	// Test WithValidatePaths
-	result = launcher.WithValidatePaths(false)
-	if result != launcher {
-		t.Error("WithValidatePaths should return the same launcher for chaining")
-	}
-	if launcher.ValidatePaths {
-		t.Error("expected ValidatePaths to be false")
-	}
-
-	// Test WithLogger
-	result = launcher.WithLogger(nil)
-	if result != launcher {
-		t.Error("WithLogger should return the same launcher for chaining")
-	}
-
-	// Test WithCmdBuilder
-	builder := NewLaunchCommandBuilder()
-	result = launcher.WithCmdBuilder(builder)
-	if result != launcher {
-		t.Error("WithCmdBuilder should return the same launcher for chaining")
-	}
-	if launcher.CmdBuilder != builder {
-		t.Error("expected CmdBuilder to be set")
-	}
-}
-
-func TestPaneLauncherTmuxClientHelper(t *testing.T) {
-	launcher := NewPaneLauncher()
-	client := launcher.tmuxClient()
-
-	if client == nil {
-		t.Error("expected non-nil client from tmuxClient()")
-	}
-}
-
 func TestPaneLauncherCmdBuilderHelper(t *testing.T) {
 	launcher := NewPaneLauncher()
 	builder := launcher.cmdBuilder()
@@ -254,40 +207,6 @@ func TestValidateProjectPath(t *testing.T) {
 					tt.path, err, tt.wantErr)
 			}
 		})
-	}
-}
-
-func TestPaneLauncherLaunchSwarmNilPlan(t *testing.T) {
-	launcher := NewPaneLauncher()
-	result, err := launcher.LaunchSwarm(context.Background(), nil, 0)
-
-	if err == nil {
-		t.Error("expected error for nil plan")
-	}
-	if result != nil {
-		t.Error("expected nil result for nil plan")
-	}
-}
-
-func TestPaneLauncherLaunchSwarmEmptyPlan(t *testing.T) {
-	launcher := NewPaneLauncher().WithValidatePaths(false)
-	plan := &SwarmPlan{
-		Sessions:    []SessionSpec{},
-		TotalAgents: 0,
-	}
-
-	result, err := launcher.LaunchSwarm(context.Background(), plan, 0)
-	if err != nil {
-		t.Errorf("unexpected error: %v", err)
-	}
-	if result == nil {
-		t.Fatal("expected non-nil result")
-	}
-	if result.TotalPanes != 0 {
-		t.Errorf("expected TotalPanes of 0, got %d", result.TotalPanes)
-	}
-	if result.Successful != 0 {
-		t.Errorf("expected Successful of 0, got %d", result.Successful)
 	}
 }
 
@@ -462,5 +381,86 @@ func TestIsCodexProvider(t *testing.T) {
 				t.Errorf("isCodexProvider(%q) = %v, want %v", tc.agentType, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestPaneLauncherLaunchSwarmEmptyPlan(t *testing.T) {
+	launcher := NewPaneLauncher().WithValidatePaths(false)
+	plan := &SwarmPlan{
+		Sessions:    []SessionSpec{},
+		TotalAgents: 0,
+	}
+
+	result, err := launcher.LaunchSwarm(context.Background(), plan, 0)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if result.TotalPanes != 0 {
+		t.Errorf("expected TotalPanes of 0, got %d", result.TotalPanes)
+	}
+	if result.Successful != 0 {
+		t.Errorf("expected Successful of 0, got %d", result.Successful)
+	}
+}
+
+func TestPaneLauncherLaunchSwarmNilPlan(t *testing.T) {
+	launcher := NewPaneLauncher()
+	result, err := launcher.LaunchSwarm(context.Background(), nil, 0)
+
+	if err == nil {
+		t.Error("expected error for nil plan")
+	}
+	if result != nil {
+		t.Error("expected nil result for nil plan")
+	}
+}
+
+func TestPaneLauncherTmuxClientHelper(t *testing.T) {
+	launcher := NewPaneLauncher()
+	client := launcher.tmuxClient()
+
+	if client == nil {
+		t.Error("expected non-nil client from tmuxClient()")
+	}
+}
+
+func TestPaneLauncherChaining(t *testing.T) {
+	launcher := NewPaneLauncher()
+
+	// Test WithCDDelay
+	result := launcher.WithCDDelay(200 * time.Millisecond)
+	if result != launcher {
+		t.Error("WithCDDelay should return the same launcher for chaining")
+	}
+	if launcher.CDDelay != 200*time.Millisecond {
+		t.Errorf("expected CDDelay of 200ms, got %v", launcher.CDDelay)
+	}
+
+	// Test WithValidatePaths
+	result = launcher.WithValidatePaths(false)
+	if result != launcher {
+		t.Error("WithValidatePaths should return the same launcher for chaining")
+	}
+	if launcher.ValidatePaths {
+		t.Error("expected ValidatePaths to be false")
+	}
+
+	// Test WithLogger
+	result = launcher.WithLogger(nil)
+	if result != launcher {
+		t.Error("WithLogger should return the same launcher for chaining")
+	}
+
+	// Test WithCmdBuilder
+	builder := NewLaunchCommandBuilder()
+	result = launcher.WithCmdBuilder(builder)
+	if result != launcher {
+		t.Error("WithCmdBuilder should return the same launcher for chaining")
+	}
+	if launcher.CmdBuilder != builder {
+		t.Error("expected CmdBuilder to be set")
 	}
 }

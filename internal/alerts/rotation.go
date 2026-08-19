@@ -155,19 +155,3 @@ type RotationEventOutput struct {
 	GeneratedAt   string  `json:"generated_at"`
 	SessionName   string  `json:"session_name,omitempty"`
 }
-
-// NewRotationEventOutput creates a RotationEventOutput for robot mode JSON.
-func NewRotationEventOutput(data RotationAlertData, status string) RotationEventOutput {
-	return RotationEventOutput{
-		Type:          "context_rotation",
-		OldAgent:      rotatingAgentID(data),
-		NewAgent:      data.NewAgentID,
-		UsagePercent:  data.ContextUsage,
-		SummaryTokens: data.SummaryTokens,
-		Status:        status,
-		Error:         data.Error,
-		DurationMs:    data.DurationMs,
-		GeneratedAt:   time.Now().UTC().Format(time.RFC3339),
-		SessionName:   data.Session,
-	}
-}

@@ -18,45 +18,6 @@ func TestLogsOptionsDefaults(t *testing.T) {
 	}
 }
 
-func TestShortAgentType(t *testing.T) {
-	tests := []struct {
-		input    string
-		expected string
-	}{
-		{"claude", "cc"},
-		{"claude_code", "cc"},
-		{"codex", "cod"},
-		{"openai-codex", "cod"},
-		{"gemini", "gmi"},
-		{"google-gemini", "gmi"},
-		{"unknown", "unk"},
-		{"ab", "ab"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.input, func(t *testing.T) {
-			result := shortAgentType(tt.input)
-			if result != tt.expected {
-				t.Errorf("shortAgentType(%q) = %q, want %q", tt.input, result, tt.expected)
-			}
-		})
-	}
-}
-
-func TestFormatAggregatedLog(t *testing.T) {
-	entry := AggregatedLogEntry{
-		Pane:      2,
-		AgentType: "claude",
-		Line:      "test line",
-	}
-
-	result := FormatAggregatedLog(entry)
-	expected := "[cc:2] test line"
-	if result != expected {
-		t.Errorf("FormatAggregatedLog() = %q, want %q", result, expected)
-	}
-}
-
 func TestLogsOutput_EmptyPanes(t *testing.T) {
 	output := &LogsOutput{
 		RobotResponse: NewRobotResponse(true),

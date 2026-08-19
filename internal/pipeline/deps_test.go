@@ -472,7 +472,7 @@ func TestResolveWorkflow(t *testing.T) {
 		},
 	}
 
-	plan := ResolveWorkflow(w)
+	plan := NewDependencyGraph(w).Resolve()
 
 	if !plan.Valid {
 		t.Errorf("expected valid plan, got errors: %v", plan.Errors)

@@ -44,13 +44,6 @@ func SetEncryptionConfig(cfg *EncryptionConfig) {
 	}
 }
 
-// GetEncryptionEnabled returns whether encryption is currently enabled.
-func GetEncryptionEnabled() bool {
-	encryptMu.RLock()
-	defer encryptMu.RUnlock()
-	return encryptionEnabled
-}
-
 // encryptJSONLine encrypts a marshaled JSON line if encryption is enabled.
 // Returns the original data unchanged when encryption is disabled.
 func encryptJSONLine(data []byte) ([]byte, error) {

@@ -595,31 +595,6 @@ func (p *TimelinePersister) GetTimelineInfo(sessionID string) (*TimelineInfo, er
 	return nil, nil
 }
 
-// Stop stops all active checkpoints and cleans up resources.
-func (p *TimelinePersister) Stop() {
-	p.lifecycleMu.Lock()
-	defer p.lifecycleMu.Unlock()
-
-	if p.stopped {
-		return
-	}
-	p.stopped = true
-
-	p.mu.Lock()
-	runners := make([]*checkpointRunner, 0, len(p.checkpoints))
-	for sessionID, runner := range p.checkpoints {
-		runners = append(runners, runner)
-		delete(p.checkpoints, sessionID)
-	}
-	p.mu.Unlock()
-
-	for _, runner := range runners {
-		runner.ticker.Stop()
-		close(runner.stop)
-		<-runner.done
-	}
-}
-
 func (p *TimelinePersister) stopCheckpointRunner(sessionID string) {
 	p.mu.Lock()
 	runner, exists := p.checkpoints[sessionID]

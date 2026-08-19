@@ -236,11 +236,6 @@ func (ps *PaneStreamer) Stop() {
 	ps.mu.Unlock()
 }
 
-// Target returns the pane target.
-func (ps *PaneStreamer) Target() string {
-	return ps.target
-}
-
 // UsingFallback returns true if polling mode is active.
 func (ps *PaneStreamer) UsingFallback() bool {
 	return ps.useFallback.Load()

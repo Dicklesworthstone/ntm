@@ -1,10 +1,7 @@
 package health
 
 import (
-	"context"
 	"errors"
-	"os"
-	"os/exec"
 	"sort"
 	"strings"
 	"testing"
@@ -89,26 +86,6 @@ func TestCheckAgentObservationUsesFreshPrivateOutput(t *testing.T) {
 	}
 }
 
-func TestParseWaitTime(t *testing.T) {
-	tests := []struct {
-		input string
-		want  int
-	}{
-		{"try again in 60s", 60},
-		{"wait 30 seconds", 30},
-		{"retry after 120s", 120},
-		{"Rate limit exceeded, 45s cooldown", 45},
-		{"no wait time here", 0},
-	}
-
-	for _, tt := range tests {
-		got := parseWaitTime(tt.input)
-		if got != tt.want {
-			t.Errorf("parseWaitTime(%q) = %d, want %d", tt.input, got, tt.want)
-		}
-	}
-}
-
 func TestDetectErrors(t *testing.T) {
 	tests := []struct {
 		input    string
@@ -165,27 +142,6 @@ func TestDetectErrorsForAgent_DetectsCrashBeyondShortLookbackWithoutPrompt(t *te
 	issues := detectErrorsForAgent(output, "cc")
 	if !hasIssueType(issues, "crash") {
 		t.Fatalf("detectErrorsForAgent missed unrecovered crash beyond short lookback: %+v", issues)
-	}
-}
-
-func TestCheckAgentCopiesPaneShellPIDBeforeCapture(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	got := checkAgent(ctx, tmux.PaneActivity{
-		Pane: tmux.Pane{
-			ID:    "%not-real",
-			Index: 7,
-			Type:  tmux.AgentCodex,
-			PID:   4242,
-		},
-	})
-
-	if got.ShellPID != 4242 {
-		t.Fatalf("ShellPID = %d, want 4242", got.ShellPID)
-	}
-	if got.Pane != 7 {
-		t.Fatalf("Pane = %d, want 7", got.Pane)
 	}
 }
 
@@ -552,67 +508,6 @@ func TestStatusSeverity(t *testing.T) {
 	}
 }
 
-func TestDetectProcessStatus(t *testing.T) {
-	t.Parallel()
-
-	// These tests use shellPID=0 to exercise the text-based fallback path.
-	tests := []struct {
-		name    string
-		output  string
-		command string
-		want    ProcessStatus
-	}{
-		{"exit status in output", "exit status 1", "python", ProcessExited},
-		{"exited with in output", "process exited with code 0", "node", ProcessExited},
-		{"connection closed", "connection closed by remote host", "ssh", ProcessExited},
-		{"session ended", "session ended", "tmux", ProcessExited},
-		{"normal output with bash", "some output", "bash", ProcessRunning},
-		{"normal output with zsh", "some output", "zsh", ProcessRunning},
-		{"normal output with sh", "some output", "sh", ProcessRunning},
-		{"empty command", "some output", "", ProcessRunning},
-		{"normal output non-shell", "some output", "python", ProcessRunning},
-		{"empty output non-shell", "", "node", ProcessRunning},
-		{"case insensitive exit", "Exit Status 127", "python", ProcessExited},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			got := detectProcessStatus(tt.output, tt.command, 0)
-			if got != tt.want {
-				t.Errorf("detectProcessStatus(%q, %q, 0) = %v, want %v", tt.output, tt.command, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestDetectProcessStatus_PIDBasedCurrentProcess(t *testing.T) {
-	t.Parallel()
-
-	// We previously used PID 1 here, but on macOS-latest CI runners
-	// launchd's children are not visible via pgrep to the unprivileged
-	// test user, so HasChildAlive(1) returned false and the test
-	// flipped to ProcessExited. Spawning our own long-lived child
-	// guarantees a child is visible regardless of platform.
-	//
-	// The sleep budget is generous (30s) so that even under heavy
-	// parallel-test load the child survives well past the
-	// detectProcessStatus call.
-	cmd := exec.Command("sleep", "30")
-	if err := cmd.Start(); err != nil {
-		t.Skipf("cannot spawn child for the PID-has-children scenario: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-	})
-
-	got := detectProcessStatus("exit status 1", "python", os.Getpid())
-	if got != ProcessRunning {
-		t.Errorf("detectProcessStatus with current PID (has children) = %v, want ProcessRunning", got)
-	}
-}
-
 func TestDetectProcessStatusForAgent_PromptOverridesExitText(t *testing.T) {
 	t.Parallel()
 
@@ -620,16 +515,6 @@ func TestDetectProcessStatusForAgent_PromptOverridesExitText(t *testing.T) {
 	got := detectProcessStatusForAgent(output, "python", 0, "cc")
 	if got != ProcessRunning {
 		t.Fatalf("detectProcessStatusForAgent(prompt+exit-text) = %v, want %v", got, ProcessRunning)
-	}
-}
-
-func TestDetectProcessStatus_IgnoresStaleExitTextBeyondLookback(t *testing.T) {
-	t.Parallel()
-
-	output := "session ended\n" + strings.Repeat("still running\n", processExitLookbackLines+2)
-	got := detectProcessStatus(output, "python", 0)
-	if got != ProcessRunning {
-		t.Fatalf("detectProcessStatus(stale-exit-history) = %v, want %v", got, ProcessRunning)
 	}
 }
 
@@ -870,11 +755,5 @@ func TestDetectProcessStatusForAgentIgnoresPIDForNonAgentPanes(t *testing.T) {
 	// An agent pane with no live child is still an exited process.
 	if got := detectProcessStatusForAgent("", "zsh", childlessPID, "claude"); got != ProcessExited {
 		t.Fatalf("claude pane with no live child = %q, want %q", got, ProcessExited)
-	}
-
-	// An unspecified agent type keeps the historical PID-based behavior so
-	// detectProcessStatus is unchanged.
-	if got := detectProcessStatus("", "zsh", childlessPID); got != ProcessExited {
-		t.Fatalf("detectProcessStatus with no agent type = %q, want %q", got, ProcessExited)
 	}
 }

@@ -147,7 +147,7 @@ func TestWSReplayIntegration_ReconnectWithCursor(t *testing.T) {
 	}
 
 	for i := 0; i < 5; i++ {
-		srv.WSHub().Publish(topic, "pane.output", map[string]interface{}{"phase": 1, "i": i})
+		srv.wsHub.Publish(topic, "pane.output", map[string]interface{}{"phase": 1, "i": i})
 	}
 
 	seen := make(map[int64]int) // seq -> delivery count across the whole test
@@ -172,7 +172,7 @@ func TestWSReplayIntegration_ReconnectWithCursor(t *testing.T) {
 	// --- Phase 2: disconnect mid-stream, publish the gap -------------------
 	conn1.Close()
 	for i := 0; i < 4; i++ {
-		srv.WSHub().Publish(topic, "pane.output", map[string]interface{}{"phase": 2, "i": i})
+		srv.wsHub.Publish(topic, "pane.output", map[string]interface{}{"phase": 2, "i": i})
 	}
 	// Wait until the gap is persisted (the hub loop Store()s each event).
 	wantSeq := lastSeq + 4
@@ -236,7 +236,7 @@ func TestWSReplayIntegration_ReconnectWithCursor(t *testing.T) {
 	}
 
 	// --- Phase 4: live streaming resumes seamlessly after replay -----------
-	srv.WSHub().Publish(topic, "pane.output", map[string]interface{}{"phase": 4})
+	srv.wsHub.Publish(topic, "pane.output", map[string]interface{}{"phase": 4})
 	frame := r2.next(2 * time.Second)
 	if frame["type"] != "event" {
 		t.Fatalf("expected live event after replay, got %v", frame)
@@ -292,7 +292,7 @@ func TestWSReplayIntegration_NoStateStore_StreamReset(t *testing.T) {
 	}
 
 	// Live streaming still works in degraded mode.
-	srv.WSHub().Publish("panes:it:0", "pane.output", map[string]interface{}{"degraded": true})
+	srv.wsHub.Publish("panes:it:0", "pane.output", map[string]interface{}{"degraded": true})
 	frame := r.next(2 * time.Second)
 	if frame["type"] != "event" {
 		t.Fatalf("expected live event in degraded mode, got %v", frame)
@@ -388,10 +388,7 @@ func TestWSHub_SlowClientDropsRecordedAndReported(t *testing.T) {
 	}
 
 	// The persisted record matches.
-	stats, err := evStore.GetDroppedStats(client.id, time.Now().Add(-time.Hour))
-	if err != nil {
-		t.Fatalf("GetDroppedStats: %v", err)
-	}
+	stats := droppedStatsForTest(t, evStore, client.id, time.Now().Add(-time.Hour))
 	if len(stats) != 1 {
 		t.Fatalf("want exactly 1 dropped record, got %d", len(stats))
 	}

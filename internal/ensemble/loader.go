@@ -139,10 +139,3 @@ func GlobalCatalog() (*ModeCatalog, error) {
 	})
 	return globalCatalog, globalCatalogErr
 }
-
-// ResetGlobalCatalog clears the global catalog singleton (for testing only).
-func ResetGlobalCatalog() {
-	globalCatalogOnce = sync.Once{}
-	globalCatalog = nil
-	globalCatalogErr = nil
-}

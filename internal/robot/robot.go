@@ -2193,12 +2193,6 @@ func robotHelpParameterUsage(param RobotParameter) string {
 	return param.Flag + "=" + robotHelpPlaceholder(param.Name)
 }
 
-// GetStatus collects machine-readable status.
-// This function returns the data struct directly, enabling CLI/REST parity.
-func GetStatus() (*StatusOutput, error) {
-	return GetStatusWithOptions(PaginationOptions{})
-}
-
 // GetStatusWithOptions collects status and applies pagination to sessions.
 func GetStatusWithOptions(opts PaginationOptions) (*StatusOutput, error) {
 	wd := mustGetwd()
@@ -2834,16 +2828,6 @@ func uniqueSortedStrings(values []string) []string {
 	return result
 }
 
-// PrintStatus outputs machine-readable status.
-// This is a thin wrapper around GetStatus() for CLI output.
-func PrintStatus() error {
-	output, err := GetStatus()
-	if err != nil {
-		return err
-	}
-	return encodeTerminalRobotOutput(output, output.RobotResponse, "robot status failed")
-}
-
 // PrintStatusWithOptions outputs status with pagination options.
 func PrintStatusWithOptions(opts PaginationOptions) error {
 	output, err := GetStatusWithOptions(opts)
@@ -3439,52 +3423,6 @@ func normalizeConflictPattern(a, b string) string {
 	return a + " <-> " + b
 }
 
-// getGraphMetrics returns bv graph analysis metrics
-func getGraphMetrics() *GraphMetrics {
-	metrics := &GraphMetrics{
-		HealthStatus: "unknown",
-	}
-
-	wd := mustGetwd()
-
-	// Get drift status directly
-	drift := bv.CheckDrift(wd)
-	switch drift.Status {
-	case bv.DriftOK:
-		metrics.HealthStatus = "ok"
-	case bv.DriftWarning:
-		metrics.HealthStatus = "warning"
-	case bv.DriftCritical:
-		metrics.HealthStatus = "critical"
-	case bv.DriftNoBaseline:
-		metrics.HealthStatus = "unknown"
-	default:
-		metrics.HealthStatus = "unknown"
-	}
-	metrics.DriftMessage = drift.Message
-
-	// Get insights once for bottlenecks and keystones
-	insights, err := bv.GetInsights(wd)
-	if err == nil && insights != nil {
-		metrics.Keystones = len(insights.Keystones)
-
-		// Top 3 bottlenecks
-		limit := 3
-		if len(insights.Bottlenecks) < limit {
-			limit = len(insights.Bottlenecks)
-		}
-		for i := 0; i < limit; i++ {
-			b := insights.Bottlenecks[i]
-			metrics.TopBottlenecks = append(metrics.TopBottlenecks, BottleneckInfo{
-				ID:    b.ID,
-				Score: b.Value,
-			})
-		}
-	}
-
-	return metrics
-}
-
 // VersionOutput represents the output for --robot-version
 type VersionOutput struct {
 	RobotResponse
@@ -3515,36 +3453,6 @@ func PrintVersion() error {
 		return err
 	}
 	return encodeTerminalRobotOutput(output, output.RobotResponse, "robot version failed")
-}
-
-// GetSessions returns a minimal session list.
-// This function returns the data struct directly, enabling CLI/REST parity.
-func GetSessions() ([]SessionInfo, error) {
-	sessions, err := tmux.ListSessions()
-	if err != nil {
-		return []SessionInfo{}, nil
-	}
-
-	output := make([]SessionInfo, 0, len(sessions))
-	for _, sess := range sessions {
-		output = append(output, SessionInfo{
-			Name:     sess.Name,
-			Exists:   true,
-			Attached: sess.Attached,
-			Windows:  sess.Windows,
-		})
-	}
-	return output, nil
-}
-
-// PrintSessions outputs minimal session list.
-// This is a thin wrapper around GetSessions() for CLI output.
-func PrintSessions() error {
-	output, err := GetSessions()
-	if err != nil {
-		return err
-	}
-	return encodeJSON(output)
 }
 
 // GetPlan generates an execution plan.
@@ -4429,20 +4337,6 @@ func stripANSI(s string) string {
 	return status.StripANSI(s)
 }
 
-// detectState determines agent state from output lines and title.
-// This is a compatibility wrapper for determineState that maintains
-// the old function signature used by other files in this package.
-func detectState(lines []string, title string) string {
-	// Reconstruct the output from lines
-	output := strings.Join(lines, "\n")
-	agentType := detectAgentType(title)
-	// Pass the long-form agent type (e.g. "claude") directly to determineState.
-	// determineState handles its own translation to short form ("cc") for the
-	// status package, and uses the long form for HasIdlePattern which matches
-	// against defaultPatterns that use Agent: "claude" (long form).
-	return determineState(output, agentType)
-}
-
 // translateAgentTypeForStatus converts long agent type names to short forms
 // expected by the status package patterns.
 func translateAgentTypeForStatus(agentType string) string {
@@ -4452,21 +4346,6 @@ func translateAgentTypeForStatus(agentType string) string {
 	default:
 		return string(canonical)
 	}
-}
-
-// isIdlePrompt checks if a line looks like an idle prompt.
-// This is a compatibility wrapper for status.IsPromptLine that uses an empty
-// agent type for generic prompt detection.
-func isIdlePrompt(line string) bool {
-	return status.IsPromptLine(line, "") || isPythonPrompt(line)
-}
-
-// isPromptLine checks if a line looks like an idle prompt for a specific pane.
-// This is a compatibility wrapper for status.IsPromptLine that extracts the
-// agent type from the pane title.
-func isPromptLine(line, paneTitle string) bool {
-	agentType := translateAgentTypeForStatus(detectAgentType(paneTitle))
-	return status.IsPromptLine(line, agentType) || isPythonPrompt(line)
 }
 
 func isPythonPrompt(line string) bool {
@@ -6059,15 +5938,6 @@ func parseSwarmSessionName(name string) (string, bool) {
 	default:
 		return "", false
 	}
-}
-
-// PrintSnapshot outputs complete system state for AI orchestration
-func PrintSnapshot(cfg *config.Config) error {
-	output, err := GetSnapshot(cfg)
-	if err != nil {
-		return err
-	}
-	return encodeTerminalRobotOutput(output, output.RobotResponse, "robot snapshot failed")
 }
 
 // PrintSnapshotWithOptions outputs snapshot with pagination options.
@@ -7846,23 +7716,6 @@ func PrintSnapshotDelta(since time.Time) error {
 		return err
 	}
 	return encodeTerminalRobotOutput(output, output.RobotResponse, "robot snapshot delta failed")
-}
-
-// RecordStateChange records a state change on the durable attention feed,
-// which is what --robot-snapshot --since and --robot-events read. It no
-// longer also writes a process-local ring buffer: that buffer was the delta
-// feature's only source, and because it lived in memory it was empty in every
-// fresh CLI process (bd-fresh-eyes-audit .11).
-func RecordStateChange(changeType tracker.ChangeType, session, pane string, details map[string]interface{}) {
-	change := tracker.StateChange{
-		Timestamp: time.Now(),
-		Type:      changeType,
-		Session:   session,
-		Pane:      pane,
-		Details:   details,
-	}
-
-	GetAttentionFeed().Append(NewTrackerEvent(change))
 }
 
 const (
@@ -9961,16 +9814,6 @@ func GetAlertsDetailed(includeResolved bool) (*AlertsOutput, error) {
 	return output, nil
 }
 
-// PrintAlertsDetailed outputs all alerts in JSON format.
-// This is a thin wrapper around GetAlertsDetailed() for CLI output.
-func PrintAlertsDetailed(includeResolved bool) error {
-	output, err := GetAlertsDetailed(includeResolved)
-	if err != nil {
-		return err
-	}
-	return encodeTerminalRobotOutput(output, output.RobotResponse, "robot alerts failed")
-}
-
 // RecipeInfo represents a recipe in JSON output
 type RecipeInfo struct {
 	Name        string            `json:"name"`
@@ -10268,16 +10111,6 @@ func terseWorkCounts(snapshot *SnapshotOutput) (ready, inProgress, blocked int) 
 	return snapshot.Summary.ReadyWork, snapshot.Summary.InProgress, 0
 }
 
-// buildAttentionHint creates a compact attention summary for terse output.
-// Format: "2!action 5?interesting" or "clear" if no attention items.
-func buildAttentionHint() string {
-	feed := PeekAttentionFeed()
-	if feed == nil {
-		return "feed:unavail"
-	}
-	return buildAttentionHintFromSummary(buildSnapshotAttentionSummary(feed))
-}
-
 func buildAttentionHintFromSummary(summary *SnapshotAttentionSummary) string {
 	if summary == nil || summary.TotalEvents == 0 {
 		return "clear"
@@ -10301,96 +10134,6 @@ func formatTerseLine(state TerseState, attentionHint string) string {
 		return line
 	}
 	return line + "|T:" + attentionHint
-}
-
-// ParseTerse parses the ultra-compact terse string into a TerseState.
-// Format: S:session|A:active/total|W:working|I:idle|E:errors|C:ctx%|B:Rn/In/Bn|M:mail|^:NaNi|!:
-func ParseTerse(s string) (*TerseState, error) {
-	state := &TerseState{}
-
-	// Split by pipe
-	parts := strings.Split(s, "|")
-	for _, part := range parts {
-		kv := strings.SplitN(part, ":", 2)
-		if len(kv) != 2 {
-			continue
-		}
-		key, val := kv[0], kv[1]
-
-		switch key {
-		case "S":
-			state.Session = val
-		case "A":
-			// Parse "active/total" format
-			agentParts := strings.Split(val, "/")
-			if len(agentParts) == 2 {
-				fmt.Sscanf(agentParts[0], "%d", &state.ActiveAgents)
-				fmt.Sscanf(agentParts[1], "%d", &state.TotalAgents)
-			}
-		case "W":
-			fmt.Sscanf(val, "%d", &state.WorkingAgents)
-		case "I":
-			fmt.Sscanf(val, "%d", &state.IdleAgents)
-		case "E":
-			fmt.Sscanf(val, "%d", &state.ErrorAgents)
-		case "C":
-			// Parse "78%" format
-			fmt.Sscanf(strings.TrimSuffix(val, "%"), "%d", &state.ContextPct)
-		case "B":
-			// Parse "R3/I2/B1" format
-			beadParts := strings.Split(val, "/")
-			for _, bp := range beadParts {
-				if len(bp) < 2 {
-					continue
-				}
-				prefix := bp[0]
-				var count int
-				fmt.Sscanf(bp[1:], "%d", &count)
-				switch prefix {
-				case 'R':
-					state.ReadyBeads = count
-				case 'I':
-					state.InProgressBead = count
-				case 'B':
-					state.BlockedBeads = count
-				}
-			}
-		case "M":
-			fmt.Sscanf(val, "%d", &state.UnreadMail)
-		case "^":
-			// Parse "2a,3i" or "0" format (attention: action, interesting)
-			if val == "0" {
-				state.AttentionAction = 0
-				state.AttentionInterest = 0
-			} else {
-				attnParts := strings.Split(val, ",")
-				for _, ap := range attnParts {
-					if strings.HasSuffix(ap, "a") {
-						fmt.Sscanf(strings.TrimSuffix(ap, "a"), "%d", &state.AttentionAction)
-					} else if strings.HasSuffix(ap, "i") {
-						fmt.Sscanf(strings.TrimSuffix(ap, "i"), "%d", &state.AttentionInterest)
-					}
-				}
-			}
-		case "!":
-			// Parse "1c,2w" or "0" format
-			if val == "0" {
-				state.CriticalAlerts = 0
-				state.WarningAlerts = 0
-			} else {
-				alertParts := strings.Split(val, ",")
-				for _, ap := range alertParts {
-					if strings.HasSuffix(ap, "c") {
-						fmt.Sscanf(strings.TrimSuffix(ap, "c"), "%d", &state.CriticalAlerts)
-					} else if strings.HasSuffix(ap, "w") {
-						fmt.Sscanf(strings.TrimSuffix(ap, "w"), "%d", &state.WarningAlerts)
-					}
-				}
-			}
-		}
-	}
-
-	return state, nil
 }
 
 // PrintTerse outputs ultra-compact single-line state for token-constrained scenarios.
@@ -10456,123 +10199,6 @@ func isAgentMailDBLockError(err error) bool {
 	return strings.Contains(msg, "database is locked") ||
 		strings.Contains(msg, "database is busy") ||
 		strings.Contains(msg, "resource busy")
-}
-
-// getTerseMailCount returns unread mail count for terse output (best-effort).
-func getTerseMailCount() int {
-	projectKey, err := os.Getwd()
-	if err != nil {
-		return 0
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-
-	client := agentmail.NewClient(agentmail.WithProjectKey(projectKey))
-	if !client.IsAvailable() {
-		return 0
-	}
-
-	// Ensure project exists
-	if _, err := ensureProjectWithRetry(ctx, client, projectKey); err != nil {
-		return 0
-	}
-
-	agents, err := client.ListProjectAgents(ctx, projectKey)
-	if err != nil {
-		return 0
-	}
-
-	// Sum unread across all agents
-	total := 0
-	for _, a := range agents {
-		total += countInbox(ctx, client, projectKey, a.Name, false)
-	}
-
-	return total
-}
-
-// getAgentMailSummary returns a best-effort Agent Mail summary for --robot-status.
-func getAgentMailSummary() (*AgentMailSummary, error) {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return nil, err
-	}
-
-	projectKey := cwd
-	if root, err := git.FindProjectRoot(cwd); err == nil {
-		projectKey = root
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-	defer cancel()
-
-	client := agentmail.NewClient(agentmail.WithProjectKey(projectKey))
-	summary := &AgentMailSummary{
-		Available: false,
-		ServerURL: client.BaseURL(),
-	}
-
-	if !client.IsAvailable() {
-		return summary, nil
-	}
-	summary.Available = true
-
-	// Ensure project exists
-	if _, err := ensureProjectWithRetry(ctx, client, projectKey); err != nil {
-		if isAgentMailDBLockError(err) {
-			return summary, nil
-		}
-		summary.Error = fmt.Sprintf("ensure_project: %v", err)
-		return summary, nil
-	}
-
-	agents, err := client.ListProjectAgents(ctx, projectKey)
-	if err != nil {
-		if isAgentMailDBLockError(err) {
-			return summary, nil
-		}
-		summary.Error = fmt.Sprintf("list_agents: %v", err)
-		return summary, nil
-	}
-	summary.SessionsRegistered = len(agents)
-
-	// Aggregate unread/urgent counts
-	for _, a := range agents {
-		summary.TotalUnread += countInbox(ctx, client, projectKey, a.Name, false)
-		summary.UrgentMessages += countInbox(ctx, client, projectKey, a.Name, true)
-	}
-
-	// Locks (best-effort)
-	if locks, err := client.ListReservations(ctx, projectKey, "", true); err == nil {
-		summary.TotalLocks = len(locks)
-	}
-
-	return summary, nil
-}
-
-// countInbox returns the count of inbox entries for an agent.
-// If urgentOnly is true, only urgent messages are counted.
-func countInbox(ctx context.Context, client *agentmail.Client, projectKey, agentName string, urgentOnly bool) int {
-	limit := 50
-	opts := agentmail.FetchInboxOptions{
-		ProjectKey:    projectKey,
-		AgentName:     agentName,
-		UrgentOnly:    urgentOnly,
-		Limit:         limit,
-		IncludeBodies: false,
-	}
-	msgs, err := client.FetchInbox(ctx, opts)
-	if err != nil {
-		return 0
-	}
-	count := 0
-	for _, msg := range msgs {
-		if isUnreadInboxMessage(msg) {
-			count++
-		}
-	}
-	return count
 }
 
 func isUnreadInboxMessage(msg agentmail.InboxMessage) bool {

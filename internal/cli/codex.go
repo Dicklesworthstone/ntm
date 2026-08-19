@@ -110,51 +110,6 @@ func resolveCodexPane(session string, pane, lines int) (*tmux.Pane, string, erro
 	return target, content, nil
 }
 
-// resolveCodexPaneSelector is the topology-safe counterpart used by shell send.
-// It accepts the shared N, W.P, and %N grammar and requires exactly one pane.
-func resolveCodexPaneSelector(session, selector string, lines int) (*tmux.Pane, string, error) {
-	if session == "" {
-		return nil, "", robot.RobotError(
-			fmt.Errorf("session is required"),
-			robot.ErrCodeInvalidFlag,
-			"Pass the session positionally or via --session; use 'ntm list' to see sessions",
-		)
-	}
-	if strings.TrimSpace(selector) == "" {
-		return nil, "", robot.RobotError(
-			fmt.Errorf("--pane selector is required"),
-			robot.ErrCodeInvalidFlag,
-			"Pass one pane as N, W.P, or %N",
-		)
-	}
-	if !tmux.SessionExists(session) {
-		return nil, "", robot.RobotError(
-			fmt.Errorf("session '%s' not found", session),
-			robot.ErrCodeSessionNotFound,
-			"Use 'ntm list' to see available sessions",
-		)
-	}
-	panes, err := tmux.GetPanes(session)
-	if err != nil {
-		return nil, "", robot.RobotError(err, robot.ErrCodeInternalError, "Could not enumerate panes for the session")
-	}
-	selected, err := resolveShellSendSelectors(panes, []string{selector}, true)
-	if err != nil {
-		return nil, "", robot.RobotError(err, robot.ErrCodePaneNotFound, "Use 'ntm status <session>' to see canonical pane addresses")
-	}
-	target := &selected[0]
-	var content string
-	if lines <= 0 || lines >= tmux.LinesFullContext {
-		content, err = tmux.CapturePaneVisible(target.ID)
-	} else {
-		content, err = tmux.CapturePaneOutput(target.ID, lines)
-	}
-	if err != nil {
-		return nil, "", robot.RobotError(err, robot.ErrCodeInternalError, "Failed to capture pane content")
-	}
-	return target, content, nil
-}
-
 // CodexPreflightResult is the JSON output for "ntm codex preflight".
 //
 // It embeds the standard robot envelope and adds the goal-readiness verdict

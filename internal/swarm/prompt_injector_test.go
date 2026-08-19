@@ -142,15 +142,6 @@ func TestNeedsDoubleEnter(t *testing.T) {
 	}
 }
 
-func TestWithLogger(t *testing.T) {
-	injector := NewPromptInjector()
-	result := injector.WithLogger(nil)
-
-	if result != injector {
-		t.Error("WithLogger should return the same injector for chaining")
-	}
-}
-
 func TestWithStaggerDelay(t *testing.T) {
 	injector := NewPromptInjector()
 	customDelay := 500 * time.Millisecond
@@ -342,15 +333,6 @@ func TestPromptInjector_MixedBatchDeliversToGrok(t *testing.T) {
 	}
 	if !grokDelivered {
 		t.Fatalf("grok pane proj:1.2 never received a send: %+v", client.sentForAgent)
-	}
-}
-
-func TestPromptInjectorTmuxClient(t *testing.T) {
-	injector := NewPromptInjector()
-	client := injector.tmuxClient()
-
-	if client == nil {
-		t.Error("expected non-nil client from tmuxClient()")
 	}
 }
 
@@ -897,35 +879,6 @@ func TestPromptInjector_BatchResultTracking(t *testing.T) {
 	}
 }
 
-// TestPromptInjector_ChainedConfiguration tests method chaining for configuration.
-func TestPromptInjector_ChainedConfiguration(t *testing.T) {
-	t.Log("[TEST] Testing chained configuration methods")
-
-	tracker := ratelimit.NewRateLimitTracker("")
-
-	injector := NewPromptInjector().
-		WithStaggerDelay(250 * time.Millisecond).
-		WithRateLimitTracker(tracker).
-		WithAdaptiveDelay(true).
-		WithLogger(nil)
-
-	t.Log("[TEST] Created injector with chained configuration")
-	t.Logf("[TEST] StaggerDelay: %v", injector.StaggerDelay)
-	t.Logf("[TEST] UseAdaptiveDelay: %v", injector.UseAdaptiveDelay)
-	t.Logf("[TEST] RateLimitTracker set: %v", injector.RateLimitTracker != nil)
-
-	// Verify all configurations were applied
-	if injector.StaggerDelay != 250*time.Millisecond {
-		t.Errorf("[TEST] Expected StaggerDelay of 250ms, got %v", injector.StaggerDelay)
-	}
-	if !injector.UseAdaptiveDelay {
-		t.Error("[TEST] Expected UseAdaptiveDelay to be true")
-	}
-	if injector.RateLimitTracker != tracker {
-		t.Error("[TEST] Expected RateLimitTracker to be set")
-	}
-}
-
 // containsIgnoreCase checks if s contains substr (case-insensitive).
 func containsIgnoreCase(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr ||
@@ -952,4 +905,50 @@ func containsLower(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+func TestPromptInjectorTmuxClient(t *testing.T) {
+	injector := NewPromptInjector()
+	client := injector.tmuxClient()
+
+	if client == nil {
+		t.Error("expected non-nil client from tmuxClient()")
+	}
+}
+
+func TestWithLogger(t *testing.T) {
+	injector := NewPromptInjector()
+	result := injector.WithLogger(nil)
+
+	if result != injector {
+		t.Error("WithLogger should return the same injector for chaining")
+	}
+}
+
+func TestPromptInjector_ChainedConfiguration(t *testing.T) {
+	t.Log("[TEST] Testing chained configuration methods")
+
+	tracker := ratelimit.NewRateLimitTracker("")
+
+	injector := NewPromptInjector().
+		WithStaggerDelay(250 * time.Millisecond).
+		WithRateLimitTracker(tracker).
+		WithAdaptiveDelay(true).
+		WithLogger(nil)
+
+	t.Log("[TEST] Created injector with chained configuration")
+	t.Logf("[TEST] StaggerDelay: %v", injector.StaggerDelay)
+	t.Logf("[TEST] UseAdaptiveDelay: %v", injector.UseAdaptiveDelay)
+	t.Logf("[TEST] RateLimitTracker set: %v", injector.RateLimitTracker != nil)
+
+	// Verify all configurations were applied
+	if injector.StaggerDelay != 250*time.Millisecond {
+		t.Errorf("[TEST] Expected StaggerDelay of 250ms, got %v", injector.StaggerDelay)
+	}
+	if !injector.UseAdaptiveDelay {
+		t.Error("[TEST] Expected UseAdaptiveDelay to be true")
+	}
+	if injector.RateLimitTracker != tracker {
+		t.Error("[TEST] Expected RateLimitTracker to be set")
+	}
 }

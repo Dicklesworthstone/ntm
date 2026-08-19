@@ -13,8 +13,8 @@ import (
 // backpressure_threshold, per-agent rate/ramp-up/cooldown/recovery knobs,
 // [spawn_pacing.headroom], [spawn_pacing.backoff]), but no runtime pacing
 // engine ever consumed those values — only the concurrency caps below are
-// read. The dead keys now take the deprecated-knob warn path (see
-// removed_knobs.go) and become load errors in v1.29.0.
+// read. The dead keys take the deprecated-knob path (see removed_knobs.go)
+// and are hard load errors since v1.29.0.
 type SpawnPacingConfig struct {
 	// Enabled controls whether spawn admission control is active.
 	Enabled bool `toml:"enabled"`

@@ -43,17 +43,13 @@ func GetConfig() (*config.Config, error) {
 	return configLoader.Get()
 }
 
-// MustGetConfig returns the configuration, panicking on error
-func MustGetConfig() *config.Config {
-	return configLoader.MustGet()
-}
-
-// IsConfigLoaded returns true if config has been loaded
-func IsConfigLoaded() bool {
-	return configLoader.IsInitialized()
-}
-
-// ResetConfig allows re-loading config (useful for testing)
+// ResetConfig allows re-loading config. Test-only hook: retained because
+// package tests across the repo (notably internal/cli) reset the lazy config
+// loader between test cases; production code never calls it.
 func ResetConfig() {
-	configLoader.Reset()
+	configLoader.mu.Lock()
+	defer configLoader.mu.Unlock()
+	configLoader.done = false
+	configLoader.initErr = nil
+	configLoader.value = nil
 }

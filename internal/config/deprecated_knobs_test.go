@@ -1,16 +1,20 @@
 package config
 
-// bd-6otuk proof (v1.28.0 warn tier): a config containing any key from the
-// second dead-knob batch still LOADS, emits exactly one loud per-key startup
-// warning naming the key + disposition + the v1.29.0 error deadline, and the
-// value is ignored (the struct fields are gone, so nothing can read it). The
-// v1.26.0-era removed keys keep failing the loader (removed_knobs_test.go);
-// genuinely unknown keys keep failing too.
+// bd-6otuk proof, v1.29.0 flip (bd-ad54k): a config containing any key from
+// the second dead-knob batch now FAILS the strict loader with a hard error
+// naming the key + disposition (the exact v1.28.0 warning key+disposition
+// text, severity flipped — same runway as the v1.26.0→v1.27.0 flip in
+// removed_knobs_test.go), every deprecated key present is listed in the one
+// load error alongside removed and unknown keys, the keys stay visible to
+// `ntm doctor` via ScanDeprecatedKnobs (which reads the file leniently), and
+// persistence validation rejects them too. Same fixtures as the v1.28.0
+// warn-mode proof — only the assertions changed severity.
 
 import (
-	"reflect"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 // deprecatedKnobFixtures covers every deprecated knob family: TOML that sets
@@ -87,29 +91,35 @@ var deprecatedKnobFixtures = []struct {
 	{"command_hooks.description", "[[command_hooks]]\nevent = \"pre_spawn\"\ncommand = \"true\"\ndescription = \"legacy\"\n", "command_hooks.description", noEffect + " (use command_hooks.name to label hooks)"},
 }
 
-// TestDeprecatedKnobsWarnAtLoad is the per-key warn-tier proof: the config
-// LOADS, stderr carries the exact contract warning line, and the doctor
-// surface (ScanDeprecatedKnobs) reports the same key + disposition.
-func TestDeprecatedKnobsWarnAtLoad(t *testing.T) {
+// TestDeprecatedKnobsErrorAtLoad is the per-key proof (v1.29.0 flip): a
+// config containing a deprecated key FAILS to load, the error names the key +
+// disposition with the exact contract text, and the key stays visible to the
+// doctor surface via ScanDeprecatedKnobs.
+func TestDeprecatedKnobsErrorAtLoad(t *testing.T) {
 	base := "projects_base = \"/tmp/deprecated-knob-proof\"\n"
 
 	for _, tt := range deprecatedKnobFixtures {
 		t.Run(tt.name, func(t *testing.T) {
 			path := createTempConfig(t, base+tt.toml)
 			cfg, stderr, err := loadCapturingStderr(t, path)
-			if err != nil {
-				t.Fatalf("Load must SUCCEED with deprecated key %s (warn tier until v1.29.0), got: %v", tt.key, err)
+			if err == nil {
+				t.Fatalf("Load must FAIL since v1.29.0 with deprecated key %s, but it succeeded", tt.key)
 			}
-			if cfg == nil {
-				t.Fatalf("Load returned nil config for deprecated key %s", tt.key)
-			}
-
-			want := deprecatedKnobWarnLine(RemovedKnob{Key: tt.key, Disposition: tt.disposition})
-			if !strings.Contains(stderr, want) {
-				t.Fatalf("warning text mismatch for %s.\nwant line: %q\ngot stderr: %q", tt.key, want, stderr)
+			if cfg != nil {
+				t.Fatalf("Load returned a non-nil config alongside the deprecated-key error for %s", tt.key)
 			}
 
-			// Doctor surface parity.
+			want := deprecatedKnobErrorLine(RemovedKnob{Key: tt.key, Disposition: tt.disposition})
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("error text mismatch for %s.\nwant line: %q\ngot error: %q", tt.key, want, err.Error())
+			}
+			// No leftover warning path: severity flipped, not duplicated.
+			if strings.Contains(stderr, "ntm: warning: config key") {
+				t.Errorf("deprecated key %s must not also emit the old v1.28.0 warning; stderr: %q", tt.key, stderr)
+			}
+
+			// Doctor surface parity: ScanDeprecatedKnobs must keep working on
+			// configs the strict loader refuses.
 			knobs, scanErr := ScanDeprecatedKnobs(path)
 			if scanErr != nil {
 				t.Fatalf("ScanDeprecatedKnobs: %v", scanErr)
@@ -141,10 +151,10 @@ func TestDeprecatedKnobsWarnAtLoad(t *testing.T) {
 	}
 }
 
-// TestDeprecatedKnobValueIgnored proves the warn tier ignores the value: a
-// config setting only deprecated spawn_pacing knobs yields exactly the
-// default SpawnPacingConfig (the fields no longer exist to be set).
-func TestDeprecatedKnobValueIgnored(t *testing.T) {
+// TestDeprecatedKnobMultiKeyOneError: several deprecated keys in one config
+// yield ONE load failure whose error carries the exact contract line for
+// every key (not first-only).
+func TestDeprecatedKnobMultiKeyOneError(t *testing.T) {
 	path := createTempConfig(t, `projects_base = "/tmp/deprecated-knob-proof"
 [spawn_pacing]
 burst_size = 99
@@ -157,25 +167,30 @@ initial_delay_ms = 1
 enabled = false
 `)
 	cfg, stderr, err := loadCapturingStderr(t, path)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
+	if err == nil {
+		t.Fatal("Load must fail with deprecated keys present")
 	}
-	if !reflect.DeepEqual(cfg.SpawnPacing, DefaultSpawnPacingConfig()) {
-		t.Errorf("SpawnPacing = %#v, want pristine defaults (deprecated values ignored)", cfg.SpawnPacing)
+	if cfg != nil {
+		t.Fatal("Load returned a non-nil config alongside the deprecated-key error")
 	}
-	if cfg.Preflight.Strict != Default().Preflight.Strict {
-		t.Errorf("Preflight.Strict changed by a deprecated sibling key")
-	}
-	for _, key := range []string{"spawn_pacing.burst_size", "spawn_pacing.max_spawns_per_sec", "spawn_pacing.backoff.initial_delay_ms", "preflight.enabled"} {
-		if !strings.Contains(stderr, "config key "+key+" is deprecated") {
-			t.Errorf("missing warning for %s; stderr: %q", key, stderr)
+	for _, want := range []RemovedKnob{
+		{Key: "spawn_pacing.burst_size", Disposition: deprecatedSpawnPacingDisp},
+		{Key: "spawn_pacing.max_spawns_per_sec", Disposition: deprecatedSpawnPacingDisp},
+		{Key: "spawn_pacing.backoff.initial_delay_ms", Disposition: deprecatedSpawnPacingDisp},
+		{Key: "preflight.enabled", Disposition: noEffect + " (preflight.strict remains live)"},
+	} {
+		if !strings.Contains(err.Error(), deprecatedKnobErrorLine(want)) {
+			t.Errorf("error must list %s with its disposition; got: %v", want.Key, err)
 		}
+	}
+	if strings.Contains(stderr, "ntm: warning: config key") {
+		t.Errorf("no leftover warning path expected; stderr: %q", stderr)
 	}
 }
 
 // TestDeprecatedPlusRemovedKeys: a removed (v1.26.0-era) key alongside a
-// deprecated one still fails the load with the removed key's error; the
-// deprecated key must not rescue it.
+// deprecated one fails the load with BOTH keys named in the one error, each
+// with its own release-pair text.
 func TestDeprecatedPlusRemovedKeys(t *testing.T) {
 	path := createTempConfig(t, `projects_base = "/tmp/deprecated-knob-proof"
 [tmux]
@@ -186,16 +201,21 @@ enabled = false
 `)
 	_, err := Load(path)
 	if err == nil {
-		t.Fatal("Load must fail when a removed key is present, even alongside deprecated keys")
+		t.Fatal("Load must fail when removed and deprecated keys are present")
 	}
 	wantRemoved := removedKnobErrorLine(RemovedKnob{Key: "tmux.palette_key", Disposition: noEffect})
 	if !strings.Contains(err.Error(), wantRemoved) {
 		t.Fatalf("error must carry the removed-key line; got: %v", err)
 	}
+	wantDeprecated := deprecatedKnobErrorLine(RemovedKnob{Key: "preflight.enabled", Disposition: noEffect + " (preflight.strict remains live)"})
+	if !strings.Contains(err.Error(), wantDeprecated) {
+		t.Fatalf("error must also carry the deprecated-key line; got: %v", err)
+	}
 }
 
-// TestDeprecatedPlusUnknownKeys: an unknown key still fails the load even
-// when deprecated keys are present.
+// TestDeprecatedPlusUnknownKeys: an unknown key and a deprecated key are BOTH
+// named in the one load error, so a single failed load lists everything to
+// fix.
 func TestDeprecatedPlusUnknownKeys(t *testing.T) {
 	path := createTempConfig(t, `projects_base = "/tmp/deprecated-knob-proof"
 definitely_not_a_key = true
@@ -207,10 +227,17 @@ enabled = false
 	if err == nil || !strings.Contains(err.Error(), "unknown field") {
 		t.Fatalf("expected unknown-field error, got %v", err)
 	}
+	if !strings.Contains(err.Error(), "definitely_not_a_key") {
+		t.Fatalf("error must name the unknown field, got %v", err)
+	}
+	wantDeprecated := deprecatedKnobErrorLine(RemovedKnob{Key: "preflight.enabled", Disposition: noEffect + " (preflight.strict remains live)"})
+	if !strings.Contains(err.Error(), wantDeprecated) {
+		t.Fatalf("error must also carry the deprecated-key line; got: %v", err)
+	}
 }
 
 // TestDeprecatedKnobsAllAtOnce: one config carrying a representative key from
-// every family loads with one warning line per key.
+// every family fails with ONE error listing every key (not first-only).
 func TestDeprecatedKnobsAllAtOnce(t *testing.T) {
 	var sb strings.Builder
 	sb.WriteString("projects_base = \"/tmp/deprecated-knob-proof\"\n")
@@ -239,35 +266,79 @@ func TestDeprecatedKnobsAllAtOnce(t *testing.T) {
 	}
 
 	path := createTempConfig(t, sb.String())
-	cfg, stderr, err := loadCapturingStderr(t, path)
-	if err != nil {
-		t.Fatalf("Load must succeed with only deprecated keys present, got: %v", err)
-	}
-	if cfg == nil {
-		t.Fatal("nil config")
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load must fail with deprecated keys present")
 	}
 	for _, tt := range deprecatedKnobFixtures {
 		if !strings.HasPrefix(tt.toml, "[") || strings.HasPrefix(tt.toml, "[[") {
 			continue
 		}
-		if !strings.Contains(stderr, "config key "+tt.key+" is deprecated") {
-			t.Errorf("combined load must warn for %s; stderr missing it", tt.key)
+		if !strings.Contains(err.Error(), "config key "+tt.key+" was ") {
+			t.Errorf("combined load error must list %s; got: %v", tt.key, err)
 		}
 	}
 }
 
-// TestValidateNTMConfigTOMLToleratesDeprecated: persistence validation
-// (config set path) tolerates deprecated keys but still rejects removed and
-// unknown ones.
-func TestValidateNTMConfigTOMLToleratesDeprecated(t *testing.T) {
-	if err := validateNTMConfigTOML("[preflight]\nenabled = false\n"); err != nil {
-		t.Fatalf("deprecated key must not fail persistence validation, got: %v", err)
+// TestValidateNTMConfigTOMLRejectsDeprecated: persistence validation (config
+// set path) rejects deprecated keys since the v1.29.0 flip — the same
+// partition as the strict loader, so `ntm config set` cannot persist a config
+// the loader would refuse — and keeps rejecting removed and unknown ones.
+func TestValidateNTMConfigTOMLRejectsDeprecated(t *testing.T) {
+	err := validateNTMConfigTOML("[preflight]\nenabled = false\n")
+	if err == nil {
+		t.Fatal("deprecated key must fail persistence validation since v1.29.0")
+	}
+	want := deprecatedKnobErrorLine(RemovedKnob{Key: "preflight.enabled", Disposition: noEffect + " (preflight.strict remains live)"})
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("persistence rejection must carry the contract line; got: %v", err)
 	}
 	if err := validateNTMConfigTOML("[tmux]\npalette_key = \"F5\"\n"); err == nil {
 		t.Fatal("removed key must still fail persistence validation")
 	}
 	if err := validateNTMConfigTOML("bogus_key = 1\n"); err == nil {
 		t.Fatal("unknown key must still fail persistence validation")
+	}
+}
+
+// TestScannerTOMLErrorsYAMLSurfaceIntact: the scanner.* keys (all but
+// ubs_path) are detached from TOML via toml:"-" and hard-error at load since
+// v1.29.0, while the SAME ScannerConfig type keeps serving as the
+// project-level .ntm.yaml schema — that YAML surface must stay fully live.
+func TestScannerTOMLErrorsYAMLSurfaceIntact(t *testing.T) {
+	// TOML: hard error with the contract line.
+	path := createTempConfig(t, "projects_base = \"/tmp/deprecated-knob-proof\"\n[scanner.defaults]\ntimeout = \"30s\"\n")
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("scanner.defaults TOML key must fail the strict loader since v1.29.0")
+	}
+	want := deprecatedKnobErrorLine(RemovedKnob{Key: "scanner.defaults.timeout", Disposition: deprecatedScannerDisp})
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("scanner TOML error must carry the contract line; got: %v", err)
+	}
+
+	// scanner.ubs_path stays live in TOML.
+	path = createTempConfig(t, "projects_base = \"/tmp/deprecated-knob-proof\"\n[scanner]\nubs_path = \"/opt/ubs\"\n")
+	cfg, stderr, err := loadCapturingStderr(t, path)
+	if err != nil {
+		t.Fatalf("scanner.ubs_path must stay loadable: %v", err)
+	}
+	if cfg.Scanner.UBSPath != "/opt/ubs" {
+		t.Fatalf("scanner.ubs_path must be parsed, got %q", cfg.Scanner.UBSPath)
+	}
+	if strings.Contains(stderr, "scanner") {
+		t.Fatalf("scanner.ubs_path must not warn; stderr: %q", stderr)
+	}
+
+	// YAML: the toml:"-" detach must not touch the YAML surface — the same
+	// fields keep decoding through ScannerConfig's yaml tags (the project
+	// .ntm.yaml scanner schema).
+	var scfg ScannerConfig
+	if err := yaml.Unmarshal([]byte("defaults:\n  timeout: 30s\n"), &scfg); err != nil {
+		t.Fatalf("yaml scanner schema must stay untouched by the TOML flip: %v", err)
+	}
+	if scfg.Defaults.Timeout != "30s" {
+		t.Fatalf("yaml scanner defaults.timeout = %q, want 30s", scfg.Defaults.Timeout)
 	}
 }
 

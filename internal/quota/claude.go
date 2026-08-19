@@ -196,22 +196,3 @@ type ClaudeQuota struct {
 	LoginMethod  string
 	IsLimited    bool
 }
-
-// ParseClaudeUsageString parses raw /usage output and returns structured data
-func ParseClaudeUsageString(output string) *ClaudeQuota {
-	info := &QuotaInfo{}
-	_, _ = parseClaudeUsage(info, output)
-	parseClaudeStatus(info, output)
-
-	return &ClaudeQuota{
-		SessionUsage: info.SessionUsage,
-		WeeklyUsage:  info.WeeklyUsage,
-		PeriodUsage:  info.PeriodUsage,
-		SonnetUsage:  info.SonnetUsage,
-		ResetTime:    info.ResetString,
-		AccountEmail: info.AccountID,
-		Organization: info.Organization,
-		LoginMethod:  info.LoginMethod,
-		IsLimited:    info.IsLimited,
-	}
-}

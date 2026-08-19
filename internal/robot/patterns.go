@@ -427,19 +427,9 @@ func (lib *PatternLibrary) PatternCount() int {
 // DefaultLibrary is the shared default pattern library.
 var DefaultLibrary = NewPatternLibrary()
 
-// MatchPatterns matches content against the default library.
-func MatchPatterns(content string, agentType string) []PatternMatch {
-	return DefaultLibrary.Match(content, agentType)
-}
-
 // MatchFirstPattern returns the first matching pattern from the default library.
 func MatchFirstPattern(content string, agentType string) *PatternMatch {
 	return DefaultLibrary.MatchFirst(content, agentType)
-}
-
-// HasErrorPattern checks for error patterns in the default library.
-func HasErrorPattern(content string, agentType string) bool {
-	return DefaultLibrary.HasError(content, agentType)
 }
 
 // HasIdlePattern checks for idle patterns in the default library.
@@ -463,9 +453,4 @@ func isKnownAgentPatternType(agentType string) bool {
 	default:
 		return false
 	}
-}
-
-// HasThinkingPattern checks for thinking patterns in the default library.
-func HasThinkingPattern(content string, agentType string) bool {
-	return DefaultLibrary.HasThinkingIndicator(content, agentType)
 }

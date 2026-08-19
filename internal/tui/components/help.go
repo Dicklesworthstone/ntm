@@ -87,8 +87,6 @@ func RenderKeyHintCompact(hint KeyHint) string {
 
 // RenderHelpBar renders a horizontal bar of key hints, respecting width constraints.
 // Hints are progressively hidden from right-to-left if they don't fit.
-// Note: This complements the existing HelpBar struct type in preview.go with a
-// function-based API that supports width-aware truncation.
 func RenderHelpBar(opts HelpBarOptions) string {
 	if len(opts.Hints) == 0 {
 		return ""
@@ -261,46 +259,6 @@ func HelpOverlay(opts HelpOverlayOptions) string {
 	return boxStyle.Render(content)
 }
 
-// CommonNavigationHints returns standard navigation key hints.
-func CommonNavigationHints() []KeyHint {
-	return []KeyHint{
-		{Key: "↑/↓", Desc: "navigate"},
-		{Key: "j/k", Desc: "navigate"},
-	}
-}
-
-// CommonSelectionHints returns standard selection key hints.
-func CommonSelectionHints() []KeyHint {
-	return []KeyHint{
-		{Key: "Enter", Desc: "select"},
-		{Key: "1-9", Desc: "quick select"},
-	}
-}
-
-// CommonQuitHints returns standard quit/back key hints.
-func CommonQuitHints() []KeyHint {
-	return []KeyHint{
-		{Key: "Esc", Desc: "back"},
-		{Key: "q", Desc: "quit"},
-	}
-}
-
-// DefaultPaletteHints returns the standard palette key hints.
-func DefaultPaletteHints() []KeyHint {
-	return []KeyHint{
-		{Key: "↑/↓", Desc: "navigate"},
-		{Key: "1-9", Desc: "quick select"},
-		{Key: "Enter", Desc: "select"},
-		{Key: "Esc", Desc: "back"},
-	}
-}
-
-// DefaultDashboardHints returns the standard dashboard key hints.
-// Order matters: most important hints first (quit, help) so they remain visible at narrow widths.
-func DefaultDashboardHints() []KeyHint {
-	return DashboardHelpBarHints(DashboardHelpOptions{Verbosity: DashboardHelpVerbosityFull})
-}
-
 // DashboardHelpBarHints returns key hints for the dashboard footer help bar.
 // Order matters: RenderHelpBar truncates from right-to-left, so the most important hints
 // must come first.
@@ -343,85 +301,3 @@ func DashboardHelpBarHints(opts DashboardHelpOptions) []KeyHint {
 // The palette overlay sections are generated in internal/palette/keymap.go
 // from the palette's phase keymaps (H3): a hardcoded copy here advertised dead
 // keys (1-9 quick-select, q, ?) that the always-focused filter swallowed.
-
-// DashboardHelpSections returns help sections for the dashboard overlay.
-func DashboardHelpSections(opts DashboardHelpOptions) []HelpSection {
-	if opts.Verbosity == DashboardHelpVerbosityMinimal {
-		return []HelpSection{
-			{
-				Title: "Navigation",
-				Hints: []KeyHint{
-					{Key: "↑ / k", Desc: "Move up"},
-					{Key: "↓ / j", Desc: "Move down"},
-					{Key: "1-9", Desc: "Quick select pane"},
-				},
-			},
-			{
-				Title: "General",
-				Hints: []KeyHint{
-					{Key: "?", Desc: "Toggle help"},
-					{Key: "q / Esc", Desc: "Quit dashboard"},
-					{Key: "Ctrl+C", Desc: "Force quit"},
-				},
-			},
-		}
-	}
-
-	sections := []HelpSection{
-		{
-			Title: "Navigation",
-			Hints: []KeyHint{
-				{Key: "↑ / k", Desc: "Move up"},
-				{Key: "↓ / j", Desc: "Move down"},
-				{Key: "← / h", Desc: "Previous panel"},
-				{Key: "→ / l", Desc: "Next panel"},
-				{Key: "Tab", Desc: "Cycle panels"},
-				{Key: "1-9", Desc: "Quick select pane"},
-			},
-		},
-		{
-			Title: "Actions",
-			Hints: []KeyHint{
-				{Key: "z / Enter", Desc: "Zoom to pane"},
-				{Key: "s", Desc: "Send prompt"},
-				{Key: "p", Desc: "Pause refresh"},
-			},
-		},
-		{
-			Title: "Data",
-			Hints: []KeyHint{
-				{Key: "c", Desc: "Refresh context"},
-				{Key: "m", Desc: "Refresh mail"},
-				{Key: "i", Desc: "Inbox details"},
-				{Key: "Ctrl+S", Desc: "CASS search"},
-			},
-		},
-		{
-			Title: "View Controls",
-			Hints: []KeyHint{
-				{Key: "r", Desc: "Refresh data"},
-				{Key: "?", Desc: "Toggle help"},
-			},
-		},
-		{
-			Title: "General",
-			Hints: []KeyHint{
-				{Key: "q / Esc", Desc: "Quit dashboard"},
-				{Key: "Ctrl+C", Desc: "Force quit"},
-			},
-		},
-	}
-
-	if opts.Debug {
-		sections = append(sections, HelpSection{
-			Title: "Debug",
-			Hints: []KeyHint{
-				{Key: "d", Desc: "Toggle diagnostics"},
-				{Key: "u", Desc: "Toggle UBS scan"},
-				{Key: "Ctrl+K", Desc: "Create checkpoint"},
-			},
-		})
-	}
-
-	return sections
-}

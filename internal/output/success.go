@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strings"
 
 	"github.com/charmbracelet/lipgloss"
 	"golang.org/x/term"
@@ -107,14 +106,6 @@ func SendSuggestions(session string) []Suggestion {
 	}
 }
 
-// KillSuggestions returns suggestions for after killing a session
-func KillSuggestions() []Suggestion {
-	return []Suggestion{
-		{Command: "ntm list", Description: "View remaining sessions"},
-		{Command: "ntm spawn <name>", Description: "Create a new session"},
-	}
-}
-
 // SuccessCheck prints a success message with a checkmark
 func SuccessCheck(msg string) {
 	PrintSuccessCheck(os.Stdout, msg)
@@ -147,29 +138,4 @@ type SuccessFooterResponse struct {
 type SuggJSON struct {
 	Command     string `json:"command"`
 	Description string `json:"description"`
-}
-
-// NewSuccessWithSuggestions creates a JSON response with suggestions
-func NewSuccessWithSuggestions(msg string, suggestions []Suggestion) SuccessFooterResponse {
-	resp := SuccessFooterResponse{
-		Success: true,
-		Message: msg,
-	}
-	for _, s := range suggestions {
-		resp.Suggestions = append(resp.Suggestions, SuggJSON(s))
-	}
-	return resp
-}
-
-// FormatSuggestions formats suggestions as a simple string (for logs/non-interactive)
-func FormatSuggestions(suggestions []Suggestion) string {
-	if len(suggestions) == 0 {
-		return ""
-	}
-	var lines []string
-	lines = append(lines, "What's next?")
-	for _, s := range suggestions {
-		lines = append(lines, fmt.Sprintf("  %s  # %s", s.Command, s.Description))
-	}
-	return strings.Join(lines, "\n")
 }

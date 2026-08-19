@@ -49,8 +49,8 @@ func TestDetectAgentFromCommand_Antigravity(t *testing.T) {
 		{"agy", agent.AgentTypeAntigravity},
 		{"agy-locked", agent.AgentTypeAntigravity},
 		{"/Users/dev/.local/bin/agy-locked", agent.AgentTypeAntigravity},
-		{"agy-locked --model 'Gemini 3.1 Pro (High)' --dangerously-skip-permissions", agent.AgentTypeAntigravity},
-		{"agy --model 'Gemini 3.1 Pro (High)' --dangerously-skip-permissions", agent.AgentTypeAntigravity},
+		{"agy-locked --model 'Gemini 3.7 Flash (High)' --dangerously-skip-permissions", agent.AgentTypeAntigravity},
+		{"agy --model 'Gemini 3.7 Flash (High)' --dangerously-skip-permissions", agent.AgentTypeAntigravity},
 		{"antigravity", agent.AgentTypeAntigravity},
 
 		// The pinned model name contains "Gemini"; it must never classify the
@@ -82,7 +82,7 @@ func TestDetectAgentFromArgv_Antigravity(t *testing.T) {
 	}{
 		{
 			name:     "agy-locked with pinned model",
-			argv:     []string{"/Users/dev/.local/bin/agy-locked", "--model", "Gemini 3.1 Pro (High)", "--dangerously-skip-permissions"},
+			argv:     []string{"/Users/dev/.local/bin/agy-locked", "--model", "Gemini 3.7 Flash (High)", "--dangerously-skip-permissions"},
 			expected: agent.AgentTypeAntigravity,
 		},
 		{

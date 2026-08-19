@@ -226,17 +226,7 @@ func TestLogNotification(t *testing.T) {
 }
 
 func TestHelperFunctions(t *testing.T) {
-	evt := NewAgentStartedEvent("sess", "p1", "cc")
-	if evt.Type != EventAgentStarted {
-		t.Errorf("NewAgentStartedEvent type = %v", evt.Type)
-	}
-
-	evt = NewErrorEvent("sess", "p1", "cc", "generic error")
-	if evt.Type != EventError {
-		t.Errorf("NewErrorEvent type = %v", evt.Type)
-	}
-
-	evt = NewRateLimitEvent("sess", "p1", "cc", 30)
+	evt := NewRateLimitEvent("sess", "p1", "cc", 30)
 	if evt.Type != EventRateLimit {
 		t.Errorf("NewRateLimitEvent type = %v", evt.Type)
 	}
@@ -249,36 +239,11 @@ func TestHelperFunctions(t *testing.T) {
 		t.Errorf("NewAgentCrashedEvent type = %v", evt.Type)
 	}
 
-	evt = NewAgentErrorEvent("sess", "p1", "cc", "error")
-	if evt.Type != EventAgentError {
-		t.Errorf("NewAgentErrorEvent type = %v", evt.Type)
-	}
-
-	evt = NewHealthDegradedEvent("sess", 5, 1, 0)
-	if evt.Type != EventHealthDegraded {
-		t.Errorf("NewHealthDegradedEvent type = %v", evt.Type)
-	}
-
 	evt = NewRotationNeededEvent("sess", 1, "cc", "cmd")
 	if evt.Type != EventRotationNeeded {
 		t.Errorf("NewRotationNeededEvent type = %v", evt.Type)
 	}
 
-	evt = NewBeadAssignedEvent("sess", "p1", "cod", "bd-1", "title")
-	if evt.Type != EventBeadAssigned {
-		t.Errorf("NewBeadAssignedEvent type = %v", evt.Type)
-	}
-	if evt.Details["bead_id"] != "bd-1" {
-		t.Errorf("NewBeadAssignedEvent bead_id = %q", evt.Details["bead_id"])
-	}
-
-	evt = NewBeadCompletedEvent("sess", "p1", "cod", "bd-2", "title-2")
-	if evt.Type != EventBeadCompleted {
-		t.Errorf("NewBeadCompletedEvent type = %v", evt.Type)
-	}
-	if evt.Details["bead_id"] != "bd-2" {
-		t.Errorf("NewBeadCompletedEvent bead_id = %q", evt.Details["bead_id"])
-	}
 }
 
 func TestFileBoxNotification(t *testing.T) {

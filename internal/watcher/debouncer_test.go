@@ -112,38 +112,6 @@ func TestDebouncerCancelNilTimer(t *testing.T) {
 	d.Cancel()
 }
 
-func TestDebouncerReset(t *testing.T) {
-	t.Run("changes duration", func(t *testing.T) {
-		d := NewDebouncer(100 * time.Millisecond)
-		newDuration := 200 * time.Millisecond
-		d.Reset(newDuration)
-
-		if d.Duration() != newDuration {
-			t.Errorf("Duration() = %v, want %v after Reset", d.Duration(), newDuration)
-		}
-	})
-
-	t.Run("cancels pending callback", func(t *testing.T) {
-		var callCount atomic.Int32
-		d := NewDebouncer(100 * time.Millisecond)
-
-		d.Trigger(func() {
-			callCount.Add(1)
-		})
-
-		// Reset cancels the pending trigger
-		time.Sleep(20 * time.Millisecond)
-		d.Reset(50 * time.Millisecond)
-
-		// Wait longer than both durations
-		time.Sleep(200 * time.Millisecond)
-
-		if got := callCount.Load(); got != 0 {
-			t.Errorf("callback called %d times after Reset(), want 0", got)
-		}
-	})
-}
-
 func TestDefaultDebounceDuration(t *testing.T) {
 	if DefaultDebounceDuration != 250*time.Millisecond {
 		t.Errorf("DefaultDebounceDuration = %v, want 250ms", DefaultDebounceDuration)

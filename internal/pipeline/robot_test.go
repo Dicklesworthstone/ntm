@@ -11,6 +11,34 @@ import (
 	"time"
 )
 
+// Test-only registry accessors retained after the exported production
+// wrappers were removed as dead code; registry tests still need direct
+// lookup/list/reset access.
+
+// GetPipelineExecution returns a pipeline by run ID.
+func GetPipelineExecution(runID string) *PipelineExecution {
+	return getPipeline(runID)
+}
+
+// GetAllPipelines returns all tracked pipelines.
+func GetAllPipelines() []*PipelineExecution {
+	pipelineMu.RLock()
+	defer pipelineMu.RUnlock()
+
+	result := make([]*PipelineExecution, 0, len(pipelineRegistry))
+	for _, exec := range pipelineRegistry {
+		result = append(result, exec)
+	}
+	return result
+}
+
+// ClearPipelineRegistry clears the pipeline registry between tests.
+func ClearPipelineRegistry() {
+	pipelineMu.Lock()
+	pipelineRegistry = make(map[string]*PipelineExecution)
+	pipelineMu.Unlock()
+}
+
 // captureStdout captures stdout during function execution
 func captureStdout(t *testing.T, f func()) string {
 	t.Helper()

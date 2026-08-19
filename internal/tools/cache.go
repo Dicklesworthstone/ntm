@@ -24,7 +24,6 @@ type Cache struct {
 	ttl       time.Duration
 	mu        sync.RWMutex
 	done      chan struct{}
-	closed    bool
 	cleanupWg sync.WaitGroup
 }
 
@@ -50,23 +49,6 @@ func NewCache(ttl time.Duration) *Cache {
 	go c.cleanupLoop()
 
 	return c
-}
-
-// Close stops the cleanup goroutine and releases resources.
-// The cache should not be used after Close is called.
-func (c *Cache) Close() {
-	c.mu.Lock()
-	if c.closed {
-		c.mu.Unlock()
-		c.cleanupWg.Wait()
-		return
-	}
-	c.closed = true
-	done := c.done
-	c.mu.Unlock()
-
-	close(done)
-	c.cleanupWg.Wait()
 }
 
 // Get retrieves a value from the cache
@@ -102,20 +84,6 @@ func (c *Cache) SetWithTTL(key string, value interface{}, ttl time.Duration) {
 	}
 }
 
-// Delete removes a key from the cache
-func (c *Cache) Delete(key string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	delete(c.entries, key)
-}
-
-// Clear removes all entries from the cache
-func (c *Cache) Clear() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.entries = make(map[string]cacheEntry)
-}
-
 // cleanupLoop periodically removes expired entries
 func (c *Cache) cleanupLoop() {
 	defer c.cleanupWg.Done()
@@ -143,11 +111,4 @@ func (c *Cache) cleanup() {
 			delete(c.entries, key)
 		}
 	}
-}
-
-// Size returns the number of entries in the cache
-func (c *Cache) Size() int {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return len(c.entries)
 }

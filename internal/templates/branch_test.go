@@ -291,7 +291,7 @@ body
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	loader := NewLoaderWithProject(tmpDir)
+	loader := newLoaderWithProjectForTest(tmpDir)
 	_, err := loader.List()
 	if err == nil {
 		t.Fatal("expected invalid project template to fail")

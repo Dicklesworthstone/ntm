@@ -430,71 +430,6 @@ func (e *Engine) LatestForCorrelation(ctx context.Context, correlationID string)
 	return &latest, nil
 }
 
-// WaitForApproval blocks until the approval is approved, denied, or times out.
-func (e *Engine) WaitForApproval(ctx context.Context, id string, timeout time.Duration) (*state.Approval, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	baseCtx := ctx
-
-	// bd-e2qk2: register the wait channel BEFORE checking status, then
-	// re-check. If a pre-fix WaitForApproval did Check-first then
-	// register, an Approve() racing between Check and register would
-	// notify the waiter list while this waiter's channel wasn't yet
-	// in it — the decision was lost and the caller blocked for the
-	// full timeout despite a decision having been made. With register-
-	// then-check, either (a) the second Check sees the decision, or
-	// (b) any future decision arrives via the now-registered channel.
-	waitCh := make(chan struct{}, 1)
-	e.waitersMu.Lock()
-	e.waiters[id] = append(e.waiters[id], waitCh)
-	e.waitersMu.Unlock()
-
-	defer e.removeWaiter(id, waitCh)
-
-	// Check current status AFTER registering — closes the race window.
-	approval, err := e.Check(baseCtx, id)
-	if err != nil {
-		return nil, err
-	}
-	if approval.Status != state.ApprovalPending {
-		return approval, nil
-	}
-
-	waitCtx, cancel := context.WithTimeout(baseCtx, timeout)
-	defer cancel()
-
-	select {
-	case <-waitCh:
-		// Approval was decided
-		return e.Check(baseCtx, id)
-	case <-waitCtx.Done():
-		if baseCtx.Err() != nil {
-			return nil, baseCtx.Err()
-		}
-		// Timeout - check final status
-		return e.Check(baseCtx, id)
-	}
-}
-
-func (e *Engine) removeWaiter(id string, waitCh chan struct{}) {
-	e.waitersMu.Lock()
-	defer e.waitersMu.Unlock()
-
-	waiters := e.waiters[id]
-	for i, ch := range waiters {
-		if ch == waitCh {
-			waiters = append(waiters[:i], waiters[i+1:]...)
-			break
-		}
-	}
-	if len(waiters) == 0 {
-		delete(e.waiters, id)
-		return
-	}
-	e.waiters[id] = waiters
-}
-
 // ListPending returns all pending approval requests.
 func (e *Engine) ListPending(ctx context.Context) ([]state.Approval, error) {
 	approvals, err := e.store.ListPendingApprovals()
@@ -536,24 +471,6 @@ func (e *Engine) History(ctx context.Context) ([]state.Approval, error) {
 		}
 	}
 	return approvals, nil
-}
-
-// ExpireStale marks all expired pending approvals as expired.
-func (e *Engine) ExpireStale(ctx context.Context) (int, error) {
-	// Use ListExpiredPendingApprovals which returns pending approvals where expires_at <= now
-	approvals, err := e.store.ListExpiredPendingApprovals()
-	if err != nil {
-		return 0, fmt.Errorf("list expired pending approvals: %w", err)
-	}
-
-	count := 0
-	for _, a := range approvals {
-		if err := e.expireApproval(&a, time.Now().UTC()); err == nil {
-			count++
-		}
-	}
-
-	return count, nil
 }
 
 // notifyWaiters wakes up all goroutines waiting on this approval.

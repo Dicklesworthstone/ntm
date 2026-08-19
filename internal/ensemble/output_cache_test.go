@@ -342,46 +342,6 @@ func TestModeOutputCache_Put_NilCache(t *testing.T) {
 	}
 }
 
-func TestModeOutputCache_Invalidate(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	cache, err := NewModeOutputCacheWithDir(dir, ModeOutputCacheConfig{Enabled: true, TTL: time.Minute, MaxEntries: 10}, nil)
-	if err != nil {
-		t.Fatalf("NewModeOutputCacheWithDir: %v", err)
-	}
-
-	mode := sampleMode(t)
-	cfg := ModeOutputConfig{Question: "inv-q", AgentType: "cc", SchemaVersion: SchemaVersion}
-	fp, _ := BuildModeOutputFingerprint("ctx", mode, cfg)
-	_ = cache.Put(fp, &ModeOutput{ModeID: mode.ID, Thesis: "t", Confidence: 0.5, GeneratedAt: time.Now()})
-
-	// Verify it exists
-	lookup := cache.Lookup(fp)
-	if !lookup.Hit {
-		t.Fatal("expected cache hit before invalidate")
-	}
-
-	// Invalidate
-	_ = cache.Invalidate(fp)
-
-	// Now lookup should read from disk (file gone) and miss
-	// Need fresh cache (no mem) to test disk invalidation
-	cache2, _ := NewModeOutputCacheWithDir(dir, ModeOutputCacheConfig{Enabled: true, TTL: time.Minute, MaxEntries: 10}, nil)
-	lookup = cache2.Lookup(fp)
-	if lookup.Hit {
-		t.Error("expected miss after invalidate")
-	}
-}
-
-func TestModeOutputCache_Invalidate_Nil(t *testing.T) {
-	t.Parallel()
-	var nilCache *ModeOutputCache
-	err := nilCache.Invalidate(ModeOutputFingerprint{})
-	if err != nil {
-		t.Errorf("Invalidate on nil = %v, want nil", err)
-	}
-}
-
 func TestModeOutputConfig_Hash(t *testing.T) {
 	t.Parallel()
 
@@ -462,19 +422,6 @@ func TestNewModeOutputCache_EmptyProjectDir(t *testing.T) {
 	}
 	if cache == nil {
 		t.Fatal("expected non-nil cache")
-	}
-}
-
-func TestBuildModeOutputFingerprint_EmptyContextHash(t *testing.T) {
-	t.Parallel()
-	mode := &ReasoningMode{ID: "test-mode"}
-	cfg := ModeOutputConfig{Question: "test"}
-	fp, err := BuildModeOutputFingerprint("", mode, cfg)
-	if err != nil {
-		t.Fatalf("BuildModeOutputFingerprint: %v", err)
-	}
-	if fp.ContextHash == "" {
-		t.Error("ContextHash should be derived from question when empty")
 	}
 }
 

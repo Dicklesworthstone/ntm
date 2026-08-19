@@ -165,56 +165,6 @@ func (s *SpawnState) Save(projectDir string) error {
 	return nil
 }
 
-// LoadSpawnState loads spawn state from disk.
-func LoadSpawnState(projectDir string) (*SpawnState, error) {
-	path := filepath.Join(projectDir, spawnStatePath)
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil // No state file
-		}
-		return nil, fmt.Errorf("read spawn state: %w", err)
-	}
-
-	var state SpawnState
-	if err := json.Unmarshal(data, &state); err != nil {
-		return nil, fmt.Errorf("parse spawn state: %w", err)
-	}
-	if shouldExpireSpawnState(state.CompletedAt, time.Now()) {
-		if err := ClearSpawnState(projectDir); err != nil {
-			return nil, err
-		}
-		return nil, nil
-	}
-
-	return &state, nil
-}
-
-func shouldExpireSpawnState(completedAt, now time.Time) bool {
-	if completedAt.IsZero() {
-		return false
-	}
-	return !completedAt.Add(spawnStateCompletionGracePeriod).After(now)
-}
-
-// ClearSpawnState removes the spawn state file.
-func ClearSpawnState(projectDir string) error {
-	path := filepath.Join(projectDir, spawnStatePath)
-	err := os.Remove(path)
-	if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("remove spawn state: %w", err)
-	}
-	return nil
-}
-
-// SpawnStateExists returns whether a spawn state file exists.
-func SpawnStateExists(projectDir string) bool {
-	path := filepath.Join(projectDir, spawnStatePath)
-	_, err := os.Stat(path)
-	return err == nil
-}
-
 // TimeUntilNextPrompt returns the duration until the next pending prompt.
 // Returns zero if all prompts are sent or if there's no pending prompt.
 func (s *SpawnState) TimeUntilNextPrompt() time.Duration {

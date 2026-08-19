@@ -217,14 +217,6 @@ func TestNewStyles(t *testing.T) {
 	}
 }
 
-func TestDefaultStyles(t *testing.T) {
-	s := DefaultStyles()
-
-	if s.Normal.Render("test") == "" {
-		t.Error("DefaultStyles() should return working styles")
-	}
-}
-
 func TestGradient(t *testing.T) {
 	theme := CatppuccinMocha
 

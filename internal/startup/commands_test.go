@@ -40,30 +40,6 @@ func TestCommandRequirements(t *testing.T) {
 	}
 }
 
-func TestRobotFlagRequirements(t *testing.T) {
-	tests := []struct {
-		flag     string
-		expected CommandRequirement
-	}{
-		{"robot-help", RequirePhase1Only},
-		{"robot-version", RequirePhase1Only},
-		{"robot-recipes", RequireConfig},
-		{"robot-status", RequireFullStartup},
-		{"robot-snapshot", RequireFullStartup},
-		{"robot-spawn", RequireFullStartup},
-		{"unknown_flag", RequireFullStartup},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.flag, func(t *testing.T) {
-			got := GetRobotFlagRequirement(tt.flag)
-			if got != tt.expected {
-				t.Errorf("GetRobotFlagRequirement(%q) = %v, want %v", tt.flag, got, tt.expected)
-			}
-		})
-	}
-}
-
 func TestNeedsConfig(t *testing.T) {
 	tests := []struct {
 		cmd      string
@@ -81,27 +57,6 @@ func TestNeedsConfig(t *testing.T) {
 			got := NeedsConfig(tt.cmd)
 			if got != tt.expected {
 				t.Errorf("NeedsConfig(%q) = %v, want %v", tt.cmd, got, tt.expected)
-			}
-		})
-	}
-}
-
-func TestNeedsFullStartup(t *testing.T) {
-	tests := []struct {
-		cmd      string
-		expected bool
-	}{
-		{"version", false},
-		{"config", false},
-		{"spawn", true},
-		{"status", true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.cmd, func(t *testing.T) {
-			got := NeedsFullStartup(tt.cmd)
-			if got != tt.expected {
-				t.Errorf("NeedsFullStartup(%q) = %v, want %v", tt.cmd, got, tt.expected)
 			}
 		})
 	}

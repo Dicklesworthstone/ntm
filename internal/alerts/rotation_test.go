@@ -3,13 +3,12 @@ package alerts
 import (
 	"strings"
 	"testing"
-	"time"
 )
 
 func TestEmitContextWarning(t *testing.T) {
 	// Clear global tracker first
 	tracker := GetGlobalTracker()
-	tracker.Clear()
+	clearTracker(tracker)
 
 	data := RotationAlertData{
 		AgentID:      "test-agent",
@@ -52,7 +51,7 @@ func TestEmitContextWarning(t *testing.T) {
 
 func TestEmitRotationStarted(t *testing.T) {
 	tracker := GetGlobalTracker()
-	tracker.Clear()
+	clearTracker(tracker)
 
 	data := RotationAlertData{
 		AgentID:      "rotating-agent",
@@ -85,7 +84,7 @@ func TestEmitRotationStarted(t *testing.T) {
 
 func TestEmitRotationComplete(t *testing.T) {
 	tracker := GetGlobalTracker()
-	tracker.Clear()
+	clearTracker(tracker)
 
 	// First emit a context warning and rotation started
 	warningData := RotationAlertData{
@@ -146,7 +145,7 @@ func TestEmitRotationComplete(t *testing.T) {
 	}
 
 	// Check resolved alerts
-	resolved := tracker.GetResolved()
+	resolved := trackerResolved(tracker)
 	if len(resolved) != 2 {
 		t.Errorf("expected 2 resolved alerts, got %d", len(resolved))
 	}
@@ -154,7 +153,7 @@ func TestEmitRotationComplete(t *testing.T) {
 
 func TestEmitRotationFailed(t *testing.T) {
 	tracker := GetGlobalTracker()
-	tracker.Clear()
+	clearTracker(tracker)
 
 	// First emit a rotation started
 	startedData := RotationAlertData{
@@ -201,104 +200,15 @@ func TestEmitRotationFailed(t *testing.T) {
 	}
 
 	// Check resolved alerts
-	resolved := tracker.GetResolved()
+	resolved := trackerResolved(tracker)
 	if len(resolved) != 1 {
 		t.Errorf("expected 1 resolved alert (started), got %d", len(resolved))
 	}
 }
 
-func TestNewRotationEventOutput(t *testing.T) {
-	data := RotationAlertData{
-		AgentID:       "agent-1",
-		OldAgentID:    "old-agent",
-		NewAgentID:    "new-agent",
-		Session:       "test-session",
-		ContextUsage:  88.5,
-		SummaryTokens: 1000,
-		DurationMs:    3500,
-		Error:         "",
-	}
-
-	output := NewRotationEventOutput(data, "completed")
-
-	if output.Type != "context_rotation" {
-		t.Errorf("expected type 'context_rotation', got %s", output.Type)
-	}
-	if output.OldAgent != "old-agent" {
-		t.Errorf("expected OldAgent 'old-agent', got %s", output.OldAgent)
-	}
-	if output.NewAgent != "new-agent" {
-		t.Errorf("expected NewAgent 'new-agent', got %s", output.NewAgent)
-	}
-	if output.UsagePercent != 88.5 {
-		t.Errorf("expected UsagePercent 88.5, got %f", output.UsagePercent)
-	}
-	if output.SummaryTokens != 1000 {
-		t.Errorf("expected SummaryTokens 1000, got %d", output.SummaryTokens)
-	}
-	if output.Status != "completed" {
-		t.Errorf("expected Status 'completed', got %s", output.Status)
-	}
-	if output.DurationMs != 3500 {
-		t.Errorf("expected DurationMs 3500, got %d", output.DurationMs)
-	}
-	if output.SessionName != "test-session" {
-		t.Errorf("expected SessionName 'test-session', got %s", output.SessionName)
-	}
-	if output.GeneratedAt == "" {
-		t.Error("expected GeneratedAt to be set")
-	}
-
-	// Verify GeneratedAt is valid RFC3339
-	_, err := time.Parse(time.RFC3339, output.GeneratedAt)
-	if err != nil {
-		t.Errorf("expected GeneratedAt to be valid RFC3339, got parse error: %v", err)
-	}
-}
-
-func TestNewRotationEventOutputStartedUsesAgentIDFallback(t *testing.T) {
-	data := RotationAlertData{
-		AgentID:      "agent-1",
-		Session:      "test-session",
-		ContextUsage: 88.5,
-	}
-
-	output := NewRotationEventOutput(data, "started")
-
-	if output.OldAgent != "agent-1" {
-		t.Errorf("expected OldAgent fallback 'agent-1', got %s", output.OldAgent)
-	}
-	if output.NewAgent != "" {
-		t.Errorf("expected NewAgent to be empty for started event, got %s", output.NewAgent)
-	}
-}
-
-func TestNewRotationEventOutputWithError(t *testing.T) {
-	data := RotationAlertData{
-		AgentID:      "agent-1",
-		OldAgentID:   "failing-agent",
-		Session:      "test-session",
-		ContextUsage: 95.0,
-		Error:        "failed to connect",
-		DurationMs:   1500,
-	}
-
-	output := NewRotationEventOutput(data, "failed")
-
-	if output.Status != "failed" {
-		t.Errorf("expected Status 'failed', got %s", output.Status)
-	}
-	if output.Error != "failed to connect" {
-		t.Errorf("expected Error 'failed to connect', got %s", output.Error)
-	}
-	if output.NewAgent != "" {
-		t.Errorf("expected NewAgent to be empty on failure, got %s", output.NewAgent)
-	}
-}
-
 func TestEmitRotationFailedUsesOldAgentFallback(t *testing.T) {
 	tracker := GetGlobalTracker()
-	tracker.Clear()
+	clearTracker(tracker)
 
 	EmitRotationStarted(RotationAlertData{
 		AgentID:      "old-agent",
@@ -324,7 +234,7 @@ func TestEmitRotationFailedUsesOldAgentFallback(t *testing.T) {
 		t.Fatalf("expected fallback context agent_id 'old-agent', got %v", active[0].Context["agent_id"])
 	}
 
-	resolved := tracker.GetResolved()
+	resolved := trackerResolved(tracker)
 	if len(resolved) != 1 {
 		t.Fatalf("expected started alert to resolve via fallback agent id, got %d resolved alerts", len(resolved))
 	}
@@ -344,7 +254,7 @@ func TestRotationAlertIDConsistency(t *testing.T) {
 	// Verify that the same alert type/session/agent produces the same ID
 	// This is important for alert resolution to work correctly
 	tracker := GetGlobalTracker()
-	tracker.Clear()
+	clearTracker(tracker)
 
 	data1 := RotationAlertData{
 		AgentID: "agent-x",
@@ -359,7 +269,7 @@ func TestRotationAlertIDConsistency(t *testing.T) {
 	id1 := active1[0].ID
 
 	// Clear and emit again - should get same ID
-	tracker.Clear()
+	clearTracker(tracker)
 	EmitRotationStarted(data1)
 
 	active2 := tracker.GetActive()

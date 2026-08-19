@@ -2,66 +2,11 @@ package tools
 
 import (
 	"context"
-	"encoding/json"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 )
-
-func assertStringEqual(t *testing.T, got, want string) {
-	t.Helper()
-	if strings.Compare(got, want) != 0 {
-		t.Fatalf("got %q, want %q", got, want)
-	}
-}
-
-func TestCASSAdapter_ExtractKeyConcepts(t *testing.T) {
-	t.Parallel()
-
-	a := NewCASSAdapter()
-
-	got := a.extractKeyConcepts("go to fix auth bug")
-	want := []string{"fix", "auth", "bug"}
-
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("extractKeyConcepts() = %#v, want %#v", got, want)
-	}
-}
-
-func TestCASSAdapter_BuildQueries(t *testing.T) {
-	t.Parallel()
-
-	a := NewCASSAdapter()
-
-	assertStringEqual(t, a.buildRelatedSessionQuery(nil, "sess"), "")
-	assertStringEqual(t, a.buildPatternQuery(nil), "")
-
-	concepts := []string{"auth", "bug"}
-
-	assertStringEqual(t, a.buildRelatedSessionQuery(concepts, "sess"), "auth OR bug")
-	assertStringEqual(t, a.buildPatternQuery(concepts), "auth AND bug")
-}
-
-func TestCASSAdapter_EnhanceAndFilterPassthrough(t *testing.T) {
-	t.Parallel()
-
-	a := NewCASSAdapter()
-
-	query := "hello world"
-	assertStringEqual(t, a.enhanceQueryForContext(query), query)
-
-	raw := json.RawMessage(`{"hits":[1]}`)
-	out, err := a.filterAndRankForContext(raw, 10)
-	if err != nil {
-		t.Fatalf("filterAndRankForContext() error: %v", err)
-	}
-	assertStringEqual(t, string(out), string(raw))
-	if !json.Valid(out) {
-		t.Fatalf("filterAndRankForContext() returned invalid JSON: %s", out)
-	}
-}
 
 func TestCASSAdapter_HasCapability(t *testing.T) {
 	t.Parallel()

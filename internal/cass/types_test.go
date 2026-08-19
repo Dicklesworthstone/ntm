@@ -197,19 +197,6 @@ func TestCapabilitiesHasConnector(t *testing.T) {
 	}
 }
 
-func TestCASSErrorError(t *testing.T) {
-	errNoHint := CASSError{Message: "something failed"}
-	if errNoHint.Error() != "something failed" {
-		t.Errorf("Error() = %q, want %q", errNoHint.Error(), "something failed")
-	}
-
-	errWithHint := CASSError{Message: "query failed", Hint: "try a simpler query"}
-	want := "query failed (hint: try a simpler query)"
-	if errWithHint.Error() != want {
-		t.Errorf("Error() = %q, want %q", errWithHint.Error(), want)
-	}
-}
-
 func TestSearchResponseUnmarshal(t *testing.T) {
 	jsonData := `{
 		"query": "authentication error",
@@ -447,21 +434,6 @@ func TestCapabilitiesUnmarshalCurrentLimitsSchema(t *testing.T) {
 		t.Fatalf("limits[max_agg_buckets] = %v, want 10", got)
 	}
 }
-func TestMessageTimestampTime(t *testing.T) {
-	ts := int64(1702200000)
-	tm := time.Unix(ts, 0)
-	msg := Message{Timestamp: &FlexTime{Time: tm}}
-	got := msg.TimestampTime()
-	if !got.Equal(tm) {
-		t.Errorf("TimestampTime() = %v, want %v", got, tm)
-	}
-
-	msgNil := Message{}
-	if !msgNil.TimestampTime().IsZero() {
-		t.Error("TimestampTime() should return zero time for nil")
-	}
-}
-
 func TestTimelineEntryTimestampTime(t *testing.T) {
 	tm := time.Unix(1702200000, 0)
 	entry := TimelineEntry{Timestamp: FlexTime{Time: tm}}

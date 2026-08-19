@@ -2047,7 +2047,7 @@ Examples:
 	cmd.Flags().Var(NewAgentSpecsValue(AgentTypeClaude, &agentSpecs), "cc", "Claude agents (N, N:model, N:model:effort, or N:model@effort)")
 	cmd.Flags().Var(NewAgentSpecsValue(AgentTypeCodex, &agentSpecs), "cod", "Codex agents (N, N:model, N:model:effort, or N:model@effort)")
 	cmd.Flags().Var(NewAgentSpecsValue(AgentTypeGemini, &agentSpecs), "gmi", "Gemini agents (N or N:model, model charset: a-zA-Z0-9._/@:+-)")
-	cmd.Flags().Var(NewAgentSpecsValue(AgentTypeAntigravity, &agentSpecs), "agy", "Antigravity (agy) agents (N; model is pinned to Gemini 3.1 Pro (High))")
+	cmd.Flags().Var(NewAgentSpecsValue(AgentTypeAntigravity, &agentSpecs), "agy", "Antigravity (agy) agents (N; model is pinned to Gemini 3.7 Flash (High))")
 	cmd.Flags().Var(NewAgentSpecsValue(AgentTypeGrok, &agentSpecs), "grok", "Grok Build agents (N, N:model, N:model:effort, or N:model@effort)")
 	cmd.Flags().IntVar(&localCount, "local", 0, "Local agents via Ollama (alias: --ollama)")
 	cmd.Flags().IntVar(&ollamaCount, "ollama", 0, "Alias for --local (explicit Ollama)")
@@ -5837,36 +5837,6 @@ func sendInitPromptToReadyAgentsWith(
 		return receipts, fmt.Errorf("init prompt delivery issues: %s", strings.Join(errs, "; "))
 	}
 	return receipts, nil
-}
-
-func collectReadyAgentPanes(panes []tmux.Pane, capture func(string) (string, error)) ([]tmux.Pane, int) {
-	observedAt := time.Now().UTC()
-	activities := make([]tmux.PaneActivity, 0, len(panes))
-	for _, pane := range panes {
-		activities = append(activities, tmux.PaneActivity{
-			Pane:         pane,
-			LastActivity: observedAt.Add(-time.Minute),
-		})
-	}
-	detector := statuspkg.NewDetector()
-	observer := statuspkg.NewSessionObserverWithDependencies(
-		detector,
-		statuspkg.DefaultSessionObserverConfig(detector.Config()),
-		statuspkg.SessionObserverDependencies{
-			ListPanes: func(context.Context, string) ([]tmux.PaneActivity, error) {
-				return append([]tmux.PaneActivity(nil), activities...), nil
-			},
-			CapturePane: func(_ context.Context, paneID string, _ int) (string, error) {
-				if capture == nil {
-					return "", errors.New("capture function is unavailable")
-				}
-				return capture(paneID)
-			},
-			Now: func() time.Time { return observedAt },
-		},
-	)
-	observation, _ := observer.Observe(context.Background(), "spawn-readiness")
-	return readyAgentPanesFromObservation(observation)
 }
 
 func readyAgentPanesFromObservation(observation statuspkg.SessionObservation) ([]tmux.Pane, int) {

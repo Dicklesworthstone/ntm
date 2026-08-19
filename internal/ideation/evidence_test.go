@@ -165,22 +165,6 @@ func TestEvaluateOverlapAdjacentFollowUpAndNovel(t *testing.T) {
 	}
 }
 
-func TestKnownClosedIdeaWizardFamilies(t *testing.T) {
-	got := KnownClosedIdeaWizardFamilies()
-	for _, want := range []string{"bd-2mb03", "bd-3v1gs", "bd-fxj4f", "bd-8kglp"} {
-		if !containsString(got, want) {
-			t.Fatalf("families=%v, want %s", got, want)
-		}
-		if !IsKnownClosedIdeaWizardFamily(want) {
-			t.Fatalf("IsKnownClosedIdeaWizardFamily(%q)=false, want true", want)
-		}
-	}
-	got[0] = "mutated"
-	if IsKnownClosedIdeaWizardFamily("mutated") {
-		t.Fatalf("KnownClosedIdeaWizardFamilies exposed mutable package state")
-	}
-}
-
 func mustMarshalJSON(t *testing.T, value any) string {
 	t.Helper()
 	data, err := json.Marshal(value)

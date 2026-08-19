@@ -160,11 +160,34 @@ func TestNewAuditExportCmd_Flags(t *testing.T) {
 
 // --- Integration tests that override newAuditSearcherFunc (NOT parallel) ---
 
+// newTestSearcher builds an audit.Searcher rooted at dir. The dedicated
+// NewSearcherWithPath constructor was removed as dead code, so redirect the
+// default constructor's home-derived path ($HOME/.local/share/ntm/audit)
+// at dir via HOME plus a symlink.
+func newTestSearcher(t *testing.T, dir string) *audit.Searcher {
+	t.Helper()
+	home := t.TempDir()
+	parent := filepath.Join(home, ".local", "share", "ntm")
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		t.Fatalf("mkdir audit parent: %v", err)
+	}
+	if err := os.Symlink(dir, filepath.Join(parent, "audit")); err != nil {
+		t.Fatalf("symlink audit dir: %v", err)
+	}
+	t.Setenv("HOME", home)
+	s, err := audit.NewSearcher()
+	if err != nil {
+		t.Fatalf("NewSearcher: %v", err)
+	}
+	return s
+}
+
 func withTestSearcher(t *testing.T, dir string) {
 	t.Helper()
+	searcher := newTestSearcher(t, dir)
 	origFunc := newAuditSearcherFunc
 	newAuditSearcherFunc = func() (*audit.Searcher, error) {
-		return audit.NewSearcherWithPath(dir), nil
+		return searcher, nil
 	}
 	t.Cleanup(func() { newAuditSearcherFunc = origFunc })
 }

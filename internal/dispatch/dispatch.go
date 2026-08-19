@@ -269,10 +269,6 @@ type ProtocolPlanner interface {
 // ProtocolPlannerFunc adapts a function to ProtocolPlanner.
 type ProtocolPlannerFunc func(context.Context, Target, bool) (ProtocolPlan, error)
 
-func (f ProtocolPlannerFunc) PlanDelivery(ctx context.Context, target Target, submit bool) (ProtocolPlan, error) {
-	return f(ctx, target, submit)
-}
-
 // DefaultProtocolPlanner mirrors NTM's established agent and shell protocols.
 type DefaultProtocolPlanner struct{}
 
@@ -457,10 +453,6 @@ type LifecycleHooks struct {
 
 // PacerFunc adapts a function to Pacer.
 type PacerFunc func(context.Context, Pace) error
-
-func (f PacerFunc) Wait(ctx context.Context, pace Pace) error {
-	return f(ctx, pace)
-}
 
 // TimerPacer implements context-aware wall-clock pacing.
 type TimerPacer struct{}

@@ -277,11 +277,6 @@ func (e *Executor) HasHooksForEvent(event CommandEvent) bool {
 	return e.config.HasHooksForEvent(event)
 }
 
-// GetHooksForEvent returns all hooks for a specific event
-func (e *Executor) GetHooksForEvent(event CommandEvent) []CommandHook {
-	return e.config.GetHooksForEvent(event)
-}
-
 // AllErrors returns a combined error from all failed results
 func AllErrors(results []ExecutionResult) error {
 	var errs []string

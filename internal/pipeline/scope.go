@@ -84,14 +84,6 @@ func captureAllVariables(vars map[string]interface{}) map[string]interface{} {
 	return snapshot
 }
 
-func restoreAllVariables(state *ExecutionState, snapshot map[string]interface{}) {
-	if snapshot == nil {
-		state.Variables = nil
-		return
-	}
-	state.Variables = captureAllVariables(snapshot)
-}
-
 // restoreBranchVariables undoes a branch body's variable writes without
 // disturbing writes made concurrently by sibling steps.
 //

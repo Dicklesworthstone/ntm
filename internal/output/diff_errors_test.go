@@ -1,8 +1,6 @@
 package output
 
 import (
-	"bytes"
-	"strings"
 	"testing"
 )
 
@@ -111,105 +109,6 @@ func TestCountLines(t *testing.T) {
 
 // ============ StyledTable tests ============
 
-func TestStyledTable_Basic(t *testing.T) {
-	t.Parallel()
-
-	var buf bytes.Buffer
-	tbl := NewStyledTableWriter(&buf, "Name", "Status", "Count")
-	tbl.AddRow("alice", "active", "5")
-	tbl.AddRow("bob", "idle", "3")
-	tbl.Render()
-
-	output := buf.String()
-	if !strings.Contains(output, "Name") {
-		t.Error("output should contain header 'Name'")
-	}
-	if !strings.Contains(output, "alice") {
-		t.Error("output should contain row data 'alice'")
-	}
-	if !strings.Contains(output, "bob") {
-		t.Error("output should contain row data 'bob'")
-	}
-	if tbl.RowCount() != 2 {
-		t.Errorf("RowCount() = %d, want 2", tbl.RowCount())
-	}
-}
-
-func TestStyledTable_WithFooter(t *testing.T) {
-	t.Parallel()
-
-	var buf bytes.Buffer
-	tbl := NewStyledTableWriter(&buf, "Col1")
-	tbl.AddRow("data")
-	tbl.WithFooter("Total: 1 item")
-	tbl.Render()
-
-	output := buf.String()
-	if !strings.Contains(output, "Total: 1 item") {
-		t.Error("output should contain footer text")
-	}
-}
-
-func TestStyledTable_WithBorder(t *testing.T) {
-	t.Parallel()
-
-	var buf bytes.Buffer
-	tbl := NewStyledTableWriter(&buf, "H1", "H2")
-	tbl.WithBorder(true)
-	if !tbl.ShowBorder {
-		t.Error("ShowBorder should be true after WithBorder(true)")
-	}
-}
-
-func TestStyledTable_EmptyHeaders(t *testing.T) {
-	t.Parallel()
-
-	var buf bytes.Buffer
-	tbl := NewStyledTableWriter(&buf)
-	tbl.Render()
-
-	if buf.Len() != 0 {
-		t.Error("empty headers should produce no output")
-	}
-}
-
-func TestStyledTable_FluentAPI(t *testing.T) {
-	t.Parallel()
-
-	var buf bytes.Buffer
-	tbl := NewStyledTableWriter(&buf, "A")
-
-	// AddRow returns the table for chaining
-	result := tbl.AddRow("1")
-	if result != tbl {
-		t.Error("AddRow should return the table for chaining")
-	}
-
-	result = tbl.WithFooter("footer")
-	if result != tbl {
-		t.Error("WithFooter should return the table for chaining")
-	}
-
-	result = tbl.WithBorder(true)
-	if result != tbl {
-		t.Error("WithBorder should return the table for chaining")
-	}
-}
-
-func TestStyledTable_MissingColumns(t *testing.T) {
-	t.Parallel()
-
-	var buf bytes.Buffer
-	tbl := NewStyledTableWriter(&buf, "A", "B", "C")
-	tbl.AddRow("only-one") // Fewer columns than headers
-	tbl.Render()
-
-	output := buf.String()
-	if !strings.Contains(output, "only-one") {
-		t.Error("should render even with fewer columns")
-	}
-}
-
 // ============ NewErrorWithDetails test ============
 
 func TestNewErrorWithDetails(t *testing.T) {
@@ -225,41 +124,3 @@ func TestNewErrorWithDetails(t *testing.T) {
 }
 
 // ============ Print JSON helpers ============
-
-func TestPrintJSONCompact(t *testing.T) {
-	t.Parallel()
-
-	// PrintJSONCompact writes to stdout; test it doesn't panic
-	// (can't easily capture stdout in a test, but we can verify it doesn't error)
-	err := PrintJSONCompact(map[string]string{"key": "value"})
-	if err != nil {
-		t.Errorf("PrintJSONCompact returned error: %v", err)
-	}
-}
-
-func TestMarshalJSON(t *testing.T) {
-	t.Parallel()
-
-	data := map[string]int{"count": 42}
-
-	// Pretty = false
-	result, err := MarshalJSON(data, false)
-	if err != nil {
-		t.Fatalf("MarshalJSON(compact) error: %v", err)
-	}
-	if !strings.Contains(string(result), "count") {
-		t.Error("compact JSON should contain key")
-	}
-	if strings.Contains(string(result), "\n") {
-		t.Error("compact JSON should not contain newlines")
-	}
-
-	// Pretty = true
-	result, err = MarshalJSON(data, true)
-	if err != nil {
-		t.Fatalf("MarshalJSON(pretty) error: %v", err)
-	}
-	if !strings.Contains(string(result), "\n") {
-		t.Error("pretty JSON should contain newlines")
-	}
-}

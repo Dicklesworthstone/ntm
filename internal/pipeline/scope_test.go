@@ -83,30 +83,6 @@ func TestLoopExecutorAliasScopeRestoresOuterAlias(t *testing.T) {
 	}
 }
 
-func TestBranchVariableSnapshotRestoresMutations(t *testing.T) {
-	state := &ExecutionState{Variables: map[string]interface{}{
-		"global": "before",
-		"keep":   "same",
-	}}
-
-	snapshot := captureAllVariables(state.Variables)
-	state.Variables["global"] = "branch-local"
-	state.Variables["temporary"] = "created in branch"
-	delete(state.Variables, "keep")
-
-	restoreAllVariables(state, snapshot)
-
-	if state.Variables["global"] != "before" {
-		t.Fatalf("global = %v, want before", state.Variables["global"])
-	}
-	if state.Variables["keep"] != "same" {
-		t.Fatalf("keep = %v, want same", state.Variables["keep"])
-	}
-	if _, ok := state.Variables["temporary"]; ok {
-		t.Fatalf("temporary variable leaked after branch restore: %v", state.Variables["temporary"])
-	}
-}
-
 func assertSubstituted(t *testing.T, state *ExecutionState, input, want string) {
 	t.Helper()
 	sub := NewSubstitutor(state, "sess", "wf")

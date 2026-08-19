@@ -494,42 +494,6 @@ func (pm *ProfileMatcher) RecommendAgent(task TaskInfo) (AgentType, ScoreResult)
 	return bestAgent, bestResult
 }
 
-// RecordCompletion updates an agent's performance metrics after task completion.
-func (pm *ProfileMatcher) RecordCompletion(agentType AgentType, success bool, duration time.Duration) {
-	pm.mu.Lock()
-	defer pm.mu.Unlock()
-
-	profile := pm.profiles[agentType]
-	if profile == nil {
-		return
-	}
-
-	profile.Performance.TasksCompleted++
-
-	// Exponential moving average for success rate
-	const alphaSuccess = 0.1
-	if success {
-		profile.Performance.SuccessRate = alphaSuccess + (1-alphaSuccess)*profile.Performance.SuccessRate
-	} else {
-		profile.Performance.SuccessRate = (1 - alphaSuccess) * profile.Performance.SuccessRate
-	}
-
-	// Exponential moving average for completion time
-	// Use alpha=0.2 (20% weight to new sample) to smooth out volatility while staying responsive
-	const alphaDuration = 0.2
-	if profile.Performance.AvgCompletionTime == 0 {
-		profile.Performance.AvgCompletionTime = duration
-	} else {
-		// Calculate using float64 for precision then convert back
-		newVal := float64(duration)
-		oldVal := float64(profile.Performance.AvgCompletionTime)
-		avg := alphaDuration*newVal + (1-alphaDuration)*oldVal
-		profile.Performance.AvgCompletionTime = time.Duration(avg)
-	}
-
-	profile.Performance.LastUpdated = time.Now()
-}
-
 // GetPerformanceStats returns performance statistics for all agents.
 func (pm *ProfileMatcher) GetPerformanceStats() map[AgentType]Performance {
 	pm.mu.RLock()
@@ -575,22 +539,5 @@ func NormalizeAgentType(t string) string {
 		return "user"
 	default:
 		return normalized
-	}
-}
-
-// ParseAgentType converts a string to AgentType.
-func ParseAgentType(s string) AgentType {
-	normalized := NormalizeAgentType(s)
-	switch normalized {
-	case "claude":
-		return AgentTypeClaude
-	case "codex":
-		return AgentTypeCodex
-	case "gemini":
-		return AgentTypeGemini
-	case "antigravity":
-		return AgentTypeAntigravity
-	default:
-		return AgentType(normalized)
 	}
 }

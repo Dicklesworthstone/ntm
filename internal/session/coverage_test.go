@@ -352,39 +352,6 @@ func TestList_SkipsCorruptedFiles(t *testing.T) {
 // ListSessionDirs — uncovered: directory without prompts.json is skipped
 // =============================================================================
 
-func TestListSessionDirs_SkipsDirWithoutPrompts(t *testing.T) {
-	tmpDir := t.TempDir()
-	oldHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", oldHome)
-
-	// Create a session with prompts
-	entry := PromptEntry{
-		Session: "has-prompts",
-		Content: "test",
-		Targets: []string{"1"},
-		Source:  "cli",
-	}
-	if err := SavePrompt(entry); err != nil {
-		t.Fatalf("SavePrompt: %v", err)
-	}
-
-	// Create a session directory without prompts.json
-	sessionsDir := filepath.Join(tmpDir, ".ntm", "sessions")
-	os.MkdirAll(filepath.Join(sessionsDir, "no-prompts"), 0700)
-
-	listed, err := ListSessionDirs()
-	if err != nil {
-		t.Fatalf("ListSessionDirs: %v", err)
-	}
-	if len(listed) != 1 {
-		t.Errorf("len = %d, want 1 (should skip dir without prompts.json)", len(listed))
-	}
-	if len(listed) > 0 && listed[0] != "has-prompts" {
-		t.Errorf("listed[0] = %q, want %q", listed[0], "has-prompts")
-	}
-}
-
 // =============================================================================
 // SessionDir — additional edge cases
 // =============================================================================
@@ -451,27 +418,6 @@ func TestExists_SanitizedName(t *testing.T) {
 // =============================================================================
 // GetLatestPrompts — uncovered: error from LoadPromptHistory
 // =============================================================================
-
-func TestGetLatestPrompts_ErrorFromLoad(t *testing.T) {
-	tmpDir := t.TempDir()
-	oldHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", oldHome)
-
-	sessionName := "corrupt-for-latest"
-
-	// Create corrupt prompts file
-	dir, err := SessionDir(sessionName)
-	if err != nil {
-		t.Fatalf("SessionDir: %v", err)
-	}
-	os.WriteFile(filepath.Join(dir, "prompts.json"), []byte("not json"), 0600)
-
-	_, err = GetLatestPrompts(sessionName, 5)
-	if err == nil {
-		t.Fatal("expected error from GetLatestPrompts with corrupt file, got nil")
-	}
-}
 
 // =============================================================================
 // Save/Load roundtrip — verify all fields persisted
@@ -585,22 +531,6 @@ func TestRedactPromptHistoryForPersistence_NilConfig(t *testing.T) {
 // (hard to trigger without mocking, but we can ensure the Remove error branch
 // is covered by clearing a session that was never saved but whose dir exists)
 // =============================================================================
-
-func TestClearPromptHistory_DirExistsButNoFile(t *testing.T) {
-	tmpDir := t.TempDir()
-	oldHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", oldHome)
-
-	// Create the session dir but don't create prompts.json
-	SessionDir("empty-session")
-
-	// ClearPromptHistory on session with dir but no file should succeed (nil)
-	err := ClearPromptHistory("empty-session")
-	if err != nil {
-		t.Errorf("ClearPromptHistory = %v, want nil", err)
-	}
-}
 
 // =============================================================================
 // PromptEntry JSON round-trip with optional fields

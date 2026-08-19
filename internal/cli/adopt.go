@@ -612,43 +612,6 @@ func adoptFlagList() string {
 	return strings.Join(parts[:len(parts)-1], ", ") + ", or " + parts[len(parts)-1]
 }
 
-// parsePaneList parses a comma-separated list of pane indices
-func parsePaneList(s string) []int {
-	if s == "" {
-		return nil
-	}
-
-	var result []int
-	parts := strings.Split(s, ",")
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		if p == "" {
-			continue
-		}
-
-		// Support ranges like "0-5"
-		if strings.Contains(p, "-") {
-			rangeParts := strings.Split(p, "-")
-			if len(rangeParts) == 2 {
-				start, err1 := strconv.Atoi(strings.TrimSpace(rangeParts[0]))
-				end, err2 := strconv.Atoi(strings.TrimSpace(rangeParts[1]))
-				if err1 == nil && err2 == nil && start <= end {
-					for i := start; i <= end; i++ {
-						result = append(result, i)
-					}
-					continue
-				}
-			}
-		}
-
-		if idx, err := strconv.Atoi(p); err == nil {
-			result = append(result, idx)
-		}
-	}
-
-	return result
-}
-
 // parsePaneSpecs parses a comma-separated pane specification into paneSpecs.
 //
 // Accepted token forms:

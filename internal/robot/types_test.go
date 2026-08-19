@@ -364,80 +364,6 @@ func TestAgentHints(t *testing.T) {
 	}
 }
 
-func TestWithAgentHints(t *testing.T) {
-	// Create a response with agent hints
-	type StatusResponse struct {
-		RobotResponse
-		SessionCount int `json:"session_count"`
-	}
-
-	resp := StatusResponse{
-		RobotResponse: NewRobotResponse(true),
-		SessionCount:  3,
-	}
-
-	hints := &AgentHints{
-		Summary: "3 active sessions",
-		SuggestedActions: []RobotAction{
-			{Action: "monitor", Reason: "all agents working"},
-		},
-	}
-
-	wrapped := AddAgentHints(resp, hints)
-	data, err := json.Marshal(wrapped)
-	if err != nil {
-		t.Fatalf("failed to marshal: %v", err)
-	}
-
-	var parsed map[string]interface{}
-	if err := json.Unmarshal(data, &parsed); err != nil {
-		t.Fatalf("failed to unmarshal: %v", err)
-	}
-
-	// Verify original fields are present
-	if parsed["success"] != true {
-		t.Error("expected success in output")
-	}
-	if parsed["session_count"] != float64(3) {
-		t.Errorf("expected session_count 3, got %v", parsed["session_count"])
-	}
-
-	// Verify _agent_hints is present
-	hintsData, ok := parsed["_agent_hints"]
-	if !ok {
-		t.Fatal("expected _agent_hints in output")
-	}
-
-	hintsMap, ok := hintsData.(map[string]interface{})
-	if !ok {
-		t.Fatal("_agent_hints should be an object")
-	}
-
-	if hintsMap["summary"] != "3 active sessions" {
-		t.Errorf("unexpected summary: %v", hintsMap["summary"])
-	}
-}
-
-func TestWithAgentHintsNil(t *testing.T) {
-	// When hints are nil, should just return the data
-	resp := NewRobotResponse(true)
-	wrapped := AddAgentHints(resp, nil)
-
-	data, err := json.Marshal(wrapped)
-	if err != nil {
-		t.Fatalf("failed to marshal: %v", err)
-	}
-
-	var parsed map[string]interface{}
-	if err := json.Unmarshal(data, &parsed); err != nil {
-		t.Fatalf("failed to unmarshal: %v", err)
-	}
-
-	if _, ok := parsed["_agent_hints"]; ok {
-		t.Error("_agent_hints should not be present when nil")
-	}
-}
-
 func TestErrorCodes(t *testing.T) {
 	// Verify error codes are defined as expected strings
 	codes := []string{
@@ -485,51 +411,6 @@ func TestRobotError(t *testing.T) {
 	if payload.Success || payload.Error != testErr.Error() || payload.ErrorCode != ErrCodeSessionNotFound || payload.Hint != "test hint" {
 		t.Fatalf("RobotError payload = %+v", payload)
 	}
-}
-
-func TestPrintRobotErrorsReturnTypedProcessResults(t *testing.T) {
-	t.Run("error", func(t *testing.T) {
-		stdout, err := captureStdout(t, func() error {
-			return PrintRobotError(errors.New("bad input"), ErrCodeInvalidFlag, "fix the input")
-		})
-		var exitErr *ProcessExitError
-		if !errors.As(err, &exitErr) {
-			t.Fatalf("PrintRobotError error = %T, want *ProcessExitError", err)
-		}
-		if exitErr.ExitCode() != 1 || !exitErr.JSONWritten() {
-			t.Fatalf("PrintRobotError result = exit %d, json_written=%v", exitErr.ExitCode(), exitErr.JSONWritten())
-		}
-		var payload RobotResponse
-		if decodeErr := json.Unmarshal([]byte(stdout), &payload); decodeErr != nil {
-			t.Fatalf("decode error payload: %v\n%s", decodeErr, stdout)
-		}
-		if payload.Success || payload.ErrorCode != ErrCodeInvalidFlag {
-			t.Fatalf("unexpected error payload: %+v", payload)
-		}
-	})
-
-	t.Run("unavailable", func(t *testing.T) {
-		stdout, err := captureStdout(t, func() error {
-			return PrintRobotUnavailable("future", "not ready", "v2", "try later")
-		})
-		var exitErr *ProcessExitError
-		if !errors.As(err, &exitErr) {
-			t.Fatalf("PrintRobotUnavailable error = %T, want *ProcessExitError", err)
-		}
-		if exitErr.ExitCode() != 2 || !exitErr.JSONWritten() {
-			t.Fatalf("PrintRobotUnavailable result = exit %d, json_written=%v", exitErr.ExitCode(), exitErr.JSONWritten())
-		}
-		var payload NotImplementedResponse
-		if decodeErr := json.Unmarshal([]byte(stdout), &payload); decodeErr != nil {
-			t.Fatalf("decode unavailable payload: %v\n%s", decodeErr, stdout)
-		}
-		if payload.Success || payload.ErrorCode != ErrCodeNotImplemented || payload.Feature != "future" {
-			t.Fatalf("unexpected unavailable payload: %+v", payload)
-		}
-		if payload.Meta == nil || payload.Meta.ExitCode != 2 {
-			t.Fatalf("unavailable meta = %+v, want exit_code=2", payload.Meta)
-		}
-	})
 }
 
 func TestNotImplementedResponse(t *testing.T) {
@@ -645,79 +526,6 @@ func TestFormatTimestampPtr(t *testing.T) {
 			t.Errorf("FormatTimestampPtr() = %q, want %q", result, expected)
 		}
 	})
-}
-
-func TestFormatUnixMillis(t *testing.T) {
-	t.Run("zero returns empty", func(t *testing.T) {
-		result := FormatUnixMillis(0)
-		if result != "" {
-			t.Errorf("FormatUnixMillis(0) = %q, want empty string", result)
-		}
-	})
-
-	t.Run("valid milliseconds", func(t *testing.T) {
-		// 2025-12-15T10:30:00Z in milliseconds
-		ms := int64(1765795800000)
-		result := FormatUnixMillis(ms)
-		// Verify it's valid RFC3339
-		_, err := time.Parse(time.RFC3339, result)
-		if err != nil {
-			t.Errorf("Result is not valid RFC3339: %v", err)
-		}
-		// Verify it ends with Z (UTC)
-		if result[len(result)-1] != 'Z' {
-			t.Errorf("Result %q should end with Z", result)
-		}
-	})
-}
-
-func TestFormatUnixSeconds(t *testing.T) {
-	t.Run("zero returns empty", func(t *testing.T) {
-		result := FormatUnixSeconds(0)
-		if result != "" {
-			t.Errorf("FormatUnixSeconds(0) = %q, want empty string", result)
-		}
-	})
-
-	t.Run("valid seconds", func(t *testing.T) {
-		// 2025-12-15T10:30:00Z in seconds
-		sec := int64(1765795800)
-		result := FormatUnixSeconds(sec)
-		// Verify it's valid RFC3339
-		parsed, err := time.Parse(time.RFC3339, result)
-		if err != nil {
-			t.Errorf("Result is not valid RFC3339: %v", err)
-		}
-		// Verify round-trip
-		if parsed.Unix() != sec {
-			t.Errorf("Round-trip failed: got %d, want %d", parsed.Unix(), sec)
-		}
-	})
-}
-
-func TestTimestampConsistency(t *testing.T) {
-	// All timestamp functions should produce consistent RFC3339 format
-	now := time.Now()
-	nowMs := now.UnixMilli()
-	nowSec := now.Unix()
-
-	results := []string{
-		FormatTimestamp(now),
-		FormatUnixMillis(nowMs),
-		FormatUnixSeconds(nowSec),
-	}
-
-	for i, result := range results {
-		// All should be valid RFC3339
-		_, err := time.Parse(time.RFC3339, result)
-		if err != nil {
-			t.Errorf("Result %d is not valid RFC3339: %v", i, err)
-		}
-		// All should end with Z
-		if result[len(result)-1] != 'Z' {
-			t.Errorf("Result %d = %q should end with Z", i, result)
-		}
-	}
 }
 
 func TestTailAgentHints(t *testing.T) {
@@ -1143,45 +951,6 @@ func TestErrorDetailsLastOutputTruncation(t *testing.T) {
 	}
 }
 
-func TestNewStructuredErrorResponse(t *testing.T) {
-	structErr := NewStructuredError(ErrCodeHardKillFailed, "kill -9 had no effect").
-		WithPhase("hard_kill").
-		WithPane(2).
-		WithRecoveryHint("Manual intervention required")
-
-	resp := NewStructuredErrorResponse(structErr)
-
-	// Check base response fields
-	if resp.Success {
-		t.Error("expected success to be false")
-	}
-	if resp.Timestamp == "" {
-		t.Error("expected timestamp to be set")
-	}
-
-	// Check backward compatibility fields
-	if resp.Error != "kill -9 had no effect" {
-		t.Errorf("expected error message 'kill -9 had no effect', got %q", resp.Error)
-	}
-	if resp.ErrorCode != ErrCodeHardKillFailed {
-		t.Errorf("expected error code %q, got %q", ErrCodeHardKillFailed, resp.ErrorCode)
-	}
-	if resp.Hint != "Manual intervention required" {
-		t.Errorf("expected hint 'Manual intervention required', got %q", resp.Hint)
-	}
-
-	// Check structured error is set
-	if resp.StructuredError == nil {
-		t.Fatal("expected structured error to be set")
-	}
-	if resp.StructuredError.Phase != "hard_kill" {
-		t.Errorf("expected phase 'hard_kill', got %q", resp.StructuredError.Phase)
-	}
-	if resp.StructuredError.Pane != 2 {
-		t.Errorf("expected pane 2, got %d", resp.StructuredError.Pane)
-	}
-}
-
 func TestStructuredErrorJSON(t *testing.T) {
 	details := NewErrorDetails().
 		WithChildPID(12345).
@@ -1297,78 +1066,6 @@ func TestRestartErrorCodes(t *testing.T) {
 				break
 			}
 		}
-	}
-}
-
-func TestStructuredErrorTerseKeyMapping(t *testing.T) {
-	// Verify terse key mappings exist for structured error fields
-	expectedMappings := map[string]string{
-		"structured_error": "se",
-		"phase":            "ph",
-		"details":          "d",
-		"recovery_hint":    "rh",
-	}
-
-	for longKey, expectedShort := range expectedMappings {
-		short, ok := TerseKeyFor(longKey)
-		if !ok {
-			t.Errorf("expected terse mapping for %q", longKey)
-			continue
-		}
-		if short != expectedShort {
-			t.Errorf("expected terse key %q for %q, got %q", expectedShort, longKey, short)
-		}
-	}
-
-	// Verify reverse mapping works
-	for longKey, shortKey := range expectedMappings {
-		long, ok := ExpandTerseKey(shortKey)
-		if !ok {
-			t.Errorf("expected reverse mapping for %q", shortKey)
-			continue
-		}
-		if long != longKey {
-			t.Errorf("expected long key %q for %q, got %q", longKey, shortKey, long)
-		}
-	}
-}
-
-func TestRobotResponseWithStructuredError(t *testing.T) {
-	// Test that RobotResponse properly includes structured_error in JSON
-	structErr := NewStructuredError(ErrCodeShellNotReturned, "No shell prompt after exit").
-		WithPhase("post_exit").
-		WithPane(1)
-
-	resp := NewStructuredErrorResponse(structErr)
-
-	data, err := json.Marshal(resp)
-	if err != nil {
-		t.Fatalf("failed to marshal: %v", err)
-	}
-
-	var parsed map[string]interface{}
-	if err := json.Unmarshal(data, &parsed); err != nil {
-		t.Fatalf("failed to unmarshal: %v", err)
-	}
-
-	// Check structured_error is present
-	se, ok := parsed["structured_error"].(map[string]interface{})
-	if !ok {
-		t.Fatal("expected structured_error in JSON output")
-	}
-	if se["code"] != ErrCodeShellNotReturned {
-		t.Errorf("expected code %q, got %v", ErrCodeShellNotReturned, se["code"])
-	}
-	if se["phase"] != "post_exit" {
-		t.Errorf("expected phase 'post_exit', got %v", se["phase"])
-	}
-
-	// Check backward compatibility - simple fields should also be set
-	if parsed["error"] != "No shell prompt after exit" {
-		t.Errorf("expected error message for backward compatibility, got %v", parsed["error"])
-	}
-	if parsed["error_code"] != ErrCodeShellNotReturned {
-		t.Errorf("expected error_code for backward compatibility, got %v", parsed["error_code"])
 	}
 }
 

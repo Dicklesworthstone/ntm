@@ -36,12 +36,6 @@ type ConfirmOptions struct {
 	HideHint bool
 }
 
-// Confirm prompts the user for confirmation with styled output.
-// Returns true if the user confirmed, false otherwise.
-func Confirm(prompt string) bool {
-	return ConfirmWithOptions(prompt, ConfirmOptions{})
-}
-
 // ConfirmWithOptions prompts with custom options.
 func ConfirmWithOptions(prompt string, opts ConfirmOptions) bool {
 	return ConfirmWriter(os.Stdout, os.Stdin, prompt, opts)
@@ -168,31 +162,5 @@ func confirmHuhTheme(opts ConfirmOptions) *huh.Theme {
 		return theme.HuhDestructiveTheme()
 	default:
 		return theme.HuhTheme()
-	}
-}
-
-// ConfirmDestructive is a convenience function for destructive operations.
-// Uses warning styling and defaults to N.
-func ConfirmDestructive(prompt string) bool {
-	return ConfirmWithOptions(prompt, ConfirmOptions{
-		Style:   StyleDestructive,
-		Default: false,
-	})
-}
-
-// MustConfirm prompts for confirmation and calls os.Exit(1) if declined.
-// Use for operations that cannot proceed without confirmation.
-func MustConfirm(prompt string) {
-	if !Confirm(prompt) {
-		fmt.Fprintln(os.Stderr, "Operation cancelled.")
-		os.Exit(1)
-	}
-}
-
-// MustConfirmDestructive prompts with destructive styling and exits if declined.
-func MustConfirmDestructive(prompt string) {
-	if !ConfirmDestructive(prompt) {
-		fmt.Fprintln(os.Stderr, "Operation cancelled.")
-		os.Exit(1)
 	}
 }

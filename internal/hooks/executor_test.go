@@ -131,11 +131,6 @@ func TestExecutorRunHooksForEvent(t *testing.T) {
 			},
 		}
 		exec := NewExecutor(cfg)
-		// GetHooksForEvent filters out disabled hooks
-		hooks := exec.GetHooksForEvent(EventPreSpawn)
-		if len(hooks) != 0 {
-			t.Errorf("disabled hooks should not be returned, got %d", len(hooks))
-		}
 		// Running hooks for event should return nil (no hooks to run)
 		results, err := exec.RunHooksForEvent(context.Background(), EventPreSpawn, ExecutionContext{})
 		if err != nil {
@@ -347,22 +342,6 @@ func TestExecutorHasHooksForEvent(t *testing.T) {
 	}
 	if exec.HasHooksForEvent(EventPostSpawn) {
 		t.Error("should not have hooks for post-spawn")
-	}
-}
-
-func TestExecutorGetHooksForEvent(t *testing.T) {
-	cfg := &CommandHooksConfig{
-		Hooks: []CommandHook{
-			{Event: EventPreSpawn, Command: "echo 1"},
-			{Event: EventPreSpawn, Command: "echo 2"},
-			{Event: EventPostSpawn, Command: "echo 3"},
-		},
-	}
-	exec := NewExecutor(cfg)
-
-	hooks := exec.GetHooksForEvent(EventPreSpawn)
-	if len(hooks) != 2 {
-		t.Errorf("expected 2 pre-spawn hooks, got %d", len(hooks))
 	}
 }
 

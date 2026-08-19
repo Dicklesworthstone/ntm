@@ -82,11 +82,6 @@ func TestBuildEffectivenessReportAbsentHistoryDegrades(t *testing.T) {
 	if !hasNoteCodeIn(report.Notes, "effectiveness_history_absent") {
 		t.Fatalf("notes=%+v, want absent-history note", report.Notes)
 	}
-
-	snapshot := SnapshotWithEffectivenessFeedback(NewIdeaEvidenceSnapshot("/repo"), report, EffectivenessFeedbackOptions{})
-	if !hasDegradedSourceID(snapshot.DegradedSources, EffectivenessSourceID) {
-		t.Fatalf("degraded sources=%+v, want effectiveness unavailable marker", snapshot.DegradedSources)
-	}
 }
 
 func TestBuildEffectivenessReportStableAggregateOrdering(t *testing.T) {
@@ -116,51 +111,19 @@ func TestBuildEffectivenessReportStableAggregateOrdering(t *testing.T) {
 	}
 }
 
-func TestSnapshotWithEffectivenessFeedbackFeedsRanker(t *testing.T) {
-	snapshot := NewIdeaEvidenceSnapshot("/repo")
-	snapshot.RecordSource(CandidateSource{ID: "br", Kind: SourceBR, Available: true, Evidence: []string{"queue evidence"}})
-	snapshot.Candidates = []IdeaCandidate{
-		stableTieCandidate("clean-candidate", "Zulu candidate"),
-		stableTieCandidate("plain-candidate", "Alpha candidate"),
-	}
-
-	before := RankCandidates(snapshot, RankOptions{TopLimit: 2, NextLimit: 0})
-	if !textIs(before.Selected[0].Candidate.ID, "plain-candidate") {
-		t.Fatalf("fixture lost deterministic tie before feedback: %+v", before.Selected)
-	}
-
-	report := BuildEffectivenessReport([]EffectivenessEvent{
-		{Kind: EffectivenessEventCandidateGenerated, CandidateID: "clean-candidate", CandidateFamily: "clean-candidate", SourceID: "br"},
-		{Kind: EffectivenessEventBeadCreated, CandidateID: "clean-candidate", CandidateFamily: "clean-candidate", SourceID: "br", BeadID: "bd-clean"},
-		{Kind: EffectivenessEventBeadClosed, CandidateID: "clean-candidate", CandidateFamily: "clean-candidate", SourceID: "br", BeadID: "bd-clean", DurationHours: 1},
-	}, EffectivenessOptions{})
-	withFeedback := SnapshotWithEffectivenessFeedback(snapshot, report, EffectivenessFeedbackOptions{})
-	after := RankCandidates(withFeedback, RankOptions{TopLimit: 2, NextLimit: 0})
-
-	if !textIs(after.Selected[0].Candidate.ID, "clean-candidate") {
-		t.Fatalf("top after feedback=%s, want clean-candidate; selected=%+v", after.Selected[0].Candidate.ID, after.Selected)
-	}
-	if after.Selected[0].Factors.Usefulness <= before.Selected[1].Factors.Usefulness {
-		t.Fatalf("usefulness did not increase: before clean=%f after=%f", before.Selected[1].Factors.Usefulness, after.Selected[0].Factors.Usefulness)
-	}
-	if !containsString(after.Selected[0].Candidate.SourceIDs, EffectivenessSourceID) {
-		t.Fatalf("source IDs=%v, want effectiveness source", after.Selected[0].Candidate.SourceIDs)
-	}
-}
-
-func hasDegradedSourceID(notes []ValidationNote, sourceID string) bool {
-	for _, note := range notes {
-		if note.SourceID == sourceID {
-			return true
-		}
-	}
-	return false
-}
-
 func effectivenessOutcomeIs(got, want EffectivenessOutcome) bool {
 	return strings.Compare(string(got), string(want)) == 0
 }
 
 func textIs(got, want string) bool {
 	return strings.Compare(got, want) == 0
+}
+
+func hasNoteCodeIn(notes []ValidationNote, code string) bool {
+	for _, n := range notes {
+		if n.Code == code {
+			return true
+		}
+	}
+	return false
 }

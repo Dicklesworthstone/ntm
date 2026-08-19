@@ -7,13 +7,9 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/agent"
 )
 
-// foreachAuthorModelFamily resolves the source model family for
+// foreachAuthorModelFamilyForPanes resolves the source model family for
 // by_model_family_difference routing. Prefer explicit family fields when
 // present, then fall back to author/model aliases.
-func foreachAuthorModelFamily(item interface{}) string {
-	return foreachAuthorModelFamilyForPanes(item, nil)
-}
-
 func foreachAuthorModelFamilyForPanes(item interface{}, panes []paneStrategyPane) string {
 	raw := foreachItemStringNonEmpty(item, "model_family", "family", "type")
 	if raw == "" {

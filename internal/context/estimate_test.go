@@ -1,11 +1,7 @@
 package context
 
 import (
-	"strings"
 	"testing"
-	"time"
-
-	"github.com/Dicklesworthstone/ntm/internal/models"
 )
 
 // TestMultiModelEstimation tests token counting accuracy across different model families.
@@ -84,34 +80,6 @@ func TestModelNormalization(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-// TestTokenCountingAccuracy tests various token counting utilities.
-func TestTokenCountingAccuracy(t *testing.T) {
-	t.Parallel()
-
-	// Test EstimateTokens with known character counts
-	tests := []struct {
-		chars        int
-		expectedLow  int64
-		expectedHigh int64
-	}{
-		{0, 0, 0},
-		{35, 8, 12},           // ~10 tokens at 3.5 chars/token
-		{350, 90, 110},        // ~100 tokens
-		{3500, 950, 1050},     // ~1000 tokens
-		{70000, 19000, 21000}, // ~20000 tokens
-	}
-
-	for _, tt := range tests {
-		tokens := EstimateTokens(tt.chars)
-		if tokens < tt.expectedLow || tokens > tt.expectedHigh {
-			t.Errorf("EstimateTokens(%d) = %d, expected range [%d, %d]",
-				tt.chars, tokens, tt.expectedLow, tt.expectedHigh)
-		}
-		t.Logf("CONTEXT_TEST: TokenCounting | Chars=%d | Tokens=%d | Range=[%d,%d]",
-			tt.chars, tokens, tt.expectedLow, tt.expectedHigh)
 	}
 }
 
@@ -227,64 +195,6 @@ Done.`,
 	}
 }
 
-// TestParseTokenCountFormats tests parsing of various token count formats.
-func TestParseTokenCountFormats(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		input    string
-		expected int64
-		valid    bool
-	}{
-		// Simple numbers
-		{"145000", 145000, true},
-		{"0", 0, true},
-		{"1", 1, true},
-
-		// With commas
-		{"145,000", 145000, true},
-		{"1,000,000", 1000000, true},
-
-		// With K suffix
-		{"145k", 145000, true},
-		{"145K", 145000, true},
-		{"1.5k", 1500, true},
-
-		// With M suffix
-		{"1M", 1000000, true},
-		{"1.5M", 1500000, true},
-		{"1.5m", 1500000, true},
-
-		// Invalid
-		{"invalid", 0, false},
-		{"", 0, false},
-		{"abc123", 0, false},
-
-		// Note: Negative numbers are parsed successfully by strconv.ParseFloat/ParseInt
-		// This documents current behavior - semantically meaningless for token counts
-		{"-1000", -1000, true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.input, func(t *testing.T) {
-			t.Parallel()
-
-			count, ok := ParseTokenCount(tt.input)
-
-			if ok != tt.valid {
-				t.Errorf("ParseTokenCount(%q) ok = %v, want %v", tt.input, ok, tt.valid)
-			}
-
-			if ok && count != tt.expected {
-				t.Errorf("ParseTokenCount(%q) = %d, want %d", tt.input, count, tt.expected)
-			}
-
-			t.Logf("CONTEXT_TEST: ParseTokenCount | Input=%q | Result=%d | Valid=%v",
-				tt.input, count, ok)
-		})
-	}
-}
-
 // TestEstimatorWithSampleData tests estimators with realistic sample data.
 func TestEstimatorWithSampleData(t *testing.T) {
 	t.Parallel()
@@ -332,70 +242,6 @@ func TestEstimatorWithSampleData(t *testing.T) {
 			}
 		})
 	}
-}
-
-// TestEdgeCases tests edge cases in estimation.
-func TestEdgeCases(t *testing.T) {
-	t.Parallel()
-
-	t.Run("empty scrollback", func(t *testing.T) {
-		t.Parallel()
-		estimate := ParseRobotModeContext("")
-		if estimate != nil {
-			t.Error("empty scrollback should return nil estimate")
-		}
-	})
-
-	t.Run("very long scrollback", func(t *testing.T) {
-		t.Parallel()
-		// Create very long content
-		longContent := strings.Repeat("x", 100000)
-		tokens := EstimateTokens(len(longContent))
-		if tokens < 25000 || tokens > 35000 {
-			t.Errorf("EstimateTokens for 100k chars = %d, expected ~28571", tokens)
-		}
-		t.Logf("CONTEXT_TEST: EdgeCase | VeryLongScrollback | Chars=%d | Tokens=%d",
-			len(longContent), tokens)
-	})
-
-	t.Run("unknown model", func(t *testing.T) {
-		t.Parallel()
-		limit := GetContextLimit("totally-unknown-model-xyz")
-		if limit != int64(models.DefaultContextLimit) {
-			t.Errorf("unknown model should return default limit, got %d", limit)
-		}
-	})
-
-	t.Run("fresh agent no data", func(t *testing.T) {
-		t.Parallel()
-		monitor := NewContextMonitor(DefaultMonitorConfig())
-		monitor.RegisterAgent("fresh-agent", "pane-1", "claude-opus-4")
-
-		// Get estimate with no messages recorded
-		estimate := monitor.GetEstimate("fresh-agent")
-		// Should return nil or very low estimate
-		if estimate != nil && estimate.TokensUsed > 1000 {
-			t.Errorf("fresh agent should have low/zero estimate, got %d", estimate.TokensUsed)
-		}
-	})
-
-	t.Run("agent with session duration only", func(t *testing.T) {
-		t.Parallel()
-		monitor := NewContextMonitor(DefaultMonitorConfig())
-		state := monitor.RegisterAgent("duration-agent", "pane-1", "claude-opus-4")
-
-		// Fake session start to 10 minutes ago
-		state.SessionStart = time.Now().Add(-10 * time.Minute)
-		state.MessageCount = 5 // Some messages for activity
-
-		estimate := monitor.GetEstimate("duration-agent")
-		if estimate == nil {
-			t.Log("CONTEXT_TEST: EdgeCase | DurationOnly - no estimate (expected)")
-		} else {
-			t.Logf("CONTEXT_TEST: EdgeCase | DurationOnly | Tokens=%d | Method=%s",
-				estimate.TokensUsed, estimate.Method)
-		}
-	})
 }
 
 // TestCrossModelComparison compares estimation behavior across model types.

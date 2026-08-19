@@ -26,33 +26,6 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
-func TestDecodeBulkAssignTriageValid(t *testing.T) {
-	payload := `{"generated_at":"2026-01-19T23:16:00Z","data_hash":"abc","triage":{"meta":{"version":"1","generated_at":"2026-01-19T23:16:00Z","phase2_ready":true,"issue_count":1,"compute_time_ms":12},"quick_ref":{"open_count":1,"actionable_count":1,"blocked_count":0,"in_progress_count":0,"top_picks":[]},"recommendations":[{"id":"bd-1","title":"Test","type":"task","status":"ready","priority":1,"score":0.5,"action":"do","reasons":[]}],"quick_wins":[],"blockers_to_clear":[]}}`
-
-	triage, err := decodeBulkAssignTriage([]byte(payload))
-	if err != nil {
-		t.Fatalf("decodeBulkAssignTriage failed: %v", err)
-	}
-
-	t.Logf("triage parsed: %+v", triage.Triage.Recommendations)
-	if len(triage.Triage.Recommendations) != 1 {
-		t.Fatalf("expected 1 recommendation, got %d", len(triage.Triage.Recommendations))
-	}
-	if triage.Triage.Recommendations[0].ID != "bd-1" {
-		t.Errorf("expected bead id bd-1, got %q", triage.Triage.Recommendations[0].ID)
-	}
-}
-
-func TestDecodeBulkAssignTriageInvalid(t *testing.T) {
-	_, err := decodeBulkAssignTriage([]byte(`{"triage":`))
-	if err == nil {
-		t.Fatal("expected error for invalid triage JSON")
-	}
-	if !strings.Contains(err.Error(), "unexpected end") {
-		t.Logf("invalid JSON error: %v", err)
-	}
-}
-
 func TestGetBulkAssignRejectsInvalidStrategyBeforeExternalWork(t *testing.T) {
 	output, err := GetBulkAssign(t.Context(), BulkAssignOptions{Session: "proj", FromBV: true, Strategy: "fastest"})
 	if err != nil {
@@ -1046,7 +1019,7 @@ func TestBulkAssignAtomicOrderAndDurableReplay(t *testing.T) {
 			keyCalls++
 			return "bulk-atomic-key", nil
 		},
-		ReservationPort: assignment.ReservationFunc(func(_ context.Context, req assignment.ReservationRequest) (assignment.LeaseReceipt, error) {
+		ReservationPort: testReservationFunc(func(_ context.Context, req assignment.ReservationRequest) (assignment.LeaseReceipt, error) {
 			mu.Lock()
 			defer mu.Unlock()
 			reserveCalls++
@@ -1148,7 +1121,7 @@ func TestRobotAtomicStaleEligibilityRejectsGateBeforeLedgerOrExternalMutation(t 
 			claimCalls++
 			return assignment.ClaimReceipt{}, nil
 		}),
-		assignment.ReservationFunc(func(context.Context, assignment.ReservationRequest) (assignment.LeaseReceipt, error) {
+		testReservationFunc(func(context.Context, assignment.ReservationRequest) (assignment.LeaseReceipt, error) {
 			reservationCalls++
 			return assignment.LeaseReceipt{}, nil
 		}),
@@ -1739,7 +1712,7 @@ func TestBulkAssignClaimConflictNeverReservesOrDispatches(t *testing.T) {
 			return bv.BeadClaimResult{}, bv.ErrBeadAlreadyClaimed
 		},
 		NewIdempotencyKey: func() (string, error) { return "conflict-key", nil },
-		ReservationPort: assignment.ReservationFunc(func(context.Context, assignment.ReservationRequest) (assignment.LeaseReceipt, error) {
+		ReservationPort: testReservationFunc(func(context.Context, assignment.ReservationRequest) (assignment.LeaseReceipt, error) {
 			reserveCalls++
 			return assignment.LeaseReceipt{}, nil
 		}),
@@ -1791,7 +1764,7 @@ func TestBulkAssignDryRunHasNoAtomicOrPacingSideEffects(t *testing.T) {
 			return bv.BeadClaimResult{}, nil
 		},
 		NewIdempotencyKey: func() (string, error) { calls++; return "", nil },
-		ReservationPort: assignment.ReservationFunc(func(context.Context, assignment.ReservationRequest) (assignment.LeaseReceipt, error) {
+		ReservationPort: testReservationFunc(func(context.Context, assignment.ReservationRequest) (assignment.LeaseReceipt, error) {
 			calls++
 			return assignment.LeaseReceipt{}, nil
 		}),
@@ -2164,7 +2137,7 @@ func TestBulkAssignLoadsAuthoritativePolicyBeforeParsingPlanningAndMutation(t *t
 					forbidden("stale Beads claim")
 					return bv.BeadClaimResult{}, nil
 				},
-				ReservationPort: assignment.ReservationFunc(func(context.Context, assignment.ReservationRequest) (assignment.LeaseReceipt, error) {
+				ReservationPort: testReservationFunc(func(context.Context, assignment.ReservationRequest) (assignment.LeaseReceipt, error) {
 					forbidden("Agent Mail reservation")
 					return assignment.LeaseReceipt{}, nil
 				}),
@@ -2239,7 +2212,7 @@ func TestBulkAssignMissingExplicitConfigIsInvalidFlagWithZeroSideEffects(t *test
 			forbidden()
 			return bv.BeadClaimResult{}, nil
 		},
-		ReservationPort: assignment.ReservationFunc(func(context.Context, assignment.ReservationRequest) (assignment.LeaseReceipt, error) {
+		ReservationPort: testReservationFunc(func(context.Context, assignment.ReservationRequest) (assignment.LeaseReceipt, error) {
 			forbidden()
 			return assignment.LeaseReceipt{}, nil
 		}),
@@ -2321,7 +2294,7 @@ func TestBulkAssignActionableVerificationFailureHasZeroMutation(t *testing.T) {
 			forbidden("Beads claim")
 			return bv.BeadClaimResult{}, nil
 		},
-		ReservationPort: assignment.ReservationFunc(func(context.Context, assignment.ReservationRequest) (assignment.LeaseReceipt, error) {
+		ReservationPort: testReservationFunc(func(context.Context, assignment.ReservationRequest) (assignment.LeaseReceipt, error) {
 			forbidden("Agent Mail reservation")
 			return assignment.LeaseReceipt{}, nil
 		}),
@@ -2402,7 +2375,7 @@ func TestBulkAssignTargetProjectCustomGateOverridesCallerCWD(t *testing.T) {
 			mutationCalls++
 			return bv.BeadClaimResult{}, nil
 		},
-		ReservationPort: assignment.ReservationFunc(func(context.Context, assignment.ReservationRequest) (assignment.LeaseReceipt, error) {
+		ReservationPort: testReservationFunc(func(context.Context, assignment.ReservationRequest) (assignment.LeaseReceipt, error) {
 			mutationCalls++
 			return assignment.LeaseReceipt{}, nil
 		}),

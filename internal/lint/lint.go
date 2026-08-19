@@ -101,21 +101,6 @@ func (l *Linter) Lint(prompt string) *Result {
 	return result
 }
 
-// LintWithRedaction performs linting and returns a redacted version of the prompt.
-func (l *Linter) LintWithRedaction(prompt string) (*Result, string) {
-	result := l.Lint(prompt)
-
-	// If redaction is configured and there are secret findings, redact them
-	if l.redactor != nil && len(result.FindingsByID(RuleSecretDetected)) > 0 {
-		cfg := *l.redactor
-		cfg.Mode = redaction.ModeRedact
-		redactResult := redaction.ScanAndRedact(prompt, cfg)
-		return result, redactResult.Output
-	}
-
-	return result, prompt
-}
-
 // checkSecrets uses the redaction engine to detect secrets.
 func (l *Linter) checkSecrets(prompt string, severity Severity) []Finding {
 	// Use warn mode to detect without modifying

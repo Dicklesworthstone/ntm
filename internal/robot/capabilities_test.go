@@ -206,11 +206,6 @@ func TestCapabilitiesAnnotateDeprecatedParametersAndAdvertiseValidFormats(t *tes
 	}
 	seen := make(map[string]string)
 	for _, command := range output.Commands {
-		for _, format := range command.OutputFormats {
-			if !isSupportedSurfaceOutputFormat(format) {
-				t.Fatalf("command %q advertises invalid output format %q", command.Name, format)
-			}
-		}
 		for _, parameter := range command.Parameters {
 			if parameter.Deprecated {
 				seen[parameter.Flag] = parameter.ReplacedBy

@@ -86,19 +86,6 @@ const (
 	ContentProse
 )
 
-// EstimateWithOverhead applies overhead multiplier for hidden context.
-// Overhead includes: system prompts, tool definitions, conversation structure,
-// and other tokens that aren't visible in the raw text.
-//
-// Typical overhead multipliers:
-//   - 1.2: Minimal system prompt, few tools
-//   - 1.5: Standard chat with moderate tool use
-//   - 2.0: Heavy tool use, complex system prompts
-func EstimateWithOverhead(visibleText string, multiplier float64) int {
-	visible := EstimateTokens(visibleText)
-	return int(float64(visible) * multiplier)
-}
-
 // DefaultContextLimit is used when a model isn't recognized.
 // Delegates to the canonical registry in internal/models.
 const DefaultContextLimit = models.DefaultContextLimit
@@ -107,16 +94,6 @@ const DefaultContextLimit = models.DefaultContextLimit
 // Delegates to the canonical registry in internal/models.
 func GetContextLimit(model string) int {
 	return models.GetContextLimit(model)
-}
-
-// UsagePercentage calculates what percentage of context is used.
-// Returns a value between 0.0 and 100.0+ (can exceed 100 if over limit).
-func UsagePercentage(tokenCount int, model string) float64 {
-	limit := GetContextLimit(model)
-	if limit == 0 {
-		return 0
-	}
-	return float64(tokenCount) * 100.0 / float64(limit)
 }
 
 // UsageInfo provides human-readable context usage information

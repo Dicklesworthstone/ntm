@@ -115,29 +115,6 @@ func TierForWidthWithHysteresis(width int, prevTier Tier) Tier {
 	return newTier
 }
 
-// TruncateRunes trims a string to max runes and appends suffix if truncated.
-// It is rune‑aware to avoid splitting emoji or wide glyphs.
-func TruncateRunes(s string, max int, suffix string) string {
-	if max <= 0 {
-		return ""
-	}
-	runes := []rune(s)
-	if len(runes) <= max {
-		return s
-	}
-	if max < len([]rune(suffix)) {
-		return string(runes[:max])
-	}
-	return string(runes[:max-len([]rune(suffix))]) + suffix
-}
-
-// Truncate is a convenience wrapper for TruncateRunes using the standard
-// single-character ellipsis "…" (U+2026). This is the preferred truncation
-// function for visual consistency across the TUI.
-func Truncate(s string, max int) string {
-	return TruncateRunes(s, max, "…")
-}
-
 // TruncateWidth trims a string to fit within maxWidth terminal columns,
 // appending suffix if truncated. Unlike TruncateRunes, this uses lipgloss.Width()
 // to properly account for double-width characters (CJK, emoji) and ANSI codes.
@@ -193,86 +170,6 @@ func truncateToWidth(s string, maxWidth int) string {
 // TruncateWidthDefault is a convenience wrapper for TruncateWidth using "…".
 func TruncateWidthDefault(s string, maxWidth int) string {
 	return TruncateWidth(s, maxWidth, "…")
-}
-
-// TruncateMiddle truncates a string by removing characters from the middle,
-// preserving both the beginning and end.
-func TruncateMiddle(s string, maxWidth int) string {
-	return TruncateMiddleWidth(s, maxWidth, "…")
-}
-
-// TruncateMiddleWidth is like TruncateMiddle but with a custom ellipsis string.
-func TruncateMiddleWidth(s string, maxWidth int, ellipsis string) string {
-	if maxWidth <= 0 {
-		return ""
-	}
-
-	// Fast path: string already fits
-	currentWidth := lipgloss.Width(s)
-	if currentWidth <= maxWidth {
-		return s
-	}
-
-	ellipsisWidth := lipgloss.Width(ellipsis)
-	available := maxWidth - ellipsisWidth
-
-	if available < 2 {
-		return truncateToWidth(s, maxWidth)
-	}
-
-	endChars := (available * 2) / 3
-	startChars := available - endChars
-
-	if startChars < 1 {
-		startChars = 1
-		endChars = available - 1
-	}
-	if endChars < 1 {
-		endChars = 1
-		startChars = available - 1
-	}
-
-	runes := []rune(s)
-
-	// Binary search for start portion
-	low, high := 0, len(runes)
-	bestStart := 0
-	for low <= high {
-		mid := low + (high-low)/2
-		if lipgloss.Width(string(runes[:mid])) <= startChars {
-			bestStart = mid
-			low = mid + 1
-		} else {
-			high = mid - 1
-		}
-	}
-	startRunes := runes[:bestStart]
-
-	// Binary search for end portion
-	low, high = 0, len(runes)
-	bestEnd := len(runes)
-	for low <= high {
-		mid := low + (high-low)/2
-		if lipgloss.Width(string(runes[mid:])) <= endChars {
-			bestEnd = mid
-			high = mid - 1
-		} else {
-			low = mid + 1
-		}
-	}
-
-	var endRunes []rune
-	if bestEnd < len(runes) {
-		endRunes = runes[bestEnd:]
-	}
-
-	result := string(startRunes) + ellipsis + string(endRunes)
-
-	if lipgloss.Width(result) > maxWidth {
-		return truncateToWidth(result, maxWidth)
-	}
-
-	return result
 }
 
 // TruncatePaneTitle truncates a pane title while preserving the differentiating suffix.
@@ -381,25 +278,6 @@ func UltraProportions(total int) (left, center, right int) {
 	left = int(float64(avail) * 0.25)
 	right = int(float64(avail) * 0.25)
 	center = avail - left - right
-	return
-}
-
-// MegaProportions returns widths for 5-panel layout (18/28/20/17/17).
-func MegaProportions(total int) (p1, p2, p3, p4, p5 int) {
-	if total < MegaWideViewThreshold {
-		return 0, total, 0, 0, 0
-	}
-	// Budget 10 cols for borders/padding (2 per panel)
-	avail := total - 10
-	if avail < 10 {
-		return 0, total, 0, 0, 0
-	}
-
-	p1 = int(float64(avail) * 0.18)
-	p2 = int(float64(avail) * 0.28)
-	p3 = int(float64(avail) * 0.20)
-	p4 = int(float64(avail) * 0.17)
-	p5 = avail - p1 - p2 - p3 - p4
 	return
 }
 

@@ -7,20 +7,6 @@ import (
 	"time"
 )
 
-// DefaultPredictorConfig returns the default configuration for ContextPredictor.
-func DefaultPredictorConfig() PredictorConfig {
-	return PredictorConfig{
-		Window:         5 * time.Minute,  // Velocity averaging window
-		PollInterval:   30 * time.Second, // How often to sample
-		MaxSamples:     64,               // Ring buffer size
-		WarnMinutes:    15.0,             // Warn when < 15 min to exhaustion
-		WarnUsage:      0.70,             // Warn when > 70% usage
-		CompactMinutes: 8.0,              // Compact when < 8 min to exhaustion
-		CompactUsage:   0.75,             // Compact when > 75% usage
-		MinSamples:     3,                // Minimum samples for valid prediction
-	}
-}
-
 // PredictorConfig configures the ContextPredictor.
 type PredictorConfig struct {
 	Window         time.Duration // Velocity averaging window
@@ -61,7 +47,24 @@ type ContextPredictor struct {
 	config  PredictorConfig
 }
 
+// DefaultPredictorConfig returns the default configuration for ContextPredictor.
+// Test-only hook: retained because external test packages (tests/e2e) construct
+// predictors directly; production receives predictors via wiring.
+func DefaultPredictorConfig() PredictorConfig {
+	return PredictorConfig{
+		Window:         5 * time.Minute,  // Velocity averaging window
+		PollInterval:   30 * time.Second, // How often to sample
+		MaxSamples:     64,               // Ring buffer size
+		WarnMinutes:    15.0,             // Warn when < 15 min to exhaustion
+		WarnUsage:      0.70,             // Warn when > 70% usage
+		CompactMinutes: 8.0,              // Compact when < 8 min to exhaustion
+		CompactUsage:   0.75,             // Compact when > 75% usage
+		MinSamples:     3,                // Minimum samples for valid prediction
+	}
+}
+
 // NewContextPredictor creates a new predictor with the given configuration.
+// Test-only hook: see DefaultPredictorConfig.
 func NewContextPredictor(cfg PredictorConfig) *ContextPredictor {
 	if cfg.MaxSamples <= 0 {
 		cfg.MaxSamples = 64

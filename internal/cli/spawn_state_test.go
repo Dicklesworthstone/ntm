@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -210,114 +209,6 @@ func TestSpawnStatePendingCount(t *testing.T) {
 	state.MarkSent("pane-3")
 	if state.PendingCount() != 0 {
 		t.Errorf("expected 0 pending, got %d", state.PendingCount())
-	}
-}
-
-func TestSpawnStateSaveAndLoad(t *testing.T) {
-	// Create temp directory
-	tmpDir := t.TempDir()
-
-	// Create and populate spawn state
-	state := NewSpawnState("batch-test", 60, 2)
-	now := time.Now()
-	state.AddPrompt("proj__cc_1", "pane-1", 1, now)
-	state.AddPrompt("proj__cc_2", "pane-2", 2, now.Add(60*time.Second))
-	state.MarkSent("pane-1")
-
-	// Save state
-	if err := state.Save(tmpDir); err != nil {
-		t.Fatalf("failed to save state: %v", err)
-	}
-
-	// Verify file exists
-	path := filepath.Join(tmpDir, ".ntm", "spawn-state.json")
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		t.Fatal("spawn state file not created")
-	}
-
-	// Load state
-	loaded, err := LoadSpawnState(tmpDir)
-	if err != nil {
-		t.Fatalf("failed to load state: %v", err)
-	}
-	if loaded == nil {
-		t.Fatal("loaded state is nil")
-	}
-
-	// Verify loaded state
-	if loaded.BatchID != "batch-test" {
-		t.Errorf("expected BatchID 'batch-test', got %s", loaded.BatchID)
-	}
-	if loaded.StaggerSeconds != 60 {
-		t.Errorf("expected StaggerSeconds 60, got %d", loaded.StaggerSeconds)
-	}
-	if len(loaded.Prompts) != 2 {
-		t.Fatalf("expected 2 prompts, got %d", len(loaded.Prompts))
-	}
-	if !loaded.Prompts[0].Sent {
-		t.Error("expected first prompt to be sent")
-	}
-	if loaded.Prompts[1].Sent {
-		t.Error("expected second prompt to not be sent")
-	}
-}
-
-func TestLoadSpawnStateNotExists(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	state, err := LoadSpawnState(tmpDir)
-	if err != nil {
-		t.Errorf("expected no error for missing file, got %v", err)
-	}
-	if state != nil {
-		t.Error("expected nil state for missing file")
-	}
-}
-
-func TestLoadSpawnState_ExpiresCompletedStateAfterGracePeriod(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	state := NewSpawnState("batch-test", 60, 1)
-	state.MarkComplete()
-	state.CompletedAt = time.Now().Add(-(spawnStateCompletionGracePeriod + time.Second))
-	if err := state.Save(tmpDir); err != nil {
-		t.Fatalf("failed to save expired state: %v", err)
-	}
-
-	loaded, err := LoadSpawnState(tmpDir)
-	if err != nil {
-		t.Fatalf("LoadSpawnState() error = %v", err)
-	}
-	if loaded != nil {
-		t.Fatalf("LoadSpawnState() = %#v, want nil for expired state", loaded)
-	}
-	if SpawnStateExists(tmpDir) {
-		t.Fatal("expected expired spawn state file to be removed")
-	}
-}
-
-func TestClearSpawnState(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	// Create state file
-	state := NewSpawnState("batch-test", 60, 1)
-	if err := state.Save(tmpDir); err != nil {
-		t.Fatalf("failed to save state: %v", err)
-	}
-
-	// Verify file exists
-	if !SpawnStateExists(tmpDir) {
-		t.Fatal("spawn state should exist")
-	}
-
-	// Clear state
-	if err := ClearSpawnState(tmpDir); err != nil {
-		t.Fatalf("failed to clear state: %v", err)
-	}
-
-	// Verify file is gone
-	if SpawnStateExists(tmpDir) {
-		t.Error("spawn state should not exist after clear")
 	}
 }
 

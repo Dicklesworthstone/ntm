@@ -4,7 +4,6 @@ package robot
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -78,20 +77,6 @@ const (
 	ConfidenceNone ConflictConfidence = "none"
 )
 
-// ConfidenceLevel returns the categorical confidence level.
-func (dc *DetectedConflict) ConfidenceLevel() ConflictConfidence {
-	switch {
-	case dc.Confidence >= 0.9:
-		return ConfidenceHigh
-	case dc.Confidence >= 0.7:
-		return ConfidenceMedium
-	case dc.Confidence >= 0.5:
-		return ConfidenceLow
-	default:
-		return ConfidenceNone
-	}
-}
-
 // ActivityWindow represents a time window of agent activity.
 type ActivityWindow struct {
 	PaneID    string    `json:"pane_id"`
@@ -99,16 +84,6 @@ type ActivityWindow struct {
 	Start     time.Time `json:"start"`
 	End       time.Time `json:"end"`
 	HasOutput bool      `json:"has_output"` // Whether output was detected during window
-}
-
-// Overlaps returns true if this window overlaps with another.
-func (aw *ActivityWindow) Overlaps(other *ActivityWindow) bool {
-	return aw.Start.Before(other.End) && other.Start.Before(aw.End)
-}
-
-// Contains returns true if the given time falls within this window.
-func (aw *ActivityWindow) Contains(t time.Time) bool {
-	return !t.Before(aw.Start) && !t.After(aw.End)
 }
 
 // GitFileStatus represents a file's status from git.
@@ -531,28 +506,6 @@ func containsAny(a, b []string) bool {
 	return false
 }
 
-// GetActivityWindows returns all tracked activity windows.
-func (cd *ConflictDetector) GetActivityWindows() map[string][]ActivityWindow {
-	cd.mu.RLock()
-	defer cd.mu.RUnlock()
-
-	// Return a copy
-	result := make(map[string][]ActivityWindow, len(cd.activityWindows))
-	for paneID, windows := range cd.activityWindows {
-		windowsCopy := make([]ActivityWindow, len(windows))
-		copy(windowsCopy, windows)
-		result[paneID] = windowsCopy
-	}
-	return result
-}
-
-// ClearActivityWindows removes all tracked activity windows.
-func (cd *ConflictDetector) ClearActivityWindows() {
-	cd.mu.Lock()
-	defer cd.mu.Unlock()
-	cd.activityWindows = make(map[string][]ActivityWindow)
-}
-
 // ConflictSummary provides a summary of detected conflicts.
 type ConflictSummary struct {
 	TotalConflicts int                `json:"total_conflicts"`
@@ -564,45 +517,10 @@ type ConflictSummary struct {
 	Timestamp      string             `json:"timestamp"`
 }
 
-// SummarizeConflicts generates a summary from a list of conflicts.
-func SummarizeConflicts(conflicts []DetectedConflict) *ConflictSummary {
-	summary := &ConflictSummary{
-		TotalConflicts: len(conflicts),
-		ByReason:       make(map[string]int),
-		Conflicts:      conflicts,
-		Timestamp:      FormatTimestamp(time.Now()),
-	}
-
-	for _, c := range conflicts {
-		switch c.ConfidenceLevel() {
-		case ConfidenceHigh:
-			summary.HighConfidence++
-		case ConfidenceMedium:
-			summary.MedConfidence++
-		case ConfidenceLow:
-			summary.LowConfidence++
-		}
-		summary.ByReason[string(c.Reason)]++
-	}
-
-	return summary
-}
-
 // ConflictDetectionResponse is the robot command response for conflict detection.
 type ConflictDetectionResponse struct {
 	RobotResponse
 	Summary *ConflictSummary `json:"summary,omitempty"`
-}
-
-// NewConflictDetectionResponse creates a new conflict detection response.
-func NewConflictDetectionResponse(conflicts []DetectedConflict) *ConflictDetectionResponse {
-	resp := &ConflictDetectionResponse{
-		RobotResponse: NewRobotResponse(true),
-	}
-	if len(conflicts) > 0 {
-		resp.Summary = SummarizeConflicts(conflicts)
-	}
-	return resp
 }
 
 // ============================================================================
@@ -705,111 +623,6 @@ func ExtractCodeBlocks(content string) []CodeBlock {
 	}
 
 	return blocks
-}
-
-// ExtractJSONOutputs detects JSON objects and arrays in output.
-// Only extracts complete, valid JSON.
-func ExtractJSONOutputs(content string) []JSONOutput {
-	var outputs []JSONOutput
-	lines := strings.Split(content, "\n")
-
-	// Track potential JSON start positions
-	for i, line := range lines {
-		lineNum := i + 1
-		trimmed := strings.TrimSpace(line)
-
-		// Look for lines starting with { or [
-		if len(trimmed) == 0 {
-			continue
-		}
-
-		if trimmed[0] == '{' || trimmed[0] == '[' {
-			// Try to find a complete JSON block starting here
-			jsonStr, endLine := extractCompleteJSON(lines, i)
-			if jsonStr != "" {
-				outputs = append(outputs, JSONOutput{
-					Raw:       jsonStr,
-					IsArray:   trimmed[0] == '[',
-					LineStart: lineNum,
-					LineEnd:   endLine,
-				})
-			}
-		}
-	}
-
-	return outputs
-}
-
-// extractCompleteJSON tries to extract a complete JSON object/array starting at line index.
-// Returns the JSON string and end line number (1-indexed), or empty string if invalid.
-func extractCompleteJSON(lines []string, startIdx int) (string, int) {
-	// Build potential JSON string line by line until we get valid JSON
-	var builder strings.Builder
-	depth := 0
-	inString := false
-	escaped := false
-
-	for i := startIdx; i < len(lines) && i < startIdx+100; i++ { // Limit to 100 lines
-		if builder.Len() > 0 {
-			builder.WriteByte('\n')
-		}
-		builder.WriteString(lines[i])
-
-		// Track bracket depth to know when JSON is complete
-		for _, ch := range lines[i] {
-			if escaped {
-				escaped = false
-				continue
-			}
-			if ch == '\\' && inString {
-				escaped = true
-				continue
-			}
-			if ch == '"' {
-				inString = !inString
-				continue
-			}
-			if inString {
-				continue
-			}
-			switch ch {
-			case '{', '[':
-				depth++
-			case '}', ']':
-				depth--
-			}
-		}
-
-		// If depth returns to 0, we have a complete structure
-		if depth == 0 && builder.Len() > 0 {
-			jsonStr := strings.TrimSpace(builder.String())
-			// Validate it's actually valid JSON
-			if isValidJSON(jsonStr) {
-				return jsonStr, i + 1 // 1-indexed
-			}
-			return "", 0
-		}
-
-		// If depth goes negative, invalid structure
-		if depth < 0 {
-			return "", 0
-		}
-	}
-
-	return "", 0
-}
-
-// isValidJSON checks if a string is valid JSON.
-func isValidJSON(s string) bool {
-	s = strings.TrimSpace(s)
-	if len(s) == 0 {
-		return false
-	}
-	// Quick validation: try to decode
-	var js interface{}
-	decoder := json.NewDecoder(strings.NewReader(s))
-	decoder.UseNumber()
-	return decoder.Decode(&js) == nil
 }
 
 // ExtractFileMentions extracts file path mentions from output with action context.
@@ -1020,190 +833,11 @@ type OutputCaptureConfig struct {
 	MaxRetention       time.Duration // Maximum age of captures to keep
 }
 
-// DefaultOutputCaptureConfig returns default configuration.
-func DefaultOutputCaptureConfig() *OutputCaptureConfig {
-	return &OutputCaptureConfig{
-		MaxCapturesPerPane: 100,
-		MaxRetention:       1 * time.Hour,
-	}
-}
-
 // OutputCapture stores captured outputs in a ring buffer per pane.
 type OutputCapture struct {
 	config   *OutputCaptureConfig
 	captures map[string][]CapturedOutput // paneID -> ring buffer of captures
 	mu       sync.RWMutex
-}
-
-// NewOutputCapture creates a new output capture store.
-func NewOutputCapture(cfg *OutputCaptureConfig) *OutputCapture {
-	if cfg == nil {
-		cfg = DefaultOutputCaptureConfig()
-	}
-	return &OutputCapture{
-		config:   cfg,
-		captures: make(map[string][]CapturedOutput),
-	}
-}
-
-// CaptureAndExtract captures raw output and extracts all structured data.
-func (oc *OutputCapture) CaptureAndExtract(paneID, agentType, rawContent, prompt string) *CapturedOutput {
-	capture := &CapturedOutput{
-		PaneID:    paneID,
-		AgentType: agentType,
-		Timestamp: time.Now(),
-		RawLength: len(rawContent),
-		Prompt:    prompt,
-	}
-
-	// Extract all structures
-	capture.CodeBlocks = ExtractCodeBlocks(rawContent)
-	capture.JSONOutputs = ExtractJSONOutputs(rawContent)
-	capture.FilePaths = ExtractFileMentions(rawContent)
-	capture.Commands = ExtractCommands(rawContent)
-
-	// Store in ring buffer
-	oc.store(paneID, *capture)
-
-	return capture
-}
-
-// store adds a capture to the ring buffer for a pane.
-func (oc *OutputCapture) store(paneID string, capture CapturedOutput) {
-	oc.mu.Lock()
-	defer oc.mu.Unlock()
-
-	// Prune old captures first
-	oc.pruneOldCapturesLocked()
-
-	// Add to ring buffer
-	captures := oc.captures[paneID]
-	captures = append(captures, capture)
-
-	// Enforce max size
-	if len(captures) > oc.config.MaxCapturesPerPane {
-		captures = captures[len(captures)-oc.config.MaxCapturesPerPane:]
-	}
-
-	oc.captures[paneID] = captures
-}
-
-// pruneOldCapturesLocked removes captures older than MaxRetention.
-// Must be called with mu held.
-func (oc *OutputCapture) pruneOldCapturesLocked() {
-	cutoff := time.Now().Add(-oc.config.MaxRetention)
-
-	for paneID, captures := range oc.captures {
-		var kept []CapturedOutput
-		for _, c := range captures {
-			if c.Timestamp.After(cutoff) {
-				kept = append(kept, c)
-			}
-		}
-		if len(kept) > 0 {
-			oc.captures[paneID] = kept
-		} else {
-			delete(oc.captures, paneID)
-		}
-	}
-}
-
-// GetCaptures returns captures for a pane, optionally limited and filtered.
-func (oc *OutputCapture) GetCaptures(paneID string, limit int, since *time.Time) []CapturedOutput {
-	oc.mu.RLock()
-	defer oc.mu.RUnlock()
-
-	captures := oc.captures[paneID]
-	if captures == nil {
-		return nil
-	}
-
-	// Filter by time if requested
-	var filtered []CapturedOutput
-	for _, c := range captures {
-		if since != nil && !c.Timestamp.After(*since) {
-			continue
-		}
-		filtered = append(filtered, c)
-	}
-
-	// Apply limit (from the end - most recent)
-	if limit > 0 && len(filtered) > limit {
-		filtered = filtered[len(filtered)-limit:]
-	}
-
-	return filtered
-}
-
-// GetAllCaptures returns all captures across all panes.
-func (oc *OutputCapture) GetAllCaptures() map[string][]CapturedOutput {
-	oc.mu.RLock()
-	defer oc.mu.RUnlock()
-
-	result := make(map[string][]CapturedOutput, len(oc.captures))
-	for paneID, captures := range oc.captures {
-		capturesCopy := make([]CapturedOutput, len(captures))
-		copy(capturesCopy, captures)
-		result[paneID] = capturesCopy
-	}
-	return result
-}
-
-// GetLatestCapture returns the most recent capture for a pane.
-func (oc *OutputCapture) GetLatestCapture(paneID string) *CapturedOutput {
-	oc.mu.RLock()
-	defer oc.mu.RUnlock()
-
-	captures := oc.captures[paneID]
-	if len(captures) == 0 {
-		return nil
-	}
-
-	latest := captures[len(captures)-1]
-	return &latest
-}
-
-// ClearCaptures removes all captures for a pane.
-func (oc *OutputCapture) ClearCaptures(paneID string) {
-	oc.mu.Lock()
-	defer oc.mu.Unlock()
-	delete(oc.captures, paneID)
-}
-
-// ClearAllCaptures removes all captures.
-func (oc *OutputCapture) ClearAllCaptures() {
-	oc.mu.Lock()
-	defer oc.mu.Unlock()
-	oc.captures = make(map[string][]CapturedOutput)
-}
-
-// Stats returns statistics about the capture store.
-func (oc *OutputCapture) Stats() OutputCaptureStats {
-	oc.mu.RLock()
-	defer oc.mu.RUnlock()
-
-	stats := OutputCaptureStats{
-		PaneCount: len(oc.captures),
-		Timestamp: time.Now(),
-	}
-
-	for paneID, captures := range oc.captures {
-		stats.TotalCaptures += len(captures)
-		if len(captures) > 0 {
-			if stats.OldestCapture.IsZero() || captures[0].Timestamp.Before(stats.OldestCapture) {
-				stats.OldestCapture = captures[0].Timestamp
-			}
-			if stats.NewestCapture.IsZero() || captures[len(captures)-1].Timestamp.After(stats.NewestCapture) {
-				stats.NewestCapture = captures[len(captures)-1].Timestamp
-			}
-		}
-		stats.CaptureCounts = append(stats.CaptureCounts, PaneCaptureCount{
-			PaneID: paneID,
-			Count:  len(captures),
-		})
-	}
-
-	return stats
 }
 
 // OutputCaptureStats provides statistics about the capture store.
@@ -1227,14 +861,6 @@ type OutputCaptureResponse struct {
 	RobotResponse
 	Stats *OutputCaptureStats `json:"stats,omitempty"`
 	Panes []string            `json:"panes,omitempty"`
-}
-
-// NewOutputCaptureResponse creates a response with capture statistics.
-func NewOutputCaptureResponse(stats OutputCaptureStats) *OutputCaptureResponse {
-	return &OutputCaptureResponse{
-		RobotResponse: NewRobotResponse(true),
-		Stats:         &stats,
-	}
 }
 
 // ============================================================================
@@ -1549,58 +1175,6 @@ func NewSessionSummaryResponse(summary *SessionSummary) *SessionSummaryResponse 
 	}
 }
 
-// FormatSessionSummaryText formats the summary as human-readable text.
-func FormatSessionSummaryText(summary *SessionSummary) string {
-	var sb strings.Builder
-
-	sb.WriteString(fmt.Sprintf("Session: %s (last %s)\n\n", summary.Session, formatDuration(summary.TimeRange.Duration)))
-
-	for _, agent := range summary.Agents {
-		// Agent header
-		sb.WriteString(fmt.Sprintf("Agent %s (%s):\n", agent.PaneTitle, agent.AgentType))
-
-		// Metrics line
-		sb.WriteString(fmt.Sprintf("  Active: %s | Output: %d lines\n",
-			formatDuration(agent.ActiveTime), agent.OutputLines))
-
-		// Files
-		if len(agent.FilesModified) > 0 {
-			sb.WriteString(fmt.Sprintf("  Files: %s\n", strings.Join(agent.FilesModified, ", ")))
-		}
-
-		// Key actions
-		if len(agent.KeyActions) > 0 {
-			sb.WriteString("  Key actions:\n")
-			for _, action := range agent.KeyActions {
-				sb.WriteString(fmt.Sprintf("    - %s\n", action))
-			}
-		}
-
-		// Errors
-		if agent.Errors > 0 {
-			sb.WriteString(fmt.Sprintf("  Errors: %d\n", agent.Errors))
-		}
-
-		sb.WriteString("\n")
-	}
-
-	// Summary totals
-	if summary.TotalFiles > 0 {
-		sb.WriteString(fmt.Sprintf("Total: %d files modified, %d output lines\n",
-			summary.TotalFiles, summary.TotalOutput))
-	}
-
-	// Conflicts
-	if len(summary.Conflicts) > 0 {
-		sb.WriteString(fmt.Sprintf("\n⚠ %d potential conflicts:\n", len(summary.Conflicts)))
-		for _, c := range summary.Conflicts {
-			sb.WriteString(fmt.Sprintf("  - %s (agents: %s)\n", c.Path, strings.Join(c.Agents, ", ")))
-		}
-	}
-
-	return sb.String()
-}
-
 // SessionSummaryOptions configures session summary generation.
 type SessionSummaryOptions struct {
 	Session   string
@@ -1624,27 +1198,6 @@ func SummarizeSession(opts SessionSummaryOptions) (*SessionSummary, error) {
 	detector := NewConflictDetector(&ConflictDetectorConfig{RepoPath: opts.RepoPath})
 	generator := NewSessionSummaryGenerator(detector, nil)
 	return generator.GenerateSummary(opts.Session, opts.Since, opts.AgentData), nil
-}
-
-// formatDuration formats a duration in a human-friendly way.
-func formatDuration(d time.Duration) string {
-	if d < time.Minute {
-		return fmt.Sprintf("%ds", int(d.Seconds()))
-	}
-	if d < time.Hour {
-		m := int(d.Minutes())
-		s := int(d.Seconds()) % 60
-		if s > 0 {
-			return fmt.Sprintf("%dm %ds", m, s)
-		}
-		return fmt.Sprintf("%dm", m)
-	}
-	h := int(d.Hours())
-	m := int(d.Minutes()) % 60
-	if m > 0 {
-		return fmt.Sprintf("%dh %dm", h, m)
-	}
-	return fmt.Sprintf("%dh", h)
 }
 
 // SummaryOptions holds options for the --robot-summary flag.

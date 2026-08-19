@@ -167,7 +167,9 @@ spec:
 	}
 
 	t.Logf("[E2E-TEMPLATE] Loading custom user template: %s", templateName)
-	loader := templates.NewSessionTemplateLoaderWithProject(tmpDir)
+	// NewSessionTemplateLoaderWithProject was removed as dead code; the default
+	// loader resolves the same user template dir via XDG_CONFIG_HOME (set above).
+	loader := templates.NewSessionTemplateLoader()
 	tmpl, err := loader.Load(templateName)
 	if err != nil {
 		t.Fatalf("Load(custom-e2e) failed: %v", err)

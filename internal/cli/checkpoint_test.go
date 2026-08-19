@@ -198,7 +198,7 @@ func TestListCheckpointSessions(t *testing.T) {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	storage := checkpoint.NewStorageWithDir(tmpDir)
+	storage := &checkpoint.Storage{BaseDir: tmpDir}
 
 	// Empty directory should return nil
 	sessions, err := listCheckpointSessions(storage)
@@ -247,7 +247,7 @@ func TestListCheckpointSessions(t *testing.T) {
 
 func TestListCheckpointSessions_SkipsSymlinkSessionDir(t *testing.T) {
 	tmpDir := t.TempDir()
-	storage := checkpoint.NewStorageWithDir(tmpDir)
+	storage := &checkpoint.Storage{BaseDir: tmpDir}
 
 	outsideDir := t.TempDir()
 	if err := os.Symlink(outsideDir, filepath.Join(tmpDir, "symlink-session")); err != nil {
@@ -265,7 +265,7 @@ func TestListCheckpointSessions_SkipsSymlinkSessionDir(t *testing.T) {
 
 func TestListCheckpointSessions_IncludesSessionWithOnlyInvalidCheckpoints(t *testing.T) {
 	tmpDir := t.TempDir()
-	storage := checkpoint.NewStorageWithDir(tmpDir)
+	storage := &checkpoint.Storage{BaseDir: tmpDir}
 
 	sessionName := "broken-session"
 	cpDir := filepath.Join(tmpDir, sessionName, "20251210-120000-broken")
@@ -287,7 +287,7 @@ func TestListCheckpointSessions_IncludesSessionWithOnlyInvalidCheckpoints(t *tes
 
 func TestListSessionCheckpoints_JSONMarksInvalidOnlySession(t *testing.T) {
 	tmpDir := t.TempDir()
-	storage := checkpoint.NewStorageWithDir(tmpDir)
+	storage := &checkpoint.Storage{BaseDir: tmpDir}
 
 	sessionName := "broken-session"
 	cpDir := filepath.Join(tmpDir, sessionName, "20251210-120000-broken")
@@ -344,7 +344,7 @@ func TestListSessionCheckpoints_JSONMarksInvalidOnlySession(t *testing.T) {
 
 func TestListSessionCheckpoints_JSONIncludesInvalidIDsAlongsideValidCheckpoints(t *testing.T) {
 	tmpDir := t.TempDir()
-	storage := checkpoint.NewStorageWithDir(tmpDir)
+	storage := &checkpoint.Storage{BaseDir: tmpDir}
 
 	sessionName := "mixed-session"
 	valid := &checkpoint.Checkpoint{
@@ -455,7 +455,7 @@ func TestCheckpointDeleteCmd_DeletesInvalidCheckpointEntry(t *testing.T) {
 
 func TestVerifySingleCheckpoint_JSONReturnsErrorForInvalidCheckpoint(t *testing.T) {
 	tmpDir := t.TempDir()
-	storage := checkpoint.NewStorageWithDir(tmpDir)
+	storage := &checkpoint.Storage{BaseDir: tmpDir}
 
 	sessionName := "verify-invalid-session"
 	checkpointID := "20251210-120000-broken"
@@ -515,7 +515,7 @@ func TestVerifySingleCheckpoint_JSONReturnsErrorForInvalidCheckpoint(t *testing.
 
 func TestVerifyAllCheckpoints_JSONReturnsErrorForInvalidCheckpoint(t *testing.T) {
 	tmpDir := t.TempDir()
-	storage := checkpoint.NewStorageWithDir(tmpDir)
+	storage := &checkpoint.Storage{BaseDir: tmpDir}
 
 	sessionName := "verify-all-invalid-session"
 	valid := &checkpoint.Checkpoint{

@@ -39,8 +39,8 @@ func TestTrendTracker_AddSample(t *testing.T) {
 		ContextRemaining: &ctx,
 	})
 
-	if tracker.GetSampleCount(1) != 1 {
-		t.Errorf("sample count = %d, want 1", tracker.GetSampleCount(1))
+	if _, count := tracker.GetTrend(1); count != 1 {
+		t.Errorf("sample count = %d, want 1", count)
 	}
 }
 
@@ -56,8 +56,8 @@ func TestTrendTracker_MaxSamplesEnforced(t *testing.T) {
 	}
 
 	// Should only keep last 3
-	if tracker.GetSampleCount(1) != 3 {
-		t.Errorf("sample count = %d, want 3", tracker.GetSampleCount(1))
+	if _, count := tracker.GetTrend(1); count != 3 {
+		t.Errorf("sample count = %d, want 3", count)
 	}
 }
 
@@ -147,115 +147,6 @@ func TestTrendTracker_UnknownTrend_OneSample(t *testing.T) {
 	}
 	if count != 1 {
 		t.Errorf("count = %d, want 1", count)
-	}
-}
-
-func TestTrendTracker_ClearPane(t *testing.T) {
-	tracker := NewTrendTracker(10)
-	ctx := 50.0
-	tracker.AddSample(1, TrendSample{
-		Timestamp:        time.Now(),
-		ContextRemaining: &ctx,
-	})
-	tracker.AddSample(2, TrendSample{
-		Timestamp:        time.Now(),
-		ContextRemaining: &ctx,
-	})
-
-	tracker.ClearPane(1)
-
-	if tracker.GetSampleCount(1) != 0 {
-		t.Errorf("pane 1 count = %d, want 0", tracker.GetSampleCount(1))
-	}
-	if tracker.GetSampleCount(2) != 1 {
-		t.Errorf("pane 2 count = %d, want 1", tracker.GetSampleCount(2))
-	}
-}
-
-func TestTrendTracker_ClearAll(t *testing.T) {
-	tracker := NewTrendTracker(10)
-	ctx := 50.0
-	tracker.AddSample(1, TrendSample{Timestamp: time.Now(), ContextRemaining: &ctx})
-	tracker.AddSample(2, TrendSample{Timestamp: time.Now(), ContextRemaining: &ctx})
-	tracker.AddSample(3, TrendSample{Timestamp: time.Now(), ContextRemaining: &ctx})
-
-	tracker.ClearAll()
-
-	for pane := 1; pane <= 3; pane++ {
-		if tracker.GetSampleCount(pane) != 0 {
-			t.Errorf("pane %d count = %d, want 0", pane, tracker.GetSampleCount(pane))
-		}
-	}
-}
-
-func TestTrendTracker_GetLastSample(t *testing.T) {
-	tracker := NewTrendTracker(10)
-	ctx := 50.0
-	tracker.AddSample(1, TrendSample{
-		Timestamp:        time.Now(),
-		ContextRemaining: &ctx,
-	})
-
-	sample, ok := tracker.GetLastSample(1)
-	if !ok {
-		t.Fatal("GetLastSample returned false")
-	}
-	if sample.ContextRemaining == nil || *sample.ContextRemaining != 50.0 {
-		t.Errorf("last sample context = %v, want 50.0", sample.ContextRemaining)
-	}
-}
-
-func TestTrendTracker_GetLastSample_Empty(t *testing.T) {
-	tracker := NewTrendTracker(10)
-
-	_, ok := tracker.GetLastSample(1)
-	if ok {
-		t.Error("GetLastSample should return false for empty pane")
-	}
-}
-
-func TestTrendTracker_GetTrendInfo(t *testing.T) {
-	tracker := NewTrendTracker(10)
-
-	// Add declining samples
-	for i := 5; i >= 1; i-- {
-		ctx := float64(i * 10)
-		tracker.AddSample(1, TrendSample{
-			Timestamp:        time.Now(),
-			ContextRemaining: &ctx,
-		})
-	}
-
-	info := tracker.GetTrendInfo(1)
-	if info.Trend != TrendDeclining {
-		t.Errorf("trend = %s, want %s", info.Trend, TrendDeclining)
-	}
-	if info.SampleCount != 5 {
-		t.Errorf("sample count = %d, want 5", info.SampleCount)
-	}
-	if info.AvgDelta >= 0 {
-		t.Errorf("avg delta = %f, want negative", info.AvgDelta)
-	}
-}
-
-func TestTrendTracker_GetDecliningPanes(t *testing.T) {
-	tracker := NewTrendTracker(10)
-
-	// Pane 1: declining
-	for i := 5; i >= 1; i-- {
-		ctx := float64(i * 10)
-		tracker.AddSample(1, TrendSample{Timestamp: time.Now(), ContextRemaining: &ctx})
-	}
-
-	// Pane 2: stable
-	for i := 0; i < 5; i++ {
-		ctx := float64(50 + (i % 2))
-		tracker.AddSample(2, TrendSample{Timestamp: time.Now(), ContextRemaining: &ctx})
-	}
-
-	declining := tracker.GetDecliningPanes()
-	if len(declining) != 1 || declining[0] != 1 {
-		t.Errorf("declining panes = %v, want [1]", declining)
 	}
 }
 

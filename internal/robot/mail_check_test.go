@@ -243,70 +243,6 @@ func TestMailCheckOutputJSONSerialization(t *testing.T) {
 	}
 }
 
-func TestMailCheckMessageFromInboxAppliesDisclosureControl(t *testing.T) {
-	thread := "bd-j9jo3.3.5"
-	secret := strings.Repeat("s", 20)
-	msg := agentmail.InboxMessage{
-		ID:          7,
-		From:        "BlueLake",
-		Subject:     "Rotate credential",
-		BodyMD:      "Need token=" + secret + " and " + strings.Repeat("harmless coordination detail ", 8),
-		ThreadID:    &thread,
-		Importance:  "urgent",
-		AckRequired: true,
-		CreatedTS:   agentmail.FlexTime{},
-	}
-
-	safe := mailCheckMessageFromInbox(msg, "GreenStone", true)
-
-	if safe.Subject != "Rotate credential" {
-		t.Fatalf("subject = %q, want %q", safe.Subject, "Rotate credential")
-	}
-	if safe.SubjectDisclosure == nil || safe.SubjectDisclosure.DisclosureState != "visible" {
-		t.Fatalf("expected visible subject disclosure, got %+v", safe.SubjectDisclosure)
-	}
-	if !strings.Contains(safe.Preview, "[REDACTED:GENERIC_SECRET:") {
-		t.Fatalf("expected redacted preview, got %q", safe.Preview)
-	}
-	if safe.PreviewDisclosure == nil || safe.PreviewDisclosure.DisclosureState != "redacted" {
-		t.Fatalf("expected redacted preview disclosure, got %+v", safe.PreviewDisclosure)
-	}
-	if safe.Body == nil || !strings.Contains(*safe.Body, "[REDACTED:GENERIC_SECRET:") {
-		t.Fatalf("expected redacted body, got %+v", safe.Body)
-	}
-	if safe.BodyDisclosure == nil || safe.BodyDisclosure.DisclosureState != "redacted" {
-		t.Fatalf("expected redacted body disclosure, got %+v", safe.BodyDisclosure)
-	}
-	if !safe.AckRequired {
-		t.Fatal("AckRequired = false, want true from inbox message")
-	}
-}
-
-func TestMailCheckMessageFromInboxPreviewsLongSafeBody(t *testing.T) {
-	msg := agentmail.InboxMessage{
-		ID:        8,
-		From:      "BlueLake",
-		Subject:   "Coordination",
-		BodyMD:    strings.Repeat("harmless coordination detail ", 8),
-		CreatedTS: agentmail.FlexTime{},
-	}
-
-	safe := mailCheckMessageFromInbox(msg, "GreenStone", true)
-
-	if safe.Body == nil {
-		t.Fatal("expected body output")
-	}
-	if safe.BodyDisclosure == nil || safe.BodyDisclosure.DisclosureState != "preview_only" {
-		t.Fatalf("expected preview_only body disclosure, got %+v", safe.BodyDisclosure)
-	}
-	if *safe.Body != safe.BodyDisclosure.Preview {
-		t.Fatalf("expected preview-only body to match preview, got body=%q preview=%q", *safe.Body, safe.BodyDisclosure.Preview)
-	}
-	if !strings.HasSuffix(*safe.Body, "...") {
-		t.Fatalf("expected preview-only body to truncate long content, got %q", *safe.Body)
-	}
-}
-
 // TestMailCheckOutputValidationError tests error response handling.
 func TestMailCheckOutputValidationError(t *testing.T) {
 	// Test that validation errors return proper error response
@@ -558,56 +494,6 @@ func TestGetMailCheck_UsesFullInboxWindowForCounts(t *testing.T) {
 	}
 }
 
-// TestTruncateStringMail tests the string truncation helper.
-func TestTruncateStringMail(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    string
-		maxLen   int
-		expected string
-	}{
-		{
-			name:     "short string unchanged",
-			input:    "Hello world",
-			maxLen:   20,
-			expected: "Hello world",
-		},
-		{
-			name:     "exact length",
-			input:    "Hello world",
-			maxLen:   11,
-			expected: "Hello world",
-		},
-		{
-			name:     "truncate at word boundary",
-			input:    "Hello wonderful world",
-			maxLen:   15,
-			expected: "Hello wonderful...", // truncates at maxLen, then finds last space if past midpoint
-		},
-		{
-			name:     "truncate long string",
-			input:    "This is a very long message that needs to be truncated for preview purposes",
-			maxLen:   30,
-			expected: "This is a very long message...",
-		},
-		{
-			name:     "trims whitespace",
-			input:    "  Hello world  ",
-			maxLen:   50,
-			expected: "Hello world",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := truncateStringMail(tt.input, tt.maxLen)
-			if result != tt.expected {
-				t.Errorf("got %q, want %q", result, tt.expected)
-			}
-		})
-	}
-}
-
 // TestMailCheckFiltersJSON tests filters serialization.
 func TestMailCheckFiltersJSON(t *testing.T) {
 	thread := "TKT-123"
@@ -664,30 +550,6 @@ func TestMailCheckFiltersOmitUnsetOptionalFields(t *testing.T) {
 		if _, exists := decoded[field]; exists {
 			t.Fatalf("%s should be omitted when unset: %s", field, string(data))
 		}
-	}
-}
-
-func TestMailCheckMessageBodyOmittedWhenBodiesDisabled(t *testing.T) {
-	msg := agentmail.InboxMessage{
-		ID:        9,
-		From:      "BlueLake",
-		Subject:   "Coordination",
-		BodyMD:    "some detailed body",
-		CreatedTS: agentmail.FlexTime{},
-	}
-
-	output := mailCheckMessageFromInbox(msg, "GreenStone", false)
-	data, err := json.Marshal(output)
-	if err != nil {
-		t.Fatalf("failed to marshal message: %v", err)
-	}
-
-	var decoded map[string]any
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		t.Fatalf("failed to unmarshal message: %v", err)
-	}
-	if _, exists := decoded["body"]; exists {
-		t.Fatalf("body should be omitted when includeBodies=false: %s", string(data))
 	}
 }
 

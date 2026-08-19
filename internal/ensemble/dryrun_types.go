@@ -1,9 +1,6 @@
 package ensemble
 
 import (
-	"errors"
-	"fmt"
-	"strings"
 	"time"
 )
 
@@ -80,31 +77,4 @@ type DryRunOptions struct {
 	IncludePreambles bool
 	// PreamblePreviewLength is the max chars to include (0 = full).
 	PreamblePreviewLength int
-}
-
-// Validate returns an error if the dry-run plan has validation errors.
-func (p *DryRunPlan) Validate() error {
-	if p == nil {
-		return errors.New("plan is nil")
-	}
-	if !p.Validation.Valid {
-		return fmt.Errorf("validation failed: %s", strings.Join(p.Validation.Errors, "; "))
-	}
-	return nil
-}
-
-// ModeCount returns the number of modes in the plan.
-func (p *DryRunPlan) ModeCount() int {
-	if p == nil {
-		return 0
-	}
-	return len(p.Modes)
-}
-
-// EstimatedTokens returns the total estimated token usage.
-func (p *DryRunPlan) EstimatedTokens() int {
-	if p == nil {
-		return 0
-	}
-	return p.Budget.EstimatedTotalTokens
 }

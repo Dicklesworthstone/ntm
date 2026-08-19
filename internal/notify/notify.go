@@ -726,39 +726,6 @@ func (n *Notifier) Close() error {
 
 // Helper functions for creating common events
 
-// NewAgentErrorEvent creates an agent error notification event
-func NewAgentErrorEvent(session, pane, agent, message string) Event {
-	return Event{
-		Type:    EventAgentError,
-		Session: session,
-		Pane:    pane,
-		Agent:   agent,
-		Message: message,
-	}
-}
-
-// NewErrorEvent creates a generic error notification event
-func NewErrorEvent(session, pane, agent, message string) Event {
-	return Event{
-		Type:    EventError,
-		Session: session,
-		Pane:    pane,
-		Agent:   agent,
-		Message: message,
-	}
-}
-
-// NewAgentStartedEvent creates an agent started notification event
-func NewAgentStartedEvent(session, pane, agent string) Event {
-	return Event{
-		Type:    EventAgentStarted,
-		Session: session,
-		Pane:    pane,
-		Agent:   agent,
-		Message: fmt.Sprintf("Agent %s started", agent),
-	}
-}
-
 // NewAgentCrashedEvent creates an agent crashed notification event
 func NewAgentCrashedEvent(session, pane, agent string) Event {
 	return Event{
@@ -784,44 +751,6 @@ func NewRateLimitEvent(session, pane, agent string, waitSeconds int) Event {
 	}
 }
 
-// NewBeadAssignedEvent creates a bead assigned notification event
-func NewBeadAssignedEvent(session, pane, agent, beadID, beadTitle string) Event {
-	message := fmt.Sprintf("Bead assigned: %s", beadID)
-	if strings.TrimSpace(beadTitle) != "" {
-		message = fmt.Sprintf("Bead assigned: %s (%s)", beadID, strings.TrimSpace(beadTitle))
-	}
-	return Event{
-		Type:    EventBeadAssigned,
-		Session: session,
-		Pane:    pane,
-		Agent:   agent,
-		Message: message,
-		Details: map[string]string{
-			"bead_id":    beadID,
-			"bead_title": beadTitle,
-		},
-	}
-}
-
-// NewBeadCompletedEvent creates a bead completed notification event
-func NewBeadCompletedEvent(session, pane, agent, beadID, beadTitle string) Event {
-	message := fmt.Sprintf("Bead completed: %s", beadID)
-	if strings.TrimSpace(beadTitle) != "" {
-		message = fmt.Sprintf("Bead completed: %s (%s)", beadID, strings.TrimSpace(beadTitle))
-	}
-	return Event{
-		Type:    EventBeadCompleted,
-		Session: session,
-		Pane:    pane,
-		Agent:   agent,
-		Message: message,
-		Details: map[string]string{
-			"bead_id":    beadID,
-			"bead_title": beadTitle,
-		},
-	}
-}
-
 // NewRotationNeededEvent creates a rotation needed notification event
 func NewRotationNeededEvent(session string, paneIndex int, agent, command string) Event {
 	return Event{
@@ -832,20 +761,6 @@ func NewRotationNeededEvent(session string, paneIndex int, agent, command string
 		Details: map[string]string{
 			"pane_index": fmt.Sprintf("%d", paneIndex),
 			"command":    command,
-		},
-	}
-}
-
-// NewHealthDegradedEvent creates a health degraded notification event
-func NewHealthDegradedEvent(session string, healthy, warning, error int) Event {
-	return Event{
-		Type:    EventHealthDegraded,
-		Session: session,
-		Message: fmt.Sprintf("Session health degraded: %d healthy, %d warning, %d error", healthy, warning, error),
-		Details: map[string]string{
-			"healthy": fmt.Sprintf("%d", healthy),
-			"warning": fmt.Sprintf("%d", warning),
-			"error":   fmt.Sprintf("%d", error),
 		},
 	}
 }

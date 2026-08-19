@@ -108,25 +108,6 @@ type PendingRotationOutput struct {
 	GeneratedAt      string   `json:"generated_at"`
 }
 
-// NewPendingRotationOutput creates a robot mode output for a pending rotation.
-func NewPendingRotationOutput(p *PendingRotation) PendingRotationOutput {
-	remaining := int(time.Until(p.TimeoutAt).Seconds())
-	if remaining < 0 {
-		remaining = 0
-	}
-	return PendingRotationOutput{
-		Type:             "rotation_pending",
-		AgentID:          p.AgentID,
-		SessionName:      p.SessionName,
-		ContextPercent:   p.ContextPercent,
-		AwaitingConfirm:  true,
-		TimeoutSeconds:   remaining,
-		DefaultAction:    string(p.DefaultAction),
-		AvailableActions: []string{"rotate", "compact", "ignore", "postpone"},
-		GeneratedAt:      time.Now().UTC().Format(time.RFC3339),
-	}
-}
-
 // RemainingSeconds returns the seconds remaining before timeout.
 func (p *PendingRotation) RemainingSeconds() int {
 	remaining := int(time.Until(p.TimeoutAt).Seconds())
@@ -313,14 +294,6 @@ func (s *DefaultPaneSpawner) getAgentCommand(agentType string) string {
 	// Fall back to using the agent type name as the command.
 	// This handles unknown/future agent types that match their CLI name.
 	return strings.TrimSpace(agentType)
-}
-
-func (tmuxPaneInputSender) SendKeys(paneID, text string, enter bool) error {
-	return tmux.SendKeys(paneID, text, enter)
-}
-
-func (tmuxPaneInputSender) SendBuffer(paneID, text string, enter bool) error {
-	return tmux.SendBuffer(paneID, text, enter)
 }
 
 func sendCompactionCommandToPane(sender paneInputSender, paneID string, cmd CompactionCommand) error {

@@ -97,45 +97,6 @@ func TestLoadSaveSessionAgent(t *testing.T) {
 		t.Errorf("ProjectKey = %q, want %q", loaded.ProjectKey, saveInfo.ProjectKey)
 	}
 
-	// Delete agent info
-	if err := DeleteSessionAgent(sessionName, saveInfo.ProjectKey); err != nil {
-		t.Fatalf("DeleteSessionAgent failed: %v", err)
-	}
-
-	// Verify it's gone
-	info, err = LoadSessionAgent(sessionName, saveInfo.ProjectKey)
-	if err != nil {
-		t.Fatalf("LoadSessionAgent failed after delete: %v", err)
-	}
-	if info != nil {
-		t.Error("Expected nil info after delete")
-	}
-}
-
-func TestIsNameTakenError(t *testing.T) {
-	tests := []struct {
-		errStr   string
-		expected bool
-	}{
-		{"name already in use", true},
-		{"agent name taken", true},
-		{"agent already registered", true},
-		{"some other error", false},
-		{"", false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.errStr, func(t *testing.T) {
-			var err error
-			if tt.errStr != "" {
-				err = NewAPIError("test", 0, &testError{msg: tt.errStr})
-			}
-			result := IsNameTakenError(err)
-			if result != tt.expected {
-				t.Errorf("IsNameTakenError(%q) = %v, want %v", tt.errStr, result, tt.expected)
-			}
-		})
-	}
 }
 
 // Helper functions for tests
@@ -151,14 +112,6 @@ func containsHelper(s, substr string) bool {
 		}
 	}
 	return false
-}
-
-type testError struct {
-	msg string
-}
-
-func (e *testError) Error() string {
-	return e.msg
 }
 
 // Tests for SessionAgentRegistry
@@ -409,20 +362,6 @@ func TestSessionAgentRegistryPersistence(t *testing.T) {
 	if !ok || name != "GreenCastle" {
 		t.Errorf("agent mapping mismatch: got %q, %v", name, ok)
 	}
-
-	// Test delete
-	if err := DeleteSessionAgentRegistry(sessionName, projectKey); err != nil {
-		t.Fatalf("DeleteSessionAgentRegistry error: %v", err)
-	}
-
-	// Verify deleted
-	deleted, err := LoadSessionAgentRegistry(sessionName, projectKey)
-	if err != nil {
-		t.Fatalf("LoadSessionAgentRegistry after delete error: %v", err)
-	}
-	if deleted != nil {
-		t.Error("expected nil after delete")
-	}
 }
 
 func TestLoadSessionAgentRegistry_ProjectKeyValidation(t *testing.T) {
@@ -634,9 +573,6 @@ func TestSessionAgentStorageRejectsInvalidSessionNames(t *testing.T) {
 	if _, err := LoadSessionAgent("../escape", info.ProjectKey); err == nil {
 		t.Fatal("expected invalid session name error from LoadSessionAgent")
 	}
-	if err := DeleteSessionAgent("../escape", info.ProjectKey); err == nil {
-		t.Fatal("expected invalid session name error from DeleteSessionAgent")
-	}
 }
 
 func TestSessionAgentRegistryRejectsInvalidSessionNames(t *testing.T) {
@@ -648,9 +584,6 @@ func TestSessionAgentRegistryRejectsInvalidSessionNames(t *testing.T) {
 	}
 	if _, err := LoadSessionAgentRegistry("../escape", "/tmp/project"); err == nil {
 		t.Fatal("expected invalid session name error from LoadSessionAgentRegistry")
-	}
-	if err := DeleteSessionAgentRegistry("../escape", "/tmp/project"); err == nil {
-		t.Fatal("expected invalid session name error from DeleteSessionAgentRegistry")
 	}
 }
 

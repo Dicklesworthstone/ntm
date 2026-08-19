@@ -19,13 +19,6 @@ func TestNewReader(t *testing.T) {
 	}
 }
 
-func TestNewReaderWithOptions(t *testing.T) {
-	r := NewReaderWithOptions("/tmp/test", 5*time.Minute, nil)
-	if r.cacheExpiry != 5*time.Minute {
-		t.Errorf("expected cacheExpiry to be 5m, got %v", r.cacheExpiry)
-	}
-}
-
 func setupTestReader(t *testing.T) (*Reader, string) {
 	t.Helper()
 	tmpDir := t.TempDir()

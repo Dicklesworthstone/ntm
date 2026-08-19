@@ -538,14 +538,6 @@ func isInterruptibleAgentPane(pane tmux.Pane) bool {
 	}
 }
 
-func intsToStrings(ints []int) []string {
-	out := make([]string, 0, len(ints))
-	for _, v := range ints {
-		out = append(out, fmt.Sprintf("%d", v))
-	}
-	return out
-}
-
 // shuffledPermutation returns a Fisher-Yates permutation of [0..n) using a deterministic PRNG.
 // If seed is 0, it uses a time-based seed and returns the chosen seed via seedUsed.
 func shuffledPermutation(n int, seed int64) (seedUsed int64, perm []int) {
@@ -3807,38 +3799,6 @@ func newShellDispatchServiceWithGate(
 	})
 }
 
-func distributeDispatchGate(session string) func(context.Context, dispatchsvc.Request, []dispatchsvc.Delivery) error {
-	return func(ctx context.Context, _ dispatchsvc.Request, deliveries []dispatchsvc.Delivery) error {
-		observation, err := observeAssignSession(ctx, session)
-		if err != nil {
-			return fmt.Errorf("observe distribute targets: %w", err)
-		}
-		activePanes, err := loadActiveAssignmentPanes(session)
-		if err != nil {
-			return fmt.Errorf("load distribute assignment occupancy: %w", err)
-		}
-		now := time.Now()
-		for _, delivery := range deliveries {
-			paneID := strings.TrimSpace(delivery.Target.Ref.ID)
-			if paneID == "" {
-				return fmt.Errorf("distribute target %s has no stable pane ID", delivery.Target.Address)
-			}
-			paneObservation, err := currentAssignPaneObservation(observation, paneID, now)
-			if err != nil {
-				return fmt.Errorf("observe distribute target %s (%s): %w", delivery.Target.Address, paneID, err)
-			}
-			if !paneObservation.SafeToDispatch() {
-				return fmt.Errorf("distribute target %s (%s) is not freshly and confidently idle (state: %s)",
-					delivery.Target.Address, paneID, paneObservation.Current.Status.State)
-			}
-			if _, active := activePanes[paneID]; active {
-				return fmt.Errorf("distribute target %s (%s) already has a durable active assignment", delivery.Target.Address, paneID)
-			}
-		}
-		return nil
-	}
-}
-
 func activeShellDispatchRedactionConfig() redaction.Config {
 	if cfg == nil {
 		return redaction.Config{Mode: redaction.ModeOff}
@@ -4301,10 +4261,6 @@ func logDCGBlocked(command, session string, panes []tmux.Pane, blocked *tools.Bl
 	}
 }
 
-func resolveSendSessionForCommand(session string) (string, bool, error) {
-	return resolveSendSessionForCommandContext(context.Background(), session)
-}
-
 func resolveSendSessionForCommandContext(ctx context.Context, session string) (string, bool, error) {
 	if ctx == nil {
 		return "", false, errors.New("send session resolution context is required")
@@ -4721,10 +4677,6 @@ func revalidateDistributeRecommendation(ctx context.Context, projectDir string, 
 		rec.Title = title
 	}
 	return rec, nil
-}
-
-func validateDistributeBeadDetails(rec robot.DistributeRecommendation, details *bv.BeadAssignmentDetails, now time.Time) error {
-	return validateDistributeBeadDetailsWithGate(rec, details, now, bv.IsOperatorGatedLabel)
 }
 
 func validateDistributeBeadDetailsForProject(projectDir string, rec robot.DistributeRecommendation, details *bv.BeadAssignmentDetails, now time.Time) error {

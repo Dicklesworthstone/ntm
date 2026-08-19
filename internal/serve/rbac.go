@@ -3,12 +3,10 @@ package serve
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"strings"
-	"time"
 )
 
 // Role represents a user's access level in the system.
@@ -327,53 +325,6 @@ func (s *Server) RequirePermission(perm Permission) func(http.Handler) http.Hand
 	}
 }
 
-// RequireRole creates a middleware that enforces a minimum role.
-func (s *Server) RequireRole(minRole Role) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			rc := RoleFromContext(r.Context())
-			if rc == nil {
-				reqID := requestIDFromContext(r.Context())
-				log.Printf("RBAC: no role context path=%s request_id=%s", r.URL.Path, reqID)
-				writeErrorResponse(w, http.StatusForbidden, ErrCodeForbidden, "access denied: no role context", nil, reqID)
-				return
-			}
-
-			if roleHierarchy(rc.Role) < roleHierarchy(minRole) {
-				reqID := requestIDFromContext(r.Context())
-				log.Printf("RBAC: insufficient role current=%s required=%s path=%s user=%s request_id=%s",
-					rc.Role, minRole, r.URL.Path, rc.UserID, reqID)
-				writeErrorResponse(w, http.StatusForbidden, ErrCodeForbidden,
-					fmt.Sprintf("access denied: requires role '%s' or higher", minRole), nil, reqID)
-				return
-			}
-
-			next.ServeHTTP(w, r)
-		})
-	}
-}
-
-// CheckPermission is a helper for handlers to check permissions inline.
-// Returns true if permission is granted, false otherwise.
-// When false, it also writes an error response.
-func CheckPermission(w http.ResponseWriter, r *http.Request, perm Permission) bool {
-	rc := RoleFromContext(r.Context())
-	if rc == nil {
-		reqID := requestIDFromContext(r.Context())
-		writeErrorResponse(w, http.StatusForbidden, ErrCodeForbidden, "access denied: no role context", nil, reqID)
-		return false
-	}
-
-	if !rc.Role.HasPermission(perm) {
-		reqID := requestIDFromContext(r.Context())
-		writeErrorResponse(w, http.StatusForbidden, ErrCodeForbidden,
-			fmt.Sprintf("access denied: role '%s' lacks permission '%s'", rc.Role, perm), nil, reqID)
-		return false
-	}
-
-	return true
-}
-
 // ApprovalRequired is returned when an operation requires approval.
 type ApprovalRequired struct {
 	Action      string `json:"action"`
@@ -386,32 +337,6 @@ type ApprovalRequired struct {
 
 // ErrCodeApprovalRequired is the error code for operations requiring approval.
 const ErrCodeApprovalRequired = "APPROVAL_REQUIRED"
-
-// writeApprovalRequired writes a 409 response indicating approval is needed.
-func writeApprovalRequired(w http.ResponseWriter, ar *ApprovalRequired, reqID string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusConflict)
-
-	resp := struct {
-		Success   bool              `json:"success"`
-		Timestamp string            `json:"timestamp"`
-		RequestID string            `json:"request_id,omitempty"`
-		Error     string            `json:"error"`
-		ErrorCode string            `json:"error_code"`
-		Approval  *ApprovalRequired `json:"approval"`
-	}{
-		Success:   false,
-		Timestamp: time.Now().UTC().Format(time.RFC3339),
-		RequestID: reqID,
-		Error:     ar.Message,
-		ErrorCode: ErrCodeApprovalRequired,
-		Approval:  ar,
-	}
-
-	if err := json.NewEncoder(w).Encode(resp); err != nil {
-		log.Printf("failed to encode approval required response: %v", err)
-	}
-}
 
 // RBACConfig holds RBAC configuration options.
 type RBACConfig struct {
@@ -426,14 +351,4 @@ type RBACConfig struct {
 
 	// AllowAnonymous permits requests without authentication (as viewer).
 	AllowAnonymous bool
-}
-
-// DefaultRBACConfig returns sensible RBAC defaults.
-func DefaultRBACConfig() RBACConfig {
-	return RBACConfig{
-		Enabled:        true,
-		DefaultRole:    RoleViewer,
-		RoleClaimKey:   "role",
-		AllowAnonymous: false,
-	}
 }

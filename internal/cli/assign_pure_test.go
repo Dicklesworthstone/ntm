@@ -6,9 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-	"time"
 
-	"github.com/Dicklesworthstone/ntm/internal/assignment"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
 )
 
@@ -86,32 +84,6 @@ func TestGetAgentStyle(t *testing.T) {
 // =============================================================================
 // getPriorityStyle — 0% → 100%
 // =============================================================================
-
-func TestGetPriorityStyle(t *testing.T) {
-
-	th := theme.Current()
-
-	tests := []struct {
-		name     string
-		priority string
-	}{
-		{"P0", "P0"},
-		{"P1", "P1"},
-		{"P2", "P2"},
-		{"P3_default", "P3"},
-		{"empty", ""},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			style := getPriorityStyle(tt.priority, th)
-			rendered := style.Render("test")
-			if rendered == "" {
-				t.Error("expected non-empty styled string")
-			}
-		})
-	}
-}
 
 // =============================================================================
 // makeRetryEnvelope — 0% → 100%
@@ -233,17 +205,6 @@ func TestMakeDirectAssignEnvelope_WithError(t *testing.T) {
 // =============================================================================
 // marshalAssignOutput — 0% → 100%
 // =============================================================================
-
-func TestMarshalAssignOutput_Nil(t *testing.T) {
-
-	data, err := marshalAssignOutput(nil)
-	if err != nil {
-		t.Fatalf("marshalAssignOutput(nil): %v", err)
-	}
-	if len(data) == 0 {
-		t.Error("expected non-empty JSON")
-	}
-}
 
 func TestShouldOfferAssignWatchOverlay(t *testing.T) {
 
@@ -736,43 +697,5 @@ func TestPrepareAndAnnounceAssignWatchOverlay(t *testing.T) {
 				t.Fatalf("prep = %+v, want %+v", prep, wantPrep)
 			}
 		})
-	}
-}
-
-// TestLoadHandledBeadIDs is the Fix-4(b) guard: the recently-completed /
-// active-suppression set used to prevent double-dispatch at the instant a
-// completion fires. Active (assigned/working) beads are always suppressed;
-// terminal (completed/failed) beads are suppressed only within the recent
-// window; long-since-terminal beads are NOT suppressed (a reopened bead flows).
-func TestLoadHandledBeadIDs(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-
-	store := assignment.NewStore("handled-test")
-	now := time.Now()
-
-	recent := now.Add(-5 * time.Second)
-	stale := now.Add(-(handledBeadRecentWindow + time.Minute))
-
-	store.Assignments["bd-active"] = &assignment.Assignment{BeadID: "bd-active", Status: assignment.StatusAssigned, AssignedAt: now}
-	store.Assignments["bd-working"] = &assignment.Assignment{BeadID: "bd-working", Status: assignment.StatusWorking, AssignedAt: now}
-	store.Assignments["bd-recent-done"] = &assignment.Assignment{BeadID: "bd-recent-done", Status: assignment.StatusCompleted, AssignedAt: now, CompletedAt: &recent}
-	store.Assignments["bd-stale-done"] = &assignment.Assignment{BeadID: "bd-stale-done", Status: assignment.StatusCompleted, AssignedAt: now, CompletedAt: &stale}
-	store.Assignments["bd-recent-fail"] = &assignment.Assignment{BeadID: "bd-recent-fail", Status: assignment.StatusFailed, AssignedAt: now, FailedAt: &recent}
-
-	handled := loadHandledBeadIDs(store)
-
-	mustSuppress := []string{"bd-active", "bd-working", "bd-recent-done", "bd-recent-fail"}
-	for _, id := range mustSuppress {
-		if _, ok := handled[id]; !ok {
-			t.Errorf("expected %q to be suppressed (handled)", id)
-		}
-	}
-	if _, ok := handled["bd-stale-done"]; ok {
-		t.Errorf("a long-since-completed bead must NOT be suppressed (it can be re-dispatched if reopened)")
-	}
-
-	// Nil store yields an empty, non-nil set.
-	if got := loadHandledBeadIDs(nil); got == nil || len(got) != 0 {
-		t.Errorf("loadHandledBeadIDs(nil) = %v, want empty non-nil set", got)
 	}
 }

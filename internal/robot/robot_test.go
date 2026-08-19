@@ -26,7 +26,6 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/robot/adapters"
 	"github.com/Dicklesworthstone/ntm/internal/state"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
-	"github.com/Dicklesworthstone/ntm/internal/tracker"
 	"github.com/Dicklesworthstone/ntm/tests/testutil"
 )
 
@@ -447,45 +446,6 @@ func TestSplitLines(t *testing.T) {
 				if got[i] != tc.expected[i] {
 					t.Errorf("splitLines(%q)[%d] = %q, want %q", tc.input, i, got[i], tc.expected[i])
 				}
-			}
-		})
-	}
-}
-
-func TestDetectState(t *testing.T) {
-	// Note: detectState behavior changed during refactoring.
-	// The new implementation delegates to status.DetectIdleFromOutput and status.DetectErrorInOutput.
-	// Key differences:
-	// - Empty output returns "idle" for user panes (empty agentType) or "active" otherwise
-	// - Idle detection requires proper agentType for agent-specific prompts
-	// - The "unknown" state no longer exists - it's now "active" by default
-	// - Pane titles must be in proper format: "{session}__{type}_{index}" for agent type detection
-	tests := []struct {
-		name     string
-		lines    []string
-		title    string
-		expected string
-	}{
-		{"empty", []string{}, "", "idle"},                                              // Empty + user type = idle
-		{"all empty lines", []string{"", "", ""}, "", "idle"},                          // Empty content + user type = idle
-		{"claude idle", []string{"some output", "claude>"}, "myproject__cc_1", "idle"}, // With proper title format
-		{"codex idle", []string{"output", "codex>"}, "myproject__cod_1", "idle"},       // With proper title format
-		{"gemini idle", []string{"Gemini>"}, "myproject__gmi_1", "idle"},               // With proper title format
-		{"bash prompt", []string{"$ "}, "", "idle"},
-		{"zsh prompt", []string{"% "}, "", "idle"},
-		{"python prompt", []string{">>> "}, "", "idle"}, // Python REPL prompt is ready for input
-		{"rate limit error", []string{"Error: rate limit exceeded"}, "", "error"},
-		{"429 error", []string{"HTTP 429 too many requests"}, "", "error"},
-		{"panic error", []string{"panic: runtime error"}, "", "error"},
-		{"fatal error", []string{"fatal: not a git repository"}, "", "error"},
-		{"active with output", []string{"Running tests", "Building package"}, "", "active"},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got := detectState(tc.lines, tc.title)
-			if got != tc.expected {
-				t.Errorf("detectState(%v, %q) = %q, want %q", tc.lines, tc.title, got, tc.expected)
 			}
 		})
 	}
@@ -1150,124 +1110,9 @@ func TestPrintPlan(t *testing.T) {
 	}
 }
 
-func TestPrintStatus(t *testing.T) {
-	skipSlowRobotShortIntegrationTest(t, "PrintStatus probes live runtime state and is too expensive for go test -short")
-
-	output, err := captureStdout(t, PrintStatus)
-	if err != nil {
-		t.Fatalf("PrintStatus failed: %v", err)
-	}
-
-	var result StatusOutput
-	if err := json.Unmarshal([]byte(output), &result); err != nil {
-		t.Fatalf("Failed to parse JSON: %v\nOutput: %s", err, output)
-	}
-
-	// Verify structure
-	if result.GeneratedAt.IsZero() {
-		t.Error("GeneratedAt is zero")
-	}
-
-	if result.SafetyProfile == "" {
-		t.Error("SafetyProfile is empty")
-	} else {
-		valid := map[string]bool{
-			config.SafetyProfileStandard: true,
-			config.SafetyProfileSafe:     true,
-			config.SafetyProfileParanoid: true,
-		}
-		if !valid[result.SafetyProfile] {
-			t.Errorf("SafetyProfile = %q, want one of standard|safe|paranoid", result.SafetyProfile)
-		}
-	}
-	if result.SchemaVersion != statusSchemaVersion {
-		t.Errorf("SchemaVersion = %q, want %q", result.SchemaVersion, statusSchemaVersion)
-	}
-	if result.SchemaID != defaultRobotSchemaID("status") {
-		t.Errorf("SchemaID = %q, want %q", result.SchemaID, defaultRobotSchemaID("status"))
-	}
-
-	// System info should be populated
-	if result.System.GoVersion == "" {
-		t.Error("System.GoVersion is empty")
-	}
-	if result.System.OS == "" {
-		t.Error("System.OS is empty")
-	}
-
-	// Sessions should be an array (empty or not)
-	if result.Sessions == nil {
-		t.Error("Sessions is nil (should be empty array)")
-	}
-}
-
-func TestPrintSessions(t *testing.T) {
-	output, err := captureStdout(t, PrintSessions)
-	if err != nil {
-		t.Fatalf("PrintSessions failed: %v", err)
-	}
-
-	var result []SessionInfo
-	if err := json.Unmarshal([]byte(output), &result); err != nil {
-		t.Fatalf("Failed to parse JSON: %v\nOutput: %s", err, output)
-	}
-
-	// Result should be an array (may be empty if no tmux sessions)
-	// Just verify it's valid JSON array
-	if result == nil {
-		t.Error("Result is nil (should be empty array)")
-	}
-}
-
 // ====================
 // Test with Real Tmux
 // ====================
-
-func TestPrintStatusWithSession(t *testing.T) {
-	skipSlowRobotShortIntegrationTest(t, "PrintStatusWithSession uses real tmux integration and belongs in longer runs")
-	testutil.RequireTmuxThrottled(t)
-
-	// Create a test session
-	sessionName := "ntm_test_status_" + time.Now().Format("150405")
-	if err := tmux.CreateSession(sessionName, ""); err != nil {
-		t.Fatalf("Failed to create test session: %v", err)
-	}
-	defer tmux.KillSession(sessionName)
-
-	output, err := captureStdout(t, PrintStatus)
-	if err != nil {
-		t.Fatalf("PrintStatus failed: %v", err)
-	}
-
-	var result StatusOutput
-	if err := json.Unmarshal([]byte(output), &result); err != nil {
-		t.Fatalf("Failed to parse JSON: %v", err)
-	}
-
-	// Should have at least one session
-	if len(result.Sessions) == 0 {
-		t.Error("Expected at least one session")
-	}
-
-	// Find our test session
-	found := false
-	for _, sess := range result.Sessions {
-		if sess.Name == sessionName {
-			found = true
-			if sess.AgentCount < 0 {
-				t.Error("AgentCount should not be negative")
-			}
-		}
-	}
-	if !found {
-		t.Errorf("Test session %s not found in output", sessionName)
-	}
-
-	// Summary should count sessions
-	if result.Summary.TotalSessions == 0 {
-		t.Error("TotalSessions should be at least 1")
-	}
-}
 
 func TestPrintTailNonexistentSession(t *testing.T) {
 	testutil.RequireTmuxThrottled(t)
@@ -1618,89 +1463,6 @@ func TestPrintTailWithPaneFilter(t *testing.T) {
 // Test PrintSnapshot
 // ====================
 
-func TestPrintSnapshot(t *testing.T) {
-	skipSlowRobotShortIntegrationTest(t, "PrintSnapshot collects live system state and is too slow for go test -short")
-
-	oldFeed := PeekAttentionFeed()
-	feed := NewAttentionFeed(AttentionFeedConfig{
-		JournalSize:       8,
-		RetentionPeriod:   30 * time.Minute,
-		HeartbeatInterval: 0,
-	})
-	SetAttentionFeed(feed)
-	t.Cleanup(func() {
-		feed.Stop()
-		SetAttentionFeed(oldFeed)
-	})
-
-	output, err := captureStdout(t, func() error { return PrintSnapshot(config.Default()) })
-	if err != nil {
-		t.Fatalf("PrintSnapshot failed: %v", err)
-	}
-
-	var result SnapshotOutput
-	if err := json.Unmarshal([]byte(output), &result); err != nil {
-		t.Fatalf("Failed to parse JSON: %v\nOutput: %s", err, output)
-	}
-
-	// Timestamp should be set
-	if result.Timestamp == "" {
-		t.Error("Timestamp is empty")
-	}
-
-	if result.SafetyProfile != config.SafetyProfileStandard {
-		t.Errorf("SafetyProfile = %q, want %q", result.SafetyProfile, config.SafetyProfileStandard)
-	}
-	if result.AttentionContractVersion != AttentionContractVersion {
-		t.Errorf("AttentionContractVersion = %q, want %q", result.AttentionContractVersion, AttentionContractVersion)
-	}
-	if result.LatestCursor != 0 {
-		t.Errorf("LatestCursor = %d, want 0 for empty journal", result.LatestCursor)
-	}
-	// Empty journal has no events to replay
-	if result.ReplayWindow.Supported {
-		t.Error("ReplayWindow.Supported = true, want false for empty journal")
-	}
-	if result.ReplayWindow.Reason != "no events in feed yet" {
-		t.Errorf("ReplayWindow.Reason = %q, want %q", result.ReplayWindow.Reason, "no events in feed yet")
-	}
-	if result.ReplayWindow.EventCount != 0 {
-		t.Errorf("ReplayWindow.EventCount = %d, want 0 for empty journal", result.ReplayWindow.EventCount)
-	}
-	if result.ReplayWindow.OldestCursor != 0 {
-		t.Errorf("ReplayWindow.OldestCursor = %d, want 0 for empty journal", result.ReplayWindow.OldestCursor)
-	}
-	if result.ReplayWindow.LatestCursor != 0 {
-		t.Errorf("ReplayWindow.LatestCursor = %d, want 0 for empty journal", result.ReplayWindow.LatestCursor)
-	}
-	if result.ReplayWindow.RetentionPeriod != (30 * time.Minute).String() {
-		t.Errorf("ReplayWindow.RetentionPeriod = %q, want %q", result.ReplayWindow.RetentionPeriod, (30 * time.Minute).String())
-	}
-	if result.ReplayWindow.ResyncCommand != "ntm --robot-snapshot" {
-		t.Errorf("ReplayWindow.ResyncCommand = %q, want %q", result.ReplayWindow.ResyncCommand, "ntm --robot-snapshot")
-	}
-	t.Logf("empty snapshot cursor handoff oldest=%d latest=%d resync=%q",
-		result.ReplayWindow.OldestCursor,
-		result.ReplayWindow.LatestCursor,
-		result.ReplayWindow.ResyncCommand,
-	)
-
-	// Sessions should be an array
-	if result.Sessions == nil {
-		t.Error("Sessions is nil (should be empty array)")
-	}
-
-	// Alerts should be an array
-	if result.Alerts == nil {
-		t.Error("Alerts is nil (should be empty array)")
-	}
-
-	// Swarm should be omitted when swarm is disabled
-	if result.Swarm != nil {
-		t.Errorf("expected Swarm to be nil when swarm is disabled, got %+v", result.Swarm)
-	}
-}
-
 func TestGetSnapshotIncludesReplayWindowMetadata(t *testing.T) {
 	oldFeed := PeekAttentionFeed()
 	feed := NewAttentionFeed(AttentionFeedConfig{
@@ -1761,174 +1523,6 @@ func TestGetSnapshotIncludesReplayWindowMetadata(t *testing.T) {
 	}
 	if result.ReplayWindow.LatestTimestamp == "" {
 		t.Error("ReplayWindow.LatestTimestamp should be populated")
-	}
-}
-
-func TestRecordStateChangePublishesToAttentionFeed(t *testing.T) {
-	oldFeed := PeekAttentionFeed()
-	feed := NewAttentionFeed(AttentionFeedConfig{
-		JournalSize:       8,
-		RetentionPeriod:   time.Hour,
-		HeartbeatInterval: 0,
-	})
-	SetAttentionFeed(feed)
-	t.Cleanup(func() {
-		feed.Stop()
-		SetAttentionFeed(oldFeed)
-	})
-
-	RecordStateChange(tracker.ChangeAgentState, "myproject", "0.2", map[string]interface{}{
-		"state": "error",
-	})
-
-	events, newest, err := feed.Replay(0, 10)
-	if err != nil {
-		t.Fatalf("Replay failed: %v", err)
-	}
-	if newest != 1 {
-		t.Errorf("newest cursor = %d, want 1", newest)
-	}
-	if len(events) != 1 {
-		t.Fatalf("got %d events, want 1", len(events))
-	}
-	if events[0].Type != EventTypeAgentStateChange {
-		t.Errorf("event.Type = %q, want %q", events[0].Type, EventTypeAgentStateChange)
-	}
-	if events[0].Severity != SeverityError {
-		t.Errorf("event.Severity = %q, want %q", events[0].Severity, SeverityError)
-	}
-}
-
-func TestPrintSnapshotIncludesSwarmWhenActive(t *testing.T) {
-	skipSlowRobotShortIntegrationTest(t, "PrintSnapshotIncludesSwarmWhenActive exercises live tmux and swarm discovery")
-	testutil.RequireTmuxThrottled(t)
-
-	// Set up attention feed for tests - earlier tests may leave globalFeed nil
-	oldFeed := PeekAttentionFeed()
-	feed := NewAttentionFeed(AttentionFeedConfig{
-		JournalSize:       8,
-		RetentionPeriod:   30 * time.Minute,
-		HeartbeatInterval: 0,
-	})
-	SetAttentionFeed(feed)
-	t.Cleanup(func() {
-		feed.Stop()
-		SetAttentionFeed(oldFeed)
-	})
-
-	sessionName := "cc_agents_" + time.Now().Format("150405")
-	if err := tmux.CreateSession(sessionName, ""); err != nil {
-		t.Fatalf("Failed to create test session: %v", err)
-	}
-	defer tmux.KillSession(sessionName)
-
-	panes, err := tmux.GetPanes(sessionName)
-	if err != nil || len(panes) == 0 {
-		t.Fatalf("Failed to get panes: %v", err)
-	}
-
-	// Ensure the pane title matches NTM convention so type detection sees it as an agent.
-	_ = tmux.SetPaneTitle(panes[0].ID, tmux.FormatPaneName(sessionName, "cc", 1, ""))
-
-	cfg := config.Default()
-	cfg.Swarm.Enabled = true
-	// Use a non-existent scan dir so the snapshot plan is still populated but fast.
-	cfg.Swarm.DefaultScanDir = "/does/not/exist"
-
-	output, err := captureStdout(t, func() error { return PrintSnapshot(cfg) })
-	if err != nil {
-		t.Fatalf("PrintSnapshot failed: %v", err)
-	}
-
-	var result SnapshotOutput
-	if err := json.Unmarshal([]byte(output), &result); err != nil {
-		t.Fatalf("Failed to parse JSON: %v", err)
-	}
-
-	if result.Swarm == nil {
-		t.Fatal("expected Swarm to be present when swarm is enabled and swarm sessions exist")
-	}
-	if !result.Swarm.Active {
-		t.Error("expected Swarm.Active to be true")
-	}
-	if result.Swarm.Plan.ScanDir != cfg.Swarm.DefaultScanDir {
-		t.Errorf("expected Swarm.Plan.ScanDir = %q, got %q", cfg.Swarm.DefaultScanDir, result.Swarm.Plan.ScanDir)
-	}
-	if result.Swarm.Sessions == nil {
-		t.Error("expected Swarm.Sessions to be a JSON array")
-	}
-	if result.Swarm.RecentEvents == nil {
-		t.Error("expected Swarm.RecentEvents to be a JSON array")
-	}
-
-	found := false
-	for _, sess := range result.Swarm.Sessions {
-		if sess.Name == sessionName {
-			found = true
-			if sess.AgentType != "cc" {
-				t.Errorf("expected swarm session agent_type cc, got %q", sess.AgentType)
-			}
-			if sess.PaneCount < 1 {
-				t.Errorf("expected swarm session pane_count >= 1, got %d", sess.PaneCount)
-			}
-		}
-	}
-	if !found {
-		t.Fatalf("expected swarm session %q to appear in snapshot", sessionName)
-	}
-}
-
-func TestPrintSnapshotWithSession(t *testing.T) {
-	skipSlowRobotShortIntegrationTest(t, "PrintSnapshotWithSession uses real tmux integration and belongs in longer runs")
-	testutil.RequireTmuxThrottled(t)
-
-	// Set up attention feed for tests - earlier tests may leave globalFeed nil
-	oldFeed := PeekAttentionFeed()
-	feed := NewAttentionFeed(AttentionFeedConfig{
-		JournalSize:       8,
-		RetentionPeriod:   30 * time.Minute,
-		HeartbeatInterval: 0,
-	})
-	SetAttentionFeed(feed)
-	t.Cleanup(func() {
-		feed.Stop()
-		SetAttentionFeed(oldFeed)
-	})
-
-	sessionName := "ntm_test_snapshot_" + time.Now().Format("150405")
-	if err := tmux.CreateSession(sessionName, ""); err != nil {
-		t.Fatalf("Failed to create test session: %v", err)
-	}
-	defer tmux.KillSession(sessionName)
-
-	output, err := captureStdout(t, func() error { return PrintSnapshot(config.Default()) })
-	if err != nil {
-		t.Fatalf("PrintSnapshot failed: %v", err)
-	}
-
-	var result SnapshotOutput
-	if err := json.Unmarshal([]byte(output), &result); err != nil {
-		t.Fatalf("Failed to parse JSON: %v", err)
-	}
-
-	// Should have at least one session
-	if len(result.Sessions) == 0 {
-		t.Error("Expected at least one session")
-	}
-
-	// Find our session
-	found := false
-	for _, sess := range result.Sessions {
-		if sess.Name == sessionName {
-			found = true
-			// Should have agents
-			if len(sess.Agents) == 0 {
-				t.Error("Expected at least one agent/pane")
-			}
-		}
-	}
-	if !found {
-		t.Errorf("Test session %s not found", sessionName)
 	}
 }
 
@@ -2455,18 +2049,6 @@ func TestSendOptionsDelay(t *testing.T) {
 // ====================
 // Test edge cases
 // ====================
-
-func TestDetectStateEdgeCases(t *testing.T) {
-	// Test with lines that have trailing whitespace
-	lines := []string{"  ", "   claude>   "}
-	state := detectState(lines, "")
-	// The implementation looks for HasSuffix after TrimSpace, so this should match
-	// Actually let me check the real implementation behavior
-	if state != "idle" && state != "active" {
-		// Either is acceptable depending on implementation
-		t.Logf("State with whitespace: %s", state)
-	}
-}
 
 func TestPrintSendEmptySession(t *testing.T) {
 	output, err := captureStdout(t, func() error {
@@ -3074,8 +2656,8 @@ func TestGetStatusWithOptionsRespectsDisabledAlertsConfig(t *testing.T) {
 	})
 
 	tracker := alerts.GetGlobalTracker()
-	tracker.Clear()
-	t.Cleanup(tracker.Clear)
+	clearAlertTracker(tracker)
+	t.Cleanup(func() { clearAlertTracker(tracker) })
 	t.Cleanup(func() {
 		alerts.SetGlobalTrackerConfig(alerts.DefaultConfig())
 	})
@@ -3116,8 +2698,8 @@ func TestGetStatusWithOptionsRespectsDisabledAlertsConfig(t *testing.T) {
 
 func TestGetDashboardRespectsDisabledAlertsConfig(t *testing.T) {
 	tracker := alerts.GetGlobalTracker()
-	tracker.Clear()
-	t.Cleanup(tracker.Clear)
+	clearAlertTracker(tracker)
+	t.Cleanup(func() { clearAlertTracker(tracker) })
 	t.Cleanup(func() {
 		alerts.SetGlobalTrackerConfig(alerts.DefaultConfig())
 	})
@@ -3221,8 +2803,8 @@ func TestDashboardAgentTypeSkipsUserPane(t *testing.T) {
 
 func TestGetAlertsDetailedRespectsDisabledAlertsConfig(t *testing.T) {
 	tracker := alerts.GetGlobalTracker()
-	tracker.Clear()
-	t.Cleanup(tracker.Clear)
+	clearAlertTracker(tracker)
+	t.Cleanup(func() { clearAlertTracker(tracker) })
 	t.Cleanup(func() {
 		alerts.SetGlobalTrackerConfig(alerts.DefaultConfig())
 	})
@@ -4073,141 +3655,6 @@ func TestTerseStateStringNoSession(t *testing.T) {
 	}
 }
 
-func TestParseTerse(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    string
-		expected TerseState
-	}{
-		{
-			name:  "full state with alerts and attention",
-			input: "S:myproject|A:2/3|W:1|I:1|E:0|C:45%|B:R10/I2/B5|M:3|^:2a,4i|!:1c,2w",
-			expected: TerseState{
-				Session:           "myproject",
-				ActiveAgents:      2,
-				TotalAgents:       3,
-				WorkingAgents:     1,
-				IdleAgents:        1,
-				ErrorAgents:       0,
-				ContextPct:        45,
-				ReadyBeads:        10,
-				BlockedBeads:      5,
-				InProgressBead:    2,
-				UnreadMail:        3,
-				AttentionAction:   2,
-				AttentionInterest: 4,
-				CriticalAlerts:    1,
-				WarningAlerts:     2,
-			},
-		},
-		{
-			name:  "no session zero alerts zero attention",
-			input: "S:-|A:0/0|W:0|I:0|E:0|C:0%|B:R15/I3/B8|M:0|^:0|!:0",
-			expected: TerseState{
-				Session:           "-",
-				ActiveAgents:      0,
-				TotalAgents:       0,
-				WorkingAgents:     0,
-				IdleAgents:        0,
-				ErrorAgents:       0,
-				ContextPct:        0,
-				ReadyBeads:        15,
-				BlockedBeads:      8,
-				InProgressBead:    3,
-				UnreadMail:        0,
-				AttentionAction:   0,
-				AttentionInterest: 0,
-				CriticalAlerts:    0,
-				WarningAlerts:     0,
-			},
-		},
-		{
-			name:  "only critical alerts only action attention",
-			input: "S:proj|A:5/8|W:3|I:2|E:0|C:78%|B:R100/I50/B20|M:10|^:3a|!:5c",
-			expected: TerseState{
-				Session:           "proj",
-				ActiveAgents:      5,
-				TotalAgents:       8,
-				WorkingAgents:     3,
-				IdleAgents:        2,
-				ErrorAgents:       0,
-				ContextPct:        78,
-				ReadyBeads:        100,
-				BlockedBeads:      20,
-				InProgressBead:    50,
-				UnreadMail:        10,
-				AttentionAction:   3,
-				AttentionInterest: 0,
-				CriticalAlerts:    5,
-				WarningAlerts:     0,
-			},
-		},
-		{
-			name:  "only interesting attention",
-			input: "S:test|A:1/1|W:1|I:0|E:0|C:50%|B:R5/I1/B2|M:0|^:7i|!:0",
-			expected: TerseState{
-				Session:           "test",
-				ActiveAgents:      1,
-				TotalAgents:       1,
-				WorkingAgents:     1,
-				IdleAgents:        0,
-				ErrorAgents:       0,
-				ContextPct:        50,
-				ReadyBeads:        5,
-				BlockedBeads:      2,
-				InProgressBead:    1,
-				UnreadMail:        0,
-				AttentionAction:   0,
-				AttentionInterest: 7,
-				CriticalAlerts:    0,
-				WarningAlerts:     0,
-			},
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			result, err := ParseTerse(tc.input)
-			if err != nil {
-				t.Fatalf("ParseTerse(%q) failed: %v", tc.input, err)
-			}
-			if *result != tc.expected {
-				t.Errorf("ParseTerse(%q) = %+v, want %+v", tc.input, *result, tc.expected)
-			}
-		})
-	}
-}
-
-func TestTerseStateRoundTrip(t *testing.T) {
-	original := TerseState{
-		Session:           "test",
-		ActiveAgents:      5,
-		TotalAgents:       8,
-		WorkingAgents:     3,
-		IdleAgents:        2,
-		ErrorAgents:       0,
-		ContextPct:        78,
-		ReadyBeads:        20,
-		BlockedBeads:      10,
-		InProgressBead:    5,
-		UnreadMail:        2,
-		AttentionAction:   3,
-		AttentionInterest: 5,
-		CriticalAlerts:    1,
-		WarningAlerts:     2,
-	}
-
-	str := original.String()
-	parsed, err := ParseTerse(str)
-	if err != nil {
-		t.Fatalf("ParseTerse failed: %v", err)
-	}
-
-	if *parsed != original {
-		t.Errorf("Round trip failed: original=%+v, parsed=%+v", original, *parsed)
-	}
-}
-
 func TestTerseStateMarshal(t *testing.T) {
 	state := TerseState{
 		Session:           "myproject",
@@ -4283,57 +3730,6 @@ func TestTerseStateAttentionStates(t *testing.T) {
 			got := state.String()
 			if !strings.Contains(got, tc.expectedSubstring) {
 				t.Errorf("TerseState.String() = %q, want substring %q", got, tc.expectedSubstring)
-			}
-		})
-	}
-}
-
-// TestTerseStateAttentionRoundTrip verifies attention fields survive round-trip.
-func TestTerseStateAttentionRoundTrip(t *testing.T) {
-	tests := []struct {
-		name         string
-		attnAction   int
-		attnInterest int
-	}{
-		{"quiet", 0, 0},
-		{"action_only", 5, 0},
-		{"interesting_only", 0, 10},
-		{"both", 3, 7},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			original := TerseState{
-				Session:           "attn-test",
-				ActiveAgents:      2,
-				TotalAgents:       3,
-				WorkingAgents:     1,
-				IdleAgents:        1,
-				ContextPct:        50,
-				ReadyBeads:        5,
-				InProgressBead:    1,
-				BlockedBeads:      2,
-				UnreadMail:        0,
-				AttentionAction:   tc.attnAction,
-				AttentionInterest: tc.attnInterest,
-				CriticalAlerts:    0,
-				WarningAlerts:     0,
-			}
-
-			str := original.String()
-			parsed, err := ParseTerse(str)
-			if err != nil {
-				t.Fatalf("ParseTerse failed: %v", err)
-			}
-
-			if parsed.AttentionAction != tc.attnAction {
-				t.Errorf("AttentionAction: got %d, want %d", parsed.AttentionAction, tc.attnAction)
-			}
-			if parsed.AttentionInterest != tc.attnInterest {
-				t.Errorf("AttentionInterest: got %d, want %d", parsed.AttentionInterest, tc.attnInterest)
-			}
-			if *parsed != original {
-				t.Errorf("Round trip failed: original=%+v, parsed=%+v", original, *parsed)
 			}
 		})
 	}
@@ -6054,7 +5450,7 @@ func TestIsAgentMailDBLockError(t *testing.T) {
 	}
 }
 
-func TestGetInboxTallyAndCountInboxIgnoreReadMessages(t *testing.T) {
+func TestGetInboxTallyIgnoresReadMessages(t *testing.T) {
 
 	readAt := &agentmail.FlexTime{Time: time.Now()}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -6109,12 +5505,6 @@ func TestGetInboxTallyAndCountInboxIgnoreReadMessages(t *testing.T) {
 	tally := getInboxTally(ctx, client, "/data/projects/ntm", "BlueLake", 10)
 	if tally.Total != 3 || tally.Unread != 2 || tally.Urgent != 1 || tally.PendingAck != 1 {
 		t.Fatalf("unexpected inbox tally: %+v", tally)
-	}
-	if got := countInbox(ctx, client, "/data/projects/ntm", "BlueLake", false); got != 2 {
-		t.Fatalf("countInbox(unread) = %d, want 2", got)
-	}
-	if got := countInbox(ctx, client, "/data/projects/ntm", "BlueLake", true); got != 1 {
-		t.Fatalf("countInbox(urgent) = %d, want 1", got)
 	}
 }
 

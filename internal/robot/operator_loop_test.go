@@ -105,58 +105,6 @@ func TestBuildAttentionHintFromSummary_LargeCounts(t *testing.T) {
 // Terse Output Attention Integration Tests (br-auag6)
 // =============================================================================
 
-func TestBuildAttentionHint_WithFeed(t *testing.T) {
-	feed := newTestAttentionFeed(t)
-	oldFeed := GetAttentionFeed()
-	SetAttentionFeed(feed)
-	defer SetAttentionFeed(oldFeed)
-
-	// No events - should be clear
-	hint := buildAttentionHint()
-	if hint != "clear" {
-		t.Errorf("empty feed hint = %q, want %q", hint, "clear")
-	}
-
-	// Add action required event
-	feed.Append(AttentionEvent{
-		Category:      EventCategoryAlert,
-		Type:          EventTypeAlertAttentionRequired,
-		Actionability: ActionabilityActionRequired,
-		Severity:      SeverityError,
-		Summary:       "critical alert",
-	})
-
-	hint = buildAttentionHint()
-	if hint != "1!action" {
-		t.Errorf("1 action hint = %q, want %q", hint, "1!action")
-	}
-
-	// Add interesting event
-	feed.Append(AttentionEvent{
-		Category:      EventCategoryAgent,
-		Type:          EventTypeAgentStateChange,
-		Actionability: ActionabilityInteresting,
-		Severity:      SeverityInfo,
-		Summary:       "state change",
-	})
-
-	hint = buildAttentionHint()
-	if hint != "1!action 1?interest" {
-		t.Errorf("mixed hint = %q, want %q", hint, "1!action 1?interest")
-	}
-}
-
-func TestBuildAttentionHint_NilFeed(t *testing.T) {
-	oldFeed := GetAttentionFeed()
-	SetAttentionFeed(nil)
-	defer SetAttentionFeed(oldFeed)
-
-	hint := buildAttentionHint()
-	if hint != "feed:unavail" {
-		t.Errorf("nil feed hint = %q, want %q", hint, "feed:unavail")
-	}
-}
-
 // =============================================================================
 // Cursor Chaining Integration Tests (verifies operator loop cursor handoff)
 // =============================================================================

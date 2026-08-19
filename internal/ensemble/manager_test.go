@@ -205,56 +205,6 @@ func TestNewEnsembleManager(t *testing.T) {
 	}
 }
 
-func TestEnsembleManager_Helpers(t *testing.T) {
-	m := &EnsembleManager{}
-
-	// Test tmuxClient returns default
-	client := m.tmuxClient()
-	if client == nil {
-		t.Error("tmuxClient() should return default client")
-	}
-
-	// Test sessionOrchestrator returns new instance
-	orch := m.sessionOrchestrator()
-	if orch == nil {
-		t.Error("sessionOrchestrator() should return new instance")
-	}
-
-	// Test paneLauncher returns new instance
-	launcher := m.paneLauncher()
-	if launcher == nil {
-		t.Error("paneLauncher() should return new instance")
-	}
-
-	// Test promptInjector returns new instance
-	injector := m.promptInjector()
-	if injector == nil {
-		t.Error("promptInjector() should return new instance")
-	}
-
-	// Test logger returns default
-	logger := m.logger()
-	if logger == nil {
-		t.Error("logger() should return default logger")
-	}
-}
-
-func TestEnsembleManager_HelpersWithValues(t *testing.T) {
-	m := NewEnsembleManager()
-	m.TmuxClient = tmux.DefaultClient
-
-	// When set, should return the set value
-	client := m.tmuxClient()
-	if client != tmux.DefaultClient {
-		t.Error("tmuxClient() should return set client")
-	}
-
-	// Test logger with set value
-	if m.logger() == nil {
-		t.Error("logger() should return set logger")
-	}
-}
-
 func TestSpawnEnsemble_NilConfig(t *testing.T) {
 	m := NewEnsembleManager()
 	_, err := m.SpawnEnsemble(nil, nil)
@@ -917,5 +867,55 @@ func TestSpawnCompletionStatus(t *testing.T) {
 				t.Fatalf("spawnCompletionStatus(%v, %d, %d, %d) = %q, want %q", tt.skipInject, tt.successes, tt.injectErrors, tt.skippedModes, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestEnsembleManager_Helpers(t *testing.T) {
+	m := &EnsembleManager{}
+
+	// Test tmuxClient returns default
+	client := m.tmuxClient()
+	if client == nil {
+		t.Error("tmuxClient() should return default client")
+	}
+
+	// Test sessionOrchestrator returns new instance
+	orch := m.sessionOrchestrator()
+	if orch == nil {
+		t.Error("sessionOrchestrator() should return new instance")
+	}
+
+	// Test paneLauncher returns new instance
+	launcher := m.paneLauncher()
+	if launcher == nil {
+		t.Error("paneLauncher() should return new instance")
+	}
+
+	// Test promptInjector returns new instance
+	injector := m.promptInjector()
+	if injector == nil {
+		t.Error("promptInjector() should return new instance")
+	}
+
+	// Test logger returns default
+	logger := m.logger()
+	if logger == nil {
+		t.Error("logger() should return default logger")
+	}
+}
+
+func TestEnsembleManager_HelpersWithValues(t *testing.T) {
+	m := NewEnsembleManager()
+	m.TmuxClient = tmux.DefaultClient
+
+	// When set, should return the set value
+	client := m.tmuxClient()
+	if client != tmux.DefaultClient {
+		t.Error("tmuxClient() should return set client")
+	}
+
+	// Test logger with set value
+	if m.logger() == nil {
+		t.Error("logger() should return set logger")
 	}
 }

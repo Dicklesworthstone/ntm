@@ -349,10 +349,6 @@ func NoveltyFromOverlap(overlap OverlapVerdict) NoveltySignal {
 	}
 }
 
-func KnownClosedIdeaWizardFamilies() []string {
-	return append([]string(nil), knownClosedIdeaWizardFamilies...)
-}
-
 func IsKnownClosedIdeaWizardFamily(id string) bool {
 	id = strings.TrimSpace(id)
 	for _, family := range knownClosedIdeaWizardFamilies {

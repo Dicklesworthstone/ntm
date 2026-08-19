@@ -360,25 +360,3 @@ var (
 	globalPIDMapOnce sync.Once
 	globalPIDMapMu   sync.RWMutex
 )
-
-// GetGlobalPIDMap returns the global PID map singleton.
-// It tracks all sessions by default.
-func GetGlobalPIDMap() *PIDMap {
-	globalPIDMapOnce.Do(func() {
-		globalPIDMap = NewPIDMap("")
-	})
-	return globalPIDMap
-}
-
-// GetGlobalPIDMapForSession returns or creates a global PID map for a specific session.
-func GetGlobalPIDMapForSession(session string) *PIDMap {
-	globalPIDMapMu.Lock()
-	defer globalPIDMapMu.Unlock()
-
-	if globalPIDMap != nil && globalPIDMap.session == session {
-		return globalPIDMap
-	}
-
-	globalPIDMap = NewPIDMap(session)
-	return globalPIDMap
-}

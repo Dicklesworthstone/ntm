@@ -342,39 +342,10 @@ func getConfigInt(config map[string]any, key string, defaultVal int) int {
 	}
 }
 
-// Clone creates a deep copy of the RuleSet.
-func (rs *RuleSet) Clone() *RuleSet {
-	clone := &RuleSet{
-		Rules: make(map[RuleID]*Rule, len(rs.Rules)),
-	}
-	for id, rule := range rs.Rules {
-		clonedRule := &Rule{
-			ID:       rule.ID,
-			Enabled:  rule.Enabled,
-			Severity: rule.Severity,
-		}
-		if rule.Config != nil {
-			clonedRule.Config = make(map[string]any, len(rule.Config))
-			for k, v := range rule.Config {
-				clonedRule.Config[k] = v
-			}
-		}
-		clone.Rules[id] = clonedRule
-	}
-	return clone
-}
-
 // SetSeverity updates the severity for a rule.
 func (rs *RuleSet) SetSeverity(id RuleID, severity Severity) {
 	if rule, ok := rs.Rules[id]; ok {
 		rule.Severity = severity
-	}
-}
-
-// Enable enables a rule.
-func (rs *RuleSet) Enable(id RuleID) {
-	if rule, ok := rs.Rules[id]; ok {
-		rule.Enabled = true
 	}
 }
 
@@ -383,16 +354,4 @@ func (rs *RuleSet) Disable(id RuleID) {
 	if rule, ok := rs.Rules[id]; ok {
 		rule.Enabled = false
 	}
-}
-
-// SetConfig sets a configuration value for a rule.
-func (rs *RuleSet) SetConfig(id RuleID, key string, value any) {
-	rule, ok := rs.Rules[id]
-	if !ok {
-		return
-	}
-	if rule.Config == nil {
-		rule.Config = make(map[string]any)
-	}
-	rule.Config[key] = value
 }

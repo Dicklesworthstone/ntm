@@ -269,49 +269,6 @@ func (c *OutputCollector) ErrorCount() int {
 	return len(c.ValidationErrors)
 }
 
-// HasEnough returns true if minimum output threshold is met.
-func (c *OutputCollector) HasEnough() bool {
-	if c == nil {
-		return false
-	}
-	return len(c.Outputs) >= c.Config.MinOutputs
-}
-
-// Reset clears all collected outputs and errors.
-func (c *OutputCollector) Reset() {
-	if c == nil {
-		return
-	}
-	c.Outputs = make([]ModeOutput, 0)
-	c.ValidationErrors = make(map[string][]string)
-	c.CollectedAt = time.Time{}
-}
-
-// CollectFromSession uses OutputCapture to collect outputs from an EnsembleSession.
-func (c *OutputCollector) CollectFromSession(session *EnsembleSession, capture *OutputCapture) error {
-	if c == nil {
-		return errors.New("collector is nil")
-	}
-	if session == nil {
-		return errors.New("session is nil")
-	}
-	if capture == nil {
-		return errors.New("output capture is nil")
-	}
-
-	captured, err := capture.CaptureAll(session)
-	if err != nil {
-		return fmt.Errorf("capture all: %w", err)
-	}
-
-	return c.CollectFromCaptures(captured)
-}
-
-// CollectFromCaptures processes pre-captured outputs and adds them to the collector.
-func (c *OutputCollector) CollectFromCaptures(captured []CapturedOutput) error {
-	return c.CollectFromCapturesFiltered(captured, nil)
-}
-
 // CollectFromCapturesFiltered processes captured outputs that match the include filter.
 func (c *OutputCollector) CollectFromCapturesFiltered(captured []CapturedOutput, include func(CapturedOutput) bool) error {
 	if c == nil {

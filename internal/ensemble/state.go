@@ -81,47 +81,6 @@ func (s *StateStore) Load(sessionName string) (*EnsembleSession, error) {
 	return fromStateSession(session), nil
 }
 
-// UpdateStatus updates the overall status of an ensemble session.
-func (s *StateStore) UpdateStatus(sessionName string, status EnsembleStatus) error {
-	if s == nil || s.ensembles == nil {
-		return errors.New("ensemble state store is nil")
-	}
-	return s.ensembles.UpdateStatus(sessionName, status.String())
-}
-
-// UpdateAssignmentStatus updates the status for a specific mode assignment.
-func (s *StateStore) UpdateAssignmentStatus(sessionName, modeID string, status AssignmentStatus) error {
-	if s == nil || s.ensembles == nil {
-		return errors.New("ensemble state store is nil")
-	}
-	return s.ensembles.UpdateAssignmentStatus(sessionName, modeID, string(status))
-}
-
-// List returns all ensemble sessions in the store.
-func (s *StateStore) List() ([]*EnsembleSession, error) {
-	if s == nil || s.ensembles == nil {
-		return nil, errors.New("ensemble state store is nil")
-	}
-
-	sessions, err := s.ensembles.ListEnsembles()
-	if err != nil {
-		return nil, err
-	}
-	results := make([]*EnsembleSession, 0, len(sessions))
-	for _, session := range sessions {
-		results = append(results, fromStateSession(session))
-	}
-	return results, nil
-}
-
-// Delete removes an ensemble session and its assignments from SQLite.
-func (s *StateStore) Delete(sessionName string) error {
-	if s == nil || s.ensembles == nil {
-		return errors.New("ensemble state store is nil")
-	}
-	return s.ensembles.DeleteEnsemble(sessionName)
-}
-
 var defaultStateStore struct {
 	mu    sync.Mutex
 	store *StateStore

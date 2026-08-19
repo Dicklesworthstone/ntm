@@ -1416,23 +1416,6 @@ type ParallelGroupResult struct {
 	Partial   bool         `json:"partial"` // Some succeeded, some failed
 }
 
-// DefaultWorkflowSettings returns sensible defaults for workflow settings
-func DefaultWorkflowSettings() WorkflowSettings {
-	logDispatch := true
-	return WorkflowSettings{
-		Timeout:          Duration{Duration: 30 * time.Minute},
-		OnError:          ErrorActionFail,
-		LogDispatch:      &logDispatch,
-		NotifyOnComplete: false,
-		NotifyOnError:    true,
-	}
-}
-
-// DefaultStepTimeout returns the default timeout for a step
-func DefaultStepTimeout() Duration {
-	return Duration{Duration: 5 * time.Minute}
-}
-
 // NormalizeAgentType converts agent type aliases to canonical form.
 // Case-insensitive: "Claude", "CLAUDE", "claude" all normalize to "claude".
 func NormalizeAgentType(t string) string {

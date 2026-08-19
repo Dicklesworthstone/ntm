@@ -307,28 +307,6 @@ func (a *Archiver) Close() error {
 	return nil
 }
 
-// Stats returns archive statistics.
-func (a *Archiver) Stats() ArchiverStats {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-
-	panesTracked := len(a.paneStates)
-	totalLines := 0
-	for _, state := range a.paneStates {
-		totalLines += state.TotalLines
-	}
-
-	return ArchiverStats{
-		Session:      a.sessionName,
-		OutputDir:    a.outputDir,
-		Started:      a.started,
-		Duration:     time.Since(a.started),
-		TotalRecords: a.totalRecords,
-		PanesTracked: panesTracked,
-		TotalLines:   totalLines,
-	}
-}
-
 // ArchiverStats contains archiver statistics.
 type ArchiverStats struct {
 	Session      string        `json:"session"`

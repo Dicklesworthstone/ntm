@@ -56,12 +56,6 @@ func (t *StyledTable) WithFooter(footer string) *StyledTable {
 	return t
 }
 
-// WithStyle sets the table style
-func (t *StyledTable) WithStyle(style TableStyle) *StyledTable {
-	t.style = style
-	return t
-}
-
 // AddRow adds a row to the table
 func (t *StyledTable) AddRow(cols ...string) {
 	for i, c := range cols {
@@ -73,11 +67,6 @@ func (t *StyledTable) AddRow(cols ...string) {
 		}
 	}
 	t.rows = append(t.rows, cols)
-}
-
-// RowCount returns the number of rows
-func (t *StyledTable) RowCount() int {
-	return len(t.rows)
 }
 
 // Render returns the table as a styled string
@@ -196,11 +185,6 @@ func (t *StyledTable) Render() string {
 	return sb.String()
 }
 
-// String implements fmt.Stringer
-func (t *StyledTable) String() string {
-	return t.Render()
-}
-
 // runeWidth returns the visual display width of a string.
 // Uses lipgloss.Width() which properly handles ANSI escape codes and
 // double-width characters (CJK, emoji) that occupy 2 terminal columns.
@@ -217,47 +201,9 @@ func padRight(s string, width int) string {
 	return s + strings.Repeat(" ", width-currentWidth)
 }
 
-// stripANSI removes ANSI escape codes from a string
-func stripANSI(s string) string {
-	var result strings.Builder
-	inEscape := false
-	for _, r := range s {
-		if r == '\033' {
-			inEscape = true
-			continue
-		}
-		if inEscape {
-			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
-				inEscape = false
-			}
-			continue
-		}
-		result.WriteRune(r)
-	}
-	return result.String()
-}
-
-// ErrorMessage renders an error message with icon
-func ErrorMessage(msg string) string {
-	th := theme.Current()
-	style := lipgloss.NewStyle().Foreground(th.Error)
-	return style.Render("✗ " + msg)
-}
-
 // InfoMessage renders an info message with icon
 func InfoMessage(msg string) string {
 	th := theme.Current()
 	style := lipgloss.NewStyle().Foreground(th.Info)
 	return style.Render("ℹ " + msg)
-}
-
-// Badge renders a small colored badge
-func Badge(text string, color lipgloss.Color) string {
-	th := theme.Current()
-	style := lipgloss.NewStyle().
-		Background(color).
-		Foreground(th.Base).
-		Padding(0, 1).
-		Bold(true)
-	return style.Render(text)
 }

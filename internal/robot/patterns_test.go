@@ -460,28 +460,11 @@ func TestDefaultLibrary(t *testing.T) {
 	}
 }
 
-func TestMatchPatterns(t *testing.T) {
-	// Test convenience function
-	matches := MatchPatterns("claude>", "claude")
-	if len(matches) == 0 {
-		t.Error("expected matches from convenience function")
-	}
-}
-
 func TestMatchFirstPattern(t *testing.T) {
 	// Test convenience function
 	match := MatchFirstPattern("panic: error", "*")
 	if match == nil {
 		t.Error("expected match from convenience function")
-	}
-}
-
-func TestHasErrorPattern(t *testing.T) {
-	if !HasErrorPattern("Rate limit exceeded", "*") {
-		t.Error("should detect rate limit error")
-	}
-	if HasErrorPattern("everything is fine", "*") {
-		t.Error("should not detect error in normal text")
 	}
 }
 
@@ -497,12 +480,6 @@ func TestHasIdlePattern(t *testing.T) {
 	}
 	if !HasIdlePattern("$ ", "user") {
 		t.Error("shell prompt should still look idle for user panes")
-	}
-}
-
-func TestHasThinkingPattern(t *testing.T) {
-	if !HasThinkingPattern("Thinking...", "*") {
-		t.Error("should detect thinking pattern")
 	}
 }
 

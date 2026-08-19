@@ -42,6 +42,17 @@ func TestGetRobotRegistry_SurfaceCoverage(t *testing.T) {
 	}
 }
 
+// findRegistrySection is a test-local replacement for the removed
+// RobotRegistry.Section convenience lookup.
+func findRegistrySection(r *RobotRegistry, name string) (RobotSectionDescriptor, bool) {
+	for _, s := range r.Sections {
+		if s.Name == name {
+			return s, true
+		}
+	}
+	return RobotSectionDescriptor{}, false
+}
+
 func TestGetRobotRegistry_SectionReferencesResolve(t *testing.T) {
 
 	registry := GetRobotRegistry()
@@ -51,7 +62,7 @@ func TestGetRobotRegistry_SectionReferencesResolve(t *testing.T) {
 
 	for _, surface := range registry.Surfaces {
 		for _, sectionName := range surface.Sections {
-			section, ok := registry.Section(sectionName)
+			section, ok := findRegistrySection(registry, sectionName)
 			if !ok {
 				t.Fatalf("surface %q references unknown section %q", surface.Name, sectionName)
 			}
@@ -387,7 +398,7 @@ func TestGetRobotRegistry_SectionConsumerMetadataPopulated(t *testing.T) {
 	}
 
 	for _, tc := range keySections {
-		section, ok := registry.Section(tc.name)
+		section, ok := findRegistrySection(registry, tc.name)
 		if !ok {
 			t.Fatalf("missing section %q", tc.name)
 		}
@@ -794,7 +805,7 @@ func TestSectionBoundedness_WellFormed(t *testing.T) {
 	sectionsWithBoundedness := []string{"sessions", "work", "attention"}
 
 	for _, name := range sectionsWithBoundedness {
-		section, ok := registry.Section(name)
+		section, ok := findRegistrySection(registry, name)
 		if !ok {
 			t.Errorf("expected section %q not found", name)
 			continue

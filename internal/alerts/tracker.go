@@ -23,14 +23,6 @@ func cloneAlertValue(alert Alert) Alert {
 	return alert
 }
 
-func cloneAlertPtr(alert *Alert) *Alert {
-	if alert == nil {
-		return nil
-	}
-	cloned := cloneAlertValue(*alert)
-	return &cloned
-}
-
 func sortAlerts(alerts []Alert) {
 	sort.Slice(alerts, func(i, j int) bool {
 		if !alerts[i].CreatedAt.Equal(alerts[j].CreatedAt) {
@@ -158,40 +150,6 @@ func (t *Tracker) GetActive() []Alert {
 	return alerts
 }
 
-// GetActiveFiltered returns active alerts filtered by type or severity
-func (t *Tracker) GetActiveFiltered(alertType *AlertType, minSeverity *Severity) []Alert {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-
-	var alerts []Alert
-	for _, alert := range t.active {
-		// Filter by type if specified
-		if alertType != nil && alert.Type != *alertType {
-			continue
-		}
-		// Filter by minimum severity if specified
-		if minSeverity != nil && severityRank(alert.Severity) < severityRank(*minSeverity) {
-			continue
-		}
-		alerts = append(alerts, cloneAlertValue(*alert))
-	}
-	sortAlerts(alerts)
-	return alerts
-}
-
-// GetResolved returns recently resolved alerts
-func (t *Tracker) GetResolved() []Alert {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-
-	alerts := make([]Alert, len(t.resolved))
-	for i, alert := range t.resolved {
-		alerts[i] = cloneAlertValue(*alert)
-	}
-	sortAlerts(alerts)
-	return alerts
-}
-
 // GetAll returns both active and resolved alerts
 func (t *Tracker) GetAll() (active []Alert, resolved []Alert) {
 	t.mu.RLock()
@@ -212,24 +170,6 @@ func (t *Tracker) GetAll() (active []Alert, resolved []Alert) {
 	return active, resolved
 }
 
-// GetByID returns a specific alert by ID, checking both active and resolved
-func (t *Tracker) GetByID(id string) (*Alert, bool) {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-
-	if alert, ok := t.active[id]; ok {
-		return cloneAlertPtr(alert), true
-	}
-
-	for _, alert := range t.resolved {
-		if alert.ID == id {
-			return cloneAlertPtr(alert), true
-		}
-	}
-
-	return nil, false
-}
-
 // Summary returns aggregate statistics about alerts
 func (t *Tracker) Summary() AlertSummary {
 	t.mu.RLock()
@@ -248,15 +188,6 @@ func (t *Tracker) Summary() AlertSummary {
 	}
 
 	return summary
-}
-
-// Clear removes all alerts (useful for testing or reset)
-func (t *Tracker) Clear() {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	t.active = make(map[string]*Alert)
-	t.resolved = make([]*Alert, 0)
 }
 
 // ManualResolve marks a specific alert as resolved

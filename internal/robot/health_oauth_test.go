@@ -318,10 +318,19 @@ func TestCountErrorsInOutput(t *testing.T) {
 	}
 }
 
+// newTestCodexThrottle builds a CodexThrottle for enrichment tests. The
+// exported constructor was removed as dead production code; Reset() puts a
+// zero-value throttle into the normal phase.
+func newTestCodexThrottle() *ratelimit.CodexThrottle {
+	ct := &ratelimit.CodexThrottle{}
+	ct.Reset()
+	return ct
+}
+
 // TestEnrichWithThrottlePaused verifies that a paused CodexThrottle
 // escalates the rate-limit status to limited and populates cooldown.
 func TestEnrichWithThrottlePaused(t *testing.T) {
-	ct := ratelimit.NewCodexThrottle(3)
+	ct := newTestCodexThrottle()
 	ct.RecordRateLimit("pane-1", 30)
 
 	health := AgentOAuthHealth{
@@ -348,7 +357,7 @@ func TestEnrichWithThrottlePaused(t *testing.T) {
 // TestEnrichWithThrottleNormal verifies that a normal throttle does not
 // change the rate-limit status or set throttle metadata.
 func TestEnrichWithThrottleNormal(t *testing.T) {
-	ct := ratelimit.NewCodexThrottle(3)
+	ct := newTestCodexThrottle()
 
 	health := AgentOAuthHealth{
 		RateLimitStatus: RateLimitOK,
@@ -385,7 +394,7 @@ func TestEnrichWithThrottleNil(t *testing.T) {
 // TestEnrichWithThrottleRateLimitCountMerge verifies that the higher
 // rate-limit count wins when merging throttle data.
 func TestEnrichWithThrottleRateLimitCountMerge(t *testing.T) {
-	ct := ratelimit.NewCodexThrottle(3)
+	ct := newTestCodexThrottle()
 	ct.RecordRateLimit("pane-1", 10)
 
 	// Agent already has a high local count

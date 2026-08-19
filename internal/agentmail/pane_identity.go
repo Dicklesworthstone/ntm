@@ -159,26 +159,6 @@ func ResolveIdentity(projectKey, paneID string) (name string, path string) {
 	return "", ""
 }
 
-// MigrateLegacyIdentityIfNeeded resolves the identity via the legacy paths and
-// migrates it to the canonical path if (a) a legacy file exists and (b) the
-// canonical file does not. This is a best-effort helper: errors are silently
-// swallowed because a migration failure should never break a caller.
-// Returns the resolved agent name (empty if none found).
-func MigrateLegacyIdentityIfNeeded(projectKey, paneID string) string {
-	canonical := CanonicalIdentityPath(projectKey, paneID)
-	if v, ok := readIdentityFile(canonical); ok {
-		// Canonical already exists with a valid regular identity file; nothing to do.
-		return v
-	}
-	name, found := ResolveIdentity(projectKey, paneID)
-	if found == "" || name == "" {
-		return ""
-	}
-	// Migrate into canonical (best-effort).
-	_, _ = WriteIdentity(projectKey, paneID, name)
-	return name
-}
-
 // WriteLegacyCompatIdentity writes the legacy `/tmp/agent-mail-name.<sha1>.<sanitized_pane>`
 // file in addition to the canonical path so that older consumers keep working
 // during the deprecation window. Returns the path written to (or empty on

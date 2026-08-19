@@ -267,15 +267,6 @@ func newAgentMailClient(projectKey string) *agentmail.Client {
 	return client
 }
 
-func resolveAgentMailProjectKey(ctx context.Context, session string) (string, error) {
-	return resolveAgentMailProjectKeyWithPreference(ctx, session, true)
-}
-
-func resolveAgentMailProjectKeyWithPreference(ctx context.Context, session string, preferSession bool) (string, error) {
-	_, projectKey, err := resolveAgentMailScopeWithPreference(ctx, session, preferSession)
-	return projectKey, err
-}
-
 func resolveAgentMailScope(ctx context.Context, session string) (string, string, error) {
 	return resolveAgentMailScopeWithPreference(ctx, session, true)
 }

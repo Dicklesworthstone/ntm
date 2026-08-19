@@ -382,37 +382,6 @@ func TestTruncateJSON_InvalidJSON(t *testing.T) {
 	}
 }
 
-func TestTruncateText(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name        string
-		text        string
-		tokenBudget int
-		wantFull    bool
-		wantSuffix  string
-	}{
-		{"short text fits", "hello", 100, true, ""},
-		{"exact fit", strings.Repeat("a", 400), 100, true, ""},
-		{"needs truncation", strings.Repeat("a", 500), 100, false, "...[truncated]"},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			result := truncateText(tc.text, tc.tokenBudget)
-			if tc.wantFull {
-				if result != tc.text {
-					t.Errorf("expected full text, got truncated (%d chars)", len(result))
-				}
-			} else {
-				if !strings.HasSuffix(result, tc.wantSuffix) {
-					t.Errorf("truncated text should end with %q, got %q", tc.wantSuffix, result[len(result)-20:])
-				}
-			}
-		})
-	}
-}
-
 func TestCalculateFilePriority(t *testing.T) {
 	t.Parallel()
 

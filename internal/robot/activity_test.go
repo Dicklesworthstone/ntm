@@ -24,67 +24,6 @@ func TestNewVelocityTracker(t *testing.T) {
 	}
 }
 
-func TestNewVelocityTrackerWithSize(t *testing.T) {
-	// Test with valid size
-	tracker := NewVelocityTrackerWithSize("test-pane", 5)
-	if tracker.MaxSamples != 5 {
-		t.Errorf("expected MaxSamples 5, got %d", tracker.MaxSamples)
-	}
-
-	// Test with zero size (should default)
-	tracker = NewVelocityTrackerWithSize("test-pane", 0)
-	if tracker.MaxSamples != DefaultMaxSamples {
-		t.Errorf("expected default MaxSamples %d, got %d", DefaultMaxSamples, tracker.MaxSamples)
-	}
-
-	// Test with negative size (should default)
-	tracker = NewVelocityTrackerWithSize("test-pane", -5)
-	if tracker.MaxSamples != DefaultMaxSamples {
-		t.Errorf("expected default MaxSamples %d, got %d", DefaultMaxSamples, tracker.MaxSamples)
-	}
-}
-
-func TestVelocityTracker_AddSample(t *testing.T) {
-	tracker := NewVelocityTrackerWithSize("test", 3)
-
-	// Add samples directly for testing
-	samples := []VelocitySample{
-		{Timestamp: time.Now(), CharsAdded: 10, Velocity: 5.0},
-		{Timestamp: time.Now(), CharsAdded: 20, Velocity: 10.0},
-		{Timestamp: time.Now(), CharsAdded: 30, Velocity: 15.0},
-	}
-
-	for _, s := range samples {
-		tracker.mu.Lock()
-		tracker.addSampleLocked(s)
-		tracker.mu.Unlock()
-	}
-
-	if len(tracker.Samples) != 3 {
-		t.Errorf("expected 3 samples, got %d", len(tracker.Samples))
-	}
-
-	// Add one more to test circular buffer behavior
-	newSample := VelocitySample{Timestamp: time.Now(), CharsAdded: 40, Velocity: 20.0}
-	tracker.mu.Lock()
-	tracker.addSampleLocked(newSample)
-	tracker.mu.Unlock()
-
-	if len(tracker.Samples) != 3 {
-		t.Errorf("expected 3 samples after overflow, got %d", len(tracker.Samples))
-	}
-
-	// First sample should now be the second original
-	if tracker.Samples[0].Velocity != 10.0 {
-		t.Errorf("expected first sample velocity 10.0, got %f", tracker.Samples[0].Velocity)
-	}
-
-	// Last sample should be the new one
-	if tracker.Samples[2].Velocity != 20.0 {
-		t.Errorf("expected last sample velocity 20.0, got %f", tracker.Samples[2].Velocity)
-	}
-}
-
 func TestVelocityTracker_CurrentVelocity(t *testing.T) {
 	tracker := NewVelocityTracker("test")
 
@@ -157,23 +96,6 @@ func TestVelocityTracker_RecentVelocity(t *testing.T) {
 	// Recent larger than samples should use all
 	if v := tracker.RecentVelocity(100); v != expected {
 		t.Errorf("expected %f for n=100, got %f", expected, v)
-	}
-}
-
-func TestVelocityTracker_SampleCount(t *testing.T) {
-	tracker := NewVelocityTrackerWithSize("test", 5)
-
-	if c := tracker.SampleCount(); c != 0 {
-		t.Errorf("expected 0 samples, got %d", c)
-	}
-
-	tracker.mu.Lock()
-	tracker.addSampleLocked(VelocitySample{Velocity: 1.0})
-	tracker.addSampleLocked(VelocitySample{Velocity: 2.0})
-	tracker.mu.Unlock()
-
-	if c := tracker.SampleCount(); c != 2 {
-		t.Errorf("expected 2 samples, got %d", c)
 	}
 }
 
@@ -369,134 +291,6 @@ func TestVelocityTracker_UpdateWithOutput_ANSI(t *testing.T) {
 	// Should only count visible characters added (6 for " world")
 	if sample.CharsAdded != 6 {
 		t.Errorf("expected 6 visible chars added (ANSI stripped), got %d", sample.CharsAdded)
-	}
-}
-
-func TestVelocityManager_GetOrCreate(t *testing.T) {
-	vm := NewVelocityManager()
-
-	// First call should create
-	tracker1 := vm.GetOrCreate("pane1")
-	if tracker1 == nil {
-		t.Fatal("expected tracker, got nil")
-	}
-	if tracker1.PaneID != "pane1" {
-		t.Errorf("expected pane1, got %s", tracker1.PaneID)
-	}
-
-	// Second call should return same tracker
-	tracker2 := vm.GetOrCreate("pane1")
-	if tracker1 != tracker2 {
-		t.Error("expected same tracker instance")
-	}
-
-	// Different pane should create new tracker
-	tracker3 := vm.GetOrCreate("pane2")
-	if tracker3 == tracker1 {
-		t.Error("expected different tracker for different pane")
-	}
-}
-
-func TestVelocityManager_Get(t *testing.T) {
-	vm := NewVelocityManager()
-
-	// Non-existent should return nil
-	if tracker := vm.Get("nonexistent"); tracker != nil {
-		t.Error("expected nil for non-existent pane")
-	}
-
-	// Create and get
-	vm.GetOrCreate("pane1")
-	if tracker := vm.Get("pane1"); tracker == nil {
-		t.Error("expected tracker, got nil")
-	}
-}
-
-func TestVelocityManager_Remove(t *testing.T) {
-	vm := NewVelocityManager()
-
-	vm.GetOrCreate("pane1")
-	vm.GetOrCreate("pane2")
-
-	if vm.TrackerCount() != 2 {
-		t.Errorf("expected 2 trackers, got %d", vm.TrackerCount())
-	}
-
-	vm.Remove("pane1")
-
-	if vm.TrackerCount() != 1 {
-		t.Errorf("expected 1 tracker after remove, got %d", vm.TrackerCount())
-	}
-
-	if vm.Get("pane1") != nil {
-		t.Error("expected nil after remove")
-	}
-
-	if vm.Get("pane2") == nil {
-		t.Error("expected pane2 to still exist")
-	}
-}
-
-func TestVelocityManager_GetAllVelocities(t *testing.T) {
-	vm := NewVelocityManager()
-
-	tracker1 := vm.GetOrCreate("pane1")
-	tracker2 := vm.GetOrCreate("pane2")
-
-	// Add samples with known velocities
-	tracker1.mu.Lock()
-	tracker1.addSampleLocked(VelocitySample{Velocity: 5.0})
-	tracker1.mu.Unlock()
-
-	tracker2.mu.Lock()
-	tracker2.addSampleLocked(VelocitySample{Velocity: 10.0})
-	tracker2.mu.Unlock()
-
-	velocities := vm.GetAllVelocities()
-
-	if len(velocities) != 2 {
-		t.Errorf("expected 2 velocities, got %d", len(velocities))
-	}
-
-	if velocities["pane1"] != 5.0 {
-		t.Errorf("expected pane1 velocity 5.0, got %f", velocities["pane1"])
-	}
-
-	if velocities["pane2"] != 10.0 {
-		t.Errorf("expected pane2 velocity 10.0, got %f", velocities["pane2"])
-	}
-}
-
-func TestVelocityManager_Clear(t *testing.T) {
-	vm := NewVelocityManager()
-
-	vm.GetOrCreate("pane1")
-	vm.GetOrCreate("pane2")
-	vm.GetOrCreate("pane3")
-
-	vm.Clear()
-
-	if vm.TrackerCount() != 0 {
-		t.Errorf("expected 0 trackers after clear, got %d", vm.TrackerCount())
-	}
-}
-
-func TestVelocityManager_TrackerCount(t *testing.T) {
-	vm := NewVelocityManager()
-
-	if vm.TrackerCount() != 0 {
-		t.Errorf("expected 0, got %d", vm.TrackerCount())
-	}
-
-	vm.GetOrCreate("pane1")
-	if vm.TrackerCount() != 1 {
-		t.Errorf("expected 1, got %d", vm.TrackerCount())
-	}
-
-	vm.GetOrCreate("pane2")
-	vm.GetOrCreate("pane3")
-	if vm.TrackerCount() != 3 {
-		t.Errorf("expected 3, got %d", vm.TrackerCount())
 	}
 }
 
@@ -1912,149 +1706,6 @@ func TestPatternCategoryConstants(t *testing.T) {
 	}
 }
 
-func TestVelocityTrackerCircularBufferEdgeCases(t *testing.T) {
-
-	// Test with size 1 - single element buffer
-	tracker := NewVelocityTrackerWithSize("test", 1)
-
-	tracker.mu.Lock()
-	tracker.addSampleLocked(VelocitySample{Velocity: 1.0})
-	tracker.addSampleLocked(VelocitySample{Velocity: 2.0})
-	tracker.addSampleLocked(VelocitySample{Velocity: 3.0})
-	tracker.mu.Unlock()
-
-	if len(tracker.Samples) != 1 {
-		t.Errorf("expected 1 sample, got %d", len(tracker.Samples))
-	}
-	if tracker.Samples[0].Velocity != 3.0 {
-		t.Errorf("expected last velocity 3.0, got %f", tracker.Samples[0].Velocity)
-	}
-}
-
-func TestVelocityTrackerExactMaxSamples(t *testing.T) {
-
-	tracker := NewVelocityTrackerWithSize("test", 3)
-
-	// Add exactly MaxSamples samples
-	for i := 1; i <= 3; i++ {
-		tracker.mu.Lock()
-		tracker.addSampleLocked(VelocitySample{Velocity: float64(i)})
-		tracker.mu.Unlock()
-	}
-
-	if len(tracker.Samples) != 3 {
-		t.Errorf("expected 3 samples, got %d", len(tracker.Samples))
-	}
-
-	// Verify order: 1.0, 2.0, 3.0
-	for i, s := range tracker.Samples {
-		expected := float64(i + 1)
-		if s.Velocity != expected {
-			t.Errorf("sample %d: expected velocity %f, got %f", i, expected, s.Velocity)
-		}
-	}
-}
-
-func TestVelocityTrackerRecentVelocityEdgeCases(t *testing.T) {
-
-	tracker := NewVelocityTrackerWithSize("test", 10)
-
-	// Test with exactly n=1
-	tracker.mu.Lock()
-	tracker.addSampleLocked(VelocitySample{Velocity: 10.0})
-	tracker.addSampleLocked(VelocitySample{Velocity: 20.0})
-	tracker.addSampleLocked(VelocitySample{Velocity: 30.0})
-	tracker.mu.Unlock()
-
-	// Recent 1 should be just the last sample
-	if v := tracker.RecentVelocity(1); v != 30.0 {
-		t.Errorf("RecentVelocity(1) = %f, want 30.0", v)
-	}
-
-	// Test with negative n (should use all)
-	if v := tracker.RecentVelocity(-1); v != 20.0 {
-		t.Errorf("RecentVelocity(-1) = %f, want 20.0 (average of all)", v)
-	}
-}
-
-func TestLastOutputAgeLocked_AllSamplesNoOutput(t *testing.T) {
-
-	tracker := NewVelocityTrackerWithSize("test", 5)
-
-	// Set LastCaptureAt but add samples with no output
-	oldTime := time.Now().Add(-10 * time.Second)
-	tracker.mu.Lock()
-	tracker.LastCaptureAt = time.Now()
-	tracker.Samples = []VelocitySample{
-		{Timestamp: oldTime.Add(-5 * time.Second), CharsAdded: 0, Velocity: 0},
-		{Timestamp: oldTime, CharsAdded: 0, Velocity: 0},
-	}
-	tracker.mu.Unlock()
-
-	// Should return time since oldest sample
-	age := tracker.LastOutputAge()
-	if age < 14*time.Second || age > 16*time.Second {
-		t.Errorf("expected ~15s age (since oldest sample), got %v", age)
-	}
-}
-
-func TestLastOutputAgeLocked_MixedSamples(t *testing.T) {
-
-	tracker := NewVelocityTrackerWithSize("test", 5)
-
-	// Mix of samples with and without output
-	now := time.Now()
-	tracker.mu.Lock()
-	tracker.LastCaptureAt = now
-	tracker.Samples = []VelocitySample{
-		{Timestamp: now.Add(-10 * time.Second), CharsAdded: 50, Velocity: 5.0}, // Has output
-		{Timestamp: now.Add(-5 * time.Second), CharsAdded: 0, Velocity: 0},     // No output
-		{Timestamp: now.Add(-2 * time.Second), CharsAdded: 0, Velocity: 0},     // No output
-	}
-	tracker.lastOutputAt = now.Add(-10 * time.Second)
-	tracker.mu.Unlock()
-
-	// Should find the sample with output (10s ago)
-	age := tracker.LastOutputAge()
-	if age < 9*time.Second || age > 11*time.Second {
-		t.Errorf("expected ~10s age (sample with output), got %v", age)
-	}
-}
-
-func TestVelocityTracker_LastOutputAgeSurvivesSampleEviction(t *testing.T) {
-	tracker := NewVelocityTrackerWithSize("test", 2)
-
-	if _, err := tracker.UpdateWithOutput("baseline"); err != nil {
-		t.Fatalf("establish baseline: %v", err)
-	}
-	if _, err := tracker.UpdateWithOutput("baseline with output"); err != nil {
-		t.Fatalf("record output: %v", err)
-	}
-
-	tracker.mu.Lock()
-	lastOutputAt := time.Now().Add(-DefaultStallThreshold - time.Second)
-	tracker.lastOutputAt = lastOutputAt
-	tracker.mu.Unlock()
-
-	for i := 0; i < tracker.MaxSamples; i++ {
-		if _, err := tracker.UpdateWithOutput("baseline with output"); err != nil {
-			t.Fatalf("silent update %d: %v", i, err)
-		}
-	}
-
-	for _, sample := range tracker.GetSamples() {
-		if sample.CharsAdded != 0 {
-			t.Fatalf("expected retained samples to be silent, got %+v", sample)
-		}
-	}
-	if age := tracker.LastOutputAge(); age <= DefaultStallThreshold {
-		t.Fatalf("LastOutputAge() = %v, want greater than %v after output sample eviction", age, DefaultStallThreshold)
-	}
-	if got := tracker.LastOutputTime(); !got.Equal(lastOutputAt) {
-		t.Fatalf("LastOutputTime() = %v, want %v", got, lastOutputAt)
-	}
-}
-
 func TestClassifyState_StalledAfterGenerating(t *testing.T) {
 
 	sc := NewStateClassifier("test", &ClassifierConfig{
@@ -2446,32 +2097,6 @@ func TestActivityMonitorNilConfig(t *testing.T) {
 	}
 }
 
-func TestVelocityManagerConcurrentAccess(t *testing.T) {
-
-	vm := NewVelocityManager()
-
-	// Simulate concurrent access
-	done := make(chan bool)
-	for i := 0; i < 10; i++ {
-		go func(idx int) {
-			paneID := "pane_" + string(rune('0'+idx))
-			tracker := vm.GetOrCreate(paneID)
-			_ = tracker.CurrentVelocity()
-			_ = vm.GetAllVelocities()
-			done <- true
-		}(i)
-	}
-
-	// Wait for all goroutines
-	for i := 0; i < 10; i++ {
-		<-done
-	}
-
-	if vm.TrackerCount() != 10 {
-		t.Errorf("expected 10 trackers, got %d", vm.TrackerCount())
-	}
-}
-
 func TestActivityMonitorConcurrentAccess(t *testing.T) {
 
 	am := NewActivityMonitor(nil)
@@ -2512,39 +2137,6 @@ func TestStateClassifierConcurrentAccess(t *testing.T) {
 
 	for i := 0; i < 10; i++ {
 		<-done
-	}
-}
-
-func TestVelocityTrackerResetClearsAll(t *testing.T) {
-
-	tracker := NewVelocityTrackerWithSize("test", 5)
-
-	// Add state
-	tracker.mu.Lock()
-	tracker.Samples = []VelocitySample{
-		{Velocity: 1.0}, {Velocity: 2.0}, {Velocity: 3.0},
-	}
-	tracker.LastCapture = "some content"
-	tracker.LastCaptureAt = time.Now()
-	tracker.mu.Unlock()
-
-	// Verify state exists
-	if tracker.SampleCount() != 3 {
-		t.Fatalf("expected 3 samples before reset, got %d", tracker.SampleCount())
-	}
-
-	// Reset
-	tracker.Reset()
-
-	// Verify all cleared
-	if tracker.SampleCount() != 0 {
-		t.Errorf("expected 0 samples after reset, got %d", tracker.SampleCount())
-	}
-	if tracker.LastCapture != "" {
-		t.Error("LastCapture should be empty after reset")
-	}
-	if !tracker.LastCaptureAt.IsZero() {
-		t.Error("LastCaptureAt should be zero after reset")
 	}
 }
 
@@ -2818,24 +2410,6 @@ func TestVelocityTracker_RestartSafeBaseline_WithGrowth(t *testing.T) {
 	if sample.CharsAdded != 0 {
 		// Because hash changed, we treat it as buffer reset
 		t.Errorf("hash mismatch should trigger buffer reset semantics (0 charsAdded), got %d", sample.CharsAdded)
-	}
-}
-
-func TestVelocityManager_WithStore(t *testing.T) {
-
-	store := newMockWatermarkStore()
-	manager := NewVelocityManager(WithManagerStore(store))
-
-	// Create tracker via manager
-	tracker := manager.GetOrCreate("managed-pane")
-
-	// Should have store wired up
-	_, _ = tracker.UpdateWithOutput("Content for managed tracker")
-
-	// Verify watermark was persisted
-	wm, _ := store.GetWatermark(WatermarkTypeVelocity, "managed-pane")
-	if wm == nil {
-		t.Error("watermark should have been persisted via manager-created tracker")
 	}
 }
 

@@ -42,16 +42,6 @@ func (sc *SpawnContext) ForAgent(order int, staggerDelay time.Duration) *AgentSp
 	}
 }
 
-// EnvVars returns environment variables to set for this agent.
-// These variables allow agents to programmatically access their spawn context.
-func (asc *AgentSpawnContext) EnvVars() map[string]string {
-	return map[string]string{
-		"NTM_SPAWN_ORDER":    fmt.Sprintf("%d", asc.Order),
-		"NTM_SPAWN_TOTAL":    fmt.Sprintf("%d", asc.TotalAgents),
-		"NTM_SPAWN_BATCH_ID": asc.BatchID,
-	}
-}
-
 // EnvVarPrefix returns a shell command prefix that sets the spawn context for
 // the following command (VAR=... form).
 //

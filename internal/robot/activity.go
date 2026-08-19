@@ -94,23 +94,6 @@ func NewVelocityTracker(paneID string, opts ...VelocityTrackerOption) *VelocityT
 	return vt
 }
 
-// NewVelocityTrackerWithSize creates a tracker with a custom buffer size.
-func NewVelocityTrackerWithSize(paneID string, maxSamples int, opts ...VelocityTrackerOption) *VelocityTracker {
-	if maxSamples <= 0 {
-		maxSamples = DefaultMaxSamples
-	}
-	vt := &VelocityTracker{
-		PaneID:     paneID,
-		Samples:    make([]VelocitySample, 0, maxSamples),
-		MaxSamples: maxSamples,
-	}
-	for _, opt := range opts {
-		opt(vt)
-	}
-	vt.restoreFromStore()
-	return vt
-}
-
 // restoreFromStore loads the baseline from persistent storage if available.
 // Called during construction; gracefully degrades if store unavailable or no prior data.
 func (vt *VelocityTracker) restoreFromStore() {
@@ -491,112 +474,6 @@ type VelocityManager struct {
 
 // VelocityManagerOption configures a VelocityManager.
 type VelocityManagerOption func(*VelocityManager)
-
-// WithManagerStore configures the manager to pass the store to all new trackers.
-func WithManagerStore(store WatermarkStore) VelocityManagerOption {
-	return func(vm *VelocityManager) {
-		vm.store = store
-	}
-}
-
-// NewVelocityManager creates a new velocity manager.
-func NewVelocityManager(opts ...VelocityManagerOption) *VelocityManager {
-	vm := &VelocityManager{
-		trackers: make(map[string]*VelocityTracker),
-	}
-	for _, opt := range opts {
-		opt(vm)
-	}
-	return vm
-}
-
-// GetOrCreate returns the tracker for a pane, creating one if needed.
-func (vm *VelocityManager) GetOrCreate(paneID string) *VelocityTracker {
-	vm.mu.Lock()
-	defer vm.mu.Unlock()
-
-	if tracker, ok := vm.trackers[paneID]; ok {
-		return tracker
-	}
-
-	var opts []VelocityTrackerOption
-	if vm.store != nil {
-		opts = append(opts, WithWatermarkStore(vm.store))
-	}
-	tracker := NewVelocityTracker(paneID, opts...)
-	vm.trackers[paneID] = tracker
-	return tracker
-}
-
-// Get returns the tracker for a pane, or nil if not found.
-func (vm *VelocityManager) Get(paneID string) *VelocityTracker {
-	vm.mu.RLock()
-	defer vm.mu.RUnlock()
-	return vm.trackers[paneID]
-}
-
-// Remove removes the tracker for a pane.
-func (vm *VelocityManager) Remove(paneID string) {
-	vm.mu.Lock()
-	defer vm.mu.Unlock()
-	delete(vm.trackers, paneID)
-}
-
-// UpdateAll updates all registered trackers.
-// Returns a map of pane IDs to their current samples, and any errors.
-func (vm *VelocityManager) UpdateAll() (map[string]*VelocitySample, map[string]error) {
-	vm.mu.RLock()
-	paneIDs := make([]string, 0, len(vm.trackers))
-	for id := range vm.trackers {
-		paneIDs = append(paneIDs, id)
-	}
-	vm.mu.RUnlock()
-
-	samples := make(map[string]*VelocitySample)
-	errors := make(map[string]error)
-
-	for _, paneID := range paneIDs {
-		tracker := vm.Get(paneID)
-		if tracker == nil {
-			continue
-		}
-
-		sample, err := tracker.Update()
-		if err != nil {
-			errors[paneID] = err
-		} else {
-			samples[paneID] = sample
-		}
-	}
-
-	return samples, errors
-}
-
-// GetAllVelocities returns the current velocity for all tracked panes.
-func (vm *VelocityManager) GetAllVelocities() map[string]float64 {
-	vm.mu.RLock()
-	defer vm.mu.RUnlock()
-
-	result := make(map[string]float64, len(vm.trackers))
-	for paneID, tracker := range vm.trackers {
-		result[paneID] = tracker.CurrentVelocity()
-	}
-	return result
-}
-
-// Clear removes all trackers.
-func (vm *VelocityManager) Clear() {
-	vm.mu.Lock()
-	defer vm.mu.Unlock()
-	vm.trackers = make(map[string]*VelocityTracker)
-}
-
-// TrackerCount returns the number of active trackers.
-func (vm *VelocityManager) TrackerCount() int {
-	vm.mu.RLock()
-	defer vm.mu.RUnlock()
-	return len(vm.trackers)
-}
 
 // =============================================================================
 // Durable output-change sequence (#246)

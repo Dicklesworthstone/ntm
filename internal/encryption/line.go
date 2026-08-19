@@ -17,16 +17,6 @@ func EncryptLine(key, plaintext []byte) ([]byte, error) {
 	return encoded, nil
 }
 
-// DecryptLine base64-decodes and decrypts an encrypted JSONL line.
-func DecryptLine(key, encoded []byte) ([]byte, error) {
-	ciphertext := make([]byte, base64.StdEncoding.DecodedLen(len(encoded)))
-	n, err := base64.StdEncoding.Decode(ciphertext, encoded)
-	if err != nil {
-		return nil, fmt.Errorf("base64 decode: %w", err)
-	}
-	return Decrypt(key, ciphertext[:n])
-}
-
 // DecryptLineWithKeyring tries each key in order until one succeeds.
 // Returns the decrypted plaintext or ErrWrongKey if no key works.
 func DecryptLineWithKeyring(keys [][]byte, encoded []byte) ([]byte, error) {

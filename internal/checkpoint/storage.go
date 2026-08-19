@@ -63,13 +63,6 @@ func NewStorage() *Storage {
 	}
 }
 
-// NewStorageWithDir creates a Storage with a custom directory.
-func NewStorageWithDir(dir string) *Storage {
-	return &Storage{
-		BaseDir: dir,
-	}
-}
-
 // CheckpointDir returns the directory path for a specific checkpoint.
 func (s *Storage) CheckpointDir(sessionName, checkpointID string) string {
 	dir, err := s.safeCheckpointDir(sessionName, checkpointID)
@@ -170,28 +163,6 @@ func (s *Storage) checkpointDirForLookup(sessionName, checkpointID string) (stri
 		return "", err
 	}
 	return filepath.Join(s.BaseDir, sessionName, checkpointID), nil
-}
-
-func resolveCheckpointRelativePath(baseDir, relPath string) (string, error) {
-	if strings.TrimSpace(relPath) == "" {
-		return "", fmt.Errorf("relative path cannot be empty")
-	}
-
-	cleaned := filepath.Clean(relPath)
-	if cleaned == "." {
-		return "", fmt.Errorf("invalid relative path: %q", relPath)
-	}
-
-	fullPath := filepath.Join(baseDir, cleaned)
-	relToBase, err := filepath.Rel(baseDir, fullPath)
-	if err != nil {
-		return "", fmt.Errorf("invalid relative path %q: %w", relPath, err)
-	}
-	if relToBase == ".." || strings.HasPrefix(relToBase, ".."+string(filepath.Separator)) || filepath.IsAbs(relToBase) {
-		return "", fmt.Errorf("path escapes checkpoint directory: %s", relPath)
-	}
-
-	return fullPath, nil
 }
 
 func resolveExistingCheckpointArtifactPath(baseDir, relPath string) (string, error) {

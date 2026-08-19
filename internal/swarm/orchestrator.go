@@ -57,17 +57,6 @@ func NewRemoteSessionOrchestrator(host string) *SessionOrchestrator {
 	}
 }
 
-// NewRemoteSessionOrchestratorWithDelay creates a remote SessionOrchestrator with custom stagger delay.
-// The host parameter should be in the format "user@host".
-// The staggerDelay parameter controls the delay between pane creations.
-func NewRemoteSessionOrchestratorWithDelay(host string, staggerDelay time.Duration) *SessionOrchestrator {
-	return &SessionOrchestrator{
-		TmuxClient:     tmux.NewClient(host),
-		StaggerDelay:   staggerDelay,
-		targetingCache: make(map[string]swarmSessionTargeting),
-	}
-}
-
 // tmuxClient returns the configured tmux client or the default client.
 func (o *SessionOrchestrator) tmuxClient() *tmux.Client {
 	if o.TmuxClient != nil {
@@ -1008,18 +997,4 @@ func sendGracefulExit(client *tmux.Client, pane tmux.Pane) error {
 		// Unknown agents: try standard Ctrl+C
 		return client.SendKeys(pane.ID, "\x03", false)
 	}
-}
-
-// ShutdownFromPlan gracefully shuts down all sessions defined in a swarm plan.
-func (o *SwarmOrchestrator) ShutdownFromPlan(ctx context.Context, plan *SwarmPlan, cfg ShutdownConfig) (*ShutdownResult, error) {
-	if plan == nil {
-		return &ShutdownResult{}, nil
-	}
-
-	sessionNames := make([]string, 0, len(plan.Sessions))
-	for _, sess := range plan.Sessions {
-		sessionNames = append(sessionNames, sess.Name)
-	}
-
-	return o.GracefulShutdown(ctx, sessionNames, cfg)
 }

@@ -32,34 +32,6 @@ type LoopResult struct {
 	FinishedAt  time.Time
 }
 
-// ErrLoopBreak is returned when a loop is exited via break control.
-type ErrLoopBreak struct {
-	Reason string
-}
-
-func (e *ErrLoopBreak) Error() string {
-	if e.Reason != "" {
-		return "loop break: " + e.Reason
-	}
-	return "loop break"
-}
-
-// ErrLoopContinue is returned when an iteration should be skipped.
-type ErrLoopContinue struct{}
-
-func (e *ErrLoopContinue) Error() string {
-	return "loop continue"
-}
-
-// ErrMaxIterations is returned when the max iterations limit is reached.
-type ErrMaxIterations struct {
-	Limit int
-}
-
-func (e *ErrMaxIterations) Error() string {
-	return fmt.Sprintf("max iterations limit reached (%d)", e.Limit)
-}
-
 // ExecuteLoop executes a loop step and returns the aggregated result.
 func (le *LoopExecutor) ExecuteLoop(ctx context.Context, step *Step, workflow *Workflow) LoopResult {
 	loop := step.Loop

@@ -1,7 +1,6 @@
 package ensemble
 
 import (
-	"strings"
 	"testing"
 )
 
@@ -140,7 +139,7 @@ func TestValidateBudgetConfig_NegativeValues(t *testing.T) {
 
 	report := NewValidationReport()
 	validateBudgetConfig(BudgetConfig{MaxTokensPerMode: -100}, report)
-	if !report.HasErrors() {
+	if len(report.Errors) == 0 {
 		t.Fatal("expected errors for negative budget values")
 	}
 	if !hasErrorCode(report, "BUDGET_NEGATIVE") {
@@ -156,7 +155,7 @@ func TestValidateBudgetConfig_PerModeExceedsTotal(t *testing.T) {
 		MaxTokensPerMode: 5000,
 		MaxTotalTokens:   2000,
 	}, report)
-	if !report.HasErrors() {
+	if len(report.Errors) == 0 {
 		t.Fatal("expected errors for per-mode exceeding total")
 	}
 	if !hasErrorCode(report, "BUDGET_PER_MODE_EXCEEDS_TOTAL") {
@@ -174,7 +173,7 @@ func TestValidateBudgetConfig_ReserveExceedsTotal(t *testing.T) {
 		SynthesisReserveTokens: 6000,
 		ContextReserveTokens:   6000,
 	}, report)
-	if !report.HasErrors() {
+	if len(report.Errors) == 0 {
 		t.Fatal("expected errors for reserve exceeding total")
 	}
 	if !hasErrorCode(report, "BUDGET_RESERVE_EXCEEDS_TOTAL") {
@@ -190,7 +189,7 @@ func TestValidateBudgetConfig_Valid(t *testing.T) {
 		MaxTokensPerMode: 5000,
 		MaxTotalTokens:   50000,
 	}, report)
-	if report.HasErrors() {
+	if len(report.Errors) > 0 {
 		t.Fatalf("expected no errors, got: %+v", report.Errors)
 	}
 }
@@ -201,7 +200,7 @@ func TestValidateBudgetConfig_ZeroValues(t *testing.T) {
 	// All zeros should be valid (no budget constraints).
 	report := NewValidationReport()
 	validateBudgetConfig(BudgetConfig{}, report)
-	if report.HasErrors() {
+	if len(report.Errors) > 0 {
 		t.Fatalf("expected no errors for zero config, got: %+v", report.Errors)
 	}
 }
@@ -306,7 +305,7 @@ func TestValidateEnsemblePreset_NilPreset(t *testing.T) {
 	t.Parallel()
 
 	report := ValidateEnsemblePreset(nil, nil, nil)
-	if !report.HasErrors() {
+	if len(report.Errors) == 0 {
 		t.Fatal("expected errors for nil preset")
 	}
 	if !hasErrorCode(report, "NIL_PRESET") {
@@ -323,7 +322,7 @@ func TestValidateEnsemblePreset_NilCatalog(t *testing.T) {
 		Modes:       []ModeRef{ModeRefFromID("x")},
 	}
 	report := ValidateEnsemblePreset(preset, nil, nil)
-	if !report.HasErrors() {
+	if len(report.Errors) == 0 {
 		t.Fatal("expected errors for nil catalog")
 	}
 	if !hasErrorCode(report, "MISSING_CATALOG") {
@@ -343,7 +342,7 @@ func TestValidateBudgetConfig_PerModeTooHigh(t *testing.T) {
 		MaxTokensPerMode: 300000, // > maxReasonablePerMode (200000)
 		MaxTotalTokens:   500000,
 	}, report)
-	if !report.HasErrors() {
+	if len(report.Errors) == 0 {
 		t.Fatal("expected errors for per-mode too high")
 	}
 	if !hasErrorCode(report, "BUDGET_PER_MODE_TOO_HIGH") {
@@ -354,54 +353,3 @@ func TestValidateBudgetConfig_PerModeTooHigh(t *testing.T) {
 // ---------------------------------------------------------------------------
 // Render — VelocityTracker
 // ---------------------------------------------------------------------------
-
-func TestVelocityTracker_Render_Nil(t *testing.T) {
-	t.Parallel()
-
-	var v *VelocityTracker
-	got := v.Render()
-	if got != "No velocity data available" {
-		t.Errorf("expected fallback message, got %q", got)
-	}
-}
-
-func TestVelocityTracker_Render_WithData(t *testing.T) {
-	t.Parallel()
-
-	v := NewVelocityTracker()
-	v.RecordOutput("mode-a", ModeOutput{
-		ModeID: "mode-a",
-		TopFindings: []Finding{
-			{Finding: "finding-1"},
-			{Finding: "finding-2"},
-		},
-	}, 1000)
-	v.RecordOutput("mode-b", ModeOutput{
-		ModeID: "mode-b",
-		TopFindings: []Finding{
-			{Finding: "finding-3"},
-		},
-	}, 2000)
-
-	got := v.Render()
-	if !strings.Contains(got, "Findings Velocity:") {
-		t.Errorf("expected header in render, got %q", got)
-	}
-	if !strings.Contains(got, "Per Mode:") {
-		t.Errorf("expected per-mode section, got %q", got)
-	}
-	if !strings.Contains(got, "mode-a") {
-		t.Errorf("expected mode ID in render, got %q", got)
-	}
-}
-
-func TestVelocityTracker_Render_EmptyTracker(t *testing.T) {
-	t.Parallel()
-
-	v := NewVelocityTracker()
-	got := v.Render()
-	// Empty tracker should still render (CalculateVelocity returns nil for no entries)
-	if got == "" {
-		t.Error("expected non-empty render for empty tracker")
-	}
-}

@@ -279,29 +279,6 @@ func (t *TimelineTracker) RecordEvent(event AgentEvent) AgentEvent {
 	return event
 }
 
-// GetEvents returns events matching the given criteria.
-// If since is zero, all events within retention period are returned.
-// Results are sorted chronologically (oldest first).
-func (t *TimelineTracker) GetEvents(since time.Time) []AgentEvent {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-
-	// Use retention cutoff if since is zero
-	cutoff := since
-	if cutoff.IsZero() {
-		cutoff = time.Now().Add(-t.config.RetentionDuration)
-	}
-
-	result := make([]AgentEvent, 0, len(t.allEvents))
-	for _, event := range t.allEvents {
-		if event.Timestamp.After(cutoff) || event.Timestamp.Equal(cutoff) {
-			result = append(result, event)
-		}
-	}
-
-	return result
-}
-
 // GetAllEventsForSession returns every retained event for a session, ignoring
 // the retention window.
 //
@@ -355,18 +332,6 @@ func (t *TimelineTracker) GetCurrentState(agentID string) TimelineState {
 		return ""
 	}
 	return timeline.currentState
-}
-
-// GetAgentStates returns the current state of all tracked agents.
-func (t *TimelineTracker) GetAgentStates() map[string]TimelineState {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-
-	states := make(map[string]TimelineState, len(t.timelines))
-	for agentID, timeline := range t.timelines {
-		states[agentID] = timeline.currentState
-	}
-	return states
 }
 
 // OnStateChange registers a callback to be called when an agent's state changes.
@@ -477,23 +442,6 @@ func (t *TimelineTracker) backgroundPrune() {
 			return
 		}
 	}
-}
-
-// Stop stops the background pruning goroutine and cleans up resources.
-func (t *TimelineTracker) Stop() {
-	t.stopOnce.Do(func() {
-		close(t.stopPrune)
-	})
-	t.pruneWg.Wait()
-}
-
-// Clear removes all tracked events and resets the tracker.
-func (t *TimelineTracker) Clear() {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	t.timelines = make(map[string]*agentTimeline)
-	t.allEvents = make([]AgentEvent, 0, 1000)
 }
 
 // AddMarker adds a discrete event marker to the timeline.

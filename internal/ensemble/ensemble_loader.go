@@ -286,10 +286,3 @@ func GlobalEnsembleRegistry() (*EnsembleRegistry, error) {
 	})
 	return globalRegistry, globalRegistryErr
 }
-
-// ResetGlobalEnsembleRegistry clears the global registry singleton (for testing only).
-func ResetGlobalEnsembleRegistry() {
-	globalRegistryOnce = sync.Once{}
-	globalRegistry = nil
-	globalRegistryErr = nil
-}

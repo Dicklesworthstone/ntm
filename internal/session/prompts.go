@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"sync"
 	"time"
 
@@ -236,74 +235,4 @@ func redactPromptHistoryForPersistence(history *PromptHistory) *PromptHistory {
 		redacted.Prompts = append(redacted.Prompts, redactedEntry)
 	}
 	return &redacted
-}
-
-// GetLatestPrompts returns the N most recent prompts for a session.
-func GetLatestPrompts(sessionName string, limit int) ([]PromptEntry, error) {
-	history, err := LoadPromptHistory(sessionName)
-	if err != nil {
-		return nil, err
-	}
-
-	// Sort by timestamp (newest first)
-	sort.Slice(history.Prompts, func(i, j int) bool {
-		return history.Prompts[i].Timestamp.After(history.Prompts[j].Timestamp)
-	})
-
-	// Limit results
-	if limit > 0 && len(history.Prompts) > limit {
-		return history.Prompts[:limit], nil
-	}
-
-	return history.Prompts, nil
-}
-
-// ClearPromptHistory removes all prompts for a session.
-func ClearPromptHistory(sessionName string) error {
-	unlock, err := acquireLock()
-	if err != nil {
-		return fmt.Errorf("lock prompt history: %w", err)
-	}
-	defer unlock()
-
-	path, err := promptsFilePath(sessionName)
-	if err != nil {
-		return err
-	}
-
-	err = os.Remove(path)
-	if os.IsNotExist(err) {
-		return nil // Already cleared
-	}
-	return err
-}
-
-// ListSessionDirs returns all sessions that have prompt history.
-func ListSessionDirs() ([]string, error) {
-	ntmDir, err := util.NTMDir()
-	if err != nil {
-		return nil, err
-	}
-
-	sessionsDir := filepath.Join(ntmDir, "sessions")
-	entries, err := os.ReadDir(sessionsDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return []string{}, nil
-		}
-		return nil, err
-	}
-
-	var sessions []string
-	for _, entry := range entries {
-		if entry.IsDir() {
-			// Check if it has a prompts.json file
-			promptsPath := filepath.Join(sessionsDir, entry.Name(), "prompts.json")
-			if _, err := os.Stat(promptsPath); err == nil {
-				sessions = append(sessions, entry.Name())
-			}
-		}
-	}
-
-	return sessions, nil
 }

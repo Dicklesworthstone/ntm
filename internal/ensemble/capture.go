@@ -46,13 +46,6 @@ func NewOutputCapture(client *tmux.Client) *OutputCapture {
 	}
 }
 
-// SetMaxLines configures how many lines to capture per pane.
-func (c *OutputCapture) SetMaxLines(lines int) {
-	if lines > 0 {
-		c.maxLines = lines
-	}
-}
-
 // CaptureAll captures output from all assignments in the session.
 func (c *OutputCapture) CaptureAll(session *EnsembleSession) ([]CapturedOutput, error) {
 	if c == nil {

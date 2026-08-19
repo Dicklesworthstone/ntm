@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -828,51 +829,6 @@ func TestAssignOptions_Defaults(t *testing.T) {
 	}
 }
 
-func TestFilterAssignableActionableRecommendationsAppliesSafetyBeforeLimit(t *testing.T) {
-	recommendations := []bv.TriageRecommendation{
-		{ID: "blocked", Status: "open", BlockedBy: []string{"dependency"}},
-		{ID: "gated", Status: "open", Labels: []string{"  OPERATOR-GATED  "}},
-		{ID: "closed", Status: "closed"},
-		{ID: "   ", Status: "open"},
-		{ID: "missing-status", Title: "Must not assign", Priority: 0},
-		{ID: " first ", Title: " First ", Type: " task ", Status: "ready", Priority: 1},
-		{ID: "second", Title: "Second", Status: " OPEN ", Priority: 2},
-		{ID: " second ", Title: "Duplicate", Status: "ready", Priority: 0},
-		{ID: "third", Title: "Third", Status: "ready", Priority: 3},
-	}
-
-	filtered := filterAssignableActionableRecommendations(recommendations, 2)
-	if len(filtered) != 2 {
-		t.Fatalf("filtered recommendation count = %d, want 2", len(filtered))
-	}
-	if got := []string{filtered[0].ID, filtered[1].ID}; !reflect.DeepEqual(got, []string{"first", "second"}) {
-		t.Fatalf("filtered IDs = %v, want eligible rows after safety filtering", got)
-	}
-	if filtered[0].Title != "First" || filtered[0].Type != "task" {
-		t.Fatalf("trimmed first recommendation = %+v", filtered[0])
-	}
-
-	all := filterAssignableActionableRecommendations(recommendations, 0)
-	if len(all) != 3 {
-		t.Fatalf("uncapped filtered recommendation count = %d, want 3", len(all))
-	}
-	if got := []string{all[0].ID, all[1].ID, all[2].ID}; !reflect.DeepEqual(got, []string{"first", "second", "third"}) {
-		t.Fatalf("uncapped filtered IDs = %v", got)
-	}
-	for _, recommendation := range all {
-		if recommendation.ID == "missing-status" {
-			t.Fatalf("blank-status recommendation escaped robot assignment safety boundary: %+v", recommendation)
-		}
-	}
-	previews := filterAssignableBeadPreviews(recommendations, 2)
-	if got := []bv.BeadPreview{
-		{ID: "first", Title: "First", Priority: "P1", Type: "task"},
-		{ID: "second", Title: "Second", Priority: "P2"},
-	}; !reflect.DeepEqual(previews, got) {
-		t.Fatalf("assignable previews = %+v, want %+v", previews, got)
-	}
-}
-
 func TestFilterAssignableActionableRecommendationsIsolatesConcurrentProjectPolicies(t *testing.T) {
 	projectA := t.TempDir()
 	projectB := t.TempDir()
@@ -945,7 +901,7 @@ func TestLoadAuthoritativeAssignmentPolicyInstallsConfiguredGatesAndFailsClosed(
 	if err != nil {
 		t.Fatalf("load authoritative assignment policy: %v", err)
 	}
-	if effective == nil || !bv.IsOperatorGatedLabel("release-approval") || !bv.IsOperatorGatedLabel("operator-gated") {
+	if effective == nil || !slices.Contains(bv.OperatorGatedLabels(), "release-approval") || !slices.Contains(bv.OperatorGatedLabels(), "operator-gated") {
 		t.Fatalf("installed operator gates = %v", bv.OperatorGatedLabels())
 	}
 	if !bv.IsOperatorGatedLabelForProject(projectDir, "release-approval") || !bv.IsOperatorGatedLabelForProject(projectDir, "operator-gated") {
@@ -956,7 +912,7 @@ func TestLoadAuthoritativeAssignmentPolicyInstallsConfiguredGatesAndFailsClosed(
 	if _, err := loadAuthoritativeAssignmentPolicy(projectDir, missing, true); err == nil || !strings.Contains(err.Error(), "explicitly selected config") {
 		t.Fatalf("missing required global policy error = %v", err)
 	}
-	if !bv.IsOperatorGatedLabel("release-approval") {
+	if !slices.Contains(bv.OperatorGatedLabels(), "release-approval") {
 		t.Fatal("failed policy load mutated the previously installed gate vocabulary")
 	}
 	if !bv.IsOperatorGatedLabelForProject(projectDir, "release-approval") {

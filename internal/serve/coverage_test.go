@@ -15,7 +15,7 @@ func TestScannerStore_GetScans_ReverseOrder(t *testing.T) {
 	store := NewScannerStore()
 
 	for i := 0; i < 5; i++ {
-		store.AddScan(&ScanRecord{
+		seedScan(store, &ScanRecord{
 			ID:        generateScanID(),
 			State:     ScanStateCompleted,
 			StartedAt: time.Now(),
@@ -32,7 +32,7 @@ func TestScannerStore_GetScans_Pagination(t *testing.T) {
 	store := NewScannerStore()
 
 	for i := 0; i < 10; i++ {
-		store.AddScan(&ScanRecord{
+		seedScan(store, &ScanRecord{
 			ID:        generateScanID(),
 			State:     ScanStateCompleted,
 			StartedAt: time.Now(),
@@ -61,34 +61,6 @@ func TestScannerStore_GetScans_Pagination(t *testing.T) {
 // =============================================================================
 // ScannerStore: GetRunningScan
 // =============================================================================
-
-func TestScannerStore_GetRunningScan(t *testing.T) {
-	store := NewScannerStore()
-
-	// No running scan
-	if scan := store.GetRunningScan(); scan != nil {
-		t.Error("expected nil when no running scan")
-	}
-
-	// Add a completed scan
-	store.AddScan(&ScanRecord{ID: "scan-1", State: ScanStateCompleted})
-
-	// Still no running scan
-	if scan := store.GetRunningScan(); scan != nil {
-		t.Error("expected nil when only completed scans exist")
-	}
-
-	// Add a running scan
-	store.AddScan(&ScanRecord{ID: "scan-2", State: ScanStateRunning})
-
-	scan := store.GetRunningScan()
-	if scan == nil {
-		t.Fatal("expected running scan")
-	}
-	if scan.ID != "scan-2" {
-		t.Errorf("expected scan-2, got %s", scan.ID)
-	}
-}
 
 // =============================================================================
 // ScannerStore: AddScan / AddFinding / GetFinding / UpdateFinding

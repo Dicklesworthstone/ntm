@@ -2,6 +2,44 @@ package ensemble
 
 import "testing"
 
+func logTestStartContribution(t *testing.T, input any) {
+	t.Helper()
+	t.Logf("TEST: %s - starting with input: %v", t.Name(), input)
+}
+
+func logTestResultContribution(t *testing.T, result any) {
+	t.Helper()
+	t.Logf("TEST: %s - got result: %v", t.Name(), result)
+}
+
+func assertTrueContribution(t *testing.T, desc string, ok bool) {
+	t.Helper()
+	t.Logf("TEST: %s - assertion: %s", t.Name(), desc)
+	if !ok {
+		t.Fatalf("assertion failed: %s", desc)
+	}
+}
+
+func assertEqualContribution(t *testing.T, desc string, got, want any) {
+	t.Helper()
+	t.Logf("TEST: %s - assertion: %s", t.Name(), desc)
+	if got != want {
+		t.Fatalf("%s: got %v want %v", desc, got, want)
+	}
+}
+
+func scoreByMode(report *ContributionReport, modeID string) ContributionScore {
+	if report == nil {
+		return ContributionScore{}
+	}
+	for _, score := range report.Scores {
+		if score.ModeID == modeID {
+			return score
+		}
+	}
+	return ContributionScore{}
+}
+
 func TestContribution_SingleMode(t *testing.T) {
 	input := map[string]any{
 		"mode":     "mode-a",
@@ -82,42 +120,4 @@ func TestContribution_DeduplicatedFindings(t *testing.T) {
 	modeB := scoreByMode(report, "mode-b")
 	assertEqualContribution(t, "unique insights mode-a", modeA.UniqueInsights, 0)
 	assertEqualContribution(t, "unique insights mode-b", modeB.UniqueInsights, 0)
-}
-
-func logTestStartContribution(t *testing.T, input any) {
-	t.Helper()
-	t.Logf("TEST: %s - starting with input: %v", t.Name(), input)
-}
-
-func logTestResultContribution(t *testing.T, result any) {
-	t.Helper()
-	t.Logf("TEST: %s - got result: %v", t.Name(), result)
-}
-
-func assertTrueContribution(t *testing.T, desc string, ok bool) {
-	t.Helper()
-	t.Logf("TEST: %s - assertion: %s", t.Name(), desc)
-	if !ok {
-		t.Fatalf("assertion failed: %s", desc)
-	}
-}
-
-func assertEqualContribution(t *testing.T, desc string, got, want any) {
-	t.Helper()
-	t.Logf("TEST: %s - assertion: %s", t.Name(), desc)
-	if got != want {
-		t.Fatalf("%s: got %v want %v", desc, got, want)
-	}
-}
-
-func scoreByMode(report *ContributionReport, modeID string) ContributionScore {
-	if report == nil {
-		return ContributionScore{}
-	}
-	for _, score := range report.Scores {
-		if score.ModeID == modeID {
-			return score
-		}
-	}
-	return ContributionScore{}
 }

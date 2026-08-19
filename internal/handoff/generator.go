@@ -1,14 +1,11 @@
 package handoff
 
 import (
-	"bufio"
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
 	"os/exec"
 	"regexp"
 	"sort"
@@ -46,18 +43,6 @@ func NewGenerator(projectDir string) *Generator {
 	return &Generator{
 		projectDir:    projectDir,
 		logger:        slog.Default().With("component", "handoff.generator"),
-		commandOutput: runGeneratorCommand,
-	}
-}
-
-// NewGeneratorWithLogger creates a Generator with a custom logger.
-func NewGeneratorWithLogger(projectDir string, logger *slog.Logger) *Generator {
-	if logger == nil {
-		logger = slog.Default()
-	}
-	return &Generator{
-		projectDir:    projectDir,
-		logger:        logger.With("component", "handoff.generator"),
 		commandOutput: runGeneratorCommand,
 	}
 }
@@ -103,212 +88,6 @@ func runGeneratorCommand(ctx context.Context, dir string, timeout time.Duration,
 		return nil, fmt.Errorf("%s command exceeded %s timeout", name, timeout)
 	}
 	return out, err
-}
-
-// GenerateFromOutput creates a handoff by analyzing agent output text.
-func (g *Generator) GenerateFromOutput(ctx context.Context, sessionName string, output []byte) (*Handoff, error) {
-	if err := requireGeneratorContext(ctx, "generate handoff from output"); err != nil {
-		return nil, err
-	}
-
-	g.logger.Debug("generating handoff from output",
-		"session", sessionName,
-		"output_size", len(output),
-	)
-
-	h := New(sessionName)
-
-	analysis := g.analyzeOutput(output)
-	if err := requireGeneratorContext(ctx, "generate handoff from output"); err != nil {
-		return nil, err
-	}
-
-	// Map analysis to handoff fields
-	h.Goal = analysis.accomplishment
-	h.Now = analysis.nextStep
-	h.DoneThisSession = analysis.tasks
-	h.Blockers = analysis.blockers
-	h.Decisions = analysis.decisions
-	h.Next = analysis.todos
-
-	// Infer status based on analysis results
-	if len(analysis.blockers) > 0 {
-		h.Status = StatusBlocked
-		h.Outcome = OutcomePartialMinus
-	} else if analysis.accomplishment != "" {
-		h.Status = StatusComplete
-		h.Outcome = OutcomeSucceeded
-	} else {
-		h.Status = StatusPartial
-		h.Outcome = OutcomePartialPlus
-	}
-
-	// Enrich with git state
-	if err := g.EnrichWithGitState(ctx, h); err != nil {
-		if cancelErr := generatorCancellationError(ctx, err, "generate handoff from output"); cancelErr != nil {
-			return nil, cancelErr
-		}
-		g.logger.Warn("git enrichment failed", "error", err)
-		// Non-fatal - continue without git info
-	}
-
-	g.logger.Debug("generated handoff from output",
-		"session", sessionName,
-		"goal_len", len(h.Goal),
-		"now_len", len(h.Now),
-		"task_count", len(h.DoneThisSession),
-		"blocker_count", len(h.Blockers),
-	)
-
-	if err := requireGeneratorContext(ctx, "generate handoff from output"); err != nil {
-		return nil, err
-	}
-	h.UpdateQuality(time.Now())
-	return h, nil
-}
-
-// GenerateFromTranscript creates handoff from Claude Code transcript.
-// Transcript path: ~/.claude/projects/.../session.jsonl
-func (g *Generator) GenerateFromTranscript(ctx context.Context, sessionName, transcriptPath string) (*Handoff, error) {
-	if err := requireGeneratorContext(ctx, "generate handoff from transcript"); err != nil {
-		return nil, err
-	}
-
-	g.logger.Debug("generating handoff from transcript",
-		"session", sessionName,
-		"path", transcriptPath,
-	)
-
-	h := New(sessionName)
-
-	file, err := os.Open(transcriptPath)
-	if err != nil {
-		g.logger.Error("failed to open transcript",
-			"path", transcriptPath,
-			"error", err,
-		)
-		return nil, fmt.Errorf("open transcript: %w", err)
-	}
-	defer file.Close()
-
-	var (
-		toolCalls     []string
-		lastAssistant string
-		errors        []string
-		filesModified []string
-	)
-
-	scanner := bufio.NewScanner(file)
-	// Handle large lines - up to 10MB per line
-	scanner.Buffer(make([]byte, 1024*1024), 10*1024*1024)
-
-	for scanner.Scan() {
-		if err := requireGeneratorContext(ctx, "generate handoff from transcript"); err != nil {
-			return nil, err
-		}
-		var entry map[string]interface{}
-		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
-			continue // Skip malformed lines
-		}
-
-		// Extract tool calls
-		if tools, ok := entry["tool_calls"].([]interface{}); ok {
-			for _, t := range tools {
-				if tm, ok := t.(map[string]interface{}); ok {
-					if name, ok := tm["name"].(string); ok {
-						toolCalls = append(toolCalls, name)
-					}
-					// Track file modifications from Edit and Write tools
-					if name, _ := tm["name"].(string); name == "Edit" || name == "Write" {
-						if args, ok := tm["arguments"].(map[string]interface{}); ok {
-							if path, ok := args["file_path"].(string); ok {
-								filesModified = append(filesModified, path)
-							}
-						}
-					}
-				}
-			}
-		}
-
-		// Extract assistant messages - keep last one for analysis
-		if role, _ := entry["role"].(string); role == "assistant" {
-			if content, ok := entry["content"].(string); ok {
-				lastAssistant = content
-			}
-		}
-
-		// Extract errors from any error field
-		if errStr, ok := entry["error"].(string); ok {
-			errors = append(errors, errStr)
-		}
-	}
-
-	if err := scanner.Err(); err != nil {
-		g.logger.Error("failed to scan transcript",
-			"path", transcriptPath,
-			"error", err,
-		)
-		return nil, fmt.Errorf("scan transcript: %w", err)
-	}
-
-	// Analyze last assistant message for goal/now/todos
-	if lastAssistant != "" {
-		analysis := g.analyzeOutput([]byte(lastAssistant))
-		h.Goal = analysis.accomplishment
-		h.Now = analysis.nextStep
-		h.Next = analysis.todos
-		h.Decisions = analysis.decisions
-	}
-
-	// Track files from tool calls
-	h.Files.Modified = uniqueStrings(filesModified)
-
-	// Track blockers from errors - keep top 3
-	if len(errors) > 0 {
-		limit := len(errors)
-		if limit > 3 {
-			limit = 3
-		}
-		h.Blockers = errors[:limit]
-		h.Status = StatusBlocked
-		h.Outcome = OutcomePartialMinus
-	}
-
-	// Set status if not already blocked
-	if h.Status == "" {
-		if h.Goal != "" {
-			h.Status = StatusComplete
-			h.Outcome = OutcomeSucceeded
-		} else {
-			h.Status = StatusPartial
-			h.Outcome = OutcomePartialPlus
-		}
-	}
-
-	// Log tool usage summary
-	toolSummary := summarizeToolCalls(toolCalls)
-
-	g.logger.Info("generated handoff from transcript",
-		"session", sessionName,
-		"tool_calls", len(toolCalls),
-		"tool_summary", toolSummary,
-		"files_modified", len(filesModified),
-		"errors", len(errors),
-	)
-
-	// Enrich with git state
-	if err := g.EnrichWithGitState(ctx, h); err != nil {
-		if cancelErr := generatorCancellationError(ctx, err, "generate handoff from transcript"); cancelErr != nil {
-			return nil, cancelErr
-		}
-		g.logger.Warn("git enrichment failed", "error", err)
-	}
-
-	if err := requireGeneratorContext(ctx, "generate handoff from transcript"); err != nil {
-		return nil, err
-	}
-	h.UpdateQuality(time.Now())
-	return h, nil
 }
 
 // EnrichWithGitState adds git information to handoff.
@@ -580,79 +359,6 @@ func truncateGen(s string, maxBytes int) string {
 		end = i
 	}
 	return s[:end]
-}
-
-func summarizeToolCalls(calls []string) string {
-	counts := make(map[string]int)
-	for _, c := range calls {
-		counts[c]++
-	}
-	if len(counts) == 0 {
-		return ""
-	}
-	tools := make([]string, 0, len(counts))
-	for tool := range counts {
-		tools = append(tools, tool)
-	}
-	sort.Strings(tools)
-	var parts []string
-	for _, tool := range tools {
-		parts = append(parts, fmt.Sprintf("%s:%d", tool, counts[tool]))
-	}
-	return strings.Join(parts, ",")
-}
-
-// ProjectDir returns the project directory for this generator.
-func (g *Generator) ProjectDir() string {
-	return g.projectDir
-}
-
-// GenerateAutoHandoff creates an auto-generated handoff suitable for pre-compact hooks.
-// It combines output analysis with git state for a complete picture.
-func (g *Generator) GenerateAutoHandoff(ctx context.Context, sessionName, agentType, paneID string, output []byte, tokensUsed, tokensMax int) (*Handoff, error) {
-	if err := requireGeneratorContext(ctx, "generate automatic handoff"); err != nil {
-		return nil, err
-	}
-
-	g.logger.Debug("generating auto-handoff",
-		"session", sessionName,
-		"agent_type", agentType,
-		"pane_id", paneID,
-		"output_size", len(output),
-		"tokens_used", tokensUsed,
-		"tokens_max", tokensMax,
-	)
-
-	h, err := g.GenerateFromOutput(ctx, sessionName, output)
-	if err != nil {
-		return nil, fmt.Errorf("generate from output: %w", err)
-	}
-	if err := requireGeneratorContext(ctx, "generate automatic handoff"); err != nil {
-		return nil, err
-	}
-
-	// Set agent info
-	h.SetAgentInfo("", agentType, paneID)
-
-	// Set token info
-	h.SetTokenInfo(tokensUsed, tokensMax)
-
-	// Set creation timestamp
-	h.CreatedAt = time.Now()
-	h.UpdatedAt = h.CreatedAt
-
-	g.logger.Info("generated auto-handoff",
-		"session", sessionName,
-		"agent_type", agentType,
-		"tokens_pct", h.TokensPct,
-		"goal", truncateGen(h.Goal, 50),
-	)
-
-	if err := requireGeneratorContext(ctx, "generate automatic handoff"); err != nil {
-		return nil, err
-	}
-	h.UpdateQuality(time.Now())
-	return h, nil
 }
 
 // =============================================================================

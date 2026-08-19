@@ -200,3 +200,24 @@ func TestStripANSI(t *testing.T) {
 		})
 	}
 }
+
+// stripANSI removes ANSI escape codes from a string. The production copy was
+// removed as dead code; tests keep it for normalizing styled output.
+func stripANSI(s string) string {
+	var result strings.Builder
+	inEscape := false
+	for _, r := range s {
+		if r == '\033' {
+			inEscape = true
+			continue
+		}
+		if inEscape {
+			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
+				inEscape = false
+			}
+			continue
+		}
+		result.WriteRune(r)
+	}
+	return result.String()
+}

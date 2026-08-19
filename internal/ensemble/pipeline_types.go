@@ -1,7 +1,6 @@
 package ensemble
 
 import (
-	"errors"
 	"fmt"
 	"time"
 )
@@ -16,11 +15,6 @@ const (
 	StageComplete  PipelineStage = "complete"
 	StageFailed    PipelineStage = "failed"
 )
-
-// String returns the stage name.
-func (s PipelineStage) String() string {
-	return string(s)
-}
 
 // EnsembleResult is the final result from a complete ensemble run.
 type EnsembleResult struct {
@@ -56,25 +50,6 @@ type EnsembleResult struct {
 
 	// Metrics captures execution telemetry.
 	Metrics *PipelineMetrics `json:"metrics,omitempty"`
-}
-
-// Success returns true if the pipeline completed without errors.
-func (r *EnsembleResult) Success() bool {
-	if r == nil {
-		return false
-	}
-	return r.Stage == StageComplete && r.Error == ""
-}
-
-// Duration returns how long the ensemble run took.
-func (r *EnsembleResult) Duration() time.Duration {
-	if r == nil {
-		return 0
-	}
-	if r.CompletedAt.IsZero() {
-		return time.Since(r.StartedAt)
-	}
-	return r.CompletedAt.Sub(r.StartedAt)
 }
 
 // PipelineMetrics captures execution telemetry for an ensemble run.
@@ -141,23 +116,6 @@ type SynthesisReport struct {
 	AuditLog []AuditEntry `json:"audit_log,omitempty"`
 }
 
-// Validate checks that the synthesis report is properly formed.
-func (s *SynthesisReport) Validate() error {
-	if s == nil {
-		return errors.New("synthesis report is nil")
-	}
-	if s.ConsolidatedThesis == "" {
-		return errors.New("consolidated_thesis is required")
-	}
-	if len(s.TopFindings) == 0 {
-		return errors.New("at least one finding is required")
-	}
-	if err := s.Confidence.Validate(); err != nil {
-		return fmt.Errorf("invalid confidence: %w", err)
-	}
-	return nil
-}
-
 // SynthesisAgreement records where multiple modes reached the same conclusion.
 type SynthesisAgreement struct {
 	Finding      string   `json:"finding"`
@@ -215,13 +173,6 @@ type RunConfig struct {
 
 	// EarlyStopConfig enables early stopping conditions.
 	EarlyStop EarlyStopConfig
-}
-
-// DefaultRunConfig returns sensible defaults for a full run.
-func DefaultRunConfig() RunConfig {
-	return RunConfig{
-		CollectTimeout: 10 * time.Minute,
-	}
 }
 
 // Stage2Result captures the outputs from the mode run stage.
@@ -288,6 +239,17 @@ type PipelineError struct {
 	Stage   PipelineStage
 	Message string
 	Cause   error
+}
+
+// Duration returns how long the ensemble run took.
+func (r *EnsembleResult) Duration() time.Duration {
+	if r == nil {
+		return 0
+	}
+	if r.CompletedAt.IsZero() {
+		return time.Since(r.StartedAt)
+	}
+	return r.CompletedAt.Sub(r.StartedAt)
 }
 
 func (e *PipelineError) Error() string {

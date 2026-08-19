@@ -241,62 +241,6 @@ func TestComputeDegradedFeatures_TmuxDegraded(t *testing.T) {
 	t.Logf("DEGRADED_FEATURES tmux_degraded count=%d", len(features))
 }
 
-func TestComputeQuotaReasonCode(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name         string
-		usagePercent float64
-		expected     ReasonCode
-	}{
-		{"zero_usage", 0, ReasonQuotaOK},
-		{"low_usage", 50, ReasonQuotaOK},
-		{"warning_threshold", 80, ReasonQuotaWarningTokens},
-		{"high_usage", 90, ReasonQuotaWarningTokens},
-		{"critical_threshold", 95, ReasonQuotaCriticalTokens},
-		{"exceeded", 100, ReasonQuotaExceededTokens},
-		{"over_limit", 105, ReasonQuotaExceededTokens},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			result := computeQuotaReasonCode(tc.usagePercent)
-			if result != tc.expected {
-				t.Errorf("usagePercent=%.1f: expected %q, got %q", tc.usagePercent, tc.expected, result)
-			}
-			t.Logf("QUOTA_REASON usage=%.1f code=%q", tc.usagePercent, result)
-		})
-	}
-}
-
-func TestReasonToStatus(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		code     ReasonCode
-		expected string
-	}{
-		{ReasonQuotaExceededTokens, "exceeded"},
-		{ReasonQuotaExceededRequests, "exceeded"},
-		{ReasonQuotaSuspended, "exceeded"},
-		{ReasonQuotaCriticalTokens, "critical"},
-		{ReasonQuotaWarningTokens, "warning"},
-		{ReasonQuotaWarningRequests, "warning"},
-		{ReasonQuotaOK, "ok"},
-		{"", "ok"},
-		{"unknown_code", "ok"},
-	}
-
-	for _, tc := range tests {
-		t.Run(string(tc.code), func(t *testing.T) {
-			result := reasonToStatus(tc.code)
-			if result != tc.expected {
-				t.Errorf("code=%q: expected %q, got %q", tc.code, tc.expected, result)
-			}
-		})
-	}
-}
-
 func TestFormatTimestamp(t *testing.T) {
 	t.Parallel()
 

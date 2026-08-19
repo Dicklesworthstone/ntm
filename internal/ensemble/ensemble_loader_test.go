@@ -347,17 +347,3 @@ func TestSaveAndLoadEnsemblesFile_RoundTrip(t *testing.T) {
 		t.Fatalf("expected 2 presets, got %d", len(loaded))
 	}
 }
-
-func TestGlobalEnsembleRegistry_Reset(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	ResetGlobalEnsembleRegistry()
-	reg1, err := GlobalEnsembleRegistry()
-	if err == nil && reg1 == nil {
-		t.Fatal("expected registry or error from GlobalEnsembleRegistry")
-	}
-	ResetGlobalEnsembleRegistry()
-	reg2, err := GlobalEnsembleRegistry()
-	if err == nil && reg2 == nil {
-		t.Fatal("expected registry or error from GlobalEnsembleRegistry")
-	}
-}

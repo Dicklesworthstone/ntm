@@ -1,7 +1,6 @@
 package pipeline
 
 import (
-	"fmt"
 	"log/slog"
 )
 
@@ -73,8 +72,6 @@ const (
 	StepKindBranch      = "branch"
 )
 
-const maxItemSummaryLen = 120
-
 // Logger returns a slog logger with the current pipeline run identity attached.
 func (e *Executor) Logger() *slog.Logger {
 	if e == nil {
@@ -119,18 +116,6 @@ func (e *Executor) stepLogger(step *Step) *slog.Logger {
 	)
 }
 
-// iterLogger returns a logger with foreach iteration identity attached.
-func (e *Executor) iterLogger(parent *slog.Logger, iter, total int, item interface{}) *slog.Logger {
-	if parent == nil {
-		parent = e.Logger()
-	}
-	return parent.With(
-		FieldIteration, iter,
-		FieldIterationTotal, total,
-		FieldItemSummary, summarizeLogItem(item),
-	)
-}
-
 func stepKind(step *Step) string {
 	switch {
 	case step == nil:
@@ -156,12 +141,4 @@ func stepKind(step *Step) string {
 	default:
 		return StepKindUnknown
 	}
-}
-
-func summarizeLogItem(item interface{}) string {
-	summary := fmt.Sprintf("%v", item)
-	if len(summary) <= maxItemSummaryLen {
-		return summary
-	}
-	return summary[:maxItemSummaryLen] + "..."
 }

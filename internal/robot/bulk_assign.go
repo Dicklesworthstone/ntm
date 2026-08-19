@@ -2807,15 +2807,6 @@ func parseBulkAssignAllocation(raw string) (map[string]string, error) {
 	return result, nil
 }
 
-// decodeBulkAssignTriage parses bv --robot-triage JSON payloads.
-func decodeBulkAssignTriage(raw []byte) (*bv.TriageResponse, error) {
-	var resp bv.TriageResponse
-	if err := json.Unmarshal(raw, &resp); err != nil {
-		return nil, err
-	}
-	return &resp, nil
-}
-
 func fetchBeadTitle(ctx context.Context, dir, beadID string) (string, error) {
 	details, err := fetchBeadDetails(ctx, dir, beadID)
 	if err != nil {

@@ -78,6 +78,8 @@ func NewPendingRotationStore() *PendingRotationStore {
 }
 
 // NewPendingRotationStoreWithPath creates a store with a custom path.
+// Test-only hook: retained because tests in other packages (notably
+// internal/coordinator) isolate the global store with a temp path.
 func NewPendingRotationStoreWithPath(path string) *PendingRotationStore {
 	return &PendingRotationStore{
 		storagePath: path,
@@ -91,11 +93,6 @@ func defaultPendingRotationPath() string {
 		return filepath.Join(os.TempDir(), "ntm", pendingRotationDir, pendingRotationFile)
 	}
 	return filepath.Join(ntmDir, pendingRotationDir, pendingRotationFile)
-}
-
-// StoragePath returns the path to the pending rotation file.
-func (s *PendingRotationStore) StoragePath() string {
-	return s.storagePath
 }
 
 // Add adds or updates a pending rotation in the store.
@@ -210,64 +207,6 @@ func (s *PendingRotationStore) GetForSession(session string) ([]*PendingRotation
 	}
 
 	return result, nil
-}
-
-// GetExpired retrieves all expired pending rotations.
-func (s *PendingRotationStore) GetExpired() ([]*PendingRotation, error) {
-	pendingMu.Lock()
-	defer pendingMu.Unlock()
-
-	entries, err := s.readAllLocked()
-	if err != nil {
-		return nil, err
-	}
-
-	var result []*PendingRotation
-	now := time.Now()
-	for _, e := range entries {
-		if e.TimeoutAt.Before(now) || e.TimeoutAt.Equal(now) {
-			result = append(result, e.ToPendingRotation())
-		}
-	}
-
-	return result, nil
-}
-
-// CleanExpired removes all expired entries.
-func (s *PendingRotationStore) CleanExpired() (int, error) {
-	pendingMu.Lock()
-	defer pendingMu.Unlock()
-
-	entries, err := s.readAllLocked()
-	if err != nil {
-		return 0, err
-	}
-
-	var newEntries []StoredPendingRotation
-	now := time.Now()
-	for _, e := range entries {
-		if e.TimeoutAt.After(now) {
-			newEntries = append(newEntries, e)
-		}
-	}
-
-	removed := len(entries) - len(newEntries)
-	if removed > 0 {
-		if err := s.writeAllLocked(newEntries); err != nil {
-			return 0, err
-		}
-	}
-
-	return removed, nil
-}
-
-// Count returns the number of pending rotations.
-func (s *PendingRotationStore) Count() (int, error) {
-	entries, err := s.GetAll()
-	if err != nil {
-		return 0, err
-	}
-	return len(entries), nil
 }
 
 // Clear removes all pending rotations.
@@ -403,9 +342,4 @@ func GetAllPendingRotations() ([]*PendingRotation, error) {
 // GetPendingRotationsForSession retrieves pending rotations for a session.
 func GetPendingRotationsForSession(session string) ([]*PendingRotation, error) {
 	return DefaultPendingRotationStore.GetForSession(session)
-}
-
-// PendingRotationStoragePath returns the path to the pending rotation file.
-func PendingRotationStoragePath() string {
-	return DefaultPendingRotationStore.StoragePath()
 }

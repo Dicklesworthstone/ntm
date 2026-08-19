@@ -4,8 +4,6 @@ package watcher
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -364,11 +362,6 @@ func mapAgentTypeToPatternAgent(agentType tmux.AgentType) string {
 	}
 }
 
-// OnFileEdit handles detected file edits by reserving files.
-func (w *FileReservationWatcher) OnFileEdit(ctx context.Context, sessionName string, pane tmux.Pane, files []string) {
-	w.onFileEdit(ctx, sessionName, pane, "", files, time.Now())
-}
-
 func (w *FileReservationWatcher) onFileEdit(
 	ctx context.Context,
 	sessionName string,
@@ -573,74 +566,6 @@ func (w *FileReservationWatcher) releaseAllReservations() {
 
 		w.removeTrackedReservation(reservation)
 	}
-}
-
-// GetActiveReservations returns a copy of all active reservations.
-func (w *FileReservationWatcher) GetActiveReservations() map[string]*PaneReservation {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	result := make(map[string]*PaneReservation, len(w.activeReservations))
-	for k, v := range w.activeReservations {
-		// Copy the reservation
-		copied := *v
-		copied.Files = make([]string, len(v.Files))
-		copy(copied.Files, v.Files)
-		copied.ReservationID = make([]int, len(v.ReservationID))
-		copy(copied.ReservationID, v.ReservationID)
-		result[k] = &copied
-	}
-	return result
-}
-
-// RenewReservations extends the TTL of all active reservations.
-func (w *FileReservationWatcher) RenewReservations(ctx context.Context) error {
-	if w.client == nil {
-		return nil
-	}
-
-	extendSeconds := int(w.reservationTTL.Seconds())
-
-	w.mu.Lock()
-	reservations := make([]PaneReservation, 0, len(w.activeReservations))
-	for _, reservation := range w.activeReservations {
-		if len(reservation.ReservationID) > 0 {
-			reservations = append(reservations, clonePaneReservation(*reservation))
-		}
-	}
-	w.mu.Unlock()
-
-	var renewErrs []error
-	for _, reservation := range reservations {
-		if len(reservation.ReservationID) > 0 {
-			renewResult, err := w.client.RenewReservations(ctx, agentmail.RenewReservationsOptions{
-				ProjectKey:     w.projectDir,
-				AgentName:      reservation.AgentName,
-				ExtendSeconds:  extendSeconds,
-				ReservationIDs: reservation.ReservationID,
-			})
-			if err != nil {
-				if w.debug {
-					log.Printf("[FileReservationWatcher] Error renewing reservations for pane %s: %v",
-						reservation.PaneID, err)
-				}
-				renewErrs = append(renewErrs, fmt.Errorf("pane %s: %w", reservation.PaneID, err))
-				continue
-			}
-			if renewResult == nil || renewResult.Renewed < len(reservation.ReservationID) {
-				renewedCount := 0
-				if renewResult != nil {
-					renewedCount = renewResult.Renewed
-				}
-				err := fmt.Errorf("renewed %d of %d reservations for pane %s", renewedCount, len(reservation.ReservationID), reservation.PaneID)
-				if w.debug {
-					log.Printf("[FileReservationWatcher] %v", err)
-				}
-				renewErrs = append(renewErrs, err)
-			}
-		}
-	}
-	return errors.Join(renewErrs...)
 }
 
 // resolveAgentName looks up the registered Agent Mail identity for a pane,

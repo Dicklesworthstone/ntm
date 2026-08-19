@@ -434,8 +434,3 @@ func effectiveProficiencyTier(tier int) tiers.Tier {
 	}
 	return candidate
 }
-
-// ProficiencyConfigPath returns the path for external use (testing, etc.)
-func ProficiencyConfigPath() string {
-	return proficiencyConfigPath()
-}

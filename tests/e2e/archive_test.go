@@ -262,47 +262,6 @@ func TestArchive_MultiPaneCapture(t *testing.T) {
 	logger.Log("PASS: Multi-pane capture verified")
 }
 
-// TestArchive_Stats tests archive statistics tracking.
-func TestArchive_Stats(t *testing.T) {
-	testutil.RequireE2E(t)
-
-	tmpDir := t.TempDir()
-	logger := testutil.NewTestLogger(t, tmpDir)
-	logger.LogSection("E2E-ARCHIVE: Test archive statistics")
-
-	archiveDir := filepath.Join(tmpDir, "archive")
-
-	// Create an archiver with test options
-	opts := archive.ArchiverOptions{
-		SessionName:     "stats_test_session",
-		OutputDir:       archiveDir,
-		Interval:        100 * time.Millisecond,
-		LinesPerCapture: 100,
-	}
-
-	archiver, err := archive.NewArchiver(opts)
-	if err != nil {
-		t.Fatalf("Failed to create archiver: %v", err)
-	}
-	defer archiver.Close()
-
-	// Get initial stats
-	stats := archiver.Stats()
-	logger.Log("[E2E-ARCHIVE] Initial stats: session=%s records=%d", stats.Session, stats.TotalRecords)
-
-	if stats.Session != opts.SessionName {
-		t.Errorf("Expected session %q, got %q", opts.SessionName, stats.Session)
-	}
-	if stats.TotalRecords != 0 {
-		t.Errorf("Expected 0 initial records, got %d", stats.TotalRecords)
-	}
-	if stats.OutputDir != archiveDir {
-		t.Errorf("Expected output dir %q, got %q", archiveDir, stats.OutputDir)
-	}
-
-	logger.Log("PASS: Archive statistics verified")
-}
-
 // TestArchive_CASSIntegration tests that archive format is CASS-compatible.
 func TestArchive_CASSIntegration(t *testing.T) {
 	testutil.RequireE2E(t)

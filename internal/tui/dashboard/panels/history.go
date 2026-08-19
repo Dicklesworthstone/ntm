@@ -450,38 +450,6 @@ func historyEntryIndexByID(entries []history.HistoryEntry, id string) int {
 	return -1
 }
 
-func (m *HistoryPanel) moveCursor(delta int) {
-	if len(m.visibleEntries) == 0 {
-		m.cursor = 0
-		m.offset = 0
-		if m.tableInit {
-			m.table.SetCursor(0)
-		}
-		return
-	}
-
-	m.cursor += delta
-	if m.cursor < 0 {
-		m.cursor = 0
-	}
-	if m.cursor >= len(m.visibleEntries) {
-		m.cursor = len(m.visibleEntries) - 1
-	}
-
-	if m.cursor < m.offset {
-		m.offset = m.cursor
-	}
-	if m.cursor >= m.offset+m.contentHeight() {
-		m.offset = m.cursor - m.contentHeight() + 1
-	}
-	if m.offset < 0 {
-		m.offset = 0
-	}
-	if m.tableInit {
-		m.table.SetCursor(m.cursor)
-	}
-}
-
 func (m *HistoryPanel) applyFilters() {
 	selectedID := m.selectedEntryID()
 	m.visibleEntries = m.visibleEntries[:0]

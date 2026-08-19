@@ -10,37 +10,6 @@ import (
 // ScannerStore: GetScan, UpdateScan, GetFindingsByScan
 // ---------------------------------------------------------------------------
 
-func TestScannerStore_GetScan_NotFound(t *testing.T) {
-
-	store := NewScannerStore()
-	_, ok := store.GetScan("nonexistent")
-	if ok {
-		t.Error("expected not found for nonexistent scan")
-	}
-}
-
-func TestScannerStore_GetScan_Found(t *testing.T) {
-
-	store := NewScannerStore()
-	scan := &ScanRecord{
-		ID:    "scan-1",
-		State: ScanStateRunning,
-		Path:  "/project",
-	}
-	store.AddScan(scan)
-
-	got, ok := store.GetScan("scan-1")
-	if !ok {
-		t.Fatal("expected scan to be found")
-	}
-	if got.ID != "scan-1" {
-		t.Errorf("expected ID=scan-1, got %q", got.ID)
-	}
-	if got.State != ScanStateRunning {
-		t.Errorf("expected state=running, got %v", got.State)
-	}
-}
-
 func TestScannerStore_UpdateScan(t *testing.T) {
 
 	store := NewScannerStore()
@@ -49,7 +18,7 @@ func TestScannerStore_UpdateScan(t *testing.T) {
 		State: ScanStateRunning,
 		Path:  "/project",
 	}
-	store.AddScan(scan)
+	seedScan(store, scan)
 
 	// Update the scan
 	now := time.Now()
@@ -58,7 +27,9 @@ func TestScannerStore_UpdateScan(t *testing.T) {
 		sr.CompletedAt = &now
 	})
 
-	got, ok := store.GetScan("scan-update")
+	store.mu.RLock()
+	got, ok := store.scans["scan-update"]
+	store.mu.RUnlock()
 	if !ok {
 		t.Fatal("expected scan after update")
 	}
@@ -70,97 +41,9 @@ func TestScannerStore_UpdateScan(t *testing.T) {
 	}
 }
 
-func TestScannerStore_GetFindingsByScan_Empty(t *testing.T) {
-
-	store := NewScannerStore()
-	findings := store.GetFindingsByScan("no-such-scan")
-	if len(findings) != 0 {
-		t.Errorf("expected 0 findings, got %d", len(findings))
-	}
-}
-
-func TestScannerStore_GetFindingsByScan_Filters(t *testing.T) {
-
-	store := NewScannerStore()
-
-	// Add findings for two different scans
-	store.AddFinding(&FindingRecord{ID: "f-1", ScanID: "scan-a", CreatedAt: time.Now()})
-	store.AddFinding(&FindingRecord{ID: "f-2", ScanID: "scan-a", CreatedAt: time.Now()})
-	store.AddFinding(&FindingRecord{ID: "f-3", ScanID: "scan-b", CreatedAt: time.Now()})
-
-	findingsA := store.GetFindingsByScan("scan-a")
-	if len(findingsA) != 2 {
-		t.Errorf("expected 2 findings for scan-a, got %d", len(findingsA))
-	}
-
-	findingsB := store.GetFindingsByScan("scan-b")
-	if len(findingsB) != 1 {
-		t.Errorf("expected 1 finding for scan-b, got %d", len(findingsB))
-	}
-}
-
-func TestScannerStore_GetFindingsByScan_AllSameScan(t *testing.T) {
-
-	store := NewScannerStore()
-	for i := 0; i < 5; i++ {
-		store.AddFinding(&FindingRecord{
-			ID:        "f-" + string(rune('a'+i)),
-			ScanID:    "scan-all",
-			CreatedAt: time.Now(),
-		})
-	}
-
-	findings := store.GetFindingsByScan("scan-all")
-	if len(findings) != 5 {
-		t.Errorf("expected 5 findings, got %d", len(findings))
-	}
-}
-
 // ---------------------------------------------------------------------------
 // JobStore: Delete
 // ---------------------------------------------------------------------------
-
-func TestJobStore_Delete_NotFound(t *testing.T) {
-
-	store := NewJobStore()
-	ok := store.Delete("nonexistent")
-	if ok {
-		t.Error("expected false for deleting nonexistent job")
-	}
-}
-
-func TestJobStore_Delete_Found(t *testing.T) {
-
-	store := NewJobStore()
-	job := store.Create("test-job")
-
-	ok := store.Delete(job.ID)
-	if !ok {
-		t.Error("expected true for deleting existing job")
-	}
-
-	// Verify it's gone
-	got := store.Get(job.ID)
-	if got != nil {
-		t.Error("expected nil after delete")
-	}
-}
-
-func TestJobStore_Delete_Idempotent(t *testing.T) {
-
-	store := NewJobStore()
-	job := store.Create("test-job")
-
-	// First delete succeeds
-	if !store.Delete(job.ID) {
-		t.Error("expected first delete to succeed")
-	}
-
-	// Second delete returns false
-	if store.Delete(job.ID) {
-		t.Error("expected second delete to return false")
-	}
-}
 
 func TestJobStore_CRUD_Lifecycle(t *testing.T) {
 
@@ -190,14 +73,6 @@ func TestJobStore_CRUD_Lifecycle(t *testing.T) {
 	}
 	if got.Progress != 1.0 {
 		t.Errorf("expected progress=1.0, got %f", got.Progress)
-	}
-
-	// Delete
-	if !store.Delete(job.ID) {
-		t.Error("expected delete to succeed")
-	}
-	if store.Get(job.ID) != nil {
-		t.Error("expected nil after delete")
 	}
 }
 

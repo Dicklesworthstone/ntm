@@ -347,8 +347,8 @@ func TestBuildDirUsagesUnderFixtureLayout(t *testing.T) {
 
 func TestPublishDiskTrajectoryAlertLifecycle(t *testing.T) {
 	tracker := alerts.GetGlobalTracker()
-	tracker.Clear()
-	t.Cleanup(tracker.Clear)
+	clearAlertTracker(tracker)
+	t.Cleanup(func() { clearAlertTracker(tracker) })
 
 	now := time.Now().UTC()
 	delta := float64(512 << 20) // 512 MiB/min

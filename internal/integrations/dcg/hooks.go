@@ -1,11 +1,8 @@
 package dcg
 
 import (
-	"encoding/json"
 	"fmt"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -110,21 +107,6 @@ func newCommandHookEntry(matcher, command string, timeout int) HookEntry {
 	}
 }
 
-// GenerateHookJSON creates the JSON string for Claude Code hook configuration.
-func GenerateHookJSON(opts DCGHookOptions) (string, error) {
-	config, err := GenerateHookConfig(opts)
-	if err != nil {
-		return "", err
-	}
-
-	data, err := json.MarshalIndent(config, "", "  ")
-	if err != nil {
-		return "", fmt.Errorf("failed to marshal hook config: %w", err)
-	}
-
-	return string(data), nil
-}
-
 // DCGAvailability tracks whether DCG is available and can be used for hooks.
 type DCGAvailability struct {
 	Available   bool
@@ -187,43 +169,6 @@ func checkDCGAvailabilityUncached(binaryPath string) DCGAvailability {
 	}
 
 	return result
-}
-
-// InvalidateDCGCache clears the DCG availability cache.
-func InvalidateDCGCache() {
-	dcgAvailabilityMutex.Lock()
-	dcgAvailabilityCache = DCGAvailability{}
-	dcgAvailabilityMutex.Unlock()
-}
-
-// WriteHookConfigFile writes the DCG hook configuration to a file.
-// This can be used to persist the hook configuration for Claude Code.
-func WriteHookConfigFile(opts DCGHookOptions, configPath string) error {
-	jsonConfig, err := GenerateHookJSON(opts)
-	if err != nil {
-		return err
-	}
-
-	// Ensure parent directory exists
-	dir := filepath.Dir(configPath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("failed to create config directory: %w", err)
-	}
-
-	return os.WriteFile(configPath, []byte(jsonConfig), 0644)
-}
-
-// HookEnvVars returns the legacy environment variable used by ntm's agent launcher
-// to pass generated Claude Code hook JSON to the spawned process.
-func HookEnvVars(opts DCGHookOptions) (map[string]string, error) {
-	jsonConfig, err := GenerateHookJSON(opts)
-	if err != nil {
-		return nil, err
-	}
-
-	return map[string]string{
-		"CLAUDE_CODE_HOOKS": jsonConfig,
-	}, nil
 }
 
 // ShouldConfigureHooks determines if DCG hooks should be configured

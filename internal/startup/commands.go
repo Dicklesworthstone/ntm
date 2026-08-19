@@ -113,24 +113,10 @@ func GetCommandRequirement(cmd string) CommandRequirement {
 	return RequireFullStartup
 }
 
-// GetRobotFlagRequirement returns the startup requirement for a robot flag
-func GetRobotFlagRequirement(flag string) CommandRequirement {
-	if req, ok := RobotFlagClassification[flag]; ok {
-		return req
-	}
-	// Default to full startup for unknown flags
-	return RequireFullStartup
-}
-
 // NeedsConfig returns true if the command requires config loading
 func NeedsConfig(cmd string) bool {
 	req := GetCommandRequirement(cmd)
 	return req >= RequireConfig
-}
-
-// NeedsFullStartup returns true if the command requires full initialization
-func NeedsFullStartup(cmd string) bool {
-	return GetCommandRequirement(cmd) == RequireFullStartup
 }
 
 // CanSkipConfig returns true if the command can run without loading config

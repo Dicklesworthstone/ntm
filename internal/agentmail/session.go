@@ -267,18 +267,6 @@ func SaveSessionAgent(sessionName, projectKey string, info *SessionAgentInfo) er
 	return nil
 }
 
-// DeleteSessionAgent removes the agent info file for a session.
-func DeleteSessionAgent(sessionName, projectKey string) error {
-	if err := validateSessionStorageName(sessionName); err != nil {
-		return err
-	}
-	path := sessionAgentPath(sessionName, projectKey)
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("deleting session agent: %w", err)
-	}
-	return nil
-}
-
 // RegisterSessionAgent registers a session as an agent with Agent Mail.
 // If Agent Mail is unavailable, registration silently fails without blocking.
 // Returns the agent info on success, nil if unavailable, or an error on failure.
@@ -386,17 +374,6 @@ func (c *Client) UpdateSessionActivity(ctx context.Context, sessionName, project
 		return fmt.Errorf("updating server activity: %w", err)
 	}
 	return nil
-}
-
-// IsNameTakenError checks if an error indicates the agent name is already taken.
-func IsNameTakenError(err error) bool {
-	if err == nil {
-		return false
-	}
-	errStr := err.Error()
-	return strings.Contains(errStr, "already in use") ||
-		strings.Contains(errStr, "name taken") ||
-		strings.Contains(errStr, "already registered")
 }
 
 // SessionAgentRegistry stores the mapping of pane titles/IDs to Agent Mail agent names
@@ -632,18 +609,6 @@ func SaveSessionAgentRegistry(registry *SessionAgentRegistry) error {
 		return fmt.Errorf("writing agent registry: %w", err)
 	}
 
-	return nil
-}
-
-// DeleteSessionAgentRegistry removes the agent registry for a session.
-func DeleteSessionAgentRegistry(sessionName, projectKey string) error {
-	if err := validateSessionStorageName(sessionName); err != nil {
-		return err
-	}
-	path := registryPath(sessionName, projectKey)
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("deleting agent registry: %w", err)
-	}
 	return nil
 }
 

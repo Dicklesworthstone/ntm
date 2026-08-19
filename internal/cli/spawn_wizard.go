@@ -179,7 +179,7 @@ func runManualWizard(sessionName string) (SpawnWizardResult, error) {
 				Validate(validateAgentCount),
 			huh.NewInput().
 				Title("Antigravity agents (agy)").
-				Description("Number of Antigravity agents to spawn (model pinned to Gemini 3.1 Pro (High))").
+				Description("Number of Antigravity agents to spawn (model pinned to Gemini 3.7 Flash (High))").
 				Placeholder("0").
 				Value(&agyStr).
 				Validate(validateAgentCount),

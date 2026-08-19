@@ -34,15 +34,6 @@ type BridgeConfig struct {
 	Verbose bool
 }
 
-// DefaultBridgeConfig returns sensible defaults for the bridge.
-func DefaultBridgeConfig() BridgeConfig {
-	return BridgeConfig{
-		MinSeverity: SeverityWarning, // P2 and above by default
-		DryRun:      false,
-		Verbose:     false,
-	}
-}
-
 // BridgeResult contains the results of a bridge operation.
 type BridgeResult struct {
 	Created    int      `json:"created"`

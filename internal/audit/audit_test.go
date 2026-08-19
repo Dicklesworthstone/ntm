@@ -225,38 +225,6 @@ func TestNewCorrelationID_IsUnique(t *testing.T) {
 	}
 }
 
-func TestAuditLogger_FlushMethod(t *testing.T) {
-	tempDir := t.TempDir()
-	t.Setenv("HOME", tempDir)
-
-	logger, err := NewAuditLogger(&LoggerConfig{
-		SessionID:     "flush-method",
-		BufferSize:    10,
-		FlushInterval: time.Hour,
-	})
-	if err != nil {
-		t.Fatalf("Failed to create audit logger: %v", err)
-	}
-
-	if err := logger.Log(AuditEntry{
-		EventType: EventTypeCommand,
-		Actor:     ActorUser,
-		Target:    "flush.method",
-	}); err != nil {
-		logger.Close()
-		t.Fatalf("Failed to log entry: %v", err)
-	}
-
-	if err := logger.Flush(); err != nil {
-		logger.Close()
-		t.Fatalf("Flush failed: %v", err)
-	}
-
-	if err := logger.Close(); err != nil {
-		t.Fatalf("Failed to close logger: %v", err)
-	}
-}
-
 func TestAuditLogger_FlushTimer(t *testing.T) {
 	tempDir := t.TempDir()
 	t.Setenv("HOME", tempDir)
@@ -490,8 +458,11 @@ func TestAuditLogger_ConcurrentWritersDoNotForkTheHashChain(t *testing.T) {
 			t.Fatalf("first.Log(%d): %v", i, err)
 		}
 	}
-	if err := first.Flush(); err != nil {
-		t.Fatalf("first.Flush: %v", err)
+	first.mutex.Lock()
+	flushErr := first.flushUnlocked()
+	first.mutex.Unlock()
+	if flushErr != nil {
+		t.Fatalf("first flush: %v", flushErr)
 	}
 
 	// Each writer's file must verify as a sound chain on its own.

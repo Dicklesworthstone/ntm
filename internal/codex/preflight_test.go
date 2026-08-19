@@ -219,9 +219,12 @@ func TestPreflight_CaseInsensitive(t *testing.T) {
 // TestEveryStateMapsToAClosedAction guards that each marker-driven rule maps to
 // an action in the closed action set, and that the action set itself is closed.
 func TestEveryStateMapsToAClosedAction(t *testing.T) {
-	validActions := map[PreflightAction]bool{}
-	for _, a := range AllPreflightActions() {
-		validActions[a] = true
+	validActions := map[PreflightAction]bool{
+		ActionProceed:       true,
+		ActionRespawn:       true,
+		ActionAlternatePane: true,
+		ActionWait:          true,
+		ActionRefuse:        true,
 	}
 	for _, r := range preflightRules {
 		if !validActions[r.Action] {
@@ -238,23 +241,5 @@ func TestOrderedPreflightRules_SortedByPriority(t *testing.T) {
 		if rules[i].Priority < rules[i-1].Priority {
 			t.Fatalf("orderedPreflightRules not ascending: %d before %d", rules[i-1].Priority, rules[i].Priority)
 		}
-	}
-}
-
-// TestAllPreflightStates_Closed guards the closed state set / count for #167.
-func TestAllPreflightStates_Closed(t *testing.T) {
-	want := []PreflightState{
-		PreflightCodexLive,
-		PreflightShellNoCodex,
-		PreflightGoalInProgress,
-		PreflightGoalCompleted,
-		PreflightReplaceGoalDialog,
-		PreflightBackgroundTerminalWait,
-		PreflightUsageLimit,
-		PreflightStaleScrollback,
-		PreflightUnknown,
-	}
-	if !reflect.DeepEqual(AllPreflightStates(), want) {
-		t.Fatalf("AllPreflightStates() = %#v, want %#v", AllPreflightStates(), want)
 	}
 }

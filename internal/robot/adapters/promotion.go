@@ -151,23 +151,3 @@ type IncidentsSummary struct {
 	ByStatus    map[string]int `json:"by_status"`
 	MttrMinutes float64        `json:"mttr_minutes,omitempty"`
 }
-
-// ComputeIncidentsSummary aggregates incident statistics
-func ComputeIncidentsSummary(incidents []IncidentItem) *IncidentsSummary {
-	summary := &IncidentsSummary{
-		BySeverity: make(map[string]int),
-		ByType:     make(map[string]int),
-		ByStatus:   make(map[string]int),
-	}
-
-	for _, inc := range incidents {
-		if inc.Status != "resolved" {
-			summary.TotalActive++
-		}
-		summary.BySeverity[inc.Severity]++
-		summary.ByType[inc.Type]++
-		summary.ByStatus[inc.Status]++
-	}
-
-	return summary
-}

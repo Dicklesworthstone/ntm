@@ -2702,7 +2702,7 @@ func resolveErrorAction(stepOnError, workflowOnError ErrorAction) ErrorAction {
 	return ErrorActionFail
 }
 
-// resolvePaneExpr substitutes PaneSpec.Expr against the executor's variable
+// resolvePaneExprCtx substitutes PaneSpec.Expr against the executor's variable
 // layer and parses the result as a 1-based pane index, populating
 // step.Pane.Index in place. No-op when Expr is empty or Index is already set
 // (foreach materialization fills Index from per-iteration assignments and
@@ -2713,11 +2713,7 @@ func resolveErrorAction(stepOnError, workflowOnError ErrorAction) ErrorAction {
 // dispatching to the wrong pane. The substitution uses the strict
 // substitutor so unresolved ${defaults.X} / ${vars.X} references fail
 // loudly at this seam (bd-6lkqr.4).
-func (e *Executor) resolvePaneExpr(step *Step) error {
-	return e.resolvePaneExprCtx(context.TODO(), step)
-}
-
-// resolvePaneExprCtx is the ctx-aware form of resolvePaneExpr.
+//
 // bd-s2edh: foreach max_rounds round overlays attached to ctx must be
 // honoured when resolving Pane.Expr inside a body step, otherwise
 // pane.expr=${round} cannot resolve under parallel: true + max_rounds > 1.
@@ -3035,46 +3031,18 @@ func (e *Executor) substituteVariablesRetainingSealsCtx(ctx context.Context, s s
 	return sub.SubstituteRetainingSeals(s)
 }
 
-// substituteVariablesRetainingSealsStrictCtx is like substituteVariablesStrictCtx but retains seals.
-func (e *Executor) substituteVariablesRetainingSealsStrictCtx(ctx context.Context, s string) (string, error) {
-	e.stateMu.RLock()
-	defer e.stateMu.RUnlock()
-	e.varMu.RLock()
-	defer e.varMu.RUnlock()
-	sub := NewSubstitutor(e.state, e.config.Session, e.state.WorkflowID)
-	sub.SetDefaults(e.defaults)
-	sub.SetMaxDepth(e.limits.MaxSubstitutionDepth)
-	if overrides := roundOverridesFromCtx(ctx); overrides != nil {
-		sub.SetLocalOverrides(overrides)
-	}
-	s = e.substituteRuntimeVariables(s)
-	return sub.SubstituteRetainingSealsStrict(s)
-}
-
-// substituteCommandArgs walks a step's Args map and runs the pipeline
+// substituteCommandArgsStrictCtx walks a step's Args map and runs the pipeline
 // substitutor over every string value (and the elements of any string-valued
 // slice) so `${vars.x}`, `${env.X}`, `${steps.s.output}`, and
 // `${defaults.foo}` resolve before the args are exported as environment
 // variables. Non-string values pass through unchanged — argValueString
-// handles their conversion downstream.
-func (e *Executor) substituteCommandArgs(args map[string]interface{}) map[string]interface{} {
-	out, _ := e.substituteCommandArgsStrict(args)
-	return out
-}
-
-// substituteCommandArgsStrict is the error-propagating variant used by the
-// command runtime path so a missing ${env.X} reference inside args fails the
-// step explicitly instead of silently shipping unresolved placeholders to
-// the child shell (bd-bhcz7). Returns the first substitution error
-// encountered while still producing a partial map for diagnostics.
-func (e *Executor) substituteCommandArgsStrict(args map[string]interface{}) (map[string]interface{}, error) {
-	return e.substituteCommandArgsStrictCtx(context.TODO(), args)
-}
-
-// substituteCommandArgsStrictCtx is the ctx-aware form of
-// substituteCommandArgsStrict; it propagates round overrides from ctx to
-// every per-value substitution so foreach max_rounds bindings (bd-2ubxp.20)
-// resolve correctly inside Args under parallel: true.
+// handles their conversion downstream. A missing ${env.X} reference inside
+// args fails the step explicitly instead of silently shipping unresolved
+// placeholders to the child shell (bd-bhcz7); returns the first substitution
+// error encountered while still producing a partial map for diagnostics.
+// Round overrides from ctx propagate to every per-value substitution so
+// foreach max_rounds bindings (bd-2ubxp.20) resolve correctly inside Args
+// under parallel: true.
 func (e *Executor) substituteCommandArgsStrictCtx(ctx context.Context, args map[string]interface{}) (map[string]interface{}, error) {
 	if len(args) == 0 {
 		return args, nil
@@ -3111,7 +3079,7 @@ func (e *Executor) substituteCommandArgsStrictCtx(ctx context.Context, args map[
 	return out, firstErr
 }
 
-// evaluateCondition evaluates a when condition.
+// evaluateConditionCtx evaluates a when condition.
 // Returns true if step should be SKIPPED.
 // Uses ConditionEvaluator for comprehensive condition support:
 // - Boolean truthy check
@@ -3121,11 +3089,7 @@ func (e *Executor) substituteCommandArgsStrictCtx(ctx context.Context, args map[
 // - Logical operators (AND, OR, NOT)
 // - Type coercion for numeric comparisons
 // Thread-safe: acquires read locks on Variables and Steps for concurrent access during parallel execution.
-func (e *Executor) evaluateCondition(condition string) (bool, error) {
-	return e.evaluateConditionCtx(context.TODO(), condition)
-}
-
-// evaluateConditionCtx is the ctx-aware form of evaluateCondition. Round
+// Round
 // overrides from ctx are passed to the Substitutor so a body step's
 // `when: ${round} == 2` predicate (bd-2ubxp.20) resolves against the
 // caller's per-iteration round value, not whatever value happens to be in
@@ -3402,40 +3366,6 @@ func SanitizeDescriptionForTerminal(desc string) string {
 		}
 	}
 	return b.String()
-}
-
-// describeForeach builds a one-line summary of a ForeachConfig for dry-run
-// output and skip-reason messages. Picks the most-specific iteration source
-// available so the operator can see at a glance what the step would loop over.
-func describeForeach(fc *ForeachConfig) string {
-	if fc == nil {
-		return "(empty foreach)"
-	}
-	src := ""
-	switch {
-	case fc.Items != "":
-		src = "items=" + truncatePrompt(fc.Items, 40)
-	case fc.Beads != "":
-		src = "beads=" + truncatePrompt(fc.Beads, 40)
-	case fc.Pairs != "":
-		src = "pairs=" + truncatePrompt(fc.Pairs, 40)
-	case fc.Debates != "":
-		src = "debates=" + truncatePrompt(fc.Debates, 40)
-	case len(fc.Models) > 0:
-		src = "models=[" + strings.Join(fc.Models, ",") + "]"
-	default:
-		src = "(no iteration source)"
-	}
-	if fc.Filter != "" {
-		src += " filter=" + fc.Filter
-	}
-	if fc.PaneStrategy != "" {
-		src += " strategy=" + fc.PaneStrategy
-	}
-	if fc.Template != "" {
-		src += " template=" + fc.Template
-	}
-	return src
 }
 
 // truncatePrompt truncates a prompt for display, respecting UTF-8 boundaries.
@@ -3822,99 +3752,6 @@ func (e *Executor) detectAgentState(paneID string) string {
 // Validate validates a workflow without executing it
 func (e *Executor) Validate(workflow *Workflow) ValidationResult {
 	return Validate(workflow)
-}
-
-// VariableContext provides access to workflow variables
-type VariableContext struct {
-	Vars     map[string]interface{}
-	Steps    map[string]StepResult
-	Session  string
-	RunID    string
-	Workflow string
-}
-
-// GetVariable retrieves a variable by reference path
-func (vc *VariableContext) GetVariable(ref string) (interface{}, bool) {
-	parts := strings.Split(ref, ".")
-	if len(parts) == 0 {
-		return nil, false
-	}
-
-	switch parts[0] {
-	case "vars":
-		if len(parts) >= 2 {
-			val, ok := vc.Vars[parts[1]]
-			return val, ok
-		}
-	case "steps":
-		if len(parts) >= 3 {
-			if result, ok := vc.Steps[parts[1]]; ok {
-				switch parts[2] {
-				case "output":
-					return result.Output, true
-				case "status":
-					return string(result.Status), true
-				case "pane":
-					return result.PaneUsed, true
-				}
-			}
-		}
-	case "env":
-		if len(parts) >= 2 {
-			return os.Getenv(parts[1]), true
-		}
-	case "session":
-		return vc.Session, true
-	case "run_id":
-		return vc.RunID, true
-	case "workflow":
-		return vc.Workflow, true
-	}
-
-	return nil, false
-}
-
-// SetVariable sets a variable value
-func (vc *VariableContext) SetVariable(name string, value interface{}) {
-	if vc.Vars == nil {
-		vc.Vars = make(map[string]interface{})
-	}
-	vc.Vars[name] = value
-}
-
-// EvaluateString evaluates all variable references in a string
-func (vc *VariableContext) EvaluateString(s string) string {
-	// Uses package-level varPattern from variables.go
-	return varPattern.ReplaceAllStringFunc(s, func(match string) string {
-		ref := match[2 : len(match)-1]
-		if val, ok := vc.GetVariable(ref); ok {
-			return fmt.Sprintf("%v", val)
-		}
-		return match
-	})
-}
-
-// ParseBool parses a string as boolean
-func ParseBool(s string) bool {
-	s = strings.ToLower(strings.TrimSpace(s))
-	switch s {
-	case "true", "yes", "1", "on":
-		return true
-	default:
-		return false
-	}
-}
-
-// ParseInt parses a string as integer with default
-func ParseInt(s string, defaultVal int) int {
-	if s == "" {
-		return defaultVal
-	}
-	val, err := strconv.Atoi(s)
-	if err != nil {
-		return defaultVal
-	}
-	return val
 }
 
 // generateRunID creates a unique run ID using timestamp and random bytes

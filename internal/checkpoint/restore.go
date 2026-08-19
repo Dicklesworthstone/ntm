@@ -81,17 +81,6 @@ func NewRestorerWithStorage(storage *Storage) *Restorer {
 	}
 }
 
-// Restore restores a session from a checkpoint.
-func (r *Restorer) Restore(sessionName, checkpointID string, opts RestoreOptions) (*RestoreResult, error) {
-	// Load checkpoint
-	cp, err := r.storage.Load(sessionName, checkpointID)
-	if err != nil {
-		return nil, fmt.Errorf("loading checkpoint: %w", err)
-	}
-
-	return r.RestoreFromCheckpoint(cp, opts)
-}
-
 // RestoreFromCheckpoint restores a session from a loaded checkpoint.
 func (r *Restorer) RestoreFromCheckpoint(cp *Checkpoint, opts RestoreOptions) (*RestoreResult, error) {
 	if cp == nil {
@@ -694,10 +683,6 @@ func (r *Restorer) injectContext(cp *Checkpoint, maxLines int) error {
 	return lastErr
 }
 
-func (r *Restorer) loadPaneScrollback(sessionName, checkpointID, paneID string) (string, error) {
-	return r.storage.LoadCompressedScrollback(sessionName, checkpointID, paneID)
-}
-
 func (r *Restorer) loadPaneScrollbackForPane(sessionName, checkpointID string, pane PaneState) (string, error) {
 	return r.storage.LoadPaneScrollback(sessionName, checkpointID, pane)
 }
@@ -999,88 +984,4 @@ func looksLikeShellCommand(command string) bool {
 	default:
 		return false
 	}
-}
-
-// RestoreLatest restores the most recent checkpoint for a session.
-func (r *Restorer) RestoreLatest(sessionName string, opts RestoreOptions) (*RestoreResult, error) {
-	cp, err := r.storage.GetLatest(sessionName)
-	if err != nil {
-		return nil, fmt.Errorf("getting latest checkpoint: %w", err)
-	}
-	return r.RestoreFromCheckpoint(cp, opts)
-}
-
-// ValidateCheckpoint checks if a checkpoint can be restored.
-func (r *Restorer) ValidateCheckpoint(cp *Checkpoint, opts RestoreOptions) []string {
-	if cp == nil {
-		return []string{ErrNilCheckpoint.Error()}
-	}
-
-	var issues []string
-
-	// Check working directory
-	workDir := cp.WorkingDir
-	if opts.CustomDirectory != "" {
-		workDir = opts.CustomDirectory
-	}
-	if workDir != "" {
-		if err := validateWorkingDirectory(workDir); err != nil {
-			issues = append(issues, workingDirectoryIssue(workDir, err))
-		}
-	}
-
-	// Check session existence
-	if tmux.SessionExists(cp.SessionName) {
-		if opts.Force {
-			issues = append(issues, fmt.Sprintf("session %q exists and will be killed", cp.SessionName))
-		} else {
-			issues = append(issues, fmt.Sprintf("session %q already exists", cp.SessionName))
-		}
-	}
-
-	// Check panes
-	if len(cp.Session.Panes) == 0 {
-		issues = append(issues, "checkpoint contains no panes")
-	}
-	layoutErrors, layoutWarnings := validateSessionWindowLayouts(cp.Session)
-	issues = append(issues, layoutErrors...)
-	issues = append(issues, layoutWarnings...)
-
-	// Check git state
-	if !opts.SkipGitCheck && cp.Git.Commit != "" && workDir != "" {
-		if warning := r.checkGitState(cp, workDir); warning != "" {
-			issues = append(issues, warning)
-		}
-	}
-
-	// Check scrollback files if context injection is requested
-	if opts.InjectContext {
-		baseDir, err := r.storage.safeCheckpointDir(cp.SessionName, cp.ID)
-		if err != nil {
-			issues = append(issues, fmt.Sprintf("invalid checkpoint path: %v", err))
-		} else {
-			for _, pane := range cp.Session.Panes {
-				if pane.ScrollbackFile == "" {
-					continue
-				}
-				scrollbackPath, err := resolveExistingCheckpointArtifactPath(baseDir, pane.ScrollbackFile)
-				if err != nil {
-					if errors.Is(err, os.ErrNotExist) {
-						issues = append(issues,
-							fmt.Sprintf("scrollback file missing for pane %s", pane.ID))
-					} else {
-						issues = append(issues,
-							fmt.Sprintf("invalid scrollback path for pane %s: %v", pane.ID, err))
-					}
-					continue
-				}
-				if _, err := os.Stat(scrollbackPath); os.IsNotExist(err) {
-					issues = append(issues,
-						fmt.Sprintf("scrollback file missing for pane %s", pane.ID))
-				}
-			}
-		}
-	}
-
-	return issues
 }

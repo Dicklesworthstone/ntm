@@ -203,17 +203,7 @@ func TestCoverageHelpersForeachBodyAndSubstitutionHelpers(t *testing.T) {
 		t.Fatal("empty foreach body error = nil")
 	}
 
-	got := substituteInterfaceMap(executor, map[string]interface{}{
-		"plain":   "${vars.name}",
-		"nested":  map[string]interface{}{"v": "${vars.name}"},
-		"list":    []interface{}{"${vars.name}", 3},
-		"strings": []string{"${vars.name}", "ok"},
-	})
-	if got["plain"] != "Ada" || got["nested"].(map[string]interface{})["v"] != "Ada" || got["list"].([]interface{})[0] != "Ada" || got["strings"].([]string)[0] != "Ada" {
-		t.Fatalf("substituteInterfaceMap = %#v, want substituted nested values", got)
-	}
-
-	got = substituteForeachInterfaceMap(executor, map[string]interface{}{
+	got := substituteForeachInterfaceMap(executor, map[string]interface{}{
 		"alias": "${alias.id}",
 		"kept":  "${item.id}",
 	}, map[string]struct{}{"item": {}})
@@ -316,16 +306,6 @@ func TestCoverageHelpersForeachErrorFormattingHelpers(t *testing.T) {
 	failed := finishForeachFailure(StepResult{StepID: "fanout"}, "source", "missing source")
 	if failed.Status != StatusFailed || failed.Error == nil || failed.Error.Type != "source" {
 		t.Fatalf("finishForeachFailure = %#v, want source failure", failed)
-	}
-
-	err := firstForeachError([]foreachIterationResult{{Index: 2, Error: "boom"}}, "fanout")
-	if err == nil || !strings.Contains(err.Message, "iteration 2") {
-		t.Fatalf("firstForeachError = %#v, want iteration message", err)
-	}
-
-	err = firstForeachError([]foreachIterationResult{{Index: 3, Results: []StepResult{{Status: StatusFailed, SkipReason: "skipped-ish"}}}}, "fanout")
-	if err == nil || !strings.Contains(err.Message, "skipped-ish") {
-		t.Fatalf("firstForeachError with result = %#v, want nested skip reason", err)
 	}
 
 	if got := resultErrorMessage(StepResult{Error: &StepError{Message: "explicit"}}); got != "explicit" {

@@ -2,28 +2,10 @@ package gemini
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"testing"
 	"time"
 )
-
-func TestDefaultSetupConfig(t *testing.T) {
-	cfg := DefaultSetupConfig()
-
-	if !cfg.AutoSelectProModel {
-		t.Error("Expected AutoSelectProModel to be true by default")
-	}
-	if cfg.ReadyTimeout <= 0 {
-		t.Error("Expected ReadyTimeout to be positive")
-	}
-	if cfg.ModelSelectTimeout <= 0 {
-		t.Error("Expected ModelSelectTimeout to be positive")
-	}
-	if cfg.PollInterval <= 0 {
-		t.Error("Expected PollInterval to be positive")
-	}
-}
 
 func TestIsGeminiReady(t *testing.T) {
 	tests := []struct {
@@ -260,18 +242,5 @@ func TestWaitForModelMenu_TimeoutMessage(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "timeout after 0s waiting for model menu") {
 		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestWaitForIdleAfterSetup_CanceledContext(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	err := WaitForIdleAfterSetup(ctx, "%1", 10*time.Millisecond)
-	if err == nil {
-		t.Fatal("expected context cancellation error, got nil")
-	}
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("expected context.Canceled, got %v", err)
 	}
 }

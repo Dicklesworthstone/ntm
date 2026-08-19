@@ -341,26 +341,3 @@ func TestDetectAllErrorsInOutput(t *testing.T) {
 		t.Error("Expected ErrorAuth in results")
 	}
 }
-
-func TestIsError(t *testing.T) {
-	tests := []struct {
-		errorType ErrorType
-		expected  bool
-	}{
-		{ErrorNone, false},
-		{ErrorRateLimit, true},
-		{ErrorAuth, true},
-		{ErrorConnection, true},
-		{ErrorCrash, true},
-		{ErrorGeneric, true},
-	}
-
-	for _, tt := range tests {
-		t.Run(string(tt.errorType), func(t *testing.T) {
-			result := IsError(tt.errorType)
-			if result != tt.expected {
-				t.Errorf("IsError(%v) = %v, want %v", tt.errorType, result, tt.expected)
-			}
-		})
-	}
-}

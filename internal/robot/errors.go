@@ -27,14 +27,6 @@ type ErrorsOptions struct {
 	Context   int      // Context lines before/after error (default: 2)
 }
 
-// DefaultErrorsOptions returns sensible defaults.
-func DefaultErrorsOptions() ErrorsOptions {
-	return ErrorsOptions{
-		Lines:   1000,
-		Context: 2,
-	}
-}
-
 // ErrorEntry represents a single error detected in pane output.
 type ErrorEntry struct {
 	Timestamp  time.Time `json:"timestamp"`
@@ -127,11 +119,6 @@ func isRobotErrorLine(line string) (bool, string) {
 		}
 	}
 	return false, ""
-}
-
-// agentTypeFromPaneType converts tmux pane type to string.
-func agentTypeFromPaneType(t tmux.AgentType) string {
-	return agentTypeString(t)
 }
 
 func detectErrorsPaneAgentType(pane tmux.Pane, paneOutput string) string {

@@ -245,15 +245,3 @@ func orderedRules() []StateRule {
 	}
 	return rules
 }
-
-// AllStates returns the closed set of palette states, in canonical order. Useful
-// for documentation, validation, and exhaustive tests.
-func AllStates() []PaletteState {
-	return []PaletteState{
-		StateIdle,
-		StateSlashPaletteOpen,
-		StateGoalPalettePrimed,
-		StateDialogOpen,
-		StateUnknown,
-	}
-}

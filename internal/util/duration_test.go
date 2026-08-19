@@ -152,24 +152,6 @@ func TestParseDurationWithDefault(t *testing.T) {
 	}
 }
 
-func TestMustParseDuration(t *testing.T) {
-	t.Run("valid duration", func(t *testing.T) {
-		d := MustParseDuration("30s")
-		if d != 30*time.Second {
-			t.Errorf("got %v, want 30s", d)
-		}
-	})
-
-	t.Run("panics on invalid", func(t *testing.T) {
-		defer func() {
-			if r := recover(); r == nil {
-				t.Error("expected panic for invalid duration")
-			}
-		}()
-		MustParseDuration("invalid")
-	})
-}
-
 func TestSuggestUnit(t *testing.T) {
 	tests := []struct {
 		input    time.Duration

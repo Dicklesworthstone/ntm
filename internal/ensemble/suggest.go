@@ -328,31 +328,6 @@ func (e *SuggestionEngine) scorePreset(preset *EnsemblePreset, compiled *compile
 	return score
 }
 
-// Score calculates match score for a specific preset against a question.
-func (e *SuggestionEngine) Score(question string, presetName string) float64 {
-	tokens := e.tokenize(question)
-	if len(tokens) == 0 {
-		return 0
-	}
-
-	index, ok := e.presetIndex[presetName]
-	if !ok {
-		return 0
-	}
-
-	score := e.scorePreset(&e.presets[index], &e.compiled[index], tokens, makeTokenSet(tokens), strings.ToLower(question))
-	return score.Score
-}
-
-// ListPresets returns all available preset names.
-func (e *SuggestionEngine) ListPresets() []string {
-	names := make([]string, len(e.presets))
-	for i, p := range e.presets {
-		names[i] = p.Name
-	}
-	return names
-}
-
 // GetPreset returns a preset by name, or nil if not found.
 func (e *SuggestionEngine) GetPreset(name string) *EnsemblePreset {
 	index, ok := e.presetIndex[name]

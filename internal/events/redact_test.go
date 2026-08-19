@@ -13,7 +13,7 @@ func TestSetRedactionConfig(t *testing.T) {
 
 	t.Run("nil_config_disables_redaction", func(t *testing.T) {
 		SetRedactionConfig(nil)
-		cfg := GetRedactionConfig()
+		cfg := redactionConfigForTest()
 		if cfg != nil {
 			t.Error("expected nil config after setting nil")
 		}
@@ -26,7 +26,7 @@ func TestSetRedactionConfig(t *testing.T) {
 		}
 		SetRedactionConfig(cfg)
 
-		got := GetRedactionConfig()
+		got := redactionConfigForTest()
 		if got == nil {
 			t.Fatal("expected non-nil config")
 		}
@@ -189,56 +189,6 @@ func TestRedactDataMap(t *testing.T) {
 	})
 }
 
-func TestSummarizeRedaction(t *testing.T) {
-	t.Run("empty_findings", func(t *testing.T) {
-		result := redaction.Result{
-			Mode:     redaction.ModeWarn,
-			Findings: nil,
-		}
-
-		summary := SummarizeRedaction(result)
-
-		if summary.FindingsCount != 0 {
-			t.Errorf("findings_count = %d, want 0", summary.FindingsCount)
-		}
-		if summary.Action != "warn" {
-			t.Errorf("action = %q, want %q", summary.Action, "warn")
-		}
-		if summary.Categories != nil {
-			t.Errorf("categories should be nil for no findings")
-		}
-	})
-
-	t.Run("with_findings", func(t *testing.T) {
-		result := redaction.Result{
-			Mode: redaction.ModeRedact,
-			Findings: []redaction.Finding{
-				{Category: redaction.CategoryOpenAIKey},
-				{Category: redaction.CategoryOpenAIKey},
-				{Category: redaction.CategoryGitHubToken},
-			},
-		}
-
-		summary := SummarizeRedaction(result)
-
-		if summary.FindingsCount != 3 {
-			t.Errorf("findings_count = %d, want 3", summary.FindingsCount)
-		}
-		if summary.Action != "redact" {
-			t.Errorf("action = %q, want %q", summary.Action, "redact")
-		}
-		if summary.Categories == nil {
-			t.Fatal("categories should not be nil")
-		}
-		if summary.Categories["OPENAI_KEY"] != 2 {
-			t.Errorf("OPENAI_KEY count = %d, want 2", summary.Categories["OPENAI_KEY"])
-		}
-		if summary.Categories["GITHUB_TOKEN"] != 1 {
-			t.Errorf("GITHUB_TOKEN count = %d, want 1", summary.Categories["GITHUB_TOKEN"])
-		}
-	})
-}
-
 // contains checks if s contains substr
 func contains(s, substr string) bool {
 	return len(substr) > 0 && len(s) >= len(substr) && indexOf(s, substr) >= 0
@@ -252,4 +202,11 @@ func indexOf(s, substr string) int {
 		}
 	}
 	return -1
+}
+
+// redactionConfigForTest returns the currently configured redaction config.
+func redactionConfigForTest() *redaction.Config {
+	redactionMu.RLock()
+	defer redactionMu.RUnlock()
+	return redactionConfig
 }

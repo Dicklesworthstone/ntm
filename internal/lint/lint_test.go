@@ -5,8 +5,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-
-	"github.com/Dicklesworthstone/ntm/internal/redaction"
 )
 
 func TestLinterBasic(t *testing.T) {
@@ -90,8 +88,8 @@ func TestCheckSize(t *testing.T) {
 	}
 
 	// Test over warning threshold but under max
-	rules.SetConfig(RuleOversizedPromptBytes, ConfigKeyWarnBytes, 10)
-	rules.SetConfig(RuleOversizedPromptBytes, ConfigKeyMaxBytes, 100)
+	setRuleConfigForTest(rules, RuleOversizedPromptBytes, ConfigKeyWarnBytes, 10)
+	setRuleConfigForTest(rules, RuleOversizedPromptBytes, ConfigKeyMaxBytes, 100)
 	mediumPrompt := strings.Repeat("a", 50)
 	findings = CheckSize(mediumPrompt, rules)
 	if len(findings) != 1 {
@@ -124,8 +122,8 @@ func TestCheckMissingContext(t *testing.T) {
 	}
 
 	// Enable and configure
-	rules.Enable(RuleMissingContext)
-	rules.SetConfig(RuleMissingContext, ConfigKeyRequiredTags, []string{"[CONTEXT]", "[TASK]"})
+	enableRuleForTest(rules, RuleMissingContext)
+	setRuleConfigForTest(rules, RuleMissingContext, ConfigKeyRequiredTags, []string{"[CONTEXT]", "[TASK]"})
 
 	// Missing all tags
 	findings = CheckMissingContext("prompt without tags", rules)
@@ -155,7 +153,7 @@ API_KEY=sk-ant-api03-abcdefghijklmnopqrstuvwxyz123456789012345678901234567890`
 
 	result := l.Lint(prompt)
 
-	secretFindings := result.FindingsByID(RuleSecretDetected)
+	secretFindings := findingsByIDForTest(result, RuleSecretDetected)
 	if len(secretFindings) == 0 {
 		t.Error("expected secret detection for API key pattern")
 	}
@@ -177,7 +175,7 @@ func TestLinterPII(t *testing.T) {
 
 	for _, tt := range tests {
 		result := l.Lint(tt.prompt)
-		piiFindings := result.FindingsByID(RulePIIDetected)
+		piiFindings := findingsByIDForTest(result, RulePIIDetected)
 
 		if tt.wantPII && len(piiFindings) == 0 {
 			t.Errorf("expected PII detection for %q", tt.prompt)
@@ -185,25 +183,6 @@ func TestLinterPII(t *testing.T) {
 		if !tt.wantPII && len(piiFindings) > 0 {
 			t.Errorf("unexpected PII detection for %q: %v", tt.prompt, piiFindings)
 		}
-	}
-}
-
-func TestRuleSetClone(t *testing.T) {
-	original := DefaultRuleSet()
-	original.SetSeverity(RuleSecretDetected, SeverityWarning)
-
-	clone := original.Clone()
-
-	// Verify clone has same values
-	if clone.Rules[RuleSecretDetected].Severity != SeverityWarning {
-		t.Error("clone should have same severity")
-	}
-
-	// Modify clone, verify original unchanged
-	clone.SetSeverity(RuleSecretDetected, SeverityInfo)
-
-	if original.Rules[RuleSecretDetected].Severity != SeverityWarning {
-		t.Error("modifying clone should not affect original")
 	}
 }
 
@@ -221,58 +200,6 @@ func TestStrictRuleSet(t *testing.T) {
 	// Verify missing context is enabled
 	if !strict.Rules[RuleMissingContext].Enabled {
 		t.Error("strict mode should enable missing context rule")
-	}
-}
-
-func TestResultHelpers(t *testing.T) {
-	result := &Result{
-		Findings: []Finding{
-			{ID: RuleSecretDetected, Severity: SeverityError},
-			{ID: RuleDestructiveCommand, Severity: SeverityWarning},
-			{ID: RulePIIDetected, Severity: SeverityWarning},
-			{ID: RuleMissingContext, Severity: SeverityInfo},
-		},
-	}
-
-	if !result.HasErrors() {
-		t.Error("should have errors")
-	}
-	if !result.HasWarnings() {
-		t.Error("should have warnings")
-	}
-
-	errors := result.FindingsBySeverity(SeverityError)
-	if len(errors) != 1 {
-		t.Errorf("expected 1 error, got %d", len(errors))
-	}
-
-	warnings := result.FindingsBySeverity(SeverityWarning)
-	if len(warnings) != 2 {
-		t.Errorf("expected 2 warnings, got %d", len(warnings))
-	}
-
-	secrets := result.FindingsByID(RuleSecretDetected)
-	if len(secrets) != 1 {
-		t.Errorf("expected 1 secret finding, got %d", len(secrets))
-	}
-}
-
-func TestLintWithRedaction(t *testing.T) {
-	l := New()
-
-	// Prompt with a detectable secret pattern
-	prompt := `Config: ANTHROPIC_KEY=sk-ant-api03-test1234567890123456789012345678901234567890123456`
-
-	result, redacted := l.LintWithRedaction(prompt)
-
-	// Should have secret findings
-	if len(result.FindingsByID(RuleSecretDetected)) == 0 {
-		t.Log("Note: Secret detection depends on redaction engine patterns")
-	}
-
-	// Redacted output should be returned (may or may not be different depending on patterns)
-	if redacted == "" {
-		t.Error("redacted output should not be empty")
 	}
 }
 
@@ -321,7 +248,7 @@ func TestRuleSet_Disable(t *testing.T) {
 	}
 
 	// Re-enable it
-	rs.Enable(RuleSecretDetected)
+	enableRuleForTest(rs, RuleSecretDetected)
 	if !rs.Rules[RuleSecretDetected].Enabled {
 		t.Error("RuleSecretDetected should be re-enabled after Enable()")
 	}
@@ -333,38 +260,6 @@ func TestRuleSet_Disable_UnknownRule(t *testing.T) {
 
 	// Should not panic for unknown rule ID
 	rs.Disable(RuleID("nonexistent-rule"))
-}
-
-// TestHasWarnings_NoWarnings tests the false branch of HasWarnings (no warnings present).
-func TestHasWarnings_NoWarnings(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name     string
-		findings []Finding
-	}{
-		{"empty findings", nil},
-		{"only errors", []Finding{
-			{ID: RuleSecretDetected, Severity: SeverityError},
-		}},
-		{"only info", []Finding{
-			{ID: RuleMissingContext, Severity: SeverityInfo},
-		}},
-		{"errors and info no warnings", []Finding{
-			{ID: RuleSecretDetected, Severity: SeverityError},
-			{ID: RuleMissingContext, Severity: SeverityInfo},
-		}},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			result := &Result{Findings: tc.findings}
-			if result.HasWarnings() {
-				t.Error("HasWarnings() = true, want false")
-			}
-		})
-	}
 }
 
 // TestHasErrors_NoErrors tests the false branch of HasErrors (no errors present).
@@ -427,42 +322,6 @@ func TestIsSafeMatch_Branches(t *testing.T) {
 // SetConfig — all branches (bd-4b4zf)
 // =============================================================================
 
-func TestSetConfig_AllBranches(t *testing.T) {
-	t.Parallel()
-
-	t.Run("unknown rule ID returns early", func(t *testing.T) {
-		t.Parallel()
-		rs := DefaultRuleSet()
-		// Should not panic — just returns silently.
-		rs.SetConfig(RuleID("nonexistent"), "key", "value")
-	})
-
-	t.Run("nil Config map is initialized", func(t *testing.T) {
-		t.Parallel()
-		rs := DefaultRuleSet()
-		// Ensure rule exists but has nil Config map.
-		rule := rs.Rules[RuleSecretDetected]
-		rule.Config = nil
-		rs.Rules[RuleSecretDetected] = rule
-
-		rs.SetConfig(RuleSecretDetected, "custom_key", 42)
-		got := rs.Rules[RuleSecretDetected].Config["custom_key"]
-		if got != 42 {
-			t.Errorf("expected Config[custom_key]=42, got %v", got)
-		}
-	})
-
-	t.Run("existing Config map updated", func(t *testing.T) {
-		t.Parallel()
-		rs := DefaultRuleSet()
-		rs.SetConfig(RuleOversizedPromptBytes, ConfigKeyWarnBytes, 999)
-		got := rs.Rules[RuleOversizedPromptBytes].Config[ConfigKeyWarnBytes]
-		if got != 999 {
-			t.Errorf("expected Config[%s]=999, got %v", ConfigKeyWarnBytes, got)
-		}
-	})
-}
-
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
@@ -473,56 +332,6 @@ func truncate(s string, n int) string {
 // =============================================================================
 // LintWithRedaction — with configured redactor (bd-1ced7)
 // =============================================================================
-
-func TestLintWithRedaction_WithRedactor(t *testing.T) {
-	t.Parallel()
-	cfg := redaction.DefaultConfig()
-	cfg.Mode = redaction.ModeRedact
-	l := New(WithRedactionConfig(&cfg))
-
-	// Prompt with a clear secret pattern
-	prompt := `export ANTHROPIC_API_KEY=sk-ant-api03-test1234567890123456789012345678901234567890123456`
-
-	result, redacted := l.LintWithRedaction(prompt)
-	_ = result
-
-	// With a redactor, the output should differ from the input if a secret was found
-	// (the redactor replaces secrets with placeholders)
-	if redacted == "" {
-		t.Error("redacted output should not be empty")
-	}
-}
-
-func TestLintWithRedaction_NoSecretNoRedaction(t *testing.T) {
-	t.Parallel()
-	cfg := redaction.DefaultConfig()
-	l := New(WithRedactionConfig(&cfg))
-
-	prompt := "Hello, just a normal prompt with no secrets"
-	result, redacted := l.LintWithRedaction(prompt)
-
-	// No secrets → output should be same as input
-	if redacted != prompt {
-		t.Errorf("expected unmodified prompt, got %q", redacted)
-	}
-	if !result.Success {
-		t.Errorf("expected success for benign prompt, got findings: %d", len(result.Findings))
-	}
-}
-
-func TestLintWithRedaction_NilRedactor(t *testing.T) {
-	t.Parallel()
-	l := New() // no redactor configured
-
-	prompt := "Just a prompt"
-	result, redacted := l.LintWithRedaction(prompt)
-	if redacted != prompt {
-		t.Errorf("without redactor: expected unchanged prompt, got %q", redacted)
-	}
-	if !result.Success {
-		t.Error("expected success")
-	}
-}
 
 // =============================================================================
 // getConfigInt — all branches (bd-1ced7)
@@ -589,11 +398,11 @@ func TestLint_OversizedPromptBytes(t *testing.T) {
 	t.Parallel()
 	rs := DefaultRuleSet()
 	// Set a very low byte warning threshold
-	rs.SetConfig(RuleOversizedPromptBytes, ConfigKeyWarnBytes, 10)
+	setRuleConfigForTest(rs, RuleOversizedPromptBytes, ConfigKeyWarnBytes, 10)
 	l := New(WithRuleSet(rs))
 
 	result := l.Lint("This is a prompt that exceeds the byte threshold by a lot")
-	findings := result.FindingsByID(RuleOversizedPromptBytes)
+	findings := findingsByIDForTest(result, RuleOversizedPromptBytes)
 	if len(findings) == 0 {
 		t.Error("expected oversized prompt finding")
 	}
@@ -603,12 +412,59 @@ func TestLint_OversizedPromptTokens(t *testing.T) {
 	t.Parallel()
 	rs := DefaultRuleSet()
 	// Set a very low token threshold
-	rs.SetConfig(RuleOversizedPromptTokens, ConfigKeyWarnTokens, 1)
+	setRuleConfigForTest(rs, RuleOversizedPromptTokens, ConfigKeyWarnTokens, 1)
 	l := New(WithRuleSet(rs))
 
 	result := l.Lint("This is a prompt that should exceed 1 token threshold easily")
-	findings := result.FindingsByID(RuleOversizedPromptTokens)
+	findings := findingsByIDForTest(result, RuleOversizedPromptTokens)
 	if len(findings) == 0 {
 		t.Error("expected oversized prompt tokens finding")
 	}
+}
+
+// Test-local helpers standing in for removed RuleSet/Result convenience methods.
+func setRuleConfigForTest(rs *RuleSet, id RuleID, key string, value any) {
+	rule, ok := rs.Rules[id]
+	if !ok {
+		return
+	}
+	if rule.Config == nil {
+		rule.Config = make(map[string]any)
+	}
+	rule.Config[key] = value
+}
+
+func enableRuleForTest(rs *RuleSet, id RuleID) {
+	if rule, ok := rs.Rules[id]; ok {
+		rule.Enabled = true
+	}
+}
+
+func findingsByIDForTest(r *Result, id RuleID) []Finding {
+	var out []Finding
+	for _, f := range r.Findings {
+		if f.ID == id {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+func findingsBySeverityForTest(r *Result, severity Severity) []Finding {
+	var out []Finding
+	for _, f := range r.Findings {
+		if f.Severity == severity {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+func hasWarningsForTest(r *Result) bool {
+	for _, f := range r.Findings {
+		if f.Severity == SeverityWarning {
+			return true
+		}
+	}
+	return false
 }

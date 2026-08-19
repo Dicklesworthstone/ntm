@@ -483,31 +483,6 @@ func TestIncrementPrompt(t *testing.T) {
 // ProficiencyConfigPath coverage
 // =============================================================================
 
-func TestProficiencyConfigPath(t *testing.T) {
-	path := ProficiencyConfigPath()
-	if path == "" {
-		t.Error("ProficiencyConfigPath returned empty string")
-	}
-	if !filepath.IsAbs(path) {
-		t.Errorf("ProficiencyConfigPath returned relative path: %s", path)
-	}
-	if filepath.Ext(path) != ".json" {
-		t.Errorf("ProficiencyConfigPath ext = %q, want .json", filepath.Ext(path))
-	}
-}
-
-func TestProficiencyConfigPath_XDGOverride(t *testing.T) {
-	tmpDir := t.TempDir()
-	os.Setenv("XDG_CONFIG_HOME", tmpDir)
-	defer os.Unsetenv("XDG_CONFIG_HOME")
-
-	path := ProficiencyConfigPath()
-	expected := filepath.Join(tmpDir, "ntm", "proficiency.json")
-	if path != expected {
-		t.Errorf("ProficiencyConfigPath = %q, want %q", path, expected)
-	}
-}
-
 func TestLoadProficiency_UsesSelectedConfigPath(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmpDir, "xdg"))

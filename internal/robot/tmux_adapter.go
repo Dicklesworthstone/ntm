@@ -145,17 +145,6 @@ func (a *TmuxAdapter) NormalizeSession(sess *tmux.Session, agents []Agent) *stat
 	}
 }
 
-// NormalizeSessions transforms multiple tmux sessions.
-func (a *TmuxAdapter) NormalizeSessions(sessions []tmux.Session, agentsBySession map[string][]Agent) []state.RuntimeSession {
-	result := make([]state.RuntimeSession, 0, len(sessions))
-	for i := range sessions {
-		agents := agentsBySession[sessions[i].Name]
-		rs := a.NormalizeSession(&sessions[i], agents)
-		result = append(result, *rs)
-	}
-	return result
-}
-
 // =============================================================================
 // Agent Normalization
 // =============================================================================

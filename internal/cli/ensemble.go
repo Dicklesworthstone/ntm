@@ -1434,10 +1434,6 @@ func streamEnsembleSynthesis(
 	return nil
 }
 
-func resolveSynthesisResumeSession(session, runID string, _ io.Writer) (string, error) {
-	return resolveSynthesisResumeSessionForOutput(session, runID, io.Discard, IsJSONOutput())
-}
-
 func resolveSynthesisResumeSessionForOutput(session, runID string, _ io.Writer, machineJSON bool) (string, error) {
 	store, _, err := resolveEnsembleCheckpointStoreForRunID(runID)
 	if err != nil {
@@ -1819,10 +1815,6 @@ func renderExportFindingsOutput(w io.Writer, payload exportFindingsOutput, forma
 		}
 		return nil
 	}
-}
-
-func loadExportFindingsContext(commandCtx context.Context, w io.Writer, session string, opts exportFindingsOptions) (*exportFindingsContext, error) {
-	return loadExportFindingsContextForOutput(commandCtx, w, session, opts, IsJSONOutput())
 }
 
 func loadExportFindingsContextForOutput(commandCtx context.Context, w io.Writer, session string, opts exportFindingsOptions, machineJSON bool) (*exportFindingsContext, error) {
@@ -2425,14 +2417,6 @@ Formats:
 	cmd.Flags().BoolVar(&opts.Stats, "stats", false, "Show provenance statistics")
 	cmd.ValidArgsFunction = completeSessionArgs
 	return cmd
-}
-
-func resolveEnsembleSession(session string, w io.Writer) (SessionResolution, error) {
-	return resolveEnsembleSessionForOutput(session, w, IsJSONOutput())
-}
-
-func resolveEnsembleStateCommandSession(session string, w io.Writer) (SessionResolution, error) {
-	return resolveEnsembleStateCommandSessionForOutput(session, w, IsJSONOutput())
 }
 
 func resolveEnsembleSessionForOutput(session string, w io.Writer, machineJSON bool) (SessionResolution, error) {

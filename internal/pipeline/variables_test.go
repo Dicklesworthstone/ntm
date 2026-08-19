@@ -1118,35 +1118,6 @@ func TestStoreStepOutput(t *testing.T) {
 	}
 }
 
-func TestValidateVarRefs(t *testing.T) {
-	available := []string{"name", "count", "vars.name", "vars.count"}
-
-	tests := []struct {
-		template string
-		wantLen  int // number of invalid refs
-	}{
-		{"${vars.name}", 0},
-		{"${vars.undefined}", 1},
-		{"${env.PATH}", 0},           // env is always valid
-		{"${session}", 0},            // context vars are valid
-		{"${unknown.var}", 1},        // unknown namespace
-		{"\\${vars.name}", 0},        // escaped is ignored
-		{"${vars.x} ${vars.y}", 2},   // both undefined
-		{"${steps.build.output}", 0}, // steps namespace is valid
-		{"${loop.item}", 0},          // loop namespace is valid
-		{"${run_id}", 0},             // context var run_id is valid
-		{"${timestamp}", 0},          // context var timestamp is valid
-		{"${workflow}", 0},           // context var workflow is valid
-	}
-
-	for _, tt := range tests {
-		invalid := ValidateVarRefs(tt.template, available)
-		if len(invalid) != tt.wantLen {
-			t.Errorf("ValidateVarRefs(%q) = %v, want %d invalid", tt.template, invalid, tt.wantLen)
-		}
-	}
-}
-
 func TestParseDefault(t *testing.T) {
 	tests := []struct {
 		expr       string
@@ -1518,11 +1489,20 @@ func TestOutputParser_ParseRegex_FullMatchNoGroups(t *testing.T) {
 	}
 }
 
-func TestClearLoopVars_NilVariables(t *testing.T) {
+// ClearLoopVars is a test-only helper retained after the production function
+// was removed as dead code; loop-variable tests use it to reset loop context
+// between assertions.
+func ClearLoopVars(state *ExecutionState, varName string) {
+	if state.Variables == nil {
+		return
+	}
 
-	state := &ExecutionState{Variables: nil}
-	// Should not panic
-	ClearLoopVars(state, "item")
+	delete(state.Variables, "loop."+varName)
+	delete(state.Variables, "loop.item")
+	delete(state.Variables, "loop.index")
+	delete(state.Variables, "loop.count")
+	delete(state.Variables, "loop.first")
+	delete(state.Variables, "loop.last")
 }
 
 func TestStoreStepOutput_NoParsedData(t *testing.T) {

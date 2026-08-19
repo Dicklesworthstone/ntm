@@ -3,7 +3,6 @@ package ensemble
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -202,22 +201,6 @@ func (t *ProvenanceTracker) RecordSynthesisCitation(findingID, synthesisLocation
 	return nil
 }
 
-// RecordTextChange tracks a finding's text being modified.
-func (t *ProvenanceTracker) RecordTextChange(findingID, newText, reason string) error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	chain, ok := t.chains[findingID]
-	if !ok {
-		return fmt.Errorf("finding %s not found", findingID)
-	}
-
-	oldText := chain.CurrentText
-	chain.CurrentText = newText
-	chain.AddStep("transform", "text-modified", fmt.Sprintf("%s: changed from %q", reason, truncateText(oldText, 50)))
-	return nil
-}
-
 // GetChain retrieves the provenance chain for a finding.
 func (t *ProvenanceTracker) GetChain(findingID string) (*ProvenanceChain, bool) {
 	t.mu.RLock()
@@ -255,42 +238,6 @@ func (t *ProvenanceTracker) ListChains() []*ProvenanceChain {
 	return result
 }
 
-// ListActiveChains returns only non-merged provenance chains.
-func (t *ProvenanceTracker) ListActiveChains() []*ProvenanceChain {
-	all := t.ListChains()
-	active := make([]*ProvenanceChain, 0, len(all))
-	for _, chain := range all {
-		if chain.IsActive() {
-			active = append(active, chain)
-		}
-	}
-	return active
-}
-
-// FindByText searches for chains containing the given text.
-func (t *ProvenanceTracker) FindByText(text string) []*ProvenanceChain {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-
-	normalized := normalizeText(text)
-	var matches []*ProvenanceChain
-
-	for _, chain := range t.chains {
-		if strings.Contains(normalizeText(chain.OriginalText), normalized) ||
-			strings.Contains(normalizeText(chain.CurrentText), normalized) {
-			cpy := *chain
-			matches = append(matches, &cpy)
-		}
-	}
-
-	return matches
-}
-
-// ContextHash returns the context hash for this tracker.
-func (t *ProvenanceTracker) ContextHash() string {
-	return t.contextHash
-}
-
 // Count returns the total number of tracked findings.
 func (t *ProvenanceTracker) Count() int {
 	t.mu.RLock()
@@ -310,24 +257,6 @@ func (t *ProvenanceTracker) ActiveCount() int {
 		}
 	}
 	return count
-}
-
-// Export serializes the tracker state to JSON.
-func (t *ProvenanceTracker) Export() ([]byte, error) {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-
-	export := struct {
-		ContextHash string                      `json:"context_hash"`
-		Chains      map[string]*ProvenanceChain `json:"chains"`
-		Stats       ProvenanceStats             `json:"stats"`
-	}{
-		ContextHash: t.contextHash,
-		Chains:      t.chains,
-		Stats:       t.computeStatsLocked(),
-	}
-
-	return json.MarshalIndent(export, "", "  ")
 }
 
 // ProvenanceStats provides summary statistics.
@@ -448,90 +377,6 @@ func truncateText(text string, maxLen int) string {
 		return text
 	}
 	return text[:maxLen-3] + "..."
-}
-
-// ProvenanceIndex provides fast lookup across multiple trackers or sessions.
-type ProvenanceIndex struct {
-	mu     sync.RWMutex
-	byID   map[string]*ProvenanceChain
-	byMode map[string][]*ProvenanceChain
-	byHash map[string][]*ProvenanceChain
-}
-
-// NewProvenanceIndex creates an empty index.
-func NewProvenanceIndex() *ProvenanceIndex {
-	return &ProvenanceIndex{
-		byID:   make(map[string]*ProvenanceChain),
-		byMode: make(map[string][]*ProvenanceChain),
-		byHash: make(map[string][]*ProvenanceChain),
-	}
-}
-
-// Index adds chains from a tracker to the index.
-func (idx *ProvenanceIndex) Index(tracker *ProvenanceTracker) {
-	idx.mu.Lock()
-	defer idx.mu.Unlock()
-
-	for _, chain := range tracker.ListChains() {
-		idx.byID[chain.FindingID] = chain
-		idx.byMode[chain.SourceMode] = append(idx.byMode[chain.SourceMode], chain)
-		idx.byHash[chain.ContextHash] = append(idx.byHash[chain.ContextHash], chain)
-	}
-}
-
-// Lookup finds a chain by ID.
-func (idx *ProvenanceIndex) Lookup(findingID string) (*ProvenanceChain, bool) {
-	idx.mu.RLock()
-	defer idx.mu.RUnlock()
-	chain, ok := idx.byID[findingID]
-	return chain, ok
-}
-
-// ByMode returns all chains from a specific mode.
-func (idx *ProvenanceIndex) ByMode(modeID string) []*ProvenanceChain {
-	idx.mu.RLock()
-	defer idx.mu.RUnlock()
-	return idx.byMode[modeID]
-}
-
-// ByContext returns all chains from a specific context hash.
-func (idx *ProvenanceIndex) ByContext(contextHash string) []*ProvenanceChain {
-	idx.mu.RLock()
-	defer idx.mu.RUnlock()
-	return idx.byHash[contextHash]
-}
-
-// ProvenanceReport generates a comprehensive report of provenance data.
-type ProvenanceReport struct {
-	GeneratedAt  time.Time           `json:"generated_at"`
-	ContextHash  string              `json:"context_hash"`
-	Stats        ProvenanceStats     `json:"stats"`
-	ActiveChains []*ProvenanceChain  `json:"active_chains"`
-	MergeGraph   map[string][]string `json:"merge_graph,omitempty"`
-}
-
-// GenerateReport creates a provenance report from a tracker.
-func GenerateReport(tracker *ProvenanceTracker) *ProvenanceReport {
-	if tracker == nil {
-		return nil
-	}
-
-	report := &ProvenanceReport{
-		GeneratedAt:  time.Now(),
-		ContextHash:  tracker.ContextHash(),
-		Stats:        tracker.Stats(),
-		ActiveChains: tracker.ListActiveChains(),
-		MergeGraph:   make(map[string][]string),
-	}
-
-	// Build merge graph
-	for _, chain := range tracker.ListChains() {
-		if len(chain.MergedFrom) > 0 {
-			report.MergeGraph[chain.FindingID] = chain.MergedFrom
-		}
-	}
-
-	return report
 }
 
 // Validate checks that a provenance chain is valid.

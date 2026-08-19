@@ -142,11 +142,3 @@ func TestOrderedRules_SortedByPriority(t *testing.T) {
 		}
 	}
 }
-
-// TestAllStates_Closed guards the closed state set.
-func TestAllStates_Closed(t *testing.T) {
-	want := []PaletteState{StateIdle, StateSlashPaletteOpen, StateGoalPalettePrimed, StateDialogOpen, StateUnknown}
-	if !reflect.DeepEqual(AllStates(), want) {
-		t.Fatalf("AllStates() = %#v, want %#v", AllStates(), want)
-	}
-}

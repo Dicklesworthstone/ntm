@@ -474,8 +474,8 @@ func TestPrintAlertsTUINilConfig(t *testing.T) {
 
 func TestGetAlertsTUIRespectsDisabledAlertsConfig(t *testing.T) {
 	tracker := alerts.GetGlobalTracker()
-	tracker.Clear()
-	t.Cleanup(tracker.Clear)
+	clearAlertTracker(tracker)
+	t.Cleanup(func() { clearAlertTracker(tracker) })
 	t.Cleanup(func() {
 		alerts.SetGlobalTrackerConfig(alerts.DefaultConfig())
 	})
@@ -535,8 +535,8 @@ func TestPrintDismissAlertNoID(t *testing.T) {
 
 func TestPrintDismissAlertWithID(t *testing.T) {
 	tracker := alerts.GetGlobalTracker()
-	tracker.Clear()
-	t.Cleanup(tracker.Clear)
+	clearAlertTracker(tracker)
+	t.Cleanup(func() { clearAlertTracker(tracker) })
 	tracker.AddAlert(alerts.Alert{
 		ID:       "test-alert-123",
 		Type:     alerts.AlertAgentError,
@@ -556,8 +556,8 @@ func TestPrintDismissAlertWithID(t *testing.T) {
 
 func TestGetDismissAlertResolvesMatchingAlert(t *testing.T) {
 	tracker := alerts.GetGlobalTracker()
-	tracker.Clear()
-	t.Cleanup(tracker.Clear)
+	clearAlertTracker(tracker)
+	t.Cleanup(func() { clearAlertTracker(tracker) })
 
 	tracker.AddAlert(alerts.Alert{
 		ID:       "alert-proj",
@@ -599,8 +599,8 @@ func TestGetDismissAlertResolvesMatchingAlert(t *testing.T) {
 
 func TestGetDismissAlertRejectsSessionMismatch(t *testing.T) {
 	tracker := alerts.GetGlobalTracker()
-	tracker.Clear()
-	t.Cleanup(tracker.Clear)
+	clearAlertTracker(tracker)
+	t.Cleanup(func() { clearAlertTracker(tracker) })
 
 	tracker.AddAlert(alerts.Alert{
 		ID:       "alert-other",
@@ -627,8 +627,8 @@ func TestGetDismissAlertRejectsSessionMismatch(t *testing.T) {
 
 func TestGetDismissAlertDismissAllBySession(t *testing.T) {
 	tracker := alerts.GetGlobalTracker()
-	tracker.Clear()
-	t.Cleanup(tracker.Clear)
+	clearAlertTracker(tracker)
+	t.Cleanup(func() { clearAlertTracker(tracker) })
 
 	tracker.AddAlert(alerts.Alert{
 		ID:       "alert-proj",

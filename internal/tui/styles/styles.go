@@ -463,28 +463,6 @@ var HeavyBox = BoxChars{
 	Cross:       "╋",
 }
 
-// Divider creates a styled divider line
-func Divider(width int, style string, color lipgloss.Color) string {
-	if width <= 0 {
-		return ""
-	}
-	var char string
-	switch style {
-	case "heavy":
-		char = "━"
-	case "double":
-		char = "═"
-	case "dotted":
-		char = "·"
-	case "dashed":
-		char = "╌"
-	default:
-		char = "─"
-	}
-
-	return lipgloss.NewStyle().Foreground(color).Render(strings.Repeat(char, width))
-}
-
 // GradientDivider creates a gradient divider
 func GradientDivider(width int, colors ...string) string {
 	if width <= 0 {
@@ -509,59 +487,6 @@ func AnimatedGradientDivider(width, tick int, colors ...string) string {
 		return GradientDivider(width, colors...)
 	}
 	return Shimmer(strings.Repeat("─", width), tick, colors...)
-}
-
-// AnimatedBorderColor returns a color that smoothly cycles between two colors for shimmer border effects.
-// Uses a triangle wave for smooth round-trip animation (no discontinuous jumps).
-// [tui-upgrade: bd-28vsw] Use with BorderForeground() for animated panel borders.
-func AnimatedBorderColor(tick int, baseColor, accentColor string) lipgloss.Color {
-	if ReducedMotionEnabled() {
-		return lipgloss.Color(baseColor)
-	}
-	// Triangle wave: 0→1→0 over 20 ticks (2 seconds at 100ms tick rate)
-	mod := tick % 20
-	if mod < 0 {
-		mod += 20
-	}
-	pos := float64(mod)
-	var t float64
-	if pos < 10 {
-		t = pos / 10.0
-	} else {
-		t = (20 - pos) / 10.0
-	}
-
-	base := ParseHex(baseColor)
-	accent := ParseHex(accentColor)
-	blended := Color{
-		R: int(float64(base.R)*(1-t) + float64(accent.R)*t),
-		G: int(float64(base.G)*(1-t) + float64(accent.G)*t),
-		B: int(float64(base.B)*(1-t) + float64(accent.B)*t),
-	}
-	return blended.ToLipgloss()
-}
-
-// Badge creates a styled badge/tag
-func Badge(text string, bg, fg lipgloss.Color) string {
-	return lipgloss.NewStyle().
-		Background(bg).
-		Foreground(fg).
-		Padding(0, 1).
-		Render(text)
-}
-
-// KeyHint renders a keyboard shortcut hint
-func KeyHint(key, description string, keyColor, descColor lipgloss.Color) string {
-	keyStyle := lipgloss.NewStyle().
-		Background(lipgloss.Color("#45475a")).
-		Foreground(keyColor).
-		Bold(true).
-		Padding(0, 1)
-
-	descStyle := lipgloss.NewStyle().
-		Foreground(descColor)
-
-	return keyStyle.Render(key) + " " + descStyle.Render(description)
 }
 
 // Truncate truncates text to max width with ellipsis

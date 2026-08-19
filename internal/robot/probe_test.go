@@ -22,32 +22,6 @@ func TestGetProbeSessionFailureUsesGeneralErrorExit(t *testing.T) {
 	}
 }
 
-// GH#251 phase 2: grok panes accept automated pane input, so a probe against a
-// grok pane proceeds to actually touch the pane instead of failing closed with
-// NOT_IMPLEMENTED before any input.
-func TestGetProbe_GrokProceedsToPaneInput(t *testing.T) {
-	mock := setupMock(t)
-	mock.Panes = []tmux.Pane{{ID: "%9", Index: 2, WindowIndex: 1, Type: tmux.AgentGrok}}
-
-	output, err := GetProbe(ProbeOptions{
-		Session: "proj",
-		Pane:    2,
-		Flags: ProbeFlags{
-			Method:    ProbeMethodKeystrokeEcho,
-			TimeoutMs: 1,
-		},
-	})
-	if err != nil {
-		t.Fatalf("GetProbe() error = %v", err)
-	}
-	if output.ErrorCode == ErrCodeNotImplemented {
-		t.Fatalf("GetProbe() response = %+v, grok probes must no longer be refused as NOT_IMPLEMENTED", output.RobotResponse)
-	}
-	if mock.CaptureCount == 0 && mock.SendKeysCount == 0 {
-		t.Fatalf("probe never touched the grok pane: capture=%d send=%d interrupt=%d", mock.CaptureCount, mock.SendKeysCount, mock.InterruptCount)
-	}
-}
-
 // GH#251 phase 2: a mixed claude+grok batch passes the preflight and both
 // panes are probed like any supported agents.
 func TestGetProbeSession_MixedBatchProbesGrok(t *testing.T) {
@@ -1397,28 +1371,6 @@ func TestProbeOutputErrorFields(t *testing.T) {
 // FormatProbeDuration Tests (bd-43oxm)
 // =============================================================================
 
-func TestFormatProbeDuration(t *testing.T) {
-	tests := []struct {
-		duration time.Duration
-		wantMs   int64
-	}{
-		{100 * time.Millisecond, 100},
-		{5 * time.Second, 5000},
-		{1 * time.Minute, 60000},
-		{500 * time.Microsecond, 0}, // Rounds down
-		{1500 * time.Millisecond, 1500},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.duration.String(), func(t *testing.T) {
-			got := FormatProbeDuration(tt.duration)
-			if got != tt.wantMs {
-				t.Errorf("FormatProbeDuration(%v) = %d, want %d", tt.duration, got, tt.wantMs)
-			}
-		})
-	}
-}
-
 // =============================================================================
 // Edge Case Tests (bd-43oxm)
 // =============================================================================
@@ -1810,70 +1762,6 @@ func (m *MockTmuxClientSequence) CaptureForStatusDetection(target string) (strin
 	return "", nil
 }
 
-// Wake-ping probe (ntm-7rgt): one structured call answers TUI liveness AND
-// whether the rate-limit wall is still up, with a tail sample — replacing the
-// raw `tmux send-keys "ping" Enter; sleep 5; --robot-tail` folklore.
-func TestProbeWakePing(t *testing.T) {
-	t.Run("rate-limited pane reports still limited", func(t *testing.T) {
-		mock := setupMock(t)
-		mock.Panes = []tmux.Pane{{ID: "%5", Index: 2, Type: tmux.AgentClaude, Title: "proj__cc_1"}}
-		mock.CaptureOutput = "some output\nrate limit reached, resets at 4pm\n"
-
-		out, err := GetProbe(ProbeOptions{
-			Session: "proj", Pane: 2,
-			Flags: ProbeFlags{Method: ProbeMethodWakePing, TimeoutMs: 50},
-		})
-		if err != nil {
-			t.Fatalf("GetProbe: %v", err)
-		}
-		if !out.Success {
-			t.Fatalf("wake_ping failed: %s", out.Error)
-		}
-		if out.ProbeDetails.StillRateLimited == nil || !*out.ProbeDetails.StillRateLimited {
-			t.Fatalf("still_rate_limited = %v, want true", out.ProbeDetails.StillRateLimited)
-		}
-		if len(out.ProbeDetails.TailSample) == 0 {
-			t.Error("tail_sample missing")
-		}
-	})
-
-	t.Run("clear pane reports wall down", func(t *testing.T) {
-		mock := setupMock(t)
-		mock.Panes = []tmux.Pane{{ID: "%5", Index: 2, Type: tmux.AgentCodex, Title: "proj__cod_1"}}
-		mock.CaptureOutput = "› \n100% context left\n"
-
-		out, err := GetProbe(ProbeOptions{
-			Session: "proj", Pane: 2,
-			Flags: ProbeFlags{Method: ProbeMethodWakePing, TimeoutMs: 50},
-		})
-		if err != nil {
-			t.Fatalf("GetProbe: %v", err)
-		}
-		if out.ProbeDetails.StillRateLimited == nil || *out.ProbeDetails.StillRateLimited {
-			t.Fatalf("still_rate_limited = %v, want false", out.ProbeDetails.StillRateLimited)
-		}
-	})
-
-	t.Run("user pane refused", func(t *testing.T) {
-		mock := setupMock(t)
-		mock.Panes = []tmux.Pane{{ID: "%1", Index: 0, Type: tmux.AgentUser, Title: "proj"}}
-
-		out, err := GetProbe(ProbeOptions{
-			Session: "proj", Pane: 0,
-			Flags: ProbeFlags{Method: ProbeMethodWakePing, TimeoutMs: 50},
-		})
-		if err != nil {
-			t.Fatalf("GetProbe: %v", err)
-		}
-		if out.Success {
-			t.Fatal("wake_ping against a user pane must be refused")
-		}
-		if out.ErrorCode != ErrCodeInvalidFlag {
-			t.Fatalf("error code = %s, want %s", out.ErrorCode, ErrCodeInvalidFlag)
-		}
-	})
-}
-
 // pane_index is window-local, so a window-per-agent layout gives every agent
 // pane index 0. Enumerating and resolving by that bare index made the whole
 // batch collapse onto window 0's pane: three probes all hit the same agent
@@ -1921,32 +1809,6 @@ func TestGetProbeSession_WindowPerAgentDoesNotCollapse(t *testing.T) {
 	for _, target := range mock.Targets {
 		if !wantTargets[target] {
 			t.Fatalf("probe addressed %q; want one of %v (window-local pane index, not the NTM agent index)", target, wantTargets)
-		}
-	}
-}
-
-// SendKeys sends with tmux's literal (-l) flag, so a KEY NAME passed to it is
-// typed as characters. The probe's cleanup used SendKeys("BSpace"), which put
-// the six letters "BSpace" into the pane rather than erasing the probe
-// character — verified live before the fix, where an agent composer was left
-// reading "❯  BSpace", text the operator's next Enter would submit.
-func TestProbeKeystrokeEchoNeverTypesKeyNamesLiterally(t *testing.T) {
-	mock := setupMock(t)
-	mock.Panes = []tmux.Pane{{ID: "%1", Index: 1, WindowIndex: 0, Type: tmux.AgentClaude}}
-	mock.CaptureOutput = "static screen"
-
-	_, err := GetProbe(ProbeOptions{
-		Session: "proj",
-		Pane:    1,
-		Flags:   ProbeFlags{Method: ProbeMethodKeystrokeEcho, TimeoutMs: 1},
-	})
-	if err != nil {
-		t.Fatalf("GetProbe() error = %v", err)
-	}
-
-	for _, sent := range mock.SentLiterals {
-		if sent == "BSpace" || sent == "Escape" || sent == "Enter" || sent == "C-u" {
-			t.Fatalf("probe sent the tmux key name %q as literal text; it would be typed into the pane, not pressed", sent)
 		}
 	}
 }

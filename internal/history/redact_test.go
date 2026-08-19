@@ -13,7 +13,7 @@ func TestSetRedactionConfig(t *testing.T) {
 
 	t.Run("nil_config_disables_redaction", func(t *testing.T) {
 		SetRedactionConfig(nil)
-		cfg := GetRedactionConfig()
+		cfg := redactionConfigForTest()
 		if cfg != nil {
 			t.Error("expected nil config after setting nil")
 		}
@@ -26,7 +26,7 @@ func TestSetRedactionConfig(t *testing.T) {
 		}
 		SetRedactionConfig(cfg)
 
-		got := GetRedactionConfig()
+		got := redactionConfigForTest()
 		if got == nil {
 			t.Fatal("expected non-nil config")
 		}
@@ -46,7 +46,7 @@ func TestSetRedactionConfig(t *testing.T) {
 		cfg.Mode = redaction.ModeBlock
 
 		// Get should return the original value
-		got := GetRedactionConfig()
+		got := redactionConfigForTest()
 		if got.Mode != redaction.ModeRedact {
 			t.Errorf("config should be a copy, got mode = %q", got.Mode)
 		}
@@ -232,4 +232,11 @@ func indexOf(s, substr string) int {
 		}
 	}
 	return -1
+}
+
+// redactionConfigForTest returns the currently configured redaction config.
+func redactionConfigForTest() *redaction.Config {
+	redactionMu.RLock()
+	defer redactionMu.RUnlock()
+	return redactionConfig
 }

@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -830,41 +831,6 @@ func TestReleaseAssignmentReservationsForClearRejectsIDPathBindingMismatch(t *te
 	}
 }
 
-func TestReserveFilesForBeadUsesResolvedProjectDir(t *testing.T) {
-	isolateSessionAgentStorage(t)
-	root, nested := createAssignProjectRoot(t)
-
-	oldCfg := cfg
-	cfg = &config.Config{ProjectsBase: filepath.Join(root, "projects-base")}
-	t.Cleanup(func() { cfg = oldCfg })
-
-	stub := newMailStub(t, nil)
-	defer stub.Close()
-	t.Setenv("AGENT_MAIL_URL", stub.server.URL)
-
-	oldWd, _ := os.Getwd()
-	if err := os.Chdir(nested); err != nil {
-		t.Fatalf("chdir nested: %v", err)
-	}
-	t.Cleanup(func() { _ = os.Chdir(oldWd) })
-	saveSessionAgentForTest(t, "demo", root, "BlueLake")
-
-	result := reserveFilesForBead(t.Context(), "demo", "bd-123", "Update internal/cli/assign.go", "claude", false, time.Second)
-	if result == nil {
-		t.Fatal("reserveFilesForBead() returned nil result")
-	}
-	if !result.Success {
-		t.Fatalf("reserveFilesForBead() success = false, error = %q", result.Error)
-	}
-
-	if len(stub.reserveCalls) != 1 {
-		t.Fatalf("expected 1 reserve call, got %d", len(stub.reserveCalls))
-	}
-	if got := stub.reserveCalls[0].Project; got != root {
-		t.Fatalf("reserve project = %q, want %q", got, root)
-	}
-}
-
 // ============================================================================
 // Completion Detection and Unblock Tests
 // ============================================================================
@@ -966,88 +932,6 @@ func TestDependencyAwareResultStructure(t *testing.T) {
 	}
 	if len(result.Errors) != 1 {
 		t.Errorf("Expected 1 error, got %d", len(result.Errors))
-	}
-}
-
-func TestNewlyUnblockedCandidateUsesAuthoritativeDependencyState(t *testing.T) {
-	const completed = "bd-completed"
-	ready := bv.BeadDependentState{ID: "bd-ready", Title: "stale title", Priority: 1}
-	readyDetails := &bv.BeadAssignmentDetails{
-		ID: "bd-ready", Title: "Live ready title", Status: "open", Priority: 4,
-		BlockingDependencies: []bv.BeadDependencyState{{ID: completed, Status: "closed"}},
-	}
-	candidate, reason, unresolved := newlyUnblockedCandidate(completed, ready, readyDetails)
-	if reason != "" || len(unresolved) != 0 || candidate == nil {
-		t.Fatalf("sole completed blocker candidate = %+v reason=%q unresolved=%v", candidate, reason, unresolved)
-	}
-	if candidate.ID != ready.ID || candidate.Title != readyDetails.Title || candidate.Priority != readyDetails.Priority || candidate.UnblockedByID != completed ||
-		!reflect.DeepEqual(candidate.PrevBlockers, []string{completed}) {
-		t.Fatalf("authoritative unblocked candidate = %+v", candidate)
-	}
-
-	blocked := bv.BeadDependentState{ID: "bd-sibling", Title: "Sibling", Priority: 2}
-	candidate, reason, unresolved = newlyUnblockedCandidate(completed, blocked, &bv.BeadAssignmentDetails{
-		ID: blocked.ID, Title: blocked.Title, Status: "open", BlockedBy: []string{"bd-still-open"},
-		BlockingDependencies: []bv.BeadDependencyState{
-			{ID: completed, Status: "closed"},
-			{ID: "bd-still-open", Status: "open"},
-		},
-	})
-	if candidate != nil || reason != "blocked_by_dependency" || !reflect.DeepEqual(unresolved, []string{"bd-still-open"}) {
-		t.Fatalf("sibling blocker candidate = %+v reason=%q unresolved=%v", candidate, reason, unresolved)
-	}
-
-	gatedDetails := &bv.BeadAssignmentDetails{
-		ID: ready.ID, Title: ready.Title, Status: "open", Labels: []string{"operator-gated"},
-		BlockingDependencies: []bv.BeadDependencyState{{ID: completed, Status: "closed"}},
-	}
-	candidate, reason, unresolved = newlyUnblockedCandidate(completed, ready, gatedDetails)
-	if candidate != nil || reason != "operator_gated" || len(unresolved) != 0 {
-		t.Fatalf("operator-gated candidate = %+v reason=%q unresolved=%v", candidate, reason, unresolved)
-	}
-
-	for _, nonterminalStatus := range []string{"resolved", "done", "unknown"} {
-		details := *readyDetails
-		details.BlockingDependencies = []bv.BeadDependencyState{
-			{ID: completed, Status: "closed"},
-			{ID: "bd-nonterminal", Status: nonterminalStatus},
-		}
-		candidate, reason, unresolved = newlyUnblockedCandidate(completed, ready, &details)
-		if candidate != nil || reason != "blocked_by_dependency" || !reflect.DeepEqual(unresolved, []string{"bd-nonterminal"}) {
-			t.Fatalf("status %q treated as terminal: candidate=%+v reason=%q unresolved=%v", nonterminalStatus, candidate, reason, unresolved)
-		}
-	}
-}
-
-func TestClassifyLiveAssignmentDetailsRejectsEveryReadyGate(t *testing.T) {
-	t.Parallel()
-	future := time.Now().Add(time.Hour)
-	tests := []struct {
-		name       string
-		details    bv.BeadAssignmentDetails
-		wantReason string
-	}{
-		{name: "future deferred", details: bv.BeadAssignmentDetails{ID: "bd-deferred", Status: "open", DeferUntil: &future}, wantReason: "deferred"},
-		{name: "pinned", details: bv.BeadAssignmentDetails{ID: "bd-pinned", Status: "open", Pinned: true}, wantReason: "pinned"},
-		{name: "ephemeral", details: bv.BeadAssignmentDetails{ID: "bd-ephemeral", Status: "open", Ephemeral: true}, wantReason: "ephemeral"},
-		{name: "template", details: bv.BeadAssignmentDetails{ID: "bd-template", Status: "open", Template: true}, wantReason: "template"},
-		{name: "wisp field", details: bv.BeadAssignmentDetails{ID: "bd-work", Status: "open", Wisp: true}, wantReason: "wisp"},
-		{name: "wisp id", details: bv.BeadAssignmentDetails{ID: "bd-wisp-123", Status: "open"}, wantReason: "wisp"},
-	}
-	for _, test := range tests {
-		test := test
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			got := classifyLiveAssignmentDetails(&test.details, nil)
-			if got == nil || got.Reason != test.wantReason {
-				t.Fatalf("live gate classification=%+v, want reason %q", got, test.wantReason)
-			}
-		})
-	}
-
-	past := time.Now().Add(-time.Hour)
-	if skipped := classifyLiveAssignmentDetails(&bv.BeadAssignmentDetails{ID: "bd-ready", Status: "open", DeferUntil: &past}, nil); skipped != nil {
-		t.Fatalf("past defer incorrectly rejected: %+v", skipped)
 	}
 }
 
@@ -1668,172 +1552,6 @@ func TestAssignSessionObserverClassifiesCanonicalAliases(t *testing.T) {
 	}
 }
 
-func TestClassifyTriageRecForAssignment(t *testing.T) {
-	type testCase struct {
-		name              string
-		rec               bv.TriageRecommendation
-		activeAssignments map[string]struct{}
-		wantSkip          bool
-		wantReason        string
-	}
-
-	tests := []testCase{
-		{
-			name:     "open with no blockers is assignable",
-			rec:      bv.TriageRecommendation{ID: "bd-1", Status: "open"},
-			wantSkip: false,
-		},
-		{
-			name:       "empty status fails closed",
-			rec:        bv.TriageRecommendation{ID: "bd-2"},
-			wantSkip:   true,
-			wantReason: "not_open_status",
-		},
-		{
-			name:       "dependency blocker wins over status",
-			rec:        bv.TriageRecommendation{ID: "bd-3", Status: "open", BlockedBy: []string{"bd-99"}},
-			wantSkip:   true,
-			wantReason: "blocked_by_dependency",
-		},
-		{
-			name:       "in_progress is skipped",
-			rec:        bv.TriageRecommendation{ID: "bd-4", Status: "in_progress"},
-			wantSkip:   true,
-			wantReason: "already_in_progress",
-		},
-		{
-			name:       "blocked status is skipped",
-			rec:        bv.TriageRecommendation{ID: "bd-5", Status: "blocked"},
-			wantSkip:   true,
-			wantReason: "blocked_status",
-		},
-		{
-			name:       "closed status is skipped",
-			rec:        bv.TriageRecommendation{ID: "bd-6", Status: "closed"},
-			wantSkip:   true,
-			wantReason: "closed_status",
-		},
-		{
-			name:       "operator_gated label beats open status",
-			rec:        bv.TriageRecommendation{ID: "bd-7", Status: "open", Labels: []string{"operator-gated"}},
-			wantSkip:   true,
-			wantReason: "operator_gated",
-		},
-		{
-			name:       "human-input label is operator gated",
-			rec:        bv.TriageRecommendation{ID: "bd-8", Status: "open", Labels: []string{"foo", "human-input"}},
-			wantSkip:   true,
-			wantReason: "operator_gated",
-		},
-		{
-			name:              "already-claimed bead is suppressed",
-			rec:               bv.TriageRecommendation{ID: "bd-9", Status: "open"},
-			activeAssignments: map[string]struct{}{"bd-9": {}},
-			wantSkip:          true,
-			wantReason:        "already_assigned",
-		},
-		{
-			name:       "status case + delimiter variation still classifies",
-			rec:        bv.TriageRecommendation{ID: "bd-10", Status: "In-Progress"},
-			wantSkip:   true,
-			wantReason: "already_in_progress",
-		},
-		{
-			name:              "blockedBy beats already_assigned",
-			rec:               bv.TriageRecommendation{ID: "bd-11", Status: "open", BlockedBy: []string{"bd-x"}},
-			activeAssignments: map[string]struct{}{"bd-11": {}},
-			wantSkip:          true,
-			wantReason:        "blocked_by_dependency",
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got := classifyTriageRecForAssignment(tc.rec, tc.activeAssignments)
-			if tc.wantSkip {
-				if got == nil {
-					t.Fatalf("expected skip with reason %q, got nil (assignable)", tc.wantReason)
-				}
-				if got.Reason != tc.wantReason {
-					t.Fatalf("reason = %q, want %q", got.Reason, tc.wantReason)
-				}
-				if got.BeadID != tc.rec.ID {
-					t.Fatalf("BeadID = %q, want %q", got.BeadID, tc.rec.ID)
-				}
-				if tc.wantReason == "blocked_by_dependency" && len(got.BlockedByIDs) == 0 {
-					t.Fatalf("blocked_by_dependency must populate BlockedByIDs")
-				}
-			} else if got != nil {
-				t.Fatalf("expected assignable, got skip with reason %q", got.Reason)
-			}
-		})
-	}
-}
-
-func TestClassifyTriageRecForAssignmentUsesCanonicalOperatorGates(t *testing.T) {
-	t.Parallel()
-
-	for _, label := range bv.OperatorGatedLabels() {
-		label := label
-		t.Run(label, func(t *testing.T) {
-			t.Parallel()
-			skipped := classifyTriageRecForAssignment(bv.TriageRecommendation{
-				ID: "bd-operator", Status: "open", Labels: []string{"  " + strings.ToUpper(label) + "  "},
-			}, nil)
-			if skipped == nil || skipped.Reason != "operator_gated" {
-				t.Fatalf("label %q classification=%+v", label, skipped)
-			}
-		})
-	}
-}
-
-func TestAssignmentLoadsFullPlanBeforeSafetyFiltering(t *testing.T) {
-	previous := getActionableRecommendationsForAssign
-	t.Cleanup(func() { getActionableRecommendationsForAssign = previous })
-
-	recommendations := make([]bv.TriageRecommendation, 0, 102)
-	for i := 0; i < 101; i++ {
-		recommendations = append(recommendations, bv.TriageRecommendation{
-			ID:       fmt.Sprintf("ntm-gated-%03d", i),
-			Title:    "Requires operator action",
-			Status:   "open",
-			Priority: 1,
-			Labels:   []string{"operator-gated"},
-		})
-	}
-	recommendations = append(recommendations, bv.TriageRecommendation{
-		ID:       "ntm-eligible-below-cap",
-		Title:    "Eligible below the former cap",
-		Status:   "open",
-		Priority: 2,
-	})
-
-	getActionableRecommendationsForAssign = func(ctx context.Context, projectDir string, limit int) ([]bv.TriageRecommendation, error) {
-		if ctx == nil {
-			t.Fatal("assignment loader received nil context")
-		}
-		if projectDir != "/authoritative/project" {
-			t.Fatalf("projectDir = %q, want authoritative project", projectDir)
-		}
-		if limit != 0 {
-			t.Fatalf("limit = %d, want 0 so safety filtering sees the full plan", limit)
-		}
-		return recommendations, nil
-	}
-
-	loaded, err := loadActionableRecommendationsForAssignment(t.Context(), "/authoritative/project")
-	if err != nil {
-		t.Fatalf("load actionable recommendations: %v", err)
-	}
-	ready, skipped := partitionActionableRecommendationsForAssignment(loaded, nil, bv.IsOperatorGatedLabel)
-	if len(skipped) != 101 {
-		t.Fatalf("skipped = %d, want 101 gated rows", len(skipped))
-	}
-	if len(ready) != 1 || ready[0].ID != "ntm-eligible-below-cap" {
-		t.Fatalf("ready = %+v, want the eligible row below 101 gated rows", ready)
-	}
-}
-
 func TestConfigureAuthoritativeAssignmentPolicyUsesResolvedProject(t *testing.T) {
 	previousConfigFile := cfgFile
 	previousWorkingDir, err := os.Getwd()
@@ -1879,12 +1597,12 @@ func TestConfigureAuthoritativeAssignmentPolicyUsesResolvedProject(t *testing.T)
 		t.Fatalf("configureAuthoritativeAssignmentPolicy: %v", err)
 	}
 	for _, label := range []string{"operator-gated", "global-approval", "project-approval"} {
-		if !bv.IsOperatorGatedLabel(label) {
+		if !slices.Contains(bv.OperatorGatedLabels(), label) {
 			t.Errorf("effective assignment policy omitted %q", label)
 		}
 	}
 	for _, label := range []string{"ambient-only", "stale-policy"} {
-		if bv.IsOperatorGatedLabel(label) {
+		if slices.Contains(bv.OperatorGatedLabels(), label) {
 			t.Errorf("effective assignment policy unexpectedly retained %q", label)
 		}
 	}
@@ -1956,10 +1674,10 @@ func TestAuthoritativeAssignmentPolicyFailuresStopEntryPoints(t *testing.T) {
 		t.Fatalf("dry-run auto-reassignment returned a preview under invalid policy: %+v", autoResult)
 	}
 
-	if !bv.IsOperatorGatedLabel("previous-policy") {
+	if !slices.Contains(bv.OperatorGatedLabels(), "previous-policy") {
 		t.Error("failed policy load replaced the previously installed safety policy")
 	}
-	if bv.IsOperatorGatedLabel("global-approval") {
+	if slices.Contains(bv.OperatorGatedLabels(), "global-approval") {
 		t.Error("failed policy load partially installed the global policy")
 	}
 }
@@ -1982,7 +1700,7 @@ func TestConfigureAuthoritativeAssignmentPolicyRejectsMissingExplicitConfig(t *t
 	if !strings.Contains(err.Error(), missingPath) || !strings.Contains(err.Error(), "explicitly selected config") {
 		t.Fatalf("configureAuthoritativeAssignmentPolicy() error = %q, want explicit path diagnostic", err)
 	}
-	if !bv.IsOperatorGatedLabel("previous-policy") {
+	if !slices.Contains(bv.OperatorGatedLabels(), "previous-policy") {
 		t.Fatal("missing explicit config replaced the previously installed safety policy")
 	}
 }
@@ -2006,7 +1724,7 @@ func TestConfigureAuthoritativeAssignmentPolicyRejectsMissingEnvConfig(t *testin
 	if !strings.Contains(err.Error(), missingPath) || !strings.Contains(err.Error(), "explicitly selected config") {
 		t.Fatalf("configureAuthoritativeAssignmentPolicy() error = %q, want NTM_CONFIG path diagnostic", err)
 	}
-	if !bv.IsOperatorGatedLabel("previous-env-policy") {
+	if !slices.Contains(bv.OperatorGatedLabels(), "previous-env-policy") {
 		t.Fatal("missing NTM_CONFIG path replaced the previously installed safety policy")
 	}
 }
@@ -2090,7 +1808,7 @@ func TestPrepareResolvedAssignCommandFailsBeforeExternalSideEffects(t *testing.T
 			if webhookStarts != 0 || clearCalls != 0 {
 				t.Fatalf("failed preflight external calls: webhook=%d clear=%d, want 0/0", webhookStarts, clearCalls)
 			}
-			if !bv.IsOperatorGatedLabel("previous-policy") {
+			if !slices.Contains(bv.OperatorGatedLabels(), "previous-policy") {
 				t.Fatal("failed preflight replaced the previously installed policy")
 			}
 		})
@@ -2177,7 +1895,7 @@ func TestPrepareResolvedAssignCommandInstallsPolicyBeforeWebhook(t *testing.T) {
 		if gotProject != projectDir || gotSession != "ordered-preflight" {
 			t.Errorf("webhook project/session = %q/%q, want %q/ordered-preflight", gotProject, gotSession, projectDir)
 		}
-		if !bv.IsOperatorGatedLabel("pre-webhook-policy") {
+		if !slices.Contains(bv.OperatorGatedLabels(), "pre-webhook-policy") {
 			t.Error("webhook started before authoritative policy was installed")
 		}
 		return func() error {
@@ -2223,7 +1941,7 @@ func TestEnsureAuthoritativeAssignmentPolicyReusesExactProject(t *testing.T) {
 	if err := ensureAuthoritativeAssignmentPolicy(projectDir, &configuredProject); err != nil {
 		t.Fatalf("initial policy load: %v", err)
 	}
-	if configuredProject != filepath.Clean(projectDir) || !bv.IsOperatorGatedLabel("loaded-once") {
+	if configuredProject != filepath.Clean(projectDir) || !slices.Contains(bv.OperatorGatedLabels(), "loaded-once") {
 		t.Fatalf("configured project=%q loaded policy=%v", configuredProject, bv.OperatorGatedLabels())
 	}
 
@@ -2316,53 +2034,6 @@ func TestWatchLoopShouldStopUsesFilteredActionableCandidates(t *testing.T) {
 				t.Fatalf("actionable query calls=%d, want 1", calls)
 			}
 		})
-	}
-}
-
-func TestFilterNewlyUnblockedByVerifiedPlan(t *testing.T) {
-	previousLabels := bv.OperatorGatedLabels()
-	t.Cleanup(func() { bv.ConfigureOperatorGatedLabels(previousLabels) })
-	bv.ConfigureOperatorGatedLabels([]string{"operator-gated"})
-
-	newly := []UnblockedBead{
-		{ID: "authorized", Title: "stale title", Priority: 4, PrevBlockers: []string{"done"}, UnblockedByID: "done"},
-		{ID: "missing", Title: "not planned", Priority: 2},
-		{ID: "gated", Title: "stale gated", Priority: 3},
-		{ID: "occupied", Title: "already owned", Priority: 1},
-	}
-	verified := []bv.TriageRecommendation{
-		{ID: "authorized", Title: "live title", Priority: 1, Status: "open"},
-		{ID: "gated", Title: "live gated", Priority: 0, Status: "open", Labels: []string{"operator-gated"}},
-		{ID: "occupied", Title: "live occupied", Priority: 1, Status: "ready"},
-		{ID: " ", Title: "ignored blank", Status: "open"},
-	}
-	active := map[string]struct{}{"occupied": {}}
-	authorized, skipped := filterNewlyUnblockedByVerifiedPlan(newly, verified, active, nil)
-
-	if len(authorized) != 1 {
-		t.Fatalf("authorized newly-unblocked work=%+v, want one item", authorized)
-	}
-	got := authorized[0]
-	if got.ID != "authorized" || got.Title != "live title" || got.Priority != 1 ||
-		!reflect.DeepEqual(got.PrevBlockers, []string{"done"}) || got.UnblockedByID != "done" {
-		t.Fatalf("authorized item=%+v, want live plan fields with dependency provenance preserved", got)
-	}
-	wantReasons := map[string]string{
-		"missing":  "not_in_actionable_plan",
-		"gated":    "operator_gated",
-		"occupied": "already_assigned",
-	}
-	if len(skipped) != len(wantReasons) {
-		t.Fatalf("skipped=%+v, want %d items", skipped, len(wantReasons))
-	}
-	for _, skip := range skipped {
-		if want := wantReasons[skip.BeadID]; skip.Reason != want {
-			t.Fatalf("skip=%+v, want reason %q", skip, want)
-		}
-		delete(wantReasons, skip.BeadID)
-	}
-	if len(wantReasons) != 0 {
-		t.Fatalf("missing skipped items: %v", wantReasons)
 	}
 }
 
@@ -2835,126 +2506,6 @@ func TestAssignmentObservationFailureCodePreservesTimeouts(t *testing.T) {
 				t.Fatalf("assignmentObservationFailureCode(%v) = %q, want %q", test.err, got, test.want)
 			}
 		})
-	}
-}
-
-func TestCompleteTriggeredAssignmentGenerationUsesExactCAS(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	const session = "trigger-completion-cas"
-	store := assignment.NewStore(session)
-	observed, err := store.Assign("ntm-trigger", "Original", 1, "codex", "CodexOne", "original work")
-	if err != nil {
-		t.Fatalf("assign original generation: %v", err)
-	}
-	winner, err := assignment.LoadStoreStrict(session)
-	if err != nil {
-		t.Fatalf("load replacement store: %v", err)
-	}
-	replacement, err := winner.Assign("ntm-trigger", "Replacement", 2, "codex", "CodexTwo", "replacement work")
-	if err != nil {
-		t.Fatalf("assign replacement generation: %v", err)
-	}
-	originalLeaseRelease := releaseAssignmentLeases
-	originalClaimRelease := releaseBeadClaimForAssignment
-	leaseReleaseCalls := 0
-	claimReleaseCalls := 0
-	releaseAssignmentLeases = func(context.Context, string, *assignment.Assignment) ([]string, error) {
-		leaseReleaseCalls++
-		return nil, errors.New("stale completion reached lease release")
-	}
-	releaseBeadClaimForAssignment = func(context.Context, string, string, string) (bool, error) {
-		claimReleaseCalls++
-		return false, errors.New("stale completion reached claim release")
-	}
-	t.Cleanup(func() {
-		releaseAssignmentLeases = originalLeaseRelease
-		releaseBeadClaimForAssignment = originalClaimRelease
-	})
-
-	applied, err := completeTriggeredAssignmentGeneration(t.Context(), store, observed)
-	if err == nil || applied || !strings.Contains(err.Error(), "generation changed") {
-		t.Fatalf("stale completion applied=%v error=%v", applied, err)
-	}
-	current, err := assignment.LoadStoreStrict(session)
-	if err != nil {
-		t.Fatalf("reload replacement: %v", err)
-	}
-	stored := current.Get(replacement.BeadID)
-	if stored == nil || stored.AgentName != replacement.AgentName || stored.Status != assignment.StatusAssigned || stored.CompletedAt != nil {
-		t.Fatalf("stale completion mutated replacement: %+v", stored)
-	}
-	if leaseReleaseCalls != 0 || claimReleaseCalls != 0 {
-		t.Fatalf("stale completion external side effects lease=%d claim=%d", leaseReleaseCalls, claimReleaseCalls)
-	}
-}
-
-func TestCompleteTriggeredAssignmentReleasesExactHandlesOnceBeforeTerminal(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	const session = "trigger-completion-terminal-release"
-	const beadID = "ntm-trigger-terminal-release"
-	projectDir := t.TempDir()
-	if err := os.Mkdir(filepath.Join(projectDir, ".git"), 0o700); err != nil {
-		t.Fatalf("create project marker: %v", err)
-	}
-	originalRepo := assignRepoPath
-	originalLeaseRelease := releaseAssignmentLeases
-	originalClaimRelease := releaseBeadClaimForAssignment
-	assignRepoPath = projectDir
-	leaseReleaseCalls := 0
-	claimReleaseCalls := 0
-	releaseAssignmentLeases = func(_ context.Context, gotSession string, current *assignment.Assignment) ([]string, error) {
-		leaseReleaseCalls++
-		if gotSession != session || current.BeadID != beadID || !reflect.DeepEqual(current.ReservationIDs, []int{971}) {
-			t.Fatalf("lease release session=%q assignment=%+v", gotSession, current)
-		}
-		return []string{"internal/cli/terminal.go"}, nil
-	}
-	releaseBeadClaimForAssignment = func(_ context.Context, gotProject, gotBeadID, actor string) (bool, error) {
-		claimReleaseCalls++
-		if gotProject != projectDir || gotBeadID != beadID || actor != "CodexOne/trigger-terminal-key" {
-			t.Fatalf("claim release project=%q bead=%q actor=%q", gotProject, gotBeadID, actor)
-		}
-		return true, nil
-	}
-	t.Cleanup(func() {
-		assignRepoPath = originalRepo
-		releaseAssignmentLeases = originalLeaseRelease
-		releaseBeadClaimForAssignment = originalClaimRelease
-	})
-
-	store := assignment.NewStore(session)
-	store.Assignments[beadID] = &assignment.Assignment{
-		BeadID: beadID, BeadTitle: "Reserved trigger", Pane: 1, AgentType: "codex", AgentName: "CodexOne",
-		Status: assignment.StatusAssigned, AssignedAt: time.Now().UTC(), IdempotencyKey: "trigger-terminal-key",
-		ClaimActor: "CodexOne/trigger-terminal-key", DispatchTarget: "%97", OccupancyKey: "%97",
-		DispatchState: assignment.DispatchSent, DispatchReceiptID: "mail-97", ReservationRequired: true,
-		ReservationState: assignment.ReservationReserved, ReservationCompleted: true,
-		ReservedPaths: []string{"internal/cli/terminal.go"}, ReservationIDs: []int{971},
-	}
-	if err := store.Save(); err != nil {
-		t.Fatalf("seed reserved trigger assignment: %v", err)
-	}
-	observed := store.Get(beadID)
-	applied, err := completeTriggeredAssignmentGeneration(t.Context(), store, observed)
-	if err != nil || !applied {
-		t.Fatalf("complete trigger applied=%v error=%v", applied, err)
-	}
-	if leaseReleaseCalls != 1 || claimReleaseCalls != 1 {
-		t.Fatalf("completion side effects lease=%d claim=%d", leaseReleaseCalls, claimReleaseCalls)
-	}
-	terminal := store.Get(beadID)
-	if terminal == nil || terminal.Status != assignment.StatusCompleted || terminal.CompletedAt == nil ||
-		terminal.ReservationState != assignment.ReservationReleased || terminal.ReservationCompleted ||
-		len(terminal.ReservationIDs) != 0 || len(terminal.ReservedPaths) != 0 || terminal.ClearState != assignment.ClearStateNone {
-		t.Fatalf("terminal trigger assignment=%+v", terminal)
-	}
-
-	applied, err = completeTriggeredAssignmentGeneration(t.Context(), store, observed)
-	if err == nil || applied || !strings.Contains(err.Error(), "generation changed") {
-		t.Fatalf("repeat completion applied=%v error=%v", applied, err)
-	}
-	if leaseReleaseCalls != 1 || claimReleaseCalls != 1 {
-		t.Fatalf("repeat completion side effects lease=%d claim=%d", leaseReleaseCalls, claimReleaseCalls)
 	}
 }
 
@@ -3839,55 +3390,6 @@ func TestResolveDirectAssignmentPaneCanonicalContract(t *testing.T) {
 	}
 }
 
-func TestDirectAssignmentIdempotencyKeyUsesRawIntentAndPhysicalPane(t *testing.T) {
-	base := &AssignCommandOptions{
-		Session:      "project",
-		PaneSelector: "1.0",
-		Prompt:       "review the parser",
-		Template:     "impl",
-		IgnoreDeps:   true,
-	}
-	first := directAssignmentIdempotencyKey(base, "ntm-123", "%42")
-	alias := *base
-	alias.PaneSelector = "%42"
-	if got := directAssignmentIdempotencyKey(&alias, "ntm-123", "%42"); got != first {
-		t.Fatalf("selector aliases for one physical pane changed the key: %s != %s", got, first)
-	}
-	changedPrompt := *base
-	changedPrompt.Prompt = "review the lexer"
-	if got := directAssignmentIdempotencyKey(&changedPrompt, "ntm-123", "%42"); got == first {
-		t.Fatal("changed prompt reused the raw-intent key")
-	}
-	if got := directAssignmentIdempotencyKey(base, "ntm-123", "%43"); got == first {
-		t.Fatal("changed physical pane reused the raw-intent key")
-	}
-	postClear := directAssignmentIdempotencyKey(base, "ntm-123", "%42", 1)
-	if postClear == first {
-		t.Fatal("post-clear generation reused the previous raw-intent key")
-	}
-	if got := directAssignmentIdempotencyKey(base, "ntm-123", "%42", 1); got != postClear {
-		t.Fatalf("same post-clear generation was not replay-stable: %s != %s", got, postClear)
-	}
-
-	templatePath := filepath.Join(t.TempDir(), "assign-template.txt")
-	custom := &AssignCommandOptions{
-		Session:      "project",
-		PaneSelector: "%42",
-		Template:     "custom",
-		TemplateFile: templatePath,
-	}
-	if err := os.WriteFile(templatePath, []byte("first {BEAD_ID}"), 0o600); err != nil {
-		t.Fatalf("write first template: %v", err)
-	}
-	firstTemplateKey := directAssignmentIdempotencyKey(custom, "ntm-123", "%42")
-	if err := os.WriteFile(templatePath, []byte("second {BEAD_ID}"), 0o600); err != nil {
-		t.Fatalf("write changed template: %v", err)
-	}
-	if got := directAssignmentIdempotencyKey(custom, "ntm-123", "%42"); got == firstTemplateKey {
-		t.Fatal("changed template-file content reused the raw-intent key")
-	}
-}
-
 func TestDirectAssignCLIProcessHelper(t *testing.T) {
 	rawArgs := os.Getenv("NTM_DIRECT_ASSIGN_HELPER_ARGS")
 	if rawArgs == "" {
@@ -4220,31 +3722,5 @@ func TestClassifyRetryOutcomeTreatsEverySkipAsFailure(t *testing.T) {
 				t.Fatalf("classifyRetryOutcome() = (%q, %v), want code=%q error=%v", code, err, test.wantCode, test.wantError)
 			}
 		})
-	}
-}
-
-// Epic beads are containers, never dispatchable implementation work (GH#242).
-func TestClassifyTriageRecExcludesContainerTypes(t *testing.T) {
-	skip := classifyTriageRecForAssignment(bv.TriageRecommendation{
-		ID: "br-epic", Title: "Some epic", Type: "epic", Status: "open",
-	}, nil)
-	if skip == nil {
-		t.Fatal("open unlabeled epic classified as assignable; must be skipped")
-	}
-	if skip.Reason != "container_issue_type" {
-		t.Fatalf("skip reason = %q, want container_issue_type", skip.Reason)
-	}
-
-	if skip := classifyTriageRecForAssignment(bv.TriageRecommendation{
-		ID: "br-task", Title: "Leaf work", Type: "task", Status: "open",
-	}, nil); skip != nil {
-		t.Fatalf("open task wrongly skipped: %+v", skip)
-	}
-
-	// Case-insensitive: br emits lowercase but defend against variants.
-	if skip := classifyTriageRecForAssignment(bv.TriageRecommendation{
-		ID: "br-epic2", Title: "Epic", Type: "Epic", Status: "open",
-	}, nil); skip == nil || skip.Reason != "container_issue_type" {
-		t.Fatalf("mixed-case epic not excluded: %+v", skip)
 	}
 }

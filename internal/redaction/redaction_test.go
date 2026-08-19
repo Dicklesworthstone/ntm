@@ -524,20 +524,6 @@ func TestRedact_ReturnsRedactedAndFindings(t *testing.T) {
 	}
 }
 
-func TestContainsSensitive_ReturnsBool(t *testing.T) {
-	resetPatternsForTest(t)
-
-	secretInput := "token=" + "gh" + "p_" + strings.Repeat("q", 40)
-	safeInput := "hello world"
-
-	if !ContainsSensitive(secretInput, Config{}) {
-		t.Error("ContainsSensitive should return true for secret input")
-	}
-	if ContainsSensitive(safeInput, Config{}) {
-		t.Error("ContainsSensitive should return false for safe input")
-	}
-}
-
 // ----------------------------------------------------------------------------
 // AddLineInfo
 // ----------------------------------------------------------------------------

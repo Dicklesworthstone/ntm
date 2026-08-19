@@ -78,7 +78,7 @@ func TestQueueOverflow_DropsOldest(t *testing.T) {
 	// This should force a queue overflow and drop the queued "second" delivery.
 	_ = mgr.Dispatch(Event{Type: "test.queue", Message: "third"})
 
-	if mgr.Stats().DroppedEvents == 0 {
+	if managerStatsForTest(mgr).DroppedEvents == 0 {
 		close(block)
 		t.Fatalf("expected dropped events when queue is full")
 	}

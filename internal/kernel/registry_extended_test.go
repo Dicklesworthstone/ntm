@@ -157,17 +157,6 @@ func TestRegistryRESTMethodCaseInsensitive(t *testing.T) {
 	t.Logf("input=get_vs_GET error=%v", err)
 }
 
-// TestRegistryGetNotFound verifies Get returns false for unknown commands.
-func TestRegistryGetNotFound(t *testing.T) {
-	reg := NewRegistry()
-
-	_, ok := reg.Get("nonexistent")
-	if ok {
-		t.Fatal("expected false for nonexistent command")
-	}
-	t.Logf("input=nonexistent found=%v", ok)
-}
-
 // TestRegistryListEmpty verifies List returns nil for empty registry.
 func TestRegistryListEmpty(t *testing.T) {
 	reg := NewRegistry()
@@ -292,7 +281,7 @@ func TestRegistryConcurrentAccess(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			_ = reg.List()
-			_, _ = reg.Get("concurrent.a")
+			_, _ = registryGet(reg, "concurrent.a")
 		}()
 	}
 
@@ -328,7 +317,7 @@ func TestRegistrySafetyLevels(t *testing.T) {
 			t.Fatalf("register %s failed: %v", tt.name, err)
 		}
 
-		got, ok := reg.Get(tt.name)
+		got, ok := registryGet(reg, tt.name)
 		if !ok {
 			t.Fatalf("command %s not found", tt.name)
 		}
@@ -350,7 +339,7 @@ func TestRegistryIdempotentFlag(t *testing.T) {
 		t.Fatalf("register failed: %v", err)
 	}
 
-	got, ok := reg.Get(cmd.Name)
+	got, ok := registryGet(reg, cmd.Name)
 	if !ok {
 		t.Fatal("command not found")
 	}
@@ -371,7 +360,7 @@ func TestRegistryEmitsEvents(t *testing.T) {
 		t.Fatalf("register failed: %v", err)
 	}
 
-	got, ok := reg.Get(cmd.Name)
+	got, ok := registryGet(reg, cmd.Name)
 	if !ok {
 		t.Fatal("command not found")
 	}
@@ -401,7 +390,7 @@ func TestRegistrySchemaRefs(t *testing.T) {
 		t.Fatalf("register failed: %v", err)
 	}
 
-	got, ok := reg.Get(cmd.Name)
+	got, ok := registryGet(reg, cmd.Name)
 	if !ok {
 		t.Fatal("command not found")
 	}
@@ -440,7 +429,7 @@ func TestRegistryMultipleExamples(t *testing.T) {
 		t.Fatalf("register failed: %v", err)
 	}
 
-	got, ok := reg.Get(cmd.Name)
+	got, ok := registryGet(reg, cmd.Name)
 	if !ok {
 		t.Fatal("command not found")
 	}
@@ -581,7 +570,7 @@ func TestRegister_Global(t *testing.T) {
 		t.Fatalf("Register: %v", err)
 	}
 
-	got, ok := Get("global-test-cmd")
+	got, ok := globalGet("global-test-cmd")
 	if !ok {
 		t.Fatal("expected to find registered command")
 	}
@@ -599,7 +588,7 @@ func TestMustRegister_Global(t *testing.T) {
 	// Should not panic
 	MustRegister(cmd)
 
-	_, ok := Get("must-register-cmd")
+	_, ok := globalGet("must-register-cmd")
 	if !ok {
 		t.Error("expected to find must-registered command")
 	}

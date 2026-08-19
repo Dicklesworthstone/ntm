@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -402,20 +403,19 @@ func TestExportImport(t *testing.T) {
 		t.Fatalf("failed to export: %v", err)
 	}
 
-	// Clear and import
-	Clear()
-	imported, err := ImportFrom(exportPath)
+	// Verify the export wrote both entries.
+	raw, err := os.ReadFile(exportPath)
 	if err != nil {
-		t.Fatalf("failed to import: %v", err)
+		t.Fatalf("failed to read export: %v", err)
 	}
-	if imported != 2 {
-		t.Errorf("expected 2 imported, got %d", imported)
+	lines := 0
+	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		if strings.TrimSpace(line) != "" {
+			lines++
+		}
 	}
-
-	// Verify
-	entries, _ := ReadAll()
-	if len(entries) != 2 {
-		t.Errorf("expected 2 entries after import, got %d", len(entries))
+	if lines != 2 {
+		t.Errorf("expected 2 exported entries, got %d", lines)
 	}
 }
 

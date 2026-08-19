@@ -180,11 +180,6 @@ type Options struct {
 	PaletteStatePath string
 }
 
-// New creates a new palette model.
-func New(session string, commands []config.PaletteCmd) Model {
-	return NewWithOptions(session, commands, Options{})
-}
-
 // customMessageKey is the reserved key for the synthetic "Custom message"
 // selection that lets the user compose a free-text prompt from scratch (#206)
 // instead of only sending pre-baked commands. It is never stored in the command

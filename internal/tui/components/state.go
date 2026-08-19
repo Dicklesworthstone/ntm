@@ -336,16 +336,3 @@ func LoadingState(message string, width int) string {
 func ErrorState(message, hint string, width int) string {
 	return RenderState(StateOptions{Kind: StateError, Message: message, Hint: hint, Width: width})
 }
-
-// RetryState renders a retry-in-progress state with attempt tracking.
-// Shows a spinner/gear icon with the message and attempt count.
-// If maxAttempts is 0, shows "Attempt N" instead of "Attempt N of M".
-func RetryState(message string, attempt, maxAttempts, width int) string {
-	return RenderState(StateOptions{
-		Kind:        StateRetrying,
-		Message:     message,
-		Attempt:     attempt,
-		MaxAttempts: maxAttempts,
-		Width:       width,
-	})
-}

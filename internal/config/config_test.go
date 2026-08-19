@@ -870,21 +870,6 @@ func TestCreateDefaultSuccess(t *testing.T) {
 	}
 }
 
-func TestFindPaletteMarkdownCwd(t *testing.T) {
-	origDir, _ := os.Getwd()
-	defer os.Chdir(origDir)
-
-	tmpDir := t.TempDir()
-	palettePath := filepath.Join(tmpDir, "command_palette.md")
-	os.WriteFile(palettePath, []byte("## Test\n### key | Label\nPrompt"), 0644)
-	os.Chdir(tmpDir)
-
-	found := findPaletteMarkdown()
-	if found == "" {
-		t.Error("Expected to find command_palette.md in cwd")
-	}
-}
-
 func TestLoadUsesExplicitConfigDirForPaletteAutodiscovery(t *testing.T) {
 	origDir, _ := os.Getwd()
 	defer os.Chdir(origDir)

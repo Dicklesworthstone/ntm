@@ -824,62 +824,6 @@ func TestDefaultSynthesisConfig(t *testing.T) {
 	}
 }
 
-func TestEnsemble_Validate(t *testing.T) {
-	modes := []ReasoningMode{
-		{ID: "deductive", Name: "Deductive", Category: CategoryFormal, ShortDesc: "Test"},
-		{ID: "bayesian", Name: "Bayesian", Category: CategoryUncertainty, ShortDesc: "Test"},
-	}
-	catalog, _ := NewModeCatalog(modes, "1.0.0")
-
-	validEnsemble := Ensemble{
-		Name:        "test-ensemble",
-		DisplayName: "Test Ensemble",
-		Description: "A test ensemble",
-		ModeIDs:     []string{"deductive", "bayesian"},
-		Synthesis:   DefaultSynthesisConfig(),
-		Budget:      DefaultBudgetConfig(),
-	}
-
-	if err := validEnsemble.Validate(catalog); err != nil {
-		t.Errorf("valid ensemble should pass validation: %v", err)
-	}
-
-	// Test missing name
-	noName := validEnsemble
-	noName.Name = ""
-	if err := noName.Validate(catalog); err == nil {
-		t.Error("ensemble without name should fail validation")
-	}
-
-	// Test invalid name format
-	invalidName := validEnsemble
-	invalidName.Name = "INVALID"
-	if err := invalidName.Validate(catalog); err == nil {
-		t.Error("ensemble with invalid name format should fail validation")
-	}
-
-	// Test missing display name
-	noDisplayName := validEnsemble
-	noDisplayName.DisplayName = ""
-	if err := noDisplayName.Validate(catalog); err == nil {
-		t.Error("ensemble without display_name should fail validation")
-	}
-
-	// Test no modes
-	noModes := validEnsemble
-	noModes.ModeIDs = nil
-	if err := noModes.Validate(catalog); err == nil {
-		t.Error("ensemble without modes should fail validation")
-	}
-
-	// Test nonexistent mode
-	badMode := validEnsemble
-	badMode.ModeIDs = []string{"deductive", "nonexistent"}
-	if err := badMode.Validate(catalog); err == nil {
-		t.Error("ensemble with nonexistent mode should fail validation")
-	}
-}
-
 func TestModeTier_IsValid(t *testing.T) {
 	tests := []struct {
 		tier  ModeTier
@@ -1141,26 +1085,6 @@ func TestAssignmentStatus_String(t *testing.T) {
 	}
 }
 
-func TestValidatePreset_Helper(t *testing.T) {
-	modes := []ReasoningMode{
-		{ID: "deductive", Code: "A1", Name: "Deductive", Category: CategoryFormal, Tier: TierCore, ShortDesc: "desc"},
-		{ID: "abductive", Code: "C1", Name: "Abductive", Category: CategoryUncertainty, Tier: TierCore, ShortDesc: "desc"},
-	}
-	catalog, err := NewModeCatalog(modes, "1.0.0")
-	if err != nil {
-		t.Fatalf("NewModeCatalog error: %v", err)
-	}
-
-	preset := EnsemblePreset{
-		Name:        "test-preset",
-		Description: "desc",
-		Modes:       []ModeRef{ModeRefFromID("deductive"), ModeRefFromID("abductive")},
-	}
-	if err := ValidatePreset(preset, catalog); err != nil {
-		t.Fatalf("ValidatePreset error: %v", err)
-	}
-}
-
 func TestModeCatalog_ListDefault(t *testing.T) {
 	modes := []ReasoningMode{
 		{ID: "core1", Name: "Core 1", Category: CategoryFormal, ShortDesc: "Test", Code: "A1", Tier: TierCore},
@@ -1371,19 +1295,6 @@ func TestCacheConfig_ZeroValue(t *testing.T) {
 // AgentDistribution Tests
 // =============================================================================
 
-func TestDefaultAgentDistribution(t *testing.T) {
-	dist := DefaultAgentDistribution()
-	if dist.Strategy != "one-per-agent" {
-		t.Errorf("default Strategy = %q, want %q", dist.Strategy, "one-per-agent")
-	}
-	if dist.MaxAgents != 0 {
-		t.Errorf("default MaxAgents = %d, want 0", dist.MaxAgents)
-	}
-	if dist.PreferredAgentType != "" {
-		t.Errorf("default PreferredAgentType = %q, want empty", dist.PreferredAgentType)
-	}
-}
-
 func TestAgentDistribution_ZeroValue(t *testing.T) {
 	var dist AgentDistribution
 	if dist.Strategy != "" {
@@ -1571,51 +1482,6 @@ func TestCacheConfig_JSONRoundTrip(t *testing.T) {
 // DefaultCatalog / EmbeddedModes Tests
 // =============================================================================
 
-func TestDefaultCatalog_Creates(t *testing.T) {
-	catalog, err := DefaultCatalog()
-	if err != nil {
-		t.Fatalf("DefaultCatalog() error: %v", err)
-	}
-	if catalog == nil {
-		t.Fatal("DefaultCatalog() returned nil")
-	}
-	if catalog.Version() != CatalogVersion {
-		t.Errorf("catalog.Version() = %q, want %q", catalog.Version(), CatalogVersion)
-	}
-}
-
-func TestDefaultCatalog_Has80Modes(t *testing.T) {
-	catalog, err := DefaultCatalog()
-	if err != nil {
-		t.Fatalf("DefaultCatalog() error: %v", err)
-	}
-	if catalog.Count() != 80 {
-		t.Errorf("DefaultCatalog has %d modes, want 80", catalog.Count())
-	}
-}
-
-func TestDefaultCatalog_CoreTierCount(t *testing.T) {
-	catalog, err := DefaultCatalog()
-	if err != nil {
-		t.Fatalf("DefaultCatalog() error: %v", err)
-	}
-	core := catalog.ListByTier(TierCore)
-	if len(core) != 28 {
-		t.Errorf("DefaultCatalog core tier has %d modes, want 28", len(core))
-	}
-}
-
-func TestDefaultCatalog_AdvancedTierCount(t *testing.T) {
-	catalog, err := DefaultCatalog()
-	if err != nil {
-		t.Fatalf("DefaultCatalog() error: %v", err)
-	}
-	advanced := catalog.ListByTier(TierAdvanced)
-	if len(advanced) != 52 {
-		t.Errorf("DefaultCatalog advanced tier has %d modes, want 52", len(advanced))
-	}
-}
-
 func TestDefaultCatalog_AllModesValidate(t *testing.T) {
 	for i, m := range EmbeddedModes {
 		if err := m.Validate(); err != nil {
@@ -1679,43 +1545,5 @@ func TestDefaultCatalog_AllCategoriesPresent(t *testing.T) {
 		if categories[cat] == 0 {
 			t.Errorf("category %q has no modes in the catalog", cat)
 		}
-	}
-}
-
-func TestDefaultCatalog_GetByCodeMatchesID(t *testing.T) {
-	catalog, err := DefaultCatalog()
-	if err != nil {
-		t.Fatalf("DefaultCatalog() error: %v", err)
-	}
-	for _, m := range EmbeddedModes {
-		if m.Code == "" {
-			continue
-		}
-		found := catalog.GetModeByCode(m.Code)
-		if found == nil {
-			t.Errorf("GetModeByCode(%q) returned nil for mode %q", m.Code, m.ID)
-			continue
-		}
-		if found.ID != m.ID {
-			t.Errorf("GetModeByCode(%q).ID = %q, want %q", m.Code, found.ID, m.ID)
-		}
-	}
-}
-
-func TestDefaultCatalog_ListDefaultIsCore(t *testing.T) {
-	catalog, err := DefaultCatalog()
-	if err != nil {
-		t.Fatalf("DefaultCatalog() error: %v", err)
-	}
-	defaults := catalog.ListDefault()
-	for _, m := range defaults {
-		if m.Tier != TierCore {
-			t.Errorf("ListDefault() includes mode %q with tier %q, want %q", m.ID, m.Tier, TierCore)
-		}
-	}
-	// ListDefault should match ListByTier(TierCore)
-	core := catalog.ListByTier(TierCore)
-	if len(defaults) != len(core) {
-		t.Errorf("ListDefault() count = %d, ListByTier(core) count = %d, want equal", len(defaults), len(core))
 	}
 }

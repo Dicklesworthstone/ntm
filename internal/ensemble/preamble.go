@@ -11,16 +11,6 @@ import (
 // SchemaVersion is the current version of the output schema contract.
 const SchemaVersion = "1.0.0"
 
-// PreambleTemplate holds the structure of a mode preamble with mandatory sections.
-type PreambleTemplate struct {
-	// BaseInstructions provides the foundation (tone, constraints).
-	BaseInstructions string
-	// ModeSection contains the mode-specific reasoning lens.
-	ModeSection string
-	// SchemaContract defines the mandatory output format (YAML schema).
-	SchemaContract string
-}
-
 // PreambleData provides the variables for rendering a preamble.
 type PreambleData struct {
 	// Problem is the user's question or problem statement.
@@ -349,12 +339,3 @@ failure_modes_to_watch:
 ## SCHEMA VERSION
 
 ` + SchemaVersion
-
-// LoadBaseTemplate returns the default base template.
-func LoadBaseTemplate() *PreambleTemplate {
-	return &PreambleTemplate{
-		BaseInstructions: baseInstructionsTemplate,
-		ModeSection:      "", // Populated per-mode
-		SchemaContract:   GetSchemaContract(),
-	}
-}

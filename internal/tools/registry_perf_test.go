@@ -18,7 +18,7 @@ func (s *slowMockAdapter) Info(ctx context.Context) (*ToolInfo, error) {
 
 func TestGetAllInfo_Concurrency(t *testing.T) {
 	// Setup registry with slow adapters
-	reg := NewRegistry()
+	reg := newTestRegistry()
 	delay := 100 * time.Millisecond
 	count := 10
 

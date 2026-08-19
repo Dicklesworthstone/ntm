@@ -2,14 +2,11 @@ package pipeline
 
 import (
 	"errors"
-	"fmt"
-	"strings"
 )
 
 var errNoAdjudicatorPane = errors.New("no available adjudicator pane")
 var errNoModelFamilyPane = errors.New("no pane matches model family")
 var errNoPaneForStrategy = errors.New("no pane available for assignment strategy")
-var errMalformedPaneDomainRoster = errors.New("malformed pane domain roster")
 
 type paneStrategyPane struct {
 	ID          string
@@ -142,61 +139,4 @@ func roundRobinPane(orderedPanes []paneStrategyPane, iterationIndex int) (string
 		iterationIndex = 0
 	}
 	return paneIDs[iterationIndex%len(paneIDs)], nil
-}
-
-// parsePaneDomainRoster parses a compact roster section with entries like:
-//
-//	pane p2:
-//	  domain: [H-001, H-005]
-func parsePaneDomainRoster(content string) ([]paneStrategyPane, error) {
-	var panes []paneStrategyPane
-	currentPane := -1
-	for lineNo, line := range strings.Split(content, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
-			continue
-		}
-		if strings.HasPrefix(trimmed, "pane ") && strings.HasSuffix(trimmed, ":") {
-			paneID := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(trimmed, "pane "), ":"))
-			if paneID == "" {
-				return nil, fmt.Errorf("%w: line %d has empty pane id", errMalformedPaneDomainRoster, lineNo+1)
-			}
-			panes = append(panes, paneStrategyPane{ID: paneID})
-			currentPane = len(panes) - 1
-			continue
-		}
-		if strings.HasPrefix(trimmed, "domain:") {
-			if currentPane < 0 {
-				return nil, fmt.Errorf("%w: line %d domain appears before pane", errMalformedPaneDomainRoster, lineNo+1)
-			}
-			domains, err := parseRosterDomainList(strings.TrimSpace(strings.TrimPrefix(trimmed, "domain:")))
-			if err != nil {
-				return nil, fmt.Errorf("%w: line %d: %v", errMalformedPaneDomainRoster, lineNo+1, err)
-			}
-			panes[currentPane].Domains = domains
-			continue
-		}
-		return nil, fmt.Errorf("%w: line %d unrecognized roster line %q", errMalformedPaneDomainRoster, lineNo+1, trimmed)
-	}
-	return panes, nil
-}
-
-func parseRosterDomainList(raw string) ([]string, error) {
-	if !strings.HasPrefix(raw, "[") || !strings.HasSuffix(raw, "]") {
-		return nil, errors.New("domain list must use [A, B] form")
-	}
-	inner := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(raw, "["), "]"))
-	if inner == "" {
-		return nil, nil
-	}
-	parts := strings.Split(inner, ",")
-	domains := make([]string, 0, len(parts))
-	for _, part := range parts {
-		domain := strings.Trim(strings.TrimSpace(part), `"'`)
-		if domain == "" {
-			return nil, errors.New("domain list contains an empty entry")
-		}
-		domains = append(domains, domain)
-	}
-	return domains, nil
 }

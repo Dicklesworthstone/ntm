@@ -105,44 +105,6 @@ func TestEnvelope_EnsemblePresets(t *testing.T) {
 	t.Log("TEST: TestEnvelope_EnsemblePresets - assertion: envelope compliant")
 }
 
-// TestEnvelope_EnsembleSynthesize verifies envelope compliance for --robot-ensemble-synthesize.
-func TestEnvelope_EnsembleSynthesize(t *testing.T) {
-	t.Log("TEST: TestEnvelope_EnsembleSynthesize - starting")
-
-	// Test with invalid session to trigger error path
-	output, err := GetEnsembleSynthesize(EnsembleSynthesizeOptions{
-		Session: "",
-	})
-	if err != nil {
-		t.Fatalf("GetEnsembleSynthesize failed: %v", err)
-	}
-
-	// Envelope fields must be present
-	if output.Timestamp == "" {
-		t.Error("envelope: timestamp is required")
-	}
-	if output.Version == "" {
-		t.Error("envelope: version is required")
-	}
-	if output.Action != "ensemble_synthesize" {
-		t.Errorf("envelope: action should be 'ensemble_synthesize', got '%s'", output.Action)
-	}
-
-	// On error, error fields should be present
-	if !output.Success {
-		if output.Error == "" {
-			t.Error("envelope: error field required on failure")
-		}
-		if output.ErrorCode == "" {
-			t.Error("envelope: error_code field required on failure")
-		}
-		// Hint is optional but recommended
-		t.Logf("envelope: hint='%s'", output.Hint)
-	}
-
-	t.Log("TEST: TestEnvelope_EnsembleSynthesize - assertion: envelope compliant on error")
-}
-
 func TestGetEnsemble_UsesPersistedStateWhenSessionOffline(t *testing.T) {
 	// bd-uizon: clear ambient NTM_CONFIG so DefaultPath uses the hermetic
 	// XDG_CONFIG_HOME below instead of inheriting a developer's local

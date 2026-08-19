@@ -28,19 +28,6 @@ func SetRedactionConfig(cfg *redaction.Config) {
 	}
 }
 
-// GetRedactionConfig returns the current redaction config (or nil if disabled).
-// Returned value is independent of the stored config — mutating its
-// reference-typed fields does not leak into future Get/Set calls.
-func GetRedactionConfig() *redaction.Config {
-	redactionMu.RLock()
-	defer redactionMu.RUnlock()
-	if redactionConfig == nil {
-		return nil
-	}
-	c := redactionConfig.DeepCopy()
-	return &c
-}
-
 // redactString applies redaction to a string if configured.
 // Returns the (potentially redacted) string.
 func redactString(s string) string {
@@ -127,22 +114,4 @@ type RedactionSummary struct {
 	FindingsCount int            `json:"findings_count"`
 	Categories    map[string]int `json:"categories,omitempty"`
 	Action        string         `json:"action"` // "warn", "redact", "block"
-}
-
-// SummarizeRedaction creates a RedactionSummary from a redaction.Result.
-// This is safe to log - it contains counts, not actual secrets.
-func SummarizeRedaction(result redaction.Result) RedactionSummary {
-	summary := RedactionSummary{
-		FindingsCount: len(result.Findings),
-		Action:        string(result.Mode),
-	}
-
-	if len(result.Findings) > 0 {
-		summary.Categories = make(map[string]int)
-		for _, f := range result.Findings {
-			summary.Categories[string(f.Category)]++
-		}
-	}
-
-	return summary
 }

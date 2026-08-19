@@ -280,22 +280,6 @@ func CapturePaneBaseline(target string) (*PaneBaseline, error) {
 	}, nil
 }
 
-// CapturePaneBaselineWithLines captures baseline with a custom line count.
-// Use this when you need more or fewer lines than the default.
-func CapturePaneBaselineWithLines(target string, lines int) (*PaneBaseline, error) {
-	content, err := CurrentTmuxClient.CapturePaneOutput(target, lines)
-	if err != nil {
-		return nil, fmt.Errorf("baseline capture failed: %w", err)
-	}
-
-	return &PaneBaseline{
-		Content:     content,
-		ContentHash: hashContent(content),
-		LineCount:   util.CountNonEmptyLines(content),
-		CapturedAt:  time.Now(),
-	}, nil
-}
-
 // ComparePaneState compares the current pane state against a baseline.
 // Returns details about what changed between the two captures.
 func ComparePaneState(baseline, current *PaneBaseline) PaneChange {
@@ -607,60 +591,6 @@ func PrintProbeFlagError(err error) error {
 	return encodeTerminalRobotOutput(&output, output.RobotResponse, "robot probe flag validation failed")
 }
 
-// GetProbe performs probe on a pane and returns the result.
-// This function returns the data struct directly, enabling CLI/REST parity.
-func GetProbe(opts ProbeOptions) (*ProbeOutput, error) {
-	output := &ProbeOutput{
-		RobotResponse:  NewRobotResponse(true),
-		Session:        opts.Session,
-		Pane:           opts.Pane,
-		ProbeMethod:    opts.Flags.Method,
-		ProbeDetails:   ProbeDetails{},
-		Responsive:     false,
-		Confidence:     ProbeConfidenceLow,
-		Recommendation: ProbeRecommendationLikelyStuck,
-		Reasoning:      "",
-	}
-
-	// Check if session exists
-	if !CurrentTmuxClient.SessionExists(opts.Session) {
-		output.RobotResponse = NewErrorResponse(
-			fmt.Errorf("session '%s' not found", opts.Session),
-			ErrCodeSessionNotFound,
-			"Use 'ntm list' to see available sessions",
-		)
-		return output, nil
-	}
-
-	// Get pane info to verify it exists
-	panes, err := CurrentTmuxClient.GetPanes(opts.Session)
-	if err != nil {
-		output.RobotResponse = NewErrorResponse(
-			fmt.Errorf("failed to get pane info: %w", err),
-			ErrCodeInternalError,
-			"Check tmux session state",
-		)
-		return output, nil
-	}
-
-	// Resolve the selector through the shared convention; see
-	// resolveProbePanes. A selector can match several panes on a multi-window
-	// session, which is why the batch surface exists.
-	matches := resolveProbePanes(panes, opts.Pane)
-	if len(matches) == 0 {
-		output.RobotResponse = NewErrorResponse(
-			fmt.Errorf("pane %d not found in session '%s'", opts.Pane, opts.Session),
-			ErrCodePaneNotFound,
-			probeSelectorHint(panes),
-		)
-		return output, nil
-	}
-	// GetProbe reports a single pane. The batch surface expands a selector to
-	// every match; here the first in topology order is the deterministic
-	// choice, and PaneRef names exactly which one was probed.
-	return probeResolvedPane(opts.Session, matches[0], sessionSpansMultipleWindows(panes), opts.Pane, opts.Flags), nil
-}
-
 // probeResolvedPane probes one already-resolved pane. Both the single-pane and
 // the batch surface funnel through it, so they cannot drift in how a pane is
 // addressed or how a result is shaped.
@@ -741,16 +671,6 @@ func probeResolvedPane(session string, targetPane tmux.Pane, multiWindow bool, s
 	return output
 }
 
-// PrintProbe outputs probe results for a pane.
-// This is a thin wrapper around GetProbe() for CLI output.
-func PrintProbe(opts ProbeOptions) error {
-	output, err := GetProbe(opts)
-	if err != nil {
-		return err
-	}
-	return encodeTerminalRobotOutput(output, output.RobotResponse, "robot probe failed")
-}
-
 func probeEntryFromOutput(output *ProbeOutput) ProbeEntry {
 	entry := ProbeEntry{
 		Pane:           output.Pane,
@@ -814,35 +734,6 @@ func probePaneRef(pane tmux.Pane, multiWindow bool) string {
 		return strconv.Itoa(pane.Index)
 	}
 	return fmt.Sprintf("%d.%d", pane.WindowIndex, pane.Index)
-}
-
-// probeSelectorHint lists the selectors resolveProbePane will actually accept.
-// A fixed "indices 0-N" hint is wrong on a multi-window session, where the
-// selectors are 1-based NTM agent indices rather than a dense 0-based range.
-func probeSelectorHint(panes []tmux.Pane) string {
-	multiWindow := sessionSpansMultipleWindows(panes)
-	seen := make(map[int]struct{}, len(panes))
-	keys := make([]int, 0, len(panes))
-	for _, pane := range panes {
-		key := pane.Index
-		if multiWindow {
-			key = pane.WindowIndex
-		}
-		if _, ok := seen[key]; ok {
-			continue
-		}
-		seen[key] = struct{}{}
-		keys = append(keys, key)
-	}
-	if len(keys) == 0 {
-		return "Session has no panes to probe"
-	}
-	sort.Ints(keys)
-	valid := make([]string, 0, len(keys))
-	for _, key := range keys {
-		valid = append(valid, strconv.Itoa(key))
-	}
-	return fmt.Sprintf("Valid --panes selectors for this session: %s", strings.Join(valid, ","))
 }
 
 // GetProbeSession probes panes in a session and returns aggregated output and exit code.
@@ -994,9 +885,4 @@ func GetProbeSession(opts ProbeSessionOptions) (*ProbeSessionOutput, int) {
 func PrintProbeSession(opts ProbeSessionOptions) int {
 	output, exitCode := GetProbeSession(opts)
 	return printLegacyRobotOutput(output, output.RobotResponse, exitCode, "robot probe failed")
-}
-
-// FormatProbeDuration formats a probe duration in milliseconds
-func FormatProbeDuration(d time.Duration) int64 {
-	return d.Milliseconds()
 }

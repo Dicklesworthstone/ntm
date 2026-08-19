@@ -14,57 +14,6 @@ import (
 // Index 0 = empty, index 8 = full block.
 var sparkBlocks = [9]rune{' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'}
 
-// Sparkline renders a compact sparkline chart from a series of values.
-// Width determines how many data points are shown (rightmost values).
-// The chart auto-scales to the min/max of the visible data.
-func Sparkline(values []float64, width int) string {
-	if len(values) == 0 || width <= 0 {
-		return ""
-	}
-
-	// Take the rightmost 'width' values
-	start := 0
-	if len(values) > width {
-		start = len(values) - width
-	}
-	visible := values[start:]
-
-	// Find min/max for scaling
-	minVal, maxVal := visible[0], visible[0]
-	for _, v := range visible {
-		if v < minVal {
-			minVal = v
-		}
-		if v > maxVal {
-			maxVal = v
-		}
-	}
-
-	// Build sparkline string
-	rng := maxVal - minVal
-
-	runes := make([]rune, len(visible))
-	for i, v := range visible {
-		var idx int
-		if rng == 0 {
-			// All values identical: show flat line at half height
-			idx = 4
-		} else {
-			normalized := (v - minVal) / rng
-			idx = int(math.Round(normalized * 8))
-		}
-		if idx < 0 {
-			idx = 0
-		}
-		if idx > 8 {
-			idx = 8
-		}
-		runes[i] = sparkBlocks[idx]
-	}
-
-	return string(runes)
-}
-
 // SparklineStyled renders a colored sparkline with theme-aware gradient.
 // Low values use the 'low' color, high values use the 'high' color.
 func SparklineStyled(values []float64, width int) string {

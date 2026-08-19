@@ -1,16 +1,12 @@
 package components
 
 import (
-	"math"
-	"os"
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/Dicklesworthstone/ntm/internal/tui/styles"
-	"github.com/Dicklesworthstone/ntm/internal/tui/terminal"
 )
 
 // TestProgressBarRendering verifies basic progress bar rendering at various percentages
@@ -135,160 +131,6 @@ func TestShimmerStability(t *testing.T) {
 	}
 }
 
-// TestASCIIFallback verifies ASCII fallback characters are used when appropriate
-func TestASCIIFallback(t *testing.T) {
-	// Set environment to trigger ASCII fallback
-	terminal.ResetCache()
-	origTerm := os.Getenv("TERM")
-	origLang := os.Getenv("LANG")
-	os.Setenv("TERM", "dumb")
-	os.Setenv("LANG", "C")
-	defer func() {
-		os.Setenv("TERM", origTerm)
-		os.Setenv("LANG", origLang)
-		terminal.ResetCache()
-	}()
-
-	bar := NewProgressBar(20)
-	bar.SetPercent(0.5)
-	bar.Animated = false
-	bar.ShowPercent = false
-
-	rendered := bar.View()
-
-	// In ASCII fallback mode, should not contain Unicode blocks
-	// Note: The actual characters may be styled, but we check the underlying text
-	if strings.Contains(rendered, "█") || strings.Contains(rendered, "░") {
-		// This is expected to fail in test environment that supports Unicode
-		// The test verifies the fallback logic is in place
-		t.Skip("Unicode blocks present - terminal supports Unicode")
-	}
-}
-
-// TestIndeterminateBarWidth verifies indeterminate bar width
-func TestIndeterminateBarWidth(t *testing.T) {
-	bar := NewIndeterminateBar(20)
-	bar.ShowLabel = false
-
-	rendered := bar.View()
-	actualWidth := lipgloss.Width(rendered)
-
-	if actualWidth != 20 {
-		t.Errorf("width = %d, want 20", actualWidth)
-	}
-}
-
-// TestIndeterminateBarBounce verifies the bar bounces correctly
-func TestIndeterminateBarBounce(t *testing.T) {
-	bar := NewIndeterminateBar(20)
-	bar.ShowLabel = false
-
-	// Collect widths over several ticks
-	var widths []int
-	for i := 0; i < 50; i++ {
-		bar.Tick = i
-		rendered := bar.View()
-		widths = append(widths, lipgloss.Width(rendered))
-	}
-
-	// All widths should be consistent (20)
-	for i, w := range widths {
-		if w != 20 {
-			t.Errorf("tick %d: width = %d, want 20", i, w)
-		}
-	}
-}
-
-// TestProgressTickInterval verifies the tick interval is reasonable
-func TestProgressTickInterval(t *testing.T) {
-	// The interval should be 150ms for reduced jitter
-	expected := 150 * 1000000 // 150ms in nanoseconds
-	actual := int(progressTickInterval.Nanoseconds())
-
-	if actual != expected {
-		t.Errorf("progressTickInterval = %d ns, want %d ns", actual, expected)
-	}
-}
-
-// TestTrueColorFallback verifies that when true color is not supported,
-// the progress bar falls back to solid primary color without per-character ANSI RGB
-func TestTrueColorFallback(t *testing.T) {
-	// Set environment to disable true color
-	terminal.ResetCache()
-	origTerm := os.Getenv("TERM")
-	origColorTerm := os.Getenv("COLORTERM")
-	os.Setenv("TERM", "xterm-256color") // 256 color but not true color
-	os.Setenv("COLORTERM", "")          // No truecolor indicator
-	defer func() {
-		os.Setenv("TERM", origTerm)
-		os.Setenv("COLORTERM", origColorTerm)
-		terminal.ResetCache()
-	}()
-
-	bar := NewProgressBar(20)
-	bar.SetPercent(0.5)
-	bar.Animated = true
-	bar.ShowPercent = false
-
-	rendered := bar.View()
-
-	// In non-true-color mode, should not contain per-character RGB escape sequences
-	// (which look like \x1b[38;2;R;G;Bm per character causing flicker)
-	// Count occurrences of the RGB color escape sequence pattern
-	rgbEscapeCount := strings.Count(rendered, "\x1b[38;2;")
-
-	// With per-character coloring, we'd have 10 escape sequences for 10 filled chars
-	// With solid color fallback, we'd have at most 1-2 (for the entire bar)
-	if rgbEscapeCount > 2 {
-		t.Errorf("found %d RGB escape sequences, expected <=2 for solid color fallback", rgbEscapeCount)
-	}
-}
-
-func TestProgressBarInitAndUpdate(t *testing.T) {
-	enableAnimationsForTest(t)
-	bar := NewProgressBar(10)
-	if cmd := bar.Init(); cmd == nil {
-		t.Fatal("expected Init to return a command when animated")
-	}
-
-	initialTick := bar.AnimationTick
-	updated, cmd := bar.Update(ProgressTickMsg{})
-	if updated.AnimationTick <= initialTick {
-		t.Fatalf("expected AnimationTick to increase, got %d", updated.AnimationTick)
-	}
-	if cmd == nil {
-		t.Fatal("expected Update to return a command on tick")
-	}
-}
-
-func TestProgressBarSpringsPercentTransitions(t *testing.T) {
-	enableAnimationsForTest(t)
-
-	bar := NewProgressBar(10)
-	bar.SetPercent(0.25)
-	if got := bar.valueSpring.Get("percent"); got != 0.25 {
-		t.Fatalf("initial spring value = %f, want 0.25", got)
-	}
-
-	bar.SetPercent(0.75)
-	if got := bar.valueSpring.Get("percent"); got != 0.25 {
-		t.Fatalf("spring should animate from prior value, got %f", got)
-	}
-	if !bar.valueSpring.IsAnimating() {
-		t.Fatal("expected value spring to animate after significant change")
-	}
-
-	for i := 0; i < 240; i++ {
-		var cmd tea.Cmd
-		bar, cmd = bar.Update(ProgressTickMsg{})
-		_ = cmd
-	}
-
-	if diff := math.Abs(bar.valueSpring.Get("percent") - 0.75); diff > 0.05 {
-		t.Fatalf("spring percent diff = %f, want <= 0.05", diff)
-	}
-}
-
 func TestProgressBarPercentReducedMotionSnaps(t *testing.T) {
 	// Clear env vars so NTM_REDUCE_MOTION takes effect
 	t.Setenv("NTM_ANIMATIONS", "")
@@ -305,82 +147,6 @@ func TestProgressBarPercentReducedMotionSnaps(t *testing.T) {
 	}
 	if bar.valueSpring.IsAnimating() {
 		t.Fatal("expected reduced motion to suppress percent spring animation")
-	}
-}
-
-func TestProgressBarInitNoAnimation(t *testing.T) {
-	enableAnimationsForTest(t)
-	bar := NewProgressBar(10)
-	bar.Animated = false
-	if cmd := bar.Init(); cmd != nil {
-		t.Fatal("expected Init to return nil when not animated")
-	}
-}
-
-func TestIndeterminateBarInitAndUpdate(t *testing.T) {
-	enableAnimationsForTest(t)
-	bar := NewIndeterminateBar(10)
-	if cmd := bar.Init(); cmd == nil {
-		t.Fatal("expected Init to return a command")
-	}
-
-	initial := bar.Tick
-	updated, cmd := bar.Update(ProgressTickMsg{})
-	if updated.Tick <= initial {
-		t.Fatalf("expected Tick to increase, got %d", updated.Tick)
-	}
-	if cmd == nil {
-		t.Fatal("expected Update to return a command on tick")
-	}
-}
-
-func TestProgressBarDisablesAnimationInTmuxByDefault(t *testing.T) {
-	t.Setenv("NTM_ANIMATIONS", "")
-	t.Setenv("NTM_REDUCE_MOTION", "")
-	t.Setenv("TMUX", "/tmp/tmux-123/default,1,0")
-	t.Setenv("STY", "")
-	t.Setenv("CI", "")
-	t.Setenv("TERM", "tmux-256color")
-	t.Setenv("COLORTERM", "truecolor")
-
-	bar := NewProgressBar(10)
-	if bar.Animated {
-		t.Fatal("expected progress bar animation to default off inside tmux")
-	}
-	if cmd := bar.Init(); cmd != nil {
-		t.Fatal("expected no progress tick command when animations are disabled")
-	}
-	updated, cmd := bar.Update(ProgressTickMsg{})
-	if updated.AnimationTick != 0 {
-		t.Fatalf("expected animation tick to remain stable, got %d", updated.AnimationTick)
-	}
-	if cmd != nil {
-		t.Fatal("expected no follow-up tick when progress animation is disabled")
-	}
-}
-
-func TestIndeterminateBarDisablesAnimationInTmuxByDefault(t *testing.T) {
-	t.Setenv("NTM_ANIMATIONS", "")
-	t.Setenv("NTM_REDUCE_MOTION", "")
-	t.Setenv("TMUX", "/tmp/tmux-123/default,1,0")
-	t.Setenv("STY", "")
-	t.Setenv("CI", "")
-	t.Setenv("TERM", "tmux-256color")
-	t.Setenv("COLORTERM", "truecolor")
-
-	bar := NewIndeterminateBar(10)
-	if bar.Animated {
-		t.Fatal("expected indeterminate bar animation to default off inside tmux")
-	}
-	if cmd := bar.Init(); cmd != nil {
-		t.Fatal("expected no indeterminate tick command when animations are disabled")
-	}
-	updated, cmd := bar.Update(ProgressTickMsg{})
-	if updated.Tick != 0 {
-		t.Fatalf("expected indeterminate tick to remain stable, got %d", updated.Tick)
-	}
-	if cmd != nil {
-		t.Fatal("expected no follow-up tick when indeterminate animation is disabled")
 	}
 }
 
@@ -444,18 +210,6 @@ func TestComponentsProgressBarStruct(t *testing.T) {
 		t.Error("component bar should not be empty")
 	}
 	t.Logf("component bar width: %d", lipgloss.Width(view))
-}
-
-// TestComponentsIndeterminateBarRender verifies indeterminate bar renders
-func TestComponentsIndeterminateBarRender(t *testing.T) {
-	ib := NewIndeterminateBar(40)
-	ib.ShowLabel = false
-
-	view := ib.View()
-	if view == "" {
-		t.Error("indeterminate bar should not be empty")
-	}
-	t.Logf("indeterminate bar width: %d", lipgloss.Width(view))
 }
 
 // TestProgressBarReducedMotion verifies reduced motion disables shimmer

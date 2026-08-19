@@ -264,6 +264,20 @@ func TestManualStrategyMechanicalPathUnchanged(t *testing.T) {
 	}
 }
 
+func TestParseLeadSynthesisResponseAcceptsYAML(t *testing.T) {
+	raw := "noise before\n```yaml\nsummary: A real synthesis of the ensemble.\nconfidence: 0.7\n```\nnoise after"
+	result, err := ParseLeadSynthesisResponse(raw)
+	if err != nil {
+		t.Fatalf("ParseLeadSynthesisResponse: %v", err)
+	}
+	if result.Summary != "A real synthesis of the ensemble." {
+		t.Errorf("summary = %q", result.Summary)
+	}
+	if float64(result.Confidence) != 0.7 {
+		t.Errorf("confidence = %v", result.Confidence)
+	}
+}
+
 func TestParseLeadSynthesisResponseRejectsPromptEcho(t *testing.T) {
 	// A pane echoing the prompt contains the unfenced schema example with the
 	// sentinel summary; it must not be parsed as a real synthesis.
@@ -280,19 +294,5 @@ func TestParseLeadSynthesisResponseRejectsPromptEcho(t *testing.T) {
 	fencedSentinel := "```json\n" + fmt.Sprintf(`{"summary": %q}`, sampleSynthesisSummary) + "\n```"
 	if _, err := ParseLeadSynthesisResponse(fencedSentinel); err == nil {
 		t.Fatal("fenced sentinel example must be rejected")
-	}
-}
-
-func TestParseLeadSynthesisResponseAcceptsYAML(t *testing.T) {
-	raw := "noise before\n```yaml\nsummary: A real synthesis of the ensemble.\nconfidence: 0.7\n```\nnoise after"
-	result, err := ParseLeadSynthesisResponse(raw)
-	if err != nil {
-		t.Fatalf("ParseLeadSynthesisResponse: %v", err)
-	}
-	if result.Summary != "A real synthesis of the ensemble." {
-		t.Errorf("summary = %q", result.Summary)
-	}
-	if float64(result.Confidence) != 0.7 {
-		t.Errorf("confidence = %v", result.Confidence)
 	}
 }

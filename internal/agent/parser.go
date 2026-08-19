@@ -17,11 +17,6 @@ func NewParser() Parser {
 	return &parserImpl{config: DefaultParserConfig()}
 }
 
-// NewParserWithConfig creates a parser with custom configuration.
-func NewParserWithConfig(cfg ParserConfig) Parser {
-	return &parserImpl{config: cfg}
-}
-
 // Parse analyzes terminal output and returns structured agent state.
 // It performs the following steps:
 // 1. Detect agent type from output patterns

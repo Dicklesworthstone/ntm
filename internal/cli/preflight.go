@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"time"
 
 	"github.com/spf13/cobra"
 
@@ -233,23 +232,6 @@ func buildPreflightResult(lintResult *lint.Result, prompt string) (*PreflightRes
 	return result, nil
 }
 
-// RunPreflightCheck is a helper for use by other commands (like send).
-// Returns (blocked, warnings, error).
-func RunPreflightCheck(prompt string, strict bool) (bool, []string, error) {
-	result, err := runPreflight(prompt, strict)
-	if err != nil {
-		return false, nil, err
-	}
-
-	var warnings []string
-	for _, f := range result.Findings {
-		msg := fmt.Sprintf("[%s] %s: %s", f.Severity, f.ID, f.Message)
-		warnings = append(warnings, msg)
-	}
-
-	return !result.Success, warnings, nil
-}
-
 func newPreflightCmd() *cobra.Command {
 	var strict bool
 	var showPreview bool
@@ -368,9 +350,4 @@ type preflightError struct {
 
 func (e preflightError) Error() string {
 	return fmt.Sprintf("preflight blocked: %d errors found", e.result.ErrorCount)
-}
-
-// FormatTimestamp formats a time for robot output.
-func FormatTimestamp(t time.Time) string {
-	return t.UTC().Format(time.RFC3339)
 }

@@ -81,19 +81,6 @@ type ReservationAdvisorLogRow struct {
 	Action        string  `json:"action"`
 }
 
-// RiskInputFromLease converts an in-memory simulator lease into advisor input.
-func RiskInputFromLease(l Lease) ReservationRiskInput {
-	return ReservationRiskInput{
-		ID:          l.ID,
-		PathPattern: l.PathPattern,
-		AgentName:   l.AgentName,
-		Exclusive:   l.Exclusive,
-		Reason:      l.Reason,
-		CreatedAt:   l.AcquiredAt,
-		ExpiresAt:   l.ExpiresAt,
-	}
-}
-
 // AdviseReservations scores active reservations and emits proof-mode actions.
 func AdviseReservations(reservations []ReservationRiskInput, opts ReservationAdvisorOptions) ReservationAdvisorReport {
 	now := opts.Now

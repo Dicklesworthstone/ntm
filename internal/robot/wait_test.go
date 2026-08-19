@@ -2,7 +2,6 @@ package robot
 
 import (
 	"context"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -20,19 +19,6 @@ func useFailingTmuxBinary(t *testing.T) {
 		t.Fatalf("write fake tmux binary: %v", err)
 	}
 	t.Setenv("NTM_TMUX_BINARY", path)
-}
-
-func TestGetWaitFailureUsesGeneralErrorExit(t *testing.T) {
-	response, exitCode := GetWait(WaitOptions{
-		Session:   "ntm-robot-contract-wait-missing",
-		Condition: WaitConditionIdle,
-	})
-	if exitCode != 1 {
-		t.Fatalf("GetWait() exit code = %d, want 1", exitCode)
-	}
-	if response.Success || response.ErrorCode != ErrCodeSessionNotFound {
-		t.Fatalf("GetWait() response = %+v, want SESSION_NOT_FOUND failure", response.RobotResponse)
-	}
 }
 
 func TestGetWaitContextReturnsCanceledBeforeTmuxLookup(t *testing.T) {
@@ -130,35 +116,6 @@ func TestGetWaitCancelTargetsOnlyActiveHandle(t *testing.T) {
 	}
 }
 
-func TestPrintWaitFailureForcesJSONUnderTOON(t *testing.T) {
-	originalFormat := GetOutputFormat()
-	SetOutputFormat(FormatTOON)
-	t.Cleanup(func() { SetOutputFormat(originalFormat) })
-
-	var exitCode int
-	stdout, err := captureStdout(t, func() error {
-		exitCode = PrintWait(WaitOptions{
-			Session:   "ntm-robot-contract-wait-missing-toon",
-			Condition: WaitConditionIdle,
-		})
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("capture PrintWait: %v", err)
-	}
-	if exitCode != 1 {
-		t.Fatalf("PrintWait() exit code = %d, want 1", exitCode)
-	}
-
-	var response WaitResponse
-	if err := json.Unmarshal([]byte(stdout), &response); err != nil {
-		t.Fatalf("PrintWait failure is not JSON: %v\noutput=%q", err, stdout)
-	}
-	if response.Success || response.ErrorCode != ErrCodeSessionNotFound || response.OutputFormat != string(FormatJSON) {
-		t.Fatalf("PrintWait response = %+v, want SESSION_NOT_FOUND JSON failure", response.RobotResponse)
-	}
-}
-
 func TestIsValidWaitCondition(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -225,31 +182,6 @@ func TestSplitWaitConditionsSeparatesConvergenceEvidence(t *testing.T) {
 	}
 }
 
-func TestHasAttentionBasedConditions(t *testing.T) {
-	tests := []struct {
-		name       string
-		conditions []string
-		want       bool
-	}{
-		{"pane only", []string{"idle", "healthy"}, false},
-		{"attention only", []string{"action_required", "mail_pending"}, true},
-		{"mixed", []string{"idle", "action_required"}, true},
-		{"single pane", []string{"idle"}, false},
-		{"single attention", []string{"attention"}, true},
-		{"empty", []string{}, false},
-		{"all attention types", []string{"attention", "action_required", "mail_pending", "context_hot"}, true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := hasAttentionBasedConditions(tt.conditions)
-			if got != tt.want {
-				t.Errorf("hasAttentionBasedConditions(%v) = %v, want %v", tt.conditions, got, tt.want)
-			}
-		})
-	}
-}
-
 func TestMeetsSingleWaitCondition(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -310,110 +242,6 @@ func TestMeetsAllWaitConditions(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestCheckWaitConditionMet_AllMode(t *testing.T) {
-	// Test with default (ALL) mode
-	opts := WaitOptions{
-		Condition:  "idle",
-		WaitForAny: false,
-	}
-
-	t.Run("all agents idle", func(t *testing.T) {
-		activities := []*AgentActivity{
-			{PaneID: "test__cc_1", State: StateWaiting},
-			{PaneID: "test__cc_2", State: StateWaiting},
-		}
-		met, matching, pending := checkWaitConditionMet(activities, opts)
-		if !met {
-			t.Error("Expected condition to be met when all agents are idle")
-		}
-		if len(matching) != 2 {
-			t.Errorf("Expected 2 matching agents, got %d", len(matching))
-		}
-		if len(pending) != 0 {
-			t.Errorf("Expected 0 pending agents, got %d", len(pending))
-		}
-	})
-
-	t.Run("some agents not idle", func(t *testing.T) {
-		activities := []*AgentActivity{
-			{PaneID: "test__cc_1", State: StateWaiting},
-			{PaneID: "test__cc_2", State: StateGenerating},
-		}
-		met, matching, pending := checkWaitConditionMet(activities, opts)
-		if met {
-			t.Error("Expected condition not to be met when some agents are generating")
-		}
-		if len(matching) != 1 {
-			t.Errorf("Expected 1 matching agent, got %d", len(matching))
-		}
-		if len(pending) != 1 {
-			t.Errorf("Expected 1 pending agent, got %d", len(pending))
-		}
-	})
-
-	t.Run("no agents", func(t *testing.T) {
-		activities := []*AgentActivity{}
-		met, _, _ := checkWaitConditionMet(activities, opts)
-		if met {
-			t.Error("Expected condition not to be met with no agents")
-		}
-	})
-}
-
-func TestCheckWaitConditionMet_AnyMode(t *testing.T) {
-	// Test with ANY mode
-	opts := WaitOptions{
-		Condition:  "idle",
-		WaitForAny: true,
-		CountN:     1,
-	}
-
-	t.Run("one agent idle", func(t *testing.T) {
-		activities := []*AgentActivity{
-			{PaneID: "test__cc_1", State: StateWaiting},
-			{PaneID: "test__cc_2", State: StateGenerating},
-		}
-		met, matching, _ := checkWaitConditionMet(activities, opts)
-		if !met {
-			t.Error("Expected condition to be met when at least one agent is idle")
-		}
-		if len(matching) != 1 {
-			t.Errorf("Expected 1 matching agent, got %d", len(matching))
-		}
-	})
-
-	t.Run("no agents idle", func(t *testing.T) {
-		activities := []*AgentActivity{
-			{PaneID: "test__cc_1", State: StateGenerating},
-			{PaneID: "test__cc_2", State: StateGenerating},
-		}
-		met, _, _ := checkWaitConditionMet(activities, opts)
-		if met {
-			t.Error("Expected condition not to be met when no agents are idle")
-		}
-	})
-
-	t.Run("count N requirement", func(t *testing.T) {
-		opts := WaitOptions{
-			Condition:  "idle",
-			WaitForAny: true,
-			CountN:     2,
-		}
-		activities := []*AgentActivity{
-			{PaneID: "test__cc_1", State: StateWaiting},
-			{PaneID: "test__cc_2", State: StateGenerating},
-			{PaneID: "test__cc_3", State: StateWaiting},
-		}
-		met, matching, _ := checkWaitConditionMet(activities, opts)
-		if !met {
-			t.Error("Expected condition to be met when 2 agents are idle and CountN=2")
-		}
-		if len(matching) != 2 {
-			t.Errorf("Expected 2 matching agents, got %d", len(matching))
-		}
-	})
 }
 
 func TestCompleteCondition(t *testing.T) {
@@ -910,194 +738,6 @@ func newWaitTestFeed(retention time.Duration) *AttentionFeed {
 // filterWaitPanes Tests
 // =============================================================================
 
-func TestFilterWaitPanes(t *testing.T) {
-
-	// Create test panes with various agent types and indices
-	// Note: detectAgentType looks for patterns like "claude", "codex", "gemini" in title
-	// or short forms like "__cc_", "__cod_", "__gmi_" with word boundaries
-	testPanes := []tmux.Pane{
-		{Index: 0, Title: "user_0"},                                 // User pane, should be filtered out
-		{Index: 1, Title: "myproject__cc_1"},                        // Claude agent (short form with prefix)
-		{Index: 2, Title: "myproject__cod_2"},                       // Codex agent (short form with prefix)
-		{Index: 3, Title: "myproject__gmi_3"},                       // Gemini agent (short form with prefix)
-		{Index: 4, Title: "myproject__cc_4"},                        // Another Claude agent
-		{Index: 5, Title: "unknown_agent"},                          // Unknown, should be filtered out
-		{Index: 6, Title: "bash"},                                   // Non-agent pane
-		{Index: 7, Title: "claude_session", Type: tmux.AgentClaude}, // Using full type name
-	}
-
-	t.Run("no_filters_returns_only_agents", func(t *testing.T) {
-		opts := WaitOptions{}
-		result := filterWaitPanes(testPanes, opts)
-
-		// Should exclude user_0, unknown_agent, bash
-		// Should include cc_1, cod_2, gmi_3, cc_4, claude_7
-		if len(result) != 5 {
-			t.Errorf("filterWaitPanes() returned %d panes, want 5", len(result))
-			for _, p := range result {
-				t.Logf("  included: Index=%d Title=%q", p.Index, p.Title)
-			}
-		}
-	})
-
-	t.Run("filter_by_pane_indices", func(t *testing.T) {
-		opts := WaitOptions{
-			PaneIndices: []int{1, 3},
-		}
-		result := filterWaitPanes(testPanes, opts)
-
-		if len(result) != 2 {
-			t.Errorf("filterWaitPanes() returned %d panes, want 2", len(result))
-		}
-
-		// Verify correct panes selected
-		indices := make(map[int]bool)
-		for _, p := range result {
-			indices[p.Index] = true
-		}
-		if !indices[1] || !indices[3] {
-			t.Errorf("Expected panes 1 and 3, got indices: %v", indices)
-		}
-	})
-
-	t.Run("filter_by_agent_type_claude", func(t *testing.T) {
-		opts := WaitOptions{
-			AgentType: "claude", // detectAgentType returns canonical names like "claude" not "cc"
-		}
-		result := filterWaitPanes(testPanes, opts)
-
-		// myproject__cc_1, myproject__cc_4, and claude_session should match "claude" type
-		if len(result) != 3 {
-			t.Errorf("filterWaitPanes(AgentType=claude) returned %d panes, want 3", len(result))
-		}
-	})
-
-	t.Run("filter_by_agent_type_codex", func(t *testing.T) {
-		opts := WaitOptions{
-			AgentType: "codex",
-		}
-		result := filterWaitPanes(testPanes, opts)
-
-		// cod_2 should match "codex" type (detectAgentType maps cod->codex)
-		if len(result) != 1 {
-			t.Errorf("filterWaitPanes(AgentType=codex) returned %d panes, want 1", len(result))
-		}
-		if len(result) > 0 && result[0].Index != 2 {
-			t.Errorf("Expected pane index 2, got %d", result[0].Index)
-		}
-	})
-
-	t.Run("filter_by_agent_type_gemini", func(t *testing.T) {
-		opts := WaitOptions{
-			AgentType: "gemini",
-		}
-		result := filterWaitPanes(testPanes, opts)
-
-		// gmi_3 should match "gemini" type (detectAgentType maps gmi->gemini)
-		if len(result) != 1 {
-			t.Errorf("filterWaitPanes(AgentType=gemini) returned %d panes, want 1", len(result))
-		}
-		if len(result) > 0 && result[0].Index != 3 {
-			t.Errorf("Expected pane index 3, got %d", result[0].Index)
-		}
-	})
-
-	t.Run("filter_by_both_indices_and_type", func(t *testing.T) {
-		opts := WaitOptions{
-			PaneIndices: []int{1, 2, 3, 4},
-			AgentType:   "claude", // Use canonical name
-		}
-		result := filterWaitPanes(testPanes, opts)
-
-		// Only myproject__cc_1 and myproject__cc_4 should match (both in indices AND type=claude)
-		if len(result) != 2 {
-			t.Errorf("filterWaitPanes() returned %d panes, want 2", len(result))
-		}
-	})
-
-	t.Run("empty_panes_input", func(t *testing.T) {
-		opts := WaitOptions{}
-		result := filterWaitPanes([]tmux.Pane{}, opts)
-
-		if len(result) != 0 {
-			t.Errorf("filterWaitPanes() with empty input returned %d panes, want 0", len(result))
-		}
-	})
-
-	t.Run("no_matching_indices", func(t *testing.T) {
-		opts := WaitOptions{
-			PaneIndices: []int{99, 100},
-		}
-		result := filterWaitPanes(testPanes, opts)
-
-		if len(result) != 0 {
-			t.Errorf("filterWaitPanes() returned %d panes, want 0", len(result))
-		}
-	})
-
-	t.Run("case_insensitive_agent_type", func(t *testing.T) {
-		opts := WaitOptions{
-			AgentType: "CLAUDE", // uppercase canonical name
-		}
-		result := filterWaitPanes(testPanes, opts)
-
-		// Should still match claude agents (case insensitive via strings.EqualFold)
-		if len(result) != 3 {
-			t.Errorf("filterWaitPanes(AgentType=CLAUDE) returned %d panes, want 3 (case insensitive)", len(result))
-		}
-	})
-
-	t.Run("alias_agent_type_matches", func(t *testing.T) {
-		tests := []struct {
-			name      string
-			agentType string
-			wantCount int
-		}{
-			{name: "claude short alias", agentType: "cc", wantCount: 3},
-			{name: "claude cli alias", agentType: "claude_code", wantCount: 3},
-			{name: "codex alias", agentType: "openai-codex", wantCount: 1},
-			{name: "gemini alias", agentType: "google-gemini", wantCount: 1},
-		}
-
-		for _, tc := range tests {
-			t.Run(tc.name, func(t *testing.T) {
-				opts := WaitOptions{AgentType: tc.agentType}
-				result := filterWaitPanes(testPanes, opts)
-				if len(result) != tc.wantCount {
-					t.Errorf("filterWaitPanes(AgentType=%q) returned %d panes, want %d", tc.agentType, len(result), tc.wantCount)
-				}
-			})
-		}
-	})
-
-	t.Run("prefers_parsed_pane_type_over_title", func(t *testing.T) {
-		panes := []tmux.Pane{
-			{Index: 1, Title: "custom scratchpad", Type: tmux.AgentClaude},
-			{Index: 2, Title: "claude_notes", Type: tmux.AgentUser},
-		}
-
-		result := filterWaitPanes(panes, WaitOptions{})
-		if len(result) != 1 {
-			t.Fatalf("filterWaitPanes() returned %d panes, want 1", len(result))
-		}
-		if result[0].Index != 1 {
-			t.Fatalf("filterWaitPanes() selected pane %d, want 1", result[0].Index)
-		}
-	})
-
-	t.Run("user_pane_always_filtered", func(t *testing.T) {
-		// Even if explicitly requested by index, user pane should be excluded
-		opts := WaitOptions{
-			PaneIndices: []int{0}, // user_0 pane
-		}
-		result := filterWaitPanes(testPanes, opts)
-
-		if len(result) != 0 {
-			t.Errorf("User pane should be filtered out, got %d panes", len(result))
-		}
-	})
-}
-
 func TestWaitPaneAgentTypePrefersParsedPaneType(t *testing.T) {
 	pane := tmux.Pane{
 		Title: "operator-notes",
@@ -1138,50 +778,6 @@ func TestResolveWaitPanesCanonicalSelectors(t *testing.T) {
 	}
 	if _, err := resolveWaitPanes(panes, WaitOptions{PaneSelectors: []string{"1.x"}}); err == nil || paneSelectorRobotErrorCode(err) != ErrCodeInvalidFlag {
 		t.Fatalf("malformed selector error = %v, code = %q", err, paneSelectorRobotErrorCode(err))
-	}
-}
-
-// rate_limited vs rate_limit_lifted semantics (ntm-xh9t): rate_limited fires
-// when a pane BECOMES limited; rate_limit_lifted is met only while the pane is
-// clear, so the wait blocks until every target pane's wall drops. Several doc
-// sites historically taught rate_limited with inverted semantics; these tests
-// pin the real contract for both directions.
-func TestRateLimitWaitConditionDirections(t *testing.T) {
-	limited := &AgentActivity{State: StateError, RateLimited: true}
-	clear := &AgentActivity{State: StateWaiting, RateLimited: false}
-
-	if !meetsSingleWaitCondition(limited, WaitConditionRateLimited) {
-		t.Error("rate_limited must be met by a limited pane")
-	}
-	if meetsSingleWaitCondition(clear, WaitConditionRateLimited) {
-		t.Error("rate_limited must not be met by a clear pane")
-	}
-	if meetsSingleWaitCondition(limited, WaitConditionRateLimitLifted) {
-		t.Error("rate_limit_lifted must not be met while the pane is limited")
-	}
-	if !meetsSingleWaitCondition(clear, WaitConditionRateLimitLifted) {
-		t.Error("rate_limit_lifted must be met by a clear pane")
-	}
-
-	// Composed check: a mixed swarm keeps the lifted-wait pending until the
-	// last limited pane clears.
-	opts := WaitOptions{Condition: WaitConditionRateLimitLifted}
-	activities := []*AgentActivity{
-		{PaneID: "1", State: StateWaiting, RateLimited: false},
-		{PaneID: "2", State: StateError, RateLimited: true},
-	}
-	met, _, pending := checkWaitConditionMet(activities, opts)
-	if met {
-		t.Fatal("lifted-wait reported met while a pane is still limited")
-	}
-	if len(pending) != 1 || pending[0] != "2" {
-		t.Fatalf("pending = %v, want the limited pane", pending)
-	}
-	activities[1].RateLimited = false
-	activities[1].State = StateWaiting
-	met, matching, _ := checkWaitConditionMet(activities, opts)
-	if !met || len(matching) != 2 {
-		t.Fatalf("lifted-wait met=%v matching=%d after all panes cleared, want met with 2", met, len(matching))
 	}
 }
 

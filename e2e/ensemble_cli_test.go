@@ -271,84 +271,6 @@ func sendYAMLModeOutput(t *testing.T, session string, pane int, thesis string) {
 	}
 }
 
-func TestE2E_EnsembleCLI_Synthesize_JSON(t *testing.T) {
-	CommonE2EPrerequisites(t)
-
-	if !supportsNTMSubcommand("ensemble") {
-		t.Skip("ntm binary does not support `ensemble` command")
-	}
-
-	suite := NewTestSuite(t, "ensemble_cli_synthesize")
-	defer suite.Teardown()
-
-	if err := suite.Setup(); err != nil {
-		t.Fatalf("[E2E-ENSEMBLE-CLI] suite setup failed: %v", err)
-	}
-
-	session := suite.Session()
-	panes, err := tmux.GetPanes(session)
-	if err != nil {
-		t.Fatalf("[E2E-ENSEMBLE-CLI] GetPanes failed: %v", err)
-	}
-	if len(panes) == 0 || panes[0].ID == "" {
-		t.Fatalf("[E2E-ENSEMBLE-CLI] expected at least 1 pane with an ID")
-	}
-	paneID := panes[0].ID
-
-	// Seed deterministic ensemble state into the shared SQLite store so the CLI can load it.
-	now := time.Now().UTC()
-	state := &ensemble.EnsembleSession{
-		SessionName:       session,
-		Question:          "E2E: deterministic synthesize without real agents",
-		PresetUsed:        "e2e",
-		Status:            ensemble.EnsembleActive,
-		SynthesisStrategy: ensemble.StrategyManual,
-		CreatedAt:         now,
-		Assignments: []ensemble.ModeAssignment{
-			{
-				ModeID:      "e2e-mode",
-				PaneName:    paneID, // use pane ID to avoid reliance on pane titles
-				AgentType:   "cc",
-				Status:      ensemble.AssignmentDone,
-				AssignedAt:  now,
-				CompletedAt: &now,
-			},
-		},
-	}
-
-	if err := ensemble.SaveSession(session, state); err != nil {
-		t.Fatalf("[E2E-ENSEMBLE-CLI] SaveSession failed: %v", err)
-	}
-
-	sendYAMLModeOutput(t, session, 0, "E2E deterministic thesis")
-
-	// Verify status JSON now shows Exists=true
-	res := runEnsembleCLICmd(t, suite, "status_json_with_state", "ensemble", "status", session, "--format", "json")
-	if res.Err != nil {
-		t.Fatalf("[E2E-ENSEMBLE-CLI] ensemble status (with state) failed: %v", res.Err)
-	}
-	var status ensembleStatusJSON
-	parseEnsembleCLIJSON(t, suite, "status_json_with_state", res.Stdout, &status)
-	if !status.Exists {
-		t.Fatalf("[E2E-ENSEMBLE-CLI] expected exists=true after seeding state")
-	}
-
-	// Synthesize to JSON.
-	res = runEnsembleCLICmd(t, suite, "synthesize_json", "ensemble", "synthesize", session, "--format", "json")
-	if res.Err != nil {
-		t.Fatalf("[E2E-ENSEMBLE-CLI] ensemble synthesize failed: %v", res.Err)
-	}
-
-	var out ensembleSynthesizeJSON
-	parseEnsembleCLIJSON(t, suite, "synthesize_json", res.Stdout, &out)
-	if out.Synthesis == nil {
-		t.Fatalf("[E2E-ENSEMBLE-CLI] synthesize output missing synthesis field")
-	}
-	if len(out.Synthesis.Findings) == 0 {
-		t.Fatalf("[E2E-ENSEMBLE-CLI] expected at least 1 synthesized finding")
-	}
-}
-
 func ensembleSpawnIsExperimental() bool {
 	cmd := exec.Command("ntm", "ensemble", "spawn", "--help")
 	output, err := cmd.CombinedOutput()
@@ -432,5 +354,83 @@ func TestE2E_EnsembleCLI_AdvancedGating(t *testing.T) {
 	res = runEnsembleCLICmd(t, suite, "spawn_advanced_allowed", okArgs...)
 	if res.Err != nil {
 		t.Fatalf("[E2E-ENSEMBLE-CLI] expected advanced spawn success: %v", res.Err)
+	}
+}
+
+func TestE2E_EnsembleCLI_Synthesize_JSON(t *testing.T) {
+	CommonE2EPrerequisites(t)
+
+	if !supportsNTMSubcommand("ensemble") {
+		t.Skip("ntm binary does not support `ensemble` command")
+	}
+
+	suite := NewTestSuite(t, "ensemble_cli_synthesize")
+	defer suite.Teardown()
+
+	if err := suite.Setup(); err != nil {
+		t.Fatalf("[E2E-ENSEMBLE-CLI] suite setup failed: %v", err)
+	}
+
+	session := suite.Session()
+	panes, err := tmux.GetPanes(session)
+	if err != nil {
+		t.Fatalf("[E2E-ENSEMBLE-CLI] GetPanes failed: %v", err)
+	}
+	if len(panes) == 0 || panes[0].ID == "" {
+		t.Fatalf("[E2E-ENSEMBLE-CLI] expected at least 1 pane with an ID")
+	}
+	paneID := panes[0].ID
+
+	// Seed deterministic ensemble state into the shared SQLite store so the CLI can load it.
+	now := time.Now().UTC()
+	state := &ensemble.EnsembleSession{
+		SessionName:       session,
+		Question:          "E2E: deterministic synthesize without real agents",
+		PresetUsed:        "e2e",
+		Status:            ensemble.EnsembleActive,
+		SynthesisStrategy: ensemble.StrategyManual,
+		CreatedAt:         now,
+		Assignments: []ensemble.ModeAssignment{
+			{
+				ModeID:      "e2e-mode",
+				PaneName:    paneID, // use pane ID to avoid reliance on pane titles
+				AgentType:   "cc",
+				Status:      ensemble.AssignmentDone,
+				AssignedAt:  now,
+				CompletedAt: &now,
+			},
+		},
+	}
+
+	if err := ensemble.SaveSession(session, state); err != nil {
+		t.Fatalf("[E2E-ENSEMBLE-CLI] SaveSession failed: %v", err)
+	}
+
+	sendYAMLModeOutput(t, session, 0, "E2E deterministic thesis")
+
+	// Verify status JSON now shows Exists=true
+	res := runEnsembleCLICmd(t, suite, "status_json_with_state", "ensemble", "status", session, "--format", "json")
+	if res.Err != nil {
+		t.Fatalf("[E2E-ENSEMBLE-CLI] ensemble status (with state) failed: %v", res.Err)
+	}
+	var status ensembleStatusJSON
+	parseEnsembleCLIJSON(t, suite, "status_json_with_state", res.Stdout, &status)
+	if !status.Exists {
+		t.Fatalf("[E2E-ENSEMBLE-CLI] expected exists=true after seeding state")
+	}
+
+	// Synthesize to JSON.
+	res = runEnsembleCLICmd(t, suite, "synthesize_json", "ensemble", "synthesize", session, "--format", "json")
+	if res.Err != nil {
+		t.Fatalf("[E2E-ENSEMBLE-CLI] ensemble synthesize failed: %v", res.Err)
+	}
+
+	var out ensembleSynthesizeJSON
+	parseEnsembleCLIJSON(t, suite, "synthesize_json", res.Stdout, &out)
+	if out.Synthesis == nil {
+		t.Fatalf("[E2E-ENSEMBLE-CLI] synthesize output missing synthesis field")
+	}
+	if len(out.Synthesis.Findings) == 0 {
+		t.Fatalf("[E2E-ENSEMBLE-CLI] expected at least 1 synthesized finding")
 	}
 }

@@ -61,12 +61,6 @@ func NewStepsWriter(w io.Writer) *Steps {
 	}
 }
 
-// SetIndent sets the indentation prefix (default: "  ").
-func (s *Steps) SetIndent(indent string) *Steps {
-	s.indent = indent
-	return s
-}
-
 // Start begins a new named step, auto-completing any running step.
 func (s *Steps) Start(name string) *Steps {
 	// Auto-complete previous step if still running
@@ -110,17 +104,6 @@ func (s *Steps) Fail() *Steps {
 	return s
 }
 
-// Skip marks the current step as skipped.
-// Prints "⊘" (or "[SKIP]" without color).
-func (s *Steps) Skip() *Steps {
-	if s.current == nil {
-		return s
-	}
-	s.current.status = StepSkipped
-	s.printStatus("⊘", "SKIP", s.dimStyle())
-	return s
-}
-
 // Warn marks the current step as completed with warnings.
 // Prints "⚠" (or "[WARN]" without color).
 func (s *Steps) Warn() *Steps {
@@ -140,14 +123,6 @@ func (s *Steps) printStatus(icon, text string, style lipgloss.Style) {
 	}
 }
 
-// Status returns the current step's status.
-func (s *Steps) Status() StepStatus {
-	if s.current == nil {
-		return StepPending
-	}
-	return s.current.status
-}
-
 // Style helpers
 func (s *Steps) successStyle() lipgloss.Style {
 	t := theme.Current()
@@ -162,11 +137,6 @@ func (s *Steps) errorStyle() lipgloss.Style {
 func (s *Steps) warnStyle() lipgloss.Style {
 	t := theme.Current()
 	return lipgloss.NewStyle().Foreground(t.Warning)
-}
-
-func (s *Steps) dimStyle() lipgloss.Style {
-	t := theme.Current()
-	return lipgloss.NewStyle().Foreground(t.Overlay)
 }
 
 // ===========================================================================
@@ -195,12 +165,6 @@ func ProgressWriter(w io.Writer) *ProgressMsg {
 	return &ProgressMsg{w: w, useColor: useColor, indent: ""}
 }
 
-// SetIndent sets the indentation prefix.
-func (p *ProgressMsg) SetIndent(indent string) *ProgressMsg {
-	p.indent = indent
-	return p
-}
-
 // Success prints "✓ message".
 func (p *ProgressMsg) Success(msg string) {
 	p.printWithIcon("✓", msg, p.successStyle())
@@ -221,16 +185,6 @@ func (p *ProgressMsg) Warningf(format string, args ...any) {
 	p.Warning(fmt.Sprintf(format, args...))
 }
 
-// Error prints "✗ message".
-func (p *ProgressMsg) Error(msg string) {
-	p.printWithIcon("✗", msg, p.errorStyle())
-}
-
-// Errorf prints "✗ formatted message".
-func (p *ProgressMsg) Errorf(format string, args ...any) {
-	p.Error(fmt.Sprintf(format, args...))
-}
-
 // Info prints "ℹ message".
 func (p *ProgressMsg) Info(msg string) {
 	p.printWithIcon("ℹ", msg, p.infoStyle())
@@ -239,16 +193,6 @@ func (p *ProgressMsg) Info(msg string) {
 // Infof prints "ℹ formatted message".
 func (p *ProgressMsg) Infof(format string, args ...any) {
 	p.Info(fmt.Sprintf(format, args...))
-}
-
-// Print prints a plain message (no icon).
-func (p *ProgressMsg) Print(msg string) {
-	fmt.Fprintf(p.w, "%s%s\n", p.indent, msg)
-}
-
-// Printf prints a formatted plain message (no icon).
-func (p *ProgressMsg) Printf(format string, args ...any) {
-	p.Print(fmt.Sprintf(format, args...))
 }
 
 func (p *ProgressMsg) printWithIcon(icon, msg string, style lipgloss.Style) {
@@ -262,11 +206,6 @@ func (p *ProgressMsg) printWithIcon(icon, msg string, style lipgloss.Style) {
 func (p *ProgressMsg) successStyle() lipgloss.Style {
 	t := theme.Current()
 	return lipgloss.NewStyle().Foreground(t.Success)
-}
-
-func (p *ProgressMsg) errorStyle() lipgloss.Style {
-	t := theme.Current()
-	return lipgloss.NewStyle().Foreground(t.Error)
 }
 
 func (p *ProgressMsg) warnStyle() lipgloss.Style {

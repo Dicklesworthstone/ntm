@@ -103,27 +103,6 @@ func TestScanDirectory(t *testing.T) {
 		result.Totals.Files, result.Totals.Critical, result.Totals.Warning, result.Totals.Info)
 }
 
-func TestQuickScan(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	result, err := QuickScan(ctx, "types.go")
-	if err != nil {
-		// Skip on timeout since UBS may be slow in CI (bd-1ihar)
-		if err == ErrTimeout {
-			t.Skipf("UBS quick scan timed out after 30s: %v", err)
-		}
-		t.Fatalf("quick scan: %v", err)
-	}
-	// result can be nil if UBS is not installed (graceful degradation)
-	if result != nil {
-		t.Logf("Quick scan: files=%d, critical=%d, warning=%d",
-			result.Totals.Files, result.Totals.Critical, result.Totals.Warning)
-	} else {
-		t.Log("Quick scan returned nil (UBS not installed)")
-	}
-}
-
 func TestScanOptions(t *testing.T) {
 	scanner, err := New()
 	if err != nil {

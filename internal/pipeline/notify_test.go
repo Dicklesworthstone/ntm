@@ -14,58 +14,29 @@ import (
 	"time"
 )
 
-func TestNewNotifier(t *testing.T) {
-	cfg := NotifierConfig{
-		Channels:      []string{"desktop", "webhook", "mail"},
-		WebhookURL:    "https://example.com/webhook",
-		MailRecipient: "Human",
+// NewNotifier is a test-only constructor retained after the production
+// NewNotifier was removed as dead code; live tests for Notifier's
+// notification paths still need a way to build a configured instance.
+func NewNotifier(cfg NotifierConfig) *Notifier {
+	channels := make([]NotificationChannel, 0, len(cfg.Channels))
+	for _, c := range cfg.Channels {
+		switch strings.ToLower(c) {
+		case "desktop":
+			channels = append(channels, ChannelDesktop)
+		case "webhook":
+			channels = append(channels, ChannelWebhook)
+		case "mail", "agentmail":
+			channels = append(channels, ChannelMail)
+		}
 	}
 
-	n := NewNotifier(cfg)
-
-	if len(n.channels) != 3 {
-		t.Errorf("expected 3 channels, got %d", len(n.channels))
-	}
-	if n.webhookURL != "https://example.com/webhook" {
-		t.Errorf("expected webhook URL, got %q", n.webhookURL)
-	}
-	if n.mailRecipient != "Human" {
-		t.Errorf("expected mail recipient 'Human', got %q", n.mailRecipient)
-	}
-}
-
-func TestNewNotifierIgnoresUnknownChannels(t *testing.T) {
-	cfg := NotifierConfig{
-		Channels: []string{"desktop", "slack", "unknown", "webhook"},
-	}
-
-	n := NewNotifier(cfg)
-
-	// Only desktop and webhook should be recognized
-	if len(n.channels) != 2 {
-		t.Errorf("expected 2 valid channels (unknown ignored), got %d", len(n.channels))
-	}
-}
-
-func TestNewNotifierFromSettings(t *testing.T) {
-	settings := WorkflowSettings{
-		NotifyOnComplete: true,
-		NotifyOnError:    true,
-		NotifyChannels:   []string{"desktop", "webhook"},
-		WebhookURL:       "https://example.com/hook",
-		MailRecipient:    "TestAgent",
-	}
-
-	n := NewNotifierFromSettings(settings, nil, "/test/project", "Coordinator")
-
-	if len(n.channels) != 2 {
-		t.Errorf("expected 2 channels, got %d", len(n.channels))
-	}
-	if n.projectKey != "/test/project" {
-		t.Errorf("expected projectKey, got %q", n.projectKey)
-	}
-	if n.agentName != "Coordinator" {
-		t.Errorf("expected agentName 'Coordinator', got %q", n.agentName)
+	return &Notifier{
+		channels:      channels,
+		webhookURL:    cfg.WebhookURL,
+		mailRecipient: cfg.MailRecipient,
+		mailClient:    cfg.MailClient,
+		projectKey:    cfg.ProjectKey,
+		agentName:     cfg.AgentName,
 	}
 }
 

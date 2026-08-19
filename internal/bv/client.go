@@ -122,11 +122,6 @@ type Insights struct {
 	TotalCount  int              `json:"total_count"`
 }
 
-// IsAvailable checks if bv is installed and responsive.
-func (c *BVClient) IsAvailable() bool {
-	return c.IsAvailableContext(context.Background())
-}
-
 // IsAvailableContext checks whether bv is installed and responsive while
 // honoring caller cancellation. Interrupted probes are never cached.
 func (c *BVClient) IsAvailableContext(ctx context.Context) bool {
@@ -226,11 +221,6 @@ func (c *BVClient) GetRecommendations(opts RecommendationOpts) ([]Recommendation
 	return recommendations, nil
 }
 
-// GetInsights returns graph analysis insights.
-func (c *BVClient) GetInsights() (*Insights, error) {
-	return c.GetInsightsContext(context.Background())
-}
-
 // GetInsightsContext returns graph insights with caller cancellation.
 func (c *BVClient) GetInsightsContext(ctx context.Context) (*Insights, error) {
 	if ctx == nil {
@@ -260,68 +250,6 @@ func (c *BVClient) GetInsightsContext(ctx context.Context) (*Insights, error) {
 
 	// Build insights from insights response
 	return c.buildInsightsFromResponse(insightsResp, workDir), nil
-}
-
-// GetQuickWins returns low-effort, high-impact recommendations.
-func (c *BVClient) GetQuickWins(limit int) ([]Recommendation, error) {
-	if limit == 0 {
-		limit = 5
-	}
-
-	triage, err := c.getTriage()
-	if err != nil {
-		return nil, err
-	}
-
-	var recommendations []Recommendation
-	for _, rec := range triage.Triage.QuickWins {
-		r := c.convertRecommendation(rec)
-		recommendations = append(recommendations, r)
-		if len(recommendations) >= limit {
-			break
-		}
-	}
-
-	return recommendations, nil
-}
-
-// GetBlockersToClear returns blockers that unblock the most work.
-func (c *BVClient) GetBlockersToClear(limit int) ([]Recommendation, error) {
-	if limit == 0 {
-		limit = 5
-	}
-
-	triage, err := c.getTriage()
-	if err != nil {
-		return nil, err
-	}
-
-	var recommendations []Recommendation
-	for _, blocker := range triage.Triage.BlockersToClear {
-		r := Recommendation{
-			ID:            blocker.ID,
-			Title:         blocker.Title,
-			UnblocksCount: blocker.UnblocksCount,
-			UnblocksIDs:   blocker.UnblocksIDs,
-			IsActionable:  blocker.Actionable,
-			BlockedByIDs:  blocker.BlockedBy,
-			EstimatedSize: "medium", // Default for blockers
-		}
-		recommendations = append(recommendations, r)
-		if len(recommendations) >= limit {
-			break
-		}
-	}
-
-	return recommendations, nil
-}
-
-// InvalidateCache clears the client's cache.
-// Call this when beads data changes.
-func (c *BVClient) InvalidateCache() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.triageCache = nil
 }
 
 // getTriage returns triage data, using cache if valid.

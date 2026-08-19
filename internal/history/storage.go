@@ -104,79 +104,6 @@ func Append(entry *HistoryEntry) error {
 	return err
 }
 
-// BatchAppend adds multiple entries to the history file atomically.
-// If redaction is configured via SetRedactionConfig, prompts are redacted before storage.
-func BatchAppend(entries []*HistoryEntry) error {
-	if len(entries) == 0 {
-		return nil
-	}
-
-	// Apply privacy gating before taking any locks or touching the filesystem.
-	toWrite := make([]*HistoryEntry, 0, len(entries))
-	for _, entry := range entries {
-		if entry == nil {
-			continue
-		}
-		if entry.Session != "" {
-			if err := privacy.GetDefaultManager().CanPersist(entry.Session, privacy.OpPromptHistory); err != nil {
-				if privacy.IsPrivacyError(err) {
-					continue
-				}
-				return err
-			}
-		}
-		toWrite = append(toWrite, entry)
-	}
-	if len(toWrite) == 0 {
-		return nil
-	}
-
-	// Prepare all data in memory before locking to ensure atomicity
-	var buf bytes.Buffer
-	for _, entry := range toWrite {
-		// Apply redaction if configured
-		entryToWrite := RedactEntry(entry)
-
-		data, err := json.Marshal(entryToWrite)
-		if err != nil {
-			return err
-		}
-		// Encrypt if configured
-		data, err = encryptJSONLine(data)
-		if err != nil {
-			return err
-		}
-		buf.Write(data)
-		buf.WriteByte('\n')
-	}
-
-	if buf.Len() == 0 {
-		return nil
-	}
-
-	unlock, err := acquireLock()
-	if err != nil {
-		return err
-	}
-	defer unlock()
-
-	path := StoragePath()
-
-	// Ensure directory exists
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-		return err
-	}
-
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	_, err = f.Write(buf.Bytes())
-	return err
-}
-
 // ReadAll reads all history entries from the file.
 // Returns empty slice if file doesn't exist.
 func ReadAll() ([]HistoryEntry, error) {
@@ -600,51 +527,6 @@ func ExportTo(path string) error {
 	}
 
 	return writer.Flush()
-}
-
-// ImportFrom reads history from a specific file and appends to current history.
-func ImportFrom(path string) (int, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return 0, err
-	}
-	defer f.Close()
-
-	var entries []*HistoryEntry
-	scanner := bufio.NewScanner(f)
-	// Set max line size for large prompts (5MB), start with 64KB
-	scanner.Buffer(make([]byte, 64*1024), 5*1024*1024)
-
-	skipped := 0
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		plain, err := decryptJSONLine(line)
-		if err != nil {
-			slog.Warn("history: import: skipping unreadable line", "error", err)
-			skipped++
-			continue
-		}
-		var entry HistoryEntry
-		if err := json.Unmarshal(plain, &entry); err != nil {
-			slog.Warn("history: import: skipping malformed line", "error", err)
-			skipped++
-			continue
-		}
-		entries = append(entries, &entry)
-	}
-	if skipped > 0 {
-		slog.Warn("history: import: lines skipped during import", "skipped", skipped, "path", path)
-	}
-
-	if err := scanner.Err(); err != nil {
-		return len(entries), err
-	}
-
-	if err := BatchAppend(entries); err != nil {
-		return 0, err
-	}
-
-	return len(entries), nil
 }
 
 // Stats returns summary statistics about history.

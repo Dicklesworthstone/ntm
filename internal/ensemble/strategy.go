@@ -147,13 +147,6 @@ func GetStrategy(name string) (*StrategyConfig, error) {
 	return s, nil
 }
 
-// ListStrategies returns all strategy configurations in canonical order.
-func ListStrategies() []*StrategyConfig {
-	out := make([]*StrategyConfig, len(strategyRegistry))
-	copy(out, strategyRegistry)
-	return out
-}
-
 // ValidateStrategy returns true if the given name is a valid synthesis strategy.
 func ValidateStrategy(name string) bool {
 	_, ok := strategyMap[SynthesisStrategy(name)]

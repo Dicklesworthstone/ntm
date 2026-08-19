@@ -408,23 +408,3 @@ func formatTokenShort(tokens int) string {
 	}
 	return fmt.Sprintf("%.1fM", float64(tokens)/1000000.0)
 }
-
-func padRight(s string, width int) string {
-	if width <= 0 {
-		return ""
-	}
-	if len(s) >= width {
-		return s
-	}
-	return s + strings.Repeat(" ", width-len(s))
-}
-
-func padLeft(s string, width int) string {
-	if width <= 0 {
-		return ""
-	}
-	if len(s) >= width {
-		return s
-	}
-	return strings.Repeat(" ", width-len(s)) + s
-}

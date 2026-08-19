@@ -71,34 +71,6 @@ func (r *Registry) Register(cmd Command) error {
 	return nil
 }
 
-// Unregister removes a command and its associated handler from the registry.
-// It returns false when the command was not registered.
-func (r *Registry) Unregister(name string) bool {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return false
-	}
-
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	cmd, exists := r.commands[name]
-	if !exists {
-		return false
-	}
-
-	delete(r.commands, name)
-	delete(r.handlers, name)
-	if cmd.REST != nil {
-		key := restKey(cmd.REST.Method, cmd.REST.Path)
-		if r.restIndex[key] == name {
-			delete(r.restIndex, key)
-		}
-	}
-
-	return true
-}
-
 // RegisterHandler associates a handler with a registered command.
 func (r *Registry) RegisterHandler(name string, handler HandlerFunc) error {
 	name = strings.TrimSpace(name)
@@ -125,15 +97,6 @@ func (r *Registry) RegisterHandler(name string, handler HandlerFunc) error {
 
 	r.handlers[name] = handler
 	return nil
-}
-
-// Get returns a command by name.
-func (r *Registry) Get(name string) (Command, bool) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	cmd, ok := r.commands[name]
-	return cmd, ok
 }
 
 // List returns all commands in deterministic order.
@@ -231,12 +194,6 @@ func Register(cmd Command) error {
 	return defaultRegistry.Register(cmd)
 }
 
-// Unregister removes a command from the default registry.
-// It returns false when the command was not registered.
-func Unregister(name string) bool {
-	return defaultRegistry.Unregister(name)
-}
-
 // MustRegister registers a command or panics on failure.
 func MustRegister(cmd Command) {
 	if err := Register(cmd); err != nil {
@@ -254,11 +211,6 @@ func MustRegisterHandler(name string, handler HandlerFunc) {
 	if err := RegisterHandler(name, handler); err != nil {
 		panic(err)
 	}
-}
-
-// Get returns a command from the default registry.
-func Get(name string) (Command, bool) {
-	return defaultRegistry.Get(name)
 }
 
 // List returns all commands from the default registry.

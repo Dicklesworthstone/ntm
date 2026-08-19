@@ -51,29 +51,6 @@ type ScanError struct {
 // BeadScannerOption configures a BeadScanner.
 type BeadScannerOption func(*BeadScanner)
 
-// WithBrPath sets a custom path to the br binary.
-func WithBrPath(path string) BeadScannerOption {
-	return func(bs *BeadScanner) {
-		bs.brPath = path
-	}
-}
-
-// WithParallelism sets the number of concurrent scans.
-func WithParallelism(n int) BeadScannerOption {
-	return func(bs *BeadScanner) {
-		if n > 0 {
-			bs.Parallelism = n
-		}
-	}
-}
-
-// WithLogger sets the logger.
-func WithLogger(logger *slog.Logger) BeadScannerOption {
-	return func(bs *BeadScanner) {
-		bs.Logger = logger
-	}
-}
-
 // WithExplicitProjects sets explicit project paths to scan.
 func WithExplicitProjects(projects []string) BeadScannerOption {
 	return func(bs *BeadScanner) {

@@ -5261,15 +5261,6 @@ func (m *Model) scheduleRefreshes(now time.Time) []tea.Cmd {
 	return cmds
 }
 
-func (m *Model) scheduleSpawnRefresh(now time.Time) tea.Cmd {
-	if refreshDue(m.lastSpawnFetch, m.spawnRefreshInterval) && !m.fetchingSpawn {
-		m.fetchingSpawn = true
-		m.lastSpawnFetch = now
-		return m.fetchSpawnStateCmd()
-	}
-	return nil
-}
-
 func rchStatusActive(status *tools.RCHStatus) bool {
 	if status == nil {
 		return false
@@ -5815,33 +5806,8 @@ func (m Model) renderConflictsPanel(width, height int) string {
 	return m.conflictsPanel.View()
 }
 
-func (m Model) renderSpawnPanel(width, height int) string {
-	m.spawnPanel.SetSize(width, height)
-	return m.spawnPanel.View()
-}
-
-func (m Model) renderMetricsPanel(width, height int) string {
-	m.metricsPanel.SetSize(width, height)
-	if m.focusedPanel == PanelMetrics {
-		m.metricsPanel.Focus()
-	} else {
-		m.metricsPanel.Blur()
-	}
-	return m.metricsPanel.View()
-}
-
 func hasMetricsData(data panels.MetricsData) bool {
 	return data.Coverage != nil || data.Redundancy != nil || data.Velocity != nil || data.Conflicts != nil
-}
-
-func (m Model) renderHistoryPanel(width, height int) string {
-	m.historyPanel.SetSize(width, height)
-	if m.focusedPanel == PanelHistory {
-		m.historyPanel.Focus()
-	} else {
-		m.historyPanel.Blur()
-	}
-	return m.historyPanel.View()
 }
 
 // renderPaneList renders a compact list of panes with status indicators.
@@ -5945,12 +5911,6 @@ func (m Model) computeContextRanks() map[string]int {
 		ranks[pr.key] = currentRank
 	}
 	return ranks
-}
-
-// spinnerDot returns a one-cell dot spinner frame based on the animation tick.
-func spinnerDot(tick int) string {
-	frames := []string{".", "·", "•", "·"}
-	return frames[tick%len(frames)]
 }
 
 // dashboardPaneIdentity returns the display identity for a pane and, when its

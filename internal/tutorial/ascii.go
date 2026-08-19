@@ -542,35 +542,6 @@ func RenderCommandCode(commands []string, tick int, typewriter bool) string {
 	return strings.Join(lines, "\n")
 }
 
-// RenderTip renders a tip card with animation
-func RenderTip(tip []string, tick int, width int) string {
-	colors := []string{"#f9e2af", "#fab387", "#f5c2e7"}
-
-	var lines []string
-
-	// Title (first line)
-	if len(tip) > 0 {
-		title := styles.Shimmer(tip[0], tick, colors...)
-		lines = append(lines, centerText(title, width))
-	}
-
-	// Content
-	if len(tip) <= 1 {
-		return strings.Join(lines, "\n")
-	}
-	for i, line := range tip[1:] {
-		reveal := tick - (i+1)*4
-		if reveal < 0 {
-			continue
-		}
-
-		content := styles.GradientText(line, "#cdd6f4", "#a6adc8")
-		lines = append(lines, centerText(content, width))
-	}
-
-	return strings.Join(lines, "\n")
-}
-
 // Helper functions
 
 func centerText(text string, width int) string {

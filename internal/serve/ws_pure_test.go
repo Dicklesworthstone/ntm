@@ -267,61 +267,13 @@ func TestWSEventStore_Cleanup_NilDB(t *testing.T) {
 // writeApprovalRequired — 0% → 100%
 // =============================================================================
 
-func TestWriteApprovalRequired(t *testing.T) {
-	w := httptest.NewRecorder()
-
-	ar := &ApprovalRequired{
-		Action:     "delete",
-		Resource:   "session:main",
-		ApprovalID: "apr-123",
-		Message:    "needs approval",
-	}
-
-	writeApprovalRequired(w, ar, "req-456")
-
-	if w.Code != http.StatusConflict {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusConflict)
-	}
-
-	ct := w.Header().Get("Content-Type")
-	if ct != "application/json" {
-		t.Errorf("Content-Type = %q", ct)
-	}
-
-	var resp struct {
-		Success   bool              `json:"success"`
-		RequestID string            `json:"request_id"`
-		Error     string            `json:"error"`
-		ErrorCode string            `json:"error_code"`
-		Approval  *ApprovalRequired `json:"approval"`
-	}
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if resp.Success {
-		t.Error("success should be false")
-	}
-	if resp.RequestID != "req-456" {
-		t.Errorf("request_id = %q", resp.RequestID)
-	}
-	if resp.ErrorCode != ErrCodeApprovalRequired {
-		t.Errorf("error_code = %q", resp.ErrorCode)
-	}
-	if resp.Approval.Action != "delete" {
-		t.Errorf("approval.action = %q", resp.Approval.Action)
-	}
-	if resp.Approval.ApprovalID != "apr-123" {
-		t.Errorf("approval.approval_id = %q", resp.Approval.ApprovalID)
-	}
-}
-
 // =============================================================================
 // WSHub getter — 0% → 100%
 // =============================================================================
 
 func TestServer_WSHub_Nil(t *testing.T) {
 	s := &Server{}
-	if hub := s.WSHub(); hub != nil {
+	if hub := s.wsHub; hub != nil {
 		t.Errorf("WSHub() = %v, want nil for empty server", hub)
 	}
 }

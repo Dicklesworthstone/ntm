@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"path"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -182,47 +181,6 @@ func (g *Generator) AddFile(relativePath string, data []byte, contentType string
 	})
 
 	return nil
-}
-
-// AddDirectory adds all files from a directory recursively.
-func (g *Generator) AddDirectory(basePath, relativeTo, contentType string) error {
-	return filepath.WalkDir(basePath, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			g.errors = append(g.errors, fmt.Sprintf("walk error: %s: %v", path, err))
-			return nil // Continue walking
-		}
-
-		if d.IsDir() {
-			return nil
-		}
-
-		info, err := os.Lstat(path)
-		if err != nil {
-			g.errors = append(g.errors, fmt.Sprintf("stat error: %s: %v", path, err))
-			return nil
-		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			g.errors = append(g.errors, fmt.Sprintf("symlink skipped: %s", path))
-			return nil
-		}
-		if !info.Mode().IsRegular() {
-			g.errors = append(g.errors, fmt.Sprintf("non-regular file skipped: %s", path))
-			return nil
-		}
-
-		data, err := os.ReadFile(path)
-		if err != nil {
-			g.errors = append(g.errors, fmt.Sprintf("read error: %s: %v", path, err))
-			return nil
-		}
-
-		relPath, err := filepath.Rel(relativeTo, path)
-		if err != nil {
-			relPath = path
-		}
-
-		return g.AddFile(relPath, data, contentType, info.ModTime())
-	})
 }
 
 // AddScrollback adds pane scrollback with optional line limit.

@@ -195,16 +195,6 @@ func (v *SchemaValidator) ParseYAML(raw string) (*ModeOutput, error) {
 	return &output, nil
 }
 
-// ParseAndValidate combines parsing and validation in a single call.
-func (v *SchemaValidator) ParseAndValidate(raw string) (*ModeOutput, []ValidationError, error) {
-	output, err := v.ParseYAML(raw)
-	if err != nil {
-		return nil, nil, err
-	}
-	errs := v.Validate(output)
-	return output, errs, nil
-}
-
 // Normalize applies normalization to a ModeOutput, injecting defaults and
 // converting flexible input formats to canonical values.
 // Returns a slice of ValidationErrors for values that couldn't be normalized.

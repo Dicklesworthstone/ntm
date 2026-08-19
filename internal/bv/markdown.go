@@ -49,15 +49,6 @@ func GetTriageMarkdown(dir string, opts MarkdownOptions) (string, error) {
 	return RenderTriageMarkdown(triage, opts), nil
 }
 
-// GetTriageMarkdownNoCache returns fresh triage data as markdown.
-func GetTriageMarkdownNoCache(dir string, opts MarkdownOptions) (string, error) {
-	triage, err := GetTriageNoCache(dir)
-	if err != nil {
-		return "", err
-	}
-	return RenderTriageMarkdown(triage, opts), nil
-}
-
 // RenderTriageMarkdown converts a TriageResponse to markdown.
 func RenderTriageMarkdown(triage *TriageResponse, opts MarkdownOptions) string {
 	if triage == nil {
@@ -251,57 +242,4 @@ var AgentContextBudget = map[AgentType]int{
 	AgentCodex:       120000, // Codex has medium context
 	AgentGemini:      100000, // Gemini has smaller context
 	AgentAntigravity: 100000, // Antigravity (Gemini successor): mirrors Gemini
-}
-
-// TriageFormat represents the output format for triage.
-type TriageFormat string
-
-const (
-	FormatJSON     TriageFormat = "json"
-	FormatMarkdown TriageFormat = "markdown"
-)
-
-// PreferredFormat returns the preferred triage format for an agent type.
-// Claude gets JSON (large context), Codex/Gemini get markdown (more readable).
-func PreferredFormat(agent AgentType) TriageFormat {
-	switch agent {
-	case AgentClaude:
-		return FormatJSON
-	case AgentCodex, AgentGemini, AgentAntigravity:
-		return FormatMarkdown
-	default:
-		return FormatJSON
-	}
-}
-
-// GetTriageForAgent returns triage in the preferred format for the agent type.
-// Returns (content, format, error).
-func GetTriageForAgent(dir string, agent AgentType) (string, TriageFormat, error) {
-	format := PreferredFormat(agent)
-
-	switch format {
-	case FormatMarkdown:
-		opts := CompactMarkdownOptions()
-		content, err := GetTriageMarkdown(dir, opts)
-		return content, format, err
-	default:
-		triage, err := GetTriage(dir)
-		if err != nil {
-			return "", format, err
-		}
-		// Return as JSON string (caller can marshal if needed)
-		return renderTriageJSON(triage), format, nil
-	}
-}
-
-// renderTriageJSON returns a compact JSON representation.
-func renderTriageJSON(triage *TriageResponse) string {
-	if triage == nil {
-		return "{}"
-	}
-	// Compact quick-ref counts only, by design; callers that need the full
-	// triage should json.Marshal the TriageResponse directly.
-	qr := &triage.Triage.QuickRef
-	return fmt.Sprintf(`{"actionable":%d,"blocked":%d,"in_progress":%d,"top_picks":%d}`,
-		qr.ActionableCount, qr.BlockedCount, qr.InProgressCount, len(qr.TopPicks))
 }

@@ -225,13 +225,6 @@ func GetRenderer(format RobotFormat) Renderer {
 	}
 }
 
-// GetContentType returns the content-type hint for the given format.
-// This is useful for tooling that needs to know the output format without
-// actually rendering.
-func GetContentType(format RobotFormat) string {
-	return GetRenderer(format).ContentType()
-}
-
 // =============================================================================
 // Output Helpers (Write to stdout)
 // =============================================================================
@@ -272,19 +265,4 @@ type RenderResult struct {
 
 	// Format is the format that was used for rendering.
 	Format RobotFormat
-}
-
-// RenderWithMeta encodes the payload and returns full metadata.
-// Use this when you need content-type information (e.g., HTTP responses).
-func RenderWithMeta(payload any, format RobotFormat) (RenderResult, error) {
-	renderer := GetRenderer(format)
-	output, err := renderer.Render(payload)
-	if err != nil {
-		return RenderResult{}, err
-	}
-	return RenderResult{
-		Output:      output,
-		ContentType: renderer.ContentType(),
-		Format:      renderer.Format(),
-	}, nil
 }

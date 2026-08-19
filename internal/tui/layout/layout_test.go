@@ -70,28 +70,6 @@ func TestUltraProportions(t *testing.T) {
 	}
 }
 
-func TestMegaProportions(t *testing.T) {
-	// Below threshold should return center-only
-	p1, p2, p3, p4, p5 := MegaProportions(300)
-	if p1 != 0 || p3 != 0 || p4 != 0 || p5 != 0 || p2 != 300 {
-		t.Fatalf("MegaProportions(300) unexpected: %d,%d,%d,%d,%d", p1, p2, p3, p4, p5)
-	}
-
-	width := 400 // Mega tier
-	p1, p2, p3, p4, p5 = MegaProportions(width)
-
-	total := p1 + p2 + p3 + p4 + p5
-	expectedTotal := width - 10 // padding budget
-
-	if total != expectedTotal {
-		t.Errorf("MegaProportions(%d) total width = %d, want %d", width, total, expectedTotal)
-	}
-
-	if p1 == 0 || p2 == 0 || p3 == 0 || p4 == 0 || p5 == 0 {
-		t.Errorf("MegaProportions(%d) returned zero width panel", width)
-	}
-}
-
 // TestTierForWidthBoundaries specifically tests the Ultra/Mega boundaries as
 // specified in the tier system documentation.
 func TestTierForWidthBoundaries(t *testing.T) {
@@ -109,40 +87,6 @@ func TestTierForWidthBoundaries(t *testing.T) {
 	}
 	if got := TierForWidth(320); got != TierMega {
 		t.Errorf("TierForWidth(320) = %v, want TierMega", got)
-	}
-}
-
-// TestTruncateRunes tests the rune-aware string truncation function.
-func TestTruncateRunes(t *testing.T) {
-	tests := []struct {
-		name   string
-		s      string
-		max    int
-		suffix string
-		want   string
-	}{
-		{"empty string", "", 10, "...", ""},
-		{"short string no truncate", "hello", 10, "...", "hello"},
-		{"exact length", "hello", 5, "...", "hello"},
-		{"truncate with suffix", "hello world", 8, "...", "hello..."},
-		{"truncate no suffix", "hello world", 8, "", "hello wo"},
-		{"max zero", "hello", 0, "...", ""},
-		{"max negative", "hello", -1, "...", ""},
-		{"suffix longer than max", "hello", 2, "...", "he"},
-		{"unicode string", "héllo wörld", 8, "...", "héllo..."},
-		{"emoji truncate", "👋🌍🎉✨", 3, ".", "👋🌍."},
-		{"emoji exact", "👋🌍", 2, "...", "👋🌍"},
-		{"single char max", "hello", 1, "", "h"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := TruncateRunes(tt.s, tt.max, tt.suffix)
-			if got != tt.want {
-				t.Errorf("TruncateRunes(%q, %d, %q) = %q, want %q",
-					tt.s, tt.max, tt.suffix, got, tt.want)
-			}
-		})
 	}
 }
 
@@ -184,28 +128,6 @@ func TestUltraProportionsBoundary(t *testing.T) {
 	}
 }
 
-// TestMegaProportionsBoundary tests MegaProportions at exact thresholds.
-func TestMegaProportionsBoundary(t *testing.T) {
-	// At 319 (below Mega threshold): center-only
-	p1, p2, p3, p4, p5 := MegaProportions(319)
-	if p1 != 0 || p3 != 0 || p4 != 0 || p5 != 0 || p2 != 319 {
-		t.Errorf("MegaProportions(319) = %d,%d,%d,%d,%d want 0,319,0,0,0",
-			p1, p2, p3, p4, p5)
-	}
-
-	// At 320 (exactly Mega threshold): should give 5-panel
-	p1, p2, p3, p4, p5 = MegaProportions(320)
-	if p1 == 0 || p2 == 0 || p3 == 0 || p4 == 0 || p5 == 0 {
-		t.Errorf("MegaProportions(320) returned zero panel: %d,%d,%d,%d,%d",
-			p1, p2, p3, p4, p5)
-	}
-	total := p1 + p2 + p3 + p4 + p5
-	expectedTotal := 320 - 10 // padding budget
-	if total != expectedTotal {
-		t.Errorf("MegaProportions(320) total = %d, want %d", total, expectedTotal)
-	}
-}
-
 // TestProportionsSmallValues tests proportion functions with edge case inputs.
 func TestProportionsSmallValues(t *testing.T) {
 	// Test SplitProportions with very small values
@@ -223,58 +145,6 @@ func TestProportionsSmallValues(t *testing.T) {
 	ul, uc, ur := UltraProportions(0)
 	if ul != 0 || uc != 0 || ur != 0 {
 		t.Errorf("UltraProportions(0) = %d,%d,%d want 0,0,0", ul, uc, ur)
-	}
-
-	// Test MegaProportions with very small values
-	p1, p2, p3, p4, p5 := MegaProportions(0)
-	if p1 != 0 || p2 != 0 || p3 != 0 || p4 != 0 || p5 != 0 {
-		t.Errorf("MegaProportions(0) = %d,%d,%d,%d,%d want all zeros",
-			p1, p2, p3, p4, p5)
-	}
-}
-
-// TestTruncate tests the convenience truncation function with single-char ellipsis.
-func TestTruncate(t *testing.T) {
-	tests := []struct {
-		name string
-		s    string
-		max  int
-		want string
-	}{
-		{"empty string", "", 10, ""},
-		{"short string no truncate", "hello", 10, "hello"},
-		{"exact length", "hello", 5, "hello"},
-		{"truncate with ellipsis", "hello world", 8, "hello w…"},
-		{"max zero", "hello", 0, ""},
-		{"max negative", "hello", -1, ""},
-		{"max one", "hello", 1, "…"},
-		{"unicode string", "héllo wörld", 8, "héllo w…"},
-		{"emoji truncate", "👋🌍🎉✨", 3, "👋🌍…"},
-		{"emoji exact", "👋🌍", 2, "👋🌍"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := Truncate(tt.s, tt.max)
-			if got != tt.want {
-				t.Errorf("Truncate(%q, %d) = %q, want %q",
-					tt.s, tt.max, got, tt.want)
-			}
-		})
-	}
-}
-
-// TestTruncateUsesEllipsis verifies Truncate uses single-char ellipsis (U+2026).
-func TestTruncateUsesEllipsis(t *testing.T) {
-	result := Truncate("hello world", 8)
-	// Should end with "…" (U+2026), not "..." (three periods)
-	if result != "hello w…" {
-		t.Errorf("Truncate should use single-char ellipsis '…', got %q", result)
-	}
-	// Verify it's exactly 8 runes
-	runes := []rune(result)
-	if len(runes) != 8 {
-		t.Errorf("Truncate result should be 8 runes, got %d", len(runes))
 	}
 }
 
@@ -614,119 +484,5 @@ func TestTruncateWidthDefault(t *testing.T) {
 	got = TruncateWidthDefault("hi", 10)
 	if got != "hi" {
 		t.Errorf("short string should pass through, got %q", got)
-	}
-}
-
-// ============ TruncateMiddle tests ============
-
-func TestTruncateMiddle(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name     string
-		s        string
-		maxWidth int
-	}{
-		{"empty string", "", 10},
-		{"zero maxWidth", "hello", 0},
-		{"negative maxWidth", "hello", -1},
-		{"fits unchanged", "hello", 10},
-		{"exact fit", "hello", 5},
-		{"needs truncation", "abcdefghij", 7},
-		{"long string", "destructive_command_guard_cc_16", 20},
-		{"very tight", "abcdefghijklmnop", 4},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			got := TruncateMiddle(tt.s, tt.maxWidth)
-			if tt.maxWidth <= 0 {
-				if got != "" {
-					t.Errorf("TruncateMiddle(%q, %d) = %q, want empty", tt.s, tt.maxWidth, got)
-				}
-				return
-			}
-			w := lipgloss.Width(got)
-			if w > tt.maxWidth {
-				t.Errorf("TruncateMiddle(%q, %d) = %q (width=%d), exceeds max", tt.s, tt.maxWidth, got, w)
-			}
-		})
-	}
-}
-
-func TestTruncateMiddle_PreservesEnds(t *testing.T) {
-	t.Parallel()
-
-	// Should preserve start and end of string
-	got := TruncateMiddle("abcdefghij", 7)
-	// Should contain start chars and end chars with ellipsis
-	if got == "" {
-		t.Fatal("should not be empty")
-	}
-	w := lipgloss.Width(got)
-	if w > 7 {
-		t.Errorf("width %d exceeds max 7: %q", w, got)
-	}
-	// Start should be preserved
-	runes := []rune(got)
-	if runes[0] != 'a' {
-		t.Errorf("first char should be 'a', got '%c'", runes[0])
-	}
-	// End should be preserved
-	last := runes[len(runes)-1]
-	if last != 'j' {
-		t.Errorf("last char should be 'j', got '%c'", last)
-	}
-}
-
-func TestTruncateMiddleWidth(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name     string
-		s        string
-		maxWidth int
-		ellipsis string
-	}{
-		{"empty string", "", 10, ".."},
-		{"zero maxWidth", "hello", 0, ".."},
-		{"fits unchanged", "hello", 10, ".."},
-		{"needs truncation", "abcdefghij", 7, ".."},
-		{"custom ellipsis", "hello world foo bar", 12, "---"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			got := TruncateMiddleWidth(tt.s, tt.maxWidth, tt.ellipsis)
-			if tt.maxWidth <= 0 {
-				if got != "" {
-					t.Errorf("TruncateMiddleWidth(%q, %d, %q) = %q, want empty", tt.s, tt.maxWidth, tt.ellipsis, got)
-				}
-				return
-			}
-			w := lipgloss.Width(got)
-			if w > tt.maxWidth {
-				t.Errorf("TruncateMiddleWidth(%q, %d, %q) = %q (width=%d), exceeds max", tt.s, tt.maxWidth, tt.ellipsis, got, w)
-			}
-		})
-	}
-}
-
-func TestTruncateMiddleWidth_CustomEllipsis(t *testing.T) {
-	t.Parallel()
-
-	got := TruncateMiddleWidth("abcdefghijklmnop", 10, "..")
-	w := lipgloss.Width(got)
-	if w > 10 {
-		t.Errorf("width %d exceeds max 10: %q", w, got)
-	}
-	// Should contain the custom ellipsis
-	if len(got) > 0 {
-		runes := []rune(got)
-		if runes[0] != 'a' {
-			t.Errorf("first char should be 'a', got '%c'", runes[0])
-		}
 	}
 }

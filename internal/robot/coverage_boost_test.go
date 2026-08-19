@@ -370,9 +370,9 @@ func TestTrendTracker_MaxSamples(t *testing.T) {
 	tracker.AddSample(1, TrendSample{Timestamp: time.Now(), ContextRemaining: &ctx3})
 	tracker.AddSample(1, TrendSample{Timestamp: time.Now(), ContextRemaining: &ctx4}) // Should evict oldest
 
-	info := tracker.GetTrendInfo(1)
-	if info.SampleCount != 3 {
-		t.Errorf("SampleCount = %d, want 3 (max samples)", info.SampleCount)
+	_, sampleCount := tracker.GetTrend(1)
+	if sampleCount != 3 {
+		t.Errorf("SampleCount = %d, want 3 (max samples)", sampleCount)
 	}
 }
 

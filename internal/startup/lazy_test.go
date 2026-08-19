@@ -65,35 +65,6 @@ func TestLazyInitializationError(t *testing.T) {
 	}
 }
 
-func TestLazyMustGet(t *testing.T) {
-	Reset()
-
-	lazy := NewLazy[int]("test_must_get", func() (int, error) {
-		return 42, nil
-	})
-
-	val := lazy.MustGet()
-	if val != 42 {
-		t.Errorf("Expected 42, got %d", val)
-	}
-}
-
-func TestLazyMustGetPanic(t *testing.T) {
-	Reset()
-
-	lazy := NewLazy[int]("test_must_get_panic", func() (int, error) {
-		return 0, errors.New("intentional failure")
-	})
-
-	defer func() {
-		if r := recover(); r == nil {
-			t.Error("Expected panic from MustGet() with error")
-		}
-	}()
-
-	lazy.MustGet() // Should panic
-}
-
 func TestLazyConcurrency(t *testing.T) {
 	Reset()
 
@@ -126,69 +97,5 @@ func TestLazyConcurrency(t *testing.T) {
 	// Init should only be called once despite concurrent access
 	if initCalled != 1 {
 		t.Errorf("Init should have been called exactly once, called %d times", initCalled)
-	}
-}
-
-func TestLazyReset(t *testing.T) {
-	Reset()
-
-	initCalled := 0
-	lazy := NewLazy[string]("test_reset", func() (string, error) {
-		initCalled++
-		return "value", nil
-	})
-
-	// First initialization
-	lazy.Get()
-	if initCalled != 1 {
-		t.Errorf("Init should have been called once, got %d", initCalled)
-	}
-
-	// Reset and get again
-	lazy.Reset()
-	Reset() // Also reset global state
-	lazy.Get()
-	if initCalled != 2 {
-		t.Errorf("Init should have been called twice after reset, got %d", initCalled)
-	}
-}
-
-func TestLazyValue(t *testing.T) {
-	Reset()
-
-	initCalled := 0
-	lazy := NewLazyValue[int]("test_lazy_value", func() int {
-		initCalled++
-		return 42
-	})
-
-	val := lazy.Get()
-	if val != 42 {
-		t.Errorf("Expected 42, got %d", val)
-	}
-	if initCalled != 1 {
-		t.Errorf("Init should have been called once, got %d", initCalled)
-	}
-
-	// Second call should not re-initialize
-	_ = lazy.Get()
-	if initCalled != 1 {
-		t.Errorf("Init should still be 1, got %d", initCalled)
-	}
-}
-
-func TestLazyWithPhase(t *testing.T) {
-	Reset()
-
-	lazy := NewLazyWithPhase[string]("test_phased", "custom_phase", func() (string, error) {
-		return "phased", nil
-	})
-
-	val, err := lazy.Get()
-	if err != nil {
-		t.Errorf("Unexpected error: %v", err)
-	}
-	if val != "phased" {
-		t.Errorf("Expected 'phased', got '%s'", val)
 	}
 }

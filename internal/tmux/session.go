@@ -447,7 +447,7 @@ func detectAgentFromCommand(command string) AgentType {
 	}
 
 	// Antigravity (agy) — checked before Gemini so an agy launch command whose
-	// pinned model name contains "Gemini" ("Gemini 3.1 Pro (High)") is never
+	// pinned model name contains "Gemini" ("Gemini 3.7 Flash (High)") is never
 	// misread as a gemini pane. Like grok, "agy" is a short generic token, so
 	// it must be the command's executable basename, never a coincidental
 	// argument. Real launch shapes: `agy`, `agy-locked` (the un-aliased
@@ -1565,11 +1565,6 @@ func SendKeysContext(ctx context.Context, target, keys string, enter bool) error
 	return DefaultClient.SendKeysContext(ctx, target, keys, enter)
 }
 
-// SendKeysWithDelayContext sends keys with a cancellable Enter delay (default client).
-func SendKeysWithDelayContext(ctx context.Context, target, keys string, enter bool, enterDelay time.Duration) error {
-	return DefaultClient.SendKeysWithDelayContext(ctx, target, keys, enter, enterDelay)
-}
-
 // PasteKeys pastes content to a pane. It delegates to SendKeys, whose literal
 // (-l) chunked delivery already handles multi-line content safely; a tmux
 // paste-buffer implementation would be an optimization, not a behavior change.
@@ -1595,11 +1590,6 @@ func (c *Client) PasteKeysWithDelayContext(ctx context.Context, target, content 
 // PasteKeys pastes content to a pane (default client)
 func PasteKeys(target, content string, enter bool) error {
 	return DefaultClient.PasteKeys(target, content, enter)
-}
-
-// PasteKeysContext pastes content with caller cancellation (default client).
-func PasteKeysContext(ctx context.Context, target, content string, enter bool) error {
-	return DefaultClient.PasteKeysContext(ctx, target, content, enter)
 }
 
 // PasteKeysWithDelay pastes content to a pane with a configurable delay (default client)
@@ -1733,16 +1723,6 @@ func (c *Client) loadBufferRemoteContext(ctx context.Context, bufferName, conten
 // SendBuffer sends content using the buffer mechanism (default client)
 func SendBuffer(target, content string, enter bool) error {
 	return DefaultClient.SendBuffer(target, content, enter)
-}
-
-// SendBufferContext sends buffer content with caller cancellation (default client).
-func SendBufferContext(ctx context.Context, target, content string, enter bool) error {
-	return DefaultClient.SendBufferContext(ctx, target, content, enter)
-}
-
-// SendBufferWithDelayContext sends buffer content with a cancellable delay (default client).
-func SendBufferWithDelayContext(ctx context.Context, target, content string, enter bool, enterDelay time.Duration) error {
-	return DefaultClient.SendBufferWithDelayContext(ctx, target, content, enter, enterDelay)
 }
 
 // SendKeysForAgent sends keys to a pane using the appropriate method for the agent type.
@@ -2473,11 +2453,6 @@ func SendKeyName(target, keyName string) error {
 	return DefaultClient.SendKeyName(target, keyName)
 }
 
-// SendKeyNameContext sends a tmux key name with cancellation (default client).
-func SendKeyNameContext(ctx context.Context, target, keyName string) error {
-	return DefaultClient.SendKeyNameContext(ctx, target, keyName)
-}
-
 // SendInterrupt sends Ctrl+C to a pane
 func (c *Client) SendInterrupt(target string) error {
 	return c.RunSilent("send-keys", "-t", target, "C-c")
@@ -2491,11 +2466,6 @@ func SendInterrupt(target string) error {
 // SendEOF sends Ctrl+D (EOF) to a pane
 func (c *Client) SendEOF(target string) error {
 	return c.RunSilent("send-keys", "-t", target, "C-d")
-}
-
-// SendEOF sends Ctrl+D (EOF) to a pane (default client)
-func SendEOF(target string) error {
-	return DefaultClient.SendEOF(target)
 }
 
 // DisplayMessage shows a message in the tmux status line.

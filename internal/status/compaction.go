@@ -172,11 +172,6 @@ func DetectCompactionWithPaneID(output, agentType, paneID string) *CompactionEve
 	return event
 }
 
-// HasCompaction is a simple boolean check for compaction
-func HasCompaction(output string, agentType string) bool {
-	return DetectCompaction(output, agentType) != nil
-}
-
 // CompactionDetector provides a stateful detector that tracks compaction events
 type CompactionDetector struct {
 	mu     sync.Mutex

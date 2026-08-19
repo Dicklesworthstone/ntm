@@ -658,11 +658,6 @@ func NewStyles(t Theme) Styles {
 	return styles
 }
 
-// DefaultStyles returns styles for the current theme
-func DefaultStyles() Styles {
-	return NewStyles(Current())
-}
-
 // Gradient returns a slice of colors for gradient effects
 func (t Theme) Gradient(steps int) []lipgloss.Color {
 	// Simple gradient from Blue to Pink

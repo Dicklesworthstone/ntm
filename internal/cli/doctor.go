@@ -689,17 +689,18 @@ func checkConfiguration() []ConfigCheck {
 	// refuses to load such a config.
 	checks = append(checks, removedKnobChecks()...)
 
-	// Deprecated config knobs (bd-6otuk, v1.28.0 batch): warn tier — the
-	// config still loads, the value is ignored, and each key becomes a hard
-	// strict-loader error in v1.29.0.
+	// Deprecated config knobs (bd-6otuk, v1.28.0 batch): hard strict-loader
+	// errors since v1.29.0. Doctor scans the config file leniently
+	// (ScanDeprecatedKnobs), so it can still name each key + disposition even
+	// though the strict loader refuses to load such a config.
 	checks = append(checks, deprecatedKnobChecks()...)
 
 	return checks
 }
 
 // deprecatedKnobChecks reports every deprecated-in-v1.28.0 config key present
-// in the active config file, one warning per key, with the exact disposition
-// text the startup warning uses.
+// in the active config file, one error per key, with the exact disposition
+// text the strict loader uses in its load error.
 func deprecatedKnobChecks() []ConfigCheck {
 	knobs, err := config.ScanDeprecatedKnobs(selectedConfigPath())
 	if err != nil {
@@ -723,8 +724,8 @@ func deprecatedKnobChecks() []ConfigCheck {
 		checks = append(checks, ConfigCheck{
 			Name:    "deprecated config key: " + knob.Key,
 			Valid:   false,
-			Status:  "warning",
-			Message: fmt.Sprintf("%s; the value is ignored (deprecated in v1.28.0) and the key becomes a config error in v1.29.0 — delete it from your config file", knob.Disposition),
+			Status:  "error",
+			Message: fmt.Sprintf("%s; the key fails config loading since v1.29.0 — delete it from your config file", knob.Disposition),
 		})
 	}
 	return checks

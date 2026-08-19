@@ -10,7 +10,7 @@ import (
 )
 
 func TestRecoveryManager_CanSendRecovery(t *testing.T) {
-	rm := NewRecoveryManagerDefault()
+	rm := NewRecoveryManager(DefaultRecoveryConfig())
 
 	// First recovery should be allowed
 	can, reason := rm.CanSendRecovery("test:0")
@@ -56,7 +56,7 @@ func TestRecoveryManager_MaxRecoveries(t *testing.T) {
 }
 
 func TestRecoveryManager_ResetPane(t *testing.T) {
-	rm := NewRecoveryManagerDefault()
+	rm := NewRecoveryManager(DefaultRecoveryConfig())
 
 	// Set some state
 	rm.mu.Lock()
@@ -80,7 +80,7 @@ func TestRecoveryManager_ResetPane(t *testing.T) {
 }
 
 func TestRecoveryManager_GetRecoveryCount(t *testing.T) {
-	rm := NewRecoveryManagerDefault()
+	rm := NewRecoveryManager(DefaultRecoveryConfig())
 
 	// Initial count should be 0
 	count := rm.GetRecoveryCount("test:0")
@@ -100,7 +100,7 @@ func TestRecoveryManager_GetRecoveryCount(t *testing.T) {
 }
 
 func TestRecoveryManager_GetLastRecoveryTime(t *testing.T) {
-	rm := NewRecoveryManagerDefault()
+	rm := NewRecoveryManager(DefaultRecoveryConfig())
 
 	// No recovery yet
 	_, ok := rm.GetLastRecoveryTime("test:0")
@@ -124,7 +124,7 @@ func TestRecoveryManager_GetLastRecoveryTime(t *testing.T) {
 }
 
 func TestRecoveryManager_SetPrompt(t *testing.T) {
-	rm := NewRecoveryManagerDefault()
+	rm := NewRecoveryManager(DefaultRecoveryConfig())
 
 	rm.SetPrompt("custom prompt")
 	if rm.prompt != "custom prompt" {
@@ -133,7 +133,7 @@ func TestRecoveryManager_SetPrompt(t *testing.T) {
 }
 
 func TestRecoveryManager_SetCooldown(t *testing.T) {
-	rm := NewRecoveryManagerDefault()
+	rm := NewRecoveryManager(DefaultRecoveryConfig())
 
 	rm.SetCooldown(5 * time.Minute)
 	if rm.cooldown != 5*time.Minute {
@@ -180,7 +180,7 @@ func TestRecoveryManager_HandleCompactionEvent(t *testing.T) {
 // event is now recovered exactly like a claude one: state is recorded and the
 // recovery prompt reaches the (fake) sender.
 func TestRecoveryManagerRecoversGrokCompaction(t *testing.T) {
-	rm := NewRecoveryManagerDefault()
+	rm := NewRecoveryManager(DefaultRecoveryConfig())
 	rm.includeBeadContext = false // keep prompt construction hermetic (no bv exec)
 	sendCh := make(chan string, 1)
 	rm.sendPrompt = func(target, _ string, _ bool) error {
@@ -299,7 +299,7 @@ func TestMakePaneID(t *testing.T) {
 }
 
 func TestRecoveryManager_GetRecoveryEvents(t *testing.T) {
-	rm := NewRecoveryManagerDefault()
+	rm := NewRecoveryManager(DefaultRecoveryConfig())
 
 	// Initially should be empty
 	events := rm.GetRecoveryEvents()
@@ -322,7 +322,7 @@ func TestRecoveryManager_GetRecoveryEvents(t *testing.T) {
 }
 
 func TestRecoveryManager_ResetAll(t *testing.T) {
-	rm := NewRecoveryManagerDefault()
+	rm := NewRecoveryManager(DefaultRecoveryConfig())
 
 	// Set some state
 	rm.mu.Lock()
@@ -390,7 +390,7 @@ func TestRecoveryManager_pruneEvents(t *testing.T) {
 }
 
 func TestRecoveryManager_SendRecoveryPrompt_NoTmux(t *testing.T) {
-	rm := NewRecoveryManagerDefault()
+	rm := NewRecoveryManager(DefaultRecoveryConfig())
 
 	// This will fail since we're not in a real tmux session
 	// but we're testing the code path
@@ -538,7 +538,7 @@ func TestRecoveryManager_SendRecoveryPromptByID_MaxRecoveries(t *testing.T) {
 // GH#251 phase 2: the exported recovery entry point now delivers to grok panes
 // like claude ones — state is recorded and the prompt reaches the sender.
 func TestRecoveryManagerExportedPromptDeliversToGrok(t *testing.T) {
-	rm := NewRecoveryManagerDefault()
+	rm := NewRecoveryManager(DefaultRecoveryConfig())
 	rm.includeBeadContext = false // keep prompt construction hermetic (no bv exec)
 	rm.resolvePaneType = func(string, int, string) (agent.AgentType, error) {
 		return agent.AgentType("xai-grok-build"), nil

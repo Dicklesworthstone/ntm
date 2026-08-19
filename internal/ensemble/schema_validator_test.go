@@ -545,62 +545,6 @@ confidence: 0.8
 	})
 }
 
-func TestSchemaValidator_ParseAndValidate(t *testing.T) {
-	v := NewSchemaValidator()
-
-	t.Run("valid YAML with validation", func(t *testing.T) {
-		yaml := `
-mode_id: deductive
-thesis: The conclusion follows from the premises
-top_findings:
-  - finding: Premise 1 is true
-    impact: high
-    confidence: 0.95
-confidence: 0.9
-`
-		output, errs, err := v.ParseAndValidate(yaml)
-		if err != nil {
-			t.Fatalf("ParseAndValidate error: %v", err)
-		}
-		if len(errs) > 0 {
-			t.Errorf("unexpected validation errors: %v", errs)
-		}
-		if output.ModeID != "deductive" {
-			t.Errorf("ModeID = %q, want %q", output.ModeID, "deductive")
-		}
-	})
-
-	t.Run("valid YAML with validation errors", func(t *testing.T) {
-		yaml := `
-thesis: Missing mode_id
-top_findings: []
-confidence: 1.5
-`
-		_, errs, err := v.ParseAndValidate(yaml)
-		if err != nil {
-			t.Fatalf("ParseAndValidate error: %v", err)
-		}
-		if len(errs) == 0 {
-			t.Error("expected validation errors")
-		}
-
-		// Should have errors for: mode_id, top_findings, confidence
-		fields := make(map[string]bool)
-		for _, e := range errs {
-			fields[e.Field] = true
-		}
-		if !fields["mode_id"] {
-			t.Error("expected error for mode_id")
-		}
-		if !fields["top_findings"] {
-			t.Error("expected error for top_findings")
-		}
-		if !fields["confidence"] {
-			t.Error("expected error for confidence")
-		}
-	})
-}
-
 func TestValidationError_Error(t *testing.T) {
 	t.Run("with value", func(t *testing.T) {
 		e := ValidationError{

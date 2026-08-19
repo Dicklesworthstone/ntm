@@ -31,11 +31,6 @@ func New(cfg config.PrivacyConfig) *Manager {
 	}
 }
 
-// DefaultManager creates a Manager with default privacy config.
-func DefaultManager() *Manager {
-	return New(config.DefaultPrivacyConfig())
-}
-
 // RegisterSession registers a session with its privacy settings.
 func (m *Manager) RegisterSession(session string, privacyMode, allowPersist bool) {
 	m.mu.Lock()

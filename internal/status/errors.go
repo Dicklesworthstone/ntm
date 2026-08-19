@@ -145,28 +145,3 @@ func DetectAllErrorsInOutput(output string) []ErrorType {
 
 	return errors
 }
-
-// IsError returns true if the error type represents an actual error
-func IsError(e ErrorType) bool {
-	return e != ErrorNone
-}
-
-// AddErrorPattern allows adding custom error patterns at runtime.
-// It is thread-safe and can be called concurrently with detection functions.
-func AddErrorPattern(errorType ErrorType, pattern string, description string) error {
-	regex, err := regexp.Compile(pattern)
-	if err != nil {
-		return err
-	}
-
-	errorPatternsMu.Lock()
-	defer errorPatternsMu.Unlock()
-
-	errorPatterns = append(errorPatterns, ErrorPattern{
-		Type:        errorType,
-		Regex:       regex,
-		Description: description,
-	})
-
-	return nil
-}

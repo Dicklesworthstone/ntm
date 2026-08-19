@@ -274,36 +274,6 @@ func TestParseResetTimeInMinutes(t *testing.T) {
 	}
 }
 
-func TestParseClaudeUsageString(t *testing.T) {
-	input := `Session: 45%
-Weekly: 72%
-Sonnet: 38%
-Resets: Monday 00:00 UTC
-Logged in as: test@example.com
-Organization: TestOrg`
-
-	quota := ParseClaudeUsageString(input)
-
-	if quota.SessionUsage != 45 {
-		t.Errorf("SessionUsage = %v, want 45", quota.SessionUsage)
-	}
-	if quota.WeeklyUsage != 72 {
-		t.Errorf("WeeklyUsage = %v, want 72", quota.WeeklyUsage)
-	}
-	if quota.SonnetUsage != 38 {
-		t.Errorf("SonnetUsage = %v, want 38", quota.SonnetUsage)
-	}
-	if quota.ResetTime != "Monday 00:00 UTC" {
-		t.Errorf("ResetTime = %v, want Monday 00:00 UTC", quota.ResetTime)
-	}
-	if quota.AccountEmail != "test@example.com" {
-		t.Errorf("AccountEmail = %v, want test@example.com", quota.AccountEmail)
-	}
-	if quota.Organization != "TestOrg" {
-		t.Errorf("Organization = %v, want TestOrg", quota.Organization)
-	}
-}
-
 func TestParseLimitedIndicators(t *testing.T) {
 	limitedInputs := []string{
 		"Rate limit exceeded",

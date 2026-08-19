@@ -215,31 +215,6 @@ func TestArchiver_WriteRecord(t *testing.T) {
 	}
 }
 
-func TestArchiver_Stats(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	a, err := NewArchiver(ArchiverOptions{
-		SessionName: "stats-test",
-		OutputDir:   tmpDir,
-	})
-	if err != nil {
-		t.Fatalf("NewArchiver() error: %v", err)
-	}
-	defer a.Close()
-
-	stats := a.Stats()
-
-	if stats.Session != "stats-test" {
-		t.Errorf("Session = %q, want %q", stats.Session, "stats-test")
-	}
-	if stats.TotalRecords != 0 {
-		t.Errorf("TotalRecords = %d, want 0", stats.TotalRecords)
-	}
-	if stats.Duration < 0 {
-		t.Errorf("Duration = %v, should be >= 0", stats.Duration)
-	}
-}
-
 func TestArchiver_RunContextCancellation(t *testing.T) {
 	tmpDir := t.TempDir()
 
@@ -1055,35 +1030,6 @@ func TestFlush_NilFile(t *testing.T) {
 	err := a.flush()
 	if err != nil {
 		t.Errorf("flush() with nil file should return nil, got %v", err)
-	}
-}
-
-func TestStats_WithPaneStates(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	a, err := NewArchiver(ArchiverOptions{
-		SessionName: "stats-panes-test",
-		OutputDir:   tmpDir,
-	})
-	if err != nil {
-		t.Fatalf("NewArchiver() error: %v", err)
-	}
-	defer a.Close()
-
-	// Manually add pane states
-	a.mu.Lock()
-	a.paneStates[2] = &PaneState{TotalLines: 100}
-	a.paneStates[3] = &PaneState{TotalLines: 200}
-	a.paneStates[4] = &PaneState{TotalLines: 50}
-	a.mu.Unlock()
-
-	stats := a.Stats()
-
-	if stats.PanesTracked != 3 {
-		t.Errorf("PanesTracked = %d, want 3", stats.PanesTracked)
-	}
-	if stats.TotalLines != 350 {
-		t.Errorf("TotalLines = %d, want 350", stats.TotalLines)
 	}
 }
 

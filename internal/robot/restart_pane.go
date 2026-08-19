@@ -1141,10 +1141,6 @@ func restartMatchingAssignment(
 	return existing
 }
 
-func validateRestartActionablePlan(beadID string, actionable []bv.TriageRecommendation) error {
-	return validateRestartActionablePlanWithPolicy(beadID, actionable, bv.OperatorGatedLabels())
-}
-
 func validateRestartActionablePlanWithPolicy(beadID string, actionable []bv.TriageRecommendation, operatorGatedLabels []string) error {
 	var match *bv.TriageRecommendation
 	for i := range actionable {
@@ -1172,10 +1168,6 @@ func validateRestartActionablePlanWithPolicy(beadID string, actionable []bv.Tria
 		return fmt.Errorf("bead %s has non-actionable plan status %q", beadID, match.Status)
 	}
 	return nil
-}
-
-func validateRestartBeadCommon(details *bv.BeadAssignmentDetails, now time.Time) error {
-	return validateRestartBeadCommonWithPolicy(details, now, bv.OperatorGatedLabels())
 }
 
 func validateRestartBeadCommonWithPolicy(details *bv.BeadAssignmentDetails, now time.Time, operatorGatedLabels []string) error {
@@ -1209,10 +1201,6 @@ func validateRestartBeadCommonWithPolicy(details *bv.BeadAssignmentDetails, now 
 	return nil
 }
 
-func validateRestartFreshDetails(details *bv.BeadAssignmentDetails, now time.Time) error {
-	return validateRestartFreshDetailsWithPolicy(details, now, bv.OperatorGatedLabels())
-}
-
 func validateRestartFreshDetailsWithPolicy(details *bv.BeadAssignmentDetails, now time.Time, operatorGatedLabels []string) error {
 	if err := validateRestartBeadCommonWithPolicy(details, now, operatorGatedLabels); err != nil {
 		return err
@@ -1224,10 +1212,6 @@ func validateRestartFreshDetailsWithPolicy(details *bv.BeadAssignmentDetails, no
 		return fmt.Errorf("bead %s is already assigned to %q", details.ID, assignee)
 	}
 	return nil
-}
-
-func validateRestartRecoveryDetails(details *bv.BeadAssignmentDetails, recovery *assignment.Assignment, now time.Time) error {
-	return validateRestartRecoveryDetailsWithPolicy(details, recovery, now, bv.OperatorGatedLabels())
 }
 
 func validateRestartRecoveryDetailsWithPolicy(details *bv.BeadAssignmentDetails, recovery *assignment.Assignment, now time.Time, operatorGatedLabels []string) error {

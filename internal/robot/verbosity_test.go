@@ -192,7 +192,7 @@ func TestEncodeJSON_RespectsVerbosityTerse(t *testing.T) {
 		SetOutputFormat(originalFormat)
 	}()
 
-	payload := AddAgentHints(NewRobotResponse(true), &AgentHints{Summary: "ok"})
+	payload := NewRobotResponse(true)
 	output, err := captureStdout(t, func() error { return encodeJSON(payload) })
 	if err != nil {
 		t.Fatalf("encodeJSON failed: %v", err)
@@ -214,9 +214,6 @@ func TestEncodeJSON_RespectsVerbosityTerse(t *testing.T) {
 	}
 	if _, exists := got["of"]; !exists {
 		t.Fatal("expected of key in terse output")
-	}
-	if _, exists := got["_agent_hints"]; exists {
-		t.Fatal("expected _agent_hints to be removed in terse output")
 	}
 	if _, exists := got["success"]; exists {
 		t.Fatal("expected success key to be shortened in terse output")

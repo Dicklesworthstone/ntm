@@ -2,15 +2,11 @@
 package config
 
 import (
-	"bytes"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
-
-	"gopkg.in/yaml.v3"
 )
 
 // ScannerConfig holds UBS scanner configuration.
@@ -20,10 +16,10 @@ import (
 // from the TOML config (`toml:"-"`), so any [scanner.defaults]/
 // [scanner.thresholds.*]/[scanner.tools]/[scanner.beads]/
 // [scanner.notifications] keys in ~/.config/ntm/config.toml land in the
-// strict loader's undecoded set and take the deprecated-knob warn path (see
-// removed_knobs.go); they become load errors in v1.29.0. The struct fields
+// strict loader's undecoded set and take the deprecated-knob path (see
+// removed_knobs.go); since v1.29.0 they are hard load errors. The struct fields
 // stay because this same type is the schema for the project-level .ntm.yaml
-// scanner config (LoadProjectScannerConfig), which is a separate surface.
+// scanner config (ProjectScannerConfig), which is a separate surface.
 type ScannerConfig struct {
 	// UBSPath is the path to the UBS executable (auto-detected if empty)
 	UBSPath string `toml:"ubs_path" yaml:"ubs_path"`
@@ -257,97 +253,6 @@ func (d *ScannerDefaults) GetTimeout() time.Duration {
 // typically stored in .ntm.yaml at the project root
 type ProjectScannerConfig struct {
 	Scanner ScannerConfig `yaml:"scanner"`
-}
-
-// LoadProjectScannerConfig loads scanner config from a project directory.
-// It searches for:
-// 1. .ntm.yaml in the project root
-// 2. .ntm.toml in the project root
-// 3. Returns defaults if not found
-func LoadProjectScannerConfig(projectDir string) (*ScannerConfig, error) {
-	// Try .ntm.yaml first
-	yamlPath := filepath.Join(projectDir, ".ntm.yaml")
-	if data, err := os.ReadFile(yamlPath); err == nil {
-		cfg, err := parseProjectScannerConfig(data)
-		if err != nil {
-			return nil, err
-		}
-		applyEnvOverrides(cfg)
-		return cfg, nil
-	}
-
-	// Try .ntm.yml
-	ymlPath := filepath.Join(projectDir, ".ntm.yml")
-	if data, err := os.ReadFile(ymlPath); err == nil {
-		cfg, err := parseProjectScannerConfig(data)
-		if err != nil {
-			return nil, err
-		}
-		applyEnvOverrides(cfg)
-		return cfg, nil
-	}
-
-	// Return defaults
-	cfg := DefaultScannerConfig()
-	applyEnvOverrides(&cfg)
-	return &cfg, nil
-}
-
-func parseProjectScannerConfig(data []byte) (*ScannerConfig, error) {
-	if len(bytes.TrimSpace(data)) == 0 {
-		cfg := DefaultScannerConfig()
-		return &cfg, nil
-	}
-
-	var root yaml.Node
-	if err := yaml.Unmarshal(data, &root); err != nil {
-		return nil, err
-	}
-
-	scannerNode := findTopLevelYAMLKey(&root, "scanner")
-	if scannerNode == nil {
-		cfg := DefaultScannerConfig()
-		return &cfg, nil
-	}
-	if scannerNode.Kind != yaml.MappingNode {
-		return nil, fmt.Errorf("scanner: expected a mapping")
-	}
-
-	raw, err := yaml.Marshal(scannerNode)
-	if err != nil {
-		return nil, fmt.Errorf("scanner: marshal: %w", err)
-	}
-
-	var cfg ScannerConfig
-	dec := yaml.NewDecoder(bytes.NewReader(raw))
-	dec.KnownFields(true)
-	if err := dec.Decode(&cfg); err != nil {
-		return nil, err
-	}
-
-	merged := mergeWithDefaults(cfg)
-	return &merged, nil
-}
-
-// mergeWithDefaults merges user config with defaults
-func mergeWithDefaults(user ScannerConfig) ScannerConfig {
-	defaults := DefaultScannerConfig()
-
-	// Merge defaults where user hasn't specified
-	if user.Defaults.Timeout == "" {
-		user.Defaults.Timeout = defaults.Defaults.Timeout
-	}
-	if user.Defaults.Exclude == nil {
-		user.Defaults.Exclude = defaults.Defaults.Exclude
-	}
-	if user.Beads.MinSeverity == "" {
-		user.Beads.MinSeverity = defaults.Beads.MinSeverity
-	}
-	if user.Beads.Labels == nil {
-		user.Beads.Labels = defaults.Beads.Labels
-	}
-
-	return user
 }
 
 // applyEnvOverrides applies environment variable overrides to scanner config

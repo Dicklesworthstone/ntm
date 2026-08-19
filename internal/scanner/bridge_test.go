@@ -5,22 +5,6 @@ import (
 	"testing"
 )
 
-func TestDefaultBridgeConfig(t *testing.T) {
-	t.Parallel()
-
-	cfg := DefaultBridgeConfig()
-
-	if cfg.MinSeverity != SeverityWarning {
-		t.Errorf("MinSeverity = %v, want %v", cfg.MinSeverity, SeverityWarning)
-	}
-	if cfg.DryRun {
-		t.Error("DryRun should be false by default")
-	}
-	if cfg.Verbose {
-		t.Error("Verbose should be false by default")
-	}
-}
-
 func TestParseCreatedBeadID(t *testing.T) {
 	t.Parallel()
 

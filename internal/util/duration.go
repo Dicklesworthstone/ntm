@@ -81,16 +81,6 @@ func ParseDurationWithDefault(s string, defaultUnit time.Duration, flagName stri
 	return time.Duration(n) * defaultUnit, nil
 }
 
-// MustParseDuration parses a duration string or panics.
-// Use only for compile-time constants or values that are guaranteed to be valid.
-func MustParseDuration(s string) time.Duration {
-	d, err := ParseDuration(s)
-	if err != nil {
-		panic(fmt.Sprintf("invalid duration %q: %v", s, err))
-	}
-	return d
-}
-
 // suggestUnit returns the short unit suffix for a time.Duration.
 func suggestUnit(d time.Duration) string {
 	switch d {

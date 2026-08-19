@@ -15,14 +15,12 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/assignment"
-	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	dispatchsvc "github.com/Dicklesworthstone/ntm/internal/dispatch"
 	"github.com/Dicklesworthstone/ntm/internal/process"
 	"github.com/Dicklesworthstone/ntm/internal/redaction"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	sessionPkg "github.com/Dicklesworthstone/ntm/internal/session"
-	statuspkg "github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/tests/testutil"
 )
@@ -151,56 +149,6 @@ func TestDistributeAssignmentIdempotencyAndReceiptContracts(t *testing.T) {
 	}
 	if got := distributeProtocolFromDeliveryID("malformed"); got != "" {
 		t.Fatalf("malformed delivery protocol = %q, want empty", got)
-	}
-}
-
-func TestValidateDistributeBeadDetailsFailsClosedOnEveryAutomationGate(t *testing.T) {
-	now := time.Now().UTC()
-	recommendation := robot.DistributeRecommendation{BeadID: "ntm-work", Title: "Stale title"}
-	validDetails := func() *bv.BeadAssignmentDetails {
-		return &bv.BeadAssignmentDetails{ID: "ntm-work", Title: "Live title", Status: "open"}
-	}
-	if err := validateDistributeBeadDetails(recommendation, validDetails(), now); err != nil {
-		t.Fatalf("valid live details rejected: %v", err)
-	}
-	past := validDetails()
-	pastDefer := now.Add(-time.Minute)
-	past.DeferUntil = &pastDefer
-	if err := validateDistributeBeadDetails(recommendation, past, now); err != nil {
-		t.Fatalf("expired defer gate rejected: %v", err)
-	}
-
-	tests := []struct {
-		name    string
-		rec     robot.DistributeRecommendation
-		details *bv.BeadAssignmentDetails
-		want    string
-	}{
-		{name: "missing recommendation ID", rec: robot.DistributeRecommendation{}, details: validDetails(), want: "no bead ID"},
-		{name: "missing details", rec: recommendation, details: nil, want: "no live assignment details"},
-		{name: "mismatched ID", rec: recommendation, details: &bv.BeadAssignmentDetails{ID: "other", Status: "open"}, want: "does not match"},
-		{name: "blocked", rec: recommendation, details: &bv.BeadAssignmentDetails{ID: "ntm-work", Status: "open", BlockedBy: []string{"ntm-dependency"}}, want: "blocked by dependencies"},
-		{name: "operator gated", rec: recommendation, details: &bv.BeadAssignmentDetails{ID: "ntm-work", Status: "open", Labels: []string{" HUMAN-INPUT "}}, want: "operator-gated"},
-		{name: "not open", rec: recommendation, details: &bv.BeadAssignmentDetails{ID: "ntm-work", Status: "in_progress"}, want: "want open"},
-		{name: "assigned", rec: recommendation, details: &bv.BeadAssignmentDetails{ID: "ntm-work", Status: "open", Assignee: "agent-7"}, want: "already assigned"},
-		{name: "deferred", rec: recommendation, details: func() *bv.BeadAssignmentDetails {
-			details := validDetails()
-			deferUntil := now.Add(time.Hour)
-			details.DeferUntil = &deferUntil
-			return details
-		}(), want: "deferred until"},
-		{name: "pinned", rec: recommendation, details: &bv.BeadAssignmentDetails{ID: "ntm-work", Status: "open", Pinned: true}, want: "pinned"},
-		{name: "ephemeral", rec: recommendation, details: &bv.BeadAssignmentDetails{ID: "ntm-work", Status: "open", Ephemeral: true}, want: "ephemeral"},
-		{name: "template", rec: recommendation, details: &bv.BeadAssignmentDetails{ID: "ntm-work", Status: "open", Template: true}, want: "template"},
-		{name: "wisp", rec: recommendation, details: &bv.BeadAssignmentDetails{ID: "ntm-work", Status: "open", Wisp: true}, want: "wisp"},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			err := validateDistributeBeadDetails(test.rec, test.details, now)
-			if err == nil || !strings.Contains(err.Error(), test.want) {
-				t.Fatalf("validation error = %v, want substring %q", err, test.want)
-			}
-		})
 	}
 }
 
@@ -599,101 +547,6 @@ func TestResolveDistributeRecommendationPaneUsesExactIDAcrossDuplicateLocalIndex
 	}
 }
 
-func TestDistributeDispatchGateRequiresFreshConfidentIdleObservation(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	now := time.Now().UTC()
-	original := newAssignSessionObserver
-	t.Cleanup(func() { newAssignSessionObserver = original })
-	setObservation := func(state statuspkg.AgentState, freshness statuspkg.ObservationFreshness, confidence float64, observedAt time.Time, observationErr string) {
-		newAssignSessionObserver = func() assignSessionObserver {
-			return fixedAssignSessionObserver{observation: statuspkg.SessionObservation{
-				Session:    "proj",
-				ObservedAt: observedAt,
-				Panes: []statuspkg.PaneObservation{{
-					Pane: tmux.PaneRef{ID: "%91", WindowIndex: 1, PaneIndex: 1},
-					Current: statuspkg.StateObservation{
-						Status: statuspkg.AgentStatus{State: state}, ObservedAt: observedAt,
-						Freshness: freshness, Confidence: confidence, Error: observationErr,
-					},
-				}},
-			}}
-		}
-	}
-	delivery := dispatchsvc.Delivery{Target: dispatchsvc.Target{
-		Pane: tmux.Pane{ID: "%91", WindowIndex: 1, Index: 1, Type: tmux.AgentClaude},
-		Ref:  tmux.PaneRef{ID: "%91", WindowIndex: 1, PaneIndex: 1}, Address: "1.1",
-	}}
-	gate := distributeDispatchGate("proj")
-
-	setObservation(statuspkg.StateIdle, statuspkg.FreshnessFresh, 0.99, now, "")
-	if err := gate(t.Context(), dispatchsvc.Request{}, []dispatchsvc.Delivery{delivery}); err != nil {
-		t.Fatalf("fresh idle gate: %v", err)
-	}
-
-	for name, setup := range map[string]func(){
-		"busy": func() { setObservation(statuspkg.StateWorking, statuspkg.FreshnessFresh, 0.99, now, "") },
-		"stale": func() {
-			setObservation(statuspkg.StateIdle, statuspkg.FreshnessStale, 0.99, now.Add(-statuspkg.DispatchObservationMaxAge-time.Second), "")
-		},
-		"capture failure": func() {
-			setObservation(statuspkg.StateUnknown, statuspkg.FreshnessUnavailable, 0, now, "capture unavailable")
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			setup()
-			if err := gate(t.Context(), dispatchsvc.Request{}, []dispatchsvc.Delivery{delivery}); err == nil {
-				t.Fatalf("%s observation passed distribute gate", name)
-			}
-		})
-	}
-}
-
-func TestDistributeDispatchGateRejectsExactDurableOccupancyAcrossDuplicateLocalIndexes(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	now := time.Now().UTC()
-	original := newAssignSessionObserver
-	t.Cleanup(func() { newAssignSessionObserver = original })
-	newAssignSessionObserver = func() assignSessionObserver {
-		return fixedAssignSessionObserver{observation: statuspkg.SessionObservation{
-			Session: "proj", ObservedAt: now,
-			Panes: []statuspkg.PaneObservation{{
-				Pane: tmux.PaneRef{ID: "%91", WindowIndex: 1, PaneIndex: 1},
-				Current: statuspkg.StateObservation{
-					Status: statuspkg.AgentStatus{State: statuspkg.StateIdle}, ObservedAt: now,
-					Freshness: statuspkg.FreshnessFresh, Confidence: 0.99,
-				},
-			}},
-		}}
-	}
-	delivery := dispatchsvc.Delivery{Target: dispatchsvc.Target{
-		Pane: tmux.Pane{ID: "%91", WindowIndex: 1, Index: 1, Type: tmux.AgentClaude},
-		Ref:  tmux.PaneRef{ID: "%91", WindowIndex: 1, PaneIndex: 1}, Address: "1.1",
-	}}
-	store := assignment.NewStore("proj")
-	store.Assignments["ntm-other-window"] = &assignment.Assignment{
-		BeadID: "ntm-other-window", Pane: 1, Status: assignment.StatusAssigned, AssignedAt: now,
-		OccupancyKey: "%90", DispatchTarget: "%90",
-	}
-	if err := store.Save(); err != nil {
-		t.Fatalf("seed other-window assignment: %v", err)
-	}
-	gate := distributeDispatchGate("proj")
-	if err := gate(t.Context(), dispatchsvc.Request{}, []dispatchsvc.Delivery{delivery}); err != nil {
-		t.Fatalf("same local index in another physical pane blocked dispatch: %v", err)
-	}
-
-	store.Assignments["ntm-target"] = &assignment.Assignment{
-		BeadID: "ntm-target", Pane: 1, Status: assignment.StatusAssigned, AssignedAt: now,
-		OccupancyKey: "%91", DispatchTarget: "%91",
-	}
-	if err := store.Save(); err != nil {
-		t.Fatalf("seed exact target assignment: %v", err)
-	}
-	if err := gate(t.Context(), dispatchsvc.Request{}, []dispatchsvc.Delivery{delivery}); err == nil || !strings.Contains(err.Error(), "durable active assignment") {
-		t.Fatalf("exact active occupancy error=%v", err)
-	}
-}
-
 func TestUnifiedDistributeServiceStopsBeforeDeliveryWhenIdleGateFails(t *testing.T) {
 	oldCfg := cfg
 	cfg = config.Default()
@@ -994,31 +847,6 @@ func TestGetSessionWorkingDirAllowsWorkspaceFallbackForInferredSession(t *testin
 
 	if got := getSessionWorkingDir(t.Context(), "ntm", true); got != cwdRepo {
 		t.Fatalf("getSessionWorkingDir inferred = %q, want %q", got, cwdRepo)
-	}
-}
-
-func TestResolveSendSessionForCommandNormalizesExplicitPrefix(t *testing.T) {
-	testutil.RequireTmuxThrottled(t)
-
-	sessionName := fmt.Sprintf("ntm-send-prefix-%d", time.Now().UnixNano())
-	prefix := sessionName[:len(sessionName)-4]
-	workDir := t.TempDir()
-
-	_ = tmux.KillSession(sessionName)
-	if err := tmux.CreateSession(sessionName, workDir); err != nil {
-		t.Fatalf("CreateSession(%q): %v", sessionName, err)
-	}
-	t.Cleanup(func() { _ = tmux.KillSession(sessionName) })
-
-	gotSession, inferred, err := resolveSendSessionForCommand(prefix)
-	if err != nil {
-		t.Fatalf("resolveSendSessionForCommand() error = %v", err)
-	}
-	if inferred {
-		t.Fatal("expected explicit prefix not to be inferred")
-	}
-	if gotSession != sessionName {
-		t.Fatalf("resolveSendSessionForCommand() session = %q, want %q", gotSession, sessionName)
 	}
 }
 

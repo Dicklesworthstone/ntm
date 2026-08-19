@@ -8,7 +8,7 @@ import (
 
 func TestRegistry_ParallelRace(t *testing.T) {
 	// Setup registry with many adapters to maximize chance of race
-	reg := NewRegistry()
+	reg := newTestRegistry()
 	count := 100
 
 	for i := 0; i < count; i++ {

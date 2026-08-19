@@ -267,18 +267,6 @@ func (c *ModeOutputCache) Put(fingerprint ModeOutputFingerprint, output *ModeOut
 	return nil
 }
 
-// Invalidate removes a cached output by fingerprint.
-func (c *ModeOutputCache) Invalidate(fingerprint ModeOutputFingerprint) error {
-	if c == nil {
-		return nil
-	}
-	key := fingerprint.CacheKey()
-	if key == "" {
-		return nil
-	}
-	return os.Remove(c.filePath(key))
-}
-
 // Clear removes all cached outputs. Returns number removed.
 func (c *ModeOutputCache) Clear() int {
 	if c == nil {

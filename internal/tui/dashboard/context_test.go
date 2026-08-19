@@ -62,61 +62,6 @@ func TestFormatTokenDisplay(t *testing.T) {
 	}
 }
 
-func TestFormatDuration(t *testing.T) {
-
-	tests := []struct {
-		name     string
-		duration time.Duration
-		expected string
-	}{
-		{
-			name:     "seconds",
-			duration: 45 * time.Second,
-			expected: "45s",
-		},
-		{
-			name:     "minutes",
-			duration: 2 * time.Minute,
-			expected: "2m",
-		},
-		{
-			name:     "hours",
-			duration: 3 * time.Hour,
-			expected: "3h",
-		},
-		{
-			name:     "under a minute",
-			duration: 30 * time.Second,
-			expected: "30s",
-		},
-		{
-			name:     "minute boundary",
-			duration: 59 * time.Second,
-			expected: "59s",
-		},
-		{
-			name:     "just over a minute",
-			duration: 61 * time.Second,
-			expected: "1m",
-		},
-		{
-			name:     "hour boundary",
-			duration: 59 * time.Minute,
-			expected: "59m",
-		},
-	}
-
-	for _, tc := range tests {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
-			result := formatDuration(tc.duration)
-			if result != tc.expected {
-				t.Errorf("formatDuration(%v) = %q, want %q", tc.duration, result, tc.expected)
-			}
-		})
-	}
-}
-
 func TestPaneStatusRotationFields(t *testing.T) {
 
 	// Test that PaneStatus has the rotation fields
@@ -269,13 +214,5 @@ func TestPaneStatusRotationState(t *testing.T) {
 	}
 	if psRotated.RotatedAt == nil {
 		t.Error("expected RotatedAt to be set")
-	}
-
-	// Verify formatDuration works for the elapsed time
-	elapsed := time.Since(*psRotated.RotatedAt)
-	formatted := formatDuration(elapsed)
-	// Should be around "2m" (with slight timing variance)
-	if !strings.HasSuffix(formatted, "m") && !strings.HasSuffix(formatted, "s") {
-		t.Errorf("formatDuration(%v) = %q, expected minutes or seconds suffix", elapsed, formatted)
 	}
 }

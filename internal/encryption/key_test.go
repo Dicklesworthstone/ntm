@@ -256,7 +256,7 @@ func TestDecodeKey_WrongSize(t *testing.T) {
 	if err == nil {
 		t.Error("expected error for wrong key size")
 	}
-	if !IsInvalidKey(err) {
+	if !IsKind(err, ErrInvalidKey) {
 		t.Errorf("expected ErrInvalidKey, got %v", err)
 	}
 }

@@ -794,28 +794,6 @@ func matchAnyRegex(text string, patterns []*regexp.Regexp) bool {
 	return false
 }
 
-// lastLineIdxMatching returns the highest line index (0-based, counting from
-// the start of `text`) that matches any of the regex patterns. Returns -1 when
-// nothing matches. Used by detectIdle to compare ordering of competing markers
-// (e.g. a fresh idle prompt below a stale spinner) so the most-recent state
-// wins instead of an unconditional override.
-func lastLineIdxMatching(text string, patterns []*regexp.Regexp) int {
-	if text == "" || len(patterns) == 0 {
-		return -1
-	}
-	lines := strings.Split(text, "\n")
-	last := -1
-	for i, line := range lines {
-		for _, p := range patterns {
-			if p.MatchString(line) {
-				last = i
-				break
-			}
-		}
-	}
-	return last
-}
-
 // collectMatches returns all patterns that matched in the text.
 func collectMatches(text string, patterns []string) []string {
 	var matches []string
@@ -929,82 +907,4 @@ type PatternSet struct {
 	TokenPattern      *regexp.Regexp // Token usage extraction
 	MemoryPattern     *regexp.Regexp // Memory usage (Gemini)
 	HeaderPattern     *regexp.Regexp
-}
-
-// GetPatternSet returns the pattern set for the given agent type.
-func GetPatternSet(agentType AgentType) *PatternSet {
-	switch agentType {
-	case AgentTypeClaudeCode:
-		return &PatternSet{
-			RateLimitPatterns: ccRateLimitPatterns,
-			WorkingPatterns:   ccWorkingPatterns,
-			IdlePatterns:      ccIdlePatterns,
-			ErrorPatterns:     ccErrorPatterns,
-			ContextWarnings:   ccContextWarnings,
-			HeaderPattern:     ccHeaderPattern,
-		}
-	case AgentTypeCodex:
-		return &PatternSet{
-			RateLimitPatterns: codRateLimitPatterns,
-			WorkingPatterns:   codWorkingPatterns,
-			IdlePatterns:      codIdlePatterns,
-			ErrorPatterns:     codErrorPatterns,
-			ContextPattern:    codContextPattern,
-			TokenPattern:      codTokenPattern,
-			HeaderPattern:     codHeaderPattern,
-		}
-	case AgentTypeGemini, AgentTypeAntigravity:
-		// Antigravity (agy) shares the Gemini CLI's TUI behavior, so it reuses
-		// the gmi* detection pattern set (see parser.go).
-		return &PatternSet{
-			RateLimitPatterns: gmiRateLimitPatterns,
-			WorkingPatterns:   gmiWorkingPatterns,
-			IdlePatterns:      gmiIdlePatterns,
-			ErrorPatterns:     gmiErrorPatterns,
-			MemoryPattern:     gmiMemoryPattern,
-			HeaderPattern:     gmiHeaderPattern,
-		}
-	case AgentTypeCursor:
-		return &PatternSet{
-			RateLimitPatterns: cursorRateLimitPatterns,
-			WorkingPatterns:   cursorWorkingPatterns,
-			IdlePatterns:      cursorIdlePatterns,
-			ErrorPatterns:     cursorErrorPatterns,
-			HeaderPattern:     cursorHeaderPattern,
-		}
-	case AgentTypeWindsurf:
-		return &PatternSet{
-			RateLimitPatterns: windsurfRateLimitPatterns,
-			WorkingPatterns:   windsurfWorkingPatterns,
-			IdlePatterns:      windsurfIdlePatterns,
-			ErrorPatterns:     windsurfErrorPatterns,
-			HeaderPattern:     windsurfHeaderPattern,
-		}
-	case AgentTypeAider:
-		return &PatternSet{
-			RateLimitPatterns: aiderRateLimitPatterns,
-			WorkingPatterns:   aiderWorkingPatterns,
-			IdlePatterns:      aiderIdlePatterns,
-			ErrorPatterns:     aiderErrorPatterns,
-			HeaderPattern:     aiderHeaderPattern,
-		}
-	case AgentTypeOllama:
-		return &PatternSet{
-			RateLimitPatterns: ollamaRateLimitPatterns,
-			WorkingPatterns:   ollamaWorkingPatterns,
-			IdlePatterns:      ollamaIdlePatterns,
-			ErrorPatterns:     ollamaErrorPatterns,
-			HeaderPattern:     ollamaHeaderPattern,
-		}
-	case AgentTypeGrok:
-		return &PatternSet{
-			RateLimitPatterns: grokRateLimitPatterns,
-			WorkingPatterns:   grokWorkingPatterns,
-			IdlePatterns:      grokIdlePatterns,
-			ErrorPatterns:     grokErrorPatterns,
-			HeaderPattern:     grokHeaderPattern,
-		}
-	default:
-		return &PatternSet{} // Empty pattern set for unknown types
-	}
 }

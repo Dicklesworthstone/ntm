@@ -73,17 +73,6 @@ const (
 // String returns the stable string value (matches JSON encoding).
 func (o EngagementOutcome) String() string { return string(o) }
 
-// AllEngagementOutcomes returns the closed outcome set in canonical order.
-func AllEngagementOutcomes() []EngagementOutcome {
-	return []EngagementOutcome{
-		EngagementEngaged,
-		EngagementEngaging,
-		EngagementDialogStuck,
-		EngagementUnconfirmed,
-		EngagementRespawnRequired,
-	}
-}
-
 // pursuingGoalRe extracts the elapsed-seconds counter from a Codex
 // "Pursuing goal (Ns)" status-bar segment. Codex renders the elapsed time as
 // "(1s)", "(45s)", "(2m3s)", etc.; we normalize that to whole seconds. The
@@ -345,9 +334,6 @@ const (
 	// ReplaceGoalCancel selects option 2 ("Cancel" — keep the current goal).
 	ReplaceGoalCancel ReplaceGoalSelection = "cancel"
 )
-
-// String returns the stable string value.
-func (s ReplaceGoalSelection) String() string { return string(s) }
 
 // replaceDialogConfirmRe matches the dialog's confirm-affordance line, which is
 // the strongest single proof the modal is actually rendered and interactive.

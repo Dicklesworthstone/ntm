@@ -5,78 +5,7 @@ import (
 	"testing"
 
 	"github.com/charmbracelet/lipgloss"
-
-	"github.com/Dicklesworthstone/ntm/internal/tui/icons"
-	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
 )
-
-func TestAgentBadge(t *testing.T) {
-	tests := []struct {
-		agentType string
-		wantLabel string
-	}{
-		{"claude", "claude"},
-		{"cc", "claude"},
-		{"claude_code", "claude"},
-		{"codex", "codex"},
-		{"cod", "codex"},
-		{"openai-codex", "codex"},
-		{"gemini", "gemini"},
-		{"gmi", "gemini"},
-		{"google-gemini", "gemini"},
-		{"grok", "grok"},
-		{"grok-build", "grok"},
-		{"ws", "windsurf"},
-		{"user", "user"},
-		{"unknown", "unknown"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.agentType, func(t *testing.T) {
-			result := AgentBadge(tt.agentType)
-			if result == "" {
-				t.Error("AgentBadge returned empty string")
-			}
-			// Badge should contain the label
-			if !strings.Contains(result, tt.wantLabel) {
-				t.Errorf("AgentBadge(%q) should contain %q", tt.agentType, tt.wantLabel)
-			}
-		})
-	}
-}
-
-func TestAgentBadgeMeta_Grok(t *testing.T) {
-	currentTheme := theme.Current()
-	currentIcons := icons.Current()
-
-	label, color, icon := agentBadgeMeta("grok-build", currentTheme, currentIcons)
-	if label != "grok" || color != currentTheme.Pink || icon != currentIcons.Robot {
-		t.Fatalf("agentBadgeMeta(grok-build) = (%q, %q, %q), want (%q, %q, %q)", label, color, icon, "grok", currentTheme.Pink, currentIcons.Robot)
-	}
-}
-
-func TestStatusBadge(t *testing.T) {
-	statuses := []string{
-		"success", "ok", "done",
-		"running", "active",
-		"idle", "waiting",
-		"warning", "warn",
-		"error", "failed",
-		"pending",
-		"disabled",
-		"blocked",
-		"unknown",
-	}
-
-	for _, status := range statuses {
-		t.Run(status, func(t *testing.T) {
-			result := StatusBadge(status)
-			if result == "" {
-				t.Errorf("StatusBadge(%q) returned empty string", status)
-			}
-		})
-	}
-}
 
 func TestModelBadge(t *testing.T) {
 	models := []struct {
@@ -164,9 +93,9 @@ func TestBadgeOptions(t *testing.T) {
 	}
 
 	for i, opt := range opts {
-		result := AgentBadge("claude", opt)
+		result := TextBadge("claude", "#89b4fa", "#1e1e2e", opt)
 		if result == "" {
-			t.Errorf("AgentBadge with opts[%d] returned empty string", i)
+			t.Errorf("TextBadge with opts[%d] returned empty string", i)
 		}
 	}
 }
@@ -178,30 +107,6 @@ func TestTextBadge(t *testing.T) {
 	}
 	if !strings.Contains(result, "custom") {
 		t.Error("TextBadge should contain the text")
-	}
-}
-
-func TestMiniBar(t *testing.T) {
-	p := DefaultMiniBarPalette()
-	bar := MiniBar(0.75, 6, p)
-	if bar == "" {
-		t.Fatal("MiniBar returned empty string")
-	}
-	if w := lipgloss.Width(bar); w != 6 {
-		t.Fatalf("MiniBar width = %d, want 6", w)
-	}
-
-	// Four-tier threshold: ensure mid-high band uses provided MidHigh
-	custom := p
-	custom.MidHigh = lipgloss.Color("#ffff00")
-	MiniBar(0.7, 4, custom) // should not panic; color check is visual-only here
-
-	// Clamp extremes
-	if w := lipgloss.Width(MiniBar(1.5, 4)); w != 4 {
-		t.Fatalf("MiniBar should clamp values above 1; width=%d", w)
-	}
-	if w := lipgloss.Width(MiniBar(-1, 3)); w != 3 {
-		t.Fatalf("MiniBar should clamp values below 0; width=%d", w)
 	}
 }
 

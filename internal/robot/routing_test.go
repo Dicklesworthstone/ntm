@@ -283,54 +283,6 @@ func TestGetAvailableAgents(t *testing.T) {
 	}
 }
 
-func TestFilterByType(t *testing.T) {
-	agents := []ScoredAgent{
-		{PaneID: "cc_1", AgentType: "cc"},
-		{PaneID: "cod_1", AgentType: "cod"},
-		{PaneID: "cc_2", AgentType: "cc"},
-		{PaneID: "gmi_1", AgentType: "gmi"},
-	}
-
-	// Filter for claude
-	filtered := FilterByType(agents, "cc")
-	if len(filtered) != 2 {
-		t.Errorf("FilterByType(cc) returned %d agents, want 2", len(filtered))
-	}
-
-	// Case insensitive
-	filtered = FilterByType(agents, "CC")
-	if len(filtered) != 2 {
-		t.Errorf("FilterByType(CC) should be case insensitive")
-	}
-
-	// Empty filter returns all
-	filtered = FilterByType(agents, "")
-	if len(filtered) != 4 {
-		t.Errorf("FilterByType('') should return all agents")
-	}
-}
-
-func TestFilterByPanes(t *testing.T) {
-	agents := []ScoredAgent{
-		{PaneID: "cc_1", PaneIndex: 1},
-		{PaneID: "cc_2", PaneIndex: 2},
-		{PaneID: "cc_3", PaneIndex: 3},
-		{PaneID: "cc_4", PaneIndex: 4},
-	}
-
-	// Filter for panes 2 and 3
-	filtered := FilterByPanes(agents, []int{2, 3})
-	if len(filtered) != 2 {
-		t.Errorf("FilterByPanes([2,3]) returned %d agents, want 2", len(filtered))
-	}
-
-	// Empty filter returns all
-	filtered = FilterByPanes(agents, []int{})
-	if len(filtered) != 4 {
-		t.Errorf("FilterByPanes([]) should return all agents")
-	}
-}
-
 func TestExcludePanes(t *testing.T) {
 	agents := []ScoredAgent{
 		{PaneID: "cc_1", PaneIndex: 1},
@@ -1897,24 +1849,6 @@ func TestCalculateAffinity_NoMapping(t *testing.T) {
 	affinity := scorer.calculateAffinity(agent, "Fix internal/robot/routing.go")
 	if affinity != 0 {
 		t.Errorf("Affinity should be 0 when no pane mapping, got %f", affinity)
-	}
-}
-
-func TestNewAgentScorerWithReservations(t *testing.T) {
-	cfg := DefaultRoutingConfig()
-	cfg.AgentMail.Enabled = true
-
-	// Without client/project key, cache should not be created
-	scorer := NewAgentScorerWithReservations(cfg, nil, "")
-	if scorer.reservationCache != nil {
-		t.Error("Should not create cache without client and project key")
-	}
-
-	// With disabled, cache should not be created
-	cfg.AgentMail.Enabled = false
-	scorer = NewAgentScorerWithReservations(cfg, nil, "/test")
-	if scorer.reservationCache != nil {
-		t.Error("Should not create cache when disabled")
 	}
 }
 

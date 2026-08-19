@@ -205,8 +205,5 @@ func assertReasonCodes(t *testing.T, got, want []ReasonCode) {
 		if got[i] != want[i] {
 			t.Fatalf("reason codes = %v, want %v", got, want)
 		}
-		if !KnownReasonCode(got[i]) {
-			t.Fatalf("reason code %q is not registered", got[i])
-		}
 	}
 }

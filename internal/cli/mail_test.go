@@ -1292,16 +1292,6 @@ func TestRunMailMutationHelpersRejectMissingOrCanceledContext(t *testing.T) {
 	}
 }
 
-func TestResolveAgentMailProjectKeyRejectsInvalidSessionName(t *testing.T) {
-	_, err := resolveAgentMailProjectKey(t.Context(), "../escape")
-	if err == nil {
-		t.Fatal("expected invalid session error")
-	}
-	if !strings.Contains(err.Error(), "invalid session name") {
-		t.Fatalf("expected invalid session error, got %v", err)
-	}
-}
-
 func TestResolveAgentMailScopesPreservePreCanceledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
@@ -1336,84 +1326,6 @@ func TestResolveAgentMailScopesPreservePreCanceledContext(t *testing.T) {
 				t.Fatalf("scope error=%v, want context.Canceled", err)
 			}
 		})
-	}
-}
-
-func TestResolveAgentMailProjectKeyWithPreferenceUsesCWDForInferredSession(t *testing.T) {
-	// Isolate HOME so macOS Application Support session registries from
-	// other tests don't leak in (XDG_CONFIG_HOME alone is not honored by
-	// os.UserConfigDir on macOS).
-	isolateSessionAgentStorage(t)
-
-	origCfg := cfg
-	origDir, _ := os.Getwd()
-	t.Cleanup(func() {
-		cfg = origCfg
-		if err := os.Chdir(origDir); err != nil {
-			t.Errorf("restore working directory: %v", err)
-		}
-	})
-
-	projectsBase := canonicalTempDir(t)
-	configProject := filepath.Join(projectsBase, "mysession")
-	if err := os.MkdirAll(configProject, 0o755); err != nil {
-		t.Fatalf("mkdir configured project: %v", err)
-	}
-
-	cwdRepo := canonicalTempDir(t)
-	if err := os.MkdirAll(filepath.Join(cwdRepo, ".git"), 0o755); err != nil {
-		t.Fatalf("mkdir cwd repo: %v", err)
-	}
-	if err := os.Chdir(cwdRepo); err != nil {
-		t.Fatalf("chdir cwd repo: %v", err)
-	}
-
-	cfg = &config.Config{ProjectsBase: projectsBase}
-
-	projectKey, err := resolveAgentMailProjectKeyWithPreference(t.Context(), "mysession", false)
-	if err != nil {
-		t.Fatalf("resolveAgentMailProjectKeyWithPreference() error = %v", err)
-	}
-	if projectKey != cwdRepo {
-		t.Fatalf("resolveAgentMailProjectKeyWithPreference() = %q, want cwd repo %q", projectKey, cwdRepo)
-	}
-}
-
-func TestResolveAgentMailProjectKeyUsesSavedSessionAgentProjectKey(t *testing.T) {
-	// HOME isolation (not just XDG_CONFIG_HOME) so saved session registries
-	// land in a sandboxed location on macOS too.
-	isolateSessionAgentStorage(t)
-
-	origCfg := cfg
-	origDir, _ := os.Getwd()
-	t.Cleanup(func() {
-		cfg = origCfg
-		if err := os.Chdir(origDir); err != nil {
-			t.Errorf("restore working directory: %v", err)
-		}
-	})
-
-	projectsBase := canonicalTempDir(t)
-	cfg = &config.Config{ProjectsBase: projectsBase}
-
-	cwdDir := canonicalTempDir(t)
-	if err := os.Chdir(cwdDir); err != nil {
-		t.Fatalf("chdir cwd: %v", err)
-	}
-
-	session := "mysession"
-	actualProject := filepath.Join(canonicalTempDir(t), "actual-project")
-	if err := os.MkdirAll(actualProject, 0o755); err != nil {
-		t.Fatalf("mkdir actual project: %v", err)
-	}
-	saveSessionAgentForTest(t, session, actualProject, "GreenCastle")
-
-	projectKey, err := resolveAgentMailProjectKeyWithPreference(t.Context(), session, true)
-	if err != nil {
-		t.Fatalf("resolveAgentMailProjectKeyWithPreference() error = %v", err)
-	}
-	if projectKey != actualProject {
-		t.Fatalf("resolveAgentMailProjectKeyWithPreference() = %q, want saved session agent project %q", projectKey, actualProject)
 	}
 }
 

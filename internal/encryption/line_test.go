@@ -26,36 +26,12 @@ func TestEncryptLineDecryptLineRoundTrip(t *testing.T) {
 		t.Error("encrypted line starts with '{', should be base64")
 	}
 
-	decrypted, err := DecryptLine(key, encrypted)
+	decrypted, err := DecryptLineWithKeyring([][]byte{key}, encrypted)
 	if err != nil {
 		t.Fatalf("DecryptLine: %v", err)
 	}
 	if !bytes.Equal(decrypted, plaintext) {
 		t.Errorf("round-trip mismatch: got %q, want %q", decrypted, plaintext)
-	}
-}
-
-func TestDecryptLineWrongKey(t *testing.T) {
-	key1 := make([]byte, KeySize)
-	key2 := make([]byte, KeySize)
-	if _, err := rand.Read(key1); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := rand.Read(key2); err != nil {
-		t.Fatal(err)
-	}
-
-	encrypted, err := EncryptLine(key1, []byte("secret data"))
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	_, err = DecryptLine(key2, encrypted)
-	if err == nil {
-		t.Fatal("expected error with wrong key")
-	}
-	if !IsWrongKey(err) {
-		t.Errorf("expected ErrWrongKey, got %v", err)
 	}
 }
 
@@ -150,7 +126,7 @@ func TestEncryptLine_EmptyPlaintext(t *testing.T) {
 		t.Fatalf("EncryptLine empty: %v", err)
 	}
 
-	decrypted, err := DecryptLine(key, encrypted)
+	decrypted, err := DecryptLineWithKeyring([][]byte{key}, encrypted)
 	if err != nil {
 		t.Fatalf("DecryptLine empty: %v", err)
 	}

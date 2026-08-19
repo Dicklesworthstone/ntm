@@ -120,35 +120,6 @@ func TestStepLoggerBindsStepIdentity(t *testing.T) {
 	)
 }
 
-func TestIterLoggerBindsIterationContext(t *testing.T) {
-	var buf bytes.Buffer
-	restore := capturePipelineLogs(t, &buf)
-	defer restore()
-
-	executor := NewExecutor(DefaultExecutorConfig("test-session"))
-	executor.state = &ExecutionState{
-		RunID:      "run-456",
-		WorkflowID: "brennerbot-incident",
-	}
-
-	longItem := strings.Repeat("H", maxItemSummaryLen+10)
-	parent := executor.stepLogger(&Step{ID: "foreach-hypotheses", Foreach: &ForeachConfig{Items: "${vars.hypotheses}"}})
-	executor.iterLogger(parent, 0, 3, longItem).Info(EventForeachIter)
-
-	events := parseJSONLEvents(t, &buf)
-	summary := summarizeLogItem(longItem)
-	assertEvent(t, events, EventForeachIter,
-		FieldStepID, "foreach-hypotheses",
-		FieldStepKind, StepKindForeach,
-		FieldIteration, "0",
-		FieldIterationTotal, "3",
-		FieldItemSummary, summary,
-	)
-	if !strings.HasSuffix(summary, "...") {
-		t.Fatalf("item summary = %q, want truncation marker", summary)
-	}
-}
-
 func TestStepKindClassification(t *testing.T) {
 	tests := []struct {
 		name string

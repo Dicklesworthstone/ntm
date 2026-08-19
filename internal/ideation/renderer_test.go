@@ -5,36 +5,6 @@ import (
 	"testing"
 )
 
-func TestRenderRoadmapJSONGoldenStable(t *testing.T) {
-	plan := fixtureRoadmapPlan(t)
-	data, err := RenderRoadmapJSON(plan)
-	if err != nil {
-		t.Fatalf("RenderRoadmapJSON failed: %v", err)
-	}
-	got := string(data)
-	for _, want := range []string{
-		`"plan_id": "bd-test1-dry-run"`,
-		`"dry_run": true`,
-		`"title": "Operator's adjacent follow-up"`,
-		`"priority": 1`,
-		`"overlap verdict: adjacent_follow_up"`,
-		`"br create --dry-run --title 'Operator'\"'\"'s adjacent follow-up'`,
-		`"br dep add --type 'related' '${BEAD_ID_ADJ}' 'bd-2mb03.5'"`,
-	} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("JSON output missing %q\n%s", want, got)
-		}
-	}
-
-	data2, err := RenderRoadmapJSON(plan)
-	if err != nil {
-		t.Fatalf("second RenderRoadmapJSON failed: %v", err)
-	}
-	if string(data2) != got {
-		t.Fatalf("JSON output was not stable")
-	}
-}
-
 func TestRenderRoadmapMarkdownGolden(t *testing.T) {
 	plan := fixtureRoadmapPlan(t)
 	got := RenderRoadmapMarkdown(plan)

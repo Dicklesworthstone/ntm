@@ -46,20 +46,6 @@ func TestStepsFail(t *testing.T) {
 	}
 }
 
-func TestStepsSkip(t *testing.T) {
-	t.Parallel()
-
-	var buf bytes.Buffer
-	steps := NewStepsWriter(&buf)
-
-	steps.Start("Optional step").Skip()
-
-	out := buf.String()
-	if !strings.Contains(out, "[SKIP]") {
-		t.Error("expected [SKIP] marker")
-	}
-}
-
 func TestStepsWarn(t *testing.T) {
 	t.Parallel()
 
@@ -90,41 +76,6 @@ func TestStepsAutoComplete(t *testing.T) {
 	count := strings.Count(out, "[OK]")
 	if count != 2 {
 		t.Errorf("expected 2 [OK] markers (auto-complete + explicit), got %d", count)
-	}
-}
-
-func TestStepsStatus(t *testing.T) {
-	t.Parallel()
-
-	var buf bytes.Buffer
-	steps := NewStepsWriter(&buf)
-
-	if steps.Status() != StepPending {
-		t.Error("expected pending status before any step")
-	}
-
-	steps.Start("Test")
-	if steps.Status() != StepRunning {
-		t.Error("expected running status after Start")
-	}
-
-	steps.Done()
-	if steps.Status() != StepSuccess {
-		t.Error("expected success status after Done")
-	}
-}
-
-func TestStepsIndent(t *testing.T) {
-	t.Parallel()
-
-	var buf bytes.Buffer
-	steps := NewStepsWriter(&buf).SetIndent("    ")
-
-	steps.Start("Indented").Done()
-
-	out := buf.String()
-	if !strings.HasPrefix(out, "    ") {
-		t.Error("expected custom indent")
 	}
 }
 
@@ -159,20 +110,6 @@ func TestProgressMsgWarning(t *testing.T) {
 	}
 }
 
-func TestProgressMsgError(t *testing.T) {
-	t.Parallel()
-
-	var buf bytes.Buffer
-	p := ProgressWriter(&buf)
-
-	p.Error("Something failed")
-
-	out := buf.String()
-	if !strings.Contains(out, "✗") {
-		t.Error("expected ✗ in error message")
-	}
-}
-
 func TestProgressMsgInfo(t *testing.T) {
 	t.Parallel()
 
@@ -187,23 +124,6 @@ func TestProgressMsgInfo(t *testing.T) {
 	}
 }
 
-func TestProgressMsgPrint(t *testing.T) {
-	t.Parallel()
-
-	var buf bytes.Buffer
-	p := ProgressWriter(&buf)
-
-	p.Print("Plain message")
-
-	out := buf.String()
-	if !strings.Contains(out, "Plain message") {
-		t.Error("expected plain message")
-	}
-	if strings.Contains(out, "✓") || strings.Contains(out, "⚠") {
-		t.Error("plain message should not have icons")
-	}
-}
-
 func TestProgressMsgFormatted(t *testing.T) {
 	t.Parallel()
 
@@ -215,20 +135,6 @@ func TestProgressMsgFormatted(t *testing.T) {
 	out := buf.String()
 	if !strings.Contains(out, "Created 5 files") {
 		t.Error("expected formatted message")
-	}
-}
-
-func TestProgressMsgIndent(t *testing.T) {
-	t.Parallel()
-
-	var buf bytes.Buffer
-	p := ProgressWriter(&buf).SetIndent(">>> ")
-
-	p.Success("Indented")
-
-	out := buf.String()
-	if !strings.HasPrefix(out, ">>>") {
-		t.Error("expected custom indent prefix")
 	}
 }
 

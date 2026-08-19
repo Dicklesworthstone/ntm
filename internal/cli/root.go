@@ -3152,6 +3152,10 @@ Shell Integration:
 // conformance test (WS0-G3, bd-ws0-guards-klz98.4), which resolves every
 // fenced `ntm ...` doc example against it. Read-only: callers must not
 // mutate the tree or execute commands through it.
+//
+// NOTE(deadcode): flagged unreachable from ./cmd/ntm because its only
+// consumer is tests/docs_conformance_test.go — an active docs CI gate.
+// Deliberately retained; see G1 dead-code lane report.
 func RootCommand() *cobra.Command {
 	return rootCmd
 }
@@ -4344,7 +4348,7 @@ func init() {
 	rootCmd.Flags().StringVar(&robotSpawnCC, "spawn-cc", "", "Claude Code agents to spawn: count[:model[:effort]] (effort also as model@effort). Use with --robot-spawn. Example: --spawn-cc=2 or --spawn-cc=2:opus:high")
 	rootCmd.Flags().StringVar(&robotSpawnCod, "spawn-cod", "", "Codex CLI agents to spawn: count[:model[:effort]] (effort also as model@effort). Use with --robot-spawn. Example: --spawn-cod=1 or --spawn-cod=8:gpt-5.3-codex:high")
 	rootCmd.Flags().StringVar(&robotSpawnGmi, "spawn-gmi", "", "Gemini CLI agents to spawn: count[:model]. Use with --robot-spawn. Example: --spawn-gmi=1")
-	rootCmd.Flags().StringVar(&robotSpawnAgy, "spawn-agy", "", "Antigravity CLI agents to spawn: count (model is pinned to Gemini 3.1 Pro (High)). Use with --robot-spawn. Example: --spawn-agy=1")
+	rootCmd.Flags().StringVar(&robotSpawnAgy, "spawn-agy", "", "Antigravity CLI agents to spawn: count (model is pinned to Gemini 3.7 Flash (High)). Use with --robot-spawn. Example: --spawn-agy=1")
 	rootCmd.Flags().StringVar(&robotSpawnGrok, "spawn-grok", "", "Grok Build agents to spawn: count[:model[:effort]] (effort also as model@effort). Use with --robot-spawn. Example: --spawn-grok=1")
 	rootCmd.Flags().StringVar(&robotSpawnPreset, "spawn-preset", "", "Use recipe preset instead of counts. See --robot-recipes. Example: --spawn-preset=standard")
 	rootCmd.Flags().BoolVar(&robotSpawnNoUser, "spawn-no-user", false, "Skip user pane creation. Optional with --robot-spawn. For headless/automation")
@@ -6084,16 +6088,6 @@ func editorTokensSafe(tokens []string) bool {
 // IsJSONOutput returns true if JSON output is enabled
 func IsJSONOutput() bool {
 	return jsonOutput
-}
-
-// GetOutputFormat returns the current output format
-func GetOutputFormat() output.Format {
-	return output.DetectFormat(jsonOutput)
-}
-
-// GetFormatter returns a formatter configured for the current output mode
-func GetFormatter() *output.Formatter {
-	return output.New(output.WithJSON(jsonOutput))
 }
 
 // DefaultPromptsOutput is the robot response for --robot-default-prompts.

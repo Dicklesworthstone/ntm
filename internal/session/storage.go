@@ -467,17 +467,6 @@ func ListArchived() ([]SavedSession, error) {
 	return sessions, nil
 }
 
-// IsArchived reports whether an archived session with the given name exists.
-func IsArchived(name string) bool {
-	name, err := normalizeSavedSessionName(name)
-	if err != nil {
-		return false
-	}
-	path := filepath.Join(ArchiveDir(), name+fileExtension)
-	_, err = os.Stat(path)
-	return err == nil
-}
-
 // loadFrom reads and parses a session state file at an explicit path. Unlike
 // Load, it does not assume the file lives in the active StorageDir, so it works
 // for archived sessions too.

@@ -33,32 +33,6 @@ func TestIsValidCondition(t *testing.T) {
 	}
 }
 
-func TestDetectAgentType(t *testing.T) {
-	tests := []struct {
-		name  string
-		title string
-		want  string
-	}{
-		{"claude agent", "myproject__cc_1", "cc"},
-		{"codex agent", "myproject__cod_2", "cod"},
-		{"gemini agent", "myproject__gmi_3", "gmi"},
-		{"session with embedded double underscore", "my__project__cc_1", "cc"},
-		{"user pane", "myproject", ""},
-		{"empty title", "", ""},
-		{"no double underscore", "myproject_cc_1", ""},
-		{"with variant", "myproject__cc_1_opus", "cc"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := detectAgentType(tt.title)
-			if got != tt.want {
-				t.Errorf("detectAgentType(%q) = %q, want %q", tt.title, got, tt.want)
-			}
-		})
-	}
-}
-
 func TestFilterPanesForWait_UsesParsedPaneType(t *testing.T) {
 
 	panes := []tmux.Pane{

@@ -327,20 +327,6 @@ func TestPreambleEngine_Render_FallbackIncludesMetadata(t *testing.T) {
 	}
 }
 
-func TestLoadBaseTemplate(t *testing.T) {
-	tmpl := LoadBaseTemplate()
-
-	if tmpl == nil {
-		t.Fatal("LoadBaseTemplate() returned nil")
-	}
-	if tmpl.BaseInstructions == "" {
-		t.Error("BaseInstructions is empty")
-	}
-	if tmpl.SchemaContract == "" {
-		t.Error("SchemaContract is empty")
-	}
-}
-
 func TestFormatContextPack_Nil(t *testing.T) {
 	result := formatContextPack(nil)
 	if result != "(No context available)" {

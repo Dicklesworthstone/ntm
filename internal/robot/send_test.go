@@ -483,69 +483,6 @@ func TestInterruptPaneAgentTypePrefersParsedPaneType(t *testing.T) {
 	}
 }
 
-func TestSelectInterruptTargetsUsesParsedPaneType(t *testing.T) {
-	panes := []tmux.Pane{
-		{Index: 0, ID: "%0", Title: "shell", Type: tmux.AgentUser},
-		{Index: 1, ID: "%1", Title: "custom scratchpad", Type: tmux.AgentClaude},
-		{Index: 2, ID: "%2", Title: "claude-notes", Type: tmux.AgentUser},
-		{Index: 3, ID: "%3", Title: "codex focus", Type: tmux.AgentCodex},
-	}
-
-	selected := selectInterruptTargets(panes, map[string]bool{}, false)
-	if len(selected) != 2 {
-		t.Fatalf("selectInterruptTargets() returned %d panes, want 2", len(selected))
-	}
-	if selected[0].Index != 1 || selected[1].Index != 3 {
-		t.Fatalf("selectInterruptTargets() picked indices [%d %d], want [1 3]", selected[0].Index, selected[1].Index)
-	}
-}
-
-func TestSendInterruptMessagesUsesAgentAwareSender(t *testing.T) {
-	targets := []interruptMessageTarget{
-		{Pane: "1", Target: "%1", AgentType: tmux.AgentCodex},
-		{Pane: "2", Target: "%2", AgentType: tmux.AgentUnknown},
-	}
-
-	type sendCall struct {
-		target    string
-		keys      string
-		enter     bool
-		delay     time.Duration
-		agentType tmux.AgentType
-	}
-
-	var calls []sendCall
-	errs := sendInterruptMessages(targets, "continue with the new task", func(target, keys string, enter bool, enterDelay time.Duration, agentType tmux.AgentType) error {
-		calls = append(calls, sendCall{
-			target:    target,
-			keys:      keys,
-			enter:     enter,
-			delay:     enterDelay,
-			agentType: agentType,
-		})
-		if target == "%2" {
-			return errors.New("send failed")
-		}
-		return nil
-	})
-
-	if len(calls) != 2 {
-		t.Fatalf("sendInterruptMessages() made %d calls, want 2", len(calls))
-	}
-	if !calls[0].enter || calls[0].delay != tmux.DefaultEnterDelay || calls[0].agentType != tmux.AgentCodex {
-		t.Fatalf("first call = %#v, want enter with default delay for codex", calls[0])
-	}
-	if !calls[1].enter || calls[1].delay != tmux.ShellEnterDelay || calls[1].agentType != tmux.AgentUnknown {
-		t.Fatalf("second call = %#v, want enter with shell delay for unknown pane", calls[1])
-	}
-	if len(errs) != 1 {
-		t.Fatalf("sendInterruptMessages() returned %d errors, want 1", len(errs))
-	}
-	if errs[0].Pane != "2" || !strings.Contains(errs[0].Reason, "send failed") {
-		t.Fatalf("sendInterruptMessages() error = %#v, want pane 2 send failure", errs[0])
-	}
-}
-
 func TestPaneAgentTypePrefersParsedPaneType(t *testing.T) {
 	pane := tmux.Pane{
 		Title: "operator-notes",
@@ -1324,7 +1261,7 @@ func TestRobotDispatchServiceAdapterParity(t *testing.T) {
 			deliveries = append(deliveries, delivery)
 			return nil
 		}),
-		dispatchsvc.PacerFunc(func(_ context.Context, pace dispatchsvc.Pace) error {
+		testPacerFunc(func(_ context.Context, pace dispatchsvc.Pace) error {
 			paces = append(paces, pace)
 			return nil
 		}),

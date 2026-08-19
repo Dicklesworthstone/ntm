@@ -225,32 +225,6 @@ func (c *Checker) CheckAll(ctx context.Context) *Report {
 	return report
 }
 
-// Check verifies a single invariant.
-func (c *Checker) Check(ctx context.Context, id InvariantID) CheckResult {
-	switch id {
-	case InvariantNoSilentDataLoss:
-		return c.checkNoSilentDataLoss(ctx)
-	case InvariantGracefulDegradation:
-		return c.checkGracefulDegradation(ctx)
-	case InvariantIdempotentOrchestration:
-		return c.checkIdempotentOrchestration(ctx)
-	case InvariantRecoverableState:
-		return c.checkRecoverableState(ctx)
-	case InvariantAuditableActions:
-		return c.checkAuditableActions(ctx)
-	case InvariantSafeByDefault:
-		return c.checkSafeByDefault(ctx)
-	default:
-		return CheckResult{
-			InvariantID: id,
-			Passed:      false,
-			Status:      "error",
-			Message:     fmt.Sprintf("unknown invariant: %s", id),
-			CheckedAt:   time.Now(),
-		}
-	}
-}
-
 // checkNoSilentDataLoss verifies the No Silent Data Loss invariant.
 func (c *Checker) checkNoSilentDataLoss(ctx context.Context) CheckResult {
 	result := CheckResult{

@@ -1,7 +1,6 @@
 package ensemble
 
 import (
-	"strings"
 	"testing"
 	"time"
 )
@@ -54,36 +53,6 @@ func TestDisagreementAuditor_EmptyOutputs(t *testing.T) {
 	}
 }
 
-func TestDisagreementAuditor_GeneratePrompt(t *testing.T) {
-	outputs := []ModeOutput{{
-		ModeID:      "deductive",
-		Thesis:      "Same",
-		TopFindings: []Finding{{Finding: "Fact", Impact: ImpactLow, Confidence: 0.5}},
-		Confidence:  0.5,
-		GeneratedAt: time.Now().UTC(),
-	}}
-	auditor := NewDisagreementAuditor(outputs, &SynthesisResult{Summary: "summary"})
-	prompt := auditor.GeneratePrompt()
-	if !strings.Contains(prompt, "DISAGREEMENT AUDITOR") {
-		t.Fatalf("prompt missing header")
-	}
-	if !strings.Contains(prompt, "Output Format") {
-		t.Fatalf("prompt missing output format section")
-	}
-}
-
-func TestDisagreementAuditor_SuggestResolutions(t *testing.T) {
-	outputs := []ModeOutput{
-		{ModeID: "a", Thesis: "Alpha", TopFindings: []Finding{{Finding: "one", Impact: ImpactLow, Confidence: 0.5}}, Confidence: 0.5, GeneratedAt: time.Now().UTC()},
-		{ModeID: "b", Thesis: "Beta", TopFindings: []Finding{{Finding: "two", Impact: ImpactLow, Confidence: 0.5}}, Confidence: 0.5, GeneratedAt: time.Now().UTC()},
-	}
-	auditor := NewDisagreementAuditor(outputs, nil)
-	suggestions := auditor.SuggestResolutions()
-	if len(suggestions) == 0 {
-		t.Fatal("expected suggestions")
-	}
-}
-
 func TestPositionsDiverge_SimilarPositions(t *testing.T) {
 	positions := []ConflictPosition{
 		{ModeID: "a", Position: "Root cause is missing nil check"},
@@ -91,15 +60,6 @@ func TestPositionsDiverge_SimilarPositions(t *testing.T) {
 	}
 	if positionsDiverge(positions) {
 		t.Fatal("expected positions not to diverge")
-	}
-}
-
-func TestFormatHelpers_NilAndEmpty(t *testing.T) {
-	if got := formatOutputs(nil); got != "[]" {
-		t.Fatalf("formatOutputs(nil) = %q, want []", got)
-	}
-	if got := formatSynthesis(nil); got != "{}" {
-		t.Fatalf("formatSynthesis(nil) = %q, want {}", got)
 	}
 }
 

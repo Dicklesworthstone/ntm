@@ -384,57 +384,6 @@ func TestPreflightResultStructure(t *testing.T) {
 	}
 }
 
-// TestPreflightHelperFunction tests the RunPreflightCheck helper used by send command.
-func TestPreflightHelperFunction(t *testing.T) {
-	tests := []struct {
-		name         string
-		prompt       string
-		strict       bool
-		wantBlocked  bool
-		wantWarnings bool
-	}{
-		{
-			name:         "benign_not_blocked",
-			prompt:       "Simple safe prompt",
-			strict:       false,
-			wantBlocked:  false,
-			wantWarnings: false,
-		},
-		{
-			name:         "destructive_not_blocked_default",
-			prompt:       "rm -rf /tmp/cache",
-			strict:       false,
-			wantBlocked:  false,
-			wantWarnings: true,
-		},
-		{
-			name:         "destructive_blocked_strict",
-			prompt:       "rm -rf /tmp/cache",
-			strict:       true,
-			wantBlocked:  true,
-			wantWarnings: true, // warnings array still populated
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			blocked, warnings, err := RunPreflightCheck(tt.prompt, tt.strict)
-			if err != nil {
-				t.Fatalf("RunPreflightCheck failed: %v", err)
-			}
-
-			if blocked != tt.wantBlocked {
-				t.Errorf("blocked = %v, want %v", blocked, tt.wantBlocked)
-			}
-
-			hasWarnings := len(warnings) > 0
-			if hasWarnings != tt.wantWarnings {
-				t.Errorf("has warnings = %v, want %v", hasWarnings, tt.wantWarnings)
-			}
-		})
-	}
-}
-
 // TestLintPackageIntegration verifies the preflight uses the lint package correctly.
 func TestLintPackageIntegration(t *testing.T) {
 	// Test that lint package functions are being called

@@ -61,37 +61,6 @@ func (c *Collector) Close() {
 	}
 }
 
-// RecordAPICall records an API call for a tool and operation.
-func (c *Collector) RecordAPICall(tool, operation string) {
-	c.mu.Lock()
-	key := fmt.Sprintf("%s:%s", tool, operation)
-	c.apiCalls[key]++
-	c.mu.Unlock()
-
-	// Persist to database
-	if c.store != nil {
-		c.upsertCounter("api_call", tool, operation)
-	}
-}
-
-// RecordLatency records a latency measurement for an operation.
-func (c *Collector) RecordLatency(operation string, duration time.Duration) {
-	ms := float64(duration.Nanoseconds()) / 1e6
-
-	c.mu.Lock()
-	c.latencies[operation] = append(c.latencies[operation], ms)
-	// Keep only last 1000 samples per operation
-	if len(c.latencies[operation]) > 1000 {
-		c.latencies[operation] = c.latencies[operation][1:]
-	}
-	c.mu.Unlock()
-
-	// Persist to database
-	if c.store != nil {
-		c.insertLatency(operation, ms)
-	}
-}
-
 // RecordBlockedCommand records a blocked command event.
 func (c *Collector) RecordBlockedCommand(agentID, command, reason string) {
 	c.mu.Lock()
@@ -101,18 +70,6 @@ func (c *Collector) RecordBlockedCommand(agentID, command, reason string) {
 	// Persist to database
 	if c.store != nil {
 		c.insertBlockedCommand(agentID, command, reason)
-	}
-}
-
-// RecordFileConflict records a file reservation conflict.
-func (c *Collector) RecordFileConflict(requestingAgent, holdingAgent, pathPattern string) {
-	c.mu.Lock()
-	c.fileConflicts++
-	c.mu.Unlock()
-
-	// Persist to database
-	if c.store != nil {
-		c.insertFileConflict(requestingAgent, holdingAgent, pathPattern)
 	}
 }
 
@@ -455,33 +412,6 @@ type ComparisonResult struct {
 
 // Database helper methods
 
-func (c *Collector) upsertCounter(metricName, tool, operation string) {
-	// Use raw SQL since state.Store doesn't have metrics methods yet
-	db := c.getDB()
-	if db == nil {
-		return
-	}
-
-	_, _ = db.Exec(`
-		INSERT INTO metric_counters (session_id, metric_name, tool, operation, count, updated_at)
-		VALUES (?, ?, ?, ?, 1, CURRENT_TIMESTAMP)
-		ON CONFLICT(session_id, metric_name, COALESCE(tool, ''), COALESCE(operation, ''))
-		DO UPDATE SET count = count + 1, updated_at = CURRENT_TIMESTAMP`,
-		c.sessionID, metricName, tool, operation)
-}
-
-func (c *Collector) insertLatency(operation string, durationMs float64) {
-	db := c.getDB()
-	if db == nil {
-		return
-	}
-
-	_, _ = db.Exec(`
-		INSERT INTO metric_latencies (session_id, operation, duration_ms)
-		VALUES (?, ?, ?)`,
-		c.sessionID, operation, durationMs)
-}
-
 func (c *Collector) insertBlockedCommand(agentID, command, reason string) {
 	db := c.getDB()
 	if db == nil {
@@ -492,18 +422,6 @@ func (c *Collector) insertBlockedCommand(agentID, command, reason string) {
 		INSERT INTO blocked_commands (session_id, agent_id, command, reason)
 		VALUES (?, ?, ?, ?)`,
 		c.sessionID, agentID, command, reason)
-}
-
-func (c *Collector) insertFileConflict(requestingAgent, holdingAgent, pathPattern string) {
-	db := c.getDB()
-	if db == nil {
-		return
-	}
-
-	_, _ = db.Exec(`
-		INSERT INTO file_conflicts (session_id, requesting_agent_id, holding_agent_id, path_pattern)
-		VALUES (?, ?, ?, ?)`,
-		c.sessionID, requestingAgent, holdingAgent, pathPattern)
 }
 
 func (c *Collector) insertSnapshot(name, data string) error {

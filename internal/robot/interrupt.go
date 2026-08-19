@@ -491,21 +491,6 @@ func resolveInterruptTargets(panes []tmux.Pane, selectors []string, all bool) ([
 	return targetPanes, nil
 }
 
-// selectInterruptTargets preserves the legacy pure helper used by older tests
-// and internal callers. Command paths use resolveInterruptTargets so selector
-// errors remain typed instead of collapsing to an empty target set.
-func selectInterruptTargets(panes []tmux.Pane, paneFilterMap map[string]bool, all bool) []tmux.Pane {
-	selectors := make([]string, 0, len(paneFilterMap))
-	for selector := range paneFilterMap {
-		selectors = append(selectors, selector)
-	}
-	resolved, err := resolveInterruptTargets(panes, selectors, all)
-	if err != nil {
-		return nil
-	}
-	return resolved
-}
-
 func unavailableRobotPaneObservation(pane tmux.Pane, observationError string, observedAt time.Time) status.PaneObservation {
 	return status.PaneObservation{
 		Pane:      pane.Ref(),
@@ -574,27 +559,6 @@ type interruptMessageTarget struct {
 	Pane      string
 	Target    string
 	AgentType tmux.AgentType
-}
-
-func sendInterruptMessages(
-	targets []interruptMessageTarget,
-	message string,
-	send func(target, keys string, enter bool, enterDelay time.Duration, agentType tmux.AgentType) error,
-) []InterruptError {
-	var errors []InterruptError
-	for _, target := range targets {
-		enterDelay := tmux.DefaultEnterDelay
-		if target.AgentType == tmux.AgentUser || target.AgentType == tmux.AgentUnknown {
-			enterDelay = tmux.ShellEnterDelay
-		}
-		if err := send(target.Target, message, true, enterDelay, target.AgentType); err != nil {
-			errors = append(errors, InterruptError{
-				Pane:   target.Pane,
-				Reason: fmt.Sprintf("failed to send message: %v", err),
-			})
-		}
-	}
-	return errors
 }
 
 // getLastMeaningfulOutput extracts the last meaningful output lines up to maxLen chars

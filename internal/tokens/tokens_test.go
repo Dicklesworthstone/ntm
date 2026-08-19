@@ -46,15 +46,6 @@ func TestEstimateTokensWithLanguageHint(t *testing.T) {
 	}
 }
 
-func TestEstimateWithOverhead(t *testing.T) {
-	text := "hello world" // 3 tokens
-
-	// 3 * 2.0 = 6
-	if got := EstimateWithOverhead(text, 2.0); got != 6 {
-		t.Errorf("EstimateWithOverhead(2.0) = %d, want 6", got)
-	}
-}
-
 func TestGetContextLimit(t *testing.T) {
 	tests := []struct {
 		model string
@@ -71,21 +62,6 @@ func TestGetContextLimit(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("GetContextLimit(%q) = %d, want %d", tt.model, got, tt.want)
 		}
-	}
-}
-
-func TestUsagePercentage(t *testing.T) {
-	// gpt-4 limit 128k
-	// 64k tokens = 50%
-	got := UsagePercentage(64000, "gpt-4")
-	if got != 50.0 {
-		t.Errorf("UsagePercentage(64k, gpt-4) = %f, want 50.0", got)
-	}
-
-	// Unknown model (128k default)
-	got = UsagePercentage(64000, "foo")
-	if got != 50.0 {
-		t.Errorf("UsagePercentage(64k, foo) = %f, want 50.0", got)
 	}
 }
 

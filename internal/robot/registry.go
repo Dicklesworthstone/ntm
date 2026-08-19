@@ -276,20 +276,6 @@ func (r *RobotRegistry) Surface(name string) (RobotSurfaceDescriptor, bool) {
 	return surface, ok
 }
 
-// Section returns a registry section by name.
-func (r *RobotRegistry) Section(name string) (RobotSectionDescriptor, bool) {
-	if r == nil {
-		return RobotSectionDescriptor{}, false
-	}
-	section, ok := r.sectionByName[name]
-	if ok {
-		section.ConsumerGuidance = cloneSectionConsumerGuidance(section.ConsumerGuidance)
-		section.Boundedness = cloneSectionBoundedness(section.Boundedness)
-		section.Explainability = cloneSectionExplainability(section.Explainability)
-	}
-	return section, ok
-}
-
 // SchemaBinding returns the output type registered for a schema type.
 func (r *RobotRegistry) SchemaBinding(schemaType string) (interface{}, bool) {
 	if r == nil {

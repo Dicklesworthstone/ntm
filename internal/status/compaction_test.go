@@ -159,15 +159,6 @@ func TestDetectCompaction_NoFalsePositives(t *testing.T) {
 	}
 }
 
-func TestHasCompaction(t *testing.T) {
-	if !HasCompaction("Conversation compacted", "claude") {
-		t.Error("HasCompaction should return true for compaction output")
-	}
-	if HasCompaction("normal output", "claude") {
-		t.Error("HasCompaction should return false for normal output")
-	}
-}
-
 func TestDetectCompactionWithPaneID(t *testing.T) {
 	event := DetectCompactionWithPaneID("Conversation compacted", "claude", "%5")
 	if event == nil {

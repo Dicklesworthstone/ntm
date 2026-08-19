@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"testing"
-	"time"
 )
 
 // ---------------------------------------------------------------------------
@@ -59,17 +58,5 @@ func findSubstring(s, sub string) bool {
 }
 
 // ---------------------------------------------------------------------------
-// formatDuration — missing branch: <= 0 (87.5% → 100%)
+
 // ---------------------------------------------------------------------------
-
-func TestFormatDuration_Zero(t *testing.T) {
-	if got := formatDuration(0); got != "now" {
-		t.Errorf("formatDuration(0) = %q, want %q", got, "now")
-	}
-}
-
-func TestFormatDuration_Negative(t *testing.T) {
-	if got := formatDuration(-5 * time.Second); got != "now" {
-		t.Errorf("formatDuration(-5s) = %q, want %q", got, "now")
-	}
-}

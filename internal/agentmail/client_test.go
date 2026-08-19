@@ -193,23 +193,21 @@ func TestIsAvailableContextRetriesTransientProbeFailures(t *testing.T) {
 
 func TestIsAvailableContextRetriesResponseBodyTransportFailure(t *testing.T) {
 	var calls atomic.Int32
-	client := NewClient(
-		WithBaseURL("http://agentmail.invalid/"),
-		WithHTTPClient(&http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-			call := calls.Add(1)
-			body := io.ReadCloser(readErrorCloser{err: io.ErrUnexpectedEOF})
-			if call > 1 {
-				body = io.NopCloser(strings.NewReader(`{"jsonrpc":"2.0","id":2,"result":{"status":"ok"}}`))
-			}
-			return &http.Response{
-				StatusCode: http.StatusOK,
-				Status:     "200 OK",
-				Body:       body,
-				Header:     make(http.Header),
-				Request:    req,
-			}, nil
-		})}),
-	)
+	client := NewClient(WithBaseURL("http://agentmail.invalid/"))
+	client.httpClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		call := calls.Add(1)
+		body := io.ReadCloser(readErrorCloser{err: io.ErrUnexpectedEOF})
+		if call > 1 {
+			body = io.NopCloser(strings.NewReader(`{"jsonrpc":"2.0","id":2,"result":{"status":"ok"}}`))
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Body:       body,
+			Header:     make(http.Header),
+			Request:    req,
+		}, nil
+	})}
 
 	if !client.IsAvailableContext(context.Background()) {
 		t.Fatalf("availability did not recover after a transient response-body read failure: %v", client.LastAvailabilityError())
@@ -228,14 +226,12 @@ func TestAvailabilityProbeBudgetBoundsAllAttempts(t *testing.T) {
 	}
 
 	var calls atomic.Int32
-	client := NewClient(
-		WithBaseURL("http://agentmail.invalid/"),
-		WithHTTPClient(&http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-			calls.Add(1)
-			<-req.Context().Done()
-			return nil, req.Context().Err()
-		})}),
-	)
+	client := NewClient(WithBaseURL("http://agentmail.invalid/"))
+	client.httpClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		calls.Add(1)
+		<-req.Context().Done()
+		return nil, req.Context().Err()
+	})}
 
 	started := time.Now()
 	if client.IsAvailableContext(context.Background()) {
@@ -510,16 +506,14 @@ func TestIsAvailableContextCancelsWhileAnotherHealthCheckOwnsLock(t *testing.T) 
 func TestAvailabilityProbeBudgetIncludesLockContention(t *testing.T) {
 	firstProbeStarted := make(chan struct{}, 1)
 	var calls atomic.Int32
-	client := NewClient(
-		WithBaseURL("http://agentmail.invalid/"),
-		WithHTTPClient(&http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-			if calls.Add(1) == 1 {
-				firstProbeStarted <- struct{}{}
-			}
-			<-req.Context().Done()
-			return nil, req.Context().Err()
-		})}),
-	)
+	client := NewClient(WithBaseURL("http://agentmail.invalid/"))
+	client.httpClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if calls.Add(1) == 1 {
+			firstProbeStarted <- struct{}{}
+		}
+		<-req.Context().Done()
+		return nil, req.Context().Err()
+	})}
 
 	ownerCtx, cancelOwner := context.WithCancel(context.Background())
 	ownerDone := make(chan bool, 1)
@@ -1148,41 +1142,6 @@ func TestBaseURL(t *testing.T) {
 				t.Errorf("BaseURL() = %q, want %q", got, tc.wantURL)
 			}
 		})
-	}
-}
-
-func TestWithHTTPClient(t *testing.T) {
-	t.Parallel()
-
-	customClient := &http.Client{Timeout: 5 * time.Minute}
-	c := NewClient(WithHTTPClient(customClient))
-
-	if c.httpClient != customClient {
-		t.Error("expected custom HTTP client to be set")
-	}
-}
-
-func TestWithHTTPClientNilKeepsDefaultClient(t *testing.T) {
-	t.Parallel()
-
-	c := NewClient(WithHTTPClient(nil))
-	if c.httpClient == nil {
-		t.Fatal("WithHTTPClient(nil) left client without an HTTP transport")
-	}
-	if c.httpClient.Timeout != DefaultTimeout {
-		t.Errorf("default HTTP timeout = %v, want %v", c.httpClient.Timeout, DefaultTimeout)
-	}
-}
-
-func TestWithTimeout(t *testing.T) {
-	t.Parallel()
-
-	// WithTimeout modifies an existing httpClient's timeout
-	customClient := &http.Client{Timeout: 10 * time.Second}
-	c := NewClient(WithHTTPClient(customClient), WithTimeout(60*time.Second))
-
-	if c.httpClient.Timeout != 60*time.Second {
-		t.Errorf("expected timeout 60s, got %v", c.httpClient.Timeout)
 	}
 }
 

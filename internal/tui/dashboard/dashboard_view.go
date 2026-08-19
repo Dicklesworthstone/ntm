@@ -890,20 +890,6 @@ func formatRelativeTime(d time.Duration) string {
 	return fmt.Sprintf("%dd", int(d.Hours()/24))
 }
 
-func formatDuration(d time.Duration) string {
-	if d <= 0 {
-		return "now"
-	}
-	d = d.Round(time.Second)
-	if d >= time.Hour {
-		return fmt.Sprintf("%dh", int(d.Hours()))
-	}
-	if d >= time.Minute {
-		return fmt.Sprintf("%dm", int(d.Minutes()))
-	}
-	return fmt.Sprintf("%ds", int(d.Seconds()))
-}
-
 func (m Model) renderDiagnosticsBar(width int) string {
 	t := m.theme
 

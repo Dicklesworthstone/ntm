@@ -119,25 +119,6 @@ func formatAuditTimestamp(ts time.Time) string {
 	return ts.UTC().Format(time.RFC3339Nano)
 }
 
-func parseAuditTimestamp(value string) (time.Time, error) {
-	for _, layout := range auditTimestampLayouts {
-		var (
-			parsed time.Time
-			err    error
-		)
-		switch layout {
-		case "2006-01-02 15:04:05.999999999", "2006-01-02 15:04:05":
-			parsed, err = time.ParseInLocation(layout, value, time.UTC)
-		default:
-			parsed, err = time.Parse(layout, value)
-		}
-		if err == nil {
-			return parsed.UTC(), nil
-		}
-	}
-	return time.Time{}, fmt.Errorf("unsupported timestamp format %q", value)
-}
-
 // DefaultAuditStoreConfig returns sensible defaults for audit storage.
 func DefaultAuditStoreConfig(dataDir string) AuditStoreConfig {
 	return AuditStoreConfig{
@@ -350,105 +331,6 @@ func (s *AuditStore) Record(rec *AuditRecord) error {
 	return nil
 }
 
-// Query retrieves audit records matching the filter.
-func (s *AuditStore) Query(filter AuditFilter) ([]AuditRecord, error) {
-	if s.db == nil {
-		return nil, fmt.Errorf("audit db not configured")
-	}
-
-	query := `SELECT id, timestamp, request_id, user_id, role, action, resource, resource_id,
-		method, path, status_code, duration_ms, session_id, pane_id, agent_id, details,
-		remote_addr, user_agent, approval_id
-		FROM audit_records WHERE 1=1`
-	args := []interface{}{}
-
-	if filter.UserID != "" {
-		query += " AND user_id = ?"
-		args = append(args, filter.UserID)
-	}
-	if filter.Action != "" {
-		query += " AND action = ?"
-		args = append(args, string(filter.Action))
-	}
-	if filter.Resource != "" {
-		query += " AND resource = ?"
-		args = append(args, filter.Resource)
-	}
-	if filter.SessionID != "" {
-		query += " AND session_id = ?"
-		args = append(args, filter.SessionID)
-	}
-	if filter.RequestID != "" {
-		query += " AND request_id = ?"
-		args = append(args, filter.RequestID)
-	}
-	if filter.ApprovalID != "" {
-		query += " AND approval_id = ?"
-		args = append(args, filter.ApprovalID)
-	}
-	if !filter.Since.IsZero() {
-		query += " AND datetime(timestamp) >= datetime(?)"
-		args = append(args, formatAuditTimestamp(filter.Since))
-	}
-	if !filter.Until.IsZero() {
-		query += " AND datetime(timestamp) <= datetime(?)"
-		args = append(args, formatAuditTimestamp(filter.Until))
-	}
-
-	query += " ORDER BY datetime(timestamp) DESC, id DESC"
-
-	if filter.Limit > 0 {
-		query += fmt.Sprintf(" LIMIT %d", filter.Limit)
-	}
-	if filter.Offset > 0 {
-		query += fmt.Sprintf(" OFFSET %d", filter.Offset)
-	}
-
-	rows, err := s.db.Query(query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("query audit records: %w", err)
-	}
-	defer func() {
-		if closeErr := rows.Close(); closeErr != nil {
-			log.Printf("audit: rows close error: %v", closeErr)
-		}
-	}()
-
-	var records []AuditRecord
-	for rows.Next() {
-		var rec AuditRecord
-		var tsStr string
-		var sessionID, paneID, agentID, details, userAgent, approvalID, resourceID sql.NullString
-
-		err := rows.Scan(
-			&rec.ID, &tsStr, &rec.RequestID, &rec.UserID, &rec.Role, &rec.Action,
-			&rec.Resource, &resourceID, &rec.Method, &rec.Path, &rec.StatusCode,
-			&rec.Duration, &sessionID, &paneID, &agentID, &details,
-			&rec.RemoteAddr, &userAgent, &approvalID,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("scan audit record: %w", err)
-		}
-
-		parsedTimestamp, err := parseAuditTimestamp(tsStr)
-		if err != nil {
-			return nil, fmt.Errorf("parse audit timestamp %q: %w", tsStr, err)
-		}
-		rec.Timestamp = parsedTimestamp
-		rec.ResourceID = resourceID.String
-		rec.SessionID = sessionID.String
-		rec.PaneID = paneID.String
-		rec.AgentID = agentID.String
-		rec.Details = details.String
-		rec.UserAgent = userAgent.String
-		rec.ApprovalID = approvalID.String
-
-		records = append(records, rec)
-	}
-
-	return records, rows.Err()
-}
-
 // AuditFilter specifies criteria for querying audit records.
 type AuditFilter struct {
 	UserID     string
@@ -612,16 +494,6 @@ func (s *AuditStore) pruneRotatedJSONL(path string) {
 	}
 }
 
-// WriteFailures reports how many audit records failed to reach the JSONL sink.
-//
-// A non-zero value means the audit log has holes. It is exposed because the
-// alternative — logging and moving on — makes a silently truncated audit log
-// indistinguishable from a quiet one, which is the worst failure mode this
-// subsystem has.
-func (s *AuditStore) WriteFailures() int64 {
-	return s.writeFailures.Load()
-}
-
 // cleanupLoop periodically removes old audit records.
 func (s *AuditStore) cleanupLoop(interval time.Duration) {
 	defer s.cleanupWG.Done()
@@ -751,13 +623,6 @@ func SetAuditSession(r *http.Request, sessionID, paneID, agentID string) {
 func SetAuditDetails(r *http.Request, details string) {
 	if ac := AuditContextFromRequest(r); ac != nil {
 		ac.Details = details
-	}
-}
-
-// SetAuditApproval sets the approval ID for audit logging.
-func SetAuditApproval(r *http.Request, approvalID string) {
-	if ac := AuditContextFromRequest(r); ac != nil {
-		ac.ApprovalID = approvalID
 	}
 }
 
@@ -940,64 +805,4 @@ func enrichAuditFromRoute(ac *AuditContext, r *http.Request) {
 			ac.ResourceID = ac.SessionID
 		}
 	}
-}
-
-// RecordApprovalAction records an approval-related audit event.
-func (s *AuditStore) RecordApprovalAction(
-	ctx context.Context,
-	action AuditAction,
-	approvalID string,
-	userID string,
-	role Role,
-	details string,
-) error {
-	reqID := requestIDFromContext(ctx)
-
-	rec := &AuditRecord{
-		Timestamp:  time.Now().UTC(),
-		RequestID:  reqID,
-		UserID:     userID,
-		Role:       role,
-		Action:     action,
-		Resource:   "approval",
-		ResourceID: approvalID,
-		Method:     "INTERNAL",
-		Path:       "/approvals/" + approvalID,
-		StatusCode: 200,
-		Duration:   0,
-		Details:    details,
-		ApprovalID: approvalID,
-	}
-
-	return s.Record(rec)
-}
-
-// RecordWebSocketAction records a WebSocket-related audit event.
-func (s *AuditStore) RecordWebSocketAction(
-	clientID string,
-	action AuditAction,
-	userID string,
-	role Role,
-	topics []string,
-	remoteAddr string,
-) error {
-	topicsJSON, _ := json.Marshal(topics)
-
-	rec := &AuditRecord{
-		Timestamp:  time.Now().UTC(),
-		RequestID:  clientID,
-		UserID:     userID,
-		Role:       role,
-		Action:     action,
-		Resource:   "websocket",
-		ResourceID: clientID,
-		Method:     "WS",
-		Path:       "/ws",
-		StatusCode: 200,
-		Duration:   0,
-		Details:    string(topicsJSON),
-		RemoteAddr: remoteAddr,
-	}
-
-	return s.Record(rec)
 }

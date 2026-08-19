@@ -3,6 +3,7 @@ package state
 import (
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -23,11 +24,11 @@ func TestNewTimelineLifecycle(t *testing.T) {
 		t.Fatalf("NewTimelineLifecycle failed: %v", err)
 	}
 
-	if lifecycle.GetTracker() != tracker {
+	if lifecycle.tracker != tracker {
 		t.Error("GetTracker returned wrong tracker")
 	}
 
-	if lifecycle.GetPersister() != persister {
+	if lifecycle.persister != persister {
 		t.Error("GetPersister returned wrong persister")
 	}
 
@@ -52,25 +53,25 @@ func TestTimelineLifecycleStartSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewTimelineLifecycle failed: %v", err)
 	}
-	defer lifecycle.Stop()
+	defer stopLifecycleForTest(lifecycle)
 
 	sessionID := "test-session"
 
 	// Start session
 	lifecycle.StartSession(sessionID)
 
-	if !lifecycle.IsSessionActive(sessionID) {
+	if !lifecycleIsActiveForTest(lifecycle, sessionID) {
 		t.Error("Session should be active after StartSession")
 	}
 
-	sessions := lifecycle.ActiveSessions()
+	sessions := lifecycleSessionsForTest(lifecycle)
 	if len(sessions) != 1 || sessions[0] != sessionID {
 		t.Errorf("Expected active sessions [%s], got %v", sessionID, sessions)
 	}
 
 	// Starting same session again should be idempotent
 	lifecycle.StartSession(sessionID)
-	sessions = lifecycle.ActiveSessions()
+	sessions = lifecycleSessionsForTest(lifecycle)
 	if len(sessions) != 1 {
 		t.Errorf("Expected 1 active session after duplicate start, got %d", len(sessions))
 	}
@@ -91,14 +92,14 @@ func TestTimelineLifecycleStartSession_IgnoresInvalidSessionID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewTimelineLifecycle failed: %v", err)
 	}
-	defer lifecycle.Stop()
+	defer stopLifecycleForTest(lifecycle)
 
 	lifecycle.StartSession("")
 	lifecycle.StartSession("   ")
 	lifecycle.StartSession("../escape")
 
-	if len(lifecycle.ActiveSessions()) != 0 {
-		t.Fatalf("expected no active sessions for invalid input, got %v", lifecycle.ActiveSessions())
+	if len(lifecycleSessionsForTest(lifecycle)) != 0 {
+		t.Fatalf("expected no active sessions for invalid input, got %v", lifecycleSessionsForTest(lifecycle))
 	}
 }
 
@@ -117,7 +118,7 @@ func TestTimelineLifecycleEndSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewTimelineLifecycle failed: %v", err)
 	}
-	defer lifecycle.Stop()
+	defer stopLifecycleForTest(lifecycle)
 
 	sessionID := "end-test-session"
 
@@ -142,7 +143,7 @@ func TestTimelineLifecycleEndSession(t *testing.T) {
 		t.Fatalf("EndSession failed: %v", err)
 	}
 
-	if lifecycle.IsSessionActive(sessionID) {
+	if lifecycleIsActiveForTest(lifecycle, sessionID) {
 		t.Error("Session should not be active after EndSession")
 	}
 
@@ -178,7 +179,7 @@ func TestTimelineLifecycleEndSession_RejectsInvalidSessionID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewTimelineLifecycle failed: %v", err)
 	}
-	defer lifecycle.Stop()
+	defer stopLifecycleForTest(lifecycle)
 
 	if err := lifecycle.EndSession("   "); err == nil {
 		t.Fatal("expected EndSession to reject blank session IDs")
@@ -203,7 +204,7 @@ func TestTimelineLifecycleMultipleSessions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewTimelineLifecycle failed: %v", err)
 	}
-	defer lifecycle.Stop()
+	defer stopLifecycleForTest(lifecycle)
 
 	// Start multiple sessions
 	sessions := []string{"session-a", "session-b", "session-c"}
@@ -211,7 +212,7 @@ func TestTimelineLifecycleMultipleSessions(t *testing.T) {
 		lifecycle.StartSession(s)
 	}
 
-	activeSessions := lifecycle.ActiveSessions()
+	activeSessions := lifecycleSessionsForTest(lifecycle)
 	if len(activeSessions) != 3 {
 		t.Errorf("Expected 3 active sessions, got %d", len(activeSessions))
 	}
@@ -222,139 +223,12 @@ func TestTimelineLifecycleMultipleSessions(t *testing.T) {
 		t.Fatalf("EndSession failed: %v", err)
 	}
 
-	activeSessions = lifecycle.ActiveSessions()
+	activeSessions = lifecycleSessionsForTest(lifecycle)
 	if len(activeSessions) != 2 {
 		t.Errorf("Expected 2 active sessions after ending one, got %d", len(activeSessions))
 	}
 
 	t.Log("PASS: Multiple sessions can be tracked concurrently")
-}
-
-func TestTimelineLifecycleStop(t *testing.T) {
-	tmpDir := t.TempDir()
-	config := &TimelinePersistConfig{BaseDir: tmpDir}
-
-	persister, err := NewTimelinePersister(config)
-	if err != nil {
-		t.Fatalf("NewTimelinePersister failed: %v", err)
-	}
-
-	tracker := NewTimelineTracker(nil)
-
-	lifecycle, err := NewTimelineLifecycle(tracker, persister)
-	if err != nil {
-		t.Fatalf("NewTimelineLifecycle failed: %v", err)
-	}
-
-	// Start sessions
-	lifecycle.StartSession("session-1")
-	lifecycle.StartSession("session-2")
-
-	// Add events
-	for _, s := range []string{"session-1", "session-2"} {
-		tracker.RecordEvent(AgentEvent{
-			AgentID:   "cc_1",
-			SessionID: s,
-			State:     TimelineWorking,
-			Timestamp: time.Now(),
-		})
-	}
-
-	// Stop should finalize all sessions
-	lifecycle.Stop()
-
-	// Verify all timelines were saved
-	for _, s := range []string{"session-1", "session-2"} {
-		events, err := persister.LoadTimeline(s)
-		if err != nil {
-			t.Errorf("LoadTimeline for %s failed: %v", s, err)
-		}
-		if len(events) == 0 {
-			t.Errorf("Expected events for %s to be persisted", s)
-		}
-	}
-
-	t.Log("PASS: Stop finalizes all active sessions")
-}
-
-func TestTimelineLifecycle_StartSessionDoesNotRacePastStop(t *testing.T) {
-	tmpDir := t.TempDir()
-	persister, err := NewTimelinePersister(&TimelinePersistConfig{BaseDir: tmpDir})
-	if err != nil {
-		t.Fatalf("NewTimelinePersister failed: %v", err)
-	}
-
-	tracker := NewTimelineTracker(nil)
-	lifecycle, err := NewTimelineLifecycle(tracker, persister)
-	if err != nil {
-		t.Fatalf("NewTimelineLifecycle failed: %v", err)
-	}
-
-	oldRunner := &checkpointRunner{
-		ticker: time.NewTicker(time.Hour),
-		stop:   make(chan struct{}),
-		done:   make(chan struct{}),
-	}
-	t.Cleanup(func() {
-		oldRunner.ticker.Stop()
-		select {
-		case <-oldRunner.done:
-		default:
-			close(oldRunner.done)
-		}
-	})
-
-	lifecycle.mu.Lock()
-	lifecycle.activeSessions["old-session"] = struct{}{}
-	lifecycle.mu.Unlock()
-	persister.mu.Lock()
-	persister.checkpoints["old-session"] = oldRunner
-	persister.mu.Unlock()
-
-	stopped := make(chan struct{})
-	go func() {
-		lifecycle.Stop()
-		close(stopped)
-	}()
-
-	select {
-	case <-oldRunner.stop:
-	case <-time.After(time.Second):
-		t.Fatal("Stop did not begin draining the old checkpoint runner")
-	}
-
-	started := make(chan struct{})
-	go func() {
-		lifecycle.StartSession("new-session")
-		close(started)
-	}()
-
-	select {
-	case <-started:
-		t.Fatal("StartSession returned before Stop completed")
-	case <-time.After(50 * time.Millisecond):
-	}
-
-	close(oldRunner.done)
-
-	select {
-	case <-stopped:
-	case <-time.After(time.Second):
-		t.Fatal("Stop did not finish")
-	}
-
-	select {
-	case <-started:
-	case <-time.After(time.Second):
-		t.Fatal("StartSession did not unblock after Stop finished")
-	}
-
-	if lifecycle.IsSessionActive("new-session") {
-		t.Fatal("new-session should not become active after lifecycle stop")
-	}
-	if len(lifecycle.ActiveSessions()) != 0 {
-		t.Fatalf("expected no active sessions after Stop, got %v", lifecycle.ActiveSessions())
-	}
 }
 
 func TestStartSessionTimeline(t *testing.T) {
@@ -381,7 +255,7 @@ func TestStartSessionTimeline(t *testing.T) {
 		t.Fatalf("GetGlobalTimelineLifecycle failed: %v", err)
 	}
 
-	if !lifecycle.IsSessionActive(sessionID) {
+	if !lifecycleIsActiveForTest(lifecycle, sessionID) {
 		t.Error("Session should be active after StartSessionTimeline")
 	}
 
@@ -427,7 +301,7 @@ func TestEndSessionTimeline(t *testing.T) {
 		t.Fatalf("GetGlobalTimelineLifecycle failed: %v", err)
 	}
 
-	if lifecycle.IsSessionActive(sessionID) {
+	if lifecycleIsActiveForTest(lifecycle, sessionID) {
 		t.Error("Session should not be active after EndSessionTimeline")
 	}
 
@@ -456,4 +330,59 @@ func TestGetGlobalTimelineTracker(t *testing.T) {
 	}
 
 	t.Log("PASS: GetGlobalTimelineTracker returns singleton")
+}
+
+// lifecycleIsActiveForTest reports whether the session has active tracking.
+func lifecycleIsActiveForTest(l *TimelineLifecycle, sessionID string) bool {
+	normalizedSessionID, err := validateTimelineSessionID(sessionID)
+	if err != nil {
+		return false
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	_, active := l.activeSessions[normalizedSessionID]
+	return active
+}
+
+// lifecycleSessionsForTest returns the sessions with active tracking.
+func lifecycleSessionsForTest(l *TimelineLifecycle) []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	sessions := make([]string, 0, len(l.activeSessions))
+	for s := range l.activeSessions {
+		sessions = append(sessions, s)
+	}
+	return sessions
+}
+
+// stopLifecycleForTest finalizes all active sessions and stops the lifecycle.
+func stopLifecycleForTest(l *TimelineLifecycle) {
+	l.lifecycleMu.Lock()
+	defer l.lifecycleMu.Unlock()
+	if l.stopped {
+		return
+	}
+	l.stopped = true
+
+	l.mu.Lock()
+	sessions := make([]string, 0, len(l.activeSessions))
+	for s := range l.activeSessions {
+		sessions = append(sessions, s)
+		delete(l.activeSessions, s)
+	}
+	l.mu.Unlock()
+
+	for _, sessionID := range sessions {
+		_ = l.persister.FinalizeSession(sessionID, l.tracker)
+	}
+}
+
+// resetGlobalTimelineLifecycleForTest tears down the singleton state so a test
+// can re-initialize it under a hermetic HOME/XDG_CONFIG_HOME/NTM_CONFIG
+// environment. Tests should call this AFTER setting their env overrides via
+// t.Setenv.
+func resetGlobalTimelineLifecycleForTest() {
+	globalTimelineLifecycle = nil
+	globalTimelineLifecycleErr = nil
+	globalTimelineLifecycleOnce = sync.Once{}
 }

@@ -106,35 +106,3 @@ func (r *Result) HasErrors() bool {
 	}
 	return false
 }
-
-// HasWarnings returns true if there are any warning-severity findings.
-func (r *Result) HasWarnings() bool {
-	for _, f := range r.Findings {
-		if f.Severity == SeverityWarning {
-			return true
-		}
-	}
-	return false
-}
-
-// FindingsByID returns all findings with the given rule ID.
-func (r *Result) FindingsByID(id RuleID) []Finding {
-	var matches []Finding
-	for _, f := range r.Findings {
-		if f.ID == id {
-			matches = append(matches, f)
-		}
-	}
-	return matches
-}
-
-// FindingsBySeverity returns all findings with the given severity.
-func (r *Result) FindingsBySeverity(severity Severity) []Finding {
-	var matches []Finding
-	for _, f := range r.Findings {
-		if f.Severity == severity {
-			matches = append(matches, f)
-		}
-	}
-	return matches
-}

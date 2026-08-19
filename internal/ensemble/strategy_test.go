@@ -45,36 +45,6 @@ func TestGetStrategy(t *testing.T) {
 	}
 }
 
-func TestListStrategies(t *testing.T) {
-	strategies := ListStrategies()
-	if len(strategies) != 11 {
-		t.Errorf("ListStrategies() returned %d, want 11", len(strategies))
-	}
-
-	// Verify deterministic order matches allStrategies.
-	for i, s := range strategies {
-		if s.Name != allStrategies[i] {
-			t.Errorf("ListStrategies()[%d].Name = %q, want %q", i, s.Name, allStrategies[i])
-		}
-	}
-
-	// Verify all have required fields.
-	for _, s := range strategies {
-		if s.Description == "" {
-			t.Errorf("strategy %q has empty Description", s.Name)
-		}
-		if len(s.OutputFocus) == 0 {
-			t.Errorf("strategy %q has empty OutputFocus", s.Name)
-		}
-		if len(s.BestFor) == 0 {
-			t.Errorf("strategy %q has empty BestFor", s.Name)
-		}
-		if s.TemplateKey == "" {
-			t.Errorf("strategy %q has empty TemplateKey", s.Name)
-		}
-	}
-}
-
 func TestValidateStrategy(t *testing.T) {
 	for _, s := range allStrategies {
 		if !ValidateStrategy(string(s)) {
@@ -129,22 +99,5 @@ func TestValidateOrMigrateStrategy(t *testing.T) {
 	_, err = ValidateOrMigrateStrategy("bogus")
 	if err == nil {
 		t.Error("ValidateOrMigrateStrategy(\"bogus\") should error")
-	}
-}
-
-func TestStrategyRequiresAgent(t *testing.T) {
-	// Manual and voting should not require an agent.
-	noAgent := map[SynthesisStrategy]bool{
-		StrategyManual: true,
-		StrategyVoting: true,
-	}
-
-	for _, s := range ListStrategies() {
-		if noAgent[s.Name] && s.RequiresAgent {
-			t.Errorf("strategy %q should not require agent", s.Name)
-		}
-		if !noAgent[s.Name] && !s.RequiresAgent {
-			t.Errorf("strategy %q should require agent", s.Name)
-		}
 	}
 }

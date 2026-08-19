@@ -89,68 +89,6 @@ func (l *TimelineLifecycle) EndSession(sessionID string) error {
 	return l.persister.FinalizeSession(normalizedSessionID, l.tracker)
 }
 
-// IsSessionActive returns true if the session has active timeline tracking.
-func (l *TimelineLifecycle) IsSessionActive(sessionID string) bool {
-	normalizedSessionID, err := validateTimelineSessionID(sessionID)
-	if err != nil {
-		return false
-	}
-
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	_, active := l.activeSessions[normalizedSessionID]
-	return active
-}
-
-// ActiveSessions returns the list of sessions with active tracking.
-func (l *TimelineLifecycle) ActiveSessions() []string {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	sessions := make([]string, 0, len(l.activeSessions))
-	for s := range l.activeSessions {
-		sessions = append(sessions, s)
-	}
-	return sessions
-}
-
-// GetTracker returns the TimelineTracker.
-func (l *TimelineLifecycle) GetTracker() *TimelineTracker {
-	return l.tracker
-}
-
-// GetPersister returns the TimelinePersister.
-func (l *TimelineLifecycle) GetPersister() *TimelinePersister {
-	return l.persister
-}
-
-// Stop stops all active checkpoints and cleans up resources.
-func (l *TimelineLifecycle) Stop() {
-	l.lifecycleMu.Lock()
-	defer l.lifecycleMu.Unlock()
-
-	if l.stopped {
-		return
-	}
-	l.stopped = true
-
-	l.mu.Lock()
-	sessions := make([]string, 0, len(l.activeSessions))
-	for s := range l.activeSessions {
-		sessions = append(sessions, s)
-		delete(l.activeSessions, s)
-	}
-	l.mu.Unlock()
-
-	// Finalize all active sessions
-	for _, sessionID := range sessions {
-		_ = l.persister.FinalizeSession(sessionID, l.tracker)
-	}
-
-	l.persister.Stop()
-	l.tracker.Stop()
-}
-
 // Global singleton lifecycle manager
 var (
 	globalTimelineLifecycle     *TimelineLifecycle
@@ -164,17 +102,6 @@ func GetGlobalTimelineLifecycle() (*TimelineLifecycle, error) {
 		globalTimelineLifecycle, globalTimelineLifecycleErr = NewTimelineLifecycle(nil, nil)
 	})
 	return globalTimelineLifecycle, globalTimelineLifecycleErr
-}
-
-// resetGlobalTimelineLifecycleForTest tears down the singleton state so a test
-// can re-initialize it under a hermetic HOME/XDG_CONFIG_HOME/NTM_CONFIG
-// environment. Tests should call this AFTER setting their env overrides via
-// t.Setenv. Not safe for production — only intended for the bd-ev740
-// regression isolation pattern.
-func resetGlobalTimelineLifecycleForTest() {
-	globalTimelineLifecycle = nil
-	globalTimelineLifecycleErr = nil
-	globalTimelineLifecycleOnce = sync.Once{}
 }
 
 // StartSessionTimeline is a convenience function to start timeline tracking for a session.

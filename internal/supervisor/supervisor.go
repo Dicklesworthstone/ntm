@@ -314,29 +314,6 @@ func (s *Supervisor) Start(spec DaemonSpec) error {
 	return nil
 }
 
-// Stop stops a daemon gracefully.
-func (s *Supervisor) Stop(name string) error {
-	s.lifecycleMu.Lock()
-	defer s.lifecycleMu.Unlock()
-
-	s.mu.Lock()
-	daemon, exists := s.daemons[name]
-	if !exists {
-		s.mu.Unlock()
-		return fmt.Errorf("daemon %s not found", name)
-	}
-	s.mu.Unlock()
-
-	return s.stopDaemon(daemon)
-}
-
-// StopAll stops all daemons owned by this session.
-func (s *Supervisor) StopAll() error {
-	s.lifecycleMu.Lock()
-	defer s.lifecycleMu.Unlock()
-	return s.stopAllOwnedDaemons()
-}
-
 // Shutdown stops all owned daemons and cancels the supervisor context.
 func (s *Supervisor) Shutdown() error {
 	s.lifecycleMu.Lock()
@@ -371,21 +348,6 @@ func (s *Supervisor) stopAllOwnedDaemons() error {
 		return fmt.Errorf("errors stopping daemons: %v", errs)
 	}
 	return nil
-}
-
-// Status returns the status of all managed daemons.
-// Returns deep copies to prevent data races with slice fields.
-func (s *Supervisor) Status() map[string]*ManagedDaemon {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	result := make(map[string]*ManagedDaemon, len(s.daemons))
-	for name, d := range s.daemons {
-		d.mu.RLock()
-		result[name] = snapshotDaemonLocked(d)
-		d.mu.RUnlock()
-	}
-	return result
 }
 
 // GetDaemon returns a snapshot of a daemon by name.

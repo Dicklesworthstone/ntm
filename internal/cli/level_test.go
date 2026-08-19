@@ -258,21 +258,6 @@ func TestLevelConfigPersistence(t *testing.T) {
 	}
 }
 
-func TestLevelConfigPathExists(t *testing.T) {
-	cleanup := setupTestProficiency(t)
-	defer cleanup()
-
-	// Load and save config
-	cfg, _ := config.LoadProficiency()
-	cfg.Save()
-
-	// Verify file exists
-	path := config.ProficiencyConfigPath()
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		t.Errorf("config file should exist at %s", path)
-	}
-}
-
 func TestLevelTierBounds(t *testing.T) {
 	// Test tier validation
 	tests := []struct {

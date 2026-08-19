@@ -244,71 +244,6 @@ func EffectivenessEventsFromArtifacts(ranking RankingResult, plan RoadmapPlan, c
 	return events
 }
 
-func SnapshotWithEffectivenessFeedback(snapshot IdeaEvidenceSnapshot, report EffectivenessReport, opts EffectivenessFeedbackOptions) IdeaEvidenceSnapshot {
-	opts = normalizeEffectivenessFeedbackOptions(opts)
-	out := cloneIdeaEvidenceSnapshot(snapshot)
-	source := CandidateSource{
-		ID:        EffectivenessSourceID,
-		Kind:      SourceEffectiveness,
-		Available: report.HistoryAvailable,
-		Required:  false,
-		Evidence:  effectivenessReportEvidence(report),
-	}
-	if !report.HistoryAvailable {
-		source.Error = "effectiveness history unavailable"
-		out.RecordSource(source)
-		out.ValidationNotes = append(out.ValidationNotes, report.Notes...)
-		return out
-	}
-	out.RecordSource(source)
-	out.OptionalSignals = append(out.OptionalSignals, boundedOptionalSignals(report.Signals, opts.MaxSignals)...)
-	sortOptionalSignals(out.OptionalSignals)
-
-	for i := range out.Candidates {
-		candidate := out.Candidates[i]
-		keys := candidateEffectivenessKeys(candidate)
-		addedEvidence := 0
-		for _, family := range report.Families {
-			if !matchesEffectivenessFamily(keys, family) {
-				continue
-			}
-			switch family.Outcome {
-			case EffectivenessOutcomeClean:
-				if addedEvidence < opts.MaxEvidencePerCandidate {
-					candidate.Evidence = append(candidate.Evidence, fmt.Sprintf("effectiveness: family %s closed %d generated bead(s) without churn", family.FamilyID, family.ClosedCount))
-					addedEvidence++
-				}
-				candidate.SourceIDs = append(candidate.SourceIDs, EffectivenessSourceID)
-			case EffectivenessOutcomeChurn:
-				candidate.ValidationNotes = append(candidate.ValidationNotes, ValidationNote{
-					Code:     "effectiveness_churn_history",
-					Severity: ValidationWarning,
-					Message:  "historical generated beads in this family produced churn",
-					SourceID: EffectivenessSourceID,
-					Evidence: []string{fmt.Sprintf("family=%s", family.FamilyID)},
-				})
-			}
-		}
-		for _, sourceSummary := range report.Sources {
-			if sourceSummary.Outcome != EffectivenessOutcomeLowYield || !hasString(candidate.SourceIDs, sourceSummary.SourceID) {
-				continue
-			}
-			candidate.ValidationNotes = append(candidate.ValidationNotes, ValidationNote{
-				Code:     "effectiveness_low_yield_source",
-				Severity: ValidationWarning,
-				Message:  "historical generated beads from this source had low yield",
-				SourceID: EffectivenessSourceID,
-				Evidence: []string{fmt.Sprintf("source=%s", sourceSummary.SourceID)},
-			})
-		}
-		candidate.Evidence = stableStrings(candidate.Evidence)
-		candidate.SourceIDs = stableStrings(candidate.SourceIDs)
-		candidate.ValidationNotes = sortValidationNotes(candidate.ValidationNotes)
-		out.Candidates[i] = candidate
-	}
-	return out
-}
-
 func (report *EffectivenessReport) countEvent(event EffectivenessEvent) {
 	switch event.Kind {
 	case EffectivenessEventCandidateGenerated:
@@ -570,16 +505,6 @@ func normalizeEffectivenessOptions(opts EffectivenessOptions) EffectivenessOptio
 	return opts
 }
 
-func normalizeEffectivenessFeedbackOptions(opts EffectivenessFeedbackOptions) EffectivenessFeedbackOptions {
-	if opts.MaxSignals <= 0 {
-		opts.MaxSignals = defaultMaxEffectivenessSignals
-	}
-	if opts.MaxEvidencePerCandidate <= 0 {
-		opts.MaxEvidencePerCandidate = defaultMaxEffectivenessCandidateEvidence
-	}
-	return opts
-}
-
 func normalizeEffectivenessEvents(events []EffectivenessEvent) []EffectivenessEvent {
 	out := make([]EffectivenessEvent, 0, len(events))
 	for _, event := range events {
@@ -641,37 +566,6 @@ func candidateEffectivenessFamily(candidate IdeaCandidate, fallback string) stri
 	return fallback
 }
 
-func candidateEffectivenessKeys(candidate IdeaCandidate) map[string]struct{} {
-	values := []string{candidate.ID, candidate.Overlap.FamilyID}
-	values = append(values, candidate.Labels...)
-	values = append(values, candidate.Keywords...)
-	values = append(values, candidate.SourceIDs...)
-	for _, related := range candidate.RelatedWork {
-		values = append(values, related.ID, related.FamilyID)
-	}
-	keys := make(map[string]struct{}, len(values))
-	for _, value := range values {
-		value = strings.TrimSpace(value)
-		if value == "" {
-			continue
-		}
-		keys[value] = struct{}{}
-	}
-	return keys
-}
-
-func matchesEffectivenessFamily(keys map[string]struct{}, family EffectivenessFamilySummary) bool {
-	if _, ok := keys[family.FamilyID]; ok {
-		return true
-	}
-	for _, id := range family.CandidateIDs {
-		if _, ok := keys[id]; ok {
-			return true
-		}
-	}
-	return false
-}
-
 func beadFamilyID(beadID string) string {
 	beadID = strings.TrimSpace(beadID)
 	if beadID == "" {
@@ -726,69 +620,4 @@ func averageEffectivenessHours(values []float64) float64 {
 		total += value
 	}
 	return roundScore(total / float64(len(values)))
-}
-
-func effectivenessReportEvidence(report EffectivenessReport) []string {
-	if !report.HistoryAvailable {
-		return []string{"effectiveness history unavailable"}
-	}
-	return stableStrings([]string{
-		fmt.Sprintf("clean_families=%d", len(report.CleanFamilyIDs)),
-		fmt.Sprintf("churn_families=%d", len(report.ChurnFamilyIDs)),
-		fmt.Sprintf("low_yield_sources=%d", len(report.LowYieldSourceIDs)),
-	})
-}
-
-func boundedOptionalSignals(signals []OptionalSignal, max int) []OptionalSignal {
-	if max <= 0 {
-		max = defaultMaxEffectivenessSignals
-	}
-	out := append([]OptionalSignal{}, signals...)
-	if len(out) > max {
-		out = out[:max]
-	}
-	return out
-}
-
-func cloneIdeaEvidenceSnapshot(snapshot IdeaEvidenceSnapshot) IdeaEvidenceSnapshot {
-	out := snapshot
-	out.Documents = append([]ProjectDocumentMarker{}, snapshot.Documents...)
-	out.CloseoutProof = append([]CloseoutProofEvidence{}, snapshot.CloseoutProof...)
-	out.Git = append([]GitTouchSummary{}, snapshot.Git...)
-	out.Sources = append([]CandidateSource{}, snapshot.Sources...)
-	out.ExistingWork = append([]ExistingWorkFingerprint{}, snapshot.ExistingWork...)
-	out.Candidates = append([]IdeaCandidate{}, snapshot.Candidates...)
-	out.OptionalSignals = append([]OptionalSignal{}, snapshot.OptionalSignals...)
-	out.DegradedSources = append([]ValidationNote{}, snapshot.DegradedSources...)
-	out.ValidationNotes = append([]ValidationNote{}, snapshot.ValidationNotes...)
-	for i := range out.Candidates {
-		out.Candidates[i].Labels = append([]string{}, out.Candidates[i].Labels...)
-		out.Candidates[i].Keywords = append([]string{}, out.Candidates[i].Keywords...)
-		out.Candidates[i].Paths = append([]string{}, out.Candidates[i].Paths...)
-		out.Candidates[i].SourceIDs = append([]string{}, out.Candidates[i].SourceIDs...)
-		out.Candidates[i].Evidence = append([]string{}, out.Candidates[i].Evidence...)
-		out.Candidates[i].RelatedWork = append([]RelatedWorkReference{}, out.Candidates[i].RelatedWork...)
-		out.Candidates[i].ValidationNotes = append([]ValidationNote{}, out.Candidates[i].ValidationNotes...)
-	}
-	return out
-}
-
-func sortValidationNotes(notes []ValidationNote) []ValidationNote {
-	out := append([]ValidationNote{}, notes...)
-	for i := range out {
-		out[i].Evidence = stableStrings(out[i].Evidence)
-	}
-	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].Code != out[j].Code {
-			return out[i].Code < out[j].Code
-		}
-		if out[i].Severity != out[j].Severity {
-			return out[i].Severity < out[j].Severity
-		}
-		if out[i].SourceID != out[j].SourceID {
-			return out[i].SourceID < out[j].SourceID
-		}
-		return out[i].Message < out[j].Message
-	})
-	return out
 }

@@ -478,11 +478,6 @@ func (c *Capturer) GetLatest(sessionName string) (*Checkpoint, error) {
 	return c.storage.GetLatest(sessionName)
 }
 
-// List returns all checkpoints for a session.
-func (c *Capturer) List(sessionName string) ([]*Checkpoint, error) {
-	return c.storage.List(sessionName)
-}
-
 // GetByIndex returns the Nth most recent checkpoint (1-indexed, 1 = latest).
 func (c *Capturer) GetByIndex(sessionName string, index int) (*Checkpoint, error) {
 	return c.storage.getByRecentIndex(sessionName, index)

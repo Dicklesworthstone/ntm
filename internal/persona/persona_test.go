@@ -867,71 +867,6 @@ func TestPrepareContextFilesRejectsSymlinkEscape(t *testing.T) {
 	}
 }
 
-func TestCleanupPromptFiles(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	// Test cleanup when directory doesn't exist
-	err := CleanupPromptFiles(tmpDir)
-	if err != nil {
-		t.Errorf("unexpected error for non-existent prompts dir: %v", err)
-	}
-
-	// Create prompts directory and files
-	promptsDir := filepath.Join(tmpDir, ".ntm", "prompts")
-	if err := os.MkdirAll(promptsDir, 0755); err != nil {
-		t.Fatal(err)
-	}
-	promptFile := filepath.Join(promptsDir, "test.md")
-	if err := os.WriteFile(promptFile, []byte("test prompt"), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Verify file exists
-	if _, err := os.Stat(promptFile); os.IsNotExist(err) {
-		t.Fatal("prompt file should exist before cleanup")
-	}
-
-	// Cleanup
-	err = CleanupPromptFiles(tmpDir)
-	if err != nil {
-		t.Fatalf("CleanupPromptFiles failed: %v", err)
-	}
-
-	// Verify directory is removed
-	if _, err := os.Stat(promptsDir); !os.IsNotExist(err) {
-		t.Error("prompts directory should be removed after cleanup")
-	}
-}
-
-func TestCleanupPromptFilesRejectsNtmSymlink(t *testing.T) {
-	tmpDir := t.TempDir()
-	projectDir := filepath.Join(tmpDir, "project")
-	outsideNtmDir := filepath.Join(tmpDir, "outside-ntm")
-	outsidePromptsDir := filepath.Join(outsideNtmDir, "prompts")
-	if err := os.MkdirAll(projectDir, 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(outsidePromptsDir, 0755); err != nil {
-		t.Fatal(err)
-	}
-	outsidePrompt := filepath.Join(outsidePromptsDir, "keep.md")
-	if err := os.WriteFile(outsidePrompt, []byte("keep"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(outsideNtmDir, filepath.Join(projectDir, ".ntm")); err != nil {
-		t.Skipf("cannot create symlink: %v", err)
-	}
-
-	if err := CleanupPromptFiles(projectDir); err == nil {
-		t.Fatal("CleanupPromptFiles() error = nil, want ntm symlink rejection")
-	} else if !strings.Contains(err.Error(), "ntm path must not be a symlink") {
-		t.Fatalf("CleanupPromptFiles() error = %v, want ntm symlink rejection", err)
-	}
-	if _, err := os.Stat(outsidePrompt); err != nil {
-		t.Fatalf("CleanupPromptFiles() removed outside prompt through .ntm symlink: %v", err)
-	}
-}
-
 func TestGetGitRepoName(t *testing.T) {
 	tmpDir := t.TempDir()
 
@@ -1083,40 +1018,6 @@ func TestDetectPrimaryLanguage(t *testing.T) {
 	result := detectPrimaryLanguage(tmpDir)
 	if result != "" {
 		t.Errorf("expected empty for no language files, got %q", result)
-	}
-}
-
-func TestDefaultUserPath(t *testing.T) {
-	// Save original env vars
-	origNTMConfig := os.Getenv("NTM_CONFIG")
-	origXDG := os.Getenv("XDG_CONFIG_HOME")
-	defer func() {
-		os.Setenv("NTM_CONFIG", origNTMConfig)
-		os.Setenv("XDG_CONFIG_HOME", origXDG)
-	}()
-
-	// Test with NTM_CONFIG set
-	os.Setenv("NTM_CONFIG", "/custom/path/config.toml")
-	os.Setenv("XDG_CONFIG_HOME", "")
-	path := DefaultUserPath()
-	if path != "/custom/path/personas.toml" {
-		t.Errorf("expected '/custom/path/personas.toml', got %q", path)
-	}
-
-	// Test with XDG_CONFIG_HOME set
-	os.Setenv("NTM_CONFIG", "")
-	os.Setenv("XDG_CONFIG_HOME", "/xdg/config")
-	path = DefaultUserPath()
-	if path != "/xdg/config/ntm/personas.toml" {
-		t.Errorf("expected '/xdg/config/ntm/personas.toml', got %q", path)
-	}
-
-	// Test with neither set (falls back to ~/.config/ntm)
-	os.Setenv("NTM_CONFIG", "")
-	os.Setenv("XDG_CONFIG_HOME", "")
-	path = DefaultUserPath()
-	if !strings.HasSuffix(path, ".config/ntm/personas.toml") {
-		t.Errorf("expected path ending with '.config/ntm/personas.toml', got %q", path)
 	}
 }
 

@@ -75,19 +75,6 @@ func TestNewBVClientWithOptions(t *testing.T) {
 	}
 }
 
-func TestBVClientIsAvailable(t *testing.T) {
-	client := NewBVClient()
-	available := client.IsAvailable()
-
-	// Just test that the method works without panicking
-	t.Logf("bv available via client: %v", available)
-
-	// Should match the package-level IsInstalled() at minimum
-	if !IsInstalled() && available {
-		t.Error("IsAvailable should be false when bv is not installed")
-	}
-}
-
 func TestBVClientIsAvailableContextDoesNotCacheCanceledProbe(t *testing.T) {
 	binDir := t.TempDir()
 	probeStarted := filepath.Join(binDir, "probe-started")
@@ -241,9 +228,9 @@ func TestBVClientGetInsights(t *testing.T) {
 
 	client := NewBVClientWithOptions(projectRoot, 30*time.Second, 10*time.Second)
 
-	insights, err := client.GetInsights()
+	insights, err := client.GetInsightsContext(context.Background())
 	if err != nil {
-		t.Fatalf("GetInsights failed: %v", err)
+		t.Fatalf("GetInsightsContext failed: %v", err)
 	}
 
 	if insights == nil {
@@ -261,60 +248,6 @@ func TestBVClientGetInsights(t *testing.T) {
 	}
 }
 
-func TestBVClientGetQuickWins(t *testing.T) {
-	requireBVIntegration(t)
-	if !IsInstalled() {
-		t.Skip("bv not installed")
-	}
-
-	projectRoot := getProjectRoot()
-	if projectRoot == "" {
-		t.Skip("No .beads directory found")
-	}
-
-	client := NewBVClientWithOptions(projectRoot, 30*time.Second, 10*time.Second)
-
-	wins, err := client.GetQuickWins(3)
-	if err != nil {
-		t.Fatalf("GetQuickWins failed: %v", err)
-	}
-
-	if len(wins) > 3 {
-		t.Errorf("Expected at most 3 quick wins, got %d", len(wins))
-	}
-
-	for i, win := range wins {
-		t.Logf("Quick win %d: ID=%s, Title=%s", i, win.ID, win.Title)
-	}
-}
-
-func TestBVClientGetBlockersToClear(t *testing.T) {
-	requireBVIntegration(t)
-	if !IsInstalled() {
-		t.Skip("bv not installed")
-	}
-
-	projectRoot := getProjectRoot()
-	if projectRoot == "" {
-		t.Skip("No .beads directory found")
-	}
-
-	client := NewBVClientWithOptions(projectRoot, 30*time.Second, 10*time.Second)
-
-	blockers, err := client.GetBlockersToClear(5)
-	if err != nil {
-		t.Fatalf("GetBlockersToClear failed: %v", err)
-	}
-
-	if len(blockers) > 5 {
-		t.Errorf("Expected at most 5 blockers, got %d", len(blockers))
-	}
-
-	for i, blocker := range blockers {
-		t.Logf("Blocker %d: ID=%s, UnblocksCount=%d", i, blocker.ID, blocker.UnblocksCount)
-	}
-}
-
 func TestBVClientCaching(t *testing.T) {
 	requireBVIntegration(t)
 	if !IsInstalled() {
@@ -327,9 +260,6 @@ func TestBVClientCaching(t *testing.T) {
 	}
 
 	client := NewBVClientWithOptions(projectRoot, 30*time.Second, 10*time.Second)
-
-	// Clear cache first
-	client.InvalidateCache()
 
 	// First call should populate cache
 	recs1, err := client.GetRecommendations(RecommendationOpts{})
@@ -347,20 +277,6 @@ func TestBVClientCaching(t *testing.T) {
 	if len(recs1) != len(recs2) {
 		t.Errorf("Cached results length mismatch: %d vs %d", len(recs1), len(recs2))
 	}
-}
-
-func TestBVClientInvalidateCache(t *testing.T) {
-	client := NewBVClient()
-
-	// This should not panic even without data
-	client.InvalidateCache()
-
-	// Verify cache is nil after invalidation
-	client.mu.RLock()
-	if client.triageCache != nil {
-		t.Error("Cache should be nil after InvalidateCache")
-	}
-	client.mu.RUnlock()
 }
 
 func TestRecommendationOptsDefaults(t *testing.T) {

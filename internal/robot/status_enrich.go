@@ -221,12 +221,3 @@ func updateActivity(paneID, content string) (time.Time, int) {
 
 	return state.lastTS, linesDelta
 }
-
-func getLastOutput(paneID string) time.Time {
-	outputStateMu.RLock()
-	defer outputStateMu.RUnlock()
-	if state, ok := paneStates[paneID]; ok {
-		return state.lastTS
-	}
-	return time.Time{}
-}

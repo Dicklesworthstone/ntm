@@ -72,12 +72,6 @@ func NewClaudeConfigProvisioner(baseDir string) *ClaudeConfigProvisioner {
 	return &ClaudeConfigProvisioner{BaseDir: baseDir}
 }
 
-// WithSourceDir overrides the config dir that entries are linked from.
-func (p *ClaudeConfigProvisioner) WithSourceDir(dir string) *ClaudeConfigProvisioner {
-	p.SourceDir = dir
-	return p
-}
-
 func (p *ClaudeConfigProvisioner) sourceDir() (string, error) {
 	if source := strings.TrimSpace(p.SourceDir); source != "" {
 		// Symlink targets are interpreted relative to the link's parent, not

@@ -52,20 +52,3 @@ func (d *Debouncer) Cancel() {
 		d.timer = nil
 	}
 }
-
-// Duration returns the debounce duration.
-func (d *Debouncer) Duration() time.Duration {
-	return d.duration
-}
-
-// Reset changes the debounce duration and cancels any pending callback.
-func (d *Debouncer) Reset(duration time.Duration) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	if d.timer != nil {
-		d.timer.Stop()
-		d.timer = nil
-	}
-	d.duration = duration
-}

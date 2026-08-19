@@ -188,8 +188,8 @@ func TestCheckAndRotate_NoAgentsAboveThreshold(t *testing.T) {
 
 func TestCheckAndRotateEmitsWarningAtConfiguredThreshold(t *testing.T) {
 	tracker := alerts.GetGlobalTracker()
-	tracker.Clear()
-	t.Cleanup(tracker.Clear)
+	clearAlertTracker(tracker)
+	t.Cleanup(func() { clearAlertTracker(tracker) })
 
 	monitor := NewContextMonitor(DefaultMonitorConfig())
 	monitor.RegisterAgent("test__cc_1", "%0", "claude-opus-4")
@@ -235,8 +235,8 @@ func TestCheckAndRotateRespectsMinimumSessionAge(t *testing.T) {
 	})
 
 	tracker := alerts.GetGlobalTracker()
-	tracker.Clear()
-	t.Cleanup(tracker.Clear)
+	clearAlertTracker(tracker)
+	t.Cleanup(func() { clearAlertTracker(tracker) })
 
 	monitor := NewContextMonitor(DefaultMonitorConfig())
 	const agentID = "test__cc_1"
@@ -288,8 +288,8 @@ func TestCheckAndRotateRespectsMinimumSessionAge(t *testing.T) {
 
 func TestRotateAgentFailureEmitsRotationAlert(t *testing.T) {
 	tracker := alerts.GetGlobalTracker()
-	tracker.Clear()
-	t.Cleanup(tracker.Clear)
+	clearAlertTracker(tracker)
+	t.Cleanup(func() { clearAlertTracker(tracker) })
 
 	monitor := NewContextMonitor(DefaultMonitorConfig())
 	monitor.RegisterAgent("test__cc_1", "%0", "claude-opus-4")
@@ -320,8 +320,8 @@ func TestRotateAgentFailureEmitsRotationAlert(t *testing.T) {
 
 func TestRotateAgentSuccessEmitsCompletionAlert(t *testing.T) {
 	tracker := alerts.GetGlobalTracker()
-	tracker.Clear()
-	t.Cleanup(tracker.Clear)
+	clearAlertTracker(tracker)
+	t.Cleanup(func() { clearAlertTracker(tracker) })
 
 	monitor := NewContextMonitor(DefaultMonitorConfig())
 	monitor.RegisterAgent("test__cc_1", "%0", "claude-opus-4")

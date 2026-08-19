@@ -229,36 +229,20 @@ func TestStatusIcon(t *testing.T) {
 	}
 }
 
-func TestIsASCII(t *testing.T) {
-	// Save and restore default
-	saved := Default
-	defer func() { Default = saved }()
-
-	SetDefault(ASCII)
-	if !IsASCII() {
-		t.Error("IsASCII() should be true when Default is ASCII")
-	}
-
-	SetDefault(Unicode)
-	if IsASCII() {
-		t.Error("IsASCII() should be false when Default is Unicode")
-	}
-}
-
 func TestSetDefaultAndCurrent(t *testing.T) {
 	saved := Default
 	defer func() { Default = saved }()
 
-	SetDefault(Unicode)
+	Default = Unicode
 	got := Current()
 	if !reflect.DeepEqual(got, Unicode) {
-		t.Error("Current() should return Unicode after SetDefault(Unicode)")
+		t.Error("Current() should return Unicode after Default = Unicode")
 	}
 
-	SetDefault(ASCII)
+	Default = ASCII
 	got = Current()
 	if !reflect.DeepEqual(got, ASCII) {
-		t.Error("Current() should return ASCII after SetDefault(ASCII)")
+		t.Error("Current() should return ASCII after Default = ASCII")
 	}
 }
 

@@ -126,48 +126,6 @@ func TestAddAlert_UpdateContext(t *testing.T) {
 // GetAlertStrings — additional coverage
 // =============================================================================
 
-func TestGetAlertStrings_Format(t *testing.T) {
-	t.Parallel()
-
-	// formatAlertString with all branches
-	tests := []struct {
-		name  string
-		alert Alert
-		want  string
-	}{
-		{
-			"message only",
-			Alert{Message: "Something happened"},
-			"Something happened",
-		},
-		{
-			"with session",
-			Alert{Message: "Error detected", Session: "myproj"},
-			"myproj: Error detected",
-		},
-		{
-			"with pane only",
-			Alert{Message: "Error", Pane: "%5"},
-			"Error (pane %5)",
-		},
-		{
-			"with session and pane",
-			Alert{Message: "Error detected", Session: "myproj", Pane: "%3"},
-			"myproj: Error detected (pane %3)",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			got := formatAlertString(tt.alert)
-			if got != tt.want {
-				t.Errorf("formatAlertString() = %q, want %q", got, tt.want)
-			}
-		})
-	}
-}
-
 // =============================================================================
 // detectErrorState — truncation of long matched line
 // =============================================================================

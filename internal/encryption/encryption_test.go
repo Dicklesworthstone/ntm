@@ -4,8 +4,6 @@ import (
 	"bytes"
 	"crypto/rand"
 	"errors"
-	"os"
-	"path/filepath"
 	"testing"
 )
 
@@ -66,7 +64,7 @@ func TestDecryptCorruptedCiphertext(t *testing.T) {
 	if err == nil {
 		t.Fatal("Decrypt: expected error")
 	}
-	if !IsCorruptedData(err) {
+	if !IsKind(err, ErrCorruptedData) {
 		t.Fatalf("expected corrupted-data error, got %v", err)
 	}
 }
@@ -76,7 +74,7 @@ func TestEncryptInvalidKey(t *testing.T) {
 	if err == nil {
 		t.Fatal("Encrypt: expected error")
 	}
-	if !IsInvalidKey(err) {
+	if !IsKind(err, ErrInvalidKey) {
 		t.Fatalf("expected invalid-key error, got %v", err)
 	}
 }
@@ -190,7 +188,7 @@ func TestDecryptDataTooShort(t *testing.T) {
 			if err == nil {
 				t.Fatal("expected error for short data")
 			}
-			if !IsCorruptedData(err) {
+			if !IsKind(err, ErrCorruptedData) {
 				t.Fatalf("expected corrupted_data error, got %v", err)
 			}
 			t.Logf("error type: %s", err)
@@ -215,7 +213,7 @@ func TestDecryptInvalidKey(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for invalid key")
 	}
-	if !IsInvalidKey(err) {
+	if !IsKind(err, ErrInvalidKey) {
 		t.Fatalf("expected invalid_key error, got %v", err)
 	}
 }
@@ -284,58 +282,6 @@ func TestIsKindNonError(t *testing.T) {
 // =============================================================================
 // EncryptFile / DecryptFile round-trip
 // =============================================================================
-
-func TestEncryptFileDecryptFileRoundTrip(t *testing.T) {
-	t.Parallel()
-	key := randomKey(t)
-	plaintext := []byte("file encryption round-trip test fixture")
-
-	srcPath := filepath.Join(t.TempDir(), "plain.txt")
-	encPath := filepath.Join(t.TempDir(), "encrypted.bin")
-	decPath := filepath.Join(t.TempDir(), "decrypted.txt")
-
-	if err := os.WriteFile(srcPath, plaintext, 0o600); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-
-	if err := EncryptFile(key, srcPath, encPath); err != nil {
-		t.Fatalf("EncryptFile: %v", err)
-	}
-	encData, _ := os.ReadFile(encPath)
-	t.Logf("encrypted file size: %d, format version: %d", len(encData), encData[0])
-
-	if err := DecryptFile(key, encPath, decPath); err != nil {
-		t.Fatalf("DecryptFile: %v", err)
-	}
-
-	got, err := os.ReadFile(decPath)
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
-	}
-	if !bytes.Equal(got, plaintext) {
-		t.Fatalf("file round-trip mismatch: got %q want %q", string(got), string(plaintext))
-	}
-}
-
-func TestEncryptFileBadSource(t *testing.T) {
-	t.Parallel()
-	key := randomKey(t)
-
-	err := EncryptFile(key, "/nonexistent/path.txt", filepath.Join(t.TempDir(), "out.bin"))
-	if err == nil {
-		t.Fatal("expected error for missing source file")
-	}
-}
-
-func TestDecryptFileBadSource(t *testing.T) {
-	t.Parallel()
-	key := randomKey(t)
-
-	err := DecryptFile(key, "/nonexistent/path.bin", filepath.Join(t.TempDir(), "out.txt"))
-	if err == nil {
-		t.Fatal("expected error for missing source file")
-	}
-}
 
 func randomKey(t *testing.T) []byte {
 	t.Helper()

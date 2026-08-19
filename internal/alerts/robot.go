@@ -1,8 +1,6 @@
 package alerts
 
 import (
-	"encoding/json"
-	"os"
 	"strings"
 	"time"
 )
@@ -59,54 +57,10 @@ func GenerateAndTrack(cfg Config) *Tracker {
 	return tracker
 }
 
-// PrintAlerts outputs all alerts in JSON format
-func PrintAlerts(cfg Config, includeResolved bool) error {
-	tracker := GenerateAndTrack(cfg)
-
-	active, resolved := tracker.GetAll()
-
-	output := AlertsOutput{
-		GeneratedAt: time.Now().UTC(),
-		Active:      active,
-		Summary:     tracker.Summary(),
-		Config:      cfg,
-	}
-
-	if includeResolved {
-		output.Resolved = resolved
-	}
-
-	encoder := json.NewEncoder(os.Stdout)
-	encoder.SetIndent("", "  ")
-	return encoder.Encode(output)
-}
-
 // GetActiveAlerts returns all currently active alerts
 func GetActiveAlerts(cfg Config) []Alert {
 	tracker := GenerateAndTrack(cfg)
 	return tracker.GetActive()
-}
-
-// GetAlertStrings returns active alerts as simple string messages
-// This is useful for integration with existing code that expects []string
-func GetAlertStrings(cfg Config) []string {
-	alerts := GetActiveAlerts(cfg)
-	messages := make([]string, len(alerts))
-	for i, alert := range alerts {
-		messages[i] = formatAlertString(alert)
-	}
-	return messages
-}
-
-func formatAlertString(alert Alert) string {
-	msg := alert.Message
-	if alert.Session != "" {
-		msg = alert.Session + ": " + msg
-	}
-	if alert.Pane != "" {
-		msg = msg + " (pane " + alert.Pane + ")"
-	}
-	return msg
 }
 
 // ToConfigAlerts converts config.AlertsConfig to alerts.Config

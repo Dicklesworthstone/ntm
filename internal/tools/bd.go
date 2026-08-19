@@ -71,22 +71,6 @@ func (a *BDAdapter) workingBinary(ctx context.Context, candidates []string) (str
 	return candidates[0], Version{}, lastErr
 }
 
-func (a *BDAdapter) resolveBinary() string {
-	candidates := a.binaryCandidates()
-	if len(candidates) == 0 {
-		return a.BinaryName()
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), a.Timeout())
-	defer cancel()
-
-	if path, _, err := a.workingBinary(ctx, candidates); err == nil {
-		return path
-	}
-
-	return candidates[0]
-}
-
 // Detect checks if bd is installed
 func (a *BDAdapter) Detect() (string, bool) {
 	candidates := a.binaryCandidates()

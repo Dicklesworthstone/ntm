@@ -1,7 +1,6 @@
 package codex
 
 import (
-	"reflect"
 	"testing"
 )
 
@@ -294,20 +293,6 @@ func TestClassifyEngagement(t *testing.T) {
 	}
 }
 
-// TestAllEngagementOutcomes_Closed guards the closed outcome set.
-func TestAllEngagementOutcomes_Closed(t *testing.T) {
-	want := []EngagementOutcome{
-		EngagementEngaged,
-		EngagementEngaging,
-		EngagementDialogStuck,
-		EngagementUnconfirmed,
-		EngagementRespawnRequired,
-	}
-	if !reflect.DeepEqual(AllEngagementOutcomes(), want) {
-		t.Fatalf("AllEngagementOutcomes() = %#v, want %#v", AllEngagementOutcomes(), want)
-	}
-}
-
 // TestDetectReplaceGoalDialog covers the #168 detection + old-goal-closed proof.
 func TestDetectReplaceGoalDialog(t *testing.T) {
 	t.Run("live-dialog-interactive-with-proof", func(t *testing.T) {
@@ -350,13 +335,4 @@ func TestDetectReplaceGoalDialog(t *testing.T) {
 			t.Errorf("expected Interactive=false without the confirm affordance")
 		}
 	})
-}
-
-func TestReplaceGoalSelection_Strings(t *testing.T) {
-	if ReplaceGoalReplace.String() != "replace" {
-		t.Errorf("ReplaceGoalReplace = %q", ReplaceGoalReplace)
-	}
-	if ReplaceGoalCancel.String() != "cancel" {
-		t.Errorf("ReplaceGoalCancel = %q", ReplaceGoalCancel)
-	}
 }

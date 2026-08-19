@@ -817,11 +817,6 @@ func snapshotPipeline(exec *PipelineExecution) *PipelineExecution {
 	return &snapshot
 }
 
-// GetPipelineExecution returns a pipeline by run ID (exported for CLI)
-func GetPipelineExecution(runID string) *PipelineExecution {
-	return getPipeline(runID)
-}
-
 // GetPipelineSnapshot returns a read-only snapshot of a pipeline, including live executor state when available.
 // When the in-memory registry has no entry (e.g. the run finished in a
 // different ntm process), it falls back to the persisted state file under
@@ -941,18 +936,6 @@ func loadAllPersistedSnapshots() []*PipelineExecution {
 		}
 	}
 	return snapshots
-}
-
-// GetAllPipelines returns all tracked pipelines (exported for CLI)
-func GetAllPipelines() []*PipelineExecution {
-	pipelineMu.RLock()
-	defer pipelineMu.RUnlock()
-
-	result := make([]*PipelineExecution, 0, len(pipelineRegistry))
-	for _, exec := range pipelineRegistry {
-		result = append(result, exec)
-	}
-	return result
 }
 
 // GetAllPipelineSnapshots returns stable, read-only pipeline snapshots sorted by start time descending.
@@ -1076,13 +1059,6 @@ func ParsePipelineVars(varsJSON string) (map[string]interface{}, error) {
 	}
 
 	return vars, nil
-}
-
-// ClearPipelineRegistry clears the pipeline registry (for testing)
-func ClearPipelineRegistry() {
-	pipelineMu.Lock()
-	pipelineRegistry = make(map[string]*PipelineExecution)
-	pipelineMu.Unlock()
 }
 
 // outputJSON writes JSON to stdout

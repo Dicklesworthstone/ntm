@@ -26,8 +26,8 @@ func TestResolvePaneExpr_DefaultsRef(t *testing.T) {
 	}
 
 	step := &Step{ID: "tpl", Pane: PaneSpec{Expr: "${defaults.triage_pane}"}}
-	if err := e.resolvePaneExpr(step); err != nil {
-		t.Fatalf("resolvePaneExpr() error = %v", err)
+	if err := e.resolvePaneExprCtx(context.Background(), step); err != nil {
+		t.Fatalf("resolvePaneExprCtx() error = %v", err)
 	}
 	if step.Pane.Index != 1 {
 		t.Fatalf("Pane.Index = %d, want 1", step.Pane.Index)
@@ -53,8 +53,8 @@ func TestResolvePaneExpr_VarsRef(t *testing.T) {
 	}
 
 	step := &Step{ID: "cmd", Pane: PaneSpec{Expr: "${vars.primary_pane}"}}
-	if err := e.resolvePaneExpr(step); err != nil {
-		t.Fatalf("resolvePaneExpr() error = %v", err)
+	if err := e.resolvePaneExprCtx(context.Background(), step); err != nil {
+		t.Fatalf("resolvePaneExprCtx() error = %v", err)
 	}
 	if step.Pane.Index != 3 {
 		t.Fatalf("Pane.Index = %d, want 3", step.Pane.Index)
@@ -78,9 +78,9 @@ func TestResolvePaneExpr_NonIntRejected(t *testing.T) {
 	}
 
 	step := &Step{ID: "tpl", Pane: PaneSpec{Expr: "${vars.session_id}"}}
-	err := e.resolvePaneExpr(step)
+	err := e.resolvePaneExprCtx(context.Background(), step)
 	if err == nil {
-		t.Fatalf("resolvePaneExpr() error = nil, want non-int error")
+		t.Fatalf("resolvePaneExprCtx() error = nil, want non-int error")
 	}
 	if !strings.Contains(err.Error(), "not an integer pane index") {
 		t.Fatalf("error = %v, want substring %q", err, "not an integer pane index")
@@ -105,9 +105,9 @@ func TestResolvePaneExpr_NonPositiveRejected(t *testing.T) {
 	}
 
 	step := &Step{ID: "cmd", Pane: PaneSpec{Expr: "${vars.bad_pane}"}}
-	err := e.resolvePaneExpr(step)
+	err := e.resolvePaneExprCtx(context.Background(), step)
 	if err == nil {
-		t.Fatalf("resolvePaneExpr() error = nil, want positive-int error")
+		t.Fatalf("resolvePaneExprCtx() error = nil, want positive-int error")
 	}
 	if !strings.Contains(err.Error(), "1-based") {
 		t.Fatalf("error = %v, want substring %q", err, "1-based")
@@ -128,8 +128,8 @@ func TestResolvePaneExpr_NoOpWhenIndexAlreadySet(t *testing.T) {
 	}
 
 	step := &Step{ID: "tpl", Pane: PaneSpec{Index: 3}}
-	if err := e.resolvePaneExpr(step); err != nil {
-		t.Fatalf("resolvePaneExpr() error = %v on static-index step", err)
+	if err := e.resolvePaneExprCtx(context.Background(), step); err != nil {
+		t.Fatalf("resolvePaneExprCtx() error = %v on static-index step", err)
 	}
 	if step.Pane.Index != 3 {
 		t.Fatalf("Pane.Index = %d, want 3 (unchanged)", step.Pane.Index)
@@ -137,7 +137,7 @@ func TestResolvePaneExpr_NoOpWhenIndexAlreadySet(t *testing.T) {
 }
 
 // TestResolvePaneExpr_NoOpWhenExprEmpty guards the early-return path —
-// resolvePaneExpr must not error on steps that simply don't use a pane
+// resolvePaneExprCtx must not error on steps that simply don't use a pane
 // expression.
 func TestResolvePaneExpr_NoOpWhenExprEmpty(t *testing.T) {
 	cfg := DefaultExecutorConfig("pane-expr-empty")
@@ -150,8 +150,8 @@ func TestResolvePaneExpr_NoOpWhenExprEmpty(t *testing.T) {
 	}
 
 	step := &Step{ID: "no-pane"}
-	if err := e.resolvePaneExpr(step); err != nil {
-		t.Fatalf("resolvePaneExpr() error = %v on stepless dispatch", err)
+	if err := e.resolvePaneExprCtx(context.Background(), step); err != nil {
+		t.Fatalf("resolvePaneExprCtx() error = %v on stepless dispatch", err)
 	}
 	if step.Pane.Index != 0 || step.Pane.Expr != "" {
 		t.Fatalf("Pane = %+v, want zero-value", step.Pane)

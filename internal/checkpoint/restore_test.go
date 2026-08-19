@@ -305,224 +305,6 @@ func TestRestorer_RestoreFromCheckpoint_WorkingDirNotDirectory(t *testing.T) {
 	}
 }
 
-func TestRestorer_ValidateCheckpoint_DirectoryNotFound(t *testing.T) {
-	r := NewRestorer()
-
-	cp := &Checkpoint{
-		WorkingDir: "/nonexistent/path",
-		Session: SessionState{
-			Panes: []PaneState{{Index: 0}},
-		},
-	}
-
-	issues := r.ValidateCheckpoint(cp, RestoreOptions{})
-
-	found := false
-	for _, issue := range issues {
-		if containsSubstr(issue, "directory not found") {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Error("Expected directory not found issue")
-	}
-}
-
-func TestRestorer_ValidateCheckpoint_NoPanes(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "ntm-restore-test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	r := NewRestorer()
-
-	cp := &Checkpoint{
-		WorkingDir: tmpDir,
-		Session: SessionState{
-			Panes: []PaneState{}, // Empty
-		},
-	}
-
-	issues := r.ValidateCheckpoint(cp, RestoreOptions{})
-
-	found := false
-	for _, issue := range issues {
-		if containsSubstr(issue, "no panes") {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Error("Expected 'no panes' issue")
-	}
-}
-
-func TestRestorer_ValidateCheckpoint_WorkingDirNotDirectory(t *testing.T) {
-	tmpDir := t.TempDir()
-	filePath := filepath.Join(tmpDir, "not-a-dir")
-	if err := os.WriteFile(filePath, []byte("data"), 0644); err != nil {
-		t.Fatalf("WriteFile failed: %v", err)
-	}
-
-	r := NewRestorerWithStorage(NewStorageWithDir(tmpDir))
-	cp := &Checkpoint{
-		WorkingDir: filePath,
-		Session: SessionState{
-			Panes: []PaneState{{Index: 0}},
-		},
-	}
-
-	issues := r.ValidateCheckpoint(cp, RestoreOptions{})
-
-	found := false
-	for _, issue := range issues {
-		if containsSubstr(issue, "not a directory") {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Fatalf("expected not-a-directory issue, got %v", issues)
-	}
-}
-
-func TestRestorer_ValidateCheckpoint_MissingScrollback(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "ntm-restore-test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	storage := NewStorageWithDir(tmpDir)
-	r := NewRestorerWithStorage(storage)
-
-	// Create a checkpoint directory without scrollback files
-	cp := &Checkpoint{
-		ID:          "test-checkpoint",
-		SessionName: "test-session",
-		WorkingDir:  tmpDir,
-		Session: SessionState{
-			Panes: []PaneState{
-				{
-					Index:          0,
-					ID:             "%0",
-					ScrollbackFile: "panes/pane_0.txt", // File doesn't exist
-				},
-			},
-		},
-	}
-
-	// Create the checkpoint directory
-	cpDir := storage.CheckpointDir(cp.SessionName, cp.ID)
-	if err := os.MkdirAll(cpDir, 0755); err != nil {
-		t.Fatalf("Failed to create checkpoint dir: %v", err)
-	}
-
-	issues := r.ValidateCheckpoint(cp, RestoreOptions{InjectContext: true})
-
-	found := false
-	for _, issue := range issues {
-		if containsSubstr(issue, "scrollback file missing") {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Errorf("Expected 'scrollback file missing' issue, got: %v", issues)
-	}
-}
-
-func TestRestorer_ValidateCheckpoint_WindowLayoutReferencesMissingWindow(t *testing.T) {
-	r := NewRestorer()
-
-	cp := &Checkpoint{
-		WorkingDir: t.TempDir(),
-		Session: SessionState{
-			Panes: []PaneState{
-				{Index: 0, WindowIndex: 0},
-				{Index: 0, WindowIndex: 1},
-			},
-			WindowLayouts: []WindowLayoutState{
-				{WindowIndex: 0, Layout: "even-horizontal"},
-				{WindowIndex: 9, Layout: "main-vertical"},
-			},
-		},
-	}
-
-	issues := r.ValidateCheckpoint(cp, RestoreOptions{})
-
-	found := false
-	for _, issue := range issues {
-		if containsSubstr(issue, "references missing window 9") {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Fatalf("expected missing-window layout issue, got %v", issues)
-	}
-}
-
-func TestRestorer_ValidateCheckpoint_WindowLayoutMissingForExistingWindow(t *testing.T) {
-	r := NewRestorer()
-
-	cp := &Checkpoint{
-		WorkingDir: t.TempDir(),
-		Session: SessionState{
-			Panes: []PaneState{
-				{Index: 0, WindowIndex: 0},
-				{Index: 0, WindowIndex: 1},
-			},
-			WindowLayouts: []WindowLayoutState{
-				{WindowIndex: 0, Layout: "even-horizontal"},
-			},
-		},
-	}
-
-	issues := r.ValidateCheckpoint(cp, RestoreOptions{})
-
-	found := false
-	for _, issue := range issues {
-		if containsSubstr(issue, "window layout missing for window 1") {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Fatalf("expected missing-layout issue, got %v", issues)
-	}
-}
-
-func TestRestorer_ValidateCheckpoint_LegacyLayoutWarnsForMultiWindowSession(t *testing.T) {
-	r := NewRestorer()
-
-	cp := &Checkpoint{
-		WorkingDir: t.TempDir(),
-		Session: SessionState{
-			Panes: []PaneState{
-				{Index: 0, WindowIndex: 0},
-				{Index: 0, WindowIndex: 1},
-			},
-			Layout: "even-horizontal",
-		},
-	}
-
-	issues := r.ValidateCheckpoint(cp, RestoreOptions{})
-
-	found := false
-	for _, issue := range issues {
-		if containsSubstr(issue, "legacy single layout string") {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Fatalf("expected legacy-layout warning, got %v", issues)
-	}
-}
-
 func TestRestorer_RestoreFromCheckpoint_SkipsLegacyLayoutForMultiWindowSession(t *testing.T) {
 	testutil.RequireTmuxThrottled(t)
 
@@ -575,40 +357,6 @@ func TestRestorer_RestoreFromCheckpoint_SkipsLegacyLayoutForMultiWindowSession(t
 	}
 	if !found {
 		t.Fatalf("expected legacy-layout skip warning, got %v", result.Warnings)
-	}
-}
-
-func TestRestorer_loadPaneScrollback_Compressed(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "ntm-restore-test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	storage := NewStorageWithDir(tmpDir)
-	r := NewRestorerWithStorage(storage)
-
-	const (
-		sessionName  = "test-session"
-		checkpointID = "test-checkpoint"
-		paneID       = "%0"
-		content      = "compressed scrollback\nline 2\n"
-	)
-
-	compressed, err := gzipCompress([]byte(content))
-	if err != nil {
-		t.Fatalf("gzipCompress failed: %v", err)
-	}
-	if _, err := storage.SaveCompressedScrollback(sessionName, checkpointID, paneID, compressed); err != nil {
-		t.Fatalf("SaveCompressedScrollback failed: %v", err)
-	}
-
-	got, err := r.loadPaneScrollback(sessionName, checkpointID, paneID)
-	if err != nil {
-		t.Fatalf("loadPaneScrollback failed: %v", err)
-	}
-	if got != content {
-		t.Fatalf("loadPaneScrollback = %q, want %q", got, content)
 	}
 }
 
@@ -698,34 +446,6 @@ func TestTruncateToLines(t *testing.T) {
 			t.Errorf("truncateToLines(%q, %d) = %q, want %q",
 				tt.content, tt.maxLines, got, tt.want)
 		}
-	}
-}
-
-func TestValidateCheckpoint_RejectsScrollbackTraversal(t *testing.T) {
-	storage := NewStorageWithDir(t.TempDir())
-	r := NewRestorerWithStorage(storage)
-
-	cp := &Checkpoint{
-		ID:          "test-checkpoint",
-		SessionName: "test-session",
-		WorkingDir:  t.TempDir(),
-		Session: SessionState{
-			Panes: []PaneState{
-				{
-					Index:          0,
-					ID:             "%0",
-					ScrollbackFile: "../../etc/passwd",
-				},
-			},
-		},
-	}
-
-	issues := r.ValidateCheckpoint(cp, RestoreOptions{InjectContext: true})
-	if len(issues) != 1 {
-		t.Fatalf("expected 1 issue, got %d: %v", len(issues), issues)
-	}
-	if !containsSubstr(issues[0], "invalid scrollback path") {
-		t.Fatalf("expected invalid scrollback path issue, got %v", issues)
 	}
 }
 
@@ -827,21 +547,6 @@ func TestFormatContextInjection(t *testing.T) {
 	}
 	if !containsSubstr(result, "World") {
 		t.Error("Expected content to be included")
-	}
-}
-
-func TestRestorer_Restore_CheckpointNotFound(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "ntm-restore-test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	r := NewRestorerWithStorage(NewStorageWithDir(tmpDir))
-
-	_, err = r.Restore("nonexistent-session", "nonexistent-checkpoint", RestoreOptions{})
-	if err == nil {
-		t.Error("Restore should fail for nonexistent checkpoint")
 	}
 }
 
@@ -1022,21 +727,6 @@ func TestRestorer_RestoreFromCheckpoint_DryRun_NoAssignments(t *testing.T) {
 	}
 	if result.BVSummary != nil {
 		t.Error("result.BVSummary should be nil for checkpoint without BV data")
-	}
-}
-
-func TestRestorer_RestoreLatest_NoCheckpoints(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "ntm-restore-test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	r := NewRestorerWithStorage(NewStorageWithDir(tmpDir))
-
-	_, err = r.RestoreLatest("nonexistent-session", RestoreOptions{})
-	if err == nil {
-		t.Error("RestoreLatest should fail when no checkpoints exist")
 	}
 }
 

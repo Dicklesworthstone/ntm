@@ -1,7 +1,6 @@
 package swarm
 
 import (
-	"context"
 	"errors"
 	"sync"
 	"testing"
@@ -924,24 +923,6 @@ func TestShutdownConfig_Defaults(t *testing.T) {
 	}
 
 	t.Log("[TEST] PASS: default shutdown config correct")
-}
-
-func TestSwarmOrchestrator_ShutdownFromPlan_NilPlan(t *testing.T) {
-	t.Log("[TEST] TestSwarmOrchestrator_ShutdownFromPlan_NilPlan: nil plan handling")
-
-	orchestrator := NewSwarmOrchestrator()
-	cfg := DefaultShutdownConfig()
-
-	result, err := orchestrator.ShutdownFromPlan(context.TODO(), nil, cfg)
-	if err != nil {
-		t.Errorf("[TEST] FAIL: unexpected error: %v", err)
-	}
-
-	if result.SessionsDestroyed != 0 {
-		t.Errorf("[TEST] FAIL: expected 0 sessions destroyed, got %d", result.SessionsDestroyed)
-	}
-
-	t.Log("[TEST] PASS: nil plan handled correctly")
 }
 
 func TestSwarmOrchestrator_ShutdownFromPlan_ExtractsSessionNames(t *testing.T) {

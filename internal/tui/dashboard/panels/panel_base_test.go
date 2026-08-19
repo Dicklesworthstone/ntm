@@ -5,40 +5,24 @@ import (
 	"time"
 )
 
-func TestDefaultPanelConfig(t *testing.T) {
-	t.Parallel()
-
-	cfg := DefaultPanelConfig("metrics", "Metrics")
-	if cfg.ID != "metrics" {
-		t.Errorf("ID = %q", cfg.ID)
-	}
-	if cfg.Title != "Metrics" {
-		t.Errorf("Title = %q", cfg.Title)
-	}
-	if cfg.Priority != PriorityNormal {
-		t.Errorf("Priority = %v", cfg.Priority)
-	}
-	if cfg.RefreshInterval != 5*time.Second {
-		t.Errorf("RefreshInterval = %v", cfg.RefreshInterval)
-	}
-	if cfg.MinWidth != 20 {
-		t.Errorf("MinWidth = %d", cfg.MinWidth)
-	}
-	if cfg.MinHeight != 5 {
-		t.Errorf("MinHeight = %d", cfg.MinHeight)
-	}
-	if !cfg.Collapsible {
-		t.Error("Collapsible should default true")
-	}
-	if cfg.DefaultCollapsed {
-		t.Error("DefaultCollapsed should default false")
+// testPanelConfig mirrors the removed DefaultPanelConfig defaults for
+// exercising live PanelBase behavior.
+func testPanelConfig(id, title string) PanelConfig {
+	return PanelConfig{
+		ID:              id,
+		Title:           title,
+		Priority:        PriorityNormal,
+		RefreshInterval: 5 * time.Second,
+		MinWidth:        20,
+		MinHeight:       5,
+		Collapsible:     true,
 	}
 }
 
 func TestPanelBaseSizeAndFocus(t *testing.T) {
 	t.Parallel()
 
-	cfg := DefaultPanelConfig("alerts", "Alerts")
+	cfg := testPanelConfig("alerts", "Alerts")
 	base := NewPanelBase(cfg)
 
 	base.SetSize(80, 20)
@@ -62,7 +46,7 @@ func TestPanelBaseSizeAndFocus(t *testing.T) {
 func TestPanelBaseLastUpdate(t *testing.T) {
 	t.Parallel()
 
-	cfg := DefaultPanelConfig("beads", "Beads")
+	cfg := testPanelConfig("beads", "Beads")
 	base := NewPanelBase(cfg)
 	now := time.Now()
 	base.SetLastUpdate(now)
@@ -75,7 +59,7 @@ func TestPanelBaseLastUpdate(t *testing.T) {
 func TestPanelBaseRetryTracking(t *testing.T) {
 	t.Parallel()
 
-	cfg := DefaultPanelConfig("cass", "CASS")
+	cfg := testPanelConfig("cass", "CASS")
 	base := NewPanelBase(cfg)
 
 	if base.IsRetrying() {
@@ -120,7 +104,7 @@ func TestPanelBaseRetryTracking(t *testing.T) {
 func TestPanelBaseMaxRetries(t *testing.T) {
 	t.Parallel()
 
-	cfg := DefaultPanelConfig("history", "History")
+	cfg := testPanelConfig("history", "History")
 	base := NewPanelBase(cfg)
 
 	if base.MaxRetries() != 0 {
@@ -136,7 +120,7 @@ func TestPanelBaseMaxRetries(t *testing.T) {
 func TestPanelBaseKeybindingsDefault(t *testing.T) {
 	t.Parallel()
 
-	cfg := DefaultPanelConfig("metrics", "Metrics")
+	cfg := testPanelConfig("metrics", "Metrics")
 	base := NewPanelBase(cfg)
 	if base.Keybindings() != nil {
 		t.Error("Keybindings() should return nil by default")

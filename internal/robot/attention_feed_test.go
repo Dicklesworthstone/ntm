@@ -14,7 +14,6 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/robot/adapters"
 	"github.com/Dicklesworthstone/ntm/internal/state"
 	"github.com/Dicklesworthstone/ntm/internal/tracker"
-	"github.com/Dicklesworthstone/ntm/internal/watcher"
 )
 
 func newTestAttentionFeed(t *testing.T) *AttentionFeed {
@@ -2901,157 +2900,6 @@ func TestNewBusAttentionEvent_AlertCritical(t *testing.T) {
 	}
 }
 
-func TestAttentionSignalAnnotations_Table(t *testing.T) {
-	timeline := time.Date(2026, 3, 21, 3, 20, 0, 0, time.UTC)
-
-	tests := []struct {
-		name               string
-		event              AttentionEvent
-		wantSignal         string
-		wantReasonContains string
-		wantMetadataKey    string
-		wantActionability  Actionability
-	}{
-		{
-			name: "session changed",
-			event: mustLoggedAttentionEvent(t, ntmevents.Event{
-				Timestamp: timeline,
-				Type:      ntmevents.EventSessionCreate,
-				Session:   "proj",
-			}),
-			wantSignal:         attentionSignalSessionChanged,
-			wantReasonContains: "session lifecycle",
-			wantActionability:  ActionabilityInteresting,
-		},
-		{
-			name: "pane changed",
-			event: NewTrackerEvent(tracker.StateChange{
-				Timestamp: timeline,
-				Type:      tracker.ChangePaneCreated,
-				Session:   "proj",
-				Pane:      "4",
-			}),
-			wantSignal:         attentionSignalPaneChanged,
-			wantReasonContains: "pane lifecycle",
-			wantActionability:  ActionabilityInteresting,
-		},
-		{
-			name:               "agent state changed",
-			event:              NewAgentStateChangeEvent("proj", 2, "cc-2", "working", "idle", "activity_tracker"),
-			wantSignal:         attentionSignalAgentStateChanged,
-			wantReasonContains: "agent lifecycle",
-			wantActionability:  ActionabilityInteresting,
-		},
-		{
-			name:               "stalled",
-			event:              mustBusAttentionEvent(t, ntmevents.NewAgentStallEvent("proj", "cod-1", 45, "waiting")),
-			wantSignal:         attentionSignalStalled,
-			wantReasonContains: "stall heuristic",
-			wantMetadataKey:    "signal_threshold_seconds",
-			wantActionability:  ActionabilityActionRequired,
-		},
-		{
-			name:               "context hot",
-			event:              mustBusAttentionEvent(t, ntmevents.NewContextWarningEvent("proj", "cc-1", 92.5, 1200)),
-			wantSignal:         attentionSignalContextHot,
-			wantReasonContains: "90%",
-			wantMetadataKey:    "signal_threshold_percent",
-			wantActionability:  ActionabilityActionRequired,
-		},
-		{
-			name:               "rate limited",
-			event:              mustBusAttentionEvent(t, ntmevents.NewWebhookEvent(ntmevents.WebhookAgentRateLimit, "proj", "2", "cc-1", "429 Too Many Requests", nil)),
-			wantSignal:         attentionSignalRateLimited,
-			wantReasonContains: "rate-limit",
-			wantMetadataKey:    "signal_threshold_rationale",
-			wantActionability:  ActionabilityActionRequired,
-		},
-		{
-			name:               "alert raised",
-			event:              mustBusAttentionEvent(t, ntmevents.NewAlertEvent("proj", "alert-4", "health", "warning", "disk warm")),
-			wantSignal:         attentionSignalAlertRaised,
-			wantReasonContains: "alert emitted",
-			wantActionability:  ActionabilityActionRequired,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			signal, _ := tt.event.Details["signal"].(string)
-			reason, _ := tt.event.Details["signal_reason"].(string)
-			t.Logf("signal=%q reason=%q summary=%q actionability=%q details=%v", signal, reason, tt.event.Summary, tt.event.Actionability, tt.event.Details)
-
-			if signal != tt.wantSignal {
-				t.Fatalf("signal = %q, want %q", signal, tt.wantSignal)
-			}
-			if !strings.Contains(reason, tt.wantReasonContains) {
-				t.Fatalf("signal_reason = %q, want substring %q", reason, tt.wantReasonContains)
-			}
-			if tt.wantMetadataKey != "" {
-				if _, ok := tt.event.Details[tt.wantMetadataKey]; !ok {
-					t.Fatalf("missing metadata key %q in details=%v", tt.wantMetadataKey, tt.event.Details)
-				}
-			}
-			if tt.wantActionability != "" && tt.event.Actionability != tt.wantActionability {
-				t.Fatalf("actionability = %q, want %q", tt.event.Actionability, tt.wantActionability)
-			}
-		})
-	}
-}
-
-func TestAttentionSignal_NormalizesLifecycleActionabilityAndActions(t *testing.T) {
-	tests := []struct {
-		name       string
-		event      AttentionEvent
-		wantSignal string
-	}{
-		{
-			name: "session created from tracker",
-			event: NewTrackerEvent(tracker.StateChange{
-				Timestamp: time.Date(2026, 3, 21, 3, 23, 0, 0, time.UTC),
-				Type:      tracker.ChangeSessionCreated,
-				Session:   "proj",
-			}),
-			wantSignal: attentionSignalSessionChanged,
-		},
-		{
-			name: "pane created from tracker",
-			event: NewTrackerEvent(tracker.StateChange{
-				Timestamp: time.Date(2026, 3, 21, 3, 23, 30, 0, time.UTC),
-				Type:      tracker.ChangePaneCreated,
-				Session:   "proj",
-				Pane:      "7",
-			}),
-			wantSignal: attentionSignalPaneChanged,
-		},
-		{
-			name:       "agent state change from helper",
-			event:      NewAgentStateChangeEvent("proj", 3, "cod-3", "idle", "working", "activity_tracker"),
-			wantSignal: attentionSignalAgentStateChanged,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := tt.event.Details["signal"]; got != tt.wantSignal {
-				t.Fatalf("signal = %#v, want %q", got, tt.wantSignal)
-			}
-			if tt.event.Actionability != ActionabilityInteresting {
-				t.Fatalf("actionability = %q, want %q", tt.event.Actionability, ActionabilityInteresting)
-			}
-			if tt.event.Severity != SeverityInfo {
-				t.Fatalf("severity = %q, want %q", tt.event.Severity, SeverityInfo)
-			}
-			if len(tt.event.NextActions) == 0 {
-				t.Error("NextActions must suggest follow-up commands")
-			}
-			if tt.event.NextActions[0].Action != "robot-status" {
-				t.Fatalf("next action = %q, want robot-status", tt.event.NextActions[0].Action)
-			}
-		})
-	}
-}
-
 func TestAttentionSignal_ContextHotThresholdBoundary(t *testing.T) {
 	tests := []struct {
 		name              string
@@ -3143,45 +2991,6 @@ func TestAttentionSignal_AlertInfoPreservesSeverity(t *testing.T) {
 	}
 	if len(event.NextActions) != 1 || event.NextActions[0].Action != "robot-status" {
 		t.Fatalf("next_actions = %v, want single robot-status action", event.NextActions)
-	}
-}
-
-func TestNewAgentStateChangeEvent(t *testing.T) {
-	event := NewAgentStateChangeEvent("myproject", 2, "cc_1", "generating", "idle", "activity_tracker")
-
-	if event.Session != "myproject" {
-		t.Errorf("Session = %q, want %q", event.Session, "myproject")
-	}
-	if event.Pane != 2 {
-		t.Errorf("Pane = %d, want 2", event.Pane)
-	}
-	if event.Category != EventCategoryAgent {
-		t.Errorf("Category = %q, want %q", event.Category, EventCategoryAgent)
-	}
-	if event.Type != EventTypeAgentStateChange {
-		t.Errorf("Type = %q, want %q", event.Type, EventTypeAgentStateChange)
-	}
-	if event.Actionability != ActionabilityInteresting {
-		t.Errorf("Actionability = %q, want %q (idle state)", event.Actionability, ActionabilityInteresting)
-	}
-
-	// Check details
-	if event.Details["agent_id"] != "cc_1" {
-		t.Errorf("details.agent_id = %v, want cc_1", event.Details["agent_id"])
-	}
-}
-
-func TestNewFileConflictEvent(t *testing.T) {
-	event := NewFileConflictEvent("myproject", "internal/robot/types.go", []string{"cc_1", "cc_2"})
-
-	if event.Actionability != ActionabilityActionRequired {
-		t.Errorf("Actionability = %q, want %q", event.Actionability, ActionabilityActionRequired)
-	}
-	if event.Severity != SeverityError {
-		t.Errorf("Severity = %q, want %q", event.Severity, SeverityError)
-	}
-	if len(event.NextActions) == 0 {
-		t.Error("NextActions should not be empty for file conflicts")
 	}
 }
 
@@ -3806,45 +3615,6 @@ func TestNewBusAttentionEvent_FileConflict(t *testing.T) {
 	}
 	if !foundDiff {
 		t.Error("NextActions should include robot-diff guidance")
-	}
-}
-
-func TestNewReservationConflictEvent_UsesCanonicalNextActions(t *testing.T) {
-
-	conflict := watcher.FileConflict{
-		Path:           "internal/auth/handler.go",
-		RequestorAgent: "BlueLake",
-		RequestorPane:  "cc_1",
-		SessionName:    "myproject",
-		Holders:        []string{"GreenCastle", "RedMountain"},
-		DetectedAt:     time.Date(2026, 3, 24, 5, 0, 0, 0, time.UTC),
-	}
-
-	att, ok := NewReservationConflictEvent(conflict)
-	if !ok {
-		t.Fatal("expected watcher reservation conflict to normalize")
-	}
-
-	foundInspectCoordination := false
-	for _, action := range att.NextActions {
-		if strings.Contains(action.Args, "--session=") {
-			t.Errorf("NextAction args should not use stale --session form: %q", action.Args)
-		}
-		if strings.Contains(action.Args, "--file=") {
-			t.Errorf("NextAction args should not use unsupported --file form: %q", action.Args)
-		}
-		if action.Action == "robot-locks" {
-			t.Errorf("NextActions should not reference nonexistent robot-locks action: %+v", action)
-		}
-		if action.Action == "robot-inspect-coordination" {
-			foundInspectCoordination = true
-			if action.Args != "--robot-inspect-coordination=BlueLake" {
-				t.Errorf("inspect-coordination args = %q, want %q", action.Args, "--robot-inspect-coordination=BlueLake")
-			}
-		}
-	}
-	if !foundInspectCoordination {
-		t.Error("NextActions should include robot-inspect-coordination guidance")
 	}
 }
 

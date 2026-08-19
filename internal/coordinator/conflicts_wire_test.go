@@ -149,7 +149,7 @@ func drainConflictEvents(c *SessionCoordinator) []CoordinatorEvent {
 	var events []CoordinatorEvent
 	for {
 		select {
-		case ev := <-c.Events():
+		case ev := <-c.events:
 			events = append(events, ev)
 		default:
 			return events

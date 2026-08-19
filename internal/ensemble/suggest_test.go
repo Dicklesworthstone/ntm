@@ -170,46 +170,6 @@ func TestSuggestionEngine_Suggest_RootCauseQuestion(t *testing.T) {
 	}
 }
 
-func TestSuggestionEngine_Score(t *testing.T) {
-	engine := NewSuggestionEngine()
-
-	tests := []struct {
-		question   string
-		presetName string
-		wantMin    float64
-	}{
-		{"security vulnerabilities", "safety-risk", 0.1},
-		{"find bugs", "bug-hunt", 0.1},
-		{"new features", "idea-forge", 0.1},
-		{"architecture review", "architecture-review", 0.1},
-		{"root cause analysis", "root-cause-analysis", 0.1},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.question, func(t *testing.T) {
-			score := engine.Score(tt.question, tt.presetName)
-			t.Logf("Score(%q, %q) = %.2f", tt.question, tt.presetName, score)
-			if score < tt.wantMin {
-				t.Errorf("score %.2f is below minimum %.2f", score, tt.wantMin)
-			}
-		})
-	}
-}
-
-func TestSuggestionEngine_ListPresets(t *testing.T) {
-	engine := NewSuggestionEngine()
-	presets := engine.ListPresets()
-
-	if len(presets) != len(EmbeddedEnsembles) {
-		t.Errorf("expected %d presets, got %d", len(EmbeddedEnsembles), len(presets))
-	}
-
-	t.Logf("Available presets (%d):", len(presets))
-	for _, p := range presets {
-		t.Logf("  - %s", p)
-	}
-}
-
 func TestSuggest_SecurityKeywords(t *testing.T) {
 	engine := NewSuggestionEngine()
 	input := "Check for security vulnerabilities and XSS risk"
@@ -378,15 +338,5 @@ func BenchmarkSuggest(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		engine.Suggest(question)
-	}
-}
-
-func BenchmarkScore(b *testing.B) {
-	engine := NewSuggestionEngine()
-	question := "What security vulnerabilities exist in this codebase?"
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		engine.Score(question, "safety-risk")
 	}
 }

@@ -85,22 +85,6 @@ func (e *EventEmitter) Emit(ev BusEvent) {
 	}
 }
 
-// Close stops the background publisher and waits for in-flight publishes to finish.
-func (e *EventEmitter) Close() {
-	e.closeOnce.Do(func() {
-		e.mu.Lock()
-		e.closed = true
-		close(e.ch)
-		e.mu.Unlock()
-		e.wg.Wait()
-	})
-}
-
-// Dropped returns the number of dropped events.
-func (e *EventEmitter) Dropped() int64 {
-	return e.dropped.Load()
-}
-
 var (
 	defaultEmitterOnce sync.Once
 	defaultEmitter     *EventEmitter

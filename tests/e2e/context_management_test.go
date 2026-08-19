@@ -551,65 +551,6 @@ func TestContextLimits(t *testing.T) {
 	logger.Log("PASS: Context limits test completed")
 }
 
-// TestTokenEstimation tests token count estimation utilities.
-func TestTokenEstimation(t *testing.T) {
-	testutil.RequireE2E(t)
-
-	logger := testutil.NewTestLoggerStdout(t)
-	logger.LogSection("Token Estimation E2E Test")
-
-	// Test EstimateTokens
-	testCases := []struct {
-		chars    int
-		minToken int64
-		maxToken int64
-	}{
-		{100, 20, 40},
-		{1000, 200, 400},
-		{10000, 2000, 4000},
-	}
-
-	for _, tc := range testCases {
-		tokens := ntmctx.EstimateTokens(tc.chars)
-		logger.Log("%d chars -> %d tokens (expected %d-%d)",
-			tc.chars, tokens, tc.minToken, tc.maxToken)
-
-		if tokens < tc.minToken || tokens > tc.maxToken {
-			t.Errorf("EstimateTokens(%d) = %d, expected %d-%d",
-				tc.chars, tokens, tc.minToken, tc.maxToken)
-		}
-	}
-
-	// Test ParseTokenCount
-	parseCases := []struct {
-		input    string
-		expected int64
-		ok       bool
-	}{
-		{"1000", 1000, true},
-		{"1,000", 1000, true},
-		{"10k", 10000, true},
-		{"1.5k", 1500, true},
-		{"1M", 1000000, true},
-		{"invalid", 0, false},
-	}
-
-	for _, tc := range parseCases {
-		result, ok := ntmctx.ParseTokenCount(tc.input)
-		logger.Log("ParseTokenCount(%q) = %d, ok=%v (expected %d, %v)",
-			tc.input, result, ok, tc.expected, tc.ok)
-
-		if ok != tc.ok {
-			t.Errorf("ParseTokenCount(%q) ok=%v, expected %v", tc.input, ok, tc.ok)
-		}
-		if ok && result != tc.expected {
-			t.Errorf("ParseTokenCount(%q) = %d, expected %d", tc.input, result, tc.expected)
-		}
-	}
-
-	logger.Log("PASS: Token estimation test completed")
-}
-
 // TestRobotModeContextParsing tests parsing context info from robot mode output.
 func TestRobotModeContextParsing(t *testing.T) {
 	testutil.RequireE2E(t)

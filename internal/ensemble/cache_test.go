@@ -7,22 +7,6 @@ import (
 	"time"
 )
 
-func TestCache_ContextHashKey(t *testing.T) {
-	mode := &ReasoningMode{ID: "deductive", Code: "A1", Category: CategoryFormal, Tier: TierCore}
-	cfg := ModeOutputConfig{Question: "Why?", AgentType: "cc", TokenCap: 1000}
-	input := map[string]any{"mode": mode.ID, "question": cfg.Question}
-	logTestStartCache(t, input)
-
-	fp, err := BuildModeOutputFingerprint("", mode, cfg)
-	logTestResultCache(t, fp)
-	assertNoErrorCache(t, "build fingerprint", err)
-	assertTrueCache(t, "context hash derived", fp.ContextHash != "")
-
-	fp2, err := BuildModeOutputFingerprint("", mode, cfg)
-	assertNoErrorCache(t, "build fingerprint again", err)
-	assertEqualCache(t, "cache key stable", fp.CacheKey(), fp2.CacheKey())
-}
-
 func TestCache_HitMiss(t *testing.T) {
 	input := map[string]any{"mode": "deductive"}
 	logTestStartCache(t, input)
@@ -44,26 +28,6 @@ func TestCache_HitMiss(t *testing.T) {
 	miss := cache.Lookup(ModeOutputFingerprint{ContextHash: "other", ModeID: "deductive", ModeVersion: fp.ModeVersion, ConfigHash: fp.ConfigHash})
 	logTestResultCache(t, miss)
 	assertTrueCache(t, "cache miss", !miss.Hit)
-}
-
-func TestCache_Invalidation(t *testing.T) {
-	input := map[string]any{"mode": "deductive"}
-	logTestStartCache(t, input)
-
-	cache, err := NewModeOutputCacheWithDir(t.TempDir(), DefaultModeOutputCacheConfig(), slog.New(slog.NewTextHandler(io.Discard, nil)))
-	assertNoErrorCache(t, "new cache", err)
-
-	mode := &ReasoningMode{ID: "deductive", Code: "A1", Category: CategoryFormal, Tier: TierCore}
-	fp, err := BuildModeOutputFingerprint("hash", mode, ModeOutputConfig{Question: "Q"})
-	assertNoErrorCache(t, "build fingerprint", err)
-	assertNoErrorCache(t, "put cache", cache.Put(fp, &ModeOutput{ModeID: "deductive"}))
-
-	assertNoErrorCache(t, "invalidate", cache.Invalidate(fp))
-	fresh, err := NewModeOutputCacheWithDir(cache.dir, DefaultModeOutputCacheConfig(), slog.New(slog.NewTextHandler(io.Discard, nil)))
-	assertNoErrorCache(t, "new cache instance", err)
-	lookup := fresh.Lookup(fp)
-	logTestResultCache(t, lookup)
-	assertTrueCache(t, "disk miss after invalidation", !lookup.Hit)
 }
 
 func TestCache_DiskPersistence(t *testing.T) {

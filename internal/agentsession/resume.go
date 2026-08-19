@@ -8,7 +8,7 @@ import (
 // antigravityModel is the model the Antigravity CLI (agy) must be pinned to on
 // every (re)launch. The agy resume path is invalid without an explicit --model,
 // and the migration mandate fixes it to this exact human-readable name.
-const antigravityModel = "Gemini 3.1 Pro (High)"
+const antigravityModel = "Gemini 3.7 Flash (High)"
 
 // ResumeCommand builds the shell command that resumes a captured agent session
 // inside its pane. Per the ntm design principle, ntm does NOT reimplement
@@ -63,21 +63,6 @@ func ResumeCommand(provider, sessionID string, preferCASR bool) string {
 			" --model " + shellQuote(antigravityModel)
 	}
 	return ""
-}
-
-// ResumeLatestCommand builds the command that resumes the most-recent
-// conversation for a provider without a captured id (e.g. when discovery found
-// no specific session but a pane should still pick up where it left off). Only
-// the Antigravity CLI exposes a first-class "resume latest" entry point
-// (`agy --continue`); for other providers there is no id-less resume, so this
-// returns "".
-func ResumeLatestCommand(provider string) string {
-	switch strings.ToLower(strings.TrimSpace(provider)) {
-	case "antigravity":
-		return "agy --continue --model " + shellQuote(antigravityModel)
-	default:
-		return ""
-	}
 }
 
 // casrAvailable reports whether the casr binary is on PATH. Overridable in

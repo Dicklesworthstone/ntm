@@ -117,114 +117,6 @@ func TestTriageAccessors_CachePrimed(t *testing.T) {
 		}
 	})
 
-	t.Run("GetTriageTopPicks", func(t *testing.T) {
-		tests := []struct {
-			name  string
-			limit int
-			want  int
-		}{
-			{"all", 10, 3},
-			{"limit_2", 2, 2},
-			{"limit_1", 1, 1},
-		}
-		for _, tt := range tests {
-			t.Run(tt.name, func(t *testing.T) {
-				picks, err := GetTriageTopPicks(dir, tt.limit)
-				if err != nil {
-					t.Fatalf("GetTriageTopPicks(%d): %v", tt.limit, err)
-				}
-				if len(picks) != tt.want {
-					t.Errorf("len(picks) = %d, want %d", len(picks), tt.want)
-				}
-			})
-		}
-		// Verify ordering preserved
-		picks, _ := GetTriageTopPicks(dir, 10)
-		if picks[0].ID != "bd-aaa" {
-			t.Errorf("first pick ID = %q, want bd-aaa", picks[0].ID)
-		}
-	})
-
-	t.Run("GetTriageRecommendations", func(t *testing.T) {
-		tests := []struct {
-			name  string
-			limit int
-			want  int
-		}{
-			{"all", 10, 4},
-			{"limit_2", 2, 2},
-		}
-		for _, tt := range tests {
-			t.Run(tt.name, func(t *testing.T) {
-				recs, err := GetTriageRecommendations(dir, tt.limit)
-				if err != nil {
-					t.Fatalf("GetTriageRecommendations(%d): %v", tt.limit, err)
-				}
-				if len(recs) != tt.want {
-					t.Errorf("len(recs) = %d, want %d", len(recs), tt.want)
-				}
-			})
-		}
-		recs, _ := GetTriageRecommendations(dir, 10)
-		if recs[0].Action != "Fix it" {
-			t.Errorf("first rec action = %q, want %q", recs[0].Action, "Fix it")
-		}
-	})
-
-	t.Run("GetQuickWins", func(t *testing.T) {
-		tests := []struct {
-			name  string
-			limit int
-			want  int
-		}{
-			{"all", 10, 2},
-			{"limit_1", 1, 1},
-		}
-		for _, tt := range tests {
-			t.Run(tt.name, func(t *testing.T) {
-				wins, err := GetQuickWins(dir, tt.limit)
-				if err != nil {
-					t.Fatalf("GetQuickWins(%d): %v", tt.limit, err)
-				}
-				if len(wins) != tt.want {
-					t.Errorf("len(wins) = %d, want %d", len(wins), tt.want)
-				}
-			})
-		}
-	})
-
-	t.Run("GetBlockersToClear", func(t *testing.T) {
-		tests := []struct {
-			name  string
-			limit int
-			want  int
-		}{
-			{"all", 10, 2},
-			{"limit_1", 1, 1},
-		}
-		for _, tt := range tests {
-			t.Run(tt.name, func(t *testing.T) {
-				blockers, err := GetBlockersToClear(dir, tt.limit)
-				if err != nil {
-					t.Fatalf("GetBlockersToClear(%d): %v", tt.limit, err)
-				}
-				if len(blockers) != tt.want {
-					t.Errorf("len(blockers) = %d, want %d", len(blockers), tt.want)
-				}
-			})
-		}
-		blockers, _ := GetBlockersToClear(dir, 10)
-		if blockers[0].UnblocksCount != 5 {
-			t.Errorf("first blocker UnblocksCount = %d, want 5", blockers[0].UnblocksCount)
-		}
-		if !blockers[0].Actionable {
-			t.Error("first blocker should be actionable")
-		}
-		if blockers[1].Actionable {
-			t.Error("second blocker should not be actionable")
-		}
-	})
-
 	t.Run("GetNextRecommendation", func(t *testing.T) {
 		rec, err := GetNextRecommendation(dir)
 		if err != nil {
@@ -238,32 +130,6 @@ func TestTriageAccessors_CachePrimed(t *testing.T) {
 		}
 		if rec.Action != "Fix it" {
 			t.Errorf("rec.Action = %q, want %q", rec.Action, "Fix it")
-		}
-	})
-
-	t.Run("GetProjectHealth", func(t *testing.T) {
-		health, err := GetProjectHealth(dir)
-		if err != nil {
-			t.Fatalf("GetProjectHealth: %v", err)
-		}
-		if health == nil {
-			t.Fatal("expected non-nil health")
-		}
-		if health.StatusDistribution["open"] != 10 {
-			t.Errorf("open count = %d, want 10", health.StatusDistribution["open"])
-		}
-		if health.GraphMetrics.TotalNodes != 42 {
-			t.Errorf("TotalNodes = %d, want 42", health.GraphMetrics.TotalNodes)
-		}
-	})
-
-	t.Run("GetTriageDataHash", func(t *testing.T) {
-		hash, err := GetTriageDataHash(dir)
-		if err != nil {
-			t.Fatalf("GetTriageDataHash: %v", err)
-		}
-		if hash != "abc123" {
-			t.Errorf("hash = %q, want %q", hash, "abc123")
 		}
 	})
 
@@ -285,33 +151,6 @@ func TestTriageAccessors_CachePrimed(t *testing.T) {
 		}
 	})
 
-	t.Run("GetTriageForAgent", func(t *testing.T) {
-		tests := []struct {
-			name       string
-			agent      AgentType
-			wantFormat TriageFormat
-		}{
-			{"claude", AgentClaude, FormatJSON},
-			{"codex", AgentCodex, FormatMarkdown},
-			{"gemini", AgentGemini, FormatMarkdown},
-			{"unknown", AgentType("other"), FormatJSON},
-		}
-		for _, tt := range tests {
-			t.Run(tt.name, func(t *testing.T) {
-				content, format, err := GetTriageForAgent(dir, tt.agent)
-				if err != nil {
-					t.Fatalf("GetTriageForAgent(%s): %v", tt.agent, err)
-				}
-				if format != tt.wantFormat {
-					t.Errorf("format = %q, want %q", format, tt.wantFormat)
-				}
-				if content == "" {
-					t.Error("expected non-empty content")
-				}
-			})
-		}
-	})
-
 	t.Run("GetTriage_CacheHit", func(t *testing.T) {
 		triage, err := GetTriage(dir)
 		if err != nil {
@@ -324,30 +163,6 @@ func TestTriageAccessors_CachePrimed(t *testing.T) {
 			t.Errorf("IssueCount = %d, want 42", triage.Triage.Meta.IssueCount)
 		}
 	})
-}
-
-func TestTriageAccessorsRejectNegativeLimit(t *testing.T) {
-	dir := t.TempDir()
-	cleanup := primeTriageCache(t, dir)
-	defer cleanup()
-
-	tests := []struct {
-		name string
-		call func() error
-	}{
-		{"top picks", func() error { _, err := GetTriageTopPicks(dir, -1); return err }},
-		{"recommendations", func() error { _, err := GetTriageRecommendations(dir, -1); return err }},
-		{"quick wins", func() error { _, err := GetQuickWins(dir, -1); return err }},
-		{"blockers", func() error { _, err := GetBlockersToClear(dir, -1); return err }},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if err := tt.call(); err == nil {
-				t.Fatal("negative limit returned no error")
-			}
-		})
-	}
 }
 
 func TestGetNextRecommendation_EmptyRecs(t *testing.T) {
@@ -366,25 +181,6 @@ func TestGetNextRecommendation_EmptyRecs(t *testing.T) {
 	}
 	if rec != nil {
 		t.Errorf("expected nil recommendation for empty list, got %v", rec)
-	}
-}
-
-func TestGetProjectHealth_NilHealth(t *testing.T) {
-	dir := t.TempDir()
-	cleanup := primeTriageCache(t, dir)
-	defer cleanup()
-
-	// Override cache with nil health
-	triageCacheMu.Lock()
-	triageCache.Triage.ProjectHealth = nil
-	triageCacheMu.Unlock()
-
-	health, err := GetProjectHealth(dir)
-	if err != nil {
-		t.Fatalf("GetProjectHealth: %v", err)
-	}
-	if health != nil {
-		t.Errorf("expected nil health, got %v", health)
 	}
 }
 

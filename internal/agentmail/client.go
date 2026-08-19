@@ -149,28 +149,10 @@ func WithToken(token string) Option {
 	}
 }
 
-// WithHTTPClient sets a custom HTTP client.
-func WithHTTPClient(client *http.Client) Option {
-	return func(c *Client) {
-		if client != nil {
-			c.httpClient = client
-		}
-	}
-}
-
 // WithProjectKey sets the default project key (working directory path).
 func WithProjectKey(key string) Option {
 	return func(c *Client) {
 		c.projectKey = key
-	}
-}
-
-// WithTimeout sets the default timeout for HTTP requests.
-func WithTimeout(timeout time.Duration) Option {
-	return func(c *Client) {
-		if c.httpClient != nil {
-			c.httpClient.Timeout = timeout
-		}
 	}
 }
 

@@ -15,17 +15,23 @@ package config
 // refuses such configs.
 //
 // SECOND TIER (bd-6otuk, v1.28.0 batch): the G2 config-key liveness audit
-// found a further set of keys with no runtime reader. They follow the same
-// staged-removal runway one release behind: their struct fields are gone (the
-// strict loader leaves them undecoded), but for v1.28.0 each key found in a
-// config file produces a loud per-key startup WARNING naming the key and its
-// disposition while the load still succeeds and the value is ignored. In
-// v1.29.0 the deprecated set folds into the removed set and each key becomes
-// the same hard strict-loader error as the v1.26.0 batch.
+// found a further set of keys with no runtime reader. They followed the same
+// staged-removal runway one release behind: v1.28.0 shipped them as a WARN
+// tier (load succeeded, value ignored, one loud per-key startup warning).
+// Since v1.29.0 each key in this tier is a hard strict-loader ERROR with the
+// same key + disposition text — the same warn→error flip the v1.26.0 batch
+// went through in v1.27.0, one release later.
+//
+// The two tiers stay SEPARATE sets even though both now error: each tier's
+// error line cites its own deprecation/error release pair and migration
+// table. FUTURE deprecation batches should add a third tier following the
+// same pattern (warn for one release, then flip): classifyUndecodedKeys
+// partitions per tier, Scan*Knobs gives doctor a lenient per-tier surface,
+// and the v1.28.0 warn-mode implementation is in git history at the v1.28.0
+// tag (deprecatedKnobWarnLine/warnDeprecatedKnobs).
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"sort"
 	"strings"
@@ -82,7 +88,7 @@ var removedKnobPrefixes = map[string]string{
 }
 
 // Dead-knob (bd-6otuk) disposition sentences that point at what stays live,
-// so the warning tells the user both what to delete and what still works.
+// so the error tells the user both what to delete and what still works.
 const (
 	deprecatedScannerDisp     = noEffect + " (only scanner.ubs_path is read; the auto-scan chain never shipped)"
 	deprecatedSpawnPacingDisp = noEffect + " (live pacing knobs: spawn_pacing.enabled, spawn_pacing.max_concurrent_spawns, spawn_pacing.agent_caps.{claude,codex,gemini}_max_concurrent)"
@@ -90,8 +96,8 @@ const (
 )
 
 // deprecatedKnobExact maps the v1.28.0 dead-knob batch (bd-6otuk) exact leaf
-// keys to their dispositions. WARN tier: load succeeds, value ignored;
-// becomes a hard error in v1.29.0.
+// keys to their dispositions. Warn tier in v1.28.0; a hard strict-loader
+// error since v1.29.0.
 var deprecatedKnobExact = map[string]string{
 	// spawn_pacing: only enabled, max_concurrent_spawns, and the three
 	// *_max_concurrent agent caps have runtime readers (robot spawn
@@ -172,8 +178,9 @@ var deprecatedKnobPrefixes = map[string]string{
 
 // classifyUndecodedKeys partitions the strict loader's undecoded key list
 // into recognized removed knobs (hard error since v1.27.0), recognized
-// deprecated knobs (v1.28.0 batch: warn, ignore value), and genuinely unknown
-// fields (still a hard load error). When a removed/deprecated table prefix
+// deprecated knobs (v1.28.0 batch: hard error since v1.29.0, with its own
+// release-pair error text), and genuinely unknown fields (still a hard load
+// error). When a removed/deprecated table prefix
 // has concrete child keys present, only the children are reported (one line
 // per key the user actually wrote); the bare table header is reported only
 // when it appears alone.
@@ -262,21 +269,27 @@ func removedKnobErrorLines(removed []RemovedKnob) []string {
 	return lines
 }
 
-// deprecatedKnobWarnLine renders the v1.28.0 warn-tier startup warning for
-// one deprecated knob (bd-6otuk). Load succeeds, value ignored; the same key
-// + disposition text becomes the strict-loader error in v1.29.0 — only the
-// severity will change, exactly like the v1.26.0→v1.27.0 flip.
-func deprecatedKnobWarnLine(knob RemovedKnob) string {
+// deprecatedKnobErrorLine renders the strict-loader error line for one
+// v1.28.0-batch deprecated knob (bd-6otuk). The key + disposition text is
+// IDENTICAL to the v1.28.0 deprecation warning it replaces — only the
+// severity changed, exactly like the v1.26.0→v1.27.0 flip
+// (bd-ws6-config-truth-ienmd.3). The line tells the user exactly what to
+// delete and why, and points at the v1.28.0 migration table for the full
+// list.
+func deprecatedKnobErrorLine(knob RemovedKnob) string {
 	return fmt.Sprintf(
-		"ntm: warning: config key %s is deprecated and its value is IGNORED — it was %s — delete it from your config file (deprecated in v1.28.0, becomes a config error in v1.29.0; see the v1.28.0 deprecated-key migration table in CHANGELOG.md)",
+		"config key %s was %s — delete it from your config file (deprecated in v1.28.0, a config error since v1.29.0; see the v1.28.0 deprecated-key migration table in CHANGELOG.md)",
 		knob.Key, knob.Disposition)
 }
 
-// warnDeprecatedKnobs writes one warning line per deprecated knob to dst.
-func warnDeprecatedKnobs(dst io.Writer, deprecated []RemovedKnob) {
+// deprecatedKnobErrorLines renders one error line per v1.28.0-batch knob, in
+// input order, so a single load failure lists every key the user must delete.
+func deprecatedKnobErrorLines(deprecated []RemovedKnob) []string {
+	lines := make([]string, 0, len(deprecated))
 	for _, knob := range deprecated {
-		fmt.Fprintln(dst, deprecatedKnobWarnLine(knob))
+		lines = append(lines, deprecatedKnobErrorLine(knob))
 	}
+	return lines
 }
 
 // ScanRemovedKnobs reports the removed config knobs present in the config
@@ -290,11 +303,11 @@ func ScanRemovedKnobs(path string) ([]RemovedKnob, error) {
 	return removed, err
 }
 
-// ScanDeprecatedKnobs reports the v1.28.0 deprecated (warn-tier, bd-6otuk)
-// config knobs present in the config file at path (empty = DefaultPath).
-// Same lenient decode and disposition text as ScanRemovedKnobs; these keys
-// still load (with a startup warning) but their values are ignored, and they
-// become strict-loader errors in v1.29.0.
+// ScanDeprecatedKnobs reports the v1.28.0-batch deprecated (bd-6otuk) config
+// knobs present in the config file at path (empty = DefaultPath). Same
+// lenient decode and disposition text as ScanRemovedKnobs — the `ntm doctor`
+// remediation surface, which keeps working on exactly the configs the strict
+// loader refuses since these keys became hard errors in v1.29.0.
 func ScanDeprecatedKnobs(path string) ([]RemovedKnob, error) {
 	_, deprecated, err := scanKnobs(path)
 	return deprecated, err

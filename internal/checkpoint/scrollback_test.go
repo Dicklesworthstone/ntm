@@ -82,20 +82,6 @@ func TestGzipCompressionRatio(t *testing.T) {
 	}
 }
 
-func TestScrollbackConfig_Defaults(t *testing.T) {
-	config := DefaultScrollbackConfig()
-
-	if config.Lines != 5000 {
-		t.Errorf("Default lines = %d, want 5000", config.Lines)
-	}
-	if !config.Compress {
-		t.Error("Default compress should be true")
-	}
-	if config.MaxSizeMB != 10 {
-		t.Errorf("Default MaxSizeMB = %d, want 10", config.MaxSizeMB)
-	}
-}
-
 func TestStorage_SaveCompressedScrollback(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "ntm-scrollback-test")
 	if err != nil {
@@ -430,38 +416,5 @@ func TestScrollbackArtifactSummary_RecordsSkippedCapture(t *testing.T) {
 	}
 	if got.RawBytes != len(capture.Content) {
 		t.Fatalf("summary RawBytes = %d, want %d", got.RawBytes, len(capture.Content))
-	}
-}
-
-func TestCheckpointOptions_ScrollbackConfig(t *testing.T) {
-	// Test default options
-	opts := defaultOptions()
-	if opts.scrollbackLines != 5000 {
-		t.Errorf("Default scrollbackLines = %d, want 5000", opts.scrollbackLines)
-	}
-	if !opts.scrollbackCompress {
-		t.Error("Default scrollbackCompress should be true")
-	}
-	if opts.scrollbackMaxSizeMB != 10 {
-		t.Errorf("Default scrollbackMaxSizeMB = %d, want 10", opts.scrollbackMaxSizeMB)
-	}
-
-	// Test option functions
-	opts = defaultOptions()
-	WithScrollbackLines(2000)(&opts)
-	if opts.scrollbackLines != 2000 {
-		t.Errorf("scrollbackLines = %d, want 2000", opts.scrollbackLines)
-	}
-
-	opts = defaultOptions()
-	WithScrollbackCompress(false)(&opts)
-	if opts.scrollbackCompress {
-		t.Error("scrollbackCompress should be false after WithScrollbackCompress(false)")
-	}
-
-	opts = defaultOptions()
-	WithScrollbackMaxSizeMB(5)(&opts)
-	if opts.scrollbackMaxSizeMB != 5 {
-		t.Errorf("scrollbackMaxSizeMB = %d, want 5", opts.scrollbackMaxSizeMB)
 	}
 }

@@ -343,27 +343,12 @@ type CASSError struct {
 	Hint    string `json:"hint,omitempty"`
 }
 
-func (e CASSError) Error() string {
-	if e.Hint != "" {
-		return fmt.Sprintf("%s (hint: %s)", e.Message, e.Hint)
-	}
-	return e.Message
-}
-
 // Message represents a chat message in a timeline
 type Message struct {
 	ID        string    `json:"id"`
 	Role      string    `json:"role"`
 	Content   string    `json:"content"`
 	Timestamp *FlexTime `json:"timestamp,omitempty"`
-}
-
-// TimestampTime returns the message timestamp as time.Time
-func (m Message) TimestampTime() time.Time {
-	if m.Timestamp == nil {
-		return time.Time{}
-	}
-	return m.Timestamp.Time
 }
 
 // TimelineEntry represents an event in the timeline

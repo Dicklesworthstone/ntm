@@ -165,7 +165,7 @@ func TestStartStopDaemon(t *testing.T) {
 	}
 
 	// Stop the daemon
-	err = s.Stop("test-daemon")
+	err = supervisorStopForTest(s, "test-daemon")
 	if err != nil {
 		t.Errorf("Stop() error = %v", err)
 	}
@@ -223,7 +223,7 @@ func TestStopDaemonDeliversGracefulTermination(t *testing.T) {
 		t.Fatalf("daemon did not install TERM trap: %v", err)
 	}
 
-	if err := s.Stop("graceful-daemon"); err != nil {
+	if err := supervisorStopForTest(s, "graceful-daemon"); err != nil {
 		t.Fatalf("Stop() error = %v", err)
 	}
 	data, err := os.ReadFile(markerPath)
@@ -307,60 +307,6 @@ func TestStartDuplicateDaemon(t *testing.T) {
 	err = s.Start(spec)
 	if err == nil {
 		t.Error("Start() should return error for duplicate daemon")
-	}
-}
-
-func TestStopNonExistent(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	s, err := New(Config{
-		SessionID:  "test-session",
-		ProjectDir: tmpDir,
-	})
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-	defer s.Shutdown()
-
-	err = s.Stop("nonexistent")
-	if err == nil {
-		t.Error("Stop() should return error for nonexistent daemon")
-	}
-}
-
-func TestStatus(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	s, err := New(Config{
-		SessionID:  "test-session",
-		ProjectDir: tmpDir,
-	})
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-	defer s.Shutdown()
-
-	// Start two daemons
-	spec1 := DaemonSpec{Name: "daemon1", Command: "sleep", Args: []string{"10"}}
-	spec2 := DaemonSpec{Name: "daemon2", Command: "sleep", Args: []string{"10"}}
-
-	if err := s.Start(spec1); err != nil {
-		t.Fatalf("Start(daemon1) error = %v", err)
-	}
-	if err := s.Start(spec2); err != nil {
-		t.Fatalf("Start(daemon2) error = %v", err)
-	}
-
-	status := s.Status()
-	if len(status) != 2 {
-		t.Errorf("Status() returned %d daemons, want 2", len(status))
-	}
-
-	if _, ok := status["daemon1"]; !ok {
-		t.Error("Status() missing daemon1")
-	}
-	if _, ok := status["daemon2"]; !ok {
-		t.Error("Status() missing daemon2")
 	}
 }
 
@@ -477,52 +423,13 @@ func TestPIDFile(t *testing.T) {
 	}
 
 	// Stop daemon
-	if err := s.Stop("pid-test"); err != nil {
+	if err := supervisorStopForTest(s, "pid-test"); err != nil {
 		t.Errorf("Stop() error = %v", err)
 	}
 
 	// PID file should be removed
 	if _, err := os.Stat(pidPath); !os.IsNotExist(err) {
 		t.Error("PID file not removed after stop")
-	}
-}
-
-func TestStopAll(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	s, err := New(Config{
-		SessionID:  "test-session",
-		ProjectDir: tmpDir,
-	})
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-	defer s.Shutdown()
-
-	// Start multiple daemons
-	for i := 0; i < 3; i++ {
-		spec := DaemonSpec{
-			Name:    fmt.Sprintf("daemon%d", i),
-			Command: "sleep",
-			Args:    []string{"10"},
-		}
-		if err := s.Start(spec); err != nil {
-			t.Fatalf("Start(daemon%d) error = %v", i, err)
-		}
-	}
-
-	// StopAll
-	if err := s.StopAll(); err != nil {
-		t.Errorf("StopAll() error = %v", err)
-	}
-
-	// All should be stopped
-	time.Sleep(100 * time.Millisecond)
-	status := s.Status()
-	for name, d := range status {
-		if d.State != StateStopped {
-			t.Errorf("daemon %s state = %v, want StateStopped", name, d.State)
-		}
 	}
 }
 
@@ -844,4 +751,40 @@ func TestStartWaitsForConcurrentShutdown(t *testing.T) {
 	if _, exists := s.GetDaemon("late-daemon"); exists {
 		t.Fatal("concurrent Start installed a daemon after Shutdown")
 	}
+}
+
+// supervisorStatusForTest snapshots all managed daemons.
+func supervisorStatusForTest(s *Supervisor) map[string]*ManagedDaemon {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	result := make(map[string]*ManagedDaemon, len(s.daemons))
+	for name, d := range s.daemons {
+		d.mu.RLock()
+		result[name] = snapshotDaemonLocked(d)
+		d.mu.RUnlock()
+	}
+	return result
+}
+
+// supervisorStopForTest stops one daemon by name.
+func supervisorStopForTest(s *Supervisor, name string) error {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+
+	s.mu.Lock()
+	daemon, exists := s.daemons[name]
+	if !exists {
+		s.mu.Unlock()
+		return fmt.Errorf("daemon %s not found", name)
+	}
+	s.mu.Unlock()
+
+	return s.stopDaemon(daemon)
+}
+
+// supervisorStopAllForTest stops all daemons owned by this session.
+func supervisorStopAllForTest(s *Supervisor) error {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	return s.stopAllOwnedDaemons()
 }

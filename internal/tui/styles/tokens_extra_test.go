@@ -8,21 +8,6 @@ import (
 // UltraWide — 0% → 100%
 // ---------------------------------------------------------------------------
 
-func TestUltraWide(t *testing.T) {
-	t.Parallel()
-
-	tokens := UltraWide()
-	if tokens.Spacing.MD <= 0 {
-		t.Error("expected positive MD spacing")
-	}
-	// UltraWide should have larger values than Default
-	def := DefaultTokens()
-	if tokens.Spacing.MD < def.Spacing.MD {
-		t.Errorf("UltraWide spacing MD (%d) should be >= DefaultTokens MD (%d)",
-			tokens.Spacing.MD, def.Spacing.MD)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // GetLayoutMode — 0% → 100%
 // ---------------------------------------------------------------------------

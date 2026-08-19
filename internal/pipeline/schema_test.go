@@ -10,6 +10,27 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// DefaultWorkflowSettings and DefaultStepTimeout are test-only helpers
+// retained after the production functions were removed as dead code; the
+// pipeline test suite builds most of its Workflows from these defaults.
+
+// DefaultWorkflowSettings returns sensible defaults for workflow settings.
+func DefaultWorkflowSettings() WorkflowSettings {
+	logDispatch := true
+	return WorkflowSettings{
+		Timeout:          Duration{Duration: 30 * time.Minute},
+		OnError:          ErrorActionFail,
+		LogDispatch:      &logDispatch,
+		NotifyOnComplete: false,
+		NotifyOnError:    true,
+	}
+}
+
+// DefaultStepTimeout returns the default timeout for a step.
+func DefaultStepTimeout() Duration {
+	return Duration{Duration: 5 * time.Minute}
+}
+
 func TestDuration_UnmarshalText(t *testing.T) {
 
 	tests := []struct {

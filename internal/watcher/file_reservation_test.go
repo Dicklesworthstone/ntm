@@ -8,7 +8,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"sync"
 	"testing"
 	"time"
 
@@ -403,57 +402,6 @@ func TestIsValidFilePathForReservation(t *testing.T) {
 			}
 		})
 	}
-}
-
-// TestGetActiveReservations tests getting a copy of active reservations.
-func TestGetActiveReservations(t *testing.T) {
-	w := NewFileReservationWatcher()
-
-	// Add some test reservations
-	w.mu.Lock()
-	w.activeReservations["pane1"] = &PaneReservation{
-		PaneID:        "pane1",
-		AgentName:     "Agent1",
-		Files:         []string{"/file1.go", "/file2.go"},
-		ReservationID: []int{1, 2},
-		LastActivity:  time.Now(),
-	}
-	w.activeReservations["pane2"] = &PaneReservation{
-		PaneID:        "pane2",
-		AgentName:     "Agent2",
-		Files:         []string{"/file3.go"},
-		ReservationID: []int{3},
-		LastActivity:  time.Now(),
-	}
-	w.mu.Unlock()
-
-	t.Run("returns copy", func(t *testing.T) {
-		result := w.GetActiveReservations()
-		t.Logf("RESERVATION_TEST: getActiveReservations | count=%d", len(result))
-
-		if len(result) != 2 {
-			t.Errorf("expected 2 reservations, got %d", len(result))
-		}
-
-		// Verify it's a copy by modifying the result
-		result["pane1"].Files = append(result["pane1"].Files, "/modified.go")
-
-		// Original should be unchanged
-		w.mu.Lock()
-		if len(w.activeReservations["pane1"].Files) != 2 {
-			t.Error("original reservation should not be modified")
-		}
-		w.mu.Unlock()
-	})
-
-	t.Run("empty reservations", func(t *testing.T) {
-		emptyW := NewFileReservationWatcher()
-		result := emptyW.GetActiveReservations()
-		t.Logf("RESERVATION_TEST: getActiveReservations_empty | count=%d", len(result))
-		if len(result) != 0 {
-			t.Errorf("expected 0 reservations, got %d", len(result))
-		}
-	})
 }
 
 // TestFileReservationWatcherStartStop tests the start/stop lifecycle.
@@ -958,71 +906,6 @@ func TestReleaseAllReservationsKeepsStateOnFailure(t *testing.T) {
 	}
 }
 
-func TestRenewReservationsUsesReservationIDs(t *testing.T) {
-	t.Parallel()
-
-	var (
-		mu   sync.Mutex
-		args []map[string]interface{}
-	)
-
-	server := newWatcherMCPServer(t, map[string]watcherToolHandler{
-		"renew_file_reservations": func(callArgs map[string]interface{}) (interface{}, *agentmail.JSONRPCError) {
-			mu.Lock()
-			copied := make(map[string]interface{}, len(callArgs))
-			for k, v := range callArgs {
-				copied[k] = v
-			}
-			args = append(args, copied)
-			mu.Unlock()
-
-			renewed := 0
-			if rawIDs, ok := callArgs["file_reservation_ids"].([]interface{}); ok {
-				renewed = len(rawIDs)
-			}
-			return agentmail.RenewReservationsResult{Renewed: renewed}, nil
-		},
-	})
-	defer server.Close()
-
-	client := agentmail.NewClient(agentmail.WithBaseURL(server.URL + "/"))
-	w := NewFileReservationWatcher(
-		WithWatcherClient(client),
-		WithProjectDir("/test/project"),
-		WithReservationTTL(15*time.Minute),
-	)
-
-	w.mu.Lock()
-	w.activeReservations["%1"] = &PaneReservation{
-		PaneID:        "%1",
-		AgentName:     "SessionAgent",
-		ReservationID: []int{1, 2},
-	}
-	w.activeReservations["%2"] = &PaneReservation{
-		PaneID:        "%2",
-		AgentName:     "SessionAgent",
-		ReservationID: []int{3},
-	}
-	w.mu.Unlock()
-
-	if err := w.RenewReservations(context.Background()); err != nil {
-		t.Fatalf("RenewReservations returned error: %v", err)
-	}
-
-	mu.Lock()
-	defer mu.Unlock()
-
-	if len(args) != 2 {
-		t.Fatalf("expected 2 renew calls, got %d", len(args))
-	}
-	for _, callArgs := range args {
-		rawIDs, ok := callArgs["file_reservation_ids"].([]interface{})
-		if !ok || len(rawIDs) == 0 {
-			t.Fatalf("expected file_reservation_ids in renew call, got %v", callArgs)
-		}
-	}
-}
-
 func TestFileReservationWatcherAutoReserveDisabledSkipsReservation(t *testing.T) {
 	t.Parallel()
 
@@ -1079,98 +962,6 @@ func TestFileReservationWatcherExtendsActiveReservationOnOutput(t *testing.T) {
 
 	if renewCalls != 1 {
 		t.Errorf("renewal calls = %d, want 1", renewCalls)
-	}
-}
-
-func TestRenewReservationsReturnsErrorOnIncompleteRenew(t *testing.T) {
-	t.Parallel()
-
-	server := newWatcherMCPServer(t, map[string]watcherToolHandler{
-		"renew_file_reservations": func(callArgs map[string]interface{}) (interface{}, *agentmail.JSONRPCError) {
-			return agentmail.RenewReservationsResult{Renewed: 0}, nil
-		},
-	})
-	defer server.Close()
-
-	client := agentmail.NewClient(agentmail.WithBaseURL(server.URL + "/"))
-	w := NewFileReservationWatcher(
-		WithWatcherClient(client),
-		WithProjectDir("/test/project"),
-		WithReservationTTL(15*time.Minute),
-	)
-
-	w.mu.Lock()
-	w.activeReservations["%1"] = &PaneReservation{
-		PaneID:        "%1",
-		AgentName:     "SessionAgent",
-		ReservationID: []int{1, 2},
-	}
-	w.mu.Unlock()
-
-	if err := w.RenewReservations(context.Background()); err == nil {
-		t.Fatal("expected incomplete renew to return an error")
-	}
-}
-
-func TestRenewReservationsContinuesAfterPaneLevelFailure(t *testing.T) {
-	t.Parallel()
-
-	var (
-		mu      sync.Mutex
-		seenIDs [][]int
-	)
-
-	server := newWatcherMCPServer(t, map[string]watcherToolHandler{
-		"renew_file_reservations": func(callArgs map[string]interface{}) (interface{}, *agentmail.JSONRPCError) {
-			rawIDs, _ := callArgs["file_reservation_ids"].([]interface{})
-			ids := make([]int, 0, len(rawIDs))
-			for _, raw := range rawIDs {
-				if id, ok := raw.(float64); ok {
-					ids = append(ids, int(id))
-				}
-			}
-
-			mu.Lock()
-			seenIDs = append(seenIDs, ids)
-			mu.Unlock()
-
-			if len(ids) == 1 && ids[0] == 1 {
-				return nil, &agentmail.JSONRPCError{Code: -32000, Message: "renew failed"}
-			}
-			return agentmail.RenewReservationsResult{Renewed: len(ids)}, nil
-		},
-	})
-	defer server.Close()
-
-	client := agentmail.NewClient(agentmail.WithBaseURL(server.URL + "/"))
-	w := NewFileReservationWatcher(
-		WithWatcherClient(client),
-		WithProjectDir("/test/project"),
-		WithReservationTTL(15*time.Minute),
-	)
-
-	w.mu.Lock()
-	w.activeReservations["%1"] = &PaneReservation{
-		PaneID:        "%1",
-		AgentName:     "SessionAgent",
-		ReservationID: []int{1},
-	}
-	w.activeReservations["%2"] = &PaneReservation{
-		PaneID:        "%2",
-		AgentName:     "SessionAgent",
-		ReservationID: []int{2},
-	}
-	w.mu.Unlock()
-
-	err := w.RenewReservations(context.Background())
-	if err == nil {
-		t.Fatal("expected renew error when one pane fails")
-	}
-
-	mu.Lock()
-	defer mu.Unlock()
-	if len(seenIDs) != 2 {
-		t.Fatalf("expected both panes to be renewed despite one failure, saw %d calls: %#v", len(seenIDs), seenIDs)
 	}
 }
 

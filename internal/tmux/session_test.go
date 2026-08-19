@@ -1514,14 +1514,6 @@ func TestBinaryPathConsistency(t *testing.T) {
 	}
 }
 
-func TestResolveTmuxBinaryPathUsesExplicitOverride(t *testing.T) {
-	override := filepath.Join(t.TempDir(), "custom-tmux")
-	t.Setenv("NTM_TMUX_BINARY", "  "+override+"  ")
-	if got := resolveTmuxBinaryPath(); got != override {
-		t.Fatalf("resolveTmuxBinaryPath() = %q, want override %q", got, override)
-	}
-}
-
 func TestBinaryPathExplicitOverrideWinsAfterInstalledPathIsCached(t *testing.T) {
 	t.Setenv("NTM_TMUX_BINARY", "")
 	if baseline := BinaryPath(); baseline == "" {

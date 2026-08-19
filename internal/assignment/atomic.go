@@ -291,6 +291,9 @@ type ReservationReconciliationPort interface {
 // ReservationFunc adapts a function to ReservationPort.
 type ReservationFunc func(context.Context, ReservationRequest) (LeaseReceipt, error)
 
+// Reserve implements ReservationPort. Test-only hook: retained because tests
+// in other packages (notably internal/coordinator) use ReservationFunc as a
+// fake ReservationPort; production code never converts ReservationFunc.
 func (f ReservationFunc) Reserve(ctx context.Context, req ReservationRequest) (LeaseReceipt, error) {
 	return f(ctx, req)
 }

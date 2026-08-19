@@ -2036,50 +2036,6 @@ func TestStorage_EmptyScrollback(t *testing.T) {
 
 // bd-32ck: Tests for assignment and BV snapshot checkpoint fields
 
-func TestCheckpointOptions_Assignments(t *testing.T) {
-	// Test default options have assignments enabled
-	opts := defaultOptions()
-	if !opts.captureAssignments {
-		t.Error("defaultOptions().captureAssignments should be true")
-	}
-
-	// Test WithAssignments(false)
-	opts = checkpointOptions{captureAssignments: true}
-	WithAssignments(false)(&opts)
-	if opts.captureAssignments {
-		t.Error("WithAssignments(false) should set captureAssignments to false")
-	}
-
-	// Test WithAssignments(true)
-	opts = checkpointOptions{captureAssignments: false}
-	WithAssignments(true)(&opts)
-	if !opts.captureAssignments {
-		t.Error("WithAssignments(true) should set captureAssignments to true")
-	}
-}
-
-func TestCheckpointOptions_BVSnapshot(t *testing.T) {
-	// Test default options have BV snapshot enabled
-	opts := defaultOptions()
-	if !opts.captureBVSnapshot {
-		t.Error("defaultOptions().captureBVSnapshot should be true")
-	}
-
-	// Test WithBVSnapshot(false)
-	opts = checkpointOptions{captureBVSnapshot: true}
-	WithBVSnapshot(false)(&opts)
-	if opts.captureBVSnapshot {
-		t.Error("WithBVSnapshot(false) should set captureBVSnapshot to false")
-	}
-
-	// Test WithBVSnapshot(true)
-	opts = checkpointOptions{captureBVSnapshot: false}
-	WithBVSnapshot(true)(&opts)
-	if !opts.captureBVSnapshot {
-		t.Error("WithBVSnapshot(true) should set captureBVSnapshot to true")
-	}
-}
-
 func TestCheckpoint_WithAssignments(t *testing.T) {
 	tmpDir := t.TempDir()
 	storage := NewStorageWithDir(tmpDir)

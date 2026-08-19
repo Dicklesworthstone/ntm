@@ -278,33 +278,6 @@ func TestRequirePermission_NilRoleContext(t *testing.T) {
 	}
 }
 
-func TestRequireRole_NilRoleContext(t *testing.T) {
-	s := &Server{}
-	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	})
-
-	handler := s.RequireRole(RoleAdmin)(inner)
-
-	// Request WITHOUT a RoleContext
-	req := httptest.NewRequest("GET", "/test", nil)
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("status = %d, want 403", rec.Code)
-	}
-
-	var resp map[string]interface{}
-	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	errMsg, _ := resp["error"].(string)
-	if !strings.Contains(errMsg, "no role context") {
-		t.Errorf("error = %v, want substring 'no role context'", errMsg)
-	}
-}
-
 // =============================================================================
 // handleSessionsV1 — nil stateStore branch
 // =============================================================================
@@ -534,7 +507,7 @@ func TestWSHub_BroadcastEvent_WithRedaction(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 
 	// Set a redaction config to exercise the redaction branch
-	hub.SetRedactionConfig(&RedactionConfig{
+	hub.setRedactionCfgForTest(&RedactionConfig{
 		Enabled: true,
 	})
 
@@ -3238,17 +3211,6 @@ func TestWSEventStore_RecordDroppedNilDB(t *testing.T) {
 	}
 }
 
-func TestWSEventStore_GetDroppedStatsNilDB(t *testing.T) {
-	store := &WSEventStore{db: nil}
-	stats, err := store.GetDroppedStats("c1", time.Now())
-	if err != nil {
-		t.Errorf("GetDroppedStats nil db: %v", err)
-	}
-	if stats != nil {
-		t.Errorf("expected nil stats from nil db, got %v", stats)
-	}
-}
-
 func TestWSEventStore_CurrentSeqBranch(t *testing.T) {
 	store := NewWSEventStore(nil, WSEventStoreConfig{BufferSize: 10, CleanupInterval: time.Hour})
 	defer store.Stop()
@@ -4721,63 +4683,6 @@ func TestCheckWSOrigin_ExternalDomain(t *testing.T) {
 
 // --- AuditStore record + query with data ---
 
-func TestAuditStore_RecordAndQuery(t *testing.T) {
-	tmpDir := t.TempDir()
-	store, err := NewAuditStore(AuditStoreConfig{
-		DBPath:    filepath.Join(tmpDir, "audit.db"),
-		JSONLPath: filepath.Join(tmpDir, "audit.jsonl"),
-		Retention: 24 * time.Hour,
-	})
-	if err != nil {
-		t.Fatalf("NewAuditStore: %v", err)
-	}
-	defer store.Close()
-
-	// Record an entry
-	err = store.Record(&AuditRecord{
-		RequestID:  "req-001",
-		UserID:     "user1",
-		Role:       RoleAdmin,
-		Action:     AuditActionCreate,
-		Resource:   "session",
-		Method:     "POST",
-		Path:       "/api/v1/sessions",
-		StatusCode: 201,
-		Duration:   50,
-		RemoteAddr: "127.0.0.1",
-	})
-	if err != nil {
-		t.Fatalf("Record: %v", err)
-	}
-
-	// Query for the record
-	records, err := store.Query(AuditFilter{UserID: "user1", Limit: 10})
-	if err != nil {
-		t.Fatalf("Query: %v", err)
-	}
-	if len(records) != 1 {
-		t.Errorf("expected 1 record, got %d", len(records))
-	}
-}
-
-func TestAuditStore_QueryNoDb(t *testing.T) {
-	tmpDir := t.TempDir()
-	// Create store with only JSONL, no DB
-	store, err := NewAuditStore(AuditStoreConfig{
-		JSONLPath: filepath.Join(tmpDir, "audit.jsonl"),
-	})
-	if err != nil {
-		t.Fatalf("NewAuditStore: %v", err)
-	}
-	defer store.Close()
-
-	// Query without DB should fail
-	_, err = store.Query(AuditFilter{Limit: 10})
-	if err == nil {
-		t.Error("expected error querying without db")
-	}
-}
-
 // --- handleSetPaneTitleV1 bad JSON ---
 
 func TestHandleSetPaneTitleV1_BadJSON(t *testing.T) {
@@ -4935,176 +4840,7 @@ func TestHandleScannerStatus_Available(t *testing.T) {
 
 // --- AuditStore Query: exercise all filter branches ---
 
-func TestAuditStore_QueryFilterBranches(t *testing.T) {
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "audit.db")
-	jsonlPath := filepath.Join(dir, "audit.jsonl")
-
-	store, err := NewAuditStore(AuditStoreConfig{
-		DBPath:          dbPath,
-		JSONLPath:       jsonlPath,
-		Retention:       24 * time.Hour,
-		CleanupInterval: time.Hour,
-	})
-	if err != nil {
-		t.Fatalf("NewAuditStore: %v", err)
-	}
-	defer store.Close()
-
-	now := time.Now()
-
-	// Insert a record with all fields populated
-	rec := &AuditRecord{
-		Timestamp:  now,
-		RequestID:  "req-filter-001",
-		UserID:     "user-alice",
-		Role:       "admin",
-		Action:     AuditActionCreate,
-		Resource:   "session",
-		Method:     "POST",
-		Path:       "/api/v1/sessions",
-		StatusCode: 201,
-		SessionID:  "sess-abc",
-		ApprovalID: "approval-xyz",
-	}
-	if err := store.Record(rec); err != nil {
-		t.Fatalf("Record: %v", err)
-	}
-
-	// Insert a second record with different fields
-	rec2 := &AuditRecord{
-		Timestamp:  now.Add(-time.Minute),
-		RequestID:  "req-filter-002",
-		UserID:     "user-bob",
-		Role:       "viewer",
-		Action:     AuditActionExecute,
-		Resource:   "pane",
-		Method:     "GET",
-		Path:       "/api/v1/panes",
-		StatusCode: 200,
-		SessionID:  "sess-def",
-	}
-	if err := store.Record(rec2); err != nil {
-		t.Fatalf("Record: %v", err)
-	}
-
-	// Filter by Action
-	results, err := store.Query(AuditFilter{Action: AuditActionCreate})
-	if err != nil {
-		t.Fatalf("Query(action): %v", err)
-	}
-	if len(results) != 1 || results[0].RequestID != "req-filter-001" {
-		t.Errorf("action filter: got %d results, want 1 with req-filter-001", len(results))
-	}
-
-	// Filter by Resource
-	results, err = store.Query(AuditFilter{Resource: "pane"})
-	if err != nil {
-		t.Fatalf("Query(resource): %v", err)
-	}
-	if len(results) != 1 || results[0].RequestID != "req-filter-002" {
-		t.Errorf("resource filter: got %d results", len(results))
-	}
-
-	// Filter by SessionID
-	results, err = store.Query(AuditFilter{SessionID: "sess-abc"})
-	if err != nil {
-		t.Fatalf("Query(session): %v", err)
-	}
-	if len(results) != 1 {
-		t.Errorf("session filter: got %d results, want 1", len(results))
-	}
-
-	// Filter by ApprovalID
-	results, err = store.Query(AuditFilter{ApprovalID: "approval-xyz"})
-	if err != nil {
-		t.Fatalf("Query(approval): %v", err)
-	}
-	if len(results) != 1 {
-		t.Errorf("approval filter: got %d results, want 1", len(results))
-	}
-
-	// Filter by Since
-	results, err = store.Query(AuditFilter{Since: now.Add(-30 * time.Second)})
-	if err != nil {
-		t.Fatalf("Query(since): %v", err)
-	}
-	if len(results) != 1 || results[0].RequestID != "req-filter-001" {
-		t.Errorf("since filter: got %d results, want 1 (recent only)", len(results))
-	}
-
-	// Filter by Until
-	results, err = store.Query(AuditFilter{Until: now.Add(-30 * time.Second)})
-	if err != nil {
-		t.Fatalf("Query(until): %v", err)
-	}
-	if len(results) != 1 || results[0].RequestID != "req-filter-002" {
-		t.Errorf("until filter: got %d results, want 1 (old only)", len(results))
-	}
-
-	// Filter by Limit + Offset
-	results, err = store.Query(AuditFilter{Limit: 10, Offset: 1})
-	if err != nil {
-		t.Fatalf("Query(offset): %v", err)
-	}
-	if len(results) != 1 {
-		t.Errorf("offset filter: got %d results, want 1 (second record)", len(results))
-	}
-}
-
 // --- AuditStore.cleanup: actually removes old records ---
-
-func TestAuditStore_CleanupRemovesOldRecords(t *testing.T) {
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "audit.db")
-
-	store, err := NewAuditStore(AuditStoreConfig{
-		DBPath:          dbPath,
-		Retention:       1 * time.Millisecond, // Very short retention
-		CleanupInterval: time.Hour,            // We'll call cleanup manually
-	})
-	if err != nil {
-		t.Fatalf("NewAuditStore: %v", err)
-	}
-	defer store.Close()
-
-	// Insert a record
-	rec := &AuditRecord{
-		Timestamp:  time.Now().Add(-time.Hour), // Old record
-		RequestID:  "req-old-001",
-		UserID:     "user-test",
-		Action:     AuditActionCreate,
-		Resource:   "test",
-		Method:     "POST",
-		Path:       "/test",
-		StatusCode: 200,
-	}
-	if err := store.Record(rec); err != nil {
-		t.Fatalf("Record: %v", err)
-	}
-
-	// Verify record exists
-	results, err := store.Query(AuditFilter{})
-	if err != nil {
-		t.Fatalf("Query before cleanup: %v", err)
-	}
-	if len(results) == 0 {
-		t.Fatal("expected at least 1 record before cleanup")
-	}
-
-	// Wait for retention to expire and run cleanup
-	time.Sleep(5 * time.Millisecond)
-	store.cleanup()
-
-	// Verify record is gone
-	results, err = store.Query(AuditFilter{})
-	if err != nil {
-		t.Fatalf("Query after cleanup: %v", err)
-	}
-	if len(results) != 0 {
-		t.Errorf("expected 0 records after cleanup, got %d", len(results))
-	}
-}
 
 // --- handleAgentWaitV1: custom timeout_ms and poll_ms ---
 
@@ -5130,7 +4866,7 @@ func TestHandleAgentWaitV1_CustomTimeoutAndPoll(t *testing.T) {
 
 func TestScannerStore_GetScans_OffsetBeyondRange(t *testing.T) {
 	store := NewScannerStore()
-	store.AddScan(&ScanRecord{ID: "scan-1", State: ScanStateCompleted, StartedAt: time.Now()})
+	seedScan(store, &ScanRecord{ID: "scan-1", State: ScanStateCompleted, StartedAt: time.Now()})
 
 	result := store.GetScans(10, 100) // offset=100 but only 1 scan
 	if len(result) != 0 {
@@ -5194,25 +4930,6 @@ func TestScannerStore_GetFindings_FilterAndPaginate(t *testing.T) {
 }
 
 // --- ScannerStore.GetFindingsByScan ---
-
-func TestScannerStore_GetFindingsByScan(t *testing.T) {
-	store := NewScannerStore()
-	store.AddFinding(&FindingRecord{
-		ID: "f1", ScanID: "scan-x",
-		Finding:   scanner.Finding{File: "a.go"},
-		CreatedAt: time.Now(),
-	})
-	store.AddFinding(&FindingRecord{
-		ID: "f2", ScanID: "scan-y",
-		Finding:   scanner.Finding{File: "b.go"},
-		CreatedAt: time.Now(),
-	})
-
-	results := store.GetFindingsByScan("scan-x")
-	if len(results) != 1 || results[0].ID != "f1" {
-		t.Errorf("GetFindingsByScan: got %d results, want 1 with f1", len(results))
-	}
-}
 
 // --- NewIdempotencyStore: default TTL for zero/negative ---
 
@@ -10812,81 +10529,7 @@ func TestHandleEventStream_NoFlusher(t *testing.T) {
 
 // --- RedactJSON: ModeOff early return ---
 
-func TestRedactJSON_ModeOff(t *testing.T) {
-
-	cfg := redaction.Config{Mode: redaction.ModeOff}
-	input := map[string]interface{}{
-		"secret":   "sample redaction input",
-		"api_key":  "sample api key input",
-		"harmless": "hello",
-	}
-
-	result, findings := RedactJSON(input, cfg)
-	if findings != 0 {
-		t.Fatalf("expected 0 findings in ModeOff, got %d", findings)
-	}
-
-	// Result should be unchanged (same reference)
-	resultMap, ok := result.(map[string]interface{})
-	if !ok {
-		t.Fatalf("expected map result, got %T", result)
-	}
-	if resultMap["secret"] != "sample redaction input" {
-		t.Fatalf("expected secret unchanged, got %v", resultMap["secret"])
-	}
-}
-
 // --- AuditStore: Record with both DB and JSONL active ---
-
-func TestAuditStore_RecordBothDBAndJSONL(t *testing.T) {
-	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "audit.db")
-	jsonlPath := filepath.Join(tmpDir, "audit.jsonl")
-
-	store, err := NewAuditStore(AuditStoreConfig{
-		DBPath:    dbPath,
-		JSONLPath: jsonlPath,
-	})
-	if err != nil {
-		t.Fatalf("failed to create audit store: %v", err)
-	}
-	defer store.Close()
-
-	rec := &AuditRecord{
-		RequestID:  "req-both-1",
-		UserID:     "test-user",
-		Role:       RoleAdmin,
-		Action:     AuditActionCreate,
-		Resource:   "session",
-		Method:     "POST",
-		Path:       "/api/v1/sessions",
-		StatusCode: 200,
-		Duration:   42,
-		RemoteAddr: "127.0.0.1",
-	}
-
-	if err := store.Record(rec); err != nil {
-		t.Fatalf("Record failed: %v", err)
-	}
-
-	// Verify JSONL file was written
-	jsonlData, err := os.ReadFile(jsonlPath)
-	if err != nil {
-		t.Fatalf("failed to read JSONL: %v", err)
-	}
-	if !strings.Contains(string(jsonlData), "req-both-1") {
-		t.Fatalf("JSONL missing request_id, got: %s", string(jsonlData))
-	}
-
-	// Verify DB was written
-	records, err := store.Query(AuditFilter{Limit: 10})
-	if err != nil {
-		t.Fatalf("Query failed: %v", err)
-	}
-	if len(records) != 1 {
-		t.Fatalf("expected 1 record in DB, got %d", len(records))
-	}
-}
 
 // --- AuditStore: Close with both DB and JSONL ---
 
@@ -12000,40 +11643,6 @@ func TestRoleHierarchy_UnknownRole(t *testing.T) {
 	}
 	if got := roleHierarchy(RoleViewer); got != 1 {
 		t.Errorf("roleHierarchy(viewer) = %d, want 1", got)
-	}
-}
-
-// TestWriteApprovalRequired_FullResponse exercises the writeApprovalRequired function
-// output format including approval_id and error_code (lines 388-410 of rbac.go).
-func TestWriteApprovalRequired_FullResponse(t *testing.T) {
-	rec := httptest.NewRecorder()
-
-	ar := &ApprovalRequired{
-		ApprovalID: "apr-123",
-		Action:     "delete",
-		Resource:   "session",
-		ExpiresAt:  "2025-12-31T23:59:59Z",
-		Message:    "Approval needed for destructive operation",
-	}
-
-	writeApprovalRequired(rec, ar, "req-456")
-
-	if rec.Code != http.StatusConflict {
-		t.Fatalf("expected 409, got %d", rec.Code)
-	}
-
-	var resp map[string]interface{}
-	json.Unmarshal(rec.Body.Bytes(), &resp)
-
-	if resp["success"] != false {
-		t.Error("expected success=false")
-	}
-	if resp["error_code"] != "APPROVAL_REQUIRED" {
-		t.Errorf("error_code = %v", resp["error_code"])
-	}
-	approval, _ := resp["approval"].(map[string]interface{})
-	if approval["approval_id"] != "apr-123" {
-		t.Errorf("approval_id = %v", approval["approval_id"])
 	}
 }
 
@@ -13339,10 +12948,7 @@ func TestWSEventStore_RecordDroppedMinCount(t *testing.T) {
 	}
 
 	// Verify it was recorded with count=1
-	stats, err := store.GetDroppedStats("c1", time.Now().Add(-1*time.Minute))
-	if err != nil {
-		t.Fatalf("GetDroppedStats failed: %v", err)
-	}
+	stats := droppedStatsForTest(t, store, "c1", time.Now().Add(-1*time.Minute))
 	if len(stats) != 1 {
 		t.Fatalf("expected 1 stat entry, got %d", len(stats))
 	}
@@ -13621,57 +13227,6 @@ func TestAuditStore_RecordDBExecError(t *testing.T) {
 	}
 }
 
-// TestAuditMiddleware_WithRBACContext exercises the rc != nil branch
-// in AuditMiddleware (lines 565-568 of audit.go) to extract non-anonymous user.
-func TestAuditMiddleware_WithRBACContext(t *testing.T) {
-
-	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "audit_rbac.db")
-
-	store, err := NewAuditStore(AuditStoreConfig{
-		DBPath:          dbPath,
-		CleanupInterval: time.Hour,
-	})
-	if err != nil {
-		t.Fatalf("failed to create store: %v", err)
-	}
-	defer store.Close()
-
-	s, _ := setupTestServer(t)
-	middleware := s.AuditMiddleware(store)
-
-	handler := middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-
-	// Create a POST request with RBAC context
-	req := httptest.NewRequest("POST", "/api/v1/test", nil)
-	ctx := withRoleContext(req.Context(), &RoleContext{
-		Role:   RoleAdmin,
-		UserID: "admin-user-42",
-	})
-	req = req.WithContext(ctx)
-	rec := httptest.NewRecorder()
-
-	handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", rec.Code)
-	}
-
-	// Verify the audit record was created with the RBAC user
-	records, err := store.Query(AuditFilter{UserID: "admin-user-42"})
-	if err != nil {
-		t.Fatalf("query failed: %v", err)
-	}
-	if len(records) != 1 {
-		t.Fatalf("expected 1 audit record for admin-user-42, got %d", len(records))
-	}
-	if records[0].Role != RoleAdmin {
-		t.Errorf("expected role=admin, got %v", records[0].Role)
-	}
-}
-
 // TestAuditMiddleware_RecordError exercises the store.Record error log path
 // in AuditMiddleware (lines 595-597 of audit.go) by using a closed-DB store.
 func TestAuditMiddleware_RecordError(t *testing.T) {
@@ -13943,30 +13498,6 @@ func TestWSEventStore_GetFromDBCursorTooOldReset(t *testing.T) {
 }
 
 // --- WSEventStore.GetDroppedStats — query error (88.9%) ---
-
-func TestWSEventStore_GetDroppedStatsQueryError(t *testing.T) {
-	db, cleanup := setupTestDB(t)
-	defer cleanup()
-
-	cfg := WSEventStoreConfig{
-		BufferSize:       10,
-		RetentionSeconds: 3600,
-		CleanupInterval:  time.Hour,
-	}
-	store := NewWSEventStore(db, cfg)
-	defer store.Stop()
-
-	// Close DB to trigger query error
-	db.Close()
-
-	_, err := store.GetDroppedStats("client-1", time.Now().Add(-time.Hour))
-	if err == nil {
-		t.Fatal("expected error from GetDroppedStats with closed DB")
-	}
-	if !strings.Contains(err.Error(), "query dropped stats") {
-		t.Errorf("expected 'query dropped stats' in error, got: %v", err)
-	}
-}
 
 // --- redactingResponseWriter.finalize — double-call early return (94.7%) ---
 

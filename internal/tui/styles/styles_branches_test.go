@@ -50,29 +50,3 @@ func TestShimmerProgressBar(t *testing.T) {
 // ---------------------------------------------------------------------------
 // MiniBar branches — cover MidHigh palette branch
 // ---------------------------------------------------------------------------
-
-func TestMiniBar_MidHighBranch(t *testing.T) {
-	t.Parallel()
-
-	// MidHigh branch: value in [0.60, 0.80) with MidHigh set
-	palette := DefaultMiniBarPalette()
-	palette.MidHigh = "#AABBCC"
-
-	got := MiniBar(0.65, 10, palette)
-	if got == "" {
-		t.Error("MiniBar() returned empty for valid input with MidHigh palette")
-	}
-}
-
-func TestMiniBar_MidHighEmpty(t *testing.T) {
-	t.Parallel()
-
-	// MidHigh empty: value in [0.60, 0.80) without MidHigh, falls back to Mid
-	palette := DefaultMiniBarPalette()
-	palette.MidHigh = ""
-
-	got := MiniBar(0.65, 10, palette)
-	if got == "" {
-		t.Error("MiniBar() returned empty for valid input without MidHigh")
-	}
-}

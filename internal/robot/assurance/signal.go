@@ -219,25 +219,6 @@ var allSignalTypes = []SignalType{
 	SignalCloseoutIntegrity,
 }
 
-// AllSignalTypes returns a copy of the canonical signal-type list. The
-// copy is intentional so callers can sort/filter without mutating the
-// shared registry.
-func AllSignalTypes() []SignalType {
-	out := make([]SignalType, len(allSignalTypes))
-	copy(out, allSignalTypes)
-	return out
-}
-
-// KnownSignalType reports whether t is in the stable signal-type registry.
-func KnownSignalType(t SignalType) bool {
-	for _, known := range allSignalTypes {
-		if t == known {
-			return true
-		}
-	}
-	return false
-}
-
 // allReasonCodes is the canonical reason-code registry. Order is
 // grouped by SignalType prefix; new codes should be appended within
 // their group and never reordered (tests pin first-and-last).
@@ -278,21 +259,4 @@ var allReasonCodes = []ReasonCode{
 	ReasonCloseoutMissingTests,
 	ReasonCloseoutDirtyWorktree,
 	ReasonCloseoutNoBeadReference,
-}
-
-// AllReasonCodes returns a copy of the canonical reason-code list.
-func AllReasonCodes() []ReasonCode {
-	out := make([]ReasonCode, len(allReasonCodes))
-	copy(out, allReasonCodes)
-	return out
-}
-
-// KnownReasonCode reports whether code is in the stable reason-code registry.
-func KnownReasonCode(code ReasonCode) bool {
-	for _, known := range allReasonCodes {
-		if code == known {
-			return true
-		}
-	}
-	return false
 }

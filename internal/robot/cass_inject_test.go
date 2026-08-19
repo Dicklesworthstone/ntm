@@ -297,30 +297,6 @@ func TestQueryCASS_EmptyKeywords(t *testing.T) {
 	}
 }
 
-func TestItoa(t *testing.T) {
-	tests := []struct {
-		input int
-		want  string
-	}{
-		{0, "0"},
-		{1, "1"},
-		{10, "10"},
-		{100, "100"},
-		{-1, "-1"},
-		{-100, "-100"},
-		{12345, "12345"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.want, func(t *testing.T) {
-			got := itoa(tt.input)
-			if got != tt.want {
-				t.Errorf("itoa(%d) = %q, want %q", tt.input, got, tt.want)
-			}
-		})
-	}
-}
-
 // =============================================================================
 // Relevance Filtering Tests
 // =============================================================================
@@ -1823,26 +1799,5 @@ func TestFilterResults_TopicFiltering_GeneralTopicNoPenalty(t *testing.T) {
 	if len(result.Hits) > 0 && result.Hits[0].ScoreDetail.TopicMultiplier != 1.0 {
 		t.Errorf("TopicMultiplier = %f, want 1.0 (no penalty for general topic)",
 			result.Hits[0].ScoreDetail.TopicMultiplier)
-	}
-}
-
-func TestDefaultTopicFilterConfig(t *testing.T) {
-	config := DefaultTopicFilterConfig()
-
-	// Check defaults
-	if config.Enabled != false {
-		t.Errorf("Enabled = %v, want false (disabled by default)", config.Enabled)
-	}
-	if config.MatchTopics != true {
-		t.Errorf("MatchTopics = %v, want true", config.MatchTopics)
-	}
-	if config.SameTopicBoost != 1.5 {
-		t.Errorf("SameTopicBoost = %f, want 1.5", config.SameTopicBoost)
-	}
-	if config.DifferentTopicPenalty != 0.5 {
-		t.Errorf("DifferentTopicPenalty = %f, want 0.5", config.DifferentTopicPenalty)
-	}
-	if len(config.ExcludeTopics) != 0 {
-		t.Errorf("ExcludeTopics = %v, want empty", config.ExcludeTopics)
 	}
 }

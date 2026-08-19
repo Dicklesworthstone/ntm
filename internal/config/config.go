@@ -1706,9 +1706,9 @@ func canonicalModelLookupAgentType(agentType string) string {
 }
 
 // AntigravityRequiredModel is the ONLY model agy (Antigravity CLI) may run on.
-// agy is hard-pinned to it everywhere (never a Flash/Anthropic/other tier) per
+// agy is hard-pinned to it everywhere (never an Anthropic/other tier) per
 // the model guard (bd-47kjh.1.7); it is intentionally NOT user-configurable.
-const AntigravityRequiredModel = "Gemini 3.1 Pro (High)"
+const AntigravityRequiredModel = "Gemini 3.7 Flash (High)"
 
 // GetModelName resolves a model alias to its full model name.
 // Returns the alias itself if no mapping is found.
@@ -1877,10 +1877,6 @@ func findPaletteMarkdownForPath(configPath string) string {
 	return findPaletteMarkdownForPathAndCWD(configPath, "")
 }
 
-func findPaletteMarkdown() string {
-	return findPaletteMarkdownForPath(DefaultPath())
-}
-
 // DetectPalettePathForConfigPathAndCWD returns the palette markdown path to use
 // for a selected config path and working directory, if any. Precedence:
 // explicit cfg.PaletteFile, then auto-discovered markdown adjacent to that
@@ -1893,19 +1889,6 @@ func DetectPalettePathForConfigPathAndCWD(cfg *Config, configPath, cwd string) s
 		return cfg.PaletteFile
 	}
 	return findPaletteMarkdownForPathAndCWD(configPath, cwd)
-}
-
-// DetectPalettePathForConfigPath returns the palette markdown path to use for
-// a selected config path, if any. Precedence: explicit cfg.PaletteFile, then
-// auto-discovered markdown adjacent to that config path or in the current cwd.
-func DetectPalettePathForConfigPath(cfg *Config, configPath string) string {
-	return DetectPalettePathForConfigPathAndCWD(cfg, configPath, "")
-}
-
-// DetectPalettePath returns the palette markdown path to use, if any.
-// Precedence: explicit cfg.PaletteFile, then auto-discovered markdown.
-func DetectPalettePath(cfg *Config) string {
-	return DetectPalettePathForConfigPath(cfg, DefaultPath())
 }
 
 // LoadPaletteFromMarkdown parses a command palette from markdown format.
@@ -2586,24 +2569,25 @@ func loadWithCWD(path, cwd string) (*Config, error) {
 			// WS6-remove-finalize (bd-ws6-config-truth-ienmd.3): keys removed
 			// in v1.26.0 warned for one release; since v1.27.0 each is a hard
 			// strict-loader error with the same key + disposition text.
-			// Genuinely unknown fields remain a hard error as before. Both
-			// kinds are reported together in one error so a single failed
-			// load lists everything the user must fix.
+			// Genuinely unknown fields remain a hard error as before.
 			//
-			// Dead-knob batch two (bd-6otuk): the v1.28.0 deprecated keys are
-			// on the warn leg of the same runway — load succeeds, value
-			// ignored, one loud warning per key; they flip to errors in
-			// v1.29.0.
+			// Dead-knob batch two (bd-6otuk): the v1.28.0 deprecated keys
+			// completed the same runway — they warned for one release and are
+			// hard strict-loader errors since v1.29.0, with their own
+			// release-pair error text.
+			//
+			// All three kinds are reported together in ONE error so a single
+			// failed load lists everything the user must fix.
 			removed, deprecated, unknown := classifyUndecodedKeys(fields)
-			if len(removed) > 0 || len(unknown) > 0 {
+			if len(removed) > 0 || len(deprecated) > 0 || len(unknown) > 0 {
 				var msgs []string
 				if len(unknown) > 0 {
 					msgs = append(msgs, "unknown field(s): "+strings.Join(unknown, ", "))
 				}
 				msgs = append(msgs, removedKnobErrorLines(removed)...)
+				msgs = append(msgs, deprecatedKnobErrorLines(deprecated)...)
 				return nil, fmt.Errorf("parsing config: %s", strings.Join(msgs, "\n"))
 			}
-			warnDeprecatedKnobs(os.Stderr, deprecated)
 		}
 
 		// Canonicalize the profile string for stable downstream outputs (config show, robot status).
@@ -3243,18 +3227,19 @@ func validateNTMConfigTOML(contents string) error {
 	}
 	if fields := undecodedConfigFields(md); len(fields) > 0 {
 		// Same partition as the strict loader (WS6-remove-finalize): removed
-		// knobs get their disposition text (what to delete and why); genuinely
-		// unknown fields keep the unknown-field error. The v1.28.0 deprecated
-		// batch (bd-6otuk) is warn-tier: tolerated here exactly as the strict
-		// loader tolerates it, so `ntm config set` on a config carrying a
-		// deprecated key still persists (the warning fires on every load).
-		removed, _, unknown := classifyUndecodedKeys(fields)
-		if len(removed) > 0 || len(unknown) > 0 {
+		// knobs get their disposition text (what to delete and why); the
+		// v1.28.0 deprecated batch (bd-6otuk) is rejected the same way since
+		// its v1.29.0 warn→error flip, so `ntm config set` cannot persist a
+		// config the strict loader would refuse; genuinely unknown fields
+		// keep the unknown-field error.
+		removed, deprecated, unknown := classifyUndecodedKeys(fields)
+		if len(removed) > 0 || len(deprecated) > 0 || len(unknown) > 0 {
 			var msgs []string
 			if len(unknown) > 0 {
 				msgs = append(msgs, "unknown field(s): "+strings.Join(unknown, ", "))
 			}
 			msgs = append(msgs, removedKnobErrorLines(removed)...)
+			msgs = append(msgs, deprecatedKnobErrorLines(deprecated)...)
 			return fmt.Errorf("%s", strings.Join(msgs, "\n"))
 		}
 	}

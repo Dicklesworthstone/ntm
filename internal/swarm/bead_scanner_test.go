@@ -23,24 +23,6 @@ func TestNewBeadScanner(t *testing.T) {
 	}
 }
 
-func TestNewBeadScannerWithOptions(t *testing.T) {
-	bs := NewBeadScanner("/test/dir",
-		WithBrPath("/custom/br"),
-		WithParallelism(8),
-		WithExplicitProjects([]string{"proj1", "proj2"}),
-	)
-
-	if bs.brPath != "/custom/br" {
-		t.Errorf("expected brPath /custom/br, got %s", bs.brPath)
-	}
-	if bs.Parallelism != 8 {
-		t.Errorf("expected Parallelism 8, got %d", bs.Parallelism)
-	}
-	if len(bs.ExplicitProjects) != 2 {
-		t.Errorf("expected 2 explicit projects, got %d", len(bs.ExplicitProjects))
-	}
-}
-
 func TestIsProject(t *testing.T) {
 	// Create temp directory
 	tmpDir := t.TempDir()
@@ -254,33 +236,6 @@ func TestScanWithBeads(t *testing.T) {
 	}
 }
 
-func TestScanContextCancellation(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	// Create multiple projects
-	for i := 0; i < 10; i++ {
-		projDir := filepath.Join(tmpDir, "project"+string(rune('0'+i)))
-		if err := os.MkdirAll(filepath.Join(projDir, ".git"), 0755); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	bs := NewBeadScanner(tmpDir, WithParallelism(2))
-
-	// Cancel context immediately
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	result, err := bs.Scan(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// With cancelled context, we may get partial results
-	// The key is that it doesn't hang
-	_ = result
-}
-
 func TestScanResultDuration(t *testing.T) {
 	tmpDir := t.TempDir()
 
@@ -340,4 +295,31 @@ func TestScanWithTimeout(t *testing.T) {
 	if result.TotalProjects != 1 {
 		t.Errorf("expected 1 project, got %d", result.TotalProjects)
 	}
+}
+
+func TestScanContextCancellation(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create multiple projects
+	for i := 0; i < 10; i++ {
+		projDir := filepath.Join(tmpDir, "project"+string(rune('0'+i)))
+		if err := os.MkdirAll(filepath.Join(projDir, ".git"), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	bs := NewBeadScanner(tmpDir)
+
+	// Cancel context immediately
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	result, err := bs.Scan(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// With cancelled context, we may get partial results
+	// The key is that it doesn't hang
+	_ = result
 }

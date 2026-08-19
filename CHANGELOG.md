@@ -13,6 +13,36 @@ NTM is a tmux session management tool for orchestrating multiple AI coding agent
 
 ## [Unreleased]
 
+### Changed — BREAKING (v1.29.0)
+
+- **The second deprecation batch of config keys now fails the loader**
+  (v1.29.0 flip promised in the v1.28.0 entry; `bd-6otuk`, flip bead
+  `bd-ad54k`): the 128 reader-less config keys deprecated in v1.28.0 (second
+  dead-knob batch — `[accounts]`, `[scanner.*]` except `ubs_path`, the
+  `[spawn_pacing]` rate/backoff/headroom subset, the `[cass]` subset,
+  integrations leaves, the `[checkpoints]` subset,
+  `[tmux.activity_indicators]`, `robot.output.{pretty,timestamps,compress}`,
+  `rotation.prefer_restart`/`rotation.accounts.priority`, and the seven
+  singles) no longer load with a deprecation warning — each one is now a hard
+  strict-loader **error** with the same key + disposition text the v1.28.0
+  warning carried, exactly like the v1.26.0→v1.27.0 flip. A single failed
+  load lists **every** offending key present (v1.26.0-batch removed keys,
+  v1.28.0-batch deprecated keys, and genuinely unknown fields together), so
+  one pass over the error tells you everything to delete. `ntm config
+  set`/persistence validation rejects the same keys with the same disposition
+  text. `ntm doctor` still names each deprecated key present in a config file
+  (now as an error check) because it scans the file leniently — useful
+  precisely when the strict loader refuses to start. The project-level
+  `.ntm.yaml` scanner schema is unchanged, and the `ensemble.*` keys remain
+  valid (they were claimed as live in v1.28.0, not deprecated). The
+  deprecation list is frozen; this release adds no new deprecations.
+  **Migration:** delete the listed keys from your config file — see the
+  deprecated-key migration table in the v1.28.0 entry below for the full list
+  and per-key dispositions. Nothing changes behaviorally — these values were
+  already ignored.
+
+### Notes
+
 - **Corrected commit provenance.** Commit `d08893d9`'s message incorrectly
   attributed the fail-closed serve safety-policy change to its completion and
   tmux diff. The actual safety-policy implementation is `dda4aae8`; history

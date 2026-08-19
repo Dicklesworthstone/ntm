@@ -322,20 +322,6 @@ func TestCoverageSubstituteForeachInterfaceValues(t *testing.T) {
 	if protectedValues[0] != "${item.name}" || protectedValues[1] != "reviewer" {
 		t.Fatalf("protected substitution = %#v, want item preserved and pane resolved", protectedValues)
 	}
-
-	plainSubstituted := substituteInterfaceMap(e, map[string]interface{}{
-		"string":  "${item.name}",
-		"nested":  map[string]interface{}{"role": "${pane.role}"},
-		"items":   []interface{}{"${loop.index}"},
-		"strings": []string{"${loop.count}"},
-		"number":  10,
-	})
-	if plainSubstituted["string"] != "alpha" || plainSubstituted["nested"].(map[string]interface{})["role"] != "reviewer" {
-		t.Fatalf("plain substitution = %#v, want item and pane resolved", plainSubstituted)
-	}
-	if got := substituteInterfaceMap(e, nil); got != nil {
-		t.Fatalf("empty map substitution = %#v, want nil", got)
-	}
 }
 
 func TestCoverageEvaluateForeachFilterAdditionalBranches(t *testing.T) {

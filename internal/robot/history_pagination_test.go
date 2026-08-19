@@ -8,6 +8,17 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
+// appendHistoryEntries seeds history for tests one entry at a time (the
+// batch writer was removed as dead production code).
+func appendHistoryEntries(t *testing.T, entries []*history.HistoryEntry) {
+	t.Helper()
+	for _, entry := range entries {
+		if err := history.Append(entry); err != nil {
+			t.Fatalf("failed to write history: %v", err)
+		}
+	}
+}
+
 func TestGetHistoryPagination(t *testing.T) {
 	tempDir := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", tempDir)
@@ -22,9 +33,7 @@ func TestGetHistoryPagination(t *testing.T) {
 		entry.SetSuccess()
 	}
 
-	if err := history.BatchAppend(entries); err != nil {
-		t.Fatalf("failed to write history: %v", err)
-	}
+	appendHistoryEntries(t, entries)
 
 	output, err := GetHistory(HistoryOptions{
 		Session: session,
@@ -81,9 +90,7 @@ func TestGetHistoryPagination_WithFiltersSummarizesFilteredAndTotal(t *testing.T
 		entry.SetSuccess()
 	}
 
-	if err := history.BatchAppend(entries); err != nil {
-		t.Fatalf("failed to write history: %v", err)
-	}
+	appendHistoryEntries(t, entries)
 
 	output, err := GetHistory(HistoryOptions{
 		Session:   session,
@@ -115,9 +122,7 @@ func TestGetHistoryFiltersByPersistedAgentTypes(t *testing.T) {
 	codexEntry.SetAgentTypes([]string{"cod"})
 	codexEntry.SetSuccess()
 
-	if err := history.BatchAppend([]*history.HistoryEntry{claudeEntry, codexEntry}); err != nil {
-		t.Fatalf("failed to write history: %v", err)
-	}
+	appendHistoryEntries(t, []*history.HistoryEntry{claudeEntry, codexEntry})
 
 	output, err := GetHistory(HistoryOptions{
 		Session:   session,
@@ -149,9 +154,7 @@ func TestGetHistoryStatsHonorsFilters(t *testing.T) {
 	recentFailure.SetAgentTypes([]string{"cod"})
 	recentFailure.SetError(assertAnError("send failed"))
 
-	if err := history.BatchAppend([]*history.HistoryEntry{oldEntry, recentFailure}); err != nil {
-		t.Fatalf("failed to write history: %v", err)
-	}
+	appendHistoryEntries(t, []*history.HistoryEntry{oldEntry, recentFailure})
 
 	output, err := GetHistory(HistoryOptions{
 		Session:   session,

@@ -39,32 +39,6 @@ func TestPrintStunningHelp(t *testing.T) {
 	}
 }
 
-func TestPrintCompactHelp(t *testing.T) {
-	// Use buffer instead of stdout
-	var buf bytes.Buffer
-
-	// Run function with buffer
-	PrintCompactHelp(&buf)
-
-	// Read output
-	output := stripANSIForTest(buf.String())
-
-	// Verify key components exist
-	expected := []string{
-		"NTM - Named Tmux Manager",
-		"Commands:",
-		"spawn",
-		"Send prompts to agents",
-		"Shell setup:",
-	}
-
-	for _, exp := range expected {
-		if !strings.Contains(output, exp) {
-			t.Errorf("Expected compact help output to contain %q, but it didn't", exp)
-		}
-	}
-}
-
 func TestPrintMinimalHelp(t *testing.T) {
 	// Use buffer instead of stdout
 	var buf bytes.Buffer
@@ -139,21 +113,6 @@ func TestPrintHelpTier1OnlyEssentialCommands(t *testing.T) {
 	}
 }
 
-func TestPrintHelpTier2IncludesStandardCommands(t *testing.T) {
-	// Compact help (similar to Tier 2) should include standard commands
-	var buf bytes.Buffer
-	PrintCompactHelp(&buf)
-	output := stripANSIForTest(buf.String())
-
-	// Commands present in compact help
-	compactCommands := []string{"spawn", "send", "palette", "status", "list", "attach", "view", "dashboard"}
-	for _, cmd := range compactCommands {
-		if !strings.Contains(output, cmd) {
-			t.Errorf("Expected compact help to contain command %q", cmd)
-		}
-	}
-}
-
 func TestPrintHelpTier3IncludesAllCommands(t *testing.T) {
 	// Full/stunning help (Tier 3 Master) should include all commands
 	var buf bytes.Buffer
@@ -174,24 +133,6 @@ func TestPrintHelpTier3IncludesAllCommands(t *testing.T) {
 		if !strings.Contains(output, section) {
 			t.Errorf("Expected Tier 3 help to contain section %q", section)
 		}
-	}
-}
-
-func TestHelpOutputProperlyAligned(t *testing.T) {
-	// Test that output is properly formatted
-	var buf bytes.Buffer
-	PrintCompactHelp(&buf)
-	output := buf.String()
-
-	// Should not have excessive whitespace
-	if strings.Contains(output, "     ") && !strings.Contains(output, "      ") {
-		// Some indentation is expected, but not excessive
-	}
-
-	// Should have consistent line structure
-	lines := strings.Split(output, "\n")
-	if len(lines) < 10 {
-		t.Errorf("Expected at least 10 lines of help output, got %d", len(lines))
 	}
 }
 

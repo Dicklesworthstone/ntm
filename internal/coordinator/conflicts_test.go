@@ -629,17 +629,3 @@ func TestReservationActiveAt_UnknownExpiryFailsClosed(t *testing.T) {
 		}
 	})
 }
-
-func TestActiveReservationPatterns_UnknownExpiryStaysVisible(t *testing.T) {
-	now := time.Date(2026, time.August, 6, 5, 0, 0, 0, time.UTC)
-	released := agentmail.FlexTime{Time: now.Add(-time.Minute)}
-	patterns := activeReservationPatterns([]agentmail.FileReservation{
-		{AgentName: "BlueLake", PathPattern: "internal/workflow/*.go"},
-		{AgentName: "BlueLake", PathPattern: "internal/pipeline/*.go", ExpiresTS: agentmail.FlexTime{Time: now.Add(-time.Minute)}},
-		{AgentName: "BlueLake", PathPattern: "internal/coordinator/*.go", ExpiresTS: agentmail.FlexTime{Time: now.Add(time.Hour)}, ReleasedTS: &released},
-	}, now)
-
-	if len(patterns) != 1 || patterns[0] != "internal/workflow/*.go" {
-		t.Fatalf("activeReservationPatterns() = %v, want only the unknown-expiry reservation", patterns)
-	}
-}

@@ -291,12 +291,12 @@ func TestOperatorGatedLabelsCanonicalVocabulary(t *testing.T) {
 		t.Fatalf("OperatorGatedLabels()=%v, want %v", got, want)
 	}
 	for _, label := range want {
-		if !IsOperatorGatedLabel(label) || !IsOperatorGatedLabel("  "+strings.ToUpper(label)+"  ") {
+		if !IsOperatorGatedLabelInPolicy(label, nil) || !IsOperatorGatedLabelInPolicy("  "+strings.ToUpper(label)+"  ", nil) {
 			t.Fatalf("canonical operator label %q was not recognized after normalization", label)
 		}
 	}
 	for _, label := range []string{"", "backend", "operator", "blocked"} {
-		if IsOperatorGatedLabel(label) {
+		if IsOperatorGatedLabelInPolicy(label, nil) {
 			t.Fatalf("non-gated label %q was classified as operator gated", label)
 		}
 	}

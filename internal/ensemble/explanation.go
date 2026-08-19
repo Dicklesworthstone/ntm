@@ -175,36 +175,6 @@ func (t *ExplanationTracker) SetConfidenceBasis(conclusionID, basis string) {
 	}
 }
 
-// AddSupportingEvidence adds supporting evidence to a conclusion.
-func (t *ExplanationTracker) AddSupportingEvidence(conclusionID, evidence string) {
-	if t == nil {
-		return
-	}
-	if c, ok := t.conclusions[conclusionID]; ok {
-		c.SupportingEvidence = append(c.SupportingEvidence, evidence)
-	}
-}
-
-// AddCounterEvidence adds counter evidence to a conclusion.
-func (t *ExplanationTracker) AddCounterEvidence(conclusionID, evidence string) {
-	if t == nil {
-		return
-	}
-	if c, ok := t.conclusions[conclusionID]; ok {
-		c.CounterEvidence = append(c.CounterEvidence, evidence)
-	}
-}
-
-// SetReasoning sets the reasoning for a conclusion.
-func (t *ExplanationTracker) SetReasoning(conclusionID, reasoning string) {
-	if t == nil {
-		return
-	}
-	if c, ok := t.conclusions[conclusionID]; ok {
-		c.Reasoning = reasoning
-	}
-}
-
 // RecordConflictResolution records how a conflict was resolved.
 func (t *ExplanationTracker) RecordConflictResolution(
 	topic string,
@@ -232,14 +202,6 @@ func (t *ExplanationTracker) SetStrategyRationale(rationale string) {
 		return
 	}
 	t.strategyRationale = rationale
-}
-
-// SetModeWeight records a mode's weight in synthesis.
-func (t *ExplanationTracker) SetModeWeight(modeID string, weight float64) {
-	if t == nil {
-		return
-	}
-	t.modeWeights[modeID] = weight
 }
 
 // GenerateLayer produces the final explanation layer.

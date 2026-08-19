@@ -383,48 +383,6 @@ func (s *WSEventStore) RecordDropped(clientID, topic, reason string, firstSeq, l
 	return nil
 }
 
-// GetDroppedStats gets dropped event statistics for a client.
-func (s *WSEventStore) GetDroppedStats(clientID string, since time.Time) ([]WSDroppedInfo, error) {
-	if s.db == nil {
-		return nil, nil
-	}
-
-	rows, err := s.db.Query(`
-		SELECT topic, client_id, SUM(dropped_count), MIN(first_dropped_seq), MAX(last_dropped_seq), reason
-		FROM ws_dropped_events
-		WHERE client_id = ? AND created_at > ?
-		GROUP BY topic, reason
-		ORDER BY MAX(created_at) DESC`,
-		clientID, since,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("query dropped stats: %w", err)
-	}
-	defer func() {
-		if closeErr := rows.Close(); closeErr != nil {
-			log.Printf("ws_events: dropped rows close error: %v", closeErr)
-		}
-	}()
-
-	var stats []WSDroppedInfo
-	for rows.Next() {
-		var info WSDroppedInfo
-		var firstSeq, lastSeq sql.NullInt64
-		if err := rows.Scan(&info.Topic, &info.ClientID, &info.DroppedCount, &firstSeq, &lastSeq, &info.Reason); err != nil {
-			return nil, fmt.Errorf("scan dropped info: %w", err)
-		}
-		if firstSeq.Valid {
-			info.FirstDroppedSeq = firstSeq.Int64
-		}
-		if lastSeq.Valid {
-			info.LastDroppedSeq = lastSeq.Int64
-		}
-		stats = append(stats, info)
-	}
-
-	return stats, rows.Err()
-}
-
 // BufferStats returns statistics about the ring buffer.
 func (s *WSEventStore) BufferStats() (size int, used int, oldestSeq int64, newestSeq int64) {
 	s.bufferMu.RLock()

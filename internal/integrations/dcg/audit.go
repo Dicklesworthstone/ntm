@@ -200,25 +200,6 @@ func (l *AuditLogger) checkRotation() error {
 	return nil
 }
 
-// Flush flushes any buffered data to disk
-func (l *AuditLogger) Flush() error {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	if l.closed {
-		return nil
-	}
-
-	if err := l.writer.Flush(); err != nil {
-		return fmt.Errorf("failed to flush buffer: %w", err)
-	}
-	if err := l.file.Sync(); err != nil {
-		return fmt.Errorf("failed to sync file: %w", err)
-	}
-
-	return nil
-}
-
 // Close flushes and closes the audit logger
 func (l *AuditLogger) Close() error {
 	l.mu.Lock()
@@ -242,9 +223,4 @@ func (l *AuditLogger) Close() error {
 	}
 
 	return nil
-}
-
-// Path returns the path to the audit log file
-func (l *AuditLogger) Path() string {
-	return l.path
 }

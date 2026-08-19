@@ -277,208 +277,6 @@ func TestSynthesizer_Synthesize_ConfigOverrides(t *testing.T) {
 	}
 }
 
-func TestSynthesizer_GeneratePrompt(t *testing.T) {
-	cfg := SynthesisConfig{
-		Strategy:    StrategyConsensus,
-		MaxFindings: 10,
-	}
-
-	synth, _ := NewSynthesizer(cfg)
-
-	input := &SynthesisInput{
-		OriginalQuestion: "What are the key risks?",
-		Outputs: []ModeOutput{
-			{
-				ModeID:     "mode-a",
-				Thesis:     "Primary risks are in authentication",
-				Confidence: 0.8,
-				TopFindings: []Finding{
-					{Finding: "Auth vulnerability", Impact: ImpactHigh, Confidence: 0.9},
-				},
-			},
-		},
-		AuditReport: &AuditReport{
-			Conflicts: []DetailedConflict{
-				{Topic: "Risk severity", Severity: ConflictMedium},
-			},
-		},
-	}
-
-	prompt := synth.GeneratePrompt(input)
-
-	if prompt == "" {
-		t.Error("GeneratePrompt returned empty string")
-	}
-
-	// Check prompt contains key elements
-	if !strings.Contains(prompt, "What are the key risks?") {
-		t.Error("Prompt should contain original question")
-	}
-	if !strings.Contains(prompt, "consensus") {
-		t.Error("Prompt should contain strategy name")
-	}
-	if !strings.Contains(prompt, "mode-a") {
-		t.Error("Prompt should contain mode outputs")
-	}
-	if !strings.Contains(prompt, "Risk severity") {
-		t.Error("Prompt should contain audit conflicts")
-	}
-}
-
-func TestSynthesizer_GeneratePrompt_NilInputs(t *testing.T) {
-	cfg := SynthesisConfig{Strategy: StrategyManual}
-	synth, _ := NewSynthesizer(cfg)
-
-	prompt := synth.GeneratePrompt(nil)
-	if prompt != "" {
-		t.Error("GeneratePrompt should return empty for nil input")
-	}
-
-	var nilSynth *Synthesizer
-	prompt = nilSynth.GeneratePrompt(&SynthesisInput{})
-	if prompt != "" {
-		t.Error("GeneratePrompt should return empty for nil receiver")
-	}
-}
-
-func TestSynthesizer_GeneratePrompt_NoAudit(t *testing.T) {
-	cfg := SynthesisConfig{Strategy: StrategyManual}
-	synth, _ := NewSynthesizer(cfg)
-
-	input := &SynthesisInput{
-		OriginalQuestion: "Test question",
-		Outputs: []ModeOutput{
-			{ModeID: "test", Thesis: "thesis", TopFindings: []Finding{{Finding: "f", Impact: ImpactMedium, Confidence: 0.5}}, Confidence: 0.5},
-		},
-		AuditReport: nil,
-	}
-
-	prompt := synth.GeneratePrompt(input)
-
-	if !strings.Contains(prompt, "No disagreement analysis available") {
-		t.Error("Prompt should indicate no audit available")
-	}
-}
-
-func TestNewSynthesisEngine(t *testing.T) {
-	cfg := SynthesisConfig{Strategy: StrategyManual}
-
-	engine, err := NewSynthesisEngine(cfg)
-	if err != nil {
-		t.Fatalf("NewSynthesisEngine error: %v", err)
-	}
-	if engine == nil {
-		t.Fatal("NewSynthesisEngine returned nil")
-	}
-	if engine.Collector == nil {
-		t.Error("Collector is nil")
-	}
-	if engine.Synthesizer == nil {
-		t.Error("Synthesizer is nil")
-	}
-}
-
-func TestNewSynthesisEngine_InvalidStrategy(t *testing.T) {
-	cfg := SynthesisConfig{Strategy: SynthesisStrategy("invalid")}
-
-	_, err := NewSynthesisEngine(cfg)
-	if err == nil {
-		t.Error("Expected error for invalid strategy")
-	}
-}
-
-func TestSynthesisEngine_AddOutput(t *testing.T) {
-	cfg := SynthesisConfig{Strategy: StrategyManual}
-	engine, _ := NewSynthesisEngine(cfg)
-
-	output := ModeOutput{
-		ModeID:      "test",
-		Thesis:      "Test thesis",
-		Confidence:  0.8,
-		TopFindings: []Finding{{Finding: "f", Impact: ImpactMedium, Confidence: 0.7}},
-	}
-
-	err := engine.AddOutput(output)
-	if err != nil {
-		t.Fatalf("AddOutput error: %v", err)
-	}
-
-	if engine.Collector.Count() != 1 {
-		t.Errorf("Collector count = %d, want 1", engine.Collector.Count())
-	}
-}
-
-func TestSynthesisEngine_AddOutput_NilEngine(t *testing.T) {
-	var engine *SynthesisEngine
-
-	err := engine.AddOutput(ModeOutput{})
-	if err == nil {
-		t.Error("Expected error for nil engine")
-	}
-}
-
-func TestSynthesisEngine_Process(t *testing.T) {
-	cfg := SynthesisConfig{Strategy: StrategyManual}
-	engine, _ := NewSynthesisEngine(cfg)
-
-	// Add outputs
-	outputs := []ModeOutput{
-		{
-			ModeID:      "mode-a",
-			Thesis:      "First thesis",
-			Confidence:  0.8,
-			TopFindings: []Finding{{Finding: "Finding A", Impact: ImpactHigh, Confidence: 0.9}},
-		},
-		{
-			ModeID:      "mode-b",
-			Thesis:      "Second thesis",
-			Confidence:  0.7,
-			TopFindings: []Finding{{Finding: "Finding B", Impact: ImpactMedium, Confidence: 0.8}},
-		},
-	}
-
-	for _, o := range outputs {
-		_ = engine.AddOutput(o)
-	}
-
-	result, audit, err := engine.Process("What is the system architecture?", nil)
-	if err != nil {
-		t.Fatalf("Process error: %v", err)
-	}
-	if result == nil {
-		t.Fatal("Process returned nil result")
-	}
-	if audit == nil {
-		t.Error("Audit report should not be nil")
-	}
-
-	if result.Summary == "" {
-		t.Error("Summary is empty")
-	}
-	if len(result.Findings) == 0 {
-		t.Error("No findings in result")
-	}
-}
-
-func TestSynthesisEngine_Process_NilEngine(t *testing.T) {
-	var engine *SynthesisEngine
-
-	_, _, err := engine.Process("question", nil)
-	if err == nil {
-		t.Error("Expected error for nil engine")
-	}
-}
-
-func TestSynthesisEngine_Process_NoOutputs(t *testing.T) {
-	cfg := SynthesisConfig{Strategy: StrategyManual}
-	engine, _ := NewSynthesisEngine(cfg)
-
-	_, _, err := engine.Process("question", nil)
-	if err == nil {
-		t.Error("Expected error for no outputs")
-	}
-}
-
 func TestSynthesisResult_Fields(t *testing.T) {
 	cfg := SynthesisConfig{Strategy: StrategyManual}
 	synth, _ := NewSynthesizer(cfg)
@@ -772,205 +570,85 @@ func TestSynthesizer_Contributions_UniqueInsights(t *testing.T) {
 	t.Logf("TEST: %s - assertion: unique insights tracked", t.Name())
 }
 
-func TestParseSynthesisOutput_JSON(t *testing.T) {
-	raw := `{"summary": "Test summary", "findings": [{"finding": "Test finding", "impact": "high", "confidence": 0.9}], "risks": [{"risk": "Test risk", "impact": "medium", "likelihood": 0.5}], "recommendations": [{"recommendation": "Test rec", "priority": "high"}], "confidence": 0.85}`
-
-	result, err := ParseSynthesisOutput(raw)
-	if err != nil {
-		t.Fatalf("ParseSynthesisOutput failed: %v", err)
+func TestSynthesizer_GeneratePrompt(t *testing.T) {
+	cfg := SynthesisConfig{
+		Strategy:    StrategyConsensus,
+		MaxFindings: 10,
 	}
 
-	if result.Summary != "Test summary" {
-		t.Errorf("Summary = %q, want %q", result.Summary, "Test summary")
-	}
-	if len(result.Findings) != 1 {
-		t.Errorf("Findings count = %d, want 1", len(result.Findings))
-	}
-	if result.Confidence != 0.85 {
-		t.Errorf("Confidence = %v, want 0.85", result.Confidence)
-	}
-}
+	synth, _ := NewSynthesizer(cfg)
 
-func TestParseSynthesisOutput_YAML(t *testing.T) {
-	raw := `summary: Test summary
-findings:
-  - finding: Test finding
-    impact: high
-    confidence: 0.9
-risks:
-  - risk: Test risk
-    impact: medium
-    likelihood: 0.5
-recommendations:
-  - recommendation: Test rec
-    priority: high
-confidence: 0.85`
-
-	result, err := ParseSynthesisOutput(raw)
-	if err != nil {
-		t.Fatalf("ParseSynthesisOutput failed: %v", err)
-	}
-
-	if result.Summary != "Test summary" {
-		t.Errorf("Summary = %q, want %q", result.Summary, "Test summary")
-	}
-	if len(result.Findings) != 1 {
-		t.Errorf("Findings count = %d, want 1", len(result.Findings))
-	}
-}
-
-func TestParseSynthesisOutput_CodeBlock(t *testing.T) {
-	raw := `Here is the synthesis:
-
-` + "```yaml" + `
-summary: Extracted from code block
-findings:
-  - finding: Finding in code block
-    impact: high
-    confidence: 0.8
-confidence: 0.75
-` + "```" + `
-
-Some text after the code block.`
-
-	result, err := ParseSynthesisOutput(raw)
-	if err != nil {
-		t.Fatalf("ParseSynthesisOutput failed: %v", err)
-	}
-
-	if result.Summary != "Extracted from code block" {
-		t.Errorf("Summary = %q, want %q", result.Summary, "Extracted from code block")
-	}
-}
-
-func TestParseSynthesisOutput_Empty(t *testing.T) {
-	_, err := ParseSynthesisOutput("")
-	if err == nil {
-		t.Error("Expected error for empty input")
-	}
-}
-
-func TestParseSynthesisOutput_Invalid(t *testing.T) {
-	_, err := ParseSynthesisOutput("this is not valid json or yaml {{{")
-	if err == nil {
-		t.Error("Expected error for invalid input")
-	}
-}
-
-func TestValidateSynthesisResult_Valid(t *testing.T) {
-	result := &SynthesisResult{
-		Summary: "Valid summary",
-		Findings: []Finding{
-			{Finding: "Test", Impact: ImpactHigh, Confidence: 0.9},
+	input := &SynthesisInput{
+		OriginalQuestion: "What are the key risks?",
+		Outputs: []ModeOutput{
+			{
+				ModeID:     "mode-a",
+				Thesis:     "Primary risks are in authentication",
+				Confidence: 0.8,
+				TopFindings: []Finding{
+					{Finding: "Auth vulnerability", Impact: ImpactHigh, Confidence: 0.9},
+				},
+			},
 		},
-		Confidence: 0.8,
-	}
-
-	errs := ValidateSynthesisResult(result)
-	if len(errs) != 0 {
-		t.Errorf("Expected no errors, got %d: %v", len(errs), errs)
-	}
-}
-
-func TestValidateSynthesisResult_MissingSummary(t *testing.T) {
-	result := &SynthesisResult{
-		Summary:    "",
-		Confidence: 0.8,
-	}
-
-	errs := ValidateSynthesisResult(result)
-	if len(errs) == 0 {
-		t.Error("Expected validation error for missing summary")
-	}
-
-	found := false
-	for _, e := range errs {
-		if e.Field == "summary" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Error("Expected error for summary field")
-	}
-}
-
-func TestValidateSynthesisResult_InvalidConfidence(t *testing.T) {
-	result := &SynthesisResult{
-		Summary:    "Test",
-		Confidence: 1.5, // Invalid
-	}
-
-	errs := ValidateSynthesisResult(result)
-	found := false
-	for _, e := range errs {
-		if e.Field == "confidence" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Error("Expected error for invalid confidence")
-	}
-}
-
-func TestValidateSynthesisResult_InvalidFinding(t *testing.T) {
-	result := &SynthesisResult{
-		Summary: "Test",
-		Findings: []Finding{
-			{Finding: "", Impact: ImpactHigh, Confidence: 0.9}, // Empty finding
+		AuditReport: &AuditReport{
+			Conflicts: []DetailedConflict{
+				{Topic: "Risk severity", Severity: ConflictMedium},
+			},
 		},
-		Confidence: 0.8,
 	}
 
-	errs := ValidateSynthesisResult(result)
-	found := false
-	for _, e := range errs {
-		if strings.Contains(e.Field, "findings[0].finding") {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Error("Expected error for empty finding")
-	}
-}
+	prompt := synth.GeneratePrompt(input)
 
-func TestParseAndValidateSynthesisOutput(t *testing.T) {
-	raw := `summary: Test summary
-findings:
-  - finding: Test finding
-    impact: high
-    confidence: 0.9
-confidence: 0.85`
+	if prompt == "" {
+		t.Error("GeneratePrompt returned empty string")
+	}
 
-	result, errs, err := ParseAndValidateSynthesisOutput(raw)
-	if err != nil {
-		t.Fatalf("ParseAndValidateSynthesisOutput failed: %v", err)
+	// Check prompt contains key elements
+	if !strings.Contains(prompt, "What are the key risks?") {
+		t.Error("Prompt should contain original question")
 	}
-	if len(errs) != 0 {
-		t.Errorf("Expected no validation errors, got %d: %v", len(errs), errs)
+	if !strings.Contains(prompt, "consensus") {
+		t.Error("Prompt should contain strategy name")
 	}
-	if result.Summary != "Test summary" {
-		t.Errorf("Summary = %q, want %q", result.Summary, "Test summary")
+	if !strings.Contains(prompt, "mode-a") {
+		t.Error("Prompt should contain mode outputs")
+	}
+	if !strings.Contains(prompt, "Risk severity") {
+		t.Error("Prompt should contain audit conflicts")
 	}
 }
 
-func TestExtractSynthesisContent_NoCodeBlock(t *testing.T) {
-	raw := `summary: Direct content
-confidence: 0.8`
+func TestSynthesizer_GeneratePrompt_NilInputs(t *testing.T) {
+	cfg := SynthesisConfig{Strategy: StrategyManual}
+	synth, _ := NewSynthesizer(cfg)
 
-	content := extractSynthesisContent(raw)
-	if !strings.Contains(content, "summary:") {
-		t.Error("Expected content to contain summary:")
+	prompt := synth.GeneratePrompt(nil)
+	if prompt != "" {
+		t.Error("GeneratePrompt should return empty for nil input")
+	}
+
+	var nilSynth *Synthesizer
+	prompt = nilSynth.GeneratePrompt(&SynthesisInput{})
+	if prompt != "" {
+		t.Error("GeneratePrompt should return empty for nil receiver")
 	}
 }
 
-func TestExtractSynthesisContent_JSONCodeBlock(t *testing.T) {
-	raw := "Some preamble\n```json\n{\"summary\": \"test\"}\n```\nSome epilogue"
+func TestSynthesizer_GeneratePrompt_NoAudit(t *testing.T) {
+	cfg := SynthesisConfig{Strategy: StrategyManual}
+	synth, _ := NewSynthesizer(cfg)
 
-	content := extractSynthesisContent(raw)
-	if !strings.Contains(content, "summary") {
-		t.Errorf("Expected content to contain summary, got: %s", content)
+	input := &SynthesisInput{
+		OriginalQuestion: "Test question",
+		Outputs: []ModeOutput{
+			{ModeID: "test", Thesis: "thesis", TopFindings: []Finding{{Finding: "f", Impact: ImpactMedium, Confidence: 0.5}}, Confidence: 0.5},
+		},
+		AuditReport: nil,
+	}
+
+	prompt := synth.GeneratePrompt(input)
+
+	if !strings.Contains(prompt, "No disagreement analysis available") {
+		t.Error("Prompt should indicate no audit available")
 	}
 }

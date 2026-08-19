@@ -36,15 +36,17 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/state"
 )
 
-var (
-	errServeTestAgentSpawnDisabled = errors.New("agent spawning disabled in serve unit tests")
-	errServeTestAgentMailDisabled  = errors.New("agent mail disabled in serve unit tests")
-)
+var errServeTestAgentSpawnDisabled = errors.New("agent spawning disabled in serve unit tests")
 
-type roundTripperFunc func(*http.Request) (*http.Response, error)
-
-func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
-	return f(req)
+// deadAgentMailClient returns a client whose base URL points at a closed
+// local port so every call fails immediately (agent mail disabled in serve
+// unit tests). The former transport-injection option WithHTTPClient was
+// removed as dead code.
+func deadAgentMailClient(t *testing.T) *agentmail.Client {
+	t.Helper()
+	ts := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	ts.Close()
+	return agentmail.NewClient(agentmail.WithBaseURL(ts.URL + "/"))
 }
 
 // setForceReleasePolicy points HOME at a hermetic dir whose policy pins
@@ -115,15 +117,7 @@ func setupTestServer(t *testing.T) (*Server, *state.Store) {
 		EventBus:   eventBus,
 		StateStore: store,
 	})
-	srv.mailClient = agentmail.NewClient(
-		agentmail.WithBaseURL("http://agentmail.test/"),
-		agentmail.WithHTTPClient(&http.Client{
-			Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
-				return nil, errServeTestAgentMailDisabled
-			}),
-			Timeout: time.Second,
-		}),
-	)
+	srv.mailClient = deadAgentMailClient(t)
 	srv.projectDir = t.TempDir()
 	srv.spawnAgents = func(context.Context, robot.SpawnOptions) (*robot.SpawnOutput, error) {
 		return nil, errServeTestAgentSpawnDisabled
@@ -334,17 +328,9 @@ func newMockAgentMailMCPClient(
 ) *agentmail.Client {
 	t.Helper()
 	handler := newMockAgentMailMCPHandler(t, handlers)
-	return agentmail.NewClient(
-		agentmail.WithBaseURL("http://agentmail.test/"),
-		agentmail.WithHTTPClient(&http.Client{
-			Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
-				rec := httptest.NewRecorder()
-				handler.ServeHTTP(rec, req)
-				return rec.Result(), nil
-			}),
-			Timeout: time.Second,
-		}),
-	)
+	ts := httptest.NewServer(handler)
+	t.Cleanup(ts.Close)
+	return agentmail.NewClient(agentmail.WithBaseURL(ts.URL + "/"))
 }
 
 func TestNew(t *testing.T) {
@@ -352,15 +338,15 @@ func TestNew(t *testing.T) {
 	if srv == nil {
 		t.Fatal("New returned nil")
 	}
-	if srv.Port() != 7337 {
-		t.Errorf("Default port = %d, want 7337", srv.Port())
+	if srv.port != 7337 {
+		t.Errorf("Default port = %d, want 7337", srv.port)
 	}
 }
 
 func TestNewWithCustomPort(t *testing.T) {
 	srv := New(Config{Port: 8080})
-	if srv.Port() != 8080 {
-		t.Errorf("Port = %d, want 8080", srv.Port())
+	if srv.port != 8080 {
+		t.Errorf("Port = %d, want 8080", srv.port)
 	}
 }
 
@@ -3816,96 +3802,6 @@ func TestAttentionItemStatePinAndEscalateSetFlags(t *testing.T) {
 	}
 	if itemState.OverrideReason != "force visibility" {
 		t.Fatalf("override_reason = %q, want force visibility", itemState.OverrideReason)
-	}
-}
-
-func TestAuthMiddlewareAPIKey(t *testing.T) {
-	srv := New(Config{
-		Auth: AuthConfig{
-			Mode:   AuthModeAPIKey,
-			APIKey: "secret",
-		},
-	})
-	handler := srv.authMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-
-	req := httptest.NewRequest(http.MethodGet, "/api/sessions", nil)
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusUnauthorized {
-		t.Errorf("missing api key status = %d, want %d", rec.Code, http.StatusUnauthorized)
-	}
-
-	req = httptest.NewRequest(http.MethodGet, "/api/sessions", nil)
-	req.Header.Set("Authorization", "Bearer secret")
-	rec = httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Errorf("valid api key status = %d, want %d", rec.Code, http.StatusOK)
-	}
-}
-
-func TestAuthMiddlewareOIDC(t *testing.T) {
-	issuer := "https://issuer.example.com"
-	audience := "ntm"
-	key := mustGenerateKey(t)
-	jwksURL := startJWKS(t, key, "kid1")
-	token := signJWT(t, key, "kid1", issuer, audience, time.Now().Add(1*time.Hour))
-
-	srv := New(Config{
-		Auth: AuthConfig{
-			Mode: AuthModeOIDC,
-			OIDC: OIDCConfig{
-				Issuer:   issuer,
-				Audience: audience,
-				JWKSURL:  jwksURL,
-			},
-		},
-	})
-	handler := srv.authMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-
-	req := httptest.NewRequest(http.MethodGet, "/api/sessions", nil)
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusUnauthorized {
-		t.Errorf("missing oidc token status = %d, want %d", rec.Code, http.StatusUnauthorized)
-	}
-
-	req = httptest.NewRequest(http.MethodGet, "/api/sessions", nil)
-	req.Header.Set("Authorization", "Bearer "+token)
-	rec = httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Errorf("valid oidc token status = %d, want %d", rec.Code, http.StatusOK)
-	}
-}
-
-func TestAuthMiddlewareMTLS(t *testing.T) {
-	srv := New(Config{
-		Auth: AuthConfig{
-			Mode: AuthModeMTLS,
-		},
-	})
-	handler := srv.authMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-
-	req := httptest.NewRequest(http.MethodGet, "/api/sessions", nil)
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusUnauthorized {
-		t.Errorf("missing mtls cert status = %d, want %d", rec.Code, http.StatusUnauthorized)
-	}
-
-	req = httptest.NewRequest(http.MethodGet, "/api/sessions", nil)
-	req.TLS = &tls.ConnectionState{PeerCertificates: []*x509.Certificate{{}}}
-	rec = httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Errorf("valid mtls cert status = %d, want %d", rec.Code, http.StatusOK)
 	}
 }
 

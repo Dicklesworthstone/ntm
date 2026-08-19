@@ -91,27 +91,6 @@ func TestEscapeQuotes(t *testing.T) {
 	}
 }
 
-func TestFormatTarget(t *testing.T) {
-	tests := []struct {
-		name    string
-		session string
-		pane    int
-		want    string
-	}{
-		{"basic", "mysession", 0, "mysession:1.0"},
-		{"pane 5", "test", 5, "test:1.5"},
-		{"complex session name", "my-ai-session", 12, "my-ai-session:1.12"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := formatTarget(tt.session, tt.pane)
-			if got != tt.want {
-				t.Errorf("formatTarget(%q, %d) = %q, want %q", tt.session, tt.pane, got, tt.want)
-			}
-		})
-	}
-}
-
 func TestFormatTargetWinPreservesExplicitWindowIndex(t *testing.T) {
 	tests := []struct {
 		name    string

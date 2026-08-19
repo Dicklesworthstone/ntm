@@ -45,7 +45,6 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/startup"
 	"github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
-	"github.com/Dicklesworthstone/ntm/internal/tracker"
 	"github.com/Dicklesworthstone/ntm/tests/testutil"
 )
 
@@ -1010,58 +1009,6 @@ func TestResolveMessageScopeUsesSavedSessionAgentWhenInferringSession(t *testing
 	}
 	if gotAgent != "BlueLake" {
 		t.Fatalf("agent name = %q, want %q", gotAgent, "BlueLake")
-	}
-}
-
-func TestResolveMessageScopeUsesCurrentPaneRegistryIdentity(t *testing.T) {
-	testutil.RequireTmuxThrottled(t)
-	isolateSessionAgentStorage(t)
-
-	projectsBase := t.TempDir()
-	projectDir := filepath.Join(projectsBase, "messagepaneidentity")
-	if err := os.MkdirAll(projectDir, 0o755); err != nil {
-		t.Fatalf("mkdir project: %v", err)
-	}
-
-	oldCfg := cfg
-	cfg = &config.Config{ProjectsBase: projectsBase}
-	t.Cleanup(func() { cfg = oldCfg })
-
-	oldWd, _ := os.Getwd()
-	otherDir := t.TempDir()
-	if err := os.Chdir(otherDir); err != nil {
-		t.Fatalf("chdir: %v", err)
-	}
-	defer os.Chdir(oldWd)
-
-	session := "messagepaneidentity"
-	_ = tmux.KillSession(session)
-	if err := tmux.CreateSession(session, projectDir); err != nil {
-		t.Fatalf("CreateSession(%q): %v", session, err)
-	}
-	t.Cleanup(func() { _ = tmux.KillSession(session) })
-
-	panes, err := tmux.GetPanes(session)
-	if err != nil {
-		t.Fatalf("GetPanes(%q): %v", session, err)
-	}
-	if len(panes) == 0 {
-		t.Fatal("expected at least one pane")
-	}
-
-	saveSessionAgentForTest(t, session, projectDir, "BlueLake")
-	saveSessionAgentRegistryForTest(t, session, projectDir, "", panes[0].ID, "GreenCastle")
-	t.Setenv("TMUX_PANE", panes[0].ID)
-
-	gotDir, gotAgent, err := resolveMessageScope(t.Context(), session)
-	if err != nil {
-		t.Fatalf("resolveMessageScope() error = %v", err)
-	}
-	if gotDir != projectDir {
-		t.Fatalf("project dir = %q, want %q", gotDir, projectDir)
-	}
-	if gotAgent != "GreenCastle" {
-		t.Fatalf("agent name = %q, want %q", gotAgent, "GreenCastle")
 	}
 }
 
@@ -2133,19 +2080,6 @@ func TestRunEnsembleSynthesize_RejectsRunIDWithoutStream(t *testing.T) {
 	}
 }
 
-func TestResolveEnsembleStateCommandSession_ExplicitOfflineSession(t *testing.T) {
-	res, err := resolveEnsembleStateCommandSession("offline-explicit-session", io.Discard)
-	if err != nil {
-		t.Fatalf("resolveEnsembleStateCommandSession() error = %v", err)
-	}
-	if res.Session != "offline-explicit-session" {
-		t.Fatalf("Session = %q, want %q", res.Session, "offline-explicit-session")
-	}
-	if res.Inferred {
-		t.Fatal("expected explicit session resolution, got inferred")
-	}
-}
-
 func TestNewEnsembleSynthesizeCmd_AllowsExplicitOfflineSession(t *testing.T) {
 	isolateSessionAgentStorage(t)
 	ensemble.CloseDefaultStateStore()
@@ -2852,109 +2786,12 @@ func TestRollbackCmd_InvalidCheckpointReportsLoadFailure(t *testing.T) {
 	}
 }
 
-func TestRunChangesNormalizesExplicitPrefix(t *testing.T) {
-	origStore := tracker.GlobalFileChanges
-	store := tracker.NewFileChangeStore(100)
-	tracker.GlobalFileChanges = store
-	t.Cleanup(func() { tracker.GlobalFileChanges = origStore })
-
-	projectsBase := t.TempDir()
-	projectDir := filepath.Join(projectsBase, "changeproject")
-	if err := os.MkdirAll(projectDir, 0o755); err != nil {
-		t.Fatalf("mkdir project: %v", err)
-	}
-
-	oldCfg := cfg
-	oldJSON := jsonOutput
-	cfg = &config.Config{ProjectsBase: projectsBase}
-	jsonOutput = false
-	t.Cleanup(func() {
-		cfg = oldCfg
-		jsonOutput = oldJSON
-	})
-
-	store.Add(tracker.RecordedFileChange{
-		Timestamp: time.Now(),
-		Session:   "changeproject",
-		Agents:    []string{"agent-1"},
-		Change: tracker.FileChange{
-			Path: filepath.Join(projectDir, "file.go"),
-			Type: tracker.FileModified,
-		},
-	})
-
-	out, err := captureStdout(t, func() error { return runChanges(t.Context(), "changep") })
-	if err != nil {
-		t.Fatalf("runChanges() error = %v", err)
-	}
-	if strings.Contains(out, "No file changes recorded.") {
-		t.Fatalf("expected recorded change output, got %q", out)
-	}
-	if !strings.Contains(out, "agent-1") {
-		t.Fatalf("expected agent name in output, got %q", out)
-	}
-}
-
-func TestRunConflictsNormalizesExplicitPrefix(t *testing.T) {
-	origStore := tracker.GlobalFileChanges
-	store := tracker.NewFileChangeStore(100)
-	tracker.GlobalFileChanges = store
-	t.Cleanup(func() { tracker.GlobalFileChanges = origStore })
-
-	projectsBase := t.TempDir()
-	projectDir := filepath.Join(projectsBase, "conflictproject")
-	if err := os.MkdirAll(projectDir, 0o755); err != nil {
-		t.Fatalf("mkdir project: %v", err)
-	}
-
-	oldCfg := cfg
-	oldJSON := jsonOutput
-	cfg = &config.Config{ProjectsBase: projectsBase}
-	jsonOutput = false
-	t.Cleanup(func() {
-		cfg = oldCfg
-		jsonOutput = oldJSON
-	})
-
-	path := filepath.Join(projectDir, "file.go")
-	store.Add(tracker.RecordedFileChange{
-		Timestamp: time.Now().Add(-2 * time.Minute),
-		Session:   "conflictproject",
-		Agents:    []string{"agent-1"},
-		Change: tracker.FileChange{
-			Path: path,
-			Type: tracker.FileModified,
-		},
-	})
-	store.Add(tracker.RecordedFileChange{
-		Timestamp: time.Now().Add(-1 * time.Minute),
-		Session:   "conflictproject",
-		Agents:    []string{"agent-2"},
-		Change: tracker.FileChange{
-			Path: path,
-			Type: tracker.FileModified,
-		},
-	})
-
-	out, err := captureStdout(t, func() error { return runConflicts(t.Context(), "conflictp", "24h", 10) })
-	if err != nil {
-		t.Fatalf("runConflicts() error = %v", err)
-	}
-	if strings.Contains(out, "No conflicts detected.") {
-		t.Fatalf("expected conflict output, got %q", out)
-	}
-	if !strings.Contains(out, "conflictproject") {
-		t.Fatalf("expected session name in output, got %q", out)
-	}
-	if !strings.Contains(out, "file.go") {
-		t.Fatalf("expected conflicted file in output, got %q", out)
-	}
-}
-
 func TestRunContextRotationPendingNormalizesExplicitPrefix(t *testing.T) {
-	storePath := filepath.Join(t.TempDir(), "pending.jsonl")
+	// NewPendingRotationStoreWithPath was removed as dead code; redirect the
+	// default store's location via HOME instead (NTMDir = $HOME/.ntm).
+	t.Setenv("HOME", t.TempDir())
 	origStore := ctxmon.DefaultPendingRotationStore
-	ctxmon.DefaultPendingRotationStore = ctxmon.NewPendingRotationStoreWithPath(storePath)
+	ctxmon.DefaultPendingRotationStore = ctxmon.NewPendingRotationStore()
 	t.Cleanup(func() { ctxmon.DefaultPendingRotationStore = origStore })
 
 	projectsBase := t.TempDir()
@@ -3985,14 +3822,6 @@ func TestIsJSONOutput(t *testing.T) {
 	}
 }
 
-// TestGetFormatter tests the formatter creation
-func TestGetFormatter(t *testing.T) {
-	formatter := GetFormatter()
-	if formatter == nil {
-		t.Fatal("Expected non-nil formatter")
-	}
-}
-
 // TestBuildInfo tests that build info variables are set
 func TestBuildInfo(t *testing.T) {
 	// These should have default values even if not set by build
@@ -4884,23 +4713,6 @@ func TestUpgradeCmdHelp(t *testing.T) {
 	}
 }
 
-// TestGetAssetName tests the asset name generation for different platforms
-func TestGetAssetName(t *testing.T) {
-	// Note: This tests the actual runtime values, so results depend on where tests run
-	name := getAssetName()
-
-	// Must start with ntm_
-	if !strings.HasPrefix(name, "ntm_") {
-		t.Errorf("getAssetName() = %q, want prefix 'ntm_'", name)
-	}
-
-	// Must contain underscore separators (not dashes)
-	parts := strings.Split(name, "_")
-	if len(parts) != 3 {
-		t.Errorf("getAssetName() = %q, want 3 parts separated by underscore", name)
-	}
-}
-
 // TestGetArchiveAssetName tests archive asset name generation
 func TestGetArchiveAssetName(t *testing.T) {
 	tests := []struct {
@@ -5309,16 +5121,6 @@ func TestUpgradeAssetNamingConsistency(t *testing.T) {
 	// The real functions use runtime.GOOS/GOARCH, so we test that the
 	// current platform produces expected patterns
 
-	realBinary := getAssetName()
-	// Binary should always start with ntm_ and use underscore separators
-	if !strings.HasPrefix(realBinary, "ntm_") {
-		t.Errorf("getAssetName() = %q, should start with 'ntm_'", realBinary)
-	}
-	parts := strings.Split(realBinary, "_")
-	if len(parts) != 3 {
-		t.Errorf("getAssetName() = %q, should have 3 underscore-separated parts", realBinary)
-	}
-
 	realArchive := getArchiveAssetName("1.0.0")
 	// Archive should have format: ntm_VERSION_OS_ARCH.ext
 	if !strings.HasPrefix(realArchive, "ntm_1.0.0_") {
@@ -5329,7 +5131,7 @@ func TestUpgradeAssetNamingConsistency(t *testing.T) {
 	}
 
 	// Log for debugging
-	t.Logf("Current platform produces: binary=%q, archive=%q", realBinary, realArchive)
+	t.Logf("Current platform produces: archive=%q", realArchive)
 }
 
 func TestParseRobotSinceWindowAcceptsRFC3339(t *testing.T) {
@@ -7823,5 +7625,57 @@ func TestClassifyRobotExecuteErrorUnknownCommandIsInvalidFlag(t *testing.T) {
 	}
 	if strings.Contains(strings.ToLower(hint), "retry") {
 		t.Errorf("hint = %q, must not advise retrying a deterministic usage error", hint)
+	}
+}
+
+func TestResolveMessageScopeUsesCurrentPaneRegistryIdentity(t *testing.T) {
+	testutil.RequireTmuxThrottled(t)
+	isolateSessionAgentStorage(t)
+
+	projectsBase := t.TempDir()
+	projectDir := filepath.Join(projectsBase, "messagepaneidentity")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("mkdir project: %v", err)
+	}
+
+	oldCfg := cfg
+	cfg = &config.Config{ProjectsBase: projectsBase}
+	t.Cleanup(func() { cfg = oldCfg })
+
+	oldWd, _ := os.Getwd()
+	otherDir := t.TempDir()
+	if err := os.Chdir(otherDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(oldWd)
+
+	session := "messagepaneidentity"
+	_ = tmux.KillSession(session)
+	if err := tmux.CreateSession(session, projectDir); err != nil {
+		t.Fatalf("CreateSession(%q): %v", session, err)
+	}
+	t.Cleanup(func() { _ = tmux.KillSession(session) })
+
+	panes, err := tmux.GetPanes(session)
+	if err != nil {
+		t.Fatalf("GetPanes(%q): %v", session, err)
+	}
+	if len(panes) == 0 {
+		t.Fatal("expected at least one pane")
+	}
+
+	saveSessionAgentForTest(t, session, projectDir, "BlueLake")
+	saveSessionAgentRegistryForTest(t, session, projectDir, "", panes[0].ID, "GreenCastle")
+	t.Setenv("TMUX_PANE", panes[0].ID)
+
+	gotDir, gotAgent, err := resolveMessageScope(t.Context(), session)
+	if err != nil {
+		t.Fatalf("resolveMessageScope() error = %v", err)
+	}
+	if gotDir != projectDir {
+		t.Fatalf("project dir = %q, want %q", gotDir, projectDir)
+	}
+	if gotAgent != "GreenCastle" {
+		t.Fatalf("agent name = %q, want %q", gotAgent, "GreenCastle")
 	}
 }

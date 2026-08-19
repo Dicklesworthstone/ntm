@@ -11,13 +11,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/Dicklesworthstone/ntm/internal/audit"
-	"github.com/Dicklesworthstone/ntm/internal/util"
 )
 
 // Default Ollama settings
@@ -129,22 +125,6 @@ func NewAdapter() *Adapter {
 	}
 }
 
-// NewAdapterWithHost creates a new Ollama adapter with a specific host
-func NewAdapterWithHost(host string) *Adapter {
-	a := NewAdapter()
-	_ = a.Connect(host)
-	return a
-}
-
-// NewAdapterFromEnv creates an adapter using NTM_OLLAMA_HOST environment variable
-func NewAdapterFromEnv() *Adapter {
-	host := os.Getenv("NTM_OLLAMA_HOST")
-	if host == "" {
-		host = DefaultHost
-	}
-	return NewAdapterWithHost(host)
-}
-
 // Connect establishes a connection to the Ollama server
 func (a *Adapter) Connect(host string) error {
 	if host == "" {
@@ -181,27 +161,6 @@ func (a *Adapter) Connect(host string) error {
 	a.connected = true
 	a.mu.Unlock()
 	return nil
-}
-
-// SetModel sets the default model for prompts
-func (a *Adapter) SetModel(model string) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.model = model
-}
-
-// GetModel returns the current model
-func (a *Adapter) GetModel() string {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	return a.model
-}
-
-// IsConnected returns whether the adapter is connected
-func (a *Adapter) IsConnected() bool {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	return a.connected
 }
 
 // Host returns the current Ollama host
@@ -276,238 +235,6 @@ type ollamaPullResponse struct {
 	Digest    string `json:"digest,omitempty"`
 	Total     int64  `json:"total,omitempty"`
 	Completed int64  `json:"completed,omitempty"`
-}
-
-// SendPrompt sends a prompt and waits for the complete response
-func (a *Adapter) SendPrompt(ctx context.Context, prompt string) (respOut *Response, err error) {
-	a.mu.RLock()
-	if !a.connected {
-		a.mu.RUnlock()
-		return nil, ErrNotConnected
-	}
-	host := a.host
-	model := a.model
-	a.mu.RUnlock()
-
-	if model == "" {
-		return nil, errors.New("no model set; call SetModel first")
-	}
-
-	correlationID := audit.NewCorrelationID()
-	auditStart := time.Now()
-	_ = audit.LogEvent("", audit.EventTypeSend, audit.ActorSystem, "ollama.send", map[string]interface{}{
-		"phase":          "start",
-		"backend":        "ollama",
-		"model":          model,
-		"stream":         false,
-		"prompt_preview": util.Truncate(strings.TrimSpace(prompt), 100),
-		"prompt_length":  len(prompt),
-		"correlation_id": correlationID,
-	}, nil)
-	defer func() {
-		payload := map[string]interface{}{
-			"phase":          "finish",
-			"backend":        "ollama",
-			"model":          model,
-			"stream":         false,
-			"success":        err == nil,
-			"duration_ms":    time.Since(auditStart).Milliseconds(),
-			"correlation_id": correlationID,
-		}
-		if respOut != nil {
-			payload["output_preview"] = util.Truncate(strings.TrimSpace(respOut.Content), 120)
-			payload["output_length"] = len(respOut.Content)
-			payload["total_tokens"] = respOut.TotalTokens
-			payload["prompt_tokens"] = respOut.PromptTokens
-			payload["output_tokens"] = respOut.OutputTokens
-			payload["done"] = respOut.Done
-		}
-		if err != nil {
-			payload["error"] = err.Error()
-			_ = audit.LogEvent("", audit.EventTypeError, audit.ActorSystem, "ollama.send", payload, nil)
-			return
-		}
-		_ = audit.LogEvent("", audit.EventTypeResponse, audit.ActorSystem, "ollama.response", payload, nil)
-	}()
-
-	reqBody := ollamaGenerateRequest{
-		Model:  model,
-		Prompt: prompt,
-		Stream: false,
-	}
-
-	body, err := json.Marshal(reqBody)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, "POST", host+"/api/generate", bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := a.client.Do(req)
-	if err != nil {
-		return nil, a.classifyError(err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, a.parseErrorResponse(resp)
-	}
-
-	var ollamaResp ollamaGenerateResponse
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 10*1024*1024)).Decode(&ollamaResp); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
-	}
-
-	respOut = &Response{
-		Content:      ollamaResp.Response,
-		Model:        ollamaResp.Model,
-		Done:         ollamaResp.Done,
-		PromptTokens: ollamaResp.PromptEvalCount,
-		OutputTokens: ollamaResp.EvalCount,
-		TotalTokens:  ollamaResp.PromptEvalCount + ollamaResp.EvalCount,
-		Duration:     time.Duration(ollamaResp.TotalDuration),
-	}
-	return respOut, nil
-}
-
-// StreamResponse sends a prompt and returns a channel of streaming tokens
-func (a *Adapter) StreamResponse(ctx context.Context, prompt string) (stream <-chan Token, err error) {
-	a.mu.RLock()
-	if !a.connected {
-		a.mu.RUnlock()
-		return nil, ErrNotConnected
-	}
-	host := a.host
-	model := a.model
-	a.mu.RUnlock()
-
-	if model == "" {
-		return nil, errors.New("no model set; call SetModel first")
-	}
-
-	correlationID := audit.NewCorrelationID()
-	auditStart := time.Now()
-	_ = audit.LogEvent("", audit.EventTypeSend, audit.ActorSystem, "ollama.stream", map[string]interface{}{
-		"phase":          "start",
-		"backend":        "ollama",
-		"model":          model,
-		"stream":         true,
-		"prompt_preview": util.Truncate(strings.TrimSpace(prompt), 100),
-		"prompt_length":  len(prompt),
-		"correlation_id": correlationID,
-	}, nil)
-	defer func() {
-		payload := map[string]interface{}{
-			"phase":          "finish",
-			"backend":        "ollama",
-			"model":          model,
-			"stream":         true,
-			"stream_started": err == nil,
-			"success":        err == nil,
-			"duration_ms":    time.Since(auditStart).Milliseconds(),
-			"correlation_id": correlationID,
-		}
-		if err != nil {
-			payload["error"] = err.Error()
-			_ = audit.LogEvent("", audit.EventTypeError, audit.ActorSystem, "ollama.stream", payload, nil)
-			return
-		}
-		_ = audit.LogEvent("", audit.EventTypeResponse, audit.ActorSystem, "ollama.stream", payload, nil)
-	}()
-
-	reqBody := ollamaGenerateRequest{
-		Model:  model,
-		Prompt: prompt,
-		Stream: true,
-	}
-
-	body, err := json.Marshal(reqBody)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, "POST", host+"/api/generate", bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := a.client.Do(req) //nolint:bodyclose // body is closed in goroutine below
-	if err != nil {
-		return nil, a.classifyError(err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		defer resp.Body.Close()
-		return nil, a.parseErrorResponse(resp)
-	}
-
-	tokenChan := make(chan Token, 100)
-
-	go func() {
-		defer close(tokenChan)
-		defer resp.Body.Close()
-
-		scanner := bufio.NewScanner(resp.Body)
-		// Increase buffer size for large responses
-		scanner.Buffer(make([]byte, 64*1024), 1024*1024)
-
-		for scanner.Scan() {
-			select {
-			case <-ctx.Done():
-				_ = sendStreamToken(ctx, tokenChan, Token{Error: ctx.Err()})
-				return
-			default:
-			}
-
-			line := scanner.Bytes()
-			if len(line) == 0 {
-				continue
-			}
-
-			var ollamaResp ollamaGenerateResponse
-			if err := json.Unmarshal(line, &ollamaResp); err != nil {
-				_ = sendStreamToken(ctx, tokenChan, Token{Error: fmt.Errorf("failed to parse stream: %w", err)})
-				return
-			}
-
-			if !sendStreamToken(ctx, tokenChan, Token{
-				Content: ollamaResp.Response,
-				Done:    ollamaResp.Done,
-			}) {
-				return
-			}
-
-			if ollamaResp.Done {
-				return
-			}
-		}
-
-		if err := scanner.Err(); err != nil {
-			_ = sendStreamToken(ctx, tokenChan, Token{Error: fmt.Errorf("stream error: %w", err)})
-		}
-	}()
-
-	return tokenChan, nil
-}
-
-func sendStreamToken(ctx context.Context, tokenChan chan<- Token, token Token) bool {
-	select {
-	case tokenChan <- token:
-		return true
-	default:
-	}
-
-	select {
-	case tokenChan <- token:
-		return true
-	case <-ctx.Done():
-		return false
-	}
 }
 
 // ListModels returns all available models on the Ollama server

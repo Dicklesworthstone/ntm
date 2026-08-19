@@ -219,13 +219,6 @@ func BinaryPath() string {
 	return tmuxBinaryPath
 }
 
-func resolveTmuxBinaryPath() string {
-	if override := strings.TrimSpace(os.Getenv("NTM_TMUX_BINARY")); override != "" {
-		return override
-	}
-	return resolveInstalledTmuxBinaryPath()
-}
-
 func resolveInstalledTmuxBinaryPath() string {
 	if path := findInstalledTmuxBinaryPath(); path != "" {
 		return path
@@ -535,11 +528,6 @@ func (c *Client) RespawnPaneContext(ctx context.Context, target string, kill boo
 		args = append(args, "-k")
 	}
 	return c.RunSilentContext(ctx, args...)
-}
-
-// RespawnPane respawns a pane, optionally killing the current process (-k) (default client)
-func RespawnPane(target string, kill bool) error {
-	return DefaultClient.RespawnPane(target, kill)
 }
 
 // RespawnPaneContext respawns a pane with cancellation support (default client)

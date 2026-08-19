@@ -106,41 +106,6 @@ func TestRegisterRejectsInvalidTemplate(t *testing.T) {
 	}
 }
 
-func TestUnregisterWebhook(t *testing.T) {
-	t.Parallel()
-
-	m := NewManager(DefaultManagerConfig())
-
-	// Register and then unregister
-	err := m.Register(WebhookConfig{
-		ID:      "test-webhook",
-		URL:     "https://example.com/webhook",
-		Enabled: true,
-	})
-	if err != nil {
-		t.Fatalf("registration failed: %v", err)
-	}
-
-	err = m.Unregister("test-webhook")
-	if err != nil {
-		t.Errorf("unexpected error: %v", err)
-	}
-
-	// Verify webhook was removed
-	m.webhooksMu.RLock()
-	_, ok := m.webhooks["test-webhook"]
-	m.webhooksMu.RUnlock()
-	if ok {
-		t.Error("webhook still exists after unregistration")
-	}
-
-	// Test unregistering non-existent webhook
-	err = m.Unregister("non-existent")
-	if err == nil {
-		t.Error("expected error for non-existent webhook")
-	}
-}
-
 func TestDispatchWithoutStart(t *testing.T) {
 	t.Parallel()
 
@@ -660,7 +625,7 @@ func TestRetryLogic(t *testing.T) {
 	// Poll for stats delivery count
 	var stats Stats
 	for time.Now().Before(deadline) {
-		stats = m.Stats()
+		stats = managerStatsForTest(m)
 		if stats.Deliveries >= 1 {
 			break
 		}
@@ -718,7 +683,7 @@ func TestNoRetryOn4xx(t *testing.T) {
 	deadline := time.Now().Add(5 * time.Second)
 	var stats Stats
 	for time.Now().Before(deadline) {
-		stats = m.Stats()
+		stats = managerStatsForTest(m)
 		if stats.DeadLetterCount >= 1 {
 			break
 		}
@@ -844,7 +809,7 @@ func TestDeadLetterQueue(t *testing.T) {
 	deadline := time.Now().Add(5 * time.Second)
 	var deadLetters []DeadLetter
 	for time.Now().Before(deadline) {
-		deadLetters = m.DeadLetters()
+		deadLetters = managerDeadLettersForTest(m)
 		if len(deadLetters) >= 1 {
 			break
 		}
@@ -860,12 +825,12 @@ func TestDeadLetterQueue(t *testing.T) {
 	}
 
 	// Test clearing dead letters
-	cleared := m.ClearDeadLetters()
+	cleared := managerClearDeadLettersForTest(m)
 	if cleared != 1 {
 		t.Errorf("expected to clear 1 dead letter, cleared %d", cleared)
 	}
 
-	deadLetters = m.DeadLetters()
+	deadLetters = managerDeadLettersForTest(m)
 	if len(deadLetters) != 0 {
 		t.Errorf("expected 0 dead letters after clear, got %d", len(deadLetters))
 	}
@@ -1091,7 +1056,7 @@ func TestStats(t *testing.T) {
 	deadline := time.Now().Add(5 * time.Second)
 	var stats Stats
 	for time.Now().Before(deadline) {
-		stats = m.Stats()
+		stats = managerStatsForTest(m)
 		if stats.Deliveries >= 5 {
 			break
 		}
@@ -1202,7 +1167,7 @@ func TestStopWaitsForInFlightDelivery(t *testing.T) {
 		t.Fatal("timeout waiting for stop")
 	}
 
-	stats := m.Stats()
+	stats := managerStatsForTest(m)
 	if stats.Deliveries != 1 {
 		t.Fatalf("expected 1 successful delivery during stop, got %+v", stats)
 	}
@@ -1312,13 +1277,13 @@ func TestStartWaitsForConcurrentStop(t *testing.T) {
 
 	deadline = time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if m.Stats().Deliveries >= 2 {
+		if managerStatsForTest(m).Deliveries >= 2 {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	stats := m.Stats()
+	stats := managerStatsForTest(m)
 	t.Fatalf("expected restarted manager to deliver a second event, got %+v", stats)
 }
 
@@ -1516,4 +1481,48 @@ func TestJsonEscape_AllBranches(t *testing.T) {
 			}
 		})
 	}
+}
+
+// managerStatsForTest snapshots the manager's counters for assertions.
+func managerStatsForTest(m *WebhookManager) Stats {
+	m.webhooksMu.RLock()
+	webhookCount := len(m.webhooks)
+	m.webhooksMu.RUnlock()
+
+	m.retryQueueMu.Lock()
+	retryLen := len(m.retryQueue)
+	m.retryQueueMu.Unlock()
+
+	m.deadLettersMu.Lock()
+	deadLetterCount := len(m.deadLetters)
+	m.deadLettersMu.Unlock()
+
+	return Stats{
+		QueueLength:     len(m.queue),
+		QueueCapacity:   cap(m.queue),
+		RetryQueueLen:   retryLen,
+		DeadLetterCount: deadLetterCount,
+		Deliveries:      m.deliveries.Load(),
+		Failures:        m.failures.Load(),
+		DroppedEvents:   m.queueFull.Load(),
+		WebhookCount:    webhookCount,
+	}
+}
+
+// managerDeadLettersForTest returns a copy of the dead letter queue.
+func managerDeadLettersForTest(m *WebhookManager) []DeadLetter {
+	m.deadLettersMu.Lock()
+	defer m.deadLettersMu.Unlock()
+	result := make([]DeadLetter, len(m.deadLetters))
+	copy(result, m.deadLetters)
+	return result
+}
+
+// managerClearDeadLettersForTest empties the dead letter queue.
+func managerClearDeadLettersForTest(m *WebhookManager) int {
+	m.deadLettersMu.Lock()
+	defer m.deadLettersMu.Unlock()
+	count := len(m.deadLetters)
+	m.deadLetters = m.deadLetters[:0]
+	return count
 }

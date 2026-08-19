@@ -596,46 +596,6 @@ func BenchmarkJSONEncode_AttentionDigestLarge(b *testing.B) {
 // Markdown Rendering Benchmarks
 // =============================================================================
 
-func BenchmarkRenderMarkdownFromProjection_Small(b *testing.B) {
-	proj := buildTestProjection(scenarioSmallSessions, scenarioSmallAgents, scenarioSmallEvents)
-
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_ = RenderMarkdownFromProjection(proj, false)
-	}
-}
-
-func BenchmarkRenderMarkdownFromProjection_Medium(b *testing.B) {
-	proj := buildTestProjection(scenarioMediumSessions, scenarioMediumAgents, scenarioMediumEvents)
-
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_ = RenderMarkdownFromProjection(proj, false)
-	}
-}
-
-func BenchmarkRenderMarkdownFromProjection_Large(b *testing.B) {
-	proj := buildTestProjection(scenarioLargeSessions, scenarioLargeAgents, scenarioLargeEvents)
-
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_ = RenderMarkdownFromProjection(proj, false)
-	}
-}
-
-func BenchmarkRenderMarkdownFromProjection_Compact(b *testing.B) {
-	proj := buildTestProjection(scenarioMediumSessions, scenarioMediumAgents, scenarioMediumEvents)
-
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_ = RenderMarkdownFromProjection(proj, true)
-	}
-}
-
 // buildTestProjection creates a SectionProjection for benchmark testing.
 func buildTestProjection(sessionCount, agentCount, eventCount int) *SectionProjection {
 	fixture := newBenchmarkFixture(sessionCount, agentCount, eventCount)
@@ -801,39 +761,6 @@ func TestPayloadSize_Projection(t *testing.T) {
 
 			if len(data) > sc.maxBytes {
 				t.Errorf("payload %d bytes exceeds budget %d bytes", len(data), sc.maxBytes)
-			}
-		})
-	}
-}
-
-// TestPayloadSize_MarkdownRendering measures markdown output sizes.
-func TestPayloadSize_MarkdownRendering(t *testing.T) {
-
-	scenarios := []struct {
-		name     string
-		sessions int
-		agents   int
-		events   int
-		compact  bool
-		maxBytes int
-	}{
-		{"small", scenarioSmallSessions, scenarioSmallAgents, scenarioSmallEvents, false, 4 * 1024},
-		{"medium", scenarioMediumSessions, scenarioMediumAgents, scenarioMediumEvents, false, 20 * 1024},
-		{"large", scenarioLargeSessions, scenarioLargeAgents, scenarioLargeEvents, false, 80 * 1024},
-		{"large_compact", scenarioLargeSessions, scenarioLargeAgents, scenarioLargeEvents, true, 40 * 1024},
-	}
-
-	for _, sc := range scenarios {
-		sc := sc
-		t.Run(sc.name, func(t *testing.T) {
-
-			proj := buildTestProjection(sc.sessions, sc.agents, sc.events)
-			md := RenderMarkdownFromProjection(proj, sc.compact)
-
-			t.Logf("scenario=%s compact=%v output_bytes=%d", sc.name, sc.compact, len(md))
-
-			if len(md) > sc.maxBytes {
-				t.Errorf("markdown output %d bytes exceeds budget %d bytes", len(md), sc.maxBytes)
 			}
 		})
 	}
@@ -1069,16 +996,6 @@ func BenchmarkRenderComparison_TOON(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_, _ = renderer.Render(digest)
-	}
-}
-
-func BenchmarkRenderComparison_Markdown(b *testing.B) {
-	proj := buildTestProjection(scenarioMediumSessions, scenarioMediumAgents, scenarioMediumEvents)
-
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_ = RenderMarkdownFromProjection(proj, false)
 	}
 }
 

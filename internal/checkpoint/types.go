@@ -221,20 +221,6 @@ func sortWindowLayouts(layouts []WindowLayoutState) {
 	})
 }
 
-func windowLayoutsEqual(a, b []WindowLayoutState) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	left := cloneWindowLayouts(a)
-	right := cloneWindowLayouts(b)
-	for i := range left {
-		if left[i] != right[i] {
-			return false
-		}
-	}
-	return true
-}
-
 func legacyLayoutFromWindowLayouts(layouts []WindowLayoutState) string {
 	if len(layouts) != 1 {
 		return ""
@@ -291,35 +277,6 @@ func WithGitCapture(capture bool) CheckpointOption {
 func WithScrollbackLines(lines int) CheckpointOption {
 	return func(o *checkpointOptions) {
 		o.scrollbackLines = lines
-	}
-}
-
-// WithScrollbackCompress enables/disables gzip compression for scrollback.
-func WithScrollbackCompress(compress bool) CheckpointOption {
-	return func(o *checkpointOptions) {
-		o.scrollbackCompress = compress
-	}
-}
-
-// WithScrollbackMaxSizeMB sets the maximum compressed scrollback size in MB.
-// Scrollback larger than this will be skipped. 0 = no limit.
-func WithScrollbackMaxSizeMB(sizeMB int) CheckpointOption {
-	return func(o *checkpointOptions) {
-		o.scrollbackMaxSizeMB = sizeMB
-	}
-}
-
-// WithAssignments enables/disables capturing bead-to-agent assignments (bd-32ck).
-func WithAssignments(capture bool) CheckpointOption {
-	return func(o *checkpointOptions) {
-		o.captureAssignments = capture
-	}
-}
-
-// WithBVSnapshot enables/disables capturing BV triage summary (bd-32ck).
-func WithBVSnapshot(capture bool) CheckpointOption {
-	return func(o *checkpointOptions) {
-		o.captureBVSnapshot = capture
 	}
 }
 

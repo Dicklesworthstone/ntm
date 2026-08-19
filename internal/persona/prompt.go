@@ -304,27 +304,6 @@ func ExpandPromptVarsWithContext(content string, p *Persona, ctx *TemplateContex
 	return content
 }
 
-// CleanupPromptFiles removes prompt files for a session.
-// This should be called when a session is killed.
-func CleanupPromptFiles(projectDir string) error {
-	ntmDir := filepath.Join(projectDir, ".ntm")
-	if err := validatePromptDir(ntmDir, "ntm"); err != nil {
-		return err
-	}
-	promptsDir := filepath.Join(ntmDir, "prompts")
-	if err := validatePromptDir(promptsDir, "prompts"); err != nil {
-		return err
-	}
-
-	// Check if directory exists
-	if _, err := os.Stat(promptsDir); os.IsNotExist(err) {
-		return nil // Nothing to clean up
-	}
-
-	// Remove the entire prompts directory
-	return os.RemoveAll(promptsDir)
-}
-
 func validatePromptPersonaName(name string) error {
 	if !nameRegex.MatchString(name) {
 		return fmt.Errorf("persona name %q contains invalid characters (allowed: a-z, A-Z, 0-9, _, -)", name)

@@ -3,7 +3,6 @@ package cli
 import (
 	"fmt"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -18,7 +17,7 @@ var (
 
 	// agyModelPattern is the RELAXED model charset for the Antigravity (agy)
 	// provider. Antigravity's model *display* names contain spaces and
-	// parentheses — e.g. "Gemini 3.1 Pro (High)" — which the standard
+	// parentheses — e.g. "Gemini 3.7 Flash (High)" — which the standard
 	// modelPattern rejects. agy always renders its model through
 	// {{shellQuote .Model}} in the launch template (and, in practice, the value
 	// is hard-pinned by config.AntigravityRequiredModel before it ever reaches a
@@ -131,7 +130,7 @@ func ParseAgentSpec(value string) (AgentSpec, error) {
 
 // parseAgentSpec parses a spec string, optionally relaxing the model charset for
 // the Antigravity (agy) provider whose display model names contain spaces and
-// parentheses (e.g. "Gemini 3.1 Pro (High)"). See agyModelPattern for why the
+// parentheses (e.g. "Gemini 3.7 Flash (High)"). See agyModelPattern for why the
 // widened charset is injection-safe. effortAtSuffix enables the `model@effort`
 // shorthand; callers that know the agent type pass it per
 // agentTypeSupportsEffortSuffix.
@@ -291,64 +290,6 @@ func resolveAgentModel(agentType AgentType, modelSpec string, pluginMap map[stri
 	return resolved
 }
 
-// ValidateModelAlias checks if a model alias exists in config
-func ValidateModelAlias(agentType AgentType, alias string) error {
-	if cfg == nil || alias == "" {
-		return nil // Can't validate without config, or nothing to validate
-	}
-
-	var aliases map[string]string
-	switch agentType {
-	case AgentTypeClaude:
-		aliases = cfg.Models.Claude
-	case AgentTypeCodex:
-		aliases = cfg.Models.Codex
-	case AgentTypeGemini:
-		aliases = cfg.Models.Gemini
-	case AgentTypeGrok:
-		// Grok Build's available model IDs are account- and release-dependent.
-		// Known aliases still resolve through Models.Grok, but an exact model ID
-		// must remain valid without NTM shipping a stale allowlist.
-		return nil
-	case AgentTypeAntigravity:
-		// agy's model is hard-pinned to "Gemini 3.1 Pro (High)" (see
-		// config.AntigravityRequiredModel), so there is no per-user alias map to
-		// validate against. Any requested alias is ignored rather than rejected:
-		// spawn.go warns and proceeds with the pinned model, so validation must
-		// not hard-fail here. Return nil unconditionally.
-		return nil
-	case AgentTypeOllama:
-		aliases = cfg.Models.Ollama
-	case AgentTypeCursor:
-		aliases = cfg.Models.Cursor
-	case AgentTypeWindsurf:
-		aliases = cfg.Models.Windsurf
-	case AgentTypeAider:
-		aliases = cfg.Models.Aider
-	case AgentTypeOpencode:
-		aliases = cfg.Models.Opencode
-	}
-
-	if aliases == nil {
-		return nil // No aliases configured
-	}
-
-	// Check if it's a known alias
-	if _, ok := aliases[strings.ToLower(alias)]; ok {
-		return nil
-	}
-
-	// List available aliases for error message
-	var available []string
-	for k := range aliases {
-		available = append(available, k)
-	}
-	sort.Strings(available)
-
-	return fmt.Errorf("unknown model alias %q for %s (available: %s)",
-		alias, agentType, strings.Join(available, ", "))
-}
-
 // AgentSpecsValue creates a flag value that accumulates into the given slice
 // with the specified agent type
 func NewAgentSpecsValue(agentType AgentType, specs *AgentSpecs) *agentSpecsValue {
@@ -370,7 +311,7 @@ func (v *agentSpecsValue) String() string {
 
 func (v *agentSpecsValue) Set(value string) error {
 	// agy carries a display model name with spaces/parentheses (e.g.
-	// "Gemini 3.1 Pro (High)"), so it uses the relaxed model charset. The
+	// "Gemini 3.7 Flash (High)"), so it uses the relaxed model charset. The
 	// model@effort shorthand only applies to types with an effort knob so
 	// '@' stays literal in other providers' model names.
 	spec, err := parseAgentSpec(value, v.agentType == AgentTypeAntigravity, agentTypeSupportsEffortSuffix(v.agentType))

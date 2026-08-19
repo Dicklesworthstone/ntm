@@ -204,10 +204,7 @@ func TestReconnectContract_SlowConsumerDropEnvelopeShape(t *testing.T) {
 		t.Fatalf("RecordDropped: %v", err)
 	}
 
-	stats, err := store.GetDroppedStats(clientID, time.Now().Add(-time.Hour))
-	if err != nil {
-		t.Fatalf("GetDroppedStats: %v", err)
-	}
+	stats := droppedStatsForTest(t, store, clientID, time.Now().Add(-time.Hour))
 	if len(stats) != 1 {
 		t.Fatalf("want exactly 1 drop record, got %d", len(stats))
 	}

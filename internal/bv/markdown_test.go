@@ -173,25 +173,6 @@ func TestCompactMarkdownOptions(t *testing.T) {
 	}
 }
 
-func TestPreferredFormat(t *testing.T) {
-	tests := []struct {
-		agent  AgentType
-		expect TriageFormat
-	}{
-		{AgentClaude, FormatJSON},
-		{AgentCodex, FormatMarkdown},
-		{AgentGemini, FormatMarkdown},
-		{"unknown", FormatJSON}, // Default to JSON
-	}
-
-	for _, tt := range tests {
-		result := PreferredFormat(tt.agent)
-		if result != tt.expect {
-			t.Errorf("PreferredFormat(%s) = %s, want %s", tt.agent, result, tt.expect)
-		}
-	}
-}
-
 func TestAgentContextBudget(t *testing.T) {
 	// Verify Claude has largest budget
 	if AgentContextBudget[AgentClaude] <= AgentContextBudget[AgentCodex] {
@@ -199,34 +180,6 @@ func TestAgentContextBudget(t *testing.T) {
 	}
 	if AgentContextBudget[AgentCodex] <= AgentContextBudget[AgentGemini] {
 		t.Error("Codex should have larger context than Gemini")
-	}
-}
-
-func TestRenderTriageJSON(t *testing.T) {
-	triage := &TriageResponse{
-		Triage: TriageData{
-			QuickRef: TriageQuickRef{
-				ActionableCount: 5,
-				BlockedCount:    3,
-				InProgressCount: 2,
-				TopPicks:        []TriageTopPick{{ID: "a"}, {ID: "b"}},
-			},
-		},
-	}
-
-	result := renderTriageJSON(triage)
-	if !strings.Contains(result, `"actionable":5`) {
-		t.Errorf("expected actionable count in JSON, got: %s", result)
-	}
-	if !strings.Contains(result, `"top_picks":2`) {
-		t.Errorf("expected top_picks count in JSON, got: %s", result)
-	}
-}
-
-func TestRenderTriageJSON_Nil(t *testing.T) {
-	result := renderTriageJSON(nil)
-	if result != "{}" {
-		t.Errorf("expected empty JSON object, got: %s", result)
 	}
 }
 

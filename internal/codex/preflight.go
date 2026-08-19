@@ -414,29 +414,3 @@ func nonNilStrings(s []string) []string {
 	}
 	return s
 }
-
-// AllPreflightStates returns the closed preflight state set in canonical order.
-func AllPreflightStates() []PreflightState {
-	return []PreflightState{
-		PreflightCodexLive,
-		PreflightShellNoCodex,
-		PreflightGoalInProgress,
-		PreflightGoalCompleted,
-		PreflightReplaceGoalDialog,
-		PreflightBackgroundTerminalWait,
-		PreflightUsageLimit,
-		PreflightStaleScrollback,
-		PreflightUnknown,
-	}
-}
-
-// AllPreflightActions returns the closed action set in canonical order.
-func AllPreflightActions() []PreflightAction {
-	return []PreflightAction{
-		ActionProceed,
-		ActionRespawn,
-		ActionAlternatePane,
-		ActionWait,
-		ActionRefuse,
-	}
-}

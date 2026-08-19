@@ -245,12 +245,6 @@ func groupPanesByType(panes []tmux.Pane) map[string][]tmux.Pane {
 	return result
 }
 
-// pickAvailablePane selects an unused pane based on preferred types.
-func pickAvailablePane(byType map[string][]tmux.Pane, preferred []string, used []ModeAssignment) tmux.Pane {
-	choice, _, _ := pickAvailablePaneWithReason(byType, preferred, used)
-	return choice
-}
-
 // ValidateAssignments checks assignments for determinism and configuration issues.
 func ValidateAssignments(assignments []ModeAssignment, modes []string) error {
 	normalized, err := normalizeModeKeys(modes)

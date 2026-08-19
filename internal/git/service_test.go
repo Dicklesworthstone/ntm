@@ -126,19 +126,6 @@ func TestWorktreeServiceMethodsRequireLiveCallerContext(t *testing.T) {
 				return err
 			},
 		},
-		{
-			name: "get all worktrees",
-			run: func(ctx context.Context) error {
-				_, err := svc.GetAllWorktrees(ctx)
-				return err
-			},
-		},
-		{
-			name: "cleanup stale worktrees",
-			run: func(ctx context.Context) error {
-				return svc.CleanupStaleWorktrees(ctx, time.Hour)
-			},
-		},
 	}
 
 	for _, operation := range operations {
@@ -457,81 +444,6 @@ exec "$WORKTREE_SERVICE_REAL_GIT" "$@"
 	gitAudit := string(gitData)
 	if strings.Count(gitAudit, "worktree add") != 1 || strings.Contains(gitAudit, "rev-parse HEAD") {
 		t.Fatalf("auto-provision crossed retained add cancellation boundary: %q", gitAudit)
-	}
-}
-
-func TestWorktreeService_GetAllWorktrees_Empty(t *testing.T) {
-	t.Parallel()
-
-	cfg := &config.Config{}
-	svc := NewWorktreeService(cfg)
-
-	result, err := svc.GetAllWorktrees(context.Background())
-	if err != nil {
-		t.Fatalf("GetAllWorktrees: %v", err)
-	}
-	if len(result) != 0 {
-		t.Errorf("expected empty result, got %d projects", len(result))
-	}
-}
-
-func TestWorktreeService_GetAllWorktrees_WithManagers(t *testing.T) {
-	t.Parallel()
-
-	tmp := setupGitRepo(t)
-
-	cfg := &config.Config{}
-	svc := NewWorktreeService(cfg)
-
-	// Populate via getManager
-	_, err := svc.getManager(t.Context(), tmp)
-	if err != nil {
-		t.Fatalf("getManager: %v", err)
-	}
-
-	result, err := svc.GetAllWorktrees(context.Background())
-	if err != nil {
-		t.Fatalf("GetAllWorktrees: %v", err)
-	}
-	if len(result) != 1 {
-		t.Errorf("expected 1 project, got %d", len(result))
-	}
-	if wts, ok := result[tmp]; !ok {
-		t.Error("expected project dir key in result")
-	} else if len(wts) != 0 {
-		t.Errorf("expected 0 worktrees (no agents), got %d", len(wts))
-	}
-}
-
-func TestWorktreeService_CleanupStaleWorktrees_NoManagers(t *testing.T) {
-	t.Parallel()
-
-	cfg := &config.Config{}
-	svc := NewWorktreeService(cfg)
-
-	err := svc.CleanupStaleWorktrees(context.Background(), 24*time.Hour)
-	if err != nil {
-		t.Fatalf("CleanupStaleWorktrees: %v", err)
-	}
-}
-
-func TestWorktreeService_CleanupStaleWorktrees_WithManagers(t *testing.T) {
-	t.Parallel()
-
-	tmp := setupGitRepo(t)
-
-	cfg := &config.Config{}
-	svc := NewWorktreeService(cfg)
-
-	_, err := svc.getManager(t.Context(), tmp)
-	if err != nil {
-		t.Fatalf("getManager: %v", err)
-	}
-
-	// No worktrees exist, so this should be a no-op
-	err = svc.CleanupStaleWorktrees(context.Background(), 24*time.Hour)
-	if err != nil {
-		t.Fatalf("CleanupStaleWorktrees: %v", err)
 	}
 }
 

@@ -25,7 +25,7 @@ func TestMaybeRotate_SkipsWhenRecent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer logger.Close()
+	defer closeLogger(logger)
 
 	// lastRotation is set to now in NewLogger, so maybeRotate should skip.
 	logger.maybeRotate()
@@ -47,7 +47,7 @@ func TestMaybeRotate_RotatesWhenOld(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer logger.Close()
+	defer closeLogger(logger)
 
 	// Write a test event to create the file
 	event := NewEvent("test_rotate", "test-session", map[string]interface{}{"key": "value"})
@@ -126,11 +126,6 @@ func TestEmitPromptSend_DoesNotPanic(t *testing.T) {
 // EmitError — 0% → 100%
 // ---------------------------------------------------------------------------
 
-func TestEmitError_DoesNotPanic(t *testing.T) {
-	// Not parallel: uses global DefaultLogger.
-	EmitError("test-session", "test_error", "something went wrong")
-}
-
 // ---------------------------------------------------------------------------
 // NewLogger with temp file — write + replay round-trip
 // ---------------------------------------------------------------------------
@@ -159,7 +154,7 @@ func TestLogger_WriteAndReplay(t *testing.T) {
 			t.Fatalf("Log failed: %v", err)
 		}
 	}
-	logger.Close()
+	closeLogger(logger)
 
 	// Replay
 	logger2, err := NewLogger(LoggerOptions{
@@ -170,9 +165,9 @@ func TestLogger_WriteAndReplay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer logger2.Close()
+	defer closeLogger(logger2)
 
-	events, err := logger2.Since(before)
+	events, err := ReadSince(logger2.path, before)
 	if err != nil {
 		t.Fatalf("Since failed: %v", err)
 	}
@@ -198,7 +193,7 @@ func TestLogger_Disabled_NoFileCreated(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer logger.Close()
+	defer closeLogger(logger)
 
 	event := NewEvent("test_disabled", "test-session", nil)
 	if err := logger.Log(event); err != nil {

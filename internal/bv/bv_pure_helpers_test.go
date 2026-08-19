@@ -120,25 +120,6 @@ func TestInvalidateTriageCachePure(t *testing.T) {
 	}
 }
 
-// =============================================================================
-// triage.go: SetTriageCacheTTL
-// =============================================================================
-
-func TestSetTriageCacheTTLPure(t *testing.T) {
-	dir := t.TempDir()
-	cleanup := primeTriageCache(t, dir)
-	defer cleanup()
-
-	// Set a very short TTL
-	SetTriageCacheTTL(1 * time.Millisecond)
-	time.Sleep(5 * time.Millisecond)
-
-	// Cache should now be expired
-	if IsCacheValid() {
-		t.Error("cache should be expired after very short TTL")
-	}
-}
-
 func TestGetTriageWithTimeoutIncludesRunLockWait(t *testing.T) {
 	InvalidateTriageCache()
 	triageRunMu.Lock()
@@ -353,21 +334,6 @@ func TestRenderHealthSummary(t *testing.T) {
 			t.Errorf("should not contain nodes when metrics nil:\n%s", out)
 		}
 	})
-}
-
-// =============================================================================
-// markdown.go: PreferredFormat
-// (already tested in markdown_test.go but adding edge case)
-// =============================================================================
-
-func TestPreferredFormatUnknownAgent(t *testing.T) {
-	t.Parallel()
-
-	// Unknown agent type should default to JSON
-	format := PreferredFormat(AgentType("unknown-agent"))
-	if format != FormatJSON {
-		t.Errorf("PreferredFormat(unknown) = %q, want %q", format, FormatJSON)
-	}
 }
 
 // =============================================================================

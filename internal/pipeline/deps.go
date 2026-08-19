@@ -488,12 +488,6 @@ func (g *DependencyGraph) Size() int {
 	return len(g.steps)
 }
 
-// ResolveWorkflow is a convenience function to create a graph and resolve it
-func ResolveWorkflow(workflow *Workflow) ExecutionPlan {
-	graph := NewDependencyGraph(workflow)
-	return graph.Resolve()
-}
-
 func (g *DependencyGraph) addReady(id string) {
 	if g.executed[id] {
 		return

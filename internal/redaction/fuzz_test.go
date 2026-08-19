@@ -200,19 +200,6 @@ func FuzzRedact(f *testing.F) {
 	})
 }
 
-// FuzzContainsSensitive ensures ContainsSensitive never panics.
-func FuzzContainsSensitive(f *testing.F) {
-	f.Add("")
-	f.Add("no secrets")
-	f.Add("secret=" + strings.Repeat("z", 20))
-
-	f.Fuzz(func(t *testing.T, input string) {
-		ResetPatterns()
-		// Must not panic.
-		_ = ContainsSensitive(input, Config{})
-	})
-}
-
 // FuzzAddLineInfo ensures AddLineInfo never panics.
 func FuzzAddLineInfo(f *testing.F) {
 	f.Add("")

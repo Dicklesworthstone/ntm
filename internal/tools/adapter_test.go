@@ -152,32 +152,6 @@ func TestNewLimitedBuffer(t *testing.T) {
 	})
 }
 
-func TestParseVersionHelpers(t *testing.T) {
-	t.Parallel()
-
-	t.Run("parseVersion delegates to standard parser", func(t *testing.T) {
-		t.Parallel()
-		v, err := parseVersion("tool v2.4.6")
-		if err != nil {
-			t.Fatalf("parseVersion error: %v", err)
-		}
-		if v.Major != 2 || v.Minor != 4 || v.Patch != 6 {
-			t.Errorf("parseVersion = %d.%d.%d, want 2.4.6", v.Major, v.Minor, v.Patch)
-		}
-	})
-
-	t.Run("parseACFSVersion delegates to standard parser", func(t *testing.T) {
-		t.Parallel()
-		v, err := parseACFSVersion("1.0.3")
-		if err != nil {
-			t.Fatalf("parseACFSVersion error: %v", err)
-		}
-		if v.Major != 1 || v.Minor != 0 || v.Patch != 3 {
-			t.Errorf("parseACFSVersion = %d.%d.%d, want 1.0.3", v.Major, v.Minor, v.Patch)
-		}
-	})
-}
-
 func TestVersionCompareAndAtLeast(t *testing.T) {
 	t.Parallel()
 

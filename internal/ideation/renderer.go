@@ -1,7 +1,6 @@
 package ideation
 
 import (
-	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -98,10 +97,6 @@ func RenderRoadmap(result RankingResult, opts RoadmapRenderOptions) RoadmapPlan 
 	}
 	plan.RenderedCount = len(plan.ProposedBeads)
 	return plan
-}
-
-func RenderRoadmapJSON(plan RoadmapPlan) ([]byte, error) {
-	return json.MarshalIndent(plan, "", "  ")
 }
 
 func RenderRoadmapMarkdown(plan RoadmapPlan) string {

@@ -92,38 +92,6 @@ func TestCheckAll(t *testing.T) {
 	}
 }
 
-func TestCheckSingleInvariant(t *testing.T) {
-	tmpDir := t.TempDir()
-	checker := NewChecker(tmpDir)
-
-	ctx := context.Background()
-
-	for _, id := range AllInvariants() {
-		result := checker.Check(ctx, id)
-		if result.InvariantID != id {
-			t.Errorf("result ID mismatch: %s != %s", result.InvariantID, id)
-		}
-		if result.CheckedAt.IsZero() {
-			t.Errorf("invariant %s has zero checked_at", id)
-		}
-	}
-}
-
-func TestCheckUnknownInvariant(t *testing.T) {
-	tmpDir := t.TempDir()
-	checker := NewChecker(tmpDir)
-
-	ctx := context.Background()
-	result := checker.Check(ctx, InvariantID("unknown"))
-
-	if result.Passed {
-		t.Error("unknown invariant should not pass")
-	}
-	if result.Status != "error" {
-		t.Errorf("unknown invariant should have error status, got %s", result.Status)
-	}
-}
-
 func TestCheckNoSilentDataLoss_WithPolicyFile(t *testing.T) {
 	tmpDir := t.TempDir()
 

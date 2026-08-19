@@ -227,21 +227,6 @@ func isSessionMissing(err error) bool {
 		strings.Contains(msg, "no sessions")
 }
 
-// checkAgent performs health checks on a single agent pane
-func checkAgent(ctx context.Context, pa tmux.PaneActivity) AgentHealth {
-	agent := newAgentHealth(pa)
-
-	// Capture pane output for analysis
-	output, err := tmux.CapturePaneOutputContext(ctx, pa.Pane.ID, 50)
-	if err != nil {
-		agent.ProcessStatus = ProcessUnknown
-		agent.Status = StatusUnknown
-		return agent
-	}
-
-	return analyzeAgentHealth(agent, pa, output)
-}
-
 func checkAgentObservation(observation status.PaneObservation) AgentHealth {
 	pa := tmux.PaneActivity{
 		Pane:         observation.Metadata,
@@ -562,12 +547,6 @@ func hasRateLimitChatter(output string) bool {
 	return false
 }
 
-// parseWaitTime extracts the suggested wait time in seconds from rate limit messages
-// Returns 0 if no wait time is found
-func parseWaitTime(output string) int {
-	return ratelimit.ParseWaitSeconds(output)
-}
-
 // hasRateLimitIssue checks if any issue indicates a rate limit
 func hasRateLimitIssue(issues []Issue) bool {
 	for _, issue := range issues {
@@ -746,19 +725,6 @@ func detectActivity(output string, lastActivity time.Time, agentType string) Act
 	}
 	// Stale if > 5 minutes with no activity
 	return ActivityStale
-}
-
-// detectProcessStatus determines if the agent process is running.
-//
-// When shellPID > 0 it uses PID-based liveness as the primary signal:
-// the shell's child process (the agent) is checked via /proc. This avoids
-// false positives from AI agents that routinely print strings like
-// "exit status" or "connection closed" in their normal output.
-//
-// Text-pattern matching is only used as a fallback when no PID is available
-// (e.g. in tests or when tmux doesn't report a PID).
-func detectProcessStatus(output string, command string, shellPID int) ProcessStatus {
-	return detectProcessStatusForAgent(output, command, shellPID, "")
 }
 
 // paneRunsAgent reports whether a pane is expected to have an agent process

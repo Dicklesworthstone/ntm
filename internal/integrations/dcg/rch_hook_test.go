@@ -2,13 +2,6 @@ package dcg
 
 import "testing"
 
-func TestDefaultRCHHookOptions(t *testing.T) {
-	opts := DefaultRCHHookOptions()
-	if opts.Timeout != 5 {
-		t.Errorf("Expected default timeout 5, got %d", opts.Timeout)
-	}
-}
-
 func TestGenerateRCHHookEntry_Basic(t *testing.T) {
 	opts := RCHHookOptions{
 		Patterns: []string{"^cargo build", "^go build"},

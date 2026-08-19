@@ -139,12 +139,6 @@ func GetCapabilitiesWithOptions(opts CapabilitiesOptions) (*CapabilitiesOutput, 
 	}, nil
 }
 
-// PrintCapabilities outputs robot mode capabilities as JSON.
-// This is a thin wrapper around GetCapabilities() for CLI output.
-func PrintCapabilities() error {
-	return PrintCapabilitiesWithOptions(CapabilitiesOptions{})
-}
-
 // PrintCapabilitiesWithOptions writes a filtered catalog and propagates a
 // typed non-zero process result for invalid exact filters.
 func PrintCapabilitiesWithOptions(opts CapabilitiesOptions) error {
@@ -2278,17 +2272,4 @@ func annotateDeprecatedRobotParameters(commands []RobotCommandInfo) []RobotComma
 	}
 
 	return commands
-}
-
-func isSupportedSurfaceOutputFormat(format string) bool {
-	if RobotFormat(format).IsValid() {
-		return true
-	}
-
-	switch format {
-	case "markdown", "text":
-		return true
-	default:
-		return false
-	}
 }

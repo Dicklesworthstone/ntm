@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"log"
 	"net/url"
 	"os"
 	"path"
@@ -17,7 +16,6 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/Dicklesworthstone/ntm/internal/agent"
-	"github.com/Dicklesworthstone/ntm/internal/watcher"
 )
 
 type WebhookFilterConfig struct {
@@ -214,88 +212,6 @@ func LoadProjectWebhooks(projectDir string) ([]WebhookConfig, error) {
 		return ParseWebhookConfig(data)
 	}
 	return nil, nil
-}
-
-// WatchProjectWebhooks watches .ntm.yaml/.ntm.yml and reloads webhook configuration on changes.
-// It returns a close function to stop watching.
-func WatchProjectWebhooks(projectDir string, onChange func([]WebhookConfig)) (func(), error) {
-	absDir, err := filepath.Abs(projectDir)
-	if err != nil {
-		return nil, fmt.Errorf("resolving project dir: %w", err)
-	}
-	projectDir = absDir
-
-	paths := []string{
-		filepath.Join(projectDir, ".ntm.yaml"),
-		filepath.Join(projectDir, ".ntm.yml"),
-	}
-
-	var lastNames string
-	emit := func(cfgs []WebhookConfig) {
-		if onChange != nil {
-			onChange(cfgs)
-		}
-		names := webhookNames(cfgs)
-		if names != lastNames {
-			log.Printf("Reloaded %d webhook(s): %s", len(cfgs), names)
-			lastNames = names
-		}
-	}
-
-	w, err := watcher.New(func(events []watcher.Event) {
-		_ = events
-		cfgs, err := LoadProjectWebhooks(projectDir)
-		if err != nil {
-			log.Printf("Error reloading webhooks from %s: %v", projectDir, err)
-			return
-		}
-		emit(cfgs)
-	}, watcher.WithDebounceDuration(500*time.Millisecond))
-	if err != nil {
-		return nil, fmt.Errorf("creating webhooks watcher: %w", err)
-	}
-
-	watchedDir := false
-	for _, p := range paths {
-		if err := w.Add(p); err != nil {
-			if !watchedDir {
-				if err := w.Add(projectDir); err != nil {
-					w.Close()
-					return nil, fmt.Errorf("watching project dir %s: %w", projectDir, err)
-				}
-				watchedDir = true
-			}
-		}
-	}
-
-	// Initial load.
-	cfgs, err := LoadProjectWebhooks(projectDir)
-	if err != nil {
-		w.Close()
-		return nil, err
-	}
-	emit(cfgs)
-
-	return func() { w.Close() }, nil
-}
-
-func webhookNames(cfgs []WebhookConfig) string {
-	if len(cfgs) == 0 {
-		return "(none)"
-	}
-	names := make([]string, 0, len(cfgs))
-	for _, c := range cfgs {
-		n := strings.TrimSpace(c.Name)
-		if n == "" {
-			continue
-		}
-		names = append(names, n)
-	}
-	if len(names) == 0 {
-		return "(unnamed)"
-	}
-	sort.Strings(names)
-	return strings.Join(names, ", ")
 }
 
 func findTopLevelYAMLKey(root *yaml.Node, key string) *yaml.Node {

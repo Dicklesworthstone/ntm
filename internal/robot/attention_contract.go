@@ -58,10 +58,7 @@
 package robot
 
 import (
-	"encoding/json"
-	"fmt"
 	"strings"
-	"time"
 )
 
 // AttentionContractVersion is the semantic version of the attention feed contract.
@@ -382,17 +379,6 @@ var AllWaitConditions = []string{
 	WaitConditionEvent,      // extended
 	WaitConditionMail,       // extended
 	WaitConditionBeadReady,  // extended
-}
-
-// IsValidAttentionWaitCondition checks if a condition name is valid.
-// Includes both base conditions from wait.go and extended conditions.
-func IsValidAttentionWaitCondition(name string) bool {
-	for _, c := range AllWaitConditions {
-		if c == name {
-			return true
-		}
-	}
-	return false
 }
 
 // =============================================================================
@@ -1230,61 +1216,3 @@ var ExampleAttention = `{
 // =============================================================================
 // Validation Helpers
 // =============================================================================
-
-// ValidateEvent checks if an event conforms to the contract.
-// Returns an error describing any violations.
-func ValidateEvent(e *AttentionEvent) error {
-	if e.Cursor <= 0 {
-		return fmt.Errorf("cursor must be positive, got %d", e.Cursor)
-	}
-	if e.Ts == "" {
-		return fmt.Errorf("ts is required")
-	}
-	if _, err := time.Parse(time.RFC3339, e.Ts); err != nil {
-		return fmt.Errorf("ts must be RFC3339: %w", err)
-	}
-	if e.Category == "" {
-		return fmt.Errorf("category is required")
-	}
-	if e.Type == "" {
-		return fmt.Errorf("type is required")
-	}
-	if e.Actionability == "" {
-		return fmt.Errorf("actionability is required")
-	}
-	if e.Severity == "" {
-		return fmt.Errorf("severity is required")
-	}
-	if e.Summary == "" {
-		return fmt.Errorf("summary is required")
-	}
-	return nil
-}
-
-// MarshalEvent serializes an event to JSON.
-func MarshalEvent(e *AttentionEvent) ([]byte, error) {
-	return json.Marshal(e)
-}
-
-// UnmarshalEvent deserializes an event from JSON.
-func UnmarshalEvent(data []byte) (*AttentionEvent, error) {
-	var e AttentionEvent
-	if err := json.Unmarshal(data, &e); err != nil {
-		return nil, err
-	}
-	return &e, nil
-}
-
-// NewEvent creates a new event with required fields.
-func NewEvent(cursor int64, category EventCategory, eventType EventType, summary string) *AttentionEvent {
-	return &AttentionEvent{
-		Cursor:        cursor,
-		Ts:            FormatTimestamp(time.Now()),
-		Category:      category,
-		Type:          eventType,
-		Actionability: ActionabilityBackground,
-		Severity:      SeverityInfo,
-		Summary:       summary,
-		NextActions:   []NextAction{}, // Always initialize
-	}
-}

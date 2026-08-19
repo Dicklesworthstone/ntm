@@ -13,115 +13,6 @@ func TestNATOAlphabetLength(t *testing.T) {
 	}
 }
 
-func TestGenerateNameDefault(t *testing.T) {
-	m := NewAgentNameMap("test-session")
-
-	tests := []struct {
-		agentType string
-		want      string
-	}{
-		{"claude", "claude-alpha"},
-		{"codex", "codex-bravo"},
-		{"gemini", "gemini-charlie"},
-		{"claude", "claude-delta"},
-	}
-
-	for _, tt := range tests {
-		got := m.GenerateName(tt.agentType)
-		if got != tt.want {
-			t.Errorf("GenerateName(%q) = %q, want %q", tt.agentType, got, tt.want)
-		}
-	}
-}
-
-func TestGenerateNameWraparound(t *testing.T) {
-	m := NewAgentNameMap("test-session")
-
-	// Exhaust all 26 NATO letters
-	for i := 0; i < 26; i++ {
-		m.GenerateName("claude")
-	}
-
-	// The 27th name should wrap around with a suffix
-	got := m.GenerateName("claude")
-	want := "claude-alpha-2"
-	if got != want {
-		t.Errorf("GenerateName after wraparound = %q, want %q", got, want)
-	}
-}
-
-func TestGenerateNameCustomNames(t *testing.T) {
-	customNames := []string{"worker-1", "worker-2", "worker-3"}
-	m := NewAgentNameMapWithCustomNames("test-session", customNames)
-
-	// First three should use custom names
-	got1 := m.GenerateName("claude")
-	got2 := m.GenerateName("codex")
-	got3 := m.GenerateName("gemini")
-
-	if got1 != "worker-1" {
-		t.Errorf("first custom name = %q, want %q", got1, "worker-1")
-	}
-	if got2 != "worker-2" {
-		t.Errorf("second custom name = %q, want %q", got2, "worker-2")
-	}
-	if got3 != "worker-3" {
-		t.Errorf("third custom name = %q, want %q", got3, "worker-3")
-	}
-
-	// Fourth should fall back to NATO alphabet
-	got4 := m.GenerateName("claude")
-	want4 := "claude-alpha"
-	if got4 != want4 {
-		t.Errorf("fourth name after custom exhausted = %q, want %q", got4, want4)
-	}
-}
-
-func TestGenerateNameUserDoesNotConsumeCustomName(t *testing.T) {
-	m := NewAgentNameMapWithCustomNames("test-session", []string{"alice", "bob"})
-
-	if got := m.GenerateName("user"); got != "user-alpha" {
-		t.Errorf("user name = %q, want user-alpha", got)
-	}
-	if got := m.GenerateName("claude"); got != "alice" {
-		t.Errorf("first agent custom name = %q, want alice", got)
-	}
-	if got := m.GenerateName("codex"); got != "bob" {
-		t.Errorf("second agent custom name = %q, want bob", got)
-	}
-}
-
-func TestAssignAndLookup(t *testing.T) {
-	m := NewAgentNameMap("test-session")
-
-	m.Assign("claude-alpha", "0.1", "claude")
-	m.Assign("codex-bravo", "0.2", "codex")
-
-	// Lookup by pane
-	name, ok := m.NameForPane("0.1")
-	if !ok || name != "claude-alpha" {
-		t.Errorf("NameForPane(0.1) = %q, %v; want %q, true", name, ok, "claude-alpha")
-	}
-
-	// Lookup by name
-	pane, ok := m.PaneForName("codex-bravo")
-	if !ok || pane != "0.2" {
-		t.Errorf("PaneForName(codex-bravo) = %q, %v; want %q, true", pane, ok, "0.2")
-	}
-
-	// Lookup type by name
-	agentType, ok := m.TypeForName("claude-alpha")
-	if !ok || agentType != "claude" {
-		t.Errorf("TypeForName(claude-alpha) = %q, %v; want %q, true", agentType, ok, "claude")
-	}
-
-	// Non-existent lookup
-	_, ok = m.PaneForName("nonexistent")
-	if ok {
-		t.Error("PaneForName(nonexistent) should return false")
-	}
-}
-
 func TestAssignNew(t *testing.T) {
 	m := NewAgentNameMap("test-session")
 
@@ -140,22 +31,21 @@ func TestAssignNew(t *testing.T) {
 	}
 
 	// Verify all mappings are correct
-	if m.Count() != 3 {
-		t.Errorf("Count() = %d, want 3", m.Count())
+	entries := m.AllNames()
+	if len(entries) != 3 {
+		t.Errorf("AllNames() returned %d entries, want 3", len(entries))
 	}
-
-	pane, ok := m.PaneForName("claude-alpha")
-	if !ok || pane != "0.1" {
-		t.Errorf("PaneForName(claude-alpha) = %q, %v; want 0.1, true", pane, ok)
+	if entries[0].Name != "claude-alpha" || entries[0].Pane != "0.1" {
+		t.Errorf("first entry = %+v, want claude-alpha at 0.1", entries[0])
 	}
 }
 
 func TestAllNames(t *testing.T) {
 	m := NewAgentNameMap("test-session")
 
-	m.Assign("claude-alpha", "0.1", "claude")
-	m.Assign("codex-bravo", "0.2", "codex")
-	m.Assign("user-charlie", "0.0", "user")
+	m.AssignNew("claude", "0.1")
+	m.AssignNew("codex", "0.2")
+	m.AssignNew("user", "0.0")
 
 	entries := m.AllNames()
 
@@ -444,21 +334,9 @@ func TestAgentNameMapConcurrency(t *testing.T) {
 	}()
 
 	for i := 0; i < 100; i++ {
-		m.Count()
 		m.AllNames()
-		m.NameForPane("0.1")
 	}
 	<-done
-}
-
-func TestUnknownAgentType(t *testing.T) {
-	m := NewAgentNameMap("test-session")
-
-	// Unknown agent type should use the type as prefix
-	name := m.GenerateName("aider")
-	if name != "aider-alpha" {
-		t.Errorf("GenerateName(aider) = %q, want %q", name, "aider-alpha")
-	}
 }
 
 func TestBuildNameMapFromSession(t *testing.T) {
@@ -477,24 +355,20 @@ func TestBuildNameMapFromSession(t *testing.T) {
 
 	nameMap := BuildNameMapFromSession("proj", nil)
 
-	if nameMap.Count() != 5 {
-		t.Fatalf("expected 5 agents, got %d", nameMap.Count())
+	entries := nameMap.AllNames()
+	if len(entries) != 5 {
+		t.Fatalf("expected 5 agents, got %d", len(entries))
 	}
 
-	// Verify name patterns
-	name0, ok := nameMap.NameForPane("0.0")
-	if !ok || name0 != "user-alpha" {
-		t.Errorf("pane 0.0 name = %q, want user-alpha", name0)
+	// Verify name patterns (entries are sorted by pane reference)
+	if entries[0].Pane != "0.0" || entries[0].Name != "user-alpha" {
+		t.Errorf("pane 0.0 entry = %+v, want user-alpha", entries[0])
 	}
-
-	name1, ok := nameMap.NameForPane("0.1")
-	if !ok || name1 != "claude-bravo" {
-		t.Errorf("pane 0.1 name = %q, want claude-bravo", name1)
+	if entries[1].Pane != "0.1" || entries[1].Name != "claude-bravo" {
+		t.Errorf("pane 0.1 entry = %+v, want claude-bravo", entries[1])
 	}
-
-	name4, ok := nameMap.NameForPane("0.4")
-	if !ok || name4 != "gemini-echo" {
-		t.Errorf("pane 0.4 name = %q, want gemini-echo", name4)
+	if entries[4].Pane != "0.4" || entries[4].Name != "gemini-echo" {
+		t.Errorf("pane 0.4 entry = %+v, want gemini-echo", entries[4])
 	}
 }
 
@@ -512,13 +386,14 @@ func TestBuildNameMapFromSessionUsesPaneTypeForCustomTitles(t *testing.T) {
 
 	nameMap := BuildNameMapFromSession("proj", nil)
 
-	name1, ok := nameMap.NameForPane("0.1")
-	if !ok || name1 != "claude-bravo" {
-		t.Fatalf("pane 0.1 name = %q, want claude-bravo", name1)
+	entries := nameMap.AllNames()
+	if len(entries) != 3 {
+		t.Fatalf("expected 3 agents, got %d", len(entries))
 	}
-
-	name2, ok := nameMap.NameForPane("0.2")
-	if !ok || name2 != "codex-charlie" {
-		t.Fatalf("pane 0.2 name = %q, want codex-charlie", name2)
+	if entries[1].Pane != "0.1" || entries[1].Name != "claude-bravo" {
+		t.Fatalf("pane 0.1 entry = %+v, want claude-bravo", entries[1])
+	}
+	if entries[2].Pane != "0.2" || entries[2].Name != "codex-charlie" {
+		t.Fatalf("pane 0.2 entry = %+v, want codex-charlie", entries[2])
 	}
 }

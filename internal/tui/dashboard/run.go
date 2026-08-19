@@ -10,17 +10,6 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
-// Run starts the dashboard.
-func Run(session, projectDir string) (*PostQuitAction, error) {
-	return RunWithOptions(session, projectDir, RunOptions{})
-}
-
-// RunPopup starts the dashboard in popup/overlay mode.
-// Escape closes the popup; zoom doesn't re-attach.
-func RunPopup(session, projectDir string) (*PostQuitAction, error) {
-	return RunWithOptions(session, projectDir, RunOptions{PopupMode: true})
-}
-
 // mouseEnabled returns true if NTM_MOUSE is not explicitly disabled.
 // Mouse support is enabled by default; set NTM_MOUSE=0 to disable.
 func mouseEnabled() bool {

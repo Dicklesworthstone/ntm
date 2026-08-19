@@ -313,35 +313,6 @@ func TestProgressBar(t *testing.T) {
 	})
 }
 
-func TestDivider(t *testing.T) {
-	tests := []struct {
-		style    string
-		expected string
-	}{
-		{"heavy", "━"},
-		{"double", "═"},
-		{"dotted", "·"},
-		{"dashed", "╌"},
-		{"", "─"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.style, func(t *testing.T) {
-			result := Divider(5, tt.style, lipgloss.Color("#ff0000"))
-			if result == "" {
-				t.Error("Divider should return non-empty string")
-			}
-		})
-	}
-
-	if result := Divider(0, "heavy", lipgloss.Color("#ff0000")); result != "" {
-		t.Fatalf("Divider with width 0 = %q, want empty string", result)
-	}
-	if result := Divider(-1, "heavy", lipgloss.Color("#ff0000")); result != "" {
-		t.Fatalf("Divider with width -1 = %q, want empty string", result)
-	}
-}
-
 func TestGradientDivider(t *testing.T) {
 	t.Run("with colors", func(t *testing.T) {
 		result := GradientDivider(10, "#ff0000", "#0000ff")
@@ -390,42 +361,6 @@ func TestAnimatedGradientDivider(t *testing.T) {
 			t.Fatalf("AnimatedGradientDivider with width 0 = %q, want empty", result)
 		}
 	})
-}
-
-// [tui-upgrade: bd-28vsw]
-func TestAnimatedBorderColor(t *testing.T) {
-	t.Run("returns valid color", func(t *testing.T) {
-		color := AnimatedBorderColor(0, "#89b4fa", "#cba6f7")
-		if color == "" {
-			t.Error("AnimatedBorderColor should return non-empty color")
-		}
-	})
-
-	t.Run("different ticks may return different colors", func(t *testing.T) {
-		c1 := AnimatedBorderColor(0, "#ff0000", "#0000ff")
-		c2 := AnimatedBorderColor(15, "#ff0000", "#0000ff")
-		// Both should be valid lipgloss colors
-		if c1 == "" || c2 == "" {
-			t.Error("AnimatedBorderColor should return valid colors")
-		}
-	})
-}
-
-func TestBadge(t *testing.T) {
-	result := Badge("test", lipgloss.Color("#ff0000"), lipgloss.Color("#ffffff"))
-	if result == "" {
-		t.Error("Badge should return non-empty string")
-	}
-}
-
-func TestKeyHint(t *testing.T) {
-	result := KeyHint("q", "quit", lipgloss.Color("#ff0000"), lipgloss.Color("#ffffff"))
-	if result == "" {
-		t.Error("KeyHint should return non-empty string")
-	}
-	if !strings.Contains(result, "q") {
-		t.Error("KeyHint should contain the key")
-	}
 }
 
 func TestTruncate(t *testing.T) {

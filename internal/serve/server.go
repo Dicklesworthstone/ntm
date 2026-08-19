@@ -629,18 +629,6 @@ func (s *JobStore) evictTerminalLocked(limit int) {
 	}
 }
 
-// Delete removes a job.
-func (s *JobStore) Delete(id string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, ok := s.jobs[id]; !ok {
-		return false
-	}
-	delete(s.jobs, id)
-	delete(s.cancels, id)
-	return true
-}
-
 // ============================================================================
 // WebSocket Hub + Subscription Protocol
 // ============================================================================
@@ -976,20 +964,6 @@ func (h *WSHub) UnregisterClient(client *WSClient) {
 		return
 	case h.unregister <- client:
 	}
-}
-
-// SetRedactionConfig sets the redaction configuration for WebSocket events.
-func (h *WSHub) SetRedactionConfig(cfg *RedactionConfig) {
-	h.redactionMu.Lock()
-	defer h.redactionMu.Unlock()
-	h.redactionCfg = cfg
-}
-
-// GetRedactionConfig returns the current redaction configuration.
-func (h *WSHub) GetRedactionConfig() *RedactionConfig {
-	h.redactionMu.RLock()
-	defer h.redactionMu.RUnlock()
-	return h.redactionCfg
 }
 
 // isSubscribed checks if a client is subscribed to a topic.
@@ -1546,11 +1520,6 @@ func (s *Server) ensureWSEventStore() {
 	})
 }
 
-// Port returns the configured port.
-func (s *Server) Port() int {
-	return s.port
-}
-
 func (s *Server) validate() error {
 	cfg := Config{
 		Host:           s.host,
@@ -1972,31 +1941,6 @@ func sanitizeRequestID(id string) string {
 		}
 	}
 	return b.String()
-}
-
-// authMiddleware enforces configured authentication for all routes.
-func (s *Server) authMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodOptions {
-			next.ServeHTTP(w, r)
-			return
-		}
-
-		claims, err := s.authenticateRequest(r)
-		if err != nil {
-			reqID := requestIDFromContext(r.Context())
-			log.Printf("auth failed mode=%s path=%s remote=%s request_id=%s err=%v", s.auth.Mode, r.URL.Path, r.RemoteAddr, reqID, err)
-			writeError(w, http.StatusUnauthorized, "unauthorized")
-			return
-		}
-
-		if claims != nil {
-			ctx := context.WithValue(r.Context(), authContextKey, claims)
-			r = r.WithContext(ctx)
-		}
-
-		next.ServeHTTP(w, r)
-	})
 }
 
 func (s *Server) authenticateRequest(r *http.Request) (map[string]interface{}, error) {
@@ -4397,11 +4341,10 @@ func (s *Server) handleAgentWaitV1(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Bound the client-supplied wait. robot.GetWait takes no context, so a
-	// disconnecting client cannot reclaim the goroutine it started: an
-	// unbounded timeout_ms pinned one server-side goroutine (and its tmux
-	// polling) indefinitely. Every other client-supplied bound in this
-	// package is clamped; these two were oversights.
+	// Bound the client-supplied wait so an unbounded timeout_ms cannot pin
+	// one server-side goroutine (and its tmux polling) indefinitely. Every
+	// other client-supplied bound in this package is clamped; these two were
+	// oversights.
 	timeout := 30 * time.Second
 	if req.TimeoutMs > 0 {
 		timeout = time.Duration(req.TimeoutMs) * time.Millisecond
@@ -5493,11 +5436,6 @@ func (c *WSClient) sendPong(requestID string) {
 	c.trySend(data, func() {
 		// Buffer full, skip
 	})
-}
-
-// WSHub returns the WebSocket hub for testing.
-func (s *Server) WSHub() *WSHub {
-	return s.wsHub
 }
 
 // =============================================================================

@@ -138,30 +138,6 @@ func TestGetAgents(t *testing.T) {
 	}
 }
 
-func TestGetAgentByPaneID(t *testing.T) {
-	c := New("test-session", "/tmp/test", nil, "TestAgent")
-
-	c.mu.Lock()
-	c.agents["%0"] = &AgentState{
-		PaneID:    "%0",
-		AgentType: "cc",
-	}
-	c.mu.Unlock()
-
-	agent := c.GetAgentByPaneID("%0")
-	if agent == nil {
-		t.Fatal("expected to find agent %0")
-	}
-	if agent.AgentType != "cc" {
-		t.Errorf("expected AgentType 'cc', got %q", agent.AgentType)
-	}
-
-	missing := c.GetAgentByPaneID("%99")
-	if missing != nil {
-		t.Error("expected nil for non-existent agent")
-	}
-}
-
 func TestGetIdleAgents(t *testing.T) {
 	c := New("test-session", "/tmp/test", nil, "TestAgent")
 	c.config.IdleThreshold = 0 // Immediate idle for testing
@@ -266,9 +242,9 @@ func TestUpdateAgentStates_CaptureFailureMarksCurrentUnavailableAndRetainsLastKn
 	}
 	c.mu.Unlock()
 
-	c.updateAgentStates()
+	_ = c.updateAgentStatesContext(context.Background())
 
-	agent := c.GetAgentByPaneID("%0")
+	agent := c.GetAgents()["%0"]
 	if agent == nil {
 		t.Fatal("expected existing agent to remain tracked when capture fails")
 	}
@@ -325,9 +301,9 @@ func TestUpdateAgentStates_TopologyFailureInvalidatesCurrentWithoutRefreshingLas
 	}
 	c.mu.Unlock()
 
-	c.updateAgentStates()
+	_ = c.updateAgentStatesContext(context.Background())
 
-	agent := c.GetAgentByPaneID("%0")
+	agent := c.GetAgents()["%0"]
 	if agent == nil {
 		t.Fatal("topology failure must not erase tracked agent")
 	}
@@ -373,13 +349,13 @@ func TestUpdateAgentStates_UsesFreshObservationForDispatchSafety(t *testing.T) {
 	c := New("test-session", "/tmp/test", nil, "TestAgent")
 	c.config.IdleThreshold = 0
 	c.monitor = NewAgentMonitor(c.session, nil, c.projectKey)
-	c.updateAgentStates()
+	_ = c.updateAgentStatesContext(context.Background())
 
-	idle := c.GetAgentByPaneID("%1")
+	idle := c.GetAgents()["%1"]
 	if idle == nil || idle.Status != robot.StateWaiting || !idle.Healthy || !idle.SafeToDispatch || idle.ObservationFreshness != status.FreshnessFresh {
 		t.Fatalf("idle observation not dispatch-safe: %+v", idle)
 	}
-	working := c.GetAgentByPaneID("%2")
+	working := c.GetAgents()["%2"]
 	if working == nil || working.Status != robot.StateGenerating || !working.Healthy || working.SafeToDispatch || working.ObservationFreshness != status.FreshnessFresh {
 		t.Fatalf("working observation safety = %+v", working)
 	}
@@ -421,71 +397,13 @@ func TestUpdateAgentStatesLoadsPersistedAgentMailIdentity(t *testing.T) {
 	c := New(session, projectKey, nil, "TestAgent")
 	c.config.IdleThreshold = 0
 	c.monitor = NewAgentMonitor(session, nil, projectKey)
-	c.updateAgentStates()
-	agent := c.GetAgentByPaneID(paneID)
+	_ = c.updateAgentStatesContext(context.Background())
+	agent := c.GetAgents()[paneID]
 	if agent == nil || agent.AgentMailName != "BlueLake" {
 		t.Fatalf("persisted pane identity was not loaded: %+v", agent)
 	}
 	if idle := c.GetIdleAgents(); len(idle) != 1 || idle[0].AgentMailName != "BlueLake" {
 		t.Fatalf("idle identity projection = %+v", idle)
-	}
-}
-
-func TestDetectAgentType(t *testing.T) {
-	tests := []struct {
-		title    string
-		expected string
-	}{
-		{"myproject__cc_1", "cc"},
-		{"myproject__claude_1", "cc"},
-		{"myproject__claude_code_1", "cc"},
-		{"myproject__cod_1", "cod"},
-		{"myproject__codex_1", "cod"},
-		{"myproject__openai-codex_1", "cod"},
-		{"myproject__gmi_1", "gmi"},
-		{"myproject__gemini_1", "gmi"},
-		{"myproject__google_gemini_1", "gmi"},
-		{"myproject__cursor_1", "cursor"},
-		{"myproject__ws_1", "windsurf"},
-		{"myproject__aider_1", "aider"},
-		{"myproject__ollama_1", "ollama"},
-		{"myproject__user_1", ""},
-		{"bash", ""},
-		{"", ""},
-	}
-
-	for _, tt := range tests {
-		result := detectAgentType(tt.title)
-		if result != tt.expected {
-			t.Errorf("detectAgentType(%q) = %q, expected %q", tt.title, result, tt.expected)
-		}
-	}
-}
-
-func TestEventsChannel(t *testing.T) {
-	c := New("test-session", "/tmp/test", nil, "TestAgent")
-
-	eventsChan := c.Events()
-	if eventsChan == nil {
-		t.Fatal("expected events channel")
-	}
-
-	// Test we can send to the channel
-	go func() {
-		c.events <- CoordinatorEvent{
-			Type:      EventAgentIdle,
-			Timestamp: time.Now(),
-			AgentID:   "%0",
-		}
-	}()
-
-	select {
-	case event := <-eventsChan:
-		if event.Type != EventAgentIdle {
-			t.Errorf("expected EventAgentIdle, got %v", event.Type)
-		}
-	case <-time.After(time.Second):
-		t.Error("timeout waiting for event")
 	}
 }
 
@@ -1030,7 +948,7 @@ func TestEmitEvent_AgentError(t *testing.T) {
 	c.emitEvent(agent, robot.StateWaiting)
 
 	select {
-	case ev := <-c.Events():
+	case ev := <-c.events:
 		if ev.Type != EventAgentError {
 			t.Errorf("expected EventAgentError, got %v", ev.Type)
 		}
@@ -1088,7 +1006,7 @@ func TestEmitEvent_AgentRecoveredTakesPrecedenceOverIdle(t *testing.T) {
 	c.emitEvent(agent, robot.StateError)
 
 	select {
-	case ev := <-c.Events():
+	case ev := <-c.events:
 		if ev.Type != EventAgentRecovered {
 			t.Fatalf("expected EventAgentRecovered, got %v", ev.Type)
 		}
@@ -1110,7 +1028,7 @@ func TestEmitEvent_NoEventForSameStatus(t *testing.T) {
 	c.emitEvent(agent, robot.StateWaiting)
 
 	select {
-	case <-c.Events():
+	case <-c.events:
 		t.Error("should not emit event for same status")
 	case <-time.After(50 * time.Millisecond):
 		// Expected: no event

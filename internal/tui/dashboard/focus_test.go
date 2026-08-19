@@ -6,9 +6,16 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+// newTestFocusRing mirrors the removed NewFocusRing constructor.
+func newTestFocusRing(targets []FocusTarget) FocusRing {
+	var ring FocusRing
+	ring.Rebuild(targets)
+	return ring
+}
+
 func TestFocusRingNext(t *testing.T) {
 
-	fr := NewFocusRing([]FocusTarget{
+	fr := newTestFocusRing([]FocusTarget{
 		{ID: "a", Visible: func() bool { return true }},
 		{ID: "b", Visible: func() bool { return true }},
 		{ID: "c", Visible: func() bool { return true }},
@@ -32,7 +39,7 @@ func TestFocusRingNext(t *testing.T) {
 
 func TestFocusRingSkipsHidden(t *testing.T) {
 
-	fr := NewFocusRing([]FocusTarget{
+	fr := newTestFocusRing([]FocusTarget{
 		{ID: "a", Visible: func() bool { return true }},
 		{ID: "b", Visible: func() bool { return false }},
 		{ID: "c", Visible: func() bool { return true }},
@@ -46,7 +53,7 @@ func TestFocusRingSkipsHidden(t *testing.T) {
 
 func TestFocusRingPrevWraps(t *testing.T) {
 
-	fr := NewFocusRing([]FocusTarget{
+	fr := newTestFocusRing([]FocusTarget{
 		{ID: "a", Visible: func() bool { return true }},
 		{ID: "b", Visible: func() bool { return true }},
 	})
@@ -59,7 +66,7 @@ func TestFocusRingPrevWraps(t *testing.T) {
 
 func TestFocusRingAllHiddenNoInfiniteLoop(t *testing.T) {
 
-	fr := NewFocusRing([]FocusTarget{
+	fr := newTestFocusRing([]FocusTarget{
 		{ID: "a", Visible: func() bool { return false }},
 		{ID: "b", Visible: func() bool { return false }},
 	})
@@ -70,7 +77,7 @@ func TestFocusRingAllHiddenNoInfiniteLoop(t *testing.T) {
 
 func TestFocusRingSetByID(t *testing.T) {
 
-	fr := NewFocusRing([]FocusTarget{
+	fr := newTestFocusRing([]FocusTarget{
 		{ID: "a", Visible: func() bool { return true }},
 		{ID: "b", Visible: func() bool { return true }},
 	})
@@ -88,7 +95,7 @@ func TestFocusRingSetByID(t *testing.T) {
 
 func TestFocusRingRebuildPreservesFocus(t *testing.T) {
 
-	fr := NewFocusRing([]FocusTarget{
+	fr := newTestFocusRing([]FocusTarget{
 		{ID: "a", Visible: func() bool { return true }},
 		{ID: "b", Visible: func() bool { return true }},
 	})
@@ -110,7 +117,7 @@ func TestFocusRingRebuildPreservesFocus(t *testing.T) {
 
 func TestFocusRingRebuildCurrentRemoved(t *testing.T) {
 
-	fr := NewFocusRing([]FocusTarget{
+	fr := newTestFocusRing([]FocusTarget{
 		{ID: "a", Visible: func() bool { return true }},
 		{ID: "b", Visible: func() bool { return true }},
 	})
@@ -131,7 +138,7 @@ func TestFocusRingRebuildCurrentRemoved(t *testing.T) {
 
 func TestFocusRingEmpty(t *testing.T) {
 
-	fr := NewFocusRing(nil)
+	fr := newTestFocusRing(nil)
 	fr.Next()
 	fr.Prev()
 	if fr.Current().ID != "" {

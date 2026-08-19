@@ -72,42 +72,6 @@ type NotifierConfig struct {
 	AgentName     string
 }
 
-// NewNotifier creates a new notifier with the given configuration.
-func NewNotifier(cfg NotifierConfig) *Notifier {
-	channels := make([]NotificationChannel, 0, len(cfg.Channels))
-	for _, c := range cfg.Channels {
-		switch strings.ToLower(c) {
-		case "desktop":
-			channels = append(channels, ChannelDesktop)
-		case "webhook":
-			channels = append(channels, ChannelWebhook)
-		case "mail", "agentmail":
-			channels = append(channels, ChannelMail)
-		}
-	}
-
-	return &Notifier{
-		channels:      channels,
-		webhookURL:    cfg.WebhookURL,
-		mailRecipient: cfg.MailRecipient,
-		mailClient:    cfg.MailClient,
-		projectKey:    cfg.ProjectKey,
-		agentName:     cfg.AgentName,
-	}
-}
-
-// NewNotifierFromSettings creates a notifier from workflow settings.
-func NewNotifierFromSettings(settings WorkflowSettings, mailClient *agentmail.Client, projectKey, agentName string) *Notifier {
-	return NewNotifier(NotifierConfig{
-		Channels:      settings.NotifyChannels,
-		WebhookURL:    settings.WebhookURL,
-		MailRecipient: settings.MailRecipient,
-		MailClient:    mailClient,
-		ProjectKey:    projectKey,
-		AgentName:     agentName,
-	})
-}
-
 // Notify sends a notification to all configured channels.
 func (n *Notifier) Notify(ctx context.Context, payload NotificationPayload) error {
 	if len(n.channels) == 0 {

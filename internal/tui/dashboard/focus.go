@@ -23,13 +23,6 @@ type FocusRing struct {
 	prevID  string
 }
 
-// NewFocusRing creates a focus ring and selects the first visible target.
-func NewFocusRing(targets []FocusTarget) FocusRing {
-	var ring FocusRing
-	ring.Rebuild(targets)
-	return ring
-}
-
 // Current returns the currently focused target, if any.
 func (fr *FocusRing) Current() FocusTarget {
 	if len(fr.targets) == 0 {

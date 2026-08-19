@@ -128,11 +128,3 @@ func supportsUnicodeBlocks(term string) bool {
 
 	return hasUTF8
 }
-
-// ResetCache clears the cached capabilities. Useful for testing.
-func ResetCache() {
-	capabilityCache.Lock()
-	capabilityCache.value = Capabilities{}
-	capabilityCache.valid = false
-	capabilityCache.Unlock()
-}

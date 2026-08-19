@@ -22,8 +22,8 @@ func TestNewAuditLogger(t *testing.T) {
 	}
 	defer logger.Close()
 
-	if logger.Path() != logPath {
-		t.Errorf("Path() = %v, want %v", logger.Path(), logPath)
+	if logger.path != logPath {
+		t.Errorf("Path() = %v, want %v", logger.path, logPath)
 	}
 
 	// Verify file was created

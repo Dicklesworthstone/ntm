@@ -7,7 +7,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"io"
 	"os"
 	"runtime"
 	"time"
@@ -233,23 +232,6 @@ func (m *Manifest) Validate() error {
 	}
 
 	return nil
-}
-
-// HashFile computes the SHA256 hash of a file.
-func HashFile(path string) (string, int64, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return "", 0, err
-	}
-	defer f.Close()
-
-	h := sha256.New()
-	size, err := io.Copy(h, f)
-	if err != nil {
-		return "", 0, err
-	}
-
-	return hex.EncodeToString(h.Sum(nil)), size, nil
 }
 
 // HashBytes computes the SHA256 hash of a byte slice.

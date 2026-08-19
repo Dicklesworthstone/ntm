@@ -92,19 +92,3 @@ func NewFileReservationWatcherFromConfig(
 
 	return NewFileReservationWatcher(opts...)
 }
-
-// DefaultFileReservationConfigValues returns the default values for file reservation config.
-// Use this when config is not available or as a fallback.
-func DefaultFileReservationConfigValues() FileReservationConfigValues {
-	return FileReservationConfigValues{
-		Enabled:               true,
-		AutoReserve:           true,
-		AutoReleaseIdleMin:    10,
-		NotifyOnConflict:      true,
-		ExtendOnActivity:      true,
-		DefaultTTLMin:         15,
-		PollIntervalSec:       10,
-		CaptureLinesForDetect: 100,
-		Debug:                 false,
-	}
-}

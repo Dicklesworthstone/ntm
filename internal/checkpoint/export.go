@@ -92,14 +92,6 @@ type ImportOptions struct {
 	AllowOverwrite bool
 }
 
-// DefaultImportOptions returns sensible defaults for import.
-func DefaultImportOptions() ImportOptions {
-	return ImportOptions{
-		VerifyChecksums: true,
-		AllowOverwrite:  false,
-	}
-}
-
 var (
 	redactionConfig *redaction.Config
 	redactionMu     sync.RWMutex
@@ -118,19 +110,6 @@ func SetRedactionConfig(cfg *redaction.Config) {
 	} else {
 		redactionConfig = nil
 	}
-}
-
-// GetRedactionConfig returns the current redaction config (or nil if unset).
-// Returned value is independent of the stored config — mutating its
-// reference-typed fields does not leak into future Get/Set calls.
-func GetRedactionConfig() *redaction.Config {
-	redactionMu.RLock()
-	defer redactionMu.RUnlock()
-	if redactionConfig == nil {
-		return nil
-	}
-	c := redactionConfig.DeepCopy()
-	return &c
 }
 
 // Export creates a portable archive of a checkpoint.

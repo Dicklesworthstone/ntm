@@ -336,11 +336,6 @@ func (c *SessionCoordinator) Stop() {
 	c.mu.Unlock()
 }
 
-// Events returns the event channel for external listeners.
-func (c *SessionCoordinator) Events() <-chan CoordinatorEvent {
-	return c.events
-}
-
 // GetAgents returns the current state of all tracked agents.
 func (c *SessionCoordinator) GetAgents() map[string]*AgentState {
 	c.mu.RLock()
@@ -352,18 +347,6 @@ func (c *SessionCoordinator) GetAgents() map[string]*AgentState {
 		result[k] = &agentCopy
 	}
 	return result
-}
-
-// GetAgentByPaneID returns the state of a specific agent.
-func (c *SessionCoordinator) GetAgentByPaneID(paneID string) *AgentState {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	if agent, ok := c.agents[paneID]; ok {
-		agentCopy := *agent
-		return &agentCopy
-	}
-	return nil
 }
 
 // GetIdleAgents returns agents that are idle and available for work.
@@ -570,11 +553,6 @@ func coordinatorPaneObservationError(paneID, message string) error {
 		cause = context.Canceled
 	}
 	return fmt.Errorf("pane %s: %w", paneID, cause)
-}
-
-// updateAgentStates refreshes the state of all agents.
-func (c *SessionCoordinator) updateAgentStates() {
-	_ = c.updateAgentStatesContext(context.Background())
 }
 
 func (c *SessionCoordinator) updateAgentStatesContext(ctx context.Context) error {

@@ -109,11 +109,6 @@ func (m *Monitor) Run(ctx context.Context) error {
 	}
 }
 
-// RunOnce performs a single check iteration (useful for testing).
-func (m *Monitor) RunOnce(ctx context.Context) error {
-	return m.checkOnce(ctx)
-}
-
 func (m *Monitor) checkOnce(ctx context.Context) error {
 	// Determine panes to check
 	panes, err := m.getPanesToCheck()

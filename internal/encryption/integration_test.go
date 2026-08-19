@@ -55,14 +55,14 @@ func TestIntegration_HistoryNotPlaintext(t *testing.T) {
 		t.Fatalf("Append: %v", err)
 	}
 
-	if err := history.BatchAppend([]*history.HistoryEntry{{
+	if err := history.Append(&history.HistoryEntry{
 		ID:        "enc-test-2",
 		Session:   "e2e-encryption",
-		Prompt:    "Batch entry with marker " + plaintextMarker + " included",
+		Prompt:    "Second entry with marker " + plaintextMarker + " included",
 		Timestamp: time.Now(),
 		Source:    history.SourceCLI,
-	}}); err != nil {
-		t.Fatalf("BatchAppend: %v", err)
+	}); err != nil {
+		t.Fatalf("Append (second entry): %v", err)
 	}
 
 	// Read the raw file
@@ -132,7 +132,6 @@ func TestIntegration_EventLogNotPlaintext(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewLogger: %v", err)
 	}
-	defer evtLogger.Close()
 
 	if err := evtLogger.Log(events.NewEvent(events.EventSessionCreate, "e2e-encryption", map[string]interface{}{
 		"marker": plaintextMarker,
@@ -161,9 +160,9 @@ func TestIntegration_EventLogNotPlaintext(t *testing.T) {
 		t.Error("SECURITY: JSON field name found in encrypted event log")
 	}
 
-	allEvents, err := evtLogger.Since(time.Time{})
+	allEvents, err := events.ReadSince(evtPath, time.Time{})
 	if err != nil {
-		t.Fatalf("Since: %v", err)
+		t.Fatalf("ReadSince: %v", err)
 	}
 	if len(allEvents) != 2 {
 		t.Fatalf("expected 2 events, got %d", len(allEvents))

@@ -28,19 +28,6 @@ func SetRedactionConfig(cfg *redaction.Config) {
 	}
 }
 
-// GetRedactionConfig returns the current redaction config (or nil if disabled).
-// Returned value is independent of the stored config — mutating its
-// reference-typed fields does not leak into future Get/Set calls.
-func GetRedactionConfig() *redaction.Config {
-	redactionMu.RLock()
-	defer redactionMu.RUnlock()
-	if redactionConfig == nil {
-		return nil
-	}
-	c := redactionConfig.DeepCopy()
-	return &c
-}
-
 // redactPrompt applies redaction to a prompt if configured.
 // Returns the (potentially redacted) prompt.
 func redactPrompt(prompt string) string {

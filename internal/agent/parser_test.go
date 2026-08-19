@@ -14,17 +14,6 @@ func TestNewParser(t *testing.T) {
 	}
 }
 
-func TestNewParserWithConfig(t *testing.T) {
-	cfg := ParserConfig{
-		ContextLowThreshold: 30.0,
-		SampleLength:        200,
-	}
-	p := NewParserWithConfig(cfg)
-	if p == nil {
-		t.Fatal("NewParserWithConfig returned nil")
-	}
-}
-
 func TestParser_Parse_EmptyOutput(t *testing.T) {
 	p := NewParser()
 	state, err := p.Parse("")
@@ -502,10 +491,10 @@ func TestParser_Parse_ANSIStripping(t *testing.T) {
 }
 
 func TestParser_Parse_RawSample(t *testing.T) {
-	p := NewParserWithConfig(ParserConfig{
+	p := &parserImpl{config: ParserConfig{
 		ContextLowThreshold: 20.0,
 		SampleLength:        50,
-	})
+	}}
 
 	// Create output longer than sample length
 	output := strings.Repeat("x", 100)

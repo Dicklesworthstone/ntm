@@ -40,21 +40,6 @@ func TestServiceLayerOutputStructure(t *testing.T) {
 			output.Version, output.Success, output.Timestamp)
 	})
 
-	t.Run("GetSessions_Structure", func(t *testing.T) {
-		sessions, err := GetSessions()
-		if err != nil {
-			// This may fail without tmux, which is OK for structural tests
-			t.Skipf("GetSessions requires tmux: %v", err)
-		}
-
-		// Verify output is a slice (never nil when returned without error)
-		if sessions == nil {
-			t.Error("GetSessions should return non-nil slice")
-		}
-
-		t.Logf("GetSessions: count=%d", len(sessions))
-	})
-
 	t.Run("GetPlan_Structure", func(t *testing.T) {
 		skipSlowRobotShortIntegrationTest(t, "GetPlan_Structure shells into live planning and belongs in longer integration runs")
 		output, err := GetPlan()

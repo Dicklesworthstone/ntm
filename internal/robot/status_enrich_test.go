@@ -447,41 +447,6 @@ func TestGetChildPID_NonExistentProcess(t *testing.T) {
 // GetLastOutput Tests
 // ====================
 
-func TestGetLastOutput_ExistingPane(t *testing.T) {
-	clearPaneStates()
-
-	paneID := "test-pane-lastoutput"
-	content := "Some output\n"
-
-	// Initialize state
-	updateActivity(paneID, content)
-
-	t.Logf("INPUT: paneID=%q (exists)", paneID)
-
-	ts := getLastOutput(paneID)
-
-	t.Logf("OUTPUT: ts=%v isZero=%v", ts, ts.IsZero())
-
-	if ts.IsZero() {
-		t.Error("getLastOutput() returned zero time for existing pane")
-	}
-}
-
-func TestGetLastOutput_NonExistentPane(t *testing.T) {
-	clearPaneStates()
-
-	paneID := "non-existent-pane"
-	t.Logf("INPUT: paneID=%q (does not exist)", paneID)
-
-	ts := getLastOutput(paneID)
-
-	t.Logf("OUTPUT: ts=%v isZero=%v", ts, ts.IsZero())
-
-	if !ts.IsZero() {
-		t.Errorf("getLastOutput() returned non-zero time for non-existent pane: %v", ts)
-	}
-}
-
 // ====================
 // Rate Limit Patterns Test
 // ====================

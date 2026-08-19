@@ -486,17 +486,6 @@ type TopicFilterConfig struct {
 	DifferentTopicPenalty float64 `json:"different_topic_penalty"`
 }
 
-// DefaultTopicFilterConfig returns sensible defaults for topic filtering.
-func DefaultTopicFilterConfig() TopicFilterConfig {
-	return TopicFilterConfig{
-		Enabled:               false, // Off by default until stable
-		MatchTopics:           true,
-		ExcludeTopics:         nil,
-		SameTopicBoost:        1.5,
-		DifferentTopicPenalty: 0.5,
-	}
-}
-
 // DetectTopics analyzes text and returns detected topics.
 func DetectTopics(text string) []Topic {
 	text = strings.ToLower(text)

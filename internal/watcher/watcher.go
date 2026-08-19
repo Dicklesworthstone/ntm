@@ -203,28 +203,11 @@ func WithIgnorePaths(patterns []string) Option {
 	}
 }
 
-// WithErrorHandler sets the error handler.
-func WithErrorHandler(handler ErrorHandler) Option {
-	return func(w *Watcher) {
-		w.errorHandler = handler
-	}
-}
-
 // WithPollInterval sets the polling interval (used when polling mode is active).
 func WithPollInterval(d time.Duration) Option {
 	return func(w *Watcher) {
 		if d > 0 {
 			w.pollInterval = d
-		}
-	}
-}
-
-// WithPolling forces polling mode (useful for tests or environments without fsnotify support).
-func WithPolling(force bool) Option {
-	return func(w *Watcher) {
-		w.forcePoll = force
-		if force {
-			w.pollMode = true
 		}
 	}
 }
@@ -349,64 +332,6 @@ func (w *Watcher) addRecursive(root string) error {
 	})
 }
 
-// Remove removes a path from the watcher.
-func (w *Watcher) Remove(path string) error {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	if w.closed {
-		return ErrClosed
-	}
-
-	absPath, err := filepath.Abs(path)
-	if err != nil {
-		return err
-	}
-
-	// Determine which watched paths are covered by this remove request.
-	// In recursive mode, we may have individually-watched subdirectories too.
-	sep := string(os.PathSeparator)
-	var toRemove []string
-	if w.recursive {
-		for watched := range w.watchedPaths {
-			if watched == absPath || strings.HasPrefix(watched, absPath+sep) {
-				toRemove = append(toRemove, watched)
-			}
-		}
-	} else {
-		if w.watchedPaths[absPath] {
-			toRemove = []string{absPath}
-		}
-	}
-
-	if len(toRemove) == 0 {
-		return nil // Not watching
-	}
-
-	if w.pollMode {
-		for _, watched := range toRemove {
-			delete(w.watchedPaths, watched)
-		}
-		// Clean up snapshots for the root and anything beneath it.
-		for snapPath := range w.snapshots {
-			if snapPath == absPath || strings.HasPrefix(snapPath, absPath+sep) {
-				delete(w.snapshots, snapPath)
-			}
-		}
-		return nil
-	}
-
-	var firstErr error
-	for _, watched := range toRemove {
-		if err := w.fsWatcher.Remove(watched); err != nil && firstErr == nil {
-			firstErr = err
-		}
-		delete(w.watchedPaths, watched)
-	}
-
-	return firstErr
-}
-
 // Close stops the watcher and releases resources.
 func (w *Watcher) Close() error {
 	w.mu.Lock()
@@ -435,18 +360,6 @@ func (w *Watcher) Close() error {
 
 	w.wg.Wait()
 	return err
-}
-
-// WatchedPaths returns a slice of all currently watched paths.
-func (w *Watcher) WatchedPaths() []string {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	paths := make([]string, 0, len(w.watchedPaths))
-	for p := range w.watchedPaths {
-		paths = append(paths, p)
-	}
-	return paths
 }
 
 // run processes events from fsnotify.

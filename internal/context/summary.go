@@ -36,14 +36,6 @@ type SummaryGeneratorConfig struct {
 	PromptTimeout time.Duration // Timeout for agent response (default: 30s)
 }
 
-// DefaultSummaryGeneratorConfig returns sensible defaults.
-func DefaultSummaryGeneratorConfig() SummaryGeneratorConfig {
-	return SummaryGeneratorConfig{
-		MaxTokens:     2000,
-		PromptTimeout: 30 * time.Second,
-	}
-}
-
 // NewSummaryGenerator creates a new SummaryGenerator with the given config.
 func NewSummaryGenerator(cfg SummaryGeneratorConfig) *SummaryGenerator {
 	if cfg.MaxTokens <= 0 {

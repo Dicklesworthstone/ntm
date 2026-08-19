@@ -383,33 +383,6 @@ func TestParseNumericPair(t *testing.T) {
 	}
 }
 
-func TestValidateCondition(t *testing.T) {
-	tests := []struct {
-		condition  string
-		wantIssues int
-	}{
-		{"${vars.x} == 1", 0},
-		{"(${vars.x} AND ${vars.y})", 0},
-		{"((nested))", 0},
-		{"(unbalanced", 1},
-		{"unbalanced)", 1},
-		{`"unclosed`, 1},
-		{`'unclosed`, 1},
-		{`"balanced"`, 0},
-		{"", 0},
-		{`"escaped \" quote"`, 0},          // escaped double quote inside
-		{`'escaped \' quote'`, 0},          // escaped single quote inside
-		{`mixed "quotes" and 'quotes'`, 0}, // both quote types balanced
-	}
-
-	for _, tt := range tests {
-		issues := ValidateCondition(tt.condition)
-		if len(issues) != tt.wantIssues {
-			t.Errorf("ValidateCondition(%q) = %d issues, want %d: %v", tt.condition, len(issues), tt.wantIssues, issues)
-		}
-	}
-}
-
 func TestFindLogicalOp(t *testing.T) {
 	tests := []struct {
 		expr string

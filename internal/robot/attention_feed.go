@@ -19,7 +19,6 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/state"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tracker"
-	"github.com/Dicklesworthstone/ntm/internal/watcher"
 )
 
 // AttentionStore defines the interface for durable attention event storage.
@@ -2779,37 +2778,6 @@ func NewBusAttentionEvent(event ntmevents.BusEvent) (AttentionEvent, bool) {
 	}
 }
 
-// NewAgentStateChangeEvent creates an agent state change event.
-func NewAgentStateChangeEvent(session string, pane int, agentID, fromState, toState, source string) AttentionEvent {
-	actionability := ActionabilityBackground
-	if toState == "idle" || toState == "error" {
-		actionability = ActionabilityInteresting
-	}
-
-	severity := SeverityInfo
-	if toState == "error" {
-		severity = SeverityError
-		actionability = ActionabilityActionRequired
-	}
-
-	return annotateAttentionSignal(AttentionEvent{
-		Ts:            time.Now().UTC().Format(time.RFC3339Nano),
-		Session:       session,
-		Pane:          pane,
-		Category:      EventCategoryAgent,
-		Type:          EventTypeAgentStateChange,
-		Source:        source,
-		Actionability: actionability,
-		Severity:      severity,
-		Summary:       fmt.Sprintf("Agent %s transitioned from %s to %s", agentID, fromState, toState),
-		Details: map[string]any{
-			"agent_id":   agentID,
-			"from_state": fromState,
-			"to_state":   toState,
-		},
-	})
-}
-
 // NewBeadEvent creates a bead-related event.
 func NewBeadEvent(eventType EventType, beadID, title string, details map[string]any) AttentionEvent {
 	actionability := ActionabilityBackground
@@ -2846,137 +2814,6 @@ func NewBeadEvent(eventType EventType, beadID, title string, details map[string]
 			},
 		},
 	}
-}
-
-// NewMailEvent creates a mail-related event.
-func NewMailEvent(eventType EventType, from, to, subject string, ackRequired bool) AttentionEvent {
-	actionability := ActionabilityInteresting
-	if ackRequired {
-		actionability = ActionabilityActionRequired
-	}
-
-	return AttentionEvent{
-		Ts:            time.Now().UTC().Format(time.RFC3339Nano),
-		Category:      EventCategoryMail,
-		Type:          eventType,
-		Source:        "agent_mail",
-		Actionability: actionability,
-		Severity:      SeverityInfo,
-		Summary:       fmt.Sprintf("Mail from %s to %s: %s", from, to, subject),
-		Details: map[string]any{
-			"from":         from,
-			"to":           to,
-			"subject":      subject,
-			"ack_required": ackRequired,
-		},
-	}
-}
-
-// NewFileConflictEvent creates a file conflict event.
-func NewFileConflictEvent(session string, filePath string, agents []string) AttentionEvent {
-	return annotateAttentionSignal(AttentionEvent{
-		Ts:            time.Now().UTC().Format(time.RFC3339Nano),
-		Session:       session,
-		Category:      EventCategoryFile,
-		Type:          EventTypeFileConflict,
-		Source:        "conflict_detector",
-		Actionability: ActionabilityActionRequired,
-		Severity:      SeverityError,
-		Summary:       fmt.Sprintf("File conflict: %s modified by %v", filePath, agents),
-		Details: map[string]any{
-			"file":   filePath,
-			"agents": agents,
-		},
-		NextActions: []NextAction{
-			{
-				Action: "robot-diff",
-				Args:   fmt.Sprintf("--robot-diff=%s", session),
-				Reason: "Compare agent changes",
-			},
-		},
-	})
-}
-
-// NewReservationConflictEvent creates an attention event for a concrete
-// reservation conflict observed by the file reservation watcher.
-func NewReservationConflictEvent(conflict watcher.FileConflict) (AttentionEvent, bool) {
-	path := strings.TrimSpace(conflict.Path)
-	holders := compactStringSlice(conflict.Holders)
-	if path == "" || len(holders) == 0 {
-		return AttentionEvent{}, false
-	}
-
-	ts := attentionTimestamp(conflict.DetectedAt)
-	details := map[string]any{
-		"path":            path,
-		"requestor_agent": strings.TrimSpace(conflict.RequestorAgent),
-		"requestor_pane":  strings.TrimSpace(conflict.RequestorPane),
-		"holders":         holders,
-	}
-	if len(conflict.HolderReservationIDs) > 0 {
-		details["holder_reservation_ids"] = append([]int(nil), conflict.HolderReservationIDs...)
-	}
-	if conflict.ReservedSince != nil && !conflict.ReservedSince.IsZero() {
-		details["reserved_since"] = conflict.ReservedSince.UTC().Format(time.RFC3339Nano)
-	}
-	if conflict.ExpiresAt != nil && !conflict.ExpiresAt.IsZero() {
-		details["expires_at"] = conflict.ExpiresAt.UTC().Format(time.RFC3339Nano)
-	}
-
-	summary := fmt.Sprintf("reservation conflict on %s", path)
-	if requestor := strings.TrimSpace(conflict.RequestorAgent); requestor != "" {
-		summary = fmt.Sprintf("reservation conflict on %s for %s", path, requestor)
-	}
-
-	return annotateAttentionSignal(AttentionEvent{
-		Ts:            ts.Format(time.RFC3339Nano),
-		Session:       conflict.SessionName,
-		Pane:          attentionPaneIndex(conflict.RequestorPane),
-		Category:      EventCategoryFile,
-		Type:          EventTypeFileConflict,
-		Source:        "watcher.file_reservation",
-		Actionability: ActionabilityActionRequired,
-		Severity:      SeverityWarning,
-		Summary:       attentionSummary(conflict.SessionName, conflict.RequestorPane, summary),
-		Details:       details,
-		NextActions:   attentionReservationConflictActions(conflict.SessionName, details, "Inspect the conflicting reservation state"),
-	}), true
-}
-
-// NewTrackedFileConflictEvent creates an attention event for a concrete file
-// overlap observed from tracker conflict analysis.
-func NewTrackedFileConflictEvent(session string, conflict tracker.Conflict) (AttentionEvent, bool) {
-	path := strings.TrimSpace(conflict.Path)
-	agents := compactStringSlice(conflict.Agents)
-	if path == "" || len(agents) < 2 {
-		return AttentionEvent{}, false
-	}
-
-	severity := SeverityWarning
-	if strings.EqualFold(conflict.Severity, "critical") {
-		severity = SeverityCritical
-	}
-
-	details := map[string]any{
-		"path":             path,
-		"agents":           agents,
-		"change_count":     len(conflict.Changes),
-		"tracker_severity": strings.TrimSpace(conflict.Severity),
-		"last_at":          attentionTimestamp(conflict.LastAt).Format(time.RFC3339Nano),
-	}
-
-	return annotateAttentionSignal(AttentionEvent{
-		Ts:            attentionTimestamp(conflict.LastAt).Format(time.RFC3339Nano),
-		Session:       session,
-		Category:      EventCategoryFile,
-		Type:          EventTypeFileConflict,
-		Source:        "tracker.conflicts",
-		Actionability: ActionabilityActionRequired,
-		Severity:      severity,
-		Summary:       attentionSummary(session, "", fmt.Sprintf("file conflict on %s across %d agents", path, len(agents))),
-		Details:       details,
-		NextActions:   attentionConflictActions(session, path, "Compare conflicting file edits"),
-	}), true
 }
 
 // =============================================================================

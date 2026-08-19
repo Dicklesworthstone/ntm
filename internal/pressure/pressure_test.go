@@ -49,58 +49,6 @@ func TestClassify_DefaultThresholdsCoverAllSources(t *testing.T) {
 	}
 }
 
-func TestMergeBudgets_TightestWins(t *testing.T) {
-	t.Parallel()
-	base := Budget{
-		MaxConcurrentSends: 16,
-		MaxPipelineFanout:  16,
-		MaxBuildSlots:      8,
-		DeferAtLevel:       LevelHigh,
-		DenyAtLevel:        LevelCritical,
-		ScannerInterval:    5 * time.Second,
-	}
-	override := Budget{
-		MaxConcurrentSends: 4,                // tighter
-		MaxPipelineFanout:  0,                // unspecified, base wins
-		MaxBuildSlots:      32,               // looser, base wins
-		DeferAtLevel:       LevelElevated,    // less tolerant, override wins
-		DenyAtLevel:        LevelHigh,        // less tolerant, override wins
-		ScannerInterval:    10 * time.Second, // longer interval = more conservative
-	}
-	got := MergeBudgets(base, override)
-
-	if got.MaxConcurrentSends != 4 {
-		t.Errorf("MaxConcurrentSends = %d, want 4", got.MaxConcurrentSends)
-	}
-	if got.MaxPipelineFanout != 16 {
-		t.Errorf("MaxPipelineFanout = %d, want 16 (base, override 0)", got.MaxPipelineFanout)
-	}
-	if got.MaxBuildSlots != 8 {
-		t.Errorf("MaxBuildSlots = %d, want 8 (base, override looser)", got.MaxBuildSlots)
-	}
-	if got.DeferAtLevel != LevelElevated {
-		t.Errorf("DeferAtLevel = %s, want elevated", got.DeferAtLevel)
-	}
-	if got.DenyAtLevel != LevelHigh {
-		t.Errorf("DenyAtLevel = %s, want high", got.DenyAtLevel)
-	}
-	if got.ScannerInterval != 10*time.Second {
-		t.Errorf("ScannerInterval = %s, want 10s", got.ScannerInterval)
-	}
-}
-
-func TestMergeBudgets_ZeroOverridePreservesBase(t *testing.T) {
-	t.Parallel()
-	base := DefaultBudget()
-	got := MergeBudgets(base, Budget{})
-	if got.MaxConcurrentSends != base.MaxConcurrentSends {
-		t.Errorf("MaxConcurrentSends = %d, want %d", got.MaxConcurrentSends, base.MaxConcurrentSends)
-	}
-	if got.DeferAtLevel != base.DeferAtLevel {
-		t.Errorf("DeferAtLevel = %s, want %s", got.DeferAtLevel, base.DeferAtLevel)
-	}
-}
-
 func TestEvaluateSpawnAdmission_AdmitsWithHeadroom(t *testing.T) {
 	t.Parallel()
 	// 5 running + 3 requested = 8 post-spawn; cap 10 leaves 2 headroom.

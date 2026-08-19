@@ -2,8 +2,6 @@ package dcg
 
 import (
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"testing"
 )
 
@@ -120,143 +118,9 @@ func TestGenerateHookConfig_RejectsUnsupportedInlineOptions(t *testing.T) {
 	}
 }
 
-func TestGenerateHookJSON(t *testing.T) {
-	opts := DefaultDCGHookOptions()
-	jsonStr, err := GenerateHookJSON(opts)
-	if err != nil {
-		t.Fatalf("GenerateHookJSON failed: %v", err)
-	}
-
-	if jsonStr == "" {
-		t.Error("Expected non-empty JSON string")
-	}
-
-	// Verify it's valid JSON
-	var config ClaudeHookConfig
-	if err := json.Unmarshal([]byte(jsonStr), &config); err != nil {
-		t.Errorf("Generated JSON is invalid: %v", err)
-	}
-
-	// Check structure
-	if len(config.Hooks.PreToolUse) != 1 {
-		t.Errorf("Expected 1 PreToolUse hook in parsed JSON, got %d", len(config.Hooks.PreToolUse))
-	}
-}
-
-func TestHookEnvVars(t *testing.T) {
-	opts := DefaultDCGHookOptions()
-	envVars, err := HookEnvVars(opts)
-	if err != nil {
-		t.Fatalf("HookEnvVars failed: %v", err)
-	}
-
-	if len(envVars) != 1 {
-		t.Errorf("Expected 1 env var, got %d", len(envVars))
-	}
-
-	hookJSON, ok := envVars["CLAUDE_CODE_HOOKS"]
-	if !ok {
-		t.Error("Expected CLAUDE_CODE_HOOKS env var to be set")
-	}
-
-	if hookJSON == "" {
-		t.Error("Expected non-empty CLAUDE_CODE_HOOKS value")
-	}
-
-	// Verify it's valid JSON
-	var config ClaudeHookConfig
-	if err := json.Unmarshal([]byte(hookJSON), &config); err != nil {
-		t.Errorf("CLAUDE_CODE_HOOKS value is invalid JSON: %v", err)
-	}
-}
-
-func TestWriteHookConfigFile(t *testing.T) {
-	// Create a temp directory
-	tmpDir, err := os.MkdirTemp("", "dcg-hooks-test-*")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	configPath := filepath.Join(tmpDir, "subdir", "hooks.json")
-
-	opts := DCGHookOptions{
-		BinaryPath: "/usr/local/bin/dcg",
-		Timeout:    3,
-	}
-
-	err = WriteHookConfigFile(opts, configPath)
-	if err != nil {
-		t.Fatalf("WriteHookConfigFile failed: %v", err)
-	}
-
-	// Verify file exists
-	if _, err := os.Stat(configPath); os.IsNotExist(err) {
-		t.Error("Config file was not created")
-	}
-
-	// Read and verify content
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		t.Fatalf("Failed to read config file: %v", err)
-	}
-
-	var config ClaudeHookConfig
-	if err := json.Unmarshal(data, &config); err != nil {
-		t.Errorf("Config file contains invalid JSON: %v", err)
-	}
-
-	if len(config.Hooks.PreToolUse) != 1 {
-		t.Errorf("Expected 1 PreToolUse hook, got %d", len(config.Hooks.PreToolUse))
-	}
-}
-
-func TestAppendRCHWhitelist(t *testing.T) {
-	t.Parallel()
-
-	base := []string{"git status", "rch exec *"}
-	merged := AppendRCHWhitelist(base)
-
-	expected := []string{"git status", "rch exec *", "rch hook *", "rch status *", "rch check *", "rch doctor *"}
-	if len(merged) != len(expected) {
-		t.Fatalf("expected %d entries, got %d: %v", len(expected), len(merged), merged)
-	}
-	for i, value := range expected {
-		if merged[i] != value {
-			t.Fatalf("merged[%d]=%q, want %q (merged=%v)", i, merged[i], value, merged)
-		}
-	}
-}
-
-func TestRCHWhitelistPatterns(t *testing.T) {
-	t.Parallel()
-
-	patterns := RCHWhitelistPatterns()
-	if len(patterns) < 3 {
-		t.Fatalf("expected at least 3 patterns, got %d", len(patterns))
-	}
-	found := map[string]bool{
-		"rch exec *":   false,
-		"rch hook *":   false,
-		"rch status *": false,
-		"rch check *":  false,
-		"rch doctor *": false,
-	}
-	for _, pattern := range patterns {
-		if _, ok := found[pattern]; ok {
-			found[pattern] = true
-		}
-	}
-	for pattern, ok := range found {
-		if !ok {
-			t.Fatalf("missing expected pattern %q in %v", pattern, patterns)
-		}
-	}
-}
-
 func TestCheckDCGAvailable_NotInstalled(t *testing.T) {
 	// Use a binary path that doesn't exist
-	InvalidateDCGCache()
+	invalidateDCGCacheForTest()
 	availability := CheckDCGAvailable("/nonexistent/path/to/dcg")
 
 	if availability.Available {
@@ -278,7 +142,7 @@ func TestShouldConfigureHooks_Disabled(t *testing.T) {
 
 func TestShouldConfigureHooks_EnabledButNotAvailable(t *testing.T) {
 	// When DCG is enabled but not available, should not configure hooks
-	InvalidateDCGCache()
+	invalidateDCGCacheForTest()
 	result := ShouldConfigureHooks(true, "/nonexistent/dcg")
 	if result {
 		t.Error("Should not configure hooks when DCG is not available")
@@ -354,32 +218,6 @@ func TestClaudeHookConfig_JSONFormat(t *testing.T) {
 	}
 }
 
-func TestInvalidateDCGCache(t *testing.T) {
-	// Set up cache with a value
-	dcgAvailabilityMutex.Lock()
-	dcgAvailabilityCache = DCGAvailability{
-		Available:  true,
-		BinaryPath: "/test/dcg",
-	}
-	dcgAvailabilityMutex.Unlock()
-
-	// Invalidate cache
-	InvalidateDCGCache()
-
-	// Check cache is cleared
-	dcgAvailabilityMutex.RLock()
-	cached := dcgAvailabilityCache
-	dcgAvailabilityMutex.RUnlock()
-
-	if cached.Available {
-		t.Error("Cache should be cleared after invalidation")
-	}
-
-	if cached.BinaryPath != "" {
-		t.Error("BinaryPath should be empty after cache invalidation")
-	}
-}
-
 // Helper function to check if string contains substring
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsHelper(s, substr))
@@ -400,4 +238,11 @@ func singleHookHandler(t *testing.T, entry HookEntry) HookHandler {
 		t.Fatalf("expected 1 nested hook handler, got %d", len(entry.Hooks))
 	}
 	return entry.Hooks[0]
+}
+
+// invalidateDCGCacheForTest clears the DCG availability cache between tests.
+func invalidateDCGCacheForTest() {
+	dcgAvailabilityMutex.Lock()
+	dcgAvailabilityCache = DCGAvailability{}
+	dcgAvailabilityMutex.Unlock()
 }

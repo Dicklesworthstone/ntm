@@ -100,10 +100,6 @@ func (m *WorktreeManager) sessionRoot() string {
 	return filepath.Join(m.worktreesRoot(), m.session)
 }
 
-func (m *WorktreeManager) worktreePath(agentName string) string {
-	return filepath.Join(m.sessionRoot(), agentName)
-}
-
 // SessionHasWorktrees reports whether worktree isolation was previously
 // provisioned for the session: its worktree root directory exists on disk.
 // The root persists across `ntm kill`, so it doubles as the record of the

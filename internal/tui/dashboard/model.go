@@ -822,13 +822,6 @@ func (m *Model) rebuildPaneList() tea.Cmd {
 	return cmd
 }
 
-// NewWithInterval creates a dashboard with custom refresh interval.
-func NewWithInterval(session, projectDir string, interval time.Duration) Model {
-	m := New(session, projectDir)
-	m.refreshInterval = interval
-	return m
-}
-
 // Init implements tea.Model.
 func (m Model) Init() tea.Cmd {
 	return tea.Batch(

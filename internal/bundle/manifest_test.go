@@ -2,8 +2,6 @@ package bundle
 
 import (
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"runtime"
 	"testing"
 	"time"
@@ -257,31 +255,6 @@ func TestManifest_JSON(t *testing.T) {
 	}
 }
 
-func TestHashFile(t *testing.T) {
-	// Create temp file
-	dir := t.TempDir()
-	path := filepath.Join(dir, "test.txt")
-	content := []byte("hello world")
-	if err := os.WriteFile(path, content, 0644); err != nil {
-		t.Fatalf("failed to write test file: %v", err)
-	}
-
-	hash, size, err := HashFile(path)
-	if err != nil {
-		t.Fatalf("HashFile failed: %v", err)
-	}
-
-	if size != int64(len(content)) {
-		t.Errorf("size = %d, want %d", size, len(content))
-	}
-
-	// Expected SHA256 of "hello world"
-	expected := "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
-	if hash != expected {
-		t.Errorf("hash = %q, want %q", hash, expected)
-	}
-}
-
 func TestHashBytes(t *testing.T) {
 	content := []byte("hello world")
 	hash := HashBytes(content)
@@ -289,31 +262,6 @@ func TestHashBytes(t *testing.T) {
 	expected := "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
 	if hash != expected {
 		t.Errorf("hash = %q, want %q", hash, expected)
-	}
-}
-
-func TestDetectFormat(t *testing.T) {
-	tests := []struct {
-		path   string
-		format Format
-	}{
-		{"bundle.zip", FormatZip},
-		{"bundle.ZIP", FormatZip},
-		{"bundle.tar.gz", FormatTarGz},
-		{"bundle.TAR.GZ", FormatTarGz},
-		{"bundle.tgz", FormatTarGz},
-		{"bundle.TGZ", FormatTarGz},
-		{"bundle.rar", FormatUnknown},
-		{"bundle", FormatUnknown},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.path, func(t *testing.T) {
-			got := DetectFormat(tt.path)
-			if got != tt.format {
-				t.Errorf("DetectFormat(%q) = %q, want %q", tt.path, got, tt.format)
-			}
-		})
 	}
 }
 

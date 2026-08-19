@@ -317,13 +317,13 @@ func TestEvaluateCondition(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			skip, err := e.evaluateCondition(tt.condition)
+			skip, err := e.evaluateConditionCtx(context.Background(), tt.condition)
 			if (err != nil) != tt.wantErr {
-				t.Errorf("evaluateCondition() error = %v, wantErr %v", err, tt.wantErr)
+				t.Errorf("evaluateConditionCtx() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
 			if skip != tt.wantSkip {
-				t.Errorf("evaluateCondition(%q) = %v, want %v", tt.condition, skip, tt.wantSkip)
+				t.Errorf("evaluateConditionCtx(%q) = %v, want %v", tt.condition, skip, tt.wantSkip)
 			}
 		})
 	}
@@ -732,150 +732,6 @@ func TestGenerateRunID(t *testing.T) {
 	// Should have reasonable length
 	if len(id1) < 20 {
 		t.Errorf("ID too short: %q (len=%d)", id1, len(id1))
-	}
-}
-
-func TestVariableContext_GetVariable(t *testing.T) {
-	vc := &VariableContext{
-		Vars: map[string]interface{}{
-			"name": "Alice",
-			"age":  30,
-		},
-		Steps: map[string]StepResult{
-			"step1": {
-				Output:   "step1 output",
-				Status:   StatusCompleted,
-				PaneUsed: "pane-1",
-			},
-		},
-		Session:  "my-session",
-		RunID:    "run-123",
-		Workflow: "my-workflow",
-	}
-
-	// Set env for testing
-	os.Setenv("TEST_VC_VAR", "env-value")
-	defer os.Unsetenv("TEST_VC_VAR")
-
-	tests := []struct {
-		name   string
-		ref    string
-		want   interface{}
-		wantOk bool
-	}{
-		{"vars.name", "vars.name", "Alice", true},
-		{"vars.age", "vars.age", 30, true},
-		{"vars.missing", "vars.missing", nil, false},
-		{"steps.step1.output", "steps.step1.output", "step1 output", true},
-		{"steps.step1.status", "steps.step1.status", "completed", true},
-		{"steps.step1.pane", "steps.step1.pane", "pane-1", true},
-		{"steps.missing.output", "steps.missing.output", nil, false},
-		{"session", "session", "my-session", true},
-		{"run_id", "run_id", "run-123", true},
-		{"workflow", "workflow", "my-workflow", true},
-		{"env.TEST_VC_VAR", "env.TEST_VC_VAR", "env-value", true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, ok := vc.GetVariable(tt.ref)
-			if ok != tt.wantOk {
-				t.Errorf("GetVariable(%q) ok = %v, want %v", tt.ref, ok, tt.wantOk)
-			}
-			if tt.wantOk && got != tt.want {
-				t.Errorf("GetVariable(%q) = %v, want %v", tt.ref, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestVariableContext_SetVariable(t *testing.T) {
-	vc := &VariableContext{}
-
-	// Initially nil
-	if vc.Vars != nil {
-		t.Error("Vars should be nil initially")
-	}
-
-	// Set a variable (should initialize map)
-	vc.SetVariable("test", "value")
-
-	if vc.Vars == nil {
-		t.Error("Vars should be initialized after SetVariable")
-	}
-	if vc.Vars["test"] != "value" {
-		t.Errorf("Vars[test] = %v, want 'value'", vc.Vars["test"])
-	}
-}
-
-func TestVariableContext_EvaluateString(t *testing.T) {
-	vc := &VariableContext{
-		Vars: map[string]interface{}{
-			"name": "Alice",
-		},
-		Session: "my-session",
-	}
-
-	input := "Hello ${vars.name} in ${session}"
-	want := "Hello Alice in my-session"
-
-	got := vc.EvaluateString(input)
-	if got != want {
-		t.Errorf("EvaluateString(%q) = %q, want %q", input, got, want)
-	}
-}
-
-func TestParseBool(t *testing.T) {
-	tests := []struct {
-		input string
-		want  bool
-	}{
-		{"true", true},
-		{"TRUE", true},
-		{"True", true},
-		{"yes", true},
-		{"YES", true},
-		{"1", true},
-		{"on", true},
-		{"false", false},
-		{"FALSE", false},
-		{"no", false},
-		{"0", false},
-		{"off", false},
-		{"", false},
-		{"maybe", false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.input, func(t *testing.T) {
-			got := ParseBool(tt.input)
-			if got != tt.want {
-				t.Errorf("ParseBool(%q) = %v, want %v", tt.input, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestParseInt(t *testing.T) {
-	tests := []struct {
-		input string
-		def   int
-		want  int
-	}{
-		{"42", 0, 42},
-		{"-1", 0, -1},
-		{"", 10, 10},
-		{"abc", 5, 5},
-		{"3.14", 0, 0}, // Invalid, returns default
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.input, func(t *testing.T) {
-			got := ParseInt(tt.input, tt.def)
-			if got != tt.want {
-				t.Errorf("ParseInt(%q, %d) = %d, want %d", tt.input, tt.def, got, tt.want)
-			}
-		})
 	}
 }
 
@@ -3161,89 +3017,6 @@ func TestTruncatePrompt_ForLoopCompletion(t *testing.T) {
 	want := "abc..."
 	if got != want {
 		t.Errorf("truncatePrompt(%q, 6) = %q, want %q", s, got, want)
-	}
-}
-
-// --- EvaluateString tests ---
-
-func TestVariableContext_EvaluateString_UnknownVar(t *testing.T) {
-
-	vc := &VariableContext{
-		Vars: map[string]interface{}{
-			"name": "Alice",
-		},
-	}
-
-	// Unknown variable should be left unchanged
-	input := "Hello ${vars.unknown}"
-	got := vc.EvaluateString(input)
-	if got != input {
-		t.Errorf("EvaluateString(%q) = %q, want unchanged %q", input, got, input)
-	}
-}
-
-func TestVariableContext_EvaluateString_MultipleVars(t *testing.T) {
-
-	vc := &VariableContext{
-		Vars: map[string]interface{}{
-			"a": "A",
-			"b": "B",
-		},
-		Session:  "sess",
-		RunID:    "run123",
-		Workflow: "wf",
-	}
-
-	input := "${vars.a} and ${vars.b} in ${session} (${run_id}, ${workflow})"
-	want := "A and B in sess (run123, wf)"
-
-	got := vc.EvaluateString(input)
-	if got != want {
-		t.Errorf("EvaluateString(%q) = %q, want %q", input, got, want)
-	}
-}
-
-func TestVariableContext_EvaluateString_Steps(t *testing.T) {
-
-	vc := &VariableContext{
-		Steps: map[string]StepResult{
-			"step1": {
-				StepID:   "step1",
-				Status:   StatusCompleted,
-				Output:   "output1",
-				PaneUsed: "pane1",
-			},
-		},
-	}
-
-	tests := []struct {
-		input string
-		want  string
-	}{
-		{"${steps.step1.output}", "output1"},
-		{"${steps.step1.status}", "completed"},
-		{"${steps.step1.pane}", "pane1"},
-	}
-
-	for _, tt := range tests {
-		got := vc.EvaluateString(tt.input)
-		if got != tt.want {
-			t.Errorf("EvaluateString(%q) = %q, want %q", tt.input, got, tt.want)
-		}
-	}
-}
-
-func TestVariableContext_EvaluateString_EnvVar(t *testing.T) {
-	t.Setenv("TEST_VAR_123", "test_value")
-
-	vc := &VariableContext{}
-
-	input := "${env.TEST_VAR_123}"
-	want := "test_value"
-
-	got := vc.EvaluateString(input)
-	if got != want {
-		t.Errorf("EvaluateString(%q) = %q, want %q", input, got, want)
 	}
 }
 

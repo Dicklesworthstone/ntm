@@ -144,12 +144,6 @@ const (
 // CompleteIdleThreshold is the time without activity to consider "complete".
 const CompleteIdleThreshold = 5 * time.Second
 
-// GetWait executes the wait operation and returns the response data.
-// Returns the response and normalized robot exit code (0=success, 1=error).
-func GetWait(opts WaitOptions) (*WaitResponse, int) {
-	return GetWaitContext(context.Background(), opts)
-}
-
 // GetWaitContext executes the wait operation while honoring caller cancellation.
 // The CLI and HTTP transports pass their request context so disconnects and
 // interrupt signals stop pending polling instead of waiting for the full timeout.
@@ -564,12 +558,6 @@ func initialAttentionWaitCursor(opts WaitOptions, hasAttention bool) int64 {
 	return GetAttentionFeed().Stats().NewestCursor
 }
 
-// PrintWait executes the wait operation and outputs JSON.
-// Returns exit code 0 on success and 1 for every wait failure.
-func PrintWait(opts WaitOptions) int {
-	return PrintWaitContext(context.Background(), opts)
-}
-
 // PrintWaitContext executes --robot-wait with cancellation-aware polling.
 func PrintWaitContext(ctx context.Context, opts WaitOptions) int {
 	resp, exitCode := GetWaitContext(ctx, opts)
@@ -642,16 +630,6 @@ func isAttentionBasedCondition(condition string) bool {
 	}
 }
 
-// hasAttentionBasedConditions returns true if any of the conditions require the attention feed.
-func hasAttentionBasedConditions(conditions []string) bool {
-	for _, c := range conditions {
-		if isAttentionBasedCondition(strings.TrimSpace(c)) {
-			return true
-		}
-	}
-	return false
-}
-
 func splitWaitConditions(conditions []string) ([]string, []string, []string) {
 	paneConditions := make([]string, 0, len(conditions))
 	attentionConditions := make([]string, 0, len(conditions))
@@ -714,56 +692,11 @@ func resolveWaitPanes(panes []tmux.Pane, opts WaitOptions) ([]tmux.Pane, error) 
 	return result, nil
 }
 
-// filterWaitPanes preserves the legacy pure-filter helper for internal callers.
-// Production paths use resolveWaitPanes so selector errors fail loud.
-func filterWaitPanes(panes []tmux.Pane, opts WaitOptions) []tmux.Pane {
-	result, _ := resolveWaitPanes(panes, opts)
-	return result
-}
-
 func waitPaneAgentType(pane tmux.Pane) string {
 	if resolved := ResolveAgentType(string(pane.Type)); resolved != "" && resolved != "unknown" {
 		return resolved
 	}
 	return detectAgentType(pane.Title)
-}
-
-// checkWaitConditionMet checks if the wait condition is satisfied.
-// Returns: met (bool), matching agents, pending agents
-func checkWaitConditionMet(activities []*AgentActivity, opts WaitOptions) (bool, []WaitAgentInfo, []string) {
-	if len(activities) == 0 {
-		return false, nil, nil
-	}
-
-	// Parse composed conditions
-	conditions := strings.Split(opts.Condition, ",")
-
-	var matchingAgents []WaitAgentInfo
-	var pendingAgents []string
-
-	now := time.Now()
-
-	for _, activity := range activities {
-		if meetsAllWaitConditions(activity, conditions) {
-			matchingAgents = append(matchingAgents, WaitAgentInfo{
-				Pane:      activity.PaneID,
-				State:     string(activity.State),
-				MetAt:     FormatTimestamp(now),
-				AgentType: activity.AgentType,
-			})
-		} else {
-			pendingAgents = append(pendingAgents, activity.PaneID)
-		}
-	}
-
-	// Determine if condition is met based on --any vs ALL
-	if opts.WaitForAny {
-		// With --any, need at least CountN agents matching
-		return len(matchingAgents) >= opts.CountN, matchingAgents, pendingAgents
-	}
-
-	// Default: ALL agents must match (no pending)
-	return len(pendingAgents) == 0 && len(matchingAgents) > 0, matchingAgents, pendingAgents
 }
 
 // checkWaitConditionMetWithTransition is like checkWaitConditionMet but handles
@@ -1107,37 +1040,4 @@ func buildWaitCursorInfo(result *AttentionConditionResult) *WaitCursorInfo {
 		NextCursor:     result.NextCursor,
 		OldestCursor:   result.OldestCursor,
 	}
-}
-
-// countByActionability counts events with a specific actionability level.
-func countByActionability(events []AttentionEvent, level Actionability) int {
-	count := 0
-	for _, ev := range events {
-		if ev.Actionability == level {
-			count++
-		}
-	}
-	return count
-}
-
-// countByType counts events with a specific event type.
-func countByType(events []AttentionEvent, eventType EventType) int {
-	count := 0
-	for _, ev := range events {
-		if ev.Type == eventType {
-			count++
-		}
-	}
-	return count
-}
-
-// countByCategory counts events with a specific category.
-func countByCategory(events []AttentionEvent, category EventCategory) int {
-	count := 0
-	for _, ev := range events {
-		if ev.Category == category {
-			count++
-		}
-	}
-	return count
 }

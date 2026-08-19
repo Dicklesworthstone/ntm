@@ -69,13 +69,6 @@ func NewRotationHistoryStore() *RotationHistoryStore {
 	}
 }
 
-// NewRotationHistoryStoreWithPath creates a history store with a custom path.
-func NewRotationHistoryStoreWithPath(path string) *RotationHistoryStore {
-	return &RotationHistoryStore{
-		storagePath: path,
-	}
-}
-
 // defaultRotationHistoryPath returns the path to the rotation history file.
 // Uses ~/.ntm/rotation_history/rotations.jsonl
 func defaultRotationHistoryPath() string {
@@ -315,146 +308,6 @@ func (s *RotationHistoryStore) Clear() error {
 	return err
 }
 
-// Prune keeps only the last n records, removing older ones.
-func (s *RotationHistoryStore) Prune(keep int) (int, error) {
-	historyMu.Lock()
-	defer historyMu.Unlock()
-
-	records, err := s.readAllLocked()
-	if err != nil {
-		return 0, err
-	}
-
-	if len(records) <= keep {
-		return 0, nil
-	}
-
-	toKeep := records[len(records)-keep:]
-	removed := len(records) - keep
-
-	// Rewrite file atomically
-	dir := filepath.Dir(s.storagePath)
-	tmpFile, err := os.CreateTemp(dir, "rotation-*.tmp")
-	if err != nil {
-		return 0, err
-	}
-	tmpPath := tmpFile.Name()
-	defer func() {
-		if tmpPath != "" {
-			_ = os.Remove(tmpPath)
-		}
-	}()
-
-	writer := bufio.NewWriter(tmpFile)
-	for _, record := range toKeep {
-		data, err := json.Marshal(record)
-		if err != nil {
-			continue
-		}
-		if _, err := writer.Write(data); err != nil {
-			return 0, err
-		}
-		if err := writer.WriteByte('\n'); err != nil {
-			return 0, err
-		}
-	}
-
-	if err := writer.Flush(); err != nil {
-		return 0, err
-	}
-	if err := tmpFile.Close(); err != nil {
-		return 0, err
-	}
-
-	if err := os.Chmod(tmpFile.Name(), 0600); err != nil {
-		return 0, err
-	}
-
-	if err := os.Rename(tmpFile.Name(), s.storagePath); err != nil {
-		return 0, err
-	}
-	tmpPath = "" // Prevent defer from removing the successfully renamed file
-
-	return removed, nil
-}
-
-// PruneByTime removes records older than the cutoff time.
-func (s *RotationHistoryStore) PruneByTime(cutoff time.Time) (int, error) {
-	historyMu.Lock()
-	defer historyMu.Unlock()
-
-	records, err := s.readAllLocked()
-	if err != nil {
-		return 0, err
-	}
-
-	var toKeep []RotationRecord
-	for _, r := range records {
-		if r.Timestamp.After(cutoff) {
-			toKeep = append(toKeep, r)
-		}
-	}
-
-	removed := len(records) - len(toKeep)
-	if removed == 0 {
-		return 0, nil
-	}
-
-	// Rewrite file atomically
-	dir := filepath.Dir(s.storagePath)
-	tmpFile, err := os.CreateTemp(dir, "rotation-*.tmp")
-	if err != nil {
-		return 0, err
-	}
-	tmpPath := tmpFile.Name()
-	defer func() {
-		if tmpPath != "" {
-			_ = os.Remove(tmpPath)
-		}
-	}()
-
-	writer := bufio.NewWriter(tmpFile)
-	for _, record := range toKeep {
-		data, err := json.Marshal(record)
-		if err != nil {
-			continue
-		}
-		if _, err := writer.Write(data); err != nil {
-			return 0, err
-		}
-		if err := writer.WriteByte('\n'); err != nil {
-			return 0, err
-		}
-	}
-
-	if err := writer.Flush(); err != nil {
-		return 0, err
-	}
-	if err := tmpFile.Close(); err != nil {
-		return 0, err
-	}
-
-	if err := os.Chmod(tmpFile.Name(), 0600); err != nil {
-		return 0, err
-	}
-
-	if err := os.Rename(tmpFile.Name(), s.storagePath); err != nil {
-		return 0, err
-	}
-	tmpPath = "" // Prevent defer from removing the successfully renamed file
-
-	return removed, nil
-}
-
-// Exists checks if rotation history file exists and has content.
-func (s *RotationHistoryStore) Exists() bool {
-	info, err := os.Stat(s.storagePath)
-	if err != nil {
-		return false
-	}
-	return info.Size() > 0
-}
-
 // RotationStats contains summary statistics about rotation history.
 type RotationStats struct {
 	TotalRotations   int     `json:"total_rotations"`
@@ -551,29 +404,6 @@ func (s *RotationHistoryStore) GetStats() (*RotationStats, error) {
 	return stats, nil
 }
 
-// NewRotationRecord creates a new rotation record from a RotationResult.
-func NewRotationRecord(result *RotationResult, session, profile, estimationMethod string) *RotationRecord {
-	record := &RotationRecord{
-		ID:               newRecordID(),
-		Timestamp:        result.Timestamp,
-		SessionName:      session,
-		AgentID:          result.OldAgentID,
-		AgentType:        deriveAgentTypeFromID(result.OldAgentID),
-		Profile:          profile,
-		Method:           result.Method,
-		Success:          result.Success,
-		SummaryTokens:    result.SummaryTokens,
-		DurationMs:       result.Duration.Milliseconds(),
-		EstimationMethod: estimationMethod,
-	}
-
-	if !result.Success {
-		record.FailureReason = result.Error
-	}
-
-	return record
-}
-
 // newRecordID generates a unique, sortable ID for rotation records.
 func newRecordID() string {
 	ms := time.Now().UnixMilli()
@@ -593,21 +423,6 @@ func RecordRotation(record *RotationRecord) error {
 // GetRotationStats is a convenience function to get stats from the default store.
 func GetRotationStats() (*RotationStats, error) {
 	return DefaultRotationHistoryStore.GetStats()
-}
-
-// GetRecentRotations is a convenience function to get recent rotations from the default store.
-func GetRecentRotations(n int) ([]RotationRecord, error) {
-	return DefaultRotationHistoryStore.ReadRecent(n)
-}
-
-// GetRotationsForSession is a convenience function to get rotations for a session.
-func GetRotationsForSession(session string) ([]RotationRecord, error) {
-	return DefaultRotationHistoryStore.ReadForSession(session)
-}
-
-// GetFailedRotations is a convenience function to get failed rotations.
-func GetFailedRotations() ([]RotationRecord, error) {
-	return DefaultRotationHistoryStore.ReadFailed()
 }
 
 // RotationHistoryStoragePath returns the path to the rotation history file.

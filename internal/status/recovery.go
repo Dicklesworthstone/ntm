@@ -95,11 +95,6 @@ func NewRecoveryManager(config RecoveryConfig) *RecoveryManager {
 	}
 }
 
-// NewRecoveryManagerDefault creates a recovery manager with default config.
-func NewRecoveryManagerDefault() *RecoveryManager {
-	return NewRecoveryManager(DefaultRecoveryConfig())
-}
-
 // CanSendRecovery checks if a recovery prompt can be sent to a pane.
 func (rm *RecoveryManager) CanSendRecovery(paneID string) (bool, string) {
 	rm.mu.RLock()

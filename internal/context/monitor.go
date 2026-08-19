@@ -548,44 +548,6 @@ func (m *ContextMonitor) ResetAgent(agentID string) {
 	}
 }
 
-// EstimateTokens provides a simple token estimation from character count.
-// Uses the standard ~3.5-4 characters per token approximation.
-func EstimateTokens(chars int) int64 {
-	// ~3.5-4 characters per token is typical
-	// We use 3.5 for a slight overestimate (safer for context limits)
-	return int64(float64(chars) / 3.5)
-}
-
-// ParseTokenCount extracts a token count from text that might contain numbers.
-// Handles formats like "145000", "145,000", "145k", "1.5M".
-func ParseTokenCount(text string) (int64, bool) {
-	text = strings.TrimSpace(text)
-	text = strings.ReplaceAll(text, ",", "")
-	text = strings.ToLower(text)
-
-	// Handle k/m suffixes
-	multiplier := int64(1)
-	if strings.HasSuffix(text, "k") {
-		multiplier = 1000
-		text = strings.TrimSuffix(text, "k")
-	} else if strings.HasSuffix(text, "m") {
-		multiplier = 1000000
-		text = strings.TrimSuffix(text, "m")
-	}
-
-	// Try parsing as float first (handles "1.5")
-	if f, err := strconv.ParseFloat(text, 64); err == nil {
-		return int64(f * float64(multiplier)), true
-	}
-
-	// Try as integer
-	if i, err := strconv.ParseInt(text, 10, 64); err == nil {
-		return i * multiplier, true
-	}
-
-	return 0, false
-}
-
 // RegisterAgentWithTranscript registers an agent with extended info including transcript path.
 // This is used for pre-compact handoff generation that needs to read the transcript.
 func (m *ContextMonitor) RegisterAgentWithTranscript(agentID, paneID, model, agentType, sessionName, transcriptPath string) *ContextState {

@@ -437,15 +437,6 @@ func userPathCandidates() []string {
 	return candidates
 }
 
-// DefaultUserPath returns the default user personas file path.
-func DefaultUserPath() string {
-	candidates := userPathCandidates()
-	if len(candidates) == 0 {
-		return ""
-	}
-	return candidates[0]
-}
-
 // DefaultProjectPath returns the default project personas file path.
 func DefaultProjectPath() string {
 	return ".ntm/personas.toml"

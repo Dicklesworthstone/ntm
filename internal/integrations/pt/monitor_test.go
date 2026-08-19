@@ -42,15 +42,15 @@ func TestHealthMonitorOptions(t *testing.T) {
 	alertCalls := 0
 
 	m := NewHealthMonitor(&cfg,
-		WithSession("test-session"),
-		WithAlertChannel(alertCh),
+		withSessionForTest("test-session"),
+		withAlertChannelForTest(alertCh),
 		WithStateChangeCallback(func(ClassificationStateChange) {
 			stateChangeCalls++
 		}),
 		WithAlertCallback(func(Alert) {
 			alertCalls++
 		}),
-		WithRano(false),
+		withRanoForTest(false),
 	)
 
 	if m.session != "test-session" {
@@ -270,7 +270,7 @@ func TestInitGlobalMonitor(t *testing.T) {
 	cfg := config.DefaultProcessTriageConfig()
 	cfg.CheckInterval = 60 // Different from default
 
-	m := InitGlobalMonitor(&cfg, WithSession("custom-session"))
+	m := InitGlobalMonitor(&cfg, withSessionForTest("custom-session"))
 	if m == nil {
 		t.Fatal("expected non-nil monitor")
 	}
@@ -452,7 +452,7 @@ func TestCheckAlertsStuck(t *testing.T) {
 	cfg.StuckThreshold = 1 // 1 second for testing
 	alertCh := make(chan Alert, 10)
 
-	m := NewHealthMonitor(&cfg, WithSession("test-session"), WithAlertChannel(alertCh))
+	m := NewHealthMonitor(&cfg, withSessionForTest("test-session"), withAlertChannelForTest(alertCh))
 
 	// Add a state that's been stuck for longer than threshold
 	stuckSince := time.Now().Add(-5 * time.Second)
@@ -490,7 +490,7 @@ func TestCheckAlertsZombie(t *testing.T) {
 	cfg := config.DefaultProcessTriageConfig()
 	alertCh := make(chan Alert, 10)
 
-	m := NewHealthMonitor(&cfg, WithAlertChannel(alertCh))
+	m := NewHealthMonitor(&cfg, withAlertChannelForTest(alertCh))
 
 	// Add a zombie state - should alert immediately
 	m.mu.Lock()
@@ -522,7 +522,7 @@ func TestCheckAlertsIdle(t *testing.T) {
 	cfg.IdleThreshold = 1 // 1 second for testing
 	alertCh := make(chan Alert, 10)
 
-	m := NewHealthMonitor(&cfg, WithAlertChannel(alertCh))
+	m := NewHealthMonitor(&cfg, withAlertChannelForTest(alertCh))
 
 	// Add a state that's been idle for longer than threshold
 	idleSince := time.Now().Add(-5 * time.Second)
@@ -556,7 +556,7 @@ func TestCheckAlertsNoAlertBelowThreshold(t *testing.T) {
 	cfg.IdleThreshold = 120 // 120 seconds threshold
 	alertCh := make(chan Alert, 10)
 
-	m := NewHealthMonitor(&cfg, WithAlertChannel(alertCh))
+	m := NewHealthMonitor(&cfg, withAlertChannelForTest(alertCh))
 
 	// Add a stuck state that's NOT past threshold
 	m.mu.Lock()
@@ -599,7 +599,7 @@ func TestSendAlertChannelFull(t *testing.T) {
 	// Create a channel with capacity 1
 	alertCh := make(chan Alert, 1)
 
-	m := NewHealthMonitor(&cfg, WithAlertChannel(alertCh))
+	m := NewHealthMonitor(&cfg, withAlertChannelForTest(alertCh))
 
 	// Fill the channel
 	alertCh <- Alert{Type: AlertStuck, Pane: "filler"}
@@ -635,7 +635,7 @@ func TestAlertsChannelAccessor(t *testing.T) {
 	cfg := config.DefaultProcessTriageConfig()
 	alertCh := make(chan Alert, 10)
 
-	m := NewHealthMonitor(&cfg, WithAlertChannel(alertCh))
+	m := NewHealthMonitor(&cfg, withAlertChannelForTest(alertCh))
 
 	ch := m.Alerts()
 	if ch == nil {
@@ -659,7 +659,7 @@ func TestAlertsChannelAccessor(t *testing.T) {
 func TestStateChangeCallbackInvokedForInitialAndTransitionOnly(t *testing.T) {
 	cfg := config.DefaultProcessTriageConfig()
 	var changes []ClassificationStateChange
-	m := NewHealthMonitor(&cfg, WithSession("callback-session"), WithStateChangeCallback(func(change ClassificationStateChange) {
+	m := NewHealthMonitor(&cfg, withSessionForTest("callback-session"), WithStateChangeCallback(func(change ClassificationStateChange) {
 		changes = append(changes, change)
 	}))
 
@@ -719,7 +719,7 @@ func TestAlertCallbackInvokedEvenWhenChannelIsFull(t *testing.T) {
 	alertCh := make(chan Alert, 1)
 	var seen []Alert
 	m := NewHealthMonitor(&cfg,
-		WithAlertChannel(alertCh),
+		withAlertChannelForTest(alertCh),
 		WithAlertCallback(func(alert Alert) {
 			seen = append(seen, alert)
 		}),
@@ -843,7 +843,7 @@ func TestGetAllStatesWithPopulatedStates(t *testing.T) {
 
 func TestMonitorStatsWithPopulatedStates(t *testing.T) {
 	cfg := config.DefaultProcessTriageConfig()
-	m := NewHealthMonitor(&cfg, WithSession("stats-test"))
+	m := NewHealthMonitor(&cfg, withSessionForTest("stats-test"))
 
 	// Populate some states with different classifications
 	now := time.Now()
@@ -959,20 +959,6 @@ func TestClassificationEventFields(t *testing.T) {
 	}
 }
 
-func TestWithRanoOption(t *testing.T) {
-	cfg := config.DefaultProcessTriageConfig()
-
-	m1 := NewHealthMonitor(&cfg, WithRano(true))
-	if !m1.useRano {
-		t.Error("expected useRano to be true")
-	}
-
-	m2 := NewHealthMonitor(&cfg, WithRano(false))
-	if m2.useRano {
-		t.Error("expected useRano to be false")
-	}
-}
-
 func TestDefaultAlertChannel(t *testing.T) {
 	cfg := config.DefaultProcessTriageConfig()
 
@@ -990,4 +976,17 @@ func TestDefaultAlertChannel(t *testing.T) {
 	default:
 		t.Error("expected default channel to have capacity")
 	}
+}
+
+// Test-local option helpers standing in for removed production options.
+func withSessionForTest(session string) HealthMonitorOption {
+	return func(m *HealthMonitor) { m.session = session }
+}
+
+func withAlertChannelForTest(ch chan Alert) HealthMonitorOption {
+	return func(m *HealthMonitor) { m.alertCh = ch }
+}
+
+func withRanoForTest(enabled bool) HealthMonitorOption {
+	return func(m *HealthMonitor) { m.useRano = enabled }
 }

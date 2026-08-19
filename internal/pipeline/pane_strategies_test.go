@@ -328,33 +328,3 @@ func TestRoundRobinPaneSkipsExcludedPanes(t *testing.T) {
 		t.Fatalf("roundRobinPane() = %q, want p1 after excluding p0", got)
 	}
 }
-
-func TestParsePaneDomainRoster(t *testing.T) {
-	roster := `
-pane p2:
-  domain: [H-001, H-005]
-pane p3:
-  domain: [H-002]
-`
-
-	got, err := parsePaneDomainRoster(roster)
-	if err != nil {
-		t.Fatalf("parsePaneDomainRoster() error = %v", err)
-	}
-	if len(got) != 2 {
-		t.Fatalf("parsePaneDomainRoster() returned %d panes, want 2", len(got))
-	}
-	if got[0].ID != "p2" || len(got[0].Domains) != 2 || got[0].Domains[1] != "H-005" {
-		t.Fatalf("first parsed pane = %#v, want p2 with H-005", got[0])
-	}
-}
-
-func TestParsePaneDomainRosterRejectsMalformedDomainList(t *testing.T) {
-	_, err := parsePaneDomainRoster(`
-pane p2:
-  domain: H-001, H-005
-`)
-	if !errors.Is(err, errMalformedPaneDomainRoster) {
-		t.Fatalf("parsePaneDomainRoster() error = %v, want %v", err, errMalformedPaneDomainRoster)
-	}
-}

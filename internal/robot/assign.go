@@ -500,10 +500,6 @@ func getAssignableActionableRecommendations(ctx context.Context, projectDir stri
 	return filterAssignableActionableRecommendationsForProject(projectDir, recommendations, limit), nil
 }
 
-func filterAssignableBeadPreviews(recommendations []bv.TriageRecommendation, limit int) []bv.BeadPreview {
-	return filterAssignableBeadPreviewsWithGate(recommendations, limit, bv.IsOperatorGatedLabel)
-}
-
 func filterAssignableBeadPreviewsForProject(projectDir string, recommendations []bv.TriageRecommendation, limit int) []bv.BeadPreview {
 	return filterAssignableBeadPreviewsWithGate(recommendations, limit, func(label string) bool {
 		return bv.IsOperatorGatedLabelForProject(projectDir, label)
@@ -522,14 +518,6 @@ func filterAssignableBeadPreviewsWithGate(recommendations []bv.TriageRecommendat
 		})
 	}
 	return previews
-}
-
-// filterAssignableActionableRecommendations is the shared policy boundary for
-// robot assignment consumers. It assumes the caller sourced recommendations
-// from GetActionableRecommendationsContext, then independently enforces the
-// status, dependency, and operator-gate invariants before planning dispatch.
-func filterAssignableActionableRecommendations(recommendations []bv.TriageRecommendation, limit int) []bv.TriageRecommendation {
-	return filterAssignableActionableRecommendationsWithGate(recommendations, limit, bv.IsOperatorGatedLabel)
 }
 
 func filterAssignableActionableRecommendationsForProject(projectDir string, recommendations []bv.TriageRecommendation, limit int) []bv.TriageRecommendation {

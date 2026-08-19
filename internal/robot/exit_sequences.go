@@ -120,13 +120,6 @@ func sendKeys(ctx context.Context, session string, win, pane int, keys string) e
 	return runTmuxCommand(ctx, "send-keys", "-t", formatTargetWin(session, win, pane), "-l", keys)
 }
 
-// formatTarget creates a tmux target string for a session and pane, assuming
-// window 1 (the historical single-window NTM layout). Retained for callers and
-// tests that do not carry a window index.
-func formatTarget(session string, pane int) string {
-	return formatTargetWin(session, 1, pane)
-}
-
 // formatTargetWin creates a tmux target string for an explicit session,
 // window, and pane address (#172). tmux window indexes may start at zero, so
 // this helper must preserve the caller's window index exactly.

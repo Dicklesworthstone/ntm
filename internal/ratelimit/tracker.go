@@ -782,19 +782,6 @@ type CodexThrottleStatus struct {
 	Guidance          string        `json:"guidance"`
 }
 
-// NewCodexThrottle creates a CodexThrottle with the given max concurrency ceiling.
-func NewCodexThrottle(maxConcurrent int) *CodexThrottle {
-	if maxConcurrent < 1 {
-		maxConcurrent = 3
-	}
-	return &CodexThrottle{
-		phase:             ThrottleNormal,
-		allowedConcurrent: maxConcurrent,
-		maxConcurrent:     maxConcurrent,
-		nowFn:             time.Now,
-	}
-}
-
 // now returns the current time, using the injectable nowFn.
 func (ct *CodexThrottle) now() time.Time {
 	if ct.nowFn != nil {

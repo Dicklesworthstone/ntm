@@ -36,17 +36,6 @@ func TestSteps_Fail_NilCurrent(t *testing.T) {
 	}
 }
 
-func TestSteps_Skip_NilCurrent(t *testing.T) {
-	t.Parallel()
-
-	var buf bytes.Buffer
-	s := NewStepsWriter(&buf)
-	s.Skip()
-	if buf.Len() > 0 {
-		t.Errorf("expected no output for nil current, got %q", buf.String())
-	}
-}
-
 func TestSteps_Warn_NilCurrent(t *testing.T) {
 	t.Parallel()
 

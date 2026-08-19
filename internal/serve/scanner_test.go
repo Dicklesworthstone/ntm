@@ -641,7 +641,7 @@ func addTestScan(id string, state ScanState) *ScanRecord {
 		Path:      "/tmp",
 		StartedAt: time.Now(),
 	}
-	scannerStore.AddScan(scan)
+	seedScan(scannerStore, scan)
 	return scan
 }
 
@@ -855,4 +855,13 @@ func TestLinkFindingBead_BlocksFurtherClaims(t *testing.T) {
 	if existing != "ntm-123" {
 		t.Fatalf("existing bead id = %q, want ntm-123", existing)
 	}
+}
+
+// seedScan inserts a scan directly into the store; the exported AddScan
+// method was removed as dead code (live code registers scans via TryStartScan).
+func seedScan(s *ScannerStore, scan *ScanRecord) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.scans[scan.ID] = cloneScan(scan)
+	s.scanList = append(s.scanList, scan.ID)
 }

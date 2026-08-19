@@ -29,34 +29,6 @@ func TestLoopResultStruct(t *testing.T) {
 	}
 }
 
-func TestErrLoopBreak(t *testing.T) {
-	err := &ErrLoopBreak{Reason: "condition met"}
-	expected := "loop break: condition met"
-	if err.Error() != expected {
-		t.Errorf("expected %q, got %q", expected, err.Error())
-	}
-
-	err2 := &ErrLoopBreak{}
-	if err2.Error() != "loop break" {
-		t.Errorf("expected 'loop break', got %q", err2.Error())
-	}
-}
-
-func TestErrLoopContinue(t *testing.T) {
-	err := &ErrLoopContinue{}
-	if err.Error() != "loop continue" {
-		t.Errorf("expected 'loop continue', got %q", err.Error())
-	}
-}
-
-func TestErrMaxIterations(t *testing.T) {
-	err := &ErrMaxIterations{Limit: 100}
-	expected := "max iterations limit reached (100)"
-	if err.Error() != expected {
-		t.Errorf("expected %q, got %q", expected, err.Error())
-	}
-}
-
 func TestToInterfaceSlice(t *testing.T) {
 	tests := []struct {
 		name    string

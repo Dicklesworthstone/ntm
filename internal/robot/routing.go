@@ -389,17 +389,6 @@ func NewAgentScorer(cfg RoutingConfig) *AgentScorer {
 	}
 }
 
-// NewAgentScorerWithReservations creates a scorer with Agent Mail reservation support.
-func NewAgentScorerWithReservations(cfg RoutingConfig, client *agentmail.Client, projectKey string) *AgentScorer {
-	scorer := NewAgentScorer(cfg)
-
-	if cfg.AgentMail.Enabled && client != nil && projectKey != "" {
-		scorer.reservationCache = NewReservationCache(client, projectKey, cfg.AgentMail.CacheTTL)
-	}
-
-	return scorer
-}
-
 // NewAgentScorerFromConfig creates a scorer using config file settings.
 // Callers should pass a config loaded via config.Load() or config.Default(),
 // which already include canonical routing defaults.
@@ -981,41 +970,6 @@ func (s *AgentScorer) GetAvailableAgents(scored []ScoredAgent) []ScoredAgent {
 	}
 
 	return available
-}
-
-// FilterByType filters agents by agent type (cc, cod, gmi).
-func FilterByType(agents []ScoredAgent, agentType string) []ScoredAgent {
-	if agentType == "" {
-		return agents
-	}
-
-	var filtered []ScoredAgent
-	for _, agent := range agents {
-		if strings.EqualFold(agent.AgentType, agentType) {
-			filtered = append(filtered, agent)
-		}
-	}
-	return filtered
-}
-
-// FilterByPanes filters agents by pane indices.
-func FilterByPanes(agents []ScoredAgent, paneIndices []int) []ScoredAgent {
-	if len(paneIndices) == 0 {
-		return agents
-	}
-
-	indexSet := make(map[int]bool)
-	for _, idx := range paneIndices {
-		indexSet[idx] = true
-	}
-
-	var filtered []ScoredAgent
-	for _, agent := range agents {
-		if indexSet[agent.PaneIndex] {
-			filtered = append(filtered, agent)
-		}
-	}
-	return filtered
 }
 
 // ExcludePanes excludes specific pane indices from the list.

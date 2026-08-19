@@ -1053,12 +1053,6 @@ func truncateToTokens(text string, maxTokens int) string {
 	return text[:cutPoint] + "\n\n[Summary truncated due to token limit]"
 }
 
-// truncateAtRuneBoundary truncates a string to at most maxBytes bytes,
-// ensuring the cut is at a valid UTF-8 rune boundary.
-func truncateAtRuneBoundary(s string, maxBytes int) string {
-	return util.SafeSlice(s, maxBytes)
-}
-
 // yamlMarshal is a small wrapper to avoid leaking yaml dependency in callers.
 func yamlMarshal(h *handoff.Handoff) ([]byte, error) {
 	return yaml.Marshal(h)

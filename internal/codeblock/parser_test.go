@@ -68,60 +68,6 @@ func TestParseNoLanguage(t *testing.T) {
 	}
 }
 
-func TestParseLanguageFilter(t *testing.T) {
-	text := `
-` + "```python" + `
-print("hello")
-` + "```" + `
-
-` + "```go" + `
-fmt.Println("hello")
-` + "```" + `
-
-` + "```bash" + `
-echo hello
-` + "```" + `
-`
-
-	// Filter for python only
-	blocks := ExtractWithFilter(text, []string{"python"})
-
-	if len(blocks) != 1 {
-		t.Fatalf("Expected 1 block, got %d", len(blocks))
-	}
-
-	if blocks[0].Language != "python" {
-		t.Errorf("Language = %q, want %q", blocks[0].Language, "python")
-	}
-
-	// Filter for python and bash
-	blocks = ExtractWithFilter(text, []string{"python", "bash"})
-
-	if len(blocks) != 2 {
-		t.Fatalf("Expected 2 blocks, got %d", len(blocks))
-	}
-}
-
-func TestParseLanguageAliases(t *testing.T) {
-	text := `
-` + "```js" + `
-console.log("hello")
-` + "```" + `
-`
-
-	// Filter for javascript (should match js)
-	blocks := ExtractWithFilter(text, []string{"javascript"})
-
-	if len(blocks) != 1 {
-		t.Fatalf("Expected 1 block, got %d", len(blocks))
-	}
-
-	// The language should be normalized
-	if blocks[0].Language != "javascript" {
-		t.Errorf("Language = %q, want %q", blocks[0].Language, "javascript")
-	}
-}
-
 func TestParseFilePathComment(t *testing.T) {
 	tests := []struct {
 		name      string

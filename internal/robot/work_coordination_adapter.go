@@ -10,11 +10,7 @@
 package robot
 
 import (
-	"sort"
 	"time"
-
-	"github.com/Dicklesworthstone/ntm/internal/bv"
-	"github.com/Dicklesworthstone/ntm/internal/tracker"
 )
 
 // =============================================================================
@@ -144,15 +140,6 @@ type WorkCoordinationAdapterConfig struct {
 	StaleThresholdMinutes int
 }
 
-// DefaultWorkCoordinationAdapterConfig returns sensible defaults.
-func DefaultWorkCoordinationAdapterConfig() WorkCoordinationAdapterConfig {
-	return WorkCoordinationAdapterConfig{
-		ReadyQueueLimit:       5,
-		RecentMailLimit:       3,
-		StaleThresholdMinutes: 120,
-	}
-}
-
 // =============================================================================
 // Adapter
 // =============================================================================
@@ -162,67 +149,9 @@ type WorkCoordinationAdapter struct {
 	config WorkCoordinationAdapterConfig
 }
 
-// NewWorkCoordinationAdapter creates a new adapter with the given configuration.
-func NewWorkCoordinationAdapter(config WorkCoordinationAdapterConfig) *WorkCoordinationAdapter {
-	return &WorkCoordinationAdapter{config: config}
-}
-
 // =============================================================================
 // Work Section Normalization
 // =============================================================================
-
-// NormalizeWorkSection creates a WorkSection from beads data.
-func (a *WorkCoordinationAdapter) NormalizeWorkSection(summary *bv.BeadsSummary) *WorkSection {
-	work := &WorkSection{
-		ReadyQueue: make([]BeadRef, 0),
-		InFlight:   make([]InFlightWork, 0),
-	}
-
-	// Populate counts from summary
-	if summary != nil {
-		work.Total = summary.Total
-		work.Open = summary.Open
-		work.InProgress = summary.InProgress
-		work.Blocked = summary.Blocked
-		work.Ready = summary.Ready
-
-		// Populate ready queue from preview
-		for i, preview := range summary.ReadyPreview {
-			if i >= a.config.ReadyQueueLimit {
-				break
-			}
-			beadType := preview.Type
-			if beadType == "" {
-				beadType = "task"
-			}
-			work.ReadyQueue = append(work.ReadyQueue, BeadRef{
-				ID:       preview.ID,
-				Title:    truncateForDisplay(preview.Title, 80),
-				Priority: parsePriorityString(preview.Priority),
-				Type:     beadType,
-			})
-		}
-
-		// Populate in-flight from in_progress_list
-		for _, inProg := range summary.InProgressList {
-			startedAt := ""
-			durationSec := 0
-			if !inProg.UpdatedAt.IsZero() {
-				startedAt = inProg.UpdatedAt.Format(time.RFC3339)
-				durationSec = int(time.Since(inProg.UpdatedAt).Seconds())
-			}
-			work.InFlight = append(work.InFlight, InFlightWork{
-				BeadID:      inProg.ID,
-				BeadTitle:   truncateForDisplay(inProg.Title, 80),
-				Agent:       inProg.Assignee,
-				StartedAt:   startedAt,
-				DurationSec: durationSec,
-			})
-		}
-	}
-
-	return work
-}
 
 // =============================================================================
 // Coordination Section Normalization
@@ -253,117 +182,6 @@ type ReservationData struct {
 	Reason    string
 }
 
-// NormalizeCoordinationSection creates a CoordinationSection from various sources.
-func (a *WorkCoordinationAdapter) NormalizeCoordinationSection(
-	mailData *AgentMailData,
-	reservations []ReservationData,
-	conflicts []tracker.Conflict,
-	handoff *HandoffSummary,
-) *CoordinationSection {
-	coord := &CoordinationSection{
-		Mail:         MailSummary{Recent: make([]MailRef, 0)},
-		Reservations: make([]ReservationInfo, 0),
-		Conflicts:    make([]ConflictInfo, 0),
-	}
-
-	// Normalize mail
-	if mailData != nil {
-		coord.Mail = a.normalizeMailSummary(mailData)
-	}
-
-	// Normalize reservations
-	for _, res := range reservations {
-		coord.Reservations = append(coord.Reservations, ReservationInfo{
-			Agent:     res.Agent,
-			Patterns:  res.Patterns,
-			Exclusive: res.Exclusive,
-			ExpiresAt: res.ExpiresAt.Format(time.RFC3339),
-			Reason:    res.Reason,
-		})
-	}
-
-	// Normalize conflicts
-	for _, conflict := range conflicts {
-		detectedAt := ""
-		if !conflict.LastAt.IsZero() {
-			detectedAt = conflict.LastAt.Format(time.RFC3339)
-		}
-		coord.Conflicts = append(coord.Conflicts, ConflictInfo{
-			ID:         conflict.Path, // Use path as ID
-			Type:       "file_conflict",
-			Files:      []string{conflict.Path},
-			Agents:     conflict.Agents,
-			DetectedAt: detectedAt,
-			Resolved:   false, // tracker.Conflict doesn't track resolution
-		})
-	}
-
-	// Normalize handoff
-	if handoff != nil && handoff.Session != "" {
-		coord.Handoff = &HandoffInfo{
-			Session:    handoff.Session,
-			Goal:       handoff.Goal,
-			Now:        handoff.Now,
-			Path:       handoff.Path,
-			AgeSeconds: handoff.AgeSeconds,
-			Status:     handoff.Status,
-		}
-	}
-
-	return coord
-}
-
-// normalizeMailSummary converts raw mail data to a MailSummary.
-func (a *WorkCoordinationAdapter) normalizeMailSummary(mailData *AgentMailData) MailSummary {
-	summary := MailSummary{
-		Recent: make([]MailRef, 0),
-	}
-
-	if mailData == nil || len(mailData.Inbox) == 0 {
-		return summary
-	}
-
-	// Count threads
-	threads := make(map[string]bool)
-
-	// Process messages
-	for _, msg := range mailData.Inbox {
-		summary.Unread++
-		if msg.Importance == "urgent" {
-			summary.Urgent++
-		}
-		if msg.AckRequired {
-			summary.AckRequired++
-		}
-		if msg.ThreadID != "" {
-			threads[msg.ThreadID] = true
-		}
-	}
-	summary.ThreadCount = len(threads)
-
-	// Sort by timestamp descending and take recent
-	sorted := make([]InboxMessage, len(mailData.Inbox))
-	copy(sorted, mailData.Inbox)
-	sort.Slice(sorted, func(i, j int) bool {
-		return sorted[i].CreatedTS.After(sorted[j].CreatedTS)
-	})
-
-	for i, msg := range sorted {
-		if i >= a.config.RecentMailLimit {
-			break
-		}
-		summary.Recent = append(summary.Recent, MailRef{
-			ID:         msg.ID,
-			From:       msg.From,
-			Subject:    truncateForDisplay(msg.Subject, 60),
-			Urgent:     msg.Importance == "urgent",
-			ReceivedAt: msg.CreatedTS.Format(time.RFC3339),
-		})
-	}
-
-	return summary
-}
-
 // =============================================================================
 // Combined Normalization
 // =============================================================================
@@ -375,49 +193,6 @@ type WorkCoordinationSnapshot struct {
 	CollectedAt  time.Time           `json:"collected_at"`
 }
 
-// NormalizeSnapshot creates a complete work/coordination snapshot.
-func (a *WorkCoordinationAdapter) NormalizeSnapshot(
-	beadsSummary *bv.BeadsSummary,
-	mailData *AgentMailData,
-	reservations []ReservationData,
-	conflicts []tracker.Conflict,
-	handoff *HandoffSummary,
-) *WorkCoordinationSnapshot {
-	return &WorkCoordinationSnapshot{
-		Work:         *a.NormalizeWorkSection(beadsSummary),
-		Coordination: *a.NormalizeCoordinationSection(mailData, reservations, conflicts, handoff),
-		CollectedAt:  time.Now(),
-	}
-}
-
 // =============================================================================
 // Helpers
 // =============================================================================
-
-// truncateForDisplay truncates a string to maxLen runes, adding "..." if truncated.
-// Note: Named differently to avoid conflict with truncateString in tui_parity.go
-func truncateForDisplay(s string, maxLen int) string {
-	runes := []rune(s)
-	if len(runes) <= maxLen {
-		return s
-	}
-	if maxLen < 4 {
-		return string(runes[:maxLen])
-	}
-	return string(runes[:maxLen-3]) + "..."
-}
-
-// parsePriorityString converts a priority string like "P0", "P1" to an int.
-// Returns 2 (medium priority) if parsing fails.
-func parsePriorityString(s string) int {
-	if len(s) < 2 {
-		return 2
-	}
-	// Handle "P0", "P1", etc.
-	if s[0] == 'P' || s[0] == 'p' {
-		if s[1] >= '0' && s[1] <= '4' {
-			return int(s[1] - '0')
-		}
-	}
-	return 2
-}

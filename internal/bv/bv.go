@@ -459,80 +459,6 @@ func GetNextActions(dir string, n int) ([]PriorityRecommendation, error) {
 	return recommendations, nil
 }
 
-// GetParallelTracks returns available parallel work tracks
-func GetParallelTracks(dir string) ([]Track, error) {
-	plan, err := GetPlan(dir)
-	if err != nil {
-		return nil, err
-	}
-
-	return plan.Plan.Tracks, nil
-}
-
-// IsBottleneck checks if an issue ID is in the bottleneck list
-func IsBottleneck(dir, issueID string) (bool, float64, error) {
-	insights, err := GetInsights(dir)
-	if err != nil {
-		return false, 0, err
-	}
-
-	for _, b := range insights.Bottlenecks {
-		if b.ID == issueID {
-			return true, b.Value, nil
-		}
-	}
-
-	return false, 0, nil
-}
-
-// IsKeystone checks if an issue ID is in the keystone list
-func IsKeystone(dir, issueID string) (bool, float64, error) {
-	insights, err := GetInsights(dir)
-	if err != nil {
-		return false, 0, err
-	}
-
-	for _, k := range insights.Keystones {
-		if k.ID == issueID {
-			return true, k.Value, nil
-		}
-	}
-
-	return false, 0, nil
-}
-
-// IsHub checks if an issue ID is in the hub list (HITS algorithm)
-func IsHub(dir, issueID string) (bool, float64, error) {
-	insights, err := GetInsights(dir)
-	if err != nil {
-		return false, 0, err
-	}
-
-	for _, h := range insights.Hubs {
-		if h.ID == issueID {
-			return true, h.Value, nil
-		}
-	}
-
-	return false, 0, nil
-}
-
-// IsAuthority checks if an issue ID is in the authority list (HITS algorithm)
-func IsAuthority(dir, issueID string) (bool, float64, error) {
-	insights, err := GetInsights(dir)
-	if err != nil {
-		return false, 0, err
-	}
-
-	for _, a := range insights.Authorities {
-		if a.ID == issueID {
-			return true, a.Value, nil
-		}
-	}
-
-	return false, 0, nil
-}
-
 // GraphPosition represents the position of an issue in the dependency graph
 type GraphPosition struct {
 	IssueID         string  `json:"issue_id"`
@@ -821,8 +747,8 @@ func GetDependencyContext(dir string, n int) (*DependencyContext, error) {
 // HasLocalBeadsDB returns true when `dir` itself contains a .beads directory.
 // Recovery callers use this to refuse to walk up into a parent repo's
 // work-item database when the child has none of its own (#130). Generic
-// list helpers (`GetInProgressList`, `GetRecentlyCompletedList`,
-// `GetBlockedList`) deliberately do not gate on this — they preserve br's
+// list helpers (`GetInProgressList`, `GetRecentlyCompletedListContext`,
+// `GetBlockedListContext`) deliberately do not gate on this — they preserve br's
 // walk-up behavior so callers that *want* parent rows (alerts, status,
 // triage) keep working from a child directory. Recovery and other
 // trust-sensitive callers must pre-check.
@@ -1210,15 +1136,6 @@ func OperatorGatedLabels() []string {
 	operatorGatedMu.RUnlock()
 	sort.Strings(labels)
 	return labels
-}
-
-// IsOperatorGatedLabel reports whether label blocks automated assignment.
-func IsOperatorGatedLabel(label string) bool {
-	normalized := strings.ToLower(strings.TrimSpace(label))
-	operatorGatedMu.RLock()
-	_, gated := operatorGatedLabels[normalized]
-	operatorGatedMu.RUnlock()
-	return gated
 }
 
 // AssignmentEligibilityError reports the exact tracker preconditions that
@@ -2470,22 +2387,6 @@ type BeadAssignmentAuthorization struct {
 	AllowOwnedInProgress      bool
 }
 
-// ValidateBeadAssignmentAuthorization checks an exact live br show result at
-// the final read-only boundary before an assignment mutates leases or durable
-// intent. The later ClaimBeadForAssignment transaction remains the race-safe
-// compare-and-set.
-func ValidateBeadAssignmentAuthorization(details *BeadAssignmentDetails, authorization BeadAssignmentAuthorization) error {
-	return validateBeadAssignmentAuthorization(details, authorization, IsOperatorGatedLabel)
-}
-
-// ValidateBeadAssignmentAuthorizationForProject validates against the policy
-// registered for one authoritative Beads workspace.
-func ValidateBeadAssignmentAuthorizationForProject(projectDir string, details *BeadAssignmentDetails, authorization BeadAssignmentAuthorization) error {
-	return validateBeadAssignmentAuthorization(details, authorization, func(label string) bool {
-		return IsOperatorGatedLabelForProject(projectDir, label)
-	})
-}
-
 // ValidateBeadAssignmentAuthorizationWithOperatorGatedLabels validates against
 // the immutable vocabulary captured by the caller at strict policy admission.
 // The same slice can then be passed to the guarded claim, keeping both sides of
@@ -2628,14 +2529,9 @@ func IsBlockingDependencyType(dependencyType string) bool {
 	}
 }
 
-// GetBeadAssignmentDetails returns exact title, status, assignee, labels, and
-// unresolved blocking dependencies for one bead using br show --json.
-func GetBeadAssignmentDetails(dir, beadID string) (*BeadAssignmentDetails, error) {
-	return GetBeadAssignmentDetailsContext(context.Background(), dir, beadID)
-}
-
-// GetBeadAssignmentDetailsContext returns exact assignment-gate state with
-// caller cancellation.
+// GetBeadAssignmentDetailsContext returns exact title, status, assignee,
+// labels, and unresolved blocking dependencies for one bead using
+// br show --json, with caller cancellation.
 func GetBeadAssignmentDetailsContext(ctx context.Context, dir, beadID string) (*BeadAssignmentDetails, error) {
 	beadID = strings.TrimSpace(beadID)
 	if beadID == "" {
@@ -2653,27 +2549,6 @@ func GetBeadAssignmentDetailsContext(ctx context.Context, dir, beadID string) (*
 		return nil, fmt.Errorf("br show returned bead %q, want %q", details.ID, beadID)
 	}
 	return details, nil
-}
-
-// GetBeadDependencyStateContext returns every blocking dependency for one bead,
-// including closed and tombstoned dependencies, with caller cancellation.
-func GetBeadDependencyStateContext(ctx context.Context, dir, beadID string) ([]BeadDependencyState, error) {
-	beadID = strings.TrimSpace(beadID)
-	if beadID == "" {
-		return nil, errors.New("bead ID is required")
-	}
-	output, err := RunBdContext(ctx, dir, "show", beadID, "--json")
-	if err != nil {
-		return nil, err
-	}
-	row, err := parseBeadShowAssignmentRow(output)
-	if err != nil {
-		return nil, err
-	}
-	if row.ID != beadID {
-		return nil, fmt.Errorf("br show returned bead %q, want %q", row.ID, beadID)
-	}
-	return blockingDependencyStates(row.Dependencies)
 }
 
 // GetBeadBlockingDependentsContext returns every local work item whose
@@ -2996,14 +2871,9 @@ func GetBeadsSummaryContext(ctx context.Context, dir string, limit int) (*BeadsS
 	return result, nil
 }
 
-// GetReadyPreview returns top N ready beads sorted by priority
-func GetReadyPreview(dir string, limit int) []BeadPreview {
-	previews, _ := GetReadyPreviewContext(context.Background(), dir, limit)
-	return previews
-}
-
-// GetReadyPreviewContext returns ready beads and preserves command, parse, and
-// cancellation failures so callers can distinguish checked-empty from unknown.
+// GetReadyPreviewContext returns top N ready beads sorted by priority and
+// preserves command, parse, and cancellation failures so callers can
+// distinguish checked-empty from unknown.
 func GetReadyPreviewContext(ctx context.Context, dir string, limit int) ([]BeadPreview, error) {
 	previews := make([]BeadPreview, 0)
 	output, err := RunBdContext(ctx, dir, "ready", "--json")
@@ -3097,19 +2967,13 @@ func GetInProgressListContext(ctx context.Context, dir string, limit int) ([]Bea
 	return items, nil
 }
 
-// GetRecentlyCompletedList returns recently completed beads.
-// These are beads with status=closed, ordered by completion time descending.
+// GetRecentlyCompletedListContext returns recently completed beads (beads with
+// status=closed, ordered by completion time descending) without erasing
+// command, parse, or cancellation failures.
 //
 // Like [`GetInProgressList`] this will walk up to a parent .beads/ when the
 // directory has none of its own; callers that need a strict per-directory
 // view should pre-check [`HasLocalBeadsDB`] (#130).
-func GetRecentlyCompletedList(dir string, limit int) []BeadPreview {
-	items, _ := GetRecentlyCompletedListContext(context.Background(), dir, limit)
-	return items
-}
-
-// GetRecentlyCompletedListContext returns recently completed beads without
-// erasing command, parse, or cancellation failures.
 func GetRecentlyCompletedListContext(ctx context.Context, dir string, limit int) ([]BeadPreview, error) {
 	items := make([]BeadPreview, 0)
 
@@ -3143,18 +3007,12 @@ func GetRecentlyCompletedListContext(ctx context.Context, dir string, limit int)
 	return items, nil
 }
 
-// GetBlockedList returns blocked beads (beads that are blocked by dependencies).
+// GetBlockedListContext returns blocked beads (beads that are blocked by
+// dependencies) without erasing command, parse, or cancellation failures.
 //
 // Like [`GetInProgressList`] this will walk up to a parent .beads/ when the
 // directory has none of its own; callers that need a strict per-directory
 // view should pre-check [`HasLocalBeadsDB`] (#130).
-func GetBlockedList(dir string, limit int) []BeadPreview {
-	items, _ := GetBlockedListContext(context.Background(), dir, limit)
-	return items
-}
-
-// GetBlockedListContext returns blocked beads without erasing command, parse,
-// or cancellation failures.
 func GetBlockedListContext(ctx context.Context, dir string, limit int) ([]BeadPreview, error) {
 	items := make([]BeadPreview, 0)
 	output, err := RunBdContext(ctx, dir, "blocked", "--json")
@@ -3185,166 +3043,4 @@ func GetBlockedListContext(ctx context.Context, dir string, limit int) ([]BeadPr
 	}
 
 	return items, nil
-}
-
-// RunRaw executes bv with given args and returns the raw output.
-// This is useful for commands where the caller wants to parse or display
-// the output directly rather than using typed wrappers.
-func RunRaw(dir string, args ...string) (string, error) {
-	return run(dir, args...)
-}
-
-// GetForecast returns forecast analysis
-func GetForecast(dir, target string) (*ForecastResponse, error) {
-	args := []string{"--robot-forecast"}
-	if target != "" {
-		args = append(args, target)
-	} else {
-		args = append(args, "all")
-	}
-	output, err := run(dir, args...)
-	if err != nil {
-		return nil, err
-	}
-	var resp ForecastResponse
-	if err := json.Unmarshal([]byte(output), &resp); err != nil {
-		return nil, fmt.Errorf("parsing forecast: %w", err)
-	}
-	return &resp, nil
-}
-
-// GetSuggestions returns hygiene suggestions
-func GetSuggestions(dir string) (*SuggestionsResponse, error) {
-	output, err := run(dir, "--robot-suggest")
-	if err != nil {
-		return nil, err
-	}
-	var resp SuggestionsResponse
-	if err := json.Unmarshal([]byte(output), &resp); err != nil {
-		return nil, fmt.Errorf("parsing suggestions: %w", err)
-	}
-	return &resp, nil
-}
-
-// GetImpact returns impact analysis for a file
-func GetImpact(dir, filePath string) (*ImpactResponse, error) {
-	output, err := run(dir, "--robot-impact", filePath)
-	if err != nil {
-		return nil, err
-	}
-	var resp ImpactResponse
-	if err := json.Unmarshal([]byte(output), &resp); err != nil {
-		return nil, fmt.Errorf("parsing impact: %w", err)
-	}
-	return &resp, nil
-}
-
-// GetSearch performs semantic search
-func GetSearch(dir, query string) (*SearchResponse, error) {
-	output, err := run(dir, "--robot-search", "--search", query)
-	if err != nil {
-		return nil, err
-	}
-	var resp SearchResponse
-	if err := json.Unmarshal([]byte(output), &resp); err != nil {
-		return nil, fmt.Errorf("parsing search: %w", err)
-	}
-	return &resp, nil
-}
-
-// GetLabelAttention returns label attention ranking
-func GetLabelAttention(dir string, limit int) (*LabelAttentionResponse, error) {
-	args := []string{"--robot-label-attention"}
-	if limit > 0 {
-		args = append(args, fmt.Sprintf("--attention-limit=%d", limit))
-	}
-	output, err := run(dir, args...)
-	if err != nil {
-		return nil, err
-	}
-	var resp LabelAttentionResponse
-	if err := json.Unmarshal([]byte(output), &resp); err != nil {
-		return nil, fmt.Errorf("parsing label attention: %w", err)
-	}
-	return &resp, nil
-}
-
-// GetLabelFlow returns cross-label dependency flow
-func GetLabelFlow(dir string) (*LabelFlowResponse, error) {
-	output, err := run(dir, "--robot-label-flow")
-	if err != nil {
-		return nil, err
-	}
-	var resp LabelFlowResponse
-	if err := json.Unmarshal([]byte(output), &resp); err != nil {
-		return nil, fmt.Errorf("parsing label flow: %w", err)
-	}
-	return &resp, nil
-}
-
-// GetLabelHealth returns per-label health metrics
-func GetLabelHealth(dir string) (*LabelHealthResponse, error) {
-	output, err := run(dir, "--robot-label-health")
-	if err != nil {
-		return nil, err
-	}
-	var resp LabelHealthResponse
-	if err := json.Unmarshal([]byte(output), &resp); err != nil {
-		return nil, fmt.Errorf("parsing label health: %w", err)
-	}
-	return &resp, nil
-}
-
-// GetFileBeads returns file-to-bead mapping
-func GetFileBeads(dir, filePath string, limit int) (*FileBeadsResponse, error) {
-	args := []string{"--robot-file-beads", filePath}
-	if limit > 0 {
-		args = append(args, fmt.Sprintf("--file-beads-limit=%d", limit))
-	}
-	output, err := run(dir, args...)
-	if err != nil {
-		return nil, err
-	}
-	var resp FileBeadsResponse
-	if err := json.Unmarshal([]byte(output), &resp); err != nil {
-		return nil, fmt.Errorf("parsing file beads: %w", err)
-	}
-	return &resp, nil
-}
-
-// GetFileHotspots returns frequently changed files
-func GetFileHotspots(dir string, limit int) (*FileHotspotsResponse, error) {
-	args := []string{"--robot-file-hotspots"}
-	if limit > 0 {
-		args = append(args, fmt.Sprintf("--hotspots-limit=%d", limit))
-	}
-	output, err := run(dir, args...)
-	if err != nil {
-		return nil, err
-	}
-	var resp FileHotspotsResponse
-	if err := json.Unmarshal([]byte(output), &resp); err != nil {
-		return nil, fmt.Errorf("parsing file hotspots: %w", err)
-	}
-	return &resp, nil
-}
-
-// GetFileRelations returns file co-change relationships
-func GetFileRelations(dir, filePath string, limit int, threshold float64) (*FileRelationsResponse, error) {
-	args := []string{"--robot-file-relations", filePath}
-	if limit > 0 {
-		args = append(args, fmt.Sprintf("--relations-limit=%d", limit))
-	}
-	if threshold > 0 {
-		args = append(args, fmt.Sprintf("--relations-threshold=%f", threshold))
-	}
-	output, err := run(dir, args...)
-	if err != nil {
-		return nil, err
-	}
-	var resp FileRelationsResponse
-	if err := json.Unmarshal([]byte(output), &resp); err != nil {
-		return nil, fmt.Errorf("parsing file relations: %w", err)
-	}
-	return &resp, nil
 }

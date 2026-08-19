@@ -42,11 +42,6 @@ func NewValidationReport() *ValidationReport {
 	}
 }
 
-// HasErrors returns true if the report contains any errors.
-func (r *ValidationReport) HasErrors() bool {
-	return r != nil && len(r.Errors) > 0
-}
-
 // Error returns a summary error if any errors are present.
 func (r *ValidationReport) Error() error {
 	if r == nil || len(r.Errors) == 0 {

@@ -85,14 +85,6 @@ func TestPadRight_ZeroWidth(t *testing.T) {
 // Styled text helpers (SectionHeader, SectionDivider, etc.)
 // =============================================================================
 
-func TestErrorMessage_ContainsIcon(t *testing.T) {
-	got := ErrorMessage("failed")
-	plain := stripANSI(got)
-	if !strings.Contains(plain, "✗") {
-		t.Errorf("ErrorMessage() = %q, should contain ✗", plain)
-	}
-}
-
 func TestInfoMessage_ContainsIcon(t *testing.T) {
 	got := InfoMessage("note")
 	plain := stripANSI(got)

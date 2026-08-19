@@ -87,8 +87,7 @@ func runCorpusScenario(t *testing.T, scenario corpusScenario) {
 	snapshot := inputs.snapshot
 	ranking := RankCandidates(snapshot, scenario.rank)
 	plan := RenderRoadmap(ranking, scenario.render)
-	guard := AssessNoveltyGuard(snapshot, ranking, scenario.guard)
-	refinement := BuildRefinementReport(snapshot, ranking, plan, guard, scenario.refinement)
+	_ = AssessNoveltyGuard(snapshot, ranking, scenario.guard)
 
 	t.Logf("scenario_id=%s candidate_count=%d suppressed_duplicate_count=%d rendered_bead_count=%d",
 		scenario.id,
@@ -104,7 +103,6 @@ func runCorpusScenario(t *testing.T, scenario corpusScenario) {
 		{name: "evidence.json", value: snapshot},
 		{name: "ranked.json", value: ranking},
 		{name: "roadmap.json", value: plan},
-		{name: "refinement.json", value: refinement},
 	}
 	for _, artifact := range artifacts {
 		actual := mustMarshalGolden(t, artifact.value)

@@ -303,25 +303,6 @@ func TestLoadModeCatalog(t *testing.T) {
 	logCatalogStats(t, catalog)
 }
 
-func TestGlobalCatalog(t *testing.T) {
-	ResetGlobalCatalog()
-	defer ResetGlobalCatalog()
-
-	catalog1, err := GlobalCatalog()
-	if err != nil {
-		t.Fatalf("GlobalCatalog() error: %v", err)
-	}
-
-	catalog2, err := GlobalCatalog()
-	if err != nil {
-		t.Fatalf("second GlobalCatalog() error: %v", err)
-	}
-
-	if catalog1 != catalog2 {
-		t.Error("GlobalCatalog() should return the same instance")
-	}
-}
-
 func TestNewModeLoader(t *testing.T) {
 	loader := NewModeLoader()
 	if loader.UserConfigDir == "" {
@@ -513,42 +494,6 @@ func TestModeCatalog_MissingFiles(t *testing.T) {
 		t.Errorf("catalog count = %d, want 80", catalog.Count())
 	}
 	logCatalogStats(t, catalog)
-}
-
-func TestModeCatalog_ThreadSafety(t *testing.T) {
-	ResetGlobalCatalog()
-	defer ResetGlobalCatalog()
-
-	const workers = 10
-	results := make(chan *ModeCatalog, workers)
-	errs := make(chan error, workers)
-
-	for i := 0; i < workers; i++ {
-		go func() {
-			catalog, err := GlobalCatalog()
-			results <- catalog
-			errs <- err
-		}()
-	}
-
-	var first *ModeCatalog
-	for i := 0; i < workers; i++ {
-		if err := <-errs; err != nil {
-			t.Fatalf("GlobalCatalog() error: %v", err)
-		}
-		catalog := <-results
-		if catalog == nil {
-			t.Fatal("GlobalCatalog() returned nil")
-		}
-		if first == nil {
-			first = catalog
-			continue
-		}
-		if catalog != first {
-			t.Error("GlobalCatalog() returned different instances across goroutines")
-		}
-	}
-	logCatalogStats(t, first)
 }
 
 func logCatalogStats(t *testing.T, catalog *ModeCatalog) {

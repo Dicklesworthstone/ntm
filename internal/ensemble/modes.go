@@ -1101,8 +1101,3 @@ var EmbeddedModes = []ReasoningMode{
 
 // CatalogVersion is the version string for the embedded mode catalog.
 const CatalogVersion = "1.0.0"
-
-// DefaultCatalog returns the embedded mode catalog initialized and validated.
-func DefaultCatalog() (*ModeCatalog, error) {
-	return NewModeCatalog(EmbeddedModes, CatalogVersion)
-}

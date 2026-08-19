@@ -66,7 +66,6 @@ package robot
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -441,17 +440,6 @@ func (d *ErrorDetails) SetExtra(key string, value interface{}) *ErrorDetails {
 	return d
 }
 
-// NewStructuredErrorResponse creates a RobotResponse with a structured error.
-func NewStructuredErrorResponse(structErr *StructuredError) RobotResponse {
-	resp := NewRobotResponse(false)
-	resp.StructuredError = structErr
-	// Also set the simple fields for backward compatibility
-	resp.Error = structErr.Message
-	resp.ErrorCode = structErr.Code
-	resp.Hint = structErr.RecoveryHint
-	return resp
-}
-
 // AgentHints provides optional guidance for AI agents consuming robot output.
 // This is included in complex responses (status, snapshot, dashboard) to help
 // agents make decisions without needing to implement complex logic themselves.
@@ -564,30 +552,6 @@ var (
 	terseKeyReverseMap     map[string]string
 	terseKeyReverseMapOnce sync.Once
 )
-
-// TerseKeyReverseMap returns the reverse mapping for short keys.
-// It panics if the mapping is not reversible (duplicate short keys).
-func TerseKeyReverseMap() map[string]string {
-	terseKeyReverseMapOnce.Do(func() {
-		reverse := make(map[string]string, len(TerseKeyMap))
-		for longKey, shortKey := range TerseKeyMap {
-			if existing, ok := reverse[shortKey]; ok {
-				panic(fmt.Sprintf("terse key map collision: %q and %q both map to %q", existing, longKey, shortKey))
-			}
-			reverse[shortKey] = longKey
-		}
-		terseKeyReverseMap = reverse
-	})
-	return terseKeyReverseMap
-}
-
-// ExpandTerseKey converts a short key back to its long form.
-// If the short key is unknown, ok is false and long is empty.
-func ExpandTerseKey(short string) (long string, ok bool) {
-	reverse := TerseKeyReverseMap()
-	long, ok = reverse[short]
-	return long, ok
-}
 
 // NewRobotResponse creates a new RobotResponse with current timestamp and envelope fields.
 func NewRobotResponse(success bool) RobotResponse {
@@ -824,69 +788,11 @@ func RobotError(err error, code, hint string) error {
 	return EncodeErrorJSON(err, code, hint, "robot")
 }
 
-// PrintRobotError outputs a standardized error response and returns the typed
-// process result consumed by the CLI entry point. It never terminates the
-// process, so deferred audit and cleanup work still runs.
-//
-// Example usage:
-//
-//	if !tmux.SessionExists(session) {
-//	    return PrintRobotError(
-//	        fmt.Errorf("session '%s' not found", session),
-//	        ErrCodeSessionNotFound,
-//	        "Use 'ntm list' to see available sessions",
-//	    )
-//	}
-func PrintRobotError(err error, code, hint string) error {
-	return EncodeErrorJSON(err, code, hint, "robot")
-}
-
 // NotImplementedResponse is the structured output for unavailable features.
 type NotImplementedResponse struct {
 	RobotResponse
 	Feature        string `json:"feature"`                   // The unavailable feature name
 	PlannedVersion string `json:"planned_version,omitempty"` // Version where feature is planned
-}
-
-// PrintRobotUnavailable outputs a response for unavailable or unimplemented
-// features and returns a typed exit-2 result. It never terminates the process.
-//
-// Exit code 2 signals "unavailable" to agents, distinct from error (1) or success (0).
-//
-// Example usage:
-//
-//	return robot.PrintRobotUnavailable(
-//	    "robot-assign",
-//	    "Work assignment is planned for a future release",
-//	    "v1.3",
-//	    "Use manual work distribution in the meantime",
-//	)
-func PrintRobotUnavailable(feature, message, plannedVersion, hint string) error {
-	resp := NotImplementedResponse{
-		RobotResponse: RobotResponse{
-			Success:      false,
-			Timestamp:    time.Now().UTC().Format(time.RFC3339),
-			Error:        message,
-			ErrorCode:    ErrCodeNotImplemented,
-			Hint:         hint,
-			OutputFormat: string(FormatJSON),
-			Meta:         NewResponseMeta(feature).WithExitCode(2),
-		},
-		Feature:        feature,
-		PlannedVersion: plannedVersion,
-	}
-	if err := json.NewEncoder(os.Stdout).Encode(resp); err != nil {
-		return &ProcessExitError{
-			code:        1,
-			cause:       fmt.Errorf("encode robot unavailable response: %w", err),
-			jsonWritten: false,
-		}
-	}
-	cause := errors.New(message)
-	if message == "" {
-		cause = errors.New("robot feature unavailable")
-	}
-	return ExitResultForCode(2, cause, true)
 }
 
 // ErrorResponse is a complete error output structure that can be embedded
@@ -917,39 +823,6 @@ type WithAgentHints struct {
 	AgentHints *AgentHints `json:"_agent_hints,omitempty"`
 }
 
-// MarshalJSON implements custom JSON marshaling to flatten the Data field.
-func (w WithAgentHints) MarshalJSON() ([]byte, error) {
-	// First marshal the data
-	dataBytes, err := json.Marshal(w.Data)
-	if err != nil {
-		return nil, err
-	}
-
-	// If no hints, just return the data
-	if w.AgentHints == nil {
-		return dataBytes, nil
-	}
-
-	// Parse data as a map
-	var dataMap map[string]interface{}
-	if err := json.Unmarshal(dataBytes, &dataMap); err != nil {
-		return nil, fmt.Errorf("data must be a JSON object: %w", err)
-	}
-
-	// Add agent hints
-	dataMap["_agent_hints"] = w.AgentHints
-
-	return json.Marshal(dataMap)
-}
-
-// AddAgentHints wraps a response with agent hints.
-func AddAgentHints(data interface{}, hints *AgentHints) WithAgentHints {
-	return WithAgentHints{
-		Data:       data,
-		AgentHints: hints,
-	}
-}
-
 // =============================================================================
 // Timestamp Helpers - RFC3339 Standardization
 // =============================================================================
@@ -968,21 +841,4 @@ func FormatTimestampPtr(t *time.Time) string {
 		return ""
 	}
 	return FormatTimestamp(*t)
-}
-
-// FormatUnixMillis converts Unix milliseconds to RFC3339 string.
-// Use this when converting from external APIs that return Unix timestamps.
-func FormatUnixMillis(ms int64) string {
-	if ms == 0 {
-		return ""
-	}
-	return FormatTimestamp(time.UnixMilli(ms))
-}
-
-// FormatUnixSeconds converts Unix seconds to RFC3339 string.
-func FormatUnixSeconds(sec int64) string {
-	if sec == 0 {
-		return ""
-	}
-	return FormatTimestamp(time.Unix(sec, 0))
 }

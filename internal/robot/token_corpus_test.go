@@ -36,7 +36,7 @@ import (
 const (
 	tokenCorpusDir        = "testdata/token_corpus"
 	fixedCorpusTimestamp  = "2026-08-16T12:00:00Z"
-	tokenCorpusMinFiles   = 50
+	tokenCorpusMinFiles   = 46
 	tokenCorpusMinSurface = 8
 )
 
@@ -401,14 +401,7 @@ func buildTokenCorpus(t *testing.T) []corpusEnvelope {
 		corpus = append(corpus, corpusEnvelope{Surface: "capabilities", Name: cv.name, Payload: out})
 	}
 
-	// 3. terse projection — real GetTerseProjection over snapshot fixtures.
-	for _, v := range []int{0, 3, 6, 9} {
-		proj := GetTerseProjection(buildCorpusSnapshot(v))
-		proj.Timestamp = fixedCorpusTimestamp
-		corpus = append(corpus, corpusEnvelope{Surface: "terse_projection", Name: fmt.Sprintf("scale%d", v), Payload: proj})
-	}
-
-	// 4. dashboard section projection — shared benchmark fixture builder.
+	// 3. dashboard section projection — shared benchmark fixture builder.
 	dashScales := []struct {
 		name                     string
 		sessions, agents, events int

@@ -897,10 +897,6 @@ func inspectProjectionInfoWithReasons(collectedAt, staleAfter time.Time, reasons
 	}
 }
 
-func inspectProjectionInfo(collectedAt, staleAfter time.Time) InspectProjectionInfo {
-	return inspectProjectionInfoWithReasons(collectedAt, staleAfter)
-}
-
 func inspectDiagnosticEntry(code, severity, summary, source string, evidence ...string) InspectDiagnosticEntry {
 	return InspectDiagnosticEntry{
 		Code:     strings.TrimSpace(code),

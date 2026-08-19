@@ -2,7 +2,6 @@ package ensemble
 
 import (
 	"encoding/json"
-	"strings"
 	"testing"
 )
 
@@ -21,28 +20,6 @@ func TestNewContributionTracker(t *testing.T) {
 	}
 
 	t.Logf("TEST: %s - assertion: tracker created with defaults", t.Name())
-}
-
-func TestNewContributionTrackerWithConfig(t *testing.T) {
-	cfg := ContributionConfig{
-		FindingsWeight:        0.1,
-		UniqueWeight:          0.2,
-		CitationWeight:        0.3,
-		RisksWeight:           0.2,
-		RecommendationsWeight: 0.2,
-		MaxHighlights:         7,
-	}
-
-	tracker := NewContributionTrackerWithConfig(cfg)
-	if tracker == nil {
-		t.Fatal("NewContributionTrackerWithConfig returned nil")
-	}
-	if tracker.modeScores == nil {
-		t.Fatal("modeScores should be initialized")
-	}
-	if tracker.Config != cfg {
-		t.Fatalf("Config = %#v, want %#v", tracker.Config, cfg)
-	}
 }
 
 func TestContributionTracker_RecordOriginalFinding(t *testing.T) {
@@ -119,6 +96,114 @@ func TestContributionTracker_RecordCitation(t *testing.T) {
 	}
 
 	t.Logf("TEST: %s - assertion: citations recorded correctly", t.Name())
+}
+
+func TestTrackContributionsFromMerge(t *testing.T) {
+	t.Logf("TEST: %s - starting", t.Name())
+
+	tracker := NewContributionTracker()
+
+	merged := &MergedOutput{
+		Findings: []MergedFinding{
+			{
+				Finding:     Finding{Finding: "Shared finding", Impact: ImpactHigh, Confidence: 0.9},
+				SourceModes: []string{"mode-a", "mode-b"},
+			},
+			{
+				Finding:     Finding{Finding: "Unique to mode-a", Impact: ImpactMedium, Confidence: 0.8},
+				SourceModes: []string{"mode-a"},
+			},
+		},
+		Risks: []MergedRisk{
+			{
+				Risk:        Risk{Risk: "Risk 1", Impact: ImpactHigh, Likelihood: 0.7},
+				SourceModes: []string{"mode-a"},
+			},
+		},
+		Recommendations: []MergedRecommendation{
+			{
+				Recommendation: Recommendation{Recommendation: "Rec 1", Priority: ImpactHigh},
+				SourceModes:    []string{"mode-b"},
+			},
+		},
+	}
+
+	TrackContributionsFromMerge(tracker, merged)
+
+	t.Logf("TEST: %s - tracked contributions from merge", t.Name())
+
+	// mode-a: 2 surviving (shared + unique), 1 unique, 1 risk
+	if tracker.modeScores["mode-a"].FindingsCount != 2 {
+		t.Errorf("mode-a FindingsCount = %d, want 2", tracker.modeScores["mode-a"].FindingsCount)
+	}
+	if tracker.modeScores["mode-a"].UniqueInsights != 1 {
+		t.Errorf("mode-a UniqueInsights = %d, want 1", tracker.modeScores["mode-a"].UniqueInsights)
+	}
+	if tracker.modeScores["mode-a"].RisksCount != 1 {
+		t.Errorf("mode-a RisksCount = %d, want 1", tracker.modeScores["mode-a"].RisksCount)
+	}
+
+	// mode-b: 1 surviving (shared), 0 unique, 1 rec
+	if tracker.modeScores["mode-b"].FindingsCount != 1 {
+		t.Errorf("mode-b FindingsCount = %d, want 1", tracker.modeScores["mode-b"].FindingsCount)
+	}
+	if tracker.modeScores["mode-b"].UniqueInsights != 0 {
+		t.Errorf("mode-b UniqueInsights = %d, want 0", tracker.modeScores["mode-b"].UniqueInsights)
+	}
+	if tracker.modeScores["mode-b"].RecommendationsCount != 1 {
+		t.Errorf("mode-b RecommendationsCount = %d, want 1", tracker.modeScores["mode-b"].RecommendationsCount)
+	}
+
+	t.Logf("TEST: %s - assertion: merge contributions tracked correctly", t.Name())
+}
+
+func TestTrackOriginalFindings(t *testing.T) {
+	t.Logf("TEST: %s - starting", t.Name())
+
+	tracker := NewContributionTracker()
+
+	outputs := []ModeOutput{
+		{
+			ModeID:      "mode-a",
+			Thesis:      "A",
+			Confidence:  0.9,
+			TopFindings: []Finding{{Finding: "F1"}, {Finding: "F2"}},
+		},
+		{
+			ModeID:      "mode-b",
+			Thesis:      "B",
+			Confidence:  0.8,
+			TopFindings: []Finding{{Finding: "F1"}},
+		},
+	}
+
+	TrackOriginalFindings(tracker, outputs)
+
+	t.Logf("TEST: %s - tracked original findings", t.Name())
+
+	if tracker.modeScores["mode-a"].OriginalFindings != 2 {
+		t.Errorf("mode-a OriginalFindings = %d, want 2", tracker.modeScores["mode-a"].OriginalFindings)
+	}
+	if tracker.modeScores["mode-b"].OriginalFindings != 1 {
+		t.Errorf("mode-b OriginalFindings = %d, want 1", tracker.modeScores["mode-b"].OriginalFindings)
+	}
+
+	t.Logf("TEST: %s - assertion: original findings tracked from outputs", t.Name())
+}
+
+func TestDefaultContributionConfig_WeightsSumToOne(t *testing.T) {
+	t.Logf("TEST: %s - starting", t.Name())
+
+	cfg := DefaultContributionConfig()
+	total := cfg.FindingsWeight + cfg.UniqueWeight + cfg.CitationWeight + cfg.RisksWeight + cfg.RecommendationsWeight
+
+	t.Logf("TEST: %s - total weight = %.2f", t.Name(), total)
+
+	if total < 0.99 || total > 1.01 {
+		t.Errorf("Weights should sum to 1.0, got %.2f", total)
+	}
+
+	t.Logf("TEST: %s - assertion: weights sum to 1.0", t.Name())
 }
 
 func TestContributionTracker_GenerateReport_Empty(t *testing.T) {
@@ -251,48 +336,6 @@ func TestContributionTracker_NilSafe(t *testing.T) {
 	t.Logf("TEST: %s - assertion: nil receiver is safe", t.Name())
 }
 
-func TestFormatReport(t *testing.T) {
-	t.Logf("TEST: %s - starting", t.Name())
-
-	tracker := NewContributionTracker()
-	tracker.RecordOriginalFinding("mode-a")
-	tracker.RecordSurvivingFinding("mode-a", "Finding text")
-	tracker.RecordUniqueFinding("mode-a", "Unique insight")
-	tracker.RecordCitation("mode-a")
-	tracker.SetModeName("mode-a", "Deductive")
-
-	report := tracker.GenerateReport()
-	output := FormatReport(report)
-
-	t.Logf("TEST: %s - formatted output:\n%s", t.Name(), output)
-
-	if !strings.Contains(output, "Mode Contribution Report") {
-		t.Error("Output should contain title")
-	}
-	if !strings.Contains(output, "Deductive") {
-		t.Error("Output should contain mode name")
-	}
-	if !strings.Contains(output, "Unique insight") {
-		t.Error("Output should contain highlight")
-	}
-
-	t.Logf("TEST: %s - assertion: formatting produces readable output", t.Name())
-}
-
-func TestFormatReport_Nil(t *testing.T) {
-	t.Logf("TEST: %s - starting", t.Name())
-
-	output := FormatReport(nil)
-
-	t.Logf("TEST: %s - nil output: %s", t.Name(), output)
-
-	if output != "No contribution data available" {
-		t.Errorf("FormatReport(nil) = %q, want 'No contribution data available'", output)
-	}
-
-	t.Logf("TEST: %s - assertion: nil handling works", t.Name())
-}
-
 func TestContributionReport_JSON(t *testing.T) {
 	t.Logf("TEST: %s - starting", t.Name())
 
@@ -315,112 +358,4 @@ func TestContributionReport_JSON(t *testing.T) {
 	}
 
 	t.Logf("TEST: %s - assertion: JSON round-trips correctly", t.Name())
-}
-
-func TestTrackContributionsFromMerge(t *testing.T) {
-	t.Logf("TEST: %s - starting", t.Name())
-
-	tracker := NewContributionTracker()
-
-	merged := &MergedOutput{
-		Findings: []MergedFinding{
-			{
-				Finding:     Finding{Finding: "Shared finding", Impact: ImpactHigh, Confidence: 0.9},
-				SourceModes: []string{"mode-a", "mode-b"},
-			},
-			{
-				Finding:     Finding{Finding: "Unique to mode-a", Impact: ImpactMedium, Confidence: 0.8},
-				SourceModes: []string{"mode-a"},
-			},
-		},
-		Risks: []MergedRisk{
-			{
-				Risk:        Risk{Risk: "Risk 1", Impact: ImpactHigh, Likelihood: 0.7},
-				SourceModes: []string{"mode-a"},
-			},
-		},
-		Recommendations: []MergedRecommendation{
-			{
-				Recommendation: Recommendation{Recommendation: "Rec 1", Priority: ImpactHigh},
-				SourceModes:    []string{"mode-b"},
-			},
-		},
-	}
-
-	TrackContributionsFromMerge(tracker, merged)
-
-	t.Logf("TEST: %s - tracked contributions from merge", t.Name())
-
-	// mode-a: 2 surviving (shared + unique), 1 unique, 1 risk
-	if tracker.modeScores["mode-a"].FindingsCount != 2 {
-		t.Errorf("mode-a FindingsCount = %d, want 2", tracker.modeScores["mode-a"].FindingsCount)
-	}
-	if tracker.modeScores["mode-a"].UniqueInsights != 1 {
-		t.Errorf("mode-a UniqueInsights = %d, want 1", tracker.modeScores["mode-a"].UniqueInsights)
-	}
-	if tracker.modeScores["mode-a"].RisksCount != 1 {
-		t.Errorf("mode-a RisksCount = %d, want 1", tracker.modeScores["mode-a"].RisksCount)
-	}
-
-	// mode-b: 1 surviving (shared), 0 unique, 1 rec
-	if tracker.modeScores["mode-b"].FindingsCount != 1 {
-		t.Errorf("mode-b FindingsCount = %d, want 1", tracker.modeScores["mode-b"].FindingsCount)
-	}
-	if tracker.modeScores["mode-b"].UniqueInsights != 0 {
-		t.Errorf("mode-b UniqueInsights = %d, want 0", tracker.modeScores["mode-b"].UniqueInsights)
-	}
-	if tracker.modeScores["mode-b"].RecommendationsCount != 1 {
-		t.Errorf("mode-b RecommendationsCount = %d, want 1", tracker.modeScores["mode-b"].RecommendationsCount)
-	}
-
-	t.Logf("TEST: %s - assertion: merge contributions tracked correctly", t.Name())
-}
-
-func TestTrackOriginalFindings(t *testing.T) {
-	t.Logf("TEST: %s - starting", t.Name())
-
-	tracker := NewContributionTracker()
-
-	outputs := []ModeOutput{
-		{
-			ModeID:      "mode-a",
-			Thesis:      "A",
-			Confidence:  0.9,
-			TopFindings: []Finding{{Finding: "F1"}, {Finding: "F2"}},
-		},
-		{
-			ModeID:      "mode-b",
-			Thesis:      "B",
-			Confidence:  0.8,
-			TopFindings: []Finding{{Finding: "F1"}},
-		},
-	}
-
-	TrackOriginalFindings(tracker, outputs)
-
-	t.Logf("TEST: %s - tracked original findings", t.Name())
-
-	if tracker.modeScores["mode-a"].OriginalFindings != 2 {
-		t.Errorf("mode-a OriginalFindings = %d, want 2", tracker.modeScores["mode-a"].OriginalFindings)
-	}
-	if tracker.modeScores["mode-b"].OriginalFindings != 1 {
-		t.Errorf("mode-b OriginalFindings = %d, want 1", tracker.modeScores["mode-b"].OriginalFindings)
-	}
-
-	t.Logf("TEST: %s - assertion: original findings tracked from outputs", t.Name())
-}
-
-func TestDefaultContributionConfig_WeightsSumToOne(t *testing.T) {
-	t.Logf("TEST: %s - starting", t.Name())
-
-	cfg := DefaultContributionConfig()
-	total := cfg.FindingsWeight + cfg.UniqueWeight + cfg.CitationWeight + cfg.RisksWeight + cfg.RecommendationsWeight
-
-	t.Logf("TEST: %s - total weight = %.2f", t.Name(), total)
-
-	if total < 0.99 || total > 1.01 {
-		t.Errorf("Weights should sum to 1.0, got %.2f", total)
-	}
-
-	t.Logf("TEST: %s - assertion: weights sum to 1.0", t.Name())
 }

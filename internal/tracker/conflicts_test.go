@@ -289,13 +289,13 @@ func TestDetectConflictsRecent(t *testing.T) {
 	now := time.Now()
 
 	// Record changes from two agents within the last 5 minutes
-	store.Add(RecordedFileChange{
+	populateStore(store, RecordedFileChange{
 		Timestamp: now.Add(-3 * time.Minute),
 		Session:   "s1",
 		Agents:    []string{"a1"},
 		Change:    FileChange{Path: "/src/main.go", Type: FileModified},
 	})
-	store.Add(RecordedFileChange{
+	populateStore(store, RecordedFileChange{
 		Timestamp: now.Add(-2 * time.Minute),
 		Session:   "s1",
 		Agents:    []string{"a2"},
@@ -321,7 +321,7 @@ func TestDetectConflictsRecent_NoConflicts(t *testing.T) {
 	now := time.Now()
 
 	// Single agent - no conflict
-	store.Add(RecordedFileChange{
+	populateStore(store, RecordedFileChange{
 		Timestamp: now.Add(-1 * time.Minute),
 		Session:   "s1",
 		Agents:    []string{"a1"},
@@ -342,19 +342,19 @@ func TestConflictsSince(t *testing.T) {
 
 	now := time.Now()
 
-	store.Add(RecordedFileChange{
+	populateStore(store, RecordedFileChange{
 		Timestamp: now.Add(-5 * time.Minute),
 		Session:   "s1",
 		Agents:    []string{"a1"},
 		Change:    FileChange{Path: "/src/api.go", Type: FileModified},
 	})
-	store.Add(RecordedFileChange{
+	populateStore(store, RecordedFileChange{
 		Timestamp: now.Add(-3 * time.Minute),
 		Session:   "s1",
 		Agents:    []string{"a2"},
 		Change:    FileChange{Path: "/src/api.go", Type: FileModified},
 	})
-	store.Add(RecordedFileChange{
+	populateStore(store, RecordedFileChange{
 		Timestamp: now.Add(-2 * time.Minute),
 		Session:   "s2",
 		Agents:    []string{"a3"},
@@ -379,13 +379,13 @@ func TestConflictsSince_EmptySession(t *testing.T) {
 
 	now := time.Now()
 
-	store.Add(RecordedFileChange{
+	populateStore(store, RecordedFileChange{
 		Timestamp: now.Add(-3 * time.Minute),
 		Session:   "s1",
 		Agents:    []string{"a1"},
 		Change:    FileChange{Path: "/src/api.go", Type: FileModified},
 	})
-	store.Add(RecordedFileChange{
+	populateStore(store, RecordedFileChange{
 		Timestamp: now.Add(-2 * time.Minute),
 		Session:   "s2",
 		Agents:    []string{"a2"},
@@ -414,13 +414,13 @@ func TestRecordedChangesSince(t *testing.T) {
 
 	now := time.Now()
 
-	store.Add(RecordedFileChange{
+	populateStore(store, RecordedFileChange{
 		Timestamp: now.Add(-10 * time.Minute),
 		Session:   "s1",
 		Agents:    []string{"a1"},
 		Change:    FileChange{Path: "/old.go", Type: FileModified},
 	})
-	store.Add(RecordedFileChange{
+	populateStore(store, RecordedFileChange{
 		Timestamp: now.Add(-1 * time.Minute),
 		Session:   "s1",
 		Agents:    []string{"a2"},
@@ -444,13 +444,13 @@ func TestRecordedChanges(t *testing.T) {
 
 	now := time.Now()
 
-	store.Add(RecordedFileChange{
+	populateStore(store, RecordedFileChange{
 		Timestamp: now.Add(-5 * time.Minute),
 		Session:   "s1",
 		Agents:    []string{"a1"},
 		Change:    FileChange{Path: "/file1.go", Type: FileModified},
 	})
-	store.Add(RecordedFileChange{
+	populateStore(store, RecordedFileChange{
 		Timestamp: now.Add(-1 * time.Minute),
 		Session:   "s1",
 		Agents:    []string{"a2"},

@@ -174,33 +174,6 @@ func getTriageContext(ctx context.Context, dir string, timeout time.Duration) (*
 	return &resp, nil
 }
 
-// GetTriageNoCache returns fresh triage data, bypassing the cache
-func GetTriageNoCache(dir string) (*TriageResponse, error) {
-	normalizedDir, err := normalizeTriageDir(dir)
-	if err != nil {
-		return nil, err
-	}
-
-	output, err := run(normalizedDir, "--robot-triage")
-	if err != nil {
-		return nil, err
-	}
-
-	var resp TriageResponse
-	if err := json.Unmarshal([]byte(output), &resp); err != nil {
-		return nil, fmt.Errorf("parsing triage: %w", err)
-	}
-
-	// Also update cache with fresh data
-	triageCacheMu.Lock()
-	triageCache = &resp
-	triageCacheDir = normalizedDir
-	triageCacheTime = time.Now()
-	triageCacheMu.Unlock()
-
-	return &resp, nil
-}
-
 // InvalidateTriageCache clears the triage cache.
 // Call this when beads data changes (e.g., after br sync --flush-only).
 func InvalidateTriageCache() {
@@ -208,13 +181,6 @@ func InvalidateTriageCache() {
 	triageCache = nil
 	triageCacheDir = ""
 	triageCacheTTL = TriageCacheTTL // Reset to default
-	triageCacheMu.Unlock()
-}
-
-// SetTriageCacheTTL allows configuring the cache TTL
-func SetTriageCacheTTL(ttl time.Duration) {
-	triageCacheMu.Lock()
-	triageCacheTTL = ttl
 	triageCacheMu.Unlock()
 }
 
@@ -227,28 +193,11 @@ func GetTriageQuickRef(dir string) (*TriageQuickRef, error) {
 	return &triage.Triage.QuickRef, nil
 }
 
-// GetTriageTopPicks returns the top N picks from triage
-func GetTriageTopPicks(dir string, n int) ([]TriageTopPick, error) {
-	if n < 0 {
-		return nil, fmt.Errorf("triage top-picks limit must not be negative: %d", n)
-	}
-	triage, err := GetTriage(dir)
-	if err != nil {
-		return nil, err
-	}
-
-	picks := triage.Triage.QuickRef.TopPicks
-	if len(picks) > n {
-		picks = picks[:n]
-	}
-	return picks, nil
-}
-
-// GetActionableRecommendations returns recommendations sourced from the FULL
+// GetActionableRecommendationsContext returns recommendations sourced from the FULL
 // dependency-aware actionable set (bv --robot-plan), ranked by triage scoring.
 //
 // bv --robot-triage is hardcoded to ≤10 recommendations (see beads_viewer
-// triage.TopN), so GetTriageRecommendations can never surface more than 10
+// triage.TopN), so triage-derived recommendations can never surface more than 10
 // candidates no matter what n is requested. On large or heavily-gated backlogs
 // whose top-ranked rows are epics/gated/blocked, that ceiling silently starves
 // the assigner: it reports the queue drained while dozens of beads below the
@@ -268,12 +217,8 @@ func GetTriageTopPicks(dir string, n int) ([]TriageTopPick, error) {
 // unavailable, malformed, structurally incomplete, or contains an assignable
 // item whose labels cannot be verified, the call fails closed rather than
 // authorizing raw triage candidates.
-func GetActionableRecommendations(dir string, n int) ([]TriageRecommendation, error) {
-	return GetActionableRecommendationsContext(context.Background(), dir, n)
-}
-
-// GetActionableRecommendationsContext returns the full actionable set while
-// honoring caller cancellation across triage, plan, and label enrichment.
+//
+// It honors caller cancellation across triage, plan, and label enrichment.
 func GetActionableRecommendationsContext(ctx context.Context, dir string, n int) ([]TriageRecommendation, error) {
 	if ctx == nil {
 		return nil, fmt.Errorf("actionable recommendations context is required")
@@ -482,57 +427,6 @@ func readyBeadLabelsContext(ctx context.Context, dir string) (map[string][]strin
 	return labels, issueTypes, nil
 }
 
-// GetTriageRecommendations returns the top N recommendations
-func GetTriageRecommendations(dir string, n int) ([]TriageRecommendation, error) {
-	if n < 0 {
-		return nil, fmt.Errorf("triage recommendations limit must not be negative: %d", n)
-	}
-	triage, err := GetTriage(dir)
-	if err != nil {
-		return nil, err
-	}
-
-	recs := triage.Triage.Recommendations
-	if len(recs) > n {
-		recs = recs[:n]
-	}
-	return recs, nil
-}
-
-// GetQuickWins returns quick win recommendations (low effort, high impact)
-func GetQuickWins(dir string, n int) ([]TriageRecommendation, error) {
-	if n < 0 {
-		return nil, fmt.Errorf("quick-wins limit must not be negative: %d", n)
-	}
-	triage, err := GetTriage(dir)
-	if err != nil {
-		return nil, err
-	}
-
-	wins := triage.Triage.QuickWins
-	if len(wins) > n {
-		wins = wins[:n]
-	}
-	return wins, nil
-}
-
-// GetBlockersToClear returns blockers that should be cleared first
-func GetBlockersToClear(dir string, n int) ([]BlockerToClear, error) {
-	if n < 0 {
-		return nil, fmt.Errorf("blockers-to-clear limit must not be negative: %d", n)
-	}
-	triage, err := GetTriage(dir)
-	if err != nil {
-		return nil, err
-	}
-
-	blockers := triage.Triage.BlockersToClear
-	if len(blockers) > n {
-		blockers = blockers[:n]
-	}
-	return blockers, nil
-}
-
 // GetNextRecommendation returns the single top recommendation.
 // This is equivalent to bv -robot-next but uses cached triage data.
 func GetNextRecommendation(dir string) (*TriageRecommendation, error) {
@@ -546,25 +440,6 @@ func GetNextRecommendation(dir string) (*TriageRecommendation, error) {
 	}
 
 	return &triage.Triage.Recommendations[0], nil
-}
-
-// GetProjectHealth returns the project health metrics from triage
-func GetProjectHealth(dir string) (*ProjectHealth, error) {
-	triage, err := GetTriage(dir)
-	if err != nil {
-		return nil, err
-	}
-
-	return triage.Triage.ProjectHealth, nil
-}
-
-// GetTriageDataHash returns the data hash for cache validation
-func GetTriageDataHash(dir string) (string, error) {
-	triage, err := GetTriage(dir)
-	if err != nil {
-		return "", err
-	}
-	return triage.DataHash, nil
 }
 
 // IsCacheValid checks if the cache is still valid

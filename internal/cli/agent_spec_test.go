@@ -244,15 +244,6 @@ func TestResolveAgentModel_Precedence(t *testing.T) {
 	}
 }
 
-func TestValidateModelAlias_EmptyAlias(t *testing.T) {
-
-	// Empty alias should always be valid (nothing to validate)
-	err := ValidateModelAlias(AgentTypeClaude, "")
-	if err != nil {
-		t.Errorf("ValidateModelAlias(empty) returned error: %v", err)
-	}
-}
-
 // =============================================================================
 // ParseAgentSpec (extended)
 // =============================================================================
@@ -310,108 +301,6 @@ func TestParseAgentSpec_InvalidFormats(t *testing.T) {
 // ValidateModelAlias (with config)
 // =============================================================================
 
-func TestValidateModelAlias_KnownAlias(t *testing.T) {
-	oldCfg := cfg
-	defer func() { cfg = oldCfg }()
-	cfg = config.Default()
-
-	// "opus" is a known Claude alias
-	err := ValidateModelAlias(AgentTypeClaude, "opus")
-	if err != nil {
-		t.Errorf("ValidateModelAlias(claude, opus) returned error: %v", err)
-	}
-
-	// "gpt5" is a known Codex alias
-	err = ValidateModelAlias(AgentTypeCodex, "gpt5")
-	if err != nil {
-		t.Errorf("ValidateModelAlias(codex, gpt5) returned error: %v", err)
-	}
-
-	// "pro" is a known Gemini alias
-	err = ValidateModelAlias(AgentTypeGemini, "pro")
-	if err != nil {
-		t.Errorf("ValidateModelAlias(gemini, pro) returned error: %v", err)
-	}
-}
-
-func TestValidateModelAlias_UnknownAlias(t *testing.T) {
-	oldCfg := cfg
-	defer func() { cfg = oldCfg }()
-	cfg = config.Default()
-
-	err := ValidateModelAlias(AgentTypeClaude, "nonexistent-model")
-	if err == nil {
-		t.Error("expected error for unknown Claude alias")
-	}
-	if !strings.Contains(err.Error(), "unknown model alias") {
-		t.Errorf("error should mention 'unknown model alias': %v", err)
-	}
-	if !strings.Contains(err.Error(), "opus") {
-		t.Errorf("error should list available aliases including 'opus': %v", err)
-	}
-}
-
-func TestValidateModelAlias_UnknownAliasCodex(t *testing.T) {
-	oldCfg := cfg
-	defer func() { cfg = oldCfg }()
-	cfg = config.Default()
-
-	err := ValidateModelAlias(AgentTypeCodex, "does-not-exist")
-	if err == nil {
-		t.Error("expected error for unknown Codex alias")
-	}
-	if !strings.Contains(err.Error(), "does-not-exist") {
-		t.Errorf("error should reference the alias: %v", err)
-	}
-}
-
-func TestValidateModelAlias_UnknownAliasGemini(t *testing.T) {
-	oldCfg := cfg
-	defer func() { cfg = oldCfg }()
-	cfg = config.Default()
-
-	err := ValidateModelAlias(AgentTypeGemini, "invalid-gem")
-	if err == nil {
-		t.Error("expected error for unknown Gemini alias")
-	}
-}
-
-func TestValidateModelAlias_NoAliasesConfigured(t *testing.T) {
-	oldCfg := cfg
-	defer func() { cfg = oldCfg }()
-	cfg = config.Default()
-	// Clear aliases to simulate no aliases configured
-	cfg.Models.Claude = nil
-
-	err := ValidateModelAlias(AgentTypeClaude, "some-alias")
-	if err != nil {
-		t.Errorf("expected nil error when no aliases configured, got: %v", err)
-	}
-}
-
-func TestValidateModelAlias_NilConfig(t *testing.T) {
-	oldCfg := cfg
-	defer func() { cfg = oldCfg }()
-	cfg = nil
-
-	err := ValidateModelAlias(AgentTypeClaude, "opus")
-	if err != nil {
-		t.Errorf("expected nil error with nil config, got: %v", err)
-	}
-}
-
-func TestValidateModelAlias_UnknownAgentType(t *testing.T) {
-	oldCfg := cfg
-	defer func() { cfg = oldCfg }()
-	cfg = config.Default()
-
-	// Unknown agent type has no aliases → should return nil
-	err := ValidateModelAlias(AgentTypeCursor, "some-model")
-	if err != nil {
-		t.Errorf("expected nil for unknown agent type (no aliases), got: %v", err)
-	}
-}
-
 // =============================================================================
 // ResolveModel (with config)
 // =============================================================================
@@ -447,15 +336,6 @@ func TestResolveModel_WithConfig(t *testing.T) {
 					tc.agentType, tc.modelSpec, got, tc.want)
 			}
 		})
-	}
-}
-
-func TestValidateModelAliasAcceptsDynamicGrokModel(t *testing.T) {
-	oldCfg := cfg
-	defer func() { cfg = oldCfg }()
-	cfg = config.Default()
-	if err := ValidateModelAlias(AgentTypeGrok, "account-current"); err != nil {
-		t.Fatalf("dynamic Grok model ID rejected: %v", err)
 	}
 }
 
@@ -638,15 +518,15 @@ func TestAgentSpecsValue_StringDelegatesToSpecs(t *testing.T) {
 
 // TestAgentSpecsValue_AgyRelaxedModelCharset covers sharp edge #2 (ntm#210):
 // Antigravity display model names contain spaces and parentheses (e.g.
-// "Gemini 3.1 Pro (High)"), which the default model charset rejects. The agy
+// "Gemini 3.7 Flash (High)"), which the default model charset rejects. The agy
 // flag path must accept them via the relaxed charset, while the strict charset
 // still applies to every other agent type.
 func TestAgentSpecsValue_AgyRelaxedModelCharset(t *testing.T) {
 	// agy accepts the spaced/parenthesized display name.
 	var agySpecs AgentSpecs
 	agy := NewAgentSpecsValue(AgentTypeAntigravity, &agySpecs)
-	if err := agy.Set("1:Gemini 3.1 Pro (High)"); err != nil {
-		t.Fatalf("agy Set(%q) unexpected error: %v", "1:Gemini 3.1 Pro (High)", err)
+	if err := agy.Set("1:Gemini 3.7 Flash (High)"); err != nil {
+		t.Fatalf("agy Set(%q) unexpected error: %v", "1:Gemini 3.7 Flash (High)", err)
 	}
 	if len(agySpecs) != 1 {
 		t.Fatalf("agy specs len = %d, want 1", len(agySpecs))
@@ -657,19 +537,19 @@ func TestAgentSpecsValue_AgyRelaxedModelCharset(t *testing.T) {
 	if agySpecs[0].Count != 1 {
 		t.Errorf("Count = %d, want 1", agySpecs[0].Count)
 	}
-	if agySpecs[0].Model != "Gemini 3.1 Pro (High)" {
-		t.Errorf("Model = %q, want %q", agySpecs[0].Model, "Gemini 3.1 Pro (High)")
+	if agySpecs[0].Model != "Gemini 3.7 Flash (High)" {
+		t.Errorf("Model = %q, want %q", agySpecs[0].Model, "Gemini 3.7 Flash (High)")
 	}
 
 	// A charset-safe alias also parses for agy.
 	var aliasSpecs AgentSpecs
-	if err := NewAgentSpecsValue(AgentTypeAntigravity, &aliasSpecs).Set("2:gemini-3-pro-high"); err != nil {
+	if err := NewAgentSpecsValue(AgentTypeAntigravity, &aliasSpecs).Set("2:gemini-3.7-flash-high"); err != nil {
 		t.Errorf("agy Set(alias) unexpected error: %v", err)
 	}
 
 	// The SAME spaced model name is REJECTED for a non-agy type (strict charset).
 	var geminiSpecs AgentSpecs
-	if err := NewAgentSpecsValue(AgentTypeGemini, &geminiSpecs).Set("1:Gemini 3.1 Pro (High)"); err == nil {
+	if err := NewAgentSpecsValue(AgentTypeGemini, &geminiSpecs).Set("1:Gemini 3.7 Flash (High)"); err == nil {
 		t.Error("gemini Set with spaced model should fail the strict charset, but succeeded")
 	}
 

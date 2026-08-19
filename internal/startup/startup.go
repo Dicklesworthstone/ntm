@@ -10,7 +10,6 @@
 package startup
 
 import (
-	"sort"
 	"sync"
 	"time"
 
@@ -118,84 +117,11 @@ func EndPhase2() time.Duration {
 	return global.phase2Time
 }
 
-// CurrentPhase returns the current startup phase
-func CurrentPhase() Phase {
-	global.mu.RLock()
-	defer global.mu.RUnlock()
-	return global.currentPhase
-}
-
-// IsPhase1Complete returns true if Phase 1 is done
-func IsPhase1Complete() bool {
-	global.mu.RLock()
-	defer global.mu.RUnlock()
-	return global.phase1Done
-}
-
-// IsPhase2Complete returns true if Phase 2 is done
-func IsPhase2Complete() bool {
-	global.mu.RLock()
-	defer global.mu.RUnlock()
-	return global.phase2Done
-}
-
-// RegisterDeferred adds a function to be run during Phase 2
-func RegisterDeferred(name string, fn func() error) {
-	global.mu.Lock()
-	defer global.mu.Unlock()
-	global.deferredFuncs = append(global.deferredFuncs, DeferredFunc{
-		Name: name,
-		Fn:   fn,
-	})
-}
-
-// RunDeferred executes all registered deferred functions
-func RunDeferred() error {
-	global.mu.Lock()
-	funcs := make([]DeferredFunc, len(global.deferredFuncs))
-	copy(funcs, global.deferredFuncs)
-	global.mu.Unlock()
-
-	for _, df := range funcs {
-		span := profiler.StartWithPhase(df.Name, "deferred")
-		if err := df.Fn(); err != nil {
-			span.Tag("error", err.Error())
-			span.End()
-			return err
-		}
-		span.End()
-		markInitialized(df.Name)
-	}
-	return nil
-}
-
-// IsInitialized checks if a subsystem has been initialized
-func IsInitialized(name string) bool {
-	global.mu.RLock()
-	defer global.mu.RUnlock()
-	return global.initialized[name]
-}
-
 // markInitialized marks a subsystem as initialized
 func markInitialized(name string) {
 	global.mu.Lock()
 	defer global.mu.Unlock()
 	global.initialized[name] = true
-}
-
-// Reset clears all startup state (useful for testing)
-func Reset() {
-	global.mu.Lock()
-	defer global.mu.Unlock()
-	global.currentPhase = PhaseNone
-	global.phase1Done = false
-	global.phase2Done = false
-	global.phase1Start = time.Time{}
-	global.phase2Start = time.Time{}
-	global.phase1Time = 0
-	global.phase2Time = 0
-	global.deferredFuncs = nil
-	global.initialized = make(map[string]bool)
 }
 
 // Stats returns startup timing statistics
@@ -207,26 +133,4 @@ type Stats struct {
 	Phase2TimeMs  float64  `json:"phase2_time_ms,omitempty"`
 	DeferredCount int      `json:"deferred_count"`
 	Initialized   []string `json:"initialized,omitempty"`
-}
-
-// GetStats returns current startup statistics
-func GetStats() Stats {
-	global.mu.RLock()
-	defer global.mu.RUnlock()
-
-	stats := Stats{
-		CurrentPhase:  global.currentPhase,
-		Phase1Done:    global.phase1Done,
-		Phase2Done:    global.phase2Done,
-		Phase1TimeMs:  float64(global.phase1Time.Nanoseconds()) / 1e6,
-		Phase2TimeMs:  float64(global.phase2Time.Nanoseconds()) / 1e6,
-		DeferredCount: len(global.deferredFuncs),
-	}
-
-	for name := range global.initialized {
-		stats.Initialized = append(stats.Initialized, name)
-	}
-	sort.Strings(stats.Initialized)
-
-	return stats
 }

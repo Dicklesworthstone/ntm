@@ -27,7 +27,7 @@ func TestRegistryRegisterAndGet(t *testing.T) {
 		t.Fatalf("register failed: %v", err)
 	}
 
-	got, ok := reg.Get(cmd.Name)
+	got, ok := registryGet(reg, cmd.Name)
 	if !ok {
 		t.Fatalf("expected command to be found")
 	}
@@ -61,39 +61,6 @@ func TestRegistryRestConflict(t *testing.T) {
 	second.REST = &RESTBinding{Method: "GET", Path: "/api/test"}
 	if err := reg.Register(second); err == nil {
 		t.Fatalf("expected REST conflict error")
-	}
-}
-
-func TestRegistryUnregisterRemovesCommandHandlerAndRESTBinding(t *testing.T) {
-	reg := NewRegistry()
-	cmd := testCommand("cmd.one")
-	cmd.REST = &RESTBinding{Method: "GET", Path: "/api/test"}
-	if err := reg.Register(cmd); err != nil {
-		t.Fatalf("register failed: %v", err)
-	}
-	if err := reg.RegisterHandler(cmd.Name, func(context.Context, any) (any, error) {
-		return "ok", nil
-	}); err != nil {
-		t.Fatalf("register handler failed: %v", err)
-	}
-
-	if !reg.Unregister(cmd.Name) {
-		t.Fatal("Unregister returned false for registered command")
-	}
-	if _, ok := reg.Get(cmd.Name); ok {
-		t.Fatal("unregistered command is still available")
-	}
-	if _, err := reg.Run(context.Background(), cmd.Name, nil); err == nil {
-		t.Fatal("unregistered command handler is still available")
-	}
-	if reg.Unregister(cmd.Name) {
-		t.Fatal("Unregister returned true for absent command")
-	}
-
-	replacement := testCommand("cmd.two")
-	replacement.REST = &RESTBinding{Method: "GET", Path: "/api/test"}
-	if err := reg.Register(replacement); err != nil {
-		t.Fatalf("register replacement after unregister: %v", err)
 	}
 }
 
@@ -169,4 +136,24 @@ func TestRegistryRunMissingHandler(t *testing.T) {
 	if _, err := reg.Run(context.Background(), cmd.Name, nil); err == nil {
 		t.Fatalf("expected error for missing handler")
 	}
+}
+
+// registryGet looks up a command by name through the live List API.
+func registryGet(r *Registry, name string) (Command, bool) {
+	for _, cmd := range r.List() {
+		if cmd.Name == name {
+			return cmd, true
+		}
+	}
+	return Command{}, false
+}
+
+// globalGet looks up a command in the default registry through the live List API.
+func globalGet(name string) (Command, bool) {
+	for _, cmd := range List() {
+		if cmd.Name == name {
+			return cmd, true
+		}
+	}
+	return Command{}, false
 }

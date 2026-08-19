@@ -2,7 +2,6 @@ package bundle
 
 import (
 	"archive/zip"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -388,52 +387,6 @@ func TestGenerator_Generate_ManifestIntegrity(t *testing.T) {
 	}
 }
 
-func TestGenerator_Verify_RoundTrip(t *testing.T) {
-	dir := t.TempDir()
-	outputPath := filepath.Join(dir, "bundle.zip")
-
-	config := GeneratorConfig{
-		Session:    "verify-test",
-		OutputPath: outputPath,
-		Format:     FormatZip,
-		NTMVersion: "v1.0.0",
-		RedactionConfig: redaction.Config{
-			Mode: redaction.ModeOff,
-		},
-	}
-	gen := NewGenerator(config)
-
-	gen.AddFile("file1.txt", []byte("content1"), ContentTypeScrollback, time.Now())
-	gen.AddFile("file2.txt", []byte("content2"), ContentTypeConfig, time.Now())
-
-	_, err := gen.Generate()
-	if err != nil {
-		t.Fatalf("Generate failed: %v", err)
-	}
-
-	// Now verify the bundle
-	result, err := Verify(outputPath)
-	if err != nil {
-		t.Fatalf("Verify failed: %v", err)
-	}
-
-	if !result.Valid {
-		t.Errorf("Bundle not valid. Errors: %v", result.Errors)
-	}
-
-	if !result.ManifestValid {
-		t.Error("Manifest not valid")
-	}
-
-	if !result.FilesPresent {
-		t.Error("Files not present")
-	}
-
-	if !result.ChecksumsValid {
-		t.Error("Checksums not valid")
-	}
-}
-
 func TestLimitLines(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -544,55 +497,5 @@ func TestGenerator_RedactionSummary(t *testing.T) {
 
 	if result.RedactionSummary.FilesScanned != 1 {
 		t.Errorf("FilesScanned = %d, want 1", result.RedactionSummary.FilesScanned)
-	}
-}
-
-func TestVerify_ManifestParsing(t *testing.T) {
-	dir := t.TempDir()
-	outputPath := filepath.Join(dir, "bundle.zip")
-
-	config := GeneratorConfig{
-		Session:    "parse-test",
-		OutputPath: outputPath,
-		Format:     FormatZip,
-		NTMVersion: "v2.0.0",
-		RedactionConfig: redaction.Config{
-			Mode: redaction.ModeOff,
-		},
-	}
-	gen := NewGenerator(config)
-	gen.AddFile("test.txt", []byte("data"), ContentTypeScrollback, time.Now())
-
-	_, err := gen.Generate()
-	if err != nil {
-		t.Fatalf("Generate failed: %v", err)
-	}
-
-	result, err := Verify(outputPath)
-	if err != nil {
-		t.Fatalf("Verify failed: %v", err)
-	}
-
-	if result.Manifest == nil {
-		t.Fatal("Manifest not parsed")
-	}
-
-	if result.Manifest.NTMVersion != "v2.0.0" {
-		t.Errorf("NTMVersion = %q, want %q", result.Manifest.NTMVersion, "v2.0.0")
-	}
-
-	// Validate JSON round-trip
-	data, err := json.Marshal(result.Manifest)
-	if err != nil {
-		t.Fatalf("Marshal failed: %v", err)
-	}
-
-	var parsed Manifest
-	if err := json.Unmarshal(data, &parsed); err != nil {
-		t.Fatalf("Unmarshal failed: %v", err)
-	}
-
-	if parsed.NTMVersion != result.Manifest.NTMVersion {
-		t.Error("JSON round-trip failed for NTMVersion")
 	}
 }

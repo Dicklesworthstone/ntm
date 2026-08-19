@@ -291,18 +291,6 @@ func (m *WebhookManager) Register(cfg WebhookConfig) error {
 	return nil
 }
 
-// Unregister removes a webhook by ID
-func (m *WebhookManager) Unregister(id string) error {
-	m.webhooksMu.Lock()
-	defer m.webhooksMu.Unlock()
-
-	if _, ok := m.webhooks[id]; !ok {
-		return fmt.Errorf("webhook %q not found", id)
-	}
-	delete(m.webhooks, id)
-	return nil
-}
-
 // Dispatch queues an event for delivery to all matching webhooks
 func (m *WebhookManager) Dispatch(event Event) error {
 	if !m.started.Load() {
@@ -516,52 +504,6 @@ type Stats struct {
 	Failures        int64 `json:"total_failures"`
 	DroppedEvents   int64 `json:"dropped_events"`
 	WebhookCount    int   `json:"webhook_count"`
-}
-
-// Stats returns current manager statistics
-func (m *WebhookManager) Stats() Stats {
-	m.webhooksMu.RLock()
-	webhookCount := len(m.webhooks)
-	m.webhooksMu.RUnlock()
-
-	m.retryQueueMu.Lock()
-	retryLen := len(m.retryQueue)
-	m.retryQueueMu.Unlock()
-
-	m.deadLettersMu.Lock()
-	deadLetterCount := len(m.deadLetters)
-	m.deadLettersMu.Unlock()
-
-	return Stats{
-		QueueLength:     len(m.queue),
-		QueueCapacity:   cap(m.queue),
-		RetryQueueLen:   retryLen,
-		DeadLetterCount: deadLetterCount,
-		Deliveries:      m.deliveries.Load(),
-		Failures:        m.failures.Load(),
-		DroppedEvents:   m.queueFull.Load(),
-		WebhookCount:    webhookCount,
-	}
-}
-
-// DeadLetters returns a copy of the dead letter queue
-func (m *WebhookManager) DeadLetters() []DeadLetter {
-	m.deadLettersMu.Lock()
-	defer m.deadLettersMu.Unlock()
-
-	result := make([]DeadLetter, len(m.deadLetters))
-	copy(result, m.deadLetters)
-	return result
-}
-
-// ClearDeadLetters removes all entries from the dead letter queue
-func (m *WebhookManager) ClearDeadLetters() int {
-	m.deadLettersMu.Lock()
-	defer m.deadLettersMu.Unlock()
-
-	count := len(m.deadLetters)
-	m.deadLetters = m.deadLetters[:0]
-	return count
 }
 
 // worker processes deliveries from the queue

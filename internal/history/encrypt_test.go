@@ -24,7 +24,7 @@ func TestSetEncryptionConfig(t *testing.T) {
 
 	t.Run("nil disables", func(t *testing.T) {
 		SetEncryptionConfig(nil)
-		if GetEncryptionEnabled() {
+		if encryptionEnabledForTest() {
 			t.Error("expected disabled")
 		}
 	})
@@ -36,7 +36,7 @@ func TestSetEncryptionConfig(t *testing.T) {
 			EncryptKey:  key,
 			DecryptKeys: [][]byte{key},
 		})
-		if !GetEncryptionEnabled() {
+		if !encryptionEnabledForTest() {
 			t.Error("expected enabled")
 		}
 	})
@@ -46,7 +46,7 @@ func TestSetEncryptionConfig(t *testing.T) {
 			Enabled:    true,
 			EncryptKey: nil,
 		})
-		if GetEncryptionEnabled() {
+		if encryptionEnabledForTest() {
 			t.Error("expected disabled when no key")
 		}
 	})
@@ -101,43 +101,6 @@ func TestEncryptedHistoryRoundTrip(t *testing.T) {
 	}
 	if entries[1].Prompt != "encrypted prompt beta" {
 		t.Errorf("entry 1 prompt = %q, want %q", entries[1].Prompt, "encrypted prompt beta")
-	}
-}
-
-func TestEncryptedBatchAppendRoundTrip(t *testing.T) {
-	tmpDir := t.TempDir()
-	os.Setenv("XDG_DATA_HOME", tmpDir)
-	defer os.Unsetenv("XDG_DATA_HOME")
-
-	key := testKey(t)
-	SetEncryptionConfig(&EncryptionConfig{
-		Enabled:     true,
-		EncryptKey:  key,
-		DecryptKeys: [][]byte{key},
-	})
-	defer SetEncryptionConfig(nil)
-
-	entries := []*HistoryEntry{
-		{ID: "b1", Session: "s", Prompt: "batch 1", Timestamp: time.Now(), Source: SourceCLI},
-		{ID: "b2", Session: "s", Prompt: "batch 2", Timestamp: time.Now(), Source: SourceCLI},
-		{ID: "b3", Session: "s", Prompt: "batch 3", Timestamp: time.Now(), Source: SourceCLI},
-	}
-
-	if err := BatchAppend(entries); err != nil {
-		t.Fatalf("BatchAppend: %v", err)
-	}
-
-	result, err := ReadAll()
-	if err != nil {
-		t.Fatalf("ReadAll: %v", err)
-	}
-	if len(result) != 3 {
-		t.Fatalf("expected 3, got %d", len(result))
-	}
-	for i, e := range result {
-		if e.ID != entries[i].ID {
-			t.Errorf("entry %d: ID = %q, want %q", i, e.ID, entries[i].ID)
-		}
 	}
 }
 
@@ -281,4 +244,11 @@ func TestKeyRotation(t *testing.T) {
 	if entries[1].ID != "k2-entry" {
 		t.Errorf("entry 1 ID = %q, want k2-entry", entries[1].ID)
 	}
+}
+
+// encryptionEnabledForTest reports whether encryption is currently enabled.
+func encryptionEnabledForTest() bool {
+	encryptMu.RLock()
+	defer encryptMu.RUnlock()
+	return encryptionEnabled
 }

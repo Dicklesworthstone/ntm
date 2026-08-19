@@ -15,8 +15,8 @@ func TestNewStyledTable(t *testing.T) {
 	if tbl == nil {
 		t.Fatal("expected non-nil StyledTable")
 	}
-	if tbl.RowCount() != 0 {
-		t.Errorf("RowCount = %d, want 0", tbl.RowCount())
+	if len(tbl.rows) != 0 {
+		t.Errorf("len(rows) = %d, want 0", len(tbl.rows))
 	}
 }
 
@@ -36,22 +36,14 @@ func TestStyledTable_WithFooter(t *testing.T) {
 	}
 }
 
-func TestStyledTable_WithStyle(t *testing.T) {
-
-	tbl := NewStyledTable("Col").WithStyle(TableStyleMinimal)
-	if tbl.style != TableStyleMinimal {
-		t.Errorf("style = %v, want TableStyleMinimal", tbl.style)
-	}
-}
-
 func TestStyledTable_AddRow(t *testing.T) {
 
 	tbl := NewStyledTable("Name", "Value")
 	tbl.AddRow("foo", "bar")
 	tbl.AddRow("baz", "longer value here")
 
-	if tbl.RowCount() != 2 {
-		t.Errorf("RowCount = %d, want 2", tbl.RowCount())
+	if len(tbl.rows) != 2 {
+		t.Errorf("len(rows) = %d, want 2", len(tbl.rows))
 	}
 }
 
@@ -81,16 +73,6 @@ func TestStyledTable_Render_WithData(t *testing.T) {
 	}
 	if !strings.Contains(stripped, "Bob") {
 		t.Error("render should contain 'Bob'")
-	}
-}
-
-func TestStyledTable_String(t *testing.T) {
-
-	tbl := NewStyledTable("H")
-	tbl.AddRow("R")
-	got := tbl.String()
-	if got == "" {
-		t.Error("String() should return non-empty")
 	}
 }
 
@@ -126,24 +108,10 @@ func TestPadRight(t *testing.T) {
 // Message formatters — 0% → 100%
 // ---------------------------------------------------------------------------
 
-func TestErrorMessage(t *testing.T) {
-	got := ErrorMessage("failed")
-	if !strings.Contains(stripANSI(got), "failed") {
-		t.Error("should contain message text")
-	}
-}
-
 func TestInfoMessage(t *testing.T) {
 	got := InfoMessage("note")
 	if !strings.Contains(stripANSI(got), "note") {
 		t.Error("should contain message text")
-	}
-}
-
-func TestBadge(t *testing.T) {
-	got := Badge("OK", "46")
-	if got == "" {
-		t.Error("expected non-empty badge")
 	}
 }
 

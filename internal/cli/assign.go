@@ -888,22 +888,6 @@ func normalizeBeadStatus(status string) string {
 	return canonical
 }
 
-// classifyTriageRecForAssignment decides whether a bv triage recommendation is
-// safe to feed into assign-and-dispatch. Returns nil when the bead is ready to
-// be assigned; otherwise returns a SkippedItem populated with the disqualifying
-// reason. The decision order is intentional: dependency blockers are reported
-// first (most useful diagnostic), then operator gates (visible policy signal),
-// then status, then "already assigned to a live pane in this session." Each
-// later check would be misleading if a higher-precedence reason also applied,
-// so we surface the strongest signal.
-//
-// bv's --robot-triage output is permissive — it includes blocked, in_progress,
-// closed, and operator-gated beads with non-zero scores. Trusting it as
-// "actionable" caused stale assignments and reassignment of in-flight work.
-func classifyTriageRecForAssignment(rec bv.TriageRecommendation, activeAssignments map[string]struct{}) *SkippedItem {
-	return classifyTriageRecForAssignmentWithGate(rec, activeAssignments, bv.IsOperatorGatedLabel)
-}
-
 func classifyTriageRecForAssignmentForProject(projectDir string, rec bv.TriageRecommendation, activeAssignments map[string]struct{}) *SkippedItem {
 	return classifyTriageRecForAssignmentWithGate(rec, activeAssignments, func(label string) bool {
 		return bv.IsOperatorGatedLabelForProject(projectDir, label)
@@ -979,10 +963,6 @@ func partitionActionableRecommendationsForAssignment(
 		})
 	}
 	return ready, skipped
-}
-
-func classifyLiveAssignmentDetails(details *bv.BeadAssignmentDetails, activeAssignments map[string]struct{}) *SkippedItem {
-	return classifyLiveAssignmentDetailsWithGate(details, activeAssignments, bv.IsOperatorGatedLabel)
 }
 
 func classifyLiveAssignmentDetailsForProject(projectDir string, details *bv.BeadAssignmentDetails, activeAssignments map[string]struct{}) *SkippedItem {
@@ -1260,56 +1240,6 @@ type DirectAssignData struct {
 	Receipt *DispatchReceipt `json:"receipt,omitempty"`
 }
 
-// generateRecommendations creates assignment recommendations
-func generateRecommendations(panes []tmux.Pane, beads []bv.BeadPreview, strategy string, idleAgents []string) []robot.AssignRecommend {
-	var recommendations []robot.AssignRecommend
-
-	// Create a map of idle agents
-	idleSet := make(map[string]bool)
-	for _, a := range idleAgents {
-		idleSet[a] = true
-	}
-
-	// Get idle pane details
-	var idlePanes []tmux.Pane
-	for _, p := range panes {
-		if idleSet[p.ID] {
-			idlePanes = append(idlePanes, p)
-		}
-	}
-
-	// Match beads to idle agents
-	beadIdx := 0
-	for _, pane := range idlePanes {
-		if beadIdx >= len(beads) {
-			break
-		}
-
-		bead := beads[beadIdx]
-		agentType := agentTypeForPane(pane)
-		model := detectModelFromTitle(agentType, pane.Title)
-
-		confidence := calculateMatchConfidence(agentType, bead, strategy)
-		reasoning := buildReasoning(agentType, bead, strategy)
-
-		recommendations = append(recommendations, robot.AssignRecommend{
-			PaneID:     pane.ID,
-			PaneTarget: pane.Ref().Physical(),
-			AgentType:  agentType,
-			Model:      model,
-			AssignBead: bead.ID,
-			BeadTitle:  bead.Title,
-			Priority:   bead.Priority,
-			Confidence: confidence,
-			Reasoning:  reasoning,
-		})
-
-		beadIdx++
-	}
-
-	return recommendations
-}
-
 // detectAgentTypeFromTitle determines agent type from pane title
 func detectAgentTypeFromTitle(title string) string {
 	title = strings.ToLower(title)
@@ -1556,27 +1486,6 @@ func getAgentStyle(agentType string, th theme.Theme) lipgloss.Style {
 		color = th.Text
 	}
 	return lipgloss.NewStyle().Foreground(color).Bold(true)
-}
-
-// getPriorityStyle returns a style for a priority level
-func getPriorityStyle(priority string, th theme.Theme) lipgloss.Style {
-	var color lipgloss.Color
-	switch priority {
-	case "P0":
-		color = th.Error
-	case "P1":
-		color = th.Warning
-	case "P2":
-		color = th.Info
-	default:
-		color = th.Subtext
-	}
-	return lipgloss.NewStyle().Foreground(color)
-}
-
-// marshalAssignOutput converts output to JSON bytes (for testing)
-func marshalAssignOutput(output *robot.AssignOutput) ([]byte, error) {
-	return json.MarshalIndent(output, "", "  ")
 }
 
 // runAssignJSON handles JSON output for the assign command
@@ -2574,41 +2483,6 @@ func displayAssignOutputEnhanced(out *AssignOutputEnhanced, verbose bool) {
 // longer suppressed (a genuinely reopened bead should flow again).
 const handledBeadRecentWindow = 90 * time.Second
 
-// loadHandledBeadIDs returns the set of bead IDs that must NOT be dispatched
-// this pass because they are already active (assigned/working) or were very
-// recently completed/failed. It reads only the local assignment store (never
-// br), so it is immune to br lock contention and always reflects what THIS
-// orchestrator has already claimed. Returns a non-nil (possibly empty) set.
-func loadHandledBeadIDs(store *assignment.AssignmentStore) map[string]struct{} {
-	handled := make(map[string]struct{})
-	if store == nil {
-		return handled
-	}
-	now := time.Now()
-	for _, a := range store.List() {
-		if a == nil {
-			continue
-		}
-		switch a.Status {
-		case assignment.StatusAssigned, assignment.StatusWorking:
-			// Actively in flight — always suppress.
-			handled[a.BeadID] = struct{}{}
-		case assignment.StatusCompleted, assignment.StatusFailed:
-			// Recently terminal — suppress only within the recent window so a
-			// just-completed bead can't be re-dispatched while it's still being
-			// reaped, but a long-since-closed-then-reopened bead can flow again.
-			ts := a.CompletedAt
-			if ts == nil {
-				ts = a.FailedAt
-			}
-			if ts == nil || now.Sub(*ts) < handledBeadRecentWindow {
-				handled[a.BeadID] = struct{}{}
-			}
-		}
-	}
-	return handled
-}
-
 func resolveAssignmentItemPane(panes []tmux.Pane, item AssignmentItem) (tmux.Pane, error) {
 	selectors := make([]string, 0, 2)
 	if paneID := strings.TrimSpace(item.PaneID); paneID != "" {
@@ -2971,10 +2845,6 @@ func newCLIAtomicAssignmentCoordinator(store *assignment.AssignmentStore, projec
 			return cliWorkingReplacementReleaseReceipt(current, released, err), err
 		},
 	))
-}
-
-func validateCLIAtomicAssignmentDetails(details *bv.BeadAssignmentDetails, request assignment.AssignmentEligibilityAuthorizationRequest) error {
-	return validateCLIAtomicAssignmentDetailsWithPolicy(details, request, bv.OperatorGatedLabels())
 }
 
 func validateCLIAtomicAssignmentDetailsWithPolicy(details *bv.BeadAssignmentDetails, request assignment.AssignmentEligibilityAuthorizationRequest, operatorGatedLabels []string) error {
@@ -5125,10 +4995,6 @@ func dependencyRelationToCompleted(states []bv.BeadDependencyState, completedBea
 	return related, unresolved
 }
 
-func newlyUnblockedCandidate(completedBeadID string, dependent bv.BeadDependentState, details *bv.BeadAssignmentDetails) (*UnblockedBead, string, []string) {
-	return newlyUnblockedCandidateWithGate(completedBeadID, dependent, details, bv.IsOperatorGatedLabel)
-}
-
 func newlyUnblockedCandidateForProject(projectDir, completedBeadID string, dependent bv.BeadDependentState, details *bv.BeadAssignmentDetails) (*UnblockedBead, string, []string) {
 	return newlyUnblockedCandidateWithGate(completedBeadID, dependent, details, func(label string) bool {
 		return bv.IsOperatorGatedLabelForProject(projectDir, label)
@@ -5464,10 +5330,6 @@ func snapshotDirectAssignmentIntent(opts *AssignCommandOptions, beadID, paneID s
 	}
 	intent.idempotencyKey = assignment.AssignmentIdempotencyKey(keyParts...)
 	return intent
-}
-
-func directAssignmentIdempotencyKey(opts *AssignCommandOptions, beadID, paneID string, clearedGeneration ...uint64) string {
-	return snapshotDirectAssignmentIntent(opts, beadID, paneID, clearedGeneration...).idempotencyKey
 }
 
 func (intent directAssignmentIntent) prompt(beadID, beadTitle string) string {
@@ -5897,40 +5759,6 @@ func getBeadTitle(ctx context.Context, projectDir, beadID string) (string, error
 	return details.Title, nil
 }
 
-// reserveFilesForBead reserves files mentioned in a bead for an agent
-func reserveFilesForBead(ctx context.Context, session, beadID, beadTitle, agentType string, verbose bool, timeout time.Duration) *assign.FileReservationResult {
-	// Create agent name from session and agent type
-	agentName := fmt.Sprintf("%s_%s", session, agentType)
-	projectKey, err := resolveAssignProjectDir(ctx, session)
-	if err != nil {
-		return &assign.FileReservationResult{
-			BeadID:    beadID,
-			AgentName: agentName,
-			Success:   false,
-			Error:     err.Error(),
-		}
-	}
-
-	// Create reservation manager (use Agent Mail if available)
-	var manager *assign.FileReservationManager
-	amClient := newAgentMailClient(projectKey)
-	if amClient.IsAvailable() {
-		manager = assign.NewFileReservationManager(amClient, projectKey)
-	} else {
-		manager = assign.NewFileReservationManager(nil, projectKey)
-	}
-
-	// Attempt reservation (will return result even without client)
-	reservationCtx, cancel := context.WithTimeout(ctx, resolveAssignTimeout(timeout))
-	defer cancel()
-	result, err := manager.ReserveForBead(reservationCtx, beadID, beadTitle, "", agentName)
-	if err != nil && assignHumanDiagnostics(verbose) {
-		fmt.Fprintf(os.Stderr, "[RESERVE] Warning: %v\n", err)
-	}
-
-	return result
-}
-
 // ============================================================================
 // Auto-Reassignment Logic
 // ============================================================================
@@ -6175,15 +6003,6 @@ func PerformAutoReassignment(ctx context.Context, completedBeadID string, opts *
 	return result, nil
 }
 
-func filterNewlyUnblockedByVerifiedPlan(
-	newlyUnblocked []UnblockedBead,
-	verifiedActionable []bv.TriageRecommendation,
-	activeAssignments map[string]struct{},
-	skipped []SkippedItem,
-) ([]UnblockedBead, []SkippedItem) {
-	return filterNewlyUnblockedByVerifiedPlanWithGate(newlyUnblocked, verifiedActionable, activeAssignments, skipped, bv.IsOperatorGatedLabel)
-}
-
 func filterNewlyUnblockedByVerifiedPlanForProject(
 	projectDir string,
 	newlyUnblocked []UnblockedBead,
@@ -6324,27 +6143,6 @@ func getIdleAgents(ctx context.Context, session, agentTypeFilter string, verbose
 // TriggerCompletionCheck manually triggers a completion check and auto-reassignment.
 // This can be called from external completion notifications or manual triggers.
 var performAutoReassignmentForTrigger = PerformAutoReassignment
-
-func completeTriggeredAssignmentGeneration(ctx context.Context, store *assignment.AssignmentStore, observed *assignment.Assignment) (bool, error) {
-	if store == nil || observed == nil {
-		return false, errors.New("observed assignment generation is required")
-	}
-	barrier, applied, err := store.BeginTerminalReconciliationIfCurrent(ctx, observed, assignment.StatusCompleted, "")
-	if err != nil {
-		return false, fmt.Errorf("begin assignment %s completion reconciliation: %w", observed.BeadID, err)
-	}
-	if !applied {
-		return false, fmt.Errorf("assignment %s generation changed or is no longer eligible for completion", observed.BeadID)
-	}
-	applied, err = reconcilePendingTerminalAssignment(ctx, store, store.SessionName, barrier)
-	if err != nil {
-		return false, fmt.Errorf("reconcile assignment %s completion: %w", observed.BeadID, err)
-	}
-	if !applied {
-		return false, fmt.Errorf("assignment %s terminal reconciliation did not complete", observed.BeadID)
-	}
-	return true, nil
-}
 
 func reconcilePendingTerminalAssignment(ctx context.Context, store *assignment.AssignmentStore, session string, current *assignment.Assignment) (bool, error) {
 	if store == nil || current == nil {
@@ -7045,22 +6843,6 @@ func (w *WatchLoop) shouldStop(ctx context.Context) (bool, error) {
 	}
 
 	return true, nil // No active work, no ready beads
-}
-
-// Stop signals the watch loop to stop
-func (w *WatchLoop) Stop() {
-	if w.stopCh != nil {
-		w.stopOnce.Do(func() {
-			close(w.stopCh)
-		})
-	}
-	w.lifecycleMu.Lock()
-	started := w.runStarted
-	done := w.runDone
-	w.lifecycleMu.Unlock()
-	if started && done != nil {
-		<-done
-	}
 }
 
 // Summary returns statistics about the watch session

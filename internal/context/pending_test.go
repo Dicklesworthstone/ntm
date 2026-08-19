@@ -2,7 +2,6 @@ package context
 
 import (
 	"bytes"
-	"encoding/json"
 	"math"
 	"os"
 	"path/filepath"
@@ -27,8 +26,8 @@ func makePending(agentID, session, pane string, timeout time.Time) *PendingRotat
 func TestNewPendingRotationStoreWithPath(t *testing.T) {
 	t.Parallel()
 	store := NewPendingRotationStoreWithPath("/tmp/test.jsonl")
-	if store.StoragePath() != "/tmp/test.jsonl" {
-		t.Errorf("StoragePath() = %q, want /tmp/test.jsonl", store.StoragePath())
+	if store.storagePath != "/tmp/test.jsonl" {
+		t.Errorf("StoragePath() = %q, want /tmp/test.jsonl", store.storagePath)
 	}
 }
 
@@ -205,117 +204,6 @@ func TestPendingRotationStore_GetForSession(t *testing.T) {
 	}
 	if len(result) != 0 {
 		t.Fatalf("expected 0 entries for sess-99, got %d", len(result))
-	}
-}
-
-func TestPendingRotationStore_GetExpired(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	store := NewPendingRotationStoreWithPath(filepath.Join(dir, "pending.jsonl"))
-
-	future := time.Now().Add(10 * time.Minute)
-	past := time.Now().Add(-1 * time.Minute)
-
-	_ = store.Add(makePending("agent-1", "sess-1", "1.1", future))
-	_ = store.Add(makePending("agent-2", "sess-1", "1.2", past))
-
-	expired, err := store.GetExpired()
-	if err != nil {
-		t.Fatalf("GetExpired: %v", err)
-	}
-	if len(expired) != 1 {
-		t.Fatalf("expected 1 expired entry, got %d", len(expired))
-	}
-	if expired[0].AgentID != "agent-2" {
-		t.Errorf("expected agent-2, got %q", expired[0].AgentID)
-	}
-}
-
-func TestPendingRotationStore_CleanExpired(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "pending.jsonl")
-	store := NewPendingRotationStoreWithPath(path)
-
-	future := time.Now().Add(10 * time.Minute)
-	past := time.Now().Add(-1 * time.Minute)
-
-	// Write entries directly to bypass Add's expired-entry filtering.
-	entries := []StoredPendingRotation{
-		*FromPendingRotation(makePending("agent-1", "sess-1", "1.1", future)),
-		*FromPendingRotation(makePending("agent-2", "sess-1", "1.2", past)),
-		*FromPendingRotation(makePending("agent-3", "sess-1", "1.3", past)),
-	}
-	f, err := os.Create(path)
-	if err != nil {
-		t.Fatalf("create file: %v", err)
-	}
-	for _, e := range entries {
-		b, _ := json.Marshal(e)
-		_, _ = f.Write(b)
-		_, _ = f.Write([]byte("\n"))
-	}
-	f.Close()
-
-	removed, err := store.CleanExpired()
-	if err != nil {
-		t.Fatalf("CleanExpired: %v", err)
-	}
-	if removed != 2 {
-		t.Errorf("removed = %d, want 2", removed)
-	}
-
-	all, err := store.GetAll()
-	if err != nil {
-		t.Fatalf("GetAll after clean: %v", err)
-	}
-	if len(all) != 1 {
-		t.Fatalf("expected 1 entry after clean, got %d", len(all))
-	}
-}
-
-func TestPendingRotationStore_CleanExpired_NothingToClean(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	store := NewPendingRotationStoreWithPath(filepath.Join(dir, "pending.jsonl"))
-
-	future := time.Now().Add(10 * time.Minute)
-	_ = store.Add(makePending("agent-1", "sess-1", "1.1", future))
-
-	removed, err := store.CleanExpired()
-	if err != nil {
-		t.Fatalf("CleanExpired: %v", err)
-	}
-	if removed != 0 {
-		t.Errorf("removed = %d, want 0", removed)
-	}
-}
-
-func TestPendingRotationStore_Count(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	store := NewPendingRotationStoreWithPath(filepath.Join(dir, "pending.jsonl"))
-
-	// Empty store
-	count, err := store.Count()
-	if err != nil {
-		t.Fatalf("Count empty: %v", err)
-	}
-	if count != 0 {
-		t.Errorf("count = %d, want 0", count)
-	}
-
-	// Add entries
-	timeout := time.Now().Add(10 * time.Minute)
-	_ = store.Add(makePending("agent-1", "sess-1", "1.1", timeout))
-	_ = store.Add(makePending("agent-2", "sess-1", "1.2", timeout))
-
-	count, err = store.Count()
-	if err != nil {
-		t.Fatalf("Count: %v", err)
-	}
-	if count != 2 {
-		t.Errorf("count = %d, want 2", count)
 	}
 }
 
@@ -636,19 +524,5 @@ func TestGetPendingRotationsForSession_Global(t *testing.T) {
 	}
 	if len(forSession) != 2 {
 		t.Errorf("expected 2 rotations for target-sess, got %d", len(forSession))
-	}
-}
-
-func TestPendingRotationStoragePath_Global(t *testing.T) {
-	origStore := DefaultPendingRotationStore
-	tmpDir := t.TempDir()
-	storagePath := filepath.Join(tmpDir, "pending.jsonl")
-	tmpStore := NewPendingRotationStoreWithPath(storagePath)
-	DefaultPendingRotationStore = tmpStore
-	t.Cleanup(func() { DefaultPendingRotationStore = origStore })
-
-	got := PendingRotationStoragePath()
-	if got != storagePath {
-		t.Errorf("PendingRotationStoragePath() = %q, want %q", got, storagePath)
 	}
 }

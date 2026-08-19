@@ -5,19 +5,12 @@ import (
 	"testing"
 )
 
-func TestNewRegistry(t *testing.T) {
-	r := NewRegistry()
-	if r == nil {
-		t.Fatal("NewRegistry() returned nil")
-	}
-
-	if len(r.adapters) != 0 {
-		t.Errorf("new registry should have 0 adapters, got %d", len(r.adapters))
-	}
+func newTestRegistry() *Registry {
+	return &Registry{adapters: make(map[ToolName]Adapter)}
 }
 
 func TestRegistryRegisterAndGet(t *testing.T) {
-	r := NewRegistry()
+	r := newTestRegistry()
 
 	adapter := newMockAdapter(ToolBV, true)
 	r.Register(adapter)
@@ -33,7 +26,7 @@ func TestRegistryRegisterAndGet(t *testing.T) {
 }
 
 func TestRegistryGetNotFound(t *testing.T) {
-	r := NewRegistry()
+	r := newTestRegistry()
 
 	_, ok := r.Get(ToolBV)
 	if ok {
@@ -41,55 +34,8 @@ func TestRegistryGetNotFound(t *testing.T) {
 	}
 }
 
-func TestRegistryAll(t *testing.T) {
-	r := NewRegistry()
-
-	r.Register(newMockAdapter(ToolBV, true))
-	r.Register(newMockAdapter(ToolBD, true))
-	r.Register(newMockAdapter(ToolCASS, false))
-
-	all := r.All()
-	if len(all) != 3 {
-		t.Errorf("All() returned %d adapters, want 3", len(all))
-	}
-}
-
-func TestRegistryDetected(t *testing.T) {
-	r := NewRegistry()
-
-	r.Register(newMockAdapter(ToolBV, true))
-	r.Register(newMockAdapter(ToolBD, true))
-	r.Register(newMockAdapter(ToolCASS, false)) // Not installed
-
-	detected := r.Detected()
-	if len(detected) != 2 {
-		t.Errorf("Detected() returned %d adapters, want 2", len(detected))
-	}
-}
-
-func TestRegistryNames(t *testing.T) {
-	r := NewRegistry()
-
-	r.Register(newMockAdapter(ToolBV, true))
-	r.Register(newMockAdapter(ToolBD, true))
-
-	names := r.Names()
-	if len(names) != 2 {
-		t.Errorf("Names() returned %d names, want 2", len(names))
-	}
-
-	nameSet := make(map[ToolName]bool)
-	for _, n := range names {
-		nameSet[n] = true
-	}
-
-	if !nameSet[ToolBV] || !nameSet[ToolBD] {
-		t.Error("Names() missing expected tool names")
-	}
-}
-
 func TestRegistryGetAllInfo(t *testing.T) {
-	r := NewRegistry()
+	r := newTestRegistry()
 
 	r.Register(newMockAdapter(ToolBV, true))
 	r.Register(newMockAdapter(ToolBD, false))
@@ -117,7 +63,7 @@ func TestRegistryGetAllInfo(t *testing.T) {
 }
 
 func TestRegistryGetHealthReport(t *testing.T) {
-	r := NewRegistry()
+	r := newTestRegistry()
 
 	r.Register(newMockAdapter(ToolBV, true))
 	r.Register(newMockAdapter(ToolBD, true))
@@ -180,35 +126,8 @@ func TestGlobalRegistryFunctions(t *testing.T) {
 		t.Errorf("Got adapter name %q, want %q", got.Name(), ToolBV)
 	}
 
-	// Test GetAll
-	all := GetAll()
-	if len(all) != 1 {
-		t.Errorf("GetAll() returned %d adapters, want 1", len(all))
-	}
-
-	// Test GetDetected
-	detected := GetDetected()
-	if len(detected) != 1 {
-		t.Errorf("GetDetected() returned %d adapters, want 1", len(detected))
-	}
-
-	// Test GetInfo
-	ctx := context.Background()
-	info, err := GetInfo(ctx, ToolBV)
-	if err != nil {
-		t.Fatalf("GetInfo() error: %v", err)
-	}
-	if info.Name != ToolBV {
-		t.Errorf("GetInfo() name = %q, want %q", info.Name, ToolBV)
-	}
-
-	// Test GetInfo for non-existent tool
-	_, err = GetInfo(ctx, ToolCASS)
-	if err != ErrToolNotInstalled {
-		t.Errorf("GetInfo() for non-existent tool error = %v, want %v", err, ErrToolNotInstalled)
-	}
-
 	// Test GetAllInfo
+	ctx := context.Background()
 	allInfo := GetAllInfo(ctx)
 	if len(allInfo) != 1 {
 		t.Errorf("GetAllInfo() returned %d infos, want 1", len(allInfo))
@@ -218,10 +137,5 @@ func TestGlobalRegistryFunctions(t *testing.T) {
 	report := GetHealthReport(ctx)
 	if report.Total != 1 {
 		t.Errorf("GetHealthReport() Total = %d, want 1", report.Total)
-	}
-
-	// Test GlobalRegistry
-	if GlobalRegistry() != globalRegistry {
-		t.Error("GlobalRegistry() should return globalRegistry")
 	}
 }

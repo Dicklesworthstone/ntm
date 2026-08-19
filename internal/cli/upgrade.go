@@ -918,19 +918,6 @@ func fetchRelease(tag string) (*GitHubRelease, error) {
 	return &release, nil
 }
 
-// getAssetName returns the expected asset name prefix for the current platform.
-// GoReleaser uses underscore separators and creates universal binaries for macOS.
-//
-// IMPORTANT: This function is part of the upgrade naming contract with .goreleaser.yaml.
-// If you change the naming logic here, you MUST also update:
-//   - .goreleaser.yaml (archives.name_template)
-//   - TestUpgradeAssetNamingContract in cli_test.go
-//
-// See CONTRIBUTING.md "Release Infrastructure" section for full documentation.
-func getAssetName() string {
-	return assetNameFor(runtime.GOOS, runtime.GOARCH)
-}
-
 // getArchiveAssetName returns the expected archive asset name for a given version.
 // Archive format: ntm_VERSION_OS_ARCH.tar.gz (or .zip for Windows).
 //

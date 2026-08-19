@@ -8,25 +8,10 @@ import (
 	"testing"
 )
 
-func TestFormatString(t *testing.T) {
-	tests := []struct {
-		format Format
-		want   string
-	}{
-		{FormatText, "text"},
-		{FormatJSON, "json"},
-	}
-
-	for _, tt := range tests {
-		if got := tt.format.String(); got != tt.want {
-			t.Errorf("Format.String() = %v, want %v", got, tt.want)
-		}
-	}
-}
-
 func TestFormatterJSON(t *testing.T) {
 	buf := &bytes.Buffer{}
-	f := New(WithJSON(true), WithWriter(buf))
+	f := New(WithJSON(true))
+	f.writer = buf
 
 	data := map[string]string{"hello": "world"}
 	if err := f.JSON(data); err != nil {
@@ -47,8 +32,6 @@ func TestFormatterIsJSON(t *testing.T) {
 		{[]Option{}, false},
 		{[]Option{WithJSON(true)}, true},
 		{[]Option{WithJSON(false)}, false},
-		{[]Option{WithFormat(FormatJSON)}, true},
-		{[]Option{WithFormat(FormatText)}, false},
 	}
 
 	for _, tt := range tests {
@@ -57,16 +40,6 @@ func TestFormatterIsJSON(t *testing.T) {
 			t.Errorf("IsJSON() = %v, want %v", got, tt.want)
 		}
 	}
-}
-
-func TestDetectFormat(t *testing.T) {
-	// With explicit flag, always use JSON
-	if got := DetectFormat(true); got != FormatJSON {
-		t.Errorf("DetectFormat(true) = %v, want FormatJSON", got)
-	}
-
-	// Without flag, depends on terminal detection
-	// In test context, this is non-deterministic
 }
 
 func TestErrorResponse(t *testing.T) {
@@ -98,26 +71,6 @@ func TestSuccessResponse(t *testing.T) {
 	}
 	if s.Message != "operation completed" {
 		t.Errorf("NewSuccess().Message = %q, want %q", s.Message, "operation completed")
-	}
-}
-
-func TestTruncate(t *testing.T) {
-	tests := []struct {
-		s      string
-		maxLen int
-		want   string
-	}{
-		{"hello", 10, "hello"},
-		{"hello world", 8, "hello..."},
-		{"hi", 2, "hi"},
-		{"hello", 3, "hel"}, // maxLen <= 3, no room for "..."
-		{"ab", 1, "a"},
-	}
-
-	for _, tt := range tests {
-		if got := Truncate(tt.s, tt.maxLen); got != tt.want {
-			t.Errorf("Truncate(%q, %d) = %q, want %q", tt.s, tt.maxLen, got, tt.want)
-		}
 	}
 }
 
@@ -180,7 +133,8 @@ func TestTable(t *testing.T) {
 func TestFormatterOutputData(t *testing.T) {
 	// JSON mode
 	buf := &bytes.Buffer{}
-	f := New(WithJSON(true), WithWriter(buf))
+	f := New(WithJSON(true))
+	f.writer = buf
 
 	jsonData := map[string]string{"test": "value"}
 	textCalled := false
@@ -202,7 +156,8 @@ func TestFormatterOutputData(t *testing.T) {
 
 	// Text mode
 	buf.Reset()
-	f = New(WithJSON(false), WithWriter(buf))
+	f = New(WithJSON(false))
+	f.writer = buf
 	textCalled = false
 
 	err = f.OutputData(nil, func(w io.Writer) error {

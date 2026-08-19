@@ -31,17 +31,6 @@ type SetupConfig struct {
 	Verbose bool
 }
 
-// DefaultSetupConfig returns the default Gemini setup configuration.
-func DefaultSetupConfig() SetupConfig {
-	return SetupConfig{
-		AutoSelectProModel: true,
-		ReadyTimeout:       60 * time.Second, // Increased from 30s for slower networks/systems
-		ModelSelectTimeout: 20 * time.Second, // Increased from 10s for reliability
-		PollInterval:       500 * time.Millisecond,
-		Verbose:            false,
-	}
-}
-
 // geminiPromptPattern matches the Gemini CLI prompt.
 var geminiPromptPattern = regexp.MustCompile(`(?i)gemini>\s*$`)
 
@@ -263,30 +252,4 @@ func isProModelSelected(output string) bool {
 func sendDownArrow(paneID string) error {
 	// tmux send-keys Down (or the escape sequence)
 	return tmux.DefaultClient.RunSilent("send-keys", "-t", paneID, "Down")
-}
-
-// WaitForIdleAfterSetup waits for the Gemini agent to return to idle state
-// after model selection, ready for user prompts.
-func WaitForIdleAfterSetup(ctx context.Context, paneID string, timeout time.Duration) error {
-	detector := status.NewDetector()
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-ticker.C:
-			s, err := detector.Detect(paneID)
-			if err != nil {
-				continue
-			}
-			if s.State == status.StateIdle {
-				return nil
-			}
-		}
-	}
 }

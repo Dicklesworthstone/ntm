@@ -253,7 +253,7 @@ func TestAuditQueryPaginationBehavior(t *testing.T) {
 func TestAuditQueryPaginationEndToEnd(t *testing.T) {
 	tmpDir := t.TempDir()
 	writeTestAuditLog(t, tmpDir, "paging_e2e", pagingFixtureRows)
-	searcher := audit.NewSearcherWithPath(tmpDir)
+	searcher := newTestSearcher(t, tmpDir)
 
 	result, err := searcher.Search(audit.Query{Sessions: []string{"paging_e2e"}})
 	if err != nil {

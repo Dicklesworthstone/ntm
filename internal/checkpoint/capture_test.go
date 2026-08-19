@@ -92,56 +92,6 @@ func TestCapturer_FindByPattern_NoSession(t *testing.T) {
 // Capturer.List (bd-9czd7)
 // =============================================================================
 
-func TestCapturer_List(t *testing.T) {
-	t.Parallel()
-	storage := NewStorageWithDir(t.TempDir())
-	capturer := NewCapturerWithStorage(storage)
-	session := "list-session"
-
-	// Save 3 checkpoints with different times
-	times := []time.Time{
-		time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC),
-		time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC),
-		time.Date(2026, 1, 1, 11, 0, 0, 0, time.UTC),
-	}
-	for i, ts := range times {
-		cp := &Checkpoint{
-			ID:   fmt.Sprintf("20260101-%02d0000-000%d-cp", ts.Hour(), i),
-			Name: fmt.Sprintf("cp-%d", i), SessionName: session,
-			CreatedAt: ts, Session: SessionState{},
-		}
-		if err := storage.Save(cp); err != nil {
-			t.Fatalf("Save: %v", err)
-		}
-	}
-
-	list, err := capturer.List(session)
-	if err != nil {
-		t.Fatalf("List: %v", err)
-	}
-	if len(list) != 3 {
-		t.Fatalf("List returned %d, want 3", len(list))
-	}
-	// Verify newest first
-	if !list[0].CreatedAt.After(list[1].CreatedAt) {
-		t.Errorf("expected newest first: %v vs %v", list[0].CreatedAt, list[1].CreatedAt)
-	}
-}
-
-func TestCapturer_List_Empty(t *testing.T) {
-	t.Parallel()
-	storage := NewStorageWithDir(t.TempDir())
-	capturer := NewCapturerWithStorage(storage)
-
-	list, err := capturer.List("no-session")
-	if err != nil {
-		t.Fatalf("List: %v", err)
-	}
-	if len(list) != 0 {
-		t.Errorf("expected 0, got %d", len(list))
-	}
-}
-
 // =============================================================================
 // Capturer.GetLatest (bd-9czd7)
 // =============================================================================

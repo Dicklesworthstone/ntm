@@ -1,17 +1,14 @@
 package robot
 
 import (
-	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
 	"time"
 
-	"github.com/Dicklesworthstone/ntm/internal/alerts"
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/robot/adapters"
-	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 // MarkdownOptions configures markdown output generation.
@@ -123,16 +120,6 @@ func renderMarkdownFromSnapshot(snapshot *SnapshotOutput, opts MarkdownOptions) 
 	}
 
 	return sb.String(), nil
-}
-
-// PrintMarkdownCompact outputs ultra-compact markdown suitable for system prompts.
-func PrintMarkdownCompact(cfg *config.Config) error {
-	opts := MarkdownOptions{
-		MaxBeads:  3,
-		MaxAlerts: 5,
-		Compact:   true,
-	}
-	return PrintMarkdown(cfg, opts)
 }
 
 func resolveMarkdownSections(requested []string) ([]string, error) {
@@ -363,24 +350,6 @@ func snapshotSessionCounts(agents []SnapshotAgent) (map[string]int, map[string]i
 	return counts, states
 }
 
-func countAgentsByType(panes []tmux.Pane) map[string]int {
-	counts := make(map[string]int, len(markdownAgentTypeOrder))
-	for _, agentType := range markdownAgentTypeOrder {
-		counts[agentType] = 0
-	}
-
-	for _, pane := range panes {
-		switch normalizedType := normalizeAgentType(string(pane.Type)); normalizedType {
-		case "claude", "codex", "gemini", "grok", "cursor", "windsurf", "aider", "ollama", "user":
-			counts[normalizedType]++
-		default:
-			counts["other"]++
-		}
-	}
-
-	return counts
-}
-
 // writeSnapshotWorkMarkdown writes the work section from the shared snapshot projection.
 func writeSnapshotWorkMarkdown(sb *strings.Builder, snapshot *SnapshotOutput, opts MarkdownOptions) {
 	work := snapshot.Work
@@ -567,28 +536,6 @@ func alertSummaryCounts(snapshot *SnapshotOutput) (totalActive, critical, warnin
 	return totalActive, critical, warning, info
 }
 
-func alertSeverityOrder(s alerts.Severity) int {
-	switch s {
-	case alerts.SeverityCritical:
-		return 0
-	case alerts.SeverityWarning:
-		return 1
-	default:
-		return 2
-	}
-}
-
-func alertSeverityIcon(s alerts.Severity) string {
-	switch s {
-	case alerts.SeverityCritical:
-		return "🔴"
-	case alerts.SeverityWarning:
-		return "⚠️"
-	default:
-		return "ℹ️"
-	}
-}
-
 func writeSnapshotAttentionMarkdown(sb *strings.Builder, attention *SnapshotAttentionSummary, opts MarkdownOptions) {
 	sb.WriteString("### Attention\n")
 	if opts.Compact {
@@ -672,82 +619,6 @@ func truncateStr(s string, maxLen int) string {
 	return s[:prevI] + "..."
 }
 
-// AgentTable renders a markdown table summarizing agents per session.
-func AgentTable(sessions []SnapshotSession) string {
-	var b strings.Builder
-	b.WriteString("| Session | Pane | Type | Variant | State |\n")
-	b.WriteString("|---|---|---|---|---|\n")
-	for _, sess := range sessions {
-		for _, agent := range sess.Agents {
-			fmt.Fprintf(&b, "| %s | %s | %s | %s | %s |\n",
-				sess.Name,
-				agent.Pane,
-				agent.Type,
-				agent.Variant,
-				agent.State)
-		}
-	}
-	return b.String()
-}
-
-// AlertsList renders alerts as a markdown bullet list.
-func AlertsList(alerts []AlertInfo) string {
-	if len(alerts) == 0 {
-		return "_No active alerts._"
-	}
-	var b strings.Builder
-	for _, a := range alerts {
-		fmt.Fprintf(&b, "- [%s] %s", strings.ToUpper(a.Severity), a.Message)
-		if a.Session != "" {
-			fmt.Fprintf(&b, " (session: %s", a.Session)
-			if a.Pane != "" {
-				fmt.Fprintf(&b, ", pane: %s", a.Pane)
-			}
-			fmt.Fprintf(&b, ")")
-		}
-		if a.BeadID != "" {
-			fmt.Fprintf(&b, " [bead: %s]", a.BeadID)
-		}
-		b.WriteString("\n")
-	}
-	return b.String()
-}
-
-// BeadsSummary renders a concise markdown summary of bead counts.
-func BeadsSummary(summary *bv.BeadsSummary) string {
-	if summary == nil || !summary.Available {
-		return "_Beads summary unavailable._"
-	}
-	return fmt.Sprintf(
-		"- Total: %d (Open: %d, In Progress: %d, Blocked: %d, Ready: %d, Closed: %d)",
-		summary.Total,
-		summary.Open,
-		summary.InProgress,
-		summary.Blocked,
-		summary.Ready,
-		summary.Closed,
-	)
-}
-
-// SuggestedActions renders planned actions as markdown list items.
-func SuggestedActions(actions []BeadAction) string {
-	if len(actions) == 0 {
-		return "_No suggested actions._"
-	}
-	var b strings.Builder
-	for _, act := range actions {
-		fmt.Fprintf(&b, "- %s: %s", act.BeadID, act.Title)
-		if len(act.BlockedBy) > 0 {
-			fmt.Fprintf(&b, " (blocked by: %s)", strings.Join(act.BlockedBy, ", "))
-		}
-		if act.Command != "" {
-			fmt.Fprintf(&b, " — `%s`", act.Command)
-		}
-		b.WriteString("\n")
-	}
-	return b.String()
-}
-
 // AgentTableRow represents a row in the agent markdown table.
 type AgentTableRow struct {
 	Agent  string
@@ -759,20 +630,6 @@ type AgentTableRow struct {
 type SuggestedAction struct {
 	Title  string
 	Reason string
-}
-
-// RenderAgentTable returns a markdown table of agents.
-func RenderAgentTable(rows []AgentTableRow) string {
-	if len(rows) == 0 {
-		return ""
-	}
-	var b strings.Builder
-	b.WriteString("| Agent | Type | Status |\n")
-	b.WriteString("| --- | --- | --- |\n")
-	for _, r := range rows {
-		fmt.Fprintf(&b, "| %s | %s | %s |\n", r.Agent, r.Type, r.Status)
-	}
-	return b.String()
 }
 
 // RenderAlertsList groups alerts by severity and returns markdown bullets.
@@ -824,309 +681,6 @@ func RenderAlertsList(alerts []AlertInfo) string {
 	return strings.TrimSpace(b.String())
 }
 
-// RenderSuggestedActions returns a numbered markdown list.
-func RenderSuggestedActions(actions []SuggestedAction) string {
-	if len(actions) == 0 {
-		return ""
-	}
-	var b strings.Builder
-	for i, a := range actions {
-		line := a.Title
-		if a.Reason != "" {
-			line = fmt.Sprintf("%s — %s", a.Title, a.Reason)
-		}
-		fmt.Fprintf(&b, "%d. %s\n", i+1, line)
-	}
-	return strings.TrimSpace(b.String())
-}
-
 // =============================================================================
 // Section Projection-Based Markdown Rendering (bd-j9jo3.6.5)
 // =============================================================================
-
-// RenderMarkdownFromProjection renders markdown from a SectionProjection.
-// This function demonstrates how markdown is a thin projection over the shared
-// section model, ensuring format changes don't imply semantic changes.
-func RenderMarkdownFromProjection(proj *SectionProjection, compact bool) string {
-	if proj == nil {
-		return "_No data available._\n"
-	}
-
-	var sb strings.Builder
-	sb.WriteString("## NTM Status\n")
-	fmt.Fprintf(&sb, "_Generated: %s_\n\n", proj.Timestamp)
-
-	for _, section := range proj.Sections {
-		if section.IsOmitted() {
-			// Skip omitted sections but note them if verbose
-			continue
-		}
-
-		heading := section.Name
-		if section.FormatHints != nil && section.FormatHints.MarkdownHeading != "" {
-			heading = section.FormatHints.MarkdownHeading
-		}
-
-		switch section.Name {
-		case SectionSummary:
-			renderMarkdownSummary(&sb, section, compact)
-		case SectionSessions:
-			renderMarkdownSessions(&sb, section, heading, compact)
-		case SectionWork:
-			renderMarkdownWork(&sb, section, heading, compact)
-		case SectionAlerts:
-			renderMarkdownAlerts(&sb, section, heading, compact)
-		case SectionAttention:
-			renderMarkdownAttention(&sb, section, heading, compact)
-		default:
-			// Generic section rendering
-			fmt.Fprintf(&sb, "### %s\n", heading)
-			if section.Data != nil {
-				fmt.Fprintf(&sb, "%v\n", section.Data)
-			}
-			sb.WriteString("\n")
-		}
-
-		// Add truncation notice if applicable
-		if section.IsTruncated() {
-			fmt.Fprintf(&sb, "_(%d items omitted; %s)_\n\n",
-				section.Truncation.TruncatedCount,
-				section.Truncation.ResumptionHint)
-		}
-	}
-
-	// Add projection metadata if there were omissions
-	if proj.Metadata != nil && len(proj.Metadata.SectionsOmitted) > 0 {
-		sb.WriteString("---\n_Omitted sections: ")
-		first := true
-		for name := range proj.Metadata.SectionsOmitted {
-			if !first {
-				sb.WriteString(", ")
-			}
-			sb.WriteString(name)
-			first = false
-		}
-		sb.WriteString("_\n")
-	}
-
-	return sb.String()
-}
-
-func renderMarkdownSummary(sb *strings.Builder, section ProjectedSection, compact bool) {
-	sb.WriteString("### Summary\n")
-
-	// Handle both pointer and value types for StatusSummary
-	var summary *StatusSummary
-	switch v := section.Data.(type) {
-	case *StatusSummary:
-		summary = v
-	case StatusSummary:
-		summary = &v
-	default:
-		sb.WriteString("_Summary unavailable._\n\n")
-		return
-	}
-	if summary == nil {
-		sb.WriteString("_Summary unavailable._\n\n")
-		return
-	}
-
-	if compact {
-		fmt.Fprintf(sb,
-			"- sessions:%d agents:%d ready:%d in_progress:%d alerts:%d mail:%d health:%s\n\n",
-			summary.TotalSessions,
-			summary.TotalAgents,
-			summary.ReadyWork,
-			summary.InProgress,
-			summary.AlertsActive,
-			summary.MailUnread,
-			firstNonEmptyString(summary.HealthStatus, "unknown"),
-		)
-		return
-	}
-
-	sb.WriteString("| Key | Value |\n")
-	sb.WriteString("|---|---|\n")
-	fmt.Fprintf(sb, "| Sessions | %d |\n", summary.TotalSessions)
-	fmt.Fprintf(sb, "| Agents | %d |\n", summary.TotalAgents)
-	fmt.Fprintf(sb, "| Ready Work | %d |\n", summary.ReadyWork)
-	fmt.Fprintf(sb, "| In Progress | %d |\n", summary.InProgress)
-	fmt.Fprintf(sb, "| Active Alerts | %d |\n", summary.AlertsActive)
-	fmt.Fprintf(sb, "| Unread Mail | %d |\n", summary.MailUnread)
-	if status := firstNonEmptyString(summary.HealthStatus); status != "" {
-		fmt.Fprintf(sb, "| Health | %s |\n", escapeMarkdownCell(status, 80))
-	}
-	sb.WriteString("\n")
-}
-
-func renderMarkdownSessions(sb *strings.Builder, section ProjectedSection, heading string, compact bool) {
-	sessions, ok := section.Data.([]SnapshotSession)
-	if !ok || sessions == nil {
-		sessions = []SnapshotSession{}
-	}
-
-	if len(sessions) == 0 {
-		if compact {
-			fmt.Fprintf(sb, "### %s: none\n\n", heading)
-		} else {
-			fmt.Fprintf(sb, "### %s\nNo active sessions.\n\n", heading)
-		}
-		return
-	}
-
-	fmt.Fprintf(sb, "### %s (%d)\n", heading, len(sessions))
-
-	if compact {
-		for _, sess := range sessions {
-			typeCounts, stateCounts := snapshotSessionCounts(sess.Agents)
-			attached := ""
-			if sess.Attached {
-				attached = "*"
-			}
-			fmt.Fprintf(sb,
-				"- %s%s: %d agents (%s) w:%d i:%d e:%d\n",
-				sess.Name,
-				attached,
-				len(sess.Agents),
-				formatMarkdownAgentTypeCounts(typeCounts),
-				stateCounts["active"],
-				stateCounts["idle"],
-				stateCounts["error"],
-			)
-		}
-		sb.WriteString("\n")
-		return
-	}
-
-	// Full table format
-	sb.WriteString("| Session | Agents | Types | States | Attached |\n")
-	sb.WriteString("|---|---|---|---|---|\n")
-	for _, sess := range sessions {
-		typeCounts, stateCounts := snapshotSessionCounts(sess.Agents)
-		types := formatMarkdownAgentTypeCounts(typeCounts)
-		states := fmt.Sprintf("w:%d i:%d e:%d",
-			stateCounts["active"], stateCounts["idle"], stateCounts["error"])
-		attached := "no"
-		if sess.Attached {
-			attached = "yes"
-		}
-		fmt.Fprintf(sb, "| %s | %d | %s | %s | %s |\n",
-			sess.Name, len(sess.Agents), types, states, attached)
-	}
-	sb.WriteString("\n")
-}
-
-func renderMarkdownWork(sb *strings.Builder, section ProjectedSection, heading string, compact bool) {
-	fmt.Fprintf(sb, "### %s\n", heading)
-
-	if section.Data == nil {
-		sb.WriteString("_No work data available._\n\n")
-		return
-	}
-
-	// Work section shapes vary by snapshot structure, so render the data as
-	// a compact JSON block rather than a content-free filler line.
-	if m, ok := toMapViaJSON(section.Data); ok && len(m) > 0 {
-		if encoded, err := json.MarshalIndent(m, "", "  "); err == nil {
-			sb.WriteString("```json\n")
-			sb.Write(encoded)
-			sb.WriteString("\n```\n\n")
-			return
-		}
-	}
-	sb.WriteString("_Work data format not recognized._\n\n")
-}
-
-func renderMarkdownAlerts(sb *strings.Builder, section ProjectedSection, heading string, compact bool) {
-	fmt.Fprintf(sb, "### %s\n", heading)
-
-	if section.Data == nil {
-		sb.WriteString("_No alerts._\n\n")
-		return
-	}
-
-	// Try to extract alerts from the section data using reflection/JSON round-trip
-	// since the data may be an anonymous struct from projectAlertsSection
-	switch data := section.Data.(type) {
-	case *AlertSummaryInfo:
-		if data == nil || data.TotalActive == 0 {
-			sb.WriteString("_No active alerts._\n\n")
-			return
-		}
-		critical := data.BySeverity["critical"]
-		warning := data.BySeverity["warning"]
-		fmt.Fprintf(sb, "Total: %d (critical: %d, warning: %d)\n",
-			data.TotalActive, critical, warning)
-	case []AlertInfo:
-		if len(data) == 0 {
-			sb.WriteString("_No active alerts._\n\n")
-			return
-		}
-		for _, a := range data {
-			fmt.Fprintf(sb, "- [%s] %s\n", strings.ToUpper(a.Severity), a.Message)
-		}
-	default:
-		// Try to extract via map access for anonymous structs
-		if m, ok := toMapViaJSON(data); ok {
-			if alerts, ok := m["alerts"].([]any); ok && len(alerts) > 0 {
-				for _, raw := range alerts {
-					if a, ok := raw.(map[string]any); ok {
-						sev, _ := a["severity"].(string)
-						msg, _ := a["message"].(string)
-						fmt.Fprintf(sb, "- [%s] %s\n", strings.ToUpper(sev), msg)
-					}
-				}
-			} else {
-				sb.WriteString("_No active alerts._\n")
-			}
-		} else {
-			sb.WriteString("_Alert data format not recognized._\n")
-		}
-	}
-	sb.WriteString("\n")
-}
-
-// toMapViaJSON converts a struct to map[string]any via JSON marshaling.
-// This handles anonymous structs that can't be type-asserted directly.
-func toMapViaJSON(v any) (map[string]any, bool) {
-	data, err := json.Marshal(v)
-	if err != nil {
-		return nil, false
-	}
-	var m map[string]any
-	if err := json.Unmarshal(data, &m); err != nil {
-		return nil, false
-	}
-	return m, true
-}
-
-func renderMarkdownAttention(sb *strings.Builder, section ProjectedSection, heading string, compact bool) {
-	fmt.Fprintf(sb, "### %s\n", heading)
-
-	summary, ok := section.Data.(*SnapshotAttentionSummary)
-	if !ok || summary == nil {
-		sb.WriteString("_Attention feed unavailable._\n\n")
-		return
-	}
-
-	backgroundCount := summary.TotalEvents - summary.ActionRequiredCount - summary.InterestingCount
-	if backgroundCount < 0 {
-		backgroundCount = 0
-	}
-
-	if compact {
-		fmt.Fprintf(sb, "- %d! action, %d? interesting, %dB background\n\n",
-			summary.ActionRequiredCount,
-			summary.InterestingCount,
-			backgroundCount,
-		)
-		return
-	}
-
-	sb.WriteString("| Category | Count |\n")
-	sb.WriteString("|---|---|\n")
-	fmt.Fprintf(sb, "| Action Required | %d |\n", summary.ActionRequiredCount)
-	fmt.Fprintf(sb, "| Interesting | %d |\n", summary.InterestingCount)
-	fmt.Fprintf(sb, "| Background | %d |\n", backgroundCount)
-	sb.WriteString("\n")
-}

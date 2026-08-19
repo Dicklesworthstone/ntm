@@ -1405,29 +1405,6 @@ func countForeachIterations(results []foreachIterationResult) (total, dispatched
 	return total, dispatched, skipped, failed
 }
 
-func firstForeachError(iterations []foreachIterationResult, stepID string) *StepError {
-	for _, iteration := range iterations {
-		if !iteration.failed() {
-			continue
-		}
-		message := iteration.Error
-		if message == "" {
-			for _, result := range iteration.Results {
-				if result.Status == StatusFailed || result.Status == StatusCancelled {
-					message = resultErrorMessage(result)
-					break
-				}
-			}
-		}
-		if message == "" {
-			message = "iteration failed"
-		}
-		// bd-wio84: structured per-iteration failure metadata.
-		return foreachStructuredErrorAtIteration(stepID, "foreach", message, "", iteration.Index)
-	}
-	return foreachStructuredError(stepID, "foreach", "iteration failure with no detail", "")
-}
-
 func finishForeachFailure(result StepResult, typ, message string) StepResult {
 	// bd-wio84: emit the same kind=foreach step_id=... reason=... details
 	// shape that stepRuntimeError produces for command/template steps so
@@ -1694,40 +1671,6 @@ func substituteForeachInterfaceValue(e *Executor, value interface{}, protected m
 		out := make([]string, len(v))
 		for i, item := range v {
 			out[i] = e.substituteForeachString(item, protected)
-		}
-		return out
-	default:
-		return value
-	}
-}
-
-func substituteInterfaceMap(e *Executor, in map[string]interface{}) map[string]interface{} {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make(map[string]interface{}, len(in))
-	for key, value := range in {
-		out[key] = substituteInterfaceValue(e, value)
-	}
-	return out
-}
-
-func substituteInterfaceValue(e *Executor, value interface{}) interface{} {
-	switch v := value.(type) {
-	case string:
-		return e.substituteVariables(v)
-	case map[string]interface{}:
-		return substituteInterfaceMap(e, v)
-	case []interface{}:
-		out := make([]interface{}, len(v))
-		for i, item := range v {
-			out[i] = substituteInterfaceValue(e, item)
-		}
-		return out
-	case []string:
-		out := make([]string, len(v))
-		for i, item := range v {
-			out[i] = e.substituteVariables(item)
 		}
 		return out
 	default:

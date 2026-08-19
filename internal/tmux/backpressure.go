@@ -118,12 +118,6 @@ func (c *Client) CaptureBackpressureInputs() []backpressure.SurfaceInput {
 	return c.captureBackpressure.inputs()
 }
 
-// DefaultCaptureBackpressureInputs exposes the local runtime client's current
-// capture measurements to snapshot assemblers.
-func DefaultCaptureBackpressureInputs() []backpressure.SurfaceInput {
-	return DefaultClient.CaptureBackpressureInputs()
-}
-
 func (c *Client) recordCaptureBackpressure(target string, lines int, latency time.Duration, err error) {
 	if c == nil {
 		return

@@ -48,18 +48,6 @@ func ParseStandardVersion(output string) (Version, error) {
 	}, nil
 }
 
-// parseVersion is the generic version parser that extracts X.Y.Z from any string.
-// It is used by tools with simple version output formats (GIIL, RU, XF, DCG, UBS, etc.).
-func parseVersion(output string) (Version, error) {
-	return ParseStandardVersion(output)
-}
-
-// parseACFSVersion extracts version from ACFS output.
-// ACFS uses simple "X.Y.Z" format, so we delegate to the standard parser.
-func parseACFSVersion(output string) (Version, error) {
-	return ParseStandardVersion(output)
-}
-
 // LimitedBuffer is a bytes.Buffer that errors on overflow.
 // It is used to prevent OOM when capturing command output.
 type LimitedBuffer struct {

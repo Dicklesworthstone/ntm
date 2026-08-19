@@ -275,48 +275,6 @@ func (a *XFAdapter) Doctor(ctx context.Context) (string, error) {
 	return stdout.String(), nil
 }
 
-func xfIndexValid(stats XFStats) bool {
-	// Conservative: require at least one strong signal of an index.
-	if stats.TweetCount > 0 || stats.LikeCount > 0 || stats.DMCount > 0 || stats.GrokCount > 0 {
-		return true
-	}
-	if stats.DatabasePath != "" {
-		return true
-	}
-	return xfIndexStatusHealthy(stats.IndexStatus)
-}
-
-func xfIndexStatusHealthy(status string) bool {
-	s := strings.ToLower(strings.TrimSpace(status))
-	if s == "" {
-		return false
-	}
-
-	// Explicitly unhealthy signals.
-	switch {
-	case strings.Contains(s, "missing"),
-		strings.Contains(s, "not indexed"),
-		strings.Contains(s, "invalid"),
-		strings.Contains(s, "corrupt"),
-		strings.Contains(s, "error"),
-		strings.Contains(s, "failed"):
-		return false
-	}
-
-	// Explicit healthy signals.
-	switch {
-	case strings.Contains(s, "ok"),
-		strings.Contains(s, "ready"),
-		strings.Contains(s, "indexed"),
-		strings.Contains(s, "healthy"),
-		strings.Contains(s, "up-to-date"):
-		return true
-	}
-
-	// Unknown status: keep conservative.
-	return false
-}
-
 func isDir(path string) (bool, error) {
 	if path == "" {
 		return false, fmt.Errorf("empty path")

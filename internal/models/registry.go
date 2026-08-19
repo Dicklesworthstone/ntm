@@ -67,6 +67,7 @@ var ContextLimits = map[string]int{
 	"gemini-1.5-flash":      1000000,
 	"gemini-3-pro-preview":  1000000,
 	"gemini-3-flash":        1000000,
+	"gemini-3.7-flash":      1000000,
 	"gemini-pro":            32000,
 }
 
@@ -235,7 +236,7 @@ var agentTypeDefaultModels = map[string]string{
 	"cc":       "claude-opus-4",
 	"cod":      "gpt-5-codex",
 	"gmi":      "gemini-2.0-flash",
-	"agy":      "gemini-3-pro-preview", // Antigravity pins Gemini 3 Pro
+	"agy":      "gemini-3.7-flash", // Antigravity pins Gemini 3.7 Flash
 	"cursor":   "claude-3.5-sonnet",
 	"windsurf": "claude-3.5-sonnet",
 	"aider":    "claude-3.5-sonnet",

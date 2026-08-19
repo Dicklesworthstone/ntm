@@ -139,19 +139,6 @@ func (f *ClaudeAuthFlow) DetectChallengeCode(output string) (string, bool) {
 	return "", false
 }
 
-// DetectAuthSuccess checks if authentication was successful
-func (f *ClaudeAuthFlow) DetectAuthSuccess(output string) bool {
-	return strings.Contains(output, "Successfully logged in") ||
-		strings.Contains(output, "Login successful")
-}
-
-// DetectAuthFailure checks if authentication failed
-func (f *ClaudeAuthFlow) DetectAuthFailure(output string) bool {
-	return strings.Contains(output, "Login failed") ||
-		strings.Contains(output, "Authentication failed") ||
-		strings.Contains(output, "Error logging in")
-}
-
 func (f *ClaudeAuthFlow) latestAuthResult(output string) AuthState {
 	successAt := latestAuthSignal(output, "Successfully logged in", "Login successful")
 	failureAt := latestAuthSignal(output, "Login failed", "Authentication failed", "Error logging in")

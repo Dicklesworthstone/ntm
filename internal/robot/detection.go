@@ -282,24 +282,3 @@ func DetectFromNTMTitle(title string) AgentDetection {
 
 	return AgentDetection{Type: "unknown", Confidence: 0.0, Method: MethodUnknown}
 }
-
-// DetectAllAgents detects agent types for all panes in a session
-func DetectAllAgents(session string) (map[int]AgentDetection, error) {
-	panes, err := tmux.GetPanes(session)
-	if err != nil {
-		return nil, err
-	}
-
-	results := make(map[int]AgentDetection)
-	for _, pane := range panes {
-		// Try to capture some content for detection
-		content := ""
-		if captured, err := tmux.CapturePaneOutput(pane.ID, 50); err == nil {
-			content = captured
-		}
-
-		results[pane.Index] = DetectAgentTypeEnhanced(pane, content)
-	}
-
-	return results, nil
-}

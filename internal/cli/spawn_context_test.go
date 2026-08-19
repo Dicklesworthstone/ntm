@@ -76,23 +76,6 @@ func TestSpawnContextForAgent(t *testing.T) {
 	}
 }
 
-func TestAgentSpawnContextEnvVars(t *testing.T) {
-	ctx := NewSpawnContext(4)
-	agentCtx := ctx.ForAgent(2, time.Second)
-
-	envVars := agentCtx.EnvVars()
-
-	if envVars["NTM_SPAWN_ORDER"] != "2" {
-		t.Errorf("expected NTM_SPAWN_ORDER=2, got %s", envVars["NTM_SPAWN_ORDER"])
-	}
-	if envVars["NTM_SPAWN_TOTAL"] != "4" {
-		t.Errorf("expected NTM_SPAWN_TOTAL=4, got %s", envVars["NTM_SPAWN_TOTAL"])
-	}
-	if envVars["NTM_SPAWN_BATCH_ID"] != ctx.BatchID {
-		t.Errorf("expected NTM_SPAWN_BATCH_ID=%s, got %s", ctx.BatchID, envVars["NTM_SPAWN_BATCH_ID"])
-	}
-}
-
 func TestAgentSpawnContextEnvVarPrefix(t *testing.T) {
 	ctx := NewSpawnContext(3)
 	agentCtx := ctx.ForAgent(1, 0)
@@ -243,25 +226,6 @@ func TestSpawnContextFirstAndLastAgent(t *testing.T) {
 	// Both should have same batch ID
 	if first.BatchID != last.BatchID {
 		t.Errorf("expected same BatchID for all agents, got %s vs %s", first.BatchID, last.BatchID)
-	}
-}
-
-func TestEnvVarsMapContent(t *testing.T) {
-	ctx := NewSpawnContext(10)
-	agentCtx := ctx.ForAgent(7, 6*time.Second)
-
-	envVars := agentCtx.EnvVars()
-
-	// Should have exactly 3 environment variables
-	if len(envVars) != 3 {
-		t.Errorf("expected 3 env vars, got %d", len(envVars))
-	}
-
-	expectedKeys := []string{"NTM_SPAWN_ORDER", "NTM_SPAWN_TOTAL", "NTM_SPAWN_BATCH_ID"}
-	for _, key := range expectedKeys {
-		if _, ok := envVars[key]; !ok {
-			t.Errorf("expected env var %s to be present", key)
-		}
 	}
 }
 

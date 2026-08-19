@@ -2,9 +2,7 @@ package ensemble
 
 import (
 	"encoding/json"
-	"fmt"
 	"sort"
-	"strings"
 	"time"
 )
 
@@ -112,14 +110,6 @@ func NewContributionTracker() *ContributionTracker {
 	return &ContributionTracker{
 		modeScores: make(map[string]*ContributionScore),
 		Config:     DefaultContributionConfig(),
-	}
-}
-
-// NewContributionTrackerWithConfig creates a tracker with custom config.
-func NewContributionTrackerWithConfig(cfg ContributionConfig) *ContributionTracker {
-	return &ContributionTracker{
-		modeScores: make(map[string]*ContributionScore),
-		Config:     cfg,
 	}
 }
 
@@ -297,45 +287,6 @@ func (t *ContributionTracker) GenerateReport() *ContributionReport {
 	}
 
 	return report
-}
-
-// FormatReport produces a human-readable contribution report.
-func FormatReport(report *ContributionReport) string {
-	if report == nil {
-		return "No contribution data available"
-	}
-
-	var b strings.Builder
-
-	fmt.Fprintf(&b, "Mode Contribution Report\n")
-	fmt.Fprintf(&b, "========================\n\n")
-
-	fmt.Fprintf(&b, "Summary:\n")
-	fmt.Fprintf(&b, "  Total Findings:  %d (deduped: %d)\n", report.TotalFindings, report.DedupedFindings)
-	fmt.Fprintf(&b, "  Overlap Rate:    %.1f%%\n", report.OverlapRate*100)
-	fmt.Fprintf(&b, "  Diversity Score: %.2f\n\n", report.DiversityScore)
-
-	fmt.Fprintf(&b, "Mode Scores:\n")
-	for _, score := range report.Scores {
-		name := score.ModeName
-		if name == "" {
-			name = score.ModeID
-		}
-		fmt.Fprintf(&b, "\n  #%d %s (%.1f)\n", score.Rank, name, score.Score)
-		fmt.Fprintf(&b, "     Findings: %d/%d (unique: %d)\n",
-			score.FindingsCount, score.OriginalFindings, score.UniqueInsights)
-		fmt.Fprintf(&b, "     Citations: %d | Risks: %d | Recs: %d\n",
-			score.CitationCount, score.RisksCount, score.RecommendationsCount)
-
-		if len(score.HighlightFindings) > 0 {
-			fmt.Fprintf(&b, "     Highlights:\n")
-			for _, h := range score.HighlightFindings {
-				fmt.Fprintf(&b, "       - %s\n", h)
-			}
-		}
-	}
-
-	return b.String()
 }
 
 // JSON returns the report as indented JSON.

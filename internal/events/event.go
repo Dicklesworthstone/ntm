@@ -70,18 +70,6 @@ func NewEvent(eventType EventType, session string, data map[string]interface{}) 
 	}
 }
 
-// NewEventWithCorrelation creates a new event with a correlation ID for tracing.
-func NewEventWithCorrelation(eventType EventType, session, agentName, correlationID string, data map[string]interface{}) *Event {
-	return &Event{
-		Timestamp:     time.Now().UTC(),
-		Type:          eventType,
-		Session:       session,
-		AgentName:     agentName,
-		CorrelationID: correlationID,
-		Data:          data,
-	}
-}
-
 // SessionCreateData contains data for session_create events.
 type SessionCreateData struct {
 	ClaudeCount      int    `json:"claude_count,omitempty"`

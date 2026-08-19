@@ -277,19 +277,6 @@ func extractWarningLines(data []byte) []string {
 	return warnings
 }
 
-// QuickScan is a convenience function that creates a scanner and runs a scan.
-// Returns nil, nil if UBS is not installed (graceful degradation).
-func QuickScan(ctx context.Context, path string) (*ScanResult, error) {
-	scanner, err := New()
-	if err != nil {
-		if errors.Is(err, ErrNotInstalled) {
-			return nil, nil // Graceful degradation
-		}
-		return nil, err
-	}
-	return scanner.Scan(ctx, path, DefaultOptions())
-}
-
 // QuickScanWithOptions is like QuickScan but accepts custom options.
 func QuickScanWithOptions(ctx context.Context, path string, opts ScanOptions) (*ScanResult, error) {
 	scanner, err := New()

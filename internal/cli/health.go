@@ -360,18 +360,6 @@ func clearScreen() {
 	fmt.Print("\033[H\033[2J")
 }
 
-// filterHealthResult applies pane and status filters to the result
-func filterHealthResult(result *health.SessionHealth) *health.SessionHealth {
-	if healthPane == "" {
-		return filterHealthResultWithOptions(result, -1, healthStatus)
-	}
-	paneIDs, err := resolveHealthPaneIDs(result.Session, healthPane)
-	if err != nil {
-		return filterHealthResultWithOptions(result, -1, healthStatus)
-	}
-	return filterHealthResultWithPaneIDs(result, paneIDs, healthStatus)
-}
-
 func resolveHealthPaneIDs(session, selector string) (map[string]struct{}, error) {
 	panes, err := tmux.GetPanes(session)
 	if err != nil {

@@ -435,61 +435,6 @@ func TestParseRobotModeContext(t *testing.T) {
 	}
 }
 
-func TestEstimateTokens(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		chars    int
-		expected int64
-	}{
-		{0, 0},
-		{35, 10},     // ~35 chars = ~10 tokens
-		{350, 100},   // ~350 chars = ~100 tokens
-		{3500, 1000}, // ~3500 chars = ~1000 tokens
-	}
-
-	for _, tt := range tests {
-		got := EstimateTokens(tt.chars)
-		// Allow some variance due to rounding
-		if got < tt.expected-5 || got > tt.expected+5 {
-			t.Errorf("EstimateTokens(%d) = %d, expected ~%d", tt.chars, got, tt.expected)
-		}
-	}
-}
-
-func TestParseTokenCount(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		input    string
-		expected int64
-		ok       bool
-	}{
-		{"145000", 145000, true},
-		{"145,000", 145000, true},
-		{"145k", 145000, true},
-		{"145K", 145000, true},
-		{"1.5M", 1500000, true},
-		{"1.5m", 1500000, true},
-		{"1.5k", 1500, true},
-		{"invalid", 0, false},
-		{"", 0, false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.input, func(t *testing.T) {
-			t.Parallel()
-			got, ok := ParseTokenCount(tt.input)
-			if ok != tt.ok {
-				t.Errorf("ParseTokenCount(%q) ok = %v, want %v", tt.input, ok, tt.ok)
-			}
-			if ok && got != tt.expected {
-				t.Errorf("ParseTokenCount(%q) = %d, want %d", tt.input, got, tt.expected)
-			}
-		})
-	}
-}
-
 func TestContextMonitor_Clear(t *testing.T) {
 	t.Parallel()
 

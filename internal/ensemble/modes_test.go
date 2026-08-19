@@ -87,54 +87,6 @@ func TestEmbeddedModes_TierDefaults(t *testing.T) {
 	}
 }
 
-func TestGetModeByID_Found(t *testing.T) {
-	catalog, err := DefaultCatalog()
-	if err != nil {
-		t.Fatalf("DefaultCatalog() error: %v", err)
-	}
-	mode := catalog.GetMode("deductive")
-	if mode == nil {
-		t.Fatal("GetMode(deductive) returned nil")
-	}
-	if mode.Code != "A1" {
-		t.Errorf("GetMode(deductive).Code = %q, want %q", mode.Code, "A1")
-	}
-}
-
-func TestGetModeByID_NotFound(t *testing.T) {
-	catalog, err := DefaultCatalog()
-	if err != nil {
-		t.Fatalf("DefaultCatalog() error: %v", err)
-	}
-	if catalog.GetMode("does-not-exist") != nil {
-		t.Error("GetMode(does-not-exist) should return nil")
-	}
-}
-
-func TestGetModeByCode_Found(t *testing.T) {
-	catalog, err := DefaultCatalog()
-	if err != nil {
-		t.Fatalf("DefaultCatalog() error: %v", err)
-	}
-	mode := catalog.GetModeByCode("A1")
-	if mode == nil {
-		t.Fatal("GetModeByCode(A1) returned nil")
-	}
-	if mode.ID != "deductive" {
-		t.Errorf("GetModeByCode(A1).ID = %q, want %q", mode.ID, "deductive")
-	}
-}
-
-func TestGetModeByCode_NotFound(t *testing.T) {
-	catalog, err := DefaultCatalog()
-	if err != nil {
-		t.Fatalf("DefaultCatalog() error: %v", err)
-	}
-	if catalog.GetModeByCode("Z99") != nil {
-		t.Error("GetModeByCode(Z99) should return nil")
-	}
-}
-
 func logSampleModes(t *testing.T, modes []ReasoningMode, count int) {
 	if count <= 0 {
 		return

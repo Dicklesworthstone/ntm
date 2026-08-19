@@ -371,10 +371,6 @@ type SpawnedAgent struct {
 	Error     string `json:"error,omitempty"`
 }
 
-func collectSpawnAdmissionInput(ctx context.Context, opts SpawnOptions, cfg *config.Config, totalAgents, totalPanes int) pressure.SpawnAdmissionInput {
-	return collectSpawnAdmissionInputWithPanes(ctx, opts, cfg, totalAgents, totalPanes, tmux.GetAllPanesContext)
-}
-
 func collectSpawnAdmissionInputWithPanes(
 	ctx context.Context,
 	opts SpawnOptions,
@@ -1476,13 +1472,6 @@ func agentTypeShort(agentType string) string {
 	}
 }
 
-// getAgentCommands returns the commands to launch each agent type with the
-// configured default models and no per-spawn overrides.
-func getAgentCommands(cfg *config.Config) map[string]string {
-	commands, _ := getAgentCommandsWithOverrides(cfg, SpawnOptions{})
-	return commands
-}
-
 // getAgentCommandsWithOverrides returns the commands to launch each agent
 // type, applying the spawn request's per-type model/effort overrides
 // (`--spawn-cod=8:gpt-5.3-codex:high` style specs, bd-rr8gn). It returns an
@@ -1607,14 +1596,6 @@ func normalizeAssignStrategyStrict(strategy string) (string, error) {
 	default:
 		return "", fmt.Errorf("unsupported assignment strategy %q (expected top-n, diverse, dependency-aware, or skill-matched)", strategy)
 	}
-}
-
-// assignWorkToAgents gets triage recommendations, claims beads, and sends work prompts.
-func assignWorkToAgents(ctx context.Context, output *SpawnOutput, workDir, session, strategy string, cfg *config.Config, requireReservation bool, reservationPaths []string, customDeps *SpawnAssignmentDependencies) []SpawnAssignment {
-	assignments, _ := assignWorkToAgentsWithError(
-		ctx, output, workDir, session, strategy, cfg, requireReservation, reservationPaths, customDeps, nil,
-	)
-	return assignments
 }
 
 func assignWorkToAgentsWithError(ctx context.Context, output *SpawnOutput, workDir, session, strategy string, cfg *config.Config, requireReservation bool, reservationPaths []string, customDeps *SpawnAssignmentDependencies, verifiedPlan *bv.TriageResponse) ([]SpawnAssignment, error) {

@@ -5,13 +5,10 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
@@ -45,11 +42,6 @@ func runCmdCapture(ctx context.Context, timeout time.Duration, name string, args
 	return out.String(), errb.String(), nil
 }
 
-// CodexHomeEnvVar is the environment variable Codex honors to locate its config
-// and auth directory. When set, Codex reads auth.json from $CODEX_HOME/auth.json
-// instead of the default global ~/.codex/auth.json.
-const CodexHomeEnvVar = "CODEX_HOME"
-
 // CodexHomeProvisioner resolves CAAM-owned, isolated CODEX_HOME directories so
 // that Codex panes in a swarm never share the global ~/.codex/auth.json. A
 // named CAAM profile supplies its own codex_home; an empty profile retains the
@@ -71,37 +63,6 @@ type CodexHomeProvisioner struct {
 
 	// Logger for structured logging.
 	Logger *slog.Logger
-}
-
-// NewCodexHomeProvisioner creates a provisioner rooted at baseDir.
-func NewCodexHomeProvisioner(baseDir string) *CodexHomeProvisioner {
-	return &CodexHomeProvisioner{
-		BaseDir:        baseDir,
-		CaamPath:       "caam",
-		CommandTimeout: defaultCodexHomeTimeout,
-		Logger:         slog.Default(),
-	}
-}
-
-// WithCaamPath sets the caam binary path.
-func (p *CodexHomeProvisioner) WithCaamPath(path string) *CodexHomeProvisioner {
-	if path != "" {
-		p.CaamPath = path
-	}
-	return p
-}
-
-// WithLogger sets the logger.
-func (p *CodexHomeProvisioner) WithLogger(l *slog.Logger) *CodexHomeProvisioner {
-	p.Logger = l
-	return p
-}
-
-func (p *CodexHomeProvisioner) logger() *slog.Logger {
-	if p.Logger != nil {
-		return p.Logger
-	}
-	return slog.Default()
 }
 
 // sanitizeSegment makes a session/pane identifier safe for use as a single path
@@ -127,111 +88,6 @@ func sanitizeSegment(s string) string {
 	return out
 }
 
-// HomePath returns the isolated CODEX_HOME directory for a (session, pane) pair.
-// It does not create the directory; use ProvisionPaneHome for that.
-func (p *CodexHomeProvisioner) HomePath(session, pane string) string {
-	return filepath.Join(p.BaseDir, ".ntm", "codex-homes", sanitizeSegment(session), sanitizeSegment(pane))
-}
-
-// ProvisionPaneHome returns the isolated CODEX_HOME for the pane. For a named
-// CAAM profile, CAAM owns the profile directory and its auth material, so this
-// resolves the profile's existing CODEX_HOME rather than attempting to copy a
-// credential through an unsupported CAAM export command. If profile is empty,
-// the per-pane directory is created empty (the pane will then need an
-// interactive login or a later RepopulatePaneHome).
-func (p *CodexHomeProvisioner) ProvisionPaneHome(ctx context.Context, session, pane, profile string) (string, error) {
-	if p.BaseDir == "" {
-		return "", fmt.Errorf("CodexHomeProvisioner: BaseDir is required")
-	}
-	if profile != "" {
-		home, err := p.caamProfileCodexHome(ctx, profile)
-		if err != nil {
-			return "", err
-		}
-		p.logger().Info("[CodexHome] provisioned_caam_profile",
-			"session", session,
-			"pane", pane,
-			"codex_home", home,
-			"profile", profile)
-		return home, nil
-	}
-
-	home := p.HomePath(session, pane)
-	if err := os.MkdirAll(home, 0o700); err != nil {
-		return "", fmt.Errorf("create codex home %s: %w", home, err)
-	}
-
-	p.logger().Info("[CodexHome] provisioned",
-		"session", session,
-		"pane", pane,
-		"codex_home", home,
-		"profile", profile,
-		"seeded", false)
-	return home, nil
-}
-
-// caamProfileCodexHome resolves CAAM's owned profile directory through its
-// supported profile-status surface. CAAM does not expose an auth export command:
-// `caam exec codex <profile>` consumes these credentials directly, and this
-// launcher consumes the same CODEX_HOME without copying credential bytes into
-// NTM-owned storage.
-func (p *CodexHomeProvisioner) caamProfileCodexHome(ctx context.Context, profile string) (string, error) {
-	caam := p.CaamPath
-	if caam == "" {
-		caam = "caam"
-	}
-	out, stderr, err := runCmdCapture(ctx, p.CommandTimeout, caam, "profile", "status", "codex", profile)
-	if err != nil {
-		return "", fmt.Errorf("inspect caam Codex profile %q: %w (%s)", profile, err, strings.TrimSpace(stderr))
-	}
-
-	var profilePath string
-	loggedIn := false
-	for _, line := range strings.Split(out, "\n") {
-		line = strings.TrimSpace(line)
-		switch {
-		case strings.HasPrefix(line, "Path:"):
-			profilePath = strings.TrimSpace(strings.TrimPrefix(line, "Path:"))
-		case strings.HasPrefix(line, "Logged in:"):
-			loggedIn = strings.EqualFold(strings.TrimSpace(strings.TrimPrefix(line, "Logged in:")), "true")
-		}
-	}
-	if profilePath == "" || !filepath.IsAbs(profilePath) {
-		return "", fmt.Errorf("inspect caam Codex profile %q: missing absolute profile path", profile)
-	}
-	if !loggedIn {
-		return "", fmt.Errorf("inspect caam Codex profile %q: profile is not logged in", profile)
-	}
-	return filepath.Join(profilePath, "codex_home"), nil
-}
-
-// RepopulatePaneHome refreshes an existing pane's isolated CODEX_HOME with the
-// auth for a (new) profile — the pane-local rotation primitive. It never touches
-// the global ~/.codex/auth.json. The caller is responsible for restarting only
-// that pane afterwards. Returns the CODEX_HOME path that was repopulated.
-func (p *CodexHomeProvisioner) RepopulatePaneHome(ctx context.Context, session, pane, profile string) (string, error) {
-	if profile == "" {
-		return "", fmt.Errorf("RepopulatePaneHome: profile is required for pane-local rotation")
-	}
-	profileHome, err := p.caamProfileCodexHome(ctx, profile)
-	if err != nil {
-		return "", err
-	}
-	p.logger().Info("[CodexHome] repopulated_pane_local",
-		"session", session,
-		"pane", pane,
-		"codex_home", profileHome,
-		"profile", profile)
-	return profileHome, nil
-}
-
-// EnvForPane returns the environment-variable assignment (CODEX_HOME=<path>) for
-// launching a pane with isolated auth. The launcher merges this into the pane's
-// per-agent env.
-func (p *CodexHomeProvisioner) EnvForPane(session, pane string) map[string]string {
-	return map[string]string{CodexHomeEnvVar: p.HomePath(session, pane)}
-}
-
 // ----------------------------------------------------------------------------
 // Live tmux probe wiring the CodexHomeInspector from 4765d665 to real panes.
 // ----------------------------------------------------------------------------
@@ -243,76 +99,6 @@ type codexHomeProbe interface {
 	// PaneCodexHome returns the isolated CODEX_HOME provisioned for a pane of
 	// this session, and whether one exists.
 	PaneCodexHome(session string, pane tmux.Pane) (value string, set bool, err error)
-}
-
-// NewTmuxCodexHomeInspector builds a CodexHomeInspector that reports the live
-// Codex panes of a session and each pane's effective CODEX_HOME. A pane with no
-// isolated home (or one pointing at the default global ~/.codex) is reported as
-// NOT isolated, so the guard can refuse an unsafe global rotation.
-//
-// baseDir is the project directory the homes were provisioned under; it must
-// match the CodexHomeProvisioner's BaseDir or no pane will be seen as isolated.
-func NewTmuxCodexHomeInspector(session, baseDir string) CodexHomeInspector {
-	return newTmuxCodexHomeInspector(session, provisionedCodexProbe{baseDir: baseDir})
-}
-
-// newTmuxCodexHomeInspector is the injectable form used by tests.
-func newTmuxCodexHomeInspector(session string, probe codexHomeProbe) CodexHomeInspector {
-	return func() ([]CodexPaneInfo, error) {
-		panes, err := probe.GetPanes(session)
-		if err != nil {
-			return nil, fmt.Errorf("list panes for session %q: %w", session, err)
-		}
-		var out []CodexPaneInfo
-		for _, pane := range panes {
-			if !isCodexAgentType(pane.Type) {
-				continue
-			}
-			// The reported identity must round-trip to the same pane key the
-			// provisioner used; see codexPaneSessionTarget.
-			target := codexPaneSessionTarget(session, pane)
-			home, set, perr := probe.PaneCodexHome(session, pane)
-			if perr != nil {
-				// Treat a probe failure for one pane as "unknown" => not isolated,
-				// so the guard fails closed for that pane.
-				out = append(out, CodexPaneInfo{SessionPane: target, CodexHome: ""})
-				continue
-			}
-			info := CodexPaneInfo{SessionPane: target}
-			if set && !isGlobalCodexHome(home) {
-				info.CodexHome = home
-			}
-			out = append(out, info)
-		}
-		return out, nil
-	}
-}
-
-// isCodexAgentType reports whether a tmux pane agent type is a Codex agent.
-func isCodexAgentType(t tmux.AgentType) bool {
-	return agent.AgentType(string(t)).Canonical() == agent.AgentTypeCodex
-}
-
-// isGlobalCodexHome reports whether a CODEX_HOME value resolves to the default
-// global ~/.codex directory (i.e. NOT an isolated per-pane home).
-func isGlobalCodexHome(home string) bool {
-	home = strings.TrimSpace(home)
-	if home == "" {
-		return true
-	}
-	if homeDir, err := os.UserHomeDir(); err == nil && homeDir != "" {
-		global := filepath.Join(homeDir, ".codex")
-		if filepath.Clean(home) == filepath.Clean(global) {
-			return true
-		}
-	}
-	// Heuristic fallback for tests / odd $HOME: a bare ~/.codex tail with no
-	// per-pane suffix is global.
-	cleaned := filepath.Clean(home)
-	if strings.HasSuffix(cleaned, string(filepath.Separator)+".codex") || cleaned == ".codex" {
-		return true
-	}
-	return false
 }
 
 // provisionedCodexProbe implements codexHomeProbe by reading the durable
@@ -333,54 +119,4 @@ func isGlobalCodexHome(home string) bool {
 // and it cannot drift from what ProvisionPaneHome actually created.
 type provisionedCodexProbe struct {
 	baseDir string
-}
-
-func (provisionedCodexProbe) GetPanes(session string) ([]tmux.Pane, error) {
-	return tmux.GetPanes(session)
-}
-
-func (p provisionedCodexProbe) PaneCodexHome(session string, pane tmux.Pane) (string, bool, error) {
-	if strings.TrimSpace(p.baseDir) == "" {
-		return "", false, nil
-	}
-	home := NewCodexHomeProvisioner(p.baseDir).HomePath(session, codexPaneKey(pane))
-	info, err := os.Stat(home)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return "", false, nil
-		}
-		return "", false, fmt.Errorf("inspect codex home %s: %w", home, err)
-	}
-	if !info.IsDir() {
-		return "", false, nil
-	}
-	return home, true, nil
-}
-
-// codexPaneKey is the pane component ProvisionPaneHome is keyed by.
-//
-// It must equal what the ROTATION path passes, or the inspector stats the wrong
-// directory and silently reports every pane as unisolated — the very failure
-// this probe replaced. That path is fixed: the limit detector builds
-// SessionPane with formatPaneTarget ("session:<window>.<pane>"), and
-// pane-local rotation derives the provisioner's pane argument from it via
-// splitSessionPane, which keeps everything after the first ':'. The key is
-// therefore "<window>.<pane>", not the bare pane index.
-//
-// codexPaneSessionTarget below is the other half of the same contract; the two
-// are pinned together by test rather than by comment.
-func codexPaneKey(pane tmux.Pane) string {
-	return fmt.Sprintf("%d.%d", pane.WindowIndex, pane.Index)
-}
-
-// codexPaneSessionTarget is the SessionPane identity the inspector reports.
-//
-// It must round-trip: splitSessionPane(codexPaneSessionTarget(s, p)) has to
-// yield the same pane key codexPaneKey produces, because the guard reads these
-// infos while rotation keys the on-disk home from a SessionPane of the same
-// shape. Reporting the tmux pane ID ("%1") here instead made splitSessionPane
-// parse it as session="%1", pane="0" — an identity that matches no provisioned
-// home at all.
-func codexPaneSessionTarget(session string, pane tmux.Pane) string {
-	return formatPaneTargetWithWindow(session, pane.WindowIndex, pane.Index)
 }

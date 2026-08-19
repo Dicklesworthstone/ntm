@@ -241,11 +241,3 @@ func FormatPriorityReport(report *PriorityReport) string {
 
 	return s
 }
-
-// GetTopPriority returns the top N findings by adjusted priority.
-func GetTopPriority(report *PriorityReport, n int) []PrioritizedFinding {
-	if n >= len(report.Findings) {
-		return report.Findings
-	}
-	return report.Findings[:n]
-}

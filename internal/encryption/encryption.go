@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 )
 
 const (
@@ -66,16 +65,6 @@ func IsKind(err error, kind ErrorKind) bool {
 // IsWrongKey reports whether err indicates an authentication failure (wrong key).
 func IsWrongKey(err error) bool {
 	return IsKind(err, ErrWrongKey)
-}
-
-// IsCorruptedData reports whether err indicates malformed or truncated data.
-func IsCorruptedData(err error) bool {
-	return IsKind(err, ErrCorruptedData)
-}
-
-// IsInvalidKey reports whether err indicates an invalid key size or format.
-func IsInvalidKey(err error) bool {
-	return IsKind(err, ErrInvalidKey)
 }
 
 // Encrypt encrypts plaintext with AES-256-GCM.
@@ -141,32 +130,6 @@ func Decrypt(key, data []byte) ([]byte, error) {
 		return nil, &Error{Kind: ErrWrongKey, Err: fmt.Errorf("authentication failed (wrong key or corrupted data): %w", err)}
 	}
 	return plaintext, nil
-}
-
-// EncryptFile reads srcPath, encrypts the contents, and writes to dstPath.
-func EncryptFile(key []byte, srcPath, dstPath string) error {
-	plaintext, err := os.ReadFile(srcPath)
-	if err != nil {
-		return err
-	}
-	ciphertext, err := Encrypt(key, plaintext)
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(dstPath, ciphertext, 0o600)
-}
-
-// DecryptFile reads srcPath, decrypts the contents, and writes to dstPath.
-func DecryptFile(key []byte, srcPath, dstPath string) error {
-	ciphertext, err := os.ReadFile(srcPath)
-	if err != nil {
-		return err
-	}
-	plaintext, err := Decrypt(key, ciphertext)
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(dstPath, plaintext, 0o600)
 }
 
 func newCipher(key []byte) (cipher.Block, error) {

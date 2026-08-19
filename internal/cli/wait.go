@@ -305,22 +305,6 @@ func filterPanesForWait(panes []tmux.Pane, opts WaitOptions) []tmux.Pane {
 	return result
 }
 
-// detectAgentType extracts the agent type from a pane title.
-// Pane titles follow the pattern: <session>__<type>_<index>
-func detectAgentType(title string) string {
-	typePart := tmux.PaneTitleSuffix(title)
-	if typePart == "" {
-		return ""
-	}
-	// Extract type before underscore and number
-	for i, c := range typePart {
-		if c == '_' {
-			return typePart[:i]
-		}
-	}
-	return typePart
-}
-
 // checkConditionMet checks if the wait condition is satisfied.
 func checkConditionMet(activities []*robot.AgentActivity, opts WaitOptions) (bool, []WaitAgentInfo) {
 	if len(activities) == 0 {

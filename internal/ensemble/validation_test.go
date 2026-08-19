@@ -2,28 +2,17 @@ package ensemble
 
 import "testing"
 
-func TestValidationReport_HasErrors(t *testing.T) {
-	report := NewValidationReport()
-	if report.HasErrors() {
-		t.Fatal("expected HasErrors false for empty report")
-	}
-	report.add(ValidationIssue{Code: "ERR", Severity: SeverityError, Message: "boom"})
-	if !report.HasErrors() {
-		t.Fatal("expected HasErrors true after adding error")
-	}
-}
-
 func TestValidateModeIDs_EmptyAndDuplicate(t *testing.T) {
 	catalog := testModeCatalog(t)
 	report := NewValidationReport()
 	validateModeIDs(nil, catalog, false, report)
-	if !report.HasErrors() {
+	if len(report.Errors) == 0 {
 		t.Fatal("expected errors for empty mode list")
 	}
 
 	report = NewValidationReport()
 	validateModeIDs([]string{"deductive", "deductive"}, catalog, false, report)
-	if !report.HasErrors() {
+	if len(report.Errors) == 0 {
 		t.Fatal("expected errors for duplicate modes")
 	}
 }
@@ -53,7 +42,7 @@ func TestValidateEnsemblePresets_Extensions(t *testing.T) {
 	}
 
 	report := ValidateEnsemblePresets(presets, catalog)
-	if report == nil || !report.HasErrors() {
+	if report == nil || len(report.Errors) == 0 {
 		t.Fatal("expected validation errors for missing extends")
 	}
 }
@@ -64,7 +53,7 @@ func TestValidateBudgetConfig_TooHigh(t *testing.T) {
 		MaxTokensPerMode: 500000,
 		MaxTotalTokens:   2000000,
 	}, report)
-	if !report.HasErrors() {
+	if len(report.Errors) == 0 {
 		t.Fatal("expected budget validation errors")
 	}
 }
@@ -81,7 +70,7 @@ func TestValidateEnsemblePreset_ModeRefsByCode(t *testing.T) {
 	}
 
 	report := ValidateEnsemblePreset(&preset, catalog, nil)
-	if report.HasErrors() {
+	if len(report.Errors) > 0 {
 		t.Fatalf("expected no errors, got: %+v", report.Errors)
 	}
 }
@@ -99,7 +88,7 @@ func TestValidateEnsemblePreset_TierEnforcement(t *testing.T) {
 	}
 
 	report := ValidateEnsemblePreset(&preset, catalog, nil)
-	if !report.HasErrors() {
+	if len(report.Errors) == 0 {
 		t.Fatal("expected errors for advanced mode without allow_advanced")
 	}
 	if !hasErrorCode(report, "TIER_NOT_ALLOWED") {
@@ -120,7 +109,7 @@ func TestValidateEnsemblePreset_AllowAdvanced(t *testing.T) {
 	}
 
 	report := ValidateEnsemblePreset(&preset, catalog, nil)
-	if report.HasErrors() {
+	if len(report.Errors) > 0 {
 		t.Fatalf("expected no errors, got: %+v", report.Errors)
 	}
 }
@@ -143,7 +132,7 @@ func TestValidateEnsemblePresets_ExtendsCycle(t *testing.T) {
 	}
 
 	report := ValidateEnsemblePresets(presets, catalog)
-	if !report.HasErrors() {
+	if len(report.Errors) == 0 {
 		t.Fatal("expected errors for extends cycle")
 	}
 	if !hasErrorCode(report, "EXTENDS_CYCLE") {
@@ -163,7 +152,7 @@ func TestValidateEnsemblePreset_ModeCodeNotFound(t *testing.T) {
 	}
 
 	report := ValidateEnsemblePreset(&preset, catalog, nil)
-	if !report.HasErrors() {
+	if len(report.Errors) == 0 {
 		t.Fatal("expected errors for unknown mode code")
 	}
 	if !hasErrorCode(report, "MODE_CODE_NOT_FOUND") {

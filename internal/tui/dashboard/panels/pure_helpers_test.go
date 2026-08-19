@@ -68,60 +68,7 @@ func TestFormatTokenShort(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// padRight/padLeft — 60%/80% → 100%
 // ---------------------------------------------------------------------------
-
-func TestPadRight(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name  string
-		s     string
-		width int
-		want  string
-	}{
-		{"zero_width", "hello", 0, ""},
-		{"negative_width", "hello", -5, ""},
-		{"no_padding", "hello", 5, "hello"},
-		{"longer", "hello", 3, "hello"},
-		{"pad", "hi", 5, "hi   "},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			if got := padRight(tt.s, tt.width); got != tt.want {
-				t.Errorf("padRight(%q, %d) = %q, want %q", tt.s, tt.width, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestPadLeft(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name  string
-		s     string
-		width int
-		want  string
-	}{
-		{"zero_width", "hello", 0, ""},
-		{"negative_width", "hello", -5, ""},
-		{"no_padding", "hello", 5, "hello"},
-		{"longer", "hello", 3, "hello"},
-		{"pad", "hi", 5, "   hi"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			if got := padLeft(tt.s, tt.width); got != tt.want {
-				t.Errorf("padLeft(%q, %d) = %q, want %q", tt.s, tt.width, got, tt.want)
-			}
-		})
-	}
-}
 
 // ---------------------------------------------------------------------------
 // formatTimelineSpan — 61.5% → 100%

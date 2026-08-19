@@ -21,13 +21,6 @@ type RCHHookOptions struct {
 	Timeout int
 }
 
-// DefaultRCHHookOptions returns sensible defaults for RCH hook configuration.
-func DefaultRCHHookOptions() RCHHookOptions {
-	return RCHHookOptions{
-		Timeout: defaultRCHHookTimeout,
-	}
-}
-
 // ShouldConfigureRCHHooks determines if RCH hooks should be configured.
 func ShouldConfigureRCHHooks(rchEnabled bool, patterns []string) bool {
 	if !rchEnabled {

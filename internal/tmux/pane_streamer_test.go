@@ -254,17 +254,6 @@ func TestPaneStreamer_UsingFallback(t *testing.T) {
 	ps.Stop()
 }
 
-func TestPaneStreamer_Target(t *testing.T) {
-	callback := func(event StreamEvent) {}
-	cfg := DefaultPaneStreamerConfig()
-
-	ps := NewPaneStreamer(DefaultClient, "mysession:5", callback, cfg)
-
-	if target := ps.Target(); target != "mysession:5" {
-		t.Errorf("expected target mysession:5, got %s", target)
-	}
-}
-
 func TestStreamManager_Stats(t *testing.T) {
 	callback := func(event StreamEvent) {}
 	cfg := DefaultPaneStreamerConfig()

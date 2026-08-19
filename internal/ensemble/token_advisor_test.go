@@ -7,33 +7,6 @@ import (
 	"testing"
 )
 
-func TestAdvisor_BasicEstimate(t *testing.T) {
-	input := map[string]any{"mode": "formal-basic", "question": "Estimate tokens"}
-	logTestStartAdvisor(t, input)
-
-	mode := ReasoningMode{
-		ID:        "formal-basic",
-		Code:      "A1",
-		Name:      "Formal",
-		Category:  CategoryFormal,
-		Tier:      TierCore,
-		ShortDesc: "Formal analysis",
-	}
-	catalog, err := NewModeCatalog([]ReasoningMode{mode}, "1.0")
-	assertNoErrorAdvisor(t, "new catalog", err)
-
-	estimator := NewEstimator(catalog, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	estimate, err := estimator.Estimate(context.Background(), EstimateInput{
-		ModeIDs:  []string{mode.ID},
-		Question: "Estimate tokens",
-		Budget:   DefaultBudgetConfig(),
-	}, EstimateOptions{DisableContext: true})
-	logTestResultAdvisor(t, estimate)
-	assertNoErrorAdvisor(t, "estimate", err)
-	assertEqualAdvisor(t, "mode count", estimate.ModeCount, 1)
-	assertTrueAdvisor(t, "estimated tokens positive", estimate.EstimatedTotalTokens > 0)
-}
-
 func TestAdvisor_BudgetWarning(t *testing.T) {
 	input := map[string]any{"mode": "formal-budget", "budget": "low"}
 	logTestStartAdvisor(t, input)

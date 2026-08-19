@@ -40,21 +40,6 @@ func NewWriter(projectDir string) *Writer {
 	}
 }
 
-// NewWriterWithOptions creates a Writer with custom options.
-func NewWriterWithOptions(projectDir string, maxPerDir int, logger *slog.Logger) *Writer {
-	if maxPerDir <= 0 {
-		maxPerDir = DefaultMaxPerDir
-	}
-	if logger == nil {
-		logger = slog.Default()
-	}
-	return &Writer{
-		baseDir:   filepath.Join(projectDir, ".ntm", "handoffs"),
-		maxPerDir: maxPerDir,
-		logger:    logger.With("component", "handoff.writer"),
-	}
-}
-
 func normalizeWriterSessionName(sessionName string) (string, error) {
 	if sessionName == "" {
 		sessionName = "general"
@@ -225,60 +210,6 @@ func visibleYAMLPaths(paths []string) []string {
 	return filtered
 }
 
-func (w *Writer) validateManagedHandoffPath(path string) (string, string, error) {
-	if path == "" {
-		return "", "", fmt.Errorf("path is required")
-	}
-	if !strings.HasSuffix(filepath.Base(path), ".yaml") {
-		return "", "", fmt.Errorf("path %s is not a handoff yaml file", path)
-	}
-
-	absBase, err := filepath.Abs(w.baseDir)
-	if err != nil {
-		return "", "", fmt.Errorf("invalid base dir: %w", err)
-	}
-	absPath, err := filepath.Abs(path)
-	if err != nil {
-		return "", "", fmt.Errorf("invalid path: %w", err)
-	}
-
-	rel, err := filepath.Rel(absBase, absPath)
-	if err != nil {
-		return "", "", fmt.Errorf("invalid path: %w", err)
-	}
-	parentEscape := ".." + string(filepath.Separator)
-	if rel == "." || rel == ".." || strings.HasPrefix(rel, parentEscape) {
-		return "", "", fmt.Errorf("path %s is not within handoff directory", path)
-	}
-
-	if err := ensureNoSymlinkComponents(absBase); err != nil {
-		return "", "", err
-	}
-	if err := ensureNoSymlinkComponents(absPath); err != nil {
-		return "", "", err
-	}
-
-	info, err := os.Lstat(absPath)
-	if err == nil {
-		if !info.Mode().IsRegular() {
-			return "", "", fmt.Errorf("path %s is not a regular handoff file", path)
-		}
-	} else if !os.IsNotExist(err) {
-		return "", "", fmt.Errorf("lstat %s: %w", path, err)
-	}
-
-	return absPath, rel, nil
-}
-
-func pathContainsArchiveDir(rel string) bool {
-	for _, part := range strings.Split(rel, string(filepath.Separator)) {
-		if part == ".archive" {
-			return true
-		}
-	}
-	return false
-}
-
 // Write saves a handoff to the appropriate directory using atomic write.
 // The description is sanitized to kebab-case for use in the filename.
 // Returns the path to the written file.
@@ -363,95 +294,6 @@ func (w *Writer) Write(h *Handoff, description string) (string, error) {
 	)
 
 	return path, nil
-}
-
-// WriteAuto saves an auto-generated handoff with timestamp naming.
-// Auto handoffs use the format: auto-handoff-{ISO8601-timestamp}.yaml
-func (w *Writer) WriteAuto(h *Handoff) (string, error) {
-	writeMu.Lock()
-	defer writeMu.Unlock()
-
-	w.logger.Debug("starting auto-handoff write",
-		"session", h.Session,
-		"tokens_pct", h.TokensPct,
-	)
-
-	// Validate
-	if errs := h.Validate(); len(errs) > 0 {
-		w.logger.Error("auto-handoff validation failed",
-			"session", h.Session,
-			"error_count", len(errs),
-		)
-		return "", fmt.Errorf("validation failed: %v", errs[0])
-	}
-
-	// Ensure directory
-	dir, err := w.ensureSessionDir(h.Session)
-	if err != nil {
-		return "", err
-	}
-
-	// Check for rotation
-	if err := w.checkRotation(h.Session); err != nil {
-		w.logger.Warn("rotation check failed", "error", err)
-	}
-
-	// Set defaults
-	h.SetDefaults()
-
-	// Generate auto filename with ISO8601 timestamp
-	filename := fmt.Sprintf("auto-handoff-%s.yaml",
-		time.Now().Format("2006-01-02T15-04-05"),
-	)
-	path := filepath.Join(dir, filename)
-
-	// Serialize
-	data, err := yaml.Marshal(h)
-	if err != nil {
-		return "", fmt.Errorf("marshal failed: %w", err)
-	}
-
-	// Atomic write
-	if err := w.atomicWrite(path, data); err != nil {
-		return "", err
-	}
-
-	if err := w.appendLedgerEntry(h, path, true); err != nil {
-		w.logger.Warn("failed to append auto-handoff ledger",
-			"session", h.Session,
-			"path", path,
-			"error", err,
-		)
-	}
-
-	w.logger.Info("auto-handoff written",
-		"path", path,
-		"session", h.Session,
-		"tokens_pct", h.TokensPct,
-		"size_bytes", len(data),
-	)
-
-	return path, nil
-}
-
-// EnsureDir creates the handoff directory for a session if needed.
-func (w *Writer) EnsureDir(sessionName string) error {
-	dir, err := w.ensureSessionDir(sessionName)
-	if err != nil {
-		w.logger.Error("failed to create handoff directory",
-			"session", sessionName,
-			"error", err,
-		)
-		return err
-	}
-
-	w.logger.Debug("ensured handoff directory", "dir", dir)
-	return nil
-}
-
-// BaseDir returns the base directory where handoffs are stored.
-func (w *Writer) BaseDir() string {
-	return w.baseDir
 }
 
 // atomicWrite writes data to a temp file then renames to target path.
@@ -746,69 +588,6 @@ func truncateLog(s string, max int) string {
 	return string(runes[:max-3]) + "..."
 }
 
-// Delete removes a specific handoff file.
-// Use with caution - typically handoffs should be archived, not deleted.
-func (w *Writer) Delete(path string) error {
-	writeMu.Lock()
-	defer writeMu.Unlock()
-
-	safePath, _, err := w.validateManagedHandoffPath(path)
-	if err != nil {
-		return err
-	}
-
-	if err := os.Remove(safePath); err != nil {
-		w.logger.Error("failed to delete handoff",
-			"path", safePath,
-			"error", err,
-		)
-		return fmt.Errorf("delete failed: %w", err)
-	}
-
-	w.logger.Info("handoff deleted", "path", safePath)
-	return nil
-}
-
-// Archive moves a specific handoff to the .archive directory.
-func (w *Writer) Archive(path string) error {
-	writeMu.Lock()
-	defer writeMu.Unlock()
-
-	safePath, rel, err := w.validateManagedHandoffPath(path)
-	if err != nil {
-		return err
-	}
-
-	// Don't archive files already in .archive
-	if pathContainsArchiveDir(rel) {
-		return fmt.Errorf("file is already archived")
-	}
-
-	dir := filepath.Dir(safePath)
-	archiveDir := filepath.Join(dir, ".archive")
-
-	// Ensure archive dir exists
-	if err := ensureSafeDir(archiveDir); err != nil {
-		return fmt.Errorf("create archive dir failed: %w", err)
-	}
-
-	newPath := filepath.Join(archiveDir, filepath.Base(safePath))
-	if err := os.Rename(safePath, newPath); err != nil {
-		w.logger.Error("failed to archive handoff",
-			"from", safePath,
-			"to", newPath,
-			"error", err,
-		)
-		return fmt.Errorf("archive failed: %w", err)
-	}
-
-	w.logger.Info("handoff archived",
-		"from", safePath,
-		"to", newPath,
-	)
-	return nil
-}
-
 // WriteToPath writes a handoff directly to the specified path.
 // Unlike Write(), this doesn't auto-generate the filename or session directory.
 func (w *Writer) WriteToPath(h *Handoff, path string) error {
@@ -861,59 +640,4 @@ func (w *Writer) WriteToPath(h *Handoff, path string) error {
 // MarshalYAML serializes a handoff to YAML bytes.
 func MarshalYAML(h *Handoff) ([]byte, error) {
 	return yaml.Marshal(h)
-}
-
-// CleanArchive removes archived handoffs older than the given duration.
-func (w *Writer) CleanArchive(sessionName string, olderThan time.Duration) (int, error) {
-	writeMu.Lock()
-	defer writeMu.Unlock()
-
-	sessionDir, err := w.sessionDirPath(sessionName)
-	if err != nil {
-		return 0, err
-	}
-
-	archiveDir := filepath.Join(sessionDir, ".archive")
-	if err := ensureNoSymlinkComponents(archiveDir); err != nil {
-		return 0, err
-	}
-
-	entries, err := os.ReadDir(archiveDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return 0, nil // No archive dir, nothing to clean
-		}
-		return 0, err
-	}
-
-	cutoff := time.Now().Add(-olderThan)
-	removed := 0
-
-	for _, path := range visibleYAMLPaths(discoverHandoffYAMLPaths(archiveDir, entries)) {
-		info, err := os.Stat(path)
-		if err != nil {
-			continue
-		}
-
-		if info.ModTime().Before(cutoff) {
-			if err := os.Remove(path); err != nil {
-				w.logger.Warn("failed to remove old archived handoff",
-					"path", path,
-					"error", err,
-				)
-			} else {
-				removed++
-			}
-		}
-	}
-
-	if removed > 0 {
-		w.logger.Info("cleaned archive",
-			"session", sessionName,
-			"removed", removed,
-			"older_than", olderThan,
-		)
-	}
-
-	return removed, nil
 }

@@ -846,39 +846,6 @@ func TestRenderCommandCode_SyntaxHighlighting(t *testing.T) {
 	}
 }
 
-func TestRenderTip(t *testing.T) {
-	t.Parallel()
-
-	tip := []string{"[Tip #1] Start Small", "", "Begin with 1-2 agents.", "Scale up as needed."}
-
-	// At high tick, all lines visible
-	got := RenderTip(tip, 100, 80)
-	stripped := stripANSI(got)
-
-	if !strings.Contains(stripped, "Start Small") {
-		t.Errorf("tip should contain title, got %q", stripped)
-	}
-	if !strings.Contains(stripped, "Begin with") {
-		t.Errorf("tip should contain content, got %q", stripped)
-	}
-
-	// At low tick, only title visible
-	gotLow := RenderTip(tip, 1, 80)
-	strippedLow := stripANSI(gotLow)
-	if !strings.Contains(strippedLow, "Start Small") {
-		t.Errorf("tip at low tick should show title, got %q", strippedLow)
-	}
-}
-
-func TestRenderTip_Empty(t *testing.T) {
-	t.Parallel()
-
-	got := RenderTip([]string{}, 100, 80)
-	if got != "" {
-		t.Errorf("empty tip should produce empty output, got %q", got)
-	}
-}
-
 // =============================================================================
 // model.go: Model accessors and helpers
 // =============================================================================

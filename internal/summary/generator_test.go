@@ -990,46 +990,6 @@ func TestTruncateToTokens(t *testing.T) {
 	}
 }
 
-func TestTruncateAtRuneBoundary(t *testing.T) {
-	t.Logf("SUMMARY_TEST: TestTruncateAtRuneBoundary | Testing rune-safe truncation")
-
-	tests := []struct {
-		name     string
-		text     string
-		maxBytes int
-		expected string
-	}{
-		{
-			name:     "ascii truncation",
-			text:     "hello world",
-			maxBytes: 5,
-			expected: "hello",
-		},
-		{
-			name:     "no truncation needed",
-			text:     "short",
-			maxBytes: 100,
-			expected: "short",
-		},
-		{
-			name:     "unicode safe",
-			text:     "héllo",
-			maxBytes: 3,
-			expected: "hé",
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Logf("SUMMARY_TEST: %s | MaxBytes=%d", tc.name, tc.maxBytes)
-			result := truncateAtRuneBoundary(tc.text, tc.maxBytes)
-			if result != tc.expected {
-				t.Fatalf("expected %q, got %q", tc.expected, result)
-			}
-		})
-	}
-}
-
 // =============================================================================
 // Helper Function Tests
 // =============================================================================

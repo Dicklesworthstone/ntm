@@ -265,11 +265,6 @@ func LoadCommandHooks(path string) (*CommandHooksConfig, error) {
 	return parseCommandHooksConfig(data, "parsing hooks config")
 }
 
-// LoadCommandHooksFromTOML parses command hooks from TOML content directly
-func LoadCommandHooksFromTOML(content string) (*CommandHooksConfig, error) {
-	return parseCommandHooksConfig([]byte(content), "parsing hooks TOML")
-}
-
 // LoadCommandHooksFromMainConfig extracts hooks from the main ntm config.
 // This supports hooks defined inline in config.toml under [[command_hooks]]
 func LoadCommandHooksFromMainConfig(mainConfigPath string) (*CommandHooksConfig, error) {

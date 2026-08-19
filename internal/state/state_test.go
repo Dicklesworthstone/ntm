@@ -1809,7 +1809,7 @@ func TestRunGCPrunesStaleRuntimeData(t *testing.T) {
 		t.Fatalf("AppendAttentionEvent(live): %v", err)
 	}
 
-	result, err := store.RunGC(DefaultRuntimeGCConfig())
+	result, err := store.RunGC(RuntimeGCConfig{ProjectionGracePeriod: DefaultRuntimeProjectionGCGrace, SourceHealthRetention: DefaultSourceHealthRetention, ResolvedIncidentRetention: DefaultResolvedIncidentRetention})
 	if err != nil {
 		t.Fatalf("RunGC() error: %v", err)
 	}

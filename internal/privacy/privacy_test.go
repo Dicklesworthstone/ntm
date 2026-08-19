@@ -19,19 +19,6 @@ func TestNew(t *testing.T) {
 	}
 }
 
-func TestDefaultManager(t *testing.T) {
-	m := DefaultManager()
-
-	if m == nil {
-		t.Fatal("DefaultManager returned nil")
-	}
-
-	// Default privacy mode is disabled
-	if m.IsPrivacyEnabled("any-session") {
-		t.Error("Privacy should be disabled by default")
-	}
-}
-
 func TestRegisterSession(t *testing.T) {
 	m := DefaultManager()
 

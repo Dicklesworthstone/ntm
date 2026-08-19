@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Dicklesworthstone/ntm/internal/bv"
 	hookspkg "github.com/Dicklesworthstone/ntm/internal/hooks"
 	"github.com/Dicklesworthstone/ntm/internal/output"
 	"github.com/Dicklesworthstone/ntm/internal/persona"
@@ -138,35 +137,6 @@ func TestCollectSummaryAgentOutputsUsesParsedPaneType(t *testing.T) {
 	}
 }
 
-func TestCollectReadyAgentPanesUsesParsedPaneType(t *testing.T) {
-
-	panes := []tmux.Pane{
-		{ID: "%1", Index: 1, Type: tmux.AgentClaude, Title: "notes"},
-		{ID: "%2", Index: 2, Type: tmux.AgentUser, Title: "claude-shell"},
-		{ID: "%3", Index: 3, Type: tmux.AgentType("openai-codex"), Title: "custom"},
-	}
-
-	outputs := map[string]string{
-		"%1": "claude> ",
-		"%2": "$ ",
-		"%3": "codex> ",
-	}
-
-	ready, totalAgents := collectReadyAgentPanes(panes, func(id string) (string, error) {
-		return outputs[id], nil
-	})
-
-	if totalAgents != 2 {
-		t.Fatalf("collectReadyAgentPanes() totalAgents = %d, want 2", totalAgents)
-	}
-	if len(ready) != 2 {
-		t.Fatalf("collectReadyAgentPanes() returned %d ready panes, want 2", len(ready))
-	}
-	if ready[0].ID != "%1" || ready[1].ID != "%3" {
-		t.Fatalf("ready panes = %+v, want %%1 and %%3", ready)
-	}
-}
-
 func TestPaneTitleTypeAndIndex(t *testing.T) {
 
 	tests := []struct {
@@ -192,43 +162,6 @@ func TestPaneTitleTypeAndIndex(t *testing.T) {
 				t.Fatalf("paneTitleTypeAndIndex(%q) = (%q, %d, %v), want (%q, %d, %v)", tc.title, gotType, gotNum, gotOK, tc.wantT, tc.wantN, tc.want)
 			}
 		})
-	}
-}
-
-func TestGenerateRecommendationsUsesCanonicalPaneIdentityAcrossWindows(t *testing.T) {
-
-	panes := []tmux.Pane{
-		{ID: "%11", WindowIndex: 0, Index: 1, Type: tmux.AgentClaude, Title: "notes"},
-		{ID: "%12", WindowIndex: 0, Index: 2, Type: tmux.AgentUser, Title: "project__cc_2"},
-		{ID: "%21", WindowIndex: 1, Index: 1, Type: tmux.AgentType("openai-codex"), Title: "custom"},
-	}
-
-	beads := []struct {
-		id    string
-		title string
-	}{
-		{id: "bd-1", title: "Fix auth"},
-		{id: "bd-2", title: "Review queue"},
-	}
-
-	recs := generateRecommendations(
-		panes,
-		[]bv.BeadPreview{
-			{ID: beads[0].id, Title: beads[0].title},
-			{ID: beads[1].id, Title: beads[1].title},
-		},
-		"balanced",
-		[]string{"%11", "%21"},
-	)
-
-	if len(recs) != 2 {
-		t.Fatalf("generateRecommendations() returned %d recs, want 2", len(recs))
-	}
-	if recs[0].AgentType != "claude" || recs[0].PaneID != "%11" || recs[0].PaneTarget != "0.1" {
-		t.Fatalf("first recommendation = %+v, want pane %%11 at 0.1 claude", recs[0])
-	}
-	if recs[1].AgentType != "codex" || recs[1].PaneID != "%21" || recs[1].PaneTarget != "1.1" {
-		t.Fatalf("second recommendation = %+v, want pane %%21 at 1.1 codex", recs[1])
 	}
 }
 

@@ -329,12 +329,6 @@ func applyPaneSessionBindings(states []PaneState, bindings []agentsession.Bindin
 	}
 }
 
-// paneCurrentPath reads a single pane's current working directory via tmux.
-// Returns "" on any failure.
-func paneCurrentPath(paneID string) string {
-	return paneCurrentPathContext(context.Background(), paneID)
-}
-
 func paneCurrentPathContext(ctx context.Context, paneID string) string {
 	output, err := tmux.DefaultClient.RunContext(ctx, "display-message", "-t", paneID, "-p", "#{pane_current_path}")
 	if err != nil {

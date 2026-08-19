@@ -131,11 +131,6 @@ func runEnsembleCompare(w io.Writer, runAID, runBID string, opts compareOptions)
 	return writeCompareResult(w, result, opts, format)
 }
 
-// loadCompareInput loads an ensemble session and constructs a CompareInput.
-func loadCompareInput(runID string) (*ensemble.CompareInput, error) {
-	return loadCompareInputForOutput(runID, IsJSONOutput())
-}
-
 func loadCompareInputForOutput(runID string, machineJSON bool) (*ensemble.CompareInput, error) {
 	return loadCompareInputResolved(runID, false, machineJSON)
 }
@@ -235,14 +230,6 @@ func buildCompareInput(runID, question string, modeIDs []string, outputs []ensem
 		Contributions:   contributions,
 		SynthesisOutput: synthesisOutput,
 	}
-}
-
-func loadCheckpointCompareInput(runID string) (*ensemble.CompareInput, error) {
-	store, _, err := resolveEnsembleCheckpointStoreForRunID(runID)
-	if err != nil {
-		return nil, fmt.Errorf("open checkpoint store: %w", err)
-	}
-	return loadCheckpointCompareInputFromStore(store, runID)
 }
 
 func loadCheckpointCompareInputFromStore(store *ensemble.CheckpointStore, runID string) (*ensemble.CompareInput, error) {

@@ -254,13 +254,6 @@ func Redact(input string, cfg Config) (string, []Finding) {
 	return result.Output, result.Findings
 }
 
-// ContainsSensitive checks if input contains any sensitive content.
-func ContainsSensitive(input string, cfg Config) bool {
-	cfg.Mode = ModeWarn
-	result := ScanAndRedact(input, cfg)
-	return len(result.Findings) > 0
-}
-
 // AddLineInfo enriches findings with line and column information.
 func AddLineInfo(input string, findings []Finding) {
 	if len(findings) == 0 {

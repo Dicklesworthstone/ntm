@@ -270,11 +270,6 @@ func ExtractFromText(text string) []CodeBlock {
 	return NewParser().Parse(text)
 }
 
-// ExtractWithFilter extracts code blocks filtered by language.
-func ExtractWithFilter(text string, languages []string) []CodeBlock {
-	return NewParser().WithLanguageFilter(languages).Parse(text)
-}
-
 // extensionMap maps file extensions to language names
 var extensionMap = map[string]string{
 	".py":         "python",

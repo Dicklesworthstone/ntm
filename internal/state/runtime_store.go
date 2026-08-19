@@ -58,15 +58,6 @@ type RuntimeGCResult struct {
 	ExpiredOutputSeqRows   int64 `json:"expired_output_seq_rows"`
 }
 
-// DefaultRuntimeGCConfig returns conservative cleanup windows for routine maintenance.
-func DefaultRuntimeGCConfig() RuntimeGCConfig {
-	return RuntimeGCConfig{
-		ProjectionGracePeriod:     DefaultRuntimeProjectionGCGrace,
-		SourceHealthRetention:     DefaultSourceHealthRetention,
-		ResolvedIncidentRetention: DefaultResolvedIncidentRetention,
-	}
-}
-
 func normalizeRuntimeGCConfig(cfg RuntimeGCConfig) RuntimeGCConfig {
 	if cfg.ProjectionGracePeriod <= 0 {
 		cfg.ProjectionGracePeriod = DefaultRuntimeProjectionGCGrace
@@ -2313,20 +2304,6 @@ func (s *Store) ListOpenIncidents() ([]Incident, error) {
 		incidents = append(incidents, *incident)
 	}
 	return incidents, rows.Err()
-}
-
-func (s *Store) getRecentResolvedIncidentByFingerprint(fingerprint string, within time.Duration) (*Incident, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	if within <= 0 {
-		within = DefaultIncidentReopenWindow
-	}
-	incident, err := queryRecentResolvedIncidentByFingerprint(s.db, fingerprint, time.Now().UTC().Add(-within))
-	if err != nil {
-		return nil, fmt.Errorf("get recent resolved incident by fingerprint: %w", err)
-	}
-	return incident, nil
 }
 
 // CreateOrUpdateIncident deduplicates durable incidents by stable fingerprint.

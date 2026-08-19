@@ -357,15 +357,6 @@ func ParseSessionTemplate(content []byte) (*SessionTemplate, error) {
 	return &tmpl, nil
 }
 
-// ParseSessionTemplateRaw parses a session template without environment variable expansion.
-func ParseSessionTemplateRaw(content []byte) (*SessionTemplate, error) {
-	var tmpl SessionTemplate
-	if err := parseSessionTemplateYAML(content, &tmpl); err != nil {
-		return nil, fmt.Errorf("parsing session template: %w", err)
-	}
-	return &tmpl, nil
-}
-
 // LoadSessionTemplate loads a session template from a file path.
 func LoadSessionTemplate(path string) (*SessionTemplate, error) {
 	content, err := os.ReadFile(path)
@@ -791,14 +782,6 @@ type SessionTemplateLoader struct {
 func NewSessionTemplateLoader() *SessionTemplateLoader {
 	return &SessionTemplateLoader{
 		projectDir: ".ntm/templates",
-		userDir:    getDefaultSessionTemplateDir(),
-	}
-}
-
-// NewSessionTemplateLoaderWithProject creates a loader for a specific project.
-func NewSessionTemplateLoaderWithProject(projectPath string) *SessionTemplateLoader {
-	return &SessionTemplateLoader{
-		projectDir: filepath.Join(projectPath, ".ntm", "templates"),
 		userDir:    getDefaultSessionTemplateDir(),
 	}
 }

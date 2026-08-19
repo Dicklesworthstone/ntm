@@ -2,7 +2,6 @@ package agents
 
 import (
 	"testing"
-	"time"
 )
 
 // =============================================================================
@@ -273,28 +272,6 @@ func TestRecommendAgent_FallbackToClaude(t *testing.T) {
 // RecordCompletion — nil profile (unknown agent)
 // =============================================================================
 
-func TestRecordCompletion_UnknownAgent(t *testing.T) {
-	t.Parallel()
-
-	pm := NewProfileMatcher()
-	// Should not panic on unknown agent type
-	pm.RecordCompletion(AgentType("nonexistent"), true, 5*time.Minute)
-}
-
 // =============================================================================
 // ParseAgentType — default case
 // =============================================================================
-
-func TestParseAgentType_Unknown(t *testing.T) {
-	t.Parallel()
-
-	got := ParseAgentType("ollama")
-	if got != AgentType("ollama") {
-		t.Errorf("ParseAgentType(\"ollama\") = %q, want %q", got, AgentType("ollama"))
-	}
-
-	got2 := ParseAgentType("UNKNOWN_THING")
-	if got2 != AgentType("unknown_thing") {
-		t.Errorf("ParseAgentType(\"UNKNOWN_THING\") = %q, want %q", got2, AgentType("unknown_thing"))
-	}
-}

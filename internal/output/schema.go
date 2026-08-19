@@ -30,11 +30,6 @@ func NewErrorWithDetails(msg, details string) ErrorResponse {
 	return ErrorResponse{Error: msg, Details: details}
 }
 
-// NewErrorWithHint creates a new error response with a remediation hint
-func NewErrorWithHint(msg, hint string) ErrorResponse {
-	return ErrorResponse{Error: msg, Hint: hint}
-}
-
 // NewErrorFull creates a new error response with all fields
 func NewErrorFull(code, msg, details, hint string) ErrorResponse {
 	return ErrorResponse{Error: msg, Code: code, Details: details, Hint: hint}

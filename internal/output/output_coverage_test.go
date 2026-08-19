@@ -34,7 +34,8 @@ func TestFormatterOutput_JSONMode(t *testing.T) {
 	t.Parallel()
 
 	var buf bytes.Buffer
-	f := New(WithJSON(true), WithWriter(&buf))
+	f := New(WithJSON(true))
+	f.writer = &buf
 
 	r := &mockResult{jsonOut: map[string]string{"status": "ok"}}
 	if err := f.Output(r); err != nil {
@@ -54,7 +55,8 @@ func TestFormatterOutput_TextMode(t *testing.T) {
 	t.Parallel()
 
 	var buf bytes.Buffer
-	f := New(WithWriter(&buf))
+	f := New()
+	f.writer = &buf
 
 	r := &mockResult{textOut: "hello world"}
 	if err := f.Output(r); err != nil {
@@ -70,7 +72,8 @@ func TestFormatterOutput_TextError(t *testing.T) {
 	t.Parallel()
 
 	var buf bytes.Buffer
-	f := New(WithWriter(&buf))
+	f := New()
+	f.writer = &buf
 
 	r := &mockResult{textErr: fmt.Errorf("render failed")}
 	err := f.Output(r)
@@ -86,32 +89,6 @@ func TestFormatterOutput_TextError(t *testing.T) {
 // ---------------------------------------------------------------------------
 // Formatter.Print (text.go:31)
 // ---------------------------------------------------------------------------
-
-func TestFormatterPrint(t *testing.T) {
-	t.Parallel()
-
-	var buf bytes.Buffer
-	f := New(WithWriter(&buf))
-
-	f.Print("alpha", " ", "beta")
-
-	if buf.String() != "alpha beta" {
-		t.Errorf("expected 'alpha beta', got %q", buf.String())
-	}
-}
-
-func TestFormatterPrint_Empty(t *testing.T) {
-	t.Parallel()
-
-	var buf bytes.Buffer
-	f := New(WithWriter(&buf))
-
-	f.Print()
-
-	if buf.Len() != 0 {
-		t.Errorf("expected empty output, got %q", buf.String())
-	}
-}
 
 // ---------------------------------------------------------------------------
 // ProgressMsg format helpers: Warningf, Errorf, Infof, Printf
@@ -134,23 +111,6 @@ func TestProgressMsg_Warningf(t *testing.T) {
 	}
 }
 
-func TestProgressMsg_Errorf(t *testing.T) {
-	t.Parallel()
-
-	var buf bytes.Buffer
-	p := ProgressWriter(&buf)
-
-	p.Errorf("failed after %d retries", 5)
-
-	out := buf.String()
-	if !strings.Contains(out, "✗") {
-		t.Error("expected error icon ✗")
-	}
-	if !strings.Contains(out, "failed after 5 retries") {
-		t.Errorf("expected formatted message, got %q", out)
-	}
-}
-
 func TestProgressMsg_Infof(t *testing.T) {
 	t.Parallel()
 
@@ -168,66 +128,9 @@ func TestProgressMsg_Infof(t *testing.T) {
 	}
 }
 
-func TestProgressMsg_Printf(t *testing.T) {
-	t.Parallel()
-
-	var buf bytes.Buffer
-	p := ProgressWriter(&buf)
-
-	p.Printf("step %d of %d", 3, 7)
-
-	out := buf.String()
-	if !strings.Contains(out, "step 3 of 7") {
-		t.Errorf("expected formatted message, got %q", out)
-	}
-	// Printf should NOT have an icon
-	if strings.Contains(out, "✓") || strings.Contains(out, "✗") || strings.Contains(out, "⚠") || strings.Contains(out, "ℹ") {
-		t.Errorf("Printf should not include an icon, got %q", out)
-	}
-}
-
-func TestProgressMsg_Printf_NoArgs(t *testing.T) {
-	t.Parallel()
-
-	var buf bytes.Buffer
-	p := ProgressWriter(&buf)
-
-	p.Printf("plain message")
-
-	if !strings.Contains(buf.String(), "plain message") {
-		t.Errorf("expected 'plain message', got %q", buf.String())
-	}
-}
-
 // ---------------------------------------------------------------------------
 // ProgressMsg format helpers with indent
 // ---------------------------------------------------------------------------
-
-func TestProgressMsg_WarningfWithIndent(t *testing.T) {
-	t.Parallel()
-
-	var buf bytes.Buffer
-	p := ProgressWriter(&buf).SetIndent("  ")
-
-	p.Warningf("warn %d", 1)
-
-	if !strings.HasPrefix(buf.String(), "  ") {
-		t.Errorf("expected indented output, got %q", buf.String())
-	}
-}
-
-func TestProgressMsg_ErrorfWithIndent(t *testing.T) {
-	t.Parallel()
-
-	var buf bytes.Buffer
-	p := ProgressWriter(&buf).SetIndent(">> ")
-
-	p.Errorf("err %s", "timeout")
-
-	if !strings.HasPrefix(buf.String(), ">> ") {
-		t.Errorf("expected indented output, got %q", buf.String())
-	}
-}
 
 // ---------------------------------------------------------------------------
 // Operation.Start and Operation.Summary (captures stdout)
@@ -400,7 +303,8 @@ func TestFormatterOutput_JSONComplex(t *testing.T) {
 	t.Parallel()
 
 	var buf bytes.Buffer
-	f := New(WithJSON(true), WithWriter(&buf))
+	f := New(WithJSON(true))
+	f.writer = &buf
 
 	r := &mockResult{jsonOut: map[string]interface{}{
 		"items": []string{"a", "b"},

@@ -8,7 +8,6 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/tui/icons"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
 	"github.com/Dicklesworthstone/ntm/internal/util"
@@ -51,31 +50,6 @@ type MedalPalette struct {
 	Bronze lipgloss.Color
 }
 
-// MiniBarPalette controls the colors and glyphs for MiniBar rendering.
-type MiniBarPalette struct {
-	Low        lipgloss.Color // value < 0.60
-	Mid        lipgloss.Color // 0.40–0.59 (legacy mid-low band)
-	MidHigh    lipgloss.Color // 0.60–0.79 (optional; falls back to Mid)
-	High       lipgloss.Color // >= 0.80
-	Empty      lipgloss.Color
-	FilledChar string
-	EmptyChar  string
-}
-
-// DefaultMiniBarPalette returns a sensible palette derived from the current theme.
-func DefaultMiniBarPalette() MiniBarPalette {
-	t := theme.Current()
-	return MiniBarPalette{
-		Low:        t.Green,
-		Mid:        t.Blue,
-		MidHigh:    t.Yellow,
-		High:       t.Red,
-		Empty:      t.Surface1,
-		FilledChar: "█",
-		EmptyChar:  "░",
-	}
-}
-
 // DefaultBadgeOptions returns sensible defaults for badge rendering
 func DefaultBadgeOptions() BadgeOptions {
 	return BadgeOptions{
@@ -83,118 +57,6 @@ func DefaultBadgeOptions() BadgeOptions {
 		Bold:     true,
 		ShowIcon: true,
 	}
-}
-
-// AgentBadge renders a badge for an agent type using theme colors.
-// agentType can be: "claude", "cc", "codex", "cod", "gemini", "gmi", "user"
-func AgentBadge(agentType string, opts ...BadgeOptions) string {
-	t := theme.Current()
-	ic := icons.Current()
-	opt := DefaultBadgeOptions()
-	if len(opts) > 0 {
-		opt = opts[0]
-	}
-
-	label, bgColor, icon := agentBadgeMeta(agentType, t, ic)
-
-	text := label
-	if opt.ShowIcon {
-		text = icon + " " + label
-	}
-
-	return renderBadge(text, bgColor, t.Base, opt)
-}
-
-func agentBadgeMeta(agentType string, t theme.Theme, ic icons.IconSet) (label string, bgColor lipgloss.Color, icon string) {
-	switch agent.AgentType(agentType).Canonical() {
-	case agent.AgentTypeClaudeCode:
-		return "claude", t.Claude, ic.Claude
-	case agent.AgentTypeCodex:
-		return "codex", t.Codex, ic.Codex
-	case agent.AgentTypeGemini:
-		return "gemini", t.Gemini, ic.Gemini
-	case agent.AgentTypeGrok:
-		return "grok", t.Pink, ic.Robot
-	case agent.AgentTypeAntigravity:
-		return "antigravity", t.Lavender, ic.Gemini
-	case agent.AgentTypeCursor:
-		return "cursor", t.Cursor, ic.Cursor
-	case agent.AgentTypeWindsurf:
-		return "windsurf", t.Windsurf, ic.Windsurf
-	case agent.AgentTypeAider:
-		return "aider", t.Aider, ic.Aider
-	case agent.AgentTypeOllama:
-		return "ollama", t.Ollama, ic.Ollama
-	case agent.AgentTypeUser:
-		return "user", t.User, ic.User
-	default:
-		label = strings.TrimSpace(strings.ToLower(agentType))
-		if label == "" {
-			label = "unknown"
-		}
-		return label, t.Overlay, "?"
-	}
-}
-
-// StatusBadge renders a status indicator badge using theme colors.
-// status can be: "success", "ok", "running", "active", "idle", "warning",
-// "error", "failed", "pending", "disabled"
-func StatusBadge(status string, opts ...BadgeOptions) string {
-	t := theme.Current()
-	opt := DefaultBadgeOptions()
-	if len(opts) > 0 {
-		opt = opts[0]
-	}
-
-	var bgColor lipgloss.Color
-	var icon string
-	var label string
-
-	switch strings.ToLower(status) {
-	case "success", "ok", "done", "complete", "completed":
-		bgColor = t.Success
-		icon = "✓"
-		label = "success"
-	case "running", "active", "working":
-		bgColor = t.Green
-		icon = "●"
-		label = "running"
-	case "idle", "waiting":
-		bgColor = t.Yellow
-		icon = "○"
-		label = "idle"
-	case "warning", "warn", "attention":
-		bgColor = t.Warning
-		icon = "⚠"
-		label = "warning"
-	case "error", "failed", "failure":
-		bgColor = t.Error
-		icon = "✗"
-		label = "error"
-	case "pending", "in_progress":
-		bgColor = t.Blue
-		icon = "◐"
-		label = "pending"
-	case "disabled", "unavailable":
-		bgColor = t.Overlay
-		icon = "◌"
-		label = "disabled"
-	case "blocked":
-		bgColor = t.Red
-		icon = "⊘"
-		label = "blocked"
-	default:
-		bgColor = t.Surface1
-		icon = "•"
-		label = status
-	}
-
-	text := label
-	if opt.ShowIcon {
-		text = icon + " " + label
-	}
-
-	return renderBadge(text, bgColor, t.Base, opt)
 }
 
 // TextBadge renders a simple text badge with custom colors
@@ -376,53 +238,6 @@ func MemoryUsageBadge(bytes int64, opts ...BadgeOptions) string {
 	}
 
 	return renderBadge(label, bgColor, t.Base, opt)
-}
-
-// MiniBar renders a compact, fixed-width bar (typically 4–8 chars) for inline metrics.
-// Value is clamped to [0,1]. Palette can override default colors and glyphs.
-func MiniBar(value float64, width int, palettes ...MiniBarPalette) string {
-	if width < 1 {
-		return ""
-	}
-	if value < 0 {
-		value = 0
-	}
-	if value > 1 {
-		value = 1
-	}
-
-	palette := DefaultMiniBarPalette()
-	if len(palettes) > 0 {
-		palette = palettes[0]
-	}
-
-	filled := int(value * float64(width))
-	if filled > width {
-		filled = width
-	}
-	empty := width - filled
-
-	var barColor lipgloss.Color
-	switch {
-	case value >= 0.80:
-		barColor = palette.High
-	case value >= 0.60:
-		if palette.MidHigh != "" {
-			barColor = palette.MidHigh
-		} else {
-			barColor = palette.Mid
-		}
-	case value >= 0.40:
-		barColor = palette.Mid
-	default:
-		barColor = palette.Low
-	}
-
-	filledStyle := lipgloss.NewStyle().Foreground(barColor)
-	emptyStyle := lipgloss.NewStyle().Foreground(palette.Empty)
-
-	return filledStyle.Render(strings.Repeat(palette.FilledChar, filled)) +
-		emptyStyle.Render(strings.Repeat(palette.EmptyChar, empty))
 }
 
 // renderBadge is the internal badge rendering function

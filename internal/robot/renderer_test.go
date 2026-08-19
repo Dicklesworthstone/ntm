@@ -426,26 +426,6 @@ func TestGetRenderer(t *testing.T) {
 	}
 }
 
-func TestGetContentType(t *testing.T) {
-	tests := []struct {
-		format      RobotFormat
-		contentType string
-	}{
-		{FormatJSON, "application/json"},
-		{FormatTOON, "text/x-toon"},
-		{FormatAuto, "application/json"}, // Auto defaults to JSON
-	}
-
-	for _, tc := range tests {
-		t.Run(string(tc.format), func(t *testing.T) {
-			ct := GetContentType(tc.format)
-			if ct != tc.contentType {
-				t.Errorf("GetContentType(%q) = %q, want %q", tc.format, ct, tc.contentType)
-			}
-		})
-	}
-}
-
 // =============================================================================
 // Output Helper Tests
 // =============================================================================
@@ -489,55 +469,6 @@ func TestOutputTo(t *testing.T) {
 // =============================================================================
 // RenderResult Tests
 // =============================================================================
-
-func TestRenderWithMeta(t *testing.T) {
-	payload := struct {
-		Data string `json:"data"`
-	}{
-		Data: "test",
-	}
-
-	t.Run("JSON format", func(t *testing.T) {
-		result, err := RenderWithMeta(payload, FormatJSON)
-		if err != nil {
-			t.Fatalf("RenderWithMeta() error: %v", err)
-		}
-
-		if result.Output == "" {
-			t.Error("expected non-empty output")
-		}
-		if result.ContentType != "application/json" {
-			t.Errorf("ContentType = %q, want %q", result.ContentType, "application/json")
-		}
-		if result.Format != FormatJSON {
-			t.Errorf("Format = %q, want %q", result.Format, FormatJSON)
-		}
-
-		// Verify output is valid JSON
-		var parsed map[string]interface{}
-		if err := json.Unmarshal([]byte(result.Output), &parsed); err != nil {
-			t.Fatalf("output is not valid JSON: %v", err)
-		}
-	})
-
-	t.Run("TOON format", func(t *testing.T) {
-		requireToonBinary(t)
-		result, err := RenderWithMeta(payload, FormatTOON)
-		if err != nil {
-			t.Fatalf("RenderWithMeta() with TOON error: %v", err)
-		}
-		if result.Output == "" {
-			t.Error("expected non-empty output")
-		}
-		if result.ContentType != "text/x-toon" {
-			t.Errorf("ContentType = %q, want %q", result.ContentType, "text/x-toon")
-		}
-		if result.Format != FormatTOON {
-			t.Errorf("Format = %q, want %q", result.Format, FormatTOON)
-		}
-		assertToonDecodesToPayload(t, result.Output, payload)
-	})
-}
 
 // =============================================================================
 // Backward Compatibility Tests

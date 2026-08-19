@@ -446,25 +446,6 @@ func (s *Substitutor) SubstituteRetainingSeals(template string) (string, error) 
 	}
 }
 
-// SubstituteRetainingSealsStrict is like SubstituteRetainingSeals but returns an error if any variable is undefined.
-func (s *Substitutor) SubstituteRetainingSealsStrict(template string) (string, error) {
-	result, err := s.SubstituteRetainingSeals(template)
-	if err != nil {
-		return "", err
-	}
-
-	// Check for any remaining unsubstituted variables
-	if varPattern.MatchString(result) {
-		matches := varPattern.FindAllString(result, -1)
-		return "", &SubstitutionError{
-			VarRef:  matches[0],
-			Message: "undefined variable (no default provided)",
-		}
-	}
-
-	return result, nil
-}
-
 // Substitute replaces all ${...} variable references in the template string.
 // Returns the substituted string and any errors encountered.
 func (s *Substitutor) Substitute(template string) (string, error) {
@@ -1235,20 +1216,6 @@ func SetLoopVars(state *ExecutionState, varName string, item interface{}, index,
 	state.Variables["loop.last"] = index == total-1
 }
 
-// ClearLoopVars removes loop context variables from execution state.
-func ClearLoopVars(state *ExecutionState, varName string) {
-	if state.Variables == nil {
-		return
-	}
-
-	delete(state.Variables, "loop."+varName)
-	delete(state.Variables, "loop.item")
-	delete(state.Variables, "loop.index")
-	delete(state.Variables, "loop.count")
-	delete(state.Variables, "loop.first")
-	delete(state.Variables, "loop.last")
-}
-
 // StoreStepOutput stores a step's output in the execution state for variable access.
 // Note: Caller must hold any necessary locks on state.Variables if used concurrently.
 func StoreStepOutput(state *ExecutionState, stepID string, output string, parsedData interface{}) {
@@ -1260,48 +1227,4 @@ func StoreStepOutput(state *ExecutionState, stepID string, output string, parsed
 	if parsedData != nil {
 		state.Variables["steps."+stepID+".data"] = parsedData
 	}
-}
-
-// ValidateVarRefs validates that all variable references in a string are valid.
-// Returns a list of invalid references.
-func ValidateVarRefs(template string, availableVars []string) []string {
-	var invalid []string
-
-	// Find all variable references (excluding escaped ones)
-	escaped := escapedPattern.ReplaceAllString(template, "")
-	matches := varPattern.FindAllString(escaped, -1)
-
-	varSet := make(map[string]bool)
-	for _, v := range availableVars {
-		varSet[v] = true
-	}
-
-	for _, match := range matches {
-		// Extract variable path (without default)
-		expr := match[2 : len(match)-1]
-		varPath, _, _ := parseDefault(expr)
-
-		// Check if the root namespace is valid
-		parts := strings.Split(varPath, ".")
-		if len(parts) == 0 {
-			continue
-		}
-
-		// Valid namespaces that don't need to be pre-declared
-		switch parts[0] {
-		case "env", "session", "run_id", "timestamp", "workflow", "loop", "defaults", "item":
-			continue
-		case "vars":
-			if len(parts) > 1 && !varSet["vars."+parts[1]] && !varSet[parts[1]] {
-				invalid = append(invalid, match)
-			}
-		case "steps":
-			// Steps are validated elsewhere during parsing
-			continue
-		default:
-			invalid = append(invalid, match)
-		}
-	}
-
-	return invalid
 }

@@ -11,9 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -440,148 +438,6 @@ func TestE2E_Suggest_PipeToSpawn(t *testing.T) {
 // Contribution Scoring Tests
 // -------------------------------------------------------------------
 
-func TestE2E_Contributions_StatusOutput(t *testing.T) {
-	CommonE2EPrerequisites(t)
-
-	if !supportsNTMSubcommand("ensemble") {
-		t.Skip("ntm binary does not support `ensemble` command")
-	}
-
-	suite := NewTestSuite(t, "ensemble_ux_contributions_status")
-	defer suite.Teardown()
-
-	if err := suite.Setup(); err != nil {
-		t.Fatalf("[E2E-ENSEMBLE-UX] suite setup failed: %v", err)
-	}
-
-	session := suite.Session()
-	t.Logf("E2E: %s - seeding ensemble state for contribution test", t.Name())
-
-	// Seed deterministic state.
-	now := time.Now().UTC()
-	panes, err := tmux.GetPanes(session)
-	if err != nil {
-		t.Fatalf("[E2E-ENSEMBLE-UX] GetPanes failed: %v", err)
-	}
-	if len(panes) == 0 || panes[0].ID == "" {
-		t.Fatalf("[E2E-ENSEMBLE-UX] expected at least 1 pane")
-	}
-	paneID := panes[0].ID
-
-	state := &ensemble.EnsembleSession{
-		SessionName:       session,
-		Question:          "E2E contribution scoring test",
-		PresetUsed:        "e2e",
-		Status:            ensemble.EnsembleActive,
-		SynthesisStrategy: ensemble.StrategyManual,
-		CreatedAt:         now,
-		Assignments: []ensemble.ModeAssignment{
-			{
-				ModeID:      "e2e-mode-a",
-				PaneName:    paneID,
-				AgentType:   "cc",
-				Status:      ensemble.AssignmentDone,
-				AssignedAt:  now,
-				CompletedAt: &now,
-			},
-		},
-	}
-	if err := ensemble.SaveSession(session, state); err != nil {
-		t.Fatalf("[E2E-ENSEMBLE-UX] SaveSession failed: %v", err)
-	}
-	// Send synthetic YAML mode output.
-	sendYAMLModeOutput(t, session, 0, "E2E contribution thesis")
-
-	// Check status includes contribution data.
-	res := runEnsembleUXCmd(t, suite, "status_with_contributions",
-		"ensemble", "status", session, "--format", "json",
-	)
-
-	t.Logf("E2E: %s - stdout: %s", t.Name(), string(res.Stdout))
-	t.Logf("E2E: %s - exit code err: %v", t.Name(), res.Err)
-
-	if res.Err != nil {
-		t.Fatalf("[E2E-ENSEMBLE-UX] ensemble status failed: %v", res.Err)
-	}
-
-	var status ensembleStatusJSON
-	parseEnsembleUXJSON(t, suite, "status_with_contributions", res.Stdout, &status)
-
-	t.Logf("E2E: %s - assertion: exists = %v (want true)", t.Name(), status.Exists)
-	if !status.Exists {
-		t.Fatalf("[E2E-ENSEMBLE-UX] expected exists=true")
-	}
-}
-
-func TestE2E_Contributions_RobotOutput(t *testing.T) {
-	CommonE2EPrerequisites(t)
-
-	if !supportsNTMSubcommand("ensemble") {
-		t.Skip("ntm binary does not support `ensemble` command")
-	}
-
-	suite := NewTestSuite(t, "ensemble_ux_contributions_robot")
-	defer suite.Teardown()
-
-	if err := suite.Setup(); err != nil {
-		t.Fatalf("[E2E-ENSEMBLE-UX] suite setup failed: %v", err)
-	}
-
-	session := suite.Session()
-	t.Logf("E2E: %s - testing robot ensemble output for contributions", t.Name())
-
-	// Seed state.
-	now := time.Now().UTC()
-	panes, err := tmux.GetPanes(session)
-	if err != nil {
-		t.Fatalf("[E2E-ENSEMBLE-UX] GetPanes failed: %v", err)
-	}
-	if len(panes) == 0 || panes[0].ID == "" {
-		t.Fatalf("[E2E-ENSEMBLE-UX] no panes available")
-	}
-	paneID := panes[0].ID
-
-	state := &ensemble.EnsembleSession{
-		SessionName:       session,
-		Question:          "E2E robot contribution test",
-		PresetUsed:        "e2e",
-		Status:            ensemble.EnsembleActive,
-		SynthesisStrategy: ensemble.StrategyManual,
-		CreatedAt:         now,
-		Assignments: []ensemble.ModeAssignment{
-			{
-				ModeID:      "e2e-robot-mode",
-				PaneName:    paneID,
-				AgentType:   "cc",
-				Status:      ensemble.AssignmentDone,
-				AssignedAt:  now,
-				CompletedAt: &now,
-			},
-		},
-	}
-	if err := ensemble.SaveSession(session, state); err != nil {
-		t.Fatalf("[E2E-ENSEMBLE-UX] SaveSession failed: %v", err)
-	}
-	sendYAMLModeOutput(t, session, 0, "E2E robot contribution thesis")
-
-	res := runEnsembleUXCmd(t, suite, "robot_ensemble_contributions",
-		fmt.Sprintf("--robot-ensemble=%s", session),
-	)
-
-	t.Logf("E2E: %s - stdout: %s", t.Name(), string(res.Stdout))
-	t.Logf("E2E: %s - exit code err: %v", t.Name(), res.Err)
-
-	if res.Err != nil {
-		t.Fatalf("[E2E-ENSEMBLE-UX] --robot-ensemble failed: %v", res.Err)
-	}
-
-	var raw json.RawMessage
-	if err := json.Unmarshal(res.Stdout, &raw); err != nil {
-		t.Fatalf("[E2E-ENSEMBLE-UX] robot ensemble output not valid JSON: %v", err)
-	}
-	t.Logf("E2E: %s - assertion: robot ensemble output is valid JSON = true (want true)", t.Name())
-}
-
 // -------------------------------------------------------------------
 // Mode Cards / Explain Tests
 // -------------------------------------------------------------------
@@ -779,274 +635,9 @@ func TestE2E_Estimate_BudgetWarning(t *testing.T) {
 // Synthesis Explanation Tests
 // -------------------------------------------------------------------
 
-func TestE2E_Explain_Flag(t *testing.T) {
-	CommonE2EPrerequisites(t)
-
-	if !supportsNTMSubcommand("ensemble") {
-		t.Skip("ntm binary does not support `ensemble` command")
-	}
-
-	suite := NewTestSuite(t, "ensemble_ux_explain_flag")
-	defer suite.Teardown()
-
-	if err := suite.Setup(); err != nil {
-		t.Fatalf("[E2E-ENSEMBLE-UX] suite setup failed: %v", err)
-	}
-
-	session := suite.Session()
-	t.Logf("E2E: %s - testing synthesize with --explain flag", t.Name())
-
-	// Seed deterministic ensemble state.
-	now := time.Now().UTC()
-	panes, err := tmux.GetPanes(session)
-	if err != nil {
-		t.Fatalf("[E2E-ENSEMBLE-UX] GetPanes failed: %v", err)
-	}
-	if len(panes) == 0 || panes[0].ID == "" {
-		t.Fatalf("[E2E-ENSEMBLE-UX] no panes available")
-	}
-	paneID := panes[0].ID
-
-	state := &ensemble.EnsembleSession{
-		SessionName:       session,
-		Question:          "E2E explain flag test",
-		PresetUsed:        "e2e",
-		Status:            ensemble.EnsembleActive,
-		SynthesisStrategy: ensemble.StrategyManual,
-		CreatedAt:         now,
-		Assignments: []ensemble.ModeAssignment{
-			{
-				ModeID:      "e2e-explain-mode",
-				PaneName:    paneID,
-				AgentType:   "cc",
-				Status:      ensemble.AssignmentDone,
-				AssignedAt:  now,
-				CompletedAt: &now,
-			},
-		},
-	}
-	if err := ensemble.SaveSession(session, state); err != nil {
-		t.Fatalf("[E2E-ENSEMBLE-UX] SaveSession failed: %v", err)
-	}
-	sendYAMLModeOutput(t, session, 0, "E2E explain thesis")
-
-	res := runEnsembleUXCmd(t, suite, "synthesize_explain",
-		"ensemble", "synthesize", session,
-		"--explain",
-		"--format", "json",
-	)
-
-	t.Logf("E2E: %s - stdout: %s", t.Name(), truncateString(string(res.Stdout), 500))
-	t.Logf("E2E: %s - exit code err: %v", t.Name(), res.Err)
-
-	if res.Err != nil {
-		t.Fatalf("[E2E-ENSEMBLE-UX] synthesize with --explain failed: %v", res.Err)
-	}
-
-	var out map[string]interface{}
-	parseEnsembleUXJSON(t, suite, "synthesize_explain", res.Stdout, &out)
-
-	// With --explain, the output should include synthesis data.
-	if _, ok := out["synthesis"]; !ok {
-		t.Fatalf("[E2E-ENSEMBLE-UX] synthesize --explain missing 'synthesis' field")
-	}
-
-	t.Logf("E2E: %s - assertion: synthesis field present = true (want true)", t.Name())
-}
-
-func TestE2E_Explain_Provenance(t *testing.T) {
-	SkipIfShort(t)
-
-	t.Logf("E2E: %s - testing provenance tracking in-process", t.Name())
-
-	// Test provenance tracking directly (no CLI needed).
-	tracker := ensemble.NewProvenanceTracker("E2E provenance test", []string{"mode-a", "mode-b"})
-
-	finding := ensemble.Finding{
-		Finding:         "Finding from mode A",
-		Impact:          ensemble.ImpactHigh,
-		Confidence:      0.85,
-		EvidencePointer: "auth/login.go:42",
-	}
-	findingID := tracker.RecordDiscovery("mode-a", finding)
-	t.Logf("E2E: %s - recorded finding with ID: %s", t.Name(), findingID)
-
-	report := ensemble.GenerateReport(tracker)
-
-	t.Logf("E2E: %s - assertion: report.ActiveChains count = %d (want >= 1)", t.Name(), len(report.ActiveChains))
-	if len(report.ActiveChains) < 1 {
-		t.Fatalf("[E2E-ENSEMBLE-UX] expected at least 1 provenance chain, got %d", len(report.ActiveChains))
-	}
-
-	exported, err := tracker.Export()
-	if err != nil {
-		t.Fatalf("[E2E-ENSEMBLE-UX] provenance export failed: %v", err)
-	}
-	if len(exported) == 0 {
-		t.Fatalf("[E2E-ENSEMBLE-UX] provenance export returned empty data")
-	}
-	t.Logf("E2E: %s - assertion: export size = %d bytes (want >0)", t.Name(), len(exported))
-}
-
 // -------------------------------------------------------------------
 // Recovery Tests
 // -------------------------------------------------------------------
-
-func TestE2E_Resume_AfterFailure(t *testing.T) {
-	SkipIfShort(t)
-
-	t.Logf("E2E: %s - testing checkpoint resume after simulated failure", t.Name())
-
-	// Use temp directory for checkpoint store.
-	tmpDir, err := os.MkdirTemp("", "ntm-e2e-checkpoint-*")
-	if err != nil {
-		t.Fatalf("[E2E-ENSEMBLE-UX] failed to create temp dir: %v", err)
-	}
-	t.Cleanup(func() { os.RemoveAll(tmpDir) })
-
-	store, err := ensemble.NewCheckpointStore(tmpDir)
-	if err != nil {
-		t.Fatalf("[E2E-ENSEMBLE-UX] NewCheckpointStore failed: %v", err)
-	}
-
-	runID := fmt.Sprintf("e2e-resume-%d", time.Now().UnixNano())
-	now := time.Now().UTC()
-
-	// Save metadata with partial completion.
-	meta := ensemble.CheckpointMetadata{
-		SessionName:  "e2e-resume-session",
-		Question:     "E2E resume test",
-		RunID:        runID,
-		Status:       ensemble.EnsembleActive,
-		CreatedAt:    now,
-		UpdatedAt:    now,
-		CompletedIDs: []string{"mode-a"},
-		PendingIDs:   []string{"mode-b", "mode-c"},
-		ErrorIDs:     []string{},
-		TotalModes:   3,
-	}
-	if err := store.SaveMetadata(meta); err != nil {
-		t.Fatalf("[E2E-ENSEMBLE-UX] SaveMetadata failed: %v", err)
-	}
-
-	// Save completed checkpoint for mode-a.
-	checkpoint := ensemble.ModeCheckpoint{
-		ModeID: "mode-a",
-		Output: &ensemble.ModeOutput{
-			ModeID:      "mode-a",
-			Thesis:      "Mode A completed thesis",
-			TopFindings: []ensemble.Finding{{Finding: "Finding A1", Impact: ensemble.ImpactMedium, Confidence: 0.8}},
-		},
-		Status:     "done",
-		CapturedAt: now,
-		TokensUsed: 500,
-	}
-	if err := store.SaveCheckpoint(runID, checkpoint); err != nil {
-		t.Fatalf("[E2E-ENSEMBLE-UX] SaveCheckpoint failed: %v", err)
-	}
-
-	// Verify resume is possible.
-	manager := ensemble.NewCheckpointManager(store, runID)
-	resumable := manager.IsResumable()
-	t.Logf("E2E: %s - assertion: resumable = %v (want true)", t.Name(), resumable)
-	if !resumable {
-		t.Fatalf("[E2E-ENSEMBLE-UX] expected checkpoint to be resumable")
-	}
-
-	// Get resume state.
-	resumeMeta, outputs, err := manager.GetResumeState()
-	if err != nil {
-		t.Fatalf("[E2E-ENSEMBLE-UX] GetResumeState failed: %v", err)
-	}
-
-	t.Logf("E2E: %s - assertion: completed_ids = %v (want [mode-a])", t.Name(), resumeMeta.CompletedIDs)
-	t.Logf("E2E: %s - assertion: pending_ids = %v (want [mode-b, mode-c])", t.Name(), resumeMeta.PendingIDs)
-	t.Logf("E2E: %s - assertion: outputs count = %d (want 1)", t.Name(), len(outputs))
-
-	if len(resumeMeta.CompletedIDs) != 1 || resumeMeta.CompletedIDs[0] != "mode-a" {
-		t.Fatalf("[E2E-ENSEMBLE-UX] unexpected completed_ids: %v", resumeMeta.CompletedIDs)
-	}
-	if len(resumeMeta.PendingIDs) != 2 {
-		t.Fatalf("[E2E-ENSEMBLE-UX] unexpected pending_ids: %v", resumeMeta.PendingIDs)
-	}
-	if len(outputs) != 1 {
-		t.Fatalf("[E2E-ENSEMBLE-UX] expected 1 completed output, got %d", len(outputs))
-	}
-}
-
-func TestE2E_RerunMode_Single(t *testing.T) {
-	SkipIfShort(t)
-
-	t.Logf("E2E: %s - testing single mode checkpoint save and reload", t.Name())
-
-	tmpDir, err := os.MkdirTemp("", "ntm-e2e-rerun-*")
-	if err != nil {
-		t.Fatalf("[E2E-ENSEMBLE-UX] failed to create temp dir: %v", err)
-	}
-	t.Cleanup(func() { os.RemoveAll(tmpDir) })
-
-	store, err := ensemble.NewCheckpointStore(tmpDir)
-	if err != nil {
-		t.Fatalf("[E2E-ENSEMBLE-UX] NewCheckpointStore failed: %v", err)
-	}
-
-	runID := fmt.Sprintf("e2e-rerun-%d", time.Now().UnixNano())
-	modeID := "rerun-test-mode"
-	now := time.Now().UTC()
-
-	// Save a checkpoint with an error.
-	errCheckpoint := ensemble.ModeCheckpoint{
-		ModeID:     modeID,
-		Status:     "error",
-		CapturedAt: now,
-		Error:      "simulated failure",
-	}
-	if err := store.SaveCheckpoint(runID, errCheckpoint); err != nil {
-		t.Fatalf("[E2E-ENSEMBLE-UX] SaveCheckpoint (error) failed: %v", err)
-	}
-
-	// Load and verify the error state.
-	loaded, err := store.LoadCheckpoint(runID, modeID)
-	if err != nil {
-		t.Fatalf("[E2E-ENSEMBLE-UX] LoadCheckpoint failed: %v", err)
-	}
-	t.Logf("E2E: %s - assertion: loaded.Status = %q (want error)", t.Name(), loaded.Status)
-	if loaded.Status != "error" {
-		t.Fatalf("[E2E-ENSEMBLE-UX] expected error status, got %q", loaded.Status)
-	}
-
-	// Now save a successful rerun.
-	successCheckpoint := ensemble.ModeCheckpoint{
-		ModeID: modeID,
-		Output: &ensemble.ModeOutput{
-			ModeID: modeID,
-			Thesis: "Successful rerun thesis",
-			TopFindings: []ensemble.Finding{
-				{Finding: "Rerun finding", Impact: ensemble.ImpactLow, Confidence: 0.75},
-			},
-		},
-		Status:     "done",
-		CapturedAt: time.Now().UTC(),
-		TokensUsed: 300,
-	}
-	if err := store.SaveCheckpoint(runID, successCheckpoint); err != nil {
-		t.Fatalf("[E2E-ENSEMBLE-UX] SaveCheckpoint (success) failed: %v", err)
-	}
-
-	// Verify the rerun replaced the error checkpoint.
-	reloaded, err := store.LoadCheckpoint(runID, modeID)
-	if err != nil {
-		t.Fatalf("[E2E-ENSEMBLE-UX] LoadCheckpoint after rerun failed: %v", err)
-	}
-
-	t.Logf("E2E: %s - assertion: reloaded.Status = %q (want done)", t.Name(), reloaded.Status)
-	if reloaded.Status != "done" {
-		t.Fatalf("[E2E-ENSEMBLE-UX] expected done status after rerun, got %q", reloaded.Status)
-	}
-	if reloaded.Output == nil || reloaded.Output.Thesis != "Successful rerun thesis" {
-		t.Fatalf("[E2E-ENSEMBLE-UX] rerun output not preserved")
-	}
-}
 
 // -------------------------------------------------------------------
 // Streaming Tests
@@ -1182,230 +773,9 @@ func TestE2E_Stream_CancelResume(t *testing.T) {
 // Dedup + Compare Tests
 // -------------------------------------------------------------------
 
-func TestE2E_Dedupe_Auto(t *testing.T) {
-	SkipIfShort(t)
-
-	t.Logf("E2E: %s - testing automatic finding deduplication", t.Name())
-
-	cfg := ensemble.DedupeConfig{
-		SimilarityThreshold:  0.7,
-		EvidenceWeight:       0.3,
-		TextWeight:           0.7,
-		PreferHighConfidence: true,
-		PreserveProvenance:   true,
-	}
-
-	engine := ensemble.NewDedupeEngine(cfg)
-
-	// Create overlapping findings from different modes as ModeOutput slices.
-	//
-	// The duplicate pairs share most of their tokens on purpose: the engine
-	// scores similarity as 0.7*Jaccard(token sets) + 0.3*evidence proximity,
-	// so at the default 0.7 threshold only genuinely near-identical phrasings
-	// cluster. Loosely paraphrased findings (e.g. "The authentication module
-	// has a SQL injection vulnerability" vs "SQL injection risk in the auth
-	// login handler", Jaccard ~0.23) score ~0.46 and correctly stay separate.
-	outputs := []ensemble.ModeOutput{
-		{
-			ModeID: "mode-security",
-			Thesis: "Security analysis",
-			TopFindings: []ensemble.Finding{
-				{Finding: "SQL injection vulnerability in the authentication login handler", Impact: ensemble.ImpactCritical, Confidence: 0.95, EvidencePointer: "auth/login.go:42"},
-				{Finding: "Memory leak in the connection pool manager", Impact: ensemble.ImpactMedium, Confidence: 0.75, EvidencePointer: "pool/manager.go:105"},
-			},
-		},
-		{
-			ModeID: "mode-review",
-			Thesis: "Code review analysis",
-			TopFindings: []ensemble.Finding{
-				{Finding: "SQL injection vulnerability in the auth login handler", Impact: ensemble.ImpactHigh, Confidence: 0.88, EvidencePointer: "auth/login.go:42"},
-				{Finding: "Memory leak in the connection pool under load", Impact: ensemble.ImpactMedium, Confidence: 0.70, EvidencePointer: "pool/manager.go:110"},
-				{Finding: "Unused error return in file handler", Impact: ensemble.ImpactLow, Confidence: 0.60, EvidencePointer: "fs/handler.go:23"},
-			},
-		},
-	}
-
-	totalFindings := 0
-	for _, o := range outputs {
-		totalFindings += len(o.TopFindings)
-	}
-
-	result := engine.Dedupe(outputs)
-
-	t.Logf("E2E: %s - assertion: cluster_count = %d (want < %d input findings)", t.Name(), len(result.Clusters), totalFindings)
-	t.Logf("E2E: %s - stats: input=%d clusters=%d", t.Name(), result.Stats.InputFindings, result.Stats.OutputClusters)
-
-	// With similar findings, we should see fewer clusters than input.
-	if len(result.Clusters) >= totalFindings {
-		t.Fatalf("[E2E-ENSEMBLE-UX] expected dedup to reduce findings: clusters=%d inputs=%d", len(result.Clusters), totalFindings)
-	}
-
-	// Log cluster details.
-	for i, cluster := range result.Clusters {
-		t.Logf("E2E: %s - cluster[%d]: canonical=%q confidence=%.2f members=%d",
-			t.Name(), i, truncateString(cluster.Canonical.Finding, 50), float64(cluster.MaxConfidence), cluster.MemberCount)
-	}
-}
-
-func TestE2E_Compare_TwoRuns(t *testing.T) {
-	SkipIfShort(t)
-
-	t.Logf("E2E: %s - testing comparison of two ensemble runs", t.Name())
-
-	tmpDir, err := os.MkdirTemp("", "ntm-e2e-compare-*")
-	if err != nil {
-		t.Fatalf("[E2E-ENSEMBLE-UX] failed to create temp dir: %v", err)
-	}
-	t.Cleanup(func() { os.RemoveAll(tmpDir) })
-
-	store, err := ensemble.NewCheckpointStore(tmpDir)
-	if err != nil {
-		t.Fatalf("[E2E-ENSEMBLE-UX] NewCheckpointStore failed: %v", err)
-	}
-
-	now := time.Now().UTC()
-	runA := "e2e-compare-a"
-	runB := "e2e-compare-b"
-
-	// Save two runs with different outputs.
-	metaA := ensemble.CheckpointMetadata{
-		RunID: runA, SessionName: "e2e-compare", Question: "E2E compare",
-		Status: ensemble.EnsembleComplete, CreatedAt: now, UpdatedAt: now,
-		CompletedIDs: []string{"mode-a", "mode-b"}, TotalModes: 2,
-	}
-	if err := store.SaveMetadata(metaA); err != nil {
-		t.Fatalf("[E2E-ENSEMBLE-UX] SaveMetadata A failed: %v", err)
-	}
-
-	for _, modeID := range []string{"mode-a", "mode-b"} {
-		cp := ensemble.ModeCheckpoint{
-			ModeID: modeID,
-			Output: &ensemble.ModeOutput{
-				ModeID:      modeID,
-				Thesis:      fmt.Sprintf("Run A thesis %s", modeID),
-				TopFindings: []ensemble.Finding{{Finding: fmt.Sprintf("Run A finding from %s", modeID), Impact: ensemble.ImpactMedium, Confidence: 0.7}},
-			},
-			Status: "done", CapturedAt: now,
-		}
-		if err := store.SaveCheckpoint(runA, cp); err != nil {
-			t.Fatalf("[E2E-ENSEMBLE-UX] SaveCheckpoint A/%s failed: %v", modeID, err)
-		}
-	}
-
-	metaB := ensemble.CheckpointMetadata{
-		RunID: runB, SessionName: "e2e-compare", Question: "E2E compare v2",
-		Status: ensemble.EnsembleComplete, CreatedAt: now.Add(time.Hour), UpdatedAt: now.Add(time.Hour),
-		CompletedIDs: []string{"mode-a", "mode-c"}, TotalModes: 2,
-	}
-	if err := store.SaveMetadata(metaB); err != nil {
-		t.Fatalf("[E2E-ENSEMBLE-UX] SaveMetadata B failed: %v", err)
-	}
-
-	for _, modeID := range []string{"mode-a", "mode-c"} {
-		cp := ensemble.ModeCheckpoint{
-			ModeID: modeID,
-			Output: &ensemble.ModeOutput{
-				ModeID:      modeID,
-				Thesis:      fmt.Sprintf("Run B thesis %s", modeID),
-				TopFindings: []ensemble.Finding{{Finding: fmt.Sprintf("Run B finding from %s", modeID), Impact: ensemble.ImpactHigh, Confidence: 0.85}},
-			},
-			Status: "done", CapturedAt: now.Add(time.Hour),
-		}
-		if err := store.SaveCheckpoint(runB, cp); err != nil {
-			t.Fatalf("[E2E-ENSEMBLE-UX] SaveCheckpoint B/%s failed: %v", modeID, err)
-		}
-	}
-
-	// Load both runs' outputs.
-	outputsA, err := store.GetCompletedOutputs(runA)
-	if err != nil {
-		t.Fatalf("[E2E-ENSEMBLE-UX] GetCompletedOutputs A failed: %v", err)
-	}
-	outputsB, err := store.GetCompletedOutputs(runB)
-	if err != nil {
-		t.Fatalf("[E2E-ENSEMBLE-UX] GetCompletedOutputs B failed: %v", err)
-	}
-
-	t.Logf("E2E: %s - assertion: outputsA count = %d (want 2)", t.Name(), len(outputsA))
-	t.Logf("E2E: %s - assertion: outputsB count = %d (want 2)", t.Name(), len(outputsB))
-
-	if len(outputsA) != 2 {
-		t.Fatalf("[E2E-ENSEMBLE-UX] expected 2 outputs for run A, got %d", len(outputsA))
-	}
-	if len(outputsB) != 2 {
-		t.Fatalf("[E2E-ENSEMBLE-UX] expected 2 outputs for run B, got %d", len(outputsB))
-	}
-
-	// Verify runs are stored separately.
-	if store.RunExists(runA) && store.RunExists(runB) {
-		t.Logf("E2E: %s - assertion: both runs exist = true (want true)", t.Name())
-	} else {
-		t.Fatalf("[E2E-ENSEMBLE-UX] one or both runs do not exist in store")
-	}
-}
-
 // -------------------------------------------------------------------
 // Sharing / Export-Import Tests
 // -------------------------------------------------------------------
-
-func TestE2E_ExportImport_RoundTrip(t *testing.T) {
-	SkipIfShort(t)
-
-	t.Logf("E2E: %s - testing export/import round-trip", t.Name())
-
-	// Get a real preset for the round-trip test.
-	engine := ensemble.NewSuggestionEngine()
-	presetNames := engine.ListPresets()
-	if len(presetNames) == 0 {
-		t.Skip("no presets available for export test")
-	}
-
-	preset := engine.GetPreset(presetNames[0])
-	if preset == nil {
-		t.Fatalf("[E2E-ENSEMBLE-UX] GetPreset(%q) returned nil", presetNames[0])
-	}
-	t.Logf("E2E: %s - using preset %q for round-trip", t.Name(), preset.Name)
-
-	// Export from preset.
-	exported := ensemble.ExportFromPreset(*preset)
-
-	// Convert to JSON.
-	data, err := json.MarshalIndent(exported, "", "  ")
-	if err != nil {
-		t.Fatalf("[E2E-ENSEMBLE-UX] marshal export failed: %v", err)
-	}
-
-	// Write to temp file.
-	tmpFile := filepath.Join(os.TempDir(), fmt.Sprintf("ntm-e2e-export-%d.json", time.Now().UnixNano()))
-	if err := os.WriteFile(tmpFile, data, 0644); err != nil {
-		t.Fatalf("[E2E-ENSEMBLE-UX] write export file failed: %v", err)
-	}
-	t.Cleanup(func() { os.Remove(tmpFile) })
-
-	// Read back and parse.
-	readData, err := os.ReadFile(tmpFile)
-	if err != nil {
-		t.Fatalf("[E2E-ENSEMBLE-UX] read export file failed: %v", err)
-	}
-
-	var imported ensemble.EnsembleExport
-	if err := json.Unmarshal(readData, &imported); err != nil {
-		t.Fatalf("[E2E-ENSEMBLE-UX] unmarshal import failed: %v", err)
-	}
-
-	// Convert back to preset.
-	roundTripped := imported.ToPreset()
-
-	t.Logf("E2E: %s - assertion: roundTripped.Name = %q (want %q)", t.Name(), roundTripped.Name, preset.Name)
-	if roundTripped.Name != preset.Name {
-		t.Fatalf("[E2E-ENSEMBLE-UX] round-trip name mismatch: got %q want %q", roundTripped.Name, preset.Name)
-	}
-
-	t.Logf("E2E: %s - assertion: roundTripped modes count = %d (want %d)", t.Name(), len(roundTripped.Modes), len(preset.Modes))
-	if len(roundTripped.Modes) != len(preset.Modes) {
-		t.Fatalf("[E2E-ENSEMBLE-UX] round-trip mode count mismatch: got %d want %d", len(roundTripped.Modes), len(preset.Modes))
-	}
-}
 
 func TestE2E_Import_RemoteRejected(t *testing.T) {
 	SkipIfShort(t)
@@ -1441,6 +811,227 @@ func TestE2E_Import_RemoteRejected(t *testing.T) {
 // -------------------------------------------------------------------
 // Finding Export Tests
 // -------------------------------------------------------------------
+
+// -------------------------------------------------------------------
+// Ensemble Presets List (robot) Tests
+// -------------------------------------------------------------------
+
+func TestE2E_Contributions_RobotOutput(t *testing.T) {
+	CommonE2EPrerequisites(t)
+
+	if !supportsNTMSubcommand("ensemble") {
+		t.Skip("ntm binary does not support `ensemble` command")
+	}
+
+	suite := NewTestSuite(t, "ensemble_ux_contributions_robot")
+	defer suite.Teardown()
+
+	if err := suite.Setup(); err != nil {
+		t.Fatalf("[E2E-ENSEMBLE-UX] suite setup failed: %v", err)
+	}
+
+	session := suite.Session()
+	t.Logf("E2E: %s - testing robot ensemble output for contributions", t.Name())
+
+	// Seed state.
+	now := time.Now().UTC()
+	panes, err := tmux.GetPanes(session)
+	if err != nil {
+		t.Fatalf("[E2E-ENSEMBLE-UX] GetPanes failed: %v", err)
+	}
+	if len(panes) == 0 || panes[0].ID == "" {
+		t.Fatalf("[E2E-ENSEMBLE-UX] no panes available")
+	}
+	paneID := panes[0].ID
+
+	state := &ensemble.EnsembleSession{
+		SessionName:       session,
+		Question:          "E2E robot contribution test",
+		PresetUsed:        "e2e",
+		Status:            ensemble.EnsembleActive,
+		SynthesisStrategy: ensemble.StrategyManual,
+		CreatedAt:         now,
+		Assignments: []ensemble.ModeAssignment{
+			{
+				ModeID:      "e2e-robot-mode",
+				PaneName:    paneID,
+				AgentType:   "cc",
+				Status:      ensemble.AssignmentDone,
+				AssignedAt:  now,
+				CompletedAt: &now,
+			},
+		},
+	}
+	if err := ensemble.SaveSession(session, state); err != nil {
+		t.Fatalf("[E2E-ENSEMBLE-UX] SaveSession failed: %v", err)
+	}
+	sendYAMLModeOutput(t, session, 0, "E2E robot contribution thesis")
+
+	res := runEnsembleUXCmd(t, suite, "robot_ensemble_contributions",
+		fmt.Sprintf("--robot-ensemble=%s", session),
+	)
+
+	t.Logf("E2E: %s - stdout: %s", t.Name(), string(res.Stdout))
+	t.Logf("E2E: %s - exit code err: %v", t.Name(), res.Err)
+
+	if res.Err != nil {
+		t.Fatalf("[E2E-ENSEMBLE-UX] --robot-ensemble failed: %v", res.Err)
+	}
+
+	var raw json.RawMessage
+	if err := json.Unmarshal(res.Stdout, &raw); err != nil {
+		t.Fatalf("[E2E-ENSEMBLE-UX] robot ensemble output not valid JSON: %v", err)
+	}
+	t.Logf("E2E: %s - assertion: robot ensemble output is valid JSON = true (want true)", t.Name())
+}
+
+func TestE2E_Contributions_StatusOutput(t *testing.T) {
+	CommonE2EPrerequisites(t)
+
+	if !supportsNTMSubcommand("ensemble") {
+		t.Skip("ntm binary does not support `ensemble` command")
+	}
+
+	suite := NewTestSuite(t, "ensemble_ux_contributions_status")
+	defer suite.Teardown()
+
+	if err := suite.Setup(); err != nil {
+		t.Fatalf("[E2E-ENSEMBLE-UX] suite setup failed: %v", err)
+	}
+
+	session := suite.Session()
+	t.Logf("E2E: %s - seeding ensemble state for contribution test", t.Name())
+
+	// Seed deterministic state.
+	now := time.Now().UTC()
+	panes, err := tmux.GetPanes(session)
+	if err != nil {
+		t.Fatalf("[E2E-ENSEMBLE-UX] GetPanes failed: %v", err)
+	}
+	if len(panes) == 0 || panes[0].ID == "" {
+		t.Fatalf("[E2E-ENSEMBLE-UX] expected at least 1 pane")
+	}
+	paneID := panes[0].ID
+
+	state := &ensemble.EnsembleSession{
+		SessionName:       session,
+		Question:          "E2E contribution scoring test",
+		PresetUsed:        "e2e",
+		Status:            ensemble.EnsembleActive,
+		SynthesisStrategy: ensemble.StrategyManual,
+		CreatedAt:         now,
+		Assignments: []ensemble.ModeAssignment{
+			{
+				ModeID:      "e2e-mode-a",
+				PaneName:    paneID,
+				AgentType:   "cc",
+				Status:      ensemble.AssignmentDone,
+				AssignedAt:  now,
+				CompletedAt: &now,
+			},
+		},
+	}
+	if err := ensemble.SaveSession(session, state); err != nil {
+		t.Fatalf("[E2E-ENSEMBLE-UX] SaveSession failed: %v", err)
+	}
+	// Send synthetic YAML mode output.
+	sendYAMLModeOutput(t, session, 0, "E2E contribution thesis")
+
+	// Check status includes contribution data.
+	res := runEnsembleUXCmd(t, suite, "status_with_contributions",
+		"ensemble", "status", session, "--format", "json",
+	)
+
+	t.Logf("E2E: %s - stdout: %s", t.Name(), string(res.Stdout))
+	t.Logf("E2E: %s - exit code err: %v", t.Name(), res.Err)
+
+	if res.Err != nil {
+		t.Fatalf("[E2E-ENSEMBLE-UX] ensemble status failed: %v", res.Err)
+	}
+
+	var status ensembleStatusJSON
+	parseEnsembleUXJSON(t, suite, "status_with_contributions", res.Stdout, &status)
+
+	t.Logf("E2E: %s - assertion: exists = %v (want true)", t.Name(), status.Exists)
+	if !status.Exists {
+		t.Fatalf("[E2E-ENSEMBLE-UX] expected exists=true")
+	}
+}
+
+func TestE2E_Explain_Flag(t *testing.T) {
+	CommonE2EPrerequisites(t)
+
+	if !supportsNTMSubcommand("ensemble") {
+		t.Skip("ntm binary does not support `ensemble` command")
+	}
+
+	suite := NewTestSuite(t, "ensemble_ux_explain_flag")
+	defer suite.Teardown()
+
+	if err := suite.Setup(); err != nil {
+		t.Fatalf("[E2E-ENSEMBLE-UX] suite setup failed: %v", err)
+	}
+
+	session := suite.Session()
+	t.Logf("E2E: %s - testing synthesize with --explain flag", t.Name())
+
+	// Seed deterministic ensemble state.
+	now := time.Now().UTC()
+	panes, err := tmux.GetPanes(session)
+	if err != nil {
+		t.Fatalf("[E2E-ENSEMBLE-UX] GetPanes failed: %v", err)
+	}
+	if len(panes) == 0 || panes[0].ID == "" {
+		t.Fatalf("[E2E-ENSEMBLE-UX] no panes available")
+	}
+	paneID := panes[0].ID
+
+	state := &ensemble.EnsembleSession{
+		SessionName:       session,
+		Question:          "E2E explain flag test",
+		PresetUsed:        "e2e",
+		Status:            ensemble.EnsembleActive,
+		SynthesisStrategy: ensemble.StrategyManual,
+		CreatedAt:         now,
+		Assignments: []ensemble.ModeAssignment{
+			{
+				ModeID:      "e2e-explain-mode",
+				PaneName:    paneID,
+				AgentType:   "cc",
+				Status:      ensemble.AssignmentDone,
+				AssignedAt:  now,
+				CompletedAt: &now,
+			},
+		},
+	}
+	if err := ensemble.SaveSession(session, state); err != nil {
+		t.Fatalf("[E2E-ENSEMBLE-UX] SaveSession failed: %v", err)
+	}
+	sendYAMLModeOutput(t, session, 0, "E2E explain thesis")
+
+	res := runEnsembleUXCmd(t, suite, "synthesize_explain",
+		"ensemble", "synthesize", session,
+		"--explain",
+		"--format", "json",
+	)
+
+	t.Logf("E2E: %s - stdout: %s", t.Name(), truncateString(string(res.Stdout), 500))
+	t.Logf("E2E: %s - exit code err: %v", t.Name(), res.Err)
+
+	if res.Err != nil {
+		t.Fatalf("[E2E-ENSEMBLE-UX] synthesize with --explain failed: %v", res.Err)
+	}
+
+	var out map[string]interface{}
+	parseEnsembleUXJSON(t, suite, "synthesize_explain", res.Stdout, &out)
+
+	// With --explain, the output should include synthesis data.
+	if _, ok := out["synthesis"]; !ok {
+		t.Fatalf("[E2E-ENSEMBLE-UX] synthesize --explain missing 'synthesis' field")
+	}
+
+	t.Logf("E2E: %s - assertion: synthesis field present = true (want true)", t.Name())
+}
 
 func TestE2E_ExportFindings_DryRun(t *testing.T) {
 	CommonE2EPrerequisites(t)
@@ -1514,51 +1105,4 @@ func TestE2E_ExportFindings_DryRun(t *testing.T) {
 	}
 
 	t.Logf("E2E: %s - assertion: synthesis JSON has findings = true", t.Name())
-}
-
-// -------------------------------------------------------------------
-// Ensemble Presets List (robot) Tests
-// -------------------------------------------------------------------
-
-func TestE2E_Presets_RobotJSON(t *testing.T) {
-	CommonE2EPrerequisites(t)
-
-	if !supportsNTMSubcommand("ensemble") {
-		t.Skip("ntm binary does not support `ensemble` command")
-	}
-
-	suite := NewTestSuite(t, "ensemble_ux_presets_robot")
-	defer suite.Teardown()
-
-	t.Logf("E2E: %s - testing robot ensemble-presets JSON output", t.Name())
-
-	res := runEnsembleUXCmd(t, suite, "robot_presets",
-		"--robot-ensemble-presets",
-	)
-
-	t.Logf("E2E: %s - stdout: %s", t.Name(), truncateString(string(res.Stdout), 500))
-	t.Logf("E2E: %s - exit code err: %v", t.Name(), res.Err)
-
-	if res.Err != nil {
-		t.Fatalf("[E2E-ENSEMBLE-UX] --robot-ensemble-presets failed: %v", res.Err)
-	}
-
-	var out presetsListJSON
-	parseEnsembleUXJSON(t, suite, "robot_presets", res.Stdout, &out)
-
-	if out.Count == 0 {
-		t.Fatalf("[E2E-ENSEMBLE-UX] expected at least 1 preset")
-	}
-	if out.Count != len(out.Presets) {
-		t.Fatalf("[E2E-ENSEMBLE-UX] preset count mismatch: count=%d len=%d", out.Count, len(out.Presets))
-	}
-
-	t.Logf("E2E: %s - assertion: preset_count = %d (want >0)", t.Name(), out.Count)
-
-	for i, p := range out.Presets {
-		if p.Name == "" {
-			t.Fatalf("[E2E-ENSEMBLE-UX] preset[%d] has empty name", i)
-		}
-		t.Logf("E2E: %s - preset[%d]: name=%s mode_count=%d", t.Name(), i, p.Name, p.ModeCount)
-	}
 }

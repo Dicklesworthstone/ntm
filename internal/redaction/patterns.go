@@ -80,12 +80,6 @@ var compiledPatterns []pattern
 // compileOnce ensures patterns are compiled exactly once.
 var compileOnce sync.Once
 
-// ResetPatterns resets compiled patterns (for testing only).
-func ResetPatterns() {
-	compileOnce = sync.Once{}
-	compiledPatterns = nil
-}
-
 // compilePatterns compiles all default patterns.
 func compilePatterns() {
 	compileOnce.Do(func() {

@@ -11,13 +11,6 @@ type MessageClient struct {
 	agentName   string
 }
 
-func NewMessageClient(projectPath, agentName string) *MessageClient {
-	return &MessageClient{
-		projectPath: projectPath,
-		agentName:   agentName,
-	}
-}
-
 func legacyMessageUnsupportedError() error {
 	return fmt.Errorf("legacy beads message commands are not supported by the installed br version")
 }

@@ -533,13 +533,6 @@ type AgentDistribution struct {
 	PreferredAgentType string `json:"preferred_agent_type,omitempty" toml:"preferred_agent_type,omitempty" yaml:"preferred_agent_type,omitempty"`
 }
 
-// DefaultAgentDistribution returns the default agent distribution (one mode per agent).
-func DefaultAgentDistribution() AgentDistribution {
-	return AgentDistribution{
-		Strategy: "one-per-agent",
-	}
-}
-
 // EnsemblePreset is a pre-configured mode combination.
 // Presets make it easy to quickly start an ensemble with a curated
 // set of modes for common use cases.
@@ -705,12 +698,6 @@ func ValidateModeCode(code string, category ModeCategory) error {
 		return fmt.Errorf("mode code %q letter %q does not match category %q (expected %q)", code, codeLetter, category, expectedLetter)
 	}
 	return nil
-}
-
-// ValidatePreset checks if a preset is valid and all its modes exist.
-// This is an alias for EnsemblePreset.Validate for convenience.
-func ValidatePreset(preset EnsemblePreset, catalog *ModeCatalog) error {
-	return preset.Validate(catalog)
 }
 
 // ModeCatalog holds a collection of reasoning modes.
@@ -1322,29 +1309,4 @@ type Ensemble struct {
 
 	// Source indicates where this ensemble was loaded from.
 	Source string `json:"source,omitempty" toml:"-" yaml:"source,omitempty"`
-}
-
-// Validate checks that the ensemble is valid and all mode IDs exist in the catalog.
-func (e *Ensemble) Validate(catalog *ModeCatalog) error {
-	if e.Name == "" {
-		return errors.New("ensemble name is required")
-	}
-	if err := ValidateModeID(e.Name); err != nil {
-		return fmt.Errorf("invalid ensemble name: %w", err)
-	}
-	if e.DisplayName == "" {
-		return errors.New("ensemble display_name is required")
-	}
-	if len(e.ModeIDs) == 0 {
-		return errors.New("ensemble must have at least one mode")
-	}
-
-	// Verify all modes exist
-	for _, modeID := range e.ModeIDs {
-		if catalog.GetMode(modeID) == nil {
-			return fmt.Errorf("mode %q not found in catalog", modeID)
-		}
-	}
-
-	return nil
 }

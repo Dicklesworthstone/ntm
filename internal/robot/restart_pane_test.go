@@ -472,37 +472,6 @@ func TestValidateRestartStorePreflightAcceptsReleasedRequiredTerminalAssignment(
 	}
 }
 
-func TestValidateRestartFreshDetailsRejectsEveryLiveAutomationGate(t *testing.T) {
-	now := time.Now()
-	future := now.Add(time.Hour)
-	base := bv.BeadAssignmentDetails{ID: "ntm-gated", Title: "Gated", Status: "open"}
-	tests := []struct {
-		name string
-		edit func(*bv.BeadAssignmentDetails)
-		want string
-	}{
-		{name: "blocked", edit: func(d *bv.BeadAssignmentDetails) { d.BlockedBy = []string{"dep"} }, want: "blocker"},
-		{name: "operator label", edit: func(d *bv.BeadAssignmentDetails) { d.Labels = []string{"operator-gated"} }, want: "operator-gated"},
-		{name: "not open", edit: func(d *bv.BeadAssignmentDetails) { d.Status = "in_progress" }, want: "want open"},
-		{name: "assigned", edit: func(d *bv.BeadAssignmentDetails) { d.Assignee = "owner" }, want: "already assigned"},
-		{name: "deferred", edit: func(d *bv.BeadAssignmentDetails) { d.DeferUntil = &future }, want: "deferred"},
-		{name: "pinned", edit: func(d *bv.BeadAssignmentDetails) { d.Pinned = true }, want: "pinned"},
-		{name: "ephemeral", edit: func(d *bv.BeadAssignmentDetails) { d.Ephemeral = true }, want: "ephemeral"},
-		{name: "template", edit: func(d *bv.BeadAssignmentDetails) { d.Template = true }, want: "template"},
-		{name: "wisp", edit: func(d *bv.BeadAssignmentDetails) { d.Wisp = true }, want: "wisp"},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			details := base
-			test.edit(&details)
-			err := validateRestartFreshDetails(&details, now)
-			if err == nil || !strings.Contains(strings.ToLower(err.Error()), test.want) {
-				t.Fatalf("validateRestartFreshDetails() error = %v, want containing %q", err, test.want)
-			}
-		})
-	}
-}
-
 func TestRestartAssignmentEligibilityPortRechecksAuthoritativeLiveState(t *testing.T) {
 	const (
 		projectDir = "/authoritative/project"
@@ -1641,22 +1610,6 @@ func TestRestartModelVarsKeepsPinnedAndAliasedModels(t *testing.T) {
 	}
 	if !vars.ModelRequested || vars.ModelAlias != "fast" {
 		t.Fatalf("alias metadata lost: requested=%t alias=%q", vars.ModelRequested, vars.ModelAlias)
-	}
-}
-
-// Robot spawn must render every agent type's default model, not only grok's.
-func TestGetAgentCommandsRendersPinnedAgyModel(t *testing.T) {
-	commands := getAgentCommands(config.Default())
-
-	agy, ok := commands["antigravity"]
-	if !ok {
-		t.Fatalf("no antigravity command rendered: %v", commands)
-	}
-	if strings.Contains(agy, "--model ''") {
-		t.Fatalf("agy rendered with an empty model and would not start: %s", agy)
-	}
-	if !strings.Contains(agy, config.AntigravityRequiredModel) {
-		t.Fatalf("agy command %q lacks the pinned model %q", agy, config.AntigravityRequiredModel)
 	}
 }
 

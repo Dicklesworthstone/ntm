@@ -254,67 +254,9 @@ func TestClaudeAuthFlow_DetectBrowserURL(t *testing.T) {
 // DetectAuthSuccess
 // =============================================================================
 
-func TestClaudeAuthFlow_DetectAuthSuccess(t *testing.T) {
-	t.Parallel()
-	flow := NewClaudeAuthFlow(false)
-
-	tests := []struct {
-		name   string
-		output string
-		want   bool
-	}{
-		{"success logged in", "Successfully logged in as user", true},
-		{"login successful", "Login successful", true},
-		{"failure message", "Login failed", false},
-		{"empty output", "", false},
-		{"embedded success", "output\nSuccessfully logged in\nmore output", true},
-		{"partial match - just success", "Success", false},
-		{"no match - logging in", "Logging in...", false},
-		{"error logging in (failure, not success)", "Error logging in", false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			if got := flow.DetectAuthSuccess(tt.output); got != tt.want {
-				t.Errorf("DetectAuthSuccess(%q) = %v, want %v", tt.output, got, tt.want)
-			}
-		})
-	}
-}
-
 // =============================================================================
 // DetectAuthFailure
 // =============================================================================
-
-func TestClaudeAuthFlow_DetectAuthFailure(t *testing.T) {
-	t.Parallel()
-	flow := NewClaudeAuthFlow(false)
-
-	tests := []struct {
-		name   string
-		output string
-		want   bool
-	}{
-		{"login failed", "Login failed due to error", true},
-		{"auth failed", "Authentication failed", true},
-		{"error logging in", "Error logging in: timeout", true},
-		{"success message", "Login successful", false},
-		{"empty output", "", false},
-		{"embedded failure", "stdout\nLogin failed\nstderr", true},
-		{"partial match - fail only", "Failed", false},
-		{"no match - authenticating", "Authenticating...", false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			if got := flow.DetectAuthFailure(tt.output); got != tt.want {
-				t.Errorf("DetectAuthFailure(%q) = %v, want %v", tt.output, got, tt.want)
-			}
-		})
-	}
-}
 
 // =============================================================================
 // DetectChallengeCode

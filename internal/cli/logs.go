@@ -316,12 +316,6 @@ func runLogsFollow(opts robot.LogsOptions) error {
 	}
 }
 
-// ParsePanesArg is defined in robot package but we need a local version for CLI.
-// This function delegates to robot.ParsePanesArg.
-func parsePanesArgLocal(s string) ([]int, error) {
-	return robot.ParsePanesArg(s)
-}
-
 // Helper for short agent type formatting
 func shortAgentTypeLocal(agentType string) string {
 	switch agent.AgentType(agentType).Canonical() {

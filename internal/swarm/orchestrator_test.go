@@ -611,24 +611,6 @@ func TestNewRemoteSessionOrchestrator(t *testing.T) {
 	}
 }
 
-func TestNewRemoteSessionOrchestratorWithDelay(t *testing.T) {
-	host := "admin@192.168.1.100"
-	delay := 500 * time.Millisecond
-	orch := NewRemoteSessionOrchestratorWithDelay(host, delay)
-
-	if orch == nil {
-		t.Fatal("expected non-nil orchestrator")
-	}
-
-	if orch.TmuxClient.Remote != host {
-		t.Errorf("expected Remote=%q, got %q", host, orch.TmuxClient.Remote)
-	}
-
-	if orch.StaggerDelay != delay {
-		t.Errorf("expected StaggerDelay %v, got %v", delay, orch.StaggerDelay)
-	}
-}
-
 func TestSessionOrchestrator_IsRemote(t *testing.T) {
 	t.Run("local orchestrator", func(t *testing.T) {
 		orch := NewSessionOrchestrator()

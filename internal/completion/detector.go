@@ -140,11 +140,6 @@ var defaultFailurePatterns = []string{
 	`(?i)aborting`,
 }
 
-// New creates a new CompletionDetector with default configuration
-func New(session string, store *assignment.AssignmentStore) *CompletionDetector {
-	return NewWithConfig(session, store, DefaultConfig())
-}
-
 // NewWithConfig creates a new CompletionDetector with custom configuration
 func NewWithConfig(session string, store *assignment.AssignmentStore, cfg DetectionConfig) *CompletionDetector {
 	defaults := DefaultConfig()
@@ -233,30 +228,6 @@ func (d *CompletionDetector) SetTerminalReconciler(reconciler TerminalReconciler
 	d.mu.Lock()
 	d.terminalReconciler = reconciler
 	d.mu.Unlock()
-}
-
-// AddPattern adds a custom completion pattern
-func (d *CompletionDetector) AddPattern(pattern string) error {
-	re, err := regexp.Compile(pattern)
-	if err != nil {
-		return fmt.Errorf("invalid pattern %q: %w", pattern, err)
-	}
-	d.mu.Lock()
-	d.Patterns = append(d.Patterns, re)
-	d.mu.Unlock()
-	return nil
-}
-
-// AddFailurePattern adds a custom failure pattern
-func (d *CompletionDetector) AddFailurePattern(pattern string) error {
-	re, err := regexp.Compile(pattern)
-	if err != nil {
-		return fmt.Errorf("invalid pattern %q: %w", pattern, err)
-	}
-	d.mu.Lock()
-	d.FailPattern = append(d.FailPattern, re)
-	d.mu.Unlock()
-	return nil
 }
 
 // Watch starts continuous monitoring and returns a channel of completion events.
@@ -818,46 +789,6 @@ func (d *CompletionDetector) eventRecordedRecentlyLocked(a *assignment.Assignmen
 	d.pruneExpiredRecentEventsLocked(now)
 	lastEvent, exists := d.recentEvents[assignmentAttemptKey(a)]
 	return exists && now.Sub(lastEvent) < d.Config.DedupWindow
-}
-
-// CheckNow performs an immediate check for one canonical pane identity.
-func (d *CompletionDetector) CheckNow(target string) (*CompletionEvent, error) {
-	if err := d.InitializationError(); err != nil {
-		return nil, fmt.Errorf("completion detector is unavailable: %w", err)
-	}
-	if d.Store == nil {
-		return nil, fmt.Errorf("no assignment store configured")
-	}
-	target = strings.TrimSpace(target)
-	if target == "" {
-		return nil, fmt.Errorf("canonical pane target is required")
-	}
-
-	// Find the assignment for this exact durable pane identity.
-	var targets []*assignment.Assignment
-	for _, a := range d.Store.ListActive() {
-		if !assignmentEligibleForCompletionScan(a) {
-			continue
-		}
-		identity, err := assignment.CanonicalPaneIdentity(a)
-		if err != nil {
-			return nil, err
-		}
-		if identity == target {
-			targets = append(targets, a)
-		}
-	}
-
-	if len(targets) == 0 {
-		return nil, fmt.Errorf("no active assignment for pane %s", target)
-	}
-	if len(targets) > 1 {
-		return nil, fmt.Errorf("canonical pane %s has %d active assignments", target, len(targets))
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	return d.checkAssignment(ctx, targets[0])
 }
 
 // isBrAvailable checks if the br CLI is available (cached)

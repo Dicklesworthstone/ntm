@@ -216,29 +216,6 @@ func TestGetTriageQuickRef(t *testing.T) {
 	}
 }
 
-func TestGetTriageTopPicks(t *testing.T) {
-	if !IsInstalled() {
-		t.Skip("bv not installed")
-	}
-
-	// Use cached triage to avoid slow bv command
-	triage, _ := getCachedTriage(t)
-
-	picks := triage.Triage.QuickWins
-	if len(picks) > 3 {
-		picks = picks[:3]
-	}
-
-	for i, pick := range picks {
-		if pick.ID == "" {
-			t.Errorf("Pick %d has empty ID", i)
-		}
-		if pick.Score < 0 {
-			t.Errorf("Pick %d has negative score: %f", i, pick.Score)
-		}
-	}
-}
-
 func TestGetNextRecommendation(t *testing.T) {
 	if !IsInstalled() {
 		t.Skip("bv not installed")
@@ -267,41 +244,6 @@ func TestGetNextRecommendation(t *testing.T) {
 	}
 
 	t.Logf("Top recommendation: %s - %s (score: %.2f)", rec.ID, rec.Title, rec.Score)
-}
-
-func TestSetTriageCacheTTL(t *testing.T) {
-	originalTTL := triageCacheTTL
-
-	// Set a short TTL
-	SetTriageCacheTTL(100 * time.Millisecond)
-
-	if triageCacheTTL != 100*time.Millisecond {
-		t.Errorf("Expected TTL to be 100ms, got %v", triageCacheTTL)
-	}
-
-	// Restore original TTL
-	SetTriageCacheTTL(originalTTL)
-}
-
-func TestGetTriageNoCache(t *testing.T) {
-	if !IsInstalled() {
-		t.Skip("bv not installed")
-	}
-
-	// Use test cache to ensure we have data, rather than making slow bv call
-	triage, _ := getCachedTriage(t)
-
-	if triage == nil {
-		t.Fatal("GetTriage returned nil")
-	}
-
-	// Verify the cached data is valid (testing the structure, not the no-cache mechanism)
-	if triage.DataHash == "" {
-		t.Error("DataHash should not be empty")
-	}
-
-	// Note: We don't test the actual GetTriageNoCache behavior here to avoid
-	// making slow bv calls. The caching logic is tested in TestTriageCache.
 }
 
 // TestReadyBeadLabelsMergesOpenListForEpics is the #224 regression: `br ready`

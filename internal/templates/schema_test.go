@@ -189,7 +189,7 @@ spec:
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	loader := NewSessionTemplateLoaderWithProject(tmpDir)
+	loader := newSessionTemplateLoaderWithProjectForTest(tmpDir)
 	tmpl, err := loader.Load("project-template")
 	if err != nil {
 		t.Fatalf("Load() error: %v", err)
@@ -240,7 +240,7 @@ spec:
 		t.Fatalf("WriteFile(child): %v", err)
 	}
 
-	loader := NewSessionTemplateLoaderWithProject(tmpDir)
+	loader := newSessionTemplateLoaderWithProjectForTest(tmpDir)
 	tmpl, err := loader.Load("child-template")
 	if err != nil {
 		t.Fatalf("Load() error: %v", err)
@@ -292,7 +292,7 @@ spec:
 		t.Fatalf("WriteFile(B): %v", err)
 	}
 
-	loader := NewSessionTemplateLoaderWithProject(tmpDir)
+	loader := newSessionTemplateLoaderWithProjectForTest(tmpDir)
 	_, err := loader.Load("template-a")
 	if err == nil {
 		t.Fatal("expected error for circular inheritance, got nil")
@@ -324,7 +324,7 @@ spec:
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	loader := NewSessionTemplateLoaderWithProject(tmpDir)
+	loader := newSessionTemplateLoaderWithProjectForTest(tmpDir)
 	templates, err := loader.List()
 	if err != nil {
 		t.Fatalf("List() error: %v", err)
@@ -370,7 +370,7 @@ func TestSessionTemplateLoader_Load_ProjectErrorWinsOverBuiltin(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	loader := NewSessionTemplateLoaderWithProject(tmpDir)
+	loader := newSessionTemplateLoaderWithProjectForTest(tmpDir)
 	_, err := loader.Load("broken-shadow")
 	if err == nil {
 		t.Fatal("expected invalid project template to fail")
@@ -393,7 +393,7 @@ func TestSessionTemplateLoader_List_ErrorsOnInvalidProjectTemplate(t *testing.T)
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	loader := NewSessionTemplateLoaderWithProject(tmpDir)
+	loader := newSessionTemplateLoaderWithProjectForTest(tmpDir)
 	_, err := loader.List()
 	if err == nil {
 		t.Fatal("expected invalid project session template to fail")
@@ -532,28 +532,6 @@ spec:
 	}
 }
 
-func TestParseSessionTemplateRaw_NoEnvExpansion(t *testing.T) {
-	t.Setenv("NTM_TEMPLATE_NAME", "env-template")
-
-	content := []byte(`apiVersion: v1
-kind: SessionTemplate
-metadata:
-  name: ${NTM_TEMPLATE_NAME}
-spec:
-  agents:
-    claude:
-      count: 1
-`)
-
-	tmpl, err := ParseSessionTemplateRaw(content)
-	if err != nil {
-		t.Fatalf("ParseSessionTemplateRaw failed: %v", err)
-	}
-	if tmpl.Metadata.Name != "${NTM_TEMPLATE_NAME}" {
-		t.Errorf("expected raw env placeholder, got %q", tmpl.Metadata.Name)
-	}
-}
-
 func TestSessionTemplateLoader_LoadFromUserDir(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", tmpDir)
@@ -576,7 +554,7 @@ spec:
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	loader := NewSessionTemplateLoaderWithProject(tmpDir)
+	loader := newSessionTemplateLoaderWithProjectForTest(tmpDir)
 	tmpl, err := loader.Load("user-template")
 	if err != nil {
 		t.Fatalf("Load() error: %v", err)
@@ -743,12 +721,21 @@ spec:
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	loader := NewSessionTemplateLoaderWithProject(tmpDir)
+	loader := newSessionTemplateLoaderWithProjectForTest(tmpDir)
 	_, err := loader.Load("broken-strict-template")
 	if err == nil {
 		t.Fatal("expected load error for unknown session-template field")
 	}
 	if !strings.Contains(err.Error(), "field legacy not found") {
 		t.Fatalf("expected unknown-field error, got %v", err)
+	}
+}
+
+// newSessionTemplateLoaderWithProjectForTest builds a SessionTemplateLoader
+// rooted at a test project dir.
+func newSessionTemplateLoaderWithProjectForTest(projectPath string) *SessionTemplateLoader {
+	return &SessionTemplateLoader{
+		projectDir: filepath.Join(projectPath, ".ntm", "templates"),
+		userDir:    getDefaultSessionTemplateDir(),
 	}
 }

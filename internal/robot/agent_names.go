@@ -58,16 +58,6 @@ func NewAgentNameMapWithCustomNames(sessionName string, customNames []string) *A
 	return m
 }
 
-// GenerateName creates a name for an agent based on its type and position.
-// The name format is "{prefix}-{nato_word}" (e.g., "claude-alpha", "codex-bravo").
-// If custom names are configured and available, those are used instead.
-func (m *AgentNameMap) GenerateName(agentType string) string {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	return m.generateNameLocked(agentType)
-}
-
 // generateNameLocked is the lock-free version of GenerateName for internal use.
 // Caller must hold m.mu.
 func (m *AgentNameMap) generateNameLocked(agentType string) string {
@@ -98,16 +88,6 @@ func (m *AgentNameMap) generateNameLocked(agentType string) string {
 	return fmt.Sprintf("%s-%s", prefix, natoWord)
 }
 
-// Assign associates a name with a pane reference and agent type.
-func (m *AgentNameMap) Assign(name, paneRef, agentType string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	m.nameToPane[name] = paneRef
-	m.paneToName[paneRef] = name
-	m.nameToType[name] = agentType
-}
-
 // AssignNew generates a name for the agent type and assigns it to the pane reference.
 // Returns the generated name.
 func (m *AgentNameMap) AssignNew(agentType, paneRef string) string {
@@ -119,32 +99,6 @@ func (m *AgentNameMap) AssignNew(agentType, paneRef string) string {
 	m.paneToName[paneRef] = name
 	m.nameToType[name] = agentType
 	return name
-}
-
-// NameForPane returns the name assigned to a pane reference.
-// Returns empty string and false if no name is assigned.
-func (m *AgentNameMap) NameForPane(paneRef string) (string, bool) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	name, ok := m.paneToName[paneRef]
-	return name, ok
-}
-
-// PaneForName returns the pane reference for a given agent name.
-// Returns empty string and false if the name is not found.
-func (m *AgentNameMap) PaneForName(name string) (string, bool) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	pane, ok := m.nameToPane[name]
-	return pane, ok
-}
-
-// TypeForName returns the agent type for a given agent name.
-func (m *AgentNameMap) TypeForName(name string) (string, bool) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	t, ok := m.nameToType[name]
-	return t, ok
 }
 
 // AllNames returns all assigned names sorted by pane reference.
@@ -164,13 +118,6 @@ func (m *AgentNameMap) AllNames() []AgentNameEntry {
 	// Sort by pane reference for deterministic output
 	sortAgentNameEntries(entries)
 	return entries
-}
-
-// Count returns the number of named agents.
-func (m *AgentNameMap) Count() int {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return len(m.nameToPane)
 }
 
 // AgentNameEntry represents a single name-to-pane mapping.

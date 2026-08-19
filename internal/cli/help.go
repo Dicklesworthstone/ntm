@@ -259,51 +259,6 @@ func renderExamples(width int, t theme.Theme, ic icons.IconSet) string {
 	return b.String()
 }
 
-// PrintCompactHelp prints a more compact version for --help flag
-func PrintCompactHelp(w io.Writer) {
-	t := theme.Current()
-	ic := icons.Current()
-
-	// Simple gradient title
-	title := styles.GradientText("NTM - Named Tmux Manager",
-		string(t.Blue), string(t.Mauve))
-	fmt.Fprintf(w, "\n  %s\n\n", title)
-
-	// Brief command list
-	fmt.Fprintln(w, "  "+lipgloss.NewStyle().Bold(true).Foreground(t.Text).Render("Commands:"))
-
-	commands := []struct {
-		name string
-		desc string
-	}{
-		{"spawn", "Create session with AI agents"},
-		{"send", "Send prompts to agents"},
-		{"palette", "Interactive command palette"},
-		{"status", "Show session status"},
-		{"list", "List all sessions"},
-		{"attach", "Attach to session"},
-		{"view", "Tile and view all panes"},
-		{"dashboard", "Interactive dashboard"},
-	}
-
-	cmdStyle := lipgloss.NewStyle().Foreground(t.Primary).Width(12)
-	descStyle := lipgloss.NewStyle().Foreground(t.Subtext)
-
-	for _, c := range commands {
-		fmt.Fprintf(w, "    %s %s\n", cmdStyle.Render(c.name), descStyle.Render(c.desc))
-	}
-
-	fmt.Fprintln(w)
-	hintStyle := lipgloss.NewStyle().Foreground(t.Overlay).Italic(true)
-	fmt.Fprintf(w, "  %s\n\n", hintStyle.Render("Run 'ntm' without arguments for full help, or 'ntm <command> --help' for details."))
-
-	// Shell init hint
-	cmdHighlight := lipgloss.NewStyle().Foreground(t.Blue).Bold(true)
-	fmt.Fprintf(w, "  Shell setup: %s\n\n", cmdHighlight.Render("eval \"$(ntm shell zsh)\""))
-
-	_ = ic // Use icons in future enhancements
-}
-
 // PrintMinimalHelp prints a minimal help showing only essential commands
 func PrintMinimalHelp(w io.Writer) {
 	t := theme.Current()

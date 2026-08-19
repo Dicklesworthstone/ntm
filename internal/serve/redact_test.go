@@ -256,143 +256,6 @@ func TestRedactionMiddleware_WarnMode(t *testing.T) {
 	t.Log("TEST: TestRedactionMiddleware_WarnMode - passed")
 }
 
-func TestRedactJSON(t *testing.T) {
-	t.Log("TEST: TestRedactJSON - starting")
-
-	testSecret := "sk-proj-FAKEtestkey1234567890123456789012345678901234"
-	cfg := redaction.Config{Mode: redaction.ModeRedact}
-
-	tests := []struct {
-		name      string
-		input     interface{}
-		wantClean bool // true if output should not contain the secret
-	}{
-		{
-			name:      "string_with_secret",
-			input:     "My API key is " + testSecret,
-			wantClean: true,
-		},
-		{
-			name: "map_with_secret",
-			input: map[string]interface{}{
-				"api_key": testSecret,
-				"name":    "test",
-			},
-			wantClean: true,
-		},
-		{
-			name: "nested_map",
-			input: map[string]interface{}{
-				"config": map[string]interface{}{
-					"secret": testSecret,
-				},
-			},
-			wantClean: true,
-		},
-		{
-			name:      "array_with_secret",
-			input:     []interface{}{"safe", testSecret, "also safe"},
-			wantClean: true,
-		},
-		{
-			name:      "safe_string",
-			input:     "This is safe content",
-			wantClean: true,
-		},
-		{
-			name:      "number",
-			input:     42,
-			wantClean: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Logf("TEST: TestRedactJSON/%s - input: %v", tt.name, tt.input)
-
-			result, findings := RedactJSON(tt.input, cfg)
-			t.Logf("TEST: TestRedactJSON/%s - result: %v, findings: %d", tt.name, result, findings)
-
-			// Serialize to check for secret
-			data, _ := json.Marshal(result)
-			resultStr := string(data)
-
-			if tt.wantClean && strings.Contains(resultStr, testSecret) {
-				t.Errorf("result still contains secret: %s", resultStr)
-			}
-		})
-	}
-	t.Log("TEST: TestRedactJSON - passed")
-}
-
-func TestRedactRequestFields(t *testing.T) {
-	t.Log("TEST: TestRedactRequestFields - starting")
-
-	testSecret := "sk-proj-FAKEtestkey1234567890123456789012345678901234"
-
-	t.Run("redact_mode", func(t *testing.T) {
-		cfg := redaction.Config{Mode: redaction.ModeRedact}
-		field1 := "Message with " + testSecret
-		field2 := "Safe message"
-
-		findings := RedactRequestFields(cfg, &field1, &field2)
-		t.Logf("TEST: TestRedactRequestFields/redact_mode - findings: %d, field1: %s", findings, field1)
-
-		if findings == 0 {
-			t.Error("expected findings > 0")
-		}
-		if strings.Contains(field1, testSecret) {
-			t.Errorf("field1 should be redacted: %s", field1)
-		}
-		if !strings.Contains(field1, "[REDACTED:") {
-			t.Errorf("field1 should contain redaction marker: %s", field1)
-		}
-		if field2 != "Safe message" {
-			t.Errorf("field2 should be unchanged: %s", field2)
-		}
-	})
-
-	t.Run("warn_mode", func(t *testing.T) {
-		cfg := redaction.Config{Mode: redaction.ModeWarn}
-		field := "Message with " + testSecret
-
-		findings := RedactRequestFields(cfg, &field)
-		t.Logf("TEST: TestRedactRequestFields/warn_mode - findings: %d, field: %s", findings, field)
-
-		// Warn mode should count findings but not modify
-		if findings == 0 {
-			t.Error("expected findings > 0")
-		}
-		if !strings.Contains(field, testSecret) {
-			t.Errorf("warn mode should not modify field: %s", field)
-		}
-	})
-
-	t.Run("off_mode", func(t *testing.T) {
-		cfg := redaction.Config{Mode: redaction.ModeOff}
-		field := "Message with " + testSecret
-
-		findings := RedactRequestFields(cfg, &field)
-		t.Logf("TEST: TestRedactRequestFields/off_mode - findings: %d", findings)
-
-		if findings != 0 {
-			t.Errorf("off mode should not scan, got findings: %d", findings)
-		}
-	})
-
-	t.Run("nil_field", func(t *testing.T) {
-		cfg := redaction.Config{Mode: redaction.ModeRedact}
-		findings := RedactRequestFields(cfg, nil)
-		t.Logf("TEST: TestRedactRequestFields/nil_field - findings: %d", findings)
-
-		if findings != 0 {
-			t.Errorf("nil field should have no findings: %d", findings)
-		}
-	})
-
-	t.Log("TEST: TestRedactRequestFields - passed")
-}
-
 func TestIsJSONContent(t *testing.T) {
 	tests := []struct {
 		contentType string
@@ -433,90 +296,6 @@ func TestRedactionSummary_Logging(t *testing.T) {
 
 	// This should not panic
 	logRedactionSummary(summary)
-}
-
-func TestSetGetRedactionConfig(t *testing.T) {
-	s := &Server{}
-
-	// Initially nil
-	if s.GetRedactionConfig() != nil {
-		t.Error("expected nil config initially")
-	}
-
-	// Set config
-	cfg := &RedactionConfig{
-		Enabled: true,
-		Config:  redaction.Config{Mode: redaction.ModeRedact},
-	}
-	s.SetRedactionConfig(cfg)
-
-	got := s.GetRedactionConfig()
-	if got == nil {
-		t.Fatal("expected non-nil config")
-	}
-	if got.Config.Mode != redaction.ModeRedact {
-		t.Errorf("mode = %q, want %q", got.Config.Mode, redaction.ModeRedact)
-	}
-
-	// Clear config
-	s.SetRedactionConfig(nil)
-	if s.GetRedactionConfig() != nil {
-		t.Error("expected nil config after clearing")
-	}
-}
-
-// bd-oekc2: GetRedactionConfig must deep-copy redaction.Config's
-// reference-typed fields so a caller that takes the godoc's "copy"
-// promise at face value cannot leak mutations back into the running
-// server. Pre-fix, `cp := *s.redactionCfg` was a shallow copy and the
-// returned struct's Allowlist/ExtraPatterns/DisabledCategories aliased
-// the server's live state.
-func TestGetRedactionConfig_DeepCopiesReferenceFields(t *testing.T) {
-	s := &Server{}
-	cfg := &RedactionConfig{
-		Enabled: true,
-		Config: redaction.Config{
-			Mode:      redaction.ModeRedact,
-			Allowlist: []string{"original-allow-0", "original-allow-1"},
-			ExtraPatterns: map[redaction.Category][]string{
-				redaction.CategoryGenericAPIKey: {"original-extra-0"},
-			},
-			DisabledCategories: []redaction.Category{redaction.CategoryPassword},
-		},
-	}
-	s.SetRedactionConfig(cfg)
-
-	first := s.GetRedactionConfig()
-	if first == nil {
-		t.Fatal("expected non-nil config")
-	}
-
-	// Mutate every reference-typed field on the returned "copy".
-	first.Config.Allowlist[0] = "MUTATED-ALLOW"
-	first.Config.Allowlist = append(first.Config.Allowlist, "appended-allow")
-	first.Config.ExtraPatterns[redaction.CategoryGenericAPIKey][0] = "MUTATED-EXTRA"
-	first.Config.ExtraPatterns[redaction.CategoryPassword] = []string{"injected"}
-	first.Config.DisabledCategories[0] = redaction.CategoryGenericAPIKey
-
-	// A subsequent fetch must reflect the original config — the
-	// godoc's "copy" promise means the server's live state is
-	// untouched even after the mutations above.
-	second := s.GetRedactionConfig()
-	if second == nil {
-		t.Fatal("expected non-nil config on second fetch")
-	}
-	if got := second.Config.Allowlist; len(got) != 2 || got[0] != "original-allow-0" || got[1] != "original-allow-1" {
-		t.Errorf("Allowlist leaked mutation: %#v", got)
-	}
-	if got := second.Config.ExtraPatterns[redaction.CategoryGenericAPIKey]; len(got) != 1 || got[0] != "original-extra-0" {
-		t.Errorf("ExtraPatterns[APIKey] leaked mutation: %#v", got)
-	}
-	if _, ok := second.Config.ExtraPatterns[redaction.CategoryPassword]; ok {
-		t.Errorf("ExtraPatterns leaked an injected key: %#v", second.Config.ExtraPatterns)
-	}
-	if got := second.Config.DisabledCategories; len(got) != 1 || got[0] != redaction.CategoryPassword {
-		t.Errorf("DisabledCategories leaked mutation: %#v", got)
-	}
 }
 
 func TestRedactingResponseWriter(t *testing.T) {
@@ -701,7 +480,7 @@ func TestWSHubRedaction_Disabled(t *testing.T) {
 	}
 
 	// Verify hub getter returns nil
-	if hub.GetRedactionConfig() != nil {
+	if hub.getRedactionCfgForTest() != nil {
 		t.Error("expected nil config initially")
 	}
 
@@ -820,7 +599,7 @@ func TestWSHubSetGetRedactionConfig(t *testing.T) {
 	hub := NewWSHub()
 
 	// Initially nil
-	if hub.GetRedactionConfig() != nil {
+	if hub.getRedactionCfgForTest() != nil {
 		t.Error("expected nil config initially")
 	}
 
@@ -829,9 +608,9 @@ func TestWSHubSetGetRedactionConfig(t *testing.T) {
 		Enabled: true,
 		Config:  redaction.Config{Mode: redaction.ModeRedact},
 	}
-	hub.SetRedactionConfig(cfg)
+	hub.setRedactionCfgForTest(cfg)
 
-	got := hub.GetRedactionConfig()
+	got := hub.getRedactionCfgForTest()
 	if got == nil {
 		t.Fatal("expected non-nil config")
 	}
@@ -843,8 +622,8 @@ func TestWSHubSetGetRedactionConfig(t *testing.T) {
 	}
 
 	// Clear config
-	hub.SetRedactionConfig(nil)
-	if hub.GetRedactionConfig() != nil {
+	hub.setRedactionCfgForTest(nil)
+	if hub.getRedactionCfgForTest() != nil {
 		t.Error("expected nil config after clearing")
 	}
 
@@ -964,7 +743,7 @@ func TestIntegration_WSEventRedaction(t *testing.T) {
 	go hub.Run()
 	defer hub.Stop()
 
-	hub.SetRedactionConfig(&RedactionConfig{
+	hub.setRedactionCfgForTest(&RedactionConfig{
 		Enabled: true,
 		Config:  redaction.Config{Mode: redaction.ModeRedact},
 	})
@@ -1129,4 +908,18 @@ func TestIntegration_MultipleSecretTypes(t *testing.T) {
 	}
 
 	t.Log("TEST: TestIntegration_MultipleSecretTypes - PASSED")
+}
+
+// Test-only accessors for WSHub redaction config (the exported accessors were
+// removed as dead code; live paths read h.redactionCfg directly).
+func (h *WSHub) setRedactionCfgForTest(cfg *RedactionConfig) {
+	h.redactionMu.Lock()
+	defer h.redactionMu.Unlock()
+	h.redactionCfg = cfg
+}
+
+func (h *WSHub) getRedactionCfgForTest() *RedactionConfig {
+	h.redactionMu.RLock()
+	defer h.redactionMu.RUnlock()
+	return h.redactionCfg
 }

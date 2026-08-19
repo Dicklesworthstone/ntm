@@ -18,17 +18,10 @@ func TestTrendTracker_SeparatePaneTracking(t *testing.T) {
 	tt.AddSample(2, TrendSample{Timestamp: now, ContextRemaining: floatPtr(90.0)})
 	tt.AddSample(3, TrendSample{Timestamp: now, ContextRemaining: floatPtr(50.0)})
 
-	if tt.GetSampleCount(1) != 1 {
-		t.Errorf("pane 1 count = %d, want 1", tt.GetSampleCount(1))
-	}
-	if tt.GetSampleCount(2) != 1 {
-		t.Errorf("pane 2 count = %d, want 1", tt.GetSampleCount(2))
-	}
-	if tt.GetSampleCount(3) != 1 {
-		t.Errorf("pane 3 count = %d, want 1", tt.GetSampleCount(3))
-	}
-	if tt.GetSampleCount(99) != 0 {
-		t.Errorf("pane 99 count = %d, want 0", tt.GetSampleCount(99))
+	for pane, want := range map[int]int{1: 1, 2: 1, 3: 1, 99: 0} {
+		if _, count := tt.GetTrend(pane); count != want {
+			t.Errorf("pane %d count = %d, want %d", pane, count, want)
+		}
 	}
 }
 
@@ -88,9 +81,6 @@ func TestTrendTracker_ConcurrentAccess(t *testing.T) {
 					ContextRemaining: floatPtr(80.0 - float64(j)),
 				})
 				tt.GetTrend(pane)
-				tt.GetSampleCount(pane)
-				tt.GetLastSample(pane)
-				tt.GetTrendInfo(pane)
 			}
 		}(i)
 	}
@@ -98,8 +88,7 @@ func TestTrendTracker_ConcurrentAccess(t *testing.T) {
 	wg.Wait()
 
 	for i := 0; i < 10; i++ {
-		count := tt.GetSampleCount(i)
-		if count != 20 {
+		if _, count := tt.GetTrend(i); count != 20 {
 			t.Errorf("pane %d count = %d, want 20", i, count)
 		}
 	}
@@ -142,27 +131,5 @@ func TestClassifyTrend_Boundaries(t *testing.T) {
 				t.Errorf("classifyTrend(%f) = %s, want %s", tc.delta, result, tc.expected)
 			}
 		})
-	}
-}
-
-func TestTrendInfo_EmptyPaneFields(t *testing.T) {
-
-	tt := NewTrendTracker(5)
-
-	info := tt.GetTrendInfo(999)
-	if info.Trend != TrendUnknown {
-		t.Errorf("empty pane trend = %s, want %s", info.Trend, TrendUnknown)
-	}
-	if info.SampleCount != 0 {
-		t.Errorf("empty pane sample count = %d, want 0", info.SampleCount)
-	}
-	if info.LastValue != nil {
-		t.Errorf("empty pane last value = %v, want nil", info.LastValue)
-	}
-	if !info.LastUpdate.IsZero() {
-		t.Errorf("empty pane last update should be zero time")
-	}
-	if info.AvgDelta != 0 {
-		t.Errorf("empty pane avg delta = %f, want 0", info.AvgDelta)
 	}
 }

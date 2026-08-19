@@ -211,7 +211,7 @@ func TestCleanShutdown(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	// Verify daemons are running
-	status := s.Status()
+	status := supervisorStatusForTest(s)
 	running := 0
 	for _, d := range status {
 		if d.State == StateRunning || d.State == StateStarting {
@@ -230,7 +230,7 @@ func TestCleanShutdown(t *testing.T) {
 
 	// Verify all stopped (or failed if killed during shutdown)
 	time.Sleep(200 * time.Millisecond)
-	status = s.Status()
+	status = supervisorStatusForTest(s)
 	for name, d := range status {
 		// After Shutdown(), daemons should be either Stopped or Failed
 		// (Failed can happen if the process was killed with SIGTERM/SIGKILL)
@@ -347,7 +347,7 @@ func TestConcurrentDaemonOperations(t *testing.T) {
 	}
 
 	// Verify all daemons started
-	status := s.Status()
+	status := supervisorStatusForTest(s)
 	if len(status) != 5 {
 		t.Errorf("Expected 5 daemons, got %d", len(status))
 	}
@@ -358,7 +358,7 @@ func TestConcurrentDaemonOperations(t *testing.T) {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			s.Stop(fmt.Sprintf("concurrent-%d", idx))
+			supervisorStopForTest(s, fmt.Sprintf("concurrent-%d", idx))
 		}(i)
 	}
 

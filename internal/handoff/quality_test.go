@@ -101,24 +101,6 @@ func TestUpdateQualityStoresMachineReadableYAML(t *testing.T) {
 	}
 }
 
-func TestGenerateFromOutputPopulatesQuality(t *testing.T) {
-	now := time.Now().UTC()
-	g := NewGenerator(t.TempDir())
-	h, err := g.GenerateFromOutput(t.Context(), "handoffquality", []byte("Implemented quality scoring.\nTODO: Run focused tests.\nDecision: keep scoring deterministic."))
-	if err != nil {
-		t.Fatalf("GenerateFromOutput returned error: %v", err)
-	}
-	if h.Quality == nil {
-		t.Fatal("generated handoff quality is nil")
-	}
-	if h.Quality.ScoredAt.Before(now.Add(-time.Second)) {
-		t.Fatalf("quality scored_at looks stale: %s", h.Quality.ScoredAt)
-	}
-	if len(h.Quality.Dimensions) != 4 {
-		t.Fatalf("quality dimensions = %d, want 4", len(h.Quality.Dimensions))
-	}
-}
-
 func TestQualityStatusIsMonotonicInScore(t *testing.T) {
 	prev := QualityStatusLow
 	rank := map[string]int{

@@ -65,24 +65,6 @@ func TestDefaultConfig(t *testing.T) {
 	}
 }
 
-func TestNew(t *testing.T) {
-	store := assignment.NewStore("test-session")
-	d := New("test-session", store)
-
-	if d.Session != "test-session" {
-		t.Errorf("Session = %q, want %q", d.Session, "test-session")
-	}
-	if d.Store != store {
-		t.Error("Store not set correctly")
-	}
-	if len(d.Patterns) == 0 {
-		t.Error("Default completion patterns not loaded")
-	}
-	if len(d.FailPattern) == 0 {
-		t.Error("Default failure patterns not loaded")
-	}
-}
-
 func TestNewWithConfigFailsClosedWhenConsumerTokenGenerationFails(t *testing.T) {
 	wantErr := errors.New("secure entropy unavailable")
 	cfg := DefaultConfig()
@@ -105,50 +87,10 @@ func TestNewWithConfigFailsClosedWhenConsumerTokenGenerationFails(t *testing.T) 
 	case <-time.After(time.Second):
 		t.Fatal("Watch did not close after failed initialization")
 	}
-	if _, err := d.CheckNow("%1"); !errors.Is(err, wantErr) {
-		t.Fatalf("CheckNow() error = %v, want initialization error %v", err, wantErr)
-	}
-}
-
-func TestAddPattern(t *testing.T) {
-	d := New("test-session", nil)
-	initialCount := len(d.Patterns)
-
-	err := d.AddPattern(`(?i)custom\s+complete`)
-	if err != nil {
-		t.Fatalf("AddPattern failed: %v", err)
-	}
-
-	if len(d.Patterns) != initialCount+1 {
-		t.Errorf("Pattern count = %d, want %d", len(d.Patterns), initialCount+1)
-	}
-}
-
-func TestAddPatternInvalid(t *testing.T) {
-	d := New("test-session", nil)
-
-	err := d.AddPattern(`[invalid`)
-	if err == nil {
-		t.Error("AddPattern should fail for invalid regex")
-	}
-}
-
-func TestAddFailurePattern(t *testing.T) {
-	d := New("test-session", nil)
-	initialCount := len(d.FailPattern)
-
-	err := d.AddFailurePattern(`(?i)custom\s+failure`)
-	if err != nil {
-		t.Fatalf("AddFailurePattern failed: %v", err)
-	}
-
-	if len(d.FailPattern) != initialCount+1 {
-		t.Errorf("Pattern count = %d, want %d", len(d.FailPattern), initialCount+1)
-	}
 }
 
 func TestMatchCompletionPatterns(t *testing.T) {
-	d := New("test-session", nil)
+	d := NewWithConfig("test-session", nil, DefaultConfig())
 
 	tests := []struct {
 		name   string
@@ -178,7 +120,7 @@ func TestMatchCompletionPatterns(t *testing.T) {
 }
 
 func TestMatchFailurePatterns(t *testing.T) {
-	d := New("test-session", nil)
+	d := NewWithConfig("test-session", nil, DefaultConfig())
 
 	tests := []struct {
 		name      string
@@ -272,25 +214,6 @@ func TestDetectionMethods(t *testing.T) {
 				t.Errorf("DetectionMethod = %q, want %q", tt.method, tt.want)
 			}
 		})
-	}
-}
-
-func TestCheckNowNoStore(t *testing.T) {
-	d := New("test-session", nil)
-
-	_, err := d.CheckNow("%1")
-	if err == nil {
-		t.Error("CheckNow should fail without assignment store")
-	}
-}
-
-func TestCheckNowNoAssignment(t *testing.T) {
-	store := assignment.NewStore("test-session")
-	d := New("test-session", store)
-
-	_, err := d.CheckNow("%99")
-	if err == nil {
-		t.Error("CheckNow should fail for pane with no assignment")
 	}
 }
 
@@ -435,7 +358,7 @@ func TestWatchCancellation(t *testing.T) {
 }
 
 func TestDeduplication(t *testing.T) {
-	d := New("test-session", nil)
+	d := NewWithConfig("test-session", nil, DefaultConfig())
 	d.Config.DedupWindow = 100 * time.Millisecond
 
 	// Record an event
@@ -457,7 +380,7 @@ func TestDeduplication(t *testing.T) {
 }
 
 func TestRecordEventLockedScopesDedupToAssignmentAttempt(t *testing.T) {
-	d := New("test-session", nil)
+	d := NewWithConfig("test-session", nil, DefaultConfig())
 	d.Config.DedupWindow = 100 * time.Millisecond
 
 	now := time.Now()
@@ -523,7 +446,7 @@ func TestPersistCompletionEventRejectsSupersededGeneration(t *testing.T) {
 		t.Fatalf("persist winner lease: %v", err)
 	}
 	newGeneration = winner.Get(beadID)
-	detector := New(session, store)
+	detector := NewWithConfig(session, store, DefaultConfig())
 	reconcileCalls := 0
 	detector.SetTerminalReconciler(func(context.Context, *assignment.Assignment) (bool, error) {
 		reconcileCalls++
@@ -558,7 +481,7 @@ func TestPersistCompletionEventAppliesExactGeneration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Assign: %v", err)
 	}
-	detector := New("completion-exact-generation", store)
+	detector := NewWithConfig("completion-exact-generation", store, DefaultConfig())
 	applied, err := detector.persistCompletionEvent(t.Context(), observed, &CompletionEvent{BeadID: observed.BeadID, Pane: observed.Pane, Method: MethodBeadClosed})
 	if err != nil || !applied {
 		t.Fatalf("exact completion applied=%v error=%v", applied, err)
@@ -598,7 +521,7 @@ func TestPersistCompletionEventBackfillsAlreadyTerminalGeneration(t *testing.T) 
 		t.Fatalf("pre-backfill terminal row=%+v", terminal)
 	}
 
-	detector := New(session, store)
+	detector := NewWithConfig(session, store, DefaultConfig())
 	reconcileCalls := 0
 	detector.SetTerminalReconciler(func(context.Context, *assignment.Assignment) (bool, error) {
 		reconcileCalls++
@@ -634,7 +557,7 @@ func TestPersistCompletionEventRejectsDifferentReasonFromDurableBarrier(t *testi
 		t.Fatalf("seed terminal barrier=%+v applied=%v error=%v", barrier, applied, err)
 	}
 
-	detector := New(session, store)
+	detector := NewWithConfig(session, store, DefaultConfig())
 	reconcileCalls := 0
 	detector.SetTerminalReconciler(func(context.Context, *assignment.Assignment) (bool, error) {
 		reconcileCalls++
@@ -673,7 +596,7 @@ func TestPendingCompletionReconciliationReleasesLeaseOnceAndEmitsOnlyAfterTermin
 		t.Fatalf("seed reserved completion: %v", err)
 	}
 	observed := store.Get(beadID)
-	detector := New(session, store)
+	detector := NewWithConfig(session, store, DefaultConfig())
 	leaseReleases := 0
 	claimReleases := 0
 	attempts := 0
@@ -751,7 +674,7 @@ func TestCompletionOutboxSingleConsumerLeaseAndExpiryRecoveryAcrossDetectors(t *
 		t.Fatalf("seed assignment: %v", err)
 	}
 	observed := store.Get(beadID)
-	detector := New(session, store)
+	detector := NewWithConfig(session, store, DefaultConfig())
 	applied, err := detector.persistCompletionEvent(t.Context(), observed, &CompletionEvent{
 		BeadID: beadID, Pane: 1, PaneID: "%91", Method: MethodPatternMatch, Timestamp: now,
 	})
@@ -881,7 +804,7 @@ func TestCompletionOutboxSingleConsumerLeaseAndExpiryRecoveryAcrossDetectors(t *
 		t.Fatalf("recovery consumer acknowledgement applied=%v error=%v", acknowledged, err)
 	}
 	afterAck := make(chan CompletionEvent, 1)
-	New(session, recoveryStore).checkAll(t.Context(), afterAck)
+	NewWithConfig(session, recoveryStore, DefaultConfig()).checkAll(t.Context(), afterAck)
 	select {
 	case replay := <-afterAck:
 		t.Fatalf("acknowledged event replayed: %+v", replay)
@@ -991,7 +914,7 @@ func TestCompletionOutboxRejectsAmbiguousPaneIdentityAndRemainsPending(t *testin
 	}
 
 	events := make(chan CompletionEvent, 1)
-	New(session, store).checkAll(t.Context(), events)
+	NewWithConfig(session, store, DefaultConfig()).checkAll(t.Context(), events)
 	select {
 	case emitted := <-events:
 		t.Fatalf("ambiguous completion event emitted: %+v", emitted)
@@ -1103,7 +1026,7 @@ func TestResolveAssignmentPaneRejectsLegacyIndexWithTypedMigrationError(t *testi
 
 	store := assignment.NewStore("completion-legacy-no-mutation")
 	store.Assignments[legacy.BeadID] = legacy
-	detector := New("completion-legacy-no-mutation", store)
+	detector := NewWithConfig("completion-legacy-no-mutation", store, DefaultConfig())
 	event, checkErr := detector.checkAssignment(t.Context(), legacy)
 	if event != nil || !errors.Is(checkErr, assignment.ErrPaneIdentityMigrationRequired) {
 		t.Fatalf("check legacy event=%+v error=%v", event, checkErr)
@@ -1113,19 +1036,8 @@ func TestResolveAssignmentPaneRejectsLegacyIndexWithTypedMigrationError(t *testi
 	}
 }
 
-func TestCheckNowRejectsLegacyPaneAssignmentsWithMigrationError(t *testing.T) {
-	store := assignment.NewStore("completion-ambiguous")
-	now := time.Now().UTC()
-	store.Assignments["bd-a"] = &assignment.Assignment{BeadID: "bd-a", Pane: 0, Status: assignment.StatusAssigned, AssignedAt: now}
-	store.Assignments["bd-b"] = &assignment.Assignment{BeadID: "bd-b", Pane: 0, Status: assignment.StatusAssigned, AssignedAt: now}
-	detector := New("completion-ambiguous", store)
-	if _, err := detector.CheckNow("%1"); !errors.Is(err, assignment.ErrPaneIdentityMigrationRequired) {
-		t.Fatalf("CheckNow error=%v, want migration requirement", err)
-	}
-}
-
 func TestBrAvailableCaching(t *testing.T) {
-	d := New("test-session", nil)
+	d := NewWithConfig("test-session", nil, DefaultConfig())
 
 	// First call checks availability
 	result1 := d.isBrAvailable()
@@ -1148,7 +1060,7 @@ func TestBrAvailableCaching(t *testing.T) {
 func TestIsBrAvailable_DoesNotWriteStdoutWhenUnavailable(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 
-	d := New("test-session", nil)
+	d := NewWithConfig("test-session", nil, DefaultConfig())
 	output := captureStdout(t, func() {
 		if d.isBrAvailable() {
 			t.Fatal("expected br to be unavailable in isolated PATH")
@@ -1163,7 +1075,7 @@ func TestIsBrAvailable_DoesNotWriteStdoutWhenUnavailable(t *testing.T) {
 // TestConcurrentDedup tests concurrent access to the deduplication mechanism
 // to verify thread-safety under race conditions. Run with: go test -race
 func TestConcurrentDedup(t *testing.T) {
-	d := New("test-session", nil)
+	d := NewWithConfig("test-session", nil, DefaultConfig())
 	d.Config.DedupWindow = 100 * time.Millisecond
 
 	var wg sync.WaitGroup
@@ -1217,7 +1129,7 @@ func TestConcurrentDedup(t *testing.T) {
 
 // TestConcurrentActivityTracking tests concurrent access to activity tracker
 func TestConcurrentActivityTracking(t *testing.T) {
-	d := New("test-session", nil)
+	d := NewWithConfig("test-session", nil, DefaultConfig())
 
 	var wg sync.WaitGroup
 	numGoroutines := 10
@@ -1258,21 +1170,10 @@ func TestConcurrentActivityTracking(t *testing.T) {
 	}
 }
 
-func TestAddFailurePatternInvalid(t *testing.T) {
-	t.Parallel()
-
-	d := New("test-session", nil)
-
-	err := d.AddFailurePattern(`[invalid`)
-	if err == nil {
-		t.Error("AddFailurePattern should fail for invalid regex")
-	}
-}
-
 func TestCheckAllNilStore(t *testing.T) {
 	t.Parallel()
 
-	d := New("test-session", nil)
+	d := NewWithConfig("test-session", nil, DefaultConfig())
 	d.Store = nil
 
 	// Should not panic, just return early
@@ -1293,7 +1194,7 @@ func TestCheckAllEmptyStore(t *testing.T) {
 	t.Parallel()
 
 	store := assignment.NewStore("test-session")
-	d := New("test-session", store)
+	d := NewWithConfig("test-session", store, DefaultConfig())
 
 	events := make(chan CompletionEvent, 10)
 	ctx := context.Background()
@@ -1342,7 +1243,7 @@ func TestCheckAllContextCancelled(t *testing.T) {
 	// Add an assignment that will be checked
 	store.Assign("bd-test", "Test Bead", 0, "claude", "agent-1", "test prompt")
 
-	d := New("test-session", store)
+	d := NewWithConfig("test-session", store, DefaultConfig())
 
 	events := make(chan CompletionEvent, 10)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1436,35 +1337,6 @@ func TestNewWithConfigAppliesDefaultsAndWatchIsUsable(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("Watch did not stop after cancellation")
 	}
-}
-
-func TestCheckNowWithActiveAssignment(t *testing.T) {
-	testutil.AcquireGlobalTmuxTestLockForTest(t)
-	t.Setenv("HOME", t.TempDir())
-
-	session := fmt.Sprintf("completion-active-%d", time.Now().UnixNano())
-	store := assignment.NewStore(session)
-	if _, err := store.Assign("bd-test", "Test Bead", 5, "claude", "agent-1", "test prompt"); err != nil {
-		t.Fatalf("Assign: %v", err)
-	}
-	store.Assignments["bd-test"].OccupancyKey = "%5"
-	store.Assignments["bd-test"].DispatchTarget = "%5"
-	if err := store.Save(); err != nil {
-		t.Fatalf("persist canonical pane identity: %v", err)
-	}
-
-	d := New(session, store)
-
-	// CheckNow will fail because we can't query real tmux panes,
-	// but it should find the assignment and attempt to check it
-	event, err := d.CheckNow("%5")
-	// The error comes from tmux.GetPanes failing, not from assignment lookup
-	// In test environment without tmux, this returns nil event
-	if err != nil {
-		t.Errorf("unexpected error: %v", err)
-	}
-	// Event may be nil if tmux isn't available
-	_ = event
 }
 
 func TestIdleDetectionNoBurstActive(t *testing.T) {
@@ -1564,7 +1436,7 @@ func TestCompletionEventWithFailure(t *testing.T) {
 func TestMatchCompletionPatternsConcurrent(t *testing.T) {
 	t.Parallel()
 
-	d := New("test-session", nil)
+	d := NewWithConfig("test-session", nil, DefaultConfig())
 
 	var wg sync.WaitGroup
 	for i := 0; i < 10; i++ {
@@ -1583,7 +1455,7 @@ func TestMatchCompletionPatternsConcurrent(t *testing.T) {
 func TestMatchFailurePatternsConcurrent(t *testing.T) {
 	t.Parallel()
 
-	d := New("test-session", nil)
+	d := NewWithConfig("test-session", nil, DefaultConfig())
 
 	var wg sync.WaitGroup
 	for i := 0; i < 10; i++ {
@@ -1719,7 +1591,7 @@ func TestDetectorReloadsStoreObservesPostStartupDispatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadStore A: %v", err)
 	}
-	d := New(session, storeA)
+	d := NewWithConfig(session, storeA, DefaultConfig())
 
 	// At startup the detector sees no assignments.
 	if got := len(storeA.ListActive()); got != 0 {
@@ -1795,7 +1667,7 @@ func TestCompletionPatternRequiresBeadClosedConfirmation(t *testing.T) {
 	// Sanity: the prompt echo really does trip the completion pattern — this is
 	// the trap the fix defends against.
 	out, _ := tmux.CapturePaneOutput(pane.ID, 50)
-	d := New(session, assignment.NewStore(session))
+	d := NewWithConfig(session, assignment.NewStore(session), DefaultConfig())
 	if !d.matchCompletionPatterns(out) {
 		t.Skip("prompt echo did not render the completion phrase in this environment")
 	}

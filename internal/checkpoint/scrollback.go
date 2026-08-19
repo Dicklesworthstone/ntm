@@ -52,16 +52,6 @@ type ScrollbackConfig struct {
 	Timeout time.Duration
 }
 
-// DefaultScrollbackConfig returns the default scrollback configuration.
-func DefaultScrollbackConfig() ScrollbackConfig {
-	return ScrollbackConfig{
-		Lines:     5000,
-		Compress:  true,
-		MaxSizeMB: 10,
-		Timeout:   30 * time.Second,
-	}
-}
-
 // CaptureScrollback captures scrollback from a tmux pane with optional compression.
 func CaptureScrollback(session, paneID string, config ScrollbackConfig) (*ScrollbackCapture, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), config.Timeout)

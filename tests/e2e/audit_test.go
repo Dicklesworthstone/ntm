@@ -178,7 +178,7 @@ func TestAudit_QueryFiltering(t *testing.T) {
 	logger.Log("[E2E-AUDIT] Created %d test entries", len(entries))
 
 	// Use Searcher to query
-	searcher := audit.NewSearcherWithPath(auditDir)
+	searcher := newAuditSearcherForTest(t, auditDir)
 
 	// Query all entries
 	result, err := searcher.Search(audit.Query{Sessions: []string{sessionID}})
@@ -713,7 +713,7 @@ func TestAudit_TimeRangeQuery(t *testing.T) {
 
 	logger.Log("[E2E-AUDIT] Created %d entries spanning 1 hour", len(entries))
 
-	searcher := audit.NewSearcherWithPath(auditDir)
+	searcher := newAuditSearcherForTest(t, auditDir)
 
 	// Query entries from last 30 minutes
 	since := baseTime.Add(30 * time.Minute)
@@ -760,4 +760,26 @@ func TestAudit_TimeRangeQuery(t *testing.T) {
 	}
 
 	logger.Log("PASS: Time range query verified")
+}
+
+// newAuditSearcherForTest builds an audit.Searcher rooted at dir. The
+// dedicated NewSearcherWithPath constructor was removed as dead code, so
+// redirect the default constructor's home-derived path
+// ($HOME/.local/share/ntm/audit) at dir via HOME plus a symlink.
+func newAuditSearcherForTest(t *testing.T, dir string) *audit.Searcher {
+	t.Helper()
+	home := t.TempDir()
+	parent := filepath.Join(home, ".local", "share", "ntm")
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		t.Fatalf("mkdir audit parent: %v", err)
+	}
+	if err := os.Symlink(dir, filepath.Join(parent, "audit")); err != nil {
+		t.Fatalf("symlink audit dir: %v", err)
+	}
+	t.Setenv("HOME", home)
+	s, err := audit.NewSearcher()
+	if err != nil {
+		t.Fatalf("NewSearcher: %v", err)
+	}
+	return s
 }

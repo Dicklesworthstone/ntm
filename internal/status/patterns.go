@@ -306,23 +306,3 @@ func GetLastNonEmptyLine(output string) string {
 
 	return ""
 }
-
-// AddPromptPattern allows adding custom prompt patterns at runtime.
-// It is thread-safe and can be called concurrently with detection functions.
-func AddPromptPattern(agentType string, pattern string, description string) error {
-	regex, err := regexp.Compile(pattern)
-	if err != nil {
-		return err
-	}
-
-	promptPatternsMu.Lock()
-	defer promptPatternsMu.Unlock()
-
-	promptPatterns = append(promptPatterns, PromptPattern{
-		AgentType:   string(agent.AgentType(agentType).Canonical()),
-		Regex:       regex,
-		Description: description,
-	})
-
-	return nil
-}

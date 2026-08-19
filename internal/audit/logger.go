@@ -564,13 +564,6 @@ func (al *AuditLogger) flushUnlocked() error {
 	return nil
 }
 
-// Flush manually flushes any buffered entries to disk
-func (al *AuditLogger) Flush() error {
-	al.mutex.Lock()
-	defer al.mutex.Unlock()
-	return al.flushUnlocked()
-}
-
 // Close flushes any remaining entries and closes the audit log
 func (al *AuditLogger) Close() error {
 	al.mutex.Lock()

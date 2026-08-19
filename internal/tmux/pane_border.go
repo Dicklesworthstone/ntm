@@ -67,16 +67,6 @@ func (c *Client) SetPaneBorderStyleContext(ctx context.Context, target, color st
 		fmt.Sprintf("pane-border-style=%s", style))
 }
 
-// SetPaneBorderStyle sets the border style for a pane (default client).
-func SetPaneBorderStyle(target, color string) error {
-	return DefaultClient.SetPaneBorderStyle(target, color)
-}
-
-// SetPaneBorderStyleContext sets the border style with context support (default client).
-func SetPaneBorderStyleContext(ctx context.Context, target, color string) error {
-	return DefaultClient.SetPaneBorderStyleContext(ctx, target, color)
-}
-
 // ResetPaneBorderStyle resets a pane's border style to the default.
 func (c *Client) ResetPaneBorderStyle(target string) error {
 	return c.ResetPaneBorderStyleContext(context.Background(), target)
@@ -86,14 +76,4 @@ func (c *Client) ResetPaneBorderStyle(target string) error {
 func (c *Client) ResetPaneBorderStyleContext(ctx context.Context, target string) error {
 	return c.RunSilentContext(ctx, "select-pane", "-t", target, "-P",
 		"pane-border-style=default")
-}
-
-// ResetPaneBorderStyle resets a pane's border style (default client).
-func ResetPaneBorderStyle(target string) error {
-	return DefaultClient.ResetPaneBorderStyle(target)
-}
-
-// ResetPaneBorderStyleContext resets border style with context support (default client).
-func ResetPaneBorderStyleContext(ctx context.Context, target string) error {
-	return DefaultClient.ResetPaneBorderStyleContext(ctx, target)
 }

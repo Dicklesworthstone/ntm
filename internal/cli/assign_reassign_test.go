@@ -19,42 +19,6 @@ import (
 	"github.com/Dicklesworthstone/ntm/tests/testutil"
 )
 
-func TestValidateCLIAtomicAssignmentDetailsRejectsLivePolicyChanges(t *testing.T) {
-	previousLabels := bv.OperatorGatedLabels()
-	bv.ConfigureOperatorGatedLabels([]string{"live-approval-required"})
-	t.Cleanup(func() { bv.ConfigureOperatorGatedLabels(previousLabels) })
-
-	request := assignment.AssignmentEligibilityAuthorizationRequest{
-		BeadID: "ntm-live-policy", ClaimActor: "StableActor", AllowOwnedInProgress: true,
-	}
-	for _, test := range []struct {
-		name    string
-		details *bv.BeadAssignmentDetails
-	}{
-		{
-			name: "configured operator gate between generations",
-			details: &bv.BeadAssignmentDetails{
-				ID: request.BeadID, Status: "in_progress", Assignee: request.ClaimActor,
-				Labels: []string{" LIVE-APPROVAL-REQUIRED "},
-			},
-		},
-		{
-			name: "blocker between generations",
-			details: &bv.BeadAssignmentDetails{
-				ID: request.BeadID, Status: "in_progress", Assignee: request.ClaimActor,
-				BlockedBy: []string{"ntm-prerequisite"},
-			},
-		},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			err := validateCLIAtomicAssignmentDetails(test.details, request)
-			if !errors.Is(err, assignment.ErrClaimIneligible) {
-				t.Fatalf("live policy error=%v, want assignment ineligible", err)
-			}
-		})
-	}
-}
-
 func TestAssignmentEntryPointsRejectCanceledContextBeforeSideEffects(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()

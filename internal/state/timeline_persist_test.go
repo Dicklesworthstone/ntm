@@ -770,7 +770,7 @@ func TestStopCheckpoint(t *testing.T) {
 	persister.StopCheckpoint("nonexistent")
 
 	// Stop on empty persister should be safe
-	persister.Stop()
+	stopPersisterForTest(persister)
 }
 
 func TestStopCheckpoint_WaitsForRunnerExit(t *testing.T) {
@@ -1149,7 +1149,7 @@ func TestStartCheckpointAndStop(t *testing.T) {
 	}
 
 	tracker := NewTimelineTracker(&TimelineConfig{PruneInterval: 0})
-	defer tracker.Stop()
+	defer stopTrackerForTest(tracker)
 
 	sessionID := "checkpoint-session"
 	tracker.RecordEvent(AgentEvent{
@@ -1161,7 +1161,7 @@ func TestStartCheckpointAndStop(t *testing.T) {
 
 	// Start checkpointing
 	persister.StartCheckpoint(sessionID, tracker)
-	defer persister.Stop()
+	defer stopPersisterForTest(persister)
 
 	deadline := time.Now().Add(30 * time.Second)
 	for {
@@ -1182,7 +1182,7 @@ func TestStartCheckpointAndStop(t *testing.T) {
 	}
 
 	// Stop should clean up all checkpoints
-	persister.Stop()
+	stopPersisterForTest(persister)
 }
 
 func TestStartCheckpoint_RestartsExisting(t *testing.T) {
@@ -1197,7 +1197,7 @@ func TestStartCheckpoint_RestartsExisting(t *testing.T) {
 	}
 
 	tracker := NewTimelineTracker(&TimelineConfig{PruneInterval: 0})
-	defer tracker.Stop()
+	defer stopTrackerForTest(tracker)
 
 	sessionID := "restart-session"
 
@@ -1205,7 +1205,7 @@ func TestStartCheckpoint_RestartsExisting(t *testing.T) {
 	persister.StartCheckpoint(sessionID, tracker)
 	persister.StartCheckpoint(sessionID, tracker)
 
-	persister.Stop()
+	stopPersisterForTest(persister)
 }
 
 func TestStartCheckpoint_WaitsForPriorRunnerExit(t *testing.T) {
@@ -1220,7 +1220,7 @@ func TestStartCheckpoint_WaitsForPriorRunnerExit(t *testing.T) {
 	}
 
 	tracker := NewTimelineTracker(&TimelineConfig{PruneInterval: 0})
-	defer tracker.Stop()
+	defer stopTrackerForTest(tracker)
 
 	oldRunner := &checkpointRunner{
 		ticker: time.NewTicker(time.Hour),
@@ -1276,7 +1276,7 @@ func TestStartCheckpoint_WaitsForPriorRunnerExit(t *testing.T) {
 		t.Fatal("expected restart to install a fresh checkpoint runner")
 	}
 
-	persister.Stop()
+	stopPersisterForTest(persister)
 }
 
 func TestStartCheckpoint_NilTrackerNoop(t *testing.T) {
@@ -1292,7 +1292,7 @@ func TestStartCheckpoint_NilTrackerNoop(t *testing.T) {
 
 	// Should not panic with nil tracker
 	persister.StartCheckpoint("session", nil)
-	persister.Stop()
+	stopPersisterForTest(persister)
 }
 
 func TestStartCheckpoint_EmptySessionNoop(t *testing.T) {
@@ -1307,12 +1307,12 @@ func TestStartCheckpoint_EmptySessionNoop(t *testing.T) {
 	}
 
 	tracker := NewTimelineTracker(&TimelineConfig{PruneInterval: 0})
-	defer tracker.Stop()
+	defer stopTrackerForTest(tracker)
 
 	// Should not panic with empty session ID
 	persister.StartCheckpoint("", tracker)
 	persister.StartCheckpoint("   ", tracker)
-	persister.Stop()
+	stopPersisterForTest(persister)
 }
 
 func TestTimelineOperationsRejectInvalidSessionIDs(t *testing.T) {
@@ -1444,7 +1444,7 @@ func TestStopWithActiveCheckpoints(t *testing.T) {
 	}
 
 	tracker := NewTimelineTracker(&TimelineConfig{PruneInterval: 0})
-	defer tracker.Stop()
+	defer stopTrackerForTest(tracker)
 
 	// Start multiple checkpoints
 	persister.StartCheckpoint("session-1", tracker)
@@ -1452,7 +1452,7 @@ func TestStopWithActiveCheckpoints(t *testing.T) {
 	persister.StartCheckpoint("session-3", tracker)
 
 	// Stop should clean up all without panic
-	persister.Stop()
+	stopPersisterForTest(persister)
 }
 
 func TestStop_WaitsForCheckpointRunnersExit(t *testing.T) {
@@ -1483,7 +1483,7 @@ func TestStop_WaitsForCheckpointRunnersExit(t *testing.T) {
 
 	returned := make(chan struct{})
 	go func() {
-		persister.Stop()
+		stopPersisterForTest(persister)
 		close(returned)
 	}()
 
@@ -1520,7 +1520,7 @@ func TestStartCheckpoint_DoesNotRacePastConcurrentStop(t *testing.T) {
 	}
 
 	tracker := NewTimelineTracker(&TimelineConfig{PruneInterval: 0})
-	defer tracker.Stop()
+	defer stopTrackerForTest(tracker)
 
 	oldRunner := &checkpointRunner{
 		ticker: time.NewTicker(time.Hour),
@@ -1542,7 +1542,7 @@ func TestStartCheckpoint_DoesNotRacePastConcurrentStop(t *testing.T) {
 
 	stopped := make(chan struct{})
 	go func() {
-		persister.Stop()
+		stopPersisterForTest(persister)
 		close(stopped)
 	}()
 
@@ -1610,7 +1610,7 @@ func TestStartCheckpoint_ConcurrentSameSessionDoesNotLeak(t *testing.T) {
 	}
 
 	tracker := NewTimelineTracker(&TimelineConfig{PruneInterval: 0})
-	defer tracker.Stop()
+	defer stopTrackerForTest(tracker)
 
 	const concurrentStarters = 32
 	const sid = "leak-session"
@@ -1641,7 +1641,7 @@ func TestStartCheckpoint_ConcurrentSameSessionDoesNotLeak(t *testing.T) {
 	// keep ticking past Stop.
 	stopped := make(chan struct{})
 	go func() {
-		persister.Stop()
+		stopPersisterForTest(persister)
 		close(stopped)
 	}()
 	select {
@@ -1815,5 +1815,29 @@ func TestCleanupReportsDeleteFailures(t *testing.T) {
 	}
 	if deleted != 0 {
 		t.Fatalf("Cleanup counted %d deletions that did not happen", deleted)
+	}
+}
+
+// stopPersisterForTest stops all of a test persister's checkpoint runners.
+func stopPersisterForTest(p *TimelinePersister) {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	if p.stopped {
+		return
+	}
+	p.stopped = true
+
+	p.mu.Lock()
+	runners := make([]*checkpointRunner, 0, len(p.checkpoints))
+	for sessionID, runner := range p.checkpoints {
+		runners = append(runners, runner)
+		delete(p.checkpoints, sessionID)
+	}
+	p.mu.Unlock()
+
+	for _, runner := range runners {
+		runner.ticker.Stop()
+		close(runner.stop)
+		<-runner.done
 	}
 }

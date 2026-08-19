@@ -124,20 +124,6 @@ type HealthMonitor struct {
 // HealthMonitorOption configures a HealthMonitor.
 type HealthMonitorOption func(*HealthMonitor)
 
-// WithSession sets the session to monitor (empty = all sessions).
-func WithSession(session string) HealthMonitorOption {
-	return func(m *HealthMonitor) {
-		m.session = session
-	}
-}
-
-// WithAlertChannel sets the channel for receiving alerts.
-func WithAlertChannel(ch chan Alert) HealthMonitorOption {
-	return func(m *HealthMonitor) {
-		m.alertCh = ch
-	}
-}
-
 // WithStateChangeCallback registers a callback for initial classifications and
 // classification transitions. Callbacks run outside the monitor lock.
 func WithStateChangeCallback(cb StateChangeCallback) HealthMonitorOption {
@@ -155,13 +141,6 @@ func WithAlertCallback(cb AlertCallback) HealthMonitorOption {
 		if cb != nil {
 			m.alertCallbacks = append(m.alertCallbacks, cb)
 		}
-	}
-}
-
-// WithRano enables rano integration for improved classification.
-func WithRano(enabled bool) HealthMonitorOption {
-	return func(m *HealthMonitor) {
-		m.useRano = enabled
 	}
 }
 

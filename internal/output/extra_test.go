@@ -7,8 +7,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
 )
 
 // Helper to capture stdout/stderr
@@ -85,37 +83,6 @@ func TestWriteJSONPrettyAndCompact(t *testing.T) {
 	}
 }
 
-func TestPrintJSONCompactOutput(t *testing.T) {
-	stdout, _ := captureOutput(func() {
-		if err := PrintJSONCompact(map[string]string{"foo": "bar"}); err != nil {
-			t.Fatalf("PrintJSONCompact error: %v", err)
-		}
-	})
-	if strings.Contains(stdout, "\n  \"foo\"") {
-		t.Errorf("PrintJSONCompact output should not be indented: %q", stdout)
-	}
-}
-
-func TestMarshalJSONPrettyAndCompact(t *testing.T) {
-	payload := map[string]string{"foo": "bar"}
-
-	pretty, err := MarshalJSON(payload, true)
-	if err != nil {
-		t.Fatalf("MarshalJSON pretty error: %v", err)
-	}
-	if !strings.Contains(string(pretty), "\n  \"foo\"") {
-		t.Errorf("MarshalJSON pretty should be indented, got: %q", string(pretty))
-	}
-
-	compact, err := MarshalJSON(payload, false)
-	if err != nil {
-		t.Fatalf("MarshalJSON compact error: %v", err)
-	}
-	if strings.Contains(string(compact), "\n  \"foo\"") {
-		t.Errorf("MarshalJSON compact should not be indented, got: %q", string(compact))
-	}
-}
-
 func TestOutputOrText(t *testing.T) {
 	data := map[string]string{"key": "val"}
 	textCalled := false
@@ -140,65 +107,6 @@ func TestOutputOrText(t *testing.T) {
 	}
 }
 
-func TestFormatterMethods(t *testing.T) {
-	f := New(WithPretty(true))
-
-	// Writer
-	if f.Writer() != os.Stdout {
-		// Default is stdout
-	}
-
-	// Format
-	if f.Format() != FormatText {
-		t.Error("Expected FormatText default")
-	}
-}
-
-func TestTextHelpersExtended(t *testing.T) {
-	// Text
-	var buf bytes.Buffer
-	f := New(WithWriter(&buf))
-
-	f.Text("hello")
-	if buf.String() != "hello" {
-		t.Errorf("Text() = %q, want hello", buf.String())
-	}
-
-	buf.Reset()
-	f.Line()
-	if buf.String() != "\n" {
-		t.Errorf("Line() = %q, want newline", buf.String())
-	}
-
-	buf.Reset()
-	f.Println("world")
-	if buf.String() != "world\n" {
-		t.Errorf("Println() = %q, want world\\n", buf.String())
-	}
-
-	buf.Reset()
-	f.Printf("hello %s", "world")
-	if buf.String() != "hello world" {
-		t.Errorf("Printf() = %q, want hello world", buf.String())
-	}
-}
-
-func TestTimestampFormat(t *testing.T) {
-	now := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
-	s := FormatTime(now)
-	if s != "2025-01-01T12:00:00Z" {
-		t.Errorf("FormatTime() = %q", s)
-	}
-
-	parsed, err := ParseTime(s)
-	if err != nil {
-		t.Errorf("ParseTime() error: %v", err)
-	}
-	if !parsed.Equal(now) {
-		t.Errorf("ParseTime() = %v, want %v", parsed, now)
-	}
-}
-
 func TestDefaultFormatter(t *testing.T) {
 	f := DefaultFormatter(true)
 	if !f.IsJSON() {
@@ -209,21 +117,6 @@ func TestDefaultFormatter(t *testing.T) {
 	if f.IsJSON() {
 		t.Error("DefaultFormatter(false) should be Text")
 	}
-}
-
-func TestDetectFormatEnv(t *testing.T) {
-	// Env var JSON
-	os.Setenv("NTM_OUTPUT_FORMAT", "json")
-	if f := DetectFormat(false); f != FormatJSON {
-		t.Error("DetectFormat(false) with env=json should be JSON")
-	}
-
-	// Env var TEXT
-	os.Setenv("NTM_OUTPUT_FORMAT", "text")
-	if f := DetectFormat(false); f != FormatText {
-		t.Error("DetectFormat(false) with env=text should be Text")
-	}
-	os.Unsetenv("NTM_OUTPUT_FORMAT")
 }
 
 func TestTerminalHelpersWithPipeStdout(t *testing.T) {
@@ -239,16 +132,8 @@ func TestTerminalHelpersWithPipeStdout(t *testing.T) {
 		r.Close()
 	}()
 
-	if IsTerminal() {
-		t.Error("IsTerminal() should be false for pipe stdout")
-	}
 	if isStdoutTerminal() {
 		t.Error("isStdoutTerminal() should be false for pipe stdout")
-	}
-
-	os.Unsetenv("NTM_OUTPUT_FORMAT")
-	if f := DetectFormat(false); f != FormatJSON {
-		t.Errorf("DetectFormat(false) with pipe stdout = %v, want FormatJSON", f)
 	}
 }
 
@@ -426,16 +311,6 @@ func TestSessionNotFoundError(t *testing.T) {
 	}
 }
 
-func TestNewErrorWithHint(t *testing.T) {
-	resp := NewErrorWithHint("failed", "try again")
-	if resp.Error != "failed" {
-		t.Errorf("Error = %q", resp.Error)
-	}
-	if resp.Hint != "try again" {
-		t.Errorf("Hint = %q", resp.Hint)
-	}
-}
-
 func TestNewErrorFull(t *testing.T) {
 	resp := NewErrorFull("CODE", "error msg", "details", "hint")
 	if resp.Code != "CODE" {
@@ -472,49 +347,6 @@ func TestQuickSuggestions(t *testing.T) {
 	}
 	if !strings.Contains(suggestions[0].Command, "cd") {
 		t.Errorf("First suggestion should be cd, got %q", suggestions[0].Command)
-	}
-}
-
-func TestFormatSuggestions(t *testing.T) {
-	suggestions := []Suggestion{
-		{Command: "ntm attach test", Description: "Connect to session"},
-		{Command: "ntm dashboard test", Description: "Live status"},
-	}
-	result := FormatSuggestions(suggestions)
-	if !strings.Contains(result, "What's next?") {
-		t.Error("FormatSuggestions should include 'What's next?' header")
-	}
-	if !strings.Contains(result, "ntm attach test") {
-		t.Error("FormatSuggestions should include commands")
-	}
-	if !strings.Contains(result, "Connect to session") {
-		t.Error("FormatSuggestions should include descriptions")
-	}
-}
-
-func TestFormatSuggestionsEmpty(t *testing.T) {
-	result := FormatSuggestions(nil)
-	if result != "" {
-		t.Errorf("FormatSuggestions(nil) = %q, want empty string", result)
-	}
-}
-
-func TestNewSuccessWithSuggestions(t *testing.T) {
-	suggestions := []Suggestion{
-		{Command: "ntm status", Description: "Check status"},
-	}
-	resp := NewSuccessWithSuggestions("Done!", suggestions)
-	if !resp.Success {
-		t.Error("Success should be true")
-	}
-	if resp.Message != "Done!" {
-		t.Errorf("Message = %q, want 'Done!'", resp.Message)
-	}
-	if len(resp.Suggestions) != 1 {
-		t.Fatalf("Suggestions count = %d, want 1", len(resp.Suggestions))
-	}
-	if resp.Suggestions[0].Command != "ntm status" {
-		t.Errorf("Suggestion command = %q", resp.Suggestions[0].Command)
 	}
 }
 
@@ -580,191 +412,5 @@ func TestSendSuggestions(t *testing.T) {
 	suggestions := SendSuggestions("proj")
 	if len(suggestions) != 2 {
 		t.Fatalf("SendSuggestions() returned %d suggestions, want 2", len(suggestions))
-	}
-}
-
-func TestKillSuggestions(t *testing.T) {
-	suggestions := KillSuggestions()
-	if len(suggestions) != 2 {
-		t.Fatalf("KillSuggestions() returned %d suggestions, want 2", len(suggestions))
-	}
-}
-
-func TestStatusBadge(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name   string
-		status string
-	}{
-		// Green statuses
-		{"active", "active"},
-		{"running", "running"},
-		{"ok", "ok"},
-		{"ready", "ready"},
-		// Yellow statuses
-		{"idle", "idle"},
-		{"waiting", "waiting"},
-		{"pending", "pending"},
-		// Blue statuses
-		{"busy", "busy"},
-		{"working", "working"},
-		{"processing", "processing"},
-		// Error statuses
-		{"error", "error"},
-		{"failed", "failed"},
-		{"stopped", "stopped"},
-		// Warning statuses
-		{"warning", "warning"},
-		{"warn", "warn"},
-		// Default/unknown
-		{"unknown status", "something_else"},
-		{"empty string", ""},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			result := StatusBadge(tc.status)
-			// The rendered string should contain the original status text
-			if !strings.Contains(result, tc.status) {
-				t.Errorf("StatusBadge(%q) = %q, does not contain input", tc.status, result)
-			}
-		})
-	}
-}
-
-func TestStatusBadge_CaseInsensitive(t *testing.T) {
-	t.Parallel()
-
-	// Upper case should still render the input text
-	result := StatusBadge("ACTIVE")
-	if !strings.Contains(result, "ACTIVE") {
-		t.Errorf("StatusBadge(\"ACTIVE\") should contain 'ACTIVE', got %q", result)
-	}
-
-	result = StatusBadge("Error")
-	if !strings.Contains(result, "Error") {
-		t.Errorf("StatusBadge(\"Error\") should contain 'Error', got %q", result)
-	}
-}
-
-func TestAgentBadge(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name      string
-		agentType string
-		wantLabel string
-	}{
-		// Claude variants
-		{"claude", "claude", "Claude"},
-		{"cc", "cc", "Claude"},
-		// Codex variants
-		{"codex", "codex", "Codex"},
-		{"codex alias", "openai-codex", "Codex"},
-		{"cod", "cod", "Codex"},
-		// Gemini variants
-		{"gemini", "gemini", "Gemini"},
-		{"gmi", "gmi", "Gemini"},
-		{"gemini alias", "google-gemini", "Gemini"},
-		{"cursor", "cursor", "Cursor"},
-		{"windsurf", "windsurf", "Windsurf"},
-		{"aider", "aider", "Aider"},
-		{"opencode short", "oc", "Opencode"},
-		{"opencode long", "opencode", "Opencode"},
-		{"ollama", "ollama", "Ollama"},
-		{"user", "user", "User"},
-		// Default/unknown
-		{"unknown agent", "other", "other"},
-		{"empty string", "", "unknown"},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			result := AgentBadge(tc.agentType)
-			if !strings.Contains(result, tc.wantLabel) {
-				t.Errorf("AgentBadge(%q) = %q, does not contain label %q", tc.agentType, result, tc.wantLabel)
-			}
-		})
-	}
-}
-
-func TestAgentBadge_CaseInsensitive(t *testing.T) {
-	t.Parallel()
-
-	result := AgentBadge("Claude")
-	if !strings.Contains(result, "Claude") {
-		t.Errorf("AgentBadge(\"Claude\") should contain 'Claude', got %q", result)
-	}
-
-	result = AgentBadge("CODEX")
-	if !strings.Contains(result, "Codex") {
-		t.Errorf("AgentBadge(\"CODEX\") should contain canonical 'Codex', got %q", result)
-	}
-}
-
-func TestOutputAgentBadgeColor(t *testing.T) {
-	t.Parallel()
-
-	current := theme.Current()
-	tests := []struct {
-		name      string
-		agentType string
-		want      string
-	}{
-		{"claude", "claude", string(current.Claude)},
-		{"codex alias", "openai-codex", string(current.Codex)},
-		{"gemini alias", "google-gemini", string(current.Gemini)},
-		{"cursor", "cursor", string(current.Cursor)},
-		{"windsurf alias", "ws", string(current.Windsurf)},
-		{"aider", "aider", string(current.Aider)},
-		{"ollama", "ollama", string(current.Ollama)},
-		{"user", "user", string(current.User)},
-		// Opencode currently has no dedicated theme color, so it falls
-		// through to current.Overlay (same as the unknown bucket). This
-		// test pins that behavior — if a future change adds a theme.Opencode
-		// color and an explicit case, this test will fail and should be
-		// updated to expect the new color.
-		{"opencode short", "oc", string(current.Overlay)},
-		{"opencode long", "opencode", string(current.Overlay)},
-		{"unknown", "other", string(current.Overlay)},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			if got := string(outputAgentBadgeColor(tc.agentType, current)); got != tc.want {
-				t.Fatalf("outputAgentBadgeColor(%q) = %q, want %q", tc.agentType, got, tc.want)
-			}
-		})
-	}
-}
-
-func TestStyledTableCompact(t *testing.T) {
-	t.Parallel()
-
-	var buf bytes.Buffer
-	tbl := NewStyledTableWriter(&buf, "A", "B")
-	tbl.Compact = true
-	tbl.AddRow("1", "2")
-	tbl.Render()
-
-	output := buf.String()
-	if !strings.Contains(output, "A") || !strings.Contains(output, "1") {
-		t.Error("compact table should contain data")
-	}
-}
-
-func TestNewStyledTable_DefaultsToStdout(t *testing.T) {
-	t.Parallel()
-
-	tbl := NewStyledTable("X", "Y")
-	if tbl == nil {
-		t.Fatal("NewStyledTable returned nil")
-	}
-	if tbl.RowCount() != 0 {
-		t.Errorf("new table RowCount() = %d, want 0", tbl.RowCount())
 	}
 }

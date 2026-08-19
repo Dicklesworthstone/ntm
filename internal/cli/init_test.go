@@ -570,21 +570,6 @@ func TestCompletionSources_EnsemblePresetsAndModesNonEmpty(t *testing.T) {
 		t.Fatalf("expected reasoning mode catalog to be non-empty")
 	}
 
-	// Sanity: tier completion must include "core" and "all".
-	values, _ := completeTierValues(nil, nil, "")
-	hasCore := false
-	hasAll := false
-	for _, v := range values {
-		switch v {
-		case "core":
-			hasCore = true
-		case "all":
-			hasAll = true
-		}
-	}
-	if !hasCore || !hasAll {
-		t.Fatalf("expected tier completion to include core+all; got=%v", values)
-	}
 }
 
 // TestRunShellInit_InvalidShell verifies error for unsupported shell

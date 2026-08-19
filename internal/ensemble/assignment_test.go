@@ -432,18 +432,6 @@ func TestPickAvailablePaneWithReason_Fallback(t *testing.T) {
 	}
 }
 
-func TestPickAvailablePane_ReturnsPreferred(t *testing.T) {
-	panes := []tmux.Pane{
-		{Title: "pane-cc", Type: tmux.AgentClaude, Index: 1, NTMIndex: 1},
-		{Title: "pane-cod", Type: tmux.AgentCodex, Index: 2, NTMIndex: 2},
-	}
-	byType := groupPanesByType(panes)
-	choice := pickAvailablePane(byType, []string{string(tmux.AgentClaude)}, nil)
-	if choice.Title != "pane-cc" {
-		t.Fatalf("choice = %q, want pane-cc", choice.Title)
-	}
-}
-
 func TestResolveMode_WithNilCatalog(t *testing.T) {
 	modeID, mode, err := resolveMode("Deductive", nil)
 	if err != nil {

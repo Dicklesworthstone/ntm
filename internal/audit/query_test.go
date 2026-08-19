@@ -93,7 +93,7 @@ func TestSearcher_Search_BasicFilters(t *testing.T) {
 
 	writeTestEntries(t, auditDir, "test-session", now.Format("2006-01-02"), entries)
 
-	searcher := NewSearcherWithPath(auditDir)
+	searcher := newTestSearcher(auditDir)
 
 	// Test: No filters (get all)
 	t.Run("NoFilters", func(t *testing.T) {
@@ -189,7 +189,7 @@ func TestSearcher_Search_TimeRange(t *testing.T) {
 
 	writeTestEntries(t, auditDir, "test-session", now.Format("2006-01-02"), entries)
 
-	searcher := NewSearcherWithPath(auditDir)
+	searcher := newTestSearcher(auditDir)
 
 	// Test: Since filter
 	t.Run("SinceFilter", func(t *testing.T) {
@@ -242,124 +242,6 @@ func TestSearcher_Search_TimeRange(t *testing.T) {
 	})
 }
 
-func TestSearcher_CountAndStream(t *testing.T) {
-	auditDir, cleanup := setupTestAuditDir(t)
-	defer cleanup()
-
-	now := time.Now().UTC()
-	entries := []AuditEntry{
-		{
-			Timestamp:   now.Add(-10 * time.Minute),
-			SessionID:   "count-session",
-			EventType:   EventTypeCommand,
-			Actor:       ActorUser,
-			Target:      "pane-1",
-			SequenceNum: 1,
-			Checksum:    "a1",
-		},
-		{
-			Timestamp:   now.Add(-5 * time.Minute),
-			SessionID:   "count-session",
-			EventType:   EventTypeSend,
-			Actor:       ActorSystem,
-			Target:      "pane-2",
-			SequenceNum: 2,
-			Checksum:    "a2",
-		},
-	}
-
-	writeTestEntries(t, auditDir, "count-session", now.Format("2006-01-02"), entries)
-
-	searcher := NewSearcherWithPath(auditDir)
-	count, err := searcher.Count(Query{
-		EventTypes: []EventType{EventTypeSend},
-	})
-	if err != nil {
-		t.Fatalf("Count failed: %v", err)
-	}
-	if count != 1 {
-		t.Fatalf("Expected count 1, got %d", count)
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	_, err = searcher.CountContext(ctx, Query{})
-	if err == nil {
-		t.Fatalf("Expected CountContext to return context error")
-	}
-
-	streamCtx, streamCancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer streamCancel()
-
-	results, err := searcher.StreamSearch(streamCtx, Query{Limit: 10})
-	if err != nil {
-		t.Fatalf("StreamSearch failed: %v", err)
-	}
-
-	streamed := 0
-	for res := range results {
-		if res.Err != nil {
-			t.Fatalf("StreamSearch error: %v", res.Err)
-		}
-		if res.Entry != nil {
-			streamed++
-		}
-	}
-	if streamed != 2 {
-		t.Fatalf("Expected 2 streamed entries, got %d", streamed)
-	}
-
-	_, err = searcher.StreamSearch(streamCtx, Query{GrepPattern: "["})
-	if err == nil {
-		t.Fatalf("Expected StreamSearch to fail with invalid grep pattern")
-	}
-}
-
-func TestSearcher_BuildIndexAndStats(t *testing.T) {
-	auditDir, cleanup := setupTestAuditDir(t)
-	defer cleanup()
-
-	now := time.Now().UTC()
-	writeTestEntries(t, auditDir, "session-a", now.Format("2006-01-02"), []AuditEntry{
-		{
-			Timestamp:   now.Add(-1 * time.Hour),
-			SessionID:   "session-a",
-			EventType:   EventTypeCommand,
-			Actor:       ActorUser,
-			Target:      "pane-1",
-			SequenceNum: 1,
-			Checksum:    "a",
-		},
-	})
-	writeTestEntries(t, auditDir, "session-b", now.Format("2006-01-02"), []AuditEntry{
-		{
-			Timestamp:   now.Add(-30 * time.Minute),
-			SessionID:   "session-b",
-			EventType:   EventTypeSend,
-			Actor:       ActorSystem,
-			Target:      "pane-2",
-			SequenceNum: 1,
-			Checksum:    "b",
-		},
-	})
-
-	searcher := NewSearcherWithPath(auditDir)
-	if err := searcher.BuildIndex(context.Background()); err != nil {
-		t.Fatalf("BuildIndex failed: %v", err)
-	}
-
-	stats := searcher.IndexStats()
-	if indexed, ok := stats["indexed"].(bool); !ok || !indexed {
-		t.Fatalf("Expected index stats to be indexed")
-	}
-	if count, ok := stats["entry_count"].(int); !ok || count != 2 {
-		t.Fatalf("Expected entry_count 2, got %v", stats["entry_count"])
-	}
-	if sessions, ok := stats["session_count"].(int); !ok || sessions != 2 {
-		t.Fatalf("Expected session_count 2, got %v", stats["session_count"])
-	}
-}
-
 func TestGlobToRegexAndExtractDate(t *testing.T) {
 	re := regexp.MustCompile(globToRegex("session*__cc_?"))
 	if !re.MatchString("session__cc_1") {
@@ -391,24 +273,8 @@ func TestNewSearcher_AuditDirAndIndex(t *testing.T) {
 		t.Fatalf("Expected audit dir %q, got %q", expectedDir, searcher.AuditDir())
 	}
 
-	if searcher.GetIndex() == nil {
+	if searcher.index == nil {
 		t.Fatalf("Expected index to be initialized")
-	}
-
-	stats := searcher.IndexStats()
-	if indexed, ok := stats["indexed"].(bool); !ok || indexed {
-		t.Fatalf("Expected empty index stats to be indexed=false")
-	}
-}
-
-func TestSearcher_Count_InvalidGrepPattern(t *testing.T) {
-	auditDir, cleanup := setupTestAuditDir(t)
-	defer cleanup()
-
-	searcher := NewSearcherWithPath(auditDir)
-	_, err := searcher.Count(Query{GrepPattern: "["})
-	if err == nil {
-		t.Fatalf("Expected Count to fail with invalid grep pattern")
 	}
 }
 
@@ -458,7 +324,7 @@ func TestSearcher_Search_TargetPattern(t *testing.T) {
 
 	writeTestEntries(t, auditDir, "test-session", now.Format("2006-01-02"), entries)
 
-	searcher := NewSearcherWithPath(auditDir)
+	searcher := newTestSearcher(auditDir)
 
 	// Test: Glob pattern with *
 	t.Run("GlobStar", func(t *testing.T) {
@@ -540,7 +406,7 @@ func TestSearcher_Search_GrepPattern(t *testing.T) {
 
 	writeTestEntries(t, auditDir, "test-session", now.Format("2006-01-02"), entries)
 
-	searcher := NewSearcherWithPath(auditDir)
+	searcher := newTestSearcher(auditDir)
 
 	// Test: Grep for specific text
 	t.Run("GrepText", func(t *testing.T) {
@@ -603,7 +469,7 @@ func TestSearcher_Search_Pagination(t *testing.T) {
 
 	writeTestEntries(t, auditDir, "test-session", now.Format("2006-01-02"), entries)
 
-	searcher := NewSearcherWithPath(auditDir)
+	searcher := newTestSearcher(auditDir)
 
 	// Test: Limit
 	t.Run("Limit", func(t *testing.T) {
@@ -650,237 +516,6 @@ func TestSearcher_Search_Pagination(t *testing.T) {
 	})
 }
 
-func TestSearcher_Count(t *testing.T) {
-	auditDir, cleanup := setupTestAuditDir(t)
-	defer cleanup()
-
-	now := time.Now().UTC()
-	entries := []AuditEntry{
-		{
-			Timestamp:   now,
-			SessionID:   "test-session",
-			EventType:   EventTypeCommand,
-			Actor:       ActorUser,
-			Target:      "t1",
-			SequenceNum: 1,
-			Checksum:    "a",
-		},
-		{
-			Timestamp:   now,
-			SessionID:   "test-session",
-			EventType:   EventTypeSend,
-			Actor:       ActorSystem,
-			Target:      "t2",
-			SequenceNum: 2,
-			Checksum:    "b",
-		},
-		{
-			Timestamp:   now,
-			SessionID:   "test-session",
-			EventType:   EventTypeSend,
-			Actor:       ActorSystem,
-			Target:      "t3",
-			SequenceNum: 3,
-			Checksum:    "c",
-		},
-	}
-
-	writeTestEntries(t, auditDir, "test-session", now.Format("2006-01-02"), entries)
-
-	searcher := NewSearcherWithPath(auditDir)
-
-	// Test: Count all
-	t.Run("CountAll", func(t *testing.T) {
-		count, err := searcher.Count(Query{})
-		if err != nil {
-			t.Fatalf("Count failed: %v", err)
-		}
-		if count != 3 {
-			t.Fatalf("Expected count 3, got %d", count)
-		}
-	})
-
-	// Test: Count with filter
-	t.Run("CountWithFilter", func(t *testing.T) {
-		count, err := searcher.Count(Query{
-			EventTypes: []EventType{EventTypeSend},
-		})
-		if err != nil {
-			t.Fatalf("Count failed: %v", err)
-		}
-		if count != 2 {
-			t.Fatalf("Expected count 2, got %d", count)
-		}
-	})
-}
-
-func TestSearcher_StreamSearch(t *testing.T) {
-	auditDir, cleanup := setupTestAuditDir(t)
-	defer cleanup()
-
-	now := time.Now().UTC()
-	entries := make([]AuditEntry, 5)
-	for i := 0; i < 5; i++ {
-		entries[i] = AuditEntry{
-			Timestamp:   now.Add(time.Duration(i) * time.Minute),
-			SessionID:   "test-session",
-			EventType:   EventTypeCommand,
-			Actor:       ActorUser,
-			Target:      "target",
-			SequenceNum: uint64(i + 1),
-			Checksum:    string(rune('a' + i)),
-		}
-	}
-
-	writeTestEntries(t, auditDir, "test-session", now.Format("2006-01-02"), entries)
-
-	searcher := NewSearcherWithPath(auditDir)
-
-	// Test: Stream all
-	t.Run("StreamAll", func(t *testing.T) {
-		ctx := context.Background()
-		results, err := searcher.StreamSearch(ctx, Query{})
-		if err != nil {
-			t.Fatalf("StreamSearch failed: %v", err)
-		}
-
-		count := 0
-		for result := range results {
-			if result.Err != nil {
-				t.Errorf("Stream error: %v", result.Err)
-				break
-			}
-			count++
-		}
-
-		if count != 5 {
-			t.Errorf("Expected 5 entries, got %d", count)
-		}
-	})
-
-	// Test: Stream with limit
-	t.Run("StreamWithLimit", func(t *testing.T) {
-		ctx := context.Background()
-		results, err := searcher.StreamSearch(ctx, Query{Limit: 2})
-		if err != nil {
-			t.Fatalf("StreamSearch failed: %v", err)
-		}
-
-		count := 0
-		for result := range results {
-			if result.Err != nil {
-				t.Errorf("Stream error: %v", result.Err)
-				break
-			}
-			count++
-		}
-
-		if count != 2 {
-			t.Errorf("Expected 2 entries, got %d", count)
-		}
-	})
-
-	// Test: Stream with cancellation
-	t.Run("StreamWithCancellation", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		results, err := searcher.StreamSearch(ctx, Query{})
-		if err != nil {
-			t.Fatalf("StreamSearch failed: %v", err)
-		}
-
-		count := 0
-		for result := range results {
-			if result.Err != nil {
-				// Expected cancellation error
-				break
-			}
-			count++
-			if count == 2 {
-				cancel()
-			}
-		}
-
-		// Should have received at least 2 entries before cancellation
-		if count < 2 {
-			t.Errorf("Expected at least 2 entries before cancel, got %d", count)
-		}
-	})
-}
-
-func TestSearcher_BuildIndex(t *testing.T) {
-	auditDir, cleanup := setupTestAuditDir(t)
-	defer cleanup()
-
-	now := time.Now().UTC()
-	entries := []AuditEntry{
-		{
-			Timestamp:   now,
-			SessionID:   "session-a",
-			EventType:   EventTypeCommand,
-			Actor:       ActorUser,
-			Target:      "t1",
-			SequenceNum: 1,
-			Checksum:    "a",
-		},
-		{
-			Timestamp:   now,
-			SessionID:   "session-b",
-			EventType:   EventTypeSend,
-			Actor:       ActorSystem,
-			Target:      "t2",
-			SequenceNum: 2,
-			Checksum:    "b",
-		},
-		{
-			Timestamp:   now,
-			SessionID:   "session-a",
-			EventType:   EventTypeError,
-			Actor:       ActorAgent,
-			Target:      "t3",
-			SequenceNum: 3,
-			Checksum:    "c",
-		},
-	}
-
-	writeTestEntries(t, auditDir, "session-a", now.Format("2006-01-02"), entries[:1])
-	writeTestEntries(t, auditDir, "session-b", now.Format("2006-01-02"), entries[1:2])
-	writeTestEntries(t, auditDir, "session-a", now.Add(24*time.Hour).Format("2006-01-02"), entries[2:])
-
-	searcher := NewSearcherWithPath(auditDir)
-
-	// Build index
-	ctx := context.Background()
-	err := searcher.BuildIndex(ctx)
-	if err != nil {
-		t.Fatalf("BuildIndex failed: %v", err)
-	}
-
-	// Check index stats
-	stats := searcher.IndexStats()
-
-	if stats["indexed"] != true {
-		t.Error("Expected indexed to be true")
-	}
-	if stats["entry_count"] != 3 {
-		t.Errorf("Expected entry_count 3, got %v", stats["entry_count"])
-	}
-	if stats["session_count"] != 2 {
-		t.Errorf("Expected session_count 2, got %v", stats["session_count"])
-	}
-
-	eventCounts := stats["event_type_counts"].(map[string]int)
-	if eventCounts["command"] != 1 {
-		t.Errorf("Expected 1 command event, got %d", eventCounts["command"])
-	}
-	if eventCounts["send"] != 1 {
-		t.Errorf("Expected 1 send event, got %d", eventCounts["send"])
-	}
-	if eventCounts["error"] != 1 {
-		t.Errorf("Expected 1 error event, got %d", eventCounts["error"])
-	}
-}
-
 func TestSearcher_Timeout(t *testing.T) {
 	auditDir, cleanup := setupTestAuditDir(t)
 	defer cleanup()
@@ -902,7 +537,7 @@ func TestSearcher_Timeout(t *testing.T) {
 
 	writeTestEntries(t, auditDir, "test-session", now.Format("2006-01-02"), entries)
 
-	searcher := NewSearcherWithPath(auditDir)
+	searcher := newTestSearcher(auditDir)
 
 	// Test with very short timeout
 	t.Run("ShortTimeout", func(t *testing.T) {
@@ -983,7 +618,7 @@ func TestSearcher_EmptyDirectory(t *testing.T) {
 	auditDir, cleanup := setupTestAuditDir(t)
 	defer cleanup()
 
-	searcher := NewSearcherWithPath(auditDir)
+	searcher := newTestSearcher(auditDir)
 
 	// Search should return empty results, not error
 	result, err := searcher.Search(Query{})
@@ -993,19 +628,10 @@ func TestSearcher_EmptyDirectory(t *testing.T) {
 	if len(result.Entries) != 0 {
 		t.Errorf("Expected 0 entries, got %d", len(result.Entries))
 	}
-
-	// Count should return 0
-	count, err := searcher.Count(Query{})
-	if err != nil {
-		t.Fatalf("Count failed: %v", err)
-	}
-	if count != 0 {
-		t.Errorf("Expected count 0, got %d", count)
-	}
 }
 
 func TestSearcher_NonexistentDirectory(t *testing.T) {
-	searcher := NewSearcherWithPath("/nonexistent/path/to/audit")
+	searcher := newTestSearcher("/nonexistent/path/to/audit")
 
 	// Should not error, just return empty results
 	result, err := searcher.Search(Query{})
@@ -1014,5 +640,13 @@ func TestSearcher_NonexistentDirectory(t *testing.T) {
 	}
 	if len(result.Entries) != 0 {
 		t.Errorf("Expected 0 entries, got %d", len(result.Entries))
+	}
+}
+
+// newTestSearcher builds a searcher rooted at a test audit directory.
+func newTestSearcher(auditDir string) *Searcher {
+	return &Searcher{
+		auditDir: auditDir,
+		index:    newIndex(),
 	}
 }

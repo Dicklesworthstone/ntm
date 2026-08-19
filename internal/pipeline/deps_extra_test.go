@@ -75,7 +75,7 @@ func TestResolveLevelsParallelism(t *testing.T) {
 		},
 	}
 
-	plan := ResolveWorkflow(workflow)
+	plan := NewDependencyGraph(workflow).Resolve()
 
 	if !plan.Valid {
 		t.Fatalf("plan should be valid, got errors: %v", plan.Errors)
@@ -107,7 +107,7 @@ func TestResolveSingleStep(t *testing.T) {
 		Steps: []Step{{ID: "only"}},
 	}
 
-	plan := ResolveWorkflow(workflow)
+	plan := NewDependencyGraph(workflow).Resolve()
 
 	if !plan.Valid {
 		t.Fatalf("plan should be valid")
@@ -126,7 +126,7 @@ func TestResolveEmpty(t *testing.T) {
 
 	workflow := &Workflow{Steps: []Step{}}
 
-	plan := ResolveWorkflow(workflow)
+	plan := NewDependencyGraph(workflow).Resolve()
 
 	if !plan.Valid {
 		t.Error("empty workflow should be valid")

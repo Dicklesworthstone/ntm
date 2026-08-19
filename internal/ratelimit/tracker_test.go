@@ -713,30 +713,6 @@ func TestDetectRateLimitForAgent_CodexAliases(t *testing.T) {
 // CodexThrottle AIMD tests (bd-3qoly)
 // =============================================================================
 
-func TestCodexThrottle_NewDefaults(t *testing.T) {
-	t.Parallel()
-	ct := NewCodexThrottle(3)
-	st := ct.Status()
-	if st.Phase != ThrottleNormal {
-		t.Errorf("initial phase = %s, want normal", st.Phase)
-	}
-	if st.AllowedConcurrent != 3 {
-		t.Errorf("allowed = %d, want 3", st.AllowedConcurrent)
-	}
-	if st.MaxConcurrent != 3 {
-		t.Errorf("max = %d, want 3", st.MaxConcurrent)
-	}
-}
-
-func TestCodexThrottle_NewDefaults_MinOne(t *testing.T) {
-	t.Parallel()
-	ct := NewCodexThrottle(0)
-	st := ct.Status()
-	if st.MaxConcurrent != 3 {
-		t.Errorf("max = %d, want 3 (default)", st.MaxConcurrent)
-	}
-}
-
 func TestCodexThrottle_RateLimit_PausesLaunches(t *testing.T) {
 	t.Parallel()
 	ct := NewCodexThrottle(4)

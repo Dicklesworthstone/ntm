@@ -29,15 +29,6 @@ func NewLoader() *Loader {
 	}
 }
 
-// NewLoaderWithProject creates a template loader for a specific project.
-func NewLoaderWithProject(projectPath string) *Loader {
-	projectDir := resolveProjectTemplateDir(projectPath, projectPath)
-	return &Loader{
-		projectDir: projectDir,
-		userDir:    getDefaultUserTemplateDir(),
-	}
-}
-
 func resolveProjectTemplateDir(startDir, fallbackProjectRoot string) string {
 	projectDir, projectCfg, err := config.FindProjectConfig(startDir)
 	if err == nil && projectCfg != nil && projectDir != "" {

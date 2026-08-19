@@ -1,11 +1,8 @@
 package config
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -317,80 +314,9 @@ func TestIsValidWebhookSeverity(t *testing.T) {
 	}
 }
 
-func TestWatchProjectWebhooks(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	path := filepath.Join(tmpDir, ".ntm.yaml")
-	if err := os.WriteFile(path, []byte("webhooks: []\n"), 0644); err != nil {
-		t.Fatalf("write initial config: %v", err)
-	}
-
-	updates := make(chan []WebhookConfig, 10)
-	closeFn, err := WatchProjectWebhooks(tmpDir, func(cfgs []WebhookConfig) {
-		updates <- cfgs
-	})
-	if err != nil {
-		t.Fatalf("WatchProjectWebhooks failed: %v", err)
-	}
-	t.Cleanup(closeFn)
-
-	// Drain initial.
-	select {
-	case <-updates:
-	case <-time.After(2 * time.Second):
-		t.Fatal("timeout waiting for initial webhook config")
-	}
-
-	if err := os.WriteFile(path, []byte(`
-webhooks:
-  - name: one
-    url: https://example.com/hook
-`), 0644); err != nil {
-		t.Fatalf("write updated config: %v", err)
-	}
-
-	select {
-	case cfgs := <-updates:
-		if len(cfgs) != 1 {
-			t.Fatalf("expected 1 webhook after reload, got %d", len(cfgs))
-		}
-		if cfgs[0].Name != "one" {
-			t.Fatalf("unexpected webhook name after reload: %q", cfgs[0].Name)
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("timeout waiting for webhook config reload")
-	}
-}
-
 // =============================================================================
 // webhookNames — all branches (bd-4b4zf)
 // =============================================================================
-
-func TestWebhookNames_AllBranches(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name string
-		cfgs []WebhookConfig
-		want string
-	}{
-		{"empty slice", nil, "(none)"},
-		{"single named", []WebhookConfig{{Name: "alpha"}}, "alpha"},
-		{"multiple named sorted", []WebhookConfig{{Name: "beta"}, {Name: "alpha"}}, "alpha, beta"},
-		{"all empty names", []WebhookConfig{{Name: ""}, {Name: "  "}}, "(unnamed)"},
-		{"mixed empty and named", []WebhookConfig{{Name: ""}, {Name: "slack"}}, "slack"},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			got := webhookNames(tc.cfgs)
-			if got != tc.want {
-				t.Errorf("webhookNames() = %q, want %q", got, tc.want)
-			}
-		})
-	}
-}
 
 // =============================================================================
 // findTopLevelYAMLKey — all branches (bd-4b4zf)

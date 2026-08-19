@@ -1,8 +1,6 @@
 package health
 
 import (
-	"os"
-	"os/exec"
 	"testing"
 	"time"
 )
@@ -65,67 +63,6 @@ func TestDetectActivity_JustUnderFiveMinutes(t *testing.T) {
 // =============================================================================
 // detectProcessStatus edge cases
 // =============================================================================
-
-func TestDetectProcessStatus_PIDWithNoChildren(t *testing.T) {
-	t.Parallel()
-	// Use our own PID as the "shell" — the Go test binary itself should
-	// have no child processes (or at least we can check the logic).
-	// We test with a PID of a process we *know* has no children.
-	// This is hard to guarantee, so let's use a very large PID
-	// that doesn't exist — process.HasChildAlive returns false for non-existent PIDs.
-	got := detectProcessStatus("some output", "python", 999999999)
-	if got != ProcessExited {
-		t.Errorf("detectProcessStatus(nonexistent PID) = %v, want ProcessExited", got)
-	}
-}
-
-func TestDetectProcessStatus_PIDWithChildren(t *testing.T) {
-	t.Parallel()
-	// Use our own PID + a long-lived child instead of PID 1. On
-	// macOS-latest CI runners, launchd's children are not visible via
-	// pgrep to the unprivileged test user. The 30s sleep keeps the
-	// child alive well past the detectProcessStatus call even when
-	// the suite is heavily parallel-loaded.
-	cmd := exec.Command("sleep", "30")
-	if err := cmd.Start(); err != nil {
-		t.Skipf("cannot spawn child for the PID-has-children scenario: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-	})
-
-	got := detectProcessStatus("exit status 1", "python", os.Getpid())
-	if got != ProcessRunning {
-		t.Errorf("detectProcessStatus(current PID with children) = %v, want ProcessRunning", got)
-	}
-}
-
-func TestDetectProcessStatus_TextFallbackMultiplePatterns(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name    string
-		output  string
-		command string
-		want    ProcessStatus
-	}{
-		{"process exited pattern", "process exited with code 1", "node", ProcessExited},
-		{"exited with pattern", "exited with status 0", "ruby", ProcessExited},
-		{"mixed case exit", "Session Ended gracefully", "tmux", ProcessExited},
-		{"shell-like fish", "some output", "fish", ProcessRunning}, // contains "sh"
-		{"non-shell no exit", "compiling...", "rustc", ProcessRunning},
-		{"empty output empty command", "", "", ProcessRunning},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			got := detectProcessStatus(tt.output, tt.command, 0)
-			if got != tt.want {
-				t.Errorf("detectProcessStatus(%q, %q, 0) = %v, want %v", tt.output, tt.command, got, tt.want)
-			}
-		})
-	}
-}
 
 // =============================================================================
 // detectErrors edge cases
@@ -260,23 +197,6 @@ func TestCalculateStatus_RateLimitOnly(t *testing.T) {
 // parseWaitTime edge cases
 // =============================================================================
 
-func TestParseWaitTime_MultipleNumbers(t *testing.T) {
-	t.Parallel()
-	// Should find the first number associated with time
-	got := parseWaitTime("retry after 30s, max 3 attempts")
-	if got != 30 {
-		t.Errorf("parseWaitTime(multiple numbers) = %d, want 30", got)
-	}
-}
-
-func TestParseWaitTime_NoNumber(t *testing.T) {
-	t.Parallel()
-	got := parseWaitTime("please wait")
-	if got != 0 {
-		t.Errorf("parseWaitTime(no number) = %d, want 0", got)
-	}
-}
-
 // =============================================================================
 // SessionNotFoundError
 // =============================================================================
@@ -322,15 +242,3 @@ func TestAgentHealth_DefaultValues(t *testing.T) {
 // =============================================================================
 // detectProcessStatus with current process PID
 // =============================================================================
-
-func TestDetectProcessStatus_CurrentProcess(t *testing.T) {
-	t.Parallel()
-	// Our own PID — the test process itself. Whether it has children depends
-	// on the test runner, so just verify it doesn't panic.
-	pid := os.Getpid()
-	got := detectProcessStatus("output", "go", pid)
-	// Should be either Running or Exited depending on child processes
-	if got != ProcessRunning && got != ProcessExited {
-		t.Errorf("detectProcessStatus(own PID) = %v, want Running or Exited", got)
-	}
-}

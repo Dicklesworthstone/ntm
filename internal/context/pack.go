@@ -97,11 +97,6 @@ func NewContextPackBuilder(store *state.Store) *ContextPackBuilder {
 	}
 }
 
-// SetAllocation overrides the default budget allocation
-func (b *ContextPackBuilder) SetAllocation(alloc BudgetAllocation) {
-	b.allocation = alloc
-}
-
 // cacheKey generates a cache key from all build inputs that affect either the
 // rendered prompt or the stored metadata on the returned pack.
 func cacheKey(opts BuildOptions, alloc BudgetAllocation) string {
@@ -737,15 +732,6 @@ func truncateJSON(data json.RawMessage, tokenBudget int) json.RawMessage {
 	}
 	result, _ := json.Marshal(fallback)
 	return result
-}
-
-// truncateText truncates text to fit within token budget
-func truncateText(text string, tokenBudget int) string {
-	charBudget := tokenBudget * 4
-	if len(text) <= charBudget {
-		return text
-	}
-	return text[:charBudget] + "\n...[truncated]"
 }
 
 // optimizeFilesForBudget applies agent-specific file selection strategies

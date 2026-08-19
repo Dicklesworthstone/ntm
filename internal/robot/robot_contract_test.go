@@ -281,32 +281,6 @@ func TestRobotEnvelopeContract_Conformance(t *testing.T) {
 			},
 		},
 		{
-			name: "capabilities",
-			run: func(t *testing.T) (string, error) {
-				return captureStdout(t, PrintCapabilities)
-			},
-			additionalAsserts: func(t *testing.T, payload map[string]interface{}) {
-				// The contract for --robot-capabilities promises a
-				// non-nil array of `commands` (machine-discoverable
-				// API). An empty array is fine; a missing field or a
-				// non-array would break callers that iterate it.
-				cmdsVal, present := payload["commands"]
-				if !present {
-					t.Fatalf("capabilities envelope missing `commands` array")
-				}
-				if _, ok := cmdsVal.([]interface{}); !ok {
-					t.Fatalf("capabilities.commands is %T, want JSON array", cmdsVal)
-				}
-				catsVal, present := payload["categories"]
-				if !present {
-					t.Fatalf("capabilities envelope missing `categories` array")
-				}
-				if _, ok := catsVal.([]interface{}); !ok {
-					t.Fatalf("capabilities.categories is %T, want JSON array", catsVal)
-				}
-			},
-		},
-		{
 			name: "ensemble_presets",
 			run: func(t *testing.T) (string, error) {
 				return captureStdout(t, PrintEnsemblePresets)

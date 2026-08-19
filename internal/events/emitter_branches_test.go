@@ -51,8 +51,8 @@ func TestEmit_NilEvent(t *testing.T) {
 	emitter.Emit(nil)
 
 	// Verify dropped counter is still 0 (nil events don't count as dropped)
-	if emitter.Dropped() != 0 {
-		t.Errorf("Emit(nil) incremented dropped counter to %d", emitter.Dropped())
+	if emitter.dropped.Load() != 0 {
+		t.Errorf("Emit(nil) incremented dropped counter to %d", emitter.dropped.Load())
 	}
 }
 

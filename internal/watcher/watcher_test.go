@@ -3,7 +3,6 @@ package watcher
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -89,16 +88,6 @@ func TestWatcherAddRemove(t *testing.T) {
 	if len(paths) != 1 {
 		t.Errorf("WatchedPaths() after duplicate add = %v, want 1 path", paths)
 	}
-
-	// Remove
-	if err := w.Remove(tmpDir); err != nil {
-		t.Fatalf("Remove() failed: %v", err)
-	}
-
-	paths = w.WatchedPaths()
-	if len(paths) != 0 {
-		t.Errorf("WatchedPaths() after remove = %v, want 0 paths", paths)
-	}
 }
 
 func TestWatcherRecursive(t *testing.T) {
@@ -167,23 +156,6 @@ func TestWatcherRecursiveRemove(t *testing.T) {
 			paths := w.WatchedPaths()
 			if len(paths) != 2 {
 				t.Fatalf("WatchedPaths() = %v, want 2 paths (root + subdir)", paths)
-			}
-
-			if err := w.Remove(tmpDir); err != nil {
-				t.Fatalf("Remove() failed: %v", err)
-			}
-
-			paths = w.WatchedPaths()
-			if len(paths) != 0 {
-				t.Fatalf("WatchedPaths() after remove = %v, want 0 paths", paths)
-			}
-
-			if w.pollMode {
-				for p := range w.snapshots {
-					if strings.HasPrefix(p, tmpDir+string(os.PathSeparator)) || p == tmpDir {
-						t.Fatalf("expected poll snapshot cleanup, found %q", p)
-					}
-				}
 			}
 		})
 	}
@@ -469,9 +441,6 @@ func TestWatcherClose(t *testing.T) {
 	tmpDir := t.TempDir()
 	if err := w.Add(tmpDir); err != ErrClosed {
 		t.Errorf("Add() after close = %v, want %v", err, ErrClosed)
-	}
-	if err := w.Remove(tmpDir); err != ErrClosed {
-		t.Errorf("Remove() after close = %v, want %v", err, ErrClosed)
 	}
 }
 

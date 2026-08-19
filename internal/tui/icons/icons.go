@@ -426,16 +426,6 @@ func Current() IconSet {
 	return Default
 }
 
-// SetDefault allows overriding the default icon set
-func SetDefault(icons IconSet) {
-	Default = icons
-}
-
-// IsASCII reports whether the active icon set is ASCII-only.
-func IsASCII() bool {
-	return reflect.DeepEqual(Current(), ASCII)
-}
-
 // AgentIcon returns the icon for an agent type
 func (i IconSet) AgentIcon(agentType string) string {
 	switch agent.AgentType(agentType).Canonical() {

@@ -747,39 +747,6 @@ func (m *TimelinePanel) formatAgentLabel(agentID string, width int) string {
 	return fmt.Sprintf("%-*s", width, agentID)
 }
 
-func (m *TimelinePanel) agentColor(agentID string) lipgloss.Color {
-	t := m.theme
-	// Color based on agent type prefix
-	if strings.HasPrefix(agentID, "cc") {
-		return t.Claude
-	}
-	if strings.HasPrefix(agentID, "cod") {
-		return t.Codex
-	}
-	if strings.HasPrefix(agentID, "gmi") {
-		return t.Gemini
-	}
-	return t.Text
-}
-
-func (m *TimelinePanel) stateColor(s state.TimelineState) lipgloss.Color {
-	t := m.theme
-	switch s {
-	case state.TimelineIdle:
-		return t.Overlay // Gray
-	case state.TimelineWorking:
-		return t.Green
-	case state.TimelineWaiting:
-		return t.Yellow
-	case state.TimelineError:
-		return t.Red
-	case state.TimelineStopped:
-		return t.Surface2 // Dark gray
-	default:
-		return t.Overlay
-	}
-}
-
 func (m *TimelinePanel) stateChar(s state.TimelineState) string {
 	switch s {
 	case state.TimelineWorking:
@@ -817,53 +784,6 @@ func (m *TimelinePanel) renderTimelineBarText(agentID string, start, end time.Ti
 	}
 
 	bar.WriteString("]")
-	return bar.String()
-}
-
-func (m *TimelinePanel) renderTimelineBar(agentID string, start, end time.Time, width int) string {
-	if width <= 2 {
-		return ""
-	}
-
-	t := m.theme
-	var bar strings.Builder
-
-	// Opening bracket
-	bar.WriteString(lipgloss.NewStyle().Foreground(t.Surface1).Render("["))
-
-	// Get events for this agent
-	events := m.getEventsForAgent(agentID)
-	if len(events) == 0 {
-		// No events, render empty bar
-		emptyStyle := lipgloss.NewStyle().Foreground(t.Surface1)
-		for i := 0; i < width-2; i++ {
-			bar.WriteString(emptyStyle.Render("·"))
-		}
-		bar.WriteString(lipgloss.NewStyle().Foreground(t.Surface1).Render("]"))
-		return bar.String()
-	}
-
-	// Calculate time per character
-	duration := end.Sub(start)
-	// Guard against width-2 being 0 or negative (already guarded by early return, but max() adds safety)
-	denom := width - 2
-	if denom < 1 {
-		denom = 1
-	}
-	charDuration := duration / time.Duration(denom)
-
-	// Render each time slot
-	for i := 0; i < width-2; i++ {
-		slotStart := start.Add(time.Duration(i) * charDuration)
-		slotEnd := slotStart.Add(charDuration)
-		slotState := m.getStateInRange(events, slotStart, slotEnd)
-		char := m.stateChar(slotState)
-		color := m.stateColor(slotState)
-		bar.WriteString(lipgloss.NewStyle().Foreground(color).Render(char))
-	}
-
-	// Closing bracket
-	bar.WriteString(lipgloss.NewStyle().Foreground(t.Surface1).Render("]"))
 	return bar.String()
 }
 
@@ -1107,113 +1027,6 @@ func (m *TimelinePanel) markerColor(mt state.MarkerType) lipgloss.Color {
 	default:
 		return t.Overlay
 	}
-}
-
-func (m *TimelinePanel) renderMarkerRow(agentID string, windowStart, windowEnd time.Time, width int) string {
-	if width <= 0 {
-		return ""
-	}
-
-	t := m.theme
-	var row strings.Builder
-
-	// Get markers for this agent in the time window
-	markers := m.getMarkersForAgentInWindow(agentID, windowStart, windowEnd)
-
-	// Calculate time per character
-	duration := windowEnd.Sub(windowStart)
-	charDuration := duration / time.Duration(width)
-
-	// Create a map of positions to markers for clustering
-	positionMarkers := make(map[int][]state.TimelineMarker)
-	for _, marker := range markers {
-		pos := int(marker.Timestamp.Sub(windowStart) / charDuration)
-		if pos < 0 {
-			pos = 0
-		}
-		if pos >= width {
-			pos = width - 1
-		}
-		positionMarkers[pos] = append(positionMarkers[pos], marker)
-	}
-
-	// Render each position
-	for i := 0; i < width; i++ {
-		markersAtPos := positionMarkers[i]
-		if len(markersAtPos) == 0 {
-			row.WriteString(" ")
-		} else if len(markersAtPos) == 1 {
-			// Single marker
-			marker := markersAtPos[0]
-			symbol := marker.Type.Symbol()
-			color := m.markerColor(marker.Type)
-
-			// Highlight if selected
-			isSelected := m.isMarkerSelected(marker)
-			style := lipgloss.NewStyle().Foreground(color)
-			if isSelected {
-				style = style.Bold(true).Background(t.Surface1)
-			}
-			row.WriteString(style.Render(symbol))
-		} else {
-			// Clustered markers - show count or special symbol
-			// Use the most important marker type (error > completion > prompt > start/stop)
-			priority := m.highestPriorityMarker(markersAtPos)
-			color := m.markerColor(priority.Type)
-			symbol := "●" // Cluster indicator
-			if len(markersAtPos) > 9 {
-				symbol = "◉"
-			}
-			style := lipgloss.NewStyle().Foreground(color).Bold(true)
-			row.WriteString(style.Render(symbol))
-		}
-	}
-
-	return row.String()
-}
-
-func (m *TimelinePanel) getMarkersForAgentInWindow(agentID string, start, end time.Time) []state.TimelineMarker {
-	var result []state.TimelineMarker
-	for _, marker := range m.data.Markers {
-		if marker.AgentID == agentID &&
-			(marker.Timestamp.After(start) || marker.Timestamp.Equal(start)) &&
-			(marker.Timestamp.Before(end) || marker.Timestamp.Equal(end)) {
-			result = append(result, marker)
-		}
-	}
-	return result
-}
-
-func (m *TimelinePanel) isMarkerSelected(marker state.TimelineMarker) bool {
-	if m.markerIndex < 0 {
-		return false
-	}
-	visibleMarkers := m.getVisibleMarkers()
-	if m.markerIndex >= len(visibleMarkers) {
-		return false
-	}
-	return visibleMarkers[m.markerIndex].ID == marker.ID
-}
-
-func (m *TimelinePanel) highestPriorityMarker(markers []state.TimelineMarker) state.TimelineMarker {
-	// Priority: error > completion > prompt > start > stop
-	priority := map[state.MarkerType]int{
-		state.MarkerError:      5,
-		state.MarkerCompletion: 4,
-		state.MarkerPrompt:     3,
-		state.MarkerStart:      2,
-		state.MarkerStop:       1,
-	}
-
-	best := markers[0]
-	bestPri := priority[best.Type]
-	for _, m := range markers[1:] {
-		if priority[m.Type] > bestPri {
-			best = m
-			bestPri = priority[m.Type]
-		}
-	}
-	return best
 }
 
 func (m *TimelinePanel) renderOverlay(width, height int) string {

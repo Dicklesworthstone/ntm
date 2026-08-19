@@ -171,29 +171,6 @@ func TestFormatPriorityReport(t *testing.T) {
 	}
 }
 
-func TestGetTopPriority(t *testing.T) {
-	report := &PriorityReport{
-		Findings: []PrioritizedFinding{
-			{Finding: Finding{Message: "1"}},
-			{Finding: Finding{Message: "2"}},
-			{Finding: Finding{Message: "3"}},
-			{Finding: Finding{Message: "4"}},
-			{Finding: Finding{Message: "5"}},
-		},
-	}
-
-	top3 := GetTopPriority(report, 3)
-	if len(top3) != 3 {
-		t.Errorf("Expected 3 items, got %d", len(top3))
-	}
-
-	// Request more than available
-	all := GetTopPriority(report, 10)
-	if len(all) != 5 {
-		t.Errorf("Expected 5 items, got %d", len(all))
-	}
-}
-
 func TestMax(t *testing.T) {
 	if max(5, 3) != 5 {
 		t.Error("max(5, 3) should be 5")

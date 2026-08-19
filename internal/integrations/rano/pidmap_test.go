@@ -219,19 +219,6 @@ func TestGetChildPIDs(t *testing.T) {
 	}
 }
 
-func TestGlobalPIDMap(t *testing.T) {
-	// Test that global singleton works
-	m1 := GetGlobalPIDMap()
-	if m1 == nil {
-		t.Fatal("GetGlobalPIDMap returned nil")
-	}
-
-	m2 := GetGlobalPIDMap()
-	if m1 != m2 {
-		t.Error("GetGlobalPIDMap should return the same instance")
-	}
-}
-
 func TestProcStatParsing(t *testing.T) {
 	// Test edge cases in stat parsing
 	tests := []struct {
@@ -364,29 +351,6 @@ func TestGetAllPIDsForPaneUnknown(t *testing.T) {
 	pids := m.GetAllPIDsForPane("unknown__pane")
 	if pids != nil {
 		t.Errorf("GetAllPIDsForPane for unknown pane should return nil, got %v", pids)
-	}
-}
-
-func TestGetGlobalPIDMapForSession(t *testing.T) {
-	// Test getting global map for specific session
-	m1 := GetGlobalPIDMapForSession("test-session-1")
-	if m1 == nil {
-		t.Fatal("GetGlobalPIDMapForSession returned nil")
-	}
-	if m1.session != "test-session-1" {
-		t.Errorf("session = %q, want %q", m1.session, "test-session-1")
-	}
-
-	// Getting same session should return same instance
-	m2 := GetGlobalPIDMapForSession("test-session-1")
-	if m1 != m2 {
-		t.Error("GetGlobalPIDMapForSession should return same instance for same session")
-	}
-
-	// Getting different session should create new instance
-	m3 := GetGlobalPIDMapForSession("test-session-2")
-	if m3.session != "test-session-2" {
-		t.Errorf("session = %q, want %q", m3.session, "test-session-2")
 	}
 }
 
