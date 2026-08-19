@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -22,6 +23,26 @@ import (
 
 // DefaultExpiry is the default time before an approval request expires.
 const DefaultExpiry = 24 * time.Hour
+
+// Sentinel errors for approval workflow failures. Callers that surface engine
+// results over another protocol (the serve REST/WS layer maps these onto HTTP
+// status codes) classify with errors.Is instead of matching message text.
+var (
+	// ErrNotFound reports that no approval record exists for the given ID.
+	ErrNotFound = errors.New("approval not found")
+	// ErrNotPending reports a decision attempted on a record already in a
+	// terminal state (approved/denied/expired/consumed).
+	ErrNotPending = errors.New("approval is not pending")
+	// ErrExpired reports a decision attempted after the record's deadline;
+	// the record has been durably transitioned to expired.
+	ErrExpired = errors.New("approval has expired")
+	// ErrSLBSelfApproval reports a two-person-rule violation: the approver is
+	// the identity that requested the approval.
+	ErrSLBSelfApproval = errors.New("SLB violation: approver cannot be the same as requester")
+	// ErrConcurrentDecision reports that the guarded SQL transition lost to a
+	// decision landed by a concurrent process.
+	ErrConcurrentDecision = errors.New("concurrently decided or expired")
+)
 
 // Config holds configuration for the approval engine.
 type Config struct {
@@ -202,7 +223,7 @@ func (e *Engine) Check(ctx context.Context, id string) (*state.Approval, error) 
 		return nil, fmt.Errorf("get approval: %w", err)
 	}
 	if approval == nil {
-		return nil, fmt.Errorf("approval not found: %s", id)
+		return nil, fmt.Errorf("%w: %s", ErrNotFound, id)
 	}
 
 	// Check if expired
@@ -225,7 +246,7 @@ func (e *Engine) Approve(ctx context.Context, id string, approverID string) erro
 		return fmt.Errorf("get approval: %w", err)
 	}
 	if approval == nil {
-		return fmt.Errorf("approval not found: %s", id)
+		return fmt.Errorf("%w: %s", ErrNotFound, id)
 	}
 
 	now := time.Now().UTC()
@@ -237,13 +258,13 @@ func (e *Engine) Approve(ctx context.Context, id string, approverID string) erro
 		return err
 	}
 	if expired {
-		return fmt.Errorf("approval has expired")
+		return ErrExpired
 	}
 	if len(e.config.ApproverList) > 0 && !contains(e.config.ApproverList, approverID) {
 		return fmt.Errorf("%s is not an authorized approver", approverID)
 	}
 	if approval.RequiresSLB && approverID == approval.RequestedBy {
-		return fmt.Errorf("SLB violation: approver cannot be the same as requester")
+		return ErrSLBSelfApproval
 	}
 
 	// Update approval. The pending->approved transition is guarded in SQL
@@ -260,7 +281,7 @@ func (e *Engine) Approve(ctx context.Context, id string, approverID string) erro
 		return fmt.Errorf("update approval: %w", err)
 	}
 	if !ok {
-		return fmt.Errorf("approval %s was concurrently decided or expired; re-check its status before approving", id)
+		return fmt.Errorf("approval %s was %w; re-check its status before approving", id, ErrConcurrentDecision)
 	}
 
 	// Emit event
@@ -292,7 +313,7 @@ func (e *Engine) Deny(ctx context.Context, id string, approverID string, reason 
 		return fmt.Errorf("get approval: %w", err)
 	}
 	if approval == nil {
-		return fmt.Errorf("approval not found: %s", id)
+		return fmt.Errorf("%w: %s", ErrNotFound, id)
 	}
 
 	now := time.Now().UTC()
@@ -304,7 +325,7 @@ func (e *Engine) Deny(ctx context.Context, id string, approverID string, reason 
 		return err
 	}
 	if expired {
-		return fmt.Errorf("approval has expired")
+		return ErrExpired
 	}
 
 	// Update approval. Guarded like Approve: the first decision to land is
@@ -319,7 +340,7 @@ func (e *Engine) Deny(ctx context.Context, id string, approverID string, reason 
 		return fmt.Errorf("update approval: %w", err)
 	}
 	if !ok {
-		return fmt.Errorf("approval %s was concurrently decided or expired; re-check its status before denying", id)
+		return fmt.Errorf("approval %s was %w; re-check its status before denying", id, ErrConcurrentDecision)
 	}
 
 	// Emit event
@@ -355,7 +376,7 @@ func (e *Engine) Consume(ctx context.Context, id string, consumerID string) erro
 		return fmt.Errorf("get approval: %w", err)
 	}
 	if approval == nil {
-		return fmt.Errorf("approval not found: %s", id)
+		return fmt.Errorf("%w: %s", ErrNotFound, id)
 	}
 	if approval.Status != state.ApprovalApproved {
 		return fmt.Errorf("approval is not approved (status: %s)", approval.Status)
@@ -603,7 +624,7 @@ func (e *Engine) notifyApprovalDecision(appr *state.Approval, decision string) {
 
 func (e *Engine) ensurePendingApproval(approval *state.Approval) error {
 	if approval.Status != state.ApprovalPending {
-		return fmt.Errorf("approval is not pending (status: %s)", approval.Status)
+		return fmt.Errorf("%w (status: %s)", ErrNotPending, approval.Status)
 	}
 	return nil
 }

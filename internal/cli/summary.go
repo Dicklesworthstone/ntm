@@ -61,7 +61,7 @@ Examples:
 			if recent && regenerate {
 				return fmt.Errorf("--recent and --regenerate cannot be used together")
 			}
-			return runSummary(cmd.Context(), args, since, format, recent, regenerate)
+			return runSummary(cmd.Context(), args, since, format, recent, regenerate, cmd.Flags().Changed("since"))
 		},
 	}
 
@@ -83,7 +83,7 @@ type summaryFileInfo struct {
 var summaryFilenameRegex = regexp.MustCompile(`^(?P<session>.+)-(?P<ts>\d{8}-\d{6})\.json$`)
 var archiveFilenameRegex = regexp.MustCompile(`^(?P<session>.+)_(?P<date>\d{4}-\d{2}-\d{2})\.jsonl$`)
 
-func runSummary(ctx context.Context, args []string, sinceStr, format string, recent, regenerate bool) error {
+func runSummary(ctx context.Context, args []string, sinceStr, format string, recent, regenerate, sinceSet bool) error {
 	sessionArg := ""
 	if len(args) > 0 {
 		sessionArg = args[0]
@@ -94,6 +94,11 @@ func runSummary(ctx context.Context, args []string, sinceStr, format string, rec
 		return err
 	}
 	machineJSON := forceJSON || IsJSONOutput()
+
+	since, err := util.ParseDurationWithDefault(sinceStr, 30*time.Minute, "since")
+	if err != nil {
+		return fmt.Errorf("invalid --since: %w", err)
+	}
 
 	wd, _ := os.Getwd()
 	projectDir, err := resolveProjectDir(ctx, sessionArg, wd, strings.TrimSpace(sessionArg) != "")
@@ -106,7 +111,13 @@ func runSummary(ctx context.Context, args []string, sinceStr, format string, rec
 	}
 
 	if regenerate {
-		return regenerateSummaryFromArchive(ctx, sessionArg, sumFormat, machineJSON, projectDir, wd)
+		// Only an explicit --since narrows regeneration: the default 30m
+		// window would silently empty most historical archives.
+		cutoff := time.Time{}
+		if sinceSet {
+			cutoff = time.Now().Add(-since)
+		}
+		return regenerateSummaryFromArchive(ctx, sessionArg, sumFormat, machineJSON, projectDir, wd, cutoff)
 	}
 
 	if recent {
@@ -161,20 +172,20 @@ func runSummary(ctx context.Context, args []string, sinceStr, format string, rec
 		return fmt.Errorf("session '%s' not found", session)
 	}
 
-	// For now, --since is only validated; wiring it into filtering is tracked in bd-gjo4k. // placebo-waiver: bd-gjo4k
-	_, err = util.ParseDurationWithDefault(sinceStr, 30*time.Minute, "since")
-	if err != nil {
-		return fmt.Errorf("invalid --since: %w", err)
-	}
-
 	// Get panes
 	panes, err := tmux.GetPanes(session)
 	if err != nil {
 		return fmt.Errorf("failed to get panes: %w", err)
 	}
 
-	// Build agent outputs
+	// Build agent outputs. Pane capture itself carries no timestamps, so the
+	// session archive (timestamped JSONL of the same scrollback) is the
+	// oracle for the --since window: content the archive proves is older
+	// than the cutoff is trimmed from the capture.
 	outputs := collectSummaryAgentOutputs(panes, tmux.CapturePaneOutput, nil)
+	if archivePath, _, archiveErr := findArchiveFile(session); archiveErr == nil && archivePath != "" {
+		outputs = trimOutputsToSinceWindow(outputs, archivePath, time.Now().Add(-since))
+	}
 
 	opts := summary.Options{
 		Session:        session,
@@ -423,7 +434,7 @@ type archiveFileInfo struct {
 	Path      string
 }
 
-func regenerateSummaryFromArchive(ctx context.Context, sessionArg string, format summary.SummaryFormat, jsonOut bool, projectDir, wd string) error {
+func regenerateSummaryFromArchive(ctx context.Context, sessionArg string, format summary.SummaryFormat, jsonOut bool, projectDir, wd string, cutoff time.Time) error {
 	searchSession := strings.TrimSpace(sessionArg)
 	if searchSession != "" {
 		resolved, err := normalizeProjectScopedSessionName(ctx, searchSession, !IsJSONOutput())
@@ -453,11 +464,14 @@ func regenerateSummaryFromArchive(ctx context.Context, sessionArg string, format
 		}
 	}
 
-	outputs, err := loadArchiveOutputs(archiveFile)
+	outputs, err := loadArchiveOutputs(archiveFile, cutoff)
 	if err != nil {
 		return err
 	}
 	if len(outputs) == 0 {
+		if !cutoff.IsZero() {
+			return fmt.Errorf("no archived output found for session %q within the --since window", sessionName)
+		}
 		return fmt.Errorf("no archived output found for session %q", sessionName)
 	}
 
@@ -587,7 +601,10 @@ func parseArchiveFilename(name string) (string, time.Time, bool) {
 	return session, ts, true
 }
 
-func loadArchiveOutputs(path string) ([]summary.AgentOutput, error) {
+// loadArchiveOutputs aggregates archived pane content into per-pane agent
+// outputs. A non-zero cutoff excludes records whose timestamp falls before
+// it; records without a timestamp cannot be dated and are kept.
+func loadArchiveOutputs(path string, cutoff time.Time) ([]summary.AgentOutput, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -606,6 +623,9 @@ func loadArchiveOutputs(path string) ([]summary.AgentOutput, error) {
 			return nil, err
 		}
 		if record.Content == "" {
+			continue
+		}
+		if !cutoff.IsZero() && !record.Timestamp.IsZero() && record.Timestamp.Before(cutoff) {
 			continue
 		}
 		builder := paneBuilders[record.Pane]
@@ -665,4 +685,68 @@ func collectSummaryAgentOutputs(
 	}
 
 	return outputs
+}
+
+// trimOutputsToSinceWindow drops live-captured pane content that the session
+// archive proves is older than the --since cutoff. Pane capture has no
+// timestamps of its own; the archiver's JSONL records the same scrollback
+// incrementally with timestamps, so the last record from before the cutoff
+// marks where the window starts inside the captured text. Panes with no
+// dated pre-cutoff archive records are left untrimmed (no evidence of age).
+func trimOutputsToSinceWindow(outputs []summary.AgentOutput, archivePath string, cutoff time.Time) []summary.AgentOutput {
+	if cutoff.IsZero() || len(outputs) == 0 {
+		return outputs
+	}
+
+	file, err := os.Open(archivePath)
+	if err != nil {
+		return outputs
+	}
+	defer file.Close()
+
+	// Last pre-cutoff record content per pane.
+	staleMarkers := make(map[string]string)
+	dec := json.NewDecoder(file)
+	for {
+		var record archive.ArchiveRecord
+		if err := dec.Decode(&record); err != nil {
+			break
+		}
+		if record.Content == "" || record.Timestamp.IsZero() {
+			continue
+		}
+		if record.Timestamp.Before(cutoff) {
+			staleMarkers[record.Pane] = record.Content
+		}
+	}
+	if len(staleMarkers) == 0 {
+		return outputs
+	}
+
+	trimmed := make([]summary.AgentOutput, len(outputs))
+	copy(trimmed, outputs)
+	for i := range trimmed {
+		marker := strings.TrimRight(staleMarkers[trimmed[i].AgentID], "\n")
+		if marker == "" {
+			continue
+		}
+		if idx := strings.LastIndex(trimmed[i].Output, marker); idx >= 0 {
+			trimmed[i].Output = strings.TrimLeft(trimmed[i].Output[idx+len(marker):], "\n")
+			continue
+		}
+		// The full record may have wrapped or been re-rendered; fall back to
+		// its last non-blank line as the boundary marker.
+		lines := strings.Split(marker, "\n")
+		for j := len(lines) - 1; j >= 0; j-- {
+			line := strings.TrimSpace(lines[j])
+			if line == "" {
+				continue
+			}
+			if idx := strings.LastIndex(trimmed[i].Output, line); idx >= 0 {
+				trimmed[i].Output = strings.TrimLeft(trimmed[i].Output[idx+len(line):], "\n")
+			}
+			break
+		}
+	}
+	return trimmed
 }

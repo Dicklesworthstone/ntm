@@ -4859,7 +4859,18 @@ func TestHandleCleanupPipelines_UsesServerProjectDir(t *testing.T) {
 }
 
 func TestApprovals_WebSocketEvents(t *testing.T) {
-	srv := New(Config{})
+	// WS approval events are sourced from durable transitions (bd-d2uxt), so
+	// the server needs a state store for its approval engine.
+	store, err := state.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if err := store.Migrate(); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	srv := New(Config{StateStore: store})
 	srv.ensureWSHubRunning()
 	defer srv.wsHub.Stop()
 
@@ -4873,11 +4884,6 @@ func TestApprovals_WebSocketEvents(t *testing.T) {
 
 	time.Sleep(10 * time.Millisecond)
 
-	approvalsLock.Lock()
-	approvals = make(map[string]*Approval)
-	approvalIDSeq = 0
-	approvalsLock.Unlock()
-
 	reqBody := strings.NewReader(`{"action":"git status","resource":"repo","reason":"test"}`)
 	req := httptest.NewRequest(http.MethodPost, "/approvals/request", reqBody)
 	req = req.WithContext(withRoleContext(req.Context(), &RoleContext{
@@ -4888,6 +4894,16 @@ func TestApprovals_WebSocketEvents(t *testing.T) {
 	srv.handleApprovalRequestV1(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("handleApprovalRequestV1 status=%d, want %d", rec.Code, http.StatusOK)
+	}
+	var createResp struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &createResp); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	approvalID := createResp.ID
+	if approvalID == "" {
+		t.Fatalf("no approval id in response: %s", rec.Body.String())
 	}
 
 	var ev1 struct {
@@ -4906,13 +4922,13 @@ func TestApprovals_WebSocketEvents(t *testing.T) {
 	if ev1.EventType != "approval.requested" {
 		t.Fatalf("event_type=%q, want %q", ev1.EventType, "approval.requested")
 	}
-	if got, _ := ev1.Data["approval_id"].(string); got != "apr-1" {
-		t.Fatalf("approval_id=%q, want %q", got, "apr-1")
+	if got, _ := ev1.Data["approval_id"].(string); got != approvalID {
+		t.Fatalf("approval_id=%q, want %q", got, approvalID)
 	}
 
-	req2 := httptest.NewRequest(http.MethodPost, "/approvals/apr-1/approve", nil)
+	req2 := httptest.NewRequest(http.MethodPost, "/approvals/"+approvalID+"/approve", nil)
 	rctx := chi.NewRouteContext()
-	rctx.URLParams.Add("id", "apr-1")
+	rctx.URLParams.Add("id", approvalID)
 	req2 = req2.WithContext(context.WithValue(req2.Context(), chi.RouteCtxKey, rctx))
 	req2 = req2.WithContext(withRoleContext(req2.Context(), &RoleContext{
 		Role:   RoleAdmin,
@@ -4940,8 +4956,8 @@ func TestApprovals_WebSocketEvents(t *testing.T) {
 	if ev2.EventType != "approval.resolved" {
 		t.Fatalf("event_type=%q, want %q", ev2.EventType, "approval.resolved")
 	}
-	if got, _ := ev2.Data["approval_id"].(string); got != "apr-1" {
-		t.Fatalf("approval_id=%q, want %q", got, "apr-1")
+	if got, _ := ev2.Data["approval_id"].(string); got != approvalID {
+		t.Fatalf("approval_id=%q, want %q", got, approvalID)
 	}
 	if got, _ := ev2.Data["decision"].(string); got != "approved" {
 		t.Fatalf("decision=%q, want %q", got, "approved")

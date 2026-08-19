@@ -1802,10 +1802,11 @@ func (s *Server) handleForceReleaseReservation(w http.ResponseWriter, r *http.Re
 	// bd-2y2on: the policy's automation.force_release knob governs EVERY
 	// surface that reaches Agent Mail's force_release_file_reservation, not
 	// just the CLI gate — otherwise this endpoint is a trivial bypass around
-	// the two-person workflow. This HTTP surface has no durable approval
-	// integration (the in-memory approvals map in safety.go is disconnected
-	// from state.db, see the note there), so anything but an explicit
-	// "auto" fails closed.
+	// the two-person workflow. The serve approval endpoints now share the
+	// durable approval store with the CLI (bd-d2uxt), but this endpoint does
+	// not evaluate the approve-and-consume gate itself, so anything but an
+	// explicit "auto" still fails closed and directs callers to the gated
+	// `ntm locks force-release` + `ntm approve` workflow.
 	pol, err := policy.LoadOrDefault()
 	if err != nil {
 		// Log the detail server-side only: the load error can embed the policy

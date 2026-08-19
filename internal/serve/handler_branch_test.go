@@ -40,6 +40,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/redaction"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/scanner"
+	"github.com/Dicklesworthstone/ntm/internal/state"
 	"github.com/Dicklesworthstone/ntm/internal/tools"
 )
 
@@ -8777,20 +8778,19 @@ func TestHandleMemoryRules_WithRealCM(t *testing.T) {
 // --- Approval approve with expired approval ---
 
 func TestApprovalApproveV1_Expired(t *testing.T) {
-	s, _ := setupTestServer(t)
+	s, store := setupTestServer(t)
 
-	// Directly insert an expired approval into the map
-	approvalsLock.Lock()
-	approvalIDSeq++
-	id := fmt.Sprintf("apr-%d", approvalIDSeq)
-	approvals[id] = &Approval{
+	// Seed an expired pending approval directly in the durable store.
+	id := "apr-expired-approve"
+	if err := store.CreateApproval(&state.Approval{
 		ID:        id,
 		Action:    "test-action",
-		Status:    "pending",
+		Status:    state.ApprovalPending,
 		CreatedAt: time.Now().Add(-2 * time.Hour),
 		ExpiresAt: time.Now().Add(-1 * time.Hour), // expired 1 hour ago
+	}); err != nil {
+		t.Fatalf("seed approval: %v", err)
 	}
-	approvalsLock.Unlock()
 
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("id", id)
@@ -12621,29 +12621,21 @@ func TestHandlePolicyResetV1_WriteFileError(t *testing.T) {
 // in handleApprovalApproveV1 (line 1103). When SLBRequired=true and the approver
 // is the same as the requestor, it should return 403 Forbidden.
 func TestApprovalApproveV1_SLBSelfApproval(t *testing.T) {
-	s, _ := setupTestServer(t)
+	s, store := setupTestServer(t)
 
-	// Insert an SLB-requiring approval with a known requestor
-	approvalsLock.Lock()
-	approvalIDSeq++
-	id := fmt.Sprintf("apr-slb-%d", approvalIDSeq)
-	approvals[id] = &Approval{
+	// Seed an SLB-requiring durable approval with a known requestor.
+	id := "apr-slb-self"
+	if err := store.CreateApproval(&state.Approval{
 		ID:          id,
 		Action:      "force_release lock-xyz",
-		Requestor:   "agent-1",
-		SLBRequired: true,
-		Status:      "pending",
+		RequestedBy: "agent-1",
+		RequiresSLB: true,
+		Status:      state.ApprovalPending,
 		CreatedAt:   time.Now(),
 		ExpiresAt:   time.Now().Add(1 * time.Hour),
+	}); err != nil {
+		t.Fatalf("seed approval: %v", err)
 	}
-	approvalsLock.Unlock()
-
-	// Clean up after test
-	defer func() {
-		approvalsLock.Lock()
-		delete(approvals, id)
-		approvalsLock.Unlock()
-	}()
 
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("id", id)
@@ -12672,26 +12664,19 @@ func TestApprovalApproveV1_SLBSelfApproval(t *testing.T) {
 // in handleApprovalsListV1 (line 943). When listing, pending approvals that have
 // expired should auto-transition to "expired" status.
 func TestApprovalsListV1_ExpiredTransition(t *testing.T) {
-	s, _ := setupTestServer(t)
+	s, store := setupTestServer(t)
 
-	// Insert an expired pending approval
-	approvalsLock.Lock()
-	approvalIDSeq++
-	id := fmt.Sprintf("apr-exp-%d", approvalIDSeq)
-	approvals[id] = &Approval{
+	// Seed an expired pending approval in the durable store.
+	id := "apr-exp-list"
+	if err := store.CreateApproval(&state.Approval{
 		ID:        id,
 		Action:    "test-expired-action",
-		Status:    "pending",
+		Status:    state.ApprovalPending,
 		CreatedAt: time.Now().Add(-2 * time.Hour),
 		ExpiresAt: time.Now().Add(-1 * time.Hour), // expired
+	}); err != nil {
+		t.Fatalf("seed approval: %v", err)
 	}
-	approvalsLock.Unlock()
-
-	defer func() {
-		approvalsLock.Lock()
-		delete(approvals, id)
-		approvalsLock.Unlock()
-	}()
 
 	req := httptest.NewRequest("GET", "/api/v1/approvals?status=expired", nil)
 	rec := httptest.NewRecorder()
@@ -12727,7 +12712,7 @@ func TestApprovalsListV1_ExpiredTransition(t *testing.T) {
 // TestApprovalsListV1_SortsNewestFirst ensures the approvals list is returned
 // in descending created_at order so the dashboard selection is deterministic.
 func TestApprovalsListV1_SortsNewestFirst(t *testing.T) {
-	s, _ := setupTestServer(t)
+	s, store := setupTestServer(t)
 
 	type approvalSeed struct {
 		id        string
@@ -12736,31 +12721,22 @@ func TestApprovalsListV1_SortsNewestFirst(t *testing.T) {
 
 	now := time.Now()
 	seeds := []approvalSeed{
-		{id: fmt.Sprintf("apr-sort-oldest-%d", approvalIDSeq+1), createdAt: now.Add(-4 * time.Minute)},
-		{id: fmt.Sprintf("apr-sort-middle-%d", approvalIDSeq+2), createdAt: now.Add(-2 * time.Minute)},
-		{id: fmt.Sprintf("apr-sort-newest-%d", approvalIDSeq+3), createdAt: now.Add(-1 * time.Minute)},
+		{id: "apr-sort-oldest", createdAt: now.Add(-4 * time.Minute)},
+		{id: "apr-sort-middle", createdAt: now.Add(-2 * time.Minute)},
+		{id: "apr-sort-newest", createdAt: now.Add(-1 * time.Minute)},
 	}
 
-	approvalsLock.Lock()
-	approvalIDSeq += int64(len(seeds))
 	for _, seed := range seeds {
-		approvals[seed.id] = &Approval{
+		if err := store.CreateApproval(&state.Approval{
 			ID:        seed.id,
 			Action:    seed.id,
-			Status:    "pending",
+			Status:    state.ApprovalPending,
 			CreatedAt: seed.createdAt,
 			ExpiresAt: now.Add(1 * time.Hour),
+		}); err != nil {
+			t.Fatalf("seed approval %s: %v", seed.id, err)
 		}
 	}
-	approvalsLock.Unlock()
-
-	defer func() {
-		approvalsLock.Lock()
-		for _, seed := range seeds {
-			delete(approvals, seed.id)
-		}
-		approvalsLock.Unlock()
-	}()
 
 	req := httptest.NewRequest("GET", "/api/v1/approvals?status=pending", nil)
 	rec := httptest.NewRecorder()
@@ -12797,32 +12773,20 @@ func TestApprovalsListV1_SortsNewestFirst(t *testing.T) {
 // in handleApprovalsHistoryV1 (lines 997-998). Creates many resolved approvals
 // and verifies limit parameter caps the results.
 func TestApprovalsHistoryV1_LimitTruncation(t *testing.T) {
-	s, _ := setupTestServer(t)
+	s, store := setupTestServer(t)
 
-	// Insert 5 resolved approvals
-	var ids []string
-	approvalsLock.Lock()
+	// Seed 5 resolved approvals in the durable store.
 	for i := 0; i < 5; i++ {
-		approvalIDSeq++
-		id := fmt.Sprintf("apr-hist-%d", approvalIDSeq)
-		approvals[id] = &Approval{
-			ID:        id,
+		if err := store.CreateApproval(&state.Approval{
+			ID:        fmt.Sprintf("apr-hist-%d", i),
 			Action:    fmt.Sprintf("action-%d", i),
-			Status:    "approved",
+			Status:    state.ApprovalApproved,
 			CreatedAt: time.Now().Add(-time.Duration(i) * time.Minute),
 			ExpiresAt: time.Now().Add(1 * time.Hour),
+		}); err != nil {
+			t.Fatalf("seed approval %d: %v", i, err)
 		}
-		ids = append(ids, id)
 	}
-	approvalsLock.Unlock()
-
-	defer func() {
-		approvalsLock.Lock()
-		for _, id := range ids {
-			delete(approvals, id)
-		}
-		approvalsLock.Unlock()
-	}()
 
 	req := httptest.NewRequest("GET", "/api/v1/approvals/history?limit=2", nil)
 	rec := httptest.NewRecorder()
@@ -12846,25 +12810,18 @@ func TestApprovalsHistoryV1_LimitTruncation(t *testing.T) {
 // in handleApprovalGetV1 (line 1036). Getting a pending approval that has expired
 // should auto-transition its status to "expired".
 func TestApprovalGetV1_ExpiredAutoTransition(t *testing.T) {
-	s, _ := setupTestServer(t)
+	s, store := setupTestServer(t)
 
-	approvalsLock.Lock()
-	approvalIDSeq++
-	id := fmt.Sprintf("apr-getexp-%d", approvalIDSeq)
-	approvals[id] = &Approval{
+	id := "apr-getexp"
+	if err := store.CreateApproval(&state.Approval{
 		ID:        id,
 		Action:    "test-get-expired",
-		Status:    "pending",
+		Status:    state.ApprovalPending,
 		CreatedAt: time.Now().Add(-2 * time.Hour),
 		ExpiresAt: time.Now().Add(-30 * time.Minute), // expired
+	}); err != nil {
+		t.Fatalf("seed approval: %v", err)
 	}
-	approvalsLock.Unlock()
-
-	defer func() {
-		approvalsLock.Lock()
-		delete(approvals, id)
-		approvalsLock.Unlock()
-	}()
 
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("id", id)
@@ -12889,27 +12846,19 @@ func TestApprovalGetV1_ExpiredAutoTransition(t *testing.T) {
 // in handleApprovalApproveV1 (line 1073). When rc != nil, the approver
 // should be set to rc.UserID instead of "unknown".
 func TestApprovalApproveV1_WithRBACContext(t *testing.T) {
-	s, _ := setupTestServer(t)
+	s, store := setupTestServer(t)
 
-	// Create approval request
-	approvalsLock.Lock()
-	approvalIDSeq++
-	id := fmt.Sprintf("apr-rbac-%d", approvalIDSeq)
-	approvals[id] = &Approval{
-		ID:        id,
-		Action:    "deploy-v2",
-		Requestor: "agent-req",
-		Status:    "pending",
-		CreatedAt: time.Now(),
-		ExpiresAt: time.Now().Add(1 * time.Hour),
+	id := "apr-rbac-approve"
+	if err := store.CreateApproval(&state.Approval{
+		ID:          id,
+		Action:      "deploy-v2",
+		RequestedBy: "agent-req",
+		Status:      state.ApprovalPending,
+		CreatedAt:   time.Now(),
+		ExpiresAt:   time.Now().Add(1 * time.Hour),
+	}); err != nil {
+		t.Fatalf("seed approval: %v", err)
 	}
-	approvalsLock.Unlock()
-
-	defer func() {
-		approvalsLock.Lock()
-		delete(approvals, id)
-		approvalsLock.Unlock()
-	}()
 
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("id", id)
@@ -12927,10 +12876,11 @@ func TestApprovalApproveV1_WithRBACContext(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 
-	// Verify the approval was set with correct approver
-	approvalsLock.RLock()
-	a := approvals[id]
-	approvalsLock.RUnlock()
+	// Verify the durable record carries the RBAC approver identity
+	a, err := store.GetApproval(id)
+	if err != nil || a == nil {
+		t.Fatalf("reload approval: %v (record=%v)", err, a)
+	}
 	if a.ApprovedBy != "admin-approver" {
 		t.Errorf("expected approved_by=admin-approver, got %s", a.ApprovedBy)
 	}
@@ -13198,38 +13148,25 @@ func TestApprovalRequestV1_WithRBACAndSLBAction(t *testing.T) {
 	if resp["slb_required"] != true {
 		t.Errorf("expected slb_required=true for force_release action, got %v", resp["slb_required"])
 	}
-	// Clean up
-	if id, ok := resp["id"].(string); ok {
-		approvalsLock.Lock()
-		delete(approvals, id)
-		approvalsLock.Unlock()
-	}
 }
 
 // TestApprovalDenyV1_WithRBACContext exercises the RBAC context branch
 // in handleApprovalDenyV1 (line 1151). When rc != nil, the denier should
 // be set to rc.UserID.
 func TestApprovalDenyV1_WithRBACContext(t *testing.T) {
-	s, _ := setupTestServer(t)
+	s, store := setupTestServer(t)
 
-	approvalsLock.Lock()
-	approvalIDSeq++
-	id := fmt.Sprintf("apr-deny-rbac-%d", approvalIDSeq)
-	approvals[id] = &Approval{
-		ID:        id,
-		Action:    "dangerous-action",
-		Requestor: "agent-req",
-		Status:    "pending",
-		CreatedAt: time.Now(),
-		ExpiresAt: time.Now().Add(1 * time.Hour),
+	id := "apr-deny-rbac"
+	if err := store.CreateApproval(&state.Approval{
+		ID:          id,
+		Action:      "dangerous-action",
+		RequestedBy: "agent-req",
+		Status:      state.ApprovalPending,
+		CreatedAt:   time.Now(),
+		ExpiresAt:   time.Now().Add(1 * time.Hour),
+	}); err != nil {
+		t.Fatalf("seed approval: %v", err)
 	}
-	approvalsLock.Unlock()
-
-	defer func() {
-		approvalsLock.Lock()
-		delete(approvals, id)
-		approvalsLock.Unlock()
-	}()
 
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("id", id)
@@ -13247,10 +13184,11 @@ func TestApprovalDenyV1_WithRBACContext(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 
-	// Verify the denier was recorded
-	approvalsLock.RLock()
-	a := approvals[id]
-	approvalsLock.RUnlock()
+	// Verify the denier was recorded on the durable record
+	a, err := store.GetApproval(id)
+	if err != nil || a == nil {
+		t.Fatalf("reload approval: %v (record=%v)", err, a)
+	}
 	if a.ApprovedBy != "admin-denier" {
 		t.Errorf("expected approved_by=admin-denier, got %s", a.ApprovedBy)
 	}
@@ -13259,26 +13197,19 @@ func TestApprovalDenyV1_WithRBACContext(t *testing.T) {
 // TestApprovalDenyV1_ExpiredApproval ensures deny mirrors approve semantics and
 // rejects approvals that have already expired.
 func TestApprovalDenyV1_ExpiredApproval(t *testing.T) {
-	s, _ := setupTestServer(t)
+	s, store := setupTestServer(t)
 
-	approvalsLock.Lock()
-	approvalIDSeq++
-	id := fmt.Sprintf("apr-deny-expired-%d", approvalIDSeq)
-	approvals[id] = &Approval{
-		ID:        id,
-		Action:    "dangerous-action",
-		Requestor: "agent-req",
-		Status:    "pending",
-		CreatedAt: time.Now().Add(-2 * time.Hour),
-		ExpiresAt: time.Now().Add(-5 * time.Minute),
+	id := "apr-deny-expired"
+	if err := store.CreateApproval(&state.Approval{
+		ID:          id,
+		Action:      "dangerous-action",
+		RequestedBy: "agent-req",
+		Status:      state.ApprovalPending,
+		CreatedAt:   time.Now().Add(-2 * time.Hour),
+		ExpiresAt:   time.Now().Add(-5 * time.Minute),
+	}); err != nil {
+		t.Fatalf("seed approval: %v", err)
 	}
-	approvalsLock.Unlock()
-
-	defer func() {
-		approvalsLock.Lock()
-		delete(approvals, id)
-		approvalsLock.Unlock()
-	}()
 
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("id", id)
@@ -13300,11 +13231,13 @@ func TestApprovalDenyV1_ExpiredApproval(t *testing.T) {
 		t.Fatalf("expected expired error, got %v", resp["error"])
 	}
 
-	approvalsLock.RLock()
-	status := approvals[id].Status
-	approvalsLock.RUnlock()
-	if status != "expired" {
-		t.Fatalf("expected approval status=expired, got %s", status)
+	// The lazy expiry transition must have been persisted durably.
+	a, err := store.GetApproval(id)
+	if err != nil || a == nil {
+		t.Fatalf("reload approval: %v (record=%v)", err, a)
+	}
+	if a.Status != state.ApprovalExpired {
+		t.Fatalf("expected approval status=expired, got %s", a.Status)
 	}
 }
 

@@ -452,15 +452,11 @@ internal/ensemble/strategy.go:ListStrategies	bd-g1-deadcode-backlog-2ijy8	outsid
 internal/ensemble/suggest.go:SuggestionEngine.ListPresets	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/ensemble/suggest.go:SuggestionEngine.Score	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/ensemble/synthesizer.go:extractSynthesisContent	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/ensemble/synthesizer.go:formatAuditSummary	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/ensemble/synthesizer.go:formatModeOutputs	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/ensemble/synthesizer.go:NewSynthesisEngine	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/ensemble/synthesizer.go:ParseAndValidateSynthesisOutput	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/ensemble/synthesizer.go:ParseSynthesisOutput	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/ensemble/synthesizer.go:SynthesisEngine.AddOutput	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/ensemble/synthesizer.go:SynthesisEngine.Process	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/ensemble/synthesizer.go:synthesisSchemaJSON	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/ensemble/synthesizer.go:Synthesizer.GeneratePrompt	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/ensemble/synthesizer.go:ValidateSynthesisResult	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/ensemble/types.go:DefaultAgentDistribution	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/ensemble/types.go:Ensemble.Validate	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete

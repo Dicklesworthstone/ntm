@@ -3209,3 +3209,139 @@ func TestSpawnOutputExposesEffectiveProjectKeyOnlyWhenItDiffers(t *testing.T) {
 		}
 	})
 }
+
+// skillMatchTriageFixture is a discriminating fixture for the strategy
+// difference tests: top-n order (by triage score) is refactor, docs, bug —
+// but capability matching pairs codex with the bug and gemini with the docs.
+func skillMatchTriageFixture() *bv.TriageResponse {
+	return &bv.TriageResponse{
+		Triage: bv.TriageData{
+			Recommendations: []bv.TriageRecommendation{
+				{ID: "bd-refactor", Title: "Restructure config loading", Type: "refactor", Priority: 1, Score: 0.95},
+				{ID: "bd-docs", Title: "Document the robot surface", Type: "docs", Priority: 2, Score: 0.90},
+				{ID: "bd-bug", Title: "Broken pane resolution", Type: "bug", Priority: 1, Score: 0.85},
+			},
+		},
+	}
+}
+
+// TestGetWorkItemsForStrategySkillMatchedDiffersFromTopN is the C4-style
+// difference test: the same fixture must produce DIFFERENT positional
+// assignments under skill-matched than under top-n, proving skill-matched
+// no longer silently falls back.
+func TestGetWorkItemsForStrategySkillMatchedDiffersFromTopN(t *testing.T) {
+	triage := skillMatchTriageFixture()
+	agents := []SpawnedAgent{
+		{Pane: "0.1", Type: "cod"},
+		{Pane: "0.2", Type: "gmi"},
+		{Pane: "0.3", Type: "cc"},
+	}
+
+	topN := getWorkItemsForStrategy(triage, "top-n", agents)
+	matched := getWorkItemsForStrategy(triage, "skill-matched", agents)
+
+	if len(topN) != 3 || len(matched) != 3 {
+		t.Fatalf("expected 3 items each, got top-n=%d skill-matched=%d", len(topN), len(matched))
+	}
+
+	// top-n pairs positionally by triage score: cod→refactor, gmi→docs, cc→bug.
+	wantTopN := []string{"bd-refactor", "bd-docs", "bd-bug"}
+	for i, want := range wantTopN {
+		if topN[i].ID != want {
+			t.Fatalf("top-n[%d] = %s, want %s", i, topN[i].ID, want)
+		}
+	}
+
+	// Capability matrix: cod scores bug 0.90 > refactor 0.75 > docs 0.70;
+	// gmi scores docs 0.90; cc scores refactor 0.95.
+	wantMatched := []string{"bd-bug", "bd-docs", "bd-refactor"}
+	for i, want := range wantMatched {
+		if matched[i].ID != want {
+			t.Fatalf("skill-matched[%d] = %s, want %s (full: %+v)", i, matched[i].ID, want, matched)
+		}
+	}
+
+	same := true
+	for i := range topN {
+		if topN[i].ID != matched[i].ID {
+			same = false
+			break
+		}
+	}
+	if same {
+		t.Fatal("skill-matched produced identical positional assignments to top-n on a discriminating fixture (silent fallback)")
+	}
+
+	for i, item := range matched {
+		if item.MatchReason == "" {
+			t.Fatalf("skill-matched[%d] (%s) has no MatchReason recorded", i, item.ID)
+		}
+		if !strings.Contains(item.MatchReason, "skill-matched") {
+			t.Fatalf("skill-matched[%d] MatchReason = %q, want skill-matched rationale", i, item.MatchReason)
+		}
+		if len(item.Reasons) == 0 || !strings.Contains(item.Reasons[len(item.Reasons)-1], "skill-matched") {
+			t.Fatalf("skill-matched[%d] Reasons missing rationale: %v", i, item.Reasons)
+		}
+	}
+	// Genuine matching must state the capability score, not a fallback note.
+	if !strings.Contains(matched[0].MatchReason, "capability") {
+		t.Fatalf("MatchReason %q does not cite a capability score", matched[0].MatchReason)
+	}
+}
+
+// TestGetSkillMatchedWorkItemsNoSignalIsLoud verifies the degenerate class
+// (unknown agent type, uniform 0.5 scores) is recorded loudly instead of
+// silently masquerading as skill matching.
+func TestGetSkillMatchedWorkItemsNoSignalIsLoud(t *testing.T) {
+	triage := skillMatchTriageFixture()
+	agents := []SpawnedAgent{{Pane: "0.1", Type: "totally-unknown-agent"}}
+
+	items := getSkillMatchedWorkItems(triage, agents)
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(items))
+	}
+	// Uniform scores keep triage order (top item first).
+	if items[0].ID != "bd-refactor" {
+		t.Fatalf("degenerate matching picked %s, want triage-order bd-refactor", items[0].ID)
+	}
+	if !strings.Contains(items[0].MatchReason, "no discriminating capability signal") {
+		t.Fatalf("degenerate matching MatchReason = %q, want loud no-signal note", items[0].MatchReason)
+	}
+}
+
+// TestGetWorkItemsForStrategyUnknownStrategyIsLoud verifies that a strategy
+// value leaking past strict normalization records a fallback reason.
+func TestGetWorkItemsForStrategyUnknownStrategyIsLoud(t *testing.T) {
+	triage := skillMatchTriageFixture()
+	agents := []SpawnedAgent{{Pane: "0.1", Type: "cc"}}
+
+	items := getWorkItemsForStrategy(triage, "not-a-strategy", agents)
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(items))
+	}
+	if !strings.Contains(items[0].MatchReason, "fell back to top-n") {
+		t.Fatalf("unknown strategy MatchReason = %q, want loud fallback note", items[0].MatchReason)
+	}
+}
+
+// TestSpawnTaskTypeForRecommendationLadder covers the explicit-type, label,
+// and title-inference rungs.
+func TestSpawnTaskTypeForRecommendationLadder(t *testing.T) {
+	cases := []struct {
+		name string
+		rec  bv.TriageRecommendation
+		want string
+	}{
+		{"explicit type wins", bv.TriageRecommendation{Type: "refactor", Title: "fix bug"}, "refactor"},
+		{"label used when type generic", bv.TriageRecommendation{Type: "task", Labels: []string{"lane", "docs"}, Title: "misc"}, "docs"},
+		{"title inference last", bv.TriageRecommendation{Type: "task", Title: "Fix broken spawn crash"}, "bug"},
+		{"generic stays task", bv.TriageRecommendation{Type: "task", Title: "misc chores galore maybe"}, "task"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := string(spawnTaskTypeForRecommendation(tc.rec)); got != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

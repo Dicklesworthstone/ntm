@@ -237,9 +237,14 @@ type LimitsConfig struct {
 	MaxCommandStdinBytes  int64 `yaml:"max_command_stdin_bytes,omitempty" toml:"max_command_stdin_bytes,omitempty" json:"max_command_stdin_bytes,omitempty"`
 	MaxForeachRounds      int   `yaml:"max_foreach_rounds,omitempty" toml:"max_foreach_rounds,omitempty" json:"max_foreach_rounds,omitempty"`
 	SubstepParallelMax    int   `yaml:"substep_parallel_max,omitempty" toml:"substep_parallel_max,omitempty" json:"substep_parallel_max,omitempty"`
-	MaxTemplateBytes      int64 `yaml:"max_template_bytes,omitempty" toml:"max_template_bytes,omitempty" json:"max_template_bytes,omitempty"`
-	MaxStepCountTotal     int   `yaml:"max_step_count_total,omitempty" toml:"max_step_count_total,omitempty" json:"max_step_count_total,omitempty"`
-	MaxSubstitutionDepth  int   `yaml:"max_substitution_recursion,omitempty" toml:"max_substitution_recursion,omitempty" json:"max_substitution_recursion,omitempty"`
+	// MaxParallelSteps bounds how many simultaneously-ready independent
+	// top-level steps the executor dispatches concurrently (bd-jio7h).
+	// Zero/unset means DefaultMaxParallelSteps; 1 forces the legacy serial
+	// scheduling.
+	MaxParallelSteps     int   `yaml:"max_parallel_steps,omitempty" toml:"max_parallel_steps,omitempty" json:"max_parallel_steps,omitempty"`
+	MaxTemplateBytes     int64 `yaml:"max_template_bytes,omitempty" toml:"max_template_bytes,omitempty" json:"max_template_bytes,omitempty"`
+	MaxStepCountTotal    int   `yaml:"max_step_count_total,omitempty" toml:"max_step_count_total,omitempty" json:"max_step_count_total,omitempty"`
+	MaxSubstitutionDepth int   `yaml:"max_substitution_recursion,omitempty" toml:"max_substitution_recursion,omitempty" json:"max_substitution_recursion,omitempty"`
 }
 
 const (
@@ -249,6 +254,7 @@ const (
 	DefaultMaxCommandStderrBytes = 4 * 1024 * 1024  // 4 MB
 	DefaultMaxCommandStdinBytes  = 1 * 1024 * 1024  // 1 MB (bd-1ka2t)
 	DefaultSubstepParallelMax    = 8                // bd-dmjn3
+	DefaultMaxParallelSteps      = 4                // bd-jio7h
 	DefaultMaxTemplateBytes      = 256 * 1024       // 256 KB
 	DefaultMaxStepCountTotal     = 100000
 	DefaultMaxSubstitutionDepth  = 8
@@ -276,6 +282,9 @@ func (lc LimitsConfig) EffectiveLimits() LimitsConfig {
 	}
 	if lc.SubstepParallelMax <= 0 {
 		lc.SubstepParallelMax = DefaultSubstepParallelMax
+	}
+	if lc.MaxParallelSteps <= 0 {
+		lc.MaxParallelSteps = DefaultMaxParallelSteps
 	}
 	if lc.MaxTemplateBytes <= 0 {
 		lc.MaxTemplateBytes = DefaultMaxTemplateBytes

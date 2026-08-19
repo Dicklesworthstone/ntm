@@ -107,6 +107,12 @@ func (f *SynthesisFormatter) formatMarkdown(w io.Writer, result *SynthesisResult
 	// Header
 	b.WriteString("# Ensemble Synthesis Report\n\n")
 	b.WriteString(fmt.Sprintf("*Generated: %s*\n\n", result.GeneratedAt.Format(time.RFC3339)))
+	if result.SynthesizedBy != "" {
+		b.WriteString(fmt.Sprintf("*Synthesis path: %s*\n\n", result.SynthesizedBy))
+	}
+	if result.FallbackReason != "" {
+		b.WriteString(fmt.Sprintf("> **Note:** %s\n\n", result.FallbackReason))
+	}
 
 	// Executive Summary
 	b.WriteString("## Executive Summary\n\n")

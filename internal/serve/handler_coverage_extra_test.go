@@ -1450,17 +1450,7 @@ func TestHandlePolicyAutomationUpdateV1_InvalidForceRelease(t *testing.T) {
 // Approval handler tests
 // ---------------------------------------------------------------------------
 
-func resetApprovalsForTest() {
-	approvalsLock.Lock()
-	defer approvalsLock.Unlock()
-	for k := range approvals {
-		delete(approvals, k)
-	}
-	approvalIDSeq = 0
-}
-
 func TestHandleApprovalsListV1(t *testing.T) {
-	resetApprovalsForTest()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/approvals?status=pending", nil)
 	rec := httptest.NewRecorder()
@@ -1471,7 +1461,6 @@ func TestHandleApprovalsListV1(t *testing.T) {
 }
 
 func TestHandleApprovalsHistoryV1(t *testing.T) {
-	resetApprovalsForTest()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/approvals/history?limit=5", nil)
 	rec := httptest.NewRecorder()
@@ -1495,7 +1484,6 @@ func TestHandleApprovalGetV1_EmptyID(t *testing.T) {
 }
 
 func TestHandleApprovalGetV1_NotFound(t *testing.T) {
-	resetApprovalsForTest()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/approvals/apr-999", nil)
 	rctx := chi.NewRouteContext()
@@ -1522,7 +1510,6 @@ func TestHandleApprovalApproveV1_EmptyID(t *testing.T) {
 }
 
 func TestHandleApprovalApproveV1_NotFound(t *testing.T) {
-	resetApprovalsForTest()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/approvals/apr-999/approve", nil)
 	rctx := chi.NewRouteContext()
@@ -1549,7 +1536,6 @@ func TestHandleApprovalDenyV1_EmptyID(t *testing.T) {
 }
 
 func TestHandleApprovalDenyV1_NotFound(t *testing.T) {
-	resetApprovalsForTest()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/approvals/apr-999/deny", nil)
 	rctx := chi.NewRouteContext()
@@ -1585,7 +1571,6 @@ func TestHandleApprovalRequestV1_EmptyAction(t *testing.T) {
 }
 
 func TestHandleApprovalRequestV1_Valid(t *testing.T) {
-	resetApprovalsForTest()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/approvals/request",
 		strings.NewReader(`{"action":"rm -rf /tmp/test","resource":"/tmp/test","reason":"cleanup","ttl_seconds":60}`))
@@ -2363,7 +2348,6 @@ func TestHandleMemoryOutcome_InvalidStatus(t *testing.T) {
 // ===========================================================================
 
 func TestApprovalEndToEnd(t *testing.T) {
-	resetApprovalsForTest()
 	srv, _ := setupTestServer(t)
 
 	// 1. Create an approval request

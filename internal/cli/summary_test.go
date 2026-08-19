@@ -457,7 +457,7 @@ func TestRegenerateSummaryFromArchive_NormalizesProjectScopedPrefix(t *testing.T
 	}
 
 	if _, err := captureStdout(t, func() error {
-		return regenerateSummaryFromArchive(t.Context(), "mypro", summary.FormatBrief, false, projectDir, otherWD)
+		return regenerateSummaryFromArchive(t.Context(), "mypro", summary.FormatBrief, false, projectDir, otherWD, time.Time{})
 	}); err != nil {
 		t.Fatalf("regenerateSummaryFromArchive() error = %v", err)
 	}
@@ -471,5 +471,134 @@ func TestRegenerateSummaryFromArchive_NormalizesProjectScopedPrefix(t *testing.T
 	}
 	if summaryFiles[0].Session != "myproject" {
 		t.Fatalf("summary session = %q, want %q", summaryFiles[0].Session, "myproject")
+	}
+}
+
+// writeArchiveJSONL writes records to a temp JSONL archive file and returns its path.
+func writeArchiveJSONL(t *testing.T, records []archive.ArchiveRecord) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "sess_2026-08-18.jsonl")
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("create archive: %v", err)
+	}
+	enc := json.NewEncoder(file)
+	for _, r := range records {
+		if err := enc.Encode(r); err != nil {
+			file.Close()
+			t.Fatalf("encode record: %v", err)
+		}
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("close archive: %v", err)
+	}
+	return path
+}
+
+// TestLoadArchiveOutputsSinceFilter proves --since actually filters the
+// regenerated capture: records older than the window are excluded, newer
+// ones included, and a zero cutoff keeps everything (bd-gjo4k).
+func TestLoadArchiveOutputsSinceFilter(t *testing.T) {
+	now := time.Now()
+	records := []archive.ArchiveRecord{
+		{Session: "s", Pane: "%1", Agent: "claude", Timestamp: now.Add(-2 * time.Hour), Content: "ANCIENT WORK\n", Sequence: 1},
+		{Session: "s", Pane: "%1", Agent: "claude", Timestamp: now.Add(-5 * time.Minute), Content: "FRESH WORK\n", Sequence: 2},
+		{Session: "s", Pane: "%2", Agent: "codex", Timestamp: now.Add(-3 * time.Hour), Content: "OLD ONLY\n", Sequence: 1},
+	}
+	path := writeArchiveJSONL(t, records)
+
+	// Zero cutoff: everything survives.
+	all, err := loadArchiveOutputs(path, time.Time{})
+	if err != nil {
+		t.Fatalf("loadArchiveOutputs(zero): %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("zero cutoff: expected 2 panes, got %d", len(all))
+	}
+	joined := ""
+	for _, o := range all {
+		joined += o.Output
+	}
+	if !strings.Contains(joined, "ANCIENT WORK") || !strings.Contains(joined, "FRESH WORK") || !strings.Contains(joined, "OLD ONLY") {
+		t.Fatalf("zero cutoff lost content: %q", joined)
+	}
+
+	// 30m cutoff: only the fresh record survives.
+	filtered, err := loadArchiveOutputs(path, now.Add(-30*time.Minute))
+	if err != nil {
+		t.Fatalf("loadArchiveOutputs(cutoff): %v", err)
+	}
+	if len(filtered) != 1 {
+		t.Fatalf("cutoff: expected 1 pane, got %d (%+v)", len(filtered), filtered)
+	}
+	if filtered[0].AgentID != "%1" {
+		t.Fatalf("cutoff: expected pane %%1, got %s", filtered[0].AgentID)
+	}
+	if strings.Contains(filtered[0].Output, "ANCIENT WORK") {
+		t.Fatalf("content older than window was not excluded: %q", filtered[0].Output)
+	}
+	if !strings.Contains(filtered[0].Output, "FRESH WORK") {
+		t.Fatalf("content newer than window was excluded: %q", filtered[0].Output)
+	}
+}
+
+// TestTrimOutputsToSinceWindow proves the live-capture path uses archive
+// timestamps to drop pre-window scrollback while keeping newer content.
+func TestTrimOutputsToSinceWindow(t *testing.T) {
+	now := time.Now()
+	records := []archive.ArchiveRecord{
+		{Session: "s", Pane: "%1", Agent: "claude", Timestamp: now.Add(-2 * time.Hour), Content: "setup output\nOLD BOUNDARY LINE\n", Sequence: 1},
+		{Session: "s", Pane: "%1", Agent: "claude", Timestamp: now.Add(-time.Minute), Content: "fresh line\n", Sequence: 2},
+	}
+	path := writeArchiveJSONL(t, records)
+
+	outputs := []summary.AgentOutput{
+		{AgentID: "%1", AgentType: "claude", Output: "setup output\nOLD BOUNDARY LINE\nfresh line\nnewest line\n"},
+		{AgentID: "%9", AgentType: "codex", Output: "untouched pane\n"},
+	}
+
+	trimmed := trimOutputsToSinceWindow(outputs, path, now.Add(-30*time.Minute))
+	if len(trimmed) != 2 {
+		t.Fatalf("expected 2 outputs, got %d", len(trimmed))
+	}
+	if strings.Contains(trimmed[0].Output, "OLD BOUNDARY LINE") || strings.Contains(trimmed[0].Output, "setup output") {
+		t.Fatalf("pre-window content survived the trim: %q", trimmed[0].Output)
+	}
+	if !strings.Contains(trimmed[0].Output, "fresh line") || !strings.Contains(trimmed[0].Output, "newest line") {
+		t.Fatalf("in-window content was dropped: %q", trimmed[0].Output)
+	}
+	// Pane without dated pre-cutoff archive evidence stays untouched.
+	if trimmed[1].Output != "untouched pane\n" {
+		t.Fatalf("pane without archive evidence was modified: %q", trimmed[1].Output)
+	}
+	// Zero cutoff is a no-op.
+	same := trimOutputsToSinceWindow(outputs, path, time.Time{})
+	if same[0].Output != outputs[0].Output {
+		t.Fatalf("zero cutoff modified output")
+	}
+	// Inputs must not be mutated.
+	if !strings.Contains(outputs[0].Output, "OLD BOUNDARY LINE") {
+		t.Fatal("trimOutputsToSinceWindow mutated its input slice")
+	}
+}
+
+// TestTrimOutputsToSinceWindowFallbackLine covers the wrapped/re-rendered
+// case where only the marker's last non-blank line is findable.
+func TestTrimOutputsToSinceWindowFallbackLine(t *testing.T) {
+	now := time.Now()
+	records := []archive.ArchiveRecord{
+		{Session: "s", Pane: "%1", Agent: "claude", Timestamp: now.Add(-2 * time.Hour), Content: "alpha rendered differently\nBOUNDARY-XYZ\n", Sequence: 1},
+	}
+	path := writeArchiveJSONL(t, records)
+
+	outputs := []summary.AgentOutput{
+		{AgentID: "%1", AgentType: "claude", Output: "alpha rendered\ndifferently\nBOUNDARY-XYZ\nnew content after\n"},
+	}
+	trimmed := trimOutputsToSinceWindow(outputs, path, now.Add(-30*time.Minute))
+	if strings.Contains(trimmed[0].Output, "BOUNDARY-XYZ") {
+		t.Fatalf("boundary line survived: %q", trimmed[0].Output)
+	}
+	if !strings.Contains(trimmed[0].Output, "new content after") {
+		t.Fatalf("post-boundary content dropped: %q", trimmed[0].Output)
 	}
 }

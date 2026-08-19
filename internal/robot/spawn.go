@@ -14,6 +14,7 @@ import (
 
 	agentpkg "github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
+	"github.com/Dicklesworthstone/ntm/internal/assign"
 	"github.com/Dicklesworthstone/ntm/internal/assignment"
 	"github.com/Dicklesworthstone/ntm/internal/audit"
 	"github.com/Dicklesworthstone/ntm/internal/bv"
@@ -353,8 +354,9 @@ type SpawnAssignment struct {
 	IdempotencyKey    string `json:"idempotency_key,omitempty"`
 	DispatchReceiptID string `json:"dispatch_receipt_id,omitempty"`
 	ReservationIDs    []int  `json:"reservation_ids,omitempty"`
-	ClaimError        string `json:"claim_error,omitempty"`  // Error during claim, if any
-	PromptError       string `json:"prompt_error,omitempty"` // Error sending prompt, if any
+	ClaimError        string `json:"claim_error,omitempty"`   // Error during claim, if any
+	PromptError       string `json:"prompt_error,omitempty"`  // Error sending prompt, if any
+	AssignReason      string `json:"assign_reason,omitempty"` // Strategy rationale for this pairing (e.g. skill-matched capability score)
 }
 
 // SpawnedAgent represents an agent created during spawn.
@@ -1658,7 +1660,7 @@ func assignWorkToAgentsWithError(ctx context.Context, output *SpawnOutput, workD
 	}
 
 	// Get work items based on strategy
-	workItems := getWorkItemsForStrategy(triage, strategy, len(readyAgents))
+	workItems := getWorkItemsForStrategy(triage, strategy, readyAgents)
 	if len(workItems) == 0 {
 		ledgerExists, err := deps.AssignmentLedgerExists(session)
 		if err != nil {
@@ -1746,11 +1748,12 @@ func assignWorkToAgentsWithError(ctx context.Context, output *SpawnOutput, workD
 
 		item := workItems[i]
 		spawnAssignment := SpawnAssignment{
-			Pane:      agent.Pane,
-			AgentType: agent.Type,
-			BeadID:    item.ID,
-			BeadTitle: item.Title,
-			Priority:  fmt.Sprintf("P%d", item.Priority),
+			Pane:         agent.Pane,
+			AgentType:    agent.Type,
+			BeadID:       item.ID,
+			BeadTitle:    item.Title,
+			Priority:     fmt.Sprintf("P%d", item.Priority),
+			AssignReason: item.MatchReason,
 		}
 		resolved, resolveErr := tmux.ResolvePaneSelectors(panes, []string{agent.Pane}, true)
 		if resolveErr != nil {
@@ -2298,34 +2301,126 @@ func spawnAssignmentDeps(custom *SpawnAssignmentDependencies) SpawnAssignmentDep
 
 // workItem represents a work item from triage for assignment.
 type workItem struct {
-	ID       string
-	Title    string
-	Priority int
-	Score    float64
-	Type     string
-	Reasons  []string
+	ID          string
+	Title       string
+	Priority    int
+	Score       float64
+	Type        string
+	Reasons     []string
+	MatchReason string // How the strategy paired this item with its agent slot (recorded in the envelope)
 }
 
 // getWorkItemsForStrategy returns work items based on the selected strategy.
-func getWorkItemsForStrategy(triage *bv.TriageResponse, strategy string, count int) []workItem {
-	var items []workItem
+// The returned slice is positional: workItems[i] is assigned to agents[i].
+func getWorkItemsForStrategy(triage *bv.TriageResponse, strategy string, agents []SpawnedAgent) []workItem {
+	count := len(agents)
 
 	switch strategy {
 	case "diverse":
 		// Get a mix of different task types
-		items = getDiverseWorkItems(triage, count)
+		return getDiverseWorkItems(triage, count)
 	case "dependency-aware":
 		// Prioritize items that unblock others
-		items = getDependencyAwareItems(triage, count)
+		return getDependencyAwareItems(triage, count)
 	case "skill-matched":
-		// This would ideally match agent types to task types
-		// For now, fall through to top-n; tracked in bd-obkeb // placebo-waiver: bd-obkeb
-		fallthrough
+		// Match agent capabilities (capability matrix) to bead task types.
+		return getSkillMatchedWorkItems(triage, agents)
 	case "top-n":
-		fallthrough
-	default:
 		// Get top N recommendations by score
-		items = getTopNWorkItems(triage, count)
+		return getTopNWorkItems(triage, count)
+	default:
+		// Strict normalization upstream should make this unreachable. If a new
+		// strategy value ever leaks through, fall back loudly instead of
+		// silently pretending it ran.
+		items := getTopNWorkItems(triage, count)
+		for i := range items {
+			items[i].MatchReason = fmt.Sprintf("strategy %q not implemented at dispatch; fell back to top-n", strategy)
+		}
+		return items
+	}
+}
+
+// spawnTaskTypeForRecommendation resolves the capability-matrix task type for
+// a triage recommendation. An explicit bead type wins unless it is the
+// generic "task"; then a label naming a specific type; then title keyword
+// inference (same ladder the C4 assign planners use).
+func spawnTaskTypeForRecommendation(rec bv.TriageRecommendation) assign.TaskType {
+	if t := strings.ToLower(strings.TrimSpace(rec.Type)); t != "" && t != "task" {
+		return assign.ParseTaskType(t)
+	}
+	for _, label := range rec.Labels {
+		if tt := assign.ParseTaskType(label); tt != assign.TaskTask {
+			return tt
+		}
+	}
+	return assign.ParseTaskType(inferTaskType(bv.BeadPreview{ID: rec.ID, Title: rec.Title, Type: rec.Type}))
+}
+
+// getSkillMatchedWorkItems pairs each agent slot with the unassigned
+// recommendation its agent type scores highest on in the capability matrix.
+// Triage order (best score first) is the tie-break, so identical capability
+// scores degrade to top-n order — and that degenerate case is recorded
+// loudly in MatchReason rather than hidden.
+func getSkillMatchedWorkItems(triage *bv.TriageResponse, agents []SpawnedAgent) []workItem {
+	recs := triage.Triage.Recommendations
+	if len(recs) == 0 || len(agents) == 0 {
+		return nil
+	}
+
+	taskTypes := make([]assign.TaskType, len(recs))
+	for j, rec := range recs {
+		taskTypes[j] = spawnTaskTypeForRecommendation(rec)
+	}
+
+	used := make([]bool, len(recs))
+	items := make([]workItem, 0, len(agents))
+	for _, agent := range agents {
+		best := -1
+		bestScore := -1.0
+		minScore, maxScore := 2.0, -1.0
+		for j := range recs {
+			if used[j] {
+				continue
+			}
+			score := assign.GetAgentScoreByString(agent.Type, string(taskTypes[j]))
+			if score < minScore {
+				minScore = score
+			}
+			if score > maxScore {
+				maxScore = score
+			}
+			// Strictly greater keeps triage score order as the tie-break:
+			// recommendations arrive sorted best-first.
+			if score > bestScore {
+				best = j
+				bestScore = score
+			}
+		}
+		if best < 0 {
+			break
+		}
+		used[best] = true
+		rec := recs[best]
+
+		matchReason := fmt.Sprintf("skill-matched: %s capability %.2f for %s tasks", agent.Type, bestScore, taskTypes[best])
+		if minScore == maxScore {
+			// No capability signal discriminated between the remaining beads
+			// (e.g. unknown agent type, or uniform task types): the pick is
+			// triage order. Say so instead of silently looking matched.
+			matchReason = fmt.Sprintf("skill-matched: no discriminating capability signal for agent type %q (uniform score %.2f); kept triage order", agent.Type, bestScore)
+		}
+
+		reasons := append([]string(nil), rec.Reasons...)
+		reasons = append(reasons, matchReason)
+		items = append(items, workItem{
+			ID:          rec.ID,
+			Title:       rec.Title,
+			Priority:    rec.Priority,
+			Score:       rec.Score,
+			Type:        rec.Type,
+			Reasons:     reasons,
+			MatchReason: matchReason,
+		})
 	}
 
 	return items

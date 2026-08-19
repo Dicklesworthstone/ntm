@@ -43,6 +43,7 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
+	approvalpkg "github.com/Dicklesworthstone/ntm/internal/approval"
 	"github.com/Dicklesworthstone/ntm/internal/events"
 	"github.com/Dicklesworthstone/ntm/internal/kernel"
 	"github.com/Dicklesworthstone/ntm/internal/policy"
@@ -63,6 +64,15 @@ type Server struct {
 	stateStore    *state.Store
 	server        *http.Server
 	auth          AuthConfig
+
+	// approvalEng is the durable approval engine over stateStore, shared with
+	// the `ntm approve` / force-release gate workflow (bd-d2uxt). Built lazily
+	// so a Server constructed without a state store stays side-effect-free;
+	// nil when no state store is configured, in which case the approval
+	// endpoints fail closed with 503 instead of falling back to process-local
+	// memory.
+	approvalEng     *approvalpkg.Engine
+	approvalEngOnce sync.Once
 
 	// SSE clients
 	sseClients   map[chan events.BusEvent]struct{}

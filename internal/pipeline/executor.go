@@ -127,7 +127,40 @@ type Executor struct {
 	// after materialize returns (bd-htmpq).
 	foreachMaterializeMu sync.Mutex
 
+	// paneLocks serializes tmux dispatch (capture-before → paste → wait →
+	// capture-after) per pane. Two steps targeting the SAME pane must not
+	// interleave prompts/output windows when top-level steps run
+	// concurrently (bd-jio7h) or when two parallel groups overlap.
+	paneLockMu sync.Mutex
+	paneLocks  map[string]chan struct{}
+
 	mailClients agentMailClientCache
+}
+
+// acquirePaneLock serializes the full dispatch window against a tmux pane.
+// It blocks until the pane is free or ctx is cancelled. The returned release
+// func must be called exactly once; a nil error always yields a valid release.
+func (e *Executor) acquirePaneLock(ctx context.Context, paneID string) (func(), error) {
+	if paneID == "" {
+		return func() {}, nil
+	}
+	e.paneLockMu.Lock()
+	if e.paneLocks == nil {
+		e.paneLocks = make(map[string]chan struct{})
+	}
+	ch, ok := e.paneLocks[paneID]
+	if !ok {
+		ch = make(chan struct{}, 1)
+		e.paneLocks[paneID] = ch
+	}
+	e.paneLockMu.Unlock()
+
+	select {
+	case ch <- struct{}{}:
+		return func() { <-ch }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 // NewExecutor creates a new workflow executor
@@ -652,46 +685,168 @@ func (e *Executor) validateDeclaredOutputs(workflow *Workflow) {
 	e.stateMu.Unlock()
 }
 
-// executeWorkflow runs all steps in dependency order
+// executeWorkflow runs all steps in dependency order. Simultaneously-ready
+// independent top-level steps execute concurrently (bd-jio7h), bounded by
+// settings.limits.max_parallel_steps (default DefaultMaxParallelSteps).
+// The scheduler goroutine is the sole graph mutator (MarkExecuted /
+// MarkFailed) and the sole writer of per-step completion bookkeeping, so
+// output_var storage always happens BEFORE dependents are unblocked —
+// preserving deterministic variable interpolation for depends_on consumers.
 func (e *Executor) executeWorkflow(ctx context.Context, workflow *Workflow) error {
 	totalSteps := e.graph.Size()
 
-	for {
+	maxParallel := e.limits.MaxParallelSteps
+	if maxParallel <= 0 {
+		maxParallel = DefaultMaxParallelSteps
+	}
+
+	// stepCtx cancels in-flight siblings on fatal errors (fail / fail_fast /
+	// retry-exhausted) without tearing down the workflow ctx used by
+	// post-pipeline steps and finalization.
+	stepCtx, cancelSteps := context.WithCancel(ctx)
+	defer cancelSteps()
+
+	type stepDone struct {
+		stepID string
+		step   *Step
+		result StepResult
+	}
+	done := make(chan stepDone)
+	inFlight := make(map[string]bool)
+	var fatalErr error
+
+	// finishStep runs on the scheduler goroutine for every completed step:
+	// records the result, stores output vars, marks the graph, persists
+	// state, and applies on_error semantics. A non-nil return is fatal.
+	finishStep := func(d stepDone) error {
+		stepID, step, result := d.stepID, d.step, d.result
+
+		e.stateMu.Lock()
+		e.state.Steps[stepID] = result
+		e.stateMu.Unlock()
+
+		// Store output in variables if configured.
+		//
+		// A foreach container owns its own OutputVar: storeForeachOutputVars
+		// already wrote the declared aggregate shape ([]string for aggregate
+		// mode, map[string]string for collect). Overwriting it here replaced
+		// that with result.Output — the human summary line "Foreach completed:
+		// 2/2 dispatched, ..." — so output_var_mode was dead for every foreach
+		// and downstream consumers read a status string instead of the data.
+		if step.OutputVar != "" && result.Status == StatusCompleted && !stepOwnsForeachOutputVar(step) {
+			e.varMu.Lock()
+			e.state.Variables[step.OutputVar] = result.Output
+			if result.ParsedData != nil {
+				e.state.Variables[step.OutputVar+"_parsed"] = result.ParsedData
+			}
+			StoreStepOutput(e.state, stepID, result.Output, result.ParsedData)
+			e.varMu.Unlock()
+		} else if result.Status == StatusCompleted && stepOwnsForeachOutputVar(step) {
+			// The steps.<id>.* keys are still expected for a foreach container.
+			e.varMu.Lock()
+			StoreStepOutput(e.state, stepID, result.Output, result.ParsedData)
+			e.varMu.Unlock()
+		}
+
+		// Mark as executed
+		if err := e.graph.MarkExecuted(stepID); err != nil {
+			return fmt.Errorf("failed to mark step %s as executed: %w", stepID, err)
+		}
+
+		e.stateMu.Lock()
+		e.state.UpdatedAt = time.Now()
+		e.stateMu.Unlock()
+		e.persistState()
+
+		// Mark skipped steps as failed ONLY if skipped due to failed dependencies.
+		// This ensures transitive dependents are also skipped (A fails -> B skipped -> C skipped).
+		// Steps skipped due to `when` conditions should NOT mark downstream as failed.
+		if result.Status == StatusSkipped && e.graph.HasFailedDependency(stepID) {
+			_ = e.graph.MarkFailed(stepID)
+		}
+
+		// Handle failure based on error action
+		if result.Status == StatusFailed {
+			// Mark step as failed in dependency graph
+			_ = e.graph.MarkFailed(stepID)
+
+			onError := resolveErrorAction(step.OnError, workflow.Settings.OnError)
+
+			switch onError {
+			case ErrorActionFail, ErrorActionFailFast:
+				return fmt.Errorf("step %s failed: %s", stepID, result.Error.Message)
+			case ErrorActionContinue:
+				// Continue to next step, dependents will be skipped
+			case ErrorActionRetry:
+				if result.Error != nil {
+					return fmt.Errorf("step %s failed after %d attempts: %s", stepID, result.Attempts, result.Error.Message)
+				}
+				return fmt.Errorf("step %s failed after %d attempts", stepID, result.Attempts)
+			}
+		}
+
+		if result.Status == StatusCancelled {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return context.Canceled
+		}
+
+		return nil
+	}
+
+	// waitOne blocks for a single completion and folds it into shared state.
+	waitOne := func() {
+		d := <-done
+		delete(inFlight, d.stepID)
+		if err := finishStep(d); err != nil && fatalErr == nil {
+			fatalErr = err
+			cancelSteps()
+		}
+	}
+
+scheduler:
+	for fatalErr == nil {
 		// Check for cancellation
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			fatalErr = ctx.Err()
+			cancelSteps()
+			break scheduler
 		default:
 		}
 
-		// Get ready steps
+		// Get ready steps, top-level before container-nested placeholders.
 		ready := e.graph.GetReadySteps()
-		if len(ready) == 0 {
-			// Check if all steps are executed
-			if e.graph.ExecutedCount() >= totalSteps {
-				break // All done
-			}
-			// No ready steps but not all executed - something is wrong
-			return fmt.Errorf("no steps ready but workflow incomplete")
-		}
-
-		// Execute ready steps (potentially in parallel if they're independent)
-		// For now, execute one at a time for simplicity // placebo-waiver: bd-jio7h
-		// Concurrent execution of independent ready steps is tracked in bd-jio7h.
 		sort.SliceStable(ready, func(i, j int) bool {
 			_, _, insideI := findStepContainer(workflow, ready[i])
 			_, _, insideJ := findStepContainer(workflow, ready[j])
 			return !insideI && insideJ
 		})
+
+		dispatched := 0
+		markedNested := 0
 		for _, stepID := range ready {
+			if inFlight[stepID] {
+				continue
+			}
 			step, exists := e.graph.GetStep(stepID)
 			if !exists {
 				continue
 			}
+			// Steps nested inside a parallel/loop container are placeholders
+			// in the flat graph: the container executes them. Mark executed
+			// so container dependents unblock.
 			if _, _, inside := findStepContainer(workflow, stepID); inside {
 				if err := e.graph.MarkExecuted(stepID); err != nil {
-					return fmt.Errorf("failed to mark nested step %s as executed: %w", stepID, err)
+					fatalErr = fmt.Errorf("failed to mark nested step %s as executed: %w", stepID, err)
+					cancelSteps()
+					break scheduler
 				}
+				markedNested++
+				continue
+			}
+			if len(inFlight) >= maxParallel {
 				continue
 			}
 
@@ -700,83 +855,43 @@ func (e *Executor) executeWorkflow(ctx context.Context, workflow *Workflow) erro
 			e.state.UpdatedAt = time.Now()
 			e.stateMu.Unlock()
 
-			// Execute the step
-			result := e.executeStep(ctx, step, workflow)
-
-			e.stateMu.Lock()
-			e.state.Steps[stepID] = result
-			e.stateMu.Unlock()
-
-			// Store output in variables if configured.
-			//
-			// A foreach container owns its own OutputVar: storeForeachOutputVars
-			// already wrote the declared aggregate shape ([]string for aggregate
-			// mode, map[string]string for collect). Overwriting it here replaced
-			// that with result.Output — the human summary line "Foreach completed:
-			// 2/2 dispatched, ..." — so output_var_mode was dead for every foreach
-			// and downstream consumers read a status string instead of the data.
-			if step.OutputVar != "" && result.Status == StatusCompleted && !stepOwnsForeachOutputVar(step) {
-				e.varMu.Lock()
-				e.state.Variables[step.OutputVar] = result.Output
-				if result.ParsedData != nil {
-					e.state.Variables[step.OutputVar+"_parsed"] = result.ParsedData
-				}
-				StoreStepOutput(e.state, stepID, result.Output, result.ParsedData)
-				e.varMu.Unlock()
-			} else if result.Status == StatusCompleted && stepOwnsForeachOutputVar(step) {
-				// The steps.<id>.* keys are still expected for a foreach container.
-				e.varMu.Lock()
-				StoreStepOutput(e.state, stepID, result.Output, result.ParsedData)
-				e.varMu.Unlock()
-			}
-
-			// Mark as executed
-			if err := e.graph.MarkExecuted(stepID); err != nil {
-				return fmt.Errorf("failed to mark step %s as executed: %w", stepID, err)
-			}
-
-			e.stateMu.Lock()
-			e.state.UpdatedAt = time.Now()
-			e.stateMu.Unlock()
-			e.persistState()
-
-			// Mark skipped steps as failed ONLY if skipped due to failed dependencies.
-			// This ensures transitive dependents are also skipped (A fails -> B skipped -> C skipped).
-			// Steps skipped due to `when` conditions should NOT mark downstream as failed.
-			if result.Status == StatusSkipped && e.graph.HasFailedDependency(stepID) {
-				_ = e.graph.MarkFailed(stepID)
-			}
-
-			// Handle failure based on error action
-			if result.Status == StatusFailed {
-				// Mark step as failed in dependency graph
-				_ = e.graph.MarkFailed(stepID)
-
-				onError := resolveErrorAction(step.OnError, workflow.Settings.OnError)
-
-				switch onError {
-				case ErrorActionFail, ErrorActionFailFast:
-					return fmt.Errorf("step %s failed: %s", stepID, result.Error.Message)
-				case ErrorActionContinue:
-					// Continue to next step, dependents will be skipped
-				case ErrorActionRetry:
-					if result.Error != nil {
-						return fmt.Errorf("step %s failed after %d attempts: %s", stepID, result.Attempts, result.Error.Message)
-					}
-					return fmt.Errorf("step %s failed after %d attempts", stepID, result.Attempts)
-				}
-			}
-
-			if result.Status == StatusCancelled {
-				if ctx.Err() != nil {
-					return ctx.Err()
-				}
-				return context.Canceled
-			}
+			inFlight[stepID] = true
+			dispatched++
+			go func(s *Step) {
+				result := e.executeStep(stepCtx, s, workflow)
+				done <- stepDone{stepID: s.ID, step: s, result: result}
+			}(step)
 		}
+
+		if markedNested > 0 {
+			// Marking nested placeholders may have unblocked new ready
+			// steps; rescan before blocking on completions.
+			continue
+		}
+
+		if len(inFlight) == 0 {
+			if dispatched == 0 {
+				if e.graph.ExecutedCount() >= totalSteps {
+					break // All done
+				}
+				// No ready steps but not all executed - something is wrong
+				fatalErr = fmt.Errorf("no steps ready but workflow incomplete")
+				break
+			}
+			continue
+		}
+
+		// Wait for one completion, then rescan for newly-unblocked steps.
+		waitOne()
 	}
 
-	return nil
+	// Drain in-flight steps so their results are recorded and persisted
+	// before returning; the first fatal error wins.
+	for len(inFlight) > 0 {
+		waitOne()
+	}
+
+	return fatalErr
 }
 
 // executeStep runs a single step with retry logic
@@ -1060,6 +1175,18 @@ func (e *Executor) executeStepOnce(ctx context.Context, step *Step, workflow *Wo
 		result.FinishedAt = time.Now()
 		return result
 	}
+
+	// Serialize the whole dispatch window (capture → paste → wait → capture)
+	// against other steps targeting the same pane (bd-jio7h).
+	releasePane, err := e.acquirePaneLock(ctx, paneID)
+	if err != nil {
+		result.Status = StatusCancelled
+		result.SkipReason = "cancelled while waiting for pane"
+		result.SkipKind = SkipKindCancelled
+		result.FinishedAt = time.Now()
+		return result
+	}
+	defer releasePane()
 
 	// Capture state before sending
 	beforeOutput, _ := e.tmuxClient().CapturePaneOutput(paneID, 2000)
@@ -1674,6 +1801,14 @@ func (e *Executor) executeTemplate(ctx context.Context, step *Step, workflow *Wo
 			Args:     step.Args,
 		})
 	}
+
+	// Serialize the whole dispatch window against other steps targeting the
+	// same pane (bd-jio7h).
+	releasePane, err := e.acquirePaneLock(ctx, paneID)
+	if err != nil {
+		return e.markTemplateCancelled(&result, step, workflow, paneID, err.Error())
+	}
+	defer releasePane()
 
 	beforeOutput, _ := e.tmuxClient().CapturePaneOutput(paneID, 2000)
 
@@ -2292,6 +2427,21 @@ func (e *Executor) executeParallelStep(ctx context.Context, step *Step, workflow
 
 	result.PaneUsed = paneID
 	result.AgentType = agentType
+
+	// Serialize dispatch against other steps targeting the same pane. Within
+	// one parallel group usedPanes already prevents sharing, but concurrent
+	// top-level scheduling (bd-jio7h) can overlap two groups (or a group and
+	// a plain step) on the same pane. Held across retries: the pane was
+	// selected once for all attempts.
+	releasePane, err := e.acquirePaneLock(ctx, paneID)
+	if err != nil {
+		result.Status = StatusCancelled
+		result.SkipReason = "cancelled while waiting for pane"
+		result.SkipKind = SkipKindCancelled
+		result.FinishedAt = time.Now()
+		return result
+	}
+	defer releasePane()
 
 	// Calculate retry parameters
 	maxAttempts := 1

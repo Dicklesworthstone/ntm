@@ -3,10 +3,19 @@ package pipeline
 import (
 	"fmt"
 	"sort"
+	"sync"
 )
 
 // DependencyGraph represents step dependencies for execution ordering
 type DependencyGraph struct {
+	// mu guards the runtime-mutable scheduling fields (ready, executed,
+	// executedCount, remainingDeps, failed). The structural fields (steps,
+	// edges, reverse, inDegree, container) are immutable after
+	// NewDependencyGraph returns, so structure-only readers skip the lock.
+	// Needed since bd-jio7h: worker goroutines call HasFailedDependency /
+	// GetFailedDependencies while the scheduler calls MarkExecuted /
+	// MarkFailed concurrently.
+	mu            sync.RWMutex
 	steps         map[string]*Step    // step ID -> step
 	edges         map[string][]string // step ID -> steps it depends on
 	reverse       map[string][]string // step ID -> steps that depend on it
@@ -316,6 +325,8 @@ func (g *DependencyGraph) Resolve() ExecutionPlan {
 
 // GetReadySteps returns steps that are ready to execute
 func (g *DependencyGraph) GetReadySteps() []string {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
 	ready := make([]string, len(g.ready))
 	copy(ready, g.ready)
 	return ready
@@ -326,6 +337,8 @@ func (g *DependencyGraph) MarkExecuted(id string) error {
 	if _, exists := g.steps[id]; !exists {
 		return fmt.Errorf("step %q not found", id)
 	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
 	if g.executed[id] {
 		return nil
 	}
@@ -345,11 +358,15 @@ func (g *DependencyGraph) MarkExecuted(id string) error {
 
 // IsExecuted returns whether a step has been executed
 func (g *DependencyGraph) IsExecuted(id string) bool {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
 	return g.executed[id]
 }
 
 // ExecutedCount returns the number of executed steps.
 func (g *DependencyGraph) ExecutedCount() int {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
 	return g.executedCount
 }
 
@@ -358,17 +375,23 @@ func (g *DependencyGraph) MarkFailed(id string) error {
 	if _, exists := g.steps[id]; !exists {
 		return fmt.Errorf("step %q not found", id)
 	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
 	g.failed[id] = true
 	return nil
 }
 
 // IsFailed returns whether a step has failed
 func (g *DependencyGraph) IsFailed(id string) bool {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
 	return g.failed[id]
 }
 
 // HasFailedDependency returns true if any of the step's dependencies failed
 func (g *DependencyGraph) HasFailedDependency(id string) bool {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
 	for _, dep := range g.edges[id] {
 		if g.failed[dep] {
 			return true
@@ -379,6 +402,8 @@ func (g *DependencyGraph) HasFailedDependency(id string) bool {
 
 // GetFailedDependencies returns the list of failed dependencies for a step
 func (g *DependencyGraph) GetFailedDependencies(id string) []string {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
 	var failed []string
 	for _, dep := range g.edges[id] {
 		if g.failed[dep] {

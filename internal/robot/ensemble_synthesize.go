@@ -45,6 +45,11 @@ type SynthesisReport struct {
 	QuestionsCount       int     `json:"questions_count"`
 	Confidence           float64 `json:"confidence"`
 	GeneratedAt          string  `json:"generated_at"`
+	// SynthesizedBy records which path produced the result ("agent" or "mechanical").
+	SynthesizedBy string `json:"synthesized_by,omitempty"`
+	// FallbackReason explains why an agent-based strategy degraded to
+	// mechanical merging; empty when the requested path ran.
+	FallbackReason string `json:"fallback_reason,omitempty"`
 }
 
 // SynthesisAudit summarizes the disagreement analysis.
@@ -290,6 +295,8 @@ func GetEnsembleSynthesize(opts EnsembleSynthesizeOptions) (*EnsembleSynthesizeO
 		QuestionsCount:       len(result.QuestionsForUser),
 		Confidence:           float64(result.Confidence),
 		GeneratedAt:          FormatTimestamp(result.GeneratedAt),
+		SynthesizedBy:        result.SynthesizedBy,
+		FallbackReason:       result.FallbackReason,
 	}
 
 	// Build audit summary

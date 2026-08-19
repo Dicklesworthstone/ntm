@@ -30,7 +30,13 @@ if command -v br >/dev/null 2>&1; then
   # First bead-shaped token on the line, NOT a greedy sed capture: greedy
   # matching grabbed the LAST token, so an open bead whose TITLE mentions a
   # closed bead id poisoned the "open" fixture and failed check 1.
-  found_open="$(br list --status=open --limit=1 2>/dev/null | grep -oE 'bd-[a-z0-9][a-z0-9._-]*' | head -1)"
+  # A "live" bead for the fixture may be open, in_progress, or blocked —
+  # after a full backlog burn the only non-closed beads can be in_progress
+  # or blocked, and --status=open alone then returns nothing.
+  for st in open in_progress blocked; do
+    found_open="$(br list --status="$st" --limit=1 2>/dev/null | grep -oE 'bd-[a-z0-9][a-z0-9._-]*' | head -1)"
+    [ -n "$found_open" ] && break
+  done
   [ -n "$found_open" ] && open_id="$found_open"
 fi
 mkdir -p "$TMP/ok"

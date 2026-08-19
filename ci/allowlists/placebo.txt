@@ -8,9 +8,3 @@
 # (D5 executeJob simulator line burned by bd-ws3-contract-breadth-psvyu.5.2 — simulator deleted, real dispatcher in jobs_dispatch.go)
 #
 # Remaining pre-existing hits, each re-tagged to a specific fix bead by the bd-d7z7i triage:
-internal/ensemble/pipeline.go	bd-lzu08	agent-based synthesis falls back to mechanical merge; fix tracked in bd-lzu08
-internal/ensemble/synthesizer.go	bd-lzu08	agent-based synthesis falls back to mechanical merge; fix tracked in bd-lzu08
-internal/pipeline/executor.go	bd-jio7h	independent ready steps execute serially; concurrency tracked in bd-jio7h
-internal/cli/summary.go	bd-gjo4k	--since validated but unused; wiring tracked in bd-gjo4k
-internal/robot/spawn.go	bd-obkeb	skill-matched strategy falls back to top-n; matching tracked in bd-obkeb
-internal/serve/safety.go	bd-d2uxt	in-memory approvals map disconnected from durable store; unification tracked in bd-d2uxt

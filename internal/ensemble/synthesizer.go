@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -20,6 +21,11 @@ type Synthesizer struct {
 
 	// MergeConfig controls mechanical merging.
 	MergeConfig MergeConfig
+
+	// Lead designates the lead agent used for agent-based strategies.
+	// When nil, agent-based strategies fall back to mechanical merging
+	// with an explicit fallback reason recorded on the result.
+	Lead *LeadAgentConfig
 }
 
 // SynthesisChunkType identifies the type of streamed synthesis output.
@@ -115,7 +121,7 @@ func (s *Synthesizer) StreamSynthesize(ctx context.Context, input *SynthesisInpu
 			return
 		}
 
-		result, err := s.Synthesize(input)
+		result, err := s.SynthesizeContext(ctx, input)
 		if err != nil {
 			if ctx.Err() != nil {
 				errs <- ctx.Err()
@@ -128,6 +134,13 @@ func (s *Synthesizer) StreamSynthesize(ctx context.Context, input *SynthesisInpu
 		if !emit(SynthesisChunk{Type: ChunkStatus, Content: "synthesis merged"}) {
 			errs <- ctx.Err()
 			return
+		}
+
+		if result.FallbackReason != "" {
+			if !emit(SynthesisChunk{Type: ChunkStatus, Content: result.FallbackReason}) {
+				errs <- ctx.Err()
+				return
+			}
 		}
 
 		for _, finding := range result.Findings {
@@ -171,9 +184,18 @@ func (s *Synthesizer) StreamSynthesize(ctx context.Context, input *SynthesisInpu
 }
 
 // Synthesize combines mode outputs into a synthesis result.
-// For agent-based strategies, this returns the prompt for the synthesizer agent.
-// For manual strategies, this performs mechanical merging directly.
+// See SynthesizeContext for the full behavior contract.
 func (s *Synthesizer) Synthesize(input *SynthesisInput) (*SynthesisResult, error) {
+	return s.SynthesizeContext(context.Background(), input)
+}
+
+// SynthesizeContext combines mode outputs into a synthesis result.
+// Manual strategies perform mechanical merging directly. Agent-based
+// strategies dispatch the synthesis prompt to the configured lead agent
+// and parse its response; if no lead agent is configured or the lead path
+// fails, the result falls back to mechanical merging with an explicit
+// FallbackReason recorded (never silently).
+func (s *Synthesizer) SynthesizeContext(ctx context.Context, input *SynthesisInput) (*SynthesisResult, error) {
 	if s == nil {
 		return nil, fmt.Errorf("synthesizer is nil")
 	}
@@ -194,13 +216,42 @@ func (s *Synthesizer) Synthesize(input *SynthesisInput) (*SynthesisResult, error
 
 	// Manual strategies do mechanical merge only
 	if !s.Strategy.RequiresAgent {
-		return s.mechanicalSynthesize(input)
+		result, err := s.mechanicalSynthesize(input)
+		if err != nil {
+			return nil, err
+		}
+		result.SynthesizedBy = SynthesisPathMechanical
+		return result, nil
 	}
 
-	// Agent-based strategies - for now, fall back to mechanical // placebo-waiver: bd-lzu08
-	// Full agent synthesis would inject a synthesizer agent prompt
-	// and wait for its response. Tracked in bd-lzu08.
-	return s.mechanicalSynthesize(input)
+	// Agent-based strategies: run the lead-agent synthesis path.
+	if s.Lead == nil {
+		return s.mechanicalFallback(input, fmt.Sprintf("no lead agent configured for agent-based strategy %q", s.Strategy.Name))
+	}
+
+	result, err := s.agentSynthesize(ctx, input)
+	if err != nil {
+		return s.mechanicalFallback(input, fmt.Sprintf("lead agent synthesis failed: %v", err))
+	}
+	result.SynthesizedBy = SynthesisPathAgent
+	return result, nil
+}
+
+// mechanicalFallback performs mechanical synthesis for an agent-based
+// strategy that could not run its lead agent, recording the reason
+// explicitly on the result so the degradation is never silent.
+func (s *Synthesizer) mechanicalFallback(input *SynthesisInput, reason string) (*SynthesisResult, error) {
+	slog.Warn("ensemble synthesis fell back to mechanical",
+		"strategy", string(s.Strategy.Name),
+		"reason", reason,
+	)
+	result, err := s.mechanicalSynthesize(input)
+	if err != nil {
+		return nil, err
+	}
+	result.SynthesizedBy = SynthesisPathMechanical
+	result.FallbackReason = "fell back to mechanical: " + reason
+	return result, nil
 }
 
 // mechanicalSynthesize performs deterministic merging without an AI agent.
@@ -391,7 +442,7 @@ func formatAuditSummary(report *AuditReport) string {
 // synthesisSchemaJSON returns the expected output schema for synthesizer agents.
 func synthesisSchemaJSON() string {
 	sample := SynthesisResult{
-		Summary: "A unified thesis synthesizing key insights from all reasoning modes.",
+		Summary: sampleSynthesisSummary,
 		Findings: []Finding{
 			{
 				Finding:         "Key finding supported by multiple modes",

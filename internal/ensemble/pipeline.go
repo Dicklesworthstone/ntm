@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/swarm"
 )
 
 // ValidatePipelineConfig checks if the config is valid for running the pipeline.
@@ -308,11 +310,9 @@ func (m *EnsembleManager) RunStage3(ctx context.Context, cfg *EnsembleConfig, ou
 		"strategy", cfg.Synthesis.Strategy,
 	)
 
-	// For now, create a basic mechanical synthesis // placebo-waiver: bd-lzu08
-	// Full synthesis with a synthesizer agent is tracked in bd-lzu08
-	report, err := m.mechanicalSynthesis(outputs, cfg.Synthesis)
+	report, err := m.synthesizeStage3Report(ctx, cfg, outputs)
 	if err != nil {
-		return nil, fmt.Errorf("mechanical synthesis: %w", err)
+		return nil, err
 	}
 
 	result := &Stage3Result{
@@ -330,8 +330,187 @@ func (m *EnsembleManager) RunStage3(ctx context.Context, cfg *EnsembleConfig, ou
 	return result, nil
 }
 
+// synthesizeStage3Report produces the stage-3 synthesis report.
+// Agent-based strategies dispatch the synthesis prompt to a designated lead
+// pane through the gated dispatch path and parse its response. When the lead
+// path is unavailable or fails, the report degrades to mechanical merging
+// with an explicit "fell back to mechanical: <reason>" audit entry - never
+// silently. Manual strategies use mechanical merging directly (unchanged).
+func (m *EnsembleManager) synthesizeStage3Report(ctx context.Context, cfg *EnsembleConfig, outputs []ModeOutput) (*SynthesisReport, error) {
+	logger := m.logger()
+
+	strategyName := string(cfg.Synthesis.Strategy)
+	if strategyName == "" {
+		strategyName = string(StrategyManual)
+	}
+
+	strategy, stratErr := GetStrategy(strategyName)
+	if stratErr != nil || !strategy.RequiresAgent {
+		report, err := m.mechanicalSynthesis(outputs, cfg.Synthesis)
+		if err != nil {
+			return nil, fmt.Errorf("mechanical synthesis: %w", err)
+		}
+		if stratErr != nil {
+			reason := fmt.Sprintf("fell back to mechanical: %v", stratErr)
+			logger.Warn("stage3: unknown synthesis strategy; using mechanical merge",
+				"strategy", strategyName, "reason", stratErr)
+			report.AuditLog = append(report.AuditLog, AuditEntry{
+				Timestamp: time.Now().UTC(),
+				Action:    "fallback_to_mechanical",
+				Details:   reason,
+			})
+		}
+		return report, nil
+	}
+
+	result, agentErr := m.runLeadSynthesis(ctx, cfg, outputs)
+	if agentErr == nil {
+		logger.Info("stage3: lead agent synthesis complete",
+			"strategy", strategyName,
+			"findings", len(result.Findings),
+		)
+		return synthesisResultToReport(result, strategy), nil
+	}
+
+	reason := fmt.Sprintf("fell back to mechanical: %v", agentErr)
+	logger.Warn("stage3: lead agent synthesis unavailable; using mechanical merge",
+		"strategy", strategyName,
+		"reason", agentErr,
+	)
+	report, err := m.mechanicalSynthesis(outputs, cfg.Synthesis)
+	if err != nil {
+		return nil, fmt.Errorf("mechanical synthesis: %w", err)
+	}
+	report.AuditLog = append(report.AuditLog, AuditEntry{
+		Timestamp: time.Now().UTC(),
+		Action:    "fallback_to_mechanical",
+		Details:   reason,
+	})
+	return report, nil
+}
+
+// runLeadSynthesis dispatches the synthesis prompt to the designated lead
+// pane and collects/parses the response.
+func (m *EnsembleManager) runLeadSynthesis(ctx context.Context, cfg *EnsembleConfig, outputs []ModeOutput) (*SynthesisResult, error) {
+	lead, err := m.leadAgentConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	synth, err := NewSynthesizer(cfg.Synthesis)
+	if err != nil {
+		return nil, fmt.Errorf("create synthesizer: %w", err)
+	}
+	synth.Lead = lead
+
+	input := &SynthesisInput{
+		Outputs:          outputs,
+		OriginalQuestion: cfg.Question,
+		Config:           cfg.Synthesis,
+	}
+
+	return synth.agentSynthesize(ctx, input)
+}
+
+// leadAgentConfig designates the lead pane for agent-based synthesis: the
+// first active/done assignment in the persisted session whose pane still
+// exists. Dispatch goes through the gated swarm.PromptInjector path.
+func (m *EnsembleManager) leadAgentConfig(cfg *EnsembleConfig) (*LeadAgentConfig, error) {
+	session, err := LoadSession(cfg.SessionName)
+	if err != nil {
+		return nil, fmt.Errorf("no lead pane available: load session state: %w", err)
+	}
+	if session == nil || len(session.Assignments) == 0 {
+		return nil, errors.New("no lead pane available: session has no assignments")
+	}
+
+	panes, err := m.tmuxClient().GetPanes(cfg.SessionName)
+	if err != nil {
+		return nil, fmt.Errorf("no lead pane available: get panes: %w", err)
+	}
+	targets := buildPaneTargetMap(cfg.SessionName, panes)
+
+	var chosen *ModeAssignment
+	for i := range session.Assignments {
+		a := &session.Assignments[i]
+		if a.Status != AssignmentActive && a.Status != AssignmentDone {
+			continue
+		}
+		if targets[a.PaneName] == "" {
+			continue
+		}
+		chosen = a
+		break
+	}
+	if chosen == nil {
+		return nil, errors.New("no lead pane available: no responsive active/done assignment pane found")
+	}
+
+	injector := m.promptInjector()
+	injector.TmuxClient = m.tmuxClient()
+
+	timeout := cfg.Budget.TimeoutPerMode
+	if timeout <= 0 {
+		timeout = DefaultLeadSynthesisTimeout
+	}
+
+	return &LeadAgentConfig{
+		PaneTarget: targets[chosen.PaneName],
+		AgentType:  chosen.AgentType,
+		Timeout:    timeout,
+		Dispatcher: promptInjectorDispatcher{injector: injector},
+		Collector:  NewPaneSynthesisCollector(m.tmuxClient()),
+	}, nil
+}
+
+// synthesisResultToReport converts an agent SynthesisResult into the
+// pipeline's SynthesisReport shape.
+func synthesisResultToReport(result *SynthesisResult, strategy *StrategyConfig) *SynthesisReport {
+	if result == nil {
+		return nil
+	}
+	strategyName := "agent"
+	if strategy != nil {
+		strategyName = "agent:" + string(strategy.Name)
+	}
+	generatedAt := result.GeneratedAt
+	if generatedAt.IsZero() {
+		generatedAt = time.Now().UTC()
+	}
+	report := &SynthesisReport{
+		GeneratedAt:            generatedAt,
+		Strategy:               strategyName,
+		ConsolidatedThesis:     result.Summary,
+		TopFindings:            result.Findings,
+		UnifiedRisks:           result.Risks,
+		UnifiedRecommendations: result.Recommendations,
+		OpenQuestions:          result.QuestionsForUser,
+		Confidence:             result.Confidence,
+	}
+	report.AuditLog = append(report.AuditLog, AuditEntry{
+		Timestamp: time.Now().UTC(),
+		Action:    "agent_synthesis",
+		Details:   fmt.Sprintf("lead agent synthesized %d findings via strategy %s", len(result.Findings), strategyName),
+	})
+	return report
+}
+
+// promptInjectorDispatcher adapts swarm.PromptInjector to the
+// SynthesisDispatcher port (the gated dispatch path).
+type promptInjectorDispatcher struct {
+	injector *swarm.PromptInjector
+}
+
+func (d promptInjectorDispatcher) DispatchSynthesisPrompt(paneTarget, agentType, prompt string) error {
+	if d.injector == nil {
+		return errors.New("prompt injector is nil")
+	}
+	return d.injector.InjectPrompt(paneTarget, agentType, prompt)
+}
+
 // mechanicalSynthesis performs basic merging without an AI synthesizer agent.
-// This is a fallback/baseline implementation - full AI synthesis is in bd-2qwm8.
+// This is the baseline implementation and the honest-degradation fallback
+// for agent-based strategies when no lead pane is available.
 func (m *EnsembleManager) mechanicalSynthesis(outputs []ModeOutput, synthCfg SynthesisConfig) (*SynthesisReport, error) {
 	report := &SynthesisReport{
 		GeneratedAt: time.Now().UTC(),
