@@ -13,6 +13,28 @@ NTM is a tmux session management tool for orchestrating multiple AI coding agent
 
 ## [Unreleased]
 
+- **Corrected commit provenance.** Commit `d08893d9`'s message incorrectly
+  attributed the fail-closed serve safety-policy change to its completion and
+  tmux diff. The actual safety-policy implementation is `dda4aae8`; history
+  is preserved and this note is the forward correction.
+
+---
+
+## [v1.28.0] -- 2026-08-18 [GitHub Release]
+
+**The issue-triage release: Grok Build phase 2, the Agent Mail delivery loop closed, and every open GitHub issue resolved** (#231, #251, #252, #253), plus the post-v1.27.0 review fixes and the second staged config-deprecation batch.
+
+### Features
+
+- **Grok Build phase 2 (#251).** Grok panes graduate from spawn-only to full swarm citizenship: readiness/working/composer patterns observed from the real authenticated TUI (permanent `│ ❯ │` composer chrome, braille spinner phase verbs, `Worked for Ns` turn ends), composer-gated `send`/`--robot-send` with per-submission verification and one-Enter rescue, plain-Ctrl+C interrupt, restart/relaunch honoring `--model`/`--effort` overrides, assignment, wait-until-ready, and health grading — every surface live-verified through ntm against the real TUI (~45 refusal tests across 16 packages became acceptance tests). Persona injection alone stays refused: the grok CLI has no system-prompt mechanism.
+- **Coordinator mail nudge (#231).** A default-off coordinator checker (`[coordinator] mail_nudge`, `nudge_cooldown_seconds`, `nudge_message`) closes the Agent Mail delivery loop: idle panes with unread mail get a composer-verified "check your inbox" nudge through the gated dispatch path — never into a working pane, fail-closed for undetectable agent types, per-pane cooldown watermarks, every decision on the attention feed, proven by a fakeagent E2E.
+- **Configurable bv timeout (#253).** `[integrations.bv] timeout_seconds` (default 30) and `NTM_BV_TIMEOUT` govern every bv subprocess; caller-set `BV_*` env vars provably reach the child, so `BV_NO_CACHE=1 BV_ROBOT_HISTORY_TIMEOUT_MS=2000` wrappers are no longer needed.
+
+### Reliability
+
+- **Linked worktrees are one project (#252).** Session project identity resolves through `git rev-parse --git-common-dir`, so a base checkout plus its `--worktrees` panes group as one repository (the base checkout wins as canonical root) while genuinely distinct repositories are still refused.
+- **Post-v1.27.0 review fixes now released:** routing filter keys canonicalize agent-type aliases; the JSON/robot session-kill path clears routing state; the workflow review gate counts only the gating role's approvals; kqueue stat-fallback baselines survive snapshot races; `ntm conflicts --json`/`changes --json` emit `[]` instead of `null`; `FindGitRoot` carries a bounded TTL cache; `swarm.force_global_auth_clobber` config wiring actually reads the config; nine dangling references from the dead-code sweep corrected (including a secret-scanning ignore that had silently unshielded live redaction fixtures).
+
 ### Deprecated — config keys (second dead-knob batch, bd-6otuk)
 
 - **128 reader-less config keys deprecated, WS6-style staged removal** (G2
