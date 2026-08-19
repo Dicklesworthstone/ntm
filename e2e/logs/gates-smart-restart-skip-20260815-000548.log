@@ -1,0 +1,135 @@
+[0s] [E2E-START] === E2E Test Started: gates-smart-restart-skip ===
+[0s] [E2E-START] Timestamp: 2026-08-15T00:05:48-04:00
+[0s] [E2E-START] Log file: /Users/jemanuel/projects/ntm/e2e/logs/gates-smart-restart-skip-20260815-000548.log
+[100ms] [PID-LINEAGE] session=ntm-e2e-gates-27553-169000 pane=%0 shell_pid=29524 fixture_pid=29526 persona=claude
+[951ms] [QUIESCE] SIGSTOP fixture pid=29526; waiting out the 5s activity threshold
+[17.52s] [NTM] args=[--robot-is-working=ntm-e2e-gates-27553-169000] exit=0 elapsed=10.062s
+[17.521s] [NTM] output={
+  "success": true,
+  "timestamp": "2026-08-15T04:06:05Z",
+  "version": "1.0.0",
+  "output_format": "json",
+  "session": "ntm-e2e-gates-27553-169000",
+  "query": {
+    "panes_requested": [
+      "0"
+    ],
+    "lines_captured": 100
+  },
+  "panes": {
+    "0": {
+      "agent_type": "cc",
+      "is_working": false,
+      "is_idle": false,
+      "is_rate_limited": false,
+      "is_context_low": false,
+      "confidence": 0.6,
+      "indicators": {
+        "work": [
+          "reading "
+        ],
+        "limit": []
+      },
+      "indicator_basis": "interactive_gate",
+      "recommendation": "MANUAL_INTERVENTION",
+      "recommendation_reason": "Blocked on interactive gate screen (\"do you trust the contents of this project\"); needs a keystroke before the pane can accept work",
+      "observation_state": "idle",
+      "observation_freshness": "fresh",
+      "observation_observed_at": "2026-08-15T04:06:05Z",
+      "safe_to_dispatch": true,
+      "pane_started_at": "2026-08-15T04:05:48Z",
+      "agent_uptime_seconds": 17,
+      "pane_pid": 29524,
+      "pane_current_command": "zsh",
+      "agent_cli_dead": true
+    }
+  },
+  "summary": {
+    "total_panes": 1,
+    "working_count": 0,
+    "idle_count": 0,
+    "rate_limited_count": 0,
+    "context_low_count": 0,
+    "error_count": 0,
+    "by_recommendation": {
+      "MANUAL_INTERVENTION": [
+        "0"
+      ]
+    }
+  }
+}
+[27.584s] [NTM] args=[--robot-smart-restart=ntm-e2e-gates-27553-169000 --prompt=gates-e2e post-restart prompt] exit=0 elapsed=10.063s
+[27.584s] [NTM] output={
+  "success": true,
+  "version": "1.0.0",
+  "output_format": "json",
+  "session": "ntm-e2e-gates-27553-169000",
+  "timestamp": "2026-08-15T04:06:15Z",
+  "dry_run": false,
+  "force": false,
+  "actions": {
+    "0": {
+      "action": "SKIPPED",
+      "reason": "Blocked on an interactive gate screen - a restart cannot answer it; a human keystroke can; requested prompt was NOT delivered (declined panes keep their incumbent agent and receive no message)",
+      "pre_check": {
+        "recommendation": "MANUAL_INTERVENTION",
+        "is_working": false,
+        "is_idle": false,
+        "is_rate_limited": false,
+        "is_context_low": false,
+        "confidence": 0.6,
+        "agent_type": "cc"
+      },
+      "prompt_outcome": {
+        "requested": true,
+        "status": "not_attempted",
+        "delivered": 0,
+        "failed": 0,
+        "blocked": 0,
+        "skipped": 0
+      }
+    }
+  },
+  "summary": {
+    "restarted": 0,
+    "skipped": 1,
+    "waiting": 0,
+    "failed": 0,
+    "panes_by_action": {
+      "SKIPPED": [
+        "0"
+      ]
+    }
+  }
+}
+[27.584s] [E2E-JSON] smart_restart_gated_skip:
+{
+  "success": true,
+  "error_code": "",
+  "actions": {
+    "0": {
+      "action": "SKIPPED",
+      "reason": "Blocked on an interactive gate screen - a restart cannot answer it; a human keystroke can; requested prompt was NOT delivered (declined panes keep their incumbent agent and receive no message)",
+      "warning": "",
+      "error": "",
+      "restart_sequence": null,
+      "prompt_outcome": {
+        "requested": true,
+        "status": "not_attempted"
+      },
+      "structured_error": null
+    }
+  },
+  "summary": {
+    "restarted": 0,
+    "skipped": 1,
+    "failed": 0,
+    "panes_by_action": {
+      "SKIPPED": [
+        "0"
+      ]
+    }
+  }
+}
+[29.096s] [PASS] gated pane SKIPPED, prompt not_attempted, zero keystrokes, PID lineage intact
+[29.096s] [E2E-END] === Test completed in 29.096s ===

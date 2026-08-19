@@ -1031,6 +1031,11 @@ func coordinatorConfigFromTOML(toml config.CoordinatorConfig, fallback coordinat
 		SendDigests:       toml.SendDigests,
 		HumanAgent:        toml.HumanAgent,
 		MailNudge:         toml.MailNudge,
+		NudgeCooldown:     time.Duration(toml.NudgeCooldownSeconds) * time.Second,
+		NudgeMessage:      toml.NudgeMessage,
+	}
+	if out.NudgeCooldown <= 0 {
+		out.NudgeCooldown = fallback.NudgeCooldown
 	}
 	if out.PollInterval < coordinator.MinPollInterval {
 		out.PollInterval = coordinator.MinPollInterval

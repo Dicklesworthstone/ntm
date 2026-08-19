@@ -1,0 +1,31 @@
+[0s] [E2E-START] === E2E Test Started: context-rotation-below-threshold ===
+[0s] [E2E-START] Timestamp: 2026-08-15T00:33:52-04:00
+[0s] [E2E-START] Log file: /Users/jemanuel/projects/ntm/e2e/logs/context-rotation-below-threshold-20260815-003352.log
+[1ms] [FIXTURE] path=/var/folders/vt/n2xyn_s51b97_j3yh2qbqcnc0000gn/T/TestContextRotationE2EDefaultOffAndBelowThresholdbelow_threshol1212255281/001/.claude/projects/-private-var-folders-vt-n2xyn-s51b97-j3yh2qbqcnc0000gn-T-TestContextRotationE2EDefaultOffAndBelowThresholdbelow-threshol1212255281-002/session-cool.jsonl tokens=100000
+[1ms] [CONFIG] /var/folders/vt/n2xyn_s51b97_j3yh2qbqcnc0000gn/T/TestContextRotationE2EDefaultOffAndBelowThresholdbelow_threshol1212255281/003/config.toml:
+# hermetic config written by context_rotation_e2e_test.go (ntm-8ice)
+[rotation]
+usage_percent_threshold = 60.0
+auto_confirm = false
+
+[context_rotation]
+try_compact_first = false
+confirm_timeout_sec = 600
+
+[43ms] [SETUP] session=ntm-e2e-crot-17589-563000 pane=%0 usage=50% threshold=60%
+[428ms] [NTM] HOME=/var/folders/vt/n2xyn_s51b97_j3yh2qbqcnc0000gn/T/TestContextRotationE2EDefaultOffAndBelowThresholdbelow_threshol1212255281/001 args=[coordinator run ntm-e2e-crot-17589-563000 --once] exit=0
+[428ms] [NTM] stdout=Coordinator cycle complete for ntm-e2e-crot-17589-563000: 0 assignment result(s)
+[428ms] [NTM] stderr=
+[480ms] [NTM] HOME=/var/folders/vt/n2xyn_s51b97_j3yh2qbqcnc0000gn/T/TestContextRotationE2EDefaultOffAndBelowThresholdbelow_threshol1212255281/001 args=[rotate context pending --json] exit=0
+[480ms] [NTM] stdout={
+  "pending": null,
+  "count": 0
+}
+[480ms] [NTM] stderr=
+[480ms] [E2E-JSON] pending_rotations_cli:
+{
+  "pending": null,
+  "count": 0
+}
+[480ms] [PASS] 50% usage below 60% threshold -> no pending
+[493ms] [E2E-END] === Test completed in 493ms ===

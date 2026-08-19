@@ -1,0 +1,67 @@
+[0s] [E2E-START] === E2E Test Started: transcript-context-stale ===
+[0s] [E2E-START] Timestamp: 2026-08-14T22:47:41-04:00
+[0s] [E2E-START] Log file: /Users/jemanuel/projects/ntm/e2e/logs/transcript-context-stale-20260814-224741.log
+[1ms] [FIXTURE] path=/var/folders/vt/n2xyn_s51b97_j3yh2qbqcnc0000gn/T/TestTranscriptContextStaleTranscriptMediumConfidence1945200908/001/.claude/projects/-private-var-folders-vt-n2xyn-s51b97-j3yh2qbqcnc0000gn-T-TestTranscriptContextStaleTranscriptMediumConfidence1945200908-002/session-stale.jsonl bytes=454 sha256=6f66b918e7ed9e0e230ab6d99e28aa97c78e08225e0aeb2ac284e13fac432bb1
+[145ms] [SETUP] session=ntm-e2e-tctx-57463-254000 pane=%0 fixture aged to 2026-08-14T22:32:41-04:00
+[10.827s] [NTM] HOME=/var/folders/vt/n2xyn_s51b97_j3yh2qbqcnc0000gn/T/TestTranscriptContextStaleTranscriptMediumConfidence1945200908/001 args=[--robot-context=ntm-e2e-tctx-57463-254000] exit=0
+[10.828s] [NTM] output={
+  "success": true,
+  "timestamp": "2026-08-15T02:47:51Z",
+  "version": "1.0.0",
+  "output_format": "json",
+  "session": "ntm-e2e-tctx-57463-254000",
+  "captured_at": "2026-08-15T02:47:51.68852Z",
+  "agents": [
+    {
+      "pane": "0",
+      "pane_idx": 0,
+      "agent_type": "claude",
+      "model": "claude-fable-5",
+      "estimated_tokens": 120000,
+      "with_overhead": 120000,
+      "context_limit": 200000,
+      "usage_percent": 60,
+      "usage_level": "Medium",
+      "confidence": "medium",
+      "state": "idle",
+      "source": "transcript",
+      "transcript_tokens": 120000,
+      "transcript_model": "claude-fable-5",
+      "transcript_path": "/var/folders/vt/n2xyn_s51b97_j3yh2qbqcnc0000gn/T/TestTranscriptContextStaleTranscriptMediumConfidence1945200908/001/.claude/projects/-private-var-folders-vt-n2xyn-s51b97-j3yh2qbqcnc0000gn-T-TestTranscriptContextStaleTranscriptMediumConfidence1945200908-002/session-stale.jsonl",
+      "transcript_updated_at": "2026-08-15T02:32:41Z"
+    }
+  ],
+  "summary": {
+    "total_agents": 1,
+    "high_usage_count": 0,
+    "avg_usage": 60
+  },
+  "_agent_hints": {
+    "suggestions": [
+      "All agents at moderate context usage - no immediate concerns"
+    ]
+  }
+}
+[10.829s] [E2E-JSON] context_agents:
+[
+  {
+    "pane": "0",
+    "pane_idx": 0,
+    "agent_type": "claude",
+    "model": "claude-fable-5",
+    "estimated_tokens": 120000,
+    "with_overhead": 120000,
+    "context_limit": 200000,
+    "usage_percent": 60,
+    "usage_level": "Medium",
+    "confidence": "medium",
+    "state": "idle",
+    "source": "transcript",
+    "transcript_tokens": 120000,
+    "transcript_model": "claude-fable-5",
+    "transcript_path": "/var/folders/vt/n2xyn_s51b97_j3yh2qbqcnc0000gn/T/TestTranscriptContextStaleTranscriptMediumConfidence1945200908/001/.claude/projects/-private-var-folders-vt-n2xyn-s51b97-j3yh2qbqcnc0000gn-T-TestTranscriptContextStaleTranscriptMediumConfidence1945200908-002/session-stale.jsonl",
+    "transcript_updated_at": "2026-08-15T02:32:41Z"
+  }
+]
+[10.829s] [PASS] stale transcript used with confidence medium
+[10.84s] [E2E-END] === Test completed in 10.84s ===

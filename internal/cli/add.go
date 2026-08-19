@@ -204,23 +204,17 @@ func resolveAddAgentCommandTemplate(agentType AgentType, pluginMap map[string]pl
 	}
 }
 
-// validateGrokPhaseOneAdd applies the same launch-only boundary as spawn.
-// Adding a pane and rendering its command are deterministic; prompt delivery,
-// CASS injection, and persona setup depend on an authenticated fullscreen TUI
-// protocol that phase one deliberately does not claim to understand.
+// validateGrokPhaseOneAdd retains the last deliberate Grok Build add refusal
+// after the GH#251 phase-2 flip: persona prompt injection (the Grok Build CLI
+// has no system-prompt flag or env var). --prompt and CASS context now flow
+// through the grok-aware readiness/composer/verify protocol.
 func validateGrokPhaseOneAdd(opts AddOptions) error {
 	for _, spec := range opts.Agents.Flatten() {
 		if spec.Type != AgentTypeGrok {
 			continue
 		}
-		if opts.Prompt != "" {
-			return errors.New("phase-one Grok Build add does not yet support --prompt; add the pane with --grok and send interactively after authenticating")
-		}
-		if !opts.NoCassContext && opts.CassContextQuery != "" {
-			return errors.New("phase-one Grok Build add does not yet support CASS context injection")
-		}
 		if profile, ok := opts.PersonaMap[spec.Model]; ok && profile != nil {
-			return errors.New("phase-one Grok Build add does not yet support persona prompt injection")
+			return errors.New("Grok Build add does not support persona prompt injection: the Grok Build CLI has no system-prompt flag or env var")
 		}
 	}
 	return nil

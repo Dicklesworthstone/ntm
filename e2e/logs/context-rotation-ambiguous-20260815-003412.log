@@ -1,0 +1,31 @@
+[0s] [E2E-START] === E2E Test Started: context-rotation-ambiguous ===
+[0s] [E2E-START] Timestamp: 2026-08-15T00:34:12-04:00
+[0s] [E2E-START] Log file: /Users/jemanuel/projects/ntm/e2e/logs/context-rotation-ambiguous-20260815-003412.log
+[1ms] [FIXTURE] path=/var/folders/vt/n2xyn_s51b97_j3yh2qbqcnc0000gn/T/TestContextRotationE2EAmbiguousCwdNoReading1976916914/001/.claude/projects/-private-var-folders-vt-n2xyn-s51b97-j3yh2qbqcnc0000gn-T-TestContextRotationE2EAmbiguousCwdNoReading1976916914-002/session-ambiguous.jsonl tokens=150000
+[1ms] [CONFIG] /var/folders/vt/n2xyn_s51b97_j3yh2qbqcnc0000gn/T/TestContextRotationE2EAmbiguousCwdNoReading1976916914/003/config.toml:
+# hermetic config written by context_rotation_e2e_test.go (ntm-8ice)
+[rotation]
+usage_percent_threshold = 60.0
+auto_confirm = false
+
+[context_rotation]
+try_compact_first = false
+confirm_timeout_sec = 600
+
+[132ms] [SETUP] session=ntm-e2e-crot-17589-959000 panes=%0,%1 sharing cwd=/private/var/folders/vt/n2xyn_s51b97_j3yh2qbqcnc0000gn/T/TestContextRotationE2EAmbiguousCwdNoReading1976916914/002
+[583ms] [NTM] HOME=/var/folders/vt/n2xyn_s51b97_j3yh2qbqcnc0000gn/T/TestContextRotationE2EAmbiguousCwdNoReading1976916914/001 args=[coordinator run ntm-e2e-crot-17589-959000 --once] exit=0
+[583ms] [NTM] stdout=Coordinator cycle complete for ntm-e2e-crot-17589-959000: 0 assignment result(s)
+[583ms] [NTM] stderr=
+[640ms] [NTM] HOME=/var/folders/vt/n2xyn_s51b97_j3yh2qbqcnc0000gn/T/TestContextRotationE2EAmbiguousCwdNoReading1976916914/001 args=[rotate context pending --json] exit=0
+[640ms] [NTM] stdout={
+  "pending": null,
+  "count": 0
+}
+[640ms] [NTM] stderr=
+[640ms] [E2E-JSON] pending_rotations_cli:
+{
+  "pending": null,
+  "count": 0
+}
+[640ms] [PASS] ambiguous 2-pane cwd group: no transcript attribution, no rotation
+[649ms] [E2E-END] === Test completed in 649ms ===

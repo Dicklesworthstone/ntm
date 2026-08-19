@@ -415,6 +415,9 @@ func VerifyAgentSubmission(ctx context.Context, target, message string, agentTyp
 	case tmux.AgentClaude:
 		kind = "claude"
 		confirmed, rescued, err = tmux.VerifyClaudeSubmissionContext(ctx, target, message, paneWidth)
+	case tmux.AgentGrok:
+		kind = "grok"
+		confirmed, rescued, err = tmux.VerifyGrokSubmissionContext(ctx, target, message, paneWidth)
 	default:
 		return nil
 	}

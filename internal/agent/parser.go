@@ -82,6 +82,12 @@ func (p *parserImpl) DetectAgentType(output string) AgentType {
 		return AgentTypeCodex
 	}
 
+	// Grok Build has a distinctive banner/status-line signature ("Grok Build
+	// 1.0.5" / "Grok 4.6 (high)").
+	if grokHeaderPattern.MatchString(output) {
+		return AgentTypeGrok
+	}
+
 	// Antigravity patterns (checked before Gemini so an agy pane is not
 	// misclassified as the legacy Gemini CLI; the two share other signatures).
 	if agyHeaderPattern.MatchString(output) {
@@ -265,6 +271,30 @@ func (p *parserImpl) detectStateFlags(output string, state *AgentState) {
 		return
 	}
 
+	// Grok Build gets the same live-tail treatment as Claude Code: its
+	// bordered composer ("│ ❯ …") is permanent chrome drawn even while a turn
+	// is in flight, so the braille-spinner activity line / "Esc:cancel" footer
+	// hint is the authoritative working signal and must win over the
+	// idle-looking composer (GH#251 phase 2, verified against grok 1.0.5).
+	if state.Type == AgentTypeGrok {
+		if GrokActivelyWorking(output, 0) {
+			state.IsWorking = true
+			state.IsIdle = false
+			if len(state.WorkIndicators) == 0 {
+				state.WorkIndicators = []string{"grok_live_spinner"}
+			}
+			state.IsInError = p.detectError(output, state.Type)
+			return
+		}
+		if state.IsIdle {
+			state.IsWorking = false
+		} else {
+			state.IsWorking = rawIsWorking
+		}
+		state.IsInError = p.detectError(output, state.Type)
+		return
+	}
+
 	// Conflict resolution: Prompt beats substring heuristics
 	// If we see a definitive prompt at the end (IsIdle), we are not working,
 	// regardless of what keywords appear in the scrollback.
@@ -298,6 +328,8 @@ func (p *parserImpl) detectRateLimit(output string, agentType AgentType) bool {
 		return matchAny(recentOutput, aiderRateLimitPatterns)
 	case AgentTypeOllama:
 		return matchAny(recentOutput, ollamaRateLimitPatterns)
+	case AgentTypeGrok:
+		return matchAny(recentOutput, grokRateLimitPatterns)
 	default:
 		// Check all patterns for unknown type
 		return matchAny(recentOutput, ccRateLimitPatterns) ||
@@ -331,6 +363,8 @@ func (p *parserImpl) detectWorking(output string, agentType AgentType) bool {
 		return matchAny(recentOutput, aiderWorkingPatterns)
 	case AgentTypeOllama:
 		return matchAny(recentOutput, ollamaWorkingPatterns)
+	case AgentTypeGrok:
+		return GrokActivelyWorking(output, 0) || matchAny(recentOutput, grokWorkingPatterns)
 	default:
 		// Check all patterns for unknown type
 		return matchAny(recentOutput, ccWorkingPatterns) ||
@@ -397,6 +431,17 @@ func (p *parserImpl) detectIdle(output string, agentType AgentType) bool {
 		return matchAnyRegex(lastLines, aiderIdlePatterns)
 	case AgentTypeOllama:
 		return matchAnyRegex(lastLines, ollamaIdlePatterns)
+	case AgentTypeGrok:
+		// Empty output with a known grok pane reads as idle (fresh spawn),
+		// mirroring the Claude arm. A live in-flight marker vetoes idle: the
+		// bordered composer is permanent chrome drawn during work.
+		if strings.TrimSpace(lastLines) == "" {
+			return true
+		}
+		if GrokActivelyWorking(output, 0) {
+			return false
+		}
+		return matchAnyRegex(lastLines, grokIdlePatterns)
 	default:
 		// Check all idle patterns for unknown type
 		return matchAnyRegex(lastLines, ccIdlePatterns) ||
@@ -435,6 +480,8 @@ func (p *parserImpl) detectError(output string, agentType AgentType) bool {
 		return matchAny(recentOutput, aiderErrorPatterns)
 	case AgentTypeOllama:
 		return matchAny(recentOutput, ollamaErrorPatterns)
+	case AgentTypeGrok:
+		return matchAny(recentOutput, grokErrorPatterns)
 	default:
 		// Check all patterns for unknown type
 		return matchAny(recentOutput, ccErrorPatterns) ||
@@ -467,6 +514,8 @@ func (p *parserImpl) collectLimitIndicators(output string, agentType AgentType) 
 		return collectMatches(recentOutput, aiderRateLimitPatterns)
 	case AgentTypeOllama:
 		return collectMatches(recentOutput, ollamaRateLimitPatterns)
+	case AgentTypeGrok:
+		return collectMatches(recentOutput, grokRateLimitPatterns)
 	default:
 		// Collect from all for unknown type
 		matches := collectMatches(recentOutput, ccRateLimitPatterns)
@@ -500,6 +549,12 @@ func (p *parserImpl) collectWorkIndicators(output string, agentType AgentType) [
 		return collectMatches(recentOutput, aiderWorkingPatterns)
 	case AgentTypeOllama:
 		return collectMatches(recentOutput, ollamaWorkingPatterns)
+	case AgentTypeGrok:
+		matches := collectMatches(recentOutput, grokWorkingPatterns)
+		if len(matches) == 0 && GrokActivelyWorking(output, 0) {
+			matches = []string{"grok_live_spinner"}
+		}
+		return matches
 	default:
 		matches := collectMatches(recentOutput, ccWorkingPatterns)
 		matches = append(matches, collectMatches(recentOutput, codWorkingPatterns)...)

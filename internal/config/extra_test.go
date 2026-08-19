@@ -1346,7 +1346,7 @@ func TestApplySafetyProfileDefaults_Mappings(t *testing.T) {
 			cfg := &Config{
 				Safety:    SafetyConfig{Profile: tt.profile},
 				Redaction: RedactionConfig{Mode: "off"},
-				Preflight: PreflightConfig{Enabled: false, Strict: false},
+				Preflight: PreflightConfig{Strict: false},
 				Privacy:   PrivacyConfig{Enabled: false},
 				Integrations: IntegrationsConfig{
 					DCG: DCGConfig{AllowOverride: false},
@@ -1358,9 +1358,8 @@ func TestApplySafetyProfileDefaults_Mappings(t *testing.T) {
 			if cfg.Safety.Profile != tt.wantProfile {
 				t.Fatalf("Safety.Profile=%q, want %q", cfg.Safety.Profile, tt.wantProfile)
 			}
-			if cfg.Preflight.Enabled != tt.preflightEnabled || cfg.Preflight.Strict != tt.preflightStrict {
-				t.Fatalf("Preflight={enabled:%v strict:%v}, want {enabled:%v strict:%v}",
-					cfg.Preflight.Enabled, cfg.Preflight.Strict, tt.preflightEnabled, tt.preflightStrict)
+			if cfg.Preflight.Strict != tt.preflightStrict {
+				t.Fatalf("Preflight.Strict=%v, want %v", cfg.Preflight.Strict, tt.preflightStrict)
 			}
 			if cfg.Redaction.Mode != tt.redactionMode {
 				t.Fatalf("Redaction.Mode=%q, want %q", cfg.Redaction.Mode, tt.redactionMode)
@@ -1462,9 +1461,8 @@ profile = %q
 			if cfg.Privacy.Enabled != tt.wantPrivacy {
 				t.Fatalf("Privacy.Enabled=%v, want %v", cfg.Privacy.Enabled, tt.wantPrivacy)
 			}
-			if cfg.Preflight.Enabled != tt.wantPreflightOn || cfg.Preflight.Strict != tt.wantPreflightStrict {
-				t.Fatalf("Preflight={enabled:%v strict:%v}, want {enabled:%v strict:%v}",
-					cfg.Preflight.Enabled, cfg.Preflight.Strict, tt.wantPreflightOn, tt.wantPreflightStrict)
+			if cfg.Preflight.Strict != tt.wantPreflightStrict {
+				t.Fatalf("Preflight.Strict=%v, want %v", cfg.Preflight.Strict, tt.wantPreflightStrict)
 			}
 			if cfg.Integrations.DCG.AllowOverride != tt.wantAllowOverride {
 				t.Fatalf("Integrations.DCG.AllowOverride=%v, want %v", cfg.Integrations.DCG.AllowOverride, tt.wantAllowOverride)

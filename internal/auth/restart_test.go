@@ -410,7 +410,10 @@ func TestOrchestrator_ExecuteRestartStrategyPromptFailureStopsRestart(t *testing
 	}
 }
 
-func TestOrchestrator_GrokRestartRejectsBeforeAnyMutation(t *testing.T) {
+// GH#251 phase 2: grok relaunch is first-class — the restart orchestrator now
+// admits grok panes through the same terminate/auth/relaunch flow as claude
+// instead of refusing before any mutation.
+func TestOrchestrator_GrokRestartFlowsLikeClaude(t *testing.T) {
 	orch := NewOrchestrator(config.Default())
 	calls := map[string]int{}
 	orch.sendKeys = func(string, string, bool) error {
@@ -455,29 +458,47 @@ func TestOrchestrator_GrokRestartRejectsBeforeAnyMutation(t *testing.T) {
 	}
 
 	err := orch.ExecuteRestartStrategy(ctx)
-	if !errors.Is(err, agent.ErrAutomatedRelaunchNotImplemented) {
-		t.Fatalf("ExecuteRestartStrategy() error = %v, want relaunch sentinel", err)
+	if err != nil {
+		t.Fatalf("ExecuteRestartStrategy() error = %v, want grok restart to complete", err)
 	}
-	if len(calls) != 0 {
-		t.Fatalf("ExecuteRestartStrategy() mutated before Grok rejection: %v", calls)
+	if errors.Is(err, agent.ErrAutomatedRelaunchNotImplemented) {
+		t.Fatalf("ExecuteRestartStrategy() still returns the relaunch sentinel: %v", err)
+	}
+	if calls["interrupt"] == 0 {
+		t.Fatalf("grok restart never terminated the old session: %v", calls)
+	}
+	if calls["browser_prompt"] != 1 {
+		t.Fatalf("grok restart browser prompts = %d, want 1: %v", calls["browser_prompt"], calls)
+	}
+	if calls["send_for_agent"] != 1 {
+		t.Fatalf("grok restart relaunch sends = %d, want 1: %v", calls["send_for_agent"], calls)
 	}
 
+	// The relaunch step alone also admits grok panes.
+	calls = map[string]int{}
 	err = orch.StartNewAgentSession(ctx)
-	if !errors.Is(err, agent.ErrAutomatedRelaunchNotImplemented) {
-		t.Fatalf("StartNewAgentSession() error = %v, want relaunch sentinel", err)
+	if err != nil {
+		t.Fatalf("StartNewAgentSession() error = %v, want grok relaunch to complete", err)
 	}
-	if len(calls) != 0 {
-		t.Fatalf("StartNewAgentSession() mutated before Grok rejection: %v", calls)
+	if calls["send_for_agent"] != 1 {
+		t.Fatalf("grok relaunch sends = %d, want 1: %v", calls["send_for_agent"], calls)
 	}
 
+	// Provider-only grok identification also passes the capability gate: the
+	// flow proceeds into real work (terminate + auth prompt) and only fails at
+	// provider resolution, not at a pre-mutation refusal.
+	calls = map[string]int{}
 	ctx.AgentType = ""
 	ctx.Provider = "xai-grok-build"
 	err = orch.ExecuteRestartStrategy(ctx)
-	if !errors.Is(err, agent.ErrAutomatedRelaunchNotImplemented) {
-		t.Fatalf("ExecuteRestartStrategy(provider-only Grok) error = %v, want relaunch sentinel", err)
+	if errors.Is(err, agent.ErrAutomatedRelaunchNotImplemented) {
+		t.Fatalf("ExecuteRestartStrategy(provider-only Grok) still returns the relaunch sentinel: %v", err)
 	}
-	if len(calls) != 0 {
-		t.Fatalf("provider-only Grok restart mutated before rejection: %v", calls)
+	if err == nil || !strings.Contains(err.Error(), "unknown provider") {
+		t.Fatalf("ExecuteRestartStrategy(provider-only Grok) error = %v, want unknown-provider failure past the gate", err)
+	}
+	if calls["interrupt"] == 0 || calls["browser_prompt"] != 1 {
+		t.Fatalf("provider-only Grok restart never reached the lifecycle steps: %v", calls)
 	}
 }
 

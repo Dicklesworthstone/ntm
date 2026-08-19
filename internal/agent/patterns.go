@@ -417,6 +417,96 @@ var (
 	aiderHeaderPattern = regexp.MustCompile(`(?i)(aider|aider\s+chat)`)
 )
 
+// Grok Build (grok) patterns for state detection.
+//
+// Derived from live captures of the official Grok Build TUI (grok 1.0.5,
+// authenticated SuperGrok session, observed at 80/120/200-column widths for
+// GH#251 phase 2). The TUI renders:
+//
+//   - a bottom-pinned bordered composer:      │ ❯ <text>              │
+//   - a status line on the composer's bottom
+//     border (permanent chrome):              ─ Grok 4.6 (high) · always-approve ─╯
+//   - a live activity line while a turn is
+//     in flight (braille spinner + verb):     ⠹ Waiting for response… 0.7s   … [stop]
+//     ⠸ Thinking… 0.0s
+//     ⠙ Responding… 1.7s
+//   - a footer hint that carries "Esc:cancel"
+//     ONLY while a turn is in flight:         Shift+Tab:mode  │  Esc:cancel  │  Ctrl+x:shortcuts
+//   - a turn-ended summary:                   Worked for 12s
+//   - an interrupt acknowledgement (Ctrl+C
+//     during a turn cancels it; Ctrl+C at
+//     idle is a no-op):                        Turn cancelled by user in 3.0s.
+//
+// Like Claude Code and codex, the composer box is drawn DURING work, so the
+// "❯" glyph alone is never idle evidence — GrokActivelyWorking must be
+// consulted first (see detectStateFlags).
+var (
+	grokRateLimitPatterns = []string{
+		"rate limit",
+		"too many requests",
+		"quota exceeded",
+		"usage limit",
+	}
+
+	grokWorkingPatterns = []string{
+		"```",
+		"writing ",
+		"reading ",
+		"running ",
+		"executing ",
+		"searching ",
+		"generating ",
+	}
+
+	// grokActiveWorkLineRe matches the live activity line grok renders while a
+	// turn is in flight: a braille spinner frame followed by one of the three
+	// observed phase verbs and the ellipsis glyph.
+	grokActiveWorkLineRe = regexp.MustCompile(`(?m)^\s*[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]\s*(?:Waiting for response|Thinking|Responding)…`)
+
+	// grokCancelHintRe matches the "Esc:cancel" footer hint that grok shows
+	// only while a turn is in flight (it disappears at idle) — a second,
+	// independent in-flight signal for frames where the spinner line wrapped
+	// or scrolled out of the live tail.
+	grokCancelHintRe = regexp.MustCompile(`Esc:cancel`)
+
+	// grokIdlePatterns indicates waiting for input. The bordered composer line
+	// ("│ ❯ …") is permanent chrome; callers must gate on !GrokActivelyWorking
+	// (detectStateFlags does) before trusting it as idle evidence.
+	grokIdlePatterns = []*regexp.Regexp{
+		regexp.MustCompile(`(?m)^\s*│\s*❯`),               // Bordered composer line
+		regexp.MustCompile(`(?m)^\s*Worked\s+for\s+\d`),   // Turn-ended summary
+		regexp.MustCompile(`Turn cancelled by user`),      // Post-interrupt acknowledgement
+		regexp.MustCompile(`(?i)grok\s+build\s+\d+\.\d+`), // Welcome banner (fresh spawn)
+	}
+
+	grokErrorPatterns = []string{
+		"error:",
+		"failed:",
+		"exception:",
+	}
+
+	// grokHeaderPattern confirms output is from the Grok Build TUI. The
+	// status-line chrome ("Grok 4.6 (high) · always-approve") and the welcome
+	// banner ("Grok Build  1.0.5") are both matched.
+	grokHeaderPattern = regexp.MustCompile(`(?i)(grok\s+build|grok\s+\d+\.\d+\s*\()`)
+)
+
+// grokLiveTailLines bounds the live-tail window scanned for grok working
+// classification. Grok pins its composer and activity line to the bottom of
+// the screen, like codex, so the same budget applies.
+const grokLiveTailLines = 15
+
+// GrokActivelyWorking reports whether a Grok Build pane's trailing live window
+// shows an in-flight turn: the braille spinner activity line ("⠹ Waiting for
+// response… / Thinking… / Responding…") or the "Esc:cancel" footer hint, both
+// of which grok renders only while a turn is running. The live window is
+// width-adaptive; paneWidth is the real tmux pane width, pass 0 when unknown.
+func GrokActivelyWorking(output string, paneWidth int) bool {
+	clean := stripANSICodes(output)
+	tail := util.GetLastNLines(clean, util.WidthAdaptiveTailLines(paneWidth, grokLiveTailLines))
+	return grokActiveWorkLineRe.MatchString(tail) || grokCancelHintRe.MatchString(tail)
+}
+
 // Ollama (ollama) patterns.
 var (
 	ollamaRateLimitPatterns = []string{
@@ -905,6 +995,14 @@ func GetPatternSet(agentType AgentType) *PatternSet {
 			IdlePatterns:      ollamaIdlePatterns,
 			ErrorPatterns:     ollamaErrorPatterns,
 			HeaderPattern:     ollamaHeaderPattern,
+		}
+	case AgentTypeGrok:
+		return &PatternSet{
+			RateLimitPatterns: grokRateLimitPatterns,
+			WorkingPatterns:   grokWorkingPatterns,
+			IdlePatterns:      grokIdlePatterns,
+			ErrorPatterns:     grokErrorPatterns,
+			HeaderPattern:     grokHeaderPattern,
 		}
 	default:
 		return &PatternSet{} // Empty pattern set for unknown types

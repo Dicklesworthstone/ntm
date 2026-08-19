@@ -1,0 +1,87 @@
+[0s] [E2E-START] === E2E Test Started: gates-ratelimit-precedence ===
+[0s] [E2E-START] Timestamp: 2026-08-15T00:07:23-04:00
+[0s] [E2E-START] Log file: /Users/jemanuel/projects/ntm/e2e/logs/gates-ratelimit-precedence-20260815-000723.log
+[134ms] [PID-LINEAGE] session=ntm-e2e-gates-27553-395000 pane=%0 shell_pid=33188 fixture_pid=33190 persona=codex
+[12.315s] [NTM] args=[--robot-is-working=ntm-e2e-gates-27553-395000] exit=0 elapsed=10.07s
+[12.317s] [NTM] output={
+  "success": true,
+  "timestamp": "2026-08-15T04:07:35Z",
+  "version": "1.0.0",
+  "output_format": "json",
+  "session": "ntm-e2e-gates-27553-395000",
+  "query": {
+    "panes_requested": [
+      "0"
+    ],
+    "lines_captured": 100
+  },
+  "panes": {
+    "0": {
+      "agent_type": "cod",
+      "is_working": false,
+      "is_idle": false,
+      "is_rate_limited": true,
+      "is_context_low": false,
+      "context_remaining": 47,
+      "confidence": 0.95,
+      "indicators": {
+        "work": [],
+        "limit": [
+          "hit your usage limit"
+        ]
+      },
+      "indicator_basis": "rate_limit_indicator",
+      "recommendation": "RATE_LIMITED_WAIT",
+      "recommendation_reason": "Agent hit rate limit",
+      "observation_state": "idle",
+      "observation_freshness": "fresh",
+      "observation_observed_at": "2026-08-15T04:07:35Z",
+      "safe_to_dispatch": true,
+      "pane_started_at": "2026-08-15T04:07:23Z",
+      "agent_uptime_seconds": 12,
+      "pane_pid": 33188,
+      "pane_current_command": "zsh",
+      "agent_cli_dead": true
+    }
+  },
+  "summary": {
+    "total_panes": 1,
+    "working_count": 0,
+    "idle_count": 0,
+    "rate_limited_count": 1,
+    "context_low_count": 0,
+    "error_count": 0,
+    "by_recommendation": {
+      "RATE_LIMITED_WAIT": [
+        "0"
+      ]
+    }
+  }
+}
+[12.317s] [E2E-JSON] is_working_rate_limited:
+{
+  "success": true,
+  "session": "ntm-e2e-gates-27553-395000",
+  "panes": {
+    "0": {
+      "agent_type": "cod",
+      "is_working": false,
+      "is_idle": false,
+      "is_rate_limited": true,
+      "indicator_basis": "rate_limit_indicator",
+      "recommendation": "RATE_LIMITED_WAIT",
+      "recommendation_reason": "Agent hit rate limit",
+      "pane_pid": 33188
+    }
+  },
+  "summary": {
+    "rate_limited_count": 1,
+    "by_recommendation": {
+      "RATE_LIMITED_WAIT": [
+        "0"
+      ]
+    }
+  }
+}
+[12.317s] [PASS] rate limit takes precedence: WAIT recommendation, no gate flag, banner + quoted phrase both on screen
+[12.317s] [E2E-END] === Test completed in 12.317s ===

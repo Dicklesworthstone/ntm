@@ -123,14 +123,15 @@ func TestSelectRespawnTargetsSkipsUserPaneByDefault(t *testing.T) {
 	}
 }
 
-func TestValidateRespawnTargetsRejectsGrokInMixedBatch(t *testing.T) {
+// GH#251 phase 2: Grok Build relaunch is implemented, so mixed batches with
+// grok panes validate like claude/codex batches.
+func TestValidateRespawnTargetsAcceptsGrokInMixedBatch(t *testing.T) {
 	panes := []tmux.Pane{
 		{ID: "%1", Index: 1, Type: tmux.AgentClaude},
 		{ID: "%2", Index: 2, Type: tmux.AgentGrok},
 	}
-	err := validateRespawnTargets(panes)
-	if !errors.Is(err, agent.ErrAutomatedRelaunchNotImplemented) {
-		t.Fatalf("validateRespawnTargets() error = %v, want Grok relaunch sentinel", err)
+	if err := validateRespawnTargets(panes); err != nil {
+		t.Fatalf("validateRespawnTargets() error = %v, want nil", err)
 	}
 	if err := validateRespawnTargets(panes[:1]); err != nil {
 		t.Fatalf("supported target unexpectedly rejected: %v", err)

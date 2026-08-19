@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	dispatchsvc "github.com/Dicklesworthstone/ntm/internal/dispatch"
 	"github.com/Dicklesworthstone/ntm/internal/redaction"
 	"github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
@@ -213,20 +212,16 @@ func TestInterruptFollowUpAppliesRedactionBeforeSideEffects(t *testing.T) {
 	})
 }
 
-func TestInterruptFollowUpRejectsMixedGrokTargetsBeforeActuation(t *testing.T) {
+// GH#251 phase 2: grok panes accept automated prompt delivery, so a follow-up
+// message targeting a mixed claude+grok batch passes the preflight.
+func TestInterruptFollowUpAcceptsMixedGrokTargets(t *testing.T) {
 	t.Parallel()
 	panes := []tmux.Pane{
 		{ID: "%1", Index: 0, Type: tmux.AgentClaude, Title: "proj__cc_1"},
 		{ID: "%2", Index: 1, Type: tmux.AgentUnknown, Title: "proj__grok_1"},
 	}
-	err := validateInterruptFollowUpTargets(panes, panes, InterruptOptions{Session: "proj", Message: "continue"})
-	var dispatchErr *dispatchsvc.Error
-	if !errors.As(err, &dispatchErr) || dispatchErr.Code != dispatchsvc.ErrPromptDeliveryUnsupported {
-		t.Fatalf("follow-up preflight error = %T %v, want %q", err, err, dispatchsvc.ErrPromptDeliveryUnsupported)
-	}
-	response := robotDispatchPrepareErrorResponse(err)
-	if response.Success || response.ErrorCode != ErrCodeNotImplemented || ExitCodeForResponse(response) != 2 {
-		t.Fatalf("interrupt response = %+v, want NOT_IMPLEMENTED / exit 2", response)
+	if err := validateInterruptFollowUpTargets(panes, panes, InterruptOptions{Session: "proj", Message: "continue"}); err != nil {
+		t.Fatalf("follow-up preflight error = %v, want nil (grok delivery is supported)", err)
 	}
 	if err := validateInterruptFollowUpTargets(panes, panes, InterruptOptions{Session: "proj"}); err != nil {
 		t.Fatalf("message-less interrupt preflight = %v, want allowed", err)

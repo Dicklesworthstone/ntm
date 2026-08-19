@@ -1488,7 +1488,10 @@ func restartCanonicalAgentType(agentType string) agent.AgentType {
 func restartLaunchAlias(agentType string) string {
 	switch canonical := restartCanonicalAgentType(agentType); canonical {
 	case agent.AgentTypeGrok:
-		return ""
+		// A bare `grok` launch would block on tool approvals; relaunch with
+		// the official autonomous approval flag, matching the phase-1 spawn
+		// template (GH#251 phase 2).
+		return "grok --always-approve"
 	case "", agent.AgentTypeUnknown:
 		return string(agent.AgentTypeClaudeCode)
 	default:

@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 )
 
@@ -250,45 +249,48 @@ func TestBuildAutoRestartStuckOutput(t *testing.T) {
 	})
 }
 
-func TestValidateAutoRestartStuckAgentsRejectsGrokInMixedBatch(t *testing.T) {
+// GH#251 phase 2: grok supports automated relaunch, so mixed batches that
+// target a grok pane pass the stuck-agent preflight.
+func TestValidateAutoRestartStuckAgentsAcceptsGrokInMixedBatch(t *testing.T) {
 	agents := []SessionAgentHealth{
 		{Pane: 1, AgentType: "claude", Health: "unhealthy", IdleSinceSeconds: 600},
 		{Pane: 2, AgentType: "grok-build", Health: "unhealthy", IdleSinceSeconds: 600},
 	}
-	err := validateAutoRestartStuckAgents(agents, []int{1, 2})
-	if !errors.Is(err, agent.ErrAutomatedRelaunchNotImplemented) {
-		t.Fatalf("validateAutoRestartStuckAgents() error = %v, want Grok relaunch sentinel", err)
+	if err := validateAutoRestartStuckAgents(agents, []int{1, 2}); err != nil {
+		t.Fatalf("validateAutoRestartStuckAgents() error = %v, want nil (grok relaunch is supported)", err)
 	}
 
 	if err := validateAutoRestartStuckAgents(agents, []int{1}); err != nil {
-		t.Fatalf("non-target Grok pane should not block supported target: %v", err)
+		t.Fatalf("single-pane target rejected: %v", err)
 	}
 }
 
-func TestRestartAutoRestartStuckPanesPreflightsWholeBatch(t *testing.T) {
+// GH#251 phase 2: the whole-batch preflight passes for mixed claude+grok
+// batches, and the grok pane is restarted like any other agent pane.
+func TestRestartAutoRestartStuckPanesRestartsMixedGrokBatch(t *testing.T) {
 	agents := []SessionAgentHealth{
 		{Pane: 1, AgentType: "claude"},
 		{Pane: 2, AgentType: "grok"},
 	}
-	calls := 0
+	var restartedPanes []string
 	restarted, failed, err := restartAutoRestartStuckPanes(
 		t.Context(),
 		AutoRestartStuckOptions{Session: "mixed"},
 		agents,
 		[]int{1, 2},
-		func(context.Context, RestartPaneOptions) (*RestartPaneOutput, error) {
-			calls++
+		func(_ context.Context, opts RestartPaneOptions) (*RestartPaneOutput, error) {
+			restartedPanes = append(restartedPanes, opts.Panes...)
 			return &RestartPaneOutput{RobotResponse: NewRobotResponse(true)}, nil
 		},
 	)
-	if !errors.Is(err, agent.ErrAutomatedRelaunchNotImplemented) {
-		t.Fatalf("restartAutoRestartStuckPanes() error = %v, want Grok relaunch sentinel", err)
+	if err != nil {
+		t.Fatalf("restartAutoRestartStuckPanes() error = %v, want nil (grok relaunch is supported)", err)
 	}
-	if calls != 0 {
-		t.Fatalf("restart callback called %d times, want zero before mixed-batch rejection", calls)
+	if !intSlicesEqual(restarted, []int{1, 2}) || failed != nil {
+		t.Fatalf("results = restarted %v failed %v, want [1 2] and nil", restarted, failed)
 	}
-	if restarted != nil || failed != nil {
-		t.Fatalf("results = restarted %v failed %v, want nil after preflight rejection", restarted, failed)
+	if len(restartedPanes) != 2 {
+		t.Fatalf("restart callback saw panes %v, want both panes including grok", restartedPanes)
 	}
 }
 

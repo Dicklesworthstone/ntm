@@ -1416,6 +1416,12 @@ func isAgentReady(output, _ string) bool {
 		"welcome back",       // Greeting
 		"bypass permissions", // Status line
 		"try \"",             // Example prompt
+		// Grok Build TUI indicators (GH#251 phase 2, live grok 1.0.5
+		// captures): the welcome banner and the bottom status line both
+		// carry "Grok Build  1.0.5", and the composer's bottom border
+		// carries "· always-approve".
+		"grok build",
+		"· always-approve",
 	}
 
 	for _, pattern := range lowerPatterns {

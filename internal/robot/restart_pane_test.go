@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/assignment"
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/config"
@@ -721,7 +720,9 @@ func TestSelectRestartPaneTargetsUsesParsedPaneTypeForFilters(t *testing.T) {
 	}
 }
 
-func TestRespawnRestartPaneTargetsRejectsGrokBatchBeforeMutation(t *testing.T) {
+// GH#251 phase 2: grok supports automated relaunch, so grok-only and mixed
+// batches pass the preflight and every pane (including grok) is respawned.
+func TestRespawnRestartPaneTargetsAcceptsGrokBatch(t *testing.T) {
 	tests := []struct {
 		name    string
 		targets []tmux.Pane
@@ -731,7 +732,7 @@ func TestRespawnRestartPaneTargetsRejectsGrokBatchBeforeMutation(t *testing.T) {
 			targets: []tmux.Pane{{ID: "%1", Index: 1, WindowIndex: 0, Type: tmux.AgentGrok}},
 		},
 		{
-			name: "mixed batch rejects before earlier supported pane",
+			name: "mixed batch respawns grok alongside supported panes",
 			targets: []tmux.Pane{
 				{ID: "%1", Index: 1, WindowIndex: 0, Type: tmux.AgentClaude},
 				{ID: "%2", Index: 2, WindowIndex: 0, Type: tmux.AgentGrok},
@@ -741,30 +742,33 @@ func TestRespawnRestartPaneTargetsRejectsGrokBatchBeforeMutation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			mutations := 0
+			var respawned []string
 			output := &RestartPaneOutput{Restarted: []string{}, Failed: []RestartError{}}
+			pid := 100
 			info, err := respawnRestartPaneTargetsContext(
 				t.Context(),
 				tt.targets,
 				false,
 				output,
-				func(context.Context, string, bool) error {
-					mutations++
+				func(_ context.Context, target string, _ bool) error {
+					respawned = append(respawned, target)
 					return nil
 				},
 				func(context.Context, string) (int, error) {
-					t.Fatal("rejected batch observed a pane PID")
-					return 0, nil
+					// A fresh PID per observation so the respawn reads as a
+					// genuine pane replacement.
+					pid++
+					return pid, nil
 				},
 			)
-			if !errors.Is(err, agent.ErrAutomatedRelaunchNotImplemented) {
-				t.Fatalf("respawnRestartPaneTargetsContext() error = %v, want Grok relaunch sentinel", err)
+			if err != nil {
+				t.Fatalf("respawnRestartPaneTargetsContext() error = %v, want nil (grok relaunch is supported)", err)
 			}
-			if mutations != 0 {
-				t.Fatalf("respawn callback called %d time(s), want zero", mutations)
+			if len(respawned) != len(tt.targets) {
+				t.Fatalf("respawn callback saw %v, want all %d panes including grok", respawned, len(tt.targets))
 			}
-			if len(info) != 0 || len(output.Restarted) != 0 || len(output.Failed) != 0 {
-				t.Fatalf("rejected batch mutated output: info=%v output=%+v", info, output)
+			if len(output.Restarted) != len(tt.targets) || len(output.Failed) != 0 || len(info) != len(tt.targets) {
+				t.Fatalf("batch results: info=%v output=%+v", info, output)
 			}
 		})
 	}
@@ -1416,12 +1420,14 @@ func TestRestartAgentLaunchCommandNilConfigFallsBackToAlias(t *testing.T) {
 	}
 }
 
-func TestRestartAgentLaunchCommandGrokNeverFallsBackToClaude(t *testing.T) {
-	if got := restartAgentLaunchCommand(nil, "grok", ""); got != "" {
-		t.Fatalf("restartAgentLaunchCommand(nil, grok) = %q, want empty unsupported command", got)
+// GH#251 phase 2: grok has its own canonical launch command — and it must be
+// the grok command, never a fallback to claude's alias.
+func TestRestartAgentLaunchCommandGrokUsesGrokCommand(t *testing.T) {
+	if got := restartAgentLaunchCommand(nil, "grok", ""); got != "grok --always-approve" {
+		t.Fatalf("restartAgentLaunchCommand(nil, grok) = %q, want %q", got, "grok --always-approve")
 	}
-	if got := restartLaunchAlias("grok-build"); got != "" {
-		t.Fatalf("restartLaunchAlias(grok-build) = %q, want empty unsupported command", got)
+	if got := restartLaunchAlias("grok-build"); got != "grok --always-approve" {
+		t.Fatalf("restartLaunchAlias(grok-build) = %q, want %q", got, "grok --always-approve")
 	}
 }
 

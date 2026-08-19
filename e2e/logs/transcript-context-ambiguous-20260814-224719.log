@@ -1,0 +1,99 @@
+[0s] [E2E-START] === E2E Test Started: transcript-context-ambiguous ===
+[0s] [E2E-START] Timestamp: 2026-08-14T22:47:19-04:00
+[0s] [E2E-START] Log file: /Users/jemanuel/projects/ntm/e2e/logs/transcript-context-ambiguous-20260814-224719.log
+[1ms] [FIXTURE] path=/var/folders/vt/n2xyn_s51b97_j3yh2qbqcnc0000gn/T/TestTranscriptContextAmbiguousPanesFallBack2504760709/001/.claude/projects/-private-var-folders-vt-n2xyn-s51b97-j3yh2qbqcnc0000gn-T-TestTranscriptContextAmbiguousPanesFallBack2504760709-002/session-ambiguous.jsonl bytes=454 sha256=6f66b918e7ed9e0e230ab6d99e28aa97c78e08225e0aeb2ac284e13fac432bb1
+[88ms] [SETUP] session=ntm-e2e-tctx-57463-563000 panes=%0,%1 projDir=/private/var/folders/vt/n2xyn_s51b97_j3yh2qbqcnc0000gn/T/TestTranscriptContextAmbiguousPanesFallBack2504760709/002
+[10.428s] [NTM] HOME=/var/folders/vt/n2xyn_s51b97_j3yh2qbqcnc0000gn/T/TestTranscriptContextAmbiguousPanesFallBack2504760709/001 args=[--robot-context=ntm-e2e-tctx-57463-563000] exit=0
+[10.428s] [NTM] output={
+  "success": true,
+  "timestamp": "2026-08-15T02:47:30Z",
+  "version": "1.0.0",
+  "output_format": "json",
+  "session": "ntm-e2e-tctx-57463-563000",
+  "captured_at": "2026-08-15T02:47:30.344742Z",
+  "agents": [
+    {
+      "pane": "0",
+      "pane_idx": 0,
+      "agent_type": "claude",
+      "model": "sonnet",
+      "estimated_tokens": 114,
+      "with_overhead": 285,
+      "context_limit": 200000,
+      "usage_percent": 0.14250000000000002,
+      "usage_level": "Low",
+      "confidence": "low",
+      "state": "idle",
+      "source": "scrollback_estimate"
+    },
+    {
+      "pane": "1",
+      "pane_idx": 1,
+      "agent_type": "claude",
+      "model": "sonnet",
+      "estimated_tokens": 109,
+      "with_overhead": 272,
+      "context_limit": 200000,
+      "usage_percent": 0.136,
+      "usage_level": "Low",
+      "confidence": "low",
+      "state": "idle",
+      "source": "scrollback_estimate"
+    }
+  ],
+  "summary": {
+    "total_agents": 2,
+    "high_usage_count": 0,
+    "avg_usage": 0.13925
+  },
+  "_agent_hints": {
+    "low_usage_agents": [
+      "0",
+      "1"
+    ],
+    "suggestions": [
+      "All agents healthy - context usage is low across the board"
+    ]
+  }
+}
+[10.428s] [E2E-JSON] context_agents:
+[
+  {
+    "pane": "0",
+    "pane_idx": 0,
+    "agent_type": "claude",
+    "model": "sonnet",
+    "estimated_tokens": 114,
+    "with_overhead": 285,
+    "context_limit": 200000,
+    "usage_percent": 0.14250000000000002,
+    "usage_level": "Low",
+    "confidence": "low",
+    "state": "idle",
+    "source": "scrollback_estimate",
+    "transcript_tokens": 0,
+    "transcript_model": "",
+    "transcript_path": "",
+    "transcript_updated_at": ""
+  },
+  {
+    "pane": "1",
+    "pane_idx": 1,
+    "agent_type": "claude",
+    "model": "sonnet",
+    "estimated_tokens": 109,
+    "with_overhead": 272,
+    "context_limit": 200000,
+    "usage_percent": 0.136,
+    "usage_level": "Low",
+    "confidence": "low",
+    "state": "idle",
+    "source": "scrollback_estimate",
+    "transcript_tokens": 0,
+    "transcript_model": "",
+    "transcript_path": "",
+    "transcript_updated_at": ""
+  }
+]
+[10.428s] [PASS] both ambiguous panes honestly report scrollback_estimate
+[10.439s] [E2E-END] === Test completed in 10.439s ===

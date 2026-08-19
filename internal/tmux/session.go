@@ -1944,6 +1944,11 @@ func composerMarkerForAgent(agentType AgentType) string {
 		return "›"
 	case AgentClaude:
 		return "❯"
+	case AgentGrok:
+		// Grok Build renders a bordered composer ("│ ❯ <text>  │"); the same
+		// heavy chevron is the live-composer marker. Lines are trimmed of the
+		// trailing box border before emptiness checks (see composerLineEmpty).
+		return "❯"
 	default:
 		return ""
 	}
@@ -1975,6 +1980,11 @@ func composerLineEmpty(capture, marker string, placeholderPrefixes []string) (fo
 			continue
 		}
 		text := strings.TrimSpace(lines[i][idx+len(marker):])
+		// Grok Build's composer is a bordered box, so the marker line ends
+		// with the box's right border ("│ ❯ <text>   │"). Strip trailing
+		// border glyphs before the emptiness check; harmless for TUIs whose
+		// composer line has no right border.
+		text = strings.TrimSpace(strings.TrimRight(text, "│"))
 		if text == "" {
 			return true, true
 		}
@@ -2089,6 +2099,10 @@ func (c *Client) ComposerReadyForDelivery(ctx context.Context, target string, ag
 		if codexLooksWorking(capture) {
 			return true, ""
 		}
+	case AgentGrok:
+		if grokLooksWorking(capture) {
+			return true, ""
+		}
 	}
 	return false, fmt.Sprintf("%s composer not visible: pane appears to be initializing or showing a dialog; a typed prompt would be swallowed", canonical)
 }
@@ -2176,6 +2190,103 @@ func codexComposerHoldsPayload(capture, message string) bool {
 // codexLooksWorking reports whether the capture shows codex's working footer.
 func codexLooksWorking(capture string) bool {
 	return strings.Contains(strings.ToLower(capture), "esc to interrupt")
+}
+
+// grokActivityLineRe matches Grok Build's live activity line — a braille
+// spinner frame plus one of the three observed phase verbs ("⠹ Waiting for
+// response… 0.7s" / "⠸ Thinking… 0.0s" / "⠙ Responding… 1.7s"). Rendered only
+// while a turn is in flight (verified live against grok 1.0.5, GH#251).
+var grokActivityLineRe = regexp.MustCompile(`(?m)^\s*[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]\s*(?:Waiting for response|Thinking|Responding)…`)
+
+// grokLooksWorking reports whether the capture shows Grok Build's in-flight
+// chrome: the spinner activity line or the "Esc:cancel" footer hint, both of
+// which disappear at idle.
+func grokLooksWorking(capture string) bool {
+	return grokActivityLineRe.MatchString(capture) || strings.Contains(capture, "Esc:cancel")
+}
+
+// grokComposerHoldsPayload reports whether a Grok Build pane capture shows the
+// delivered message still sitting unsubmitted in the bordered composer. Grok
+// pins its "│ ❯ <text> │" composer to the bottom of the screen and echoes
+// submitted prompts into the transcript with a plain "❯" prefix, so only the
+// BOTTOM-MOST marker line is live-composer evidence; the trailing box border
+// is stripped before evaluation.
+func grokComposerHoldsPayload(capture, message string) bool {
+	snippet := ""
+	for _, line := range strings.Split(message, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			if len(line) > 32 {
+				line = line[:32]
+			}
+			snippet = line
+			break
+		}
+	}
+	lines := strings.Split(capture, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := lines[i]
+		marker := strings.Index(line, "❯")
+		if marker < 0 {
+			continue
+		}
+		composerText := strings.TrimSpace(strings.TrimRight(strings.TrimSpace(line[marker+len("❯"):]), "│"))
+		if composerText == "" {
+			return false
+		}
+		if strings.Contains(composerText, "[Pasted") {
+			return true
+		}
+		return snippet != "" && strings.Contains(line, snippet)
+	}
+	return false
+}
+
+// VerifyGrokSubmissionContext confirms that a prompt delivered to a Grok Build
+// pane actually submitted (GH#251 phase 2). Mirrors the codex verifier: when
+// the payload is still visibly sitting in the composer after the double-Enter
+// protocol, the rescue is one extra Enter, then bounded polling. Returns
+// (confirmed, rescued); confirmed=false means the payload is still visibly
+// unsubmitted and callers must not report the send as delivered.
+//
+// paneWidth is accepted for signature parity with the other verifiers; grok's
+// working check is a full-capture match and does not depend on it.
+func (c *Client) VerifyGrokSubmissionContext(ctx context.Context, target, message string, paneWidth int) (bool, bool, error) {
+	if err := waitForSendDelay(ctx, codexVerifyInitialDelay); err != nil {
+		return false, false, err
+	}
+	capture, err := c.CapturePaneVisibleContext(ctx, target)
+	if err != nil {
+		return false, false, fmt.Errorf("capture grok pane for submission verification: %w", err)
+	}
+	if grokLooksWorking(capture) || !grokComposerHoldsPayload(capture, message) {
+		return true, false, nil
+	}
+
+	// The composer still holds the payload: finish the job with one bare
+	// Enter, then poll for the submission to take effect. An extra Enter into
+	// an already-submitted grok composer is a no-op (verified live).
+	if err := c.RunSilentContext(ctx, "send-keys", "-t", target, "Enter"); err != nil {
+		return false, true, fmt.Errorf("send rescue Enter to grok pane: %w", err)
+	}
+	for poll := 0; poll < codexVerifyMaxPolls; poll++ {
+		if err := waitForSendDelay(ctx, codexVerifyPollInterval); err != nil {
+			return false, true, err
+		}
+		capture, err = c.CapturePaneVisibleContext(ctx, target)
+		if err != nil {
+			return false, true, fmt.Errorf("capture grok pane after rescue Enter: %w", err)
+		}
+		if grokLooksWorking(capture) || !grokComposerHoldsPayload(capture, message) {
+			return true, true, nil
+		}
+	}
+	return false, true, nil
+}
+
+// VerifyGrokSubmissionContext verifies grok prompt submission (default client).
+func VerifyGrokSubmissionContext(ctx context.Context, target, message string, paneWidth int) (bool, bool, error) {
+	return DefaultClient.VerifyGrokSubmissionContext(ctx, target, message, paneWidth)
 }
 
 // VerifyCodexSubmissionContext confirms that a prompt delivered to a codex

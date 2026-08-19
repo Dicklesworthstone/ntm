@@ -13,9 +13,19 @@ package config
 // `ntm doctor` surfaces the same keys via ScanRemovedKnobs, which reads the
 // config file leniently — useful precisely because the strict loader now
 // refuses such configs.
+//
+// SECOND TIER (bd-6otuk, v1.28.0 batch): the G2 config-key liveness audit
+// found a further set of keys with no runtime reader. They follow the same
+// staged-removal runway one release behind: their struct fields are gone (the
+// strict loader leaves them undecoded), but for v1.28.0 each key found in a
+// config file produces a loud per-key startup WARNING naming the key and its
+// disposition while the load still succeeds and the value is ignored. In
+// v1.29.0 the deprecated set folds into the removed set and each key becomes
+// the same hard strict-loader error as the v1.26.0 batch.
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strings"
@@ -71,21 +81,123 @@ var removedKnobPrefixes = map[string]string{
 	"retry.assign":     noEffect + " (no assign retry loop ships; live overrides: [retry.webhook], [retry.alerts], [retry.agent_mail])",
 }
 
+// Dead-knob (bd-6otuk) disposition sentences that point at what stays live,
+// so the warning tells the user both what to delete and what still works.
+const (
+	deprecatedScannerDisp     = noEffect + " (only scanner.ubs_path is read; the auto-scan chain never shipped)"
+	deprecatedSpawnPacingDisp = noEffect + " (live pacing knobs: spawn_pacing.enabled, spawn_pacing.max_concurrent_spawns, spawn_pacing.agent_caps.{claude,codex,gemini}_max_concurrent)"
+	deprecatedCheckpointDisp  = noEffect + " (the background checkpoint worker never shipped; the other [checkpoints] knobs and manual 'ntm checkpoint' are unaffected)"
+)
+
+// deprecatedKnobExact maps the v1.28.0 dead-knob batch (bd-6otuk) exact leaf
+// keys to their dispositions. WARN tier: load succeeds, value ignored;
+// becomes a hard error in v1.29.0.
+var deprecatedKnobExact = map[string]string{
+	// spawn_pacing: only enabled, max_concurrent_spawns, and the three
+	// *_max_concurrent agent caps have runtime readers (robot spawn
+	// admission); every other pacing leaf was parsed and validated only.
+	"spawn_pacing.agent_caps.claude_ramp_up_delay_ms": deprecatedSpawnPacingDisp,
+	"spawn_pacing.agent_caps.claude_rate_per_sec":     deprecatedSpawnPacingDisp,
+	"spawn_pacing.agent_caps.codex_ramp_up_delay_ms":  deprecatedSpawnPacingDisp,
+	"spawn_pacing.agent_caps.codex_rate_per_sec":      deprecatedSpawnPacingDisp,
+	"spawn_pacing.agent_caps.gemini_ramp_up_delay_ms": deprecatedSpawnPacingDisp,
+	"spawn_pacing.agent_caps.gemini_rate_per_sec":     deprecatedSpawnPacingDisp,
+	"spawn_pacing.agent_caps.cooldown_on_failure_ms":  deprecatedSpawnPacingDisp,
+	"spawn_pacing.agent_caps.recovery_successes":      deprecatedSpawnPacingDisp,
+	"spawn_pacing.backpressure_threshold":             deprecatedSpawnPacingDisp,
+	"spawn_pacing.burst_size":                         deprecatedSpawnPacingDisp,
+	"spawn_pacing.default_retries":                    deprecatedSpawnPacingDisp,
+	"spawn_pacing.max_spawns_per_sec":                 deprecatedSpawnPacingDisp,
+	"spawn_pacing.retry_delay_ms":                     deprecatedSpawnPacingDisp,
+
+	"cass.show_install_hints": noEffect,
+
+	"integrations.caam.providers":   noEffect,
+	"integrations.caam.enabled":     noEffect + " (caam availability is probed, not configured)",
+	"integrations.caam.auto_rotate": noEffect + " (rotation is controlled by [rotation] and the --auto-rotate-accounts flag)",
+
+	"integrations.rano.providers":   noEffect,
+	"integrations.rano.binary_path": noEffect + " (the rano adapter resolves the binary from PATH)",
+
+	"integrations.process_triage.binary_path": noEffect + " (the process_triage adapter resolves the binary from PATH)",
+
+	"integrations.rch.min_build_time":   noEffect,
+	"integrations.rch.show_location":    noEffect,
+	"integrations.rch.preferred_worker": noEffect,
+	"integrations.rch.dcg_whitelist":    noEffect + " (documented legacy no-op)",
+	"integrations.rch.fallback_local":   noEffect,
+
+	"checkpoints.auto_checkpoint_on_spawn": deprecatedCheckpointDisp,
+	"checkpoints.interval_minutes":         deprecatedCheckpointDisp,
+	"checkpoints.on_error":                 deprecatedCheckpointDisp,
+	"checkpoints.on_rotation":              deprecatedCheckpointDisp,
+
+	"robot.output.pretty":     noEffect + " (robot.output.format remains live)",
+	"robot.output.timestamps": noEffect + " (robot.output.format remains live)",
+	"robot.output.compress":   noEffect + " (robot.output.format remains live)",
+
+	"rotation.prefer_restart":    noEffect,
+	"rotation.accounts.priority": noEffect + " (rotation accounts are ordered as written in the config file)",
+
+	"agent_mail.program_name":        noEffect + " (the agent-mail program name is fixed to \"ntm\")",
+	"agents.default_count":           noEffect,
+	"recovery.stale_threshold_hours": noEffect,
+	"resilience.rate_limit.patterns": noEffect + " (rate-limit patterns are built into internal/agent)",
+	"suggestions_enabled":            noEffect,
+	"preflight.enabled":              noEffect + " (preflight.strict remains live)",
+	"command_hooks.description":      noEffect + " (use command_hooks.name to label hooks)",
+}
+
+// deprecatedKnobPrefixes maps deprecated table prefixes of the v1.28.0 batch
+// to their dispositions; a prefix matches the table key itself and every key
+// beneath it.
+var deprecatedKnobPrefixes = map[string]string{
+	"accounts": noEffect + " (account rotation reads [rotation] and caam, not [accounts])",
+
+	"scanner.beads":         deprecatedScannerDisp,
+	"scanner.defaults":      deprecatedScannerDisp,
+	"scanner.notifications": deprecatedScannerDisp,
+	"scanner.thresholds":    deprecatedScannerDisp,
+	"scanner.tools":         deprecatedScannerDisp,
+
+	"spawn_pacing.backoff":  deprecatedSpawnPacingDisp,
+	"spawn_pacing.headroom": deprecatedSpawnPacingDisp,
+
+	"cass.duplicates": noEffect + " (duplicate checking is driven by CLI flags, not config)",
+	"cass.search":     noEffect,
+	"cass.tui":        noEffect,
+
+	"tmux.activity_indicators": noEffect,
+}
+
 // classifyUndecodedKeys partitions the strict loader's undecoded key list
-// into recognized removed knobs (warn, ignore value) and genuinely unknown
-// fields (still a hard load error). When a removed table prefix has concrete
-// child keys present, only the children are reported (one warning per key the
-// user actually wrote); the bare table header is reported only when it
-// appears alone.
-func classifyUndecodedKeys(fields []string) (removed []RemovedKnob, unknown []string) {
-	matched := make(map[string]string) // key -> disposition
+// into recognized removed knobs (hard error since v1.27.0), recognized
+// deprecated knobs (v1.28.0 batch: warn, ignore value), and genuinely unknown
+// fields (still a hard load error). When a removed/deprecated table prefix
+// has concrete child keys present, only the children are reported (one line
+// per key the user actually wrote); the bare table header is reported only
+// when it appears alone.
+func classifyUndecodedKeys(fields []string) (removed, deprecated []RemovedKnob, unknown []string) {
+	type match struct {
+		disposition string
+		deprecated  bool
+	}
+	matched := make(map[string]match)
 	for _, key := range fields {
 		if disp, ok := removedKnobExact[key]; ok {
-			matched[key] = disp
+			matched[key] = match{disposition: disp}
 			continue
 		}
-		if disp, ok := matchRemovedPrefix(key); ok {
-			matched[key] = disp
+		if disp, ok := matchPrefix(key, removedKnobPrefixes); ok {
+			matched[key] = match{disposition: disp}
+			continue
+		}
+		if disp, ok := deprecatedKnobExact[key]; ok {
+			matched[key] = match{disposition: disp, deprecated: true}
+			continue
+		}
+		if disp, ok := matchPrefix(key, deprecatedKnobPrefixes); ok {
+			matched[key] = match{disposition: disp, deprecated: true}
 			continue
 		}
 		unknown = append(unknown, key)
@@ -101,13 +213,18 @@ func classifyUndecodedKeys(fields []string) (removed []RemovedKnob, unknown []st
 		if hasStrictChild(key, keys) {
 			continue
 		}
-		removed = append(removed, RemovedKnob{Key: key, Disposition: matched[key]})
+		knob := RemovedKnob{Key: key, Disposition: matched[key].disposition}
+		if matched[key].deprecated {
+			deprecated = append(deprecated, knob)
+		} else {
+			removed = append(removed, knob)
+		}
 	}
-	return removed, unknown
+	return removed, deprecated, unknown
 }
 
-func matchRemovedPrefix(key string) (string, bool) {
-	for prefix, disp := range removedKnobPrefixes {
+func matchPrefix(key string, prefixes map[string]string) (string, bool) {
+	for prefix, disp := range prefixes {
 		if key == prefix || strings.HasPrefix(key, prefix+".") {
 			return disp, true
 		}
@@ -145,6 +262,23 @@ func removedKnobErrorLines(removed []RemovedKnob) []string {
 	return lines
 }
 
+// deprecatedKnobWarnLine renders the v1.28.0 warn-tier startup warning for
+// one deprecated knob (bd-6otuk). Load succeeds, value ignored; the same key
+// + disposition text becomes the strict-loader error in v1.29.0 — only the
+// severity will change, exactly like the v1.26.0→v1.27.0 flip.
+func deprecatedKnobWarnLine(knob RemovedKnob) string {
+	return fmt.Sprintf(
+		"ntm: warning: config key %s is deprecated and its value is IGNORED — it was %s — delete it from your config file (deprecated in v1.28.0, becomes a config error in v1.29.0; see the v1.28.0 deprecated-key migration table in CHANGELOG.md)",
+		knob.Key, knob.Disposition)
+}
+
+// warnDeprecatedKnobs writes one warning line per deprecated knob to dst.
+func warnDeprecatedKnobs(dst io.Writer, deprecated []RemovedKnob) {
+	for _, knob := range deprecated {
+		fmt.Fprintln(dst, deprecatedKnobWarnLine(knob))
+	}
+}
+
 // ScanRemovedKnobs reports the removed config knobs present in the config
 // file at path (empty = DefaultPath). It is the `ntm doctor` surface: same
 // classification and disposition text as the strict-loader error, but it
@@ -152,21 +286,36 @@ func removedKnobErrorLines(removed []RemovedKnob) []string {
 // refuses since v1.27.0. A missing config file yields no knobs; an
 // unparseable file yields an error.
 func ScanRemovedKnobs(path string) ([]RemovedKnob, error) {
+	removed, _, err := scanKnobs(path)
+	return removed, err
+}
+
+// ScanDeprecatedKnobs reports the v1.28.0 deprecated (warn-tier, bd-6otuk)
+// config knobs present in the config file at path (empty = DefaultPath).
+// Same lenient decode and disposition text as ScanRemovedKnobs; these keys
+// still load (with a startup warning) but their values are ignored, and they
+// become strict-loader errors in v1.29.0.
+func ScanDeprecatedKnobs(path string) ([]RemovedKnob, error) {
+	_, deprecated, err := scanKnobs(path)
+	return deprecated, err
+}
+
+func scanKnobs(path string) (removed, deprecated []RemovedKnob, err error) {
 	if path == "" {
 		path = DefaultPath()
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil
+			return nil, nil, nil
 		}
-		return nil, err
+		return nil, nil, err
 	}
 	cfg := &Config{}
 	md, err := toml.Decode(string(data), cfg)
 	if err != nil {
-		return nil, fmt.Errorf("parsing config: %w", err)
+		return nil, nil, fmt.Errorf("parsing config: %w", err)
 	}
-	removed, _ := classifyUndecodedKeys(undecodedConfigFields(md))
-	return removed, nil
+	removed, deprecated, _ = classifyUndecodedKeys(undecodedConfigFields(md))
+	return removed, deprecated, nil
 }

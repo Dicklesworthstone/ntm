@@ -91,7 +91,7 @@ func normalizeTriageDir(dir string) (string, error) {
 // GetTriage returns the complete triage analysis from bv --robot-triage.
 // Results are cached for TriageCacheTTL (default 30 seconds).
 func GetTriage(dir string) (*TriageResponse, error) {
-	return getTriageContext(context.Background(), dir, DefaultTimeout)
+	return getTriageContext(context.Background(), dir, CommandTimeout())
 }
 
 // GetTriageContext returns cached or fresh triage while honoring caller
@@ -100,7 +100,7 @@ func GetTriageContext(ctx context.Context, dir string) (*TriageResponse, error) 
 	if ctx == nil {
 		return nil, fmt.Errorf("triage context is required")
 	}
-	return getTriageContext(ctx, dir, DefaultTimeout)
+	return getTriageContext(ctx, dir, CommandTimeout())
 }
 
 // GetTriageWithTimeout returns complete triage analysis with a caller-scoped
@@ -121,7 +121,7 @@ func getTriageContext(ctx context.Context, dir string, timeout time.Duration) (*
 		return nil, err
 	}
 	if timeout <= 0 {
-		timeout = DefaultTimeout
+		timeout = CommandTimeout()
 	}
 	deadline := time.Now().Add(timeout)
 

@@ -1367,7 +1367,10 @@ func TestRobotDispatchServiceAdapterParity(t *testing.T) {
 	}
 }
 
-func TestRobotDispatchRejectsDetectedGrokAsUnavailableWithoutDelivery(t *testing.T) {
+// GH#251 phase 2: a title-detected grok pane is a deliverable target, so the
+// dispatch delivers to it alongside the claude pane instead of failing the
+// whole batch as NOT_IMPLEMENTED.
+func TestRobotDispatchDeliversToDetectedGrok(t *testing.T) {
 	t.Parallel()
 	panes := []tmux.Pane{
 		{ID: "%1", Index: 0, Type: tmux.AgentClaude, Title: "proj__cc_1"},
@@ -1379,11 +1382,11 @@ func TestRobotDispatchRejectsDetectedGrokAsUnavailableWithoutDelivery(t *testing
 		t.Fatalf("detected Grok request type = %q, want %q", request.Panes[1].Type, tmux.AgentGrok)
 	}
 
-	var deliveries int
+	var deliveries []dispatchsvc.Delivery
 	service, _, err := newRobotDispatchService(
 		redaction.Config{Mode: redaction.ModeOff},
-		dispatchsvc.DelivererFunc(func(context.Context, dispatchsvc.Delivery) error {
-			deliveries++
+		dispatchsvc.DelivererFunc(func(_ context.Context, delivery dispatchsvc.Delivery) error {
+			deliveries = append(deliveries, delivery)
 			return nil
 		}),
 		nil,
@@ -1391,18 +1394,12 @@ func TestRobotDispatchRejectsDetectedGrokAsUnavailableWithoutDelivery(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = service.Execute(context.Background(), request)
-	var dispatchErr *dispatchsvc.Error
-	if !errors.As(err, &dispatchErr) || dispatchErr.Code != dispatchsvc.ErrPromptDeliveryUnsupported {
-		t.Fatalf("dispatch error = %T %v, want %q", err, err, dispatchsvc.ErrPromptDeliveryUnsupported)
+	result, err := service.Execute(context.Background(), request)
+	if err != nil {
+		t.Fatalf("dispatch error = %v, want nil (grok delivery is supported)", err)
 	}
-	if deliveries != 0 {
-		t.Fatalf("delivery calls = %d, want 0", deliveries)
-	}
-
-	response := robotDispatchPrepareErrorResponse(err)
-	if response.Success || response.ErrorCode != ErrCodeNotImplemented || ExitCodeForResponse(response) != 2 {
-		t.Fatalf("robot response = %+v, want NOT_IMPLEMENTED / exit 2", response)
+	if !result.Success || result.Delivered != 2 || len(deliveries) != 2 {
+		t.Fatalf("result=%+v deliveries=%d, want both panes delivered", result, len(deliveries))
 	}
 }
 

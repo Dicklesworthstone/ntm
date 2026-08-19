@@ -1,0 +1,43 @@
+[0s] [E2E-START] === E2E Test Started: gates-smart-restart-shell-not-returned ===
+[0s] [E2E-START] Timestamp: 2026-08-15T00:06:17-04:00
+[0s] [E2E-START] Log file: /Users/jemanuel/projects/ntm/e2e/logs/gates-smart-restart-shell-not-returned-20260815-000617.log
+[97ms] [PID-LINEAGE] session=ntm-e2e-gates-27553-775000 pane=%0 shell_pid=30326 fixture_pid=30328 persona=claude
+[22.587s] [NTM] args=[--robot-smart-restart=ntm-e2e-gates-27553-775000 --force] exit=1 elapsed=22.485s
+[22.587s] [NTM] output={"success":false,"version":"1.0.0","output_format":"json","error":"1 of 1 targeted pane(s) failed to restart","error_code":"SHELL_NOT_RETURNED","hint":"Panes evaluated: 0. Run 'ntm --robot-is-working=ntm-e2e-gates-27553-775000' to see live pane addresses and states.","session":"ntm-e2e-gates-27553-775000","timestamp":"2026-08-15T04:06:27Z","dry_run":false,"force":true,"actions":{"0":{"action":"FAILED","reason":"restart exit sequence unconfirmed: agent did not return to shell within 12s (exit_method=double_ctrl_c)","pre_check":{"recommendation":"SAFE_TO_RESTART","is_working":false,"is_idle":true,"is_rate_limited":false,"is_context_low":false,"confidence":0.5,"agent_type":"cc"},"restart_sequence":{"exit_method":"double_ctrl_c","exit_duration_ms":12307,"shell_confirmed":false,"agent_launched":false,"agent_launch_status":"not_ready","launch_attempted":false,"agent_type":"cc"},"error":"post_exit: Shell did not return within 12s after exit - agent may still be running","structured_error":{"code":"SHELL_NOT_RETURNED","message":"Shell did not return within 12s after exit - agent may still be running","phase":"post_exit","details":{"last_output":"❯\n? for shortcuts\n❯\n? for shortcuts\n❯\n? for shortcuts\n❯\n? for shortcuts\n❯\n? for shortcuts\n❯\n? for shortcuts","attempted_actions":["exit-agent-cc","wait-shell-return"],"agent_type":"cc"},"recovery_hint":"Try ntm --robot-smart-restart=ntm-e2e-gates-27553-775000 --panes=0 --hard-kill, or manually kill the process"}}},"summary":{"restarted":0,"skipped":0,"waiting":0,"failed":1,"panes_by_action":{"FAILED":["0"]}}}
+[22.587s] [TIMING] smart-restart (exit-failure path) took 22.485s
+[22.587s] [E2E-JSON] smart_restart_shell_not_returned:
+{
+  "success": false,
+  "error_code": "SHELL_NOT_RETURNED",
+  "actions": {
+    "0": {
+      "action": "FAILED",
+      "reason": "restart exit sequence unconfirmed: agent did not return to shell within 12s (exit_method=double_ctrl_c)",
+      "warning": "",
+      "error": "post_exit: Shell did not return within 12s after exit - agent may still be running",
+      "restart_sequence": {
+        "exit_method": "double_ctrl_c",
+        "shell_confirmed": false,
+        "launch_attempted": false,
+        "agent_launched": false
+      },
+      "prompt_outcome": null,
+      "structured_error": {
+        "code": "SHELL_NOT_RETURNED",
+        "phase": "post_exit"
+      }
+    }
+  },
+  "summary": {
+    "restarted": 0,
+    "skipped": 0,
+    "failed": 1,
+    "panes_by_action": {
+      "FAILED": [
+        "0"
+      ]
+    }
+  }
+}
+[24.094s] [PASS] SHELL_NOT_RETURNED surfaced with honest reason; fixture survived 2 Ctrl+C bytes
+[24.094s] [E2E-END] === Test completed in 24.094s ===

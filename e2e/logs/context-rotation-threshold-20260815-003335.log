@@ -1,0 +1,148 @@
+[0s] [E2E-START] === E2E Test Started: context-rotation-threshold ===
+[0s] [E2E-START] Timestamp: 2026-08-15T00:33:35-04:00
+[0s] [E2E-START] Log file: /Users/jemanuel/projects/ntm/e2e/logs/context-rotation-threshold-20260815-003335.log
+[1ms] [FIXTURE] path=/var/folders/vt/n2xyn_s51b97_j3yh2qbqcnc0000gn/T/TestContextRotationE2EThresholdEnqueuesPending2908334394/001/.claude/projects/-private-var-folders-vt-n2xyn-s51b97-j3yh2qbqcnc0000gn-T-TestContextRotationE2EThresholdEnqueuesPending2908334394-002/session-hot.jsonl tokens=150000
+[1ms] [CONFIG] /var/folders/vt/n2xyn_s51b97_j3yh2qbqcnc0000gn/T/TestContextRotationE2EThresholdEnqueuesPending2908334394/003/config.toml:
+# hermetic config written by context_rotation_e2e_test.go (ntm-8ice)
+[rotation]
+usage_percent_threshold = 60.0
+auto_confirm = false
+
+[context_rotation]
+try_compact_first = false
+confirm_timeout_sec = 600
+
+[704ms] [SETUP] session=ntm-e2e-crot-17589-585000 pane=%0 agent=ntm-e2e-crot-17589-585000__cc_1 projDir=/private/var/folders/vt/n2xyn_s51b97_j3yh2qbqcnc0000gn/T/TestContextRotationE2EThresholdEnqueuesPending2908334394/002
+[1.725s] [NTM] HOME=/var/folders/vt/n2xyn_s51b97_j3yh2qbqcnc0000gn/T/TestContextRotationE2EThresholdEnqueuesPending2908334394/001 args=[coordinator run ntm-e2e-crot-17589-585000 --once] exit=0
+[1.725s] [NTM] stdout=Coordinator cycle complete for ntm-e2e-crot-17589-585000: 0 assignment result(s)
+[1.726s] [NTM] stderr=2026/08/15 00:33:37 INFO context rotation enqueued from transcript usage session=ntm-e2e-crot-17589-585000 pane=%0 agent=ntm-e2e-crot-17589-585000__cc_1 usage_percent=75 threshold=60 tokens=150000 limit=200000 source=/var/folders/vt/n2xyn_s51b97_j3yh2qbqcnc0000gn/T/TestContextRotationE2EThresholdEnqueuesPending2908334394/001/.claude/projects/-private-var-folders-vt-n2xyn-s51b97-j3yh2qbqcnc0000gn-T-TestContextRotationE2EThresholdEnqueuesPending2908334394-002/session-hot.jsonl confidence=high auto_confirm=false
+[1.726s] [EVIDENCE] enqueue slog carries tokens/limit/source/confidence verbatim
+[1.779s] [NTM] HOME=/var/folders/vt/n2xyn_s51b97_j3yh2qbqcnc0000gn/T/TestContextRotationE2EThresholdEnqueuesPending2908334394/001 args=[rotate context pending --json] exit=0
+[1.779s] [NTM] stdout={
+  "pending": [
+    {
+      "agent_id": "ntm-e2e-crot-17589-585000__cc_1",
+      "session_name": "ntm-e2e-crot-17589-585000",
+      "context_percent": 75,
+      "timeout_seconds": 599,
+      "default_action": "rotate",
+      "created_at": "00:33:37"
+    }
+  ],
+  "count": 1
+}
+[1.779s] [NTM] stderr=
+[1.779s] [E2E-JSON] pending_rotations_cli:
+{
+  "pending": [
+    {
+      "agent_id": "ntm-e2e-crot-17589-585000__cc_1",
+      "session_name": "ntm-e2e-crot-17589-585000",
+      "context_percent": 75,
+      "timeout_seconds": 599,
+      "default_action": "rotate",
+      "created_at": "00:33:37"
+    }
+  ],
+  "count": 1
+}
+[11.998s] [NTM] HOME=/var/folders/vt/n2xyn_s51b97_j3yh2qbqcnc0000gn/T/TestContextRotationE2EThresholdEnqueuesPending2908334394/001 args=[--robot-context=ntm-e2e-crot-17589-585000] exit=0
+[11.998s] [NTM] stdout={
+  "success": true,
+  "timestamp": "2026-08-15T04:33:47Z",
+  "version": "1.0.0",
+  "output_format": "json",
+  "session": "ntm-e2e-crot-17589-585000",
+  "captured_at": "2026-08-15T04:33:47.847397Z",
+  "agents": [
+    {
+      "pane": "0",
+      "pane_idx": 0,
+      "agent_type": "claude",
+      "model": "claude-fable-5",
+      "estimated_tokens": 150000,
+      "with_overhead": 150000,
+      "context_limit": 200000,
+      "usage_percent": 75,
+      "usage_level": "High",
+      "confidence": "high",
+      "state": "idle",
+      "source": "transcript",
+      "transcript_tokens": 150000,
+      "transcript_model": "claude-fable-5",
+      "transcript_path": "/var/folders/vt/n2xyn_s51b97_j3yh2qbqcnc0000gn/T/TestContextRotationE2EThresholdEnqueuesPending2908334394/001/.claude/projects/-private-var-folders-vt-n2xyn-s51b97-j3yh2qbqcnc0000gn-T-TestContextRotationE2EThresholdEnqueuesPending2908334394-002/session-hot.jsonl",
+      "transcript_updated_at": "2026-08-15T04:33:35Z"
+    }
+  ],
+  "summary": {
+    "total_agents": 1,
+    "high_usage_count": 1,
+    "avg_usage": 75
+  },
+  "pending_rotations": [
+    {
+      "agent_id": "ntm-e2e-crot-17589-585000__cc_1",
+      "session_name": "ntm-e2e-crot-17589-585000",
+      "pane_id": "%0",
+      "context_percent": 75,
+      "created_at": "2026-08-15T00:33:37-04:00",
+      "timeout_at": "2026-08-15T00:43:37-04:00",
+      "default_action": "rotate",
+      "work_dir": "/private/var/folders/vt/n2xyn_s51b97_j3yh2qbqcnc0000gn/T/TestContextRotationE2EThresholdEnqueuesPending2908334394/002"
+    }
+  ],
+  "_agent_hints": {
+    "high_usage_agents": [
+      "0"
+    ],
+    "suggestions": [
+      "All agents have high context usage - consider spawning new sessions"
+    ]
+  }
+}
+[11.999s] [NTM] stderr=
+[11.999s] [E2E-JSON] robot_context_pending:
+[
+  {
+    "agent_id": "ntm-e2e-crot-17589-585000__cc_1",
+    "session_name": "ntm-e2e-crot-17589-585000",
+    "pane_id": "%0",
+    "context_percent": 75,
+    "default_action": "rotate",
+    "work_dir": "/private/var/folders/vt/n2xyn_s51b97_j3yh2qbqcnc0000gn/T/TestContextRotationE2EThresholdEnqueuesPending2908334394/002"
+  }
+]
+[12.235s] [NTM] HOME=/var/folders/vt/n2xyn_s51b97_j3yh2qbqcnc0000gn/T/TestContextRotationE2EThresholdEnqueuesPending2908334394/001 args=[coordinator run ntm-e2e-crot-17589-585000 --once] exit=0
+[12.235s] [NTM] stdout=Coordinator cycle complete for ntm-e2e-crot-17589-585000: 0 assignment result(s)
+[12.235s] [NTM] stderr=
+[12.288s] [NTM] HOME=/var/folders/vt/n2xyn_s51b97_j3yh2qbqcnc0000gn/T/TestContextRotationE2EThresholdEnqueuesPending2908334394/001 args=[rotate context pending --json] exit=0
+[12.288s] [NTM] stdout={
+  "pending": [
+    {
+      "agent_id": "ntm-e2e-crot-17589-585000__cc_1",
+      "session_name": "ntm-e2e-crot-17589-585000",
+      "context_percent": 75,
+      "timeout_seconds": 589,
+      "default_action": "rotate",
+      "created_at": "00:33:37"
+    }
+  ],
+  "count": 1
+}
+[12.288s] [NTM] stderr=
+[12.288s] [E2E-JSON] pending_rotations_cli:
+{
+  "pending": [
+    {
+      "agent_id": "ntm-e2e-crot-17589-585000__cc_1",
+      "session_name": "ntm-e2e-crot-17589-585000",
+      "context_percent": 75,
+      "timeout_seconds": 589,
+      "default_action": "rotate",
+      "created_at": "00:33:37"
+    }
+  ],
+  "count": 1
+}
+[12.288s] [PASS] threshold trigger enqueued once with evidence; cross-process dedupe held
+[12.299s] [E2E-END] === Test completed in 12.299s ===

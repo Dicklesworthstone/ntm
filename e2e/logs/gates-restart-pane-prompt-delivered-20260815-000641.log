@@ -1,0 +1,73 @@
+[0s] [E2E-START] === E2E Test Started: gates-restart-pane-prompt-delivered ===
+[0s] [E2E-START] Timestamp: 2026-08-15T00:06:41-04:00
+[0s] [E2E-START] Log file: /Users/jemanuel/projects/ntm/e2e/logs/gates-restart-pane-prompt-delivered-20260815-000641.log
+[791ms] [PID-LINEAGE] session=ntm-e2e-gates-27553-827000 pane=%0 shell_pid=32190 fixture_pid=32190 persona=claude (respawnable)
+[14.949s] [NTM] args=[--robot-restart-pane=ntm-e2e-gates-27553-827000 --restart-prompt=GATES-E2E-RESTART-PROMPT-1786766802159969000] exit=0 elapsed=14.153s
+[14.949s] [NTM] output={
+  "success": true,
+  "timestamp": "2026-08-15T04:06:52Z",
+  "version": "1.0.0",
+  "output_format": "json",
+  "session": "ntm-e2e-gates-27553-827000",
+  "restarted_at": "2026-08-15T04:06:52.247644Z",
+  "restarted": [
+    "0"
+  ],
+  "failed": [],
+  "prompt_sent": true,
+  "prompt_delivery": {
+    "0": "delivered"
+  },
+  "process_alive": {
+    "0": true
+  },
+  "agent_relaunched": {
+    "0": true
+  },
+  "agent_relaunch_status": {
+    "0": "ready"
+  },
+  "pane_shell_pids": {
+    "0": {
+      "before": 32190,
+      "after": 32461
+    }
+  }
+}
+[14.949s] [TIMING] restart-pane (delivered path) took 14.153s
+[14.949s] [E2E-JSON] restart_pane_prompt_delivered:
+{
+  "success": true,
+  "error": "",
+  "error_code": "",
+  "restarted": [
+    "0"
+  ],
+  "failed": [],
+  "prompt_sent": true,
+  "prompt_error": "",
+  "prompt_delivery": {
+    "0": "delivered"
+  },
+  "agent_relaunched": {
+    "0": true
+  },
+  "agent_relaunch_status": {
+    "0": "ready"
+  },
+  "pane_shell_pids": {
+    "0": {
+      "before": 32190,
+      "after": 32461
+    }
+  }
+}
+[14.949s] [PID-LINEAGE] respawn evidence: shell 32190 -> 32461
+[14.949s] [E2E-JSON] relaunched_submit_event:
+{
+  "ts": "2026-08-15T04:06:55.096979Z",
+  "event": "submit",
+  "data": "GATES-E2E-RESTART-PROMPT-1786766802159969000"
+}
+[14.949s] [PASS] restart relaunched the configured agent and delivered the prompt after readiness
+[14.949s] [E2E-END] === Test completed in 14.949s ===

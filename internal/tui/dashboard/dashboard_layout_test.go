@@ -16,7 +16,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/cass"
@@ -76,7 +75,9 @@ func (c *dashboardReplayTestClient) SendKeys(target string, _ string, _ bool) er
 	return nil
 }
 
-func TestDashboardHistoryReplayRejectsMixedGrokBatchBeforeSend(t *testing.T) {
+// GH#251 phase 2: grok panes are now valid automated prompt-delivery targets,
+// so history replay sends to a mixed claude+grok batch like claude/codex.
+func TestDashboardHistoryReplaySendsMixedGrokBatch(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 
 	m := New("replay-grok", "")
@@ -86,7 +87,7 @@ func TestDashboardHistoryReplayRejectsMixedGrokBatchBeforeSend(t *testing.T) {
 	}}
 	entry := history.HistoryEntry{
 		Targets: []string{"1", "2"},
-		Prompt:  "do not deliver",
+		Prompt:  "deliver to both panes",
 	}
 
 	msg := m.executeReplayWithClient(entry, client)()
@@ -94,20 +95,21 @@ func TestDashboardHistoryReplayRejectsMixedGrokBatchBeforeSend(t *testing.T) {
 	if !ok {
 		t.Fatalf("executeReplayWithClient() message = %T, want dashboardReplayResultMsg", msg)
 	}
-	if !errors.Is(result.Err, agent.ErrAutomatedPromptDeliveryNotImplemented) {
-		t.Fatalf("executeReplayWithClient() error = %v, want Grok prompt-delivery sentinel", result.Err)
+	if result.Err != nil {
+		t.Fatalf("executeReplayWithClient() error = %v, want mixed claude+grok replay accepted", result.Err)
 	}
-	if client.getCalls != 1 || len(client.sentTargets) != 0 {
-		t.Fatalf("replay client calls = get:%d targets:%v, want get:1 targets:[]", client.getCalls, client.sentTargets)
+	wantTargets := []string{"%1", "%2"}
+	if client.getCalls != 1 || !reflect.DeepEqual(client.sentTargets, wantTargets) {
+		t.Fatalf("replay client calls = get:%d targets:%v, want get:1 targets:%v", client.getCalls, client.sentTargets, wantTargets)
 	}
-	if _, err := os.Stat(history.StoragePath()); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("unsupported replay mutated history storage: stat error = %v", err)
+	if _, err := os.Stat(history.StoragePath()); err != nil {
+		t.Fatalf("successful replay did not record history: stat error = %v", err)
 	}
 
 	updated, _ := m.Update(result)
 	next := updated.(Model)
-	if !strings.Contains(next.healthMessage, agent.GrokPromptDeliveryCapabilityHint) {
-		t.Fatalf("dashboard replay message = %q, want unsupported Grok hint", next.healthMessage)
+	if !strings.Contains(next.healthMessage, "Prompt replayed") {
+		t.Fatalf("dashboard replay message = %q, want replay success message", next.healthMessage)
 	}
 }
 

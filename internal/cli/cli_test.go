@@ -3442,8 +3442,12 @@ func TestConfigShowJSONIncludesSafetyProfile(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected safety.preflight to be object, got %T", safety["preflight"])
 	}
-	if enabled, ok := preflight["enabled"].(bool); !ok || !enabled {
-		t.Fatalf("expected safety.preflight.enabled=true, got %v", preflight["enabled"])
+	// preflight.enabled was deprecated in v1.28.0 (bd-6otuk); only strict remains.
+	if _, exists := preflight["enabled"]; exists {
+		t.Fatalf("safety.preflight must not echo the deprecated enabled key, got %v", preflight["enabled"])
+	}
+	if _, ok := preflight["strict"].(bool); !ok {
+		t.Fatalf("expected safety.preflight.strict to be a bool, got %v", preflight["strict"])
 	}
 
 	if _, exists := parsed["health"]; exists {

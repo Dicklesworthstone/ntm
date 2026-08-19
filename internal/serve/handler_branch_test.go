@@ -950,7 +950,9 @@ func TestHandlePaneInputV1_EmptyText(t *testing.T) {
 	}
 }
 
-func TestHandlePaneInputV1_GrokReturnsNotImplementedBeforeSendKeys(t *testing.T) {
+// GH#251 phase 2: grok panes are now valid automated prompt-delivery targets,
+// so pane input flows through send-keys exactly like claude/codex panes.
+func TestHandlePaneInputV1_GrokDeliversViaSendKeys(t *testing.T) {
 	srv, _ := setupTestServer(t)
 	resolveCalls := 0
 	sendCalls := 0
@@ -961,8 +963,11 @@ func TestHandlePaneInputV1_GrokReturnsNotImplementedBeforeSendKeys(t *testing.T)
 		}
 		return tmux.Pane{ID: "%7", Index: paneIdx, Type: tmux.AgentType(" XAI_GROK_BUILD ")}, nil
 	}
-	srv.sendPaneKeys = func(string, string, bool) error {
+	srv.sendPaneKeys = func(target, text string, enter bool) error {
 		sendCalls++
+		if target != "%7" || text != "review this" || !enter {
+			t.Fatalf("send-keys called with target=%q text=%q enter=%v", target, text, enter)
+		}
 		return nil
 	}
 
@@ -975,18 +980,22 @@ func TestHandlePaneInputV1_GrokReturnsNotImplementedBeforeSendKeys(t *testing.T)
 
 	srv.handlePaneInputV1(rec, req)
 
-	if rec.Code != http.StatusNotImplemented {
-		t.Fatalf("status = %d, want 501; body: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
 	}
-	var response APIError
+	var response struct {
+		Success bool   `json:"success"`
+		Sent    bool   `json:"sent"`
+		Pane    string `json:"pane"`
+	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
 		t.Fatalf("unmarshal response: %v", err)
 	}
-	if response.Success || response.ErrorCode != ErrCodeNotImplemented {
-		t.Fatalf("response = %+v, want NOT_IMPLEMENTED", response)
+	if !response.Success || !response.Sent || response.Pane != "%7" {
+		t.Fatalf("response = %+v, want successful send to %%7", response)
 	}
-	if resolveCalls != 1 || sendCalls != 0 {
-		t.Fatalf("resolve calls = %d, send calls = %d; want 1 and 0", resolveCalls, sendCalls)
+	if resolveCalls != 1 || sendCalls != 1 {
+		t.Fatalf("resolve calls = %d, send calls = %d; want 1 and 1", resolveCalls, sendCalls)
 	}
 }
 

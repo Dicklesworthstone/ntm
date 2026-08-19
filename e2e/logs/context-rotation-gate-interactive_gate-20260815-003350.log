@@ -1,0 +1,38 @@
+[0s] [E2E-START] === E2E Test Started: context-rotation-gate-interactive_gate ===
+[0s] [E2E-START] Timestamp: 2026-08-15T00:33:50-04:00
+[0s] [E2E-START] Log file: /Users/jemanuel/projects/ntm/e2e/logs/context-rotation-gate-interactive_gate-20260815-003350.log
+[2ms] [FIXTURE] path=/var/folders/vt/n2xyn_s51b97_j3yh2qbqcnc0000gn/T/TestContextRotationE2ESafetyGatesBlockRotationinteractive_gate3271473706/001/.claude/projects/-private-var-folders-vt-n2xyn-s51b97-j3yh2qbqcnc0000gn-T-TestContextRotationE2ESafetyGatesBlockRotationinteractive-gate3271473706-002/session-gated.jsonl tokens=150000
+[2ms] [CONFIG] /var/folders/vt/n2xyn_s51b97_j3yh2qbqcnc0000gn/T/TestContextRotationE2ESafetyGatesBlockRotationinteractive_gate3271473706/003/config.toml:
+# hermetic config written by context_rotation_e2e_test.go (ntm-8ice)
+[rotation]
+usage_percent_threshold = 60.0
+auto_confirm = false
+
+[context_rotation]
+try_compact_first = false
+confirm_timeout_sec = 600
+
+[57ms] [SETUP] session=ntm-e2e-crot-17589-514000 pane=%0 gate=interactive_gate
+[314ms] [ARM] gate trust -> full-screen trust dialog, no composer
+[949ms] [NTM] HOME=/var/folders/vt/n2xyn_s51b97_j3yh2qbqcnc0000gn/T/TestContextRotationE2ESafetyGatesBlockRotationinteractive_gate3271473706/001 args=[coordinator run ntm-e2e-crot-17589-514000 --once] exit=0
+[949ms] [NTM] stdout=Coordinator cycle complete for ntm-e2e-crot-17589-514000: 0 assignment result(s)
+[949ms] [NTM] stderr=2026/08/15 00:33:51 INFO context rotation skipped by safety gate session=ntm-e2e-crot-17589-514000 pane=%0 agent=ntm-e2e-crot-17589-514000__cc_1 reason="interactive_gate:do you trust the contents of this project" usage_percent=75 threshold=60 tokens=150000 limit=200000 source=/var/folders/vt/n2xyn_s51b97_j3yh2qbqcnc0000gn/T/TestContextRotationE2ESafetyGatesBlockRotationinteractive_gate3271473706/001/.claude/projects/-private-var-folders-vt-n2xyn-s51b97-j3yh2qbqcnc0000gn-T-TestContextRotationE2ESafetyGatesBlockRotationinteractive-gate3271473706-002/session-gated.jsonl confidence=high
+[1.113s] [NTM] HOME=/var/folders/vt/n2xyn_s51b97_j3yh2qbqcnc0000gn/T/TestContextRotationE2ESafetyGatesBlockRotationinteractive_gate3271473706/001 args=[rotate context pending --json] exit=0
+[1.114s] [NTM] stdout={
+  "pending": null,
+  "count": 0
+}
+[1.114s] [NTM] stderr=
+[1.114s] [E2E-JSON] pending_rotations_cli:
+{
+  "pending": null,
+  "count": 0
+}
+[1.114s] [E2E-JSON] fixture_event_summary:
+{
+  "control": 1,
+  "render": 4,
+  "submit": 0
+}
+[1.114s] [PASS] interactive_gate gate blocked rotation with logged reason
+[1.131s] [E2E-END] === Test completed in 1.131s ===

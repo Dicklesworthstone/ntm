@@ -264,6 +264,10 @@ func (s *DefaultPaneSpawner) getAgentCommand(agentType string) string {
 			if s.config.Agents.Antigravity != "" {
 				return s.config.Agents.Antigravity
 			}
+		case agent.AgentTypeGrok:
+			if s.config.Agents.Grok != "" {
+				return s.config.Agents.Grok
+			}
 		case agent.AgentTypeCursor:
 			if s.config.Agents.Cursor != "" {
 				return s.config.Agents.Cursor
@@ -294,9 +298,9 @@ func (s *DefaultPaneSpawner) getAgentCommand(agentType string) string {
 		// The Antigravity launch binary is `agy`, not its long display name.
 		return "agy"
 	case agent.AgentTypeGrok:
-		// SpawnAgent rejects Grok before creating a pane. Keep this helper
-		// fail-closed as a second defense against a bare `grok` fallback.
-		return ""
+		// Relaunch with the official autonomous approval flag so a rotated
+		// pane does not block on tool approvals (GH#251 phase 2).
+		return "grok --always-approve"
 	case agent.AgentTypeCursor:
 		return "cursor"
 	case agent.AgentTypeWindsurf:

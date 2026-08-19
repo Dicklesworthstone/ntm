@@ -123,14 +123,16 @@ func TestApplyModelCommands_NilConfigSafe(t *testing.T) {
 	}
 }
 
-func TestValidateSessionsAutomatedRelaunchOnlyGatesLaunch(t *testing.T) {
+// GH#251 phase 2: Grok Build relaunch is implemented, so launching restores
+// of saved grok panes now validate like topology-only restores.
+func TestValidateSessionsAutomatedRelaunchAcceptsGrok(t *testing.T) {
 	state := &session.SessionState{Panes: []session.PaneState{{Index: 1, AgentType: "grok"}}}
 
 	if err := validateSessionsAutomatedRelaunch(state, false); err != nil {
 		t.Fatalf("topology-only restore validation error = %v, want nil", err)
 	}
-	if err := validateSessionsAutomatedRelaunch(state, true); !errors.Is(err, session.ErrAutomatedRelaunchNotImplemented) {
-		t.Fatalf("launching restore validation error = %v, want Grok relaunch sentinel", err)
+	if err := validateSessionsAutomatedRelaunch(state, true); err != nil {
+		t.Fatalf("launching restore validation error = %v, want nil", err)
 	}
 }
 

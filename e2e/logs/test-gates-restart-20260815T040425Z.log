@@ -1,0 +1,731 @@
+=== RUN   TestGatesE2EGateDetectionAcrossHealthSurfaces
+    suite_test.go:190: [E2E-START] === E2E Test Started: gates-detection ===
+    suite_test.go:190: [E2E-START] Timestamp: 2026-08-15T00:04:27-04:00
+    suite_test.go:190: [E2E-START] Log file: /Users/jemanuel/projects/ntm/e2e/logs/gates-detection-20260815-000427.log
+    suite_test.go:190: [PID-LINEAGE] session=ntm-e2e-gates-27553-645000 pane=%0 shell_pid=27606 fixture_pid=27608 persona=claude
+    suite_test.go:190: [SETUP] trust gate armed on %0
+    suite_test.go:190: [QUIESCE] SIGSTOP fixture pid=27608; waiting out the 5s activity threshold
+    suite_test.go:190: [NTM] args=[--robot-is-working=ntm-e2e-gates-27553-645000] exit=0 elapsed=10.757s
+    suite_test.go:190: [NTM] output={
+          "success": true,
+          "timestamp": "2026-08-15T04:04:46Z",
+          "version": "1.0.0",
+          "output_format": "json",
+          "session": "ntm-e2e-gates-27553-645000",
+          "query": {
+            "panes_requested": [
+              "0"
+            ],
+            "lines_captured": 100
+          },
+          "panes": {
+            "0": {
+              "agent_type": "cc",
+              "is_working": false,
+              "is_idle": false,
+              "is_rate_limited": false,
+              "is_context_low": false,
+              "confidence": 0.6,
+              "indicators": {
+                "work": [
+                  "reading "
+                ],
+                "limit": []
+              },
+              "indicator_basis": "interactive_gate",
+              "recommendation": "MANUAL_INTERVENTION",
+              "recommendation_reason": "Blocked on interactive gate screen (\"do you trust the contents of this project\"); needs a keystroke before the pane can accept work",
+              "observation_state": "idle",
+              "observation_freshness": "fresh",
+              "observation_observed_at": "2026-08-15T04:04:46Z",
+              "safe_to_dispatch": true,
+              "pane_started_at": "2026-08-15T04:04:28Z",
+              "agent_uptime_seconds": 18,
+              "pane_pid": 27606,
+              "pane_current_command": "zsh",
+              "agent_cli_dead": true
+            }
+          },
+          "summary": {
+            "total_panes": 1,
+            "working_count": 0,
+            "idle_count": 0,
+            "rate_limited_count": 0,
+            "context_low_count": 0,
+            "error_count": 0,
+            "by_recommendation": {
+              "MANUAL_INTERVENTION": [
+                "0"
+              ]
+            }
+          }
+        }
+    suite_test.go:190: [E2E-JSON] is_working_gated:
+        {
+          "success": true,
+          "session": "ntm-e2e-gates-27553-645000",
+          "panes": {
+            "0": {
+              "agent_type": "cc",
+              "is_working": false,
+              "is_idle": false,
+              "is_rate_limited": false,
+              "indicator_basis": "interactive_gate",
+              "recommendation": "MANUAL_INTERVENTION",
+              "recommendation_reason": "Blocked on interactive gate screen (\"do you trust the contents of this project\"); needs a keystroke before the pane can accept work",
+              "pane_pid": 27606
+            }
+          },
+          "summary": {
+            "rate_limited_count": 0,
+            "by_recommendation": {
+              "MANUAL_INTERVENTION": [
+                "0"
+              ]
+            }
+          }
+        }
+    suite_test.go:190: [PID-LINEAGE] is-working reports pane_pid=27606 (tmux shell pid=27606)
+    suite_test.go:190: [NTM] args=[--robot-agent-health=ntm-e2e-gates-27553-645000 --no-caut] exit=0 elapsed=10.066s
+    suite_test.go:190: [NTM] output={
+          "success": true,
+          "timestamp": "2026-08-15T04:04:56Z",
+          "version": "1.0.0",
+          "output_format": "json",
+          "session": "ntm-e2e-gates-27553-645000",
+          "query": {
+            "panes_requested": [
+              "0"
+            ],
+            "lines_captured": 100,
+            "caut_enabled": false,
+            "pt_enabled": false
+          },
+          "caut_available": false,
+          "pt_available": false,
+          "pt_status": "disabled",
+          "panes": {
+            "0": {
+              "agent_type": "cc",
+              "local_state": {
+                "is_working": false,
+                "is_idle": false,
+                "is_rate_limited": false,
+                "is_context_low": false,
+                "confidence": 0.6,
+                "indicators": {
+                  "work": [
+                    "reading "
+                  ],
+                  "limit": []
+                },
+                "observation_state": "idle",
+                "observation_freshness": "fresh",
+                "observation_observed_at": "2026-08-15T04:04:56Z",
+                "safe_to_dispatch": true
+              },
+              "health_score": 100,
+              "health_grade": "A",
+              "issues": [],
+              "recommendation": "MANUAL_INTERVENTION",
+              "recommendation_reason": "Blocked on interactive gate screen (\"do you trust the contents of this project\"); needs a keystroke before the pane can accept work"
+            }
+          },
+          "provider_summary": {},
+          "fleet_health": {
+            "total_panes": 1,
+            "healthy_count": 1,
+            "warning_count": 0,
+            "critical_count": 0,
+            "avg_health_score": 100,
+            "overall_grade": "A"
+          }
+        }
+    suite_test.go:190: [E2E-JSON] agent_health_gated:
+        {
+          "success": true,
+          "panes": {
+            "0": {
+              "agent_type": "cc",
+              "recommendation": "MANUAL_INTERVENTION",
+              "recommendation_reason": "Blocked on interactive gate screen (\"do you trust the contents of this project\"); needs a keystroke before the pane can accept work"
+            }
+          }
+        }
+    suite_test.go:190: [NTM] args=[--robot-health=ntm-e2e-gates-27553-645000] exit=0 elapsed=10.127s
+    suite_test.go:190: [NTM] output={
+          "success": true,
+          "timestamp": "2026-08-15T04:05:06Z",
+          "version": "1.0.0",
+          "output_format": "json",
+          "session": "ntm-e2e-gates-27553-645000",
+          "checked_at": "2026-08-15T04:05:06.5925Z",
+          "agents": [
+            {
+              "pane": 0,
+              "pane_target": "0",
+              "agent_type": "claude",
+              "health": "blocked",
+              "idle_since_seconds": 38,
+              "restarts": 0,
+              "last_error": "blocked on interactive gate screen (\"do you trust the contents of this project\"); needs a keystroke",
+              "rate_limit_count": 0,
+              "backoff_remaining": 0,
+              "confidence": 1
+            }
+          ],
+          "summary": {
+            "total": 1,
+            "healthy": 0,
+            "degraded": 0,
+            "unhealthy": 0,
+            "rate_limited": 0
+          }
+        }
+    suite_test.go:190: [E2E-JSON] session_health_gated:
+        {
+          "pane": 0,
+          "agent_type": "claude",
+          "health": "blocked",
+          "last_error": "blocked on interactive gate screen (\"do you trust the contents of this project\"); needs a keystroke"
+        }
+    suite_test.go:190: [TIMING] gated-surface assertions done in 38.322s
+    suite_test.go:190: [NTM] args=[--robot-is-working=ntm-e2e-gates-27553-645000] exit=0 elapsed=10.08s
+    suite_test.go:190: [NTM] output={
+          "success": true,
+          "timestamp": "2026-08-15T04:05:18Z",
+          "version": "1.0.0",
+          "output_format": "json",
+          "session": "ntm-e2e-gates-27553-645000",
+          "query": {
+            "panes_requested": [
+              "0"
+            ],
+            "lines_captured": 100
+          },
+          "panes": {
+            "0": {
+              "agent_type": "cc",
+              "is_working": true,
+              "is_idle": false,
+              "is_rate_limited": false,
+              "is_context_low": false,
+              "confidence": 0.6,
+              "indicators": {
+                "work": [
+                  "claude_live_spinner",
+                  "live_window_thinking"
+                ],
+                "limit": []
+              },
+              "indicator_basis": "claude_live_spinner",
+              "recommendation": "DO_NOT_INTERRUPT",
+              "recommendation_reason": "Canonical live observation reports active work",
+              "observation_state": "working",
+              "observation_freshness": "fresh",
+              "observation_observed_at": "2026-08-15T04:05:18Z",
+              "safe_to_dispatch": false,
+              "pane_started_at": "2026-08-15T04:04:28Z",
+              "agent_uptime_seconds": 50,
+              "pane_pid": 27606,
+              "pane_current_command": "zsh",
+              "agent_cli_dead": true
+            }
+          },
+          "summary": {
+            "total_panes": 1,
+            "working_count": 1,
+            "idle_count": 0,
+            "rate_limited_count": 0,
+            "context_low_count": 0,
+            "error_count": 0,
+            "by_recommendation": {
+              "DO_NOT_INTERRUPT": [
+                "0"
+              ]
+            }
+          }
+        }
+    suite_test.go:190: [E2E-JSON] is_working_quoted_phrase_under_work_chrome:
+        {
+          "success": true,
+          "session": "ntm-e2e-gates-27553-645000",
+          "panes": {
+            "0": {
+              "agent_type": "cc",
+              "is_working": true,
+              "is_idle": false,
+              "is_rate_limited": false,
+              "indicator_basis": "claude_live_spinner",
+              "recommendation": "DO_NOT_INTERRUPT",
+              "recommendation_reason": "Canonical live observation reports active work",
+              "pane_pid": 27606
+            }
+          },
+          "summary": {
+            "rate_limited_count": 0,
+            "by_recommendation": {
+              "DO_NOT_INTERRUPT": [
+                "0"
+              ]
+            }
+          }
+        }
+    suite_test.go:190: [TIMING] negative case done in 12.096s
+    suite_test.go:190: [PASS] gate flagged on all three surfaces; quoted phrase under work chrome not flagged
+    suite_test.go:190: [E2E-END] === Test completed in 51.121s ===
+--- PASS: TestGatesE2EGateDetectionAcrossHealthSurfaces (51.13s)
+=== RUN   TestGatesE2EHealthRestartStuckLeavesGatedPaneUntouched
+    suite_test.go:190: [E2E-START] === E2E Test Started: gates-restart-stuck-refusal ===
+    suite_test.go:190: [E2E-START] Timestamp: 2026-08-15T00:05:18-04:00
+    suite_test.go:190: [E2E-START] Log file: /Users/jemanuel/projects/ntm/e2e/logs/gates-restart-stuck-refusal-20260815-000518.log
+    suite_test.go:190: [PID-LINEAGE] session=ntm-e2e-gates-27553-848000 pane=%0 shell_pid=28846 fixture_pid=28848 persona=claude
+    suite_test.go:190: [QUIESCE] SIGSTOP fixture pid=28848; waiting out the 5s activity threshold
+    suite_test.go:190: [PID-LINEAGE] before restart-stuck: shell_pid=28846 fixture_pid=28848 key_events=0
+    suite_test.go:190: [NTM] args=[--robot-health=ntm-e2e-gates-27553-848000] exit=0 elapsed=10.118s
+    suite_test.go:190: [NTM] output={
+          "success": true,
+          "timestamp": "2026-08-15T04:05:36Z",
+          "version": "1.0.0",
+          "output_format": "json",
+          "session": "ntm-e2e-gates-27553-848000",
+          "checked_at": "2026-08-15T04:05:36.43351Z",
+          "agents": [
+            {
+              "pane": 0,
+              "pane_target": "0",
+              "agent_type": "claude",
+              "health": "blocked",
+              "idle_since_seconds": 17,
+              "restarts": 0,
+              "last_error": "blocked on interactive gate screen (\"do you trust the contents of this project\"); needs a keystroke",
+              "rate_limit_count": 0,
+              "backoff_remaining": 0,
+              "confidence": 1
+            }
+          ],
+          "summary": {
+            "total": 1,
+            "healthy": 0,
+            "degraded": 0,
+            "unhealthy": 0,
+            "rate_limited": 0
+          }
+        }
+    suite_test.go:190: [NTM] args=[--robot-health-restart-stuck=ntm-e2e-gates-27553-848000] exit=0 elapsed=10.123s
+    suite_test.go:190: [NTM] output={
+          "success": true,
+          "timestamp": "2026-08-15T04:05:46Z",
+          "version": "1.0.0",
+          "output_format": "json",
+          "session": "ntm-e2e-gates-27553-848000",
+          "stuck_panes": [],
+          "restarted": [],
+          "threshold": "5m0s",
+          "checked_at": "2026-08-15T04:05:46Z"
+        }
+    suite_test.go:190: [E2E-JSON] restart_stuck_gated:
+        {
+          "success": true,
+          "error_code": "",
+          "stuck_panes": [],
+          "restarted": [],
+          "failed": null,
+          "threshold": "5m0s"
+        }
+    suite_test.go:190: [PID-LINEAGE] after restart-stuck: shell_pid=28846 fixture_pid=28848 (unchanged)
+    suite_test.go:190: [GAP] restart-stuck surface exposes no per-pane refusal reason; see test comment
+    suite_test.go:190: [PASS] gated pane untouched by --robot-health-restart-stuck
+    suite_test.go:190: [E2E-END] === Test completed in 29.379s ===
+--- PASS: TestGatesE2EHealthRestartStuckLeavesGatedPaneUntouched (29.39s)
+=== RUN   TestGatesE2ESmartRestartSkipsGatedPaneWithPromptNotAttempted
+    suite_test.go:190: [E2E-START] === E2E Test Started: gates-smart-restart-skip ===
+    suite_test.go:190: [E2E-START] Timestamp: 2026-08-15T00:05:48-04:00
+    suite_test.go:190: [E2E-START] Log file: /Users/jemanuel/projects/ntm/e2e/logs/gates-smart-restart-skip-20260815-000548.log
+    suite_test.go:190: [PID-LINEAGE] session=ntm-e2e-gates-27553-169000 pane=%0 shell_pid=29524 fixture_pid=29526 persona=claude
+    suite_test.go:190: [QUIESCE] SIGSTOP fixture pid=29526; waiting out the 5s activity threshold
+    suite_test.go:190: [NTM] args=[--robot-is-working=ntm-e2e-gates-27553-169000] exit=0 elapsed=10.062s
+    suite_test.go:190: [NTM] output={
+          "success": true,
+          "timestamp": "2026-08-15T04:06:05Z",
+          "version": "1.0.0",
+          "output_format": "json",
+          "session": "ntm-e2e-gates-27553-169000",
+          "query": {
+            "panes_requested": [
+              "0"
+            ],
+            "lines_captured": 100
+          },
+          "panes": {
+            "0": {
+              "agent_type": "cc",
+              "is_working": false,
+              "is_idle": false,
+              "is_rate_limited": false,
+              "is_context_low": false,
+              "confidence": 0.6,
+              "indicators": {
+                "work": [
+                  "reading "
+                ],
+                "limit": []
+              },
+              "indicator_basis": "interactive_gate",
+              "recommendation": "MANUAL_INTERVENTION",
+              "recommendation_reason": "Blocked on interactive gate screen (\"do you trust the contents of this project\"); needs a keystroke before the pane can accept work",
+              "observation_state": "idle",
+              "observation_freshness": "fresh",
+              "observation_observed_at": "2026-08-15T04:06:05Z",
+              "safe_to_dispatch": true,
+              "pane_started_at": "2026-08-15T04:05:48Z",
+              "agent_uptime_seconds": 17,
+              "pane_pid": 29524,
+              "pane_current_command": "zsh",
+              "agent_cli_dead": true
+            }
+          },
+          "summary": {
+            "total_panes": 1,
+            "working_count": 0,
+            "idle_count": 0,
+            "rate_limited_count": 0,
+            "context_low_count": 0,
+            "error_count": 0,
+            "by_recommendation": {
+              "MANUAL_INTERVENTION": [
+                "0"
+              ]
+            }
+          }
+        }
+    suite_test.go:190: [NTM] args=[--robot-smart-restart=ntm-e2e-gates-27553-169000 --prompt=gates-e2e post-restart prompt] exit=0 elapsed=10.063s
+    suite_test.go:190: [NTM] output={
+          "success": true,
+          "version": "1.0.0",
+          "output_format": "json",
+          "session": "ntm-e2e-gates-27553-169000",
+          "timestamp": "2026-08-15T04:06:15Z",
+          "dry_run": false,
+          "force": false,
+          "actions": {
+            "0": {
+              "action": "SKIPPED",
+              "reason": "Blocked on an interactive gate screen - a restart cannot answer it; a human keystroke can; requested prompt was NOT delivered (declined panes keep their incumbent agent and receive no message)",
+              "pre_check": {
+                "recommendation": "MANUAL_INTERVENTION",
+                "is_working": false,
+                "is_idle": false,
+                "is_rate_limited": false,
+                "is_context_low": false,
+                "confidence": 0.6,
+                "agent_type": "cc"
+              },
+              "prompt_outcome": {
+                "requested": true,
+                "status": "not_attempted",
+                "delivered": 0,
+                "failed": 0,
+                "blocked": 0,
+                "skipped": 0
+              }
+            }
+          },
+          "summary": {
+            "restarted": 0,
+            "skipped": 1,
+            "waiting": 0,
+            "failed": 0,
+            "panes_by_action": {
+              "SKIPPED": [
+                "0"
+              ]
+            }
+          }
+        }
+    suite_test.go:190: [E2E-JSON] smart_restart_gated_skip:
+        {
+          "success": true,
+          "error_code": "",
+          "actions": {
+            "0": {
+              "action": "SKIPPED",
+              "reason": "Blocked on an interactive gate screen - a restart cannot answer it; a human keystroke can; requested prompt was NOT delivered (declined panes keep their incumbent agent and receive no message)",
+              "warning": "",
+              "error": "",
+              "restart_sequence": null,
+              "prompt_outcome": {
+                "requested": true,
+                "status": "not_attempted"
+              },
+              "structured_error": null
+            }
+          },
+          "summary": {
+            "restarted": 0,
+            "skipped": 1,
+            "failed": 0,
+            "panes_by_action": {
+              "SKIPPED": [
+                "0"
+              ]
+            }
+          }
+        }
+    suite_test.go:190: [PASS] gated pane SKIPPED, prompt not_attempted, zero keystrokes, PID lineage intact
+    suite_test.go:190: [E2E-END] === Test completed in 29.096s ===
+--- PASS: TestGatesE2ESmartRestartSkipsGatedPaneWithPromptNotAttempted (29.10s)
+=== RUN   TestGatesE2ESmartRestartExitSequenceUnconfirmed
+    suite_test.go:190: [E2E-START] === E2E Test Started: gates-smart-restart-shell-not-returned ===
+    suite_test.go:190: [E2E-START] Timestamp: 2026-08-15T00:06:17-04:00
+    suite_test.go:190: [E2E-START] Log file: /Users/jemanuel/projects/ntm/e2e/logs/gates-smart-restart-shell-not-returned-20260815-000617.log
+    suite_test.go:190: [PID-LINEAGE] session=ntm-e2e-gates-27553-775000 pane=%0 shell_pid=30326 fixture_pid=30328 persona=claude
+    suite_test.go:190: [NTM] args=[--robot-smart-restart=ntm-e2e-gates-27553-775000 --force] exit=1 elapsed=22.485s
+    suite_test.go:190: [NTM] output={"success":false,"version":"1.0.0","output_format":"json","error":"1 of 1 targeted pane(s) failed to restart","error_code":"SHELL_NOT_RETURNED","hint":"Panes evaluated: 0. Run 'ntm --robot-is-working=ntm-e2e-gates-27553-775000' to see live pane addresses and states.","session":"ntm-e2e-gates-27553-775000","timestamp":"2026-08-15T04:06:27Z","dry_run":false,"force":true,"actions":{"0":{"action":"FAILED","reason":"restart exit sequence unconfirmed: agent did not return to shell within 12s (exit_method=double_ctrl_c)","pre_check":{"recommendation":"SAFE_TO_RESTART","is_working":false,"is_idle":true,"is_rate_limited":false,"is_context_low":false,"confidence":0.5,"agent_type":"cc"},"restart_sequence":{"exit_method":"double_ctrl_c","exit_duration_ms":12307,"shell_confirmed":false,"agent_launched":false,"agent_launch_status":"not_ready","launch_attempted":false,"agent_type":"cc"},"error":"post_exit: Shell did not return within 12s after exit - agent may still be running","structured_error":{"code":"SHELL_NOT_RETURNED","message":"Shell did not return within 12s after exit - agent may still be running","phase":"post_exit","details":{"last_output":"❯\n? for shortcuts\n❯\n? for shortcuts\n❯\n? for shortcuts\n❯\n? for shortcuts\n❯\n? for shortcuts\n❯\n? for shortcuts","attempted_actions":["exit-agent-cc","wait-shell-return"],"agent_type":"cc"},"recovery_hint":"Try ntm --robot-smart-restart=ntm-e2e-gates-27553-775000 --panes=0 --hard-kill, or manually kill the process"}}},"summary":{"restarted":0,"skipped":0,"waiting":0,"failed":1,"panes_by_action":{"FAILED":["0"]}}}
+    suite_test.go:190: [TIMING] smart-restart (exit-failure path) took 22.485s
+    suite_test.go:190: [E2E-JSON] smart_restart_shell_not_returned:
+        {
+          "success": false,
+          "error_code": "SHELL_NOT_RETURNED",
+          "actions": {
+            "0": {
+              "action": "FAILED",
+              "reason": "restart exit sequence unconfirmed: agent did not return to shell within 12s (exit_method=double_ctrl_c)",
+              "warning": "",
+              "error": "post_exit: Shell did not return within 12s after exit - agent may still be running",
+              "restart_sequence": {
+                "exit_method": "double_ctrl_c",
+                "shell_confirmed": false,
+                "launch_attempted": false,
+                "agent_launched": false
+              },
+              "prompt_outcome": null,
+              "structured_error": {
+                "code": "SHELL_NOT_RETURNED",
+                "phase": "post_exit"
+              }
+            }
+          },
+          "summary": {
+            "restarted": 0,
+            "skipped": 0,
+            "failed": 1,
+            "panes_by_action": {
+              "FAILED": [
+                "0"
+              ]
+            }
+          }
+        }
+    suite_test.go:190: [PASS] SHELL_NOT_RETURNED surfaced with honest reason; fixture survived 2 Ctrl+C bytes
+    suite_test.go:190: [E2E-END] === Test completed in 24.094s ===
+--- PASS: TestGatesE2ESmartRestartExitSequenceUnconfirmed (24.12s)
+=== RUN   TestGatesE2ERestartPanePromptDeliveredAfterReadiness
+    suite_test.go:190: [E2E-START] === E2E Test Started: gates-restart-pane-prompt-delivered ===
+    suite_test.go:190: [E2E-START] Timestamp: 2026-08-15T00:06:41-04:00
+    suite_test.go:190: [E2E-START] Log file: /Users/jemanuel/projects/ntm/e2e/logs/gates-restart-pane-prompt-delivered-20260815-000641.log
+    suite_test.go:190: [PID-LINEAGE] session=ntm-e2e-gates-27553-827000 pane=%0 shell_pid=32190 fixture_pid=32190 persona=claude (respawnable)
+    suite_test.go:190: [NTM] args=[--robot-restart-pane=ntm-e2e-gates-27553-827000 --restart-prompt=GATES-E2E-RESTART-PROMPT-1786766802159969000] exit=0 elapsed=14.153s
+    suite_test.go:190: [NTM] output={
+          "success": true,
+          "timestamp": "2026-08-15T04:06:52Z",
+          "version": "1.0.0",
+          "output_format": "json",
+          "session": "ntm-e2e-gates-27553-827000",
+          "restarted_at": "2026-08-15T04:06:52.247644Z",
+          "restarted": [
+            "0"
+          ],
+          "failed": [],
+          "prompt_sent": true,
+          "prompt_delivery": {
+            "0": "delivered"
+          },
+          "process_alive": {
+            "0": true
+          },
+          "agent_relaunched": {
+            "0": true
+          },
+          "agent_relaunch_status": {
+            "0": "ready"
+          },
+          "pane_shell_pids": {
+            "0": {
+              "before": 32190,
+              "after": 32461
+            }
+          }
+        }
+    suite_test.go:190: [TIMING] restart-pane (delivered path) took 14.153s
+    suite_test.go:190: [E2E-JSON] restart_pane_prompt_delivered:
+        {
+          "success": true,
+          "error": "",
+          "error_code": "",
+          "restarted": [
+            "0"
+          ],
+          "failed": [],
+          "prompt_sent": true,
+          "prompt_error": "",
+          "prompt_delivery": {
+            "0": "delivered"
+          },
+          "agent_relaunched": {
+            "0": true
+          },
+          "agent_relaunch_status": {
+            "0": "ready"
+          },
+          "pane_shell_pids": {
+            "0": {
+              "before": 32190,
+              "after": 32461
+            }
+          }
+        }
+    suite_test.go:190: [PID-LINEAGE] respawn evidence: shell 32190 -> 32461
+    suite_test.go:190: [E2E-JSON] relaunched_submit_event:
+        {
+          "ts": "2026-08-15T04:06:55.096979Z",
+          "event": "submit",
+          "data": "GATES-E2E-RESTART-PROMPT-1786766802159969000"
+        }
+    suite_test.go:190: [PASS] restart relaunched the configured agent and delivered the prompt after readiness
+    suite_test.go:190: [E2E-END] === Test completed in 14.949s ===
+--- PASS: TestGatesE2ERestartPanePromptDeliveredAfterReadiness (14.96s)
+=== RUN   TestGatesE2ERestartPanePromptWithheldWhenShellStaysForeground
+    suite_test.go:190: [E2E-START] === E2E Test Started: gates-restart-pane-prompt-withheld ===
+    suite_test.go:190: [E2E-START] Timestamp: 2026-08-15T00:06:56-04:00
+    suite_test.go:190: [E2E-START] Log file: /Users/jemanuel/projects/ntm/e2e/logs/gates-restart-pane-prompt-withheld-20260815-000656.log
+    suite_test.go:190: [PID-LINEAGE] session=ntm-e2e-gates-27553-270000 pane=%0 shell_pid=32704 fixture_pid=32704 persona=claude (respawnable)
+    suite_test.go:190: [NTM] args=[--robot-restart-pane=ntm-e2e-gates-27553-270000 --restart-prompt=GATES-E2E-WITHHELD-PROMPT-1786766817039034000] exit=1 elapsed=26.51s
+    suite_test.go:190: [NTM] output={"success":false,"timestamp":"2026-08-15T04:07:07Z","version":"1.0.0","output_format":"json","error":"1 restarted pane(s) did not receive the requested prompt","error_code":"RESTART_PROMPT_NOT_DELIVERED","hint":"The restart completed, but the prompt was withheld because the pane never became ready for typed input; no keystrokes were sent to withheld panes. Inspect prompt_delivery and re-send with --robot-send once the agent is up.","session":"ntm-e2e-gates-27553-270000","restarted_at":"2026-08-15T04:07:07.125027Z","restarted":["0"],"failed":[{"pane":"0","reason":"RESTART_PROMPT_NOT_DELIVERED: prompt withheld, no keystrokes sent: pane did not become ready for prompt delivery within 15s: pane foreground process is a shell (\"bash\"), not the relaunched agent; typing the prompt would hit the shell"}],"prompt_error":"pane 0: RESTART_PROMPT_NOT_DELIVERED: prompt withheld, no keystrokes sent: pane did not become ready for prompt delivery within 15s: pane foreground process is a shell (\"bash\"), not the relaunched agent; typing the prompt would hit the shell","prompt_delivery":{"0":"skipped"},"process_alive":{"0":true},"agent_relaunched":{"0":true},"agent_relaunch_status":{"0":"ready"},"pane_shell_pids":{"0":{"before":32704,"after":32927}}}
+    suite_test.go:190: [TIMING] restart-pane (withheld path) took 26.51s
+    suite_test.go:190: [E2E-JSON] restart_pane_prompt_withheld:
+        {
+          "success": false,
+          "error": "1 restarted pane(s) did not receive the requested prompt",
+          "error_code": "RESTART_PROMPT_NOT_DELIVERED",
+          "restarted": [
+            "0"
+          ],
+          "failed": [
+            {
+              "pane": "0",
+              "reason": "RESTART_PROMPT_NOT_DELIVERED: prompt withheld, no keystrokes sent: pane did not become ready for prompt delivery within 15s: pane foreground process is a shell (\"bash\"), not the relaunched agent; typing the prompt would hit the shell"
+            }
+          ],
+          "prompt_sent": false,
+          "prompt_error": "pane 0: RESTART_PROMPT_NOT_DELIVERED: prompt withheld, no keystrokes sent: pane did not become ready for prompt delivery within 15s: pane foreground process is a shell (\"bash\"), not the relaunched agent; typing the prompt would hit the shell",
+          "prompt_delivery": {
+            "0": "skipped"
+          },
+          "agent_relaunched": {
+            "0": true
+          },
+          "agent_relaunch_status": {
+            "0": "ready"
+          },
+          "pane_shell_pids": {
+            "0": {
+              "before": 32704,
+              "after": 32927
+            }
+          }
+        }
+    suite_test.go:190: [PASS] prompt withheld from shell foreground with RESTART_PROMPT_NOT_DELIVERED; capture proves zero prompt keystrokes
+    suite_test.go:190: [E2E-END] === Test completed in 27.237s ===
+--- PASS: TestGatesE2ERestartPanePromptWithheldWhenShellStaysForeground (27.25s)
+=== RUN   TestGatesE2ERateLimitPrecedenceOverGateFlagging
+    suite_test.go:190: [E2E-START] === E2E Test Started: gates-ratelimit-precedence ===
+    suite_test.go:190: [E2E-START] Timestamp: 2026-08-15T00:07:23-04:00
+    suite_test.go:190: [E2E-START] Log file: /Users/jemanuel/projects/ntm/e2e/logs/gates-ratelimit-precedence-20260815-000723.log
+    suite_test.go:190: [PID-LINEAGE] session=ntm-e2e-gates-27553-395000 pane=%0 shell_pid=33188 fixture_pid=33190 persona=codex
+    suite_test.go:190: [NTM] args=[--robot-is-working=ntm-e2e-gates-27553-395000] exit=0 elapsed=10.07s
+    suite_test.go:190: [NTM] output={
+          "success": true,
+          "timestamp": "2026-08-15T04:07:35Z",
+          "version": "1.0.0",
+          "output_format": "json",
+          "session": "ntm-e2e-gates-27553-395000",
+          "query": {
+            "panes_requested": [
+              "0"
+            ],
+            "lines_captured": 100
+          },
+          "panes": {
+            "0": {
+              "agent_type": "cod",
+              "is_working": false,
+              "is_idle": false,
+              "is_rate_limited": true,
+              "is_context_low": false,
+              "context_remaining": 47,
+              "confidence": 0.95,
+              "indicators": {
+                "work": [],
+                "limit": [
+                  "hit your usage limit"
+                ]
+              },
+              "indicator_basis": "rate_limit_indicator",
+              "recommendation": "RATE_LIMITED_WAIT",
+              "recommendation_reason": "Agent hit rate limit",
+              "observation_state": "idle",
+              "observation_freshness": "fresh",
+              "observation_observed_at": "2026-08-15T04:07:35Z",
+              "safe_to_dispatch": true,
+              "pane_started_at": "2026-08-15T04:07:23Z",
+              "agent_uptime_seconds": 12,
+              "pane_pid": 33188,
+              "pane_current_command": "zsh",
+              "agent_cli_dead": true
+            }
+          },
+          "summary": {
+            "total_panes": 1,
+            "working_count": 0,
+            "idle_count": 0,
+            "rate_limited_count": 1,
+            "context_low_count": 0,
+            "error_count": 0,
+            "by_recommendation": {
+              "RATE_LIMITED_WAIT": [
+                "0"
+              ]
+            }
+          }
+        }
+    suite_test.go:190: [E2E-JSON] is_working_rate_limited:
+        {
+          "success": true,
+          "session": "ntm-e2e-gates-27553-395000",
+          "panes": {
+            "0": {
+              "agent_type": "cod",
+              "is_working": false,
+              "is_idle": false,
+              "is_rate_limited": true,
+              "indicator_basis": "rate_limit_indicator",
+              "recommendation": "RATE_LIMITED_WAIT",
+              "recommendation_reason": "Agent hit rate limit",
+              "pane_pid": 33188
+            }
+          },
+          "summary": {
+            "rate_limited_count": 1,
+            "by_recommendation": {
+              "RATE_LIMITED_WAIT": [
+                "0"
+              ]
+            }
+          }
+        }
+    suite_test.go:190: [PASS] rate limit takes precedence: WAIT recommendation, no gate flag, banner + quoted phrase both on screen
+    suite_test.go:190: [E2E-END] === Test completed in 12.317s ===
+--- PASS: TestGatesE2ERateLimitPrecedenceOverGateFlagging (12.32s)
+PASS
+ok  	github.com/Dicklesworthstone/ntm/e2e	188.798s

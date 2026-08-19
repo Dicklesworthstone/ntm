@@ -2,11 +2,9 @@ package swarm
 
 import (
 	"context"
-	"errors"
 	"testing"
 	"time"
 
-	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/ratelimit"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
@@ -16,11 +14,22 @@ type countingPromptInjectionTmuxClient struct {
 	getPanesCount     int
 	sendKeysCount     int
 	sendForAgentCount int
+
+	// captureOutput is returned from readiness polls; an idle-looking prompt
+	// keeps WaitForReady from burning its full 30s timeout per pane.
+	captureOutput string
+	// sentForAgent records (pane, agentType) for every SendKeysForAgent call.
+	sentForAgent []promptInjectionSend
+}
+
+type promptInjectionSend struct {
+	pane      string
+	agentType tmux.AgentType
 }
 
 func (c *countingPromptInjectionTmuxClient) CaptureForStatusDetectionContext(context.Context, string) (string, error) {
 	c.captureCount++
-	return "", nil
+	return c.captureOutput, nil
 }
 
 func (c *countingPromptInjectionTmuxClient) GetPanes(string) ([]tmux.Pane, error) {
@@ -33,8 +42,9 @@ func (c *countingPromptInjectionTmuxClient) SendKeys(string, string, bool) error
 	return nil
 }
 
-func (c *countingPromptInjectionTmuxClient) SendKeysForAgent(string, string, bool, tmux.AgentType) error {
+func (c *countingPromptInjectionTmuxClient) SendKeysForAgent(pane string, _ string, _ bool, agentType tmux.AgentType) error {
 	c.sendForAgentCount++
+	c.sentForAgent = append(c.sentForAgent, promptInjectionSend{pane: pane, agentType: agentType})
 	return nil
 }
 
@@ -256,36 +266,55 @@ func TestInjectBatchEmpty(t *testing.T) {
 	}
 }
 
-func TestPromptInjector_GrokDirectPathsRejectBeforeTmux(t *testing.T) {
-	client := &countingPromptInjectionTmuxClient{}
+// GH#251 phase 2: grok prompt delivery is first-class — both the public
+// InjectPrompt path and the direct sendToPane helper deliver to the (fake)
+// tmux sender instead of refusing before any tmux call.
+func TestPromptInjector_GrokDirectPathsDeliverViaTmux(t *testing.T) {
+	client := &countingPromptInjectionTmuxClient{captureOutput: "ready>\n"}
 	injector := NewPromptInjector()
 	injector.tmuxClientOverride = client
+	injector.EnterDelay = 0
+	injector.DoubleEnterDelay = 0
 
-	for name, inject := range map[string]func() error{
-		"public": func() error {
+	for _, tt := range []struct {
+		name   string
+		inject func() error
+	}{
+		{name: "public", inject: func() error {
 			return injector.InjectPrompt("proj:1.2", "grok-build", "continue")
-		},
-		"direct helper": func() error {
+		}},
+		{name: "direct helper", inject: func() error {
 			return injector.sendToPane("proj:1.2", "xai_grok_build", "continue")
-		},
+		}},
 	} {
-		t.Run(name, func(t *testing.T) {
-			err := inject()
-			if !errors.Is(err, agent.ErrAutomatedPromptDeliveryNotImplemented) {
-				t.Fatalf("error = %v, want automated prompt delivery sentinel", err)
+		t.Run(tt.name, func(t *testing.T) {
+			if err := tt.inject(); err != nil {
+				t.Fatalf("error = %v, want grok prompt delivered", err)
 			}
 		})
 	}
 
-	if client.captureCount != 0 || client.getPanesCount != 0 || client.sendKeysCount != 0 || client.sendForAgentCount != 0 {
-		t.Fatalf("tmux calls occurred before Grok rejection: %+v", client)
+	if client.sendForAgentCount != 2 {
+		t.Fatalf("SendKeysForAgent calls = %d, want 2 (one per grok delivery)", client.sendForAgentCount)
+	}
+	if client.sendKeysCount < 2 {
+		t.Fatalf("SendKeys (enter) calls = %d, want at least 2", client.sendKeysCount)
+	}
+	for _, send := range client.sentForAgent {
+		if send.pane != "proj:1.2" {
+			t.Fatalf("delivery pane = %q, want proj:1.2", send.pane)
+		}
 	}
 }
 
-func TestPromptInjector_MixedBatchPreflightIsAtomic(t *testing.T) {
-	client := &countingPromptInjectionTmuxClient{}
+// GH#251 phase 2: a mixed batch containing grok now passes preflight and every
+// pane — grok included — is delivered to, exactly like claude/codex.
+func TestPromptInjector_MixedBatchDeliversToGrok(t *testing.T) {
+	client := &countingPromptInjectionTmuxClient{captureOutput: "ready>\n"}
 	injector := NewPromptInjector().WithStaggerDelay(0)
 	injector.tmuxClientOverride = client
+	injector.EnterDelay = 0
+	injector.DoubleEnterDelay = 0
 	targets := []InjectionTarget{
 		{SessionPane: "proj:1.1", AgentType: "cc"},
 		{SessionPane: "proj:1.2", AgentType: "grok"},
@@ -293,17 +322,26 @@ func TestPromptInjector_MixedBatchPreflightIsAtomic(t *testing.T) {
 	}
 
 	result, err := injector.InjectBatchWithContext(context.Background(), targets, "continue")
-	if !errors.Is(err, agent.ErrAutomatedPromptDeliveryNotImplemented) {
-		t.Fatalf("InjectBatchWithContext() error = %v, want automated prompt delivery sentinel", err)
+	if err != nil {
+		t.Fatalf("InjectBatchWithContext() error = %v, want mixed grok batch accepted", err)
 	}
 	if result == nil {
 		t.Fatal("InjectBatchWithContext() returned nil result")
 	}
-	if result.TotalPanes != len(targets) || result.Successful != 0 || result.Failed != 0 || len(result.Results) != 0 {
-		t.Fatalf("batch result mutated before preflight completed: %+v", result)
+	if result.TotalPanes != len(targets) || result.Successful != len(targets) || result.Failed != 0 || len(result.Results) != len(targets) {
+		t.Fatalf("batch result = %+v, want all %d panes delivered", result, len(targets))
 	}
-	if client.captureCount != 0 || client.getPanesCount != 0 || client.sendKeysCount != 0 || client.sendForAgentCount != 0 {
-		t.Fatalf("mixed batch made tmux calls before Grok rejection: %+v", client)
+	if client.sendForAgentCount != len(targets) {
+		t.Fatalf("SendKeysForAgent calls = %d, want %d (grok pane must be included)", client.sendForAgentCount, len(targets))
+	}
+	grokDelivered := false
+	for _, send := range client.sentForAgent {
+		if send.pane == "proj:1.2" {
+			grokDelivered = true
+		}
+	}
+	if !grokDelivered {
+		t.Fatalf("grok pane proj:1.2 never received a send: %+v", client.sentForAgent)
 	}
 }
 

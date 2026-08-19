@@ -174,14 +174,10 @@ func TestGetValue_ConfigServiceRemainingSections(t *testing.T) {
 		{"agents.cursor"},
 		{"help_verbosity"},
 		{"palette_file"},
-		{"suggestions_enabled"},
 		{"palette"},
 		{"palette_state.pinned"},
 		{"tmux.history_limit"},
 		{"robot.verbosity"},
-		{"robot.output.timestamps"},
-		{"integrations.caam.enabled"},
-		{"integrations.rch.preferred_worker"},
 		{"models.codex"},
 		{"checkpoints.before_add_agents"},
 		{"notifications.webhook.method"},
@@ -190,20 +186,10 @@ func TestGetValue_ConfigServiceRemainingSections(t *testing.T) {
 		{"recovery.max_recovery_tokens"},
 		{"cleanup.max_age_hours"},
 		{"assign.strategy"},
-		{"spawn_pacing.agent_caps.codex_rate_per_sec"},
 		{"encryption.key_format"},
 		{"send.base_prompt_file"},
 		{"prompts.gmi_default_file"},
 		{"models.default_claude"},
-		{"cass.show_install_hints"},
-		{"cass.duplicates.prompt_on_match"},
-		{"cass.search.default_limit"},
-		{"cass.tui.show_status_indicator"},
-		{"scanner.defaults.languages"},
-		{"scanner.thresholds.pre_commit.block_critical"},
-		{"scanner.beads.labels"},
-		{"scanner.notifications.enabled"},
-		{"accounts.codex"},
 		{"rotation.auto_trigger"},
 		{"gemini_setup.verbose"},
 	}
@@ -232,29 +218,6 @@ func TestGetValue_Alerts(t *testing.T) {
 		{"alerts.bead_stale_hours"},
 		{"alerts.context_warning_threshold"},
 		{"alerts.resolved_prune_minutes"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.path, func(t *testing.T) {
-			t.Parallel()
-			_, err := GetValue(cfg, tt.path)
-			if err != nil {
-				t.Errorf("GetValue(%q) error = %v", tt.path, err)
-			}
-		})
-	}
-}
-
-func TestGetValue_TmuxActivityIndicators(t *testing.T) {
-	t.Parallel()
-	cfg := Default()
-
-	tests := []struct {
-		path string
-	}{
-		{"tmux.activity_indicators"},
-		{"tmux.activity_indicators.enabled"},
-		{"tmux.activity_indicators.active_seconds"},
-		{"tmux.activity_indicators.stalled_seconds"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.path, func(t *testing.T) {
@@ -329,9 +292,7 @@ func TestGetValue_MemoryPrivacySwarmAndRano(t *testing.T) {
 		{"swarm.auto_rotate_accounts"},
 		{"integrations.rano"},
 		{"integrations.rano.enabled"},
-		{"integrations.rano.binary_path"},
 		{"integrations.rano.poll_interval_ms"},
-		{"integrations.rano.providers"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.path, func(t *testing.T) {
@@ -709,33 +670,6 @@ func TestValidateRanoConfig_PollIntervalBoundary(t *testing.T) {
 	}
 }
 
-func TestValidateRanoConfig_BinaryPathNotExists(t *testing.T) {
-	t.Parallel()
-	cfg := &RanoConfig{
-		Enabled:        true,
-		BinaryPath:     "/nonexistent/rano",
-		PollIntervalMs: 200,
-	}
-	err := ValidateRanoConfig(cfg)
-	if err == nil {
-		t.Error("ValidateRanoConfig with nonexistent binary should return error")
-	}
-}
-
-func TestValidateRanoConfig_BinaryPathIsDir(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	cfg := &RanoConfig{
-		Enabled:        true,
-		BinaryPath:     dir,
-		PollIntervalMs: 200,
-	}
-	err := ValidateRanoConfig(cfg)
-	if err == nil {
-		t.Error("ValidateRanoConfig with directory binary should return error")
-	}
-}
-
 // =============================================================================
 // applyEnvOverrides tests (46.2% → target >80%)
 // =============================================================================
@@ -926,37 +860,6 @@ func TestValidateProcessTriageConfig_Unconfigured(t *testing.T) {
 	}
 }
 
-func TestValidateProcessTriageConfig_BinaryNotExists(t *testing.T) {
-	t.Parallel()
-	cfg := &ProcessTriageConfig{
-		Enabled:        true,
-		BinaryPath:     "/nonexistent/pt",
-		CheckInterval:  10,
-		IdleThreshold:  60,
-		StuckThreshold: 120,
-	}
-	err := ValidateProcessTriageConfig(cfg)
-	if err == nil {
-		t.Error("should error for nonexistent binary")
-	}
-}
-
-func TestValidateProcessTriageConfig_BinaryIsDir(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	cfg := &ProcessTriageConfig{
-		Enabled:        true,
-		BinaryPath:     dir,
-		CheckInterval:  10,
-		IdleThreshold:  60,
-		StuckThreshold: 120,
-	}
-	err := ValidateProcessTriageConfig(cfg)
-	if err == nil {
-		t.Error("should error for directory as binary")
-	}
-}
-
 func TestValidateProcessTriageConfig_CheckIntervalTooLow(t *testing.T) {
 	t.Parallel()
 	cfg := &ProcessTriageConfig{
@@ -1035,25 +938,6 @@ func TestValidateProcessTriageConfig_StuckEqualIdle(t *testing.T) {
 	}
 	if err := ValidateProcessTriageConfig(cfg); err != nil {
 		t.Errorf("stuck_threshold=idle_threshold should be valid: %v", err)
-	}
-}
-
-func TestValidateProcessTriageConfig_ValidBinary(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	binPath := filepath.Join(dir, "pt")
-	if err := os.WriteFile(binPath, []byte("#!/bin/sh"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	cfg := &ProcessTriageConfig{
-		Enabled:        true,
-		BinaryPath:     binPath,
-		CheckInterval:  10,
-		IdleThreshold:  60,
-		StuckThreshold: 120,
-	}
-	if err := ValidateProcessTriageConfig(cfg); err != nil {
-		t.Errorf("valid config should pass: %v", err)
 	}
 }
 
@@ -1167,7 +1051,6 @@ func TestValidate_NegativeCheckpoints(t *testing.T) {
 	cfg := Default()
 	cfg.Checkpoints.MaxAutoCheckpoints = -1
 	cfg.Checkpoints.ScrollbackLines = -1
-	cfg.Checkpoints.IntervalMinutes = -1
 	errs := Validate(cfg)
 	cpCount := 0
 	for _, e := range errs {
@@ -1175,8 +1058,8 @@ func TestValidate_NegativeCheckpoints(t *testing.T) {
 			cpCount++
 		}
 	}
-	if cpCount < 3 {
-		t.Errorf("expected at least 3 checkpoint errors, got %d", cpCount)
+	if cpCount < 2 {
+		t.Errorf("expected at least 2 checkpoint errors, got %d", cpCount)
 	}
 }
 
@@ -1771,20 +1654,15 @@ func TestMergeStringListPreferFirst_AllEmpty(t *testing.T) {
 func TestValidate_WiresSectionSpecificValidators(t *testing.T) {
 	t.Parallel()
 	cfg := Default()
-	cfg.Tmux.ActivityIndicators.ActiveSeconds = 0
 	cfg.FileReservation.DefaultTTLMin = 0
-	cfg.Scanner.Defaults.Timeout = "nope"
 	cfg.Memory.QueryTimeoutSeconds = 0
 	cfg.Integrations.Rano.PollIntervalMs = 50
-	cfg.Accounts.ResetBufferMinutes = -1
 	cfg.SessionRecovery.MaxRecoveryTokens = -1
 	cfg.Cleanup.MaxAgeHours = -1
 	cfg.Assign.Strategy = "nonsense"
 	cfg.Checkpoints.BeforeAddAgents = -1
 	cfg.Resilience.HealthCheckSeconds = -1
 	cfg.Resilience.CrashThreshold = -1
-	cfg.CASS.Duplicates.SimilarityThreshold = 2
-	cfg.CASS.Search.DefaultLimit = -1
 	cfg.Tmux.HistoryLimit = -1
 	cfg.Rotation.Thresholds.WarningPercent = 101
 	cfg.GeminiSetup.ReadyTimeoutSeconds = -1
@@ -1798,20 +1676,15 @@ func TestValidate_WiresSectionSpecificValidators(t *testing.T) {
 	}
 
 	wantPaths := []string{
-		"tmux.activity_indicators",
 		"file_reservation",
-		"scanner",
 		"memory",
 		"integrations.rano",
-		"accounts",
 		"recovery.max_recovery_tokens",
 		"cleanup.max_age_hours",
 		"assign.strategy",
 		"checkpoints.before_add_agents",
 		"resilience.health_check_seconds",
 		"resilience.crash_threshold",
-		"cass.duplicates.similarity_threshold",
-		"cass.search.default_limit",
 		"tmux.history_limit",
 		"rotation",
 		"gemini_setup",
@@ -1835,7 +1708,6 @@ func TestDiff_RecentConfigServiceSections(t *testing.T) {
 	t.Parallel()
 	cfg := Default()
 	defaults := Default()
-	cfg.Tmux.ActivityIndicators.StalledSeconds = defaults.Tmux.ActivityIndicators.StalledSeconds + 1
 	cfg.FileReservation.Debug = !defaults.FileReservation.Debug
 	cfg.Memory.MaxRules = defaults.Memory.MaxRules + 1
 	cfg.Privacy.Enabled = !defaults.Privacy.Enabled
@@ -1844,7 +1716,6 @@ func TestDiff_RecentConfigServiceSections(t *testing.T) {
 
 	diffs := Diff(cfg)
 	wantPaths := []string{
-		"tmux.activity_indicators.stalled_seconds",
 		"file_reservation.debug",
 		"memory.max_rules",
 		"privacy.enabled",
@@ -1865,14 +1736,10 @@ func TestDiff_ConfigServiceRemainingSections(t *testing.T) {
 	cfg.Agents.Cursor = "cursor-agent"
 	cfg.PaletteState.Pinned = []string{"fresh_review"}
 	cfg.Tmux.HistoryLimit = defaults.Tmux.HistoryLimit + 100
-	cfg.Robot.Output.Timestamps = !defaults.Robot.Output.Timestamps
 	cfg.Integrations.CAAM.ResetHorizonMinutes = defaults.Integrations.CAAM.ResetHorizonMinutes + 1
-	cfg.Integrations.RCH.PreferredWorker = "worker-2"
 	cfg.Integrations.ProcessTriage.UseRanoData = !defaults.Integrations.ProcessTriage.UseRanoData
 	cfg.Models.Codex = map[string]string{"max": "gpt-5.5-codex"}
-	cfg.Checkpoints.OnError = !defaults.Checkpoints.OnError
 	cfg.Notifications.Webhook.Headers = map[string]string{"X-Test": "1"}
-	cfg.Resilience.RateLimit.Patterns = []string{"quota exceeded"}
 	cfg.ContextRotation.DefaultConfirmAction = "compact"
 	cfg.SessionRecovery.MaxRecoveryTokens = defaults.SessionRecovery.MaxRecoveryTokens + 500
 	cfg.Cleanup.MaxAgeHours = defaults.Cleanup.MaxAgeHours + 1
@@ -1881,9 +1748,6 @@ func TestDiff_ConfigServiceRemainingSections(t *testing.T) {
 	cfg.Encryption.KeyFormat = "base64"
 	cfg.Send.BasePromptFile = "/tmp/base-prompt.md"
 	cfg.Prompts.CCDefaultFile = "/tmp/claude-prompt.md"
-	cfg.CASS.Duplicates.LookbackDays = defaults.CASS.Duplicates.LookbackDays + 1
-	cfg.Scanner.Tools.Disabled = []string{"shellcheck"}
-	cfg.Accounts.Codex = []AccountEntry{{Email: "codex@example.com", Alias: "cod", Priority: 2}}
 	cfg.Rotation.AutoTrigger = !defaults.Rotation.AutoTrigger
 	cfg.GeminiSetup.Verbose = !defaults.GeminiSetup.Verbose
 
@@ -1892,14 +1756,10 @@ func TestDiff_ConfigServiceRemainingSections(t *testing.T) {
 		"agents.cursor",
 		"palette_state.pinned",
 		"tmux.history_limit",
-		"robot.output.timestamps",
 		"integrations.caam.reset_horizon_minutes",
-		"integrations.rch.preferred_worker",
 		"integrations.process_triage.use_rano_data",
 		"models.codex",
-		"checkpoints.on_error",
 		"notifications.webhook.headers",
-		"resilience.rate_limit.patterns",
 		"context_rotation.default_confirm_action",
 		"recovery.max_recovery_tokens",
 		"cleanup.max_age_hours",
@@ -1908,9 +1768,6 @@ func TestDiff_ConfigServiceRemainingSections(t *testing.T) {
 		"encryption.key_format",
 		"send.base_prompt_file",
 		"prompts.cc_default_file",
-		"cass.duplicates.lookback_days",
-		"scanner.tools.disabled",
-		"accounts.codex",
 		"rotation.auto_trigger",
 		"gemini_setup.verbose",
 	}

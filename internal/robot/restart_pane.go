@@ -219,9 +219,18 @@ func restartOverrideAppendFlags(resolvedType string, override restartLaunchOverr
 		if needModel && override.Model != "" {
 			flags.WriteString(" --model " + tmux.ShellQuote(override.Model))
 		}
+	case "grok":
+		// Grok Build exposes --model and --effort (alias of --reasoning-effort);
+		// last-flag-wins parsing verified against grok 1.0.5 --help (GH#251).
+		if needModel && override.Model != "" {
+			flags.WriteString(" --model " + tmux.ShellQuote(override.Model))
+		}
+		if needEffort && override.Effort != "" {
+			flags.WriteString(" --effort " + tmux.ShellQuote(override.Effort))
+		}
 	default:
 		if override.Model != "" || override.Effort != "" {
-			return "", fmt.Errorf("agent type %q does not support a restart model override; supported: claude, codex, gemini", resolvedType)
+			return "", fmt.Errorf("agent type %q does not support a restart model override; supported: claude, codex, gemini, grok", resolvedType)
 		}
 	}
 	return flags.String(), nil
@@ -1695,6 +1704,8 @@ func restartAgentLaunchCommandWithOverride(cfg *config.Config, agentType, varian
 			tmpl = cfg.Agents.Gemini
 		case "antigravity":
 			tmpl = cfg.Agents.Antigravity
+		case "grok":
+			tmpl = cfg.Agents.Grok
 		case "cursor":
 			tmpl = cfg.Agents.Cursor
 		case "windsurf":

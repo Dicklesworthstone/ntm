@@ -1228,7 +1228,7 @@ func buildCommandRegistry() []RobotCommandInfo {
 				{Name: "spawn-cod", Flag: "--spawn-cod", Type: "string", Required: false, Description: "Codex agents: count[:model[:effort]] (effort also as model@effort), e.g. 1 or 8:gpt-5.3-codex:high"},
 				{Name: "spawn-gmi", Flag: "--spawn-gmi", Type: "string", Required: false, Description: "Gemini agents (legacy): count[:model]"},
 				{Name: "spawn-agy", Flag: "--spawn-agy", Type: "string", Required: false, Description: "Antigravity (agy) agents: count (model is pinned by config)"},
-				{Name: "spawn-grok", Flag: "--spawn-grok", Type: "string", Required: false, Description: "Grok Build agents: count[:model[:effort]] (phase one: launch only; no wait or assignment)"},
+				{Name: "spawn-grok", Flag: "--spawn-grok", Type: "string", Required: false, Description: "Grok Build agents: count[:model[:effort]]"},
 				{Name: "spawn-preset", Flag: "--spawn-preset", Type: "string", Required: false, Description: "Use recipe preset instead of counts"},
 				{Name: "spawn-no-user", Flag: "--spawn-no-user", Type: "bool", Required: false, Description: "Skip user pane creation"},
 				{Name: "spawn-wait", Flag: "--spawn-wait", Type: "bool", Required: false, Description: "Wait for agents to show ready state before returning"},

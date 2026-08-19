@@ -159,6 +159,19 @@ func (d *UnifiedDetector) determineStateAt(output, agentType string, lastActivit
 		}
 	}
 
+	// Grok Build mirrors the Claude/Codex arms above: its bordered composer is
+	// permanent chrome and its live activity line renders ABOVE the composer,
+	// so the shared in-flight classifier outranks both velocity and the
+	// prompt-line scan (GH#251 phase 2, live grok 1.0.5 captures).
+	if agentType == string(agent.AgentTypeGrok) {
+		if agent.GrokActivelyWorking(output, 0) {
+			return StateWorking, ErrorNone
+		}
+		if DetectIdleFromOutput(output, agentType) {
+			return StateIdle, ErrorNone
+		}
+	}
+
 	// Check if at prompt (idle) - prioritize this when velocity is low
 	isAtPrompt := DetectIdleFromOutput(output, agentType)
 	if isAtPrompt && isLowVelocity {

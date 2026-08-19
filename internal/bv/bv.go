@@ -108,7 +108,7 @@ func IsInstalled() bool {
 // run executes bv with given args and returns stdout.
 // It includes retry logic for transient database locks.
 func run(dir string, args ...string) (string, error) {
-	return runWithTimeout(dir, DefaultTimeout, args...)
+	return runWithTimeout(dir, CommandTimeout(), args...)
 }
 
 func runWithTimeout(dir string, timeout time.Duration, args ...string) (string, error) {
@@ -126,7 +126,7 @@ func runWithContextTimeout(parent context.Context, dir string, timeout time.Dura
 		return "", ErrNotInstalled
 	}
 	if timeout <= 0 {
-		timeout = DefaultTimeout
+		timeout = CommandTimeout()
 	}
 
 	normalizedDir, err := normalizeTriageDir(dir)
@@ -200,7 +200,7 @@ func GetInsights(dir string) (*InsightsResponse, error) {
 
 // GetInsightsContext returns graph insights with caller cancellation.
 func GetInsightsContext(ctx context.Context, dir string) (*InsightsResponse, error) {
-	output, err := runWithContextTimeout(ctx, dir, DefaultTimeout, "--robot-insights")
+	output, err := runWithContextTimeout(ctx, dir, CommandTimeout(), "--robot-insights")
 	if err != nil {
 		return nil, err
 	}
@@ -235,7 +235,7 @@ func GetPlan(dir string) (*PlanResponse, error) {
 
 // GetPlanContext returns the parallel execution plan with caller cancellation.
 func GetPlanContext(ctx context.Context, dir string) (*PlanResponse, error) {
-	output, err := runWithContextTimeout(ctx, dir, DefaultTimeout, "--robot-plan")
+	output, err := runWithContextTimeout(ctx, dir, CommandTimeout(), "--robot-plan")
 	if err != nil {
 		return nil, err
 	}
@@ -356,7 +356,7 @@ func CheckDrift(dir string) DriftResult {
 		}
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), DefaultTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), CommandTimeout())
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "bv", "--check-drift")

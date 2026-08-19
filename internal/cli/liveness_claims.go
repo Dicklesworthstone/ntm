@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/encryption"
 	"github.com/Dicklesworthstone/ntm/internal/hooks"
@@ -79,6 +80,8 @@ func init() {
 		"coordinator.send_digests",
 		"coordinator.human_agent",
 		"coordinator.mail_nudge",
+		"coordinator.nudge_cooldown_seconds",
+		"coordinator.nudge_message",
 	} {
 		config.RegisterReader(key, coordinatorConfigFromTOML)
 	}
@@ -229,7 +232,32 @@ func init() {
 	config.RegisterReader("integrations.rch.enabled", spawnSessionLogicContextWithOutput)
 	config.RegisterReader("integrations.rch.binary_path", spawnSessionLogicContextWithOutput)
 	config.RegisterReader("integrations.rch.intercept_patterns", spawnSessionLogicContextWithOutput)
+	// bv subprocess timeout: root.go PersistentPreRunE installs it into
+	// internal/bv via ConfigureCommandTimeout (GH#253).
+	config.RegisterReader("integrations.bv.timeout_seconds", bv.ConfigureCommandTimeout)
 
 	// Swarm launch stagger (swarm.go).
 	config.RegisterReader("swarm.stagger_delay_ms", runSwarm)
+
+	// Swarm global-auth clobber escape hatch (swarm.go): the config value
+	// seeds the --force-global-auth-clobber flag default (bd-6otuk fixed the
+	// prior wiring bug where the flag's hard-coded false overwrote the config
+	// value before any read).
+	config.RegisterReader("swarm.force_global_auth_clobber", newSwarmCmd)
+
+	// Ensemble defaults consumed in EVERY build by the --robot-ensemble-spawn
+	// dispatch (root.go applyRobotEnsembleConfigDefaults); under
+	// -tags ensemble_experimental the same keys also feed the real spawn
+	// paths (ensemble_spawn.go, robot/ensemble_spawn.go). The remaining
+	// ensemble.* keys are read only under the build tag — see
+	// liveness_claims_ensemble.go and the permanent entries in
+	// ci/allowlists/config.txt (bd-6otuk).
+	config.RegisterReader("ensemble.default_ensemble", applyRobotEnsembleConfigDefaults)
+	config.RegisterReader("ensemble.agent_mix", applyRobotEnsembleConfigDefaults)
+	config.RegisterReader("ensemble.assignment", applyRobotEnsembleConfigDefaults)
+	config.RegisterReader("ensemble.allow_advanced", applyRobotEnsembleConfigDefaults)
+	config.RegisterReader("ensemble.mode_tier_default", applyRobotEnsembleConfigDefaults)
+	config.RegisterReader("ensemble.budget.total", applyRobotEnsembleConfigDefaults)
+	config.RegisterReader("ensemble.budget.per_agent", applyRobotEnsembleConfigDefaults)
+	config.RegisterReader("ensemble.cache.enabled", applyRobotEnsembleConfigDefaults)
 }

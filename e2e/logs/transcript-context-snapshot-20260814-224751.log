@@ -1,0 +1,492 @@
+[0s] [E2E-START] === E2E Test Started: transcript-context-snapshot ===
+[0s] [E2E-START] Timestamp: 2026-08-14T22:47:51-04:00
+[0s] [E2E-START] Log file: /Users/jemanuel/projects/ntm/e2e/logs/transcript-context-snapshot-20260814-224751.log
+[2ms] [FIXTURE] path=/var/folders/vt/n2xyn_s51b97_j3yh2qbqcnc0000gn/T/TestTranscriptContextSnapshotParity559998758/001/.claude/projects/-private-var-folders-vt-n2xyn-s51b97-j3yh2qbqcnc0000gn-T-TestTranscriptContextSnapshotParity559998758-002/session-snapshot.jsonl bytes=454 sha256=6f66b918e7ed9e0e230ab6d99e28aa97c78e08225e0aeb2ac284e13fac432bb1
+[72ms] [SETUP] session=ntm-e2e-tctx-57463-994000 pane=%0 projDir=/private/var/folders/vt/n2xyn_s51b97_j3yh2qbqcnc0000gn/T/TestTranscriptContextSnapshotParity559998758/002
+[10.593s] [NTM] HOME=/var/folders/vt/n2xyn_s51b97_j3yh2qbqcnc0000gn/T/TestTranscriptContextSnapshotParity559998758/001 args=[--robot-context=ntm-e2e-tctx-57463-994000] exit=0
+[10.594s] [NTM] output={
+  "success": true,
+  "timestamp": "2026-08-15T02:48:02Z",
+  "version": "1.0.0",
+  "output_format": "json",
+  "session": "ntm-e2e-tctx-57463-994000",
+  "captured_at": "2026-08-15T02:48:02.378721Z",
+  "agents": [
+    {
+      "pane": "0",
+      "pane_idx": 0,
+      "agent_type": "claude",
+      "model": "claude-fable-5",
+      "estimated_tokens": 120000,
+      "with_overhead": 120000,
+      "context_limit": 200000,
+      "usage_percent": 60,
+      "usage_level": "Medium",
+      "confidence": "high",
+      "state": "idle",
+      "source": "transcript",
+      "transcript_tokens": 120000,
+      "transcript_model": "claude-fable-5",
+      "transcript_path": "/var/folders/vt/n2xyn_s51b97_j3yh2qbqcnc0000gn/T/TestTranscriptContextSnapshotParity559998758/001/.claude/projects/-private-var-folders-vt-n2xyn-s51b97-j3yh2qbqcnc0000gn-T-TestTranscriptContextSnapshotParity559998758-002/session-snapshot.jsonl",
+      "transcript_updated_at": "2026-08-15T02:47:51Z"
+    }
+  ],
+  "summary": {
+    "total_agents": 1,
+    "high_usage_count": 0,
+    "avg_usage": 60
+  },
+  "_agent_hints": {
+    "suggestions": [
+      "All agents at moderate context usage - no immediate concerns"
+    ]
+  }
+}
+[10.594s] [E2E-JSON] context_agents:
+[
+  {
+    "pane": "0",
+    "pane_idx": 0,
+    "agent_type": "claude",
+    "model": "claude-fable-5",
+    "estimated_tokens": 120000,
+    "with_overhead": 120000,
+    "context_limit": 200000,
+    "usage_percent": 60,
+    "usage_level": "Medium",
+    "confidence": "high",
+    "state": "idle",
+    "source": "transcript",
+    "transcript_tokens": 120000,
+    "transcript_model": "claude-fable-5",
+    "transcript_path": "/var/folders/vt/n2xyn_s51b97_j3yh2qbqcnc0000gn/T/TestTranscriptContextSnapshotParity559998758/001/.claude/projects/-private-var-folders-vt-n2xyn-s51b97-j3yh2qbqcnc0000gn-T-TestTranscriptContextSnapshotParity559998758-002/session-snapshot.jsonl",
+    "transcript_updated_at": "2026-08-15T02:47:51Z"
+  }
+]
+[32.905s] [NTM] HOME=/var/folders/vt/n2xyn_s51b97_j3yh2qbqcnc0000gn/T/TestTranscriptContextSnapshotParity559998758/001 args=[--robot-snapshot] exit=0
+[32.91s] [NTM] output={
+  "success": true,
+  "timestamp": "2026-08-15T02:48:12Z",
+  "version": "1.0.0",
+  "output_format": "json",
+  "schema_id": "ntm:robot:snapshot:v1",
+  "schema_version": "ntm.robot.snapshot.v1",
+  "ts": "2026-08-15T02:48:12Z",
+  "safety_profile": "standard",
+  "attention_contract_version": "1.2.0",
+  "latest_cursor": 0,
+  "replay_window": {
+    "supported": false,
+    "reason": "no events in feed yet",
+    "oldest_cursor": 0,
+    "latest_cursor": 0,
+    "event_count": 0,
+    "retention_period": "1h0m0s",
+    "resync_command": "ntm --robot-snapshot"
+  },
+  "sessions": [],
+  "active_incidents": [],
+  "sources": {
+    "sources": {},
+    "all_fresh": false
+  },
+  "summary": {
+    "total_sessions": 0,
+    "total_agents": 0,
+    "attached_count": 0,
+    "claude_count": 0,
+    "codex_count": 0,
+    "gemini_count": 0,
+    "antigravity_count": 0,
+    "grok_count": 0,
+    "cursor_count": 0,
+    "windsurf_count": 0,
+    "aider_count": 0,
+    "opencode_count": 0,
+    "ollama_count": 0,
+    "agents_by_state": {},
+    "agents_by_type": {},
+    "ready_work": 0,
+    "in_progress": 0,
+    "health_score": 1,
+    "health_status": "healthy",
+    "alerts_active": 0,
+    "mail_unread": 0,
+    "mail_urgent": 0
+  },
+  "work": {
+    "ready": [],
+    "blocked": [],
+    "in_progress": [],
+    "summary": {
+      "total": 0,
+      "open": 0,
+      "in_progress": 0,
+      "closed": 0,
+      "ready": 0,
+      "blocked": 0
+    },
+    "available": false,
+    "reason": "runtime projection empty"
+  },
+  "beads_summary": {
+    "available": true,
+    "project": "/Users/jemanuel/projects/ntm"
+  },
+  "coordination": {
+    "available": false,
+    "mail_unread": 0,
+    "mail_urgent": 0,
+    "pending_ack": 0,
+    "has_handoff": false
+  },
+  "quota": {
+    "accounts": [],
+    "available": false,
+    "reason": "runtime projection empty"
+  },
+  "tools": [
+    {
+      "name": "acfs",
+      "installed": false,
+      "version": "0.0.0",
+      "capabilities": [],
+      "health": {
+        "healthy": false,
+        "message": "Tool not installed",
+        "last_checked": "2026-08-15T02:48:12Z"
+      }
+    },
+    {
+      "name": "am",
+      "installed": true,
+      "version": "mcp-agent-mail 0.3.26",
+      "path": "/Users/jemanuel/.local/bin/mcp-agent-mail",
+      "capabilities": [
+        "macros",
+        "server_available"
+      ],
+      "health": {
+        "healthy": true,
+        "message": "Agent Mail server is healthy",
+        "latency_ms": 13,
+        "last_checked": "2026-08-15T02:48:12Z"
+      }
+    },
+    {
+      "name": "bd",
+      "installed": true,
+      "version": "br 0.3.0",
+      "path": "/Users/jemanuel/.local/bin/br",
+      "capabilities": [
+        "robot_mode"
+      ],
+      "health": {
+        "healthy": true,
+        "message": "beads_rust is healthy",
+        "latency_ms": 45,
+        "last_checked": "2026-08-15T02:48:13Z"
+      }
+    },
+    {
+      "name": "bv",
+      "installed": true,
+      "version": "bv v0.16.0",
+      "path": "/Users/jemanuel/.local/bin/bv",
+      "capabilities": [
+        "robot_mode"
+      ],
+      "health": {
+        "healthy": true,
+        "message": "bv is healthy",
+        "latency_ms": 48,
+        "last_checked": "2026-08-15T02:48:13Z"
+      },
+      "required": true
+    },
+    {
+      "name": "caam",
+      "installed": true,
+      "version": "caam dev (unknown) built on unknown with go1.25.4",
+      "path": "/opt/homebrew/bin/caam",
+      "capabilities": [
+        "robot_mode"
+      ],
+      "health": {
+        "healthy": true,
+        "message": "caam is healthy",
+        "latency_ms": 57,
+        "last_checked": "2026-08-15T02:48:13Z"
+      }
+    },
+    {
+      "name": "cass",
+      "installed": true,
+      "version": "cass 0.6.24",
+      "path": "/Users/jemanuel/.local/bin/cass",
+      "capabilities": [
+        "robot_mode",
+        "search"
+      ],
+      "health": {
+        "healthy": false,
+        "message": "cass installed but not initialized (run: cass index --full)",
+        "latency_ms": 231,
+        "last_checked": "2026-08-15T02:48:13Z"
+      }
+    },
+    {
+      "name": "caut",
+      "installed": true,
+      "version": "caut 0.1.0",
+      "path": "/Users/jemanuel/.cargo/bin/caut",
+      "capabilities": [
+        "robot_mode"
+      ],
+      "health": {
+        "healthy": true,
+        "message": "caut is healthy",
+        "latency_ms": 15,
+        "last_checked": "2026-08-15T02:48:12Z"
+      }
+    },
+    {
+      "name": "cm",
+      "installed": true,
+      "version": "0.2.0",
+      "path": "/Users/jemanuel/.local/bin/cm",
+      "capabilities": [
+        "robot_mode"
+      ],
+      "health": {
+        "healthy": true,
+        "message": "cm is healthy (daemon not running)",
+        "latency_ms": 365,
+        "last_checked": "2026-08-15T02:48:14Z"
+      }
+    },
+    {
+      "name": "dcg",
+      "installed": true,
+      "version": "0.9.2",
+      "path": "/Users/jemanuel/.local/bin/dcg",
+      "capabilities": [
+        "robot_mode"
+      ],
+      "health": {
+        "healthy": true,
+        "message": "dcg is healthy",
+        "latency_ms": 12,
+        "last_checked": "2026-08-15T02:48:12Z"
+      }
+    },
+    {
+      "name": "giil",
+      "installed": true,
+      "version": "giil version 3.1.0 (Hybrid Edition)",
+      "path": "/Users/jemanuel/.local/bin/giil",
+      "capabilities": [
+        "robot_mode"
+      ],
+      "health": {
+        "healthy": true,
+        "message": "giil is healthy",
+        "latency_ms": 27,
+        "last_checked": "2026-08-15T02:48:12Z"
+      }
+    },
+    {
+      "name": "jfp",
+      "installed": true,
+      "version": "jfp/1.0.0 darwin-arm64 node-v24.3.0",
+      "path": "/Users/jemanuel/.local/bin/jfp",
+      "capabilities": [
+        "robot_mode",
+        "search",
+        "list",
+        "show",
+        "install",
+        "export",
+        "update",
+        "suggest",
+        "mcp_server"
+      ],
+      "health": {
+        "healthy": true,
+        "message": "jfp is healthy",
+        "latency_ms": 259,
+        "last_checked": "2026-08-15T02:48:14Z"
+      }
+    },
+    {
+      "name": "ms",
+      "installed": false,
+      "version": "0.0.0",
+      "capabilities": [],
+      "health": {
+        "healthy": false,
+        "message": "Tool not installed",
+        "last_checked": "2026-08-15T02:48:12Z"
+      }
+    },
+    {
+      "name": "pt",
+      "installed": true,
+      "version": "pt 2.0.5",
+      "path": "/Users/jemanuel/.local/bin/pt",
+      "capabilities": [],
+      "health": {
+        "healthy": true,
+        "message": "pt is healthy (version check passed)",
+        "latency_ms": 59,
+        "last_checked": "2026-08-15T02:48:13Z"
+      }
+    },
+    {
+      "name": "rano",
+      "installed": false,
+      "version": "0.0.0",
+      "capabilities": [],
+      "health": {
+        "healthy": false,
+        "message": "Tool not installed",
+        "last_checked": "2026-08-15T02:48:12Z"
+      }
+    },
+    {
+      "name": "rch",
+      "installed": true,
+      "version": "rch 1.0.56 (commit 2a493e5a680b)",
+      "path": "/Users/jemanuel/.local/bin/rch",
+      "capabilities": [
+        "robot_mode"
+      ],
+      "health": {
+        "healthy": true,
+        "message": "rch is healthy",
+        "latency_ms": 15,
+        "last_checked": "2026-08-15T02:48:12Z"
+      }
+    },
+    {
+      "name": "ru",
+      "installed": true,
+      "version": "ru version 1.0.1",
+      "path": "/Users/jemanuel/.local/bin/ru",
+      "capabilities": [],
+      "health": {
+        "healthy": true,
+        "message": "ru is healthy",
+        "latency_ms": 118,
+        "last_checked": "2026-08-15T02:48:13Z"
+      }
+    },
+    {
+      "name": "rust_proxy",
+      "installed": false,
+      "version": "0.0.0",
+      "capabilities": [],
+      "health": {
+        "healthy": false,
+        "message": "Tool not installed",
+        "last_checked": "2026-08-15T02:48:12Z"
+      }
+    },
+    {
+      "name": "s2p",
+      "installed": true,
+      "version": "0.0.0",
+      "path": "/Users/jemanuel/.local/bin/s2p",
+      "capabilities": [
+        "context_pack"
+      ],
+      "health": {
+        "healthy": false,
+        "message": "s2p at /Users/jemanuel/.local/bin/s2p not responding",
+        "error": "failed to get s2p version: exit status 1",
+        "latency_ms": 379,
+        "last_checked": "2026-08-15T02:48:14Z"
+      }
+    },
+    {
+      "name": "slb",
+      "installed": true,
+      "version": "0.0.0",
+      "path": "/Users/jemanuel/.cargo/bin/slb",
+      "capabilities": [
+        "robot_mode",
+        "daemon_mode",
+        "request",
+        "approve",
+        "deny",
+        "status",
+        "pending"
+      ],
+      "health": {
+        "healthy": false,
+        "message": "slb at /Users/jemanuel/.cargo/bin/slb not responding",
+        "error": "failed to get slb version: exit status 1",
+        "latency_ms": 10,
+        "last_checked": "2026-08-15T02:48:12Z"
+      }
+    },
+    {
+      "name": "ubs",
+      "installed": true,
+      "version": "UBS Meta-Runner v5.2.42 (git 01402394)",
+      "path": "/Users/jemanuel/.local/bin/ubs",
+      "capabilities": [],
+      "health": {
+        "healthy": true,
+        "message": "ubs is healthy",
+        "latency_ms": 104,
+        "last_checked": "2026-08-15T02:48:13Z"
+      }
+    },
+    {
+      "name": "xf",
+      "installed": false,
+      "version": "0.0.0",
+      "capabilities": [],
+      "health": {
+        "healthy": false,
+        "message": "Tool not installed",
+        "last_checked": "2026-08-15T02:48:12Z"
+      }
+    }
+  ],
+  "resource_pressure": {
+    "success": true,
+    "timestamp": "2026-08-15T02:48:12.570706Z",
+    "mode": "observe",
+    "overall": "low",
+    "limiting": null,
+    "recommended_action": "ok",
+    "enforcing": false,
+    "sources": null
+  },
+  "alerts": [],
+  "attention_summary": {
+    "total_events": 0,
+    "action_required_count": 0,
+    "interesting_count": 0,
+    "unsupported_signals": [
+      "bead_orphaned"
+    ],
+    "next_steps": [
+      {
+        "action": "robot-status",
+        "args": "--robot-status",
+        "reason": "Inspect the current robot state while the attention feed is still empty"
+      },
+      {
+        "action": "robot-snapshot",
+        "args": "--robot-snapshot",
+        "reason": "Refresh the bootstrap view after agents start emitting replayable attention events"
+      }
+    ]
+  }
+}
+[32.915s] [DELTA] bd-2dqv5 expected snapshot context_percent=60; actual: projection-backed --robot-snapshot returned zero sessions (projection refresh persisted no fresh rows), so the transcript-derived percent surfaces only via --robot-context
+[32.921s] [PASS] snapshot behavior pinned (documented delta: no transcript parity on projection-backed path)
+[33.143s] [E2E-END] === Test completed in 33.143s ===

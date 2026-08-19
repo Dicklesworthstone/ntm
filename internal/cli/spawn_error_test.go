@@ -340,9 +340,6 @@ func TestSessionRecoveryConfig_Defaults(t *testing.T) {
 	if !cfg.AutoInjectOnSpawn {
 		t.Error("AutoInjectOnSpawn should be enabled by default")
 	}
-	if cfg.StaleThresholdHours <= 0 {
-		t.Error("StaleThresholdHours should be positive")
-	}
 }
 
 // TestSessionRecoveryConfig_ZeroTokensDisabled tests that zero tokens effectively disables.

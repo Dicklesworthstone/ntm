@@ -1,0 +1,67 @@
+[0s] [E2E-START] === E2E Test Started: transcript-context-claude-within ===
+[0s] [E2E-START] Timestamp: 2026-08-14T22:46:45-04:00
+[0s] [E2E-START] Log file: /Users/jemanuel/projects/ntm/e2e/logs/transcript-context-claude-within-20260814-224645.log
+[2ms] [FIXTURE] path=/var/folders/vt/n2xyn_s51b97_j3yh2qbqcnc0000gn/T/TestTranscriptContextClaudeWithinWindow2073733468/001/.claude/projects/-private-var-folders-vt-n2xyn-s51b97-j3yh2qbqcnc0000gn-T-TestTranscriptContextClaudeWithinWindow2073733468-002/session-1.jsonl bytes=454 sha256=6f66b918e7ed9e0e230ab6d99e28aa97c78e08225e0aeb2ac284e13fac432bb1
+[1.495s] [SETUP] session=ntm-e2e-tctx-57463-967000 pane=%0 projDir=/private/var/folders/vt/n2xyn_s51b97_j3yh2qbqcnc0000gn/T/TestTranscriptContextClaudeWithinWindow2073733468/002
+[12.874s] [NTM] HOME=/var/folders/vt/n2xyn_s51b97_j3yh2qbqcnc0000gn/T/TestTranscriptContextClaudeWithinWindow2073733468/001 args=[--robot-context=ntm-e2e-tctx-57463-967000] exit=0
+[12.876s] [NTM] output={
+  "success": true,
+  "timestamp": "2026-08-15T02:46:58Z",
+  "version": "1.0.0",
+  "output_format": "json",
+  "session": "ntm-e2e-tctx-57463-967000",
+  "captured_at": "2026-08-15T02:46:58.791463Z",
+  "agents": [
+    {
+      "pane": "0",
+      "pane_idx": 0,
+      "agent_type": "claude",
+      "model": "claude-fable-5",
+      "estimated_tokens": 120000,
+      "with_overhead": 120000,
+      "context_limit": 200000,
+      "usage_percent": 60,
+      "usage_level": "Medium",
+      "confidence": "high",
+      "state": "idle",
+      "source": "transcript",
+      "transcript_tokens": 120000,
+      "transcript_model": "claude-fable-5",
+      "transcript_path": "/var/folders/vt/n2xyn_s51b97_j3yh2qbqcnc0000gn/T/TestTranscriptContextClaudeWithinWindow2073733468/001/.claude/projects/-private-var-folders-vt-n2xyn-s51b97-j3yh2qbqcnc0000gn-T-TestTranscriptContextClaudeWithinWindow2073733468-002/session-1.jsonl",
+      "transcript_updated_at": "2026-08-15T02:46:45Z"
+    }
+  ],
+  "summary": {
+    "total_agents": 1,
+    "high_usage_count": 0,
+    "avg_usage": 60
+  },
+  "_agent_hints": {
+    "suggestions": [
+      "All agents at moderate context usage - no immediate concerns"
+    ]
+  }
+}
+[12.876s] [E2E-JSON] context_agents:
+[
+  {
+    "pane": "0",
+    "pane_idx": 0,
+    "agent_type": "claude",
+    "model": "claude-fable-5",
+    "estimated_tokens": 120000,
+    "with_overhead": 120000,
+    "context_limit": 200000,
+    "usage_percent": 60,
+    "usage_level": "Medium",
+    "confidence": "high",
+    "state": "idle",
+    "source": "transcript",
+    "transcript_tokens": 120000,
+    "transcript_model": "claude-fable-5",
+    "transcript_path": "/var/folders/vt/n2xyn_s51b97_j3yh2qbqcnc0000gn/T/TestTranscriptContextClaudeWithinWindow2073733468/001/.claude/projects/-private-var-folders-vt-n2xyn-s51b97-j3yh2qbqcnc0000gn-T-TestTranscriptContextClaudeWithinWindow2073733468-002/session-1.jsonl",
+    "transcript_updated_at": "2026-08-15T02:46:45Z"
+  }
+]
+[12.881s] [PASS] transcript ground truth surfaced exactly: 120000 tokens = 60%
+[12.912s] [E2E-END] === Test completed in 12.912s ===

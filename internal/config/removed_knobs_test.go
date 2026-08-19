@@ -206,13 +206,16 @@ func TestUnknownFieldStillErrors(t *testing.T) {
 // TestClassifyUndecodedKeys_TableHeaderDedup: when a removed table has
 // concrete child keys, only the children are reported.
 func TestClassifyUndecodedKeys_TableHeaderDedup(t *testing.T) {
-	removed, unknown := classifyUndecodedKeys([]string{
+	removed, deprecated, unknown := classifyUndecodedKeys([]string{
 		"integrations.caut",
 		"integrations.caut.enabled",
 		"integrations.caut.currency",
 	})
 	if len(unknown) != 0 {
 		t.Fatalf("unexpected unknown keys: %v", unknown)
+	}
+	if len(deprecated) != 0 {
+		t.Fatalf("unexpected deprecated keys: %v", deprecated)
 	}
 	got := make([]string, 0, len(removed))
 	for _, k := range removed {

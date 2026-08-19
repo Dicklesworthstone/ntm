@@ -910,7 +910,6 @@ func TestRecoveryContext_BuildGracefulDegradation(t *testing.T) {
 		IncludeBeadsContext: true,
 		MaxRecoveryTokens:   3000,
 		AutoInjectOnSpawn:   true,
-		StaleThresholdHours: 24,
 	}
 
 	rc, err := buildRecoveryContext(ctx, "nonexistent-session-12345", t.TempDir(), recoveryCfg)

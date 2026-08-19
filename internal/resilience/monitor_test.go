@@ -2,14 +2,12 @@ package resilience
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/health"
 )
@@ -100,24 +98,36 @@ func TestRestartAgentUsesBuiltPaneCommandAndSendKeys(t *testing.T) {
 	}
 }
 
-func TestRestartAgentRejectsGrokBeforeLifecycleMutation(t *testing.T) {
+// GH#251 phase 2: grok agents are now valid automated-restart targets, so
+// restartAgent rebuilds and re-sends the grok launch command like claude/codex.
+func TestRestartAgentRestartsGrokLikeOtherAgents(t *testing.T) {
 	restore := saveHooks()
 	defer restore()
 
+	var mu sync.Mutex
 	buildCalls := 0
 	sendCalls := 0
 	setHooksLocked(func() {
 		buildPaneCmdFn = func(string, string) (string, error) {
+			mu.Lock()
+			defer mu.Unlock()
 			buildCalls++
 			return "grok --always-approve", nil
 		}
-		sendKeysFn = func(string, string, bool) error {
+		sendKeysFn = func(paneID, cmd string, enter bool) error {
+			mu.Lock()
+			defer mu.Unlock()
 			sendCalls++
+			if paneID != "pane-1" || cmd != "grok --always-approve" || !enter {
+				t.Errorf("sendKeys(%q, %q, %v), want grok relaunch on pane-1", paneID, cmd, enter)
+			}
 			return nil
 		}
+		sleepFn = func(time.Duration) {}
 	})
 
 	cfg := config.Default()
+	cfg.Resilience.AutoRestart = true
 	cfg.Resilience.RestartDelaySeconds = 0
 	m := NewMonitor("test-session", "/tmp/project", cfg, true)
 	m.RegisterAgent("pane-1", 1, 0, "grok-build", "grok-3", "grok --always-approve")
@@ -125,40 +135,55 @@ func TestRestartAgentRejectsGrokBeforeLifecycleMutation(t *testing.T) {
 	m.agents["pane-1"].Healthy = false
 	m.mu.Unlock()
 
-	if err := validateAutomatedMonitorRestart("xai_grok_build"); !errors.Is(err, agent.ErrAutomatedRelaunchNotImplemented) {
-		t.Fatalf("validateAutomatedMonitorRestart() error = %v, want relaunch sentinel", err)
+	if err := validateAutomatedMonitorRestart("xai_grok_build"); err != nil {
+		t.Fatalf("validateAutomatedMonitorRestart() error = %v, want grok accepted", err)
 	}
 	m.restartAgent(context.Background(), m.agents["pane-1"])
 
-	if buildCalls != 0 || sendCalls != 0 {
-		t.Fatalf("restart hooks called before Grok rejection: build=%d send=%d", buildCalls, sendCalls)
+	mu.Lock()
+	gotBuild, gotSend := buildCalls, sendCalls
+	mu.Unlock()
+	if gotBuild != 1 || gotSend != 1 {
+		t.Fatalf("restart hooks: build=%d send=%d, want 1 and 1", gotBuild, gotSend)
 	}
 	m.mu.RLock()
 	state := *m.agents["pane-1"]
 	m.mu.RUnlock()
-	if state.RestartCount != 0 || state.Healthy {
-		t.Fatalf("Grok restart mutated state: count=%d healthy=%v", state.RestartCount, state.Healthy)
+	if state.RestartCount != 1 || !state.Healthy {
+		t.Fatalf("Grok restart state: count=%d healthy=%v, want restarted and healthy", state.RestartCount, state.Healthy)
 	}
 }
 
-func TestHandleCrashDoesNotScheduleGrokRestart(t *testing.T) {
+// GH#251 phase 2: a crashed grok agent is now scheduled for auto-restart
+// exactly like claude/codex agents.
+func TestHandleCrashSchedulesGrokRestart(t *testing.T) {
 	restore := saveHooks()
 	defer restore()
 
+	var mu sync.Mutex
 	buildCalls := 0
 	sendCalls := 0
 	setHooksLocked(func() {
 		buildPaneCmdFn = func(string, string) (string, error) {
+			mu.Lock()
+			defer mu.Unlock()
 			buildCalls++
 			return "grok --always-approve", nil
 		}
-		sendKeysFn = func(string, string, bool) error {
+		sendKeysFn = func(paneID, cmd string, enter bool) error {
+			mu.Lock()
+			defer mu.Unlock()
 			sendCalls++
+			if paneID != "pane-1" || cmd != "grok --always-approve" || !enter {
+				t.Errorf("sendKeys(%q, %q, %v), want grok relaunch on pane-1", paneID, cmd, enter)
+			}
 			return nil
 		}
+		sleepFn = func(time.Duration) {}
 	})
 
 	cfg := config.Default()
+	cfg.Resilience.AutoRestart = true
 	cfg.Resilience.MaxRestarts = 3
 	cfg.Resilience.RestartDelaySeconds = 0
 	m := NewMonitor("test-session", "/tmp/project", cfg, true)
@@ -167,11 +192,14 @@ func TestHandleCrashDoesNotScheduleGrokRestart(t *testing.T) {
 	m.handleCrash(context.Background(), m.agents["pane-1"], "test crash")
 	m.wg.Wait()
 
-	if buildCalls != 0 || sendCalls != 0 {
-		t.Fatalf("Grok crash scheduled restart hooks: build=%d send=%d", buildCalls, sendCalls)
+	mu.Lock()
+	gotBuild, gotSend := buildCalls, sendCalls
+	mu.Unlock()
+	if gotBuild != 1 || gotSend != 1 {
+		t.Fatalf("Grok crash restart hooks: build=%d send=%d, want 1 and 1", gotBuild, gotSend)
 	}
-	if count := m.GetRestartCount("pane-1"); count != 0 {
-		t.Fatalf("Grok crash restart count = %d, want zero", count)
+	if count := m.GetRestartCount("pane-1"); count != 1 {
+		t.Fatalf("Grok crash restart count = %d, want 1", count)
 	}
 }
 

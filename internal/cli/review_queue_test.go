@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/assignment"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
@@ -293,7 +292,8 @@ func TestAgentLabel_WithoutName(t *testing.T) {
 	}
 }
 
-func TestSendReviewPromptsRejectsMixedGrokBatchBeforeSending(t *testing.T) {
+// GH#251 phase 2: review prompts now deliver to Grok Build panes too.
+func TestSendReviewPromptsAcceptsMixedGrokBatch(t *testing.T) {
 	suggestions := []ReviewSuggestion{
 		{Pane: 1, AgentType: "claude", Prompt: "review one"},
 		{Pane: 2, AgentType: " XAI_GROK_BUILD ", Prompt: "review two"},
@@ -305,11 +305,11 @@ func TestSendReviewPromptsRejectsMixedGrokBatchBeforeSending(t *testing.T) {
 		return nil
 	})
 
-	if !errors.Is(err, agent.ErrAutomatedPromptDeliveryNotImplemented) {
-		t.Fatalf("error = %v, want prompt-delivery sentinel", err)
+	if err != nil {
+		t.Fatalf("error = %v, want nil (grok delivery supported in phase 2)", err)
 	}
-	if sent != 0 || skipped != 0 || calls != 0 {
-		t.Fatalf("sent=%d skipped=%d calls=%d, want all zero", sent, skipped, calls)
+	if sent != 3 || skipped != 0 || calls != 3 {
+		t.Fatalf("sent=%d skipped=%d calls=%d, want sent=3 skipped=0 calls=3", sent, skipped, calls)
 	}
 }
 

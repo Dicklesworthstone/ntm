@@ -265,7 +265,6 @@ internal/coordinator/monitor.go:AgentMonitor.GetAgentStatusWithOutput	bd-g1-dead
 internal/coordinator/monitor.go:AgentMonitor.GetAllAgentStatuses	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/coordinator/monitor.go:AgentMonitor.GetReservationsForAgent	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/coordinator/monitor.go:monitorStateConfidence	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/dispatch/dispatch.go:AllowAllRedactor.RedactFinalMessage	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/dispatch/dispatch.go:PacerFunc.Wait	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/dispatch/dispatch.go:ProtocolPlannerFunc.PlanDelivery	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/encryption/encryption.go:DecryptFile	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete

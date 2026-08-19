@@ -19,6 +19,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	dispatchsvc "github.com/Dicklesworthstone/ntm/internal/dispatch"
+	"github.com/Dicklesworthstone/ntm/internal/git"
 	"github.com/Dicklesworthstone/ntm/internal/redaction"
 	statuspkg "github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
@@ -723,6 +724,13 @@ func ResolveLiveSessionProjectContext(ctx context.Context, session string, panes
 	if paneCurrentPath == nil {
 		return "", fmt.Errorf("resolve live project for session %q: pane current-path lookup is not configured", session)
 	}
+	// Panes are grouped by physical repository identity, not by visible
+	// checkout path: a base checkout and its linked worktrees are different
+	// paths but one repository (they share one git common directory), and an
+	// `ntm spawn --worktrees` session legitimately spans exactly that shape
+	// (issue #252). Non-git project roots keep their cleaned path as identity,
+	// so genuinely distinct roots still fail closed below.
+	identities := make(map[string]*liveProjectIdentity)
 	roots := make(map[string][]string)
 	for _, pane := range panes {
 		if err := ctx.Err(); err != nil {
@@ -746,10 +754,25 @@ func ResolveLiveSessionProjectContext(ctx context.Context, session string, panes
 		}
 		projectDir = filepath.Clean(projectDir)
 		roots[projectDir] = append(roots[projectDir], paneID)
+
+		key := "path\x00" + projectDir
+		commonDir := ""
+		if resolved, commonErr := git.CommonDir(ctx, projectDir); commonErr == nil && resolved != "" {
+			commonDir = resolved
+			key = "git\x00" + commonDir
+		} else if ctxErr := ctx.Err(); ctxErr != nil {
+			return "", ctxErr
+		}
+		identity := identities[key]
+		if identity == nil {
+			identity = &liveProjectIdentity{commonDir: commonDir, dirs: make(map[string]struct{})}
+			identities[key] = identity
+		}
+		identity.dirs[projectDir] = struct{}{}
 	}
-	if len(roots) == 1 {
-		for projectDir := range roots {
-			return projectDir, nil
+	if len(identities) == 1 {
+		for _, identity := range identities {
+			return identity.canonicalProjectDir(), nil
 		}
 	}
 
@@ -765,6 +788,41 @@ func ResolveLiveSessionProjectContext(ctx context.Context, session string, panes
 		parts = append(parts, fmt.Sprintf("%s (%s)", projectDir, strings.Join(paneIDs, ",")))
 	}
 	return "", fmt.Errorf("resolve live project for session %q: panes span multiple project roots: %s", session, strings.Join(parts, "; "))
+}
+
+// liveProjectIdentity groups the visible pane project roots that resolved to
+// one physical repository (or, for non-git roots, to one cleaned path).
+type liveProjectIdentity struct {
+	commonDir string // symlink-resolved git common directory; "" for non-git roots
+	dirs      map[string]struct{}
+}
+
+// canonicalProjectDir picks the authoritative project root for one physical
+// repository. The base checkout — the directory owning the shared common
+// directory, where the controller pane runs — wins over any linked worktree;
+// with no usable base, the lexically-first visible root keeps the result
+// deterministic.
+func (identity *liveProjectIdentity) canonicalProjectDir() string {
+	if len(identity.dirs) == 1 {
+		for projectDir := range identity.dirs {
+			return projectDir
+		}
+	}
+	if identity.commonDir != "" && filepath.Base(identity.commonDir) == ".git" {
+		base := filepath.Dir(identity.commonDir)
+		if _, ok := identity.dirs[base]; ok {
+			return base
+		}
+		if util.ProjectDirScore(base) > 0 {
+			return base
+		}
+	}
+	dirs := make([]string, 0, len(identity.dirs))
+	for projectDir := range identity.dirs {
+		dirs = append(dirs, projectDir)
+	}
+	sort.Strings(dirs)
+	return dirs[0]
 }
 
 func normalizeBulkAssignStrategy(strategy string) (string, error) {

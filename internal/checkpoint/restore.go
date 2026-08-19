@@ -952,10 +952,6 @@ func restorableAgentCommand(pane PaneState) string {
 	if !agentType.IsValid() || agentType == agent.AgentTypeUser || agentType == agent.AgentTypeUnknown {
 		return ""
 	}
-	if agentType == agent.AgentTypeGrok {
-		return ""
-	}
-
 	command := strings.TrimSpace(pane.Command)
 	if command != "" && !looksLikeShellCommand(command) {
 		return command
@@ -971,6 +967,10 @@ func restorableAgentCommand(pane PaneState) string {
 	case agent.AgentTypeAntigravity:
 		// agy's launch binary is "agy" (distinct from the gemini CLI).
 		return "agy"
+	case agent.AgentTypeGrok:
+		// Relaunch with the official autonomous approval flag so the restored
+		// pane does not block on tool approvals (GH#251 phase 2).
+		return "grok --always-approve"
 	case agent.AgentTypeCursor:
 		return "cursor"
 	case agent.AgentTypeWindsurf:

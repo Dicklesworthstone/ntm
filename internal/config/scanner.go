@@ -13,25 +13,35 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// ScannerConfig holds UBS scanner configuration
+// ScannerConfig holds UBS scanner configuration.
+//
+// TOML surface (bd-6otuk, deprecated v1.28.0): only scanner.ubs_path has a
+// runtime reader in the shipped binary. The other sub-tables are detached
+// from the TOML config (`toml:"-"`), so any [scanner.defaults]/
+// [scanner.thresholds.*]/[scanner.tools]/[scanner.beads]/
+// [scanner.notifications] keys in ~/.config/ntm/config.toml land in the
+// strict loader's undecoded set and take the deprecated-knob warn path (see
+// removed_knobs.go); they become load errors in v1.29.0. The struct fields
+// stay because this same type is the schema for the project-level .ntm.yaml
+// scanner config (LoadProjectScannerConfig), which is a separate surface.
 type ScannerConfig struct {
 	// UBSPath is the path to the UBS executable (auto-detected if empty)
 	UBSPath string `toml:"ubs_path" yaml:"ubs_path"`
 
 	// Defaults are the default scan settings
-	Defaults ScannerDefaults `toml:"defaults" yaml:"defaults"`
+	Defaults ScannerDefaults `toml:"-" yaml:"defaults"`
 
 	// Thresholds for different contexts
-	Thresholds ScannerThresholds `toml:"thresholds" yaml:"thresholds"`
+	Thresholds ScannerThresholds `toml:"-" yaml:"thresholds"`
 
 	// Tools configures which UBS tools to enable/disable
-	Tools ScannerTools `toml:"tools" yaml:"tools"`
+	Tools ScannerTools `toml:"-" yaml:"tools"`
 
 	// Beads configures auto-bead creation from findings
-	Beads ScannerBeads `toml:"beads" yaml:"beads"`
+	Beads ScannerBeads `toml:"-" yaml:"beads"`
 
 	// Notifications for scan events
-	Notifications ScannerNotifications `toml:"notifications" yaml:"notifications"`
+	Notifications ScannerNotifications `toml:"-" yaml:"notifications"`
 }
 
 // ScannerDefaults holds default scan settings

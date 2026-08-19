@@ -2113,6 +2113,8 @@ func getAgentCommand(agentType string) string {
 		return "gemini"
 	case "antigravity":
 		return "agy"
+	case "grok":
+		return "grok --always-approve"
 	case "cursor":
 		return "cursor"
 	case "windsurf":

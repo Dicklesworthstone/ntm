@@ -1,7 +1,6 @@
 package status
 
 import (
-	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -177,8 +176,17 @@ func TestRecoveryManager_HandleCompactionEvent(t *testing.T) {
 	}
 }
 
-func TestRecoveryManagerRejectsGrokCompactionBeforeStateMutation(t *testing.T) {
+// GH#251 phase 2: grok prompt delivery is first-class — a grok compaction
+// event is now recovered exactly like a claude one: state is recorded and the
+// recovery prompt reaches the (fake) sender.
+func TestRecoveryManagerRecoversGrokCompaction(t *testing.T) {
 	rm := NewRecoveryManagerDefault()
+	rm.includeBeadContext = false // keep prompt construction hermetic (no bv exec)
+	sendCh := make(chan string, 1)
+	rm.sendPrompt = func(target, _ string, _ bool) error {
+		sendCh <- target
+		return nil
+	}
 	event := &CompactionEvent{
 		PaneID:      "unchanged",
 		AgentType:   " XAI_GROK_BUILD ",
@@ -187,23 +195,28 @@ func TestRecoveryManagerRejectsGrokCompactionBeforeStateMutation(t *testing.T) {
 	}
 
 	sent, err := rm.HandleCompactionEvent(event, "grok-session", 4)
-	if sent {
-		t.Fatal("recovery sent = true, want false")
+	if err != nil {
+		t.Fatalf("error = %v, want grok recovery accepted", err)
 	}
-	if !errors.Is(err, agent.ErrAutomatedPromptDeliveryNotImplemented) {
-		t.Fatalf("error = %v, want prompt-delivery sentinel", err)
+	if !sent {
+		t.Fatal("recovery sent = false, want true")
 	}
-	if event.PaneID != "unchanged" {
-		t.Fatalf("event pane ID mutated to %q", event.PaneID)
+	if event.PaneID != makePaneID("grok-session", 4) {
+		t.Fatalf("event pane ID = %q, want %q", event.PaneID, makePaneID("grok-session", 4))
 	}
-	if count := rm.GetRecoveryCount(makePaneID("grok-session", 4)); count != 0 {
-		t.Fatalf("recovery count = %d, want 0", count)
+	if count := rm.GetRecoveryCount(makePaneID("grok-session", 4)); count != 1 {
+		t.Fatalf("recovery count = %d, want 1", count)
 	}
-	if _, ok := rm.GetLastRecoveryTime(makePaneID("grok-session", 4)); ok {
-		t.Fatal("last recovery time was mutated")
+	if _, ok := rm.GetLastRecoveryTime(makePaneID("grok-session", 4)); !ok {
+		t.Fatal("last recovery time was not recorded")
 	}
-	if events := rm.GetRecoveryEvents(); len(events) != 0 {
-		t.Fatalf("recovery events = %+v, want empty", events)
+	select {
+	case target := <-sendCh:
+		if target != "grok-session:.4" {
+			t.Fatalf("recovery prompt target = %q, want grok-session:.4", target)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("recovery prompt never reached the sender")
 	}
 }
 
@@ -522,33 +535,38 @@ func TestRecoveryManager_SendRecoveryPromptByID_MaxRecoveries(t *testing.T) {
 	}
 }
 
-func TestRecoveryManagerExportedPromptRejectsGrokBeforeStateOrSendMutation(t *testing.T) {
+// GH#251 phase 2: the exported recovery entry point now delivers to grok panes
+// like claude ones — state is recorded and the prompt reaches the sender.
+func TestRecoveryManagerExportedPromptDeliversToGrok(t *testing.T) {
 	rm := NewRecoveryManagerDefault()
+	rm.includeBeadContext = false // keep prompt construction hermetic (no bv exec)
 	rm.resolvePaneType = func(string, int, string) (agent.AgentType, error) {
 		return agent.AgentType("xai-grok-build"), nil
 	}
-	sendCalls := 0
+	sendCh := make(chan struct{}, 1)
 	rm.sendPrompt = func(string, string, bool) error {
-		sendCalls++
+		sendCh <- struct{}{}
 		return nil
 	}
 
 	paneID := "%grok"
 	sent, err := rm.SendRecoveryPromptByID("grok-session", 4, paneID, "compacted")
-	if sent {
-		t.Fatal("Grok recovery sent = true, want false")
+	if err != nil {
+		t.Fatalf("Grok recovery error = %v, want delivery accepted", err)
 	}
-	if !errors.Is(err, agent.ErrAutomatedPromptDeliveryNotImplemented) {
-		t.Fatalf("Grok recovery error = %v, want prompt-delivery sentinel", err)
+	if !sent {
+		t.Fatal("Grok recovery sent = false, want true")
 	}
-	if sendCalls != 0 {
-		t.Fatalf("Grok recovery send calls = %d, want 0", sendCalls)
+	if count := rm.GetRecoveryCount(paneID); count != 1 {
+		t.Fatalf("Grok recovery count = %d, want 1", count)
 	}
-	if count := rm.GetRecoveryCount(paneID); count != 0 {
-		t.Fatalf("Grok recovery count = %d, want 0", count)
+	if _, ok := rm.GetLastRecoveryTime(paneID); !ok {
+		t.Fatal("Grok recovery did not record last-recovery state")
 	}
-	if _, ok := rm.GetLastRecoveryTime(paneID); ok {
-		t.Fatal("Grok recovery mutated last-recovery state")
+	select {
+	case <-sendCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Grok recovery prompt never reached the sender")
 	}
 }
 
@@ -570,27 +588,41 @@ func TestCompactionRecoveryIntegration_CheckAndRecover_WithCompaction(t *testing
 	t.Logf("Sent=%v, Error=%v", sent, err)
 }
 
-func TestCompactionRecoveryIntegrationDetectsButDoesNotRecoverGrok(t *testing.T) {
+// GH#251 phase 2: the integration now both detects AND recovers grok
+// compactions, the same as claude/codex.
+func TestCompactionRecoveryIntegrationDetectsAndRecoversGrok(t *testing.T) {
 	cri := NewCompactionRecoveryIntegrationDefault()
+	rm := cri.Recovery()
+	rm.includeBeadContext = false // keep prompt construction hermetic (no bv exec)
+	sendCh := make(chan struct{}, 1)
+	rm.sendPrompt = func(string, string, bool) error {
+		sendCh <- struct{}{}
+		return nil
+	}
 
 	event, sent, err := cri.CheckAndRecover("Continuing from summary", "Grok-Build", "grok-session", 3)
 	if event == nil {
 		t.Fatal("compaction event = nil, want detected event")
 	}
-	if sent {
-		t.Fatal("recovery sent = true, want false")
+	if err != nil {
+		t.Fatalf("error = %v, want grok recovery accepted", err)
 	}
-	if !errors.Is(err, agent.ErrAutomatedPromptDeliveryNotImplemented) {
-		t.Fatalf("error = %v, want prompt-delivery sentinel", err)
+	if !sent {
+		t.Fatal("recovery sent = false, want true")
 	}
 	if detectorEvents := cri.Detector().EventsForPane(makePaneID("grok-session", 3)); len(detectorEvents) != 1 {
 		t.Fatalf("detector events = %+v, want one detected event", detectorEvents)
 	}
-	if count := cri.Recovery().GetRecoveryCount(makePaneID("grok-session", 3)); count != 0 {
-		t.Fatalf("recovery count = %d, want 0", count)
+	if count := rm.GetRecoveryCount(makePaneID("grok-session", 3)); count != 1 {
+		t.Fatalf("recovery count = %d, want 1", count)
 	}
-	if _, ok := cri.Recovery().GetLastRecoveryTime(makePaneID("grok-session", 3)); ok {
-		t.Fatal("last recovery time was mutated")
+	if _, ok := rm.GetLastRecoveryTime(makePaneID("grok-session", 3)); !ok {
+		t.Fatal("last recovery time was not recorded")
+	}
+	select {
+	case <-sendCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("grok recovery prompt never reached the sender")
 	}
 }
 

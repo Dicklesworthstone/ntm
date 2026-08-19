@@ -1,0 +1,41 @@
+[0s] [E2E-START] === E2E Test Started: gates-restart-pane-prompt-withheld ===
+[0s] [E2E-START] Timestamp: 2026-08-15T00:06:56-04:00
+[0s] [E2E-START] Log file: /Users/jemanuel/projects/ntm/e2e/logs/gates-restart-pane-prompt-withheld-20260815-000656.log
+[719ms] [PID-LINEAGE] session=ntm-e2e-gates-27553-270000 pane=%0 shell_pid=32704 fixture_pid=32704 persona=claude (respawnable)
+[27.229s] [NTM] args=[--robot-restart-pane=ntm-e2e-gates-27553-270000 --restart-prompt=GATES-E2E-WITHHELD-PROMPT-1786766817039034000] exit=1 elapsed=26.51s
+[27.229s] [NTM] output={"success":false,"timestamp":"2026-08-15T04:07:07Z","version":"1.0.0","output_format":"json","error":"1 restarted pane(s) did not receive the requested prompt","error_code":"RESTART_PROMPT_NOT_DELIVERED","hint":"The restart completed, but the prompt was withheld because the pane never became ready for typed input; no keystrokes were sent to withheld panes. Inspect prompt_delivery and re-send with --robot-send once the agent is up.","session":"ntm-e2e-gates-27553-270000","restarted_at":"2026-08-15T04:07:07.125027Z","restarted":["0"],"failed":[{"pane":"0","reason":"RESTART_PROMPT_NOT_DELIVERED: prompt withheld, no keystrokes sent: pane did not become ready for prompt delivery within 15s: pane foreground process is a shell (\"bash\"), not the relaunched agent; typing the prompt would hit the shell"}],"prompt_error":"pane 0: RESTART_PROMPT_NOT_DELIVERED: prompt withheld, no keystrokes sent: pane did not become ready for prompt delivery within 15s: pane foreground process is a shell (\"bash\"), not the relaunched agent; typing the prompt would hit the shell","prompt_delivery":{"0":"skipped"},"process_alive":{"0":true},"agent_relaunched":{"0":true},"agent_relaunch_status":{"0":"ready"},"pane_shell_pids":{"0":{"before":32704,"after":32927}}}
+[27.229s] [TIMING] restart-pane (withheld path) took 26.51s
+[27.229s] [E2E-JSON] restart_pane_prompt_withheld:
+{
+  "success": false,
+  "error": "1 restarted pane(s) did not receive the requested prompt",
+  "error_code": "RESTART_PROMPT_NOT_DELIVERED",
+  "restarted": [
+    "0"
+  ],
+  "failed": [
+    {
+      "pane": "0",
+      "reason": "RESTART_PROMPT_NOT_DELIVERED: prompt withheld, no keystrokes sent: pane did not become ready for prompt delivery within 15s: pane foreground process is a shell (\"bash\"), not the relaunched agent; typing the prompt would hit the shell"
+    }
+  ],
+  "prompt_sent": false,
+  "prompt_error": "pane 0: RESTART_PROMPT_NOT_DELIVERED: prompt withheld, no keystrokes sent: pane did not become ready for prompt delivery within 15s: pane foreground process is a shell (\"bash\"), not the relaunched agent; typing the prompt would hit the shell",
+  "prompt_delivery": {
+    "0": "skipped"
+  },
+  "agent_relaunched": {
+    "0": true
+  },
+  "agent_relaunch_status": {
+    "0": "ready"
+  },
+  "pane_shell_pids": {
+    "0": {
+      "before": 32704,
+      "after": 32927
+    }
+  }
+}
+[27.237s] [PASS] prompt withheld from shell foreground with RESTART_PROMPT_NOT_DELIVERED; capture proves zero prompt keystrokes
+[27.237s] [E2E-END] === Test completed in 27.237s ===

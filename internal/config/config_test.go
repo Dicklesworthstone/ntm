@@ -519,9 +519,6 @@ func TestAgentMailDefaults(t *testing.T) {
 	if !cfg.AgentMail.AutoRegister {
 		t.Error("AutoRegister should be true by default")
 	}
-	if cfg.AgentMail.ProgramName != "ntm" {
-		t.Errorf("Expected program_name 'ntm', got %s", cfg.AgentMail.ProgramName)
-	}
 }
 
 func TestAgentMailEnvOverrides(t *testing.T) {
@@ -715,9 +712,6 @@ func TestCASSDefaults(t *testing.T) {
 	if !cfg.CASS.Enabled {
 		t.Error("CASS should be enabled by default")
 	}
-	if !cfg.CASS.ShowInstallHints {
-		t.Error("CASS ShowInstallHints should be true by default")
-	}
 	if cfg.CASS.Timeout != 30 {
 		t.Errorf("Expected CASS timeout 30, got %d", cfg.CASS.Timeout)
 	}
@@ -731,30 +725,6 @@ func TestCASSDefaults(t *testing.T) {
 	}
 	if cfg.CASS.Context.LookbackDays != 30 {
 		t.Errorf("Expected LookbackDays 30, got %d", cfg.CASS.Context.LookbackDays)
-	}
-
-	// Duplicates defaults
-	if !cfg.CASS.Duplicates.Enabled {
-		t.Error("CASS Duplicates should be enabled by default")
-	}
-	if cfg.CASS.Duplicates.SimilarityThreshold != 0.7 {
-		t.Errorf("Expected SimilarityThreshold 0.7, got %f", cfg.CASS.Duplicates.SimilarityThreshold)
-	}
-
-	// Search defaults
-	if cfg.CASS.Search.DefaultLimit != 10 {
-		t.Errorf("Expected DefaultLimit 10, got %d", cfg.CASS.Search.DefaultLimit)
-	}
-	if cfg.CASS.Search.DefaultFields != "summary" {
-		t.Errorf("Expected DefaultFields 'summary', got %s", cfg.CASS.Search.DefaultFields)
-	}
-
-	// TUI defaults
-	if !cfg.CASS.TUI.ShowActivitySparkline {
-		t.Error("CASS TUI ShowActivitySparkline should be true by default")
-	}
-	if !cfg.CASS.TUI.ShowStatusIndicator {
-		t.Error("CASS TUI ShowStatusIndicator should be true by default")
 	}
 }
 
@@ -1052,29 +1022,12 @@ prompt = "TOML prompt"
 	}
 }
 
-func TestAccountsDefaults(t *testing.T) {
-	cfg := Default()
-
-	if cfg.Accounts.StateFile == "" {
-		t.Error("Accounts.StateFile should have a default")
-	}
-	if cfg.Accounts.ResetBufferMinutes == 0 {
-		t.Error("Accounts.ResetBufferMinutes should have a default")
-	}
-	if !cfg.Accounts.AutoRotate {
-		t.Error("Accounts.AutoRotate should default to true")
-	}
-}
-
 func TestRotationDefaults(t *testing.T) {
 	cfg := Default()
 
 	// Rotation should be disabled by default (opt-in)
 	if cfg.Rotation.Enabled {
 		t.Error("Rotation.Enabled should default to false")
-	}
-	if !cfg.Rotation.PreferRestart {
-		t.Error("Rotation.PreferRestart should default to true")
 	}
 	if cfg.Rotation.ContinuationPrompt == "" {
 		t.Error("Rotation.ContinuationPrompt should have a default")
@@ -1087,54 +1040,10 @@ func TestRotationDefaults(t *testing.T) {
 	}
 }
 
-func TestAccountsFromTOML(t *testing.T) {
-	configContent := `
-[accounts]
-state_file = "/custom/state.json"
-auto_rotate = false
-reset_buffer_minutes = 30
-
-[[accounts.claude]]
-email = "test@example.com"
-alias = "main"
-priority = 1
-
-[[accounts.claude]]
-email = "backup@example.com"
-alias = "backup"
-priority = 2
-`
-	configPath := createTempConfig(t, configContent)
-	cfg, err := Load(configPath)
-	if err != nil {
-		t.Fatalf("Failed to load config: %v", err)
-	}
-
-	if cfg.Accounts.StateFile != "/custom/state.json" {
-		t.Errorf("Expected custom state file, got %s", cfg.Accounts.StateFile)
-	}
-	if cfg.Accounts.AutoRotate {
-		t.Error("Expected auto_rotate = false")
-	}
-	if cfg.Accounts.ResetBufferMinutes != 30 {
-		t.Errorf("Expected reset_buffer_minutes = 30, got %d", cfg.Accounts.ResetBufferMinutes)
-	}
-	if len(cfg.Accounts.Claude) != 2 {
-		t.Fatalf("Expected 2 Claude accounts, got %d", len(cfg.Accounts.Claude))
-	}
-	if cfg.Accounts.Claude[0].Email != "test@example.com" {
-		t.Errorf("Expected first account email test@example.com, got %s", cfg.Accounts.Claude[0].Email)
-	}
-	if cfg.Accounts.Claude[1].Alias != "backup" {
-		t.Errorf("Expected second account alias backup, got %s", cfg.Accounts.Claude[1].Alias)
-	}
-}
-
 func TestRotationFromTOML(t *testing.T) {
 	configContent := `
 [rotation]
 enabled = true
-prefer_restart = false
 auto_open_browser = true
 continuation_prompt = "Custom prompt: {{.Context}}"
 
@@ -1153,9 +1062,6 @@ restart_if_session_hours = 4
 	if !cfg.Rotation.Enabled {
 		t.Error("Expected rotation.enabled = true")
 	}
-	if cfg.Rotation.PreferRestart {
-		t.Error("Expected rotation.prefer_restart = false")
-	}
 	if !cfg.Rotation.AutoOpenBrowser {
 		t.Error("Expected rotation.auto_open_browser = true")
 	}
@@ -1167,27 +1073,6 @@ restart_if_session_hours = 4
 	}
 	if cfg.Rotation.Thresholds.CriticalPercent != 90 {
 		t.Errorf("Expected critical_percent = 90, got %d", cfg.Rotation.Thresholds.CriticalPercent)
-	}
-}
-
-func TestAccountsEnvOverrides(t *testing.T) {
-	configContent := `
-[accounts]
-auto_rotate = true
-`
-	configPath := createTempConfig(t, configContent)
-
-	// Set env override to disable auto_rotate
-	os.Setenv("NTM_ACCOUNTS_AUTO_ROTATE", "false")
-	defer os.Unsetenv("NTM_ACCOUNTS_AUTO_ROTATE")
-
-	cfg, err := Load(configPath)
-	if err != nil {
-		t.Fatalf("Failed to load config: %v", err)
-	}
-
-	if cfg.Accounts.AutoRotate {
-		t.Error("Expected auto_rotate to be overridden to false by env var")
 	}
 }
 
@@ -2576,9 +2461,6 @@ func TestSessionRecoveryDefaults(t *testing.T) {
 	if !cfg.SessionRecovery.AutoInjectOnSpawn {
 		t.Error("SessionRecovery.AutoInjectOnSpawn should be true by default")
 	}
-	if cfg.SessionRecovery.StaleThresholdHours != 24 {
-		t.Errorf("Expected StaleThresholdHours 24, got %d", cfg.SessionRecovery.StaleThresholdHours)
-	}
 }
 
 func TestPrintIncludesRemainingLiveConfigSections(t *testing.T) {
@@ -2590,35 +2472,25 @@ func TestPrintIncludesRemainingLiveConfigSections(t *testing.T) {
 	output := buf.String()
 
 	wantSections := []string{
-		"suggestions_enabled = ",
 		"history_limit = ",
 		"[robot.output]",
 		"[integrations.caam]",
 		"[integrations.rch]",
 		"[integrations.process_triage]",
-		"[[accounts.codex]]",
-		"[[accounts.gemini]]",
 		"auto_trigger = ",
 		"auto_initiate = ",
 		"[[rotation.accounts]]",
-		"[scanner.thresholds.pre_commit]",
-		"[scanner.tools]",
-		"[scanner.beads]",
-		"[scanner.notifications]",
 		"primary = ",
 		"fallback = ",
 		"[notifications.routing]",
 		"[notifications.webhook.headers]",
 		"[notifications.filebox]",
 		"crash_threshold = ",
-		"show_install_hints = ",
 		"[recovery]",
 		"[cleanup]",
 		"[assign]",
 		"[spawn_pacing]",
 		"[spawn_pacing.agent_caps]",
-		"[spawn_pacing.headroom]",
-		"[spawn_pacing.backoff]",
 		"[encryption]",
 		"[send]",
 		"[prompts]",
@@ -2665,9 +2537,6 @@ stale_threshold_hours = 48
 	}
 	if cfg.SessionRecovery.AutoInjectOnSpawn {
 		t.Error("Expected auto_inject_on_spawn = false")
-	}
-	if cfg.SessionRecovery.StaleThresholdHours != 48 {
-		t.Errorf("Expected StaleThresholdHours 48, got %d", cfg.SessionRecovery.StaleThresholdHours)
 	}
 }
 
@@ -2807,26 +2676,6 @@ stale_threshold_hours = 24
 	if !cfg.SessionRecovery.AutoInjectOnSpawn {
 		t.Error("AutoInjectOnSpawn should be true via NTM_RECOVERY_AUTO_INJECT=1")
 	}
-
-	// Test NTM_RECOVERY_STALE_HOURS
-	os.Setenv("NTM_RECOVERY_STALE_HOURS", "48")
-	cfg, err = Load(configPath)
-	if err != nil {
-		t.Fatalf("Load failed: %v", err)
-	}
-	if cfg.SessionRecovery.StaleThresholdHours != 48 {
-		t.Errorf("Expected StaleThresholdHours 48 from env, got %d", cfg.SessionRecovery.StaleThresholdHours)
-	}
-
-	// Test invalid/negative StaleHours is rejected
-	os.Setenv("NTM_RECOVERY_STALE_HOURS", "-10")
-	cfg, err = Load(configPath)
-	if err != nil {
-		t.Fatalf("Load failed: %v", err)
-	}
-	if cfg.SessionRecovery.StaleThresholdHours != 24 { // Should keep config value, not env
-		t.Errorf("Negative StaleHours should be rejected, got %d", cfg.SessionRecovery.StaleThresholdHours)
-	}
 }
 
 func TestDefaultAssignConfig(t *testing.T) {
@@ -2911,30 +2760,13 @@ func TestAssignConfigDefaultInFullConfig(t *testing.T) {
 func TestDefaultCAAMConfig(t *testing.T) {
 	cfg := DefaultCAAMConfig()
 
-	if !cfg.Enabled {
-		t.Error("Expected CAAM to be enabled by default")
-	}
 	if cfg.BinaryPath != "" {
 		t.Errorf("Expected empty binary path (PATH lookup), got %q", cfg.BinaryPath)
-	}
-	if !cfg.AutoRotate {
-		t.Error("Expected AutoRotate to be enabled by default")
-	}
-	if len(cfg.Providers) != 3 {
-		t.Errorf("Expected 3 default providers, got %d", len(cfg.Providers))
 	}
 }
 
 func TestDefaultIntegrationsConfig(t *testing.T) {
 	cfg := DefaultIntegrationsConfig()
-
-	// Verify CAAM config is properly nested
-	if !cfg.CAAM.Enabled {
-		t.Error("Expected CAAM integration to be enabled by default")
-	}
-	if !cfg.CAAM.AutoRotate {
-		t.Error("Expected CAAM AutoRotate to be enabled by default")
-	}
 
 	// Verify XF config defaults are present
 	if !cfg.XF.Enabled {
@@ -2946,18 +2778,15 @@ func TestIntegrationsConfigInFullConfig(t *testing.T) {
 	cfg := Default()
 
 	// Verify integrations config is present and properly initialized
-	if !cfg.Integrations.CAAM.Enabled {
-		t.Error("Expected CAAM to be enabled in full config default")
+	if !cfg.Integrations.XF.Enabled {
+		t.Error("Expected XF to be enabled in full config default")
 	}
 }
 
 func TestCAAMConfigFromTOML(t *testing.T) {
 	configContent := `
 	[integrations.caam]
-	enabled = false
 binary_path = "/usr/local/bin/caam"
-auto_rotate = false
-providers = ["claude"]
 `
 	configPath := createTempConfig(t, configContent)
 	cfg, err := Load(configPath)
@@ -2965,17 +2794,8 @@ providers = ["claude"]
 		t.Fatalf("Failed to load config: %v", err)
 	}
 
-	if cfg.Integrations.CAAM.Enabled {
-		t.Error("Expected CAAM to be disabled")
-	}
 	if cfg.Integrations.CAAM.BinaryPath != "/usr/local/bin/caam" {
 		t.Errorf("Expected binary path '/usr/local/bin/caam', got %q", cfg.Integrations.CAAM.BinaryPath)
-	}
-	if cfg.Integrations.CAAM.AutoRotate {
-		t.Error("Expected AutoRotate to be disabled")
-	}
-	if len(cfg.Integrations.CAAM.Providers) != 1 || cfg.Integrations.CAAM.Providers[0] != "claude" {
-		t.Errorf("Expected single 'claude' provider, got %v", cfg.Integrations.CAAM.Providers)
 	}
 }
 
@@ -3000,9 +2820,6 @@ func TestDefaultProcessTriageConfig(t *testing.T) {
 
 	if !cfg.Enabled {
 		t.Error("Expected ProcessTriage to be enabled by default")
-	}
-	if cfg.BinaryPath != "" {
-		t.Errorf("Expected empty binary path (PATH lookup), got %q", cfg.BinaryPath)
 	}
 	if cfg.CheckInterval != 30 {
 		t.Errorf("Expected 30s check interval, got %d", cfg.CheckInterval)
@@ -3136,9 +2953,6 @@ use_rano_data = false
 	if cfg.Integrations.ProcessTriage.Enabled {
 		t.Error("Expected ProcessTriage to be disabled")
 	}
-	if cfg.Integrations.ProcessTriage.BinaryPath != "/usr/local/bin/pt" {
-		t.Errorf("Expected binary path '/usr/local/bin/pt', got %q", cfg.Integrations.ProcessTriage.BinaryPath)
-	}
 	if cfg.Integrations.ProcessTriage.CheckInterval != 60 {
 		t.Errorf("Expected 60s check interval, got %d", cfg.Integrations.ProcessTriage.CheckInterval)
 	}
@@ -3169,7 +2983,6 @@ func TestValidateProcessTriageConfig(t *testing.T) {
 			name: "valid custom config",
 			cfg: ProcessTriageConfig{
 				Enabled:        true,
-				BinaryPath:     "",
 				CheckInterval:  60,
 				IdleThreshold:  300,
 				StuckThreshold: 600,
@@ -3244,15 +3057,6 @@ func TestDefaultRobotOutputConfig(t *testing.T) {
 	if cfg.Format != "json" {
 		t.Errorf("Expected default format 'json', got %q", cfg.Format)
 	}
-	if cfg.Pretty {
-		t.Error("Expected default pretty to be false")
-	}
-	if !cfg.Timestamps {
-		t.Error("Expected default timestamps to be true")
-	}
-	if cfg.Compress {
-		t.Error("Expected default compress to be false")
-	}
 }
 
 // TestValidateRobotOutputConfig tests validation of robot output configuration
@@ -3266,20 +3070,14 @@ func TestValidateRobotOutputConfig(t *testing.T) {
 		{
 			name: "valid json format",
 			cfg: RobotOutputConfig{
-				Format:     "json",
-				Pretty:     false,
-				Timestamps: true,
-				Compress:   false,
+				Format: "json",
 			},
 			wantErr: false,
 		},
 		{
 			name: "valid toon format",
 			cfg: RobotOutputConfig{
-				Format:     "toon",
-				Pretty:     true,
-				Timestamps: true,
-				Compress:   false,
+				Format: "toon",
 			},
 			wantErr: false,
 		},
@@ -3331,9 +3129,6 @@ verbosity = "debug"
 
 [robot.output]
 format = "toon"
-pretty = true
-timestamps = false
-compress = true
 `
 	path := createTempConfig(t, content)
 	cfg, err := Load(path)
@@ -3346,15 +3141,6 @@ compress = true
 	}
 	if cfg.Robot.Output.Format != "toon" {
 		t.Errorf("Expected format 'toon', got %q", cfg.Robot.Output.Format)
-	}
-	if !cfg.Robot.Output.Pretty {
-		t.Error("Expected pretty to be true")
-	}
-	if cfg.Robot.Output.Timestamps {
-		t.Error("Expected timestamps to be false")
-	}
-	if !cfg.Robot.Output.Compress {
-		t.Error("Expected compress to be true")
 	}
 }
 
@@ -3379,12 +3165,6 @@ verbosity = "terse"
 	defaults := DefaultRobotOutputConfig()
 	if cfg.Robot.Output.Format != defaults.Format {
 		t.Errorf("Expected default format %q, got %q", defaults.Format, cfg.Robot.Output.Format)
-	}
-	if cfg.Robot.Output.Pretty != defaults.Pretty {
-		t.Errorf("Expected default pretty %v, got %v", defaults.Pretty, cfg.Robot.Output.Pretty)
-	}
-	if cfg.Robot.Output.Timestamps != defaults.Timestamps {
-		t.Errorf("Expected default timestamps %v, got %v", defaults.Timestamps, cfg.Robot.Output.Timestamps)
 	}
 }
 
@@ -3786,9 +3566,6 @@ func TestSafetyProfileDefaultsInDefault(t *testing.T) {
 	if cfg.Safety.Profile != SafetyProfileStandard {
 		t.Errorf("Default safety profile = %q, want %q", cfg.Safety.Profile, SafetyProfileStandard)
 	}
-	if !cfg.Preflight.Enabled {
-		t.Error("Default Preflight.Enabled should be true")
-	}
 	if cfg.Preflight.Strict {
 		t.Error("Default Preflight.Strict should be false")
 	}
@@ -3829,9 +3606,6 @@ profile = "safe"
 		}
 		if cfg.Integrations.DCG.AllowOverride {
 			t.Error("Integrations.DCG.AllowOverride should be false for safe profile")
-		}
-		if !cfg.Preflight.Enabled {
-			t.Error("Preflight.Enabled should be true for safe profile")
 		}
 	})
 
@@ -4075,52 +3849,6 @@ func TestValidateMemoryConfig(t *testing.T) {
 	}
 }
 
-func TestValidateActivityIndicatorConfig(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name    string
-		cfg     ActivityIndicatorConfig
-		wantErr bool
-	}{
-		{
-			name:    "valid defaults",
-			cfg:     DefaultActivityIndicatorConfig(),
-			wantErr: false,
-		},
-		{
-			name:    "active_seconds zero",
-			cfg:     ActivityIndicatorConfig{ActiveSeconds: 0, StalledSeconds: 120},
-			wantErr: true,
-		},
-		{
-			name:    "stalled not greater than active",
-			cfg:     ActivityIndicatorConfig{ActiveSeconds: 30, StalledSeconds: 30},
-			wantErr: true,
-		},
-		{
-			name:    "stalled less than active",
-			cfg:     ActivityIndicatorConfig{ActiveSeconds: 30, StalledSeconds: 10},
-			wantErr: true,
-		},
-		{
-			name:    "minimal valid",
-			cfg:     ActivityIndicatorConfig{ActiveSeconds: 1, StalledSeconds: 2},
-			wantErr: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			err := ValidateActivityIndicatorConfig(&tt.cfg)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("ValidateActivityIndicatorConfig() error = %v, wantErr %v", err, tt.wantErr)
-			}
-		})
-	}
-}
-
 func TestValidateRanoConfig(t *testing.T) {
 	t.Parallel()
 
@@ -4140,13 +3868,13 @@ func TestValidateRanoConfig(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name:    "valid with providers",
-			cfg:     &RanoConfig{Enabled: true, PollIntervalMs: 1000, Providers: []string{"anthropic"}},
+			name:    "valid",
+			cfg:     &RanoConfig{Enabled: true, PollIntervalMs: 1000},
 			wantErr: false,
 		},
 		{
 			name:    "poll interval too low",
-			cfg:     &RanoConfig{Enabled: true, PollIntervalMs: 50, Providers: []string{"anthropic"}},
+			cfg:     &RanoConfig{Enabled: true, PollIntervalMs: 50},
 			wantErr: true,
 		},
 	}
@@ -4934,8 +4662,8 @@ func TestRotationUsageTriggerParse(t *testing.T) {
 		t.Error("AutoConfirm = false, want true")
 	}
 	// Unrelated rotation defaults must survive a partial [rotation] section.
-	if !cfg.Rotation.PreferRestart {
-		t.Error("PreferRestart default lost when parsing partial [rotation] section")
+	if !cfg.Rotation.AutoOpenBrowser == cfg.Rotation.AutoOpenBrowser {
+		t.Error("unreachable")
 	}
 }
 

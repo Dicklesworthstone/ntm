@@ -16,7 +16,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/assignment"
 	"github.com/Dicklesworthstone/ntm/internal/bv"
@@ -2953,14 +2952,15 @@ func mockTmuxPanesForList(indices []int) []tmux.Pane {
 	return panes
 }
 
-func TestValidateBulkAssignPromptDeliveryRejectsMixedGrokBatch(t *testing.T) {
+// GH#251 phase 2: grok now supports automated prompt delivery, so a mixed
+// claude+grok batch passes the batch-level preflight instead of failing closed.
+func TestValidateBulkAssignPromptDeliveryAcceptsMixedGrokBatch(t *testing.T) {
 	assignments := []BulkAssignAssignment{
 		{Pane: "0.1", AgentType: "claude", Status: "planned"},
 		{Pane: "0.2", AgentType: "grok-build", Status: "planned"},
 	}
-	err := validateBulkAssignPromptDelivery(assignments)
-	if !errors.Is(err, agent.ErrAutomatedPromptDeliveryNotImplemented) {
-		t.Fatalf("validateBulkAssignPromptDelivery() error = %v, want Grok prompt sentinel", err)
+	if err := validateBulkAssignPromptDelivery(assignments); err != nil {
+		t.Fatalf("validateBulkAssignPromptDelivery() error = %v, want nil (grok delivery is supported)", err)
 	}
 	if got := bulkAssignTMUXAgentType("grok-build"); got != tmux.AgentGrok {
 		t.Fatalf("bulkAssignTMUXAgentType(grok-build) = %s, want grok", got)
@@ -3095,7 +3095,9 @@ var osReadFileImpl = func(path string) ([]byte, error) {
 // target, every other assignment is marked NOT_IMPLEMENTED, and
 // ExitCodeForResponse maps that to exit 2 — documented as "skip gracefully". One
 // Grok pane thus made every healthy pane in the session unassignable.
-func TestFilterBulkAssignPanesExcludesUndeliverableAgents(t *testing.T) {
+// GH#251 phase 2: grok panes are deliverable, so the filter keeps them in the
+// plan alongside claude and codex (only non-agent panes are excluded).
+func TestFilterBulkAssignPanesIncludesGrokAgents(t *testing.T) {
 	panes := []tmux.Pane{
 		{ID: "%1", Index: 1, Title: "claude", Type: tmux.AgentClaude},
 		{ID: "%2", Index: 2, Title: "codex", Type: tmux.AgentCodex},
@@ -3114,16 +3116,20 @@ func TestFilterBulkAssignPanesExcludesUndeliverableAgents(t *testing.T) {
 	}
 	t.Logf("BULK_ASSIGN_TEST: planned agent types = %v", got)
 
-	if len(filtered) != 2 {
-		t.Fatalf("planned %d panes (%v), want 2 (claude and codex only)", len(filtered), got)
+	if len(filtered) != 3 {
+		t.Fatalf("planned %d panes (%v), want 3 (claude, codex, and grok)", len(filtered), got)
 	}
+	sawGrok := false
 	for _, p := range filtered {
 		if normalizeAgentType(p.AgentType) == "grok" {
-			t.Fatal("a grok pane was planned; it cannot receive an automated prompt and would fail the batch")
+			sawGrok = true
 		}
 		if err := bulkAssignTMUXAgentType(p.AgentType).ValidateAutomatedPromptDelivery(); err != nil {
 			t.Fatalf("planned pane %s cannot receive a prompt: %v", p.Ref.StableKey(), err)
 		}
+	}
+	if !sawGrok {
+		t.Fatal("grok pane was excluded from the plan; grok delivery is now supported")
 	}
 
 	// The surviving plan must pass the batch-level delivery check that used to
@@ -3134,5 +3140,121 @@ func TestFilterBulkAssignPanesExcludesUndeliverableAgents(t *testing.T) {
 	}
 	if err := validateBulkAssignPromptDelivery(planned); err != nil {
 		t.Fatalf("the surviving plan was rejected by the batch delivery check: %v", err)
+	}
+}
+
+// sameResolverPath compares two paths after symlink resolution (macOS temp
+// dirs live behind the /var → /private/var symlink).
+func sameResolverPath(t *testing.T, got, want string) bool {
+	t.Helper()
+	gotResolved, err := filepath.EvalSymlinks(got)
+	if err != nil {
+		gotResolved = filepath.Clean(got)
+	}
+	wantResolved, err := filepath.EvalSymlinks(want)
+	if err != nil {
+		wantResolved = filepath.Clean(want)
+	}
+	return gotResolved == wantResolved
+}
+
+// runResolverGitCommand runs git in dir for linked-worktree resolver tests,
+// skipping the test when git itself is unavailable.
+func runResolverGitCommand(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Skipf("git %v failed: %v\n%s", args, err, out)
+	}
+}
+
+// setupResolverRepoWithWorktrees creates a real git repo at a temp base
+// checkout plus n linked worktrees under base/.ntm/worktrees/<session>/cod_N,
+// mirroring the `ntm spawn --worktrees` topology from issue #252.
+func setupResolverRepoWithWorktrees(t *testing.T, session string, n int) (base string, worktrees []string) {
+	t.Helper()
+	base = t.TempDir()
+	runResolverGitCommand(t, base, "init", "-b", "main")
+	runResolverGitCommand(t, base, "config", "user.email", "test@test.com")
+	runResolverGitCommand(t, base, "config", "user.name", "Test")
+	runResolverGitCommand(t, base, "commit", "--allow-empty", "-m", "init")
+	for i := 1; i <= n; i++ {
+		wt := filepath.Join(base, ".ntm", "worktrees", session, fmt.Sprintf("cod_%d", i))
+		runResolverGitCommand(t, base, "worktree", "add", "-b", fmt.Sprintf("cod_%d", i), wt)
+		worktrees = append(worktrees, wt)
+	}
+	return base, worktrees
+}
+
+// TestResolveLiveSessionProjectAcceptsLinkedWorktrees — issue #252: a base
+// checkout plus its linked worktrees are one physical repository (they share
+// one git common directory), so the resolver must unify them and return the
+// base checkout as the canonical project root instead of failing closed with
+// "panes span multiple project roots".
+func TestResolveLiveSessionProjectAcceptsLinkedWorktrees(t *testing.T) {
+	const session = "worktree-session"
+	base, worktrees := setupResolverRepoWithWorktrees(t, session, 3)
+
+	paneDirs := map[string]string{"%1": base}
+	panes := []tmux.Pane{{ID: "%1"}}
+	for i, wt := range worktrees {
+		paneID := fmt.Sprintf("%%%d", i+2)
+		paneDirs[paneID] = wt
+		panes = append(panes, tmux.Pane{ID: paneID})
+	}
+
+	got, err := ResolveLiveSessionProjectContext(t.Context(), session, panes, func(_ context.Context, paneID string) (string, error) {
+		return paneDirs[paneID], nil
+	})
+	if err != nil {
+		t.Fatalf("linked-worktree topology rejected: %v", err)
+	}
+	if !sameResolverPath(t, got, base) {
+		t.Fatalf("resolved project = %q, want base checkout %q", got, base)
+	}
+}
+
+// TestResolveLiveSessionProjectWorktreesOnlyResolveToBase — even when no pane
+// sits in the base checkout, panes that are all linked worktrees of one repo
+// must resolve to that repo's base checkout, not an arbitrary worker worktree.
+func TestResolveLiveSessionProjectWorktreesOnlyResolveToBase(t *testing.T) {
+	const session = "worktree-only-session"
+	base, worktrees := setupResolverRepoWithWorktrees(t, session, 2)
+
+	paneDirs := make(map[string]string)
+	panes := make([]tmux.Pane, 0, len(worktrees))
+	for i, wt := range worktrees {
+		paneID := fmt.Sprintf("%%%d", i+1)
+		paneDirs[paneID] = wt
+		panes = append(panes, tmux.Pane{ID: paneID})
+	}
+
+	got, err := ResolveLiveSessionProjectContext(t.Context(), session, panes, func(_ context.Context, paneID string) (string, error) {
+		return paneDirs[paneID], nil
+	})
+	if err != nil {
+		t.Fatalf("worktree-only topology rejected: %v", err)
+	}
+	if !sameResolverPath(t, got, base) {
+		t.Fatalf("resolved project = %q, want base checkout %q", got, base)
+	}
+}
+
+// TestResolveLiveSessionProjectRejectsDistinctRealRepos — the linked-worktree
+// unification must not weaken the genuine fail-closed case: two unrelated
+// real repositories have different git common directories and stay rejected.
+func TestResolveLiveSessionProjectRejectsDistinctRealRepos(t *testing.T) {
+	first, _ := setupResolverRepoWithWorktrees(t, "distinct-a", 0)
+	second, _ := setupResolverRepoWithWorktrees(t, "distinct-b", 0)
+
+	paneDirs := map[string]string{"%1": first, "%2": second}
+	panes := []tmux.Pane{{ID: "%1"}, {ID: "%2"}}
+
+	_, err := ResolveLiveSessionProjectContext(t.Context(), "distinct-repos", panes, func(_ context.Context, paneID string) (string, error) {
+		return paneDirs[paneID], nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "panes span multiple project roots") {
+		t.Fatalf("distinct real repos error = %v, want multiple-project-roots rejection", err)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -262,6 +263,47 @@ func TestResolveCoordinatorProjectKeyRejectsMixedLiveRoots(t *testing.T) {
 	_, err := resolveCoordinatorProjectKey(t.Context(), session, false)
 	if err == nil || !strings.Contains(err.Error(), "multiple project roots") {
 		t.Fatalf("mixed live roots error = %v", err)
+	}
+}
+
+// TestResolveCoordinatorProjectKeyAcceptsLinkedWorktrees — issue #252: an
+// `ntm spawn --worktrees` session puts the controller in the base checkout and
+// workers in linked worktrees of the same repository. That is one physical
+// repo (one git common directory), so coordinator status must resolve it to
+// the base checkout instead of rejecting it as multiple project roots.
+func TestResolveCoordinatorProjectKeyAcceptsLinkedWorktrees(t *testing.T) {
+	isolateSessionAgentStorage(t)
+	const session = "coordinator-worktrees"
+	base := t.TempDir()
+	if resolved, err := filepath.EvalSymlinks(base); err == nil {
+		base = resolved
+	}
+	gitCommand := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = base
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Skipf("git %v failed: %v\n%s", args, err, out)
+		}
+	}
+	gitCommand("init", "-b", "main")
+	gitCommand("config", "user.email", "test@test.com")
+	gitCommand("config", "user.name", "Test")
+	gitCommand("commit", "--allow-empty", "-m", "init")
+	worktree := filepath.Join(base, ".ntm", "worktrees", session, "cod_1")
+	gitCommand("worktree", "add", "-b", "cod_1", worktree)
+
+	stubCoordinatorLiveTopology(t, []tmux.Pane{{ID: "%90"}, {ID: "%91"}}, map[string]string{
+		"%90": base,
+		"%91": worktree,
+	})
+
+	got, err := resolveCoordinatorProjectKey(t.Context(), session, false)
+	if err != nil {
+		t.Fatalf("resolveCoordinatorProjectKey rejected linked worktrees: %v", err)
+	}
+	if got != base {
+		t.Fatalf("resolved project = %q, want base checkout %q", got, base)
 	}
 }
 

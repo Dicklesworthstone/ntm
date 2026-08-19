@@ -307,8 +307,6 @@ func validateMainConfigReferences(cfg *config.Config, result *ValidationResult, 
 	validateBinaryReference("integrations.dcg.binary_path", cfg.Integrations.DCG.BinaryPath, result)
 	validateBinaryReference("integrations.caam.binary_path", cfg.Integrations.CAAM.BinaryPath, result)
 	validateBinaryReference("integrations.rch.binary_path", cfg.Integrations.RCH.BinaryPath, result)
-	validateBinaryReference("integrations.process_triage.binary_path", cfg.Integrations.ProcessTriage.BinaryPath, result)
-	validateBinaryReference("integrations.rano.binary_path", cfg.Integrations.Rano.BinaryPath, result)
 	validateBinaryReference("cass.binary_path", cfg.CASS.BinaryPath, result)
 	validateBinaryReference("scanner.ubs_path", cfg.Scanner.UBSPath, result)
 

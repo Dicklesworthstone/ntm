@@ -268,7 +268,6 @@ type SafetyDefaults struct {
 	RedactionAllowlistCount   int    `json:"redaction_allowlist_count"`
 	PrivacyDefaultEnabled     bool   `json:"privacy_default_enabled"`
 	EncryptionAtRestEnabled   bool   `json:"encryption_at_rest_enabled"`
-	PreflightDefaultEnabled   bool   `json:"preflight_default_enabled"`
 	PreflightDefaultStrict    bool   `json:"preflight_default_strict"`
 }
 
@@ -690,6 +689,44 @@ func checkConfiguration() []ConfigCheck {
 	// refuses to load such a config.
 	checks = append(checks, removedKnobChecks()...)
 
+	// Deprecated config knobs (bd-6otuk, v1.28.0 batch): warn tier — the
+	// config still loads, the value is ignored, and each key becomes a hard
+	// strict-loader error in v1.29.0.
+	checks = append(checks, deprecatedKnobChecks()...)
+
+	return checks
+}
+
+// deprecatedKnobChecks reports every deprecated-in-v1.28.0 config key present
+// in the active config file, one warning per key, with the exact disposition
+// text the startup warning uses.
+func deprecatedKnobChecks() []ConfigCheck {
+	knobs, err := config.ScanDeprecatedKnobs(selectedConfigPath())
+	if err != nil {
+		return []ConfigCheck{{
+			Name:    "deprecated config keys",
+			Valid:   false,
+			Status:  "warning",
+			Message: fmt.Sprintf("could not scan config for deprecated keys: %v", err),
+		}}
+	}
+	if len(knobs) == 0 {
+		return []ConfigCheck{{
+			Name:    "deprecated config keys",
+			Valid:   true,
+			Status:  "ok",
+			Message: "no deprecated config keys present",
+		}}
+	}
+	checks := make([]ConfigCheck, 0, len(knobs))
+	for _, knob := range knobs {
+		checks = append(checks, ConfigCheck{
+			Name:    "deprecated config key: " + knob.Key,
+			Valid:   false,
+			Status:  "warning",
+			Message: fmt.Sprintf("%s; the value is ignored (deprecated in v1.28.0) and the key becomes a config error in v1.29.0 — delete it from your config file", knob.Disposition),
+		})
+	}
 	return checks
 }
 
@@ -744,7 +781,6 @@ func buildSafetyDefaults(cfg *config.Config) SafetyDefaults {
 		RedactionAllowlistCount:   allowlistCount,
 		PrivacyDefaultEnabled:     cfg.Privacy.Enabled,
 		EncryptionAtRestEnabled:   cfg.Encryption.Enabled,
-		PreflightDefaultEnabled:   cfg.Preflight.Enabled,
 		PreflightDefaultStrict:    cfg.Preflight.Strict,
 	}
 }
@@ -914,15 +950,11 @@ func renderDoctorTUITo(w io.Writer, report *DoctorReport) error {
 	fmt.Fprintf(w, "  %s Encryption at rest: %s\n", encryptionStatus, mutedStyle.Render(encryptionLabel))
 
 	preflightStatus := statusIcon("ok")
-	preflightLabel := "disabled"
-	if report.SafetyDefaults.PreflightDefaultEnabled {
-		preflightLabel = "enabled"
-	}
 	strictLabel := "strict=off"
 	if report.SafetyDefaults.PreflightDefaultStrict {
 		strictLabel = "strict=on"
 	}
-	fmt.Fprintf(w, "  %s Prompt preflight: %s (%s)\n", preflightStatus, mutedStyle.Render(preflightLabel), mutedStyle.Render(strictLabel))
+	fmt.Fprintf(w, "  %s Prompt preflight: %s\n", preflightStatus, mutedStyle.Render(strictLabel))
 
 	// Invariants section
 	fmt.Fprintln(w, sectionStyle.Render("Design Invariants:"))

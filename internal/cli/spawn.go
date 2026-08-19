@@ -868,37 +868,24 @@ func validateSpawnAgentCommands(opts SpawnOptions, ollamaHost string) error {
 	return nil
 }
 
-// validateGrokPhaseOneSpawn keeps the first-class Grok Build integration on
-// the behavior that has deterministic, fake-binary-testable semantics. Launch,
-// model selection, counting, and exact process discovery are supported in
-// phase one. Prompt injection, assignment, persona setup, and restart require
-// authenticated TUI fixtures and therefore fail closed instead of pretending
-// to work through another provider's protocol.
-func validateGrokPhaseOneSpawn(opts SpawnOptions, effectiveConfig *config.Config) error {
-	for agentOrder, spec := range opts.Agents {
+// validateGrokPhaseOneSpawn retains the last deliberate Grok Build spawn
+// refusal after the GH#251 phase-2 flip: persona prompt injection. The Grok
+// Build CLI exposes no system-prompt flag or env var (verified against
+// `grok --help`), so a persona cannot be delivered faithfully — pretending
+// via first-prompt prepending is a different contract than cc/cod personas.
+// Prompt delivery, CASS context, marching orders, --assign, and
+// --auto-restart now flow through the grok-aware readiness/composer/verify
+// protocol implemented from live grok 1.0.5 captures.
+func validateGrokPhaseOneSpawn(opts SpawnOptions, _ *config.Config) error {
+	for _, spec := range opts.Agents {
 		if spec.Type != AgentTypeGrok {
 			continue
 		}
-		if opts.Prompt != "" || opts.InitPrompt != "" {
-			return errors.New("phase-one Grok Build spawn does not yet support --prompt or --init-prompt; launch with --grok and send interactively after authenticating")
-		}
-		if !opts.NoCassContext && opts.CassContextQuery != "" {
-			return errors.New("phase-one Grok Build spawn does not yet support CASS context injection")
-		}
-		if _, ok := opts.MarchingOrders[agentOrder]; ok {
-			return errors.New("phase-one Grok Build spawn does not yet support marching-order prompt delivery")
-		}
-		if opts.Assign {
-			return errors.New("phase-one Grok Build spawn does not yet support --assign")
-		}
-		if opts.AutoRestart || (effectiveConfig != nil && effectiveConfig.Resilience.AutoRestart) {
-			return errors.New("phase-one Grok Build spawn does not yet support --auto-restart")
-		}
 		if spec.Persona != nil {
-			return errors.New("phase-one Grok Build spawn does not yet support persona prompt injection")
+			return errors.New("Grok Build spawn does not support persona prompt injection: the Grok Build CLI has no system-prompt flag or env var")
 		}
 		if profile, ok := opts.PersonaMap[spec.Model]; ok && profile != nil {
-			return errors.New("phase-one Grok Build spawn does not yet support persona prompt injection")
+			return errors.New("Grok Build spawn does not support persona prompt injection: the Grok Build CLI has no system-prompt flag or env var")
 		}
 	}
 	return nil
@@ -3236,12 +3223,6 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 
 		go func(paneID, paneTitle string, idx int, agentType AgentType, agent FlatAgent, panePrompt string, hasPrompt bool) {
 			defer setupWg.Done()
-			if agentType == AgentTypeGrok {
-				// Grok Build's authenticated fullscreen TUI readiness and input
-				// protocol are deliberately not inferred from other providers.
-				return
-			}
-
 			// Gemini post-spawn setup: auto-select Pro model
 			if agentType == AgentTypeGemini && cfg.GeminiSetup.AutoSelectProModel {
 				geminiCfg := gemini.SetupConfig{

@@ -88,6 +88,46 @@ func TestSwarmCmd_AutoRotateAccountsFlag_DefaultFromConfig(t *testing.T) {
 	}
 }
 
+// TestSwarmCmd_ForceGlobalAuthClobberFlag_DefaultFromConfig is the bd-6otuk
+// behavior proof for the wiring fix: swarm.force_global_auth_clobber used to
+// be overwritten by the flag's hard-coded false default before any read.
+// Now the config value seeds the flag default (flipping the knob changes the
+// effective value), while an explicit flag still overrides.
+func TestSwarmCmd_ForceGlobalAuthClobberFlag_DefaultFromConfig(t *testing.T) {
+	prevCfg := cfg
+	t.Cleanup(func() { cfg = prevCfg })
+
+	cfg = &config.Config{
+		Swarm: config.DefaultSwarmConfig(),
+	}
+	cfg.Swarm.ForceGlobalAuthClobber = true
+
+	cmd := newSwarmCmd()
+
+	flag := cmd.PersistentFlags().Lookup("force-global-auth-clobber")
+	if flag == nil {
+		t.Fatal("expected --force-global-auth-clobber flag to exist")
+	}
+	got, err := cmd.PersistentFlags().GetBool("force-global-auth-clobber")
+	if err != nil {
+		t.Fatalf("GetBool(force-global-auth-clobber) error: %v", err)
+	}
+	if got != true {
+		t.Errorf("force-global-auth-clobber default = %v, want true (seeded from config)", got)
+	}
+
+	// With the knob off, the default stays false.
+	cfg.Swarm.ForceGlobalAuthClobber = false
+	cmd = newSwarmCmd()
+	got, err = cmd.PersistentFlags().GetBool("force-global-auth-clobber")
+	if err != nil {
+		t.Fatalf("GetBool(force-global-auth-clobber) error: %v", err)
+	}
+	if got != false {
+		t.Errorf("force-global-auth-clobber default = %v, want false", got)
+	}
+}
+
 func TestSwarmCmd_PromptFlagsExist(t *testing.T) {
 	cmd := newSwarmCmd()
 	if cmd.Flags().Lookup("prompt") == nil {

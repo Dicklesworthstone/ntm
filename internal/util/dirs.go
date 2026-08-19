@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -50,9 +51,58 @@ func EnsureDir(path string) error {
 	return os.MkdirAll(path, 0755)
 }
 
+// gitRootCache memoizes FindGitRoot results per start directory so hot paths
+// (e.g. --robot-status resolving project dirs per collection) do not spawn
+// `git rev-parse --show-toplevel` repeatedly for the same directory.
+// Entries expire after gitRootCacheTTL; the map is bounded at
+// gitRootCacheMaxEntries and reset wholesale when full (bd-6afgy).
+var gitRootCache = struct {
+	sync.Mutex
+	entries map[string]gitRootCacheEntry
+}{entries: make(map[string]gitRootCacheEntry)}
+
+type gitRootCacheEntry struct {
+	root    string
+	err     error
+	expires time.Time
+}
+
+const (
+	gitRootCacheTTL        = 30 * time.Second
+	gitRootCacheMaxEntries = 256
+)
+
 // FindGitRoot attempts to find the root of the git repository
 // containing the given directory. Returns empty string if not found.
+// Results (including failures) are cached for a short TTL per start
+// directory; repo moves/deletions are picked up after the TTL lapses.
 func FindGitRoot(startDir string) (string, error) {
+	now := time.Now()
+
+	gitRootCache.Lock()
+	if entry, ok := gitRootCache.entries[startDir]; ok && now.Before(entry.expires) {
+		gitRootCache.Unlock()
+		return entry.root, entry.err
+	}
+	gitRootCache.Unlock()
+
+	root, err := findGitRootUncached(startDir)
+
+	gitRootCache.Lock()
+	if len(gitRootCache.entries) >= gitRootCacheMaxEntries {
+		gitRootCache.entries = make(map[string]gitRootCacheEntry)
+	}
+	gitRootCache.entries[startDir] = gitRootCacheEntry{
+		root:    root,
+		err:     err,
+		expires: now.Add(gitRootCacheTTL),
+	}
+	gitRootCache.Unlock()
+
+	return root, err
+}
+
+func findGitRootUncached(startDir string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--show-toplevel")

@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Dicklesworthstone/ntm/internal/agent"
 	dispatchsvc "github.com/Dicklesworthstone/ntm/internal/dispatch"
 	"github.com/Dicklesworthstone/ntm/internal/redaction"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
@@ -70,7 +69,9 @@ func (e *deterministicSmartRestartExecutor) sendKeys(_ context.Context, _ string
 	return nil
 }
 
-func TestValidateSmartRestartTargetsRejectsWholeGrokBatch(t *testing.T) {
+// GH#251 phase 2: grok supports automated relaunch, so grok-only and mixed
+// batches pass the smart-restart target preflight.
+func TestValidateSmartRestartTargetsAcceptsWholeGrokBatch(t *testing.T) {
 	for _, panes := range []map[string]PaneWorkStatus{
 		{"0": {AgentType: "grok"}},
 		{
@@ -78,29 +79,35 @@ func TestValidateSmartRestartTargetsRejectsWholeGrokBatch(t *testing.T) {
 			"1": {AgentType: "grok-build"},
 		},
 	} {
-		if err := validateSmartRestartTargets(panes); !errors.Is(err, agent.ErrAutomatedRelaunchNotImplemented) {
-			t.Fatalf("validateSmartRestartTargets() error = %v, want Grok relaunch sentinel", err)
+		if err := validateSmartRestartTargets(panes); err != nil {
+			t.Fatalf("validateSmartRestartTargets() error = %v, want nil (grok relaunch is supported)", err)
 		}
 	}
 }
 
-func TestExecuteRestartRejectsGrokBeforeMutation(t *testing.T) {
-	executor := &deterministicSmartRestartExecutor{}
+// GH#251 phase 2: executeRestart treats a grok pane like any supported agent —
+// it runs the restart lifecycle and relaunches with the grok launch command.
+func TestExecuteRestartRelaunchesGrokWithGrokCommand(t *testing.T) {
+	executor := &deterministicSmartRestartExecutor{
+		shellPID:        321,
+		ready:           true,
+		readyConfigured: true,
+		childAlive:      true,
+	}
 	seq, err := executeRestart(t.Context(), "proj", 0, 1, "grok-build", SmartRestartOptions{
 		Force:        true,
 		HardKill:     true,
 		HardKillOnly: true,
 		executor:     executor,
 	})
-	if seq == nil || seq.AgentType != "grok-build" || seq.AgentLaunched {
-		t.Fatalf("executeRestart() sequence = %+v, want unlaunched Grok sequence", seq)
+	if err != nil {
+		t.Fatalf("executeRestart() error = %v, want nil (grok relaunch is supported)", err)
 	}
-	var structured *StructuredError
-	if !errors.As(err, &structured) || structured.Code != ErrCodeNotImplemented || structured.Phase != "preflight" {
-		t.Fatalf("executeRestart() error = %T %+v, want NOT_IMPLEMENTED preflight error", err, err)
+	if seq == nil || seq.AgentType != "grok-build" || !seq.AgentLaunched || !seq.LaunchAttempted {
+		t.Fatalf("executeRestart() sequence = %+v, want launched Grok sequence", seq)
 	}
-	if len(executor.mutations) != 0 || len(executor.launches) != 0 {
-		t.Fatalf("executeRestart() mutated unsupported target: mutations=%v launches=%v", executor.mutations, executor.launches)
+	if len(executor.launches) != 1 || !strings.Contains(executor.launches[0], "grok --always-approve") {
+		t.Fatalf("executeRestart() launches = %v, want the grok launch command", executor.launches)
 	}
 }
 
@@ -1194,8 +1201,9 @@ func TestRestartLaunchAlias(t *testing.T) {
 		{"openai-codex", "cod"},
 		{"google-gemini", "gmi"},
 		{"antigravity", "agy"},
-		{"grok", ""},
-		{"xai_grok_build", ""},
+		// GH#251 phase 2: grok has a canonical launch command.
+		{"grok", "grok --always-approve"},
+		{"xai_grok_build", "grok --always-approve"},
 		{"opencode", "oc"},
 		{"ws", "windsurf"},
 		{"aider", "aider"},

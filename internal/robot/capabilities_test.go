@@ -274,7 +274,9 @@ func TestBuildCommandRegistry_CanonicalPaneContracts(t *testing.T) {
 	}
 }
 
-func TestSpawnCapabilitiesAdvertiseGrokPhaseOne(t *testing.T) {
+// GH#251 phase 2: grok is fully supported, so the spawn capability must no
+// longer advertise a phase-one launch-only boundary.
+func TestSpawnCapabilitiesAdvertiseGrokFullSupport(t *testing.T) {
 	output, err := GetCapabilitiesWithOptions(CapabilitiesOptions{Command: "spawn"})
 	if err != nil || !output.Success || len(output.Commands) != 1 {
 		t.Fatalf("spawn capabilities output=%+v err=%v", output, err)
@@ -282,8 +284,9 @@ func TestSpawnCapabilitiesAdvertiseGrokPhaseOne(t *testing.T) {
 	command := output.Commands[0]
 	for _, parameter := range command.Parameters {
 		if parameter.Flag == "--spawn-grok" {
-			if !strings.Contains(strings.ToLower(parameter.Description), "launch only") {
-				t.Fatalf("spawn-grok description does not expose phase-one boundary: %q", parameter.Description)
+			lower := strings.ToLower(parameter.Description)
+			if strings.Contains(lower, "launch only") || strings.Contains(lower, "phase one") {
+				t.Fatalf("spawn-grok description still advertises a phase-one boundary: %q", parameter.Description)
 			}
 			return
 		}

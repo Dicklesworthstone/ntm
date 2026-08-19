@@ -2,7 +2,6 @@ package agent
 
 import (
 	"encoding/json"
-	"errors"
 	"testing"
 	"time"
 )
@@ -171,13 +170,10 @@ func TestAgentTypeGrokAliasesAreExact(t *testing.T) {
 }
 
 func TestAgentTypeValidateAutomatedRelaunch(t *testing.T) {
-	for _, agentType := range []AgentType{AgentTypeGrok, "grok-build", "xai_grok_build"} {
-		if err := agentType.ValidateAutomatedRelaunch(); !errors.Is(err, ErrAutomatedRelaunchNotImplemented) {
-			t.Errorf("AgentType(%q).ValidateAutomatedRelaunch() error = %v, want sentinel", agentType, err)
-		}
-	}
-
-	for _, agentType := range []AgentType{AgentTypeClaudeCode, AgentTypeCodex, AgentTypeGemini, AgentTypeUser, AgentTypeUnknown} {
+	// GH#251 phase 2: Grok Build relaunch is implemented (grok --always-approve
+	// template + live-verified TUI markers), so the phase-one sentinel no
+	// longer fires for any grok alias.
+	for _, agentType := range []AgentType{AgentTypeGrok, "grok-build", "xai_grok_build", AgentTypeClaudeCode, AgentTypeCodex, AgentTypeGemini, AgentTypeUser, AgentTypeUnknown} {
 		if err := agentType.ValidateAutomatedRelaunch(); err != nil {
 			t.Errorf("AgentType(%q).ValidateAutomatedRelaunch() error = %v, want nil", agentType, err)
 		}
@@ -185,19 +181,14 @@ func TestAgentTypeValidateAutomatedRelaunch(t *testing.T) {
 }
 
 func TestAgentTypeValidateAutomatedPromptDelivery(t *testing.T) {
+	// GH#251 phase 2: automated Grok Build prompt delivery is implemented
+	// (composer-gated, submission-verified), so every alias now passes.
 	for _, agentType := range []AgentType{
 		AgentTypeGrok,
 		" Grok-Build ",
 		"GROK_BUILD",
 		"xai-grok-build",
 		"XAI_GROK_BUILD",
-	} {
-		if err := agentType.ValidateAutomatedPromptDelivery(); !errors.Is(err, ErrAutomatedPromptDeliveryNotImplemented) {
-			t.Errorf("AgentType(%q).ValidateAutomatedPromptDelivery() error = %v, want sentinel", agentType, err)
-		}
-	}
-
-	for _, agentType := range []AgentType{
 		AgentTypeClaudeCode,
 		AgentTypeCodex,
 		AgentTypeGemini,

@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
@@ -368,7 +367,10 @@ func TestPrepareBuildsThenRedactsEveryFinalMessageBeforeDelivery(t *testing.T) {
 	}
 }
 
-func TestPrepareRejectsGrokBeforePromptPipelineForSubmitAndStageOnly(t *testing.T) {
+// TestPrepareAcceptsGrokInMixedBatch replaces the phase-one refusal test:
+// after GH#251 phase 2, a mixed batch containing a Grok Build pane flows
+// through the full prompt pipeline and delivers to every pane, grok included.
+func TestPrepareAcceptsGrokInMixedBatch(t *testing.T) {
 	t.Parallel()
 	panes := []tmux.Pane{
 		testPane("%1", 0, 0, tmux.AgentClaude, ""),
@@ -376,56 +378,54 @@ func TestPrepareRejectsGrokBeforePromptPipelineForSubmitAndStageOnly(t *testing.
 		testPane("%3", 0, 2, tmux.AgentCodex, ""),
 	}
 
-	for _, submit := range []bool{true, false} {
-		submit := submit
-		name := "stage_only"
-		if submit {
-			name = "submit"
-		}
-		t.Run(name, func(t *testing.T) {
-			var built, redacted, planned, delivered int
-			service, err := NewService(Ports{
-				Builder: FinalMessageBuilderFunc(func(_ context.Context, in BuildInput) (string, error) {
-					built++
-					return in.BaseMessage, nil
-				}),
-				Redactor: FinalMessageRedactorFunc(func(_ context.Context, _ Target, message string) (RedactionResult, error) {
-					redacted++
-					return RedactionResult{Message: message}, nil
-				}),
-				Protocols: ProtocolPlannerFunc(func(_ context.Context, _ Target, _ bool) (ProtocolPlan, error) {
-					planned++
-					return ProtocolPlan{Protocol: ProtocolStageOnly}, nil
-				}),
-				Deliverer: DelivererFunc(func(context.Context, Delivery) error {
-					delivered++
-					return nil
-				}),
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
+	var built, redacted, planned, delivered int
+	var deliveredTypes []tmux.AgentType
+	service, err := NewService(Ports{
+		Builder: FinalMessageBuilderFunc(func(_ context.Context, in BuildInput) (string, error) {
+			built++
+			return in.BaseMessage, nil
+		}),
+		Redactor: FinalMessageRedactorFunc(func(_ context.Context, _ Target, message string) (RedactionResult, error) {
+			redacted++
+			return RedactionResult{Message: message}, nil
+		}),
+		Protocols: ProtocolPlannerFunc(func(_ context.Context, _ Target, _ bool) (ProtocolPlan, error) {
+			planned++
+			return ProtocolPlan{Protocol: ProtocolStageOnly}, nil
+		}),
+		Deliverer: DelivererFunc(func(_ context.Context, delivery Delivery) error {
+			delivered++
+			deliveredTypes = append(deliveredTypes, delivery.Target.AgentType.Canonical())
+			return nil
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 
-			result, err := service.Execute(context.Background(), Request{
-				Session: "proj",
-				Panes:   panes,
-				Message: "work",
-				Submit:  submit,
-			})
-			dispatchErr := requireCode(t, err, ErrPromptDeliveryUnsupported)
-			if !errors.Is(err, agent.ErrAutomatedPromptDeliveryNotImplemented) {
-				t.Fatalf("error = %v, want shared prompt-delivery sentinel", err)
-			}
-			if dispatchErr.Target == nil || dispatchErr.Target.AgentType.Canonical() != tmux.AgentGrok || dispatchErr.Target.Address != "1" {
-				t.Fatalf("unsupported target = %+v, want Grok address 1", dispatchErr.Target)
-			}
-			if built != 0 || redacted != 0 || planned != 0 || delivered != 0 {
-				t.Fatalf("prompt pipeline calls = build:%d redact:%d protocol:%d deliver:%d, want all zero", built, redacted, planned, delivered)
-			}
-			if result.Delivered != 0 || len(result.Targets) != 0 || len(result.Receipts) != 0 {
-				t.Fatalf("rejected mixed request result = %+v", result)
-			}
-		})
+	result, err := service.Execute(context.Background(), Request{
+		Session: "proj",
+		Panes:   panes,
+		Message: "work",
+		Submit:  false,
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v, want nil (grok delivery supported in phase 2)", err)
+	}
+	if delivered != 3 || built != 3 || redacted != 3 || planned != 3 {
+		t.Fatalf("prompt pipeline calls = build:%d redact:%d protocol:%d deliver:%d, want 3 each", built, redacted, planned, delivered)
+	}
+	grokDelivered := false
+	for _, at := range deliveredTypes {
+		if at == tmux.AgentGrok {
+			grokDelivered = true
+		}
+	}
+	if !grokDelivered {
+		t.Fatalf("delivered agent types = %v, want to include grok", deliveredTypes)
+	}
+	if result.Delivered != 3 {
+		t.Fatalf("result.Delivered = %d, want 3", result.Delivered)
 	}
 }
 

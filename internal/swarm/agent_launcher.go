@@ -175,7 +175,7 @@ func (l *AgentLauncher) launchAgentCommand(session string, pane int, agentType, 
 
 	if isGrok {
 		if _, err := l.processStartWaiter()(context.Background(), session, target); err != nil {
-			return fmt.Errorf("phase-one Grok Build in pane %s did not start a stable process: %w", target, err)
+			return fmt.Errorf("Grok Build in pane %s did not start a stable process: %w", target, err)
 		}
 	}
 

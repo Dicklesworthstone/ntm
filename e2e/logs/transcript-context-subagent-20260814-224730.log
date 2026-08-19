@@ -1,0 +1,68 @@
+[0s] [E2E-START] === E2E Test Started: transcript-context-subagent ===
+[0s] [E2E-START] Timestamp: 2026-08-14T22:47:30-04:00
+[0s] [E2E-START] Log file: /Users/jemanuel/projects/ntm/e2e/logs/transcript-context-subagent-20260814-224730.log
+[1ms] [FIXTURE] path=/var/folders/vt/n2xyn_s51b97_j3yh2qbqcnc0000gn/T/TestTranscriptContextSubagentExcluded3402772874/001/.codex/sessions/2026/08/14/rollout-2026-08-14T10-00-00-e2e-main.jsonl bytes=896 sha256=3b31b620c42dad943e0ab0feb12ec9784b9886ab40b0f48493441ae12423304b
+[1ms] [FIXTURE] path=/var/folders/vt/n2xyn_s51b97_j3yh2qbqcnc0000gn/T/TestTranscriptContextSubagentExcluded3402772874/001/.codex/sessions/2026/08/14/rollout-2026-08-14T11-00-00-e2e-sub.jsonl bytes=899 sha256=1aa9dee8a088f44c4d2604230aa55f048bf7ae3e1c3d0302e678f9428258e6bd
+[53ms] [SETUP] session=ntm-e2e-tctx-57463-877000 pane=%0 main=/var/folders/vt/n2xyn_s51b97_j3yh2qbqcnc0000gn/T/TestTranscriptContextSubagentExcluded3402772874/001/.codex/sessions/2026/08/14/rollout-2026-08-14T10-00-00-e2e-main.jsonl sub=/var/folders/vt/n2xyn_s51b97_j3yh2qbqcnc0000gn/T/TestTranscriptContextSubagentExcluded3402772874/001/.codex/sessions/2026/08/14/rollout-2026-08-14T11-00-00-e2e-sub.jsonl
+[10.589s] [NTM] HOME=/var/folders/vt/n2xyn_s51b97_j3yh2qbqcnc0000gn/T/TestTranscriptContextSubagentExcluded3402772874/001 args=[--robot-context=ntm-e2e-tctx-57463-877000] exit=0
+[10.589s] [NTM] output={
+  "success": true,
+  "timestamp": "2026-08-15T02:47:40Z",
+  "version": "1.0.0",
+  "output_format": "json",
+  "session": "ntm-e2e-tctx-57463-877000",
+  "captured_at": "2026-08-15T02:47:40.946948Z",
+  "agents": [
+    {
+      "pane": "0",
+      "pane_idx": 0,
+      "agent_type": "codex",
+      "model": "gpt-5.3-codex",
+      "estimated_tokens": 129200,
+      "with_overhead": 129200,
+      "context_limit": 258400,
+      "usage_percent": 50,
+      "usage_level": "Medium",
+      "confidence": "high",
+      "state": "idle",
+      "source": "transcript",
+      "transcript_tokens": 129200,
+      "transcript_model": "gpt-5.3-codex",
+      "transcript_path": "/var/folders/vt/n2xyn_s51b97_j3yh2qbqcnc0000gn/T/TestTranscriptContextSubagentExcluded3402772874/001/.codex/sessions/2026/08/14/rollout-2026-08-14T10-00-00-e2e-main.jsonl",
+      "transcript_updated_at": "2026-08-15T02:45:30Z"
+    }
+  ],
+  "summary": {
+    "total_agents": 1,
+    "high_usage_count": 0,
+    "avg_usage": 50
+  },
+  "_agent_hints": {
+    "suggestions": [
+      "All agents at moderate context usage - no immediate concerns"
+    ]
+  }
+}
+[10.589s] [E2E-JSON] context_agents:
+[
+  {
+    "pane": "0",
+    "pane_idx": 0,
+    "agent_type": "codex",
+    "model": "gpt-5.3-codex",
+    "estimated_tokens": 129200,
+    "with_overhead": 129200,
+    "context_limit": 258400,
+    "usage_percent": 50,
+    "usage_level": "Medium",
+    "confidence": "high",
+    "state": "idle",
+    "source": "transcript",
+    "transcript_tokens": 129200,
+    "transcript_model": "gpt-5.3-codex",
+    "transcript_path": "/var/folders/vt/n2xyn_s51b97_j3yh2qbqcnc0000gn/T/TestTranscriptContextSubagentExcluded3402772874/001/.codex/sessions/2026/08/14/rollout-2026-08-14T10-00-00-e2e-main.jsonl",
+    "transcript_updated_at": "2026-08-15T02:45:30Z"
+  }
+]
+[10.589s] [PASS] newest-but-subagent rollout skipped; main session attributed
+[10.601s] [E2E-END] === Test completed in 10.601s ===

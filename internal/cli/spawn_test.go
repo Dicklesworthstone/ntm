@@ -503,87 +503,100 @@ func TestValidateSpawnAgentTypes(t *testing.T) {
 	}
 }
 
-func TestValidateGrokPhaseOneSpawnFailsClosed(t *testing.T) {
+// GH#251 phase 2: Grok Build spawn now supports prompt delivery, CASS
+// context, marching orders, --assign, and --auto-restart. The only remaining
+// deliberate refusal is persona injection — the Grok Build CLI has no
+// system-prompt flag or env var.
+func TestValidateGrokSpawnAcceptsPhaseTwoSurfacesRejectsPersona(t *testing.T) {
 	base := SpawnOptions{Agents: []FlatAgent{{Type: AgentTypeGrok, Index: 1}}}
 	effectiveConfig := config.Default()
-	if err := validateGrokPhaseOneSpawn(base, effectiveConfig); err != nil {
-		t.Fatalf("plain Grok spawn should be supported: %v", err)
-	}
-	if err := validateGrokPhaseOneSpawn(SpawnOptions{
-		Agents: base.Agents, NoCassContext: true, CassContextQuery: "ignored",
-	}, effectiveConfig); err != nil {
-		t.Fatalf("disabled CASS context should not block Grok spawn: %v", err)
-	}
 
-	tests := []SpawnOptions{
+	accepted := []SpawnOptions{
+		base,
+		{Agents: base.Agents, NoCassContext: true, CassContextQuery: "ignored"},
 		{Agents: base.Agents, Prompt: "work"},
 		{Agents: base.Agents, InitPrompt: "work"},
 		{Agents: base.Agents, CassContextQuery: "history"},
 		{Agents: base.Agents, MarchingOrders: map[int]string{0: "work"}},
 		{Agents: base.Agents, Assign: true},
 		{Agents: base.Agents, AutoRestart: true},
-		{Agents: []FlatAgent{{Type: AgentTypeGrok, Index: 1, Persona: &persona.Persona{Name: "reviewer"}}}},
 	}
-	for _, opts := range tests {
+	for _, opts := range accepted {
+		if err := validateGrokPhaseOneSpawn(opts, effectiveConfig); err != nil {
+			t.Fatalf("phase-2 Grok spawn options unexpectedly rejected: %+v: %v", opts, err)
+		}
+	}
+
+	rejected := []SpawnOptions{
+		{Agents: []FlatAgent{{Type: AgentTypeGrok, Index: 1, Persona: &persona.Persona{Name: "reviewer"}}}},
+		{
+			Agents:     []FlatAgent{{Type: AgentTypeGrok, Index: 1, Model: "reviewer"}},
+			PersonaMap: map[string]*persona.Persona{"reviewer": {Name: "reviewer"}},
+		},
+	}
+	for _, opts := range rejected {
 		if err := validateGrokPhaseOneSpawn(opts, effectiveConfig); err == nil {
-			t.Fatalf("unsupported Grok options unexpectedly accepted: %+v", opts)
+			t.Fatalf("Grok persona injection unexpectedly accepted: %+v", opts)
 		}
 	}
 
 	effectiveConfig.Resilience.AutoRestart = true
-	if err := validateGrokPhaseOneSpawn(base, effectiveConfig); err == nil {
-		t.Fatal("config-enabled automatic restart unexpectedly accepted for Grok")
+	if err := validateGrokPhaseOneSpawn(base, effectiveConfig); err != nil {
+		t.Fatalf("config-enabled automatic restart unexpectedly rejected for Grok: %v", err)
 	}
 }
 
-func TestGrokSpawnSuppressesAmbientContextPromptDelivery(t *testing.T) {
+// GH#251 phase 2: Grok panes are now automated prompt-delivery targets and
+// receive the same spawn prompt sequence as claude/codex.
+func TestGrokSpawnDeliversAmbientContextPrompts(t *testing.T) {
 	grokOnly := []FlatAgent{{Type: AgentTypeGrok, Index: 1}}
-	if spawnHasAutomatedPromptDeliveryTarget(grokOnly) {
-		t.Fatal("Grok-only spawn unexpectedly has an automated prompt-delivery target")
+	if !spawnHasAutomatedPromptDeliveryTarget(grokOnly) {
+		t.Fatal("Grok-only spawn should have an automated prompt-delivery target")
 	}
-	if steps := buildSpawnPromptSequenceForAgent(
+	steps := buildSpawnPromptSequenceForAgent(
 		AgentTypeGrok,
 		"ambient CASS context",
 		"ambient recovery context",
 		"defensive user prompt",
 		time.Second,
-	); len(steps) != 0 {
-		t.Fatalf("Grok prompt steps = %+v, want empty defensive sequence", steps)
+	)
+	if len(steps) != 2 || steps[0].Kind != "recovery_context" || steps[1].Kind != "user_prompt" {
+		t.Fatalf("Grok prompt steps = %+v, want recovery plus CASS-enriched user prompt", steps)
 	}
 
 	mixed := append([]FlatAgent{{Type: AgentTypeClaude, Index: 1}}, grokOnly...)
 	if !spawnHasAutomatedPromptDeliveryTarget(mixed) {
 		t.Fatal("mixed spawn should retain automated context for supported agents")
 	}
-	steps := buildSpawnPromptSequenceForAgent(AgentTypeClaude, "cass", "recovery", "prompt", time.Second)
-	if len(steps) != 2 || steps[0].Kind != "recovery_context" || steps[1].Kind != "user_prompt" {
-		t.Fatalf("supported-agent prompt steps = %+v, want recovery plus CASS-enriched user prompt", steps)
+	claudeSteps := buildSpawnPromptSequenceForAgent(AgentTypeClaude, "cass", "recovery", "prompt", time.Second)
+	if len(claudeSteps) != 2 || claudeSteps[0].Kind != "recovery_context" || claudeSteps[1].Kind != "user_prompt" {
+		t.Fatalf("supported-agent prompt steps = %+v, want recovery plus CASS-enriched user prompt", claudeSteps)
 	}
 }
 
-func TestValidateGrokPhaseOneAddFailsClosed(t *testing.T) {
+// GH#251 phase 2: Grok Build add accepts --prompt and CASS context; only
+// persona injection remains refused (no system-prompt mechanism in the CLI).
+func TestValidateGrokAddAcceptsPhaseTwoSurfacesRejectsPersona(t *testing.T) {
 	base := AddOptions{Agents: AgentSpecs{{Type: AgentTypeGrok, Count: 1}}}
-	if err := validateGrokPhaseOneAdd(base); err != nil {
-		t.Fatalf("plain Grok add should be supported: %v", err)
-	}
-	if err := validateGrokPhaseOneAdd(AddOptions{
-		Agents: base.Agents, NoCassContext: true, CassContextQuery: "ignored",
-	}); err != nil {
-		t.Fatalf("disabled CASS context should not block Grok add: %v", err)
-	}
 
-	tests := []AddOptions{
+	accepted := []AddOptions{
+		base,
+		{Agents: base.Agents, NoCassContext: true, CassContextQuery: "ignored"},
 		{Agents: base.Agents, Prompt: "work"},
 		{Agents: base.Agents, CassContextQuery: "history"},
-		{
-			Agents:     AgentSpecs{{Type: AgentTypeGrok, Count: 1, Model: "reviewer"}},
-			PersonaMap: map[string]*persona.Persona{"reviewer": {Name: "reviewer"}},
-		},
 	}
-	for _, opts := range tests {
-		if err := validateGrokPhaseOneAdd(opts); err == nil {
-			t.Fatalf("unsupported Grok add options unexpectedly accepted: %+v", opts)
+	for _, opts := range accepted {
+		if err := validateGrokPhaseOneAdd(opts); err != nil {
+			t.Fatalf("phase-2 Grok add options unexpectedly rejected: %+v: %v", opts, err)
 		}
+	}
+
+	personaOpts := AddOptions{
+		Agents:     AgentSpecs{{Type: AgentTypeGrok, Count: 1, Model: "reviewer"}},
+		PersonaMap: map[string]*persona.Persona{"reviewer": {Name: "reviewer"}},
+	}
+	if err := validateGrokPhaseOneAdd(personaOpts); err == nil {
+		t.Fatalf("Grok persona injection unexpectedly accepted: %+v", personaOpts)
 	}
 }
 

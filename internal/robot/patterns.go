@@ -134,6 +134,19 @@ func defaultPatterns() []Pattern {
 		{Name: "agy_trust_prompt", RegexStr: `(?i)do\s+you\s+trust\s+the\s+contents\s+of\s+this\s+project`, Agent: "antigravity", State: StateError, Category: CategoryError, Priority: 210, Description: "Antigravity workspace-trust dialog question (pane blocked on keystroke)"},
 		{Name: "agy_trust_option", RegexStr: `(?i)yes,\s+i\s+trust\s+this\s+folder`, Agent: "antigravity", State: StateError, Category: CategoryError, Priority: 209, Description: "Antigravity workspace-trust dialog option line (pane blocked on keystroke)"},
 
+		// Grok Build patterns (GH#251 phase 2), derived from live captures of
+		// grok 1.0.5. The braille-spinner activity line ("⠹ Waiting for
+		// response… 0.7s" / "⠸ Thinking… 0.0s" / "⠙ Responding… 1.7s") and the
+		// "Esc:cancel" footer hint render ONLY while a turn is in flight, so
+		// they outrank the permanent composer chrome the same way the codex
+		// working patterns outrank codex_chevron_prompt.
+		{Name: "grok_spinner_phase", RegexStr: `(?m)^\s*[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]\s*(?:Waiting for response|Thinking|Responding)…`, Agent: "grok", State: StateThinking, Category: CategoryThinking, Priority: 115, Description: "Grok Build live activity line (spinner + phase verb, only during an in-flight turn)"},
+		{Name: "grok_esc_cancel", RegexStr: `Esc:cancel`, Agent: "grok", State: StateThinking, Category: CategoryThinking, Priority: 115, Description: "Grok Build Esc:cancel footer hint (only shown during active work)"},
+		{Name: "grok_worked_for", RegexStr: `(?m)^\s*Worked\s+for\s+\d`, Agent: "grok", State: StateWaiting, Category: CategoryCompletion, Priority: 95, Description: "Grok Build turn-ended summary (Worked for 12s)"},
+		{Name: "grok_turn_cancelled", RegexStr: `Turn cancelled by user`, Agent: "grok", State: StateWaiting, Category: CategoryCompletion, Priority: 95, Description: "Grok Build post-interrupt acknowledgement"},
+		{Name: "grok_composer_prompt", RegexStr: `(?m)^\s*│\s*❯`, Agent: "grok", State: StateWaiting, Category: CategoryIdle, Priority: 92, Description: "Grok Build bordered composer line (permanent chrome; outranked by the in-flight patterns above)"},
+		{Name: "grok_welcome_banner", RegexStr: `(?i)grok\s+build\s+\d+\.\d+`, Agent: "grok", State: StateWaiting, Category: CategoryIdle, Priority: 96, Description: "Grok Build welcome banner (fresh spawn readiness)"},
+
 		// Generic shell prompts (user/fallback)
 		{Name: "shell_dollar", RegexStr: `\$\s*$`, Agent: "*", State: StateWaiting, Category: CategoryIdle, Priority: 20, Description: "Shell dollar prompt"},
 		{Name: "shell_percent", RegexStr: `%\s*$`, Agent: "*", State: StateWaiting, Category: CategoryIdle, Priority: 20, Description: "Shell percent prompt"},
@@ -445,7 +458,7 @@ func isGenericShellIdlePattern(name string) bool {
 
 func isKnownAgentPatternType(agentType string) bool {
 	switch normalizeAgentType(agentType) {
-	case "claude", "codex", "gemini", "antigravity", "cursor", "windsurf", "aider", "oc", "ollama":
+	case "claude", "codex", "gemini", "antigravity", "grok", "cursor", "windsurf", "aider", "oc", "ollama":
 		return true
 	default:
 		return false

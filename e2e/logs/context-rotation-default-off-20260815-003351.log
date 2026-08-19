@@ -1,0 +1,27 @@
+[0s] [E2E-START] === E2E Test Started: context-rotation-default-off ===
+[0s] [E2E-START] Timestamp: 2026-08-15T00:33:51-04:00
+[0s] [E2E-START] Log file: /Users/jemanuel/projects/ntm/e2e/logs/context-rotation-default-off-20260815-003351.log
+[3ms] [FIXTURE] path=/var/folders/vt/n2xyn_s51b97_j3yh2qbqcnc0000gn/T/TestContextRotationE2EDefaultOffAndBelowThresholddefault_off3582174351/001/.claude/projects/-private-var-folders-vt-n2xyn-s51b97-j3yh2qbqcnc0000gn-T-TestContextRotationE2EDefaultOffAndBelowThresholddefault-off3582174351-002/session-defaultoff.jsonl tokens=150000
+[4ms] [CONFIG] /var/folders/vt/n2xyn_s51b97_j3yh2qbqcnc0000gn/T/TestContextRotationE2EDefaultOffAndBelowThresholddefault_off3582174351/003/config.toml:
+# hermetic config written by context_rotation_e2e_test.go (ntm-8ice)
+[context_rotation]
+try_compact_first = false
+confirm_timeout_sec = 600
+
+[77ms] [SETUP] session=ntm-e2e-crot-17589-907000 pane=%0 (threshold unset)
+[400ms] [NTM] HOME=/var/folders/vt/n2xyn_s51b97_j3yh2qbqcnc0000gn/T/TestContextRotationE2EDefaultOffAndBelowThresholddefault_off3582174351/001 args=[coordinator run ntm-e2e-crot-17589-907000 --once] exit=0
+[400ms] [NTM] stdout=Coordinator cycle complete for ntm-e2e-crot-17589-907000: 0 assignment result(s)
+[400ms] [NTM] stderr=
+[450ms] [NTM] HOME=/var/folders/vt/n2xyn_s51b97_j3yh2qbqcnc0000gn/T/TestContextRotationE2EDefaultOffAndBelowThresholddefault_off3582174351/001 args=[rotate context pending --json] exit=0
+[450ms] [NTM] stdout={
+  "pending": null,
+  "count": 0
+}
+[450ms] [NTM] stderr=
+[450ms] [E2E-JSON] pending_rotations_cli:
+{
+  "pending": null,
+  "count": 0
+}
+[450ms] [PASS] threshold unset -> trigger fully off despite 75% usage
+[562ms] [E2E-END] === Test completed in 562ms ===

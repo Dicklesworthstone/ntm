@@ -27,8 +27,6 @@ var (
 	captureForHealthCheckWithCtx = tmux.CaptureForHealthCheckContext
 )
 
-const mailNudgeCooldown = 5 * time.Minute
-
 // SessionCoordinator manages agent coordination for a tmux session.
 type SessionCoordinator struct {
 	mu          sync.RWMutex
@@ -50,14 +48,11 @@ type SessionCoordinator struct {
 	workItemDetailsFn           func(context.Context, string) (*bv.BeadAssignmentDetails, error)
 	claimBeadForAssignmentFn    func(context.Context, string, string, string, []string) (bv.BeadClaimResult, error)
 	releaseWorkItemClaimFn      func(context.Context, string, string, string) (bool, error)
-	fetchInboxFn                func(context.Context, agentmail.FetchInboxOptions) ([]agentmail.InboxMessage, error)
-	sendNudgeFn                 func(context.Context, string) error
 	operatorGatedLabels         []string
 
 	// Agent tracking
-	agents        map[string]*AgentState
-	lastMailNudge map[string]time.Time
-	lastUpdate    time.Time
+	agents     map[string]*AgentState
+	lastUpdate time.Time
 
 	// Monitors
 	monitor *AgentMonitor
@@ -70,6 +65,11 @@ type SessionCoordinator struct {
 	// [integrations.caam] auto_failover is true; created lazily on the
 	// first cycle.
 	caamFailover *failoverChecker
+
+	// Agent Mail idle-pane nudge trigger (GH#231). Nil unless [coordinator]
+	// mail_nudge is true AND an Agent Mail client exists; created lazily on
+	// the first cycle.
+	mailNudge *mailNudgeChecker
 
 	// Conflict handling (bd-ws2-wire-or-delete-ykmcz.1). The detector is
 	// created lazily on the first cycle where a conflict flag is enabled;
@@ -145,6 +145,14 @@ type CoordinatorConfig struct {
 	HumanAgent  string `toml:"human_agent"`  // Agent name to send digests to (default: "Human")
 	MailNudge   bool   `toml:"mail_nudge"`   // Prompt idle panes that have unread Agent Mail
 
+	// Mail nudge tunables (GH#231). These mirror the [coordinator]
+	// nudge_cooldown_seconds / nudge_message config keys; the CLI populates
+	// them from config.Coordinator when starting a coordinator. A
+	// non-positive cooldown falls back to the fixed 60s default; an empty
+	// message uses the built-in nudge prompt.
+	NudgeCooldown time.Duration `toml:"-"`
+	NudgeMessage  string        `toml:"-"`
+
 	// Context rotation trigger (bd-rpmg8). These mirror the [rotation]
 	// usage_percent_threshold / auto_confirm config keys (NOT [coordinator]);
 	// the CLI populates them from config.Rotation when starting a coordinator.
@@ -174,6 +182,7 @@ func DefaultCoordinatorConfig() CoordinatorConfig {
 		SendDigests:       false, // Disabled by default
 		HumanAgent:        "Human",
 		MailNudge:         false, // Disabled by default - prompts a pane
+		NudgeCooldown:     defaultMailNudgeCooldown,
 	}
 }
 
@@ -224,16 +233,9 @@ func New(session, projectKey string, mailClient *agentmail.Client, agentName str
 		reservationClient:   mailClient,
 		operatorGatedLabels: append([]string(nil), bv.OperatorGatedLabelsForProject(projectKey)...),
 		agents:              make(map[string]*AgentState),
-		lastMailNudge:       make(map[string]time.Time),
 		config:              DefaultCoordinatorConfig(),
 		events:              make(chan CoordinatorEvent, 100),
 		stopCh:              make(chan struct{}),
-	}
-	if mailClient != nil {
-		c.fetchInboxFn = mailClient.FetchInbox
-	}
-	c.sendNudgeFn = func(ctx context.Context, paneID string) error {
-		return tmux.SendKeysContext(ctx, paneID, "You have unread Agent Mail. Please check your inbox when ready.", true)
 	}
 	return c
 }
@@ -441,7 +443,7 @@ func (c *SessionCoordinator) RunCycle(ctx context.Context) ([]AssignmentResult, 
 	if err := c.updateAgentStatesContext(ctx); err != nil {
 		return nil, err
 	}
-	c.nudgeUnreadMail(ctx)
+	c.maybeCheckMailNudge(ctx)
 	c.maybeCheckContextRotation(ctx)
 	c.maybeCheckCaamFailover(ctx)
 	// Conflict detection + negotiation behind the persisted flags
@@ -497,51 +499,24 @@ func (c *SessionCoordinator) maybeCheckCaamFailover(ctx context.Context) {
 	checker.runOnce(ctx)
 }
 
-// nudgeUnreadMail prompts only healthy, freshly observed waiting panes. It
-// reads mail headers only and never interrupts a pane that is working.
-func (c *SessionCoordinator) nudgeUnreadMail(ctx context.Context) {
-	c.mu.RLock()
-	if !c.config.MailNudge || c.fetchInboxFn == nil || c.sendNudgeFn == nil {
-		c.mu.RUnlock()
+// maybeCheckMailNudge runs the Agent Mail idle-pane nudge trigger for this
+// cycle (GH#231). DEFAULT-OFF GUARANTEE: with [coordinator] mail_nudge unset
+// (false) — or no Agent Mail client at all — this returns before
+// constructing the checker: zero inbox probing, zero new subprocess calls,
+// zero behavior change.
+func (c *SessionCoordinator) maybeCheckMailNudge(ctx context.Context) {
+	c.mu.Lock()
+	if !c.config.MailNudge || c.mailClient == nil {
+		c.mu.Unlock()
 		return
 	}
-	now := time.Now()
-	agents := make([]AgentState, 0, len(c.agents))
-	for _, agent := range c.agents {
-		if agent.Status != robot.StateWaiting || agent.ObservationFreshness != status.FreshnessFresh || !agent.Healthy || agent.AgentMailName == "" || now.Sub(c.lastMailNudge[agent.PaneID]) < mailNudgeCooldown {
-			continue
-		}
-		agents = append(agents, *agent)
+	if c.mailNudge == nil {
+		c.mailNudge = newMailNudgeChecker(c.session, c.projectKey, c.config, c.mailClient)
 	}
-	fetchInbox := c.fetchInboxFn
-	sendNudge := c.sendNudgeFn
-	projectKey := c.projectKey
-	c.mu.RUnlock()
+	checker := c.mailNudge
+	c.mu.Unlock()
 
-	for _, agent := range agents {
-		inbox, err := fetchInbox(ctx, agentmail.FetchInboxOptions{ProjectKey: projectKey, AgentName: agent.AgentMailName, Limit: 1})
-		if err != nil {
-			slog.Warn("coordinator could not inspect Agent Mail inbox", "session", c.session, "pane", agent.PaneID, "agent", agent.AgentMailName, "error", err)
-			continue
-		}
-		hasUnread := false
-		for _, message := range inbox {
-			if message.ReadAt == nil {
-				hasUnread = true
-				break
-			}
-		}
-		if !hasUnread {
-			continue
-		}
-		if err := sendNudge(ctx, agent.PaneID); err != nil {
-			slog.Warn("coordinator could not nudge pane for unread Agent Mail", "session", c.session, "pane", agent.PaneID, "error", err)
-			continue
-		}
-		c.mu.Lock()
-		c.lastMailNudge[agent.PaneID] = now
-		c.mu.Unlock()
-	}
+	checker.runOnce(ctx)
 }
 
 func (c *SessionCoordinator) reportAssignmentCycle(results []AssignmentResult, err error) {

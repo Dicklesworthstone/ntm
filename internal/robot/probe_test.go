@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/util"
 )
@@ -23,7 +22,10 @@ func TestGetProbeSessionFailureUsesGeneralErrorExit(t *testing.T) {
 	}
 }
 
-func TestGetProbe_GrokRejectsBeforePaneInput(t *testing.T) {
+// GH#251 phase 2: grok panes accept automated pane input, so a probe against a
+// grok pane proceeds to actually touch the pane instead of failing closed with
+// NOT_IMPLEMENTED before any input.
+func TestGetProbe_GrokProceedsToPaneInput(t *testing.T) {
 	mock := setupMock(t)
 	mock.Panes = []tmux.Pane{{ID: "%9", Index: 2, WindowIndex: 1, Type: tmux.AgentGrok}}
 
@@ -38,18 +40,17 @@ func TestGetProbe_GrokRejectsBeforePaneInput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetProbe() error = %v", err)
 	}
-	if output.Success || output.ErrorCode != ErrCodeNotImplemented {
-		t.Fatalf("GetProbe() response = %+v, want NOT_IMPLEMENTED", output.RobotResponse)
+	if output.ErrorCode == ErrCodeNotImplemented {
+		t.Fatalf("GetProbe() response = %+v, grok probes must no longer be refused as NOT_IMPLEMENTED", output.RobotResponse)
 	}
-	if !strings.Contains(output.Error, agent.GrokPromptDeliveryCapabilityHint) {
-		t.Fatalf("GetProbe() error = %q, want Grok capability hint", output.Error)
-	}
-	if mock.CaptureCount != 0 || mock.SendKeysCount != 0 || mock.InterruptCount != 0 {
-		t.Fatalf("probe mutated Grok pane before rejection: capture=%d send=%d interrupt=%d", mock.CaptureCount, mock.SendKeysCount, mock.InterruptCount)
+	if mock.CaptureCount == 0 && mock.SendKeysCount == 0 {
+		t.Fatalf("probe never touched the grok pane: capture=%d send=%d interrupt=%d", mock.CaptureCount, mock.SendKeysCount, mock.InterruptCount)
 	}
 }
 
-func TestGetProbeSession_MixedBatchPreflightIsAtomic(t *testing.T) {
+// GH#251 phase 2: a mixed claude+grok batch passes the preflight and both
+// panes are probed like any supported agents.
+func TestGetProbeSession_MixedBatchProbesGrok(t *testing.T) {
 	mock := setupMock(t)
 	mock.Panes = []tmux.Pane{
 		{ID: "%1", Index: 1, WindowIndex: 0, Type: tmux.AgentClaude},
@@ -64,17 +65,14 @@ func TestGetProbeSession_MixedBatchPreflightIsAtomic(t *testing.T) {
 			TimeoutMs: 1,
 		},
 	})
-	if exitCode != 2 {
-		t.Fatalf("GetProbeSession() exit code = %d, want 2", exitCode)
+	if output.ErrorCode == ErrCodeNotImplemented {
+		t.Fatalf("GetProbeSession() response = %+v exit=%d, grok must no longer fail the batch preflight", output.RobotResponse, exitCode)
 	}
-	if output.Success || output.ErrorCode != ErrCodeNotImplemented {
-		t.Fatalf("GetProbeSession() response = %+v, want NOT_IMPLEMENTED", output.RobotResponse)
+	if output.Summary.TotalProbed != 2 || len(output.Probes) != 2 {
+		t.Fatalf("mixed batch did not probe both panes: probes=%v summary=%+v", output.Probes, output.Summary)
 	}
-	if len(output.Probes) != 0 || output.Summary.TotalProbed != 0 {
-		t.Fatalf("probe result mutated before batch preflight completed: probes=%v summary=%+v", output.Probes, output.Summary)
-	}
-	if mock.CaptureCount != 0 || mock.SendKeysCount != 0 || mock.InterruptCount != 0 {
-		t.Fatalf("mixed batch mutated a pane before Grok rejection: capture=%d send=%d interrupt=%d", mock.CaptureCount, mock.SendKeysCount, mock.InterruptCount)
+	if mock.CaptureCount == 0 && mock.SendKeysCount == 0 && mock.InterruptCount == 0 {
+		t.Fatalf("mixed batch never touched the panes: capture=%d send=%d interrupt=%d", mock.CaptureCount, mock.SendKeysCount, mock.InterruptCount)
 	}
 }
 

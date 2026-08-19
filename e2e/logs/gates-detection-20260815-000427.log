@@ -1,0 +1,275 @@
+[0s] [E2E-START] === E2E Test Started: gates-detection ===
+[0s] [E2E-START] Timestamp: 2026-08-15T00:04:27-04:00
+[0s] [E2E-START] Log file: /Users/jemanuel/projects/ntm/e2e/logs/gates-detection-20260815-000427.log
+[703ms] [PID-LINEAGE] session=ntm-e2e-gates-27553-645000 pane=%0 shell_pid=27606 fixture_pid=27608 persona=claude
+[1.559s] [SETUP] trust gate armed on %0
+[1.559s] [QUIESCE] SIGSTOP fixture pid=27608; waiting out the 5s activity threshold
+[18.817s] [NTM] args=[--robot-is-working=ntm-e2e-gates-27553-645000] exit=0 elapsed=10.757s
+[18.818s] [NTM] output={
+  "success": true,
+  "timestamp": "2026-08-15T04:04:46Z",
+  "version": "1.0.0",
+  "output_format": "json",
+  "session": "ntm-e2e-gates-27553-645000",
+  "query": {
+    "panes_requested": [
+      "0"
+    ],
+    "lines_captured": 100
+  },
+  "panes": {
+    "0": {
+      "agent_type": "cc",
+      "is_working": false,
+      "is_idle": false,
+      "is_rate_limited": false,
+      "is_context_low": false,
+      "confidence": 0.6,
+      "indicators": {
+        "work": [
+          "reading "
+        ],
+        "limit": []
+      },
+      "indicator_basis": "interactive_gate",
+      "recommendation": "MANUAL_INTERVENTION",
+      "recommendation_reason": "Blocked on interactive gate screen (\"do you trust the contents of this project\"); needs a keystroke before the pane can accept work",
+      "observation_state": "idle",
+      "observation_freshness": "fresh",
+      "observation_observed_at": "2026-08-15T04:04:46Z",
+      "safe_to_dispatch": true,
+      "pane_started_at": "2026-08-15T04:04:28Z",
+      "agent_uptime_seconds": 18,
+      "pane_pid": 27606,
+      "pane_current_command": "zsh",
+      "agent_cli_dead": true
+    }
+  },
+  "summary": {
+    "total_panes": 1,
+    "working_count": 0,
+    "idle_count": 0,
+    "rate_limited_count": 0,
+    "context_low_count": 0,
+    "error_count": 0,
+    "by_recommendation": {
+      "MANUAL_INTERVENTION": [
+        "0"
+      ]
+    }
+  }
+}
+[18.819s] [E2E-JSON] is_working_gated:
+{
+  "success": true,
+  "session": "ntm-e2e-gates-27553-645000",
+  "panes": {
+    "0": {
+      "agent_type": "cc",
+      "is_working": false,
+      "is_idle": false,
+      "is_rate_limited": false,
+      "indicator_basis": "interactive_gate",
+      "recommendation": "MANUAL_INTERVENTION",
+      "recommendation_reason": "Blocked on interactive gate screen (\"do you trust the contents of this project\"); needs a keystroke before the pane can accept work",
+      "pane_pid": 27606
+    }
+  },
+  "summary": {
+    "rate_limited_count": 0,
+    "by_recommendation": {
+      "MANUAL_INTERVENTION": [
+        "0"
+      ]
+    }
+  }
+}
+[18.827s] [PID-LINEAGE] is-working reports pane_pid=27606 (tmux shell pid=27606)
+[28.897s] [NTM] args=[--robot-agent-health=ntm-e2e-gates-27553-645000 --no-caut] exit=0 elapsed=10.066s
+[28.897s] [NTM] output={
+  "success": true,
+  "timestamp": "2026-08-15T04:04:56Z",
+  "version": "1.0.0",
+  "output_format": "json",
+  "session": "ntm-e2e-gates-27553-645000",
+  "query": {
+    "panes_requested": [
+      "0"
+    ],
+    "lines_captured": 100,
+    "caut_enabled": false,
+    "pt_enabled": false
+  },
+  "caut_available": false,
+  "pt_available": false,
+  "pt_status": "disabled",
+  "panes": {
+    "0": {
+      "agent_type": "cc",
+      "local_state": {
+        "is_working": false,
+        "is_idle": false,
+        "is_rate_limited": false,
+        "is_context_low": false,
+        "confidence": 0.6,
+        "indicators": {
+          "work": [
+            "reading "
+          ],
+          "limit": []
+        },
+        "observation_state": "idle",
+        "observation_freshness": "fresh",
+        "observation_observed_at": "2026-08-15T04:04:56Z",
+        "safe_to_dispatch": true
+      },
+      "health_score": 100,
+      "health_grade": "A",
+      "issues": [],
+      "recommendation": "MANUAL_INTERVENTION",
+      "recommendation_reason": "Blocked on interactive gate screen (\"do you trust the contents of this project\"); needs a keystroke before the pane can accept work"
+    }
+  },
+  "provider_summary": {},
+  "fleet_health": {
+    "total_panes": 1,
+    "healthy_count": 1,
+    "warning_count": 0,
+    "critical_count": 0,
+    "avg_health_score": 100,
+    "overall_grade": "A"
+  }
+}
+[28.897s] [E2E-JSON] agent_health_gated:
+{
+  "success": true,
+  "panes": {
+    "0": {
+      "agent_type": "cc",
+      "recommendation": "MANUAL_INTERVENTION",
+      "recommendation_reason": "Blocked on interactive gate screen (\"do you trust the contents of this project\"); needs a keystroke before the pane can accept work"
+    }
+  }
+}
+[39.025s] [NTM] args=[--robot-health=ntm-e2e-gates-27553-645000] exit=0 elapsed=10.127s
+[39.025s] [NTM] output={
+  "success": true,
+  "timestamp": "2026-08-15T04:05:06Z",
+  "version": "1.0.0",
+  "output_format": "json",
+  "session": "ntm-e2e-gates-27553-645000",
+  "checked_at": "2026-08-15T04:05:06.5925Z",
+  "agents": [
+    {
+      "pane": 0,
+      "pane_target": "0",
+      "agent_type": "claude",
+      "health": "blocked",
+      "idle_since_seconds": 38,
+      "restarts": 0,
+      "last_error": "blocked on interactive gate screen (\"do you trust the contents of this project\"); needs a keystroke",
+      "rate_limit_count": 0,
+      "backoff_remaining": 0,
+      "confidence": 1
+    }
+  ],
+  "summary": {
+    "total": 1,
+    "healthy": 0,
+    "degraded": 0,
+    "unhealthy": 0,
+    "rate_limited": 0
+  }
+}
+[39.025s] [E2E-JSON] session_health_gated:
+{
+  "pane": 0,
+  "agent_type": "claude",
+  "health": "blocked",
+  "last_error": "blocked on interactive gate screen (\"do you trust the contents of this project\"); needs a keystroke"
+}
+[39.025s] [TIMING] gated-surface assertions done in 38.322s
+[51.121s] [NTM] args=[--robot-is-working=ntm-e2e-gates-27553-645000] exit=0 elapsed=10.08s
+[51.121s] [NTM] output={
+  "success": true,
+  "timestamp": "2026-08-15T04:05:18Z",
+  "version": "1.0.0",
+  "output_format": "json",
+  "session": "ntm-e2e-gates-27553-645000",
+  "query": {
+    "panes_requested": [
+      "0"
+    ],
+    "lines_captured": 100
+  },
+  "panes": {
+    "0": {
+      "agent_type": "cc",
+      "is_working": true,
+      "is_idle": false,
+      "is_rate_limited": false,
+      "is_context_low": false,
+      "confidence": 0.6,
+      "indicators": {
+        "work": [
+          "claude_live_spinner",
+          "live_window_thinking"
+        ],
+        "limit": []
+      },
+      "indicator_basis": "claude_live_spinner",
+      "recommendation": "DO_NOT_INTERRUPT",
+      "recommendation_reason": "Canonical live observation reports active work",
+      "observation_state": "working",
+      "observation_freshness": "fresh",
+      "observation_observed_at": "2026-08-15T04:05:18Z",
+      "safe_to_dispatch": false,
+      "pane_started_at": "2026-08-15T04:04:28Z",
+      "agent_uptime_seconds": 50,
+      "pane_pid": 27606,
+      "pane_current_command": "zsh",
+      "agent_cli_dead": true
+    }
+  },
+  "summary": {
+    "total_panes": 1,
+    "working_count": 1,
+    "idle_count": 0,
+    "rate_limited_count": 0,
+    "context_low_count": 0,
+    "error_count": 0,
+    "by_recommendation": {
+      "DO_NOT_INTERRUPT": [
+        "0"
+      ]
+    }
+  }
+}
+[51.121s] [E2E-JSON] is_working_quoted_phrase_under_work_chrome:
+{
+  "success": true,
+  "session": "ntm-e2e-gates-27553-645000",
+  "panes": {
+    "0": {
+      "agent_type": "cc",
+      "is_working": true,
+      "is_idle": false,
+      "is_rate_limited": false,
+      "indicator_basis": "claude_live_spinner",
+      "recommendation": "DO_NOT_INTERRUPT",
+      "recommendation_reason": "Canonical live observation reports active work",
+      "pane_pid": 27606
+    }
+  },
+  "summary": {
+    "rate_limited_count": 0,
+    "by_recommendation": {
+      "DO_NOT_INTERRUPT": [
+        "0"
+      ]
+    }
+  }
+}
+[51.121s] [TIMING] negative case done in 12.096s
+[51.121s] [PASS] gate flagged on all three surfaces; quoted phrase under work chrome not flagged
+[51.121s] [E2E-END] === Test completed in 51.121s ===

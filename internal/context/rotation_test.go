@@ -404,8 +404,15 @@ func TestCheckAndRotate_LongSessionResetsReplacementMonitorState(t *testing.T) {
 	}
 }
 
-func TestCheckAndRotate_MixedGrokBatchIsAtomic(t *testing.T) {
-	t.Parallel()
+// GH#251 phase 2: grok relaunch/prompt delivery is first-class, so a mixed
+// claude+grok batch now passes rotation preflight and both agents are
+// scheduled — the grok member no longer vetoes the batch.
+func TestCheckAndRotate_MixedGrokBatchSchedulesBothAgents(t *testing.T) {
+	oldStore := DefaultPendingRotationStore
+	DefaultPendingRotationStore = NewPendingRotationStoreWithPath(filepath.Join(t.TempDir(), "pending.jsonl"))
+	t.Cleanup(func() {
+		DefaultPendingRotationStore = oldStore
+	})
 
 	monitor := NewContextMonitor(DefaultMonitorConfig())
 	monitor.RegisterAgent("custom-claude-pane", "%1", "claude-opus-4")
@@ -423,17 +430,30 @@ func TestCheckAndRotate_MixedGrokBatchIsAtomic(t *testing.T) {
 	cfg := config.DefaultContextRotationConfig()
 	cfg.RotateThreshold = 0.50
 	cfg.MinSessionAgeSec = 0
+	// RequireConfirm keeps the test on the fast pending-rotation path while
+	// still driving the batch preflight that used to reject grok.
+	cfg.RequireConfirm = true
 	r := NewRotator(RotatorConfig{Monitor: monitor, Spawner: spawner, Config: cfg})
 
 	results, err := r.CheckAndRotate("test", "/tmp")
-	if !errors.Is(err, agent.ErrAutomatedRelaunchNotImplemented) {
-		t.Fatalf("CheckAndRotate() error = %v, want relaunch sentinel", err)
+	if err != nil {
+		t.Fatalf("CheckAndRotate() error = %v, want mixed grok batch accepted", err)
 	}
-	if results != nil {
-		t.Fatalf("CheckAndRotate() results = %+v, want nil rejected batch", results)
+	if len(results) != 2 {
+		t.Fatalf("CheckAndRotate() results = %+v, want both claude and grok scheduled", results)
+	}
+	for _, result := range results {
+		if result.State != RotationStatePending {
+			t.Fatalf("result %+v state = %s, want %s", result, result.State, RotationStatePending)
+		}
+	}
+	for _, agentID := range []string{"custom-claude-pane", "custom-grok-pane"} {
+		if !r.HasPendingRotation(agentID) {
+			t.Fatalf("no pending rotation created for %s", agentID)
+		}
 	}
 	if len(spawner.sentKeys) != 0 || len(spawner.sentBuffers) != 0 || len(spawner.spawnedPanes) != 0 || len(spawner.killedPanes) != 0 {
-		t.Fatalf("mixed Grok batch mutated panes: keys=%v buffers=%v spawned=%v killed=%v", spawner.sentKeys, spawner.sentBuffers, spawner.spawnedPanes, spawner.killedPanes)
+		t.Fatalf("confirmation-gated batch mutated panes: keys=%v buffers=%v spawned=%v killed=%v", spawner.sentKeys, spawner.sentBuffers, spawner.spawnedPanes, spawner.killedPanes)
 	}
 }
 
@@ -766,7 +786,12 @@ func TestManualRotate_NoSpawner(t *testing.T) {
 	}
 }
 
-func TestManualRotate_GrokFailsBeforeAnyLifecycleMutation(t *testing.T) {
+// GH#251 phase 2: grok passes the rotation capability gate. The mock spawner's
+// sendError makes the flow fail at the first post-admission lifecycle step
+// (requesting the handoff summary), proving grok reaches the same rotation
+// path claude does instead of being refused up front — while keeping the test
+// fast and off any real tmux server.
+func TestManualRotate_GrokPassesCapabilityGate(t *testing.T) {
 	t.Parallel()
 
 	monitor := NewContextMonitor(DefaultMonitorConfig())
@@ -780,40 +805,51 @@ func TestManualRotate_GrokFailsBeforeAnyLifecycleMutation(t *testing.T) {
 		Type:     agent.AgentTypeGrok,
 		NTMIndex: 1,
 	}}
+	spawner.sendError = errors.New("pane input unavailable in test")
 
+	cfg := config.DefaultContextRotationConfig()
+	cfg.TryCompactFirst = false // skip compaction wait loops; rotation path only
 	r := NewRotator(RotatorConfig{
 		Monitor: monitor,
 		Spawner: spawner,
-		Config:  config.DefaultContextRotationConfig(),
+		Config:  cfg,
 	})
 	result := r.ManualRotate("test", "test__grok_1", "/tmp")
 
 	if result.Success || result.State != RotationStateFailed {
-		t.Fatalf("ManualRotate() result = %+v, want failed", result)
+		t.Fatalf("ManualRotate() result = %+v, want post-admission failure", result)
 	}
-	if !strings.Contains(result.Error, agent.GrokPhaseOneCapabilityHint) {
-		t.Fatalf("ManualRotate() error = %q, want Grok capability hint", result.Error)
+	if strings.Contains(result.Error, agent.GrokPhaseOneCapabilityHint) {
+		t.Fatalf("ManualRotate() error = %q, grok must not be refused by the capability gate", result.Error)
 	}
-	if len(spawner.sentKeys) != 0 || len(spawner.sentBuffers) != 0 {
-		t.Fatalf("Grok rotation sent input: keys=%v buffers=%v", spawner.sentKeys, spawner.sentBuffers)
+	if !strings.Contains(result.Error, "failed to request summary") {
+		t.Fatalf("ManualRotate() error = %q, want summary-request failure past the capability gate", result.Error)
 	}
 	if len(spawner.spawnedPanes) != 0 {
-		t.Fatalf("Grok rotation spawned panes: %v", spawner.spawnedPanes)
+		t.Fatalf("failed rotation spawned panes: %v", spawner.spawnedPanes)
 	}
 	if len(spawner.killedPanes) != 0 {
-		t.Fatalf("Grok rotation killed panes: %v", spawner.killedPanes)
+		t.Fatalf("failed rotation killed panes: %v", spawner.killedPanes)
 	}
 }
 
-func TestDefaultPaneSpawnerRejectsGrokBeforeCreatingPane(t *testing.T) {
+// GH#251 phase 2: grok relaunch is first-class — the spawner resolves a real
+// launch command (config override or the official autonomous default) instead
+// of failing closed with an empty command. SpawnAgent itself is not driven
+// here because it would create a real tmux pane.
+func TestDefaultPaneSpawnerGrokCommand(t *testing.T) {
 	t.Parallel()
 
 	spawner := NewDefaultPaneSpawner(nil)
-	if _, err := spawner.SpawnAgent("test", "grok-build", 1, "", "/tmp"); !errors.Is(err, agent.ErrAutomatedRelaunchNotImplemented) {
-		t.Fatalf("SpawnAgent(grok-build) error = %v, want relaunch sentinel", err)
+	if got := spawner.getAgentCommand("grok-build"); got != "grok --always-approve" {
+		t.Fatalf("getAgentCommand(grok-build) = %q, want %q", got, "grok --always-approve")
 	}
-	if got := spawner.getAgentCommand("grok-build"); got != "" {
-		t.Fatalf("getAgentCommand(grok-build) = %q, want fail-closed empty command", got)
+
+	cfg := &config.Config{}
+	cfg.Agents.Grok = "/opt/bin/grok --always-approve --model grok-4"
+	custom := NewDefaultPaneSpawner(cfg)
+	if got := custom.getAgentCommand("xai_grok_build"); got != cfg.Agents.Grok {
+		t.Fatalf("getAgentCommand(xai_grok_build) = %q, want configured %q", got, cfg.Agents.Grok)
 	}
 }
 
@@ -1167,7 +1203,12 @@ func TestProcessExpiredPending_UsesStoredSession(t *testing.T) {
 	}
 }
 
-func TestProcessExpiredPending_MixedGrokBatchIsAtomic(t *testing.T) {
+// GH#251 phase 2: grok prompt delivery is first-class, so an expired mixed
+// claude+grok batch now passes preflight and BOTH pending actions are
+// committed — the grok member no longer causes the whole batch to be kept.
+// Both entries use ConfirmCompact and a millisecond-timeout compactor so the
+// test stays fast and never spawns/kills panes.
+func TestProcessExpiredPending_MixedGrokBatchCommitsBothActions(t *testing.T) {
 	oldStore := DefaultPendingRotationStore
 	DefaultPendingRotationStore = NewPendingRotationStoreWithPath(filepath.Join(t.TempDir(), "pending.jsonl"))
 	t.Cleanup(func() {
@@ -1177,6 +1218,8 @@ func TestProcessExpiredPending_MixedGrokBatchIsAtomic(t *testing.T) {
 	monitor := NewContextMonitor(DefaultMonitorConfig())
 	monitor.RegisterAgent("custom-claude-pane", "%1", "claude-opus-4")
 	monitor.RegisterAgent("custom-grok-pane", "%2", "grok-3")
+	monitor.RecordMessage("custom-claude-pane", 1000, 1000)
+	monitor.RecordMessage("custom-grok-pane", 1000, 1000)
 	spawner := NewMockPaneSpawner()
 	spawner.panes = []tmux.Pane{
 		{ID: "%1", Index: 1, Title: "custom-claude-pane", Type: tmux.AgentClaude},
@@ -1184,6 +1227,11 @@ func TestProcessExpiredPending_MixedGrokBatchIsAtomic(t *testing.T) {
 	}
 	r := NewRotator(RotatorConfig{
 		Monitor: monitor,
+		Compactor: NewCompactor(monitor, CompactorConfig{
+			MinReduction:     0.10,
+			BuiltinTimeout:   time.Millisecond,
+			SummarizeTimeout: time.Millisecond,
+		}),
 		Spawner: spawner,
 		Config:  config.DefaultContextRotationConfig(),
 	})
@@ -1194,7 +1242,7 @@ func TestProcessExpiredPending_MixedGrokBatchIsAtomic(t *testing.T) {
 			SessionName:   "test",
 			PaneID:        "%1",
 			TimeoutAt:     now.Add(-2 * time.Minute),
-			DefaultAction: ConfirmRotate,
+			DefaultAction: ConfirmCompact,
 			WorkDir:       "/tmp",
 		},
 		{
@@ -1208,6 +1256,8 @@ func TestProcessExpiredPending_MixedGrokBatchIsAtomic(t *testing.T) {
 	}
 	for _, item := range pending {
 		r.pending[item.AgentID] = item
+		// Persist with a future timeout (the store's Get filters expired
+		// entries) so removal after commit is actually observable.
 		stored := clonePendingRotation(item)
 		stored.TimeoutAt = now.Add(time.Hour)
 		if err := AddPendingRotation(stored); err != nil {
@@ -1218,23 +1268,27 @@ func TestProcessExpiredPending_MixedGrokBatchIsAtomic(t *testing.T) {
 	r.processExpiredPending("caller-session", "/caller/workdir")
 
 	for _, item := range pending {
-		got := r.GetPendingRotation(item.AgentID)
-		if got == nil {
-			t.Fatalf("pending rotation %s was deleted before batch preflight completed", item.AgentID)
-		}
-		if !got.TimeoutAt.Equal(item.TimeoutAt) {
-			t.Fatalf("pending rotation %s timeout changed from %s to %s", item.AgentID, item.TimeoutAt, got.TimeoutAt)
+		if r.HasPendingRotation(item.AgentID) {
+			t.Fatalf("pending rotation %s was not committed by the mixed batch", item.AgentID)
 		}
 		stored, err := GetPendingRotationByID(item.AgentID)
 		if err != nil {
 			t.Fatalf("GetPendingRotationByID(%s) error = %v", item.AgentID, err)
 		}
-		if stored == nil {
-			t.Fatalf("persisted pending rotation %s was deleted", item.AgentID)
+		if stored != nil {
+			t.Fatalf("persisted pending rotation %s was not removed after commit", item.AgentID)
 		}
 	}
-	if len(spawner.sentKeys) != 0 || len(spawner.sentBuffers) != 0 || len(spawner.spawnedPanes) != 0 || len(spawner.killedPanes) != 0 {
-		t.Fatalf("expired mixed batch mutated panes: keys=%v buffers=%v spawned=%v killed=%v", spawner.sentKeys, spawner.sentBuffers, spawner.spawnedPanes, spawner.killedPanes)
+	// Compaction input must reach BOTH panes: claude's builtin slash commands
+	// via SendKeys and the summarize prompt (claude and grok) via SendBuffer.
+	if len(spawner.sentKeys["%1"]) == 0 {
+		t.Fatalf("claude pane %%1 received no compaction commands: keys=%v", spawner.sentKeys)
+	}
+	if len(spawner.sentBuffers["%2"]) == 0 {
+		t.Fatalf("grok pane %%2 received no compaction prompt: buffers=%v", spawner.sentBuffers)
+	}
+	if len(spawner.spawnedPanes) != 0 || len(spawner.killedPanes) != 0 {
+		t.Fatalf("compaction batch spawned/killed panes: spawned=%v killed=%v", spawner.spawnedPanes, spawner.killedPanes)
 	}
 }
 
@@ -1422,36 +1476,84 @@ func TestConfirmRotation_CompactWithoutPaneKeepsPending(t *testing.T) {
 	}
 }
 
-func TestConfirmRotation_CustomTitleGrokKeepsPending(t *testing.T) {
-	for _, tt := range []struct {
-		action ConfirmAction
-		hint   string
-	}{
-		{action: ConfirmRotate, hint: agent.GrokPhaseOneCapabilityHint},
-		{action: ConfirmCompact, hint: agent.GrokPromptDeliveryCapabilityHint},
-	} {
-		t.Run(string(tt.action), func(t *testing.T) {
-			spawner := NewMockPaneSpawner()
-			spawner.panes = []tmux.Pane{{
-				ID: "%7", Index: 7, Title: "operator-selected-title", Type: tmux.AgentGrok,
-			}}
-			r := NewRotator(RotatorConfig{Spawner: spawner})
-			r.pending["operator-selected-title"] = &PendingRotation{
-				AgentID: "operator-selected-title", SessionName: "test-session", PaneID: "%7",
-			}
+// GH#251 phase 2: a grok pane behind an operator-selected custom title now
+// passes the ConfirmRotation capability admission for both rotate and compact,
+// so the pending entry is consumed and the action proceeds — the same path a
+// claude pane takes. The rotate case fails afterwards for a non-capability
+// reason (agent not registered in the monitor) so it stays fast and mutation
+// free; the compact case runs to a real compaction attempt against the fakes.
+func TestConfirmRotation_CustomTitleGrokAdmitted(t *testing.T) {
+	oldStore := DefaultPendingRotationStore
+	DefaultPendingRotationStore = NewPendingRotationStoreWithPath(filepath.Join(t.TempDir(), "pending.jsonl"))
+	t.Cleanup(func() {
+		DefaultPendingRotationStore = oldStore
+	})
 
-			result := r.ConfirmRotation("operator-selected-title", tt.action, 0)
-			if result.State != RotationStateFailed || !strings.Contains(result.Error, tt.hint) {
-				t.Fatalf("ConfirmRotation(%s) result = %+v, want Grok capability failure", tt.action, result)
-			}
-			if !r.HasPendingRotation("operator-selected-title") {
-				t.Fatalf("ConfirmRotation(%s) removed pending state before capability admission", tt.action)
-			}
-			if len(spawner.sentKeys) != 0 || len(spawner.sentBuffers) != 0 || len(spawner.spawnedPanes) != 0 || len(spawner.killedPanes) != 0 {
-				t.Fatalf("ConfirmRotation(%s) mutated panes: %+v", tt.action, spawner)
-			}
+	t.Run("rotate", func(t *testing.T) {
+		spawner := NewMockPaneSpawner()
+		spawner.panes = []tmux.Pane{{
+			ID: "%7", Index: 7, Title: "operator-selected-title", Type: tmux.AgentGrok,
+		}}
+		r := NewRotator(RotatorConfig{
+			Monitor: NewContextMonitor(DefaultMonitorConfig()),
+			Spawner: spawner,
+			Config:  config.DefaultContextRotationConfig(),
 		})
-	}
+		r.pending["operator-selected-title"] = &PendingRotation{
+			AgentID: "operator-selected-title", SessionName: "test-session", PaneID: "%7",
+		}
+
+		result := r.ConfirmRotation("operator-selected-title", ConfirmRotate, 0)
+		if strings.Contains(result.Error, agent.GrokPhaseOneCapabilityHint) {
+			t.Fatalf("ConfirmRotation(rotate) error = %q, grok must not be refused by the capability gate", result.Error)
+		}
+		if result.State != RotationStateFailed || !strings.Contains(result.Error, "agent not found in monitor") {
+			t.Fatalf("ConfirmRotation(rotate) result = %+v, want post-admission monitor failure", result)
+		}
+		if r.HasPendingRotation("operator-selected-title") {
+			t.Fatal("ConfirmRotation(rotate) kept pending state after capability admission")
+		}
+		if len(spawner.sentKeys) != 0 || len(spawner.sentBuffers) != 0 || len(spawner.spawnedPanes) != 0 || len(spawner.killedPanes) != 0 {
+			t.Fatalf("ConfirmRotation(rotate) mutated panes on early failure: %+v", spawner)
+		}
+	})
+
+	t.Run("compact", func(t *testing.T) {
+		monitor := NewContextMonitor(DefaultMonitorConfig())
+		monitor.RegisterAgent("operator-selected-title", "%7", "grok-3")
+		monitor.RecordMessage("operator-selected-title", 1000, 1000)
+		spawner := NewMockPaneSpawner()
+		spawner.panes = []tmux.Pane{{
+			ID: "%7", Index: 7, Title: "operator-selected-title", Type: tmux.AgentGrok,
+		}}
+		r := NewRotator(RotatorConfig{
+			Monitor: monitor,
+			Compactor: NewCompactor(monitor, CompactorConfig{
+				MinReduction:     0.10,
+				BuiltinTimeout:   time.Millisecond,
+				SummarizeTimeout: time.Millisecond,
+			}),
+			Spawner: spawner,
+			Config:  config.DefaultContextRotationConfig(),
+		})
+		r.pending["operator-selected-title"] = &PendingRotation{
+			AgentID: "operator-selected-title", SessionName: "test-session", PaneID: "%7",
+		}
+
+		result := r.ConfirmRotation("operator-selected-title", ConfirmCompact, 0)
+		if strings.Contains(result.Error, agent.GrokPromptDeliveryCapabilityHint) {
+			t.Fatalf("ConfirmRotation(compact) error = %q, grok must not be refused by the capability gate", result.Error)
+		}
+		if r.HasPendingRotation("operator-selected-title") {
+			t.Fatal("ConfirmRotation(compact) kept pending state after capability admission")
+		}
+		if len(spawner.sentBuffers["%7"]) == 0 {
+			t.Fatalf("grok pane %%7 received no compaction prompt: buffers=%v", spawner.sentBuffers)
+		}
+		if len(spawner.spawnedPanes) != 0 || len(spawner.killedPanes) != 0 {
+			t.Fatalf("ConfirmRotation(compact) spawned/killed panes: %+v", spawner)
+		}
+	})
 }
 
 func TestPendingRotationRoundTrip(t *testing.T) {

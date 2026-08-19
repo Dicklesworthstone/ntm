@@ -1,5 +1,5 @@
 # ci/allowlists/config.txt — G2 config-key liveness allowlist (bd-ws0-guards-klz98.3)
-# Format: <entry>\t<bead-id>\t<reason>  (see ci/allowlists/README.md)
+# Format: <entry>	<bead-id>	<reason>  (see ci/allowlists/README.md)
 # Seeded by the G2 bead from the gap register (WS6 G-list + [cass] injection keys + tmux.palette_key).
 # Entry = dotted leaf-key path of the parsed Config struct (see internal/config/liveness_test.go).
 # Seeded 2026-08-16 from the first full liveness walk (472 unclaimed keys at zero claims):
@@ -7,156 +7,31 @@
 # RegisterReader claims for 255 live keys (see internal/*/liveness_claims.go) and re-tagged the
 # 153 keys with no runtime reader to bd-6otuk (dead-knob staged removal).
 # A key passes by claim: config.RegisterReader(key, realReaderFunc) from the consuming package.
-accounts.aider.alias	bd-6otuk	dead knob (G2 audit): AccountsConfig is parsed but never consumed at runtime; staged removal
-accounts.aider.email	bd-6otuk	dead knob (G2 audit): AccountsConfig is parsed but never consumed at runtime; staged removal
-accounts.aider.priority	bd-6otuk	dead knob (G2 audit): AccountsConfig is parsed but never consumed at runtime; staged removal
-accounts.antigravity.alias	bd-6otuk	dead knob (G2 audit): AccountsConfig is parsed but never consumed at runtime; staged removal
-accounts.antigravity.email	bd-6otuk	dead knob (G2 audit): AccountsConfig is parsed but never consumed at runtime; staged removal
-accounts.antigravity.priority	bd-6otuk	dead knob (G2 audit): AccountsConfig is parsed but never consumed at runtime; staged removal
-accounts.auto_rotate	bd-6otuk	dead knob (G2 audit): AccountsConfig is parsed but never consumed at runtime; staged removal
-accounts.claude.alias	bd-6otuk	dead knob (G2 audit): AccountsConfig is parsed but never consumed at runtime; staged removal
-accounts.claude.email	bd-6otuk	dead knob (G2 audit): AccountsConfig is parsed but never consumed at runtime; staged removal
-accounts.claude.priority	bd-6otuk	dead knob (G2 audit): AccountsConfig is parsed but never consumed at runtime; staged removal
-accounts.codex.alias	bd-6otuk	dead knob (G2 audit): AccountsConfig is parsed but never consumed at runtime; staged removal
-accounts.codex.email	bd-6otuk	dead knob (G2 audit): AccountsConfig is parsed but never consumed at runtime; staged removal
-accounts.codex.priority	bd-6otuk	dead knob (G2 audit): AccountsConfig is parsed but never consumed at runtime; staged removal
-accounts.cursor.alias	bd-6otuk	dead knob (G2 audit): AccountsConfig is parsed but never consumed at runtime; staged removal
-accounts.cursor.email	bd-6otuk	dead knob (G2 audit): AccountsConfig is parsed but never consumed at runtime; staged removal
-accounts.cursor.priority	bd-6otuk	dead knob (G2 audit): AccountsConfig is parsed but never consumed at runtime; staged removal
-accounts.gemini.alias	bd-6otuk	dead knob (G2 audit): AccountsConfig is parsed but never consumed at runtime; staged removal
-accounts.gemini.email	bd-6otuk	dead knob (G2 audit): AccountsConfig is parsed but never consumed at runtime; staged removal
-accounts.gemini.priority	bd-6otuk	dead knob (G2 audit): AccountsConfig is parsed but never consumed at runtime; staged removal
-accounts.ollama.alias	bd-6otuk	dead knob (G2 audit): AccountsConfig is parsed but never consumed at runtime; staged removal
-accounts.ollama.email	bd-6otuk	dead knob (G2 audit): AccountsConfig is parsed but never consumed at runtime; staged removal
-accounts.ollama.priority	bd-6otuk	dead knob (G2 audit): AccountsConfig is parsed but never consumed at runtime; staged removal
-accounts.reset_buffer_minutes	bd-6otuk	dead knob (G2 audit): AccountsConfig is parsed but never consumed at runtime; staged removal
-accounts.state_file	bd-6otuk	dead knob (G2 audit): AccountsConfig is parsed but never consumed at runtime; staged removal
-accounts.windsurf.alias	bd-6otuk	dead knob (G2 audit): AccountsConfig is parsed but never consumed at runtime; staged removal
-accounts.windsurf.email	bd-6otuk	dead knob (G2 audit): AccountsConfig is parsed but never consumed at runtime; staged removal
-accounts.windsurf.priority	bd-6otuk	dead knob (G2 audit): AccountsConfig is parsed but never consumed at runtime; staged removal
-agent_mail.program_name	bd-6otuk	dead knob (G2 audit): no runtime reader outside internal/config parse/render/echo; staged removal or real wiring
-agents.default_count	bd-6otuk	dead knob (G2 audit): no runtime reader outside internal/config parse/render/echo; staged removal or real wiring
-cass.duplicates.enabled	bd-6otuk	dead knob (G2 audit): no runtime reader outside internal/config parse/render/echo; staged removal or real wiring
-cass.duplicates.lookback_days	bd-6otuk	dead knob (G2 audit): no runtime reader outside internal/config parse/render/echo; staged removal or real wiring
-cass.duplicates.prompt_on_match	bd-6otuk	dead knob (G2 audit): no runtime reader outside internal/config parse/render/echo; staged removal or real wiring
-cass.duplicates.similarity_threshold	bd-6otuk	dead knob (G2 audit): no runtime reader outside internal/config parse/render/echo; staged removal or real wiring
-cass.search.default_fields	bd-6otuk	dead knob (G2 audit): no runtime reader outside internal/config parse/render/echo; staged removal or real wiring
-cass.search.default_limit	bd-6otuk	dead knob (G2 audit): no runtime reader outside internal/config parse/render/echo; staged removal or real wiring
-cass.search.include_meta	bd-6otuk	dead knob (G2 audit): no runtime reader outside internal/config parse/render/echo; staged removal or real wiring
-cass.show_install_hints	bd-6otuk	dead knob (G2 audit): no runtime reader outside internal/config parse/render/echo; staged removal or real wiring
-cass.tui.show_activity_sparkline	bd-6otuk	dead knob (G2 audit): no runtime reader outside internal/config parse/render/echo; staged removal or real wiring
-cass.tui.show_status_indicator	bd-6otuk	dead knob (G2 audit): no runtime reader outside internal/config parse/render/echo; staged removal or real wiring
-checkpoints.auto_checkpoint_on_spawn	bd-6otuk	dead knob (G2 audit): no runtime reader outside internal/config parse/render/echo; staged removal or real wiring
-checkpoints.interval_minutes	bd-6otuk	dead knob (G2 audit): no runtime reader outside internal/config parse/render/echo; staged removal or real wiring
-checkpoints.on_error	bd-6otuk	dead knob (G2 audit): no runtime reader outside internal/config parse/render/echo; staged removal or real wiring
-checkpoints.on_rotation	bd-6otuk	dead knob (G2 audit): no runtime reader outside internal/config parse/render/echo; staged removal or real wiring
-command_hooks.description	bd-6otuk	dead knob (G2 audit): no runtime reader outside internal/config parse/render/echo; staged removal or real wiring
-ensemble.agent_mix	bd-6otuk	dead knob (G2 audit): only reader is behind the ensemble_experimental build tag, compiled out of shipped binaries; staged removal
-ensemble.allow_advanced	bd-6otuk	dead knob (G2 audit): only reader is behind the ensemble_experimental build tag, compiled out of shipped binaries; staged removal
-ensemble.assignment	bd-6otuk	dead knob (G2 audit): only reader is behind the ensemble_experimental build tag, compiled out of shipped binaries; staged removal
-ensemble.budget.context_pack	bd-6otuk	dead knob (G2 audit): only reader is behind the ensemble_experimental build tag, compiled out of shipped binaries; staged removal
-ensemble.budget.per_agent	bd-6otuk	dead knob (G2 audit): only reader is behind the ensemble_experimental build tag, compiled out of shipped binaries; staged removal
-ensemble.budget.synthesis	bd-6otuk	dead knob (G2 audit): only reader is behind the ensemble_experimental build tag, compiled out of shipped binaries; staged removal
-ensemble.budget.total	bd-6otuk	dead knob (G2 audit): only reader is behind the ensemble_experimental build tag, compiled out of shipped binaries; staged removal
-ensemble.cache.cache_dir	bd-6otuk	dead knob (G2 audit): only reader is behind the ensemble_experimental build tag, compiled out of shipped binaries; staged removal
-ensemble.cache.enabled	bd-6otuk	dead knob (G2 audit): only reader is behind the ensemble_experimental build tag, compiled out of shipped binaries; staged removal
-ensemble.cache.max_entries	bd-6otuk	dead knob (G2 audit): only reader is behind the ensemble_experimental build tag, compiled out of shipped binaries; staged removal
-ensemble.cache.share_across_modes	bd-6otuk	dead knob (G2 audit): only reader is behind the ensemble_experimental build tag, compiled out of shipped binaries; staged removal
-ensemble.cache.ttl_minutes	bd-6otuk	dead knob (G2 audit): only reader is behind the ensemble_experimental build tag, compiled out of shipped binaries; staged removal
-ensemble.default_ensemble	bd-6otuk	dead knob (G2 audit): only reader is behind the ensemble_experimental build tag, compiled out of shipped binaries; staged removal
-ensemble.early_stop.enabled	bd-6otuk	dead knob (G2 audit): only reader is behind the ensemble_experimental build tag, compiled out of shipped binaries; staged removal
-ensemble.early_stop.findings_threshold	bd-6otuk	dead knob (G2 audit): only reader is behind the ensemble_experimental build tag, compiled out of shipped binaries; staged removal
-ensemble.early_stop.min_agents	bd-6otuk	dead knob (G2 audit): only reader is behind the ensemble_experimental build tag, compiled out of shipped binaries; staged removal
-ensemble.early_stop.similarity_threshold	bd-6otuk	dead knob (G2 audit): only reader is behind the ensemble_experimental build tag, compiled out of shipped binaries; staged removal
-ensemble.early_stop.window_size	bd-6otuk	dead knob (G2 audit): only reader is behind the ensemble_experimental build tag, compiled out of shipped binaries; staged removal
-ensemble.mode_tier_default	bd-6otuk	dead knob (G2 audit): only reader is behind the ensemble_experimental build tag, compiled out of shipped binaries; staged removal
-ensemble.synthesis.conflict_resolution	bd-6otuk	dead knob (G2 audit): only reader is behind the ensemble_experimental build tag, compiled out of shipped binaries; staged removal
-ensemble.synthesis.include_raw_outputs	bd-6otuk	dead knob (G2 audit): only reader is behind the ensemble_experimental build tag, compiled out of shipped binaries; staged removal
-ensemble.synthesis.max_findings	bd-6otuk	dead knob (G2 audit): only reader is behind the ensemble_experimental build tag, compiled out of shipped binaries; staged removal
-ensemble.synthesis.min_confidence	bd-6otuk	dead knob (G2 audit): only reader is behind the ensemble_experimental build tag, compiled out of shipped binaries; staged removal
-ensemble.synthesis.strategy	bd-6otuk	dead knob (G2 audit): only reader is behind the ensemble_experimental build tag, compiled out of shipped binaries; staged removal
-integrations.caam.auto_rotate	bd-6otuk	dead knob (G2 audit): no runtime reader outside internal/config parse/render/echo; staged removal or real wiring
-integrations.caam.enabled	bd-6otuk	dead knob (G2 audit): no runtime reader outside internal/config parse/render/echo; staged removal or real wiring
-integrations.caam.providers	bd-6otuk	dead knob (G2 audit): no runtime reader outside internal/config parse/render/echo; staged removal or real wiring
-integrations.process_triage.binary_path	bd-6otuk	dead knob (G2 audit): no runtime reader outside internal/config parse/render/echo; staged removal or real wiring
-integrations.rano.binary_path	bd-6otuk	dead knob (G2 audit): no runtime reader outside internal/config parse/render/echo; staged removal or real wiring
-integrations.rano.providers	bd-6otuk	dead knob (G2 audit): no runtime reader outside internal/config parse/render/echo; staged removal or real wiring
-integrations.rch.dcg_whitelist	bd-6otuk	dead knob (G2 audit): no runtime reader outside internal/config parse/render/echo; staged removal or real wiring
-integrations.rch.fallback_local	bd-6otuk	dead knob (G2 audit): no runtime reader outside internal/config parse/render/echo; staged removal or real wiring
-integrations.rch.min_build_time	bd-6otuk	dead knob (G2 audit): no runtime reader outside internal/config parse/render/echo; staged removal or real wiring
-integrations.rch.preferred_worker	bd-6otuk	dead knob (G2 audit): no runtime reader outside internal/config parse/render/echo; staged removal or real wiring
-integrations.rch.show_location	bd-6otuk	dead knob (G2 audit): no runtime reader outside internal/config parse/render/echo; staged removal or real wiring
-preflight.enabled	bd-6otuk	dead knob (G2 audit): no runtime reader outside internal/config parse/render/echo; staged removal or real wiring
-recovery.stale_threshold_hours	bd-6otuk	dead knob (G2 audit): no runtime reader outside internal/config parse/render/echo; staged removal or real wiring
-resilience.rate_limit.patterns	bd-6otuk	dead knob (G2 audit): no runtime reader outside internal/config parse/render/echo; staged removal or real wiring
-robot.output.compress	bd-6otuk	dead knob (G2 audit): no runtime reader outside internal/config parse/render/echo; staged removal or real wiring
-robot.output.pretty	bd-6otuk	dead knob (G2 audit): no runtime reader outside internal/config parse/render/echo; staged removal or real wiring
-robot.output.timestamps	bd-6otuk	dead knob (G2 audit): no runtime reader outside internal/config parse/render/echo; staged removal or real wiring
-rotation.accounts.priority	bd-6otuk	dead knob (G2 audit): no runtime reader outside internal/config parse/render/echo; staged removal or real wiring
-rotation.prefer_restart	bd-6otuk	dead knob (G2 audit): no runtime reader outside internal/config parse/render/echo; staged removal or real wiring
-scanner.beads.auto_close	bd-6otuk	dead knob (G2 audit): only readers are functions with zero non-test callers (ScanOptionsFromConfig/AutoScanner chain); staged removal
-scanner.beads.auto_create	bd-6otuk	dead knob (G2 audit): only readers are functions with zero non-test callers (ScanOptionsFromConfig/AutoScanner chain); staged removal
-scanner.beads.labels	bd-6otuk	dead knob (G2 audit): only readers are functions with zero non-test callers (ScanOptionsFromConfig/AutoScanner chain); staged removal
-scanner.beads.min_severity	bd-6otuk	dead knob (G2 audit): only readers are functions with zero non-test callers (ScanOptionsFromConfig/AutoScanner chain); staged removal
-scanner.defaults.exclude	bd-6otuk	dead knob (G2 audit): only readers are functions with zero non-test callers (ScanOptionsFromConfig/AutoScanner chain); staged removal
-scanner.defaults.languages	bd-6otuk	dead knob (G2 audit): only readers are functions with zero non-test callers (ScanOptionsFromConfig/AutoScanner chain); staged removal
-scanner.defaults.parallel	bd-6otuk	dead knob (G2 audit): only readers are functions with zero non-test callers (ScanOptionsFromConfig/AutoScanner chain); staged removal
-scanner.defaults.timeout	bd-6otuk	dead knob (G2 audit): only readers are functions with zero non-test callers (ScanOptionsFromConfig/AutoScanner chain); staged removal
-scanner.notifications.enabled	bd-6otuk	dead knob (G2 audit): only readers are functions with zero non-test callers (ScanOptionsFromConfig/AutoScanner chain); staged removal
-scanner.notifications.on_new_critical	bd-6otuk	dead knob (G2 audit): only readers are functions with zero non-test callers (ScanOptionsFromConfig/AutoScanner chain); staged removal
-scanner.notifications.summary_after_scan	bd-6otuk	dead knob (G2 audit): only readers are functions with zero non-test callers (ScanOptionsFromConfig/AutoScanner chain); staged removal
-scanner.thresholds.ci.block_critical	bd-6otuk	dead knob (G2 audit): only readers are functions with zero non-test callers (ScanOptionsFromConfig/AutoScanner chain); staged removal
-scanner.thresholds.ci.block_errors	bd-6otuk	dead knob (G2 audit): only readers are functions with zero non-test callers (ScanOptionsFromConfig/AutoScanner chain); staged removal
-scanner.thresholds.ci.fail_critical	bd-6otuk	dead knob (G2 audit): only readers are functions with zero non-test callers (ScanOptionsFromConfig/AutoScanner chain); staged removal
-scanner.thresholds.ci.fail_errors	bd-6otuk	dead knob (G2 audit): only readers are functions with zero non-test callers (ScanOptionsFromConfig/AutoScanner chain); staged removal
-scanner.thresholds.ci.show_info	bd-6otuk	dead knob (G2 audit): only readers are functions with zero non-test callers (ScanOptionsFromConfig/AutoScanner chain); staged removal
-scanner.thresholds.ci.show_warnings	bd-6otuk	dead knob (G2 audit): only readers are functions with zero non-test callers (ScanOptionsFromConfig/AutoScanner chain); staged removal
-scanner.thresholds.dashboard.block_critical	bd-6otuk	dead knob (G2 audit): only readers are functions with zero non-test callers (ScanOptionsFromConfig/AutoScanner chain); staged removal
-scanner.thresholds.dashboard.block_errors	bd-6otuk	dead knob (G2 audit): only readers are functions with zero non-test callers (ScanOptionsFromConfig/AutoScanner chain); staged removal
-scanner.thresholds.dashboard.fail_critical	bd-6otuk	dead knob (G2 audit): only readers are functions with zero non-test callers (ScanOptionsFromConfig/AutoScanner chain); staged removal
-scanner.thresholds.dashboard.fail_errors	bd-6otuk	dead knob (G2 audit): only readers are functions with zero non-test callers (ScanOptionsFromConfig/AutoScanner chain); staged removal
-scanner.thresholds.dashboard.show_info	bd-6otuk	dead knob (G2 audit): only readers are functions with zero non-test callers (ScanOptionsFromConfig/AutoScanner chain); staged removal
-scanner.thresholds.dashboard.show_warnings	bd-6otuk	dead knob (G2 audit): only readers are functions with zero non-test callers (ScanOptionsFromConfig/AutoScanner chain); staged removal
-scanner.thresholds.interactive.block_critical	bd-6otuk	dead knob (G2 audit): only readers are functions with zero non-test callers (ScanOptionsFromConfig/AutoScanner chain); staged removal
-scanner.thresholds.interactive.block_errors	bd-6otuk	dead knob (G2 audit): only readers are functions with zero non-test callers (ScanOptionsFromConfig/AutoScanner chain); staged removal
-scanner.thresholds.interactive.fail_critical	bd-6otuk	dead knob (G2 audit): only readers are functions with zero non-test callers (ScanOptionsFromConfig/AutoScanner chain); staged removal
-scanner.thresholds.interactive.fail_errors	bd-6otuk	dead knob (G2 audit): only readers are functions with zero non-test callers (ScanOptionsFromConfig/AutoScanner chain); staged removal
-scanner.thresholds.interactive.show_info	bd-6otuk	dead knob (G2 audit): only readers are functions with zero non-test callers (ScanOptionsFromConfig/AutoScanner chain); staged removal
-scanner.thresholds.interactive.show_warnings	bd-6otuk	dead knob (G2 audit): only readers are functions with zero non-test callers (ScanOptionsFromConfig/AutoScanner chain); staged removal
-scanner.thresholds.pre_commit.block_critical	bd-6otuk	dead knob (G2 audit): only readers are functions with zero non-test callers (ScanOptionsFromConfig/AutoScanner chain); staged removal
-scanner.thresholds.pre_commit.block_errors	bd-6otuk	dead knob (G2 audit): only readers are functions with zero non-test callers (ScanOptionsFromConfig/AutoScanner chain); staged removal
-scanner.thresholds.pre_commit.fail_critical	bd-6otuk	dead knob (G2 audit): only readers are functions with zero non-test callers (ScanOptionsFromConfig/AutoScanner chain); staged removal
-scanner.thresholds.pre_commit.fail_errors	bd-6otuk	dead knob (G2 audit): only readers are functions with zero non-test callers (ScanOptionsFromConfig/AutoScanner chain); staged removal
-scanner.thresholds.pre_commit.show_info	bd-6otuk	dead knob (G2 audit): only readers are functions with zero non-test callers (ScanOptionsFromConfig/AutoScanner chain); staged removal
-scanner.thresholds.pre_commit.show_warnings	bd-6otuk	dead knob (G2 audit): only readers are functions with zero non-test callers (ScanOptionsFromConfig/AutoScanner chain); staged removal
-scanner.tools.disabled	bd-6otuk	dead knob (G2 audit): only readers are functions with zero non-test callers (ScanOptionsFromConfig/AutoScanner chain); staged removal
-scanner.tools.enabled	bd-6otuk	dead knob (G2 audit): only readers are functions with zero non-test callers (ScanOptionsFromConfig/AutoScanner chain); staged removal
-spawn_pacing.agent_caps.claude_ramp_up_delay_ms	bd-6otuk	dead knob (G2 audit): only enabled/max_concurrent_spawns/agent_caps.*_max_concurrent are consumed; this leaf has no runtime reader; staged removal
-spawn_pacing.agent_caps.claude_rate_per_sec	bd-6otuk	dead knob (G2 audit): only enabled/max_concurrent_spawns/agent_caps.*_max_concurrent are consumed; this leaf has no runtime reader; staged removal
-spawn_pacing.agent_caps.codex_ramp_up_delay_ms	bd-6otuk	dead knob (G2 audit): only enabled/max_concurrent_spawns/agent_caps.*_max_concurrent are consumed; this leaf has no runtime reader; staged removal
-spawn_pacing.agent_caps.codex_rate_per_sec	bd-6otuk	dead knob (G2 audit): only enabled/max_concurrent_spawns/agent_caps.*_max_concurrent are consumed; this leaf has no runtime reader; staged removal
-spawn_pacing.agent_caps.cooldown_on_failure_ms	bd-6otuk	dead knob (G2 audit): only enabled/max_concurrent_spawns/agent_caps.*_max_concurrent are consumed; this leaf has no runtime reader; staged removal
-spawn_pacing.agent_caps.gemini_ramp_up_delay_ms	bd-6otuk	dead knob (G2 audit): only enabled/max_concurrent_spawns/agent_caps.*_max_concurrent are consumed; this leaf has no runtime reader; staged removal
-spawn_pacing.agent_caps.gemini_rate_per_sec	bd-6otuk	dead knob (G2 audit): only enabled/max_concurrent_spawns/agent_caps.*_max_concurrent are consumed; this leaf has no runtime reader; staged removal
-spawn_pacing.agent_caps.recovery_successes	bd-6otuk	dead knob (G2 audit): only enabled/max_concurrent_spawns/agent_caps.*_max_concurrent are consumed; this leaf has no runtime reader; staged removal
-spawn_pacing.backoff.global_pause_duration_ms	bd-6otuk	dead knob (G2 audit): only enabled/max_concurrent_spawns/agent_caps.*_max_concurrent are consumed; this leaf has no runtime reader; staged removal
-spawn_pacing.backoff.initial_delay_ms	bd-6otuk	dead knob (G2 audit): only enabled/max_concurrent_spawns/agent_caps.*_max_concurrent are consumed; this leaf has no runtime reader; staged removal
-spawn_pacing.backoff.max_consecutive_failures	bd-6otuk	dead knob (G2 audit): only enabled/max_concurrent_spawns/agent_caps.*_max_concurrent are consumed; this leaf has no runtime reader; staged removal
-spawn_pacing.backoff.max_delay_ms	bd-6otuk	dead knob (G2 audit): only enabled/max_concurrent_spawns/agent_caps.*_max_concurrent are consumed; this leaf has no runtime reader; staged removal
-spawn_pacing.backoff.multiplier	bd-6otuk	dead knob (G2 audit): only enabled/max_concurrent_spawns/agent_caps.*_max_concurrent are consumed; this leaf has no runtime reader; staged removal
-spawn_pacing.backpressure_threshold	bd-6otuk	dead knob (G2 audit): only enabled/max_concurrent_spawns/agent_caps.*_max_concurrent are consumed; this leaf has no runtime reader; staged removal
-spawn_pacing.burst_size	bd-6otuk	dead knob (G2 audit): only enabled/max_concurrent_spawns/agent_caps.*_max_concurrent are consumed; this leaf has no runtime reader; staged removal
-spawn_pacing.default_retries	bd-6otuk	dead knob (G2 audit): only enabled/max_concurrent_spawns/agent_caps.*_max_concurrent are consumed; this leaf has no runtime reader; staged removal
-spawn_pacing.headroom.check_interval_ms	bd-6otuk	dead knob (G2 audit): only enabled/max_concurrent_spawns/agent_caps.*_max_concurrent are consumed; this leaf has no runtime reader; staged removal
-spawn_pacing.headroom.enabled	bd-6otuk	dead knob (G2 audit): only enabled/max_concurrent_spawns/agent_caps.*_max_concurrent are consumed; this leaf has no runtime reader; staged removal
-spawn_pacing.headroom.max_load_average	bd-6otuk	dead knob (G2 audit): only enabled/max_concurrent_spawns/agent_caps.*_max_concurrent are consumed; this leaf has no runtime reader; staged removal
-spawn_pacing.headroom.max_open_files	bd-6otuk	dead knob (G2 audit): only enabled/max_concurrent_spawns/agent_caps.*_max_concurrent are consumed; this leaf has no runtime reader; staged removal
-spawn_pacing.headroom.min_free_disk_mb	bd-6otuk	dead knob (G2 audit): only enabled/max_concurrent_spawns/agent_caps.*_max_concurrent are consumed; this leaf has no runtime reader; staged removal
-spawn_pacing.headroom.min_free_mb	bd-6otuk	dead knob (G2 audit): only enabled/max_concurrent_spawns/agent_caps.*_max_concurrent are consumed; this leaf has no runtime reader; staged removal
-spawn_pacing.max_spawns_per_sec	bd-6otuk	dead knob (G2 audit): only enabled/max_concurrent_spawns/agent_caps.*_max_concurrent are consumed; this leaf has no runtime reader; staged removal
-spawn_pacing.retry_delay_ms	bd-6otuk	dead knob (G2 audit): only enabled/max_concurrent_spawns/agent_caps.*_max_concurrent are consumed; this leaf has no runtime reader; staged removal
-suggestions_enabled	bd-6otuk	dead knob (G2 audit): no runtime reader outside internal/config parse/render/echo; staged removal or real wiring
-swarm.force_global_auth_clobber	bd-6otuk	dead knob (G2 audit): no runtime reader outside internal/config parse/render/echo; staged removal or real wiring
-tmux.activity_indicators.active_seconds	bd-6otuk	dead knob (G2 audit): no runtime reader outside internal/config parse/render/echo; staged removal or real wiring
-tmux.activity_indicators.enabled	bd-6otuk	dead knob (G2 audit): no runtime reader outside internal/config parse/render/echo; staged removal or real wiring
-tmux.activity_indicators.stalled_seconds	bd-6otuk	dead knob (G2 audit): no runtime reader outside internal/config parse/render/echo; staged removal or real wiring
+# bd-6otuk disposition (2026-08-18): of the 153 dead-knob keys tagged above in
+# earlier revisions, 128 were deprecated in v1.28.0 (struct fields removed;
+# warn-tier in internal/config/removed_knobs.go, errors in v1.29.0), 9 gained
+# real claims (the 8 all-build ensemble defaults + swarm.force_global_auth_clobber
+# after its flag-clobber wiring fix), and the 16 ensemble.* keys below are live
+# ONLY under -tags ensemble_experimental.
+# permanent:
+# Blind spot: build tags. These keys' RegisterReader claims live in
+# internal/cli/liveness_claims_ensemble.go behind the ensemble_experimental
+# build tag, so the untagged liveness walk cannot observe them; tagged test
+# runs register the claims and these entries become inert (permanent entries
+# are exempt from the stale check).
+ensemble.synthesis.strategy	permanent	build-tag blind spot: reader tag-gated (ensemble_experimental), claimed in liveness_claims_ensemble.go
+ensemble.synthesis.min_confidence	permanent	build-tag blind spot: reader tag-gated (ensemble_experimental), claimed in liveness_claims_ensemble.go
+ensemble.synthesis.max_findings	permanent	build-tag blind spot: reader tag-gated (ensemble_experimental), claimed in liveness_claims_ensemble.go
+ensemble.synthesis.include_raw_outputs	permanent	build-tag blind spot: reader tag-gated (ensemble_experimental), claimed in liveness_claims_ensemble.go
+ensemble.synthesis.conflict_resolution	permanent	build-tag blind spot: reader tag-gated (ensemble_experimental), claimed in liveness_claims_ensemble.go
+ensemble.budget.synthesis	permanent	build-tag blind spot: reader tag-gated (ensemble_experimental), claimed in liveness_claims_ensemble.go
+ensemble.budget.context_pack	permanent	build-tag blind spot: reader tag-gated (ensemble_experimental), claimed in liveness_claims_ensemble.go
+ensemble.cache.ttl_minutes	permanent	build-tag blind spot: reader tag-gated (ensemble_experimental), claimed in liveness_claims_ensemble.go
+ensemble.cache.cache_dir	permanent	build-tag blind spot: reader tag-gated (ensemble_experimental), claimed in liveness_claims_ensemble.go
+ensemble.cache.max_entries	permanent	build-tag blind spot: reader tag-gated (ensemble_experimental), claimed in liveness_claims_ensemble.go
+ensemble.cache.share_across_modes	permanent	build-tag blind spot: reader tag-gated (ensemble_experimental), claimed in liveness_claims_ensemble.go
+ensemble.early_stop.enabled	permanent	build-tag blind spot: reader tag-gated (ensemble_experimental), claimed in liveness_claims_ensemble.go
+ensemble.early_stop.min_agents	permanent	build-tag blind spot: reader tag-gated (ensemble_experimental), claimed in liveness_claims_ensemble.go
+ensemble.early_stop.findings_threshold	permanent	build-tag blind spot: reader tag-gated (ensemble_experimental), claimed in liveness_claims_ensemble.go
+ensemble.early_stop.similarity_threshold	permanent	build-tag blind spot: reader tag-gated (ensemble_experimental), claimed in liveness_claims_ensemble.go
+ensemble.early_stop.window_size	permanent	build-tag blind spot: reader tag-gated (ensemble_experimental), claimed in liveness_claims_ensemble.go

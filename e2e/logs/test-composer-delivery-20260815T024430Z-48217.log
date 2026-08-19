@@ -1,0 +1,807 @@
+=== RUN   TestComposerDeliveryReadinessRefusal
+    suite_test.go:190: [E2E-START] === E2E Test Started: composer-delivery-readiness-refusal ===
+    suite_test.go:190: [E2E-START] Timestamp: 2026-08-14T22:44:36-04:00
+    suite_test.go:190: [E2E-START] Log file: /Users/jemanuel/projects/ntm/logs/e2e-20260815T024420Z-48217/test-composer-delivery/composer-delivery-readiness-refusal-20260814-224436.log
+    suite_test.go:190: [SETUP] session=ntm-e2e-fake-49127-748000 pane=%0 persona=claude
+    suite_test.go:190: [GATE] trust gate rendered; event baseline=4
+    suite_test.go:190: [NTM] args=[--robot-send=ntm-e2e-fake-49127-748000 --msg=readiness gate probe payload --type=claude] exit=1
+    suite_test.go:190: [NTM] output={"success":false,"timestamp":"2026-08-15T02:44:49Z","version":"1.0.0","output_format":"json","error":"1 of 1 sends failed","error_code":"INTERNAL_ERROR","session":"ntm-e2e-fake-49127-748000","sent_at":"2026-08-15T02:44:49.437143Z","blocked":false,"redaction":{"mode":"warn","findings":0,"action":"warn"},"warnings":[],"targets":["0"],"successful":[],"failed":[{"pane":"0","error":"pane %0 not ready for delivery: cc composer not visible: pane appears to be initializing or showing a dialog; a typed prompt would be swallowed"}],"message_preview":"readiness gate probe payload","_agent_hints":{"summary":"All 1 sends failed","suggestions":["Check agent states with --robot-tail","Verify session and pane existence"]}}
+    suite_test.go:190: [TIMING] gated send took 11.197s
+    suite_test.go:190: [E2E-JSON] gated_send_envelope:
+        {
+          "success": false,
+          "error": "1 of 1 sends failed",
+          "error_code": "INTERNAL_ERROR",
+          "targets": [
+            "0"
+          ],
+          "successful": [],
+          "failed": [
+            {
+              "pane": "0",
+              "error": "pane %0 not ready for delivery: cc composer not visible: pane appears to be initializing or showing a dialog; a typed prompt would be swallowed"
+            }
+          ]
+        }
+    suite_test.go:190: [PASS] typed refusal: pane %0 not ready for delivery: cc composer not visible: pane appears to be initializing or showing a dialog; a typed prompt would be swallowed
+    suite_test.go:190: [PASS] zero input events reached the fixture during the refused send
+    suite_test.go:190: [NTM] args=[--robot-send=ntm-e2e-fake-49127-748000 --msg=readiness gate probe payload --type=claude] exit=0
+    suite_test.go:190: [NTM] output={
+          "success": true,
+          "timestamp": "2026-08-15T02:44:59Z",
+          "version": "1.0.0",
+          "output_format": "json",
+          "session": "ntm-e2e-fake-49127-748000",
+          "sent_at": "2026-08-15T02:44:59.839784Z",
+          "blocked": false,
+          "redaction": {
+            "mode": "warn",
+            "findings": 0,
+            "action": "warn"
+          },
+          "warnings": [],
+          "targets": [
+            "0"
+          ],
+          "successful": [
+            "0"
+          ],
+          "failed": [],
+          "message_preview": "readiness gate probe payload",
+          "_agent_hints": {
+            "summary": "Sent to 1 agent(s) successfully",
+            "suggestions": [
+              "Wait for agent acknowledgment using --robot-tail"
+            ]
+          }
+        }
+    suite_test.go:190: [E2E-JSON] post_dismiss_send_envelope:
+        {
+          "success": true,
+          "targets": [
+            "0"
+          ],
+          "successful": [
+            "0"
+          ],
+          "failed": []
+        }
+    suite_test.go:190: [E2E-JSON] post_dismiss_submit_event:
+        {
+          "ts": "2026-08-15T02:45:00.91308Z",
+          "event": "submit",
+          "data": "readiness gate probe payload"
+        }
+    suite_test.go:190: [PASS] identical send succeeded once the gate was dismissed
+    suite_test.go:190: [E2E-END] === Test completed in 26.168s ===
+--- PASS: TestComposerDeliveryReadinessRefusal (26.19s)
+=== RUN   TestComposerDeliveryStrandRescue
+    suite_test.go:190: [E2E-START] === E2E Test Started: composer-delivery-strand-rescue ===
+    suite_test.go:190: [E2E-START] Timestamp: 2026-08-14T22:45:02-04:00
+    suite_test.go:190: [E2E-START] Log file: /Users/jemanuel/projects/ntm/logs/e2e-20260815T024420Z-48217/test-composer-delivery/composer-delivery-strand-rescue-20260814-224502.log
+    suite_test.go:190: [SETUP] session=ntm-e2e-fake-49127-542000 pane=%0 armed strand 2
+    suite_test.go:190: [NTM] args=[--robot-send=ntm-e2e-fake-49127-542000 --msg=stranded composer rescue payload --type=codex] exit=0
+    suite_test.go:190: [NTM] output={
+          "success": true,
+          "timestamp": "2026-08-15T02:45:12Z",
+          "version": "1.0.0",
+          "output_format": "json",
+          "session": "ntm-e2e-fake-49127-542000",
+          "sent_at": "2026-08-15T02:45:12.836363Z",
+          "blocked": false,
+          "redaction": {
+            "mode": "warn",
+            "findings": 0,
+            "action": "warn"
+          },
+          "warnings": [],
+          "targets": [
+            "0"
+          ],
+          "successful": [
+            "0"
+          ],
+          "failed": [],
+          "message_preview": "stranded composer rescue payload",
+          "_agent_hints": {
+            "summary": "Sent to 1 agent(s) successfully",
+            "suggestions": [
+              "Wait for agent acknowledgment using --robot-tail"
+            ]
+          }
+        }
+    suite_test.go:190: [TIMING] rescued send took 13.308s
+    suite_test.go:190: [E2E-JSON] rescued_send_envelope:
+        {
+          "success": true,
+          "targets": [
+            "0"
+          ],
+          "successful": [
+            "0"
+          ],
+          "failed": []
+        }
+    suite_test.go:190: [PASS] 2 protocol Enters swallowed, 1 rescue submit, envelope delivered=submitted
+    suite_test.go:190: [E2E-END] === Test completed in 13.615s ===
+--- PASS: TestComposerDeliveryStrandRescue (13.63s)
+=== RUN   TestComposerDeliveryStrandRescueExhausted
+    suite_test.go:190: [E2E-START] === E2E Test Started: composer-delivery-strand-exhausted ===
+    suite_test.go:190: [E2E-START] Timestamp: 2026-08-14T22:45:15-04:00
+    suite_test.go:190: [E2E-START] Log file: /Users/jemanuel/projects/ntm/logs/e2e-20260815T024420Z-48217/test-composer-delivery/composer-delivery-strand-exhausted-20260814-224515.log
+    suite_test.go:190: [SETUP] session=ntm-e2e-fake-49127-521000 pane=%0 armed strand 99
+    suite_test.go:190: [NTM] args=[--robot-send=ntm-e2e-fake-49127-521000 --msg=unrescued strand payload --type=codex] exit=1
+    suite_test.go:190: [NTM] output={"success":false,"timestamp":"2026-08-15T02:45:26Z","version":"1.0.0","output_format":"json","error":"1 of 1 sends failed","error_code":"INTERNAL_ERROR","session":"ntm-e2e-fake-49127-521000","sent_at":"2026-08-15T02:45:26.664014Z","blocked":false,"redaction":{"mode":"warn","findings":0,"action":"warn"},"warnings":[],"targets":["0"],"successful":[],"failed":[{"pane":"0","error":"codex submission unconfirmed: prompt still in composer after rescue (pane %0); submit manually or retry"}],"message_preview":"unrescued strand payload","_agent_hints":{"summary":"All 1 sends failed","suggestions":["Check agent states with --robot-tail","Verify session and pane existence"]}}
+    suite_test.go:190: [TIMING] exhausted send took 16.184s
+    suite_test.go:190: [E2E-JSON] exhausted_send_envelope:
+        {
+          "success": false,
+          "error": "1 of 1 sends failed",
+          "error_code": "INTERNAL_ERROR",
+          "targets": [
+            "0"
+          ],
+          "successful": [],
+          "failed": [
+            {
+              "pane": "0",
+              "error": "codex submission unconfirmed: prompt still in composer after rescue (pane %0); submit manually or retry"
+            }
+          ]
+        }
+    suite_test.go:190: [PASS] rescue exhausted: typed failure, 3 swallows, 0 submits
+    suite_test.go:190: [E2E-END] === Test completed in 16.503s ===
+--- PASS: TestComposerDeliveryStrandRescueExhausted (16.52s)
+=== RUN   TestComposerDeliveryComposerVisibility
+    suite_test.go:190: [E2E-START] === E2E Test Started: composer-delivery-visibility ===
+    suite_test.go:190: [E2E-START] Timestamp: 2026-08-14T22:45:32-04:00
+    suite_test.go:190: [E2E-START] Log file: /Users/jemanuel/projects/ntm/logs/e2e-20260815T024420Z-48217/test-composer-delivery/composer-delivery-visibility-20260814-224532.log
+    suite_test.go:190: [SETUP] session=ntm-e2e-fake-49127-417000 pane=%0 persona=claude
+    suite_test.go:190: [NTM] args=[--robot-send=ntm-e2e-fake-49127-417000 --msg=staged composer visibility payload --type=claude --enter=false] exit=0
+    suite_test.go:190: [NTM] output={
+          "success": true,
+          "timestamp": "2026-08-15T02:45:42Z",
+          "version": "1.0.0",
+          "output_format": "json",
+          "session": "ntm-e2e-fake-49127-417000",
+          "sent_at": "2026-08-15T02:45:42.716726Z",
+          "blocked": false,
+          "redaction": {
+            "mode": "warn",
+            "findings": 0,
+            "action": "warn"
+          },
+          "warnings": [],
+          "targets": [
+            "0"
+          ],
+          "successful": [
+            "0"
+          ],
+          "failed": [],
+          "message_preview": "staged composer visibility payload",
+          "_agent_hints": {
+            "summary": "Sent to 1 agent(s) successfully",
+            "suggestions": [
+              "Wait for agent acknowledgment using --robot-tail"
+            ]
+          }
+        }
+    suite_test.go:190: [E2E-JSON] stage_only_send_envelope:
+        {
+          "success": true,
+          "targets": [
+            "0"
+          ],
+          "successful": [
+            "0"
+          ],
+          "failed": []
+        }
+    suite_test.go:190: [GROUND-TRUTH] payload staged in composer, zero submits
+    suite_test.go:190: [NTM] args=[--robot-is-working=ntm-e2e-fake-49127-417000] exit=0
+    suite_test.go:190: [NTM] output={
+          "success": true,
+          "timestamp": "2026-08-15T02:45:53Z",
+          "version": "1.0.0",
+          "output_format": "json",
+          "session": "ntm-e2e-fake-49127-417000",
+          "query": {
+            "panes_requested": [
+              "0"
+            ],
+            "lines_captured": 100
+          },
+          "panes": {
+            "0": {
+              "agent_type": "cc",
+              "is_working": false,
+              "is_idle": true,
+              "is_rate_limited": false,
+              "is_context_low": false,
+              "confidence": 0.5,
+              "indicators": {
+                "work": [],
+                "limit": []
+              },
+              "indicator_basis": "claude_finished_turn_prompt",
+              "recommendation": "SAFE_TO_RESTART",
+              "recommendation_reason": "Agent is idle",
+              "observation_state": "idle",
+              "observation_freshness": "fresh",
+              "observation_observed_at": "2026-08-15T02:45:53Z",
+              "safe_to_dispatch": true,
+              "pane_started_at": "2026-08-15T02:45:32Z",
+              "agent_uptime_seconds": 20,
+              "pane_pid": 53572,
+              "pane_current_command": "fakeagent",
+              "unsubmitted_input": true
+            }
+          },
+          "summary": {
+            "total_panes": 1,
+            "working_count": 0,
+            "idle_count": 1,
+            "rate_limited_count": 0,
+            "context_low_count": 0,
+            "error_count": 0,
+            "by_recommendation": {
+              "SAFE_TO_RESTART": [
+                "0"
+              ]
+            }
+          }
+        }
+    suite_test.go:190: [E2E-JSON] staged_is_working:
+        {
+          "success": true,
+          "session": "ntm-e2e-fake-49127-417000",
+          "panes": {
+            "0": {
+              "agent_type": "cc",
+              "is_working": false,
+              "is_idle": true,
+              "recommendation": "SAFE_TO_RESTART",
+              "safe_to_dispatch": true,
+              "unsubmitted_input": true,
+              "queued_messages": false
+            }
+          }
+        }
+    suite_test.go:190: [PASS] is-working reports unsubmitted_input=true for the staged payload
+    suite_test.go:190: [NTM] args=[--robot-status] exit=0
+    suite_test.go:190: [NTM] output={
+          "success": true,
+          "timestamp": "2026-08-15T02:46:03Z",
+          "version": "1.0.0",
+          "output_format": "json",
+          "schema_id": "ntm:robot:status:v1",
+          "schema_version": "ntm.robot.status.v2",
+          "generated_at": "2026-08-15T02:46:03.312033Z",
+          "safety_profile": "standard",
+          "overall_status": "healthy",
+          "system": {
+            "version": "dev",
+            "commit": "none",
+            "build_date": "unknown",
+            "go_version": "go1.26.5",
+            "os": "darwin",
+            "arch": "arm64",
+            "tmux_available": true
+          },
+          "sessions": [],
+          "summary": {
+            "total_sessions": 0,
+            "total_agents": 0,
+            "attached_count": 0,
+            "claude_count": 0,
+            "codex_count": 0,
+            "gemini_count": 0,
+            "antigravity_count": 0,
+            "grok_count": 0,
+            "cursor_count": 0,
+            "windsurf_count": 0,
+            "aider_count": 0,
+            "opencode_count": 0,
+            "ollama_count": 0,
+            "agents_by_state": {},
+            "agents_by_type": {},
+            "ready_work": 0,
+            "in_progress": 0,
+            "health_score": 1,
+            "health_status": "healthy",
+            "alerts_active": 0,
+            "mail_unread": 0,
+            "mail_urgent": 0
+          },
+          "sources": {
+            "sources": {},
+            "all_fresh": false
+          }
+        }
+    suite_test.go:190: [E2E-JSON] robot_status:
+        {
+          "success": true,
+          "schema_version": "ntm.robot.status.v2",
+          "sessions": []
+        }
+    suite_test.go:190: [DISCREPANCY] robot-status v2 returns session headers only and reads the runtime projection store; unsubmitted_input is NOT exposed there (bead expected it) — it lives on --robot-is-working. Fixture session listed=false (unlisted is normal: the ad-hoc session was never projected)
+    suite_test.go:190: [NTM] args=[--robot-is-working=ntm-e2e-fake-49127-417000] exit=0
+    suite_test.go:190: [NTM] output={
+          "success": true,
+          "timestamp": "2026-08-15T02:46:19Z",
+          "version": "1.0.0",
+          "output_format": "json",
+          "session": "ntm-e2e-fake-49127-417000",
+          "query": {
+            "panes_requested": [
+              "0"
+            ],
+            "lines_captured": 100
+          },
+          "panes": {
+            "0": {
+              "agent_type": "cc",
+              "is_working": false,
+              "is_idle": true,
+              "is_rate_limited": false,
+              "is_context_low": false,
+              "confidence": 0.5,
+              "indicators": {
+                "work": [],
+                "limit": []
+              },
+              "indicator_basis": "claude_finished_turn_prompt",
+              "recommendation": "SAFE_TO_RESTART",
+              "recommendation_reason": "Agent is idle",
+              "observation_state": "idle",
+              "observation_freshness": "fresh",
+              "observation_observed_at": "2026-08-15T02:46:19Z",
+              "safe_to_dispatch": true,
+              "pane_started_at": "2026-08-15T02:45:32Z",
+              "agent_uptime_seconds": 47,
+              "pane_pid": 53572,
+              "pane_current_command": "fakeagent",
+              "unsubmitted_input": true,
+              "queued_messages": true
+            }
+          },
+          "summary": {
+            "total_panes": 1,
+            "working_count": 0,
+            "idle_count": 1,
+            "rate_limited_count": 0,
+            "context_low_count": 0,
+            "error_count": 0,
+            "by_recommendation": {
+              "SAFE_TO_RESTART": [
+                "0"
+              ]
+            }
+          }
+        }
+    suite_test.go:190: [E2E-JSON] queued_footer_live_is_working:
+        {
+          "success": true,
+          "session": "ntm-e2e-fake-49127-417000",
+          "panes": {
+            "0": {
+              "agent_type": "cc",
+              "is_working": false,
+              "is_idle": true,
+              "recommendation": "SAFE_TO_RESTART",
+              "safe_to_dispatch": true,
+              "unsubmitted_input": true,
+              "queued_messages": true
+            }
+          }
+        }
+    suite_test.go:190: [PASS] queued footer in the live tail => queued_messages=true (unsubmitted_input still true)
+    suite_test.go:190: [NTM] args=[--robot-is-working=ntm-e2e-fake-49127-417000] exit=0
+    suite_test.go:190: [NTM] output={
+          "success": true,
+          "timestamp": "2026-08-15T02:46:33Z",
+          "version": "1.0.0",
+          "output_format": "json",
+          "session": "ntm-e2e-fake-49127-417000",
+          "query": {
+            "panes_requested": [
+              "0"
+            ],
+            "lines_captured": 100
+          },
+          "panes": {
+            "0": {
+              "agent_type": "cc",
+              "is_working": false,
+              "is_idle": true,
+              "is_rate_limited": false,
+              "is_context_low": false,
+              "confidence": 0.5,
+              "indicators": {
+                "work": [],
+                "limit": []
+              },
+              "indicator_basis": "claude_finished_turn_prompt",
+              "recommendation": "SAFE_TO_RESTART",
+              "recommendation_reason": "Agent is idle",
+              "observation_state": "idle",
+              "observation_freshness": "fresh",
+              "observation_observed_at": "2026-08-15T02:46:33Z",
+              "safe_to_dispatch": true,
+              "pane_started_at": "2026-08-15T02:45:32Z",
+              "agent_uptime_seconds": 60,
+              "pane_pid": 53572,
+              "pane_current_command": "fakeagent",
+              "unsubmitted_input": true
+            }
+          },
+          "summary": {
+            "total_panes": 1,
+            "working_count": 0,
+            "idle_count": 1,
+            "rate_limited_count": 0,
+            "context_low_count": 0,
+            "error_count": 0,
+            "by_recommendation": {
+              "SAFE_TO_RESTART": [
+                "0"
+              ]
+            }
+          }
+        }
+    suite_test.go:190: [E2E-JSON] queued_footer_buried_is_working:
+        {
+          "success": true,
+          "session": "ntm-e2e-fake-49127-417000",
+          "panes": {
+            "0": {
+              "agent_type": "cc",
+              "is_working": false,
+              "is_idle": true,
+              "recommendation": "SAFE_TO_RESTART",
+              "safe_to_dispatch": true,
+              "unsubmitted_input": true,
+              "queued_messages": false
+            }
+          }
+        }
+    suite_test.go:190: [PASS] buried queued footer => queued_messages=false
+    suite_test.go:190: [E2E-JSON] submit_event:
+        {
+          "ts": "2026-08-15T02:46:33.242394Z",
+          "event": "submit",
+          "data": "staged composer visibility payload"
+        }
+    suite_test.go:190: [NTM] args=[--robot-is-working=ntm-e2e-fake-49127-417000] exit=0
+    suite_test.go:190: [NTM] output={
+          "success": true,
+          "timestamp": "2026-08-15T02:46:43Z",
+          "version": "1.0.0",
+          "output_format": "json",
+          "session": "ntm-e2e-fake-49127-417000",
+          "query": {
+            "panes_requested": [
+              "0"
+            ],
+            "lines_captured": 100
+          },
+          "panes": {
+            "0": {
+              "agent_type": "cc",
+              "is_working": false,
+              "is_idle": true,
+              "is_rate_limited": false,
+              "is_context_low": false,
+              "confidence": 0.5,
+              "indicators": {
+                "work": [],
+                "limit": []
+              },
+              "indicator_basis": "claude_finished_turn_prompt",
+              "recommendation": "SAFE_TO_RESTART",
+              "recommendation_reason": "Agent is idle",
+              "observation_state": "idle",
+              "observation_freshness": "fresh",
+              "observation_observed_at": "2026-08-15T02:46:43Z",
+              "safe_to_dispatch": true,
+              "pane_started_at": "2026-08-15T02:45:32Z",
+              "agent_uptime_seconds": 71,
+              "pane_pid": 53572,
+              "pane_current_command": "fakeagent"
+            }
+          },
+          "summary": {
+            "total_panes": 1,
+            "working_count": 0,
+            "idle_count": 1,
+            "rate_limited_count": 0,
+            "context_low_count": 0,
+            "error_count": 0,
+            "by_recommendation": {
+              "SAFE_TO_RESTART": [
+                "0"
+              ]
+            }
+          }
+        }
+    suite_test.go:190: [E2E-JSON] submitted_is_working:
+        {
+          "success": true,
+          "session": "ntm-e2e-fake-49127-417000",
+          "panes": {
+            "0": {
+              "agent_type": "cc",
+              "is_working": false,
+              "is_idle": true,
+              "recommendation": "SAFE_TO_RESTART",
+              "safe_to_dispatch": true,
+              "unsubmitted_input": false,
+              "queued_messages": false
+            }
+          }
+        }
+    suite_test.go:190: [PASS] unsubmitted_input=false after submission
+    suite_test.go:190: [E2E-END] === Test completed in 1m11.096s ===
+--- PASS: TestComposerDeliveryComposerVisibility (71.20s)
+=== RUN   TestComposerDeliveryNarrowPaneLiveness
+    suite_test.go:190: [E2E-START] === E2E Test Started: composer-delivery-narrow-liveness ===
+    suite_test.go:190: [E2E-START] Timestamp: 2026-08-14T22:46:43-04:00
+    suite_test.go:190: [E2E-START] Log file: /Users/jemanuel/projects/ntm/logs/e2e-20260815T024420Z-48217/test-composer-delivery/composer-delivery-narrow-liveness-20260814-224643.log
+    suite_test.go:190: [SETUP:narrow26] session=ntm-e2e-fake-49127-810000 pane=%0 width=26
+    suite_test.go:190: [NTM] args=[--robot-is-working=ntm-e2e-fake-49127-810000] exit=0
+    suite_test.go:190: [NTM] output={
+          "success": true,
+          "timestamp": "2026-08-15T02:46:55Z",
+          "version": "1.0.0",
+          "output_format": "json",
+          "session": "ntm-e2e-fake-49127-810000",
+          "query": {
+            "panes_requested": [
+              "0"
+            ],
+            "lines_captured": 100
+          },
+          "panes": {
+            "0": {
+              "agent_type": "cod",
+              "is_working": true,
+              "is_idle": false,
+              "is_rate_limited": false,
+              "is_context_low": false,
+              "context_remaining": 47,
+              "confidence": 0.75,
+              "indicators": {
+                "work": [
+                  "live_window_thinking"
+                ],
+                "limit": []
+              },
+              "indicator_basis": "codex_live_working_indicator",
+              "recommendation": "DO_NOT_INTERRUPT",
+              "recommendation_reason": "Canonical live observation reports active work",
+              "observation_state": "working",
+              "observation_freshness": "fresh",
+              "observation_observed_at": "2026-08-15T02:46:55Z",
+              "safe_to_dispatch": false,
+              "pane_started_at": "2026-08-15T02:46:43Z",
+              "agent_uptime_seconds": 11,
+              "pane_pid": 57400,
+              "pane_current_command": "fakeagent"
+            }
+          },
+          "summary": {
+            "total_panes": 1,
+            "working_count": 1,
+            "idle_count": 0,
+            "rate_limited_count": 0,
+            "context_low_count": 0,
+            "error_count": 0,
+            "by_recommendation": {
+              "DO_NOT_INTERRUPT": [
+                "0"
+              ]
+            }
+          }
+        }
+    suite_test.go:190: [E2E-JSON] narrow26_is_working:
+        {
+          "success": true,
+          "session": "ntm-e2e-fake-49127-810000",
+          "panes": {
+            "0": {
+              "agent_type": "cod",
+              "is_working": true,
+              "is_idle": false,
+              "recommendation": "DO_NOT_INTERRUPT",
+              "safe_to_dispatch": false,
+              "unsubmitted_input": false,
+              "queued_messages": false
+            }
+          }
+        }
+    suite_test.go:190: [PASS:narrow26] is_working=true recommendation=DO_NOT_INTERRUPT (11.968s)
+    suite_test.go:190: [SETUP:parity120] session=ntm-e2e-fake-49127-443000 pane=%1 width=120
+    suite_test.go:190: [NTM] args=[--robot-is-working=ntm-e2e-fake-49127-443000] exit=0
+    suite_test.go:190: [NTM] output={
+          "success": true,
+          "timestamp": "2026-08-15T02:47:07Z",
+          "version": "1.0.0",
+          "output_format": "json",
+          "session": "ntm-e2e-fake-49127-443000",
+          "query": {
+            "panes_requested": [
+              "0"
+            ],
+            "lines_captured": 100
+          },
+          "panes": {
+            "0": {
+              "agent_type": "cod",
+              "is_working": true,
+              "is_idle": false,
+              "is_rate_limited": false,
+              "is_context_low": false,
+              "context_remaining": 47,
+              "confidence": 0.75,
+              "indicators": {
+                "work": [
+                  "live_window_thinking"
+                ],
+                "limit": []
+              },
+              "indicator_basis": "codex_live_working_indicator",
+              "recommendation": "DO_NOT_INTERRUPT",
+              "recommendation_reason": "Canonical live observation reports active work",
+              "observation_state": "working",
+              "observation_freshness": "fresh",
+              "observation_observed_at": "2026-08-15T02:47:07Z",
+              "safe_to_dispatch": false,
+              "pane_started_at": "2026-08-15T02:46:55Z",
+              "agent_uptime_seconds": 11,
+              "pane_pid": 58068,
+              "pane_current_command": "fakeagent"
+            }
+          },
+          "summary": {
+            "total_panes": 1,
+            "working_count": 1,
+            "idle_count": 0,
+            "rate_limited_count": 0,
+            "context_low_count": 0,
+            "error_count": 0,
+            "by_recommendation": {
+              "DO_NOT_INTERRUPT": [
+                "0"
+              ]
+            }
+          }
+        }
+    suite_test.go:190: [E2E-JSON] parity120_is_working:
+        {
+          "success": true,
+          "session": "ntm-e2e-fake-49127-443000",
+          "panes": {
+            "0": {
+              "agent_type": "cod",
+              "is_working": true,
+              "is_idle": false,
+              "recommendation": "DO_NOT_INTERRUPT",
+              "safe_to_dispatch": false,
+              "unsubmitted_input": false,
+              "queued_messages": false
+            }
+          }
+        }
+    suite_test.go:190: [PASS:parity120] is_working=true recommendation=DO_NOT_INTERRUPT (11.775s)
+    suite_test.go:190: [E2E-END] === Test completed in 23.743s ===
+--- PASS: TestComposerDeliveryNarrowPaneLiveness (23.79s)
+=== RUN   TestComposerDeliveryVerifyRender
+    suite_test.go:190: [E2E-START] === E2E Test Started: composer-delivery-verify-render ===
+    suite_test.go:190: [E2E-START] Timestamp: 2026-08-14T22:47:07-04:00
+    suite_test.go:190: [E2E-START] Log file: /Users/jemanuel/projects/ntm/logs/e2e-20260815T024420Z-48217/test-composer-delivery/composer-delivery-verify-render-20260814-224707.log
+    suite_test.go:190: [SETUP] session=ntm-e2e-fake-49127-263000 pane=%0 persona=claude
+    suite_test.go:190: [NTM] args=[--robot-send=ntm-e2e-fake-49127-263000 --msg=verify render evidence payload --type=claude --verify-render] exit=0
+    suite_test.go:190: [NTM] output={
+          "success": true,
+          "timestamp": "2026-08-15T02:47:17Z",
+          "version": "1.0.0",
+          "output_format": "json",
+          "session": "ntm-e2e-fake-49127-263000",
+          "sent_at": "2026-08-15T02:47:17.49415Z",
+          "blocked": false,
+          "redaction": {
+            "mode": "warn",
+            "findings": 0,
+            "action": "warn"
+          },
+          "warnings": [],
+          "targets": [
+            "0"
+          ],
+          "successful": [
+            "0"
+          ],
+          "failed": [],
+          "message_preview": "verify render evidence payload",
+          "_agent_hints": {
+            "summary": "Sent to 1 agent(s) successfully",
+            "suggestions": [
+              "Wait for agent acknowledgment using --robot-tail"
+            ]
+          },
+          "render_evidence": [
+            {
+              "pane": "0",
+              "delivered": true,
+              "delivered_and_rendered": true,
+              "baseline_available": true,
+              "render_available": true,
+              "render_changed": true
+            }
+          ]
+        }
+    suite_test.go:190: [TIMING] verify-render send took 12.385s
+    suite_test.go:190: [E2E-JSON] verify_render_send_envelope:
+        {
+          "success": true,
+          "targets": [
+            "0"
+          ],
+          "successful": [
+            "0"
+          ],
+          "failed": [],
+          "render_evidence": [
+            {
+              "pane": "0",
+              "delivered": true,
+              "delivered_and_rendered": true,
+              "baseline_available": true,
+              "render_available": true,
+              "render_changed": true
+            }
+          ]
+        }
+    suite_test.go:190: [PASS] delivered_and_rendered=true and the fixture confirms the submit
+    suite_test.go:190: [E2E-END] === Test completed in 12.44s ===
+--- PASS: TestComposerDeliveryVerifyRender (12.45s)
+=== RUN   TestComposerDeliveryVerifyRenderFailure
+    suite_test.go:190: [E2E-START] === E2E Test Started: composer-delivery-verify-render-failure ===
+    suite_test.go:190: [E2E-START] Timestamp: 2026-08-14T22:47:19-04:00
+    suite_test.go:190: [E2E-START] Log file: /Users/jemanuel/projects/ntm/logs/e2e-20260815T024420Z-48217/test-composer-delivery/composer-delivery-verify-render-failure-20260814-224719.log
+    suite_test.go:190: [SETUP] session=ntm-e2e-fake-49127-120000 pane=%0 armed strand 99
+    suite_test.go:190: [NTM] args=[--robot-send=ntm-e2e-fake-49127-120000 --msg=verify render failure payload --type=codex --verify-render] exit=1
+    suite_test.go:190: [NTM] output={"success":false,"timestamp":"2026-08-15T02:47:30Z","version":"1.0.0","output_format":"json","error":"1 of 1 sends failed","error_code":"INTERNAL_ERROR","session":"ntm-e2e-fake-49127-120000","sent_at":"2026-08-15T02:47:30.171776Z","blocked":false,"redaction":{"mode":"warn","findings":0,"action":"warn"},"warnings":[],"targets":["0"],"successful":[],"failed":[{"pane":"0","error":"codex submission unconfirmed: prompt still in composer after rescue (pane %0); submit manually or retry"}],"message_preview":"verify render failure payload","_agent_hints":{"summary":"All 1 sends failed","suggestions":["Check agent states with --robot-tail","Verify session and pane existence"]},"render_evidence":[{"pane":"0","delivered":false,"delivered_and_rendered":false,"baseline_available":true,"render_available":true,"render_changed":true}]}
+    suite_test.go:190: [TIMING] verify-render failure send took 15.516s
+    suite_test.go:190: [E2E-JSON] verify_render_failure_send_envelope:
+        {
+          "success": false,
+          "error": "1 of 1 sends failed",
+          "error_code": "INTERNAL_ERROR",
+          "targets": [
+            "0"
+          ],
+          "successful": [],
+          "failed": [
+            {
+              "pane": "0",
+              "error": "codex submission unconfirmed: prompt still in composer after rescue (pane %0); submit manually or retry"
+            }
+          ],
+          "render_evidence": [
+            {
+              "pane": "0",
+              "delivered": false,
+              "delivered_and_rendered": false,
+              "baseline_available": true,
+              "render_available": true,
+              "render_changed": true
+            }
+          ]
+        }
+    suite_test.go:190: [PASS] failed send: delivered=false, delivered_and_rendered=false, render_changed=true (truthful), 0 submits
+    suite_test.go:190: [E2E-END] === Test completed in 15.818s ===
+--- PASS: TestComposerDeliveryVerifyRenderFailure (15.83s)
+PASS
+ok  	github.com/Dicklesworthstone/ntm/e2e	180.479s

@@ -654,6 +654,10 @@ Shell Integration:
 				// labels (#223).
 				bv.ConfigureOperatorGatedLabels(cfg.Assign.OperatorGatedLabels)
 
+				// Bound every bv subprocess with the configured timeout
+				// ([integrations.bv] timeout_seconds; NTM_BV_TIMEOUT wins, GH#253).
+				bv.ConfigureCommandTimeout(cfg.Integrations.BV.TimeoutSeconds)
+
 				privacy.SetDefaultManager(privacy.New(cfg.Privacy))
 
 				redactCfg := cfg.Redaction.ToRedactionLibConfig()
@@ -5618,11 +5622,13 @@ func loadSelectedConfigOrDefault() *config.Config {
 	if err != nil {
 		loaded = config.Default()
 		bv.ConfigureOperatorGatedLabels(loaded.Assign.OperatorGatedLabels)
+		bv.ConfigureCommandTimeout(loaded.Integrations.BV.TimeoutSeconds)
 		return loaded
 	}
 	// Callers on this path bypassed the PersistentPreRun config application,
 	// so install config-driven package state here as well (#223).
 	bv.ConfigureOperatorGatedLabels(loaded.Assign.OperatorGatedLabels)
+	bv.ConfigureCommandTimeout(loaded.Integrations.BV.TimeoutSeconds)
 	return loaded
 }
 
@@ -5762,16 +5768,12 @@ Examples:
 						"pane_init_delay_ms": effectiveCfg.Tmux.PaneInitDelayMs,
 					},
 					"checkpoints": map[string]interface{}{
-						"enabled":                  effectiveCfg.Checkpoints.Enabled,
-						"before_broadcast":         effectiveCfg.Checkpoints.BeforeBroadcast,
-						"before_add_agents":        effectiveCfg.Checkpoints.BeforeAddAgents,
-						"max_auto_checkpoints":     effectiveCfg.Checkpoints.MaxAutoCheckpoints,
-						"scrollback_lines":         effectiveCfg.Checkpoints.ScrollbackLines,
-						"include_git":              effectiveCfg.Checkpoints.IncludeGit,
-						"auto_checkpoint_on_spawn": effectiveCfg.Checkpoints.AutoCheckpointOnSpawn,
-						"interval_minutes":         effectiveCfg.Checkpoints.IntervalMinutes,
-						"on_rotation":              effectiveCfg.Checkpoints.OnRotation,
-						"on_error":                 effectiveCfg.Checkpoints.OnError,
+						"enabled":              effectiveCfg.Checkpoints.Enabled,
+						"before_broadcast":     effectiveCfg.Checkpoints.BeforeBroadcast,
+						"before_add_agents":    effectiveCfg.Checkpoints.BeforeAddAgents,
+						"max_auto_checkpoints": effectiveCfg.Checkpoints.MaxAutoCheckpoints,
+						"scrollback_lines":     effectiveCfg.Checkpoints.ScrollbackLines,
+						"include_git":          effectiveCfg.Checkpoints.IncludeGit,
 					},
 					"alerts": map[string]interface{}{
 						"enabled":                 effectiveCfg.Alerts.Enabled,
@@ -5785,8 +5787,7 @@ Examples:
 					"safety": map[string]interface{}{
 						"profile": effectiveCfg.Safety.Profile,
 						"preflight": map[string]interface{}{
-							"enabled": effectiveCfg.Preflight.Enabled,
-							"strict":  effectiveCfg.Preflight.Strict,
+							"strict": effectiveCfg.Preflight.Strict,
 						},
 						"redaction": map[string]interface{}{
 							"mode": effectiveCfg.Redaction.Mode,
@@ -5802,15 +5803,12 @@ Examples:
 							"allow_override": effectiveCfg.Integrations.DCG.AllowOverride,
 						},
 						"caam": map[string]interface{}{
-							"enabled":               effectiveCfg.Integrations.CAAM.Enabled,
-							"auto_rotate":           effectiveCfg.Integrations.CAAM.AutoRotate,
 							"auto_failover":         effectiveCfg.Integrations.CAAM.AutoFailover,
 							"reset_horizon_minutes": effectiveCfg.Integrations.CAAM.ResetHorizonMinutes,
 							"failover_providers":    effectiveCfg.Integrations.CAAM.FailoverProviders,
 						},
 						"rch": map[string]interface{}{
-							"enabled":        effectiveCfg.Integrations.RCH.Enabled,
-							"fallback_local": effectiveCfg.Integrations.RCH.FallbackLocal,
+							"enabled": effectiveCfg.Integrations.RCH.Enabled,
 						},
 						"process_triage": map[string]interface{}{
 							"enabled": effectiveCfg.Integrations.ProcessTriage.Enabled,

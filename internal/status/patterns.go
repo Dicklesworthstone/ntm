@@ -65,6 +65,12 @@ var promptPatterns = []PromptPattern{
 	// Ollama patterns
 	{AgentType: "ollama", Regex: regexp.MustCompile(`(?i)ollama>?\s*$`), Description: "Ollama prompt"},
 
+	// Grok Build patterns (GH#251 phase 2, from live grok 1.0.5 captures).
+	// The bordered composer line ("│ ❯ …  │") is permanent chrome, so
+	// DetectIdleFromOutput vetoes it with agent.GrokActivelyWorking first.
+	{AgentType: "grok", Regex: regexp.MustCompile(`^│\s*❯`), Description: "Grok Build bordered composer line"},
+	{AgentType: "grok", Regex: regexp.MustCompile(`(?i)grok\s+build\s+\d+\.\d+`), Description: "Grok Build banner/status line"},
+
 	// Generic shell prompts (for user panes and fallback)
 	// Match simple prompts like "$" or "user@host:~$ "
 	// Avoid matching sentences like "cost is $" by disallowing spaces in the prefix
@@ -144,6 +150,7 @@ var knownAgentTypes = map[string]bool{
 	"windsurf": true,
 	"aider":    true,
 	"ollama":   true,
+	"grok":     true, // Grok Build renders a bordered "│ ❯" composer (GH#251)
 }
 
 // knownAgentPromptPrefixes matches prompts that belong to specific agent types.
@@ -220,6 +227,15 @@ func DetectIdleFromOutput(output string, agentType string) bool {
 		// prompts the shared recognizer doesn't enumerate (e.g. "claude>") are
 		// still caught, but without the activeWorkBelow guard — Claude work is
 		// already ruled out by ClaudeActivelyWorking above.
+	}
+
+	// Grok Build: the bordered composer is permanent chrome drawn during work,
+	// so the live in-flight markers (braille spinner activity line /
+	// "Esc:cancel" footer hint) must veto idle first. GrokActivelyWorking is
+	// biased to false-WORKING, so gating on it can never report a busy grok
+	// pane as idle (GH#251 phase 2).
+	if agentType == string(agent.AgentTypeGrok) && agent.GrokActivelyWorking(output, 0) {
+		return false
 	}
 
 	// Strip ANSI first for cleaner processing

@@ -13,6 +13,55 @@ NTM is a tmux session management tool for orchestrating multiple AI coding agent
 
 ## [Unreleased]
 
+### Deprecated — config keys (second dead-knob batch, bd-6otuk)
+
+- **128 reader-less config keys deprecated, WS6-style staged removal** (G2
+  config-key liveness audit, `bd-6otuk`): each key below is now parsed by
+  nothing — setting it still loads, but emits one loud startup **warning**
+  per key naming the key and its disposition, and the value is **ignored**.
+  In v1.29.0 these keys become hard strict-loader **errors** with the same
+  disposition text, exactly like the v1.26.0→v1.27.0 flip. `ntm doctor`
+  lists every deprecated key present in the config file (warning check);
+  `ntm config set` persistence tolerates them for this release.
+
+  Deprecated-key migration table (v1.28.0 → error in v1.29.0):
+
+  | Key family | Keys | Disposition |
+  |---|---|---|
+  | `[accounts]` (whole section) | `state_file`, `auto_rotate`, `reset_buffer_minutes`, `[[accounts.<provider>]]` `email`/`alias`/`priority` for claude, codex, gemini, antigravity, cursor, windsurf, aider, ollama (27) | never had an effect — account rotation reads `[rotation]` and caam, not `[accounts]` |
+  | `[scanner.*]` except `ubs_path` | all of `[scanner.defaults]`, `[scanner.thresholds.{pre_commit,ci,dashboard,interactive}]`, `[scanner.tools]`, `[scanner.beads]`, `[scanner.notifications]` (37) | never had an effect — only `scanner.ubs_path` is read; the auto-scan chain never shipped. The project-level `.ntm.yaml` scanner schema is unchanged |
+  | `[spawn_pacing]` rate/backoff/headroom | `max_spawns_per_sec`, `burst_size`, `default_retries`, `retry_delay_ms`, `backpressure_threshold`, `agent_caps.*_rate_per_sec`, `agent_caps.*_ramp_up_delay_ms`, `agent_caps.cooldown_on_failure_ms`, `agent_caps.recovery_successes`, all `[spawn_pacing.backoff]`, all `[spawn_pacing.headroom]` (24) | never had an effect — live pacing knobs: `enabled`, `max_concurrent_spawns`, `agent_caps.{claude,codex,gemini}_max_concurrent` |
+  | `[cass]` subset | `show_install_hints`, all `[cass.duplicates]`, `[cass.search]`, `[cass.tui]` (10) | never had an effect — duplicate checking is driven by CLI flags; `[cass]` core + `[cass.context]` stay live |
+  | integrations leaves | `caam.{enabled,auto_rotate,providers}`, `rano.{binary_path,providers}`, `process_triage.binary_path`, `rch.{min_build_time,show_location,preferred_worker,dcg_whitelist,fallback_local}` (11) | never had an effect — adapters resolve binaries from PATH; `rch.dcg_whitelist` was a documented legacy no-op |
+  | `[checkpoints]` subset | `auto_checkpoint_on_spawn`, `interval_minutes`, `on_rotation`, `on_error` (4) | never had an effect — the background checkpoint worker never shipped; the other `[checkpoints]` knobs and manual `ntm checkpoint` are unaffected |
+  | `[tmux.activity_indicators]` | `enabled`, `active_seconds`, `stalled_seconds` (3) | never had an effect |
+  | `[robot.output]` subset | `pretty`, `timestamps`, `compress` (3) | never had an effect — `robot.output.format` remains live |
+  | rotation subset | `rotation.prefer_restart`, `rotation.accounts.priority` (2) | never had an effect — rotation accounts are used in the order written |
+  | singles | `agent_mail.program_name`, `agents.default_count`, `recovery.stale_threshold_hours`, `resilience.rate_limit.patterns`, `suggestions_enabled`, `preflight.enabled`, `command_hooks.description` (7) | never had an effect — the agent-mail program name is fixed to `ntm`; rate-limit patterns are built into `internal/agent`; `preflight.strict` and `command_hooks.name` remain live |
+
+  **Migration:** delete the listed keys from `~/.config/ntm/config.toml`
+  (the startup warning names each one). Nothing changes behaviorally — these
+  values were already ignored.
+
+- **Excluded from deprecation — `ensemble.*` (24 keys stay valid)**: the
+  audit's premise ("reader compiled out of shipped binaries") was only half
+  true. Eight ensemble defaults (`default_ensemble`, `agent_mix`,
+  `assignment`, `allow_advanced`, `mode_tier_default`, `budget.total`,
+  `budget.per_agent`, `cache.enabled`) are read in EVERY build by the
+  `--robot-ensemble-spawn` config-default path and are now claimed as live;
+  the remaining 16 (`synthesis.*`, `cache.*`, `budget.{synthesis,context_pack}`,
+  `early_stop.*`) drive real spawns under `-tags ensemble_experimental` and
+  are claimed under that tag, with permanent build-tag-blind-spot allowlist
+  entries on the untagged side.
+
+### Fixed
+
+- **`swarm.force_global_auth_clobber` now works** (`bd-6otuk`): the config
+  value was overwritten by the `--force-global-auth-clobber` flag's
+  hard-coded `false` default before any read, making the knob a silent
+  no-op. The config value now seeds the flag default (mirroring
+  `--auto-rotate-accounts`); an explicit flag still overrides.
+
 - **Corrected commit provenance.** Commit `d08893d9`'s message incorrectly
   attributed the fail-closed serve safety-policy change to its completion and
   tmux diff. The actual safety-policy implementation is `dda4aae8`; history

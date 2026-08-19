@@ -185,7 +185,7 @@ func runManualWizard(sessionName string) (SpawnWizardResult, error) {
 				Validate(validateAgentCount),
 			huh.NewInput().
 				Title("Grok Build agents (grok)").
-				Description("Number of Grok Build agents to launch (phase one: no automated prompt delivery or restart)").
+				Description("Number of Grok Build agents to launch").
 				Placeholder("0").
 				Value(&grokStr).
 				Validate(validateAgentCount),

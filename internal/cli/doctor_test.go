@@ -15,7 +15,6 @@ func TestBuildSafetyDefaults(t *testing.T) {
 	cfg.Redaction.Mode = "redact"
 	cfg.Redaction.Allowlist = []string{"safe-token", "test-key"}
 	cfg.Privacy.Enabled = true
-	cfg.Preflight.Enabled = true
 	cfg.Preflight.Strict = true
 
 	got := buildSafetyDefaults(cfg)
@@ -34,9 +33,6 @@ func TestBuildSafetyDefaults(t *testing.T) {
 	}
 	if got.EncryptionAtRestEnabled {
 		t.Fatal("EncryptionAtRestEnabled=true, want false")
-	}
-	if !got.PreflightDefaultEnabled {
-		t.Fatal("PreflightDefaultEnabled=false, want true")
 	}
 	if !got.PreflightDefaultStrict {
 		t.Fatal("PreflightDefaultStrict=false, want true")
@@ -80,7 +76,6 @@ func TestEncodeDoctorJSONIncludesSafetyDefaults(t *testing.T) {
 			RedactionAllowlistCount:   1,
 			PrivacyDefaultEnabled:     false,
 			EncryptionAtRestEnabled:   false,
-			PreflightDefaultEnabled:   true,
 			PreflightDefaultStrict:    false,
 		},
 		Tools:         []ToolCheck{},
@@ -103,9 +98,6 @@ func TestEncodeDoctorJSONIncludesSafetyDefaults(t *testing.T) {
 	if decoded.SafetyDefaults.RedactionMode != "warn" {
 		t.Fatalf("decoded RedactionMode=%q, want %q", decoded.SafetyDefaults.RedactionMode, "warn")
 	}
-	if !decoded.SafetyDefaults.PreflightDefaultEnabled {
-		t.Fatalf("decoded PreflightDefaultEnabled=false, want true")
-	}
 }
 
 func TestRenderDoctorTUIIncludesSafetyDefaults(t *testing.T) {
@@ -113,8 +105,7 @@ func TestRenderDoctorTUIIncludesSafetyDefaults(t *testing.T) {
 		Timestamp: time.Now(),
 		Overall:   "healthy",
 		SafetyDefaults: SafetyDefaults{
-			RedactionMode:           "warn",
-			PreflightDefaultEnabled: true,
+			RedactionMode: "warn",
 		},
 	}
 

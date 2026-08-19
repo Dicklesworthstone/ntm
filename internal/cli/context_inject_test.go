@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -266,7 +265,9 @@ func TestSelectContextInjectTargetPanes(t *testing.T) {
 	})
 }
 
-func TestInjectContextIntoPanesRejectsMixedGrokBatchBeforeSending(t *testing.T) {
+// GH#251 phase 2: mixed batches containing Grok Build panes now inject like
+// claude/codex batches — every alias canonicalizes to a deliverable target.
+func TestInjectContextIntoPanesAcceptsMixedGrokBatch(t *testing.T) {
 	for _, grokAlias := range []tmux.AgentType{tmux.AgentGrok, " Grok-Build ", "XAI_GROK_BUILD"} {
 		t.Run(string(grokAlias), func(t *testing.T) {
 			panes := []tmux.Pane{
@@ -280,14 +281,14 @@ func TestInjectContextIntoPanesRejectsMixedGrokBatchBeforeSending(t *testing.T) 
 				return nil
 			})
 
-			if !errors.Is(err, agent.ErrAutomatedPromptDeliveryNotImplemented) {
-				t.Fatalf("error = %v, want prompt-delivery sentinel", err)
+			if err != nil {
+				t.Fatalf("error = %v, want nil (grok delivery supported in phase 2)", err)
 			}
-			if calls != 0 {
-				t.Fatalf("sender calls = %d, want 0", calls)
+			if calls != 3 {
+				t.Fatalf("sender calls = %d, want 3", calls)
 			}
-			if len(injected) != 0 {
-				t.Fatalf("injected panes = %v, want empty", injected)
+			if len(injected) != 3 {
+				t.Fatalf("injected panes = %v, want 3 entries", injected)
 			}
 		})
 	}

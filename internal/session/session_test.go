@@ -99,13 +99,15 @@ func TestPaneStateHasFreshSessionBindingFailsClosed(t *testing.T) {
 	}
 }
 
-func TestValidateAutomatedRelaunchRejectsGrokSavedBatch(t *testing.T) {
+// GH#251 phase 2: grok saved batches are now valid automated-relaunch targets,
+// so validation accepts them exactly like claude/codex batches.
+func TestValidateAutomatedRelaunchAcceptsGrokSavedBatch(t *testing.T) {
 	for _, state := range []*SessionState{
 		{Panes: []PaneState{{Index: 1, AgentType: "grok"}}},
 		{Panes: []PaneState{{Index: 1, AgentType: "cc"}, {Index: 2, AgentType: "grok-build"}}},
 	} {
-		if err := ValidateAutomatedRelaunch(state); !errors.Is(err, ErrAutomatedRelaunchNotImplemented) {
-			t.Fatalf("ValidateAutomatedRelaunch() error = %v, want Grok relaunch sentinel", err)
+		if err := ValidateAutomatedRelaunch(state); err != nil {
+			t.Fatalf("ValidateAutomatedRelaunch() error = %v, want Grok batch accepted", err)
 		}
 	}
 
@@ -114,22 +116,37 @@ func TestValidateAutomatedRelaunchRejectsGrokSavedBatch(t *testing.T) {
 	}
 }
 
-func TestAutomatedRelaunchDefensesRejectGrokBeforeTmuxMutation(t *testing.T) {
-	state := &SessionState{
-		Name:    "invalid/session/name",
-		WorkDir: t.TempDir(),
-		Panes: []PaneState{{
-			Index:     1,
-			AgentType: "grok",
-			Command:   "claude",
-		}},
-	}
+// GH#251 phase 2: automated relaunch defenses no longer short-circuit on grok
+// panes. A grok saved batch now flows past preflight and fails at exactly the
+// same downstream boundary as an equivalent claude batch (here: the invalid
+// session name), proving grok is processed like claude.
+func TestAutomatedRelaunchDefensesProcessGrokLikeClaude(t *testing.T) {
+	for _, agentType := range []string{"cc", "grok"} {
+		state := &SessionState{
+			Name:    "invalid/session/name",
+			WorkDir: t.TempDir(),
+			Panes: []PaneState{{
+				Index:     1,
+				AgentType: agentType,
+				Command:   "claude",
+			}},
+		}
 
-	if err := RestoreAgents(state.Name, state, AgentCommands{Claude: "claude"}, nil); !errors.Is(err, ErrAutomatedRelaunchNotImplemented) {
-		t.Fatalf("RestoreAgents() error = %v, want Grok relaunch sentinel before pane lookup", err)
-	}
-	if result, err := Resume(state, AgentCommands{Claude: "claude"}, ResumeOptions{Force: true}); !errors.Is(err, ErrAutomatedRelaunchNotImplemented) || result != nil {
-		t.Fatalf("Resume() = (%+v, %v), want nil and Grok relaunch sentinel before topology restore", result, err)
+		err := RestoreAgents(state.Name, state, AgentCommands{Claude: "claude"}, nil)
+		if errors.Is(err, ErrAutomatedRelaunchNotImplemented) {
+			t.Fatalf("RestoreAgents(%s) error = %v, want no relaunch sentinel", agentType, err)
+		}
+		if err == nil || !strings.Contains(err.Error(), "getting panes") {
+			t.Fatalf("RestoreAgents(%s) error = %v, want pane-lookup failure past preflight", agentType, err)
+		}
+
+		result, err := Resume(state, AgentCommands{Claude: "claude"}, ResumeOptions{Force: true})
+		if errors.Is(err, ErrAutomatedRelaunchNotImplemented) {
+			t.Fatalf("Resume(%s) error = %v, want no relaunch sentinel", agentType, err)
+		}
+		if result != nil || err == nil || !strings.Contains(err.Error(), "invalid session name") {
+			t.Fatalf("Resume(%s) = (%+v, %v), want session-name failure past preflight", agentType, result, err)
+		}
 	}
 }
 

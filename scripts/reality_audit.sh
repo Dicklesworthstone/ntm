@@ -179,7 +179,11 @@ if command -v br >/dev/null 2>&1; then
   fi
   echo "ledger scope: $LEDGER_SCOPE ($(printf '%s\n' "$CLOSED_IDS" | sed '/^$/d' | wc -l | tr -d ' ') candidates)"
   SAMPLE_IDS="$(printf '%s\n' "$CLOSED_IDS" | sed '/^$/d' | seeded_sample 10)"
-  TEST_LIST="$(go test ./... -list '.*' 2>/dev/null | grep -E '^(Test|Fuzz|Example)' | sort -u || true)"
+  # NTM_INTEGRATION_TESTS=1: env-gated packages (tests/integration) skip
+  # wholesale without it, so their tests would vanish from -list and every
+  # integration-test proof would false-positive as PROOF_MISSING (bd-m9zpa).
+  # Listing only enumerates test names; it does not execute the tests.
+  TEST_LIST="$(NTM_INTEGRATION_TESTS=1 go test ./... -list '.*' 2>/dev/null | grep -E '^(Test|Fuzz|Example)' | sort -u || true)"
   # check_proofs <bead-id> — echo the first named (Test|Fuzz) function that
   # `go test -list` confirms live, or "MISSING <first-named>" if names exist
   # but none are live, or nothing if the close names no test at all.

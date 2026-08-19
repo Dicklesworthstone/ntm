@@ -1,0 +1,70 @@
+[0s] [E2E-START] === E2E Test Started: transcript-context-claude-clamp ===
+[0s] [E2E-START] Timestamp: 2026-08-14T22:46:58-04:00
+[0s] [E2E-START] Log file: /Users/jemanuel/projects/ntm/e2e/logs/transcript-context-claude-clamp-20260814-224658.log
+[1ms] [FIXTURE] path=/var/folders/vt/n2xyn_s51b97_j3yh2qbqcnc0000gn/T/TestTranscriptContextClaudeOverflowClamp2034283172/001/.claude/projects/-private-var-folders-vt-n2xyn-s51b97-j3yh2qbqcnc0000gn-T-TestTranscriptContextClaudeOverflowClamp2034283172-002/session-overflow.jsonl bytes=459 sha256=fc874f039a62cfd68b8ac38baf0c5a386061167a4b06777069c01dff7eb1030f
+[91ms] [SETUP] session=ntm-e2e-tctx-57463-247000 pane=%0 projDir=/private/var/folders/vt/n2xyn_s51b97_j3yh2qbqcnc0000gn/T/TestTranscriptContextClaudeOverflowClamp2034283172/002
+[10.707s] [NTM] HOME=/var/folders/vt/n2xyn_s51b97_j3yh2qbqcnc0000gn/T/TestTranscriptContextClaudeOverflowClamp2034283172/001 args=[--robot-context=ntm-e2e-tctx-57463-247000] exit=0
+[10.708s] [NTM] output={
+  "success": true,
+  "timestamp": "2026-08-15T02:47:09Z",
+  "version": "1.0.0",
+  "output_format": "json",
+  "session": "ntm-e2e-tctx-57463-247000",
+  "captured_at": "2026-08-15T02:47:09.561178Z",
+  "agents": [
+    {
+      "pane": "0",
+      "pane_idx": 0,
+      "agent_type": "claude",
+      "model": "claude-fable-5",
+      "estimated_tokens": 660000,
+      "with_overhead": 660000,
+      "context_limit": 200000,
+      "usage_percent": 100,
+      "usage_level": "Critical",
+      "confidence": "low",
+      "state": "idle",
+      "source": "transcript",
+      "transcript_tokens": 660000,
+      "transcript_model": "claude-fable-5",
+      "transcript_path": "/var/folders/vt/n2xyn_s51b97_j3yh2qbqcnc0000gn/T/TestTranscriptContextClaudeOverflowClamp2034283172/001/.claude/projects/-private-var-folders-vt-n2xyn-s51b97-j3yh2qbqcnc0000gn-T-TestTranscriptContextClaudeOverflowClamp2034283172-002/session-overflow.jsonl",
+      "transcript_updated_at": "2026-08-15T02:46:58Z"
+    }
+  ],
+  "summary": {
+    "total_agents": 1,
+    "high_usage_count": 1,
+    "avg_usage": 100
+  },
+  "_agent_hints": {
+    "high_usage_agents": [
+      "0"
+    ],
+    "suggestions": [
+      "All agents have high context usage - consider spawning new sessions"
+    ]
+  }
+}
+[10.708s] [E2E-JSON] context_agents:
+[
+  {
+    "pane": "0",
+    "pane_idx": 0,
+    "agent_type": "claude",
+    "model": "claude-fable-5",
+    "estimated_tokens": 660000,
+    "with_overhead": 660000,
+    "context_limit": 200000,
+    "usage_percent": 100,
+    "usage_level": "Critical",
+    "confidence": "low",
+    "state": "idle",
+    "source": "transcript",
+    "transcript_tokens": 660000,
+    "transcript_model": "claude-fable-5",
+    "transcript_path": "/var/folders/vt/n2xyn_s51b97_j3yh2qbqcnc0000gn/T/TestTranscriptContextClaudeOverflowClamp2034283172/001/.claude/projects/-private-var-folders-vt-n2xyn-s51b97-j3yh2qbqcnc0000gn-T-TestTranscriptContextClaudeOverflowClamp2034283172-002/session-overflow.jsonl",
+    "transcript_updated_at": "2026-08-15T02:46:58Z"
+  }
+]
+[10.708s] [PASS] 660000/200000 clamped to 100% with confidence low
+[10.717s] [E2E-END] === Test completed in 10.717s ===

@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/tests/testutil"
 )
@@ -133,45 +132,86 @@ func TestRestorer_RestoreFromCheckpoint_NoPanes(t *testing.T) {
 	}
 }
 
-func TestRestorer_RestoreFromCheckpointRejectsGrokBeforeMutation(t *testing.T) {
+// GH#251 phase 2: grok relaunch is first-class, so restore planning accepts
+// grok panes exactly like claude/codex instead of refusing before mutation.
+func TestRestorer_RestoreFromCheckpointAcceptsGrokPanes(t *testing.T) {
 	tests := []struct {
 		name  string
 		panes []PaneState
+		want  int
 	}{
 		{
 			name:  "grok only",
-			panes: []PaneState{{Index: 0, AgentType: "grok", Command: "grok"}},
+			panes: []PaneState{{Index: 0, ID: "%0", AgentType: "grok", Command: "grok"}},
+			want:  1,
 		},
 		{
 			name: "mixed batch",
 			panes: []PaneState{
-				{Index: 0, AgentType: "cc", Command: "claude"},
-				{Index: 1, AgentType: "grok-build", Command: "grok"},
+				{Index: 0, ID: "%0", AgentType: "cc", Command: "claude"},
+				{Index: 1, ID: "%1", AgentType: "grok-build", Command: "grok"},
 			},
+			want: 2,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cp := &Checkpoint{
+				ID:          "grok-acceptance-checkpoint",
 				SessionName: "definitely-not-an-existing-ntm-checkpoint-session",
-				WorkingDir:  "/definitely/not/a/real/checkpoint/directory",
+				WorkingDir:  t.TempDir(),
 				Session:     SessionState{Panes: tt.panes},
 			}
-			result, err := NewRestorerWithStorage(NewStorageWithDir(t.TempDir())).RestoreFromCheckpoint(cp, RestoreOptions{Force: true})
-			if !errors.Is(err, agent.ErrAutomatedRelaunchNotImplemented) {
-				t.Fatalf("RestoreFromCheckpoint() error = %v, want Grok relaunch sentinel", err)
+			// DryRun keeps the test off a real tmux server while still
+			// exercising the restore-planning admission that used to refuse
+			// grok before any pane was counted.
+			result, err := NewRestorerWithStorage(NewStorageWithDir(t.TempDir())).RestoreFromCheckpoint(cp, RestoreOptions{Force: true, DryRun: true})
+			if err != nil {
+				t.Fatalf("RestoreFromCheckpoint() error = %v, want grok batch accepted", err)
 			}
-			if result != nil {
-				t.Fatalf("RestoreFromCheckpoint() result = %+v, want nil before restore planning", result)
+			if result == nil {
+				t.Fatal("RestoreFromCheckpoint() result = nil, want plan including grok panes")
+			}
+			if result.PanesRestored != tt.want {
+				t.Fatalf("PanesRestored = %d, want %d (grok panes must be included)", result.PanesRestored, tt.want)
 			}
 		})
 	}
 }
 
-func TestRestorableAgentCommandRejectsGrokEvenWithCapturedCommand(t *testing.T) {
-	if got := restorableAgentCommand(PaneState{AgentType: "grok", Command: "claude"}); got != "" {
-		t.Fatalf("restorableAgentCommand(grok) = %q, want empty unsupported command", got)
+// GH#251 phase 2: grok panes now get a relaunch command like every other
+// first-class agent — captured commands are preserved, shell/missing commands
+// fall back to the official autonomous launch flag.
+func TestRestorableAgentCommandGrok(t *testing.T) {
+	tests := []struct {
+		name string
+		pane PaneState
+		want string
+	}{
+		{
+			name: "captured non-shell command is preserved",
+			pane: PaneState{AgentType: "grok", Command: "/opt/bin/grok --always-approve --model grok-4"},
+			want: "/opt/bin/grok --always-approve --model grok-4",
+		},
+		{
+			name: "shell command falls back to autonomous default",
+			pane: PaneState{AgentType: "grok", Command: "zsh"},
+			want: "grok --always-approve",
+		},
+		{
+			name: "missing command falls back to autonomous default",
+			pane: PaneState{AgentType: "grok-build"},
+			want: "grok --always-approve",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := restorableAgentCommand(tt.pane); got != tt.want {
+				t.Fatalf("restorableAgentCommand(%+v) = %q, want %q", tt.pane, got, tt.want)
+			}
+		})
 	}
 }
 

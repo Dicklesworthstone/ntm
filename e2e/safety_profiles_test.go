@@ -54,8 +54,8 @@ func TestE2E_SafetyProfile_StandardDefaults(t *testing.T) {
 		t.Errorf("[E2E-SAFETY-PROFILE] expected profile=standard, got %s", cfg.Safety.Profile)
 	}
 
-	suite.Logger().Log("[E2E-SAFETY-PROFILE] Standard profile: preflight.enabled=%v preflight.strict=%v redaction.mode=%s privacy.enabled=%v",
-		cfg.Preflight.Enabled, cfg.Preflight.Strict, cfg.Redaction.Mode, cfg.Privacy.Enabled)
+	suite.Logger().Log("[E2E-SAFETY-PROFILE] Standard profile: preflight.strict=%v redaction.mode=%s privacy.enabled=%v",
+		cfg.Preflight.Strict, cfg.Redaction.Mode, cfg.Privacy.Enabled)
 
 	suite.Logger().Log("[E2E-SAFETY-PROFILE] Standard profile defaults verified")
 }

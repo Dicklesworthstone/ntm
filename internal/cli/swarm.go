@@ -207,6 +207,16 @@ Examples:
 	if cfg != nil {
 		defaultAutoRotate = cfg.Swarm.AutoRotateAccounts
 	}
+	// bd-6otuk: swarm.force_global_auth_clobber used to be overwritten by the
+	// flag's hard-coded false default before any read (runSwarm assigns
+	// opts.ForceGlobalAuth unconditionally), so the config key was a silent
+	// no-op. Seeding the flag default from config makes the key live while
+	// preserving the explicit flag as the override, mirroring
+	// --auto-rotate-accounts above.
+	defaultForceGlobalAuth := false
+	if cfg != nil {
+		defaultForceGlobalAuth = cfg.Swarm.ForceGlobalAuthClobber
+	}
 
 	cmd.Flags().StringVar(&scanDir, "scan-dir", defaultScanDir, "Directory to scan for projects")
 	cmd.Flags().StringSliceVar(&projects, "projects", nil, "Explicit list of project paths (comma-separated)")
@@ -220,7 +230,7 @@ Examples:
 	cmd.Flags().BoolVar(&waitReady, "wait-ready", false, "Wait for all agents to reach idle/ready state before returning")
 	cmd.Flags().IntVar(&readyTimeout, "ready-timeout", 30, "Timeout in seconds for --wait-ready (default: 30)")
 	cmd.PersistentFlags().BoolVar(&autoRotate, "auto-rotate-accounts", defaultAutoRotate, "Automatically rotate accounts on usage limit hit (requires caam)")
-	cmd.PersistentFlags().BoolVar(&forceGlobalAuth, "force-global-auth-clobber", false, "DANGEROUS: permit automatic global ~/.codex/auth.json rotation even when live Codex panes share global auth or caam lacks the safe-restore capability; bypasses account pins (#194)")
+	cmd.PersistentFlags().BoolVar(&forceGlobalAuth, "force-global-auth-clobber", defaultForceGlobalAuth, "DANGEROUS: permit automatic global ~/.codex/auth.json rotation even when live Codex panes share global auth or caam lacks the safe-restore capability; bypasses account pins (#194)")
 
 	// Add subcommands
 	cmd.AddCommand(newSwarmPlanCmd())

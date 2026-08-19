@@ -1,0 +1,166 @@
+[0s] [E2E-START] === E2E Test Started: transcript-context-perf ===
+[0s] [E2E-START] Timestamp: 2026-08-14T22:48:24-04:00
+[0s] [E2E-START] Log file: /Users/jemanuel/projects/ntm/e2e/logs/transcript-context-perf-20260814-224824.log
+[32ms] [FIXTURE] path=/var/folders/vt/n2xyn_s51b97_j3yh2qbqcnc0000gn/T/TestTranscriptContextPerfGuardAmbiguousGroup765760475/001/.claude/projects/-private-var-folders-vt-n2xyn-s51b97-j3yh2qbqcnc0000gn-T-TestTranscriptContextPerfGuardAmbiguousGroup765760475-002/session-perf.jsonl bytes=454 sha256=6f66b918e7ed9e0e230ab6d99e28aa97c78e08225e0aeb2ac284e13fac432bb1
+[407ms] [SETUP] session=ntm-e2e-tctx-57463-738000 panes=4 sharing cwd=/private/var/folders/vt/n2xyn_s51b97_j3yh2qbqcnc0000gn/T/TestTranscriptContextPerfGuardAmbiguousGroup765760475/002
+[13.035s] [NTM] HOME=/var/folders/vt/n2xyn_s51b97_j3yh2qbqcnc0000gn/T/TestTranscriptContextPerfGuardAmbiguousGroup765760475/001 args=[--robot-context=ntm-e2e-tctx-57463-738000] exit=0
+[13.044s] [NTM] output={
+  "success": true,
+  "timestamp": "2026-08-15T02:48:37Z",
+  "version": "1.0.0",
+  "output_format": "json",
+  "session": "ntm-e2e-tctx-57463-738000",
+  "captured_at": "2026-08-15T02:48:37.621651Z",
+  "agents": [
+    {
+      "pane": "0",
+      "pane_idx": 0,
+      "agent_type": "claude",
+      "model": "sonnet",
+      "estimated_tokens": 139,
+      "with_overhead": 347,
+      "context_limit": 200000,
+      "usage_percent": 0.1735,
+      "usage_level": "Low",
+      "confidence": "low",
+      "state": "idle",
+      "source": "scrollback_estimate"
+    },
+    {
+      "pane": "1",
+      "pane_idx": 1,
+      "agent_type": "claude",
+      "model": "sonnet",
+      "estimated_tokens": 134,
+      "with_overhead": 335,
+      "context_limit": 200000,
+      "usage_percent": 0.1675,
+      "usage_level": "Low",
+      "confidence": "low",
+      "state": "idle",
+      "source": "scrollback_estimate"
+    },
+    {
+      "pane": "2",
+      "pane_idx": 2,
+      "agent_type": "claude",
+      "model": "sonnet",
+      "estimated_tokens": 134,
+      "with_overhead": 335,
+      "context_limit": 200000,
+      "usage_percent": 0.1675,
+      "usage_level": "Low",
+      "confidence": "low",
+      "state": "idle",
+      "source": "scrollback_estimate"
+    },
+    {
+      "pane": "3",
+      "pane_idx": 3,
+      "agent_type": "claude",
+      "model": "sonnet",
+      "estimated_tokens": 134,
+      "with_overhead": 335,
+      "context_limit": 200000,
+      "usage_percent": 0.1675,
+      "usage_level": "Low",
+      "confidence": "low",
+      "state": "idle",
+      "source": "scrollback_estimate"
+    }
+  ],
+  "summary": {
+    "total_agents": 4,
+    "high_usage_count": 0,
+    "avg_usage": 0.16899999999999998
+  },
+  "_agent_hints": {
+    "low_usage_agents": [
+      "0",
+      "1",
+      "2",
+      "3"
+    ],
+    "suggestions": [
+      "All agents healthy - context usage is low across the board"
+    ]
+  }
+}
+[13.052s] [E2E-JSON] context_agents:
+[
+  {
+    "pane": "0",
+    "pane_idx": 0,
+    "agent_type": "claude",
+    "model": "sonnet",
+    "estimated_tokens": 139,
+    "with_overhead": 347,
+    "context_limit": 200000,
+    "usage_percent": 0.1735,
+    "usage_level": "Low",
+    "confidence": "low",
+    "state": "idle",
+    "source": "scrollback_estimate",
+    "transcript_tokens": 0,
+    "transcript_model": "",
+    "transcript_path": "",
+    "transcript_updated_at": ""
+  },
+  {
+    "pane": "1",
+    "pane_idx": 1,
+    "agent_type": "claude",
+    "model": "sonnet",
+    "estimated_tokens": 134,
+    "with_overhead": 335,
+    "context_limit": 200000,
+    "usage_percent": 0.1675,
+    "usage_level": "Low",
+    "confidence": "low",
+    "state": "idle",
+    "source": "scrollback_estimate",
+    "transcript_tokens": 0,
+    "transcript_model": "",
+    "transcript_path": "",
+    "transcript_updated_at": ""
+  },
+  {
+    "pane": "2",
+    "pane_idx": 2,
+    "agent_type": "claude",
+    "model": "sonnet",
+    "estimated_tokens": 134,
+    "with_overhead": 335,
+    "context_limit": 200000,
+    "usage_percent": 0.1675,
+    "usage_level": "Low",
+    "confidence": "low",
+    "state": "idle",
+    "source": "scrollback_estimate",
+    "transcript_tokens": 0,
+    "transcript_model": "",
+    "transcript_path": "",
+    "transcript_updated_at": ""
+  },
+  {
+    "pane": "3",
+    "pane_idx": 3,
+    "agent_type": "claude",
+    "model": "sonnet",
+    "estimated_tokens": 134,
+    "with_overhead": 335,
+    "context_limit": 200000,
+    "usage_percent": 0.1675,
+    "usage_level": "Low",
+    "confidence": "low",
+    "state": "idle",
+    "source": "scrollback_estimate",
+    "transcript_tokens": 0,
+    "transcript_model": "",
+    "transcript_path": "",
+    "transcript_updated_at": ""
+  }
+]
+[13.063s] [TIMING] --robot-context over 4 ambiguous panes took 12.649s
+[13.069s] [PASS] ambiguous 4-pane group fell back correctly within 30s
+[13.158s] [E2E-END] === Test completed in 13.158s ===

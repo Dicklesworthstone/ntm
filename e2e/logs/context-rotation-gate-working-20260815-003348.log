@@ -1,0 +1,38 @@
+[0s] [E2E-START] === E2E Test Started: context-rotation-gate-working ===
+[0s] [E2E-START] Timestamp: 2026-08-15T00:33:48-04:00
+[0s] [E2E-START] Log file: /Users/jemanuel/projects/ntm/e2e/logs/context-rotation-gate-working-20260815-003348.log
+[0s] [FIXTURE] path=/var/folders/vt/n2xyn_s51b97_j3yh2qbqcnc0000gn/T/TestContextRotationE2ESafetyGatesBlockRotationworking3516138258/001/.claude/projects/-private-var-folders-vt-n2xyn-s51b97-j3yh2qbqcnc0000gn-T-TestContextRotationE2ESafetyGatesBlockRotationworking3516138258-002/session-gated.jsonl tokens=150000
+[1ms] [CONFIG] /var/folders/vt/n2xyn_s51b97_j3yh2qbqcnc0000gn/T/TestContextRotationE2ESafetyGatesBlockRotationworking3516138258/003/config.toml:
+# hermetic config written by context_rotation_e2e_test.go (ntm-8ice)
+[rotation]
+usage_percent_threshold = 60.0
+auto_confirm = false
+
+[context_rotation]
+try_compact_first = false
+confirm_timeout_sec = 600
+
+[98ms] [SETUP] session=ntm-e2e-crot-17589-868000 pane=%0 gate=working
+[351ms] [ARM] work 120 -> live spinner chrome
+[825ms] [NTM] HOME=/var/folders/vt/n2xyn_s51b97_j3yh2qbqcnc0000gn/T/TestContextRotationE2ESafetyGatesBlockRotationworking3516138258/001 args=[coordinator run ntm-e2e-crot-17589-868000 --once] exit=0
+[825ms] [NTM] stdout=Coordinator cycle complete for ntm-e2e-crot-17589-868000: 0 assignment result(s)
+[825ms] [NTM] stderr=2026/08/15 00:33:48 INFO context rotation skipped by safety gate session=ntm-e2e-crot-17589-868000 pane=%0 agent=ntm-e2e-crot-17589-868000__cc_1 reason=working usage_percent=75 threshold=60 tokens=150000 limit=200000 source=/var/folders/vt/n2xyn_s51b97_j3yh2qbqcnc0000gn/T/TestContextRotationE2ESafetyGatesBlockRotationworking3516138258/001/.claude/projects/-private-var-folders-vt-n2xyn-s51b97-j3yh2qbqcnc0000gn-T-TestContextRotationE2ESafetyGatesBlockRotationworking3516138258-002/session-gated.jsonl confidence=high
+[892ms] [NTM] HOME=/var/folders/vt/n2xyn_s51b97_j3yh2qbqcnc0000gn/T/TestContextRotationE2ESafetyGatesBlockRotationworking3516138258/001 args=[rotate context pending --json] exit=0
+[892ms] [NTM] stdout={
+  "pending": null,
+  "count": 0
+}
+[892ms] [NTM] stderr=
+[892ms] [E2E-JSON] pending_rotations_cli:
+{
+  "pending": null,
+  "count": 0
+}
+[893ms] [E2E-JSON] fixture_event_summary:
+{
+  "control": 1,
+  "render": 3,
+  "submit": 0
+}
+[893ms] [PASS] working gate blocked rotation with logged reason
+[910ms] [E2E-END] === Test completed in 910ms ===

@@ -3590,7 +3590,7 @@
           "flag": "--spawn-grok",
           "type": "string",
           "required": false,
-          "description": "Grok Build agents: count[:model[:effort]] (phase one: launch only; no wait or assignment)"
+          "description": "Grok Build agents: count[:model[:effort]]"
         },
         {
           "name": "spawn-preset",
@@ -10849,7 +10849,7 @@
           "flag": "--spawn-grok",
           "type": "string",
           "required": false,
-          "description": "Grok Build agents: count[:model[:effort]] (phase one: launch only; no wait or assignment)"
+          "description": "Grok Build agents: count[:model[:effort]]"
         },
         {
           "name": "spawn-preset",

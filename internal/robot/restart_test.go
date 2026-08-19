@@ -133,24 +133,37 @@ func TestRestartManager_TryRestart_Disabled(t *testing.T) {
 	}
 }
 
-func TestRestartManagerTryRestartRejectsGrokBeforeLifecycleMutation(t *testing.T) {
-	manager := NewRestartManager("test-session", &RestartConfig{Enabled: true}, nil)
-	result := manager.TryRestart(context.Background(), "%1", "grok-build", HealthUnhealthy)
-	if result.Type != RestartNone || result.Success {
-		t.Fatalf("TryRestart() result = %+v, want non-mutating rejection", result)
-	}
-	if !strings.Contains(result.Reason, agent.ErrAutomatedRelaunchNotImplemented.Error()) {
-		t.Fatalf("TryRestart() reason = %q, want Grok capability boundary", result.Reason)
+// GH#251 phase 2: grok passes the relaunch capability gate, so TryRestart
+// treats a grok pane exactly like claude — it reaches the same policy checks
+// (rate limiting here, chosen so no real tmux restart is attempted) instead of
+// being rejected with the Grok capability sentinel.
+func TestRestartManagerTryRestartAcceptsGrokLikeClaude(t *testing.T) {
+	config := &RestartConfig{Enabled: true, MaxRestartsPerHour: 1}
+	for _, agentType := range []string{"claude", "grok-build"} {
+		manager := NewRestartManager("test-session", config, nil)
+		manager.recordRestart("%1")
+		result := manager.TryRestart(context.Background(), "%1", agentType, HealthUnhealthy)
+		if result.Type != RestartNone || result.Success {
+			t.Fatalf("TryRestart(%s) result = %+v, want rate-limited rejection", agentType, result)
+		}
+		if strings.Contains(result.Reason, agent.ErrAutomatedRelaunchNotImplemented.Error()) {
+			t.Fatalf("TryRestart(%s) reason = %q, grok must no longer hit the capability boundary", agentType, result.Reason)
+		}
 	}
 }
 
-func TestAutoRestartUnhealthyAgentRejectsGrokBeforeHealthMutation(t *testing.T) {
-	result := AutoRestartUnhealthyAgent(context.Background(), "test-session", "%1", "grok", 0, nil)
-	if result.Type != RestartNone || result.Success {
-		t.Fatalf("AutoRestartUnhealthyAgent() result = %+v, want non-mutating rejection", result)
-	}
-	if !strings.Contains(result.Reason, agent.ErrAutomatedRelaunchNotImplemented.Error()) {
-		t.Fatalf("AutoRestartUnhealthyAgent() reason = %q, want Grok capability boundary", result.Reason)
+// GH#251 phase 2: grok passes the relaunch capability gate, so a healthy grok
+// agent gets the same "no restart needed" answer as claude rather than the
+// Grok capability sentinel.
+func TestAutoRestartUnhealthyAgentAcceptsGrokLikeClaude(t *testing.T) {
+	for _, agentType := range []string{"claude", "grok"} {
+		result := AutoRestartUnhealthyAgent(context.Background(), "test-session", "%1", agentType, 0, nil)
+		if result.Type != RestartNone || result.Success {
+			t.Fatalf("AutoRestartUnhealthyAgent(%s) result = %+v, want healthy no-op", agentType, result)
+		}
+		if strings.Contains(result.Reason, agent.ErrAutomatedRelaunchNotImplemented.Error()) {
+			t.Fatalf("AutoRestartUnhealthyAgent(%s) reason = %q, grok must no longer hit the capability boundary", agentType, result.Reason)
+		}
 	}
 }
 

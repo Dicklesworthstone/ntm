@@ -1,7 +1,6 @@
 package palette
 
 import (
-	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -12,7 +11,6 @@ import (
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/history"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
@@ -1270,7 +1268,9 @@ func TestSendRefusesEmptyMessage(t *testing.T) {
 	}
 }
 
-func TestSendRejectsMixedGrokBatchBeforeAnyPaneMutation(t *testing.T) {
+// GH#251 phase 2: grok panes are now valid automated prompt-delivery targets,
+// so a mixed claude+grok batch is dispatched to every pane like claude/codex.
+func TestSendDeliversMixedGrokBatchToEveryPane(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 
 	m := New("mixed-grok", testCommands)
@@ -1288,21 +1288,25 @@ func TestSendRejectsMixedGrokBatchBeforeAnyPaneMutation(t *testing.T) {
 				{ID: "%2", Index: 2, Type: tmux.AgentGrok},
 			}, nil
 		},
-		func(target, _ string, _ tmux.AgentType) error {
+		func(target, prompt string, _ tmux.AgentType) error {
+			if strings.TrimSpace(prompt) == "" {
+				t.Fatalf("send() dispatched empty prompt to %s", target)
+			}
 			sentTargets = append(sentTargets, target)
 			return nil
 		},
 	)
 
 	got := model.(Model)
-	if !errors.Is(got.err, agent.ErrAutomatedPromptDeliveryNotImplemented) {
-		t.Fatalf("send() error = %v, want Grok prompt-delivery sentinel", got.err)
+	if got.err != nil {
+		t.Fatalf("send() error = %v, want mixed claude+grok batch accepted", got.err)
 	}
-	if len(sentTargets) != 0 {
-		t.Fatalf("send() mutated targets %v before mixed-batch rejection", sentTargets)
+	wantTargets := []string{"%1", "%2"}
+	if !reflect.DeepEqual(sentTargets, wantTargets) {
+		t.Fatalf("send() targets = %v, want %v (grok pane delivered like claude)", sentTargets, wantTargets)
 	}
-	if got.sent || got.sentCount != 0 {
-		t.Fatalf("send() state = sent:%v count:%d, want unsent", got.sent, got.sentCount)
+	if !got.sent || got.sentCount != 2 {
+		t.Fatalf("send() state = sent:%v count:%d, want both panes sent", got.sent, got.sentCount)
 	}
 }
 

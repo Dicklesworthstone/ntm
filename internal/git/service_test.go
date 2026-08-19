@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
@@ -158,7 +157,9 @@ func TestWorktreeServiceMethodsRequireLiveCallerContext(t *testing.T) {
 	}
 }
 
-func TestWorktreeService_AutoProvisionSessionRejectsMixedGrokBatchBeforeMutation(t *testing.T) {
+// GH#251 phase 2: grok panes are now valid automated targets, so a mixed
+// cod+grok batch provisions worktrees and updates panes for both agents.
+func TestWorktreeService_AutoProvisionSessionProvisionsMixedGrokBatch(t *testing.T) {
 	t.Parallel()
 
 	repo := setupGitRepo(t)
@@ -176,27 +177,40 @@ func TestWorktreeService_AutoProvisionSessionRejectsMixedGrokBatchBeforeMutation
 			{PaneID: "%2", AgentType: "grok-build", AgentNum: 2, Title: sessionName + "__grok_2"},
 		}, nil
 	}
-	sendCount := 0
-	svc.changeDirectoryInPaneFn = func(ctx context.Context, _, _ string) error {
+	mutatedPanes := []string{}
+	svc.changeDirectoryInPaneFn = func(ctx context.Context, paneID, workingDir string) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		sendCount++
+		if workingDir == "" {
+			t.Fatalf("pane %s mutation received empty worktree path", paneID)
+		}
+		mutatedPanes = append(mutatedPanes, paneID)
 		return nil
 	}
 
 	response, err := svc.AutoProvisionSession(context.Background(), sessionName)
-	if !errors.Is(err, agent.ErrAutomatedPromptDeliveryNotImplemented) {
-		t.Fatalf("AutoProvisionSession() error = %v, want prompt-delivery sentinel", err)
+	if err != nil {
+		t.Fatalf("AutoProvisionSession() error = %v, want mixed cod+grok batch accepted", err)
 	}
-	if response != nil {
-		t.Fatalf("AutoProvisionSession() response = %+v, want nil on rejected batch", response)
+	if response == nil || len(response.Errors) != 0 {
+		t.Fatalf("AutoProvisionSession() response = %+v, want no provisioning errors", response)
 	}
-	if sendCount != 0 {
-		t.Fatalf("mixed Grok batch sent %d pane mutations, want 0", sendCount)
+	if len(response.Provisions) != 2 || response.SuccessCount != 2 {
+		t.Fatalf("provisions = %+v (success=%d), want both cod and grok panes provisioned", response.Provisions, response.SuccessCount)
 	}
-	if len(svc.managers) != 0 {
-		t.Fatalf("mixed Grok batch initialized %d worktree managers before preflight", len(svc.managers))
+	byPane := map[string]WorktreeProvision{}
+	for _, p := range response.Provisions {
+		byPane[p.PaneID] = p
+	}
+	if p, ok := byPane["%1"]; !ok || p.AgentType != "cod" || p.WorktreePath == "" || p.Branch == "" {
+		t.Fatalf("cod provision = %+v, want populated worktree", p)
+	}
+	if p, ok := byPane["%2"]; !ok || p.AgentType != "grok-build" || p.WorktreePath == "" || p.Branch == "" {
+		t.Fatalf("grok provision = %+v, want populated worktree like the cod pane", p)
+	}
+	if len(mutatedPanes) != 2 || mutatedPanes[0] != "%1" || mutatedPanes[1] != "%2" {
+		t.Fatalf("pane mutations = %v, want both panes updated in order", mutatedPanes)
 	}
 }
 

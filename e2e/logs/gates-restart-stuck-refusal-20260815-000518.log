@@ -1,0 +1,61 @@
+[0s] [E2E-START] === E2E Test Started: gates-restart-stuck-refusal ===
+[0s] [E2E-START] Timestamp: 2026-08-15T00:05:18-04:00
+[0s] [E2E-START] Log file: /Users/jemanuel/projects/ntm/e2e/logs/gates-restart-stuck-refusal-20260815-000518.log
+[265ms] [PID-LINEAGE] session=ntm-e2e-gates-27553-848000 pane=%0 shell_pid=28846 fixture_pid=28848 persona=claude
+[1.118s] [QUIESCE] SIGSTOP fixture pid=28848; waiting out the 5s activity threshold
+[7.626s] [PID-LINEAGE] before restart-stuck: shell_pid=28846 fixture_pid=28848 key_events=0
+[17.744s] [NTM] args=[--robot-health=ntm-e2e-gates-27553-848000] exit=0 elapsed=10.118s
+[17.744s] [NTM] output={
+  "success": true,
+  "timestamp": "2026-08-15T04:05:36Z",
+  "version": "1.0.0",
+  "output_format": "json",
+  "session": "ntm-e2e-gates-27553-848000",
+  "checked_at": "2026-08-15T04:05:36.43351Z",
+  "agents": [
+    {
+      "pane": 0,
+      "pane_target": "0",
+      "agent_type": "claude",
+      "health": "blocked",
+      "idle_since_seconds": 17,
+      "restarts": 0,
+      "last_error": "blocked on interactive gate screen (\"do you trust the contents of this project\"); needs a keystroke",
+      "rate_limit_count": 0,
+      "backoff_remaining": 0,
+      "confidence": 1
+    }
+  ],
+  "summary": {
+    "total": 1,
+    "healthy": 0,
+    "degraded": 0,
+    "unhealthy": 0,
+    "rate_limited": 0
+  }
+}
+[27.868s] [NTM] args=[--robot-health-restart-stuck=ntm-e2e-gates-27553-848000] exit=0 elapsed=10.123s
+[27.868s] [NTM] output={
+  "success": true,
+  "timestamp": "2026-08-15T04:05:46Z",
+  "version": "1.0.0",
+  "output_format": "json",
+  "session": "ntm-e2e-gates-27553-848000",
+  "stuck_panes": [],
+  "restarted": [],
+  "threshold": "5m0s",
+  "checked_at": "2026-08-15T04:05:46Z"
+}
+[27.868s] [E2E-JSON] restart_stuck_gated:
+{
+  "success": true,
+  "error_code": "",
+  "stuck_panes": [],
+  "restarted": [],
+  "failed": null,
+  "threshold": "5m0s"
+}
+[29.379s] [PID-LINEAGE] after restart-stuck: shell_pid=28846 fixture_pid=28848 (unchanged)
+[29.379s] [GAP] restart-stuck surface exposes no per-pane refusal reason; see test comment
+[29.379s] [PASS] gated pane untouched by --robot-health-restart-stuck
+[29.379s] [E2E-END] === Test completed in 29.379s ===
