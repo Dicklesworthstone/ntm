@@ -81,6 +81,7 @@ func TestGetBulkAssignRejectsNegativeStaggerBeforeExternalWork(t *testing.T) {
 }
 
 func TestGetBulkAssignPreservesDependencyLocalDeadline(t *testing.T) {
+	hermeticGlobalConfig(t)
 	deps := BulkAssignDependencies{
 		ListPanes: func(context.Context, string) ([]tmux.Pane, error) {
 			return []tmux.Pane{{ID: "%1", WindowIndex: 0, Index: 1, Type: tmux.AgentCodex}}, nil
@@ -98,6 +99,7 @@ func TestGetBulkAssignPreservesDependencyLocalDeadline(t *testing.T) {
 }
 
 func TestBulkAssignMissingBVAndBRDependenciesAreTyped(t *testing.T) {
+	hermeticGlobalConfig(t)
 	base := BulkAssignDependencies{
 		ListPanes: func(context.Context, string) ([]tmux.Pane, error) {
 			return []tmux.Pane{{ID: "%1", Index: 1, Title: "proj__cod_1", Type: tmux.AgentCodex}}, nil
@@ -688,6 +690,7 @@ func TestBulkAssignSequentialCancellationStopsLaterClaimAndDispatch(t *testing.T
 }
 
 func TestBulkAssignCancellationPropagatesToTriageDependency(t *testing.T) {
+	hermeticGlobalConfig(t)
 	ctx, cancel := context.WithCancel(t.Context())
 	started := make(chan struct{})
 	inProgressCalls := atomic.Int32{}
@@ -1748,6 +1751,7 @@ func TestRobotAtomicClaimPortMapsAssignmentEligibilityRejection(t *testing.T) {
 }
 
 func TestBulkAssignDryRunHasNoAtomicOrPacingSideEffects(t *testing.T) {
+	hermeticGlobalConfig(t)
 	plan := allocateBulkAssignBeads(
 		[]bulkPane{{Ref: tmux.PaneRef{ID: "%8", WindowIndex: 0, PaneIndex: 1}, AgentType: "codex"}},
 		[]bulkBead{{ID: "bd-dry", Title: "Dry"}},
@@ -1976,6 +1980,7 @@ func TestBulkAssignInvalidBeadIDInAllocation(t *testing.T) {
 }
 
 func TestBulkAssignBVFailure(t *testing.T) {
+	hermeticGlobalConfig(t)
 	deps := BulkAssignDependencies{
 		FetchTriage: func(context.Context, string) (*bv.TriageResponse, error) {
 			return nil, errors.New("bv failed")
@@ -2013,6 +2018,7 @@ func TestBulkAssignBVFailure(t *testing.T) {
 }
 
 func TestBulkAssignUsesAuthoritativeSessionProjectForBVPlanning(t *testing.T) {
+	hermeticGlobalConfig(t)
 	authoritative := t.TempDir()
 	wrongCWD := t.TempDir()
 	var triageDir, inProgressDir string

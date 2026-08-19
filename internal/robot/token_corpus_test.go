@@ -489,6 +489,16 @@ func TestTokenCorpusFixturesMatchCurrentStructs(t *testing.T) {
 	const regenHint = "regenerate with NTM_UPDATE_TOKEN_CORPUS=1 go test -run TestGenerateTokenCorpus ./internal/robot/"
 	corpus := buildTokenCorpus(t)
 	for i, e := range corpus {
+		// Capabilities fixtures embed the ensemble-spawn descriptor, which
+		// differs between the untagged stub build and the tagged release
+		// build. The committed fixtures are canonical for the UNTAGGED
+		// variant (the one CI's test job compiles); under the release tag
+		// the capabilities surface legitimately differs, so skip only
+		// those fixtures there rather than ratcheting two variants into
+		// one byte-identical corpus.
+		if ensembleSpawnAvailable && e.Surface == "capabilities" {
+			continue
+		}
 		rendered, err := Render(e.Payload, FormatJSON)
 		if err != nil {
 			t.Fatalf("render %s/%s: %v", e.Surface, e.Name, err)

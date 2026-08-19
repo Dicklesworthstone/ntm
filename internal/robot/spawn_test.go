@@ -2182,6 +2182,7 @@ func TestFinalizeSpawnAssignmentOutputRequiresEveryEligibleAgent(t *testing.T) {
 }
 
 func TestGetSpawnReportsZeroAssignmentCoverageAsFailure(t *testing.T) {
+	hermeticGlobalConfig(t)
 	panes := []tmux.Pane{
 		{ID: "%1", WindowIndex: 0, Index: 0},
 		{ID: "%2", WindowIndex: 0, Index: 1},
@@ -2210,6 +2211,7 @@ func TestGetSpawnReportsZeroAssignmentCoverageAsFailure(t *testing.T) {
 }
 
 func TestGetSpawnPreservesTypedAssignmentPreflightTimeoutWithoutLifecycleMutation(t *testing.T) {
+	hermeticGlobalConfig(t)
 	panes := []tmux.Pane{{ID: "%1", WindowIndex: 0, Index: 0}}
 	deps := testSpawnLifecycleDependencies(panes)
 	lifecycleCalls := 0

@@ -33,7 +33,6 @@ func TestCAAMConfigFailoverParse(t *testing.T) {
 	path := filepath.Join(dir, "config.toml")
 	contents := `
 [integrations.caam]
-enabled = true
 auto_failover = true
 reset_horizon_minutes = 45
 failover_providers = ["claude", "openai"]
@@ -60,7 +59,9 @@ failover_providers = ["claude", "openai"]
 
 	// Absent keys keep defaults.
 	minimal := filepath.Join(dir, "minimal.toml")
-	if err := os.WriteFile(minimal, []byte("[integrations.caam]\nenabled = true\n"), 0o644); err != nil {
+	// integrations.caam.enabled is a hard error since v1.29.0 (bd-6otuk flip),
+	// so the minimal fixture uses a live caam key instead.
+	if err := os.WriteFile(minimal, []byte("[integrations.caam]\nbinary_path = \"/opt/caam\"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	cfg2, err := Load(minimal)

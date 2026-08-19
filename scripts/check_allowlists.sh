@@ -31,7 +31,7 @@ ALLOWLIST_DIR="${ALLOWLIST_DIR:-ci/allowlists}"
 PATTERNS_FILE="${PATTERNS_FILE:-ci/placebo_patterns.txt}"
 SRC_SCAN_DIRS="${SRC_SCAN_DIRS-internal cmd}"
 
-BEAD_ID_RE='^bd-[a-z0-9][a-z0-9._-]*$'
+BEAD_ID_RE='^(bd|ntm)-[a-z0-9][a-z0-9._-]*$'  # ntm- prefixed beads are real workspace beads too
 FAIL=0
 
 fail() { echo "check_allowlists: FAIL: $*" >&2; FAIL=1; }

@@ -148,6 +148,23 @@ func skipSlowRobotShortIntegrationTest(t *testing.T, reason string) {
 	}
 }
 
+// hermeticGlobalConfig points config.DefaultPath at a minimal valid temp
+// global config for the duration of the test, so code paths that load the
+// global config (LoadAssignmentPolicy, alerts/spawn config resolution) never
+// read the developer's real ~/.config/ntm/config.toml. That file may
+// legitimately carry keys that hard-fail the strict loader since the v1.29.0
+// deprecated-key flip (bd-6otuk / bd-ad54k) — same hermeticity precedent as
+// isolateSessionAgentStorage in internal/cli.
+func hermeticGlobalConfig(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(path, []byte("projects_base = \""+dir+"\"\n"), 0o644); err != nil {
+		t.Fatalf("write hermetic global config: %v", err)
+	}
+	t.Setenv("NTM_CONFIG", path)
+}
+
 func TestMain(m *testing.M) {
 	cleanupTmux, err := testutil.IsolateTmuxTestProcess()
 	if err != nil {
@@ -2649,6 +2666,7 @@ func TestGetStatusWithProjectionStoreUsesRuntimeProjection(t *testing.T) {
 }
 
 func TestGetStatusWithOptionsRespectsDisabledAlertsConfig(t *testing.T) {
+	hermeticGlobalConfig(t)
 	oldStore := currentProjectionStore()
 	SetProjectionStore(nil)
 	t.Cleanup(func() {
@@ -2697,6 +2715,7 @@ func TestGetStatusWithOptionsRespectsDisabledAlertsConfig(t *testing.T) {
 }
 
 func TestGetDashboardRespectsDisabledAlertsConfig(t *testing.T) {
+	hermeticGlobalConfig(t)
 	tracker := alerts.GetGlobalTracker()
 	clearAlertTracker(tracker)
 	t.Cleanup(func() { clearAlertTracker(tracker) })
@@ -2802,6 +2821,7 @@ func TestDashboardAgentTypeSkipsUserPane(t *testing.T) {
 }
 
 func TestGetAlertsDetailedRespectsDisabledAlertsConfig(t *testing.T) {
+	hermeticGlobalConfig(t)
 	tracker := alerts.GetGlobalTracker()
 	clearAlertTracker(tracker)
 	t.Cleanup(func() { clearAlertTracker(tracker) })

@@ -34,7 +34,7 @@ if command -v br >/dev/null 2>&1; then
   # after a full backlog burn the only non-closed beads can be in_progress
   # or blocked, and --status=open alone then returns nothing.
   for st in open in_progress blocked; do
-    found_open="$(br list --status="$st" --limit=1 2>/dev/null | grep -oE 'bd-[a-z0-9][a-z0-9._-]*' | head -1)"
+    found_open="$(br list --status="$st" --limit=1 2>/dev/null | grep -oE '(bd|ntm)-[a-z0-9][a-z0-9._-]*' | head -1)"
     [ -n "$found_open" ] && break
   done
   [ -n "$found_open" ] && open_id="$found_open"

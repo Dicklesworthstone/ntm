@@ -241,7 +241,6 @@ pane_init_delay_ms = 1500
 enabled = true
 url = "http://localhost:9999/mcp/"
 auto_register = false
-program_name = "test-ntm"
 supervisor_enabled = true
 `
 	path := createTempConfig(t, content)
@@ -2497,7 +2496,6 @@ include_agent_mail = false
 include_beads_context = false
 max_recovery_tokens = 5000
 auto_inject_on_spawn = false
-stale_threshold_hours = 48
 `
 	configPath := createTempConfig(t, configContent)
 	cfg, err := Load(configPath)
@@ -2565,7 +2563,6 @@ include_agent_mail = true
 include_beads_context = true
 max_recovery_tokens = 2000
 auto_inject_on_spawn = true
-stale_threshold_hours = 24
 `), 0644); err != nil {
 		t.Fatalf("Failed to create config file: %v", err)
 	}
@@ -2923,7 +2920,6 @@ func TestProcessTriageConfigFromTOML(t *testing.T) {
 	configContent := `
 [integrations.process_triage]
 enabled = false
-binary_path = "/usr/local/bin/pt"
 check_interval = 60
 idle_threshold = 600
 stuck_threshold = 1200
