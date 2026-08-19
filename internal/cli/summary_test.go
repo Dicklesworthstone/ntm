@@ -557,7 +557,7 @@ func TestTrimOutputsToSinceWindow(t *testing.T) {
 		{AgentID: "%9", AgentType: "codex", Output: "untouched pane\n"},
 	}
 
-	trimmed := trimOutputsToSinceWindow(outputs, path, now.Add(-30*time.Minute))
+	trimmed := trimOutputsToSinceWindow(outputs, path, now.Add(-30*time.Minute), nil)
 	if len(trimmed) != 2 {
 		t.Fatalf("expected 2 outputs, got %d", len(trimmed))
 	}
@@ -572,13 +572,44 @@ func TestTrimOutputsToSinceWindow(t *testing.T) {
 		t.Fatalf("pane without archive evidence was modified: %q", trimmed[1].Output)
 	}
 	// Zero cutoff is a no-op.
-	same := trimOutputsToSinceWindow(outputs, path, time.Time{})
+	same := trimOutputsToSinceWindow(outputs, path, time.Time{}, nil)
 	if same[0].Output != outputs[0].Output {
 		t.Fatalf("zero cutoff modified output")
 	}
 	// Inputs must not be mutated.
 	if !strings.Contains(outputs[0].Output, "OLD BOUNDARY LINE") {
 		t.Fatal("trimOutputsToSinceWindow mutated its input slice")
+	}
+}
+
+// TestTrimOutputsToSinceWindowArchivePaneAlias proves trimming works against
+// REAL archiver-keyed rows: archive.Archiver names panes "<type>_<index>"
+// (e.g. "cc_1"), not by tmux pane ID, so the alias map must bridge the two.
+// Regression for the fresh-eyes review finding that --since trimming was a
+// silent no-op on production archives.
+func TestTrimOutputsToSinceWindowArchivePaneAlias(t *testing.T) {
+	now := time.Now()
+	records := []archive.ArchiveRecord{
+		{Session: "s", Pane: "cc_1", Agent: "cc", Timestamp: now.Add(-2 * time.Hour), Content: "stale prelude\nCC BOUNDARY\n", Sequence: 1},
+	}
+	path := writeArchiveJSONL(t, records)
+
+	outputs := []summary.AgentOutput{
+		{AgentID: "%4", AgentType: "claude", Output: "stale prelude\nCC BOUNDARY\nrecent work\n"},
+	}
+	aliases := map[string]string{"%4": "cc_1"}
+	trimmed := trimOutputsToSinceWindow(outputs, path, now.Add(-30*time.Minute), aliases)
+	if strings.Contains(trimmed[0].Output, "CC BOUNDARY") || strings.Contains(trimmed[0].Output, "stale prelude") {
+		t.Fatalf("archiver-keyed pre-window content survived the trim: %q", trimmed[0].Output)
+	}
+	if !strings.Contains(trimmed[0].Output, "recent work") {
+		t.Fatalf("in-window content was dropped: %q", trimmed[0].Output)
+	}
+
+	// Without the alias the pane has no provable stale content: untouched.
+	untrimmed := trimOutputsToSinceWindow(outputs, path, now.Add(-30*time.Minute), nil)
+	if untrimmed[0].Output != outputs[0].Output {
+		t.Fatalf("pane without alias evidence was modified: %q", untrimmed[0].Output)
 	}
 }
 
@@ -594,7 +625,7 @@ func TestTrimOutputsToSinceWindowFallbackLine(t *testing.T) {
 	outputs := []summary.AgentOutput{
 		{AgentID: "%1", AgentType: "claude", Output: "alpha rendered\ndifferently\nBOUNDARY-XYZ\nnew content after\n"},
 	}
-	trimmed := trimOutputsToSinceWindow(outputs, path, now.Add(-30*time.Minute))
+	trimmed := trimOutputsToSinceWindow(outputs, path, now.Add(-30*time.Minute), nil)
 	if strings.Contains(trimmed[0].Output, "BOUNDARY-XYZ") {
 		t.Fatalf("boundary line survived: %q", trimmed[0].Output)
 	}

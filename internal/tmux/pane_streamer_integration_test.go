@@ -87,8 +87,8 @@ func TestIntegration_PaneStreamer_FallbackPolling(t *testing.T) {
 	}
 
 	// Verify target is correct
-	if ps.Target() != target {
-		t.Errorf("expected target %s, got %s", target, ps.Target())
+	if ps.target != target {
+		t.Errorf("expected target %s, got %s", target, ps.target)
 	}
 }
 

@@ -184,7 +184,7 @@ func runSummary(ctx context.Context, args []string, sinceStr, format string, rec
 	// than the cutoff is trimmed from the capture.
 	outputs := collectSummaryAgentOutputs(panes, tmux.CapturePaneOutput, nil)
 	if archivePath, _, archiveErr := findArchiveFile(session); archiveErr == nil && archivePath != "" {
-		outputs = trimOutputsToSinceWindow(outputs, archivePath, time.Now().Add(-since))
+		outputs = trimOutputsToSinceWindow(outputs, archivePath, time.Now().Add(-since), archivePaneAliases(panes))
 	}
 
 	opts := summary.Options{
@@ -687,13 +687,28 @@ func collectSummaryAgentOutputs(
 	return outputs
 }
 
+// archivePaneAliases maps each pane's tmux ID (the summary output AgentID)
+// to the "<type>_<index>" pane name the archiver records on its JSONL rows
+// (see archive.Archiver's paneName), so --since trimming can find a pane's
+// archive markers even though the two surfaces use different pane keys.
+func archivePaneAliases(panes []tmux.Pane) map[string]string {
+	aliases := make(map[string]string, len(panes))
+	for _, p := range panes {
+		aliases[p.ID] = fmt.Sprintf("%s_%d", p.Type, p.Index)
+	}
+	return aliases
+}
+
 // trimOutputsToSinceWindow drops live-captured pane content that the session
 // archive proves is older than the --since cutoff. Pane capture has no
 // timestamps of its own; the archiver's JSONL records the same scrollback
 // incrementally with timestamps, so the last record from before the cutoff
 // marks where the window starts inside the captured text. Panes with no
 // dated pre-cutoff archive records are left untrimmed (no evidence of age).
-func trimOutputsToSinceWindow(outputs []summary.AgentOutput, archivePath string, cutoff time.Time) []summary.AgentOutput {
+// Archive rows key panes by "<type>_<index>" while outputs carry tmux pane
+// IDs; aliases bridges the two (an AgentID lookup is still honoured for
+// callers whose archives are keyed by pane ID).
+func trimOutputsToSinceWindow(outputs []summary.AgentOutput, archivePath string, cutoff time.Time, aliases map[string]string) []summary.AgentOutput {
 	if cutoff.IsZero() || len(outputs) == 0 {
 		return outputs
 	}
@@ -726,7 +741,11 @@ func trimOutputsToSinceWindow(outputs []summary.AgentOutput, archivePath string,
 	trimmed := make([]summary.AgentOutput, len(outputs))
 	copy(trimmed, outputs)
 	for i := range trimmed {
-		marker := strings.TrimRight(staleMarkers[trimmed[i].AgentID], "\n")
+		rawMarker, ok := staleMarkers[trimmed[i].AgentID]
+		if !ok {
+			rawMarker = staleMarkers[aliases[trimmed[i].AgentID]]
+		}
+		marker := strings.TrimRight(rawMarker, "\n")
 		if marker == "" {
 			continue
 		}

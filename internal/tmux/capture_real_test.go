@@ -77,7 +77,7 @@ func TestRealCaptureFeedsBackpressureSnapshot(t *testing.T) {
 		t.Fatalf("CapturePaneOutput failed: %v", err)
 	}
 
-	inputs := DefaultCaptureBackpressureInputs()
+	inputs := DefaultClient.CaptureBackpressureInputs()
 	snapshot := backpressure.Evaluate(inputs, backpressure.SnapshotOptions{})
 	for _, surface := range snapshot.Surfaces {
 		if surface.Surface == backpressure.SurfaceTmuxCapture && surface.Pane == panes[0].ID {
