@@ -2387,12 +2387,35 @@ func populateSnapshotFeedMetadata(output *SnapshotOutput, feed *AttentionFeed) {
 	output.AttentionSummary = buildSnapshotAttentionSummary(feed)
 }
 
+// errProjectionStaleEmpty signals that the runtime projection returned zero
+// fresh session rows while live tmux reports running sessions. Every
+// runtime_sessions row can age past stale_after between collector runs, in
+// which case GetFreshRuntimeSessions legitimately returns no rows and no
+// error — but presenting that as an authoritative empty fleet would be false
+// (freshness contract: fail-visible, never treat stale data as authoritative).
+// Callers treat this error as "projection cannot answer" and fall back to
+// live tmux enumeration.
+var errProjectionStaleEmpty = errors.New("runtime projection has no fresh sessions while tmux reports live sessions")
+
+// projectionLiveSessions is a test seam for the live tmux check performed
+// when the projection returns zero fresh rows.
+var projectionLiveSessions = tmux.ListSessions
+
 func buildProjectionBackedStatus(store *state.Store, cfg *config.Config, opts PaginationOptions) (*StatusOutput, error) {
 	output := newStatusOutput(cfg)
 
 	sessions, err := store.GetFreshRuntimeSessions()
 	if err != nil {
 		return nil, fmt.Errorf("status sessions: %w", err)
+	}
+	if len(sessions) == 0 {
+		// Zero fresh rows is ambiguous: the machine may be idle, or every
+		// projection row may have gone stale. Only trust the empty answer
+		// when live tmux confirms it; otherwise degrade to the live path.
+		live, liveErr := projectionLiveSessions()
+		if liveErr != nil || len(live) > 0 {
+			return nil, errProjectionStaleEmpty
+		}
 	}
 	agentsBySession := make(map[string][]state.RuntimeAgent, len(sessions))
 	for _, sess := range sessions {
@@ -4797,6 +4820,12 @@ func GetSnapshotWithOptions(cfg *config.Config, opts PaginationOptions) (*Snapsh
 		if err == nil {
 			return projectionOutput, nil
 		}
+		if errors.Is(err, errProjectionStaleEmpty) {
+			// Surface the degradation instead of hiding it: the live loop
+			// below is authoritative, but callers should know the projection
+			// aged out (freshness contract: fail-visible).
+			output.Alerts = append(output.Alerts, "runtime projection stale (no fresh session rows); served live tmux enumeration")
+		}
 	}
 
 	for _, sess := range sessions {
@@ -5442,6 +5471,13 @@ func buildProjectionBackedSnapshotSessions(store *state.Store, tmuxSessions []tm
 	rows, err := store.GetFreshRuntimeSessions()
 	if err != nil {
 		return nil, fmt.Errorf("snapshot sessions: %w", err)
+	}
+	if len(rows) == 0 && len(tmuxSessions) > 0 {
+		// The caller already holds live tmux sessions; an empty projection
+		// here means every runtime_sessions row aged past stale_after, not
+		// that the fleet is gone. Refuse to answer so the caller serves the
+		// live enumeration instead of a false empty snapshot.
+		return nil, errProjectionStaleEmpty
 	}
 
 	agentsBySession := make(map[string][]state.RuntimeAgent, len(rows))
