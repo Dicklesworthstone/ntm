@@ -398,7 +398,7 @@ ntm timeline list
 ntm timeline show <session-id>
 ntm history search "authentication error"
 ntm audit show payments
-ntm changes conflicts payments
+ntm conflicts payments
 ntm resume payments
 ```
 

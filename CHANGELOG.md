@@ -13,6 +13,29 @@ NTM is a tmux session management tool for orchestrating multiple AI coding agent
 
 ## [Unreleased]
 
+- **Corrected commit provenance.** Commit `d08893d9`'s message incorrectly
+  attributed the fail-closed serve safety-policy change to its completion and
+  tmux diff. The actual safety-policy implementation is `dda4aae8`; history
+  is preserved and this note is the forward correction.
+
+---
+
+## [v1.29.0] -- 2026-08-19 [GitHub Release]
+
+**The P3-backlog and fleet-friction release**: the final open beads implemented, ~72k lines of dead code removed, the second config-deprecation batch flipped to errors as promised, and a fleet-wide cass mining pass converted three weeks of real agent friction into fixes.
+
+### Features
+
+- **Parallel pipeline execution.** Independent ready steps run concurrently (`settings.limits.max_parallel_steps`, default 4; `1` restores serial order) with fail_fast sibling cancellation, per-pane dispatch serialization, and race-clean state recording.
+- **Real ensemble lead-agent synthesis.** Agent-based synthesis strategies dispatch the lead synthesis agent through gated delivery with fenced-response parsing; degradation to mechanical merge is recorded loudly, never silent.
+- **Skill-matched spawn assignment** routes through the capability matrix with per-assignment rationale (provably different from top-n); `summary --since` genuinely filters via the archive time oracle; **durable HTTP approvals** — serve's approval endpoints share one approval space with the CLI (two-person SLB rule surfaces as 403, WS events fire after durable transitions, 503 fail-closed without a store).
+
+### Reliability
+
+- **tmux session targets are exact-match** (`=` sigil through one canonical helper, ~90 call sites): spawning `foo` beside `foo_bar` can no longer cross-wire panes into the sibling session — a field-mined collision class.
+- **Fleet-friction batch** (from cass mining across seven machines): paste-buffer names are collision-proof across processes; `-V` joins `--version`; curated did-you-mean hints cover the fleet's most-guessed flags (`--message` aliases `--msg`); missing beads workspaces read as clean empty results instead of INTERNAL_ERROR; empty-message errors are INVALID_ARGS; invalid model IDs get advisory registry suggestions; kill-time Agent Mail cleanup releases dead pane agents' reservations.
+- **Dead-code burndown complete**: the pre-existing backlog reached zero — 1,380 symbols (~72k LOC) deleted after per-symbol re-verification under both build variants, 32 justified permanent entries remain.
+
 ### Changed — BREAKING (v1.29.0)
 
 - **The second deprecation batch of config keys now fails the loader**

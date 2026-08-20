@@ -145,7 +145,7 @@ ntm timeline list
 ntm timeline show <session-id>
 ntm history search "authentication error"
 ntm audit show myproject
-ntm changes conflicts myproject
+ntm conflicts myproject
 ntm resume myproject
 ```
 
