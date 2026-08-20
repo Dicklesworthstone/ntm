@@ -3587,6 +3587,29 @@ type BeadsListSummary struct {
 	Ready      int `json:"ready"`
 }
 
+// isBeadsNotInitializedError reports whether a br invocation failed only
+// because no beads workspace exists (no .beads/ directory or database). It
+// matches the phrasings br has used across versions, including the
+// NOT_INITIALIZED JSON error code emitted by br 0.2.x.
+func isBeadsNotInitializedError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	for _, fragment := range []string{
+		"no .beads",
+		"not initialized",
+		"not_initialized",
+		"no beads database",
+		"br init",
+	} {
+		if strings.Contains(msg, fragment) {
+			return true
+		}
+	}
+	return false
+}
+
 // GetBeadsList returns beads list with optional filtering.
 // This function returns the data struct directly, enabling CLI/REST parity.
 func GetBeadsList(opts BeadsListOptions) (*BeadsListOutput, error) {
@@ -3637,19 +3660,36 @@ func GetBeadsList(opts BeadsListOptions) (*BeadsListOutput, error) {
 	// Execute br list
 	result, err := bv.RunBd("", args...)
 	if err != nil {
-		// Check if this is just "no beads" vs actual error
-		if strings.Contains(err.Error(), "no .beads") || strings.Contains(err.Error(), "not initialized") {
+		// A missing beads workspace is not an internal fault: the surface
+		// contract for "no beads here" is a clean empty success with a hint
+		// (same as the fresh-project case above). br has phrased this state
+		// several ways across versions (plain text and JSON envelopes), so
+		// match broadly — field evidence shows the narrow match leaked
+		// NOT_INITIALIZED failures out as INTERNAL_ERROR envelopes.
+		if isBeadsNotInitializedError(err) {
 			output.AgentHints = &AgentHints{
 				Summary: "Beads not initialized in this project",
 				Notes:   []string{"Run 'br init' to initialize beads tracking"},
 			}
 			return output, nil
 		}
+		// br disappearing between the IsBdInstalled precheck and the run is a
+		// dependency problem, not an internal error.
+		if strings.Contains(err.Error(), "executable file not found") {
+			return &BeadsListOutput{
+				RobotResponse: NewErrorResponse(
+					fmt.Errorf("failed to list beads: %w", err),
+					ErrCodeDependencyMissing,
+					"Install br or run 'br init' in your project",
+				),
+				Beads: []BeadListItem{},
+			}, nil
+		}
 		return &BeadsListOutput{
 			RobotResponse: NewErrorResponse(
 				fmt.Errorf("failed to list beads: %w", err),
 				ErrCodeInternalError,
-				"Check that br is installed and .beads/ exists",
+				"Run 'br list --json' in the project directory to inspect the underlying br failure",
 			),
 			Beads: []BeadListItem{},
 		}, nil
