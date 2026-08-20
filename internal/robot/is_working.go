@@ -901,7 +901,7 @@ func isWorkingPaneKey(sel selectedPane, multiWindow bool) string {
 // pane_current_path. Used only by the --semantic path to locate the repo for
 // token-attributed reads; returns "" on any failure (degrades to source none).
 func paneCurrentPathForTarget(ctx context.Context, target string) string {
-	output, err := tmux.DefaultClient.RunContext(ctx, "display-message", "-t", target, "-p", "#{pane_current_path}")
+	output, err := tmux.DefaultClient.RunContext(ctx, "display-message", "-t", tmux.ExactTarget(target), "-p", "#{pane_current_path}")
 	if err != nil {
 		return ""
 	}

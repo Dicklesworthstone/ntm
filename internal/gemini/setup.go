@@ -251,5 +251,5 @@ func isProModelSelected(output string) bool {
 // sendDownArrow sends a down arrow key to the pane.
 func sendDownArrow(paneID string) error {
 	// tmux send-keys Down (or the escape sequence)
-	return tmux.DefaultClient.RunSilent("send-keys", "-t", paneID, "Down")
+	return tmux.DefaultClient.RunSilent("send-keys", "-t", tmux.ExactTarget(paneID), "Down")
 }

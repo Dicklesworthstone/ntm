@@ -10332,7 +10332,7 @@ func generateContextHints(lowUsage, highUsage []string, highCount, total int) *C
 // paneCurrentPath returns a pane's current working directory. Overridable
 // for tests.
 var paneCurrentPath = func(paneID string) (string, bool) {
-	cwd, err := tmux.DefaultClient.Run("display-message", "-p", "-t", paneID, "#{pane_current_path}")
+	cwd, err := tmux.DefaultClient.Run("display-message", "-p", "-t", tmux.ExactTarget(paneID), "#{pane_current_path}")
 	if err != nil {
 		return "", false
 	}

@@ -25,7 +25,7 @@ var (
 	coordinatorSessionExists  = tmux.SessionExists
 	coordinatorGetPanes       = tmux.GetPanes
 	coordinatorPaneCurrentDir = func(paneID string) (string, error) {
-		return tmux.DefaultClient.Run("display-message", "-p", "-t", paneID, "#{pane_current_path}")
+		return tmux.DefaultClient.Run("display-message", "-p", "-t", tmux.ExactTarget(paneID), "#{pane_current_path}")
 	}
 )
 

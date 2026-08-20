@@ -458,7 +458,7 @@ func bulkAssignDeps(custom *BulkAssignDependencies) BulkAssignDependencies {
 		FetchBeadDetails:     fetchBeadDetails,
 		Cwd:                  os.Getwd,
 		PaneCurrentPath: func(ctx context.Context, paneID string) (string, error) {
-			return tmux.DefaultClient.RunContext(ctx, "display-message", "-p", "-t", paneID, "#{pane_current_path}")
+			return tmux.DefaultClient.RunContext(ctx, "display-message", "-p", "-t", tmux.ExactTarget(paneID), "#{pane_current_path}")
 		},
 		LoadStore:                             assignment.LoadStoreStrict,
 		ClaimBead:                             bv.ClaimBeadForAssignment,

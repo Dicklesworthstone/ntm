@@ -304,7 +304,7 @@ func getSessionWorkDir(session string) (string, error) {
 	if !tmux.SessionExists(session) {
 		return "", fmt.Errorf("session %q does not exist", session)
 	}
-	cmd := exec.Command(tmux.BinaryPath(), "display-message", "-p", "-t", session, "#{pane_current_path}")
+	cmd := exec.Command(tmux.BinaryPath(), "display-message", "-p", "-t", tmux.TargetSession(session), "#{pane_current_path}")
 	out, err := cmd.Output()
 	if err != nil {
 		return "", err

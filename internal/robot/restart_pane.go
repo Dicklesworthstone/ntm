@@ -1796,7 +1796,7 @@ func paneShellPIDContext(ctx context.Context, target string) (int, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
-	pidStr, err := tmux.DefaultClient.RunContext(ctx, "display-message", "-t", target, "-p", "#{pane_pid}")
+	pidStr, err := tmux.DefaultClient.RunContext(ctx, "display-message", "-t", tmux.ExactTarget(target), "-p", "#{pane_pid}")
 	if err != nil {
 		return 0, err
 	}
@@ -2146,7 +2146,7 @@ func paneCurrentCommandContext(ctx context.Context, target string) (string, erro
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	cmd, err := tmux.DefaultClient.RunContext(ctx, "display-message", "-t", target, "-p", "#{pane_current_command}")
+	cmd, err := tmux.DefaultClient.RunContext(ctx, "display-message", "-t", tmux.ExactTarget(target), "-p", "#{pane_current_command}")
 	if err != nil {
 		return "", err
 	}

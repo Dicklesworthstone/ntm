@@ -217,7 +217,7 @@ func (ps *PaneStreamer) Stop() {
 	// Stop pipe-pane before closing the FIFO. Closing the descriptor wakes an
 	// idle reader that would otherwise remain blocked in ReadString forever.
 	if ps.ownsPipePane {
-		_ = ps.client.RunSilent("pipe-pane", "-t", ps.target)
+		_ = ps.client.RunSilent("pipe-pane", "-t", ExactTarget(ps.target))
 		paneStreamOwners.Lock()
 		delete(paneStreamOwners.owners, paneStreamKey{client: ps.client, target: ps.target})
 		paneStreamOwners.Unlock()
@@ -274,7 +274,7 @@ func (ps *PaneStreamer) startPipePaneStreaming() error {
 	// Start the pipe-pane command
 	// Note: pipe-pane runs the command in a shell, output goes to the command's stdin
 	catCmd := pipePaneCatCommand(ps.fifoPath)
-	if err := ps.client.RunSilent("pipe-pane", "-t", ps.target, catCmd); err != nil {
+	if err := ps.client.RunSilent("pipe-pane", "-t", ExactTarget(ps.target), catCmd); err != nil {
 		os.Remove(ps.fifoPath)
 		ps.fifoPath = ""
 		return fmt.Errorf("pipe-pane: %w", err)

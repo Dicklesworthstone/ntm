@@ -176,10 +176,10 @@ See ntm#139.`,
 						// `switch-client` against the already-attached
 						// session is a tmux no-op, so this is safe even
 						// when the target is in the current session.
-						if _, err := tmux.DefaultClient.Run("switch-client", "-t", e.Session); err != nil {
+						if _, err := tmux.DefaultClient.Run("switch-client", "-t", tmux.TargetSession(e.Session)); err != nil {
 							return fmt.Errorf("tmux switch-client %s: %w", e.Session, err)
 						}
-						if _, err := tmux.DefaultClient.Run("select-pane", "-t", e.PaneID); err != nil {
+						if _, err := tmux.DefaultClient.Run("select-pane", "-t", tmux.ExactTarget(e.PaneID)); err != nil {
 							return fmt.Errorf("tmux select-pane %s: %w", e.PaneID, err)
 						}
 						if IsJSONOutput() {

@@ -790,7 +790,7 @@ func resolveExplicitProjectDirForSessionContext(parent context.Context, session 
 		session,
 		tmux.GetPanesContext,
 		func(ctx context.Context, paneID string) (string, error) {
-			return tmux.DefaultClient.RunContext(ctx, "display-message", "-p", "-t", paneID, "#{pane_current_path}")
+			return tmux.DefaultClient.RunContext(ctx, "display-message", "-p", "-t", tmux.ExactTarget(paneID), "#{pane_current_path}")
 		},
 	)
 }

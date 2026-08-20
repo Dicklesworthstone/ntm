@@ -510,7 +510,7 @@ func (ws *WorktreeService) changeDirectoryInPane(ctx context.Context, paneID, wo
 		return err
 	}
 	// Send Ctrl-C first to interrupt any running command
-	if err := tmux.DefaultClient.RunSilentContext(ctx, "send-keys", "-t", paneID, "C-c"); err != nil {
+	if err := tmux.DefaultClient.RunSilentContext(ctx, "send-keys", "-t", tmux.ExactTarget(paneID), "C-c"); err != nil {
 		return fmt.Errorf("failed to send interrupt: %w", err)
 	}
 

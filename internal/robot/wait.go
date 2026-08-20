@@ -286,7 +286,7 @@ func GetWaitContext(ctx context.Context, opts WaitOptions) (*WaitResponse, int) 
 				RobotResponse: NewErrorResponse(
 					fmt.Errorf("timeout after %v", opts.Timeout),
 					ErrCodeTimeout,
-					"Try increasing --timeout (or deprecated --wait-timeout) or check agent status with --robot-activity",
+					"Try increasing --timeout or check agent status with --robot-activity",
 				),
 				Session:       opts.Session,
 				Condition:     opts.Condition,

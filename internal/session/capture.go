@@ -142,7 +142,7 @@ func captureWindows(sessionName string) []WindowState {
 	sep := tmux.FieldSeparator
 	format := "#{window_index}" + sep + "#{window_name}" + sep +
 		"#{window_active}" + sep + "#{window_zoomed_flag}" + sep + "#{window_layout}"
-	output, err := tmux.DefaultClient.Run("list-windows", "-t", sessionName, "-F", format)
+	output, err := tmux.DefaultClient.Run("list-windows", "-t", tmux.TargetSession(sessionName), "-F", format)
 	if err != nil {
 		return nil
 	}
@@ -330,7 +330,7 @@ func applyPaneSessionBindings(states []PaneState, bindings []agentsession.Bindin
 }
 
 func paneCurrentPathContext(ctx context.Context, paneID string) string {
-	output, err := tmux.DefaultClient.RunContext(ctx, "display-message", "-t", paneID, "-p", "#{pane_current_path}")
+	output, err := tmux.DefaultClient.RunContext(ctx, "display-message", "-t", tmux.ExactTarget(paneID), "-p", "#{pane_current_path}")
 	if err != nil {
 		return ""
 	}
@@ -342,7 +342,7 @@ func detectWorkDir(sessionName string, panes []tmux.Pane) string {
 	// Try to get the active pane's current path via tmux
 	for _, p := range panes {
 		if p.Active {
-			output, err := tmux.DefaultClient.Run("display-message", "-t", p.ID, "-p", "#{pane_current_path}")
+			output, err := tmux.DefaultClient.Run("display-message", "-t", tmux.ExactTarget(p.ID), "-p", "#{pane_current_path}")
 			if err == nil && len(output) > 0 {
 				path := strings.TrimSpace(output)
 				if path != "" {
@@ -355,7 +355,7 @@ func detectWorkDir(sessionName string, panes []tmux.Pane) string {
 
 	// Fallback: try the first pane if no active pane or it failed
 	if len(panes) > 0 {
-		output, err := tmux.DefaultClient.Run("display-message", "-t", panes[0].ID, "-p", "#{pane_current_path}")
+		output, err := tmux.DefaultClient.Run("display-message", "-t", tmux.ExactTarget(panes[0].ID), "-p", "#{pane_current_path}")
 		if err == nil && len(output) > 0 {
 			path := strings.TrimSpace(output)
 			if path != "" {
@@ -407,7 +407,7 @@ func runGitInfoCommand(dir string, timeout time.Duration, args ...string) string
 
 // getLayout gets the current tmux layout for the session.
 func getLayout(sessionName string) string {
-	output, err := tmux.DefaultClient.Run("display-message", "-t", sessionName, "-p", "#{window_layout}")
+	output, err := tmux.DefaultClient.Run("display-message", "-t", tmux.TargetSession(sessionName), "-p", "#{window_layout}")
 	if err != nil {
 		return "tiled" // Default fallback
 	}

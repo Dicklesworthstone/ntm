@@ -356,7 +356,7 @@ func detectSessionStructure(session string) (*SessionStructureInfo, error) {
 	tmuxPath := tmux.BinaryPath()
 
 	// Determine primary window (prefer window 1 if present)
-	windowOut, err := exec.Command(tmuxPath, "list-windows", "-t", session, "-F", "#{window_index}").Output()
+	windowOut, err := exec.Command(tmuxPath, "list-windows", "-t", tmux.TargetSession(session), "-F", "#{window_index}").Output()
 	if err != nil {
 		return nil, err
 	}
@@ -383,7 +383,7 @@ func detectSessionStructure(session string) (*SessionStructureInfo, error) {
 	target := fmt.Sprintf("%s:%d", session, primaryWindow)
 
 	// Get pane indices from primary window
-	out, err := exec.Command(tmuxPath, "list-panes", "-t", target, "-F", "#{pane_index}").Output()
+	out, err := exec.Command(tmuxPath, "list-panes", "-t", tmux.ExactTarget(target), "-F", "#{pane_index}").Output()
 	if err != nil {
 		return nil, err
 	}

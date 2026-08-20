@@ -32,13 +32,13 @@ func (c *Client) EnsurePaneBorderStatus(session string) error {
 func (c *Client) EnsurePaneBorderStatusContext(ctx context.Context, session string) error {
 	// -A includes values inherited from the global/window defaults, so a user
 	// who globally chose "bottom" (or already enabled "top") is left alone.
-	if out, err := c.RunContext(ctx, "show-options", "-A", "-w", "-v", "-t", session, "pane-border-status"); err == nil {
+	if out, err := c.RunContext(ctx, "show-options", "-A", "-w", "-v", "-t", SessionOptionTarget(session), "pane-border-status"); err == nil {
 		switch strings.TrimSpace(out) {
 		case "top", "bottom":
 			return nil
 		}
 	}
-	return c.RunSilentContext(ctx, "set-option", "-w", "-t", session,
+	return c.RunSilentContext(ctx, "set-option", "-w", "-t", SessionOptionTarget(session),
 		"pane-border-status", PaneBorderStatusPosition)
 }
 
@@ -63,7 +63,7 @@ func (c *Client) SetPaneBorderStyle(target, color string) error {
 // SetPaneBorderStyleContext sets the pane border style with context/cancellation support.
 func (c *Client) SetPaneBorderStyleContext(ctx context.Context, target, color string) error {
 	style := fmt.Sprintf("fg=%s", color)
-	return c.RunSilentContext(ctx, "select-pane", "-t", target, "-P",
+	return c.RunSilentContext(ctx, "select-pane", "-t", ExactTarget(target), "-P",
 		fmt.Sprintf("pane-border-style=%s", style))
 }
 
@@ -74,6 +74,6 @@ func (c *Client) ResetPaneBorderStyle(target string) error {
 
 // ResetPaneBorderStyleContext resets border style with context support.
 func (c *Client) ResetPaneBorderStyleContext(ctx context.Context, target string) error {
-	return c.RunSilentContext(ctx, "select-pane", "-t", target, "-P",
+	return c.RunSilentContext(ctx, "select-pane", "-t", ExactTarget(target), "-P",
 		"pane-border-style=default")
 }

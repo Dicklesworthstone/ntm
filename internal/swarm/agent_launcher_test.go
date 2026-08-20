@@ -179,7 +179,7 @@ func TestResolveSwarmSessionTargeting_BaseIndexZero(t *testing.T) {
 	runner := &fakeTmuxRunner{
 		windowsOutput: "0\n",
 		panesOutput: map[string]string{
-			"test:0": "0\n1\n2\n",
+			"=test:0": "0\n1\n2\n",
 		},
 		errByCommand: map[string]error{},
 	}
@@ -202,7 +202,7 @@ func TestResolveSwarmSessionTargeting_PrefersWindowOne(t *testing.T) {
 	runner := &fakeTmuxRunner{
 		windowsOutput: "0\n1\n2\n",
 		panesOutput: map[string]string{
-			"test:1": "0\n1\n",
+			"=test:1": "0\n1\n",
 		},
 		errByCommand: map[string]error{},
 	}
@@ -222,7 +222,7 @@ func TestResolveSwarmSessionTargeting_BaseIndexOne(t *testing.T) {
 	runner := &fakeTmuxRunner{
 		windowsOutput: "2\n1\n", // unsorted; resolver should pick min
 		panesOutput: map[string]string{
-			"test:1": "3\n1\n2\n", // unsorted; resolver should pick min
+			"=test:1": "3\n1\n2\n", // unsorted; resolver should pick min
 		},
 		errByCommand: map[string]error{},
 	}

@@ -412,7 +412,7 @@ func AnswerDialog(ctx context.Context, opts AnswerDialogOptions) (*AnswerDialogO
 			case <-time.After(150 * time.Millisecond):
 			}
 		}
-		if err := tmux.DefaultClient.RunSilentContext(ctx, "send-keys", "-t", pane.ID, key); err != nil {
+		if err := tmux.DefaultClient.RunSilentContext(ctx, "send-keys", "-t", tmux.ExactTarget(pane.ID), key); err != nil {
 			output.RobotResponse = NewErrorResponse(fmt.Errorf("send key %q: %w", key, err), ErrCodeInternalError, "Check tmux pane state")
 			return output, nil
 		}

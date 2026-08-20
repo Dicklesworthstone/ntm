@@ -523,7 +523,7 @@ func (c *Client) RespawnPane(target string, kill bool) error {
 
 // RespawnPaneContext respawns a pane with cancellation support
 func (c *Client) RespawnPaneContext(ctx context.Context, target string, kill bool) error {
-	args := []string{"respawn-pane", "-t", target}
+	args := []string{"respawn-pane", "-t", ExactTarget(target)}
 	if kill {
 		args = append(args, "-k")
 	}

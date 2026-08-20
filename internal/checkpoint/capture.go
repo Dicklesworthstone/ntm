@@ -258,16 +258,16 @@ func (c *Capturer) captureGitState(workingDir, sessionName, checkpointID string)
 
 // getSessionDir gets the working directory for a session.
 func getSessionDir(sessionName string) (string, error) {
-	return tmux.DefaultClient.Run("display-message", "-p", "-t", sessionName, "#{pane_current_path}")
+	return tmux.DefaultClient.Run("display-message", "-p", "-t", tmux.TargetSession(sessionName), "#{pane_current_path}")
 }
 
 // getSessionLayout gets the tmux layout string for a session.
 func getSessionLayout(sessionName string) (string, error) {
-	return tmux.DefaultClient.Run("display-message", "-p", "-t", sessionName, "#{window_layout}")
+	return tmux.DefaultClient.Run("display-message", "-p", "-t", tmux.TargetSession(sessionName), "#{window_layout}")
 }
 
 func getSessionWindowLayouts(sessionName string) ([]WindowLayoutState, error) {
-	out, err := tmux.DefaultClient.Run("list-windows", "-t", sessionName, "-F", "#{window_index}\t#{window_layout}")
+	out, err := tmux.DefaultClient.Run("list-windows", "-t", tmux.TargetSession(sessionName), "-F", "#{window_index}\t#{window_layout}")
 	if err != nil {
 		return nil, err
 	}
@@ -303,7 +303,7 @@ func canUseLegacyLayoutFallback(panes []PaneState) bool {
 }
 
 func getSessionActivePaneID(sessionName string) (string, error) {
-	return tmux.DefaultClient.Run("display-message", "-p", "-t", sessionName, "#{pane_id}")
+	return tmux.DefaultClient.Run("display-message", "-p", "-t", tmux.TargetSession(sessionName), "#{pane_id}")
 }
 
 // isGitRepo checks if a directory is a git repository.

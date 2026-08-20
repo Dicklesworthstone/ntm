@@ -700,7 +700,7 @@ func (c *Client) SessionExists(name string) bool {
 
 // SessionExistsContext checks whether a session exists with caller cancellation.
 func (c *Client) SessionExistsContext(ctx context.Context, name string) (bool, error) {
-	return classifySessionExistsResult(c.RunSilentContext(ctx, "has-session", "-t", name))
+	return classifySessionExistsResult(c.RunSilentContext(ctx, "has-session", "-t", TargetSession(name)))
 }
 
 func classifySessionExistsResult(err error) (bool, error) {
@@ -887,7 +887,7 @@ func (c *Client) CreateSessionWithHistoryLimitContext(ctx context.Context, name,
 	if historyLimit > 0 {
 		// Set history-limit on the session so all panes (including those created
 		// later via split-window) inherit the larger scrollback buffer.
-		if err := c.RunSilentContext(ctx, "set-option", "-t", name, "history-limit", fmt.Sprintf("%d", historyLimit)); err != nil {
+		if err := c.RunSilentContext(ctx, "set-option", "-t", SessionOptionTarget(name), "history-limit", fmt.Sprintf("%d", historyLimit)); err != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return fmt.Errorf("tmux session %q was created before cancellation: %w", name, ctxErr)
 			}
@@ -929,7 +929,7 @@ func (c *Client) GetPanes(session string) ([]Pane, error) {
 func (c *Client) GetPanesContext(ctx context.Context, session string) ([]Pane, error) {
 	sep := FieldSeparator
 	format := fmt.Sprintf("#{pane_id}%[1]s#{pane_index}%[1]s#{pane_title}%[1]s#{pane_current_command}%[1]s#{pane_width}%[1]s#{pane_height}%[1]s#{pane_active}%[1]s#{pane_pid}%[1]s#{window_index}", sep)
-	output, err := c.RunContext(ctx, "list-panes", "-s", "-t", session, "-F", format)
+	output, err := c.RunContext(ctx, "list-panes", "-s", "-t", TargetSession(session), "-F", format)
 	if err != nil {
 		return nil, err
 	}
@@ -1209,7 +1209,7 @@ func (c *Client) GetFirstWindow(session string) (int, error) {
 // GetFirstWindowContext returns the first window index for a session with
 // cancellation support.
 func (c *Client) GetFirstWindowContext(ctx context.Context, session string) (int, error) {
-	output, err := c.RunContext(ctx, "list-windows", "-t", session, "-F", "#{window_index}")
+	output, err := c.RunContext(ctx, "list-windows", "-t", TargetSession(session), "-F", "#{window_index}")
 	if err != nil {
 		return 0, err
 	}
@@ -1252,7 +1252,7 @@ func (c *Client) SplitWindowContext(ctx context.Context, session string, directo
 	target := fmt.Sprintf("%s:%d", session, firstWin)
 
 	// Split and get the new pane ID
-	paneID, err := c.RunContext(ctx, "split-window", "-t", target, "-c", directory, "-P", "-F", "#{pane_id}")
+	paneID, err := c.RunContext(ctx, "split-window", "-t", ExactTarget(target), "-c", directory, "-P", "-F", "#{pane_id}")
 	if err != nil {
 		return "", err
 	}
@@ -1261,7 +1261,7 @@ func (c *Client) SplitWindowContext(ctx context.Context, session string, directo
 	}
 
 	// Apply tiled layout
-	if err := c.RunSilentContext(ctx, "select-layout", "-t", target, "tiled"); err != nil {
+	if err := c.RunSilentContext(ctx, "select-layout", "-t", ExactTarget(target), "tiled"); err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return paneID, fmt.Errorf("tmux pane %q was created before cancellation: %w", paneID, ctxErr)
 		}
@@ -1302,7 +1302,7 @@ func (c *Client) SetPaneTitleContext(ctx context.Context, paneID, title string) 
 			return fmt.Errorf("pane title contains disallowed control character 0x%02x", r)
 		}
 	}
-	selectErr := c.RunSilentContext(ctx, "select-pane", "-t", paneID, "-T", title)
+	selectErr := c.RunSilentContext(ctx, "select-pane", "-t", ExactTarget(paneID), "-T", title)
 	if selectErr != nil && ClassifyCommandError(selectErr).Kind == CommandErrorPaneNotFound {
 		// On busy tmux servers, newly-created panes can transiently fail to resolve by ID.
 		// Retry briefly to reduce flakiness (especially under `go test`).
@@ -1311,7 +1311,7 @@ func (c *Client) SetPaneTitleContext(ctx context.Context, paneID, title string) 
 			if err := waitForSendDelay(ctx, 50*time.Millisecond); err != nil {
 				return err
 			}
-			selectErr = c.RunSilentContext(ctx, "select-pane", "-t", paneID, "-T", title)
+			selectErr = c.RunSilentContext(ctx, "select-pane", "-t", ExactTarget(paneID), "-T", title)
 			if selectErr != nil && ClassifyCommandError(selectErr).Kind != CommandErrorPaneNotFound {
 				break
 			}
@@ -1328,7 +1328,7 @@ func (c *Client) SetPaneTitleContext(ctx context.Context, paneID, title string) 
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	_ = c.RunSilentContext(ctx, "set-option", "-p", "-t", paneID, "allow-set-title", "off")
+	_ = c.RunSilentContext(ctx, "set-option", "-p", "-t", ExactTarget(paneID), "allow-set-title", "off")
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -1347,7 +1347,7 @@ func SetPaneTitleContext(ctx context.Context, paneID, title string) error {
 
 // GetPaneTitle returns the title of a pane
 func (c *Client) GetPaneTitle(paneID string) (string, error) {
-	return c.Run("display-message", "-p", "-t", paneID, "#{pane_title}")
+	return c.Run("display-message", "-p", "-t", ExactTarget(paneID), "#{pane_title}")
 }
 
 // GetPaneTitle returns the title of a pane (default client)
@@ -1438,7 +1438,7 @@ func (c *Client) SendKeysWithDelayContext(ctx context.Context, target, keys stri
 	const chunkSize = 4096
 
 	if len(keys) <= chunkSize {
-		if err := c.RunSilentContext(ctx, "send-keys", "-t", target, "-l", "--", escapeTrailingSemicolon(keys)); err != nil {
+		if err := c.RunSilentContext(ctx, "send-keys", "-t", ExactTarget(target), "-l", "--", escapeTrailingSemicolon(keys)); err != nil {
 			return err
 		}
 	} else {
@@ -1459,7 +1459,7 @@ func (c *Client) SendKeysWithDelayContext(ctx context.Context, target, keys stri
 			}
 
 			chunk := keys[start:end]
-			if err := c.RunSilentContext(ctx, "send-keys", "-t", target, "-l", "--", escapeTrailingSemicolon(chunk)); err != nil {
+			if err := c.RunSilentContext(ctx, "send-keys", "-t", ExactTarget(target), "-l", "--", escapeTrailingSemicolon(chunk)); err != nil {
 				return err
 			}
 			start = end
@@ -1475,7 +1475,7 @@ func (c *Client) SendKeysWithDelayContext(ctx context.Context, target, keys stri
 		}
 		// Use "Enter" instead of "C-m" (Ctrl+M) because some TUIs (e.g., Codex)
 		// distinguish between the Enter key and the carriage return control character.
-		return c.RunSilentContext(ctx, "send-keys", "-t", target, "Enter")
+		return c.RunSilentContext(ctx, "send-keys", "-t", ExactTarget(target), "Enter")
 	}
 	return nil
 }
@@ -1632,9 +1632,12 @@ func (c *Client) SendBufferWithDelayContext(ctx context.Context, target, content
 		return errors.New("tmux Enter delay cannot be negative")
 	}
 	// Use a unique buffer name to avoid conflicts with concurrent operations.
-	// Combine timestamp with an atomic counter to prevent collisions when
-	// multiple goroutines call this within the same nanosecond.
-	bufferName := fmt.Sprintf("ntm-%d-%d", time.Now().UnixNano(), bufferSeq.Add(1))
+	// The PID makes the name unique across concurrent ntm processes sharing
+	// one tmux server (each process starts its bufferSeq at 1, so two
+	// processes' first sends landing in the same nanosecond would otherwise
+	// collide and paste-buffer -d one another's buffers); the timestamp and
+	// atomic counter make it unique across goroutines within a process.
+	bufferName := fmt.Sprintf("ntm-%d-%d-%d", os.Getpid(), time.Now().UnixNano(), bufferSeq.Add(1))
 
 	// Load content into a tmux buffer
 	// We use 'load-buffer' with stdin to handle arbitrary content including special characters
@@ -1654,7 +1657,7 @@ func (c *Client) SendBufferWithDelayContext(ctx context.Context, target, content
 
 	// Paste the buffer into the target pane
 	// -p = paste from buffer, -d = delete buffer after pasting, -b = buffer name
-	if err := c.RunSilentContext(ctx, "paste-buffer", "-p", "-d", "-b", bufferName, "-t", target); err != nil {
+	if err := c.RunSilentContext(ctx, "paste-buffer", "-p", "-d", "-b", bufferName, "-t", ExactTarget(target)); err != nil {
 		// Cleanup uses its own short context because the delivery context may be
 		// canceled. It can only delete the private buffer; it never submits Enter.
 		c.cleanupBuffer(bufferName)
@@ -1665,7 +1668,7 @@ func (c *Client) SendBufferWithDelayContext(ctx context.Context, target, content
 		if err := waitForSendDelay(ctx, enterDelay); err != nil {
 			return err
 		}
-		return c.RunSilentContext(ctx, "send-keys", "-t", target, "Enter")
+		return c.RunSilentContext(ctx, "send-keys", "-t", ExactTarget(target), "Enter")
 	}
 	return nil
 }
@@ -1860,14 +1863,14 @@ func (c *Client) SendKeysForAgentDoubleEnterContext(ctx context.Context, target,
 		return err
 	}
 	// First Enter
-	if err := c.RunSilentContext(ctx, "send-keys", "-t", target, "Enter"); err != nil {
+	if err := c.RunSilentContext(ctx, "send-keys", "-t", ExactTarget(target), "Enter"); err != nil {
 		return err
 	}
 	if err := waitForSendDelay(ctx, DoubleEnterSecondDelay); err != nil {
 		return err
 	}
 	// Second Enter
-	if err := c.RunSilentContext(ctx, "send-keys", "-t", target, "Enter"); err != nil {
+	if err := c.RunSilentContext(ctx, "send-keys", "-t", ExactTarget(target), "Enter"); err != nil {
 		return err
 	}
 	return nil
@@ -2104,7 +2107,7 @@ func (c *Client) ClearComposerContext(ctx context.Context, target string, agentT
 				return false, false, err
 			}
 		}
-		if err := c.RunSilentContext(ctx, "send-keys", "-t", target, key); err != nil {
+		if err := c.RunSilentContext(ctx, "send-keys", "-t", ExactTarget(target), key); err != nil {
 			return false, false, fmt.Errorf("send composer clear key %q: %w", key, err)
 		}
 	}
@@ -2246,7 +2249,7 @@ func (c *Client) VerifyGrokSubmissionContext(ctx context.Context, target, messag
 	// The composer still holds the payload: finish the job with one bare
 	// Enter, then poll for the submission to take effect. An extra Enter into
 	// an already-submitted grok composer is a no-op (verified live).
-	if err := c.RunSilentContext(ctx, "send-keys", "-t", target, "Enter"); err != nil {
+	if err := c.RunSilentContext(ctx, "send-keys", "-t", ExactTarget(target), "Enter"); err != nil {
 		return false, true, fmt.Errorf("send rescue Enter to grok pane: %w", err)
 	}
 	for poll := 0; poll < codexVerifyMaxPolls; poll++ {
@@ -2297,7 +2300,7 @@ func (c *Client) VerifyCodexSubmissionContext(ctx context.Context, target, messa
 
 	// The composer still holds the payload: finish the job with one bare
 	// Enter, then poll for the submission to take effect.
-	if err := c.RunSilentContext(ctx, "send-keys", "-t", target, "Enter"); err != nil {
+	if err := c.RunSilentContext(ctx, "send-keys", "-t", ExactTarget(target), "Enter"); err != nil {
 		return false, true, fmt.Errorf("send rescue Enter to codex pane: %w", err)
 	}
 	for poll := 0; poll < codexVerifyMaxPolls; poll++ {
@@ -2399,13 +2402,13 @@ func (c *Client) VerifyClaudeSubmissionContext(ctx context.Context, target, mess
 
 	// Dismiss a possible picker, then finish the submission. A single Escape
 	// is deliberate: double-Escape opens Claude Code's message-history jump.
-	if err := c.RunSilentContext(ctx, "send-keys", "-t", target, "Escape"); err != nil {
+	if err := c.RunSilentContext(ctx, "send-keys", "-t", ExactTarget(target), "Escape"); err != nil {
 		return false, true, fmt.Errorf("send rescue Escape to claude pane: %w", err)
 	}
 	if err := waitForSendDelay(ctx, 300*time.Millisecond); err != nil {
 		return false, true, err
 	}
-	if err := c.RunSilentContext(ctx, "send-keys", "-t", target, "Enter"); err != nil {
+	if err := c.RunSilentContext(ctx, "send-keys", "-t", ExactTarget(target), "Enter"); err != nil {
 		return false, true, fmt.Errorf("send rescue Enter to claude pane: %w", err)
 	}
 	for poll := 0; poll < codexVerifyMaxPolls; poll++ {
@@ -2445,7 +2448,7 @@ func (c *Client) SendKeyName(target, keyName string) error {
 // The "--" stops a key name that begins with a dash from being parsed by tmux
 // as a flag instead of a key.
 func (c *Client) SendKeyNameContext(ctx context.Context, target, keyName string) error {
-	return c.RunSilentContext(ctx, "send-keys", "-t", target, "--", keyName)
+	return c.RunSilentContext(ctx, "send-keys", "-t", ExactTarget(target), "--", keyName)
 }
 
 // SendKeyName sends a tmux key name using the default client.
@@ -2455,7 +2458,7 @@ func SendKeyName(target, keyName string) error {
 
 // SendInterrupt sends Ctrl+C to a pane
 func (c *Client) SendInterrupt(target string) error {
-	return c.RunSilent("send-keys", "-t", target, "C-c")
+	return c.RunSilent("send-keys", "-t", ExactTarget(target), "C-c")
 }
 
 // SendInterrupt sends Ctrl+C to a pane (default client)
@@ -2465,13 +2468,13 @@ func SendInterrupt(target string) error {
 
 // SendEOF sends Ctrl+D (EOF) to a pane
 func (c *Client) SendEOF(target string) error {
-	return c.RunSilent("send-keys", "-t", target, "C-d")
+	return c.RunSilent("send-keys", "-t", ExactTarget(target), "C-d")
 }
 
 // DisplayMessage shows a message in the tmux status line.
 // The "--" prevents msg from being interpreted as a tmux flag.
 func (c *Client) DisplayMessage(session, msg string, durationMs int) error {
-	return c.RunSilent("display-message", "-t", session, "-d", fmt.Sprintf("%d", durationMs), "--", msg)
+	return c.RunSilent("display-message", "-t", TargetSession(session), "-d", fmt.Sprintf("%d", durationMs), "--", msg)
 }
 
 // DisplayMessage shows a message in the tmux status line (default client)
@@ -2508,10 +2511,10 @@ func BuildPaneCommand(projectDir, agentCommand string) (string, error) {
 func (c *Client) AttachOrSwitch(session string) error {
 	if c.Remote == "" {
 		if InTmux() {
-			return c.RunSilent("switch-client", "-t", session)
+			return c.RunSilent("switch-client", "-t", TargetSession(session))
 		}
 		// Interactive attach needs stdin/stdout, so use exec directly for local
-		cmd := exec.Command(BinaryPath(), "attach", "-t", session)
+		cmd := exec.Command(BinaryPath(), "attach", "-t", TargetSession(session))
 		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
@@ -2520,7 +2523,7 @@ func (c *Client) AttachOrSwitch(session string) error {
 
 	// Remote attach
 	// ssh -t user@host tmux attach -t session
-	remoteCmd := buildRemoteShellCommand("tmux", "attach", "-t", session)
+	remoteCmd := buildRemoteShellCommand("tmux", "attach", "-t", TargetSession(session))
 	// Use "--" to prevent Remote from being parsed as an ssh option.
 	sshArgs := []string{"-t", "--", c.Remote, remoteCmd}
 	cmd := exec.Command("ssh", sshArgs...)
@@ -2537,7 +2540,7 @@ func AttachOrSwitch(session string) error {
 
 // KillSession kills a tmux session
 func (c *Client) KillSession(session string) error {
-	return c.RunSilent("kill-session", "-t", session)
+	return c.RunSilent("kill-session", "-t", TargetSession(session))
 }
 
 // KillSession kills a tmux session (default client)
@@ -2555,7 +2558,7 @@ func (c *Client) KillPaneContext(ctx context.Context, paneID string) error {
 	if ctx == nil {
 		return errors.New("tmux kill pane context is required")
 	}
-	return c.RunSilentContext(ctx, "kill-pane", "-t", paneID)
+	return c.RunSilentContext(ctx, "kill-pane", "-t", ExactTarget(paneID))
 }
 
 // KillPane kills a tmux pane (default client)
@@ -2579,7 +2582,7 @@ func (c *Client) ApplyTiledLayoutContext(ctx context.Context, session string) er
 	if ctx == nil {
 		return errors.New("tmux layout context is required")
 	}
-	output, err := c.RunContext(ctx, "list-windows", "-t", session, "-F", "#{window_index}")
+	output, err := c.RunContext(ctx, "list-windows", "-t", TargetSession(session), "-F", "#{window_index}")
 	if err != nil {
 		return err
 	}
@@ -2592,18 +2595,18 @@ func (c *Client) ApplyTiledLayoutContext(ctx context.Context, session string) er
 		target := fmt.Sprintf("%s:%s", session, winIdx)
 
 		// Unzoom if zoomed
-		zoomed, displayErr := c.RunContext(ctx, "display-message", "-t", target, "-p", "#{window_zoomed_flag}")
+		zoomed, displayErr := c.RunContext(ctx, "display-message", "-t", ExactTarget(target), "-p", "#{window_zoomed_flag}")
 		if displayErr != nil {
 			return fmt.Errorf("inspect window %s zoom state: %w", target, displayErr)
 		}
 		if zoomed == "1" {
-			if err := c.RunSilentContext(ctx, "resize-pane", "-t", target, "-Z"); err != nil {
+			if err := c.RunSilentContext(ctx, "resize-pane", "-t", ExactTarget(target), "-Z"); err != nil {
 				return fmt.Errorf("unzoom window %s: %w", target, err)
 			}
 		}
 
 		// Apply tiled layout
-		if err := c.RunSilentContext(ctx, "select-layout", "-t", target, "tiled"); err != nil {
+		if err := c.RunSilentContext(ctx, "select-layout", "-t", ExactTarget(target), "tiled"); err != nil {
 			return fmt.Errorf("apply tiled layout to window %s: %w", target, err)
 		}
 	}
@@ -2631,11 +2634,11 @@ func (c *Client) ZoomPane(session string, paneIndex int) error {
 
 	target := fmt.Sprintf("%s:%d.%d", session, firstWin, paneIndex)
 
-	if err := c.RunSilent("select-pane", "-t", target); err != nil {
+	if err := c.RunSilent("select-pane", "-t", ExactTarget(target)); err != nil {
 		return err
 	}
 
-	return c.RunSilent("resize-pane", "-t", target, "-Z")
+	return c.RunSilent("resize-pane", "-t", ExactTarget(target), "-Z")
 }
 
 // ZoomPane zooms a specific pane (default client)
@@ -2656,7 +2659,7 @@ func (c *Client) CapturePaneOutputContext(ctx context.Context, target string, li
 		lines = -lines
 	}
 	started := time.Now()
-	output, err := c.RunContext(ctx, "capture-pane", "-t", target, "-p", "-S", fmt.Sprintf("-%d", lines))
+	output, err := c.RunContext(ctx, "capture-pane", "-t", ExactTarget(target), "-p", "-S", fmt.Sprintf("-%d", lines))
 	c.recordCaptureBackpressure(target, lines, time.Since(started), err)
 	return output, err
 }
@@ -2682,7 +2685,7 @@ func (c *Client) CapturePaneVisible(target string) (string, error) {
 // caller cancellation.
 func (c *Client) CapturePaneVisibleContext(ctx context.Context, target string) (string, error) {
 	started := time.Now()
-	output, err := c.RunContext(ctx, "capture-pane", "-t", target, "-p", "-S", "0")
+	output, err := c.RunContext(ctx, "capture-pane", "-t", ExactTarget(target), "-p", "-S", "0")
 	c.recordCaptureBackpressure(target, 0, time.Since(started), err)
 	return output, err
 }
@@ -2735,7 +2738,7 @@ func (c *Client) GetCurrentSessionContext(ctx context.Context) (string, error) {
 	if paneTarget == "" {
 		return "", err
 	}
-	output, err = c.RunContext(ctx, "display-message", "-p", "-t", paneTarget, "#{session_name}")
+	output, err = c.RunContext(ctx, "display-message", "-p", "-t", ExactTarget(paneTarget), "#{session_name}")
 	if err != nil {
 		return "", err
 	}
@@ -2782,7 +2785,7 @@ func ValidateSessionName(name string) error {
 // does not expose a pane-level activity timestamp; window_activity is the
 // narrowest supported signal and is conservative when a window has many panes.
 func (c *Client) GetPaneActivity(paneID string) (time.Time, error) {
-	output, err := c.Run("display-message", "-p", "-t", paneID, "#{window_activity}")
+	output, err := c.Run("display-message", "-p", "-t", ExactTarget(paneID), "#{window_activity}")
 	if err != nil {
 		return time.Time{}, err
 	}
@@ -2809,7 +2812,7 @@ type PaneActivity struct {
 func (c *Client) GetPanesWithActivityContext(ctx context.Context, session string) ([]PaneActivity, error) {
 	sep := FieldSeparator
 	format := fmt.Sprintf("#{pane_id}%[1]s#{pane_index}%[1]s#{pane_title}%[1]s#{pane_current_command}%[1]s#{pane_width}%[1]s#{pane_height}%[1]s#{pane_active}%[1]s#{window_activity}%[1]s#{pane_pid}%[1]s#{window_index}", sep)
-	output, err := c.RunContext(ctx, "list-panes", "-s", "-t", session, "-F", format)
+	output, err := c.RunContext(ctx, "list-panes", "-s", "-t", TargetSession(session), "-F", format)
 	if err != nil {
 		return nil, err
 	}

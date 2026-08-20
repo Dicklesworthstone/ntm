@@ -266,7 +266,7 @@ func (r *Restorer) restoreLayout(cp *Checkpoint, workDir string) (int, error) {
 				"-F",
 				"#{pane_id}",
 				"-t",
-				windowTarget,
+				tmux.ExactTarget(windowTarget),
 				"-c",
 				workDir,
 			)
@@ -275,7 +275,7 @@ func (r *Restorer) restoreLayout(cp *Checkpoint, workDir string) (int, error) {
 			paneID, err = tmux.DefaultClient.Run(
 				"split-window",
 				"-t",
-				windowTarget,
+				tmux.ExactTarget(windowTarget),
 				"-c",
 				workDir,
 				"-P",
@@ -379,7 +379,7 @@ func relaunchRestoredPane(paneID, workDir, agentCmd string) error {
 
 		// Respawn the pane directly into the target command instead of typing into
 		// a shell prompt. This avoids lost-input races while panes are still initializing.
-		if err := tmux.DefaultClient.RunSilent("respawn-pane", "-k", "-c", workDir, "-t", paneID, safeCommand); err != nil {
+		if err := tmux.DefaultClient.RunSilent("respawn-pane", "-k", "-c", workDir, "-t", tmux.ExactTarget(paneID), safeCommand); err != nil {
 			lastErr = err
 			continue
 		}
@@ -414,7 +414,7 @@ func waitForPaneCommand(paneID, expected string, timeout time.Duration) error {
 }
 
 func currentPaneCommand(paneID string) (string, error) {
-	output, err := tmux.DefaultClient.Run("display-message", "-p", "-t", paneID, "#{pane_current_command}")
+	output, err := tmux.DefaultClient.Run("display-message", "-p", "-t", tmux.ExactTarget(paneID), "#{pane_current_command}")
 	if err != nil {
 		return "", fmt.Errorf("getting pane current command: %w", err)
 	}
@@ -583,7 +583,7 @@ func moveInitialWindow(sessionName string, targetWindowIndex int) error {
 
 	source := fmt.Sprintf("%s:%d", sessionName, currentWindowIndex)
 	target := fmt.Sprintf("%s:%d", sessionName, targetWindowIndex)
-	if err := tmux.DefaultClient.RunSilent("move-window", "-s", source, "-t", target); err != nil {
+	if err := tmux.DefaultClient.RunSilent("move-window", "-s", tmux.ExactTarget(source), "-t", tmux.ExactTarget(target)); err != nil {
 		return fmt.Errorf("moving initial window from %s to %s: %w", source, target, err)
 	}
 	return nil
@@ -602,7 +602,7 @@ func (r *Restorer) restoreActivePane(cp *Checkpoint) error {
 	if !ok {
 		return nil
 	}
-	return tmux.DefaultClient.RunSilent("select-pane", "-t", targetPane.ID)
+	return tmux.DefaultClient.RunSilent("select-pane", "-t", tmux.ExactTarget(targetPane.ID))
 }
 
 // applyLayout applies a tmux layout string to a session.
@@ -611,7 +611,7 @@ func (r *Restorer) applyLayout(sessionName, layout string) error {
 		layout = "tiled"
 	}
 
-	output, err := tmux.DefaultClient.Run("list-windows", "-t", sessionName, "-F", "#{window_index}")
+	output, err := tmux.DefaultClient.Run("list-windows", "-t", tmux.TargetSession(sessionName), "-F", "#{window_index}")
 	if err != nil {
 		return err
 	}
@@ -621,7 +621,7 @@ func (r *Restorer) applyLayout(sessionName, layout string) error {
 			continue
 		}
 		target := fmt.Sprintf("%s:%s", sessionName, win)
-		if err := tmux.DefaultClient.RunSilent("select-layout", "-t", target, layout); err != nil {
+		if err := tmux.DefaultClient.RunSilent("select-layout", "-t", tmux.ExactTarget(target), layout); err != nil {
 			return err
 		}
 	}
@@ -636,7 +636,7 @@ func (r *Restorer) applyWindowLayouts(sessionName string, windowLayouts []Window
 			layout = "tiled"
 		}
 		target := fmt.Sprintf("%s:%d", sessionName, windowLayout.WindowIndex)
-		if err := tmux.DefaultClient.RunSilent("select-layout", "-t", target, layout); err != nil {
+		if err := tmux.DefaultClient.RunSilent("select-layout", "-t", tmux.ExactTarget(target), layout); err != nil {
 			return err
 		}
 	}

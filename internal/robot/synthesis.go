@@ -1306,7 +1306,7 @@ func getPanesForSession(session string) ([]paneInfo, error) {
 
 // capturePaneOutput captures output from a tmux pane.
 func capturePaneOutput(paneID string, lines int) (string, error) {
-	cmd := exec.Command(tmux.BinaryPath(), "capture-pane", "-t", paneID, "-p", "-S", fmt.Sprintf("-%d", lines))
+	cmd := exec.Command(tmux.BinaryPath(), "capture-pane", "-t", tmux.ExactTarget(paneID), "-p", "-S", fmt.Sprintf("-%d", lines))
 	output, err := cmd.Output()
 	if err != nil {
 		return "", err

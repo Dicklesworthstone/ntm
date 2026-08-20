@@ -94,7 +94,7 @@ func resolveSwarmSessionTargeting(ctx context.Context, runner tmuxContextRunner,
 		return swarmSessionTargeting{}, errors.New("session name required")
 	}
 
-	windowsOut, err := runner.RunContext(ctx, "list-windows", "-t", session, "-F", "#{window_index}")
+	windowsOut, err := runner.RunContext(ctx, "list-windows", "-t", tmux.TargetSession(session), "-F", "#{window_index}")
 	if err != nil {
 		return swarmSessionTargeting{}, fmt.Errorf("list-windows: %w", err)
 	}
@@ -103,7 +103,7 @@ func resolveSwarmSessionTargeting(ctx context.Context, runner tmuxContextRunner,
 		return swarmSessionTargeting{}, fmt.Errorf("parse window index: %w", err)
 	}
 
-	panesOut, err := runner.RunContext(ctx, "list-panes", "-t", fmt.Sprintf("%s:%d", session, windowIndex), "-F", "#{pane_index}")
+	panesOut, err := runner.RunContext(ctx, "list-panes", "-t", tmux.ExactTarget(fmt.Sprintf("%s:%d", session, windowIndex)), "-F", "#{pane_index}")
 	if err != nil {
 		return swarmSessionTargeting{}, fmt.Errorf("list-panes: %w", err)
 	}

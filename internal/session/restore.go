@@ -135,14 +135,14 @@ func Restore(state *SessionState, opts RestoreOptions) (err error) {
 
 			if p.WindowIndex != lastWindowIndex {
 				// New window
-				if err := tmux.DefaultClient.RunSilent("new-window", "-t", name, "-c", workDir); err != nil {
+				if err := tmux.DefaultClient.RunSilent("new-window", "-t", tmux.TargetSession(name), "-c", workDir); err != nil {
 					return fmt.Errorf("creating window for pane %d: %w", i+1, err)
 				}
 				lastWindowIndex = p.WindowIndex
 			} else {
 				// Split window
 				// We target the session, which defaults to the active window (the one we just created or split)
-				if _, err := tmux.DefaultClient.Run("split-window", "-t", name, "-c", workDir); err != nil {
+				if _, err := tmux.DefaultClient.Run("split-window", "-t", tmux.TargetSession(name), "-c", workDir); err != nil {
 					return fmt.Errorf("creating pane %d: %w", i+1, err)
 				}
 			}
@@ -616,7 +616,7 @@ func restoreWindowFidelity(session string, state *SessionState, panes []PaneStat
 	}
 
 	// Map saved window indices (in creation order) -> new tmux window indices.
-	newOut, err := tmux.DefaultClient.Run("list-windows", "-t", session, "-F", "#{window_index}")
+	newOut, err := tmux.DefaultClient.Run("list-windows", "-t", tmux.TargetSession(session), "-F", "#{window_index}")
 	if err != nil {
 		_ = applyLayout(session, state.Layout)
 		return
@@ -647,14 +647,14 @@ func restoreWindowFidelity(session string, state *SessionState, panes []PaneStat
 		}
 		target := fmt.Sprintf("%s:%s", session, newIdx)
 		if w.Name != "" {
-			_ = tmux.DefaultClient.RunSilent("rename-window", "-t", target, w.Name)
+			_ = tmux.DefaultClient.RunSilent("rename-window", "-t", tmux.ExactTarget(target), w.Name)
 		}
 		layout := w.Layout
 		if layout == "" {
 			layout = state.Layout
 		}
 		if layout != "" {
-			_ = tmux.DefaultClient.RunSilent("select-layout", "-t", target, layout)
+			_ = tmux.DefaultClient.RunSilent("select-layout", "-t", tmux.ExactTarget(target), layout)
 		}
 	}
 
@@ -666,10 +666,10 @@ func restoreWindowFidelity(session string, state *SessionState, panes []PaneStat
 			continue
 		}
 		paneID := tmuxPanes[i].ID
-		_ = tmux.DefaultClient.RunSilent("select-pane", "-t", paneID)
+		_ = tmux.DefaultClient.RunSilent("select-pane", "-t", tmux.ExactTarget(paneID))
 		if w, ok := winByIdx[panes[i].WindowIndex]; ok {
 			if w.Zoomed {
-				_ = tmux.DefaultClient.RunSilent("resize-pane", "-Z", "-t", paneID)
+				_ = tmux.DefaultClient.RunSilent("resize-pane", "-Z", "-t", tmux.ExactTarget(paneID))
 			}
 			if w.Active {
 				if newIdx, ok := savedToNew[panes[i].WindowIndex]; ok {
@@ -691,7 +691,7 @@ func restoreWindowFidelity(session string, state *SessionState, panes []PaneStat
 		}
 	}
 	if activeWindowTarget != "" {
-		_ = tmux.DefaultClient.RunSilent("select-window", "-t", activeWindowTarget)
+		_ = tmux.DefaultClient.RunSilent("select-window", "-t", tmux.ExactTarget(activeWindowTarget))
 	}
 }
 
@@ -702,7 +702,7 @@ func applyLayout(session, layout string) error {
 	}
 
 	// Get first window
-	output, err := tmux.DefaultClient.Run("list-windows", "-t", session, "-F", "#{window_index}")
+	output, err := tmux.DefaultClient.Run("list-windows", "-t", tmux.TargetSession(session), "-F", "#{window_index}")
 	if err != nil {
 		return err
 	}
@@ -713,7 +713,7 @@ func applyLayout(session, layout string) error {
 			continue
 		}
 		target := fmt.Sprintf("%s:%s", session, win)
-		_ = tmux.DefaultClient.RunSilent("select-layout", "-t", target, layout)
+		_ = tmux.DefaultClient.RunSilent("select-layout", "-t", tmux.ExactTarget(target), layout)
 	}
 
 	return nil

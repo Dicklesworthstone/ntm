@@ -134,7 +134,7 @@ func newRotationChecker(session, workDir string, coordCfg CoordinatorConfig, ntm
 		ctxMonitor:         ctxMonitor,
 		getPanes:           tmux.GetPanes,
 		sessionCreated: func(session string) (time.Time, bool) {
-			out, err := tmux.DefaultClient.Run("display-message", "-p", "-t", session, "#{session_created}")
+			out, err := tmux.DefaultClient.Run("display-message", "-p", "-t", tmux.TargetSession(session), "#{session_created}")
 			if err != nil {
 				return time.Time{}, false
 			}
@@ -145,7 +145,7 @@ func newRotationChecker(session, workDir string, coordCfg CoordinatorConfig, ntm
 			return time.Unix(secs, 0), true
 		},
 		paneCwd: func(paneID string) (string, bool) {
-			cwd, err := tmux.DefaultClient.Run("display-message", "-p", "-t", paneID, "#{pane_current_path}")
+			cwd, err := tmux.DefaultClient.Run("display-message", "-p", "-t", tmux.ExactTarget(paneID), "#{pane_current_path}")
 			if err != nil {
 				return "", false
 			}
