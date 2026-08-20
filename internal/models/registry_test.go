@@ -140,3 +140,56 @@ func TestApplyOverridesRejectsNonPositiveLimits(t *testing.T) {
 		t.Fatalf("valid override not applied: limit = %d, want 12345", got)
 	}
 }
+
+func TestKnownModel(t *testing.T) {
+	tests := []struct {
+		model string
+		want  bool
+	}{
+		{"", false},
+		{"claude-opus-5", true},          // exact
+		{"opus-5", true},                 // alias
+		{"Claude-Opus-5", true},          // case-insensitive
+		{"claude-opus-5-20260101", true}, // date suffix strip
+		{"claude-opus-4-8", true},        // prefix match on claude-opus-4
+		{"claude-opus5", false},          // typo: not resolvable
+		{"totally-custom-model", false},
+	}
+	for _, tt := range tests {
+		if got := KnownModel(tt.model); got != tt.want {
+			t.Errorf("KnownModel(%q) = %v, want %v", tt.model, got, tt.want)
+		}
+	}
+}
+
+func TestSuggestModel(t *testing.T) {
+	tests := []struct {
+		model string
+		want  string
+	}{
+		{"", ""},
+		{"claude-opus-5", ""}, // known: no suggestion
+		{"opus-5", ""},        // known alias: no suggestion
+		{"claude-opus5", "claude-opus-5"},
+		{"claude-sonet-5", "claude-sonnet-5"},
+		{"gpt5-codex", "gpt-5-codex"},
+		{"fabel-5", "claude-fable-5"},               // alias near-miss resolves to canonical
+		{"totally-unrelated-model-name-xyz-42", ""}, // no confident match
+	}
+	for _, tt := range tests {
+		if got := SuggestModel(tt.model); got != tt.want {
+			t.Errorf("SuggestModel(%q) = %q, want %q", tt.model, got, tt.want)
+		}
+	}
+}
+
+func TestSuggestModelDeterministicTies(t *testing.T) {
+	// Repeated calls must return the same suggestion despite map iteration
+	// order (ties break by longest common prefix, then lexicographically).
+	first := SuggestModel("claude-opus5")
+	for i := 0; i < 20; i++ {
+		if got := SuggestModel("claude-opus5"); got != first {
+			t.Fatalf("SuggestModel non-deterministic: %q then %q", first, got)
+		}
+	}
+}

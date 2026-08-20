@@ -2723,3 +2723,26 @@ func TestSpawnTaskTypeForRecommendationLadder(t *testing.T) {
 		})
 	}
 }
+
+func TestSpawnModelHints(t *testing.T) {
+	cfg := config.Default()
+
+	// Known models and empty overrides produce no hints.
+	if hints := spawnModelHints(cfg, SpawnOptions{}); len(hints) != 0 {
+		t.Fatalf("no-override hints = %v, want none", hints)
+	}
+	if hints := spawnModelHints(cfg, SpawnOptions{CCModel: "claude-opus-5"}); len(hints) != 0 {
+		t.Fatalf("known-model hints = %v, want none", hints)
+	}
+
+	// A near-miss typo yields a did-you-mean hint (advisory, never an error).
+	hints := spawnModelHints(cfg, SpawnOptions{CCModel: "claude-opus5"})
+	if len(hints) != 1 || !strings.Contains(hints[0], "claude-opus-5") || !strings.Contains(hints[0], "did you mean") {
+		t.Fatalf("typo hints = %v, want one did-you-mean for claude-opus-5", hints)
+	}
+
+	// Completely custom model IDs stay silent so self-hosted models work.
+	if hints := spawnModelHints(cfg, SpawnOptions{CodModel: "totally-custom-model-xyz-42"}); len(hints) != 0 {
+		t.Fatalf("custom-model hints = %v, want none", hints)
+	}
+}

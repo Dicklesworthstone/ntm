@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 	"unicode"
@@ -2842,6 +2843,38 @@ func TestCircuitBreakerClosesAfterSuccessfulProbe(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		if err := c.cbCheck(); err != nil {
 			t.Fatalf("call %d rejected after a successful probe: %v", i, err)
+		}
+	}
+}
+
+func TestNewSendBufferNameUniqueUnderConcurrency(t *testing.T) {
+	// Concurrent sends must never share a tmux buffer name: paste-buffer -d
+	// deletes the buffer after pasting, so a name collision means one send
+	// pastes/deletes the other's payload ("no buffer ntm-..." in the field).
+	const goroutines = 32
+	const perGoroutine = 64
+	names := make(chan string, goroutines*perGoroutine)
+	var wg sync.WaitGroup
+	for g := 0; g < goroutines; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < perGoroutine; i++ {
+				names <- newSendBufferName()
+			}
+		}()
+	}
+	wg.Wait()
+	close(names)
+	seen := make(map[string]struct{}, goroutines*perGoroutine)
+	prefix := fmt.Sprintf("ntm-%d-", os.Getpid())
+	for name := range names {
+		if _, dup := seen[name]; dup {
+			t.Fatalf("duplicate buffer name generated: %s", name)
+		}
+		seen[name] = struct{}{}
+		if !strings.HasPrefix(name, prefix) {
+			t.Fatalf("buffer name %q missing PID prefix %q (cross-process uniqueness)", name, prefix)
 		}
 	}
 }

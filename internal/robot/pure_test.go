@@ -99,8 +99,11 @@ func TestFormatTargetWinPreservesExplicitWindowIndex(t *testing.T) {
 		pane    int
 		want    string
 	}{
-		{name: "zero based window", session: "mysession", window: 0, pane: 3, want: "mysession:0.3"},
-		{name: "positive window", session: "mysession", window: 7, pane: 2, want: "mysession:7.2"},
+		// The "=" prefix exact-matches the session portion so a sibling
+		// session sharing the name as a prefix can never be hit (see
+		// formatTargetWin / tmux.ExactTarget).
+		{name: "zero based window", session: "mysession", window: 0, pane: 3, want: "=mysession:0.3"},
+		{name: "positive window", session: "mysession", window: 7, pane: 2, want: "=mysession:7.2"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

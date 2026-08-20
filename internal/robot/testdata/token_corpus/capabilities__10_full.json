@@ -2379,8 +2379,8 @@
           "flag": "--strategy",
           "type": "string",
           "required": false,
-          "default": "balanced",
-          "description": "Strategy: balanced, speed, quality, dependency"
+          "default": "simple",
+          "description": "Strategy: simple (sequential pairing), balanced, speed, quality, dependency"
         }
       ],
       "examples": [
@@ -9592,8 +9592,8 @@
           "flag": "--strategy",
           "type": "string",
           "required": false,
-          "default": "balanced",
-          "description": "Strategy: balanced, speed, quality, dependency"
+          "default": "simple",
+          "description": "Strategy: simple (sequential pairing), balanced, speed, quality, dependency"
         }
       ],
       "examples": [

@@ -1184,7 +1184,7 @@ func buildCommandRegistry() []RobotCommandInfo {
 			Parameters: []RobotParameter{
 				{Name: "session", Flag: "--robot-assign", Type: "string", Required: true, Description: "Session name"},
 				{Name: "beads", Flag: "--beads", Type: "string", Required: false, Description: "Specific bead IDs to assign (comma-separated)"},
-				{Name: "strategy", Flag: "--strategy", Type: "string", Required: false, Default: "balanced", Description: "Strategy: balanced, speed, quality, dependency"},
+				{Name: "strategy", Flag: "--strategy", Type: "string", Required: false, Default: "simple", Description: "Strategy: simple (sequential pairing), balanced, speed, quality, dependency"},
 			},
 			Examples: []string{"ntm --robot-assign=proj --strategy=speed --beads=bd-abc,bd-xyz"},
 		},

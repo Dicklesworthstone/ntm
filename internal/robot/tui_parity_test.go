@@ -2714,3 +2714,28 @@ func TestGetPaletteXFEnabledKnob(t *testing.T) {
 		t.Fatal("xf.enabled=false must not inject the xf-search palette entry")
 	}
 }
+
+func TestIsBeadsNotInitializedError(t *testing.T) {
+	tests := []struct {
+		msg  string
+		want bool
+	}{
+		{"br list --json: exit status 1: no .beads directory found", true},
+		{"beads workspace not initialized", true},
+		{"br list: {\"error\":{\"code\":\"NOT_INITIALIZED\",\"message\":\"...\"}}", true},
+		{"No beads database found in this project", true},
+		{"exit status 1: run 'br init' to create a workspace", true},
+		{"br list --json: exit status 1: database disk image is malformed", false},
+		{"exec: \"br\": executable file not found in $PATH", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		var err error
+		if tt.msg != "" {
+			err = errors.New(tt.msg)
+		}
+		if got := isBeadsNotInitializedError(err); got != tt.want {
+			t.Errorf("isBeadsNotInitializedError(%q) = %v, want %v", tt.msg, got, tt.want)
+		}
+	}
+}

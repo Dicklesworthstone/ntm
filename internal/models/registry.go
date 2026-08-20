@@ -273,21 +273,40 @@ func SuggestModel(model string) string {
 	best := ""
 	bestDist := len(lower)/3 + 2 // confidence bound scales with length
 	bestPrefix := -1
+	bestSuffix := -1
 	consider := func(candidate, canonical string) {
 		d := editDistance(lower, candidate)
 		if d > bestDist {
 			return
 		}
 		// Ties break toward the candidate sharing the longest prefix with
-		// the guess, then lexicographically for deterministic output across
-		// map iteration orders.
+		// the guess, then the longest suffix ("claude-opus5" should suggest
+		// claude-opus-5, not the equally distant "claude-opus" alias), then
+		// lexicographically for deterministic output across map iteration
+		// orders.
 		p := 0
 		for p < len(lower) && p < len(candidate) && lower[p] == candidate[p] {
 			p++
 		}
-		if d < bestDist || p > bestPrefix || (d == bestDist && p == bestPrefix && (best == "" || canonical < best)) {
+		s := 0
+		for s < len(lower) && s < len(candidate) && lower[len(lower)-1-s] == candidate[len(candidate)-1-s] {
+			s++
+		}
+		better := d < bestDist
+		if !better && d == bestDist {
+			switch {
+			case p != bestPrefix:
+				better = p > bestPrefix
+			case s != bestSuffix:
+				better = s > bestSuffix
+			default:
+				better = best == "" || canonical < best
+			}
+		}
+		if better {
 			bestDist = d
 			bestPrefix = p
+			bestSuffix = s
 			best = canonical
 		}
 	}

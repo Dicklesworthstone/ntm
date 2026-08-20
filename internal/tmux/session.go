@@ -1631,13 +1631,7 @@ func (c *Client) SendBufferWithDelayContext(ctx context.Context, target, content
 	if enterDelay < 0 {
 		return errors.New("tmux Enter delay cannot be negative")
 	}
-	// Use a unique buffer name to avoid conflicts with concurrent operations.
-	// The PID makes the name unique across concurrent ntm processes sharing
-	// one tmux server (each process starts its bufferSeq at 1, so two
-	// processes' first sends landing in the same nanosecond would otherwise
-	// collide and paste-buffer -d one another's buffers); the timestamp and
-	// atomic counter make it unique across goroutines within a process.
-	bufferName := fmt.Sprintf("ntm-%d-%d-%d", os.Getpid(), time.Now().UnixNano(), bufferSeq.Add(1))
+	bufferName := newSendBufferName()
 
 	// Load content into a tmux buffer
 	// We use 'load-buffer' with stdin to handle arbitrary content including special characters
@@ -1671,6 +1665,18 @@ func (c *Client) SendBufferWithDelayContext(ctx context.Context, target, content
 		return c.RunSilentContext(ctx, "send-keys", "-t", ExactTarget(target), "Enter")
 	}
 	return nil
+}
+
+// newSendBufferName returns a tmux buffer name that is unique per send.
+// The PID makes the name unique across concurrent ntm processes sharing one
+// tmux server (each process starts its bufferSeq at 1, so two processes'
+// first sends landing in the same nanosecond could otherwise collide and
+// paste-buffer -d one another's buffers); the timestamp plus the atomic
+// counter make it unique across goroutines within a process. Every send —
+// including a caller-level retry of a failed send — allocates a fresh name,
+// so no retry can race a prior attempt's delete-after-paste.
+func newSendBufferName() string {
+	return fmt.Sprintf("ntm-%d-%d-%d", os.Getpid(), time.Now().UnixNano(), bufferSeq.Add(1))
 }
 
 func (c *Client) cleanupBuffer(bufferName string) {

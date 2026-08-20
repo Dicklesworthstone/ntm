@@ -453,20 +453,6 @@ func classifyRobotExecuteError(err error) (string, string) {
 	return robot.ErrCodeInternalError, "Retry the command or inspect ntm diagnostics"
 }
 
-// suggestNearestFlag extracts the offending flag name from a cobra/pflag
-// "unknown flag: --foo" error and returns the closest registered root flag
-// within a small edit distance, or "" when no confident match exists. Field
-// evidence shows agents repeatedly guessing near-miss robot flags
-// (--robot-state for --robot-status, --robot-panes for --robot-status);
-// each miss without a suggestion costs a discovery round-trip.
-func suggestNearestFlag(errMsg string) string {
-	unknown := unknownFlagFromError(errMsg)
-	if unknown == "" {
-		return ""
-	}
-	return nearestFlagName(unknown, rootCmd.Flags())
-}
-
 // unknownFlagFromError extracts the offending flag name from a cobra/pflag
 // "unknown flag: --foo" error message, or "" when the message has a
 // different shape.

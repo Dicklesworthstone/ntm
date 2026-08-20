@@ -5930,6 +5930,8 @@ func TestRobotProcessErrorContract(t *testing.T) {
 		{name: "robot send empty singular pane", args: []string{"--robot-send=proj", "--msg=work", "--pane="}, errorCode: robot.ErrCodeInvalidFlag, expectedExit: 1},
 		{name: "robot send singular and plural panes", args: []string{"--robot-send=proj", "--msg=work", "--pane=1", "--panes=2"}, errorCode: robot.ErrCodeInvalidFlag, expectedExit: 1},
 		{name: "robot send malformed verify render", args: []string{"--robot-send=proj", "--msg=work", "--verify-render=not-a-bool"}, errorCode: robot.ErrCodeInvalidFlag, expectedExit: 1},
+		{name: "robot send missing msg", args: []string{"--robot-send=proj"}, errorCode: robot.ErrCodeInvalidArgs, expectedExit: 1},
+		{name: "robot send empty msg", args: []string{"--robot-send=proj", "--msg="}, errorCode: robot.ErrCodeInvalidArgs, expectedExit: 1},
 		{name: "missing session", args: []string{"--robot-agent-names=ntm-robot-contract-missing-session"}, errorCode: robot.ErrCodeSessionNotFound, expectedExit: 1},
 		{name: "unknown docs topic", args: []string{"--robot-docs=not-a-topic"}, errorCode: robot.ErrCodeInvalidFlag, expectedExit: 1},
 		{name: "unknown docs topic forces json from toon", args: []string{"--robot-docs=not-a-topic", "--robot-format=toon"}, errorCode: robot.ErrCodeInvalidFlag, expectedExit: 1},
@@ -7677,5 +7679,78 @@ func TestResolveMessageScopeUsesCurrentPaneRegistryIdentity(t *testing.T) {
 	}
 	if gotAgent != "GreenCastle" {
 		t.Fatalf("agent name = %q, want %q", gotAgent, "GreenCastle")
+	}
+}
+
+func TestClassifyRobotExecuteErrorCuratedMisGuessHints(t *testing.T) {
+	// Top mis-guessed flags from the cass-mined INVALID_FLAG dataset get a
+	// curated hint naming the real spelling instead of a nearest-flag guess.
+	code, hint := classifyRobotExecuteError(errors.New("unknown flag: --project-dir"))
+	if code != robot.ErrCodeInvalidFlag {
+		t.Fatalf("classifyRobotExecuteError() code = %q, want %q", code, robot.ErrCodeInvalidFlag)
+	}
+	if !strings.Contains(hint, "--spawn-dir") || !strings.Contains(hint, "--project") {
+		t.Fatalf("classifyRobotExecuteError() hint = %q, want curated --spawn-dir/--project guidance", hint)
+	}
+}
+
+func TestUnknownFlagFromError(t *testing.T) {
+	tests := []struct {
+		errMsg string
+		want   string
+	}{
+		{"unknown flag: --project-dir", "project-dir"},
+		{"unknown flag: --session in command", "session"},
+		{"flag needs an argument: --msg", ""},
+		{"", ""},
+	}
+	for _, tt := range tests {
+		if got := unknownFlagFromError(tt.errMsg); got != tt.want {
+			t.Errorf("unknownFlagFromError(%q) = %q, want %q", tt.errMsg, got, tt.want)
+		}
+	}
+}
+
+func TestSubcommandFlagErrorsGetCuratedOrNearestHints(t *testing.T) {
+	// The root FlagErrorFunc annotates subcommand flag errors: curated hints
+	// for the fleet's top mis-guesses, nearest-flag did-you-mean otherwise.
+	fn := rootCmd.FlagErrorFunc()
+	if fn == nil {
+		t.Fatal("rootCmd has no FlagErrorFunc")
+	}
+	sendCmd, _, err := rootCmd.Find([]string{"send"})
+	if err != nil || sendCmd == rootCmd {
+		t.Fatalf("finding 'send' subcommand: %v", err)
+	}
+	sendCmd.InitDefaultHelpFlag()
+
+	got := fn(sendCmd, errors.New("unknown flag: --session"))
+	if got == nil || !strings.Contains(got.Error(), "--robot-send=SESSION") {
+		t.Fatalf("curated --session hint missing: %v", got)
+	}
+	got = fn(sendCmd, errors.New("unknown flag: --pane-x"))
+	if got == nil || !strings.Contains(got.Error(), "did you mean --pane?") {
+		t.Fatalf("nearest-flag hint missing for --pane-x: %v", got)
+	}
+	// Root flag errors pass through untouched (the robot path classifies them).
+	rootErr := errors.New("unknown flag: --robot-beads")
+	if got := fn(rootCmd, rootErr); got != rootErr {
+		t.Fatalf("root error was modified: %v", got)
+	}
+}
+
+func TestRootVersionFlagRegistered(t *testing.T) {
+	// `ntm --version` / `-V` must work alongside the version subcommand
+	// (85 fleet failures probed --version first and read "unknown flag" as a
+	// broken install). Output shape is pinned by the version template.
+	f := rootCmd.Flags().Lookup("version")
+	if f == nil {
+		t.Fatal("root --version flag is not registered")
+	}
+	if f.Shorthand != "V" {
+		t.Fatalf("version flag shorthand = %q, want \"V\"", f.Shorthand)
+	}
+	if tmpl := rootCmd.VersionTemplate(); !strings.Contains(tmpl, "ntm version") {
+		t.Fatalf("version template %q does not match the 'ntm version' headline", tmpl)
 	}
 }
