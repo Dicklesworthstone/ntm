@@ -22,6 +22,17 @@ NTM is a tmux session management tool for orchestrating multiple AI coding agent
 
 ---
 
+## [v1.29.3] -- 2026-08-20 [GitHub Release]
+
+**Migrate-hardening patch** (adversarial torture-test findings against v1.29.2's headline feature).
+
+### Reliability
+
+- **`ntm config migrate` verdicts are honest**: when dead keys survive the line surgery (live inline tables like `rotation = { prefer_restart = true }`, BOM-defeated headers), the command no longer reports "config is clean" — the lenient re-scan always runs, `clean` requires zero unresolved keys, the file stays untouched when nothing is removable, and each unresolved key is named for manual cleanup.
+- **Backups can never clobber**: same-second migrations get `O_EXCL` collision-proof backup names. Sixteen new torture tests pin prefix-collision, dotted/quoted-key, nested-bracket-array, inline-table, CRLF, BOM, symlink, concurrent-lock, and read-only behavior, and an end-to-end test proves `ntm shell` still reflects custom `[agents]` config.
+
+---
+
 ## [v1.29.2] -- 2026-08-20 [GitHub Release]
 
 **Config-migration UX patch** — fixes the removed-key warning wall that greeted every new terminal pane on machines with pre-v1.26 configs (field incident, `bd-config-migrate-warning-wall-151x2`).
