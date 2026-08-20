@@ -26,6 +26,21 @@ var CommandClassification = map[string]CommandRequirement{
 	"completion": RequirePhase1Only,
 	"upgrade":    RequirePhase1Only,
 
+	// Silent shell surfaces (bd-config-migrate-warning-wall-151x2): these are
+	// eval'd/parsed by the user's shell on every pane and tab-completion, so
+	// they must never trigger config loading — a broken config would print
+	// warnings into the eval'd stream or completion output. `ntm shell` falls
+	// back to built-in defaults silently; cobra's hidden completion commands
+	// (`__complete`/`__completeNoDesc`, cobra.ShellCompRequestCmd /
+	// cobra.ShellCompNoDescRequestCmd) need no config at all.
+	"shell":            RequirePhase1Only,
+	"__complete":       RequirePhase1Only,
+	"__completeNoDesc": RequirePhase1Only,
+
+	// `ntm config migrate` reads the config file leniently itself — loading
+	// the (by definition possibly broken) config first would defeat it.
+	"migrate": RequirePhase1Only,
+
 	// Config-only commands
 	"config":   RequireConfig,
 	"bind":     RequireConfig,

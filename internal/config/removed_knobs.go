@@ -176,6 +176,63 @@ var deprecatedKnobPrefixes = map[string]string{
 	"tmux.activity_indicators": noEffect,
 }
 
+// classifyDeadKey reports whether a dotted config key is a known dead knob
+// (either removal tier), together with its disposition and tier name
+// ("removed" for the v1.26.0 batch, "deprecated" for the v1.28.0 batch).
+// Shared by the strict-loader classification and `ntm config migrate`.
+func classifyDeadKey(key string) (disposition, tier string, ok bool) {
+	if disp, found := removedKnobExact[key]; found {
+		return disp, DeadKeyTierRemoved, true
+	}
+	if disp, found := matchPrefix(key, removedKnobPrefixes); found {
+		return disp, DeadKeyTierRemoved, true
+	}
+	if disp, found := deprecatedKnobExact[key]; found {
+		return disp, DeadKeyTierDeprecated, true
+	}
+	if disp, found := matchPrefix(key, deprecatedKnobPrefixes); found {
+		return disp, DeadKeyTierDeprecated, true
+	}
+	return "", "", false
+}
+
+// Dead-key tier names shared by the strict loader, doctor, and config migrate.
+const (
+	// DeadKeyTierRemoved is the v1.26.0 removal batch (error since v1.27.0).
+	DeadKeyTierRemoved = "removed"
+	// DeadKeyTierDeprecated is the v1.28.0 batch (bd-6otuk; error since v1.29.0).
+	DeadKeyTierDeprecated = "deprecated"
+)
+
+// DeadKeyLoadError is the strict-loader failure for a config file containing
+// removed (v1.26.0 batch) and/or deprecated (v1.28.0 batch) keys, plus any
+// genuinely unknown fields found in the same pass. Its Error() text is
+// byte-identical to the historical fmt.Errorf message, so robot JSON error
+// envelopes and doctor are unchanged; the type exists so the human CLI
+// fallback (root.go PersistentPreRunE) can collapse the multi-line detail
+// into a single actionable line pointing at `ntm config migrate`.
+type DeadKeyLoadError struct {
+	Removed    []RemovedKnob
+	Deprecated []RemovedKnob
+	Unknown    []string
+}
+
+func (e *DeadKeyLoadError) Error() string {
+	var msgs []string
+	if len(e.Unknown) > 0 {
+		msgs = append(msgs, "unknown field(s): "+strings.Join(e.Unknown, ", "))
+	}
+	msgs = append(msgs, removedKnobErrorLines(e.Removed)...)
+	msgs = append(msgs, deprecatedKnobErrorLines(e.Deprecated)...)
+	return "parsing config: " + strings.Join(msgs, "\n")
+}
+
+// DeadKeyCount is the number of removed + deprecated keys in the failure
+// (unknown fields excluded — those are not migratable no-ops).
+func (e *DeadKeyLoadError) DeadKeyCount() int {
+	return len(e.Removed) + len(e.Deprecated)
+}
+
 // classifyUndecodedKeys partitions the strict loader's undecoded key list
 // into recognized removed knobs (hard error since v1.27.0), recognized
 // deprecated knobs (v1.28.0 batch: hard error since v1.29.0, with its own

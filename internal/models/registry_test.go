@@ -175,6 +175,8 @@ func TestSuggestModel(t *testing.T) {
 		{"gpt5-codex", "gpt-5-codex"},
 		{"fabel-5", "claude-fable-5"},               // alias near-miss resolves to canonical
 		{"totally-unrelated-model-name-xyz-42", ""}, // no confident match
+		{"x", ""},  // tiny input: rewriting the whole ID is noise, not a near miss
+		{"zz", ""}, // tiny input with no distance-1 registry neighbor
 	}
 	for _, tt := range tests {
 		if got := SuggestModel(tt.model); got != tt.want {

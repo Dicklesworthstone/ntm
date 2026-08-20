@@ -106,7 +106,7 @@ deterministic.
 
 **Corpus**: the suite's golden replay manifest is complemented by the
 D3 real-envelope corpus at `internal/robot/testdata/token_corpus/` —
-50 production-shaped envelopes across 9 surfaces (snapshot, status,
+46 production-shaped envelopes across 9 surfaces (the v1.29.0 dead-code burndown removed four envelope types) (snapshot, status,
 capabilities, terse_projection, dashboard_projection, alerts,
 agent_names, error, tail), generated hermetically from the production
 output structs (`NTM_UPDATE_TOKEN_CORPUS=1` regenerates). It has two

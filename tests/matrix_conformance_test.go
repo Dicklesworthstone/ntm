@@ -292,8 +292,8 @@ func TestMatrixCorpusContractClean(t *testing.T) {
 			}
 		}
 	}
-	if files < 50 {
-		t.Errorf("D3 corpus has %d envelopes; the matrix promises >= 50", files)
+	if files < 46 {
+		t.Errorf("D3 corpus has %d envelopes; the matrix promises >= 46", files)
 	}
 	if len(surfaces) < 8 {
 		t.Errorf("D3 corpus covers %d surfaces; the matrix promises >= 8 (%v)", len(surfaces), surfaces)

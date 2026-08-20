@@ -2580,13 +2580,10 @@ func loadWithCWD(path, cwd string) (*Config, error) {
 			// failed load lists everything the user must fix.
 			removed, deprecated, unknown := classifyUndecodedKeys(fields)
 			if len(removed) > 0 || len(deprecated) > 0 || len(unknown) > 0 {
-				var msgs []string
-				if len(unknown) > 0 {
-					msgs = append(msgs, "unknown field(s): "+strings.Join(unknown, ", "))
-				}
-				msgs = append(msgs, removedKnobErrorLines(removed)...)
-				msgs = append(msgs, deprecatedKnobErrorLines(deprecated)...)
-				return nil, fmt.Errorf("parsing config: %s", strings.Join(msgs, "\n"))
+				// Typed error (message text unchanged) so the human CLI
+				// fallback can collapse dead-key failures into one line
+				// pointing at `ntm config migrate`.
+				return nil, &DeadKeyLoadError{Removed: removed, Deprecated: deprecated, Unknown: unknown}
 			}
 		}
 

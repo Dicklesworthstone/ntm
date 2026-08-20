@@ -272,6 +272,14 @@ func SuggestModel(model string) string {
 	lower := strings.ToLower(model)
 	best := ""
 	bestDist := len(lower)/3 + 2 // confidence bound scales with length
+	// A suggestion that rewrites the whole input is noise, not a near miss:
+	// without this cap, "x" suggested "o1" (distance 2 ≥ the entire input).
+	if bestDist >= len(lower) {
+		bestDist = len(lower) - 1
+	}
+	if bestDist < 1 {
+		return ""
+	}
 	bestPrefix := -1
 	bestSuffix := -1
 	consider := func(candidate, canonical string) {

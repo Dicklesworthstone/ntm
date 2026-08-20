@@ -13,6 +13,31 @@ NTM is a tmux session management tool for orchestrating multiple AI coding agent
 
 ## [Unreleased]
 
+### Fixed
+
+- **`ntm config migrate` + one-line dead-key warning + silent shell surfaces
+  (field incident, `bd-config-migrate-warning-wall-151x2`).** After v1.29.1,
+  a global config still carrying removed/deprecated keys made `eval "$(ntm
+  shell zsh)"` print the strict loader's full ~30-line per-key disposition
+  wall to stderr in every new terminal pane, with hand-editing as the only
+  remedy. Three fixes: **(1)** new `ntm config migrate` surgically deletes
+  every removed (v1.26.0 batch) and deprecated (v1.28.0 batch) key from the
+  selected config file — all other keys, comments, and ordering preserved
+  byte-for-byte, emptied table headers and dead `[[accounts.*]]` blocks
+  removed too — always writing a timestamped backup
+  (`config.toml.bak.<unix>`) first, reporting each key with its disposition,
+  honoring `--config`/`--dry-run`/`--json`, and no-opping on clean configs;
+  every key it removes was a provable no-op, so behavior cannot change.
+  **(2)** The human CLI's config-load-failure warning collapses to one line
+  when the failure is removed/deprecated keys (`ntm: config has N removed
+  key(s) ... run 'ntm config migrate' ...; details: ntm doctor`); robot JSON
+  error envelopes, `ntm doctor`, and `config migrate --dry-run` keep the full
+  per-key detail, and non-key load failures keep the existing full warning.
+  **(3)** `ntm shell <shell>`, `ntm completion <shell>`, and cobra's hidden
+  `__complete`/`__completeNoDesc` completion commands no longer load config
+  at all, so shell-integration and tab-completion output stays byte-clean on
+  stderr even with a broken config.
+
 - **Corrected commit provenance.** Commit `d08893d9`'s message incorrectly
   attributed the fail-closed serve safety-policy change to its completion and
   tmux diff. The actual safety-policy implementation is `dda4aae8`; history
@@ -71,10 +96,11 @@ NTM is a tmux session management tool for orchestrating multiple AI coding agent
   `.ntm.yaml` scanner schema is unchanged, and the `ensemble.*` keys remain
   valid (they were claimed as live in v1.28.0, not deprecated). The
   deprecation list is frozen; this release adds no new deprecations.
-  **Migration:** delete the listed keys from your config file — see the
-  deprecated-key migration table in the v1.28.0 entry below for the full list
-  and per-key dispositions. Nothing changes behaviorally — these values were
-  already ignored.
+  **Migration:** delete the listed keys from your config file (or run
+  `ntm config migrate`, which removes them surgically with a backup) — see
+  the deprecated-key migration table in the v1.28.0 entry below for the full
+  list and per-key dispositions. Nothing changes behaviorally — these values
+  were already ignored.
 
 ### Notes
 
@@ -127,7 +153,8 @@ NTM is a tmux session management tool for orchestrating multiple AI coding agent
   | singles | `agent_mail.program_name`, `agents.default_count`, `recovery.stale_threshold_hours`, `resilience.rate_limit.patterns`, `suggestions_enabled`, `preflight.enabled`, `command_hooks.description` (7) | never had an effect — the agent-mail program name is fixed to `ntm`; rate-limit patterns are built into `internal/agent`; `preflight.strict` and `command_hooks.name` remain live |
 
   **Migration:** delete the listed keys from `~/.config/ntm/config.toml`
-  (the startup warning names each one). Nothing changes behaviorally — these
+  (the startup warning names each one), or run `ntm config migrate` to
+  remove them surgically with a backup. Nothing changes behaviorally — these
   values were already ignored.
 
 - **Excluded from deprecation — `ensemble.*` (24 keys stay valid)**: the
@@ -191,8 +218,10 @@ the staged config removal completes its second phase.
   config file (now as an error check) because it scans the file leniently —
   useful precisely when the strict loader refuses to start. The removal list
   is frozen; this release adds no new removals. **Migration:** delete the
-  listed keys from your config file — see the removed-key migration table in
-  the v1.26.0 entry below for the full list and per-key dispositions.
+  listed keys from your config file (or run `ntm config migrate`, which
+  removes them surgically with a backup) — see the removed-key migration
+  table in the v1.26.0 entry below for the full list and per-key
+  dispositions.
 
 ### Reliability
 
@@ -285,6 +314,8 @@ binary; `docs/reality/audit-v1.26.0.md`).
   | `memory.include_anti_patterns`, `memory.include_history` | no substrate |
 
   Genuinely unknown keys remain hard load errors, exactly as before.
+  (Since the Unreleased entry above: delete the keys by hand or run
+  `ntm config migrate`, which removes them surgically with a backup.)
 
 ### Infrastructure
 

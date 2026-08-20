@@ -64,7 +64,9 @@ fi
 covered=" integration e2e ensemble_experimental load "
 # git-tracked files only: the repo carries a local .gomodcache/ whose
 # third-party tests use tags (sqlite_*, goexperiment.*) we must not gate on.
-uncovered="$(git grep -h '^//go:build ' -- '*_test.go' 2>/dev/null \
+# third_party/ (vendored bubbletea fork) is excluded too: its upstream tests
+# may carry platform/feature tags this repo neither owns nor gates on.
+uncovered="$(git grep -h '^//go:build ' -- '*_test.go' ':(exclude)third_party/**' 2>/dev/null \
   | sed 's|^//go:build ||' \
   | tr '&|()!' ' ' \
   | tr ' ' '\n' \

@@ -16,6 +16,11 @@
 // send-keys, capture-pane, list-panes, list-windows, select-layout,
 // select-pane, display-message, respawn-pane, pipe-pane, and paste-buffer.
 //
+// Version floor: the `=` exact-match sigil has existed since tmux 2.1
+// (Oct 2015, the cmd-find rewrite). NTM elsewhere already assumes tmux 3.0+
+// features (per-pane options like allow-set-title), so no runtime version
+// guard is needed here.
+//
 // The ONE exception (verified empirically): session/window-scoped option
 // commands (`set-option`/`show-options` without `-p`) reject `=name` with
 // "no such session: =name" but accept `=name:`. Use SessionOptionTarget for

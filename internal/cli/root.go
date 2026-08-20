@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -441,9 +442,9 @@ func classifyRobotExecuteError(err error) (string, string) {
 		if strings.Contains(message, fragment) {
 			hint := "Use 'ntm --robot-help' or 'ntm --robot-capabilities' to inspect valid flags"
 			if unknown := unknownFlagFromError(err.Error()); unknown != "" {
-				if curated, ok := flagMisGuessHints[unknown]; ok {
+				if curated, suggestion := flagErrorGuidance(unknown, rootCmd.Flags()); curated != "" {
 					hint = curated
-				} else if suggestion := nearestFlagName(unknown, rootCmd.Flags()); suggestion != "" {
+				} else if suggestion != "" {
 					hint = fmt.Sprintf("Did you mean --%s? Otherwise use 'ntm --robot-help' or 'ntm --robot-capabilities' to inspect valid flags", suggestion)
 				}
 			}
@@ -482,6 +483,60 @@ var flagMisGuessHints = map[string]string{
 	"timeout":     "--timeout is a robot-surface flag (e.g. ntm --robot-wait=SESSION --timeout=2m); this command does not accept it",
 	"message":     "Use --msg (or --msg-file) for robot message payloads; 'ntm send' takes the prompt as a positional argument",
 	"msg":         "Use --msg with robot surfaces (e.g. --robot-send=SESSION --msg='...'); 'ntm send' takes the prompt as a positional argument",
+}
+
+// curatedFlagHint returns the curated hint for an unknown flag, tolerating a
+// single-edit typo of a curated key (--sesion, --messge). Without the typo
+// tolerance those guesses fell through to the generic edit-distance flag
+// suggester, which picks a red herring (--sesion's nearest flag on 'ntm send'
+// is --json). Matching iterates keys in sorted order so a hypothetical
+// distance-1 tie resolves deterministically. Callers must consult a real
+// registered flag one edit away FIRST (see flagErrorGuidance): on a command
+// that actually has --session, the fix for --sesion is the flag itself, not
+// the curated redirection.
+func curatedFlagHint(unknown string) (string, bool) {
+	if hint, ok := flagMisGuessHints[unknown]; ok {
+		return hint, true
+	}
+	keys := make([]string, 0, len(flagMisGuessHints))
+	for key := range flagMisGuessHints {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		if levenshteinDistance(unknown, key) == 1 {
+			return flagMisGuessHints[key], true
+		}
+	}
+	return "", false
+}
+
+// flagErrorGuidance resolves the best guidance for an unknown flag name, in
+// precedence order:
+//  1. exact curated hint (the guessed flag is a known fleet mis-guess);
+//  2. a registered flag one edit away (a plain typo of a real flag on this
+//     surface beats the curated redirection: ntm codex --sesion means the
+//     command's own --session);
+//  3. curated hint for a single-edit typo of a curated key;
+//  4. the general edit-distance suggester.
+//
+// Exactly one of hint/suggestion is non-empty on a hit; both empty means no
+// confident guidance exists.
+func flagErrorGuidance(unknown string, flagSets ...*pflag.FlagSet) (hint, suggestion string) {
+	if unknown == "" {
+		return "", ""
+	}
+	if curated, ok := flagMisGuessHints[unknown]; ok {
+		return curated, ""
+	}
+	nearest := nearestFlagName(unknown, flagSets...)
+	if nearest != "" && levenshteinDistance(unknown, nearest) <= 1 {
+		return "", nearest
+	}
+	if curated, ok := curatedFlagHint(unknown); ok {
+		return curated, ""
+	}
+	return "", nearest
 }
 
 // nearestFlagName returns the closest registered flag name across the given
@@ -647,7 +702,19 @@ Shell Integration:
 				// here — it is skipped with its own warning inside LoadMerged.
 				// Warn loudly so the user sees the real cause instead of
 				// silently reverting to built-in defaults (issue #162).
-				fmt.Fprintf(os.Stderr, "ntm: warning: config load failed (%v); using built-in defaults\n", err)
+				//
+				// Exception (bd-config-migrate-warning-wall-151x2): when the
+				// failure is removed/deprecated keys, the full multi-key
+				// disposition wall printed on EVERY invocation (~30 lines per
+				// terminal pane via shell integration). Collapse it to one
+				// actionable line; the full detail remains in robot JSON
+				// envelopes, `ntm doctor`, and `ntm config migrate --dry-run`.
+				var deadErr *config.DeadKeyLoadError
+				if errors.As(err, &deadErr) && deadErr.DeadKeyCount() > 0 {
+					fmt.Fprintf(os.Stderr, "ntm: config has %d removed key(s) that never had an effect — run 'ntm config migrate' to clean them (backup kept); details: ntm doctor\n", deadErr.DeadKeyCount())
+				} else {
+					fmt.Fprintf(os.Stderr, "ntm: warning: config load failed (%v); using built-in defaults\n", err)
+				}
 				cfg = config.Default()
 			}
 			activeTheme := theme.Current()
@@ -4161,11 +4228,15 @@ func init() {
 		}
 		// Curated hints win over the edit-distance suggester: for the known
 		// mis-guesses the nearest registered flag is usually a red herring
-		// (--session's nearest match on 'ntm send' is --json).
-		if curated, ok := flagMisGuessHints[unknown]; ok {
+		// (--session's nearest match on 'ntm send' is --json). But a real
+		// flag one edit away wins over a fuzzy curated match, so commands
+		// that genuinely have --session still get "did you mean --session?"
+		// for --sesion (see flagErrorGuidance).
+		curated, suggestion := flagErrorGuidance(unknown, cmd.Flags(), cmd.InheritedFlags())
+		if curated != "" {
 			return fmt.Errorf("%w\nHint: %s", err, curated)
 		}
-		if suggestion := nearestFlagName(unknown, cmd.Flags(), cmd.InheritedFlags()); suggestion != "" {
+		if suggestion != "" {
 			return fmt.Errorf("%w (did you mean --%s?)", err, suggestion)
 		}
 		return err
@@ -5987,6 +6058,10 @@ Examples:
 
 	// Add validate subcommand (comprehensive validation from validate.go)
 	cmd.AddCommand(newConfigValidateCmd())
+
+	// Add migrate subcommand: surgical removal of removed/deprecated keys
+	// (bd-config-migrate-warning-wall-151x2).
+	cmd.AddCommand(newConfigMigrateCmd())
 
 	// Add get subcommand
 	cmd.AddCommand(&cobra.Command{

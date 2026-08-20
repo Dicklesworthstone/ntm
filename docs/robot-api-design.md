@@ -281,7 +281,9 @@ results for remediation instead of reporting a verified outcome.
 | `AGENT_NOT_FOUND` | Agent does not exist |
 | `THREAD_NOT_FOUND` | Thread does not exist |
 | `INVALID_FLAG` | Invalid flag combination |
+| `INVALID_ARGS` | Required argument missing or empty (e.g. `--robot-send` without a usable `--msg`/`--msg-file`) |
 | `INVALID_INPUT` | Invalid parameter value |
+| `DEPENDENCY_MISSING` | Required external tool not installed or vanished mid-run |
 | `MISSING_REQUIRED` | Required parameter missing |
 | `TIMEOUT` | Operation timed out |
 | `NOT_IMPLEMENTED` | Feature not yet available |
@@ -303,6 +305,7 @@ results for remediation instead of reporting a verified outcome.
 - `NOT_IMPLEMENTED` → exit 2
 - `MISSING_REQUIRED` → exit 1
 - `INVALID_FLAG` → exit 1
+- `INVALID_ARGS` → exit 1
 - `INVALID_INPUT` → exit 1
 - `SESSION_NOT_FOUND` → exit 1
 - All other errors → exit 1
