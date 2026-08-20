@@ -75,11 +75,6 @@ uncovered="$(git grep -h '^//go:build ' -- '*_test.go' ':(exclude)third_party/**
       case "$tag" in
         # GOOS/GOARCH and race are supplied by the platform/toolchain, not -tags.
         linux|darwin|windows|freebsd|openbsd|netbsd|plan9|solaris|js|wasip1|aix|android|ios|amd64|arm64|386|arm|race|cgo|unix|go1.*) continue ;;
-        # Deliberate quarantine, NOT a gate gap: the pre-18ae64f3 scenario
-        # harness (e2e/scenario_harness*.go) was parked behind this tag when
-        # harness.go superseded it and no longer compiles (bd-yhc8r tracks
-        # deleting it). Do not add new code under this tag.
-        legacy_scenario_harness) continue ;;
       esac
       case "$covered" in
         *" $tag "*) ;;
