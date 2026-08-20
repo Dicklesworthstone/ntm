@@ -45,6 +45,20 @@ NTM is a tmux session management tool for orchestrating multiple AI coding agent
 
 ---
 
+## [v1.29.2] -- 2026-08-20 [GitHub Release]
+
+**Config-migration UX patch** — fixes the removed-key warning wall that greeted every new terminal pane on machines with pre-v1.26 configs.
+
+### Features
+
+- **`ntm config migrate`** surgically deletes every removed/deprecated config key (both migration batches) from the selected config file — keys that by definition never had an effect, so behavior cannot change. Timestamped backup always written first; comments, ordering, and every live byte preserved; emptied tables removed; `--dry-run` and `--json` supported; clean configs no-op.
+
+### Reliability
+
+- The startup config warning collapses to **one line** pointing at `ntm config migrate` and `ntm doctor` (the full per-key detail remains in robot error envelopes, doctor, and `--dry-run`); `ntm shell`, `completion`, and shell-completion internals no longer load config at all and emit zero stderr — new panes stay clean.
+
+---
+
 ## [v1.29.1] -- 2026-08-19 [GitHub Release]
 
 **Same-day patch: the two issues filed against v1.29.0, fixed.**
