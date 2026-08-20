@@ -90,6 +90,13 @@ const (
 	// ErrCodeInvalidFlag indicates a flag value is invalid or malformed.
 	ErrCodeInvalidFlag = "INVALID_FLAG"
 
+	// ErrCodeInvalidArgs indicates a required argument is missing or empty
+	// (e.g. --robot-send without a usable --msg/--msg-file). Distinct from
+	// ErrCodeInvalidFlag, which covers malformed or unknown flags. Several
+	// robot surfaces already emit this string literally; this constant is
+	// the canonical taxonomy entry.
+	ErrCodeInvalidArgs = "INVALID_ARGS"
+
 	// ErrCodeTimeout indicates the operation timed out.
 	ErrCodeTimeout = "TIMEOUT"
 

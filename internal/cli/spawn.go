@@ -34,6 +34,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/handoff"
 	"github.com/Dicklesworthstone/ntm/internal/hooks"
 	"github.com/Dicklesworthstone/ntm/internal/integrations/dcg"
+	"github.com/Dicklesworthstone/ntm/internal/models"
 	"github.com/Dicklesworthstone/ntm/internal/output"
 	"github.com/Dicklesworthstone/ntm/internal/persona"
 	"github.com/Dicklesworthstone/ntm/internal/plugins"
@@ -3029,6 +3030,18 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 			systemPromptFile = promptFile
 			if !IsJSONOutput() {
 				fmt.Printf("  → persona '%s' → pane %s_%d\n", profile.Name, agent.Type, agent.Index)
+			}
+		}
+
+		// Advisory model did-you-mean (bd-uh7la item 6): an explicitly
+		// requested model that resolves to an ID the model registry doesn't
+		// know, but that sits a small edit away from a known registry ID, is
+		// almost always a typo. Warn with the suggestion and proceed so
+		// custom/self-hosted model IDs keep working.
+		if modelRequested && agent.Type != AgentTypeAntigravity && agent.Type != AgentTypeOllama && !IsJSONOutput() {
+			if suggestion := models.SuggestModel(resolvedModel); suggestion != "" {
+				output.PrintWarningf("model %q is not in the model registry; did you mean %q? (spawning with the requested model)",
+					resolvedModel, suggestion)
 			}
 		}
 

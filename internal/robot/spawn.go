@@ -21,6 +21,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	dispatchsvc "github.com/Dicklesworthstone/ntm/internal/dispatch"
 	"github.com/Dicklesworthstone/ntm/internal/handoff"
+	"github.com/Dicklesworthstone/ntm/internal/models"
 	"github.com/Dicklesworthstone/ntm/internal/pressure"
 	"github.com/Dicklesworthstone/ntm/internal/process"
 	"github.com/Dicklesworthstone/ntm/internal/recovery"
@@ -167,6 +168,11 @@ type SpawnOutput struct {
 	MonitorStarted bool   `json:"monitor_started"`
 	MonitorError   string `json:"monitor_error,omitempty"`
 	MonitorPID     int    `json:"monitor_pid,omitempty"`
+	// ModelHints carries did-you-mean guidance for requested model overrides
+	// that do not resolve in the model registry (e.g. "claude-opus5" →
+	// "claude-opus-5"). Advisory only: unrecognized models still spawn, so
+	// custom/self-hosted model IDs keep working (bd-uh7la item 6).
+	ModelHints []string `json:"model_hints,omitempty"`
 }
 
 func setSpawnCancellation(output *SpawnOutput, err error) {
@@ -488,6 +494,12 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 		output.RobotResponse = NewErrorResponse(validationErr, errorCode, hint)
 		return output, nil
 	}
+	// Advisory model did-you-mean: a requested model override that resolves
+	// to an ID unknown to the model registry but a small edit away from a
+	// known one is almost always a typo (field evidence: near-miss IDs on
+	// spawn). The spawn still proceeds so custom model IDs keep working.
+	output.ModelHints = spawnModelHints(cfg, opts)
+
 	// Render launch commands up front so a model/effort override that the
 	// configured launch template cannot honor fails before any tmux session or
 	// pane is created (bd-rr8gn).
@@ -1479,6 +1491,35 @@ func agentTypeShort(agentType string) string {
 // the configured launch command never references {{.Model}} or
 // {{.ReasoningEffort}}, so the override would be silently dropped. Rendering
 // problems without an override keep the raw configured command, as before.
+// spawnModelHints returns did-you-mean hints for explicit model overrides
+// that resolve (through config aliases) to IDs unknown to the model registry
+// but within a small edit distance of a known registry ID. Advisory only —
+// callers must not fail the spawn on these.
+func spawnModelHints(cfg *config.Config, opts SpawnOptions) []string {
+	requested := []struct{ agentType, model string }{
+		{"claude", opts.CCModel},
+		{"codex", opts.CodModel},
+		{"gemini", opts.GmiModel},
+		{"grok", opts.GrokModel},
+	}
+	var hints []string
+	for _, req := range requested {
+		if req.model == "" {
+			continue
+		}
+		resolved := req.model
+		if cfg != nil {
+			if r := cfg.Models.GetModelName(req.agentType, req.model); r != "" {
+				resolved = r
+			}
+		}
+		if suggestion := models.SuggestModel(resolved); suggestion != "" {
+			hints = append(hints, fmt.Sprintf("model %q (%s) is not in the model registry; did you mean %q? Spawning with the requested model anyway", resolved, req.agentType, suggestion))
+		}
+	}
+	return hints
+}
+
 func getAgentCommandsWithOverrides(cfg *config.Config, opts SpawnOptions) (map[string]string, error) {
 	defaults := map[string]string{
 		"claude":      "claude",

@@ -217,6 +217,116 @@ func GetContextLimit(model string) int {
 	return DefaultContextLimit
 }
 
+// KnownModel reports whether a model identifier resolves in the registry
+// through the same rules GetContextLimit uses (exact match, alias, date-suffix
+// strip, or longest-prefix match) — i.e. whether GetContextLimit would return
+// a real registry value rather than the DefaultContextLimit fallback.
+func KnownModel(model string) bool {
+	if model == "" {
+		return false
+	}
+	registryMu.RLock()
+	defer registryMu.RUnlock()
+
+	lower := strings.ToLower(model)
+	if _, ok := ContextLimits[lower]; ok {
+		return true
+	}
+	if canonical, ok := Aliases[lower]; ok {
+		if _, ok := ContextLimits[canonical]; ok {
+			return true
+		}
+	}
+	stripped := dateSuffixRe.ReplaceAllString(lower, "")
+	if stripped != lower {
+		if _, ok := ContextLimits[stripped]; ok {
+			return true
+		}
+		if canonical, ok := Aliases[stripped]; ok {
+			if _, ok := ContextLimits[canonical]; ok {
+				return true
+			}
+		}
+	}
+	for key := range ContextLimits {
+		if strings.HasPrefix(lower, key) || strings.HasPrefix(stripped, key) {
+			return true
+		}
+	}
+	return false
+}
+
+// SuggestModel returns the canonical registry identifier closest to an
+// unrecognized model ID within a small edit distance, or "" when the ID is
+// already known or no confident match exists. Field evidence shows agents
+// mistyping near-miss model IDs on spawn (e.g. "claude-opus5"); a
+// did-you-mean pointing at the real registry ID saves a discovery
+// round-trip. Alias matches resolve to their canonical name.
+func SuggestModel(model string) string {
+	if model == "" || KnownModel(model) {
+		return ""
+	}
+	registryMu.RLock()
+	defer registryMu.RUnlock()
+
+	lower := strings.ToLower(model)
+	best := ""
+	bestDist := len(lower)/3 + 2 // confidence bound scales with length
+	bestPrefix := -1
+	consider := func(candidate, canonical string) {
+		d := editDistance(lower, candidate)
+		if d > bestDist {
+			return
+		}
+		// Ties break toward the candidate sharing the longest prefix with
+		// the guess, then lexicographically for deterministic output across
+		// map iteration orders.
+		p := 0
+		for p < len(lower) && p < len(candidate) && lower[p] == candidate[p] {
+			p++
+		}
+		if d < bestDist || p > bestPrefix || (d == bestDist && p == bestPrefix && (best == "" || canonical < best)) {
+			bestDist = d
+			bestPrefix = p
+			best = canonical
+		}
+	}
+	for key := range ContextLimits {
+		consider(key, key)
+	}
+	for alias, canonical := range Aliases {
+		if _, ok := ContextLimits[canonical]; ok {
+			consider(alias, canonical)
+		}
+	}
+	return best
+}
+
+// editDistance is a plain O(len(a)*len(b)) Levenshtein distance over bytes;
+// model IDs are short ASCII so this is cheap.
+func editDistance(a, b string) int {
+	if a == b {
+		return 0
+	}
+	prev := make([]int, len(b)+1)
+	curr := make([]int, len(b)+1)
+	for j := range prev {
+		prev[j] = j
+	}
+	for i := 1; i <= len(a); i++ {
+		curr[0] = i
+		for j := 1; j <= len(b); j++ {
+			cost := 1
+			if a[i-1] == b[j-1] {
+				cost = 0
+			}
+			curr[j] = min(min(curr[j-1]+1, prev[j]+1), prev[j-1]+cost)
+		}
+		prev, curr = curr, prev
+	}
+	return prev[len(b)]
+}
+
 // agentTypeBudgetPct defines what fraction of the model's context limit
 // to allocate as a safe working budget per agent type. The remainder is
 // reserved for system prompts, tool definitions, and overhead.
