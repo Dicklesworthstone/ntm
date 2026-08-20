@@ -934,15 +934,17 @@ func TestE2E_Timebox_DryRunPlanValidation(t *testing.T) {
 	suite := NewTestSuite(t, "timebox_dryrun_validation")
 	defer suite.Teardown()
 
-	// Test the Validate() method on DryRunPlan
+	// DryRunPlan.Validate was removed in the G1 dead-code burndown (670f6380);
+	// plans report validity through the Validation struct, which is what the
+	// CLI surfaces. Assert those semantics directly (bd-xj28x).
 	validPlan := &ensemble.DryRunPlan{
 		SessionName: "test-session",
 		Question:    "What is the issue?",
 		Validation:  ensemble.DryRunValidation{Valid: true},
 	}
 
-	if err := validPlan.Validate(); err != nil {
-		t.Errorf("[E2E-TIMEBOX] valid plan should not return error: %v", err)
+	if !validPlan.Validation.Valid || len(validPlan.Validation.Errors) != 0 {
+		t.Errorf("[E2E-TIMEBOX] valid plan must report Valid with no errors: %+v", validPlan.Validation)
 	}
 	suite.Logger().Log("[E2E-TIMEBOX] Valid plan passed validation")
 
@@ -955,19 +957,15 @@ func TestE2E_Timebox_DryRunPlanValidation(t *testing.T) {
 		},
 	}
 
-	if err := invalidPlan.Validate(); err == nil {
-		t.Error("[E2E-TIMEBOX] invalid plan should return error")
+	if invalidPlan.Validation.Valid {
+		t.Error("[E2E-TIMEBOX] invalid plan should report Valid=false")
+	} else if len(invalidPlan.Validation.Errors) == 0 {
+		t.Error("[E2E-TIMEBOX] invalid plan should carry validation errors")
 	} else {
-		suite.Logger().Log("[E2E-TIMEBOX] Invalid plan correctly rejected: %v", err)
+		suite.Logger().Log("[E2E-TIMEBOX] Invalid plan correctly rejected: %v", invalidPlan.Validation.Errors)
 	}
 
-	// Nil plan
-	var nilPlan *ensemble.DryRunPlan
-	if err := nilPlan.Validate(); err == nil {
-		t.Error("[E2E-TIMEBOX] nil plan should return error")
-	}
-
-	suite.Logger().Log("[E2E-TIMEBOX] DryRunPlan validation tested: valid, invalid, nil")
+	suite.Logger().Log("[E2E-TIMEBOX] DryRunPlan validation tested: valid, invalid")
 }
 
 // -------------------------------------------------------------------

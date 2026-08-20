@@ -7,7 +7,6 @@ package e2e
 
 import (
 	"fmt"
-	"math"
 	"strings"
 	"testing"
 

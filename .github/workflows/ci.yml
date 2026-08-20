@@ -70,6 +70,9 @@ jobs:
       - name: G2 config-key liveness (RegisterReader claims + canary + ratchet)
         run: bash scripts/guards/config_liveness.sh
 
+      - name: Tagged-test compile gate (go vet per test build tag + canary, bd-xj28x)
+        run: bash scripts/guards/tagged_vet.sh
+
   # ============================================================================
   # RELEASE PREFLIGHT (dry-run) - WS0-G4 release-artifact lockstep
   # (bd-ws0-guards-klz98.5). Releases are DSR-only (AGENTS.md), so this job is

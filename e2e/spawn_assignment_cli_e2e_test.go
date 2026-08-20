@@ -1222,9 +1222,11 @@ reasoning_effort = "medium"
 			t.Fatalf("reset Grok ambient-context CASS invocation log: %v", err)
 		}
 		checkpointMarker := "GROK_RECOVERY_CONTEXT_MUST_NOT_SEND"
-		checkpointStorage := checkpoint.NewStorageWithDir(
-			filepath.Join(fixture.root, "home", checkpoint.DefaultCheckpointDir),
-		)
+		// checkpoint.NewStorageWithDir was removed in the G1 dead-code
+		// burndown (670f6380); BaseDir is exported, construct directly.
+		checkpointStorage := &checkpoint.Storage{
+			BaseDir: filepath.Join(fixture.root, "home", checkpoint.DefaultCheckpointDir),
+		}
 		ambientCheckpoint := &checkpoint.Checkpoint{
 			Version:     checkpoint.CurrentVersion,
 			ID:          "ambient-context",
