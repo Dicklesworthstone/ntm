@@ -20,6 +20,18 @@ NTM is a tmux session management tool for orchestrating multiple AI coding agent
 
 ---
 
+## [v1.29.1] -- 2026-08-19 [GitHub Release]
+
+**Same-day patch: the two issues filed against v1.29.0, fixed.**
+
+### Reliability
+
+- **Stale projections no longer hide live sessions (#254).** When every runtime-projection row passes its staleness horizon, `--robot-snapshot`/`--robot-status` now verify against live tmux and serve the live view with a staleness alert instead of returning an empty session list; an empty result is served only when live tmux confirms idle.
+- **Pane identities publish before agents launch (#255).** Spawn writes each agent's Agent Mail identity (canonical + legacy files, durable registry) immediately before its launch keystrokes, so a booting agent can never race its own registration; identity failures stay fail-open (mail down never blocks a spawn).
+- **Tagged test code compiles in CI again.** A new tagged-vet guard compiles the integration, e2e+ensemble, and load test variants with a firing canary and a tag census — and immediately caught three more tagged tests rotted by the dead-code sweep, now fixed.
+
+---
+
 ## [v1.29.0] -- 2026-08-19 [GitHub Release]
 
 **The P3-backlog and fleet-friction release**: the final open beads implemented, ~72k lines of dead code removed, the second config-deprecation batch flipped to errors as promised, and a fleet-wide cass mining pass converted three weeks of real agent friction into fixes.
