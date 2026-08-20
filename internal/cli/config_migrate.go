@@ -65,18 +65,25 @@ Examples:
 				return nil
 			}
 
-			if dryRun {
-				fmt.Printf("dry-run: %d dead key(s) would be removed from %s (nothing written):\n", len(result.Changes), result.Path)
+			if len(result.Changes) > 0 {
+				if dryRun {
+					fmt.Printf("dry-run: %d dead key(s) would be removed from %s (nothing written):\n", len(result.Changes), result.Path)
+				} else {
+					fmt.Printf("removed %d dead key(s) from %s:\n", len(result.Changes), result.Path)
+				}
+				for _, change := range result.Changes {
+					fmt.Printf("  - %s (%s): %s\n", change.Key, change.Tier, change.Disposition)
+				}
+				if !dryRun && result.BackupPath != "" {
+					fmt.Printf("backup written: %s\n", result.BackupPath)
+				}
+				fmt.Println(migrateNoBehaviorChange)
 			} else {
-				fmt.Printf("removed %d dead key(s) from %s:\n", len(result.Changes), result.Path)
+				// Nothing was removable but dead keys remain (unresolved-only
+				// config, e.g. inside a live inline table): the file was NOT
+				// modified and no backup was written.
+				fmt.Printf("no dead keys could be removed automatically from %s (file unchanged)\n", result.Path)
 			}
-			for _, change := range result.Changes {
-				fmt.Printf("  - %s (%s): %s\n", change.Key, change.Tier, change.Disposition)
-			}
-			if !dryRun {
-				fmt.Printf("backup written: %s\n", result.BackupPath)
-			}
-			fmt.Println(migrateNoBehaviorChange)
 			if len(result.Unresolved) > 0 {
 				fmt.Printf("WARNING: %d dead key(s) could not be removed automatically (edit by hand; 'ntm doctor' names each):\n", len(result.Unresolved))
 				for _, change := range result.Unresolved {

@@ -15,29 +15,6 @@ NTM is a tmux session management tool for orchestrating multiple AI coding agent
 
 ### Fixed
 
-- **`ntm config migrate` + one-line dead-key warning + silent shell surfaces
-  (field incident, `bd-config-migrate-warning-wall-151x2`).** After v1.29.1,
-  a global config still carrying removed/deprecated keys made `eval "$(ntm
-  shell zsh)"` print the strict loader's full ~30-line per-key disposition
-  wall to stderr in every new terminal pane, with hand-editing as the only
-  remedy. Three fixes: **(1)** new `ntm config migrate` surgically deletes
-  every removed (v1.26.0 batch) and deprecated (v1.28.0 batch) key from the
-  selected config file — all other keys, comments, and ordering preserved
-  byte-for-byte, emptied table headers and dead `[[accounts.*]]` blocks
-  removed too — always writing a timestamped backup
-  (`config.toml.bak.<unix>`) first, reporting each key with its disposition,
-  honoring `--config`/`--dry-run`/`--json`, and no-opping on clean configs;
-  every key it removes was a provable no-op, so behavior cannot change.
-  **(2)** The human CLI's config-load-failure warning collapses to one line
-  when the failure is removed/deprecated keys (`ntm: config has N removed
-  key(s) ... run 'ntm config migrate' ...; details: ntm doctor`); robot JSON
-  error envelopes, `ntm doctor`, and `config migrate --dry-run` keep the full
-  per-key detail, and non-key load failures keep the existing full warning.
-  **(3)** `ntm shell <shell>`, `ntm completion <shell>`, and cobra's hidden
-  `__complete`/`__completeNoDesc` completion commands no longer load config
-  at all, so shell-integration and tab-completion output stays byte-clean on
-  stderr even with a broken config.
-
 - **Corrected commit provenance.** Commit `d08893d9`'s message incorrectly
   attributed the fail-closed serve safety-policy change to its completion and
   tmux diff. The actual safety-policy implementation is `dda4aae8`; history
@@ -47,7 +24,7 @@ NTM is a tmux session management tool for orchestrating multiple AI coding agent
 
 ## [v1.29.2] -- 2026-08-20 [GitHub Release]
 
-**Config-migration UX patch** — fixes the removed-key warning wall that greeted every new terminal pane on machines with pre-v1.26 configs.
+**Config-migration UX patch** — fixes the removed-key warning wall that greeted every new terminal pane on machines with pre-v1.26 configs (field incident, `bd-config-migrate-warning-wall-151x2`).
 
 ### Features
 
@@ -328,7 +305,7 @@ binary; `docs/reality/audit-v1.26.0.md`).
   | `memory.include_anti_patterns`, `memory.include_history` | no substrate |
 
   Genuinely unknown keys remain hard load errors, exactly as before.
-  (Since the Unreleased entry above: delete the keys by hand or run
+  (Since v1.29.2: delete the keys by hand or run
   `ntm config migrate`, which removes them surgically with a backup.)
 
 ### Infrastructure

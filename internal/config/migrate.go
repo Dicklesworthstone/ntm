@@ -112,15 +112,13 @@ func MigrateDeadKeys(path string, dryRun bool) (*MigrationResult, error) {
 	result.Updated = updated
 	result.Changes = changes
 
-	if len(changes) == 0 {
-		result.Clean = true
-		return result, nil
-	}
-
 	// Safety net: the cleaned contents must still be valid TOML, and every
 	// dead key we claim to have removed must actually be gone under the same
 	// lenient scan doctor uses. Anything still present is reported as
-	// unresolved rather than silently claimed fixed.
+	// unresolved rather than silently claimed fixed. This runs even when the
+	// surgical editor removed NOTHING: a dead key the editor cannot reach (for
+	// example inside a live inline table) must surface as unresolved, never as
+	// a false "config is clean" while the strict loader still refuses the file.
 	cfg := &Config{}
 	md, err := toml.Decode(updated, cfg)
 	if err != nil {
@@ -134,20 +132,57 @@ func MigrateDeadKeys(path string, dryRun bool) (*MigrationResult, error) {
 		result.Unresolved = append(result.Unresolved, MigrationChange{Key: knob.Key, Disposition: knob.Disposition, Tier: DeadKeyTierDeprecated})
 	}
 
+	if len(changes) == 0 {
+		// Nothing removable: clean only when the rescan agrees nothing dead
+		// remains. Either way the file is untouched (no backup, no write).
+		result.Clean = len(result.Unresolved) == 0
+		return result, nil
+	}
+
 	if dryRun {
 		return result, nil
 	}
 
 	// Timestamped backup FIRST, next to the file, then the atomic rewrite.
-	backupPath := resolvedPath + ".bak." + strconv.FormatInt(time.Now().Unix(), 10)
-	if err := os.WriteFile(backupPath, data, mode); err != nil {
-		return nil, fmt.Errorf("writing backup %s (config left untouched): %w", backupPath, err)
+	backupPath, err := writeMigrationBackup(resolvedPath, data, mode)
+	if err != nil {
+		return nil, fmt.Errorf("writing backup (config left untouched): %w", err)
 	}
 	result.BackupPath = backupPath
 	if err := util.AtomicWriteFile(resolvedPath, []byte(updated), mode); err != nil {
 		return nil, fmt.Errorf("writing migrated config %s (backup kept at %s): %w", path, backupPath, err)
 	}
 	return result, nil
+}
+
+// writeMigrationBackup writes the original config bytes to
+// <path>.bak.<unix>, refusing (O_EXCL) to overwrite an existing backup: two
+// migrations in the same second must not silently clobber the first backup —
+// the whole point of the backup is that it survives. On a name collision a
+// "-1", "-2", ... suffix is appended.
+func writeMigrationBackup(resolvedPath string, data []byte, mode os.FileMode) (string, error) {
+	base := resolvedPath + ".bak." + strconv.FormatInt(time.Now().Unix(), 10)
+	for attempt := 0; ; attempt++ {
+		backupPath := base
+		if attempt > 0 {
+			backupPath = base + "-" + strconv.Itoa(attempt)
+		}
+		f, err := os.OpenFile(backupPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
+		if err != nil {
+			if os.IsExist(err) && attempt < 1000 {
+				continue
+			}
+			return "", err
+		}
+		if _, err := f.Write(data); err != nil {
+			f.Close()
+			return "", fmt.Errorf("writing %s: %w", backupPath, err)
+		}
+		if err := f.Close(); err != nil {
+			return "", fmt.Errorf("closing %s: %w", backupPath, err)
+		}
+		return backupPath, nil
+	}
 }
 
 // removeDeadTOMLKeys performs the line-level surgery: it returns contents

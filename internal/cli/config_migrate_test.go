@@ -311,3 +311,55 @@ func TestCompletionStderrByteClean(t *testing.T) {
 		t.Errorf("__complete produced no candidates:\n%.200s", stdout)
 	}
 }
+
+// TestShellIntegrationReflectsCustomAgentConfig guards against the silent
+// alias-revert regression: `shell` is classified Phase1Only (config loading
+// skipped in PersistentPreRunE), so runShellInit must still load the selected
+// config itself — a user-customized [agents] command must appear in the
+// emitted aliases, and stderr must stay byte-clean.
+func TestShellIntegrationReflectsCustomAgentConfig(t *testing.T) {
+	custom := `# custom agents
+[agents]
+claude = "my-custom-claude --special-flag"
+codex = "my-custom-codex"
+`
+	stdout, stderr := runMigrateChild(t, "shell-zsh", custom)
+	if stderr != "" {
+		t.Errorf("ntm shell zsh wrote stderr with a valid custom config:\n%s", stderr)
+	}
+	if !strings.Contains(stdout, "alias cc='my-custom-claude --special-flag'") {
+		t.Errorf("custom claude agent command missing from zsh aliases:\n%.400s", stdout)
+	}
+	if !strings.Contains(stdout, "alias cod='my-custom-codex'") {
+		t.Errorf("custom codex agent command missing from zsh aliases:\n%.400s", stdout)
+	}
+}
+
+// TestConfigMigrateUnresolvedOnlyNotClean: a dead key the surgical editor
+// cannot remove (inside a live inline table) must NOT be reported as a clean
+// config — the strict loader still refuses the file.
+func TestConfigMigrateUnresolvedOnlyNotClean(t *testing.T) {
+	path := writeCLIMigrateFixture(t, "rotation = { prefer_restart = true }\n")
+	pinSelectedConfig(t, path)
+
+	out, err := captureStdout(t, func() error {
+		return newConfigMigrateCmd().Execute()
+	})
+	if err != nil {
+		t.Fatalf("config migrate: %v\noutput:\n%s", err, out)
+	}
+	if strings.Contains(out, "config is clean") {
+		t.Errorf("unresolved-only config reported clean:\n%s", out)
+	}
+	if !strings.Contains(out, "could not be removed automatically") ||
+		!strings.Contains(out, "rotation.prefer_restart") {
+		t.Errorf("output missing unresolved warning naming the key:\n%s", out)
+	}
+	if strings.Contains(out, "backup written:") {
+		t.Errorf("no write happened, but a backup line was printed:\n%s", out)
+	}
+	after, _ := os.ReadFile(path)
+	if string(after) != "rotation = { prefer_restart = true }\n" {
+		t.Error("file was modified despite nothing being removable")
+	}
+}
