@@ -440,8 +440,12 @@ func classifyRobotExecuteError(err error) (string, string) {
 	} {
 		if strings.Contains(message, fragment) {
 			hint := "Use 'ntm --robot-help' or 'ntm --robot-capabilities' to inspect valid flags"
-			if suggestion := suggestNearestFlag(err.Error()); suggestion != "" {
-				hint = fmt.Sprintf("Did you mean --%s? Otherwise use 'ntm --robot-help' or 'ntm --robot-capabilities' to inspect valid flags", suggestion)
+			if unknown := unknownFlagFromError(err.Error()); unknown != "" {
+				if curated, ok := flagMisGuessHints[unknown]; ok {
+					hint = curated
+				} else if suggestion := nearestFlagName(unknown, rootCmd.Flags()); suggestion != "" {
+					hint = fmt.Sprintf("Did you mean --%s? Otherwise use 'ntm --robot-help' or 'ntm --robot-capabilities' to inspect valid flags", suggestion)
+				}
 			}
 			return robot.ErrCodeInvalidFlag, hint
 		}
@@ -456,6 +460,17 @@ func classifyRobotExecuteError(err error) (string, string) {
 // (--robot-state for --robot-status, --robot-panes for --robot-status);
 // each miss without a suggestion costs a discovery round-trip.
 func suggestNearestFlag(errMsg string) string {
+	unknown := unknownFlagFromError(errMsg)
+	if unknown == "" {
+		return ""
+	}
+	return nearestFlagName(unknown, rootCmd.Flags())
+}
+
+// unknownFlagFromError extracts the offending flag name from a cobra/pflag
+// "unknown flag: --foo" error message, or "" when the message has a
+// different shape.
+func unknownFlagFromError(errMsg string) string {
 	const marker = "unknown flag: --"
 	idx := strings.Index(errMsg, marker)
 	if idx < 0 {
@@ -465,28 +480,56 @@ func suggestNearestFlag(errMsg string) string {
 	if cut := strings.IndexAny(unknown, " \t\n"); cut >= 0 {
 		unknown = unknown[:cut]
 	}
+	return unknown
+}
+
+// flagMisGuessHints maps flag spellings agents repeatedly guess (top
+// mis-guesses in the cass-mined INVALID_FLAG dataset, 2026-08 fleet mining)
+// to a hint naming the real spelling. Consulted when the guessed flag does
+// not exist on the failing surface, before the generic edit-distance
+// suggester, because the correct fix is usually not the nearest flag name
+// (e.g. --session's fix is passing the session as the robot flag's value).
+var flagMisGuessHints = map[string]string{
+	"session":     "Pass the session as the robot flag value (e.g. --robot-send=SESSION) or as the command's positional argument (e.g. ntm send SESSION \"msg\")",
+	"pane":        "Use --panes=N[,N...] to target panes (robot surfaces also accept singular --pane=N with --robot-send and --robot-history)",
+	"project-dir": "Use --spawn-dir=PATH with --robot-spawn, or --project=PATH with ensemble/JFP robot commands",
+	"timeout":     "--timeout is a robot-surface flag (e.g. ntm --robot-wait=SESSION --timeout=2m); this command does not accept it",
+	"message":     "Use --msg (or --msg-file) for robot message payloads; 'ntm send' takes the prompt as a positional argument",
+	"msg":         "Use --msg with robot surfaces (e.g. --robot-send=SESSION --msg='...'); 'ntm send' takes the prompt as a positional argument",
+}
+
+// nearestFlagName returns the closest registered flag name across the given
+// flag sets within a small edit distance, or "" when no confident match
+// exists. Field evidence shows agents repeatedly guessing near-miss robot
+// flags (--robot-state for --robot-status); each miss without a suggestion
+// costs a discovery round-trip.
+func nearestFlagName(unknown string, flagSets ...*pflag.FlagSet) string {
 	if unknown == "" {
 		return ""
 	}
-
 	best := ""
 	bestDist := len(unknown)/3 + 2 // confidence bound scales with length
 	bestPrefix := -1
-	rootCmd.Flags().VisitAll(func(f *pflag.Flag) {
-		d := levenshteinDistance(unknown, f.Name)
-		if d > bestDist {
-			return
+	for _, fs := range flagSets {
+		if fs == nil {
+			continue
 		}
-		// Ties break toward the candidate sharing the longest prefix with
-		// the guess: --robot-state should suggest --robot-status, not the
-		// alphabetically earlier --robot-save at the same edit distance.
-		p := commonPrefixLen(unknown, f.Name)
-		if d < bestDist || p > bestPrefix {
-			bestDist = d
-			bestPrefix = p
-			best = f.Name
-		}
-	})
+		fs.VisitAll(func(f *pflag.Flag) {
+			d := levenshteinDistance(unknown, f.Name)
+			if d > bestDist {
+				return
+			}
+			// Ties break toward the candidate sharing the longest prefix with
+			// the guess: --robot-state should suggest --robot-status, not the
+			// alphabetically earlier --robot-save at the same edit distance.
+			p := commonPrefixLen(unknown, f.Name)
+			if d < bestDist || p > bestPrefix {
+				bestDist = d
+				bestPrefix = p
+				best = f.Name
+			}
+		})
+	}
 	return best
 }
 
@@ -1921,14 +1964,16 @@ Shell Integration:
 			// Load message from --msg or --msg-file
 			msg, err := loadRobotSendMessage(robotSendMsg, robotSendMsgFile)
 			if err != nil {
-				failRobotCommand(err, robot.ErrCodeInvalidFlag, "Provide a readable non-empty --msg or --msg-file", "robot-send")
+				// Missing/empty message content is an argument problem, not a
+				// malformed flag (INVALID_ARGS per the robot taxonomy).
+				failRobotCommand(err, robot.ErrCodeInvalidArgs, "Provide a readable non-empty --msg or --msg-file", "robot-send")
 				return
 			}
 			robotSendMsg = msg
 
 			// Validate message is provided
 			if robotSendMsg == "" {
-				failRobotCommand(errors.New("--msg or --msg-file is required with --robot-send"), robot.ErrCodeInvalidFlag, "Provide --msg or --msg-file", "robot-send")
+				failRobotCommand(errors.New("--msg or --msg-file is required with --robot-send"), robot.ErrCodeInvalidArgs, "Provide --msg or --msg-file", "robot-send")
 				return
 			}
 			paneSelectors, err := robot.ParsePaneSelectorsArg(robotPanes)
@@ -2168,7 +2213,7 @@ Shell Integration:
 			// Load message from --msg or --msg-file (reuse logic from robot-send)
 			msg, err := loadRobotSendMessage(robotSendMsg, robotSendMsgFile)
 			if err != nil {
-				failRobotCommand(err, robot.ErrCodeInvalidFlag, "Provide a readable non-empty --msg or --msg-file", "robot-ack")
+				failRobotCommand(err, robot.ErrCodeInvalidArgs, "Provide a readable non-empty --msg or --msg-file", "robot-ack")
 				return
 			}
 			robotSendMsg = msg
@@ -4107,6 +4152,38 @@ func init() {
 	jsonArgumentRoot = rootCmd
 
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default ~/.config/ntm/config.toml)")
+
+	// Pre-register cobra's built-in version flag so it gets the -V shorthand
+	// (fleet probes reach for `ntm --version`/`-V` before discovering the
+	// `version` subcommand; -v is left free for any future verbose flag).
+	// Output is pinned to the `ntm version` headline via the template below.
+	rootCmd.Flags().BoolP("version", "V", false, "Print version information (same as 'ntm version')")
+	rootCmd.SetVersionTemplate("ntm version {{.Version}}\n")
+
+	// Subcommand flag errors get a did-you-mean over the failing command's
+	// own flags, plus curated hints for the fleet's top mis-guessed flags
+	// (--session, --pane, --project-dir, --timeout, --message). Root flag
+	// errors keep their existing robot-path classification, which already
+	// runs the same suggester.
+	rootCmd.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error {
+		if err == nil || cmd == nil || cmd == rootCmd {
+			return err
+		}
+		unknown := unknownFlagFromError(err.Error())
+		if unknown == "" {
+			return err
+		}
+		// Curated hints win over the edit-distance suggester: for the known
+		// mis-guesses the nearest registered flag is usually a red herring
+		// (--session's nearest match on 'ntm send' is --json).
+		if curated, ok := flagMisGuessHints[unknown]; ok {
+			return fmt.Errorf("%w\nHint: %s", err, curated)
+		}
+		if suggestion := nearestFlagName(unknown, cmd.Flags(), cmd.InheritedFlags()); suggestion != "" {
+			return fmt.Errorf("%w (did you mean --%s?)", err, suggestion)
+		}
+		return err
+	})
 
 	// Global JSON output flag - applies to all commands
 	rootCmd.PersistentFlags().BoolVar(&jsonOutput, "json", false, "Output in JSON format (machine-readable)")
