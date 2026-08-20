@@ -493,6 +493,13 @@ type ReleaseReservationsResult struct {
 	ReleasedAt *FlexTime `json:"released_at,omitempty"`
 }
 
+// CleanupPaneIdentitiesResult contains the result of cleanup_pane_identities:
+// stale per-pane identity files removed for tmux panes that no longer exist.
+type CleanupPaneIdentitiesResult struct {
+	RemovedCount int      `json:"removed_count"`
+	RemovedPaths []string `json:"removed_paths,omitempty"`
+}
+
 // ForceReleaseOptions contains options for forcibly releasing a stale reservation.
 type ForceReleaseOptions struct {
 	ProjectKey     string

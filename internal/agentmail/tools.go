@@ -573,6 +573,29 @@ func (c *Client) ReleaseReservations(ctx context.Context, projectKey, agentName 
 	return &releaseResult, nil
 }
 
+// CleanupPaneIdentities invokes the cleanup_pane_identities MCP tool, which
+// removes stale per-pane identity files for tmux panes that no longer exist
+// (the server checks live tmux panes itself and no-ops when tmux is down).
+// Pass an empty projectKey to clean up across all projects.
+func (c *Client) CleanupPaneIdentities(ctx context.Context, projectKey string) (*CleanupPaneIdentitiesResult, error) {
+	args := map[string]interface{}{}
+	if projectKey != "" {
+		args["project_key"] = projectKey
+	}
+
+	result, err := c.callTool(ctx, "cleanup_pane_identities", args)
+	if err != nil {
+		return nil, err
+	}
+
+	var cleanupResult CleanupPaneIdentitiesResult
+	if err := json.Unmarshal(result, &cleanupResult); err != nil {
+		return nil, NewAPIError("cleanup_pane_identities", 0, err)
+	}
+
+	return &cleanupResult, nil
+}
+
 // RenewReservations extends the TTL of existing reservations using options struct.
 func (c *Client) RenewReservations(ctx context.Context, opts RenewReservationsOptions) (*RenewReservationsResult, error) {
 	args := map[string]interface{}{

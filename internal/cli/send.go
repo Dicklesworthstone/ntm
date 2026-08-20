@@ -2963,6 +2963,11 @@ func runKill(ctx context.Context, w io.Writer, session string, force bool, tags 
 	// Reap any agent process subtrees that survived kill-session.
 	reapOrphanProcesses(orphanCandidates)
 
+	// Best-effort: release Agent Mail reservations held by the session's
+	// registered pane agents and drop stale pane identities (bd-1bdvy).
+	// Never blocks or fails the kill when the mail server is down.
+	cleanupAgentMailOnKill(ctx, session, dir)
+
 	// Drop persisted routing state for the killed session so a recreated
 	// session with the same name does not inherit a stale last_agent /
 	// rotation cursor (bd-88um4). Best-effort: routing state is only a hint.
@@ -3336,6 +3341,11 @@ func buildKillResponse(ctx context.Context, session string, force bool, tags []s
 			return nil, err
 		}
 		auditKilled = true
+
+		// Best-effort: release Agent Mail reservations held by the session's
+		// registered pane agents and drop stale pane identities (bd-1bdvy).
+		// Never blocks or fails the kill when the mail server is down.
+		cleanupAgentMailOnKill(ctx, session, dir)
 
 		// Drop persisted routing state for the killed session so a recreated
 		// session with the same name does not inherit a stale last_agent /
