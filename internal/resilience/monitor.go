@@ -48,6 +48,8 @@ type AgentState struct {
 	RateLimited         bool      // Currently rate limited
 	LastRateLimitTime   time.Time // When rate limit was last detected
 	WaitSeconds         int       // Suggested wait time from rate limit message
+	SuppressedBy        string    // Guard currently suppressing crash handling ("" when none)
+	SuppressedSince     time.Time // When that suppression began
 }
 
 // Monitor watches agent health and handles auto-restart
@@ -338,10 +340,16 @@ func (m *Monitor) checkHealth(ctx context.Context) {
 	type rateLimitClearEvent struct {
 		agent AgentState
 	}
+	type suppressionEvent struct {
+		agent  AgentState
+		guard  string
+		detail string
+	}
 
 	var crashes []crashEvent
 	var rateLimits []rateLimitEvent
 	var rateLimitClears []rateLimitClearEvent
+	var suppressions []suppressionEvent
 
 	m.mu.Lock()
 	// Build a map of pane health by pane ID
@@ -401,8 +409,15 @@ func (m *Monitor) checkHealth(ctx context.Context) {
 			// skip crash handling regardless of what text patterns say.
 			if pidKnown && pidAlive {
 				agentState.ConsecutiveFailures = 0
-				log.Printf("[resilience] Agent %s: health check says unhealthy but PID %d has living children — skipping crash handling (false positive avoided)",
-					agentState.PaneID, shellPID)
+				if agentState.SuppressedBy != "pid_alive" {
+					agentState.SuppressedBy = "pid_alive"
+					agentState.SuppressedSince = time.Now()
+					suppressions = append(suppressions, suppressionEvent{
+						agent:  *agentState,
+						guard:  "pid_alive",
+						detail: fmt.Sprintf("health check says unhealthy but PID %d has living children", shellPID),
+					})
+				}
 				continue
 			}
 
@@ -415,11 +430,38 @@ func (m *Monitor) checkHealth(ctx context.Context) {
 				// IsWorking guard: never interrupt agents that are actively
 				// producing output. This prevents false-positive crash
 				// detection when AI agents print strings like "exit status"
-				// or "connection closed" in their normal output.
-				if agentHealth.Activity == health.ActivityActive {
-					log.Printf("[resilience] Agent %s reports error/exit but activity is active — skipping crash handler (IsWorking guard)", agentState.PaneID)
+				// or "connection closed" in their normal output (issue #48).
+				//
+				// It applies only where the process is UNKNOWN, which is the
+				// case it was written for — a text pattern that looks like a
+				// crash, with no PID to check it against. When the PID is
+				// known dead the guard above has already run and declined, and
+				// Activity cannot rescue a process that has exited.
+				//
+				// That distinction matters because Activity is derived from
+				// tmux's #{window_activity} and is WINDOW-scoped, not
+				// pane-scoped: a busy sibling pane in the same window keeps a
+				// dead pane looking active, and ntm's default layout puts every
+				// agent of a swarm in one window. On 2026-08-20 a three-pane
+				// swarm let that veto stand for seven hours, printing 862
+				// identical guard lines and burying the eight crash events that
+				// mattered.
+				if !pidKnown && agentHealth.Activity == health.ActivityActive {
+					if agentState.SuppressedBy != "activity" {
+						agentState.SuppressedBy = "activity"
+						agentState.SuppressedSince = time.Now()
+						suppressions = append(suppressions, suppressionEvent{
+							agent:  *agentState,
+							guard:  "activity",
+							detail: "reports error/exit but window activity is active, and no PID is known",
+						})
+					}
 					continue
 				}
+
+				// Past both guards: nothing is suppressing this agent any more.
+				agentState.SuppressedBy = ""
+				agentState.SuppressedSince = time.Time{}
 
 				reason := "Agent unhealthy"
 				if len(agentHealth.Issues) > 0 {
@@ -455,11 +497,16 @@ func (m *Monitor) checkHealth(ctx context.Context) {
 			// Agent is healthy again
 			agentState.ConsecutiveFailures = 0
 			agentState.Healthy = true
+			agentState.SuppressedBy = ""
+			agentState.SuppressedSince = time.Time{}
 		}
 	}
 	m.mu.Unlock()
 
 	// Process events outside the lock to prevent deadlocks with the event bus
+	for i := range suppressions {
+		m.handleSuppression(&suppressions[i].agent, suppressions[i].guard, suppressions[i].detail)
+	}
 	for i := range rateLimitClears {
 		m.handleRateLimitCleared(&rateLimitClears[i].agent)
 	}
@@ -469,6 +516,34 @@ func (m *Monitor) checkHealth(ctx context.Context) {
 	for i := range crashes {
 		m.handleCrash(ctx, &crashes[i].agent, crashes[i].reason)
 	}
+}
+
+// handleSuppression reports that a guard stopped crash handling for an agent. It is
+// called once per transition into that state, never once per tick: the guards are
+// evaluated every HealthCheckSeconds, so an unconditional log prints for as long as the
+// condition holds. On 2026-08-20 that produced 862 identical lines across seven hours,
+// which is 96% of the monitor log and the reason the eight real crash events in it went
+// unread.
+//
+// It also puts the decision on the event bus. Suppressing crash handling is a verdict
+// about a session, and it was previously visible only as a line in a text log that no
+// tool consumes.
+func (m *Monitor) handleSuppression(agentState *AgentState, guard, detail string) {
+	log.Printf("[resilience] Agent %s: %s — skipping crash handling (%s guard)",
+		agentState.PaneID, detail, guard)
+
+	events.DefaultEmitter().Emit(events.NewWebhookEvent(
+		events.WebhookHealthDegraded,
+		m.session,
+		agentState.PaneID,
+		agentState.AgentType,
+		fmt.Sprintf("crash handling suppressed by %s guard: %s", guard, detail),
+		map[string]string{
+			"project_dir": m.projectDir,
+			"pane_index":  fmt.Sprintf("%d", agentState.PaneIndex),
+			"guard":       guard,
+		},
+	))
 }
 
 // handleRateLimit processes a detected rate limit event

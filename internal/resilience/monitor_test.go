@@ -1283,6 +1283,138 @@ func TestMonitorStartWaitsForConcurrentStop(t *testing.T) {
 	m.Stop()
 }
 
+func TestCheckHealthActivityDoesNotVetoDeadPID(t *testing.T) {
+	// The IsWorking guard exists for issue #48: an agent printing "exit status"
+	// in its normal output must not be read as a crash. That case has no PID to
+	// check against, which is what makes the text ambiguous.
+	//
+	// When the PID IS known and authoritatively dead, Activity must not veto.
+	// Activity comes from tmux's #{window_activity}, which is window-scoped, so
+	// a busy sibling pane in the same window reports "active" for a pane whose
+	// process has exited — and ntm's default layout puts a swarm's agents in one
+	// window. Before this was narrowed, that veto ran for seven hours on a live
+	// session and suppressed every crash it was handed.
+	restore := saveHooks()
+	defer restore()
+
+	var restartAttempted bool
+	setHooksLocked(func() {
+		checkSessionFn = func(ctx context.Context, session string) (*health.SessionHealth, error) {
+			return &health.SessionHealth{
+				Session: session,
+				Agents: []health.AgentHealth{
+					{
+						PaneID:        "pane-1",
+						ShellPID:      4242, // known...
+						Status:        health.StatusError,
+						ProcessStatus: health.ProcessExited,
+						Activity:      health.ActivityActive, // ...and a sibling pane is noisy
+						Issues:        []health.Issue{{Type: "crash", Message: "Process exited"}},
+					},
+				},
+			}, nil
+		}
+		isChildAliveFn = func(pid int) bool { return false } // ...and dead
+
+		sleepFn = func(d time.Duration) {}
+		sendKeysFn = func(paneID, cmd string, enter bool) error {
+			restartAttempted = true
+			return nil
+		}
+		buildPaneCmdFn = func(projectDir, agentCmd string) (string, error) {
+			return agentCmd, nil
+		}
+	})
+
+	cfg := config.Default()
+	cfg.Resilience.AutoRestart = true
+	cfg.Resilience.MaxRestarts = 3
+	cfg.Resilience.RestartDelaySeconds = 0
+
+	m := NewMonitor("test-session", "/tmp/project", cfg, true)
+	m.RegisterAgent("pane-1", 1, 4242, "cc", "opus", "claude")
+
+	m.checkHealth(context.Background())
+	time.Sleep(100 * time.Millisecond)
+
+	m.mu.RLock()
+	restarts := m.agents["pane-1"].RestartCount
+	m.mu.RUnlock()
+
+	// Healthy is not the assertion: handleCrash restarts the agent and marks it
+	// healthy again, so the observable proof is that crash handling ran at all.
+	if !restartAttempted {
+		t.Error("a dead PID must be treated as a crash even while window activity reads active")
+	}
+	if restarts != 1 {
+		t.Errorf("expected exactly one restart, got %d", restarts)
+	}
+}
+
+func TestCheckHealthSuppressionReportedOncePerTransition(t *testing.T) {
+	// The guards are evaluated every tick. Reporting them every tick is what
+	// produced 862 identical lines in one seven-hour run — 96% of that log, with
+	// the eight events that mattered underneath it. A suppression is a state,
+	// and a state is reported when it changes.
+	restore := saveHooks()
+	defer restore()
+
+	setHooksLocked(func() {
+		checkSessionFn = func(ctx context.Context, session string) (*health.SessionHealth, error) {
+			return &health.SessionHealth{
+				Session: session,
+				Agents: []health.AgentHealth{
+					{
+						PaneID:        "pane-1",
+						ShellPID:      4242,
+						Status:        health.StatusError,
+						ProcessStatus: health.ProcessExited,
+						Activity:      health.ActivityIdle,
+						Issues:        []health.Issue{{Type: "crash", Message: "Process exited"}},
+					},
+				},
+			}, nil
+		}
+		isChildAliveFn = func(pid int) bool { return true } // the pid_alive guard holds
+		sleepFn = func(d time.Duration) {}
+	})
+
+	cfg := config.Default()
+	cfg.Resilience.AutoRestart = false
+
+	m := NewMonitor("test-session", "/tmp/project", cfg, false)
+	m.RegisterAgent("pane-1", 1, 4242, "cc", "opus", "claude")
+
+	m.checkHealth(context.Background())
+	m.mu.RLock()
+	firstGuard := m.agents["pane-1"].SuppressedBy
+	firstSince := m.agents["pane-1"].SuppressedSince
+	m.mu.RUnlock()
+
+	if firstGuard != "pid_alive" {
+		t.Fatalf("expected the pid_alive guard to hold, got %q", firstGuard)
+	}
+	if firstSince.IsZero() {
+		t.Fatal("a suppression must be stamped when it begins")
+	}
+
+	for i := 0; i < 5; i++ {
+		m.checkHealth(context.Background())
+	}
+
+	m.mu.RLock()
+	laterGuard := m.agents["pane-1"].SuppressedBy
+	laterSince := m.agents["pane-1"].SuppressedSince
+	m.mu.RUnlock()
+
+	if laterGuard != "pid_alive" {
+		t.Errorf("the suppression should still hold, got %q", laterGuard)
+	}
+	if !laterSince.Equal(firstSince) {
+		t.Error("a suppression that never changed state was re-reported; that is the 862-line failure")
+	}
+}
+
 func TestCheckHealthIsWorkingGuardSkipsCrash(t *testing.T) {
 	// When the health check reports StatusError/ProcessExited but the agent
 	// is still actively producing output (ActivityActive), the IsWorking
