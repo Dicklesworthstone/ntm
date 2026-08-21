@@ -159,6 +159,27 @@ func (d *UnifiedDetector) determineStateAt(output, agentType string, lastActivit
 		}
 	}
 
+	// pi keeps its status line and input rules drawn while a turn is in flight,
+	// exactly like Claude and Codex, so the same shape applies: the live-tail
+	// spinner classifier is authoritative and the chrome is only an idle signal
+	// once that classifier has said no.
+	//
+	// It matters more here than for the other two. pi is a plugin agent with no
+	// entry in any detection table, so every pi pane resolved to StateUnknown,
+	// which observationConfidence pins at 0.25 — below the 0.75 SafeToDispatch
+	// floor, permanently. `ntm spawn --pi` therefore timed out waiting for a
+	// readiness signal that could never arrive, on panes that were alive and
+	// working, and --robot-is-working returned the same unknown for a healthy
+	// pane and a wedged one.
+	if agentType == string(agent.AgentTypePi) {
+		if agent.PiActivelyWorking(output, 0) {
+			return StateWorking, ErrorNone
+		}
+		if agent.PiIdlePromptShowing(output) {
+			return StateIdle, ErrorNone
+		}
+	}
+
 	// Check if at prompt (idle) - prioritize this when velocity is low
 	isAtPrompt := DetectIdleFromOutput(output, agentType)
 	if isAtPrompt && isLowVelocity {
@@ -232,6 +253,12 @@ func isKnownAgentType(agentType string) bool {
 	case agent.AgentTypeClaudeCode,
 		agent.AgentTypeCodex,
 		agent.AgentTypeGemini,
+		// Antigravity is a full built-in everywhere else — const, Canonical,
+		// IsValid, its own parser arms, and a pattern set shared with Gemini.
+		// This list was the one place it was missing, which was enough to make
+		// every agy pane resolve unknown.
+		agent.AgentTypeAntigravity,
+		agent.AgentTypePi,
 		agent.AgentTypeCursor,
 		agent.AgentTypeWindsurf,
 		agent.AgentTypeAider,

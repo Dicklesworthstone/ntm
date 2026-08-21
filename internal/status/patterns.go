@@ -45,6 +45,16 @@ var promptPatterns = []PromptPattern{
 	{AgentType: "cc", Regex: regexp.MustCompile(`╰─>\s*$`), Description: "Claude Code arrow prompt"},
 	{AgentType: "cc", Regex: regexp.MustCompile(`(?m)❯[\s\x{00a0}]*$`), Description: "Claude Code unicode angle prompt (multiline, NBSP-aware)"},
 
+	// pi patterns. pi draws no prompt character: what it shows while waiting is
+	// a bottom status line, "↑100k ↓958 13.0%/262k (auto)".
+	//
+	// CRITICAL: that line is permanent chrome, drawn during work as well. It is
+	// safe here only because determineStateAt checks PiActivelyWorking before it
+	// consults this table — used ungated it would report every working pi pane
+	// as idle, which is the trap the removed "bypass permissions on" cc pattern
+	// fell into.
+	{AgentType: "pi", Regex: regexp.MustCompile(`\d+(?:\.\d+)?%/\d+k\s+\(auto\)`), Description: "pi status line"},
+
 	// Codex CLI patterns
 	{AgentType: "cod", Regex: regexp.MustCompile(`(?i)codex>?\s*$`), Description: "Codex prompt"},
 	{AgentType: "cod", Regex: regexp.MustCompile(`^\s*›\s*.*$`), Description: "Codex chevron prompt"},
@@ -140,6 +150,8 @@ var knownAgentTypes = map[string]bool{
 	"cc":       true, // Claude Code uses "claude>" or ">" prompts
 	"cod":      true, // Codex uses "codex>" prompt
 	"gmi":      true, // Gemini uses "gemini>" prompt
+	"agy":      true, // Antigravity shares the Gemini TUI
+	"pi":       true, // pi draws a bottom status line rather than a prompt
 	"cursor":   true,
 	"windsurf": true,
 	"aider":    true,
