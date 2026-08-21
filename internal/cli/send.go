@@ -2955,6 +2955,30 @@ func runKill(ctx context.Context, w io.Writer, session string, force bool, tags 
 	for _, p := range panesForStop {
 		panePIDs = append(panePIDs, p.PID)
 	}
+
+	// Reap nothing this session does not own. The list above comes from a bare
+	// tmux target, which is a name resolved against whatever namespace the
+	// command and the current state make it resolve against; the check below
+	// re-asks with a target that can only mean a session. When the two disagree,
+	// the panes about to have their process subtrees signalled belong to someone
+	// else, and the symptom of proceeding is the worst shape a failure can take:
+	// their agents die by PID while their panes survive kill-session, so the
+	// panes are still there, empty, and nothing reports a loss.
+	//
+	// Refusing is the correct outcome rather than reaping the narrower set. If
+	// the two answers differ, KillSession is about to be handed the same
+	// ambiguous name, and no reap policy makes that safe.
+	ownedPIDs, ownErr := tmux.SessionPanePIDs(session)
+	if ownErr != nil {
+		return fmt.Errorf("verify panes belong to session %q: %w", session, ownErr)
+	}
+	if foreign := foreignPanePIDs(panePIDs, ownedPIDs); len(foreign) > 0 {
+		return fmt.Errorf(
+			"refusing to kill %q: tmux resolved it to pane(s) %v that are not in session %q (it owns %v) — "+
+				"the name is ambiguous right now, so kill the session with an unambiguous target instead: tmux kill-session -t %q",
+			session, foreign, session, ownedPIDs, session+":")
+	}
+
 	orphanCandidates := collectPaneDescendants(panePIDs)
 
 	// Kill the monitor process before destroying the session
@@ -3078,6 +3102,26 @@ func collectPaneDescendants(panePIDs []int) []int {
 // exited (the common case — most agents die with their pane shell's SIGHUP) are
 // skipped. Errors from kill are ignored: a process may exit between the
 // liveness check and the signal, which is exactly the outcome we want.
+// foreignPanePIDs returns the entries of candidates that are absent from owned.
+//
+// Split out from the kill path because this comparison is the whole guard, and a
+// guard that is only exercised by killing a real session is a guard nobody ever
+// sees fail.
+func foreignPanePIDs(candidates, owned []int) []int {
+	ownedSet := make(map[int]struct{}, len(owned))
+	for _, pid := range owned {
+		ownedSet[pid] = struct{}{}
+	}
+
+	var foreign []int
+	for _, pid := range candidates {
+		if _, ok := ownedSet[pid]; !ok {
+			foreign = append(foreign, pid)
+		}
+	}
+	return foreign
+}
+
 func reapOrphanProcesses(pids []int) {
 	if len(pids) == 0 {
 		return

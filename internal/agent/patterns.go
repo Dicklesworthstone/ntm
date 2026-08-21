@@ -253,6 +253,74 @@ var (
 
 const codexLiveTailLines = 15
 
+// piLiveTailLines bounds the live-tail window scanned for pi's in-flight
+// marker, for the same reason Codex needs one: pi leaves finished spinner
+// frames in scrollback, so matching the whole capture would make a completed
+// turn look busy forever.
+const piLiveTailLines = 15
+
+// pi's markers, read off a live pane on 2026-08-21 (pi 0.84.2) rather than
+// guessed. The pane was launched bare, captured idle, then given a prompt long
+// enough to hold the working frame open.
+var (
+	// " pi v0.84.2", and the hint bar pi keeps under its banner.
+	piHeaderPattern = regexp.MustCompile(`(?im)^\s*pi\s+v\d+\.\d+\b|ctrl\+c/ctrl\+d\s+clear/exit`)
+
+	// The in-flight line is a braille spinner frame followed by "Working...":
+	//     ⠴ Working...
+	// Anchored at line start and tied to the spinner on purpose — the bare word
+	// appears in ordinary prose ("working directory") and matching it alone
+	// would report every pane that mentions one as busy.
+	piActiveWorkLineRe = regexp.MustCompile(`(?im)^\s*[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]\s*Working\b`)
+
+	// pi's bottom status line, e.g. "↑100k ↓958 13.0%/262k (auto)". This is
+	// PERMANENT CHROME: it is drawn while pi works as well as while it waits.
+	// It is a positive idle signal only when combined with !PiActivelyWorking —
+	// the trap the removed "bypass permissions on" ccIdlePattern fell into.
+	piPromptChromeRe = regexp.MustCompile(`(?m)\d+(?:\.\d+)?%/\d+k\s+\(auto\)`)
+
+	piWorkingPatterns = []string{
+		"working...",
+	}
+
+	piIdlePatterns = []*regexp.Regexp{
+		piPromptChromeRe,
+	}
+
+	piErrorPatterns = []string{
+		// Both observed on this setup: the upstream stops a long turn with
+		// finish_reason: length, and pi reports the second line, which is
+		// wrong — the first is the true one.
+		"response was truncated before completion",
+		"context overflow detected",
+	}
+
+	// Deliberately empty: pi's rendering of an upstream 429 has not been
+	// observed here, and a guessed pattern that never matches is worse than an
+	// empty list, because it reads as covered.
+	piRateLimitPatterns = []string{}
+
+	piContextWarnings = []string{}
+)
+
+// PiActivelyWorking reports whether pi's trailing live window holds an
+// in-flight marker. Mirrors CodexActivelyWorking: pi keeps its input chrome and
+// status line visible during work, so a bounded tail plus the spinner line is
+// the only honest signal.
+//
+// paneWidth is the real tmux pane width; pass 0 when unknown.
+func PiActivelyWorking(output string, paneWidth int) bool {
+	clean := stripANSICodes(output)
+	tail := util.GetLastNLines(clean, util.WidthAdaptiveTailLines(paneWidth, piLiveTailLines))
+	return piActiveWorkLineRe.MatchString(tail)
+}
+
+// PiIdlePromptShowing reports whether pi is drawing the chrome it shows while
+// waiting. Only meaningful gated on !PiActivelyWorking; see piPromptChromeRe.
+func PiIdlePromptShowing(output string) bool {
+	return piPromptChromeRe.MatchString(stripANSICodes(output))
+}
+
 // Gemini CLI (gmi) patterns for state detection.
 var (
 	// gmiMemoryPattern extracts memory usage.
@@ -852,6 +920,15 @@ func GetPatternSet(agentType AgentType) *PatternSet {
 			ErrorPatterns:     ccErrorPatterns,
 			ContextWarnings:   ccContextWarnings,
 			HeaderPattern:     ccHeaderPattern,
+		}
+	case AgentTypePi:
+		return &PatternSet{
+			RateLimitPatterns: piRateLimitPatterns,
+			WorkingPatterns:   piWorkingPatterns,
+			IdlePatterns:      piIdlePatterns,
+			ErrorPatterns:     piErrorPatterns,
+			ContextWarnings:   piContextWarnings,
+			HeaderPattern:     piHeaderPattern,
 		}
 	case AgentTypeCodex:
 		return &PatternSet{

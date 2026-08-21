@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -24,9 +25,13 @@ func TestLoadSessionAgent_Fallback(t *testing.T) {
 	// let's create the directory structure manually in a location and see if we can
 	// point the function to it. But we can't redirect it.
 
-	// WAIT: sessionAgentPath uses os.UserConfigDir() OR HOME/.config.
-	// We can set HOME environment variable to tmpDir.
+	// sessionAgentPath resolves through os.UserConfigDir(), which on Linux reads
+	// XDG_CONFIG_HOME FIRST and only falls back to $HOME/.config when that is
+	// unset. Setting HOME alone therefore redirects nothing on any desktop that
+	// exports XDG_CONFIG_HOME -- os.UserConfigDir() keeps returning the real
+	// ~/.config, and the reset helper below used to delete it. Both must be set.
 	t.Setenv("HOME", tmpDir)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmpDir, ".config"))
 
 	sessionName := "test-session"
 	projectKey := "/path/to/project"
@@ -55,8 +60,18 @@ func TestLoadSessionAgent_Fallback(t *testing.T) {
 	}
 	data, _ := json.Marshal(info)
 
-	// Helper to clear directories
+	// Helper to clear directories.
+	//
+	// The containment check is not defensive programming for its own sake: this
+	// helper deleted the real ~/.config twice on 2026-08-21, taking the desktop's
+	// entire configuration with it, because configDir resolved outside tmpDir. A
+	// recursive delete of a path this test did not create is never correct, so it
+	// fails the test instead of running.
 	reset := func() {
+		t.Helper()
+		if !strings.HasPrefix(configDir, tmpDir+string(os.PathSeparator)) {
+			t.Fatalf("refusing to remove %q: outside the test temp dir %q", configDir, tmpDir)
+		}
 		os.RemoveAll(configDir)
 	}
 

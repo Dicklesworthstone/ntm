@@ -153,6 +153,7 @@ func TestFormatPaneTarget(t *testing.T) {
 
 type fakeTmuxRunner struct {
 	windowsOutput string
+	windowsTarget string
 	panesOutput   map[string]string
 	errByCommand  map[string]error
 }
@@ -172,6 +173,9 @@ func (f *fakeTmuxRunner) RunContext(ctx context.Context, args ...string) (string
 
 	switch cmd {
 	case "list-windows":
+		if target, ok := findTmuxFlagValue(args, "-t"); ok {
+			f.windowsTarget = target
+		}
 		return f.windowsOutput, nil
 	case "list-panes":
 		target, ok := findTmuxFlagValue(args, "-t")
@@ -1558,5 +1562,30 @@ func TestSwarmLaunch_AntigravityPinnedModelPassthrough(t *testing.T) {
 	}
 	if !strings.Contains(shell, "--dangerously-skip-permissions") {
 		t.Errorf("BuildLaunchCommand(agy).ToShellCommand() = %q, missing auto-approve flag", shell)
+	}
+}
+
+// The window index this function returns is fed straight into the pane target it
+// builds, so an ambiguous lookup here yields a target that reads as qualified and
+// was computed from the wrong session. Asserting on the target rather than on the
+// returned index is deliberate: the index is correct in this fixture either way,
+// which is exactly why the defect was invisible.
+func TestResolveSwarmSessionTargeting_QualifiesTheWindowLookup(t *testing.T) {
+	t.Parallel()
+
+	runner := &fakeTmuxRunner{
+		windowsOutput: "1\n",
+		panesOutput: map[string]string{
+			"test:1": "1\n",
+		},
+		errByCommand: map[string]error{},
+	}
+
+	if _, err := resolveSwarmSessionTargeting(context.Background(), runner, "test"); err != nil {
+		t.Fatalf("resolveSwarmSessionTargeting returned error: %v", err)
+	}
+
+	if runner.windowsTarget != "test:" {
+		t.Fatalf("list-windows target = %q, want %q — a bare name can resolve outside the session", runner.windowsTarget, "test:")
 	}
 }

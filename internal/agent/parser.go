@@ -82,6 +82,12 @@ func (p *parserImpl) DetectAgentType(output string) AgentType {
 		return AgentTypeCodex
 	}
 
+	// pi's banner and hint bar. Checked before the Gemini family because pi's
+	// header is exact and cannot collide with theirs.
+	if piHeaderPattern.MatchString(output) {
+		return AgentTypePi
+	}
+
 	// Antigravity patterns (checked before Gemini so an agy pane is not
 	// misclassified as the legacy Gemini CLI; the two share other signatures).
 	if agyHeaderPattern.MatchString(output) {
@@ -286,6 +292,8 @@ func (p *parserImpl) detectRateLimit(output string, agentType AgentType) bool {
 	switch agentType {
 	case AgentTypeClaudeCode:
 		return matchAny(recentOutput, ccRateLimitPatterns)
+	case AgentTypePi:
+		return matchAny(recentOutput, piRateLimitPatterns)
 	case AgentTypeCodex:
 		return matchAny(recentOutput, codRateLimitPatterns)
 	case AgentTypeGemini, AgentTypeAntigravity:
@@ -319,6 +327,8 @@ func (p *parserImpl) detectWorking(output string, agentType AgentType) bool {
 	switch agentType {
 	case AgentTypeClaudeCode:
 		return matchAny(recentOutput, ccWorkingPatterns)
+	case AgentTypePi:
+		return matchAny(recentOutput, piWorkingPatterns)
 	case AgentTypeCodex:
 		return matchAny(recentOutput, codWorkingPatterns)
 	case AgentTypeGemini, AgentTypeAntigravity:
@@ -383,6 +393,8 @@ func (p *parserImpl) detectIdle(output string, agentType AgentType) bool {
 			return true
 		}
 		return false
+	case AgentTypePi:
+		return matchAnyRegex(lastLines, piIdlePatterns)
 	case AgentTypeCodex:
 		return matchAnyRegex(lastLines, codIdlePatterns)
 	case AgentTypeGemini, AgentTypeAntigravity:
@@ -423,6 +435,8 @@ func (p *parserImpl) detectError(output string, agentType AgentType) bool {
 			return true
 		}
 		return matchAny(recentOutput, ccErrorPatterns)
+	case AgentTypePi:
+		return matchAny(recentOutput, piErrorPatterns)
 	case AgentTypeCodex:
 		return matchAny(recentOutput, codErrorPatterns)
 	case AgentTypeGemini, AgentTypeAntigravity:
@@ -455,6 +469,8 @@ func (p *parserImpl) collectLimitIndicators(output string, agentType AgentType) 
 	switch agentType {
 	case AgentTypeClaudeCode:
 		return collectMatches(recentOutput, ccRateLimitPatterns)
+	case AgentTypePi:
+		return collectMatches(recentOutput, piRateLimitPatterns)
 	case AgentTypeCodex:
 		return collectMatches(recentOutput, codRateLimitPatterns)
 	case AgentTypeGemini, AgentTypeAntigravity:
@@ -488,6 +504,8 @@ func (p *parserImpl) collectWorkIndicators(output string, agentType AgentType) [
 	switch agentType {
 	case AgentTypeClaudeCode:
 		return collectMatches(recentOutput, ccWorkingPatterns)
+	case AgentTypePi:
+		return collectMatches(recentOutput, piWorkingPatterns)
 	case AgentTypeCodex:
 		return collectMatches(recentOutput, codWorkingPatterns)
 	case AgentTypeGemini, AgentTypeAntigravity:

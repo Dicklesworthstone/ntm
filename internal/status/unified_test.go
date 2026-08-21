@@ -1138,6 +1138,75 @@ const codexWorkingCapture = "• Ran command\n" +
 // #{window_activity}, which any busy sibling pane keeps fresh. The pane was
 // therefore reported "working" forever and --robot-is-working never let an
 // orchestrator feed it.
+// Both captures below were taken from a live pi 0.84.2 pane on 2026-08-21, not
+// written from imagination: the pane was launched bare, captured while waiting,
+// then given a prompt long enough to hold the working frame open.
+const piIdleAtStatusLineCapture = ` pi v0.84.2
+ escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more
+ Press ctrl+o to show full startup help and loaded resources.
+
+────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────
+/home/gabriel/repositories/daytrace
+0.0%/262k (auto)                              (litellm) kimi-k2.7`
+
+const piWorkingCapture = `with its own shell process, working directory, and scrollback history. You can
+split a window horizontally or vertically to create panes.
+
+ ⠴ Working...
+────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────
+/home/gabriel/repositories/daytrace
+↑100k ↓958 13.0%/262k (auto)                  (litellm) kimi-k2.7`
+
+func TestDetermineStatePiPaneIsNotUnknown(t *testing.T) {
+	// pi is a plugin agent: it has no entry in any detection table, so every pi
+	// pane resolved to StateUnknown, which observationConfidence pins at 0.25 —
+	// under the 0.75 SafeToDispatch floor, permanently. `ntm spawn --pi` waited
+	// for a readiness signal that could never arrive, and --robot-is-working
+	// returned the same unknown for a healthy pane and a wedged one.
+	d := NewDetector()
+	observedAt := time.Date(2026, 8, 21, 13, 0, 0, 0, time.UTC)
+	freshActivity := observedAt
+
+	state, errType := d.determineStateAt(piIdleAtStatusLineCapture, "pi", freshActivity, observedAt)
+	if state != StateIdle || errType != ErrorNone {
+		t.Fatalf("pi waiting at its status line = %v/%v, want idle", state, errType)
+	}
+
+	// The status line is permanent chrome — it is drawn during work too. A
+	// working pane must stay working, or the idle arm has simply replaced one
+	// wrong answer with another.
+	state, errType = d.determineStateAt(piWorkingCapture, "pi", freshActivity, observedAt)
+	if state != StateWorking || errType != ErrorNone {
+		t.Fatalf("pi mid-turn = %v/%v, want working", state, errType)
+	}
+
+	// And it stays working when velocity is low: a long turn produces no new
+	// scrollback, which is exactly the case the velocity heuristic gets wrong.
+	state, _ = d.determineStateAt(piWorkingCapture, "pi", observedAt.Add(-time.Hour), observedAt)
+	if state != StateWorking {
+		t.Fatalf("quiet pi mid-turn = %v, want working", state)
+	}
+}
+
+func TestKnownAgentTypesCoversPiAndAntigravity(t *testing.T) {
+	// agy was a full built-in everywhere else — const, Canonical, IsValid, its
+	// own parser arms, a pattern set shared with Gemini. This list was the one
+	// place it was missing, and that alone was enough to make every agy pane
+	// resolve unknown.
+	for _, agentType := range []string{"pi", "agy"} {
+		if !isKnownAgentType(agentType) {
+			t.Errorf("isKnownAgentType(%q) = false, want true", agentType)
+		}
+	}
+	if isKnownAgentType("definitely-not-an-agent") {
+		t.Error("isKnownAgentType accepted an unknown type")
+	}
+}
+
 func TestDetermineStateCodexIdleBeatsWindowVelocity(t *testing.T) {
 	d := NewDetector()
 	observedAt := time.Date(2026, 7, 30, 9, 0, 0, 0, time.UTC)

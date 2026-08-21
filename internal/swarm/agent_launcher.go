@@ -214,7 +214,12 @@ func resolveSwarmSessionTargeting(ctx context.Context, runner tmuxContextRunner,
 		return swarmSessionTargeting{}, errors.New("session name required")
 	}
 
-	windowsOut, err := runner.RunContext(ctx, "list-windows", "-t", session, "-F", "#{window_index}")
+	// "<session>:" rather than "<session>". The window index derived here is fed
+	// straight back into the pane lookup below, so an ambiguous answer at this
+	// step produces a target that reads as fully qualified and was computed from
+	// the wrong session — the qualification arriving one step too late is what
+	// makes the result look trustworthy.
+	windowsOut, err := runner.RunContext(ctx, "list-windows", "-t", session+":", "-F", "#{window_index}")
 	if err != nil {
 		return swarmSessionTargeting{}, fmt.Errorf("list-windows: %w", err)
 	}

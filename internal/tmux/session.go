@@ -970,6 +970,45 @@ func GetPanesContext(ctx context.Context, session string) ([]Pane, error) {
 	return DefaultClient.GetPanesContext(ctx, session)
 }
 
+// SessionPanePIDsContext returns the shell PID of every pane in a session,
+// resolved through an unambiguous target.
+//
+// The trailing colon is the whole point. A tmux target without one is a name to
+// be looked up, and which namespace it is looked up in depends on the command
+// and on what happens to exist at that moment; "<session>:" can only ever name a
+// session. Every other pane lookup in this package passes the bare name, which
+// is correct whenever it resolves and gives no warning when it does not.
+//
+// This exists for the callers that act destructively on what comes back. There,
+// a lookup that quietly answers about something else is not a wrong list, it is
+// signals delivered to processes nobody meant to touch.
+func (c *Client) SessionPanePIDsContext(ctx context.Context, session string) ([]int, error) {
+	output, err := c.RunContext(ctx, "list-panes", "-s", "-t", session+":", "-F", "#{pane_pid}")
+	if err != nil {
+		return nil, err
+	}
+
+	var pids []int
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		pid, err := strconv.Atoi(line)
+		if err != nil {
+			return nil, fmt.Errorf("parse pane pid %q in session %q: %w", line, session, err)
+		}
+		pids = append(pids, pid)
+	}
+
+	return pids, nil
+}
+
+// SessionPanePIDs returns the shell PID of every pane in a session (default client).
+func SessionPanePIDs(session string) ([]int, error) {
+	return DefaultClient.SessionPanePIDsContext(context.Background(), session)
+}
+
 const (
 	defaultPaneProcessStartTimeout = 10 * time.Second
 	defaultPaneProcessStartPoll    = 100 * time.Millisecond
