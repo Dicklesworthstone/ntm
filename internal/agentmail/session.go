@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -392,9 +393,24 @@ type SessionAgentRegistry struct {
 	// survives pane renames. `omitempty` + map-pointer treats old
 	// registries that predate this field as if no tokens were known.
 	RegistrationTokens map[string]string `json:"registration_tokens,omitempty"`
-	RegisteredAt       time.Time         `json:"registered_at"`
-	UpdatedAt          time.Time         `json:"updated_at"`
+	// PanePIDs records the tmux #{pane_pid} observed for each pane id when its
+	// binding was written (pane_id -> pid). tmux reuses pane ids across server
+	// restarts, so the pid distinguishes "the pane that registered this name"
+	// from "an unrelated pane that later got the same %N". Together with
+	// PaneIDMap it lets a later process decide whether a recorded binding is
+	// still LIVE instead of trusting a recycled title (ntm#256). Optional:
+	// registries written before this field carry no pids (treated as unknown).
+	PanePIDs     map[string]int `json:"pane_pids,omitempty"`
+	RegisteredAt time.Time      `json:"registered_at"`
+	UpdatedAt    time.Time      `json:"updated_at"`
 }
+
+// PaneLiveness reports whether a pane id recorded in the registry still refers
+// to the pane that registered it. recordedPID is the #{pane_pid} stored at
+// registration time, or 0 when unknown. Implementations typically require the
+// pane to exist in the session and, when a pid was recorded, to still carry
+// that pid.
+type PaneLiveness func(paneID string, recordedPID int) bool
 
 // NewSessionAgentRegistry creates a new empty registry.
 func NewSessionAgentRegistry(sessionName, projectKey string) *SessionAgentRegistry {
@@ -633,10 +649,130 @@ func (r *SessionAgentRegistry) AddAgent(paneTitle, paneID, agentName string) {
 		for existingPaneID, existingAgent := range r.PaneIDMap {
 			if existingAgent == agentName && existingPaneID != paneID {
 				delete(r.PaneIDMap, existingPaneID)
+				// The pid belonged to the binding we just retired.
+				delete(r.PanePIDs, existingPaneID)
 			}
 		}
 		r.PaneIDMap[paneID] = agentName
 	}
+}
+
+// SetPanePID records the #{pane_pid} observed for paneID when its binding was
+// written. A pid <= 0 clears the record (liveness falls back to pane
+// existence only).
+func (r *SessionAgentRegistry) SetPanePID(paneID string, pid int) {
+	if r == nil || paneID == "" {
+		return
+	}
+	if pid <= 0 {
+		delete(r.PanePIDs, paneID)
+		return
+	}
+	if r.PanePIDs == nil {
+		r.PanePIDs = make(map[string]int)
+	}
+	r.PanePIDs[paneID] = pid
+}
+
+// PanePID returns the pid recorded for paneID, or 0 when none was recorded.
+func (r *SessionAgentRegistry) PanePID(paneID string) int {
+	if r == nil || r.PanePIDs == nil {
+		return 0
+	}
+	return r.PanePIDs[paneID]
+}
+
+// PaneIDForAgent returns the pane id currently bound to agentName, if any.
+func (r *SessionAgentRegistry) PaneIDForAgent(agentName string) (string, bool) {
+	if r == nil || r.PaneIDMap == nil || agentName == "" {
+		return "", false
+	}
+	for paneID, name := range r.PaneIDMap {
+		if name == agentName {
+			return paneID, true
+		}
+	}
+	return "", false
+}
+
+// paneBindingLive reports whether the binding recorded for paneID is still
+// held by a live pane. A nil isLive means the caller cannot observe liveness;
+// the binding is then treated as LIVE (occupied) so an unobservable slot is
+// never handed to a second pane — the conservative failure is a fresh
+// identity, never a shared one.
+func (r *SessionAgentRegistry) paneBindingLive(paneID string, isLive PaneLiveness) bool {
+	if paneID == "" {
+		return false
+	}
+	if isLive == nil {
+		return true
+	}
+	return isLive(paneID, r.PanePID(paneID))
+}
+
+// ResolveForPane decides which registered identity, if any, the pane
+// (paneTitle, paneID) should reuse. It returns the agent name, the pane id the
+// identity is being recovered from (empty when the name was bound to this very
+// pane or to no pane at all), and whether a reuse is allowed.
+//
+// Resolution order (ntm#256):
+//  1. paneID itself is bound -> that name. The stable physical pane id is the
+//     primary key; a title is only a hint.
+//  2. paneTitle is bound -> that name, but ONLY when the pane currently
+//     holding it is dead per isLive. A live holder makes the slot OCCUPIED and
+//     the caller must mint a fresh identity instead of re-issuing a running
+//     agent's name to a second pane. Dead-slot reuse (same-session respawn
+//     after a kill) keeps working exactly as before.
+//
+// Callers that cannot observe liveness may pass a nil isLive; every recorded
+// holder is then treated as live, i.e. titles never trigger reuse.
+func (r *SessionAgentRegistry) ResolveForPane(paneTitle, paneID string, isLive PaneLiveness) (name string, recoveredFrom string, ok bool) {
+	if r == nil {
+		return "", "", false
+	}
+	if paneID != "" {
+		if name, found := r.GetAgentByID(paneID); found && name != "" {
+			return name, "", true
+		}
+	}
+	if paneTitle == "" {
+		return "", "", false
+	}
+	name, found := r.GetAgentByTitle(paneTitle)
+	if !found || name == "" {
+		return "", "", false
+	}
+	holder, bound := r.PaneIDForAgent(name)
+	if !bound || holder == "" || holder == paneID {
+		// Title known but no (other) pane on record: nothing can be live.
+		return name, "", true
+	}
+	if r.paneBindingLive(holder, isLive) {
+		return "", "", false
+	}
+	return name, holder, true
+}
+
+// OccupiedTitles returns the registry titles whose bound pane is still live
+// per isLive. `ntm add` folds these into its next-index derivation so a live
+// pane whose title was overwritten by the agent (or the user) still counts as
+// occupying its slot (ntm#256). Order is deterministic (sorted).
+func (r *SessionAgentRegistry) OccupiedTitles(isLive PaneLiveness) []string {
+	if r == nil || len(r.Agents) == 0 {
+		return nil
+	}
+	titles := make([]string, 0, len(r.Agents))
+	for title, name := range r.Agents {
+		holder, bound := r.PaneIDForAgent(name)
+		if !bound {
+			continue
+		}
+		if r.paneBindingLive(holder, isLive) {
+			titles = append(titles, title)
+		}
+	}
+	sort.Strings(titles)
+	return titles
 }
 
 // GetAgentByTitle returns the agent name for a pane title.

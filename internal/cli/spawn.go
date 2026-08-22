@@ -3109,6 +3109,23 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 		// CLAUDE_CONFIG_DIR silently defeat it.
 		agentCmd = claudeEnv.ApplyToCommand(agentCmd)
 
+		// A worktree pane runs with a cwd whose derived project key differs
+		// from the session key Agent Mail registered, so tell the agent's
+		// tooling which key NTM published its identity under (ntm#257).
+		// AGENT_MAIL_PROJECT is the variable the Agent Mail CLI already honours
+		// ahead of cwd derivation. A plugin env var or an explicit --pane-env
+		// value of the same name wins.
+		if opts.UseWorktrees {
+			if _, fromPlugin := envVars["AGENT_MAIL_PROJECT"]; !fromPlugin {
+				if _, fromUser := opts.PaneEnv["AGENT_MAIL_PROJECT"]; !fromUser {
+					if envVars == nil {
+						envVars = make(map[string]string)
+					}
+					envVars["AGENT_MAIL_PROJECT"] = dir
+				}
+			}
+		}
+
 		// Apply plugin env vars if any
 		if len(envVars) > 0 {
 			var envPrefix string
@@ -3202,12 +3219,19 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 		// Publish this pane's Agent Mail identity BEFORE launching the agent
 		// so a process that resolves its identity during startup reads its
 		// assigned name, not a previous occupant's (gh#255). Failures degrade
-		// gracefully and never block the launch. The project key stays `dir`
-		// (not the worktree path) to match the historical registration key.
+		// gracefully and never block the launch. The registration key stays
+		// `dir` (the historical project key); a worktree pane's identity is
+		// additionally published under its own directory so cwd-derived
+		// resolution inside the worktree finds it too (ntm#257).
+		paneDir := ""
+		if workingDir != dir {
+			paneDir = workingDir
+		}
 		identityCoordinator.prepareAgent(ctx, spawnedAgentInfo{
 			paneIndex:     pane.Index,
 			paneID:        pane.ID,
 			paneTitle:     title,
+			paneDir:       paneDir,
 			agentType:     string(agent.Type),
 			model:         agent.Model,
 			resolvedModel: resolvedModel,
@@ -4250,6 +4274,11 @@ type spawnedAgentInfo struct {
 	agentType     string
 	model         string
 	resolvedModel string
+	// paneDir is the directory the agent process is launched in when it
+	// differs from the session's project key (linked worktrees). Empty for
+	// ordinary panes. The identity is additionally published under this key
+	// so cwd-derived resolution finds it (ntm#257).
+	paneDir string
 }
 
 // registerSpawnedAgents registers each spawned agent with Agent Mail and returns status.
@@ -4302,7 +4331,18 @@ type spawnIdentityCoordinator struct {
 	// reconciliation so two panes never match the same server-side agent.
 	reconciledIDs map[int]bool
 	status        *output.AgentMailSpawnStatus
+	// livePanes maps pane id -> #{pane_pid} for the session as observed when
+	// the coordinator initialized (refreshed on a miss); liveness derives from
+	// it. Both are nil when the topology could not be read, which makes every
+	// recorded holder count as live — the fail-safe is a fresh identity,
+	// never a shared one (ntm#256).
+	livePanes map[string]int
+	liveness  agentmail.PaneLiveness
 }
+
+// spawnIdentityPaneProbe lists a session's panes for liveness judgement. It
+// is a variable so tests can supply a topology without a tmux server.
+var spawnIdentityPaneProbe = tmux.GetPanesContext
 
 func newSpawnIdentityCoordinator(workingDir, sessionName string) *spawnIdentityCoordinator {
 	return &spawnIdentityCoordinator{
@@ -4358,6 +4398,7 @@ func (c *spawnIdentityCoordinator) ensureInit(parentCtx context.Context) {
 	if c.registry == nil {
 		c.registry = agentmail.NewSessionAgentRegistry(c.sessionName, c.workingDir)
 	}
+	c.observeLivePanes(parentCtx)
 
 	// Ensure project exists
 	ctx, cancel := context.WithTimeout(parentCtx, 5*time.Second)
@@ -4394,22 +4435,23 @@ func (c *spawnIdentityCoordinator) prepareAgent(parentCtx context.Context, agent
 		return
 	}
 
-	// Check if this pane already has an identity from a prior session (#69)
-	if existingName, ok := c.registry.GetAgent(agent.paneTitle, agent.paneID); ok && existingName != "" {
+	// Reuse the identity of a prior occupant of this slot (#69) — but only a
+	// DEAD one. The pane id is the primary key; a matching title whose
+	// recorded pane is still live means the slot is occupied and the running
+	// agent keeps its name, so this pane gets a fresh identity (ntm#256).
+	if existingName, recoveredFrom, ok := c.registry.ResolveForPane(agent.paneTitle, agent.paneID, c.liveness); ok && existingName != "" {
 		c.status.AgentsRegistered++
 		c.status.AgentMap[agent.paneID] = existingName
 		if !IsJSONOutput() {
-			output.PrintInfof("Reused existing identity for pane %d: %s", agent.paneIndex, existingName)
-		}
-		// Write canonical identity file (XDG-compliant, atomic, Agent-Mail-compatible).
-		if _, writeErr := agentmail.WriteIdentity(c.workingDir, agent.paneID, existingName); writeErr != nil {
-			if !IsJSONOutput() {
-				output.PrintWarningf("Failed to write canonical identity for pane %d: %v", agent.paneIndex, writeErr)
+			if recoveredFrom != "" {
+				output.PrintInfof("Reused existing identity for pane %d: %s (recovered from pane %s, no longer live)", agent.paneIndex, existingName, recoveredFrom)
+			} else {
+				output.PrintInfof("Reused existing identity for pane %d: %s", agent.paneIndex, existingName)
 			}
 		}
-		// Backward compat: also write to legacy /tmp/ location used by old notify hooks.
-		_ = agentmail.WriteLegacyCompatIdentity(c.workingDir, agent.paneID, existingName)
+		c.publishIdentity(agent, existingName)
 		c.registry.AddAgent(agent.paneTitle, agent.paneID, existingName)
+		c.recordPanePID(parentCtx, agent.paneID)
 		c.persistRegistry()
 		return
 	}
@@ -4469,24 +4511,16 @@ func (c *spawnIdentityCoordinator) prepareAgent(parentCtx context.Context, agent
 		}
 	}
 
-	// Write per-pane identity file so Agent Mail and notify hooks can resolve
-	// AGENT_MAIL_AGENT. Canonical contract (see agentmail.CanonicalIdentityPath
-	// and the mcp-agent-mail Rust reference in pane_identity.rs):
-	//   Canonical: ~/.config/agent-mail/identity/<sha1(project_key)[0:12]>/<sanitized_pane_id>
-	//   Legacy:    /tmp/agent-mail-name.<sha1(project_key)[0:12]>.<sanitized_pane_id>
-	if _, writeErr := agentmail.WriteIdentity(c.workingDir, agent.paneID, registered.Name); writeErr != nil {
-		if !IsJSONOutput() {
-			output.PrintWarningf("Failed to write identity file for pane %d: %v", agent.paneIndex, writeErr)
-		}
-	}
-	// Backward compat: legacy /tmp/ location is still consumed by older hooks.
-	_ = agentmail.WriteLegacyCompatIdentity(c.workingDir, agent.paneID, registered.Name)
+	// Write the per-pane identity file(s) so Agent Mail and notify hooks can
+	// resolve AGENT_MAIL_AGENT before the agent process starts.
+	c.publishIdentity(agent, registered.Name)
 
 	c.status.AgentsRegistered++
 	c.status.AgentMap[agent.paneID] = registered.Name
 
 	// Add to registry for persistence
 	c.registry.AddAgent(agent.paneTitle, agent.paneID, registered.Name)
+	c.recordPanePID(parentCtx, agent.paneID)
 	// Persist the registration_token alongside the agent name so
 	// later ntm processes can re-authenticate as this agent on
 	// mcp-agent-mail >=2.13 (ntm#146).
@@ -4518,6 +4552,59 @@ func (c *spawnIdentityCoordinator) persistRegistry() {
 // matching the historical registerSpawnedAgents contract.
 func (c *spawnIdentityCoordinator) finalStatus() *output.AgentMailSpawnStatus {
 	return c.status
+}
+
+// observeLivePanes snapshots the session's pane ids and pids so registry
+// bindings can be judged live or dead (ntm#256). When the topology cannot be
+// read the snapshot is nil and ResolveForPane treats every recorded holder as
+// live: titles then never trigger reuse, pane ids still do.
+func (c *spawnIdentityCoordinator) observeLivePanes(ctx context.Context) {
+	panes, err := spawnIdentityPaneProbe(ctx, c.sessionName)
+	if err != nil {
+		c.livePanes = nil
+		c.liveness = nil
+		return
+	}
+	live := make(map[string]int, len(panes))
+	for _, p := range panes {
+		if p.ID != "" {
+			live[p.ID] = p.PID
+		}
+	}
+	c.livePanes = live
+	c.liveness = livenessFromPanes(panes)
+}
+
+// recordPanePID stores the registering pane's current #{pane_pid} beside its
+// binding so a later process can tell this incarnation from a recycled %N.
+// A pane absent from the init snapshot (created after it) triggers one
+// refresh; an unknown pid is simply left unrecorded.
+func (c *spawnIdentityCoordinator) recordPanePID(ctx context.Context, paneID string) {
+	if paneID == "" || c.registry == nil {
+		return
+	}
+	pid, ok := c.livePanes[paneID]
+	if !ok {
+		c.observeLivePanes(ctx)
+		pid = c.livePanes[paneID]
+	}
+	c.registry.SetPanePID(paneID, pid)
+}
+
+// publishIdentity writes the canonical identity file (XDG-compliant, atomic,
+// Agent-Mail-compatible; see agentmail.CanonicalIdentityPath and the
+// mcp-agent-mail Rust reference in pane_identity.rs) plus the legacy /tmp
+// compat file still read by older hooks, under every project key the pane may
+// resolve its identity through: the session key, its symlink-resolved form,
+// and the pane's worktree directory (ntm#257). The extra keys are best-effort;
+// only a failure on the session key itself is reported.
+func (c *spawnIdentityCoordinator) publishIdentity(agent spawnedAgentInfo, name string) {
+	for i, key := range identityPublishKeys(c.workingDir, agent.paneDir) {
+		if _, writeErr := agentmail.WriteIdentity(key, agent.paneID, name); writeErr != nil && i == 0 && !IsJSONOutput() {
+			output.PrintWarningf("Failed to write identity file for pane %d: %v", agent.paneIndex, writeErr)
+		}
+		_ = agentmail.WriteLegacyCompatIdentity(key, agent.paneID, name)
+	}
 }
 
 // agentTypeToProgram maps NTM agent types to Agent Mail program names.

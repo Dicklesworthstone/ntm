@@ -15,6 +15,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/checkpoint"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/events"
@@ -545,19 +546,14 @@ func executeAdd(ctx context.Context, opts AddOptions, emitResult bool) error {
 		return outputError(err)
 	}
 
-	maxIndices := make(map[string]int)
-
-	// Helper to parse index from title
-	parseIndex := func(title string) {
-		typeStr, num, ok := paneTitleTypeAndIndex(title)
-		if ok && num > maxIndices[typeStr] {
-			maxIndices[typeStr] = num
-		}
-	}
-
-	for _, p := range panes {
-		parseIndex(p.Title)
-	}
+	// Next indices come from the live topology AND the persisted registry: a
+	// live pane whose title no longer parses (the agent or the user retitled
+	// it) still occupies its slot, so its registry title must count, or the
+	// slot is re-issued and the new pane inherits a running agent's Agent Mail
+	// identity (ntm#256). The registry read is a plain file load and never
+	// contacts Agent Mail; a missing registry simply contributes nothing.
+	addRegistry, _ := agentmail.LoadSessionAgentRegistry(session, dir)
+	maxIndices := nextPaneIndices(panes, addRegistry)
 
 	// Resolve CASS context if enabled
 	var cassContext string
