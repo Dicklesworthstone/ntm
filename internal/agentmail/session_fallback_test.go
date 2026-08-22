@@ -4,45 +4,110 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
 
+// pathWithin reports whether path is root itself or lies strictly inside
+// root. Both sides are cleaned; a bare prefix match is NOT enough (/tmp/a must
+// not contain /tmp/ab), so the comparison is done on a separator boundary.
+//
+// It exists because a recursive delete of a path a test did not create is
+// never correct, whatever the environment says (gh#258).
+func pathWithin(root, path string) bool {
+	root = filepath.Clean(root)
+	path = filepath.Clean(path)
+	if root == "" || path == "" {
+		return false
+	}
+	if path == root {
+		return true
+	}
+	return strings.HasPrefix(path, root+string(os.PathSeparator))
+}
+
+// isolateUserConfig points every config-dir resolution NTM uses at a fresh
+// temp dir and returns it. os.UserConfigDir() honours XDG_CONFIG_HOME *before*
+// HOME on Linux and derives from HOME on macOS/Windows, so setting HOME alone
+// redirects nothing on a session that exports XDG_CONFIG_HOME (systemd user
+// sessions, uwsm, Hyprland, ...). That exact gap let this file's reset helper
+// recursively delete a developer's real ~/.config (gh#258). Both variables
+// are set so the redirect holds on every platform.
+func isolateUserConfig(t *testing.T) string {
+	t.Helper()
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmpDir, ".config"))
+	return tmpDir
+}
+
+// TestIsolateUserConfigRedirectsSessionsBaseDir is the regression guard for
+// gh#258: with the isolation helper applied, the *production* resolver must
+// land inside the temp dir, never in the real user's config directory.
+func TestIsolateUserConfigRedirectsSessionsBaseDir(t *testing.T) {
+	realConfigDir, realErr := os.UserConfigDir()
+
+	tmpDir := isolateUserConfig(t)
+
+	base := getSessionsBaseDir()
+	if !pathWithin(tmpDir, base) {
+		t.Fatalf("getSessionsBaseDir() = %q, want a path inside the test temp dir %q", base, tmpDir)
+	}
+	if realErr == nil && realConfigDir != "" && pathWithin(realConfigDir, base) {
+		t.Fatalf("getSessionsBaseDir() = %q still resolves under the real config dir %q", base, realConfigDir)
+	}
+}
+
+// TestPathWithinRefusesEscapes pins the containment predicate that gates the
+// only recursive delete in this package's tests. The negative cases are the
+// ones that matter: a real config dir, a sibling with a shared prefix, and a
+// parent of the root must all be refused.
+func TestPathWithinRefusesEscapes(t *testing.T) {
+	root := filepath.Join(string(os.PathSeparator), "tmp", "ntm-test-root")
+	cases := []struct {
+		name string
+		path string
+		want bool
+	}{
+		{"root itself", root, true},
+		{"direct child", filepath.Join(root, ".config"), true},
+		{"nested child", filepath.Join(root, ".config", "ntm", "sessions", "s"), true},
+		{"unclean child", root + string(os.PathSeparator) + "." + string(os.PathSeparator) + "x", true},
+		{"shared prefix sibling", root + "-other", false},
+		{"parent", filepath.Dir(root), false},
+		{"unrelated absolute", filepath.Join(string(os.PathSeparator), "home", "user", ".config"), false},
+		{"dot-dot escape", filepath.Join(root, "..", "escaped"), false},
+		{"empty path", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := pathWithin(root, tc.path); got != tc.want {
+				t.Fatalf("pathWithin(%q, %q) = %v, want %v", root, tc.path, got, tc.want)
+			}
+		})
+	}
+	if pathWithin("", root) {
+		t.Fatal("pathWithin with an empty root must refuse")
+	}
+}
+
 // TestLoadSessionAgent_Fallback tests the fallback logic in LoadSessionAgent.
 func TestLoadSessionAgent_Fallback(t *testing.T) {
-	// Setup temporary config directory
-	tmpDir := t.TempDir()
-
-	// Mock user config dir via environment variable or override function if possible.
-	// Since sessionAgentPath uses os.UserConfigDir(), we can't easily mock it without
-	// changing the implementation or using a different approach.
-	// Instead, we can create a local version of sessionAgentPath for testing logic,
-	// OR we can rely on the fact that LoadSessionAgent calls sessionAgentPath.
-
-	// However, sessionAgentPath is not exported and uses hardcoded os.UserConfigDir().
-	// To test this effectively without mocking os.UserConfigDir (which is hard),
-	// let's create the directory structure manually in a location and see if we can
-	// point the function to it. But we can't redirect it.
-
-	// WAIT: sessionAgentPath uses os.UserConfigDir() OR HOME/.config.
-	// We can set HOME environment variable to tmpDir.
-	t.Setenv("HOME", tmpDir)
+	tmpDir := isolateUserConfig(t)
 
 	sessionName := "test-session"
 	projectKey := "/path/to/project"
 	projectSlug := ProjectSlugFromPath(projectKey)
 	legacyProjectSlug := legacyProjectSlugFromPath(projectKey)
 
-	// Expected paths based on implementation:
-	// New: $HOME/.config/ntm/sessions/test-session/path-to-project/agent.json
-	// Legacy slug fallback: $HOME/.config/ntm/sessions/test-session/project/agent.json
-	// Legacy: $HOME/.config/ntm/sessions/test-session/agent.json
-
-	configDir, err := os.UserConfigDir()
-	if err != nil {
-		configDir = filepath.Join(tmpDir, ".config")
-	}
-	baseDir := filepath.Join(configDir, "ntm", "sessions", sessionName)
+	// Resolve the session directory through the same function production
+	// uses, so the test and the code under test can never disagree about
+	// where files live.
+	//   New:                 <base>/test-session/path-to-project/agent.json
+	//   Legacy slug fallback: <base>/test-session/project/agent.json
+	//   Legacy:              <base>/test-session/agent.json
+	baseDir := filepath.Join(getSessionsBaseDir(), sessionName)
 	newPath := filepath.Join(baseDir, projectSlug, "agent.json")
 	legacySlugPath := filepath.Join(baseDir, legacyProjectSlug, "agent.json")
 	legacyPath := filepath.Join(baseDir, "agent.json")
@@ -55,9 +120,17 @@ func TestLoadSessionAgent_Fallback(t *testing.T) {
 	}
 	data, _ := json.Marshal(info)
 
-	// Helper to clear directories
+	// reset clears only this test's session directory between subtests.
+	// The containment check is load-bearing: it refuses to delete anything
+	// the isolation helper did not redirect into the temp dir (gh#258).
 	reset := func() {
-		os.RemoveAll(configDir)
+		t.Helper()
+		if !pathWithin(tmpDir, baseDir) {
+			t.Fatalf("refusing to remove %q: outside the test temp dir %q", baseDir, tmpDir)
+		}
+		if err := os.RemoveAll(baseDir); err != nil {
+			t.Fatalf("reset %q: %v", baseDir, err)
+		}
 	}
 
 	// 1. Test finding in new path
