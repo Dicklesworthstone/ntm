@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/alerts"
 	"github.com/Dicklesworthstone/ntm/internal/bv"
@@ -6095,5 +6096,22 @@ func TestGetSnapshotDelta_NoStoreIsHonest(t *testing.T) {
 	}
 	if output.ErrorCode != ErrCodeNotImplemented {
 		t.Fatalf("error_code = %q, want %q", output.ErrorCode, ErrCodeNotImplemented)
+	}
+}
+
+func TestAgentTypeStringPassesThroughRegisteredPlugins(t *testing.T) {
+	agent.UnregisterPlugins()
+	t.Cleanup(agent.UnregisterPlugins)
+	if got := agentTypeString(tmux.AgentType("omp")); got != "unknown" {
+		t.Fatalf("unregistered type = %q, want unknown", got)
+	}
+	if err := agent.RegisterPlugin("omp", nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := agentTypeString(tmux.AgentType("OMP")); got != "omp" {
+		t.Fatalf("registered plugin type = %q, want omp", got)
+	}
+	if got := paneAgentType(tmux.Pane{Type: tmux.AgentType("omp"), Title: "repro__omp_1"}); got != "omp" {
+		t.Fatalf("paneAgentType = %q, want omp", got)
 	}
 }

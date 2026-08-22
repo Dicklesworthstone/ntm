@@ -654,6 +654,11 @@ Shell Integration:
 			tmux.DefaultClient = tmux.NewClient(sshHost)
 		}
 
+		// Agent plugins are recognised agent types everywhere (status, robot
+		// surfaces, send targeting, deps), not only at spawn/add (ntm#260).
+		// Cheap: a directory scan of a handful of TOML files, nil when absent.
+		registerAgentPluginTypes(pluginAgentsDirForArgs(os.Args[1:]))
+
 		// Handle --no-color flag by setting environment variable
 		// This integrates with the existing theme.NoColorEnabled() system
 		if noColor {

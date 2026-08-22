@@ -1794,6 +1794,10 @@ func modelNameForPane(p tmux.Pane) string {
 			if cfg.Models.DefaultOllama != "" {
 				return cfg.Models.DefaultOllama
 			}
+		case tmux.AgentOpencode:
+			if cfg.Models.DefaultOpencode != "" {
+				return cfg.Models.DefaultOpencode
+			}
 		}
 	}
 	// Fall back to compiled-in defaults from config.DefaultModels() so the

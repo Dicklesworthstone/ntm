@@ -71,6 +71,12 @@ var promptPatterns = []PromptPattern{
 	{AgentType: "grok", Regex: regexp.MustCompile(`^│\s*❯`), Description: "Grok Build bordered composer line"},
 	{AgentType: "grok", Regex: regexp.MustCompile(`(?i)grok\s+build\s+\d+\.\d+`), Description: "Grok Build banner/status line"},
 
+	// OpenCode patterns (ntm#261). The composer hint text is rendered only
+	// while the prompt is empty, i.e. at idle; DetectIdleFromOutput vetoes
+	// it with agent.OpencodeActivelyWorking (the `esc interrupt` footer) first.
+	{AgentType: "oc", Regex: regexp.MustCompile(`(?i)\bAsk anything\b`), Description: "OpenCode empty-composer hint text"},
+	{AgentType: "oc", Regex: regexp.MustCompile(`(?i)^Interrupted$`), Description: "OpenCode post-interrupt acknowledgement"},
+
 	// Generic shell prompts (for user panes and fallback)
 	// Match simple prompts like "$" or "user@host:~$ "
 	// Avoid matching sentences like "cost is $" by disallowing spaces in the prefix
@@ -151,11 +157,12 @@ var knownAgentTypes = map[string]bool{
 	"aider":    true,
 	"ollama":   true,
 	"grok":     true, // Grok Build renders a bordered "│ ❯" composer (GH#251)
+	"oc":       true, // OpenCode renders an "Ask anything..." composer (ntm#261)
 }
 
 // knownAgentPromptPrefixes matches prompts that belong to specific agent types.
 // When agentType is empty, the generic ">" pattern should not match these.
-var knownAgentPromptPrefixes = regexp.MustCompile(`(?i)^(claude|codex|gemini|cursor|windsurf|aider|ollama)>\s*$`)
+var knownAgentPromptPrefixes = regexp.MustCompile(`(?i)^(claude|codex|gemini|cursor|windsurf|aider|ollama|opencode)>\s*$`)
 
 // ccActiveSpinnerPatterns detect Claude Code's "actively working" indicators
 // (randomized timing spinners like "Scurrying… (12s)", the extended-thinking
@@ -238,6 +245,19 @@ func DetectIdleFromOutput(output string, agentType string) bool {
 		return false
 	}
 
+	// OpenCode: the `esc interrupt` footer is drawn only while a turn runs
+	// and vetoes the composer-hint idle pattern (ntm#261).
+	if agentType == string(agent.AgentTypeOpencode) && agent.OpencodeActivelyWorking(output, 0) {
+		return false
+	}
+
+	// Registered plugin agents: declared Working patterns veto idle; declared
+	// Idle patterns are consulted alongside the generic prompt scan (ntm#260).
+	pluginPatterns, isPlugin := agent.LookupPluginPatterns(agent.AgentType(agentType))
+	if isPlugin && agent.PluginActivelyWorking(output, agent.AgentType(agentType), 0) {
+		return false
+	}
+
 	// Strip ANSI first for cleaner processing
 	clean := StripANSI(output)
 
@@ -253,6 +273,13 @@ func DetectIdleFromOutput(output string, agentType string) bool {
 			continue
 		}
 		linesChecked++
+		if isPlugin && len(pluginPatterns.Idle) > 0 {
+			for _, re := range pluginPatterns.Idle {
+				if re.MatchString(line) {
+					return true
+				}
+			}
+		}
 		if IsPromptLine(line, agentType) {
 			// Guard against false idle: if the agent is actively working its
 			// input box is still drawn, but a spinner sits below the prompt.

@@ -6011,6 +6011,11 @@ func agentTypeString(t tmux.AgentType) string {
 	case tmux.AgentUser:
 		return "user"
 	default:
+		// A registered agent plugin is its own type (ntm#260); anything else
+		// that tmux could not classify stays "unknown".
+		if agent.IsPluginType(agent.AgentType(t)) {
+			return strings.ToLower(strings.TrimSpace(string(t)))
+		}
 		return "unknown"
 	}
 }
@@ -6060,6 +6065,10 @@ func modelNameForPane(pane tmux.Pane, cfg *config.Config) string {
 		case tmux.AgentOllama:
 			if cfg.Models.DefaultOllama != "" {
 				return cfg.Models.DefaultOllama
+			}
+		case tmux.AgentOpencode:
+			if cfg.Models.DefaultOpencode != "" {
+				return cfg.Models.DefaultOpencode
 			}
 		}
 	}

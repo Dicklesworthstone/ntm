@@ -507,6 +507,56 @@ func GrokActivelyWorking(output string, paneWidth int) bool {
 	return grokActiveWorkLineRe.MatchString(tail) || grokCancelHintRe.MatchString(tail)
 }
 
+// OpenCode (oc, https://opencode.ai) patterns (ntm#261). Derived from the
+// TUI source (packages/tui/src/component/prompt/index.tsx): the composer
+// hint text reads `Ask anything... "<example>"` and is drawn only while
+// the prompt is empty, i.e. at idle; while a turn runs the TUI renders a
+// spinner plus an `esc interrupt` (after one press: `esc again to
+// interrupt`) footer hint that disappears at idle.
+var (
+	ocRateLimitPatterns = []string{
+		"rate limit",
+		"too many requests",
+		"quota exceeded",
+		"usage limit",
+	}
+
+	ocWorkingPatterns = []string{
+		"esc interrupt",
+		"esc again to interrupt",
+	}
+
+	// ocInterruptHintRe matches the footer hint OpenCode shows only while a
+	// turn is in flight.
+	ocInterruptHintRe = regexp.MustCompile(`(?i)\besc\s+(?:again\s+to\s+)?interrupt\b`)
+
+	// ocIdlePatterns indicates the empty composer is waiting for input.
+	// Callers gate on !OpencodeActivelyWorking first (detectStateFlags does).
+	ocIdlePatterns = []*regexp.Regexp{
+		regexp.MustCompile(`(?i)\bAsk anything\b`),
+		regexp.MustCompile(`(?m)^\s*Interrupted\s*$`), // post-interrupt acknowledgement
+	}
+
+	ocErrorPatterns = []string{
+		"error:",
+		"failed:",
+		"exception:",
+	}
+)
+
+// ocLiveTailLines bounds the live-tail window scanned for the OpenCode
+// working veto; the footer sits at the bottom of the screen like grok's.
+const ocLiveTailLines = 15
+
+// OpencodeActivelyWorking reports whether an OpenCode pane's trailing live
+// window shows an in-flight turn via the `esc interrupt` footer hint.
+// paneWidth is the real tmux pane width; pass 0 when unknown.
+func OpencodeActivelyWorking(output string, paneWidth int) bool {
+	clean := stripANSICodes(output)
+	tail := util.GetLastNLines(clean, util.WidthAdaptiveTailLines(paneWidth, ocLiveTailLines))
+	return ocInterruptHintRe.MatchString(tail)
+}
+
 // Ollama (ollama) patterns.
 var (
 	ollamaRateLimitPatterns = []string{

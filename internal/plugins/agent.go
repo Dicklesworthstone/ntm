@@ -28,6 +28,48 @@ type AgentPlugin struct {
 		Model string   `toml:"model"`
 		Tags  []string `toml:"tags"`
 	} `toml:"defaults"`
+	// Readiness lets a plugin declare how NTM should classify its panes, so
+	// status, --robot-tail, --verify-boot, and safe dispatch treat it like a
+	// built-in agent (ntm#260). Each entry is a Go regexp matched against
+	// ANSI-stripped pane output:
+	//   idle_patterns    — a match in the last few lines, with no working
+	//                      match in the live tail, means the composer is
+	//                      waiting for input;
+	//   working_patterns — a match in the live tail means a turn is in
+	//                      flight (vetoes idle), e.g. OMP's `⟨esc⟩` hint;
+	//   error_patterns   — a match in the recent output marks an error.
+	// With none declared the generic prompt heuristics apply as before.
+	Readiness struct {
+		IdlePatterns    []string `toml:"idle_patterns"`
+		WorkingPatterns []string `toml:"working_patterns"`
+		ErrorPatterns   []string `toml:"error_patterns"`
+	} `toml:"readiness"`
+}
+
+// ProbeCommand returns the executable a plugin launches — the first token of
+// its command template, before any argument or template action — so `ntm
+// deps` can probe PATH for it. Empty when the template starts with a
+// template action (the executable itself is dynamic).
+func (p AgentPlugin) ProbeCommand() string {
+	cmd := strings.TrimSpace(p.Command)
+	if cmd == "" || strings.HasPrefix(cmd, "{{") {
+		return ""
+	}
+	if idx := strings.Index(cmd, "{{"); idx >= 0 {
+		cmd = cmd[:idx]
+	}
+	fields := strings.Fields(cmd)
+	if len(fields) == 0 {
+		return ""
+	}
+	// Skip leading VAR=value assignments.
+	for _, f := range fields {
+		if strings.Contains(f, "=") && !strings.HasPrefix(f, "=") {
+			continue
+		}
+		return f
+	}
+	return ""
 }
 
 type agentConfigFile struct {

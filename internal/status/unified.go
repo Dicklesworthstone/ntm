@@ -172,6 +172,31 @@ func (d *UnifiedDetector) determineStateAt(output, agentType string, lastActivit
 		}
 	}
 
+	// OpenCode keeps its composer drawn while a turn runs, so the in-flight
+	// footer outranks velocity; the hint text is idle evidence only once
+	// the footer is gone (ntm#261).
+	if agentType == string(agent.AgentTypeOpencode) {
+		if agent.OpencodeActivelyWorking(output, 0) {
+			return StateWorking, ErrorNone
+		}
+		if DetectIdleFromOutput(output, agentType) {
+			return StateIdle, ErrorNone
+		}
+	}
+
+	// Registered plugin agents with declared readiness patterns get the same
+	// treatment as the built-ins above (ntm#260): their Working patterns are
+	// authoritative and their Idle patterns outrank the velocity gate, which
+	// is window-scoped and kept fresh by any busy sibling pane.
+	if pp, ok := agent.LookupPluginPatterns(agent.AgentType(agentType)); ok && pp.Declared() {
+		if agent.PluginActivelyWorking(output, agent.AgentType(agentType), 0) {
+			return StateWorking, ErrorNone
+		}
+		if DetectIdleFromOutput(output, agentType) {
+			return StateIdle, ErrorNone
+		}
+	}
+
 	// Check if at prompt (idle) - prioritize this when velocity is low
 	isAtPrompt := DetectIdleFromOutput(output, agentType)
 	if isAtPrompt && isLowVelocity {
@@ -248,6 +273,7 @@ func isKnownAgentType(agentType string) bool {
 		agent.AgentTypeCursor,
 		agent.AgentTypeWindsurf,
 		agent.AgentTypeAider,
+		agent.AgentTypeOpencode,
 		agent.AgentTypeOllama:
 		return true
 	default:

@@ -40,6 +40,10 @@ func (p *parserImpl) ParseWithHint(output string, hint AgentType) (*AgentState, 
 	// Step 1: Detect agent type
 	if canonicalHint := hint.Canonical(); canonicalHint.IsValid() {
 		state.Type = canonicalHint
+	} else if IsPluginType(canonicalHint) {
+		// A registered agent plugin is a real type: keep it so its declared
+		// readiness patterns drive classification (ntm#260).
+		state.Type = pluginKey(string(canonicalHint))
 	} else {
 		state.Type = p.DetectAgentType(cleanOutput)
 	}
@@ -323,6 +327,8 @@ func (p *parserImpl) detectRateLimit(output string, agentType AgentType) bool {
 		return matchAny(recentOutput, aiderRateLimitPatterns)
 	case AgentTypeOllama:
 		return matchAny(recentOutput, ollamaRateLimitPatterns)
+	case AgentTypeOpencode:
+		return matchAny(recentOutput, ocRateLimitPatterns)
 	case AgentTypeGrok:
 		return matchAny(recentOutput, grokRateLimitPatterns)
 	default:
@@ -360,7 +366,14 @@ func (p *parserImpl) detectWorking(output string, agentType AgentType) bool {
 		return matchAny(recentOutput, ollamaWorkingPatterns)
 	case AgentTypeGrok:
 		return GrokActivelyWorking(output, 0) || matchAny(recentOutput, grokWorkingPatterns)
+	case AgentTypeOpencode:
+		return OpencodeActivelyWorking(output, 0) || matchAny(recentOutput, ocWorkingPatterns)
 	default:
+		// A registered plugin with declared Working patterns is authoritative
+		// for its own type; the generic union below is for truly unknown types.
+		if pp, ok := LookupPluginPatterns(agentType); ok && len(pp.Working) > 0 {
+			return PluginActivelyWorking(output, agentType, 0)
+		}
 		// Check all patterns for unknown type
 		return matchAny(recentOutput, ccWorkingPatterns) ||
 			matchAny(recentOutput, codWorkingPatterns) ||
@@ -437,7 +450,29 @@ func (p *parserImpl) detectIdle(output string, agentType AgentType) bool {
 			return false
 		}
 		return matchAnyRegex(lastLines, grokIdlePatterns)
+	case AgentTypeOpencode:
+		// Mirrors the grok arm: a fresh pane with no output reads as idle; the
+		// `esc interrupt` footer vetoes idle while a turn runs; otherwise the
+		// empty-composer hint text is the idle signal.
+		if strings.TrimSpace(lastLines) == "" {
+			return true
+		}
+		if OpencodeActivelyWorking(output, 0) {
+			return false
+		}
+		return matchAnyRegex(lastLines, ocIdlePatterns)
 	default:
+		// A registered plugin with declared readiness patterns: its Working
+		// patterns veto idle, its Idle patterns decide; with no Idle patterns
+		// declared fall through to the generic union (ntm#260).
+		if pp, ok := LookupPluginPatterns(agentType); ok && pp.Declared() {
+			if PluginActivelyWorking(output, agentType, 0) {
+				return false
+			}
+			if idle, declared := PluginIdlePromptShowing(lastLines, agentType); declared {
+				return idle
+			}
+		}
 		// Check all idle patterns for unknown type
 		return matchAnyRegex(lastLines, ccIdlePatterns) ||
 			matchAnyRegex(lastLines, codIdlePatterns) ||
@@ -477,7 +512,12 @@ func (p *parserImpl) detectError(output string, agentType AgentType) bool {
 		return matchAny(recentOutput, ollamaErrorPatterns)
 	case AgentTypeGrok:
 		return matchAny(recentOutput, grokErrorPatterns)
+	case AgentTypeOpencode:
+		return matchAny(recentOutput, ocErrorPatterns)
 	default:
+		if pp, ok := LookupPluginPatterns(agentType); ok && len(pp.Error) > 0 {
+			return PluginErrorShowing(recentOutput, agentType)
+		}
 		// Check all patterns for unknown type
 		return matchAny(recentOutput, ccErrorPatterns) ||
 			matchAny(recentOutput, codErrorPatterns) ||
@@ -509,6 +549,8 @@ func (p *parserImpl) collectLimitIndicators(output string, agentType AgentType) 
 		return collectMatches(recentOutput, aiderRateLimitPatterns)
 	case AgentTypeOllama:
 		return collectMatches(recentOutput, ollamaRateLimitPatterns)
+	case AgentTypeOpencode:
+		return collectMatches(recentOutput, ocRateLimitPatterns)
 	case AgentTypeGrok:
 		return collectMatches(recentOutput, grokRateLimitPatterns)
 	default:
@@ -544,6 +586,8 @@ func (p *parserImpl) collectWorkIndicators(output string, agentType AgentType) [
 		return collectMatches(recentOutput, aiderWorkingPatterns)
 	case AgentTypeOllama:
 		return collectMatches(recentOutput, ollamaWorkingPatterns)
+	case AgentTypeOpencode:
+		return collectMatches(recentOutput, ocWorkingPatterns)
 	case AgentTypeGrok:
 		matches := collectMatches(recentOutput, grokWorkingPatterns)
 		if len(matches) == 0 && GrokActivelyWorking(output, 0) {

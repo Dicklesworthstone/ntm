@@ -91,6 +91,7 @@ func init() {
 	config.RegisterReader("models.default_gemini", modelNameForPane)
 	config.RegisterReader("models.default_grok", modelNameForPane)
 	config.RegisterReader("models.default_ollama", modelNameForPane)
+	config.RegisterReader("models.default_opencode", modelNameForPane)
 
 	// DCG status surface (dcg_status.go).
 	config.RegisterReader("integrations.dcg.allow_override", resolveDCGSettings)

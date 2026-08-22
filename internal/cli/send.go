@@ -930,6 +930,14 @@ func newSendCmd() *cobra.Command {
 	cmd.Flags().Lookup("gmi").NoOptDefVal = "true"
 	cmd.Flags().Var(newSendTargetValue(AgentTypeAntigravity, &targets), "agy", "send to Antigravity (agy) agents (optional :variant filter)")
 	cmd.Flags().Lookup("agy").NoOptDefVal = "true"
+	cmd.Flags().Var(newSendTargetValue(AgentTypeGrok, &targets), "grok", "send to Grok Build agents (optional :variant filter)")
+	cmd.Flags().Lookup("grok").NoOptDefVal = "true"
+	cmd.Flags().Var(newSendTargetValue(AgentTypeOpencode, &targets), "oc", "send to OpenCode agents (optional :variant filter)")
+	cmd.Flags().Lookup("oc").NoOptDefVal = "true"
+	// Agent plugins get the same selectors spawn/add expose (ntm#260).
+	for _, p := range registerAgentPluginTypes(pluginAgentsDirForArgs(os.Args[1:])) {
+		registerPluginSendFlags(cmd, p, &targets)
+	}
 	cmd.Flags().BoolVar(&targetAll, "all", false, "send to all agent panes, overriding type/tag filters (the user pane is excluded unless --include-user)")
 	cmd.Flags().BoolVar(&includeUser, "include-user", false, "opt the user/control pane into a --all broadcast (deliberate shell input only)")
 	cmd.Flags().BoolVar(&clearInput, "clear-input", false, "clear residual composer text (per-agent Escape ritual + C-u, verified) before typing each prompt; recommended after interrupts on codex panes")

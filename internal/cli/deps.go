@@ -109,7 +109,15 @@ func init() {
 	})
 }
 
+// defaultDepChecks returns the built-in probes followed by one probe per
+// agent plugin declared under <config>/agents (ntm#260), so a plugin agent
+// is reported — and counted as available — alongside the built-ins.
 func defaultDepChecks() []depCheck {
+	checks := builtinDepChecks()
+	return append(checks, pluginDepChecks(registerAgentPluginTypes(pluginAgentsDirForArgs(os.Args[1:])))...)
+}
+
+func builtinDepChecks() []depCheck {
 	return []depCheck{
 		// Required
 		{
@@ -173,6 +181,14 @@ func defaultDepChecks() []depCheck {
 			Required:    false,
 			Category:    "AI Agents",
 			InstallHint: "curl https://cursor.com/install -fsS | bash (installs `cursor-agent`; the `cursor` IDE binary is NOT the agent CLI)",
+		},
+		{
+			Name:        "OpenCode",
+			Command:     "opencode",
+			VersionArgs: []string{"--version"},
+			Required:    false,
+			Category:    "AI Agents",
+			InstallHint: "curl -fsSL https://opencode.ai/install | bash (or `npm install -g opencode-ai`)",
 		},
 
 		// Recommended

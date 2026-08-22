@@ -4462,6 +4462,17 @@ func (c *spawnIdentityCoordinator) prepareAgent(parentCtx context.Context, agent
 	if model == "" {
 		model = agent.model
 	}
+	// Agent Mail rejects an empty model, but several agent types legitimately
+	// delegate model selection to the CLI's own config (bare --oc=N, --grok=N,
+	// plugins without a default). Register with a stable, clearly-delegated
+	// delegation marker instead of failing the pane's identity (ntm#261).
+	if strings.TrimSpace(model) == "" {
+		model = delegatedModelPlaceholder(program)
+		if !IsJSONOutput() {
+			output.PrintInfof("No model resolved for pane %d (%s); registering with Agent Mail as %q — set models.default_%s or pass an explicit model to name it",
+				agent.paneIndex, agent.agentType, model, modelDefaultKeyForType(agent.agentType))
+		}
+	}
 
 	regCtx, regCancel := context.WithTimeout(parentCtx, 15*time.Second)
 	registered, err := c.client.CreateAgentIdentity(regCtx, agentmail.RegisterAgentOptions{
@@ -4604,6 +4615,39 @@ func (c *spawnIdentityCoordinator) publishIdentity(agent spawnedAgentInfo, name 
 			output.PrintWarningf("Failed to write identity file for pane %d: %v", agent.paneIndex, writeErr)
 		}
 		_ = agentmail.WriteLegacyCompatIdentity(key, agent.paneID, name)
+	}
+}
+
+// delegatedModelPlaceholder is the model identifier NTM registers with Agent
+// Mail when the agent type delegates model selection to its own CLI config
+// and no explicit model was given. It is stable per program, so the same
+// pane re-registers identically, and unmistakably not a real model name.
+func delegatedModelPlaceholder(program string) string {
+	program = strings.TrimSpace(program)
+	if program == "" {
+		program = "agent"
+	}
+	return program + "/cli-default"
+}
+
+// modelDefaultKeyForType names the [models] key a user would set to give the
+// type a real default model, for the delegation notice.
+func modelDefaultKeyForType(agentType string) string {
+	switch agentpkg.AgentType(agentType).Canonical() {
+	case agentpkg.AgentTypeOpencode:
+		return "opencode"
+	case agentpkg.AgentTypeGrok:
+		return "grok"
+	case agentpkg.AgentTypeClaudeCode:
+		return "claude"
+	case agentpkg.AgentTypeCodex:
+		return "codex"
+	case agentpkg.AgentTypeGemini:
+		return "gemini"
+	case agentpkg.AgentTypeOllama:
+		return "ollama"
+	default:
+		return strings.ToLower(strings.TrimSpace(agentType))
 	}
 }
 

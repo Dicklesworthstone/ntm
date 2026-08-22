@@ -1622,20 +1622,23 @@ func DefaultXFConfig() XFConfig {
 
 // ModelsConfig holds model alias configuration for each agent type
 type ModelsConfig struct {
-	DefaultClaude string            `toml:"default_claude"` // Default model for Claude
-	DefaultCodex  string            `toml:"default_codex"`  // Default model for Codex
-	DefaultGemini string            `toml:"default_gemini"` // Default model for Gemini
-	DefaultGrok   string            `toml:"default_grok"`   // Optional Grok Build default; empty delegates to the CLI
-	DefaultOllama string            `toml:"default_ollama"` // Default model for Ollama
-	Claude        map[string]string `toml:"claude"`         // Claude model aliases
-	Codex         map[string]string `toml:"codex"`          // Codex model aliases
-	Gemini        map[string]string `toml:"gemini"`         // Gemini model aliases
-	Grok          map[string]string `toml:"grok"`           // Grok Build model aliases
-	Ollama        map[string]string `toml:"ollama"`         // Ollama model aliases
-	Cursor        map[string]string `toml:"cursor"`         // Cursor model aliases
-	Windsurf      map[string]string `toml:"windsurf"`       // Windsurf model aliases
-	Aider         map[string]string `toml:"aider"`          // Aider model aliases
-	Opencode      map[string]string `toml:"opencode"`       // Opencode (oc) model aliases — see ntm#116
+	DefaultClaude string `toml:"default_claude"` // Default model for Claude
+	DefaultCodex  string `toml:"default_codex"`  // Default model for Codex
+	DefaultGemini string `toml:"default_gemini"` // Default model for Gemini
+	DefaultGrok   string `toml:"default_grok"`   // Optional Grok Build default; empty delegates to the CLI
+	DefaultOllama string `toml:"default_ollama"` // Default model for Ollama
+	// DefaultOpencode is the optional OpenCode default; empty delegates model
+	// selection to OpenCode's own config (ntm#261).
+	DefaultOpencode string            `toml:"default_opencode"`
+	Claude          map[string]string `toml:"claude"`   // Claude model aliases
+	Codex           map[string]string `toml:"codex"`    // Codex model aliases
+	Gemini          map[string]string `toml:"gemini"`   // Gemini model aliases
+	Grok            map[string]string `toml:"grok"`     // Grok Build model aliases
+	Ollama          map[string]string `toml:"ollama"`   // Ollama model aliases
+	Cursor          map[string]string `toml:"cursor"`   // Cursor model aliases
+	Windsurf        map[string]string `toml:"windsurf"` // Windsurf model aliases
+	Aider           map[string]string `toml:"aider"`    // Aider model aliases
+	Opencode        map[string]string `toml:"opencode"` // Opencode (oc) model aliases — see ntm#116
 	// ContextLimits allows overriding built-in context window sizes for models.
 	// Keys are model names (e.g., "claude-opus-4-6"), values are token counts.
 	// These override the built-in defaults in internal/models/registry.go.
@@ -1646,11 +1649,12 @@ type ModelsConfig struct {
 // Model IDs should match those in internal/agents/profiles.go (no date suffixes).
 func DefaultModels() ModelsConfig {
 	return ModelsConfig{
-		DefaultClaude: "claude-opus-4-8",
-		DefaultCodex:  DefaultCodexModel,
-		DefaultGemini: "gemini-3-pro-preview",
-		DefaultGrok:   "",
-		DefaultOllama: "llama3",
+		DefaultClaude:   "claude-opus-4-8",
+		DefaultCodex:    DefaultCodexModel,
+		DefaultGemini:   "gemini-3-pro-preview",
+		DefaultGrok:     "",
+		DefaultOllama:   "llama3",
+		DefaultOpencode: "",
 		Claude: map[string]string{
 			"opus":      "claude-opus-4-8",
 			"sonnet":    "claude-sonnet-4-6",
@@ -1766,6 +1770,8 @@ func (m *ModelsConfig) GetModelName(agentType, alias string) string {
 			return m.DefaultGrok
 		case "ollama":
 			return m.DefaultOllama
+		case "opencode":
+			return m.DefaultOpencode
 		}
 		return ""
 	}
@@ -3874,6 +3880,7 @@ func Print(cfg *Config, w io.Writer) error {
 	fmt.Fprintf(w, "default_codex = %q\n", cfg.Models.DefaultCodex)
 	fmt.Fprintf(w, "default_gemini = %q\n", cfg.Models.DefaultGemini)
 	fmt.Fprintf(w, "default_grok = %q  # Empty delegates model selection to Grok Build\n", cfg.Models.DefaultGrok)
+	fmt.Fprintf(w, "default_opencode = %q  # Empty delegates model selection to OpenCode's own config\n", cfg.Models.DefaultOpencode)
 	fmt.Fprintln(w)
 
 	// Write Claude model aliases
@@ -4691,6 +4698,8 @@ func GetValue(cfg *Config, path string) (interface{}, error) {
 			return cfg.Models.DefaultGemini, nil
 		case "default_grok":
 			return cfg.Models.DefaultGrok, nil
+		case "default_opencode":
+			return cfg.Models.DefaultOpencode, nil
 		case "claude":
 			return cfg.Models.Claude, nil
 		case "codex":
@@ -5449,6 +5458,7 @@ func Diff(cfg *Config) []ConfigDiff {
 	addDiff("models.default_codex", defaults.Models.DefaultCodex, cfg.Models.DefaultCodex)
 	addDiff("models.default_gemini", defaults.Models.DefaultGemini, cfg.Models.DefaultGemini)
 	addDiff("models.default_grok", defaults.Models.DefaultGrok, cfg.Models.DefaultGrok)
+	addDiff("models.default_opencode", defaults.Models.DefaultOpencode, cfg.Models.DefaultOpencode)
 	addDiff("models.claude", defaults.Models.Claude, cfg.Models.Claude)
 	addDiff("models.codex", defaults.Models.Codex, cfg.Models.Codex)
 	addDiff("models.gemini", defaults.Models.Gemini, cfg.Models.Gemini)
