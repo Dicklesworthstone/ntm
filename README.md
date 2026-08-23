@@ -512,6 +512,42 @@ Configuration loading is strict: unknown fields are errors. The unused TOML
 `health_check_seconds`, and `crash_threshold`). The `ntm health` command remains
 available and is unrelated to that removed config section.
 
+### Agent Plugins
+
+Custom agent types load from the `agents/` directory that sits next to the
+selected config file: `~/.config/ntm/agents/*.toml` by default,
+`$XDG_CONFIG_HOME/ntm/agents/` under an XDG override, or
+`<dir-of-config>/agents/` with an explicit `--config`. Each TOML declares a
+name/alias (which become `--<name>`/`--<alias>` spawn and `send` selectors), a
+command template, and optional `[agent.readiness]` regexes that drive
+idle/working/error classification for `status`, `--robot-tail`, and
+`--verify-boot` exactly like the built-in agents. NTM never modifies files in
+`agents/` — an existing preset you have customised is yours.
+
+A maintained, verified preset for **Oh My Pi (`omp`)** ships in
+[`examples/agents/omp.toml`](examples/agents/omp.toml). Setup:
+
+```bash
+# One-time: complete OMP's interactive setup BEFORE the first spawn,
+# otherwise the first prompt lands in the setup wizard.
+omp setup
+
+# Install the preset next to your NTM config, then verify it is visible.
+mkdir -p ~/.config/ntm/agents
+cp examples/agents/omp.toml ~/.config/ntm/agents/
+ntm plugins list
+ntm deps -v          # probes `omp (plugin)` on PATH
+
+# Exercise it.
+ntm spawn repro --omp=1 --verify-boot
+ntm --robot-tail=repro --fresh
+ntm send repro --omp "Reply exactly NTM_OMP_OK"
+```
+
+Model and thinking overrides render through the preset's command template
+(e.g. `--omp=1:MODEL`); omitting a default model in the preset deliberately
+lets OMP's own configuration choose.
+
 ## Design Principles
 
 ### No Silent Data Loss

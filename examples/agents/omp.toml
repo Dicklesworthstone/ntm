@@ -1,0 +1,41 @@
+# Oh My Pi (omp) agent-plugin preset for NTM (ntm#260 / ntm#262).
+#
+# Install — copy this file to the `agents/` directory that sits NEXT TO the
+# NTM config you actually use (NTM loads plugins from the selected config's
+# sibling `agents/` directory):
+#
+#   default:            ~/.config/ntm/agents/omp.toml
+#   XDG override:       $XDG_CONFIG_HOME/ntm/agents/omp.toml
+#   explicit --config:  <dir-of-that-config>/agents/omp.toml
+#
+# NTM only reads this directory; nothing ever overwrites an existing
+# omp.toml you have customised.
+#
+# One-time prerequisite: run `omp setup` interactively BEFORE the first
+# spawn. Without it the pane boots into the setup wizard and the first
+# prompt would be typed into the wizard, not the composer.
+#
+# Verify the install:
+#   ntm plugins list                       # preset visible
+#   ntm deps -v                            # `omp (plugin)` probed on PATH
+#   ntm spawn repro --omp=1 --verify-boot  # waits for the real composer
+#   ntm --robot-tail=repro --fresh         # panes report type "omp"
+#   ntm send repro --omp "Reply exactly NTM_OMP_OK"
+#
+# Model/thinking overrides render through the command template below, e.g.
+# `--omp=1:gpt-6` or an effort spec; omitting a model here (no
+# [agent.defaults] model) deliberately lets OMP's own configuration choose.
+
+[agent]
+name = "omp"
+alias = "om"
+description = "Oh My Pi (omp) — Pi-family coding agent with profiles and native TUI"
+command = "omp{{if .Model}} --model {{shellQuote .Model}}{{end}}{{if .ReasoningEffort}} --thinking {{shellQuote .ReasoningEffort}}{{end}}"
+
+[agent.readiness]
+# Verified against live omp v18 chrome captured in tmux (ntm#260): in flight
+# it renders ` ⠙ Working… ⟨esc⟩` above the composer box; at idle the
+# composer's bottom border is the last line of the screen.
+working_patterns = ['⟨esc⟩', '^\s*[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]\s*Working']
+idle_patterns = ['^\s*╰─.*─╯\s*$']
+error_patterns = ['(?i)^error:']
