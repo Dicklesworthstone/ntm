@@ -13,12 +13,27 @@ NTM is a tmux session management tool for orchestrating multiple AI coding agent
 
 ## [Unreleased]
 
+---
+
+## [v1.30.0] -- 2026-08-22 [GitHub Release]
+
+**Agent Mail identity integrity + first-class agent plugins** (GitHub issues #256, #257, #258, #260, #261).
+
 ### Fixed
 
-- **Corrected commit provenance.** Commit `d08893d9`'s message incorrectly
-  attributed the fail-closed serve safety-policy change to its completion and
-  tmux diff. The actual safety-policy implementation is `dda4aae8`; history
-  is preserved and this note is the forward correction.
+- **Live Agent Mail identities are never re-issued** ([#256](https://github.com/Dicklesworthstone/ntm/issues/256)): `ntm add` combined title-derived indexing with a title-first registry lookup, so two live panes could be handed the same identity. The session registry now records pane ids and pids, resolves pane-id-first, and reuses a title only when its holder is provably dead (absent, or present with a different pid); unobservable liveness means "occupied" and a fresh identity is minted. `ntm add` also folds live registry titles into its index allocation.
+- **`--worktrees` panes are addressable under both project keys** ([#257](https://github.com/Dicklesworthstone/ntm/issues/257)): spawn published pane identities under the session project key while agents derived theirs from the worktree cwd, so mail addressed one key and agents registered under another. Identities are now published under the session key, its resolved form, and the worktree directory, and `AGENT_MAIL_PROJECT=<session dir>` is injected into worktree panes unless plugin env or `--pane-env` overrides it.
+- **The agentmail fallback test can never touch the real `~/.config`** ([#258](https://github.com/Dicklesworthstone/ntm/issues/258)): the test set only `HOME`, but `os.UserConfigDir()` honours `XDG_CONFIG_HOME` first, so `go test ./internal/...` could delete the real config directory. The test is now hermetic (both variables isolated, paths derived from the production resolver, deletion refused unless provably inside the temp sandbox) with regression tests pinning the containment.
+- **Corrected commit provenance.** Commit `d08893d9`'s message incorrectly attributed the fail-closed serve safety-policy change to its completion and tmux diff. The actual safety-policy implementation is `dda4aae8`; history is preserved and this note is the forward correction.
+
+### Added
+
+- **OpenCode parity** ([#261](https://github.com/Dicklesworthstone/ntm/issues/261)): readiness/working detection for the OpenCode TUI, `ntm send --oc`/`--grok` targeting, a deps probe, `models.default_opencode`, and a registration fallback (`<program>/cli-default`) when no model is configured, so bare OpenCode panes still get Agent Mail identities.
+- **First-class agent plugin readiness contract** ([#260](https://github.com/Dicklesworthstone/ntm/issues/260), partial): plugins can register `[agent.readiness]` idle/working/error patterns that the parser and status detector honour, plugin agent types flow through robot reports, `ntm send --<plugin>` targeting works, and deps probes call the plugin's probe command. Verified live against Oh My Pi v18; setup/preflight TOML support is tracked on the issue.
+
+### Internal
+
+- Removed the superseded legacy e2e scenario harness (bd-yhc8r).
 
 ---
 
