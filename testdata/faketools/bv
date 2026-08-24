@@ -104,9 +104,11 @@ case "$ARG" in
         ;;
     robot-history)
         if [ "$MODE" = "zero_counts" ]; then
-            echo '{"stats":{"total_beads":0,"beads_with_commits":0,"total_commits":0},"histories":[],"commit_index":{}}'
+            echo '{"stats":{"total_beads":0,"beads_with_commits":0,"total_commits":0},"histories":{},"commit_index":{}}'
+        elif [ "$MODE" = "history_bad_shape" ]; then
+            echo '{"stats":{"total_beads":1,"beads_with_commits":1,"total_commits":1},"histories":"not-an-object","commit_index":{}}'
         else
-            echo '{"stats":{"total_beads":1,"beads_with_commits":1,"total_commits":1},"histories":[{"id":"bd-1","title":"Test","events":[]}],"commit_index":{}}'
+            echo '{"stats":{"total_beads":1,"beads_with_commits":1,"total_commits":1},"histories":{"bd-1":{"bead_id":"bd-1","title":"Test","status":"closed","events":[{"bead_id":"bd-1","event_type":"modified","timestamp":"2026-01-01T00:00:00Z","commit_sha":"abc","commit_message":"msg","author":"a","author_email":"a@b"}],"milestones":{"closed":{"bead_id":"bd-1","event_type":"closed","timestamp":"2026-01-01T00:00:00Z","commit_sha":"abc","commit_message":"msg","author":"a","author_email":"a@b"}},"commits":[{"sha":"abc"}],"cycle_time":null,"last_author":"a"}},"commit_index":{"abc":["bd-1"]}}'
         fi
         exit 0
         ;;

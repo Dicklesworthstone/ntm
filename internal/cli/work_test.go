@@ -291,6 +291,72 @@ func TestWorkHistoryDegradationSurfacesOnStdout(t *testing.T) {
 	}
 }
 
+func TestWorkHistoryNonVersionFailureHasNoVersionClaim(t *testing.T) {
+	fakeToolsPATH(t)
+	t.Setenv("FAKE_TOOL_MODE", "robot_error")
+	resetFlags()
+
+	out, err := captureStdout(t, func() error {
+		return runWorkHistory()
+	})
+	if err == nil {
+		t.Fatal("runWorkHistory() = nil error, want non-zero exit")
+	}
+
+	plain := status.StripANSI(out)
+	if !strings.Contains(plain, "Warning:") {
+		t.Fatalf("stdout missing warning:\n%s", plain)
+	}
+	if strings.Contains(plain, "requires >=") {
+		t.Errorf("non-version failure must not claim a version problem:\n%s", plain)
+	}
+	if !strings.Contains(plain, "--robot-history") {
+		t.Errorf("stdout missing mode:\n%s", plain)
+	}
+	if !strings.Contains(plain, "robot mode failed") {
+		t.Errorf("stdout missing bv stderr:\n%s", plain)
+	}
+}
+
+func TestWorkHistoryRendersObjectKeyedHistories(t *testing.T) {
+	fakeToolsPATH(t)
+	t.Setenv("FAKE_TOOL_MODE", "normal")
+	resetFlags()
+
+	out, err := captureStdout(t, func() error {
+		return runWorkHistory()
+	})
+	if err != nil {
+		t.Fatalf("runWorkHistory() error = %v, want nil", err)
+	}
+
+	plain := status.StripANSI(out)
+	for _, want := range []string{"Bead History & Correlation", "(bv)", "bd-1", "Test", "Milestones:", "closed"} {
+		if !strings.Contains(plain, want) {
+			t.Errorf("stdout missing %q\nstdout:\n%s", want, plain)
+		}
+	}
+}
+
+func TestWorkHistoryParseFailureReportsError(t *testing.T) {
+	fakeToolsPATH(t)
+	t.Setenv("FAKE_TOOL_MODE", "history_bad_shape")
+	resetFlags()
+
+	out, err := captureStdout(t, func() error {
+		return runWorkHistory()
+	})
+	if err == nil {
+		t.Fatal("runWorkHistory() = nil error, want parse failure")
+	}
+	if !strings.Contains(err.Error(), "could not be parsed") {
+		t.Errorf("error = %q, want parse-failure message", err)
+	}
+	if strings.Contains(status.StripANSI(out), "Bead History") {
+		t.Errorf("parse failure must not render as an answer:\n%s", out)
+	}
+}
+
 func TestWorkHistoryNoWarningWhenBVAnswers(t *testing.T) {
 	fakeToolsPATH(t)
 

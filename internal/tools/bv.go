@@ -324,6 +324,7 @@ type BVRobotError struct {
 	Err              error   // the underlying exit/parse error
 	InstalledVersion Version // installed bv version, if known
 	RequiredVersion  Version // minimum version that serves Mode
+	VersionProblem   bool    // true when the installed bv is below RequiredVersion
 }
 
 func (e *BVRobotError) Error() string {
@@ -378,7 +379,14 @@ func (a *BVAdapter) runRobotCommand(ctx context.Context, dir string, args ...str
 
 	if err := cmd.Wait(); err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
-			return nil, ErrTimeout
+			// A hung bv is not a version problem: report the mode and the
+			// timeout without shelling out again for the version (which would
+			// itself hang).
+			return nil, &BVRobotError{
+				Mode:   mode,
+				Stderr: stderr.String(),
+				Err:    ErrTimeout,
+			}
 		}
 		return nil, a.newBVRobotError(mode, stderr.String(), err)
 	}
@@ -393,14 +401,19 @@ func (a *BVAdapter) runRobotCommand(ctx context.Context, dir string, args ...str
 
 // newBVRobotError builds a BVRobotError carrying the installed version and the
 // minimum version that serves the mode, so callers can report degradation from
-// observed behaviour rather than from a version comparison.
+// observed behaviour rather than from a version comparison. VersionProblem is
+// set only when the installed version is known and below the requirement; a
+// bv that ran and failed for its own reasons (non-zero exit, invalid JSON) is
+// not a version problem.
 func (a *BVAdapter) newBVRobotError(mode, stderr string, err error) *BVRobotError {
+	installed := a.installedVersion()
 	return &BVRobotError{
 		Mode:             mode,
 		Stderr:           stderr,
 		Err:              err,
-		InstalledVersion: a.installedVersion(),
+		InstalledVersion: installed,
 		RequiredVersion:  BVMinRobotVersion,
+		VersionProblem:   installed.IsKnown() && !installed.AtLeast(BVMinRobotVersion),
 	}
 }
 

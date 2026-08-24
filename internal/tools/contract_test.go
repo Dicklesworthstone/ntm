@@ -1036,6 +1036,37 @@ func TestBVAdapterRobotModeDegradation(t *testing.T) {
 	}
 }
 
+// TestBVAdapterRobotModeTimeoutIsBVRobotError verifies that a hung bv surfaces
+// as a *BVRobotError (not the bare ErrTimeout sentinel) and is not reported as
+// a version problem.
+func TestBVAdapterRobotModeTimeoutIsBVRobotError(t *testing.T) {
+	cleanup := withFakeTools(t)
+	defer cleanup()
+
+	os.Setenv("FAKE_TOOL_MODE", "timeout")
+	defer os.Unsetenv("FAKE_TOOL_MODE")
+
+	adapter := NewBVAdapter()
+	adapter.SetTimeout(100 * time.Millisecond)
+	ctx := context.Background()
+	projectRoot := filepath.Dir(filepath.Dir(fakeToolsPath(t)))
+
+	_, err := adapter.GetHistory(ctx, projectRoot)
+	if err == nil {
+		t.Fatal("GetHistory() = nil error in timeout mode, want *BVRobotError")
+	}
+	var bvErr *BVRobotError
+	if !errors.As(err, &bvErr) {
+		t.Fatalf("GetHistory() error = %T, want *BVRobotError", err)
+	}
+	if !errors.Is(err, ErrTimeout) {
+		t.Errorf("GetHistory() error does not wrap ErrTimeout: %v", err)
+	}
+	if bvErr.VersionProblem {
+		t.Error("timeout must not be reported as a version problem")
+	}
+}
+
 // TestBVAdapterCapabilitiesGate verifies the capability gate names versions
 // that exist: 0.15.0 (below the gate) must not report robot_history, while
 // 0.31.0 (above the gate) must. The previous table gated these modes behind

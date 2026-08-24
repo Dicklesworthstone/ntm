@@ -180,6 +180,12 @@ func (v Version) AtLeast(other Version) bool {
 	return v.Compare(other) >= 0
 }
 
+// IsKnown reports whether the version was actually determined. The zero
+// Version (all fields empty) means the version could not be parsed.
+func (v Version) IsKnown() bool {
+	return v.Major != 0 || v.Minor != 0 || v.Patch != 0 || v.Raw != ""
+}
+
 // ToolInfo contains metadata about a detected tool
 type ToolInfo struct {
 	Name         ToolName     `json:"name"`
