@@ -1902,7 +1902,7 @@
         "type": "object"
       }
     },
-    "description": "Unified state query: sessions + beads + alerts + mail. Use --since for delta snapshots.",
+    "description": "Unified state query: sessions + beads + alerts + mail. Use --since for delta snapshots, --session to scope to one session.",
     "properties": {
       "_agent_hints": {
         "$ref": "#/definitions/AgentHints",

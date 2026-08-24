@@ -447,9 +447,10 @@ func buildCommandRegistry() []RobotCommandInfo {
 			Name:        "snapshot",
 			Flag:        "--robot-snapshot",
 			Category:    "state",
-			Description: "Unified state query: sessions + beads + alerts + mail. Use --since for delta snapshots.",
+			Description: "Unified state query: sessions + beads + alerts + mail. Use --since for delta snapshots, --session to scope to one session.",
 			Parameters: []RobotParameter{
 				{Name: "since", Flag: "--since", Type: "string", Required: false, Description: "RFC3339 timestamp for delta snapshot"},
+				{Name: "session", Flag: "--session", Type: "string", Required: false, Description: "Scope to one session"},
 				{Name: "bead-limit", Flag: "--bead-limit", Type: "int", Required: false, Default: "5", Description: "Max beads per category"},
 				{Name: "robot-limit", Flag: "--robot-limit", Type: "int", Required: false, Default: "0", Description: "Max sessions to return (alias: --limit)"},
 				{Name: "robot-offset", Flag: "--robot-offset", Type: "int", Required: false, Default: "0", Description: "Pagination offset for sessions (alias: --offset)"},
@@ -457,6 +458,7 @@ func buildCommandRegistry() []RobotCommandInfo {
 			Examples: []string{
 				"ntm --robot-snapshot",
 				"ntm --robot-snapshot --since=2025-01-15T10:00:00Z",
+				"ntm --robot-snapshot --session=myproject",
 			},
 		},
 		{

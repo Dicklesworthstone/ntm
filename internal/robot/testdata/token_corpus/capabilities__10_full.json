@@ -1389,7 +1389,7 @@
       "flag": "--robot-snapshot",
       "category": "state",
       "summary": "Unified state query: sessions + beads + alerts + mail.",
-      "description": "Unified state query: sessions + beads + alerts + mail. Use --since for delta snapshots.",
+      "description": "Unified state query: sessions + beads + alerts + mail. Use --since for delta snapshots, --session to scope to one session.",
       "output_formats": [
         "json"
       ],
@@ -1416,6 +1416,13 @@
           "type": "string",
           "required": false,
           "description": "RFC3339 timestamp for delta snapshot"
+        },
+        {
+          "name": "session",
+          "flag": "--session",
+          "type": "string",
+          "required": false,
+          "description": "Scope to one session"
         },
         {
           "name": "bead-limit",
@@ -1446,7 +1453,8 @@
       ],
       "examples": [
         "ntm --robot-snapshot",
-        "ntm --robot-snapshot --since=2025-01-15T10:00:00Z"
+        "ntm --robot-snapshot --since=2025-01-15T10:00:00Z",
+        "ntm --robot-snapshot --session=myproject"
       ],
       "transports": [
         {
@@ -8427,7 +8435,7 @@
       "flag": "--robot-snapshot",
       "category": "state",
       "summary": "Unified state query: sessions + beads + alerts + mail.",
-      "description": "Unified state query: sessions + beads + alerts + mail. Use --since for delta snapshots.",
+      "description": "Unified state query: sessions + beads + alerts + mail. Use --since for delta snapshots, --session to scope to one session.",
       "output_formats": [
         "json"
       ],
@@ -8458,6 +8466,13 @@
           "description": "RFC3339 timestamp for delta snapshot"
         },
         {
+          "name": "session",
+          "flag": "--session",
+          "type": "string",
+          "required": false,
+          "description": "Scope to one session"
+        },
+        {
           "name": "bead-limit",
           "flag": "--bead-limit",
           "type": "int",
@@ -8486,7 +8501,8 @@
       ],
       "examples": [
         "ntm --robot-snapshot",
-        "ntm --robot-snapshot --since=2025-01-15T10:00:00Z"
+        "ntm --robot-snapshot --since=2025-01-15T10:00:00Z",
+        "ntm --robot-snapshot --session=myproject"
       ],
       "transports": [
         {

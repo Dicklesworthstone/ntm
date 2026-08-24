@@ -7806,6 +7806,20 @@ func TestClassifyRobotExecuteErrorSuggestsNearestFlag(t *testing.T) {
 	}
 }
 
+// TestClassifyRobotExecuteErrorSuggestsSessionForRobotSession guards the
+// --robot-session near-miss: a caller reaching for the shared --session scope
+// (e.g. to scope --robot-snapshot) should be pointed at --session, not at the
+// nearest robot-* flag.
+func TestClassifyRobotExecuteErrorSuggestsSessionForRobotSession(t *testing.T) {
+	code, hint := classifyRobotExecuteError(errors.New("unknown flag: --robot-session"))
+	if code != robot.ErrCodeInvalidFlag {
+		t.Fatalf("code = %q, want INVALID_FLAG", code)
+	}
+	if !strings.Contains(hint, "--session") {
+		t.Errorf("hint = %q, want a --session suggestion", hint)
+	}
+}
+
 func TestClassifyRobotExecuteErrorUnknownCommandIsInvalidFlag(t *testing.T) {
 	code, hint := classifyRobotExecuteError(errors.New(`unknown command "myproject" for "ntm"`))
 	if code != robot.ErrCodeInvalidFlag {
