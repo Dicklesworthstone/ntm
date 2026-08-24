@@ -2,7 +2,9 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,8 +13,10 @@ import (
 	"time"
 
 	dispatchsvc "github.com/Dicklesworthstone/ntm/internal/dispatch"
+	"github.com/Dicklesworthstone/ntm/internal/output"
 	statuspkg "github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
+	"github.com/Dicklesworthstone/ntm/tests/testutil"
 )
 
 type scriptedSpawnObserver struct {
@@ -837,5 +841,129 @@ func TestSpawnReadinessVerdictPerPane(t *testing.T) {
 	}
 	if !strings.Contains(lines[3], "delivery-not-implemented") {
 		t.Fatalf("grok verdict = %q, want delivery-not-implemented", lines[3])
+	}
+}
+
+// TestSpawnReadinessVerdictEndToEnd drives the real spawn lifecycle and asserts
+// that the per-pane delivery-readiness verdict reaches both output surfaces:
+// the human-readable verdict line (text mode) and the PaneResponse
+// ReadinessVerdict field (JSON mode). Unlike TestSpawnReadinessVerdictPerPane,
+// which re-implements the production loop, this test exercises recordSetupVerdict,
+// the post-setup print loop, and the JSON assignment inside spawnSessionLogicContext.
+func TestSpawnReadinessVerdictEndToEnd(t *testing.T) {
+	testutil.RequireTmuxThrottled(t)
+
+	tmpDir := t.TempDir()
+
+	oldCfg := cfg
+	oldJSON := jsonOutput
+	defer func() {
+		cfg = oldCfg
+		jsonOutput = oldJSON
+	}()
+
+	cfg = newTmuxIntegrationTestConfig(tmpDir)
+	configureSessionTemplateFakeAgents(cfg)
+
+	agents := []FlatAgent{
+		{Type: AgentTypeClaude, Index: 1},
+		{Type: AgentTypeCodex, Index: 1},
+		{Type: AgentTypeGemini, Index: 1},
+	}
+	spawnOpts := func(sessionName string) SpawnOptions {
+		return SpawnOptions{
+			Session:  sessionName,
+			Agents:   agents,
+			CCCount:  1,
+			CodCount: 1,
+			GmiCount: 1,
+			UserPane: true,
+		}
+	}
+
+	t.Run("text", func(t *testing.T) {
+		jsonOutput = false
+		sessionName := fmt.Sprintf("ntm-verdict-text-%d", time.Now().UnixNano())
+		defer func() { _ = tmux.KillSession(sessionName) }()
+		projectDir := filepath.Join(tmpDir, sessionName)
+		if err := os.MkdirAll(projectDir, 0755); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+		stdout, err := captureStdout(t, func() error {
+			return spawnSessionLogicContext(t.Context(), spawnOpts(sessionName))
+		})
+		if err != nil {
+			t.Fatalf("spawnSessionLogicContext: %v", err)
+		}
+		assertSpawnVerdictLines(t, sessionName, stdout)
+	})
+
+	t.Run("json", func(t *testing.T) {
+		jsonOutput = true
+		sessionName := fmt.Sprintf("ntm-verdict-json-%d", time.Now().UnixNano())
+		defer func() { _ = tmux.KillSession(sessionName) }()
+		projectDir := filepath.Join(tmpDir, sessionName)
+		if err := os.MkdirAll(projectDir, 0755); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+		stdout, err := captureStdout(t, func() error {
+			return spawnSessionLogicContext(t.Context(), spawnOpts(sessionName))
+		})
+		if err != nil {
+			t.Fatalf("spawnSessionLogicContext: %v", err)
+		}
+		assertSpawnVerdictJSON(t, stdout)
+	})
+}
+
+func assertSpawnVerdictLines(t *testing.T, sessionName, stdout string) {
+	t.Helper()
+	panes, err := tmux.GetPanes(sessionName)
+	if err != nil {
+		t.Fatalf("GetPanes: %v", err)
+	}
+	paneByType := make(map[tmux.AgentType]string, len(panes))
+	for _, p := range panes {
+		paneByType[p.Type] = p.ID
+	}
+	wants := []struct {
+		agentType AgentType
+		verdict   string
+	}{
+		{AgentTypeClaude, string(tmux.VerdictCheckedAndReady)},
+		{AgentTypeCodex, string(tmux.VerdictCheckedAndReady)},
+		{AgentTypeGemini, string(tmux.VerdictNoClassifier)},
+	}
+	for _, w := range wants {
+		paneID := paneByType[tmux.AgentType(w.agentType)]
+		if paneID == "" {
+			t.Fatalf("no pane for agent type %s", w.agentType)
+		}
+		want := formatSpawnReadinessVerdict(paneID, w.agentType, w.verdict)
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("stdout missing verdict line %q; got:\n%s", want, stdout)
+		}
+	}
+}
+
+func assertSpawnVerdictJSON(t *testing.T, stdout string) {
+	t.Helper()
+	var resp output.SpawnResponse
+	if err := json.Unmarshal([]byte(stdout), &resp); err != nil {
+		t.Fatalf("decode spawn response: %v; stdout=%q", err, stdout)
+	}
+	byType := make(map[string]string, len(resp.Panes))
+	for _, p := range resp.Panes {
+		byType[p.Type] = p.ReadinessVerdict
+	}
+	wants := map[string]string{
+		"claude": string(tmux.VerdictCheckedAndReady),
+		"codex":  string(tmux.VerdictCheckedAndReady),
+		"gemini": string(tmux.VerdictNoClassifier),
+	}
+	for typ, want := range wants {
+		if got := byType[typ]; got != want {
+			t.Fatalf("ReadinessVerdict for %s = %q, want %q", typ, got, want)
+		}
 	}
 }
