@@ -940,16 +940,18 @@ func (sc *StateClassifier) classifyInternal(sample *VelocitySample) (*AgentActiv
 	// long-idle pane in THINKING state. Dropping stale thinking matches
 	// lets classifyState fall through to the correct idle/unknown path.
 	//
-	// CategoryError matches are filtered with the same live-window logic
-	// when an idle prompt is present in the live tail: stale "failed" or
-	// "api error" text high in scrollback above a current chevron prompt
-	// would otherwise pin the pane to ERROR forever, even though the agent
-	// is sitting at a healthy prompt waiting for input. Fresh errors that
-	// land inside the live tail still classify as ERROR.
+	// CategoryError matches are filtered with the same live-window logic,
+	// but the stale-error guard must cover both recovery shapes: a pane
+	// that has gone quiet at a fresh idle prompt, and a pane that is
+	// actively producing new output. In both cases an error string left in
+	// older scrollback is not the pane's current state and must not pin it
+	// to ERROR. Fresh errors that land inside the live tail still classify
+	// as ERROR, and a pane that is neither idle nor progressing (a
+	// genuinely stuck pane) keeps its stale error.
 	liveContent := lastNLines(content, util.WidthAdaptiveTailLines(sc.paneWidth, liveThinkingWindowLines))
 	liveMatches := sc.patternLibrary.Match(liveContent, sc.agentType)
 	effectiveMatches := filterThinkingToLive(matches, liveMatches)
-	effectiveMatches = filterErrorToLiveWhenIdle(effectiveMatches, liveMatches)
+	effectiveMatches = filterErrorToLive(effectiveMatches, liveMatches, sample.CharsAdded > 0)
 
 	// Calculate proposed state and confidence
 	proposedState, confidence, trigger := sc.classifyState(velocity, effectiveMatches)
@@ -960,9 +962,10 @@ func (sc *StateClassifier) classifyInternal(sample *VelocitySample) (*AgentActiv
 	// Check whether any matched pattern is a rate-limit indicator so the
 	// RateLimited flag on AgentActivity is set from real pattern evidence.
 	// We scan `effectiveMatches` rather than `matches` so the flag stays
-	// consistent with the state classification: when filterErrorToLiveWhenIdle
+	// consistent with the state classification: when filterErrorToLive
 	// drops a stale rate-limit pattern that scrolled above a current idle
-	// prompt, the pane is no longer rate-limited and downstream consumers
+	// prompt or behind a pane that is actively producing new output, the
+	// pane is no longer rate-limited and downstream consumers
 	// (`internal/health/health.go`, `internal/resilience/monitor.go`) must
 	// not continue to gate on a recovered pane as if it were still throttled.
 	// `DetectedPatterns` deliberately keeps the unfiltered view because it
@@ -1141,25 +1144,25 @@ func filterThinkingToLive(full, live []PatternMatch) []PatternMatch {
 	return out
 }
 
-// filterErrorToLiveWhenIdle drops CategoryError matches from `full` whose
-// pattern name is not also present in `live`, but only when `live` contains a
-// CategoryIdle prompt match. The combination of "no live error + a live idle
-// prompt" is the signature of historical error text scrolled high in the
-// buffer above a current healthy chevron/prompt: the agent has finished the
-// failure path, recovered, and is now waiting for the next input. Fresh
-// errors (rate limits, auth failures, crashes that just happened) still
-// match in `live` and survive the filter as ERROR. When no idle prompt is in
-// the live tail the pane is not currently waiting and `full` is returned
-// unchanged so error priority is preserved.
+// filterErrorToLive drops CategoryError matches from `full` whose pattern
+// name is not also present in `live`, but only when the pane is demonstrably
+// not stuck: either the live tail shows a fresh idle prompt (the agent
+// recovered and is waiting for input) or the pane is progressing (output
+// grew between the two captures that produced this classification). In both
+// cases an error string left in older scrollback is not the pane's *current*
+// state and must not pin it to ERROR. Fresh errors that land inside the live
+// tail still survive as ERROR, and a pane that is neither idle nor
+// progressing — a genuinely stuck pane — keeps its stale error so a wedged
+// agent is still caught.
 //
 // Plain-text error patterns (failed_text, api_error, exception, …) are the
 // load-bearing instances of this false positive because their regexes match
 // raw substrings ("failed", "error:", "exception:") that linger in
 // scrollback long after the offending operation completed. The filter is
 // pattern-agnostic though — it applies to every CategoryError match that
-// exists in `full` but not in `live` once a fresh idle prompt is observed,
+// exists in `full` but not in `live` once the pane is idle or progressing,
 // including rate-limit, auth, network, and crash patterns.
-func filterErrorToLiveWhenIdle(full, live []PatternMatch) []PatternMatch {
+func filterErrorToLive(full, live []PatternMatch, progressing bool) []PatternMatch {
 	// Fast path: no error matches at all → nothing to filter.
 	hasError := false
 	for _, m := range full {
@@ -1171,20 +1174,6 @@ func filterErrorToLiveWhenIdle(full, live []PatternMatch) []PatternMatch {
 	if !hasError {
 		return full
 	}
-	// Only debounce when the live tail shows the pane is actively waiting
-	// at an idle prompt. Without this guard a pane that just rolled an
-	// error past the live window with no follow-up prompt would silently
-	// drop the error and misclassify as the next-best non-error state.
-	hasLiveIdle := false
-	for _, m := range live {
-		if m.Category == CategoryIdle {
-			hasLiveIdle = true
-			break
-		}
-	}
-	if !hasLiveIdle {
-		return full
-	}
 	// Build the set of error-pattern names that are still in the live tail.
 	// Any CategoryError match in `full` whose name is in this set is fresh
 	// and must keep ERROR priority; the rest are stale scrollback artifacts.
@@ -1194,16 +1183,31 @@ func filterErrorToLiveWhenIdle(full, live []PatternMatch) []PatternMatch {
 			liveError[m.Pattern] = struct{}{}
 		}
 	}
-	allLive := true
+	hasStaleError := false
 	for _, m := range full {
 		if m.Category == CategoryError {
 			if _, ok := liveError[m.Pattern]; !ok {
-				allLive = false
+				hasStaleError = true
 				break
 			}
 		}
 	}
-	if allLive {
+	if !hasStaleError {
+		return full
+	}
+	// Only debounce when the pane is recovered (live idle prompt) or
+	// actively progressing. Without this guard a pane that just rolled an
+	// error past the live window with no follow-up prompt and no new output
+	// would silently drop the error and misclassify as the next-best
+	// non-error state.
+	hasLiveIdle := false
+	for _, m := range live {
+		if m.Category == CategoryIdle {
+			hasLiveIdle = true
+			break
+		}
+	}
+	if !hasLiveIdle && !progressing {
 		return full
 	}
 	out := make([]PatternMatch, 0, len(full))

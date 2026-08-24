@@ -187,7 +187,20 @@ func (d *UnifiedDetector) determineStateAt(output, agentType string, lastActivit
 		return StateIdle, ErrorNone
 	}
 
-	// Check for errors (only relevant if not clearly at a prompt waiting for input)
+	// Check for errors (only relevant if not clearly at a prompt waiting for input).
+	//
+	// Divergence from the robot classifier (internal/robot/activity.go): this
+	// detector is a single-snapshot classifier — one output string plus an
+	// activity timestamp, no live-tail window and no two-capture growth
+	// signal — so it cannot tell "the error just printed" (genuine) from "a
+	// stale error left in scrollback while the pane keeps working". It errs
+	// toward ERROR, which is the safe direction here: the destructive
+	// consumers (health restart, ntm wait, diagnose --restart, the
+	// agent.error event) all read the robot classifier, which applies the
+	// live-tail + progress guard, and this detector's ERROR verdict is
+	// corroborated before any destructive action. The robot classifier is
+	// therefore the authoritative answer for a working pane; this one is
+	// deliberately conservative.
 	if errType := DetectErrorInOutput(output); errType != ErrorNone {
 		return StateError, errType
 	}
