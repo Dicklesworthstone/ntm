@@ -2,7 +2,9 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,8 +13,10 @@ import (
 	"time"
 
 	dispatchsvc "github.com/Dicklesworthstone/ntm/internal/dispatch"
+	"github.com/Dicklesworthstone/ntm/internal/output"
 	statuspkg "github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
+	"github.com/Dicklesworthstone/ntm/tests/testutil"
 )
 
 type scriptedSpawnObserver struct {
@@ -682,5 +686,284 @@ func TestSpawnPromptWorkerCleanupBlocksUntilWorkerExit(t *testing.T) {
 	case <-joined:
 	case <-time.After(time.Second):
 		t.Fatal("spawn lifecycle did not return after its prompt worker exited")
+	}
+}
+
+// bd-zz717: the per-pane readiness verdict is rendered as one line per pane,
+// naming the pane, the canonical agent type, and the verdict. The
+// no-classifier verdict names what the operator must do — send the prompt by
+// hand.
+func TestFormatSpawnReadinessVerdict(t *testing.T) {
+	tests := []struct {
+		name      string
+		agentType AgentType
+		verdict   string
+		want      string
+	}{
+		{
+			name:      "checked-and-ready",
+			agentType: AgentTypeClaude,
+			verdict:   string(tmux.VerdictCheckedAndReady),
+			want:      "✓ pane %1 (cc): checked-and-ready",
+		},
+		{
+			name:      "no-classifier names manual send",
+			agentType: AgentTypeGemini,
+			verdict:   string(tmux.VerdictNoClassifier),
+			want:      "⚠ pane %1 (gmi): no-classifier — no composer classifier for this agent type; send the prompt by hand",
+		},
+		{
+			name:      "delivery-not-implemented",
+			agentType: AgentTypeGrok,
+			verdict:   spawnVerdictDeliveryNotImplemented,
+			want:      "⚠ pane %1 (grok): delivery-not-implemented — automated prompt delivery is not implemented for this agent type",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := formatSpawnReadinessVerdict("%1", tt.agentType, tt.verdict); got != tt.want {
+				t.Fatalf("formatSpawnReadinessVerdict() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSpawnPaneReadinessVerdict(t *testing.T) {
+	tests := []struct {
+		name      string
+		agentType AgentType
+		want      string
+	}{
+		{
+			name:      "grok delivery not implemented",
+			agentType: AgentTypeGrok,
+			want:      spawnVerdictDeliveryNotImplemented,
+		},
+		{
+			name:      "claude checked-and-ready",
+			agentType: AgentTypeClaude,
+			want:      string(tmux.VerdictCheckedAndReady),
+		},
+		{
+			name:      "codex checked-and-ready",
+			agentType: AgentTypeCodex,
+			want:      string(tmux.VerdictCheckedAndReady),
+		},
+		{
+			name:      "gemini no-classifier",
+			agentType: AgentTypeGemini,
+			want:      string(tmux.VerdictNoClassifier),
+		},
+		{
+			name:      "antigravity no-classifier",
+			agentType: AgentTypeAntigravity,
+			want:      string(tmux.VerdictNoClassifier),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := spawnPaneReadinessVerdict(tt.agentType); got != tt.want {
+				t.Fatalf("spawnPaneReadinessVerdict() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDispatchSpawnPromptSequenceReadinessTimeout(t *testing.T) {
+	now := time.Now().UTC()
+	pane := tmux.Pane{ID: "%46", WindowIndex: 0, Index: 1, Type: tmux.AgentClaude, Title: "demo__cc_1"}
+	notReady := testSpawnPaneObservation(now, pane, statuspkg.StateUnknown)
+	notReady.Current.Freshness = statuspkg.FreshnessUnavailable
+	notReady.Current.Confidence = 0
+	observation := testSpawnSessionObservation(now, notReady)
+	observation.Complete = false
+	observer := &scriptedSpawnObserver{observations: []statuspkg.SessionObservation{observation}}
+	dispatcher := &recordingSpawnDispatcher{}
+
+	_, err := dispatchSpawnPromptSequence(
+		t.Context(), "demo", pane.ID,
+		[]spawnPromptStep{{Kind: "user_prompt", Message: "must-not-send"}},
+		observer, dispatcher, 10*time.Millisecond, time.Millisecond,
+	)
+	if err == nil || !strings.Contains(err.Error(), "timeout waiting for pane") {
+		t.Fatalf("error = %v, want readiness timeout", err)
+	}
+	if len(dispatcher.messages) != 0 {
+		t.Fatalf("messages = %v, want no dispatch on timeout", dispatcher.messages)
+	}
+}
+
+// TestSpawnReadinessVerdictPerPane simulates a four-pane spawn and asserts one
+// readiness verdict line per pane (bd-zz717). The observer/dispatcher seams
+// stand in for tmux; the composer verdict is supplied directly because
+// ComposerDeliveryVerdict requires a live tmux capture.
+func TestSpawnReadinessVerdictPerPane(t *testing.T) {
+	now := time.Now().UTC()
+	panes := []tmux.Pane{
+		{ID: "%1", WindowIndex: 0, Index: 1, Type: tmux.AgentClaude, Title: "demo__cc_1"},
+		{ID: "%2", WindowIndex: 0, Index: 2, Type: tmux.AgentCodex, Title: "demo__cod_2"},
+		{ID: "%3", WindowIndex: 0, Index: 3, Type: tmux.AgentGemini, Title: "demo__gmi_3"},
+		{ID: "%4", WindowIndex: 0, Index: 4, Type: tmux.AgentGrok, Title: "demo__grok_4"},
+	}
+	obs := make([]statuspkg.PaneObservation, 0, len(panes))
+	for _, p := range panes {
+		obs = append(obs, testSpawnPaneObservation(now, p, statuspkg.StateIdle))
+	}
+	observer := &scriptedSpawnObserver{observations: []statuspkg.SessionObservation{testSpawnSessionObservation(now, obs...)}}
+	dispatcher := &recordingSpawnDispatcher{}
+
+	lines := make([]string, 0, len(panes))
+	for _, p := range panes {
+		agentType := AgentType(p.Type)
+		verdict := spawnPaneReadinessVerdict(agentType)
+		if verdict != spawnVerdictDeliveryNotImplemented {
+			steps := buildSpawnPromptSequenceForAgent(agentType, "", "", "work", 0)
+			if _, err := dispatchSpawnPromptSequence(t.Context(), "demo", p.ID, steps, observer, dispatcher, 0, time.Millisecond); err != nil {
+				t.Fatalf("dispatch pane %s: %v", p.ID, err)
+			}
+		}
+		lines = append(lines, formatSpawnReadinessVerdict(p.ID, agentType, verdict))
+	}
+
+	if len(lines) != len(panes) {
+		t.Fatalf("verdict lines = %d, want one per pane (%d)", len(lines), len(panes))
+	}
+	for i, p := range panes {
+		if !strings.Contains(lines[i], p.ID) {
+			t.Fatalf("verdict line[%d] = %q, want pane %s named", i, lines[i], p.ID)
+		}
+	}
+	if !strings.Contains(lines[0], "checked-and-ready") || !strings.Contains(lines[1], "checked-and-ready") {
+		t.Fatalf("claude/codex verdicts = %q, %q, want checked-and-ready", lines[0], lines[1])
+	}
+	if !strings.Contains(lines[2], "no-classifier") {
+		t.Fatalf("gemini verdict = %q, want no-classifier", lines[2])
+	}
+	if !strings.Contains(lines[3], "delivery-not-implemented") {
+		t.Fatalf("grok verdict = %q, want delivery-not-implemented", lines[3])
+	}
+}
+
+// TestSpawnReadinessVerdictEndToEnd drives the real spawn lifecycle and asserts
+// that the per-pane delivery-readiness verdict reaches both output surfaces:
+// the human-readable verdict line (text mode) and the PaneResponse
+// ReadinessVerdict field (JSON mode). Unlike TestSpawnReadinessVerdictPerPane,
+// which re-implements the production loop, this test exercises recordSetupVerdict,
+// the post-setup print loop, and the JSON assignment inside spawnSessionLogicContext.
+func TestSpawnReadinessVerdictEndToEnd(t *testing.T) {
+	testutil.RequireTmuxThrottled(t)
+
+	tmpDir := t.TempDir()
+
+	oldCfg := cfg
+	oldJSON := jsonOutput
+	defer func() {
+		cfg = oldCfg
+		jsonOutput = oldJSON
+	}()
+
+	cfg = newTmuxIntegrationTestConfig(tmpDir)
+	configureSessionTemplateFakeAgents(cfg)
+
+	agents := []FlatAgent{
+		{Type: AgentTypeClaude, Index: 1},
+		{Type: AgentTypeCodex, Index: 1},
+		{Type: AgentTypeGemini, Index: 1},
+	}
+	spawnOpts := func(sessionName string) SpawnOptions {
+		return SpawnOptions{
+			Session:  sessionName,
+			Agents:   agents,
+			CCCount:  1,
+			CodCount: 1,
+			GmiCount: 1,
+			UserPane: true,
+		}
+	}
+
+	t.Run("text", func(t *testing.T) {
+		jsonOutput = false
+		sessionName := fmt.Sprintf("ntm-verdict-text-%d", time.Now().UnixNano())
+		defer func() { _ = tmux.KillSession(sessionName) }()
+		projectDir := filepath.Join(tmpDir, sessionName)
+		if err := os.MkdirAll(projectDir, 0755); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+		stdout, err := captureStdout(t, func() error {
+			return spawnSessionLogicContext(t.Context(), spawnOpts(sessionName))
+		})
+		if err != nil {
+			t.Fatalf("spawnSessionLogicContext: %v", err)
+		}
+		assertSpawnVerdictLines(t, sessionName, stdout)
+	})
+
+	t.Run("json", func(t *testing.T) {
+		jsonOutput = true
+		sessionName := fmt.Sprintf("ntm-verdict-json-%d", time.Now().UnixNano())
+		defer func() { _ = tmux.KillSession(sessionName) }()
+		projectDir := filepath.Join(tmpDir, sessionName)
+		if err := os.MkdirAll(projectDir, 0755); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+		stdout, err := captureStdout(t, func() error {
+			return spawnSessionLogicContext(t.Context(), spawnOpts(sessionName))
+		})
+		if err != nil {
+			t.Fatalf("spawnSessionLogicContext: %v", err)
+		}
+		assertSpawnVerdictJSON(t, stdout)
+	})
+}
+
+func assertSpawnVerdictLines(t *testing.T, sessionName, stdout string) {
+	t.Helper()
+	panes, err := tmux.GetPanes(sessionName)
+	if err != nil {
+		t.Fatalf("GetPanes: %v", err)
+	}
+	paneByType := make(map[tmux.AgentType]string, len(panes))
+	for _, p := range panes {
+		paneByType[p.Type] = p.ID
+	}
+	wants := []struct {
+		agentType AgentType
+		verdict   string
+	}{
+		{AgentTypeClaude, string(tmux.VerdictCheckedAndReady)},
+		{AgentTypeCodex, string(tmux.VerdictCheckedAndReady)},
+		{AgentTypeGemini, string(tmux.VerdictNoClassifier)},
+	}
+	for _, w := range wants {
+		paneID := paneByType[tmux.AgentType(w.agentType)]
+		if paneID == "" {
+			t.Fatalf("no pane for agent type %s", w.agentType)
+		}
+		want := formatSpawnReadinessVerdict(paneID, w.agentType, w.verdict)
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("stdout missing verdict line %q; got:\n%s", want, stdout)
+		}
+	}
+}
+
+func assertSpawnVerdictJSON(t *testing.T, stdout string) {
+	t.Helper()
+	var resp output.SpawnResponse
+	if err := json.Unmarshal([]byte(stdout), &resp); err != nil {
+		t.Fatalf("decode spawn response: %v; stdout=%q", err, stdout)
+	}
+	byType := make(map[string]string, len(resp.Panes))
+	for _, p := range resp.Panes {
+		byType[p.Type] = p.ReadinessVerdict
+	}
+	wants := map[string]string{
+		"claude": string(tmux.VerdictCheckedAndReady),
+		"codex":  string(tmux.VerdictCheckedAndReady),
+		"gemini": string(tmux.VerdictNoClassifier),
+	}
+	for typ, want := range wants {
+		if got := byType[typ]; got != want {
+			t.Fatalf("ReadinessVerdict for %s = %q, want %q", typ, got, want)
+		}
 	}
 }

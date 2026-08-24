@@ -2876,6 +2876,83 @@ func TestComposerLineEmpty_PlaceholderCountsAsEmpty(t *testing.T) {
 	}
 }
 
+// bd-zz717: the delivery-readiness verdict classifies how readiness was
+// established — positively verified (checked-and-ready) or fail-open
+// (no-classifier). The fail-open contract is asserted, not assumed: unknown
+// agent types, empty captures, and capture errors all return ready=true.
+func TestClassifyComposerDeliveryVerdict(t *testing.T) {
+	tests := []struct {
+		name        string
+		agentType   AgentType
+		capture     string
+		captureErr  error
+		wantVerdict DeliveryReadinessVerdict
+		wantReady   bool
+	}{
+		{
+			name:        "claude marker present",
+			agentType:   AgentClaude,
+			capture:     "Claude Code v0.0.0\n❯ ",
+			wantVerdict: VerdictCheckedAndReady,
+			wantReady:   true,
+		},
+		{
+			name:        "codex marker present",
+			agentType:   AgentCodex,
+			capture:     "codex\n› ",
+			wantVerdict: VerdictCheckedAndReady,
+			wantReady:   true,
+		},
+		{
+			name:        "gemini absent from marker table",
+			agentType:   AgentGemini,
+			capture:     "gemini>",
+			wantVerdict: VerdictNoClassifier,
+			wantReady:   true,
+		},
+		{
+			name:        "antigravity absent from marker table",
+			agentType:   AgentAntigravity,
+			capture:     "agy>",
+			wantVerdict: VerdictNoClassifier,
+			wantReady:   true,
+		},
+		{
+			name:        "grok absent from marker table",
+			agentType:   AgentGrok,
+			capture:     "grok>",
+			wantVerdict: VerdictNoClassifier,
+			wantReady:   true,
+		},
+		{
+			name:        "empty capture fails open",
+			agentType:   AgentClaude,
+			capture:     "",
+			wantVerdict: VerdictNoClassifier,
+			wantReady:   true,
+		},
+		{
+			name:        "capture error fails open",
+			agentType:   AgentClaude,
+			capture:     "",
+			captureErr:  errors.New("capture deadline exceeded"),
+			wantVerdict: VerdictNoClassifier,
+			wantReady:   true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			verdict, ready, _ := classifyComposerDeliveryVerdict(tt.agentType, tt.capture, tt.captureErr, 0)
+			if verdict != tt.wantVerdict {
+				t.Fatalf("verdict = %q, want %q", verdict, tt.wantVerdict)
+			}
+			if ready != tt.wantReady {
+				t.Fatalf("ready = %v, want %v", ready, tt.wantReady)
+			}
+		})
+	}
+}
+
 // An empty pane_current_command means the pane's process is gone — tmux
 // reports it for a pane whose command died instantly and is held open by
 // remain-on-exit, which is exactly what launch verification exists to catch.
