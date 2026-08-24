@@ -598,6 +598,13 @@ func TestActivityJSONStateField(t *testing.T) {
 			wantUnknown: 1,
 		},
 		{
+			name:      "user",
+			panes:     []tmux.Pane{{Index: 1, Title: "user", Type: tmux.AgentUser}},
+			wantState: activityStateUnclassified,
+			wantPane:  1,
+			wantUser:  1,
+		},
+		{
 			name:      "ok",
 			panes:     []tmux.Pane{{ID: "%999999", Index: 1, Title: "cc_1", Type: tmux.AgentClaude}},
 			wantState: activityStateOK,
