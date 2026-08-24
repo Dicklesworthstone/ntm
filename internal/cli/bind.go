@@ -15,8 +15,21 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
 )
 
-// validKeyRegex validates tmux key bindings (alphanumeric, -, ^ for Ctrl)
-var validKeyRegex = regexp.MustCompile(`^[a-zA-Z0-9\-\^]+$`)
+// validKeyRegex validates tmux key bindings. The first character must be a
+// letter, digit, or ^ (Ctrl); subsequent characters may also include - (used
+// by key names like C-a and M-Left). A leading - is rejected because tmux
+// would read it as a flag (e.g. "--help") and refuse the binding.
+var validKeyRegex = regexp.MustCompile(`^[a-zA-Z0-9\^][a-zA-Z0-9\-\^]*$`)
+
+// validateKey reports whether key is a tmux key name that can be written to a
+// bind-key line. The error names the rejected value so a mistyped invocation
+// is self-explanatory.
+func validateKey(key string) error {
+	if !validKeyRegex.MatchString(key) {
+		return fmt.Errorf("invalid key %q: must start with a letter, digit, or ^ (Ctrl); may contain letters, digits, -, and ^", key)
+	}
+	return nil
+}
 
 func newBindCmd() *cobra.Command {
 	var (
@@ -48,10 +61,10 @@ Examples:
 				key = "F12"
 			}
 
-			// Validate key to prevent injection
-			// Allowed: alphanumeric, -, ^ (for Ctrl)
-			if !validKeyRegex.MatchString(key) {
-				return fmt.Errorf("invalid key format: %q (allowed: a-z, 0-9, -, ^)", key)
+			// Validate the key before touching tmux or the config file. A
+			// leading dash would be read by tmux as a flag and refuse to parse.
+			if err := validateKey(key); err != nil {
+				return err
 			}
 
 			if showOnly {
@@ -88,10 +101,9 @@ func setupBinding(key string) error {
 	if inTmux {
 		cmd := exec.Command(tmux.BinaryPath(), "bind-key", "-n", key, "display-popup", "-E", "-w", "80%", "-h", "70%", "ntm palette")
 		if err := cmd.Run(); err != nil {
-			fmt.Printf("%s⚠%s Could not bind in current session: %v\n", colorize(t.Warning), colorize(t.Text), err)
-		} else {
-			fmt.Printf("%s✓%s Bound %s in current tmux server\n", colorize(t.Success), colorize(t.Text), key)
+			return fmt.Errorf("could not bind %q in current tmux session: %w", key, err)
 		}
+		fmt.Printf("%s✓%s Bound %s in current tmux server\n", colorize(t.Success), colorize(t.Text), key)
 	} else {
 		fmt.Printf("%s→%s Not in tmux, will only update config file\n", colorize(t.Info), colorize(t.Text))
 	}
@@ -174,10 +186,9 @@ func setupOverlayBindingWithWriter(key string, out io.Writer) error {
 	if inTmux {
 		cmd := exec.Command(tmux.BinaryPath(), overlayBindingArgs(key)...)
 		if err := cmd.Run(); err != nil {
-			maybeFprintf(out, "%s⚠%s Could not bind in current session: %v\n", colorize(t.Warning), colorize(t.Text), err)
-		} else {
-			maybeFprintf(out, "%s✓%s Bound %s for dashboard overlay in current tmux server\n", colorize(t.Success), colorize(t.Text), key)
+			return fmt.Errorf("could not bind %q for dashboard overlay in current tmux session: %w", key, err)
 		}
+		maybeFprintf(out, "%s✓%s Bound %s for dashboard overlay in current tmux server\n", colorize(t.Success), colorize(t.Text), key)
 	} else {
 		maybeFprintf(out, "%s→%s Not in tmux, will only update config file\n", colorize(t.Info), colorize(t.Text))
 	}
