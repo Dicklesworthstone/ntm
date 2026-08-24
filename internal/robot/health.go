@@ -19,6 +19,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/process"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
+	"github.com/Dicklesworthstone/ntm/internal/util"
 )
 
 // HealthOutput provides a focused project health summary for AI agents
@@ -465,11 +466,19 @@ func CheckAgentHealthWithActivity(paneID string, agentType string, shellPID int,
 	// 1. Process check - is the agent still running or crashed?
 	check.ProcessCheck = checkProcess(paneID, shellPID)
 
+	// Build one classifier shared by the stall and error checks so both
+	// reach their verdicts through the same live-tail + progress guard and
+	// share a single velocity baseline (no second tmux capture).
+	classifier := NewStateClassifier(paneID, &ClassifierConfig{
+		AgentType:      agentType,
+		StallThreshold: DefaultStallThreshold,
+	})
+
 	// 2. Stall check - use activity detection for stall detection
-	check.StallCheck = checkStallWithActivity(paneID, agentType)
+	check.StallCheck = checkStallWithActivity(classifier)
 
 	// 3. Error check - detect error patterns
-	check.ErrorCheck = checkErrors(paneID, agentType, paneWidth)
+	check.ErrorCheck = checkErrors(paneID, classifier, agentType, paneWidth)
 
 	// Calculate overall health state
 	check.HealthState, check.Reason = calculateHealthState(check)
@@ -566,18 +575,14 @@ func checkProcess(paneID string, shellPID int) *ProcessCheckResult {
 	return result
 }
 
-// checkStallWithActivity uses the StateClassifier for stall detection
-func checkStallWithActivity(paneID string, agentType string) *StallCheckResult {
+// checkStallWithActivity uses the StateClassifier for stall detection.
+// classifier is built once by CheckAgentHealthWithActivity and shared with
+// checkErrors so both checks share one velocity baseline and one guard.
+func checkStallWithActivity(classifier *StateClassifier) *StallCheckResult {
 	result := &StallCheckResult{
 		Stalled:    false,
 		Confidence: 0.5,
 	}
-
-	// Create a classifier for this pane
-	classifier := NewStateClassifier(paneID, &ClassifierConfig{
-		AgentType:      agentType,
-		StallThreshold: DefaultStallThreshold,
-	})
 
 	// Classify the current state
 	activity, err := classifier.Classify()
@@ -615,47 +620,102 @@ func checkStallWithActivity(paneID string, agentType string) *StallCheckResult {
 	return result
 }
 
-// checkErrors detects error patterns in pane output. agentType gates the
-// interactive-gate scan: only real agent panes render gate screens, so
-// user/unknown/empty types skip it (a user shell tailing a log that prints
-// a gate phrase must not read as blocked). paneWidth feeds the
-// width-adaptive gate scan; pass 0 when unknown.
-func checkErrors(paneID string, agentType string, paneWidth int) *ErrorCheckResult {
+// checkErrors detects error patterns in pane output, applying the same
+// live-tail + progress guard the StateClassifier uses (filterErrorToLive)
+// so a stale error in scrollback does not read as unhealthy while the pane
+// is recovered (progressing or parked at a fresh idle prompt). classifier is
+// the same instance checkStallWithActivity used for its Classify() call, so
+// the two checks share one velocity baseline and one progress signal instead
+// of capturing twice. agentType gates the interactive-gate scan: only real
+// agent panes render gate screens, so user/unknown/empty types skip it (a
+// user shell tailing a log that prints a gate phrase must not read as
+// blocked). paneWidth feeds the width-adaptive gate scan and live-tail
+// window; pass 0 when unknown.
+func checkErrors(paneID string, classifier *StateClassifier, agentType string, paneWidth int) *ErrorCheckResult {
+	// Capture pane output
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	output, err := tmux.CapturePaneOutputContext(ctx, paneID, 50)
+	if err != nil {
+		return &ErrorCheckResult{
+			HasErrors:   false,
+			RateLimited: false,
+			Patterns:    []string{},
+			Reason:      "failed to capture pane output",
+		}
+	}
+
+	// Feed the last LinesStatusDetection lines of this capture into the
+	// shared classifier to obtain the progress signal (output growth between
+	// the stall check's capture and this one). The classifier's Classify()
+	// captured LinesStatusDetection lines, so we compare against the
+	// same-sized tail rather than the full 50-line capture — comparing
+	// different sizes would read as growth even when the pane is idle. This
+	// reuses the velocity baseline checkStallWithActivity established, so no
+	// additional tmux capture is needed.
+	progressing := false
+	if classifier != nil {
+		if activity, cerr := classifier.ClassifyWithOutput(lastNLines(output, tmux.LinesStatusDetection)); cerr == nil {
+			progressing = activity.Velocity > 0
+		}
+	}
+
+	return checkErrorsInOutput(output, agentType, paneWidth, progressing)
+}
+
+// checkErrorsInOutput scans `output` for healthErrorPatterns, applying the
+// same live-tail + progress guard the StateClassifier uses (filterErrorToLive):
+// a pattern that matches only outside the live tail is stale scrollback and is
+// dropped while the pane is recovered (progressing or parked at a fresh idle
+// prompt), but kept when the pane is stuck (neither progressing nor idle). It
+// is separated from checkErrors so the guard is unit-testable with fixture
+// scrollback strings.
+func checkErrorsInOutput(output string, agentType string, paneWidth int, progressing bool) *ErrorCheckResult {
 	result := &ErrorCheckResult{
 		HasErrors:   false,
 		RateLimited: false,
 		Patterns:    []string{},
 	}
 
-	// Capture pane output
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	output, err := tmux.CapturePaneOutputContext(ctx, paneID, 50)
-	if err != nil {
-		result.Reason = "failed to capture pane output"
-		return result
-	}
-
 	output = stripANSI(output)
 	outputLower := strings.ToLower(output)
+
+	live := lastNLines(output, util.WidthAdaptiveTailLines(paneWidth, liveThinkingWindowLines))
+	liveLower := strings.ToLower(live)
+
+	// hasLiveIdle mirrors filterErrorToLive's recovery check: a fresh idle
+	// prompt in the live tail means the pane recovered and is waiting for
+	// input, so a stale error must not pin it to unhealthy.
+	hasLiveIdle := len(DefaultLibrary.MatchByCategory(live, agentType, CategoryIdle)) > 0
 
 	// Check for error patterns
 	seenPatterns := make(map[string]bool)
 	for _, ep := range healthErrorPatterns {
-		if strings.Contains(outputLower, strings.ToLower(ep.Pattern)) {
-			if !seenPatterns[ep.Type] {
-				result.Patterns = append(result.Patterns, ep.Type)
-				seenPatterns[ep.Type] = true
+		patternLower := strings.ToLower(ep.Pattern)
+		if !strings.Contains(outputLower, patternLower) {
+			continue
+		}
+		// A match outside the live tail is stale scrollback. Drop it while
+		// the pane is recovered (progressing or parked at a fresh idle
+		// prompt), mirroring filterErrorToLive. A pane that is neither
+		// progressing nor idle keeps its stale error so a genuinely stuck
+		// pane is still caught.
+		if !strings.Contains(liveLower, patternLower) && (progressing || hasLiveIdle) {
+			continue
+		}
+		if seenPatterns[ep.Type] {
+			continue
+		}
+		result.Patterns = append(result.Patterns, ep.Type)
+		seenPatterns[ep.Type] = true
 
-				if ep.Type == "rate_limit" {
-					result.RateLimited = true
-					result.WaitSeconds = parseRateLimitWait(output)
-				}
+		if ep.Type == "rate_limit" {
+			result.RateLimited = true
+			result.WaitSeconds = parseRateLimitWait(output)
+		}
 
-				if ep.Type == "crash" || ep.Type == "auth_error" || ep.Type == "network_error" {
-					result.HasErrors = true
-				}
-			}
+		if ep.Type == "crash" || ep.Type == "auth_error" || ep.Type == "network_error" {
+			result.HasErrors = true
 		}
 	}
 
