@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -385,5 +386,252 @@ func TestRunAdopt_SessionMissingRoutesThroughJSONEnvelope(t *testing.T) {
 
 	if !errors.Is(err, errJSONFailure) {
 		t.Fatalf("runAdopt returned %v, want errJSONFailure", err)
+	}
+}
+
+// TestActivityEmptyMessage covers bd-3mz5g: when no agents are rendered, the
+// message must distinguish an empty session (no panes) from a session whose
+// panes all failed classification, and report unknown vs user panes
+// separately. The unclassified message names what to check.
+func TestActivityEmptyMessage(t *testing.T) {
+	const checkHint = "Check the pane title, the pane command, and whether the agent process sits deeper than the four levels detectAgentFromProcessTree walks."
+
+	tests := []struct {
+		name   string
+		result *activityResult
+		want   string
+	}{
+		{
+			name:   "zero_panes",
+			result: &activityResult{PaneCount: 0, State: activityStateEmpty},
+			want:   "No panes found in session",
+		},
+		{
+			name: "all_unknown",
+			result: &activityResult{
+				PaneCount:    4,
+				UnknownCount: 4,
+				State:        activityStateUnclassified,
+			},
+			want: "4 panes, none classified as agents\n" +
+				"  4 unclassified (unknown)\n" +
+				checkHint,
+		},
+		{
+			name: "all_user",
+			result: &activityResult{
+				PaneCount: 2,
+				UserCount: 2,
+				State:     activityStateUnclassified,
+			},
+			want: "2 panes, none classified as agents\n" +
+				"  2 user panes (expected)\n" +
+				checkHint,
+		},
+		{
+			name: "mixed_unknown_and_user",
+			result: &activityResult{
+				PaneCount:    6,
+				UnknownCount: 4,
+				UserCount:    2,
+				State:        activityStateUnclassified,
+			},
+			want: "6 panes, none classified as agents\n" +
+				"  4 unclassified (unknown)\n" +
+				"  2 user panes (expected)\n" +
+				checkHint,
+		},
+		{
+			name: "filtered_out_keeps_historical_message",
+			result: &activityResult{
+				PaneCount: 2,
+				State:     activityStateOK,
+			},
+			want: "No agents found in session",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := activityEmptyMessage(tt.result); got != tt.want {
+				t.Errorf("activityEmptyMessage() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestActivitySkippedMessage covers bd-3mz5g: when at least one agent is
+// rendered, skipped panes are reported with unknown and user counted
+// separately.
+func TestActivitySkippedMessage(t *testing.T) {
+	tests := []struct {
+		name   string
+		result *activityResult
+		want   string
+	}{
+		{name: "no_skips", result: &activityResult{}, want: ""},
+		{
+			name:   "unknown_only",
+			result: &activityResult{UnknownCount: 2},
+			want:   "Skipped: 2 unclassified (unknown)",
+		},
+		{
+			name:   "user_only",
+			result: &activityResult{UserCount: 1},
+			want:   "Skipped: 1 user pane",
+		},
+		{
+			name:   "mixed",
+			result: &activityResult{UnknownCount: 2, UserCount: 1},
+			want:   "Skipped: 2 unclassified (unknown), 1 user pane",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := activitySkippedMessage(tt.result); got != tt.want {
+				t.Errorf("activitySkippedMessage() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestBuildActivityResult covers bd-3mz5g over a stubbed pane list (no tmux
+// server): the result carries pane/unknown/user counts and a state field that
+// separates an empty session from an unclassified one, while a classified
+// agent is still rendered.
+func TestBuildActivityResult(t *testing.T) {
+	unknownPane := tmux.Pane{Index: 1, Title: "zsh", Type: tmux.AgentUnknown}
+	userPane := tmux.Pane{Index: 2, Title: "user", Type: tmux.AgentUser}
+	claudePane := tmux.Pane{ID: "%999999", Index: 3, Title: "cc_3", Type: tmux.AgentClaude}
+
+	tests := []struct {
+		name        string
+		panes       []tmux.Pane
+		wantState   string
+		wantPane    int
+		wantUnknown int
+		wantUser    int
+		wantAgents  int
+	}{
+		{
+			name:      "zero_panes",
+			panes:     nil,
+			wantState: activityStateEmpty,
+		},
+		{
+			name:        "all_unknown",
+			panes:       []tmux.Pane{unknownPane, unknownPane},
+			wantState:   activityStateUnclassified,
+			wantPane:    2,
+			wantUnknown: 2,
+		},
+		{
+			name:      "all_user",
+			panes:     []tmux.Pane{userPane},
+			wantState: activityStateUnclassified,
+			wantPane:  1,
+			wantUser:  1,
+		},
+		{
+			name:        "mix_user_unknown_agent",
+			panes:       []tmux.Pane{userPane, unknownPane, claudePane},
+			wantState:   activityStateOK,
+			wantPane:    3,
+			wantUnknown: 1,
+			wantUser:    1,
+			wantAgents:  1,
+		},
+		{
+			name:       "one_agent_only",
+			panes:      []tmux.Pane{claudePane},
+			wantState:  activityStateOK,
+			wantPane:   1,
+			wantAgents: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := buildActivityResult("test-session", tt.panes, activityOptions{})
+			if result.State != tt.wantState {
+				t.Errorf("State = %q, want %q", result.State, tt.wantState)
+			}
+			if result.PaneCount != tt.wantPane {
+				t.Errorf("PaneCount = %d, want %d", result.PaneCount, tt.wantPane)
+			}
+			if result.UnknownCount != tt.wantUnknown {
+				t.Errorf("UnknownCount = %d, want %d", result.UnknownCount, tt.wantUnknown)
+			}
+			if result.UserCount != tt.wantUser {
+				t.Errorf("UserCount = %d, want %d", result.UserCount, tt.wantUser)
+			}
+			if len(result.Agents) != tt.wantAgents {
+				t.Errorf("len(Agents) = %d, want %d", len(result.Agents), tt.wantAgents)
+			}
+		})
+	}
+}
+
+// TestActivityJSONStateField covers bd-3mz5g: the --json envelope carries the
+// empty/unclassified/ok distinction as a field, asserted by round-trip, so a
+// caller can tell the two states apart without parsing prose.
+func TestActivityJSONStateField(t *testing.T) {
+	tests := []struct {
+		name        string
+		panes       []tmux.Pane
+		wantState   string
+		wantPane    int
+		wantUnknown int
+		wantUser    int
+	}{
+		{
+			name:      "empty",
+			panes:     nil,
+			wantState: activityStateEmpty,
+		},
+		{
+			name:        "unclassified",
+			panes:       []tmux.Pane{{Index: 1, Title: "zsh", Type: tmux.AgentUnknown}},
+			wantState:   activityStateUnclassified,
+			wantPane:    1,
+			wantUnknown: 1,
+		},
+		{
+			name:      "ok",
+			panes:     []tmux.Pane{{ID: "%999999", Index: 1, Title: "cc_1", Type: tmux.AgentClaude}},
+			wantState: activityStateOK,
+			wantPane:  1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := buildActivityResult("json-session", tt.panes, activityOptions{})
+			env := buildActivityJSONEnvelope(result)
+
+			raw, err := json.Marshal(env)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+
+			var roundTripped activityJSONEnvelope
+			if err := json.Unmarshal(raw, &roundTripped); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+
+			if roundTripped.State != tt.wantState {
+				t.Errorf("state = %q, want %q", roundTripped.State, tt.wantState)
+			}
+			if roundTripped.PaneCount != tt.wantPane {
+				t.Errorf("pane_count = %d, want %d", roundTripped.PaneCount, tt.wantPane)
+			}
+			if roundTripped.UnknownCount != tt.wantUnknown {
+				t.Errorf("unknown_count = %d, want %d", roundTripped.UnknownCount, tt.wantUnknown)
+			}
+			if roundTripped.UserCount != tt.wantUser {
+				t.Errorf("user_count = %d, want %d", roundTripped.UserCount, tt.wantUser)
+			}
+		})
 	}
 }

@@ -232,11 +232,24 @@ func runActivityWatch(session string, opts activityOptions) error {
 	}
 }
 
+// activityState values distinguish why no agents were rendered, so the TUI
+// and the --json envelope can tell "this session has no panes" from "there
+// are panes here and none of them could be classified" (bd-3mz5g).
+const (
+	activityStateEmpty        = "empty"
+	activityStateUnclassified = "unclassified"
+	activityStateOK           = "ok"
+)
+
 type activityResult struct {
-	Session    string
-	CapturedAt time.Time
-	Agents     []agentInfo
-	Summary    map[string]int
+	Session      string
+	CapturedAt   time.Time
+	Agents       []agentInfo
+	Summary      map[string]int
+	PaneCount    int    // total panes returned by GetPanes
+	UnknownCount int    // panes classified "unknown" (a classification miss)
+	UserCount    int    // panes classified "user" (expected)
+	State        string // activityStateEmpty | activityStateUnclassified | activityStateOK
 }
 
 type agentInfo struct {
@@ -254,19 +267,33 @@ func collectActivityData(session string, opts activityOptions) (*activityResult,
 	if err != nil {
 		return nil, fmt.Errorf("failed to get panes: %w", err)
 	}
+	return buildActivityResult(session, panes, opts), nil
+}
 
+// buildActivityResult classifies a pane list and assembles the activity
+// result. Split from collectActivityData so tests can drive it with a stubbed
+// pane list and no tmux server. Classification is unchanged: unknown and user
+// panes are skipped (and now counted) before passesFilter is consulted.
+func buildActivityResult(session string, panes []tmux.Pane, opts activityOptions) *activityResult {
 	result := &activityResult{
 		Session:    session,
 		CapturedAt: time.Now(),
 		Agents:     make([]agentInfo, 0),
 		Summary:    make(map[string]int),
+		PaneCount:  len(panes),
 	}
 
 	for _, pane := range panes {
 		agentType := detectAgentTypeFromPane(pane)
 
-		// Skip non-agent panes
-		if agentType == "unknown" || agentType == "user" {
+		// Skip non-agent panes, counting each so the operator can tell an
+		// expected skip (user) from a classification miss (unknown).
+		switch agentType {
+		case "unknown":
+			result.UnknownCount++
+			continue
+		case "user":
+			result.UserCount++
 			continue
 		}
 
@@ -312,7 +339,21 @@ func collectActivityData(session string, opts activityOptions) (*activityResult,
 		result.Summary[string(activity.State)]++
 	}
 
-	return result, nil
+	result.State = activityResultState(result)
+	return result
+}
+
+// activityResultState derives the state field that distinguishes an empty
+// session from a session whose panes all failed classification.
+func activityResultState(result *activityResult) string {
+	switch {
+	case result.PaneCount == 0:
+		return activityStateEmpty
+	case len(result.Agents) == 0 && result.UnknownCount+result.UserCount == result.PaneCount:
+		return activityStateUnclassified
+	default:
+		return activityStateOK
+	}
 }
 
 func detectAgentTypeFromPane(pane tmux.Pane) string {
@@ -399,12 +440,16 @@ type activityJSONAgent struct {
 // activityJSONEnvelope is the --json envelope for `ntm activity`. Watch mode
 // streams the same shape as NDJSON frames (one per refresh tick).
 type activityJSONEnvelope struct {
-	Success    bool                `json:"success"`
-	Session    string              `json:"session"`
-	CapturedAt string              `json:"captured_at"`
-	Agents     []activityJSONAgent `json:"agents"`
-	Summary    map[string]int      `json:"summary"`
-	Error      string              `json:"error,omitempty"`
+	Success      bool                `json:"success"`
+	Session      string              `json:"session"`
+	CapturedAt   string              `json:"captured_at"`
+	State        string              `json:"state"`
+	PaneCount    int                 `json:"pane_count"`
+	UnknownCount int                 `json:"unknown_count"`
+	UserCount    int                 `json:"user_count"`
+	Agents       []activityJSONAgent `json:"agents"`
+	Summary      map[string]int      `json:"summary"`
+	Error        string              `json:"error,omitempty"`
 }
 
 func buildActivityJSONEnvelope(result *activityResult) activityJSONEnvelope {
@@ -424,11 +469,15 @@ func buildActivityJSONEnvelope(result *activityResult) activityJSONEnvelope {
 	}
 
 	return activityJSONEnvelope{
-		Success:    true,
-		Session:    result.Session,
-		CapturedAt: result.CapturedAt.Format(time.RFC3339),
-		Agents:     agents,
-		Summary:    result.Summary,
+		Success:      true,
+		Session:      result.Session,
+		CapturedAt:   result.CapturedAt.Format(time.RFC3339),
+		State:        result.State,
+		PaneCount:    result.PaneCount,
+		UnknownCount: result.UnknownCount,
+		UserCount:    result.UserCount,
+		Agents:       agents,
+		Summary:      result.Summary,
 	}
 }
 
@@ -588,7 +637,7 @@ func renderActivityTUI(result *activityResult, watchMode bool) error {
 	fmt.Println()
 
 	if len(result.Agents) == 0 {
-		fmt.Println(mutedStyle.Render("No agents found in session"))
+		fmt.Println(mutedStyle.Render(activityEmptyMessage(result)))
 		return nil
 	}
 
@@ -644,9 +693,63 @@ func renderActivityTUI(result *activityResult, watchMode bool) error {
 
 	summary := strings.Join(summaryParts, ", ")
 	fmt.Println(boxStyle.Render(summary))
+	if skipped := activitySkippedMessage(result); skipped != "" {
+		fmt.Println(mutedStyle.Render(skipped))
+	}
 	fmt.Println()
 
 	return nil
+}
+
+// activityEmptyMessage builds the explanation shown when no agents are
+// rendered. It distinguishes an empty session (no panes) from a session whose
+// panes all failed classification, and reports unknown vs user panes
+// separately so the operator can tell an expected skip from a miss.
+func activityEmptyMessage(result *activityResult) string {
+	if result.PaneCount == 0 {
+		return "No panes found in session"
+	}
+
+	if result.State != activityStateUnclassified {
+		// Classified agents exist but were filtered out by the type/pane
+		// filters; keep the historical message.
+		return "No agents found in session"
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d panes, none classified as agents", result.PaneCount)
+	if result.UnknownCount > 0 {
+		fmt.Fprintf(&b, "\n  %d unclassified (unknown)", result.UnknownCount)
+	}
+	if result.UserCount > 0 {
+		fmt.Fprintf(&b, "\n  %d user pane%s (expected)", result.UserCount, pluralSuffix(result.UserCount))
+	}
+	b.WriteString("\nCheck the pane title, the pane command, and whether the agent process sits deeper than the four levels detectAgentFromProcessTree walks.")
+	return b.String()
+}
+
+// activitySkippedMessage reports panes skipped during classification when at
+// least one agent was rendered. Empty when nothing was skipped.
+func activitySkippedMessage(result *activityResult) string {
+	var parts []string
+	if result.UnknownCount > 0 {
+		parts = append(parts, fmt.Sprintf("%d unclassified (unknown)", result.UnknownCount))
+	}
+	if result.UserCount > 0 {
+		parts = append(parts, fmt.Sprintf("%d user pane%s", result.UserCount, pluralSuffix(result.UserCount)))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "Skipped: " + strings.Join(parts, ", ")
+}
+
+// pluralSuffix returns "s" for counts other than one, for simple pluralization.
+func pluralSuffix(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
 }
 
 func stateIcon(state string) string {
