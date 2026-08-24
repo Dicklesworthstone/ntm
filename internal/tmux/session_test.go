@@ -1778,6 +1778,31 @@ func TestParseAgentFromTitleEdgeCases(t *testing.T) {
 	}
 }
 
+func TestParseAgentFromTitleKnownAgentTypes(t *testing.T) {
+	tests := []struct {
+		title string
+		want  AgentType
+	}{
+		{"session__cc_1", AgentClaude},
+		{"session__cod_1", AgentCodex},
+		{"session__gmi_1", AgentGemini},
+		{"session__agy_1", AgentAntigravity},
+		{"session__pi_1", AgentPi},
+		{"session__cursor_1", AgentCursor},
+		{"session__windsurf_1", AgentWindsurf},
+		{"session__aider_1", AgentAider},
+		{"session__ollama_1", AgentOllama},
+	}
+	for _, tt := range tests {
+		t.Run(tt.title, func(t *testing.T) {
+			got, _, _, _ := parseAgentFromTitle(tt.title)
+			if got.Canonical() != tt.want {
+				t.Errorf("parseAgentFromTitle(%q).Canonical() = %q, want %q", tt.title, got.Canonical(), tt.want)
+			}
+		})
+	}
+}
+
 func TestDetectAgentFromCommandEdgeCases(t *testing.T) {
 	t.Parallel()
 

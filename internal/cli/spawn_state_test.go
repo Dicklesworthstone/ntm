@@ -967,3 +967,118 @@ func assertSpawnVerdictJSON(t *testing.T, stdout string) {
 		}
 	}
 }
+
+// pi captures, read off a live pi 0.84.2 pane (mirrors the fixtures in
+// internal/status/unified_test.go). The idle capture is a pane waiting at its
+// status line; the working capture is the same pane mid-turn with the braille
+// spinner and "Working..." in the live tail.
+const piIdleAtStatusLineCapture = ` pi v0.84.2
+ escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more
+ Press ctrl+o to show full startup help and loaded resources.
+
+────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────
+/home/gabriel/repositories/daytrace
+0.0%/262k (auto)                              (litellm) kimi-k2.7`
+
+const piWorkingCapture = `with its own shell process, working directory, and scrollback history. You can
+split a window horizontally or vertically to create panes.
+
+ ⠴ Working...
+────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────
+/home/gabriel/repositories/daytrace
+↑100k ↓958 13.0%/262k (auto)                  (litellm) kimi-k2.7`
+
+// newPiSessionObserver builds a SessionObserver whose topology and capture are
+// pinned to a single pi pane, so the full chain — title-derived Pane.Type,
+// determineStateAt's pi arm, and observationConfidence — is exercised rather
+// than a hand-built PaneObservation.
+func newPiSessionObserver(observedAt time.Time, capture string) *statuspkg.SessionObserver {
+	detector := statuspkg.NewDetector()
+	return statuspkg.NewSessionObserverWithDependencies(
+		detector,
+		statuspkg.DefaultSessionObserverConfig(detector.Config()),
+		statuspkg.SessionObserverDependencies{
+			ListPanes: func(context.Context, string) ([]tmux.PaneActivity, error) {
+				return []tmux.PaneActivity{{
+					Pane:         tmux.Pane{ID: "%1", Index: 1, Title: "demo__pi_1", Type: tmux.AgentPi},
+					LastActivity: observedAt.Add(-time.Minute),
+				}}, nil
+			},
+			CapturePane: func(_ context.Context, _ string, _ int) (string, error) {
+				return capture, nil
+			},
+			Now: func() time.Time { return observedAt },
+		},
+	)
+}
+
+// TestSpawnPaneObservationSafeToDispatchPi is the assertion the suite was
+// missing: the readiness gate (spawnPaneObservationSafeToDispatch) succeeding
+// for a non-cc/cod agent type. It exercises the full chain from a real pi
+// capture, so a future classifier that stops resolving pi to idle fails here
+// rather than silently timing out every pi spawn.
+func TestSpawnPaneObservationSafeToDispatchPi(t *testing.T) {
+	observedAt := time.Now().UTC()
+
+	t.Run("idle pi prompt is dispatchable", func(t *testing.T) {
+		observer := newPiSessionObserver(observedAt, piIdleAtStatusLineCapture)
+		observation, err := observer.Observe(context.Background(), "demo")
+		if err != nil {
+			t.Fatalf("Observe: %v", err)
+		}
+		pane, ok := observation.PaneByID("%1")
+		if !ok {
+			t.Fatal("observed pane missing")
+		}
+		if pane.AgentType != "pi" {
+			t.Fatalf("AgentType = %q, want pi", pane.AgentType)
+		}
+		if pane.Current.Status.State != statuspkg.StateIdle {
+			t.Fatalf("state = %q, want idle", pane.Current.Status.State)
+		}
+		if !spawnPaneObservationSafeToDispatch(pane) {
+			t.Fatalf("spawnPaneObservationSafeToDispatch = false for idle pi (state=%s confidence=%.2f)",
+				pane.Current.Status.State, pane.Current.Confidence)
+		}
+	})
+
+	t.Run("mid-work pi pane is not dispatchable", func(t *testing.T) {
+		observer := newPiSessionObserver(observedAt, piWorkingCapture)
+		observation, err := observer.Observe(context.Background(), "demo")
+		if err != nil {
+			t.Fatalf("Observe: %v", err)
+		}
+		pane, ok := observation.PaneByID("%1")
+		if !ok {
+			t.Fatal("observed pane missing")
+		}
+		if pane.Current.Status.State != statuspkg.StateWorking {
+			t.Fatalf("state = %q, want working", pane.Current.Status.State)
+		}
+		if spawnPaneObservationSafeToDispatch(pane) {
+			t.Fatal("spawnPaneObservationSafeToDispatch = true for mid-work pi, want false")
+		}
+	})
+}
+
+// TestWaitForSpawnPaneReadyPi drives the readiness poll against a fake
+// observer that yields a live pi observation, asserting it returns before the
+// deadline. The existing timeout test covers only AgentClaude and only the
+// failing direction.
+func TestWaitForSpawnPaneReadyPi(t *testing.T) {
+	observedAt := time.Now().UTC()
+	observer := newPiSessionObserver(observedAt, piIdleAtStatusLineCapture)
+
+	start := time.Now()
+	err := waitForSpawnPaneReady(t.Context(), "demo", "%1", 5*time.Second, time.Millisecond, observer)
+	if err != nil {
+		t.Fatalf("waitForSpawnPaneReady = %v, want nil", err)
+	}
+	if elapsed := time.Since(start); elapsed >= 5*time.Second {
+		t.Fatalf("waitForSpawnPaneReady took %v, want return before deadline", elapsed)
+	}
+}
