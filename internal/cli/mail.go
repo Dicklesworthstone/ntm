@@ -46,6 +46,7 @@ Examples:
 	cmd.AddCommand(newMailInboxCmdReal())
 	cmd.AddCommand(newMailReadCmd())
 	cmd.AddCommand(newMailAckCmd())
+	cmd.AddCommand(newMailRegisterCmd())
 
 	return cmd
 }
@@ -606,6 +607,100 @@ func newMailAckCmd() *cobra.Command {
 	return newMailMarkCmd(mailActionAck)
 }
 
+// MailRegisterResult is the JSON output for `ntm mail register`.
+type MailRegisterResult struct {
+	Success    bool   `json:"success"`
+	Session    string `json:"session"`
+	Agent      string `json:"agent,omitempty"`
+	ProjectKey string `json:"project_key,omitempty"`
+	Error      string `json:"error,omitempty"`
+}
+
+// newMailRegisterCmd creates or repairs a session's coordinator identity.
+func newMailRegisterCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "register <session>",
+		Short: "Create or repair a session's Agent Mail coordinator identity",
+		Long: `Create or repair the session's coordinator identity (agent.json) with
+Agent Mail. The lock-family commands (lock, unlock, locks force-release,
+locks renew) act as this identity, so a session whose coordinator identity
+was lost — for example by a registration race at spawn — refuses those
+commands until it is repaired.
+
+This is the command to run when ` + "`ntm lock`" + `/` + "`ntm unlock`" + ` report
+"session '<name>' has no Agent Mail identity".
+
+Examples:
+  ntm mail register myproject
+  ntm mail register myproject --json`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runMailRegister(cmd, args[0])
+		},
+	}
+
+	return cmd
+}
+
+func runMailRegister(cmd *cobra.Command, session string) error {
+	parent, err := requireMailCommandContext(cmd, "mail register")
+	if err != nil {
+		return err
+	}
+	session, projectKey, err := resolveAgentMailCommandScope(parent, session)
+	if err != nil {
+		return err
+	}
+
+	client := newAgentMailClient(projectKey)
+	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
+	defer cancel()
+
+	if !client.IsAvailableContext(ctx) {
+		return agentMailUnavailableError(ctx, client, "agent mail server not available")
+	}
+
+	info, err := client.RegisterSessionAgent(ctx, session, projectKey)
+	if err != nil {
+		if IsJSONOutput() {
+			result := MailRegisterResult{Success: false, Session: session, ProjectKey: projectKey, Error: err.Error()}
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			if encErr := enc.Encode(result); encErr != nil {
+				return encErr
+			}
+			return jsonFailureExit()
+		}
+		return fmt.Errorf("registering session agent: %w", err)
+	}
+	if info == nil {
+		// Agent Mail became unavailable between the availability check and
+		// the registration call.
+		if IsJSONOutput() {
+			result := MailRegisterResult{Success: false, Session: session, ProjectKey: projectKey, Error: "agent mail unavailable"}
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			if encErr := enc.Encode(result); encErr != nil {
+				return encErr
+			}
+			return jsonFailureExit()
+		}
+		return fmt.Errorf("agent mail unavailable")
+	}
+
+	if IsJSONOutput() {
+		result := MailRegisterResult{Success: true, Session: session, Agent: info.AgentName, ProjectKey: projectKey}
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		if encErr := enc.Encode(result); encErr != nil {
+			return encErr
+		}
+		return nil
+	}
+	fmt.Printf("Registered session coordinator identity: %s\n", info.AgentName)
+	return nil
+}
+
 func newMailMarkCmd(action mailAction) *cobra.Command {
 	var (
 		agent     string
@@ -689,6 +784,35 @@ func loadResolvedSessionAgent(session, projectKey string) (*agentmail.SessionAge
 		return nil, nil
 	}
 	return agentmail.LoadBestSessionAgent(session, projectKey)
+}
+
+// resolveLockAgentName resolves the Agent Mail identity for a lock-family
+// command using the same fallback chain the mail commands use: an explicit
+// --agent flag, a TMUX_PANE lookup in the pane registry, the session's
+// coordinator identity (agent.json), then the AGENT_NAME environment
+// variable. It returns "" when no identity can be resolved (bd-j3q).
+func resolveLockAgentName(ctx context.Context, session, projectKey, agent string) string {
+	agent = strings.TrimSpace(agent)
+	if agent != "" {
+		return agent
+	}
+	if name := resolveSessionPaneAgentName(ctx, session, projectKey); name != "" {
+		return name
+	}
+	if info, err := loadResolvedSessionAgent(session, projectKey); err == nil && info != nil && strings.TrimSpace(info.AgentName) != "" {
+		return info.AgentName
+	}
+	if envAgent := strings.TrimSpace(os.Getenv("AGENT_NAME")); envAgent != "" {
+		return envAgent
+	}
+	return ""
+}
+
+// noSessionAgentIdentityError builds the error returned when a lock-family
+// command cannot resolve an Agent Mail identity for a session. It names the
+// repair command so an operator is never left with a bare refusal (bd-j3q).
+func noSessionAgentIdentityError(session string) error {
+	return fmt.Errorf("session '%s' has no Agent Mail identity; run 'ntm mail register %s' to create it, or pass --agent <name>", session, session)
 }
 
 func resolveSessionPaneAgentName(ctx context.Context, session, projectKey string) string {

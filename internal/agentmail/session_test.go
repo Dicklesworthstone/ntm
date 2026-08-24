@@ -1,7 +1,10 @@
 package agentmail
 
 import (
+	"context"
 	"encoding/json"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"testing"
@@ -651,6 +654,72 @@ func TestSessionAgentRegistryRejectsInvalidSessionNames(t *testing.T) {
 	}
 	if err := DeleteSessionAgentRegistry("../escape", "/tmp/project"); err == nil {
 		t.Fatal("expected invalid session name error from DeleteSessionAgentRegistry")
+	}
+}
+
+// TestRegisterSessionAgent_ReconcilesTransientBusy mirrors the pane-identity
+// reconciliation in registerSpawnedAgents: when register_agent fails with a
+// transient busy error, the coordinator identity may still have been created
+// server-side. RegisterSessionAgent must list agents and recover it instead of
+// bubbling the error up and leaving the session with no coordinator identity
+// (bd-j3q).
+func TestRegisterSessionAgent_ReconcilesTransientBusy(t *testing.T) {
+	ResetBusyRetryPolicyForTest()
+	t.Cleanup(ResetBusyRetryPolicyForTest)
+	ApplyRetryPolicy(1, 1) // one retry, 1ms backoff, for test speed
+
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmpDir, ".config"))
+
+	projectKey := filepath.Join(tmpDir, "project")
+	sessionName := "reconcile-session"
+
+	server := httptest.NewServer(mockMCPHandler(t, map[string]func(args map[string]interface{}) (interface{}, *JSONRPCError){
+		"health_check": func(args map[string]interface{}) (interface{}, *JSONRPCError) {
+			return HealthStatus{Status: "ok"}, nil
+		},
+		"ensure_project": func(args map[string]interface{}) (interface{}, *JSONRPCError) {
+			return Project{ID: 1, Slug: "reconcile", HumanKey: projectKey}, nil
+		},
+		"register_agent": func(args map[string]interface{}) (interface{}, *JSONRPCError) {
+			return nil, &JSONRPCError{Code: -32000, Message: "resource temporarily busy"}
+		},
+		"resource:resource://agents/" + url.PathEscape(projectKey): func(args map[string]interface{}) (interface{}, *JSONRPCError) {
+			agentsJSON, _ := json.Marshal(map[string]interface{}{
+				"agents": []Agent{
+					{ID: 9, Name: "CoordinatorAgent", Program: "ntm", Model: "coordinator"},
+				},
+			})
+			return map[string]interface{}{
+				"contents": []map[string]interface{}{
+					{"text": string(agentsJSON)},
+				},
+			}, nil
+		},
+	}))
+	defer server.Close()
+
+	c := NewClient(WithBaseURL(server.URL + "/"))
+	info, err := c.RegisterSessionAgent(context.Background(), sessionName, projectKey)
+	if err != nil {
+		t.Fatalf("RegisterSessionAgent() error = %v, want reconciled success", err)
+	}
+	if info == nil {
+		t.Fatal("RegisterSessionAgent() = nil, want reconciled coordinator identity")
+	}
+	if info.AgentName != "CoordinatorAgent" {
+		t.Fatalf("AgentName = %q, want %q", info.AgentName, "CoordinatorAgent")
+	}
+
+	// The reconciled identity must be persisted locally so later lock
+	// commands can read it back from agent.json.
+	loaded, err := LoadSessionAgent(sessionName, projectKey)
+	if err != nil {
+		t.Fatalf("LoadSessionAgent() error = %v", err)
+	}
+	if loaded == nil || loaded.AgentName != "CoordinatorAgent" {
+		t.Fatalf("reconciled identity not persisted; loaded = %+v", loaded)
 	}
 }
 

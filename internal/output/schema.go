@@ -142,6 +142,16 @@ type AgentMailSpawnStatus struct {
 	AgentMap          map[string]string `json:"agent_map,omitempty"` // stable %pane_id -> agent name
 }
 
+// AgentMailCoordinatorStatus reports the outcome of registering the
+// session's coordinator identity (agent.json) with Agent Mail. A missing
+// coordinator identity is what makes `ntm lock`/`ntm unlock` refuse to act,
+// so a spawn that failed to create it must not report unqualified success.
+type AgentMailCoordinatorStatus struct {
+	Registered bool   `json:"registered"`
+	AgentName  string `json:"agent_name,omitempty"`
+	Error      string `json:"error,omitempty"`
+}
+
 // RecoverySpawnStatus reports whether configured session recovery produced
 // prompt content and which optional sources degraded.
 type RecoverySpawnStatus struct {
@@ -163,6 +173,11 @@ type SpawnResponse struct {
 	Stagger          *StaggerConfig        `json:"stagger,omitempty"`
 	AgentMail        *AgentMailSpawnStatus `json:"agent_mail,omitempty"`
 	Recovery         *RecoverySpawnStatus  `json:"recovery,omitempty"`
+	// CoordinatorIdentity reports whether the session's coordinator identity
+	// (agent.json) was created. A spawn that produced no coordinator identity
+	// must not report unqualified success, because `ntm lock`/`ntm unlock`
+	// refuse to act without it (bd-j3q).
+	CoordinatorIdentity *AgentMailCoordinatorStatus `json:"coordinator_identity,omitempty"`
 	// ProfileSet is the --profile-set name when the session was spawned from a
 	// persona set. Combined with each pane's `persona` field this gives an
 	// orchestrator a deterministic persona→pane mapping (ntm#149).

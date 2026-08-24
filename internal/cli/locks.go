@@ -1025,6 +1025,7 @@ func newLocksForceReleaseCmd() *cobra.Command {
 		note        string
 		noNotify    bool
 		skipConfirm bool
+		agent       string
 	)
 
 	cmd := &cobra.Command{
@@ -1041,7 +1042,8 @@ By default, the previous holder is notified about the forced release.
 Examples:
   ntm locks force-release myproject 42              # Force release reservation #42
   ntm locks force-release myproject 42 --note "Agent crashed"
-  ntm locks force-release myproject 42 --no-notify  # Don't notify previous holder`,
+  ntm locks force-release myproject 42 --no-notify  # Don't notify previous holder
+  ntm locks force-release myproject 42 --agent GreenCastle  # Act as a specific agent`,
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			session := args[0]
@@ -1055,13 +1057,14 @@ Examples:
 				return fmt.Errorf("invalid reservation ID '%s': must be a positive number", reservationIDStr)
 			}
 
-			return runForceRelease(cmd.Context(), session, reservationID, note, !noNotify, skipConfirm)
+			return runForceRelease(cmd.Context(), session, reservationID, note, !noNotify, skipConfirm, agent)
 		},
 	}
 
 	cmd.Flags().StringVar(&note, "note", "", "Explanation for the force-release")
 	cmd.Flags().BoolVar(&noNotify, "no-notify", false, "Don't notify the previous holder")
 	cmd.Flags().BoolVarP(&skipConfirm, "yes", "y", false, "Skip confirmation prompt")
+	cmd.Flags().StringVar(&agent, "agent", "", "Agent name to force-release as (defaults to the session's coordinator identity, then $AGENT_NAME)")
 
 	return cmd
 }
@@ -1097,7 +1100,7 @@ func forceReleaseGateError(session string, reservationID int, err error) error {
 	return err
 }
 
-func runForceRelease(ctx context.Context, session string, reservationID int, note string, notify, skipConfirm bool) error {
+func runForceRelease(ctx context.Context, session string, reservationID int, note string, notify, skipConfirm bool, agent string) error {
 	session, projectKey, err := resolveAgentMailScope(ctx, session)
 	if err != nil {
 		return err
@@ -1179,17 +1182,10 @@ func runForceRelease(ctx context.Context, session string, reservationID int, not
 		fmt.Println(decision.Message)
 	}
 
-	sessionAgent, err := loadResolvedSessionAgent(session, projectKey)
-	if err != nil {
-		return fmt.Errorf("loading session agent: %w", err)
-	}
-
-	agentName := ""
-	if sessionAgent != nil {
-		agentName = sessionAgent.AgentName
-	} else {
+	agentName := resolveLockAgentName(ctx, session, projectKey, agent)
+	if agentName == "" {
 		if IsJSONOutput() {
-			result := ForceReleaseResult{Success: false, Session: session, ReservationID: reservationID, ApprovalID: decision.ApprovalID, ApprovalStatus: decision.ApprovalStatus, Error: "Session has no Agent Mail identity"}
+			result := ForceReleaseResult{Success: false, Session: session, ReservationID: reservationID, ApprovalID: decision.ApprovalID, ApprovalStatus: decision.ApprovalStatus, Error: noSessionAgentIdentityError(session).Error()}
 			enc := json.NewEncoder(os.Stdout)
 			enc.SetIndent("", "  ")
 			if encErr := enc.Encode(result); encErr != nil {
@@ -1197,7 +1193,7 @@ func runForceRelease(ctx context.Context, session string, reservationID int, not
 			}
 			return jsonFailureExit()
 		}
-		return fmt.Errorf("session '%s' has no Agent Mail identity", session)
+		return noSessionAgentIdentityError(session)
 	}
 
 	client := newAgentMailClient(projectKey)
@@ -1314,6 +1310,7 @@ func runForceRelease(ctx context.Context, session string, reservationID int, not
 
 func newLocksRenewCmd() *cobra.Command {
 	var extendMinutes int
+	var agent string
 
 	cmd := &cobra.Command{
 		Use:   "renew <session>",
@@ -1325,15 +1322,17 @@ before the reservations expire.
 
 Examples:
   ntm locks renew myproject              # Extend by 30 minutes (default)
-  ntm locks renew myproject --extend 60  # Extend by 60 minutes`,
+  ntm locks renew myproject --extend 60  # Extend by 60 minutes
+  ntm locks renew myproject --agent GreenCastle  # Renew as a specific agent`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			session := args[0]
-			return runRenewLocks(cmd.Context(), session, extendMinutes)
+			return runRenewLocks(cmd.Context(), session, extendMinutes, agent)
 		},
 	}
 
 	cmd.Flags().IntVar(&extendMinutes, "extend", 30, "Minutes to extend reservations")
+	cmd.Flags().StringVar(&agent, "agent", "", "Agent name to renew as (defaults to the session's coordinator identity, then $AGENT_NAME)")
 
 	return cmd
 }
@@ -1348,7 +1347,7 @@ type RenewResult struct {
 	Error         string `json:"error,omitempty"`
 }
 
-func runRenewLocks(ctx context.Context, session string, extendMinutes int) error {
+func runRenewLocks(ctx context.Context, session string, extendMinutes int, agent string) error {
 	if extendMinutes < 1 {
 		return fmt.Errorf("extend time must be at least 1 minute")
 	}
@@ -1358,17 +1357,10 @@ func runRenewLocks(ctx context.Context, session string, extendMinutes int) error
 		return err
 	}
 
-	sessionAgent, err := loadResolvedSessionAgent(session, projectKey)
-	if err != nil {
-		return fmt.Errorf("loading session agent: %w", err)
-	}
-
-	agentName := ""
-	if sessionAgent != nil {
-		agentName = sessionAgent.AgentName
-	} else {
+	agentName := resolveLockAgentName(ctx, session, projectKey, agent)
+	if agentName == "" {
 		if IsJSONOutput() {
-			result := RenewResult{Success: false, Session: session, Error: "Session has no Agent Mail identity"}
+			result := RenewResult{Success: false, Session: session, Error: noSessionAgentIdentityError(session).Error()}
 			enc := json.NewEncoder(os.Stdout)
 			enc.SetIndent("", "  ")
 			if encErr := enc.Encode(result); encErr != nil {
@@ -1376,7 +1368,7 @@ func runRenewLocks(ctx context.Context, session string, extendMinutes int) error
 			}
 			return jsonFailureExit()
 		}
-		return fmt.Errorf("session '%s' has no Agent Mail identity", session)
+		return noSessionAgentIdentityError(session)
 	}
 
 	client := newAgentMailClient(projectKey)

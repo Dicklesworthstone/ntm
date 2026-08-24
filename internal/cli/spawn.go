@@ -3639,7 +3639,7 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 		}
 
 		// Register session coordinator with Agent Mail (creates agent.json for ntm lock)
-		registerSessionAgent(ctx, opts.Session, dir)
+		coordinatorIdentity := registerSessionAgent(ctx, opts.Session, dir)
 
 		// Register spawned agents with Agent Mail
 		var agentMailStatus *output.AgentMailSpawnStatus
@@ -3671,6 +3671,7 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 			Stagger:             staggerCfg,
 			AgentMail:           agentMailStatus,
 			Recovery:            newRecoverySpawnStatus(recoveryEnabled, rc),
+			CoordinatorIdentity: coordinatorIdentity,
 			ProfileSet:          opts.ProfileSetName,
 		}
 
@@ -4304,15 +4305,18 @@ func agentMailRegistrationEnabled() bool {
 
 // registerSessionAgent registers the session with Agent Mail.
 // This is non-blocking and logs but does not fail if unavailable.
-func registerSessionAgent(parentCtx context.Context, sessionName, workingDir string) {
+// It returns a status describing the coordinator identity outcome so the
+// spawn JSON envelope can report a missing identity instead of unqualified
+// success (bd-j3q).
+func registerSessionAgent(parentCtx context.Context, sessionName, workingDir string) *output.AgentMailCoordinatorStatus {
 	if !agentMailRegistrationEnabled() {
-		return
+		return nil
 	}
 	if parentCtx == nil {
 		if !IsJSONOutput() {
 			output.PrintWarning("Agent Mail registration skipped: missing command context")
 		}
-		return
+		return &output.AgentMailCoordinatorStatus{Registered: false, Error: "missing command context"}
 	}
 	var opts []agentmail.Option
 	if cfg != nil {
@@ -4333,11 +4337,16 @@ func registerSessionAgent(parentCtx context.Context, sessionName, workingDir str
 		if !IsJSONOutput() {
 			output.PrintWarningf("Agent Mail registration failed: %v", err)
 		}
-		return
+		return &output.AgentMailCoordinatorStatus{Registered: false, Error: err.Error()}
 	}
-	if info != nil && !IsJSONOutput() {
+	if info == nil {
+		// Agent Mail unavailable — registration silently skipped.
+		return &output.AgentMailCoordinatorStatus{Registered: false, Error: "agent mail unavailable"}
+	}
+	if !IsJSONOutput() {
 		output.PrintInfof("Registered with Agent Mail as %s", info.AgentName)
 	}
+	return &output.AgentMailCoordinatorStatus{Registered: true, AgentName: info.AgentName}
 }
 
 // spawnedAgentInfo holds agent info for registration with Agent Mail.

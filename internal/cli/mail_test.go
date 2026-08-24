@@ -973,7 +973,7 @@ func TestRunUnlockErrorsOnZeroSpecificRelease(t *testing.T) {
 
 	t.Setenv("AGENT_MAIL_URL", stub.server.URL+"/")
 
-	err := runUnlock(t.Context(), session, []string{"internal/cli/*.go"}, false, -1, "")
+	err := runUnlock(t.Context(), session, []string{"internal/cli/*.go"}, false, -1, "", "")
 	if err == nil {
 		t.Fatal("expected unlock to fail when no requested reservations were released")
 	}
@@ -1004,7 +1004,7 @@ func TestRunRenewLocksUsesProjectRootFromSubdir(t *testing.T) {
 	t.Setenv("AGENT_MAIL_URL", stub.server.URL+"/")
 	t.Chdir(filepath.Join(projectKey, "internal"))
 
-	if err := runRenewLocks(t.Context(), session, 30); err != nil {
+	if err := runRenewLocks(t.Context(), session, 30, ""); err != nil {
 		t.Fatalf("runRenewLocks: %v", err)
 	}
 	if len(stub.renewCalls) != 1 {
@@ -1030,7 +1030,7 @@ func TestRunRenewLocksErrorsOnZeroRenewed(t *testing.T) {
 
 	t.Setenv("AGENT_MAIL_URL", stub.server.URL+"/")
 
-	err := runRenewLocks(t.Context(), session, 30)
+	err := runRenewLocks(t.Context(), session, 30, "")
 	if err == nil {
 		t.Fatal("expected renew to fail when no reservations were renewed")
 	}
@@ -1722,7 +1722,7 @@ func TestRunLockUsesSessionProjectDir(t *testing.T) {
 	t.Setenv("AGENT_MAIL_URL", stub.server.URL+"/")
 	t.Chdir(canonicalTempDir(t))
 
-	if err := runLock(t.Context(), session, []string{"internal/**/*.go"}, "scope test", "1h", false); err != nil {
+	if err := runLock(t.Context(), session, []string{"internal/**/*.go"}, "scope test", "1h", false, ""); err != nil {
 		t.Fatalf("runLock: %v", err)
 	}
 	if len(stub.reserveCalls) != 1 {
@@ -1824,7 +1824,7 @@ func TestRunUnlockUsesSessionProjectDir(t *testing.T) {
 	t.Setenv("AGENT_MAIL_URL", stub.server.URL+"/")
 	t.Chdir(canonicalTempDir(t))
 
-	if err := runUnlock(t.Context(), session, []string{"internal/cli/*.go"}, false, -1, ""); err != nil {
+	if err := runUnlock(t.Context(), session, []string{"internal/cli/*.go"}, false, -1, "", ""); err != nil {
 		t.Fatalf("runUnlock: %v", err)
 	}
 	if len(stub.releaseCalls) != 1 {
@@ -1859,7 +1859,7 @@ func TestRunUnlockUsesSavedSessionAgentIdentityAndProjectKey(t *testing.T) {
 	t.Setenv("AGENT_MAIL_URL", stub.server.URL+"/")
 	t.Chdir(canonicalTempDir(t))
 
-	if err := runUnlock(t.Context(), session, []string{"internal/cli/*.go"}, false, -1, ""); err != nil {
+	if err := runUnlock(t.Context(), session, []string{"internal/cli/*.go"}, false, -1, "", ""); err != nil {
 		t.Fatalf("runUnlock: %v", err)
 	}
 	if len(stub.releaseCalls) != 1 {
@@ -1911,7 +1911,7 @@ func TestRunForceReleaseUsesSessionProjectDir(t *testing.T) {
 		t.Fatalf("write auto policy: %v", err)
 	}
 
-	if err := runForceRelease(t.Context(), session, 42, "stale", true, true); err != nil {
+	if err := runForceRelease(t.Context(), session, 42, "stale", true, true, ""); err != nil {
 		t.Fatalf("runForceRelease: %v", err)
 	}
 	if len(stub.forceReleaseCalls) != 1 {
@@ -1946,7 +1946,7 @@ func TestRunRenewLocksUsesSessionProjectDir(t *testing.T) {
 	t.Setenv("AGENT_MAIL_URL", stub.server.URL+"/")
 	t.Chdir(canonicalTempDir(t))
 
-	if err := runRenewLocks(t.Context(), session, 30); err != nil {
+	if err := runRenewLocks(t.Context(), session, 30, ""); err != nil {
 		t.Fatalf("runRenewLocks: %v", err)
 	}
 	if len(stub.renewCalls) != 1 {
@@ -1954,5 +1954,178 @@ func TestRunRenewLocksUsesSessionProjectDir(t *testing.T) {
 	}
 	if got := stub.renewCalls[0].Project; got != projectKey {
 		t.Fatalf("expected renew project %q, got %q", projectKey, got)
+	}
+}
+
+// TestRunLockUsesExplicitAgentWhenNoSessionIdentity verifies the operator
+// escape hatch from bd-j3q: with no coordinator identity (agent.json) on disk,
+// an explicit --agent value lets `ntm lock` proceed as that identity instead
+// of refusing with a bare "has no Agent Mail identity" error.
+func TestRunLockUsesExplicitAgentWhenNoSessionIdentity(t *testing.T) {
+	resetFlags()
+	isolateSessionAgentStorage(t)
+
+	projectsBase := canonicalTempDir(t)
+	projectKey := filepath.Join(projectsBase, "mysession")
+	if err := os.MkdirAll(projectKey, 0o755); err != nil {
+		t.Fatalf("mkdir project: %v", err)
+	}
+
+	stub := newMailStub(t, nil)
+	defer stub.Close()
+
+	oldCfg := cfg
+	cfg = &config.Config{ProjectsBase: projectsBase}
+	t.Cleanup(func() { cfg = oldCfg })
+
+	t.Setenv("AGENT_MAIL_URL", stub.server.URL+"/")
+	t.Setenv("AGENT_NAME", "")
+	t.Setenv("TMUX_PANE", "")
+	t.Chdir(canonicalTempDir(t))
+
+	if err := runLock(t.Context(), "mysession", []string{"internal/**/*.go"}, "scope test", "1h", false, "ExplicitAgent"); err != nil {
+		t.Fatalf("runLock: %v", err)
+	}
+	if len(stub.reserveCalls) != 1 {
+		t.Fatalf("expected one reserve call, got %d", len(stub.reserveCalls))
+	}
+	if got := stub.reserveCalls[0].Agent; got != "ExplicitAgent" {
+		t.Fatalf("expected reserve agent %q, got %q", "ExplicitAgent", got)
+	}
+}
+
+// TestRunUnlockUsesExplicitAgentWhenNoSessionIdentity is the unlock-side
+// mirror of the lock escape hatch (bd-j3q).
+func TestRunUnlockUsesExplicitAgentWhenNoSessionIdentity(t *testing.T) {
+	resetFlags()
+	isolateSessionAgentStorage(t)
+
+	projectsBase := canonicalTempDir(t)
+	projectKey := filepath.Join(projectsBase, "mysession")
+	if err := os.MkdirAll(projectKey, 0o755); err != nil {
+		t.Fatalf("mkdir project: %v", err)
+	}
+
+	stub := newMailStub(t, nil)
+	defer stub.Close()
+
+	oldCfg := cfg
+	cfg = &config.Config{ProjectsBase: projectsBase}
+	t.Cleanup(func() { cfg = oldCfg })
+
+	t.Setenv("AGENT_MAIL_URL", stub.server.URL+"/")
+	t.Setenv("AGENT_NAME", "")
+	t.Setenv("TMUX_PANE", "")
+	t.Chdir(canonicalTempDir(t))
+
+	if err := runUnlock(t.Context(), "mysession", []string{"internal/cli/*.go"}, false, -1, "", "ExplicitAgent"); err != nil {
+		t.Fatalf("runUnlock: %v", err)
+	}
+	if len(stub.releaseCalls) != 1 {
+		t.Fatalf("expected one release call, got %d", len(stub.releaseCalls))
+	}
+	if got := stub.releaseCalls[0].Agent; got != "ExplicitAgent" {
+		t.Fatalf("expected release agent %q, got %q", "ExplicitAgent", got)
+	}
+}
+
+// TestRunLockNoIdentityNamesRepairCommand pins the bd-j3q contract that a
+// missing identity error must name the repair command, so a future reword
+// cannot silently drop the operator's next step.
+func TestRunLockNoIdentityNamesRepairCommand(t *testing.T) {
+	resetFlags()
+	isolateSessionAgentStorage(t)
+
+	projectsBase := canonicalTempDir(t)
+	projectKey := filepath.Join(projectsBase, "mysession")
+	if err := os.MkdirAll(projectKey, 0o755); err != nil {
+		t.Fatalf("mkdir project: %v", err)
+	}
+
+	stub := newMailStub(t, nil)
+	defer stub.Close()
+
+	oldCfg := cfg
+	cfg = &config.Config{ProjectsBase: projectsBase}
+	t.Cleanup(func() { cfg = oldCfg })
+
+	t.Setenv("AGENT_MAIL_URL", stub.server.URL+"/")
+	t.Setenv("AGENT_NAME", "")
+	t.Setenv("TMUX_PANE", "")
+	t.Chdir(canonicalTempDir(t))
+
+	err := runLock(t.Context(), "mysession", []string{"internal/**/*.go"}, "scope test", "1h", false, "")
+	if err == nil {
+		t.Fatal("expected missing identity error")
+	}
+	if !strings.Contains(err.Error(), "ntm mail register") {
+		t.Fatalf("error must name the repair command, got: %v", err)
+	}
+	if len(stub.reserveCalls) != 0 {
+		t.Fatalf("expected no reserve call when identity is missing, got %d", len(stub.reserveCalls))
+	}
+}
+
+// TestRunUnlockNoIdentityNamesRepairCommand is the unlock-side mirror of the
+// repair-command contract (bd-j3q).
+func TestRunUnlockNoIdentityNamesRepairCommand(t *testing.T) {
+	resetFlags()
+	isolateSessionAgentStorage(t)
+
+	projectsBase := canonicalTempDir(t)
+	projectKey := filepath.Join(projectsBase, "mysession")
+	if err := os.MkdirAll(projectKey, 0o755); err != nil {
+		t.Fatalf("mkdir project: %v", err)
+	}
+
+	stub := newMailStub(t, nil)
+	defer stub.Close()
+
+	oldCfg := cfg
+	cfg = &config.Config{ProjectsBase: projectsBase}
+	t.Cleanup(func() { cfg = oldCfg })
+
+	t.Setenv("AGENT_MAIL_URL", stub.server.URL+"/")
+	t.Setenv("AGENT_NAME", "")
+	t.Setenv("TMUX_PANE", "")
+	t.Chdir(canonicalTempDir(t))
+
+	err := runUnlock(t.Context(), "mysession", []string{"internal/cli/*.go"}, false, -1, "", "")
+	if err == nil {
+		t.Fatal("expected missing identity error")
+	}
+	if !strings.Contains(err.Error(), "ntm mail register") {
+		t.Fatalf("error must name the repair command, got: %v", err)
+	}
+	if len(stub.releaseCalls) != 0 {
+		t.Fatalf("expected no release call when identity is missing, got %d", len(stub.releaseCalls))
+	}
+}
+
+// TestRegisterSessionAgentReportsFailureInStatus verifies the bd-j3q spawn
+// contract: when RegisterSessionAgent fails, the returned coordinator status
+// carries the failure so the spawn JSON envelope does not report unqualified
+// success.
+func TestRegisterSessionAgentReportsFailureInStatus(t *testing.T) {
+	resetFlags()
+	isolateSessionAgentStorage(t)
+
+	oldCfg := cfg
+	cfg = &config.Config{AgentMail: config.AgentMailConfig{Enabled: true, AutoRegister: true}}
+	t.Cleanup(func() { cfg = oldCfg })
+
+	stub := newMailStub(t, nil)
+	defer stub.Close()
+	t.Setenv("AGENT_MAIL_URL", stub.server.URL+"/")
+
+	status := registerSessionAgent(t.Context(), "mysession", GetProjectRoot())
+	if status == nil {
+		t.Fatal("expected non-nil coordinator status when registration is enabled")
+	}
+	if status.Registered {
+		t.Fatal("expected Registered=false when registration fails")
+	}
+	if status.Error == "" {
+		t.Fatal("expected non-empty error in coordinator status")
 	}
 }
