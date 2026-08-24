@@ -198,6 +198,17 @@ func (m *AgentMonitor) resultFromPaneObservation(pane status.PaneObservation) Ag
 		classifier.SetAgentType(pane.AgentType)
 		if activity, err := classifier.ClassifyWithOutput(pane.RawOutput); err == nil {
 			result.Velocity = activity.Velocity
+			// The robot classifier carries the live-tail and progress guard
+			// (bd-j5cdo), so its verdict is authoritative for the error
+			// decision: a static StateError is downgraded when the pane has
+			// demonstrably recovered. Non-error static verdicts are left
+			// untouched so Claude, Codex and pi panes keep their existing
+			// short-circuit behaviour.
+			result.Status = resolveStatus(result.Status, activity.State)
+			result.Healthy = robotStateHealthy(result.Status)
+			result.SafeToDispatch = result.Status == robot.StateWaiting &&
+				result.Healthy &&
+				status.ObservationConfidenceIsActionable(result.Confidence)
 		}
 	}
 	return result
@@ -274,6 +285,36 @@ func activeReservationPatterns(reservations []agentmail.FileReservation, now tim
 		}
 	}
 	return patterns
+}
+
+// resolveStatus merges the static detector's verdict with the robot
+// classifier's verdict. The robot classifier carries the live-tail and
+// progress guard (bd-j5cdo), so when the static detector reports StateError
+// the robot verdict is authoritative: a stale error in scrollback that the
+// static detector flagged is downgraded to the robot's recovered state
+// (generating, thinking or waiting). A fresh error in the live tail and a
+// genuinely stuck pane both keep the static StateError, because the robot
+// classifier returns StateError in those cases. Non-error static verdicts
+// are left untouched so Claude, Codex and pi panes keep their existing
+// short-circuit behaviour.
+func resolveStatus(static robot.AgentState, robotState robot.AgentState) robot.AgentState {
+	if static == robot.StateError && robotState != robot.StateError {
+		return robotState
+	}
+	return static
+}
+
+// robotStateHealthy reports whether a robot verdict represents a healthy
+// (working or idle) pane. It mirrors status.AgentStatus.IsHealthy for the
+// robot state space: generating, thinking and waiting are healthy; error,
+// stalled and unknown are not.
+func robotStateHealthy(s robot.AgentState) bool {
+	switch s {
+	case robot.StateGenerating, robot.StateThinking, robot.StateWaiting:
+		return true
+	default:
+		return false
+	}
 }
 
 // mapStatusToRobotState converts status.AgentState to robot.AgentState.
