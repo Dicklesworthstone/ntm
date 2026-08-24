@@ -5,6 +5,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -2661,10 +2662,11 @@ type HistoryResponse struct {
 }
 
 // HistoryStats contains overall history statistics
+// (reported by bv, not computed by ntm)
 type HistoryStats struct {
-	TotalBeads      int `json:"total_beads"`
-	TotalCommits    int `json:"total_commits"`
-	CorrelatedCount int `json:"correlated_count"`
+	TotalBeads       int `json:"total_beads"`
+	TotalCommits     int `json:"total_commits"`
+	BeadsWithCommits int `json:"beads_with_commits"`
 }
 
 // BeadHistory contains history for a single bead
@@ -2741,12 +2743,11 @@ func runWorkHistory() error {
 	adapter := tools.NewBVAdapter()
 	output, err := adapter.GetHistory(context.Background(), dir)
 	if err != nil {
-		return err
+		return reportBVDegradation(err)
 	}
 
 	if jsonOutput {
-		fmt.Println(string(output))
-		return nil
+		return emitBVJSONEnvelope(adapter, output, nil)
 	}
 
 	// Parse and render
@@ -2770,10 +2771,10 @@ func renderHistory(resp HistoryResponse) error {
 	fmt.Println(titleStyle.Render("Bead History & Correlation"))
 	fmt.Println()
 
-	// Stats
+	// Stats (reported by bv, not computed by ntm)
 	stats := resp.Stats
-	fmt.Printf("  Total Beads: %d  Commits: %d  Correlated: %d\n\n",
-		stats.TotalBeads, stats.TotalCommits, stats.CorrelatedCount)
+	fmt.Printf("  Total Beads: %d  Commits: %d  Beads with Commits: %d  (bv)\n\n",
+		stats.TotalBeads, stats.TotalCommits, stats.BeadsWithCommits)
 
 	// Recent bead histories (limit to first 10)
 	histories := resp.Histories
@@ -3067,12 +3068,11 @@ func runWorkBurndown(sprint string) error {
 	adapter := tools.NewBVAdapter()
 	output, err := adapter.GetBurndown(context.Background(), dir, sprint)
 	if err != nil {
-		return err
+		return reportBVDegradation(err)
 	}
 
 	if jsonOutput {
-		fmt.Println(string(output))
-		return nil
+		return emitBVJSONEnvelope(adapter, output, nil)
 	}
 
 	// Parse and render
@@ -3146,4 +3146,113 @@ func outputJSON(v interface{}) error {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	return enc.Encode(v)
+}
+
+// bvDegradation is the JSON degradation field carried by work history and
+// work burndown output, so an orchestrator can tell a real zero from an
+// unavailable capability.
+type bvDegradation struct {
+	Tool             string `json:"tool"`
+	InstalledVersion string `json:"installed_version"`
+	RequiredVersion  string `json:"required_version"`
+	Complete         bool   `json:"complete"`
+	Error            string `json:"error,omitempty"`
+	Stderr           string `json:"stderr,omitempty"`
+}
+
+// bvWorkEnvelope wraps bv's raw output with the degradation field.
+type bvWorkEnvelope struct {
+	Degradation bvDegradation   `json:"degradation"`
+	Data        json.RawMessage `json:"data,omitempty"`
+}
+
+// reportBVDegradation surfaces a bv robot failure on stdout. In JSON mode it
+// emits a degradation envelope; in human mode it prints a warning naming the
+// installed version and the capability that failed. It returns errJSONFailure
+// so Execute() exits non-zero without decorating stderr.
+func reportBVDegradation(err error) error {
+	var bvErr *tools.BVRobotError
+	if !errors.As(err, &bvErr) {
+		return err
+	}
+	if jsonOutput {
+		return emitBVJSONEnvelope(nil, nil, bvErr)
+	}
+	renderBVDegradationWarning(bvErr)
+	return errJSONFailure
+}
+
+// emitBVJSONEnvelope writes the JSON envelope for a bv-backed work command.
+// On success it carries bv's raw output under "data" with complete=true; on
+// failure it carries the degradation fields with complete=false and returns
+// errJSONFailure so the process exits non-zero.
+func emitBVJSONEnvelope(adapter *tools.BVAdapter, data json.RawMessage, bvErr *tools.BVRobotError) error {
+	env := bvWorkEnvelope{}
+	if bvErr != nil {
+		env.Degradation = degradationFromError(bvErr)
+	} else {
+		env.Degradation = degradationComplete(adapter)
+		env.Data = data
+	}
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(env); err != nil {
+		return err
+	}
+	if bvErr != nil {
+		return errJSONFailure
+	}
+	return nil
+}
+
+// renderBVDegradationWarning prints a human-readable warning naming the
+// installed version and the capability that failed, plus bv's own stderr text.
+func renderBVDegradationWarning(bvErr *tools.BVRobotError) {
+	detail := strings.TrimSpace(bvErr.Stderr)
+	if detail == "" {
+		detail = bvErr.Err.Error()
+	}
+	fmt.Fprintf(os.Stdout, "Warning: bv %s could not answer %s (requires >= %s): %s\n",
+		versionString(bvErr.InstalledVersion), bvErr.Mode, versionString(bvErr.RequiredVersion), detail)
+}
+
+func degradationFromError(bvErr *tools.BVRobotError) bvDegradation {
+	return bvDegradation{
+		Tool:             "bv",
+		InstalledVersion: versionString(bvErr.InstalledVersion),
+		RequiredVersion:  versionString(bvErr.RequiredVersion),
+		Complete:         false,
+		Error:            bvErr.Err.Error(),
+		Stderr:           strings.TrimSpace(bvErr.Stderr),
+	}
+}
+
+func degradationComplete(adapter *tools.BVAdapter) bvDegradation {
+	return bvDegradation{
+		Tool:             "bv",
+		InstalledVersion: versionString(adapterVersion(adapter)),
+		RequiredVersion:  versionString(tools.BVMinRobotVersion),
+		Complete:         true,
+	}
+}
+
+// adapterVersion returns the installed bv version, or the zero Version if it
+// cannot be determined.
+func adapterVersion(adapter *tools.BVAdapter) tools.Version {
+	v, err := adapter.Version(context.Background())
+	if err != nil {
+		return tools.Version{}
+	}
+	return v
+}
+
+// versionString renders a Version, using "unknown" for the zero value.
+func versionString(v tools.Version) string {
+	if v.Major == 0 && v.Minor == 0 && v.Patch == 0 {
+		if v.Raw != "" {
+			return v.Raw
+		}
+		return "unknown"
+	}
+	return fmt.Sprintf("%d.%d.%d", v.Major, v.Minor, v.Patch)
 }

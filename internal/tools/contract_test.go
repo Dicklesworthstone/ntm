@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -950,6 +951,126 @@ func TestBVAdapterRobotModes(t *testing.T) {
 				t.Errorf("%s missing key %q", tt.name, tt.key)
 			}
 		})
+	}
+}
+
+// TestBVAdapterRobotModeDegradation exercises the real bv failure modes the
+// fake tool now emulates: a non-zero exit with plain-text stderr, a version
+// below the capability gate, and malformed JSON. Each must surface as a
+// *BVRobotError carrying bv's stderr and the installed/required versions.
+func TestBVAdapterRobotModeDegradation(t *testing.T) {
+	cleanup := withFakeTools(t)
+	defer cleanup()
+
+	adapter := NewBVAdapter()
+	ctx := context.Background()
+	projectRoot := filepath.Dir(filepath.Dir(fakeToolsPath(t)))
+
+	tests := []struct {
+		name        string
+		mode        string
+		wantErr     bool
+		wantStderr  string
+		wantVersion Version
+	}{
+		{
+			name:       "non-zero exit surfaces stderr",
+			mode:       "robot_error",
+			wantErr:    true,
+			wantStderr: "robot mode failed",
+		},
+		{
+			name:    "version below gate but answers",
+			mode:    "old_version_answers",
+			wantErr: false,
+		},
+		{
+			name:        "version below gate refuses names version",
+			mode:        "old_version_refuses",
+			wantErr:     true,
+			wantStderr:  "unknown command",
+			wantVersion: Version{Major: 0, Minor: 15, Patch: 0},
+		},
+		{
+			name:    "malformed json names the tool",
+			mode:    "malformed",
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			os.Setenv("FAKE_TOOL_MODE", tt.mode)
+			defer os.Unsetenv("FAKE_TOOL_MODE")
+
+			raw, err := adapter.GetHistory(ctx, projectRoot)
+			if !tt.wantErr {
+				if err != nil {
+					t.Fatalf("GetHistory() error in mode %q: %v", tt.mode, err)
+				}
+				if !json.Valid(raw) {
+					t.Fatalf("GetHistory() returned invalid JSON in mode %q", tt.mode)
+				}
+				return
+			}
+
+			if err == nil {
+				t.Fatalf("GetHistory() = nil error in mode %q, want *BVRobotError", tt.mode)
+			}
+			var bvErr *BVRobotError
+			if !errors.As(err, &bvErr) {
+				t.Fatalf("GetHistory() error = %T, want *BVRobotError", err)
+			}
+			if tt.wantStderr != "" && !strings.Contains(bvErr.Stderr, tt.wantStderr) {
+				t.Errorf("BVRobotError.Stderr = %q, want contains %q", bvErr.Stderr, tt.wantStderr)
+			}
+			if tt.wantVersion != (Version{}) && (bvErr.InstalledVersion.Major != tt.wantVersion.Major ||
+				bvErr.InstalledVersion.Minor != tt.wantVersion.Minor ||
+				bvErr.InstalledVersion.Patch != tt.wantVersion.Patch) {
+				t.Errorf("BVRobotError.InstalledVersion = %+v, want %+v", bvErr.InstalledVersion, tt.wantVersion)
+			}
+			if bvErr.RequiredVersion != BVMinRobotVersion {
+				t.Errorf("BVRobotError.RequiredVersion = %+v, want %+v", bvErr.RequiredVersion, BVMinRobotVersion)
+			}
+		})
+	}
+}
+
+// TestBVAdapterCapabilitiesGate verifies the capability gate names versions
+// that exist: 0.15.0 (below the gate) must not report robot_history, while
+// 0.31.0 (above the gate) must. The previous table gated these modes behind
+// 0.30/0.31, versions no published bv has ever reached.
+func TestBVAdapterCapabilitiesGate(t *testing.T) {
+	cleanup := withFakeTools(t)
+	defer cleanup()
+
+	adapter := NewBVAdapter()
+	ctx := context.Background()
+
+	os.Setenv("FAKE_TOOL_MODE", "old_version_answers")
+	caps, err := adapter.Capabilities(ctx)
+	os.Unsetenv("FAKE_TOOL_MODE")
+	if err != nil {
+		t.Fatalf("Capabilities() error: %v", err)
+	}
+	for _, c := range caps {
+		if c == "robot_history" {
+			t.Fatal("Capabilities() reported robot_history for bv 0.15.0 (below gate)")
+		}
+	}
+
+	caps, err = adapter.Capabilities(ctx)
+	if err != nil {
+		t.Fatalf("Capabilities() error: %v", err)
+	}
+	found := false
+	for _, c := range caps {
+		if c == "robot_history" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("Capabilities() did not report robot_history for bv 0.31.0 (above gate)")
 	}
 }
 

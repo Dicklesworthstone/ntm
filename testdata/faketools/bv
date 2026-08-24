@@ -1,6 +1,16 @@
 #!/bin/bash
 # Fake bv tool for testing
-# Supports MODE environment variable: normal (default), timeout, error, schema_drift
+# Supports MODE environment variable:
+#   normal (default)      - version 0.31.0, every robot mode answers
+#   timeout               - hangs (killed by the adapter timeout)
+#   error                 - every command exits 1 with plain-text stderr
+#   schema_drift          - returns JSON with an unexpected schema
+#   robot_error           - version answers, robot modes exit 1 with stderr
+#   old_version_answers   - version 0.15.0 (below gate), robot modes answer
+#   old_version_refuses   - version 0.15.0 (below gate), robot modes exit 1
+#   zero_counts           - robot-history returns well-formed zero counts
+#   malformed             - robot modes return non-JSON text
+#   no_sprint             - robot-burndown exits 1 with "No active sprint found"
 
 MODE="${FAKE_TOOL_MODE:-normal}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -27,12 +37,39 @@ esac
 ARG="${1#-}"
 ARG="${ARG#-}"
 
-# Normal mode - check arguments
+# --version reports a mode-dependent version.
 case "$ARG" in
     -version|version)
-        echo "bv 0.31.0 (fake)"
+        case "$MODE" in
+            old_version_answers|old_version_refuses)
+                echo "bv 0.15.0 (fake)"
+                ;;
+            *)
+                echo "bv 0.31.0 (fake)"
+                ;;
+        esac
         exit 0
         ;;
+esac
+
+# Modes that fail every robot command with plain-text stderr (or non-JSON).
+case "$MODE" in
+    robot_error)
+        echo "bv: robot mode failed" >&2
+        exit 1
+        ;;
+    old_version_refuses)
+        echo "bv: unknown command: $1" >&2
+        exit 1
+        ;;
+    malformed)
+        echo "this is not json"
+        exit 0
+        ;;
+esac
+
+# Normal mode - check arguments
+case "$ARG" in
     robot-triage)
         cat "$FIXTURES_DIR/bv_triage.json" 2>/dev/null || echo '{"generated_at": "2026-01-01T00:00:00Z", "data_hash": "test", "triage": {"meta": {"version": "1.0.0"}, "quick_ref": {"open_count": 10, "actionable_count": 5}}}'
         exit 0
@@ -66,10 +103,18 @@ case "$ARG" in
         exit 0
         ;;
     robot-history)
-        echo '{"stats":{"total_beads":1,"total_commits":0,"correlated_count":0},"histories":[{"id":"bd-1","title":"Test","events":[]}]}'
+        if [ "$MODE" = "zero_counts" ]; then
+            echo '{"stats":{"total_beads":0,"beads_with_commits":0,"total_commits":0},"histories":[],"commit_index":{}}'
+        else
+            echo '{"stats":{"total_beads":1,"beads_with_commits":1,"total_commits":1},"histories":[{"id":"bd-1","title":"Test","events":[]}],"commit_index":{}}'
+        fi
         exit 0
         ;;
     robot-burndown)
+        if [ "$MODE" = "no_sprint" ]; then
+            echo "No active sprint found" >&2
+            exit 1
+        fi
         echo '{"sprint":"s1","progress":{"total_points":10,"completed_points":4,"percent_complete":40,"days_remaining":3},"scope_changes":[],"at_risk":[]}'
         exit 0
         ;;
