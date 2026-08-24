@@ -445,7 +445,7 @@ var AttentionCommands = []AttentionCommand{
 			{Name: "--events-limit", Type: "int", Required: false, Description: "Max events to return (default: 100)"},
 			{Name: "--events-category", Type: "string", Required: false, Description: "Filter by category"},
 			{Name: "--events-actionability", Type: "string", Required: false, Description: "Filter by actionability"},
-			{Name: "--events-session", Type: "string", Required: false, Description: "Filter by session"},
+			{Name: "--session", Type: "string", Required: false, Description: "Filter by session"},
 		},
 		Returns: "EventsOutput with events array and next_cursor",
 		Example: "ntm --robot-events --since-cursor=42 --events-limit=50",
@@ -479,7 +479,7 @@ var AttentionCommands = []AttentionCommand{
 		Synopsis: "Get items requiring operator response",
 		Args: []CommandArg{
 			{Name: "--attention-cursor", Type: "cursor", Required: false, Description: "Continue from a previous attention cursor"},
-			{Name: "--attention-session", Type: "string", Required: false, Description: "Scope to session"},
+			{Name: "--session", Type: "string", Required: false, Description: "Scope to session"},
 			{Name: "--attention-timeout", Type: "duration", Required: false, Description: "Max wait time (default: 5m)"},
 			{Name: "--attention-condition", Type: "string", Required: false, Description: "Condition to wait for: attention, action_required, mail_pending"},
 		},

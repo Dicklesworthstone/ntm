@@ -452,7 +452,7 @@ func TestBuildCommandRegistry_AttentionCommandsUseLiveFlagNames(t *testing.T) {
 		"--since-cursor",
 		"--events-limit",
 		"--events-category",
-		"--events-session",
+		"--session",
 		"--events-actionability",
 	}
 	for _, want := range wantEventFlags {
@@ -476,7 +476,7 @@ func TestBuildCommandRegistry_AttentionCommandsUseLiveFlagNames(t *testing.T) {
 	attention := findCommand("attention")
 	wantAttentionFlags := []string{
 		"--attention-cursor",
-		"--attention-session",
+		"--session",
 		"--attention-timeout",
 		"--attention-poll",
 		"--attention-condition",

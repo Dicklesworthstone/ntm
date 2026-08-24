@@ -1,9 +1,14 @@
 package cli
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
+
+	"github.com/Dicklesworthstone/ntm/internal/robot"
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 // newRobotSessionTestCmd builds a throwaway command with the same session
@@ -121,4 +126,119 @@ func TestResolveRobotSnapshotSession(t *testing.T) {
 			t.Errorf("resolveRobotSnapshotSession() = %q, want empty", got)
 		}
 	})
+}
+
+// TestResolveRobotSessionConvergedQueries guards the bucket-C convergence:
+// the six queries that used to scope by a bespoke session flag now resolve the
+// shared --session flag through the same helper path as the bucket-A queries.
+// --robot-digest reuses the attention resolver, so it is asserted through
+// resolveRobotAttentionSession.
+func TestResolveRobotSessionConvergedQueries(t *testing.T) {
+	tests := []struct {
+		name    string
+		resolve func(*cobra.Command) string
+	}{
+		{name: "events", resolve: resolveRobotEventsSession},
+		{name: "attention", resolve: resolveRobotAttentionSession},
+		{name: "digest", resolve: resolveRobotAttentionSession},
+		{name: "overlay", resolve: resolveRobotOverlaySession},
+		{name: "markdown", resolve: resolveRobotMarkdownSession},
+		{name: "dismiss-alert", resolve: resolveRobotDismissSession},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := newRobotSessionTestCmd(t)
+			if err := cmd.ParseFlags([]string{"--session=proj"}); err != nil {
+				t.Fatalf("ParseFlags: %v", err)
+			}
+			if got := tt.resolve(cmd); got != "proj" {
+				t.Errorf("%s resolver = %q, want %q", tt.name, got, "proj")
+			}
+		})
+	}
+}
+
+// TestResolveRobotMailSessionPrecedence guards the --robot-mail convergence:
+// the shared --session flag is the highest-precedence source, the positional
+// argument is next, and the cwd/tmux inference remains the fallback. The
+// inference itself is environment-dependent and predates this bead, so the
+// regression guard here is precedence plus the explicit/inferred contract.
+func TestResolveRobotMailSessionPrecedence(t *testing.T) {
+	t.Run("--session flag wins over positional", func(t *testing.T) {
+		cmd := newRobotSessionTestCmd(t)
+		if err := cmd.ParseFlags([]string{"--session=flag"}); err != nil {
+			t.Fatalf("ParseFlags: %v", err)
+		}
+		got, explicit := resolveRobotMailSession(cmd, []string{"positional"})
+		if got != "flag" {
+			t.Errorf("resolveRobotMailSession() = %q, want %q (flag wins)", got, "flag")
+		}
+		if !explicit {
+			t.Errorf("resolveRobotMailSession() explicit = false, want true")
+		}
+	})
+
+	t.Run("positional wins when no --session", func(t *testing.T) {
+		cmd := newRobotSessionTestCmd(t)
+		if err := cmd.ParseFlags(nil); err != nil {
+			t.Fatalf("ParseFlags: %v", err)
+		}
+		got, explicit := resolveRobotMailSession(cmd, []string{"positional"})
+		if got != "positional" {
+			t.Errorf("resolveRobotMailSession() = %q, want %q (positional)", got, "positional")
+		}
+		if !explicit {
+			t.Errorf("resolveRobotMailSession() explicit = false, want true")
+		}
+	})
+
+	t.Run("no --session and no positional falls back to inference", func(t *testing.T) {
+		cmd := newRobotSessionTestCmd(t)
+		if err := cmd.ParseFlags(nil); err != nil {
+			t.Fatalf("ParseFlags: %v", err)
+		}
+		got, explicit := resolveRobotMailSession(cmd, nil)
+		// An inferred session is never reported as explicit; that is the
+		// contract the dispatch branch relies on to pick the right scope
+		// resolution path.
+		if explicit {
+			t.Errorf("resolveRobotMailSession() explicit = true, want false for inferred session")
+		}
+		if !tmux.IsInstalled() && got != "" {
+			t.Errorf("resolveRobotMailSession() = %q, want empty when tmux is not installed", got)
+		}
+	})
+}
+
+// TestRemovedSessionFlagsAreGone enumerates rootCmd's registered flags and
+// asserts none of the five deleted bespoke session-scoping names is present.
+// This is the case that fails if one is quietly restored as an alias or a
+// hidden flag.
+func TestRemovedSessionFlagsAreGone(t *testing.T) {
+	removed := []string{"events-session", "attention-session", "overlay-session", "md-session", "dismiss-session"}
+	for _, name := range removed {
+		if f := rootCmd.Flags().Lookup(name); f != nil {
+			t.Errorf("flag --%s still registered on rootCmd (deprecated=%q); it must be deleted, not aliased", name, f.Deprecated)
+		}
+	}
+}
+
+// TestClassifyRobotExecuteErrorSuggestsSessionForRemovedSessionFlags guards the
+// near-miss hint for the five deleted names: a caller reaching for one of them
+// gets INVALID_FLAG with a hint naming --session, not the nearest surviving
+// sibling (e.g. --md-sections for the old markdown session filter).
+func TestClassifyRobotExecuteErrorSuggestsSessionForRemovedSessionFlags(t *testing.T) {
+	removed := []string{"events-session", "attention-session", "overlay-session", "md-session", "dismiss-session"}
+	for _, name := range removed {
+		t.Run(name, func(t *testing.T) {
+			code, hint := classifyRobotExecuteError(fmt.Errorf("unknown flag: --%s", name))
+			if code != robot.ErrCodeInvalidFlag {
+				t.Fatalf("code = %q, want INVALID_FLAG", code)
+			}
+			if !strings.Contains(hint, "--session") {
+				t.Errorf("hint = %q, want a --session suggestion", hint)
+			}
+		})
+	}
 }

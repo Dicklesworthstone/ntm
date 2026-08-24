@@ -60,7 +60,7 @@ State inspection (read-only, safe to call in a loop; note the flag forms vary):
 - ntm --robot-status                                       - Tmux sessions, panes, and agent states (start here)
 - ntm --robot-activity={{.Session}}                        - Per-agent activity states (idle/busy/error) for this session
 - ntm --robot-tail={{.Session}} --panes=N --lines=50       - Capture recent output from pane N
-- ntm --robot-attention --attention-session={{.Session}}   - Block until an agent needs attention (drives monitor loop)
+- ntm --robot-attention --session={{.Session}}   - Block until an agent needs attention (drives monitor loop)
 - ntm mail inbox {{.Session}} --json                       - Check Agent Mail inbox for pending messages
 
 Actions (mutating; use deliberately):

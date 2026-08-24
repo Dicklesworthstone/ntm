@@ -473,7 +473,7 @@ func filterAttentionEventsByProfile(events []AttentionEvent, profile string) []A
 func buildAttentionNextCommand(opts AttentionOptions, cursor int64) string {
 	parts := []string{fmt.Sprintf("ntm --robot-attention --attention-cursor=%d", cursor)}
 	if opts.Session != "" {
-		parts = append(parts, fmt.Sprintf("--attention-session=%s", opts.Session))
+		parts = append(parts, fmt.Sprintf("--session=%s", opts.Session))
 	}
 	if opts.Profile != "" {
 		parts = append(parts, fmt.Sprintf("--profile=%s", opts.Profile))
@@ -593,7 +593,7 @@ func PrintOverlay(opts OverlayOptions) error {
 			opts,
 			fmt.Errorf("session is required"),
 			ErrCodeInvalidFlag,
-			"Pass --overlay-session=<session> or run --robot-overlay inside the target tmux session",
+			"Pass --session=<session> or run --robot-overlay inside the target tmux session",
 		))
 	}
 	if !overlayInTmux() {

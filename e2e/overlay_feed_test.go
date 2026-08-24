@@ -182,7 +182,7 @@ func TestOverlayFeedRejectsNegativeCursorOutsideTmux(t *testing.T) {
 	h := newOverlayHarness(t, "overlay_feed_negative_cursor_outside_tmux")
 	defer h.Close()
 
-	resp := runOverlayWithEnv(t, h, []string{"TMUX="}, "--robot-overlay", "--overlay-session", "proj", "--overlay-cursor", "-1")
+	resp := runOverlayWithEnv(t, h, []string{"TMUX="}, "--robot-overlay", "--session", "proj", "--overlay-cursor", "-1")
 	if resp.Success {
 		t.Fatalf("expected failure response, got success: %+v", resp)
 	}
@@ -232,7 +232,7 @@ func TestOverlayFeedReportsMissingTargetSessionInsideTmux(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	const missingSession = "overlay-missing-session-e2e"
-	resp := runOverlayInPane(t, h, "session-not-found", "--robot-overlay", "--overlay-session", missingSession)
+	resp := runOverlayInPane(t, h, "session-not-found", "--robot-overlay", "--session", missingSession)
 	if resp.Success {
 		t.Fatalf("expected failure response, got success: %+v", resp)
 	}
@@ -260,7 +260,7 @@ func TestOverlayFeedNoWaitReportsImmediatePopupFailureInsideTmux(t *testing.T) {
 		h,
 		"overlay-no-wait-failure",
 		"--robot-overlay",
-		"--overlay-session", h.SessionName(),
+		"--session", h.SessionName(),
 		"--overlay-cursor", "73",
 		"--overlay-no-wait",
 	)
@@ -303,7 +303,7 @@ func TestOverlayFeedCursorPropagationInZoomHint(t *testing.T) {
 		h,
 		"cursor-propagation",
 		"--robot-overlay",
-		"--overlay-session", h.SessionName(),
+		"--session", h.SessionName(),
 		"--overlay-cursor", fmt.Sprintf("%d", targetCursor),
 		"--overlay-no-wait",
 	)
@@ -320,7 +320,7 @@ func TestOverlayFeedGracefulDegradationOutsideTmux(t *testing.T) {
 	defer h.Close()
 
 	// Run without TMUX env (simulates running outside tmux)
-	resp := runOverlayWithEnv(t, h, []string{"TMUX="}, "--robot-overlay", "--overlay-session", "proj")
+	resp := runOverlayWithEnv(t, h, []string{"TMUX="}, "--robot-overlay", "--session", "proj")
 
 	// Should fail gracefully with clear error
 	if resp.Success {
@@ -352,7 +352,7 @@ func TestOverlayFeedRejectsZeroCursor(t *testing.T) {
 		h,
 		"zero-cursor",
 		"--robot-overlay",
-		"--overlay-session", h.SessionName(),
+		"--session", h.SessionName(),
 		"--overlay-cursor", "0",
 		"--overlay-no-wait",
 	)
@@ -385,7 +385,7 @@ func TestOverlayFeedLargeCursorValue(t *testing.T) {
 		h,
 		"large-cursor",
 		"--robot-overlay",
-		"--overlay-session", h.SessionName(),
+		"--session", h.SessionName(),
 		"--overlay-cursor", fmt.Sprintf("%d", largeCursor),
 		"--overlay-no-wait",
 	)
@@ -400,7 +400,7 @@ func TestOverlayFeedResponseIncludesTimestamp(t *testing.T) {
 	h := newOverlayHarness(t, "overlay_feed_timestamp")
 	defer h.Close()
 
-	resp := runOverlayWithEnv(t, h, []string{"TMUX="}, "--robot-overlay", "--overlay-session", "proj")
+	resp := runOverlayWithEnv(t, h, []string{"TMUX="}, "--robot-overlay", "--session", "proj")
 
 	// All responses should include a timestamp for observability
 	if resp.Timestamp == "" {
@@ -424,7 +424,7 @@ func TestOverlayFeedSessionEchoedInResponse(t *testing.T) {
 	defer h.Close()
 
 	const testSession = "my-custom-session-name"
-	resp := runOverlayWithEnv(t, h, []string{"TMUX="}, "--robot-overlay", "--overlay-session", testSession)
+	resp := runOverlayWithEnv(t, h, []string{"TMUX="}, "--robot-overlay", "--session", testSession)
 
 	// Response should echo back the requested session
 	if resp.Session != testSession {
@@ -450,7 +450,7 @@ func TestOverlayFeedNoWaitFlagSemantic(t *testing.T) {
 		h,
 		"without-no-wait",
 		"--robot-overlay",
-		"--overlay-session", h.SessionName(),
+		"--session", h.SessionName(),
 	)
 	if resp1.NoWait {
 		t.Fatalf("expected no_wait=false without flag, got %+v", resp1)
@@ -462,7 +462,7 @@ func TestOverlayFeedNoWaitFlagSemantic(t *testing.T) {
 		h,
 		"with-no-wait",
 		"--robot-overlay",
-		"--overlay-session", h.SessionName(),
+		"--session", h.SessionName(),
 		"--overlay-no-wait",
 	)
 	if !resp2.NoWait {
@@ -477,7 +477,7 @@ func TestOverlayFeedDismissedStateNotLaunched(t *testing.T) {
 	h := newOverlayHarness(t, "overlay_feed_dismissed_state")
 	defer h.Close()
 
-	resp := runOverlayWithEnv(t, h, []string{"TMUX="}, "--robot-overlay", "--overlay-session", "proj")
+	resp := runOverlayWithEnv(t, h, []string{"TMUX="}, "--robot-overlay", "--session", "proj")
 
 	// When not launched, dismissed should be false
 	if resp.Dismissed {
@@ -494,7 +494,7 @@ func TestOverlayFeedResponseStructureComplete(t *testing.T) {
 	h := newOverlayHarness(t, "overlay_feed_response_structure")
 	defer h.Close()
 
-	resp := runOverlayWithEnv(t, h, []string{"TMUX="}, "--robot-overlay", "--overlay-session", "proj")
+	resp := runOverlayWithEnv(t, h, []string{"TMUX="}, "--robot-overlay", "--session", "proj")
 
 	// Verify response has complete structure for agent consumption
 	// Success should be boolean (false in this case)
@@ -548,7 +548,7 @@ func TestOverlayFeedMultipleCursorValuesAreDistinct(t *testing.T) {
 			h,
 			fmt.Sprintf("cursor-%d", cursor),
 			"--robot-overlay",
-			"--overlay-session", h.SessionName(),
+			"--session", h.SessionName(),
 			"--overlay-cursor", fmt.Sprintf("%d", cursor),
 			"--overlay-no-wait",
 		)
@@ -573,7 +573,7 @@ func TestOverlayFeedMissingSessionNameReturnsError(t *testing.T) {
 	defer h.Close()
 
 	// Run with explicit empty session outside tmux (can't auto-detect)
-	resp := runOverlayWithEnv(t, h, []string{"TMUX="}, "--robot-overlay", "--overlay-session", "")
+	resp := runOverlayWithEnv(t, h, []string{"TMUX="}, "--robot-overlay", "--session", "")
 
 	// Should still return a structured error
 	if resp.Success {
@@ -586,7 +586,7 @@ func TestOverlayFeedHintsProvidesRecoveryGuidance(t *testing.T) {
 	h := newOverlayHarness(t, "overlay_feed_recovery_hints")
 	defer h.Close()
 
-	resp := runOverlayWithEnv(t, h, []string{"TMUX="}, "--robot-overlay", "--overlay-session", "nonexistent")
+	resp := runOverlayWithEnv(t, h, []string{"TMUX="}, "--robot-overlay", "--session", "nonexistent")
 
 	// Hints should provide actionable guidance
 	if resp.Hint == "" {

@@ -478,6 +478,14 @@ func suggestNearestFlag(errMsg string) string {
 		}
 	}
 
+	// A caller reaching for a deleted bespoke session-scoping flag is
+	// reaching for the shared --session flag. The nearest surviving sibling
+	// (e.g. --md-sections for the old markdown session filter) would be the
+	// wrong hint, so prefer --session directly.
+	if strings.HasSuffix(unknown, "-session") && rootCmd.Flags().Lookup("session") != nil {
+		return "session"
+	}
+
 	best := ""
 	bestDist := len(unknown)/3 + 2 // confidence bound scales with length
 	bestPrefix := -1
@@ -847,7 +855,7 @@ Shell Integration:
 			return
 		}
 		if robotEvents {
-			session, err := resolveOptionalRobotSessionFilter(cmd.Context(), robotEventsSession)
+			session, err := resolveOptionalRobotSessionFilter(cmd.Context(), resolveRobotEventsSession(cmd))
 			if err != nil {
 				failRobotCommand(err, robot.ErrCodeSessionNotFound, "Use 'ntm list' to see available sessions", "robot-events")
 				return
@@ -898,7 +906,7 @@ Shell Integration:
 			return
 		}
 		if robotAttention {
-			session, err := resolveOptionalRobotSessionFilter(cmd.Context(), robotAttentionSession)
+			session, err := resolveOptionalRobotSessionFilter(cmd.Context(), resolveRobotAttentionSession(cmd))
 			if err != nil {
 				failRobotCommand(err, robot.ErrCodeSessionNotFound, "Use 'ntm list' to see available sessions", "robot-attention")
 				return
@@ -932,7 +940,7 @@ Shell Integration:
 			return
 		}
 		if robotDigest {
-			session, err := resolveOptionalRobotSessionFilter(cmd.Context(), robotAttentionSession)
+			session, err := resolveOptionalRobotSessionFilter(cmd.Context(), resolveRobotAttentionSession(cmd))
 			if err != nil {
 				failRobotCommand(err, robot.ErrCodeSessionNotFound, "Use 'ntm list' to see available sessions", "robot-digest")
 				return
@@ -1127,7 +1135,7 @@ Shell Integration:
 			return
 		}
 		if robotOverlay {
-			session, err := resolveOptionalRobotLiveSession(cmd.Context(), robotOverlaySession)
+			session, err := resolveOptionalRobotLiveSession(cmd.Context(), resolveRobotOverlaySession(cmd))
 			if err != nil {
 				failRobotCommand(err, robot.ErrCodeSessionNotFound, "Use 'ntm list' to see available sessions", "robot-overlay")
 				return
@@ -1189,17 +1197,7 @@ Shell Integration:
 		}
 		if robotMail {
 			projectKey := GetProjectRoot()
-			sessionName := ""
-			sessionExplicit := len(args) > 0
-			if len(args) > 0 {
-				sessionName = args[0]
-			} else if tmux.IsInstalled() {
-				// Best-effort: infer a session when running inside tmux or when cwd matches
-				// a project dir. Robot mode must never prompt.
-				if res, err := ResolveSessionWithOptions("", cmd.OutOrStdout(), SessionResolveOptions{TreatAsJSON: true}); err == nil && res.Session != "" {
-					sessionName = res.Session
-				}
-			}
+			sessionName, sessionExplicit := resolveRobotMailSession(cmd, args)
 
 			if sessionName != "" {
 				resolvedSession, resolvedProjectKey, err := resolveAgentMailScopeWithPreference(cmd.Context(), sessionName, sessionExplicit)
@@ -2565,7 +2563,7 @@ Shell Integration:
 			return
 		}
 		if robotMarkdown {
-			session, err := resolveOptionalRobotSessionFilter(cmd.Context(), robotMarkdownSession)
+			session, err := resolveOptionalRobotSessionFilter(cmd.Context(), resolveRobotMarkdownSession(cmd))
 			if err != nil {
 				failRobotCommand(err, robot.ErrCodeSessionNotFound, "Use 'ntm list' to see available sessions", "robot-markdown")
 				return
@@ -2839,7 +2837,7 @@ Shell Integration:
 			return
 		}
 		if robotDismissAlert != "" {
-			dismissSession, err := resolveOptionalRobotSessionFilter(cmd.Context(), robotDismissSession)
+			dismissSession, err := resolveOptionalRobotSessionFilter(cmd.Context(), resolveRobotDismissSession(cmd))
 			if err != nil {
 				failRobotCommand(err, robot.ErrCodeSessionNotFound, "Use 'ntm list' to see available sessions", "robot-dismiss-alert")
 				return
@@ -3586,13 +3584,11 @@ var (
 	robotEventsWindowBefore    string // duration before incident start for replay context
 	robotEventsWindowAfter     string // duration after incident end for replay context
 	robotEventsCategory        string // category filter for --robot-events
-	robotEventsSession         string // session filter for --robot-events
 	robotEventsActionability   string // actionability filter for --robot-events
 	robotProfile               string // filter profile for attention-feed commands (br-91gti)
 	robotAttention             bool   // one obvious tending primitive (br-t540i)
 	robotDigest                bool   // non-blocking digest of attention state (br-rkh17)
 	robotAttentionSinceCursor  int64  // cursor for --robot-attention
-	robotAttentionSession      string // session filter for --robot-attention
 	robotAttentionTimeout      string // timeout for --robot-attention
 	robotAttentionPoll         string // poll interval for --robot-attention
 	robotAttentionCondition    string // attention condition to wait for
@@ -3631,10 +3627,9 @@ var (
 	robotEnsembleStopNoCollect bool   // skip partial output collection
 
 	// Robot-overlay flags for agent-initiated human handoff (br-a6cmp)
-	robotOverlay        bool   // open overlay for human handoff
-	robotOverlaySession string // session for overlay
-	robotOverlayCursor  int64  // attention cursor for pre-focus
-	robotOverlayNoWait  bool   // return immediately without blocking
+	robotOverlay       bool  // open overlay for human handoff
+	robotOverlayCursor int64 // attention cursor for pre-focus
+	robotOverlayNoWait bool  // return immediately without blocking
 
 	// Robot-send flags
 	robotSend             string // session name for send
@@ -3754,7 +3749,6 @@ var (
 	// Robot-markdown flags for token-efficient markdown output
 	robotMarkdown          bool   // markdown output mode
 	robotMarkdownCompact   bool   // ultra-compact markdown
-	robotMarkdownSession   string // filter to specific session
 	robotMarkdownSections  string // comma-separated sections to include
 	robotMarkdownMaxBeads  int    // max beads per category
 	robotMarkdownMaxAlerts int    // max alerts to show
@@ -3918,7 +3912,6 @@ var (
 	robotPaletteCategory   string // filter by category
 	robotPaletteSearch     string // search query
 	robotDismissAlert      string // alert ID to dismiss
-	robotDismissSession    string // session scope for alert dismissal
 	robotDismissAll        bool   // dismiss all matching alerts
 
 	// Robot-diff flags for comparing agent activity
@@ -4152,13 +4145,11 @@ func init() {
 	rootCmd.Flags().StringVar(&robotEventsWindowBefore, "events-window-before", "", "Replay context before incident start. Optional with --robot-events --events-incident. Example: --events-window-before=5m")
 	rootCmd.Flags().StringVar(&robotEventsWindowAfter, "events-window-after", "", "Replay context after incident end. Optional with --robot-events --events-incident. Example: --events-window-after=1m")
 	rootCmd.Flags().StringVar(&robotEventsCategory, "events-category", "", "Filter by event category. Optional with --robot-events. Example: --events-category=agent")
-	rootCmd.Flags().StringVar(&robotEventsSession, "events-session", "", "Filter by session name. Optional with --robot-events. Example: --events-session=myproject")
 	rootCmd.Flags().StringVar(&robotEventsActionability, "events-actionability", "", "Filter by actionability level. Optional with --robot-events. Values: action_required, interesting, background")
 	rootCmd.Flags().StringVar(&robotProfile, "profile", "", "Attention-feed filter profile. Applies to --robot-events, --robot-attention, --robot-digest, --robot-wait. Values: operator, debug, minimal, alerts")
 	rootCmd.Flags().BoolVar(&robotAttention, "robot-attention", false, "The one obvious tending primitive: wait for attention, then return digest. Example: ntm --robot-attention --attention-cursor=42")
 	rootCmd.Flags().BoolVar(&robotDigest, "robot-digest", false, "Non-blocking attention digest. Returns counts and top items without waiting. Example: ntm --robot-digest --profile=minimal")
 	rootCmd.Flags().Int64Var(&robotAttentionSinceCursor, "attention-cursor", 0, "Cursor position to wait/digest from. Optional with --robot-attention. Example: --attention-cursor=42")
-	rootCmd.Flags().StringVar(&robotAttentionSession, "attention-session", "", "Filter to specific session. Optional with --robot-attention. Example: --attention-session=myproject")
 	rootCmd.Flags().StringVar(&robotAttentionTimeout, "attention-timeout", "5m", "Maximum wait time. Optional with --robot-attention. Example: --attention-timeout=10m")
 	rootCmd.Flags().StringVar(&robotAttentionPoll, "attention-poll", "1s", "Polling interval. Optional with --robot-attention. Example: --attention-poll=500ms")
 	rootCmd.Flags().StringVar(&robotAttentionCondition, "attention-condition", "attention", "Which condition to wait for. Optional with --robot-attention. Values: attention, action_required, mail_pending")
@@ -4228,7 +4219,6 @@ func init() {
 
 	// Overlay flags for agent-initiated human handoff (br-a6cmp)
 	rootCmd.Flags().BoolVar(&robotOverlay, "robot-overlay", false, "Open dashboard overlay for human handoff (JSON). Requires tmux. Example: ntm --robot-overlay")
-	rootCmd.Flags().StringVar(&robotOverlaySession, "overlay-session", "", "Session for overlay. Optional with --robot-overlay, defaults to current session. Example: --overlay-session=myproject")
 	rootCmd.Flags().Int64Var(&robotOverlayCursor, "overlay-cursor", 0, "Pre-focus attention panel on this cursor. Optional with --robot-overlay. Example: --overlay-cursor=42")
 	rootCmd.Flags().BoolVar(&robotOverlayNoWait, "overlay-no-wait", false, "Return immediately without blocking. Optional with --robot-overlay")
 
@@ -4412,7 +4402,6 @@ func init() {
 	// Robot-markdown flags for token-efficient markdown output
 	rootCmd.Flags().BoolVar(&robotMarkdown, "robot-markdown", false, "System state as markdown tables. LLM-friendly, ~84% fewer tokens than the JSON snapshot (measured on the committed corpus by TestTokenCorpus_MarkdownFloor)")
 	rootCmd.Flags().BoolVar(&robotMarkdownCompact, "md-compact", false, "Ultra-compact markdown: abbreviations, minimal whitespace. Use with --robot-markdown")
-	rootCmd.Flags().StringVar(&robotMarkdownSession, "md-session", "", "Filter to one session. Optional with --robot-markdown. Example: --md-session=myproject")
 	rootCmd.Flags().StringVar(&robotMarkdownSections, "md-sections", "", "Include only specific sections: summary,sessions,work,alerts,attention. Example: --md-sections=summary,sessions")
 	rootCmd.Flags().IntVar(&robotMarkdownMaxBeads, "md-max-beads", 0, "Max beads per category (0=default). Optional with --robot-markdown")
 	rootCmd.Flags().IntVar(&robotMarkdownMaxAlerts, "md-max-alerts", 0, "Max alerts to show (0=default). Optional with --robot-markdown")
@@ -4594,7 +4583,6 @@ func init() {
 
 	rootCmd.Flags().StringVar(&robotDismissAlert, "robot-dismiss-alert", "", "Dismiss an alert by ID. Example: ntm --robot-dismiss-alert=alert-abc123")
 	rootCmd.Flags().Lookup("robot-dismiss-alert").NoOptDefVal = "__present__"
-	rootCmd.Flags().StringVar(&robotDismissSession, "dismiss-session", "", "Scope dismissal to session. Optional with --robot-dismiss-alert")
 	rootCmd.Flags().BoolVar(&robotDismissAll, "dismiss-all", false, "Dismiss all matching alerts. Use with --robot-dismiss-alert")
 
 	// Robot-diff flags for comparing agent activity (synthesis)
@@ -4801,7 +4789,7 @@ func init() {
 	// prefixed session flags. The deprecation hints below point at
 	// --session, so it must actually be registered on this command surface
 	// (ntm#214: the hint previously suggested a flag that didn't exist).
-	rootCmd.Flags().StringVar(&robotSharedSession, "session", "", "Session name. Canonical form for --robot-pipeline-run, --robot-tokens, --robot-alerts, --robot-palette, and --robot-snapshot (replaces --pipeline-session, --tokens-session, --alerts-session, --palette-session)")
+	rootCmd.Flags().StringVar(&robotSharedSession, "session", "", "Session name. Canonical form for --robot-pipeline-run, --robot-tokens, --robot-alerts, --robot-palette, --robot-snapshot, --robot-events, --robot-attention, --robot-digest, --robot-overlay, --robot-markdown, --robot-dismiss-alert, and --robot-mail (replaces --pipeline-session, --tokens-session, --alerts-session, --palette-session)")
 
 	// --no-wait for interrupt
 	rootCmd.Flags().BoolVar(&robotInterruptNoWait, "no-wait", false, "Return immediately without waiting")
@@ -4894,7 +4882,6 @@ func init() {
 
 	// Markdown prefixed flags → canonical forms
 	rootCmd.Flags().MarkDeprecated("md-compact", "use --compact instead")
-	rootCmd.Flags().MarkDeprecated("md-session", "use --session instead")
 	rootCmd.Flags().MarkDeprecated("md-sections", "use --sections instead")
 	rootCmd.Flags().MarkDeprecated("md-max-beads", "use --max-beads instead")
 	rootCmd.Flags().MarkDeprecated("md-max-alerts", "use --max-alerts instead")
@@ -4935,7 +4922,6 @@ func init() {
 	rootCmd.Flags().MarkDeprecated("attention-limit", "use --limit instead")
 
 	// Dismiss prefixed flags → canonical forms
-	rootCmd.Flags().MarkDeprecated("dismiss-session", "use --session instead")
 	rootCmd.Flags().MarkDeprecated("dismiss-all", "use --all instead")
 
 	// Summary prefixed flags → canonical forms
@@ -5419,6 +5405,48 @@ func resolveRobotPaletteSession(cmd *cobra.Command) string {
 
 func resolveRobotSnapshotSession(cmd *cobra.Command) string {
 	return resolveRobotSharedFlag(cmd, "", "", "session", robotSharedSession)
+}
+
+func resolveRobotEventsSession(cmd *cobra.Command) string {
+	return resolveRobotSharedFlag(cmd, "", "", "session", robotSharedSession)
+}
+
+func resolveRobotAttentionSession(cmd *cobra.Command) string {
+	return resolveRobotSharedFlag(cmd, "", "", "session", robotSharedSession)
+}
+
+func resolveRobotOverlaySession(cmd *cobra.Command) string {
+	return resolveRobotSharedFlag(cmd, "", "", "session", robotSharedSession)
+}
+
+func resolveRobotMarkdownSession(cmd *cobra.Command) string {
+	return resolveRobotSharedFlag(cmd, "", "", "session", robotSharedSession)
+}
+
+func resolveRobotDismissSession(cmd *cobra.Command) string {
+	return resolveRobotSharedFlag(cmd, "", "", "session", robotSharedSession)
+}
+
+// resolveRobotMailSession resolves the session for --robot-mail with the
+// shared --session flag as the highest-precedence source, falling back to the
+// positional argument and then to the cwd/tmux inference that predates the
+// shared flag. The second return reports whether the session was explicitly
+// named (flag or positional) rather than inferred.
+func resolveRobotMailSession(cmd *cobra.Command, args []string) (string, bool) {
+	if sessionFlag := resolveRobotSharedFlag(cmd, "", "", "session", robotSharedSession); sessionFlag != "" {
+		return sessionFlag, true
+	}
+	if len(args) > 0 {
+		return args[0], true
+	}
+	if tmux.IsInstalled() {
+		// Best-effort: infer a session when running inside tmux or when cwd
+		// matches a project dir. Robot mode must never prompt.
+		if res, err := ResolveSessionWithOptions("", cmd.OutOrStdout(), SessionResolveOptions{TreatAsJSON: true}); err == nil && res.Session != "" {
+			return res.Session, false
+		}
+	}
+	return "", false
 }
 
 func resolveRobotReplayDryRun(cmd *cobra.Command) bool {

@@ -2094,7 +2094,7 @@ Common Workflows:
 -----------------
 - Single agent: ntm --robot-spawn=proj --spawn-cc=1 --spawn-wait
 - Send+wait:    ntm --robot-send=proj --msg="do X" --track
-- Handoff:      ntm --robot-overlay --overlay-session=proj --overlay-cursor=42 --overlay-no-wait
+- Handoff:      ntm --robot-overlay --session=proj --overlay-cursor=42 --overlay-no-wait
 - Bootstrap:    ntm --robot-snapshot   # use latest_cursor + replay_window for follow-up
 - Tending:      ntm --robot-attention --attention-cursor=42  # wait-then-digest loop
 - Recover:      ntm --robot-snapshot   # resync after cursor expiration

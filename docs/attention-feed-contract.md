@@ -442,7 +442,7 @@ Get prioritized items that currently need attention.
 ```bash
 ntm --robot-attention
 ntm --robot-attention --limit=5
-ntm --robot-attention --attention-session=myproject
+ntm --robot-attention --session=myproject
 ```
 
 **Response:**

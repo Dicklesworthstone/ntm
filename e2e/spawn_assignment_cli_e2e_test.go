@@ -897,7 +897,7 @@ func TestE2ESpawnGrokPhaseOneBuiltBinary(t *testing.T) {
 			}
 
 			markdown := fixture.runNTM(t, hardeningDir,
-				"--robot-markdown", "--md-session="+hardeningSession, "--md-sections=sessions",
+				"--robot-markdown", "--session="+hardeningSession, "--md-sections=sessions",
 			)
 			fixture.requireSuccess(t, markdown)
 			markdownText := string(markdown.stdout)
