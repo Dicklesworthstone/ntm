@@ -832,7 +832,7 @@ func TestFilterThinkingToLive_KeepsCurrentBullets(t *testing.T) {
 // CategoryThinking live-window filter: when the live tail contains an idle
 // prompt and the error pattern only appears in the older scrollback,
 // classifyState should land on WAITING.
-func TestFilterErrorToLiveWhenIdle_DropsHistoricalErrorAboveLivePrompt(t *testing.T) {
+func TestFilterErrorToLive_DropsHistoricalErrorAboveLivePrompt(t *testing.T) {
 	// "failed" 40 lines above an idle codex chevron.
 	var b strings.Builder
 	b.WriteString("Error: failed to upload chunk 17 with: connection reset\n")
@@ -885,10 +885,10 @@ func TestFilterErrorToLiveWhenIdle_DropsHistoricalErrorAboveLivePrompt(t *testin
 	}
 
 	// The filter should drop the stale error match entirely.
-	filtered := filterErrorToLiveWhenIdle(full, live)
+	filtered := filterErrorToLive(full, live, false)
 	for _, m := range filtered {
 		if m.Category == CategoryError && m.Pattern == "failed_text" {
-			t.Fatalf("filterErrorToLiveWhenIdle failed to drop stale failed_text: %+v", filtered)
+			t.Fatalf("filterErrorToLive failed to drop stale failed_text: %+v", filtered)
 		}
 	}
 
@@ -906,7 +906,7 @@ func TestFilterErrorToLiveWhenIdle_DropsHistoricalErrorAboveLivePrompt(t *testin
 // when the failure is currently visible in the live tail (e.g. a fresh API
 // error that just landed alongside the chevron), the filter must NOT drop
 // it. The pane is genuinely in trouble and should classify as ERROR.
-func TestFilterErrorToLiveWhenIdle_KeepsFreshErrorInLiveTail(t *testing.T) {
+func TestFilterErrorToLive_KeepsFreshErrorInLiveTail(t *testing.T) {
 	content := "" +
 		"  Read connection.rs\n" +
 		"  Edited connection.rs\n" +
@@ -935,7 +935,7 @@ func TestFilterErrorToLiveWhenIdle_KeepsFreshErrorInLiveTail(t *testing.T) {
 		t.Fatalf("test premise broken: liveError=%v liveIdle=%v live=%+v", sawLiveError, sawLiveIdle, live)
 	}
 
-	filtered := filterErrorToLiveWhenIdle(full, live)
+	filtered := filterErrorToLive(full, live, false)
 	sawError := false
 	for _, m := range filtered {
 		if m.Category == CategoryError && m.Pattern == "failed_text" {
@@ -944,7 +944,7 @@ func TestFilterErrorToLiveWhenIdle_KeepsFreshErrorInLiveTail(t *testing.T) {
 		}
 	}
 	if !sawError {
-		t.Fatalf("filterErrorToLiveWhenIdle dropped a fresh in-live-tail failed_text: %+v", filtered)
+		t.Fatalf("filterErrorToLive dropped a fresh in-live-tail failed_text: %+v", filtered)
 	}
 
 	sc := NewStateClassifier("test", nil)
@@ -954,13 +954,12 @@ func TestFilterErrorToLiveWhenIdle_KeepsFreshErrorInLiveTail(t *testing.T) {
 	}
 }
 
-// TestFilterErrorToLiveWhenIdle_NoIdlePromptKeepsHistoricalError ensures the
-// debounce only fires when the live tail actually shows the pane is
-// currently waiting at a prompt. A pane that is generating output (no idle
-// match) with an error somewhere in the buffer should keep ERROR priority,
-// since "no live prompt + historical error" is not the false-positive shape
-// the issue describes — it could just be a stalled error mid-output.
-func TestFilterErrorToLiveWhenIdle_NoIdlePromptKeepsHistoricalError(t *testing.T) {
+// TestFilterErrorToLive_StuckPaneKeepsHistoricalError ensures the debounce
+// only fires when the pane is recovered (live idle prompt) or progressing
+// (output growth). A pane that is neither — no idle prompt and no new
+// output — keeps its historical error, because that is the signature of a
+// genuinely stuck pane, not a false positive.
+func TestFilterErrorToLive_StuckPaneKeepsHistoricalError(t *testing.T) {
 	var b strings.Builder
 	b.WriteString("Error: failed to acquire lock on resource\n")
 	for i := 0; i < 30; i++ {
@@ -982,9 +981,9 @@ func TestFilterErrorToLiveWhenIdle_NoIdlePromptKeepsHistoricalError(t *testing.T
 		}
 	}
 
-	// With no idle prompt in the live tail the filter must be a no-op
-	// and the historical error must survive.
-	filtered := filterErrorToLiveWhenIdle(full, live)
+	// With no idle prompt and no progress the filter must be a no-op and
+	// the historical error must survive (a stuck pane is still caught).
+	filtered := filterErrorToLive(full, live, false)
 	sawError := false
 	for _, m := range filtered {
 		if m.Category == CategoryError && m.Pattern == "failed_text" {
@@ -993,7 +992,206 @@ func TestFilterErrorToLiveWhenIdle_NoIdlePromptKeepsHistoricalError(t *testing.T
 		}
 	}
 	if !sawError {
-		t.Fatalf("filterErrorToLiveWhenIdle wrongly dropped historical error with no live idle prompt; got %+v", filtered)
+		t.Fatalf("filterErrorToLive wrongly dropped historical error with no live idle prompt and no progress; got %+v", filtered)
+	}
+}
+
+// TestFilterErrorToLive_TableDriven pins the filter's placement rule directly:
+// an error match only survives when it is in the live tail, or when the pane
+// is neither idle nor progressing (a genuinely stuck pane).
+func TestFilterErrorToLive_TableDriven(t *testing.T) {
+	errMatch := PatternMatch{Pattern: "invalid_key", Category: CategoryError}
+	idleMatch := PatternMatch{Pattern: "codex_chevron_prompt", Category: CategoryIdle}
+	thinkMatch := PatternMatch{Pattern: "codex_working", Category: CategoryThinking}
+
+	tests := []struct {
+		name        string
+		full        []PatternMatch
+		live        []PatternMatch
+		progressing bool
+		wantError   bool
+	}{
+		{
+			name:        "error in live tail, pane idle",
+			full:        []PatternMatch{errMatch, idleMatch},
+			live:        []PatternMatch{errMatch, idleMatch},
+			progressing: false,
+			wantError:   true,
+		},
+		{
+			name:        "error in live tail, pane working",
+			full:        []PatternMatch{errMatch, thinkMatch},
+			live:        []PatternMatch{errMatch, thinkMatch},
+			progressing: true,
+			wantError:   true,
+		},
+		{
+			name:        "error outside live tail, pane idle",
+			full:        []PatternMatch{errMatch, idleMatch},
+			live:        []PatternMatch{idleMatch},
+			progressing: false,
+			wantError:   false,
+		},
+		{
+			name:        "error outside live tail, pane working",
+			full:        []PatternMatch{errMatch, thinkMatch},
+			live:        []PatternMatch{thinkMatch},
+			progressing: true,
+			wantError:   false,
+		},
+		{
+			name:        "error outside live tail, pane stuck",
+			full:        []PatternMatch{errMatch},
+			live:        []PatternMatch{},
+			progressing: false,
+			wantError:   true,
+		},
+		{
+			name:        "no error anywhere",
+			full:        []PatternMatch{idleMatch},
+			live:        []PatternMatch{idleMatch},
+			progressing: false,
+			wantError:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := filterErrorToLive(tt.full, tt.live, tt.progressing)
+			sawError := false
+			for _, m := range got {
+				if m.Category == CategoryError {
+					sawError = true
+					break
+				}
+			}
+			if sawError != tt.wantError {
+				t.Fatalf("filterErrorToLive(...) error present = %v, want %v; got %+v", sawError, tt.wantError, got)
+			}
+		})
+	}
+}
+
+// workingScrollback builds a pane capture of `tailLines` working-output
+// lines. When errorLine is non-empty it is prepended as a stale line buried
+// well outside the 15-line live tail.
+func workingScrollback(errorLine string, tailLines int) string {
+	var b strings.Builder
+	if errorLine != "" {
+		b.WriteString(errorLine)
+		b.WriteString("\n")
+	}
+	for i := 0; i < 20; i++ {
+		b.WriteString("    filler line that scrolled past the live window\n")
+	}
+	for i := 0; i < tailLines; i++ {
+		b.WriteString("    working output line\n")
+	}
+	return b.String()
+}
+
+// TestStateClassifier_StaleErrorDoesNotPinWorkingPane is the defect fixture:
+// a pane whose buffer contains an error string in older scrollback and whose
+// tail is actively growing must classify as working, not error. The first
+// capture establishes a working baseline with no error; the second capture
+// shows the pane printed a transient error line that has since scrolled out
+// of the live tail while it kept producing output.
+func TestStateClassifier_StaleErrorDoesNotPinWorkingPane(t *testing.T) {
+	tests := []struct {
+		name      string
+		errorLine string
+	}{
+		{name: "invalid_api_key", errorLine: "invalid_api_key"},
+		{name: "context_canceled", errorLine: "Error: context canceled"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sc := NewStateClassifier("test", nil)
+			sc.SetAgentType("codex")
+
+			// First capture: a working pane with no error yet.
+			if _, err := sc.ClassifyWithOutput(workingScrollback("", 2)); err != nil {
+				t.Fatalf("first ClassifyWithOutput: %v", err)
+			}
+
+			// Second capture: the transient error line has scrolled out of
+			// the live tail and the pane kept producing output.
+			time.Sleep(10 * time.Millisecond)
+			activity, err := sc.ClassifyWithOutput(workingScrollback(tt.errorLine, 5))
+			if err != nil {
+				t.Fatalf("second ClassifyWithOutput: %v", err)
+			}
+			if activity.State == StateError {
+				t.Fatalf("working pane with stale %q classified as ERROR", tt.errorLine)
+			}
+			if activity.State != StateGenerating && activity.State != StateThinking {
+				t.Fatalf("working pane classified as %s; want GENERATING or THINKING", activity.State)
+			}
+		})
+	}
+}
+
+// TestStateClassifier_StuckPaneWithStaleErrorStillErrors is the inverse: two
+// consecutive captures with no growth and a stale error must still classify
+// as ERROR, so a genuinely wedged pane is caught.
+func TestStateClassifier_StuckPaneWithStaleErrorStillErrors(t *testing.T) {
+	sc := NewStateClassifier("test", nil)
+	sc.SetAgentType("codex")
+
+	content := workingScrollback("invalid_api_key", 2)
+	if _, err := sc.ClassifyWithOutput(content); err != nil {
+		t.Fatalf("first ClassifyWithOutput: %v", err)
+	}
+	time.Sleep(10 * time.Millisecond)
+	activity, err := sc.ClassifyWithOutput(content)
+	if err != nil {
+		t.Fatalf("second ClassifyWithOutput: %v", err)
+	}
+	if activity.State != StateError {
+		t.Fatalf("stuck pane with stale invalid_api_key classified as %s; want ERROR", activity.State)
+	}
+}
+
+// TestStateClassifier_applyHysteresis_NonErrorTransitionsRequireStability is
+// the regression guard for the hysteresis path: the error fix must not
+// quietly damp any non-error transition. Every non-error target still
+// requires the full stability window before it is adopted.
+func TestStateClassifier_applyHysteresis_NonErrorTransitionsRequireStability(t *testing.T) {
+	nonErrorStates := []AgentState{
+		StateGenerating, StateThinking, StateWaiting, StateStalled, StateUnknown,
+	}
+	for _, target := range nonErrorStates {
+		t.Run(string(target), func(t *testing.T) {
+			sc := NewStateClassifier("test", &ClassifierConfig{HysteresisDuration: 2 * time.Second})
+			// Pick a "from" state that differs from the target so the
+			// hysteresis path (not the same-state fast path) is exercised.
+			from := StateWaiting
+			if target == StateWaiting {
+				from = StateGenerating
+			}
+			sc.currentState = from
+			sc.stateSince = time.Now().Add(-time.Hour)
+
+			// First call: starts pending, stays in `from`.
+			if got := sc.applyHysteresis(target, 0.8, "test"); got != from {
+				t.Fatalf("first call = %s, want %s (pending started)", got, from)
+			}
+			if sc.pendingState != target {
+				t.Fatalf("pendingState = %s, want %s", sc.pendingState, target)
+			}
+
+			// Second call before hysteresis elapses: still `from`.
+			if got := sc.applyHysteresis(target, 0.8, "test"); got != from {
+				t.Fatalf("second call = %s, want %s (hysteresis not elapsed)", got, from)
+			}
+
+			// After hysteresis elapses: transitions to target.
+			sc.pendingSince = time.Now().Add(-3 * time.Second)
+			if got := sc.applyHysteresis(target, 0.8, "test"); got != target {
+				t.Fatalf("after hysteresis = %s, want %s", got, target)
+			}
+		})
 	}
 }
 
@@ -1062,7 +1260,7 @@ func TestActivity_RateLimitedFlagFollowsLiveWindow(t *testing.T) {
 
 	// Post-filter (what activity.go actually feeds the flag now): the
 	// stale rate_limit_text is dropped, so the flag must read false.
-	filtered := filterErrorToLiveWhenIdle(full, live)
+	filtered := filterErrorToLive(full, live, false)
 	if isRateLimitPatternMatch(filtered) {
 		t.Fatalf("isRateLimitPatternMatch(filtered) returned true; rate_limit_text leaked through filter on a recovered pane: %+v", filtered)
 	}
