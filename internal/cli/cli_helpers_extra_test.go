@@ -65,10 +65,14 @@ func TestDetectAgentTypeFromPane(t *testing.T) {
 		{"claude", tmux.Pane{Type: tmux.AgentClaude}, "claude"},
 		{"codex", tmux.Pane{Type: tmux.AgentCodex}, "codex"},
 		{"gemini", tmux.Pane{Type: tmux.AgentGemini}, "gemini"},
+		{"antigravity", tmux.Pane{Type: tmux.AgentAntigravity}, "antigravity"},
+		{"pi", tmux.Pane{Type: tmux.AgentPi}, "pi"},
+		{"pi by title", tmux.Pane{Type: tmux.AgentPi, Title: "demo__pi_1"}, "pi"},
 		{"grok alias canonicalized", tmux.Pane{Type: tmux.AgentType("xai_grok_build")}, "grok"},
 		{"cursor", tmux.Pane{Type: tmux.AgentCursor}, "cursor"},
 		{"windsurf", tmux.Pane{Type: tmux.AgentWindsurf}, "windsurf"},
 		{"aider", tmux.Pane{Type: tmux.AgentAider}, "aider"},
+		{"opencode", tmux.Pane{Type: tmux.AgentOpencode}, "oc"},
 		{"ollama", tmux.Pane{Type: tmux.AgentOllama}, "ollama"},
 		{"codex alias canonicalized", tmux.Pane{Type: tmux.AgentType("openai-codex")}, "codex"},
 		{"user", tmux.Pane{Type: tmux.AgentUser}, "user"},
@@ -105,6 +109,31 @@ func TestAgentTypeForPanePrefersTmuxTypeAndFallsBackToTitle(t *testing.T) {
 				t.Errorf("agentTypeForPane(%+v) = %q, want %q", tc.pane, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestDetectAgentTypeSitesAgreeOnPi pins the cli pane-type table against the
+// robot title table for a pi pane. The two tables are the reachable half of the
+// three detection sites named in bd-g3a; the third
+// (internal/coordinator/detect_agent_type.go's detectAgentType) is unexported
+// and unreachable from package cli, so it is pinned by its own
+// TestDetectAgentType in internal/coordinator rather than from here. The defect
+// this guards against is the two tables disagreeing about the same pane, which
+// is how bd-gc0 and bd-g3a both happened.
+func TestDetectAgentTypeSitesAgreeOnPi(t *testing.T) {
+	pane := tmux.Pane{ID: "%1", Index: 1, Type: tmux.AgentPi, Title: "demo__pi_1"}
+
+	cliType := detectAgentTypeFromPane(pane)
+	robotType := robot.DetectAgentType(pane.Title)
+
+	if cliType != "pi" {
+		t.Errorf("detectAgentTypeFromPane(pi pane) = %q, want pi", cliType)
+	}
+	if robotType != "pi" {
+		t.Errorf("robot.DetectAgentType(%q) = %q, want pi", pane.Title, robotType)
+	}
+	if cliType != robotType {
+		t.Errorf("detection sites disagree about a pi pane: cli=%q robot=%q", cliType, robotType)
 	}
 }
 
