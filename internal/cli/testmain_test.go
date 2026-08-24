@@ -48,8 +48,20 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 
+	// CLI tests also persist Agent Mail session agents and registries; never
+	// let them write into the developer's real ~/.config/ntm/sessions/.
+	cleanupConfig, err := testutil.IsolateUserConfigProcess()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "isolate CLI config: %v\n", err)
+		os.Exit(1)
+	}
+
 	code := m.Run()
 
+	if err := cleanupConfig(); err != nil {
+		fmt.Fprintf(os.Stderr, "clean up isolated CLI config: %v\n", err)
+		code = 1
+	}
 	if err := cleanupGit(); err != nil {
 		fmt.Fprintf(os.Stderr, "clean up isolated CLI git config: %v\n", err)
 		code = 1

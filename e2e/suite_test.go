@@ -56,7 +56,23 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 
+	// E2E tests persist Agent Mail session registries; never let them write
+	// into the developer's real ~/.config/ntm/sessions/. Set after the build
+	// above so `go build` keeps using the developer's real module cache.
+	cleanupConfig, err := testutil.IsolateUserConfigProcess()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "E2E: failed to isolate config: %v\n", err)
+		if cleanupErr := cleanupTmux(); cleanupErr != nil {
+			fmt.Fprintf(os.Stderr, "E2E: failed to clean up isolated tmux: %v\n", cleanupErr)
+		}
+		os.Exit(1)
+	}
+
 	code := m.Run()
+	if err := cleanupConfig(); err != nil {
+		fmt.Fprintf(os.Stderr, "E2E: failed to clean up isolated config: %v\n", err)
+		code = 1
+	}
 	if err := cleanupTmux(); err != nil {
 		fmt.Fprintf(os.Stderr, "E2E: failed to clean up isolated tmux: %v\n", err)
 		code = 1

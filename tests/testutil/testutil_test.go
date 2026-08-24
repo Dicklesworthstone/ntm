@@ -469,3 +469,148 @@ func TestSkipConditions(t *testing.T) {
 		}
 	})
 }
+
+// TestConfigDirIsolationGuard fails if a package whose tests are known to
+// reach os.UserConfigDir() has a TestMain that does not call
+// IsolateUserConfigProcess. The list below is the audit from the bd-dst bead:
+// it must be extended whenever a new package's tests start persisting
+// os.UserConfigDir()-derived state, so the isolation cannot silently decay.
+func TestConfigDirIsolationGuard(t *testing.T) {
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller(0) failed")
+	}
+	repoRoot, err := findRepoRoot(filepath.Dir(file))
+	if err != nil {
+		t.Fatalf("findRepoRoot: %v", err)
+	}
+	packages := []string{
+		"e2e",
+		"internal/agentmail",
+		"internal/cli",
+		"internal/coordinator",
+		"internal/robot",
+		"tests/e2e",
+	}
+	for _, pkg := range packages {
+		pkgDir := filepath.Join(repoRoot, filepath.FromSlash(pkg))
+		if !packageTestMainIsolatesUserConfig(t, pkgDir) {
+			t.Errorf("package %s reaches os.UserConfigDir() in tests but its TestMain does not call IsolateUserConfigProcess", pkg)
+		}
+	}
+}
+
+// packageTestMainIsolatesUserConfig reports whether any *_test.go file in the
+// package declares a TestMain and references IsolateUserConfigProcess. The
+// helper is process-wide and only meaningful from TestMain, so its presence in
+// a package's test sources is the signal the guard checks.
+func packageTestMainIsolatesUserConfig(t *testing.T, pkgDir string) bool {
+	t.Helper()
+	entries, err := os.ReadDir(pkgDir)
+	if err != nil {
+		t.Fatalf("read package dir %s: %v", pkgDir, err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), "_test.go") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(pkgDir, entry.Name()))
+		if err != nil {
+			t.Fatalf("read %s: %v", entry.Name(), err)
+		}
+		src := string(data)
+		// Both signals must come from the SAME file, and the call must be a
+		// call rather than a mention. Tracking them independently across the
+		// package let a bare reference in any test file — a comment naming the
+		// helper was enough — satisfy the guard for a TestMain that had
+		// stopped calling it, which is the decay this guard exists to catch.
+		if strings.Contains(src, "func TestMain(") &&
+			strings.Contains(src, "IsolateUserConfigProcess()") {
+			return true
+		}
+	}
+	return false
+}
+
+func TestIsolateUserConfigProcessRedirectsUserConfigDir(t *testing.T) {
+	realHome, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("UserHomeDir: %v", err)
+	}
+
+	cleanup, err := IsolateUserConfigProcess()
+	if err != nil {
+		t.Fatalf("IsolateUserConfigProcess() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := cleanup(); err != nil {
+			t.Errorf("cleanup IsolateUserConfigProcess(): %v", err)
+		}
+	})
+
+	root := filepath.Dir(os.Getenv("XDG_CONFIG_HOME"))
+	if root == "" || root == "." {
+		t.Fatal("XDG_CONFIG_HOME not set by helper")
+	}
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		t.Fatalf("UserConfigDir: %v", err)
+	}
+	if !strings.HasPrefix(configDir, root) {
+		t.Fatalf("UserConfigDir() = %q, want under isolated root %q", configDir, root)
+	}
+	if strings.HasPrefix(configDir, realHome) {
+		t.Fatalf("UserConfigDir() = %q still under real home %q", configDir, realHome)
+	}
+}
+
+func TestIsolateUserConfigProcessRestoresPreviousValues(t *testing.T) {
+	ambientXDG, ambientXDGSet := os.LookupEnv("XDG_CONFIG_HOME")
+	ambientHome, ambientHomeSet := os.LookupEnv("HOME")
+	t.Cleanup(func() {
+		if ambientXDGSet {
+			os.Setenv("XDG_CONFIG_HOME", ambientXDG)
+		} else {
+			os.Unsetenv("XDG_CONFIG_HOME")
+		}
+		if ambientHomeSet {
+			os.Setenv("HOME", ambientHome)
+		} else {
+			os.Unsetenv("HOME")
+		}
+	})
+
+	// Both set: cleanup restores the exact previous values.
+	os.Setenv("XDG_CONFIG_HOME", "/ambient/xdg")
+	os.Setenv("HOME", "/ambient/home")
+	cleanup, err := IsolateUserConfigProcess()
+	if err != nil {
+		t.Fatalf("IsolateUserConfigProcess() error = %v", err)
+	}
+	if err := cleanup(); err != nil {
+		t.Fatalf("cleanup: %v", err)
+	}
+	if got := os.Getenv("XDG_CONFIG_HOME"); got != "/ambient/xdg" {
+		t.Fatalf("XDG_CONFIG_HOME = %q, want /ambient/xdg", got)
+	}
+	if got := os.Getenv("HOME"); got != "/ambient/home" {
+		t.Fatalf("HOME = %q, want /ambient/home", got)
+	}
+
+	// XDG_CONFIG_HOME unset: cleanup restores it to unset, not empty.
+	os.Unsetenv("XDG_CONFIG_HOME")
+	os.Setenv("HOME", "/ambient/home")
+	cleanup, err = IsolateUserConfigProcess()
+	if err != nil {
+		t.Fatalf("IsolateUserConfigProcess() error = %v", err)
+	}
+	if err := cleanup(); err != nil {
+		t.Fatalf("cleanup: %v", err)
+	}
+	if _, ok := os.LookupEnv("XDG_CONFIG_HOME"); ok {
+		t.Fatalf("XDG_CONFIG_HOME = %q, want unset", os.Getenv("XDG_CONFIG_HOME"))
+	}
+	if got := os.Getenv("HOME"); got != "/ambient/home" {
+		t.Fatalf("HOME = %q, want /ambient/home", got)
+	}
+}
