@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
-	"strings"
 	"time"
 )
 
@@ -40,6 +39,12 @@ type BVGroupedTriageOptions struct {
 	ByLabel bool
 	ByTrack bool
 }
+
+// BVMinRobotVersion is the minimum bv version that serves the robot modes ntm
+// shells out to. Verified against bv 0.16.1 (2026-08-24): every gated mode
+// answered. The previous table named 0.30/0.31, versions no published bv has
+// ever reached, which reported working capabilities as absent.
+var BVMinRobotVersion = Version{Major: 0, Minor: 16, Patch: 0}
 
 // NewBVAdapter creates a new BV adapter
 func NewBVAdapter() *BVAdapter {
@@ -84,13 +89,13 @@ func (a *BVAdapter) Capabilities(ctx context.Context) ([]Capability, error) {
 		return caps, nil
 	}
 
-	// bv 0.30+ has robot-triage
-	if version.AtLeast(Version{Major: 0, Minor: 30, Patch: 0}) {
+	// bv 0.16+ has robot-triage
+	if version.AtLeast(BVMinRobotVersion) {
 		caps = append(caps, "robot_triage", "robot_plan", "robot_insights", "robot_next")
 	}
 
-	// bv 0.31+ includes additional analysis modes
-	if version.AtLeast(Version{Major: 0, Minor: 31, Patch: 0}) {
+	// bv 0.16+ includes additional analysis modes
+	if version.AtLeast(BVMinRobotVersion) {
 		caps = append(caps,
 			"robot_alerts",
 			"robot_graph",
@@ -310,10 +315,36 @@ func (a *BVAdapter) GetFileRelations(ctx context.Context, dir string, filePath s
 	return a.runRobotCommand(ctx, dir, args...)
 }
 
+// BVRobotError reports a bv robot command that failed or degraded. It carries
+// bv's own stderr text and the installed/required versions so callers can
+// surface the failure on stdout instead of only through the generic Error: path.
+type BVRobotError struct {
+	Mode             string  // the robot mode flag, e.g. "--robot-history"
+	Stderr           string  // bv's own stderr text
+	Err              error   // the underlying exit/parse error
+	InstalledVersion Version // installed bv version, if known
+	RequiredVersion  Version // minimum version that serves Mode
+	VersionProblem   bool    // true when the installed bv is below RequiredVersion
+}
+
+func (e *BVRobotError) Error() string {
+	if e.Stderr != "" {
+		return fmt.Sprintf("bv %s failed: %v: %s", e.Mode, e.Err, e.Stderr)
+	}
+	return fmt.Sprintf("bv %s failed: %v", e.Mode, e.Err)
+}
+
+func (e *BVRobotError) Unwrap() error { return e.Err }
+
 // runRobotCommand executes a bv robot command and returns raw JSON
 func (a *BVAdapter) runRobotCommand(ctx context.Context, dir string, args ...string) (json.RawMessage, error) {
 	ctx, cancel := context.WithTimeout(ctx, a.Timeout())
 	defer cancel()
+
+	mode := ""
+	if len(args) > 0 {
+		mode = args[0]
+	}
 
 	cmd := exec.CommandContext(ctx, a.BinaryName(), args...)
 	cmd.WaitDelay = time.Second
@@ -329,7 +360,7 @@ func (a *BVAdapter) runRobotCommand(ctx context.Context, dir string, args ...str
 	cmd.Stderr = &stderr
 
 	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("failed to start bv: %w", err)
+		return nil, a.newBVRobotError(mode, stderr.String(), err)
 	}
 
 	// Limit output to 10MB to prevent OOM
@@ -348,15 +379,50 @@ func (a *BVAdapter) runRobotCommand(ctx context.Context, dir string, args ...str
 
 	if err := cmd.Wait(); err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
-			return nil, ErrTimeout
+			// A hung bv is not a version problem: report the mode and the
+			// timeout without shelling out again for the version (which would
+			// itself hang).
+			return nil, &BVRobotError{
+				Mode:   mode,
+				Stderr: stderr.String(),
+				Err:    ErrTimeout,
+			}
 		}
-		return nil, fmt.Errorf("bv %s failed: %w: %s", strings.Join(args, " "), err, stderr.String())
+		return nil, a.newBVRobotError(mode, stderr.String(), err)
 	}
 
 	// Validate JSON
 	if !json.Valid(output) {
-		return nil, fmt.Errorf("%w: invalid JSON from bv", ErrSchemaValidation)
+		return nil, a.newBVRobotError(mode, stderr.String(), fmt.Errorf("%w: invalid JSON from bv", ErrSchemaValidation))
 	}
 
 	return output, nil
+}
+
+// newBVRobotError builds a BVRobotError carrying the installed version and the
+// minimum version that serves the mode, so callers can report degradation from
+// observed behaviour rather than from a version comparison. VersionProblem is
+// set only when the installed version is known and below the requirement; a
+// bv that ran and failed for its own reasons (non-zero exit, invalid JSON) is
+// not a version problem.
+func (a *BVAdapter) newBVRobotError(mode, stderr string, err error) *BVRobotError {
+	installed := a.installedVersion()
+	return &BVRobotError{
+		Mode:             mode,
+		Stderr:           stderr,
+		Err:              err,
+		InstalledVersion: installed,
+		RequiredVersion:  BVMinRobotVersion,
+		VersionProblem:   installed.IsKnown() && !installed.AtLeast(BVMinRobotVersion),
+	}
+}
+
+// installedVersion returns the installed bv version, or the zero Version if it
+// cannot be determined. It never fails the caller.
+func (a *BVAdapter) installedVersion() Version {
+	v, err := a.Version(context.Background())
+	if err != nil {
+		return Version{}
+	}
+	return v
 }

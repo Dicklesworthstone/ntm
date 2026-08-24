@@ -5,6 +5,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -2654,41 +2655,43 @@ Examples:
 // Response types for the new commands
 
 // HistoryResponse contains bead-to-commit correlation data
+// (reported by bv, not computed by ntm).
 type HistoryResponse struct {
-	Stats       HistoryStats          `json:"stats"`
-	Histories   []BeadHistory         `json:"histories"`
-	CommitIndex map[string]CommitInfo `json:"commit_index"`
+	Stats       HistoryStats           `json:"stats"`
+	Histories   map[string]BeadHistory `json:"histories"`
+	CommitIndex map[string][]string    `json:"commit_index"`
 }
 
 // HistoryStats contains overall history statistics
+// (reported by bv, not computed by ntm)
 type HistoryStats struct {
-	TotalBeads      int `json:"total_beads"`
-	TotalCommits    int `json:"total_commits"`
-	CorrelatedCount int `json:"correlated_count"`
+	TotalBeads       int `json:"total_beads"`
+	TotalCommits     int `json:"total_commits"`
+	BeadsWithCommits int `json:"beads_with_commits"`
 }
 
-// BeadHistory contains history for a single bead
+// BeadHistory contains history for a single bead. bv returns histories as an
+// object keyed by bead id, not an array.
 type BeadHistory struct {
-	ID         string      `json:"id"`
-	Title      string      `json:"title"`
-	Events     []BeadEvent `json:"events"`
-	Commits    []string    `json:"commits"`
-	Milestones []string    `json:"milestones"`
+	ID         string               `json:"bead_id"`
+	Title      string               `json:"title"`
+	Status     string               `json:"status"`
+	Events     []BeadEvent          `json:"events"`
+	Commits    []json.RawMessage    `json:"commits"`
+	Milestones map[string]BeadEvent `json:"milestones"`
+	LastAuthor string               `json:"last_author"`
 }
 
 // BeadEvent represents a bead state change
+// (reported by bv, not computed by ntm).
 type BeadEvent struct {
-	Timestamp time.Time `json:"timestamp"`
-	Event     string    `json:"event"`
-	Status    string    `json:"status,omitempty"`
-}
-
-// CommitInfo contains commit details
-type CommitInfo struct {
-	Hash      string    `json:"hash"`
-	Timestamp time.Time `json:"timestamp"`
-	Message   string    `json:"message"`
-	Beads     []string  `json:"beads,omitempty"`
+	BeadID      string    `json:"bead_id"`
+	EventType   string    `json:"event_type"`
+	Timestamp   time.Time `json:"timestamp"`
+	CommitSHA   string    `json:"commit_sha"`
+	CommitMsg   string    `json:"commit_message"`
+	Author      string    `json:"author"`
+	AuthorEmail string    `json:"author_email"`
 }
 
 // GraphResponse contains dependency graph data
@@ -2741,20 +2744,19 @@ func runWorkHistory() error {
 	adapter := tools.NewBVAdapter()
 	output, err := adapter.GetHistory(context.Background(), dir)
 	if err != nil {
-		return err
+		return reportBVDegradation(err)
 	}
 
 	if jsonOutput {
-		fmt.Println(string(output))
-		return nil
+		return emitBVJSONEnvelope(adapter, output, nil)
 	}
 
 	// Parse and render
 	var resp HistoryResponse
 	if err := json.Unmarshal(output, &resp); err != nil {
-		// If parsing fails, just print raw output
-		fmt.Println(string(output))
-		return nil
+		// A parse failure must not look like an answer: report it instead of
+		// silently dumping the raw blob.
+		return fmt.Errorf("bv --robot-history response could not be parsed: %w", err)
 	}
 
 	return renderHistory(resp)
@@ -2770,18 +2772,38 @@ func renderHistory(resp HistoryResponse) error {
 	fmt.Println(titleStyle.Render("Bead History & Correlation"))
 	fmt.Println()
 
-	// Stats
+	// Stats (reported by bv, not computed by ntm)
 	stats := resp.Stats
-	fmt.Printf("  Total Beads: %d  Commits: %d  Correlated: %d\n\n",
-		stats.TotalBeads, stats.TotalCommits, stats.CorrelatedCount)
+	fmt.Printf("  Total Beads: %d  Commits: %d  Beads with Commits: %d  (bv)\n\n",
+		stats.TotalBeads, stats.TotalCommits, stats.BeadsWithCommits)
 
-	// Recent bead histories (limit to first 10)
+	// Bead histories, first 10 by id: bv returns them keyed by bead id, so
+	// there is no recency to preserve and sorting is what makes the output
+	// deterministic.
 	histories := resp.Histories
 	if len(histories) > 10 {
-		histories = histories[:10]
+		ids := make([]string, 0, len(histories))
+		for id := range histories {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		ids = ids[:10]
+		limited := make(map[string]BeadHistory, 10)
+		for _, id := range ids {
+			limited[id] = histories[id]
+		}
+		histories = limited
 	}
 
-	for _, bead := range histories {
+	// Render in a stable order so output is deterministic.
+	ids := make([]string, 0, len(histories))
+	for id := range histories {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+
+	for _, id := range ids {
+		bead := histories[id]
 		fmt.Printf("  %s %s\n", idStyle.Render(bead.ID), bead.Title)
 
 		if len(bead.Events) > 0 {
@@ -2790,8 +2812,13 @@ func renderHistory(resp HistoryResponse) error {
 		}
 
 		if len(bead.Milestones) > 0 {
+			milestones := make([]string, 0, len(bead.Milestones))
+			for name := range bead.Milestones {
+				milestones = append(milestones, name)
+			}
+			sort.Strings(milestones)
 			fmt.Printf("    %s %s\n",
-				mutedStyle.Render("Milestones:"), strings.Join(bead.Milestones, ", "))
+				mutedStyle.Render("Milestones:"), strings.Join(milestones, ", "))
 		}
 		fmt.Println()
 	}
@@ -3067,12 +3094,11 @@ func runWorkBurndown(sprint string) error {
 	adapter := tools.NewBVAdapter()
 	output, err := adapter.GetBurndown(context.Background(), dir, sprint)
 	if err != nil {
-		return err
+		return reportBVDegradation(err)
 	}
 
 	if jsonOutput {
-		fmt.Println(string(output))
-		return nil
+		return emitBVJSONEnvelope(adapter, output, nil)
 	}
 
 	// Parse and render
@@ -3146,4 +3172,125 @@ func outputJSON(v interface{}) error {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	return enc.Encode(v)
+}
+
+// bvDegradation is the JSON degradation field carried by work history and
+// work burndown output, so an orchestrator can tell a real zero from an
+// unavailable capability.
+type bvDegradation struct {
+	Tool             string `json:"tool"`
+	InstalledVersion string `json:"installed_version"`
+	RequiredVersion  string `json:"required_version"`
+	Complete         bool   `json:"complete"`
+	// VersionProblem distinguishes "bv is too old for this capability" from
+	// "bv ran and failed for its own reasons". Without it a reader has to
+	// compare the two version strings itself and guess, which is the guess the
+	// human warning no longer makes.
+	VersionProblem bool   `json:"version_problem"`
+	Error          string `json:"error,omitempty"`
+	Stderr         string `json:"stderr,omitempty"`
+}
+
+// bvWorkEnvelope wraps bv's raw output with the degradation field.
+type bvWorkEnvelope struct {
+	Degradation bvDegradation   `json:"degradation"`
+	Data        json.RawMessage `json:"data,omitempty"`
+}
+
+// reportBVDegradation surfaces a bv robot failure on stdout. In JSON mode it
+// emits a degradation envelope; in human mode it prints a warning naming the
+// installed version and the capability that failed. It returns errJSONFailure
+// so Execute() exits non-zero without decorating stderr.
+func reportBVDegradation(err error) error {
+	var bvErr *tools.BVRobotError
+	if !errors.As(err, &bvErr) {
+		return err
+	}
+	if jsonOutput {
+		return emitBVJSONEnvelope(nil, nil, bvErr)
+	}
+	renderBVDegradationWarning(bvErr)
+	return errJSONFailure
+}
+
+// emitBVJSONEnvelope writes the JSON envelope for a bv-backed work command.
+// On success it carries bv's raw output under "data" with complete=true; on
+// failure it carries the degradation fields with complete=false and returns
+// errJSONFailure so the process exits non-zero.
+func emitBVJSONEnvelope(adapter *tools.BVAdapter, data json.RawMessage, bvErr *tools.BVRobotError) error {
+	env := bvWorkEnvelope{}
+	if bvErr != nil {
+		env.Degradation = degradationFromError(bvErr)
+	} else {
+		env.Degradation = degradationComplete(adapter)
+		env.Data = data
+	}
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(env); err != nil {
+		return err
+	}
+	if bvErr != nil {
+		return errJSONFailure
+	}
+	return nil
+}
+
+// renderBVDegradationWarning prints a human-readable warning. When the
+// installed bv is below the requirement it names the version and the
+// capability; when bv ran and failed for its own reasons it reports the tool,
+// the mode and bv's own text, with no version claim.
+func renderBVDegradationWarning(bvErr *tools.BVRobotError) {
+	detail := strings.TrimSpace(bvErr.Stderr)
+	if detail == "" {
+		detail = bvErr.Err.Error()
+	}
+	if bvErr.VersionProblem {
+		fmt.Fprintf(os.Stdout, "Warning: bv %s could not answer %s (requires >= %s): %s\n",
+			versionString(bvErr.InstalledVersion), bvErr.Mode, versionString(bvErr.RequiredVersion), detail)
+		return
+	}
+	fmt.Fprintf(os.Stdout, "Warning: bv %s failed: %s\n", bvErr.Mode, detail)
+}
+
+func degradationFromError(bvErr *tools.BVRobotError) bvDegradation {
+	return bvDegradation{
+		Tool:             "bv",
+		InstalledVersion: versionString(bvErr.InstalledVersion),
+		RequiredVersion:  versionString(bvErr.RequiredVersion),
+		Complete:         false,
+		VersionProblem:   bvErr.VersionProblem,
+		Error:            bvErr.Err.Error(),
+		Stderr:           strings.TrimSpace(bvErr.Stderr),
+	}
+}
+
+func degradationComplete(adapter *tools.BVAdapter) bvDegradation {
+	return bvDegradation{
+		Tool:             "bv",
+		InstalledVersion: versionString(adapterVersion(adapter)),
+		RequiredVersion:  versionString(tools.BVMinRobotVersion),
+		Complete:         true,
+	}
+}
+
+// adapterVersion returns the installed bv version, or the zero Version if it
+// cannot be determined.
+func adapterVersion(adapter *tools.BVAdapter) tools.Version {
+	v, err := adapter.Version(context.Background())
+	if err != nil {
+		return tools.Version{}
+	}
+	return v
+}
+
+// versionString renders a Version, using "unknown" for the zero value.
+func versionString(v tools.Version) string {
+	if v.Major == 0 && v.Minor == 0 && v.Patch == 0 {
+		if v.Raw != "" {
+			return v.Raw
+		}
+		return "unknown"
+	}
+	return fmt.Sprintf("%d.%d.%d", v.Major, v.Minor, v.Patch)
 }
