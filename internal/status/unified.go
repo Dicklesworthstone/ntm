@@ -198,9 +198,11 @@ func (d *UnifiedDetector) determineStateAt(output, agentType string, lastActivit
 	// the robot classifier, and that corroboration is narrower than the
 	// consumers' names suggest. `ntm wait` reads the robot classifier
 	// directly (classifier.Classify()), so its error verdict is the robot
-	// one. The coordinator's agent.error event is emitted from this static
-	// verdict: resultFromPaneObservation maps the static State and only
-	// assigns Velocity from the robot classifier, with no Status override.
+	// one. The coordinator's resultFromPaneObservation now reads the robot
+	// classifier's verdict for Status as well (bd-g6q02): a static
+	// StateError is downgraded when the pane has recovered, so the
+	// agent.error event and the dispatch gate act on the corroborated
+	// verdict rather than this static one.
 	// Health restart runs on internal/health plus PID liveness and never
 	// reads the robot classifier; diagnose --restart fires on PID-liveness
 	// crash detection, not this error verdict. The exposure is bounded but
@@ -208,7 +210,8 @@ func (d *UnifiedDetector) determineStateAt(output, agentType string, lastActivit
 	// above, and an idle pane at a prompt is rescued before this check, but
 	// a gemini, cursor, windsurf, aider, ollama or unknown pane that is
 	// progressing with a stale error in the window still classifies
-	// StateError. The static scan covers the last 50 lines
+	// StateError here; the coordinator's robot-verdict override is what
+	// clears it downstream. The static scan covers the last 50 lines
 	// (DetectErrorInOutput), so the exposed band is the scrollback between
 	// the robot classifier's width-adaptive live tail and that 50-line bound.
 	if errType := DetectErrorInOutput(output); errType != ErrorNone {
