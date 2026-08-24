@@ -91,13 +91,18 @@ type PaneResponse struct {
 	// pane shell PID's process start time, so age-based replacement policies
 	// work from robot output instead of raw tmux plumbing (ntm-qvpm). Empty
 	// when unknown.
-	PaneStartedAt  string  `json:"pane_started_at,omitempty"`
-	Status         string  `json:"status,omitempty"`          // idle, working, error
-	PromptDelayMs  int64   `json:"prompt_delay_ms,omitempty"` // Stagger delay in milliseconds
-	ContextTokens  int     `json:"context_tokens,omitempty"`
-	ContextLimit   int     `json:"context_limit,omitempty"`
-	ContextPercent float64 `json:"context_percent,omitempty"`
-	ContextModel   string  `json:"context_model,omitempty"`
+	PaneStartedAt string `json:"pane_started_at,omitempty"`
+	Status        string `json:"status,omitempty"`          // idle, working, error
+	PromptDelayMs int64  `json:"prompt_delay_ms,omitempty"` // Stagger delay in milliseconds
+	// ReadinessVerdict is the per-pane delivery-readiness verdict recorded at
+	// spawn (bd-zz717): checked-and-ready, no-classifier, or
+	// delivery-not-implemented. Empty when the pane predates verdict tracking
+	// or the verdict was not recorded.
+	ReadinessVerdict string  `json:"readiness_verdict,omitempty"`
+	ContextTokens    int     `json:"context_tokens,omitempty"`
+	ContextLimit     int     `json:"context_limit,omitempty"`
+	ContextPercent   float64 `json:"context_percent,omitempty"`
+	ContextModel     string  `json:"context_model,omitempty"`
 }
 
 // AgentCountsResponse is the standard format for agent counts.

@@ -115,6 +115,11 @@ const (
 	// spawnVerifyBootTimeout bounds the --verify-boot post-launch readiness
 	// gate (ntm-mr4k): OC-038's manual validator used a 30s budget.
 	spawnVerifyBootTimeout = 30 * time.Second
+
+	// spawnVerdictDeliveryNotImplemented is the per-pane readiness verdict for
+	// an agent type whose prompt sequence comes back empty from
+	// buildSpawnPromptSequenceForAgent (bd-zz717).
+	spawnVerdictDeliveryNotImplemented = "delivery-not-implemented"
 )
 
 type spawnSessionObserver interface {
@@ -2784,6 +2789,21 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 		setupErrorsMu.Unlock()
 	}
 
+	// Per-pane delivery-readiness verdicts (bd-zz717). One verdict per pane is
+	// recorded as the prompt-delivery goroutine finishes, then printed after
+	// setupWg.Wait() so a run where prompts silently do not arrive is visible
+	// in the spawn output instead of being discovered forty turns later.
+	var setupVerdictsMu sync.Mutex
+	setupVerdicts := make(map[string]string)
+	recordSetupVerdict := func(paneID, verdict string) {
+		if paneID == "" || verdict == "" {
+			return
+		}
+		setupVerdictsMu.Lock()
+		setupVerdicts[paneID] = verdict
+		setupVerdictsMu.Unlock()
+	}
+
 	// Initialize rate limit tracker for smart stagger mode or Codex cooldown gating (bd-3qoly)
 	var rateLimitTracker *ratelimit.RateLimitTracker
 	hasCodex := opts.CodCount > 0
@@ -3236,9 +3256,15 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 
 		go func(paneID, paneTitle string, idx int, agentType AgentType, agent FlatAgent, panePrompt string, hasPrompt bool) {
 			defer setupWg.Done()
-			if agentType == AgentTypeGrok {
-				// Grok Build's authenticated fullscreen TUI readiness and input
-				// protocol are deliberately not inferred from other providers.
+			// Record the delivery-readiness verdict up front: it is a property
+			// of the agent type, not the dispatch outcome, so every pane gets
+			// exactly one verdict line even when delivery later times out.
+			verdict := spawnPaneReadinessVerdict(agentType)
+			recordSetupVerdict(paneID, verdict)
+			if verdict == spawnVerdictDeliveryNotImplemented {
+				// Delivery is not implemented for this type (e.g., Grok Build's
+				// authenticated fullscreen TUI readiness and input protocol are
+				// deliberately not inferred from other providers).
 				return
 			}
 
@@ -3424,6 +3450,24 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 	if err := waitForSpawnPromptWorkers(ctx, setupDone, sigChan, IsJSONOutput(), cancelSetup); err != nil {
 		return outputError(err)
 	}
+
+	// Print one delivery-readiness verdict per pane (bd-zz717). The verdict
+	// tells the operator whether readiness was established (checked-and-ready),
+	// assumed (no-classifier), or skipped (delivery-not-implemented), so a run
+	// where prompts silently do not arrive is visible in the spawn output
+	// instead of being discovered forty turns later.
+	if !IsJSONOutput() {
+		setupVerdictsMu.Lock()
+		for _, agent := range launchedAgents {
+			verdict, ok := setupVerdicts[agent.paneID]
+			if !ok {
+				continue
+			}
+			fmt.Println(formatSpawnReadinessVerdict(agent.paneID, AgentType(agent.agentType), verdict))
+		}
+		setupVerdictsMu.Unlock()
+	}
+
 	setupErrorsMu.Lock()
 	failedPaneIDs := make([]string, 0, len(setupErrors))
 	for paneID := range setupErrors {
@@ -3581,6 +3625,7 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 			paneResponses[i].Persona = panePersonas[p.ID]
 			paneResponses[i].PersonaPromptSource = panePersonaPromptSources[p.ID]
 			paneResponses[i].PromptDelayMs = paneDelays[p.ID].Milliseconds()
+			paneResponses[i].ReadinessVerdict = setupVerdicts[p.ID]
 			incrementAgentCounts(&agentCounts, p.Type)
 		}
 
@@ -3970,6 +4015,34 @@ func spawnPromptSequenceIsCassOnly(steps []spawnPromptStep) bool {
 		}
 	}
 	return true
+}
+
+// spawnPaneReadinessVerdict computes the per-pane delivery-readiness verdict
+// from the agent type alone (bd-zz717). A type whose automated prompt delivery
+// is not implemented reports delivery-not-implemented; otherwise the composer
+// classifier verdict (checked-and-ready or no-classifier) is reported. The
+// verdict is a property of the agent type, not the dispatch outcome, so it is
+// recorded for every pane regardless of whether delivery later times out.
+func spawnPaneReadinessVerdict(agentType AgentType) string {
+	if err := agentpkg.AgentType(agentType).ValidateAutomatedPromptDelivery(); err != nil {
+		return spawnVerdictDeliveryNotImplemented
+	}
+	return string(tmux.ComposerClassifierVerdict(tmux.AgentType(agentType)))
+}
+
+// formatSpawnReadinessVerdict renders the per-pane delivery-readiness verdict
+// line (bd-zz717). The no-classifier verdict names what the operator must do —
+// send the prompt by hand — because delivery was allowed unchecked.
+func formatSpawnReadinessVerdict(paneID string, agentType AgentType, verdict string) string {
+	canonical := agentpkg.AgentType(agentType).Canonical()
+	switch verdict {
+	case string(tmux.VerdictNoClassifier):
+		return fmt.Sprintf("⚠ pane %s (%s): no-classifier — no composer classifier for this agent type; send the prompt by hand", paneID, canonical)
+	case spawnVerdictDeliveryNotImplemented:
+		return fmt.Sprintf("⚠ pane %s (%s): delivery-not-implemented — automated prompt delivery is not implemented for this agent type", paneID, canonical)
+	default:
+		return fmt.Sprintf("✓ pane %s (%s): checked-and-ready", paneID, canonical)
+	}
 }
 
 func dispatchSpawnPromptSequence(

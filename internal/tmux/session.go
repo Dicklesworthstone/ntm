@@ -2314,6 +2314,53 @@ func InspectComposer(capture string, agentType AgentType) ComposerState {
 	return state
 }
 
+// DeliveryReadinessVerdict classifies how a pane's delivery readiness was
+// established at spawn: whether a composer classifier positively verified the
+// pane, or the gate failed open because no classifier exists (or the capture
+// could not be read). The verdict is reporting only — it never changes the
+// fail-open contract.
+type DeliveryReadinessVerdict string
+
+const (
+	// VerdictCheckedAndReady means a composer classifier positively verified
+	// the pane was ready to receive its prompt.
+	VerdictCheckedAndReady DeliveryReadinessVerdict = "checked-and-ready"
+	// VerdictNoClassifier means no composer classifier exists for the agent
+	// type (or the capture could not be read), so delivery was allowed
+	// unchecked.
+	VerdictNoClassifier DeliveryReadinessVerdict = "no-classifier"
+)
+
+// classifyComposerDeliveryVerdict classifies how delivery readiness was
+// established for a pane, given its agent type and a capture (or capture
+// error). It mirrors ComposerReadyForDelivery's fail-open contract exactly:
+// unknown agent types, empty captures, and capture errors all return
+// ready=true with the no-classifier verdict.
+func classifyComposerDeliveryVerdict(agentType AgentType, capture string, captureErr error, paneWidth int) (DeliveryReadinessVerdict, bool, string) {
+	canonical := agentType.Canonical()
+	marker := composerMarkerForAgent(canonical)
+	if marker == "" {
+		return VerdictNoClassifier, true, ""
+	}
+	if captureErr != nil || strings.TrimSpace(capture) == "" {
+		return VerdictNoClassifier, true, ""
+	}
+	if strings.Contains(capture, marker) {
+		return VerdictCheckedAndReady, true, ""
+	}
+	switch canonical {
+	case AgentClaude:
+		if agent.ClaudeActivelyWorking(capture, paneWidth) {
+			return VerdictCheckedAndReady, true, ""
+		}
+	case AgentCodex:
+		if codexLooksWorking(capture) {
+			return VerdictCheckedAndReady, true, ""
+		}
+	}
+	return VerdictCheckedAndReady, false, fmt.Sprintf("%s composer not visible: pane appears to be initializing or showing a dialog; a typed prompt would be swallowed", canonical)
+}
+
 // ComposerReadyForDelivery reports whether an agent pane is in a state that
 // can accept a typed prompt (bd-dp9oy). Sends fired while a Claude/codex
 // TUI is still initializing — or while it is showing a trust dialog or menu
@@ -2330,34 +2377,37 @@ func InspectComposer(capture string, agentType AgentType) ComposerState {
 // paneWidth is the real tmux pane width used by the width-adaptive working
 // detectors (bd-eeifh); pass 0 when unknown.
 func (c *Client) ComposerReadyForDelivery(ctx context.Context, target string, agentType AgentType, paneWidth int) (ready bool, reason string) {
-	canonical := agentType.Canonical()
-	marker := composerMarkerForAgent(canonical)
+	_, ready, reason = c.composerDeliveryVerdict(ctx, target, agentType, paneWidth)
+	return ready, reason
+}
+
+// composerDeliveryVerdict reports the delivery-readiness verdict alongside the
+// ready/reason pair. It shares ComposerReadyForDelivery's capture and fail-open
+// behaviour, adding only the verdict classification.
+func (c *Client) composerDeliveryVerdict(ctx context.Context, target string, agentType AgentType, paneWidth int) (DeliveryReadinessVerdict, bool, string) {
+	marker := composerMarkerForAgent(agentType.Canonical())
 	if marker == "" {
-		return true, ""
+		return VerdictNoClassifier, true, ""
 	}
 	capture, err := c.CapturePaneVisibleContext(ctx, target)
-	if err != nil || strings.TrimSpace(capture) == "" {
-		return true, ""
-	}
-	if strings.Contains(capture, marker) {
-		return true, ""
-	}
-	switch canonical {
-	case AgentClaude:
-		if agent.ClaudeActivelyWorking(capture, paneWidth) {
-			return true, ""
-		}
-	case AgentCodex:
-		if codexLooksWorking(capture) {
-			return true, ""
-		}
-	}
-	return false, fmt.Sprintf("%s composer not visible: pane appears to be initializing or showing a dialog; a typed prompt would be swallowed", canonical)
+	return classifyComposerDeliveryVerdict(agentType, capture, err, paneWidth)
 }
 
 // ComposerReadyForDelivery checks delivery readiness (default client).
 func ComposerReadyForDelivery(ctx context.Context, target string, agentType AgentType, paneWidth int) (bool, string) {
 	return DefaultClient.ComposerReadyForDelivery(ctx, target, agentType, paneWidth)
+}
+
+// ComposerClassifierVerdict returns the delivery-readiness verdict for an
+// agent type without capturing the pane: no-classifier when the type has no
+// composer marker, checked-and-ready when it does. The spawn path uses this
+// to report which classifier will verify readiness (or that none exists)
+// without adding a capture per pane.
+func ComposerClassifierVerdict(agentType AgentType) DeliveryReadinessVerdict {
+	if composerMarkerForAgent(agentType.Canonical()) == "" {
+		return VerdictNoClassifier
+	}
+	return VerdictCheckedAndReady
 }
 
 // ClearComposerContext performs the per-agent pre-send composer clear and
