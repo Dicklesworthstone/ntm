@@ -510,8 +510,6 @@ func packageTestMainIsolatesUserConfig(t *testing.T, pkgDir string) bool {
 	if err != nil {
 		t.Fatalf("read package dir %s: %v", pkgDir, err)
 	}
-	hasTestMain := false
-	hasHelper := false
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), "_test.go") {
 			continue
@@ -521,14 +519,17 @@ func packageTestMainIsolatesUserConfig(t *testing.T, pkgDir string) bool {
 			t.Fatalf("read %s: %v", entry.Name(), err)
 		}
 		src := string(data)
-		if strings.Contains(src, "func TestMain(") {
-			hasTestMain = true
-		}
-		if strings.Contains(src, "IsolateUserConfigProcess") {
-			hasHelper = true
+		// Both signals must come from the SAME file, and the call must be a
+		// call rather than a mention. Tracking them independently across the
+		// package let a bare reference in any test file — a comment naming the
+		// helper was enough — satisfy the guard for a TestMain that had
+		// stopped calling it, which is the decay this guard exists to catch.
+		if strings.Contains(src, "func TestMain(") &&
+			strings.Contains(src, "IsolateUserConfigProcess()") {
+			return true
 		}
 	}
-	return hasTestMain && hasHelper
+	return false
 }
 
 func TestIsolateUserConfigProcessRedirectsUserConfigDir(t *testing.T) {
