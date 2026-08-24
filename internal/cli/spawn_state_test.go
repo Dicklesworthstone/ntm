@@ -1082,3 +1082,79 @@ func TestWaitForSpawnPaneReadyPi(t *testing.T) {
 		t.Fatalf("waitForSpawnPaneReady took %v, want return before deadline", elapsed)
 	}
 }
+
+// TestReadyAgentPanesCountsPiPanes drives the --init-prompt/--assign readiness
+// gate (readyAgentPanesFromObservation / readinessIssuesForAgentPanes) over a
+// real pi observation. Before bd-g3a, detectAgentTypeFromPane resolved a pi
+// pane to "unknown", so the pane was skipped as a non-agent and never counted
+// ready; the prompt was silently not delivered.
+func TestReadyAgentPanesCountsPiPanes(t *testing.T) {
+	observedAt := time.Now().UTC()
+	observer := newPiSessionObserver(observedAt, piIdleAtStatusLineCapture)
+	observation, err := observer.Observe(context.Background(), "demo")
+	if err != nil {
+		t.Fatalf("Observe: %v", err)
+	}
+
+	ready, agents := readyAgentPanesFromObservation(observation)
+	if agents != 1 {
+		t.Fatalf("readyAgentPanesFromObservation agents = %d, want 1 (pi pane counted as an agent pane)", agents)
+	}
+	if len(ready) != 1 {
+		t.Fatalf("readyAgentPanesFromObservation ready = %d, want 1 (idle pi pane counted ready)", len(ready))
+	}
+
+	issues := readinessIssuesForAgentPanes(observation)
+	if len(issues) != 0 {
+		t.Fatalf("readinessIssuesForAgentPanes = %v, want no issue for a ready pi pane", issues)
+	}
+}
+
+// TestReadyAgentPanesRegressionCCAndCod pins the cc and cod behaviour of the
+// same two readiness functions, so the pi fix cannot change how the already-
+// handled agent types classify.
+func TestReadyAgentPanesRegressionCCAndCod(t *testing.T) {
+	now := time.Now().UTC()
+	panes := []tmux.Pane{
+		{ID: "%71", WindowIndex: 0, Index: 1, Type: tmux.AgentClaude, Title: "demo__cc_1"},
+		{ID: "%72", WindowIndex: 0, Index: 2, Type: tmux.AgentCodex, Title: "demo__cod_2"},
+	}
+	observation := testSpawnSessionObservation(
+		now,
+		testSpawnPaneObservation(now, panes[0], statuspkg.StateIdle),
+		testSpawnPaneObservation(now, panes[1], statuspkg.StateIdle),
+	)
+
+	ready, agents := readyAgentPanesFromObservation(observation)
+	if agents != 2 || len(ready) != 2 {
+		t.Fatalf("ready=%v agents=%d, want 2 ready cc+cod panes", ready, agents)
+	}
+	issues := readinessIssuesForAgentPanes(observation)
+	if len(issues) != 0 {
+		t.Fatalf("readiness issues = %v, want none for ready cc+cod panes", issues)
+	}
+}
+
+// TestSendInitPromptDeliversToPiPanes settles the end-to-end claim at the
+// function boundary --init-prompt actually calls: sendInitPromptToReadyAgentsWith
+// must deliver the init prompt to every pi pane. Before bd-g3a the readiness
+// gate classified the pi pane as unknown, so agentCount was 0 and the prompt was
+// never dispatched.
+func TestSendInitPromptDeliversToPiPanes(t *testing.T) {
+	observedAt := time.Now().UTC()
+	observer := newPiSessionObserver(observedAt, piIdleAtStatusLineCapture)
+	dispatcher := &recordingSpawnDispatcher{}
+
+	receipts, err := sendInitPromptToReadyAgentsWith(
+		t.Context(), "", "demo", "Read AGENTS.md", false, observer, dispatcher,
+	)
+	if err != nil {
+		t.Fatalf("sendInitPromptToReadyAgentsWith() error = %v", err)
+	}
+	if len(receipts) != 1 || len(dispatcher.messages) != 1 {
+		t.Fatalf("receipts=%d messages=%d, want 1 delivered init prompt to the pi pane", len(receipts), len(dispatcher.messages))
+	}
+	if dispatcher.panes[0] != "%1" {
+		t.Fatalf("dispatched pane = %q, want %%1", dispatcher.panes[0])
+	}
+}
