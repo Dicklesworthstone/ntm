@@ -154,6 +154,66 @@ func IsolateGitConfigProcess() (func() error, error) {
 	return func() error { return os.RemoveAll(dir) }, nil
 }
 
+// IsolateUserConfigProcess redirects os.UserConfigDir() and os.UserHomeDir()
+// into a process-private temporary root for the lifetime of the test binary.
+// os.UserConfigDir() reads XDG_CONFIG_HOME and falls back to $HOME/.config
+// when the former is unset, so both must be overridden: a test that sets only
+// HOME still writes into the developer's real ~/.config on any desktop that
+// exports XDG_CONFIG_HOME. Call from TestMain before m.Run(); the returned
+// cleanup restores the previous values (an unset variable is restored to
+// unset, not empty) and removes the private root.
+func IsolateUserConfigProcess() (func() error, error) {
+	dir, err := os.MkdirTemp("", "ntm-test-config-")
+	if err != nil {
+		return nil, fmt.Errorf("create private config dir: %w", err)
+	}
+
+	prevXDG, xdgWasSet := os.LookupEnv("XDG_CONFIG_HOME")
+	prevHome, homeWasSet := os.LookupEnv("HOME")
+
+	if err := os.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "config")); err != nil {
+		return nil, errors.Join(fmt.Errorf("set XDG_CONFIG_HOME: %w", err), os.RemoveAll(dir))
+	}
+	if err := os.Setenv("HOME", filepath.Join(dir, "home")); err != nil {
+		return nil, errors.Join(fmt.Errorf("set HOME: %w", err), os.RemoveAll(dir))
+	}
+
+	return func() error {
+		var errs []error
+		if xdgWasSet {
+			errs = append(errs, os.Setenv("XDG_CONFIG_HOME", prevXDG))
+		} else {
+			errs = append(errs, os.Unsetenv("XDG_CONFIG_HOME"))
+		}
+		if homeWasSet {
+			errs = append(errs, os.Setenv("HOME", prevHome))
+		} else {
+			errs = append(errs, os.Unsetenv("HOME"))
+		}
+		errs = append(errs, removeAllWritable(dir))
+		return errors.Join(errs...)
+	}, nil
+}
+
+// removeAllWritable makes a directory tree writable before removing it. Go's
+// module cache (and other tools) create read-only files and directories;
+// os.RemoveAll cannot unlink inside a read-only directory, so a bare
+// os.RemoveAll would leave the isolated root behind and fail the cleanup.
+func removeAllWritable(dir string) error {
+	_ = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil // let os.RemoveAll report the real error
+		}
+		if info.IsDir() {
+			_ = os.Chmod(path, 0o700)
+		} else {
+			_ = os.Chmod(path, 0o600)
+		}
+		return nil
+	})
+	return os.RemoveAll(dir)
+}
+
 // returns an idempotent cleanup function. TestMain callers must run cleanup
 // before os.Exit so the private server and its short socket root do not leak.
 // NTM_TEST_TMUX_ENV_OWNED marks a helper process whose caller owns its tmux

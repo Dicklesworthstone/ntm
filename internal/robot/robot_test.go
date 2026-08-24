@@ -155,7 +155,18 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "isolate robot tmux tests: %v\n", err)
 		os.Exit(1)
 	}
+	// Robot tests persist Agent Mail session agents; never let them write into
+	// the developer's real ~/.config/ntm/sessions/.
+	cleanupConfig, err := testutil.IsolateUserConfigProcess()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "isolate robot config: %v\n", err)
+		os.Exit(1)
+	}
 	code := m.Run()
+	if err := cleanupConfig(); err != nil {
+		fmt.Fprintf(os.Stderr, "clean up isolated robot config: %v\n", err)
+		code = 1
+	}
 	if err := cleanupTmux(); err != nil {
 		fmt.Fprintf(os.Stderr, "clean up isolated robot tmux: %v\n", err)
 		code = 1

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -395,7 +397,6 @@ func TestUpdateAgentStates_UsesFreshObservationForDispatchSafety(t *testing.T) {
 }
 
 func TestUpdateAgentStatesLoadsPersistedAgentMailIdentity(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
 	projectKey := t.TempDir()
 	const session = "registry-identity-session"
 	const paneID = "%17"
@@ -404,6 +405,27 @@ func TestUpdateAgentStatesLoadsPersistedAgentMailIdentity(t *testing.T) {
 	registry.AddAgent(paneTitle, paneID, "BlueLake")
 	if err := agentmail.SaveSessionAgentRegistry(registry); err != nil {
 		t.Fatalf("SaveSessionAgentRegistry: %v", err)
+	}
+
+	// The registry must land under the process-wide isolated config root that
+	// TestMain installs via testutil.IsolateUserConfigProcess, never the
+	// developer's real ~/.config. Assert on the resolved path so a missing
+	// override fails here instead of silently writing into the real config
+	// directory.
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		t.Fatalf("UserConfigDir: %v", err)
+	}
+	isolatedRoot := os.Getenv("XDG_CONFIG_HOME")
+	if !strings.Contains(isolatedRoot, "ntm-test-config-") {
+		t.Fatalf("XDG_CONFIG_HOME = %q, want helper-created isolated root (TestMain isolation missing)", isolatedRoot)
+	}
+	if !strings.HasPrefix(configDir, isolatedRoot) {
+		t.Fatalf("UserConfigDir() = %q, want under isolated root %q", configDir, isolatedRoot)
+	}
+	registryPath := filepath.Join(configDir, "ntm", "sessions", session, agentmail.ProjectSlugFromPath(projectKey), "agent_registry.json")
+	if _, err := os.Stat(registryPath); err != nil {
+		t.Fatalf("registry not written under isolated config root %q: %v", registryPath, err)
 	}
 
 	originalGetPanes := getPanesWithActivity

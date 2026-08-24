@@ -2208,8 +2208,20 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 
+	// E2E tests persist Agent Mail session registries; never let them write
+	// into the developer's real ~/.config/ntm/sessions/.
+	cleanupConfig, err := testutil.IsolateUserConfigProcess()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "isolate E2E config: %v\n", err)
+		os.Exit(1)
+	}
+
 	code := m.Run()
 
+	if err := cleanupConfig(); err != nil {
+		fmt.Fprintf(os.Stderr, "clean up isolated E2E config: %v\n", err)
+		code = 1
+	}
 	if err := cleanupTmux(); err != nil {
 		fmt.Fprintf(os.Stderr, "clean up isolated E2E tmux: %v\n", err)
 		code = 1
