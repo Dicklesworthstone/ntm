@@ -194,13 +194,23 @@ func (d *UnifiedDetector) determineStateAt(output, agentType string, lastActivit
 	// activity timestamp, no live-tail window and no two-capture growth
 	// signal — so it cannot tell "the error just printed" (genuine) from "a
 	// stale error left in scrollback while the pane keeps working". It errs
-	// toward ERROR, which is the safe direction here: the destructive
-	// consumers (health restart, ntm wait, diagnose --restart, the
-	// agent.error event) all read the robot classifier, which applies the
-	// live-tail + progress guard, and this detector's ERROR verdict is
-	// corroborated before any destructive action. The robot classifier is
-	// therefore the authoritative answer for a working pane; this one is
-	// deliberately conservative.
+	// toward ERROR, which is safe only where the verdict is corroborated by
+	// the robot classifier, and that corroboration is narrower than the
+	// consumers' names suggest. `ntm wait` reads the robot classifier
+	// directly (classifier.Classify()), so its error verdict is the robot
+	// one. The coordinator's agent.error event is emitted from this static
+	// verdict: resultFromPaneObservation maps the static State and only
+	// assigns Velocity from the robot classifier, with no Status override.
+	// Health restart runs on internal/health plus PID liveness and never
+	// reads the robot classifier; diagnose --restart fires on PID-liveness
+	// crash detection, not this error verdict. The exposure is bounded but
+	// real: Claude, Codex and pi short-circuit on actively-working chrome
+	// above, and an idle pane at a prompt is rescued before this check, but
+	// a gemini, cursor, windsurf, aider, ollama or unknown pane that is
+	// progressing with a stale error in the window still classifies
+	// StateError. The static scan covers the last 50 lines
+	// (DetectErrorInOutput), so the exposed band is the scrollback between
+	// the robot classifier's width-adaptive live tail and that 50-line bound.
 	if errType := DetectErrorInOutput(output); errType != ErrorNone {
 		return StateError, errType
 	}
