@@ -1,6 +1,8 @@
 package robot
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -1050,5 +1052,135 @@ func TestHealthCheckConcurrentAccess(t *testing.T) {
 	// Wait for all goroutines
 	for i := 0; i < 10; i++ {
 		<-done
+	}
+}
+
+// =============================================================================
+// Tests for checkErrorsInOutput (bd-vevxk live-tail + progress guard)
+// =============================================================================
+
+func TestCheckErrorsInOutput(t *testing.T) {
+	// buildScrollback returns a 50-line "working" scrollback with the error
+	// text placed at errorLine (0-indexed; -1 means no error). The working
+	// lines are plain prose that matches no healthErrorPatterns entry.
+	buildScrollback := func(errorLine int, errorText string) string {
+		lines := make([]string, 50)
+		for i := range lines {
+			lines[i] = fmt.Sprintf("processing item %d", i+1)
+		}
+		if errorLine >= 0 && errorLine < len(lines) {
+			lines[errorLine] = errorText
+		}
+		return strings.Join(lines, "\n")
+	}
+
+	// buildScrollbackIdle is buildScrollback with a claude idle prompt (╰─>)
+	// as the last line, so the live tail reads as a recovered pane waiting for
+	// input rather than a stuck one.
+	buildScrollbackIdle := func(errorLine int, errorText string) string {
+		lines := make([]string, 50)
+		for i := range lines {
+			lines[i] = fmt.Sprintf("processing item %d", i+1)
+		}
+		if errorLine >= 0 && errorLine < len(lines) {
+			lines[errorLine] = errorText
+		}
+		lines[49] = "╰─>"
+		return strings.Join(lines, "\n")
+	}
+
+	// The live tail is the last 15 lines (indices 35..49). Line 45 is inside
+	// it; line 9 is forty lines back, outside it.
+	tests := []struct {
+		name        string
+		output      string
+		progressing bool
+		wantErrors  bool
+	}{
+		{
+			name:        "connection reset in live tail, progressing",
+			output:      buildScrollback(45, "connection reset by peer"),
+			progressing: true,
+			wantErrors:  true,
+		},
+		{
+			name:        "connection reset outside live tail, progressing",
+			output:      buildScrollback(9, "connection reset by peer"),
+			progressing: true,
+			wantErrors:  false,
+		},
+		{
+			name:        "connection reset outside live tail, no growth",
+			output:      buildScrollback(9, "connection reset by peer"),
+			progressing: false,
+			wantErrors:  true,
+		},
+		{
+			name:        "connection reset outside live tail, recovered at idle prompt",
+			output:      buildScrollbackIdle(9, "connection reset by peer"),
+			progressing: false,
+			wantErrors:  false,
+		},
+		{
+			name:        "panic in live tail, progressing",
+			output:      buildScrollback(45, "panic: runtime error"),
+			progressing: true,
+			wantErrors:  true,
+		},
+		{
+			name:        "panic outside live tail, progressing",
+			output:      buildScrollback(9, "panic: runtime error"),
+			progressing: true,
+			wantErrors:  false,
+		},
+		{
+			name:        "panic outside live tail, no growth",
+			output:      buildScrollback(9, "panic: runtime error"),
+			progressing: false,
+			wantErrors:  true,
+		},
+		{
+			name:        "no error anywhere",
+			output:      buildScrollback(-1, ""),
+			progressing: true,
+			wantErrors:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := checkErrorsInOutput(tt.output, "claude", 0, tt.progressing)
+			if got.HasErrors != tt.wantErrors {
+				t.Errorf("checkErrorsInOutput() HasErrors = %v, want %v (patterns=%v reason=%q)",
+					got.HasErrors, tt.wantErrors, got.Patterns, got.Reason)
+			}
+		})
+	}
+}
+
+// TestClassifyStuckPanes_UnhealthyStillRestartable is a regression guard for
+// bd-vevxk: the health verdict change (a stale error no longer reads
+// unhealthy while a pane is progressing) must not change which panes are
+// restartable. An unhealthy pane is still a restart candidate; only blocked
+// and rate_limited panes are skipped.
+func TestClassifyStuckPanes_UnhealthyStillRestartable(t *testing.T) {
+	threshold := 5 * time.Minute
+	thresholdSec := int(threshold.Seconds())
+
+	agents := []SessionAgentHealth{
+		{Pane: 1, Health: "unhealthy", IdleSinceSeconds: thresholdSec + 1},
+		{Pane: 2, Health: "healthy", IdleSinceSeconds: thresholdSec + 1},
+		{Pane: 3, Health: "blocked", IdleSinceSeconds: thresholdSec + 1},
+		{Pane: 4, Health: "rate_limited", IdleSinceSeconds: thresholdSec + 1},
+	}
+
+	stuck, skipped := ClassifyStuckPanes(agents, threshold)
+
+	wantStuck := []int{1, 2}
+	if !intSlicesEqual(stuck, wantStuck) {
+		t.Errorf("ClassifyStuckPanes() stuck = %v, want %v", stuck, wantStuck)
+	}
+	if len(skipped) != 2 {
+		t.Errorf("ClassifyStuckPanes() skipped = %d, want 2", len(skipped))
 	}
 }
