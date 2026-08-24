@@ -378,7 +378,6 @@ func resetFlags() {
 	robotPaletteCategory = ""
 	robotPaletteSearch = ""
 	robotDismissAlert = ""
-	robotDismissSession = ""
 	robotDismissAll = false
 	robotAgentHealthVerbose = false
 	robotSmartRestartDryRun = false

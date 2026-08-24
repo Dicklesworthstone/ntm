@@ -78,7 +78,7 @@ type RobotParameter struct {
 }
 
 var deprecatedRobotParameterReplacements = map[string]string{
-	"--alerts-session": "--session", "--alerts-severity": "--severity", "--bead-limit": "--limit", "--beads-assignee": "--assignee", "--beads-limit": "--limit", "--beads-priority": "--priority", "--beads-status": "--status", "--bulk-strategy": "--strategy", "--diagnose-brief": "--brief", "--diagnose-fix": "--fix", "--dismiss-all": "--all", "--dismiss-session": "--session", "--files-limit": "--limit", "--files-window": "--window", "--inspect-code": "--code", "--inspect-index": "--index", "--inspect-lines": "--lines", "--md-compact": "--compact", "--md-max-alerts": "--max-alerts", "--md-max-beads": "--max-beads", "--md-session": "--session", "--metrics-period": "--period", "--palette-category": "--category", "--palette-search": "--search", "--palette-session": "--session", "--pipeline-background": "--background", "--pipeline-session": "--session", "--pipeline-vars": "--vars", "--replay-id": "--id", "--save-output": "--output", "--tokens-agent": "--agent", "--tokens-days": "--days", "--tokens-group-by": "--group-by", "--tokens-session": "--session", "--tokens-since": "--since", "--triage-limit": "--limit",
+	"--alerts-session": "--session", "--alerts-severity": "--severity", "--bead-limit": "--limit", "--beads-assignee": "--assignee", "--beads-limit": "--limit", "--beads-priority": "--priority", "--beads-status": "--status", "--bulk-strategy": "--strategy", "--diagnose-brief": "--brief", "--diagnose-fix": "--fix", "--dismiss-all": "--all", "--files-limit": "--limit", "--files-window": "--window", "--inspect-code": "--code", "--inspect-index": "--index", "--inspect-lines": "--lines", "--md-compact": "--compact", "--md-max-alerts": "--max-alerts", "--md-max-beads": "--max-beads", "--metrics-period": "--period", "--palette-category": "--category", "--palette-search": "--search", "--palette-session": "--session", "--pipeline-background": "--background", "--pipeline-session": "--session", "--pipeline-vars": "--vars", "--replay-id": "--id", "--save-output": "--output", "--tokens-agent": "--agent", "--tokens-days": "--days", "--tokens-group-by": "--group-by", "--tokens-session": "--session", "--tokens-since": "--since", "--triage-limit": "--limit",
 }
 
 // categoryOrder defines the canonical order for categories
@@ -750,11 +750,11 @@ func buildCommandRegistry() []RobotCommandInfo {
 			Description: "System state as markdown tables.",
 			Parameters: []RobotParameter{
 				{Name: "md-compact", Flag: "--md-compact", Type: "bool", Required: false, Description: "Ultra-compact markdown with abbreviations"},
-				{Name: "md-session", Flag: "--md-session", Type: "string", Required: false, Description: "Filter to one session"},
+				{Name: "session", Flag: "--session", Type: "string", Required: false, Description: "Filter to one session"},
 				{Name: "md-max-beads", Flag: "--md-max-beads", Type: "int", Required: false, Description: "Max beads per category"},
 				{Name: "md-max-alerts", Flag: "--md-max-alerts", Type: "int", Required: false, Description: "Max alerts to show"},
 			},
-			Examples: []string{"ntm --robot-markdown --md-compact --md-session=myproject"},
+			Examples: []string{"ntm --robot-markdown --md-compact --session=myproject"},
 		},
 		{
 			Name:        "health",
@@ -867,7 +867,7 @@ func buildCommandRegistry() []RobotCommandInfo {
 				{Name: "events-window-before", Flag: "--events-window-before", Type: "duration", Required: false, Default: "5m", Description: "Context before incident start for incident replay"},
 				{Name: "events-window-after", Flag: "--events-window-after", Type: "duration", Required: false, Default: "1m", Description: "Context after incident end for incident replay"},
 				{Name: "events-category", Flag: "--events-category", Type: "string", Required: false, Description: "Filter by event category"},
-				{Name: "events-session", Flag: "--events-session", Type: "string", Required: false, Description: "Filter by session name"},
+				{Name: "session", Flag: "--session", Type: "string", Required: false, Description: "Filter by session name"},
 				{Name: "events-actionability", Flag: "--events-actionability", Type: "string", Required: false, Description: "Filter by actionability level"},
 				{Name: "profile", Flag: "--profile", Type: "string", Required: false, Default: "operator", Description: "Attention profile: operator, debug, minimal, alerts"},
 			},
@@ -900,7 +900,7 @@ func buildCommandRegistry() []RobotCommandInfo {
 			Description: "The canonical tending primitive: wait until attention is needed, then return a digest with wake reason and next cursor. This is the one obvious way to implement an operator loop. Combines wait + digest semantics with cursor handoff for mechanical replay.",
 			Parameters: []RobotParameter{
 				{Name: "attention-cursor", Flag: "--attention-cursor", Type: "int", Required: false, Default: "0", Description: "Wait for attention after this cursor"},
-				{Name: "attention-session", Flag: "--attention-session", Type: "string", Required: false, Description: "Filter to a specific session"},
+				{Name: "session", Flag: "--session", Type: "string", Required: false, Description: "Filter to a specific session"},
 				{Name: "attention-timeout", Flag: "--attention-timeout", Type: "string", Required: false, Default: "5m", Description: "Maximum wait time before returning"},
 				{Name: "attention-poll", Flag: "--attention-poll", Type: "string", Required: false, Default: "1s", Description: "Polling interval"},
 				{Name: "profile", Flag: "--profile", Type: "string", Required: false, Default: "operator", Description: "Attention profile: operator, debug, minimal, alerts"},
@@ -909,7 +909,7 @@ func buildCommandRegistry() []RobotCommandInfo {
 			Examples: []string{
 				"ntm --robot-attention",
 				"ntm --robot-attention --attention-cursor=42 --attention-timeout=2m",
-				"ntm --robot-attention --attention-session=proj --profile=debug --attention-condition=action_required",
+				"ntm --robot-attention --session=proj --profile=debug --attention-condition=action_required",
 			},
 		},
 
@@ -1002,12 +1002,12 @@ func buildCommandRegistry() []RobotCommandInfo {
 			Category:    "control",
 			Description: "Open the dashboard overlay for human handoff from an agent or operator loop. Runs inside tmux, can resolve the current session automatically, and can pre-focus the attention panel on a specific cursor.",
 			Parameters: []RobotParameter{
-				{Name: "overlay-session", Flag: "--overlay-session", Type: "string", Required: false, Description: "Session to open. Defaults to the current tmux session when omitted."},
+				{Name: "session", Flag: "--session", Type: "string", Required: false, Description: "Session to open. Defaults to the current tmux session when omitted."},
 				{Name: "overlay-cursor", Flag: "--overlay-cursor", Type: "int", Required: false, Default: "0", Description: "Pre-focus the overlay attention panel on this cursor"},
 				{Name: "overlay-no-wait", Flag: "--overlay-no-wait", Type: "bool", Required: false, Description: "Return after launch instead of blocking until the popup is dismissed"},
 			},
 			Examples: []string{
-				"ntm --robot-overlay --overlay-session=myproject",
+				"ntm --robot-overlay --session=myproject",
 				"ntm --robot-overlay --overlay-cursor=42 --overlay-no-wait",
 			},
 		},
@@ -2150,7 +2150,7 @@ func buildCommandRegistry() []RobotCommandInfo {
 			Description: "Dismiss an alert.",
 			Parameters: []RobotParameter{
 				{Name: "alert-id", Flag: "--robot-dismiss-alert", Type: "string", Required: false, Description: "Alert ID to dismiss; omit when using --dismiss-all"},
-				{Name: "dismiss-session", Flag: "--dismiss-session", Type: "string", Required: false, Description: "Scope dismissal to session"},
+				{Name: "session", Flag: "--session", Type: "string", Required: false, Description: "Scope dismissal to session"},
 				{Name: "dismiss-all", Flag: "--dismiss-all", Type: "bool", Required: false, Description: "Dismiss all matching alerts"},
 			},
 			Examples: []string{"ntm --robot-dismiss-alert=alert-abc123", "ntm --robot-dismiss-alert --dismiss-all"},

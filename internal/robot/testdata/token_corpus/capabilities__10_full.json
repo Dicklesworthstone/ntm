@@ -1049,13 +1049,11 @@
           "replaced_by": "--compact"
         },
         {
-          "name": "md-session",
-          "flag": "--md-session",
+          "name": "session",
+          "flag": "--session",
           "type": "string",
           "required": false,
-          "description": "Filter to one session",
-          "deprecated": true,
-          "replaced_by": "--session"
+          "description": "Filter to one session"
         },
         {
           "name": "md-max-beads",
@@ -1077,7 +1075,7 @@
         }
       ],
       "examples": [
-        "ntm --robot-markdown --md-compact --md-session=myproject"
+        "ntm --robot-markdown --md-compact --session=myproject"
       ],
       "transports": [
         {
@@ -1727,8 +1725,8 @@
           "description": "Wait for attention after this cursor"
         },
         {
-          "name": "attention-session",
-          "flag": "--attention-session",
+          "name": "session",
+          "flag": "--session",
           "type": "string",
           "required": false,
           "description": "Filter to a specific session"
@@ -1769,7 +1767,7 @@
       "examples": [
         "ntm --robot-attention",
         "ntm --robot-attention --attention-cursor=42 --attention-timeout=2m",
-        "ntm --robot-attention --attention-session=proj --profile=debug --attention-condition=action_required"
+        "ntm --robot-attention --session=proj --profile=debug --attention-condition=action_required"
       ],
       "transports": [
         {
@@ -1889,8 +1887,8 @@
           "description": "Filter by event category"
         },
         {
-          "name": "events-session",
-          "flag": "--events-session",
+          "name": "session",
+          "flag": "--session",
           "type": "string",
           "required": false,
           "description": "Filter by session name"
@@ -2816,8 +2814,8 @@
       "schema_source": "built_in",
       "parameters": [
         {
-          "name": "overlay-session",
-          "flag": "--overlay-session",
+          "name": "session",
+          "flag": "--session",
           "type": "string",
           "required": false,
           "description": "Session to open. Defaults to the current tmux session when omitted."
@@ -2839,7 +2837,7 @@
         }
       ],
       "examples": [
-        "ntm --robot-overlay --overlay-session=myproject",
+        "ntm --robot-overlay --session=myproject",
         "ntm --robot-overlay --overlay-cursor=42 --overlay-no-wait"
       ],
       "transports": [
@@ -5090,13 +5088,11 @@
           "description": "Alert ID to dismiss; omit when using --dismiss-all"
         },
         {
-          "name": "dismiss-session",
-          "flag": "--dismiss-session",
+          "name": "session",
+          "flag": "--session",
           "type": "string",
           "required": false,
-          "description": "Scope dismissal to session",
-          "deprecated": true,
-          "replaced_by": "--session"
+          "description": "Scope dismissal to session"
         },
         {
           "name": "dismiss-all",
@@ -8073,13 +8069,11 @@
           "replaced_by": "--compact"
         },
         {
-          "name": "md-session",
-          "flag": "--md-session",
+          "name": "session",
+          "flag": "--session",
           "type": "string",
           "required": false,
-          "description": "Filter to one session",
-          "deprecated": true,
-          "replaced_by": "--session"
+          "description": "Filter to one session"
         },
         {
           "name": "md-max-beads",
@@ -8101,7 +8095,7 @@
         }
       ],
       "examples": [
-        "ntm --robot-markdown --md-compact --md-session=myproject"
+        "ntm --robot-markdown --md-compact --session=myproject"
       ],
       "transports": [
         {
@@ -8862,8 +8856,8 @@
           "description": "Wait for attention after this cursor"
         },
         {
-          "name": "attention-session",
-          "flag": "--attention-session",
+          "name": "session",
+          "flag": "--session",
           "type": "string",
           "required": false,
           "description": "Filter to a specific session"
@@ -8904,7 +8898,7 @@
       "examples": [
         "ntm --robot-attention",
         "ntm --robot-attention --attention-cursor=42 --attention-timeout=2m",
-        "ntm --robot-attention --attention-session=proj --profile=debug --attention-condition=action_required"
+        "ntm --robot-attention --session=proj --profile=debug --attention-condition=action_required"
       ],
       "transports": [
         {
@@ -9084,8 +9078,8 @@
           "description": "Filter by event category"
         },
         {
-          "name": "events-session",
-          "flag": "--events-session",
+          "name": "session",
+          "flag": "--session",
           "type": "string",
           "required": false,
           "description": "Filter by session name"
@@ -10063,8 +10057,8 @@
       "schema_source": "built_in",
       "parameters": [
         {
-          "name": "overlay-session",
-          "flag": "--overlay-session",
+          "name": "session",
+          "flag": "--session",
           "type": "string",
           "required": false,
           "description": "Session to open. Defaults to the current tmux session when omitted."
@@ -10086,7 +10080,7 @@
         }
       ],
       "examples": [
-        "ntm --robot-overlay --overlay-session=myproject",
+        "ntm --robot-overlay --session=myproject",
         "ntm --robot-overlay --overlay-cursor=42 --overlay-no-wait"
       ],
       "transports": [
@@ -12466,13 +12460,11 @@
           "description": "Alert ID to dismiss; omit when using --dismiss-all"
         },
         {
-          "name": "dismiss-session",
-          "flag": "--dismiss-session",
+          "name": "session",
+          "flag": "--session",
           "type": "string",
           "required": false,
-          "description": "Scope dismissal to session",
-          "deprecated": true,
-          "replaced_by": "--session"
+          "description": "Scope dismissal to session"
         },
         {
           "name": "dismiss-all",

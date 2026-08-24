@@ -33,8 +33,8 @@
           "description": "Wait for attention after this cursor"
         },
         {
-          "name": "attention-session",
-          "flag": "--attention-session",
+          "name": "session",
+          "flag": "--session",
           "type": "string",
           "required": false,
           "description": "Filter to a specific session"
@@ -75,7 +75,7 @@
       "examples": [
         "ntm --robot-attention",
         "ntm --robot-attention --attention-cursor=42 --attention-timeout=2m",
-        "ntm --robot-attention --attention-session=proj --profile=debug --attention-condition=action_required"
+        "ntm --robot-attention --session=proj --profile=debug --attention-condition=action_required"
       ],
       "transports": [
         {
@@ -195,8 +195,8 @@
           "description": "Filter by event category"
         },
         {
-          "name": "events-session",
-          "flag": "--events-session",
+          "name": "session",
+          "flag": "--session",
           "type": "string",
           "required": false,
           "description": "Filter by session name"
@@ -265,8 +265,8 @@
           "description": "Wait for attention after this cursor"
         },
         {
-          "name": "attention-session",
-          "flag": "--attention-session",
+          "name": "session",
+          "flag": "--session",
           "type": "string",
           "required": false,
           "description": "Filter to a specific session"
@@ -307,7 +307,7 @@
       "examples": [
         "ntm --robot-attention",
         "ntm --robot-attention --attention-cursor=42 --attention-timeout=2m",
-        "ntm --robot-attention --attention-session=proj --profile=debug --attention-condition=action_required"
+        "ntm --robot-attention --session=proj --profile=debug --attention-condition=action_required"
       ],
       "transports": [
         {
@@ -487,8 +487,8 @@
           "description": "Filter by event category"
         },
         {
-          "name": "events-session",
-          "flag": "--events-session",
+          "name": "session",
+          "flag": "--session",
           "type": "string",
           "required": false,
           "description": "Filter by session name"

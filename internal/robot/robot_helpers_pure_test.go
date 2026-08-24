@@ -431,7 +431,7 @@ func TestPrintOverlayRejectsInvalidInput(t *testing.T) {
 			name:     "missing session outside tmux",
 			opts:     OverlayOptions{},
 			wantCode: ErrCodeInvalidFlag,
-			wantHint: "Pass --overlay-session=<session> or run --robot-overlay inside the target tmux session",
+			wantHint: "Pass --session=<session> or run --robot-overlay inside the target tmux session",
 		},
 		{
 			name:     "explicit session outside tmux",

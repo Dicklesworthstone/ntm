@@ -119,7 +119,7 @@ These flags are shared across many commands and MUST NOT be tool-prefixed:
 | `--lines=N` | Lines to capture | tail, inspect |
 | `--query=Q` | Search query | search commands |
 | `--type=T` | Filter by agent type | send, ack, interrupt, activity, wait, route, history |
-| `--attention-session=S` | Filter attention by session | attention |
+| `--session=S` | Filter attention by session | attention |
 | `--timeout=D` | Operation timeout | wait, ack, interrupt |
 | `--verbose` | Detailed output | status, health commands |
 | `--dry-run` | Preview without executing | send, spawn, restart |
@@ -646,7 +646,6 @@ Use this checklist when adding or modifying a robot command:
 ### Dismiss Flags
 | Deprecated | Canonical |
 |------------|-----------|
-| `--dismiss-session` | `--session` |
 | `--dismiss-all` | `--all` |
 
 ### Interrupt Flags
@@ -677,7 +676,6 @@ Use this checklist when adding or modifying a robot command:
 | Deprecated | Canonical |
 |------------|-----------|
 | `--md-compact` | `--compact` |
-| `--md-session` | `--session` |
 | `--md-sections` | `--sections` |
 | `--md-max-beads` | `--max-beads` |
 | `--md-max-alerts` | `--max-alerts` |

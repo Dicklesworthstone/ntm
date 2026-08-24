@@ -209,7 +209,7 @@ func getCommandsContent() *DocsContent {
 --robot-answer-dialog=SESSION: Answer a dialog by label (--panes + --choice); destructive confirms refuse accept-side answers
 --robot-smart-restart=SESSION: Safety-checked restart with optional --hard-kill / --hard-kill-only fallback
 --robot-wait=SESSION: Wait for pane state, attention-feed, or evidence-backed convergence condition
---robot-overlay: Open dashboard overlay for human handoff (--overlay-session optional inside tmux)
+--robot-overlay: Open dashboard overlay for human handoff (--session optional inside tmux)
 --robot-route=SESSION: Get routing recommendation`,
 			},
 			{
@@ -353,7 +353,7 @@ func getExamplesContent() *DocsContent {
 			{
 				Name:        "handoff_to_human",
 				Description: "Open the dashboard overlay as a structured human handoff actuator",
-				Command:     "ntm --robot-overlay --overlay-session=proj --overlay-cursor=42 --overlay-no-wait",
+				Command:     "ntm --robot-overlay --session=proj --overlay-cursor=42 --overlay-no-wait",
 				Notes:       "Use this when an operator should jump directly to the relevant attention item instead of parsing free-form instructions",
 			},
 			{
