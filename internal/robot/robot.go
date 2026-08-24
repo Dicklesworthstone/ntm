@@ -4851,6 +4851,22 @@ func GetSnapshot(cfg *config.Config) (*SnapshotOutput, error) {
 	return GetSnapshotWithOptions(cfg, PaginationOptions{})
 }
 
+// filterByName returns the items whose name matches name, or the full list
+// when name is empty (no scope). It is a pure function so the scoping rule is
+// unit-testable without a live tmux server.
+func filterByName[T any](items []T, name string, nameOf func(T) string) []T {
+	if name == "" {
+		return items
+	}
+	filtered := make([]T, 0, 1)
+	for _, it := range items {
+		if nameOf(it) == name {
+			filtered = append(filtered, it)
+		}
+	}
+	return filtered
+}
+
 // GetSnapshotWithOptions retrieves complete system state with pagination applied to sessions.
 func GetSnapshotWithOptions(cfg *config.Config, opts PaginationOptions) (*SnapshotOutput, error) {
 	if cfg == nil {
@@ -4911,6 +4927,23 @@ func GetSnapshotWithOptions(cfg *config.Config, opts PaginationOptions) (*Snapsh
 		)
 		output.Alerts = append(output.Alerts, "failed to list tmux sessions: "+err.Error())
 		return output, nil
+	}
+
+	// A session scope narrows the snapshot to one session. The CLI resolves
+	// the name through the same helper path as the other session-scoped robot
+	// queries, so a non-empty value here is already normalized (or is a raw
+	// name that did not match any live session). Refuse a scope that names no
+	// session rather than answering with an empty success.
+	if opts.Session != "" {
+		sessions = filterByName(sessions, opts.Session, func(s tmux.Session) string { return s.Name })
+		if len(sessions) == 0 {
+			output.RobotResponse = NewErrorResponse(
+				fmt.Errorf("session '%s' not found", opts.Session),
+				ErrCodeSessionNotFound,
+				"Use 'ntm list' to see available sessions",
+			)
+			return output, nil
+		}
 	}
 
 	if store := currentProjectionStore(); store != nil {
@@ -5130,7 +5163,9 @@ func buildProjectionBackedSnapshot(
 	if err != nil {
 		return nil, err
 	}
-	output.Sessions = sessions
+	// The projection path sources sessions from the runtime store, not from
+	// tmux.ListSessions, so the session scope must be applied here too.
+	output.Sessions = filterByName(sessions, opts.Session, func(s SnapshotSession) string { return s.Name })
 	if workRows, err := store.ListFreshRuntimeWork("", 0); err == nil {
 		output.Work = snapshotWorkFromRuntime(workRows, BeadLimit)
 	}

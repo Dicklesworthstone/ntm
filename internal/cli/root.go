@@ -469,6 +469,15 @@ func suggestNearestFlag(errMsg string) string {
 		return ""
 	}
 
+	// A caller who prefixes a shared flag with "robot-" (e.g. --robot-session
+	// for --session) is reaching for the shared flag, not the nearest robot-*
+	// flag. Prefer the stripped name when it is itself a registered flag.
+	if strings.HasPrefix(unknown, "robot-") {
+		if stripped := strings.TrimPrefix(unknown, "robot-"); stripped != "" && rootCmd.Flags().Lookup(stripped) != nil {
+			return stripped
+		}
+	}
+
 	best := ""
 	bestDist := len(unknown)/3 + 2 // confidence bound scales with length
 	bestPrefix := -1
@@ -822,6 +831,14 @@ Shell Integration:
 				}
 				err = robot.PrintSnapshotDelta(sinceTime)
 			} else {
+				if sessionName := resolveRobotSnapshotSession(cmd); sessionName != "" {
+					resolved, resolveErr := resolveOptionalRobotSessionFilter(cmd.Context(), sessionName)
+					if resolveErr != nil {
+						failRobotCommand(resolveErr, robot.ErrCodeSessionNotFound, "Use 'ntm list' to see available sessions", "robot-snapshot")
+						return
+					}
+					pagination.Session = resolved
+				}
 				err = robot.PrintSnapshotWithOptions(cfg, pagination)
 			}
 			if err != nil {
@@ -4125,7 +4142,7 @@ func init() {
 	rootCmd.Flags().BoolVar(&robotCapabilitiesCompact, "capability-compact", false, "Return a token-efficient --robot-capabilities command catalog")
 	rootCmd.Flags().StringVar(&robotDocs, "robot-docs", "", "Get documentation for a topic (JSON). Topics: quickstart, commands, examples, exit-codes. Example: ntm --robot-docs=quickstart")
 	rootCmd.Flags().BoolVar(&robotPlan, "robot-plan", false, "Get bv execution plan with parallelizable tracks (JSON). Example: ntm --robot-plan")
-	rootCmd.Flags().BoolVar(&robotSnapshot, "robot-snapshot", false, "Unified state: sessions + beads + alerts + mail. Use --since for delta. Example: ntm --robot-snapshot")
+	rootCmd.Flags().BoolVar(&robotSnapshot, "robot-snapshot", false, "Unified state: sessions + beads + alerts + mail. Use --since for delta, --session to scope to one session. Example: ntm --robot-snapshot")
 	rootCmd.Flags().StringVar(&robotSince, "since", "", "Shared time filter for commands that support --since. Snapshot uses RFC3339; history/diff/summary accept duration or RFC3339 timestamps; tokens accepts ISO8601 or YYYY-MM-DD; robot-mail-check accepts YYYY-MM-DD. Examples: --since=2025-12-15T10:00:00Z, --since=1h, --since=2025-12-15")
 	rootCmd.Flags().BoolVar(&robotEvents, "robot-events", false, "Stream attention events since cursor. Use for raw replay/feed. Example: ntm --robot-events --since-cursor=42 --events-limit=50")
 	rootCmd.Flags().Int64Var(&robotEventsSinceCursor, "since-cursor", 0, "Cursor position to replay from. Optional with --robot-events. Example: --since-cursor=42")
@@ -4784,7 +4801,7 @@ func init() {
 	// prefixed session flags. The deprecation hints below point at
 	// --session, so it must actually be registered on this command surface
 	// (ntm#214: the hint previously suggested a flag that didn't exist).
-	rootCmd.Flags().StringVar(&robotSharedSession, "session", "", "Session name. Canonical form for --robot-pipeline-run, --robot-tokens, --robot-alerts, and --robot-palette (replaces --pipeline-session, --tokens-session, --alerts-session, --palette-session)")
+	rootCmd.Flags().StringVar(&robotSharedSession, "session", "", "Session name. Canonical form for --robot-pipeline-run, --robot-tokens, --robot-alerts, --robot-palette, and --robot-snapshot (replaces --pipeline-session, --tokens-session, --alerts-session, --palette-session)")
 
 	// --no-wait for interrupt
 	rootCmd.Flags().BoolVar(&robotInterruptNoWait, "no-wait", false, "Return immediately without waiting")
@@ -5398,6 +5415,10 @@ func resolveRobotAlertsSession(cmd *cobra.Command) string {
 
 func resolveRobotPaletteSession(cmd *cobra.Command) string {
 	return resolveRobotSharedFlag(cmd, "palette-session", robotPaletteSession, "session", robotSharedSession)
+}
+
+func resolveRobotSnapshotSession(cmd *cobra.Command) string {
+	return resolveRobotSharedFlag(cmd, "", "", "session", robotSharedSession)
 }
 
 func resolveRobotReplayDryRun(cmd *cobra.Command) bool {

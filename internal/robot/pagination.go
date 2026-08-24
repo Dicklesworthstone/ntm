@@ -4,6 +4,10 @@ package robot
 type PaginationOptions struct {
 	Limit  int
 	Offset int
+	// Session, when non-empty, scopes the output to a single tmux session.
+	// Consumers that enumerate sessions (e.g. snapshot) filter to this name
+	// and report SESSION_NOT_FOUND when it does not exist.
+	Session string
 }
 
 // PaginationInfo describes pagination state for array outputs.

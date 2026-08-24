@@ -97,3 +97,28 @@ func TestResolveRobotSessionSharedFlag(t *testing.T) {
 		}
 	})
 }
+
+// TestResolveRobotSnapshotSession guards the --robot-snapshot session scope:
+// it resolves the shared --session flag through the same helper path as the
+// four queries above, with no snapshot-specific prefixed flag to fall back to.
+func TestResolveRobotSnapshotSession(t *testing.T) {
+	t.Run("shared --session resolves for snapshot", func(t *testing.T) {
+		cmd := newRobotSessionTestCmd(t)
+		if err := cmd.ParseFlags([]string{"--session=proj"}); err != nil {
+			t.Fatalf("ParseFlags: %v", err)
+		}
+		if got := resolveRobotSnapshotSession(cmd); got != "proj" {
+			t.Errorf("resolveRobotSnapshotSession() = %q, want %q", got, "proj")
+		}
+	})
+
+	t.Run("no --session resolves empty", func(t *testing.T) {
+		cmd := newRobotSessionTestCmd(t)
+		if err := cmd.ParseFlags(nil); err != nil {
+			t.Fatalf("ParseFlags: %v", err)
+		}
+		if got := resolveRobotSnapshotSession(cmd); got != "" {
+			t.Errorf("resolveRobotSnapshotSession() = %q, want empty", got)
+		}
+	})
+}
