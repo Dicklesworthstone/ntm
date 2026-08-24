@@ -2,7 +2,9 @@ package cli
 
 import (
 	"bytes"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -35,6 +37,13 @@ func TestValidKeyRegex(t *testing.T) {
 		{"'F12", false, "single quote"},
 		{"\"F12", false, "double quote"},
 		{"F12\nother", false, "newline injection"},
+		{"--help", false, "leading dash long flag"},
+		{"-k", false, "leading dash short flag"},
+		{"--overlay", false, "leading dash long flag"},
+		{"-", false, "bare dash"},
+		{"M-Left", true, "meta combo with multi-char"},
+		{"^A", true, "caret ctrl uppercase"},
+		{"q", true, "single letter q"},
 	}
 
 	for _, tc := range testCases {
@@ -576,4 +585,174 @@ func TestDefaultKeySelection(t *testing.T) {
 
 	t.Logf("Default palette key: %s", defaultPaletteKey)
 	t.Logf("Default overlay key: %s", defaultOverlayKey)
+}
+
+// TestValidateKey tests the key validator used by every bind subcommand. The
+// leading-dash cases are the regression this bead fixes: the old regex admitted
+// them, and tmux then refused the resulting bind-key line.
+func TestValidateKey(t *testing.T) {
+	testCases := []struct {
+		key       string
+		wantValid bool
+		desc      string
+	}{
+		{"--help", false, "leading dash long flag"},
+		{"-k", false, "leading dash short flag"},
+		{"--overlay", false, "leading dash long flag"},
+		{"-", false, "bare dash"},
+		{"F6", true, "function key F6"},
+		{"F12", true, "function key F12"},
+		{"C-a", true, "ctrl combo with dash"},
+		{"M-Left", true, "meta combo with multi-char"},
+		{"^A", true, "caret ctrl uppercase"},
+		{"q", true, "single letter"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.desc, func(t *testing.T) {
+			err := validateKey(tc.key)
+			if tc.wantValid {
+				if err != nil {
+					t.Errorf("validateKey(%q) = %v, want nil", tc.key, err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("validateKey(%q) = nil, want error", tc.key)
+			}
+			if !strings.Contains(err.Error(), tc.key) {
+				t.Errorf("validateKey(%q) error %q does not name the rejected value", tc.key, err.Error())
+			}
+		})
+	}
+}
+
+// TestSetupBindingLiveBindFailureDoesNotWriteConfig covers the branch that
+// turned a typo into nine days of tmux startup errors: when the live bind-key
+// fails inside tmux, the config write must be aborted, not downgraded to a
+// warning.
+func TestSetupBindingLiveBindFailureDoesNotWriteConfig(t *testing.T) {
+	tmpDir := t.TempDir()
+	confPath := filepath.Join(tmpDir, ".tmux.conf")
+	existing := "set -g status on\nset -g mouse on\n"
+	if err := os.WriteFile(confPath, []byte(existing), 0600); err != nil {
+		t.Fatalf("write initial conf: %v", err)
+	}
+
+	t.Setenv("HOME", tmpDir)
+	t.Setenv("TMUX", "test-session")          // pretend we are inside tmux
+	t.Setenv("NTM_TMUX_BINARY", "/bin/false") // live bind-key fails
+
+	err := setupBinding("F6")
+	if err == nil {
+		t.Fatal("setupBinding succeeded, want error when live bind fails")
+	}
+
+	got, readErr := os.ReadFile(confPath)
+	if readErr != nil {
+		t.Fatalf("read conf: %v", readErr)
+	}
+	if string(got) != existing {
+		t.Errorf("config modified on live-bind failure:\n got: %q\nwant: %q", got, existing)
+	}
+}
+
+// TestBindRejectsDashLeadingKeyAcrossModes verifies the shared validation guard
+// covers --overlay, --unbind and --show, and that none of them writes to
+// ~/.tmux.conf when the key is rejected.
+func TestBindRejectsDashLeadingKeyAcrossModes(t *testing.T) {
+	testCases := []struct {
+		name string
+		args []string
+	}{
+		{"palette", []string{"--key", "--help"}},
+		{"overlay", []string{"--overlay", "--key", "--help"}},
+		{"unbind", []string{"--unbind", "--key", "--help"}},
+		{"show", []string{"--show", "--key", "--help"}},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			confPath := filepath.Join(tmpDir, ".tmux.conf")
+			t.Setenv("HOME", tmpDir)
+			os.Unsetenv("TMUX")
+
+			cmd := newBindCmd()
+			cmd.SetArgs(tc.args)
+			err := cmd.Execute()
+			if err == nil {
+				t.Fatalf("bind %v succeeded, want error for dash-leading key", tc.args)
+			}
+			if !strings.Contains(err.Error(), "--help") {
+				t.Errorf("bind %v error %q does not name the rejected value", tc.args, err.Error())
+			}
+
+			if _, statErr := os.Stat(confPath); !os.IsNotExist(statErr) {
+				t.Errorf("bind %v wrote a config file despite rejecting the key", tc.args)
+			}
+		})
+	}
+}
+
+// TestBindDefaultGoldenFile verifies the exact bytes `ntm bind` writes for the
+// default key match the checked-in golden file.
+func TestBindDefaultGoldenFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+	os.Unsetenv("TMUX")
+
+	if err := setupBinding("F6"); err != nil {
+		t.Fatalf("setupBinding failed: %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(tmpDir, ".tmux.conf"))
+	if err != nil {
+		t.Fatalf("read generated conf: %v", err)
+	}
+
+	golden, err := os.ReadFile(filepath.Join("testdata", "bind_default.tmux.conf"))
+	if err != nil {
+		t.Fatalf("read golden conf: %v", err)
+	}
+
+	if !bytes.Equal(got, golden) {
+		t.Errorf("generated conf differs from golden:\n got: %q\nwant: %q", got, golden)
+	}
+}
+
+// TestGoldenConfigParsesWithTmux feeds the checked-in golden file through
+// `tmux source-file` to prove the generated line parses. It skips when no tmux
+// binary is present, and uses an isolated socket so it never touches the
+// developer's server.
+func TestGoldenConfigParsesWithTmux(t *testing.T) {
+	tmuxBin, err := exec.LookPath("tmux")
+	if err != nil {
+		t.Skip("tmux binary not available")
+	}
+
+	golden, err := os.ReadFile(filepath.Join("testdata", "bind_default.tmux.conf"))
+	if err != nil {
+		t.Fatalf("read golden conf: %v", err)
+	}
+
+	socket := fmt.Sprintf("ntm-bind-golden-%d", os.Getpid())
+
+	start := exec.Command(tmuxBin, "-L", socket, "new-session", "-d", "-s", "ntm-bind-golden")
+	if out, err := start.CombinedOutput(); err != nil {
+		t.Skipf("could not start isolated tmux server: %v: %s", err, out)
+	}
+	defer func() {
+		_ = exec.Command(tmuxBin, "-L", socket, "kill-server").Run()
+	}()
+
+	conf := filepath.Join(t.TempDir(), "tmux.conf")
+	if err := os.WriteFile(conf, golden, 0600); err != nil {
+		t.Fatalf("write temp conf: %v", err)
+	}
+
+	source := exec.Command(tmuxBin, "-L", socket, "source-file", conf)
+	if out, err := source.CombinedOutput(); err != nil {
+		t.Fatalf("tmux source-file rejected the generated config: %v\n%s", err, out)
+	}
 }
