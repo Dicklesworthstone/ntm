@@ -2777,7 +2777,9 @@ func renderHistory(resp HistoryResponse) error {
 	fmt.Printf("  Total Beads: %d  Commits: %d  Beads with Commits: %d  (bv)\n\n",
 		stats.TotalBeads, stats.TotalCommits, stats.BeadsWithCommits)
 
-	// Recent bead histories (limit to first 10)
+	// Bead histories, first 10 by id: bv returns them keyed by bead id, so
+	// there is no recency to preserve and sorting is what makes the output
+	// deterministic.
 	histories := resp.Histories
 	if len(histories) > 10 {
 		ids := make([]string, 0, len(histories))
@@ -3180,8 +3182,13 @@ type bvDegradation struct {
 	InstalledVersion string `json:"installed_version"`
 	RequiredVersion  string `json:"required_version"`
 	Complete         bool   `json:"complete"`
-	Error            string `json:"error,omitempty"`
-	Stderr           string `json:"stderr,omitempty"`
+	// VersionProblem distinguishes "bv is too old for this capability" from
+	// "bv ran and failed for its own reasons". Without it a reader has to
+	// compare the two version strings itself and guess, which is the guess the
+	// human warning no longer makes.
+	VersionProblem bool   `json:"version_problem"`
+	Error          string `json:"error,omitempty"`
+	Stderr         string `json:"stderr,omitempty"`
 }
 
 // bvWorkEnvelope wraps bv's raw output with the degradation field.
@@ -3252,6 +3259,7 @@ func degradationFromError(bvErr *tools.BVRobotError) bvDegradation {
 		InstalledVersion: versionString(bvErr.InstalledVersion),
 		RequiredVersion:  versionString(bvErr.RequiredVersion),
 		Complete:         false,
+		VersionProblem:   bvErr.VersionProblem,
 		Error:            bvErr.Err.Error(),
 		Stderr:           strings.TrimSpace(bvErr.Stderr),
 	}

@@ -504,6 +504,7 @@ func TestWorkHistoryJSONCarriesDegradation(t *testing.T) {
 			InstalledVersion string `json:"installed_version"`
 			RequiredVersion  string `json:"required_version"`
 			Complete         bool   `json:"complete"`
+			VersionProblem   bool   `json:"version_problem"`
 			Stderr           string `json:"stderr"`
 		} `json:"degradation"`
 	}
@@ -516,8 +517,47 @@ func TestWorkHistoryJSONCarriesDegradation(t *testing.T) {
 	if env.Degradation.Complete {
 		t.Error("degradation.complete = true, want false")
 	}
+	if env.Degradation.VersionProblem {
+		t.Error("degradation.version_problem = true, want false: bv satisfies the requirement and failed for its own reasons")
+	}
 	if !strings.Contains(env.Degradation.Stderr, "robot mode failed") {
 		t.Errorf("degradation.stderr = %q, want contains robot mode failed", env.Degradation.Stderr)
+	}
+}
+
+// TestWorkHistoryJSONVersionProblemFlag is the other direction of the flag
+// above: a bv below the requirement is the one case where the version is the
+// story, and an orchestrator must be able to read that without comparing the
+// two version strings itself.
+func TestWorkHistoryJSONVersionProblemFlag(t *testing.T) {
+	fakeToolsPATH(t)
+	t.Setenv("FAKE_TOOL_MODE", "old_version_refuses")
+
+	prevJSON := jsonOutput
+	jsonOutput = true
+	t.Cleanup(func() { jsonOutput = prevJSON })
+
+	out, err := captureStdout(t, func() error {
+		return runWorkHistory()
+	})
+	if err == nil {
+		t.Fatal("runWorkHistory() = nil error, want non-zero exit")
+	}
+
+	var env struct {
+		Degradation struct {
+			VersionProblem bool `json:"version_problem"`
+			Complete       bool `json:"complete"`
+		} `json:"degradation"`
+	}
+	if err := json.Unmarshal([]byte(out), &env); err != nil {
+		t.Fatalf("stdout is not valid JSON: %v\nstdout:\n%s", err, out)
+	}
+	if !env.Degradation.VersionProblem {
+		t.Error("degradation.version_problem = false, want true for a bv below the requirement")
+	}
+	if env.Degradation.Complete {
+		t.Error("degradation.complete = true, want false")
 	}
 }
 
