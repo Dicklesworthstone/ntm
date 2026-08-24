@@ -248,7 +248,14 @@ var (
 	}
 
 	// codHeaderPattern confirms output is from Codex CLI.
-	codHeaderPattern = regexp.MustCompile(`(?i)\b(codex|openai|gpt-\d)\b`)
+	//
+	// "openai" was removed from this alternation (bd-gc0): pi is an
+	// OpenAI-compatible client (see types.go), so its panes routinely print
+	// the bare word "openai" while working on OpenAI-adjacent code, and a
+	// bare-word match here misclassified those panes as Codex. The word
+	// "codex" and the "gpt-N" model token remain: a genuine Codex pane prints
+	// "OpenAI Codex CLI vX.Y.Z" (the "codex" word) or a "gpt-N" model line.
+	codHeaderPattern = regexp.MustCompile(`(?i)\b(codex|gpt-\d)\b`)
 )
 
 const codexLiveTailLines = 15

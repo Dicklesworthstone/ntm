@@ -1,0 +1,24 @@
+ pi v0.84.2
+ctrl+c/ctrl+d clear/exit
+
+⠴ Working...
+
+I'll refactor the openai client to route through the local proxy. The
+current handler hardcodes the upstream base URL, so I'm extracting it into
+a config field and threading it through the request builder.
+
+```go
+type Client struct {
+    baseURL string
+    http    *http.Client
+}
+
+func NewClient(baseURL string) *Client {
+    return &Client{baseURL: baseURL, http: &http.Client{}}
+}
+```
+
+The proxy forwards to gpt-4o-mini for the cheap lane and deepseek-v4-pro-high
+for the heavy lane, so the base URL is the only thing that changes per call.
+
+↑100k ↓958 13.0%/262k (auto)

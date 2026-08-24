@@ -451,6 +451,7 @@ func TestDetectAgentType(t *testing.T) {
 		{"myproject__gemini_1", "gmi"},
 		{"myproject__google_gemini_1", "gmi"},
 		{"myproject__cursor_1", "cursor"},
+		{"myproject__pi_1", "pi"},
 		{"myproject__ws_1", "windsurf"},
 		{"myproject__aider_1", "aider"},
 		{"myproject__ollama_1", "ollama"},

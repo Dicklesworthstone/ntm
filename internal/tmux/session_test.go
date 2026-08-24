@@ -2828,6 +2828,18 @@ func TestComposerClearKeys_PerAgentSequences(t *testing.T) {
 	}
 }
 
+// TestComposerMarkerForAgent_PiFailsOpen asserts that a pi pane has no
+// composer marker, so it reaches the fail-open no-classifier path rather than
+// the Codex "›" marker check (bd-gc0).
+func TestComposerMarkerForAgent_PiFailsOpen(t *testing.T) {
+	if got := composerMarkerForAgent(AgentPi); got != "" {
+		t.Errorf("composerMarkerForAgent(AgentPi) = %q, want \"\" (no classifier)", got)
+	}
+	if got := composerMarkerForAgent(AgentCodex); got != "›" {
+		t.Errorf("composerMarkerForAgent(AgentCodex) = %q, want \"›\"", got)
+	}
+}
+
 func TestComposerLineEmpty_BottomMostMarkerOnly(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -2921,6 +2933,13 @@ func TestClassifyComposerDeliveryVerdict(t *testing.T) {
 			name:        "grok absent from marker table",
 			agentType:   AgentGrok,
 			capture:     "grok>",
+			wantVerdict: VerdictNoClassifier,
+			wantReady:   true,
+		},
+		{
+			name:        "pi absent from marker table",
+			agentType:   AgentPi,
+			capture:     " pi v0.84.2\nctrl+c/ctrl+d clear/exit",
 			wantVerdict: VerdictNoClassifier,
 			wantReady:   true,
 		},

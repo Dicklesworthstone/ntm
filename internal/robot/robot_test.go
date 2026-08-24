@@ -190,12 +190,17 @@ func TestDetectAgentType(t *testing.T) {
 		{"cod short form double underscore", "test__cod__2", "codex"},
 		{"gmi short form", "myproject__gmi_1", "gemini"},
 		{"gmi short form double underscore", "test__gmi__2", "gemini"},
+		{"pi short form", "myproject__pi_1", "pi"},
+		{"pi short form double underscore", "test__pi__2", "pi"},
+		{"pi short form with variant", "llmux--ticktest__pi_1_deepseek-v4-pro-high", "pi"},
 		{"ws short form", "myproject__ws_1", "windsurf"},
 
 		// Should NOT match short forms inside words
 		{"success not cc", "success_test", "unknown"},
 		{"accord not cc", "accord_pane", "unknown"},
 		{"decode not cod", "decode_pane", "unknown"},
+		{"api not pi", "api_server", "unknown"},
+		{"pipeline not pi", "pipeline_pane", "unknown"},
 
 		// Edge cases
 		{"unknown", "bash", "unknown"},
@@ -1945,6 +1950,7 @@ func TestAgentTypeString(t *testing.T) {
 		{tmux.AgentClaude, "claude"},
 		{tmux.AgentCodex, "codex"},
 		{tmux.AgentGemini, "gemini"},
+		{tmux.AgentPi, "pi"},
 		{tmux.AgentGrok, "grok"},
 		{tmux.AgentCursor, "cursor"},
 		{tmux.AgentWindsurf, "windsurf"},
