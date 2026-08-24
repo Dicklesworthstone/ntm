@@ -470,6 +470,17 @@ func detectAgentFromCommand(command string) AgentType {
 		return AgentAntigravity
 	}
 
+	// pi (the pi coding agent) — same executable-only rule as grok and agy:
+	// "pi" is a short generic token, so it must be the command's executable
+	// basename, never a coincidental argument. This arm is load-bearing for
+	// spawn readiness: pi rewrites its pane title via OSC 0 ("π - <cwd>"),
+	// so the ntm-formatted title is gone by the time the readiness poll lists
+	// the pane, and the command name is the only signal left that the pane is
+	// a pi agent rather than a user shell.
+	if commandExecutableIs(cmd, "pi") {
+		return AgentPi
+	}
+
 	// Helper to check if a command matches an agent
 	isAgent := func(name string) bool {
 		return cmd == name ||
@@ -555,12 +566,20 @@ func detectAgentFromArgv(argv []string) AgentType {
 		return AgentAntigravity
 	}
 
+	// pi: same executable-only rule as grok and agy. "pi" is a short generic
+	// token that shows up in unrelated argv elements (`rg pi`), so it may only
+	// classify via argv[0]; the fallback loops below exclude AgentPi the same
+	// way they exclude AgentGrok and AgentAntigravity.
+	if commandExecutableIs(argv[0], "pi") {
+		return AgentPi
+	}
+
 	joined := strings.Join(argv, " ")
-	if t := detectAgentFromCommand(joined); t != AgentUser && t != AgentGrok && t != AgentAntigravity {
+	if t := detectAgentFromCommand(joined); t != AgentUser && t != AgentGrok && t != AgentAntigravity && t != AgentPi {
 		return t
 	}
 	for _, arg := range argv {
-		if t := detectAgentFromCommand(arg); t != AgentUser && t != AgentGrok && t != AgentAntigravity {
+		if t := detectAgentFromCommand(arg); t != AgentUser && t != AgentGrok && t != AgentAntigravity && t != AgentPi {
 			return t
 		}
 	}

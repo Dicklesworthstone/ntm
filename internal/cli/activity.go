@@ -366,6 +366,8 @@ func detectAgentTypeFromPane(pane tmux.Pane) string {
 		return "gemini"
 	case tmux.AgentAntigravity:
 		return "antigravity"
+	case tmux.AgentPi:
+		return "pi"
 	case tmux.AgentGrok:
 		return "grok"
 	case tmux.AgentCursor:
