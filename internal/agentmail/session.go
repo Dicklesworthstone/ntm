@@ -329,7 +329,18 @@ func (c *Client) RegisterSessionAgent(ctx context.Context, sessionName, workingD
 		TaskDescription: fmt.Sprintf("NTM session coordinator for %s", sessionName),
 	})
 	if err != nil {
-		return nil, fmt.Errorf("registering agent: %w", err)
+		// On transient busy errors the agent may have been created
+		// server-side despite the error. Reconcile by listing agents and
+		// matching program/model, mirroring registerSpawnedAgents (bd-j3q).
+		if IsTransientBusy(err) {
+			if reconciled := c.reconcileCoordinatorAgent(ctx, workingDir); reconciled != nil {
+				agent = reconciled
+				err = nil
+			}
+		}
+		if err != nil {
+			return nil, fmt.Errorf("registering agent: %w", err)
+		}
 	}
 
 	// Save locally
@@ -344,6 +355,26 @@ func (c *Client) RegisterSessionAgent(ctx context.Context, sessionName, workingD
 	}
 
 	return info, nil
+}
+
+// reconcileCoordinatorAgent lists the project's agents and returns the
+// coordinator identity (program "ntm", model "coordinator") if one already
+// exists server-side. Used to recover from a transient busy error where the
+// registration may have succeeded despite the error response (bd-j3q).
+func (c *Client) reconcileCoordinatorAgent(ctx context.Context, projectKey string) *Agent {
+	allAgents, err := c.ListAgents(ctx, projectKey)
+	if err != nil {
+		return nil
+	}
+	var found *Agent
+	for i := range allAgents {
+		if allAgents[i].Program == "ntm" && allAgents[i].Model == "coordinator" {
+			if found == nil || allAgents[i].ID > found.ID {
+				found = &allAgents[i]
+			}
+		}
+	}
+	return found
 }
 
 // UpdateSessionActivity updates the last_active timestamp for a session's agent.

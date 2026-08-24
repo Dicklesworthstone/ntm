@@ -19,6 +19,7 @@ func newLockCmd() *cobra.Command {
 		reason string
 		ttl    string
 		shared bool
+		agent  string
 	)
 
 	cmd := &cobra.Command{
@@ -33,18 +34,20 @@ Examples:
   ntm lock myproject "src/api/**" --reason "Implementing user endpoints"
   ntm lock myproject "src/api/**" "tests/api/**" --ttl 2h
   ntm lock myproject "docs/**" --shared     # Non-exclusive (read) lock
-  ntm lock myproject "config/*.json"        # Default 1 hour TTL`,
+  ntm lock myproject "config/*.json"        # Default 1 hour TTL
+  ntm lock myproject "src/**" --agent GreenCastle  # Act as a specific agent`,
 		Args: cobra.MinimumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			session := args[0]
 			patterns := args[1:]
-			return runLock(cmd.Context(), session, patterns, reason, ttl, shared)
+			return runLock(cmd.Context(), session, patterns, reason, ttl, shared, agent)
 		},
 	}
 
 	cmd.Flags().StringVar(&reason, "reason", "", "Reason for the lock")
 	cmd.Flags().StringVar(&ttl, "ttl", "1h", "Time to live (e.g., 30m, 2h, 24h)")
 	cmd.Flags().BoolVar(&shared, "shared", false, "Non-exclusive (read) lock")
+	cmd.Flags().StringVar(&agent, "agent", "", "Agent name to reserve as (defaults to the session's coordinator identity, then $AGENT_NAME)")
 
 	return cmd
 }
@@ -61,7 +64,7 @@ type LockResult struct {
 	Error     string                          `json:"error,omitempty"`
 }
 
-func runLock(ctx context.Context, session string, patterns []string, reason, ttlStr string, shared bool) error {
+func runLock(ctx context.Context, session string, patterns []string, reason, ttlStr string, shared bool, agent string) error {
 	ttlDuration, err := util.ParseDuration(ttlStr)
 	if err != nil {
 		return fmt.Errorf("invalid TTL format '%s': use format like 30m, 1h, 1d", ttlStr)
@@ -76,13 +79,10 @@ func runLock(ctx context.Context, session string, patterns []string, reason, ttl
 		return err
 	}
 
-	sessionAgent, err := loadResolvedSessionAgent(session, projectKey)
-	if err != nil {
-		return fmt.Errorf("loading session agent: %w", err)
-	}
-	if sessionAgent == nil {
+	agentName := resolveLockAgentName(ctx, session, projectKey, agent)
+	if agentName == "" {
 		if IsJSONOutput() {
-			result := LockResult{Success: false, Session: session, Error: "Session has no Agent Mail identity"}
+			result := LockResult{Success: false, Session: session, Error: noSessionAgentIdentityError(session).Error()}
 			enc := json.NewEncoder(os.Stdout)
 			enc.SetIndent("", "  ")
 			if encErr := enc.Encode(result); encErr != nil {
@@ -90,13 +90,13 @@ func runLock(ctx context.Context, session string, patterns []string, reason, ttl
 			}
 			return jsonFailureExit()
 		}
-		return fmt.Errorf("session '%s' has no Agent Mail identity", session)
+		return noSessionAgentIdentityError(session)
 	}
 
 	client := newAgentMailClient(projectKey)
 	if !client.IsAvailable() {
 		if IsJSONOutput() {
-			result := LockResult{Success: false, Session: session, Agent: sessionAgent.AgentName, Error: "Agent Mail server unavailable"}
+			result := LockResult{Success: false, Session: session, Agent: agentName, Error: "Agent Mail server unavailable"}
 			enc := json.NewEncoder(os.Stdout)
 			enc.SetIndent("", "  ")
 			if encErr := enc.Encode(result); encErr != nil {
@@ -112,7 +112,7 @@ func runLock(ctx context.Context, session string, patterns []string, reason, ttl
 
 	opts := agentmail.FileReservationOptions{
 		ProjectKey: projectKey,
-		AgentName:  sessionAgent.AgentName,
+		AgentName:  agentName,
 		Paths:      patterns,
 		TTLSeconds: ttlSeconds,
 		Exclusive:  !shared,
@@ -121,7 +121,7 @@ func runLock(ctx context.Context, session string, patterns []string, reason, ttl
 
 	reservation, err := client.ReservePaths(ctx, opts)
 
-	result := LockResult{Session: session, Agent: sessionAgent.AgentName, TTL: ttlStr}
+	result := LockResult{Session: session, Agent: agentName, TTL: ttlStr}
 
 	if err != nil {
 		if reservation != nil && len(reservation.Conflicts) > 0 {

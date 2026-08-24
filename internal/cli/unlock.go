@@ -14,6 +14,7 @@ func newUnlockCmd() *cobra.Command {
 	var all bool
 	var paneIdx int
 	var taskID string
+	var agent string
 
 	cmd := &cobra.Command{
 		Use:   "unlock <session> [patterns...]",
@@ -32,18 +33,20 @@ Examples:
   ntm unlock myproject "src/api/**"       # Release specific pattern
   ntm unlock myproject --all              # Release all reservations
   ntm unlock myproject "*.go" "*.json"    # Release multiple patterns
-  ntm unlock myproject "src/api/x.go" --pane=2 --task-id=br-123 --json`,
+  ntm unlock myproject "src/api/x.go" --pane=2 --task-id=br-123 --json
+  ntm unlock myproject --all --agent GreenCastle  # Release as a specific agent`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			session := args[0]
 			patterns := args[1:]
-			return runUnlock(cmd.Context(), session, patterns, all, paneIdx, taskID)
+			return runUnlock(cmd.Context(), session, patterns, all, paneIdx, taskID, agent)
 		},
 	}
 
 	cmd.Flags().BoolVar(&all, "all", false, "Release all reservations for this session")
 	cmd.Flags().IntVar(&paneIdx, "pane", -1, "Pane index that originally held the reservation (for the release receipt; ntm#129)")
 	cmd.Flags().StringVar(&taskID, "task-id", "", "Work-item id that owned the reservation (for the release receipt; ntm#129)")
+	cmd.Flags().StringVar(&agent, "agent", "", "Agent name to release as (defaults to the session's coordinator identity, then $AGENT_NAME)")
 
 	return cmd
 }
@@ -86,7 +89,7 @@ type ReleaseConflict struct {
 	Reason string `json:"reason"`
 }
 
-func runUnlock(ctx context.Context, session string, patterns []string, all bool, paneIdx int, taskID string) error {
+func runUnlock(ctx context.Context, session string, patterns []string, all bool, paneIdx int, taskID string, agent string) error {
 	if len(patterns) == 0 && !all {
 		return fmt.Errorf("specify patterns to release or use --all")
 	}
@@ -96,13 +99,10 @@ func runUnlock(ctx context.Context, session string, patterns []string, all bool,
 		return err
 	}
 
-	sessionAgent, err := loadResolvedSessionAgent(session, projectKey)
-	if err != nil {
-		return fmt.Errorf("loading session agent: %w", err)
-	}
-	if sessionAgent == nil {
+	agentName := resolveLockAgentName(ctx, session, projectKey, agent)
+	if agentName == "" {
 		if IsJSONOutput() {
-			result := UnlockResult{Success: false, Session: session, Error: "Session has no Agent Mail identity"}
+			result := UnlockResult{Success: false, Session: session, Error: noSessionAgentIdentityError(session).Error()}
 			enc := json.NewEncoder(os.Stdout)
 			enc.SetIndent("", "  ")
 			if encErr := enc.Encode(result); encErr != nil {
@@ -110,13 +110,13 @@ func runUnlock(ctx context.Context, session string, patterns []string, all bool,
 			}
 			return jsonFailureExit()
 		}
-		return fmt.Errorf("session '%s' has no Agent Mail identity", session)
+		return noSessionAgentIdentityError(session)
 	}
 
 	client := newAgentMailClient(projectKey)
 	if !client.IsAvailable() {
 		if IsJSONOutput() {
-			result := UnlockResult{Success: false, Session: session, Agent: sessionAgent.AgentName, Error: "Agent Mail server unavailable"}
+			result := UnlockResult{Success: false, Session: session, Agent: agentName, Error: "Agent Mail server unavailable"}
 			enc := json.NewEncoder(os.Stdout)
 			enc.SetIndent("", "  ")
 			if encErr := enc.Encode(result); encErr != nil {
@@ -135,8 +135,8 @@ func runUnlock(ctx context.Context, session string, patterns []string, all bool,
 		pathsToRelease = patterns
 	}
 
-	releaseResult, err := client.ReleaseReservations(ctx, projectKey, sessionAgent.AgentName, pathsToRelease, nil)
-	result := UnlockResult{Session: session, Agent: sessionAgent.AgentName}
+	releaseResult, err := client.ReleaseReservations(ctx, projectKey, agentName, pathsToRelease, nil)
+	result := UnlockResult{Session: session, Agent: agentName}
 	if releaseResult != nil && releaseResult.ReleasedAt != nil {
 		t := releaseResult.ReleasedAt.Time
 		result.ReleasedAt = &t
