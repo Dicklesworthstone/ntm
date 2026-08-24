@@ -1170,6 +1170,9 @@ func TestRestartCanonicalAgentType(t *testing.T) {
 		{"opencode", "oc"},
 		{"ws", "windsurf"},
 		{"ollama", "ollama"},
+		// pi has no exit ritual of its own: it must fall open to the unknown
+		// Ctrl+C path, never to the Codex /exit ritual (bd-gc0).
+		{"pi", "unknown"},
 		{"mystery-agent", "unknown"},
 		{"", "unknown"},
 	}

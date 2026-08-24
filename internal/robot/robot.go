@@ -3814,6 +3814,8 @@ func detectAgentType(title string) string {
 		return "antigravity"
 	case containsShortForm(titleLower, "grok"):
 		return "grok"
+	case containsShortForm(titleLower, "pi"):
+		return "pi"
 	case containsShortForm(titleLower, "ws"):
 		return "windsurf"
 	case containsShortForm(titleLower, "oc"):
@@ -6125,6 +6127,8 @@ func agentTypeString(t tmux.AgentType) string {
 		return "gemini"
 	case tmux.AgentAntigravity:
 		return "antigravity"
+	case tmux.AgentPi:
+		return "pi"
 	case tmux.AgentGrok:
 		return "grok"
 	case tmux.AgentCursor:

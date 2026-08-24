@@ -67,8 +67,19 @@ func (p *parserImpl) ParseWithHint(output string, hint AgentType) (*AgentState, 
 // DetectAgentType identifies which agent type produced the output.
 // It checks for agent-specific signatures in priority order.
 func (p *parserImpl) DetectAgentType(output string) AgentType {
-	// Check for explicit headers/signatures in priority order
-	// Priority: Claude > Codex > Gemini (based on specificity of patterns)
+	// Check for explicit headers/signatures in priority order.
+	//
+	// Specific, structural headers are checked before bare-word headers: a
+	// specific match must outrank a bare word regardless of which agent each
+	// belongs to (bd-gc0). pi is an OpenAI-compatible client, so its panes
+	// routinely print "openai"/"gpt-N"/"claude" while working, and the
+	// bare-word cc/cod headers below must not win over pi's exact banner.
+
+	// pi's banner and hint bar. Checked first: pi's header is exact and
+	// cannot collide with any other agent's signature.
+	if piHeaderPattern.MatchString(output) {
+		return AgentTypePi
+	}
 
 	if ccHeaderPattern.MatchString(output) {
 		return AgentTypeClaudeCode
@@ -80,12 +91,6 @@ func (p *parserImpl) DetectAgentType(output string) AgentType {
 	}
 	if codHeaderPattern.MatchString(output) {
 		return AgentTypeCodex
-	}
-
-	// pi's banner and hint bar. Checked before the Gemini family because pi's
-	// header is exact and cannot collide with theirs.
-	if piHeaderPattern.MatchString(output) {
-		return AgentTypePi
 	}
 
 	// Antigravity patterns (checked before Gemini so an agy pane is not

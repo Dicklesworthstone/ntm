@@ -45,6 +45,7 @@ const (
 	AgentCodex       = agent.AgentTypeCodex
 	AgentGemini      = agent.AgentTypeGemini
 	AgentAntigravity = agent.AgentTypeAntigravity
+	AgentPi          = agent.AgentTypePi
 	AgentGrok        = agent.AgentTypeGrok
 	AgentCursor      = agent.AgentTypeCursor
 	AgentWindsurf    = agent.AgentTypeWindsurf

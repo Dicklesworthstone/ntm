@@ -32,6 +32,8 @@ func detectAgentType(title string) string {
 		return "gmi"
 	case agent.AgentTypeAntigravity:
 		return "agy"
+	case agent.AgentTypePi:
+		return "pi"
 	case agent.AgentTypeCursor:
 		return "cursor"
 	case agent.AgentTypeWindsurf:

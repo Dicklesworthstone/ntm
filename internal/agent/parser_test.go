@@ -193,6 +193,82 @@ func TestParser_DetectAgentType_OllamaMentionDoesNotFalsePositive(t *testing.T) 
 	}
 }
 
+// TestParser_DetectAgentType_PiCollisions locks in the bd-gc0 fix: a specific
+// header match (pi's banner) outranks a bare-word match (cod's "openai"/
+// "gpt-N"), and a bare "openai" with no specific signal resolves to unknown
+// rather than to any named agent.
+func TestParser_DetectAgentType_PiCollisions(t *testing.T) {
+	p := NewParser()
+
+	tests := []struct {
+		name   string
+		output string
+		want   AgentType
+	}{
+		// One row per agent (unambiguous content).
+		{"claude", "Claude Opus 4.5 is ready", AgentTypeClaudeCode},
+		{"codex", "OpenAI Codex CLI ready", AgentTypeCodex},
+		{"gemini", "gemini-2.0-flash-preview ready", AgentTypeGemini},
+		{"antigravity", "antigravity session started", AgentTypeAntigravity},
+		{"pi", " pi v0.84.2\nctrl+c/ctrl+d clear/exit", AgentTypePi},
+		{"cursor", "Cursor AI ready to assist", AgentTypeCursor},
+		{"windsurf", "Windsurf IDE connected", AgentTypeWindsurf},
+		{"aider", "aider chat session", AgentTypeAider},
+		{"ollama", "ollama run codellama:latest", AgentTypeOllama},
+
+		// Known collisions (bd-gc0): pi's banner outranks the bare words.
+		{"pi content containing openai", " pi v0.84.2\nctrl+c/ctrl+d clear/exit\n\nrefactor the openai client", AgentTypePi},
+		{"pi content containing gpt-4", " pi v0.84.2\nctrl+c/ctrl+d clear/exit\n\nroute gpt-4 through the proxy", AgentTypePi},
+		{"codex content with pi-like status line", "OpenAI Codex CLI v1.2.3\n47% context left · ? for shortcuts\n13.0%/262k (auto)", AgentTypeCodex},
+
+		// A bare "openai" with no specific signal must not classify as cod.
+		{"bare openai word only", "using the openai api for this task", AgentTypeUnknown},
+		{"nothing specific", "some random text with no agent signals", AgentTypeUnknown},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := p.DetectAgentType(tt.output)
+			if got != tt.want {
+				t.Errorf("DetectAgentType(%q) = %v, want %v", tt.output, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestParser_DetectAgentType_PiGoldenCapture classifies a captured pi pane
+// transcript (checked into testdata) as pi even though its content mentions
+// "openai" and "gpt-4o-mini" — the words that previously tripped the bare
+// codHeaderPattern and misread the pane as Codex.
+func TestParser_DetectAgentType_PiGoldenCapture(t *testing.T) {
+	p := NewParser()
+	output := loadTestData(t, "pi_working_openai.txt")
+
+	if got := p.DetectAgentType(output); got != AgentTypePi {
+		t.Errorf("DetectAgentType(pi_working_openai.txt) = %v, want %v", got, AgentTypePi)
+	}
+
+	state, err := p.Parse(output)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+	if state.Type != AgentTypePi {
+		t.Errorf("Parse(pi_working_openai.txt).Type = %v, want %v", state.Type, AgentTypePi)
+	}
+}
+
+// TestParser_CalculateConfidence_BareHeaderMatch pins the 0.5 base confidence
+// for a bare header-word match with no supporting signal, so a future change
+// to the additive terms cannot quietly make a weak match look strong.
+func TestParser_CalculateConfidence_BareHeaderMatch(t *testing.T) {
+	p := NewParser().(*parserImpl)
+
+	state := &AgentState{Type: AgentTypeCodex}
+	if got := p.calculateConfidence(state); got != 0.5 {
+		t.Errorf("calculateConfidence(bare header match) = %f, want 0.5", got)
+	}
+}
+
 func TestParser_Parse_RateLimited_Claude(t *testing.T) {
 	p := NewParser()
 	output := `Claude Opus 4.5 ready
