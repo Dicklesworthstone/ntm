@@ -12,14 +12,28 @@ import (
 	"testing"
 	"time"
 	"unicode"
+
+	"github.com/Dicklesworthstone/ntm/tests/testutil/tmuxenv"
 )
 
+// tmuxenv, not tests/testutil, is imported here: testutil depends on this
+// package (internal/tmux) for command-error classification, so a test file
+// inside package tmux cannot import testutil without an import cycle.
+// tmuxenv holds no such dependency and is the shared home for both the
+// ownership predicate and the validated temp-root creation, so this TestMain
+// and testutil.IsolateTmuxTestProcess stay in sync instead of drifting.
 func TestMain(m *testing.M) {
 	if os.Getenv("NTM_TEST_TMUX_ENV_OWNED") == "1" {
-		os.Exit(m.Run())
+		if tmuxenv.Owned() {
+			os.Exit(m.Run())
+		}
+		fmt.Fprintf(os.Stderr,
+			"NTM_TEST_TMUX_ENV_OWNED=1 set but TMUX_TMPDIR=%q does not prove isolated ownership; isolating normally\n",
+			os.Getenv("TMUX_TMPDIR"),
+		)
 	}
 
-	tmuxRoot, err := os.MkdirTemp(tmuxTestTempBase(), "ntm-tmux-test-*")
+	tmuxRoot, err := tmuxenv.CreateShortTmuxTempDir()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "create isolated tmux root: %v\n", err)
 		os.Exit(1)
@@ -91,6 +105,9 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
+// tmuxTestTempBase is the plain (unvalidated) base directory used by tests
+// in this file that need a throwaway isolated socket root outside of
+// TestMain's own ownership-checked one.
 func tmuxTestTempBase() string {
 	if runtime.GOOS == "windows" {
 		return os.TempDir()

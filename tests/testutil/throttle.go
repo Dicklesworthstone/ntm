@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
+	"github.com/Dicklesworthstone/ntm/tests/testutil/tmuxenv"
 )
 
 // TimeoutScaleEnv multiplies every test time budget passed through
@@ -31,22 +32,6 @@ import (
 //
 //	NTM_TEST_TIMEOUT_SCALE=4 go test -short ./...
 const TimeoutScaleEnv = "NTM_TEST_TIMEOUT_SCALE"
-
-const (
-	tmuxTestTempBaseEnv = "NTM_TMUX_TEST_TMPDIR"
-
-	// sockaddr_un.sun_path is only 104 bytes on several supported Unix
-	// platforms. Keep the projected pathname below 100 bytes, including its
-	// terminating NUL, so a test root that works on Linux also works on BSD and
-	// macOS.
-	maxTmuxSocketPathBytes = 100
-	tmuxTempDirPattern     = "ntm-tmux-test-*"
-)
-
-type tmuxTempDirCandidate struct {
-	source string
-	path   string
-}
 
 // TmuxTestThrottle limits concurrent tmux session spawning in tests.
 // This prevents fork bombs when running tests with high parallelism.
@@ -214,16 +199,37 @@ func removeAllWritable(dir string) error {
 	return os.RemoveAll(dir)
 }
 
+// TmuxTestEnvOwned reports whether the current process's own TMUX_TMPDIR
+// proves it already owns an isolated tmux server. NTM_TEST_TMUX_ENV_OWNED is
+// only trustworthy when this holds — an inherited or ambient TMUX_TMPDIR
+// that does not match tmuxenv.Pattern means the flag is lying about
+// ownership. Delegates to tmuxenv so internal/tmux's own TestMain, which
+// cannot import this package without an import cycle, can share the same
+// check instead of hand-copying it.
+func TmuxTestEnvOwned() bool {
+	return tmuxenv.Owned()
+}
+
 // returns an idempotent cleanup function. TestMain callers must run cleanup
 // before os.Exit so the private server and its short socket root do not leak.
 // NTM_TEST_TMUX_ENV_OWNED marks a helper process whose caller owns its tmux
 // environment; isolation is a no-op so fake-binary contract tests stay intact.
+// The flag alone is not trusted: TmuxTestEnvOwned must also confirm TMUX_TMPDIR
+// was produced by this package's own isolation, or a shell that merely kept the
+// variable from an earlier command would disable isolation against its own
+// live tmux server.
 func IsolateTmuxTestProcess() (func() error, error) {
 	if os.Getenv("NTM_TEST_TMUX_ENV_OWNED") == "1" {
-		return func() error { return nil }, nil
+		if TmuxTestEnvOwned() {
+			return func() error { return nil }, nil
+		}
+		fmt.Fprintf(os.Stderr,
+			"NTM_TEST_TMUX_ENV_OWNED=1 set but TMUX_TMPDIR=%q does not prove isolated ownership; isolating normally\n",
+			os.Getenv("TMUX_TMPDIR"),
+		)
 	}
 
-	dir, err := createShortTmuxTempDir()
+	dir, err := CreateShortTmuxTempDir()
 	if err != nil {
 		return nil, err
 	}
@@ -322,7 +328,7 @@ func isolatedTmuxEnvironment(root string) []string {
 func ShortTmuxTempDir(t *testing.T) string {
 	t.Helper()
 
-	dir, err := createShortTmuxTempDir()
+	dir, err := CreateShortTmuxTempDir()
 	if err != nil {
 		t.Fatalf("create short tmux temp directory: %v", err)
 	}
@@ -334,108 +340,16 @@ func ShortTmuxTempDir(t *testing.T) string {
 	return dir
 }
 
-func createShortTmuxTempDir() (string, error) {
-	return createShortTmuxTempDirFromCandidates(shortTmuxTempDirCandidates())
-}
-
-func createShortTmuxTempDirFromCandidates(candidates []tmuxTempDirCandidate) (string, error) {
-	var failures []string
-	for _, candidate := range candidates {
-		if err := validateTmuxTempBase(candidate.path); err != nil {
-			failures = append(failures, fmt.Sprintf("%s %q: %v", candidate.source, candidate.path, err))
-			continue
-		}
-
-		dir, err := os.MkdirTemp(candidate.path, tmuxTempDirPattern)
-		if err != nil {
-			failures = append(failures, fmt.Sprintf("%s %q: %v", candidate.source, candidate.path, err))
-			continue
-		}
-		if err := validateTmuxSocketRoot(dir); err != nil {
-			cleanupErr := os.Remove(dir)
-			if cleanupErr != nil {
-				err = fmt.Errorf("%w (also could not remove rejected directory %q: %v)", err, dir, cleanupErr)
-			}
-			failures = append(failures, fmt.Sprintf("%s %q: %v", candidate.source, candidate.path, err))
-			continue
-		}
-		return dir, nil
-	}
-
-	if len(failures) == 0 {
-		failures = append(failures, "no candidate directories were configured")
-	}
-	return "", fmt.Errorf(
-		"create tmux test directory: no writable base can produce a portable socket path; "+
-			"set %s to a short writable directory; attempts: %s",
-		tmuxTestTempBaseEnv,
-		strings.Join(failures, "; "),
-	)
-}
-
-func shortTmuxTempDirCandidates() []tmuxTempDirCandidate {
-	raw := []tmuxTempDirCandidate{
-		{source: tmuxTestTempBaseEnv, path: os.Getenv(tmuxTestTempBaseEnv)},
-	}
-	if runtime.GOOS != "windows" {
-		raw = append(raw,
-			tmuxTempDirCandidate{source: "portable fallback", path: "/var/tmp"},
-			tmuxTempDirCandidate{source: "portable fallback", path: "/tmp"},
-		)
-	}
-	raw = append(raw, tmuxTempDirCandidate{source: "os.TempDir fallback", path: os.TempDir()})
-
-	seen := make(map[string]struct{}, len(raw))
-	candidates := make([]tmuxTempDirCandidate, 0, len(raw))
-	for _, candidate := range raw {
-		if candidate.path == "" {
-			continue
-		}
-		path, err := filepath.Abs(candidate.path)
-		if err == nil {
-			candidate.path = path
-		} else {
-			candidate.path = filepath.Clean(candidate.path)
-		}
-		key := candidate.path
-		if runtime.GOOS == "windows" {
-			key = strings.ToLower(key)
-		}
-		if _, exists := seen[key]; exists {
-			continue
-		}
-		seen[key] = struct{}{}
-		candidates = append(candidates, candidate)
-	}
-	return candidates
-}
-
-func validateTmuxTempBase(base string) error {
-	// Go currently replaces '*' with a ten-digit random suffix. Reserving
-	// twenty digits avoids depending on that implementation detail.
-	projectedRoot := filepath.Join(base, "ntm-tmux-test-18446744073709551615")
-	return validateTmuxSocketRoot(projectedRoot)
-}
-
-func validateTmuxSocketRoot(root string) error {
-	if runtime.GOOS == "windows" {
-		return nil
-	}
-
-	// tmux's default socket is $TMUX_TMPDIR/tmux-$UID/default. Reserve the
-	// largest decimal uint64 UID even though supported Unix systems use
-	// narrower uid_t values.
-	projected := filepath.Join(root, "tmux-18446744073709551615", "default")
-	length := len([]byte(projected)) + 1 // sockaddr_un requires a trailing NUL.
-	if length > maxTmuxSocketPathBytes {
-		return fmt.Errorf(
-			"projected tmux socket path %q needs %d bytes (portable limit %d)",
-			projected,
-			length,
-			maxTmuxSocketPathBytes,
-		)
-	}
-	return nil
+// CreateShortTmuxTempDir creates a private TMUX_TMPDIR whose projected
+// default socket pathname fits conservative Unix-domain socket limits.
+// Unlike ShortTmuxTempDir it takes no *testing.T and registers no cleanup,
+// so it can run from a TestMain before any test's T exists; the caller owns
+// removing the returned directory. Delegates to tmuxenv so internal/tmux's
+// own TestMain, which cannot import this package without an import cycle,
+// creates its isolated root the same validated way instead of hand-rolling
+// a narrower copy.
+func CreateShortTmuxTempDir() (string, error) {
+	return tmuxenv.CreateShortTmuxTempDir()
 }
 
 // IntegrationTestPrecheckThrottled runs integration prechecks with throttling.

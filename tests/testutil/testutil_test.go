@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/tests/testutil/tmuxenv"
 )
 
 const (
@@ -240,7 +242,7 @@ func TestIsolateTmuxTestProcess(t *testing.T) {
 	if !info.IsDir() {
 		t.Fatalf("TMUX_TMPDIR = %q, want directory", tmuxTmpDir)
 	}
-	if err := validateTmuxSocketRoot(tmuxTmpDir); err != nil {
+	if err := tmuxenv.ValidateSocketRoot(tmuxTmpDir); err != nil {
 		t.Fatalf("TMUX_TMPDIR = %q cannot host a portable tmux socket: %v", tmuxTmpDir, err)
 	}
 	if err := cleanupTmux(); err != nil {
@@ -255,7 +257,9 @@ func TestIsolateTmuxTestProcessPreservesConfiguredFakeBinaryEnvironment(t *testi
 	fakeDir := t.TempDir()
 	invoked := filepath.Join(fakeDir, "invoked")
 	fakeBinary := filepath.Join(fakeDir, "tmux")
-	ownedTmuxRoot := t.TempDir()
+	// Must match tmuxenv.Pattern: NTM_TEST_TMUX_ENV_OWNED is only trusted
+	// when TMUX_TMPDIR proves it, not merely because it is set.
+	ownedTmuxRoot := ShortTmuxTempDir(t)
 	script := "#!/bin/sh\n: > \"$NTM_TEST_FAKE_TMUX_INVOKED\"\nexit 64\n"
 	if err := os.WriteFile(fakeBinary, []byte(script), 0o700); err != nil {
 		t.Fatalf("write fake tmux binary: %v", err)
@@ -288,6 +292,38 @@ func TestIsolateTmuxTestProcessPreservesConfiguredFakeBinaryEnvironment(t *testi
 	}
 	if info, err := os.Stat(ownedTmuxRoot); err != nil || !info.IsDir() {
 		t.Fatalf("caller-owned tmux root %q was changed during no-op cleanup: info=%v err=%v", ownedTmuxRoot, info, err)
+	}
+}
+
+// TestIsolateTmuxTestProcessIgnoresUnprovenOwnershipFlag is the regression
+// case: NTM_TEST_TMUX_ENV_OWNED=1 set by an ambient shell, with a TMUX_TMPDIR
+// that was never produced by this package's own isolation, must not be
+// trusted. Before the fix this combination short-circuited to a no-op
+// cleanup and left TMUX_TMPDIR resolving to the caller's live tmux server.
+func TestIsolateTmuxTestProcessIgnoresUnprovenOwnershipFlag(t *testing.T) {
+	bogusRoot := t.TempDir() // does not match tmuxenv.Pattern
+	t.Setenv("NTM_TEST_TMUX_ENV_OWNED", "1")
+	t.Setenv("TMUX", "bystander-server,1,0")
+	t.Setenv("TMUX_PANE", "%3")
+	t.Setenv("TMUX_TMPDIR", bogusRoot)
+
+	cleanupTmux, err := IsolateTmuxTestProcess()
+	if err != nil {
+		t.Fatalf("IsolateTmuxTestProcess() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := cleanupTmux(); err != nil {
+			t.Errorf("cleanup IsolateTmuxTestProcess(): %v", err)
+		}
+	})
+	if got := os.Getenv("TMUX"); got != "" {
+		t.Fatalf("TMUX = %q, want isolation to run despite the unproven flag", got)
+	}
+	if got := os.Getenv("TMUX_PANE"); got != "" {
+		t.Fatalf("TMUX_PANE = %q, want isolation to run despite the unproven flag", got)
+	}
+	if got := os.Getenv("TMUX_TMPDIR"); got == "" || got == bogusRoot {
+		t.Fatalf("TMUX_TMPDIR = %q, want a fresh isolated root, not the bogus %q", got, bogusRoot)
 	}
 }
 
@@ -326,96 +362,6 @@ func TestIsolateTmuxTestProcessStillIsolatesConfiguredBinary(t *testing.T) {
 	}
 }
 
-func TestShortTmuxTempDirCandidatesOverrideFirstAndDeduplicated(t *testing.T) {
-	t.Setenv(tmuxTestTempBaseEnv, os.TempDir()+string(filepath.Separator))
-
-	candidates := shortTmuxTempDirCandidates()
-	if len(candidates) == 0 {
-		t.Fatal("shortTmuxTempDirCandidates() returned no candidates")
-	}
-	want, err := filepath.Abs(os.TempDir())
-	if err != nil {
-		t.Fatalf("filepath.Abs(%q): %v", os.TempDir(), err)
-	}
-	if got := candidates[0]; got.source != tmuxTestTempBaseEnv || got.path != want {
-		t.Fatalf("first candidate = %#v, want source %q path %q", got, tmuxTestTempBaseEnv, want)
-	}
-
-	count := 0
-	for _, candidate := range candidates {
-		if candidate.path == want {
-			count++
-		}
-	}
-	if count != 1 {
-		t.Fatalf("candidate %q appears %d times, want exactly once: %#v", want, count, candidates)
-	}
-}
-
-func TestShortTmuxTempDirCandidatesPreferShortUnixBasesToLongTMPDIR(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Unix fallback ordering does not apply on Windows")
-	}
-
-	t.Setenv(tmuxTestTempBaseEnv, "")
-	longTempDir := filepath.Join(string(filepath.Separator), strings.Repeat("x", maxTmuxSocketPathBytes))
-	t.Setenv("TMPDIR", longTempDir)
-
-	candidates := shortTmuxTempDirCandidates()
-	if len(candidates) != 3 {
-		t.Fatalf("shortTmuxTempDirCandidates() = %#v, want /var/tmp, /tmp, and long TMPDIR", candidates)
-	}
-	if candidates[0].path != "/var/tmp" || candidates[1].path != "/tmp" || candidates[2].path != longTempDir {
-		t.Fatalf("candidate order = %#v, want /var/tmp, /tmp, then %q", candidates, longTempDir)
-	}
-	if err := validateTmuxTempBase(candidates[2].path); err == nil {
-		t.Fatalf("long TMPDIR candidate %q passed projected socket-path validation", candidates[2].path)
-	}
-}
-
-func TestValidateTmuxSocketRootRejectsLongUnixPath(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Unix-domain socket path limits do not apply on Windows")
-	}
-
-	if err := validateTmuxSocketRoot(filepath.Join(string(filepath.Separator), "var", "tmp", "ntm")); err != nil {
-		t.Fatalf("short root rejected: %v", err)
-	}
-	longRoot := filepath.Join(string(filepath.Separator), strings.Repeat("x", maxTmuxSocketPathBytes))
-	err := validateTmuxSocketRoot(longRoot)
-	if err == nil {
-		t.Fatalf("validateTmuxSocketRoot(%q) succeeded, want path-length error", longRoot)
-	}
-	if !strings.Contains(err.Error(), "projected tmux socket path") ||
-		!strings.Contains(err.Error(), "portable limit") {
-		t.Fatalf("validateTmuxSocketRoot() error = %q, want actionable path-limit details", err)
-	}
-}
-
-func TestCreateShortTmuxTempDirReportsAllCandidateFailures(t *testing.T) {
-	missingRoot := filepath.Join(t.TempDir(), "missing")
-	candidates := []tmuxTempDirCandidate{
-		{source: "explicit override", path: filepath.Join(missingRoot, "one")},
-		{source: "portable fallback", path: filepath.Join(missingRoot, "two")},
-	}
-
-	_, err := createShortTmuxTempDirFromCandidates(candidates)
-	if err == nil {
-		t.Fatal("createShortTmuxTempDirFromCandidates() succeeded, want aggregate error")
-	}
-	for _, want := range []string{
-		"explicit override",
-		candidates[0].path,
-		"portable fallback",
-		candidates[1].path,
-		tmuxTestTempBaseEnv,
-	} {
-		if !strings.Contains(err.Error(), want) {
-			t.Fatalf("aggregate error %q does not contain %q", err, want)
-		}
-	}
-}
-
 func TestShortTmuxTempDirCreatesAndCleansDirectory(t *testing.T) {
 	var dir string
 	t.Run("create", func(t *testing.T) {
@@ -427,7 +373,7 @@ func TestShortTmuxTempDirCreatesAndCleansDirectory(t *testing.T) {
 		if !info.IsDir() {
 			t.Fatalf("ShortTmuxTempDir() = %q, want directory", dir)
 		}
-		if err := validateTmuxSocketRoot(dir); err != nil {
+		if err := tmuxenv.ValidateSocketRoot(dir); err != nil {
 			t.Fatalf("ShortTmuxTempDir() = %q cannot host a portable tmux socket: %v", dir, err)
 		}
 	})
