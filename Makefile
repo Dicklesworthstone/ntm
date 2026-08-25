@@ -12,7 +12,15 @@ LDFLAGS := -ldflags "-s -w \
 	-X github.com/Dicklesworthstone/ntm/internal/cli.Date=$(BUILD_TIME) \
 	-X github.com/Dicklesworthstone/ntm/internal/cli.BuiltBy=$(BUILT_BY)"
 
-GO := go
+# Which `go` answers from PATH is a property of the calling shell, not of this repo. Two Go
+# installs can report the same upstream version with different toolchain tags and then reject
+# each other's build cache, and the failure reads as `compile: version "go1.26.6" does not
+# match go tool version "go1.26.6-X:nodwarf5"` — it names the compiler, so the first suspect
+# is the diff under test rather than the environment. Ask the version manager first, so a
+# systemd unit, a container or an agent harness that rebuilds PATH cannot change the answer.
+# `?=` keeps `make build GO=/some/other/go` working, and the fallback keeps a clean checkout
+# building on a machine that has no version manager at all.
+GO ?= $(shell mise which go 2>/dev/null || echo go)
 GOFLAGS := -trimpath
 
 # Output directory
