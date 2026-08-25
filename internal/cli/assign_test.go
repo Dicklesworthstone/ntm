@@ -4072,7 +4072,11 @@ exec %q "$@"
 	dispatchLog := filepath.Join(root, "dispatch.log")
 	agentScriptPath := filepath.Join(root, "agent.sh")
 	agentScript := fmt.Sprintf(`#!/bin/sh
-exec awk -v out=%q 'BEGIN { printf "❯ "; fflush() } { printf "%%s\n", $0 >> out; close(out); printf "\n• Working (press esc to interrupt)\n"; fflush(); system("sleep 300") }'
+printf '❯ '
+IFS= read -r line
+printf '%%s\n' "$line" >> %q
+printf '\n• Working (press esc to interrupt)\n'
+sleep 300
 `, dispatchLog)
 	if err := os.WriteFile(agentScriptPath, []byte(agentScript), 0o755); err != nil {
 		t.Fatalf("write agent fixture: %v", err)
