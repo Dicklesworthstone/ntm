@@ -503,6 +503,12 @@ func detectAgentFromCommand(command string) AgentType {
 		return AgentOllama
 	}
 
+	// OpenCode (https://opencode.ai) ships as a single `opencode` binary, so
+	// tmux reports it directly as the pane's current command (ntm#266).
+	if isAgent("opencode") {
+		return AgentOpencode
+	}
+
 	return AgentUser
 }
 
@@ -928,7 +934,7 @@ func (c *Client) GetPanes(session string) ([]Pane, error) {
 // GetPanesContext returns all panes in a session with cancellation support.
 func (c *Client) GetPanesContext(ctx context.Context, session string) ([]Pane, error) {
 	sep := FieldSeparator
-	format := fmt.Sprintf("#{pane_id}%[1]s#{pane_index}%[1]s#{pane_title}%[1]s#{pane_current_command}%[1]s#{pane_width}%[1]s#{pane_height}%[1]s#{pane_active}%[1]s#{pane_pid}%[1]s#{window_index}", sep)
+	format := fmt.Sprintf("#{pane_id}%[1]s#{pane_index}%[1]s#{pane_title}%[1]s#{pane_current_command}%[1]s#{pane_width}%[1]s#{pane_height}%[1]s#{pane_active}%[1]s#{pane_pid}%[1]s#{window_index}%[1]s#{@ntm_agent_type}", sep)
 	output, err := c.RunContext(ctx, "list-panes", "-s", "-t", TargetSession(session), "-F", format)
 	if err != nil {
 		return nil, err
@@ -1149,7 +1155,7 @@ func waitForPaneProcessStartContext(
 func (c *Client) GetAllPanesContext(ctx context.Context) (map[string][]Pane, error) {
 	sep := FieldSeparator
 	// Add session_name at the beginning
-	format := fmt.Sprintf("#{session_name}%[1]s#{pane_id}%[1]s#{pane_index}%[1]s#{pane_title}%[1]s#{pane_current_command}%[1]s#{pane_width}%[1]s#{pane_height}%[1]s#{pane_active}%[1]s#{pane_pid}%[1]s#{window_index}", sep)
+	format := fmt.Sprintf("#{session_name}%[1]s#{pane_id}%[1]s#{pane_index}%[1]s#{pane_title}%[1]s#{pane_current_command}%[1]s#{pane_width}%[1]s#{pane_height}%[1]s#{pane_active}%[1]s#{pane_pid}%[1]s#{window_index}%[1]s#{@ntm_agent_type}", sep)
 	output, err := c.RunContext(ctx, "list-panes", "-a", "-F", format)
 	if err != nil {
 		// No server/no sessions is not an error; treat as empty result.
@@ -1171,14 +1177,14 @@ func (c *Client) GetAllPanesContext(ctx context.Context) (map[string][]Pane, err
 		}
 
 		parts := strings.Split(line, sep)
-		if len(parts) != 10 {
-			return nil, fmt.Errorf("parse pane %d: expected 10 fields, got %d", lineNumber+1, len(parts))
+		if len(parts) != 11 {
+			return nil, fmt.Errorf("parse pane %d: expected 11 fields, got %d", lineNumber+1, len(parts))
 		}
 
 		sessionName := parts[0]
-		// parts[1:] contains: id, index, title, command, width, height, active, pid, window_index
+		// parts[1:] contains: id, index, title, command, width, height, active, pid, window_index, @ntm_agent_type
 		// parts[1:8] = id(0), index(1), title(2), command(3), width(4), height(5), active(6)
-		// parts[8:] = pid(0), window_index(1)
+		// parts[8:] = pid(0), window_index(1), @ntm_agent_type(2)
 		p, err := parsePaneFromParts(parts[1:8], parts[8:])
 		if err != nil {
 			return nil, fmt.Errorf("parse pane %d: %w", lineNumber+1, err)
@@ -2817,7 +2823,7 @@ type PaneActivity struct {
 // GetPanesWithActivityContext returns all panes in a session with their activity times with cancellation support.
 func (c *Client) GetPanesWithActivityContext(ctx context.Context, session string) ([]PaneActivity, error) {
 	sep := FieldSeparator
-	format := fmt.Sprintf("#{pane_id}%[1]s#{pane_index}%[1]s#{pane_title}%[1]s#{pane_current_command}%[1]s#{pane_width}%[1]s#{pane_height}%[1]s#{pane_active}%[1]s#{window_activity}%[1]s#{pane_pid}%[1]s#{window_index}", sep)
+	format := fmt.Sprintf("#{pane_id}%[1]s#{pane_index}%[1]s#{pane_title}%[1]s#{pane_current_command}%[1]s#{pane_width}%[1]s#{pane_height}%[1]s#{pane_active}%[1]s#{window_activity}%[1]s#{pane_pid}%[1]s#{window_index}%[1]s#{@ntm_agent_type}", sep)
 	output, err := c.RunContext(ctx, "list-panes", "-s", "-t", TargetSession(session), "-F", format)
 	if err != nil {
 		return nil, err
@@ -2830,13 +2836,13 @@ func (c *Client) GetPanesWithActivityContext(ctx context.Context, session string
 		}
 
 		parts := strings.Split(line, sep)
-		if len(parts) != 10 {
-			return nil, fmt.Errorf("parse pane activity %d from session %q: expected 10 fields, got %d", lineNumber+1, session, len(parts))
+		if len(parts) != 11 {
+			return nil, fmt.Errorf("parse pane activity %d from session %q: expected 11 fields, got %d", lineNumber+1, session, len(parts))
 		}
 
-		// Format: id(0), index(1), title(2), command(3), width(4), height(5), active(6), last_activity(7), pid(8), window_index(9)
+		// Format: id(0), index(1), title(2), command(3), width(4), height(5), active(6), last_activity(7), pid(8), window_index(9), @ntm_agent_type(10)
 		// parts[:7] = id..active
-		// parts[8:] = pid, window_index
+		// parts[8:] = pid, window_index, @ntm_agent_type
 		p, err := parsePaneFromParts(parts[:7], parts[8:])
 		if err != nil {
 			return nil, fmt.Errorf("parse pane activity %d from session %q: %w", lineNumber+1, session, err)
@@ -2862,19 +2868,24 @@ func (c *Client) GetPanesWithActivityContext(ctx context.Context, session string
 // parsePaneLine parses a single line from list-panes format into a Pane.
 func parsePaneLine(line, sep string) (*Pane, error) {
 	parts := strings.Split(line, sep)
-	if len(parts) != 9 {
-		return nil, fmt.Errorf("expected 9 fields, got %d", len(parts))
+	if len(parts) != 10 {
+		return nil, fmt.Errorf("expected 10 fields, got %d", len(parts))
 	}
-	// For standard GetPanes: id, index, title, command, width, height, active, pid, window_index
+	// For standard GetPanes: id, index, title, command, width, height, active, pid, window_index, @ntm_agent_type
 	return parsePaneFromParts(parts[:7], parts[7:])
 }
 
 // parsePaneFromParts constructs a Pane from pre-split parts.
 // parts1: id, index, title, command, width, height, active
-// parts2: pid, window_index
+// parts2: pid, window_index, and optionally the pane's @ntm_agent_type user
+// option (empty when unset or when the tmux server predates pane options).
 func parsePaneFromParts(parts1, parts2 []string) (*Pane, error) {
-	if len(parts1) != 7 || len(parts2) != 2 {
-		return nil, fmt.Errorf("expected 7 primary fields and 2 secondary fields, got %d and %d", len(parts1), len(parts2))
+	if len(parts1) != 7 || (len(parts2) != 2 && len(parts2) != 3) {
+		return nil, fmt.Errorf("expected 7 primary fields and 2 or 3 secondary fields, got %d and %d", len(parts1), len(parts2))
+	}
+	recordedType := ""
+	if len(parts2) == 3 {
+		recordedType = parts2[2]
 	}
 
 	index, err := strconv.Atoi(parts1[1])
@@ -2914,14 +2925,28 @@ func parsePaneFromParts(parts1, parts2 []string) (*Pane, error) {
 	// Parse pane title using regex to extract type, index, variant, and tags
 	pane.Type, pane.NTMIndex, pane.Variant, pane.Tags = parseAgentFromTitle(pane.Title)
 
+	// A type recorded on the pane by ntm itself (adopt sets the
+	// @ntm_agent_type pane option) is authoritative: unlike the title it
+	// cannot be overwritten by the program running in the pane. OpenCode, for
+	// example, re-asserts its own "opencode | <dir>" title continuously, so an
+	// adopted pane's NTM title survives only seconds (ntm#266). The title is
+	// still consulted above for the NTM index, variant and tags.
+	if recorded := ParsePaneAgentTypeOption(recordedType); recorded != AgentUnknown {
+		pane.Type = recorded
+		return pane, nil
+	}
+
 	// Fallback chain:
 	//  1. Title-based parse (NTM-formatted titles).
 	//  2. Immediate command name (`claude`, `codex`, etc.).
-	//  3. Process tree walk — required when the agent runs under a
+	//  3. A title the agent set for itself (e.g. OpenCode's "opencode | dir").
+	//  4. Process tree walk — required when the agent runs under a
 	//     wrapper that shows up in tmux's `pane_current_command` (e.g.
 	//     Bun-launched Codex shows `bun`, not `codex`). See acfs#267.
 	if pane.Type == AgentUser && pane.Command != "" {
 		if detected := detectAgentFromCommand(pane.Command); detected != AgentUser {
+			pane.Type = detected
+		} else if detected := detectAgentFromSelfTitle(pane.Title); detected != AgentUser {
 			pane.Type = detected
 		} else if isAgentWrapperCommand(pane.Command) && pane.PID > 0 {
 			if detected := detectAgentFromProcessTree(pane.PID, 4); detected != AgentUser {
@@ -2931,6 +2956,80 @@ func parsePaneFromParts(parts1, parts2 []string) (*Pane, error) {
 	}
 
 	return pane, nil
+}
+
+// PaneAgentTypeOption is the tmux pane user option in which ntm records the
+// agent type it assigned to a pane. Programs running in the pane can rewrite
+// the pane title (OSC 0/2 escapes, or tmux commands of their own) but never
+// this option, so it survives agents that manage their own titles (ntm#266).
+// Pane-scoped options need tmux 3.0+; on older servers the option is simply
+// absent and the title/command heuristics apply.
+const PaneAgentTypeOption = "@ntm_agent_type"
+
+// ParsePaneAgentTypeOption converts a raw @ntm_agent_type value into an agent
+// type. It returns AgentUnknown when the option is unset or names a type ntm
+// does not know (a built-in type or a registered plugin), so a stale or
+// hand-edited value can never masquerade as a real agent.
+func ParsePaneAgentTypeOption(raw string) AgentType {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return AgentUnknown
+	}
+	canonical := AgentType(raw).Canonical()
+	if canonical.IsValid() {
+		return canonical
+	}
+	if agent.IsPluginType(canonical) {
+		return canonical
+	}
+	return AgentUnknown
+}
+
+// SetPaneAgentType records agentType on the pane as the @ntm_agent_type user
+// option (see PaneAgentTypeOption). Unlike SetPaneTitle it never touches the
+// title, so it is safe to call for panes whose program owns its own title.
+func (c *Client) SetPaneAgentType(paneID string, agentType AgentType) error {
+	return c.SetPaneAgentTypeContext(context.Background(), paneID, agentType)
+}
+
+// SetPaneAgentTypeContext is SetPaneAgentType with caller cancellation.
+func (c *Client) SetPaneAgentTypeContext(ctx context.Context, paneID string, agentType AgentType) error {
+	if ctx == nil {
+		return errors.New("tmux pane agent type context is required")
+	}
+	if strings.TrimSpace(paneID) == "" {
+		return errors.New("pane ID is required")
+	}
+	recorded := ParsePaneAgentTypeOption(string(agentType))
+	if recorded == AgentUnknown {
+		return fmt.Errorf("agent type %q is not a known agent type", agentType)
+	}
+	return c.RunSilentContext(ctx, "set-option", "-p", "-t", ExactTarget(paneID), PaneAgentTypeOption, string(recorded))
+}
+
+// SetPaneAgentType records the agent type on a pane (default client).
+func SetPaneAgentType(paneID string, agentType AgentType) error {
+	return DefaultClient.SetPaneAgentType(paneID, agentType)
+}
+
+// detectAgentFromSelfTitle recognises pane titles that an agent CLI sets for
+// itself, as opposed to the NTM "session__type_n" convention. Only shapes
+// that are unambiguous are listed: OpenCode renders "opencode | <workdir>"
+// (ntm#266). Free-form titles such as Claude Code's summary line are not
+// matched here; the command and process-tree checks cover those.
+func detectAgentFromSelfTitle(title string) AgentType {
+	trimmed := strings.TrimSpace(title)
+	if trimmed == "" {
+		return AgentUser
+	}
+	head := trimmed
+	if i := strings.Index(trimmed, "|"); i >= 0 {
+		head = trimmed[:i]
+	}
+	if strings.EqualFold(strings.TrimSpace(head), "opencode") {
+		return AgentOpencode
+	}
+	return AgentUser
 }
 
 func parsePaneActivityTimestamp(raw string, now time.Time) (time.Time, error) {

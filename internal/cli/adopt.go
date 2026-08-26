@@ -467,6 +467,20 @@ func runAdopt(opts AdoptOptions) error {
 					return fmt.Errorf("failed to set title for pane %s: %v", req, err)
 				}
 			}
+			// Record the type on the pane itself, independent of the title.
+			// Some agents (OpenCode) re-assert their own pane title
+			// continuously, so a title-only registration is undone within
+			// seconds and every type-filtered surface (activity, context,
+			// send --oc) stops seeing the pane (ntm#266). The pane option is
+			// consulted first by the pane parser and cannot be overwritten by
+			// the program in the pane. Best-effort: pane options need tmux
+			// 3.0+, and the title-based path still works where they are
+			// unavailable.
+			if !opts.DryRun {
+				if err := tmux.SetPaneAgentType(pane.ID, canonicalType); err != nil && !jsonOutput {
+					output.PrintWarningf("Could not record agent type on pane %s (%v); type detection will rely on the pane title", req, err)
+				}
+			}
 
 			adoptedPanes = append(adoptedPanes, info)
 			ntmIndex[canonicalType]++
