@@ -89,8 +89,13 @@ for use with NTM by setting appropriate pane titles and registering
 agent types. After adoption, all NTM commands (send, status, list, etc.)
 will work with the session.
 
-Panes are specified by their pane index (0-based from tmux). Use commas to
-specify multiple panes per agent type. Ranges like "0-5" are supported.
+Panes are specified by their tmux pane index, exactly as tmux reports it.
+That means your base-index / pane-base-index settings are honoured: indices
+start at 0 by default, or at 1 if your tmux.conf configures
+"pane-base-index 1" (the ACFS tmux.conf does). Check the real indices with:
+  tmux list-panes -s -t <session> -F '#{window_index}.#{pane_index} #{pane_title}'
+Use commas to specify multiple panes per agent type. Ranges like "0-5" are
+supported.
 
 For window-per-agent layouts (one pane per window, all sharing pane index 0),
 address panes with "window.pane" syntax (e.g. "2.0") so each pane is uniquely
