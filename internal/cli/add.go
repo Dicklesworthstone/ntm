@@ -651,8 +651,8 @@ func executeAdd(ctx context.Context, opts AddOptions, emitResult bool) error {
 		num := maxIndices[agentTypeStr]
 
 		title := tmux.FormatPaneName(session, agentTypeStr, num, agent.Model)
-		if err := tmux.SetPaneTitleContext(ctx, paneID, title); err != nil {
-			return outputError(fmt.Errorf("setting pane title: %w", err))
+		if err := tmux.SetPaneAgentIdentityContext(ctx, paneID, title, tmux.AgentType(agent.Type)); err != nil {
+			return outputError(fmt.Errorf("setting pane identity: %w", err))
 		}
 
 		// Generate command

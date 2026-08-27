@@ -1242,11 +1242,12 @@ func launchAgent(ctx context.Context, pane tmux.Pane, session, agentType string,
 		}
 	}
 
-	// Set pane title
-	if err := tmux.SetPaneTitleContext(ctx, pane.ID, title); err != nil {
-		agent.Error = fmt.Sprintf("setting title: %v", err)
+	// Persist the type before launch so wrappers and self-managed TUI titles
+	// cannot downgrade this known agent pane to a user shell (GH#268).
+	if err := tmux.SetPaneAgentIdentityContext(ctx, pane.ID, title, tmux.AgentType(agentType)); err != nil {
+		agent.Error = fmt.Sprintf("setting identity: %v", err)
 		agent.StartupMs = time.Since(startTime).Milliseconds()
-		return agent, fmt.Errorf("setting title: %w", err)
+		return agent, fmt.Errorf("setting identity: %w", err)
 	}
 
 	// Launch agent command

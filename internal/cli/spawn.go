@@ -2892,8 +2892,8 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 		// The reasoning effort is folded into the variant once it is resolved,
 		// further down — see the bd-qs6rj comment there.
 		title := tmux.FormatPaneName(opts.Session, string(agent.Type), agent.Index, agent.Model)
-		if err := tmux.SetPaneTitleContext(ctx, pane.ID, title); err != nil {
-			return outputError(fmt.Errorf("setting pane title: %w", err))
+		if err := tmux.SetPaneAgentIdentityContext(ctx, pane.ID, title, tmux.AgentType(agent.Type)); err != nil {
+			return outputError(fmt.Errorf("setting pane identity: %w", err))
 		}
 		lifecyclePartialMutation = true
 		lifecycleAffectedPaneIDs = append(lifecycleAffectedPaneIDs, pane.ID)

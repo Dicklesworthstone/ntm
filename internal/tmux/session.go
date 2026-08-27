@@ -1351,6 +1351,35 @@ func SetPaneTitleContext(ctx context.Context, paneID, title string) error {
 	return DefaultClient.SetPaneTitleContext(ctx, paneID, title)
 }
 
+// SetPaneAgentIdentityContext records both pieces of pane identity that ntm
+// owns: the human-readable title and the durable agent-type pane option. The
+// option is authoritative when wrappers or TUIs replace the visible command or
+// title, so lifecycle paths that already know the agent type must use this
+// helper before launching the agent.
+func (c *Client) SetPaneAgentIdentityContext(ctx context.Context, paneID, title string, agentType AgentType) error {
+	if ParsePaneAgentTypeOption(string(agentType)) == AgentUnknown {
+		return fmt.Errorf("agent type %q is not a known agent type", agentType)
+	}
+	if title != "" {
+		if err := c.SetPaneTitleContext(ctx, paneID, title); err != nil {
+			return err
+		}
+	}
+	return c.SetPaneAgentTypeContext(ctx, paneID, agentType)
+}
+
+// SetPaneAgentIdentityContext records pane title and durable agent type using
+// the default client.
+func SetPaneAgentIdentityContext(ctx context.Context, paneID, title string, agentType AgentType) error {
+	return DefaultClient.SetPaneAgentIdentityContext(ctx, paneID, title, agentType)
+}
+
+// SetPaneAgentIdentity records pane title and durable agent type using the
+// default client.
+func SetPaneAgentIdentity(paneID, title string, agentType AgentType) error {
+	return DefaultClient.SetPaneAgentIdentityContext(context.Background(), paneID, title, agentType)
+}
+
 // GetPaneTitle returns the title of a pane
 func (c *Client) GetPaneTitle(paneID string) (string, error) {
 	return c.Run("display-message", "-p", "-t", ExactTarget(paneID), "#{pane_title}")
