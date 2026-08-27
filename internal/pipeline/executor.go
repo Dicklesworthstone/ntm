@@ -110,6 +110,11 @@ type Executor struct {
 	// observe state while cancellation persistence is still writing to disk.
 	backgroundCommandWG sync.WaitGroup
 
+	// persistMu serializes snapshot-and-save transactions. Multiple workers may
+	// checkpoint concurrently; without this lock an older snapshot whose fsync
+	// finishes last can overwrite a newer state revision on disk.
+	persistMu sync.Mutex
+
 	// adjudicatorHistory records the order in which rotate_adjudicator picked
 	// adjudicator panes during this run. Each entry is the chosen pane ID;
 	// rotateAdjudicator uses the gap-since-last-seen to balance assignments
@@ -3640,6 +3645,9 @@ func (e *Executor) snapshotState() *ExecutionState {
 }
 
 func (e *Executor) persistState() {
+	e.persistMu.Lock()
+	defer e.persistMu.Unlock()
+
 	if e.state == nil {
 		return
 	}
