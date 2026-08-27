@@ -412,11 +412,11 @@ func (m *Monitor) checkHealth(ctx context.Context) {
 					continue
 				}
 
-				// IsWorking guard: never interrupt agents that are actively
-				// producing output. This prevents false-positive crash
-				// detection when AI agents print strings like "exit status"
-				// or "connection closed" in their normal output.
-				if agentHealth.Activity == health.ActivityActive {
+				// SAFETY: Activity is a text/timestamp heuristic and may be stale.
+				// It may suppress an untrusted text-only crash signal when PID
+				// liveness is unavailable, but it must never override a known-dead
+				// child PID. Known-alive PIDs returned at the guard above.
+				if !pidKnown && agentHealth.Activity == health.ActivityActive {
 					log.Printf("[resilience] Agent %s reports error/exit but activity is active — skipping crash handler (IsWorking guard)", agentState.PaneID)
 					continue
 				}

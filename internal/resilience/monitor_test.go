@@ -1376,6 +1376,70 @@ func TestCheckHealthIsWorkingGuardSkipsCrash(t *testing.T) {
 	}
 }
 
+func TestCheckHealthKnownDeadPIDBypassesActiveOutputGuard(t *testing.T) {
+	restore := saveHooks()
+	defer restore()
+
+	var probedPID int
+	var restartMu sync.Mutex
+	restartAttempts := 0
+	setHooksLocked(func() {
+		checkSessionFn = func(ctx context.Context, session string) (*health.SessionHealth, error) {
+			return &health.SessionHealth{
+				Session: session,
+				Agents: []health.AgentHealth{
+					{
+						PaneID:        "pane-1",
+						ShellPID:      4242,
+						Status:        health.StatusError,
+						ProcessStatus: health.ProcessExited,
+						Activity:      health.ActivityActive,
+						Issues:        []health.Issue{{Type: "crash", Message: "Process exited"}},
+					},
+				},
+			}, nil
+		}
+		isChildAliveFn = func(pid int) bool {
+			probedPID = pid
+			return false
+		}
+		sleepFn = func(time.Duration) {}
+		buildPaneCmdFn = func(_ string, agentCmd string) (string, error) {
+			return agentCmd, nil
+		}
+		sendKeysFn = func(_ string, _ string, _ bool) error {
+			restartMu.Lock()
+			restartAttempts++
+			restartMu.Unlock()
+			return nil
+		}
+	})
+
+	cfg := config.Default()
+	cfg.Resilience.AutoRestart = true
+	cfg.Resilience.MaxRestarts = 3
+	cfg.Resilience.RestartDelaySeconds = 0
+
+	m := NewMonitor("test-session", "/tmp/project", cfg, true)
+	m.RegisterAgent("pane-1", 1, 4242, "cc", "opus", "claude")
+
+	m.checkHealth(context.Background())
+	m.wg.Wait()
+
+	if probedPID != 4242 {
+		t.Fatalf("probed PID = %d, want 4242", probedPID)
+	}
+	restartMu.Lock()
+	gotRestartAttempts := restartAttempts
+	restartMu.Unlock()
+	if gotRestartAttempts != 1 {
+		t.Fatalf("restart attempts = %d, want 1 for authoritatively dead PID", gotRestartAttempts)
+	}
+	if got := m.GetRestartCount("pane-1"); got != 1 {
+		t.Fatalf("restart count = %d, want 1", got)
+	}
+}
+
 func TestCheckHealthFallsBackToRegisteredShellPID(t *testing.T) {
 	restore := saveHooks()
 	defer restore()
