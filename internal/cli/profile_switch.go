@@ -199,8 +199,8 @@ func runProfileSwitch(ctx context.Context, agentID, newProfileName, sessionName,
 
 	// Update pane title while preserving any existing pane tags.
 	newTitle := formatProfileSwitchPaneTitle(sessionName, agentType, agentIndex, newProfile.Name, targetPane.Tags)
-	if err := tmux.SetPaneTitleContext(ctx, targetPane.ID, newTitle); err != nil {
-		return outputProfileSwitchError(agentID, targetPane.ID, newProfileName, fmt.Errorf("updating pane title: %w", err))
+	if err := tmux.SetPaneAgentIdentityContext(ctx, targetPane.ID, newTitle, tmux.AgentType(agentType)); err != nil {
+		return outputProfileSwitchError(agentID, targetPane.ID, newProfileName, fmt.Errorf("updating pane identity: %w", err))
 	}
 
 	return outputProfileSwitchSuccess(agentID, targetPane.ID, oldProfile, newProfile.Name)

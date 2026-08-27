@@ -164,9 +164,11 @@ func (o *SessionOrchestrator) createSession(client *tmux.Client, spec SessionSpe
 	// since tmux creates it unconditionally with CreateSession.
 	firstPaneID := panes[0].ID
 	if len(spec.Panes) > 0 {
-		title := o.formatPaneTitle(spec.Name, spec.Panes[0])
-		if err := o.setPaneTitleWithRetry(client, firstPaneID, title); err != nil {
-			slog.Warn("[SessionOrchestrator] set_pane_title_failed", "session", spec.Name, "pane", firstPaneID, "error", err)
+		paneSpec := spec.Panes[0]
+		title := o.formatPaneTitle(spec.Name, paneSpec)
+		if err := o.setPaneIdentityWithRetry(client, firstPaneID, title, paneSpec.AgentType); err != nil {
+			result.Error = fmt.Errorf("setting initial pane identity for session %q: %w", spec.Name, err)
+			return result
 		}
 	}
 	result.PaneIDs = append(result.PaneIDs, firstPaneID)
@@ -197,10 +199,11 @@ func (o *SessionOrchestrator) createSession(client *tmux.Client, spec SessionSpe
 			continue
 		}
 
-		// Set pane title
+		// Persist pane title and provider before the launch phase.
 		title := o.formatPaneTitle(spec.Name, paneSpec)
-		if err := o.setPaneTitleWithRetry(client, paneID, title); err != nil {
-			slog.Warn("[SessionOrchestrator] set_pane_title_failed", "session", spec.Name, "pane", paneID, "error", err)
+		if err := o.setPaneIdentityWithRetry(client, paneID, title, paneSpec.AgentType); err != nil {
+			result.Error = fmt.Errorf("setting pane %d identity for session %q: %w", i, spec.Name, err)
+			return result
 		}
 
 		result.PaneIDs = append(result.PaneIDs, paneID)
@@ -541,10 +544,10 @@ func (o *SessionOrchestrator) GetRemoteConnectionInfo() *RemoteConnectionInfo {
 	return info
 }
 
-func (o *SessionOrchestrator) setPaneTitleWithRetry(client *tmux.Client, paneID, title string) error {
+func (o *SessionOrchestrator) setPaneIdentityWithRetry(client *tmux.Client, paneID, title, agentType string) error {
 	var err error
 	for i := 0; i < 3; i++ {
-		if err = client.SetPaneTitle(paneID, title); err == nil {
+		if err = client.SetPaneAgentIdentityContext(context.Background(), paneID, title, tmux.AgentType(agentType)); err == nil {
 			return nil
 		}
 		time.Sleep(100 * time.Millisecond)

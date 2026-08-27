@@ -1109,7 +1109,8 @@ func TestSendRestartPromptsContextPreservesConfirmedDeliveryWhenCancellationFoll
 }
 
 func TestRelaunchRestartPaneAgentContextObservesReadyAgentAfterSenderReturnsCancellation(t *testing.T) {
-	ctx, cancel := context.WithCancel(t.Context())
+	type contextKey struct{}
+	ctx, cancel := context.WithCancel(context.WithValue(t.Context(), contextKey{}, "restart-test"))
 	defer cancel()
 	info := restartPromptTarget{
 		Pane:         "1",
@@ -1126,7 +1127,7 @@ func TestRelaunchRestartPaneAgentContextObservesReadyAgentAfterSenderReturnsCanc
 		"codex",
 		time.Minute,
 		func(gotCtx context.Context, target string, agentType tmux.AgentType) error {
-			if gotCtx != ctx || target != "%1" || agentType != tmux.AgentCodex {
+			if gotCtx.Value(contextKey{}) != "restart-test" || target != "%1" || agentType != tmux.AgentCodex {
 				t.Fatalf("identity context=%v target=%q type=%s", gotCtx, target, agentType)
 			}
 			identitySet = true

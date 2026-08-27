@@ -3041,6 +3041,12 @@ func SetPaneAgentType(paneID string, agentType AgentType) error {
 	return DefaultClient.SetPaneAgentType(paneID, agentType)
 }
 
+// SetPaneAgentTypeContext records the agent type on a pane with caller
+// cancellation (default client).
+func SetPaneAgentTypeContext(ctx context.Context, paneID string, agentType AgentType) error {
+	return DefaultClient.SetPaneAgentTypeContext(ctx, paneID, agentType)
+}
+
 // detectAgentFromSelfTitle recognises pane titles that an agent CLI sets for
 // itself, as opposed to the NTM "session__type_n" convention. Only shapes
 // that are unambiguous are listed: OpenCode renders "opencode | <workdir>"

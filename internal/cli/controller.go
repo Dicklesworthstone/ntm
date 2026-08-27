@@ -349,10 +349,10 @@ func buildControllerResponse(ctx context.Context, opts ControllerInput) (*Contro
 		}
 	}
 
-	// Set pane title
+	// Persist the controller provider separately from its mutable display title.
 	title := tmux.FormatPaneName(session, "controller_"+agentTypeFull, 1, "")
-	if err := tmux.SetPaneTitle(targetPaneID, title); err != nil {
-		return nil, fmt.Errorf("setting pane title: %w", err)
+	if err := tmux.SetPaneAgentIdentity(targetPaneID, title, tmux.AgentType(agentTypeFull)); err != nil {
+		return nil, fmt.Errorf("setting controller pane identity: %w", err)
 	}
 
 	// Launch the agent

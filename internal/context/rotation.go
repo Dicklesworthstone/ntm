@@ -173,13 +173,13 @@ func (s *DefaultPaneSpawner) SpawnAgent(session, agentType string, index int, va
 		return "", fmt.Errorf("creating pane: %w", err)
 	}
 
-	// Set the pane title
+	// Persist the replacement provider separately from its mutable title.
 	shortType := agentTypeShort(agentType)
 	title := tmux.FormatPaneName(session, shortType, index, variant)
-	if err := tmux.SetPaneTitle(paneID, title); err != nil {
+	if err := tmux.SetPaneAgentIdentity(paneID, title, tmux.AgentType(agentType)); err != nil {
 		// Clean up orphaned pane on failure
 		_ = tmux.KillPane(paneID)
-		return "", fmt.Errorf("setting pane title: %w", err)
+		return "", fmt.Errorf("setting pane identity: %w", err)
 	}
 
 	// Get the agent command
