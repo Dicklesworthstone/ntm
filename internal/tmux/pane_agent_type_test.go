@@ -148,6 +148,41 @@ func TestSetPaneAgentTypeRejectsUnknownType(t *testing.T) {
 	if err := c.SetPaneAgentType("", AgentOpencode); err == nil {
 		t.Fatal("SetPaneAgentType accepted an empty pane ID")
 	}
+	if err := c.SetPaneAgentIdentityContext(t.Context(), "%1", "proj__bad_1", AgentType("nope")); err == nil {
+		t.Fatal("SetPaneAgentIdentityContext accepted an unknown agent type")
+	}
+}
+
+// GH#268: lifecycle code knows the provider before launch. Persisting that
+// knowledge must survive both a wrapper becoming pane_current_command and a
+// TUI replacing the visible title.
+func TestRealSetPaneAgentIdentitySurvivesWrapperAndTitleRewrite(t *testing.T) {
+	skipIfNoTmux(t)
+
+	session := createTestSession(t)
+	panes, err := GetPanes(session)
+	if err != nil || len(panes) == 0 {
+		t.Fatalf("GetPanes: panes=%d err=%v", len(panes), err)
+	}
+	paneID := panes[0].ID
+
+	for _, want := range []AgentType{AgentClaude, AgentCodex, AgentGrok} {
+		title := FormatPaneName(session, string(want), 1, "")
+		if err := SetPaneAgentIdentityContext(t.Context(), paneID, title, want); err != nil {
+			t.Fatalf("SetPaneAgentIdentityContext(%s): %v", want, err)
+		}
+		if err := DefaultClient.RunSilent("select-pane", "-t", ExactTarget(paneID), "-T", "wrapper | changed by TUI"); err != nil {
+			t.Fatalf("rewrite title for %s: %v", want, err)
+		}
+
+		got, err := GetPanes(session)
+		if err != nil {
+			t.Fatalf("GetPanes after %s title rewrite: %v", want, err)
+		}
+		if len(got) != 1 || got[0].Type != want {
+			t.Fatalf("panes after %s title rewrite = %+v, want durable type %s", want, got, want)
+		}
+	}
 }
 
 // TestRealSetPaneAgentTypeSurvivesTitleRewrite drives a real tmux server: the

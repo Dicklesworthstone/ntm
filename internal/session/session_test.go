@@ -14,6 +14,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/swarm"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
+	"github.com/Dicklesworthstone/ntm/tests/testutil"
 )
 
 type fakePaneBindingDiscoverer struct {
@@ -1266,6 +1267,46 @@ func TestSessionState_WindowsRoundTrip(t *testing.T) {
 	}
 	if !strings.Contains(string(data), `"grok":2`) {
 		t.Errorf("serialized session missing Grok count: %s", data)
+	}
+}
+
+func TestRestorePersistsAgentTypeAcrossWrapperTitleRewrite(t *testing.T) {
+	testutil.RequireTmuxThrottled(t)
+
+	sessionName := "ntm-session-restore-identity-" + time.Now().Format("150405000000")
+	state := &SessionState{
+		Name:    sessionName,
+		WorkDir: t.TempDir(),
+		Panes: []PaneState{{
+			Index:       0,
+			WindowIndex: 0,
+			Title:       sessionName + "__cod_1",
+			AgentType:   "cod",
+		}},
+	}
+	t.Cleanup(func() {
+		if tmux.SessionExists(sessionName) {
+			_ = tmux.KillSession(sessionName)
+		}
+	})
+
+	if err := Restore(state, RestoreOptions{}); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	panes, err := tmux.GetPanes(sessionName)
+	if err != nil || len(panes) != 1 {
+		t.Fatalf("GetPanes after restore: panes=%+v err=%v", panes, err)
+	}
+	paneID := panes[0].ID
+	if err := tmux.SetPaneTitle(paneID, "caam | title replaced by wrapper"); err != nil {
+		t.Fatalf("rewrite restored pane title: %v", err)
+	}
+	panes, err = tmux.GetPanes(sessionName)
+	if err != nil {
+		t.Fatalf("GetPanes after title rewrite: %v", err)
+	}
+	if len(panes) != 1 || panes[0].Type != tmux.AgentCodex {
+		t.Fatalf("restored pane type after title rewrite = %+v, want codex", panes)
 	}
 }
 

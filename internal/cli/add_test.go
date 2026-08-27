@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -12,11 +13,14 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/output"
 	"github.com/Dicklesworthstone/ntm/internal/persona"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
+	"github.com/Dicklesworthstone/ntm/tests/testutil"
 )
 
 func TestNewAgentLifecycleFailureResponseClassifiesPromptFailureAndMutation(t *testing.T) {
@@ -178,6 +182,67 @@ func TestNewAddCmd_RegistersOllamaFlag(t *testing.T) {
 	if cmd.Flags().Lookup("ollama") == nil {
 		t.Fatal("expected add command to register --ollama")
 	}
+}
+
+func TestAddPersistsAgentTypeAcrossWrapperTitleRewrite(t *testing.T) {
+	testutil.RequireTmuxThrottled(t)
+
+	workDir := t.TempDir()
+	sessionName := fmt.Sprintf("ntm-test-add-identity-%d", time.Now().UnixNano())
+	if err := tmux.CreateSession(sessionName, workDir); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	t.Cleanup(func() { _ = tmux.KillSession(sessionName) })
+
+	oldCfg, oldJSONOutput := cfg, jsonOutput
+	t.Cleanup(func() {
+		cfg = oldCfg
+		jsonOutput = oldJSONOutput
+	})
+	cfg = newTmuxIntegrationTestConfig(workDir)
+	cfg.Agents.Codex = testAgentCatCommandTemplate
+	cfg.Checkpoints.Enabled = false
+	cfg.CASS.Context.Enabled = false
+	jsonOutput = false
+
+	if err := executeAdd(t.Context(), AddOptions{
+		Session: sessionName,
+		Agents: AgentSpecs{{
+			Type:  AgentTypeCodex,
+			Count: 1,
+		}},
+		NoCassContext: true,
+	}, false); err != nil {
+		t.Fatalf("executeAdd: %v", err)
+	}
+
+	panes, err := tmux.GetPanes(sessionName)
+	if err != nil {
+		t.Fatalf("GetPanes: %v", err)
+	}
+	var codexPaneID string
+	for _, pane := range panes {
+		if pane.Type == tmux.AgentCodex {
+			codexPaneID = pane.ID
+			break
+		}
+	}
+	if codexPaneID == "" {
+		t.Fatalf("added Codex pane not found: %+v", panes)
+	}
+	if err := tmux.SetPaneTitle(codexPaneID, "caam | title replaced by wrapper"); err != nil {
+		t.Fatalf("rewrite added pane title: %v", err)
+	}
+	panes, err = tmux.GetPanes(sessionName)
+	if err != nil {
+		t.Fatalf("GetPanes after title rewrite: %v", err)
+	}
+	for _, pane := range panes {
+		if pane.ID == codexPaneID && pane.Type == tmux.AgentCodex {
+			return
+		}
+	}
+	t.Fatalf("added pane %s lost its durable Codex type after title rewrite: %+v", codexPaneID, panes)
 }
 
 // TestAddThreadsReasoningEffort is the ntm#195 regression guard. The `add`

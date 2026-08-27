@@ -1032,6 +1032,25 @@ func TestRestorer_RestoreFromCheckpoint_RelaunchesCommandsAcrossWindows(t *testi
 	if sorted[2].Title != sessionName+"__cursor_2" {
 		t.Fatalf("third pane title = %q, want %q", sorted[2].Title, sessionName+"__cursor_2")
 	}
+	wantTypeByID := map[string]tmux.AgentType{
+		sorted[0].ID: tmux.AgentClaude,
+		sorted[1].ID: tmux.AgentCursor,
+		sorted[2].ID: tmux.AgentCursor,
+	}
+	for paneID := range wantTypeByID {
+		if err := tmux.SetPaneTitle(paneID, "wrapper | title replaced by TUI"); err != nil {
+			t.Fatalf("rewrite restored pane %s title: %v", paneID, err)
+		}
+	}
+	panesAfterRewrite, err := tmux.GetPanes(sessionName)
+	if err != nil {
+		t.Fatalf("GetPanes after title rewrite: %v", err)
+	}
+	for _, pane := range panesAfterRewrite {
+		if want, ok := wantTypeByID[pane.ID]; ok && pane.Type != want {
+			t.Errorf("restored pane %s type after title rewrite = %s, want %s", pane.ID, pane.Type, want)
+		}
+	}
 
 	activePaneID, err := tmux.DefaultClient.Run("display-message", "-p", "-t", sessionName, "#{pane_id}")
 	if err != nil {

@@ -973,9 +973,11 @@ func TestSpawnSessionLogic(t *testing.T) {
 
 	// Validate user pane and agent pane
 	foundClaude := false
+	claudePaneID := ""
 	for _, p := range panes {
 		if p.Type == tmux.AgentClaude {
 			foundClaude = true
+			claudePaneID = p.ID
 			// Check title format: session__type_index_variant
 			expectedTitle := fmt.Sprintf("%s__cc_1_claude-3-5-sonnet-20241022", sessionName)
 			if p.Title != expectedTitle {
@@ -985,7 +987,23 @@ func TestSpawnSessionLogic(t *testing.T) {
 	}
 
 	if !foundClaude {
-		t.Error("did not find Claude agent pane")
+		t.Fatal("did not find Claude agent pane")
+	}
+	if err := tmux.SetPaneTitle(claudePaneID, "caam | title replaced by wrapper"); err != nil {
+		t.Fatalf("rewrite spawned Claude title: %v", err)
+	}
+	panes, err = tmux.GetPanes(sessionName)
+	if err != nil {
+		t.Fatalf("get panes after title rewrite: %v", err)
+	}
+	foundClaude = false
+	for _, p := range panes {
+		if p.ID == claudePaneID && p.Type == tmux.AgentClaude {
+			foundClaude = true
+		}
+	}
+	if !foundClaude {
+		t.Fatalf("spawned pane %s lost its durable Claude type after title rewrite: %+v", claudePaneID, panes)
 	}
 
 	// Verify project directory creation

@@ -588,6 +588,7 @@ func GetRestartPaneContext(ctx context.Context, opts RestartPaneOptions) (*Resta
 				info,
 				launchCmd,
 				restartPaneReadyTimeout,
+				tmux.SetPaneAgentTypeContext,
 				tmux.SendKeysForAgentContext,
 				paneShellPIDContext,
 				waitForPaneAgentReadyContext,
@@ -1466,6 +1467,7 @@ func relaunchRestartPaneAgentContext(
 	info restartPromptTarget,
 	launchCommand string,
 	readyTimeout time.Duration,
+	setAgentType func(context.Context, string, tmux.AgentType) error,
 	send func(context.Context, string, string, bool, tmux.AgentType) error,
 	panePID func(context.Context, string) (int, error),
 	waitReady func(context.Context, string, int, string, time.Duration) (bool, error),
@@ -1475,7 +1477,7 @@ func relaunchRestartPaneAgentContext(
 	if ctx == nil {
 		return failed, "preflight", errors.New("agent relaunch context is required")
 	}
-	if send == nil || panePID == nil || waitReady == nil || hasChildAlive == nil {
+	if setAgentType == nil || send == nil || panePID == nil || waitReady == nil || hasChildAlive == nil {
 		return failed, "preflight", errors.New("agent relaunch dependencies are required")
 	}
 
@@ -1485,6 +1487,9 @@ func relaunchRestartPaneAgentContext(
 			err = errors.New("pane PID is unavailable")
 		}
 		return failed, "PID observation", err
+	}
+	if err := setAgentType(ctx, info.Target, tmux.AgentType(info.ResolvedType)); err != nil {
+		return failed, "identity", err
 	}
 	if err := send(ctx, info.Target, launchCommand, true, info.AgentType); err != nil {
 		if restartPaneCancellationError(ctx, err) != nil {

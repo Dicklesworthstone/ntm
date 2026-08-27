@@ -221,18 +221,22 @@ func (r *Restorer) createSession(cp *Checkpoint, workDir string) error {
 	// Wait for session to be ready
 	time.Sleep(100 * time.Millisecond)
 
-	// Set the title of the first pane if we have pane info
+	// Restore the first pane's title and durable type before relaunching it.
 	panes := sortedCheckpointPanes(cp.Session.Panes)
 	if len(panes) > 0 {
 		if err := moveInitialWindow(cp.SessionName, panes[0].WindowIndex); err != nil {
 			return err
 		}
 		firstPane := panes[0]
-		if firstPane.Title != "" {
-			panes, err := tmux.GetPanes(cp.SessionName)
-			if err == nil && len(panes) > 0 {
-				_ = tmux.SetPaneTitle(panes[0].ID, firstPane.Title)
-			}
+		livePanes, err := tmux.GetPanes(cp.SessionName)
+		if err != nil {
+			return fmt.Errorf("getting initial restored pane: %w", err)
+		}
+		if len(livePanes) == 0 {
+			return fmt.Errorf("restored session %q has no initial pane", cp.SessionName)
+		}
+		if err := setRestoredPaneIdentity(livePanes[0].ID, firstPane.Title, firstPane.AgentType); err != nil {
+			return fmt.Errorf("setting initial restored pane identity: %w", err)
 		}
 	}
 
@@ -287,9 +291,8 @@ func (r *Restorer) restoreLayout(cp *Checkpoint, workDir string) (int, error) {
 			return panesCreated, fmt.Errorf("creating pane %d: %w", i, err)
 		}
 
-		// Set pane title to match checkpoint
-		if paneState.Title != "" {
-			_ = tmux.SetPaneTitle(paneID, paneState.Title)
+		if err := setRestoredPaneIdentity(paneID, paneState.Title, paneState.AgentType); err != nil {
+			return panesCreated, fmt.Errorf("setting pane %d identity: %w", i, err)
 		}
 
 		panesCreated++
@@ -315,6 +318,17 @@ func (r *Restorer) restoreLayout(cp *Checkpoint, workDir string) (int, error) {
 	}
 
 	return panesCreated, nil
+}
+
+func setRestoredPaneIdentity(paneID, title, rawAgentType string) error {
+	agentType := tmux.ParsePaneAgentTypeOption(rawAgentType)
+	if agentType == tmux.AgentUnknown {
+		if title == "" {
+			return nil
+		}
+		return tmux.SetPaneTitle(paneID, title)
+	}
+	return tmux.SetPaneAgentIdentity(paneID, title, agentType)
 }
 
 func (r *Restorer) restoreAgents(cp *Checkpoint, workDir string) error {

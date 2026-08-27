@@ -155,15 +155,20 @@ func Restore(state *SessionState, opts RestoreOptions) (err error) {
 		return fmt.Errorf("getting panes: %w", err)
 	}
 
-	// Set pane titles
+	// Restore visible titles and durable agent types before relaunching. The
+	// pane option remains authoritative after wrappers or TUIs rewrite titles.
 	for i, paneState := range panes {
 		if i >= len(tmuxPanes) {
 			break
 		}
-		if paneState.Title != "" {
+		agentType := tmux.ParsePaneAgentTypeOption(paneState.AgentType)
+		if agentType != tmux.AgentUnknown {
+			if err := tmux.SetPaneAgentIdentity(tmuxPanes[i].ID, paneState.Title, agentType); err != nil {
+				return fmt.Errorf("setting restored pane %d identity: %w", i, err)
+			}
+		} else if paneState.Title != "" {
 			if err := tmux.SetPaneTitle(tmuxPanes[i].ID, paneState.Title); err != nil {
-				// Non-fatal - continue with other panes
-				continue
+				return fmt.Errorf("setting restored pane %d title: %w", i, err)
 			}
 		}
 	}

@@ -1149,6 +1149,30 @@ func TestSpawnOptions_MultipleAgentTypes(t *testing.T) {
 		t.Errorf("[E2E-SPAWN] Expected 1 gemini, got %d", typeCounts["gemini"])
 	}
 
+	panes, err := tmux.GetPanes(sessionName)
+	if err != nil {
+		t.Fatalf("[E2E-SPAWN] GetPanes before title rewrite: %v", err)
+	}
+	wantTypeByID := make(map[string]tmux.AgentType)
+	for _, pane := range panes {
+		if pane.Type == tmux.AgentUser {
+			continue
+		}
+		wantTypeByID[pane.ID] = pane.Type
+		if err := tmux.SetPaneTitle(pane.ID, "caam | title replaced by wrapper"); err != nil {
+			t.Fatalf("[E2E-SPAWN] rewrite pane %s title: %v", pane.ID, err)
+		}
+	}
+	panes, err = tmux.GetPanes(sessionName)
+	if err != nil {
+		t.Fatalf("[E2E-SPAWN] GetPanes after title rewrite: %v", err)
+	}
+	for _, pane := range panes {
+		if want, ok := wantTypeByID[pane.ID]; ok && pane.Type != want {
+			t.Errorf("[E2E-SPAWN] pane %s type after wrapper/title rewrite = %s, want %s", pane.ID, pane.Type, want)
+		}
+	}
+
 	t.Logf("[E2E-SPAWN] Operation=MultiAgentTypes | Session=%s | Agents=%d | Types=%v",
 		resp.Session, len(resp.Agents), typeCounts)
 }

@@ -1117,6 +1117,7 @@ func TestRelaunchRestartPaneAgentContextObservesReadyAgentAfterSenderReturnsCanc
 		AgentType:    tmux.AgentCodex,
 		ResolvedType: "codex",
 	}
+	identitySet := false
 	mutated := false
 	var pidCalls int
 	outcome, phase, err := relaunchRestartPaneAgentContext(
@@ -1124,9 +1125,16 @@ func TestRelaunchRestartPaneAgentContextObservesReadyAgentAfterSenderReturnsCanc
 		info,
 		"codex",
 		time.Minute,
+		func(gotCtx context.Context, target string, agentType tmux.AgentType) error {
+			if gotCtx != ctx || target != "%1" || agentType != tmux.AgentCodex {
+				t.Fatalf("identity context=%v target=%q type=%s", gotCtx, target, agentType)
+			}
+			identitySet = true
+			return nil
+		},
 		func(gotCtx context.Context, target, command string, enter bool, agentType tmux.AgentType) error {
-			if gotCtx != ctx || target != "%1" || command != "codex" || !enter || agentType != tmux.AgentCodex {
-				t.Fatalf("launch context=%v target=%q command=%q enter=%t type=%s", gotCtx, target, command, enter, agentType)
+			if !identitySet || gotCtx != ctx || target != "%1" || command != "codex" || !enter || agentType != tmux.AgentCodex {
+				t.Fatalf("launch identitySet=%t context=%v target=%q command=%q enter=%t type=%s", identitySet, gotCtx, target, command, enter, agentType)
 			}
 			mutated = true
 			cancel()
@@ -1159,7 +1167,7 @@ func TestRelaunchRestartPaneAgentContextObservesReadyAgentAfterSenderReturnsCanc
 		},
 		func(pid int) bool { return mutated && pid == 100 },
 	)
-	if !errors.Is(err, context.Canceled) || phase != "launch" || pidCalls != 2 {
+	if !identitySet || !errors.Is(err, context.Canceled) || phase != "launch" || pidCalls != 2 {
 		t.Fatalf("relaunch error=%v phase=%q pidCalls=%d", err, phase, pidCalls)
 	}
 	if outcome.Status != RestartAgentRelaunchReady || !outcome.Ready || !outcome.ProcessAlive || outcome.ShellPID != 100 {
