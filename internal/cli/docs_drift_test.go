@@ -10,6 +10,8 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
+
+	"github.com/Dicklesworthstone/ntm/internal/plugins"
 )
 
 // TestReadmeNtmFlagsExist is the docs-drift gate from ntm-25ow: every
@@ -27,6 +29,18 @@ func TestReadmeNtmFlagsExist(t *testing.T) {
 	defer file.Close()
 
 	flagToken := regexp.MustCompile(`--[a-z][a-z0-9-]*`)
+	shippedPlugins, err := plugins.LoadAgentPlugins(filepath.Join("..", "..", "examples", "agents"))
+	if err != nil {
+		t.Fatalf("load shipped agent plugins: %v", err)
+	}
+	pluginFlags := make(map[string]struct{})
+	for _, plugin := range shippedPlugins {
+		for _, name := range []string{plugin.Name, plugin.Alias} {
+			if name = strings.TrimSpace(name); name != "" {
+				pluginFlags[name] = struct{}{}
+			}
+		}
+	}
 
 	lookupCommand := func(fields []string) *cobra.Command {
 		cmd := rootCmd
@@ -54,6 +68,16 @@ func TestReadmeNtmFlagsExist(t *testing.T) {
 		for c := cmd; c != nil; c = c.Parent() {
 			check(c.Flags())
 			check(c.PersistentFlags())
+		}
+		if !found {
+			// Agent-plugin flags are registered dynamically before command
+			// execution, so they are absent from the package-global Cobra tree.
+			// Accept only names declared by versioned shipped manifests, and only
+			// on the three commands that expose plugin selectors/counts.
+			switch cmd.Name() {
+			case "spawn", "add", "send":
+				_, found = pluginFlags[name]
+			}
 		}
 		return found
 	}

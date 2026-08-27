@@ -1488,7 +1488,7 @@ func relaunchRestartPaneAgentContext(
 		}
 		return failed, "PID observation", err
 	}
-	if err := setAgentType(ctx, info.Target, tmux.AgentType(info.ResolvedType)); err != nil {
+	if err := setAgentType(ctx, info.Target, tmux.AgentType(info.ResolvedType).Canonical()); err != nil {
 		return failed, "identity", err
 	}
 	if err := send(ctx, info.Target, launchCommand, true, info.AgentType); err != nil {

@@ -228,6 +228,10 @@ func (r *Restorer) createSession(cp *Checkpoint, workDir string) error {
 			return err
 		}
 		firstPane := panes[0]
+		firstAgentType := tmux.ParsePaneAgentTypeOption(firstPane.AgentType)
+		if firstPane.Title == "" && (firstAgentType == tmux.AgentUnknown || firstAgentType == tmux.AgentUser) {
+			return nil
+		}
 		livePanes, err := tmux.GetPanes(cp.SessionName)
 		if err != nil {
 			return fmt.Errorf("getting initial restored pane: %w", err)
@@ -322,7 +326,7 @@ func (r *Restorer) restoreLayout(cp *Checkpoint, workDir string) (int, error) {
 
 func setRestoredPaneIdentity(paneID, title, rawAgentType string) error {
 	agentType := tmux.ParsePaneAgentTypeOption(rawAgentType)
-	if agentType == tmux.AgentUnknown {
+	if agentType == tmux.AgentUnknown || agentType == tmux.AgentUser {
 		if title == "" {
 			return nil
 		}

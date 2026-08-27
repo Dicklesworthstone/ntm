@@ -52,6 +52,7 @@ import (
 	"github.com/spf13/pflag"
 
 	"github.com/Dicklesworthstone/ntm/internal/cli"
+	"github.com/Dicklesworthstone/ntm/internal/plugins"
 )
 
 const (
@@ -262,7 +263,7 @@ func shellTokens(s string) ([]string, error) {
 
 // checkExample resolves argv against the real cobra tree and parses its flags
 // without executing anything. Returns a non-nil error describing the drift.
-func checkExample(root *cobra.Command, argv []string) error {
+func checkExample(root *cobra.Command, argv []string, agentPlugins []plugins.AgentPlugin) error {
 	cmd, rest, err := root.Find(argv)
 	if err != nil {
 		return fmt.Errorf("unknown command: %v", err)
@@ -273,6 +274,24 @@ func checkExample(root *cobra.Command, argv []string) error {
 	fs.SetOutput(io.Discard)
 	fs.AddFlagSet(cmd.Flags())
 	fs.AddFlagSet(cmd.InheritedFlags())
+	// Agent plugins add flags dynamically when ntm starts, so they are absent
+	// from the package-global Cobra tree used by this non-executing gate. Mirror
+	// only the flags declared by versioned shipped presets; production loader
+	// and registration behavior has its own tests in internal/cli.
+	for _, plugin := range agentPlugins {
+		for _, name := range []string{plugin.Name, plugin.Alias} {
+			name = strings.TrimSpace(name)
+			if name == "" || fs.Lookup(name) != nil {
+				continue
+			}
+			switch cmd.Name() {
+			case "spawn", "add":
+				fs.String(name, "", "shipped agent plugin")
+			case "send":
+				fs.Bool(name, false, "shipped agent plugin selector")
+			}
+		}
+	}
 	if err := fs.Parse(rest); err != nil {
 		return fmt.Errorf("flag parse failed for %q: %v", cmd.CommandPath(), err)
 	}
@@ -415,6 +434,11 @@ func TestDocsExamplesCanary(t *testing.T) {
 func runDocsCheckOn(t *testing.T, rel, content string) (violations []string, skips []docExample) {
 	t.Helper()
 	cobraRoot := cli.RootCommand()
+	root := docsRepoRoot(t)
+	agentPlugins, err := plugins.LoadAgentPlugins(filepath.Join(root, "examples", "agents"))
+	if err != nil {
+		t.Fatalf("loading shipped agent plugins for docs conformance: %v", err)
+	}
 	for _, ex := range extractExamples(rel, content) {
 		if ex.skipped {
 			skips = append(skips, ex)
@@ -425,7 +449,7 @@ func runDocsCheckOn(t *testing.T, rel, content string) (violations []string, ski
 			violations = append(violations, fmt.Sprintf("%s:%d: %v (line: %s)", ex.file, ex.line, err, ex.raw))
 			continue
 		}
-		if err := checkExample(cobraRoot, argv); err != nil {
+		if err := checkExample(cobraRoot, argv, agentPlugins); err != nil {
 			violations = append(violations, fmt.Sprintf("%s:%d: %v (line: %s)", ex.file, ex.line, err, ex.raw))
 		}
 	}
