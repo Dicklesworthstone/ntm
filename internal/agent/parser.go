@@ -294,6 +294,27 @@ func (p *parserImpl) detectStateFlags(output string, state *AgentState) {
 		return
 	}
 
+	// Antigravity keeps its composer/footer visible during work. The live
+	// "esc to cancel" hint is authoritative and must beat the prompt chrome.
+	if state.Type == AgentTypeAntigravity {
+		if AntigravityActivelyWorking(output, 0) {
+			state.IsWorking = true
+			state.IsIdle = false
+			if len(state.WorkIndicators) == 0 {
+				state.WorkIndicators = []string{"antigravity_live_cancel"}
+			}
+			state.IsInError = p.detectError(output, state.Type)
+			return
+		}
+		if state.IsIdle {
+			state.IsWorking = false
+		} else {
+			state.IsWorking = rawIsWorking
+		}
+		state.IsInError = p.detectError(output, state.Type)
+		return
+	}
+
 	// Conflict resolution: Prompt beats substring heuristics
 	// If we see a definitive prompt at the end (IsIdle), we are not working,
 	// regardless of what keywords appear in the scrollback.
@@ -354,8 +375,10 @@ func (p *parserImpl) detectWorking(output string, agentType AgentType) bool {
 		return matchAny(recentOutput, ccWorkingPatterns)
 	case AgentTypeCodex:
 		return matchAny(recentOutput, codWorkingPatterns)
-	case AgentTypeGemini, AgentTypeAntigravity:
+	case AgentTypeGemini:
 		return matchAny(recentOutput, gmiWorkingPatterns)
+	case AgentTypeAntigravity:
+		return AntigravityActivelyWorking(output, 0) || matchAny(recentOutput, gmiWorkingPatterns)
 	case AgentTypeCursor:
 		return matchAny(recentOutput, cursorWorkingPatterns)
 	case AgentTypeWindsurf:
@@ -427,10 +450,14 @@ func (p *parserImpl) detectIdle(output string, agentType AgentType) bool {
 		return false
 	case AgentTypeCodex:
 		return matchAnyRegex(lastLines, codIdlePatterns)
-	case AgentTypeGemini, AgentTypeAntigravity:
-		// Gemini (and its successor Antigravity) are trickier - check for prompt
-		// or lack of working indicators
+	case AgentTypeGemini:
+		// Gemini is trickier - check for prompt or lack of working indicators.
 		return matchAnyRegex(lastLines, gmiIdlePatterns)
+	case AgentTypeAntigravity:
+		if AntigravityActivelyWorking(output, 0) {
+			return false
+		}
+		return matchAnyRegex(lastLines, agyIdlePatterns)
 	case AgentTypeCursor:
 		return matchAnyRegex(lastLines, cursorIdlePatterns)
 	case AgentTypeWindsurf:
@@ -576,8 +603,14 @@ func (p *parserImpl) collectWorkIndicators(output string, agentType AgentType) [
 		return collectMatches(recentOutput, ccWorkingPatterns)
 	case AgentTypeCodex:
 		return collectMatches(recentOutput, codWorkingPatterns)
-	case AgentTypeGemini, AgentTypeAntigravity:
+	case AgentTypeGemini:
 		return collectMatches(recentOutput, gmiWorkingPatterns)
+	case AgentTypeAntigravity:
+		matches := collectMatches(recentOutput, gmiWorkingPatterns)
+		if AntigravityActivelyWorking(output, 0) {
+			matches = append(matches, "antigravity_live_cancel")
+		}
+		return matches
 	case AgentTypeCursor:
 		return collectMatches(recentOutput, cursorWorkingPatterns)
 	case AgentTypeWindsurf:

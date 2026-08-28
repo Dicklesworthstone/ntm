@@ -133,6 +133,9 @@ func defaultPatterns() []Pattern {
 		// filter keeps stale scrollback quotes from re-triggering it.
 		{Name: "agy_trust_prompt", RegexStr: `(?i)do\s+you\s+trust\s+the\s+contents\s+of\s+this\s+project`, Agent: "antigravity", State: StateError, Category: CategoryError, Priority: 210, Description: "Antigravity workspace-trust dialog question (pane blocked on keystroke)"},
 		{Name: "agy_trust_option", RegexStr: `(?i)yes,\s+i\s+trust\s+this\s+folder`, Agent: "antigravity", State: StateError, Category: CategoryError, Priority: 209, Description: "Antigravity workspace-trust dialog option line (pane blocked on keystroke)"},
+		{Name: "agy_esc_cancel", RegexStr: `(?i)\besc\s+to\s+cancel\b`, Agent: "antigravity", State: StateThinking, Category: CategoryThinking, Priority: 115, Description: "Antigravity in-flight cancel hint"},
+		{Name: "agy_bare_prompt", RegexStr: `(?m)^\s*>\s*$`, Agent: "antigravity", State: StateWaiting, Category: CategoryIdle, Priority: 100, Description: "Antigravity bare composer prompt"},
+		{Name: "agy_shortcuts_footer", RegexStr: `(?i)\?\s+for\s+shortcuts`, Agent: "antigravity", State: StateWaiting, Category: CategoryIdle, Priority: 96, Description: "Antigravity idle shortcuts footer"},
 
 		// Grok Build patterns (GH#251 phase 2), derived from live captures of
 		// grok 1.0.5. The braille-spinner activity line ("⠹ Waiting for

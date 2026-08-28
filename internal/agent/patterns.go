@@ -311,18 +311,33 @@ var (
 	gmiHeaderPattern = regexp.MustCompile(`(?i)(gemini.*preview|gemini-\d|google\s+ai)`)
 )
 
-// Antigravity CLI (agy) patterns for state detection.
-//
-// Antigravity is the Gemini CLI's successor and shares its interactive TUI
-// behavior (memory display, YOLO-style auto-approve, prompt rendering), so its
-// working / idle / rate-limit / error / metric detection reuses the gmi*
-// pattern sets above (see the AgentTypeAntigravity arms in parser.go). The only
-// agy-specific signal we need is a header signature that distinguishes an
-// Antigravity pane from a legacy Gemini pane during unhinted type detection.
+// Antigravity CLI (agy) patterns for state detection. Its prompt and live-work
+// footer differ from Gemini even though both providers share model/memory and
+// rate-limit vocabulary (GH#270).
 var (
 	// agyHeaderPattern confirms output is from the Antigravity CLI.
 	agyHeaderPattern = regexp.MustCompile(`(?i)antigravity`)
+
+	// agyCancelHintRe matches the footer shown only while a turn is active.
+	agyCancelHintRe = regexp.MustCompile(`(?i)\besc\s+to\s+cancel\b`)
+
+	// The bare composer prompt is followed by shortcut/model footer lines, so
+	// Gemini's end-of-buffer prompt expression cannot see it.
+	agyIdlePatterns = []*regexp.Regexp{
+		regexp.MustCompile(`(?m)^\s*>\s*$`),
+		regexp.MustCompile(`(?i)\?\s+for\s+shortcuts`),
+	}
 )
+
+const agyLiveTailLines = 15
+
+// AntigravityActivelyWorking reports whether the trailing live TUI frame
+// contains the provider's in-flight cancel hint.
+func AntigravityActivelyWorking(output string, paneWidth int) bool {
+	clean := stripANSICodes(output)
+	tail := util.GetLastNLines(clean, util.WidthAdaptiveTailLines(paneWidth, agyLiveTailLines))
+	return agyCancelHintRe.MatchString(tail)
+}
 
 // Cursor (cursor) patterns.
 var (

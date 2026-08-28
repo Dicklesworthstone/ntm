@@ -818,11 +818,10 @@ func (sc *StateClassifier) classifyInternal(sample *VelocitySample) (*AgentActiv
 	// lets classifyState fall through to the correct idle/unknown path.
 	//
 	// CategoryError matches are filtered with the same live-window logic
-	// when an idle prompt is present in the live tail: stale "failed" or
-	// "api error" text high in scrollback above a current chevron prompt
-	// would otherwise pin the pane to ERROR forever, even though the agent
-	// is sitting at a healthy prompt waiting for input. Fresh errors that
-	// land inside the live tail still classify as ERROR.
+	// when a current idle or thinking signal is present in the live tail:
+	// stale "failed" or "api error" text high in scrollback must not pin a
+	// pane to ERROR after its TUI has visibly moved on. Fresh errors inside
+	// the live tail still classify as ERROR.
 	liveContent := lastNLines(content, util.WidthAdaptiveTailLines(sc.paneWidth, liveThinkingWindowLines))
 	liveMatches := sc.patternLibrary.Match(liveContent, sc.agentType)
 	effectiveMatches := filterThinkingToLive(matches, liveMatches)
@@ -1020,14 +1019,11 @@ func filterThinkingToLive(full, live []PatternMatch) []PatternMatch {
 
 // filterErrorToLiveWhenIdle drops CategoryError matches from `full` whose
 // pattern name is not also present in `live`, but only when `live` contains a
-// CategoryIdle prompt match. The combination of "no live error + a live idle
-// prompt" is the signature of historical error text scrolled high in the
-// buffer above a current healthy chevron/prompt: the agent has finished the
-// failure path, recovered, and is now waiting for the next input. Fresh
-// errors (rate limits, auth failures, crashes that just happened) still
-// match in `live` and survive the filter as ERROR. When no idle prompt is in
-// the live tail the pane is not currently waiting and `full` is returned
-// unchanged so error priority is preserved.
+// current-state signal: an idle prompt or a provider-specific thinking marker.
+// That combination proves the TUI has visibly moved past historical error text.
+// Fresh errors still match in `live` and survive the filter as ERROR. When no
+// current-state signal is present, `full` is returned unchanged so an ambiguous
+// pane fails closed.
 //
 // Plain-text error patterns (failed_text, api_error, exception, …) are the
 // load-bearing instances of this false positive because their regexes match
@@ -1048,18 +1044,17 @@ func filterErrorToLiveWhenIdle(full, live []PatternMatch) []PatternMatch {
 	if !hasError {
 		return full
 	}
-	// Only debounce when the live tail shows the pane is actively waiting
-	// at an idle prompt. Without this guard a pane that just rolled an
-	// error past the live window with no follow-up prompt would silently
-	// drop the error and misclassify as the next-best non-error state.
-	hasLiveIdle := false
+	// Only debounce when the live tail supplies positive current-state
+	// evidence. Without this guard a pane that merely rolled an error past
+	// the live window could silently lose the error while stalled.
+	hasLiveCurrentSignal := false
 	for _, m := range live {
-		if m.Category == CategoryIdle {
-			hasLiveIdle = true
+		if m.Category == CategoryIdle || m.Category == CategoryThinking {
+			hasLiveCurrentSignal = true
 			break
 		}
 	}
-	if !hasLiveIdle {
+	if !hasLiveCurrentSignal {
 		return full
 	}
 	// Build the set of error-pattern names that are still in the live tail.

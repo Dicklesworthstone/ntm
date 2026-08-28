@@ -791,6 +791,40 @@ func TestFilterErrorToLiveWhenIdle_NoIdlePromptKeepsHistoricalError(t *testing.T
 	}
 }
 
+func TestStateClassifier_AntigravityLiveFrames(t *testing.T) {
+	idleOutput := `Antigravity
+
+  >
+
+  ? for shortcuts
+  Gemini 3.7 Flash (High)`
+	idleClassifier := NewStateClassifier("agy-idle", &ClassifierConfig{AgentType: "agy"})
+	idle, err := idleClassifier.ClassifyWithOutput(idleOutput)
+	if err != nil {
+		t.Fatalf("classify idle Antigravity frame: %v", err)
+	}
+	if idle.State != StateWaiting {
+		t.Fatalf("idle Antigravity state = %s, want %s; patterns=%v", idle.State, StateWaiting, idle.DetectedPatterns)
+	}
+
+	var workingOutput strings.Builder
+	workingOutput.WriteString("Error: failed to run an earlier tool\n")
+	for i := 0; i < 20; i++ {
+		workingOutput.WriteString("historical output outside the live window\n")
+	}
+	workingOutput.WriteString("⠹ Analyzing repository\n")
+	workingOutput.WriteString("esc to cancel\n")
+	workingOutput.WriteString("Gemini 3.7 Flash (High)\n")
+	workingClassifier := NewStateClassifier("agy-working", &ClassifierConfig{AgentType: "agy"})
+	working, err := workingClassifier.ClassifyWithOutput(workingOutput.String())
+	if err != nil {
+		t.Fatalf("classify working Antigravity frame: %v", err)
+	}
+	if working.State != StateThinking {
+		t.Fatalf("working Antigravity state = %s, want %s; patterns=%v", working.State, StateThinking, working.DetectedPatterns)
+	}
+}
+
 // TestActivity_RateLimitedFlagFollowsLiveWindow asserts that the
 // activity-level RateLimited flag stays consistent with the classified
 // state when a stale rate-limit pattern scrolled above a current idle

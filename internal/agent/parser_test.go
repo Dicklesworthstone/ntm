@@ -398,6 +398,37 @@ codex> `
 	}
 }
 
+func TestParser_ParseWithHint_AntigravityLiveFrames(t *testing.T) {
+	p := NewParser()
+
+	idleOutput := `Antigravity
+
+  >
+
+  ? for shortcuts
+  Gemini 3.7 Flash (High)`
+	idle, err := p.ParseWithHint(idleOutput, AgentTypeAntigravity)
+	if err != nil {
+		t.Fatalf("parse idle Antigravity frame: %v", err)
+	}
+	if !idle.IsIdle || idle.IsWorking || idle.IsInError {
+		t.Fatalf("idle Antigravity frame = %+v, want idle only", idle)
+	}
+
+	workingOutput := `Antigravity
+  >
+  ⠹ Analyzing repository
+  esc to cancel
+  Gemini 3.7 Flash (High)`
+	working, err := p.ParseWithHint(workingOutput, AgentTypeAntigravity)
+	if err != nil {
+		t.Fatalf("parse working Antigravity frame: %v", err)
+	}
+	if !working.IsWorking || working.IsIdle || working.IsInError {
+		t.Fatalf("working Antigravity frame = %+v, want working only", working)
+	}
+}
+
 func TestParser_Parse_Codex_LowContext(t *testing.T) {
 	p := NewParser()
 	output := `Some work done...
