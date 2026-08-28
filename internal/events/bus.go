@@ -117,8 +117,15 @@ func (b *EventBus) Publish(event BusEvent) {
 
 	// Call handlers outside of lock with bounded concurrency
 	for _, entry := range entries {
-		// Acquire semaphore slot (blocks if at capacity to apply backpressure)
-		b.handlerSem <- struct{}{}
+		if !b.tryAcquireHandlerSlot() {
+			// Caller-runs backpressure is required here: a handler may publish a
+			// nested event. Blocking for capacity while every slot is held by
+			// reentrant handlers creates a wait cycle in which no slot can be
+			// released. Running inline preserves the concurrency bound and breaks
+			// that cycle.
+			invokeEventHandler(entry.handler, event, "handler")
+			continue
+		}
 
 		// Run handler in goroutine for non-blocking publish
 		go func(h EventHandler) {
@@ -126,12 +133,7 @@ func (b *EventBus) Publish(event BusEvent) {
 				// Release semaphore slot
 				<-b.handlerSem
 			}()
-			defer func() {
-				if r := recover(); r != nil {
-					log.Printf("event bus: handler panic recovered: %v", r)
-				}
-			}()
-			h(event)
+			invokeEventHandler(h, event, "handler")
 		}(entry.handler)
 	}
 }
@@ -155,8 +157,12 @@ func (b *EventBus) PublishSync(event BusEvent) {
 	// Call handlers synchronously with bounded concurrency
 	var wg sync.WaitGroup
 	for _, entry := range entries {
-		// Acquire semaphore slot (blocks if at capacity to apply backpressure)
-		b.handlerSem <- struct{}{}
+		if !b.tryAcquireHandlerSlot() {
+			// See Publish: waiting for a slot here can deadlock when every
+			// in-flight handler is synchronously publishing another event.
+			invokeEventHandler(entry.handler, event, "sync handler")
+			continue
+		}
 
 		wg.Add(1)
 		go func(h EventHandler) {
@@ -165,15 +171,28 @@ func (b *EventBus) PublishSync(event BusEvent) {
 				// Release semaphore slot
 				<-b.handlerSem
 			}()
-			defer func() {
-				if r := recover(); r != nil {
-					log.Printf("event bus: sync handler panic recovered: %v", r)
-				}
-			}()
-			h(event)
+			invokeEventHandler(h, event, "sync handler")
 		}(entry.handler)
 	}
 	wg.Wait()
+}
+
+func (b *EventBus) tryAcquireHandlerSlot() bool {
+	select {
+	case b.handlerSem <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func invokeEventHandler(handler EventHandler, event BusEvent, label string) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("event bus: %s panic recovered: %v", label, r)
+		}
+	}()
+	handler(event)
 }
 
 // History returns recent events (newest first)

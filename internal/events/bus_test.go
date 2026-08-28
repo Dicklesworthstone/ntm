@@ -309,6 +309,87 @@ func TestEventBus_ConcurrentPublish(t *testing.T) {
 	}
 }
 
+func TestEventBus_ReentrantPublishAtCapacityDoesNotDeadlock(t *testing.T) {
+	t.Run("Publish", func(t *testing.T) {
+		assertReentrantPublishAtCapacityDoesNotDeadlock(t, func(bus *EventBus, event BusEvent) {
+			bus.Publish(event)
+		})
+	})
+	t.Run("PublishSync", func(t *testing.T) {
+		assertReentrantPublishAtCapacityDoesNotDeadlock(t, func(bus *EventBus, event BusEvent) {
+			bus.PublishSync(event)
+		})
+	})
+}
+
+func assertReentrantPublishAtCapacityDoesNotDeadlock(t *testing.T, publishOuter func(*EventBus, BusEvent)) {
+	t.Helper()
+
+	bus := NewEventBus(10)
+	ready := make(chan struct{}, DefaultMaxConcurrentHandlers)
+	release := make(chan struct{})
+	completed := make(chan struct{}, DefaultMaxConcurrentHandlers)
+	var nestedReceived atomic.Int32
+
+	bus.Subscribe("nested", func(BusEvent) {
+		nestedReceived.Add(1)
+	})
+	bus.Subscribe("outer", func(BusEvent) {
+		ready <- struct{}{}
+		<-release
+		bus.PublishSync(BaseEvent{Type: "nested", Timestamp: time.Now()})
+		completed <- struct{}{}
+	})
+
+	var publishers sync.WaitGroup
+	publishers.Add(DefaultMaxConcurrentHandlers)
+	for i := 0; i < DefaultMaxConcurrentHandlers; i++ {
+		go func() {
+			defer publishers.Done()
+			publishOuter(bus, BaseEvent{Type: "outer", Timestamp: time.Now()})
+		}()
+	}
+
+	for i := 0; i < DefaultMaxConcurrentHandlers; i++ {
+		select {
+		case <-ready:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("only %d/%d outer handlers reached the saturation barrier", i, DefaultMaxConcurrentHandlers)
+		}
+	}
+	close(release)
+
+	for i := 0; i < DefaultMaxConcurrentHandlers; i++ {
+		select {
+		case <-completed:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("only %d/%d reentrant outer handlers completed", i, DefaultMaxConcurrentHandlers)
+		}
+	}
+
+	done := make(chan struct{})
+	go func() {
+		publishers.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("reentrant PublishSync deadlocked with every handler semaphore slot occupied")
+	}
+
+	if got := nestedReceived.Load(); got != DefaultMaxConcurrentHandlers {
+		t.Fatalf("nested handlers received %d events, want %d", got, DefaultMaxConcurrentHandlers)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for len(bus.handlerSem) != 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := len(bus.handlerSem); got != 0 {
+		t.Fatalf("handler semaphore retained %d slots after all handlers completed", got)
+	}
+}
+
 func TestEventBus_ConcurrentSubscribe(t *testing.T) {
 	t.Parallel()
 
