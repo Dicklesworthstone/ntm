@@ -288,7 +288,8 @@ func checkExample(root *cobra.Command, argv []string, agentPlugins []plugins.Age
 			case "spawn", "add":
 				fs.String(name, "", "shipped agent plugin")
 			case "send":
-				fs.Bool(name, false, "shipped agent plugin selector")
+				fs.String(name, "", "shipped agent plugin selector")
+				fs.Lookup(name).NoOptDefVal = "true"
 			}
 		}
 	}
@@ -428,6 +429,19 @@ func TestDocsExamplesCanary(t *testing.T) {
 	// The fixture's valid example must NOT be flagged (no false positives).
 	if strings.Contains(joined, "ntm version --short") {
 		t.Fatalf("CANARY FAILURE — gate false-positived on the fixture's valid example.\nViolations:\n%s", joined)
+	}
+}
+
+func TestCheckExampleShippedPluginSendFlagShape(t *testing.T) {
+	agentPlugins := []plugins.AgentPlugin{{Name: "omp", Alias: "om"}}
+	for _, argv := range [][]string{
+		{"send", "demo", "--omp", "prompt"},
+		{"send", "demo", "--omp=reviewer", "prompt"},
+		{"send", "demo", "--om=reviewer", "prompt"},
+	} {
+		if err := checkExample(cli.RootCommand(), argv, agentPlugins); err != nil {
+			t.Errorf("checkExample(%q) rejected valid shipped-plugin send syntax: %v", argv, err)
+		}
 	}
 }
 
