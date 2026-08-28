@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/Dicklesworthstone/ntm/internal/config"
+	"github.com/Dicklesworthstone/ntm/internal/persona"
 	"github.com/Dicklesworthstone/ntm/internal/plugins"
 )
 
@@ -544,20 +545,81 @@ func TestAgentSpecsValue_AgyRejectsModelOverride(t *testing.T) {
 }
 
 func TestValidateAgentModelOverridesRejectsProgrammaticAgyModel(t *testing.T) {
-	err := validateAgentModelOverrides([]FlatAgent{{
-		Type:  AgentTypeAntigravity,
-		Index: 1,
-		Model: "gemini-3.1-pro-high",
-	}})
-	if err == nil || !strings.Contains(err.Error(), "model is pinned") {
-		t.Fatalf("validateAgentModelOverrides() error = %v, want pinned-model rejection", err)
+	for _, model := range []string{"gemini-3.1-pro-high", config.AntigravityRequiredModel} {
+		err := validateAgentModelOverrides([]FlatAgent{{
+			Type:  AgentTypeAntigravity,
+			Index: 1,
+			Model: model,
+		}}, nil)
+		if err == nil || !strings.Contains(err.Error(), "model is pinned") {
+			t.Errorf("validateAgentModelOverrides(%q) error = %v, want pinned-model rejection", model, err)
+		}
 	}
 
 	if err := validateAgentModelOverrides([]FlatAgent{{
 		Type:  AgentTypeAntigravity,
 		Index: 1,
-	}}); err != nil {
+	}}, nil); err != nil {
 		t.Fatalf("count-only agy spec rejected: %v", err)
+	}
+}
+
+func TestValidateAgentModelOverridesAllowsPinnedAgyPersonas(t *testing.T) {
+	pinned := &persona.Persona{
+		Name:      "agy-reviewer",
+		AgentType: "antigravity",
+		Model:     config.AntigravityRequiredModel,
+	}
+
+	expanded, err := expandProfileAgents([]*persona.Persona{pinned}, nil)
+	if err != nil {
+		t.Fatalf("expand AGY profile: %v", err)
+	}
+	if err := validateSpawnAgentTypes(expanded, nil, nil); err != nil {
+		t.Fatalf("profile-expanded pinned-model AGY persona rejected: %v", err)
+	}
+
+	personaMap := map[string]*persona.Persona{"agy-reviewer": pinned}
+	if err := validateAgentModelOverrides([]FlatAgent{{
+		Type:  AgentTypeAntigravity,
+		Index: 1,
+		Model: "agy-reviewer",
+	}}, personaMap); err != nil {
+		t.Fatalf("mapped pinned-model AGY persona rejected: %v", err)
+	}
+	if err := validateAgentSpecModelOverrides(AgentSpecs{{
+		Type:  AgentTypeAntigravity,
+		Count: 1,
+		Model: "agy-reviewer",
+	}}, personaMap); err != nil {
+		t.Fatalf("add-style pinned-model AGY persona rejected: %v", err)
+	}
+}
+
+func TestValidateAgentModelOverridesRejectsDivergentAgyPersonaModel(t *testing.T) {
+	divergent := &persona.Persona{
+		Name:      "agy-reviewer",
+		AgentType: "antigravity",
+		Model:     "gemini-3.1-pro-high",
+	}
+
+	err := validateAgentModelOverrides([]FlatAgent{{
+		Type:    AgentTypeAntigravity,
+		Index:   1,
+		Model:   divergent.Model,
+		Persona: divergent,
+	}}, nil)
+	if err == nil || !strings.Contains(err.Error(), "persona") || !strings.Contains(err.Error(), "model is pinned") {
+		t.Fatalf("divergent attached AGY persona error = %v, want pinned-model persona rejection", err)
+	}
+
+	err = validateAgentSpecModelOverrides(AgentSpecs{{
+		Type:  AgentTypeAntigravity,
+		Count: 1,
+		Model: "agy-reviewer",
+	}}, map[string]*persona.Persona{"agy-reviewer": divergent})
+	if err == nil || !strings.Contains(err.Error(), "persona") || !strings.Contains(err.Error(), "model is pinned") {
+		t.Fatalf("divergent mapped AGY persona error = %v, want pinned-model persona rejection", err)
 	}
 }
 

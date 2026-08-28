@@ -730,8 +730,8 @@ func prependSpawnPaneEnv(command string, env map[string]string) string {
 	return prefix.String() + command
 }
 
-func validateSpawnAgentTypes(agents []FlatAgent, pluginMap map[string]plugins.AgentPlugin) error {
-	if err := validateAgentModelOverrides(agents); err != nil {
+func validateSpawnAgentTypes(agents []FlatAgent, pluginMap map[string]plugins.AgentPlugin, personaMap map[string]*persona.Persona) error {
+	if err := validateAgentModelOverrides(agents, personaMap); err != nil {
 		return err
 	}
 	for _, agent := range agents {
@@ -2234,7 +2234,7 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 	if err := validateSpawnPaneEnv(opts.PaneEnv); err != nil {
 		return outputError(err)
 	}
-	if err := validateSpawnAgentTypes(opts.Agents, opts.PluginMap); err != nil {
+	if err := validateSpawnAgentTypes(opts.Agents, opts.PluginMap, opts.PersonaMap); err != nil {
 		return outputError(err)
 	}
 	if err := validateGrokPhaseOneSpawn(opts, cfg); err != nil {
@@ -2968,14 +2968,6 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 		// declared default for bare plugin specs — see resolveAgentModel).
 		resolvedModel := resolveAgentModel(agent.Type, agent.Model, opts.PluginMap)
 		modelRequested := strings.TrimSpace(agent.Model) != ""
-		// agy is hard-pinned: ResolveModel always returns the required model. If
-		// the user explicitly requested a different one, surface that it was
-		// ignored (model guard, bd-47kjh.1.7) rather than silently overriding.
-		if agent.Type == AgentTypeAntigravity && modelRequested &&
-			!strings.EqualFold(strings.TrimSpace(agent.Model), resolvedModel) && !IsJSONOutput() {
-			output.PrintWarningf("agy model is pinned to %q; ignoring requested %q (agent %d)",
-				resolvedModel, agent.Model, agent.Index)
-		}
 		if agent.Type == AgentTypeOllama && resolvedModel == "" {
 			resolvedModel = strings.TrimSpace(opts.LocalModel)
 			if resolvedModel == "" {

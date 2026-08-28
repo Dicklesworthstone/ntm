@@ -486,18 +486,18 @@ func TestValidateSpawnAgentTypes(t *testing.T) {
 		{Type: AgentTypeAider},
 		{Type: AgentTypeOpencode},
 	}
-	if err := validateSpawnAgentTypes(builtins, nil); err != nil {
+	if err := validateSpawnAgentTypes(builtins, nil, nil); err != nil {
 		t.Fatalf("built-in agent validation error = %v", err)
 	}
 
 	pluginMap := map[string]plugins.AgentPlugin{
 		"custom": {Name: "custom", Command: "custom-agent"},
 	}
-	if err := validateSpawnAgentTypes([]FlatAgent{{Type: AgentType("custom")}}, pluginMap); err != nil {
+	if err := validateSpawnAgentTypes([]FlatAgent{{Type: AgentType("custom")}}, pluginMap, nil); err != nil {
 		t.Fatalf("plugin agent validation error = %v", err)
 	}
 
-	err := validateSpawnAgentTypes([]FlatAgent{{Type: AgentType("mystery")}}, pluginMap)
+	err := validateSpawnAgentTypes([]FlatAgent{{Type: AgentType("mystery")}}, pluginMap, nil)
 	if err == nil || !strings.Contains(err.Error(), `unknown agent type "mystery"`) {
 		t.Fatalf("unknown agent validation error = %v", err)
 	}

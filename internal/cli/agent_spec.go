@@ -305,8 +305,52 @@ func validateAgentModelOverride(agentType AgentType, model string) error {
 	return nil
 }
 
-func validateAgentModelOverrides(agents []FlatAgent) error {
+func validateAntigravityPersonaModel(p *persona.Persona) error {
+	if p == nil {
+		return nil
+	}
+	model := strings.TrimSpace(p.Model)
+	if model == "" || model == config.AntigravityRequiredModel {
+		return nil
+	}
+	return fmt.Errorf(
+		"Antigravity persona %q requests model %q, but model is pinned to %q",
+		p.Name,
+		model,
+		config.AntigravityRequiredModel,
+	)
+}
+
+// validateAgentModelOverrides distinguishes a persona's declared pinned model
+// from an explicit launch override. Persona/profile expansion carries model
+// metadata in FlatAgent.Model even though Antigravity itself is not
+// user-selectable; treating those two sources alike breaks supported persona
+// launches. Any divergent persona declaration still fails closed because the
+// launcher would otherwise run a different model from the recorded metadata.
+func validateAgentModelOverrides(agents []FlatAgent, personaMap map[string]*persona.Persona) error {
 	for _, agent := range agents {
+		if agent.Type == AgentTypeAntigravity {
+			if agent.Persona != nil {
+				if strings.TrimSpace(agent.Model) != strings.TrimSpace(agent.Persona.Model) {
+					return fmt.Errorf(
+						"Antigravity persona %q has inconsistent model metadata %q; expected %q",
+						agent.Persona.Name,
+						agent.Model,
+						agent.Persona.Model,
+					)
+				}
+				if err := validateAntigravityPersonaModel(agent.Persona); err != nil {
+					return err
+				}
+				continue
+			}
+			if p, ok := personaMap[agent.Model]; ok && p != nil {
+				if err := validateAntigravityPersonaModel(p); err != nil {
+					return err
+				}
+				continue
+			}
+		}
 		if err := validateAgentModelOverride(agent.Type, agent.Model); err != nil {
 			return err
 		}
@@ -314,8 +358,18 @@ func validateAgentModelOverrides(agents []FlatAgent) error {
 	return nil
 }
 
-func validateAgentSpecModelOverrides(specs AgentSpecs) error {
+// validateAgentSpecModelOverrides is the pre-flattened counterpart used by
+// add, where a persona is represented by its name in AgentSpec.Model.
+func validateAgentSpecModelOverrides(specs AgentSpecs, personaMap map[string]*persona.Persona) error {
 	for _, spec := range specs {
+		if spec.Type == AgentTypeAntigravity {
+			if p, ok := personaMap[spec.Model]; ok && p != nil {
+				if err := validateAntigravityPersonaModel(p); err != nil {
+					return err
+				}
+				continue
+			}
+		}
 		if err := validateAgentModelOverride(spec.Type, spec.Model); err != nil {
 			return err
 		}

@@ -5453,9 +5453,9 @@ func robotSpawnOptionsFromFlags(cmd *cobra.Command, readyTimeout time.Duration, 
 		AgyCount:      specs[AgentTypeAntigravity].Count,
 		GrokCount:     specs[AgentTypeGrok].Count,
 		// Model/effort overrides from the count[:model[:effort]] specs. agy is
-		// intentionally absent: its model is hard-pinned by config, so any
-		// model in a --spawn-agy spec is accepted and ignored, exactly like
-		// `ntm spawn --agy=N:model`. Efforts flow only for the types whose
+		// intentionally absent: its model is hard-pinned by config, and parsing
+		// rejects any --spawn-agy model override before options are built.
+		// Efforts flow only for the types whose
 		// launch command consumes them (cc/cod/grok), mirroring the CLI spawn
 		// path where other types drop the hint at template-render time.
 		CCModel:             specs[AgentTypeClaude].Model,
