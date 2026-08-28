@@ -6100,8 +6100,6 @@ func TestGetSnapshotDelta_NoStoreIsHonest(t *testing.T) {
 }
 
 func TestAgentTypeStringPassesThroughRegisteredPlugins(t *testing.T) {
-	agent.UnregisterPlugins()
-	t.Cleanup(agent.UnregisterPlugins)
 	if got := agentTypeString(tmux.AgentType("omp")); got != "unknown" {
 		t.Fatalf("unregistered type = %q, want unknown", got)
 	}

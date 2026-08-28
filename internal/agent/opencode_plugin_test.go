@@ -86,9 +86,15 @@ func TestParser_Opencode_IdleAndWorking(t *testing.T) {
 	}
 }
 
+func resetPluginPatternsForTest() {
+	pluginPatternsMu.Lock()
+	pluginPatterns = map[AgentType]PluginPatterns{}
+	pluginPatternsMu.Unlock()
+}
+
 func TestRegisterPlugin(t *testing.T) {
-	UnregisterPlugins()
-	t.Cleanup(UnregisterPlugins)
+	resetPluginPatternsForTest()
+	t.Cleanup(resetPluginPatternsForTest)
 
 	if err := RegisterPlugin("", nil, nil, nil); err == nil {
 		t.Fatal("empty name must be rejected")
@@ -132,8 +138,8 @@ const (
 )
 
 func TestParser_PluginPatternsDriveClassification(t *testing.T) {
-	UnregisterPlugins()
-	t.Cleanup(UnregisterPlugins)
+	resetPluginPatternsForTest()
+	t.Cleanup(resetPluginPatternsForTest)
 	if err := RegisterPlugin("omp", []string{`^\s*╰─.*─╯\s*$`}, []string{`⟨esc⟩`}, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +166,7 @@ func TestParser_PluginPatternsDriveClassification(t *testing.T) {
 	// Unregistered type: the same screens fall back to the generic union,
 	// which knows nothing about the omp box — proving the plugin patterns
 	// are what produced the verdicts above.
-	UnregisterPlugins()
+	resetPluginPatternsForTest()
 	fallback, err := p.ParseWithHint(ompIdle, "omp")
 	if err != nil {
 		t.Fatal(err)

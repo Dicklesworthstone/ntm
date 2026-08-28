@@ -9,7 +9,6 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -86,27 +85,18 @@ func TestParallelReadySteps_DiamondOverlap(t *testing.T) {
 // the number of simultaneously-running top-level steps.
 func TestParallelReadySteps_BoundedConcurrency(t *testing.T) {
 	tmpDir := t.TempDir()
-	gauge := filepath.Join(tmpDir, "gauge")
 
-	// Each step increments a "currently running" gauge implemented with
-	// files, records the high-water mark, sleeps, then decrements. mkdir is
-	// atomic on POSIX so it serves as the critical-section lock.
-	cmd := `
-lock() { while ! mkdir ` + gauge + `.lock 2>/dev/null; do sleep 0.01; done; }
-unlock() { rmdir ` + gauge + `.lock; }
-lock
-n=$(cat ` + gauge + ` 2>/dev/null || echo 0)
-n=$((n+1))
-printf '%s' "$n" > ` + gauge + `
-hi=$(cat ` + gauge + `.hi 2>/dev/null || echo 0)
-[ "$n" -gt "$hi" ] && printf '%s' "$n" > ` + gauge + `.hi
-unlock
-sleep 0.3
-lock
-n=$(cat ` + gauge + `)
-printf '%s' "$((n-1))" > ` + gauge + `
-unlock
-`
+	// Pair the four steps behind two rendezvous points. With the configured
+	// limit, s1/s2 must overlap before either can finish, followed by s3/s4.
+	// A limit of one makes the first rendezvous fail after its bounded wait; a
+	// limit above two is detected from the authoritative intervals below.
+	// This avoids a timing-sensitive file gauge whose shell lock could itself
+	// fail under a heavily loaded full-suite run.
+	rendezvous := func(self, other string) string {
+		return "touch " + self + ".start; i=0; while [ $i -lt 100 ]; do " +
+			"[ -f " + other + ".start ] && { sleep 0.1; exit 0; }; " +
+			"sleep 0.05; i=$((i+1)); done; exit 1"
+	}
 
 	workflow := &Workflow{
 		SchemaVersion: SchemaVersion,
@@ -116,10 +106,10 @@ unlock
 			Limits:  LimitsConfig{MaxParallelSteps: 2},
 		},
 		Steps: []Step{
-			{ID: "s1", Command: cmd},
-			{ID: "s2", Command: cmd},
-			{ID: "s3", Command: cmd},
-			{ID: "s4", Command: cmd},
+			{ID: "s1", Command: rendezvous("s1", "s2")},
+			{ID: "s2", Command: rendezvous("s2", "s1")},
+			{ID: "s3", Command: rendezvous("s3", "s4")},
+			{ID: "s4", Command: rendezvous("s4", "s3")},
 		},
 	}
 
@@ -128,7 +118,7 @@ unlock
 	cfg.DefaultTimeout = 10 * time.Second
 	executor := NewExecutor(cfg)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	state, err := executor.Run(ctx, workflow, nil, nil)
 	if err != nil {
@@ -138,13 +128,19 @@ unlock
 		t.Fatalf("workflow status = %q, want %q", state.Status, StatusCompleted)
 	}
 
-	raw, err := os.ReadFile(gauge + ".hi")
-	if err != nil {
-		t.Fatalf("reading high-water mark: %v", err)
-	}
-	hi, err := strconv.Atoi(strings.TrimSpace(string(raw)))
-	if err != nil {
-		t.Fatalf("parsing high-water mark %q: %v", raw, err)
+	hi := 0
+	for _, probe := range state.Steps {
+		concurrent := 0
+		for _, candidate := range state.Steps {
+			// Step intervals are half-open: [StartedAt, FinishedAt). Maximum
+			// interval overlap always occurs at one of the start timestamps.
+			if !candidate.StartedAt.After(probe.StartedAt) && probe.StartedAt.Before(candidate.FinishedAt) {
+				concurrent++
+			}
+		}
+		if concurrent > hi {
+			hi = concurrent
+		}
 	}
 	if hi > 2 {
 		t.Fatalf("high-water concurrency = %d, want <= max_parallel_steps (2)", hi)

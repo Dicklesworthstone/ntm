@@ -50,9 +50,6 @@ func TestDetermineState_Opencode(t *testing.T) {
 }
 
 func TestPluginReadinessPatterns(t *testing.T) {
-	agent.UnregisterPlugins()
-	t.Cleanup(agent.UnregisterPlugins)
-
 	// Before registration the omp box is unknown to every heuristic.
 	d := NewDetector()
 	if state, _ := d.determineState(ompIdle, "omp", time.Now().Add(-time.Hour)); state == StateIdle {

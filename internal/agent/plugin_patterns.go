@@ -87,13 +87,6 @@ func RegisterPlugin(name string, idle, working, errs []string) error {
 	return nil
 }
 
-// UnregisterPlugins forgets every registered plugin (tests).
-func UnregisterPlugins() {
-	pluginPatternsMu.Lock()
-	pluginPatterns = map[AgentType]PluginPatterns{}
-	pluginPatternsMu.Unlock()
-}
-
 // IsPluginType reports whether t names a registered plugin agent type.
 func IsPluginType(t AgentType) bool {
 	_, ok := LookupPluginPatterns(t)

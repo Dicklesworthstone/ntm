@@ -304,6 +304,33 @@ func (f DelivererFunc) Deliver(ctx context.Context, delivery Delivery) error {
 // TMUXDeliverer maps the neutral delivery protocol to NTM's tmux primitives.
 type TMUXDeliverer struct{}
 
+// validateTMUXDeliveryProtocol rejects malformed transport plans before any
+// pane inspection or actuation. Service.Prepare normally validates plans, but
+// TMUXDeliverer is also a public port implementation and must fail
+// deterministically when called directly.
+func validateTMUXDeliveryProtocol(delivery Delivery) error {
+	if delivery.EnterDelay < 0 || delivery.SecondEnterDelay < 0 {
+		return errors.New("tmux delivery delays cannot be negative")
+	}
+	switch delivery.Protocol {
+	case ProtocolStageOnly:
+		if delivery.EnterDelay != 0 || delivery.SecondEnterDelay != 0 {
+			return errors.New("tmux stage-only protocol cannot include enter delays")
+		}
+	case ProtocolSingleEnter:
+		if delivery.SecondEnterDelay != 0 {
+			return errors.New("tmux single-enter protocol cannot include a second-enter delay")
+		}
+	case ProtocolDoubleEnter:
+		if delivery.EnterDelay != tmux.DoubleEnterFirstDelay || delivery.SecondEnterDelay != tmux.DoubleEnterSecondDelay {
+			return fmt.Errorf("tmux double-enter protocol requires delays %s and %s", tmux.DoubleEnterFirstDelay, tmux.DoubleEnterSecondDelay)
+		}
+	default:
+		return fmt.Errorf("unsupported delivery protocol %q", delivery.Protocol)
+	}
+	return nil
+}
+
 // RefuseDeadAgentPane rejects delivery to an agent-typed pane whose CLI has
 // exited back to a bare shell (ntm-0g0b): the keystrokes would land in zsh —
 // possibly EXECUTING message text as shell commands — while the send reported
@@ -321,6 +348,9 @@ func RefuseDeadAgentPane(pane tmux.Pane) error {
 
 func (TMUXDeliverer) Deliver(ctx context.Context, delivery Delivery) error {
 	if err := contextError(ctx); err != nil {
+		return err
+	}
+	if err := validateTMUXDeliveryProtocol(delivery); err != nil {
 		return err
 	}
 	if err := RefuseDeadAgentPane(delivery.Target.Pane); err != nil {
@@ -348,9 +378,6 @@ func (TMUXDeliverer) Deliver(ctx context.Context, delivery Delivery) error {
 	case ProtocolSingleEnter:
 		return tmux.SendKeysForAgentWithDelayContext(ctx, target, delivery.Message, true, delivery.EnterDelay, delivery.Target.AgentType)
 	case ProtocolDoubleEnter:
-		if delivery.EnterDelay != tmux.DoubleEnterFirstDelay || delivery.SecondEnterDelay != tmux.DoubleEnterSecondDelay {
-			return fmt.Errorf("tmux double-enter protocol requires delays %s and %s", tmux.DoubleEnterFirstDelay, tmux.DoubleEnterSecondDelay)
-		}
 		if err := tmux.SendKeysForAgentDoubleEnterContext(ctx, target, delivery.Message, delivery.Target.AgentType); err != nil {
 			return err
 		}

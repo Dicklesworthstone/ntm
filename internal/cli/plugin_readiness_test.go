@@ -33,9 +33,6 @@ idle_patterns = ['^\s*╰─.*─╯\s*$']
 `
 
 func TestRegisterAgentPluginTypes(t *testing.T) {
-	agentpkg.UnregisterPlugins()
-	t.Cleanup(agentpkg.UnregisterPlugins)
-
 	if got := registerAgentPluginTypes(filepath.Join(t.TempDir(), "missing")); got != nil {
 		t.Fatalf("missing dir must yield no plugins, got %v", got)
 	}
@@ -56,13 +53,19 @@ func TestRegisterAgentPluginTypes(t *testing.T) {
 	}
 
 	// An invalid pattern is reported and skipped without breaking the type.
-	agentpkg.UnregisterPlugins()
-	writePluginTOML(t, dir, strings.Replace(ompPluginTOML, `'⟨esc⟩'`, `'('`, 1))
+	// Use a distinct plugin name so this assertion cannot inherit the valid
+	// OMP registration from the first half of the test.
+	invalidTOML := strings.NewReplacer(
+		`name = "omp"`, `name = "badready"`,
+		`alias = "om"`, `alias = "br"`,
+		`'⟨esc⟩'`, `'('`,
+	).Replace(ompPluginTOML)
+	writePluginTOML(t, dir, invalidTOML)
 	registerAgentPluginTypes(dir)
-	if !agentpkg.IsPluginType("omp") {
+	if !agentpkg.IsPluginType("badready") {
 		t.Fatal("a plugin with an invalid readiness pattern must still be a recognised type")
 	}
-	if pp, _ := agentpkg.LookupPluginPatterns("omp"); pp.Declared() {
+	if pp, _ := agentpkg.LookupPluginPatterns("badready"); pp.Declared() {
 		t.Fatal("invalid pattern set must not be partially registered")
 	}
 }

@@ -405,9 +405,9 @@ func TestLoadBestSessionAgentRegistry_PrefersUsableProject(t *testing.T) {
 	sessionName := "test-best-registry"
 	staleProject := filepath.Join(tmpDir, "stale-project")
 	actualProject := filepath.Join(tmpDir, "actual-project")
-	if err := os.MkdirAll(staleProject, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	// Leave staleProject absent. Besides matching a genuinely stale registry,
+	// this keeps the fixture isolated when a remote test runner places
+	// t.TempDir beneath an unrelated repository with its own .beads/.git.
 	if err := os.MkdirAll(filepath.Join(actualProject, ".beads"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -447,9 +447,9 @@ func TestLoadBestSessionAgent_PrefersUsableProject(t *testing.T) {
 	sessionName := "test-best-agent"
 	staleProject := filepath.Join(tmpDir, "stale-project")
 	actualProject := filepath.Join(tmpDir, "actual-project")
-	if err := os.MkdirAll(staleProject, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	// The stale artifact points at a project that no longer exists. Keeping
+	// the path absent prevents enclosing project markers from influencing its
+	// score on runners whose temporary directory lives inside a checkout.
 	if err := os.MkdirAll(filepath.Join(actualProject, ".beads"), 0o755); err != nil {
 		t.Fatal(err)
 	}

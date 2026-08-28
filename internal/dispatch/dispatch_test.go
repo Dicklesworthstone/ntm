@@ -1130,19 +1130,28 @@ func TestLifecycleFailureAbortsBeforeActuationAndFinishesOnce(t *testing.T) {
 	}
 }
 
-func TestTMUXDelivererRejectsInvalidOrUnrepresentableDoubleEnterPlans(t *testing.T) {
+func TestTMUXDelivererRejectsInvalidOrUnrepresentableProtocols(t *testing.T) {
 	t.Parallel()
 	deliverer := TMUXDeliverer{}
 	target := targetFromPane(testPane("%1", 0, 0, tmux.AgentClaude, ""), false)
-	err := deliverer.Deliver(context.Background(), Delivery{Target: target, Protocol: DeliveryProtocol("triple_enter")})
-	if err == nil || !strings.Contains(err.Error(), "unsupported delivery protocol") {
-		t.Fatalf("invalid protocol error = %v", err)
-	}
-	err = deliverer.Deliver(context.Background(), Delivery{
-		Target: target, Protocol: ProtocolDoubleEnter, EnterDelay: time.Millisecond, SecondEnterDelay: time.Millisecond,
-	})
-	if err == nil || !strings.Contains(err.Error(), "requires delays") {
-		t.Fatalf("custom double-enter timing error = %v", err)
+	for _, tc := range []struct {
+		name     string
+		delivery Delivery
+		want     string
+	}{
+		{name: "unknown protocol", delivery: Delivery{Protocol: DeliveryProtocol("triple_enter")}, want: "unsupported delivery protocol"},
+		{name: "negative delay", delivery: Delivery{Protocol: ProtocolSingleEnter, EnterDelay: -time.Millisecond}, want: "cannot be negative"},
+		{name: "stage-only delay", delivery: Delivery{Protocol: ProtocolStageOnly, EnterDelay: time.Millisecond}, want: "cannot include enter delays"},
+		{name: "single-enter second delay", delivery: Delivery{Protocol: ProtocolSingleEnter, SecondEnterDelay: time.Millisecond}, want: "cannot include a second-enter delay"},
+		{name: "custom double-enter timing", delivery: Delivery{Protocol: ProtocolDoubleEnter, EnterDelay: time.Millisecond, SecondEnterDelay: time.Millisecond}, want: "requires delays"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.delivery.Target = target
+			err := deliverer.Deliver(context.Background(), tc.delivery)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Deliver() error = %v, want substring %q", err, tc.want)
+			}
+		})
 	}
 }
 

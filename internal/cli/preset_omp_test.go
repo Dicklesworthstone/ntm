@@ -31,9 +31,6 @@ const (
 )
 
 func TestShippedOmpPresetLoadsThroughProductionLoader(t *testing.T) {
-	agentpkg.UnregisterPlugins()
-	t.Cleanup(agentpkg.UnregisterPlugins)
-
 	loaded := registerAgentPluginTypes(shippedOmpPresetDir(t))
 	if len(loaded) != 1 {
 		t.Fatalf("examples/agents must hold exactly the omp preset, got %d plugins", len(loaded))
@@ -62,9 +59,6 @@ func TestShippedOmpPresetLoadsThroughProductionLoader(t *testing.T) {
 // Guards the readiness regexes against drift: the shipped patterns must keep
 // classifying the captured omp v18 chrome (working veto + idle border).
 func TestShippedOmpPresetReadinessMatchesCapturedChrome(t *testing.T) {
-	agentpkg.UnregisterPlugins()
-	t.Cleanup(agentpkg.UnregisterPlugins)
-
 	registerAgentPluginTypes(shippedOmpPresetDir(t))
 	pp, ok := agentpkg.LookupPluginPatterns("omp")
 	if !ok || !pp.Declared() {
@@ -101,9 +95,6 @@ func TestShippedOmpPresetReadinessMatchesCapturedChrome(t *testing.T) {
 // The preset's command template must render model and thinking overrides
 // through the production renderer, and stay a bare `omp` without them.
 func TestShippedOmpPresetCommandTemplate(t *testing.T) {
-	agentpkg.UnregisterPlugins()
-	t.Cleanup(agentpkg.UnregisterPlugins)
-
 	loaded := registerAgentPluginTypes(shippedOmpPresetDir(t))
 	if len(loaded) != 1 {
 		t.Fatalf("expected the omp preset, got %d plugins", len(loaded))
