@@ -35,7 +35,7 @@ func TestEventEmitter_PublishesEvent(t *testing.T) {
 func TestEventEmitter_DropsWhenBufferFull(t *testing.T) {
 	bus := NewEventBus(10)
 	// Force Publish() backpressure by shrinking the handler semaphore and
-	// registering >1 handler where the first blocks.
+	// registering more blocking handlers than it can run asynchronously.
 	bus.handlerSem = make(chan struct{}, 1)
 
 	block := make(chan struct{})
@@ -46,7 +46,9 @@ func TestEventEmitter_DropsWhenBufferFull(t *testing.T) {
 		once.Do(func() { close(started) })
 		<-block
 	})
-	bus.Subscribe("test_event", func(e BusEvent) {})
+	bus.Subscribe("test_event", func(e BusEvent) {
+		<-block
+	})
 
 	emitter := NewEventEmitter(bus, 2)
 	defer closeEmitter(emitter)

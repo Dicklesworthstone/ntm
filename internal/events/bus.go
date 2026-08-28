@@ -40,7 +40,7 @@ type EventBus struct {
 	history     *ring.Ring
 	historySize int
 	historyMu   sync.RWMutex
-	handlerSem  chan struct{} // semaphore to limit concurrent handlers
+	handlerSem  chan struct{} // semaphore to limit asynchronously spawned handlers
 }
 
 // NewEventBus creates a new event bus with the specified history size
@@ -115,19 +115,19 @@ func (b *EventBus) Publish(event BusEvent) {
 	entries = append(entries, b.subscribers["*"]...)
 	b.mu.RUnlock()
 
-	// Call handlers outside of lock with bounded concurrency
+	// Call handlers outside of the lock with bounded goroutine creation.
 	for _, entry := range entries {
 		if !b.tryAcquireHandlerSlot() {
 			// Caller-runs backpressure is required here: a handler may publish a
 			// nested event. Blocking for capacity while every slot is held by
 			// reentrant handlers creates a wait cycle in which no slot can be
-			// released. Running inline preserves the concurrency bound and breaks
-			// that cycle.
+			// released. Running inline applies backpressure without spawning another
+			// goroutine and breaks that cycle.
 			invokeEventHandler(entry.handler, event, "handler")
 			continue
 		}
 
-		// Run handler in goroutine for non-blocking publish
+		// The acquired slot bounds event-bus-owned handler goroutines.
 		go func(h EventHandler) {
 			defer func() {
 				// Release semaphore slot
@@ -154,7 +154,7 @@ func (b *EventBus) PublishSync(event BusEvent) {
 	entries = append(entries, b.subscribers["*"]...)
 	b.mu.RUnlock()
 
-	// Call handlers synchronously with bounded concurrency
+	// Call handlers synchronously with bounded goroutine creation.
 	var wg sync.WaitGroup
 	for _, entry := range entries {
 		if !b.tryAcquireHandlerSlot() {
