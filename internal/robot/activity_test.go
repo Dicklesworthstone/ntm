@@ -626,7 +626,7 @@ func TestFilterThinkingToLive_KeepsCurrentBullets(t *testing.T) {
 // CategoryThinking live-window filter: when the live tail contains an idle
 // prompt and the error pattern only appears in the older scrollback,
 // classifyState should land on WAITING.
-func TestFilterErrorToLiveWhenIdle_DropsHistoricalErrorAboveLivePrompt(t *testing.T) {
+func TestFilterErrorToLiveWithCurrentSignal_DropsHistoricalErrorAboveLivePrompt(t *testing.T) {
 	// "failed" 40 lines above an idle codex chevron.
 	var b strings.Builder
 	b.WriteString("Error: failed to upload chunk 17 with: connection reset\n")
@@ -679,10 +679,10 @@ func TestFilterErrorToLiveWhenIdle_DropsHistoricalErrorAboveLivePrompt(t *testin
 	}
 
 	// The filter should drop the stale error match entirely.
-	filtered := filterErrorToLiveWhenIdle(full, live)
+	filtered := filterErrorToLiveWithCurrentSignal(full, live)
 	for _, m := range filtered {
 		if m.Category == CategoryError && m.Pattern == "failed_text" {
-			t.Fatalf("filterErrorToLiveWhenIdle failed to drop stale failed_text: %+v", filtered)
+			t.Fatalf("filterErrorToLiveWithCurrentSignal failed to drop stale failed_text: %+v", filtered)
 		}
 	}
 
@@ -700,7 +700,7 @@ func TestFilterErrorToLiveWhenIdle_DropsHistoricalErrorAboveLivePrompt(t *testin
 // when the failure is currently visible in the live tail (e.g. a fresh API
 // error that just landed alongside the chevron), the filter must NOT drop
 // it. The pane is genuinely in trouble and should classify as ERROR.
-func TestFilterErrorToLiveWhenIdle_KeepsFreshErrorInLiveTail(t *testing.T) {
+func TestFilterErrorToLiveWithCurrentSignal_KeepsFreshErrorInLiveTail(t *testing.T) {
 	content := "" +
 		"  Read connection.rs\n" +
 		"  Edited connection.rs\n" +
@@ -729,7 +729,7 @@ func TestFilterErrorToLiveWhenIdle_KeepsFreshErrorInLiveTail(t *testing.T) {
 		t.Fatalf("test premise broken: liveError=%v liveIdle=%v live=%+v", sawLiveError, sawLiveIdle, live)
 	}
 
-	filtered := filterErrorToLiveWhenIdle(full, live)
+	filtered := filterErrorToLiveWithCurrentSignal(full, live)
 	sawError := false
 	for _, m := range filtered {
 		if m.Category == CategoryError && m.Pattern == "failed_text" {
@@ -738,7 +738,7 @@ func TestFilterErrorToLiveWhenIdle_KeepsFreshErrorInLiveTail(t *testing.T) {
 		}
 	}
 	if !sawError {
-		t.Fatalf("filterErrorToLiveWhenIdle dropped a fresh in-live-tail failed_text: %+v", filtered)
+		t.Fatalf("filterErrorToLiveWithCurrentSignal dropped a fresh in-live-tail failed_text: %+v", filtered)
 	}
 
 	sc := NewStateClassifier("test", nil)
@@ -754,7 +754,7 @@ func TestFilterErrorToLiveWhenIdle_KeepsFreshErrorInLiveTail(t *testing.T) {
 // match) with an error somewhere in the buffer should keep ERROR priority,
 // since "no live prompt + historical error" is not the false-positive shape
 // the issue describes — it could just be a stalled error mid-output.
-func TestFilterErrorToLiveWhenIdle_NoIdlePromptKeepsHistoricalError(t *testing.T) {
+func TestFilterErrorToLiveWithCurrentSignal_NoIdlePromptKeepsHistoricalError(t *testing.T) {
 	var b strings.Builder
 	b.WriteString("Error: failed to acquire lock on resource\n")
 	for i := 0; i < 30; i++ {
@@ -778,7 +778,7 @@ func TestFilterErrorToLiveWhenIdle_NoIdlePromptKeepsHistoricalError(t *testing.T
 
 	// With no idle prompt in the live tail the filter must be a no-op
 	// and the historical error must survive.
-	filtered := filterErrorToLiveWhenIdle(full, live)
+	filtered := filterErrorToLiveWithCurrentSignal(full, live)
 	sawError := false
 	for _, m := range filtered {
 		if m.Category == CategoryError && m.Pattern == "failed_text" {
@@ -787,7 +787,38 @@ func TestFilterErrorToLiveWhenIdle_NoIdlePromptKeepsHistoricalError(t *testing.T
 		}
 	}
 	if !sawError {
-		t.Fatalf("filterErrorToLiveWhenIdle wrongly dropped historical error with no live idle prompt; got %+v", filtered)
+		t.Fatalf("filterErrorToLiveWithCurrentSignal wrongly dropped historical error with no live idle prompt; got %+v", filtered)
+	}
+}
+
+func TestFilterErrorToLiveWithCurrentSignal_GenericThinkingKeepsHistoricalError(t *testing.T) {
+	full := []PatternMatch{
+		{Pattern: "failed_text", Category: CategoryError},
+		{Pattern: "processing_text", Category: CategoryThinking},
+	}
+	live := []PatternMatch{{Pattern: "processing_text", Category: CategoryThinking}}
+
+	filtered := filterErrorToLiveWithCurrentSignal(full, live)
+	for _, match := range filtered {
+		if match.Pattern == "failed_text" && match.Category == CategoryError {
+			return
+		}
+	}
+	t.Fatalf("generic thinking text discarded an ambiguous historical error: %+v", filtered)
+}
+
+func TestFilterErrorToLiveWithCurrentSignal_AuthoritativeWorkDropsHistoricalError(t *testing.T) {
+	full := []PatternMatch{
+		{Pattern: "failed_text", Category: CategoryError},
+		{Pattern: "agy_esc_cancel", Category: CategoryThinking},
+	}
+	live := []PatternMatch{{Pattern: "agy_esc_cancel", Category: CategoryThinking}}
+
+	filtered := filterErrorToLiveWithCurrentSignal(full, live)
+	for _, match := range filtered {
+		if match.Pattern == "failed_text" && match.Category == CategoryError {
+			t.Fatalf("authoritative live-work marker did not discard stale error: %+v", filtered)
+		}
 	}
 }
 
@@ -890,7 +921,7 @@ func TestActivity_RateLimitedFlagFollowsLiveWindow(t *testing.T) {
 
 	// Post-filter (what activity.go actually feeds the flag now): the
 	// stale rate_limit_text is dropped, so the flag must read false.
-	filtered := filterErrorToLiveWhenIdle(full, live)
+	filtered := filterErrorToLiveWithCurrentSignal(full, live)
 	if isRateLimitPatternMatch(filtered) {
 		t.Fatalf("isRateLimitPatternMatch(filtered) returned true; rate_limit_text leaked through filter on a recovered pane: %+v", filtered)
 	}

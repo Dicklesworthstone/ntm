@@ -818,14 +818,15 @@ func (sc *StateClassifier) classifyInternal(sample *VelocitySample) (*AgentActiv
 	// lets classifyState fall through to the correct idle/unknown path.
 	//
 	// CategoryError matches are filtered with the same live-window logic
-	// when a current idle or thinking signal is present in the live tail:
+	// when a current idle or authoritative provider work signal is present in
+	// the live tail:
 	// stale "failed" or "api error" text high in scrollback must not pin a
 	// pane to ERROR after its TUI has visibly moved on. Fresh errors inside
 	// the live tail still classify as ERROR.
 	liveContent := lastNLines(content, util.WidthAdaptiveTailLines(sc.paneWidth, liveThinkingWindowLines))
 	liveMatches := sc.patternLibrary.Match(liveContent, sc.agentType)
 	effectiveMatches := filterThinkingToLive(matches, liveMatches)
-	effectiveMatches = filterErrorToLiveWhenIdle(effectiveMatches, liveMatches)
+	effectiveMatches = filterErrorToLiveWithCurrentSignal(effectiveMatches, liveMatches)
 
 	// Calculate proposed state and confidence
 	proposedState, confidence, trigger := sc.classifyState(velocity, effectiveMatches)
@@ -836,7 +837,7 @@ func (sc *StateClassifier) classifyInternal(sample *VelocitySample) (*AgentActiv
 	// Check whether any matched pattern is a rate-limit indicator so the
 	// RateLimited flag on AgentActivity is set from real pattern evidence.
 	// We scan `effectiveMatches` rather than `matches` so the flag stays
-	// consistent with the state classification: when filterErrorToLiveWhenIdle
+	// consistent with the state classification: when filterErrorToLiveWithCurrentSignal
 	// drops a stale rate-limit pattern that scrolled above a current idle
 	// prompt, the pane is no longer rate-limited and downstream consumers
 	// (`internal/health/health.go`, `internal/resilience/monitor.go`) must
@@ -1017,9 +1018,10 @@ func filterThinkingToLive(full, live []PatternMatch) []PatternMatch {
 	return out
 }
 
-// filterErrorToLiveWhenIdle drops CategoryError matches from `full` whose
+// filterErrorToLiveWithCurrentSignal drops CategoryError matches from `full` whose
 // pattern name is not also present in `live`, but only when `live` contains a
-// current-state signal: an idle prompt or a provider-specific thinking marker.
+// current-state signal: an idle prompt or an allowlisted provider-specific
+// thinking marker that is only rendered while a turn is in flight.
 // That combination proves the TUI has visibly moved past historical error text.
 // Fresh errors still match in `live` and survive the filter as ERROR. When no
 // current-state signal is present, `full` is returned unchanged so an ambiguous
@@ -1030,9 +1032,9 @@ func filterThinkingToLive(full, live []PatternMatch) []PatternMatch {
 // raw substrings ("failed", "error:", "exception:") that linger in
 // scrollback long after the offending operation completed. The filter is
 // pattern-agnostic though — it applies to every CategoryError match that
-// exists in `full` but not in `live` once a fresh idle prompt is observed,
-// including rate-limit, auth, network, and crash patterns.
-func filterErrorToLiveWhenIdle(full, live []PatternMatch) []PatternMatch {
+// exists in `full` but not in `live` once a fresh current-state signal is
+// observed, including rate-limit, auth, network, and crash patterns.
+func filterErrorToLiveWithCurrentSignal(full, live []PatternMatch) []PatternMatch {
 	// Fast path: no error matches at all → nothing to filter.
 	hasError := false
 	for _, m := range full {
@@ -1049,7 +1051,7 @@ func filterErrorToLiveWhenIdle(full, live []PatternMatch) []PatternMatch {
 	// the live window could silently lose the error while stalled.
 	hasLiveCurrentSignal := false
 	for _, m := range live {
-		if m.Category == CategoryIdle || m.Category == CategoryThinking {
+		if m.Category == CategoryIdle || isAuthoritativeLiveWorkPattern(m.Pattern) {
 			hasLiveCurrentSignal = true
 			break
 		}
@@ -1088,6 +1090,26 @@ func filterErrorToLiveWhenIdle(full, live []PatternMatch) []PatternMatch {
 		out = append(out, m)
 	}
 	return out
+}
+
+// isAuthoritativeLiveWorkPattern is deliberately an allowlist. Generic
+// thinking matches such as "processing..." or a braille glyph can occur in
+// ordinary output and are not strong enough evidence to discard an error from
+// the wider capture. These provider-specific patterns describe TUI chrome that
+// is documented to exist only during an active turn.
+func isAuthoritativeLiveWorkPattern(name string) bool {
+	switch name {
+	case "codex_working",
+		"codex_waiting_background",
+		"codex_esc_interrupt",
+		"codex_thinking_bullet",
+		"agy_esc_cancel",
+		"grok_spinner_phase",
+		"grok_esc_cancel":
+		return true
+	default:
+		return false
+	}
 }
 
 // classifyState determines state based on velocity and patterns.
