@@ -431,6 +431,9 @@ func executeAdd(ctx context.Context, opts AddOptions, emitResult bool) error {
 		return outputError(fmt.Errorf("add canceled: %w", err))
 	}
 	totalAgents := opts.Agents.TotalCount()
+	if err := validateAgentSpecModelOverrides(opts.Agents); err != nil {
+		return outputError(err)
+	}
 	if err := validateGrokPhaseOneAdd(opts); err != nil {
 		return outputError(err)
 	}

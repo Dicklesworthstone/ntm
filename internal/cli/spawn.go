@@ -731,6 +731,9 @@ func prependSpawnPaneEnv(command string, env map[string]string) string {
 }
 
 func validateSpawnAgentTypes(agents []FlatAgent, pluginMap map[string]plugins.AgentPlugin) error {
+	if err := validateAgentModelOverrides(agents); err != nil {
+		return err
+	}
 	for _, agent := range agents {
 		switch agent.Type {
 		case AgentTypeClaude, AgentTypeCodex, AgentTypeGemini, AgentTypeAntigravity, AgentTypeGrok,

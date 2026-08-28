@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/persona"
 	"github.com/Dicklesworthstone/ntm/internal/plugins"
 )
@@ -290,6 +291,50 @@ func resolveAgentModel(agentType AgentType, modelSpec string, pluginMap map[stri
 	return resolved
 }
 
+// validateAgentModelOverrides rejects model metadata that cannot affect the
+// launched process. Antigravity is intentionally hard-pinned by both NTM and
+// agy-locked; preserving a requested override would make the pane title and
+// robot metadata advertise a model that is not running (GH#269).
+func validateAgentModelOverride(agentType AgentType, model string) error {
+	if agentType == AgentTypeAntigravity && strings.TrimSpace(model) != "" {
+		return fmt.Errorf(
+			"Antigravity model overrides are not supported; model is pinned to %q (use --agy=N)",
+			config.AntigravityRequiredModel,
+		)
+	}
+	return nil
+}
+
+func validateAgentModelOverrides(agents []FlatAgent) error {
+	for _, agent := range agents {
+		if err := validateAgentModelOverride(agent.Type, agent.Model); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateAgentSpecModelOverrides(specs AgentSpecs) error {
+	for _, spec := range specs {
+		if err := validateAgentModelOverride(spec.Type, spec.Model); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func parseTypedAgentSpec(value string, agentType AgentType) (AgentSpec, error) {
+	spec, err := parseAgentSpec(value, agentType == AgentTypeAntigravity, agentTypeSupportsEffortSuffix(agentType))
+	if err != nil {
+		return AgentSpec{}, err
+	}
+	spec.Type = agentType
+	if err := validateAgentModelOverride(spec.Type, spec.Model); err != nil {
+		return AgentSpec{}, err
+	}
+	return spec, nil
+}
+
 // AgentSpecsValue creates a flag value that accumulates into the given slice
 // with the specified agent type
 func NewAgentSpecsValue(agentType AgentType, specs *AgentSpecs) *agentSpecsValue {
@@ -310,15 +355,12 @@ func (v *agentSpecsValue) String() string {
 }
 
 func (v *agentSpecsValue) Set(value string) error {
-	// agy carries a display model name with spaces/parentheses (e.g.
-	// "Gemini 3.7 Flash (High)"), so it uses the relaxed model charset. The
-	// model@effort shorthand only applies to types with an effort knob so
-	// '@' stays literal in other providers' model names.
-	spec, err := parseAgentSpec(value, v.agentType == AgentTypeAntigravity, agentTypeSupportsEffortSuffix(v.agentType))
+	// Parse with the provider's grammar and enforce provider-specific launch
+	// constraints before appending anything to the accumulated flag value.
+	spec, err := parseTypedAgentSpec(value, v.agentType)
 	if err != nil {
 		return err
 	}
-	spec.Type = v.agentType
 	*v.specs = append(*v.specs, spec)
 	return nil
 }

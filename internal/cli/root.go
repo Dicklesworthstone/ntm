@@ -424,6 +424,9 @@ func classifyRobotExecuteError(err error) (string, string) {
 		return robot.ErrCodeInvalidFlag, "Fix the invalid command input or selected configuration"
 	}
 	message := strings.ToLower(err.Error())
+	if strings.Contains(message, `for "--robot-status" flag`) && strings.Contains(message, "strconv.parsebool") {
+		return robot.ErrCodeInvalidFlag, "--robot-status reports all sessions and takes no value; run 'ntm --robot-status' and select the requested session from the sessions array"
+	}
 	for _, fragment := range []string{
 		"unknown flag",
 		"unknown shorthand flag",
@@ -5402,11 +5405,10 @@ func parseRobotSpawnAgentFlag(flagName, raw string, agentType AgentType) (AgentS
 	if count, err := strconv.Atoi(value); err == nil {
 		return AgentSpec{Type: agentType, Count: count}, nil
 	}
-	spec, err := parseAgentSpec(value, agentType == AgentTypeAntigravity, agentTypeSupportsEffortSuffix(agentType))
+	spec, err := parseTypedAgentSpec(value, agentType)
 	if err != nil {
 		return AgentSpec{}, fmt.Errorf("invalid %s value %q: %w", flagName, raw, err)
 	}
-	spec.Type = agentType
 	return spec, nil
 }
 

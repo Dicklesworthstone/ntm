@@ -516,50 +516,48 @@ func TestAgentSpecsValue_StringDelegatesToSpecs(t *testing.T) {
 	}
 }
 
-// TestAgentSpecsValue_AgyRelaxedModelCharset covers sharp edge #2 (ntm#210):
-// Antigravity display model names contain spaces and parentheses (e.g.
-// "Gemini 3.7 Flash (High)"), which the default model charset rejects. The agy
-// flag path must accept them via the relaxed charset, while the strict charset
-// still applies to every other agent type.
-func TestAgentSpecsValue_AgyRelaxedModelCharset(t *testing.T) {
-	// agy accepts the spaced/parenthesized display name.
-	var agySpecs AgentSpecs
-	agy := NewAgentSpecsValue(AgentTypeAntigravity, &agySpecs)
-	if err := agy.Set("1:Gemini 3.7 Flash (High)"); err != nil {
-		t.Fatalf("agy Set(%q) unexpected error: %v", "1:Gemini 3.7 Flash (High)", err)
-	}
-	if len(agySpecs) != 1 {
-		t.Fatalf("agy specs len = %d, want 1", len(agySpecs))
-	}
-	if agySpecs[0].Type != AgentTypeAntigravity {
-		t.Errorf("Type = %s, want agy", agySpecs[0].Type)
-	}
-	if agySpecs[0].Count != 1 {
-		t.Errorf("Count = %d, want 1", agySpecs[0].Count)
-	}
-	if agySpecs[0].Model != "Gemini 3.7 Flash (High)" {
-		t.Errorf("Model = %q, want %q", agySpecs[0].Model, "Gemini 3.7 Flash (High)")
-	}
-
-	// A charset-safe alias also parses for agy.
-	var aliasSpecs AgentSpecs
-	if err := NewAgentSpecsValue(AgentTypeAntigravity, &aliasSpecs).Set("2:gemini-3.7-flash-high"); err != nil {
-		t.Errorf("agy Set(alias) unexpected error: %v", err)
-	}
-
-	// The SAME spaced model name is REJECTED for a non-agy type (strict charset).
-	var geminiSpecs AgentSpecs
-	if err := NewAgentSpecsValue(AgentTypeGemini, &geminiSpecs).Set("1:Gemini 3.7 Flash (High)"); err == nil {
-		t.Error("gemini Set with spaced model should fail the strict charset, but succeeded")
-	}
-
-	// Even under the relaxed agy charset, shell metacharacters remain rejected
-	// (defense-in-depth against injection).
-	for _, bad := range []string{"1:a;b", "1:a|b", "1:a$b", "1:a`b`", "1:a&&b"} {
-		var s AgentSpecs
-		if err := NewAgentSpecsValue(AgentTypeAntigravity, &s).Set(bad); err == nil {
-			t.Errorf("agy Set(%q) should be rejected (shell metachar), but succeeded", bad)
+// Antigravity is hard-pinned by its launcher. Accepting a user model here used
+// to preserve the requested value in the pane title while launching the pinned
+// model, making the title and robot metadata false (GH#269).
+func TestAgentSpecsValue_AgyRejectsModelOverride(t *testing.T) {
+	for _, value := range []string{
+		"1:gemini-3.1-pro-high",
+		"1:Gemini 3.7 Flash (High)",
+	} {
+		var specs AgentSpecs
+		err := NewAgentSpecsValue(AgentTypeAntigravity, &specs).Set(value)
+		if err == nil || !strings.Contains(err.Error(), "model is pinned") {
+			t.Errorf("agy Set(%q) error = %v, want pinned-model rejection", value, err)
 		}
+		if len(specs) != 0 {
+			t.Errorf("agy Set(%q) appended rejected spec: %+v", value, specs)
+		}
+	}
+
+	var countOnly AgentSpecs
+	if err := NewAgentSpecsValue(AgentTypeAntigravity, &countOnly).Set("2"); err != nil {
+		t.Fatalf("agy count-only spec rejected: %v", err)
+	}
+	if len(countOnly) != 1 || countOnly[0].Count != 2 || countOnly[0].Model != "" {
+		t.Fatalf("agy count-only spec = %+v, want count 2 with no advertised model", countOnly)
+	}
+}
+
+func TestValidateAgentModelOverridesRejectsProgrammaticAgyModel(t *testing.T) {
+	err := validateAgentModelOverrides([]FlatAgent{{
+		Type:  AgentTypeAntigravity,
+		Index: 1,
+		Model: "gemini-3.1-pro-high",
+	}})
+	if err == nil || !strings.Contains(err.Error(), "model is pinned") {
+		t.Fatalf("validateAgentModelOverrides() error = %v, want pinned-model rejection", err)
+	}
+
+	if err := validateAgentModelOverrides([]FlatAgent{{
+		Type:  AgentTypeAntigravity,
+		Index: 1,
+	}}); err != nil {
+		t.Fatalf("count-only agy spec rejected: %v", err)
 	}
 }
 

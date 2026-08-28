@@ -5922,8 +5922,10 @@ func TestRobotProcessErrorContract(t *testing.T) {
 		errorCode       string
 		expectedExit    int
 		expectedCommand string
+		expectedHint    string
 	}{
 		{name: "unknown robot flag", args: []string{"--robot-status", "--not-a-real-flag"}, errorCode: robot.ErrCodeInvalidFlag, expectedExit: 1},
+		{name: "robot status rejects session value with corrective hint", args: []string{"--robot-status=project"}, errorCode: robot.ErrCodeInvalidFlag, expectedExit: 1, expectedCommand: "robot-status", expectedHint: "reports all sessions and takes no value"},
 		{name: "invalid pagination", args: []string{"--robot-status", "--robot-limit=-1"}, errorCode: robot.ErrCodeInvalidFlag, expectedExit: 1},
 		{name: "invalid duration", args: []string{"--robot-attention", "--attention-timeout=not-a-duration"}, errorCode: robot.ErrCodeInvalidFlag, expectedExit: 1},
 		{name: "invalid panes", args: []string{"--robot-rano-stats", "--panes=not-a-pane"}, errorCode: robot.ErrCodeInvalidFlag, expectedExit: 1},
@@ -6008,6 +6010,12 @@ func TestRobotProcessErrorContract(t *testing.T) {
 			}
 			if got, _ := payload["error_code"].(string); got != tt.errorCode {
 				t.Fatalf("error_code = %q, want %q; payload=%v", got, tt.errorCode, payload)
+			}
+			if tt.expectedHint != "" {
+				got, _ := payload["hint"].(string)
+				if !strings.Contains(got, tt.expectedHint) {
+					t.Fatalf("hint = %q, want substring %q; payload=%v", got, tt.expectedHint, payload)
+				}
 			}
 			if meta, ok := payload["_meta"].(map[string]any); ok {
 				if got, ok := meta["exit_code"].(float64); ok && int(got) != exitCode {
@@ -7617,6 +7625,19 @@ func TestClassifyRobotExecuteErrorSuggestsNearestFlag(t *testing.T) {
 	_, hint = classifyRobotExecuteError(errors.New("unknown flag: --zzzzqqqq"))
 	if strings.Contains(hint, "Did you mean") {
 		t.Errorf("hint = %q, want no suggestion for a hopeless guess", hint)
+	}
+}
+
+func TestClassifyRobotExecuteErrorExplainsRobotStatusValueMisuse(t *testing.T) {
+	err := errors.New(`invalid argument "project" for "--robot-status" flag: strconv.ParseBool: parsing "project": invalid syntax`)
+	code, hint := classifyRobotExecuteError(err)
+	if code != robot.ErrCodeInvalidFlag {
+		t.Fatalf("code = %q, want INVALID_FLAG", code)
+	}
+	for _, want := range []string{"--robot-status", "reports all sessions", "takes no value"} {
+		if !strings.Contains(hint, want) {
+			t.Errorf("hint = %q, want %q", hint, want)
+		}
 	}
 }
 
