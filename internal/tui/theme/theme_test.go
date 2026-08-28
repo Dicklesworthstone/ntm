@@ -418,6 +418,13 @@ func TestDetectDarkBackgroundRespectsExplicitOverrides(t *testing.T) {
 }
 
 func TestDetectDarkBackgroundUsesColorFGBG(t *testing.T) {
+	// This test isolates COLORFGBG precedence from the caller's terminal and
+	// transport environment. In particular, remote test workers set SSH_* and
+	// production deliberately defaults to dark before consulting COLORFGBG.
+	for _, key := range []string{"NTM_BACKGROUND", "NTM_BG", "TERMINAL_BACKGROUND", "SSH_CONNECTION", "SSH_TTY"} {
+		t.Setenv(key, "")
+	}
+
 	t.Run("dark background code is detected", func(t *testing.T) {
 		t.Setenv("COLORFGBG", "15;0")
 		if !detectDarkBackground() {

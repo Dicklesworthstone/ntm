@@ -298,7 +298,7 @@ func resolveAgentModel(agentType AgentType, modelSpec string, pluginMap map[stri
 func validateAgentModelOverride(agentType AgentType, model string) error {
 	if agentType == AgentTypeAntigravity && strings.TrimSpace(model) != "" {
 		return fmt.Errorf(
-			"Antigravity model overrides are not supported; model is pinned to %q (use --agy=N)",
+			"antigravity model overrides are not supported; model is pinned to %q (use --agy=N)",
 			config.AntigravityRequiredModel,
 		)
 	}
@@ -314,7 +314,7 @@ func validateAntigravityPersonaModel(p *persona.Persona) error {
 		return nil
 	}
 	return fmt.Errorf(
-		"Antigravity persona %q requests model %q, but model is pinned to %q",
+		"antigravity persona %q requests model %q, but model is pinned to %q",
 		p.Name,
 		model,
 		config.AntigravityRequiredModel,
@@ -333,7 +333,7 @@ func validateAgentModelOverrides(agents []FlatAgent, personaMap map[string]*pers
 			if agent.Persona != nil {
 				if strings.TrimSpace(agent.Model) != strings.TrimSpace(agent.Persona.Model) {
 					return fmt.Errorf(
-						"Antigravity persona %q has inconsistent model metadata %q; expected %q",
+						"antigravity persona %q has inconsistent model metadata %q; expected %q",
 						agent.Persona.Name,
 						agent.Model,
 						agent.Persona.Model,
