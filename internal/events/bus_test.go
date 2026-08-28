@@ -310,34 +310,44 @@ func TestEventBus_ConcurrentPublish(t *testing.T) {
 }
 
 func TestEventBus_ReentrantPublishAtCapacityDoesNotDeadlock(t *testing.T) {
-	t.Run("Publish", func(t *testing.T) {
-		assertReentrantPublishAtCapacityDoesNotDeadlock(t, func(bus *EventBus, event BusEvent) {
-			bus.Publish(event)
-		})
-	})
-	t.Run("PublishSync", func(t *testing.T) {
-		assertReentrantPublishAtCapacityDoesNotDeadlock(t, func(bus *EventBus, event BusEvent) {
-			bus.PublishSync(event)
-		})
-	})
+	publishers := []struct {
+		name string
+		fn   func(*EventBus, BusEvent)
+	}{
+		{name: "Publish", fn: func(bus *EventBus, event BusEvent) { bus.Publish(event) }},
+		{name: "PublishSync", fn: func(bus *EventBus, event BusEvent) { bus.PublishSync(event) }},
+	}
+	for _, outer := range publishers {
+		for _, nested := range publishers {
+			t.Run(outer.name+"/nested_"+nested.name, func(t *testing.T) {
+				assertReentrantPublishAtCapacityDoesNotDeadlock(t, outer.fn, nested.fn)
+			})
+		}
+	}
 }
 
-func assertReentrantPublishAtCapacityDoesNotDeadlock(t *testing.T, publishOuter func(*EventBus, BusEvent)) {
+func assertReentrantPublishAtCapacityDoesNotDeadlock(
+	t *testing.T,
+	publishOuter func(*EventBus, BusEvent),
+	publishNested func(*EventBus, BusEvent),
+) {
 	t.Helper()
 
 	bus := NewEventBus(10)
 	ready := make(chan struct{}, DefaultMaxConcurrentHandlers)
 	release := make(chan struct{})
 	completed := make(chan struct{}, DefaultMaxConcurrentHandlers)
+	nestedCompleted := make(chan struct{}, DefaultMaxConcurrentHandlers)
 	var nestedReceived atomic.Int32
 
 	bus.Subscribe("nested", func(BusEvent) {
 		nestedReceived.Add(1)
+		nestedCompleted <- struct{}{}
 	})
 	bus.Subscribe("outer", func(BusEvent) {
 		ready <- struct{}{}
 		<-release
-		bus.PublishSync(BaseEvent{Type: "nested", Timestamp: time.Now()})
+		publishNested(bus, BaseEvent{Type: "nested", Timestamp: time.Now()})
 		completed <- struct{}{}
 	})
 
@@ -350,19 +360,21 @@ func assertReentrantPublishAtCapacityDoesNotDeadlock(t *testing.T, publishOuter 
 		}()
 	}
 
+	readyDeadline := time.After(2 * time.Second)
 	for i := 0; i < DefaultMaxConcurrentHandlers; i++ {
 		select {
 		case <-ready:
-		case <-time.After(2 * time.Second):
+		case <-readyDeadline:
 			t.Fatalf("only %d/%d outer handlers reached the saturation barrier", i, DefaultMaxConcurrentHandlers)
 		}
 	}
 	close(release)
 
+	outerDeadline := time.After(2 * time.Second)
 	for i := 0; i < DefaultMaxConcurrentHandlers; i++ {
 		select {
 		case <-completed:
-		case <-time.After(2 * time.Second):
+		case <-outerDeadline:
 			t.Fatalf("only %d/%d reentrant outer handlers completed", i, DefaultMaxConcurrentHandlers)
 		}
 	}
@@ -375,7 +387,16 @@ func assertReentrantPublishAtCapacityDoesNotDeadlock(t *testing.T, publishOuter 
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
-		t.Fatal("reentrant PublishSync deadlocked with every handler semaphore slot occupied")
+		t.Fatal("reentrant publish deadlocked with every handler semaphore slot occupied")
+	}
+
+	nestedDeadline := time.After(2 * time.Second)
+	for i := 0; i < DefaultMaxConcurrentHandlers; i++ {
+		select {
+		case <-nestedCompleted:
+		case <-nestedDeadline:
+			t.Fatalf("only %d/%d nested handlers completed", i, DefaultMaxConcurrentHandlers)
+		}
 	}
 
 	if got := nestedReceived.Load(); got != DefaultMaxConcurrentHandlers {
