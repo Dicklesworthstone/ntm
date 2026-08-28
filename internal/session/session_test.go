@@ -1310,6 +1310,45 @@ func TestRestorePersistsAgentTypeAcrossWrapperTitleRewrite(t *testing.T) {
 	}
 }
 
+func TestRestoreLeavesUserPaneReclassifiable(t *testing.T) {
+	testutil.RequireTmuxThrottled(t)
+
+	sessionName := "ntm-session-restore-user-" + time.Now().Format("150405000000")
+	state := &SessionState{
+		Name:    sessionName,
+		WorkDir: t.TempDir(),
+		Panes: []PaneState{{
+			Index:       0,
+			WindowIndex: 0,
+			Title:       sessionName + "__user_1",
+			AgentType:   "user",
+		}},
+	}
+	t.Cleanup(func() {
+		if tmux.SessionExists(sessionName) {
+			_ = tmux.KillSession(sessionName)
+		}
+	})
+
+	if err := Restore(state, RestoreOptions{}); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	panes, err := tmux.GetPanes(sessionName)
+	if err != nil || len(panes) != 1 {
+		t.Fatalf("GetPanes after restore: panes=%+v err=%v", panes, err)
+	}
+	if err := tmux.SetPaneTitle(panes[0].ID, tmux.FormatPaneName(sessionName, "cod", 1, "")); err != nil {
+		t.Fatalf("rewrite restored user pane title: %v", err)
+	}
+	panes, err = tmux.GetPanes(sessionName)
+	if err != nil {
+		t.Fatalf("GetPanes after agent title rewrite: %v", err)
+	}
+	if len(panes) != 1 || panes[0].Type != tmux.AgentCodex {
+		t.Fatalf("restored user pane type after agent title rewrite = %+v, want codex", panes)
+	}
+}
+
 // bd-4tz2d: restore recreates a whole saved swarm at once, so relaunching its
 // Claude panes onto the shared rotating credential puts every one of them back
 // into the GH#237 refresh-token race. The saved pane command was captured
