@@ -240,13 +240,15 @@ type activityResult struct {
 }
 
 type agentInfo struct {
-	Pane       int
-	AgentType  string
-	State      string
-	Confidence float64
-	Velocity   float64
-	Duration   time.Duration
-	StateSince time.Time
+	Pane        int
+	WindowIndex int
+	PaneID      string
+	AgentType   string
+	State       string
+	Confidence  float64
+	Velocity    float64
+	Duration    time.Duration
+	StateSince  time.Time
 }
 
 func collectActivityData(session string, opts activityOptions) (*activityResult, error) {
@@ -284,9 +286,11 @@ func collectActivityData(session string, opts activityOptions) (*activityResult,
 		if err != nil {
 			// Include with unknown state on error
 			result.Agents = append(result.Agents, agentInfo{
-				Pane:      pane.Index,
-				AgentType: agentType,
-				State:     "UNKNOWN",
+				Pane:        pane.Index,
+				WindowIndex: pane.WindowIndex,
+				PaneID:      pane.ID,
+				AgentType:   agentType,
+				State:       "UNKNOWN",
 			})
 			result.Summary["UNKNOWN"]++
 			continue
@@ -299,13 +303,15 @@ func collectActivityData(session string, opts activityOptions) (*activityResult,
 		}
 
 		info := agentInfo{
-			Pane:       pane.Index,
-			AgentType:  agentType,
-			State:      string(activity.State),
-			Confidence: activity.Confidence,
-			Velocity:   activity.Velocity,
-			Duration:   duration,
-			StateSince: activity.StateSince,
+			Pane:        pane.Index,
+			WindowIndex: pane.WindowIndex,
+			PaneID:      pane.ID,
+			AgentType:   agentType,
+			State:       string(activity.State),
+			Confidence:  activity.Confidence,
+			Velocity:    activity.Velocity,
+			Duration:    duration,
+			StateSince:  activity.StateSince,
 		}
 
 		result.Agents = append(result.Agents, info)
@@ -387,13 +393,15 @@ func passesFilter(agentType string, pane tmux.Pane, opts activityOptions, multiW
 
 // activityJSONAgent is one agent row in the --json envelope.
 type activityJSONAgent struct {
-	Pane       int     `json:"pane"`
-	AgentType  string  `json:"agent_type"`
-	State      string  `json:"state"`
-	Confidence float64 `json:"confidence"`
-	Velocity   float64 `json:"velocity"`
-	Duration   string  `json:"duration"`
-	StateSince string  `json:"state_since,omitempty"`
+	Pane        int     `json:"pane"`
+	WindowIndex int     `json:"window_index"`
+	PaneID      string  `json:"pane_id"`
+	AgentType   string  `json:"agent_type"`
+	State       string  `json:"state"`
+	Confidence  float64 `json:"confidence"`
+	Velocity    float64 `json:"velocity"`
+	Duration    string  `json:"duration"`
+	StateSince  string  `json:"state_since,omitempty"`
 }
 
 // activityJSONEnvelope is the --json envelope for `ntm activity`. Watch mode
@@ -411,12 +419,14 @@ func buildActivityJSONEnvelope(result *activityResult) activityJSONEnvelope {
 	agents := make([]activityJSONAgent, len(result.Agents))
 	for i, a := range result.Agents {
 		agents[i] = activityJSONAgent{
-			Pane:       a.Pane,
-			AgentType:  a.AgentType,
-			State:      a.State,
-			Confidence: a.Confidence,
-			Velocity:   a.Velocity,
-			Duration:   formatActivityDuration(a.Duration),
+			Pane:        a.Pane,
+			WindowIndex: a.WindowIndex,
+			PaneID:      a.PaneID,
+			AgentType:   a.AgentType,
+			State:       a.State,
+			Confidence:  a.Confidence,
+			Velocity:    a.Velocity,
+			Duration:    formatActivityDuration(a.Duration),
 		}
 		if !a.StateSince.IsZero() {
 			agents[i].StateSince = a.StateSince.Format(time.RFC3339)
@@ -592,11 +602,13 @@ func renderActivityTUI(result *activityResult, watchMode bool) error {
 		return nil
 	}
 
-	// Build table header
-	header := fmt.Sprintf("%-6s  %-8s  %-12s  %-10s  %s",
-		"Pane", "Agent", "State", "Velocity", "Duration")
+	// Build table header. Win and PaneID disambiguate rows whose per-window
+	// Pane index collides across windows (gs-5wlp) — Pane alone is not a
+	// stable or unique identifier once a session has more than one window.
+	header := fmt.Sprintf("%-4s  %-6s  %-8s  %-8s  %-12s  %-10s  %s",
+		"Win", "Pane", "PaneID", "Agent", "State", "Velocity", "Duration")
 	fmt.Println(headerStyle.Render(header))
-	fmt.Println(mutedStyle.Render(strings.Repeat("─", 55)))
+	fmt.Println(mutedStyle.Render(strings.Repeat("─", 72)))
 
 	// Build table rows
 	for _, agent := range result.Agents {
@@ -613,8 +625,10 @@ func renderActivityTUI(result *activityResult, watchMode bool) error {
 		stateIcon := stateIcon(agent.State)
 		stateStr := stateStyle(agent.State).Render(fmt.Sprintf("%s %s", stateIcon, agent.State))
 
-		row := fmt.Sprintf("%-6d  %s  %-12s  %-10s  %s",
+		row := fmt.Sprintf("%-4d  %-6d  %-8s  %s  %-12s  %-10s  %s",
+			agent.WindowIndex,
 			agent.Pane,
+			agent.PaneID,
 			agentStyle(agent.AgentType).Render(fmt.Sprintf("%-8s", agent.AgentType)),
 			stateStr,
 			velocityStr,
