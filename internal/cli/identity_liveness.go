@@ -75,6 +75,12 @@ func nextPaneIndices(panes []tmux.Pane, registry *agentmail.SessionAgentRegistry
 // Empty inputs and duplicates are dropped, so a plain spawn yields exactly the
 // session key (plus its resolved form when the path is a symlink).
 func identityPublishKeys(sessionKey, paneDir string) []string {
+	if override := agentmail.InvocationProjectKey(""); override != "" {
+		// The explicit invocation scope is authoritative. Do not also publish
+		// identities under the physical checkout/worktree keys: a public Agent
+		// Mail deployment resolves the pane through the canonical key only.
+		return []string{override}
+	}
 	var keys []string
 	seen := make(map[string]struct{}, 4)
 	add := func(key string) {

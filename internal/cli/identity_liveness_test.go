@@ -119,6 +119,16 @@ func TestIdentityPublishKeys(t *testing.T) {
 	}
 }
 
+func TestIdentityPublishKeys_UsesCanonicalInvocationOverrideOnly(t *testing.T) {
+	const canonical = "/repos/github.com/biji-biji-initiative/bbi-infrastructure"
+	t.Setenv(agentmail.ProjectKeyOverrideEnv, canonical)
+
+	got := identityPublishKeys("/home/ubuntu/work/bbi-infrastructure", "/tmp/bbi-worktree")
+	if !reflect.DeepEqual(got, []string{canonical}) {
+		t.Fatalf("identity keys = %v, want only canonical public key %q", got, canonical)
+	}
+}
+
 func TestIdentityPublishKeys_ResolvesSymlinks(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink creation requires privileges on windows")

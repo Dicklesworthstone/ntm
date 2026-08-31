@@ -2,9 +2,13 @@ package cli
 
 import (
 	"context"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -12,6 +16,60 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
+
+// TestControllerBootstrapsIdentityBeforeAgentCommand prevents controller
+// launches from regressing to the old post-launch registration race. The
+// check is structural because the production dispatch is a real tmux command:
+// the identity coordinator must run before controller SendKeys.
+func TestControllerBootstrapsIdentityBeforeAgentCommand(t *testing.T) {
+	_, testFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("locate controller test source")
+	}
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, filepath.Join(filepath.Dir(testFile), "controller.go"), nil, 0)
+	if err != nil {
+		t.Fatalf("parse controller.go: %v", err)
+	}
+
+	var fn *ast.FuncDecl
+	for _, decl := range file.Decls {
+		if candidate, ok := decl.(*ast.FuncDecl); ok && candidate.Name.Name == "buildControllerResponse" {
+			fn = candidate
+			break
+		}
+	}
+	if fn == nil {
+		t.Fatal("buildControllerResponse not found")
+	}
+
+	var prepare, launch token.Pos
+	ast.Inspect(fn, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		selector, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		switch selector.Sel.Name {
+		case "prepareAgent":
+			prepare = call.Pos()
+		case "SendKeys":
+			if launch == token.NoPos {
+				launch = call.Pos()
+			}
+		}
+		return true
+	})
+	if prepare == token.NoPos || launch == token.NoPos {
+		t.Fatalf("controller bootstrap/launch calls missing: prepare=%v launch=%v", prepare, launch)
+	}
+	if fset.Position(prepare).Offset >= fset.Position(launch).Offset {
+		t.Fatalf("controller identity bootstrap at %v must precede agent command at %v", fset.Position(prepare), fset.Position(launch))
+	}
+}
 
 func TestControllerUsesDetachedDedicatedWindowWithoutTargetingExistingPanes(t *testing.T) {
 	existing := []tmux.Pane{

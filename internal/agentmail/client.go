@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -171,8 +172,12 @@ func NewClient(opts ...Option) *Client {
 		},
 	}
 
-	// Check environment variables
+	// Check environment variables. MCP_AGENT_MAIL_TOKEN is the public MCP
+	// convention; AGENT_MAIL_TOKEN remains the explicit NTM override when both
+	// are present.
 	if token := os.Getenv("AGENT_MAIL_TOKEN"); token != "" {
+		c.bearerToken = token
+	} else if token := os.Getenv("MCP_AGENT_MAIL_TOKEN"); token != "" {
 		c.bearerToken = token
 	}
 	if baseURL := os.Getenv("AGENT_MAIL_URL"); baseURL != "" {
@@ -512,6 +517,7 @@ type ToolCallParams struct {
 // callTool makes a JSON-RPC call to the Agent Mail server.
 func (c *Client) callTool(ctx context.Context, toolName string, args map[string]interface{}) (json.RawMessage, error) {
 	reqID := c.requestID.Add(1)
+	args = withInvocationProjectKey(args)
 
 	rpcReq := JSONRPCRequest{
 		JSONRPC: "2.0",
@@ -581,6 +587,36 @@ func (c *Client) callTool(ctx context.Context, toolName string, args map[string]
 	return content, nil
 }
 
+// withInvocationProjectKey rewrites only the project-bearing fields at the
+// single Agent Mail RPC boundary. Keeping this here covers every Agent Mail
+// tool without changing local NTM session/worktree resolution. Copy first so
+// callers can safely reuse their argument maps after a request.
+func withInvocationProjectKey(args map[string]interface{}) map[string]interface{} {
+	if len(args) == 0 {
+		return args
+	}
+	override := InvocationProjectKey("")
+	if override == "" {
+		return args
+	}
+	_, hasProjectKey := args["project_key"]
+	_, hasHumanKey := args["human_key"]
+	if !hasProjectKey && !hasHumanKey {
+		return args
+	}
+	cloned := make(map[string]interface{}, len(args))
+	for key, value := range args {
+		cloned[key] = value
+	}
+	if hasProjectKey {
+		cloned["project_key"] = override
+	}
+	if hasHumanKey {
+		cloned["human_key"] = override
+	}
+	return cloned
+}
+
 // callToolWithTimeout calls a tool with a specific timeout.
 func (c *Client) callToolWithTimeout(ctx context.Context, toolName string, args map[string]interface{}, timeout time.Duration) (json.RawMessage, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
@@ -621,6 +657,7 @@ func (c *Client) callToolWithBusyRetry(ctx context.Context, toolName string, arg
 // ReadResource reads a resource from the Agent Mail server.
 func (c *Client) ReadResource(ctx context.Context, uri string) (json.RawMessage, error) {
 	reqID := c.requestID.Add(1)
+	uri = withInvocationProjectKeyResourceURI(uri)
 
 	rpcReq := JSONRPCRequest{
 		JSONRPC: "2.0",
@@ -681,6 +718,42 @@ func (c *Client) ReadResource(ctx context.Context, uri string) (json.RawMessage,
 	}
 
 	return rpcResp.Result, nil
+}
+
+// withInvocationProjectKeyResourceURI applies the invocation key to the
+// project-bearing Agent Mail resource shapes. Resources carry identity in a
+// URI rather than a tools/call argument, so they do not pass through
+// withInvocationProjectKey above.
+func withInvocationProjectKeyResourceURI(uri string) string {
+	override := InvocationProjectKey("")
+	if override == "" {
+		return uri
+	}
+	parsed, err := url.Parse(uri)
+	if err != nil || parsed.Scheme != "resource" {
+		return uri
+	}
+
+	changed := false
+	query := parsed.Query()
+	if _, ok := query["project"]; ok {
+		query.Set("project", override)
+		parsed.RawQuery = query.Encode()
+		changed = true
+	}
+	switch parsed.Host {
+	case "agents", "file_reservations":
+		// Agent Mail treats this as one escaped path segment. Preserve the
+		// original callers' url.PathEscape representation so an absolute
+		// canonical key does not become resource://...//repos/... .
+		parsed.Path = override
+		parsed.RawPath = url.PathEscape(override)
+		changed = true
+	}
+	if !changed {
+		return uri
+	}
+	return parsed.String()
 }
 
 // httpBaseURL returns the HTTP REST API base URL derived from the MCP base URL.

@@ -1,9 +1,29 @@
 package agentmail
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 )
+
+// ProjectKeyOverrideEnv selects a canonical Agent Mail project identity for
+// one NTM invocation. It is deliberately environment-scoped: callers that do
+// not set it retain their physical checkout path as the Agent Mail key.
+//
+// This is useful when a checked-out upstream project must coordinate through a
+// registered shared namespace, for example the public BBI project key.
+const ProjectKeyOverrideEnv = "NTM_AGENT_MAIL_PROJECT_KEY"
+
+// InvocationProjectKey returns the Agent Mail key to use for this process.
+// An explicitly configured canonical key wins over a physical working
+// directory; whitespace-only overrides are ignored so they cannot turn a
+// normal invocation into an empty project key.
+func InvocationProjectKey(projectKey string) string {
+	if override := strings.TrimSpace(os.Getenv(ProjectKeyOverrideEnv)); override != "" {
+		return override
+	}
+	return projectKey
+}
 
 // CanonicalProjectKey resolves a project key through symlinks to the real
 // directory Agent Mail registers projects under.

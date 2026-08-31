@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"reflect"
 	"strings"
 	"sync"
@@ -68,6 +69,109 @@ func TestNewClient(t *testing.T) {
 	}
 	if c.bearerToken != "test-token" {
 		t.Errorf("expected token 'test-token', got %s", c.bearerToken)
+	}
+}
+
+func TestNewClientUsesPublicMCPTokenFallbackWithoutLeakingIt(t *testing.T) {
+	const token = "public-agent-mail-token-must-not-appear-in-errors"
+	t.Setenv("AGENT_MAIL_TOKEN", "")
+	t.Setenv("MCP_AGENT_MAIL_TOKEN", token)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer "+token {
+			t.Errorf("Authorization = %q, want public MCP token", got)
+		}
+		http.Error(w, "denied", http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	c := NewClient(WithBaseURL(server.URL + "/"))
+	_, err := c.HealthCheck(context.Background())
+	if err == nil {
+		t.Fatal("HealthCheck unexpectedly succeeded")
+	}
+	if strings.Contains(err.Error(), token) {
+		t.Fatalf("Agent Mail token leaked through error: %v", err)
+	}
+}
+
+func TestClientRewritesAllProjectRPCKeysForInvocationOverride(t *testing.T) {
+	const canonical = "/repos/github.com/biji-biji-initiative/bbi-infrastructure"
+	const physical = "/home/ubuntu/work/bbi-infrastructure"
+	t.Setenv(ProjectKeyOverrideEnv, canonical)
+
+	seen := make(map[string]map[string]interface{})
+	var resourceURIs []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Method string          `json:"method"`
+			ID     interface{}     `json:"id"`
+			Params json.RawMessage `json:"params"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if req.Method == "resources/read" {
+			var params map[string]string
+			if err := json.Unmarshal(req.Params, &params); err != nil {
+				t.Fatalf("decode resource params: %v", err)
+			}
+			seen["resources/read"] = map[string]interface{}{"uri": params["uri"]}
+			resourceURIs = append(resourceURIs, params["uri"])
+			_ = json.NewEncoder(w).Encode(JSONRPCResponse{JSONRPC: "2.0", ID: req.ID, Result: json.RawMessage(`{"contents":[]}`)})
+			return
+		}
+		var params struct {
+			Name      string                 `json:"name"`
+			Arguments map[string]interface{} `json:"arguments"`
+		}
+		if err := json.Unmarshal(req.Params, &params); err != nil {
+			t.Fatalf("decode tool params: %v", err)
+		}
+		seen[params.Name] = params.Arguments
+		var result interface{}
+		switch params.Name {
+		case "ensure_project":
+			result = Project{ID: 7, HumanKey: canonical}
+		case "send_message":
+			result = SendResult{}
+		default:
+			t.Fatalf("unexpected tool %q", params.Name)
+		}
+		raw, err := json.Marshal(result)
+		if err != nil {
+			t.Fatalf("marshal response: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(JSONRPCResponse{JSONRPC: "2.0", ID: req.ID, Result: raw})
+	}))
+	defer server.Close()
+
+	c := NewClient(WithBaseURL(server.URL + "/"))
+	if _, err := c.EnsureProject(context.Background(), physical); err != nil {
+		t.Fatalf("EnsureProject: %v", err)
+	}
+	if _, err := c.SendMessage(context.Background(), SendMessageOptions{
+		ProjectKey: physical, SenderName: "BlueLake", To: []string{"GreenCastle"}, Subject: "scope", BodyMD: "test",
+	}); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	if _, err := c.ReadResource(context.Background(), "resource://inbox/BlueLake?project=/home/ubuntu/work/bbi-infrastructure"); err != nil {
+		t.Fatalf("ReadResource: %v", err)
+	}
+	if _, err := c.ReadResource(context.Background(), "resource://agents/"+url.PathEscape(physical)); err != nil {
+		t.Fatalf("ReadResource agents: %v", err)
+	}
+	if got, _ := seen["ensure_project"]["human_key"].(string); got != canonical {
+		t.Fatalf("ensure_project human_key = %q, want %q", got, canonical)
+	}
+	if got, _ := seen["send_message"]["project_key"].(string); got != canonical {
+		t.Fatalf("send_message project_key = %q, want %q", got, canonical)
+	}
+	if got, _ := seen["resources/read"]["uri"].(string); got != "resource://agents/"+url.PathEscape(canonical) {
+		t.Fatalf("agent resource URI = %q, want one escaped canonical path segment", got)
+	}
+	if len(resourceURIs) != 2 || !strings.Contains(resourceURIs[0], "project="+url.QueryEscape(canonical)) {
+		t.Fatalf("resource URIs = %q, want canonical project query followed by escaped path", resourceURIs)
 	}
 }
 

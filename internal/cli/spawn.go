@@ -4235,16 +4235,7 @@ func registerSessionAgent(parentCtx context.Context, sessionName, workingDir str
 		}
 		return
 	}
-	var opts []agentmail.Option
-	if cfg != nil {
-		if cfg.AgentMail.URL != "" {
-			opts = append(opts, agentmail.WithBaseURL(cfg.AgentMail.URL))
-		}
-		if cfg.AgentMail.Token != "" {
-			opts = append(opts, agentmail.WithToken(cfg.AgentMail.Token))
-		}
-	}
-	client := agentmail.NewClient(opts...)
+	client := newAgentMailClient(workingDir)
 	ctx, cancel := context.WithTimeout(parentCtx, 15*time.Second)
 	defer cancel()
 
@@ -4362,16 +4353,7 @@ func (c *spawnIdentityCoordinator) ensureInit(parentCtx context.Context) {
 	}
 	c.enabled = true
 
-	var opts []agentmail.Option
-	if cfg != nil {
-		if cfg.AgentMail.URL != "" {
-			opts = append(opts, agentmail.WithBaseURL(cfg.AgentMail.URL))
-		}
-		if cfg.AgentMail.Token != "" {
-			opts = append(opts, agentmail.WithToken(cfg.AgentMail.Token))
-		}
-	}
-	c.client = agentmail.NewClient(opts...)
+	c.client = newAgentMailClient(c.workingDir)
 
 	// Check availability first (uses cached result)
 	if !c.client.IsAvailable() {

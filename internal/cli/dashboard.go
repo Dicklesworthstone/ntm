@@ -136,11 +136,11 @@ func startDashboardReservationWatcher(session, projectDir string) func() {
 		return nil
 	}
 
-	amOpts := []agentmail.Option{
-		agentmail.WithBaseURL(cfg.AgentMail.URL),
-		agentmail.WithProjectKey(projectDir),
+	amOpts := []agentmail.Option{agentmail.WithProjectKey(projectDir)}
+	if cfg.AgentMail.URL != "" && os.Getenv("AGENT_MAIL_URL") == "" {
+		amOpts = append(amOpts, agentmail.WithBaseURL(cfg.AgentMail.URL))
 	}
-	if cfg.AgentMail.Token != "" {
+	if cfg.AgentMail.Token != "" && os.Getenv("AGENT_MAIL_TOKEN") == "" && os.Getenv("MCP_AGENT_MAIL_TOKEN") == "" {
 		amOpts = append(amOpts, agentmail.WithToken(cfg.AgentMail.Token))
 	}
 	amClient := agentmail.NewClient(amOpts...)

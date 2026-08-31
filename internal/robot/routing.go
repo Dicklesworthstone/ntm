@@ -520,7 +520,8 @@ const reservationAffinityRefreshTimeout = 3 * time.Second
 // resolves the project key SESSION-FIRST with the same precedence the CLI
 // uses (persisted session registry, then configured session dir, then cwd —
 // bd-2rtl8), constructs an Agent Mail client from the same config/env
-// precedence the CLI uses (env AGENT_MAIL_URL/AGENT_MAIL_TOKEN override
+// precedence the CLI uses (env AGENT_MAIL_URL/AGENT_MAIL_TOKEN or
+// MCP_AGENT_MAIL_TOKEN override
 // config), attaches the process-shared TTL ReservationCache with one
 // best-effort TTL-bounded refresh, and loads the persisted pane→agent-name
 // mapping from the session agent registry. Everything is best-effort: any
@@ -543,7 +544,7 @@ func (s *AgentScorer) wireReservationAffinity(cfg *config.Config, session string
 	if cfg.AgentMail.URL != "" && os.Getenv("AGENT_MAIL_URL") == "" {
 		opts = append(opts, agentmail.WithBaseURL(cfg.AgentMail.URL))
 	}
-	if cfg.AgentMail.Token != "" && os.Getenv("AGENT_MAIL_TOKEN") == "" {
+	if cfg.AgentMail.Token != "" && os.Getenv("AGENT_MAIL_TOKEN") == "" && os.Getenv("MCP_AGENT_MAIL_TOKEN") == "" {
 		opts = append(opts, agentmail.WithToken(cfg.AgentMail.Token))
 	}
 	client := agentmail.NewClient(opts...)

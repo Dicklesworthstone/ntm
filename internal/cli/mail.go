@@ -250,7 +250,7 @@ func newAgentMailClient(projectKey string) *agentmail.Client {
 		if cfg.AgentMail.URL != "" && os.Getenv("AGENT_MAIL_URL") == "" {
 			opts = append(opts, agentmail.WithBaseURL(cfg.AgentMail.URL))
 		}
-		if cfg.AgentMail.Token != "" && os.Getenv("AGENT_MAIL_TOKEN") == "" {
+		if cfg.AgentMail.Token != "" && os.Getenv("AGENT_MAIL_TOKEN") == "" && os.Getenv("MCP_AGENT_MAIL_TOKEN") == "" {
 			opts = append(opts, agentmail.WithToken(cfg.AgentMail.Token))
 		}
 	}

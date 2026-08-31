@@ -48,6 +48,21 @@ func TestCanonicalProjectKeyFallsBackOnMissingPath(t *testing.T) {
 	}
 }
 
+func TestInvocationProjectKeyOverrideIsScopedAndExplicit(t *testing.T) {
+	physical := "/home/ubuntu/work/bbi-infrastructure"
+	canonical := "/repos/github.com/biji-biji-initiative/bbi-infrastructure"
+
+	t.Setenv(ProjectKeyOverrideEnv, "  "+canonical+"  ")
+	if got := InvocationProjectKey(physical); got != canonical {
+		t.Fatalf("InvocationProjectKey() = %q, want canonical public key %q", got, canonical)
+	}
+
+	t.Setenv(ProjectKeyOverrideEnv, " \t ")
+	if got := InvocationProjectKey(physical); got != physical {
+		t.Fatalf("blank override must preserve physical key: got %q want %q", got, physical)
+	}
+}
+
 func TestProjectKeysEquivalent(t *testing.T) {
 	t.Parallel()
 	real, link := makeSymlinkedDir(t)

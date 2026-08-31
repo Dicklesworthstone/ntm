@@ -250,6 +250,78 @@ func TestSpawnIdentityCoordinator_PublishesIdentityAtPrepareTime(t *testing.T) {
 	}
 }
 
+// A public project key is intentionally server-governed. If the selected key
+// is rejected (for example, it has not been admitted to the shared namespace),
+// spawn must retain NTM's fail-open launch policy and must not publish an
+// identity under the physical checkout as an accidental fallback.
+func TestSpawnIdentityCoordinator_CanonicalOverrideRejectionFailsOpen(t *testing.T) {
+	isolateIdentityDirs(t)
+	const canonical = "/repos/github.com/biji-biji-initiative/bbi-infrastructure"
+	t.Setenv(agentmail.ProjectKeyOverrideEnv, canonical)
+
+	var mu sync.Mutex
+	seenHumanKey := ""
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ID     interface{} `json:"id"`
+			Params struct {
+				Name      string                 `json:"name"`
+				Arguments map[string]interface{} `json:"arguments"`
+			} `json:"params"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if req.Params.Name == "health_check" {
+			raw, _ := json.Marshal(map[string]string{"status": "ok"})
+			_ = json.NewEncoder(w).Encode(agentmail.JSONRPCResponse{JSONRPC: "2.0", ID: req.ID, Result: raw})
+			return
+		}
+		if req.Params.Name == "ensure_project" {
+			mu.Lock()
+			seenHumanKey, _ = req.Params.Arguments["human_key"].(string)
+			mu.Unlock()
+			_ = json.NewEncoder(w).Encode(agentmail.JSONRPCResponse{JSONRPC: "2.0", ID: req.ID, Error: &agentmail.JSONRPCError{Code: -32041, Message: "UNREGISTERED_PROJECT"}})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(agentmail.JSONRPCResponse{JSONRPC: "2.0", ID: req.ID, Error: &agentmail.JSONRPCError{Code: -32601, Message: "unexpected tool"}})
+	}))
+	t.Cleanup(srv.Close)
+
+	oldCfg := cfg
+	t.Cleanup(func() { cfg = oldCfg })
+	cfg = config.Default()
+	cfg.AgentMail.Enabled = true
+	cfg.AgentMail.AutoRegister = true
+	cfg.AgentMail.URL = srv.URL + "/"
+
+	physical := t.TempDir()
+	paneID := "%8"
+	coordinator := newSpawnIdentityCoordinator(physical, "canonical_override_rejection")
+	coordinator.prepareAgent(context.Background(), spawnedAgentInfo{
+		paneIndex: 1, paneID: paneID, paneTitle: "canonical_override_rejection__cc_1", agentType: "cc", model: "opus",
+	})
+
+	status := coordinator.finalStatus()
+	if status == nil || !status.Available || status.ProjectRegistered || status.AgentsFailed != 1 {
+		t.Fatalf("rejected canonical registration must fail open with one failed identity: %+v", status)
+	}
+	mu.Lock()
+	gotHumanKey := seenHumanKey
+	mu.Unlock()
+	if gotHumanKey != canonical {
+		t.Fatalf("ensure_project human_key = %q, want canonical key %q", gotHumanKey, canonical)
+	}
+	if _, err := os.Stat(agentmail.CanonicalIdentityPath(physical, paneID)); !os.IsNotExist(err) {
+		t.Fatalf("physical identity must not be published after canonical rejection: %v", err)
+	}
+	if _, err := os.Stat(agentmail.CanonicalIdentityPath(canonical, paneID)); !os.IsNotExist(err) {
+		t.Fatalf("canonical identity must not be published when registration failed: %v", err)
+	}
+}
+
 // TestSpawnIdentityCoordinator_DisabledIsInert: with no config (or Agent Mail
 // off) the coordinator must not touch the network or filesystem and must
 // report a nil status, matching the historical registerSpawnedAgents

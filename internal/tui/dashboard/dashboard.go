@@ -703,10 +703,10 @@ func (m *Model) newAgentMailClient(projectKey string) *agentmail.Client {
 		if !m.cfg.AgentMail.Enabled {
 			return nil
 		}
-		if m.cfg.AgentMail.URL != "" {
+		if m.cfg.AgentMail.URL != "" && os.Getenv("AGENT_MAIL_URL") == "" {
 			opts = append(opts, agentmail.WithBaseURL(m.cfg.AgentMail.URL))
 		}
-		if m.cfg.AgentMail.Token != "" {
+		if m.cfg.AgentMail.Token != "" && os.Getenv("AGENT_MAIL_TOKEN") == "" && os.Getenv("MCP_AGENT_MAIL_TOKEN") == "" {
 			opts = append(opts, agentmail.WithToken(m.cfg.AgentMail.Token))
 		}
 	}

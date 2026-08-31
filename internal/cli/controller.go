@@ -381,6 +381,20 @@ func buildControllerResponse(ctx context.Context, opts ControllerInput) (*Contro
 		return nil, fmt.Errorf("setting controller pane identity: %w", err)
 	}
 
+	// Register and publish the controller's Agent Mail identity before its
+	// command starts. A controller begins using NTM's coordination surfaces
+	// immediately, so delaying this until after SendKeys creates the same
+	// boot-time identity race avoided by normal spawn (#255).
+	identityCoordinator := newSpawnIdentityCoordinator(dir, session)
+	identityCoordinator.prepareAgent(ctx, spawnedAgentInfo{
+		paneIndex: targetPaneIndex,
+		paneID:    targetPaneID,
+		paneTitle: title,
+		paneDir:   dir,
+		agentType: agentType,
+		model:     opts.Model,
+	})
+
 	// Launch the agent
 	if err := tmux.SendKeys(targetPaneID, agentCmd, true); err != nil {
 		return nil, fmt.Errorf("launching agent: %w", err)
