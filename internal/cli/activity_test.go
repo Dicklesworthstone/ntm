@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
+	"github.com/Dicklesworthstone/ntm/tests/testutil"
 )
 
 func TestStateIcon(t *testing.T) {
@@ -385,5 +387,93 @@ func TestRunAdopt_SessionMissingRoutesThroughJSONEnvelope(t *testing.T) {
 
 	if !errors.Is(err, errJSONFailure) {
 		t.Fatalf("runAdopt returned %v, want errJSONFailure", err)
+	}
+}
+
+// TestActivity_TwoWindowPaneIndexCollision covers the topology where the
+// per-window pane index collides across windows: a session with two windows
+// whose only panes are each "pane 1" of their own window. `ntm activity` used
+// to print two indistinguishable rows for that layout; window_index and the
+// stable tmux pane_id must now disambiguate them in both the collected data
+// and the --json envelope, while the legacy "pane" field stays intact for
+// existing consumers.
+func TestActivity_TwoWindowPaneIndexCollision(t *testing.T) {
+	testutil.RequireTmuxThrottled(t)
+
+	workDir := t.TempDir()
+	session := fmt.Sprintf("ntm-test-activity-win-%d", time.Now().UnixNano())
+	if err := tmux.CreateSession(session, workDir); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	t.Cleanup(func() { _ = tmux.KillSession(session) })
+
+	first, err := tmux.GetPanes(session)
+	if err != nil || len(first) != 1 {
+		t.Fatalf("initial panes = %d (err=%v), want 1", len(first), err)
+	}
+	if _, err := tmux.DefaultClient.Run("select-pane", "-t", first[0].ID, "-T", session+"__cc_1"); err != nil {
+		t.Fatalf("title first pane: %v", err)
+	}
+	if _, err := tmux.DefaultClient.Run("new-window", "-d", "-t", session, "-c", workDir); err != nil {
+		t.Fatalf("new-window: %v", err)
+	}
+	panes, err := tmux.GetPanes(session)
+	if err != nil || len(panes) != 2 {
+		t.Fatalf("panes after new-window = %d (err=%v), want 2", len(panes), err)
+	}
+	for _, p := range panes {
+		if p.WindowIndex != first[0].WindowIndex {
+			if _, err := tmux.DefaultClient.Run("select-pane", "-t", p.ID, "-T", session+"__cc_2"); err != nil {
+				t.Fatalf("title second-window pane: %v", err)
+			}
+		}
+	}
+
+	// Precondition: this IS the collision — same per-window index, different
+	// windows, distinct stable IDs.
+	panes, err = tmux.GetPanes(session)
+	if err != nil || len(panes) != 2 {
+		t.Fatalf("re-read panes = %d (err=%v), want 2", len(panes), err)
+	}
+	if panes[0].Index != panes[1].Index {
+		t.Fatalf("precondition: pane indexes differ (%d vs %d); collision not reproduced", panes[0].Index, panes[1].Index)
+	}
+	if panes[0].WindowIndex == panes[1].WindowIndex || panes[0].ID == panes[1].ID || panes[0].ID == "" {
+		t.Fatalf("precondition: panes not in distinct windows with distinct IDs: %+v", panes)
+	}
+
+	result, err := collectActivityData(session, activityOptions{})
+	if err != nil {
+		t.Fatalf("collectActivityData: %v", err)
+	}
+	if len(result.Agents) != 2 {
+		t.Fatalf("agents = %d, want 2: %+v", len(result.Agents), result.Agents)
+	}
+
+	envelope := buildActivityJSONEnvelope(result)
+	data, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatalf("marshal envelope: %v", err)
+	}
+	for _, field := range []string{`"pane"`, `"window_index"`, `"pane_id"`} {
+		if !strings.Contains(string(data), field) {
+			t.Fatalf("envelope missing %s field: %s", field, data)
+		}
+	}
+
+	seenIDs := map[string]bool{}
+	seenWindows := map[int]bool{}
+	for _, a := range envelope.Agents {
+		if a.PaneID == "" {
+			t.Fatalf("agent row missing pane_id: %+v", a)
+		}
+		if seenIDs[a.PaneID] {
+			t.Fatalf("pane_id %s repeated — rows are still indistinguishable: %+v", a.PaneID, envelope.Agents)
+		}
+		seenIDs[a.PaneID] = true
+		seenWindows[a.WindowIndex] = true
+	}
+	if len(seenWindows) != 2 {
+		t.Fatalf("window_index did not separate the colliding rows: %+v", envelope.Agents)
 	}
 }
