@@ -1,7 +1,9 @@
 package agentmail
 
 import (
+	"context"
 	"encoding/json"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -630,5 +632,93 @@ func TestLoadSessionAgentRegistryContinuesPastMismatchedCandidate(t *testing.T) 
 	}
 	if loaded.ProjectKey != projectKey {
 		t.Fatalf("expected project key %s, got %s", projectKey, loaded.ProjectKey)
+	}
+}
+
+// A fresh coordinator registration must persist the server-issued identity
+// AND its registration token, and prime the client's in-process token cache,
+// so every later ntm process re-claims the same adjective+noun identity
+// instead of sending as an unregistered literal (GH coordinator-identity fix;
+// PR #274/#275 context).
+func TestRegisterSessionAgent_PersistsIdentityAndToken(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmpDir, ".config"))
+
+	server := httptest.NewServer(mockMCPHandler(t, map[string]func(args map[string]interface{}) (interface{}, *JSONRPCError){
+		"health_check": func(map[string]interface{}) (interface{}, *JSONRPCError) {
+			return map[string]interface{}{"status": "ok"}, nil
+		},
+		"ensure_project": func(args map[string]interface{}) (interface{}, *JSONRPCError) {
+			key, _ := args["human_key"].(string)
+			return Project{ID: 1, HumanKey: key}, nil
+		},
+		"register_agent": func(map[string]interface{}) (interface{}, *JSONRPCError) {
+			return Agent{ID: 2, Name: "GreenCastle", RegistrationToken: "tok-abc123"}, nil
+		},
+	}))
+	t.Cleanup(server.Close)
+
+	client := NewClient(WithBaseURL(server.URL + "/"))
+	info, err := client.RegisterSessionAgent(context.Background(), "coord-fresh", "/proj/coord-fresh")
+	if err != nil {
+		t.Fatalf("RegisterSessionAgent: %v", err)
+	}
+	if info == nil || info.AgentName != "GreenCastle" || info.RegistrationToken != "tok-abc123" {
+		t.Fatalf("info = %+v, want GreenCastle with tok-abc123", info)
+	}
+
+	loaded, err := LoadSessionAgent("coord-fresh", "/proj/coord-fresh")
+	if err != nil || loaded == nil {
+		t.Fatalf("LoadSessionAgent = (%+v, %v)", loaded, err)
+	}
+	if loaded.RegistrationToken != "tok-abc123" {
+		t.Fatalf("persisted token = %q, want tok-abc123", loaded.RegistrationToken)
+	}
+	if tok := client.RegistrationToken("/proj/coord-fresh", "GreenCastle"); tok != "tok-abc123" {
+		t.Fatalf("client token cache = %q, want tok-abc123", tok)
+	}
+}
+
+// Re-registration for an already-persisted session identity must send the
+// persisted registration token so the server authenticates the re-claim
+// rather than rejecting the name as already taken.
+func TestRegisterSessionAgent_ReusesPersistedTokenOnReclaim(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmpDir, ".config"))
+
+	if err := SaveSessionAgent("coord-reuse", "/proj/coord-reuse", &SessionAgentInfo{
+		AgentName:         "GreenCastle",
+		ProjectKey:        "/proj/coord-reuse",
+		RegistrationToken: "tok-persisted",
+		RegisteredAt:      time.Now().Add(-time.Hour),
+		LastActiveAt:      time.Now().Add(-time.Hour),
+	}); err != nil {
+		t.Fatalf("seed session agent: %v", err)
+	}
+
+	var gotToken string
+	server := httptest.NewServer(mockMCPHandler(t, map[string]func(args map[string]interface{}) (interface{}, *JSONRPCError){
+		"health_check": func(map[string]interface{}) (interface{}, *JSONRPCError) {
+			return map[string]interface{}{"status": "ok"}, nil
+		},
+		"register_agent": func(args map[string]interface{}) (interface{}, *JSONRPCError) {
+			gotToken, _ = args["registration_token"].(string)
+			return Agent{ID: 2, Name: "GreenCastle", RegistrationToken: "tok-persisted"}, nil
+		},
+	}))
+	t.Cleanup(server.Close)
+
+	client := NewClient(WithBaseURL(server.URL + "/"))
+	info, err := client.RegisterSessionAgent(context.Background(), "coord-reuse", "/proj/coord-reuse")
+	if err != nil {
+		t.Fatalf("RegisterSessionAgent: %v", err)
+	}
+	if info == nil || info.AgentName != "GreenCastle" {
+		t.Fatalf("info = %+v, want reused GreenCastle identity", info)
+	}
+	if gotToken != "tok-persisted" {
+		t.Fatalf("register_agent received token %q, want the persisted tok-persisted", gotToken)
 	}
 }

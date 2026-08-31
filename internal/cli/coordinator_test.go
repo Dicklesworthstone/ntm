@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/coordinator"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
@@ -467,5 +468,33 @@ func TestFormatIdleDuration(t *testing.T) {
 				t.Errorf("formatIdleDuration(%v) = %q; want %q", tc.duration, result, tc.expected)
 			}
 		})
+	}
+}
+
+// The coordinator's Agent Mail sender must be a real registered identity, not
+// the unregistered "NTM-Coordinator" literal the server rejects. With no
+// reachable server, the resolver must fall back to a previously persisted
+// session identity, and only to the legacy literal when nothing is persisted.
+func TestResolveCoordinatorIdentity_FallbackChain(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmpDir, ".config"))
+
+	// Nothing persisted, no client: legacy literal.
+	if got := resolveCoordinatorIdentity(t.Context(), nil, "coord-id-sess", "/proj/coord-id"); got != coordinatorFallbackName {
+		t.Fatalf("empty state identity = %q, want %q", got, coordinatorFallbackName)
+	}
+
+	// Persisted session identity, no client: reuse the registered name.
+	if err := agentmail.SaveSessionAgent("coord-id-sess", "/proj/coord-id", &agentmail.SessionAgentInfo{
+		AgentName:    "PurpleFinch",
+		ProjectKey:   "/proj/coord-id",
+		RegisteredAt: time.Now(),
+		LastActiveAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("seed session agent: %v", err)
+	}
+	if got := resolveCoordinatorIdentity(t.Context(), nil, "coord-id-sess", "/proj/coord-id"); got != "PurpleFinch" {
+		t.Fatalf("persisted identity = %q, want PurpleFinch", got)
 	}
 }

@@ -271,3 +271,90 @@ func TestRustContractCompatibility(t *testing.T) {
 		}
 	}
 }
+
+// The current mcp-agent-mail reference implementation stores a structured
+// PaneIdentityRecord JSON object in the canonical identity file (its GH#252
+// binding-liveness work); older writers stored a bare name. Resolving must
+// decode the structured form to its "name" field — returning the raw blob
+// made an entire JSON object the Beads assignee and Agent Mail actor for the
+// pane (PR #275 finding 5).
+func TestResolveIdentity_StructuredPaneBindingDecodesToName(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	t.Setenv("HOME", tmp)
+
+	projectKey := "/structured/binding"
+	paneID := "%25"
+	path := CanonicalIdentityPath(projectKey, paneID)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("mkdir identity dir: %v", err)
+	}
+	record := `{"name":"BlueLake","session_name":"proj","pane_id":"%25","pane_pid":4242,` +
+		`"socket_path":"/tmp/tmux-1000/default","written_at":"2026-08-30T00:00:00Z"}`
+	if err := os.WriteFile(path, []byte(record+"\n"), 0o600); err != nil {
+		t.Fatalf("write structured identity: %v", err)
+	}
+
+	name, foundPath := ResolveIdentity(projectKey, paneID)
+	if name != "BlueLake" {
+		t.Fatalf("ResolveIdentity name = %q, want BlueLake (a raw JSON blob must never be an identity)", name)
+	}
+	if foundPath != path {
+		t.Fatalf("ResolveIdentity path = %q, want %q", foundPath, path)
+	}
+}
+
+// Malformed or name-less JSON must fail closed: falling through to "use the
+// raw contents" would resurrect the JSON-blob-as-assignee bug for exactly the
+// files most likely to be corrupt.
+func TestResolveIdentity_MalformedOrNamelessJSONFailsClosed(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+	}{
+		{"truncated object", `{"name":"Blue`},
+		{"object without name", `{"pane_id":"%25"}`},
+		{"object with empty name", `{"name":"   "}`},
+		{"array", `["BlueLake"]`},
+	}
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tmp := t.TempDir()
+			t.Setenv("XDG_CONFIG_HOME", tmp)
+			t.Setenv("HOME", tmp)
+
+			projectKey := fmt.Sprintf("/malformed/binding/%d", i)
+			paneID := "%26"
+			path := CanonicalIdentityPath(projectKey, paneID)
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				t.Fatalf("mkdir identity dir: %v", err)
+			}
+			if err := os.WriteFile(path, []byte(tc.content), 0o600); err != nil {
+				t.Fatalf("write identity: %v", err)
+			}
+			if name, foundPath := ResolveIdentity(projectKey, paneID); name != "" || foundPath != "" {
+				t.Fatalf("ResolveIdentity = (%q, %q), want no identity for %s", name, foundPath, tc.name)
+			}
+		})
+	}
+}
+
+// Plain-text legacy identities must keep resolving exactly as before.
+func TestResolveIdentity_PlainTextStillResolves(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	t.Setenv("HOME", tmp)
+
+	projectKey := "/plain/legacy"
+	paneID := "%27"
+	path := CanonicalIdentityPath(projectKey, paneID)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("mkdir identity dir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("SnowyOwl\n"), 0o600); err != nil {
+		t.Fatalf("write identity: %v", err)
+	}
+	if name, _ := ResolveIdentity(projectKey, paneID); name != "SnowyOwl" {
+		t.Fatalf("ResolveIdentity = %q, want SnowyOwl", name)
+	}
+}

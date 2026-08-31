@@ -17,10 +17,15 @@ import (
 
 // SessionAgentInfo tracks the registered agent identity for a session.
 type SessionAgentInfo struct {
-	AgentName    string    `json:"agent_name"`
-	ProjectKey   string    `json:"project_key"`
-	RegisteredAt time.Time `json:"registered_at"`
-	LastActiveAt time.Time `json:"last_active_at"`
+	AgentName  string `json:"agent_name"`
+	ProjectKey string `json:"project_key"`
+	// RegistrationToken is the server-issued token for this identity.
+	// Persisting it lets a later ntm process re-claim the same agent name
+	// instead of being rejected by a server that requires token auth for
+	// re-registration.
+	RegistrationToken string    `json:"registration_token,omitempty"`
+	RegisteredAt      time.Time `json:"registered_at"`
+	LastActiveAt      time.Time `json:"last_active_at"`
 }
 
 // sanitizeRegex is precompiled for performance (used by sanitizeSessionName)
@@ -285,12 +290,17 @@ func (c *Client) RegisterSessionAgent(ctx context.Context, sessionName, workingD
 
 	// If already registered with same project, just update activity
 	if existing != nil && existing.ProjectKey == workingDir && existing.AgentName != "" {
+		// Prime the client's token cache with the persisted token so the
+		// re-register call below authenticates as the existing identity.
+		if existing.RegistrationToken != "" {
+			c.SetRegistrationToken(workingDir, existing.AgentName, existing.RegistrationToken)
+		}
 		existing.LastActiveAt = time.Now()
 		if err := SaveSessionAgent(sessionName, workingDir, existing); err != nil {
 			return nil, err
 		}
 		// Update activity on server (re-register updates last_active_ts)
-		_, serverErr := c.RegisterAgent(ctx, RegisterAgentOptions{
+		agent, serverErr := c.RegisterAgent(ctx, RegisterAgentOptions{
 			ProjectKey:      workingDir,
 			Program:         "ntm",
 			Model:           "coordinator",
@@ -300,6 +310,13 @@ func (c *Client) RegisterSessionAgent(ctx context.Context, sessionName, workingD
 		if serverErr != nil {
 			// Return local state but pass error up so caller can warn
 			return existing, fmt.Errorf("updating server activity: %w", serverErr)
+		}
+		// Persist a (re)issued token for the next process.
+		if agent != nil && agent.RegistrationToken != "" && agent.RegistrationToken != existing.RegistrationToken {
+			existing.RegistrationToken = agent.RegistrationToken
+			if err := SaveSessionAgent(sessionName, workingDir, existing); err != nil {
+				return nil, err
+			}
 		}
 		return existing, nil
 	}
@@ -323,10 +340,11 @@ func (c *Client) RegisterSessionAgent(ctx context.Context, sessionName, workingD
 
 	// Save locally
 	info := &SessionAgentInfo{
-		AgentName:    agent.Name,
-		ProjectKey:   workingDir,
-		RegisteredAt: time.Now(),
-		LastActiveAt: time.Now(),
+		AgentName:         agent.Name,
+		ProjectKey:        workingDir,
+		RegistrationToken: agent.RegistrationToken,
+		RegisteredAt:      time.Now(),
+		LastActiveAt:      time.Now(),
 	}
 	if err := SaveSessionAgent(sessionName, workingDir, info); err != nil {
 		return nil, err

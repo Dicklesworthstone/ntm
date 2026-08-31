@@ -32,6 +32,7 @@ import (
 	"crypto/sha1" //nolint:gosec // Not cryptographic; path namespace only.
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -250,9 +251,19 @@ func sanitizePaneID(paneID string) string {
 	return b.String()
 }
 
-// readIdentityFile reads the identity file at path and returns the trimmed
-// contents and true, or ("", false) if the file does not exist or the content
-// is empty after trimming.
+// readIdentityFile reads the identity file at path and returns the agent
+// name and true, or ("", false) if the file does not exist or holds no usable
+// name.
+//
+// Two on-disk formats exist. Legacy writers (older ntm, this package's
+// WriteIdentity) store the bare adjective+noun name as plain text. The
+// current mcp-agent-mail reference implementation stores a structured
+// PaneIdentityRecord JSON object ({"name":"BlueLake","pane_id":"%25",...}) in
+// the SAME canonical path. Returning the raw contents of a structured file
+// made the entire JSON blob the caller's Agent Mail actor and Beads assignee
+// (PR #275 finding), so JSON content is decoded down to its "name" field, and
+// malformed JSON fails closed — a JSON document is never itself a valid agent
+// name.
 func readIdentityFile(path string) (string, bool) {
 	info, err := os.Lstat(path)
 	if err != nil {
@@ -268,6 +279,19 @@ func readIdentityFile(path string) (string, bool) {
 	trimmed := strings.TrimSpace(string(data))
 	if trimmed == "" {
 		return "", false
+	}
+	if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
+		var record struct {
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal([]byte(trimmed), &record); err != nil {
+			return "", false
+		}
+		name := strings.TrimSpace(record.Name)
+		if name == "" {
+			return "", false
+		}
+		return name, true
 	}
 	return trimmed, true
 }

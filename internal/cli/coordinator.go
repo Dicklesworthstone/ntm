@@ -14,12 +14,45 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/coordinator"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
 )
+
+// coordinatorFallbackName is the legacy hard-coded coordinator sender. It was
+// never a registered Agent Mail identity, so the server rejects mail and
+// claims made under it ("Agent 'NTM-Coordinator' not found in project"). It
+// survives only as the last-resort identity when Agent Mail is unreachable
+// AND no previously registered session identity is persisted — in that state
+// nothing can be delivered anyway, and a recognizable literal beats an empty
+// sender.
+const coordinatorFallbackName = "NTM-Coordinator"
+
+// resolveCoordinatorIdentity returns the Agent Mail identity the coordinator
+// acts as. First choice is the session's server-registered coordinator agent:
+// RegisterSessionAgent registers a server-generated adjective+noun identity at
+// first use, persists it (name + registration token) under the session, and
+// reuses it on every later call — the same identity `ntm spawn` registers.
+// When the server is unreachable, a previously persisted identity is still
+// the right sender; the legacy literal is the final fallback.
+func resolveCoordinatorIdentity(ctx context.Context, client *agentmail.Client, session, projectKey string) string {
+	if client != nil {
+		regCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		// A non-nil info with a non-nil err means the local identity exists
+		// but the server activity refresh failed — the name is still valid.
+		if info, _ := client.RegisterSessionAgent(regCtx, session, projectKey); info != nil && strings.TrimSpace(info.AgentName) != "" {
+			return info.AgentName
+		}
+	}
+	if saved, err := agentmail.LoadSessionAgent(session, projectKey); err == nil && saved != nil && strings.TrimSpace(saved.AgentName) != "" {
+		return saved.AgentName
+	}
+	return coordinatorFallbackName
+}
 
 var (
 	coordinatorSessionExists  = tmux.SessionExists
@@ -122,7 +155,8 @@ func runCoordinatorStatus(cmd *cobra.Command, args []string) error {
 
 	// Create coordinator to get status without enabling configured side effects.
 	mailClient := newAgentMailClient(projectKey)
-	coord := coordinator.New(session, projectKey, mailClient, "NTM-Coordinator").WithConfig(runtimeConfig)
+	coordName := resolveCoordinatorIdentity(cmd.Context(), mailClient, session, projectKey)
+	coord := coordinator.New(session, projectKey, mailClient, coordName).WithConfig(runtimeConfig)
 
 	// Get agent states
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -323,7 +357,8 @@ func runCoordinatorDigest(cmd *cobra.Command, args []string, sendMail bool) erro
 	// Digest is a read-only surface: never let its brief coordinator run
 	// enqueue context rotations (bd-rpmg8).
 	runtimeConfig.RotationUsageThreshold = 0
-	coord := coordinator.New(session, projectKey, mailClient, "NTM-Coordinator").WithConfig(runtimeConfig)
+	coordName := resolveCoordinatorIdentity(cmd.Context(), mailClient, session, projectKey)
+	coord := coordinator.New(session, projectKey, mailClient, coordName).WithConfig(runtimeConfig)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -408,7 +443,9 @@ func runCoordinatorRun(cmd *cobra.Command, args []string, once bool) error {
 	}
 
 	runtimeConfig, ntmConfig := loadCoordinatorRuntimeConfigWithNTM()
-	coord := coordinator.New(session, projectKey, newAgentMailClient(projectKey), "NTM-Coordinator").
+	mailClient := newAgentMailClient(projectKey)
+	coordName := resolveCoordinatorIdentity(cmd.Context(), mailClient, session, projectKey)
+	coord := coordinator.New(session, projectKey, mailClient, coordName).
 		WithConfig(runtimeConfig).
 		WithNTMConfig(ntmConfig)
 	if once {
