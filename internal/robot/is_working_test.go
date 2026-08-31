@@ -245,7 +245,7 @@ func TestApplyCanonicalWorkSafetyFailsClosed(t *testing.T) {
 	applyCanonicalWorkSafety(&working, statuspkg.PaneObservation{Current: statuspkg.StateObservation{
 		Status:    statuspkg.AgentStatus{State: statuspkg.StateWorking},
 		Freshness: statuspkg.FreshnessFresh,
-	}}, false)
+	}}, false, cpuFallbackOptions{})
 	if !working.IsWorking || working.IsIdle || working.Recommendation != string(agent.RecommendDoNotInterrupt) {
 		t.Fatalf("working safety override = %+v", working)
 	}
@@ -254,7 +254,7 @@ func TestApplyCanonicalWorkSafetyFailsClosed(t *testing.T) {
 	applyCanonicalWorkSafety(&unknown, statuspkg.PaneObservation{Current: statuspkg.StateObservation{
 		Status:    statuspkg.AgentStatus{State: statuspkg.StateUnknown},
 		Freshness: statuspkg.FreshnessFresh,
-	}}, false)
+	}}, false, cpuFallbackOptions{})
 	if unknown.IsWorking || unknown.IsIdle || unknown.Recommendation != string(agent.RecommendUnknown) {
 		t.Fatalf("unknown safety override = %+v", unknown)
 	}
@@ -274,14 +274,14 @@ func TestApplyCanonicalWorkSafetyIdleCorrectsStaleWorking(t *testing.T) {
 	}
 
 	corrected := PaneWorkStatus{IsWorking: true, Recommendation: string(agent.RecommendDoNotInterrupt)}
-	applyCanonicalWorkSafety(&corrected, idleObservation(), false)
+	applyCanonicalWorkSafety(&corrected, idleObservation(), false, cpuFallbackOptions{})
 	if corrected.IsWorking || !corrected.IsIdle || corrected.Recommendation != string(agent.RecommendSafeToRestart) {
 		t.Fatalf("idle safety override = %+v", corrected)
 	}
 
 	// Negative case 1: the live-window THINKING override (#133) pins working.
 	liveBusy := PaneWorkStatus{IsWorking: true, Recommendation: string(agent.RecommendDoNotInterrupt)}
-	applyCanonicalWorkSafety(&liveBusy, idleObservation(), true)
+	applyCanonicalWorkSafety(&liveBusy, idleObservation(), true, cpuFallbackOptions{})
 	if !liveBusy.IsWorking || liveBusy.IsIdle || liveBusy.Recommendation != string(agent.RecommendDoNotInterrupt) {
 		t.Fatalf("live-busy pane was talked down to idle = %+v", liveBusy)
 	}
@@ -290,19 +290,19 @@ func TestApplyCanonicalWorkSafetyIdleCorrectsStaleWorking(t *testing.T) {
 	weak := PaneWorkStatus{IsWorking: true, Recommendation: string(agent.RecommendDoNotInterrupt)}
 	weakObservation := idleObservation()
 	weakObservation.Current.Confidence = 0.5
-	applyCanonicalWorkSafety(&weak, weakObservation, false)
+	applyCanonicalWorkSafety(&weak, weakObservation, false, cpuFallbackOptions{})
 	if !weak.IsWorking || weak.IsIdle {
 		t.Fatalf("weak idle evidence flipped the verdict = %+v", weak)
 	}
 
 	// Negative case 3: rate-limit and error verdicts keep precedence.
 	walled := PaneWorkStatus{IsWorking: true, IsRateLimited: true, Recommendation: string(agent.RecommendRateLimitedWait)}
-	applyCanonicalWorkSafety(&walled, idleObservation(), false)
+	applyCanonicalWorkSafety(&walled, idleObservation(), false, cpuFallbackOptions{})
 	if walled.Recommendation != string(agent.RecommendRateLimitedWait) || walled.IsIdle {
 		t.Fatalf("rate-limited pane was advertised as free = %+v", walled)
 	}
 	broken := PaneWorkStatus{IsWorking: true, Recommendation: string(agent.RecommendErrorState)}
-	applyCanonicalWorkSafety(&broken, idleObservation(), false)
+	applyCanonicalWorkSafety(&broken, idleObservation(), false, cpuFallbackOptions{})
 	if broken.Recommendation != string(agent.RecommendErrorState) || broken.IsIdle {
 		t.Fatalf("errored pane was advertised as free = %+v", broken)
 	}

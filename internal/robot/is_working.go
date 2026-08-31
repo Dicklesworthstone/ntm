@@ -46,6 +46,35 @@ type IsWorkingOptions struct {
 	// back to the conservative default (defaultSemanticWindow). Only consulted
 	// when Semantic is true.
 	SemanticWindow time.Duration
+
+	// CPUFallbackOnUnknown, when true, enables a process-evidence liveness
+	// fallback for panes the canonical observer reports StateUnknown (ntm-tnh1):
+	// a working `claude` pane can render a frozen frame with an empty composer
+	// for over an hour while genuinely busy the whole time, and a screen/title
+	// read has no signal left to resolve that. When enabled, an Unknown pane
+	// with a live PID gets a short /proc-style CPU-tick delta sample (via
+	// process.CPUDeltaWorking) instead of being left Unknown.
+	//
+	// OFF by default: this function BLOCKS for CPUFallbackInterval per
+	// Unknown pane it fires on, sampled serially, one pane at a time, in this
+	// draft. That is an acceptable cost for a slow, occasional caller (e.g. a
+	// preflight check run once per session) and likely NOT acceptable for a
+	// hot per-pane status path called frequently across many panes -- batching
+	// every Unknown pane's sample into one shared sleep (the way the interim
+	// Python probe at agent-factory's src/pane_liveness.py does) is the right
+	// shape for that caller and is intentionally NOT implemented here; this
+	// flag exists so the tradeoff is opt-in and discussed at review, not
+	// silently defaulted on for every caller of GetIsWorking.
+	CPUFallbackOnUnknown bool
+	// CPUFallbackInterval is the sampling window for the fallback above.
+	// Zero falls back to a conservative 3s default. Only consulted when
+	// CPUFallbackOnUnknown is true.
+	CPUFallbackInterval time.Duration
+	// CPUFallbackThresholdPct is the CPU%% (over CPUFallbackInterval) at or
+	// above which an Unknown pane is reclassified working. Zero falls back to
+	// a conservative 5.0 default. Only consulted when CPUFallbackOnUnknown is
+	// true.
+	CPUFallbackThresholdPct float64
 }
 
 // DefaultIsWorkingOptions returns sensible defaults.
@@ -527,7 +556,11 @@ func GetIsWorking(ctx context.Context, opts IsWorkingOptions) (*IsWorkingOutput,
 			status.Indicators.Work = append(work, "live_window_thinking")
 		}
 		parsedStatus := status
-		applyCanonicalWorkSafety(&status, paneObservation, liveBusy)
+		applyCanonicalWorkSafety(&status, paneObservation, liveBusy, cpuFallbackOptions{
+			enabled:      opts.CPUFallbackOnUnknown,
+			interval:     opts.CPUFallbackInterval,
+			thresholdPct: opts.CPUFallbackThresholdPct,
+		})
 		status.IndicatorBasis = workIndicatorBasis(state, liveBusy, parsedStatus, status, paneObservation)
 		applyInteractiveGateOverride(&status, state.Type, content, paneObservation.Metadata.Width)
 
@@ -684,11 +717,23 @@ func applyInteractiveGateOverride(workStatus *PaneWorkStatus, agentType agent.Ag
 	return true
 }
 
+// cpuFallbackOptions carries the CPUFallback* fields from IsWorkingOptions
+// through to applyCanonicalWorkSafety without exposing the full options
+// struct (and its Session/Panes/etc. fields, irrelevant here) to a function
+// that should only see the three knobs it actually consumes.
+type cpuFallbackOptions struct {
+	enabled      bool
+	interval     time.Duration
+	thresholdPct float64
+}
+
 // applyCanonicalWorkSafety reconciles the parser verdict with the canonical
 // observation. liveBusy reports whether the live-window THINKING override
 // (#133) fired for this pane; it pins the working verdict so the idle arm can
-// never talk a mid-tool-call pane back down to idle.
-func applyCanonicalWorkSafety(workStatus *PaneWorkStatus, observation statuspkg.PaneObservation, liveBusy bool) {
+// never talk a mid-tool-call pane back down to idle. cpuFallback carries the
+// opt-in process-evidence fallback for the StateUnknown arm (ntm-tnh1); see
+// IsWorkingOptions.CPUFallbackOnUnknown for why it defaults off.
+func applyCanonicalWorkSafety(workStatus *PaneWorkStatus, observation statuspkg.PaneObservation, liveBusy bool, cpuFallback cpuFallbackOptions) {
 	if workStatus == nil {
 		return
 	}
@@ -728,6 +773,34 @@ func applyCanonicalWorkSafety(workStatus *PaneWorkStatus, observation statuspkg.
 		workStatus.IsIdle = false
 		workStatus.Recommendation = string(agent.RecommendUnknown)
 		workStatus.RecommendationReason = "Canonical live observation could not determine current state"
+
+		if !cpuFallback.enabled || observation.Metadata.PID <= 0 {
+			return
+		}
+		interval := cpuFallback.interval
+		if interval <= 0 {
+			interval = 3 * time.Second
+		}
+		threshold := cpuFallback.thresholdPct
+		if threshold <= 0 {
+			threshold = 5.0
+		}
+		working, pct, err := process.CPUDeltaWorking(observation.Metadata.PID, interval, threshold)
+		if err != nil || !working {
+			return
+		}
+		// A screen/title read had nothing to go on, but the pane's process
+		// tree is actively burning CPU -- treat that as working, the same
+		// class of correction the StateWorking/StateIdle arms above already
+		// make against a stale or absent parser verdict.
+		workStatus.IsWorking = true
+		workStatus.IsIdle = false
+		workStatus.Recommendation = string(agent.RecommendDoNotInterrupt)
+		workStatus.RecommendationReason = fmt.Sprintf(
+			"Canonical observation was Unknown, but a %.0fs /proc CPU-delta sample read %.1f%% -- process evidence overrides an inconclusive screen read (ntm-tnh1)",
+			interval.Seconds(), pct,
+		)
+		workStatus.IndicatorBasis = "cpu_delta_fallback"
 	}
 }
 
