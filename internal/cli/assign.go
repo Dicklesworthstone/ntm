@@ -257,6 +257,16 @@ func filterAssignAgentsByTemplate(agents []assignAgentInfo, template string) []a
 	return filtered
 }
 
+func roleEligibleAssignAgents(agents []assignAgentInfo, projectDir, template string) ([]assignAgentInfo, error) {
+	withRoles, err := applyAssignPersonaRoles(agents, projectDir)
+	if err != nil {
+		return nil, err
+	}
+	return filterAssignAgentsByTemplate(withRoles, template), nil
+}
+
+var checkAssignCycles = CheckCycles
+
 func newAssignCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "assign [session]",
@@ -1776,7 +1786,7 @@ func getAssignOutputEnhanced(ctx context.Context, opts *AssignCommandOptions) (*
 	// Filter out beads in dependency cycles (with warning)
 	var cycleWarnings int
 	var cyclicBeads []SkippedItem
-	cycles, err := CheckCycles(ctx, projectDir, false)
+	cycles, err := checkAssignCycles(ctx, projectDir, false)
 	if err != nil {
 		return nil, fmt.Errorf("inspect assignment dependency cycles: %w", err)
 	}
@@ -1807,6 +1817,10 @@ func getAssignOutputEnhanced(ctx context.Context, opts *AssignCommandOptions) (*
 
 	// Combine all skipped beads
 	allSkipped := append(blockedBeads, cyclicBeads...)
+	idleAgents, err = roleEligibleAssignAgents(idleAgents, projectDir, opts.Template)
+	if err != nil {
+		return nil, err
+	}
 
 	result := &AssignOutputEnhanced{
 		Strategy:    opts.Strategy,
@@ -1843,12 +1857,6 @@ func getAssignOutputEnhanced(ctx context.Context, opts *AssignCommandOptions) (*
 	}
 
 	// Generate assignments using strategy
-	idleAgents, err = applyAssignPersonaRoles(idleAgents, projectDir)
-	if err != nil {
-		return nil, err
-	}
-	idleAgents = filterAssignAgentsByTemplate(idleAgents, opts.Template)
-	result.Summary.IdleAgents = len(idleAgents)
 	assignments, allocationPlan := generateAssignmentsEnhancedWithPlan(ctx, idleAgents, readyBeads, opts, true)
 	result.Allocation = assignAllocationView(allocationPlan)
 	if allocationPlan != nil && allocationPlan.Decision == assign.AllocationDecisionDefer && len(assignments) == 0 {
@@ -3508,6 +3516,10 @@ func runRetryAssignments(ctx context.Context, session string) error {
 			}
 			return fmt.Errorf("failed to get idle agents: %w", err)
 		}
+		idleAgents, err = roleEligibleAssignAgents(idleAgents, projectDir, assignTemplate)
+		if err != nil {
+			return emitRetryFailure(session, "PERSONA_ERROR", err)
+		}
 	}
 
 	// Process each failed assignment
@@ -4444,6 +4456,10 @@ func runReassignment(ctx context.Context, session string) error {
 		idleAgents, idleErr := getIdleAgents(ctx, session, assignToType, assignVerbose)
 		if idleErr != nil {
 			return emitContextAwareReassignFailure(ctx, session, "TMUX_ERROR", idleErr, nil)
+		}
+		idleAgents, idleErr = roleEligibleAssignAgents(idleAgents, projectDir, assignTemplate)
+		if idleErr != nil {
+			return emitReassignFailure(session, "PERSONA_ERROR", idleErr.Error(), nil)
 		}
 		if len(idleAgents) == 0 {
 			return emitReassignFailure(session, "NO_IDLE_AGENT", fmt.Sprintf("no idle %s agents available", assignToType), map[string]interface{}{"agent_type": assignToType})
@@ -6033,12 +6049,11 @@ func PerformAutoReassignment(ctx context.Context, completedBeadID string, opts *
 		policyProject:   opts.policyProject,
 	}
 
-	idleAgents, err = applyAssignPersonaRoles(idleAgents, projectDir)
+	idleAgents, err = roleEligibleAssignAgents(idleAgents, projectDir, assignOpts.Template)
 	if err != nil {
 		result.Errors = append(result.Errors, err.Error())
 		return result, nil
 	}
-	idleAgents = filterAssignAgentsByTemplate(idleAgents, assignOpts.Template)
 	result.IdleAgents = len(idleAgents)
 	assignments := generateAssignmentsEnhanced(ctx, idleAgents, filteredBeads, assignOpts)
 	result.Assignments = assignments

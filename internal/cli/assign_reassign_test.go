@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -42,6 +43,83 @@ func TestAssignmentEntryPointsRejectCanceledContextBeforeSideEffects(t *testing.
 				t.Fatalf("error = %v, want context.Canceled", err)
 			}
 		})
+	}
+}
+
+func TestGetAssignOutputEnhancedExcludesReviewerPersonaFromImplementation(t *testing.T) {
+	testutil.RequireTmuxThrottled(t)
+
+	snapshot := captureAssignGlobals()
+	defer snapshot.restore()
+	tmpDir := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", filepath.Join(tmpDir, "xdg"))
+	t.Setenv("AGENT_MAIL_URL", "http://127.0.0.1:1")
+	cfg = newTmuxIntegrationTestConfig(tmpDir)
+	cfg.Agents.Claude = testAgentCatCommandTemplate
+	cfg.Agents.Codex = testAgentCatCommandTemplate
+
+	sessionName, claudePane, codexPane := setupReassignSession(t, tmpDir)
+	projectDir := t.TempDir()
+	ntmDir := filepath.Join(projectDir, ".ntm")
+	if err := os.MkdirAll(ntmDir, 0o755); err != nil {
+		t.Fatalf("create project ntm dir: %v", err)
+	}
+	personas := `[[personas]]
+name = "implementation-seat"
+agent_type = "claude"
+tags = ["implementer"]
+
+[[personas]]
+name = "review-seat"
+agent_type = "codex"
+tags = ["reviewer"]
+`
+	if err := os.WriteFile(filepath.Join(ntmDir, "personas.toml"), []byte(personas), 0o600); err != nil {
+		t.Fatalf("write personas: %v", err)
+	}
+	if err := tmux.SetPaneTitle(claudePane.ID, tmux.FormatPaneName(sessionName, "cc", 1, "implementation-seat")); err != nil {
+		t.Fatalf("title implementation pane: %v", err)
+	}
+	if err := tmux.SetPaneTitle(codexPane.ID, tmux.FormatPaneName(sessionName, "cod", 1, "review-seat")); err != nil {
+		t.Fatalf("title review pane: %v", err)
+	}
+
+	previousObserver := newAssignSessionObserver
+	observedAt := time.Now().UTC()
+	newAssignSessionObserver = func() assignSessionObserver {
+		return fixedAssignSessionObserver{observation: statuspkg.SessionObservation{
+			Session: sessionName, ObservedAt: observedAt, Complete: true,
+			Panes: []statuspkg.PaneObservation{
+				{Pane: tmux.PaneRef{ID: claudePane.ID, WindowIndex: claudePane.WindowIndex, PaneIndex: claudePane.Index}, Current: statuspkg.StateObservation{Status: statuspkg.AgentStatus{State: statuspkg.StateIdle}, ObservedAt: observedAt, Freshness: statuspkg.FreshnessFresh, Confidence: 0.99}},
+				{Pane: tmux.PaneRef{ID: codexPane.ID, WindowIndex: codexPane.WindowIndex, PaneIndex: codexPane.Index}, Current: statuspkg.StateObservation{Status: statuspkg.AgentStatus{State: statuspkg.StateIdle}, ObservedAt: observedAt, Freshness: statuspkg.FreshnessFresh, Confidence: 0.99}},
+			},
+		}}
+	}
+	previousCycles := checkAssignCycles
+	checkAssignCycles = func(context.Context, string, bool) ([][]string, error) { return nil, nil }
+	t.Cleanup(func() {
+		newAssignSessionObserver = previousObserver
+		checkAssignCycles = previousCycles
+	})
+
+	out, err := getAssignOutputEnhanced(t.Context(), &AssignCommandOptions{
+		Session:                     sessionName,
+		ProjectDir:                  projectDir,
+		Strategy:                    "quality",
+		Template:                    "impl",
+		actionablePreflightVerified: true,
+		verifiedActionable: []bv.TriageRecommendation{{
+			ID: "bd-role-live", Title: "Implement new assignment feature", Type: "task", Status: "open", Priority: 2,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("getAssignOutputEnhanced: %v", err)
+	}
+	if len(out.Assignments) != 1 {
+		t.Fatalf("output = %+v, want one implementation assignment", out)
+	}
+	if out.Assignments[0].PaneID != claudePane.ID {
+		t.Fatalf("implementation assigned to pane %s, want implementer %s (reviewer was %s)", out.Assignments[0].PaneID, claudePane.ID, codexPane.ID)
 	}
 }
 
@@ -108,6 +186,9 @@ func setupReassignSession(t *testing.T, tmpDir string) (string, tmux.Pane, tmux.
 	t.Helper()
 
 	sessionName := fmt.Sprintf("ntm-test-reassign-%d", time.Now().UnixNano())
+	if err := os.MkdirAll(filepath.Join(tmpDir, sessionName), 0o755); err != nil {
+		t.Fatalf("create session project: %v", err)
+	}
 	t.Cleanup(func() {
 		_ = tmux.KillSession(sessionName)
 	})
