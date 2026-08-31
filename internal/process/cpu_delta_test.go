@@ -45,16 +45,25 @@ func startHelper(t *testing.T, mode string) *exec.Cmd {
 }
 
 func TestCPUDeltaPercent_BusyProcessReadsHigh(t *testing.T) {
+	// Round-2 finding (SnowySparrow): a flat ">=50%" hard assertion over a 200ms
+	// window failed at 30.0% on a contended CI/dev box -- this repo's own test
+	// helpers routinely run on a machine with many concurrent builds/agents, and
+	// a spinning child process is not guaranteed a full core for the whole
+	// window even though it never blocks voluntarily. Fixed two ways: a longer
+	// window (1s, not 200ms) to average out short scheduling gaps, and a lower,
+	// contention-tolerant absolute floor -- what actually matters for
+	// CPUDeltaWorking's real contract is clearing the production 5% threshold
+	// by a wide, unambiguous margin, not approximating 100% on a shared box.
 	cmd := startHelper(t, "busy")
 	// Let the loop actually start spinning before the first sample.
 	time.Sleep(50 * time.Millisecond)
 
-	pct, err := CPUDeltaPercent(cmd.Process.Pid, 200*time.Millisecond)
+	pct, err := CPUDeltaPercent(cmd.Process.Pid, time.Second)
 	if err != nil {
 		t.Fatalf("CPUDeltaPercent: %v", err)
 	}
-	if pct < 50.0 {
-		t.Errorf("CPUDeltaPercent(busy) = %.1f%%, want >= 50%% for a tight CPU loop", pct)
+	if pct < 20.0 {
+		t.Errorf("CPUDeltaPercent(busy) = %.1f%%, want >= 20%% (4x the 5%% production threshold) for a tight CPU loop, even on a contended box", pct)
 	}
 }
 
@@ -74,7 +83,9 @@ func TestCPUDeltaPercent_IdleProcessReadsLow(t *testing.T) {
 func TestCPUDeltaWorking_ThresholdSplitsBusyFromIdle(t *testing.T) {
 	busy := startHelper(t, "busy")
 	time.Sleep(50 * time.Millisecond)
-	working, pct, err := CPUDeltaWorking(busy.Process.Pid, 200*time.Millisecond, 5.0)
+	// 1s window, same contention-robustness reasoning as
+	// TestCPUDeltaPercent_BusyProcessReadsHigh.
+	working, pct, err := CPUDeltaWorking(busy.Process.Pid, time.Second, 5.0)
 	if err != nil {
 		t.Fatalf("CPUDeltaWorking(busy): %v", err)
 	}
