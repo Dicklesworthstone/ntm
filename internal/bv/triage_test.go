@@ -854,6 +854,76 @@ func TestGetActionableRecommendationsUsesPlanMembershipAndLiveBeadState(t *testi
 	}
 }
 
+func TestGetActionableRecommendationsSkipsStalePlanRowsByLiveLifecycle(t *testing.T) {
+	for _, status := range []string{"closed", "blocked", "in_progress", "deferred"} {
+		t.Run(status, func(t *testing.T) {
+			binDir := t.TempDir()
+			bvScript := `#!/bin/sh
+case "$1" in
+  --robot-triage) printf '%s\n' '{"triage":{"recommendations":[{"id":"tracked","title":"tracked","status":"open","priority":1}]}}' ;;
+  --robot-plan) printf '%s\n' '{"plan":{"tracks":[{"track_id":"one","items":[{"id":"tracked","title":"tracked","status":"open","priority":1}]}]}}' ;;
+  *) exit 64 ;;
+esac
+`
+			brScript := `#!/bin/sh
+case "$*" in
+  *" ready "*|*" --status open "*) printf '%s\n' '[]' ;;
+  *" --all "*) printf '%s\n' '[{"id":"tracked","status":"` + status + `"}]' ;;
+  *) printf 'unexpected br args: %s\n' "$*" >&2; exit 64 ;;
+esac
+`
+			for name, script := range map[string]string{"bv": bvScript, "br": brScript} {
+				if err := os.WriteFile(filepath.Join(binDir, name), []byte(script), 0o700); err != nil {
+					t.Fatalf("write fake %s: %v", name, err)
+				}
+			}
+			t.Setenv("PATH", binDir)
+			InvalidateTriageCache()
+			t.Cleanup(InvalidateTriageCache)
+
+			recs, err := GetActionableRecommendationsContext(t.Context(), t.TempDir(), 0)
+			if err != nil {
+				t.Fatalf("lifecycle %s returned error: %v", status, err)
+			}
+			if len(recs) != 0 {
+				t.Fatalf("lifecycle %s recommendations=%+v, want stale row skipped", status, recs)
+			}
+		})
+	}
+}
+
+func TestGetActionableRecommendationsStillRefusesUnverifiedOpenLifecycle(t *testing.T) {
+	binDir := t.TempDir()
+	bvScript := `#!/bin/sh
+case "$1" in
+  --robot-triage) printf '%s\n' '{"triage":{"recommendations":[]}}' ;;
+  --robot-plan) printf '%s\n' '{"plan":{"tracks":[{"track_id":"one","items":[{"id":"tracked","title":"tracked","status":"open","priority":1}]}]}}' ;;
+  *) exit 64 ;;
+esac
+`
+	brScript := `#!/bin/sh
+case "$*" in
+  *" ready "*|*" --status open "*) printf '%s\n' '[]' ;;
+  *" --all "*) printf '%s\n' '[{"id":"tracked","status":"open"}]' ;;
+  *) exit 64 ;;
+esac
+`
+	for name, script := range map[string]string{"bv": bvScript, "br": brScript} {
+		if err := os.WriteFile(filepath.Join(binDir, name), []byte(script), 0o700); err != nil {
+			t.Fatalf("write fake %s: %v", name, err)
+		}
+	}
+	t.Setenv("PATH", binDir)
+	InvalidateTriageCache()
+	t.Cleanup(InvalidateTriageCache)
+
+	recs, err := GetActionableRecommendationsContext(t.Context(), t.TempDir(), 0)
+	if recs != nil || err == nil || !errors.Is(err, ErrActionableLabelsUnverified) ||
+		!strings.Contains(err.Error(), "still open") {
+		t.Fatalf("recommendations=%+v error=%v, want fail-closed live-open error", recs, err)
+	}
+}
+
 func TestGetActionableRecommendationsExcludesNonOpenPlanRowsBeforeLabelVerification(t *testing.T) {
 	installActionableRecommendationTestTools(
 		t,
