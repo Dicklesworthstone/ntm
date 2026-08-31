@@ -208,6 +208,76 @@ func TestMailNudgeWorkingPaneSkippedAndPublished(t *testing.T) {
 	}
 }
 
+// TestMailNudgeGrokIdlePaneDispatched proves Grok Build panes use their
+// landed live-state detector instead of being rejected as an unsupported
+// agent type. The empty bordered composer is the idle state observed in a
+// real Grok TUI capture.
+func TestMailNudgeGrokIdlePaneDispatched(t *testing.T) {
+	server := newMailInboxServer(t, map[string][]map[string]interface{}{
+		"CalmBison": {unreadMessage(1)},
+	})
+	defer server.Close()
+
+	panes := []tmux.Pane{{ID: "%3", Title: "mailsess__grok_1", Type: tmux.AgentGrok, Width: 120}}
+	env := newMailNudgeTestEnv(t, server.URL, panes,
+		map[string]string{"mailsess__grok_1": "CalmBison"},
+		func(string) (string, error) {
+			return "│ ❯                                      │\n─ Grok 4.6 (high) · always-approve ─╯\n", nil
+		})
+
+	decisions := env.mc.runOnce(t.Context())
+	if len(decisions) != 1 || decisions[0].Action != "nudged" || decisions[0].SkipReason != "" {
+		t.Fatalf("decisions = %+v, want one Grok nudge", decisions)
+	}
+	if len(env.dispatch) != 1 || env.dispatch[0] != "%3" {
+		t.Fatalf("dispatched panes = %v, want [%%3]", env.dispatch)
+	}
+}
+
+// TestMailNudgeGrokWorkingAndHeldInputSkipped covers both safety vetoes that
+// make autonomous Grok nudging safe: an in-flight spinner and text already in
+// the bordered composer. Neither capture may receive another prompt.
+func TestMailNudgeGrokWorkingAndHeldInputSkipped(t *testing.T) {
+	tests := []struct {
+		name       string
+		capture    string
+		wantReason string
+	}{
+		{
+			name:       "working",
+			capture:    "⠹ Waiting for response… 0.7s [stop]\n│ ❯                 │\nShift+Tab:mode │ Esc:cancel │ Ctrl+x:shortcuts\n",
+			wantReason: "working",
+		},
+		{
+			name:       "held input",
+			capture:    "│ ❯ finish the previous request           │\n─ Grok 4.6 (high) · always-approve ─╯\n",
+			wantReason: "unsubmitted_input",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			server := newMailInboxServer(t, map[string][]map[string]interface{}{
+				"CalmBison": {unreadMessage(1)},
+			})
+			defer server.Close()
+
+			panes := []tmux.Pane{{ID: "%3", Title: "mailsess__grok_1", Type: tmux.AgentGrok, Width: 120}}
+			env := newMailNudgeTestEnv(t, server.URL, panes,
+				map[string]string{"mailsess__grok_1": "CalmBison"},
+				func(string) (string, error) { return tc.capture, nil })
+
+			decisions := env.mc.runOnce(t.Context())
+			if len(decisions) != 1 || decisions[0].Action != "skipped" || decisions[0].SkipReason != tc.wantReason {
+				t.Fatalf("decisions = %+v, want one skipped/%s", decisions, tc.wantReason)
+			}
+			if len(env.dispatch) != 0 {
+				t.Fatalf("Grok pane was dispatched to despite %s: %v", tc.wantReason, env.dispatch)
+			}
+		})
+	}
+}
+
 // TestMailNudgeFailsClosedForUnsupportedAgentTypes: agent types without a
 // working detector are refused outright.
 func TestMailNudgeFailsClosedForUnsupportedAgentTypes(t *testing.T) {

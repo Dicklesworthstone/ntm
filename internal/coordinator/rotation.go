@@ -419,9 +419,13 @@ func rotationEvidence(d rotationDecision) string {
 //  4. unsubmitted_input  — the composer holds typed-but-unsent text
 //  5. queued_messages    — the TUI reports queued unsubmitted messages
 //
-// Only Claude Code and Codex panes can reach this point (they are the only
-// agent types with known transcript locations); any other type is refused
-// outright because the automated rotation path does not support it.
+// The caller decides whether an agent supports the requested automation.
+// This shared fire-time gate admits only agent types with authoritative live
+// working detectors; every other type is refused rather than typed into while
+// its state is unknown. Context rotation currently reaches this gate only for
+// Claude Code and Codex because those are the types with known transcript
+// locations. Mail nudge can also reach it for Grok Build, whose TUI detector
+// and composer inspection are independent of transcript discovery.
 func rotationSafetySkipReason(captured string, pane tmux.Pane) string {
 	canonical := pane.Type.Canonical()
 	switch canonical {
@@ -431,6 +435,10 @@ func rotationSafetySkipReason(captured string, pane tmux.Pane) string {
 		}
 	case agent.AgentTypeCodex:
 		if agent.CodexActivelyWorking(captured, pane.Width) {
+			return "working"
+		}
+	case agent.AgentTypeGrok:
+		if agent.GrokActivelyWorking(captured, pane.Width) {
 			return "working"
 		}
 	default:
