@@ -29,7 +29,21 @@ var (
 	checkSessionFn   = health.CheckSession
 	displayMessageFn = tmux.DisplayMessage
 	isChildAliveFn   = process.IsChildAlive
+	paneExistsFn     = paneExistsInSession
 )
+
+func paneExistsInSession(session, paneID string) (bool, error) {
+	panes, err := tmux.GetPanes(session)
+	if err != nil {
+		return false, err
+	}
+	for _, pane := range panes {
+		if pane.ID == paneID {
+			return true, nil
+		}
+	}
+	return false, nil
+}
 
 // AgentState tracks the state of an individual agent for restart purposes
 type AgentState struct {
@@ -803,6 +817,7 @@ func (m *Monitor) restartAgent(ctx context.Context, agent *AgentState) {
 	buildFunc := buildPaneCmdFn
 	sendFunc := sendKeysFn
 	isChildAliveFunc := isChildAliveFn
+	paneExists := paneExistsFn
 	hooksMu.RUnlock()
 
 	select {
@@ -842,6 +857,22 @@ func (m *Monitor) restartAgent(ctx context.Context, agent *AgentState) {
 		if a, ok := m.agents[agent.PaneID]; ok {
 			a.Healthy = true
 		}
+		m.mu.Unlock()
+		return
+	}
+
+	// A manifest can outlive a pane after tmux topology changes. Never remap by
+	// index: a replacement pane may belong to another agent. Retire the stale
+	// runtime binding and fail closed before any keys are injected.
+	exists, err := paneExists(m.session, agent.PaneID)
+	if err != nil || !exists {
+		if err != nil {
+			log.Printf("[resilience] Stale pane binding %s: cannot verify membership in session %s: %v", agent.PaneID, m.session, err)
+		} else {
+			log.Printf("[resilience] Stale pane binding %s is not present in session %s; skipping restart", agent.PaneID, m.session)
+		}
+		m.mu.Lock()
+		delete(m.agents, agent.PaneID)
 		m.mu.Unlock()
 		return
 	}

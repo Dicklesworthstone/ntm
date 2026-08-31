@@ -3215,6 +3215,7 @@ Shell Integration:
 		// Robot-mail-check handler for Agent Mail inbox (bd-adgv)
 		if robotMailCheck {
 			opts := robot.MailCheckOptions{
+				Client:        newAgentMailClient(mailProject),
 				Project:       mailProject,
 				Agent:         mailAgent,
 				Thread:        mailThread,

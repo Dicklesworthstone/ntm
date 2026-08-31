@@ -22,6 +22,8 @@ func saveHooks() func() {
 	origCheckSession := checkSessionFn
 	origDisplayMessage := displayMessageFn
 	origIsChildAlive := isChildAliveFn
+	origPaneExists := paneExistsFn
+	paneExistsFn = func(string, string) (bool, error) { return true, nil }
 	hooksMu.Unlock()
 
 	return func() {
@@ -32,7 +34,43 @@ func saveHooks() func() {
 		checkSessionFn = origCheckSession
 		displayMessageFn = origDisplayMessage
 		isChildAliveFn = origIsChildAlive
+		paneExistsFn = origPaneExists
 		hooksMu.Unlock()
+	}
+}
+
+func TestRestartAgentRetiresStalePaneWithoutSendingKeys(t *testing.T) {
+	restore := saveHooks()
+	defer restore()
+
+	sendCalls := 0
+	setHooksLocked(func() {
+		paneExistsFn = func(string, string) (bool, error) { return false, nil }
+		sendKeysFn = func(string, string, bool) error {
+			sendCalls++
+			return nil
+		}
+		buildPaneCmdFn = func(string, string) (string, error) { return "codex", nil }
+	})
+
+	cfg := config.Default()
+	cfg.Resilience.RestartDelaySeconds = 0
+	m := NewMonitor("test-session", "/tmp/project", cfg, true)
+	m.RegisterAgent("%404", 4, 0, "cod", "gpt-5", "codex")
+	m.mu.Lock()
+	m.agents["%404"].Healthy = false
+	m.mu.Unlock()
+
+	m.restartAgent(context.Background(), m.agents["%404"])
+
+	if sendCalls != 0 {
+		t.Fatalf("sendKeys calls = %d, want 0 for stale pane", sendCalls)
+	}
+	m.mu.RLock()
+	_, retained := m.agents["%404"]
+	m.mu.RUnlock()
+	if retained {
+		t.Fatal("stale pane binding remained registered after failed membership check")
 	}
 }
 

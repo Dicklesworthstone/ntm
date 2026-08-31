@@ -152,6 +152,48 @@ func TestMailCheckOptionsValidate(t *testing.T) {
 	}
 }
 
+func TestGetMailCheckUsesInjectedClientForConfiguredEndpointAndToken(t *testing.T) {
+	const token = "test-public-agent-mail-token"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer "+token {
+			t.Fatalf("Authorization = %q, want configured bearer token", got)
+		}
+		var req agentmail.JSONRPCRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		params, ok := req.Params.(map[string]interface{})
+		if !ok {
+			t.Fatalf("params type = %T, want map", req.Params)
+		}
+		switch params["name"] {
+		case "health_check":
+			_ = json.NewEncoder(w).Encode(agentmail.JSONRPCResponse{
+				JSONRPC: "2.0", ID: req.ID, Result: json.RawMessage(`{"status":"ok"}`),
+			})
+		case "fetch_inbox":
+			_ = json.NewEncoder(w).Encode(agentmail.JSONRPCResponse{
+				JSONRPC: "2.0", ID: req.ID, Result: json.RawMessage(`{"result":[]}`),
+			})
+		default:
+			t.Fatalf("unexpected Agent Mail tool %q", params["name"])
+		}
+	}))
+	defer server.Close()
+
+	output, err := GetMailCheck(MailCheckOptions{
+		Client:  agentmail.NewClient(agentmail.WithBaseURL(server.URL), agentmail.WithToken(token)),
+		Project: "/repos/example/project",
+		Agent:   "BlueLake",
+	})
+	if err != nil {
+		t.Fatalf("GetMailCheck returned error: %v", err)
+	}
+	if !output.Success {
+		t.Fatalf("GetMailCheck success = false, error=%q", output.Error)
+	}
+}
+
 // TestMailCheckOutputJSONSerialization tests that MailCheckOutput serializes correctly.
 func TestMailCheckOutputJSONSerialization(t *testing.T) {
 	// Test that all fields serialize correctly
