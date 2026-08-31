@@ -26,6 +26,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/completion"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	dispatchsvc "github.com/Dicklesworthstone/ntm/internal/dispatch"
+	"github.com/Dicklesworthstone/ntm/internal/persona"
 	"github.com/Dicklesworthstone/ntm/internal/redaction"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	statuspkg "github.com/Dicklesworthstone/ntm/internal/status"
@@ -1147,6 +1148,47 @@ func TestMakeReassignErrorEnvelope(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestAssignPersonaRolesResolvePaneVariantTags(t *testing.T) {
+	registry := persona.NewRegistry()
+	registry.Add(&persona.Persona{Name: "quill", Tags: []string{"reviewer", "standing-qa-pool"}})
+
+	roles := assignPersonaRoles(registry, tmux.Pane{Variant: "quill"})
+	if !reflect.DeepEqual(roles, []string{"reviewer"}) {
+		t.Fatalf("assignPersonaRoles() = %v, want [reviewer]", roles)
+	}
+	if roles := assignPersonaRoles(registry, tmux.Pane{Variant: "gpt-5@high"}); len(roles) != 0 {
+		t.Fatalf("model-only pane roles = %v, want none", roles)
+	}
+}
+
+func TestFilterAssignAgentsByTemplateHonorsPersonaRoles(t *testing.T) {
+	agents := []assignAgentInfo{
+		{pane: tmux.Pane{ID: "%1"}, personaRoles: []string{"reviewer"}},
+		{pane: tmux.Pane{ID: "%2"}, personaRoles: []string{"implementer"}},
+		{pane: tmux.Pane{ID: "%3"}},
+		{pane: tmux.Pane{ID: "%4"}, personaRoles: []string{"reviewer", "implementer"}},
+	}
+
+	impl := filterAssignAgentsByTemplate(agents, "impl")
+	if len(impl) != 3 {
+		t.Fatalf("impl candidate count = %d, want 3", len(impl))
+	}
+	if got := []string{impl[0].pane.ID, impl[1].pane.ID, impl[2].pane.ID}; !reflect.DeepEqual(got, []string{"%2", "%3", "%4"}) {
+		t.Fatalf("impl candidates = %v, want implementer, untagged, and dual-role panes", got)
+	}
+	review := filterAssignAgentsByTemplate(agents, "review")
+	if len(review) != 3 {
+		t.Fatalf("review candidate count = %d, want 3", len(review))
+	}
+	if got := []string{review[0].pane.ID, review[1].pane.ID, review[2].pane.ID}; !reflect.DeepEqual(got, []string{"%1", "%3", "%4"}) {
+		t.Fatalf("review candidates = %v, want reviewer, untagged, and dual-role panes", got)
+	}
+	custom := filterAssignAgentsByTemplate(agents, "custom")
+	if len(custom) != len(agents) {
+		t.Fatalf("custom template filtered %d agents, want %d", len(custom), len(agents))
 	}
 }
 

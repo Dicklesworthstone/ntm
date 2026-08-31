@@ -30,6 +30,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	dispatchsvc "github.com/Dicklesworthstone/ntm/internal/dispatch"
 	"github.com/Dicklesworthstone/ntm/internal/events"
+	"github.com/Dicklesworthstone/ntm/internal/persona"
 	"github.com/Dicklesworthstone/ntm/internal/pressure"
 	"github.com/Dicklesworthstone/ntm/internal/redaction"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
@@ -202,6 +203,58 @@ type assignAgentInfo struct {
 	contextUsage      float64
 	activeAssignments int
 	resourceHeadroom  float64
+	personaRoles      []string
+}
+
+func assignPersonaRoles(registry *persona.Registry, pane tmux.Pane) []string {
+	variant, _ := tmux.ParsePaneVariant(pane.Variant)
+	profile, ok := registry.Get(variant)
+	if !ok {
+		return nil
+	}
+	roles := make([]string, 0, len(profile.Tags))
+	for _, tag := range profile.Tags {
+		switch role := strings.ToLower(strings.TrimSpace(tag)); role {
+		case "implementer", "reviewer":
+			roles = append(roles, role)
+		}
+	}
+	return roles
+}
+
+func applyAssignPersonaRoles(agents []assignAgentInfo, projectDir string) ([]assignAgentInfo, error) {
+	registry, err := persona.LoadRegistry(projectDir)
+	if err != nil {
+		return nil, fmt.Errorf("loading persona roles for assignment: %w", err)
+	}
+	for i := range agents {
+		agents[i].personaRoles = assignPersonaRoles(registry, agents[i].pane)
+	}
+	return agents, nil
+}
+
+func filterAssignAgentsByTemplate(agents []assignAgentInfo, template string) []assignAgentInfo {
+	template = strings.ToLower(strings.TrimSpace(template))
+	if template != "impl" && template != "review" {
+		return agents
+	}
+	filtered := make([]assignAgentInfo, 0, len(agents))
+	for _, candidate := range agents {
+		implementer := false
+		reviewer := false
+		for _, role := range candidate.personaRoles {
+			implementer = implementer || role == "implementer"
+			reviewer = reviewer || role == "reviewer"
+		}
+		if template == "impl" && reviewer && !implementer {
+			continue
+		}
+		if template == "review" && implementer && !reviewer {
+			continue
+		}
+		filtered = append(filtered, candidate)
+	}
+	return filtered
 }
 
 func newAssignCmd() *cobra.Command {
@@ -211,7 +264,8 @@ func newAssignCmd() *cobra.Command {
 		Long: `Analyze ready work from BV and recommend or execute task-to-agent assignments.
 
 This command queries BV for prioritized ready work and matches tasks to idle agents
-based on agent type strengths and the selected strategy.
+based on agent type strengths, persona role tags, and the selected strategy. The
+impl and review templates exclude panes explicitly tagged for the opposite role.
 
 Strategies:
   balanced    - Balance workload across agents (default)
@@ -1789,6 +1843,12 @@ func getAssignOutputEnhanced(ctx context.Context, opts *AssignCommandOptions) (*
 	}
 
 	// Generate assignments using strategy
+	idleAgents, err = applyAssignPersonaRoles(idleAgents, projectDir)
+	if err != nil {
+		return nil, err
+	}
+	idleAgents = filterAssignAgentsByTemplate(idleAgents, opts.Template)
+	result.Summary.IdleAgents = len(idleAgents)
 	assignments, allocationPlan := generateAssignmentsEnhancedWithPlan(ctx, idleAgents, readyBeads, opts, true)
 	result.Allocation = assignAllocationView(allocationPlan)
 	if allocationPlan != nil && allocationPlan.Decision == assign.AllocationDecisionDefer && len(assignments) == 0 {
@@ -5973,6 +6033,13 @@ func PerformAutoReassignment(ctx context.Context, completedBeadID string, opts *
 		policyProject:   opts.policyProject,
 	}
 
+	idleAgents, err = applyAssignPersonaRoles(idleAgents, projectDir)
+	if err != nil {
+		result.Errors = append(result.Errors, err.Error())
+		return result, nil
+	}
+	idleAgents = filterAssignAgentsByTemplate(idleAgents, assignOpts.Template)
+	result.IdleAgents = len(idleAgents)
 	assignments := generateAssignmentsEnhanced(ctx, idleAgents, filteredBeads, assignOpts)
 	result.Assignments = assignments
 
