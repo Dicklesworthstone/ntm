@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
@@ -48,6 +49,65 @@ func TestControllerUsesDetachedDedicatedWindowWithoutTargetingExistingPanes(t *t
 	for _, arg := range args {
 		if arg == "%44" || arg == "%51" || arg == "split-window" || arg == "send-keys" {
 			t.Fatalf("detached controller creation targets an existing pane/process via %q", arg)
+		}
+	}
+}
+
+func TestResolveControllerProjectDirPreservesConfiguredTargetInMixedSession(t *testing.T) {
+	projectsBase := t.TempDir()
+	target := filepath.Join(projectsBase, "bbi-infrastructure")
+	if err := os.MkdirAll(filepath.Join(target, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	previousCfg := cfg
+	configured := config.Default()
+	configured.ProjectsBase = projectsBase
+	cfg = configured
+	t.Cleanup(func() { cfg = previousCfg })
+
+	previousCurrentDir := controllerPaneCurrentDir
+	controllerPaneCurrentDir = func(paneID string) (string, error) {
+		switch paneID {
+		case "%44":
+			return target, nil
+		case "%66":
+			return "/home/ubuntu/work/mereka-lms", nil
+		default:
+			return "", os.ErrNotExist
+		}
+	}
+	t.Cleanup(func() { controllerPaneCurrentDir = previousCurrentDir })
+
+	panes := []tmux.Pane{
+		{ID: "%44", PID: 4400, Title: "bbi-infrastructure__cod_1"},
+		{ID: "%66", PID: 6600, Title: "mereka-lms__cc_1"},
+	}
+	got, err := resolveControllerProjectDir(t.Context(), "bbi-infrastructure", panes)
+	if err != nil {
+		t.Fatalf("resolveControllerProjectDir: %v", err)
+	}
+	if got != target {
+		t.Fatalf("controller project dir = %q, want configured BBI checkout %q", got, target)
+	}
+}
+
+func TestRenderControllerAgentCommandCarriesExplicitSolUltraAndProfile(t *testing.T) {
+	t.Setenv("NTM_CODEX_PROFILE", "g1")
+	template := `exec /opt/ntm/codex ${NTM_CODEX_PROFILE:-g3} -m {{shellQuote .Model}} -c model_reasoning_effort={{shellQuote .ReasoningEffort}}`
+	opts := ControllerInput{Model: "gpt-5.6-sol", ReasoningEffort: "ultra"}
+
+	got, err := renderControllerAgentCommand(template, opts, "cod", "codex", "bbi-infrastructure", "/home/ubuntu/work/bbi-infrastructure")
+	if err != nil {
+		t.Fatalf("renderControllerAgentCommand: %v", err)
+	}
+	for _, want := range []string{
+		"export NTM_CODEX_PROFILE='g1';",
+		"'gpt-5.6-sol'",
+		"model_reasoning_effort='ultra'",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("rendered controller command %q does not contain %q", got, want)
 		}
 	}
 }
@@ -428,6 +488,23 @@ func TestControllerCmdFlags(t *testing.T) {
 		t.Errorf("--agent-type default = %q, want 'cc'", f.DefValue)
 	}
 
+	// Explicit model and effort flags must reach AgentTemplateVars rather than
+	// silently falling back to the controller template's defaults.
+	f = cmd.Flags().Lookup("model")
+	if f == nil {
+		t.Fatal("--model flag not found")
+	}
+	if f.DefValue != "" {
+		t.Errorf("--model default = %q, want ''", f.DefValue)
+	}
+	f = cmd.Flags().Lookup("reasoning-effort")
+	if f == nil {
+		t.Fatal("--reasoning-effort flag not found")
+	}
+	if f.DefValue != "" {
+		t.Errorf("--reasoning-effort default = %q, want ''", f.DefValue)
+	}
+
 	// Check --prompt flag
 	f = cmd.Flags().Lookup("prompt")
 	if f == nil {
@@ -472,13 +549,15 @@ func TestControllerCmdRequiresExactlyOneArg(t *testing.T) {
 
 func TestControllerResponseFields(t *testing.T) {
 	resp := ControllerResponse{
-		Session:    "test-proj",
-		PaneID:     "%5",
-		PaneIndex:  1,
-		AgentType:  "claude",
-		PromptUsed: "default",
-		AgentCount: 3,
-		AgentList:  "- Pane 2: cc\n- Pane 3: cod\n- Pane 4: gmi",
+		Session:         "test-proj",
+		PaneID:          "%5",
+		PaneIndex:       1,
+		AgentType:       "codex",
+		Model:           "gpt-5.6-sol",
+		ReasoningEffort: "ultra",
+		PromptUsed:      "default",
+		AgentCount:      3,
+		AgentList:       "- Pane 2: cc\n- Pane 3: cod\n- Pane 4: gmi",
 	}
 
 	if resp.Session != "test-proj" {
@@ -487,8 +566,11 @@ func TestControllerResponseFields(t *testing.T) {
 	if resp.PaneIndex != 1 {
 		t.Errorf("PaneIndex = %d, want 1", resp.PaneIndex)
 	}
-	if resp.AgentType != "claude" {
-		t.Errorf("AgentType = %q, want 'claude'", resp.AgentType)
+	if resp.AgentType != "codex" {
+		t.Errorf("AgentType = %q, want 'codex'", resp.AgentType)
+	}
+	if resp.Model != "gpt-5.6-sol" || resp.ReasoningEffort != "ultra" {
+		t.Errorf("controller model/effort = %q/%q, want gpt-5.6-sol/ultra", resp.Model, resp.ReasoningEffort)
 	}
 	if resp.AgentCount != 3 {
 		t.Errorf("AgentCount = %d, want 3", resp.AgentCount)
