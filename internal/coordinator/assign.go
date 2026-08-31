@@ -16,6 +16,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/persona"
+	"github.com/Dicklesworthstone/ntm/internal/pressure"
 	"github.com/Dicklesworthstone/ntm/internal/redaction"
 )
 
@@ -77,19 +78,63 @@ type WorkAssignment struct {
 
 // AssignmentResult contains the result of an assignment attempt.
 type AssignmentResult struct {
-	Success        bool            `json:"success"`
-	Assignment     *WorkAssignment `json:"assignment,omitempty"`
-	Error          string          `json:"error,omitempty"`
-	Reservations   []string        `json:"reservations,omitempty"`
-	MessageSent    bool            `json:"message_sent"`
-	ClaimActor     string          `json:"claim_actor,omitempty"`
-	IdempotencyKey string          `json:"idempotency_key,omitempty"`
+	Success          bool            `json:"success"`
+	Assignment       *WorkAssignment `json:"assignment,omitempty"`
+	Error            string          `json:"error,omitempty"`
+	Reservations     []string        `json:"reservations,omitempty"`
+	MessageSent      bool            `json:"message_sent"`
+	ClaimActor       string          `json:"claim_actor,omitempty"`
+	IdempotencyKey   string          `json:"idempotency_key,omitempty"`
+	Deferred         bool            `json:"deferred,omitempty"`
+	ReasonCode       string          `json:"reason_code,omitempty"`
+	PressureLevel    string          `json:"pressure_level,omitempty"`
+	PressureLimit    []string        `json:"pressure_limiting,omitempty"`
+	PressureOverride bool            `json:"pressure_override,omitempty"`
+}
+
+// AssignmentPressure is the exact live host-pressure evidence used by the
+// coordinator admission gate.
+type AssignmentPressure struct {
+	Available bool
+	Level     string
+	Limiting  []string
+}
+
+func liveCoordinatorAssignmentPressure(ctx context.Context) AssignmentPressure {
+	if ctx == nil || ctx.Err() != nil {
+		return AssignmentPressure{}
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 250*time.Millisecond)
+	defer cancel()
+	governor := pressure.New(pressure.Config{
+		Mode: pressure.ModeObserve, Providers: []pressure.Provider{pressure.NewSystemProvider()},
+	})
+	snapshot := governor.Refresh(probeCtx)
+	if len(snapshot.Readings) == 0 {
+		return AssignmentPressure{}
+	}
+	limiting := make([]string, 0, len(snapshot.Limiting))
+	for _, source := range snapshot.Limiting {
+		limiting = append(limiting, string(source))
+	}
+	return AssignmentPressure{Available: true, Level: snapshot.Overall.String(), Limiting: limiting}
 }
 
 // AssignWork assigns verified actionable work to idle agents.
 func (c *SessionCoordinator) AssignWork(ctx context.Context) ([]AssignmentResult, error) {
 	if !c.config.AutoAssign {
 		return nil, nil
+	}
+	assignmentPressure := AssignmentPressure{}
+	if c.assignmentPressureFn != nil {
+		assignmentPressure = c.assignmentPressureFn(ctx)
+	}
+	criticalPressure := assignmentPressure.Available && strings.EqualFold(strings.TrimSpace(assignmentPressure.Level), "critical")
+	if criticalPressure && !c.config.AllowCriticalPressure {
+		return []AssignmentResult{{
+			Deferred: true, ReasonCode: "critical_pressure", PressureLevel: assignmentPressure.Level,
+			PressureLimit: append([]string(nil), assignmentPressure.Limiting...),
+		}}, nil
 	}
 	store, err := assignmentstore.LoadStoreStrict(c.session)
 	if err != nil {
@@ -161,6 +206,11 @@ func (c *SessionCoordinator) AssignWork(ctx context.Context) ([]AssignmentResult
 	// snapshot.
 	for _, scored := range ScoreAndSelectAssignments(assignmentCandidates, recommendations, DefaultScoreConfig(), nil) {
 		result := c.attemptAssignment(ctx, scored.Assignment, scored.Recommendation)
+		if criticalPressure {
+			result.PressureLevel = assignmentPressure.Level
+			result.PressureLimit = append([]string(nil), assignmentPressure.Limiting...)
+			result.PressureOverride = true
+		}
 		results = append(results, result)
 
 		if result.Success {

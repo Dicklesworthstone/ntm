@@ -1811,6 +1811,19 @@ func TestFilterActionableRecommendationsExcludesLiveAssignedOpenWork(t *testing.
 	}
 }
 
+func TestAssignWorkDefersHonestlyUnderCriticalHostPressure(t *testing.T) {
+	c := New("critical-pressure", t.TempDir(), nil, "IvoryAnchor")
+	c.config.AutoAssign = true
+	c.assignmentPressureFn = func(context.Context) AssignmentPressure {
+		return AssignmentPressure{Available: true, Level: "critical", Limiting: []string{"load"}}
+	}
+
+	results, err := c.AssignWork(t.Context())
+	if err != nil || len(results) != 1 || !results[0].Deferred || results[0].Success || results[0].ReasonCode != "critical_pressure" || results[0].PressureLevel != "critical" || !reflect.DeepEqual(results[0].PressureLimit, []string{"load"}) {
+		t.Fatalf("critical-pressure results=%+v error=%v", results, err)
+	}
+}
+
 func TestAssignWorkDoesNotMutateSharedActionableRecommendations(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	shared := []bv.TriageRecommendation{{

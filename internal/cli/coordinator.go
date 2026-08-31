@@ -654,6 +654,7 @@ type coordinatorRunOutput struct {
 
 func newCoordinatorRunCmd() *cobra.Command {
 	var once bool
+	var allowCriticalPressure bool
 	cmd := &cobra.Command{
 		Use:   "run [session]",
 		Short: "Run the session coordinator until interrupted",
@@ -663,14 +664,18 @@ opt-in automatic assignment. The command exits cleanly on SIGINT or SIGTERM.
 Use --once to execute exactly one fresh observation and assignment cycle.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runCoordinatorRun(cmd, args, once)
+			return runCoordinatorRun(cmd, args, once, allowCriticalPressure)
 		},
 	}
 	cmd.Flags().BoolVar(&once, "once", false, "Run exactly one fresh coordinator cycle")
+	cmd.Flags().BoolVar(&allowCriticalPressure, "allow-critical-pressure", false, "Allow one explicit assignment cycle under reported critical host pressure (requires --once)")
 	return cmd
 }
 
-func runCoordinatorRun(cmd *cobra.Command, args []string, once bool) error {
+func runCoordinatorRun(cmd *cobra.Command, args []string, once, allowCriticalPressure bool) error {
+	if allowCriticalPressure && !once {
+		return markCLIInvalidInput(errors.New("--allow-critical-pressure requires --once"))
+	}
 	var session string
 	if len(args) > 0 {
 		session = args[0]
@@ -699,6 +704,7 @@ func runCoordinatorRun(cmd *cobra.Command, args []string, once bool) error {
 	}
 
 	runtimeConfig, ntmConfig := loadCoordinatorRuntimeConfigWithNTM()
+	runtimeConfig.AllowCriticalPressure = allowCriticalPressure
 	coord, _, err := loadBootstrappedCoordinator(session, projectKey)
 	if err != nil {
 		return err
@@ -762,7 +768,7 @@ func coordinatorRunFailure(assignments []coordinator.AssignmentResult, cycleErr 
 	}
 	failed := 0
 	for _, result := range assignments {
-		if !result.Success {
+		if !result.Success && !result.Deferred {
 			failed++
 		}
 	}

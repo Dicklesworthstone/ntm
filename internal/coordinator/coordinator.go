@@ -60,6 +60,7 @@ type SessionCoordinator struct {
 	actionableRecommendationsFn func(context.Context, string, int) ([]bv.TriageRecommendation, error)
 	workItemStatusFn            func(context.Context, string) (string, error)
 	workItemDetailsFn           func(context.Context, string) (*bv.BeadAssignmentDetails, error)
+	assignmentPressureFn        func(context.Context) AssignmentPressure
 	claimBeadForAssignmentFn    func(context.Context, string, string, string, []string) (bv.BeadClaimResult, error)
 	releaseWorkItemClaimFn      func(context.Context, string, string, string) (bool, error)
 	operatorGatedLabels         []string
@@ -149,6 +150,9 @@ type CoordinatorConfig struct {
 	AutoAssign     bool    `toml:"auto_assign"`      // Automatically assign work to idle agents
 	IdleThreshold  float64 `toml:"idle_threshold"`   // Seconds of inactivity before considering idle
 	AssignOnlyIdle bool    `toml:"assign_only_idle"` // Only assign to truly idle agents
+	// AllowCriticalPressure is runtime-only and may be enabled only by the
+	// bounded `coordinator run --once --allow-critical-pressure` CLI path.
+	AllowCriticalPressure bool `toml:"-"`
 
 	// Conflict handling
 	ConflictNotify    bool `toml:"conflict_notify"`    // Notify when conflicts detected
@@ -240,17 +244,18 @@ type busCoordinatorEvent struct {
 // New creates a new SessionCoordinator.
 func New(session, projectKey string, mailClient *agentmail.Client, agentName string) *SessionCoordinator {
 	c := &SessionCoordinator{
-		session:             session,
-		agentName:           agentName,
-		projectKey:          projectKey,
-		mailProjectKey:      projectKey,
-		mailClient:          mailClient,
-		reservationClient:   mailClient,
-		operatorGatedLabels: append([]string(nil), bv.OperatorGatedLabelsForProject(projectKey)...),
-		agents:              make(map[string]*AgentState),
-		config:              DefaultCoordinatorConfig(),
-		events:              make(chan CoordinatorEvent, 100),
-		stopCh:              make(chan struct{}),
+		session:              session,
+		agentName:            agentName,
+		projectKey:           projectKey,
+		mailProjectKey:       projectKey,
+		mailClient:           mailClient,
+		reservationClient:    mailClient,
+		operatorGatedLabels:  append([]string(nil), bv.OperatorGatedLabelsForProject(projectKey)...),
+		assignmentPressureFn: liveCoordinatorAssignmentPressure,
+		agents:               make(map[string]*AgentState),
+		config:               DefaultCoordinatorConfig(),
+		events:               make(chan CoordinatorEvent, 100),
+		stopCh:               make(chan struct{}),
 	}
 	return c
 }
@@ -540,6 +545,10 @@ func (c *SessionCoordinator) reportAssignmentCycle(results []AssignmentResult, e
 		return
 	}
 	for _, result := range results {
+		if result.Deferred {
+			slog.Info("coordinator auto-assignment deferred", "session", c.session, "reason", result.ReasonCode, "pressure", result.PressureLevel, "limiting", result.PressureLimit)
+			continue
+		}
 		if !result.Success {
 			beadID := ""
 			if result.Assignment != nil {

@@ -274,6 +274,7 @@ func TestCoordinatorRunFailureIncludesAssignmentFailures(t *testing.T) {
 	}{
 		{name: "empty success"},
 		{name: "assignment success", assignments: []coordinator.AssignmentResult{{Success: true}}},
+		{name: "pressure deferral", assignments: []coordinator.AssignmentResult{{Deferred: true, ReasonCode: "critical_pressure"}}},
 		{name: "assignment failure", assignments: []coordinator.AssignmentResult{{Success: false}}, wantError: true},
 		{name: "cycle failure", cycleErr: errors.New("observe failed"), wantError: true},
 	}
