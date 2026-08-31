@@ -1790,6 +1790,27 @@ func TestFilterActionableRecommendationsUsesLiveDependencyAndLabelTruth(t *testi
 	}
 }
 
+func TestFilterActionableRecommendationsExcludesLiveAssignedOpenWork(t *testing.T) {
+	t.Parallel()
+	c := New("recommendation-live-assignee", t.TempDir(), nil, "CoordinatorAgent")
+	details := map[string]*bv.BeadAssignmentDetails{
+		"ntm-ready":   {ID: "ntm-ready", Title: "Unassigned work", IssueType: "task", Status: "open"},
+		"ntm-claimed": {ID: "ntm-claimed", Title: "Externally owned", IssueType: "task", Status: "open", Assignee: "partners@mereka.my"},
+	}
+	c.workItemDetailsFn = func(_ context.Context, beadID string) (*bv.BeadAssignmentDetails, error) {
+		copy := *details[beadID]
+		return &copy, nil
+	}
+
+	filtered, terminal, err := c.filterActionableRecommendations(t.Context(), []bv.TriageRecommendation{
+		{ID: "ntm-claimed", Title: "Stale unassigned", Type: "task", Status: "open"},
+		{ID: "ntm-ready", Title: "Stale ready", Type: "task", Status: "open"},
+	}, nil)
+	if err != nil || terminal || len(filtered) != 1 || filtered[0].ID != "ntm-ready" {
+		t.Fatalf("filtered=%+v terminal=%v error=%v, want only live unassigned work", filtered, terminal, err)
+	}
+}
+
 func TestAssignWorkDoesNotMutateSharedActionableRecommendations(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	shared := []bv.TriageRecommendation{{

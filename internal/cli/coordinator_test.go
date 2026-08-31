@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -182,6 +183,30 @@ func TestCoordinatorBootstrapImportsOnlyExactInProjectPaneIdentities(t *testing.
 	_, _, err = validateCoordinatorBootstrapBindings(t.Context(), projectDir, panes, append(specs, "%66=WrongProject"))
 	if err == nil || !strings.Contains(err.Error(), "cross-project") {
 		t.Fatalf("cross-project pane binding error = %v", err)
+	}
+}
+
+func TestCoordinatorBootstrapPanesFindsExplicitBindingInDetachedSession(t *testing.T) {
+	previousAll := coordinatorGetAllPanes
+	t.Cleanup(func() { coordinatorGetAllPanes = previousAll })
+	coordinatorGetAllPanes = func(context.Context) (map[string][]tmux.Pane, error) {
+		return map[string][]tmux.Pane{
+			"bbi-infrastructure":                 {{ID: "%44", PID: 4400}},
+			"bbi-infrastructure--lms-argo-wedge": {{ID: "%155", PID: 15500}},
+			"mereka-lms":                         {{ID: "%66", PID: 6600}},
+		}, nil
+	}
+
+	panes, err := coordinatorBootstrapPanes(t.Context(), []tmux.Pane{{ID: "%44", PID: 4400}}, []string{"%44=AzureCreek", "%155=YellowOx"})
+	if err != nil {
+		t.Fatalf("coordinatorBootstrapPanes: %v", err)
+	}
+	got := make(map[string]int, len(panes))
+	for _, pane := range panes {
+		got[pane.ID] = pane.PID
+	}
+	if got["%44"] != 4400 || got["%155"] != 15500 {
+		t.Fatalf("expanded panes = %+v, want primary and explicitly named detached pane available", got)
 	}
 }
 

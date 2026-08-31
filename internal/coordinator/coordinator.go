@@ -28,6 +28,7 @@ import (
 
 var (
 	getPanesWithActivity         = tmux.GetPanesWithActivity
+	getAllPanesContext           = tmux.GetAllPanesContext
 	captureForHealthCheckWithCtx = tmux.CaptureForHealthCheckContext
 	coordinatorPaneCurrentDir    = func(ctx context.Context, paneID string) (string, error) {
 		return tmux.DefaultClient.RunContext(ctx, "display-message", "-p", "-t", tmux.ExactTarget(paneID), "#{pane_current_path}")
@@ -586,6 +587,9 @@ func coordinatorPaneObservationError(paneID, message string) error {
 func (c *SessionCoordinator) updateAgentStatesContext(ctx context.Context) error {
 	if c.monitor == nil {
 		return errors.New("agent monitor is not configured")
+	}
+	if c.authoritativePaneBindings {
+		c.monitor.SetPaneBindings(c.paneBindings)
 	}
 	observation, err := c.monitor.ObserveSession(ctx)
 	if err != nil {

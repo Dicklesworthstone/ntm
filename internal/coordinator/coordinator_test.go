@@ -452,6 +452,59 @@ func TestAuthoritativeCoordinatorBindingsSkipUnboundCrossProjectAndRecycledPanes
 	}
 }
 
+func TestAuthoritativeCoordinatorBindingsObserveDetachedSameProjectSession(t *testing.T) {
+	projectDir := t.TempDir()
+	originalGetPanes := getPanesWithActivity
+	originalGetAllPanes := getAllPanesContext
+	originalCapture := captureForHealthCheckWithCtx
+	originalCurrentDir := coordinatorPaneCurrentDir
+	t.Cleanup(func() {
+		getPanesWithActivity = originalGetPanes
+		getAllPanesContext = originalGetAllPanes
+		captureForHealthCheckWithCtx = originalCapture
+		coordinatorPaneCurrentDir = originalCurrentDir
+	})
+	getPanesWithActivity = func(session string) ([]tmux.PaneActivity, error) {
+		switch session {
+		case "bbi-infrastructure":
+			return []tmux.PaneActivity{{Pane: tmux.Pane{ID: "%44", Index: 1, PID: 4400, Type: tmux.AgentCodex}}}, nil
+		case "bbi-infrastructure--lms-argo-wedge":
+			return []tmux.PaneActivity{
+				{Pane: tmux.Pane{ID: "%155", Index: 1, PID: 15500, Type: tmux.AgentCodex}},
+				{Pane: tmux.Pane{ID: "%156", Index: 2, PID: 15600, Type: tmux.AgentCodex}},
+			}, nil
+		default:
+			return nil, fmt.Errorf("unexpected session %q", session)
+		}
+	}
+	getAllPanesContext = func(context.Context) (map[string][]tmux.Pane, error) {
+		return map[string][]tmux.Pane{
+			"bbi-infrastructure":                 {{ID: "%44", PID: 4400}},
+			"bbi-infrastructure--lms-argo-wedge": {{ID: "%155", PID: 15500}, {ID: "%156", PID: 15600}},
+		}, nil
+	}
+	captureForHealthCheckWithCtx = func(context.Context, string) (string, error) {
+		return "completed\n────────────\n› \n────────────", nil
+	}
+	coordinatorPaneCurrentDir = func(context.Context, string) (string, error) { return projectDir, nil }
+
+	bindings := map[string]agentmail.CoordinatorPaneBinding{
+		"%44":  {AgentName: "AzureCreek", PanePID: 4400, ProjectDir: projectDir},
+		"%155": {AgentName: "YellowOx", PanePID: 15500, ProjectDir: projectDir},
+		"%156": {AgentName: "NobleAnchor", PanePID: 15600, ProjectDir: projectDir},
+	}
+	c := New("bbi-infrastructure", projectDir, nil, "IvoryAnchor").
+		WithAgentMailScope("/repos/github.com/biji-biji-initiative/bbi-infrastructure", "IvoryAnchor", bindings)
+	c.monitor = NewAgentMonitor(c.session, nil, c.projectKey)
+	if err := c.updateAgentStatesContext(context.Background()); err != nil {
+		t.Fatalf("updateAgentStatesContext: %v", err)
+	}
+	agents := c.GetAgents()
+	if len(agents) != 3 || agents["%44"].AgentMailName != "AzureCreek" || agents["%155"].AgentMailName != "YellowOx" || agents["%156"].AgentMailName != "NobleAnchor" {
+		t.Fatalf("authoritative multi-session agents = %+v", agents)
+	}
+}
+
 func TestEmitEvent_PublishesToEventsBus(t *testing.T) {
 	c := New("test-session", "/tmp/test", nil, "TestAgent")
 

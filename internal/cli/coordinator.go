@@ -27,6 +27,7 @@ import (
 var (
 	coordinatorSessionExists  = tmux.SessionExists
 	coordinatorGetPanes       = tmux.GetPanes
+	coordinatorGetAllPanes    = tmux.GetAllPanesContext
 	coordinatorPaneCurrentDir = func(paneID string) (string, error) {
 		return tmux.DefaultClient.Run("display-message", "-p", "-t", tmux.ExactTarget(paneID), "#{pane_current_path}")
 	}
@@ -162,6 +163,10 @@ func runCoordinatorBootstrap(cmd *cobra.Command, requestedSession string, opts c
 	if err != nil {
 		return fmt.Errorf("getting coordinator panes: %w", err)
 	}
+	panes, err = coordinatorBootstrapPanes(cmd.Context(), panes, opts.Bindings)
+	if err != nil {
+		return fmt.Errorf("getting explicitly bound coordinator panes: %w", err)
+	}
 	bindings, publicBindings, err := validateCoordinatorBootstrapBindings(cmd.Context(), projectDir, panes, opts.Bindings)
 	if err != nil {
 		return markCLIInvalidInput(err)
@@ -257,6 +262,44 @@ func runCoordinatorBootstrap(cmd *cobra.Command, requestedSession string, opts c
 	}
 	result.Persisted = true
 	return json.NewEncoder(cmd.OutOrStdout()).Encode(result)
+}
+
+// coordinatorBootstrapPanes expands the primary session topology only when an
+// explicit binding names a pane outside it. Pane IDs are tmux-server-global;
+// the later PID and project checks remain the authorization boundary.
+func coordinatorBootstrapPanes(ctx context.Context, primary []tmux.Pane, specs []string) ([]tmux.Pane, error) {
+	live := make(map[string]struct{}, len(primary))
+	for _, pane := range primary {
+		live[pane.ID] = struct{}{}
+	}
+	needsAll := false
+	for _, spec := range specs {
+		paneID, _, ok := strings.Cut(spec, "=")
+		if ok {
+			if _, present := live[strings.TrimSpace(paneID)]; !present {
+				needsAll = true
+				break
+			}
+		}
+	}
+	if !needsAll {
+		return primary, nil
+	}
+	bySession, err := coordinatorGetAllPanes(ctx)
+	if err != nil {
+		return nil, err
+	}
+	result := append([]tmux.Pane(nil), primary...)
+	for _, panes := range bySession {
+		for _, pane := range panes {
+			if _, exists := live[pane.ID]; exists {
+				continue
+			}
+			live[pane.ID] = struct{}{}
+			result = append(result, pane)
+		}
+	}
+	return result, nil
 }
 
 func validateCoordinatorBootstrapBindings(ctx context.Context, projectDir string, panes []tmux.Pane, specs []string) (map[string]agentmail.CoordinatorPaneBinding, map[string]string, error) {

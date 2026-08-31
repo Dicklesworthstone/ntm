@@ -210,6 +210,7 @@ func (c *SessionCoordinator) filterActionableRecommendations(ctx context.Context
 		}
 		live := recommendation
 		var trackerStatus string
+		var trackerAssignee string
 		var err error
 		switch {
 		case c.workItemDetailsFn != nil:
@@ -217,6 +218,7 @@ func (c *SessionCoordinator) filterActionableRecommendations(ctx context.Context
 			details, err = c.workItemDetailsFn(ctx, recommendation.ID)
 			if details != nil {
 				trackerStatus = details.Status
+				trackerAssignee = details.Assignee
 				live.Title = details.Title
 				live.Status = details.Status
 				live.Labels = append([]string(nil), details.Labels...)
@@ -231,6 +233,7 @@ func (c *SessionCoordinator) filterActionableRecommendations(ctx context.Context
 			details, err = bv.GetBeadAssignmentDetailsContext(ctx, c.projectKey, recommendation.ID)
 			if details != nil {
 				trackerStatus = details.Status
+				trackerAssignee = details.Assignee
 				live.Title = details.Title
 				live.Status = details.Status
 				live.Labels = append([]string(nil), details.Labels...)
@@ -243,6 +246,12 @@ func (c *SessionCoordinator) filterActionableRecommendations(ctx context.Context
 		}
 		switch strings.ToLower(strings.TrimSpace(trackerStatus)) {
 		case "open":
+			// An open row can still be owned by another actor. Treat the live
+			// assignee as part of the authorization boundary so the planner
+			// cannot select it and then abort the whole cycle at atomic claim.
+			if strings.TrimSpace(trackerAssignee) != "" {
+				continue
+			}
 			// Type evidence is part of the authorization boundary, not a
 			// display field: without it the container (epic) gate below cannot
 			// prove this item is implementation work. bv's actionable-plan

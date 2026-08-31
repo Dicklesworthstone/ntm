@@ -3,6 +3,8 @@ package coordinator
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sync"
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
@@ -19,6 +21,8 @@ type AgentMonitor struct {
 	detector    *status.UnifiedDetector
 	observer    *status.SessionObserver
 	activityMon *robot.ActivityMonitor
+	bindingsMu  sync.RWMutex
+	boundPanes  map[string]struct{}
 }
 
 // AgentStatusResult holds the result of checking an agent's status.
@@ -40,26 +44,100 @@ type AgentStatusResult struct {
 // NewAgentMonitor creates a new agent monitor.
 func NewAgentMonitor(session string, mailClient *agentmail.Client, projectKey string) *AgentMonitor {
 	detector := status.NewDetector()
+	monitor := &AgentMonitor{}
 	observer := status.NewSessionObserverWithDependencies(
 		detector,
 		status.DefaultSessionObserverConfig(detector.Config()),
 		status.SessionObserverDependencies{
-			ListPanes: func(_ context.Context, session string) ([]tmux.PaneActivity, error) {
-				return getPanesWithActivity(session)
+			ListPanes: func(ctx context.Context, session string) ([]tmux.PaneActivity, error) {
+				return monitor.listPanes(ctx, session)
 			},
 			CapturePane: func(ctx context.Context, paneID string, _ int) (string, error) {
 				return captureForHealthCheckWithCtx(ctx, paneID)
 			},
 		},
 	)
-	return &AgentMonitor{
-		session:     session,
-		projectKey:  projectKey,
-		mailClient:  mailClient,
-		detector:    detector,
-		observer:    observer,
-		activityMon: robot.NewActivityMonitor(nil),
+	monitor.session = session
+	monitor.projectKey = projectKey
+	monitor.mailClient = mailClient
+	monitor.detector = detector
+	monitor.observer = observer
+	monitor.activityMon = robot.NewActivityMonitor(nil)
+	return monitor
+}
+
+// SetPaneBindings installs the exact stable pane IDs authorized by bootstrap.
+func (m *AgentMonitor) SetPaneBindings(bindings map[string]agentmail.CoordinatorPaneBinding) {
+	m.bindingsMu.Lock()
+	defer m.bindingsMu.Unlock()
+	m.boundPanes = make(map[string]struct{}, len(bindings))
+	for paneID := range bindings {
+		m.boundPanes[paneID] = struct{}{}
 	}
+}
+
+func (m *AgentMonitor) bindingSnapshot() map[string]struct{} {
+	m.bindingsMu.RLock()
+	defer m.bindingsMu.RUnlock()
+	result := make(map[string]struct{}, len(m.boundPanes))
+	for paneID := range m.boundPanes {
+		result[paneID] = struct{}{}
+	}
+	return result
+}
+
+// listPanes observes the primary session and, only when an authoritative pane
+// is absent there, discovers its owning session by tmux-global stable pane ID.
+// The coordinator still validates the bound PID and project directory before
+// admitting the resulting observation.
+func (m *AgentMonitor) listPanes(ctx context.Context, session string) ([]tmux.PaneActivity, error) {
+	primary, err := getPanesWithActivity(session)
+	if err != nil {
+		return nil, err
+	}
+	missing := m.bindingSnapshot()
+	if len(missing) == 0 {
+		return primary, nil
+	}
+	for _, pane := range primary {
+		delete(missing, pane.Pane.ID)
+	}
+	if len(missing) == 0 {
+		return primary, nil
+	}
+
+	bySession, err := getAllPanesContext(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("discovering bound pane sessions: %w", err)
+	}
+	result := append([]tmux.PaneActivity(nil), primary...)
+	for candidateSession, panes := range bySession {
+		if candidateSession == session {
+			continue
+		}
+		needed := false
+		for _, pane := range panes {
+			if _, ok := missing[pane.ID]; ok {
+				needed = true
+				break
+			}
+		}
+		if !needed {
+			continue
+		}
+		observed, observeErr := getPanesWithActivity(candidateSession)
+		if observeErr != nil {
+			return nil, fmt.Errorf("observing bound panes in session %q: %w", candidateSession, observeErr)
+		}
+		for _, pane := range observed {
+			if _, ok := missing[pane.Pane.ID]; !ok {
+				continue
+			}
+			result = append(result, pane)
+			delete(missing, pane.Pane.ID)
+		}
+	}
+	return result, nil
 }
 
 // ObserveSession returns the canonical point-in-time observation used by the
