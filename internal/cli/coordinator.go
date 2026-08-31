@@ -14,11 +14,14 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/coordinator"
+	ntmgit "github.com/Dicklesworthstone/ntm/internal/git"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
+	"github.com/Dicklesworthstone/ntm/internal/util"
 )
 
 var (
@@ -53,6 +56,7 @@ Examples:
 	}
 
 	cmd.AddCommand(newCoordinatorStatusCmd())
+	cmd.AddCommand(newCoordinatorBootstrapCmd())
 	cmd.AddCommand(newCoordinatorDigestCmd())
 	cmd.AddCommand(newCoordinatorConflictsCmd())
 	cmd.AddCommand(newCoordinatorAssignCmd())
@@ -82,6 +86,244 @@ Examples:
 	}
 
 	return cmd
+}
+
+type coordinatorBootstrapOptions struct {
+	MailProjectKey  string
+	CoordinatorName string
+	TokenFile       string
+	Bindings        []string
+	DryRun          bool
+}
+
+type coordinatorBootstrapResult struct {
+	Success         bool              `json:"success"`
+	DryRun          bool              `json:"dry_run"`
+	Session         string            `json:"session"`
+	ProjectDir      string            `json:"project_dir"`
+	MailProjectKey  string            `json:"mail_project_key"`
+	CoordinatorName string            `json:"coordinator_name"`
+	PaneBindings    map[string]string `json:"pane_bindings"`
+	WouldCreate     bool              `json:"would_create_coordinator,omitempty"`
+	Persisted       bool              `json:"persisted"`
+}
+
+func newCoordinatorBootstrapCmd() *cobra.Command {
+	var opts coordinatorBootstrapOptions
+	cmd := &cobra.Command{
+		Use:   "bootstrap <session>",
+		Short: "Explicitly persist the coordinator sender and live pane identities",
+		Long: `Bootstrap is the only coordinator command allowed to create its Agent Mail
+sender. It requires an explicit canonical mail project key, exact coordinator
+name, and exact live pane-to-agent bindings. Dispatch commands never register
+or invent identities. Use --dry-run to validate without creating or writing.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runCoordinatorBootstrap(cmd, args[0], opts)
+		},
+	}
+	cmd.Flags().StringVar(&opts.MailProjectKey, "mail-project-key", "", "Canonical Agent Mail project key (required)")
+	cmd.Flags().StringVar(&opts.CoordinatorName, "coordinator-name", "", "Exact durable coordinator Agent Mail name (required)")
+	cmd.Flags().StringVar(&opts.TokenFile, "registration-token-file", "", "Absolute mode-0600 file containing an existing coordinator token")
+	cmd.Flags().StringArrayVar(&opts.Bindings, "bind", nil, "Exact live pane binding PANE_ID=AGENT_NAME (repeatable, required)")
+	cmd.Flags().BoolVar(&opts.DryRun, "dry-run", false, "Validate only; do not create an identity or persist state")
+	_ = cmd.MarkFlagRequired("mail-project-key")
+	_ = cmd.MarkFlagRequired("coordinator-name")
+	_ = cmd.MarkFlagRequired("bind")
+	return cmd
+}
+
+func runCoordinatorBootstrap(cmd *cobra.Command, requestedSession string, opts coordinatorBootstrapOptions) error {
+	if err := tmux.EnsureInstalled(); err != nil {
+		return err
+	}
+	resolved, err := ResolveSession(requestedSession, cmd.OutOrStdout())
+	if err != nil {
+		return err
+	}
+	if resolved.Session == "" {
+		return errors.New("session is required")
+	}
+	session := resolved.Session
+	projectDir, err := resolveCoordinatorProjectKey(cmd.Context(), session, resolved.Inferred)
+	if err != nil {
+		return err
+	}
+	mailProjectKey := filepath.Clean(strings.TrimSpace(opts.MailProjectKey))
+	if !filepath.IsAbs(mailProjectKey) {
+		return markCLIInvalidInput(fmt.Errorf("--mail-project-key must be an absolute canonical key"))
+	}
+	coordinatorName := strings.TrimSpace(opts.CoordinatorName)
+	if coordinatorName == "" {
+		return markCLIInvalidInput(fmt.Errorf("--coordinator-name is required"))
+	}
+
+	panes, err := coordinatorGetPanes(session)
+	if err != nil {
+		return fmt.Errorf("getting coordinator panes: %w", err)
+	}
+	bindings, publicBindings, err := validateCoordinatorBootstrapBindings(cmd.Context(), projectDir, panes, opts.Bindings)
+	if err != nil {
+		return markCLIInvalidInput(err)
+	}
+
+	client := newAgentMailClient(mailProjectKey)
+	roster, err := client.ListAgents(cmd.Context(), mailProjectKey)
+	if err != nil {
+		return fmt.Errorf("listing Agent Mail roster for %s: %w", mailProjectKey, err)
+	}
+	rosterByName := make(map[string]agentmail.Agent, len(roster))
+	for _, agent := range roster {
+		rosterByName[agent.Name] = agent
+	}
+	for paneID, binding := range bindings {
+		if _, ok := rosterByName[binding.AgentName]; !ok {
+			return fmt.Errorf("pane %s identity %q is absent from Agent Mail project %s; bootstrap never mints pane identities", paneID, binding.AgentName, mailProjectKey)
+		}
+	}
+
+	existing, err := agentmail.LoadCoordinatorSessionState(session, projectDir)
+	if err != nil {
+		return err
+	}
+	registrationToken := ""
+	if existing != nil {
+		if existing.MailProjectKey != mailProjectKey || existing.Coordinator.AgentName != coordinatorName {
+			return fmt.Errorf("persisted coordinator identity is %s in %s; refusing to replace it with %s in %s", existing.Coordinator.AgentName, existing.MailProjectKey, coordinatorName, mailProjectKey)
+		}
+		registrationToken = existing.Coordinator.RegistrationToken
+	}
+	if opts.TokenFile != "" {
+		importedToken, tokenErr := readCoordinatorRegistrationToken(opts.TokenFile)
+		if tokenErr != nil {
+			return tokenErr
+		}
+		if registrationToken != "" && registrationToken != importedToken {
+			return fmt.Errorf("token file does not match the persisted coordinator token")
+		}
+		registrationToken = importedToken
+	}
+	_, coordinatorExists := rosterByName[coordinatorName]
+	wouldCreate := !coordinatorExists && existing == nil && registrationToken == ""
+	if coordinatorExists && registrationToken == "" {
+		return fmt.Errorf("coordinator name %q already exists but no registration token was supplied; refusing to mint a duplicate", coordinatorName)
+	}
+	if !coordinatorExists && registrationToken != "" {
+		return fmt.Errorf("registration token supplied for absent coordinator %q", coordinatorName)
+	}
+
+	result := coordinatorBootstrapResult{
+		Success: true, DryRun: opts.DryRun, Session: session, ProjectDir: projectDir,
+		MailProjectKey: mailProjectKey, CoordinatorName: coordinatorName,
+		PaneBindings: publicBindings, WouldCreate: wouldCreate,
+	}
+	if opts.DryRun {
+		return json.NewEncoder(cmd.OutOrStdout()).Encode(result)
+	}
+
+	client.SetRegistrationToken(mailProjectKey, coordinatorName, registrationToken)
+	registered, err := client.RegisterAgent(cmd.Context(), agentmail.RegisterAgentOptions{
+		ProjectKey: mailProjectKey, Program: "ntm", Model: "coordinator", Name: coordinatorName,
+		TaskDescription: fmt.Sprintf("NTM session coordinator for %s", session),
+	})
+	if err != nil {
+		return fmt.Errorf("registering exact coordinator identity %q: %w", coordinatorName, err)
+	}
+	if registered.Name != coordinatorName {
+		return fmt.Errorf("Agent Mail returned coordinator %q, want exact name %q", registered.Name, coordinatorName)
+	}
+	if registered.Program != "" && registered.Program != "ntm" || registered.Model != "" && registered.Model != "coordinator" {
+		return fmt.Errorf("Agent Mail coordinator identity has program=%q model=%q, want ntm/coordinator", registered.Program, registered.Model)
+	}
+	if registered.RegistrationToken != "" {
+		registrationToken = registered.RegistrationToken
+	}
+	if registrationToken == "" {
+		return fmt.Errorf("Agent Mail did not return a coordinator registration token")
+	}
+
+	state := &agentmail.CoordinatorSessionState{
+		Version: 1, SessionName: session, ProjectDir: projectDir, MailProjectKey: mailProjectKey,
+		Coordinator: agentmail.CoordinatorIdentity{
+			AgentName: coordinatorName, RegistrationToken: registrationToken, Program: "ntm", Model: "coordinator",
+		},
+		PaneBindings: bindings,
+	}
+	if existing != nil {
+		state.CreatedAt = existing.CreatedAt
+	}
+	if err := agentmail.SaveCoordinatorSessionState(state); err != nil {
+		return err
+	}
+	result.Persisted = true
+	return json.NewEncoder(cmd.OutOrStdout()).Encode(result)
+}
+
+func validateCoordinatorBootstrapBindings(ctx context.Context, projectDir string, panes []tmux.Pane, specs []string) (map[string]agentmail.CoordinatorPaneBinding, map[string]string, error) {
+	live := make(map[string]tmux.Pane, len(panes))
+	for _, pane := range panes {
+		live[pane.ID] = pane
+	}
+	bindings := make(map[string]agentmail.CoordinatorPaneBinding, len(specs))
+	public := make(map[string]string, len(specs))
+	seenNames := make(map[string]string, len(specs))
+	for _, spec := range specs {
+		paneID, agentName, ok := strings.Cut(spec, "=")
+		paneID, agentName = strings.TrimSpace(paneID), strings.TrimSpace(agentName)
+		if !ok || paneID == "" || agentName == "" {
+			return nil, nil, fmt.Errorf("invalid --bind %q; want PANE_ID=AGENT_NAME", spec)
+		}
+		pane, ok := live[paneID]
+		if !ok || pane.PID <= 0 {
+			return nil, nil, fmt.Errorf("bound pane %s is not live with a stable pid", paneID)
+		}
+		if previous, duplicate := seenNames[agentName]; duplicate && previous != paneID {
+			return nil, nil, fmt.Errorf("agent %q is bound to both %s and %s", agentName, previous, paneID)
+		}
+		paneDir, err := coordinatorPaneCurrentDir(paneID)
+		if err != nil {
+			return nil, nil, fmt.Errorf("reading project for pane %s: %w", paneID, err)
+		}
+		matches, err := coordinatorProjectDirsMatch(ctx, projectDir, paneDir)
+		if err != nil {
+			return nil, nil, err
+		}
+		if !matches {
+			return nil, nil, fmt.Errorf("pane %s is in cross-project directory %q; refusing binding", paneID, strings.TrimSpace(paneDir))
+		}
+		bindings[paneID] = agentmail.CoordinatorPaneBinding{
+			AgentName: agentName, PanePID: pane.PID, ProjectDir: filepath.Clean(projectDir), ImportedAt: time.Now().UTC(),
+		}
+		public[paneID] = agentName
+		seenNames[agentName] = paneID
+	}
+	if len(bindings) == 0 {
+		return nil, nil, fmt.Errorf("at least one --bind is required")
+	}
+	return bindings, public, nil
+}
+
+func readCoordinatorRegistrationToken(path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if !filepath.IsAbs(path) {
+		return "", markCLIInvalidInput(fmt.Errorf("--registration-token-file must be absolute"))
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", fmt.Errorf("reading coordinator token file: %w", err)
+	}
+	if !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 {
+		return "", fmt.Errorf("coordinator token file must be a mode-0600 regular file")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("reading coordinator token file: %w", err)
+	}
+	token := strings.TrimSpace(string(data))
+	if token == "" {
+		return "", fmt.Errorf("coordinator token file is empty")
+	}
+	return token, nil
 }
 
 func runCoordinatorStatus(cmd *cobra.Command, args []string) error {
@@ -121,8 +363,11 @@ func runCoordinatorStatus(cmd *cobra.Command, args []string) error {
 	runtimeConfig.RotationUsageThreshold = 0
 
 	// Create coordinator to get status without enabling configured side effects.
-	mailClient := newAgentMailClient(projectKey)
-	coord := coordinator.New(session, projectKey, mailClient, "NTM-Coordinator").WithConfig(runtimeConfig)
+	coord, _, err := loadBootstrappedCoordinator(session, projectKey)
+	if err != nil {
+		return err
+	}
+	coord.WithConfig(runtimeConfig)
 
 	// Get agent states
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -316,14 +561,17 @@ func runCoordinatorDigest(cmd *cobra.Command, args []string, sendMail bool) erro
 		return fmt.Errorf("getting project root failed")
 	}
 
-	mailClient := newAgentMailClient(projectKey)
 	runtimeConfig := loadCoordinatorRuntimeConfig()
 	runtimeConfig.AutoAssign = false
 	runtimeConfig.SendDigests = false
 	// Digest is a read-only surface: never let its brief coordinator run
 	// enqueue context rotations (bd-rpmg8).
 	runtimeConfig.RotationUsageThreshold = 0
-	coord := coordinator.New(session, projectKey, mailClient, "NTM-Coordinator").WithConfig(runtimeConfig)
+	coord, _, err := loadBootstrappedCoordinator(session, projectKey)
+	if err != nil {
+		return err
+	}
+	coord.WithConfig(runtimeConfig)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -408,9 +656,11 @@ func runCoordinatorRun(cmd *cobra.Command, args []string, once bool) error {
 	}
 
 	runtimeConfig, ntmConfig := loadCoordinatorRuntimeConfigWithNTM()
-	coord := coordinator.New(session, projectKey, newAgentMailClient(projectKey), "NTM-Coordinator").
-		WithConfig(runtimeConfig).
-		WithNTMConfig(ntmConfig)
+	coord, _, err := loadBootstrappedCoordinator(session, projectKey)
+	if err != nil {
+		return err
+	}
+	coord.WithConfig(runtimeConfig).WithNTMConfig(ntmConfig)
 	if once {
 		assignments, cycleErr := coord.RunCycle(cmd.Context())
 		runErr := coordinatorRunFailure(assignments, cycleErr)
@@ -479,6 +729,21 @@ func coordinatorRunFailure(assignments []coordinator.AssignmentResult, cycleErr 
 	return nil
 }
 
+func loadBootstrappedCoordinator(session, projectDir string) (*coordinator.SessionCoordinator, *agentmail.CoordinatorSessionState, error) {
+	state, err := agentmail.LoadCoordinatorSessionState(session, projectDir)
+	if err != nil {
+		return nil, nil, err
+	}
+	if state == nil {
+		return nil, nil, fmt.Errorf("coordinator is not bootstrapped for session %q and project %q; run `ntm coordinator bootstrap %s --mail-project-key <canonical-key> --coordinator-name <name> --bind <pane-id>=<agent-name>`", session, projectDir, session)
+	}
+	client := newAgentMailClient(state.MailProjectKey)
+	client.SetRegistrationToken(state.MailProjectKey, state.Coordinator.AgentName, state.Coordinator.RegistrationToken)
+	coord := coordinator.New(session, projectDir, client, state.Coordinator.AgentName).
+		WithAgentMailScope(state.MailProjectKey, state.Coordinator.AgentName, state.PaneBindings)
+	return coord, state, nil
+}
+
 func resolveCoordinatorProjectKey(ctx context.Context, session string, inferred bool) (string, error) {
 	session = strings.TrimSpace(session)
 	if session == "" {
@@ -491,6 +756,24 @@ func resolveCoordinatorProjectKey(ctx context.Context, session string, inferred 
 		}
 		if len(panes) == 0 {
 			return "", fmt.Errorf("resolve live coordinator project for %s: session has no panes", session)
+		}
+		// A session may intentionally contain an unrelated utility pane. When
+		// the configured session checkout is live in at least one pane, use it
+		// as the coordinator target and let bootstrap bindings select the exact
+		// in-project panes. Never let an unrelated pane redefine the project.
+		if cfg != nil {
+			configured := filepath.Clean(cfg.GetProjectDir(session))
+			if util.ProjectDirScore(configured) > 0 {
+				for _, pane := range panes {
+					paneDir, pathErr := coordinatorPaneCurrentDir(pane.ID)
+					if pathErr != nil {
+						continue
+					}
+					if same, _ := coordinatorProjectDirsMatch(ctx, configured, paneDir); same {
+						return configured, nil
+					}
+				}
+			}
 		}
 		projectKey, err := robot.ResolveLiveSessionProject(session, panes, coordinatorPaneCurrentDir)
 		if err != nil {
@@ -515,6 +798,26 @@ func resolveCoordinatorProjectKey(ctx context.Context, session string, inferred 
 		return "", errors.New("getting project root failed")
 	}
 	return projectKey, nil
+}
+
+func coordinatorProjectDirsMatch(ctx context.Context, targetDir, candidateDir string) (bool, error) {
+	targetRoot := filepath.Clean(util.ResolveProjectDir(strings.TrimSpace(targetDir)))
+	candidateRoot := filepath.Clean(util.ResolveProjectDir(strings.TrimSpace(candidateDir)))
+	if !filepath.IsAbs(targetRoot) || !filepath.IsAbs(candidateRoot) {
+		return false, nil
+	}
+	if targetRoot == candidateRoot {
+		return true, nil
+	}
+	targetCommon, targetErr := ntmgit.CommonDir(ctx, targetRoot)
+	candidateCommon, candidateErr := ntmgit.CommonDir(ctx, candidateRoot)
+	if targetErr != nil || candidateErr != nil {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+		return false, nil
+	}
+	return targetCommon != "" && targetCommon == candidateCommon, nil
 }
 
 func loadCoordinatorRuntimeConfig() coordinator.CoordinatorConfig {
@@ -646,12 +949,17 @@ func runCoordinatorConflicts(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("getting project root failed")
 	}
 
-	mailClient := newAgentMailClient(projectKey)
+	_, state, err := loadBootstrappedCoordinator(session, projectKey)
+	if err != nil {
+		return err
+	}
+	mailClient := newAgentMailClient(state.MailProjectKey)
+	mailClient.SetRegistrationToken(state.MailProjectKey, state.Coordinator.AgentName, state.Coordinator.RegistrationToken)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	detector := coordinator.NewConflictDetector(mailClient, projectKey)
+	detector := coordinator.NewConflictDetector(mailClient, state.MailProjectKey)
 	conflicts, err := detector.DetectConflicts(ctx)
 	if err != nil {
 		return fmt.Errorf("detecting conflicts: %w", err)

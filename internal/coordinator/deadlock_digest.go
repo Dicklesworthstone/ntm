@@ -116,7 +116,7 @@ func (c *SessionCoordinator) populateDeadlockAlerts(ctx context.Context, digest 
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	reservations, err := c.mailClient.ListReservations(ctx, c.projectKey, "", true)
+	reservations, err := c.mailClient.ListReservations(ctx, c.mailProjectKey, "", true)
 	if err != nil {
 		return
 	}

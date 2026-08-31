@@ -19,6 +19,31 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
+var controllerCreateDetachedWindow = func(ctx context.Context, session, directory string) (string, error) {
+	return tmux.DefaultClient.RunContext(ctx, newControllerWindowArgs(session, directory)...)
+}
+
+func newControllerWindowArgs(session, directory string) []string {
+	return []string{"new-window", "-d", "-t", tmux.TargetSession(session), "-c", directory, "-n", "ntm-controller", "-P", "-F", "#{pane_id}"}
+}
+
+func createDedicatedControllerPane(ctx context.Context, session, directory string, existing []tmux.Pane) (string, error) {
+	paneID, err := controllerCreateDetachedWindow(ctx, session, directory)
+	if err != nil {
+		return "", err
+	}
+	paneID = strings.TrimSpace(paneID)
+	if paneID == "" {
+		return "", fmt.Errorf("detached controller window returned no pane id")
+	}
+	for _, pane := range existing {
+		if pane.ID == paneID {
+			return "", fmt.Errorf("detached controller window returned existing pane id %s", paneID)
+		}
+	}
+	return paneID, nil
+}
+
 // ControllerInput is the kernel input for sessions.controller.
 type ControllerInput struct {
 	Session    string `json:"session"`
@@ -81,7 +106,7 @@ func init() {
 	// Register sessions.controller command
 	kernel.MustRegister(kernel.Command{
 		Name:        "sessions.controller",
-		Description: "Launch a dedicated controller agent in pane 1",
+		Description: "Launch a dedicated controller agent in a detached window",
 		Category:    "sessions",
 		Input: &kernel.SchemaRef{
 			Name: "ControllerInput",
@@ -139,8 +164,8 @@ func newControllerCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "controller <session>",
-		Short: "Launch a dedicated controller agent in pane 1",
-		Long: `Launch a controller agent in pane 1 of an existing session.
+		Short: "Launch a dedicated controller agent in a detached window",
+		Long: `Launch a controller agent in a new detached window of an existing session.
 
 The controller agent coordinates work among other agents in the session,
 prevents conflicts, and ensures quality.
@@ -314,38 +339,22 @@ func buildControllerResponse(ctx context.Context, opts ControllerInput) (*Contro
 		agentCmd = claudeEnv.ApplyToCommand(agentCmd)
 	}
 
-	// Find or create pane 1
-	var targetPaneID string
-	var targetPaneIndex int
-	pane1Found := false
-
-	for _, p := range panes {
-		if p.Index == 1 {
-			pane1Found = true
-			targetPaneID = p.ID
+	// Always create a detached dedicated window and target only the pane ID
+	// returned by tmux. Pane indices repeat across windows; reusing "pane 1"
+	// can overwrite a running agent in an unrelated window.
+	targetPaneID, err := createDedicatedControllerPane(ctx, session, dir, panes)
+	if err != nil {
+		return nil, fmt.Errorf("creating detached controller window: %w", err)
+	}
+	targetPaneIndex := 0
+	updatedPanes, err := tmux.GetPanes(session)
+	if err != nil {
+		return nil, fmt.Errorf("getting updated panes: %w", err)
+	}
+	for _, p := range updatedPanes {
+		if p.ID == targetPaneID {
 			targetPaneIndex = p.Index
 			break
-		}
-	}
-
-	if !pane1Found {
-		// Create a new pane which will become the controller pane
-		newPaneID, err := tmux.SplitWindow(session, dir)
-		if err != nil {
-			return nil, fmt.Errorf("creating controller pane: %w", err)
-		}
-		targetPaneID = newPaneID
-
-		// Get updated pane list to find the new pane's index
-		updatedPanes, err := tmux.GetPanes(session)
-		if err != nil {
-			return nil, fmt.Errorf("getting updated panes: %w", err)
-		}
-		for _, p := range updatedPanes {
-			if p.ID == newPaneID {
-				targetPaneIndex = p.Index
-				break
-			}
 		}
 	}
 

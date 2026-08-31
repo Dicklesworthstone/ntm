@@ -594,7 +594,7 @@ func (c *SessionCoordinator) releaseTerminalAssignmentReservations(ctx context.C
 		return fmt.Errorf("reconcile reservation for %s: %w", current.BeadID, err)
 	}
 	lease.Requested = requested
-	port := &coordinatorAgentMailReservationPort{client: c.reservationClient, projectKey: agentmail.CanonicalProjectKey(c.projectKey)}
+	port := &coordinatorAgentMailReservationPort{client: c.reservationClient, projectKey: c.mailProjectKey}
 	reconciled, err := port.ReconcileReservation(ctx, assignmentstore.ReservationRequest{
 		BeadID: current.BeadID, BeadTitle: current.BeadTitle, AgentName: lease.AgentName,
 		Target: lease.Target, RequestedPaths: requested, TTL: time.Hour,
@@ -642,7 +642,7 @@ func (c *SessionCoordinator) releaseCoordinatorLease(ctx context.Context, curren
 	if c.reservationClient == nil {
 		return errors.New("agent mail reservation client is not configured")
 	}
-	manager := assignpkg.NewFileReservationManager(c.reservationClient, c.projectKey)
+	manager := assignpkg.NewFileReservationManager(c.reservationClient, c.mailProjectKey)
 	_, err := manager.ReleaseExactForBead(ctx, current, lease.ReservationIDs, lease.Granted)
 	return err
 }
@@ -1008,16 +1008,16 @@ func (c *SessionCoordinator) newAtomicAssignmentCoordinator(store *assignmentsto
 			BeadID: claim.ID, Actor: claim.Actor, Status: claim.Status, ClaimedAt: claim.ClaimedAt,
 		}, nil
 	})
-	reservationPort := &coordinatorAgentMailReservationPort{client: c.reservationClient, projectKey: agentmail.CanonicalProjectKey(c.projectKey)}
+	reservationPort := &coordinatorAgentMailReservationPort{client: c.reservationClient, projectKey: c.mailProjectKey}
 	dispatchPort := assignmentstore.DispatchFunc(func(ctx context.Context, req assignmentstore.DispatchRequest) (assignmentstore.DispatchReceipt, error) {
 		started := time.Now()
-		project, err := c.mailClient.EnsureProject(ctx, c.projectKey)
+		project, err := c.mailClient.EnsureProject(ctx, c.mailProjectKey)
 		if err != nil {
 			return assignmentstore.DispatchReceipt{Duration: time.Since(started)}, assignmentstore.GuaranteeNoActuation(
 				fmt.Errorf("ensure Agent Mail dispatch project: %w", err),
 			)
 		}
-		projectID, projectErr := validatedCoordinatorAgentMailProjectID(project, c.projectKey)
+		projectID, projectErr := validatedCoordinatorAgentMailProjectID(project, c.mailProjectKey)
 		if projectErr != nil {
 			return assignmentstore.DispatchReceipt{Duration: time.Since(started)}, assignmentstore.GuaranteeNoActuation(
 				fmt.Errorf("validate Agent Mail dispatch project: %w", projectErr),
@@ -1025,7 +1025,7 @@ func (c *SessionCoordinator) newAtomicAssignmentCoordinator(store *assignmentsto
 		}
 		subject := fmt.Sprintf("Work Assignment: %s", req.BeadID)
 		sent, err := c.mailClient.SendMessage(ctx, agentmail.SendMessageOptions{
-			ProjectKey:  c.projectKey,
+			ProjectKey:  c.mailProjectKey,
 			SenderName:  c.agentName,
 			To:          []string{req.AgentName},
 			Subject:     subject,
@@ -1038,7 +1038,7 @@ func (c *SessionCoordinator) newAtomicAssignmentCoordinator(store *assignmentsto
 			return receipt, err
 		}
 		deliveryID, receiptErr := validatedAgentMailDeliveryID(
-			sent, c.projectKey, projectID, c.agentName, req.AgentName, subject, req.Prompt,
+			sent, c.mailProjectKey, projectID, c.agentName, req.AgentName, subject, req.Prompt,
 		)
 		if receiptErr != nil {
 			return receipt, receiptErr

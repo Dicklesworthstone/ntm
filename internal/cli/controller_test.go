@@ -1,14 +1,56 @@
 package cli
 
 import (
+	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
+
+func TestControllerUsesDetachedDedicatedWindowWithoutTargetingExistingPanes(t *testing.T) {
+	existing := []tmux.Pane{
+		{ID: "%44", Index: 1, WindowIndex: 1, PID: 4400, Title: "bbi-infrastructure__cod_1"},
+		{ID: "%51", Index: 0, WindowIndex: 2, PID: 5100, Title: "bbi-infrastructure__cod_2"},
+	}
+	before := append([]tmux.Pane(nil), existing...)
+	previousCreate := controllerCreateDetachedWindow
+	controllerCreateDetachedWindow = func(_ context.Context, session, directory string) (string, error) {
+		if session != "bbi-infrastructure" || directory != "/home/ubuntu/work/bbi-infrastructure" {
+			t.Fatalf("detached window target = %q %q", session, directory)
+		}
+		return "%200", nil
+	}
+	t.Cleanup(func() { controllerCreateDetachedWindow = previousCreate })
+	newPaneID, err := createDedicatedControllerPane(t.Context(), "bbi-infrastructure", "/home/ubuntu/work/bbi-infrastructure", existing)
+	if err != nil {
+		t.Fatalf("createDedicatedControllerPane: %v", err)
+	}
+	if newPaneID != "%200" {
+		t.Fatalf("controller pane = %q, want newly-created %%200", newPaneID)
+	}
+	args := newControllerWindowArgs("bbi-infrastructure", "/home/ubuntu/work/bbi-infrastructure")
+
+	want := []string{
+		"new-window", "-d", "-t", "=bbi-infrastructure", "-c", "/home/ubuntu/work/bbi-infrastructure",
+		"-n", "ntm-controller", "-P", "-F", "#{pane_id}",
+	}
+	if !reflect.DeepEqual(args, want) {
+		t.Fatalf("controller window args = %#v, want %#v", args, want)
+	}
+	if !reflect.DeepEqual(existing, before) {
+		t.Fatalf("controller planning mutated existing panes: got %+v want %+v", existing, before)
+	}
+	for _, arg := range args {
+		if arg == "%44" || arg == "%51" || arg == "split-window" || arg == "send-keys" {
+			t.Fatalf("detached controller creation targets an existing pane/process via %q", arg)
+		}
+	}
+}
 
 // ---------------------------------------------------------------------------
 // resolveControllerPrompt – template variable substitution

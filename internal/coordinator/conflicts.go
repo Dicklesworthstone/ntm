@@ -267,7 +267,7 @@ func (c *SessionCoordinator) runConflictCycle(ctx context.Context) []ConflictOut
 	detect := c.detectConflictsFn
 	if detect == nil {
 		if c.conflictDetector == nil {
-			c.conflictDetector = NewConflictDetector(c.mailClient, c.projectKey)
+			c.conflictDetector = NewConflictDetector(c.mailClient, c.mailProjectKey)
 		}
 		detect = c.conflictDetector.DetectConflicts
 	}
@@ -504,7 +504,7 @@ func (c *SessionCoordinator) NegotiateConflict(ctx context.Context, conflict *Co
 	// Send negotiation request
 	body := c.formatNegotiationRequest(conflict, requester, lowestPriority)
 	_, err := c.mailClient.SendMessage(ctx, agentmail.SendMessageOptions{
-		ProjectKey:  c.projectKey,
+		ProjectKey:  c.mailProjectKey,
 		SenderName:  c.agentName,
 		To:          []string{lowestPriority.AgentName},
 		Subject:     fmt.Sprintf("File Reservation Conflict: %s", conflict.Pattern),
@@ -544,7 +544,7 @@ func (c *SessionCoordinator) NotifyConflict(ctx context.Context, conflict *Confl
 
 	body := c.formatConflictNotification(conflict)
 	_, err := c.mailClient.SendMessage(ctx, agentmail.SendMessageOptions{
-		ProjectKey:  c.projectKey,
+		ProjectKey:  c.mailProjectKey,
 		SenderName:  c.agentName,
 		To:          recipients,
 		Subject:     fmt.Sprintf("⚠️ Reservation Conflict Detected: %s", conflict.Pattern),

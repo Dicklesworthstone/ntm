@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/coordinator"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
@@ -146,6 +147,75 @@ func TestCoordinatorRunCommandExposesDeterministicOnceMode(t *testing.T) {
 	}
 	if flag := cmd.Flags().Lookup("once"); flag == nil || flag.DefValue != "false" {
 		t.Fatalf("--once flag = %+v", flag)
+	}
+}
+
+func TestCoordinatorBootstrapImportsOnlyExactInProjectPaneIdentities(t *testing.T) {
+	projectDir := t.TempDir()
+	otherDir := t.TempDir()
+	previousPath := coordinatorPaneCurrentDir
+	coordinatorPaneCurrentDir = func(paneID string) (string, error) {
+		if paneID == "%66" {
+			return otherDir, nil
+		}
+		return projectDir, nil
+	}
+	t.Cleanup(func() { coordinatorPaneCurrentDir = previousPath })
+	panes := []tmux.Pane{
+		{ID: "%44", PID: 4400}, {ID: "%45", PID: 4500}, {ID: "%46", PID: 4600},
+		{ID: "%51", PID: 5100}, {ID: "%66", PID: 6600}, {ID: "%129", PID: 12900},
+	}
+	specs := []string{"%44=AzureCreek", "%45=TopazAnchor", "%46=CrimsonOak", "%51=IvoryTern", "%129=CoralFox"}
+	bindings, public, err := validateCoordinatorBootstrapBindings(t.Context(), projectDir, panes, specs)
+	if err != nil {
+		t.Fatalf("validateCoordinatorBootstrapBindings: %v", err)
+	}
+	if len(bindings) != 5 || len(public) != 5 {
+		t.Fatalf("bindings = %+v, want exact five", public)
+	}
+	if _, ok := bindings["%66"]; ok {
+		t.Fatal("unbound LMS pane %66 was imported")
+	}
+	if bindings["%44"].AgentName != "AzureCreek" || bindings["%129"].AgentName != "CoralFox" {
+		t.Fatalf("exact identities changed: %+v", public)
+	}
+	_, _, err = validateCoordinatorBootstrapBindings(t.Context(), projectDir, panes, append(specs, "%66=WrongProject"))
+	if err == nil || !strings.Contains(err.Error(), "cross-project") {
+		t.Fatalf("cross-project pane binding error = %v", err)
+	}
+}
+
+func TestLoadBootstrappedCoordinatorFailsClosedWithoutIdentity(t *testing.T) {
+	isolateSessionAgentStorage(t)
+	projectDir := t.TempDir()
+	coord, state, err := loadBootstrappedCoordinator("missing-coordinator", projectDir)
+	if err == nil || coord != nil || state != nil || !strings.Contains(err.Error(), "not bootstrapped") {
+		t.Fatalf("loadBootstrappedCoordinator = (%v, %+v, %v), want fail closed", coord, state, err)
+	}
+}
+
+func TestLoadBootstrappedCoordinatorHydratesExactPersistedSender(t *testing.T) {
+	isolateSessionAgentStorage(t)
+	projectDir := t.TempDir()
+	state := &agentmail.CoordinatorSessionState{
+		Version: 1, SessionName: "persisted-coordinator", ProjectDir: projectDir,
+		MailProjectKey: "/repos/github.com/biji-biji-initiative/bbi-infrastructure",
+		Coordinator: agentmail.CoordinatorIdentity{
+			AgentName: "SilverHarbor", RegistrationToken: "coordinator-token", Program: "ntm", Model: "coordinator",
+		},
+		PaneBindings: map[string]agentmail.CoordinatorPaneBinding{
+			"%44": {AgentName: "AzureCreek", PanePID: 4400, ProjectDir: projectDir},
+		},
+	}
+	if err := agentmail.SaveCoordinatorSessionState(state); err != nil {
+		t.Fatal(err)
+	}
+	coord, loaded, err := loadBootstrappedCoordinator(state.SessionName, projectDir)
+	if err != nil {
+		t.Fatalf("loadBootstrappedCoordinator: %v", err)
+	}
+	if coord == nil || loaded.MailProjectKey == loaded.ProjectDir || loaded.Coordinator.AgentName != "SilverHarbor" {
+		t.Fatalf("loaded coordinator scope = %+v", loaded)
 	}
 }
 

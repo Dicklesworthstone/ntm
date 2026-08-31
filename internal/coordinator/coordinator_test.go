@@ -407,6 +407,51 @@ func TestUpdateAgentStatesLoadsPersistedAgentMailIdentity(t *testing.T) {
 	}
 }
 
+func TestAuthoritativeCoordinatorBindingsSkipUnboundCrossProjectAndRecycledPanes(t *testing.T) {
+	projectDir := t.TempDir()
+	otherDir := t.TempDir()
+	originalGetPanes := getPanesWithActivity
+	originalCapture := captureForHealthCheckWithCtx
+	originalCurrentDir := coordinatorPaneCurrentDir
+	t.Cleanup(func() {
+		getPanesWithActivity = originalGetPanes
+		captureForHealthCheckWithCtx = originalCapture
+		coordinatorPaneCurrentDir = originalCurrentDir
+	})
+	getPanesWithActivity = func(string) ([]tmux.PaneActivity, error) {
+		return []tmux.PaneActivity{
+			{Pane: tmux.Pane{ID: "%44", Index: 1, PID: 4400, Title: "train", Type: tmux.AgentCodex}},
+			{Pane: tmux.Pane{ID: "%45", Index: 2, PID: 4500, Title: "unbound", Type: tmux.AgentCodex}},
+			{Pane: tmux.Pane{ID: "%66", Index: 3, PID: 6600, Title: "lms", Type: tmux.AgentCodex}},
+			{Pane: tmux.Pane{ID: "%129", Index: 4, PID: 9999, Title: "recycled", Type: tmux.AgentCodex}},
+		}, nil
+	}
+	captureForHealthCheckWithCtx = func(context.Context, string) (string, error) {
+		return "completed\n────────────\n› \n────────────", nil
+	}
+	coordinatorPaneCurrentDir = func(_ context.Context, paneID string) (string, error) {
+		if paneID == "%66" {
+			return otherDir, nil
+		}
+		return projectDir, nil
+	}
+	bindings := map[string]agentmail.CoordinatorPaneBinding{
+		"%44":  {AgentName: "AzureCreek", PanePID: 4400, ProjectDir: projectDir},
+		"%66":  {AgentName: "CrossProject", PanePID: 6600, ProjectDir: projectDir},
+		"%129": {AgentName: "CoralFox", PanePID: 12900, ProjectDir: projectDir},
+	}
+	c := New("bbi-infrastructure", projectDir, nil, "SilverHarbor").
+		WithAgentMailScope("/repos/github.com/biji-biji-initiative/bbi-infrastructure", "SilverHarbor", bindings)
+	c.monitor = NewAgentMonitor(c.session, nil, c.projectKey)
+	if err := c.updateAgentStatesContext(context.Background()); err != nil {
+		t.Fatalf("updateAgentStatesContext: %v", err)
+	}
+	agents := c.GetAgents()
+	if len(agents) != 1 || agents["%44"] == nil || agents["%44"].AgentMailName != "AzureCreek" {
+		t.Fatalf("authoritative agents = %+v, want only %%44/AzureCreek", agents)
+	}
+}
+
 func TestEmitEvent_PublishesToEventsBus(t *testing.T) {
 	c := New("test-session", "/tmp/test", nil, "TestAgent")
 

@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -16,15 +18,20 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/events"
+	ntmgit "github.com/Dicklesworthstone/ntm/internal/git"
 	"github.com/Dicklesworthstone/ntm/internal/persona"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
+	"github.com/Dicklesworthstone/ntm/internal/util"
 )
 
 var (
 	getPanesWithActivity         = tmux.GetPanesWithActivity
 	captureForHealthCheckWithCtx = tmux.CaptureForHealthCheckContext
+	coordinatorPaneCurrentDir    = func(ctx context.Context, paneID string) (string, error) {
+		return tmux.DefaultClient.RunContext(ctx, "display-message", "-p", "-t", tmux.ExactTarget(paneID), "#{pane_current_path}")
+	}
 )
 
 // SessionCoordinator manages agent coordination for a tmux session.
@@ -33,9 +40,15 @@ type SessionCoordinator struct {
 	lifecycleMu sync.Mutex
 
 	// Identity
-	session    string // tmux session name
-	agentName  string // Agent Mail identity (e.g., "OrangeFox")
-	projectKey string // Absolute path to working directory
+	session        string // tmux session name
+	agentName      string // Agent Mail identity (e.g., "OrangeFox")
+	projectKey     string // Absolute path to physical working directory (bv/br/config)
+	mailProjectKey string // Canonical Agent Mail namespace; may be a virtual /repos key
+
+	// authoritativePaneBindings is set only from explicit coordinator
+	// bootstrap state. When true, legacy local pane registries are ignored.
+	authoritativePaneBindings bool
+	paneBindings              map[string]agentmail.CoordinatorPaneBinding
 
 	// Clients
 	mailClient        *agentmail.Client
@@ -229,6 +242,7 @@ func New(session, projectKey string, mailClient *agentmail.Client, agentName str
 		session:             session,
 		agentName:           agentName,
 		projectKey:          projectKey,
+		mailProjectKey:      projectKey,
 		mailClient:          mailClient,
 		reservationClient:   mailClient,
 		operatorGatedLabels: append([]string(nil), bv.OperatorGatedLabelsForProject(projectKey)...),
@@ -236,6 +250,20 @@ func New(session, projectKey string, mailClient *agentmail.Client, agentName str
 		config:              DefaultCoordinatorConfig(),
 		events:              make(chan CoordinatorEvent, 100),
 		stopCh:              make(chan struct{}),
+	}
+	return c
+}
+
+// WithAgentMailScope separates the physical checkout used by local project
+// tools from the canonical Agent Mail namespace and installs only the pane
+// bindings explicitly verified by `ntm coordinator bootstrap`.
+func (c *SessionCoordinator) WithAgentMailScope(mailProjectKey, agentName string, bindings map[string]agentmail.CoordinatorPaneBinding) *SessionCoordinator {
+	c.mailProjectKey = strings.TrimSpace(mailProjectKey)
+	c.agentName = strings.TrimSpace(agentName)
+	c.authoritativePaneBindings = true
+	c.paneBindings = make(map[string]agentmail.CoordinatorPaneBinding, len(bindings))
+	for paneID, binding := range bindings {
+		c.paneBindings[paneID] = binding
 	}
 	return c
 }
@@ -494,7 +522,7 @@ func (c *SessionCoordinator) maybeCheckMailNudge(ctx context.Context) {
 		return
 	}
 	if c.mailNudge == nil {
-		c.mailNudge = newMailNudgeChecker(c.session, c.projectKey, c.config, c.mailClient)
+		c.mailNudge = newMailNudgeChecker(c.session, c.mailProjectKey, c.config, c.mailClient)
 	}
 	checker := c.mailNudge
 	c.mu.Unlock()
@@ -578,6 +606,21 @@ func (c *SessionCoordinator) updateAgentStatesContext(ctx context.Context) error
 		if pane.AgentType == string(tmux.AgentUser) || pane.AgentType == string(tmux.AgentUnknown) {
 			continue
 		}
+		if c.authoritativePaneBindings {
+			binding, ok := c.paneBindings[pane.Pane.ID]
+			if !ok || binding.PanePID <= 0 || pane.Metadata.PID != binding.PanePID {
+				continue
+			}
+			currentDir, pathErr := coordinatorPaneCurrentDir(ctx, pane.Pane.ID)
+			if pathErr != nil {
+				slog.Warn("coordinator skipped pane with unreadable project", "session", c.session, "pane_id", pane.Pane.ID, "error", pathErr)
+				continue
+			}
+			belongs, pathErr := coordinatorProjectsMatch(ctx, c.projectKey, currentDir)
+			if pathErr != nil || !belongs {
+				continue
+			}
+		}
 		state := c.monitor.resultFromPaneObservation(pane)
 		updates = append(updates, agentUpdate{
 			paneID:    pane.Pane.ID,
@@ -594,9 +637,13 @@ func (c *SessionCoordinator) updateAgentStatesContext(ctx context.Context) error
 			observationErrors = append(observationErrors, coordinatorPaneObservationError(pane.Pane.ID, message))
 		}
 	}
-	registry, registryErr := agentmail.LoadSessionAgentRegistry(c.session, c.projectKey)
-	if registryErr != nil {
-		slog.Warn("coordinator could not load Agent Mail pane registry", "session", c.session, "error", registryErr)
+	var registry *agentmail.SessionAgentRegistry
+	if !c.authoritativePaneBindings {
+		var registryErr error
+		registry, registryErr = agentmail.LoadSessionAgentRegistry(c.session, c.mailProjectKey)
+		if registryErr != nil {
+			slog.Warn("coordinator could not load Agent Mail pane registry", "session", c.session, "error", registryErr)
+		}
 	}
 
 	c.mu.Lock()
@@ -649,7 +696,9 @@ func (c *SessionCoordinator) updateAgentStatesContext(ctx context.Context) error
 		agent.ObservationError = state.ErrorMessage
 		agent.SafeToDispatch = state.SafeToDispatch
 		agent.Healthy = state.Healthy
-		if registry != nil {
+		if c.authoritativePaneBindings {
+			agent.AgentMailName = c.paneBindings[update.paneID].AgentName
+		} else if registry != nil {
 			if agentName, ok := registry.GetAgent(update.paneTitle, update.paneID); ok {
 				agent.AgentMailName = agentName
 			} else {
@@ -684,6 +733,28 @@ func (c *SessionCoordinator) updateAgentStatesContext(ctx context.Context) error
 		c.emitEvent(transition.agent, transition.prevStatus)
 	}
 	return errors.Join(observationErrors...)
+}
+
+func coordinatorProjectsMatch(ctx context.Context, targetDir, paneDir string) (bool, error) {
+	targetDir = strings.TrimSpace(targetDir)
+	paneDir = strings.TrimSpace(paneDir)
+	if !filepath.IsAbs(targetDir) || !filepath.IsAbs(paneDir) {
+		return false, nil
+	}
+	targetRoot := filepath.Clean(util.ResolveProjectDir(targetDir))
+	paneRoot := filepath.Clean(util.ResolveProjectDir(paneDir))
+	if targetRoot == paneRoot {
+		return true, nil
+	}
+	targetCommon, targetErr := ntmgit.CommonDir(ctx, targetRoot)
+	paneCommon, paneErr := ntmgit.CommonDir(ctx, paneRoot)
+	if targetErr != nil || paneErr != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return false, ctxErr
+		}
+		return false, nil
+	}
+	return targetCommon != "" && targetCommon == paneCommon, nil
 }
 
 // markAgentObservationsUnavailable makes a whole-session observation failure
