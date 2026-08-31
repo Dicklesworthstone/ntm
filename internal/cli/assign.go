@@ -322,7 +322,7 @@ Examples:
 
 	// Direct pane assignment flags
 	cmd.Flags().StringVar(&assignPane, "pane", "", "Assign bead directly to exactly one N, W.P, or %N pane selector (requires --beads)")
-	cmd.Flags().BoolVar(&assignForce, "force", false, "Force assignment even if pane is busy (also allows --clear to remove completed assignments)")
+	cmd.Flags().BoolVar(&assignForce, "force", false, "Force assignment even if pane is busy (also lets --clear remove completed or outcome-unknown assignments)")
 	cmd.Flags().BoolVar(&assignIgnoreDeps, "ignore-deps", false, "Ignore dependency checks for assignment")
 	cmd.Flags().StringVar(&assignPrompt, "prompt", "", "Custom prompt for direct assignment")
 
@@ -3832,9 +3832,14 @@ func clearStoredAssignmentIfStatus(ctx context.Context, store *assignment.Assign
 	}
 	current = refreshed
 	var clearing *assignment.Assignment
-	if len(expected) == 0 {
+	switch {
+	case assignForce && len(expected) == 0:
+		clearing, err = store.BeginClearForce(ctx, current.BeadID, time.Now().UTC())
+	case assignForce:
+		clearing, err = store.BeginClearForceIfStatus(ctx, current.BeadID, time.Now().UTC(), expected...)
+	case len(expected) == 0:
 		clearing, err = store.BeginClear(ctx, current.BeadID, time.Now().UTC())
-	} else {
+	default:
 		clearing, err = store.BeginClearIfStatus(ctx, current.BeadID, time.Now().UTC(), expected...)
 	}
 	if err != nil {

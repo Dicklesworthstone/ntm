@@ -32,6 +32,7 @@ import (
 	"crypto/sha1" //nolint:gosec // Not cryptographic; path namespace only.
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -268,6 +269,23 @@ func readIdentityFile(path string) (string, bool) {
 	trimmed := strings.TrimSpace(string(data))
 	if trimmed == "" {
 		return "", false
+	}
+	// Current mcp-agent-mail writes a structured pane-binding object while
+	// older NTM versions wrote the adjective+noun as plain text. Returning the
+	// raw object here makes that entire JSON blob become the Beads assignee and
+	// claim actor. Decode structured bindings and fail closed on malformed JSON;
+	// a JSON document is never itself a valid Agent Mail name.
+	if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
+		var binding struct {
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal(data, &binding); err != nil {
+			return "", false
+		}
+		trimmed = strings.TrimSpace(binding.Name)
+		if trimmed == "" {
+			return "", false
+		}
 	}
 	return trimmed, true
 }

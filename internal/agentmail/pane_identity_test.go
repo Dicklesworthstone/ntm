@@ -114,6 +114,48 @@ func TestWriteIdentityRejectsEmptyName(t *testing.T) {
 	}
 }
 
+func TestResolveIdentityDecodesStructuredPaneBinding(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	t.Setenv("HOME", tmp)
+
+	projectKey := "/structured/project"
+	paneID := "%31"
+	path := CanonicalIdentityPath(projectKey, paneID)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("mkdir identity dir: %v", err)
+	}
+	content := `{"schema_version":"am.pane-binding.v1","name":"SnowySparrow","pane_id":"%31"}`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write structured identity: %v", err)
+	}
+
+	name, foundPath := ResolveIdentity(projectKey, paneID)
+	if name != "SnowySparrow" || foundPath != path {
+		t.Fatalf("ResolveIdentity = (%q, %q), want (SnowySparrow, %q)", name, foundPath, path)
+	}
+}
+
+func TestResolveIdentityRejectsMalformedStructuredPaneBinding(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	t.Setenv("HOME", tmp)
+
+	projectKey := "/malformed/project"
+	paneID := "%32"
+	path := CanonicalIdentityPath(projectKey, paneID)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("mkdir identity dir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(`{"name":`), 0o600); err != nil {
+		t.Fatalf("write malformed identity: %v", err)
+	}
+
+	if name, foundPath := ResolveIdentity(projectKey, paneID); name != "" || foundPath != "" {
+		t.Fatalf("malformed JSON became an identity: name=%q path=%q", name, foundPath)
+	}
+}
+
 func TestResolveIdentityIgnoresCanonicalSymlink(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", tmp)

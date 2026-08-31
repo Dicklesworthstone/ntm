@@ -17,10 +17,11 @@ import (
 
 // SessionAgentInfo tracks the registered agent identity for a session.
 type SessionAgentInfo struct {
-	AgentName    string    `json:"agent_name"`
-	ProjectKey   string    `json:"project_key"`
-	RegisteredAt time.Time `json:"registered_at"`
-	LastActiveAt time.Time `json:"last_active_at"`
+	AgentName         string    `json:"agent_name"`
+	ProjectKey        string    `json:"project_key"`
+	RegistrationToken string    `json:"registration_token,omitempty"`
+	RegisteredAt      time.Time `json:"registered_at"`
+	LastActiveAt      time.Time `json:"last_active_at"`
 }
 
 // sanitizeRegex is precompiled for performance (used by sanitizeSessionName)
@@ -269,12 +270,16 @@ func SaveSessionAgent(sessionName, projectKey string, info *SessionAgentInfo) er
 }
 
 // RegisterSessionAgent registers a session as an agent with Agent Mail.
-// If Agent Mail is unavailable, registration silently fails without blocking.
-// Returns the agent info on success, nil if unavailable, or an error on failure.
+// The required registration calls are also the availability probe: a full
+// health_check is intentionally not used here because its diagnostic snapshot
+// can be slower than ordinary identity operations under load.
+// Returns the agent info on success or an error on failure.
 func (c *Client) RegisterSessionAgent(ctx context.Context, sessionName, workingDir string) (*SessionAgentInfo, error) {
-	// Check if Agent Mail is available
-	if !c.IsAvailable() {
-		return nil, nil // Silently skip if unavailable
+	// Ensure the project first even when local session metadata exists. Agent
+	// Mail may have rebuilt its database from the archive since the last NTM
+	// run, and this required call doubles as the reachability probe.
+	if _, err := c.EnsureProject(ctx, workingDir); err != nil {
+		return nil, fmt.Errorf("ensuring project: %w", err)
 	}
 
 	// Check if already registered
@@ -285,12 +290,12 @@ func (c *Client) RegisterSessionAgent(ctx context.Context, sessionName, workingD
 
 	// If already registered with same project, just update activity
 	if existing != nil && existing.ProjectKey == workingDir && existing.AgentName != "" {
-		existing.LastActiveAt = time.Now()
-		if err := SaveSessionAgent(sessionName, workingDir, existing); err != nil {
-			return nil, err
+		if existing.RegistrationToken != "" {
+			c.SetRegistrationToken(workingDir, existing.AgentName, existing.RegistrationToken)
 		}
+		existing.LastActiveAt = time.Now()
 		// Update activity on server (re-register updates last_active_ts)
-		_, serverErr := c.RegisterAgent(ctx, RegisterAgentOptions{
+		agent, serverErr := c.RegisterAgent(ctx, RegisterAgentOptions{
 			ProjectKey:      workingDir,
 			Program:         "ntm",
 			Model:           "coordinator",
@@ -298,15 +303,15 @@ func (c *Client) RegisterSessionAgent(ctx context.Context, sessionName, workingD
 			TaskDescription: fmt.Sprintf("NTM session coordinator for %s", sessionName),
 		})
 		if serverErr != nil {
-			// Return local state but pass error up so caller can warn
 			return existing, fmt.Errorf("updating server activity: %w", serverErr)
 		}
+		if agent.RegistrationToken != "" {
+			existing.RegistrationToken = agent.RegistrationToken
+		}
+		if err := SaveSessionAgent(sessionName, workingDir, existing); err != nil {
+			return nil, err
+		}
 		return existing, nil
-	}
-
-	// Ensure project exists
-	if _, err := c.EnsureProject(ctx, workingDir); err != nil {
-		return nil, fmt.Errorf("ensuring project: %w", err)
 	}
 
 	// Register the agent. Omit Name so the server auto-generates a valid
@@ -323,10 +328,11 @@ func (c *Client) RegisterSessionAgent(ctx context.Context, sessionName, workingD
 
 	// Save locally
 	info := &SessionAgentInfo{
-		AgentName:    agent.Name,
-		ProjectKey:   workingDir,
-		RegisteredAt: time.Now(),
-		LastActiveAt: time.Now(),
+		AgentName:         agent.Name,
+		ProjectKey:        workingDir,
+		RegistrationToken: agent.RegistrationToken,
+		RegisteredAt:      time.Now(),
+		LastActiveAt:      time.Now(),
 	}
 	if err := SaveSessionAgent(sessionName, workingDir, info); err != nil {
 		return nil, err

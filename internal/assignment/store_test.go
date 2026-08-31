@@ -2487,6 +2487,15 @@ func TestAssignmentClearRejectsUnknownDispatchOutcome(t *testing.T) {
 	if stored == nil || stored.ClearState != ClearStateNone || stored.DispatchState != DispatchSending || stored.DispatchAttempts != 1 {
 		t.Fatalf("rejected clear mutated dispatch barrier: %+v", stored)
 	}
+
+	forced, err := store.BeginClearForce(t.Context(), beadID, now.Add(2*time.Second))
+	if err != nil {
+		t.Fatalf("BeginClearForce: %v", err)
+	}
+	if forced.ClearState != ClearStateReservationReleasing || forced.DispatchState != DispatchPending ||
+		!strings.Contains(forced.LastDispatchError, "force-cleared") {
+		t.Fatalf("forced clear did not terminalize unknown dispatch: %+v", forced)
+	}
 }
 
 func TestBeginClearIfStatusRejectsConcurrentLifecycleChange(t *testing.T) {

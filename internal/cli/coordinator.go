@@ -14,12 +14,38 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/coordinator"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
 )
+
+func existingCoordinatorAgentName(session, projectKey string) string {
+	info, err := agentmail.LoadBestSessionAgent(session, projectKey)
+	if err != nil || info == nil {
+		return ""
+	}
+	return strings.TrimSpace(info.AgentName)
+}
+
+func registerCoordinatorAgent(ctx context.Context, client *agentmail.Client, session, projectKey string) (string, error) {
+	if ctx == nil {
+		return "", errors.New("coordinator Agent Mail registration requires a command context")
+	}
+	if client == nil {
+		return "", errors.New("coordinator Agent Mail client is not configured")
+	}
+	info, err := client.RegisterSessionAgent(ctx, session, projectKey)
+	if err != nil {
+		return "", fmt.Errorf("register coordinator Agent Mail identity: %w", err)
+	}
+	if info == nil || strings.TrimSpace(info.AgentName) == "" {
+		return "", errors.New("register coordinator Agent Mail identity: server returned no agent name")
+	}
+	return strings.TrimSpace(info.AgentName), nil
+}
 
 var (
 	coordinatorSessionExists  = tmux.SessionExists
@@ -122,7 +148,7 @@ func runCoordinatorStatus(cmd *cobra.Command, args []string) error {
 
 	// Create coordinator to get status without enabling configured side effects.
 	mailClient := newAgentMailClient(projectKey)
-	coord := coordinator.New(session, projectKey, mailClient, "NTM-Coordinator").WithConfig(runtimeConfig)
+	coord := coordinator.New(session, projectKey, mailClient, existingCoordinatorAgentName(session, projectKey)).WithConfig(runtimeConfig)
 
 	// Get agent states
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -323,10 +349,16 @@ func runCoordinatorDigest(cmd *cobra.Command, args []string, sendMail bool) erro
 	// Digest is a read-only surface: never let its brief coordinator run
 	// enqueue context rotations (bd-rpmg8).
 	runtimeConfig.RotationUsageThreshold = 0
-	coord := coordinator.New(session, projectKey, mailClient, "NTM-Coordinator").WithConfig(runtimeConfig)
-
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	agentName := existingCoordinatorAgentName(session, projectKey)
+	if sendMail {
+		agentName, err = registerCoordinatorAgent(ctx, mailClient, session, projectKey)
+		if err != nil {
+			return err
+		}
+	}
+	coord := coordinator.New(session, projectKey, mailClient, agentName).WithConfig(runtimeConfig)
 
 	if err := coord.Start(ctx); err != nil {
 		return fmt.Errorf("starting coordinator: %w", err)
@@ -408,7 +440,14 @@ func runCoordinatorRun(cmd *cobra.Command, args []string, once bool) error {
 	}
 
 	runtimeConfig, ntmConfig := loadCoordinatorRuntimeConfigWithNTM()
-	coord := coordinator.New(session, projectKey, newAgentMailClient(projectKey), "NTM-Coordinator").
+	mailClient := newAgentMailClient(projectKey)
+	registrationCtx, registrationCancel := context.WithTimeout(cmd.Context(), 15*time.Second)
+	agentName, registrationErr := registerCoordinatorAgent(registrationCtx, mailClient, session, projectKey)
+	registrationCancel()
+	if registrationErr != nil {
+		return registrationErr
+	}
+	coord := coordinator.New(session, projectKey, mailClient, agentName).
 		WithConfig(runtimeConfig).
 		WithNTMConfig(ntmConfig)
 	if once {

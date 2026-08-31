@@ -1035,7 +1035,12 @@ func (c *SessionCoordinator) newAtomicAssignmentCoordinator(store *assignmentsto
 		})
 		receipt := assignmentstore.DispatchReceipt{Duration: time.Since(started)}
 		if err != nil {
-			return receipt, err
+			// An MCP tool-level rejection is a completed negative response: the
+			// server did not send a message. Mark it as no-actuation so the
+			// atomic ledger returns to pending instead of stranding the pane and
+			// bead behind a permanent dispatch_state="sending" barrier. Network
+			// timeouts and malformed success responses remain outcome-unknown.
+			return receipt, coordinatorMailDispatchError(err)
 		}
 		deliveryID, receiptErr := validatedAgentMailDeliveryID(
 			sent, c.projectKey, projectID, c.agentName, req.AgentName, subject, req.Prompt,
@@ -1137,6 +1142,13 @@ func (c *SessionCoordinator) newAtomicAssignmentCoordinator(store *assignmentsto
 			},
 		)).
 		WithWorkingReplacementAuthorizationPort(replacementAuthorization)
+}
+
+func coordinatorMailDispatchError(err error) error {
+	if err != nil && agentmail.IsToolRejection(err) {
+		return assignmentstore.GuaranteeNoActuation(err)
+	}
+	return err
 }
 
 func validatedAgentMailDeliveryID(sent *agentmail.SendResult, projectKey string, projectID int, senderName, agentName, subject, body string) (string, error) {

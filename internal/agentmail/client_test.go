@@ -898,6 +898,19 @@ func TestExtractMCPContent(t *testing.T) {
 	}
 }
 
+func TestExtractMCPContentTypesToolRejection(t *testing.T) {
+	_, err := extractMCPContent(json.RawMessage(`{
+		"content": [{"type": "text", "text": "Agent 'NTM-Coordinator' not found"}],
+		"isError": true
+	}`))
+	if err == nil || !IsToolRejection(err) {
+		t.Fatalf("extractMCPContent error=%v, want typed tool rejection", err)
+	}
+	if IsServerUnavailable(err) || IsTimeout(err) {
+		t.Fatalf("tool rejection was misclassified as ambiguous transport failure: %v", err)
+	}
+}
+
 func TestCallToolWithMCPEnvelope(t *testing.T) {
 	// Mock server that returns MCP envelope format
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

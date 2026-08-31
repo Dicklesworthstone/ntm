@@ -119,6 +119,18 @@ func TestWorkAssignmentStruct(t *testing.T) {
 	}
 }
 
+func TestCoordinatorMailDispatchErrorTerminalizesServerRejectionOnly(t *testing.T) {
+	rejection := &agentmail.ToolRejectionError{Err: errors.New("sender is not registered")}
+	if got := coordinatorMailDispatchError(rejection); !assignmentstore.IsGuaranteedNoActuation(got) {
+		t.Fatalf("server rejection remained outcome-unknown: %v", got)
+	}
+
+	timeout := agentmail.NewAPIError("send_message", 0, agentmail.ErrTimeout)
+	if got := coordinatorMailDispatchError(timeout); assignmentstore.IsGuaranteedNoActuation(got) || !errors.Is(got, agentmail.ErrTimeout) {
+		t.Fatalf("ambiguous timeout was terminalized: %v", got)
+	}
+}
+
 func TestAssignmentResultStruct(t *testing.T) {
 	ar := AssignmentResult{
 		Success:      true,

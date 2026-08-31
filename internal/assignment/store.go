@@ -1174,7 +1174,16 @@ func (s *AssignmentStore) ListActive() []*Assignment {
 // release. The barrier retains exact reservation IDs and blocks new assignment
 // generations until CompleteClear removes the record.
 func (s *AssignmentStore) BeginClear(ctx context.Context, beadID string, startedAt time.Time) (*Assignment, error) {
-	return s.beginClear(ctx, beadID, startedAt, nil)
+	return s.beginClear(ctx, beadID, startedAt, false, nil)
+}
+
+// BeginClearForce establishes the clear barrier even when dispatch is stuck
+// at the outcome-unknown sending boundary. This is an explicit operator escape
+// hatch: the original delivery may have happened, but its durable claim and
+// leases can still be released so the bead and pane do not remain occupied
+// forever.
+func (s *AssignmentStore) BeginClearForce(ctx context.Context, beadID string, startedAt time.Time) (*Assignment, error) {
+	return s.beginClear(ctx, beadID, startedAt, true, nil)
 }
 
 // BeginClearIfStatus establishes the clear barrier only if the status still
@@ -1185,7 +1194,15 @@ func (s *AssignmentStore) BeginClearIfStatus(ctx context.Context, beadID string,
 	if len(expected) == 0 {
 		return nil, errors.New("at least one expected assignment status is required")
 	}
-	return s.beginClear(ctx, beadID, startedAt, expected)
+	return s.beginClear(ctx, beadID, startedAt, false, expected)
+}
+
+// BeginClearForceIfStatus is the status-guarded variant of BeginClearForce.
+func (s *AssignmentStore) BeginClearForceIfStatus(ctx context.Context, beadID string, startedAt time.Time, expected ...AssignmentStatus) (*Assignment, error) {
+	if len(expected) == 0 {
+		return nil, errors.New("at least one expected assignment status is required")
+	}
+	return s.beginClear(ctx, beadID, startedAt, true, expected)
 }
 
 // BeginTerminalReconciliationIfCurrent durably records the desired terminal
@@ -1311,7 +1328,7 @@ func (s *AssignmentStore) beginTerminalReconciliationIfCurrent(ctx context.Conte
 	return cloneAssignment(current), true, nil
 }
 
-func (s *AssignmentStore) beginClear(ctx context.Context, beadID string, startedAt time.Time, expected []AssignmentStatus) (*Assignment, error) {
+func (s *AssignmentStore) beginClear(ctx context.Context, beadID string, startedAt time.Time, forceOutcomeUnknown bool, expected []AssignmentStatus) (*Assignment, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -1323,13 +1340,13 @@ func (s *AssignmentStore) beginClear(ctx context.Context, beadID string, started
 	if err := s.LoadStrict(); err != nil {
 		return nil, fmt.Errorf("refresh assignment clear %s: %w", beadID, err)
 	}
-	return s.beginClearWithOperationLock(beadID, startedAt, expected)
+	return s.beginClearWithOperationLock(beadID, startedAt, forceOutcomeUnknown, expected)
 }
 
 // beginClearWithOperationLock mutates clear state while the caller owns the
 // bead operation lock and has refreshed the store. Atomic replacement uses it
 // to avoid recursively acquiring the same cross-process lock.
-func (s *AssignmentStore) beginClearWithOperationLock(beadID string, startedAt time.Time, expected []AssignmentStatus) (*Assignment, error) {
+func (s *AssignmentStore) beginClearWithOperationLock(beadID string, startedAt time.Time, forceOutcomeUnknown bool, expected []AssignmentStatus) (*Assignment, error) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 	assignment := s.Assignments[beadID]
@@ -1339,7 +1356,7 @@ func (s *AssignmentStore) beginClearWithOperationLock(beadID string, startedAt t
 	if len(expected) > 0 && !assignmentStatusAllowed(assignment.Status, expected) {
 		return nil, fmt.Errorf("%w: %s is %s, expected %s", ErrAssignmentStatusMismatch, beadID, assignment.Status, formatAssignmentStatuses(expected))
 	}
-	if assignment.DispatchState == DispatchSending {
+	if assignment.DispatchState == DispatchSending && !forceOutcomeUnknown {
 		return nil, fmt.Errorf("%w: cannot clear %s while dispatch outcome is unknown", ErrDispatchOutcomeUnknown, beadID)
 	}
 	if strings.TrimSpace(assignment.PendingCompletionEventID) != "" {
@@ -1352,6 +1369,10 @@ func (s *AssignmentStore) beginClearWithOperationLock(beadID string, startedAt t
 		startedAt = time.Now().UTC()
 	}
 	previous := cloneAssignment(assignment)
+	if assignment.DispatchState == DispatchSending {
+		assignment.DispatchState = DispatchPending
+		assignment.LastDispatchError = "force-cleared after dispatch outcome became unknown"
+	}
 	assignment.ClearState = ClearStateReservationReleasing
 	assignment.ClearStartedAt = &startedAt
 	assignment.ClearError = ""

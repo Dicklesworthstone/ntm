@@ -1,12 +1,46 @@
 package agentmail
 
 import (
+	"context"
 	"encoding/json"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 )
+
+func TestRegisterSessionAgentUsesRequiredCallsAndPersistsToken(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+
+	server := httptest.NewServer(mockMCPHandler(t, map[string]func(map[string]interface{}) (interface{}, *JSONRPCError){
+		"ensure_project": func(args map[string]interface{}) (interface{}, *JSONRPCError) {
+			return Project{ID: 7, HumanKey: args["human_key"].(string)}, nil
+		},
+		"register_agent": func(args map[string]interface{}) (interface{}, *JSONRPCError) {
+			return Agent{ID: 8, Name: "WhiteHorse", Program: args["program"].(string), Model: args["model"].(string), RegistrationToken: "session-token"}, nil
+		},
+	}))
+	t.Cleanup(server.Close)
+
+	client := NewClient(WithBaseURL(server.URL + "/"))
+	info, err := client.RegisterSessionAgent(context.Background(), "session-token-test", "/project/token-test")
+	if err != nil {
+		t.Fatalf("RegisterSessionAgent: %v", err)
+	}
+	if info == nil || info.AgentName != "WhiteHorse" || info.RegistrationToken != "session-token" {
+		t.Fatalf("session info = %+v", info)
+	}
+	loaded, err := LoadSessionAgent("session-token-test", "/project/token-test")
+	if err != nil || loaded == nil || loaded.RegistrationToken != "session-token" {
+		t.Fatalf("persisted session info = %+v, error=%v", loaded, err)
+	}
+	if token := client.RegistrationToken("/project/token-test", "WhiteHorse"); token != "session-token" {
+		t.Fatalf("client token = %q, want session-token", token)
+	}
+}
 
 func TestSanitizeSessionName(t *testing.T) {
 	tests := []struct {
