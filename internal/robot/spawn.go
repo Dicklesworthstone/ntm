@@ -47,6 +47,8 @@ var promptPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`❯\s*$`),       // Modern prompts (U+276F)
 	regexp.MustCompile(`›\s*$`),       // Codex prompt (U+203A) empty
 	regexp.MustCompile(`(?m)^›`),      // Codex prompt with hint text
+	regexp.MustCompile(`»\s*$`),       // Codex ultra-effort prompt (U+00BB) empty (GH#273)
+	regexp.MustCompile(`(?m)^»`),      // Codex ultra-effort prompt with hint text (GH#273)
 	regexp.MustCompile(`>\s*$`),       // Simple prompt at end of output
 	regexp.MustCompile(`(?m)^>\s*$`),  // Simple prompt on its own line
 }

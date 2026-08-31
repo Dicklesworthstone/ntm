@@ -1960,22 +1960,41 @@ func ComposerClearKeys(agentType AgentType) []string {
 	}
 }
 
-// composerMarkerForAgent returns the live-composer marker glyph used to
-// verify emptiness, or "" when the TUI has no known marker.
-func composerMarkerForAgent(agentType AgentType) string {
+// composerMarkersForAgent returns the live-composer marker glyphs used to
+// verify emptiness, or nil when the TUI has no known marker. Codex has TWO
+// markers: "›" (U+203A) at every reasoning effort except ultra, and "»"
+// (U+00BB) at effort ultra — codex's EffortTier::prompt_glyph swaps the
+// composer glyph with the effort (GH#273), so a gate that only knows "›"
+// refuses every delivery to an ultra pane.
+func composerMarkersForAgent(agentType AgentType) []string {
 	switch agentType.Canonical() {
 	case AgentCodex:
-		return "›"
+		return []string{"›", "»"}
 	case AgentClaude:
-		return "❯"
+		return []string{"❯"}
 	case AgentGrok:
 		// Grok Build renders a bordered composer ("│ ❯ <text>  │"); the same
 		// heavy chevron is the live-composer marker. Lines are trimmed of the
 		// trailing box border before emptiness checks (see composerLineEmpty).
-		return "❯"
+		return []string{"❯"}
 	default:
-		return ""
+		return nil
 	}
+}
+
+// indexAnyMarker returns the byte index and glyph of the leftmost occurrence
+// of any of the markers in line, or (-1, "") when none appears.
+func indexAnyMarker(line string, markers []string) (int, string) {
+	best, bestMarker := -1, ""
+	for _, m := range markers {
+		if m == "" {
+			continue
+		}
+		if j := strings.Index(line, m); j >= 0 && (best < 0 || j < best) {
+			best, bestMarker = j, m
+		}
+	}
+	return best, bestMarker
 }
 
 // composerPlaceholderPrefixes lists per-agent hint text the TUI renders in
@@ -1996,10 +2015,10 @@ func composerPlaceholderPrefixes(agentType AgentType) []string {
 // capture carries no composer text. found=false means no marker line was
 // visible at all (verification impossible). Hint text the TUI renders in an
 // empty composer counts as empty.
-func composerLineEmpty(capture, marker string, placeholderPrefixes []string) (found, empty bool) {
+func composerLineEmpty(capture string, markers []string, placeholderPrefixes []string) (found, empty bool) {
 	lines := strings.Split(capture, "\n")
 	for i := len(lines) - 1; i >= 0; i-- {
-		idx := strings.Index(lines[i], marker)
+		idx, marker := indexAnyMarker(lines[i], markers)
 		if idx < 0 {
 			continue
 		}
@@ -2076,11 +2095,11 @@ func InspectComposer(capture string, agentType AgentType) ComposerState {
 			break
 		}
 	}
-	marker := composerMarkerForAgent(agentType)
-	if marker == "" {
+	markers := composerMarkersForAgent(agentType)
+	if len(markers) == 0 {
 		return state
 	}
-	found, empty := composerLineEmpty(capture, marker, composerPlaceholderPrefixes(agentType))
+	found, empty := composerLineEmpty(capture, markers, composerPlaceholderPrefixes(agentType))
 	state.MarkerVisible = found
 	state.HoldsText = found && !empty
 	return state
@@ -2103,15 +2122,15 @@ func InspectComposer(capture string, agentType AgentType) ComposerState {
 // detectors (bd-eeifh); pass 0 when unknown.
 func (c *Client) ComposerReadyForDelivery(ctx context.Context, target string, agentType AgentType, paneWidth int) (ready bool, reason string) {
 	canonical := agentType.Canonical()
-	marker := composerMarkerForAgent(canonical)
-	if marker == "" {
+	markers := composerMarkersForAgent(canonical)
+	if len(markers) == 0 {
 		return true, ""
 	}
 	capture, err := c.CapturePaneVisibleContext(ctx, target)
 	if err != nil || strings.TrimSpace(capture) == "" {
 		return true, ""
 	}
-	if strings.Contains(capture, marker) {
+	if composerVisibleForDelivery(capture, markers) {
 		return true, ""
 	}
 	switch canonical {
@@ -2136,6 +2155,49 @@ func ComposerReadyForDelivery(ctx context.Context, target string, agentType Agen
 	return DefaultClient.ComposerReadyForDelivery(ctx, target, agentType, paneWidth)
 }
 
+// dialogOptionLineRe matches the text of a numbered dialog option row after
+// the marker glyph has been stripped ("1. Update now (runs `bun install -g
+// @openai/codex`)"). Codex renders its update dialog's selected option with
+// the same "›" cursor glyph as the composer prompt, so a whole-screen
+// substring match accepted the dialog as a ready composer and a robot send's
+// Enter selected "Update now" — an unintended self-update (GH#273 root cause
+// 3; same class as the Claude-menu half of GH#241).
+var dialogOptionLineRe = regexp.MustCompile(`^\d{1,2}[.)]\s`)
+
+// dialogChromeScanLines bounds how far below the marker line the delivery
+// gate looks for dialog chrome like "Press enter to continue". Dialogs render
+// that hint directly under their option list, so a short window is enough and
+// keeps transcript text far above the composer from vetoing a live pane.
+const dialogChromeScanLines = 6
+
+// composerVisibleForDelivery reports whether the capture POSITIVELY shows a
+// live composer rather than dialog chrome reusing the marker glyph. Only the
+// BOTTOM-MOST marker line counts — the composer is bottom-pinned in every
+// supported TUI, and transcript echoes render the marker higher up. A marker
+// line whose text is a numbered dialog option, or whose frame shows "Press
+// enter to continue" at or just below the marker, is a selection cursor, not
+// an input box (GH#273 root cause 3).
+func composerVisibleForDelivery(capture string, markers []string) bool {
+	lines := strings.Split(capture, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		idx, marker := indexAnyMarker(lines[i], markers)
+		if idx < 0 {
+			continue
+		}
+		text := strings.TrimSpace(lines[i][idx+len(marker):])
+		if dialogOptionLineRe.MatchString(text) {
+			return false
+		}
+		for j := i; j < len(lines) && j <= i+dialogChromeScanLines; j++ {
+			if strings.Contains(strings.ToLower(lines[j]), "press enter to continue") {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
 // ClearComposerContext performs the per-agent pre-send composer clear and
 // verifies the composer is empty where the TUI exposes a marker. Returns
 // cleared=false only when verification POSITIVELY shows leftover text;
@@ -2152,8 +2214,8 @@ func (c *Client) ClearComposerContext(ctx context.Context, target string, agentT
 			return false, false, fmt.Errorf("send composer clear key %q: %w", key, err)
 		}
 	}
-	marker := composerMarkerForAgent(agentType)
-	if marker == "" {
+	markers := composerMarkersForAgent(agentType)
+	if len(markers) == 0 {
 		return true, false, nil
 	}
 	if err := waitForSendDelay(ctx, composerClearVerifyWait); err != nil {
@@ -2163,7 +2225,7 @@ func (c *Client) ClearComposerContext(ctx context.Context, target string, agentT
 	if err != nil {
 		return false, false, fmt.Errorf("capture pane for composer clear verification: %w", err)
 	}
-	found, empty := composerLineEmpty(capture, marker, composerPlaceholderPrefixes(agentType))
+	found, empty := composerLineEmpty(capture, markers, composerPlaceholderPrefixes(agentType))
 	if !found {
 		return true, false, nil
 	}
@@ -2187,19 +2249,21 @@ func codexComposerHoldsPayload(capture, message string) bool {
 			break
 		}
 	}
-	// Only the BOTTOM-MOST "›" line is the live composer. Codex also echoes
+	// Only the BOTTOM-MOST marker line is the live composer. Codex also echoes
 	// submitted user messages into the transcript with a "›" prefix, so any
 	// earlier match is history — treating it as composer content would make a
 	// successfully submitted prompt look permanently stuck and fail the
-	// delivery falsely.
+	// delivery falsely. Both codex glyphs count: "›" everywhere, "»" at
+	// reasoning effort ultra (GH#273).
+	markers := composerMarkersForAgent(AgentCodex)
 	lines := strings.Split(capture, "\n")
 	for i := len(lines) - 1; i >= 0; i-- {
 		line := lines[i]
-		marker := strings.Index(line, "›")
-		if marker < 0 {
+		idx, marker := indexAnyMarker(line, markers)
+		if idx < 0 {
 			continue
 		}
-		composerText := strings.TrimSpace(line[marker+len("›"):])
+		composerText := strings.TrimSpace(line[idx+len(marker):])
 		if composerText == "" {
 			return false
 		}

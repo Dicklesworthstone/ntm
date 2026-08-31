@@ -2740,7 +2740,7 @@ func TestComposerLineEmpty_BottomMostMarkerOnly(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			found, empty := composerLineEmpty(tc.capture, tc.marker, nil)
+			found, empty := composerLineEmpty(tc.capture, []string{tc.marker}, nil)
 			if found != tc.wantFound || empty != tc.wantEmpty {
 				t.Fatalf("composerLineEmpty = (found=%v, empty=%v), want (found=%v, empty=%v)", found, empty, tc.wantFound, tc.wantEmpty)
 			}
@@ -2754,16 +2754,16 @@ func TestComposerLineEmpty_BottomMostMarkerOnly(t *testing.T) {
 // verified clear on an idle pane would false-fail.
 func TestComposerLineEmpty_PlaceholderCountsAsEmpty(t *testing.T) {
 	capture := "chat\n❯ Try \"refactor <filepath>\"\n────\n"
-	found, empty := composerLineEmpty(capture, "❯", composerPlaceholderPrefixes(AgentClaude))
+	found, empty := composerLineEmpty(capture, []string{"❯"}, composerPlaceholderPrefixes(AgentClaude))
 	if !found || !empty {
 		t.Fatalf("claude placeholder: got (found=%v, empty=%v), want (true, true)", found, empty)
 	}
-	found, empty = composerLineEmpty("› Ask Codex to do anything\n", "›", composerPlaceholderPrefixes(AgentCodex))
+	found, empty = composerLineEmpty("› Ask Codex to do anything\n", []string{"›"}, composerPlaceholderPrefixes(AgentCodex))
 	if !found || !empty {
 		t.Fatalf("codex placeholder: got (found=%v, empty=%v), want (true, true)", found, empty)
 	}
 	// Real residue must still read as non-empty.
-	found, empty = composerLineEmpty("❯ Try harder next time, agent\n", "❯", composerPlaceholderPrefixes(AgentClaude))
+	found, empty = composerLineEmpty("❯ Try harder next time, agent\n", []string{"❯"}, composerPlaceholderPrefixes(AgentClaude))
 	if !found {
 		t.Fatalf("residue: marker not found")
 	}

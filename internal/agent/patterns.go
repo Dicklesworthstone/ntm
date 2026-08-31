@@ -232,10 +232,10 @@ var (
 
 	// codIdlePatterns indicates waiting for input.
 	codIdlePatterns = []*regexp.Regexp{
-		regexp.MustCompile(`>\s*$`),                // Standard prompt
-		regexp.MustCompile(`\?\s*for\s*shortcuts`), // Codex prompt line
-		regexp.MustCompile(`codex>\s*$`),           // Codex prompt
-		regexp.MustCompile(`(?m)^\s*›(?:\s.*)?$`),  // Codex chevron prompt, empty or with prefilled input
+		regexp.MustCompile(`>\s*$`),                  // Standard prompt
+		regexp.MustCompile(`\?\s*for\s*shortcuts`),   // Codex prompt line
+		regexp.MustCompile(`codex>\s*$`),             // Codex prompt
+		regexp.MustCompile(`(?m)^\s*[›»](?:\s.*)?$`), // Codex chevron prompt, empty or with prefilled input ("»" at effort ultra, GH#273)
 	}
 
 	// codErrorPatterns indicates error conditions.
