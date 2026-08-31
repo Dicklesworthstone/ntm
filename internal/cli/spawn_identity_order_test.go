@@ -21,7 +21,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"sync"
 	"testing"
 
@@ -141,8 +140,22 @@ func fakeSpawnMailServer(t *testing.T, agentName string) (*httptest.Server, func
 		case "ensure_project":
 			result = map[string]interface{}{"id": 1, "slug": "proj", "human_key": "proj"}
 		case "create_agent_identity", "register_agent":
+			registeredName := agentName
+			if name, ok := req.Params.Arguments["name"].(string); ok && name != "" {
+				registeredName = name
+			}
+			paneID := r.Header.Get("X-Tmux-Pane")
+			projectKey, _ := req.Params.Arguments["project_key"].(string)
+			receipt := agentmail.PaneIdentityRecord{
+				Name: registeredName, SessionName: "test-session", PaneID: paneID,
+				PanePID: 4242, SocketPath: "/tmp/test-tmux.sock", WrittenAt: "2026-08-31T00:00:00Z",
+			}
+			data, _ := json.Marshal(receipt)
+			path := agentmail.CanonicalIdentityPath(projectKey, paneID)
+			_ = os.MkdirAll(filepath.Dir(path), 0o700)
+			_ = os.WriteFile(path, data, 0o600)
 			result = map[string]interface{}{
-				"id": 42, "name": agentName,
+				"id": 42, "name": registeredName,
 				"program": req.Params.Arguments["program"],
 				"model":   req.Params.Arguments["model"],
 			}
@@ -225,7 +238,11 @@ func TestSpawnIdentityCoordinator_PublishesIdentityAtPrepareTime(t *testing.T) {
 	if err != nil {
 		t.Fatalf("canonical identity must exist before launch: %v", err)
 	}
-	if got := strings.TrimSpace(string(raw)); got != "BraveFalcon" {
+	var receipt agentmail.PaneIdentityRecord
+	if err := json.Unmarshal(raw, &receipt); err != nil {
+		t.Fatalf("canonical identity is not a generation receipt: %v", err)
+	}
+	if got := receipt.Name; got != "BraveFalcon" {
 		t.Fatalf("canonical identity = %q, want BraveFalcon (stale value must be replaced before launch)", got)
 	}
 

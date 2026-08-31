@@ -3,6 +3,7 @@ package agentmail
 import (
 	"crypto/sha1"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -114,6 +115,51 @@ func TestWriteIdentityRejectsEmptyName(t *testing.T) {
 	}
 }
 
+func TestWriteIdentityRefusesCompositePaneAddress(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	if _, err := WriteIdentity("/p", "main:0:2", "BlueLake"); err == nil {
+		t.Fatal("composite pane address must be refused")
+	}
+}
+
+func TestVerifiedGenerationReceiptAndMirror(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	record := PaneIdentityRecord{Name: "BlueLake", SessionName: "main", PaneID: "%42", PanePID: 123, SocketPath: "/tmp/tmux.sock", WrittenAt: "2026-08-31T00:00:00Z"}
+	data, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := CanonicalIdentityPath("/source", "%42")
+	if err := writeIdentityFile(path, string(data)); err != nil {
+		t.Fatal(err)
+	}
+	_, verified, err := ReadVerifiedIdentity("/source", "%42", "BlueLake")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := MirrorVerifiedIdentity("/worktree", "%42", verified); err != nil {
+		t.Fatal(err)
+	}
+	mirrored, err := os.ReadFile(CanonicalIdentityPath("/worktree", "%42"))
+	if err != nil || string(mirrored) != string(data) {
+		t.Fatalf("mirror changed receipt: err=%v got=%s", err, mirrored)
+	}
+}
+
+func TestPlainNameIsNotGenerationEvidence(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	path := CanonicalIdentityPath("/p", "%42")
+	if err := writeIdentityFile(path, "BlueLake\n"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := ReadVerifiedIdentity("/p", "%42", "BlueLake"); err == nil {
+		t.Fatal("plain-name compatibility file must not satisfy generation proof")
+	}
+}
+
 func TestResolveIdentityIgnoresCanonicalSymlink(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", tmp)
@@ -218,7 +264,7 @@ func TestResolveIdentityReturnsEmptyWhenMissing(t *testing.T) {
 	}
 }
 
-// Guarantees #107 regression: ntm-written identities must be discoverable at
+// Guarantees #107 regression: bare-pane identities must be discoverable at
 // the exact path the mcp-agent-mail Rust reference computes. We recompute
 // the reference path independently (sha1[:12] of project_key under
 // `~/.config/agent-mail/identity/<hash>/<sanitized>`) and assert byte
@@ -243,7 +289,6 @@ func TestRustContractCompatibility(t *testing.T) {
 	cases := []vec{
 		{"/project/alpha", "%0", "0"},
 		{"/project/beta", "%42", "42"},
-		{"/project/gamma", "main:0:2", "main-0-2"},
 	}
 
 	for _, c := range cases {

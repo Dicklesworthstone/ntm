@@ -8,11 +8,9 @@
 //
 //	~/.config/agent-mail/identity/<sha1(project_key)[:12]>/<sanitized_pane_id>
 //
-// Pane IDs are sanitized the same way the reference implementation sanitizes
-// them: the leading `%` is stripped; ASCII alphanumerics, `-`, and `_` are
-// preserved; `:` is replaced with `-` (so composite keys like
-// `main:0:2` become `main-0-2`); all other characters become `_`. An empty
-// result becomes `unknown`.
+// New writes accept only the upstream address contract: a bare `%N` pane id.
+// The sanitizer still understands composite keys because ResolveIdentity must
+// remain able to read files written by older ntm versions.
 //
 // Reads also check a small set of legacy locations for backwards
 // compatibility with identity files written by older `ntm` versions:
@@ -39,6 +37,19 @@ import (
 	"strings"
 )
 
+// PaneIdentityRecord is the generation receipt written by Agent Mail 0.3.31.
+// A plain-name compatibility file is readable, but it cannot prove that the
+// registering pane is still the holder and is therefore not sufficient for a
+// fresh ntm spawn.
+type PaneIdentityRecord struct {
+	Name        string `json:"name"`
+	SessionName string `json:"session_name"`
+	PaneID      string `json:"pane_id"`
+	PanePID     uint32 `json:"pane_pid"`
+	SocketPath  string `json:"socket_path"`
+	WrittenAt   string `json:"written_at"`
+}
+
 const (
 	// identityDirName is the sub-path under the user's config dir used to
 	// store per-pane identity files.
@@ -63,15 +74,70 @@ func CanonicalIdentityPath(projectKey, paneID string) string {
 // pane. The write is atomic (write-then-rename). Parent directories are
 // created with mode 0o700.
 //
-// A newline is appended to the agent name so the file is easy to read with
-// shell tooling; ResolveIdentity trims whitespace when reading.
+// This helper remains for legacy compatibility writers and tests. Spawned
+// identities use the structured receipt written by Agent Mail itself.
 func WriteIdentity(projectKey, paneID, agentName string) (string, error) {
+	if err := requireBarePaneID(paneID); err != nil {
+		return "", err
+	}
 	trimmed := strings.TrimSpace(agentName)
 	if trimmed == "" {
 		return "", fmt.Errorf("agent name must not be empty")
 	}
 	path := CanonicalIdentityPath(projectKey, paneID)
 	if err := writeIdentityFile(path, trimmed+"\n"); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+func requireBarePaneID(paneID string) error {
+	if len(paneID) < 2 || paneID[0] != '%' {
+		return fmt.Errorf("pane id %q is not a bare %%N Agent Mail address", paneID)
+	}
+	for _, ch := range paneID[1:] {
+		if ch < '0' || ch > '9' {
+			return fmt.Errorf("pane id %q is not a bare %%N Agent Mail address", paneID)
+		}
+	}
+	return nil
+}
+
+// ReadVerifiedIdentity reads the server-written generation receipt and checks
+// that it binds the identity returned by registration to the requested pane.
+func ReadVerifiedIdentity(projectKey, paneID, agentName string) (*PaneIdentityRecord, []byte, error) {
+	if err := requireBarePaneID(paneID); err != nil {
+		return nil, nil, err
+	}
+	path := CanonicalIdentityPath(projectKey, paneID)
+	data, err := os.ReadFile(path) //nolint:gosec // canonical project/pane path
+	if err != nil {
+		return nil, nil, fmt.Errorf("read Agent Mail generation receipt %s: %w", path, err)
+	}
+	var record PaneIdentityRecord
+	if err := json.Unmarshal(data, &record); err != nil {
+		return nil, nil, fmt.Errorf("Agent Mail generation receipt is not structured JSON: %w", err)
+	}
+	if record.Name != strings.TrimSpace(agentName) || record.PaneID != paneID {
+		return nil, nil, fmt.Errorf("Agent Mail generation receipt binds name=%q pane=%q, want name=%q pane=%q", record.Name, record.PaneID, agentName, paneID)
+	}
+	if record.SessionName == "" || record.PanePID == 0 || record.SocketPath == "" || record.WrittenAt == "" {
+		return nil, nil, fmt.Errorf("Agent Mail generation receipt for %s lacks verified-live binding facts", paneID)
+	}
+	return &record, data, nil
+}
+
+// MirrorVerifiedIdentity projects an already-verified receipt into another
+// project-key namespace without re-deriving or weakening its binding facts.
+func MirrorVerifiedIdentity(projectKey, paneID string, receipt []byte) (string, error) {
+	if err := requireBarePaneID(paneID); err != nil {
+		return "", err
+	}
+	if len(receipt) == 0 {
+		return "", fmt.Errorf("cannot mirror an empty Agent Mail generation receipt")
+	}
+	path := CanonicalIdentityPath(projectKey, paneID)
+	if err := writeIdentityFile(path, string(receipt)); err != nil {
 		return "", err
 	}
 	return path, nil

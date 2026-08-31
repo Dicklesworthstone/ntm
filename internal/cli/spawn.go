@@ -4435,6 +4435,32 @@ func (c *spawnIdentityCoordinator) prepareAgent(parentCtx context.Context, agent
 	// recorded pane is still live means the slot is occupied and the running
 	// agent keeps its name, so this pane gets a fresh identity (ntm#256).
 	if existingName, recoveredFrom, ok := c.registry.ResolveForPane(agent.paneTitle, agent.paneID, c.liveness); ok && existingName != "" {
+		program := agentTypeToProgram(agent.agentType)
+		model := agent.resolvedModel
+		if model == "" {
+			model = agent.model
+		}
+		if strings.TrimSpace(model) == "" {
+			model = delegatedModelPlaceholder(program)
+		}
+		c.registry.HydrateClientTokens(c.client)
+		regCtx, regCancel := context.WithTimeout(parentCtx, 15*time.Second)
+		registered, regErr := c.client.RegisterAgent(regCtx, agentmail.RegisterAgentOptions{
+			ProjectKey: c.workingDir,
+			Program:    program,
+			Model:      model,
+			Name:       existingName,
+			PaneID:     agent.paneID,
+		})
+		regCancel()
+		if regErr != nil || registered == nil {
+			c.status.AgentsFailed++
+			return
+		}
+		if err := c.publishIdentity(agent, registered.Name); err != nil {
+			c.status.AgentsFailed++
+			return
+		}
 		c.status.AgentsRegistered++
 		c.status.AgentMap[agent.paneID] = existingName
 		if !IsJSONOutput() {
@@ -4444,7 +4470,6 @@ func (c *spawnIdentityCoordinator) prepareAgent(parentCtx context.Context, agent
 				output.PrintInfof("Reused existing identity for pane %d: %s", agent.paneIndex, existingName)
 			}
 		}
-		c.publishIdentity(agent, existingName)
 		c.registry.AddAgent(agent.paneTitle, agent.paneID, existingName)
 		c.recordPanePID(parentCtx, agent.paneID)
 		c.persistRegistry()
@@ -4474,6 +4499,7 @@ func (c *spawnIdentityCoordinator) prepareAgent(parentCtx context.Context, agent
 		ProjectKey: c.workingDir,
 		Program:    program,
 		Model:      model,
+		PaneID:     agent.paneID,
 	})
 	regCancel()
 
@@ -4519,7 +4545,13 @@ func (c *spawnIdentityCoordinator) prepareAgent(parentCtx context.Context, agent
 
 	// Write the per-pane identity file(s) so Agent Mail and notify hooks can
 	// resolve AGENT_MAIL_AGENT before the agent process starts.
-	c.publishIdentity(agent, registered.Name)
+	if err := c.publishIdentity(agent, registered.Name); err != nil {
+		c.status.AgentsFailed++
+		if !IsJSONOutput() {
+			output.PrintWarningf("Agent Mail registration for pane %d lacked verified generation readback: %v", agent.paneIndex, err)
+		}
+		return
+	}
 
 	c.status.AgentsRegistered++
 	c.status.AgentMap[agent.paneID] = registered.Name
@@ -4604,13 +4636,20 @@ func (c *spawnIdentityCoordinator) recordPanePID(ctx context.Context, paneID str
 // resolve its identity through: the session key, its symlink-resolved form,
 // and the pane's worktree directory (ntm#257). The extra keys are best-effort;
 // only a failure on the session key itself is reported.
-func (c *spawnIdentityCoordinator) publishIdentity(agent spawnedAgentInfo, name string) {
-	for i, key := range identityPublishKeys(c.workingDir, agent.paneDir) {
-		if _, writeErr := agentmail.WriteIdentity(key, agent.paneID, name); writeErr != nil && i == 0 && !IsJSONOutput() {
-			output.PrintWarningf("Failed to write identity file for pane %d: %v", agent.paneIndex, writeErr)
+func (c *spawnIdentityCoordinator) publishIdentity(agent spawnedAgentInfo, name string) error {
+	_, receipt, err := agentmail.ReadVerifiedIdentity(c.workingDir, agent.paneID, name)
+	if err != nil {
+		return err
+	}
+	for _, key := range identityPublishKeys(c.workingDir, agent.paneDir) {
+		if key != c.workingDir {
+			if _, writeErr := agentmail.MirrorVerifiedIdentity(key, agent.paneID, receipt); writeErr != nil {
+				return writeErr
+			}
 		}
 		_ = agentmail.WriteLegacyCompatIdentity(key, agent.paneID, name)
 	}
+	return nil
 }
 
 // delegatedModelPlaceholder is the model identifier NTM registers with Agent

@@ -59,11 +59,8 @@ func seedRegistry(t *testing.T, session, projectKey, title, paneID, agentName st
 
 func readIdentity(t *testing.T, projectKey, paneID string) string {
 	t.Helper()
-	raw, err := os.ReadFile(agentmail.CanonicalIdentityPath(projectKey, paneID))
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(raw))
+	name, _ := agentmail.ResolveIdentity(projectKey, paneID)
+	return name
 }
 
 func countCreates(tools []string) int {
@@ -129,7 +126,7 @@ func TestSpawnIdentityCoordinator_LiveHolderKeepsItsName(t *testing.T) {
 
 // TestSpawnIdentityCoordinator_DeadHolderIsReused keeps the #69 contract:
 // after the holder of a title died, a same-session respawn gets its name
-// back without a server round-trip, and the binding moves to the new pane.
+// back after a server re-registration binds it to the new pane generation.
 func TestSpawnIdentityCoordinator_DeadHolderIsReused(t *testing.T) {
 	isolateIdentityDirs(t)
 	srv, calledTools := fakeSpawnMailServer(t, "BraveFalcon")
@@ -150,8 +147,8 @@ func TestSpawnIdentityCoordinator_DeadHolderIsReused(t *testing.T) {
 	if status == nil || status.AgentsRegistered != 1 || status.AgentMap["%9"] != "OldTenant" {
 		t.Fatalf("status = %+v, want OldTenant reused for %%9", status)
 	}
-	if creates := countCreates(calledTools()); creates != 0 {
-		t.Fatalf("identity creations = %d, want 0 (dead slot must be reused)", creates)
+	if creates := countCreates(calledTools()); creates != 1 {
+		t.Fatalf("identity registrations = %d, want 1 generation-bound reuse", creates)
 	}
 	if got := readIdentity(t, projectKey, "%9"); got != "OldTenant" {
 		t.Fatalf("identity file for %%9 = %q, want OldTenant", got)
@@ -192,8 +189,8 @@ func TestSpawnIdentityCoordinator_RecycledPaneIDIsDead(t *testing.T) {
 	if status := coordinator.finalStatus(); status == nil || status.AgentMap["%9"] != "OldTenant" {
 		t.Fatalf("status = %+v, want OldTenant recovered from the dead %%5 binding", status)
 	}
-	if creates := countCreates(calledTools()); creates != 0 {
-		t.Fatalf("identity creations = %d, want 0", creates)
+	if creates := countCreates(calledTools()); creates != 1 {
+		t.Fatalf("identity registrations = %d, want 1", creates)
 	}
 }
 

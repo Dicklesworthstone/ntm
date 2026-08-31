@@ -534,6 +534,9 @@ func (c *Client) callTool(ctx context.Context, toolName string, args map[string]
 	}
 
 	req.Header.Set("Content-Type", "application/json")
+	if paneID, _ := ctx.Value(tmuxPaneContextKey{}).(string); paneID != "" {
+		req.Header.Set("X-Tmux-Pane", paneID)
+	}
 	if c.bearerToken != "" {
 		req.Header.Set("Authorization", "Bearer "+c.bearerToken)
 	}
@@ -579,6 +582,27 @@ func (c *Client) callTool(ctx context.Context, toolName string, args map[string]
 	}
 
 	return content, nil
+}
+
+type tmuxPaneContextKey struct{}
+
+// withTmuxPane binds one Agent Mail request to the bare pane address accepted
+// by the 0.3.31 X-Tmux-Pane contract. Composite session:window:pane labels are
+// provenance, not addresses, and must never reach the server header.
+func withTmuxPane(ctx context.Context, paneID string) (context.Context, error) {
+	paneID = strings.TrimSpace(paneID)
+	if paneID == "" {
+		return ctx, nil
+	}
+	if len(paneID) < 2 || paneID[0] != '%' {
+		return nil, fmt.Errorf("tmux pane id %q is not a bare %%N address", paneID)
+	}
+	for _, ch := range paneID[1:] {
+		if ch < '0' || ch > '9' {
+			return nil, fmt.Errorf("tmux pane id %q is not a bare %%N address", paneID)
+		}
+	}
+	return context.WithValue(ctx, tmuxPaneContextKey{}, paneID), nil
 }
 
 // callToolWithTimeout calls a tool with a specific timeout.

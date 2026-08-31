@@ -73,6 +73,11 @@ func (c *Client) EnsureProject(ctx context.Context, projectKey string) (*Project
 
 // RegisterAgent registers an agent in a project.
 func (c *Client) RegisterAgent(ctx context.Context, opts RegisterAgentOptions) (*Agent, error) {
+	var err error
+	ctx, err = withTmuxPane(ctx, opts.PaneID)
+	if err != nil {
+		return nil, NewAPIError("register_agent", 0, err)
+	}
 	args := map[string]interface{}{
 		"project_key": opts.ProjectKey,
 		"program":     opts.Program,
@@ -107,6 +112,11 @@ func (c *Client) RegisterAgent(ctx context.Context, opts RegisterAgentOptions) (
 
 // CreateAgentIdentity creates a new unique agent identity.
 func (c *Client) CreateAgentIdentity(ctx context.Context, opts RegisterAgentOptions) (*Agent, error) {
+	var err error
+	ctx, err = withTmuxPane(ctx, opts.PaneID)
+	if err != nil {
+		return nil, NewAPIError("create_agent_identity", 0, err)
+	}
 	args := map[string]interface{}{
 		"project_key": opts.ProjectKey,
 		"program":     opts.Program,

@@ -1297,6 +1297,42 @@ func TestRegisterAgent_WithOptionalFields(t *testing.T) {
 	}
 }
 
+func TestCreateAgentIdentityCarriesBarePaneHeader(t *testing.T) {
+	t.Parallel()
+	var got string
+	base := mockMCPHandler(t, map[string]func(map[string]interface{}) (interface{}, *JSONRPCError){
+		"create_agent_identity": func(map[string]interface{}) (interface{}, *JSONRPCError) {
+			return Agent{ID: 1, Name: "BlueLake", Program: "ntm", Model: "opus"}, nil
+		},
+	})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Get("X-Tmux-Pane")
+		base.ServeHTTP(w, r)
+	}))
+	defer server.Close()
+	c := NewClient(WithBaseURL(server.URL + "/"))
+	_, err := c.CreateAgentIdentity(context.Background(), RegisterAgentOptions{
+		ProjectKey: "/test", Program: "ntm", Model: "opus", PaneID: "%42",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "%42" {
+		t.Fatalf("X-Tmux-Pane = %q, want %%42", got)
+	}
+}
+
+func TestRegistrationRefusesCompositePaneAddress(t *testing.T) {
+	t.Parallel()
+	c := NewClient()
+	_, err := c.CreateAgentIdentity(context.Background(), RegisterAgentOptions{
+		ProjectKey: "/test", Program: "ntm", Model: "opus", PaneID: "main:0:2",
+	})
+	if err == nil || !strings.Contains(err.Error(), "bare %N") {
+		t.Fatalf("expected bare-address refusal, got %v", err)
+	}
+}
+
 func TestFetchInbox_WithAllOptions(t *testing.T) {
 	t.Parallel()
 
