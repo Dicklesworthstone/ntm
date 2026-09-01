@@ -479,11 +479,11 @@ func extractMCPContent(result json.RawMessage) (json.RawMessage, error) {
 			msgLower := strings.ToLower(errMsg)
 			// Detect transient busy errors so callers can retry
 			if strings.Contains(msgLower, "busy") || strings.Contains(msgLower, "temporarily unavailable") {
-				return nil, fmt.Errorf("%w: %s", ErrTransientBusy, errMsg)
+				return nil, &ToolRejectionError{Err: fmt.Errorf("%w: %s", ErrTransientBusy, errMsg)}
 			}
-			return nil, fmt.Errorf("tool error: %s", errMsg)
+			return nil, &ToolRejectionError{Err: fmt.Errorf("tool error: %s", errMsg)}
 		}
-		return nil, fmt.Errorf("tool returned error")
+		return nil, &ToolRejectionError{Err: errors.New("tool returned error")}
 	}
 
 	// Prefer structuredContent (already parsed JSON)

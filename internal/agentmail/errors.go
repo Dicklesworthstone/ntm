@@ -52,6 +52,41 @@ type JSONRPCError struct {
 	Data    interface{} `json:"data,omitempty"`
 }
 
+// ToolRejectionError marks an MCP exchange that completed with the server
+// explicitly rejecting the tool call (isError in the tool result envelope).
+// Unlike a transport failure or timeout, the server provably received the
+// request and refused it, so the requested side effect did not happen.
+// Callers holding crash-recovery barriers around external side effects can
+// treat this as a safe "no actuation" outcome instead of outcome-unknown.
+type ToolRejectionError struct {
+	Err error
+}
+
+// Error implements the error interface.
+func (e *ToolRejectionError) Error() string {
+	if e == nil || e.Err == nil {
+		return "agent mail tool rejected the request"
+	}
+	return e.Err.Error()
+}
+
+// Unwrap returns the underlying error for errors.Is/As support.
+func (e *ToolRejectionError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+// IsToolRejection reports whether the server completed the MCP exchange with
+// an explicit tool-level rejection. Transport errors, timeouts, and
+// response-decode failures are deliberately excluded: their side-effect
+// outcome is ambiguous.
+func IsToolRejection(err error) bool {
+	var rejection *ToolRejectionError
+	return errors.As(err, &rejection)
+}
+
 // Error implements the error interface.
 func (e *JSONRPCError) Error() string {
 	if e.Data != nil {

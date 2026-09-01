@@ -1122,3 +1122,77 @@ func TestClearPaneEnvelopeSubcommand(t *testing.T) {
 		t.Error("Expected Pane to be 3")
 	}
 }
+
+// TestRunClearForceReleasesUnknownDispatchOutcome covers the operator escape
+// hatch: `ntm assign --clear <bead> --force` releases an assignment stranded
+// at the outcome-unknown dispatch_state="sending" boundary, terminalizing the
+// dispatch barrier back to pending before leases are released.
+func TestRunClearForceReleasesUnknownDispatchOutcome(t *testing.T) {
+	isolateSessionAgentStorage(t)
+	const (
+		session = "clear-force-unknown-dispatch"
+		beadID  = "ntm-clear-force-unknown"
+	)
+	store := assignment.NewStore(session)
+	request := assignment.AtomicRequest{
+		BeadID: beadID, BeadTitle: "Unknown delivery", Target: "%77", OccupancyKey: "%77", Pane: 1,
+		AgentType: "codex", AgentName: "BlueLake", Actor: "BlueLake", Prompt: "work", IdempotencyKey: "unknown-delivery-key",
+	}
+	if _, err := store.RecordAtomicIntent(request, assignment.StableClaimActor(request.Actor, request.IdempotencyKey), time.Now().UTC()); err != nil {
+		t.Fatalf("RecordAtomicIntent: %v", err)
+	}
+	if err := store.RecordAtomicDispatchStarted(beadID, request.IdempotencyKey, time.Now().UTC()); err != nil {
+		t.Fatalf("RecordAtomicDispatchStarted: %v", err)
+	}
+	// The fixture has no external Beads claim; this test targets the
+	// force-clear dispatch barrier and local occupancy release only.
+	store.Assignments[beadID].ClaimActor = ""
+	if err := store.Save(); err != nil {
+		t.Fatalf("save unknown dispatch fixture: %v", err)
+	}
+
+	previousJSON := jsonOutput
+	previousForce := assignForce
+	previousRelease := releaseAssignmentLeases
+	t.Cleanup(func() {
+		jsonOutput = previousJSON
+		assignForce = previousForce
+		releaseAssignmentLeases = previousRelease
+	})
+	jsonOutput = true
+
+	// Without --force the outcome-unknown barrier must keep rejecting the clear.
+	assignForce = false
+	releaseAssignmentLeases = func(context.Context, string, *assignment.Assignment) ([]string, error) {
+		t.Fatal("clear without --force must not reach lease release")
+		return nil, nil
+	}
+	if output, err := captureStdout(t, func() error {
+		return runClearSelectedAssignmentsFromStore(&cobra.Command{}, store, session, []string{beadID}, "clear")
+	}); err == nil {
+		t.Fatalf("clear without --force succeeded despite unknown dispatch outcome\noutput=%s", output)
+	}
+	if current := store.Get(beadID); current == nil || current.DispatchState != assignment.DispatchSending {
+		t.Fatalf("rejected clear mutated the dispatch barrier: %+v", store.Get(beadID))
+	}
+
+	// With --force the barrier is terminalized and the assignment released.
+	assignForce = true
+	releaseCalls := 0
+	releaseAssignmentLeases = func(_ context.Context, _ string, current *assignment.Assignment) ([]string, error) {
+		releaseCalls++
+		if current.DispatchState != assignment.DispatchPending || current.ClearState != assignment.ClearStateReservationReleasing {
+			t.Fatalf("force clear did not terminalize before release: %+v", current)
+		}
+		return nil, nil
+	}
+	output, err := captureStdout(t, func() error {
+		return runClearSelectedAssignmentsFromStore(&cobra.Command{}, store, session, []string{beadID}, "clear")
+	})
+	if err != nil {
+		t.Fatalf("force clear unknown dispatch: %v\noutput=%s", err, output)
+	}
+	if releaseCalls != 1 || store.Get(beadID) != nil {
+		t.Fatalf("force clear release calls=%d remaining=%+v", releaseCalls, store.Get(beadID))
+	}
+}

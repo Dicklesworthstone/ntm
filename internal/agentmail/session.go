@@ -274,12 +274,18 @@ func SaveSessionAgent(sessionName, projectKey string, info *SessionAgentInfo) er
 }
 
 // RegisterSessionAgent registers a session as an agent with Agent Mail.
-// If Agent Mail is unavailable, registration silently fails without blocking.
-// Returns the agent info on success, nil if unavailable, or an error on failure.
+// The required registration calls double as the availability probe: the full
+// health_check diagnostic is deliberately not used here because assembling
+// its snapshot can be slower than ordinary identity operations on a loaded
+// server, which would suppress registration while the server is healthy.
+// Returns the agent info on success or an error on failure.
 func (c *Client) RegisterSessionAgent(ctx context.Context, sessionName, workingDir string) (*SessionAgentInfo, error) {
-	// Check if Agent Mail is available
-	if !c.IsAvailable() {
-		return nil, nil // Silently skip if unavailable
+	// Ensure the project first, even when local session metadata already
+	// exists: Agent Mail may have rebuilt its database from the archive since
+	// the last NTM run, and this lightweight required call is also the
+	// reachability probe.
+	if _, err := c.EnsureProject(ctx, workingDir); err != nil {
+		return nil, fmt.Errorf("ensuring project: %w", err)
 	}
 
 	// Check if already registered
@@ -319,11 +325,6 @@ func (c *Client) RegisterSessionAgent(ctx context.Context, sessionName, workingD
 			}
 		}
 		return existing, nil
-	}
-
-	// Ensure project exists
-	if _, err := c.EnsureProject(ctx, workingDir); err != nil {
-		return nil, fmt.Errorf("ensuring project: %w", err)
 	}
 
 	// Register the agent. Omit Name so the server auto-generates a valid

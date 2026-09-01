@@ -30,6 +30,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	dispatchsvc "github.com/Dicklesworthstone/ntm/internal/dispatch"
 	"github.com/Dicklesworthstone/ntm/internal/events"
+	"github.com/Dicklesworthstone/ntm/internal/output"
 	"github.com/Dicklesworthstone/ntm/internal/pressure"
 	"github.com/Dicklesworthstone/ntm/internal/redaction"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
@@ -322,7 +323,7 @@ Examples:
 
 	// Direct pane assignment flags
 	cmd.Flags().StringVar(&assignPane, "pane", "", "Assign bead directly to exactly one N, W.P, or %N pane selector (requires --beads)")
-	cmd.Flags().BoolVar(&assignForce, "force", false, "Force assignment even if pane is busy (also allows --clear to remove completed assignments)")
+	cmd.Flags().BoolVar(&assignForce, "force", false, "Force assignment even if pane is busy (also lets --clear remove completed or outcome-unknown assignments; forcing an outcome-unknown clear may duplicate an already-delivered dispatch)")
 	cmd.Flags().BoolVar(&assignIgnoreDeps, "ignore-deps", false, "Ignore dependency checks for assignment")
 	cmd.Flags().StringVar(&assignPrompt, "prompt", "", "Custom prompt for direct assignment")
 
@@ -3831,10 +3832,23 @@ func clearStoredAssignmentIfStatus(ctx context.Context, store *assignment.Assign
 		return nil, fmt.Errorf("assignment %s reached terminal status %s while waiting to clear", current.BeadID, refreshed.Status)
 	}
 	current = refreshed
+	if assignForce && current.DispatchState == assignment.DispatchSending && !IsJSONOutput() {
+		output.PrintWarningf(
+			"Force-clearing %s while its dispatch outcome is unknown: the original message may already have been delivered, so re-assigning can duplicate work. Verify pane %d before re-dispatching.",
+			current.BeadID, current.Pane,
+		)
+	}
 	var clearing *assignment.Assignment
-	if len(expected) == 0 {
+	switch {
+	case assignForce && len(expected) == 0:
+		// Operator escape hatch: --force also releases assignments stuck at
+		// the outcome-unknown dispatch boundary (see BeginClearForce).
+		clearing, err = store.BeginClearForce(ctx, current.BeadID, time.Now().UTC())
+	case assignForce:
+		clearing, err = store.BeginClearForceIfStatus(ctx, current.BeadID, time.Now().UTC(), expected...)
+	case len(expected) == 0:
 		clearing, err = store.BeginClear(ctx, current.BeadID, time.Now().UTC())
-	} else {
+	default:
 		clearing, err = store.BeginClearIfStatus(ctx, current.BeadID, time.Now().UTC(), expected...)
 	}
 	if err != nil {

@@ -1265,3 +1265,36 @@ func TestFetchInbox_UnmarshalFormats(t *testing.T) {
 		}
 	})
 }
+
+func TestExtractMCPContentTypedToolRejection(t *testing.T) {
+	t.Run("rejection_with_message", func(t *testing.T) {
+		_, err := extractMCPContent(json.RawMessage(`{
+			"content": [{"type": "text", "text": "Agent 'NTM-Coordinator' not found"}],
+			"isError": true
+		}`))
+		if err == nil || !IsToolRejection(err) {
+			t.Fatalf("extractMCPContent error=%v, want typed tool rejection", err)
+		}
+		if IsServerUnavailable(err) || IsTimeout(err) {
+			t.Fatalf("tool rejection misclassified as ambiguous transport failure: %v", err)
+		}
+	})
+
+	t.Run("busy_rejection_keeps_transient_classification", func(t *testing.T) {
+		_, err := extractMCPContent(json.RawMessage(`{
+			"content": [{"type": "text", "text": "database is busy"}],
+			"isError": true
+		}`))
+		if err == nil || !IsToolRejection(err) || !IsTransientBusy(err) {
+			t.Fatalf("busy rejection lost a classification: rejection=%v busy=%v err=%v",
+				IsToolRejection(err), IsTransientBusy(err), err)
+		}
+	})
+
+	t.Run("rejection_without_message", func(t *testing.T) {
+		_, err := extractMCPContent(json.RawMessage(`{"isError": true}`))
+		if err == nil || !IsToolRejection(err) {
+			t.Fatalf("extractMCPContent error=%v, want typed tool rejection", err)
+		}
+	})
+}

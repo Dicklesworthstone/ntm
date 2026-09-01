@@ -1034,7 +1034,7 @@ func (c *AtomicCoordinator) releaseWorkingReplacementWithOperationLocks(ctx cont
 	}
 
 	if current.ClearState == ClearStateNone {
-		clearing, err := c.store.beginClearWithOperationLock(req.BeadID, c.now(), []AssignmentStatus{StatusWorking})
+		clearing, err := c.store.beginClearWithOperationLock(req.BeadID, c.now(), false, []AssignmentStatus{StatusWorking})
 		if err != nil {
 			return receipt, c.store.Get(req.BeadID), err
 		}

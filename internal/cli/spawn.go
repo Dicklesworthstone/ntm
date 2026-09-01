@@ -4373,17 +4373,15 @@ func (c *spawnIdentityCoordinator) ensureInit(parentCtx context.Context) {
 	}
 	c.client = agentmail.NewClient(opts...)
 
-	// Check availability first (uses cached result)
-	if !c.client.IsAvailable() {
-		c.status = &output.AgentMailSpawnStatus{
-			Available:         false,
-			ProjectRegistered: false,
-		}
-		return
-	}
-	c.available = true
+	// Do not gate spawn registration on the full MCP health_check probe. Its
+	// availability budget is deliberately small, while a healthy Agent Mail
+	// server under database pressure may need longer to assemble the
+	// diagnostic snapshot; gating on it made a loaded-but-healthy server
+	// suppress every pane identity. ensure_project below is the operation
+	// spawn actually needs and is a sufficient (and lighter) reachability
+	// check — treat its response as authoritative.
 	c.status = &output.AgentMailSpawnStatus{
-		Available: true,
+		Available: false,
 		AgentMap:  make(map[string]string),
 	}
 
@@ -4395,8 +4393,8 @@ func (c *spawnIdentityCoordinator) ensureInit(parentCtx context.Context) {
 	}
 	c.observeLivePanes(parentCtx)
 
-	// Ensure project exists
-	ctx, cancel := context.WithTimeout(parentCtx, 5*time.Second)
+	// Ensure project exists; success also marks Agent Mail available.
+	ctx, cancel := context.WithTimeout(parentCtx, 15*time.Second)
 	defer cancel()
 	if _, err := c.client.EnsureProject(ctx, c.workingDir); err != nil {
 		if !IsJSONOutput() {
@@ -4404,6 +4402,8 @@ func (c *spawnIdentityCoordinator) ensureInit(parentCtx context.Context) {
 		}
 		return
 	}
+	c.available = true
+	c.status.Available = true
 	c.projectOK = true
 	c.status.ProjectRegistered = true
 }

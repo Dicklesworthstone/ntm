@@ -2487,6 +2487,41 @@ func TestAssignmentClearRejectsUnknownDispatchOutcome(t *testing.T) {
 	if stored == nil || stored.ClearState != ClearStateNone || stored.DispatchState != DispatchSending || stored.DispatchAttempts != 1 {
 		t.Fatalf("rejected clear mutated dispatch barrier: %+v", stored)
 	}
+
+	// The explicit operator escape hatch does establish the barrier: dispatch
+	// returns to pending (retryable) and the reason is recorded.
+	forced, err := store.BeginClearForce(t.Context(), beadID, now.Add(2*time.Second))
+	if err != nil {
+		t.Fatalf("BeginClearForce: %v", err)
+	}
+	if forced.ClearState != ClearStateReservationReleasing || forced.DispatchState != DispatchPending ||
+		!strings.Contains(forced.LastDispatchError, "force-cleared") {
+		t.Fatalf("forced clear did not terminalize unknown dispatch: %+v", forced)
+	}
+}
+
+func TestBeginClearForceIfStatusStillGuardsStatus(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	const beadID = "ntm-clear-force-status"
+	store := NewStore("assignment-clear-force-status")
+	request := AtomicRequest{
+		BeadID: beadID, BeadTitle: "Sending", Target: "%72", OccupancyKey: "%72", Pane: 1,
+		AgentType: "codex", AgentName: "CodexOne", Actor: "CodexOne", Prompt: "work", IdempotencyKey: "force-status-key",
+	}
+	now := time.Now().UTC()
+	if _, err := store.RecordAtomicIntent(request, StableClaimActor(request.Actor, request.IdempotencyKey), now); err != nil {
+		t.Fatalf("RecordAtomicIntent: %v", err)
+	}
+	if err := store.RecordAtomicDispatchStarted(beadID, request.IdempotencyKey, now); err != nil {
+		t.Fatalf("RecordAtomicDispatchStarted: %v", err)
+	}
+	// Force bypasses only the dispatch-outcome barrier, never the status guard.
+	if _, err := store.BeginClearForceIfStatus(t.Context(), beadID, now.Add(time.Second), StatusFailed); !errors.Is(err, ErrAssignmentStatusMismatch) {
+		t.Fatalf("BeginClearForceIfStatus error=%v, want ErrAssignmentStatusMismatch", err)
+	}
+	if _, err := store.BeginClearForceIfStatus(t.Context(), beadID, now.Add(time.Second)); err == nil {
+		t.Fatal("BeginClearForceIfStatus with no expected statuses must fail")
+	}
 }
 
 func TestBeginClearIfStatusRejectsConcurrentLifecycleChange(t *testing.T) {

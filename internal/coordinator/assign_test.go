@@ -2826,3 +2826,28 @@ func TestScoreAssignmentWithNilProfile(t *testing.T) {
 		t.Errorf("expected zero FocusPatternBonus with nil profile, got %f", result.ScoreBreakdown.FocusPatternBonus)
 	}
 }
+
+func TestCoordinatorMailDispatchErrorTerminalizesOnlyToolRejection(t *testing.T) {
+	rejection := &agentmail.ToolRejectionError{Err: errors.New("sender is not registered")}
+	if got := coordinatorMailDispatchError(rejection); !assignmentstore.IsGuaranteedNoActuation(got) {
+		t.Fatalf("explicit server rejection stayed outcome-unknown: %v", got)
+	}
+	wrapped := fmt.Errorf("send work assignment: %w", rejection)
+	if got := coordinatorMailDispatchError(wrapped); !assignmentstore.IsGuaranteedNoActuation(got) {
+		t.Fatalf("wrapped server rejection stayed outcome-unknown: %v", got)
+	}
+
+	timeout := agentmail.NewAPIError("send_message", 0, agentmail.ErrTimeout)
+	if got := coordinatorMailDispatchError(timeout); assignmentstore.IsGuaranteedNoActuation(got) || !errors.Is(got, agentmail.ErrTimeout) {
+		t.Fatalf("ambiguous timeout was terminalized: %v", got)
+	}
+
+	transport := errors.New("connection reset by peer")
+	if got := coordinatorMailDispatchError(transport); assignmentstore.IsGuaranteedNoActuation(got) {
+		t.Fatalf("ambiguous transport failure was terminalized: %v", got)
+	}
+
+	if got := coordinatorMailDispatchError(nil); got != nil {
+		t.Fatalf("nil error changed to %v", got)
+	}
+}

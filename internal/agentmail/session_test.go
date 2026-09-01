@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -700,8 +702,8 @@ func TestRegisterSessionAgent_ReusesPersistedTokenOnReclaim(t *testing.T) {
 
 	var gotToken string
 	server := httptest.NewServer(mockMCPHandler(t, map[string]func(args map[string]interface{}) (interface{}, *JSONRPCError){
-		"health_check": func(map[string]interface{}) (interface{}, *JSONRPCError) {
-			return map[string]interface{}{"status": "ok"}, nil
+		"ensure_project": func(args map[string]interface{}) (interface{}, *JSONRPCError) {
+			return Project{ID: 2, HumanKey: args["human_key"].(string)}, nil
 		},
 		"register_agent": func(args map[string]interface{}) (interface{}, *JSONRPCError) {
 			gotToken, _ = args["registration_token"].(string)
@@ -720,5 +722,135 @@ func TestRegisterSessionAgent_ReusesPersistedTokenOnReclaim(t *testing.T) {
 	}
 	if gotToken != "tok-persisted" {
 		t.Fatalf("register_agent received token %q, want the persisted tok-persisted", gotToken)
+	}
+}
+
+// TestRegisterSessionAgentProbesWithEnsureProject verifies the availability
+// probe is the lightweight ensure_project call rather than the heavier
+// health_check diagnostic: a loaded-but-healthy server that would blow the
+// health_check budget must still yield a session identity.
+func TestRegisterSessionAgentProbesWithEnsureProject(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+
+	var mu sync.Mutex
+	var called []string
+	record := func(name string) {
+		mu.Lock()
+		called = append(called, name)
+		mu.Unlock()
+	}
+
+	server := httptest.NewServer(mockMCPHandler(t, map[string]func(args map[string]interface{}) (interface{}, *JSONRPCError){
+		"ensure_project": func(args map[string]interface{}) (interface{}, *JSONRPCError) {
+			record("ensure_project")
+			return Project{ID: 7, HumanKey: args["human_key"].(string)}, nil
+		},
+		"register_agent": func(args map[string]interface{}) (interface{}, *JSONRPCError) {
+			record("register_agent")
+			return Agent{ID: 8, Name: "WhiteHorse", Program: args["program"].(string), Model: args["model"].(string), RegistrationToken: "session-token"}, nil
+		},
+		// No health_check handler: mockMCPHandler fails the exchange for any
+		// unhandled tool, so a health_check probe would surface as an error.
+	}))
+	t.Cleanup(server.Close)
+
+	client := NewClient(WithBaseURL(server.URL + "/"))
+	info, err := client.RegisterSessionAgent(context.Background(), "session-probe-test", "/project/probe-test")
+	if err != nil {
+		t.Fatalf("RegisterSessionAgent: %v", err)
+	}
+	if info == nil || info.AgentName != "WhiteHorse" || info.RegistrationToken != "session-token" {
+		t.Fatalf("session info = %+v", info)
+	}
+
+	mu.Lock()
+	tools := append([]string(nil), called...)
+	mu.Unlock()
+	if len(tools) < 2 || tools[0] != "ensure_project" {
+		t.Fatalf("ensure_project must be the first (probe) call, got %v", tools)
+	}
+	for _, tool := range tools {
+		if tool == "health_check" {
+			t.Fatalf("registration must not be gated on health_check, got %v", tools)
+		}
+	}
+
+	loaded, err := LoadSessionAgent("session-probe-test", "/project/probe-test")
+	if err != nil || loaded == nil || loaded.RegistrationToken != "session-token" {
+		t.Fatalf("persisted session info = %+v, error=%v", loaded, err)
+	}
+	if token := client.RegistrationToken("/project/probe-test", "WhiteHorse"); token != "session-token" {
+		t.Fatalf("client token cache = %q, want session-token", token)
+	}
+}
+
+// TestRegisterSessionAgentEnsuresProjectOnReRegister verifies the existing
+// registration fast path still runs ensure_project first: Agent Mail may have
+// rebuilt its database since the identity was persisted locally.
+func TestRegisterSessionAgentEnsuresProjectOnReRegister(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+
+	if err := SaveSessionAgent("session-rebuild-test", "/project/rebuild-test", &SessionAgentInfo{
+		AgentName:  "WhiteHorse",
+		ProjectKey: "/project/rebuild-test",
+	}); err != nil {
+		t.Fatalf("seed session agent: %v", err)
+	}
+
+	var mu sync.Mutex
+	ensures := 0
+	server := httptest.NewServer(mockMCPHandler(t, map[string]func(args map[string]interface{}) (interface{}, *JSONRPCError){
+		"ensure_project": func(args map[string]interface{}) (interface{}, *JSONRPCError) {
+			mu.Lock()
+			ensures++
+			mu.Unlock()
+			return Project{ID: 7, HumanKey: args["human_key"].(string)}, nil
+		},
+		"register_agent": func(args map[string]interface{}) (interface{}, *JSONRPCError) {
+			return Agent{ID: 8, Name: args["name"].(string)}, nil
+		},
+	}))
+	t.Cleanup(server.Close)
+
+	client := NewClient(WithBaseURL(server.URL + "/"))
+	info, err := client.RegisterSessionAgent(context.Background(), "session-rebuild-test", "/project/rebuild-test")
+	if err != nil {
+		t.Fatalf("RegisterSessionAgent: %v", err)
+	}
+	if info == nil || info.AgentName != "WhiteHorse" {
+		t.Fatalf("session info = %+v", info)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if ensures != 1 {
+		t.Fatalf("ensure_project calls = %d, want 1", ensures)
+	}
+}
+
+// TestRegisterSessionAgentFailsClosedWhenProjectEnsureFails verifies the probe
+// failure is reported instead of the old silent (nil, nil) skip.
+func TestRegisterSessionAgentFailsClosedWhenProjectEnsureFails(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+
+	server := httptest.NewServer(mockMCPHandler(t, map[string]func(args map[string]interface{}) (interface{}, *JSONRPCError){
+		"ensure_project": func(map[string]interface{}) (interface{}, *JSONRPCError) {
+			return nil, &JSONRPCError{Code: -32000, Message: "database unavailable"}
+		},
+	}))
+	t.Cleanup(server.Close)
+
+	client := NewClient(WithBaseURL(server.URL + "/"))
+	info, err := client.RegisterSessionAgent(context.Background(), "session-down-test", "/project/down-test")
+	if err == nil || info != nil {
+		t.Fatalf("RegisterSessionAgent = (%+v, %v), want ensure-project error", info, err)
+	}
+	if !strings.Contains(err.Error(), "ensuring project") {
+		t.Fatalf("error should identify the failed probe, got %v", err)
 	}
 }

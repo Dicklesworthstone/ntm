@@ -241,6 +241,9 @@ func TestSpawnIdentityCoordinator_PublishesIdentityAtPrepareTime(t *testing.T) {
 	// The server must have been asked to create exactly one identity.
 	creates := 0
 	for _, tool := range calledTools() {
+		if tool == "health_check" {
+			t.Fatal("spawn identity registration must not be gated on the slower diagnostic health_check; ensure_project is the availability probe")
+		}
 		if tool == "create_agent_identity" || tool == "register_agent" {
 			creates++
 		}
