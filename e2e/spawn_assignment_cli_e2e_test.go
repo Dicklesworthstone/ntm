@@ -8699,6 +8699,7 @@ func spawnAssignmentIsolatedEnv(overrides map[string]string) []string {
 	replaced := map[string]struct{}{
 		"HOME": {}, "XDG_CONFIG_HOME": {}, "XDG_DATA_HOME": {}, "XDG_STATE_HOME": {}, "XDG_CACHE_HOME": {},
 		"PWD": {}, "OLDPWD": {}, "GIT_DIR": {}, "GIT_WORK_TREE": {}, "BR_DB": {}, "BD_DB": {}, "BEADS_DB": {}, "AGENT_NAME": {},
+		"BR_NO_DAEMON": {}, "BD_NO_DAEMON": {},
 		"PATH": {},
 		"TMUX": {}, "TMUX_PANE": {}, "TMUX_TMPDIR": {},
 		"NTM_CONFIG": {}, "NTM_OUTPUT_FORMAT": {}, "NTM_ROBOT_FORMAT": {}, "TOON_DEFAULT_FORMAT": {},
@@ -8717,6 +8718,15 @@ func spawnAssignmentIsolatedEnv(overrides map[string]string) []string {
 	}
 	for key, value := range overrides {
 		result = append(result, key+"="+value)
+	}
+	// Hermetic br: pin the daemon off so host-level br daemons/config cannot
+	// answer reads for beads seeded through the fixture's isolated state
+	// (#263). A no-op on br >=0.5; the discriminator on older installs.
+	if _, ok := overrides["BR_NO_DAEMON"]; !ok {
+		result = append(result, "BR_NO_DAEMON=1")
+	}
+	if _, ok := overrides["BD_NO_DAEMON"]; !ok {
+		result = append(result, "BD_NO_DAEMON=1")
 	}
 	sort.Strings(result)
 	return result

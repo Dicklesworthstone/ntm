@@ -581,13 +581,21 @@ func TestE2EAtomicAssignmentIsolatedEnvScrubsHostOverrides(t *testing.T) {
 	for _, key := range []string{"BR_DB", "BD_DB", "BEADS_DB", "GIT_DIR", "GIT_WORK_TREE", "AGENT_NAME", "PWD", "OLDPWD", "NTM_TEST_ASSIGNMENT_SAVE_FAIL_AFTER_BACKUP", "NTM_TEST_COMPLETION_ACK_FAIL_ONCE", "NTM_TEST_COMPLETION_LEASE_DURATION", "NTM_TEST_COMPLETION_HANDLER_DELAY"} {
 		t.Setenv(key, "/should/not/escape")
 	}
+	t.Setenv("BR_NO_DAEMON", "0") // host value must not survive either
 	env := atomicAssignmentIsolatedEnv(map[string]string{"HOME": t.TempDir()})
+	daemonPins := map[string]string{}
 	for _, entry := range env {
-		key, _, _ := strings.Cut(entry, "=")
+		key, value, _ := strings.Cut(entry, "=")
 		switch key {
 		case "BR_DB", "BD_DB", "BEADS_DB", "GIT_DIR", "GIT_WORK_TREE", "AGENT_NAME", "PWD", "OLDPWD", "NTM_TEST_ASSIGNMENT_SAVE_FAIL_AFTER_BACKUP", "NTM_TEST_COMPLETION_ACK_FAIL_ONCE", "NTM_TEST_COMPLETION_LEASE_DURATION", "NTM_TEST_COMPLETION_HANDLER_DELAY":
 			t.Fatalf("isolated process environment retained %s", key)
+		case "BR_NO_DAEMON", "BD_NO_DAEMON":
+			daemonPins[key] = value
 		}
+	}
+	// Hermetic br: the fixture environment must pin daemons off (#263).
+	if daemonPins["BR_NO_DAEMON"] != "1" || daemonPins["BD_NO_DAEMON"] != "1" {
+		t.Fatalf("daemon pins = %v, want BR_NO_DAEMON=1 and BD_NO_DAEMON=1", daemonPins)
 	}
 }
 
@@ -11183,6 +11191,7 @@ func atomicAssignmentIsolatedEnv(overrides map[string]string) []string {
 	replaced := map[string]struct{}{
 		"HOME": {}, "XDG_CONFIG_HOME": {}, "XDG_DATA_HOME": {}, "XDG_STATE_HOME": {}, "XDG_CACHE_HOME": {}, "PWD": {}, "OLDPWD": {},
 		"GIT_DIR": {}, "GIT_WORK_TREE": {}, "BR_DB": {}, "BD_DB": {}, "BEADS_DB": {}, "AGENT_NAME": {},
+		"BR_NO_DAEMON": {}, "BD_NO_DAEMON": {},
 		"TMUX": {}, "TMUX_PANE": {}, "TMUX_TMPDIR": {},
 		"NTM_CONFIG": {}, "NTM_OUTPUT_FORMAT": {}, "NTM_ROBOT_FORMAT": {}, "NTM_TEST_ASSIGNMENT_SAVE_FAIL_AFTER_BACKUP": {}, "NTM_TEST_COMPLETION_ACK_FAIL_ONCE": {}, "NTM_TEST_COMPLETION_LEASE_DURATION": {}, "NTM_TEST_COMPLETION_HANDLER_DELAY": {}, "TOON_DEFAULT_FORMAT": {},
 		"AGENT_MAIL_URL": {}, "AGENT_MAIL_TOKEN": {},
@@ -11200,6 +11209,19 @@ func atomicAssignmentIsolatedEnv(overrides map[string]string) []string {
 	}
 	for key, value := range overrides {
 		result = append(result, key+"="+value)
+	}
+	// Hermetic br: host-level br daemons must not answer reads for beads the
+	// fixture seeded through its own isolated state — on hosts running an
+	// older br (0.3.x/0.4.x) daemon, seeded beads came back invisible to
+	// `br ready`/`br list` and the assign-family e2e suites failed (#263).
+	// br >=0.5 documents BR_NO_DAEMON as an effective no-op, so pinning it is
+	// free there and the discriminator where it matters. Both the seeding
+	// writes (mustBR) and the built ntm process run with this environment.
+	if _, ok := overrides["BR_NO_DAEMON"]; !ok {
+		result = append(result, "BR_NO_DAEMON=1")
+	}
+	if _, ok := overrides["BD_NO_DAEMON"]; !ok {
+		result = append(result, "BD_NO_DAEMON=1")
 	}
 	sort.Strings(result)
 	return result
