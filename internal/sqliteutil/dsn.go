@@ -2,6 +2,7 @@ package sqliteutil
 
 import (
 	"net/url"
+	"runtime"
 	"strings"
 
 	_ "modernc.org/sqlite"
@@ -11,7 +12,7 @@ const DriverName = "sqlite"
 
 func FileDSN(path string, pragmas ...string) string {
 	q := pragmaQuery(pragmas...)
-	return (&url.URL{Scheme: "file", Path: path, RawQuery: q.Encode()}).String()
+	return fileDSN(path, q)
 }
 
 // ImmediateTransactionFileDSN acquires SQLite's write reservation when a
@@ -20,7 +21,31 @@ func FileDSN(path string, pragmas ...string) string {
 func ImmediateTransactionFileDSN(path string, pragmas ...string) string {
 	q := pragmaQuery(pragmas...)
 	q.Set("_txlock", "immediate")
-	return (&url.URL{Scheme: "file", Path: path, RawQuery: q.Encode()}).String()
+	return fileDSN(path, q)
+}
+
+func fileDSN(path string, query url.Values) string {
+	return fileDSNForOS(path, query, runtime.GOOS)
+}
+
+func fileDSNForOS(path string, query url.Values, goos string) string {
+	return (&url.URL{Scheme: "file", Path: fileURIPath(path, goos), RawQuery: query.Encode()}).String()
+}
+
+func fileURIPath(path, goos string) string {
+	if goos != "windows" {
+		return path
+	}
+
+	path = strings.ReplaceAll(path, `\`, "/")
+	if len(path) >= 3 && isASCIIAlpha(path[0]) && path[1] == ':' && path[2] == '/' {
+		return "/" + path
+	}
+	return path
+}
+
+func isASCIIAlpha(value byte) bool {
+	return value >= 'A' && value <= 'Z' || value >= 'a' && value <= 'z'
 }
 
 func MemoryDSN(pragmas ...string) string {

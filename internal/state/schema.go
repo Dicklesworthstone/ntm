@@ -8,7 +8,7 @@ import (
 	"embed"
 	"fmt"
 	"io/fs"
-	"path/filepath"
+	"path"
 	"sort"
 	"strings"
 	"time"
@@ -229,7 +229,7 @@ func GetMigrationFiles() ([]string, error) {
 
 // ReadMigration reads the content of a migration file.
 func ReadMigration(filename string) (string, error) {
-	data, err := migrations.ReadFile(filepath.Join("migrations", filename))
+	data, err := migrations.ReadFile(path.Join("migrations", filename))
 	if err != nil {
 		return "", fmt.Errorf("read migration %s: %w", filename, err)
 	}
