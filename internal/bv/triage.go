@@ -271,10 +271,51 @@ func GetActionableRecommendationsContext(ctx context.Context, dir string, n int)
 	if labelsErr != nil {
 		return nil, classifyActionableLabelsError(ctx, labelsErr)
 	}
+
+	// bv --robot-plan is a ranked snapshot; Beads owns lifecycle state. A plan
+	// row that has vanished from both open-only label surfaces is either stale
+	// (closed/blocked/in_progress/deferred since the snapshot — satisfied or
+	// ineligible, skip it) or genuinely unaccounted for (fail closed). Resolve
+	// the distinction once against the complete tracker surface; the normal
+	// all-verified path never pays for the extra br call.
+	var missingFromOpen []string
 	for _, item := range planItems {
 		if _, verified := labelsByID[item.ID]; !verified {
-			return nil, fmt.Errorf("%w: open actionable plan item %q was absent from both br ready and br list --status open", ErrActionableLabelsUnverified, item.ID)
+			missingFromOpen = append(missingFromOpen, item.ID)
 		}
+	}
+	if len(missingFromOpen) > 0 {
+		statusesByID, statusErr := allBeadStatusesContext(ctx, dir)
+		if statusErr != nil {
+			return nil, classifyActionableLabelsError(ctx, statusErr)
+		}
+		stale := make(map[string]struct{}, len(missingFromOpen))
+		for _, id := range missingFromOpen {
+			status, tracked := statusesByID[id]
+			switch {
+			case !tracked:
+				return nil, fmt.Errorf("%w: actionable plan item %q was absent from br ready, br list --status open, and br list --all", ErrActionableLabelsUnverified, id)
+			case status == "open":
+				// Live-open yet invisible on both open surfaces: the label
+				// sources are inconsistent, not merely behind the plan. Keep
+				// failing closed rather than dispatch unverifiable work.
+				return nil, fmt.Errorf("%w: plan item %q is still open in br list --all but was absent from both br ready and br list --status open", ErrActionableLabelsUnverified, id)
+			default:
+				stale[id] = struct{}{}
+			}
+		}
+		filtered := planItems[:0]
+		for _, item := range planItems {
+			if _, drop := stale[item.ID]; drop {
+				delete(planByID, item.ID)
+				continue
+			}
+			filtered = append(filtered, item)
+		}
+		planItems = filtered
+	}
+
+	for _, item := range planItems {
 		// Type evidence follows the same coverage invariant as labels: without
 		// a verified issue type the classifier cannot prove a plan item is not
 		// a container (epic), so assignment must stop rather than dispatch it.
@@ -425,6 +466,38 @@ func readyBeadLabelsContext(ctx context.Context, dir string) (map[string][]strin
 		}
 	}
 	return labels, issueTypes, nil
+}
+
+// allBeadStatusesContext reads Beads' complete lifecycle surface (br list
+// --all) as an id→status map. It backs the stale-plan-row resolution above
+// and is only invoked when a plan item has already vanished from both
+// open-only label sources, so the common path stays at two br calls.
+func allBeadStatusesContext(ctx context.Context, dir string) (map[string]string, error) {
+	args := []string{"list", "--json", "--all", "--limit", "100000"}
+	output, err := RunBdContext(ctx, dir, args...)
+	if err != nil {
+		return nil, fmt.Errorf("read bead lifecycle (br %s): %w", strings.Join(args, " "), err)
+	}
+	items, err := UnmarshalBdList[struct {
+		ID     string `json:"id"`
+		Status string `json:"status"`
+	}](output)
+	if err != nil {
+		return nil, fmt.Errorf("parse bead lifecycle (br %s): %w", strings.Join(args, " "), err)
+	}
+	statuses := make(map[string]string, len(items))
+	for _, item := range items {
+		id := strings.TrimSpace(item.ID)
+		if id == "" {
+			continue
+		}
+		status := strings.ToLower(strings.TrimSpace(item.Status))
+		if status == "" {
+			return nil, fmt.Errorf("parse bead lifecycle (br %s): bead %q has a blank status", strings.Join(args, " "), id)
+		}
+		statuses[id] = status
+	}
+	return statuses, nil
 }
 
 // GetNextRecommendation returns the single top recommendation.

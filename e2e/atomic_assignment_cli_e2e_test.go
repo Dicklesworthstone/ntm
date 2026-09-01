@@ -5087,12 +5087,17 @@ func TestE2EAtomicAssignmentLabelEnrichmentFailuresFailClosedBuiltProcess(t *tes
 		`for arg in "$@"; do`,
 		`  case "$arg" in ready|list) command="$arg"; break ;; esac`,
 		`done`,
+		`for arg in "$@"; do`,
+		`  [ "$arg" = "--all" ] && [ "$command" = "list" ] && command=list_all`,
+		`done`,
 		`case "$NTM_E2E_BR_MODE:$command" in`,
 		`  ready_failure:ready) printf 'injected br ready failure\n' >&2; exit 70 ;;`,
 		`  list_failure:list) printf 'injected br list failure\n' >&2; exit 71 ;;`,
 		`  malformed_ready:ready) printf '{\n'; exit 0 ;;`,
 		`  malformed_list:list) printf '{\n'; exit 0 ;;`,
-		`  absent:ready|absent:list) printf '[]\n'; exit 0 ;;`,
+		`  absent:ready|absent:list|absent:list_all) printf '[]\n'; exit 0 ;;`,
+		`  stale_closed:ready|stale_closed:list) printf '[]\n'; exit 0 ;;`,
+		`  stale_closed:list_all) printf '[{"id":"%s","status":"closed"}]\n' "$NTM_E2E_BEAD_ID"; exit 0 ;;`,
 		"esac",
 		"real_br=" + tmux.ShellQuote(fixture.brPath),
 		`exec "$real_br" "$@"`,
@@ -5113,6 +5118,7 @@ func TestE2EAtomicAssignmentLabelEnrichmentFailuresFailClosedBuiltProcess(t *tes
 		mode              string
 		wantDiagnostic    string
 		wantBRInvocations []string
+		wantStaleSkip     bool
 	}{
 		{
 			name: "br ready failure", mode: "ready_failure",
@@ -5135,9 +5141,22 @@ func TestE2EAtomicAssignmentLabelEnrichmentFailuresFailClosedBuiltProcess(t *tes
 			wantBRInvocations: []string{"--lock-timeout 5000 ready --json --limit 100000", "--lock-timeout 5000 list --json --status open --limit 100000"},
 		},
 		{
-			name: "plan item absent from both label sources", mode: "absent",
-			wantDiagnostic:    "absent from both br ready and br list --status open",
-			wantBRInvocations: []string{"--lock-timeout 5000 ready --json --limit 100000", "--lock-timeout 5000 list --json --status open --limit 100000"},
+			name: "plan item absent from every tracker surface", mode: "absent",
+			wantDiagnostic: "absent from br ready, br list --status open, and br list --all",
+			wantBRInvocations: []string{
+				"--lock-timeout 5000 ready --json --limit 100000",
+				"--lock-timeout 5000 list --json --status open --limit 100000",
+				"--lock-timeout 5000 list --json --all --limit 100000",
+			},
+		},
+		{
+			name: "plan item closed since the bv snapshot is skipped", mode: "stale_closed",
+			wantStaleSkip: true,
+			wantBRInvocations: []string{
+				"--lock-timeout 5000 ready --json --limit 100000",
+				"--lock-timeout 5000 list --json --status open --limit 100000",
+				"--lock-timeout 5000 list --json --all --limit 100000",
+			},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -5175,6 +5194,7 @@ func TestE2EAtomicAssignmentLabelEnrichmentFailuresFailClosedBuiltProcess(t *tes
 			env["NTM_E2E_PLAN_PAYLOAD"] = planPath
 			env["NTM_E2E_BR_TRACE"] = brTrace
 			env["NTM_E2E_BR_MODE"] = tc.mode
+			env["NTM_E2E_BEAD_ID"] = beadID
 			result := fixture.runNTM(t, env,
 				"--json", "assign", fixture.session,
 				"--repo="+fixture.projectDir,
@@ -5187,10 +5207,29 @@ func TestE2EAtomicAssignmentLabelEnrichmentFailuresFailClosedBuiltProcess(t *tes
 				"--timeout=15s",
 				"--quiet",
 			)
-			code, message := assertAtomicAssignmentSingleFailureJSON(t, result)
-			if code != "ASSIGN_ERROR" || !strings.Contains(message, "actionable bead labels could not be verified") ||
-				!strings.Contains(message, tc.wantDiagnostic) {
-				t.Fatalf("label-enrichment failure code=%q message=%q, want ASSIGN_ERROR containing %q", code, message, tc.wantDiagnostic)
+			if tc.wantStaleSkip {
+				// A plan row that Beads reports closed is satisfied, not an
+				// error: the run must succeed cleanly with zero assignments.
+				if result.exitCode != 0 || len(bytes.TrimSpace(result.stderr)) != 0 {
+					t.Fatalf("stale-skip exit=%d stdout=%s stderr=%s, want clean success", result.exitCode, result.stdout, result.stderr)
+				}
+				var envelope struct {
+					Success bool `json:"success"`
+					Summary struct {
+						Assigned int `json:"assigned"`
+						Failed   int `json:"failed"`
+					} `json:"summary"`
+				}
+				decodeAtomicAssignmentJSON(t, result.stdout, &envelope)
+				if !envelope.Success || envelope.Summary.Assigned != 0 || envelope.Summary.Failed != 0 {
+					t.Fatalf("stale-skip envelope=%+v raw=%s", envelope, result.stdout)
+				}
+			} else {
+				code, message := assertAtomicAssignmentSingleFailureJSON(t, result)
+				if code != "ASSIGN_ERROR" || !strings.Contains(message, "actionable bead labels could not be verified") ||
+					!strings.Contains(message, tc.wantDiagnostic) {
+					t.Fatalf("label-enrichment failure code=%q message=%q, want ASSIGN_ERROR containing %q", code, message, tc.wantDiagnostic)
+				}
 			}
 
 			trace, err := os.ReadFile(brTrace)
