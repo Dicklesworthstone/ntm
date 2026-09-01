@@ -26,6 +26,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/completion"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	dispatchsvc "github.com/Dicklesworthstone/ntm/internal/dispatch"
+	"github.com/Dicklesworthstone/ntm/internal/persona"
 	"github.com/Dicklesworthstone/ntm/internal/redaction"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	statuspkg "github.com/Dicklesworthstone/ntm/internal/status"
@@ -3722,5 +3723,79 @@ func TestClassifyRetryOutcomeTreatsEverySkipAsFailure(t *testing.T) {
 				t.Fatalf("classifyRetryOutcome() = (%q, %v), want code=%q error=%v", code, err, test.wantCode, test.wantError)
 			}
 		})
+	}
+}
+
+// TestAssignPaneRoles covers role resolution from pane title tags, persona
+// names, and persona tags, and the deliberate non-matching of broad
+// descriptive tags like "review".
+func TestAssignPaneRoles(t *testing.T) {
+	registry := persona.NewRegistry()
+	registry.Add(&persona.Persona{Name: "quill", Tags: []string{"reviewer", "standing-qa-pool"}})
+	registry.Add(&persona.Persona{Name: "reviewer", Tags: []string{"review", "quality", "bugs"}})
+	registry.Add(&persona.Persona{Name: "architect", Tags: []string{"design", "review", "architecture"}})
+
+	tests := []struct {
+		name     string
+		pane     tmux.Pane
+		wantImpl bool
+		wantRev  bool
+	}{
+		{name: "persona tag reviewer", pane: tmux.Pane{Variant: "quill"}, wantRev: true},
+		{name: "builtin persona name reviewer", pane: tmux.Pane{Variant: "reviewer"}, wantRev: true},
+		{name: "architect stays dual-eligible", pane: tmux.Pane{Variant: "architect"}},
+		{name: "model-only pane", pane: tmux.Pane{Variant: "gpt-5@high"}},
+		{name: "title tag implementer", pane: tmux.Pane{Tags: []string{"implementer", "frontend"}}, wantImpl: true},
+		{name: "untagged", pane: tmux.Pane{}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			roles := assignPaneRoles(registry, tc.pane)
+			if roles.implementer != tc.wantImpl || roles.reviewer != tc.wantRev {
+				t.Fatalf("assignPaneRoles(%+v) = %+v, want impl=%v rev=%v", tc.pane, roles, tc.wantImpl, tc.wantRev)
+			}
+		})
+	}
+
+	// Nil registry: only title tags apply.
+	roles := assignPaneRoles(nil, tmux.Pane{Tags: []string{"Reviewer"}})
+	if !roles.reviewer || roles.implementer {
+		t.Fatalf("nil-registry roles = %+v, want reviewer only (case-insensitive)", roles)
+	}
+}
+
+// TestFilterAssignAgentsForTemplate: reviewer-only panes are excluded from
+// impl assignment and implementer-only panes from review assignment, while
+// untagged and dual-role panes stay eligible; non-role templates pass
+// through unchanged.
+func TestFilterAssignAgentsForTemplate(t *testing.T) {
+	registry := persona.NewRegistry()
+	registry.Add(&persona.Persona{Name: "reviewer", Tags: []string{"review"}})
+	registry.Add(&persona.Persona{Name: "implementer", Tags: []string{"implementation"}})
+	registry.Add(&persona.Persona{Name: "hybrid", Tags: []string{"implementer", "reviewer"}})
+
+	agents := []assignAgentInfo{
+		{pane: tmux.Pane{ID: "%1", Variant: "reviewer"}},
+		{pane: tmux.Pane{ID: "%2", Variant: "implementer"}},
+		{pane: tmux.Pane{ID: "%3", Variant: "sonnet@high"}},
+		{pane: tmux.Pane{ID: "%4", Variant: "hybrid"}},
+	}
+	ids := func(list []assignAgentInfo) []string {
+		out := make([]string, 0, len(list))
+		for _, a := range list {
+			out = append(out, a.pane.ID)
+		}
+		return out
+	}
+
+	if got := ids(filterAssignAgentsForTemplate(agents, registry, "impl")); !reflect.DeepEqual(got, []string{"%2", "%3", "%4"}) {
+		t.Fatalf("impl candidates = %v, want [%%2 %%3 %%4]", got)
+	}
+	if got := ids(filterAssignAgentsForTemplate(agents, registry, "review")); !reflect.DeepEqual(got, []string{"%1", "%3", "%4"}) {
+		t.Fatalf("review candidates = %v, want [%%1 %%3 %%4]", got)
+	}
+	if got := ids(filterAssignAgentsForTemplate(agents, registry, "custom")); !reflect.DeepEqual(got, []string{"%1", "%2", "%3", "%4"}) {
+		t.Fatalf("custom candidates = %v, want all", got)
 	}
 }

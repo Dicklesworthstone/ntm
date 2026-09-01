@@ -31,6 +31,7 @@ import (
 	dispatchsvc "github.com/Dicklesworthstone/ntm/internal/dispatch"
 	"github.com/Dicklesworthstone/ntm/internal/events"
 	"github.com/Dicklesworthstone/ntm/internal/output"
+	"github.com/Dicklesworthstone/ntm/internal/persona"
 	"github.com/Dicklesworthstone/ntm/internal/pressure"
 	"github.com/Dicklesworthstone/ntm/internal/redaction"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
@@ -203,6 +204,82 @@ type assignAgentInfo struct {
 	contextUsage      float64
 	activeAssignments int
 	resourceHeadroom  float64
+}
+
+// assignPaneRoleSet captures the persona roles a pane is explicitly bound to.
+// A pane with neither flag set is untagged and eligible for every template.
+type assignPaneRoleSet struct {
+	implementer bool
+	reviewer    bool
+}
+
+// assignPaneRoles resolves a pane's role bindings from (a) the pane title's
+// user tags, (b) the persona profile named by the pane's durable variant —
+// matching both the persona's name and its tags. Only the explicit role
+// tokens "implementer" and "reviewer" count; broader descriptive tags
+// ("review", "coding", …) are deliberately ignored so mixed-focus personas
+// like the builtin architect stay eligible for both templates.
+func assignPaneRoles(registry *persona.Registry, pane tmux.Pane) assignPaneRoleSet {
+	var roles assignPaneRoleSet
+	note := func(token string) {
+		switch strings.ToLower(strings.TrimSpace(token)) {
+		case "implementer":
+			roles.implementer = true
+		case "reviewer":
+			roles.reviewer = true
+		}
+	}
+	for _, tag := range pane.Tags {
+		note(tag)
+	}
+	if registry != nil {
+		// Variant is a persona name for persona-spawned panes and model[@effort]
+		// for model panes; ParsePaneVariant strips a reasoning-effort suffix.
+		name, _ := tmux.ParsePaneVariant(pane.Variant)
+		if profile, ok := registry.Get(name); ok {
+			note(profile.Name)
+			for _, tag := range profile.Tags {
+				note(tag)
+			}
+		}
+	}
+	return roles
+}
+
+// filterAssignAgentsForTemplate drops panes explicitly bound to the opposite
+// role of the impl/review templates: reviewer-only panes never receive
+// implementation work and implementer-only panes never receive review work.
+// Untagged, model-only, and dual-role panes stay eligible; other templates
+// pass through unfiltered.
+func filterAssignAgentsForTemplate(agents []assignAgentInfo, registry *persona.Registry, template string) []assignAgentInfo {
+	template = strings.ToLower(strings.TrimSpace(template))
+	if template != "impl" && template != "review" {
+		return agents
+	}
+	eligible := make([]assignAgentInfo, 0, len(agents))
+	for _, candidate := range agents {
+		roles := assignPaneRoles(registry, candidate.pane)
+		if template == "impl" && roles.reviewer && !roles.implementer {
+			continue
+		}
+		if template == "review" && roles.implementer && !roles.reviewer {
+			continue
+		}
+		eligible = append(eligible, candidate)
+	}
+	return eligible
+}
+
+// assignRoleEligibleAgents loads the project persona registry and applies the
+// template role filter. A registry that fails to load fails closed: assigning
+// review work to a reviewer-tagged pane requires knowing which panes those
+// are, so a corrupt personas.toml must surface, not be skipped.
+func assignRoleEligibleAgents(agents []assignAgentInfo, projectDir, template string) ([]assignAgentInfo, error) {
+	registry, err := persona.LoadRegistry(projectDir)
+	if err != nil {
+		return nil, fmt.Errorf("load persona registry for role-aware assignment: %w", err)
+	}
+	return filterAssignAgentsForTemplate(agents, registry, template), nil
 }
 
 func newAssignCmd() *cobra.Command {
@@ -1754,6 +1831,13 @@ func getAssignOutputEnhanced(ctx context.Context, opts *AssignCommandOptions) (*
 
 	// Combine all skipped beads
 	allSkipped := append(blockedBeads, cyclicBeads...)
+
+	// Persona role gating: reviewer-only panes never receive impl work and
+	// implementer-only panes never receive review work.
+	idleAgents, err = assignRoleEligibleAgents(idleAgents, projectDir, opts.Template)
+	if err != nil {
+		return nil, err
+	}
 
 	result := &AssignOutputEnhanced{
 		Strategy:    opts.Strategy,
@@ -3449,6 +3533,10 @@ func runRetryAssignments(ctx context.Context, session string) error {
 			}
 			return fmt.Errorf("failed to get idle agents: %w", err)
 		}
+		idleAgents, err = assignRoleEligibleAgents(idleAgents, projectDir, assignTemplate)
+		if err != nil {
+			return emitRetryFailure(session, "PERSONA_ERROR", err)
+		}
 	}
 
 	// Process each failed assignment
@@ -4398,6 +4486,10 @@ func runReassignment(ctx context.Context, session string) error {
 		idleAgents, idleErr := getIdleAgents(ctx, session, assignToType, assignVerbose)
 		if idleErr != nil {
 			return emitContextAwareReassignFailure(ctx, session, "TMUX_ERROR", idleErr, nil)
+		}
+		idleAgents, idleErr = assignRoleEligibleAgents(idleAgents, projectDir, assignTemplate)
+		if idleErr != nil {
+			return emitReassignFailure(session, "PERSONA_ERROR", idleErr.Error(), nil)
 		}
 		if len(idleAgents) == 0 {
 			return emitReassignFailure(session, "NO_IDLE_AGENT", fmt.Sprintf("no idle %s agents available", assignToType), map[string]interface{}{"agent_type": assignToType})
@@ -5986,6 +6078,13 @@ func PerformAutoReassignment(ctx context.Context, completedBeadID string, opts *
 		ReserveFiles:    opts.ReserveFiles,
 		policyProject:   opts.policyProject,
 	}
+
+	idleAgents, err = assignRoleEligibleAgents(idleAgents, projectDir, assignOpts.Template)
+	if err != nil {
+		result.Errors = append(result.Errors, err.Error())
+		return result, nil
+	}
+	result.IdleAgents = len(idleAgents)
 
 	assignments := generateAssignmentsEnhanced(ctx, idleAgents, filteredBeads, assignOpts)
 	result.Assignments = assignments
