@@ -12,7 +12,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tui/dashboard"
 	"github.com/Dicklesworthstone/ntm/internal/watcher"
@@ -136,14 +135,11 @@ func startDashboardReservationWatcher(session, projectDir string) func() {
 		return nil
 	}
 
-	amOpts := []agentmail.Option{
-		agentmail.WithBaseURL(cfg.AgentMail.URL),
-		agentmail.WithProjectKey(projectDir),
-	}
-	if cfg.AgentMail.Token != "" {
-		amOpts = append(amOpts, agentmail.WithToken(cfg.AgentMail.Token))
-	}
-	amClient := agentmail.NewClient(amOpts...)
+	// Use the shared constructor so the watcher gets the same semantics as
+	// every other CLI mail path: environment overrides config for URL/token
+	// (this path used to force the config values over AGENT_MAIL_URL/
+	// AGENT_MAIL_TOKEN), plus hydrated per-project registration tokens.
+	amClient := newAgentMailClient(projectDir)
 
 	watcherCtx, cancelWatcher := context.WithCancel(context.Background())
 	done := make(chan struct{})

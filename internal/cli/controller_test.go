@@ -537,3 +537,60 @@ func TestRobotControllerNoPromptFlagRegistered(t *testing.T) {
 		t.Errorf("--controller-no-prompt default = %q, want 'false'", f.DefValue)
 	}
 }
+
+// TestControllerReusablePane: the controller may take over pane 1 of the
+// session's first window only when that pane is verifiably a bare shell.
+// Running agents, wrapper commands, panes in later windows, and sessions with
+// no pane 1 all force a fresh pane instead of a hijack.
+func TestControllerReusablePane(t *testing.T) {
+	tests := []struct {
+		name   string
+		panes  []tmux.Pane
+		wantID string
+		wantOK bool
+	}{
+		{
+			name: "bare shell pane 1 is reused",
+			panes: []tmux.Pane{
+				{ID: "%1", Index: 0, WindowIndex: 0, Command: "zsh"},
+				{ID: "%2", Index: 1, WindowIndex: 0, Title: "work", Command: "zsh"},
+			},
+			wantID: "%2", wantOK: true,
+		},
+		{
+			name: "running agent in pane 1 is never taken over",
+			panes: []tmux.Pane{
+				{ID: "%1", Index: 0, WindowIndex: 0, Command: "zsh"},
+				{ID: "%2", Index: 1, WindowIndex: 0, Title: "sess__cc_1", Type: tmux.AgentClaude, Command: "claude"},
+			},
+		},
+		{
+			name: "agent-titled pane with shell command still refused",
+			panes: []tmux.Pane{
+				{ID: "%2", Index: 1, WindowIndex: 0, Title: "sess__cc_1", Type: tmux.AgentClaude, Command: "zsh"},
+			},
+		},
+		{
+			name: "non-shell foreground command refused",
+			panes: []tmux.Pane{
+				{ID: "%2", Index: 1, WindowIndex: 0, Title: "logs", Command: "tail"},
+			},
+		},
+		{
+			name: "index 1 in a later window is not the controller slot",
+			panes: []tmux.Pane{
+				{ID: "%1", Index: 0, WindowIndex: 0, Command: "zsh"},
+				{ID: "%9", Index: 1, WindowIndex: 3, Command: "zsh"},
+			},
+		},
+		{name: "no panes", panes: nil},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			pane, ok := controllerReusablePane(tc.panes)
+			if ok != tc.wantOK || (ok && pane.ID != tc.wantID) {
+				t.Fatalf("controllerReusablePane = %+v,%v want id=%q ok=%v", pane, ok, tc.wantID, tc.wantOK)
+			}
+		})
+	}
+}

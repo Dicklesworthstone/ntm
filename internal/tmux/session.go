@@ -589,6 +589,22 @@ var bareShellCommands = map[string]struct{}{
 	"zsh": {}, "bash": {}, "sh": {}, "fish": {}, "dash": {}, "ksh": {}, "tcsh": {},
 }
 
+// RunsBareShell reports whether the pane's foreground process is a bare login
+// shell — the only state in which typing a launch command into the pane is
+// guaranteed to reach a shell rather than a running program. Conservative by
+// construction: wrappers and unknown binaries all report false.
+func (p Pane) RunsBareShell() bool {
+	base := strings.ToLower(strings.TrimSpace(p.Command))
+	if i := strings.LastIndex(base, "/"); i >= 0 {
+		base = base[i+1:]
+	}
+	if i := strings.IndexAny(base, " \t"); i >= 0 {
+		base = base[:i]
+	}
+	_, isShell := bareShellCommands[base]
+	return isShell
+}
+
 // AgentCLIDead reports whether an agent-typed pane's CLI has exited back to a
 // bare shell — the pane looks like an agent (title) but its foreground
 // process is the login shell, so anything typed into it lands in zsh, not an

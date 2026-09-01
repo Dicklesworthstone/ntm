@@ -314,18 +314,19 @@ func buildControllerResponse(ctx context.Context, opts ControllerInput) (*Contro
 		agentCmd = claudeEnv.ApplyToCommand(agentCmd)
 	}
 
-	// Find or create pane 1
+	// Find or create the controller pane. Pane 1 is only a candidate slot:
+	// pane indices repeat per window (a session GetPanes sweep can surface an
+	// index-1 pane from ANY window), and in a spawned session pane 1 is
+	// usually a RUNNING agent — retitling it and typing the launch command
+	// into it would hijack that agent's identity and inject the command as a
+	// prompt. Reuse pane 1 only when it is verifiably a plain shell pane in
+	// the session's first window; otherwise create a fresh pane.
 	var targetPaneID string
 	var targetPaneIndex int
-	pane1Found := false
-
-	for _, p := range panes {
-		if p.Index == 1 {
-			pane1Found = true
-			targetPaneID = p.ID
-			targetPaneIndex = p.Index
-			break
-		}
+	reusable, pane1Found := controllerReusablePane(panes)
+	if pane1Found {
+		targetPaneID = reusable.ID
+		targetPaneIndex = reusable.Index
 	}
 
 	if !pane1Found {
@@ -388,6 +389,32 @@ func buildControllerResponse(ctx context.Context, opts ControllerInput) (*Contro
 		AgentCount:          agentCount,
 		AgentList:           strings.Join(agentList, "\n"),
 	}, nil
+}
+
+// controllerReusablePane picks the pane the controller may take over: pane 1
+// of the session's first window, and only when it is verifiably a plain shell
+// pane. It refuses agent-typed panes and panes running anything but a bare
+// shell — retitling a running agent's pane and typing the controller launch
+// command into it would hijack that agent's identity and inject the command
+// as a prompt.
+func controllerReusablePane(panes []tmux.Pane) (tmux.Pane, bool) {
+	lowestWindow := -1
+	for _, p := range panes {
+		if lowestWindow < 0 || p.WindowIndex < lowestWindow {
+			lowestWindow = p.WindowIndex
+		}
+	}
+	for _, p := range panes {
+		if p.WindowIndex != lowestWindow || p.Index != 1 {
+			continue
+		}
+		canonical := p.Type.Canonical()
+		if (canonical == tmux.AgentUser || canonical == tmux.AgentUnknown || !canonical.IsValid()) && p.RunsBareShell() {
+			return p, true
+		}
+		return tmux.Pane{}, false
+	}
+	return tmux.Pane{}, false
 }
 
 func controllerAgentList(panes []tmux.Pane) ([]string, int) {
