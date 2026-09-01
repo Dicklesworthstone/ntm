@@ -358,3 +358,79 @@ func TestResolveIdentity_PlainTextStillResolves(t *testing.T) {
 		t.Fatalf("ResolveIdentity = %q, want SnowyOwl", name)
 	}
 }
+
+// TestBareTmuxPaneID: only %N addresses pass; composite labels, bare digits,
+// and junk are refused — those are ntm-side provenance, not addresses the
+// server's pane-binding contract accepts.
+func TestBareTmuxPaneID(t *testing.T) {
+	accepted := map[string]string{"%0": "%0", "%42": "%42", "  %7 ": "%7"}
+	for in, want := range accepted {
+		if got, ok := BareTmuxPaneID(in); !ok || got != want {
+			t.Errorf("BareTmuxPaneID(%q) = %q,%v want %q,true", in, got, ok, want)
+		}
+	}
+	for _, in := range []string{"", "%", "42", "main:0:2", "%1a", "%1\r\nEvil: x"} {
+		if got, ok := BareTmuxPaneID(in); ok {
+			t.Errorf("BareTmuxPaneID(%q) = %q,true want refusal", in, got)
+		}
+	}
+}
+
+// TestPaneIdentityReceiptReadAndMirror: the server's structured generation
+// receipt round-trips byte-for-byte into another project namespace, and both
+// namespaces resolve to the same agent name.
+func TestPaneIdentityReceiptReadAndMirror(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	t.Setenv("HOME", tmp)
+
+	raw := `{"name":"BlueLake","session_name":"proj","pane_id":"%42","pane_pid":4242,` +
+		`"socket_path":"/tmp/tmux-1000/default","written_at":"2026-08-31T00:00:00Z"}`
+	path := CanonicalIdentityPath("/source/project", "%42")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	receipt, name, ok := ReadPaneIdentityReceipt("/source/project", "%42")
+	if !ok || name != "BlueLake" || string(receipt) != raw {
+		t.Fatalf("ReadPaneIdentityReceipt = %q,%q,%v", receipt, name, ok)
+	}
+	if _, err := MirrorPaneIdentityReceipt("/worktree/project", "%42", receipt); err != nil {
+		t.Fatalf("mirror: %v", err)
+	}
+	mirrored, err := os.ReadFile(CanonicalIdentityPath("/worktree/project", "%42"))
+	if err != nil || string(mirrored) != raw {
+		t.Fatalf("mirrored receipt = %q err=%v, want byte-identical copy", mirrored, err)
+	}
+	if got, _ := ResolveIdentity("/worktree/project", "%42"); got != "BlueLake" {
+		t.Fatalf("mirrored namespace resolves to %q, want BlueLake", got)
+	}
+}
+
+// TestPaneIdentityReceiptRejectsPlainAndMalformed: a legacy plain-name file or
+// malformed JSON is not a generation receipt.
+func TestPaneIdentityReceiptRejectsPlainAndMalformed(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	t.Setenv("HOME", tmp)
+
+	for name, content := range map[string]string{
+		"plain":    "BlueLake\n",
+		"broken":   "{not json",
+		"nameless": `{"pane_id":"%42"}`,
+	} {
+		path := CanonicalIdentityPath("/p-"+name, "%42")
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, ok := ReadPaneIdentityReceipt("/p-"+name, "%42"); ok {
+			t.Errorf("%s content was accepted as a generation receipt", name)
+		}
+	}
+}

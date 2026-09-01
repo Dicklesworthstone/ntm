@@ -71,6 +71,17 @@ func (c *Client) EnsureProject(ctx context.Context, projectKey string) (*Project
 	return &project, nil
 }
 
+// attachPaneBinding adds the caller's tmux pane id to a registration call's
+// arguments when it is a bare %N address, which is the only shape the server's
+// pane-binding contract accepts. Registration works without a pane binding, so
+// an empty or non-bare id (a composite session:window:pane label, say) is
+// simply omitted rather than failing the call.
+func attachPaneBinding(args map[string]interface{}, paneID string) {
+	if bare, ok := BareTmuxPaneID(paneID); ok {
+		args["pane_id"] = bare
+	}
+}
+
 // RegisterAgent registers an agent in a project.
 func (c *Client) RegisterAgent(ctx context.Context, opts RegisterAgentOptions) (*Agent, error) {
 	args := map[string]interface{}{
@@ -84,6 +95,7 @@ func (c *Client) RegisterAgent(ctx context.Context, opts RegisterAgentOptions) (
 	if opts.TaskDescription != "" {
 		args["task_description"] = opts.TaskDescription
 	}
+	attachPaneBinding(args, opts.PaneID)
 
 	// Re-claim path: include the agent's registration token when known so
 	// the server can authenticate us as the existing identity instead of
@@ -118,6 +130,7 @@ func (c *Client) CreateAgentIdentity(ctx context.Context, opts RegisterAgentOpti
 	if opts.TaskDescription != "" {
 		args["task_description"] = opts.TaskDescription
 	}
+	attachPaneBinding(args, opts.PaneID)
 
 	result, err := c.callToolWithBusyRetry(ctx, "create_agent_identity", args, 3*time.Second, busyMaxRetries())
 	if err != nil {

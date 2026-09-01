@@ -11,7 +11,10 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -128,8 +131,10 @@ func TestSpawnIdentityCoordinator_LiveHolderKeepsItsName(t *testing.T) {
 }
 
 // TestSpawnIdentityCoordinator_DeadHolderIsReused keeps the #69 contract:
-// after the holder of a title died, a same-session respawn gets its name
-// back without a server round-trip, and the binding moves to the new pane.
+// after the holder of a title died, a same-session respawn gets its name back
+// and the binding moves to the new pane. One best-effort register_agent
+// re-binds the reused name to the new pane generation server-side; reuse
+// itself never depends on that call succeeding.
 func TestSpawnIdentityCoordinator_DeadHolderIsReused(t *testing.T) {
 	isolateIdentityDirs(t)
 	srv, calledTools := fakeSpawnMailServer(t, "BraveFalcon")
@@ -150,8 +155,8 @@ func TestSpawnIdentityCoordinator_DeadHolderIsReused(t *testing.T) {
 	if status == nil || status.AgentsRegistered != 1 || status.AgentMap["%9"] != "OldTenant" {
 		t.Fatalf("status = %+v, want OldTenant reused for %%9", status)
 	}
-	if creates := countCreates(calledTools()); creates != 0 {
-		t.Fatalf("identity creations = %d, want 0 (dead slot must be reused)", creates)
+	if creates := countCreates(calledTools()); creates != 1 {
+		t.Fatalf("identity registrations = %d, want exactly 1 (the pane-binding refresh; the dead slot's name must be reused, not recreated)", creates)
 	}
 	if got := readIdentity(t, projectKey, "%9"); got != "OldTenant" {
 		t.Fatalf("identity file for %%9 = %q, want OldTenant", got)
@@ -192,8 +197,36 @@ func TestSpawnIdentityCoordinator_RecycledPaneIDIsDead(t *testing.T) {
 	if status := coordinator.finalStatus(); status == nil || status.AgentMap["%9"] != "OldTenant" {
 		t.Fatalf("status = %+v, want OldTenant recovered from the dead %%5 binding", status)
 	}
-	if creates := countCreates(calledTools()); creates != 0 {
-		t.Fatalf("identity creations = %d, want 0", creates)
+	if creates := countCreates(calledTools()); creates != 1 {
+		t.Fatalf("identity registrations = %d, want exactly 1 pane-binding refresh for the reused name", creates)
+	}
+}
+
+// TestSpawnIdentityCoordinator_ReuseSurvivesFailedBindingRefresh: the reuse
+// path's server re-registration is strictly best-effort — when the server
+// rejects it, the pane still gets its recovered name (the #69 offline-reuse
+// contract).
+func TestSpawnIdentityCoordinator_ReuseSurvivesFailedBindingRefresh(t *testing.T) {
+	isolateIdentityDirs(t)
+	srv := failingRegistrationMailServer(t)
+	enableFakeAgentMail(t, srv.URL)
+
+	projectKey := t.TempDir()
+	session := "spawn_identity_reuse_offline"
+	seedRegistry(t, session, projectKey, session+"__cc_1", "%5", "OldTenant", 111)
+	stubPaneProbe(t, []tmux.Pane{{ID: "%9", PID: 999, Title: session + "__cc_1"}}, nil)
+
+	coordinator := newSpawnIdentityCoordinator(projectKey, session)
+	coordinator.prepareAgent(context.Background(), spawnedAgentInfo{
+		paneIndex: 1, paneID: "%9", paneTitle: session + "__cc_1", agentType: "cc",
+	})
+
+	status := coordinator.finalStatus()
+	if status == nil || status.AgentsRegistered != 1 || status.AgentMap["%9"] != "OldTenant" {
+		t.Fatalf("status = %+v, want OldTenant reused despite failed binding refresh", status)
+	}
+	if got := readIdentity(t, projectKey, "%9"); got != "OldTenant" {
+		t.Fatalf("identity file for %%9 = %q, want OldTenant", got)
 	}
 }
 
@@ -302,5 +335,103 @@ func TestSpawnWorktreeInjectsAgentMailProject(t *testing.T) {
 	}
 	if !strings.Contains(body, `paneDir:`) {
 		t.Fatal("spawn must hand the pane's launch directory to prepareAgent so worktree identities publish under both keys")
+	}
+}
+
+// failingRegistrationMailServer answers health_check and ensure_project but
+// rejects every registration call, simulating a reachable server that refuses
+// the best-effort pane-binding refresh.
+func failingRegistrationMailServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ID     interface{} `json:"id"`
+			Method string      `json:"method"`
+			Params struct {
+				Name string `json:"name"`
+			} `json:"params"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		var result interface{}
+		switch req.Params.Name {
+		case "health_check":
+			result = map[string]interface{}{"status": "ok"}
+		case "ensure_project":
+			result = map[string]interface{}{"id": 1, "slug": "proj", "human_key": "proj"}
+		default:
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"jsonrpc": "2.0", "id": req.ID,
+				"error": map[string]interface{}{"code": -32000, "message": "registration refused"},
+			})
+			return
+		}
+		raw, _ := json.Marshal(result)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"jsonrpc": "2.0", "id": req.ID, "result": json.RawMessage(raw),
+		})
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestPublishIdentityPreservesServerReceipt: when registration carried a pane
+// binding, the Agent Mail server has already written a structured generation
+// receipt at the canonical session-key path. publishIdentity must keep it
+// (not clobber it with a plain name) and mirror its exact bytes into the
+// pane's worktree namespace.
+func TestPublishIdentityPreservesServerReceipt(t *testing.T) {
+	isolateIdentityDirs(t)
+
+	projectKey := t.TempDir()
+	paneDir := t.TempDir()
+	receipt := `{"name":"BlueLake","session_name":"s","pane_id":"%7","pane_pid":4242,` +
+		`"socket_path":"/tmp/tmux.sock","written_at":"2026-08-31T00:00:00Z"}`
+	canonical := agentmail.CanonicalIdentityPath(projectKey, "%7")
+	if err := os.MkdirAll(filepath.Dir(canonical), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(canonical, []byte(receipt), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	c := newSpawnIdentityCoordinator(projectKey, "receipt_session")
+	c.publishIdentity(spawnedAgentInfo{paneIndex: 1, paneID: "%7", paneDir: paneDir}, "BlueLake")
+
+	after, err := os.ReadFile(canonical)
+	if err != nil || string(after) != receipt {
+		t.Fatalf("canonical receipt after publish = %q err=%v, want untouched", after, err)
+	}
+	mirrored, err := os.ReadFile(agentmail.CanonicalIdentityPath(paneDir, "%7"))
+	if err != nil || string(mirrored) != receipt {
+		t.Fatalf("worktree mirror = %q err=%v, want byte-identical receipt", mirrored, err)
+	}
+}
+
+// TestPublishIdentityOverwritesMismatchedReceipt: a receipt bound to a
+// DIFFERENT identity is stale evidence for this pane and is replaced with the
+// registered name.
+func TestPublishIdentityOverwritesMismatchedReceipt(t *testing.T) {
+	isolateIdentityDirs(t)
+
+	projectKey := t.TempDir()
+	canonical := agentmail.CanonicalIdentityPath(projectKey, "%7")
+	if err := os.MkdirAll(filepath.Dir(canonical), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	stale := `{"name":"OldTenant","session_name":"s","pane_id":"%7","pane_pid":1,` +
+		`"socket_path":"/tmp/tmux.sock","written_at":"2026-08-01T00:00:00Z"}`
+	if err := os.WriteFile(canonical, []byte(stale), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	c := newSpawnIdentityCoordinator(projectKey, "receipt_session")
+	c.publishIdentity(spawnedAgentInfo{paneIndex: 1, paneID: "%7"}, "BlueLake")
+
+	if got := readIdentity(t, projectKey, "%7"); got != "BlueLake" {
+		t.Fatalf("identity after publish = %q, want BlueLake replacing the stale receipt", got)
 	}
 }

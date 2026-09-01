@@ -296,6 +296,7 @@ type RegisterAgentOptions struct {
 	Model           string
 	Name            string // Optional; auto-generated if empty
 	TaskDescription string
+	PaneID          string // Optional bare tmux pane id (%N); lets the server write its pane-binding generation receipt
 }
 
 // SendMessageOptions contains options for sending a message.

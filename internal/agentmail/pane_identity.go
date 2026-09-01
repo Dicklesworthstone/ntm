@@ -77,6 +77,66 @@ func WriteIdentity(projectKey, paneID, agentName string) (string, error) {
 	return path, nil
 }
 
+// BareTmuxPaneID reports whether paneID is a bare tmux pane address (%N) and
+// returns its trimmed form. This is the only shape the Agent Mail server's
+// pane-binding contract accepts (its is_trusted_tmux_pane_header allowlist);
+// composite session:window:pane labels are ntm-side provenance, not addresses.
+func BareTmuxPaneID(paneID string) (string, bool) {
+	paneID = strings.TrimSpace(paneID)
+	if len(paneID) < 2 || len(paneID) > 64 || paneID[0] != '%' {
+		return "", false
+	}
+	for _, ch := range paneID[1:] {
+		if ch < '0' || ch > '9' {
+			return "", false
+		}
+	}
+	return paneID, true
+}
+
+// ReadPaneIdentityReceipt reads the canonical identity file for a pane and,
+// when it holds the Agent Mail server's structured PaneIdentityRecord JSON
+// (the generation receipt its pane-binding registration writes), returns the
+// raw receipt bytes and the agent name it binds. Plain-text legacy files and
+// unreadable/malformed content return ok=false: a bare name carries no
+// generation-binding facts worth preserving.
+func ReadPaneIdentityReceipt(projectKey, paneID string) (receipt []byte, name string, ok bool) {
+	path := CanonicalIdentityPath(projectKey, paneID)
+	data, err := os.ReadFile(path) //nolint:gosec // canonical project/pane path
+	if err != nil {
+		return nil, "", false
+	}
+	trimmed := strings.TrimSpace(string(data))
+	if !strings.HasPrefix(trimmed, "{") {
+		return nil, "", false
+	}
+	var record struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal([]byte(trimmed), &record); err != nil {
+		return nil, "", false
+	}
+	record.Name = strings.TrimSpace(record.Name)
+	if record.Name == "" {
+		return nil, "", false
+	}
+	return data, record.Name, true
+}
+
+// MirrorPaneIdentityReceipt copies a server-written generation receipt into
+// another project-key namespace byte-for-byte, so worktree/symlink aliases of
+// the project resolve the same binding facts instead of a weaker plain name.
+func MirrorPaneIdentityReceipt(projectKey, paneID string, receipt []byte) (string, error) {
+	if len(receipt) == 0 {
+		return "", fmt.Errorf("cannot mirror an empty pane identity receipt")
+	}
+	path := CanonicalIdentityPath(projectKey, paneID)
+	if err := writeIdentityFile(path, string(receipt)); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
 func writeIdentityFile(path, content string) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {

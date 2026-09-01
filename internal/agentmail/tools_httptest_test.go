@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -1534,5 +1535,83 @@ func TestNewClient_EnvURLNoTrailingSlash(t *testing.T) {
 	c := NewClient()
 	if c.baseURL != "http://envhost:9999/mcp/" {
 		t.Errorf("baseURL = %q, want http://envhost:9999/mcp/", c.baseURL)
+	}
+}
+
+// TestRegistrationCarriesBarePaneBinding: a bare %N pane id in
+// RegisterAgentOptions reaches the server as the pane_id tool argument (the
+// contract that makes the server write its pane-binding generation receipt),
+// on both registration surfaces.
+func TestRegistrationCarriesBarePaneBinding(t *testing.T) {
+	t.Parallel()
+
+	var mu sync.Mutex
+	seen := map[string]interface{}{}
+	record := func(tool string) func(map[string]interface{}) (interface{}, *JSONRPCError) {
+		return func(args map[string]interface{}) (interface{}, *JSONRPCError) {
+			mu.Lock()
+			seen[tool] = args["pane_id"]
+			mu.Unlock()
+			return Agent{ID: 1, Name: "BlueLake", Program: "ntm", Model: "opus"}, nil
+		}
+	}
+	server := httptest.NewServer(mockMCPHandler(t, map[string]func(map[string]interface{}) (interface{}, *JSONRPCError){
+		"register_agent":        record("register_agent"),
+		"create_agent_identity": record("create_agent_identity"),
+	}))
+	defer server.Close()
+
+	c := NewClient(WithBaseURL(server.URL + "/"))
+	if _, err := c.CreateAgentIdentity(context.Background(), RegisterAgentOptions{
+		ProjectKey: "/test", Program: "ntm", Model: "opus", PaneID: "%42",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.RegisterAgent(context.Background(), RegisterAgentOptions{
+		ProjectKey: "/test", Program: "ntm", Model: "opus", Name: "BlueLake", PaneID: "%7",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if seen["create_agent_identity"] != "%42" {
+		t.Errorf("create_agent_identity pane_id = %v, want %%42", seen["create_agent_identity"])
+	}
+	if seen["register_agent"] != "%7" {
+		t.Errorf("register_agent pane_id = %v, want %%7", seen["register_agent"])
+	}
+}
+
+// TestRegistrationOmitsNonBarePaneBinding: composite labels and empty ids are
+// omitted — the registration itself still succeeds, it just carries no
+// pane binding for the server to receipt.
+func TestRegistrationOmitsNonBarePaneBinding(t *testing.T) {
+	t.Parallel()
+
+	for _, paneID := range []string{"", "main:0:2", "%x"} {
+		var mu sync.Mutex
+		var got interface{} = "sentinel-not-set"
+		server := httptest.NewServer(mockMCPHandler(t, map[string]func(map[string]interface{}) (interface{}, *JSONRPCError){
+			"create_agent_identity": func(args map[string]interface{}) (interface{}, *JSONRPCError) {
+				mu.Lock()
+				_, got = args["pane_id"], args["pane_id"]
+				mu.Unlock()
+				return Agent{ID: 1, Name: "BlueLake", Program: "ntm", Model: "opus"}, nil
+			},
+		}))
+		c := NewClient(WithBaseURL(server.URL + "/"))
+		_, err := c.CreateAgentIdentity(context.Background(), RegisterAgentOptions{
+			ProjectKey: "/test", Program: "ntm", Model: "opus", PaneID: paneID,
+		})
+		server.Close()
+		if err != nil {
+			t.Fatalf("paneID %q: registration must still succeed: %v", paneID, err)
+		}
+		mu.Lock()
+		if got != nil {
+			t.Errorf("paneID %q: pane_id argument = %v, want absent", paneID, got)
+		}
+		mu.Unlock()
 	}
 }

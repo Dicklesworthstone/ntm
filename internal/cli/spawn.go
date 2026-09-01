@@ -4435,6 +4435,33 @@ func (c *spawnIdentityCoordinator) prepareAgent(parentCtx context.Context, agent
 	// recorded pane is still live means the slot is occupied and the running
 	// agent keeps its name, so this pane gets a fresh identity (ntm#256).
 	if existingName, recoveredFrom, ok := c.registry.ResolveForPane(agent.paneTitle, agent.paneID, c.liveness); ok && existingName != "" {
+		// Best-effort: re-register the reused name bound to THIS pane so the
+		// server's pane-binding generation receipt follows the new pane
+		// instead of the dead one it recovered from. Reuse deliberately does
+		// not depend on the server (#69: a same-session respawn gets its name
+		// back even offline), so a failed or timed-out re-registration only
+		// means the binding refresh waits for the next opportunity.
+		reuseProgram := agentTypeToProgram(agent.agentType)
+		reuseModel := agent.resolvedModel
+		if reuseModel == "" {
+			reuseModel = agent.model
+		}
+		if strings.TrimSpace(reuseModel) == "" {
+			reuseModel = delegatedModelPlaceholder(reuseProgram)
+		}
+		// Re-claiming an existing name on mcp-agent-mail >=2.13 needs its
+		// registration token; prime the client's cache from the registry.
+		c.registry.HydrateClientTokens(c.client)
+		reregCtx, reregCancel := context.WithTimeout(parentCtx, 15*time.Second)
+		_, _ = c.client.RegisterAgent(reregCtx, agentmail.RegisterAgentOptions{
+			ProjectKey: c.workingDir,
+			Program:    reuseProgram,
+			Model:      reuseModel,
+			Name:       existingName,
+			PaneID:     agent.paneID,
+		})
+		reregCancel()
+
 		c.status.AgentsRegistered++
 		c.status.AgentMap[agent.paneID] = existingName
 		if !IsJSONOutput() {
@@ -4474,6 +4501,7 @@ func (c *spawnIdentityCoordinator) prepareAgent(parentCtx context.Context, agent
 		ProjectKey: c.workingDir,
 		Program:    program,
 		Model:      model,
+		PaneID:     agent.paneID,
 	})
 	regCancel()
 
@@ -4605,9 +4633,30 @@ func (c *spawnIdentityCoordinator) recordPanePID(ctx context.Context, paneID str
 // and the pane's worktree directory (ntm#257). The extra keys are best-effort;
 // only a failure on the session key itself is reported.
 func (c *spawnIdentityCoordinator) publishIdentity(agent spawnedAgentInfo, name string) {
+	// When registration carried a pane binding, the Agent Mail server has
+	// already written a structured generation receipt (name + pane + PID +
+	// socket) at the canonical session-key path. That receipt is strictly
+	// richer than a plain name — its liveness facts back the server's
+	// pane-identity reuse — so never clobber it: keep it in place and mirror
+	// its exact bytes into the alternate project namespaces. Without a
+	// matching receipt (older server, unreachable filesystem, or a stale
+	// receipt for a different identity), fall back to plain-name writes.
+	receipt, receiptName, hasReceipt := agentmail.ReadPaneIdentityReceipt(c.workingDir, agent.paneID)
+	if hasReceipt && receiptName != name {
+		hasReceipt = false
+	}
 	for i, key := range identityPublishKeys(c.workingDir, agent.paneDir) {
-		if _, writeErr := agentmail.WriteIdentity(key, agent.paneID, name); writeErr != nil && i == 0 && !IsJSONOutput() {
-			output.PrintWarningf("Failed to write identity file for pane %d: %v", agent.paneIndex, writeErr)
+		switch {
+		case hasReceipt && key == c.workingDir:
+			// Canonical receipt already in place; leave it untouched.
+		case hasReceipt:
+			if _, writeErr := agentmail.MirrorPaneIdentityReceipt(key, agent.paneID, receipt); writeErr != nil && i == 0 && !IsJSONOutput() {
+				output.PrintWarningf("Failed to mirror identity receipt for pane %d: %v", agent.paneIndex, writeErr)
+			}
+		default:
+			if _, writeErr := agentmail.WriteIdentity(key, agent.paneID, name); writeErr != nil && i == 0 && !IsJSONOutput() {
+				output.PrintWarningf("Failed to write identity file for pane %d: %v", agent.paneIndex, writeErr)
+			}
 		}
 		_ = agentmail.WriteLegacyCompatIdentity(key, agent.paneID, name)
 	}
