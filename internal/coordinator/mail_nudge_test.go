@@ -110,7 +110,10 @@ func unreadMessage(id int) map[string]interface{} {
 }
 
 func readMessage(id int) map[string]interface{} {
-	return map[string]interface{}{"id": id, "subject": "old news", "from": "GreenCastle", "read_at": "2026-08-18T10:00:00Z"}
+	// Real fetch_inbox rows carry "read_ts", not "read_at" (#277). The fixture
+	// must emit the server's field name so the suite proves the decode path
+	// against reality rather than against the code's own expectations.
+	return map[string]interface{}{"id": id, "subject": "old news", "from": "GreenCastle", "read_ts": "2026-08-18T10:00:00Z"}
 }
 
 // TestMailNudgeDispatchedOnceWithCooldown is the headline loop: unread mail on

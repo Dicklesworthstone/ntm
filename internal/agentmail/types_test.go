@@ -439,3 +439,72 @@ func TestFlexTimeUnmarshalJSON_BareFormatParsedAsUTC(t *testing.T) {
 		t.Errorf("parsed date = %v, want 2026-03-15", ft.Time)
 	}
 }
+
+// TestInboxMessageUnmarshalJSON_ReadTS verifies inbox rows decode as read when
+// the server sends "read_ts" (the actual fetch_inbox field name) rather than
+// "read_at". Regression test for the mail_nudge forever-unread bug (#277):
+// the fixture is a verbatim live fetch_inbox row (include_body:false).
+func TestInboxMessageUnmarshalJSON_ReadTS(t *testing.T) {
+	t.Parallel()
+
+	fixture := `[{"id":272,"subject":"...","from":"AmberCompass",
+ "created_ts":"2026-08-31T04:07:13.425906Z",
+ "read_ts":"2026-08-31T04:07:53.154091Z","kind":"to"}]`
+
+	var messages []InboxMessage
+	if err := json.Unmarshal([]byte(fixture), &messages); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(messages) != 1 {
+		t.Fatalf("len(messages) = %d, want 1", len(messages))
+	}
+	msg := messages[0]
+	if msg.ReadAt == nil {
+		t.Fatal("ReadAt = nil for a message the server marked read via read_ts; it would count as unread forever")
+	}
+	if got, want := msg.ReadAt.Time.UTC().Format(time.RFC3339Nano), "2026-08-31T04:07:53.154091Z"; got != want {
+		t.Errorf("ReadAt = %s, want %s", got, want)
+	}
+	if msg.ID != 272 || msg.From != "AmberCompass" || msg.Kind != "to" {
+		t.Errorf("sibling fields lost: %+v", msg)
+	}
+}
+
+// TestInboxMessageUnmarshalJSON_ReadAtStillWorks keeps the legacy/result-shape
+// field name working, and verifies read_at wins when both names are present.
+func TestInboxMessageUnmarshalJSON_ReadAtStillWorks(t *testing.T) {
+	t.Parallel()
+
+	var msg InboxMessage
+	if err := json.Unmarshal([]byte(`{"id":1,"read_at":"2026-08-18T10:00:00Z"}`), &msg); err != nil {
+		t.Fatalf("unmarshal read_at: %v", err)
+	}
+	if msg.ReadAt == nil {
+		t.Fatal("ReadAt = nil, want bound from read_at")
+	}
+
+	var both InboxMessage
+	if err := json.Unmarshal([]byte(`{"id":2,"read_at":"2026-08-18T10:00:00Z","read_ts":"2026-08-19T11:00:00Z"}`), &both); err != nil {
+		t.Fatalf("unmarshal both: %v", err)
+	}
+	if both.ReadAt == nil || !both.ReadAt.Time.Equal(mustTime(t, "2026-08-18T10:00:00Z")) {
+		t.Errorf("ReadAt with both fields = %v, want read_at value", both.ReadAt)
+	}
+
+	var unread InboxMessage
+	if err := json.Unmarshal([]byte(`{"id":3,"subject":"x"}`), &unread); err != nil {
+		t.Fatalf("unmarshal unread: %v", err)
+	}
+	if unread.ReadAt != nil {
+		t.Errorf("ReadAt for unread message = %v, want nil", unread.ReadAt)
+	}
+}
+
+func mustTime(t *testing.T, s string) time.Time {
+	t.Helper()
+	ts, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		t.Fatalf("parse %q: %v", s, err)
+	}
+	return ts
+}

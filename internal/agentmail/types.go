@@ -137,6 +137,27 @@ type InboxMessage struct {
 	ReadAt      *FlexTime `json:"read_at,omitempty"`
 }
 
+// UnmarshalJSON accepts both "read_at" and "read_ts" for the read timestamp.
+// Agent Mail's fetch_inbox emits inbox rows with "read_ts" (matching the
+// created_ts/updated_ts/expires_ts convention), while mark_message_read and
+// acknowledge_message results use "read_at". Binding only "read_at" made every
+// fetched inbox message decode as unread, so mail_nudge prompted idle panes
+// about already-read mail forever.
+func (m *InboxMessage) UnmarshalJSON(data []byte) error {
+	type inboxMessageAlias InboxMessage
+	aux := struct {
+		*inboxMessageAlias
+		ReadTS *FlexTime `json:"read_ts,omitempty"`
+	}{inboxMessageAlias: (*inboxMessageAlias)(m)}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	if m.ReadAt == nil && aux.ReadTS != nil {
+		m.ReadAt = aux.ReadTS
+	}
+	return nil
+}
+
 // ContactLink represents a contact relationship between agents.
 type ContactLink struct {
 	FromAgent string    `json:"from_agent,omitempty"`

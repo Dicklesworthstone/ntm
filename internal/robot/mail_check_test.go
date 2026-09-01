@@ -588,11 +588,11 @@ func TestGetMailCheck_AggregatesProjectAgentsWhenAgentOmitted(t *testing.T) {
 				case "BlueLake":
 					result = json.RawMessage(`{"result":[
 						{"id":1,"subject":"Shared","from":"Alice","created_ts":"2026-01-02T00:00:00Z","importance":"normal","ack_required":false,"kind":"to","body_md":"shared body"},
-						{"id":2,"subject":"Blue only","from":"Bob","created_ts":"2026-01-03T00:00:00Z","importance":"urgent","ack_required":true,"kind":"to","body_md":"blue body","read_at":"2026-01-03T01:00:00Z"}
+						{"id":2,"subject":"Blue only","from":"Bob","created_ts":"2026-01-03T00:00:00Z","importance":"urgent","ack_required":true,"kind":"to","body_md":"blue body","read_ts":"2026-01-03T01:00:00Z"}
 					]}`)
 				case "GreenStone":
 					result = json.RawMessage(`{"result":[
-						{"id":1,"subject":"Shared","from":"Alice","created_ts":"2026-01-02T00:00:00Z","importance":"normal","ack_required":false,"kind":"to","body_md":"shared body","read_at":"2026-01-02T01:00:00Z"},
+						{"id":1,"subject":"Shared","from":"Alice","created_ts":"2026-01-02T00:00:00Z","importance":"normal","ack_required":false,"kind":"to","body_md":"shared body","read_ts":"2026-01-02T01:00:00Z"},
 						{"id":3,"subject":"Green only","from":"Carol","created_ts":"2026-01-01T00:00:00Z","importance":"normal","ack_required":false,"kind":"to","body_md":"green body"}
 					]}`)
 				default:
