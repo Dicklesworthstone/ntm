@@ -368,3 +368,72 @@ func TestNewMailNudgeCheckerGates(t *testing.T) {
 		t.Fatalf("message = %q, want trimmed override", mc.message)
 	}
 }
+
+// TestMailNudgeGrokIdlePaneNudged: Grok Build panes have a live working
+// detector (GrokActivelyWorking) and composer inspection, both capture-based,
+// so the shared safety gate admits them for mail nudging — an idle Grok pane
+// with unread mail gets exactly one nudge instead of a permanent
+// unsupported_agent_type refusal.
+func TestMailNudgeGrokIdlePaneNudged(t *testing.T) {
+	server := newMailInboxServer(t, map[string][]map[string]interface{}{
+		"CalmBison": {unreadMessage(1)},
+	})
+	defer server.Close()
+
+	grokIdle := "│ ❯                                        │\n╰─ Grok 4.6 (high) · always-approve ──────╯\n"
+	panes := []tmux.Pane{{ID: "%7", Title: "mailsess__grok_1", Type: tmux.AgentGrok, Width: 120}}
+	env := newMailNudgeTestEnv(t, server.URL, panes,
+		map[string]string{"mailsess__grok_1": "CalmBison"},
+		func(string) (string, error) { return grokIdle, nil })
+
+	decisions := env.mc.runOnce(t.Context())
+	if len(decisions) != 1 || decisions[0].Action != "nudged" || decisions[0].SkipReason != "" {
+		t.Fatalf("decisions = %+v, want one nudged Grok pane", decisions)
+	}
+	if len(env.dispatch) != 1 || env.dispatch[0] != "%7" {
+		t.Fatalf("dispatched = %v, want [%%7]", env.dispatch)
+	}
+}
+
+// TestMailNudgeGrokSafetyVetoes: the two gates that make Grok nudging safe —
+// an in-flight turn (spinner / Esc:cancel footer) and text already held in
+// the bordered composer — must both veto the nudge.
+func TestMailNudgeGrokSafetyVetoes(t *testing.T) {
+	tests := []struct {
+		name       string
+		capture    string
+		wantReason string
+	}{
+		{
+			name:       "in-flight turn",
+			capture:    "⠹ Waiting for response… 1.2s\n│ ❯                  │\nShift+Tab:mode │ Esc:cancel │ Ctrl+x:shortcuts\n",
+			wantReason: "working",
+		},
+		{
+			name:       "held composer text",
+			capture:    "│ ❯ keep going on the previous task        │\n╰─ Grok 4.6 (high) · always-approve ──────╯\n",
+			wantReason: "unsubmitted_input",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			server := newMailInboxServer(t, map[string][]map[string]interface{}{
+				"CalmBison": {unreadMessage(1)},
+			})
+			defer server.Close()
+
+			panes := []tmux.Pane{{ID: "%7", Title: "mailsess__grok_1", Type: tmux.AgentGrok, Width: 120}}
+			env := newMailNudgeTestEnv(t, server.URL, panes,
+				map[string]string{"mailsess__grok_1": "CalmBison"},
+				func(string) (string, error) { return tc.capture, nil })
+
+			decisions := env.mc.runOnce(t.Context())
+			if len(decisions) != 1 || decisions[0].Action != "skipped" || decisions[0].SkipReason != tc.wantReason {
+				t.Fatalf("decisions = %+v, want one skipped/%s", decisions, tc.wantReason)
+			}
+			if len(env.dispatch) != 0 {
+				t.Fatalf("Grok pane dispatched despite %s veto: %v", tc.wantReason, env.dispatch)
+			}
+		})
+	}
+}
