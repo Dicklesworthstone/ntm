@@ -778,3 +778,50 @@ func TestMailCheckAgentHintsOmitEmpty(t *testing.T) {
 
 // Note: contains() and containsHelper() are defined in diagnose_test.go
 // and are reused here since we're in the same package
+
+// TestGetMailCheckUsesInjectedConfiguredClient: the CLI hands GetMailCheck its
+// fully configured Agent Mail client (config-file URL, bearer token, hydrated
+// registration tokens). The check must run against that client — proven here
+// by a server that rejects any call without the configured bearer token —
+// rather than constructing a fresh environment-only client.
+func TestGetMailCheckUsesInjectedConfiguredClient(t *testing.T) {
+	const token = "configured-mail-check-token"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer "+token {
+			t.Errorf("Authorization = %q, want configured bearer token", got)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		var req agentmail.JSONRPCRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode request: %v", err)
+			return
+		}
+		params, _ := req.Params.(map[string]interface{})
+		switch params["name"] {
+		case "health_check":
+			_ = json.NewEncoder(w).Encode(agentmail.JSONRPCResponse{
+				JSONRPC: "2.0", ID: req.ID, Result: json.RawMessage(`{"status":"ok"}`),
+			})
+		case "fetch_inbox":
+			_ = json.NewEncoder(w).Encode(agentmail.JSONRPCResponse{
+				JSONRPC: "2.0", ID: req.ID, Result: json.RawMessage(`{"result":[]}`),
+			})
+		default:
+			t.Errorf("unexpected Agent Mail tool %v", params["name"])
+		}
+	}))
+	defer server.Close()
+
+	output, err := GetMailCheck(MailCheckOptions{
+		Client:  agentmail.NewClient(agentmail.WithBaseURL(server.URL), agentmail.WithToken(token)),
+		Project: "/repos/example/project",
+		Agent:   "BlueLake",
+	})
+	if err != nil {
+		t.Fatalf("GetMailCheck: %v", err)
+	}
+	if !output.Success {
+		t.Fatalf("GetMailCheck success=false error=%q", output.Error)
+	}
+}

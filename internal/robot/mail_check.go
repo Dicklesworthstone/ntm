@@ -68,6 +68,11 @@ type MailCheckAgentHints struct {
 
 // MailCheckOptions configures the GetMailCheck operation
 type MailCheckOptions struct {
+	// Client is the Agent Mail client to use. The CLI passes its fully
+	// configured client (config-file URL/token plus hydrated per-project
+	// registration tokens); when nil, an environment-configured default
+	// client is constructed, preserving direct-caller behavior.
+	Client        *agentmail.Client
 	Project       string
 	Agent         string
 	Thread        string
@@ -298,8 +303,12 @@ func GetMailCheck(opts MailCheckOptions) (*MailCheckOutput, error) {
 		}, nil
 	}
 
-	// Create Agent Mail client
-	client := agentmail.NewClient()
+	// Use the injected (configured) Agent Mail client when the caller
+	// supplied one; otherwise fall back to the environment-driven default.
+	client := opts.Client
+	if client == nil {
+		client = agentmail.NewClient()
+	}
 
 	// Check availability
 	if !client.IsAvailable() {
@@ -307,7 +316,7 @@ func GetMailCheck(opts MailCheckOptions) (*MailCheckOutput, error) {
 			RobotResponse: NewErrorResponse(
 				fmt.Errorf("Agent Mail not available"),
 				ErrCodeDependencyMissing,
-				"Start Agent Mail server: mcp-agent-mail or ensure it's running",
+				"Ensure the Agent Mail server (mcp-agent-mail) is running and the configured Agent Mail URL/token are correct",
 			),
 			Project:  opts.Project,
 			Messages: []MailCheckMessage{},

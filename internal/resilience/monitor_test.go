@@ -22,6 +22,10 @@ func saveHooks() func() {
 	origCheckSession := checkSessionFn
 	origDisplayMessage := displayMessageFn
 	origIsChildAlive := isChildAliveFn
+	origPanePresent := panePresentFn
+	// Default for tests: the pane exists. Tests exercising the stale-binding
+	// guard override this explicitly.
+	panePresentFn = func(string, string) (bool, error) { return true, nil }
 	hooksMu.Unlock()
 
 	return func() {
@@ -32,7 +36,97 @@ func saveHooks() func() {
 		checkSessionFn = origCheckSession
 		displayMessageFn = origDisplayMessage
 		isChildAliveFn = origIsChildAlive
+		panePresentFn = origPanePresent
 		hooksMu.Unlock()
+	}
+}
+
+// TestRestartAgentStalePaneBindingRetiredWithoutKeys: a pane ID that no longer
+// exists in the session must never receive restart keystrokes (after a tmux
+// server restart the same ID can belong to a different agent), and the dead
+// binding is retired so the monitor stops retrying it.
+func TestRestartAgentStalePaneBindingRetiredWithoutKeys(t *testing.T) {
+	restore := saveHooks()
+	defer restore()
+
+	var mu sync.Mutex
+	sendCalls := 0
+	setHooksLocked(func() {
+		panePresentFn = func(string, string) (bool, error) { return false, nil }
+		sendKeysFn = func(string, string, bool) error {
+			mu.Lock()
+			defer mu.Unlock()
+			sendCalls++
+			return nil
+		}
+		buildPaneCmdFn = func(string, string) (string, error) { return "codex", nil }
+	})
+
+	cfg := config.Default()
+	cfg.Resilience.RestartDelaySeconds = 0
+	m := NewMonitor("test-session", "/tmp/project", cfg, true)
+	m.RegisterAgent("%404", 4, 0, "cod", "gpt-5", "codex")
+	m.mu.Lock()
+	agent := m.agents["%404"]
+	agent.Healthy = false
+	m.mu.Unlock()
+
+	m.restartAgent(context.Background(), agent)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if sendCalls != 0 {
+		t.Fatalf("sendKeys calls = %d, want 0 for a stale pane binding", sendCalls)
+	}
+	m.mu.RLock()
+	_, retained := m.agents["%404"]
+	m.mu.RUnlock()
+	if retained {
+		t.Fatal("stale pane binding still registered after retirement")
+	}
+}
+
+// TestRestartAgentMembershipCheckErrorSkipsButKeepsBinding: when the pane
+// query itself fails (tmux briefly unreachable), the restart is skipped
+// fail-closed but the binding survives for the next cycle.
+func TestRestartAgentMembershipCheckErrorSkipsButKeepsBinding(t *testing.T) {
+	restore := saveHooks()
+	defer restore()
+
+	var mu sync.Mutex
+	sendCalls := 0
+	setHooksLocked(func() {
+		panePresentFn = func(string, string) (bool, error) { return false, fmt.Errorf("tmux unreachable") }
+		sendKeysFn = func(string, string, bool) error {
+			mu.Lock()
+			defer mu.Unlock()
+			sendCalls++
+			return nil
+		}
+		buildPaneCmdFn = func(string, string) (string, error) { return "codex", nil }
+	})
+
+	cfg := config.Default()
+	cfg.Resilience.RestartDelaySeconds = 0
+	m := NewMonitor("test-session", "/tmp/project", cfg, true)
+	m.RegisterAgent("%405", 5, 0, "cod", "gpt-5", "codex")
+	m.mu.Lock()
+	agent := m.agents["%405"]
+	agent.Healthy = false
+	m.mu.Unlock()
+
+	m.restartAgent(context.Background(), agent)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if sendCalls != 0 {
+		t.Fatalf("sendKeys calls = %d, want 0 when membership cannot be verified", sendCalls)
+	}
+	m.mu.RLock()
+	_, retained := m.agents["%405"]
+	m.mu.RUnlock()
+	if !retained {
+		t.Fatal("binding was retired on a transient membership-check error")
 	}
 }
 

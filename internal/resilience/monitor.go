@@ -29,7 +29,26 @@ var (
 	checkSessionFn   = health.CheckSession
 	displayMessageFn = tmux.DisplayMessage
 	isChildAliveFn   = process.IsChildAlive
+	panePresentFn    = panePresentInSession
 )
+
+// panePresentInSession reports whether paneID currently exists in session.
+// Restart key injection must be gated on this: pane IDs are only unique per
+// tmux server lifetime, so after a server restart (or a session teardown and
+// recreation under the same name) a remembered ID can point at a pane that
+// now belongs to a different agent entirely.
+func panePresentInSession(session, paneID string) (bool, error) {
+	panes, err := tmux.GetPanes(session)
+	if err != nil {
+		return false, err
+	}
+	for _, pane := range panes {
+		if pane.ID == paneID {
+			return true, nil
+		}
+	}
+	return false, nil
+}
 
 // AgentState tracks the state of an individual agent for restart purposes
 type AgentState struct {
@@ -803,6 +822,7 @@ func (m *Monitor) restartAgent(ctx context.Context, agent *AgentState) {
 	buildFunc := buildPaneCmdFn
 	sendFunc := sendKeysFn
 	isChildAliveFunc := isChildAliveFn
+	panePresentFunc := panePresentFn
 	hooksMu.RUnlock()
 
 	select {
@@ -843,6 +863,23 @@ func (m *Monitor) restartAgent(ctx context.Context, agent *AgentState) {
 			a.Healthy = true
 		}
 		m.mu.Unlock()
+		return
+	}
+
+	// Stale-binding guard: a tracked pane ID can outlive the pane it named
+	// (tmux server restart, session recreated under the same name). Never
+	// inject keys unless the ID is verifiably a member of our session right
+	// now — and retire the binding when it is not, so the monitor stops
+	// retrying a pane that will never come back.
+	if present, presentErr := panePresentFunc(m.session, agent.PaneID); presentErr != nil || !present {
+		if presentErr != nil {
+			log.Printf("[resilience] Refusing to restart agent %s: cannot verify pane membership in session %s: %v", agent.PaneID, m.session, presentErr)
+		} else {
+			log.Printf("[resilience] Retiring stale pane binding %s: pane no longer exists in session %s", agent.PaneID, m.session)
+			m.mu.Lock()
+			delete(m.agents, agent.PaneID)
+			m.mu.Unlock()
+		}
 		return
 	}
 
