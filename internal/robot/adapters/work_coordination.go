@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
@@ -307,10 +309,11 @@ func (a *WorkCoordinationAdapter) Collect(ctx context.Context) (*SignalBatch, er
 		Work:         work,
 		Coordination: coordination,
 	}
-	if ctxErr := ctx.Err(); ctxErr != nil {
-		a.lastErr = ctxErr
-		return batch, ctxErr
-	}
+	// Work and coordination degrade independently (#285). A deadline that
+	// expires during Agent Mail enrichment must not discard a Beads work
+	// section that already completed — that turned slow mail history into a
+	// false "queue dry" status. collectWork surfaces its own context errors;
+	// collectCoordination degrades in-section (Available=false + Reason).
 	if workErr != nil {
 		a.lastErr = workErr
 		return batch, workErr
@@ -378,21 +381,19 @@ func (a *WorkCoordinationAdapter) collectCoordination(ctx context.Context, now t
 	if err != nil {
 		inputs.Reason = fmt.Sprintf("list_agents failed: %v", err)
 	} else {
-		inputs.InboxByAgent = make(map[string][]agentmail.InboxMessage)
+		names := make([]string, 0, len(agents))
 		for _, agent := range agents {
 			if agent.Name == "HumanOverseer" {
 				continue
 			}
-			inbox, err := client.FetchInbox(ctx, agentmail.FetchInboxOptions{
-				ProjectKey:    a.config.ProjectDir,
-				AgentName:     agent.Name,
-				Limit:         25,
-				IncludeBodies: true,
-			})
-			if err != nil {
-				continue
-			}
-			inputs.InboxByAgent[agent.Name] = inbox
+			names = append(names, agent.Name)
+		}
+		inboxes, timedOut := a.fetchInboxes(ctx, client, names)
+		inputs.InboxByAgent = inboxes
+		if timedOut {
+			// Partial results stay usable, but the section must say so: mail
+			// counts derived from a cut-short sweep are a floor, not a total.
+			inputs.Reason = fmt.Sprintf("agent mail inbox enrichment timed out after %d of %d inboxes", len(inboxes), len(names))
 		}
 	}
 
@@ -402,6 +403,70 @@ func (a *WorkCoordinationAdapter) collectCoordination(ctx context.Context, now t
 	}
 
 	return NormalizeCoordination(inputs)
+}
+
+// statusInboxFetchConcurrency bounds parallel fetch_inbox calls during status
+// enrichment. Projects accumulate many historical Agent Mail identities; a
+// sequential sweep made status latency grow linearly with that history and
+// routinely blew the shared collection deadline (#285).
+const statusInboxFetchConcurrency = 8
+
+// fetchInboxes reads the given agents' inboxes with bounded concurrency,
+// stopping as soon as ctx expires. It returns whatever completed plus whether
+// the sweep was cut short; per-inbox errors are skipped as before. No fetch
+// outlives the call: the worker pool drains before returning.
+func (a *WorkCoordinationAdapter) fetchInboxes(ctx context.Context, client *agentmail.Client, names []string) (map[string][]agentmail.InboxMessage, bool) {
+	inboxes := make(map[string][]agentmail.InboxMessage, len(names))
+	if len(names) == 0 {
+		return inboxes, false
+	}
+
+	var (
+		mu       sync.Mutex
+		wg       sync.WaitGroup
+		timedOut atomic.Bool
+	)
+	work := make(chan string)
+
+	workers := statusInboxFetchConcurrency
+	if workers > len(names) {
+		workers = len(names)
+	}
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for name := range work {
+				if ctx.Err() != nil {
+					timedOut.Store(true)
+					continue // keep draining so the feeder never blocks
+				}
+				inbox, err := client.FetchInbox(ctx, agentmail.FetchInboxOptions{
+					ProjectKey:    a.config.ProjectDir,
+					AgentName:     name,
+					Limit:         25,
+					IncludeBodies: true,
+				})
+				if err != nil {
+					if ctx.Err() != nil {
+						timedOut.Store(true)
+					}
+					continue
+				}
+				mu.Lock()
+				inboxes[name] = inbox
+				mu.Unlock()
+			}
+		}()
+	}
+
+	for _, name := range names {
+		work <- name
+	}
+	close(work)
+	wg.Wait()
+
+	return inboxes, timedOut.Load()
 }
 
 func (a *WorkCoordinationAdapter) mailClient() *agentmail.Client {

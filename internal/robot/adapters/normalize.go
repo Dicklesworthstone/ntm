@@ -478,10 +478,13 @@ func (a *SignalAggregator) Collect(ctx context.Context) (*AggregatedSignals, err
 		// Track errors
 		if outcome.err != nil {
 			errs = append(errs, outcome.err)
-			continue
 		}
 
-		// Merge batch data
+		// Merge batch data. Adapters return partial batches alongside typed
+		// errors (a completed work section next to a timed-out coordination
+		// section, #285); the completed sections must survive the error
+		// instead of the whole batch being discarded. mergeSignalBatch is
+		// nil-safe and only overwrites sections the batch actually carries.
 		mergeSignalBatch(result, outcome.batch)
 	}
 
