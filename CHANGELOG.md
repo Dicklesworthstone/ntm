@@ -15,6 +15,33 @@ NTM is a tmux session management tool for orchestrating multiple AI coding agent
 
 ---
 
+## [v1.31.0] -- 2026-09-01 [GitHub Release]
+
+**Durable agent identity, coordinator/Agent Mail integrity, and the Antigravity/Codex delivery-gate wave** (GitHub issues #262, #263, #265, #266, #268, #269, #270, #271, #273, #277, #285).
+
+### Added
+
+- **Oh My Pi plugin preset** ([#262](https://github.com/Dicklesworthstone/ntm/issues/262)): ships the maintained Oh My Pi preset with a setup guide.
+- **Stable pane identity in activity output**: `ntm activity` now emits `window_index` and a stable `pane_id`, so robot-mode consumers can track panes across layout changes.
+- **Pane-generation-bound Agent Mail identities**: spawned identities are bound to their pane generation and server receipts are preserved, so a respawned pane can never inherit a predecessor's mail identity.
+- **Tool-rejection classification in atomic dispatch**: the coordinator classifies tool rejections during dispatch and streamlines spawn availability checks.
+
+### Fixed
+
+- **Durable agent type** ([GH#268](https://github.com/Dicklesworthstone/ntm/issues/268)): the pane's agent type is recorded on the pane (not just its title) and persists across spawn, add, adopt, controller changes, rotation, profile switch, restore, and restart; the `user` pseudo-type is never stamped as durable.
+- **Antigravity support hardening** ([GH#270](https://github.com/Dicklesworthstone/ntm/issues/270), [GH#269](https://github.com/Dicklesworthstone/ntm/issues/269), [GH#271](https://github.com/Dicklesworthstone/ntm/issues/271)): idle and working TUI frames are classified correctly, pinned Antigravity personas pass model validation, `agy` model overrides are rejected with a clear explanation, and error strings are normalized.
+- **Codex ultra composer delivery gate** ([#273](https://github.com/Dicklesworthstone/ntm/issues/273)): the delivery gate accepts the Codex ultra composer glyph `»` and rejects dialog frames, so sends no longer stall on Codex ultra.
+- **Agent Mail read state** ([#277](https://github.com/Dicklesworthstone/ntm/issues/277)): inbox rows accept `read_ts`, so mail that has been read stops counting as unread; structured pane-binding JSON is decoded to its name and the real coordinator identity is registered.
+- **Robot-mode reliability**: completed Beads work is no longer dropped when Agent Mail history is slow; stale errors are debounced only on authoritative live work; mail checks use the configured Agent Mail client; restarts are gated on live pane membership; crash handling runs even for a known-dead PID.
+- **Assignment flow**: explicit persona roles are respected when matching work to panes, and stale `bv` plan rows are reconciled against live bead lifecycle instead of failing assignment.
+- **Controller safety**: the controller never takes over a running agent's pane, and dashboard mail-client semantics are aligned with it; Grok Build panes are admitted through the shared mail-nudge safety gate.
+- **Event bus**: reentrant publishing at capacity no longer deadlocks (non-blocking caller-runs backpressure).
+- **Windows**: drive paths serialize as empty-authority SQLite URIs and embedded migration paths are slash-joined, fixing database access on Windows ([#263](https://github.com/Dicklesworthstone/ntm/issues/263) family).
+- **Pipeline**: executor snapshot persistence to disk is serialized.
+- **Docs/CLI polish**: shipped-plugin send flags parse as optional values; `adopt` help no longer claims 0-based pane indices (honours `pane-base-index`).
+
+---
+
 ## [v1.30.0] -- 2026-08-22 [GitHub Release]
 
 **Agent Mail identity integrity + first-class agent plugins** (GitHub issues #256, #257, #258, #260, #261).
