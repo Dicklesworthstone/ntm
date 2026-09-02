@@ -994,6 +994,7 @@ var defaultOperatorGatedLabels = []string{
 	"human-input",
 	"business-input",
 	"blocked-on-operator",
+	"packet-tracked",
 }
 
 var (

@@ -285,6 +285,7 @@ func TestOperatorGatedLabelsCanonicalVocabulary(t *testing.T) {
 		"needs-operator",
 		"operator-action",
 		"operator-gated",
+		"packet-tracked",
 	}
 	got := OperatorGatedLabels()
 	if !reflect.DeepEqual(got, want) {

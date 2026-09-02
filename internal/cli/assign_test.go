@@ -159,6 +159,28 @@ func TestBlockedBeadsReasonString(t *testing.T) {
 	}
 }
 
+func TestPacketTrackedBeadIsExcludedFromDirectAssignment(t *testing.T) {
+	t.Parallel()
+
+	recommendation := bv.TriageRecommendation{
+		ID:     "agent-factory-packet",
+		Title:  "Mission packet tracking bead",
+		Status: "open",
+		Labels: []string{"packet-tracked"},
+	}
+	skipped := classifyTriageRecForAssignmentWithGate(
+		recommendation,
+		nil,
+		func(label string) bool { return bv.IsOperatorGatedLabelInPolicy(label, nil) },
+	)
+	if skipped == nil {
+		t.Fatal("packet-tracked bead remained eligible for direct assignment")
+	}
+	if skipped.Reason != "operator_gated" {
+		t.Fatalf("packet-tracked skip reason=%q, want operator_gated", skipped.Reason)
+	}
+}
+
 // TestAssignOutputEnhancedStructure tests the output structure is correct for JSON
 func TestAssignOutputEnhancedStructure(t *testing.T) {
 	output := AssignOutputEnhanced{
@@ -1982,6 +2004,11 @@ func TestWatchLoopShouldStopUsesFilteredActionableCandidates(t *testing.T) {
 		{
 			name:     "operator-gated-only queue is drained",
 			recs:     []bv.TriageRecommendation{{ID: "gated", Status: "open", Labels: []string{"operator-gated"}}},
+			wantStop: true,
+		},
+		{
+			name:     "packet-tracked-only queue is drained",
+			recs:     []bv.TriageRecommendation{{ID: "packet", Status: "open", Labels: []string{"packet-tracked"}}},
 			wantStop: true,
 		},
 		{
