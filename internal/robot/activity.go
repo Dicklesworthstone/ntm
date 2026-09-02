@@ -510,6 +510,12 @@ type OutputSequenceInfo struct {
 	Epoch     string `json:"epoch"`
 	Sequence  int64  `json:"sequence"`
 	ChangedAt string `json:"changed_at,omitempty"`
+
+	// advanced records whether THIS observation moved the sequence, i.e. the
+	// pane tail differs from what the previous observer (possibly another
+	// process) saw. Internal: it feeds the status classifier's output
+	// evidence (#288) and is not part of the wire schema.
+	advanced bool
 }
 
 // outputSeqScope builds the durable watermark scope for a pane. The tmux
@@ -601,6 +607,7 @@ func advanceOutputSequence(store WatermarkStore, scope, contentHash string, obse
 	}
 	info.Sequence = wm.LastCursor
 	info.ChangedAt = changedAt.Format(time.RFC3339)
+	info.advanced = true
 	return info, nil
 }
 

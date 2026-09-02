@@ -165,13 +165,14 @@ func TestUpdateActivity_FirstCall(t *testing.T) {
 
 	t.Logf("OUTPUT: lastTS=%v linesDelta=%d", lastTS, linesDelta)
 
-	// First call should return current time and total lines
-	if lastTS.IsZero() {
-		t.Error("updateActivity() first call should have non-zero timestamp")
+	// First call only records the baseline: there is no prior capture to
+	// diff against, so it must not claim output was just produced (#288).
+	if !lastTS.IsZero() {
+		t.Errorf("updateActivity() first call timestamp = %v, want zero (no baseline)", lastTS)
 	}
 
-	if linesDelta != 3 {
-		t.Errorf("updateActivity() first call linesDelta = %d, want 3", linesDelta)
+	if linesDelta != 0 {
+		t.Errorf("updateActivity() first call linesDelta = %d, want 0", linesDelta)
 	}
 }
 

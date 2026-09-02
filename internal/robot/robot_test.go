@@ -5345,9 +5345,11 @@ func TestUpdateActivityLinesDelta(t *testing.T) {
 
 	paneID := "%1"
 
-	_, delta := updateActivity(paneID, "a\nb\n")
-	if delta != 2 {
-		t.Fatalf("initial delta = %d, want 2", delta)
+	// First observation in a process has no baseline to diff against, so it
+	// must report no activity (#288).
+	ts, delta := updateActivity(paneID, "a\nb\n")
+	if delta != 0 || !ts.IsZero() {
+		t.Fatalf("initial observation = (%v, %d), want (zero, 0)", ts, delta)
 	}
 
 	_, delta = updateActivity(paneID, "a\nb\n")
