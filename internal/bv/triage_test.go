@@ -956,12 +956,19 @@ func TestGetActionableRecommendationsSkipsPlanRowsClosedSinceSnapshot(t *testing
 				`{"triage":{"recommendations":[{"id":"tracked","title":"tracked","status":"open","priority":1}]}}`,
 				`[{"id":"tracked","status":"`+status+`"}]`)
 
-			recs, err := GetActionableRecommendationsContext(t.Context(), t.TempDir(), 0)
-			if err != nil {
-				t.Fatalf("lifecycle %s: unexpected error: %v", status, err)
+			scans := 1
+			if status == "closed" || status == "in_progress" {
+				scans = 3
 			}
-			if len(recs) != 0 {
-				t.Fatalf("lifecycle %s: recommendations = %+v, want stale row dropped", status, recs)
+			projectDir := t.TempDir()
+			for scan := 1; scan <= scans; scan++ {
+				recs, err := GetActionableRecommendationsContext(t.Context(), projectDir, 0)
+				if err != nil {
+					t.Fatalf("lifecycle %s scan %d: unexpected error: %v", status, scan, err)
+				}
+				if len(recs) != 0 {
+					t.Fatalf("lifecycle %s scan %d: recommendations = %+v, want stale row dropped", status, scan, recs)
+				}
 			}
 		})
 	}

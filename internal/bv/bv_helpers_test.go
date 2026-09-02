@@ -322,6 +322,43 @@ func TestRunBdContextCancelsDuringTransientRetryBackoff(t *testing.T) {
 	}
 }
 
+func TestRunBdContextRetriesBeadsWriteLockTimeout(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir .git: %v", err)
+	}
+	binDir := t.TempDir()
+	attempts := filepath.Join(t.TempDir(), "attempts")
+	script := `#!/bin/sh
+printf 'x\n' >> "` + attempts + `"
+count=$(wc -l < "` + attempts + `")
+if [ "$count" -lt 3 ]; then
+  printf 'CONFIG_ERROR: Timed out after 5000ms waiting for write lock .beads/.write.lock\n' >&2
+  exit 1
+fi
+printf '{"issues":[],"total":0,"limit":100000,"offset":0,"has_more":false}\n'
+`
+	if err := os.WriteFile(filepath.Join(binDir, "br"), []byte(script), 0o700); err != nil {
+		t.Fatalf("write fake br: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	output, err := RunBdContext(t.Context(), dir, "ready", "--json", "--limit", "100000")
+	if err != nil {
+		t.Fatalf("RunBdContext returned the transient write-lock timeout: %v", err)
+	}
+	if !strings.Contains(output, `"issues":[]`) {
+		t.Fatalf("RunBdContext output=%q, want successful third attempt", output)
+	}
+	data, err := os.ReadFile(attempts)
+	if err != nil {
+		t.Fatalf("read fake br attempts: %v", err)
+	}
+	if got := strings.Count(string(data), "x"); got != 3 {
+		t.Fatalf("fake br attempts=%d, want exactly 3", got)
+	}
+}
+
 func TestGetRecentlyCompletedListContext(t *testing.T) {
 	t.Run("returns_limited_completed_rows", func(t *testing.T) {
 		dir := t.TempDir()

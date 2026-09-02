@@ -2294,7 +2294,9 @@ func isNoBeadsDBError(streams ...string) bool {
 
 func isTransientBeadsDBError(streams ...string) bool {
 	s := strings.ToLower(strings.Join(streams, "\n"))
-	return strings.Contains(s, "database is busy") || strings.Contains(s, "database is locked")
+	return strings.Contains(s, "database is busy") ||
+		strings.Contains(s, "database is locked") ||
+		strings.Contains(s, "waiting for write lock")
 }
 
 func transientBeadsDBBackoff(attempt int) time.Duration {
