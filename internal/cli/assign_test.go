@@ -159,7 +159,7 @@ func TestBlockedBeadsReasonString(t *testing.T) {
 	}
 }
 
-func TestPacketTrackedBeadIsExcludedFromDirectAssignment(t *testing.T) {
+func TestPacketTrackedBeadNeverEntersAssignmentPlanAcrossRepeatedScans(t *testing.T) {
 	t.Parallel()
 
 	recommendation := bv.TriageRecommendation{
@@ -168,16 +168,18 @@ func TestPacketTrackedBeadIsExcludedFromDirectAssignment(t *testing.T) {
 		Status: "open",
 		Labels: []string{"packet-tracked"},
 	}
-	skipped := classifyTriageRecForAssignmentWithGate(
-		recommendation,
-		nil,
-		func(label string) bool { return bv.IsOperatorGatedLabelInPolicy(label, nil) },
-	)
-	if skipped == nil {
-		t.Fatal("packet-tracked bead remained eligible for direct assignment")
-	}
-	if skipped.Reason != "operator_gated" {
-		t.Fatalf("packet-tracked skip reason=%q, want operator_gated", skipped.Reason)
+	for scan := 1; scan <= 3; scan++ {
+		ready, skipped := partitionActionableRecommendationsForAssignment(
+			[]bv.TriageRecommendation{recommendation},
+			nil,
+			func(label string) bool { return bv.IsOperatorGatedLabelInPolicy(label, nil) },
+		)
+		if len(ready) != 0 {
+			t.Fatalf("scan %d offered packet-tracked bead for assignment: %+v", scan, ready)
+		}
+		if len(skipped) != 1 || skipped[0].BeadID != recommendation.ID || skipped[0].Reason != "operator_gated" {
+			t.Fatalf("scan %d skipped=%+v, want one operator_gated packet", scan, skipped)
+		}
 	}
 }
 

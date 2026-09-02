@@ -416,6 +416,28 @@ func TestValidateBeadAssignmentAuthorizationAllowsExplicitStaleOwnershipState(t 
 	}
 }
 
+func TestValidateBeadAssignmentAuthorizationRejectsPacketTrackedBead(t *testing.T) {
+	t.Parallel()
+
+	details := &BeadAssignmentDetails{
+		ID:     "agent-factory-packet",
+		Status: "open",
+		Labels: []string{"packet-tracked"},
+	}
+	err := ValidateBeadAssignmentAuthorizationWithOperatorGatedLabels(
+		details,
+		BeadAssignmentAuthorization{BeadID: details.ID},
+		nil,
+	)
+	var eligibilityErr *AssignmentEligibilityError
+	if !errors.Is(err, ErrBeadAssignmentIneligible) || !errors.As(err, &eligibilityErr) {
+		t.Fatalf("authorization error=%v, want typed assignment-ineligible error", err)
+	}
+	if !reflect.DeepEqual(eligibilityErr.OperatorLabels, []string{"packet-tracked"}) {
+		t.Fatalf("operator labels=%v, want [packet-tracked]", eligibilityErr.OperatorLabels)
+	}
+}
+
 func TestClaimBeadForAssignmentTransactionRejectsDirectStartBlockers(t *testing.T) {
 	requireRealBR(t)
 
