@@ -85,6 +85,7 @@ func newWorkReadinessTestWorkspace(t *testing.T) string {
 	}
 	binDir := t.TempDir()
 	script := `#!/bin/sh
+if [ "${1:-}" = "--lock-timeout" ]; then shift 2; fi
 case "$1" in
   ready)
     printf '%s\n' '{"issues":[{"id":"ready-1","title":"first","priority":1},{"id":"ready-2","title":"second","priority":2},{"id":"ready-3","title":"third","priority":3}],"total":3}'

@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -173,13 +174,15 @@ func runWithContextTimeout(parent context.Context, dir string, timeout time.Dura
 			return "", ErrNoBaseline
 		}
 
-		// Handle transient database locks (SQLite)
-		if attempt < maxAttempts && (strings.Contains(stderrStr, "database is locked") ||
-			strings.Contains(stdoutStr, "database is locked") ||
-			strings.Contains(stderrStr, "database is busy")) {
-			backoff := transientBeadsDBBackoff(attempt)
-			if time.Until(deadline) <= backoff {
-				return "", fmt.Errorf("bv timed out after %v: %w", timeout, ErrTimeout)
+		// Handle transient workspace contention (SQLite locks, br write lock).
+		if isTransientBeadsDBError(stderrStr, stdoutStr) {
+			backoff, retry := transientBeadsRetryDelay(attempt, maxAttempts, deadline)
+			if !retry {
+				if attempt < maxAttempts {
+					return "", fmt.Errorf("bv timed out after %v: %w", timeout, ErrTimeout)
+				}
+				return "", fmt.Errorf("bv %s: workspace still contended after %d attempt(s): %w: %s",
+					strings.Join(args, " "), attempt, err, stderrStr)
 			}
 			if err := waitForBeadsRetry(parent, backoff); err != nil {
 				return "", err
@@ -836,6 +839,7 @@ func runBdContext(parent context.Context, dir string, allowNoDB bool, args ...st
 	}
 
 	const maxAttempts = 6 // Canonical default: config.RetryConfig.DB.MaxAttempts
+	retryDeadline := time.Now().Add(transientBeadsRetryBudget)
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		ctx, cancel := context.WithTimeout(parent, DefaultTimeout)
 
@@ -871,8 +875,15 @@ func runBdContext(parent context.Context, dir string, allowNoDB bool, args ...st
 			attempt = 0
 			continue
 		}
-		if attempt < maxAttempts && isTransientBeadsDBError(stderrStr, stdoutStr) {
-			if err := waitForBeadsRetry(parent, transientBeadsDBBackoff(attempt)); err != nil {
+		if isTransientBeadsDBError(stderrStr, stdoutStr) {
+			delay, retry := transientBeadsRetryDelay(attempt, maxAttempts, retryDeadline)
+			if !retry {
+				return "", fmt.Errorf(
+					"br %s: workspace still contended after %d attempt(s): %w: %s",
+					strings.Join(args, " "), attempt, err, diagnostics,
+				)
+			}
+			if err := waitForBeadsRetry(parent, delay); err != nil {
 				return "", err
 			}
 			continue
@@ -2292,23 +2303,80 @@ func isNoBeadsDBError(streams ...string) bool {
 	return strings.Contains(s, "no beads database found") || strings.Contains(s, "use 'br --no-db'")
 }
 
+// isTransientBeadsDBError reports whether a failed br/bv invocation died on
+// workspace contention that a later attempt can reasonably expect to clear:
+//
+//   - SQLite "database is busy" / "database is locked" (another writer holds
+//     the SQLite lock);
+//   - br's cross-process workspace write lock timing out ("Timed out after
+//     Nms waiting for write lock (...) at .beads/.write.lock"). br reports
+//     this as a CONFIG_ERROR, but it is contention, not configuration: the
+//     command never ran, so retrying it is safe for reads and for
+//     compare-and-set mutations alike.
+//
+// Every other diagnostic (including other CONFIG_ERRORs such as a genuinely
+// unwritable lock file) is terminal and must not be retried.
 func isTransientBeadsDBError(streams ...string) bool {
 	s := strings.ToLower(strings.Join(streams, "\n"))
-	return strings.Contains(s, "database is busy") || strings.Contains(s, "database is locked")
+	if strings.Contains(s, "database is busy") || strings.Contains(s, "database is locked") {
+		return true
+	}
+	return strings.Contains(s, "timed out after") && strings.Contains(s, "waiting for write lock")
 }
 
-func transientBeadsDBBackoff(attempt int) time.Duration {
+const (
+	// transientBeadsDBBackoffBase is the first retry delay after workspace
+	// contention; each later attempt doubles it up to transientBeadsDBBackoffCap.
+	transientBeadsDBBackoffBase = 50 * time.Millisecond
+	transientBeadsDBBackoffCap  = 800 * time.Millisecond
+)
+
+// transientBeadsRetryBudget bounds the total wall-clock time one br/bv
+// invocation may spend retrying workspace contention, measured from the first
+// attempt. It is a var so tests can shrink it; production code never writes it.
+var transientBeadsRetryBudget = 20 * time.Second
+
+// transientBeadsDBBackoffBounds returns the inclusive [min, max] delay window
+// for the given 1-based attempt: exponential growth capped at
+// transientBeadsDBBackoffCap, with the lower bound at half the ceiling so
+// jitter spreads contending processes without collapsing to zero.
+func transientBeadsDBBackoffBounds(attempt int) (time.Duration, time.Duration) {
 	if attempt < 1 {
 		attempt = 1
 	}
-	backoff := 50 * time.Millisecond
-	for i := 1; i < attempt; i++ {
-		backoff *= 2
-		if backoff >= 800*time.Millisecond {
-			return 800 * time.Millisecond
-		}
+	ceiling := transientBeadsDBBackoffBase
+	for i := 1; i < attempt && ceiling < transientBeadsDBBackoffCap; i++ {
+		ceiling *= 2
 	}
-	return backoff
+	if ceiling > transientBeadsDBBackoffCap {
+		ceiling = transientBeadsDBBackoffCap
+	}
+	return ceiling / 2, ceiling
+}
+
+// transientBeadsDBBackoff returns the jittered delay before retrying the
+// given 1-based attempt, uniformly drawn from transientBeadsDBBackoffBounds.
+func transientBeadsDBBackoff(attempt int) time.Duration {
+	low, high := transientBeadsDBBackoffBounds(attempt)
+	if high <= low {
+		return low
+	}
+	return low + rand.N(high-low+1)
+}
+
+// transientBeadsRetryDelay decides whether a transient failure on the given
+// attempt should be retried and, if so, how long to wait first. It returns
+// false when the attempt budget is spent or when the next delay would push the
+// invocation past deadline; the caller then surfaces the last br error.
+func transientBeadsRetryDelay(attempt, maxAttempts int, deadline time.Time) (time.Duration, bool) {
+	if attempt >= maxAttempts {
+		return 0, false
+	}
+	delay := transientBeadsDBBackoff(attempt)
+	if time.Until(deadline) <= delay {
+		return 0, false
+	}
+	return delay, true
 }
 
 func containsString(list []string, value string) bool {

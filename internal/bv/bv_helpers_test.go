@@ -290,8 +290,8 @@ func TestRunBdContextCancelsDuringTransientRetryBackoff(t *testing.T) {
 	for attempt := 1; attempt <= 3; attempt++ {
 		select {
 		case delay := <-retryWaitEntered:
-			if want := transientBeadsDBBackoff(attempt); delay != want {
-				t.Fatalf("retry backoff %d delay=%s, want %s", attempt, delay, want)
+			if low, high := transientBeadsDBBackoffBounds(attempt); delay < low || delay > high {
+				t.Fatalf("retry backoff %d delay=%s, want within [%s, %s]", attempt, delay, low, high)
 			}
 			if attempt < 3 {
 				continueRetry <- struct{}{}
@@ -319,6 +319,162 @@ func TestRunBdContextCancelsDuringTransientRetryBackoff(t *testing.T) {
 	}
 	if attempts := strings.Count(string(data), "x"); attempts != 3 {
 		t.Fatalf("fake br attempts=%d, want exactly 3 with no post-cancellation execution", attempts)
+	}
+}
+
+// installFakeBRWithAttempts installs a fake br on PATH that appends one line
+// to the returned attempts file per invocation and runs script after that.
+// The script may reference $attempts (the file path) and $count (invocations
+// so far, including the current one).
+func installFakeBRWithAttempts(t *testing.T, script string) (dir, attempts string) {
+	t.Helper()
+	dir = t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir .git: %v", err)
+	}
+	binDir := t.TempDir()
+	attempts = filepath.Join(t.TempDir(), "attempts")
+	full := "#!/bin/sh\nattempts=" + attempts + "\nprintf 'x\\n' >> \"$attempts\"\ncount=$(wc -l < \"$attempts\" | tr -d ' ')\n" + script
+	if err := os.WriteFile(filepath.Join(binDir, "br"), []byte(full), 0o700); err != nil {
+		t.Fatalf("write fake br: %v", err)
+	}
+	// Keep the host PATH: the script shells out to wc/tr.
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return dir, attempts
+}
+
+func countFakeBRAttempts(t *testing.T, attempts string) int {
+	t.Helper()
+	data, err := os.ReadFile(attempts)
+	if err != nil {
+		t.Fatalf("read fake br attempts: %v", err)
+	}
+	return strings.Count(string(data), "x")
+}
+
+// brWriteLockTimeoutDiagnostic mirrors the exact CONFIG_ERROR br prints when
+// its cross-process workspace write lock times out.
+const brWriteLockTimeoutDiagnostic = "CONFIG_ERROR: Timed out after 5000ms waiting for write lock (database) at .beads/.write.lock. Another br process may be holding that authority; retry after it exits or investigate a stuck process."
+
+func TestIsTransientBeadsDBError(t *testing.T) {
+	cases := []struct {
+		name   string
+		stderr string
+		want   bool
+	}{
+		{name: "sqlite locked", stderr: "Error: database is locked", want: true},
+		{name: "sqlite busy", stderr: "database is busy", want: true},
+		{name: "br write lock timeout", stderr: brWriteLockTimeoutDiagnostic, want: true},
+		{name: "unwritable write lock is terminal", stderr: "CONFIG_ERROR: Failed to open write lock .beads/.write.lock: permission denied", want: false},
+		{name: "other config error is terminal", stderr: "CONFIG_ERROR: invalid [sync] configuration", want: false},
+		{name: "generic timeout is terminal", stderr: "Timed out after 30s waiting for remote", want: false},
+		{name: "empty", stderr: "", want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isTransientBeadsDBError(tc.stderr, ""); got != tc.want {
+				t.Fatalf("isTransientBeadsDBError(%q) = %v, want %v", tc.stderr, got, tc.want)
+			}
+			if got := isTransientBeadsDBError("", tc.stderr); got != tc.want {
+				t.Fatalf("isTransientBeadsDBError(stdout=%q) = %v, want %v", tc.stderr, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestTransientBeadsDBBackoffIsBoundedExponentialWithJitter(t *testing.T) {
+	wantCeilings := []time.Duration{
+		50 * time.Millisecond, 100 * time.Millisecond, 200 * time.Millisecond,
+		400 * time.Millisecond, 800 * time.Millisecond, 800 * time.Millisecond,
+		800 * time.Millisecond,
+	}
+	for i, ceiling := range wantCeilings {
+		attempt := i + 1
+		low, high := transientBeadsDBBackoffBounds(attempt)
+		if high != ceiling || low != ceiling/2 {
+			t.Fatalf("attempt %d bounds = [%s, %s], want [%s, %s]", attempt, low, high, ceiling/2, ceiling)
+		}
+		for sample := 0; sample < 64; sample++ {
+			if got := transientBeadsDBBackoff(attempt); got < low || got > high {
+				t.Fatalf("attempt %d backoff %s outside [%s, %s]", attempt, got, low, high)
+			}
+		}
+	}
+	if low, high := transientBeadsDBBackoffBounds(0); low != 25*time.Millisecond || high != 50*time.Millisecond {
+		t.Fatalf("attempt 0 bounds = [%s, %s], want clamped to attempt 1", low, high)
+	}
+}
+
+func TestTransientBeadsRetryDelayHonorsAttemptAndDeadlineBudgets(t *testing.T) {
+	farDeadline := time.Now().Add(time.Hour)
+	if _, retry := transientBeadsRetryDelay(6, 6, farDeadline); retry {
+		t.Fatal("final attempt must not be retried")
+	}
+	if delay, retry := transientBeadsRetryDelay(1, 6, farDeadline); !retry || delay <= 0 {
+		t.Fatalf("attempt 1 retry = (%s, %v), want positive delay", delay, retry)
+	}
+	if _, retry := transientBeadsRetryDelay(1, 6, time.Now()); retry {
+		t.Fatal("an expired deadline must stop retries even with attempts remaining")
+	}
+}
+
+func TestRunBdContextRetriesBeadsWriteLockTimeoutThenSucceeds(t *testing.T) {
+	dir, attempts := installFakeBRWithAttempts(t, `
+if [ "$count" -lt 3 ]; then
+  printf '%s\n' "`+brWriteLockTimeoutDiagnostic+`" >&2
+  exit 1
+fi
+printf '%s\n' '{"issues":[],"total":0}'
+`)
+
+	output, err := RunBdContext(context.Background(), dir, "ready", "--json")
+	if err != nil {
+		t.Fatalf("RunBdContext returned the transient write-lock timeout: %v", err)
+	}
+	if !strings.Contains(output, `"issues":[]`) {
+		t.Fatalf("RunBdContext output=%q, want the successful third attempt", output)
+	}
+	if got := countFakeBRAttempts(t, attempts); got != 3 {
+		t.Fatalf("fake br attempts=%d, want exactly 3", got)
+	}
+}
+
+func TestRunBdContextDoesNotRetryTerminalConfigError(t *testing.T) {
+	dir, attempts := installFakeBRWithAttempts(t, `
+printf '%s\n' 'CONFIG_ERROR: Failed to open write lock .beads/.write.lock: permission denied' >&2
+exit 1
+`)
+
+	_, err := RunBdContext(context.Background(), dir, "ready", "--json")
+	if err == nil || !strings.Contains(err.Error(), "Failed to open write lock") {
+		t.Fatalf("RunBdContext error=%v, want the terminal CONFIG_ERROR surfaced", err)
+	}
+	if got := countFakeBRAttempts(t, attempts); got != 1 {
+		t.Fatalf("fake br attempts=%d, want exactly 1 (no retry on a terminal error)", got)
+	}
+}
+
+func TestRunBdContextStopsRetryingContentionAtTotalDeadline(t *testing.T) {
+	previous := transientBeadsRetryBudget
+	transientBeadsRetryBudget = 120 * time.Millisecond
+	t.Cleanup(func() { transientBeadsRetryBudget = previous })
+
+	dir, attempts := installFakeBRWithAttempts(t, `
+printf '%s\n' "`+brWriteLockTimeoutDiagnostic+`" >&2
+exit 1
+`)
+
+	start := time.Now()
+	_, err := RunBdContext(context.Background(), dir, "ready", "--json")
+	elapsed := time.Since(start)
+	if err == nil || !strings.Contains(err.Error(), "still contended") || !strings.Contains(err.Error(), "waiting for write lock") {
+		t.Fatalf("RunBdContext error=%v, want contention surfaced after the retry budget", err)
+	}
+	if got := countFakeBRAttempts(t, attempts); got < 1 || got >= 6 {
+		t.Fatalf("fake br attempts=%d, want the deadline to cut retries short of the %d-attempt cap", got, 6)
+	}
+	if elapsed > 5*time.Second {
+		t.Fatalf("RunBdContext took %s, want the total retry deadline to bound it", elapsed)
 	}
 }
 
