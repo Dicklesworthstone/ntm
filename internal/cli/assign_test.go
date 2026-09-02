@@ -2146,11 +2146,12 @@ func TestWatchLoopSurvivesThreeScansWithTransientBeadsWriteLockTimeout(t *testin
 	}
 	binDir := t.TempDir()
 	attempts := filepath.Join(t.TempDir(), "attempts")
+	scanMarker := filepath.Join(t.TempDir(), "scan")
 	brScript := `#!/bin/sh
-printf 'x\n' >> "` + attempts + `"
-count=$(wc -l < "` + attempts + `")
-remainder=$((count % 3))
-if [ "$remainder" -ne 0 ]; then
+scan=$(cat "` + scanMarker + `")
+printf '%s\n' "$scan" >> "` + attempts + `"
+count=$(grep -c "^${scan}$" "` + attempts + `")
+if [ "$count" -lt 3 ]; then
   printf 'CONFIG_ERROR: Timed out after 5000ms waiting for write lock .beads/.write.lock\n' >&2
   exit 1
 fi
@@ -2161,7 +2162,12 @@ printf '{"issues":[],"total":0,"limit":100000,"offset":0,"has_more":false}\n'
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
+	var probes atomic.Int32
 	runWatchLoopThroughThreeSuccessfulScans(t, func(ctx context.Context) error {
+		scan := probes.Add(1)
+		if err := os.WriteFile(scanMarker, []byte(fmt.Sprintf("%d\n", scan)), 0o600); err != nil {
+			return fmt.Errorf("write scan marker: %w", err)
+		}
 		_, err := bv.RunBdContext(ctx, projectDir, "ready", "--json", "--limit", "100000")
 		return err
 	})
@@ -2170,8 +2176,9 @@ printf '{"issues":[],"total":0,"limit":100000,"offset":0,"has_more":false}\n'
 	if err != nil {
 		t.Fatalf("read fake br attempts: %v", err)
 	}
-	if got := strings.Count(string(data), "x"); got != 9 {
-		t.Fatalf("fake br attempts=%d, want three retries across each of three scans", got)
+	want := "1\n1\n1\n2\n2\n2\n3\n3\n3\n"
+	if got := string(data); got != want {
+		t.Fatalf("fake br attempts by scan=%q, want %q", got, want)
 	}
 }
 
