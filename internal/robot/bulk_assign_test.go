@@ -1695,6 +1695,29 @@ func TestBulkAssignFailureClassReportsAmbiguousDispatchTruthfully(t *testing.T) 
 	}
 }
 
+func TestRobotAtomicPaneDispatchPortMakesPreActuationRefusalRetryable(t *testing.T) {
+	const session = "composer-retry"
+	panes := []tmux.Pane{{ID: "%41", WindowIndex: 0, Index: 1, Type: tmux.AgentCodex}}
+	port := newRobotAtomicPaneDispatchPort(
+		session,
+		func(context.Context, string) ([]tmux.Pane, error) { return panes, nil },
+		func(context.Context, string) (statuspkg.SessionObservation, error) {
+			return bulkSafeObservation(session, panes), nil
+		},
+		redaction.Config{Mode: redaction.ModeOff},
+		dispatchsvc.DelivererFunc(func(context.Context, dispatchsvc.Delivery) error {
+			return dispatchsvc.GuaranteeNoDeliveryActuation(errors.New("codex 0.152 composer not ready"))
+		}),
+		nil,
+	)
+	_, err := port.Dispatch(t.Context(), assignment.DispatchRequest{
+		BeadID: "bd-composer-retry", Target: "%41", AgentType: "codex", Prompt: "work", IdempotencyKey: "composer-retry-key",
+	})
+	if !assignment.IsGuaranteedNoActuation(err) {
+		t.Fatalf("dispatch error = %v, want assignment retry classification", err)
+	}
+}
+
 func TestBulkAssignClaimConflictNeverReservesOrDispatches(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	plan := allocateBulkAssignBeads(

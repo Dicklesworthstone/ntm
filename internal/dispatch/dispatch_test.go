@@ -1151,7 +1151,28 @@ func TestTMUXDelivererRejectsInvalidOrUnrepresentableProtocols(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("Deliver() error = %v, want substring %q", err, tc.want)
 			}
+			if !IsGuaranteedNoDeliveryActuation(err) {
+				t.Fatalf("Deliver() error = %v, want guaranteed-no-delivery-actuation classification", err)
+			}
 		})
+	}
+}
+
+func TestDeliveryActuationClassificationSurvivesServiceWrapping(t *testing.T) {
+	service, err := NewService(Ports{
+		Redactor: AllowAllRedactor{},
+		Deliverer: DelivererFunc(func(context.Context, Delivery) error {
+			return GuaranteeNoDeliveryActuation(errors.New("codex 0.152 composer not ready"))
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = service.Execute(context.Background(), Request{
+		Session: "proj", Panes: []tmux.Pane{testPane("%1", 0, 0, tmux.AgentCodex, "")}, Message: "work", Submit: true,
+	})
+	if !IsGuaranteedNoDeliveryActuation(err) {
+		t.Fatalf("wrapped service error = %v, want guaranteed-no-delivery-actuation classification", err)
 	}
 }
 

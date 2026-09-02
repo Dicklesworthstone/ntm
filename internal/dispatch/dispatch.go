@@ -46,6 +46,30 @@ type Error struct {
 	Err    error
 }
 
+type guaranteedNoDeliveryActuationError struct {
+	err error
+}
+
+func (e *guaranteedNoDeliveryActuationError) Error() string { return e.err.Error() }
+func (e *guaranteedNoDeliveryActuationError) Unwrap() error { return e.err }
+
+// GuaranteeNoDeliveryActuation marks a delivery failure that happened before
+// any byte of the requested message was typed into the target. Callers with a
+// durable idempotency barrier may safely retry only errors carrying this mark.
+func GuaranteeNoDeliveryActuation(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &guaranteedNoDeliveryActuationError{err: err}
+}
+
+// IsGuaranteedNoDeliveryActuation reports whether retrying the requested
+// message cannot duplicate a prior delivery.
+func IsGuaranteedNoDeliveryActuation(err error) bool {
+	var target *guaranteedNoDeliveryActuationError
+	return errors.As(err, &target)
+}
+
 func (e *Error) Error() string {
 	if e == nil {
 		return "dispatch error"
@@ -348,13 +372,13 @@ func RefuseDeadAgentPane(pane tmux.Pane) error {
 
 func (TMUXDeliverer) Deliver(ctx context.Context, delivery Delivery) error {
 	if err := contextError(ctx); err != nil {
-		return err
+		return GuaranteeNoDeliveryActuation(err)
 	}
 	if err := validateTMUXDeliveryProtocol(delivery); err != nil {
-		return err
+		return GuaranteeNoDeliveryActuation(err)
 	}
 	if err := RefuseDeadAgentPane(delivery.Target.Pane); err != nil {
-		return err
+		return GuaranteeNoDeliveryActuation(err)
 	}
 	target := delivery.Target.Ref.ID
 	if target == "" {
@@ -367,10 +391,12 @@ func (TMUXDeliverer) Deliver(ctx context.Context, delivery Delivery) error {
 	// unknown agent types, so it can only refuse when the screen positively
 	// shows neither a composer nor working-state chrome.
 	if ready, reason := tmux.ComposerReadyForDelivery(ctx, target, delivery.Target.AgentType, delivery.Target.Pane.Width); !ready {
-		return fmt.Errorf("pane %s not ready for delivery: %s", target, reason)
+		return GuaranteeNoDeliveryActuation(fmt.Errorf("pane %s not ready for delivery: %s", target, reason))
 	}
 	if err := ClearComposerForDelivery(ctx, target, delivery); err != nil {
-		return err
+		// ClearComposer may press control keys, but it never types the requested
+		// message. Re-running the clear choreography cannot duplicate delivery.
+		return GuaranteeNoDeliveryActuation(err)
 	}
 	switch delivery.Protocol {
 	case ProtocolStageOnly:
@@ -383,7 +409,7 @@ func (TMUXDeliverer) Deliver(ctx context.Context, delivery Delivery) error {
 		}
 		return VerifyAgentSubmission(ctx, target, delivery.Message, delivery.Target.AgentType, delivery.Target.Pane.Width)
 	default:
-		return fmt.Errorf("unsupported delivery protocol %q", delivery.Protocol)
+		return GuaranteeNoDeliveryActuation(fmt.Errorf("unsupported delivery protocol %q", delivery.Protocol))
 	}
 }
 

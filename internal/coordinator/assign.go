@@ -342,6 +342,9 @@ func (c *SessionCoordinator) recoverPendingAssignments(ctx context.Context, stor
 		if !coordinatorAssignmentIsRecoverable(recorded) {
 			continue
 		}
+		if !coordinatorDispatchRetryReady(recorded, time.Now()) {
+			continue
+		}
 		target := strings.TrimSpace(recorded.OccupancyKey)
 		if target == "" {
 			target = strings.TrimSpace(recorded.DispatchTarget)
@@ -364,6 +367,29 @@ func (c *SessionCoordinator) recoverPendingAssignments(ctx context.Context, stor
 		results = append(results, c.recoverPendingAssignment(ctx, store, recorded, work))
 	}
 	return results
+}
+
+const (
+	coordinatorDispatchRetryInitial = 5 * time.Second
+	coordinatorDispatchRetryMaximum = time.Minute
+)
+
+// coordinatorDispatchRetryReady applies bounded exponential backoff to a
+// known pre-actuation dispatch failure. DispatchAttempts is incremented before
+// each transport call, and DispatchStartedAt is therefore the durable clock
+// anchor for recovery after a coordinator restart.
+func coordinatorDispatchRetryReady(recorded *assignmentstore.Assignment, now time.Time) bool {
+	if recorded == nil || recorded.LastDispatchError == "" || recorded.DispatchStartedAt == nil {
+		return true
+	}
+	delay := coordinatorDispatchRetryInitial
+	for attempt := 1; attempt < recorded.DispatchAttempts && delay < coordinatorDispatchRetryMaximum; attempt++ {
+		delay *= 2
+		if delay > coordinatorDispatchRetryMaximum {
+			delay = coordinatorDispatchRetryMaximum
+		}
+	}
+	return !now.Before(recorded.DispatchStartedAt.Add(delay))
 }
 
 func pendingRecoveryIdentityError(recorded *assignmentstore.Assignment, candidate *AgentState) error {

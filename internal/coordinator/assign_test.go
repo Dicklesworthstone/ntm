@@ -1259,6 +1259,89 @@ func TestAssignWorkKeepsUnknownDispatchFailClosed(t *testing.T) {
 	}
 }
 
+func TestCoordinatorDispatchRetryBackoff(t *testing.T) {
+	now := time.Now().UTC()
+	recorded := &assignmentstore.Assignment{
+		DispatchState: assignmentstore.DispatchPending, DispatchAttempts: 1,
+		DispatchStartedAt: &now, LastDispatchError: "codex 0.152 composer not ready",
+	}
+	if coordinatorDispatchRetryReady(recorded, now.Add(coordinatorDispatchRetryInitial-time.Millisecond)) {
+		t.Fatal("first retry became eligible before initial backoff")
+	}
+	if !coordinatorDispatchRetryReady(recorded, now.Add(coordinatorDispatchRetryInitial)) {
+		t.Fatal("first retry did not become eligible at initial backoff")
+	}
+
+	recorded.DispatchAttempts = 9
+	if coordinatorDispatchRetryReady(recorded, now.Add(coordinatorDispatchRetryMaximum-time.Millisecond)) {
+		t.Fatal("retry became eligible before capped backoff")
+	}
+	if !coordinatorDispatchRetryReady(recorded, now.Add(coordinatorDispatchRetryMaximum)) {
+		t.Fatal("retry did not become eligible at capped backoff")
+	}
+}
+
+func TestAssignWorkDefersThenRetriesKnownPreActuationFailure(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	const session = "coordinator-retry-backoff"
+	request := assignmentstore.AtomicRequest{
+		BeadID: "ntm-retry", BeadTitle: "Retry delivery", Target: "%94", OccupancyKey: "%94", Pane: 1,
+		AgentType: "cod", AgentName: "BlueLake", Actor: "BlueLake", Prompt: "retry me",
+		IdempotencyKey: "coordinator-retry-key",
+	}
+	store := assignmentstore.NewStore(session)
+	actor := assignmentstore.StableClaimActor(request.Actor, request.IdempotencyKey)
+	if _, err := store.RecordAtomicIntent(request, actor, time.Now().UTC()); err != nil {
+		t.Fatalf("RecordAtomicIntent: %v", err)
+	}
+	if _, err := store.RecordAtomicClaim(request, assignmentstore.ClaimReceipt{
+		BeadID: request.BeadID, Actor: actor, Status: "in_progress", ClaimedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("RecordAtomicClaim: %v", err)
+	}
+	if err := store.RecordAtomicDispatchStarted(request.BeadID, request.IdempotencyKey, time.Now().UTC()); err != nil {
+		t.Fatalf("RecordAtomicDispatchStarted: %v", err)
+	}
+	if err := store.RecordAtomicDispatchFailed(request.BeadID, request.IdempotencyKey, assignmentstore.GuaranteeNoActuation(errors.New("composer not ready"))); err != nil {
+		t.Fatalf("RecordAtomicDispatchFailed: %v", err)
+	}
+
+	c := New(session, t.TempDir(), &agentmail.Client{}, "CoordinatorAgent")
+	addEligibleCoordinatorAgent(c, request.Target, request.AgentName)
+	factoryCalls := 0
+	c.atomicCoordinatorFactory = func(store *assignmentstore.AssignmentStore) *assignmentstore.AtomicCoordinator {
+		factoryCalls++
+		return assignmentstore.NewAtomicCoordinator(
+			store,
+			assignmentstore.ClaimFunc(func(context.Context, string, string) (assignmentstore.ClaimReceipt, error) {
+				t.Fatal("retry repeated a completed claim")
+				return assignmentstore.ClaimReceipt{}, nil
+			}),
+			nil,
+			assignmentstore.DispatchFunc(func(context.Context, assignmentstore.DispatchRequest) (assignmentstore.DispatchReceipt, error) {
+				return assignmentstore.DispatchReceipt{DeliveryID: "retry-delivered"}, nil
+			}),
+			nil,
+		)
+	}
+	results, err := c.AssignWork(t.Context())
+	if err != nil || len(results) != 0 || factoryCalls != 0 {
+		t.Fatalf("within backoff results=%+v error=%v factoryCalls=%d", results, err, factoryCalls)
+	}
+
+	recorded := store.Get(request.BeadID)
+	old := time.Now().UTC().Add(-coordinatorDispatchRetryInitial - time.Second)
+	recorded.DispatchStartedAt = &old
+	store.Assignments[request.BeadID] = recorded
+	if err := store.Save(); err != nil {
+		t.Fatalf("age retry barrier: %v", err)
+	}
+	results, err = c.AssignWork(t.Context())
+	if err != nil || len(results) != 1 || !results[0].Success || factoryCalls != 1 {
+		t.Fatalf("after backoff results=%+v error=%v factoryCalls=%d", results, err, factoryCalls)
+	}
+}
+
 func TestAssignWorkReleasesTerminalLeaseBeforePaneReuse(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	const session = "coordinator-terminal-lease-release"

@@ -2547,6 +2547,9 @@ func (p *robotAtomicPaneDispatchPort) Dispatch(ctx context.Context, req assignme
 		receipt.DeliveryID = assignment.DispatchDeliveryID(delivery.Target.Ref.StableKey(), string(delivery.Protocol), req.IdempotencyKey)
 	}
 	if dispatchErr != nil {
+		if dispatchsvc.IsGuaranteedNoDeliveryActuation(dispatchErr) {
+			return receipt, assignment.GuaranteeNoActuation(dispatchErr)
+		}
 		return receipt, dispatchErr
 	}
 	if result.Delivered != 1 || len(result.Receipts) != 1 || result.Receipts[0].Status != dispatchsvc.ReceiptDelivered {
