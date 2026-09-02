@@ -251,21 +251,75 @@ func TestGetSpawnGrokUsesConfiguredDefaultModelWithFakeLifecycle(t *testing.T) {
 	}
 }
 
-func TestLaunchAgentGrokRejectsBusyPaneBeforeMutation(t *testing.T) {
-	agent, err := launchAgent(
-		t.Context(),
-		tmux.Pane{ID: "%9", WindowIndex: 0, Index: 2, Command: "claude"},
-		"busy-session",
-		"grok",
-		1,
-		t.TempDir(),
-		"grok --always-approve",
-	)
-	if err == nil || !strings.Contains(err.Error(), "pre-launch current command") {
-		t.Fatalf("launchAgent error=%v, want pre-launch baseline rejection", err)
+// #291: every agent type launches by typing into the pane, so every agent
+// type must refuse a pane that is already running a non-shell process.
+func TestLaunchAgentRejectsBusyPaneBeforeMutationForEveryAgentType(t *testing.T) {
+	for _, agentType := range []string{"claude", "codex", "gemini", "antigravity", "grok"} {
+		t.Run(agentType, func(t *testing.T) {
+			agent, err := launchAgent(
+				t.Context(),
+				tmux.Pane{ID: "%9", WindowIndex: 0, Index: 2, Command: "cat"},
+				"busy-session",
+				agentType,
+				1,
+				t.TempDir(),
+				agentType+" --launch",
+			)
+			if err == nil || !errors.Is(err, tmux.ErrPaneOccupied) || !strings.Contains(err.Error(), "pre-launch current command") {
+				t.Fatalf("launchAgent(%s) error=%v, want pre-launch baseline rejection", agentType, err)
+			}
+			if !strings.Contains(agent.Error, "pre-launch current command") || agent.Ready {
+				t.Fatalf("launchAgent(%s) agent=%+v, want baseline rejection recorded", agentType, agent)
+			}
+		})
 	}
-	if !strings.Contains(agent.Error, "pre-launch current command") {
-		t.Fatalf("spawned agent error=%q, want baseline rejection", agent.Error)
+}
+
+func TestGetSpawnRefusesOccupiedExistingPaneForNonGrokAgents(t *testing.T) {
+	panes := []tmux.Pane{
+		{ID: "%0", WindowIndex: 0, Index: 0, Command: "zsh"},
+		{ID: "%1", WindowIndex: 0, Index: 1, Command: "cat"},
+	}
+	deps := testSpawnLifecycleDependencies(panes)
+	var splitCalls, layoutCalls, launchCalls int
+	deps.SplitWindow = func(context.Context, string, string) (string, error) {
+		splitCalls++
+		return "%new", nil
+	}
+	deps.ApplyTiledLayout = func(context.Context, string) error {
+		layoutCalls++
+		return nil
+	}
+	deps.LaunchAgent = func(context.Context, tmux.Pane, string, string, int, string, string) (SpawnedAgent, error) {
+		launchCalls++
+		return SpawnedAgent{}, nil
+	}
+
+	out, err := GetSpawn(t.Context(), SpawnOptions{
+		Session: "occupied-existing", CCCount: 1, CodCount: 1, WorkingDir: t.TempDir(), LifecycleDeps: deps,
+	}, testSpawnConfig())
+	if err != nil {
+		t.Fatalf("GetSpawn returned transport error: %v", err)
+	}
+	if out.Success || !strings.Contains(out.Error, "agent pane 1") || !strings.Contains(out.Error, `"cat"`) {
+		t.Fatalf("GetSpawn output=%+v, want occupied pane 1 rejected before any mutation", out)
+	}
+	if out.RobotResponse.Success || !strings.Contains(out.RobotResponse.Hint, "idle shell") {
+		t.Fatalf("GetSpawn robot response=%+v, want actionable idle-shell hint", out.RobotResponse)
+	}
+	if splitCalls != 0 || layoutCalls != 0 || launchCalls != 0 {
+		t.Fatalf("occupied pane lifecycle calls: split=%d layout=%d launch=%d, want zero", splitCalls, layoutCalls, launchCalls)
+	}
+}
+
+func TestSpawnAgentPaneRangeCountsEveryAgentFamily(t *testing.T) {
+	start, count := spawnAgentPaneRange(SpawnOptions{CCCount: 2, CodCount: 1, GmiCount: 1, AgyCount: 1, GrokCount: 1})
+	if start != 1 || count != 6 {
+		t.Fatalf("spawnAgentPaneRange() = (%d, %d), want (1, 6)", start, count)
+	}
+	start, count = spawnAgentPaneRange(SpawnOptions{CCCount: 1, NoUserPane: true})
+	if start != 0 || count != 1 {
+		t.Fatalf("spawnAgentPaneRange(no user pane) = (%d, %d), want (0, 1)", start, count)
 	}
 }
 

@@ -1002,9 +1002,19 @@ func PaneCommandIsShell(command string) bool {
 	}
 }
 
+// ErrPaneOccupied is wrapped by ValidatePaneLaunchBaseline when a launch
+// target is already running a non-shell process.
+var ErrPaneOccupied = errors.New("pane is occupied by a non-shell process")
+
 // ValidatePaneLaunchBaseline rejects a pane that was already occupied before
-// an agent launch. Without this preflight, a stable pre-existing process could
-// be mistaken for the process that the launch command was meant to start.
+// an agent launch. The decision is made from tmux's own `pane_current_command`
+// (the foreground process on the pane's tty), not from titles or output
+// heuristics: a pane whose foreground process is an interactive shell is idle,
+// anything else (an agent CLI, `cat`, `vim`, a build) would receive the launch
+// line as keystrokes — `tmux send-keys` succeeds either way, so without this
+// preflight the launch command would be typed into the running process and
+// spawn would report success. A pane with an empty observation (process died
+// instantly under remain-on-exit) is left to the post-launch stability wait.
 func ValidatePaneLaunchBaseline(pane Pane) error {
 	command := strings.TrimSpace(pane.Command)
 	if command == "" || PaneCommandIsShell(command) {
@@ -1016,10 +1026,51 @@ func ValidatePaneLaunchBaseline(pane Pane) error {
 		paneID = pane.Ref().Physical()
 	}
 	return fmt.Errorf(
-		"pane %s pre-launch current command %q is already a non-shell process; use an idle shell pane",
+		"pane %s pre-launch current command %q is already a non-shell process (%w); "+
+			"refusing to type the launch command into it — free the pane (exit that process) "+
+			"or add the agent in a fresh pane instead of reusing this one",
 		paneID,
 		command,
+		ErrPaneOccupied,
 	)
+}
+
+// ValidatePaneLaunchBaselineLiveContext re-reads the exact pane from tmux
+// immediately before a launch and applies ValidatePaneLaunchBaseline to the
+// fresh observation. It closes the gap between a batch preflight and the
+// send-keys call: identity registration and command preparation can take long
+// enough for something else to occupy the pane. A pane that can no longer be
+// found, or a tmux read failure, is a refusal — the launch is never retargeted.
+func ValidatePaneLaunchBaselineLiveContext(ctx context.Context, session, paneID string) error {
+	return validatePaneLaunchBaselineLiveContext(ctx, session, paneID, GetPanesContext)
+}
+
+func validatePaneLaunchBaselineLiveContext(ctx context.Context, session, paneID string, listPanes paneProcessLister) error {
+	if ctx == nil {
+		return errors.New("pane launch preflight requires a context")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	session = strings.TrimSpace(session)
+	paneID = strings.TrimSpace(paneID)
+	if session == "" || paneID == "" {
+		return errors.New("pane launch preflight requires a session and an exact pane ID")
+	}
+	if listPanes == nil {
+		return errors.New("pane launch preflight requires a pane lister")
+	}
+	panes, err := listPanes(ctx, session)
+	if err != nil {
+		return fmt.Errorf("re-reading pane %s before launch: %w", paneID, err)
+	}
+	for _, pane := range panes {
+		if strings.TrimSpace(pane.ID) != paneID {
+			continue
+		}
+		return ValidatePaneLaunchBaseline(pane)
+	}
+	return fmt.Errorf("pane %s disappeared from session %s before launch", paneID, session)
 }
 
 type paneProcessLister func(context.Context, string) ([]Pane, error)

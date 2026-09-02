@@ -162,13 +162,91 @@ func TestValidatePaneLaunchBaseline(t *testing.T) {
 			if err == nil {
 				t.Fatalf("ValidatePaneLaunchBaseline(%+v) error = nil, want occupied-pane rejection", test.pane)
 			}
-			for _, want := range []string{test.pane.ID, strings.TrimSpace(test.pane.Command), "pre-launch", "non-shell", "idle shell"} {
+			if !errors.Is(err, ErrPaneOccupied) {
+				t.Fatalf("ValidatePaneLaunchBaseline(%+v) error = %v, want wrapped ErrPaneOccupied", test.pane, err)
+			}
+			for _, want := range []string{test.pane.ID, strings.TrimSpace(test.pane.Command), "pre-launch", "non-shell", "free the pane"} {
 				if !strings.Contains(err.Error(), want) {
 					t.Fatalf("ValidatePaneLaunchBaseline(%+v) error = %q, want %q", test.pane, err, want)
 				}
 			}
 		})
 	}
+}
+
+func TestValidatePaneLaunchBaselineLiveContextRefusesInsteadOfRetargeting(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("exact target became occupied after the batch preflight", func(t *testing.T) {
+		list := func(context.Context, string) ([]Pane, error) {
+			return []Pane{{ID: "%other", Command: "zsh"}, {ID: "%target", Command: "claude"}}, nil
+		}
+		err := validatePaneLaunchBaselineLiveContext(ctx, "project", "%target", list)
+		if err == nil || !errors.Is(err, ErrPaneOccupied) {
+			t.Fatalf("validatePaneLaunchBaselineLiveContext() error = %v, want occupied-pane rejection", err)
+		}
+		for _, want := range []string{"%target", `"claude"`} {
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("validatePaneLaunchBaselineLiveContext() error = %q, want %q", err, want)
+			}
+		}
+	})
+
+	t.Run("exact target is still an idle shell", func(t *testing.T) {
+		list := func(context.Context, string) ([]Pane, error) {
+			return []Pane{{ID: "%other", Command: "vim"}, {ID: "%target", Command: "/bin/zsh"}}, nil
+		}
+		if err := validatePaneLaunchBaselineLiveContext(ctx, "project", "%target", list); err != nil {
+			t.Fatalf("validatePaneLaunchBaselineLiveContext() error = %v", err)
+		}
+	})
+
+	t.Run("missing target is never replaced by another pane", func(t *testing.T) {
+		list := func(context.Context, string) ([]Pane, error) {
+			return []Pane{{ID: "%other", Command: "zsh"}}, nil
+		}
+		err := validatePaneLaunchBaselineLiveContext(ctx, "project", "%target", list)
+		if err == nil || !strings.Contains(err.Error(), "pane %target disappeared") {
+			t.Fatalf("validatePaneLaunchBaselineLiveContext() error = %v, want missing-pane refusal", err)
+		}
+	})
+
+	t.Run("unreadable topology fails closed", func(t *testing.T) {
+		list := func(context.Context, string) ([]Pane, error) {
+			return nil, errors.New("tmux unavailable")
+		}
+		err := validatePaneLaunchBaselineLiveContext(ctx, "project", "%target", list)
+		if err == nil || !strings.Contains(err.Error(), "tmux unavailable") {
+			t.Fatalf("validatePaneLaunchBaselineLiveContext() error = %v, want lister failure surfaced", err)
+		}
+	})
+
+	t.Run("canceled context is not a launch", func(t *testing.T) {
+		canceled, cancel := context.WithCancel(ctx)
+		cancel()
+		listed := false
+		list := func(context.Context, string) ([]Pane, error) {
+			listed = true
+			return []Pane{{ID: "%target", Command: "zsh"}}, nil
+		}
+		err := validatePaneLaunchBaselineLiveContext(canceled, "project", "%target", list)
+		if !errors.Is(err, context.Canceled) || listed {
+			t.Fatalf("validatePaneLaunchBaselineLiveContext(canceled) error = %v listed=%v, want cancellation before any read", err, listed)
+		}
+	})
+
+	t.Run("blank identifiers are refused", func(t *testing.T) {
+		list := func(context.Context, string) ([]Pane, error) { return nil, nil }
+		if err := validatePaneLaunchBaselineLiveContext(ctx, "", "%target", list); err == nil {
+			t.Fatal("blank session accepted")
+		}
+		if err := validatePaneLaunchBaselineLiveContext(ctx, "project", " ", list); err == nil {
+			t.Fatal("blank pane ID accepted")
+		}
+		if err := validatePaneLaunchBaselineLiveContext(ctx, "project", "%target", nil); err == nil {
+			t.Fatal("nil lister accepted")
+		}
+	})
 }
 
 func TestWaitForPaneProcessStartRequiresStableNonShellObservation(t *testing.T) {

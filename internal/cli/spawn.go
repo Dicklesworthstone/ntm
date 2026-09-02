@@ -909,21 +909,26 @@ func validateSpawnPaneCapacity(panes []tmux.Pane, startIdx, agentCount int) erro
 	return nil
 }
 
-func validateSpawnGrokPaneBaselines(panes []tmux.Pane, startIdx int, agents []FlatAgent) error {
+// validateSpawnPaneBaselines preflights every pane the batch will launch
+// into, for every agent type, before any agent is launched. Spawning into an
+// existing session reuses its panes positionally; if one of them is already
+// running a process (a live agent, `cat`, an editor), tmux send-keys would
+// happily type the launch command into that process and spawn would report
+// success (#291). Checking the whole batch first also prevents a partial
+// launch where agents 1..k start and agent k+1 is refused.
+func validateSpawnPaneBaselines(panes []tmux.Pane, startIdx int, agents []FlatAgent) error {
 	for agentOffset, launch := range agents {
-		if launch.Type != AgentTypeGrok {
-			continue
-		}
 		paneOffset := startIdx + agentOffset
 		if paneOffset < 0 || paneOffset >= len(panes) {
 			return fmt.Errorf(
-				"no assigned pane for Grok Build agent %d at offset %d",
+				"no assigned pane for %s agent %d at offset %d",
+				launch.Type,
 				launch.Index,
 				paneOffset,
 			)
 		}
 		if err := tmux.ValidatePaneLaunchBaseline(panes[paneOffset]); err != nil {
-			return fmt.Errorf("validate Grok Build agent %d: %w", launch.Index, err)
+			return fmt.Errorf("%s agent %d: %w (use `ntm add` to grow a session that already has running panes)", launch.Type, launch.Index, err)
 		}
 	}
 	return nil
@@ -2722,8 +2727,8 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 	if err := validateSpawnPaneCapacity(panes, startIdx, len(opts.Agents)); err != nil {
 		return outputError(err)
 	}
-	if err := validateSpawnGrokPaneBaselines(panes, startIdx, opts.Agents); err != nil {
-		return outputError(fmt.Errorf("validating Grok Build launch panes: %w", err))
+	if err := validateSpawnPaneBaselines(panes, startIdx, opts.Agents); err != nil {
+		return outputError(fmt.Errorf("validating agent launch panes: %w", err))
 	}
 
 	agentNum := startIdx
@@ -2875,11 +2880,6 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 		}
 
 		pane := panes[agentNum]
-		if agent.Type == AgentTypeGrok {
-			if err := tmux.ValidatePaneLaunchBaseline(pane); err != nil {
-				return outputError(fmt.Errorf("launching %s agent: %w", agent.Type, err))
-			}
-		}
 
 		if testPacing.agentDelay > 0 && staggerAgentIdx > 0 {
 			if err := waitContextDelay(ctx, testPacing.agentDelay); err != nil {
@@ -3231,6 +3231,17 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 			model:         agent.Model,
 			resolvedModel: resolvedModel,
 		})
+
+		// Re-read the exact pane immediately before typing into it: the batch
+		// preflight above ran before identity registration and command
+		// preparation, and send-keys cannot tell whether a shell or a live
+		// process receives the bytes (#291). Refuse rather than retarget.
+		if err := tmux.ValidatePaneLaunchBaselineLiveContext(ctx, opts.Session, pane.ID); err != nil {
+			return outputError(fmt.Errorf(
+				"refusing to launch %s agent %d into pane %s: %w",
+				agent.Type, agent.Index, pane.ID, err,
+			))
+		}
 
 		if err := tmux.SendKeysContext(ctx, pane.ID, cmd, true); err != nil {
 			launchErr := fmt.Errorf(

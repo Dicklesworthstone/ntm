@@ -249,41 +249,47 @@ func validateSpawnRequest(opts SpawnOptions) (string, error) {
 	return strategy, nil
 }
 
-func validateGrokSpawnPaneBaselines(panes []tmux.Pane, opts SpawnOptions) error {
-	if opts.GrokCount <= 0 {
-		return nil
-	}
-	start := opts.CCCount + opts.CodCount + opts.GmiCount + opts.AgyCount
+// spawnAgentPaneRange returns the first pane index agents occupy and how many
+// agent panes the request needs. Pane 0 is reserved for the user unless
+// NoUserPane is set; agents of every type follow it positionally.
+func spawnAgentPaneRange(opts SpawnOptions) (start, count int) {
 	if !opts.NoUserPane {
-		start++
+		start = 1
 	}
-	for i := 0; i < opts.GrokCount; i++ {
+	count = opts.CCCount + opts.CodCount + opts.GmiCount + opts.AgyCount + opts.GrokCount
+	return start, count
+}
+
+// validateSpawnPaneBaselines preflights every agent pane of the final
+// topology, for every agent type, before any launch. A reused pane that is
+// already running a process would otherwise receive the launch command as
+// keystrokes while send-keys reports success (#291).
+func validateSpawnPaneBaselines(panes []tmux.Pane, opts SpawnOptions) error {
+	start, count := spawnAgentPaneRange(opts)
+	for i := 0; i < count; i++ {
 		paneIndex := start + i
 		if paneIndex >= len(panes) {
-			return fmt.Errorf("requested Grok Build pane %d is unavailable", i+1)
+			return fmt.Errorf("requested agent pane %d is unavailable", i+1)
 		}
 		if err := tmux.ValidatePaneLaunchBaseline(panes[paneIndex]); err != nil {
-			return fmt.Errorf("validate Grok Build agent %d: %w", i+1, err)
+			return fmt.Errorf("agent pane %d: %w", i+1, err)
 		}
 	}
 	return nil
 }
 
-func validateExistingGrokSpawnPaneBaselines(panes []tmux.Pane, opts SpawnOptions) error {
-	if opts.GrokCount <= 0 {
-		return nil
-	}
-	start := opts.CCCount + opts.CodCount + opts.GmiCount + opts.AgyCount
-	if !opts.NoUserPane {
-		start++
-	}
-	for i := 0; i < opts.GrokCount; i++ {
+// validateExistingSpawnPaneBaselines checks the panes an existing session
+// already has before any new panes are split, so an occupied target refuses
+// the spawn before the topology is mutated.
+func validateExistingSpawnPaneBaselines(panes []tmux.Pane, opts SpawnOptions) error {
+	start, count := spawnAgentPaneRange(opts)
+	for i := 0; i < count; i++ {
 		paneIndex := start + i
 		if paneIndex >= len(panes) {
 			break
 		}
 		if err := tmux.ValidatePaneLaunchBaseline(panes[paneIndex]); err != nil {
-			return fmt.Errorf("validate Grok Build agent %d: %w", i+1, err)
+			return fmt.Errorf("agent pane %d: %w", i+1, err)
 		}
 	}
 	return nil
@@ -871,12 +877,12 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 		}
 		return output, nil
 	}
-	if err := validateExistingGrokSpawnPaneBaselines(panes, opts); err != nil {
-		output.Error = fmt.Sprintf("validating existing Grok Build launch panes: %v", err)
+	if err := validateExistingSpawnPaneBaselines(panes, opts); err != nil {
+		output.Error = fmt.Sprintf("validating existing agent launch panes: %v", err)
 		output.RobotResponse = NewErrorResponse(
 			err,
 			ErrCodeInternalError,
-			"Use an idle shell pane before launching Grok Build",
+			"Agents only launch into idle shell panes; free the occupied pane or add agents with `ntm add <session>`",
 		)
 		return output, nil
 	}
@@ -926,12 +932,12 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 		)
 		return output, nil
 	}
-	if err := validateGrokSpawnPaneBaselines(panes, opts); err != nil {
-		output.Error = fmt.Sprintf("validating Grok Build launch panes: %v", err)
+	if err := validateSpawnPaneBaselines(panes, opts); err != nil {
+		output.Error = fmt.Sprintf("validating agent launch panes: %v", err)
 		output.RobotResponse = NewErrorResponse(
 			err,
 			ErrCodeInternalError,
-			"Use an idle shell pane before launching Grok Build",
+			"Agents only launch into idle shell panes; free the occupied pane or add agents with `ntm add <session>`",
 		)
 		return output, nil
 	}
@@ -1236,12 +1242,19 @@ func launchAgent(ctx context.Context, pane tmux.Pane, session, agentType string,
 		agent.Error = fmt.Sprintf("launch canceled: %v", err)
 		return agent, fmt.Errorf("launch canceled: %w", err)
 	}
-	if agentTypeShort(agentType) == "grok" {
-		if err := tmux.ValidatePaneLaunchBaseline(pane); err != nil {
-			agent.Error = fmt.Sprintf("launching: %v", err)
-			agent.StartupMs = time.Since(startTime).Milliseconds()
-			return agent, fmt.Errorf("launching Grok Build: %w", err)
-		}
+	// Every agent type launches by typing into the pane, so every launch
+	// must prove the target is still an idle shell: first from the snapshot
+	// the caller planned with, then from a fresh tmux read taken right before
+	// the pane is mutated (#291).
+	if err := tmux.ValidatePaneLaunchBaseline(pane); err != nil {
+		agent.Error = fmt.Sprintf("launching: %v", err)
+		agent.StartupMs = time.Since(startTime).Milliseconds()
+		return agent, fmt.Errorf("launching %s: %w", agentType, err)
+	}
+	if err := tmux.ValidatePaneLaunchBaselineLiveContext(ctx, session, pane.ID); err != nil {
+		agent.Error = fmt.Sprintf("launching: %v", err)
+		agent.StartupMs = time.Since(startTime).Milliseconds()
+		return agent, fmt.Errorf("launching %s: %w", agentType, err)
 	}
 
 	// Persist the type before launch so wrappers and self-managed TUI titles

@@ -651,44 +651,84 @@ func TestValidateSpawnPaneCapacity(t *testing.T) {
 	}
 }
 
-func TestValidateSpawnGrokPaneBaselinesPreflightsCompleteAssignment(t *testing.T) {
+func TestValidateSpawnPaneBaselinesPreflightsCompleteAssignment(t *testing.T) {
 	agents := []FlatAgent{
 		{Type: AgentTypeClaude, Index: 1},
 		{Type: AgentTypeGrok, Index: 1},
 	}
+
+	// #291: an existing session pane that is already running a process (an
+	// agent CLI, `cat`, an editor) must refuse a launch for EVERY agent type,
+	// not only Grok; send-keys would otherwise type the launch line into it.
+	t.Run("occupied first target refuses the batch for a non-Grok agent", func(t *testing.T) {
+		panes := []tmux.Pane{
+			{ID: "%occupied", Index: 0, Command: "cat"},
+			{ID: "%idle", Index: 1, Command: "zsh"},
+		}
+		err := validateSpawnPaneBaselines(panes, 0, agents)
+		if err == nil {
+			t.Fatal("validateSpawnPaneBaselines() error = nil, want occupied Claude pane rejected")
+		}
+		if !errors.Is(err, tmux.ErrPaneOccupied) {
+			t.Fatalf("validateSpawnPaneBaselines() error = %v, want wrapped tmux.ErrPaneOccupied", err)
+		}
+		for _, want := range []string{"cc agent 1", "%occupied", `"cat"`, "non-shell", "ntm add"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("validateSpawnPaneBaselines() error = %q, want %q", err, want)
+			}
+		}
+	})
+
+	t.Run("live agent in a reused pane is refused", func(t *testing.T) {
+		panes := []tmux.Pane{
+			{ID: "%live", Index: 0, Command: "claude"},
+			{ID: "%idle", Index: 1, Command: "zsh"},
+		}
+		err := validateSpawnPaneBaselines(panes, 0, []FlatAgent{{Type: AgentTypeCodex, Index: 1}})
+		if err == nil || !errors.Is(err, tmux.ErrPaneOccupied) {
+			t.Fatalf("validateSpawnPaneBaselines() error = %v, want occupied-pane rejection", err)
+		}
+	})
 
 	t.Run("late occupied Grok target rejects mixed batch", func(t *testing.T) {
 		panes := []tmux.Pane{
 			{ID: "%idle", Index: 0, Command: "zsh"},
 			{ID: "%occupied", Index: 1, Command: "sleep"},
 		}
-		err := validateSpawnGrokPaneBaselines(panes, 0, agents)
+		err := validateSpawnPaneBaselines(panes, 0, agents)
 		if err == nil {
-			t.Fatal("validateSpawnGrokPaneBaselines() error = nil")
+			t.Fatal("validateSpawnPaneBaselines() error = nil")
 		}
-		for _, want := range []string{"Grok Build agent 1", "%occupied", "sleep", "non-shell"} {
+		for _, want := range []string{"grok agent 1", "%occupied", "sleep", "non-shell"} {
 			if !strings.Contains(err.Error(), want) {
-				t.Fatalf("validateSpawnGrokPaneBaselines() error = %q, want %q", err, want)
+				t.Fatalf("validateSpawnPaneBaselines() error = %q, want %q", err, want)
 			}
 		}
 	})
 
-	t.Run("user pane offset reaches assigned Grok shell", func(t *testing.T) {
+	t.Run("user pane offset reaches assigned shells", func(t *testing.T) {
 		panes := []tmux.Pane{
-			{ID: "%user", Index: 0, Command: "zsh"},
+			{ID: "%user", Index: 0, Command: "vim"}, // the reserved user pane may be busy
 			{ID: "%claude", Index: 1, Command: "bash"},
 			{ID: "%grok", Index: 2, Command: "fish"},
 		}
-		if err := validateSpawnGrokPaneBaselines(panes, 1, agents); err != nil {
-			t.Fatalf("validateSpawnGrokPaneBaselines() error = %v", err)
+		if err := validateSpawnPaneBaselines(panes, 1, agents); err != nil {
+			t.Fatalf("validateSpawnPaneBaselines() error = %v", err)
 		}
 	})
 
-	t.Run("missing assigned Grok pane fails closed", func(t *testing.T) {
+	t.Run("empty observation is left to the post-launch stability wait", func(t *testing.T) {
+		panes := []tmux.Pane{{ID: "%fresh", Index: 0}}
+		if err := validateSpawnPaneBaselines(panes, 0, agents[:1]); err != nil {
+			t.Fatalf("validateSpawnPaneBaselines() error = %v", err)
+		}
+	})
+
+	t.Run("missing assigned pane fails closed", func(t *testing.T) {
 		panes := []tmux.Pane{{ID: "%claude", Index: 0, Command: "zsh"}}
-		err := validateSpawnGrokPaneBaselines(panes, 0, agents)
-		if err == nil || !strings.Contains(err.Error(), "no assigned pane for Grok Build agent 1 at offset 1") {
-			t.Fatalf("validateSpawnGrokPaneBaselines() error = %v", err)
+		err := validateSpawnPaneBaselines(panes, 0, agents)
+		if err == nil || !strings.Contains(err.Error(), "no assigned pane for grok agent 1 at offset 1") {
+			t.Fatalf("validateSpawnPaneBaselines() error = %v", err)
 		}
 	})
 }
