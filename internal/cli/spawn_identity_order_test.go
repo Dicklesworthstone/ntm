@@ -4,7 +4,9 @@ package cli
 // process (tmux.SendKeysContext) before creating and publishing its Agent
 // Mail pane identity, so an agent that resolved its identity during startup
 // could read a previous occupant's name or find none. The text output path
-// also called registerSpawnedAgents twice.
+// also called registerSpawnedAgents twice. agent-factory-wsnk adds a second
+// ordering invariant: the exact pane is revalidated after identity preparation
+// and immediately before the launch bytes are sent.
 //
 // The fix introduces spawnIdentityCoordinator: identities are prepared and
 // published per-pane immediately before the launch keystrokes, and the three
@@ -60,7 +62,7 @@ func spawnFuncDecl(t *testing.T, funcName string) (*token.FileSet, *ast.FuncDecl
 func TestSpawnPublishesIdentityBeforeLaunch(t *testing.T) {
 	fset, fn := spawnFuncDecl(t, "spawnSessionLogicContextWithOutput")
 
-	var firstSendKeys, prepareCall token.Pos
+	var firstSendKeys, prepareCall, launchPreflightCall token.Pos
 	registerCalls := 0
 	ast.Inspect(fn, func(node ast.Node) bool {
 		call, ok := node.(*ast.CallExpr)
@@ -79,6 +81,9 @@ func TestSpawnPublishesIdentityBeforeLaunch(t *testing.T) {
 			if fun.Name == "registerSpawnedAgents" {
 				registerCalls++
 			}
+			if fun.Name == "validateCurrentSpawnPaneBaseline" {
+				launchPreflightCall = call.Pos()
+			}
 		}
 		return true
 	})
@@ -92,9 +97,17 @@ func TestSpawnPublishesIdentityBeforeLaunch(t *testing.T) {
 	if firstSendKeys == token.NoPos {
 		t.Fatal("spawnSessionLogicContextWithOutput must call tmux.SendKeysContext")
 	}
+	if launchPreflightCall == token.NoPos {
+		t.Fatal("spawnSessionLogicContextWithOutput must revalidate the exact pane before launch")
+	}
 	if fset.Position(prepareCall).Offset >= fset.Position(firstSendKeys).Offset {
 		t.Errorf("prepareAgent (%v) must precede the first tmux.SendKeysContext (%v): agents may not launch before their pane identity is published",
 			fset.Position(prepareCall), fset.Position(firstSendKeys))
+	}
+	if fset.Position(prepareCall).Offset >= fset.Position(launchPreflightCall).Offset ||
+		fset.Position(launchPreflightCall).Offset >= fset.Position(firstSendKeys).Offset {
+		t.Errorf("launch preflight (%v) must run after identity preparation (%v) and immediately before send-keys (%v)",
+			fset.Position(launchPreflightCall), fset.Position(prepareCall), fset.Position(firstSendKeys))
 	}
 }
 

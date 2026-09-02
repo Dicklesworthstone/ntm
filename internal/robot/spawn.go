@@ -249,41 +249,37 @@ func validateSpawnRequest(opts SpawnOptions) (string, error) {
 	return strategy, nil
 }
 
-func validateGrokSpawnPaneBaselines(panes []tmux.Pane, opts SpawnOptions) error {
-	if opts.GrokCount <= 0 {
-		return nil
-	}
-	start := opts.CCCount + opts.CodCount + opts.GmiCount + opts.AgyCount
+func validateSpawnPaneBaselines(panes []tmux.Pane, opts SpawnOptions) error {
+	start := 0
 	if !opts.NoUserPane {
 		start++
 	}
-	for i := 0; i < opts.GrokCount; i++ {
+	total := opts.CCCount + opts.CodCount + opts.GmiCount + opts.AgyCount + opts.GrokCount
+	for i := 0; i < total; i++ {
 		paneIndex := start + i
 		if paneIndex >= len(panes) {
-			return fmt.Errorf("requested Grok Build pane %d is unavailable", i+1)
+			return fmt.Errorf("requested agent pane %d is unavailable", i+1)
 		}
 		if err := tmux.ValidatePaneLaunchBaseline(panes[paneIndex]); err != nil {
-			return fmt.Errorf("validate Grok Build agent %d: %w", i+1, err)
+			return fmt.Errorf("validate agent pane %d: %w", i+1, err)
 		}
 	}
 	return nil
 }
 
-func validateExistingGrokSpawnPaneBaselines(panes []tmux.Pane, opts SpawnOptions) error {
-	if opts.GrokCount <= 0 {
-		return nil
-	}
-	start := opts.CCCount + opts.CodCount + opts.GmiCount + opts.AgyCount
+func validateExistingSpawnPaneBaselines(panes []tmux.Pane, opts SpawnOptions) error {
+	start := 0
 	if !opts.NoUserPane {
 		start++
 	}
-	for i := 0; i < opts.GrokCount; i++ {
+	total := opts.CCCount + opts.CodCount + opts.GmiCount + opts.AgyCount + opts.GrokCount
+	for i := 0; i < total; i++ {
 		paneIndex := start + i
 		if paneIndex >= len(panes) {
 			break
 		}
 		if err := tmux.ValidatePaneLaunchBaseline(panes[paneIndex]); err != nil {
-			return fmt.Errorf("validate Grok Build agent %d: %w", i+1, err)
+			return fmt.Errorf("validate agent pane %d: %w", i+1, err)
 		}
 	}
 	return nil
@@ -871,12 +867,12 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 		}
 		return output, nil
 	}
-	if err := validateExistingGrokSpawnPaneBaselines(panes, opts); err != nil {
-		output.Error = fmt.Sprintf("validating existing Grok Build launch panes: %v", err)
+	if err := validateExistingSpawnPaneBaselines(panes, opts); err != nil {
+		output.Error = fmt.Sprintf("validating existing agent launch panes: %v", err)
 		output.RobotResponse = NewErrorResponse(
 			err,
 			ErrCodeInternalError,
-			"Use an idle shell pane before launching Grok Build",
+			"Use idle shell panes before launching agents",
 		)
 		return output, nil
 	}
@@ -926,12 +922,12 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 		)
 		return output, nil
 	}
-	if err := validateGrokSpawnPaneBaselines(panes, opts); err != nil {
-		output.Error = fmt.Sprintf("validating Grok Build launch panes: %v", err)
+	if err := validateSpawnPaneBaselines(panes, opts); err != nil {
+		output.Error = fmt.Sprintf("validating agent launch panes: %v", err)
 		output.RobotResponse = NewErrorResponse(
 			err,
 			ErrCodeInternalError,
-			"Use an idle shell pane before launching Grok Build",
+			"Use idle shell panes before launching agents",
 		)
 		return output, nil
 	}
@@ -1236,12 +1232,10 @@ func launchAgent(ctx context.Context, pane tmux.Pane, session, agentType string,
 		agent.Error = fmt.Sprintf("launch canceled: %v", err)
 		return agent, fmt.Errorf("launch canceled: %w", err)
 	}
-	if agentTypeShort(agentType) == "grok" {
-		if err := tmux.ValidatePaneLaunchBaseline(pane); err != nil {
-			agent.Error = fmt.Sprintf("launching: %v", err)
-			agent.StartupMs = time.Since(startTime).Milliseconds()
-			return agent, fmt.Errorf("launching Grok Build: %w", err)
-		}
+	if err := tmux.ValidatePaneLaunchBaseline(pane); err != nil {
+		agent.Error = fmt.Sprintf("launching: %v", err)
+		agent.StartupMs = time.Since(startTime).Milliseconds()
+		return agent, fmt.Errorf("launching %s: %w", agentType, err)
 	}
 
 	// Persist the type before launch so wrappers and self-managed TUI titles

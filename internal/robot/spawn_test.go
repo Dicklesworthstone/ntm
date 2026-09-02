@@ -251,21 +251,58 @@ func TestGetSpawnGrokUsesConfiguredDefaultModelWithFakeLifecycle(t *testing.T) {
 	}
 }
 
-func TestLaunchAgentGrokRejectsBusyPaneBeforeMutation(t *testing.T) {
-	agent, err := launchAgent(
-		t.Context(),
-		tmux.Pane{ID: "%9", WindowIndex: 0, Index: 2, Command: "claude"},
-		"busy-session",
-		"grok",
-		1,
-		t.TempDir(),
-		"grok --always-approve",
-	)
-	if err == nil || !strings.Contains(err.Error(), "pre-launch current command") {
-		t.Fatalf("launchAgent error=%v, want pre-launch baseline rejection", err)
+func TestLaunchAgentRejectsBusyPaneBeforeMutationForEveryAgentType(t *testing.T) {
+	for _, agentType := range []string{"claude", "codex", "gemini", "antigravity", "grok"} {
+		t.Run(agentType, func(t *testing.T) {
+			agent, err := launchAgent(
+				t.Context(),
+				tmux.Pane{ID: "%9", WindowIndex: 0, Index: 2, Command: "claude"},
+				"busy-session",
+				agentType,
+				1,
+				t.TempDir(),
+				"agent-command",
+			)
+			if err == nil || !strings.Contains(err.Error(), "pre-launch current command") {
+				t.Fatalf("launchAgent error=%v, want pre-launch baseline rejection", err)
+			}
+			if !strings.Contains(agent.Error, "pre-launch current command") {
+				t.Fatalf("spawned agent error=%q, want baseline rejection", agent.Error)
+			}
+		})
 	}
-	if !strings.Contains(agent.Error, "pre-launch current command") {
-		t.Fatalf("spawned agent error=%q, want baseline rejection", agent.Error)
+}
+
+func TestGetSpawnClaudeRejectsBusyExistingPaneBeforeTopologyOrLaunch(t *testing.T) {
+	panes := []tmux.Pane{{ID: "%1", WindowIndex: 0, Index: 0, Command: "claude"}}
+	deps := testSpawnLifecycleDependencies(panes)
+	splitCalls := 0
+	layoutCalls := 0
+	launchCalls := 0
+	deps.SplitWindow = func(context.Context, string, string) (string, error) {
+		splitCalls++
+		return "%new", nil
+	}
+	deps.ApplyTiledLayout = func(context.Context, string) error {
+		layoutCalls++
+		return nil
+	}
+	deps.LaunchAgent = func(context.Context, tmux.Pane, string, string, int, string, string) (SpawnedAgent, error) {
+		launchCalls++
+		return SpawnedAgent{}, nil
+	}
+
+	out, err := GetSpawn(t.Context(), SpawnOptions{
+		Session: "claude-busy", CCCount: 2, NoUserPane: true, WorkingDir: t.TempDir(), LifecycleDeps: deps,
+	}, testSpawnConfig())
+	if err != nil {
+		t.Fatalf("GetSpawn returned transport error: %v", err)
+	}
+	if out.Success || !strings.Contains(out.Error, "pre-launch current command") {
+		t.Fatalf("GetSpawn output=%+v, want occupied-pane rejection", out)
+	}
+	if splitCalls != 0 || layoutCalls != 0 || launchCalls != 0 {
+		t.Fatalf("occupied Claude lifecycle calls: split=%d layout=%d launch=%d, want zero", splitCalls, layoutCalls, launchCalls)
 	}
 }
 

@@ -651,44 +651,94 @@ func TestValidateSpawnPaneCapacity(t *testing.T) {
 	}
 }
 
-func TestValidateSpawnGrokPaneBaselinesPreflightsCompleteAssignment(t *testing.T) {
+func TestValidateSpawnPaneBaselinesPreflightsCompleteAssignment(t *testing.T) {
 	agents := []FlatAgent{
 		{Type: AgentTypeClaude, Index: 1},
-		{Type: AgentTypeGrok, Index: 1},
+		{Type: AgentTypeCodex, Index: 1},
 	}
 
-	t.Run("late occupied Grok target rejects mixed batch", func(t *testing.T) {
+	t.Run("late occupied target rejects mixed batch", func(t *testing.T) {
 		panes := []tmux.Pane{
 			{ID: "%idle", Index: 0, Command: "zsh"},
-			{ID: "%occupied", Index: 1, Command: "sleep"},
+			{ID: "%occupied", Index: 1, Command: "claude"},
 		}
-		err := validateSpawnGrokPaneBaselines(panes, 0, agents)
+		err := validateSpawnPaneBaselines(panes, 0, agents)
 		if err == nil {
-			t.Fatal("validateSpawnGrokPaneBaselines() error = nil")
+			t.Fatal("validateSpawnPaneBaselines() error = nil")
 		}
-		for _, want := range []string{"Grok Build agent 1", "%occupied", "sleep", "non-shell"} {
+		for _, want := range []string{"cod agent 1", "%occupied", "claude", "non-shell"} {
 			if !strings.Contains(err.Error(), want) {
-				t.Fatalf("validateSpawnGrokPaneBaselines() error = %q, want %q", err, want)
+				t.Fatalf("validateSpawnPaneBaselines() error = %q, want %q", err, want)
 			}
 		}
 	})
 
-	t.Run("user pane offset reaches assigned Grok shell", func(t *testing.T) {
+	t.Run("user pane offset reaches assigned agent shells", func(t *testing.T) {
 		panes := []tmux.Pane{
 			{ID: "%user", Index: 0, Command: "zsh"},
 			{ID: "%claude", Index: 1, Command: "bash"},
-			{ID: "%grok", Index: 2, Command: "fish"},
+			{ID: "%codex", Index: 2, Command: "fish"},
 		}
-		if err := validateSpawnGrokPaneBaselines(panes, 1, agents); err != nil {
-			t.Fatalf("validateSpawnGrokPaneBaselines() error = %v", err)
+		if err := validateSpawnPaneBaselines(panes, 1, agents); err != nil {
+			t.Fatalf("validateSpawnPaneBaselines() error = %v", err)
 		}
 	})
 
-	t.Run("missing assigned Grok pane fails closed", func(t *testing.T) {
+	t.Run("missing assigned pane fails closed", func(t *testing.T) {
 		panes := []tmux.Pane{{ID: "%claude", Index: 0, Command: "zsh"}}
-		err := validateSpawnGrokPaneBaselines(panes, 0, agents)
-		if err == nil || !strings.Contains(err.Error(), "no assigned pane for Grok Build agent 1 at offset 1") {
-			t.Fatalf("validateSpawnGrokPaneBaselines() error = %v", err)
+		err := validateSpawnPaneBaselines(panes, 0, agents)
+		if err == nil || !strings.Contains(err.Error(), "no assigned pane for cod agent 1 at offset 1") {
+			t.Fatalf("validateSpawnPaneBaselines() error = %v", err)
+		}
+	})
+}
+
+func TestValidateCurrentSpawnPaneBaselineRefusesInsteadOfRetargeting(t *testing.T) {
+	ctx := t.Context()
+	t.Run("occupied interactive CLI", func(t *testing.T) {
+		list := func(context.Context, string) ([]tmux.Pane, error) {
+			return []tmux.Pane{
+				{ID: "%other", Command: "zsh"},
+				{ID: "%target", Command: "claude"},
+			}, nil
+		}
+		err := validateCurrentSpawnPaneBaseline(ctx, "project", "%target", list)
+		if err == nil {
+			t.Fatal("validateCurrentSpawnPaneBaseline() error = nil")
+		}
+		for _, want := range []string{"%target", "claude", "non-shell", "idle shell"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("validateCurrentSpawnPaneBaseline() error = %q, want %q", err, want)
+			}
+		}
+	})
+
+	t.Run("exact target remains an idle shell", func(t *testing.T) {
+		list := func(context.Context, string) ([]tmux.Pane, error) {
+			return []tmux.Pane{{ID: "%target", Command: "/bin/zsh"}}, nil
+		}
+		if err := validateCurrentSpawnPaneBaseline(ctx, "project", "%target", list); err != nil {
+			t.Fatalf("validateCurrentSpawnPaneBaseline() error = %v", err)
+		}
+	})
+
+	t.Run("missing target is not replaced with another pane", func(t *testing.T) {
+		list := func(context.Context, string) ([]tmux.Pane, error) {
+			return []tmux.Pane{{ID: "%other", Command: "zsh"}}, nil
+		}
+		err := validateCurrentSpawnPaneBaseline(ctx, "project", "%target", list)
+		if err == nil || !strings.Contains(err.Error(), "pane %target disappeared") {
+			t.Fatalf("validateCurrentSpawnPaneBaseline() error = %v", err)
+		}
+	})
+
+	t.Run("unreadable topology fails closed", func(t *testing.T) {
+		list := func(context.Context, string) ([]tmux.Pane, error) {
+			return nil, errors.New("tmux unavailable")
+		}
+		err := validateCurrentSpawnPaneBaseline(ctx, "project", "%target", list)
+		if err == nil || !strings.Contains(err.Error(), "tmux unavailable") {
+			t.Fatalf("validateCurrentSpawnPaneBaseline() error = %v", err)
 		}
 	})
 }
