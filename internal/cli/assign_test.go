@@ -2067,6 +2067,114 @@ func TestWatchLoopRunStopsOnAutomatedAssignmentSafetyErrors(t *testing.T) {
 	}
 }
 
+func runWatchLoopThroughThreeSuccessfulScans(t *testing.T, probe func(context.Context) error) {
+	t.Helper()
+	isolateSessionAgentStorage(t)
+
+	store := assignment.NewStore("watch-three-scan-" + strings.ReplaceAll(t.Name(), "/", "-"))
+	loop := NewWatchLoop("watch-three-scan", store, &AutoReassignOptions{
+		Session: "watch-three-scan",
+		Quiet:   true,
+	})
+	loop.stopWhenDone = false
+	loop.scanInterval = time.Millisecond
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	var scans atomic.Int32
+	loop.scanFn = func(scanCtx context.Context) error {
+		if err := probe(scanCtx); err != nil {
+			return err
+		}
+		if scans.Add(1) == 3 {
+			cancel()
+		}
+		return nil
+	}
+
+	err := loop.Run(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("WatchLoop.Run() error=%v, want cancellation after third successful scan", err)
+	}
+	if got := scans.Load(); got != 3 {
+		t.Fatalf("successful scans=%d, want exactly 3", got)
+	}
+}
+
+func TestWatchLoopSurvivesThreeScansWithInProgressPlanItem(t *testing.T) {
+	projectDir := t.TempDir()
+	binDir := t.TempDir()
+	bvScript := `#!/bin/sh
+case "$1" in
+  --robot-triage) printf '%s\n' '{"triage":{"recommendations":[{"id":"tracked","title":"tracked","status":"open","priority":1}]}}' ;;
+  --robot-plan) printf '%s\n' '{"plan":{"tracks":[{"track_id":"t1","items":[{"id":"tracked","title":"tracked","status":"open","priority":1}]}]}}' ;;
+  *) printf 'unexpected bv args: %s\n' "$*" >&2; exit 64 ;;
+esac
+`
+	brScript := `#!/bin/sh
+case "$*" in
+  *" --all "*) printf '%s\n' '[{"id":"tracked","status":"in_progress"}]' ;;
+  *" ready "*|*" --status open "*) printf '%s\n' '[]' ;;
+  *) printf 'unexpected br args: %s\n' "$*" >&2; exit 64 ;;
+esac
+`
+	for name, script := range map[string]string{"bv": bvScript, "br": brScript} {
+		if err := os.WriteFile(filepath.Join(binDir, name), []byte(script), 0o700); err != nil {
+			t.Fatalf("write fake %s: %v", name, err)
+		}
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	bv.InvalidateTriageCache()
+	t.Cleanup(bv.InvalidateTriageCache)
+
+	runWatchLoopThroughThreeSuccessfulScans(t, func(ctx context.Context) error {
+		recommendations, err := bv.GetActionableRecommendationsContext(ctx, projectDir, 0)
+		if err != nil {
+			return err
+		}
+		if len(recommendations) != 0 {
+			return fmt.Errorf("in-progress plan item remained actionable: %+v", recommendations)
+		}
+		return nil
+	})
+}
+
+func TestWatchLoopSurvivesThreeScansWithTransientBeadsWriteLockTimeout(t *testing.T) {
+	projectDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(projectDir, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir .git: %v", err)
+	}
+	binDir := t.TempDir()
+	attempts := filepath.Join(t.TempDir(), "attempts")
+	brScript := `#!/bin/sh
+printf 'x\n' >> "` + attempts + `"
+count=$(wc -l < "` + attempts + `")
+remainder=$((count % 3))
+if [ "$remainder" -ne 0 ]; then
+  printf 'CONFIG_ERROR: Timed out after 5000ms waiting for write lock .beads/.write.lock\n' >&2
+  exit 1
+fi
+printf '{"issues":[],"total":0,"limit":100000,"offset":0,"has_more":false}\n'
+`
+	if err := os.WriteFile(filepath.Join(binDir, "br"), []byte(brScript), 0o700); err != nil {
+		t.Fatalf("write fake br: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	runWatchLoopThroughThreeSuccessfulScans(t, func(ctx context.Context) error {
+		_, err := bv.RunBdContext(ctx, projectDir, "ready", "--json", "--limit", "100000")
+		return err
+	})
+
+	data, err := os.ReadFile(attempts)
+	if err != nil {
+		t.Fatalf("read fake br attempts: %v", err)
+	}
+	if got := strings.Count(string(data), "x"); got != 9 {
+		t.Fatalf("fake br attempts=%d, want three retries across each of three scans", got)
+	}
+}
+
 func TestCountSkippedByReason(t *testing.T) {
 	items := []SkippedItem{
 		{BeadID: "a", Reason: "blocked_by_dependency"},
