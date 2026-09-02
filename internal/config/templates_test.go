@@ -3,6 +3,8 @@ package config
 import (
 	"strings"
 	"testing"
+
+	"github.com/Dicklesworthstone/ntm/internal/agent"
 )
 
 func TestGenerateAgentCommand_LegacyMode(t *testing.T) {
@@ -357,7 +359,7 @@ func TestDefaultAgentTemplates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Grok template failed: %v", err)
 	}
-	if grokBare != "grok --always-approve" {
+	if grokBare != agent.DefaultGrokAutomationCommand {
 		t.Fatalf("Grok bare render = %q", grokBare)
 	}
 	grokOverride, err := GenerateAgentCommand(templates.Grok, AgentTemplateVars{
@@ -366,7 +368,7 @@ func TestDefaultAgentTemplates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Grok override template failed: %v", err)
 	}
-	if grokOverride != "grok --always-approve --model 'account/model' --effort 'high'" {
+	if grokOverride != agent.DefaultGrokAutomationCommand+" --model 'account/model' --effort 'high'" {
 		t.Fatalf("Grok override render = %q", grokOverride)
 	}
 

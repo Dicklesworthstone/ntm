@@ -8,20 +8,24 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/Dicklesworthstone/ntm/internal/agent"
+	agentpkg "github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/assignment"
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	dispatchsvc "github.com/Dicklesworthstone/ntm/internal/dispatch"
 	"github.com/Dicklesworthstone/ntm/internal/pressure"
+	"github.com/Dicklesworthstone/ntm/internal/provider"
+	"github.com/Dicklesworthstone/ntm/internal/ratelimit"
 	statuspkg "github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
+	zaipkg "github.com/Dicklesworthstone/ntm/internal/zai"
 	"github.com/Dicklesworthstone/ntm/tests/testutil"
 )
 
@@ -71,8 +75,12 @@ func testSpawnLifecycleDependencies(panes []tmux.Pane) *SpawnLifecycleDependenci
 		GetPanes: func(context.Context, string) ([]tmux.Pane, error) {
 			return append([]tmux.Pane(nil), panes...), nil
 		},
-		SplitWindow:      func(context.Context, string, string) (string, error) { return "%new", nil },
-		ApplyTiledLayout: func(context.Context, string) error { return nil },
+		SplitWindow:       func(context.Context, string, string) (string, error) { return "%new", nil },
+		ApplyTiledLayout:  func(context.Context, string) error { return nil },
+		QuarantineZAIPane: func(context.Context, string) error { return nil },
+		ProbeZAI: func(_ context.Context, _ config.ProviderProfileConfig, identity provider.Identity) (zaipkg.Receipt, error) {
+			return zaipkg.Receipt{Model: identity.Model(), ModelSessionEvidence: true, NonceSHA256: "nonce", OutputSHA256: "output", SessionIDSHA256: "session"}, nil
+		},
 		LaunchAgent: func(_ context.Context, pane tmux.Pane, session, agentType string, number int, _, _ string) (SpawnedAgent, error) {
 			return SpawnedAgent{
 				Pane:  fmt.Sprintf("%d.%d", pane.WindowIndex, pane.Index),
@@ -206,6 +214,310 @@ func TestValidateSpawnRequestRejectsInvalidCountsAndEmptySpawn(t *testing.T) {
 	}
 }
 
+func qualifiedZAIProfile() config.ProviderProfileConfig {
+	const hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	return config.ProviderProfileConfig{
+		Provider:                "zai",
+		AccountAlias:            "test-account",
+		Model:                   "glm-5.3-flash",
+		Endpoint:                "https://api.z.ai/api/anthropic",
+		Runtime:                 "claude-code",
+		ConfigSHA256:            hash,
+		Command:                 "claude",
+		AutomationPolicy:        "zai-readonly-ci",
+		ExactTargetOnly:         true,
+		ProbeRequired:           true,
+		ModelProbeState:         "qualified",
+		ModelProbeReceiptSHA256: hash,
+	}
+}
+
+func TestGetSpawnZAIRequiresExactQualifiedProviderProfile(t *testing.T) {
+	opts := SpawnOptions{Session: "zai-profile", ZAICount: 1, DryRun: true}
+	out, err := GetSpawn(t.Context(), opts, testSpawnConfig())
+	if err != nil {
+		t.Fatalf("GetSpawn() error: %v", err)
+	}
+	if out.Success || !strings.Contains(out.Error, "requires an exact --provider-profile") {
+		t.Fatalf("missing profile output=%+v, want exact-profile rejection", out)
+	}
+
+	cfg := testSpawnConfig()
+	profile := qualifiedZAIProfile()
+	cfg.ProviderProfiles = map[string]config.ProviderProfileConfig{"zai-test-glm53": profile}
+	opts.ZAIProviderProfile = "zai-test-glm53"
+	opts.LifecycleDeps = testSpawnLifecycleDependencies(nil)
+	out, err = GetSpawn(t.Context(), opts, cfg)
+	if err != nil {
+		t.Fatalf("GetSpawn(qualified) error: %v", err)
+	}
+	if !out.Success || len(out.WouldCreate) != 2 { // user pane plus the Z.ai lane
+		t.Fatalf("qualified Z.ai dry-run output=%+v", out)
+	}
+	zai := out.WouldCreate[1]
+	identity, err := profile.Identity()
+	if err != nil {
+		t.Fatalf("profile Identity() error: %v", err)
+	}
+	if zai.Type != "zai" || zai.ProviderProfile != "zai-test-glm53" || zai.ProviderIdentityHash != identity.Hash() || zai.ProviderIdentityEvidence != provider.IdentityEvidenceProfileAttested || zai.ModelProbeState != "qualified" {
+		t.Fatalf("Z.ai preview identity=%+v, want distinct profile-bound Z.ai lane", zai)
+	}
+
+	panes := []tmux.Pane{{ID: "%zai", WindowIndex: 0, Index: 0}}
+	deps := testSpawnLifecycleDependencies(panes)
+	var gotType, gotCommand string
+	deps.LaunchAgent = func(_ context.Context, pane tmux.Pane, session, agentType string, number int, _, command string) (SpawnedAgent, error) {
+		gotType, gotCommand = agentType, command
+		return SpawnedAgent{Pane: "0.0", Type: agentType, Title: fmt.Sprintf("%s__zai_%d", session, number)}, nil
+	}
+	deps.PersistZAIIdentity = func(context.Context, string, tmux.ProviderPaneIdentity) error { return nil }
+	opts.DryRun = false
+	opts.NoUserPane = true
+	opts.WorkingDir = t.TempDir()
+	opts.LifecycleDeps = deps
+	out, err = GetSpawn(t.Context(), opts, cfg)
+	if err != nil || !out.Success {
+		t.Fatalf("GetSpawn(live fake) output=%+v err=%v", out, err)
+	}
+	if gotType != "zai" || !strings.Contains(gotCommand, "ANTHROPIC_BASE_URL='https://api.z.ai/api/anthropic'") || !strings.Contains(gotCommand, "--restricted") || !strings.Contains(gotCommand, "--disallowedTools 'Bash,Edit,Write,NotebookEdit'") {
+		t.Fatalf("Z.ai launch=(%q,%q), want NTM-compiled restricted command", gotType, gotCommand)
+	}
+	if len(out.Agents) != 1 || out.Agents[0].ProviderIdentityHash != identity.Hash() || out.Agents[0].ProviderIdentityEvidence != provider.IdentityEvidenceProfileAttested || out.Agents[0].Admission == nil || out.Agents[0].Admission.CapacityControlScope != provider.CapacityControlScopeProcessLocal {
+		t.Fatalf("Z.ai spawned agent identity=%+v", out.Agents)
+	}
+
+}
+
+func TestGetSpawnZAIBlocksBeforeTmuxWithoutSuccessfulBoundProbe(t *testing.T) {
+	profile := qualifiedZAIProfile()
+	cfg := testSpawnConfig()
+	cfg.ProviderProfiles = map[string]config.ProviderProfileConfig{"zai-test-glm53": profile}
+	deps := testSpawnLifecycleDependencies([]tmux.Pane{{ID: "%zai", WindowIndex: 0, Index: 0}})
+	var launches, creates int
+	deps.ProbeZAI = func(context.Context, config.ProviderProfileConfig, provider.Identity) (zaipkg.Receipt, error) {
+		return zaipkg.Receipt{Model: profile.Model, FailureClass: "model_session_evidence_missing"}, nil
+	}
+	deps.CreateSession = func(context.Context, string, string, int) error { creates++; return nil }
+	deps.LaunchAgent = func(context.Context, tmux.Pane, string, string, int, string, string) (SpawnedAgent, error) {
+		launches++
+		return SpawnedAgent{}, nil
+	}
+	out, err := GetSpawn(t.Context(), SpawnOptions{Session: "zai-probe-block", ZAICount: 1, ZAIProviderProfile: "zai-test-glm53", NoUserPane: true, WorkingDir: t.TempDir(), LifecycleDeps: deps, ProviderAdmission: &scriptedProviderAdmission{decision: ratelimit.Decision{Allowed: true, NoFailover: true}}}, cfg)
+	if err != nil {
+		t.Fatalf("GetSpawn() error: %v", err)
+	}
+	if out.Success || launches != 0 || creates != 0 || !strings.Contains(out.Hint, "NO-GO") {
+		t.Fatalf("probe failure launched=%d created=%d output=%+v", launches, creates, out)
+	}
+}
+
+func TestGetSpawnZAIProbeBusinessErrorRecordsExactCapacityClass(t *testing.T) {
+	profile := qualifiedZAIProfile()
+	cfg := testSpawnConfig()
+	cfg.ProviderProfiles = map[string]config.ProviderProfileConfig{"zai-test-glm53": profile}
+	deps := testSpawnLifecycleDependencies([]tmux.Pane{{ID: "%zai", WindowIndex: 0, Index: 0}})
+	deps.ProbeZAI = func(context.Context, config.ProviderProfileConfig, provider.Identity) (zaipkg.Receipt, error) {
+		return zaipkg.Receipt{Model: profile.Model, ProviderErrorClass: provider.ErrorPlanExpired, FailureClass: "process_failed"}, errors.New("redacted")
+	}
+	admission := &scriptedProviderAdmission{decision: ratelimit.Decision{Allowed: true, NoFailover: true}}
+	out, err := GetSpawn(t.Context(), SpawnOptions{Session: "zai-probe-plan", ZAICount: 1, ZAIProviderProfile: "zai-test-glm53", NoUserPane: true, WorkingDir: t.TempDir(), LifecycleDeps: deps, ProviderAdmission: admission}, cfg)
+	if err != nil || out.Success || admission.acquires != 1 || admission.releases != 1 || admission.failures != 1 {
+		t.Fatalf("output=%+v admission=%+v err=%v", out, admission, err)
+	}
+}
+
+type scriptedProviderAdmission struct {
+	decision  ratelimit.Decision
+	acquires  int
+	releases  int
+	successes int
+	failures  int
+	identity  provider.Identity
+}
+
+func (s *scriptedProviderAdmission) Acquire(identity provider.Identity) ratelimit.Decision {
+	s.acquires++
+	s.identity = identity
+	return s.decision
+}
+func (s *scriptedProviderAdmission) Release(provider.Identity) { s.releases++ }
+func (s *scriptedProviderAdmission) RecordResult(provider.Identity, ratelimit.ErrorClass, time.Duration) ratelimit.Decision {
+	s.failures++
+	return ratelimit.Decision{NoFailover: true}
+}
+func (s *scriptedProviderAdmission) RecordSuccess(provider.Identity) { s.successes++ }
+
+func TestGetSpawnZAIAdmissionDenialDoesNotLaunchOrFallback(t *testing.T) {
+	profile := qualifiedZAIProfile()
+	cfg := testSpawnConfig()
+	cfg.ProviderProfiles = map[string]config.ProviderProfileConfig{"zai-test-glm53": profile}
+	panes := []tmux.Pane{{ID: "%zai", WindowIndex: 0, Index: 0}}
+	deps := testSpawnLifecycleDependencies(panes)
+	launches, probes, creates := 0, 0, 0
+	deps.ProbeZAI = func(context.Context, config.ProviderProfileConfig, provider.Identity) (zaipkg.Receipt, error) {
+		probes++
+		return zaipkg.Receipt{}, nil
+	}
+	deps.CreateSession = func(context.Context, string, string, int) error { creates++; return nil }
+	deps.LaunchAgent = func(context.Context, tmux.Pane, string, string, int, string, string) (SpawnedAgent, error) {
+		launches++
+		return SpawnedAgent{}, nil
+	}
+	metadataWrites := 0
+	deps.PersistZAIIdentity = func(context.Context, string, tmux.ProviderPaneIdentity) error {
+		metadataWrites++
+		return nil
+	}
+	admission := &scriptedProviderAdmission{decision: ratelimit.Decision{Reason: ratelimit.ErrorRateLimited, NoFailover: true}}
+	out, err := GetSpawn(t.Context(), SpawnOptions{
+		Session: "zai-admission", ZAICount: 1, ZAIProviderProfile: "zai-test-glm53", NoUserPane: true,
+		WorkingDir: t.TempDir(), LifecycleDeps: deps, ProviderAdmission: admission,
+	}, cfg)
+	if err != nil {
+		t.Fatalf("GetSpawn error: %v", err)
+	}
+	if out.Success || launches != 0 || probes != 0 || creates != 0 || metadataWrites != 0 {
+		t.Fatalf("denial output=%+v launches=%d probes=%d creates=%d metadata=%d, want no provider/tmux mutation", out, launches, probes, creates, metadataWrites)
+	}
+	if !strings.Contains(out.Error, "probe was not called") {
+		t.Fatalf("denied Z.ai receipt=%+v, want explicit no-probe denial", out)
+	}
+	identity, _ := profile.Identity()
+	if admission.acquires != 1 || admission.identity.Hash() != identity.Hash() || admission.releases != 0 {
+		t.Fatalf("admission calls acquire=%d release=%d identity=%q", admission.acquires, admission.releases, admission.identity.Hash())
+	}
+}
+
+func TestGetSpawnZAIPersistsSafeIdentityAndFailsClosedOnPersistenceFailure(t *testing.T) {
+	profile := qualifiedZAIProfile()
+	cfg := testSpawnConfig()
+	cfg.ProviderProfiles = map[string]config.ProviderProfileConfig{"zai-test-glm53": profile}
+	panes := []tmux.Pane{{ID: "%zai", WindowIndex: 0, Index: 0}}
+	deps := testSpawnLifecycleDependencies(panes)
+	deps.LaunchAgent = func(_ context.Context, pane tmux.Pane, session, agentType string, number int, _, _ string) (SpawnedAgent, error) {
+		return SpawnedAgent{Pane: pane.Ref().Physical(), Type: agentType, Title: fmt.Sprintf("%s__zai_%d", session, number)}, nil
+	}
+	var persisted tmux.ProviderPaneIdentity
+	deps.PersistZAIIdentity = func(_ context.Context, paneID string, metadata tmux.ProviderPaneIdentity) error {
+		if paneID != "%zai" {
+			t.Fatalf("pane ID=%q, want %%zai", paneID)
+		}
+		persisted = metadata
+		return nil
+	}
+	admission := &scriptedProviderAdmission{decision: ratelimit.Decision{Allowed: true, NoFailover: true}}
+	out, err := GetSpawn(t.Context(), SpawnOptions{
+		Session: "zai-metadata", ZAICount: 1, ZAIProviderProfile: "zai-test-glm53", NoUserPane: true,
+		WorkingDir: t.TempDir(), LifecycleDeps: deps, ProviderAdmission: admission,
+	}, cfg)
+	if err != nil || !out.Success {
+		t.Fatalf("GetSpawn output=%+v err=%v", out, err)
+	}
+	identity, _ := profile.Identity()
+	if persisted.Profile != "zai-test-glm53" || persisted.IdentitySHA256 != identity.Hash() || persisted.ModelProbeState != "live_verified" || persisted.ModelProbeReceiptSHA256 != "output" {
+		t.Fatalf("persisted metadata=%+v", persisted)
+	}
+	if admission.acquires != 1 || admission.releases != 1 || admission.successes != 1 || admission.failures != 0 {
+		t.Fatalf("admission calls %+v", admission)
+	}
+
+	cleanupCalls := 0
+	liveProvider := true
+	deps.PersistZAIIdentity = func(context.Context, string, tmux.ProviderPaneIdentity) error {
+		return errors.New("pane option unavailable")
+	}
+	deps.QuarantineZAIPane = func(_ context.Context, paneID string) error {
+		cleanupCalls++
+		if paneID != "%zai" {
+			t.Fatalf("quarantine pane ID=%q, want %%zai", paneID)
+		}
+		liveProvider = false
+		return nil
+	}
+	out, err = GetSpawn(t.Context(), SpawnOptions{
+		Session: "zai-metadata-fail", ZAICount: 1, ZAIProviderProfile: "zai-test-glm53", NoUserPane: true,
+		WorkingDir: t.TempDir(), LifecycleDeps: deps, ProviderAdmission: &scriptedProviderAdmission{decision: ratelimit.Decision{Allowed: true, NoFailover: true}},
+	}, cfg)
+	if err != nil || out.Success || len(out.Agents) != 1 || !strings.Contains(out.Agents[0].Error, "metadata") {
+		t.Fatalf("metadata persistence failure output=%+v err=%v", out, err)
+	}
+	if cleanupCalls != 1 || out.Agents[0].CleanupState != "pane_terminated" || out.Agents[0].CleanupErrorHash != "" {
+		t.Fatalf("metadata persistence cleanup=%+v calls=%d, want exact-pane termination evidence", out.Agents[0], cleanupCalls)
+	}
+	if liveProvider {
+		t.Fatal("metadata persistence failure left an unbound live Z.ai provider process")
+	}
+}
+
+func TestGetSpawnZAIMetadataPersistenceFailureRecordsRedactedQuarantineFailure(t *testing.T) {
+	profile := qualifiedZAIProfile()
+	cfg := testSpawnConfig()
+	cfg.ProviderProfiles = map[string]config.ProviderProfileConfig{"zai-test-glm53": profile}
+	panes := []tmux.Pane{{ID: "%zai", WindowIndex: 0, Index: 0}}
+	deps := testSpawnLifecycleDependencies(panes)
+	deps.LaunchAgent = func(_ context.Context, pane tmux.Pane, session, agentType string, number int, _, _ string) (SpawnedAgent, error) {
+		return SpawnedAgent{Pane: pane.Ref().Physical(), Type: agentType, Title: fmt.Sprintf("%s__zai_%d", session, number)}, nil
+	}
+	deps.PersistZAIIdentity = func(context.Context, string, tmux.ProviderPaneIdentity) error {
+		return errors.New("metadata failure with secret-token-that-must-not-escape")
+	}
+	const cleanupSecret = "cleanup-token-that-must-not-escape"
+	deps.QuarantineZAIPane = func(context.Context, string) error { return errors.New(cleanupSecret) }
+
+	out, err := GetSpawn(t.Context(), SpawnOptions{
+		Session: "zai-metadata-quarantine-fail", ZAICount: 1, ZAIProviderProfile: "zai-test-glm53", NoUserPane: true,
+		WorkingDir: t.TempDir(), LifecycleDeps: deps, ProviderAdmission: &scriptedProviderAdmission{decision: ratelimit.Decision{Allowed: true, NoFailover: true}},
+	}, cfg)
+	if err != nil || out.Success || len(out.Agents) != 1 {
+		t.Fatalf("GetSpawn output=%+v err=%v", out, err)
+	}
+	agent := out.Agents[0]
+	if agent.CleanupState != "quarantine_failed" || len(agent.CleanupErrorHash) != 64 || strings.Contains(agent.Error, cleanupSecret) || strings.Contains(out.Error, cleanupSecret) {
+		t.Fatalf("unsafe cleanup evidence agent=%+v output=%+v", agent, out)
+	}
+}
+
+func TestGetSpawnZAILaunchErrorAlwaysQuarantinesExactPane(t *testing.T) {
+	profile := qualifiedZAIProfile()
+	cfg := testSpawnConfig()
+	cfg.ProviderProfiles = map[string]config.ProviderProfileConfig{"zai-test-glm53": profile}
+	panes := []tmux.Pane{{ID: "%zai", WindowIndex: 0, Index: 0}}
+	deps := testSpawnLifecycleDependencies(panes)
+	const launchSecret = "provider-launch-secret-that-must-not-escape"
+	deps.LaunchAgent = func(_ context.Context, pane tmux.Pane, session, agentType string, number int, _, _ string) (SpawnedAgent, error) {
+		return SpawnedAgent{Pane: pane.Ref().Physical(), Type: agentType, Title: fmt.Sprintf("%s__zai_%d", session, number)}, errors.New(launchSecret)
+	}
+	metadataWrites := 0
+	deps.PersistZAIIdentity = func(context.Context, string, tmux.ProviderPaneIdentity) error {
+		metadataWrites++
+		return nil
+	}
+	quarantineCalls := 0
+	liveProvider := true
+	deps.QuarantineZAIPane = func(_ context.Context, paneID string) error {
+		quarantineCalls++
+		if paneID != "%zai" {
+			t.Fatalf("quarantine pane ID=%q, want %%zai", paneID)
+		}
+		liveProvider = false
+		return nil
+	}
+	out, err := GetSpawn(t.Context(), SpawnOptions{
+		Session: "zai-launch-unknown", ZAICount: 1, ZAIProviderProfile: "zai-test-glm53", NoUserPane: true,
+		WorkingDir: t.TempDir(), LifecycleDeps: deps, ProviderAdmission: &scriptedProviderAdmission{decision: ratelimit.Decision{Allowed: true, NoFailover: true}},
+	}, cfg)
+	if err != nil || out.Success || len(out.Agents) != 1 {
+		t.Fatalf("GetSpawn output=%+v err=%v", out, err)
+	}
+	agent := out.Agents[0]
+	if metadataWrites != 0 || quarantineCalls != 1 || liveProvider || agent.CleanupState != "pane_terminated" || len(agent.LaunchErrorHash) != 64 {
+		t.Fatalf("launch quarantine evidence agent=%+v metadata=%d cleanup=%d live=%v", agent, metadataWrites, quarantineCalls, liveProvider)
+	}
+	if strings.Contains(agent.Error, launchSecret) || strings.Contains(out.Error, launchSecret) {
+		t.Fatalf("launch receipt leaked provider error: agent=%+v output=%+v", agent, out)
+	}
+}
+
 func TestGetSpawnGrokUsesExactCommandWithFakeLifecycle(t *testing.T) {
 	panes := []tmux.Pane{{ID: "%1", WindowIndex: 0, Index: 0}}
 	deps := testSpawnLifecycleDependencies(panes)
@@ -221,7 +533,7 @@ func TestGetSpawnGrokUsesExactCommandWithFakeLifecycle(t *testing.T) {
 	if err != nil || !out.Success {
 		t.Fatalf("GetSpawn output=%+v err=%v", out, err)
 	}
-	if gotType != "grok" || gotCommand != "grok --always-approve" {
+	if gotType != "grok" || gotCommand != agentpkg.DefaultGrokAutomationCommand {
 		t.Fatalf("fake launch type=%q command=%q", gotType, gotCommand)
 	}
 	if len(out.Agents) != 1 || out.Agents[0].Title != "grok-fake__grok_1" {
@@ -246,7 +558,7 @@ func TestGetSpawnGrokUsesConfiguredDefaultModelWithFakeLifecycle(t *testing.T) {
 	if err != nil || !out.Success {
 		t.Fatalf("GetSpawn output=%+v err=%v", out, err)
 	}
-	if gotCommand != "grok --always-approve --model 'account/model'" {
+	if gotCommand != agentpkg.DefaultGrokAutomationCommand+" --model 'account/model'" {
 		t.Fatalf("configured Grok command=%q", gotCommand)
 	}
 }
@@ -259,7 +571,7 @@ func TestLaunchAgentGrokRejectsBusyPaneBeforeMutation(t *testing.T) {
 		"grok",
 		1,
 		t.TempDir(),
-		"grok --always-approve",
+		agentpkg.DefaultGrokAutomationCommand,
 	)
 	if err == nil || !strings.Contains(err.Error(), "pre-launch current command") {
 		t.Fatalf("launchAgent error=%v, want pre-launch baseline rejection", err)
@@ -340,21 +652,138 @@ func TestGetSpawnGrokAllowsIdleExistingPaneBeforeAddingMissingPane(t *testing.T)
 	}
 }
 
-func TestGetSpawnGrokRejectsUnverifiedTUISemantics(t *testing.T) {
-	for _, opts := range []SpawnOptions{
-		{Session: "grok-wait", GrokCount: 1, WaitReady: true},
-		{Session: "grok-assign", GrokCount: 1, AssignWork: true, AssignStrategy: "top-n"},
-	} {
-		out, err := GetSpawn(t.Context(), opts, testSpawnConfig())
-		if err != nil {
-			t.Fatalf("GetSpawn returned transport error: %v", err)
+func TestGetSpawnGrokWaitsForReadiness(t *testing.T) {
+	panes := []tmux.Pane{{ID: "%1", WindowIndex: 0, Index: 0}}
+	deps := testSpawnLifecycleDependencies(panes)
+	waitCalls := 0
+	deps.WaitForReady = func(_ context.Context, output *SpawnOutput, timeout time.Duration) error {
+		waitCalls++
+		if timeout != 750*time.Millisecond {
+			t.Fatalf("readiness timeout = %s, want 750ms", timeout)
 		}
-		if out.Success || out.ErrorCode != ErrCodeNotImplemented || !strings.Contains(strings.ToLower(out.Error), "grok") {
-			t.Fatalf("output=%+v, want Grok NOT_IMPLEMENTED", out)
+		if len(output.Agents) != 1 || output.Agents[0].Type != "grok" {
+			t.Fatalf("readiness agents = %+v, want one Grok pane", output.Agents)
 		}
-		if ExitCodeForResponse(out.RobotResponse) != 2 || out.Hint != agent.GrokPhaseOneCapabilityHint {
-			t.Fatalf("output=%+v, want unavailable exit 2 and Grok capability hint", out)
+		output.Agents[0].Ready = true
+		return nil
+	}
+
+	out, err := GetSpawn(t.Context(), SpawnOptions{
+		Session: "grok-wait", GrokCount: 1, NoUserPane: true, WorkingDir: t.TempDir(),
+		WaitReady: true, ReadyTimeout: 750 * time.Millisecond, LifecycleDeps: deps,
+	}, testSpawnConfig())
+	if err != nil || !out.Success {
+		t.Fatalf("GetSpawn output=%+v err=%v", out, err)
+	}
+	if waitCalls != 1 || len(out.Agents) != 1 || !out.Agents[0].Ready {
+		t.Fatalf("wait calls=%d agents=%+v, want one ready Grok agent", waitCalls, out.Agents)
+	}
+}
+
+func TestValidateSpawnRequestAcceptsGrokAssignment(t *testing.T) {
+	strategy, err := validateSpawnRequest(SpawnOptions{
+		GrokCount: 1, WaitReady: true, AssignWork: true, AssignStrategy: " dependency ",
+	})
+	if err != nil || strategy != "dependency-aware" {
+		t.Fatalf("validateSpawnRequest strategy=%q err=%v, want dependency-aware,nil", strategy, err)
+	}
+}
+
+func TestGetSpawnGrokWaitsBeforeAssignmentDispatch(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	hermeticGlobalConfig(t)
+	const session = "grok-wait-assign"
+	projectDir := t.TempDir()
+	pane := tmux.Pane{
+		ID: "%31", WindowIndex: 0, Index: 0, Title: session + "__grok_1", Type: tmux.AgentGrok, Command: "zsh",
+	}
+	var order []string
+	waited := false
+	observed := false
+	claimed := false
+	claimActor := ""
+
+	lifecycle := testSpawnLifecycleDependencies([]tmux.Pane{pane})
+	lifecycle.LaunchAgent = func(_ context.Context, gotPane tmux.Pane, gotSession, agentType string, number int, _, _ string) (SpawnedAgent, error) {
+		return SpawnedAgent{
+			Pane: gotPane.Ref().Physical(), Name: "GrokAgent", Type: agentType,
+			Title: fmt.Sprintf("%s__grok_%d", gotSession, number),
+		}, nil
+	}
+	lifecycle.WaitForReady = func(_ context.Context, output *SpawnOutput, _ time.Duration) error {
+		order = append(order, "wait")
+		if observed || claimed {
+			t.Fatal("assignment activity occurred before the readiness wait")
 		}
+		waited = true
+		output.Agents[0].Ready = true
+		return nil
+	}
+
+	store := assignment.NewStore(session)
+	assignmentDeps := &SpawnAssignmentDependencies{
+		LoadAssignmentPolicy: func(string, string, bool) (*config.Config, error) {
+			return testSpawnConfig(), nil
+		},
+		FetchActionable: func(context.Context, string, int) ([]bv.TriageRecommendation, error) {
+			return []bv.TriageRecommendation{{ID: "bd-grok-ready", Title: "Ready Grok work", Status: "open", Priority: 1}}, nil
+		},
+		ListPanes: func(context.Context, string) ([]tmux.Pane, error) {
+			return []tmux.Pane{pane}, nil
+		},
+		LoadStore: func(string) (*assignment.AssignmentStore, error) { return store, nil },
+		ObserveSession: func(context.Context, string) (statuspkg.SessionObservation, error) {
+			order = append(order, "observe")
+			if !waited {
+				t.Fatal("fresh assignment observation ran before readiness completed")
+			}
+			observed = true
+			return bulkSafeObservation(session, []tmux.Pane{pane}), nil
+		},
+		GetBeadDetails: func(_ context.Context, _ string, beadID string) (*bv.BeadAssignmentDetails, error) {
+			details := &bv.BeadAssignmentDetails{ID: beadID, Title: "Ready Grok work", Status: "open", Priority: 1}
+			if claimed {
+				details.Status = "in_progress"
+				details.Assignee = claimActor
+			}
+			return details, nil
+		},
+		ClaimBeadWithOperatorGatedLabels: func(_ context.Context, _ string, beadID, actor string, _ []string) (bv.BeadClaimResult, error) {
+			order = append(order, "claim")
+			if !observed || strings.TrimSpace(actor) == "" {
+				t.Fatalf("claim observed=%v actor=%q, want fresh observation and a canonical actor", observed, actor)
+			}
+			claimActor = actor
+			claimed = true
+			return bv.BeadClaimResult{ID: beadID, Title: "Ready Grok work", Actor: actor, Status: "in_progress", ClaimedAt: time.Now().UTC()}, nil
+		},
+		GetBeadStatus:     func(context.Context, string, string) (string, error) { return "in_progress", nil },
+		NewIdempotencyKey: func() (string, error) { return "grok-ready-key", nil },
+		DispatchDeliverer: dispatchsvc.DelivererFunc(func(_ context.Context, delivery dispatchsvc.Delivery) error {
+			order = append(order, "dispatch")
+			if !waited || !observed || !claimed || delivery.Target.Ref.ID != pane.ID {
+				t.Fatalf("unsafe dispatch state waited=%v observed=%v claimed=%v target=%q", waited, observed, claimed, delivery.Target.Ref.ID)
+			}
+			return nil
+		}),
+	}
+
+	out, err := GetSpawn(t.Context(), SpawnOptions{
+		Session: session, GrokCount: 1, NoUserPane: true, WorkingDir: projectDir,
+		WaitReady: true, ReadyTimeout: time.Second, AssignWork: true, AssignStrategy: "top-n",
+		LifecycleDeps: lifecycle, AssignmentDeps: assignmentDeps,
+	}, testSpawnConfig())
+	if err != nil || !out.Success {
+		t.Fatalf("GetSpawn output=%+v err=%v", out, err)
+	}
+	if len(out.Assignments) != 1 || !out.Assignments[0].Claimed || !out.Assignments[0].PromptSent {
+		t.Fatalf("Grok assignments=%+v, want one claimed and dispatched assignment", out.Assignments)
+	}
+	waitIndex := slices.Index(order, "wait")
+	observeIndex := slices.Index(order, "observe")
+	dispatchIndex := slices.Index(order, "dispatch")
+	if waitIndex < 0 || observeIndex <= waitIndex || dispatchIndex <= observeIndex {
+		t.Fatalf("assignment order=%v, want wait before observe before dispatch", order)
 	}
 }
 
@@ -1030,7 +1459,7 @@ func TestSpawnOptions_NoAgentsSpecified(t *testing.T) {
 	if resp.Error == "" {
 		t.Error("[E2E-SPAWN] Expected error for no agents specified")
 	}
-	if resp.Error != "no agents specified (use cc, cod, gmi, agy, or grok counts)" {
+	if resp.Error != "no agents specified (use cc, cod, gmi, agy, grok, or zai counts)" {
 		t.Errorf("[E2E-SPAWN] Unexpected error message: %s", resp.Error)
 	}
 
@@ -2549,6 +2978,63 @@ func TestWaitForAgentsReadyRequiresLiveProcess(t *testing.T) {
 	}
 }
 
+func TestWaitForAgentsReadyGrokWaitsPastBannerForComposer(t *testing.T) {
+	originalLiveness := spawnPaneLiveness
+	t.Cleanup(func() { spawnPaneLiveness = originalLiveness })
+	spawnPaneLiveness = func(context.Context, string) (int, bool) { return 4242, true }
+
+	output := &SpawnOutput{
+		Session: "grok-ready",
+		Agents:  []SpawnedAgent{{Pane: "0.1", Type: "grok"}},
+	}
+	captureCalls := 0
+	capture := func(context.Context, string, int) (string, error) {
+		captureCalls++
+		if captureCalls == 1 {
+			return "Grok Build  1.0.13\nWelcome back\n", nil
+		}
+		return "Grok Build  1.0.13\n│ ❯                         │\n╰─ Grok 4.6 (high) · always-approve ─╯\n", nil
+	}
+
+	if err := waitForAgentsReadyWithCapture(t.Context(), output, 2*time.Second, capture); err != nil {
+		t.Fatalf("waitForAgentsReadyWithCapture(Grok) error = %v", err)
+	}
+	if captureCalls < 2 || !output.Agents[0].Ready {
+		t.Fatalf("capture calls=%d agent=%+v, want banner rejected then composer accepted", captureCalls, output.Agents[0])
+	}
+}
+
+func TestWaitForAgentsReadyCarriesActualPaneWidthIntoGrokDetector(t *testing.T) {
+	originalLiveness := spawnPaneLiveness
+	t.Cleanup(func() { spawnPaneLiveness = originalLiveness })
+	spawnPaneLiveness = func(context.Context, string) (int, bool) { return 4242, true }
+
+	output := &SpawnOutput{
+		Session: "grok-width",
+		Agents:  []SpawnedAgent{{Pane: "0.1", Type: "grok"}},
+	}
+	// At 40 columns the adaptive live tail is 30 physical rows. A fixed
+	// 15-row detector would lose the provider header and incorrectly report
+	// UNREADY_PROVIDER_CHROME_MISSING.
+	captureText := "Grok Build  1.0.13\n" + strings.Repeat("wrapped status row\n", 20) +
+		"│ ❯                         │\n╰─ Grok 4.6 (high) · default ─╯\n"
+	widthTarget := ""
+	err := waitForAgentsReadyWithCaptureAndWidth(
+		t.Context(), output, time.Second,
+		func(context.Context, string, int) (string, error) { return captureText, nil },
+		func(target string) int {
+			widthTarget = target
+			return 40
+		},
+	)
+	if err != nil {
+		t.Fatalf("width-aware Grok readiness: %v", err)
+	}
+	if widthTarget == "" || !output.Agents[0].Ready || output.Agents[0].ReadyReason != "READY" {
+		t.Fatalf("target=%q agent=%+v", widthTarget, output.Agents[0])
+	}
+}
+
 // "ready" must match as a word: as a bare substring it also hit "already".
 func TestIsAgentReadyDoesNotMatchAlready(t *testing.T) {
 	if isAgentReady("Already up to date.\n", "claude") {
@@ -2556,6 +3042,25 @@ func TestIsAgentReadyDoesNotMatchAlready(t *testing.T) {
 	}
 	if !isAgentReady("agent ready for input\n", "claude") {
 		t.Fatal(`a genuine "ready" line should still match`)
+	}
+}
+
+func TestIsAgentReadyGrokRequiresAuthenticatedEmptyComposer(t *testing.T) {
+	idle := "Grok Build  1.0.13\n│ ❯                         │\n╰─ Grok 4.6 (high) · always-approve ─╯\n"
+	if !isAgentReady(idle, "grok") {
+		t.Fatal("authenticated empty Grok composer should be ready")
+	}
+	for _, output := range []string{
+		"Grok Build  1.0.13\nWelcome back\n",
+		"Grok Build  1.0.13\nOpen a browser to authenticate\n",
+		"Rate limit exceeded. Try again later.\n" + idle,
+		"Error: authentication expired\n" + idle,
+		"~/project\n❯ \n",
+		idle + "⠸ Thinking… 0.0s\nEsc:cancel\n",
+	} {
+		if isAgentReady(output, "grok") {
+			t.Fatalf("unready Grok output %q classified ready", output)
+		}
 	}
 }
 

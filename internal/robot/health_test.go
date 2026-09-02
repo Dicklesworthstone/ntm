@@ -48,6 +48,7 @@ func TestDetectAgentTypeFromPane(t *testing.T) {
 		want string
 	}{
 		{name: "claude", pane: tmux.Pane{Type: tmux.AgentClaude}, want: "claude"},
+		{name: "zai", pane: tmux.Pane{Type: tmux.AgentZAI}, want: "zai"},
 		{name: "ollama", pane: tmux.Pane{Type: tmux.AgentOllama}, want: "ollama"},
 		{name: "unknown", pane: tmux.Pane{Type: tmux.AgentType("mystery")}, want: "unknown"},
 	}

@@ -3786,6 +3786,8 @@ func ResolveAgentType(t string) string {
 		return "antigravity"
 	case agent.AgentTypeGrok:
 		return "grok"
+	case agent.AgentTypeZAI:
+		return "zai"
 	case agent.AgentTypeCursor:
 		return "cursor"
 	case agent.AgentTypeWindsurf:
@@ -5998,6 +6000,8 @@ func agentTypeString(t tmux.AgentType) string {
 		return "antigravity"
 	case tmux.AgentGrok:
 		return "grok"
+	case tmux.AgentZAI:
+		return "zai"
 	case tmux.AgentCursor:
 		return "cursor"
 	case tmux.AgentWindsurf:

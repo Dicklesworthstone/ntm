@@ -8,6 +8,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
@@ -371,7 +372,7 @@ func TestDefaultAgentArgs(t *testing.T) {
 		{"cc", []string{}},
 		{"cod", []string{}},
 		{"gmi", []string{}},
-		{"grok", []string{"--always-approve"}},
+		{"grok", agent.DefaultGrokAutomationShellArgs()},
 		{"cursor", []string{"--yolo"}},
 	}
 
@@ -539,7 +540,7 @@ func TestBuildLaunchCommand(t *testing.T) {
 			useFullPaths:   false,
 			expectedBinary: "grok",
 			expectedType:   "grok",
-			expectedArgs:   []string{"--always-approve"},
+			expectedArgs:   agent.DefaultGrokAutomationShellArgs(),
 		},
 		{
 			name:           "Grok phase one with full path",
@@ -547,7 +548,7 @@ func TestBuildLaunchCommand(t *testing.T) {
 			useFullPaths:   true,
 			expectedBinary: "grok",
 			expectedType:   "grok",
-			expectedArgs:   []string{"--always-approve"},
+			expectedArgs:   agent.DefaultGrokAutomationShellArgs(),
 		},
 		{
 			name:           "Cursor uses headless agent CLI",

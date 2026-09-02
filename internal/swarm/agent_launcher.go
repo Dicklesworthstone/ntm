@@ -235,7 +235,7 @@ var DefaultAgentArgs = map[string][]string{
 	// to. The model is pre-quoted because ToShellCommand joins args with
 	// spaces straight into a shell command.
 	"agy":      {"--model", tmux.ShellQuote(config.AntigravityRequiredModel), "--dangerously-skip-permissions"},
-	"grok":     {"--always-approve"},
+	"grok":     agent.DefaultGrokAutomationShellArgs(),
 	"cursor":   {"--yolo"},
 	"windsurf": {},
 	"aider":    {},

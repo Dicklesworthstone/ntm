@@ -398,6 +398,36 @@ codex> `
 	}
 }
 
+func TestParser_ParseWithHint_GrokReadinessFailsClosed(t *testing.T) {
+	parser := NewParser()
+	idle := "Grok Build  1.0.13\n│ ❯                         │\n╰─ Grok 4.6 (high) · always-approve ─╯\n"
+
+	state, err := parser.ParseWithHint(idle, AgentTypeGrok)
+	if err != nil {
+		t.Fatalf("ParseWithHint(idle Grok) error = %v", err)
+	}
+	if !state.IsIdle || state.IsWorking || state.IsRateLimited || state.IsInError {
+		t.Fatalf("idle Grok state = %+v, want idle-only", state)
+	}
+
+	for _, output := range []string{
+		"",
+		"Grok Build  1.0.13\nOpen a browser to authenticate\n",
+		"Grok Build  1.0.13\nWelcome back\n",
+		"Rate limit exceeded. Try again later.\n" + idle,
+		"Error: authentication expired\n" + idle,
+		"~/project\n❯ \n",
+	} {
+		state, err = parser.ParseWithHint(output, AgentTypeGrok)
+		if err != nil {
+			t.Fatalf("ParseWithHint(unready Grok) error = %v", err)
+		}
+		if state.IsIdle {
+			t.Fatalf("unready Grok output %q classified idle: %+v", output, state)
+		}
+	}
+}
+
 func TestParser_ParseWithHint_AntigravityLiveFrames(t *testing.T) {
 	p := NewParser()
 

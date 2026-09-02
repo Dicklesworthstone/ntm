@@ -253,6 +253,7 @@ func TestResolveSpawnAssignAgentType(t *testing.T) {
 		{"explicit short code", "CC", false, false, false, false, "claude"},
 		{"explicit cli alias", "codex-cli", false, false, false, false, "codex"},
 		{"explicit spaced alias", " google-gemini ", false, false, false, false, "gemini"},
+		{"explicit Grok alias", " Grok-Build ", false, false, false, false, "grok"},
 		{"cc only flag", "", true, false, false, false, "claude"},
 		{"cod only flag", "", false, true, false, false, "codex"},
 		{"gmi only flag", "", false, false, true, false, "gemini"},

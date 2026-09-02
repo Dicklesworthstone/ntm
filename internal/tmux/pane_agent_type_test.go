@@ -138,6 +138,69 @@ func TestParsePaneAgentTypeOption(t *testing.T) {
 	}
 }
 
+func TestParsePaneLine_ProviderIdentityMetadataIsStrictAndSafe(t *testing.T) {
+	t.Parallel()
+	hash := strings.Repeat("a", 64)
+	receipt := strings.Repeat("b", 64)
+	line := strings.Join([]string{"%7", "2", "sess__zai_1", "zsh", "80", "24", "1", "0", "1", "zai", "zai-kevin-glm53", hash, "qualified", receipt}, FieldSeparator)
+	pane, err := parsePaneLine(line, FieldSeparator)
+	if err != nil {
+		t.Fatalf("parsePaneLine: %v", err)
+	}
+	if pane.ProviderProfile != "zai-kevin-glm53" || pane.ProviderIdentitySHA256 != hash || pane.ModelProbeState != "qualified" || pane.ModelProbeReceiptSHA256 != receipt {
+		t.Fatalf("provider pane metadata=%+v", pane)
+	}
+	if pane.ProviderIdentityState != ProviderIdentityStateProfileAttested || !pane.ProviderIdentityBound() {
+		t.Fatalf("provider identity state=%q bound=%v, want profile-attested bound pane", pane.ProviderIdentityState, pane.ProviderIdentityBound())
+	}
+
+	unsafe := strings.Join([]string{"%7", "2", "sess__zai_1", "zsh", "80", "24", "1", "0", "1", "zai", "zai-kevin-glm53", hash, "qualified", "https://token@example.invalid"}, FieldSeparator)
+	pane, err = parsePaneLine(unsafe, FieldSeparator)
+	if err != nil {
+		t.Fatalf("parsePaneLine unsafe metadata: %v", err)
+	}
+	if pane.ProviderProfile != "" || pane.ProviderIdentitySHA256 != "" {
+		t.Fatalf("unsafe metadata must be discarded, got %+v", pane)
+	}
+	if pane.ProviderIdentityState != ProviderIdentityStateUnboundInvalid || pane.ProviderIdentityBound() {
+		t.Fatalf("unsafe provider identity state=%q bound=%v", pane.ProviderIdentityState, pane.ProviderIdentityBound())
+	}
+
+	missing := strings.Join([]string{"%7", "2", "sess__zai_1", "zsh", "80", "24", "1", "0", "1", "zai", "", "", "", ""}, FieldSeparator)
+	pane, err = parsePaneLine(missing, FieldSeparator)
+	if err != nil {
+		t.Fatalf("parsePaneLine missing metadata: %v", err)
+	}
+	if pane.ProviderIdentityState != ProviderIdentityStateUnboundMissing || pane.ProviderIdentityBound() {
+		t.Fatalf("missing provider identity state=%q bound=%v", pane.ProviderIdentityState, pane.ProviderIdentityBound())
+	}
+}
+
+func TestSetProviderPaneIdentityRejectsUnsafeValues(t *testing.T) {
+	t.Parallel()
+	c := &Client{}
+	valid := ProviderPaneIdentity{Profile: "zai-kevin-glm53", IdentitySHA256: strings.Repeat("a", 64), ModelProbeState: "qualified", ModelProbeReceiptSHA256: strings.Repeat("b", 64)}
+	if err := validateProviderPaneIdentity(valid); err != nil {
+		t.Fatalf("validate valid metadata: %v", err)
+	}
+	for _, bad := range []ProviderPaneIdentity{
+		{Profile: "ZAI", IdentitySHA256: valid.IdentitySHA256, ModelProbeState: "qualified", ModelProbeReceiptSHA256: valid.ModelProbeReceiptSHA256},
+		{Profile: valid.Profile, IdentitySHA256: "token", ModelProbeState: "qualified", ModelProbeReceiptSHA256: valid.ModelProbeReceiptSHA256},
+		{Profile: valid.Profile, IdentitySHA256: valid.IdentitySHA256, ModelProbeState: "unprobed", ModelProbeReceiptSHA256: valid.ModelProbeReceiptSHA256},
+	} {
+		if err := c.SetProviderPaneIdentityContext(t.Context(), "%1", bad); err == nil {
+			t.Fatalf("SetProviderPaneIdentityContext accepted unsafe metadata=%+v", bad)
+		}
+	}
+}
+
+func TestValidateProviderPaneIdentityAcceptsLiveVerifiedReceipt(t *testing.T) {
+	metadata := ProviderPaneIdentity{Profile: "zai-kevin-glm53", IdentitySHA256: strings.Repeat("a", 64), ModelProbeState: "live_verified", ModelProbeReceiptSHA256: strings.Repeat("b", 64)}
+	if err := validateProviderPaneIdentity(metadata); err != nil {
+		t.Fatalf("live_verified metadata rejected: %v", err)
+	}
+}
+
 func TestSetPaneAgentTypeRejectsUnknownType(t *testing.T) {
 	t.Parallel()
 

@@ -46,6 +46,7 @@ const (
 	AgentGemini      = agent.AgentTypeGemini
 	AgentAntigravity = agent.AgentTypeAntigravity
 	AgentGrok        = agent.AgentTypeGrok
+	AgentZAI         = agent.AgentTypeZAI
 	AgentCursor      = agent.AgentTypeCursor
 	AgentWindsurf    = agent.AgentTypeWindsurf
 	AgentAider       = agent.AgentTypeAider
@@ -73,7 +74,23 @@ type Pane struct {
 	Height      int
 	Active      bool
 	PID         int // Shell PID
+	// Provider identity metadata is populated only from validated pane options.
+	// It contains names and hashes, never endpoints, commands, or credentials.
+	ProviderProfile         string
+	ProviderIdentitySHA256  string
+	ModelProbeState         string
+	ModelProbeReceiptSHA256 string
+	// ProviderIdentityState is a read-only reconciliation signal. In
+	// particular, a pre-existing Z.ai pane without valid metadata is visible as
+	// unbound rather than silently treated as a profile-qualified provider lane.
+	ProviderIdentityState string
 }
+
+const (
+	ProviderIdentityStateProfileAttested = "profile_attested"
+	ProviderIdentityStateUnboundMissing  = "unbound_missing"
+	ProviderIdentityStateUnboundInvalid  = "unbound_invalid"
+)
 
 // PaneRef is the stable physical identity and topology address of a pane.
 // ID is the tmux-native identity; WindowIndex and PaneIndex identify its
@@ -950,7 +967,7 @@ func (c *Client) GetPanes(session string) ([]Pane, error) {
 // GetPanesContext returns all panes in a session with cancellation support.
 func (c *Client) GetPanesContext(ctx context.Context, session string) ([]Pane, error) {
 	sep := FieldSeparator
-	format := fmt.Sprintf("#{pane_id}%[1]s#{pane_index}%[1]s#{pane_title}%[1]s#{pane_current_command}%[1]s#{pane_width}%[1]s#{pane_height}%[1]s#{pane_active}%[1]s#{pane_pid}%[1]s#{window_index}%[1]s#{@ntm_agent_type}", sep)
+	format := fmt.Sprintf("#{pane_id}%[1]s#{pane_index}%[1]s#{pane_title}%[1]s#{pane_current_command}%[1]s#{pane_width}%[1]s#{pane_height}%[1]s#{pane_active}%[1]s#{pane_pid}%[1]s#{window_index}%[1]s#{@ntm_agent_type}%[1]s#{@ntm_provider_profile}%[1]s#{@ntm_provider_identity_sha256}%[1]s#{@ntm_model_probe_state}%[1]s#{@ntm_model_probe_receipt_sha256}", sep)
 	output, err := c.RunContext(ctx, "list-panes", "-s", "-t", TargetSession(session), "-F", format)
 	if err != nil {
 		return nil, err
@@ -1171,7 +1188,7 @@ func waitForPaneProcessStartContext(
 func (c *Client) GetAllPanesContext(ctx context.Context) (map[string][]Pane, error) {
 	sep := FieldSeparator
 	// Add session_name at the beginning
-	format := fmt.Sprintf("#{session_name}%[1]s#{pane_id}%[1]s#{pane_index}%[1]s#{pane_title}%[1]s#{pane_current_command}%[1]s#{pane_width}%[1]s#{pane_height}%[1]s#{pane_active}%[1]s#{pane_pid}%[1]s#{window_index}%[1]s#{@ntm_agent_type}", sep)
+	format := fmt.Sprintf("#{session_name}%[1]s#{pane_id}%[1]s#{pane_index}%[1]s#{pane_title}%[1]s#{pane_current_command}%[1]s#{pane_width}%[1]s#{pane_height}%[1]s#{pane_active}%[1]s#{pane_pid}%[1]s#{window_index}%[1]s#{@ntm_agent_type}%[1]s#{@ntm_provider_profile}%[1]s#{@ntm_provider_identity_sha256}%[1]s#{@ntm_model_probe_state}%[1]s#{@ntm_model_probe_receipt_sha256}", sep)
 	output, err := c.RunContext(ctx, "list-panes", "-a", "-F", format)
 	if err != nil {
 		// No server/no sessions is not an error; treat as empty result.
@@ -1193,12 +1210,12 @@ func (c *Client) GetAllPanesContext(ctx context.Context) (map[string][]Pane, err
 		}
 
 		parts := strings.Split(line, sep)
-		if len(parts) != 11 {
-			return nil, fmt.Errorf("parse pane %d: expected 11 fields, got %d", lineNumber+1, len(parts))
+		if len(parts) != 15 {
+			return nil, fmt.Errorf("parse pane %d: expected 15 fields, got %d", lineNumber+1, len(parts))
 		}
 
 		sessionName := parts[0]
-		// parts[1:] contains: id, index, title, command, width, height, active, pid, window_index, @ntm_agent_type
+		// parts[1:] contains primary pane fields followed by pane-owned metadata.
 		// parts[1:8] = id(0), index(1), title(2), command(3), width(4), height(5), active(6)
 		// parts[8:] = pid(0), window_index(1), @ntm_agent_type(2)
 		p, err := parsePaneFromParts(parts[1:8], parts[8:])
@@ -2932,7 +2949,7 @@ type PaneActivity struct {
 // GetPanesWithActivityContext returns all panes in a session with their activity times with cancellation support.
 func (c *Client) GetPanesWithActivityContext(ctx context.Context, session string) ([]PaneActivity, error) {
 	sep := FieldSeparator
-	format := fmt.Sprintf("#{pane_id}%[1]s#{pane_index}%[1]s#{pane_title}%[1]s#{pane_current_command}%[1]s#{pane_width}%[1]s#{pane_height}%[1]s#{pane_active}%[1]s#{window_activity}%[1]s#{pane_pid}%[1]s#{window_index}%[1]s#{@ntm_agent_type}", sep)
+	format := fmt.Sprintf("#{pane_id}%[1]s#{pane_index}%[1]s#{pane_title}%[1]s#{pane_current_command}%[1]s#{pane_width}%[1]s#{pane_height}%[1]s#{pane_active}%[1]s#{window_activity}%[1]s#{pane_pid}%[1]s#{window_index}%[1]s#{@ntm_agent_type}%[1]s#{@ntm_provider_profile}%[1]s#{@ntm_provider_identity_sha256}%[1]s#{@ntm_model_probe_state}%[1]s#{@ntm_model_probe_receipt_sha256}", sep)
 	output, err := c.RunContext(ctx, "list-panes", "-s", "-t", TargetSession(session), "-F", format)
 	if err != nil {
 		return nil, err
@@ -2945,8 +2962,8 @@ func (c *Client) GetPanesWithActivityContext(ctx context.Context, session string
 		}
 
 		parts := strings.Split(line, sep)
-		if len(parts) != 11 {
-			return nil, fmt.Errorf("parse pane activity %d from session %q: expected 11 fields, got %d", lineNumber+1, session, len(parts))
+		if len(parts) != 15 {
+			return nil, fmt.Errorf("parse pane activity %d from session %q: expected 15 fields, got %d", lineNumber+1, session, len(parts))
 		}
 
 		// Format: id(0), index(1), title(2), command(3), width(4), height(5), active(6), last_activity(7), pid(8), window_index(9), @ntm_agent_type(10)
@@ -2977,8 +2994,8 @@ func (c *Client) GetPanesWithActivityContext(ctx context.Context, session string
 // parsePaneLine parses a single line from list-panes format into a Pane.
 func parsePaneLine(line, sep string) (*Pane, error) {
 	parts := strings.Split(line, sep)
-	if len(parts) != 10 {
-		return nil, fmt.Errorf("expected 10 fields, got %d", len(parts))
+	if len(parts) != 10 && len(parts) != 14 {
+		return nil, fmt.Errorf("expected 10 or 14 fields, got %d", len(parts))
 	}
 	// For standard GetPanes: id, index, title, command, width, height, active, pid, window_index, @ntm_agent_type
 	return parsePaneFromParts(parts[:7], parts[7:])
@@ -2986,14 +3003,17 @@ func parsePaneLine(line, sep string) (*Pane, error) {
 
 // parsePaneFromParts constructs a Pane from pre-split parts.
 // parts1: id, index, title, command, width, height, active
-// parts2: pid, window_index, and optionally the pane's @ntm_agent_type user
+// parts2: pid, window_index, and optionally pane-owned user options.
 // option (empty when unset or when the tmux server predates pane options).
 func parsePaneFromParts(parts1, parts2 []string) (*Pane, error) {
-	if len(parts1) != 7 || (len(parts2) != 2 && len(parts2) != 3) {
-		return nil, fmt.Errorf("expected 7 primary fields and 2 or 3 secondary fields, got %d and %d", len(parts1), len(parts2))
+	if len(parts1) != 7 || (len(parts2) != 2 && len(parts2) != 3 && len(parts2) != 7) {
+		return nil, fmt.Errorf("expected 7 primary fields and 2, 3, or 7 secondary fields, got %d and %d", len(parts1), len(parts2))
 	}
 	recordedType := ""
 	if len(parts2) == 3 {
+		recordedType = parts2[2]
+	}
+	if len(parts2) == 7 {
 		recordedType = parts2[2]
 	}
 
@@ -3030,6 +3050,23 @@ func parsePaneFromParts(parts1, parts2 []string) (*Pane, error) {
 		Active:      active,
 		PID:         pid,
 	}
+	providerMetadataPresent := len(parts2) == 7 && hasProviderPaneMetadataValues(parts2[3:])
+	providerMetadataValid := false
+	if len(parts2) == 7 {
+		metadata := ProviderPaneIdentity{
+			Profile:                 parts2[3],
+			IdentitySHA256:          parts2[4],
+			ModelProbeState:         parts2[5],
+			ModelProbeReceiptSHA256: parts2[6],
+		}
+		if validateProviderPaneIdentity(metadata) == nil {
+			providerMetadataValid = true
+			pane.ProviderProfile = metadata.Profile
+			pane.ProviderIdentitySHA256 = metadata.IdentitySHA256
+			pane.ModelProbeState = metadata.ModelProbeState
+			pane.ModelProbeReceiptSHA256 = metadata.ModelProbeReceiptSHA256
+		}
+	}
 
 	// Parse pane title using regex to extract type, index, variant, and tags
 	pane.Type, pane.NTMIndex, pane.Variant, pane.Tags = parseAgentFromTitle(pane.Title)
@@ -3042,6 +3079,7 @@ func parsePaneFromParts(parts1, parts2 []string) (*Pane, error) {
 	// still consulted above for the NTM index, variant and tags.
 	if recorded := ParsePaneAgentTypeOption(recordedType); recorded != AgentUnknown {
 		pane.Type = recorded
+		setProviderIdentityState(pane, providerMetadataPresent, providerMetadataValid)
 		return pane, nil
 	}
 
@@ -3063,8 +3101,50 @@ func parsePaneFromParts(parts1, parts2 []string) (*Pane, error) {
 			}
 		}
 	}
+	setProviderIdentityState(pane, providerMetadataPresent, providerMetadataValid)
 
 	return pane, nil
+}
+
+func hasProviderPaneMetadataValues(values []string) bool {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// setProviderIdentityState deliberately performs no cleanup. A stale or
+// malformed Z.ai pane may be an owner-owned process after a restart; callers
+// get an explicit fail-closed signal and must not treat it as a qualified
+// provider target or destroy it without proving ownership.
+func setProviderIdentityState(pane *Pane, metadataPresent, metadataValid bool) {
+	if pane == nil || pane.Type != AgentZAI {
+		return
+	}
+	if metadataValid {
+		pane.ProviderIdentityState = ProviderIdentityStateProfileAttested
+		return
+	}
+	if metadataPresent {
+		pane.ProviderIdentityState = ProviderIdentityStateUnboundInvalid
+		return
+	}
+	pane.ProviderIdentityState = ProviderIdentityStateUnboundMissing
+}
+
+// ProviderIdentityBound reports whether a Z.ai pane has the complete safe
+// metadata NTM needs before regarding it as profile-attested. It intentionally
+// does not elevate that metadata to runtime verification.
+func (p Pane) ProviderIdentityBound() bool {
+	return p.Type == AgentZAI && p.ProviderIdentityState == ProviderIdentityStateProfileAttested &&
+		validateProviderPaneIdentity(ProviderPaneIdentity{
+			Profile:                 p.ProviderProfile,
+			IdentitySHA256:          p.ProviderIdentitySHA256,
+			ModelProbeState:         p.ModelProbeState,
+			ModelProbeReceiptSHA256: p.ModelProbeReceiptSHA256,
+		}) == nil
 }
 
 // PaneAgentTypeOption is the tmux pane user option in which ntm records the
@@ -3074,6 +3154,78 @@ func parsePaneFromParts(parts1, parts2 []string) (*Pane, error) {
 // Pane-scoped options need tmux 3.0+; on older servers the option is simply
 // absent and the title/command heuristics apply.
 const PaneAgentTypeOption = "@ntm_agent_type"
+
+const (
+	PaneProviderProfileOption         = "@ntm_provider_profile"
+	PaneProviderIdentitySHA256Option  = "@ntm_provider_identity_sha256"
+	PaneModelProbeStateOption         = "@ntm_model_probe_state"
+	PaneModelProbeReceiptSHA256Option = "@ntm_model_probe_receipt_sha256"
+)
+
+var (
+	providerPaneProfilePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,127}$`)
+	providerPaneSHA256Pattern  = regexp.MustCompile(`^[a-f0-9]{64}$`)
+)
+
+// ProviderPaneIdentity is the safe subset of a provider launch boundary that
+// must survive on the pane. It deliberately excludes endpoint, command,
+// account details, and any secret. Each value is tightly validated before it
+// is written or surfaced from tmux.
+type ProviderPaneIdentity struct {
+	Profile                 string
+	IdentitySHA256          string
+	ModelProbeState         string
+	ModelProbeReceiptSHA256 string
+}
+
+func validateProviderPaneIdentity(metadata ProviderPaneIdentity) error {
+	if !providerPaneProfilePattern.MatchString(metadata.Profile) {
+		return errors.New("provider profile must be a lowercase exact profile key")
+	}
+	if !providerPaneSHA256Pattern.MatchString(metadata.IdentitySHA256) {
+		return errors.New("provider identity hash must be a lowercase SHA-256")
+	}
+	if state := strings.ToLower(strings.TrimSpace(metadata.ModelProbeState)); state != "qualified" && state != "live_verified" {
+		return errors.New("provider pane metadata requires a qualified or live-verified model probe")
+	}
+	if !providerPaneSHA256Pattern.MatchString(metadata.ModelProbeReceiptSHA256) {
+		return errors.New("model probe receipt hash must be a lowercase SHA-256")
+	}
+	return nil
+}
+
+// SetProviderPaneIdentityContext persists the safe, immutable provider
+// binding for a launched provider pane. It intentionally fails if any option
+// cannot be recorded: a pane with an unprovable provider identity is unsafe
+// for later provider-scoped operations.
+func (c *Client) SetProviderPaneIdentityContext(ctx context.Context, paneID string, metadata ProviderPaneIdentity) error {
+	if ctx == nil {
+		return errors.New("tmux provider pane identity context is required")
+	}
+	if strings.TrimSpace(paneID) == "" {
+		return errors.New("pane ID is required")
+	}
+	if err := validateProviderPaneIdentity(metadata); err != nil {
+		return err
+	}
+	for _, item := range []struct{ key, value string }{
+		{PaneProviderProfileOption, metadata.Profile},
+		{PaneProviderIdentitySHA256Option, metadata.IdentitySHA256},
+		{PaneModelProbeStateOption, "qualified"},
+		{PaneModelProbeReceiptSHA256Option, metadata.ModelProbeReceiptSHA256},
+	} {
+		if err := c.RunSilentContext(ctx, "set-option", "-p", "-t", ExactTarget(paneID), item.key, item.value); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// SetProviderPaneIdentityContext persists provider pane identity on the
+// default tmux client.
+func SetProviderPaneIdentityContext(ctx context.Context, paneID string, metadata ProviderPaneIdentity) error {
+	return DefaultClient.SetProviderPaneIdentityContext(ctx, paneID, metadata)
+}
 
 // ParsePaneAgentTypeOption converts a raw @ntm_agent_type value into an agent
 // type. It returns AgentUnknown when the option is unset or names a type ntm

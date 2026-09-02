@@ -1669,6 +1669,9 @@ func restartModelVars(cfg *config.Config, agentType, variant string) config.Agen
 func restartAgentLaunchCommand(cfg *config.Config, agentType, variant string) string {
 	cmd, err := restartAgentLaunchCommandWithOverride(cfg, agentType, variant, restartLaunchOverride{})
 	if err != nil {
+		if agent.AgentType(agentType).Canonical() == agent.AgentTypeZAI {
+			return ""
+		}
 		return restartLaunchAlias(agentType)
 	}
 	return cmd
@@ -1679,6 +1682,9 @@ func restartAgentLaunchCommand(cfg *config.Config, agentType, variant string) st
 // override it preserves the historical silent-fallback-to-alias behavior;
 // with one, every failure that would drop the override is a loud error.
 func restartAgentLaunchCommandWithOverride(cfg *config.Config, agentType, variant string, override restartLaunchOverride) (string, error) {
+	if agent.AgentType(agentType).Canonical() == agent.AgentTypeZAI {
+		return "", agent.ErrZAIProfileRelaunchRequired
+	}
 	alias := restartLaunchAlias(agentType)
 	resolved := ResolveAgentType(agentType)
 
@@ -1812,6 +1818,21 @@ func paneShellPIDContext(ctx context.Context, target string) (int, error) {
 	return pid, nil
 }
 
+func paneWidthContext(ctx context.Context, target string) int {
+	if ctx == nil || ctx.Err() != nil {
+		return 0
+	}
+	value, err := tmux.DefaultClient.RunContext(ctx, "display-message", "-t", tmux.ExactTarget(target), "-p", "#{pane_width}")
+	if err != nil {
+		return 0
+	}
+	width, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil || width <= 0 {
+		return 0
+	}
+	return width
+}
+
 // waitForPaneAgentReadyContext polls until the agent TUI is ready and the pane
 // shell has a live agent child. A shellPID <= 0 skips the process check.
 func waitForPaneAgentReadyContext(ctx context.Context, target string, shellPID int, agentType string, timeout time.Duration) (bool, error) {
@@ -1820,6 +1841,7 @@ func waitForPaneAgentReadyContext(ctx context.Context, target string, shellPID i
 		target,
 		shellPID,
 		agentType,
+		paneWidthContext(ctx, target),
 		timeout,
 		restartPaneReadyPollInterval,
 		tmux.CapturePaneOutputContext,
@@ -1904,6 +1926,7 @@ func waitForPaneAgentReadyWithContext(
 	target string,
 	shellPID int,
 	agentType string,
+	paneWidth int,
 	timeout time.Duration,
 	pollInterval time.Duration,
 	capture func(context.Context, string, int) (string, error),
@@ -1928,8 +1951,8 @@ func waitForPaneAgentReadyWithContext(
 		if cancelErr := restartPaneCancellationError(ctx, captureErr); cancelErr != nil {
 			return false, cancelErr
 		}
-		if captureErr == nil && isAgentReady(captured, agentType) {
-			ready = true
+		if captureErr == nil {
+			ready, _ = agentReadiness(captured, agentType, paneWidth)
 		}
 		if ready && shellPID > 0 && !hasChildAlive(shellPID) {
 			// Content looks ready but nothing is running under the shell —

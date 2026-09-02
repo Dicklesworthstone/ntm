@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
+	"github.com/Dicklesworthstone/ntm/internal/agent"
 )
 
 func TestDefault(t *testing.T) {
@@ -669,7 +670,7 @@ func TestPrint(t *testing.T) {
 	if !strings.Contains(output, "supervisor_enabled = false") {
 		t.Error("Expected printed config to make Agent Mail supervisor ownership explicit")
 	}
-	for _, want := range []string{"grok = \"grok --always-approve", "default_grok = \"\"", "[models.grok]"} {
+	for _, want := range []string{"grok = \"grok --no-auto-update", "grok_policy = \"grok-readonly-ci\"", "default_grok = \"\"", "[models.grok]"} {
 		if !strings.Contains(output, want) {
 			t.Errorf("Expected printed config to contain %q", want)
 		}
@@ -678,7 +679,7 @@ func TestPrint(t *testing.T) {
 
 func TestPrintGrokConfigRoundTrip(t *testing.T) {
 	cfg := Default()
-	cfg.Agents.Grok = "grok --always-approve --profile custom"
+	cfg.Agents.Grok = agent.DefaultGrokAutomationCommand + " --profile custom"
 	cfg.Models.DefaultGrok = "account/default"
 	cfg.Models.Grok = map[string]string{
 		"fast":  "account/fast",

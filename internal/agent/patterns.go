@@ -484,15 +484,12 @@ var (
 	// or scrolled out of the live tail.
 	grokCancelHintRe = regexp.MustCompile(`Esc:cancel`)
 
-	// grokIdlePatterns indicates waiting for input. The bordered composer line
-	// ("│ ❯ …") is permanent chrome; callers must gate on !GrokActivelyWorking
-	// (detectStateFlags does) before trusting it as idle evidence.
-	grokIdlePatterns = []*regexp.Regexp{
-		regexp.MustCompile(`(?m)^\s*│\s*❯`),               // Bordered composer line
-		regexp.MustCompile(`(?m)^\s*Worked\s+for\s+\d`),   // Turn-ended summary
-		regexp.MustCompile(`Turn cancelled by user`),      // Post-interrupt acknowledgement
-		regexp.MustCompile(`(?i)grok\s+build\s+\d+\.\d+`), // Welcome banner (fresh spawn)
-	}
+	// grokEmptyComposerLineRe is positive evidence that the authenticated TUI
+	// is accepting fresh input. A welcome banner, completed-turn summary, or
+	// shell prompt is not sufficient: each can remain visible while Grok is
+	// booting, authenticating, or showing a modal. The right border is required
+	// so an ordinary shell prompt using the same chevron cannot match.
+	grokEmptyComposerLineRe = regexp.MustCompile(`(?m)^\s*│\s*❯\s*│\s*$`)
 
 	grokErrorPatterns = []string{
 		"error:",
@@ -520,6 +517,71 @@ func GrokActivelyWorking(output string, paneWidth int) bool {
 	clean := stripANSICodes(output)
 	tail := util.GetLastNLines(clean, util.WidthAdaptiveTailLines(paneWidth, grokLiveTailLines))
 	return grokActiveWorkLineRe.MatchString(tail) || grokCancelHintRe.MatchString(tail)
+}
+
+// GrokReadinessReason is a stable, machine-readable explanation for a Grok
+// compatibility-TUI readiness decision.
+type GrokReadinessReason string
+
+const (
+	GrokReady                         GrokReadinessReason = "READY"
+	GrokUnreadyEmptyCapture           GrokReadinessReason = "UNREADY_EMPTY_CAPTURE"
+	GrokUnreadyActiveTurn             GrokReadinessReason = "UNREADY_ACTIVE_TURN"
+	GrokUnreadyRateLimited            GrokReadinessReason = "UNREADY_RATE_LIMITED"
+	GrokUnreadyError                  GrokReadinessReason = "UNREADY_ERROR"
+	GrokUnreadyAuthenticationRequired GrokReadinessReason = "UNREADY_AUTHENTICATION_REQUIRED"
+	GrokUnreadyComposerMissing        GrokReadinessReason = "UNREADY_COMPOSER_MISSING"
+	GrokUnreadyProviderChromeMissing  GrokReadinessReason = "UNREADY_PROVIDER_CHROME_MISSING"
+)
+
+// GrokReadiness is the reason-coded compatibility-TUI readiness result.
+type GrokReadiness struct {
+	Ready  bool                `json:"ready"`
+	Reason GrokReadinessReason `json:"reason"`
+}
+
+// DetectGrokReadiness reports whether a capture positively identifies an
+// authenticated, idle Grok Build composer that can accept a fresh prompt.
+//
+// Grok Build does not publish a passive readiness protocol, so this detector is
+// intentionally fail-closed. It requires both the empty bordered composer and
+// Grok-specific TUI chrome from the live tail. Banner-only, authentication,
+// modal, error, active-turn, bare-shell, and pre-filled-composer captures all
+// remain unready.
+func DetectGrokReadiness(output string, paneWidth int) GrokReadiness {
+	clean := stripANSICodes(output)
+	if strings.TrimSpace(clean) == "" {
+		return GrokReadiness{Reason: GrokUnreadyEmptyCapture}
+	}
+	if GrokActivelyWorking(clean, paneWidth) {
+		return GrokReadiness{Reason: GrokUnreadyActiveTurn}
+	}
+	tail := util.GetLastNLines(clean, util.WidthAdaptiveTailLines(paneWidth, grokLiveTailLines))
+	if matchAny(tail, grokRateLimitPatterns) {
+		return GrokReadiness{Reason: GrokUnreadyRateLimited}
+	}
+	if matchAny(tail, grokErrorPatterns) {
+		return GrokReadiness{Reason: GrokUnreadyError}
+	}
+	lowerTail := strings.ToLower(tail)
+	for _, marker := range []string{"grok login", "select login method", "authentication required", "sign in to grok"} {
+		if strings.Contains(lowerTail, marker) {
+			return GrokReadiness{Reason: GrokUnreadyAuthenticationRequired}
+		}
+	}
+	if !grokEmptyComposerLineRe.MatchString(tail) {
+		return GrokReadiness{Reason: GrokUnreadyComposerMissing}
+	}
+	if !grokHeaderPattern.MatchString(tail) {
+		return GrokReadiness{Reason: GrokUnreadyProviderChromeMissing}
+	}
+	return GrokReadiness{Ready: true, Reason: GrokReady}
+}
+
+// GrokReadyForAutomatedInput preserves the original boolean API for callers
+// that do not need reason-coded diagnostics.
+func GrokReadyForAutomatedInput(output string, paneWidth int) bool {
+	return DetectGrokReadiness(output, paneWidth).Ready
 }
 
 // OpenCode (oc, https://opencode.ai) patterns (ntm#261). Derived from the
@@ -943,6 +1005,10 @@ func stripANSICodes(text string) string {
 		} else {
 			line = clean[start : start+newlineIdx]
 		}
+		// A CR immediately before LF is a line ending, not a terminal
+		// overwrite. Preserve the line's content on Windows/CRLF checkouts;
+		// only an earlier CR means "keep the text after the last overwrite".
+		line = strings.TrimSuffix(line, "\r")
 
 		if lastCR := strings.LastIndex(line, "\r"); lastCR != -1 {
 			sb.WriteString(line[lastCR+1:])

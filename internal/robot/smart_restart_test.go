@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	agentpkg "github.com/Dicklesworthstone/ntm/internal/agent"
 	dispatchsvc "github.com/Dicklesworthstone/ntm/internal/dispatch"
 	"github.com/Dicklesworthstone/ntm/internal/redaction"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
@@ -85,6 +86,15 @@ func TestValidateSmartRestartTargetsAcceptsWholeGrokBatch(t *testing.T) {
 	}
 }
 
+func TestValidateSmartRestartTargetsRejectsZAI(t *testing.T) {
+	err := validateSmartRestartTargets(map[string]PaneWorkStatus{
+		"0": {AgentType: "zai"},
+	})
+	if !errors.Is(err, agentpkg.ErrZAIProfileRelaunchRequired) {
+		t.Fatalf("validateSmartRestartTargets(zai) error = %v, want profile-required error", err)
+	}
+}
+
 // GH#251 phase 2: executeRestart treats a grok pane like any supported agent —
 // it runs the restart lifecycle and relaunches with the grok launch command.
 func TestExecuteRestartRelaunchesGrokWithGrokCommand(t *testing.T) {
@@ -106,7 +116,7 @@ func TestExecuteRestartRelaunchesGrokWithGrokCommand(t *testing.T) {
 	if seq == nil || seq.AgentType != "grok-build" || !seq.AgentLaunched || !seq.LaunchAttempted {
 		t.Fatalf("executeRestart() sequence = %+v, want launched Grok sequence", seq)
 	}
-	if len(executor.launches) != 1 || !strings.Contains(executor.launches[0], "grok --always-approve") {
+	if len(executor.launches) != 1 || !strings.Contains(executor.launches[0], agentpkg.DefaultGrokAutomationCommand) {
 		t.Fatalf("executeRestart() launches = %v, want the grok launch command", executor.launches)
 	}
 }
@@ -1174,6 +1184,7 @@ func TestRestartCanonicalAgentType(t *testing.T) {
 		{"antigravity", "agy"},
 		{"agy", "agy"},
 		{"grok-build", "grok"},
+		{"z.ai", "zai"},
 		{"opencode", "oc"},
 		{"ws", "windsurf"},
 		{"ollama", "ollama"},
@@ -1202,8 +1213,10 @@ func TestRestartLaunchAlias(t *testing.T) {
 		{"google-gemini", "gmi"},
 		{"antigravity", "agy"},
 		// GH#251 phase 2: grok has a canonical launch command.
-		{"grok", "grok --always-approve"},
-		{"xai_grok_build", "grok --always-approve"},
+		{"grok", agentpkg.DefaultGrokAutomationCommand},
+		{"xai_grok_build", agentpkg.DefaultGrokAutomationCommand},
+		// Z.ai is a profile-bound provider, never a generic Claude alias.
+		{"zai", ""},
 		{"opencode", "oc"},
 		{"ws", "windsurf"},
 		{"aider", "aider"},

@@ -771,6 +771,13 @@ func spawnAgentCommandTemplate(agentType AgentType, pluginMap map[string]plugins
 		}
 		return tmpl, nil, nil
 	case AgentTypeGrok:
+		policy := strings.TrimSpace(cfg.Agents.GrokPolicy)
+		if policy == "" {
+			policy = agentpkg.DefaultGrokAutomationPolicyName
+		}
+		if policy != agentpkg.DefaultGrokAutomationPolicyName {
+			return "", nil, fmt.Errorf("unknown Grok automation policy %q", policy)
+		}
 		tmpl := cfg.Agents.Grok
 		if tmpl == "" {
 			tmpl = config.DefaultAgentTemplates().Grok
@@ -921,6 +928,29 @@ func validateSpawnGrokPaneBaselines(panes []tmux.Pane, startIdx int, agents []Fl
 				launch.Index,
 				paneOffset,
 			)
+		}
+		if err := tmux.ValidatePaneLaunchBaseline(panes[paneOffset]); err != nil {
+			return fmt.Errorf("validate Grok Build agent %d: %w", launch.Index, err)
+		}
+	}
+	return nil
+}
+
+// validateExistingSpawnGrokPaneBaselines checks every Grok target that already
+// exists before spawn performs cosmetic changes, pane splits, or launches an
+// earlier agent in the batch. Missing targets are deliberately deferred until
+// after pane creation and the complete-assignment validation above.
+func validateExistingSpawnGrokPaneBaselines(panes []tmux.Pane, startIdx int, agents []FlatAgent) error {
+	for agentOffset, launch := range agents {
+		if launch.Type != AgentTypeGrok {
+			continue
+		}
+		paneOffset := startIdx + agentOffset
+		if paneOffset < 0 {
+			return fmt.Errorf("invalid assigned pane offset %d for Grok Build agent %d", paneOffset, launch.Index)
+		}
+		if paneOffset >= len(panes) {
+			continue
 		}
 		if err := tmux.ValidatePaneLaunchBaseline(panes[paneOffset]); err != nil {
 			return fmt.Errorf("validate Grok Build agent %d: %w", launch.Index, err)
@@ -1262,7 +1292,7 @@ type SpawnOptions struct {
 	AssignVerbose      bool          // Show detailed scoring/decision logs during assignment
 	AssignQuiet        bool          // Suppress non-essential assignment output
 	AssignTimeout      time.Duration // Timeout for external calls during assignment (bv, br, Agent Mail)
-	AssignAgentType    string        // Filter assignment to specific agent type (claude, codex, gemini)
+	AssignAgentType    string        // Filter assignment to specific agent type (claude, codex, gemini, antigravity, grok)
 	AssignCCOnly       bool          // Only assign to Claude agents (alias for --assign-agent=claude)
 	AssignCodOnly      bool          // Only assign to Codex agents (alias for --assign-agent=codex)
 	AssignGmiOnly      bool          // Only assign to Gemini agents (alias for --assign-agent=gemini)
@@ -2103,7 +2133,7 @@ Examples:
 	cmd.Flags().BoolVarP(&assignVerbose, "assign-verbose", "", false, "Show detailed scoring/decision logs during assignment")
 	cmd.Flags().BoolVarP(&assignQuiet, "assign-quiet", "", false, "Suppress non-essential assignment output")
 	cmd.Flags().DurationVar(&assignTimeout, "assign-timeout", 30*time.Second, "Timeout for external calls during assignment (bv, br, Agent Mail)")
-	cmd.Flags().StringVar(&assignAgentType, "assign-agent", "", "Filter assignment to specific agent type: claude, codex, gemini, antigravity")
+	cmd.Flags().StringVar(&assignAgentType, "assign-agent", "", "Filter assignment to specific agent type: claude, codex, gemini, antigravity, grok")
 	cmd.Flags().BoolVar(&assignCCOnly, "assign-cc-only", false, "Only assign to Claude agents (alias for --assign-agent=claude)")
 	cmd.Flags().BoolVar(&assignCodOnly, "assign-cod-only", false, "Only assign to Codex agents (alias for --assign-agent=codex)")
 	cmd.Flags().BoolVar(&assignGmiOnly, "assign-gmi-only", false, "Only assign to Gemini agents (alias for --assign-agent=gemini)")
@@ -2573,15 +2603,6 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 	}
 	lifecycleSessionMayExist = true
 
-	// Make pane titles visible on stock tmux: pane-border-status defaults to
-	// "off", which hides every title NTM sets. Session-local only, and an
-	// existing user preference (top/bottom, local or inherited) is respected
-	// (bd-ws7-docs-ux-truth-tqh3l.8). Best-effort: cosmetic failure must not
-	// abort the spawn.
-	if err := tmux.EnsurePaneBorderStatusContext(ctx, opts.Session); err != nil && !IsJSONOutput() {
-		output.PrintWarningf("Could not enable pane-border-status: %v", err)
-	}
-
 	getPanesWithRetry := func(session string, attempts int, delay time.Duration) ([]tmux.Pane, error) {
 		var lastErr error
 		for i := 0; i < attempts; i++ {
@@ -2621,6 +2642,26 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 				lifecycleAffectedPaneIDs = append(lifecycleAffectedPaneIDs, pane.ID)
 			}
 		}
+	}
+	// Validate all already-present Grok targets before the first session-local
+	// mutation. This makes a reused-session rejection genuinely preflight-only,
+	// including when Grok is later than another provider in a mixed batch.
+	sortPanesForAssignment(panes)
+	preflightStartIdx := 0
+	if opts.UserPane {
+		preflightStartIdx = 1
+	}
+	if err := validateExistingSpawnGrokPaneBaselines(panes, preflightStartIdx, opts.Agents); err != nil {
+		return outputError(fmt.Errorf("validating Grok Build launch panes: %w", err))
+	}
+
+	// Make pane titles visible on stock tmux: pane-border-status defaults to
+	// "off", which hides every title NTM sets. Session-local only, and an
+	// existing user preference (top/bottom, local or inherited) is respected
+	// (bd-ws7-docs-ux-truth-tqh3l.8). Best-effort: cosmetic failure must not
+	// abort the spawn.
+	if err := tmux.EnsurePaneBorderStatusContext(ctx, opts.Session); err != nil && !IsJSONOutput() {
+		output.PrintWarningf("Could not enable pane-border-status: %v", err)
 	}
 	// If this spawn flips the session's worktree isolation mode, release
 	// Agent Mail build-slot leases held by identities NTM registered whose

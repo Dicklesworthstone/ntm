@@ -844,6 +844,36 @@ func buildCommandRegistry() []RobotCommandInfo {
 				"ntm --robot-summary=myproject --since=2026-03-22T03:50:00Z",
 			},
 		},
+		{
+			Name:        "provider-capabilities",
+			Flag:        "--robot-provider-capabilities",
+			Category:    "state",
+			Description: "Report the local provider transport matrix, compiled Grok automation-policy digest, offline conformance-harness availability, and redacted configured-profile qualification states. Performs no provider or network calls.",
+			Examples: []string{
+				"ntm --robot-provider-capabilities",
+			},
+		},
+		{
+			Name:        "provider-conformance",
+			Flag:        "--robot-provider-conformance",
+			Category:    "state",
+			Description: "Run the credential-free synthetic provider lifecycle/error-taxonomy harness for one exact profile and declared transport. This validates NTM's contract only; it does not qualify a live account or model.",
+			Parameters: []RobotParameter{
+				{Name: "provider-profile", Flag: "--provider-profile", Type: "string", Required: true, Description: "Exact configured provider profile"},
+				{Name: "provider-transport", Flag: "--provider-transport", Type: "string", Required: true, Description: "xai_acp, xai_grok_tui, or zai_claude_runtime"},
+			},
+			Examples: []string{"ntm --robot-provider-conformance --provider-profile=xai-primary --provider-transport=xai_acp"},
+		},
+		{
+			Name:        "grok-acp-receipt",
+			Flag:        "--robot-grok-acp-receipt",
+			Category:    "state",
+			Description: "Read one durable nonce-bound Grok ACP outcome by operation ID without contacting the provider or redispatching work.",
+			Parameters: []RobotParameter{
+				{Name: "operation-id", Flag: "--robot-grok-acp-receipt", Type: "string", Required: true, Description: "Operation ID returned by --robot-grok-acp-run"},
+			},
+			Examples: []string{"ntm --robot-grok-acp-receipt=grok-acp-0123456789abcdef0123456789abcdef"},
+		},
 
 		// === ATTENTION FEED (Operator Loop) ===
 		{
@@ -906,6 +936,26 @@ func buildCommandRegistry() []RobotCommandInfo {
 		},
 
 		// === AGENT CONTROL ===
+		{
+			Name:        "grok-acp-run",
+			Flag:        "--robot-grok-acp-run",
+			Category:    "control",
+			Description: "Run one Grok ACP operation with the compiled least-privilege policy and emit a nonce-bound, redacted structured receipt. This bypasses tmux and always disables auto-update.",
+			Parameters: []RobotParameter{
+				{Name: "msg", Flag: "--msg", Type: "string", Required: true, Description: "Prompt content (or use --msg-file)"},
+				{Name: "msg-file", Flag: "--msg-file", Type: "string", Required: false, Description: "Read prompt content from a file, or stdin with '-'"},
+				{Name: "provider-profile", Flag: "--provider-profile", Type: "string", Required: true, Description: "Exact xAI/Grok [provider_profiles] target; broad runtime targets are rejected"},
+				{Name: "provider-model", Flag: "--provider-model", Type: "string", Required: false, Description: "Optional exact model assertion; it cannot override the selected profile and the receipt reports a model only when provider metadata confirms it"},
+				{Name: "nonce", Flag: "--nonce", Type: "string", Required: false, Description: "Acknowledgement nonce; generated cryptographically when omitted and never emitted in plaintext"},
+				{Name: "op-id", Flag: "--op-id", Type: "string", Required: false, Description: "Caller operation identifier bound into the receipt"},
+				{Name: "cwd", Flag: "--cwd", Type: "string", Required: false, Description: "Existing working directory for the ACP session"},
+				{Name: "timeout", Flag: "--timeout", Type: "duration", Required: false, Default: "5m", Description: "Maximum operation duration"},
+				{Name: "grok-binary", Flag: "--grok-binary", Type: "string", Required: false, Description: "Optional exact executable assertion; it cannot override the profile-bound Grok executable"},
+			},
+			Examples: []string{
+				"ntm --robot-grok-acp-run --provider-profile=xai-grok-primary --msg-file=prompt.txt --op-id=review-42 --timeout=5m",
+			},
+		},
 		{
 			Name:        "send",
 			Flag:        "--robot-send",
@@ -1223,6 +1273,8 @@ func buildCommandRegistry() []RobotCommandInfo {
 				{Name: "spawn-gmi", Flag: "--spawn-gmi", Type: "string", Required: false, Description: "Gemini agents (legacy): count[:model]"},
 				{Name: "spawn-agy", Flag: "--spawn-agy", Type: "string", Required: false, Description: "Antigravity (agy) agents: count (model is pinned by config)"},
 				{Name: "spawn-grok", Flag: "--spawn-grok", Type: "string", Required: false, Description: "Grok Build agents: count[:model[:effort]]"},
+				{Name: "spawn-zai", Flag: "--spawn-zai", Type: "string", Required: false, Description: "Z.ai agents: count only; requires one exact provider profile"},
+				{Name: "provider-profile", Flag: "--provider-profile", Type: "string", Required: false, Description: "Exact probe-qualified [provider_profiles] target required by --spawn-zai"},
 				{Name: "spawn-preset", Flag: "--spawn-preset", Type: "string", Required: false, Description: "Use recipe preset instead of counts"},
 				{Name: "spawn-no-user", Flag: "--spawn-no-user", Type: "bool", Required: false, Description: "Skip user pane creation"},
 				{Name: "spawn-wait", Flag: "--spawn-wait", Type: "bool", Required: false, Description: "Wait for agents to show ready state before returning"},
@@ -1237,6 +1289,7 @@ func buildCommandRegistry() []RobotCommandInfo {
 				"ntm --robot-spawn=myproject --spawn-cc=2 --spawn-cod=1 --spawn-wait --timeout=30s",
 				"ntm --robot-spawn=myproject --spawn-cod=8:gpt-5.3-codex:high",
 				"ntm --robot-spawn=myproject --spawn-grok=1",
+				"ntm --robot-spawn=myproject --spawn-zai=1 --provider-profile=zai-reviewed-profile",
 				"ntm --robot-spawn=myproject --spawn-preset=standard",
 				"ntm --robot-spawn=myproject --spawn-label=frontend --spawn-cc=3",
 				"ntm --robot-spawn=myproject --spawn-assign-work --strategy=dependency-aware",

@@ -467,16 +467,10 @@ func (p *parserImpl) detectIdle(output string, agentType AgentType) bool {
 	case AgentTypeOllama:
 		return matchAnyRegex(lastLines, ollamaIdlePatterns)
 	case AgentTypeGrok:
-		// Empty output with a known grok pane reads as idle (fresh spawn),
-		// mirroring the Claude arm. A live in-flight marker vetoes idle: the
-		// bordered composer is permanent chrome drawn during work.
-		if strings.TrimSpace(lastLines) == "" {
-			return true
-		}
-		if GrokActivelyWorking(output, 0) {
-			return false
-		}
-		return matchAnyRegex(lastLines, grokIdlePatterns)
+		// Grok has no documented passive readiness protocol. Only a positively
+		// identified, empty authenticated composer is safe to call idle; a blank
+		// pane or welcome banner may still be booting or awaiting authentication.
+		return GrokReadyForAutomatedInput(output, 0)
 	case AgentTypeOpencode:
 		// Mirrors the grok arm: a fresh pane with no output reads as idle; the
 		// `esc interrupt` footer vetoes idle while a turn runs; otherwise the

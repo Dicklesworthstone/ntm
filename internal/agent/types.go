@@ -13,18 +13,22 @@ import (
 type AgentType string
 
 const (
-	AgentTypeClaudeCode  AgentType = "cc"       // Claude Code CLI
-	AgentTypeCodex       AgentType = "cod"      // Codex CLI (OpenAI)
-	AgentTypeGemini      AgentType = "gmi"      // Gemini CLI (Google)
-	AgentTypeAntigravity AgentType = "agy"      // Antigravity CLI (Google) — successor to the Gemini CLI
-	AgentTypeGrok        AgentType = "grok"     // Grok Build CLI (xAI)
-	AgentTypeOllama      AgentType = "ollama"   // Local Ollama CLI
-	AgentTypeCursor      AgentType = "cursor"   // Cursor AI
-	AgentTypeWindsurf    AgentType = "windsurf" // Windsurf IDE
-	AgentTypeAider       AgentType = "aider"    // Aider CLI
-	AgentTypeOpencode    AgentType = "oc"       // Opencode (https://opencode.ai) — see ntm#116
-	AgentTypeUser        AgentType = "user"     // User/Shell pane
-	AgentTypeUnknown     AgentType = "unknown"  // Unable to determine agent type
+	AgentTypeClaudeCode  AgentType = "cc"   // Claude Code CLI
+	AgentTypeCodex       AgentType = "cod"  // Codex CLI (OpenAI)
+	AgentTypeGemini      AgentType = "gmi"  // Gemini CLI (Google)
+	AgentTypeAntigravity AgentType = "agy"  // Antigravity CLI (Google) — successor to the Gemini CLI
+	AgentTypeGrok        AgentType = "grok" // Grok Build CLI (xAI)
+	// AgentTypeZAI is a Z.ai provider lane. It may use a Claude-compatible
+	// runtime, but must never be folded into AgentTypeClaudeCode because the
+	// provider/account/model identity and permissions are different.
+	AgentTypeZAI      AgentType = "zai"
+	AgentTypeOllama   AgentType = "ollama"   // Local Ollama CLI
+	AgentTypeCursor   AgentType = "cursor"   // Cursor AI
+	AgentTypeWindsurf AgentType = "windsurf" // Windsurf IDE
+	AgentTypeAider    AgentType = "aider"    // Aider CLI
+	AgentTypeOpencode AgentType = "oc"       // Opencode (https://opencode.ai) — see ntm#116
+	AgentTypeUser     AgentType = "user"     // User/Shell pane
+	AgentTypeUnknown  AgentType = "unknown"  // Unable to determine agent type
 )
 
 // GrokPhaseOneCapabilityHint described the phase-one Grok Build integration
@@ -47,6 +51,13 @@ var ErrAutomatedRelaunchNotImplemented = errors.New(GrokPhaseOneCapabilityHint)
 // input is written to a Grok Build pane.
 var ErrAutomatedPromptDeliveryNotImplemented = errors.New(GrokPromptDeliveryCapabilityHint)
 
+// ErrZAIProfileRelaunchRequired prevents a Z.ai pane from being relaunched
+// through a generic runtime alias. Z.ai may use a Claude-compatible runtime,
+// but its account, model, endpoint, and automation policy are profile-bound.
+// Lifecycle code must therefore grow an exact provider-profile-aware relaunch
+// path before it is allowed to restart one.
+var ErrZAIProfileRelaunchRequired = errors.New("Z.ai relaunch requires an exact provider-profile-aware implementation; refusing any Claude/cc fallback")
+
 // String returns the agent type as a string.
 func (t AgentType) String() string {
 	return string(t)
@@ -66,6 +77,8 @@ func (t AgentType) Canonical() AgentType {
 		return AgentTypeAntigravity
 	case "grok", "grok-build", "grok_build", "grokbuild", "xai-grok-build", "xai_grok_build", "xaigrokbuild":
 		return AgentTypeGrok
+	case "zai", "z.ai", "z-ai":
+		return AgentTypeZAI
 	case "cursor":
 		return AgentTypeCursor
 	case "windsurf", "ws":
@@ -98,6 +111,8 @@ func (t AgentType) DisplayName() string {
 		return "Antigravity CLI"
 	case AgentTypeGrok:
 		return "Grok Build"
+	case AgentTypeZAI:
+		return "Z.ai"
 	case AgentTypeOllama:
 		return "Ollama"
 	case AgentTypeCursor:
@@ -128,6 +143,8 @@ func (t AgentType) ProfileName() string {
 		return "Antigravity"
 	case AgentTypeGrok:
 		return "Grok"
+	case AgentTypeZAI:
+		return "Z.ai"
 	case AgentTypeOllama:
 		return "Ollama"
 	case AgentTypeCursor:
@@ -154,7 +171,7 @@ func (t AgentType) ProfileName() string {
 // IsValid returns true if this is a known agent type.
 func (t AgentType) IsValid() bool {
 	switch t.Canonical() {
-	case AgentTypeClaudeCode, AgentTypeCodex, AgentTypeGemini, AgentTypeAntigravity, AgentTypeGrok, AgentTypeOllama, AgentTypeCursor, AgentTypeWindsurf, AgentTypeAider, AgentTypeOpencode, AgentTypeUser:
+	case AgentTypeClaudeCode, AgentTypeCodex, AgentTypeGemini, AgentTypeAntigravity, AgentTypeGrok, AgentTypeZAI, AgentTypeOllama, AgentTypeCursor, AgentTypeWindsurf, AgentTypeAider, AgentTypeOpencode, AgentTypeUser:
 		return true
 	default:
 		return false
@@ -166,10 +183,13 @@ func (t AgentType) IsValid() bool {
 // an entire target batch before mutating any pane or session.
 //
 // Grok Build passed this gate in phase 2 (GH#251): restart/relaunch reuses
-// the configured launch template (`grok --always-approve …`), and the TUI's
+// the configured least-privilege launch template, and the TUI's
 // readiness/working markers are implemented in internal/agent and
 // internal/robot pattern sets from live grok 1.0.5 captures.
 func (t AgentType) ValidateAutomatedRelaunch() error {
+	if t.Canonical() == AgentTypeZAI {
+		return ErrZAIProfileRelaunchRequired
+	}
 	return nil
 }
 

@@ -279,9 +279,7 @@ func (s *DefaultPaneSpawner) getAgentCommand(agentType string) string {
 		// The Antigravity launch binary is `agy`, not its long display name.
 		return "agy"
 	case agent.AgentTypeGrok:
-		// Relaunch with the official autonomous approval flag so a rotated
-		// pane does not block on tool approvals (GH#251 phase 2).
-		return "grok --always-approve"
+		return agent.DefaultGrokAutomationCommand
 	case agent.AgentTypeCursor:
 		return "cursor"
 	case agent.AgentTypeWindsurf:

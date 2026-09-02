@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
@@ -315,6 +316,16 @@ func TestValidateDiagnoseFixTargetsAcceptsGrokInMixedBatch(t *testing.T) {
 	}
 	if err := validateDiagnoseFixTargets(diag, panes); err != nil {
 		t.Fatalf("validateDiagnoseFixTargets() error = %v, want nil (grok relaunch is supported)", err)
+	}
+}
+
+func TestValidateDiagnoseFixTargetsRejectsZAI(t *testing.T) {
+	diag := DiagnoseOutput{Recommendations: []DiagnoseRecommendation{{
+		Pane: 1, Action: "restart", AutoFixable: true,
+	}}}
+	err := validateDiagnoseFixTargets(diag, []tmux.Pane{{ID: "%zai", Index: 1, Type: tmux.AgentZAI}})
+	if !errors.Is(err, agent.ErrZAIProfileRelaunchRequired) {
+		t.Fatalf("validateDiagnoseFixTargets(zai) error = %v, want profile-required error", err)
 	}
 }
 

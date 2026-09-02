@@ -35,6 +35,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/pipeline"
 	"github.com/Dicklesworthstone/ntm/internal/plugins"
 	"github.com/Dicklesworthstone/ntm/internal/privacy"
+	"github.com/Dicklesworthstone/ntm/internal/provider"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/session"
 	"github.com/Dicklesworthstone/ntm/internal/startup"
@@ -375,6 +376,90 @@ func machineJSONInvocation(cmd *cobra.Command) (bool, string) {
 		}
 	}
 	return true, command
+}
+
+// validateProviderRobotCommandExclusivity prevents the provider-native paths
+// from being shadowed by an earlier robot dispatch branch. These operations
+// emit authoritative-looking receipts, so silently choosing one of two
+// requested robot commands would be unsafe.
+func validateProviderRobotCommandExclusivity(cmd *cobra.Command) error {
+	if cmd == nil || (!activeRobotFlag(cmd, "robot-grok-acp-run") && !activeRobotFlag(cmd, "robot-grok-acp-receipt") && !activeRobotFlag(cmd, "robot-provider-capabilities") && !activeRobotFlag(cmd, "robot-provider-conformance")) {
+		return nil
+	}
+	capabilities, err := robot.GetCapabilities()
+	if err != nil {
+		return fmt.Errorf("load robot command registry: %w", err)
+	}
+	seen := make(map[string]struct{})
+	active := make([]string, 0, 2)
+	for _, command := range capabilities.Commands {
+		name := strings.TrimPrefix(strings.TrimSpace(command.Flag), "--")
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		if activeRobotFlag(cmd, name) {
+			active = append(active, "--"+name)
+		}
+	}
+	if len(active) <= 1 {
+		return nil
+	}
+	sort.Strings(active)
+	return fmt.Errorf("provider-native robot commands are mutually exclusive with other robot commands: %s", strings.Join(active, ", "))
+}
+
+func activeRobotFlag(cmd *cobra.Command, name string) bool {
+	flag := cmd.Flags().Lookup(name)
+	if flag == nil || !flag.Changed {
+		return false
+	}
+	if flag.Value.Type() != "bool" {
+		return true
+	}
+	active, err := strconv.ParseBool(flag.Value.String())
+	return err == nil && active
+}
+
+type grokACPProfileResolution struct {
+	Identity provider.Identity
+	Binary   string
+	Model    string
+}
+
+// resolveGrokACPProviderProfile converts optional CLI assertions into one
+// exact, immutable xAI launch boundary. Assertions may confirm the selected
+// profile but can never override it.
+func resolveGrokACPProviderProfile(selected *config.Config, target, modelAssertion, binaryAssertion string) (grokACPProfileResolution, error) {
+	target = strings.TrimSpace(target)
+	if selected == nil || target == "" {
+		return grokACPProfileResolution{}, errors.New("--robot-grok-acp-run requires an exact --provider-profile")
+	}
+	profile, err := selected.ProviderProfile(target)
+	if err != nil {
+		return grokACPProfileResolution{}, err
+	}
+	identity, err := profile.Identity()
+	if err != nil {
+		return grokACPProfileResolution{}, err
+	}
+	if identity.Provider() != "xai" || identity.Runtime() != "grok" || !profile.ExactTargetOnly {
+		return grokACPProfileResolution{}, fmt.Errorf("provider profile %q must bind provider=xai, runtime=grok, and exact_target_only=true", target)
+	}
+	if strings.TrimSpace(profile.AutomationPolicy) != agent.DefaultGrokAutomationPolicyName {
+		return grokACPProfileResolution{}, fmt.Errorf("provider profile %q names unsupported automation policy %q", target, profile.AutomationPolicy)
+	}
+	if requested := strings.TrimSpace(modelAssertion); requested != "" && requested != identity.Model() {
+		return grokACPProfileResolution{}, fmt.Errorf("--provider-model %q does not match provider profile model %q", requested, identity.Model())
+	}
+	binary := strings.TrimSpace(profile.Command)
+	if assertion := strings.TrimSpace(binaryAssertion); assertion != "" && assertion != binary {
+		return grokACPProfileResolution{}, fmt.Errorf("--grok-binary does not match the executable bound by provider profile %q", target)
+	}
+	return grokACPProfileResolution{Identity: identity, Binary: binary, Model: identity.Model()}, nil
 }
 
 // encryptionStartupError reports a fatal encryption-at-rest startup failure.
@@ -861,6 +946,18 @@ Shell Integration:
 				fmt.Fprintf(os.Stderr, "Warning: %v, using default verbosity\n", verbosityErr)
 			}
 		}
+		if err := validateProviderRobotCommandExclusivity(cmd); err != nil {
+			command := "robot-provider-capabilities"
+			if robotGrokACPRun {
+				command = "robot-grok-acp-run"
+			} else if robotGrokACPReceipt != "" {
+				command = "robot-grok-acp-receipt"
+			} else if robotProviderConformance {
+				command = "robot-provider-conformance"
+			}
+			failRobotCommand(err, robot.ErrCodeInvalidFlag, "Run exactly one robot command per invocation", command)
+			return
+		}
 		robotDryRunEffective := robotDryRun || robotRestoreDry
 
 		// Handle robot flags for AI agent integration
@@ -893,6 +990,24 @@ Shell Integration:
 				Compact:  robotCapabilitiesCompact,
 			}
 			if err := robot.PrintCapabilitiesWithOptions(opts); err != nil {
+				recordRobotProcessExit(err)
+			}
+			return
+		}
+		if robotProviderCapabilities {
+			if err := robot.PrintProviderCapabilities(cfg); err != nil {
+				recordRobotProcessExit(err)
+			}
+			return
+		}
+		if robotProviderConformance {
+			if err := robot.PrintProviderConformance(cmd.Context(), cfg, robotProviderProfile, robotProviderTransport); err != nil {
+				recordRobotProcessExit(err)
+			}
+			return
+		}
+		if robotGrokACPReceipt != "" {
+			if err := robot.PrintGrokACPOperationReceipt(robotGrokACPReceipt); err != nil {
 				recordRobotProcessExit(err)
 			}
 			return
@@ -1990,6 +2105,63 @@ Shell Integration:
 			}
 			return
 		}
+		if robotGrokACPRun {
+			if robotSend != "" || robotSendReceipt != "" {
+				failRobotCommand(errors.New("--robot-grok-acp-run cannot be combined with tmux robot-send commands"), robot.ErrCodeInvalidFlag, "Run the provider-native ACP operation separately", "robot-grok-acp-run")
+				return
+			}
+			msg, err := loadRobotSendMessage(robotSendMsg, robotSendMsgFile)
+			if err != nil {
+				failRobotCommand(err, robot.ErrCodeInvalidArgs, "Provide a readable non-empty --msg or --msg-file", "robot-grok-acp-run")
+				return
+			}
+			cwd := strings.TrimSpace(robotDCGCwd)
+			if cwd == "" {
+				cwd, err = os.Getwd()
+				if err != nil {
+					failRobotCommand(err, robot.ErrCodeInvalidArgs, "Provide an accessible --cwd", "robot-grok-acp-run")
+					return
+				}
+			}
+			cwd, err = filepath.Abs(cwd)
+			if err != nil {
+				failRobotCommand(err, robot.ErrCodeInvalidArgs, "Provide an accessible --cwd", "robot-grok-acp-run")
+				return
+			}
+			info, err := os.Stat(cwd)
+			if err != nil || !info.IsDir() {
+				if err == nil {
+					err = fmt.Errorf("cwd %q is not a directory", cwd)
+				}
+				failRobotCommand(err, robot.ErrCodeInvalidArgs, "Provide an existing directory with --cwd", "robot-grok-acp-run")
+				return
+			}
+			resolvedProfile, err := resolveGrokACPProviderProfile(cfg, robotProviderProfile, robotGrokACPModel, robotGrokACPBinary)
+			if err != nil {
+				failRobotCommand(err, robot.ErrCodeInvalidFlag, "Select an exact xAI/Grok profile bound to the compiled least-privilege policy", "robot-grok-acp-run")
+				return
+			}
+			timeout, err := util.ParseDurationWithDefault(robotWaitTimeout, time.Second, "timeout")
+			if err != nil {
+				failRobotCommand(err, robot.ErrCodeInvalidFlag, "Use a duration such as 5m or 30s", "robot-grok-acp-run")
+				return
+			}
+			runCtx, cancel := context.WithTimeout(cmd.Context(), timeout)
+			defer cancel()
+			if err := robot.PrintGrokACPOperation(runCtx, robot.GrokACPOperationOptions{
+				Prompt:      msg,
+				CWD:         cwd,
+				Binary:      resolvedProfile.Binary,
+				Model:       resolvedProfile.Model,
+				OperationID: strings.TrimSpace(robotSendOpID),
+				Nonce:       strings.TrimSpace(robotGrokACPNonce),
+				Identity:    resolvedProfile.Identity,
+			}); err != nil {
+				recordRobotProcessExit(err)
+			}
+			return
+		}
+
 		if robotSendReceipt != "" {
 			if robotSend != "" {
 				// The receipt branch would otherwise return before the send
@@ -3672,6 +3844,9 @@ var (
 	robotCapabilitiesCategory  string
 	robotCapabilitiesSearch    string
 	robotCapabilitiesCompact   bool
+	robotProviderCapabilities  bool
+	robotProviderConformance   bool
+	robotProviderTransport     string
 	robotDocs                  string // --robot-docs topic
 	robotPlan                  bool
 	robotSnapshot              bool   // unified state query
@@ -3751,6 +3926,14 @@ var (
 	robotSendWithCASS     bool   // inject CASS session context into the outgoing message (bd-ws2-wire-or-delete-ykmcz.11)
 	robotSendNoCASS       bool   // force-disable CASS injection, overriding [cass.context] enabled=true
 
+	// Provider-native Grok ACP flags. Message, operation ID, timeout, and cwd
+	// deliberately reuse the canonical shared robot flags.
+	robotGrokACPRun     bool
+	robotGrokACPReceipt string
+	robotGrokACPModel   string
+	robotGrokACPNonce   string
+	robotGrokACPBinary  string
+
 	// Robot-assign flags for work distribution
 	robotAssign         string // session name for work assignment
 	robotAssignBeads    string // comma-separated bead IDs to assign
@@ -3814,6 +3997,8 @@ var (
 	robotSpawnGmi        string // Gemini agents: count[:model]
 	robotSpawnAgy        string // Antigravity agents: count (model pinned)
 	robotSpawnGrok       string // Grok Build agents: count[:model[:effort]]
+	robotSpawnZAI        string // Z.ai agents: exact count, provider profile supplies model
+	robotProviderProfile string // exact [provider_profiles] target for --spawn-zai
 	robotSpawnPreset     string // recipe/preset name
 	robotSpawnNoUser     bool   // don't create user pane
 	robotSpawnWait       bool   // wait for agents to be ready
@@ -4274,6 +4459,9 @@ func init() {
 	rootCmd.Flags().StringVar(&robotCapabilitiesCategory, "capability-category", "", "Filter --robot-capabilities to one exact category")
 	rootCmd.Flags().StringVar(&robotCapabilitiesSearch, "capability-search", "", "Search --robot-capabilities metadata for a case-insensitive query")
 	rootCmd.Flags().BoolVar(&robotCapabilitiesCompact, "capability-compact", false, "Return a token-efficient --robot-capabilities command catalog")
+	rootCmd.Flags().BoolVar(&robotProviderCapabilities, "robot-provider-capabilities", false, "Get the redacted provider transport, policy, conformance, and configured-profile capability matrix (JSON; no provider calls)")
+	rootCmd.Flags().BoolVar(&robotProviderConformance, "robot-provider-conformance", false, "Run the synthetic offline provider conformance harness for one exact profile (JSON; no provider calls)")
+	rootCmd.Flags().StringVar(&robotProviderTransport, "provider-transport", "", "Declared transport for --robot-provider-conformance: xai_acp, xai_grok_tui, or zai_claude_runtime")
 	rootCmd.Flags().StringVar(&robotDocs, "robot-docs", "", "Get documentation for a topic (JSON). Topics: quickstart, commands, examples, exit-codes. Example: ntm --robot-docs=quickstart")
 	rootCmd.Flags().BoolVar(&robotPlan, "robot-plan", false, "Get bv execution plan with parallelizable tracks (JSON). Example: ntm --robot-plan")
 	rootCmd.Flags().BoolVar(&robotSnapshot, "robot-snapshot", false, "Unified state: sessions + beads + alerts + mail. Use --since for delta. Example: ntm --robot-snapshot")
@@ -4395,7 +4583,7 @@ func init() {
 	// Robot-send flags for batch messaging
 	rootCmd.Flags().StringVar(&robotSend, "robot-send", "", "Send message to panes atomically. Required: SESSION, --msg or --msg-file. Example: ntm --robot-send=proj --msg='Fix auth'")
 	rootCmd.Flags().StringVar(&robotSendMsg, "msg", "", "Shared message payload. Required with --robot-send unless --msg-file is set. Optional with --robot-ack (echo detection) and --robot-interrupt (post-interrupt retask)")
-	rootCmd.Flags().StringVar(&robotSendMsgFile, "msg-file", "", "Read message content from file, or stdin with '-'. Keeps prompt text out of the scanned command line so command-safety filters cannot mistake message content for executable commands. Use with --robot-send")
+	rootCmd.Flags().StringVar(&robotSendMsgFile, "msg-file", "", "Read message content from file, or stdin with '-'. Keeps prompt text out of the scanned command line. Use with --robot-send or --robot-grok-acp-run")
 	rootCmd.Flags().BoolVar(&robotSendEnter, "enter", true, "Send Enter after pasting message (default: true). Use --enter=false to paste without submitting")
 	rootCmd.Flags().BoolVar(&robotSendEnter, "submit", true, "Alias for --enter")
 	// Field evidence across multiple machines shows agents reliably guess
@@ -4423,8 +4611,13 @@ func init() {
 	rootCmd.Flags().BoolVar(&robotSendWithMemory, "with-memory", false, "Inject relevant CM (cass-memory) rules above the message before sending. Optional with --robot-send; degrades gracefully when cm is unavailable. Config: [memory] send_injection/send_max_rules/send_budget_tokens")
 	rootCmd.Flags().BoolVar(&robotSendWithCASS, "with-cass", false, "Inject relevant CASS session context above the message before sending. Optional with --robot-send; degrades gracefully when cass is unavailable. Config: [cass.context] enabled/max_sessions/lookback_days/max_tokens/min_relevance/skip_if_context_above/prefer_same_project")
 	rootCmd.Flags().BoolVar(&robotSendNoCASS, "no-cass", false, "Disable CASS context injection for this send, overriding [cass.context] enabled=true")
-	rootCmd.Flags().StringVar(&robotSendOpID, "op-id", "", "Durable idempotent operation ID for --robot-send: identical retries replay the recorded outcome, conflicting reuse is rejected. Example: ntm --robot-send=proj --msg='...' --op-id=deploy-42")
+	rootCmd.Flags().StringVar(&robotSendOpID, "op-id", "", "Operation ID. With --robot-send it is durable/idempotent; with --robot-grok-acp-run it binds the receipt. Example: --op-id=deploy-42")
 	rootCmd.Flags().StringVar(&robotSendReceipt, "robot-send-receipt", "", "Query the durable receipt of an idempotent send by operation ID. Example: ntm --robot-send-receipt=deploy-42")
+	rootCmd.Flags().BoolVar(&robotGrokACPRun, "robot-grok-acp-run", false, "Run one provider-native Grok ACP operation with a nonce-bound JSON receipt. Requires --msg or --msg-file; uses --timeout and --cwd")
+	rootCmd.Flags().StringVar(&robotGrokACPReceipt, "robot-grok-acp-receipt", "", "Read one durable Grok ACP receipt by operation ID without provider dispatch")
+	rootCmd.Flags().StringVar(&robotGrokACPModel, "provider-model", "", "Optional exact model assertion for --robot-grok-acp-run; it must match the selected provider profile. The receipt names it only if provider metadata confirms it")
+	rootCmd.Flags().StringVar(&robotGrokACPNonce, "nonce", "", "Optional acknowledgement nonce for --robot-grok-acp-run; generated cryptographically when omitted and never emitted in plaintext")
+	rootCmd.Flags().StringVar(&robotGrokACPBinary, "grok-binary", "", "Optional Grok CLI path assertion for --robot-grok-acp-run; it must match the profile-bound command")
 
 	// Robot-assign flags for work distribution
 	rootCmd.Flags().StringVar(&robotAssign, "robot-assign", "", "Get work distribution recommendations. Required: SESSION. Example: ntm --robot-assign=proj --strategy=speed")
@@ -4493,6 +4686,8 @@ func init() {
 	rootCmd.Flags().StringVar(&robotSpawnGmi, "spawn-gmi", "", "Gemini CLI agents to spawn: count[:model]. Use with --robot-spawn. Example: --spawn-gmi=1")
 	rootCmd.Flags().StringVar(&robotSpawnAgy, "spawn-agy", "", "Antigravity CLI agents to spawn: count (model is pinned to Gemini 3.7 Flash (High)). Use with --robot-spawn. Example: --spawn-agy=1")
 	rootCmd.Flags().StringVar(&robotSpawnGrok, "spawn-grok", "", "Grok Build agents to spawn: count[:model[:effort]] (effort also as model@effort). Use with --robot-spawn. Example: --spawn-grok=1")
+	rootCmd.Flags().StringVar(&robotSpawnZAI, "spawn-zai", "", "Z.ai agents to spawn: count only. Requires exact --provider-profile; profile supplies provider/account/model/runtime. Use with --robot-spawn.")
+	rootCmd.Flags().StringVar(&robotProviderProfile, "provider-profile", "", "Exact [provider_profiles] target required by --spawn-zai, --robot-grok-acp-run, and --robot-provider-conformance; broad runtime targets are rejected")
 	rootCmd.Flags().StringVar(&robotSpawnPreset, "spawn-preset", "", "Use recipe preset instead of counts. See --robot-recipes. Example: --spawn-preset=standard")
 	rootCmd.Flags().BoolVar(&robotSpawnNoUser, "spawn-no-user", false, "Skip user pane creation. Optional with --robot-spawn. For headless/automation")
 	rootCmd.Flags().BoolVar(&robotSpawnWait, "spawn-wait", false, "Wait for agents to show ready state before returning. Recommended for automation")
@@ -4790,7 +4985,7 @@ func init() {
 	rootCmd.Flags().StringVar(&robotDCGCmd, "command", "", "Command to preflight with --robot-dcg-check / --robot-guard (no execution). Example: --command='rm -rf /tmp'")
 	rootCmd.Flags().StringVar(&robotDCGCmd, "cmd", "", "DEPRECATED: use --command")
 	rootCmd.Flags().StringVar(&robotDCGContext, "context", "", "Context/intent for the command (helps DCG make better decisions). Example: --context='Cleaning build artifacts'")
-	rootCmd.Flags().StringVar(&robotDCGCwd, "cwd", "", "Working directory context (defaults to current directory). Example: --cwd=/tmp/scratch")
+	rootCmd.Flags().StringVar(&robotDCGCwd, "cwd", "", "Working directory context for guard checks and provider-native operations (defaults to current directory). Example: --cwd=/tmp/scratch")
 	rootCmd.Flags().BoolVar(&robotSafetySimulate, "robot-safety-simulate", false, "Simulate a safety policy command plan without execution. JSON output. Use --command and/or repeated --step.")
 	rootCmd.Flags().StringArrayVar(&robotSafetySteps, "step", nil, "Command step for --robot-safety-simulate; repeat for multi-step plans")
 
@@ -4875,7 +5070,7 @@ func init() {
 	rootCmd.Flags().BoolVar(&robotHistoryStats, "stats", false, "Show statistics instead of entries")
 
 	// --timeout, --poll, --any for wait/ack
-	rootCmd.Flags().StringVar(&robotWaitTimeout, "timeout", "5m", "Maximum wait/operation timeout. Works with --robot-wait, --robot-ack, --robot-send --track, --robot-interrupt, and --robot-spawn --spawn-wait")
+	rootCmd.Flags().StringVar(&robotWaitTimeout, "timeout", "5m", "Maximum wait/operation timeout. Works with --robot-wait, --robot-ack, --robot-send --track, --robot-interrupt, --robot-spawn --spawn-wait, and --robot-grok-acp-run")
 	rootCmd.Flags().StringVar(&robotWaitPoll, "poll", "2s", "Polling interval. Works with --robot-wait, --robot-ack, and --robot-send --track")
 	rootCmd.Flags().BoolVar(&robotWaitAny, "any", false, "Match ANY instead of ALL")
 
@@ -5438,21 +5633,46 @@ func parseRobotSpawnAgentSpecs() (map[AgentType]AgentSpec, error) {
 	return specs, nil
 }
 
+// parseRobotSpawnZAICount keeps the provider model out of the CLI grammar:
+// --spawn-zai names only a count and --provider-profile is the immutable
+// provider/account/model/runtime selection. Accepting a Claude-style model
+// suffix here would create an ambiguous identity boundary.
+func parseRobotSpawnZAICount(raw string) (int, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return 0, nil
+	}
+	if strings.ContainsAny(value, ":@") {
+		return 0, fmt.Errorf("invalid --spawn-zai value %q: use a count only; select the model with --provider-profile", raw)
+	}
+	count, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, fmt.Errorf("invalid --spawn-zai value %q: count must be an integer", raw)
+	}
+	return count, nil
+}
+
 func robotSpawnOptionsFromFlags(cmd *cobra.Command, readyTimeout time.Duration, reservationPaths []string, dryRun bool) (robot.SpawnOptions, error) {
 	specs, err := parseRobotSpawnAgentSpecs()
 	if err != nil {
 		return robot.SpawnOptions{}, err
 	}
+	zaiCount, err := parseRobotSpawnZAICount(robotSpawnZAI)
+	if err != nil {
+		return robot.SpawnOptions{}, err
+	}
 	return robot.SpawnOptions{
-		Session:       robotSpawn,
-		Label:         robotSpawnLabel,
-		ConfigPath:    selectedConfigPath(),
-		RequireConfig: selectedConfigIsExplicit(),
-		CCCount:       specs[AgentTypeClaude].Count,
-		CodCount:      specs[AgentTypeCodex].Count,
-		GmiCount:      specs[AgentTypeGemini].Count,
-		AgyCount:      specs[AgentTypeAntigravity].Count,
-		GrokCount:     specs[AgentTypeGrok].Count,
+		Session:            robotSpawn,
+		Label:              robotSpawnLabel,
+		ConfigPath:         selectedConfigPath(),
+		RequireConfig:      selectedConfigIsExplicit(),
+		CCCount:            specs[AgentTypeClaude].Count,
+		CodCount:           specs[AgentTypeCodex].Count,
+		GmiCount:           specs[AgentTypeGemini].Count,
+		AgyCount:           specs[AgentTypeAntigravity].Count,
+		GrokCount:          specs[AgentTypeGrok].Count,
+		ZAICount:           zaiCount,
+		ZAIProviderProfile: robotProviderProfile,
 		// Model/effort overrides from the count[:model[:effort]] specs. agy is
 		// intentionally absent: its model is hard-pinned by config, and parsing
 		// rejects any --spawn-agy model override before options are built.
@@ -6487,7 +6707,8 @@ func needsConfigLoading(cmdName string) bool {
 			robotHealthOAuth != "" || robotHealthRestartStuck != "" || robotLogs != "" || robotDiagnose != "" || robotTerse || robotMarkdown || robotSave != "" || robotRestore != "" ||
 			robotContext != "" || robotEnsemble != "" || robotEnsembleSpawn != "" || robotEnsembleSuggest != "" || robotEnsembleStop != "" || robotAlerts || robotIsWorking != "" || robotAgentHealth != "" ||
 			robotSmartRestart != "" || robotMonitor != "" || robotEnv != "" || robotSupportBundle != "" ||
-			robotActivity != "" || robotProductivity != "" || robotSendReceipt != "" {
+			robotActivity != "" || robotProductivity != "" || robotSendReceipt != "" ||
+			robotGrokACPRun || robotGrokACPReceipt != "" || robotProviderCapabilities || robotProviderConformance {
 			return true
 		}
 	}

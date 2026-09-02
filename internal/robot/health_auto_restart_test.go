@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 )
 
@@ -262,6 +263,13 @@ func TestValidateAutoRestartStuckAgentsAcceptsGrokInMixedBatch(t *testing.T) {
 
 	if err := validateAutoRestartStuckAgents(agents, []int{1}); err != nil {
 		t.Fatalf("single-pane target rejected: %v", err)
+	}
+}
+
+func TestAutoRestartStuckPreflightRejectsZAI(t *testing.T) {
+	err := validateAutoRestartStuckAgents([]SessionAgentHealth{{Pane: 7, AgentType: "zai"}}, []int{7})
+	if !errors.Is(err, agent.ErrZAIProfileRelaunchRequired) {
+		t.Fatalf("validateAutoRestartStuckAgents(zai) error = %v, want profile-required error", err)
 	}
 }
 

@@ -13,6 +13,8 @@ import (
 	"sync"
 	"text/template"
 	"text/template/parse"
+
+	"github.com/Dicklesworthstone/ntm/internal/agent"
 )
 
 // AgentTemplateVars contains variables available for agent command templates
@@ -436,12 +438,11 @@ func DefaultAgentTemplates() AgentConfig {
 		// continue the session") — the bead-designed prepend-to-first-prompt
 		// fallback for CLIs without a true system-prompt mechanism.
 		Antigravity: `{{agyBinary}} --model {{shellQuote .Model}} --dangerously-skip-permissions{{if .SystemPromptFile}} --prompt-interactive "$(cat {{shellQuote .SystemPromptFile}})"{{end}}`,
-		// Grok Build owns its default model selection. NTM only supplies --model
-		// for an explicit/configured override, avoiding stale built-in model IDs.
-		// --always-approve is the official autonomous approval flag exposed by
-		// the current Grok Build CLI.
-		Grok:   `grok --always-approve{{if .Model}} --model {{shellQuote .Model}}{{end}}{{if .ReasoningEffort}} --effort {{shellQuote .ReasoningEffort}}{{end}}`,
-		Ollama: `ollama run {{shellQuote (.Model | default "codellama:latest")}}`,
+		// Provider-native automation uses ACP. This TUI compatibility launch is
+		// bound to a named least-privilege policy and never broad approval.
+		Grok:       agent.DefaultGrokAutomationCommandTemplate,
+		GrokPolicy: agent.DefaultGrokAutomationPolicyName,
+		Ollama:     `ollama run {{shellQuote (.Model | default "codellama:latest")}}`,
 		// Cursor: launch the Cursor Agent CLI (`cursor-agent`), NOT the `cursor`
 		// IDE binary — on Linux `cursor` is the GUI editor launcher (useless in a
 		// tmux pane) and often absent on headless hosts entirely (GH#233).

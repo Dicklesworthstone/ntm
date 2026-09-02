@@ -98,7 +98,11 @@ var RobotFlagClassification = map[string]CommandRequirement{
 	"robot-version": RequirePhase1Only,
 
 	// Config-only robot flags
-	"robot-recipes": RequireConfig,
+	"robot-recipes":               RequireConfig,
+	"robot-grok-acp-run":          RequireConfig,
+	"robot-grok-acp-receipt":      RequireConfig,
+	"robot-provider-capabilities": RequireConfig,
+	"robot-provider-conformance":  RequireConfig,
 
 	// Full startup robot flags
 	"robot-status":       RequireFullStartup,

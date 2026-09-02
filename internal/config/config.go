@@ -2,6 +2,7 @@ package config
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -20,8 +21,10 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/models"
 	"github.com/Dicklesworthstone/ntm/internal/notify"
 	"github.com/Dicklesworthstone/ntm/internal/persona"
+	"github.com/Dicklesworthstone/ntm/internal/provider"
 	"github.com/Dicklesworthstone/ntm/internal/redaction"
 	"github.com/Dicklesworthstone/ntm/internal/util"
+	"github.com/Dicklesworthstone/ntm/internal/zai"
 )
 
 const (
@@ -75,48 +78,52 @@ func validateSynthesisStrategy(name string) error {
 
 // Config represents the main configuration
 type Config struct {
-	ProjectsBase    string                `toml:"projects_base"`
-	Theme           string                `toml:"theme"`          // UI Theme (mocha, macchiato, nord, latte, auto)
-	HelpVerbosity   string                `toml:"help_verbosity"` // Help verbosity: minimal or full (default: full)
-	PaletteFile     string                `toml:"palette_file"`   // Path to command_palette.md (optional)
-	Agents          AgentConfig           `toml:"agents"`
-	Palette         []PaletteCmd          `toml:"palette"`
-	PaletteState    PaletteState          `toml:"palette_state"`
-	Tmux            TmuxConfig            `toml:"tmux"`
-	Robot           RobotConfig           `toml:"robot"`
-	CommandHooks    []CommandHookConfig   `toml:"command_hooks"`
-	AgentMail       AgentMailConfig       `toml:"agent_mail"`
-	Integrations    IntegrationsConfig    `toml:"integrations"` // External tool integrations (dcg, caam, etc.)
-	Models          ModelsConfig          `toml:"models"`
-	Alerts          AlertsConfig          `toml:"alerts"`
-	Checkpoints     CheckpointsConfig     `toml:"checkpoints"`
-	Notifications   notify.Config         `toml:"notifications"`
-	Resilience      ResilienceConfig      `toml:"resilience"`
-	Scanner         ScannerConfig         `toml:"scanner"`          // UBS scanner configuration
-	Bugs            BugsConfig            `toml:"bugs"`             // UBS bug push routing (ntm bugs watch)
-	CASS            CASSConfig            `toml:"cass"`             // CASS integration configuration
-	Rotation        RotationConfig        `toml:"rotation"`         // Account rotation configuration
-	GeminiSetup     GeminiSetupConfig     `toml:"gemini_setup"`     // Gemini post-spawn setup
-	Context         ContextConfig         `toml:"context"`          // Context pack options
-	ContextRotation ContextRotationConfig `toml:"context_rotation"` // Context window rotation
-	SessionRecovery SessionRecoveryConfig `toml:"recovery"`         // Smart session recovery
-	Cleanup         CleanupConfig         `toml:"cleanup"`          // Temp file cleanup configuration
-	FileReservation FileReservationConfig `toml:"file_reservation"` // Auto file reservation via Agent Mail
-	Memory          MemoryConfig          `toml:"memory"`           // CASS Memory (cm) integration
-	Assign          AssignConfig          `toml:"assign"`           // Assignment strategy configuration
-	Ensemble        EnsembleConfig        `toml:"ensemble"`         // Reasoning ensemble defaults
-	Swarm           SwarmConfig           `toml:"swarm"`            // Weighted multi-project agent swarm
-	SpawnPacing     SpawnPacingConfig     `toml:"spawn_pacing"`     // Spawn scheduler pacing configuration
-	Safety          SafetyConfig          `toml:"safety"`           // Safety profile selection + defaults
-	Preflight       PreflightConfig       `toml:"preflight"`        // Prompt preflight/lint configuration
-	Redaction       RedactionConfig       `toml:"redaction"`        // Secrets/PII redaction configuration
-	Privacy         PrivacyConfig         `toml:"privacy"`          // Privacy mode configuration
-	Encryption      EncryptionConfig      `toml:"encryption"`       // Encryption at rest for artifacts
-	Send            SendConfig            `toml:"send"`             // Send command defaults
-	Prompts         PromptsConfig         `toml:"prompts"`          // Per-agent-type default prompts
-	Retry           RetryConfig           `toml:"retry"`            // Unified retry policy configuration
-	Routing         RoutingConfig         `toml:"routing"`          // Agent routing/scoring weights
-	Coordinator     CoordinatorConfig     `toml:"coordinator"`      // Session coordinator (digests, auto-assign, conflict handling)
+	ProjectsBase  string      `toml:"projects_base"`
+	Theme         string      `toml:"theme"`          // UI Theme (mocha, macchiato, nord, latte, auto)
+	HelpVerbosity string      `toml:"help_verbosity"` // Help verbosity: minimal or full (default: full)
+	PaletteFile   string      `toml:"palette_file"`   // Path to command_palette.md (optional)
+	Agents        AgentConfig `toml:"agents"`
+	// ProviderProfiles binds a provider configuration to an explicit, named
+	// launch target. It deliberately does not overload a runtime family (such
+	// as "claude") with an actual provider identity.
+	ProviderProfiles map[string]ProviderProfileConfig `toml:"provider_profiles"`
+	Palette          []PaletteCmd                     `toml:"palette"`
+	PaletteState     PaletteState                     `toml:"palette_state"`
+	Tmux             TmuxConfig                       `toml:"tmux"`
+	Robot            RobotConfig                      `toml:"robot"`
+	CommandHooks     []CommandHookConfig              `toml:"command_hooks"`
+	AgentMail        AgentMailConfig                  `toml:"agent_mail"`
+	Integrations     IntegrationsConfig               `toml:"integrations"` // External tool integrations (dcg, caam, etc.)
+	Models           ModelsConfig                     `toml:"models"`
+	Alerts           AlertsConfig                     `toml:"alerts"`
+	Checkpoints      CheckpointsConfig                `toml:"checkpoints"`
+	Notifications    notify.Config                    `toml:"notifications"`
+	Resilience       ResilienceConfig                 `toml:"resilience"`
+	Scanner          ScannerConfig                    `toml:"scanner"`          // UBS scanner configuration
+	Bugs             BugsConfig                       `toml:"bugs"`             // UBS bug push routing (ntm bugs watch)
+	CASS             CASSConfig                       `toml:"cass"`             // CASS integration configuration
+	Rotation         RotationConfig                   `toml:"rotation"`         // Account rotation configuration
+	GeminiSetup      GeminiSetupConfig                `toml:"gemini_setup"`     // Gemini post-spawn setup
+	Context          ContextConfig                    `toml:"context"`          // Context pack options
+	ContextRotation  ContextRotationConfig            `toml:"context_rotation"` // Context window rotation
+	SessionRecovery  SessionRecoveryConfig            `toml:"recovery"`         // Smart session recovery
+	Cleanup          CleanupConfig                    `toml:"cleanup"`          // Temp file cleanup configuration
+	FileReservation  FileReservationConfig            `toml:"file_reservation"` // Auto file reservation via Agent Mail
+	Memory           MemoryConfig                     `toml:"memory"`           // CASS Memory (cm) integration
+	Assign           AssignConfig                     `toml:"assign"`           // Assignment strategy configuration
+	Ensemble         EnsembleConfig                   `toml:"ensemble"`         // Reasoning ensemble defaults
+	Swarm            SwarmConfig                      `toml:"swarm"`            // Weighted multi-project agent swarm
+	SpawnPacing      SpawnPacingConfig                `toml:"spawn_pacing"`     // Spawn scheduler pacing configuration
+	Safety           SafetyConfig                     `toml:"safety"`           // Safety profile selection + defaults
+	Preflight        PreflightConfig                  `toml:"preflight"`        // Prompt preflight/lint configuration
+	Redaction        RedactionConfig                  `toml:"redaction"`        // Secrets/PII redaction configuration
+	Privacy          PrivacyConfig                    `toml:"privacy"`          // Privacy mode configuration
+	Encryption       EncryptionConfig                 `toml:"encryption"`       // Encryption at rest for artifacts
+	Send             SendConfig                       `toml:"send"`             // Send command defaults
+	Prompts          PromptsConfig                    `toml:"prompts"`          // Per-agent-type default prompts
+	Retry            RetryConfig                      `toml:"retry"`            // Unified retry policy configuration
+	Routing          RoutingConfig                    `toml:"routing"`          // Agent routing/scoring weights
+	Coordinator      CoordinatorConfig                `toml:"coordinator"`      // Session coordinator (digests, auto-assign, conflict handling)
 
 	// Runtime-only fields (populated by project config merging)
 	ProjectDefaults map[string]int `toml:"-"`
@@ -720,6 +727,7 @@ type AgentConfig struct {
 	Gemini      string            `toml:"gemini"`
 	Antigravity string            `toml:"antigravity"` // Antigravity (agy) launch command — successor to the Gemini CLI
 	Grok        string            `toml:"grok"`        // Official xAI Grok Build launch command
+	GrokPolicy  string            `toml:"grok_policy"` // Named NTM automation policy bound to the Grok command
 	Ollama      string            `toml:"ollama"`
 	Cursor      string            `toml:"cursor"`
 	Windsurf    string            `toml:"windsurf"`
@@ -741,6 +749,210 @@ type AgentConfig struct {
 	// credential; this supplies the static one they all read. Kept OUTSIDE
 	// the config dir on purpose so it is never linked into a pane.
 	ClaudeTokenFile string `toml:"claude_token_file"`
+}
+
+// ProviderProfileConfig is an explicit, non-secret provider launch boundary.
+// Its map key is the only legal target name. For example, a Z.ai profile must
+// be addressed as "zai-kevin-glm53", never by the broad "claude" runtime
+// selector. ConfigSHA256 is the digest of a separately redacted manifest; it
+// must never be computed from a credential or placed in Endpoint.
+type ProviderProfileConfig struct {
+	Provider     string `toml:"provider"`
+	AccountAlias string `toml:"account_alias"`
+	Model        string `toml:"model"`
+	Endpoint     string `toml:"endpoint"`
+	Runtime      string `toml:"runtime"`
+	ConfigSHA256 string `toml:"config_sha256"`
+	// Command is exactly one executable reference (for example "claude" or an
+	// absolute path). NTM compiles every Z.ai endpoint/model/policy argument;
+	// profile-owned shell fragments are never executed.
+	Command          string `toml:"command"`
+	AutomationPolicy string `toml:"automation_policy"`
+	ExactTargetOnly  bool   `toml:"exact_target_only"`
+	ProbeRequired    bool   `toml:"probe_required"`
+	// ModelProbeState is historical, operator-recorded diagnostic metadata.
+	// It never authorizes launch or proves provider/model availability.
+	ModelProbeState string `toml:"model_probe_state"`
+	// ModelProbeReceiptSHA256 identifies a separately reviewed historical
+	// diagnostic receipt. Production Z.ai spawn always performs a fresh probe.
+	ModelProbeReceiptSHA256 string `toml:"model_probe_receipt_sha256"`
+}
+
+func init() {
+	// The resolver is the consumer of this intentionally atomic config map:
+	// it prevents a caller from treating a runtime family as a provider lane.
+	RegisterReader("provider_profiles", (*Config).ProviderProfile)
+}
+
+// Identity validates and converts the complete immutable provider tuple. The
+// returned value contains only normalized, non-secret identity material.
+func (p ProviderProfileConfig) Identity() (provider.Identity, error) {
+	return provider.NewIdentity(p.Provider, p.AccountAlias, p.Model, p.Endpoint, p.Runtime, p.ConfigSHA256)
+}
+
+// ValidateProviderProfiles validates every profile independently so callers
+// can surface all malformed provider boundaries at once. The profile map key
+// is intentionally part of the validation: it is the exact target selectors
+// that future spawn/send commands must use.
+func ValidateProviderProfiles(profiles map[string]ProviderProfileConfig) []error {
+	var errs []error
+	names := make([]string, 0, len(profiles))
+	for name := range profiles {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		errs = append(errs, validateProviderProfile(name, profiles[name])...)
+	}
+	return errs
+}
+
+func validateProviderProfile(name string, profile ProviderProfileConfig) []error {
+	target, err := normalizeProviderProfileTarget(name)
+	if err != nil {
+		return []error{fmt.Errorf("provider_profiles.%q: %w", name, err)}
+	}
+	var errs []error
+	if _, err := profile.Identity(); err != nil {
+		errs = append(errs, fmt.Errorf("provider_profiles.%s identity: %w", target, err))
+	}
+	if strings.TrimSpace(profile.Command) == "" || containsControlCharacter(profile.Command) {
+		errs = append(errs, fmt.Errorf("provider_profiles.%s command must be non-empty and contain no control characters", target))
+	}
+	if strings.TrimSpace(profile.AutomationPolicy) == "" || containsControlCharacter(profile.AutomationPolicy) {
+		errs = append(errs, fmt.Errorf("provider_profiles.%s automation_policy must be non-empty and contain no control characters", target))
+	}
+	providerName := strings.ToLower(strings.TrimSpace(profile.Provider))
+	runtimeName := strings.ToLower(strings.TrimSpace(profile.Runtime))
+	if providerName == "xai" && runtimeName == "grok" {
+		if err := validateProviderExecutable(profile.Command); err != nil {
+			errs = append(errs, fmt.Errorf("provider_profiles.%s Grok ACP command: %w", target, err))
+		}
+		if strings.TrimSpace(profile.AutomationPolicy) != agent.DefaultGrokAutomationPolicyName {
+			errs = append(errs, fmt.Errorf("provider_profiles.%s Grok ACP profiles must use automation_policy = %q", target, agent.DefaultGrokAutomationPolicyName))
+		}
+		if !profile.ExactTargetOnly {
+			errs = append(errs, fmt.Errorf("provider_profiles.%s Grok ACP profiles must set exact_target_only = true", target))
+		}
+	}
+	if providerName == "zai" {
+		identity, identityErr := profile.Identity()
+		if identityErr == nil && identity.Endpoint() != "https://api.z.ai/api/anthropic" {
+			errs = append(errs, fmt.Errorf("provider_profiles.%s Z.ai endpoint must be the official Claude-compatible endpoint https://api.z.ai/api/anthropic", target))
+		}
+		if identityErr == nil && identity.Runtime() != "claude-code" {
+			errs = append(errs, fmt.Errorf("provider_profiles.%s Z.ai runtime must be claude-code", target))
+		}
+		if strings.TrimSpace(profile.AutomationPolicy) != provider.DefaultZAIAutomationPolicyName {
+			errs = append(errs, fmt.Errorf("provider_profiles.%s Z.ai profiles must use automation_policy = %q", target, provider.DefaultZAIAutomationPolicyName))
+		}
+		if err := zai.ValidateExecutable(profile.Command); err != nil {
+			errs = append(errs, fmt.Errorf("provider_profiles.%s Z.ai command: %w", target, err))
+		}
+		if !profile.ExactTargetOnly {
+			errs = append(errs, fmt.Errorf("provider_profiles.%s Z.ai profiles must set exact_target_only = true", target))
+		}
+		if !profile.ProbeRequired {
+			errs = append(errs, fmt.Errorf("provider_profiles.%s Z.ai profiles must set probe_required = true", target))
+		}
+		// Historical model_probe_* fields are diagnostic-only. They are not
+		// launch authority: every production spawn runs a fresh nonce-bound
+		// headless probe against this exact endpoint/model before tmux mutates.
+	}
+	return errs
+}
+
+// validateProviderExecutable keeps the native ACP adapter on execve semantics:
+// Command is one executable reference, never a shell fragment or an executable
+// plus arguments. Absolute paths may contain spaces because they are passed as
+// a single argv[0] value. Automated flags are compiled by the adapter itself.
+func validateProviderExecutable(command string) error {
+	if command != strings.TrimSpace(command) || command == "" {
+		return errors.New("must be a trimmed executable name or absolute path")
+	}
+	if containsControlCharacter(command) || strings.ContainsAny(command, ";&|<>`\"'") {
+		return errors.New("must not contain shell syntax, quoting, or control characters")
+	}
+	if strings.HasPrefix(command, "-") {
+		return errors.New("must not begin with an option")
+	}
+	if len(strings.Fields(command)) > 1 && !filepath.IsAbs(command) {
+		return errors.New("must be one executable name; put arguments in the compiled adapter policy")
+	}
+	return nil
+}
+
+func containsUnsafeProviderLaunchBypass(command string) bool {
+	normalized := strings.ToLower(strings.Join(strings.Fields(command), " "))
+	for _, prohibited := range []string{
+		"--always-approve",
+		"--allow-all",
+		"--dangerously-skip-permissions",
+		"--permission-mode bypasspermissions",
+		"--permission-mode=bypasspermissions",
+		"--yolo",
+	} {
+		if strings.Contains(normalized, prohibited) {
+			return true
+		}
+	}
+	return false
+}
+
+// ProviderProfile resolves a configured, exact provider target. Runtime-wide
+// Claude selectors are rejected before lookup because a Claude Code executable
+// can front several providers and is not a provider identity.
+func (c *Config) ProviderProfile(target string) (ProviderProfileConfig, error) {
+	rawTarget := target
+	name, err := normalizeProviderProfileTarget(target)
+	if err != nil {
+		return ProviderProfileConfig{}, err
+	}
+	profile, ok := c.ProviderProfiles[name]
+	if !ok {
+		return ProviderProfileConfig{}, fmt.Errorf("provider profile %q is not configured", name)
+	}
+	if profile.ExactTargetOnly && rawTarget != name {
+		return ProviderProfileConfig{}, fmt.Errorf("provider profile %q requires an exact target", name)
+	}
+	if errs := validateProviderProfile(name, profile); len(errs) > 0 {
+		return ProviderProfileConfig{}, fmt.Errorf("provider profile %q is invalid: %w", name, errs[0])
+	}
+	return profile, nil
+}
+
+func normalizeProviderProfileTarget(target string) (string, error) {
+	target = strings.ToLower(strings.TrimSpace(target))
+	if isAmbiguousClaudeTarget(target) {
+		return "", fmt.Errorf("ambiguous Claude-wide target %q is prohibited; use an explicit provider profile target", target)
+	}
+	if target == "" {
+		return "", fmt.Errorf("provider profile target is required")
+	}
+	for _, r := range target {
+		if !((r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '.' || r == '_' || r == '-') {
+			return "", fmt.Errorf("provider profile target %q contains an invalid character", target)
+		}
+	}
+	return target, nil
+}
+
+func isAmbiguousClaudeTarget(target string) bool {
+	switch target {
+	case "claude", "cc", "claude-code", "claudecode", "claude_code":
+		return true
+	default:
+		return false
+	}
+}
+
+func containsControlCharacter(value string) bool {
+	for _, r := range value {
+		if r < 0x20 || r == 0x7f {
+			return true
+		}
+	}
+	return false
 }
 
 // ContextConfig holds options for context-pack composition.
@@ -3602,6 +3814,7 @@ func Print(cfg *Config, w io.Writer) error {
 	fmt.Fprintf(w, "codex = %q\n", cfg.Agents.Codex)
 	fmt.Fprintf(w, "gemini = %q\n", cfg.Agents.Gemini)
 	fmt.Fprintf(w, "grok = %q\n", cfg.Agents.Grok)
+	fmt.Fprintf(w, "grok_policy = %q\n", cfg.Agents.GrokPolicy)
 	if cfg.Agents.Antigravity != "" {
 		fmt.Fprintf(w, "antigravity = %q\n", cfg.Agents.Antigravity)
 	}
@@ -3618,6 +3831,32 @@ func Print(cfg *Config, w io.Writer) error {
 		fmt.Fprintf(w, "oc = %q\n", cfg.Agents.Opencode)
 	}
 	fmt.Fprintln(w)
+
+	if len(cfg.ProviderProfiles) > 0 {
+		fmt.Fprintln(w, "# Explicit provider identities. Never put API keys in this file.")
+		profileNames := make([]string, 0, len(cfg.ProviderProfiles))
+		for name := range cfg.ProviderProfiles {
+			profileNames = append(profileNames, name)
+		}
+		sort.Strings(profileNames)
+		for _, name := range profileNames {
+			profile := cfg.ProviderProfiles[name]
+			fmt.Fprintf(w, "[provider_profiles.%q]\n", name)
+			fmt.Fprintf(w, "provider = %q\n", profile.Provider)
+			fmt.Fprintf(w, "account_alias = %q\n", profile.AccountAlias)
+			fmt.Fprintf(w, "model = %q\n", profile.Model)
+			fmt.Fprintf(w, "endpoint = %q\n", profile.Endpoint)
+			fmt.Fprintf(w, "runtime = %q\n", profile.Runtime)
+			fmt.Fprintf(w, "config_sha256 = %q\n", profile.ConfigSHA256)
+			fmt.Fprintf(w, "command = %q\n", profile.Command)
+			fmt.Fprintf(w, "automation_policy = %q\n", profile.AutomationPolicy)
+			fmt.Fprintf(w, "exact_target_only = %t\n", profile.ExactTargetOnly)
+			fmt.Fprintf(w, "probe_required = %t\n", profile.ProbeRequired)
+			fmt.Fprintf(w, "model_probe_state = %q\n", profile.ModelProbeState)
+			fmt.Fprintf(w, "model_probe_receipt_sha256 = %q\n", profile.ModelProbeReceiptSHA256)
+			fmt.Fprintln(w)
+		}
+	}
 
 	fmt.Fprintln(w, "[tmux]")
 	fmt.Fprintln(w, "# Tmux-specific settings")
@@ -5714,6 +5953,9 @@ func Validate(cfg *Config) []error {
 	}
 
 	var errs []error
+	for _, err := range ValidateProviderProfiles(cfg.ProviderProfiles) {
+		errs = append(errs, err)
+	}
 
 	// Validate context rotation
 	if err := ValidateContextRotationConfig(&cfg.ContextRotation); err != nil {

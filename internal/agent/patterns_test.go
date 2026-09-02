@@ -1,6 +1,9 @@
 package agent
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"regexp"
 	"testing"
 
@@ -118,6 +121,111 @@ func TestMatchAny(t *testing.T) {
 				t.Errorf("matchAny() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestGrokReadyForAutomatedInputRequiresAuthenticatedEmptyComposer(t *testing.T) {
+	idle := "Grok Build  1.0.13\n" +
+		"╭────────────────────────────────────────╮\n" +
+		"│ ❯                                      │\n" +
+		"╰─ Grok 4.6 (high) · always-approve ────╯\n"
+	working := idle + "⠹ Waiting for response… 0.7s   … [stop]\nEsc:cancel\n"
+
+	tests := []struct {
+		name   string
+		output string
+		want   bool
+	}{
+		{name: "authenticated idle composer", output: idle, want: true},
+		{name: "active turn", output: working, want: false},
+		{name: "welcome banner only", output: "Grok Build  1.0.13\nWelcome back\n", want: false},
+		{name: "device authentication", output: "Grok Build  1.0.13\nOpen the browser to authenticate\nCode: ABCD-EFGH\n", want: false},
+		{name: "selection modal", output: "Grok Build  1.0.13\n│ ❯ 1. Sign in with xAI                  │\nPress enter to continue\n", want: false},
+		{name: "bare shell chevron", output: "~/project\n❯ \n", want: false},
+		{name: "prefilled composer", output: "Grok Build  1.0.13\n│ ❯ unsent draft                         │\n╰─ Grok 4.6 (high) · always-approve ────╯\n", want: false},
+		{name: "rate limited with composer", output: "Rate limit exceeded. Try again later.\n" + idle, want: false},
+		{name: "error with composer", output: "Error: authentication expired\n" + idle, want: false},
+		{name: "status without composer", output: "Grok 4.6 (high) · always-approve\n", want: false},
+		{name: "empty capture", output: "", want: false},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := GrokReadyForAutomatedInput(test.output, 120); got != test.want {
+				t.Fatalf("GrokReadyForAutomatedInput() = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestGrokReadinessReasonCodes(t *testing.T) {
+	idle := "Grok Build  1.0.13\n│ ❯                                      │\n╰─ Grok 4.6 (high) · default ───────────╯\n"
+	tests := []struct {
+		name   string
+		output string
+		want   GrokReadinessReason
+	}{
+		{name: "empty", output: "", want: GrokUnreadyEmptyCapture},
+		{name: "working", output: idle + "Esc:cancel\n", want: GrokUnreadyActiveTurn},
+		{name: "rate limit", output: "Rate limit exceeded\n" + idle, want: GrokUnreadyRateLimited},
+		{name: "error", output: "Error: provider unavailable\n" + idle, want: GrokUnreadyError},
+		{name: "authentication", output: "Grok Build  1.0.13\nAuthentication required\nRun grok login\n", want: GrokUnreadyAuthenticationRequired},
+		{name: "composer", output: "Grok Build  1.0.13\n", want: GrokUnreadyComposerMissing},
+		{name: "chrome", output: "│ ❯                                      │\n", want: GrokUnreadyProviderChromeMissing},
+		{name: "ready", output: idle, want: GrokReady},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := DetectGrokReadiness(test.output, 80)
+			if got.Reason != test.want || got.Ready != (test.want == GrokReady) {
+				t.Fatalf("DetectGrokReadiness() = %+v, want reason %s", got, test.want)
+			}
+		})
+	}
+}
+
+func TestGrokReadinessRedactedFixtureMatrix(t *testing.T) {
+	type fixture struct {
+		File    string              `json:"file"`
+		Version string              `json:"version"`
+		Width   int                 `json:"width"`
+		Reason  GrokReadinessReason `json:"reason"`
+	}
+	var manifest struct {
+		SchemaVersion int       `json:"schema_version"`
+		Redacted      bool      `json:"redacted"`
+		Fixtures      []fixture `json:"fixtures"`
+	}
+	manifestPath := filepath.Join("testdata", "grok-readiness-fixtures.json")
+	raw, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	if manifest.SchemaVersion != 1 || !manifest.Redacted || len(manifest.Fixtures) < 4 {
+		t.Fatalf("invalid fixture manifest: %+v", manifest)
+	}
+	versions := map[string]bool{}
+	widths := map[int]bool{}
+	for _, item := range manifest.Fixtures {
+		item := item
+		t.Run(item.File, func(t *testing.T) {
+			capture, err := os.ReadFile(filepath.Join("testdata", item.File))
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := DetectGrokReadiness(string(capture), item.Width)
+			if got.Reason != item.Reason {
+				t.Fatalf("DetectGrokReadiness(width=%d) = %+v, want %s", item.Width, got, item.Reason)
+			}
+		})
+		versions[item.Version] = true
+		widths[item.Width] = true
+	}
+	if len(versions) < 2 || len(widths) < 3 {
+		t.Fatalf("fixture matrix lacks version/geometry coverage: versions=%v widths=%v", versions, widths)
 	}
 }
 
@@ -388,6 +496,16 @@ func TestStripANSICodes(t *testing.T) {
 			text: "\x1b[2J\x1b[HClear screen",
 			want: "Clear screen",
 		},
+		{
+			name: "CRLF preserves line content",
+			text: "Claude Opus 4.5\r\nWriting file\r\n",
+			want: "Claude Opus 4.5\nWriting file\n",
+		},
+		{
+			name: "terminal carriage return keeps replacement",
+			text: "old progress\rnew progress\n",
+			want: "new progress\n",
+		},
 	}
 
 	for _, tt := range tests {
@@ -549,6 +667,8 @@ func TestAllPatternsCompile(t *testing.T) {
 		cursorHeaderPattern,
 		windsurfHeaderPattern,
 		aiderHeaderPattern,
+		grokHeaderPattern,
+		grokEmptyComposerLineRe,
 		ansiPattern,
 	}
 

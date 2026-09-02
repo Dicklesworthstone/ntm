@@ -2,6 +2,8 @@ package robot
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -24,16 +26,14 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/models"
 	"github.com/Dicklesworthstone/ntm/internal/pressure"
 	"github.com/Dicklesworthstone/ntm/internal/process"
+	"github.com/Dicklesworthstone/ntm/internal/provider"
+	"github.com/Dicklesworthstone/ntm/internal/ratelimit"
 	"github.com/Dicklesworthstone/ntm/internal/recovery"
 	"github.com/Dicklesworthstone/ntm/internal/resilience"
 	"github.com/Dicklesworthstone/ntm/internal/state"
 	statuspkg "github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
-)
-
-var (
-	errGrokSpawnWaitUnavailable   = errors.New("--spawn-wait is not yet supported for Grok Build because its authenticated TUI readiness protocol has not been verified")
-	errGrokSpawnAssignUnavailable = errors.New("--spawn-assign-work is not yet supported for Grok Build because prompt delivery has not been verified")
+	zaipkg "github.com/Dicklesworthstone/ntm/internal/zai"
 )
 
 // readyWordRe matches "ready" as a whole word. A bare substring check also hit
@@ -64,6 +64,10 @@ type SpawnOptions struct {
 	GmiCount      int    // Gemini agents
 	AgyCount      int    // Antigravity agents
 	GrokCount     int    // Grok Build agents
+	ZAICount      int    // Z.ai provider-profile agents
+	// ZAIProviderProfile is the exact [provider_profiles] key selected for
+	// --spawn-zai. Broad Claude runtime selectors are intentionally invalid.
+	ZAIProviderProfile string
 	// Per-type model/effort overrides parsed from the CLI's
 	// `count[:model[:effort]]` spawn flag grammar (bd-rr8gn). Empty means the
 	// configured default. Efforts exist only for the agent types whose launch
@@ -91,20 +95,33 @@ type SpawnOptions struct {
 	ReservationPaths    []string
 	AssignmentDeps      *SpawnAssignmentDependencies
 	LifecycleDeps       *SpawnLifecycleDependencies
+	// ProviderAdmission gates provider-backed launches by the complete
+	// provider identity. A nil value uses the process-wide controller.
+	ProviderAdmission ProviderAdmission
 }
 
 // SpawnLifecycleDependencies exposes tmux lifecycle ports for deterministic
 // terminal-contract tests. Production callers leave this nil.
 type SpawnLifecycleDependencies struct {
-	IsTMUXInstalled  func() bool
-	GetAllPanes      func(context.Context) (map[string][]tmux.Pane, error)
-	SessionExists    func(context.Context, string) (bool, error)
-	CreateSession    func(context.Context, string, string, int) error
-	GetPanes         func(context.Context, string) ([]tmux.Pane, error)
-	SplitWindow      func(context.Context, string, string) (string, error)
-	ApplyTiledLayout func(context.Context, string) error
-	LaunchAgent      func(context.Context, tmux.Pane, string, string, int, string, string) (SpawnedAgent, error)
-	WaitForReady     func(context.Context, *SpawnOutput, time.Duration) error
+	IsTMUXInstalled    func() bool
+	GetAllPanes        func(context.Context) (map[string][]tmux.Pane, error)
+	SessionExists      func(context.Context, string) (bool, error)
+	CreateSession      func(context.Context, string, string, int) error
+	GetPanes           func(context.Context, string) ([]tmux.Pane, error)
+	SplitWindow        func(context.Context, string, string) (string, error)
+	ApplyTiledLayout   func(context.Context, string) error
+	LaunchAgent        func(context.Context, tmux.Pane, string, string, int, string, string) (SpawnedAgent, error)
+	PersistZAIIdentity func(context.Context, string, tmux.ProviderPaneIdentity) error
+	// QuarantineZAIPane must leave no provider process running in paneID. It
+	// is called after a successful Z.ai launch when the immutable pane
+	// identity cannot be recorded. Production removes that exact pane; tests
+	// inject a deterministic lifecycle port.
+	QuarantineZAIPane func(context.Context, string) error
+	// ProbeZAI is a pre-tmux, no-tool headless proof port. Production runs the
+	// exact endpoint/model through Claude stream JSON; tests provide a
+	// deterministic receipt. A configured profile is not sufficient proof.
+	ProbeZAI     func(context.Context, config.ProviderProfileConfig, provider.Identity) (zaipkg.Receipt, error)
+	WaitForReady func(context.Context, *SpawnOutput, time.Duration) error
 	// StartSessionMonitor is the shared manifest-writer + monitor-launcher
 	// port (resilience.StartSessionMonitor in production; WS0-G6 single
 	// code path with CLI spawn, bd-ws1-truth-safety-l5ddi.8).
@@ -224,20 +241,21 @@ func validateSpawnRequest(opts SpawnOptions) (string, error) {
 		{flag: "--spawn-gmi", value: opts.GmiCount},
 		{flag: "--spawn-agy", value: opts.AgyCount},
 		{flag: "--spawn-grok", value: opts.GrokCount},
+		{flag: "--spawn-zai", value: opts.ZAICount},
 	}
 	for _, count := range counts {
 		if count.value < 0 {
 			return "", fmt.Errorf("%s must be zero or greater, got %d", count.flag, count.value)
 		}
 	}
-	if opts.CCCount+opts.CodCount+opts.GmiCount+opts.AgyCount+opts.GrokCount <= 0 {
-		return "", errors.New("no agents specified (use cc, cod, gmi, agy, or grok counts)")
+	if opts.ZAICount > 0 && strings.TrimSpace(opts.ZAIProviderProfile) == "" {
+		return "", errors.New("--spawn-zai requires an exact --provider-profile")
 	}
-	if opts.GrokCount > 0 && opts.WaitReady {
-		return "", errGrokSpawnWaitUnavailable
+	if opts.ZAICount == 0 && strings.TrimSpace(opts.ZAIProviderProfile) != "" {
+		return "", errors.New("--provider-profile is only valid with --spawn-zai")
 	}
-	if opts.GrokCount > 0 && opts.AssignWork {
-		return "", errGrokSpawnAssignUnavailable
+	if opts.CCCount+opts.CodCount+opts.GmiCount+opts.AgyCount+opts.GrokCount+opts.ZAICount <= 0 {
+		return "", errors.New("no agents specified (use cc, cod, gmi, agy, grok, or zai counts)")
 	}
 	if !opts.AssignWork {
 		return "", nil
@@ -291,14 +309,21 @@ func validateExistingGrokSpawnPaneBaselines(panes []tmux.Pane, opts SpawnOptions
 
 func spawnLifecycleDeps(custom *SpawnLifecycleDependencies) SpawnLifecycleDependencies {
 	deps := SpawnLifecycleDependencies{
-		IsTMUXInstalled:     tmux.IsInstalled,
-		GetAllPanes:         tmux.GetAllPanesContext,
-		SessionExists:       tmux.SessionExistsContext,
-		CreateSession:       tmux.CreateSessionWithHistoryLimitContext,
-		GetPanes:            tmux.GetPanesContext,
-		SplitWindow:         tmux.SplitWindowContext,
-		ApplyTiledLayout:    tmux.ApplyTiledLayoutContext,
-		LaunchAgent:         launchAgent,
+		IsTMUXInstalled:    tmux.IsInstalled,
+		GetAllPanes:        tmux.GetAllPanesContext,
+		SessionExists:      tmux.SessionExistsContext,
+		CreateSession:      tmux.CreateSessionWithHistoryLimitContext,
+		GetPanes:           tmux.GetPanesContext,
+		SplitWindow:        tmux.SplitWindowContext,
+		ApplyTiledLayout:   tmux.ApplyTiledLayoutContext,
+		LaunchAgent:        launchAgent,
+		PersistZAIIdentity: tmux.SetProviderPaneIdentityContext,
+		QuarantineZAIPane:  quarantineZAIPane,
+		ProbeZAI: func(ctx context.Context, profile config.ProviderProfileConfig, identity provider.Identity) (zaipkg.Receipt, error) {
+			probeCtx, cancel := context.WithTimeout(ctx, zaipkg.DefaultProbeTimeout)
+			defer cancel()
+			return zaipkg.Probe(probeCtx, zaipkg.ProbeSpec{Binary: profile.Command, Endpoint: identity.Endpoint(), Model: identity.Model()})
+		},
 		WaitForReady:        waitForAgentsReady,
 		StartSessionMonitor: resilience.StartSessionMonitor,
 	}
@@ -328,6 +353,15 @@ func spawnLifecycleDeps(custom *SpawnLifecycleDependencies) SpawnLifecycleDepend
 	}
 	if custom.LaunchAgent != nil {
 		deps.LaunchAgent = custom.LaunchAgent
+	}
+	if custom.PersistZAIIdentity != nil {
+		deps.PersistZAIIdentity = custom.PersistZAIIdentity
+	}
+	if custom.QuarantineZAIPane != nil {
+		deps.QuarantineZAIPane = custom.QuarantineZAIPane
+	}
+	if custom.ProbeZAI != nil {
+		deps.ProbeZAI = custom.ProbeZAI
 	}
 	if custom.WaitForReady != nil {
 		deps.WaitForReady = custom.WaitForReady
@@ -369,14 +403,97 @@ type SpawnAssignment struct {
 
 // SpawnedAgent represents an agent created during spawn.
 type SpawnedAgent struct {
-	Pane      string `json:"pane"`
-	Name      string `json:"name,omitempty"`
-	Type      string `json:"type"`
-	Variant   string `json:"variant,omitempty"`
-	Title     string `json:"title"`
-	Ready     bool   `json:"ready"`
-	StartupMs int64  `json:"startup_ms"`
-	Error     string `json:"error,omitempty"`
+	Pane        string `json:"pane"`
+	Name        string `json:"name,omitempty"`
+	Type        string `json:"type"`
+	Variant     string `json:"variant,omitempty"`
+	Title       string `json:"title"`
+	Ready       bool   `json:"ready"`
+	ReadyReason string `json:"ready_reason,omitempty"`
+	StartupMs   int64  `json:"startup_ms"`
+	Error       string `json:"error,omitempty"`
+	// ProviderProfile and ProviderIdentityHash bind a distinct provider lane
+	// without emitting credentials or endpoint material.
+	ProviderProfile      string `json:"provider_profile,omitempty"`
+	ProviderIdentityHash string `json:"provider_identity_hash,omitempty"`
+	// ProviderIdentityEvidence is intentionally profile_attested for opaque
+	// Claude-compatible runtimes. It must not be read as live proof that the
+	// process honored the configured endpoint or config hash.
+	ProviderIdentityEvidence provider.IdentityEvidenceGrade `json:"provider_identity_evidence,omitempty"`
+	ModelProbeState          string                         `json:"model_probe_state,omitempty"`
+	ModelProbeReceiptHash    string                         `json:"model_probe_receipt_hash,omitempty"`
+	Admission                *AdmissionEvidence             `json:"admission,omitempty"`
+	// CleanupState and CleanupErrorHash record fail-closed post-launch
+	// cleanup without exposing terminal output, commands, or credentials.
+	CleanupState     string `json:"cleanup_state,omitempty"`
+	CleanupErrorHash string `json:"cleanup_error_hash,omitempty"`
+	LaunchErrorHash  string `json:"launch_error_hash,omitempty"`
+}
+
+const zaiPaneQuarantineTimeout = 10 * time.Second
+
+// quarantineZAIPane removes the exact pane that contains a launched Z.ai
+// process whose identity binding failed. A removed pane cannot retain an
+// unbound provider process or partially persisted pane options.
+func quarantineZAIPane(ctx context.Context, paneID string) error {
+	if strings.TrimSpace(paneID) == "" {
+		return errors.New("Z.ai pane ID is required for quarantine")
+	}
+	if ctx == nil {
+		return errors.New("Z.ai pane quarantine context is required")
+	}
+	return tmux.KillPaneContext(ctx, paneID)
+}
+
+func cleanupErrorHash(err error) string {
+	if err == nil {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(err.Error()))
+	return hex.EncodeToString(sum[:])
+}
+
+// quarantineUnboundZAIPane intentionally uses an independent short-lived
+// context: a caller cancellation must not leave an already launched provider
+// process running without its immutable identity metadata.
+func quarantineUnboundZAIPane(deps SpawnLifecycleDependencies, paneID string) (string, string) {
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), zaiPaneQuarantineTimeout)
+	defer cancel()
+	if err := deps.QuarantineZAIPane(cleanupCtx, paneID); err != nil {
+		return "quarantine_failed", cleanupErrorHash(err)
+	}
+	return "pane_terminated", ""
+}
+
+func resolveZAISpawnProfile(opts SpawnOptions, cfg *config.Config) (config.ProviderProfileConfig, provider.Identity, error) {
+	if opts.ZAICount == 0 {
+		return config.ProviderProfileConfig{}, provider.Identity{}, nil
+	}
+	if cfg == nil {
+		return config.ProviderProfileConfig{}, provider.Identity{}, errors.New("--spawn-zai requires a loaded configuration with an exact provider profile")
+	}
+	profile, err := cfg.ProviderProfile(opts.ZAIProviderProfile)
+	if err != nil {
+		return config.ProviderProfileConfig{}, provider.Identity{}, err
+	}
+	identity, err := profile.Identity()
+	if err != nil {
+		return config.ProviderProfileConfig{}, provider.Identity{}, err
+	}
+	if identity.Provider() != "zai" {
+		return config.ProviderProfileConfig{}, provider.Identity{}, fmt.Errorf("provider profile %q is %q, but --spawn-zai only accepts provider = \"zai\"", opts.ZAIProviderProfile, identity.Provider())
+	}
+	if !profile.ExactTargetOnly {
+		return config.ProviderProfileConfig{}, provider.Identity{}, fmt.Errorf("provider profile %q must require exact targeting", opts.ZAIProviderProfile)
+	}
+	if !profile.ProbeRequired {
+		return config.ProviderProfileConfig{}, provider.Identity{}, fmt.Errorf("provider profile %q must require a live no-tool probe", opts.ZAIProviderProfile)
+	}
+	return profile, identity, nil
+}
+
+func restrictedZAILaunchCommand(profile config.ProviderProfileConfig, identity provider.Identity) (string, error) {
+	return zaipkg.RestrictedLaunchCommand(profile.Command, identity.Endpoint(), identity.Model())
 }
 
 func collectSpawnAdmissionInputWithPanes(
@@ -487,13 +604,13 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 	assignStrategy, validationErr := validateSpawnRequest(opts)
 	if validationErr != nil {
 		output.Error = validationErr.Error()
-		errorCode := ErrCodeInvalidFlag
-		hint := "Use non-negative agent counts and a supported assignment strategy"
-		if errors.Is(validationErr, errGrokSpawnWaitUnavailable) || errors.Is(validationErr, errGrokSpawnAssignUnavailable) {
-			errorCode = ErrCodeNotImplemented
-			hint = agentpkg.GrokPhaseOneCapabilityHint
-		}
-		output.RobotResponse = NewErrorResponse(validationErr, errorCode, hint)
+		output.RobotResponse = NewErrorResponse(validationErr, ErrCodeInvalidFlag, "Use non-negative agent counts and a supported assignment strategy")
+		return output, nil
+	}
+	zaiProfile, zaiIdentity, zaiProfileErr := resolveZAISpawnProfile(opts, cfg)
+	if zaiProfileErr != nil {
+		output.Error = zaiProfileErr.Error()
+		output.RobotResponse = NewErrorResponse(zaiProfileErr, ErrCodeInvalidFlag, "Use --spawn-zai with a qualified exact Z.ai provider profile")
 		return output, nil
 	}
 	// Advisory model did-you-mean: a requested model override that resolves
@@ -515,6 +632,15 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 		)
 		return output, nil
 	}
+	if opts.ZAICount > 0 {
+		command, err := restrictedZAILaunchCommand(zaiProfile, zaiIdentity)
+		if err != nil {
+			output.Error = fmt.Sprintf("compile restricted Z.ai launch: %v", err)
+			output.RobotResponse = NewErrorResponse(err, ErrCodeInvalidFlag, "Use a single Z.ai executable reference and an exact provider identity")
+			return output, nil
+		}
+		agentCommands["zai"] = command
+	}
 	deps := spawnLifecycleDeps(opts.LifecycleDeps)
 	if err := ctx.Err(); err != nil {
 		setSpawnCancellation(output, err)
@@ -523,7 +649,7 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 	_ = audit.LogEvent(opts.Session, audit.EventTypeSpawn, audit.ActorSystem, "robot.spawn", map[string]interface{}{
 		"phase":           "start",
 		"session":         opts.Session,
-		"total_agents":    opts.CCCount + opts.CodCount + opts.GmiCount + opts.AgyCount + opts.GrokCount,
+		"total_agents":    opts.CCCount + opts.CodCount + opts.GmiCount + opts.AgyCount + opts.GrokCount + opts.ZAICount,
 		"preset":          opts.Preset,
 		"no_user_pane":    opts.NoUserPane,
 		"dry_run":         opts.DryRun,
@@ -532,6 +658,13 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 		"assign_strategy": opts.AssignStrategy,
 		"correlation_id":  correlationID,
 	}, nil)
+	if opts.ZAICount > 0 {
+		_ = audit.LogEvent(opts.Session, audit.EventTypeSpawn, audit.ActorSystem, "robot.spawn.zai_profile", map[string]interface{}{
+			"provider_profile":       opts.ZAIProviderProfile,
+			"provider_identity_hash": zaiIdentity.Hash(),
+			"model_probe_state":      zaiProfile.ModelProbeState,
+		}, nil)
+	}
 	defer func() {
 		agentsLaunched := 0
 		if output != nil {
@@ -541,7 +674,7 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 		payload := map[string]interface{}{
 			"phase":           "finish",
 			"session":         opts.Session,
-			"total_agents":    opts.CCCount + opts.CodCount + opts.GmiCount + opts.AgyCount + opts.GrokCount,
+			"total_agents":    opts.CCCount + opts.CodCount + opts.GmiCount + opts.AgyCount + opts.GrokCount + opts.ZAICount,
 			"preset":          opts.Preset,
 			"no_user_pane":    opts.NoUserPane,
 			"dry_run":         opts.DryRun,
@@ -631,6 +764,12 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 			return output, nil
 		}
 		cfg = effectiveConfig
+		zaiProfile, zaiIdentity, zaiProfileErr = resolveZAISpawnProfile(opts, cfg)
+		if zaiProfileErr != nil {
+			output.Error = zaiProfileErr.Error()
+			output.RobotResponse = NewErrorResponse(zaiProfileErr, ErrCodeInvalidFlag, "Use an exact, probe-qualified Z.ai profile in the authoritative configuration")
+			return output, nil
+		}
 		// The authoritative assignment policy replaces cfg (the serve path
 		// passes cfg=nil), so launch commands must be re-rendered from the
 		// merged config — otherwise serve-spawned AssignWork panes fall back
@@ -644,6 +783,15 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 				"Fix the [agents] launch command template or drop the model/effort override",
 			)
 			return output, nil
+		}
+		if opts.ZAICount > 0 {
+			command, err := restrictedZAILaunchCommand(zaiProfile, zaiIdentity)
+			if err != nil {
+				output.Error = fmt.Sprintf("compile restricted Z.ai launch: %v", err)
+				output.RobotResponse = NewErrorResponse(err, ErrCodeInvalidFlag, "Use a single Z.ai executable reference and an exact provider identity")
+				return output, nil
+			}
+			agentCommands["zai"] = command
 		}
 		operatorGatedLabels := []string(nil)
 		if effectiveConfig != nil {
@@ -677,6 +825,47 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 		verifiedAssignmentPlan = restrictTriageToAssignable(nil, actionable)
 	}
 
+	providerAdmission := opts.ProviderAdmission
+	if providerAdmission == nil {
+		providerAdmission = ratelimit.DefaultAdmissionController()
+	}
+	zaiProbeAdmissionHeld := false
+	defer func() {
+		if zaiProbeAdmissionHeld {
+			providerAdmission.Release(zaiIdentity)
+		}
+	}()
+	// A profile is a declaration, not a live provider observation. Production
+	// spawns must prove the exact endpoint/model before any session or pane can
+	// be created. Dry-run intentionally remains configuration-only.
+	if opts.ZAICount > 0 && !opts.DryRun {
+		decision := providerAdmission.Acquire(zaiIdentity)
+		if !decision.Allowed {
+			output.Error = "provider admission denied; Z.ai probe was not called"
+			output.RobotResponse = NewErrorResponse(errors.New(output.Error), ErrCodeResourceBusy, "Wait for the exact Z.ai identity capacity window; no probe or tmux mutation occurred")
+			return output, nil
+		}
+		zaiProbeAdmissionHeld = true
+		receipt, probeErr := deps.ProbeZAI(ctx, zaiProfile, zaiIdentity)
+		if probeErr != nil || !receipt.ModelSessionEvidence || receipt.Model != zaiIdentity.Model() || receipt.NonceSHA256 == "" || receipt.OutputSHA256 == "" || receipt.SessionIDSHA256 == "" {
+			providerAdmission.Release(zaiIdentity)
+			zaiProbeAdmissionHeld = false
+			if receipt.ProviderErrorClass != "" && receipt.ProviderErrorClass != provider.ErrorUnknown {
+				providerAdmission.RecordResult(zaiIdentity, receipt.ProviderErrorClass, 0)
+			}
+			hint := "Correct the exact endpoint/model or update the Claude-compatible client; no Z.ai pane was launched"
+			if receipt.FailureClass == "model_session_evidence_missing" {
+				hint = "The installed Claude client cannot prove session-scoped model identity; Z.ai production launch remains NO-GO"
+			}
+			output.Error = "Z.ai live no-tool probe did not establish nonce-bound exact model/session evidence"
+			output.RobotResponse = NewErrorResponse(errors.New(output.Error), ErrCodeDependencyMissing, hint)
+			return output, nil
+		}
+		providerAdmission.RecordSuccess(zaiIdentity)
+		zaiProfile.ModelProbeState = "live_verified"
+		zaiProfile.ModelProbeReceiptSHA256 = receipt.OutputSHA256
+	}
+
 	// Load handoff context for session recovery (non-fatal if not found)
 	spawnRecovery, handoffCtx := loadLatestHandoff(dir, opts.Session)
 	if spawnRecovery != nil {
@@ -685,7 +874,7 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 	// handoffCtx is available for use in work prompts below
 	_ = handoffCtx // silence unused warning when not in orchestrator mode
 
-	totalAgents := opts.CCCount + opts.CodCount + opts.GmiCount + opts.AgyCount + opts.GrokCount
+	totalAgents := opts.CCCount + opts.CodCount + opts.GmiCount + opts.AgyCount + opts.GrokCount + opts.ZAICount
 
 	// Calculate total panes needed
 	totalPanes := totalAgents
@@ -800,6 +989,22 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 				Name:  dryRunNameMap.AssignNew("grok", grokPane),
 				Type:  "grok",
 				Title: fmt.Sprintf("%s__grok_%d", opts.Session, i+1),
+			})
+			paneIdx++
+		}
+
+		for i := 0; i < opts.ZAICount; i++ {
+			zaiPane := fmt.Sprintf("0.%d", paneIdx)
+			output.WouldCreate = append(output.WouldCreate, SpawnedAgent{
+				Pane:                     zaiPane,
+				Name:                     dryRunNameMap.AssignNew("zai", zaiPane),
+				Type:                     "zai",
+				Title:                    fmt.Sprintf("%s__zai_%d", opts.Session, i+1),
+				ProviderProfile:          opts.ZAIProviderProfile,
+				ProviderIdentityHash:     zaiIdentity.Hash(),
+				ProviderIdentityEvidence: zaiIdentity.EvidenceGrade(),
+				ModelProbeState:          zaiProfile.ModelProbeState,
+				ModelProbeReceiptHash:    zaiProfile.ModelProbeReceiptSHA256,
 			})
 			paneIdx++
 		}
@@ -975,8 +1180,12 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 	}
 
 	type launchRequest struct {
-		agentType string
-		number    int
+		agentType             string
+		number                int
+		providerProfile       string
+		providerIdentity      provider.Identity
+		modelProbeState       string
+		modelProbeReceiptHash string
 	}
 	launchRequests := make([]launchRequest, 0, totalAgents)
 	for _, spec := range []struct {
@@ -988,9 +1197,17 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 		{agentType: "gemini", count: opts.GmiCount},
 		{agentType: "antigravity", count: opts.AgyCount},
 		{agentType: "grok", count: opts.GrokCount},
+		{agentType: "zai", count: opts.ZAICount},
 	} {
 		for i := 0; i < spec.count; i++ {
-			launchRequests = append(launchRequests, launchRequest{agentType: spec.agentType, number: i + 1})
+			request := launchRequest{agentType: spec.agentType, number: i + 1}
+			if spec.agentType == "zai" {
+				request.providerProfile = opts.ZAIProviderProfile
+				request.providerIdentity = zaiIdentity
+				request.modelProbeState = zaiProfile.ModelProbeState
+				request.modelProbeReceiptHash = zaiProfile.ModelProbeReceiptSHA256
+			}
+			launchRequests = append(launchRequests, request)
 		}
 	}
 
@@ -1006,6 +1223,42 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 			return output, nil
 		}
 		pane := panes[startIdx+i]
+		if request.agentType == "zai" {
+			decision := ratelimit.Decision{Allowed: true, NoFailover: true}
+			if zaiProbeAdmissionHeld {
+				// The validated probe and first pane launch are one provider
+				// operation. Keeping this slot avoids double-spending a one-token
+				// default bucket between preflight and the launch it authorizes.
+				zaiProbeAdmissionHeld = false
+			} else {
+				decision = providerAdmission.Acquire(request.providerIdentity)
+			}
+			admission := &AdmissionEvidence{
+				Allowed:              decision.Allowed,
+				Reason:               decision.Reason,
+				RetryAt:              decision.RetryAt,
+				NoFailover:           decision.NoFailover,
+				CapacityControlScope: provider.CapacityControlScopeProcessLocal,
+			}
+			if !decision.Allowed {
+				agent := SpawnedAgent{
+					Pane:                     pane.Ref().Physical(),
+					Type:                     "zai",
+					Title:                    fmt.Sprintf("%s__zai_%d", opts.Session, request.number),
+					ProviderProfile:          request.providerProfile,
+					ProviderIdentityHash:     request.providerIdentity.Hash(),
+					ProviderIdentityEvidence: request.providerIdentity.EvidenceGrade(),
+					ModelProbeState:          request.modelProbeState,
+					ModelProbeReceiptHash:    request.modelProbeReceiptHash,
+					Admission:                admission,
+					Error:                    "provider admission denied; exact Z.ai profile was not launched",
+				}
+				agent.Name = nameMap.AssignNew(request.agentType, agent.Pane)
+				output.Agents = append(output.Agents, agent)
+				launchErrors = append(launchErrors, fmt.Errorf("zai agent %d: provider admission denied (%s)", request.number, decision.Reason))
+				continue
+			}
+		}
 		agent, launchErr := deps.LaunchAgent(
 			ctx, pane, opts.Session, request.agentType, request.number, dir, agentCommands[request.agentType],
 		)
@@ -1019,7 +1272,55 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 			agent.Title = fmt.Sprintf("%s__%s_%d", opts.Session, agentTypeShort(request.agentType), request.number)
 		}
 		agent.Name = nameMap.AssignNew(request.agentType, agent.Pane)
-		if pane.ID != "" {
+		agent.ProviderProfile = request.providerProfile
+		if request.agentType == "zai" {
+			agent.ProviderIdentityHash = request.providerIdentity.Hash()
+			agent.ProviderIdentityEvidence = request.providerIdentity.EvidenceGrade()
+		}
+		agent.ModelProbeState = request.modelProbeState
+		agent.ModelProbeReceiptHash = request.modelProbeReceiptHash
+		if request.agentType == "zai" {
+			providerAdmission.Release(request.providerIdentity)
+			agent.Admission = &AdmissionEvidence{Allowed: true, NoFailover: true, CapacityControlScope: provider.CapacityControlScopeProcessLocal}
+			if launchErr != nil {
+				// LaunchAgent may report an error after tmux accepted some or all
+				// keystrokes. Treat every Z.ai launch error as outcome-unknown and
+				// terminate the exact dedicated pane before returning; otherwise a
+				// live provider process could survive without identity metadata.
+				agent.LaunchErrorHash = cleanupErrorHash(launchErr)
+				agent.CleanupState, agent.CleanupErrorHash = quarantineUnboundZAIPane(deps, pane.ID)
+				launchErr = errors.New("Z.ai launch failed or had an unknown outcome; the exact pane was quarantined")
+				if agent.CleanupState == "quarantine_failed" {
+					launchErr = errors.New("Z.ai launch failed or had an unknown outcome; exact-pane quarantine failed")
+				}
+				agent.Error = launchErr.Error()
+			} else {
+				metadata := tmux.ProviderPaneIdentity{
+					Profile:                 request.providerProfile,
+					IdentitySHA256:          request.providerIdentity.Hash(),
+					ModelProbeState:         request.modelProbeState,
+					ModelProbeReceiptSHA256: request.modelProbeReceiptHash,
+				}
+				if err := deps.PersistZAIIdentity(ctx, pane.ID, metadata); err != nil {
+					agent.CleanupState, agent.CleanupErrorHash = quarantineUnboundZAIPane(deps, pane.ID)
+					launchErr = errors.New("Z.ai pane identity metadata was not persisted; launched pane was quarantined")
+					if agent.CleanupState == "quarantine_failed" {
+						launchErr = errors.New("Z.ai pane identity metadata was not persisted; pane quarantine failed")
+					}
+					if agent.Error == "" {
+						agent.Error = launchErr.Error()
+					}
+				}
+			}
+			// This is launch pacing, not request feedback: the opaque Claude-
+			// compatible TUI does not expose each Z.ai API call or its business
+			// code to NTM. Never poison or clear the provider request circuit from
+			// a local process/metadata outcome.
+		}
+		// Only a fully launched and (for providers) identity-bound agent may
+		// enter the monitor manifest. A Z.ai launch or metadata failure has
+		// already removed the exact pane above (or emitted quarantine_failed).
+		if pane.ID != "" && launchErr == nil {
 			monitorPaneIDs[agent.Pane] = pane.ID
 		}
 		if launchErr != nil && agent.Error == "" {
@@ -1292,7 +1593,21 @@ func launchAgent(ctx context.Context, pane tmux.Pane, session, agentType string,
 
 // waitForAgentsReady polls agents for ready state.
 func waitForAgentsReady(ctx context.Context, output *SpawnOutput, timeout time.Duration) error {
-	return waitForAgentsReadyWithCapture(ctx, output, timeout, tmux.CapturePaneOutputContext)
+	widths := make(map[string]int)
+	if output != nil {
+		if panes, err := tmux.GetPanesContext(ctx, output.Session); err == nil {
+			for _, pane := range panes {
+				widths[pane.Ref().Physical()] = pane.Width
+				if pane.ID != "" {
+					widths[pane.ID] = pane.Width
+				}
+			}
+		}
+	}
+	return waitForAgentsReadyWithCaptureAndWidth(
+		ctx, output, timeout, tmux.CapturePaneOutputContext,
+		func(paneRef string) int { return widths[paneRef] },
+	)
 }
 
 // spawnPaneLiveness reports whether a process is running under the pane's shell.
@@ -1314,6 +1629,16 @@ func waitForAgentsReadyWithCapture(
 	output *SpawnOutput,
 	timeout time.Duration,
 	capture func(context.Context, string, int) (string, error),
+) error {
+	return waitForAgentsReadyWithCaptureAndWidth(ctx, output, timeout, capture, nil)
+}
+
+func waitForAgentsReadyWithCaptureAndWidth(
+	ctx context.Context,
+	output *SpawnOutput,
+	timeout time.Duration,
+	capture func(context.Context, string, int) (string, error),
+	widthForPane func(string) int,
 ) error {
 	if ctx == nil {
 		return errors.New("waiting for agents requires a context")
@@ -1374,10 +1699,16 @@ func waitForAgentsReadyWithCapture(
 			// Text alone reports a bare shell prompt as ready, so a spawn whose
 			// agent CLI is missing from PATH used to return ready:true with
 			// nothing running at all.
-			ready := isAgentReady(captured, output.Agents[i].Type)
+			paneWidth := 0
+			if widthForPane != nil {
+				paneWidth = widthForPane(paneRef)
+			}
+			ready, reason := agentReadiness(captured, output.Agents[i].Type, paneWidth)
+			output.Agents[i].ReadyReason = reason
 			if ready {
 				if shellPID, childAlive := spawnPaneLiveness(readyCtx, target); shellPID > 0 && !childAlive {
 					ready = false
+					output.Agents[i].ReadyReason = "UNREADY_PROCESS_NOT_RUNNING"
 				}
 			}
 			if ready {
@@ -1408,9 +1739,19 @@ func waitForAgentsReadyWithCapture(
 	}
 }
 
-// isAgentReady checks if agent output indicates ready state.
-// Note: agentType is accepted for future type-specific detection but currently unused.
-func isAgentReady(output, _ string) bool {
+// isAgentReady checks if agent output indicates ready state. Grok Build uses a
+// strict, type-specific detector because its welcome banner and bordered
+// composer can appear independently during boot, authentication, and work.
+func isAgentReady(output, agentType string) bool {
+	ready, _ := agentReadiness(output, agentType, 0)
+	return ready
+}
+
+func agentReadiness(output, agentType string, paneWidth int) (bool, string) {
+	if agentpkg.AgentType(agentType).Canonical() == agentpkg.AgentTypeGrok {
+		result := agentpkg.DetectGrokReadiness(output, paneWidth)
+		return result.Ready, string(result.Reason)
+	}
 	lower := strings.ToLower(output)
 
 	// Common ready indicators (case-insensitive)
@@ -1429,17 +1770,11 @@ func isAgentReady(output, _ string) bool {
 		"welcome back",       // Greeting
 		"bypass permissions", // Status line
 		"try \"",             // Example prompt
-		// Grok Build TUI indicators (GH#251 phase 2, live grok 1.0.5
-		// captures): the welcome banner and the bottom status line both
-		// carry "Grok Build  1.0.5", and the composer's bottom border
-		// carries "· always-approve".
-		"grok build",
-		"· always-approve",
 	}
 
 	for _, pattern := range lowerPatterns {
 		if strings.Contains(lower, pattern) {
-			return true
+			return true, "READY"
 		}
 	}
 
@@ -1447,16 +1782,16 @@ func isAgentReady(output, _ string) bool {
 	// "already", so ordinary output such as "Already up to date." counted as an
 	// agent coming up.
 	if readyWordRe.MatchString(lower) {
-		return true
+		return true, "READY"
 	}
 
 	for _, p := range promptPatterns {
 		if p.MatchString(output) {
-			return true
+			return true, "READY"
 		}
 	}
 
-	return false
+	return false, "UNREADY_NO_READY_INDICATOR"
 }
 
 // agentTypeShort returns short form for pane naming.
@@ -1472,6 +1807,8 @@ func agentTypeShort(agentType string) string {
 		return "agy"
 	case tmux.AgentGrok:
 		return "grok"
+	case tmux.AgentZAI:
+		return "zai"
 	case tmux.AgentCursor:
 		return "cursor"
 	case tmux.AgentWindsurf:
@@ -1529,7 +1866,7 @@ func getAgentCommandsWithOverrides(cfg *config.Config, opts SpawnOptions) (map[s
 		"codex":       "codex",
 		"gemini":      "gemini",
 		"antigravity": "agy",
-		"grok":        "grok --always-approve",
+		"grok":        agentpkg.DefaultGrokAutomationCommandTemplate,
 	}
 
 	if cfg != nil && cfg.Agents.Claude != "" {
@@ -1545,6 +1882,13 @@ func getAgentCommandsWithOverrides(cfg *config.Config, opts SpawnOptions) (map[s
 		defaults["antigravity"] = cfg.Agents.Antigravity
 	}
 	if cfg != nil && cfg.Agents.Grok != "" {
+		policy := strings.TrimSpace(cfg.Agents.GrokPolicy)
+		if policy == "" {
+			policy = agentpkg.DefaultGrokAutomationPolicyName
+		}
+		if policy != agentpkg.DefaultGrokAutomationPolicyName {
+			return nil, fmt.Errorf("unknown Grok automation policy %q", policy)
+		}
 		defaults["grok"] = cfg.Agents.Grok
 	}
 

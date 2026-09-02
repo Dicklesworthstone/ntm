@@ -43,6 +43,10 @@ Commands that operate globally (no session context) are bool flags:
 --robot-plan                # bv global plan
 --robot-tools               # Tool inventory
 --robot-capabilities        # API discovery
+--robot-provider-capabilities # Provider transport/profile discovery (redacted, local-only)
+--robot-provider-conformance  # Synthetic/offline provider adapter contract check
+--robot-grok-acp-run          # Native Grok ACP operation (exact provider profile required)
+--robot-grok-acp-receipt=ID   # Read durable Grok ACP operation receipt
 --robot-snapshot            # Unified state dump
 --robot-triage              # bv triage analysis
 --robot-dashboard           # Dashboard summary
@@ -149,16 +153,105 @@ Only use tool prefix for options unique to that tool:
 | `--spawn-cc=N` | Claude agents to spawn | spawn-specific |
 | `--spawn-cod=N` | Codex agents to spawn | spawn-specific |
 | `--spawn-agy=N` | Antigravity agents to spawn | spawn-specific |
-| `--spawn-grok=N` | Grok Build agents to spawn (phase one: launch only) | spawn-specific |
+| `--spawn-grok=N` | Grok Build agents to spawn | spawn-specific |
+| `--spawn-zai=N` | Z.ai agents to spawn; requires an exact provider profile | spawn-specific |
+| `--provider-profile=NAME` | Exact configured provider identity for `--spawn-zai`, `--robot-grok-acp-run`, or provider conformance | provider-specific |
+| `--provider-transport=NAME` | Declared transport for the offline provider conformance harness | provider-specific |
 | `--spawn-gmi=N` | Gemini agents to spawn (legacy) | spawn-specific |
 | `--spawn-preset=NAME` | Use preset recipe | spawn-specific |
 | `--probe-method=M` | Probe detection method | probe-specific |
 | `--xf-mode=semantic` | XF search mode | xf-specific |
 | `--bulk-strategy=S` | Bulk assign strategy | bulk-assign-specific |
 
-Grok Build phase one does not automate the authenticated fullscreen TUI. Robot
-send, retasking interrupt, restart, readiness waits, assignment, and restore-time
-relaunch return `NOT_IMPLEMENTED` before mutating a Grok pane.
+Grok Build supports two evidence-distinct paths. Provider-native one-shot
+automation uses ACP JSON-RPC (`grok --no-auto-update --sandbox=read-only --permission-mode=dontAsk
+<allow/deny rules> [--model EXACT_MODEL] agent stdio`) and is the primary path.
+Every ACP operation requires an exact xAI/Grok provider profile. Optional
+`--provider-model` and `--grok-binary` values only assert equality with that
+profile; they cannot replace its identity or executable. Admission is keyed by
+the full provider/account/model/endpoint/runtime/config tuple and never selects
+a fallback identity. These controls are process-local; separate NTM processes
+do not share budgets, backoff, or circuit state.
+It binds a generated nonce instruction into the prompt and reports completion
+only when an assistant text update echoes that exact nonce. The receipt contains
+only hashes/counts, provider session and optional structured model/usage fields,
+plus observable local exit/cleanup state; it never contains prompts, nonces,
+raw output, tool arguments, or credentials. Missing nonce acknowledgement is a
+typed operation failure. A post-acceptance timeout is `DISPATCH_UNKNOWN` rather
+than a retry-safe failure. Local termination/reap does not prove provider-side
+cancellation, so ACP cancellation is deliberately advertised as unavailable.
+Automated ACP removes `XAI_API_KEY` and all proxy variables from the child
+environment (proxy URLs may embed credentials), then authenticates only with
+the local Grok CLI's `cached_token`; if that method is unavailable it fails
+closed with `GROK_ACP_CACHED_AUTH_UNAVAILABLE`. An exported API key is never an
+automated fallback. Exact model identity requires completion metadata
+or a structured xAI model notification bound to the returned provider session
+and exact launch model. A global provider catalog is availability evidence only
+and cannot make a robot operation succeed.
+The operation ID is durably bound to the identity, logical prompt, working
+directory, executable, and policy hashes before provider dispatch; the receipt
+separately hashes the exact nonce-bound packet. Normal retries with a newly
+generated transport nonce replay the recorded safe outcome, conflicting reuse fails, and an
+in-progress/outcome-unknown operation is never stale-taken-over. Query it with
+`--robot-grok-acp-receipt=OPERATION_ID` without contacting the provider.
+
+The receipt is runtime-attested only for fields supplied by the structured ACP
+protocol, such as a provider session ID, completion status, or model
+observation. The profile tuple remains profile-attested: NTM hashes and binds
+the configured values but does not claim the opaque runtime independently
+proved each value.
+
+Interactive Grok panes are the compatibility fallback for readiness waits,
+exact-pane send and assignment, retasking interrupt, restart, and restore-time
+relaunch. The named `grok-readonly-ci` policy uses `--no-auto-update`, xAI's
+independent `read-only` filesystem sandbox, the headless fail-closed `dontAsk`
+mode, explicit allow rules, and deny rules; broad approval bypasses
+are not a valid automated launch. Because xAI does not publish a passive
+TUI-readiness protocol, NTM requires positive authenticated composer evidence
+and fails closed on login screens, modals, errors, rate limits, bare shells,
+pre-filled composers, active turns, and unrecognized future UI states. Grok
+readiness records `READY` or reason-coded `UNREADY_*` evidence and receives the
+actual tmux pane width so line wrapping does not hide a required live signal.
+`--spawn-wait` is recommended with `--spawn-assign-work` when the caller
+requires readiness-gated spawn evidence; assignment still performs its own fresh
+safety observation when the wait flag is omitted.
+
+The Grok policy permits only read/search operations and denies `Bash(*)`.
+NTM runs tests and verification outside the provider process; allowing selected
+test commands would not honestly establish credential isolation until a
+non-exportable credential broker and kernel-enforced sandbox exist.
+
+Z.ai launch is provider-profile based, not a broad Claude-runtime target.
+`--spawn-zai` requires an exact `--provider-profile` whose immutable provider,
+account alias, model, endpoint, runtime, and redacted configuration digest form
+one identity. Z.ai profiles must use the official `https://api.z.ai/api/anthropic`
+endpoint, `claude-code` runtime, and an executable-only command. Before tmux
+mutation, NTM runs a fresh zero-tool, no-session-persistence Claude stream-JSON
+probe against the exact endpoint/model with every provider tool disabled. It
+requires a top-level successful result whose nonce and session ID match the
+same `system/init` record that names the exact model; absence is production
+NO-GO. The probe requires an explicit `ZAI_API_KEY` or deliberately Z.ai-scoped
+`ANTHROPIC_AUTH_TOKEN`, maps it to the one canonical child auth variable, and
+strips unrelated inherited credentials. The compiled pane command repeats that
+minimal-environment boundary and exits with `NTM_ZAI_AUTH_REQUIRED` if the tmux
+environment did not inherit a Z.ai token; preflight does not claim otherwise.
+The current official model guide lists `glm-5.3-flash`, but a documentation
+listing is not evidence that the selected account/plan can call it.
+The `zai-readonly-ci` policy, endpoint, runtime, and configuration digest are
+also profile-attested only: a Claude-compatible Z.ai TUI does not expose enough
+structured runtime evidence for NTM to independently prove per-invocation
+policy enforcement.
+
+Capacity claims follow the transport boundary. Native Grok ACP calls have
+exact-identity request admission with independent concurrency/token buckets,
+backoff, and circuit state within one NTM process. A Claude-compatible Z.ai TUI
+exposes only its process, not each underlying provider call, so NTM applies
+exact-identity admission around the live preflight and first authorized pane
+launch. Exact structured preflight business errors update the corresponding
+backoff/circuit state, but individual TUI model calls and their live errors
+remain unobservable, so request-capacity control and TUI live error feedback
+are advertised as `unavailable`. It does not infer provider health from a local
+launch and never silently changes provider identity.
 
 ### 2.3 Aliases for Backward Compatibility
 
@@ -246,7 +339,7 @@ as complete.
 | `--robot-send` with `--verify-render` | One `render_evidence` entry per target; require `delivered_and_rendered: true` for every target | NTM captures bounded pane output before and after dispatch. `delivered_and_rendered` requires dispatch success, both captures, and a changed rendered output. Missing, unchanged, or unavailable evidence makes the overall response `success: false`; it proves rendered delivery, not prompt comprehension. |
 | `--robot-send` with `--track` | `send` plus `ack.confirmations`, `ack.pending`, `ack.failed`, and `ack.timed_out` | The strongest prompt-consumption evidence. A confirmation reports its `ack_type`, time, and latency. Pending or timed-out panes require follow-up; do not retry blindly. |
 | `--robot-tail=SESSION --fresh` | Per-pane `capture_collected_at`, `capture_provenance`, and optional `capture_error` | A direct post-action observation. `capture_provenance: "live"` is fresh capture evidence; `"unavailable"` means the pane was not observed and is not evidence of no effect. |
-| `--robot-spawn` with `--spawn-wait` | The command waits up to `--spawn-timeout` for ready observations | Readiness-gated spawn evidence. A timeout is an error rather than a claim that all agents booted; inspect the resulting session with a fresh tail. |
+| `--robot-spawn` with `--spawn-wait` | The command waits up to `--timeout` for ready observations | Readiness-gated spawn evidence. Grok requires a positively identified authenticated empty composer; a timeout is an error rather than a claim that all agents booted. Inspect the resulting session with a fresh tail. |
 | `--robot-exit-cli`, `--robot-kill-agent`, and restart/relaunch paths | Per-pane `results`, including `shell_pid`, `agent_pids`, `shell_preserved`, and `verification_failed`; restart output also includes `pane_shell_pids`, `process_alive`, and relaunch status | Process/lifecycle evidence. `verification_failed` means observation failed, not that a pane was destroyed. A respawn must show a changed `pane_shell_pids.after`; unchanged or absent PID evidence is not a verified restart. |
 
 The durable attention feed mirrors actuation progress as `request`, `outcome`,
@@ -255,6 +348,40 @@ the target set, confirmations, pending targets, timeout state, and one of
 `confirmed`, `partial_timeout`, `timed_out`, or `pending`. It is suitable for
 asynchronous monitoring; command responses remain the primary evidence for the
 specific invocation.
+
+### 3.5 Provider Capability Discovery
+
+`--robot-provider-capabilities` is a local, read-only discovery surface. It
+returns the static transport evidence matrix, the compiled-in named Grok policy
+(name, sandbox, permission mode, digest, and rule counts), and the offline conformance
+harness description. When a configuration is loaded it adds only redacted
+provider-profile projections: selector and immutable identity hashes,
+exact-target/probe flags, and model-probe state. It never emits executable
+commands, endpoints, credentials, API keys, raw configuration, prompts, or
+provider output. Config-valid xAI profiles report
+`operation_evidence_required`; Z.ai profiles report `live_probe_required`.
+Neither state claims the account or operation has been qualified.
+
+The matrix is a contract for the evidence a transport can produce, not proof
+that a local account is enabled or qualified. In particular, an exact Z.ai
+profile still needs its fresh nonce-bound live probe before launch, and
+the ACP cancellation field remains unavailable until an authoritative
+provider-side cancellation contract and receipt are implemented. Run the
+offline harness explicitly with `--robot-provider-conformance
+--provider-profile=NAME
+--provider-transport=xai_acp|xai_grok_tui|zai_claude_runtime`. It uses a
+compiled redacted synthetic runtime, makes no live provider or network call,
+and is not a live qualification result. The report always covers no-write
+launch/identity, nonce delivery, exact error taxonomy, cancellation semantics,
+crash/outcome-unknown recovery, declared resumption support, and zero-residual
+cleanup. Its zero-residual observation is synthetic; transport cleanup remains
+`submission` evidence until a live process-tree/session residual check exists.
+
+For a separate opt-in no-write live Grok ACP check, run
+`NTM_LIVE_GROK_ACP=1 NTM_LIVE_GROK_MODEL=grok-4.6 go test -tags=integration ./internal/grok -run '^TestLiveACPReadOnlyRoundTrip$' -count=1 -v`
+only in an authenticated Grok environment you are authorized to use. This test
+is live evidence for that exact environment; it is not supplied by the
+synthetic conformance command.
 
 Example: dispatch a prompt and require bounded downstream evidence rather than
 assuming that an accepted keypress was consumed.
@@ -776,6 +903,10 @@ GLOBAL COMMANDS (bool flags)
   --robot-version         Version info
   --robot-snapshot        Unified state dump
   --robot-capabilities    API discovery
+  --robot-provider-capabilities  Provider transport/profile discovery
+  --robot-provider-conformance   Synthetic/offline provider adapter contract check
+  --robot-grok-acp-run           Native Grok ACP operation
+  --robot-grok-acp-receipt=ID    Read Grok ACP operation receipt
   --schema=TYPE           JSON Schema generation
 
 SESSION COMMANDS (=SESSION syntax)
@@ -805,5 +936,5 @@ OUTPUT FORMAT
 
 ---
 
-*Last updated: 2026-03-26*
+*Last updated: 2026-09-01*
 *Reference: bd-3045p, bd-12nbo, bd-j9jo3.9.4*

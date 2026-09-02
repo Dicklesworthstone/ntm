@@ -66,3 +66,28 @@ func TestParseRobotSpawnAgentFlag(t *testing.T) {
 		})
 	}
 }
+
+func TestParseRobotSpawnZAICountRejectsModelOverrides(t *testing.T) {
+	for _, tc := range []struct {
+		input   string
+		want    int
+		wantErr string
+	}{
+		{input: "", want: 0},
+		{input: "2", want: 2},
+		{input: "1:glm-5.3-flash", wantErr: "count only"},
+		{input: "1@high", wantErr: "count only"},
+		{input: "two", wantErr: "integer"},
+	} {
+		got, err := parseRobotSpawnZAICount(tc.input)
+		if tc.wantErr != "" {
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("parseRobotSpawnZAICount(%q) error=%v, want %q", tc.input, err, tc.wantErr)
+			}
+			continue
+		}
+		if err != nil || got != tc.want {
+			t.Fatalf("parseRobotSpawnZAICount(%q)=(%d,%v), want (%d,nil)", tc.input, got, err, tc.want)
+		}
+	}
+}

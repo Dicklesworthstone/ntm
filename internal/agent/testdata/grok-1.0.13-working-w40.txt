@@ -1,0 +1,7 @@
+Grok Build  1.0.13
+Workspace: [REDACTED]
+⠹ Waiting for response…
+Esc:cancel
+╭──────────────────────────────────────╮
+│ ❯                                    │
+╰─ Grok 4.6 (high) · default ──────────╯

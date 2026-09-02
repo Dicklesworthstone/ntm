@@ -33,6 +33,7 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
+	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/checkpoint"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	ctxmon "github.com/Dicklesworthstone/ntm/internal/context"
@@ -188,6 +189,112 @@ func TestRobotInvocationFromArgsPrefersOperationOverGlobalModifiers(t *testing.T
 	}
 }
 
+func TestProviderRobotCommandsAreRegisteredAndConfigOnly(t *testing.T) {
+	for _, name := range []string{"robot-grok-acp-run", "robot-grok-acp-receipt", "robot-provider-capabilities", "robot-provider-conformance"} {
+		if rootCmd.Flags().Lookup(name) == nil {
+			t.Fatalf("root flag --%s is not registered", name)
+		}
+		if got := startup.RobotFlagClassification[name]; got != startup.RequireConfig {
+			t.Fatalf("startup classification for --%s = %v, want RequireConfig", name, got)
+		}
+	}
+}
+
+func TestValidateProviderRobotCommandExclusivity(t *testing.T) {
+	newCommand := func() *cobra.Command {
+		cmd := &cobra.Command{Use: "ntm"}
+		cmd.Flags().Bool("robot-grok-acp-run", false, "")
+		cmd.Flags().String("robot-grok-acp-receipt", "", "")
+		cmd.Flags().Bool("robot-provider-capabilities", false, "")
+		cmd.Flags().Bool("robot-provider-conformance", false, "")
+		cmd.Flags().Bool("robot-status", false, "")
+		cmd.Flags().String("robot-send", "", "")
+		return cmd
+	}
+
+	t.Run("single provider command", func(t *testing.T) {
+		cmd := newCommand()
+		if err := cmd.Flags().Set("robot-grok-acp-run", "true"); err != nil {
+			t.Fatal(err)
+		}
+		if err := validateProviderRobotCommandExclusivity(cmd); err != nil {
+			t.Fatalf("single command rejected: %v", err)
+		}
+	})
+
+	for _, test := range []struct {
+		name  string
+		flags map[string]string
+	}{
+		{name: "both provider commands", flags: map[string]string{"robot-grok-acp-run": "true", "robot-provider-capabilities": "true"}},
+		{name: "conformance plus capabilities", flags: map[string]string{"robot-provider-conformance": "true", "robot-provider-capabilities": "true"}},
+		{name: "receipt plus run", flags: map[string]string{"robot-grok-acp-receipt": "op", "robot-grok-acp-run": "true"}},
+		{name: "earlier status branch", flags: map[string]string{"robot-provider-capabilities": "true", "robot-status": "true"}},
+		{name: "explicit empty send", flags: map[string]string{"robot-grok-acp-run": "true", "robot-send": ""}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cmd := newCommand()
+			for name, value := range test.flags {
+				if err := cmd.Flags().Set(name, value); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := validateProviderRobotCommandExclusivity(cmd); err == nil {
+				t.Fatal("conflicting commands were accepted")
+			}
+		})
+	}
+}
+
+func TestResolveGrokACPProviderProfileFailsClosed(t *testing.T) {
+	base := config.ProviderProfileConfig{
+		Provider:         "xai",
+		AccountAlias:     "kevin",
+		Model:            "grok-code",
+		Endpoint:         "https://api.x.ai/v1",
+		Runtime:          "grok",
+		ConfigSHA256:     strings.Repeat("a", 64),
+		Command:          "grok",
+		AutomationPolicy: agent.DefaultGrokAutomationPolicyName,
+		ExactTargetOnly:  true,
+	}
+	with := func(profile config.ProviderProfileConfig) *config.Config {
+		return &config.Config{ProviderProfiles: map[string]config.ProviderProfileConfig{"xai-grok-primary": profile}}
+	}
+
+	if _, err := resolveGrokACPProviderProfile(nil, "xai-grok-primary", "", ""); err == nil {
+		t.Fatal("nil config was accepted")
+	}
+	if _, err := resolveGrokACPProviderProfile(with(base), "claude", "", ""); err == nil {
+		t.Fatal("broad Claude target was accepted")
+	}
+
+	wrongRuntime := base
+	wrongRuntime.Runtime = "claude"
+	if _, err := resolveGrokACPProviderProfile(with(wrongRuntime), "xai-grok-primary", "", ""); err == nil {
+		t.Fatal("non-Grok runtime was accepted")
+	}
+	wrongPolicy := base
+	wrongPolicy.AutomationPolicy = "always-approve"
+	if _, err := resolveGrokACPProviderProfile(with(wrongPolicy), "xai-grok-primary", "", ""); err == nil {
+		t.Fatal("uncompiled automation policy was accepted")
+	}
+	if _, err := resolveGrokACPProviderProfile(with(base), "xai-grok-primary", "different-model", ""); err == nil {
+		t.Fatal("model override escaped the profile")
+	}
+	if _, err := resolveGrokACPProviderProfile(with(base), "xai-grok-primary", "", "different-binary"); err == nil {
+		t.Fatal("binary override escaped the profile")
+	}
+
+	got, err := resolveGrokACPProviderProfile(with(base), "xai-grok-primary", base.Model, base.Command)
+	if err != nil {
+		t.Fatalf("exact profile rejected: %v", err)
+	}
+	if !got.Identity.Valid() || got.Identity.Provider() != "xai" || got.Identity.Runtime() != "grok" || got.Model != base.Model || got.Binary != base.Command {
+		t.Fatalf("resolution = %+v, want exact xAI/Grok profile", got)
+	}
+}
+
 func TestJSONInvocationFromArgsHonorsExplicitBooleanAndTerminator(t *testing.T) {
 	tests := []struct {
 		name string
@@ -304,6 +411,7 @@ func resetFlags() {
 	robotHelp = false
 	robotStatus = false
 	robotVersion = false
+	robotProviderCapabilities = false
 	robotPlan = false
 	robotSnapshot = false
 	robotSince = ""
@@ -317,6 +425,12 @@ func resetFlags() {
 	robotSend = ""
 	robotSendMsg = ""
 	robotSendMsgFile = ""
+	robotSendOpID = ""
+	robotSendReceipt = ""
+	robotGrokACPRun = false
+	robotGrokACPModel = ""
+	robotGrokACPNonce = ""
+	robotGrokACPBinary = ""
 	robotSendEnter = true
 	robotSendAll = false
 	robotSendType = ""
@@ -358,6 +472,8 @@ func resetFlags() {
 	robotSpawnGmi = ""
 	robotSpawnAgy = ""
 	robotSpawnGrok = ""
+	robotSpawnZAI = ""
+	robotProviderProfile = ""
 	robotSpawnPreset = ""
 	robotSpawnNoUser = false
 	robotSpawnWait = false

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	agentpkg "github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/assignment"
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/config"
@@ -868,7 +869,7 @@ func TestRestartPaneReadinessAndDelayHonorCancellation(t *testing.T) {
 		ctx, cancel := context.WithCancel(t.Context())
 		var captureCalls, childCalls int
 		ready, err := waitForPaneAgentReadyWithContext(
-			ctx, "%7", 1234, "codex", time.Minute, time.Second,
+			ctx, "%7", 1234, "codex", 92, time.Minute, time.Second,
 			func(gotCtx context.Context, target string, lines int) (string, error) {
 				captureCalls++
 				if gotCtx != ctx || target != "%7" || lines != 50 {
@@ -1401,11 +1402,31 @@ func TestRestartAgentLaunchCommandNilConfigFallsBackToAlias(t *testing.T) {
 // GH#251 phase 2: grok has its own canonical launch command — and it must be
 // the grok command, never a fallback to claude's alias.
 func TestRestartAgentLaunchCommandGrokUsesGrokCommand(t *testing.T) {
-	if got := restartAgentLaunchCommand(nil, "grok", ""); got != "grok --always-approve" {
-		t.Fatalf("restartAgentLaunchCommand(nil, grok) = %q, want %q", got, "grok --always-approve")
+	if got := restartAgentLaunchCommand(nil, "grok", ""); got != agentpkg.DefaultGrokAutomationCommand {
+		t.Fatalf("restartAgentLaunchCommand(nil, grok) = %q, want %q", got, agentpkg.DefaultGrokAutomationCommand)
 	}
-	if got := restartLaunchAlias("grok-build"); got != "grok --always-approve" {
-		t.Fatalf("restartLaunchAlias(grok-build) = %q, want %q", got, "grok --always-approve")
+	if got := restartLaunchAlias("grok-build"); got != agentpkg.DefaultGrokAutomationCommand {
+		t.Fatalf("restartLaunchAlias(grok-build) = %q, want %q", got, agentpkg.DefaultGrokAutomationCommand)
+	}
+}
+
+func TestRestartAgentLaunchCommandRejectsZAIProfileFallback(t *testing.T) {
+	cmd, err := restartAgentLaunchCommandWithOverride(nil, "zai", "", restartLaunchOverride{})
+	if !errors.Is(err, agentpkg.ErrZAIProfileRelaunchRequired) || cmd != "" {
+		t.Fatalf("restartAgentLaunchCommandWithOverride(zai) = (%q, %v), want empty command and profile-required error", cmd, err)
+	}
+	if got := restartAgentLaunchCommand(nil, "zai", ""); got != "" {
+		t.Fatalf("restartAgentLaunchCommand(nil, zai) = %q, want no generic fallback", got)
+	}
+	if got := ResolveAgentType("z.ai"); got != "zai" {
+		t.Fatalf("ResolveAgentType(z.ai) = %q, want zai", got)
+	}
+}
+
+func TestRestartPreflightRejectsZAI(t *testing.T) {
+	err := validateRestartPaneTargets([]tmux.Pane{{ID: "%zai", Type: tmux.AgentZAI}})
+	if !errors.Is(err, agentpkg.ErrZAIProfileRelaunchRequired) {
+		t.Fatalf("validateRestartPaneTargets(zai) error = %v, want profile-required error", err)
 	}
 }
 

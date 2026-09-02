@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "redacted": true,
+  "fixtures": [
+    {"file": "grok-1.0.5-idle-w80.txt", "version": "1.0.5", "width": 80, "reason": "READY"},
+    {"file": "grok-1.0.13-idle-w120.txt", "version": "1.0.13", "width": 120, "reason": "READY"},
+    {"file": "grok-1.0.13-working-w40.txt", "version": "1.0.13", "width": 40, "reason": "UNREADY_ACTIVE_TURN"},
+    {"file": "grok-1.0.13-auth-w80.txt", "version": "1.0.13", "width": 80, "reason": "UNREADY_AUTHENTICATION_REQUIRED"}
+  ]
+}

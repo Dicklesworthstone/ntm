@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/tests/testutil"
 )
@@ -197,12 +198,12 @@ func TestRestorableAgentCommandGrok(t *testing.T) {
 		{
 			name: "shell command falls back to autonomous default",
 			pane: PaneState{AgentType: "grok", Command: "zsh"},
-			want: "grok --always-approve",
+			want: agent.DefaultGrokAutomationCommand,
 		},
 		{
 			name: "missing command falls back to autonomous default",
 			pane: PaneState{AgentType: "grok-build"},
-			want: "grok --always-approve",
+			want: agent.DefaultGrokAutomationCommand,
 		},
 	}
 

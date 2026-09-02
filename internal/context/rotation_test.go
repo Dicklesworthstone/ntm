@@ -841,8 +841,8 @@ func TestDefaultPaneSpawnerGrokCommand(t *testing.T) {
 	t.Parallel()
 
 	spawner := NewDefaultPaneSpawner(nil)
-	if got := spawner.getAgentCommand("grok-build"); got != "grok --always-approve" {
-		t.Fatalf("getAgentCommand(grok-build) = %q, want %q", got, "grok --always-approve")
+	if got := spawner.getAgentCommand("grok-build"); got != agent.DefaultGrokAutomationCommand {
+		t.Fatalf("getAgentCommand(grok-build) = %q, want %q", got, agent.DefaultGrokAutomationCommand)
 	}
 
 	cfg := &config.Config{}

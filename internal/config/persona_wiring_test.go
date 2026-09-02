@@ -3,6 +3,8 @@ package config
 import (
 	"strings"
 	"testing"
+
+	"github.com/Dicklesworthstone/ntm/internal/agent"
 )
 
 // TestPersonaWiringPerAgentType is the bd-ws7-docs-ux-truth-tqh3l.5 proof
@@ -124,8 +126,8 @@ func TestPersonaWiringWithoutPersona(t *testing.T) {
 	if err != nil {
 		t.Fatalf("grok template without persona: %v", err)
 	}
-	if grok != "grok --always-approve" {
-		t.Errorf("grok bare command = %q, want %q", grok, "grok --always-approve")
+	if grok != agent.DefaultGrokAutomationCommand {
+		t.Errorf("grok bare command = %q, want %q", grok, agent.DefaultGrokAutomationCommand)
 	}
 }
 

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 )
@@ -170,13 +171,16 @@ func TestAgentTypeGrokAliasesAreExact(t *testing.T) {
 }
 
 func TestAgentTypeValidateAutomatedRelaunch(t *testing.T) {
-	// GH#251 phase 2: Grok Build relaunch is implemented (grok --always-approve
-	// template + live-verified TUI markers), so the phase-one sentinel no
+	// GH#251 phase 2: Grok Build relaunch is implemented with the named
+	// least-privilege template and live-verified TUI markers, so the phase-one sentinel no
 	// longer fires for any grok alias.
 	for _, agentType := range []AgentType{AgentTypeGrok, "grok-build", "xai_grok_build", AgentTypeClaudeCode, AgentTypeCodex, AgentTypeGemini, AgentTypeUser, AgentTypeUnknown} {
 		if err := agentType.ValidateAutomatedRelaunch(); err != nil {
 			t.Errorf("AgentType(%q).ValidateAutomatedRelaunch() error = %v, want nil", agentType, err)
 		}
+	}
+	if err := AgentTypeZAI.ValidateAutomatedRelaunch(); !errors.Is(err, ErrZAIProfileRelaunchRequired) {
+		t.Fatalf("AgentTypeZAI.ValidateAutomatedRelaunch() error = %v, want ErrZAIProfileRelaunchRequired", err)
 	}
 }
 

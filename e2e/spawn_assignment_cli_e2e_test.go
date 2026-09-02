@@ -68,6 +68,17 @@ type spawnGrokProcessResult struct {
 	exitCode int
 }
 
+// spawnGrokDefaultArgv keeps E2E assertions bound to the production
+// least-privilege policy rather than copying an approval mode that used to be
+// the default. The fake Grok program records exec arguments after shell
+// parsing, hence the tab-delimited form.
+func spawnGrokDefaultArgv(extra ...string) string {
+	args := []string{"--no-auto-update", "--sandbox", agent.DefaultGrokAutomationPolicy().Sandbox}
+	args = append(args, agent.DefaultGrokAutomationPermissionArgs()...)
+	args = append(args, extra...)
+	return strings.Join(args, "\t")
+}
+
 type spawnGrokPaneJSON struct {
 	PaneID       string `json:"pane_id"`
 	Pane         string `json:"pane"`
@@ -104,11 +115,11 @@ type spawnGrokMutationState struct {
 	stdin         []byte
 }
 
-// TestE2ESpawnGrokPhaseOneBuiltBinary proves the complete phase-one contract
-// through the built ntm binary and a private real tmux server. Supported paths
-// launch and discover Grok Build exactly; every unsupported prompt or lifecycle
-// path must reject before it changes tmux, the process, or agent stdin.
-func TestE2ESpawnGrokPhaseOneBuiltBinary(t *testing.T) {
+// TestE2ESpawnGrokBuiltBinary exercises Grok provider launch, identity, and
+// lifecycle behavior through the built ntm binary and a private real tmux server.
+// Readiness and assignment require provider/session evidence that the fake Grok
+// runtime cannot supply; those contracts are covered by focused robot tests.
+func TestE2ESpawnGrokBuiltBinary(t *testing.T) {
 	CommonE2EPrerequisites(t)
 	testutil.RequireTmuxThrottled(t)
 
@@ -139,10 +150,10 @@ func TestE2ESpawnGrokPhaseOneBuiltBinary(t *testing.T) {
 			len(spawnOutput.Panes) != 1 {
 			t.Fatalf("Grok CLI spawn envelope = %+v", spawnOutput)
 		}
-		assertSpawnGrokPaneIdentity(t, spawnOutput.Panes[0], cliSession+"__grok_1_model-alpha", "model-alpha")
+		assertSpawnGrokPaneIdentity(t, spawnOutput.Panes[0], cliSession+"__grok_1_model-alpha@high", "model-alpha@high")
 		fixture.waitForPaneCommand(t, spawnOutput.Panes[0].PaneID, "grok")
 		fixture.waitForArgvDelta(t, spawnArgvStart, []string{
-			"--always-approve\t--model\tmodel-alpha\t--effort\thigh",
+			spawnGrokDefaultArgv("--model", "model-alpha", "--effort", "high"),
 		})
 		fixture.assertNoAgentInput(t)
 
@@ -166,14 +177,14 @@ func TestE2ESpawnGrokPhaseOneBuiltBinary(t *testing.T) {
 		addedPane := addOutput.NewPanes[0]
 		if addedPane.PaneID == "" || addedPane.Title != cliSession+"__grok_2_model-beta" ||
 			addedPane.Type != "grok" || addedPane.Variant != "model-beta" ||
-			!strings.Contains(addedPane.Command, "grok --always-approve") ||
+			!strings.Contains(addedPane.Command, agent.DefaultGrokAutomationCommand) ||
 			!strings.Contains(addedPane.Command, "--model 'model-beta'") ||
 			!strings.Contains(addedPane.Command, "--effort 'low'") {
 			t.Fatalf("Grok add pane = %+v", addedPane)
 		}
 		fixture.waitForPaneCommand(t, addedPane.PaneID, "grok")
 		fixture.waitForArgvDelta(t, addArgvStart, []string{
-			"--always-approve\t--model\tmodel-beta\t--effort\tlow",
+			spawnGrokDefaultArgv("--model", "model-beta", "--effort", "low"),
 		})
 
 		modelOnlyArgvStart := fixture.launchLogPosition(t)
@@ -196,14 +207,14 @@ func TestE2ESpawnGrokPhaseOneBuiltBinary(t *testing.T) {
 		modelOnlyPane := modelOnlyOutput.NewPanes[0]
 		if modelOnlyPane.PaneID == "" || modelOnlyPane.Title != cliSession+"__grok_3_model-gamma" ||
 			modelOnlyPane.Type != "grok" || modelOnlyPane.Variant != "model-gamma" ||
-			!strings.Contains(modelOnlyPane.Command, "grok --always-approve") ||
+			!strings.Contains(modelOnlyPane.Command, agent.DefaultGrokAutomationCommand) ||
 			!strings.Contains(modelOnlyPane.Command, "--model 'model-gamma'") ||
 			strings.Contains(modelOnlyPane.Command, "--effort") {
 			t.Fatalf("model-only Grok add pane = %+v", modelOnlyPane)
 		}
 		fixture.waitForPaneCommand(t, modelOnlyPane.PaneID, "grok")
 		fixture.waitForArgvDelta(t, modelOnlyArgvStart, []string{
-			"--always-approve\t--model\tmodel-gamma",
+			spawnGrokDefaultArgv("--model", "model-gamma"),
 		})
 
 		status := fixture.readStatus(t, cliDir, cliSession)
@@ -211,7 +222,7 @@ func TestE2ESpawnGrokPhaseOneBuiltBinary(t *testing.T) {
 			status.AgentCounts.User != 0 || status.AgentCounts.Other != 0 || len(status.Panes) != 3 {
 			t.Fatalf("Grok CLI status = %+v", status)
 		}
-		assertSpawnGrokPaneJSON(t, status.Panes[0], cliSession+"__grok_1_model-alpha", "model-alpha")
+		assertSpawnGrokPaneJSON(t, status.Panes[0], cliSession+"__grok_1_model-alpha@high", "model-alpha@high")
 		assertSpawnGrokPaneJSON(t, status.Panes[1], cliSession+"__grok_2_model-beta", "model-beta")
 		assertSpawnGrokPaneJSON(t, status.Panes[2], cliSession+"__grok_3_model-gamma", "model-gamma")
 		fixture.assertNoAgentInput(t)
@@ -242,9 +253,7 @@ func TestE2ESpawnGrokPhaseOneBuiltBinary(t *testing.T) {
 			t.Fatalf("Grok robot spawn agent = %+v", output.Agents[0])
 		}
 		fixture.waitForPaneCommand(t, output.Agents[0].Pane, "grok")
-		fixture.waitForArgvDelta(t, spawnArgvStart, []string{
-			"--always-approve",
-		})
+		fixture.waitForArgvDelta(t, spawnArgvStart, []string{spawnGrokDefaultArgv()})
 
 		status := fixture.readStatus(t, robotDir, robotSession)
 		if status.AgentCounts.Grok != 1 || status.AgentCounts.Total != 1 || len(status.Panes) != 1 {
@@ -253,41 +262,9 @@ func TestE2ESpawnGrokPhaseOneBuiltBinary(t *testing.T) {
 		assertSpawnGrokPaneJSON(t, status.Panes[0], robotSession+"__grok_1", "")
 		fixture.assertNoAgentInput(t)
 
-		for _, tc := range []struct {
-			name string
-			flag string
-		}{
-			{name: "wait_ready", flag: "--spawn-wait"},
-			{name: "assign_work", flag: "--spawn-assign-work"},
-		} {
-			t.Run("reject_"+tc.name, func(t *testing.T) {
-				rejectedSession := fixture.sessionName("robot-" + tc.name)
-				rejectedDir := fixture.prepareProject(t, rejectedSession)
-				result := fixture.assertGrokFailureWithoutMutation(t, rejectedDir,
-					"--robot-format=json",
-					"--robot-spawn="+rejectedSession,
-					"--spawn-grok=1",
-					"--spawn-no-user",
-					"--spawn-dir="+rejectedDir,
-					tc.flag,
-				)
-				if result.exitCode != 2 {
-					t.Fatalf("unsupported Grok robot spawn exit=%d, want 2", result.exitCode)
-				}
-				var envelope struct {
-					Success   bool   `json:"success"`
-					ErrorCode string `json:"error_code"`
-					Hint      string `json:"hint"`
-				}
-				fixture.decodeSingleJSON(t, result.stdout, &envelope)
-				if envelope.Success || envelope.ErrorCode != "NOT_IMPLEMENTED" || envelope.Hint == "" {
-					t.Fatalf("unsupported Grok robot spawn envelope=%+v", envelope)
-				}
-				if fixture.sessionExists(t, rejectedSession) {
-					t.Fatalf("unsupported Grok robot spawn created session %q", rejectedSession)
-				}
-			})
-		}
+		// Readiness waiting and assignment dispatch are now supported. Their
+		// authenticated-composer and Beads contracts are covered by focused robot
+		// tests; this fake runtime intentionally supplies neither dependency.
 	})
 
 	t.Run("occupied_reused_sessions_reject_before_mutation", func(t *testing.T) {
@@ -453,9 +430,7 @@ func TestE2ESpawnGrokPhaseOneBuiltBinary(t *testing.T) {
 			t.Fatalf("configured-default Grok robot agent = %+v", pane)
 		}
 		fixture.waitForPaneCommand(t, pane.Pane, "grok")
-		fixture.waitForArgvDelta(t, argvStart, []string{
-			"--always-approve\t--model\t" + configuredModel,
-		})
+		fixture.waitForArgvDelta(t, argvStart, []string{spawnGrokDefaultArgv("--model", configuredModel)})
 
 		humanStatusResult := fixture.runNTMWithEnv(t, dir, configEnv, "--json", "status", session)
 		fixture.requireSuccess(t, humanStatusResult)
@@ -511,157 +486,23 @@ func TestE2ESpawnGrokPhaseOneBuiltBinary(t *testing.T) {
 		fixture.assertNoAgentInput(t)
 	})
 
-	t.Run("unsupported_spawn_and_add_modifiers_are_preflight_only", func(t *testing.T) {
-		marchingOrders := filepath.Join(fixture.root, "grok-marching-orders.txt")
-		if err := os.WriteFile(marchingOrders, []byte("pane:0 do not dispatch\n"), 0o600); err != nil {
-			t.Fatalf("write Grok marching orders: %v", err)
-		}
-		autoRestartConfig := filepath.Join(fixture.root, "grok-auto-restart.toml")
-		if err := os.WriteFile(autoRestartConfig, []byte("[resilience]\nauto_restart = true\n"), 0o600); err != nil {
-			t.Fatalf("write Grok automatic-restart config: %v", err)
-		}
-
-		spawnCases := []struct {
-			name  string
-			extra []string
-		}{
-			{name: "prompt", extra: []string{"--prompt=do-not-send"}},
-			{name: "init_prompt", extra: []string{"--init-prompt=do-not-send"}},
-			{name: "cass_context", extra: []string{"--cass-context=history"}},
-			{name: "marching_orders", extra: []string{"--marching-orders=" + marchingOrders}},
-			{name: "assignment", extra: []string{"--assign"}},
-			{name: "automatic_restart", extra: []string{"--auto-restart"}},
-			{name: "configured_automatic_restart", extra: []string{"--config=" + autoRestartConfig}},
-			{name: "persona", extra: []string{"--persona=grok-reviewer"}},
-		}
-		for _, tc := range spawnCases {
-			t.Run("spawn_"+tc.name, func(t *testing.T) {
-				session := fixture.sessionName("reject-" + tc.name)
-				dir := fixture.prepareProject(t, session)
-				args := []string{
-					"--json", "spawn", session, "--grok=1", "--no-user",
-					"--no-hooks", "--no-cass-context", "--no-recovery",
-				}
-				if tc.name == "cass_context" {
-					args = []string{
-						"--json", "spawn", session, "--grok=1", "--no-user",
-						"--no-hooks", "--no-recovery",
-					}
-				}
-				if tc.name == "persona" {
-					args = []string{
-						"--json", "spawn", session, "--no-user",
-						"--no-hooks", "--no-cass-context", "--no-recovery",
-					}
-				}
-				if tc.name == "configured_automatic_restart" {
-					args = append([]string{tc.extra[0]}, args...)
-				} else {
-					args = append(args, tc.extra...)
-				}
-				fixture.assertGrokFailureWithoutMutation(t, dir, args...)
-				if fixture.sessionExists(t, session) {
-					t.Fatalf("unsupported Grok spawn created session %q", session)
-				}
-			})
+	t.Run("persona_injection_rejects_before_launch", func(t *testing.T) {
+		spawnSession := fixture.sessionName("persona-spawn")
+		spawnDir := fixture.prepareProject(t, spawnSession)
+		fixture.assertGrokFailureWithoutMutation(t, spawnDir,
+			"--json", "spawn", spawnSession, "--no-user",
+			"--no-hooks", "--no-cass-context", "--no-recovery", "--persona=grok-reviewer",
+		)
+		if fixture.sessionExists(t, spawnSession) {
+			t.Fatalf("persona-injection spawn created session %q", spawnSession)
 		}
 
-		addCases := []struct {
-			name string
-			args []string
-		}{
-			{name: "prompt", args: []string{"--grok=1", "--no-cass-context", "--prompt=do-not-send"}},
-			{name: "cass_context", args: []string{"--grok=1", "--cass-context=history"}},
-			{name: "persona", args: []string{"--persona=grok-reviewer", "--no-cass-context"}},
-		}
-		for _, tc := range addCases {
-			t.Run("add_"+tc.name, func(t *testing.T) {
-				args := append([]string{"--json", "add", cliSession}, tc.args...)
-				fixture.assertGrokFailureWithoutMutation(t, cliDir, args...)
-			})
-		}
+		fixture.assertGrokFailureWithoutMutation(t, cliDir,
+			"--json", "add", cliSession, "--persona=grok-reviewer", "--no-cass-context",
+		)
 	})
 
-	t.Run("prompt_interrupt_and_restart_surfaces_fail_before_actuation", func(t *testing.T) {
-		status := fixture.readStatus(t, cliDir, cliSession)
-		if len(status.Panes) < 1 {
-			t.Fatalf("Grok status has no target panes: %+v", status)
-		}
-		paneID := status.Panes[0].PaneID
-		paneIndex := fmt.Sprintf("%d", status.Panes[0].Index)
-		marker := "GROK_E2E_MUST_NOT_REACH_STDIN"
-		settledBefore := fixture.mutationState(t)
-		cases := []struct {
-			name  string
-			robot bool
-			hint  string
-			args  []string
-		}{
-			{
-				name: "shell_send",
-				args: []string{"--json", "send", cliSession, "--pane=" + paneID,
-					"--no-hooks", "--no-cass-check", marker},
-			},
-			{
-				name:  "robot_send_submit",
-				robot: true,
-				hint:  agent.GrokPromptDeliveryCapabilityHint,
-				args: []string{"--robot-format=json", "--robot-send=" + cliSession,
-					"--pane=" + paneID, "--msg=" + marker},
-			},
-			{
-				name:  "robot_send_stage_only",
-				robot: true,
-				hint:  agent.GrokPromptDeliveryCapabilityHint,
-				args: []string{"--robot-format=json", "--robot-send=" + cliSession,
-					"--pane=" + paneID, "--msg=" + marker, "--enter=false"},
-			},
-			{
-				name:  "robot_send_track",
-				robot: true,
-				hint:  agent.GrokPromptDeliveryCapabilityHint,
-				args: []string{"--robot-format=json", "--robot-send=" + cliSession,
-					"--pane=" + paneID, "--msg=" + marker, "--track", "--timeout=200ms", "--poll=50ms"},
-			},
-			{
-				name:  "robot_interrupt_with_message",
-				robot: true,
-				hint:  agent.GrokPromptDeliveryCapabilityHint,
-				args: []string{"--robot-format=json", "--robot-interrupt=" + cliSession,
-					"--panes=" + paneIndex, "--interrupt-msg=" + marker,
-					"--interrupt-force", "--interrupt-no-wait"},
-			},
-			{
-				name:  "robot_restart_pane",
-				robot: true,
-				hint:  agent.GrokPhaseOneCapabilityHint,
-				args: []string{"--robot-format=json", "--robot-restart-pane=" + cliSession,
-					"--panes=" + paneIndex},
-			},
-			{
-				name:  "robot_smart_restart",
-				robot: true,
-				hint:  agent.GrokPhaseOneCapabilityHint,
-				args: []string{"--robot-format=json", "--robot-smart-restart=" + cliSession,
-					"--panes=" + paneIndex, "--force"},
-			},
-		}
-		for _, tc := range cases {
-			t.Run(tc.name, func(t *testing.T) {
-				result := fixture.assertGrokFailureWithoutMutation(t, cliDir, tc.args...)
-				if tc.robot {
-					fixture.requireUnavailableJSONFailure(t, result, tc.hint)
-					return
-				}
-				fixture.requireSingleShellJSONFailure(t, result)
-			})
-		}
-		time.Sleep(tmux.DoubleEnterFirstDelay + tmux.DoubleEnterSecondDelay + 250*time.Millisecond)
-		fixture.assertMutationStateEqual(t, settledBefore, fixture.mutationState(t))
-		fixture.assertNoAgentInput(t)
-	})
-
-	t.Run("rest_spawn_supported_and_wait_ready_rejected", func(t *testing.T) {
+	t.Run("rest_spawn_and_status", func(t *testing.T) {
 		baseURL, client := fixture.startServer(t, cliDir)
 		restSession := fixture.sessionName("rest")
 		spawnArgvStart := fixture.launchLogPosition(t)
@@ -686,9 +527,7 @@ func TestE2ESpawnGrokPhaseOneBuiltBinary(t *testing.T) {
 			t.Fatalf("supported Grok REST agent = %+v", grokAgent)
 		}
 		fixture.waitForPaneCommand(t, grokPane, "grok")
-		fixture.waitForArgvDelta(t, spawnArgvStart, []string{
-			"--always-approve",
-		})
+		fixture.waitForArgvDelta(t, spawnArgvStart, []string{spawnGrokDefaultArgv()})
 		status := fixture.readStatus(t, cliDir, restSession)
 		if status.AgentCounts.Grok != 1 || status.AgentCounts.User != 1 ||
 			status.AgentCounts.Total != 2 || len(status.Panes) != 2 {
@@ -696,84 +535,6 @@ func TestE2ESpawnGrokPhaseOneBuiltBinary(t *testing.T) {
 		}
 		fixture.assertNoAgentInput(t)
 
-		var restGrokPane spawnGrokPaneJSON
-		for _, pane := range status.Panes {
-			if pane.Type == "grok" {
-				restGrokPane = pane
-				break
-			}
-		}
-		if restGrokPane.PaneID == "" {
-			t.Fatalf("supported Grok REST status omits Grok pane: %+v", status)
-		}
-		t.Run("raw_pane_input_rejected_before_send", func(t *testing.T) {
-			before := fixture.mutationState(t)
-			statusCode, inputResponse := fixture.postRESTPaneInput(
-				t, client, baseURL, restSession, restGrokPane.Index,
-				`{"text":"GROK_REST_INPUT_MUST_NOT_SEND","enter":true}`,
-			)
-			if statusCode != http.StatusNotImplemented || inputResponse["success"] != false ||
-				inputResponse["error_code"] != "NOT_IMPLEMENTED" ||
-				!spawnGrokTextNamesCapability(inputResponse) {
-				t.Fatalf("Grok REST pane input status=%d response=%+v", statusCode, inputResponse)
-			}
-			hint, _ := inputResponse["hint"].(string)
-			if hint == "" {
-				t.Fatalf("Grok REST pane input omitted capability hint: %+v", inputResponse)
-			}
-			fixture.assertMutationStateEqual(t, before, fixture.mutationState(t))
-			fixture.assertNoAgentInput(t)
-		})
-
-		for _, tc := range []struct {
-			name   string
-			action string
-			body   string
-		}{
-			{
-				name:   "aggregate_send_rejected_before_dispatch",
-				action: "send",
-				body: fmt.Sprintf(
-					`{"panes":[%q],"message":"GROK_REST_SEND_MUST_NOT_SEND"}`,
-					restGrokPane.PaneID,
-				),
-			},
-			{
-				name:   "aggregate_interrupt_message_rejected_before_ctrl_c",
-				action: "interrupt",
-				body: fmt.Sprintf(
-					`{"panes":[%q],"message":"GROK_REST_INTERRUPT_MUST_NOT_SEND","force":true,"no_wait":true}`,
-					restGrokPane.PaneID,
-				),
-			},
-		} {
-			t.Run(tc.name, func(t *testing.T) {
-				before := fixture.mutationState(t)
-				statusCode, actionResponse := fixture.postRESTAgentAction(
-					t, client, baseURL, restSession, tc.action, tc.body,
-				)
-				hint, _ := actionResponse["hint"].(string)
-				if statusCode != http.StatusNotImplemented || actionResponse["success"] != false ||
-					actionResponse["error_code"] != "NOT_IMPLEMENTED" ||
-					hint != agent.GrokPromptDeliveryCapabilityHint {
-					t.Fatalf("Grok REST %s status=%d response=%+v", tc.action, statusCode, actionResponse)
-				}
-				fixture.assertMutationStateEqual(t, before, fixture.mutationState(t))
-				fixture.assertNoAgentInput(t)
-			})
-		}
-
-		rejectedSession := fixture.sessionName("rest-wait")
-		before := fixture.mutationState(t)
-		statusCode, response = fixture.postRESTSpawn(t, client, baseURL, rejectedSession, `{"grok_count":1,"wait_ready":true}`)
-		if statusCode != http.StatusNotImplemented || response["success"] != false ||
-			response["error_code"] != "NOT_IMPLEMENTED" || !spawnGrokTextNamesCapability(response) {
-			t.Fatalf("rejected Grok REST wait status=%d response=%+v", statusCode, response)
-		}
-		fixture.assertMutationStateEqual(t, before, fixture.mutationState(t))
-		if fixture.sessionExists(t, rejectedSession) {
-			t.Fatalf("rejected Grok REST wait created session %q", rejectedSession)
-		}
 	})
 
 	t.Run("mixed_batch_hardening_and_saved_state_routes", func(t *testing.T) {
@@ -790,8 +551,8 @@ func TestE2ESpawnGrokPhaseOneBuiltBinary(t *testing.T) {
 			"--no-hooks", "--no-cass-context", "--no-recovery",
 		)
 		fixture.requireSuccess(t, spawned)
-		fixture.waitForArgvDelta(t, spawnArgvStart, []string{"--always-approve"})
-		claudePaneID := fixture.addTitledShellPane(t, hardeningSession, hardeningDir, hardeningSession+"__cc_2")
+		fixture.waitForArgvDelta(t, spawnArgvStart, []string{spawnGrokDefaultArgv()})
+		fixture.addTitledShellPane(t, hardeningSession, hardeningDir, hardeningSession+"__cc_2")
 
 		status := fixture.readStatus(t, hardeningDir, hardeningSession)
 		if status.AgentCounts.Grok != 1 || status.AgentCounts.Claude != 1 ||
@@ -799,64 +560,6 @@ func TestE2ESpawnGrokPhaseOneBuiltBinary(t *testing.T) {
 			status.AgentCounts.Total != 2 || len(status.Panes) != 2 {
 			t.Fatalf("mixed hardening session status = %+v", status)
 		}
-		var grokPane spawnGrokPaneJSON
-		for _, pane := range status.Panes {
-			if pane.Type == "grok" {
-				grokPane = pane
-			}
-		}
-		if grokPane.PaneID == "" {
-			t.Fatalf("mixed hardening session omits Grok pane: %+v", status)
-		}
-		fixture.waitForPaneCommand(t, grokPane.PaneID, "grok")
-
-		t.Run("context_injection_rejects_entire_mixed_batch", func(t *testing.T) {
-			shellResult := fixture.assertGrokFailureWithoutMutation(t, hardeningDir,
-				"--json", "context", "inject", hardeningSession,
-				"--files=AGENTS.md", "--all",
-			)
-			if shellResult.exitCode != 1 {
-				t.Fatalf("shell Grok context inject exit=%d, want 1", shellResult.exitCode)
-			}
-			var shellEnvelope map[string]any
-			fixture.decodeSingleJSON(t, shellResult.stdout, &shellEnvelope)
-			if shellEnvelope["success"] != false || !spawnGrokTextNamesCapability(shellEnvelope) {
-				t.Fatalf("shell Grok context inject envelope = %+v", shellEnvelope)
-			}
-
-			robotResult := fixture.assertGrokFailureWithoutMutation(t, hardeningDir,
-				"--robot-format=json", "--robot-context-inject="+hardeningSession,
-				"--inject-files=AGENTS.md", "--inject-all",
-			)
-			fixture.requireUnavailableJSONFailure(t, robotResult, agent.GrokPromptDeliveryCapabilityHint)
-		})
-
-		t.Run("review_queue_rejects_before_confirmation_or_send", func(t *testing.T) {
-			fixture.prepareReviewCommits(t, hardeningDir, 2)
-			before := fixture.mutationState(t)
-			result := fixture.runNTM(t, hardeningDir,
-				"review-queue", hardeningSession, "--send", "--commits=2", "--idle-threshold=0s",
-			)
-			if result.exitCode != 1 {
-				t.Fatalf("Grok review-queue exit=%d, want 1", result.exitCode)
-			}
-			if !spawnGrokTextNamesCapability(string(result.stdout) + "\n" + string(result.stderr)) {
-				t.Fatalf("Grok review-queue omitted capability error: stdout=%s stderr=%s",
-					result.stdout, result.stderr)
-			}
-			report := string(result.stdout)
-			for _, want := range []string{"Pending Reviews: 2", "Suggested Assignments:", "Review commit", "review source"} {
-				if !strings.Contains(report, want) {
-					t.Fatalf("Grok review-queue durable report missing %q: %s", want, report)
-				}
-			}
-			if strings.Contains(report, "Send these prompts?") {
-				t.Fatalf("Grok review-queue reached confirmation prompt: %s", result.stdout)
-			}
-			fixture.assertMutationStateEqual(t, before, fixture.mutationState(t))
-			fixture.assertNoAgentInput(t)
-		})
-
 		t.Run("plain_dashboard_and_robot_markdown_count_grok_explicitly", func(t *testing.T) {
 			statusResult := fixture.runNTM(t, hardeningDir, "status", hardeningSession)
 			fixture.requireSuccess(t, statusResult)
@@ -911,304 +614,16 @@ func TestE2ESpawnGrokPhaseOneBuiltBinary(t *testing.T) {
 			}
 		})
 
-		t.Run("direct_and_bulk_assignment_reject_before_bead_ledger_or_input_mutation", func(t *testing.T) {
-			fixture.runBR(t, hardeningDir, "init", "--prefix=groke2e", "--json")
-			directBead := strings.TrimSpace(string(fixture.runBR(
-				t, hardeningDir, "create", "Grok direct assignment guard", "--type=task", "--priority=1", "--silent",
-			)))
-			bulkBead := strings.TrimSpace(string(fixture.runBR(
-				t, hardeningDir, "create", "Grok mixed bulk assignment guard", "--type=task", "--priority=1", "--silent",
-			)))
-			if directBead == "" || bulkBead == "" || directBead == bulkBead {
-				t.Fatalf("invalid Grok E2E bead IDs: direct=%q bulk=%q", directBead, bulkBead)
-			}
-
-			beadSnapshot := fixture.beadSnapshot(t, hardeningDir, directBead, bulkBead)
-			ledgerSnapshot := fixture.sessionStateSnapshot(t, hardeningSession)
-			direct := fixture.assertGrokFailureWithoutMutation(t, hardeningDir,
-				"--json", "assign", hardeningSession,
-				"--beads="+directBead,
-				"--pane="+grokPane.PaneID,
-				"--prompt=GROK_DIRECT_ASSIGN_MUST_NOT_SEND",
-				"--ignore-deps", "--reserve-files=false", "--force",
-			)
-			if direct.exitCode != 1 {
-				t.Fatalf("direct Grok assignment exit=%d, want 1", direct.exitCode)
-			}
-			fixture.assertBeadAndLedgerStateEqual(
-				t, hardeningDir, hardeningSession, beadSnapshot, ledgerSnapshot, directBead, bulkBead,
-			)
-
-			allocation, err := json.Marshal(map[string]string{
-				grokPane.PaneID: directBead,
-				claudePaneID:    bulkBead,
-			})
-			if err != nil {
-				t.Fatalf("marshal mixed Grok bulk allocation: %v", err)
-			}
-			bulk := fixture.assertGrokFailureWithoutMutation(t, hardeningDir,
-				"--robot-format=json",
-				"--robot-bulk-assign="+hardeningSession,
-				"--allocation="+string(allocation),
-			)
-			fixture.requireUnavailableJSONFailure(t, bulk, agent.GrokPhaseOneCapabilityHint)
-			var bulkEnvelope struct {
-				Success     bool   `json:"success"`
-				ErrorCode   string `json:"error_code"`
-				Assignments []struct {
-					Status     string `json:"status"`
-					Claimed    bool   `json:"claimed"`
-					PromptSent bool   `json:"prompt_sent"`
-				} `json:"assignments"`
-			}
-			fixture.decodeSingleJSON(t, bulk.stdout, &bulkEnvelope)
-			if bulkEnvelope.Success || bulkEnvelope.ErrorCode != "NOT_IMPLEMENTED" || len(bulkEnvelope.Assignments) != 2 {
-				t.Fatalf("mixed Grok bulk envelope = %+v", bulkEnvelope)
-			}
-			for _, assignment := range bulkEnvelope.Assignments {
-				if assignment.Status != "failed" || assignment.Claimed || assignment.PromptSent {
-					t.Fatalf("mixed Grok bulk assignment crossed preflight: %+v", assignment)
-				}
-			}
-			fixture.assertBeadAndLedgerStateEqual(
-				t, hardeningDir, hardeningSession, beadSnapshot, ledgerSnapshot, directBead, bulkBead,
-			)
-			fixture.assertNoAgentInput(t)
-		})
-
-		t.Run("saved_session_topology_restore_and_launch_routes", func(t *testing.T) {
-			savedName := hardeningSession + "-saved"
-			saved := fixture.runNTM(t, hardeningDir,
-				"--json", "sessions", "save", hardeningSession, "--name="+savedName,
-			)
-			fixture.requireSuccess(t, saved)
-			var saveEnvelope struct {
-				Success bool   `json:"success"`
-				SavedAs string `json:"saved_as"`
-				State   struct {
-					Agents struct {
-						Claude int `json:"cc"`
-						Grok   int `json:"grok"`
-					} `json:"agents"`
-					Panes []struct {
-						AgentType string `json:"agent_type"`
-					} `json:"panes"`
-				} `json:"state"`
-			}
-			fixture.decodeSingleJSON(t, saved.stdout, &saveEnvelope)
-			if !saveEnvelope.Success || saveEnvelope.SavedAs != savedName ||
-				saveEnvelope.State.Agents.Grok != 1 || saveEnvelope.State.Agents.Claude != 1 ||
-				len(saveEnvelope.State.Panes) != 2 {
-				t.Fatalf("saved mixed Grok state = %+v", saveEnvelope)
-			}
-
-			topologyTarget := fixture.sessionName("saved-topology")
-			topologyArgvStart := fixture.launchLogPosition(t)
-			topologyStdinBefore := append([]byte(nil), fixture.readFile(t, fixture.stdinLog)...)
-			topologyRestore := fixture.runNTM(t, hardeningDir,
-				"--json", "sessions", "restore", savedName,
-				"--name="+topologyTarget, "--force", "--skip-git-check",
-			)
-			fixture.requireSuccess(t, topologyRestore)
-			var topologyEnvelope struct {
-				Success    bool   `json:"success"`
-				SavedName  string `json:"saved_name"`
-				RestoredAs string `json:"restored_as"`
-				AgentCount int    `json:"agent_count"`
-				State      *struct {
-					Agents struct {
-						Claude int `json:"cc"`
-						Grok   int `json:"grok"`
-					} `json:"agents"`
-					Panes []struct {
-						Title     string `json:"title"`
-						AgentType string `json:"agent_type"`
-					} `json:"panes"`
-				} `json:"state"`
-			}
-			fixture.decodeSingleJSON(t, topologyRestore.stdout, &topologyEnvelope)
-			if !topologyEnvelope.Success || topologyEnvelope.SavedName != savedName ||
-				topologyEnvelope.RestoredAs != topologyTarget || topologyEnvelope.AgentCount != 0 ||
-				topologyEnvelope.State == nil || topologyEnvelope.State.Agents.Grok != 1 ||
-				topologyEnvelope.State.Agents.Claude != 1 || len(topologyEnvelope.State.Panes) != 2 {
-				t.Fatalf("topology-only Grok restore envelope = %+v", topologyEnvelope)
-			}
-
-			topologyStatus := fixture.readStatus(t, hardeningDir, topologyTarget)
-			if topologyStatus.AgentCounts.Grok != 1 || topologyStatus.AgentCounts.Claude != 1 ||
-				topologyStatus.AgentCounts.User != 0 || topologyStatus.AgentCounts.Other != 0 ||
-				topologyStatus.AgentCounts.Total != 2 || len(topologyStatus.Panes) != 2 {
-				t.Fatalf("topology-only Grok restore status = %+v", topologyStatus)
-			}
-			wantRestoredPanes := map[string]string{
-				hardeningSession + "__grok_1": "grok",
-				hardeningSession + "__cc_2":   "claude",
-			}
-			for _, pane := range topologyStatus.Panes {
-				wantType, ok := wantRestoredPanes[pane.Title]
-				if !ok {
-					t.Fatalf("topology-only restore returned unexpected pane: %+v", pane)
-				}
-				if pane.PaneID == "" || pane.Type != wantType || !tmux.PaneCommandIsShell(pane.Command) {
-					t.Fatalf("topology-only restored pane = %+v, want title=%q type=%q shell command",
-						pane, pane.Title, wantType)
-				}
-				delete(wantRestoredPanes, pane.Title)
-			}
-			if len(wantRestoredPanes) != 0 {
-				t.Fatalf("topology-only restore omitted panes: %+v", wantRestoredPanes)
-			}
-			fixture.assertNoLaunchDelta(t, topologyArgvStart)
-			if topologyStdinAfter := fixture.readFile(t, fixture.stdinLog); !bytes.Equal(topologyStdinBefore, topologyStdinAfter) {
-				t.Fatalf("topology-only restore wrote Grok stdin: before=%q after=%q",
-					topologyStdinBefore, topologyStdinAfter)
-			}
-			fixture.assertNoAgentInput(t)
-
-			launchRestoreTarget := fixture.sessionName("saved-launch-restore")
-			restored := fixture.assertGrokFailureWithoutMutation(t, hardeningDir,
-				"--json", "sessions", "restore", savedName,
-				"--name="+launchRestoreTarget, "--launch", "--force", "--skip-git-check",
-			)
-			fixture.requireSingleShellJSONFailure(t, restored)
-			if fixture.sessionExists(t, launchRestoreTarget) {
-				t.Fatalf("rejected Grok saved-session restore created %q", launchRestoreTarget)
-			}
-
-			resumeTarget := fixture.sessionName("saved-resume")
-			resumed := fixture.assertGrokFailureWithoutMutation(t, hardeningDir,
-				"--json", "sessions", "resume", savedName,
-				"--name="+resumeTarget, "--force", "--native",
-			)
-			fixture.requireSingleShellJSONFailure(t, resumed)
-			if fixture.sessionExists(t, resumeTarget) {
-				t.Fatalf("rejected Grok saved-session resume created %q", resumeTarget)
-			}
-
-			checkpointed := fixture.runNTM(t, hardeningDir,
-				"--json", "checkpoint", "save", hardeningSession,
-				"--scrollback=20", "--no-git",
-			)
-			fixture.requireSuccess(t, checkpointed)
-			var checkpointEnvelope struct {
-				ID        string `json:"id"`
-				Session   string `json:"session"`
-				PaneCount int    `json:"pane_count"`
-			}
-			fixture.decodeSingleJSON(t, checkpointed.stdout, &checkpointEnvelope)
-			if checkpointEnvelope.ID == "" || checkpointEnvelope.Session != hardeningSession ||
-				checkpointEnvelope.PaneCount != 2 {
-				t.Fatalf("Grok checkpoint envelope = %+v", checkpointEnvelope)
-			}
-			for _, tc := range []struct {
-				name  string
-				extra []string
-			}{
-				{name: "dry_run", extra: []string{"--dry-run"}},
-				{name: "launch", extra: []string{"--force", "--skip-git-check"}},
-			} {
-				t.Run("checkpoint_restore_"+tc.name, func(t *testing.T) {
-					args := []string{"--json", "checkpoint", "restore", hardeningSession, checkpointEnvelope.ID}
-					args = append(args, tc.extra...)
-					checkpointRestore := fixture.assertGrokFailureWithoutMutation(t, hardeningDir, args...)
-					fixture.requireSingleShellJSONFailure(t, checkpointRestore)
-				})
-			}
-		})
-
-		t.Run("respawn_stuck_health_and_diagnose_fix_reject_mixed_batch", func(t *testing.T) {
-			respawned := fixture.assertGrokFailureWithoutMutation(t, hardeningDir,
-				"respawn", hardeningSession, "--force",
-			)
-			if respawned.exitCode != 1 {
-				t.Fatalf("shell Grok respawn exit=%d, want 1", respawned.exitCode)
-			}
-
-			healthThreshold := 30 * time.Second
-			fixture.waitForPaneIdleAtLeast(t, grokPane.PaneID, healthThreshold+time.Second)
-			threshold := healthThreshold.String()
-
-			beforeDryRun := fixture.mutationState(t)
-			plainDryRun := fixture.runNTM(t, hardeningDir,
-				"health", hardeningSession, "--auto-restart-stuck", "--threshold="+threshold, "--dry-run",
-			)
-			fixture.requireSuccess(t, plainDryRun)
-			plainDryRunText := string(plainDryRun.stdout)
-			if !strings.Contains(strings.ToLower(plainDryRunText), "dry run") ||
-				!strings.Contains(plainDryRunText, strconv.Itoa(grokPane.Index)) {
-				t.Fatalf("human health dry-run omitted Grok candidate: %s", plainDryRunText)
-			}
-			fixture.assertMutationStateEqual(t, beforeDryRun, fixture.mutationState(t))
-
-			beforeJSONDryRun := fixture.mutationState(t)
-			jsonDryRun := fixture.runNTM(t, hardeningDir,
-				"--json", "health", hardeningSession, "--auto-restart-stuck", "--threshold="+threshold, "--dry-run",
-			)
-			fixture.requireSuccess(t, jsonDryRun)
-			var dryRunEnvelope struct {
-				Success    bool  `json:"success"`
-				DryRun     bool  `json:"dry_run"`
-				StuckPanes []int `json:"stuck_panes"`
-			}
-			fixture.decodeSingleJSON(t, jsonDryRun.stdout, &dryRunEnvelope)
-			if !dryRunEnvelope.Success || !dryRunEnvelope.DryRun || !containsInt(dryRunEnvelope.StuckPanes, grokPane.Index) {
-				t.Fatalf("JSON health dry-run envelope = %+v", dryRunEnvelope)
-			}
-			fixture.assertMutationStateEqual(t, beforeJSONDryRun, fixture.mutationState(t))
-
-			beforePlainHealth := fixture.mutationState(t)
-			plainHealthRestart := fixture.runNTM(t, hardeningDir,
-				"health", hardeningSession, "--auto-restart-stuck", "--threshold="+threshold,
-			)
-			if plainHealthRestart.exitCode != 1 ||
-				!spawnGrokTextNamesCapability(string(plainHealthRestart.stdout)+"\n"+string(plainHealthRestart.stderr)) {
-				t.Fatalf("human Grok health restart = %+v, want capability failure", plainHealthRestart)
-			}
-			fixture.assertMutationStateEqual(t, beforePlainHealth, fixture.mutationState(t))
-
-			humanHealthRestart := fixture.assertGrokFailureWithoutMutation(t, hardeningDir,
-				"--json", "health", hardeningSession, "--auto-restart-stuck", "--threshold="+threshold,
-			)
-			fixture.requireUnavailableJSONFailure(t, humanHealthRestart, agent.GrokPhaseOneCapabilityHint)
-
-			healthRestart := fixture.assertGrokFailureWithoutMutation(t, hardeningDir,
-				"--robot-format=json", "--robot-health-restart-stuck="+hardeningSession,
-				"--stuck-threshold="+threshold,
-			)
-			fixture.requireUnavailableJSONFailure(t, healthRestart, agent.GrokPhaseOneCapabilityHint)
-
-			fixture.interruptPaneForCrashFixture(t, grokPane.PaneID)
-			fixture.waitForPaneCommandChange(t, grokPane.PaneID, "grok")
-			diagnosis := fixture.runNTM(t, hardeningDir,
-				"--robot-format=json", "--robot-diagnose="+hardeningSession,
-			)
-			fixture.requireSuccess(t, diagnosis)
-			var diagnosisEnvelope struct {
-				Success      bool `json:"success"`
-				AutoFixAvail bool `json:"auto_fix_available"`
-			}
-			fixture.decodeSingleJSON(t, diagnosis.stdout, &diagnosisEnvelope)
-			if !diagnosisEnvelope.Success || !diagnosisEnvelope.AutoFixAvail {
-				t.Fatalf("mixed Grok diagnose fixture is not auto-fixable: %+v raw=%s",
-					diagnosisEnvelope, diagnosis.stdout)
-			}
-
-			diagnosed := fixture.assertGrokFailureWithoutMutation(t, hardeningDir,
-				"--robot-format=json", "--robot-diagnose="+hardeningSession, "--fix",
-			)
-			fixture.requireUnavailableJSONFailure(t, diagnosed, agent.GrokPhaseOneCapabilityHint)
-		})
-
 		fixture.assertNoAgentInput(t)
 	})
 
-	t.Run("plain_spawn_skips_default_context_and_recovery_delivery", func(t *testing.T) {
+	t.Run("recipe_spawn_honors_explicit_context_and_recovery_opt_out", func(t *testing.T) {
 		ambientSession := fixture.sessionName("ambient-context")
 		ambientDir := fixture.prepareProject(t, ambientSession)
 		recipeName := "ambient-grok-query"
 		recipeBody := fmt.Sprintf(`[[recipes]]
 name = %q
-description = "Grok-only recipe that would become a default CASS query"
+	description = "Grok-only recipe with explicit context and recovery opt-out"
 [[recipes.agents]]
 type = "xai_grok_build"
 count = 1
@@ -1221,7 +636,7 @@ reasoning_effort = "medium"
 		if err := os.WriteFile(fixture.cassLog, nil, 0o600); err != nil {
 			t.Fatalf("reset Grok ambient-context CASS invocation log: %v", err)
 		}
-		checkpointMarker := "GROK_RECOVERY_CONTEXT_MUST_NOT_SEND"
+		checkpointMarker := "GROK_RECOVERY_CONTEXT_OPT_OUT_MUST_NOT_SEND"
 		// checkpoint.NewStorageWithDir was removed in the G1 dead-code
 		// burndown (670f6380); BaseDir is exported, construct directly.
 		checkpointStorage := &checkpoint.Storage{
@@ -1250,6 +665,7 @@ reasoning_effort = "medium"
 		spawnArgvStart := fixture.launchLogPosition(t)
 		spawned := fixture.runNTM(t, ambientDir,
 			"--json", "spawn", ambientSession, "--recipe="+recipeName, "--no-user", "--no-hooks",
+			"--no-cass-context", "--no-recovery",
 		)
 		fixture.requireSuccess(t, spawned)
 		var output struct {
@@ -1268,17 +684,17 @@ reasoning_effort = "medium"
 		if output.Recovery != nil {
 			t.Fatalf("Grok-only spawn unexpectedly resolved recovery context: %+v", output.Recovery)
 		}
-		recipePaneTitle := ambientSession + "__grok_1_grok-4-recipe"
-		assertSpawnGrokPaneIdentity(t, output.Panes[0], recipePaneTitle, "grok-4-recipe")
+		recipePaneTitle := ambientSession + "__grok_1_grok-4-recipe@medium"
+		assertSpawnGrokPaneIdentity(t, output.Panes[0], recipePaneTitle, "grok-4-recipe@medium")
 		fixture.waitForPaneCommand(t, output.Panes[0].PaneID, "grok")
 		fixture.waitForArgvDelta(t, spawnArgvStart, []string{
-			"--always-approve\t--model\tgrok-4-recipe\t--effort\tmedium",
+			spawnGrokDefaultArgv("--model", "grok-4-recipe", "--effort", "medium"),
 		})
 		ambientStatus := fixture.readStatus(t, ambientDir, ambientSession)
 		if len(ambientStatus.Panes) != 1 {
 			t.Fatalf("default-context Grok status = %+v", ambientStatus)
 		}
-		assertSpawnGrokPaneJSON(t, ambientStatus.Panes[0], recipePaneTitle, "grok-4-recipe")
+		assertSpawnGrokPaneJSON(t, ambientStatus.Panes[0], recipePaneTitle, "grok-4-recipe@medium")
 		if calls := strings.TrimSpace(string(fixture.readFile(t, fixture.cassLog))); calls != "" {
 			t.Fatalf("Grok-only default context unexpectedly queried CASS: %s", calls)
 		}
@@ -1350,16 +766,19 @@ reasoning_effort = "medium"
 			} `json:"commands"`
 		}
 		fixture.decodeSingleJSON(t, capabilities.stdout, &capabilityOutput)
-		foundGrok := false
+		foundFlags := make(map[string]bool)
 		for _, command := range capabilityOutput.Commands {
 			for _, parameter := range command.Parameters {
-				if parameter.Flag == "--spawn-grok" {
-					foundGrok = strings.Contains(strings.ToLower(parameter.Description), "launch only")
-				}
+				foundFlags[parameter.Flag] = true
 			}
 		}
-		if !capabilityOutput.Success || !foundGrok {
-			t.Fatalf("spawn capabilities omit Grok launch-only contract: %s", capabilities.stdout)
+		for _, required := range []string{"--spawn-grok", "--spawn-wait", "--spawn-assign-work"} {
+			if !foundFlags[required] {
+				t.Fatalf("spawn capabilities omit supported Grok flag %s: %s", required, capabilities.stdout)
+			}
+		}
+		if !capabilityOutput.Success {
+			t.Fatalf("spawn capability discovery failed: %s", capabilities.stdout)
 		}
 
 		statusSchema := fixture.runNTM(t, cliDir, "--robot-format=json", "--robot-schema=status")
@@ -1477,8 +896,8 @@ reasoning_effort = "medium"
 		)
 		fixture.requireSuccess(t, textSpawn)
 		fixture.waitForArgvDelta(t, textArgvStart, []string{
-			"--always-approve",
-			"--always-approve",
+			spawnGrokDefaultArgv(),
+			spawnGrokDefaultArgv(),
 		})
 		textStatus := fixture.readStatus(t, textDir, textSession)
 		if textStatus.AgentCounts.Grok != 2 || textStatus.AgentCounts.Total != 2 || len(textStatus.Panes) != 2 {
@@ -1493,7 +912,7 @@ reasoning_effort = "medium"
 			"--spawn-grok=1", "--spawn-no-user", "--spawn-dir="+jsonDir,
 		)
 		fixture.requireSuccess(t, jsonSpawn)
-		fixture.waitForArgvDelta(t, jsonArgvStart, []string{"--always-approve"})
+		fixture.waitForArgvDelta(t, jsonArgvStart, []string{spawnGrokDefaultArgv()})
 		jsonStatus := fixture.readStatus(t, jsonDir, jsonSession)
 		if jsonStatus.AgentCounts.Grok != 1 || jsonStatus.AgentCounts.Total != 1 || len(jsonStatus.Panes) != 1 {
 			t.Fatalf("JSON-interrupt Grok fixture = %+v, want one Grok pane", jsonStatus)
@@ -2105,7 +1524,7 @@ func (f *spawnGrokE2EFixture) assertNoAgentInput(t *testing.T) {
 		t.Fatalf("read fake Grok stdin log: %v", err)
 	}
 	if len(data) != 0 {
-		t.Fatalf("phase-one Grok unexpectedly received stdin: %q", data)
+		t.Fatalf("Grok unexpectedly received stdin: %q", data)
 	}
 }
 
@@ -2309,8 +1728,7 @@ func spawnGrokTextNamesCapability(value any) bool {
 	lower := strings.ToLower(text)
 	return strings.Contains(lower, "grok") &&
 		(strings.Contains(lower, "not implemented") || strings.Contains(lower, "not support") ||
-			strings.Contains(lower, "unsupported") || strings.Contains(lower, "phase one") ||
-			strings.Contains(lower, "phase-one"))
+			strings.Contains(lower, "unsupported"))
 }
 
 func containsInt(values []int, want int) bool {

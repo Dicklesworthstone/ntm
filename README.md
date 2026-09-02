@@ -124,7 +124,7 @@ ntm zoom payments 3
 ntm attach payments
 ```
 
-#### Grok Build (phase one)
+#### Grok Build
 
 NTM recognizes the official xAI Grok Build CLI as the canonical `grok` agent
 type. Install it using [xAI's current instructions](https://docs.x.ai/build/overview),
@@ -146,16 +146,193 @@ ntm spawn research --grok=1
 ntm spawn research --grok=1:MODEL_ID
 ntm spawn research --grok=1:MODEL_ID:EFFORT
 ntm --robot-spawn=research --spawn-grok=1
+ntm --robot-spawn=research --spawn-grok=1 --spawn-wait --timeout=30s
+ntm --robot-spawn=research --spawn-grok=1 --spawn-wait --spawn-assign-work --strategy=dependency-aware
 ```
 
-NTM launches Grok Build with its official `--always-approve` automation flag.
-Phase one intentionally covers configuration, model and `--effort` arguments,
-launch, adopt, exact process discovery, status/count/schema/doctor projections,
-and topology-only saved-session restore. Authenticated fullscreen-TUI readiness,
-automated prompt delivery/assignment, interrupt-with-message, restart, and
-restore-time process relaunch are not yet claimed. Those operations fail closed
-before pane mutation; interact with an authenticated Grok pane directly. Robot
-`--spawn-wait` and `--spawn-assign-work` also fail closed for Grok panes.
+Provider-native automation uses Grok's ACP JSON-RPC transport as the primary
+automation path rather than screen scraping. One-shot runs launch
+`grok --no-auto-update --sandbox=read-only --permission-mode=dontAsk <allow/deny rules> [--model EXACT_MODEL] agent stdio`,
+apply the named `grok-readonly-ci` policy, and return a nonce-bound receipt
+containing provider session/completion metadata plus redacted hashes and cleanup
+evidence. Exact-identity admission applies a separate, process-local
+concurrency/token budget, backoff, and circuit state to each
+provider/account/model/endpoint/runtime/config tuple and never changes provider
+on denial. The policy is deliberately
+least-privilege: xAI's filesystem sandbox independently blocks workspace
+writes and, on Linux, child-network access, while named permission rules permit
+only read/search and deny all Bash, common credential paths, and broad approval
+bypasses. NTM performs tests and other verification itself; provider-side test
+execution remains unavailable until a non-exportable credential broker and
+kernel-enforced sandbox can support it honestly.
+
+Bind each ACP run to an exact non-secret provider profile. The `command` field
+is the executable path passed directly to the operating system, not a shell
+command, and optional CLI model/binary flags are assertions rather than
+overrides:
+
+```toml
+[provider_profiles.xai-grok-primary]
+provider = "xai"
+account_alias = "kevin"
+model = "YOUR_EXACT_GROK_MODEL"
+endpoint = "https://api.x.ai/v1"
+runtime = "grok"
+config_sha256 = "YOUR_64_CHARACTER_LOWERCASE_REDACTED_CONFIG_SHA256"
+command = "grok"
+automation_policy = "grok-readonly-ci"
+exact_target_only = true
+```
+
+```bash
+ntm --robot-grok-acp-run --provider-profile=xai-grok-primary --msg='Inspect the repository and report the relevant files and findings.'
+ntm --robot-grok-acp-run --provider-profile=xai-grok-primary --msg-file=/tmp/prompt.txt --provider-model=MODEL_ID --op-id=audit-42
+ntm --robot-grok-acp-receipt=audit-42
+ntm --robot-provider-conformance --provider-profile=xai-grok-primary --provider-transport=xai_acp
+ntm --robot-provider-capabilities
+```
+
+The receipt is successful only when Grok reports structured completion and the
+assistant stream echoes the generated nonce exactly. It records only hashes,
+counts, provider session/model/usage metadata when supplied by ACP, and local
+exit/cleanup evidence when observable. A timeout after prompt acceptance is
+`DISPATCH_UNKNOWN`, not an invitation to replay blindly. ACP's local process
+termination/reap evidence is not an authoritative provider-cancellation receipt;
+the capability matrix currently marks provider cancellation as unavailable. NTM
+never serializes the prompt, nonce, credentials, raw output, or raw tool
+arguments in the receipt. Automated ACP starts with a minimal environment that
+explicitly removes `XAI_API_KEY` and all proxy variables (proxy URLs may embed
+credentials), then authenticates only with the local Grok CLI's `cached_token`;
+it fails with `GROK_ACP_CACHED_AUTH_UNAVAILABLE` when no cached login is offered.
+An exported API key is never an automated fallback.
+
+Exact Grok model identity is confirmed only by completion metadata or an xAI
+structured notification bound to the returned provider session and the exact
+selected model. A provider model catalog proves availability only, so it is
+retained as transport observation but cannot make a robot operation succeed.
+
+An identity is **runtime-attested** only for fields the structured provider
+protocol actually returns in the receipt (for example, a Grok ACP session ID,
+completion status, or model observation). The remaining fields in a configured
+profile are **profile-attested**: NTM hashes and binds the operator-supplied
+tuple, but does not claim the opaque provider runtime independently proved
+them.
+
+Operation IDs are durable and binding-sensitive. The binding covers the exact
+provider identity, logical prompt hash, working-directory hash, executable
+hash, and compiled policy digest; the receipt separately hashes the exact
+nonce-bound packet. This allows a normal retry with an omitted/generated nonce
+to replay the recorded safe outcome without another provider call. Conflicting reuse returns
+`IDEMPOTENCY_CONFLICT`; an abandoned in-progress operation remains
+outcome-unknown and is never taken over automatically. Use
+`--robot-grok-acp-receipt=OPERATION_ID` to inspect it without dispatch.
+
+Interactive Grok panes remain a compatibility path. Their default launch also
+uses `--no-auto-update`, the `read-only` sandbox, and the `grok-readonly-ci`
+allow/deny policy; it does not grant broad approval. Panes participate in readiness waits, exact-pane prompt
+delivery and assignment, interrupt-with-message, restart, and restore-time
+relaunch. For stronger spawn evidence, combine `--spawn-wait` with
+`--spawn-assign-work` so the spawn response does not succeed until NTM has
+observed an authenticated empty composer. Assignment dispatch performs its own
+fresh safety observation even when `--spawn-wait` is omitted.
+
+xAI does not publish a passive TUI-readiness protocol. NTM therefore recognizes
+the bordered composer and live working chrome observed in authenticated Grok
+Build sessions and fails closed when that evidence is absent. A welcome banner,
+login/device-auth screen, modal, error, rate limit, bare shell, pre-filled
+composer, or active turn does not satisfy the spawn readiness gate. Readiness
+receipts include a stable `ready_reason`: `READY` or a reason-coded `UNREADY_*`
+state such as `UNREADY_AUTHENTICATION_REQUIRED`, `UNREADY_ACTIVE_TURN`,
+`UNREADY_RATE_LIMITED`, `UNREADY_COMPOSER_MISSING`, or
+`UNREADY_PROVIDER_CHROME_MISSING`. Detection receives the actual tmux pane
+width so wrapped narrow panes do not silently lose the live tail needed for a
+safe decision. UI changes in a future Grok release may cause a bounded readiness
+timeout until NTM's redacted fixture matrix and capture patterns are updated.
+Persona injection remains unsupported because Grok Build does not expose a
+system-prompt launch surface.
+
+#### Z.ai provider profiles
+
+Z.ai is an explicit provider lane, not a broad `claude`/`cc` target. Use an
+exact configured profile with the provider, account alias, model, endpoint,
+runtime, and redacted configuration digest bound into one immutable identity:
+
+```bash
+ntm --robot-spawn=research --spawn-zai=2 --provider-profile=zai-team-model
+ntm --robot-provider-conformance --provider-profile=zai-team-model --provider-transport=zai_claude_runtime
+ntm --robot-provider-capabilities
+```
+
+```toml
+[provider_profiles.zai-team-model]
+provider = "zai"
+account_alias = "team"
+model = "glm-5.3-flash"
+endpoint = "https://api.z.ai/api/anthropic"
+runtime = "claude-code"
+config_sha256 = "YOUR_64_CHARACTER_LOWERCASE_REDACTED_CONFIG_SHA256"
+command = "claude"
+automation_policy = "zai-readonly-ci"
+exact_target_only = true
+probe_required = true
+model_probe_state = "unprobed"
+model_probe_receipt_sha256 = ""
+```
+
+For Z.ai, the selected profile must use the official
+`https://api.z.ai/api/anthropic` endpoint and `claude-code` runtime. Its
+`command` is an executable only: NTM generates the exact endpoint/model and
+restricted policy (`--restricted`, `--safe-mode`, strict MCP, no slash
+commands/Chrome, and only `Read,Glob,Grep,WebSearch`; Bash/Edit/write tools
+are denied). Before any tmux mutation, production launch runs a fresh zero-tool,
+no-session-persistence Claude stream-JSON probe. It must return the nonce in a
+successful result for the same session whose initialization names the exact
+model; otherwise launch is NO-GO. The probe requires an explicit `ZAI_API_KEY`
+or deliberately Z.ai-scoped `ANTHROPIC_AUTH_TOKEN`. The provider child receives
+only a canonical `ANTHROPIC_AUTH_TOKEN` plus a minimal runtime environment; it
+does not inherit unrelated xAI, AWS, GitHub, or other credentials. The tmux
+server must also have inherited one of those Z.ai auth variables: the compiled
+pane command fails with `NTM_ZAI_AUTH_REQUIRED` when it did not, and NTM does
+not claim that a profile or preflight proves tmux credential delivery.
+
+The profile identity remains profile-attested; the provider-capability receipt exposes
+only safe identity hashes and probe state—never commands, endpoints, API keys,
+or raw configuration. It also advertises the offline fake-runtime conformance
+harness, which exercises launch, nonce delivery, cancellation semantics,
+recovery, resumption, rate-limit classification, and cleanup against redacted
+fixtures. That harness makes no provider or network call and is not a live
+qualification receipt.
+
+Current Z.ai documentation lists `glm-5.3-flash` as an official model code,
+but documentation availability is not account/plan availability. If the local
+Claude client cannot emit session-scoped model evidence, production Z.ai launch
+remains NO-GO while dry-run/profile identity discovery stays available.
+
+Capability discovery never calls a configured profile “launchable”: xAI
+profiles report `operation_evidence_required`, while Z.ai profiles report
+`live_probe_required`. A successful Z.ai preflight is recorded as
+`live_verified` only in that spawn operation and its bound pane metadata; a
+similarly named value written into configuration remains a diagnostic claim,
+not qualification evidence.
+
+Capacity evidence is transport-specific. Native Grok ACP calls are governed per
+exact identity by process-local concurrency, token-bucket, backoff, and circuit
+state. The Z.ai preflight and first authorized pane launch share one exact-
+identity admission, and structured live preflight errors update the same
+rate-limit/overload/permanent-error circuit. For the resulting Claude-compatible
+TUI, NTM still cannot
+observe or govern the runtime's individual model calls or live business-error
+responses. The capability matrix therefore reports Z.ai request-capacity control
+and TUI live error feedback as `unavailable`; the complete Z.ai taxonomy is
+exercised by the offline conformance harness, while exact structured errors
+seen during live preflight are classified without guessing from prose. NTM
+never silently fails over to a different provider identity.
+
+`--robot-provider-conformance` is deliberately synthetic and offline. It is a
+fixture-backed adapter contract check, not live-provider qualification. For an
+opt-in no-write live Grok ACP check, run
+`NTM_LIVE_GROK_ACP=1 NTM_LIVE_GROK_MODEL=grok-4.6 go test -tags=integration ./internal/grok -run '^TestLiveACPReadOnlyRoundTrip$' -count=1 -v`
+only in an authenticated Grok environment you are authorized to use.
 
 Use labels when you want multiple coordinated swarms on the same project while
 keeping a shared project directory:
@@ -754,7 +931,7 @@ of the normal product model.
 - NTM is intentionally `tmux`-centric.
 - Linux and macOS are the primary environments.
 - Some advanced workflows depend on external tools such as Agent Mail, `br`, `bv`, `cass`, or worktree helpers.
-- Grok Build support is currently phase one: launch/discovery/counting work, while authenticated TUI readiness, automated prompt delivery/assignment, interrupt-with-message, restart, and restore-time relaunch are deliberately unsupported and fail closed.
+- Grok Build automation primarily uses provider-native ACP JSON-RPC. Interactive-pane compatibility workflows still depend on observed fullscreen-TUI chrome because xAI does not publish a passive readiness API; unrecognized UI states fail closed and may require a redacted fixture/pattern update.
 - The system is local-first. It is not a hosted SaaS control plane.
 
 ## Development

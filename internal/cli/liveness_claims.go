@@ -200,6 +200,7 @@ func init() {
 		"agents.gemini",
 		"agents.antigravity",
 		"agents.grok",
+		"agents.grok_policy",
 		"agents.ollama",
 		"agents.cursor",
 		"agents.windsurf",

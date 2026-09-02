@@ -693,6 +693,32 @@ func TestValidateSpawnGrokPaneBaselinesPreflightsCompleteAssignment(t *testing.T
 	})
 }
 
+func TestValidateExistingSpawnGrokPaneBaselinesChecksOnlyPresentTargets(t *testing.T) {
+	agents := []FlatAgent{
+		{Type: AgentTypeClaude, Index: 1},
+		{Type: AgentTypeGrok, Index: 1},
+		{Type: AgentTypeGrok, Index: 2},
+	}
+
+	t.Run("late occupied target rejects before batch mutation", func(t *testing.T) {
+		panes := []tmux.Pane{
+			{ID: "%idle", Index: 0, Command: "zsh"},
+			{ID: "%occupied", Index: 1, Command: "grok"},
+		}
+		err := validateExistingSpawnGrokPaneBaselines(panes, 0, agents)
+		if err == nil || !strings.Contains(err.Error(), "%occupied") || !strings.Contains(err.Error(), "non-shell") {
+			t.Fatalf("validateExistingSpawnGrokPaneBaselines() error = %v", err)
+		}
+	})
+
+	t.Run("missing future target is deferred to pane creation", func(t *testing.T) {
+		panes := []tmux.Pane{{ID: "%idle", Index: 0, Command: "bash"}}
+		if err := validateExistingSpawnGrokPaneBaselines(panes, 0, agents); err != nil {
+			t.Fatalf("validateExistingSpawnGrokPaneBaselines() error = %v", err)
+		}
+	})
+}
+
 func TestSpawnUnknownAgentTextReturnsErrorWithoutWarning(t *testing.T) {
 	oldJSON := jsonOutput
 	jsonOutput = false
