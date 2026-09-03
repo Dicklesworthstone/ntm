@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -550,6 +551,85 @@ func TestRunClearFailedAssignmentsClearsOnlyFailedRows(t *testing.T) {
 	}
 }
 
+func TestClearTerminalAssignmentCanRetainBeadClaim(t *testing.T) {
+	isolateSessionAgentStorage(t)
+	const (
+		session = "clear-terminal-retain-claim"
+		beadID  = "ntm-terminal-retain-claim"
+	)
+	store := assignment.NewStore(session)
+	stored, err := store.Assign(beadID, "Terminal residue", 1, "codex", "BlueLake", "work")
+	if err != nil {
+		t.Fatalf("assign terminal row: %v", err)
+	}
+	stored.Status = assignment.StatusFailed
+	stored.ClaimActor = "BlueLake/ntm-retained"
+	store.Assignments[beadID] = stored
+	if err := store.Save(); err != nil {
+		t.Fatalf("save terminal row: %v", err)
+	}
+
+	previousRetain := assignRetainClaim
+	previousRelease := releaseAssignmentLeases
+	previousClaimRelease := releaseBeadClaimForAssignment
+	t.Cleanup(func() {
+		assignRetainClaim = previousRetain
+		releaseAssignmentLeases = previousRelease
+		releaseBeadClaimForAssignment = previousClaimRelease
+	})
+	assignRetainClaim = true
+	releaseAssignmentLeases = func(context.Context, string, *assignment.Assignment) ([]string, error) { return nil, nil }
+	releaseBeadClaimForAssignment = func(context.Context, string, string, string) (bool, error) {
+		t.Fatal("retain-claim clear released the Beads claim")
+		return false, nil
+	}
+
+	if _, err := clearStoredAssignment(t.Context(), store, session, store.Get(beadID)); err != nil {
+		t.Fatalf("clear terminal row while retaining claim: %v", err)
+	}
+	if got := store.Get(beadID); got != nil {
+		t.Fatalf("terminal residue still owns pane: %+v", got)
+	}
+}
+
+func TestRetainClaimRejectsNonterminalAssignment(t *testing.T) {
+	isolateSessionAgentStorage(t)
+	const (
+		session = "clear-working-retain-claim"
+		beadID  = "ntm-working-retain-claim"
+	)
+	store := assignment.NewStore(session)
+	stored, err := store.Assign(beadID, "Working assignment", 1, "codex", "BlueLake", "work")
+	if err != nil {
+		t.Fatalf("assign working row: %v", err)
+	}
+	stored.ClaimActor = "BlueLake/ntm-working"
+	store.Assignments[beadID] = stored
+	if err := store.Save(); err != nil {
+		t.Fatalf("save working row: %v", err)
+	}
+
+	previousRetain := assignRetainClaim
+	previousRelease := releaseAssignmentLeases
+	t.Cleanup(func() {
+		assignRetainClaim = previousRetain
+		releaseAssignmentLeases = previousRelease
+	})
+	assignRetainClaim = true
+	releaseAssignmentLeases = func(context.Context, string, *assignment.Assignment) ([]string, error) {
+		t.Fatal("nonterminal retain-claim crossed the release boundary")
+		return nil, nil
+	}
+
+	_, err = clearStoredAssignment(t.Context(), store, session, store.Get(beadID))
+	if err == nil || !strings.Contains(err.Error(), "requires a terminal assignment row") {
+		t.Fatalf("nonterminal retain-claim error=%v", err)
+	}
+	if got := store.Get(beadID); got == nil || got.ClearState != assignment.ClearStateNone {
+		t.Fatalf("nonterminal retain-claim mutated row: %+v", got)
+	}
+}
+
 func TestRunClearSelectedAssignmentsCanceledJSONIsTimeoutWithoutMutation(t *testing.T) {
 	isolateSessionAgentStorage(t)
 	const (
@@ -802,6 +882,14 @@ func TestAssignCommandHasClearFailedFlag(t *testing.T) {
 	flag := cmd.Flags().Lookup("clear-failed")
 	if flag == nil {
 		t.Fatal("Expected 'clear-failed' flag to exist")
+	}
+}
+
+func TestAssignCommandHasRetainClaimFlag(t *testing.T) {
+	cmd := newAssignCmd()
+	flag := cmd.Flags().Lookup("retain-claim")
+	if flag == nil || flag.DefValue != "false" {
+		t.Fatalf("--retain-claim flag = %+v", flag)
 	}
 }
 

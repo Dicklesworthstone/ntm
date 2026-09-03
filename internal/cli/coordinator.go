@@ -386,18 +386,22 @@ func runCoordinatorDigest(cmd *cobra.Command, args []string, sendMail bool) erro
 }
 
 type coordinatorRunOutput struct {
-	Success     bool                           `json:"success"`
-	Session     string                         `json:"session"`
-	Timestamp   string                         `json:"timestamp"`
-	Once        bool                           `json:"once"`
-	AutoAssign  bool                           `json:"auto_assign"`
-	Assignments []coordinator.AssignmentResult `json:"assignments"`
-	ErrorCode   string                         `json:"error_code,omitempty"`
-	Error       string                         `json:"error,omitempty"`
+	Success      bool                           `json:"success"`
+	Session      string                         `json:"session"`
+	Timestamp    string                         `json:"timestamp"`
+	Once         bool                           `json:"once"`
+	AutoAssign   bool                           `json:"auto_assign"`
+	ReserveFiles bool                           `json:"reserve_files"`
+	Assignments  []coordinator.AssignmentResult `json:"assignments"`
+	ErrorCode    string                         `json:"error_code,omitempty"`
+	Error        string                         `json:"error,omitempty"`
 }
 
 func newCoordinatorRunCmd() *cobra.Command {
-	var once bool
+	var (
+		once         bool
+		reserveFiles bool
+	)
 	cmd := &cobra.Command{
 		Use:   "run [session]",
 		Short: "Run the session coordinator until interrupted",
@@ -407,14 +411,15 @@ opt-in automatic assignment. The command exits cleanly on SIGINT or SIGTERM.
 Use --once to execute exactly one fresh observation and assignment cycle.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runCoordinatorRun(cmd, args, once)
+			return runCoordinatorRun(cmd, args, once, reserveFiles)
 		},
 	}
 	cmd.Flags().BoolVar(&once, "once", false, "Run exactly one fresh coordinator cycle")
+	cmd.Flags().BoolVar(&reserveFiles, "reserve-files", true, "Reserve repository paths via Agent Mail before daemon assignment")
 	return cmd
 }
 
-func runCoordinatorRun(cmd *cobra.Command, args []string, once bool) error {
+func runCoordinatorRun(cmd *cobra.Command, args []string, once, reserveFiles bool) error {
 	var session string
 	if len(args) > 0 {
 		session = args[0]
@@ -443,6 +448,7 @@ func runCoordinatorRun(cmd *cobra.Command, args []string, once bool) error {
 	}
 
 	runtimeConfig, ntmConfig := loadCoordinatorRuntimeConfigWithNTM()
+	runtimeConfig.ReserveFiles = reserveFiles
 	mailClient := newAgentMailClient(projectKey)
 	coordName := resolveCoordinatorIdentity(cmd.Context(), mailClient, session, projectKey)
 	coord := coordinator.New(session, projectKey, mailClient, coordName).
@@ -453,7 +459,7 @@ func runCoordinatorRun(cmd *cobra.Command, args []string, once bool) error {
 		runErr := coordinatorRunFailure(assignments, cycleErr)
 		output := coordinatorRunOutput{
 			Success: runErr == nil, Session: session, Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
-			Once: true, AutoAssign: runtimeConfig.AutoAssign, Assignments: assignments,
+			Once: true, AutoAssign: runtimeConfig.AutoAssign, ReserveFiles: runtimeConfig.ReserveFiles, Assignments: assignments,
 		}
 		if runErr != nil {
 			output.ErrorCode = "ASSIGNMENT_FAILED"
@@ -488,13 +494,13 @@ func runCoordinatorRun(cmd *cobra.Command, args []string, once bool) error {
 	if jsonOutput {
 		output := coordinatorRunOutput{
 			Success: true, Session: session, Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
-			Once: false, AutoAssign: runtimeConfig.AutoAssign, Assignments: []coordinator.AssignmentResult{},
+			Once: false, AutoAssign: runtimeConfig.AutoAssign, ReserveFiles: runtimeConfig.ReserveFiles, Assignments: []coordinator.AssignmentResult{},
 		}
 		if err := json.NewEncoder(cmd.OutOrStdout()).Encode(output); err != nil {
 			return err
 		}
 	} else {
-		fmt.Fprintf(cmd.OutOrStdout(), "Coordinator running for %s (auto-assign=%t); press Ctrl-C to stop\n", session, runtimeConfig.AutoAssign)
+		fmt.Fprintf(cmd.OutOrStdout(), "Coordinator running for %s (auto-assign=%t, reserve-files=%t); press Ctrl-C to stop\n", session, runtimeConfig.AutoAssign, runtimeConfig.ReserveFiles)
 	}
 	<-cmd.Context().Done()
 	return nil
@@ -1063,6 +1069,7 @@ func coordinatorConfigFromTOML(toml config.CoordinatorConfig, fallback coordinat
 		AutoAssign:        toml.AutoAssign,
 		IdleThreshold:     toml.IdleThreshold,
 		AssignOnlyIdle:    toml.AssignOnlyIdle,
+		ReserveFiles:      fallback.ReserveFiles,
 		ConflictNotify:    toml.ConflictNotify,
 		ConflictNegotiate: toml.ConflictNegotiate,
 		SendDigests:       toml.SendDigests,

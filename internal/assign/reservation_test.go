@@ -657,6 +657,36 @@ func TestReleaseExactForBeadRequiresDurableBarrier(t *testing.T) {
 	}
 }
 
+func TestReleaseExactForBeadReleasesDurablyBoundProjectMismatch(t *testing.T) {
+	releaseCalls := 0
+	server := newAssignMCPServer(t, map[string]assignToolHandler{
+		"list_file_reservations": func(map[string]interface{}) (interface{}, *agentmail.JSONRPCError) {
+			if releaseCalls > 0 {
+				return []agentmail.FileReservation{}, nil
+			}
+			reservation := reconcileReservation(142, "AgentOne", "internal/shared.go", "bead assignment: bd-release")
+			reservation.ProjectID = 0
+			return []agentmail.FileReservation{reservation}, nil
+		},
+		"release_file_reservations": func(args map[string]interface{}) (interface{}, *agentmail.JSONRPCError) {
+			releaseCalls++
+			ids, _ := args["file_reservation_ids"].([]interface{})
+			if len(ids) != 1 || int(ids[0].(float64)) != 142 {
+				t.Fatalf("release reservation IDs=%v, want [142]", ids)
+			}
+			return agentmail.ReleaseReservationsResult{Released: 1}, nil
+		},
+	})
+	defer server.Close()
+	manager := NewFileReservationManager(agentmail.NewClient(agentmail.WithBaseURL(server.URL+"/")), "/test/project")
+	released, err := manager.ReleaseExactForBead(
+		t.Context(), exactReleaseBarrier("bd-release", "AgentOne"), []int{142}, []string{"internal/shared.go"},
+	)
+	if err != nil || !reflect.DeepEqual(released, []string{"internal/shared.go"}) || releaseCalls != 1 {
+		t.Fatalf("project-mismatch release paths=%v calls=%d error=%v", released, releaseCalls, err)
+	}
+}
+
 func TestReconcileForBeadReturnsOnlyExactActiveLeases(t *testing.T) {
 	releasedAt := agentmail.FlexTime{Time: time.Now().UTC()}
 	manager := newReservationReconcileManager(t, []agentmail.FileReservation{

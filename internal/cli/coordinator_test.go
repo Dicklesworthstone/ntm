@@ -148,6 +148,9 @@ func TestCoordinatorRunCommandExposesDeterministicOnceMode(t *testing.T) {
 	if flag := cmd.Flags().Lookup("once"); flag == nil || flag.DefValue != "false" {
 		t.Fatalf("--once flag = %+v", flag)
 	}
+	if flag := cmd.Flags().Lookup("reserve-files"); flag == nil || flag.DefValue != "true" {
+		t.Fatalf("--reserve-files flag = %+v", flag)
+	}
 }
 
 func stubCoordinatorLiveTopology(t *testing.T, panes []tmux.Pane, paths map[string]string) {

@@ -607,9 +607,10 @@ func selectExactReleaseReservations(
 		path := strings.TrimSpace(reservation.PathPattern)
 		_, requestedByID := wantedIDs[reservation.ID]
 		_, requestedByPath := wantedPaths[path]
-		exactBinding := reservation.ID > 0 && reservation.ProjectID == expectedProjectID &&
-			strings.TrimSpace(reservation.AgentName) == agentName && strings.TrimSpace(reservation.Reason) == reason
-		if requestedByID && !exactBinding {
+		identityBinding := reservation.ID > 0 && strings.TrimSpace(reservation.AgentName) == agentName &&
+			strings.TrimSpace(reservation.Reason) == reason
+		exactBinding := identityBinding && reservation.ProjectID == expectedProjectID
+		if requestedByID && !identityBinding {
 			return nil, nil, fmt.Errorf("reservation %d is not authoritatively bound to bead %s", reservation.ID, beadID)
 		}
 		if requestedByID && len(wantedPaths) > 0 && !requestedByPath {
@@ -619,14 +620,18 @@ func selectExactReleaseReservations(
 			strings.TrimSpace(reservation.AgentName) == agentName && strings.TrimSpace(reservation.Reason) == reason && reservation.ID <= 0 {
 			return nil, nil, fmt.Errorf("active reservation for path %q has no durable ID", path)
 		}
-		if exactBinding && requestedByPath {
+		if exactBinding && requestedByPath && !requestedByID {
 			matchesByPath[path] = append(matchesByPath[path], reservation.ID)
 		}
-		if requestedByID && exactBinding && len(wantedPaths) == 0 {
+		// A durable reservation ID plus the exact bead, agent, and path binding
+		// remains safe to release when the server reports a malformed project
+		// ID. Requiring the malformed field to agree made such rows permanent.
+		if requestedByID && identityBinding {
 			selectedIDs[reservation.ID] = struct{}{}
 			if path != "" {
 				selectedPaths[path] = struct{}{}
 			}
+			continue
 		}
 	}
 	for path := range wantedPaths {

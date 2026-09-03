@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -687,6 +688,10 @@ func (c *SessionCoordinator) attemptAssignment(ctx context.Context, assignment *
 	}
 	claimActor := assignmentstore.StableClaimActor(assignment.AgentMailName, idempotencyKey)
 	body := c.formatAssignmentMessage(assignment, rec, claimActor)
+	requestedPaths := repositoryReservationPaths(c.projectKey, assignment.FilesToReserve)
+	if !c.config.ReserveFiles {
+		requestedPaths = nil
+	}
 
 	store, err := assignmentstore.LoadStoreStrict(c.session)
 	if err != nil {
@@ -703,11 +708,47 @@ func (c *SessionCoordinator) attemptAssignment(ctx context.Context, assignment *
 		Actor:              assignment.AgentMailName,
 		Prompt:             body,
 		IdempotencyKey:     idempotencyKey,
-		RequireReservation: len(assignment.FilesToReserve) > 0,
-		RequestedPaths:     append([]string(nil), assignment.FilesToReserve...),
+		RequireReservation: len(requestedPaths) > 0,
+		RequestedPaths:     requestedPaths,
 		ReservationTTL:     time.Hour,
 	}
 	return c.executeAtomicAssignment(ctx, store, assignment, request)
+}
+
+// repositoryReservationPaths removes path-like prose before it reaches Agent
+// Mail. Concrete paths must exist under the repository; glob patterns must
+// have an existing literal repository prefix. This keeps rate expressions,
+// dates, ratios, and other slash-bearing title fragments out of reservations.
+func repositoryReservationPaths(projectKey string, candidates []string) []string {
+	root := filepath.Clean(strings.TrimSpace(projectKey))
+	if root == "" || root == "." {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(candidates))
+	paths := make([]string, 0, len(candidates))
+	for _, raw := range candidates {
+		candidate := filepath.Clean(strings.TrimSpace(raw))
+		if candidate == "" || candidate == "." || filepath.IsAbs(candidate) || candidate == ".." || strings.HasPrefix(candidate, ".."+string(filepath.Separator)) {
+			continue
+		}
+		prefix := candidate
+		if wildcard := strings.IndexAny(prefix, "*?["); wildcard >= 0 {
+			prefix = strings.TrimRight(prefix[:wildcard], string(filepath.Separator))
+			if prefix == "" {
+				prefix = "."
+			}
+		}
+		if _, err := os.Stat(filepath.Join(root, prefix)); err != nil {
+			continue
+		}
+		candidate = filepath.ToSlash(candidate)
+		if _, duplicate := seen[candidate]; duplicate {
+			continue
+		}
+		seen[candidate] = struct{}{}
+		paths = append(paths, candidate)
+	}
+	return paths
 }
 
 func (c *SessionCoordinator) executeAtomicAssignment(ctx context.Context, store *assignmentstore.AssignmentStore, work *WorkAssignment, request assignmentstore.AtomicRequest) AssignmentResult {
@@ -1008,7 +1049,7 @@ func (c *SessionCoordinator) newAtomicAssignmentCoordinator(store *assignmentsto
 			BeadID: claim.ID, Actor: claim.Actor, Status: claim.Status, ClaimedAt: claim.ClaimedAt,
 		}, nil
 	})
-	reservationPort := &coordinatorAgentMailReservationPort{client: c.reservationClient, projectKey: agentmail.CanonicalProjectKey(c.projectKey)}
+	reservationPort := c.newCoordinatorReservationPort()
 	dispatchPort := assignmentstore.DispatchFunc(func(ctx context.Context, req assignmentstore.DispatchRequest) (assignmentstore.DispatchReceipt, error) {
 		started := time.Now()
 		project, err := c.mailClient.EnsureProject(ctx, c.projectKey)
@@ -1144,6 +1185,13 @@ func (c *SessionCoordinator) newAtomicAssignmentCoordinator(store *assignmentsto
 			},
 		)).
 		WithWorkingReplacementAuthorizationPort(replacementAuthorization)
+}
+
+func (c *SessionCoordinator) newCoordinatorReservationPort() assignmentstore.ReservationPort {
+	if !c.config.ReserveFiles {
+		return nil
+	}
+	return &coordinatorAgentMailReservationPort{client: c.reservationClient, projectKey: agentmail.CanonicalProjectKey(c.projectKey)}
 }
 
 // coordinatorMailDispatchError classifies an Agent Mail send failure for the
@@ -1611,6 +1659,12 @@ func ExtractMentionedFiles(title, description string) []string {
 // isFilePath checks if a string looks like a file path.
 func isFilePath(s string) bool {
 	if len(s) < 3 {
+		return false
+	}
+	// Slash-bearing quantities such as "13714/2m" and dates such as
+	// "2026/09/03" are prose, not repository paths. Extracted paths are also
+	// checked against the repository before any reservation request.
+	if s[0] >= '0' && s[0] <= '9' {
 		return false
 	}
 

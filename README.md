@@ -310,6 +310,8 @@ ntm coordinator conflicts payments
 ntm coordinator enable auto-assign
 ntm coordinator enable digest --interval=30m
 ntm coordinator disable conflict-negotiate
+ntm coordinator run payments --reserve-files=false
+ntm assign payments --clear-pane=3 --force --retain-claim
 ```
 
 `ntm locks force-release` is approval-gated by default (`automation.force_release:
@@ -323,6 +325,12 @@ action honor the same policy setting.
 `coordinator enable` and `disable` persist the selected `--config` file, or the
 global config by default, without replacing unrelated settings or comments.
 Restart an already running `ntm coordinator run` daemon to apply a toggle.
+Pass `--reserve-files=false` to that daemon when Agent Mail reservations are
+unavailable. To remove a terminal assignment row that still owns a pane without
+reopening its Bead, clear it with `--retain-claim`; this flag rejects nonterminal
+rows. The clear still releases reservations first, using the durable reservation
+ID, bead reason, agent, and path binding even if the stored reservation has a
+malformed project ID.
 The selected file may use a `[coordinator]` table or root dotted assignments
 such as `coordinator.auto_assign = false`. A whole-section inline assignment
 such as `coordinator = { auto_assign = false }` is rejected without changing

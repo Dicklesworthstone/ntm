@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -253,6 +255,12 @@ func TestAttemptAssignmentRequiresAgentMailIdentity(t *testing.T) {
 func TestAttemptAssignmentAtomicSuccessPersistsReceipt(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	projectDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(projectDir, "internal", "coordinator"), 0o755); err != nil {
+		t.Fatalf("create repository path: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "internal", "coordinator", "assign.go"), []byte("package coordinator\n"), 0o600); err != nil {
+		t.Fatalf("write repository path: %v", err)
+	}
 	c := New("coordinator-atomic-success", projectDir, &agentmail.Client{}, "CoordinatorAgent")
 	var order []string
 	c.atomicCoordinatorFactory = func(store *assignmentstore.AssignmentStore) *assignmentstore.AtomicCoordinator {
@@ -302,6 +310,49 @@ func TestAttemptAssignmentAtomicSuccessPersistsReceipt(t *testing.T) {
 	if stored == nil || stored.DispatchState != assignmentstore.DispatchSent || stored.DispatchReceiptID != "mail-91" ||
 		stored.ClaimActor != result.ClaimActor || stored.IdempotencyKey != result.IdempotencyKey || stored.OccupancyKey != "%9" {
 		t.Fatalf("durable coordinator assignment = %+v", stored)
+	}
+}
+
+func TestAttemptAssignmentCanDisableUnavailableReservations(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	projectDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(projectDir, "internal"), 0o755); err != nil {
+		t.Fatalf("create repository path: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "internal", "daemon.go"), []byte("package internal\n"), 0o600); err != nil {
+		t.Fatalf("write repository path: %v", err)
+	}
+	c := New("coordinator-reservations-disabled", projectDir, &agentmail.Client{}, "CoordinatorAgent")
+	c.config.AutoAssign = true
+	c.config.ReserveFiles = false
+	c.reservationClient = &fakeCoordinatorReservationClient{ensureErr: errors.New("reservation service unavailable")}
+	var order []string
+	c.atomicCoordinatorFactory = func(store *assignmentstore.AssignmentStore) *assignmentstore.AtomicCoordinator {
+		claim := assignmentstore.ClaimFunc(func(_ context.Context, beadID, actor string) (assignmentstore.ClaimReceipt, error) {
+			order = append(order, "claim")
+			return assignmentstore.ClaimReceipt{BeadID: beadID, Actor: actor, Status: "in_progress", ClaimedAt: time.Now().UTC()}, nil
+		})
+		dispatch := assignmentstore.DispatchFunc(func(context.Context, assignmentstore.DispatchRequest) (assignmentstore.DispatchReceipt, error) {
+			order = append(order, "dispatch")
+			return assignmentstore.DispatchReceipt{DeliveryID: "mail-disabled-reservation"}, nil
+		})
+		return assignmentstore.NewAtomicCoordinator(store, claim, c.newCoordinatorReservationPort(), dispatch)
+	}
+	work := &WorkAssignment{
+		BeadID: "ntm-reservations-disabled", BeadTitle: "Daemon internal/daemon.go", AgentPaneID: "%19", AgentPaneIndex: 2,
+		AgentMailName: "BlueFox", AgentType: "cod", FilesToReserve: []string{"internal/daemon.go"},
+	}
+	result := c.attemptAssignment(t.Context(), work, &bv.TriageRecommendation{ID: work.BeadID, Title: work.BeadTitle})
+	if !result.Success || strings.Join(order, ",") != "claim,dispatch" || len(result.Reservations) != 0 {
+		t.Fatalf("reservations-disabled result=%+v order=%v", result, order)
+	}
+	record := assignmentstore.NewStore(c.session)
+	if err := record.LoadStrict(); err != nil {
+		t.Fatalf("load reservations-disabled ledger: %v", err)
+	}
+	stored := record.Get(work.BeadID)
+	if stored == nil || stored.ReservationRequired || len(stored.ReservationInputPaths) != 0 || stored.DispatchState != assignmentstore.DispatchSent {
+		t.Fatalf("reservations-disabled ledger=%+v", stored)
 	}
 }
 
@@ -2560,6 +2611,24 @@ func TestExtractMentionedFiles(t *testing.T) {
 	}
 }
 
+func TestRepositoryReservationPathsRequireRealRepositoryTargets(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "internal"), 0o755); err != nil {
+		t.Fatalf("create repository directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "internal", "real.go"), []byte("package internal\n"), 0o600); err != nil {
+		t.Fatalf("write repository file: %v", err)
+	}
+	candidates := ExtractMentionedFiles(
+		"iris pressure CRIT: allocstall 13714/2m for 2 samples; fix internal/real.go and missing/path.go",
+		"",
+	)
+	got := repositoryReservationPaths(root, candidates)
+	if !reflect.DeepEqual(got, []string{"internal/real.go"}) {
+		t.Fatalf("repository reservation paths=%v, want only the real repository file", got)
+	}
+}
+
 func TestIsFilePath(t *testing.T) {
 	tests := []struct {
 		input string
@@ -2570,6 +2639,7 @@ func TestIsFilePath(t *testing.T) {
 		{"pkg/**/*.ts", true},
 		{"README.md", true},
 		{".gitignore", true},
+		{"13714/2m", false},
 		{"hello", false},
 		{"the", false},
 		{"Fix", false},

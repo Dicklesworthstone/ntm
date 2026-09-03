@@ -68,6 +68,7 @@ var (
 	assignClear       string // Clear specific bead assignments (comma-separated)
 	assignClearPane   string // Clear all assignments for one canonical pane selector
 	assignClearFailed bool   // Clear all failed assignments
+	assignRetainClaim bool   // Retain the Beads claim while retiring terminal ledger rows
 
 	// Watch mode flags for continuous auto-assignment
 	assignWatch         bool          // Enable watch mode for continuous auto-assignment on completion
@@ -367,6 +368,7 @@ Examples:
   ntm assign myproject --clear-pane=3          # Clear all assignments for pane 3
   ntm assign myproject --clear-failed          # Clear all failed assignments
   ntm assign myproject --clear bd-123 --force  # Clear completed assignment
+  ntm assign myproject --clear-pane=3 --force --retain-claim # Retire terminal pane residue without reopening its bead
   ntm assign myproject --reassign bd-123 --to-pane=4   # Reassign to pane 4
   ntm assign myproject --reassign bd-123 --to-type=codex  # Reassign to idle codex
   ntm assign myproject --retry bd-123          # Retry failed bead bd-123
@@ -408,6 +410,7 @@ Examples:
 	cmd.Flags().StringVar(&assignClear, "clear", "", "Clear specific bead assignments (comma-separated bead IDs)")
 	cmd.Flags().StringVar(&assignClearPane, "clear-pane", "", "Clear all assignments for one pane (N, W.P, or %N; use when agent crashed)")
 	cmd.Flags().BoolVar(&assignClearFailed, "clear-failed", false, "Clear all failed assignments")
+	cmd.Flags().BoolVar(&assignRetainClaim, "retain-claim", false, "Keep the Beads claim when clearing terminal assignment rows")
 
 	// Watch mode flags
 	cmd.Flags().BoolVar(&assignWatch, "watch", false, "Enable watch mode for continuous auto-assignment on completion")
@@ -514,6 +517,9 @@ func isAutomatedAssignmentSafetyError(err error) bool {
 func prepareResolvedAssignCommand(cmd *cobra.Command, session, projectDir string) (handled bool, policyProject string, closeWebhook func() error, err error) {
 	if assignClear != "" || strings.TrimSpace(assignClearPane) != "" || assignClearFailed {
 		return true, "", nil, runClearAssignmentsForCommand(cmd, session)
+	}
+	if assignRetainClaim {
+		return false, "", nil, fmt.Errorf("%w: --retain-claim requires --clear, --clear-pane, or --clear-failed", errCLIInvalidInput)
 	}
 
 	if err := ensureAuthoritativeAssignmentPolicy(projectDir, &policyProject); err != nil {
@@ -3245,6 +3251,7 @@ type ClearAssignmentResult struct {
 	AssignmentFound          bool     `json:"assignment_found"`
 	FileReservationsReleased bool     `json:"file_reservations_released"`
 	FilesReleased            []string `json:"files_released,omitempty"`
+	ClaimRetained            bool     `json:"claim_retained,omitempty"`
 	Success                  bool     `json:"success"`
 	Error                    string   `json:"error,omitempty"`
 	ErrorCode                string   `json:"error_code,omitempty"`
@@ -3920,6 +3927,9 @@ func clearStoredAssignmentIfStatus(ctx context.Context, store *assignment.Assign
 		return nil, fmt.Errorf("assignment %s reached terminal status %s while waiting to clear", current.BeadID, refreshed.Status)
 	}
 	current = refreshed
+	if assignRetainClaim && !assignmentStatusIsTerminalForCleanup(current.Status) {
+		return nil, fmt.Errorf("--retain-claim requires a terminal assignment row; %s is %s", current.BeadID, current.Status)
+	}
 	if assignForce && current.DispatchState == assignment.DispatchSending && !IsJSONOutput() {
 		output.PrintWarningf(
 			"Force-clearing %s while its dispatch outcome is unknown: the original message may already have been delivered, so re-assigning can duplicate work. Verify pane %d before re-dispatching.",
@@ -3960,7 +3970,7 @@ func clearStoredAssignmentIfStatus(ctx context.Context, store *assignment.Assign
 			return released, fmt.Errorf("persist completed reservation release: %w", err)
 		}
 	}
-	if strings.TrimSpace(clearing.ClaimActor) != "" {
+	if strings.TrimSpace(clearing.ClaimActor) != "" && !assignRetainClaim {
 		projectDir, projectErr := resolveAssignProjectDir(ctx, session)
 		if projectErr != nil {
 			claimErr := fmt.Errorf("resolve project for Beads claim release: %w", projectErr)
@@ -4113,6 +4123,7 @@ func runClearSelectedAssignmentsFromStore(cmd *cobra.Command, store *assignment.
 			} else {
 				result.FilesReleased = releasedFiles
 				result.FileReservationsReleased = len(releasedFiles) > 0
+				result.ClaimRetained = assignRetainClaim && strings.TrimSpace(foundAssignment.ClaimActor) != ""
 				result.Success = true
 				successCount++
 			}
@@ -4176,7 +4187,11 @@ func runClearSelectedAssignmentsFromStore(cmd *cobra.Command, store *assignment.
 		fmt.Printf("Cleared %d of %d bead assignments:\n\n", successCount, len(beadIDs))
 		for _, result := range results {
 			if result.Success {
-				fmt.Printf("  ✓ %s (pane %d, %s)\n", result.BeadID, result.PreviousPane, result.PreviousAgentType)
+				claimNote := ""
+				if result.ClaimRetained {
+					claimNote = ", claim retained"
+				}
+				fmt.Printf("  ✓ %s (pane %d, %s%s)\n", result.BeadID, result.PreviousPane, result.PreviousAgentType, claimNote)
 				if len(result.FilesReleased) > 0 {
 					fmt.Printf("    Released files: %v\n", result.FilesReleased)
 				}
@@ -4334,6 +4349,7 @@ func runClearPaneAssignments(cmd *cobra.Command, session, selector string) error
 		} else {
 			beadResult.FilesReleased = releasedFiles
 			beadResult.FileReservationsReleased = len(releasedFiles) > 0
+			beadResult.ClaimRetained = assignRetainClaim && strings.TrimSpace(a.ClaimActor) != ""
 			beadResult.Success = true
 		}
 
@@ -4409,7 +4425,11 @@ func runClearPaneAssignments(cmd *cobra.Command, session, selector string) error
 			fmt.Printf("Cleared all assignments for pane %s (%s):\n\n", assignmentPaneTarget(targetPane), agentType)
 			for _, beadResult := range result.ClearedBeads {
 				if beadResult.Success {
-					fmt.Printf("  ✓ %s\n", beadResult.BeadID)
+					claimNote := ""
+					if beadResult.ClaimRetained {
+						claimNote = " (claim retained)"
+					}
+					fmt.Printf("  ✓ %s%s\n", beadResult.BeadID, claimNote)
 					if len(beadResult.FilesReleased) > 0 {
 						fmt.Printf("    Released files: %v\n", beadResult.FilesReleased)
 					}

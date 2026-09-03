@@ -1218,6 +1218,21 @@ func TestAtomicAssignmentCanonicalOccupancyRejectsSelectorAliases(t *testing.T) 
 	}
 }
 
+func TestTargetOccupiedErrorNamesStatusAndAge(t *testing.T) {
+	assignedAt := time.Date(2026, 9, 3, 10, 0, 0, 0, time.UTC)
+	err := targetOccupiedError("%42", &Assignment{
+		BeadID: "ntm-stale", Status: StatusCompleted, AssignedAt: assignedAt,
+	}, assignedAt.Add(90*time.Minute))
+	if !errors.Is(err, ErrTargetOccupied) {
+		t.Fatalf("targetOccupiedError()=%v, want ErrTargetOccupied", err)
+	}
+	for _, want := range []string{"owned by bead ntm-stale", "status=completed", "age=1h30m0s", "assigned_at=2026-09-03T10:00:00Z"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("targetOccupiedError()=%q, missing %q", err, want)
+		}
+	}
+}
+
 func TestAtomicAssignmentDispatchOnlyCanonicalIdentityOccupiesTarget(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	store := NewStore("atomic-dispatch-only-occupancy")

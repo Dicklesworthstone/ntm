@@ -719,7 +719,7 @@ func (c *AtomicCoordinator) Execute(ctx context.Context, req AtomicRequest) (Ato
 	}
 	if occupied != nil {
 		result.Assignment = occupied
-		return result, fmt.Errorf("%w: %s is owned by bead %s", ErrTargetOccupied, req.Target, occupied.BeadID)
+		return result, targetOccupiedError(req.Target, occupied, c.now())
 	}
 
 	prior := c.store.Get(req.BeadID)
@@ -974,6 +974,24 @@ func (c *AtomicCoordinator) Execute(ctx context.Context, req AtomicRequest) (Ato
 	result.Assignment = c.store.Get(req.BeadID)
 	result.Sent = true
 	return result, nil
+}
+
+func targetOccupiedError(target string, occupied *Assignment, now time.Time) error {
+	if occupied == nil {
+		return fmt.Errorf("%w: %s has an unknown owner", ErrTargetOccupied, target)
+	}
+	age := "unknown"
+	assignedAt := "unknown"
+	if !occupied.AssignedAt.IsZero() {
+		assignedAt = occupied.AssignedAt.UTC().Format(time.RFC3339)
+		elapsed := now.Sub(occupied.AssignedAt)
+		if elapsed < 0 {
+			elapsed = 0
+		}
+		age = elapsed.Truncate(time.Second).String()
+	}
+	return fmt.Errorf("%w: %s is owned by bead %s (status=%s, age=%s, assigned_at=%s)",
+		ErrTargetOccupied, target, occupied.BeadID, occupied.Status, age, assignedAt)
 }
 
 func assignmentEligibilityAuthorizationRequest(prior *Assignment, req AtomicRequest, actor string, replacementStart bool) AssignmentEligibilityAuthorizationRequest {
@@ -1391,7 +1409,6 @@ func (c *AtomicCoordinator) ensureReservation(ctx context.Context, req AtomicReq
 			return lease, recorded, fmt.Errorf("reconcile reservation for %s: invalid state %q", req.BeadID, reconciliation.State)
 		}
 	}
-
 	if c.reserver == nil {
 		if req.RequireReservation {
 			return lease, recorded, ErrReservationRequired

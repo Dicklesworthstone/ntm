@@ -135,6 +135,7 @@ type CoordinatorConfig struct {
 	AutoAssign     bool    `toml:"auto_assign"`      // Automatically assign work to idle agents
 	IdleThreshold  float64 `toml:"idle_threshold"`   // Seconds of inactivity before considering idle
 	AssignOnlyIdle bool    `toml:"assign_only_idle"` // Only assign to truly idle agents
+	ReserveFiles   bool    `toml:"-"`                // Reserve repository paths before daemon assignment
 
 	// Conflict handling
 	ConflictNotify    bool `toml:"conflict_notify"`    // Notify when conflicts detected
@@ -177,6 +178,7 @@ func DefaultCoordinatorConfig() CoordinatorConfig {
 		AutoAssign:        false, // Disabled by default - opt-in
 		IdleThreshold:     30.0,
 		AssignOnlyIdle:    true,
+		ReserveFiles:      true,
 		ConflictNotify:    true,
 		ConflictNegotiate: false, // Manual resolution by default
 		SendDigests:       false, // Disabled by default
