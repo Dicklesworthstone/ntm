@@ -2,8 +2,11 @@ package coordinator
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -1256,6 +1259,184 @@ func TestAssignWorkKeepsUnknownDispatchFailClosed(t *testing.T) {
 	stored := store.Get(request.BeadID)
 	if stored == nil || stored.DispatchState != assignmentstore.DispatchSending || stored.DispatchAttempts != 1 {
 		t.Fatalf("unknown dispatch ledger changed = %+v", stored)
+	}
+}
+
+func TestAssignWorkDeadPaneDoesNotBlockReadyBead(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	const session = "agent-factory"
+	writeStrandedAssignmentIncidentFixture(t, home, session)
+
+	c := New(session, t.TempDir(), &agentmail.Client{}, "CoordinatorAgent")
+	addEligibleCoordinatorAgent(c, "%1001", "ReadyAgent")
+	c.actionableRecommendationsFn = func(context.Context, string, int) ([]bv.TriageRecommendation, error) {
+		return []bv.TriageRecommendation{{
+			ID: "agent-factory-ready-b", Title: "Ready bead B", Type: "bug", Status: "open", Priority: 1, Score: 1,
+		}}, nil
+	}
+	c.workItemStatusFn = func(_ context.Context, beadID string) (string, error) {
+		if beadID == "agent-factory-ready-b" {
+			return "open", nil
+		}
+		return "in_progress", nil
+	}
+	c.atomicCoordinatorFactory = successfulCoordinatorAtomicFactory("mail-ready-b")
+
+	results, err := c.AssignWork(t.Context())
+	if err != nil {
+		t.Fatalf("AssignWork: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("assignment results=%+v, want dead A plus placed B", results)
+	}
+	byBead := make(map[string]AssignmentResult, len(results))
+	for _, result := range results {
+		if result.Assignment != nil {
+			byBead[result.Assignment.BeadID] = result
+		}
+	}
+	stranded := byBead["agent-factory-6ndm"]
+	if stranded.Success || !strings.Contains(stranded.Error, `%993`) || !strings.Contains(stranded.Error, "no longer exists") {
+		t.Fatalf("stranded result=%+v", stranded)
+	}
+	ready := byBead["agent-factory-ready-b"]
+	if !ready.Success || !ready.MessageSent {
+		t.Fatalf("ready bead B was not placed: %+v", ready)
+	}
+
+	loaded, err := assignmentstore.LoadStoreStrict(session)
+	if err != nil {
+		t.Fatalf("strict load after recovery: %v", err)
+	}
+	failed := loaded.Get("agent-factory-6ndm")
+	if failed == nil || failed.Status != assignmentstore.StatusFailed || !strings.Contains(failed.FailReason, `%993`) || failed.DispatchAttempts != 1 {
+		t.Fatalf("stranded assignment=%+v, want terminal failed state naming dead target", failed)
+	}
+	placed := loaded.Get("agent-factory-ready-b")
+	if placed == nil || placed.Status != assignmentstore.StatusAssigned || placed.DispatchReceiptID != "mail-ready-b" {
+		t.Fatalf("ready assignment=%+v", placed)
+	}
+	ledgerPath := filepath.Join(home, ".ntm", "sessions", session, "assignments.json")
+	primary, err := os.ReadFile(ledgerPath)
+	if err != nil {
+		t.Fatalf("read primary ledger: %v", err)
+	}
+	backup, err := os.ReadFile(ledgerPath + ".bak")
+	if err != nil {
+		t.Fatalf("read backup ledger: %v", err)
+	}
+	if string(primary) != string(backup) || loaded.PersistenceGeneration <= 4775 {
+		t.Fatalf("recovery persistence generation=%d primary/backup equal=%v", loaded.PersistenceGeneration, string(primary) == string(backup))
+	}
+}
+
+func TestAssignWorkBoundsKnownSafeDispatchRetries(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	const session = "coordinator-dispatch-attempt-limit"
+	request := assignmentstore.AtomicRequest{
+		BeadID: "ntm-retry-limit", BeadTitle: "Bounded retry", Target: "%94", OccupancyKey: "%94", Pane: 1,
+		AgentType: "cod", AgentName: "BlueLake", Actor: "BlueLake", Prompt: "bounded delivery",
+		IdempotencyKey: "coordinator-retry-limit-key",
+	}
+	store := assignmentstore.NewStore(session)
+	actor := assignmentstore.StableClaimActor(request.Actor, request.IdempotencyKey)
+	if _, err := store.RecordAtomicIntent(request, actor, time.Now().UTC()); err != nil {
+		t.Fatalf("RecordAtomicIntent: %v", err)
+	}
+	if _, err := store.RecordAtomicClaim(request, assignmentstore.ClaimReceipt{BeadID: request.BeadID, Actor: actor, Status: "in_progress", ClaimedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("RecordAtomicClaim: %v", err)
+	}
+	for attempt := 0; attempt < coordinatorDispatchAttemptLimit; attempt++ {
+		if err := store.RecordAtomicDispatchStarted(request.BeadID, request.IdempotencyKey, time.Now().UTC()); err != nil {
+			t.Fatalf("RecordAtomicDispatchStarted attempt %d: %v", attempt+1, err)
+		}
+		if err := store.RecordAtomicDispatchFailed(request.BeadID, request.IdempotencyKey, errors.New("known pre-send failure")); err != nil {
+			t.Fatalf("RecordAtomicDispatchFailed attempt %d: %v", attempt+1, err)
+		}
+	}
+
+	c := New(session, t.TempDir(), &agentmail.Client{}, "CoordinatorAgent")
+	addEligibleCoordinatorAgent(c, request.Target, request.AgentName)
+	c.atomicCoordinatorFactory = func(*assignmentstore.AssignmentStore) *assignmentstore.AtomicCoordinator {
+		t.Fatal("attempt ceiling must stop before another dispatch")
+		return nil
+	}
+	results, err := c.AssignWork(t.Context())
+	if err != nil {
+		t.Fatalf("AssignWork: %v", err)
+	}
+	if len(results) != 1 || results[0].Success || !strings.Contains(results[0].Error, "attempt limit reached") {
+		t.Fatalf("attempt-limit results=%+v", results)
+	}
+	failed, err := assignmentstore.LoadStoreStrict(session)
+	if err != nil {
+		t.Fatalf("strict load: %v", err)
+	}
+	row := failed.Get(request.BeadID)
+	if row == nil || row.Status != assignmentstore.StatusFailed || row.DispatchAttempts != coordinatorDispatchAttemptLimit || !strings.Contains(row.FailReason, "attempt limit reached") {
+		t.Fatalf("attempt-limit row=%+v", row)
+	}
+}
+
+func writeStrandedAssignmentIncidentFixture(t *testing.T, home, session string) {
+	t.Helper()
+	const strandedRow = `{
+  "bead_id": "agent-factory-6ndm",
+  "bead_title": "Hiring has no front door: factory hire exists and runs pipeline.md section 7, but nothing owns the trigger phrases or checks the roster first (repurpose ex-hire per George)",
+  "pane": 8,
+  "agent_type": "codex",
+  "agent_name": "ChartreuseThrush",
+  "status": "claimed",
+  "assigned_at": "2026-09-02T19:26:37.747913399Z",
+  "idempotency_key": "229bbb021f11b4ed872090599e6cc674287b66f381da0674e758236633a9cff8",
+  "claim_actor": "ChartreuseThrush/ntm-30a83b47454b",
+  "claim_state": "claimed",
+  "claim_status": "in_progress",
+  "claim_attempts": 1,
+  "claim_started_at": "2026-09-02T19:26:37.792893902Z",
+  "claimed_at": "2026-09-02T19:26:37.874312506Z",
+  "claim_requires_non_terminal": true,
+  "reservation_state": "pending",
+  "dispatch_state": "sending",
+  "dispatch_target": "%993",
+  "occupancy_key": "%993",
+  "prompt_sha256": "6e85de7a11d48ef72c7be7d5b9d08bd298dec3acb342dc9591914ea5280d2380",
+  "intent_sha256": "6e85de7a11d48ef72c7be7d5b9d08bd298dec3acb342dc9591914ea5280d2380",
+  "pending_prompt": "Work on bead agent-factory-6ndm: Hiring has no front door: factory hire exists and runs pipeline.md section 7, but nothing owns the trigger phrases or checks the roster first (repurpose ex-hire per George). Check dependencies first with ` + "`" + `br dep tree agent-factory-6ndm` + "`" + `.",
+  "dispatch_attempts": 1,
+  "dispatch_started_at": "2026-09-02T19:26:39.301798264Z"
+}`
+	var assignment assignmentstore.Assignment
+	if err := json.Unmarshal([]byte(strandedRow), &assignment); err != nil {
+		t.Fatalf("decode preserved incident row: %v", err)
+	}
+	updatedAt, err := time.Parse(time.RFC3339Nano, "2026-09-02T23:00:59.530647074Z")
+	if err != nil {
+		t.Fatalf("parse incident ledger timestamp: %v", err)
+	}
+	snapshot := struct {
+		SessionName           string                                 `json:"session_name"`
+		Assignments           map[string]*assignmentstore.Assignment `json:"assignments"`
+		PersistenceGeneration uint64                                 `json:"persistence_generation"`
+		UpdatedAt             time.Time                              `json:"updated_at"`
+		Version               int                                    `json:"version"`
+	}{
+		SessionName: session, Assignments: map[string]*assignmentstore.Assignment{assignment.BeadID: &assignment},
+		PersistenceGeneration: 4775, UpdatedAt: updatedAt, Version: 9,
+	}
+	data, err := json.MarshalIndent(snapshot, "", "  ")
+	if err != nil {
+		t.Fatalf("encode incident ledger fixture: %v", err)
+	}
+	dir := filepath.Join(home, ".ntm", "sessions", session)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("create incident fixture directory: %v", err)
+	}
+	for _, path := range []string{filepath.Join(dir, "assignments.json"), filepath.Join(dir, "assignments.json.bak")} {
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatalf("write incident fixture %s: %v", path, err)
+		}
 	}
 }
 

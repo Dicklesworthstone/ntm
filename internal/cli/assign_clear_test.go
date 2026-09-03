@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -1194,5 +1196,24 @@ func TestRunClearForceReleasesUnknownDispatchOutcome(t *testing.T) {
 	}
 	if releaseCalls != 1 || store.Get(beadID) != nil {
 		t.Fatalf("force clear release calls=%d remaining=%+v", releaseCalls, store.Get(beadID))
+	}
+	reloaded, err := assignment.LoadStoreStrict(session)
+	if err != nil {
+		t.Fatalf("strict load after force clear: %v", err)
+	}
+	if reloaded.Get(beadID) != nil {
+		t.Fatalf("force-cleared assignment remained after strict load: %+v", reloaded.Get(beadID))
+	}
+	ledgerPath := filepath.Join(assignment.StorageDir(), session, "assignments.json")
+	primary, err := os.ReadFile(ledgerPath)
+	if err != nil {
+		t.Fatalf("read force-clear primary: %v", err)
+	}
+	backup, err := os.ReadFile(ledgerPath + ".bak")
+	if err != nil {
+		t.Fatalf("read force-clear backup: %v", err)
+	}
+	if string(primary) != string(backup) {
+		t.Fatal("force clear left equal-generation primary and backup divergent")
 	}
 }

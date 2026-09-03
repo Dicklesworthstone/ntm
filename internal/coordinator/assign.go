@@ -86,6 +86,11 @@ type AssignmentResult struct {
 	IdempotencyKey string          `json:"idempotency_key,omitempty"`
 }
 
+// coordinatorDispatchAttemptLimit bounds retries that are proven to have
+// stopped before transport actuation. Outcome-unknown sends are never retried;
+// they remain behind the ambiguity barrier unless their physical pane dies.
+const coordinatorDispatchAttemptLimit = 3
+
 // AssignWork assigns verified actionable work to idle agents.
 func (c *SessionCoordinator) AssignWork(ctx context.Context) ([]AssignmentResult, error) {
 	if !c.config.AutoAssign {
@@ -315,6 +320,7 @@ func (c *SessionCoordinator) recoverPendingAssignments(ctx context.Context, stor
 			eligibleTargets[strings.TrimSpace(candidate.PaneID)] = candidate
 		}
 	}
+	liveTargets := c.liveAssignmentTargets()
 	active := store.ListActive()
 	sort.Slice(active, func(i, j int) bool {
 		if active[i] == nil {
@@ -332,6 +338,17 @@ func (c *SessionCoordinator) recoverPendingAssignments(ctx context.Context, stor
 			continue
 		}
 		work := coordinatorWorkAssignmentFromRecord(recorded)
+		target := strings.TrimSpace(recorded.OccupancyKey)
+		if target == "" {
+			target = strings.TrimSpace(recorded.DispatchTarget)
+		}
+		if target != "" {
+			if _, live := liveTargets[target]; !live {
+				reason := fmt.Sprintf("assignment dispatch target %q no longer exists", target)
+				results = append(results, failCoordinatorAssignment(ctx, store, recorded, work, reason))
+				continue
+			}
+		}
 		if recorded.DispatchState == assignmentstore.DispatchSending {
 			results = append(results, AssignmentResult{
 				Assignment: work, ClaimActor: recorded.ClaimActor, IdempotencyKey: recorded.IdempotencyKey,
@@ -342,9 +359,10 @@ func (c *SessionCoordinator) recoverPendingAssignments(ctx context.Context, stor
 		if !coordinatorAssignmentIsRecoverable(recorded) {
 			continue
 		}
-		target := strings.TrimSpace(recorded.OccupancyKey)
-		if target == "" {
-			target = strings.TrimSpace(recorded.DispatchTarget)
+		if recorded.DispatchAttempts >= coordinatorDispatchAttemptLimit {
+			reason := fmt.Sprintf("assignment dispatch attempt limit reached for target %q (%d attempts)", target, recorded.DispatchAttempts)
+			results = append(results, failCoordinatorAssignment(ctx, store, recorded, work, reason))
+			continue
 		}
 		candidate, eligible := eligibleTargets[target]
 		if !eligible {
@@ -364,6 +382,39 @@ func (c *SessionCoordinator) recoverPendingAssignments(ctx context.Context, stor
 		results = append(results, c.recoverPendingAssignment(ctx, store, recorded, work))
 	}
 	return results
+}
+
+// liveAssignmentTargets snapshots every currently observed agent pane, not
+// only idle/eligible candidates. RunCycle refreshes this map from tmux before
+// assignment, so absence proves that a persisted physical pane no longer
+// exists while presence still distinguishes a busy pane from a dead one.
+func (c *SessionCoordinator) liveAssignmentTargets() map[string]struct{} {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	targets := make(map[string]struct{}, len(c.agents))
+	for paneID := range c.agents {
+		if target := strings.TrimSpace(paneID); target != "" {
+			targets[target] = struct{}{}
+		}
+	}
+	return targets
+}
+
+func failCoordinatorAssignment(ctx context.Context, store *assignmentstore.AssignmentStore, recorded *assignmentstore.Assignment, work *WorkAssignment, reason string) AssignmentResult {
+	result := AssignmentResult{
+		Assignment: safeCoordinatorWorkProjection(work), ClaimActor: recorded.ClaimActor,
+		IdempotencyKey: recorded.IdempotencyKey, Error: reason,
+	}
+	applied, err := store.MarkFailedIfCurrent(ctx, recorded, reason)
+	if err != nil {
+		result.Error = fmt.Sprintf("%s: persist terminal assignment: %v", reason, err)
+		return result
+	}
+	if !applied {
+		result.Error = fmt.Sprintf("%s: assignment changed before terminalization", reason)
+	}
+	return result
 }
 
 func pendingRecoveryIdentityError(recorded *assignmentstore.Assignment, candidate *AgentState) error {
