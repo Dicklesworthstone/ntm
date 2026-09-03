@@ -1,6 +1,7 @@
 package coordinator
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -1343,7 +1344,7 @@ func TestAssignWorkDoesNotInferDeathFromUnavailablePaneSnapshot(t *testing.T) {
 	}
 }
 
-func TestAssignWorkDeadPaneDoesNotBlockReadyBead(t *testing.T) {
+func TestAssignWorkDeadPaneReapsIncidentRowAndPlacesIndependentWork(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	const session = "agent-factory"
@@ -1362,6 +1363,7 @@ func TestAssignWorkDeadPaneDoesNotBlockReadyBead(t *testing.T) {
 		}
 		return "in_progress", nil
 	}
+	c.releaseWorkItemClaimFn = func(context.Context, string, string, string) (bool, error) { return true, nil }
 	c.atomicCoordinatorFactory = successfulCoordinatorAtomicFactory("mail-ready-b")
 
 	results, err := c.AssignWork(t.Context())
@@ -1382,6 +1384,9 @@ func TestAssignWorkDeadPaneDoesNotBlockReadyBead(t *testing.T) {
 		t.Fatalf("stranded result=%+v", stranded)
 	}
 	ready := byBead["agent-factory-ready-b"]
+	// B is an independent-work control, not evidence that the old row caused
+	// starvation: AssignWork has always continued from recovery into scoring
+	// whenever another verified candidate and recommendation exist.
 	if !ready.Success || !ready.MessageSent {
 		t.Fatalf("ready bead B was not placed: %+v", ready)
 	}
@@ -1412,7 +1417,7 @@ func TestAssignWorkDeadPaneDoesNotBlockReadyBead(t *testing.T) {
 	}
 }
 
-func TestAssignWorkNonRetryableLivePaneDoesNotBlockReadyBead(t *testing.T) {
+func TestAssignWorkPermanentFailureBlockSurvivesRowClearAndStopsRedispatch(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	const session = "agent-factory"
@@ -1426,11 +1431,24 @@ func TestAssignWorkNonRetryableLivePaneDoesNotBlockReadyBead(t *testing.T) {
 			ID: "agent-factory-ready-b", Title: "Ready bead B", Type: "bug", Status: "open", Priority: 1, Score: 1,
 		}}, nil
 	}
+	trackerStatus := map[string]string{
+		"agent-factory-9d6s":    "in_progress",
+		"agent-factory-ready-b": "open",
+	}
 	c.workItemStatusFn = func(_ context.Context, beadID string) (string, error) {
 		if beadID == "agent-factory-ready-b" {
 			return "open", nil
 		}
-		return "in_progress", nil
+		return trackerStatus[beadID], nil
+	}
+	claimReleases := 0
+	c.releaseWorkItemClaimFn = func(_ context.Context, _ string, beadID, actor string) (bool, error) {
+		if beadID != "agent-factory-9d6s" || actor != "WildIvy/ntm-e1f181f3d719" {
+			t.Fatalf("release claim bead=%q actor=%q", beadID, actor)
+		}
+		claimReleases++
+		trackerStatus[beadID] = "open"
+		return true, nil
 	}
 	failedDispatches := 0
 	c.atomicCoordinatorFactory = func(store *assignmentstore.AssignmentStore) *assignmentstore.AtomicCoordinator {
@@ -1475,7 +1493,6 @@ func TestAssignWorkNonRetryableLivePaneDoesNotBlockReadyBead(t *testing.T) {
 	if failedDispatches != 1 {
 		t.Fatalf("non-retryable dispatch attempts=%d, want 1", failedDispatches)
 	}
-
 	// The first cycle consumes the final known-no-actuation attempt while still
 	// placing B. The next cycle terminalizes A before a fourth dispatch.
 	results, err = c.AssignWork(t.Context())
@@ -1489,6 +1506,9 @@ func TestAssignWorkNonRetryableLivePaneDoesNotBlockReadyBead(t *testing.T) {
 	if failedDispatches != 1 {
 		t.Fatalf("non-retryable row dispatched past ceiling: attempts=%d", failedDispatches)
 	}
+	if claimReleases != 1 || trackerStatus["agent-factory-9d6s"] != "open" {
+		t.Fatalf("post-reap claim releases=%d tracker status=%q, want one release and open", claimReleases, trackerStatus["agent-factory-9d6s"])
+	}
 
 	loaded, err := assignmentstore.LoadStoreStrict(session)
 	if err != nil {
@@ -1499,9 +1519,103 @@ func TestAssignWorkNonRetryableLivePaneDoesNotBlockReadyBead(t *testing.T) {
 		!strings.Contains(failed.FailReason, "attempt limit reached") {
 		t.Fatalf("non-retryable live-pane assignment=%+v", failed)
 	}
+	block, blocked := loaded.ActiveDispatchFailureBlock("agent-factory-9d6s")
+	if !blocked || block.FailureClass != "SENDER_TOKEN_MISMATCH" {
+		t.Fatalf("durable dispatch block=%+v active=%v", block, blocked)
+	}
 	placed := loaded.Get("agent-factory-ready-b")
 	if placed == nil || placed.Status != assignmentstore.StatusAssigned || placed.DispatchReceiptID != "mail-ready-after-nonretryable" {
 		t.Fatalf("ready assignment=%+v", placed)
+	}
+
+	// Reproduce the live second cycle: an operator clears the failed row after
+	// its stale claim is released, which returns the bead to the ready queue.
+	// The circuit breaker is outside that row, so the same permanent failure
+	// class cannot start a fresh attempt counter and dispatch again.
+	if _, err := loaded.BeginClearForce(t.Context(), "agent-factory-9d6s", time.Now().UTC()); err != nil {
+		t.Fatalf("BeginClearForce failed row: %v", err)
+	}
+	if _, err := loaded.RecordClearLeasesReleased(t.Context(), "agent-factory-9d6s"); err != nil {
+		t.Fatalf("RecordClearLeasesReleased failed row: %v", err)
+	}
+	if err := loaded.CompleteClear(t.Context(), "agent-factory-9d6s"); err != nil {
+		t.Fatalf("CompleteClear failed row: %v", err)
+	}
+	if loaded.Get("agent-factory-9d6s") != nil {
+		t.Fatal("failed assignment row survived explicit clear")
+	}
+	if _, stillBlocked := loaded.ActiveDispatchFailureBlock("agent-factory-9d6s"); !stillBlocked {
+		t.Fatal("row clear erased permanent dispatch circuit breaker")
+	}
+
+	c.actionableRecommendationsFn = func(context.Context, string, int) ([]bv.TriageRecommendation, error) {
+		return []bv.TriageRecommendation{{
+			ID: "agent-factory-9d6s", Title: "Ready again after claim release", Type: "bug", Status: "open", Priority: 1, Score: 1,
+		}}, nil
+	}
+	results, err = c.AssignWork(t.Context())
+	if err != nil {
+		t.Fatalf("AssignWork after row clear: %v", err)
+	}
+	if len(results) != 1 || results[0].Assignment == nil || results[0].Assignment.BeadID != "agent-factory-9d6s" ||
+		!strings.Contains(results[0].Error, "SENDER_TOKEN_MISMATCH") || !strings.Contains(results[0].Error, "--override-dispatch-block") {
+		t.Fatalf("post-clear circuit-breaker results=%+v", results)
+	}
+	if failedDispatches != 1 {
+		t.Fatalf("same bead was re-dispatched after row clear: total dispatches=%d, want 1", failedDispatches)
+	}
+
+	reloaded, err := assignmentstore.LoadStoreStrict(session)
+	if err != nil {
+		t.Fatalf("strict reload after row clear: %v", err)
+	}
+	if _, stillBlocked := reloaded.ActiveDispatchFailureBlock("agent-factory-9d6s"); !stillBlocked {
+		t.Fatal("strict reload lost permanent dispatch circuit breaker")
+	}
+	ledgerPath := filepath.Join(home, ".ntm", "sessions", session, "assignments.json")
+	primary, err := os.ReadFile(ledgerPath)
+	if err != nil {
+		t.Fatalf("read primary ledger: %v", err)
+	}
+	backup, err := os.ReadFile(ledgerPath + ".bak")
+	if err != nil {
+		t.Fatalf("read backup ledger: %v", err)
+	}
+	if !bytes.Equal(primary, backup) {
+		t.Fatal("primary and backup ledgers differ after durable dispatch block")
+	}
+	cleared, err := reloaded.ClearDispatchFailureBlock(t.Context(), "agent-factory-9d6s")
+	if err != nil || !cleared {
+		t.Fatalf("explicit circuit-breaker override cleared=%v error=%v", cleared, err)
+	}
+	final, err := assignmentstore.LoadStoreStrict(session)
+	if err != nil {
+		t.Fatalf("strict reload after circuit-breaker override: %v", err)
+	}
+	if _, blocked := final.ActiveDispatchFailureBlock("agent-factory-9d6s"); blocked {
+		t.Fatal("explicit circuit-breaker override did not survive strict reload")
+	}
+}
+
+func TestServerDeclaredPermanentDispatchFailure(t *testing.T) {
+	tests := []struct {
+		name      string
+		raw       string
+		wantClass string
+		want      bool
+	}{
+		{name: "permanent", raw: `tool error: {"error":{"type":"SENDER_TOKEN_MISMATCH","recoverable":false}}`, wantClass: "SENDER_TOKEN_MISMATCH", want: true},
+		{name: "recoverable", raw: `tool error: {"error":{"type":"RATE_LIMITED","recoverable":true}}`},
+		{name: "missing declaration", raw: `tool error: {"error":{"type":"UNKNOWN"}}`},
+		{name: "malformed", raw: `tool error: {nope`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			gotClass, got := serverDeclaredPermanentDispatchFailure(test.raw)
+			if got != test.want || gotClass != test.wantClass {
+				t.Fatalf("serverDeclaredPermanentDispatchFailure()=(%q,%v), want (%q,%v)", gotClass, got, test.wantClass, test.want)
+			}
+		})
 	}
 }
 
@@ -1532,6 +1646,7 @@ func TestAssignWorkBoundsKnownSafeDispatchRetries(t *testing.T) {
 
 	c := New(session, t.TempDir(), &agentmail.Client{}, "CoordinatorAgent")
 	addEligibleCoordinatorAgent(c, request.Target, request.AgentName)
+	c.releaseWorkItemClaimFn = func(context.Context, string, string, string) (bool, error) { return true, nil }
 	c.atomicCoordinatorFactory = func(*assignmentstore.AssignmentStore) *assignmentstore.AtomicCoordinator {
 		t.Fatal("attempt ceiling must stop before another dispatch")
 		return nil

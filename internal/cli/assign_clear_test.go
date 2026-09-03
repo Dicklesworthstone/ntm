@@ -55,6 +55,54 @@ func TestClearAssignmentResultStructure(t *testing.T) {
 	}
 }
 
+func TestClearDispatchFailureBlockRequiresExplicitForcedOverride(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	const (
+		session = "clear-dispatch-block"
+		beadID  = "ntm-permanent-failure"
+	)
+	store := assignment.NewStore(session)
+	store.DispatchFailureBlocks[beadID] = assignment.DispatchFailureBlock{
+		BeadID: beadID, FailureClass: "SENDER_TOKEN_MISMATCH", Reason: "permanent rejection",
+		Generation: 1, BlockedAt: time.Now().UTC(),
+	}
+	if err := store.Save(); err != nil {
+		t.Fatalf("seed dispatch failure block: %v", err)
+	}
+
+	previousClear := assignClear
+	previousClearPane := assignClearPane
+	previousClearFailed := assignClearFailed
+	previousForce := assignForce
+	previousOverride := assignOverrideDispatchBlock
+	t.Cleanup(func() {
+		assignClear = previousClear
+		assignClearPane = previousClearPane
+		assignClearFailed = previousClearFailed
+		assignForce = previousForce
+		assignOverrideDispatchBlock = previousOverride
+	})
+	assignClear = beadID
+	assignClearPane = ""
+	assignClearFailed = false
+	assignOverrideDispatchBlock = true
+	assignForce = false
+	if err := runClearAssignments(&cobra.Command{}, session); err == nil {
+		t.Fatal("dispatch block override without --force succeeded")
+	}
+	assignForce = true
+	if _, err := captureStdout(t, func() error { return runClearAssignments(&cobra.Command{}, session) }); err != nil {
+		t.Fatalf("explicit forced dispatch block override: %v", err)
+	}
+	reloaded, err := assignment.LoadStoreStrict(session)
+	if err != nil {
+		t.Fatalf("strict load after dispatch block override: %v", err)
+	}
+	if _, blocked := reloaded.ActiveDispatchFailureBlock(beadID); blocked {
+		t.Fatal("explicit forced override left dispatch failure block active")
+	}
+}
+
 // TestClearAssignmentResultNotFound tests result when assignment not found
 func TestClearAssignmentResultNotFound(t *testing.T) {
 	result := ClearAssignmentResult{

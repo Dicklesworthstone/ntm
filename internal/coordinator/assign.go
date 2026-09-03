@@ -2,6 +2,7 @@ package coordinator
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -152,6 +153,21 @@ func (c *SessionCoordinator) AssignWork(ctx context.Context) ([]AssignmentResult
 		return results, err
 	}
 	recommendations = filtered
+	blockedRecommendations := make([]bv.TriageRecommendation, 0, len(recommendations))
+	for _, recommendation := range recommendations {
+		block, blocked := store.ActiveDispatchFailureBlock(recommendation.ID)
+		if !blocked {
+			blockedRecommendations = append(blockedRecommendations, recommendation)
+			continue
+		}
+		results = append(results, AssignmentResult{
+			Assignment: &WorkAssignment{BeadID: recommendation.ID},
+			Error: fmt.Sprintf(
+				"assignment for bead %q is blocked after permanent dispatch failure class %s; correct the failure condition, then clear the circuit breaker with ntm assign %s --clear %s --force --override-dispatch-block",
+				recommendation.ID, block.FailureClass, c.session, recommendation.ID),
+		})
+	}
+	recommendations = blockedRecommendations
 	if len(recommendations) == 0 {
 		return results, nil
 	}
@@ -345,7 +361,7 @@ func (c *SessionCoordinator) recoverPendingAssignments(ctx context.Context, stor
 		if target != "" && paneSnapshotUsable {
 			if _, present := physicalTargets[target]; !present {
 				reason := fmt.Sprintf("assignment dispatch target %q is absent from the current tmux pane snapshot", target)
-				results = append(results, failCoordinatorAssignment(ctx, store, recorded, work, reason))
+				results = append(results, c.failCoordinatorAssignment(ctx, store, recorded, work, reason, nil))
 				continue
 			}
 		}
@@ -361,7 +377,16 @@ func (c *SessionCoordinator) recoverPendingAssignments(ctx context.Context, stor
 		}
 		if recorded.DispatchAttempts >= coordinatorDispatchAttemptLimit {
 			reason := fmt.Sprintf("assignment dispatch attempt limit reached for target %q (%d attempts)", target, recorded.DispatchAttempts)
-			results = append(results, failCoordinatorAssignment(ctx, store, recorded, work, reason))
+			var block *assignmentstore.DispatchFailureBlock
+			if failureClass, permanent := serverDeclaredPermanentDispatchFailure(recorded.LastDispatchError); permanent {
+				reason = fmt.Sprintf("%s after server-declared permanent failure class %s", reason, failureClass)
+				block = &assignmentstore.DispatchFailureBlock{
+					FailureClass: failureClass,
+					Reason:       reason,
+					Target:       target,
+				}
+			}
+			results = append(results, c.failCoordinatorAssignment(ctx, store, recorded, work, reason, block))
 			continue
 		}
 		candidate, eligible := eligibleTargets[target]
@@ -399,20 +424,51 @@ func (c *SessionCoordinator) physicalAssignmentTargets() (map[string]struct{}, b
 	return targets, c.assignmentPaneSnapshotUsable
 }
 
-func failCoordinatorAssignment(ctx context.Context, store *assignmentstore.AssignmentStore, recorded *assignmentstore.Assignment, work *WorkAssignment, reason string) AssignmentResult {
+func (c *SessionCoordinator) failCoordinatorAssignment(ctx context.Context, store *assignmentstore.AssignmentStore, recorded *assignmentstore.Assignment, work *WorkAssignment, reason string, block *assignmentstore.DispatchFailureBlock) AssignmentResult {
 	result := AssignmentResult{
 		Assignment: safeCoordinatorWorkProjection(work), ClaimActor: recorded.ClaimActor,
 		IdempotencyKey: recorded.IdempotencyKey, Error: reason,
 	}
-	applied, err := store.MarkFailedIfCurrent(ctx, recorded, reason)
+	// A missing physical pane resolves an otherwise ambiguous `sending`
+	// boundary: there is no surviving target on which work can still begin.
+	// Move it back to the durable pending side before claim reconciliation.
+	if recorded.DispatchState == assignmentstore.DispatchSending {
+		if err := store.RecordAtomicDispatchFailed(recorded.BeadID, recorded.IdempotencyKey, errors.New(reason)); err != nil {
+			result.Error = fmt.Sprintf("%s: resolve dead-target dispatch boundary: %v", reason, err)
+			return result
+		}
+		recorded = store.Get(recorded.BeadID)
+	}
+	completed, err := c.reconcileTerminalAssignmentWithDispatchBlock(ctx, store, recorded, assignmentstore.StatusFailed, reason, block)
 	if err != nil {
-		result.Error = fmt.Sprintf("%s: persist terminal assignment: %v", reason, err)
+		result.Error = fmt.Sprintf("%s: reconcile terminal assignment: %v", reason, err)
 		return result
 	}
-	if !applied {
+	if !completed {
 		result.Error = fmt.Sprintf("%s: assignment changed before terminalization", reason)
 	}
 	return result
+}
+
+func serverDeclaredPermanentDispatchFailure(raw string) (string, bool) {
+	start := strings.Index(raw, "{")
+	if start < 0 {
+		return "", false
+	}
+	var payload struct {
+		Error struct {
+			Type        string `json:"type"`
+			Recoverable *bool  `json:"recoverable"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(raw[start:]), &payload); err != nil || payload.Error.Recoverable == nil || *payload.Error.Recoverable {
+		return "", false
+	}
+	failureClass := strings.TrimSpace(payload.Error.Type)
+	if failureClass == "" {
+		failureClass = "SERVER_DECLARED_PERMANENT"
+	}
+	return failureClass, true
 }
 
 func pendingRecoveryIdentityError(recorded *assignmentstore.Assignment, candidate *AgentState) error {
@@ -545,6 +601,10 @@ func (c *SessionCoordinator) reconcileTerminalAssignments(ctx context.Context, s
 }
 
 func (c *SessionCoordinator) reconcileTerminalAssignment(ctx context.Context, store *assignmentstore.AssignmentStore, observed *assignmentstore.Assignment, terminalStatus assignmentstore.AssignmentStatus, terminalReason string) (bool, error) {
+	return c.reconcileTerminalAssignmentWithDispatchBlock(ctx, store, observed, terminalStatus, terminalReason, nil)
+}
+
+func (c *SessionCoordinator) reconcileTerminalAssignmentWithDispatchBlock(ctx context.Context, store *assignmentstore.AssignmentStore, observed *assignmentstore.Assignment, terminalStatus assignmentstore.AssignmentStatus, terminalReason string, dispatchBlock *assignmentstore.DispatchFailureBlock) (bool, error) {
 	cleanupUnlock, err := store.AcquireExternalCleanupLock(ctx, observed.BeadID)
 	if err != nil {
 		return false, fmt.Errorf("lock terminal assignment %s external cleanup: %w", observed.BeadID, err)
@@ -565,7 +625,13 @@ func (c *SessionCoordinator) reconcileTerminalAssignment(ctx context.Context, st
 		terminalReason = current.PendingTerminalReason
 	}
 
-	barrier, applied, err := store.BeginTerminalReconciliationIfCurrent(ctx, current, terminalStatus, terminalReason)
+	var barrier *assignmentstore.Assignment
+	var applied bool
+	if dispatchBlock != nil {
+		barrier, applied, err = store.BeginDispatchBlockedTerminalReconciliationIfCurrent(ctx, current, terminalReason, *dispatchBlock)
+	} else {
+		barrier, applied, err = store.BeginTerminalReconciliationIfCurrent(ctx, current, terminalStatus, terminalReason)
+	}
 	if err != nil {
 		return false, fmt.Errorf("begin terminal reconciliation for %s: %w", observed.BeadID, err)
 	}

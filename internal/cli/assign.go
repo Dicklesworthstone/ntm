@@ -65,9 +65,10 @@ var (
 	assignPrompt     string // Custom prompt for direct assignment
 
 	// Clear assignment flags
-	assignClear       string // Clear specific bead assignments (comma-separated)
-	assignClearPane   string // Clear all assignments for one canonical pane selector
-	assignClearFailed bool   // Clear all failed assignments
+	assignClear                 string // Clear specific bead assignments (comma-separated)
+	assignClearPane             string // Clear all assignments for one canonical pane selector
+	assignClearFailed           bool   // Clear all failed assignments
+	assignOverrideDispatchBlock bool   // Explicitly clear a durable permanent-dispatch circuit breaker
 
 	// Watch mode flags for continuous auto-assignment
 	assignWatch         bool          // Enable watch mode for continuous auto-assignment on completion
@@ -408,6 +409,7 @@ Examples:
 	cmd.Flags().StringVar(&assignClear, "clear", "", "Clear specific bead assignments (comma-separated bead IDs)")
 	cmd.Flags().StringVar(&assignClearPane, "clear-pane", "", "Clear all assignments for one pane (N, W.P, or %N; use when agent crashed)")
 	cmd.Flags().BoolVar(&assignClearFailed, "clear-failed", false, "Clear all failed assignments")
+	cmd.Flags().BoolVar(&assignOverrideDispatchBlock, "override-dispatch-block", false, "With --clear and --force, explicitly clear the bead's permanent-dispatch circuit breaker")
 
 	// Watch mode flags
 	cmd.Flags().BoolVar(&assignWatch, "watch", false, "Enable watch mode for continuous auto-assignment on completion")
@@ -512,7 +514,7 @@ func isAutomatedAssignmentSafetyError(err error) bool {
 // every non-clear CLI assignment mode. Clear is intentionally independent of
 // config validity because it only removes durable assignment state.
 func prepareResolvedAssignCommand(cmd *cobra.Command, session, projectDir string) (handled bool, policyProject string, closeWebhook func() error, err error) {
-	if assignClear != "" || strings.TrimSpace(assignClearPane) != "" || assignClearFailed {
+	if assignClear != "" || strings.TrimSpace(assignClearPane) != "" || assignClearFailed || assignOverrideDispatchBlock {
 		return true, "", nil, runClearAssignmentsForCommand(cmd, session)
 	}
 
@@ -3244,6 +3246,7 @@ type ClearAssignmentResult struct {
 	PreviousStatus           string   `json:"previous_status,omitempty"`
 	AssignmentFound          bool     `json:"assignment_found"`
 	FileReservationsReleased bool     `json:"file_reservations_released"`
+	DispatchBlockCleared     bool     `json:"dispatch_block_cleared,omitempty"`
 	FilesReleased            []string `json:"files_released,omitempty"`
 	Success                  bool     `json:"success"`
 	Error                    string   `json:"error,omitempty"`
@@ -3867,6 +3870,13 @@ func runClearAssignments(cmd *cobra.Command, session string) error {
 		}
 		return err
 	}
+	if assignOverrideDispatchBlock && (strings.TrimSpace(assignClear) == "" || !assignForce) {
+		err := fmt.Errorf("--override-dispatch-block requires --clear and --force")
+		if IsJSONOutput() {
+			return emitJSONFailureEnvelope(makeClearErrorEnvelope("INVALID_ARGS", err.Error()))
+		}
+		return err
+	}
 
 	if assignClear != "" {
 		return runClearSpecificBeads(cmd, session, assignClear)
@@ -4073,8 +4083,21 @@ func runClearSelectedAssignmentsFromStore(cmd *cobra.Command, store *assignment.
 		}
 
 		if foundAssignment == nil {
-			result.Success = false
-			result.Error = "assignment not found or already completed"
+			if assignOverrideDispatchBlock {
+				cleared, clearErr := store.ClearDispatchFailureBlock(ctx, beadID)
+				if clearErr != nil {
+					result.Error = clearErr.Error()
+				} else if cleared {
+					result.DispatchBlockCleared = true
+					result.Success = true
+					successCount++
+				} else {
+					result.Error = "assignment and active dispatch failure block not found"
+				}
+			} else {
+				result.Success = false
+				result.Error = "assignment not found or already completed"
+			}
 		} else {
 			result.PreviousPane = foundAssignment.Pane
 			result.PreviousAgent = foundAssignment.AgentName
@@ -4111,6 +4134,18 @@ func runClearSelectedAssignmentsFromStore(cmd *cobra.Command, store *assignment.
 					}
 				}
 			} else {
+				if assignOverrideDispatchBlock {
+					result.DispatchBlockCleared, clearErr = store.ClearDispatchFailureBlock(ctx, beadID)
+					if clearErr != nil {
+						result.Success = false
+						result.Error = clearErr.Error()
+						if firstFailureErr == nil {
+							firstFailureErr = clearErr
+						}
+						results = append(results, result)
+						continue
+					}
+				}
 				result.FilesReleased = releasedFiles
 				result.FileReservationsReleased = len(releasedFiles) > 0
 				result.Success = true
