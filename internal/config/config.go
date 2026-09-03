@@ -1712,7 +1712,7 @@ func canonicalModelLookupAgentType(agentType string) string {
 // AntigravityRequiredModel is the ONLY model agy (Antigravity CLI) may run on.
 // agy is hard-pinned to it everywhere (never an Anthropic/other tier) per
 // the model guard (bd-47kjh.1.7); it is intentionally NOT user-configurable.
-const AntigravityRequiredModel = "Gemini 3.7 Flash (High)"
+const AntigravityRequiredModel = "Gemini 3.8 Flash (High)"
 
 // GetModelName resolves a model alias to its full model name.
 // Returns the alias itself if no mapping is found.

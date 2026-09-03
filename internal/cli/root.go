@@ -4491,7 +4491,7 @@ func init() {
 	rootCmd.Flags().StringVar(&robotSpawnCC, "spawn-cc", "", "Claude Code agents to spawn: count[:model[:effort]] (effort also as model@effort). Use with --robot-spawn. Example: --spawn-cc=2 or --spawn-cc=2:opus:high")
 	rootCmd.Flags().StringVar(&robotSpawnCod, "spawn-cod", "", "Codex CLI agents to spawn: count[:model[:effort]] (effort also as model@effort). Use with --robot-spawn. Example: --spawn-cod=1 or --spawn-cod=8:gpt-5.3-codex:high")
 	rootCmd.Flags().StringVar(&robotSpawnGmi, "spawn-gmi", "", "Gemini CLI agents to spawn: count[:model]. Use with --robot-spawn. Example: --spawn-gmi=1")
-	rootCmd.Flags().StringVar(&robotSpawnAgy, "spawn-agy", "", "Antigravity CLI agents to spawn: count (model is pinned to Gemini 3.7 Flash (High)). Use with --robot-spawn. Example: --spawn-agy=1")
+	rootCmd.Flags().StringVar(&robotSpawnAgy, "spawn-agy", "", "Antigravity CLI agents to spawn: count (model is pinned to Gemini 3.8 Flash (High)). Use with --robot-spawn. Example: --spawn-agy=1")
 	rootCmd.Flags().StringVar(&robotSpawnGrok, "spawn-grok", "", "Grok Build agents to spawn: count[:model[:effort]] (effort also as model@effort). Use with --robot-spawn. Example: --spawn-grok=1")
 	rootCmd.Flags().StringVar(&robotSpawnPreset, "spawn-preset", "", "Use recipe preset instead of counts. See --robot-recipes. Example: --spawn-preset=standard")
 	rootCmd.Flags().BoolVar(&robotSpawnNoUser, "spawn-no-user", false, "Skip user pane creation. Optional with --robot-spawn. For headless/automation")

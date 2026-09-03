@@ -447,7 +447,7 @@ func detectAgentFromCommand(command string) AgentType {
 	}
 
 	// Antigravity (agy) — checked before Gemini so an agy launch command whose
-	// pinned model name contains "Gemini" ("Gemini 3.7 Flash (High)") is never
+	// pinned model name contains "Gemini" ("Gemini 3.8 Flash (High)") is never
 	// misread as a gemini pane. Like grok, "agy" is a short generic token, so
 	// it must be the command's executable basename, never a coincidental
 	// argument. Real launch shapes: `agy`, `agy-locked` (the un-aliased

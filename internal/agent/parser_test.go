@@ -406,7 +406,7 @@ func TestParser_ParseWithHint_AntigravityLiveFrames(t *testing.T) {
   >
 
   ? for shortcuts
-  Gemini 3.7 Flash (High)`
+  Gemini 3.8 Flash (High)`
 	idle, err := p.ParseWithHint(idleOutput, AgentTypeAntigravity)
 	if err != nil {
 		t.Fatalf("parse idle Antigravity frame: %v", err)
@@ -419,7 +419,7 @@ func TestParser_ParseWithHint_AntigravityLiveFrames(t *testing.T) {
   >
   ⠹ Analyzing repository
   esc to cancel
-  Gemini 3.7 Flash (High)`
+  Gemini 3.8 Flash (High)`
 	working, err := p.ParseWithHint(workingOutput, AgentTypeAntigravity)
 	if err != nil {
 		t.Fatalf("parse working Antigravity frame: %v", err)

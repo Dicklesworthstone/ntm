@@ -8,7 +8,7 @@ import (
 // antigravityModel is the model the Antigravity CLI (agy) must be pinned to on
 // every (re)launch. The agy resume path is invalid without an explicit --model,
 // and the migration mandate fixes it to this exact human-readable name.
-const antigravityModel = "Gemini 3.7 Flash (High)"
+const antigravityModel = "Gemini 3.8 Flash (High)"
 
 // ResumeCommand builds the shell command that resumes a captured agent session
 // inside its pane. Per the ntm design principle, ntm does NOT reimplement

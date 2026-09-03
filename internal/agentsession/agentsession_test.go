@@ -120,8 +120,8 @@ func TestResumeCommandNative(t *testing.T) {
 		{"claude", "abc-123", true, "claude --resume 'abc-123'"},
 		{"codex", "r1", false, "codex resume 'r1'"},
 		{"gemini", "g9", true, "gemini --resume 'g9'"},
-		{"antigravity", "uuid-9", false, "agy --conversation 'uuid-9' --model 'Gemini 3.7 Flash (High)'"},
-		{"antigravity", "uuid-9", true, "agy --conversation 'uuid-9' --model 'Gemini 3.7 Flash (High)'"},
+		{"antigravity", "uuid-9", false, "agy --conversation 'uuid-9' --model 'Gemini 3.8 Flash (High)'"},
+		{"antigravity", "uuid-9", true, "agy --conversation 'uuid-9' --model 'Gemini 3.8 Flash (High)'"},
 		{"claude", "", true, ""},
 		{"unknown", "x", true, ""},
 	}
@@ -153,7 +153,7 @@ func TestResumeCommandCASR(t *testing.T) {
 		{"gemini", "g9", "casr -gmi 'g9'"},
 		// Antigravity has no casr short-flag; even with preferCASR=true and
 		// casr available it must fall through to its native agy command.
-		{"antigravity", "uuid-9", "agy --conversation 'uuid-9' --model 'Gemini 3.7 Flash (High)'"},
+		{"antigravity", "uuid-9", "agy --conversation 'uuid-9' --model 'Gemini 3.8 Flash (High)'"},
 	}
 	for _, c := range cases {
 		if got := ResumeCommand(c.provider, c.id, true); got != c.want {
