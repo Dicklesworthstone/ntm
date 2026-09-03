@@ -299,6 +299,13 @@ func TestMailCheckValidationErrorRetainsCanonicalFilters(t *testing.T) {
 
 func TestGetMailCheck_DefaultsZeroLimit(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Availability is probed with a cheap liveness GET before any MCP tool
+		// call (ntm#295); answer it like a live server.
+		if r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"status":"ok"}`))
+			return
+		}
 		var req agentmail.JSONRPCRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Fatalf("failed to decode request: %v", err)
@@ -370,6 +377,13 @@ func TestGetMailCheck_DefaultsZeroLimit(t *testing.T) {
 func TestGetMailCheck_HasMoreUsesOverfetch(t *testing.T) {
 	fetchLimits := []int{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Availability is probed with a cheap liveness GET before any MCP tool
+		// call (ntm#295); answer it like a live server.
+		if r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"status":"ok"}`))
+			return
+		}
 		var req agentmail.JSONRPCRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Fatalf("failed to decode request: %v", err)
@@ -452,6 +466,13 @@ func TestGetMailCheck_UsesFullInboxWindowForCounts(t *testing.T) {
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Availability is probed with a cheap liveness GET before any MCP tool
+		// call (ntm#295); answer it like a live server.
+		if r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"status":"ok"}`))
+			return
+		}
 		var req agentmail.JSONRPCRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Fatalf("failed to decode request: %v", err)
@@ -557,6 +578,13 @@ func TestGetMailCheck_AggregatesProjectAgentsWhenAgentOmitted(t *testing.T) {
 	const wantSince = "2026-01-01T00:00:00Z"
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Availability is probed with a cheap liveness GET before any MCP tool
+		// call (ntm#295); answer it like a live server.
+		if r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"status":"ok"}`))
+			return
+		}
 		var req agentmail.JSONRPCRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Fatalf("failed to decode request: %v", err)
@@ -666,6 +694,13 @@ func TestGetMailCheck_BackfillsWhenThreadFilterNeedsOlderMatches(t *testing.T) {
 	fetchLimits := []int{}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Availability is probed with a cheap liveness GET before any MCP tool
+		// call (ntm#295); answer it like a live server.
+		if r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"status":"ok"}`))
+			return
+		}
 		var req agentmail.JSONRPCRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Fatalf("failed to decode request: %v", err)
@@ -787,6 +822,13 @@ func TestMailCheckAgentHintsOmitEmpty(t *testing.T) {
 func TestGetMailCheckUsesInjectedConfiguredClient(t *testing.T) {
 	const token = "configured-mail-check-token"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Availability is probed with a cheap liveness GET before any MCP tool
+		// call (ntm#295); answer it like a live server.
+		if r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"status":"ok"}`))
+			return
+		}
 		if got := r.Header.Get("Authorization"); got != "Bearer "+token {
 			t.Errorf("Authorization = %q, want configured bearer token", got)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)

@@ -327,6 +327,13 @@ func TestGetMail_DegradesOnAgentMailListAgentsError(t *testing.T) {
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Availability is probed with a cheap liveness GET before any MCP tool
+		// call (ntm#295); answer it like a live server.
+		if r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"status":"ok"}`))
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 
 		var req struct {
@@ -5380,6 +5387,13 @@ func TestEnsureProjectWithRetryRetriesDatabaseLock(t *testing.T) {
 
 	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Availability is probed with a cheap liveness GET before any MCP tool
+		// call (ntm#295); answer it like a live server.
+		if r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"status":"ok"}`))
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 
 		n := calls.Add(1)
@@ -5415,6 +5429,13 @@ func TestEnsureProjectWithRetryDoesNotRetryNonLockErrors(t *testing.T) {
 
 	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Availability is probed with a cheap liveness GET before any MCP tool
+		// call (ntm#295); answer it like a live server.
+		if r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"status":"ok"}`))
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		calls.Add(1)
 		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"permission denied"}],"isError":true}}`))
@@ -5477,6 +5498,13 @@ func TestGetInboxTallyIgnoresReadMessages(t *testing.T) {
 
 	readAt := &agentmail.FlexTime{Time: time.Now()}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Availability is probed with a cheap liveness GET before any MCP tool
+		// call (ntm#295); answer it like a live server.
+		if r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"status":"ok"}`))
+			return
+		}
 		var req struct {
 			JSONRPC string          `json:"jsonrpc"`
 			ID      interface{}     `json:"id"`
@@ -5538,6 +5566,13 @@ func TestFetchAgentMailDataIgnoresReadMessagesForUnreadCounts(t *testing.T) {
 	readAt := &agentmail.FlexTime{Time: time.Now()}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Availability is probed with a cheap liveness GET before any MCP tool
+		// call (ntm#295); answer it like a live server.
+		if r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"status":"ok"}`))
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 
 		var req struct {
@@ -5655,6 +5690,13 @@ func TestBuildCorrelationGraphMailSummaryIgnoresReadMessagesForUnreadCounts(t *t
 	readAt := &agentmail.FlexTime{Time: time.Now()}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Availability is probed with a cheap liveness GET before any MCP tool
+		// call (ntm#295); answer it like a live server.
+		if r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"status":"ok"}`))
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 
 		var req struct {

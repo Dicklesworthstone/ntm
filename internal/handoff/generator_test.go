@@ -821,6 +821,13 @@ func TestEnrichWithAgentMailPreservesMidflightCancellation(t *testing.T) {
 			reached := make(chan struct{}, 1)
 
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				// Availability is probed with a cheap liveness GET before any
+				// MCP tool call (ntm#295); answer it like a live server.
+				if r.Method == http.MethodGet {
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = w.Write([]byte(`{"status":"ok"}`))
+					return
+				}
 				var req agentmail.JSONRPCRequest
 				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 					t.Errorf("decode request: %v", err)
