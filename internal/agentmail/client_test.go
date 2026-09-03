@@ -124,8 +124,13 @@ func TestIsAvailable(t *testing.T) {
 		t.Fatal("nil-context availability probe reported success")
 	}
 
-	// Mock MCP JSON-RPC server for health_check
+	// Mock MCP JSON-RPC server for health_check. It exposes no cheap liveness
+	// endpoint, so the availability probe must fall back to the tool call.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			http.NotFound(w, r)
+			return
+		}
 		var req JSONRPCRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Fatalf("failed to decode request: %v", err)
@@ -164,6 +169,10 @@ func TestIsAvailable(t *testing.T) {
 func TestIsAvailableContextRetriesTransientProbeFailures(t *testing.T) {
 	var calls atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			http.NotFound(w, r)
+			return
+		}
 		n := calls.Add(1)
 		if n <= 2 {
 			// Transient failure: refuse the first two probes.
@@ -221,8 +230,9 @@ func TestIsAvailableContextRetriesResponseBodyTransportFailure(t *testing.T) {
 }
 
 func TestAvailabilityProbeBudgetBoundsAllAttempts(t *testing.T) {
-	if availabilityProbeBudget <= 0 || availabilityProbeBudget >= 2*time.Second {
-		t.Fatalf("availability probe budget must be positive and below 2s, got %v", availabilityProbeBudget)
+	budget := availabilityProbeBudget()
+	if budget <= 0 || budget >= 2*time.Second {
+		t.Fatalf("availability probe budget must be positive and below 2s, got %v", budget)
 	}
 
 	var calls atomic.Int32
@@ -238,8 +248,8 @@ func TestAvailabilityProbeBudgetBoundsAllAttempts(t *testing.T) {
 		t.Fatal("deadline-bound availability probe reported success")
 	}
 	elapsed := time.Since(started)
-	if elapsed < availabilityProbeBudget-100*time.Millisecond {
-		t.Fatalf("availability probe returned before its budget: elapsed=%v budget=%v", elapsed, availabilityProbeBudget)
+	if elapsed < budget-100*time.Millisecond {
+		t.Fatalf("availability probe returned before its budget: elapsed=%v budget=%v", elapsed, budget)
 	}
 	if elapsed >= 2*time.Second {
 		t.Fatalf("availability probe exceeded the strict 2s bound: %v", elapsed)
@@ -296,7 +306,11 @@ func TestIsAvailableContextPermanentFailuresAreOneShot(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var calls atomic.Int32
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodGet {
+					http.NotFound(w, r)
+					return
+				}
 				calls.Add(1)
 				w.WriteHeader(tt.statusCode)
 				_, _ = w.Write([]byte(tt.body))
@@ -416,7 +430,11 @@ func TestWaitForAvailabilityRetryHonorsCallerCancellation(t *testing.T) {
 
 func TestIsAvailableContextInvalidatedFailureThenSuccessClearsDiagnostic(t *testing.T) {
 	var calls atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			http.NotFound(w, r)
+			return
+		}
 		if calls.Add(1) == 1 {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
@@ -538,7 +556,7 @@ func TestAvailabilityProbeBudgetIncludesLockContention(t *testing.T) {
 
 	// Leave the waiter less than a fresh probe budget after the owner releases
 	// the lock. A per-attempt deadline would therefore exceed the total bound.
-	time.Sleep(availabilityProbeBudget - 350*time.Millisecond)
+	time.Sleep(availabilityProbeBudget() - 350*time.Millisecond)
 	cancelOwner()
 	select {
 	case available := <-ownerDone:
@@ -1297,4 +1315,121 @@ func TestExtractMCPContentTypedToolRejection(t *testing.T) {
 			t.Fatalf("extractMCPContent error=%v, want typed tool rejection", err)
 		}
 	})
+}
+
+// TestIsAvailableSlowHealthCheckToolStillAvailable is the #295 regression: a
+// server that answers the cheap liveness endpoint instantly must be reported
+// available even when the MCP `health_check` tool — a full archive/SQLite
+// inventory on a real mailbox — takes far longer than the probe budget. The
+// old probe called only the tool, so every reservation verb refused against a
+// healthy, granting server.
+func TestIsAvailableSlowHealthCheckToolStillAvailable(t *testing.T) {
+	var toolCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/health" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"status":"ready"}`))
+			return
+		}
+		toolCalls.Add(1)
+		// Far beyond the probe budget, like health_check on a large store.
+		time.Sleep(3 * time.Second)
+		statusJSON, _ := json.Marshal(HealthStatus{Status: "ok"})
+		_ = json.NewEncoder(w).Encode(JSONRPCResponse{JSONRPC: "2.0", ID: 1, Result: statusJSON})
+	}))
+	defer server.Close()
+
+	client := NewClient(WithBaseURL(server.URL + "/mcp/"))
+	started := time.Now()
+	if !client.IsAvailableContext(context.Background()) {
+		t.Fatalf("server with instant liveness reported unavailable: %v", client.LastAvailabilityError())
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("liveness-based probe took %v; it must not wait on the health_check tool", elapsed)
+	}
+	if got := toolCalls.Load(); got != 0 {
+		t.Fatalf("availability probe called the heavy health_check tool %d times, want 0", got)
+	}
+	if err := client.LastAvailabilityError(); err != nil {
+		t.Fatalf("available server retained a diagnostic: %v", err)
+	}
+}
+
+// TestIsAvailableFallsBackToHealthCheckToolWithoutLivenessEndpoint keeps the
+// positive control: a server with no /health endpoint is still judged by the
+// MCP dispatch path.
+func TestIsAvailableFallsBackToHealthCheckToolWithoutLivenessEndpoint(t *testing.T) {
+	var toolCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			http.NotFound(w, r)
+			return
+		}
+		toolCalls.Add(1)
+		statusJSON, _ := json.Marshal(HealthStatus{Status: "ok"})
+		_ = json.NewEncoder(w).Encode(JSONRPCResponse{JSONRPC: "2.0", ID: 1, Result: statusJSON})
+	}))
+	defer server.Close()
+
+	client := NewClient(WithBaseURL(server.URL + "/mcp/"))
+	if !client.IsAvailableContext(context.Background()) {
+		t.Fatalf("MCP-only server reported unavailable: %v", client.LastAvailabilityError())
+	}
+	if got := toolCalls.Load(); got != 1 {
+		t.Fatalf("fallback made %d health_check calls, want 1", got)
+	}
+}
+
+// TestIsAvailableDownServerStaysUnavailable is the negative control: the
+// liveness-first probe must not make a dead server look alive, and must keep
+// the terminal reason.
+func TestIsAvailableDownServerStaysUnavailable(t *testing.T) {
+	client := NewClient(WithBaseURL("http://127.0.0.1:1/mcp/"))
+	if client.IsAvailableContext(context.Background()) {
+		t.Fatal("unreachable server reported available")
+	}
+	if err := client.LastAvailabilityError(); err == nil {
+		t.Fatal("unreachable server left no diagnostic")
+	}
+}
+
+// TestLivenessURLDerivesOriginRoot pins that the liveness endpoint is resolved
+// against the server origin, not against the MCP mount path.
+func TestLivenessURLDerivesOriginRoot(t *testing.T) {
+	tests := []struct {
+		base string
+		want string
+	}{
+		{base: "http://127.0.0.1:8765/mcp/", want: "http://127.0.0.1:8765/health"},
+		{base: "https://mail.example.test/a/b/mcp/", want: "https://mail.example.test/health"},
+	}
+	for _, tt := range tests {
+		c := NewClient(WithBaseURL(tt.base))
+		got, err := c.livenessURL()
+		if err != nil {
+			t.Fatalf("livenessURL(%q) error = %v", tt.base, err)
+		}
+		if got != tt.want {
+			t.Fatalf("livenessURL(%q) = %q, want %q", tt.base, got, tt.want)
+		}
+	}
+}
+
+// TestAvailabilityProbeBudgetHonorsEnvOverride covers the operator escape
+// hatch requested in #295 for servers with no liveness endpoint and a mailbox
+// large enough that health_check cannot land inside the default budget.
+func TestAvailabilityProbeBudgetHonorsEnvOverride(t *testing.T) {
+	if got := availabilityProbeBudget(); got != defaultAvailabilityProbeBudget {
+		t.Fatalf("default budget = %v, want %v", got, defaultAvailabilityProbeBudget)
+	}
+	t.Setenv(ProbeBudgetEnv, "4s")
+	if got := availabilityProbeBudget(); got != 4*time.Second {
+		t.Fatalf("overridden budget = %v, want 4s", got)
+	}
+	for _, bad := range []string{"", "not-a-duration", "0s", "-1s"} {
+		t.Setenv(ProbeBudgetEnv, bad)
+		if got := availabilityProbeBudget(); got != defaultAvailabilityProbeBudget {
+			t.Fatalf("budget with %q = %v, want the default %v", bad, got, defaultAvailabilityProbeBudget)
+		}
+	}
 }

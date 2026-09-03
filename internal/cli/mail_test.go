@@ -1868,3 +1868,36 @@ func TestRunRenewLocksUsesSessionProjectDir(t *testing.T) {
 		t.Fatalf("expected renew project %q, got %q", projectKey, got)
 	}
 }
+
+// TestAgentMailUnavailableMessageSurfacesProbeReason is the #295 regression on
+// the reporting side: reservation verbs must name the probe's terminal error
+// in their JSON `error` instead of emitting a bare, misleading fixed string.
+func TestAgentMailUnavailableMessageSurfacesProbeReason(t *testing.T) {
+	reason := errors.New("liveness: context deadline exceeded")
+	got := agentMailUnavailableMessage(mailAvailabilityDiagnosticStub{err: reason})
+	want := "Agent Mail server unavailable: liveness: context deadline exceeded"
+	if got != want {
+		t.Fatalf("agentMailUnavailableMessage() = %q, want %q", got, want)
+	}
+
+	if got := agentMailUnavailableMessage(mailAvailabilityDiagnosticStub{}); got != "Agent Mail server unavailable" {
+		t.Fatalf("agentMailUnavailableMessage() without a reason = %q", got)
+	}
+	if got := agentMailUnavailableMessage(legacyMailAvailabilityStub{}); got != "Agent Mail server unavailable" {
+		t.Fatalf("agentMailUnavailableMessage() for a client without diagnostics = %q", got)
+	}
+}
+
+func TestAgentMailUnavailableCLIErrorWrapsProbeReason(t *testing.T) {
+	reason := errors.New("liveness: connection refused")
+	err := agentMailUnavailableCLIError(mailAvailabilityDiagnosticStub{err: reason})
+	if !errors.Is(err, reason) {
+		t.Fatalf("agentMailUnavailableCLIError() = %v, want wrapped reason", err)
+	}
+	if !strings.HasPrefix(err.Error(), "agent mail server unavailable: ") {
+		t.Fatalf("agentMailUnavailableCLIError() = %q, want lowercase prefixed message", err)
+	}
+	if err := agentMailUnavailableCLIError(legacyMailAvailabilityStub{}); err == nil || err.Error() != "agent mail server unavailable" {
+		t.Fatalf("agentMailUnavailableCLIError() without diagnostics = %v", err)
+	}
+}

@@ -199,6 +199,38 @@ type mailAvailabilityErrorProvider interface {
 	LastAvailabilityError() error
 }
 
+// agentMailUnavailableMessage is the operator-facing text for a failed
+// availability probe, with the probe's terminal error appended when one is
+// known. Reservation verbs (lock/unlock/locks/renew/force-release) used to
+// emit the bare string, which pointed operators at a healthy server and
+// discarded the only evidence of what actually failed (issue #295).
+func agentMailUnavailableMessage(client any) string {
+	const base = "Agent Mail server unavailable"
+	if reason := agentMailUnavailableReason(client); reason != nil {
+		return base + ": " + reason.Error()
+	}
+	return base
+}
+
+// agentMailUnavailableReason returns the terminal error of the most recent
+// availability probe, or nil when the client cannot report one.
+func agentMailUnavailableReason(client any) error {
+	if provider, ok := client.(mailAvailabilityErrorProvider); ok {
+		return provider.LastAvailabilityError()
+	}
+	return nil
+}
+
+// agentMailUnavailableCLIError is the human-output counterpart of
+// agentMailUnavailableMessage: a lowercase, wrapped error carrying the probe's
+// terminal cause so `errors.Is` still works on it.
+func agentMailUnavailableCLIError(client any) error {
+	if reason := agentMailUnavailableReason(client); reason != nil {
+		return fmt.Errorf("agent mail server unavailable: %w", reason)
+	}
+	return errors.New("agent mail server unavailable")
+}
+
 func agentMailUnavailableError(ctx context.Context, client any, fallback string) error {
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return fmt.Errorf("checking agent mail availability: %w", ctxErr)

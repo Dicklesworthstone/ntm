@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -36,13 +37,35 @@ const (
 	// AvailabilityCacheTTL is how long to cache IsAvailable() results.
 	AvailabilityCacheTTL = 30 * time.Second
 
-	// availabilityProbeBudget bounds all health attempts and backoffs. Keep the
-	// probe below two seconds so optional Agent Mail discovery cannot stall CLI
-	// startup when the service is unavailable.
-	availabilityProbeBudget   = 1250 * time.Millisecond
-	availabilityProbeAttempts = 3
-	availabilityProbeBackoff  = 150 * time.Millisecond
+	// defaultAvailabilityProbeBudget bounds all health attempts and backoffs.
+	// Keep the probe below two seconds so optional Agent Mail discovery cannot
+	// stall CLI startup when the service is unavailable.
+	defaultAvailabilityProbeBudget = 1250 * time.Millisecond
+	availabilityProbeAttempts      = 3
+	availabilityProbeBackoff       = 150 * time.Millisecond
+
+	// ProbeBudgetEnv overrides the availability probe budget (a Go duration,
+	// e.g. "5s"). Operators whose server has no cheap liveness endpoint and a
+	// large mailbox need more than the default (issue #295).
+	ProbeBudgetEnv = "NTM_AGENT_MAIL_PROBE_BUDGET"
 )
+
+// errLivenessUnsupported marks a liveness probe that the server answered but
+// that cannot decide availability (no such endpoint, or it is auth-walled).
+// The caller falls back to the MCP health_check tool.
+var errLivenessUnsupported = errors.New("agent mail liveness endpoint unsupported")
+
+// availabilityProbeBudget returns the wall-clock budget for one availability
+// probe, honoring ProbeBudgetEnv. An unparseable or non-positive value falls
+// back to the default rather than disabling the guard.
+func availabilityProbeBudget() time.Duration {
+	if raw := strings.TrimSpace(os.Getenv(ProbeBudgetEnv)); raw != "" {
+		if d, err := time.ParseDuration(raw); err == nil && d > 0 {
+			return d
+		}
+	}
+	return defaultAvailabilityProbeBudget
+}
 
 // Client provides methods to interact with the Agent Mail API.
 type Client struct {
@@ -217,7 +240,7 @@ func (c *Client) IsAvailableContext(ctx context.Context) bool {
 	// One deadline covers lock contention, every attempt, and every backoff.
 	// Caller cancellation exits without changing either the cache or the last
 	// completed diagnostic.
-	probeCtx, cancelProbe := context.WithTimeout(ctx, availabilityProbeBudget)
+	probeCtx, cancelProbe := context.WithTimeout(ctx, availabilityProbeBudget())
 	defer cancelProbe()
 
 	// Acquire the health-check lock without losing caller cancellation while a
@@ -253,7 +276,7 @@ func (c *Client) IsAvailableContext(ctx context.Context) bool {
 	available := false
 probeLoop:
 	for attempt := 1; attempt <= availabilityProbeAttempts; attempt++ {
-		_, err = c.HealthCheck(probeCtx)
+		err = c.probeAvailability(probeCtx)
 		if ctx.Err() != nil {
 			return false
 		}
@@ -390,6 +413,97 @@ func HasArchiveForProject(projectKey string) bool {
 		}
 	}
 	return false
+}
+
+// livenessURL derives the server's cheap liveness endpoint from the MCP base
+// URL: the MCP transport is mounted at a path (".../mcp/") while liveness is
+// served from the origin root ("/health").
+func (c *Client) livenessURL() (string, error) {
+	u, err := url.Parse(c.baseURL)
+	if err != nil {
+		return "", err
+	}
+	if u.Scheme == "" || u.Host == "" {
+		return "", fmt.Errorf("agent mail base URL %q has no origin", c.baseURL)
+	}
+	return (&url.URL{Scheme: u.Scheme, Host: u.Host, Path: "/" + HealthCheckPath}).String(), nil
+}
+
+// LivenessCheck performs a cheap liveness probe (GET /health) against the
+// Agent Mail server. It exists because the MCP `health_check` tool is a full
+// diagnostic — on a large mailbox it inventories the git archive against
+// SQLite and takes seconds — which made it useless as a startup-budget gate
+// for mutating verbs like `ntm lock` (issue #295).
+//
+// It returns nil when the server answers 2xx, errLivenessUnsupported when the
+// server answers but the endpoint cannot decide availability (missing or
+// auth-walled), and a transport/status error otherwise.
+func (c *Client) LivenessCheck(ctx context.Context) error {
+	target, err := c.livenessURL()
+	if err != nil {
+		return errLivenessUnsupported
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		return NewAPIError("liveness", 0, err)
+	}
+	req.Header.Set("Accept", "application/json")
+	if c.bearerToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.bearerToken)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		if ctx.Err() != nil {
+			return NewAPIError("liveness", 0, ErrTimeout)
+		}
+		return NewAPIError("liveness", 0, ErrServerUnavailable)
+	}
+	defer resp.Body.Close()
+	// Drain a bounded prefix so the connection can be reused. A truncated body
+	// is a transport failure, not a verdict, so it retries like any other.
+	if _, err := io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10)); err != nil {
+		return responseBodyReadError(ctx, "liveness", err)
+	}
+
+	switch {
+	case resp.StatusCode >= 200 && resp.StatusCode < 300:
+		return nil
+	case resp.StatusCode == http.StatusRequestTimeout,
+		resp.StatusCode == http.StatusTooEarly,
+		resp.StatusCode == http.StatusTooManyRequests:
+		// Genuinely transient: let the shared retry classifier see them.
+		return NewAPIError("liveness", resp.StatusCode, fmt.Errorf("unexpected status: %s", resp.Status))
+	case resp.StatusCode >= 400 && resp.StatusCode < 500,
+		resp.StatusCode == http.StatusNotImplemented:
+		// The server is talking, but this endpoint cannot answer the question:
+		// it does not exist here, rejects GET, or is auth-walled. Availability
+		// falls back to the MCP dispatch path rather than being decided by a
+		// route we do not own.
+		return errLivenessUnsupported
+	default:
+		return NewAPIError("liveness", resp.StatusCode, fmt.Errorf("unexpected status: %s", resp.Status))
+	}
+}
+
+// probeAvailability performs a single availability attempt: a cheap liveness
+// GET first, falling back to the MCP health_check tool only when the server
+// has no usable liveness endpoint. Availability must not depend on the cost of
+// the heaviest diagnostic tool (issue #295).
+func (c *Client) probeAvailability(ctx context.Context) error {
+	err := c.LivenessCheck(ctx)
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, errLivenessUnsupported) {
+		return err
+	}
+	if ctx.Err() != nil {
+		return NewAPIError("health_check", 0, ErrTimeout)
+	}
+	_, toolErr := c.HealthCheck(ctx)
+	return toolErr
 }
 
 // HealthCheck performs a health check against the Agent Mail server.

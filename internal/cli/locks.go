@@ -210,11 +210,11 @@ func runLocksCheck(ctx context.Context, session, path string, pane int, taskID s
 
 	client := newAgentMailClient(projectKey)
 	if !client.IsAvailable() {
-		result.Error = "Agent Mail server unavailable"
+		result.Error = agentMailUnavailableMessage(client)
 		if IsJSONOutput() {
 			return emitResult(result)
 		}
-		return fmt.Errorf("agent mail server unavailable")
+		return agentMailUnavailableCLIError(client)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -566,7 +566,7 @@ func runLocksAdvise(ctx context.Context, session string, allAgents bool) error {
 	client := newAgentMailClient(projectKey)
 	if !client.IsAvailable() {
 		agentMailUnavailable = true
-		agentMailErr = "Agent Mail server unavailable"
+		agentMailErr = agentMailUnavailableMessage(client)
 		warnings = append(warnings, agentMailErr)
 	} else {
 		mailCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -826,7 +826,7 @@ func runLocks(ctx context.Context, session string, allAgents, checkDeadlocks boo
 	client := newAgentMailClient(projectKey)
 	if !client.IsAvailable() {
 		if IsJSONOutput() {
-			result := LocksResult{Success: false, Session: session, Agent: agentName, ProjectKey: projectKey, Error: "Agent Mail server unavailable", ReasonCode: "agentmail_unavailable"}
+			result := LocksResult{Success: false, Session: session, Agent: agentName, ProjectKey: projectKey, Error: agentMailUnavailableMessage(client), ReasonCode: "agentmail_unavailable"}
 			enc := json.NewEncoder(os.Stdout)
 			enc.SetIndent("", "  ")
 			if encErr := enc.Encode(result); encErr != nil {
@@ -834,7 +834,7 @@ func runLocks(ctx context.Context, session string, allAgents, checkDeadlocks boo
 			}
 			return jsonFailureExit()
 		}
-		return fmt.Errorf("agent mail server unavailable")
+		return agentMailUnavailableCLIError(client)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -1203,7 +1203,7 @@ func runForceRelease(ctx context.Context, session string, reservationID int, not
 	client := newAgentMailClient(projectKey)
 	if !client.IsAvailable() {
 		if IsJSONOutput() {
-			result := ForceReleaseResult{Success: false, Session: session, Agent: agentName, ReservationID: reservationID, ApprovalID: decision.ApprovalID, ApprovalStatus: decision.ApprovalStatus, Error: "Agent Mail server unavailable"}
+			result := ForceReleaseResult{Success: false, Session: session, Agent: agentName, ReservationID: reservationID, ApprovalID: decision.ApprovalID, ApprovalStatus: decision.ApprovalStatus, Error: agentMailUnavailableMessage(client)}
 			enc := json.NewEncoder(os.Stdout)
 			enc.SetIndent("", "  ")
 			if encErr := enc.Encode(result); encErr != nil {
@@ -1211,7 +1211,7 @@ func runForceRelease(ctx context.Context, session string, reservationID int, not
 			}
 			return jsonFailureExit()
 		}
-		return fmt.Errorf("agent mail server unavailable")
+		return agentMailUnavailableCLIError(client)
 	}
 
 	// Confirmation prompt (unless skipped or JSON mode)
@@ -1382,7 +1382,7 @@ func runRenewLocks(ctx context.Context, session string, extendMinutes int) error
 	client := newAgentMailClient(projectKey)
 	if !client.IsAvailable() {
 		if IsJSONOutput() {
-			result := RenewResult{Success: false, Session: session, Agent: agentName, Error: "Agent Mail server unavailable"}
+			result := RenewResult{Success: false, Session: session, Agent: agentName, Error: agentMailUnavailableMessage(client)}
 			enc := json.NewEncoder(os.Stdout)
 			enc.SetIndent("", "  ")
 			if encErr := enc.Encode(result); encErr != nil {
@@ -1390,7 +1390,7 @@ func runRenewLocks(ctx context.Context, session string, extendMinutes int) error
 			}
 			return jsonFailureExit()
 		}
-		return fmt.Errorf("agent mail server unavailable")
+		return agentMailUnavailableCLIError(client)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

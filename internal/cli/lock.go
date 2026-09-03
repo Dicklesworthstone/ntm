@@ -96,7 +96,7 @@ func runLock(ctx context.Context, session string, patterns []string, reason, ttl
 	client := newAgentMailClient(projectKey)
 	if !client.IsAvailable() {
 		if IsJSONOutput() {
-			result := LockResult{Success: false, Session: session, Agent: sessionAgent.AgentName, Error: "Agent Mail server unavailable"}
+			result := LockResult{Success: false, Session: session, Agent: sessionAgent.AgentName, Error: agentMailUnavailableMessage(client)}
 			enc := json.NewEncoder(os.Stdout)
 			enc.SetIndent("", "  ")
 			if encErr := enc.Encode(result); encErr != nil {
@@ -104,7 +104,7 @@ func runLock(ctx context.Context, session string, patterns []string, reason, ttl
 			}
 			return jsonFailureExit()
 		}
-		return fmt.Errorf("agent mail server unavailable")
+		return agentMailUnavailableCLIError(client)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
