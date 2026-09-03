@@ -615,60 +615,60 @@ func (p Pane) AgentCLIDead() bool {
 	if !agentType.IsValid() || agentType == AgentUser || agentType == AgentUnknown {
 		return false
 	}
-	base := strings.ToLower(strings.TrimSpace(p.Command))
-	if i := strings.LastIndex(base, "/"); i >= 0 {
-		base = base[i+1:]
-	}
-	if i := strings.IndexAny(base, " \t"); i >= 0 {
-		base = base[:i]
-	}
-	if _, isShell := bareShellCommands[base]; !isShell {
+	return strings.TrimSpace(p.Command) != "" && p.IdleShell()
+}
+
+// IdleShell reports whether the pane is an idle interactive shell with
+// nothing running under it — the only state in which keystrokes reach a
+// shell prompt. tmux's pane_current_command names the foreground
+// process-group leader, which is also the shell for a non-exec'ing wrapper
+// script, a `sh -c …` agent or a command list (`a && b`), so when the pane's
+// root pid is known the process tree and the root's argv decide: a shell
+// started with a script path or -c is running something, and a shell with a
+// live descendant is busy. Without a pid the command name alone decides.
+func (p Pane) IdleShell() bool {
+	command := strings.TrimSpace(p.Command)
+	if command == "" || !PaneCommandIsShell(command) {
 		return false
 	}
-	// tmux reports the foreground process-group leader, which is the shell
-	// whenever the agent runs as a child of a non-exec'ing wrapper script or a
-	// shell command list. A shell with a live non-shell descendant is a
-	// running agent, not a dead one; only a shell with nothing under it is
-	// "bare". Without a pid (synthetic panes, non-Linux) the command decides.
+	if p.PID <= 0 {
+		return true
+	}
+	if !shellArgvLooksInteractive(process.GetCmdline(p.PID)) {
+		return false
+	}
 	return !shellHasLiveDescendant(p.PID, 4)
 }
 
-// shellHasLiveDescendant reports whether any process under pid (bounded
-// depth and fan-out, like detectAgentFromProcessTree) is not itself a shell.
+// shellArgvLooksInteractive reports whether a shell's argv is that of an
+// interactive shell (a bare name, possibly a login "-zsh", with flags only)
+// rather than a shell executing a script path or a -c command string.
+func shellArgvLooksInteractive(argv []string) bool {
+	if len(argv) == 0 {
+		return true // unreadable (no /proc, process gone): the command decides
+	}
+	for _, arg := range argv[1:] {
+		arg = strings.TrimSpace(arg)
+		if arg == "" {
+			continue
+		}
+		if arg == "-c" || !strings.HasPrefix(arg, "-") {
+			return false
+		}
+	}
+	return true
+}
+
+// shellHasLiveDescendant reports whether any process runs under pid. Any
+// descendant counts: even a nested shell under the interactive one means the
+// pane is not idle. (maxDepth is kept for symmetry with
+// detectAgentFromProcessTree; a direct child is enough to decide.)
 func shellHasLiveDescendant(pid, maxDepth int) bool {
 	if pid <= 0 {
 		return false
 	}
-	type frame struct {
-		pid   int
-		depth int
-	}
-	stack := []frame{{pid: pid, depth: 0}}
-	visited := map[int]bool{pid: true}
-	for len(stack) > 0 {
-		top := stack[len(stack)-1]
-		stack = stack[:len(stack)-1]
-		if top.pid != pid {
-			argv := process.GetCmdline(top.pid)
-			if len(argv) > 0 {
-				name := strings.ToLower(filepath.Base(strings.TrimSpace(argv[0])))
-				if _, isShell := bareShellCommands[name]; !isShell {
-					return true
-				}
-			}
-		}
-		if top.depth >= maxDepth {
-			continue
-		}
-		for _, child := range process.GetChildPIDs(top.pid, 8) {
-			if visited[child] {
-				continue
-			}
-			visited[child] = true
-			stack = append(stack, frame{pid: child, depth: top.depth + 1})
-		}
-	}
-	return false
+	_ = maxDepth
+	return len(process.GetChildPIDs(pid, 8)) > 0
 }
 
 func isAgentWrapperCommand(command string) bool {
@@ -1080,9 +1080,9 @@ var ErrPaneOccupied = errors.New("pane is occupied by a non-shell process")
 // instantly under remain-on-exit) is left to the post-launch stability wait.
 func ValidatePaneLaunchBaseline(pane Pane) error {
 	command := strings.TrimSpace(pane.Command)
-	if command == "" || PaneCommandIsShell(command) || PaneCommandIsStarting(command) {
+	if command == "" || PaneCommandIsStarting(command) || pane.IdleShell() {
 		// Empty or still-starting observations are not evidence of an occupant;
-		// the live pre-launch re-read (which waits for the shell) and the
+		// the live pre-launch re-read (which waits for an idle shell) and the
 		// post-launch stability wait cover them.
 		return nil
 	}
@@ -1091,12 +1091,17 @@ func ValidatePaneLaunchBaseline(pane Pane) error {
 	if paneID == "" {
 		paneID = pane.Ref().Physical()
 	}
+	what := "is already a non-shell process"
+	if PaneCommandIsShell(command) {
+		what = "is a shell that is running something (a script or a child process)"
+	}
 	return fmt.Errorf(
-		"pane %s pre-launch current command %q is already a non-shell process (%w); "+
+		"pane %s pre-launch current command %q %s (%w); "+
 			"refusing to type the launch command into it — free the pane (exit that process) "+
 			"or add the agent in a fresh pane instead of reusing this one",
 		paneID,
 		command,
+		what,
 		ErrPaneOccupied,
 	)
 }
@@ -1143,7 +1148,7 @@ func validatePaneLaunchBaselineLiveContext(ctx context.Context, session, paneID 
 			return fmt.Errorf("pane %s disappeared from session %s before launch", paneID, session)
 		}
 		command := strings.TrimSpace(found.Command)
-		if command == "" || PaneCommandIsShell(command) {
+		if command == "" || found.IdleShell() {
 			return nil
 		}
 		if time.Now().After(deadline) {
@@ -1170,7 +1175,7 @@ func validatePaneLaunchBaselineLiveContext(ctx context.Context, session, paneID 
 // applies ValidatePaneLaunchBaseline to what tmux reports.
 func ValidatePaneLaunchBaselineSettledContext(ctx context.Context, session string, pane Pane) error {
 	command := strings.TrimSpace(pane.Command)
-	if command == "" || PaneCommandIsShell(command) {
+	if command == "" || pane.IdleShell() {
 		return nil
 	}
 	paneID := strings.TrimSpace(pane.ID)
@@ -1267,7 +1272,7 @@ func waitForPaneProcessStartContext(
 				// returned success and callers reported the agent as
 				// launched. The empty-command failure detail below was
 				// likewise unreachable.
-				if lastCommand == "" || PaneCommandIsShell(strings.ToLower(filepath.Base(lastCommand))) {
+				if lastCommand == "" || PaneCommandIsStarting(lastCommand) || pane.IdleShell() {
 					stableCommand = ""
 					stableObservations = 0
 					break
