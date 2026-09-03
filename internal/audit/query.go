@@ -88,15 +88,8 @@ type Searcher struct {
 
 // NewSearcher creates a new audit log searcher
 func NewSearcher() (*Searcher, error) {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get home directory: %w", err)
-	}
-
-	auditDir := filepath.Join(homeDir, ".local", "share", "ntm", "audit")
-
 	return &Searcher{
-		auditDir: auditDir,
+		auditDir: Dir(),
 		index:    newIndex(),
 	}, nil
 }

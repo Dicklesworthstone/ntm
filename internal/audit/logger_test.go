@@ -404,3 +404,72 @@ func splitLines(content string) []string {
 	}
 	return lines
 }
+
+// TestDir_HonorsXDGDataHome pins issue #292: audit JSONL must land under
+// XDG_DATA_HOME when it is set, so an isolated data root really isolates all
+// ntm artifacts.
+func TestDir_HonorsXDGDataHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	dataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", dataHome)
+	if got, want := Dir(), filepath.Join(dataHome, "ntm", "audit"); got != want {
+		t.Fatalf("Dir() with XDG_DATA_HOME = %q, want %q", got, want)
+	}
+
+	// Unset falls back to ~/.local/share.
+	t.Setenv("XDG_DATA_HOME", "")
+	if got, want := Dir(), filepath.Join(home, ".local", "share", "ntm", "audit"); got != want {
+		t.Fatalf("Dir() without XDG_DATA_HOME = %q, want %q", got, want)
+	}
+
+	// A relative XDG_DATA_HOME is invalid per the spec and must be ignored.
+	t.Setenv("XDG_DATA_HOME", "relative/data")
+	if got, want := Dir(), filepath.Join(home, ".local", "share", "ntm", "audit"); got != want {
+		t.Fatalf("Dir() with relative XDG_DATA_HOME = %q, want %q", got, want)
+	}
+}
+
+// TestNewAuditLogger_WritesUnderXDGDataHome proves the logger itself (not just
+// the helper) writes into the XDG data root, and never into $HOME.
+func TestNewAuditLogger_WritesUnderXDGDataHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", dataHome)
+
+	logger, err := NewAuditLogger(DefaultConfig("xdg-probe"))
+	if err != nil {
+		t.Fatalf("NewAuditLogger: %v", err)
+	}
+	if err := logger.Log(AuditEntry{
+		SessionID: "xdg-probe",
+		EventType: EventTypeSpawn,
+		Actor:     ActorSystem,
+		Target:    "xdg-probe",
+	}); err != nil {
+		t.Fatalf("Log: %v", err)
+	}
+	if err := logger.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	entries, err := os.ReadDir(filepath.Join(dataHome, "ntm", "audit"))
+	if err != nil {
+		t.Fatalf("audit dir under XDG_DATA_HOME not created: %v", err)
+	}
+	found := false
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), "xdg-probe-") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("no audit file for session under %s: %v", dataHome, entries)
+	}
+
+	if _, err := os.Stat(filepath.Join(home, ".local", "share", "ntm", "audit")); !os.IsNotExist(err) {
+		t.Fatalf("audit logger created $HOME/.local/share/ntm/audit despite XDG_DATA_HOME (err=%v)", err)
+	}
+}

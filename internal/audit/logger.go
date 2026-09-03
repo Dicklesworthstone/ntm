@@ -302,19 +302,32 @@ func auditWriterID() string {
 	return strconv.Itoa(os.Getpid())
 }
 
+// Dir returns the directory holding audit JSONL logs.
+//
+// It follows the XDG Base Directory spec (XDG_DATA_HOME, falling back to
+// ~/.local/share) so that every ntm data artifact lands in the same tree —
+// isolating XDG_DATA_HOME must isolate audit logs too, exactly as it already
+// does for resilience manifests and monitor logs (issue #292). A relative
+// XDG_DATA_HOME is ignored per the spec.
+func Dir() string {
+	dataDir := os.Getenv("XDG_DATA_HOME")
+	if !filepath.IsAbs(dataDir) {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return filepath.Join(os.TempDir(), "ntm", "audit")
+		}
+		dataDir = filepath.Join(home, ".local", "share")
+	}
+	return filepath.Join(dataDir, "ntm", "audit")
+}
+
 // NewAuditLogger creates a new audit logger for the specified session
 func NewAuditLogger(config *LoggerConfig) (*AuditLogger, error) {
 	if config == nil {
 		config = DefaultConfig("")
 	}
 
-	// Create audit log directory
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get home directory: %w", err)
-	}
-
-	auditDir := filepath.Join(homeDir, ".local", "share", "ntm", "audit")
+	auditDir := Dir()
 	if err := os.MkdirAll(auditDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create audit directory: %w", err)
 	}
