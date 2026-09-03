@@ -274,6 +274,111 @@ func ShortTmuxTempDir(t *testing.T) string {
 	return dir
 }
 
+// DefaultStaleTmuxReapAge is the minimum age a leaked tmux socket root must
+// reach before ReapStaleTmuxTestServers will touch it. It is deliberately far
+// longer than any single suite: leaks accumulate over days, so a generous floor
+// still bounds them, while a tight one risks reaping a slow but live run.
+const DefaultStaleTmuxReapAge = 4 * time.Hour
+
+// ReapStaleTmuxTestServers kills isolated tmux test servers left behind by a
+// test binary that was killed mid-run.
+//
+// Every isolated server — the process-wide one from IsolateTmuxTestProcess and
+// each per-fixture one from ShortTmuxTempDir — lives under a
+// "ntm-tmux-test-*" socket root in one of the short candidate bases, and both
+// paths remove that root on the way out. A SIGKILL (interrupted suite, OOM,
+// host reboot) runs no cleanup at all, so the detached tmux server and its
+// socket root survive; across runs they accumulate without bound, and on a
+// small-core host each one is a standing contribution to the very load metric
+// that gates test parallelism.
+//
+// A process cannot clean up after its own SIGKILL, so the next run self-heals:
+// call this from a package TestMain before m.Run(). It is best-effort — it
+// never fails a suite — and returns the number of socket roots it removed.
+//
+// Two guards keep a concurrent run safe: the socket root this process owns
+// (TMUX_TMPDIR) is skipped outright, and a root is only considered when
+// everything in it is older than minAge. Age is taken as the newest mtime of
+// the root and its entries, so a root whose socket was created recently is
+// never mistaken for a leak.
+func ReapStaleTmuxTestServers(minAge time.Duration) int {
+	if minAge <= 0 {
+		minAge = DefaultStaleTmuxReapAge
+	}
+	own := ""
+	if v := strings.TrimSpace(os.Getenv("TMUX_TMPDIR")); v != "" {
+		if abs, err := filepath.Abs(v); err == nil {
+			own = filepath.Clean(abs)
+		}
+	}
+
+	prefix := strings.TrimSuffix(tmuxTempDirPattern, "*")
+	bin := findSystemTmuxBinary()
+	cutoff := time.Now().Add(-minAge)
+	reaped := 0
+	seen := make(map[string]struct{})
+
+	for _, candidate := range shortTmuxTempDirCandidates() {
+		entries, err := os.ReadDir(candidate.path)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if !entry.IsDir() || !strings.HasPrefix(entry.Name(), prefix) {
+				continue
+			}
+			dir := filepath.Clean(filepath.Join(candidate.path, entry.Name()))
+			if dir == own {
+				continue
+			}
+			if _, dup := seen[dir]; dup {
+				continue
+			}
+			seen[dir] = struct{}{}
+			if !tmuxSocketRootIsStale(dir, cutoff) {
+				continue
+			}
+			if bin != "" {
+				ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+				cmd := exec.CommandContext(ctx, bin, "kill-server")
+				cmd.Env = isolatedTmuxEnvironment(dir)
+				_ = cmd.Run() // best-effort: a dead or empty socket yields "no server"
+				cancel()
+			}
+			if err := os.RemoveAll(dir); err == nil {
+				reaped++
+			}
+		}
+	}
+	return reaped
+}
+
+// tmuxSocketRootIsStale reports whether a socket root and everything directly
+// inside it predate cutoff. Using the newest entry mtime — not just the
+// directory's — keeps a root whose socket was created after the directory from
+// being read as old.
+func tmuxSocketRootIsStale(dir string, cutoff time.Time) bool {
+	info, err := os.Stat(dir)
+	if err != nil {
+		return false
+	}
+	newest := info.ModTime()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, entry := range entries {
+		entryInfo, err := entry.Info()
+		if err != nil {
+			return false
+		}
+		if entryInfo.ModTime().After(newest) {
+			newest = entryInfo.ModTime()
+		}
+	}
+	return newest.Before(cutoff)
+}
+
 func createShortTmuxTempDir() (string, error) {
 	return createShortTmuxTempDirFromCandidates(shortTmuxTempDirCandidates())
 }

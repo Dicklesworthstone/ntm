@@ -39,6 +39,63 @@ type WatermarkStore interface {
 // WatermarkTypeVelocity is the watermark type used for velocity tracker baselines.
 const WatermarkTypeVelocity = "velocity"
 
+// WatermarkTypeActivityState is the watermark type that records when a pane
+// entered the activity state it is currently in. A StateClassifier is
+// per-process state, so a one-shot `ntm activity` always reported a state that
+// had "just" started; the watermark is what makes state age survive separate
+// invocations.
+const WatermarkTypeActivityState = "activity_state"
+
+// ObserveActivityState reconciles one classified pane state against its durable
+// watermark and returns the time that state was first observed.
+//
+// scope must identify a single pane LIFETIME — session, tmux pane ID, and the
+// pane's PID — so a recycled tmux pane ID cannot inherit the age of whatever
+// ran there before.
+//
+// A nil store degrades to the observation time. Store errors are returned so a
+// caller can fall back to its in-process classifier result instead of failing
+// an otherwise healthy query; the returned time is always usable.
+func ObserveActivityState(store WatermarkStore, scope string, activityState AgentState, observedAt time.Time) (time.Time, error) {
+	if observedAt.IsZero() {
+		observedAt = time.Now()
+	}
+	observedAt = observedAt.UTC()
+	if store == nil {
+		return observedAt, nil
+	}
+
+	previous, err := store.GetWatermark(WatermarkTypeActivityState, scope)
+	if err != nil {
+		return observedAt, err
+	}
+	// Same state as last time, with a watermark that is not in the future:
+	// keep the original entry time so duration grows across invocations.
+	if previous != nil &&
+		previous.Consumer == string(activityState) &&
+		previous.LastTs != nil &&
+		!previous.LastTs.After(observedAt) {
+		return previous.LastTs.UTC(), nil
+	}
+
+	createdAt := observedAt
+	if previous != nil && !previous.CreatedAt.IsZero() {
+		createdAt = previous.CreatedAt
+	}
+	stateSince := observedAt
+	if err := store.SetWatermark(&state.OutputWatermark{
+		WatermarkType: WatermarkTypeActivityState,
+		Scope:         scope,
+		LastTs:        &stateSince,
+		Consumer:      string(activityState),
+		CreatedAt:     createdAt,
+		UpdatedAt:     observedAt,
+	}); err != nil {
+		return observedAt, err
+	}
+	return stateSince, nil
+}
+
 // VelocitySample represents a single velocity measurement at a point in time.
 type VelocitySample struct {
 	Timestamp  time.Time `json:"timestamp"`
@@ -703,6 +760,7 @@ type StateClassifier struct {
 	patternLibrary     *PatternLibrary
 	agentType          string
 	paneWidth          int
+	paneHeight         int
 	stallThreshold     time.Duration
 	hysteresisDuration time.Duration
 
@@ -725,7 +783,12 @@ type ClassifierConfig struct {
 	AgentType string
 	// PaneWidth is the real tmux pane width; used to widen the live tail
 	// window on narrow panes (bd-eeifh). Zero keeps the calibrated budget.
-	PaneWidth          int
+	PaneWidth int
+	// PaneHeight is the real tmux pane height. When set, transient state
+	// markers are classified from the pane's VISIBLE screen only: a capture
+	// includes scrollback, so on a short pane a spinner that scrolled off
+	// hours ago otherwise stays inside the "live tail" forever.
+	PaneHeight         int
 	StallThreshold     time.Duration
 	HysteresisDuration time.Duration
 	PatternLibrary     *PatternLibrary
@@ -764,6 +827,7 @@ func NewStateClassifier(paneID string, cfg *ClassifierConfig) *StateClassifier {
 		patternLibrary:     patternLib,
 		agentType:          cfg.AgentType,
 		paneWidth:          cfg.PaneWidth,
+		paneHeight:         cfg.PaneHeight,
 		stallThreshold:     stallThreshold,
 		hysteresisDuration: hysteresis,
 		currentState:       StateUnknown,
@@ -830,7 +894,14 @@ func (sc *StateClassifier) classifyInternal(sample *VelocitySample) (*AgentActiv
 	// stale "failed" or "api error" text high in scrollback must not pin a
 	// pane to ERROR after its TUI has visibly moved on. Fresh errors inside
 	// the live tail still classify as ERROR.
-	liveContent := lastNLines(content, util.WidthAdaptiveTailLines(sc.paneWidth, liveThinkingWindowLines))
+	// The live window can never be larger than what is actually on screen:
+	// capture-pane returns scrollback too, so a fixed tail on a short pane
+	// keeps a long-gone spinner permanently "live".
+	visibleContent := content
+	if sc.paneHeight > 0 {
+		visibleContent = util.GetLastNLines(content, sc.paneHeight)
+	}
+	liveContent := lastNLines(visibleContent, util.WidthAdaptiveTailLines(sc.paneWidth, liveThinkingWindowLines))
 	liveMatches := sc.patternLibrary.Match(liveContent, sc.agentType)
 	effectiveMatches := filterThinkingToLive(matches, liveMatches)
 	effectiveMatches = filterErrorToLiveWithCurrentSignal(effectiveMatches, liveMatches)

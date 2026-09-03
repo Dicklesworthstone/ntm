@@ -35,6 +35,16 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 
+	// Self-heal against leaks from an earlier run that was killed mid-test. A
+	// SIGKILL (interrupted suite, OOM, host reboot) runs neither the per-test
+	// cleanup nor the isolation cleanup above, so that run's detached tmux
+	// server and its "ntm-tmux-test-*" socket root survive and accumulate. The
+	// reaper runs AFTER isolation so this process's own socket root is already
+	// in TMUX_TMPDIR and is skipped by name as well as by age.
+	if reaped := testutil.ReapStaleTmuxTestServers(staleTmuxReapAge()); reaped > 0 {
+		fmt.Fprintf(os.Stderr, "E2E: reaped %d leaked tmux test socket root(s) from an earlier interrupted run\n", reaped)
+	}
+
 	bin, err := ensureE2ENTMBin()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "E2E: failed to resolve/build ntm: %v\n", err)
@@ -62,6 +72,19 @@ func TestMain(m *testing.M) {
 		code = 1
 	}
 	os.Exit(code)
+}
+
+// staleTmuxReapAge is the minimum age a leaked tmux socket root must reach
+// before the startup reaper removes it. The default is deliberately far longer
+// than any single suite so a slow but live run is never mistaken for a leak;
+// NTM_E2E_TMUX_REAP_MIN (minutes) tightens or loosens it per host.
+func staleTmuxReapAge() time.Duration {
+	if v := strings.TrimSpace(os.Getenv("NTM_E2E_TMUX_REAP_MIN")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return time.Duration(n) * time.Minute
+		}
+	}
+	return testutil.DefaultStaleTmuxReapAge
 }
 
 func ensureE2ENTMBin() (string, error) {
