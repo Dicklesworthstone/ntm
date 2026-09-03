@@ -824,7 +824,7 @@ Shell Integration:
 		}
 
 		if shouldInitializeRobotPersistence(cmd) {
-			if err := initializeRobotPersistence(cmd.Context()); err != nil {
+			if err := initializeRobotPersistence(cmd.Context(), cmd.Name() != "activity"); err != nil {
 				return err
 			}
 		}
@@ -3380,6 +3380,9 @@ func shouldInitializeRobotPersistence(cmd *cobra.Command) bool {
 	if cmd != nil && cmd.Name() == "serve" {
 		return false
 	}
+	if cmd != nil && cmd.Name() == "activity" {
+		return true
+	}
 
 	for _, arg := range os.Args[1:] {
 		if arg == "--schema" {
@@ -3411,7 +3414,7 @@ func robotFlagSkipsPersistence(arg string) bool {
 	}
 }
 
-func initializeRobotPersistence(ctx context.Context) error {
+func initializeRobotPersistence(ctx context.Context, refreshProjection bool) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -3437,6 +3440,9 @@ func initializeRobotPersistence(ctx context.Context) error {
 	))
 	robot.SetProjectionStore(store)
 	robotStateStore = store
+	if !refreshProjection {
+		return nil
+	}
 
 	// Assignment commands perform their own strict policy validation before
 	// consulting bv/br. Keep the persistence store available to the command, but

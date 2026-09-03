@@ -2339,6 +2339,82 @@ func (m *mockWatermarkStore) SetWatermark(wm *state.OutputWatermark) error {
 	return nil
 }
 
+func TestObserveActivityStateSurvivesOneShotProcesses(t *testing.T) {
+	store := newMockWatermarkStore()
+	started := time.Date(2026, 9, 3, 11, 30, 0, 0, time.UTC)
+	scope := "agent-factory|%9|4242"
+
+	first, err := ObserveActivityState(store, scope, StateWaiting, started)
+	if err != nil {
+		t.Fatalf("first observation: %v", err)
+	}
+	second, err := ObserveActivityState(store, scope, StateWaiting, started.Add(30*time.Second))
+	if err != nil {
+		t.Fatalf("second observation: %v", err)
+	}
+	if !first.Equal(started) || !second.Equal(started) {
+		t.Fatalf("stable WAITING state_since = %v then %v, want %v", first, second, started)
+	}
+
+	changedAt := started.Add(31 * time.Second)
+	changed, err := ObserveActivityState(store, scope, StateThinking, changedAt)
+	if err != nil {
+		t.Fatalf("changed observation: %v", err)
+	}
+	if !changed.Equal(changedAt) {
+		t.Fatalf("changed THINKING state_since = %v, want %v", changed, changedAt)
+	}
+
+	stableAgain, err := ObserveActivityState(store, scope, StateThinking, changedAt.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("stable changed observation: %v", err)
+	}
+	if !stableAgain.Equal(changedAt) {
+		t.Fatalf("stable THINKING state_since = %v, want %v", stableAgain, changedAt)
+	}
+}
+
+func TestStateClassifierLimitsCodexThinkingToVisiblePane(t *testing.T) {
+	const idleComposerWithOffscreenSpinner = "• Working (12s • Esc to interrupt)\n" +
+		"historical output\n" +
+		"more historical output\n" +
+		"\n" +
+		"▌ Ask Codex to do something\n" +
+		"›\n" +
+		"  ⏎ send   ⌃J newline   ⌃T transcript   ⌃C quit\n"
+
+	idle := NewStateClassifier("%9", &ClassifierConfig{
+		AgentType:  "codex",
+		PaneWidth:  80,
+		PaneHeight: 4,
+	})
+	activity, err := idle.ClassifyWithOutput(idleComposerWithOffscreenSpinner)
+	if err != nil {
+		t.Fatalf("idle classification: %v", err)
+	}
+	if activity.State != StateWaiting {
+		t.Fatalf("Codex composer with off-screen spinner = %s, want %s", activity.State, StateWaiting)
+	}
+
+	const workingViewport = "historical output\n" +
+		"• Working (12s • Esc to interrupt)\n" +
+		"▌ Ask Codex to do something\n" +
+		"›\n" +
+		"  ⏎ send   ⌃J newline   ⌃T transcript   ⌃C quit\n"
+	working := NewStateClassifier("%10", &ClassifierConfig{
+		AgentType:  "codex",
+		PaneWidth:  80,
+		PaneHeight: 4,
+	})
+	activity, err = working.ClassifyWithOutput(workingViewport)
+	if err != nil {
+		t.Fatalf("working classification: %v", err)
+	}
+	if activity.State != StateThinking {
+		t.Fatalf("Codex viewport with live spinner = %s, want %s", activity.State, StateThinking)
+	}
+}
+
 func TestVelocityTracker_RestartSafeBaseline_UnchangedContent(t *testing.T) {
 
 	store := newMockWatermarkStore()

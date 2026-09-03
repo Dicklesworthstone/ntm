@@ -10,6 +10,7 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
+	"github.com/Dicklesworthstone/ntm/internal/util"
 )
 
 // UnifiedDetector implements the Detector interface by combining
@@ -809,8 +810,18 @@ func (o *SessionObserver) buildPaneObservation(cache *sessionObservationCache, p
 		lastActivity = contentChangedAt
 	}
 
-	status := o.detector.AnalyzeAt(pane.Pane.ID, pane.Pane.Title, normalizedAgentType, output, lastActivity, observedAt)
-	confidence := observationConfidence(status, output)
+	// CapturePaneOutput(-N) returns N scrollback rows plus the whole visible
+	// screen. Transient TUI markers (Codex's "Working" spinner in particular)
+	// are authoritative only while visible; using a fixed tail lets an
+	// off-screen marker survive indefinitely on short panes. Keep the full
+	// capture for content-change history and diagnostics, but classify only the
+	// pane's current viewport when tmux supplied its height.
+	classificationOutput := output
+	if pane.Pane.Height > 0 {
+		classificationOutput = util.GetLastNLines(output, pane.Pane.Height)
+	}
+	status := o.detector.AnalyzeAt(pane.Pane.ID, pane.Pane.Title, normalizedAgentType, classificationOutput, lastActivity, observedAt)
+	confidence := observationConfidence(status, classificationOutput)
 	observation.Current = StateObservation{
 		Status:     status,
 		ObservedAt: observedAt,

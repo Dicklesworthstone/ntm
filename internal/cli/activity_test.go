@@ -71,6 +71,15 @@ func TestFormatActivityDuration(t *testing.T) {
 	}
 }
 
+func TestActivityStateScopeSeparatesPaneLifetimes(t *testing.T) {
+	first := activityStateScope("agent-factory", tmux.Pane{ID: "%9", PID: 4242})
+	samePaneNewProcess := activityStateScope("agent-factory", tmux.Pane{ID: "%9", PID: 5252})
+	otherSession := activityStateScope("workshop", tmux.Pane{ID: "%9", PID: 4242})
+	if first == samePaneNewProcess || first == otherSession {
+		t.Fatalf("activity state scope aliases pane lifetimes: %q, %q, %q", first, samePaneNewProcess, otherSession)
+	}
+}
+
 func TestPassesFilter(t *testing.T) {
 
 	tests := []struct {

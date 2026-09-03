@@ -943,6 +943,85 @@ func TestDetermineStateCodexIdleBeatsWindowVelocity(t *testing.T) {
 	}
 }
 
+// TestSessionObserverClassifiesOnlyVisibleCodexViewport covers short tmux
+// panes where capture-pane -S includes more scrollback than screen rows. A
+// completed turn's spinner may remain inside the 15-line detector tail while
+// already being off-screen; assignment must use the visible composer state.
+func TestSessionObserverClassifiesOnlyVisibleCodexViewport(t *testing.T) {
+	t.Parallel()
+
+	observedAt := time.Date(2026, 9, 3, 11, 30, 0, 0, time.UTC)
+	tests := []struct {
+		name         string
+		capture      string
+		wantState    AgentState
+		wantDispatch bool
+	}{
+		{
+			name: "off-screen spinner above idle composer",
+			capture: "• Working (12s • Esc to interrupt)\n" +
+				"historical output\n" +
+				"more historical output\n" +
+				"\n" +
+				"▌ Ask Codex to do something\n" +
+				"›\n" +
+				"  ⏎ send   ⌃J newline   ⌃T transcript   ⌃C quit\n",
+			wantState:    StateIdle,
+			wantDispatch: true,
+		},
+		{
+			name: "spinner inside working viewport",
+			capture: "historical output\n" +
+				"• Working (12s • Esc to interrupt)\n" +
+				"▌ Ask Codex to do something\n" +
+				"›\n" +
+				"  ⏎ send   ⌃J newline   ⌃T transcript   ⌃C quit\n",
+			wantState:    StateWorking,
+			wantDispatch: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			observer := NewSessionObserverWithDependencies(NewDetector(), DefaultSessionObserverConfig(DefaultConfig()), SessionObserverDependencies{
+				ListPanes: func(context.Context, string) ([]tmux.PaneActivity, error) {
+					return []tmux.PaneActivity{{
+						Pane: tmux.Pane{
+							ID:          "%9",
+							WindowIndex: 0,
+							Index:       1,
+							Title:       "agent-factory__cod_1",
+							Type:        tmux.AgentCodex,
+							Width:       80,
+							Height:      4,
+						},
+						LastActivity: observedAt,
+					}}, nil
+				},
+				CapturePane: func(context.Context, string, int) (string, error) {
+					return tt.capture, nil
+				},
+				Now: func() time.Time { return observedAt },
+			})
+
+			observation, err := observer.Observe(context.Background(), "agent-factory")
+			if err != nil {
+				t.Fatalf("Observe() error = %v", err)
+			}
+			pane, ok := observation.PaneByID("%9")
+			if !ok {
+				t.Fatal("observation missing pane %9")
+			}
+			if pane.Current.Status.State != tt.wantState {
+				t.Fatalf("state = %s, want %s", pane.Current.Status.State, tt.wantState)
+			}
+			if pane.SafeToDispatch() != tt.wantDispatch {
+				t.Fatalf("SafeToDispatch() = %v, want %v", pane.SafeToDispatch(), tt.wantDispatch)
+			}
+		})
+	}
+}
+
 // TestSessionObserverAppliesPaneLocalActivityBound covers the second half of
 // #234: the pane-content fingerprint bound from ntm#213 lived only in
 // UnifiedDetector.Detect, not in SessionObserver.buildPaneObservation — and the

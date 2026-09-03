@@ -585,6 +585,17 @@ func TestShouldInitializeRobotPersistenceSkipsStatelessOverlay(t *testing.T) {
 	}
 }
 
+func TestShouldInitializeRobotPersistenceForActivity(t *testing.T) {
+	origArgs := os.Args
+	t.Cleanup(func() { os.Args = origArgs })
+	os.Args = []string{"ntm", "activity", "agent-factory", "--json"}
+
+	cmd := &cobra.Command{Use: "activity"}
+	if !shouldInitializeRobotPersistence(cmd) {
+		t.Fatal("activity command must initialize persistence for durable state_since")
+	}
+}
+
 func isolateSessionAgentStorage(t *testing.T) {
 	t.Helper()
 	home := t.TempDir()

@@ -39,6 +39,55 @@ type WatermarkStore interface {
 // WatermarkTypeVelocity is the watermark type used for velocity tracker baselines.
 const WatermarkTypeVelocity = "velocity"
 
+// WatermarkTypeActivityState is the watermark type used to preserve the time
+// at which a pane entered its currently observed activity state. Unlike a
+// StateClassifier instance, this watermark survives one-shot CLI processes.
+const WatermarkTypeActivityState = "activity_state"
+
+// ObserveActivityState reconciles one classified pane state with its durable
+// watermark and returns the time at which that state was first observed. A
+// scope must identify one pane lifetime (callers should include the session,
+// tmux pane ID, and pane PID) so a recycled tmux ID cannot inherit old state.
+//
+// A nil store degrades to the current observation time. Store failures are
+// returned so callers can keep their non-durable classifier result rather than
+// failing an otherwise healthy activity query.
+func ObserveActivityState(store WatermarkStore, scope string, activityState AgentState, observedAt time.Time) (time.Time, error) {
+	if observedAt.IsZero() {
+		observedAt = time.Now().UTC()
+	} else {
+		observedAt = observedAt.UTC()
+	}
+	if store == nil {
+		return observedAt, nil
+	}
+
+	wm, err := store.GetWatermark(WatermarkTypeActivityState, scope)
+	if err != nil {
+		return observedAt, err
+	}
+	if wm != nil && wm.Consumer == string(activityState) && wm.LastTs != nil && !wm.LastTs.After(observedAt) {
+		return wm.LastTs.UTC(), nil
+	}
+
+	createdAt := observedAt
+	if wm != nil && !wm.CreatedAt.IsZero() {
+		createdAt = wm.CreatedAt
+	}
+	stateSince := observedAt
+	if err := store.SetWatermark(&state.OutputWatermark{
+		WatermarkType: WatermarkTypeActivityState,
+		Scope:         scope,
+		LastTs:        &stateSince,
+		Consumer:      string(activityState),
+		CreatedAt:     createdAt,
+		UpdatedAt:     observedAt,
+	}); err != nil {
+		return observedAt, err
+	}
+	return stateSince, nil
+}
+
 // VelocitySample represents a single velocity measurement at a point in time.
 type VelocitySample struct {
 	Timestamp  time.Time `json:"timestamp"`
@@ -703,6 +752,7 @@ type StateClassifier struct {
 	patternLibrary     *PatternLibrary
 	agentType          string
 	paneWidth          int
+	paneHeight         int
 	stallThreshold     time.Duration
 	hysteresisDuration time.Duration
 
@@ -725,7 +775,11 @@ type ClassifierConfig struct {
 	AgentType string
 	// PaneWidth is the real tmux pane width; used to widen the live tail
 	// window on narrow panes (bd-eeifh). Zero keeps the calibrated budget.
-	PaneWidth          int
+	PaneWidth int
+	// PaneHeight is the real tmux pane height. When set, transient state
+	// markers are classified only from the visible screen, excluding the
+	// additional scrollback rows returned by capture-pane -S.
+	PaneHeight         int
 	StallThreshold     time.Duration
 	HysteresisDuration time.Duration
 	PatternLibrary     *PatternLibrary
@@ -764,6 +818,7 @@ func NewStateClassifier(paneID string, cfg *ClassifierConfig) *StateClassifier {
 		patternLibrary:     patternLib,
 		agentType:          cfg.AgentType,
 		paneWidth:          cfg.PaneWidth,
+		paneHeight:         cfg.PaneHeight,
 		stallThreshold:     stallThreshold,
 		hysteresisDuration: hysteresis,
 		currentState:       StateUnknown,
@@ -830,7 +885,11 @@ func (sc *StateClassifier) classifyInternal(sample *VelocitySample) (*AgentActiv
 	// stale "failed" or "api error" text high in scrollback must not pin a
 	// pane to ERROR after its TUI has visibly moved on. Fresh errors inside
 	// the live tail still classify as ERROR.
-	liveContent := lastNLines(content, util.WidthAdaptiveTailLines(sc.paneWidth, liveThinkingWindowLines))
+	visibleContent := content
+	if sc.paneHeight > 0 {
+		visibleContent = util.GetLastNLines(content, sc.paneHeight)
+	}
+	liveContent := lastNLines(visibleContent, util.WidthAdaptiveTailLines(sc.paneWidth, liveThinkingWindowLines))
 	liveMatches := sc.patternLibrary.Match(liveContent, sc.agentType)
 	effectiveMatches := filterThinkingToLive(matches, liveMatches)
 	effectiveMatches = filterErrorToLiveWithCurrentSignal(effectiveMatches, liveMatches)
