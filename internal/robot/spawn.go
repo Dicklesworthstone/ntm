@@ -264,14 +264,14 @@ func spawnAgentPaneRange(opts SpawnOptions) (start, count int) {
 // topology, for every agent type, before any launch. A reused pane that is
 // already running a process would otherwise receive the launch command as
 // keystrokes while send-keys reports success (#291).
-func validateSpawnPaneBaselines(panes []tmux.Pane, opts SpawnOptions) error {
+func validateSpawnPaneBaselines(ctx context.Context, panes []tmux.Pane, opts SpawnOptions) error {
 	start, count := spawnAgentPaneRange(opts)
 	for i := 0; i < count; i++ {
 		paneIndex := start + i
 		if paneIndex >= len(panes) {
 			return fmt.Errorf("requested agent pane %d is unavailable", i+1)
 		}
-		if err := tmux.ValidatePaneLaunchBaseline(panes[paneIndex]); err != nil {
+		if err := tmux.ValidatePaneLaunchBaselineSettledContext(ctx, opts.Session, panes[paneIndex]); err != nil {
 			return fmt.Errorf("agent pane %d: %w", i+1, err)
 		}
 	}
@@ -281,14 +281,14 @@ func validateSpawnPaneBaselines(panes []tmux.Pane, opts SpawnOptions) error {
 // validateExistingSpawnPaneBaselines checks the panes an existing session
 // already has before any new panes are split, so an occupied target refuses
 // the spawn before the topology is mutated.
-func validateExistingSpawnPaneBaselines(panes []tmux.Pane, opts SpawnOptions) error {
+func validateExistingSpawnPaneBaselines(ctx context.Context, panes []tmux.Pane, opts SpawnOptions) error {
 	start, count := spawnAgentPaneRange(opts)
 	for i := 0; i < count; i++ {
 		paneIndex := start + i
 		if paneIndex >= len(panes) {
 			break
 		}
-		if err := tmux.ValidatePaneLaunchBaseline(panes[paneIndex]); err != nil {
+		if err := tmux.ValidatePaneLaunchBaselineSettledContext(ctx, opts.Session, panes[paneIndex]); err != nil {
 			return fmt.Errorf("agent pane %d: %w", i+1, err)
 		}
 	}
@@ -877,7 +877,7 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 		}
 		return output, nil
 	}
-	if err := validateExistingSpawnPaneBaselines(panes, opts); err != nil {
+	if err := validateExistingSpawnPaneBaselines(ctx, panes, opts); err != nil {
 		output.Error = fmt.Sprintf("validating existing agent launch panes: %v", err)
 		output.RobotResponse = NewErrorResponse(
 			err,
@@ -932,7 +932,7 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 		)
 		return output, nil
 	}
-	if err := validateSpawnPaneBaselines(panes, opts); err != nil {
+	if err := validateSpawnPaneBaselines(ctx, panes, opts); err != nil {
 		output.Error = fmt.Sprintf("validating agent launch panes: %v", err)
 		output.RobotResponse = NewErrorResponse(
 			err,

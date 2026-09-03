@@ -916,7 +916,7 @@ func validateSpawnPaneCapacity(panes []tmux.Pane, startIdx, agentCount int) erro
 // happily type the launch command into that process and spawn would report
 // success (#291). Checking the whole batch first also prevents a partial
 // launch where agents 1..k start and agent k+1 is refused.
-func validateSpawnPaneBaselines(panes []tmux.Pane, startIdx int, agents []FlatAgent) error {
+func validateSpawnPaneBaselines(ctx context.Context, session string, panes []tmux.Pane, startIdx int, agents []FlatAgent) error {
 	for agentOffset, launch := range agents {
 		paneOffset := startIdx + agentOffset
 		if paneOffset < 0 || paneOffset >= len(panes) {
@@ -927,7 +927,7 @@ func validateSpawnPaneBaselines(panes []tmux.Pane, startIdx int, agents []FlatAg
 				paneOffset,
 			)
 		}
-		if err := tmux.ValidatePaneLaunchBaseline(panes[paneOffset]); err != nil {
+		if err := tmux.ValidatePaneLaunchBaselineSettledContext(ctx, session, panes[paneOffset]); err != nil {
 			return fmt.Errorf("%s agent %d: %w (use `ntm add` to grow a session that already has running panes)", launch.Type, launch.Index, err)
 		}
 	}
@@ -2727,7 +2727,7 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 	if err := validateSpawnPaneCapacity(panes, startIdx, len(opts.Agents)); err != nil {
 		return outputError(err)
 	}
-	if err := validateSpawnPaneBaselines(panes, startIdx, opts.Agents); err != nil {
+	if err := validateSpawnPaneBaselines(ctx, opts.Session, panes, startIdx, opts.Agents); err != nil {
 		return outputError(fmt.Errorf("validating agent launch panes: %w", err))
 	}
 

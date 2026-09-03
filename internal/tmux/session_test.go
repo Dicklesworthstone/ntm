@@ -222,10 +222,10 @@ func TestValidatePaneLaunchBaselineLiveContextRefusesInsteadOfRetargeting(t *tes
 		}
 	})
 
-	t.Run("pane that never leaves tmux is refused as a nested client", func(t *testing.T) {
-		savedTimeout, savedPoll := paneLaunchStartingTimeout, paneLaunchStartingPoll
-		paneLaunchStartingTimeout, paneLaunchStartingPoll = 60*time.Millisecond, 5*time.Millisecond
-		defer func() { paneLaunchStartingTimeout, paneLaunchStartingPoll = savedTimeout, savedPoll }()
+	t.Run("pane that never leaves tmux is refused as a nested client after the settle window", func(t *testing.T) {
+		savedTimeout, savedPoll := paneLaunchSettleTimeout, paneLaunchSettlePoll
+		paneLaunchSettleTimeout, paneLaunchSettlePoll = 60*time.Millisecond, 5*time.Millisecond
+		defer func() { paneLaunchSettleTimeout, paneLaunchSettlePoll = savedTimeout, savedPoll }()
 		list := func(context.Context, string) ([]Pane, error) {
 			return []Pane{{ID: "%target", Command: "tmux"}}, nil
 		}

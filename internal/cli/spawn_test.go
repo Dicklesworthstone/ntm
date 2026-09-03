@@ -665,7 +665,7 @@ func TestValidateSpawnPaneBaselinesPreflightsCompleteAssignment(t *testing.T) {
 			{ID: "%occupied", Index: 0, Command: "cat"},
 			{ID: "%idle", Index: 1, Command: "zsh"},
 		}
-		err := validateSpawnPaneBaselines(panes, 0, agents)
+		err := validateSpawnPaneBaselines(context.Background(), "ntm-unit-no-such-session", panes, 0, agents)
 		if err == nil {
 			t.Fatal("validateSpawnPaneBaselines() error = nil, want occupied Claude pane rejected")
 		}
@@ -684,7 +684,7 @@ func TestValidateSpawnPaneBaselinesPreflightsCompleteAssignment(t *testing.T) {
 			{ID: "%live", Index: 0, Command: "claude"},
 			{ID: "%idle", Index: 1, Command: "zsh"},
 		}
-		err := validateSpawnPaneBaselines(panes, 0, []FlatAgent{{Type: AgentTypeCodex, Index: 1}})
+		err := validateSpawnPaneBaselines(context.Background(), "ntm-unit-no-such-session", panes, 0, []FlatAgent{{Type: AgentTypeCodex, Index: 1}})
 		if err == nil || !errors.Is(err, tmux.ErrPaneOccupied) {
 			t.Fatalf("validateSpawnPaneBaselines() error = %v, want occupied-pane rejection", err)
 		}
@@ -695,7 +695,7 @@ func TestValidateSpawnPaneBaselinesPreflightsCompleteAssignment(t *testing.T) {
 			{ID: "%idle", Index: 0, Command: "zsh"},
 			{ID: "%occupied", Index: 1, Command: "sleep"},
 		}
-		err := validateSpawnPaneBaselines(panes, 0, agents)
+		err := validateSpawnPaneBaselines(context.Background(), "ntm-unit-no-such-session", panes, 0, agents)
 		if err == nil {
 			t.Fatal("validateSpawnPaneBaselines() error = nil")
 		}
@@ -712,21 +712,21 @@ func TestValidateSpawnPaneBaselinesPreflightsCompleteAssignment(t *testing.T) {
 			{ID: "%claude", Index: 1, Command: "bash"},
 			{ID: "%grok", Index: 2, Command: "fish"},
 		}
-		if err := validateSpawnPaneBaselines(panes, 1, agents); err != nil {
+		if err := validateSpawnPaneBaselines(context.Background(), "ntm-unit-no-such-session", panes, 1, agents); err != nil {
 			t.Fatalf("validateSpawnPaneBaselines() error = %v", err)
 		}
 	})
 
 	t.Run("empty observation is left to the post-launch stability wait", func(t *testing.T) {
 		panes := []tmux.Pane{{ID: "%fresh", Index: 0}}
-		if err := validateSpawnPaneBaselines(panes, 0, agents[:1]); err != nil {
+		if err := validateSpawnPaneBaselines(context.Background(), "ntm-unit-no-such-session", panes, 0, agents[:1]); err != nil {
 			t.Fatalf("validateSpawnPaneBaselines() error = %v", err)
 		}
 	})
 
 	t.Run("missing assigned pane fails closed", func(t *testing.T) {
 		panes := []tmux.Pane{{ID: "%claude", Index: 0, Command: "zsh"}}
-		err := validateSpawnPaneBaselines(panes, 0, agents)
+		err := validateSpawnPaneBaselines(context.Background(), "ntm-unit-no-such-session", panes, 0, agents)
 		if err == nil || !strings.Contains(err.Error(), "no assigned pane for grok agent 1 at offset 1") {
 			t.Fatalf("validateSpawnPaneBaselines() error = %v", err)
 		}
