@@ -2108,6 +2108,74 @@ func composerLineEmpty(capture string, markers []string, placeholderPrefixes []s
 	return false, false
 }
 
+// composerBlockMaxRows bounds how far below the marker line the composer
+// block scan looks for wrapped continuation rows. Claude Code's composer is a
+// bordered box that grows downward as the entry wraps; a bound keeps a
+// transcript that happens to sit inside a box from being read as input.
+const composerBlockMaxRows = 24
+
+// boxRuleRunes are the glyphs that make up a box rule/corner row. A row built
+// only from these is chrome, not composer text.
+const boxRuleRunes = "─━╌┄┈╰╯└┘╭╮┌┐┏┓┗┛"
+
+// composerBlockEmpty reports whether the LIVE composer block — the bottom-most
+// marker line together with its wrapped continuation rows — carries any text.
+//
+// composerLineEmpty only looks at the marker row. A Claude Code entry long
+// enough to wrap renders its tail on the rows *below* the marker inside the
+// same bordered box, so a clear that emptied only the marker row verified as
+// "empty" while the logical entry was still there — and, symmetrically, a
+// stranded wrapped prompt could not be proven cleared (ntm#300).
+//
+// Continuation rows are recognized only inside a bordered composer: the marker
+// row must carry a vertical border to its left, and a continuation row must
+// carry one too. Unboxed TUIs fall back to the single-row check unchanged, so
+// this can never invent composer text where the old check saw none.
+func composerBlockEmpty(capture string, markers []string, placeholderPrefixes []string) (found, empty bool, text string) {
+	lines := strings.Split(capture, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		idx, marker := indexAnyMarker(lines[i], markers)
+		if idx < 0 {
+			continue
+		}
+		head := strings.TrimSpace(lines[i][idx+len(marker):])
+		head = strings.TrimSpace(strings.TrimRight(head, "│┃"))
+
+		parts := []string{}
+		if head != "" {
+			parts = append(parts, head)
+		}
+		if strings.ContainsAny(lines[i][:idx], "│┃") {
+			for j := i + 1; j < len(lines) && j-i <= composerBlockMaxRows; j++ {
+				row := lines[j]
+				if !strings.ContainsAny(row, "│┃") {
+					break
+				}
+				inner := strings.TrimSpace(strings.Trim(row, " \t│┃"))
+				if inner == "" {
+					continue
+				}
+				if strings.TrimLeft(inner, boxRuleRunes) == "" {
+					break
+				}
+				parts = append(parts, inner)
+			}
+		}
+
+		text = strings.Join(parts, " ")
+		if text == "" {
+			return true, true, ""
+		}
+		for _, prefix := range placeholderPrefixes {
+			if strings.HasPrefix(text, prefix) {
+				return true, true, text
+			}
+		}
+		return true, false, text
+	}
+	return false, false, ""
+}
+
 // ComposerState is the message-independent view of an agent pane's input
 // box, derived from a pane capture (bd-v8dqd). It lets observability
 // surfaces report "this pane holds an unsubmitted prompt" or "this pane has
@@ -2166,7 +2234,10 @@ func InspectComposer(capture string, agentType AgentType) ComposerState {
 	if len(markers) == 0 {
 		return state
 	}
-	found, empty := composerLineEmpty(capture, markers, composerPlaceholderPrefixes(agentType))
+	// Block-aware: a Claude entry long enough to wrap puts its tail on the
+	// rows below the marker, and an unsubmitted wrapped prompt must still
+	// report HoldsText (ntm#300).
+	found, empty, _ := composerBlockEmpty(capture, markers, composerPlaceholderPrefixes(agentType))
 	state.MarkerVisible = found
 	state.HoldsText = found && !empty
 	return state
@@ -2265,42 +2336,190 @@ func composerVisibleForDelivery(capture string, markers []string) bool {
 	return false
 }
 
+// ComposerClearBlocker names the state that kept a composer from being
+// cleared. It is a typed reason so callers can distinguish "the agent is
+// holding queued messages" from "a modal owns the keyboard" from "there is
+// simply text we could not drain" (ntm#300).
+type ComposerClearBlocker string
+
+const (
+	// ComposerBlockerNone means nothing blocked the clear.
+	ComposerBlockerNone ComposerClearBlocker = ""
+	// ComposerBlockerInput: ordinary unsubmitted text survived every
+	// escalation round.
+	ComposerBlockerInput ComposerClearBlocker = "input"
+	// ComposerBlockerQueued: the TUI still reports queued messages held
+	// outside the composer, so a fresh prompt would not be the next thing
+	// the agent processes.
+	ComposerBlockerQueued ComposerClearBlocker = "queued"
+	// ComposerBlockerModal: a dialog or picker owns the keyboard; sending
+	// line-kill keys there would select menu entries instead of clearing.
+	ComposerBlockerModal ComposerClearBlocker = "modal"
+)
+
+// ComposerClearResult reports the outcome of a composer clear.
+type ComposerClearResult struct {
+	// Cleared is false only when verification POSITIVELY shows leftover
+	// state.
+	Cleared bool
+	// Verified is false when the sequence was sent but emptiness could not
+	// be confirmed (no marker visible / unknown TUI).
+	Verified bool
+	// Blocker names what stopped the clear when Cleared is false.
+	Blocker ComposerClearBlocker
+	// Rounds counts the escalation rounds actually run.
+	Rounds int
+	// Residual is the composer text still visible when Cleared is false,
+	// for operator diagnostics.
+	Residual string
+}
+
+// composerClearEscalationKeys is the round-2+ sequence. A single C-u kills to
+// the start of the current line, which does not drain a Claude Code entry that
+// has wrapped across several visual rows — the failure behind ntm#300. Moving
+// to the end of the entry first and repeating the kill drains it row by row.
+var composerClearEscalationKeys = []string{"C-e", "C-u"}
+
+// composerClearMaxRounds bounds the escalation. Each round costs one key
+// burst plus one capture, so the loop stays well inside a send's budget.
+const composerClearMaxRounds = 4
+
+// composerClearMaxBackspaces caps the final measured drain so a
+// mis-measurement can never turn into an unbounded key storm.
+const composerClearMaxBackspaces = 4096
+
 // ClearComposerContext performs the per-agent pre-send composer clear and
-// verifies the composer is empty where the TUI exposes a marker. Returns
-// cleared=false only when verification POSITIVELY shows leftover text;
-// verified=false means the sequence was sent but emptiness could not be
-// confirmed (no marker visible / unknown TUI).
-func (c *Client) ClearComposerContext(ctx context.Context, target string, agentType AgentType) (cleared, verified bool, err error) {
-	for i, key := range ComposerClearKeys(agentType) {
-		if i > 0 {
-			if err := waitForSendDelay(ctx, composerClearKeyGap); err != nil {
-				return false, false, err
+// verifies the composer is empty where the TUI exposes a marker.
+//
+// The clear escalates: the per-agent ritual first, then end-of-entry +
+// line-kill rounds, then a measured backspace drain sized from the residual
+// text the capture still shows. Each round is verified against the whole
+// composer BLOCK (marker row plus wrapped continuation rows), because a
+// wrapped entry is exactly the case the single-round, single-row version
+// could neither clear nor prove cleared (ntm#300).
+//
+// A pane whose queued-message footer is up gets its queued entry recalled
+// with Up before the ritual, so --clear-input covers queued composer state
+// too. A pane parked on a dialog is refused with ComposerBlockerModal rather
+// than hammered with line-kill keys, which would pick menu entries.
+func (c *Client) ClearComposerContext(ctx context.Context, target string, agentType AgentType) (ComposerClearResult, error) {
+	markers := composerMarkersForAgent(agentType)
+
+	sendKeys := func(keys []string) error {
+		for i, key := range keys {
+			if i > 0 {
+				if err := waitForSendDelay(ctx, composerClearKeyGap); err != nil {
+					return err
+				}
+			}
+			if err := c.RunSilentContext(ctx, "send-keys", "-t", ExactTarget(target), key); err != nil {
+				return fmt.Errorf("send composer clear key %q: %w", key, err)
 			}
 		}
-		if err := c.RunSilentContext(ctx, "send-keys", "-t", ExactTarget(target), key); err != nil {
-			return false, false, fmt.Errorf("send composer clear key %q: %w", key, err)
+		return nil
+	}
+
+	// Unknown TUI: fire the line-kill and report an unverifiable clear, the
+	// same best-effort contract as before.
+	if len(markers) == 0 {
+		if err := sendKeys(ComposerClearKeys(agentType)); err != nil {
+			return ComposerClearResult{}, err
+		}
+		return ComposerClearResult{Cleared: true, Rounds: 1}, nil
+	}
+
+	result := ComposerClearResult{}
+	for round := 1; round <= composerClearMaxRounds; round++ {
+		capture, err := c.CapturePaneVisibleContext(ctx, target)
+		if err != nil {
+			return result, fmt.Errorf("capture pane for composer clear verification: %w", err)
+		}
+
+		// Never send line-kill keys into a dialog: they act as menu
+		// navigation there, which is how a "recovery" can submit something.
+		if !composerVisibleForDelivery(capture, markers) {
+			result.Blocker = ComposerBlockerModal
+			result.Verified = true
+			result.Residual = ""
+			return result, nil
+		}
+
+		queued := InspectComposer(capture, agentType).QueuedMessages
+		keys := ComposerClearKeys(agentType)
+		drain := 0
+		switch {
+		case round == composerClearMaxRounds:
+			_, _, residual := composerBlockEmpty(capture, markers, composerPlaceholderPrefixes(agentType))
+			keys = []string{"C-e"}
+			drain = backspaceCount(residual)
+		case round > 1:
+			keys = composerClearEscalationKeys
+		}
+		if queued {
+			// Recall the queued entry into the composer so the same kill
+			// sequence drains it.
+			keys = append([]string{"Up"}, keys...)
+		}
+
+		result.Rounds = round
+		if err := sendKeys(keys); err != nil {
+			return result, err
+		}
+		if drain > 0 {
+			if err := waitForSendDelay(ctx, composerClearKeyGap); err != nil {
+				return result, err
+			}
+			// One tmux call with -N: a per-key gap would turn a long entry
+			// into a multi-second key storm.
+			if err := c.RunSilentContext(ctx, "send-keys", "-t", ExactTarget(target), "-N", strconv.Itoa(drain), "BSpace"); err != nil {
+				return result, fmt.Errorf("send composer backspace drain: %w", err)
+			}
+		}
+		if err := waitForSendDelay(ctx, composerClearVerifyWait); err != nil {
+			return result, err
+		}
+
+		after, err := c.CapturePaneVisibleContext(ctx, target)
+		if err != nil {
+			return result, fmt.Errorf("capture pane for composer clear verification: %w", err)
+		}
+		found, empty, residual := composerBlockEmpty(after, markers, composerPlaceholderPrefixes(agentType))
+		stillQueued := InspectComposer(after, agentType).QueuedMessages
+		if !found {
+			// No marker visible: unverifiable, same as before.
+			result.Cleared = true
+			return result, nil
+		}
+		if empty && !stillQueued {
+			result.Cleared = true
+			result.Verified = true
+			return result, nil
+		}
+		result.Verified = true
+		result.Residual = residual
+		if empty && stillQueued {
+			result.Blocker = ComposerBlockerQueued
+		} else {
+			result.Blocker = ComposerBlockerInput
 		}
 	}
-	markers := composerMarkersForAgent(agentType)
-	if len(markers) == 0 {
-		return true, false, nil
+	return result, nil
+}
+
+// backspaceCount sizes the final measured drain: one BSpace per rune of
+// residual composer text, plus a small margin for glyphs the capture may have
+// collapsed. It is the last escalation step precisely because it depends on no
+// editor binding beyond Backspace.
+func backspaceCount(residual string) int {
+	n := len([]rune(residual)) + 8
+	if n > composerClearMaxBackspaces {
+		n = composerClearMaxBackspaces
 	}
-	if err := waitForSendDelay(ctx, composerClearVerifyWait); err != nil {
-		return false, false, err
-	}
-	capture, err := c.CapturePaneVisibleContext(ctx, target)
-	if err != nil {
-		return false, false, fmt.Errorf("capture pane for composer clear verification: %w", err)
-	}
-	found, empty := composerLineEmpty(capture, markers, composerPlaceholderPrefixes(agentType))
-	if !found {
-		return true, false, nil
-	}
-	return empty, true, nil
+	return n
 }
 
 // ClearComposerContext clears the composer using the default client.
-func ClearComposerContext(ctx context.Context, target string, agentType AgentType) (bool, bool, error) {
+func ClearComposerContext(ctx context.Context, target string, agentType AgentType) (ComposerClearResult, error) {
 	return DefaultClient.ClearComposerContext(ctx, target, agentType)
 }
 

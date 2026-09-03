@@ -401,14 +401,37 @@ func ClearComposerForDelivery(ctx context.Context, target string, delivery Deliv
 	if canonical == tmux.AgentUser || canonical == tmux.AgentUnknown || !canonical.IsValid() {
 		return nil
 	}
-	cleared, verified, err := tmux.ClearComposerContext(ctx, target, delivery.Target.AgentType)
+	result, err := tmux.ClearComposerContext(ctx, target, delivery.Target.AgentType)
 	if err != nil {
 		return fmt.Errorf("COMPOSER_CLEAR_FAILED: pane %s: %w", delivery.Target.Ref.Physical(), err)
 	}
-	if !cleared && verified {
-		return fmt.Errorf("COMPOSER_NOT_CLEARED: pane %s composer still holds text after the clear sequence; inspect with --robot-tail before resending", delivery.Target.Ref.Physical())
+	if !result.Cleared && result.Verified {
+		return fmt.Errorf("COMPOSER_NOT_CLEARED: pane %s %s; inspect with --robot-tail before resending",
+			delivery.Target.Ref.Physical(), composerBlockerDetail(result))
 	}
 	return nil
+}
+
+// composerBlockerDetail renders the typed reason a composer could not be
+// cleared. "Still holds text" was the only thing --clear-input could ever say,
+// which left operators unable to tell ordinary stranded input from queued
+// messages from a pane parked on a modal (ntm#300).
+func composerBlockerDetail(result tmux.ComposerClearResult) string {
+	switch result.Blocker {
+	case tmux.ComposerBlockerModal:
+		return "is showing a dialog or picker, not an input box, so the composer was not touched (answering it needs a deliberate keystroke)"
+	case tmux.ComposerBlockerQueued:
+		return fmt.Sprintf("still reports queued messages after %d clear rounds; a new prompt would not be the next thing the agent processes", result.Rounds)
+	default:
+		residual := strings.TrimSpace(result.Residual)
+		if len(residual) > 120 {
+			residual = residual[:120] + "…"
+		}
+		if residual == "" {
+			return fmt.Sprintf("composer still holds text after %d clear rounds", result.Rounds)
+		}
+		return fmt.Sprintf("composer still holds text after %d clear rounds: %q", result.Rounds, residual)
+	}
 }
 
 // VerifyAgentSubmission closes the gap between "keys were sent" and "the
