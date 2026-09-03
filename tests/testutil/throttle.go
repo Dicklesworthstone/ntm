@@ -274,6 +274,67 @@ func ShortTmuxTempDir(t *testing.T) string {
 	return dir
 }
 
+// ReapStaleTmuxTestServers kills isolated tmux test servers that leaked from a
+// test binary killed mid-run. On a normal pass or fail the per-test cleanup and
+// the TestMain cleanup stop each private server and remove its socket root, but
+// a SIGKILL — an interrupted suite, an OOM, a host reboot — runs neither, so the
+// detached tmux server and its "ntm-tmux-test-*" socket directory survive and
+// accumulate. On a small-core host each leaked server is a standing contribution
+// to process count and load, on exactly the metric that gates test parallelism,
+// and it grows with every run.
+//
+// Every isolated server keeps its socket under a "ntm-tmux-test-*" directory in
+// one of the short candidate bases: the process-wide server from
+// IsolateTmuxTestProcess and every per-fixture server from ShortTmuxTempDir
+// alike. This scans those same bases and, for each such directory whose mtime is
+// older than minAge, kills the server on that socket and removes the directory.
+// The age guard is load-bearing: a concurrent in-flight run's socket root is
+// recent, so it — and the socket root this process just created for itself — is
+// never touched. Call it from a package TestMain before m.Run() so leaks cannot
+// accumulate across runs. It is best-effort by design: it never fails a suite,
+// and returns the number of socket directories it removed.
+func ReapStaleTmuxTestServers(minAge time.Duration) int {
+	prefix := strings.TrimSuffix(tmuxTempDirPattern, "*")
+	bin := findSystemTmuxBinary()
+	now := time.Now()
+	reaped := 0
+	seen := make(map[string]struct{})
+	for _, candidate := range shortTmuxTempDirCandidates() {
+		entries, err := os.ReadDir(candidate.path)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if !entry.IsDir() || !strings.HasPrefix(entry.Name(), prefix) {
+				continue
+			}
+			dir := filepath.Join(candidate.path, entry.Name())
+			if _, dup := seen[dir]; dup {
+				continue
+			}
+			seen[dir] = struct{}{}
+			info, err := entry.Info()
+			if err != nil {
+				continue
+			}
+			if now.Sub(info.ModTime()) < minAge {
+				continue // recent — may belong to an in-flight run
+			}
+			if bin != "" {
+				ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+				cmd := exec.CommandContext(ctx, bin, "kill-server")
+				cmd.Env = isolatedTmuxEnvironment(dir)
+				_ = cmd.Run() // best-effort; a dead or empty socket yields "no server"
+				cancel()
+			}
+			if err := os.RemoveAll(dir); err == nil {
+				reaped++
+			}
+		}
+	}
+	return reaped
+}
+
 func createShortTmuxTempDir() (string, error) {
 	return createShortTmuxTempDirFromCandidates(shortTmuxTempDirCandidates())
 }
