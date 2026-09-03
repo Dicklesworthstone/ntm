@@ -1523,6 +1523,13 @@ func TestAssignWorkPermanentFailureBlockSurvivesRowClearAndStopsRedispatch(t *te
 	if !blocked || block.FailureClass != "SENDER_TOKEN_MISMATCH" {
 		t.Fatalf("durable dispatch block=%+v active=%v", block, blocked)
 	}
+	classBlock, classBlocked := loaded.ActiveDispatchFailureBlockForClass("agent-factory-9d6s", "SENDER_TOKEN_MISMATCH")
+	if !classBlocked || classBlock.BeadID != "agent-factory-9d6s" || classBlock.FailureClass != "SENDER_TOKEN_MISMATCH" {
+		t.Fatalf("durable bead/failure-class block=%+v active=%v", classBlock, classBlocked)
+	}
+	if _, wrongClassBlocked := loaded.ActiveDispatchFailureBlockForClass("agent-factory-9d6s", "RATE_LIMITED"); wrongClassBlocked {
+		t.Fatal("permanent failure block leaked across failure classes")
+	}
 	placed := loaded.Get("agent-factory-ready-b")
 	if placed == nil || placed.Status != assignmentstore.StatusAssigned || placed.DispatchReceiptID != "mail-ready-after-nonretryable" {
 		t.Fatalf("ready assignment=%+v", placed)
@@ -1544,7 +1551,7 @@ func TestAssignWorkPermanentFailureBlockSurvivesRowClearAndStopsRedispatch(t *te
 	if loaded.Get("agent-factory-9d6s") != nil {
 		t.Fatal("failed assignment row survived explicit clear")
 	}
-	if _, stillBlocked := loaded.ActiveDispatchFailureBlock("agent-factory-9d6s"); !stillBlocked {
+	if _, stillBlocked := loaded.ActiveDispatchFailureBlockForClass("agent-factory-9d6s", "SENDER_TOKEN_MISMATCH"); !stillBlocked {
 		t.Fatal("row clear erased permanent dispatch circuit breaker")
 	}
 
@@ -1569,7 +1576,7 @@ func TestAssignWorkPermanentFailureBlockSurvivesRowClearAndStopsRedispatch(t *te
 	if err != nil {
 		t.Fatalf("strict reload after row clear: %v", err)
 	}
-	if _, stillBlocked := reloaded.ActiveDispatchFailureBlock("agent-factory-9d6s"); !stillBlocked {
+	if _, stillBlocked := reloaded.ActiveDispatchFailureBlockForClass("agent-factory-9d6s", "SENDER_TOKEN_MISMATCH"); !stillBlocked {
 		t.Fatal("strict reload lost permanent dispatch circuit breaker")
 	}
 	ledgerPath := filepath.Join(home, ".ntm", "sessions", session, "assignments.json")
@@ -1592,7 +1599,7 @@ func TestAssignWorkPermanentFailureBlockSurvivesRowClearAndStopsRedispatch(t *te
 	if err != nil {
 		t.Fatalf("strict reload after circuit-breaker override: %v", err)
 	}
-	if _, blocked := final.ActiveDispatchFailureBlock("agent-factory-9d6s"); blocked {
+	if _, blocked := final.ActiveDispatchFailureBlockForClass("agent-factory-9d6s", "SENDER_TOKEN_MISMATCH"); blocked {
 		t.Fatal("explicit circuit-breaker override did not survive strict reload")
 	}
 }

@@ -62,12 +62,17 @@ func TestClearDispatchFailureBlockRequiresExplicitForcedOverride(t *testing.T) {
 		beadID  = "ntm-permanent-failure"
 	)
 	store := assignment.NewStore(session)
-	store.DispatchFailureBlocks[beadID] = assignment.DispatchFailureBlock{
-		BeadID: beadID, FailureClass: "SENDER_TOKEN_MISMATCH", Reason: "permanent rejection",
-		Generation: 1, BlockedAt: time.Now().UTC(),
+	store.DispatchFailureBlocks[beadID] = map[string]assignment.DispatchFailureBlock{
+		"SENDER_TOKEN_MISMATCH": {
+			BeadID: beadID, FailureClass: "SENDER_TOKEN_MISMATCH", Reason: "permanent rejection",
+			Generation: 1, BlockedAt: time.Now().UTC(),
+		},
 	}
 	if err := store.Save(); err != nil {
 		t.Fatalf("seed dispatch failure block: %v", err)
+	}
+	if _, blocked := store.ActiveDispatchFailureBlockForClass(beadID, "SENDER_TOKEN_MISMATCH"); !blocked {
+		t.Fatal("seeded bead/failure-class block is not active")
 	}
 
 	previousClear := assignClear
@@ -98,7 +103,7 @@ func TestClearDispatchFailureBlockRequiresExplicitForcedOverride(t *testing.T) {
 	if err != nil {
 		t.Fatalf("strict load after dispatch block override: %v", err)
 	}
-	if _, blocked := reloaded.ActiveDispatchFailureBlock(beadID); blocked {
+	if _, blocked := reloaded.ActiveDispatchFailureBlockForClass(beadID, "SENDER_TOKEN_MISMATCH"); blocked {
 		t.Fatal("explicit forced override left dispatch failure block active")
 	}
 }

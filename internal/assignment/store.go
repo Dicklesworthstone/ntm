@@ -135,7 +135,7 @@ type Assignment struct {
 	CompletionLeaseExpiresAt *time.Time           `json:"completion_lease_expires_at,omitempty"`
 }
 
-// DispatchFailureBlock is a durable, bead-scoped circuit breaker for a
+// DispatchFailureBlock is a durable bead/failure-class circuit breaker for a
 // server-declared permanent dispatch failure. It deliberately lives outside
 // an assignment row: operators may clear/reap that row to release its claim,
 // but doing so must not reset the dispatch-attempt ceiling and immediately
@@ -213,14 +213,14 @@ func cloneAssignment(a *Assignment) *Assignment {
 
 // AssignmentStore manages bead-to-agent assignments for a session
 type AssignmentStore struct {
-	SessionName                    string                          `json:"session_name"`
-	Assignments                    map[string]*Assignment          `json:"assignments"`                   // bead_id -> active or terminal assignment
-	ClearedGenerations             map[string]uint64               `json:"cleared_generations,omitempty"` // bead_id -> completed explicit clears
-	DispatchFailureBlocks          map[string]DispatchFailureBlock `json:"dispatch_failure_blocks,omitempty"`
-	DispatchFailureClearGeneration map[string]uint64               `json:"dispatch_failure_clear_generations,omitempty"`
-	PersistenceGeneration          uint64                          `json:"persistence_generation,omitempty"`
-	UpdatedAt                      time.Time                       `json:"updated_at"`
-	Version                        int                             `json:"version"` // Schema version for migrations
+	SessionName                    string                                     `json:"session_name"`
+	Assignments                    map[string]*Assignment                     `json:"assignments"`                   // bead_id -> active or terminal assignment
+	ClearedGenerations             map[string]uint64                          `json:"cleared_generations,omitempty"` // bead_id -> completed explicit clears
+	DispatchFailureBlocks          map[string]map[string]DispatchFailureBlock `json:"dispatch_failure_blocks,omitempty"`
+	DispatchFailureClearGeneration map[string]map[string]uint64               `json:"dispatch_failure_clear_generations,omitempty"`
+	PersistenceGeneration          uint64                                     `json:"persistence_generation,omitempty"`
+	UpdatedAt                      time.Time                                  `json:"updated_at"`
+	Version                        int                                        `json:"version"` // Schema version for migrations
 
 	mutex                sync.RWMutex
 	path                 string                 // Path to persistence file
@@ -318,8 +318,8 @@ func newStore(sessionName string, createSessionDir bool) *AssignmentStore {
 		SessionName:                    sessionName,
 		Assignments:                    make(map[string]*Assignment),
 		ClearedGenerations:             make(map[string]uint64),
-		DispatchFailureBlocks:          make(map[string]DispatchFailureBlock),
-		DispatchFailureClearGeneration: make(map[string]uint64),
+		DispatchFailureBlocks:          make(map[string]map[string]DispatchFailureBlock),
+		DispatchFailureClearGeneration: make(map[string]map[string]uint64),
 		PersistenceGeneration:          0,
 		UpdatedAt:                      time.Now().UTC(),
 		Version:                        assignmentStoreVersion,
@@ -433,7 +433,7 @@ func (s *AssignmentStore) applySnapshotLocked(loaded *AssignmentStore) {
 	s.Assignments = cloneAssignmentMap(loaded.Assignments)
 	s.ClearedGenerations = cloneClearedGenerationMap(loaded.ClearedGenerations)
 	s.DispatchFailureBlocks = cloneDispatchFailureBlockMap(loaded.DispatchFailureBlocks)
-	s.DispatchFailureClearGeneration = cloneClearedGenerationMap(loaded.DispatchFailureClearGeneration)
+	s.DispatchFailureClearGeneration = cloneDispatchFailureClearGenerationMap(loaded.DispatchFailureClearGeneration)
 	s.PersistenceGeneration = loaded.PersistenceGeneration
 	s.UpdatedAt = loaded.UpdatedAt
 	s.Version = loaded.Version
@@ -447,10 +447,10 @@ func (s *AssignmentStore) applySnapshotLocked(loaded *AssignmentStore) {
 		s.ClearedGenerations = make(map[string]uint64)
 	}
 	if s.DispatchFailureBlocks == nil {
-		s.DispatchFailureBlocks = make(map[string]DispatchFailureBlock)
+		s.DispatchFailureBlocks = make(map[string]map[string]DispatchFailureBlock)
 	}
 	if s.DispatchFailureClearGeneration == nil {
-		s.DispatchFailureClearGeneration = make(map[string]uint64)
+		s.DispatchFailureClearGeneration = make(map[string]map[string]uint64)
 	}
 	for _, assignment := range s.Assignments {
 		normalizeFailureReason(assignment)
@@ -493,7 +493,7 @@ func (s *AssignmentStore) saveLocked() error {
 		s.Assignments = cloneAssignmentMap(latest)
 		s.ClearedGenerations = cloneClearedGenerationMap(latestClearedGenerations)
 		s.DispatchFailureBlocks = cloneDispatchFailureBlockMap(latestDispatchFailureBlocks)
-		s.DispatchFailureClearGeneration = cloneClearedGenerationMap(latestDispatchFailureClearGeneration)
+		s.DispatchFailureClearGeneration = cloneDispatchFailureClearGenerationMap(latestDispatchFailureClearGeneration)
 		s.PersistenceGeneration = latestSnapshot.PersistenceGeneration
 		s.UpdatedAt = latestSnapshot.UpdatedAt
 		s.Version = latestSnapshot.Version
@@ -503,7 +503,7 @@ func (s *AssignmentStore) saveLocked() error {
 	}
 	mergedClearedGenerations := mergeClearedGenerations(latestClearedGenerations, s.ClearedGenerations)
 	mergedDispatchFailureBlocks := mergeDispatchFailureBlocks(latestDispatchFailureBlocks, s.DispatchFailureBlocks)
-	mergedDispatchFailureClearGeneration := mergeClearedGenerations(latestDispatchFailureClearGeneration, s.DispatchFailureClearGeneration)
+	mergedDispatchFailureClearGeneration := mergeDispatchFailureClearGenerations(latestDispatchFailureClearGeneration, s.DispatchFailureClearGeneration)
 	if latestSnapshot.PersistenceGeneration == ^uint64(0) {
 		return &PersistenceError{Operation: "save", Path: s.path, Cause: errors.New("persistence generation exhausted")}
 	}
@@ -629,22 +629,49 @@ func cloneClearedGenerationMap(input map[string]uint64) map[string]uint64 {
 	return cloned
 }
 
-func cloneDispatchFailureBlockMap(input map[string]DispatchFailureBlock) map[string]DispatchFailureBlock {
-	cloned := make(map[string]DispatchFailureBlock, len(input))
-	for beadID, block := range input {
-		cloned[beadID] = block
+func cloneDispatchFailureBlockMap(input map[string]map[string]DispatchFailureBlock) map[string]map[string]DispatchFailureBlock {
+	cloned := make(map[string]map[string]DispatchFailureBlock, len(input))
+	for beadID, byClass := range input {
+		cloned[beadID] = make(map[string]DispatchFailureBlock, len(byClass))
+		for failureClass, block := range byClass {
+			cloned[beadID][failureClass] = block
+		}
 	}
 	return cloned
 }
 
-func mergeDispatchFailureBlocks(latest, current map[string]DispatchFailureBlock) map[string]DispatchFailureBlock {
+func cloneDispatchFailureClearGenerationMap(input map[string]map[string]uint64) map[string]map[string]uint64 {
+	cloned := make(map[string]map[string]uint64, len(input))
+	for beadID, byClass := range input {
+		cloned[beadID] = cloneClearedGenerationMap(byClass)
+	}
+	return cloned
+}
+
+func mergeDispatchFailureBlocks(latest, current map[string]map[string]DispatchFailureBlock) map[string]map[string]DispatchFailureBlock {
 	merged := cloneDispatchFailureBlockMap(latest)
-	for beadID, block := range current {
-		prior, exists := merged[beadID]
-		if !exists || block.Generation > prior.Generation ||
-			(block.Generation == prior.Generation && block.BlockedAt.After(prior.BlockedAt)) {
-			merged[beadID] = block
+	for beadID, byClass := range current {
+		if merged[beadID] == nil {
+			merged[beadID] = make(map[string]DispatchFailureBlock)
 		}
+		for failureClass, block := range byClass {
+			prior, exists := merged[beadID][failureClass]
+			if !exists || block.Generation > prior.Generation ||
+				(block.Generation == prior.Generation && block.BlockedAt.After(prior.BlockedAt)) {
+				merged[beadID][failureClass] = block
+			}
+		}
+	}
+	return merged
+}
+
+func mergeDispatchFailureClearGenerations(latest, current map[string]map[string]uint64) map[string]map[string]uint64 {
+	merged := cloneDispatchFailureClearGenerationMap(latest)
+	for beadID, byClass := range current {
+		if merged[beadID] == nil {
+			merged[beadID] = make(map[string]uint64)
+		}
+		merged[beadID] = mergeClearedGenerations(merged[beadID], byClass)
 	}
 	return merged
 }
@@ -684,8 +711,8 @@ func readAssignmentStateForMerge(path, expectedSession string) (*AssignmentStore
 			SessionName:                    expectedSession,
 			Assignments:                    make(map[string]*Assignment),
 			ClearedGenerations:             make(map[string]uint64),
-			DispatchFailureBlocks:          make(map[string]DispatchFailureBlock),
-			DispatchFailureClearGeneration: make(map[string]uint64),
+			DispatchFailureBlocks:          make(map[string]map[string]DispatchFailureBlock),
+			DispatchFailureClearGeneration: make(map[string]map[string]uint64),
 			Version:                        assignmentStoreVersion,
 		}, nil
 	}
@@ -819,17 +846,22 @@ func decodeAssignmentSnapshot(data []byte, expectedSession string) (*AssignmentS
 		loaded.ClearedGenerations = make(map[string]uint64)
 	}
 	if loaded.DispatchFailureBlocks == nil {
-		loaded.DispatchFailureBlocks = make(map[string]DispatchFailureBlock)
+		loaded.DispatchFailureBlocks = make(map[string]map[string]DispatchFailureBlock)
 	}
 	if loaded.DispatchFailureClearGeneration == nil {
-		loaded.DispatchFailureClearGeneration = make(map[string]uint64)
+		loaded.DispatchFailureClearGeneration = make(map[string]map[string]uint64)
 	}
-	for beadID, block := range loaded.DispatchFailureBlocks {
-		if strings.TrimSpace(beadID) == "" || strings.TrimSpace(block.BeadID) != beadID {
-			return nil, fmt.Errorf("dispatch failure block %q has mismatched bead ID %q", beadID, block.BeadID)
+	for beadID, byClass := range loaded.DispatchFailureBlocks {
+		if strings.TrimSpace(beadID) == "" || len(byClass) == 0 {
+			return nil, fmt.Errorf("dispatch failure blocks for bead %q are incomplete", beadID)
 		}
-		if strings.TrimSpace(block.FailureClass) == "" || block.Generation == 0 || block.BlockedAt.IsZero() {
-			return nil, fmt.Errorf("dispatch failure block %q is incomplete", beadID)
+		for failureClass, block := range byClass {
+			if strings.TrimSpace(block.BeadID) != beadID {
+				return nil, fmt.Errorf("dispatch failure block %q/%q has mismatched bead ID %q", beadID, failureClass, block.BeadID)
+			}
+			if strings.TrimSpace(failureClass) == "" || strings.TrimSpace(block.FailureClass) != failureClass || block.Generation == 0 || block.BlockedAt.IsZero() {
+				return nil, fmt.Errorf("dispatch failure block %q/%q is incomplete or mismatched", beadID, failureClass)
+			}
 		}
 	}
 	for beadID, assignment := range loaded.Assignments {
@@ -1337,25 +1369,31 @@ func (s *AssignmentStore) beginTerminalReconciliationIfCurrent(ctx context.Conte
 			return
 		}
 		if s.DispatchFailureBlocks == nil {
-			s.DispatchFailureBlocks = make(map[string]DispatchFailureBlock)
+			s.DispatchFailureBlocks = make(map[string]map[string]DispatchFailureBlock)
 		}
 		if s.DispatchFailureClearGeneration == nil {
-			s.DispatchFailureClearGeneration = make(map[string]uint64)
+			s.DispatchFailureClearGeneration = make(map[string]map[string]uint64)
 		}
 		block := *dispatchBlock
 		block.BeadID = observed.BeadID
 		block.FailureClass = strings.TrimSpace(block.FailureClass)
+		if s.DispatchFailureBlocks[observed.BeadID] == nil {
+			s.DispatchFailureBlocks[observed.BeadID] = make(map[string]DispatchFailureBlock)
+		}
+		if s.DispatchFailureClearGeneration[observed.BeadID] == nil {
+			s.DispatchFailureClearGeneration[observed.BeadID] = make(map[string]uint64)
+		}
 		if block.BlockedAt.IsZero() {
 			block.BlockedAt = time.Now().UTC()
 		} else {
 			block.BlockedAt = block.BlockedAt.UTC()
 		}
-		generation := s.DispatchFailureClearGeneration[observed.BeadID] + 1
-		if existing := s.DispatchFailureBlocks[observed.BeadID]; existing.Generation >= generation {
+		generation := s.DispatchFailureClearGeneration[observed.BeadID][block.FailureClass] + 1
+		if existing := s.DispatchFailureBlocks[observed.BeadID][block.FailureClass]; existing.Generation >= generation {
 			generation = existing.Generation
 		}
 		block.Generation = generation
-		s.DispatchFailureBlocks[observed.BeadID] = block
+		s.DispatchFailureBlocks[observed.BeadID][block.FailureClass] = block
 	}
 	ensureCompletionEvent := func() (bool, error) {
 		if !createCompletionEvent || strings.TrimSpace(current.PendingCompletionEventID) != "" {
@@ -1412,7 +1450,13 @@ func (s *AssignmentStore) beginTerminalReconciliationIfCurrent(ctx context.Conte
 
 	startedAt := time.Now().UTC()
 	previous := cloneAssignment(current)
-	previousBlock, hadPreviousBlock := s.DispatchFailureBlocks[observed.BeadID]
+	dispatchFailureClass := ""
+	previousBlock := DispatchFailureBlock{}
+	hadPreviousBlock := false
+	if dispatchBlock != nil {
+		dispatchFailureClass = strings.TrimSpace(dispatchBlock.FailureClass)
+		previousBlock, hadPreviousBlock = s.DispatchFailureBlocks[observed.BeadID][dispatchFailureClass]
+	}
 	installDispatchBlock()
 	current.ClearState = ClearStateReservationReleasing
 	current.ClearStartedAt = &startedAt
@@ -1438,10 +1482,15 @@ func (s *AssignmentStore) beginTerminalReconciliationIfCurrent(ctx context.Conte
 			return nil, false, nil
 		}
 		s.Assignments[observed.BeadID] = previous
-		if hadPreviousBlock {
-			s.DispatchFailureBlocks[observed.BeadID] = previousBlock
-		} else {
-			delete(s.DispatchFailureBlocks, observed.BeadID)
+		if dispatchBlock != nil {
+			if hadPreviousBlock {
+				s.DispatchFailureBlocks[observed.BeadID][dispatchFailureClass] = previousBlock
+			} else {
+				delete(s.DispatchFailureBlocks[observed.BeadID], dispatchFailureClass)
+				if len(s.DispatchFailureBlocks[observed.BeadID]) == 0 {
+					delete(s.DispatchFailureBlocks, observed.BeadID)
+				}
+			}
 		}
 		delete(s.replace, observed.BeadID)
 		return nil, false, err
@@ -1449,13 +1498,37 @@ func (s *AssignmentStore) beginTerminalReconciliationIfCurrent(ctx context.Conte
 	return cloneAssignment(current), true, nil
 }
 
-// ActiveDispatchFailureBlock returns the bead-scoped dispatch circuit breaker
-// when it has not been explicitly cleared by an operator.
+// ActiveDispatchFailureBlock returns one active bead/failure-class circuit
+// breaker. A bead is blocked while any failure class remains active.
 func (s *AssignmentStore) ActiveDispatchFailureBlock(beadID string) (DispatchFailureBlock, bool) {
 	s.mutex.RLock()
 	defer s.mutex.RUnlock()
-	block, ok := s.DispatchFailureBlocks[strings.TrimSpace(beadID)]
-	if !ok || block.Generation <= s.DispatchFailureClearGeneration[strings.TrimSpace(beadID)] {
+	beadID = strings.TrimSpace(beadID)
+	var selected DispatchFailureBlock
+	found := false
+	for failureClass, block := range s.DispatchFailureBlocks[beadID] {
+		if block.Generation <= s.DispatchFailureClearGeneration[beadID][failureClass] {
+			continue
+		}
+		if !found || block.BlockedAt.After(selected.BlockedAt) ||
+			(block.BlockedAt.Equal(selected.BlockedAt) && block.FailureClass < selected.FailureClass) {
+			selected = block
+			found = true
+		}
+	}
+	return selected, found
+}
+
+// ActiveDispatchFailureBlockForClass checks the exact durable breaker
+// identity. The attempt ceiling is scoped to this tuple, never to an
+// assignment row or to the bead alone.
+func (s *AssignmentStore) ActiveDispatchFailureBlockForClass(beadID, failureClass string) (DispatchFailureBlock, bool) {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+	beadID = strings.TrimSpace(beadID)
+	failureClass = strings.TrimSpace(failureClass)
+	block, ok := s.DispatchFailureBlocks[beadID][failureClass]
+	if !ok || block.Generation <= s.DispatchFailureClearGeneration[beadID][failureClass] {
 		return DispatchFailureBlock{}, false
 	}
 	return block, true
@@ -1482,14 +1555,23 @@ func (s *AssignmentStore) ClearDispatchFailureBlock(ctx context.Context, beadID 
 	}
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
-	block, ok := s.DispatchFailureBlocks[beadID]
-	if !ok || block.Generation <= s.DispatchFailureClearGeneration[beadID] {
+	if s.DispatchFailureClearGeneration == nil {
+		s.DispatchFailureClearGeneration = make(map[string]map[string]uint64)
+	}
+	if s.DispatchFailureClearGeneration[beadID] == nil {
+		s.DispatchFailureClearGeneration[beadID] = make(map[string]uint64)
+	}
+	cleared := false
+	for failureClass, block := range s.DispatchFailureBlocks[beadID] {
+		if block.Generation <= s.DispatchFailureClearGeneration[beadID][failureClass] {
+			continue
+		}
+		s.DispatchFailureClearGeneration[beadID][failureClass] = block.Generation
+		cleared = true
+	}
+	if !cleared {
 		return false, nil
 	}
-	if s.DispatchFailureClearGeneration == nil {
-		s.DispatchFailureClearGeneration = make(map[string]uint64)
-	}
-	s.DispatchFailureClearGeneration[beadID] = block.Generation
 	if err := s.saveLocked(); err != nil {
 		return false, err
 	}

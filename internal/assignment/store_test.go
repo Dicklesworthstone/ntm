@@ -1731,6 +1731,60 @@ func TestRecordAtomicIntentCannotReplaceTerminalLeaseHandles(t *testing.T) {
 	}
 }
 
+func TestDispatchFailureBlocksPersistByBeadAndFailureClass(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	const (
+		session = "dispatch-failure-class-identity"
+		beadID  = "ntm-permanent-failure"
+	)
+	now := time.Now().UTC()
+	store := NewStore(session)
+	store.DispatchFailureBlocks[beadID] = map[string]DispatchFailureBlock{
+		"SENDER_TOKEN_MISMATCH": {
+			BeadID: beadID, FailureClass: "SENDER_TOKEN_MISMATCH", Reason: "sender registration is stale",
+			Generation: 1, BlockedAt: now,
+		},
+		"ACCOUNT_DISABLED": {
+			BeadID: beadID, FailureClass: "ACCOUNT_DISABLED", Reason: "account is disabled",
+			Generation: 1, BlockedAt: now.Add(time.Second),
+		},
+	}
+	if err := store.Save(); err != nil {
+		t.Fatalf("save class-scoped dispatch blocks: %v", err)
+	}
+
+	reloaded, err := LoadStoreStrict(session)
+	if err != nil {
+		t.Fatalf("strict reload class-scoped dispatch blocks: %v", err)
+	}
+	for _, failureClass := range []string{"SENDER_TOKEN_MISMATCH", "ACCOUNT_DISABLED"} {
+		block, active := reloaded.ActiveDispatchFailureBlockForClass(beadID, failureClass)
+		if !active || block.BeadID != beadID || block.FailureClass != failureClass {
+			t.Fatalf("block for %s=%+v active=%v", failureClass, block, active)
+		}
+	}
+	if _, active := reloaded.ActiveDispatchFailureBlockForClass(beadID, "RATE_LIMITED"); active {
+		t.Fatal("class-scoped breaker matched an unrelated failure class")
+	}
+	if block, active := reloaded.ActiveDispatchFailureBlock(beadID); !active || block.FailureClass != "ACCOUNT_DISABLED" {
+		t.Fatalf("bead-level admission view=%+v active=%v, want newest active class", block, active)
+	}
+
+	cleared, err := reloaded.ClearDispatchFailureBlock(t.Context(), beadID)
+	if err != nil || !cleared {
+		t.Fatalf("clear all bead failure classes: cleared=%v error=%v", cleared, err)
+	}
+	final, err := LoadStoreStrict(session)
+	if err != nil {
+		t.Fatalf("strict reload after class-scoped clear: %v", err)
+	}
+	for _, failureClass := range []string{"SENDER_TOKEN_MISMATCH", "ACCOUNT_DISABLED"} {
+		if _, active := final.ActiveDispatchFailureBlockForClass(beadID, failureClass); active {
+			t.Fatalf("explicit bead override left class %s active", failureClass)
+		}
+	}
+}
+
 func TestAssignmentClearBarrierRetainsLeaseAndBlocksNewWork(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	const session = "assignment-clear-barrier"
