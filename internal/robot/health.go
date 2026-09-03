@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -17,6 +18,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/config"
+	"github.com/Dicklesworthstone/ntm/internal/errsig"
 	"github.com/Dicklesworthstone/ntm/internal/process"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
@@ -418,34 +420,41 @@ type ErrorCheckResult struct {
 	Reason      string   `json:"reason,omitempty"`
 }
 
-// Error patterns for detailed detection (literal string patterns for strings.Contains)
+// healthErrorPatterns classify captured pane output into operational failure
+// kinds. They are regexes, not substrings, because substring matching over the
+// last 50 lines made a bare "429" — inside a SHA-256 digest the agent had
+// printed — authoritative rate-limit evidence, walling off a working reviewer
+// pane that every other surface reported healthy (ntm#299).
+//
+// The rule: a numeric code counts only in a structured position, and a
+// single-word keyword counts only when it starts the line's content
+// (errsig.Anchored strips TUI and log decoration first). Multi-token runtime
+// signatures such as "connection refused" need neither.
 var healthErrorPatterns = []struct {
-	Pattern string
+	Pattern *regexp.Regexp
 	Type    string
 }{
 	// Rate limit patterns
-	{"rate limit", "rate_limit"},
-	{"ratelimit", "rate_limit"},
-	{"rate-limit", "rate_limit"},
-	{"429", "rate_limit"},
-	{"too many requests", "rate_limit"},
-	{"quota exceeded", "rate_limit"},
+	{regexp.MustCompile(errsig.Anchored(`(?i:rate[\s_-]?limit)`) + `|(?i)\brate[\s_-]?limits?\s+(?:exceeded|reached)\b|(?i)\brate_limit_error\b|(?i)\b(?:hit|hitting|reached)\s+(?:the\s+|a\s+|your\s+)?rate[\s_-]?limit\b`), "rate_limit"},
+	{regexp.MustCompile(errsig.HTTPStatus("429", "too many requests", "rate limit")), "rate_limit"},
+	{regexp.MustCompile(`(?i)\btoo many requests\b`), "rate_limit"},
+	{regexp.MustCompile(`(?i)\bquota exceeded\b`), "rate_limit"},
 	// Auth error patterns
-	{"authentication failed", "auth_error"},
-	{"authentication error", "auth_error"},
-	{"401", "auth_error"},
-	{"unauthorized", "auth_error"},
+	{regexp.MustCompile(`(?i)\bauthentication (?:failed|error)\b`), "auth_error"},
+	{regexp.MustCompile(errsig.HTTPStatus("401", "unauthorized")), "auth_error"},
+	{regexp.MustCompile(errsig.Anchored(`(?i:unauthorized)\b`)), "auth_error"},
 	// Crash patterns
-	{"panic:", "crash"},
-	{"fatal error", "crash"},
-	{"segmentation fault", "crash"},
-	{"stack trace", "crash"},
+	{regexp.MustCompile(errsig.Anchored(`(?i:panic):\s`)), "crash"},
+	{regexp.MustCompile(errsig.Anchored(`(?i:fatal error)\b`) + `|(?i)\bfatal error:\s*\S`), "crash"},
+	{regexp.MustCompile(`(?i)\bsegmentation fault\b`), "crash"},
+	{regexp.MustCompile(errsig.FatalSignalPattern), "crash"},
+	{regexp.MustCompile(errsig.Anchored(`(?i:(?:stack trace|traceback))\b`)), "crash"},
 	// Network error patterns
-	{"connection refused", "network_error"},
-	{"connection reset", "network_error"},
-	{"connection timeout", "network_error"},
-	{"network error", "network_error"},
-	{"network unreachable", "network_error"},
+	{regexp.MustCompile(`(?i)\bconnection refused\b`), "network_error"},
+	{regexp.MustCompile(`(?i)\bconnection reset\b`), "network_error"},
+	{regexp.MustCompile(`(?i)\bconnection timed? ?out\b`), "network_error"},
+	{regexp.MustCompile(`(?i)\bnetwork error\b`), "network_error"},
+	{regexp.MustCompile(`(?i)\bnetwork (?:is )?unreachable\b`), "network_error"},
 }
 
 // CheckAgentHealthWithActivity performs a comprehensive health check using activity detection.
@@ -637,12 +646,11 @@ func checkErrors(paneID string, agentType string, paneWidth int) *ErrorCheckResu
 	}
 
 	output = stripANSI(output)
-	outputLower := strings.ToLower(output)
 
 	// Check for error patterns
 	seenPatterns := make(map[string]bool)
 	for _, ep := range healthErrorPatterns {
-		if strings.Contains(outputLower, strings.ToLower(ep.Pattern)) {
+		if ep.Pattern.MatchString(output) {
 			if !seenPatterns[ep.Type] {
 				result.Patterns = append(result.Patterns, ep.Type)
 				seenPatterns[ep.Type] = true

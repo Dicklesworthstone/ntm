@@ -595,7 +595,7 @@ func TestHealthErrorPatterns(t *testing.T) {
 	types := make(map[string]int)
 	for _, ep := range healthErrorPatterns {
 		types[ep.Type]++
-		if ep.Pattern == "" {
+		if ep.Pattern == nil || ep.Pattern.String() == "" {
 			t.Error("Found empty pattern")
 		}
 		if ep.Type == "" {

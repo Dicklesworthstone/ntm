@@ -671,7 +671,7 @@ func TestPatternLibraryErrorPatternVariants(t *testing.T) {
 	errorTexts := []string{
 		"Rate limit exceeded",
 		"rate limit",
-		"429",
+		"HTTP/1.1 429 Too Many Requests",
 		"HTTP 429",
 		"too many requests",
 		"quota exceeded",
@@ -696,6 +696,26 @@ func TestPatternLibraryErrorPatternVariants(t *testing.T) {
 	for _, text := range errorTexts {
 		if !lib.HasError(text, "*") {
 			t.Errorf("expected error detection for %q", text)
+		}
+	}
+
+	// Negative controls: ordinary agent prose that merely mentions failure,
+	// and a bare status number. These used to classify as operational errors,
+	// marking healthy panes ERROR and degrading whole sessions (ntm#297,
+	// ntm#299).
+	nonErrorTexts := []string{
+		"429",
+		"6f764f0c7344e437767e61f189f493065dca56cadc7048610948be7a5d42963f",
+		"it failed naming exactly the seven against the HEAD ci.yml before the edit,",
+		"the planted negative failed as expected, and 19/19 switches discriminate after",
+		"the review finding says cleanup catches BaseException",
+		"the service status line reports a configured wait timeout 20000ms",
+		"we should handle the diagnostics timeout in a follow-up",
+		"scanned 429 files in the worktree",
+	}
+	for _, text := range nonErrorTexts {
+		if lib.HasError(text, "*") {
+			t.Errorf("prose must not be an operational error: %q matched %v", text, lib.MatchByCategory(text, "*", CategoryError))
 		}
 	}
 }
@@ -866,7 +886,7 @@ func TestPatternLibraryMultipleMatches(t *testing.T) {
 	lib := NewPatternLibrary()
 
 	// Content that could match multiple patterns
-	content := "Rate limit 429 error"
+	content := "Rate limit exceeded: HTTP 429 too many requests"
 	matches := lib.Match(content, "*")
 
 	if len(matches) < 2 {
