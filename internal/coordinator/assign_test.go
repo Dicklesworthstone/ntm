@@ -1412,6 +1412,99 @@ func TestAssignWorkDeadPaneDoesNotBlockReadyBead(t *testing.T) {
 	}
 }
 
+func TestAssignWorkNonRetryableLivePaneDoesNotBlockReadyBead(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	const session = "agent-factory"
+	writeNonRetryableLivePaneIncidentFixture(t, home, session)
+
+	c := New(session, t.TempDir(), &agentmail.Client{}, "CoordinatorAgent")
+	addEligibleCoordinatorAgent(c, "%893", "WildIvy")
+	addEligibleCoordinatorAgent(c, "%1001", "ReadyAgent")
+	c.actionableRecommendationsFn = func(context.Context, string, int) ([]bv.TriageRecommendation, error) {
+		return []bv.TriageRecommendation{{
+			ID: "agent-factory-ready-b", Title: "Ready bead B", Type: "bug", Status: "open", Priority: 1, Score: 1,
+		}}, nil
+	}
+	c.workItemStatusFn = func(_ context.Context, beadID string) (string, error) {
+		if beadID == "agent-factory-ready-b" {
+			return "open", nil
+		}
+		return "in_progress", nil
+	}
+	failedDispatches := 0
+	c.atomicCoordinatorFactory = func(store *assignmentstore.AssignmentStore) *assignmentstore.AtomicCoordinator {
+		claim := assignmentstore.ClaimFunc(func(_ context.Context, beadID, actor string) (assignmentstore.ClaimReceipt, error) {
+			return assignmentstore.ClaimReceipt{BeadID: beadID, Actor: actor, Status: "in_progress", ClaimedAt: time.Now().UTC()}, nil
+		})
+		dispatch := assignmentstore.DispatchFunc(func(_ context.Context, request assignmentstore.DispatchRequest) (assignmentstore.DispatchReceipt, error) {
+			if request.BeadID == "agent-factory-9d6s" {
+				failedDispatches++
+				rejection := &agentmail.ToolRejectionError{Err: errors.New(`tool error: {"error":{"type":"SENDER_TOKEN_MISMATCH","message":"sender_token does not match the registered token for agent 'WhiteHorse'","recoverable":false}}`)}
+				return assignmentstore.DispatchReceipt{}, coordinatorMailDispatchError(rejection)
+			}
+			return assignmentstore.DispatchReceipt{DeliveryID: "mail-ready-after-nonretryable"}, nil
+		})
+		preflight := assignmentstore.PromptPreflightFunc(func(_ context.Context, request assignmentstore.DispatchRequest) (assignmentstore.PromptPreflightResult, error) {
+			return assignmentstore.PromptPreflightResult{DispatchPrompt: request.Prompt, DurablePrompt: request.Prompt}, nil
+		})
+		return assignmentstore.NewAtomicCoordinator(store, claim, nil, dispatch, preflight)
+	}
+
+	results, err := c.AssignWork(t.Context())
+	if err != nil {
+		t.Fatalf("AssignWork: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("assignment results=%+v, want failed A attempt plus placed B", results)
+	}
+	byBead := make(map[string]AssignmentResult, len(results))
+	for _, result := range results {
+		if result.Assignment != nil {
+			byBead[result.Assignment.BeadID] = result
+		}
+	}
+	stranded := byBead["agent-factory-9d6s"]
+	if stranded.Success || !strings.Contains(stranded.Error, "SENDER_TOKEN_MISMATCH") || strings.Contains(stranded.Error, "absent from") {
+		t.Fatalf("non-retryable live-pane result=%+v", stranded)
+	}
+	ready := byBead["agent-factory-ready-b"]
+	if !ready.Success || !ready.MessageSent {
+		t.Fatalf("ready bead B was not placed: %+v", ready)
+	}
+	if failedDispatches != 1 {
+		t.Fatalf("non-retryable dispatch attempts=%d, want 1", failedDispatches)
+	}
+
+	// The first cycle consumes the final known-no-actuation attempt while still
+	// placing B. The next cycle terminalizes A before a fourth dispatch.
+	results, err = c.AssignWork(t.Context())
+	if err != nil {
+		t.Fatalf("AssignWork after reaching ceiling: %v", err)
+	}
+	if len(results) != 1 || results[0].Assignment == nil || results[0].Assignment.BeadID != "agent-factory-9d6s" ||
+		!strings.Contains(results[0].Error, "attempt limit reached") {
+		t.Fatalf("post-ceiling results=%+v", results)
+	}
+	if failedDispatches != 1 {
+		t.Fatalf("non-retryable row dispatched past ceiling: attempts=%d", failedDispatches)
+	}
+
+	loaded, err := assignmentstore.LoadStoreStrict(session)
+	if err != nil {
+		t.Fatalf("strict load after recovery: %v", err)
+	}
+	failed := loaded.Get("agent-factory-9d6s")
+	if failed == nil || failed.Status != assignmentstore.StatusFailed || failed.DispatchAttempts != coordinatorDispatchAttemptLimit ||
+		!strings.Contains(failed.FailReason, "attempt limit reached") {
+		t.Fatalf("non-retryable live-pane assignment=%+v", failed)
+	}
+	placed := loaded.Get("agent-factory-ready-b")
+	if placed == nil || placed.Status != assignmentstore.StatusAssigned || placed.DispatchReceiptID != "mail-ready-after-nonretryable" {
+		t.Fatalf("ready assignment=%+v", placed)
+	}
+}
+
 func TestAssignWorkBoundsKnownSafeDispatchRetries(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	const session = "coordinator-dispatch-attempt-limit"
@@ -1517,6 +1610,76 @@ func writeStrandedAssignmentIncidentFixture(t *testing.T, home, session string) 
 	for _, path := range []string{filepath.Join(dir, "assignments.json"), filepath.Join(dir, "assignments.json.bak")} {
 		if err := os.WriteFile(path, data, 0o600); err != nil {
 			t.Fatalf("write incident fixture %s: %v", path, err)
+		}
+	}
+}
+
+func writeNonRetryableLivePaneIncidentFixture(t *testing.T, home, session string) {
+	t.Helper()
+	// This is the second live incident recorded on agent-factory-m0ip. The
+	// attempt count starts one below the coordinator ceiling so the fixture
+	// proves that this permanent tool rejection belongs to the bounded,
+	// known-no-actuation failure class.
+	const strandedRow = `{
+  "bead_id": "agent-factory-9d6s",
+  "bead_title": "planrun preflight: host map declares an orx.exe exploratory holder on workshop-pc, but host-install-sources has no orx entry, so the holder can never be installed and preflight refuses the seat",
+  "pane": 2,
+  "agent_type": "cod",
+  "agent_name": "WildIvy",
+  "status": "claimed",
+  "assigned_at": "2026-09-03T02:48:01Z",
+  "idempotency_key": "e1f181f3d71942813a59c006ddbce8f214100992bd1f8c24cbed09eac72959d4",
+  "claim_actor": "WildIvy/ntm-e1f181f3d719",
+  "claim_state": "claimed",
+  "claim_status": "in_progress",
+  "claim_attempts": 1,
+  "claim_started_at": "2026-09-03T02:48:01Z",
+  "claimed_at": "2026-09-03T02:48:01Z",
+  "claim_requires_non_terminal": true,
+  "reservation_state": "reserved",
+  "reservation_attempts": 1,
+  "reservation_completed": true,
+  "reservation_agent": "WildIvy",
+  "reservation_target": "%893",
+  "dispatch_state": "pending",
+  "dispatch_target": "%893",
+  "occupancy_key": "%893",
+  "prompt_sha256": "09f7ae947be557a67aae68dfd84f4c7b40c80cd24945de9564a36d6fcc8acf98",
+  "intent_sha256": "09f7ae947be557a67aae68dfd84f4c7b40c80cd24945de9564a36d6fcc8acf98",
+  "pending_prompt": "# Work Assignment\n\n**Bead:** agent-factory-9d6s\n**Title:** planrun preflight: host map declares an orx.exe exploratory holder on workshop-pc, but host-install-sources has no orx entry, so the holder can never be installed and preflight refuses the seat\n**Priority:** P1\n**Score:** 0.13\n\n## Why This Task\n\n- 🔓 Unblocks 1 item(s): agent-factory-clmx\n- ✅ Currently unclaimed - available for work\n- 🚨 High priority (P1) - prioritize this work\n\n## Impact\n\nCompleting this will unblock 1 other tasks:\n- agent-factory-clmx\n\n## Instructions\n\n1. Review the bead with ` + "`" + `br show agent-factory-9d6s` + "`" + `\n2. NTM already claimed this bead atomically as ` + "`" + `WildIvy/ntm-e1f181f3d719` + "`" + `; do not claim it again\n3. Verify the listed file reservations before editing\n4. Implement and test\n5. Close with ` + "`" + `br close agent-factory-9d6s` + "`" + `\n6. Commit with ` + "`" + `.beads/` + "`" + ` changes\n\nPlease acknowledge this message when you begin work.\n",
+  "dispatch_attempts": 2,
+  "dispatch_started_at": "2026-09-03T03:38:00Z",
+  "last_dispatch_error": "agentmail: send_message failed: tool error: {\"error\":{\"type\":\"SENDER_TOKEN_MISMATCH\",\"message\":\"sender_token does not match the registered token for agent 'WhiteHorse'. Only the agent's owner (the session that called register_agent) can send messages as this agent. Use the registration_token returned by register_agent.\",\"recoverable\":false,\"data\":{\"sender_name\":\"WhiteHorse\",\"hint\":\"Use the registration_token returned by register_agent as sender_token\"}}}"
+}`
+	var assignment assignmentstore.Assignment
+	if err := json.Unmarshal([]byte(strandedRow), &assignment); err != nil {
+		t.Fatalf("decode non-retryable incident row: %v", err)
+	}
+	updatedAt, err := time.Parse(time.RFC3339Nano, "2026-09-03T03:38:00Z")
+	if err != nil {
+		t.Fatalf("parse non-retryable incident ledger timestamp: %v", err)
+	}
+	snapshot := struct {
+		SessionName           string                                 `json:"session_name"`
+		Assignments           map[string]*assignmentstore.Assignment `json:"assignments"`
+		PersistenceGeneration uint64                                 `json:"persistence_generation"`
+		UpdatedAt             time.Time                              `json:"updated_at"`
+		Version               int                                    `json:"version"`
+	}{
+		SessionName: session, Assignments: map[string]*assignmentstore.Assignment{assignment.BeadID: &assignment},
+		PersistenceGeneration: 4890, UpdatedAt: updatedAt, Version: 9,
+	}
+	data, err := json.MarshalIndent(snapshot, "", "  ")
+	if err != nil {
+		t.Fatalf("encode non-retryable incident ledger fixture: %v", err)
+	}
+	dir := filepath.Join(home, ".ntm", "sessions", session)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("create non-retryable fixture directory: %v", err)
+	}
+	for _, path := range []string{filepath.Join(dir, "assignments.json"), filepath.Join(dir, "assignments.json.bak")} {
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatalf("write non-retryable fixture %s: %v", path, err)
 		}
 	}
 }
