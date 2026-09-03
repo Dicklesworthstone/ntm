@@ -3253,13 +3253,17 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 			}
 			return outputError(launchErr)
 		}
-		if agent.Type == AgentTypeGrok {
-			if _, err := tmux.WaitForPaneProcessStartContext(ctx, opts.Session, pane.ID); err != nil {
-				return outputError(fmt.Errorf(
-					"launching %s agent in pane %s did not start a stable process: %w",
-					agent.Type, pane.ID, err,
-				))
-			}
+		// Wait until the agent CLI actually replaced the shell in the pane, for
+		// every agent type: prompt delivery runs right after this and refuses a
+		// pane whose foreground is still a bare shell (PANE_AGENT_DEAD), so
+		// typing the launch line and immediately dispatching the prompt raced
+		// that check. The stability requirement also catches a CLI that exits
+		// at once.
+		if _, err := tmux.WaitForPaneProcessStartContext(ctx, opts.Session, pane.ID); err != nil {
+			return outputError(fmt.Errorf(
+				"launching %s agent in pane %s did not start a stable process: %w",
+				agent.Type, pane.ID, err,
+			))
 		}
 		if rateLimitTracker != nil && agent.Type == AgentTypeCodex {
 			rateLimitTracker.RecordSuccess("openai")

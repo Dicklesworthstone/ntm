@@ -137,8 +137,8 @@ func logSendEnvelopeSubset(t *testing.T, output *SendOutput) {
 		opSummary = fmt.Sprintf("{status=%s replayed=%v admissions=%d}",
 			output.Operation.Status, output.Operation.Replayed, len(output.Operation.Admissions))
 	}
-	t.Logf("envelope: success=%v error_code=%q hint=%q targets=%v successful=%v operation=%s",
-		output.Success, output.ErrorCode, output.Hint, output.Targets, output.Successful, opSummary)
+	t.Logf("envelope: success=%v error_code=%q error=%q hint=%q targets=%v successful=%v failed=%+v operation=%s",
+		output.Success, output.ErrorCode, output.Error, output.Hint, output.Targets, output.Successful, output.Failed, opSummary)
 }
 
 // mustGetSendOperation reads the durable row for (opID, session); it may
@@ -594,21 +594,18 @@ func TestGetSendIdempotency_StaleInProgressClaimTakenOver(t *testing.T) {
 }
 
 // Branch (f): a preflight failure AFTER the claim (dispatch Prepare rejects
-// the target before any keystroke) releases the claim so the operation ID is
-// immediately reusable. The seam: a pane titled as a grok agent fails
-// dispatch's ValidatePromptDeliveryTargets during Prepare — which runs after
-// the claim block — with prompt_delivery_unsupported.
+// the request before any keystroke) releases the claim so the operation ID is
+// immediately reusable. The seam: a negative inter-send delay is only
+// validated by dispatch's Prepare — which runs after the claim block — as
+// invalid_request. (The original seam, prompt_delivery_unsupported for a
+// grok pane, no longer exists: automated prompt delivery is implemented for
+// every agent type, and a grok-titled bare shell is refused later, at
+// delivery, as PANE_AGENT_DEAD.)
 func TestGetSendIdempotency_PreflightFailureReleasesClaim(t *testing.T) {
 	testutil.RequireTmuxThrottled(t)
 	installIdempotencyBranchFeed(t)
 	store := installIdempotencyBranchStore(t)
 	session, paneID := createIdempotencyBranchSession(t, "preflight")
-
-	// Mark the pane as a grok agent; automated prompt delivery to grok is
-	// not implemented, so Prepare fails after the claim succeeded.
-	if err := tmux.SetPaneTitle(paneID, session+"__grok_1"); err != nil {
-		t.Fatalf("SetPaneTitle: %v", err)
-	}
 
 	opID := fmt.Sprintf("op-preflight-%d", time.Now().UnixNano())
 	opts := SendOptions{
@@ -616,8 +613,9 @@ func TestGetSendIdempotency_PreflightFailureReleasesClaim(t *testing.T) {
 		Message:        "echo ntm-idem-preflight",
 		Pane:           paneID,
 		IdempotencyKey: opID,
+		DelayMs:        -1, // rejected by Prepare, after the claim
 	}
-	t.Logf("seeded row: none (fresh claim against grok-titled pane %s)", paneID)
+	t.Logf("seeded row: none (fresh claim against pane %s with a negative delay)", paneID)
 
 	output, err := GetSend(opts)
 	if err != nil {
@@ -628,8 +626,8 @@ func TestGetSendIdempotency_PreflightFailureReleasesClaim(t *testing.T) {
 	if output.Success {
 		t.Fatal("Success = true, want prompt-delivery preflight failure")
 	}
-	if output.ErrorCode != ErrCodeNotImplemented {
-		t.Fatalf("ErrorCode = %q, want %q (prompt_delivery_unsupported)", output.ErrorCode, ErrCodeNotImplemented)
+	if output.ErrorCode != ErrCodeInvalidFlag {
+		t.Fatalf("ErrorCode = %q, want %q (invalid_request: negative delay)", output.ErrorCode, ErrCodeInvalidFlag)
 	}
 
 	// The claim must have been RELEASED: no row remains.

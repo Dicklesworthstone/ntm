@@ -988,6 +988,22 @@ const (
 	paneProcessStableObservations  = 2
 )
 
+// A pane that tmux has just created reports the tmux binary itself as its
+// foreground command until the child execs the shell (observed for ~300 ms
+// on Linux). The launch baseline must not mistake that window for an
+// occupying process; the live pre-launch check waits it out instead.
+var (
+	paneLaunchStartingTimeout = 3 * time.Second
+	paneLaunchStartingPoll    = 50 * time.Millisecond
+)
+
+// PaneCommandIsStarting reports whether tmux still observes its own binary as
+// the pane's foreground process, i.e. the pane child has not exec'd the shell
+// yet. Neither idle nor occupied: the caller should re-observe shortly.
+func PaneCommandIsStarting(command string) bool {
+	return strings.ToLower(filepath.Base(strings.TrimSpace(command))) == "tmux"
+}
+
 // PaneCommandIsShell reports whether tmux still observes an interactive shell
 // rather than the process sent to the pane.
 func PaneCommandIsShell(command string) bool {
@@ -1017,7 +1033,10 @@ var ErrPaneOccupied = errors.New("pane is occupied by a non-shell process")
 // instantly under remain-on-exit) is left to the post-launch stability wait.
 func ValidatePaneLaunchBaseline(pane Pane) error {
 	command := strings.TrimSpace(pane.Command)
-	if command == "" || PaneCommandIsShell(command) {
+	if command == "" || PaneCommandIsShell(command) || PaneCommandIsStarting(command) {
+		// Empty or still-starting observations are not evidence of an occupant;
+		// the live pre-launch re-read (which waits for the shell) and the
+		// post-launch stability wait cover them.
 		return nil
 	}
 
@@ -1060,17 +1079,41 @@ func validatePaneLaunchBaselineLiveContext(ctx context.Context, session, paneID 
 	if listPanes == nil {
 		return errors.New("pane launch preflight requires a pane lister")
 	}
-	panes, err := listPanes(ctx, session)
-	if err != nil {
-		return fmt.Errorf("re-reading pane %s before launch: %w", paneID, err)
-	}
-	for _, pane := range panes {
-		if strings.TrimSpace(pane.ID) != paneID {
-			continue
+	deadline := time.Now().Add(paneLaunchStartingTimeout)
+	for {
+		panes, err := listPanes(ctx, session)
+		if err != nil {
+			return fmt.Errorf("re-reading pane %s before launch: %w", paneID, err)
 		}
-		return ValidatePaneLaunchBaseline(pane)
+		var found *Pane
+		for i := range panes {
+			if strings.TrimSpace(panes[i].ID) == paneID {
+				found = &panes[i]
+				break
+			}
+		}
+		if found == nil {
+			return fmt.Errorf("pane %s disappeared from session %s before launch", paneID, session)
+		}
+		// A pane whose child has not exec'd its shell yet reports "tmux": wait
+		// for the real foreground process before judging it, bounded so a
+		// genuinely nested tmux client is still refused as an occupant.
+		if !PaneCommandIsStarting(found.Command) || time.Now().After(deadline) {
+			if PaneCommandIsStarting(found.Command) {
+				return fmt.Errorf(
+					"pane %s pre-launch current command %q did not become a shell within %s (%w); "+
+						"a nested tmux client would receive the launch line as keystrokes",
+					paneID, strings.TrimSpace(found.Command), paneLaunchStartingTimeout, ErrPaneOccupied,
+				)
+			}
+			return ValidatePaneLaunchBaseline(*found)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(paneLaunchStartingPoll):
+		}
 	}
-	return fmt.Errorf("pane %s disappeared from session %s before launch", paneID, session)
 }
 
 type paneProcessLister func(context.Context, string) ([]Pane, error)

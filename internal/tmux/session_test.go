@@ -146,6 +146,7 @@ func TestValidatePaneLaunchBaseline(t *testing.T) {
 		{name: "empty observation", pane: Pane{ID: "%1"}},
 		{name: "shell", pane: Pane{ID: "%2", Command: "zsh"}},
 		{name: "shell path", pane: Pane{ID: "%3", Command: "/bin/bash"}},
+		{name: "starting (child has not exec'd the shell yet)", pane: Pane{ID: "%6", Command: "tmux"}},
 		{name: "occupied utility", pane: Pane{ID: "%4", Command: "sleep"}, wantErr: true},
 		{name: "occupied agent", pane: Pane{ID: "%5", Command: "/opt/bin/grok"}, wantErr: true},
 	}
@@ -198,6 +199,42 @@ func TestValidatePaneLaunchBaselineLiveContextRefusesInsteadOfRetargeting(t *tes
 		}
 		if err := validatePaneLaunchBaselineLiveContext(ctx, "project", "%target", list); err != nil {
 			t.Fatalf("validatePaneLaunchBaselineLiveContext() error = %v", err)
+		}
+	})
+
+	t.Run("freshly created pane still shows tmux, then its shell", func(t *testing.T) {
+		// tmux reports its own binary as the pane command until the child execs
+		// the shell (~300 ms on Linux); the live check must wait, not refuse.
+		calls := 0
+		list := func(context.Context, string) ([]Pane, error) {
+			calls++
+			command := "tmux"
+			if calls >= 3 {
+				command = "zsh"
+			}
+			return []Pane{{ID: "%target", Command: command}}, nil
+		}
+		if err := validatePaneLaunchBaselineLiveContext(ctx, "project", "%target", list); err != nil {
+			t.Fatalf("validatePaneLaunchBaselineLiveContext() error = %v, want the launch to proceed once the shell appears", err)
+		}
+		if calls < 3 {
+			t.Fatalf("listPanes called %d time(s), want the check to re-observe until the shell appears", calls)
+		}
+	})
+
+	t.Run("pane that never leaves tmux is refused as a nested client", func(t *testing.T) {
+		savedTimeout, savedPoll := paneLaunchStartingTimeout, paneLaunchStartingPoll
+		paneLaunchStartingTimeout, paneLaunchStartingPoll = 60*time.Millisecond, 5*time.Millisecond
+		defer func() { paneLaunchStartingTimeout, paneLaunchStartingPoll = savedTimeout, savedPoll }()
+		list := func(context.Context, string) ([]Pane, error) {
+			return []Pane{{ID: "%target", Command: "tmux"}}, nil
+		}
+		err := validatePaneLaunchBaselineLiveContext(ctx, "project", "%target", list)
+		if err == nil || !errors.Is(err, ErrPaneOccupied) {
+			t.Fatalf("validatePaneLaunchBaselineLiveContext() error = %v, want occupied-pane refusal after the starting timeout", err)
+		}
+		if !strings.Contains(err.Error(), "did not become a shell") {
+			t.Fatalf("validatePaneLaunchBaselineLiveContext() error = %q, want the starting-timeout wording", err)
 		}
 	})
 

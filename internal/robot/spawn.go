@@ -1291,12 +1291,13 @@ func launchAgent(ctx context.Context, pane tmux.Pane, session, agentType string,
 		agent.StartupMs = time.Since(startTime).Milliseconds()
 		return agent, fmt.Errorf("launching: %w", err)
 	}
-	if agentTypeShort(agentType) == "grok" {
-		if _, err := tmux.WaitForPaneProcessStartContext(ctx, session, pane.ID); err != nil {
-			agent.Error = fmt.Sprintf("launching: stable process did not start: %v", err)
-			agent.StartupMs = time.Since(startTime).Milliseconds()
-			return agent, fmt.Errorf("launching Grok Build: stable process did not start: %w", err)
-		}
+	// Every agent type: the launch only counts once a stable non-shell process
+	// owns the pane, because the prompt that follows is refused while the
+	// foreground is still a bare shell (PANE_AGENT_DEAD).
+	if _, err := tmux.WaitForPaneProcessStartContext(ctx, session, pane.ID); err != nil {
+		agent.Error = fmt.Sprintf("launching: stable process did not start: %v", err)
+		agent.StartupMs = time.Since(startTime).Milliseconds()
+		return agent, fmt.Errorf("launching %s: stable process did not start: %w", agentType, err)
 	}
 
 	agent.StartupMs = time.Since(startTime).Milliseconds()
