@@ -719,8 +719,9 @@ func TestPrintSpawn(t *testing.T) {
 	}
 
 	cfg := config.Default()
-	// Override agent command to be fast
-	cfg.Agents.Claude = "echo test"
+	// A persistent fake agent: the launch waits for a stable non-shell process,
+	// so an instant-exit command would (correctly) count as a failed launch.
+	cfg.Agents.Claude = "/bin/cat"
 	// Admission behavior has dedicated tests below. Keep this spawn/JSON smoke
 	// test independent of ambient agents and host pressure while still using a
 	// real tmux session.
@@ -1111,7 +1112,7 @@ func TestSpawnOptions_SafetyMode(t *testing.T) {
 	}
 
 	cfg := config.Default()
-	cfg.Agents.Claude = "echo test"
+	cfg.Agents.Claude = "/bin/cat" // persistent fake agent (see above)
 
 	output, _ := captureStdout(t, func() error { return PrintSpawn(t.Context(), opts, cfg) })
 
@@ -1153,10 +1154,10 @@ func TestSpawnOptions_MultipleAgentTypes(t *testing.T) {
 	cfg.SpawnPacing.AgentCaps.ClaudeMaxConcurrent = 1024
 	cfg.SpawnPacing.AgentCaps.CodexMaxConcurrent = 1024
 	cfg.SpawnPacing.AgentCaps.GeminiMaxConcurrent = 1024
-	// Use fast echo commands
-	cfg.Agents.Claude = "echo claude_test"
-	cfg.Agents.Codex = "echo codex_test"
-	cfg.Agents.Gemini = "echo gemini_test"
+	// Persistent fake agents: the launch requires a stable non-shell process.
+	cfg.Agents.Claude = "/bin/cat"
+	cfg.Agents.Codex = "/bin/cat"
+	cfg.Agents.Gemini = "/bin/cat"
 
 	output, err := captureStdout(t, func() error { return PrintSpawn(t.Context(), opts, cfg) })
 	if err != nil {
