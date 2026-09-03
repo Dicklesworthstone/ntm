@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -51,8 +52,10 @@ type SessionCoordinator struct {
 	operatorGatedLabels         []string
 
 	// Agent tracking
-	agents     map[string]*AgentState
-	lastUpdate time.Time
+	agents                       map[string]*AgentState
+	assignmentPaneIDs            map[string]struct{}
+	assignmentPaneSnapshotUsable bool
+	lastUpdate                   time.Time
 
 	// Monitors
 	monitor *AgentMonitor
@@ -233,6 +236,7 @@ func New(session, projectKey string, mailClient *agentmail.Client, agentName str
 		reservationClient:   mailClient,
 		operatorGatedLabels: append([]string(nil), bv.OperatorGatedLabelsForProject(projectKey)...),
 		agents:              make(map[string]*AgentState),
+		assignmentPaneIDs:   make(map[string]struct{}),
 		config:              DefaultCoordinatorConfig(),
 		events:              make(chan CoordinatorEvent, 100),
 		stopCh:              make(chan struct{}),
@@ -564,6 +568,12 @@ func (c *SessionCoordinator) updateAgentStatesContext(ctx context.Context) error
 		c.markAgentObservationsUnavailable(observation.ObservedAt, err)
 		return err
 	}
+	assignmentPaneIDs := make(map[string]struct{}, len(observation.Panes))
+	for _, pane := range observation.Panes {
+		if paneID := strings.TrimSpace(pane.Pane.ID); paneID != "" {
+			assignmentPaneIDs[paneID] = struct{}{}
+		}
+	}
 
 	type agentUpdate struct {
 		paneID    string
@@ -600,6 +610,8 @@ func (c *SessionCoordinator) updateAgentStatesContext(ctx context.Context) error
 	}
 
 	c.mu.Lock()
+	c.assignmentPaneIDs = assignmentPaneIDs
+	c.assignmentPaneSnapshotUsable = true
 
 	// Track which panes we've seen
 	seenPanes := make(map[string]bool, len(updates))
@@ -695,6 +707,9 @@ func (c *SessionCoordinator) markAgentObservationsUnavailable(observedAt time.Ti
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	// A failed topology observation is not an empty pane set. Keep the last
+	// snapshot for diagnostics, but make it unusable as evidence of pane death.
+	c.assignmentPaneSnapshotUsable = false
 	for _, agent := range c.agents {
 		if agent.ObservationFreshness == status.FreshnessFresh && agent.Status != robot.StateUnknown {
 			agent.LastKnownStatus = agent.Status

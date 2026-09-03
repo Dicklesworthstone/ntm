@@ -320,7 +320,7 @@ func (c *SessionCoordinator) recoverPendingAssignments(ctx context.Context, stor
 			eligibleTargets[strings.TrimSpace(candidate.PaneID)] = candidate
 		}
 	}
-	liveTargets := c.liveAssignmentTargets()
+	physicalTargets, paneSnapshotUsable := c.physicalAssignmentTargets()
 	active := store.ListActive()
 	sort.Slice(active, func(i, j int) bool {
 		if active[i] == nil {
@@ -342,9 +342,9 @@ func (c *SessionCoordinator) recoverPendingAssignments(ctx context.Context, stor
 		if target == "" {
 			target = strings.TrimSpace(recorded.DispatchTarget)
 		}
-		if target != "" {
-			if _, live := liveTargets[target]; !live {
-				reason := fmt.Sprintf("assignment dispatch target %q no longer exists", target)
+		if target != "" && paneSnapshotUsable {
+			if _, present := physicalTargets[target]; !present {
+				reason := fmt.Sprintf("assignment dispatch target %q is absent from the current tmux pane snapshot", target)
 				results = append(results, failCoordinatorAssignment(ctx, store, recorded, work, reason))
 				continue
 			}
@@ -384,21 +384,19 @@ func (c *SessionCoordinator) recoverPendingAssignments(ctx context.Context, stor
 	return results
 }
 
-// liveAssignmentTargets snapshots every currently observed agent pane, not
-// only idle/eligible candidates. RunCycle refreshes this map from tmux before
-// assignment, so absence proves that a persisted physical pane no longer
-// exists while presence still distinguishes a busy pane from a dead one.
-func (c *SessionCoordinator) liveAssignmentTargets() map[string]struct{} {
+// physicalAssignmentTargets returns the complete pane topology observed by
+// the monitor, including user and unclassified panes omitted from c.agents.
+// The boolean is false when topology enumeration failed or no successful
+// observation has occurred; an unavailable snapshot can never prove death.
+func (c *SessionCoordinator) physicalAssignmentTargets() (map[string]struct{}, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	targets := make(map[string]struct{}, len(c.agents))
-	for paneID := range c.agents {
-		if target := strings.TrimSpace(paneID); target != "" {
-			targets[target] = struct{}{}
-		}
+	targets := make(map[string]struct{}, len(c.assignmentPaneIDs))
+	for paneID := range c.assignmentPaneIDs {
+		targets[paneID] = struct{}{}
 	}
-	return targets
+	return targets, c.assignmentPaneSnapshotUsable
 }
 
 func failCoordinatorAssignment(ctx context.Context, store *assignmentstore.AssignmentStore, recorded *assignmentstore.Assignment, work *WorkAssignment, reason string) AssignmentResult {

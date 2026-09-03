@@ -318,9 +318,48 @@ func TestUpdateAgentStates_TopologyFailureInvalidatesCurrentWithoutRefreshingLas
 	}
 	c.mu.RLock()
 	lastUpdate := c.lastUpdate
+	paneSnapshotUsable := c.assignmentPaneSnapshotUsable
 	c.mu.RUnlock()
 	if lastUpdate != priorUpdate {
 		t.Fatalf("lastUpdate refreshed on failed topology: got %v want %v", lastUpdate, priorUpdate)
+	}
+	if paneSnapshotUsable {
+		t.Fatal("failed topology remained usable as pane-death evidence")
+	}
+}
+
+func TestUpdateAgentStatesTracksPhysicalUnclassifiedPanes(t *testing.T) {
+	origGetPanesWithActivity := getPanesWithActivity
+	origCaptureForHealthCheckWithCtx := captureForHealthCheckWithCtx
+	t.Cleanup(func() {
+		getPanesWithActivity = origGetPanesWithActivity
+		captureForHealthCheckWithCtx = origCaptureForHealthCheckWithCtx
+	})
+
+	getPanesWithActivity = func(string) ([]tmux.PaneActivity, error) {
+		return []tmux.PaneActivity{
+			{Pane: tmux.Pane{ID: "%1", Index: 1, Type: tmux.AgentCodex}},
+			{Pane: tmux.Pane{ID: "%2", Index: 2, Type: tmux.AgentUnknown}},
+		}, nil
+	}
+	captureForHealthCheckWithCtx = func(context.Context, string) (string, error) {
+		return "completed\n────────────\n› \n────────────", nil
+	}
+
+	c := New("test-session", t.TempDir(), nil, "TestAgent")
+	c.monitor = NewAgentMonitor(c.session, nil, c.projectKey)
+	if err := c.updateAgentStatesContext(t.Context()); err != nil {
+		t.Fatalf("updateAgentStatesContext: %v", err)
+	}
+	if _, classified := c.GetAgents()["%2"]; classified {
+		t.Fatal("unknown pane unexpectedly entered the agent map")
+	}
+	physical, usable := c.physicalAssignmentTargets()
+	if !usable {
+		t.Fatal("successful topology observation was not usable")
+	}
+	if _, present := physical["%2"]; !present {
+		t.Fatalf("unclassified pane absent from physical topology: %v", physical)
 	}
 }
 

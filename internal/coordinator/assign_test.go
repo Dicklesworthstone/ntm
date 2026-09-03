@@ -960,6 +960,8 @@ func addEligibleCoordinatorAgent(c *SessionCoordinator, paneID, agentName string
 		Status: robot.StateWaiting, Healthy: true, SafeToDispatch: true,
 		LastActivity: now.Add(-time.Minute), ObservedAt: now, ObservationFreshness: status.FreshnessFresh,
 	}
+	c.assignmentPaneIDs[paneID] = struct{}{}
+	c.assignmentPaneSnapshotUsable = true
 	c.workItemStatusFn = func(context.Context, string) (string, error) { return "in_progress", nil }
 	c.actionableRecommendationsFn = func(context.Context, string, int) ([]bv.TriageRecommendation, error) { return nil, nil }
 }
@@ -1262,6 +1264,85 @@ func TestAssignWorkKeepsUnknownDispatchFailClosed(t *testing.T) {
 	}
 }
 
+func TestAssignWorkKeepsUnknownDispatchFailClosedForLiveUnclassifiedPane(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	const session = "coordinator-live-unclassified"
+	request := assignmentstore.AtomicRequest{
+		BeadID: "ntm-live-unclassified", BeadTitle: "Live unclassified", Target: "%92", OccupancyKey: "%92", Pane: 2,
+		AgentType: "cod", AgentName: "BlueLake", Actor: "BlueLake", Prompt: "ambiguous delivery",
+		IdempotencyKey: "coordinator-live-unclassified-key",
+	}
+	store := assignmentstore.NewStore(session)
+	actor := assignmentstore.StableClaimActor(request.Actor, request.IdempotencyKey)
+	if _, err := store.RecordAtomicIntent(request, actor, time.Now().UTC()); err != nil {
+		t.Fatalf("RecordAtomicIntent: %v", err)
+	}
+	if _, err := store.RecordAtomicClaim(request, assignmentstore.ClaimReceipt{BeadID: request.BeadID, Actor: actor, Status: "in_progress", ClaimedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("RecordAtomicClaim: %v", err)
+	}
+	if err := store.RecordAtomicDispatchStarted(request.BeadID, request.IdempotencyKey, time.Now().UTC()); err != nil {
+		t.Fatalf("RecordAtomicDispatchStarted: %v", err)
+	}
+
+	c := New(session, t.TempDir(), &agentmail.Client{}, "CoordinatorAgent")
+	addEligibleCoordinatorAgent(c, "%1001", "DifferentAgent")
+	// %92 exists in the physical tmux topology but is deliberately absent
+	// from c.agents, matching a live pane whose agent is momentarily unknown.
+	c.assignmentPaneIDs[request.Target] = struct{}{}
+	c.atomicCoordinatorFactory = func(*assignmentstore.AssignmentStore) *assignmentstore.AtomicCoordinator {
+		t.Fatal("outcome-unknown dispatch must remain behind the ambiguity barrier")
+		return nil
+	}
+	results, err := c.AssignWork(t.Context())
+	if err != nil {
+		t.Fatalf("AssignWork: %v", err)
+	}
+	if len(results) != 1 || results[0].Success || !strings.Contains(results[0].Error, assignmentstore.ErrDispatchOutcomeUnknown.Error()) {
+		t.Fatalf("live unclassified results = %+v", results)
+	}
+	row := store.Get(request.BeadID)
+	if row == nil || row.Status == assignmentstore.StatusFailed || row.DispatchState != assignmentstore.DispatchSending {
+		t.Fatalf("live unclassified row was terminalized = %+v", row)
+	}
+}
+
+func TestAssignWorkDoesNotInferDeathFromUnavailablePaneSnapshot(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	const session = "coordinator-pane-snapshot-unavailable"
+	request := assignmentstore.AtomicRequest{
+		BeadID: "ntm-unavailable-topology", BeadTitle: "Unavailable topology", Target: "%93", OccupancyKey: "%93", Pane: 3,
+		AgentType: "cod", AgentName: "BlueLake", Actor: "BlueLake", Prompt: "ambiguous delivery",
+		IdempotencyKey: "coordinator-unavailable-topology-key",
+	}
+	store := assignmentstore.NewStore(session)
+	actor := assignmentstore.StableClaimActor(request.Actor, request.IdempotencyKey)
+	if _, err := store.RecordAtomicIntent(request, actor, time.Now().UTC()); err != nil {
+		t.Fatalf("RecordAtomicIntent: %v", err)
+	}
+	if _, err := store.RecordAtomicClaim(request, assignmentstore.ClaimReceipt{BeadID: request.BeadID, Actor: actor, Status: "in_progress", ClaimedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("RecordAtomicClaim: %v", err)
+	}
+	if err := store.RecordAtomicDispatchStarted(request.BeadID, request.IdempotencyKey, time.Now().UTC()); err != nil {
+		t.Fatalf("RecordAtomicDispatchStarted: %v", err)
+	}
+
+	c := New(session, t.TempDir(), &agentmail.Client{}, "CoordinatorAgent")
+	addEligibleCoordinatorAgent(c, "%1001", "DifferentAgent")
+	c.assignmentPaneIDs = map[string]struct{}{}
+	c.assignmentPaneSnapshotUsable = false
+	results, err := c.AssignWork(t.Context())
+	if err != nil {
+		t.Fatalf("AssignWork: %v", err)
+	}
+	if len(results) != 1 || !strings.Contains(results[0].Error, assignmentstore.ErrDispatchOutcomeUnknown.Error()) {
+		t.Fatalf("unavailable topology results = %+v", results)
+	}
+	row := store.Get(request.BeadID)
+	if row == nil || row.Status == assignmentstore.StatusFailed || row.DispatchState != assignmentstore.DispatchSending {
+		t.Fatalf("unavailable topology row was terminalized = %+v", row)
+	}
+}
+
 func TestAssignWorkDeadPaneDoesNotBlockReadyBead(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -1297,7 +1378,7 @@ func TestAssignWorkDeadPaneDoesNotBlockReadyBead(t *testing.T) {
 		}
 	}
 	stranded := byBead["agent-factory-6ndm"]
-	if stranded.Success || !strings.Contains(stranded.Error, `%993`) || !strings.Contains(stranded.Error, "no longer exists") {
+	if stranded.Success || !strings.Contains(stranded.Error, `%993`) || !strings.Contains(stranded.Error, "absent from the current tmux pane snapshot") {
 		t.Fatalf("stranded result=%+v", stranded)
 	}
 	ready := byBead["agent-factory-ready-b"]
