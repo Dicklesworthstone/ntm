@@ -3256,6 +3256,48 @@ func TestCLIAtomicDispatchReobservesAndRejectsBusyPaneBeforeActuation(t *testing
 	}
 }
 
+func TestCLIAtomicPaneDispatchPortMakesPreActuationRefusalRetryable(t *testing.T) {
+	const session = "composer-retry"
+	panes := []tmux.Pane{{ID: "%41", WindowIndex: 0, Index: 1, Type: tmux.AgentCodex}}
+	tests := []struct {
+		name          string
+		deliveryError error
+		wantRetryable bool
+	}{
+		{
+			name:          "known pre-actuation refusal",
+			deliveryError: dispatchsvc.GuaranteeNoDeliveryActuation(errors.New("codex 0.152 composer not ready")),
+			wantRetryable: true,
+		},
+		{
+			name:          "unmarked delivery failure",
+			deliveryError: errors.New("connection lost with delivery outcome unknown"),
+			wantRetryable: false,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			port := &cliAtomicPaneDispatchPort{
+				session:         session,
+				redactionConfig: redaction.Config{Mode: redaction.ModeOff},
+				bypassIdleGate:  true,
+				listPanes: func(context.Context, string) ([]tmux.Pane, error) {
+					return panes, nil
+				},
+				deliverer: dispatchsvc.DelivererFunc(func(context.Context, dispatchsvc.Delivery) error {
+					return test.deliveryError
+				}),
+			}
+			_, err := port.Dispatch(t.Context(), assignment.DispatchRequest{
+				BeadID: "bd-composer-retry", Target: "%41", AgentType: "codex", Prompt: "work", IdempotencyKey: "composer-retry-key",
+			})
+			if got := assignment.IsGuaranteedNoActuation(err); got != test.wantRetryable {
+				t.Fatalf("assignment retry classification = %v for error %v, want %v", got, err, test.wantRetryable)
+			}
+		})
+	}
+}
+
 func TestCLIAtomicPreflightBlocksSensitiveReservationPathBeforeTopologyLookup(t *testing.T) {
 	port := &cliAtomicPaneDispatchPort{redactionConfig: redaction.DefaultConfig()}
 	_, err := port.Preflight(t.Context(), assignment.DispatchRequest{

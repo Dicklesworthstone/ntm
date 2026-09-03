@@ -3066,16 +3066,26 @@ type cliAtomicPaneDispatchPort struct {
 	redactionConfig redaction.Config
 	observer        assignSessionObserver
 	bypassIdleGate  bool
+	listPanes       func(context.Context, string) ([]tmux.Pane, error)
+	deliverer       dispatchsvc.Deliverer
 }
 
 func (p *cliAtomicPaneDispatchPort) prepare(ctx context.Context, req assignment.DispatchRequest) (*dispatchsvc.Service, *dispatchsvc.Prepared, error) {
-	panes, err := tmux.GetPanesContext(ctx, p.session)
+	listPanes := p.listPanes
+	if listPanes == nil {
+		listPanes = tmux.GetPanesContext
+	}
+	panes, err := listPanes(ctx, p.session)
 	if err != nil {
 		return nil, nil, fmt.Errorf("load dispatch topology: %w", err)
 	}
+	deliverer := p.deliverer
+	if deliverer == nil {
+		deliverer = dispatchsvc.TMUXDeliverer{}
+	}
 	service, err := dispatchsvc.NewService(dispatchsvc.Ports{
 		Redactor: shellFinalMessageRedactor(p.redactionConfig), Protocols: shellDispatchProtocolPlanner{},
-		Deliverer: dispatchsvc.TMUXDeliverer{},
+		Deliverer: deliverer,
 	})
 	if err != nil {
 		return nil, nil, err
@@ -3148,6 +3158,9 @@ func (p *cliAtomicPaneDispatchPort) Dispatch(ctx context.Context, req assignment
 	result, dispatchErr := service.Dispatch(ctx, prepared)
 	receipt := assignment.DispatchReceipt{Duration: time.Since(started)}
 	if dispatchErr != nil {
+		if dispatchsvc.IsGuaranteedNoDeliveryActuation(dispatchErr) {
+			return receipt, assignment.GuaranteeNoActuation(dispatchErr)
+		}
 		return receipt, dispatchErr
 	}
 	delivery, err := validateSinglePaneDispatchResult(result, req.Target)
