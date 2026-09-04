@@ -44,7 +44,27 @@ jobs:
           cp automation/internal/robot/restart_pane_affinity.go repo/internal/robot/restart_pane_affinity.go
           cp automation/internal/robot/restart_pane_affinity_test.go repo/internal/robot/restart_pane_affinity_test.go
           cd repo
+          python - <<'PY'
+          from pathlib import Path
+          path = Path("internal/robot/restart_pane.go")
+          text = path.read_text()
+          full = "\t// PaneShellPIDs is the per-pane respawn evidence (ntm-tgkb): a real\n"
+          short = "\t// PaneShellPIDs\n"
+          if text.count(full) != 1:
+              raise SystemExit("restart_pane.go: expected one PaneShellPIDs comment header")
+          path.write_text(text.replace(full, short, 1))
+          PY
           python ../automation/.github/ntm298_apply.py 2>&1 | tee ../apply.log
+          python - <<'PY'
+          from pathlib import Path
+          path = Path("internal/robot/restart_pane.go")
+          text = path.read_text()
+          short = "\t// PaneShellPIDs\n"
+          full = "\t// PaneShellPIDs is the per-pane respawn evidence (ntm-tgkb): a real\n"
+          if text.count(short) != 1:
+              raise SystemExit("restart_pane.go: expected one normalized PaneShellPIDs comment header")
+          path.write_text(text.replace(short, full, 1))
+          PY
           gofmt -w \
             internal/resilience/launch_binding.go \
             internal/resilience/launch_binding_test.go \
