@@ -200,7 +200,7 @@ func TestAddPersistsAgentTypeAcrossWrapperTitleRewrite(t *testing.T) {
 		jsonOutput = oldJSONOutput
 	})
 	cfg = newTmuxIntegrationTestConfig(workDir)
-	cfg.Agents.Codex = testAgentCatCommandTemplate
+	cfg.Agents.Codex = testAgentCodexCommandTemplate
 	cfg.Checkpoints.Enabled = false
 	cfg.CASS.Context.Enabled = false
 	jsonOutput = false

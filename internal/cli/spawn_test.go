@@ -961,7 +961,7 @@ func TestSpawnSessionLogic(t *testing.T) {
 	// Override templates to avoid dependency on actual agent binaries while
 	// remaining compatible with explicit model overrides under test.
 	cfg.Agents.Claude = testAgentCatCommandTemplate
-	cfg.Agents.Codex = testAgentCatCommandTemplate
+	cfg.Agents.Codex = testAgentCodexCommandTemplate
 	cfg.Agents.Gemini = testAgentCatCommandTemplate
 
 	// Unique session name

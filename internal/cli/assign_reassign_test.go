@@ -232,7 +232,7 @@ func TestRunReassignment_ToPane_Success(t *testing.T) {
 
 	cfg = newTmuxIntegrationTestConfig(tmpDir)
 	cfg.Agents.Claude = testAgentCatCommandTemplate
-	cfg.Agents.Codex = testAgentCatCommandTemplate
+	cfg.Agents.Codex = testAgentCodexCommandTemplate
 	cfg.Agents.Gemini = testAgentCatCommandTemplate
 	jsonOutput = true
 
@@ -338,7 +338,7 @@ func TestRunRetryAssignments_PreservesPreviousFailReasonAndMetadata(t *testing.T
 
 	cfg = newTmuxIntegrationTestConfig(tmpDir)
 	cfg.Agents.Claude = testAgentCatCommandTemplate
-	cfg.Agents.Codex = testAgentCatCommandTemplate
+	cfg.Agents.Codex = testAgentCodexCommandTemplate
 	cfg.Agents.Gemini = testAgentCatCommandTemplate
 	jsonOutput = true
 
@@ -438,7 +438,7 @@ func TestRunRetryAssignments_TargetedPendingMissingPhysicalPaneFailsAndPreserves
 	t.Setenv("AGENT_MAIL_URL", "http://127.0.0.1:1")
 	cfg = newTmuxIntegrationTestConfig(tmpDir)
 	cfg.Agents.Claude = testAgentCatCommandTemplate
-	cfg.Agents.Codex = testAgentCatCommandTemplate
+	cfg.Agents.Codex = testAgentCodexCommandTemplate
 	cfg.Agents.Gemini = testAgentCatCommandTemplate
 	jsonOutput = true
 
@@ -512,7 +512,7 @@ func TestRunReassignment_AlreadyAssigned(t *testing.T) {
 
 	cfg = newTmuxIntegrationTestConfig(tmpDir)
 	cfg.Agents.Claude = testAgentCatCommandTemplate
-	cfg.Agents.Codex = testAgentCatCommandTemplate
+	cfg.Agents.Codex = testAgentCodexCommandTemplate
 	jsonOutput = true
 
 	sessionName, claudePane, _ := setupReassignSession(t, tmpDir)
@@ -561,7 +561,7 @@ func TestRunReassignment_NoIdleAgentForType(t *testing.T) {
 
 	cfg = newTmuxIntegrationTestConfig(tmpDir)
 	cfg.Agents.Claude = testAgentCatCommandTemplate
-	cfg.Agents.Codex = testAgentCatCommandTemplate
+	cfg.Agents.Codex = testAgentCodexCommandTemplate
 	jsonOutput = true
 
 	sessionName, claudePane, _ := setupReassignSession(t, tmpDir)
@@ -609,7 +609,7 @@ func TestRunReassignment_TargetBusyWithoutForce(t *testing.T) {
 
 	cfg = newTmuxIntegrationTestConfig(tmpDir)
 	cfg.Agents.Claude = testAgentCatCommandTemplate
-	cfg.Agents.Codex = testAgentCatCommandTemplate
+	cfg.Agents.Codex = testAgentCodexCommandTemplate
 	jsonOutput = true
 
 	sessionName, claudePane, codexPane := setupReassignSession(t, tmpDir)
@@ -623,9 +623,11 @@ func TestRunReassignment_TargetBusyWithoutForce(t *testing.T) {
 		t.Fatalf("MarkWorking failed: %v", err)
 	}
 
-	// Make the target pane appear busy.
+	// Make the target pane appear busy: the fake codex (cat) echoes whatever it
+	// receives, so echoing Codex's in-flight footer is what the status observer
+	// classifies as working (a plain word leaves the composer idle).
 	targetPaneID := codexPane.ID
-	_ = tmux.SendKeys(targetPaneID, "busy", true)
+	_ = tmux.SendKeys(targetPaneID, "• Working (esc to interrupt)", true)
 	time.Sleep(200 * time.Millisecond)
 
 	assignReassign = "bd-126"
@@ -662,7 +664,7 @@ func TestRunReassignment_NotAssigned(t *testing.T) {
 
 	cfg = newTmuxIntegrationTestConfig(tmpDir)
 	cfg.Agents.Claude = testAgentCatCommandTemplate
-	cfg.Agents.Codex = testAgentCatCommandTemplate
+	cfg.Agents.Codex = testAgentCodexCommandTemplate
 	jsonOutput = true
 
 	sessionName, _, codexPane := setupReassignSession(t, tmpDir)
@@ -701,7 +703,7 @@ func TestRunReassignment_ToPaneNotFound(t *testing.T) {
 
 	cfg = newTmuxIntegrationTestConfig(tmpDir)
 	cfg.Agents.Claude = testAgentCatCommandTemplate
-	cfg.Agents.Codex = testAgentCatCommandTemplate
+	cfg.Agents.Codex = testAgentCodexCommandTemplate
 	jsonOutput = true
 
 	sessionName, claudePane, _ := setupReassignSession(t, tmpDir)
@@ -755,7 +757,7 @@ func TestRunReassignment_CompletedBead(t *testing.T) {
 
 	cfg = newTmuxIntegrationTestConfig(tmpDir)
 	cfg.Agents.Claude = testAgentCatCommandTemplate
-	cfg.Agents.Codex = testAgentCatCommandTemplate
+	cfg.Agents.Codex = testAgentCodexCommandTemplate
 	jsonOutput = true
 
 	sessionName, claudePane, codexPane := setupReassignSession(t, tmpDir)
@@ -820,7 +822,7 @@ func TestRunReassignment_FailedBead(t *testing.T) {
 
 	cfg = newTmuxIntegrationTestConfig(tmpDir)
 	cfg.Agents.Claude = testAgentCatCommandTemplate
-	cfg.Agents.Codex = testAgentCatCommandTemplate
+	cfg.Agents.Codex = testAgentCodexCommandTemplate
 	jsonOutput = true
 
 	sessionName, claudePane, codexPane := setupReassignSession(t, tmpDir)
@@ -885,7 +887,7 @@ func TestRunReassignment_ReservationRequiredFailsClosedWhenAgentMailUnavailable(
 
 	cfg = newTmuxIntegrationTestConfig(tmpDir)
 	cfg.Agents.Claude = testAgentCatCommandTemplate
-	cfg.Agents.Codex = testAgentCatCommandTemplate
+	cfg.Agents.Codex = testAgentCodexCommandTemplate
 	jsonOutput = true
 
 	sessionName, claudePane, codexPane := setupReassignSession(t, tmpDir)
@@ -943,7 +945,7 @@ func TestRunReassignment_ForceDoesNotBypassDurableTargetOccupancy(t *testing.T) 
 	t.Setenv("AGENT_MAIL_URL", "http://127.0.0.1:1")
 	cfg = newTmuxIntegrationTestConfig(tmpDir)
 	cfg.Agents.Claude = testAgentCatCommandTemplate
-	cfg.Agents.Codex = testAgentCatCommandTemplate
+	cfg.Agents.Codex = testAgentCodexCommandTemplate
 	jsonOutput = true
 
 	sessionName, claudePane, codexPane := setupReassignSession(t, tmpDir)
@@ -997,7 +999,7 @@ func TestRunReassignment_RedactionBlockLeavesRecoverableHandoffBarrier(t *testin
 	t.Setenv("AGENT_MAIL_URL", "http://127.0.0.1:1")
 	cfg = newTmuxIntegrationTestConfig(tmpDir)
 	cfg.Agents.Claude = testAgentCatCommandTemplate
-	cfg.Agents.Codex = testAgentCatCommandTemplate
+	cfg.Agents.Codex = testAgentCodexCommandTemplate
 	cfg.Redaction.Mode = string(redaction.ModeBlock)
 	jsonOutput = true
 

@@ -55,3 +55,22 @@ func TestAgentCLIDeadLooksUnderWrapperShells(t *testing.T) {
 		t.Fatalf("user panes are never dead")
 	}
 }
+
+func TestPaneProcessStartedCommandOnlySemantics(t *testing.T) {
+	cases := []struct {
+		name string
+		pane Pane
+		want bool
+	}{
+		{"empty", Pane{ID: "%1"}, false},
+		{"still starting", Pane{ID: "%1", Command: "tmux"}, false},
+		{"idle shell, no pid", Pane{ID: "%1", Command: "zsh"}, false},
+		{"agent", Pane{ID: "%1", Command: "node"}, true},
+		{"agent path", Pane{ID: "%1", Command: "/opt/bin/claude"}, true},
+	}
+	for _, tc := range cases {
+		if got := paneProcessStarted(tc.pane); got != tc.want {
+			t.Fatalf("%s: paneProcessStarted(%+v) = %v, want %v", tc.name, tc.pane, got, tc.want)
+		}
+	}
+}

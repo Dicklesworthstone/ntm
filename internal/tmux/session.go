@@ -637,7 +637,39 @@ func (p Pane) IdleShell() bool {
 	if !shellArgvLooksInteractive(process.GetCmdline(p.PID)) {
 		return false
 	}
+	if p.ForegroundJobRunning() {
+		return false
+	}
 	return !shellHasLiveDescendant(p.PID, 4)
+}
+
+// ForegroundJobRunning reports whether a job other than the pane's root shell
+// owns the pane's terminal: the shell launched something with job control and
+// that process group is now in the foreground. This is the precise "the agent
+// has taken over the pane" signal; the foreground command name alone cannot
+// tell an agent started via `sh -c …` from the idle shell. False when the
+// pid is unknown or /proc is unavailable.
+func (p Pane) ForegroundJobRunning() bool {
+	if p.PID <= 0 {
+		return false
+	}
+	tpgid, pgrp, ok := process.TerminalForeground(p.PID)
+	return ok && tpgid > 0 && tpgid != pgrp
+}
+
+// paneProcessStarted reports whether an observation shows a launched process
+// owning the pane: a non-shell foreground command, or (when the pid is known)
+// a job in the foreground even if it is itself a shell (`sh -c …` agents,
+// non-exec'ing wrapper scripts).
+func paneProcessStarted(pane Pane) bool {
+	command := strings.TrimSpace(pane.Command)
+	if command == "" || PaneCommandIsStarting(command) {
+		return false
+	}
+	if !PaneCommandIsShell(command) {
+		return true
+	}
+	return pane.ForegroundJobRunning()
 }
 
 // shellArgvLooksInteractive reports whether a shell's argv is that of an
@@ -1272,7 +1304,7 @@ func waitForPaneProcessStartContext(
 				// returned success and callers reported the agent as
 				// launched. The empty-command failure detail below was
 				// likewise unreachable.
-				if lastCommand == "" || PaneCommandIsStarting(lastCommand) || pane.IdleShell() {
+				if !paneProcessStarted(pane) {
 					stableCommand = ""
 					stableObservations = 0
 					break

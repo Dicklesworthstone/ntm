@@ -38,7 +38,7 @@ func TestAgentLifecycleSpawnWorkKill(t *testing.T) {
 
 	// Use 'cat' as agent command - it echoes input back to stdout
 	cfg.Agents.Claude = testAgentCatCommandTemplate
-	cfg.Agents.Codex = testAgentCatCommandTemplate
+	cfg.Agents.Codex = testAgentCodexCommandTemplate
 	cfg.Agents.Gemini = testAgentCatCommandTemplate
 
 	sessionName := fmt.Sprintf("ntm-lifecycle-%d", time.Now().UnixNano())
@@ -200,7 +200,7 @@ func TestAgentLifecycleMultipleAgents(t *testing.T) {
 	jsonOutput = true
 
 	cfg.Agents.Claude = testAgentCatCommandTemplate
-	cfg.Agents.Codex = testAgentCatCommandTemplate
+	cfg.Agents.Codex = testAgentCodexCommandTemplate
 	cfg.Agents.Gemini = testAgentCatCommandTemplate
 
 	sessionName := fmt.Sprintf("ntm-lifecycle-multi-%d", time.Now().UnixNano())

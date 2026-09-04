@@ -437,7 +437,7 @@ func captureStdout(t *testing.T, f func() error) (string, error) {
 func configureSessionTemplateFakeAgents(testCfg *config.Config) {
 	const modelPrefix = `{{if .Model}}: {{shellQuote .Model}} >/dev/null && {{end}}`
 	testCfg.Agents.Claude = modelPrefix + `/bin/sh -c 'stty -echo; printf "Claude Code v0.0.0\n\342\235\257 \n"; while IFS= read -r line; do printf "RECEIVED:%s\n\342\235\257 \n" "$line"; done'`
-	testCfg.Agents.Codex = modelPrefix + `/bin/sh -c 'stty -echo; printf "Codex CLI\ncodex>\n"; while IFS= read -r line; do printf "RECEIVED:%s\ncodex>\n" "$line"; done'`
+	testCfg.Agents.Codex = modelPrefix + `/bin/sh -c 'stty -echo; printf "Codex CLI\n\342\200\272 \n"; while IFS= read -r line; do printf "RECEIVED:%s\n\342\200\272 \n" "$line"; done'`
 	testCfg.Agents.Gemini = modelPrefix + `/bin/sh -c 'stty -echo; printf "Gemini CLI\ngemini>\n"; while IFS= read -r line; do printf "RECEIVED:%s\ngemini>\n" "$line"; done'`
 }
 

@@ -1243,10 +1243,11 @@ func launchAgent(ctx context.Context, pane tmux.Pane, session, agentType string,
 		return agent, fmt.Errorf("launch canceled: %w", err)
 	}
 	// Every agent type launches by typing into the pane, so every launch
-	// must prove the target is still an idle shell: first from the snapshot
-	// the caller planned with, then from a fresh tmux read taken right before
-	// the pane is mutated (#291).
-	if err := tmux.ValidatePaneLaunchBaseline(pane); err != nil {
+	// must prove the target is an idle shell: first from the snapshot the
+	// caller planned with (settle-aware, so a pane created moments ago is not
+	// refused for its shell's startup children), then from a fresh tmux read
+	// taken right before the pane is mutated (#291).
+	if err := tmux.ValidatePaneLaunchBaselineSettledContext(ctx, session, pane); err != nil {
 		agent.Error = fmt.Sprintf("launching: %v", err)
 		agent.StartupMs = time.Since(startTime).Milliseconds()
 		return agent, fmt.Errorf("launching %s: %w", agentType, err)
