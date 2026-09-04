@@ -1177,3 +1177,84 @@ func trackerGetByID(tr *Tracker, id string) (Alert, bool) {
 	}
 	return Alert{}, false
 }
+
+// TestGeneratorDetectErrorState_ProseIsNotAnIncident is the ntm#299
+// regression: the alert generator promotes an agent_error into aggregate
+// session health, so ordinary agent prose that merely contains "exception",
+// "timeout" or "failed" must not become one. A healthy reviewer session was
+// reported degraded with three such alerts while --robot-health reported the
+// same session healthy in the same minute.
+func TestGeneratorDetectErrorState_ProseIsNotAnIncident(t *testing.T) {
+	t.Parallel()
+
+	gen := NewGenerator(DefaultConfig())
+	pane := tmux.Pane{ID: "pane-prose"}
+
+	prose := []string{
+		"the service status line reports a configured wait timeout 20000ms",
+		"a review finding says cleanup catches BaseException",
+		"planning prose discussing a diagnostics timeout for the next pass",
+		"... it failed naming exactly the seven against the HEAD ci.yml before the edit,",
+		"the planted negative failed as expected",
+		"we should add a stack trace to the error path later",
+	}
+	for _, line := range prose {
+		if alert := gen.detectErrorState("sess", pane, []string{line}); alert != nil {
+			t.Errorf("prose became an agent_error alert: %q -> %s", line, alert.Message)
+		}
+	}
+
+	// Positive controls: real runtime failures must still fire loudly.
+	positives := map[string]Severity{
+		"Traceback (most recent call last):":       SeverityError,
+		"panic: runtime error: index out of range": SeverityCritical,
+		"ValueError: bad input":                    SeverityError,
+		"Failed to connect to api.anthropic.com":   SeverityWarning,
+		"command exited with code 2":               SeverityWarning,
+		"signal SIGSEGV: segmentation violation":   SeverityCritical,
+		"Error: overloaded_error":                  SeverityError,
+		"read: connection timed out":               SeverityWarning,
+	}
+	for line, wantSev := range positives {
+		alert := gen.detectErrorState("sess", pane, []string{line})
+		if alert == nil {
+			t.Errorf("real failure produced no alert: %q", line)
+			continue
+		}
+		if alert.Severity != wantSev {
+			t.Errorf("%q severity = %s, want %s", line, alert.Severity, wantSev)
+		}
+	}
+}
+
+// TestGeneratorDetectRateLimit_BareNumbersAreNotEvidence pins the other half of
+// ntm#299: a SHA-256 that happens to contain "429" is not a provider limit.
+func TestGeneratorDetectRateLimit_BareNumbersAreNotEvidence(t *testing.T) {
+	t.Parallel()
+
+	gen := NewGenerator(DefaultConfig())
+	pane := tmux.Pane{ID: "pane-rl"}
+
+	negatives := []string{
+		"6f764f0c7344e437767e61f189f493065dca56cadc7048610948be7a5d42963f",
+		"scanned 429 files in the worktree",
+		"we should handle rate limit errors in a follow-up",
+	}
+	for _, line := range negatives {
+		if alert := gen.detectRateLimit("sess", pane, []string{line}); alert != nil {
+			t.Errorf("bare number or prose became a rate-limit alert: %q", line)
+		}
+	}
+
+	positives := []string{
+		"HTTP/1.1 429 Too Many Requests",
+		"Rate limit exceeded. Try again in 60s.",
+		"You've hit your rate limit for this model",
+		"quota exceeded for this account",
+	}
+	for _, line := range positives {
+		if alert := gen.detectRateLimit("sess", pane, []string{line}); alert == nil {
+			t.Errorf("real rate limit produced no alert: %q", line)
+		}
+	}
+}

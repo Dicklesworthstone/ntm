@@ -72,7 +72,9 @@ func HTTPStatus(code string, reasons ...string) string {
 	if len(reasons) == 0 {
 		alts = alts[:len(alts)-2]
 	}
-	return `(?:` + strings.Join(alts, "|") + `)`
+	// Case-insensitive as a whole: real logs write "http/1.1 429",
+	// `"Status": 429` and "Error 429" in every casing.
+	return `(?i:` + strings.Join(alts, "|") + `)`
 }
 
 // NonzeroExitPattern matches a process outcome line reporting a nonzero exit.

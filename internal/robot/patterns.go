@@ -179,7 +179,7 @@ func defaultPatterns() []Pattern {
 		// line (possibly behind TUI decoration), whereas prose that merely
 		// discusses an error does not — and prose used to be enough to mark a
 		// healthy agent degraded (ntm#299).
-		{Name: "api_error", RegexStr: errsig.Anchored(`(?i:(?:[\w.-]+\s+)?error)\s*:\s*\S`), Agent: "*", State: StateError, Category: CategoryError, Priority: 180, Description: "API/runtime error line"},
+		{Name: "api_error", RegexStr: errsig.Anchored(`(?i:(?:[\w.-]+\s+)?[\w.-]*error)\s*:\s*\S`), Agent: "*", State: StateError, Category: CategoryError, Priority: 180, Description: "API/runtime error line"},
 		{Name: "exception", RegexStr: errsig.Anchored(`(?i:[\w.]*exception)\s*:\s*\S`), Agent: "*", State: StateError, Category: CategoryError, Priority: 180, Description: "Raised exception line"},
 		{Name: "traceback", RegexStr: errsig.Anchored(`(?i:traceback)\b`), Agent: "*", State: StateError, Category: CategoryError, Priority: 180, Description: "Traceback header"},
 		// failed_text is the pattern that turned a successful handoff sentence

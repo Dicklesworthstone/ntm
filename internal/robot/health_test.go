@@ -871,3 +871,48 @@ func TestHealthCheckConcurrentAccess(t *testing.T) {
 		<-done
 	}
 }
+
+// TestHealthErrorPatternsRejectProseAndBareNumbers is the ntm#299 regression on
+// the health surface: pane output is classified with strings.Contains-style
+// breadth, so a SHA-256 containing "429" used to make a working reviewer pane
+// look rate-limited while every other surface reported it healthy.
+func TestHealthErrorPatternsRejectProseAndBareNumbers(t *testing.T) {
+	classify := func(output string) map[string]bool {
+		kinds := make(map[string]bool)
+		for _, ep := range healthErrorPatterns {
+			if ep.Pattern.MatchString(output) {
+				kinds[ep.Type] = true
+			}
+		}
+		return kinds
+	}
+
+	healthy := []string{
+		"6f764f0c7344e437767e61f189f493065dca56cadc7048610948be7a5d42963f",
+		"reviewed 429 files and 401 tests",
+		"we should handle rate limit errors and unauthorized responses later",
+		"the plan mentions a stack trace helper we could add",
+		"cleanup catches BaseException so the pane stays alive",
+	}
+	for _, output := range healthy {
+		if kinds := classify(output); len(kinds) > 0 {
+			t.Errorf("healthy pane output classified as %v: %q", kinds, output)
+		}
+	}
+
+	failures := map[string]string{
+		"HTTP/1.1 429 Too Many Requests":           "rate_limit",
+		"Rate limit exceeded, retry in 60s":        "rate_limit",
+		"HTTP 401 Unauthorized":                    "auth_error",
+		"authentication failed for this account":   "auth_error",
+		"panic: runtime error: index out of range": "crash",
+		"signal SIGSEGV: segmentation violation":   "crash",
+		"Traceback (most recent call last):":       "crash",
+		"dial tcp: connection refused":             "network_error",
+	}
+	for output, want := range failures {
+		if kinds := classify(output); !kinds[want] {
+			t.Errorf("real failure %q classified as %v, want %s", output, kinds, want)
+		}
+	}
+}

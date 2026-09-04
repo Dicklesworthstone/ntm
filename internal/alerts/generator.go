@@ -38,7 +38,7 @@ var (
 		severity Severity
 		msg      string
 	}{
-		{regexp.MustCompile(errsig.Anchored(`(?i:(?:[\w.-]+\s+)?error)\s*:\s*\S`)), SeverityError, "Error detected in agent output"},
+		{regexp.MustCompile(errsig.Anchored(`(?i:(?:[\w.-]+\s+)?[\w.-]*error)\s*:\s*\S`)), SeverityError, "Error detected in agent output"},
 		{regexp.MustCompile(errsig.Anchored(`(?i:fatal(?:\s+error)?)\s*:\s*\S`)), SeverityCritical, "Fatal error in agent"},
 		{regexp.MustCompile(errsig.Anchored(`(?i:panic):\s`)), SeverityCritical, "Panic in agent"},
 		{regexp.MustCompile(errsig.Anchored(`(?i:failed)\b(?:\s+to\b|\s+with\b|\s*[:.]|\s*$)`)), SeverityWarning, "Operation failed in agent"},
