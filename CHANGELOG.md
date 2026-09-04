@@ -15,6 +15,36 @@ NTM is a tmux session management tool for orchestrating multiple AI coding agent
 
 ---
 
+## [v1.32.0] -- 2026-09-03 [GitHub Release]
+
+**Pane liveness and launch safety, anchored failure evidence, durable activity state, and the Gemini 3.8 Antigravity pin** (GitHub issues [#283](https://github.com/Dicklesworthstone/ntm/issues/283), [#288](https://github.com/Dicklesworthstone/ntm/issues/288), [#292](https://github.com/Dicklesworthstone/ntm/issues/292), [#294](https://github.com/Dicklesworthstone/ntm/issues/294), [#295](https://github.com/Dicklesworthstone/ntm/issues/295), [#297](https://github.com/Dicklesworthstone/ntm/issues/297), [#299](https://github.com/Dicklesworthstone/ntm/issues/299), [#300](https://github.com/Dicklesworthstone/ntm/issues/300), [#301](https://github.com/Dicklesworthstone/ntm/issues/301), [#302](https://github.com/Dicklesworthstone/ntm/issues/302), [#303](https://github.com/Dicklesworthstone/ntm/issues/303); PRs [#290](https://github.com/Dicklesworthstone/ntm/pull/290), [#291](https://github.com/Dicklesworthstone/ntm/pull/291)).
+
+### Added
+
+- **Durable activity state** ([#301](https://github.com/Dicklesworthstone/ntm/issues/301)): `ntm activity` reconciles each pane's classified state against a watermark scoped to the pane lifetime (session, pane ID, pane PID), so `state_since` and the duration grow across one-shot invocations instead of resetting to "now". Transient TUI markers are classified from the visible viewport, not the scrollback, so a spinner that scrolled away hours ago no longer pins a pane to THINKING.
+- **Agent Mail probe budget** ([#295](https://github.com/Dicklesworthstone/ntm/issues/295)): `NTM_AGENT_MAIL_PROBE_BUDGET` (a Go duration) overrides the 1250 ms availability budget, a cheap unauthenticated `/health` liveness probe decides availability before falling back to the MCP health tool, and every reservation verb (`lock`, `unlock`, `locks`, `renew`, `force-release`) reports the probe's actual error instead of a bare "Agent Mail server unavailable".
+- **Ready counts bound to direct tracker evidence** ([#283](https://github.com/Dicklesworthstone/ntm/issues/283)): the work-readiness model derives the complete ready count and the capped preview from one `br ready --json` result, and blocked snapshots keep blocker IDs, blocker counts, priority and issue type instead of title-only rows.
+- **Typed composer blockers** ([#300](https://github.com/Dicklesworthstone/ntm/issues/300)): `--clear-input` reports whether a composer is held by stranded text, queued messages or a modal dialog, and how many clearing rounds ran, so `COMPOSER_NOT_CLEARED` tells the operator whether to inspect, wait or answer a dialog.
+
+### Changed
+
+- **Antigravity default model is Gemini 3.8 Flash (High)** (`gemini-3.8-flash`): the required-model pin, the session-resume model, the registry alias, flag help and the spawn wizards all move from 3.7, matching ACFS's `agy-locked` launcher and model guard.
+- **Spawn never launches into an occupied pane** ([#291](https://github.com/Dicklesworthstone/ntm/pull/291)): every agent pane of a batch is preflighted before any launch, the exact pane is re-read immediately before `send-keys`, and an occupied, missing or unreadable pane fails closed with the running command named and a pointer to `ntm add`. Previously only Grok launches checked, and the launch line (including `--dangerously-skip-permissions`) could be typed into a live agent or editor.
+
+### Fixed
+
+- **Pane liveness is judged by the terminal's foreground process group, not the command name**: a job other than the pane's root shell owning the tty is the "agent took over the pane" signal, so agents started as `sh -c ...` and non-exec'ing wrapper scripts count as live while only a bare interactive shell counts as dead (`PANE_AGENT_DEAD`). Fresh panes get a 3 s settle window (tmux reports itself as the foreground command for about 300 ms before the shell execs), and the post-launch stable-process wait now runs for every agent type, not only Grok, so a prompt is never dispatched into a shell the agent has not yet replaced.
+- **Wrapped composer clear** ([#300](https://github.com/Dicklesworthstone/ntm/issues/300)): the whole bordered composer block (marker row plus wrapped continuation rows) is verified empty, and a pane with no composer marker at all is reported as unverifiable rather than as blocked on a modal.
+- **Anchored failure evidence** ([#297](https://github.com/Dicklesworthstone/ntm/issues/297), [#299](https://github.com/Dicklesworthstone/ntm/issues/299)): prose about failure ("the planted negative failed as expected", a 20000 ms timeout mentioned in a plan, a SHA-256 that contains "429") no longer marks a pane ERROR or degrades a session. Only anchored runtime signatures, structured status codes (case-insensitive) and process outcomes count, for alerts, robot health and handoff text alike; named exception lines such as `ValueError: bad input` are recognised.
+- **A fresh `--robot-status` process no longer reports every agent busy** ([#288](https://github.com/Dicklesworthstone/ntm/issues/288)): a first observation only records a baseline; without an in-process clock the durable output sequence is used, a pane resting at its prompt is idle and never "stalled", and no clock plus no decisive tail yields unknown, never busy.
+- **Assignment rail** ([#294](https://github.com/Dicklesworthstone/ntm/issues/294), [#302](https://github.com/Dicklesworthstone/ntm/issues/302)): pre-actuation dispatch refusals (dead CLI, unsupported protocol, composer not ready or not clearable) are retried behind the idempotency barrier with bounded exponential backoff instead of permanently failing the assignment; reservation candidates must resolve inside the repository, so prose like `13714/2m` or `2026/09/03` no longer becomes an Agent Mail lease; occupied-target refusals name the owning bead with its status, age and assignment time.
+- **`br` write-lock timeouts are retried** ([#290](https://github.com/Dicklesworthstone/ntm/pull/290)) with jittered, deadline-bounded backoff, so one contended `br ready` during `ntm assign --watch` is no longer a hard failure; other `CONFIG_ERROR`s stay terminal.
+- **Audit JSONL honours `XDG_DATA_HOME`** ([#292](https://github.com/Dicklesworthstone/ntm/issues/292)) the same way resilience manifests and monitor logs already did.
+- **Checkpoint pane resolution on tmux 3.6**: the session's selected pane is resolved with the `=name:` target form (tmux 3.6 answers `=name` with empty output) and an empty answer is logged instead of silently recording the last window's active pane.
+- **E2E hygiene** ([#303](https://github.com/Dicklesworthstone/ntm/issues/303)): `ntm-tmux-test-*` servers leaked by a killed run are reaped at suite start, age-guarded and never the suite's own socket root.
+
+---
+
 ## [v1.31.0] -- 2026-09-01 [GitHub Release]
 
 **Durable agent identity, coordinator/Agent Mail integrity, and the Antigravity/Codex delivery-gate wave** (GitHub issues #262, #263, #265, #266, #268, #269, #270, #271, #273, #277, #285).
