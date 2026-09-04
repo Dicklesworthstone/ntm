@@ -15,7 +15,7 @@ NTM is a tmux session management tool for orchestrating multiple AI coding agent
 
 ---
 
-## [v1.32.0] -- 2026-09-03 [GitHub Release]
+## [v1.32.0] -- 2026-09-04 [GitHub Release]
 
 **Pane liveness and launch safety, anchored failure evidence, durable activity state, and the Gemini 3.8 Antigravity pin** (GitHub issues [#283](https://github.com/Dicklesworthstone/ntm/issues/283), [#288](https://github.com/Dicklesworthstone/ntm/issues/288), [#292](https://github.com/Dicklesworthstone/ntm/issues/292), [#294](https://github.com/Dicklesworthstone/ntm/issues/294), [#295](https://github.com/Dicklesworthstone/ntm/issues/295), [#297](https://github.com/Dicklesworthstone/ntm/issues/297), [#299](https://github.com/Dicklesworthstone/ntm/issues/299), [#300](https://github.com/Dicklesworthstone/ntm/issues/300), [#301](https://github.com/Dicklesworthstone/ntm/issues/301), [#302](https://github.com/Dicklesworthstone/ntm/issues/302), [#303](https://github.com/Dicklesworthstone/ntm/issues/303); PRs [#290](https://github.com/Dicklesworthstone/ntm/pull/290), [#291](https://github.com/Dicklesworthstone/ntm/pull/291)).
 
