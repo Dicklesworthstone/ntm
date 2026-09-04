@@ -13,6 +13,10 @@ NTM is a tmux session management tool for orchestrating multiple AI coding agent
 
 ## [Unreleased]
 
+### Fixed
+
+- **Service panes are no longer counted as agents** ([#305](https://github.com/Dicklesworthstone/ntm/issues/305)): ACFS runs long-lived service processes (`cm`, `cass`, …) in tmux panes alongside agent panes and tags each one with the `@acfs_service` pane option. NTM now reads that durable tag — plus the vendor-neutral `@ntm_service` — straight off `list-panes`, and excludes tagged panes from every agent surface: `--robot-status` counts and `agents_by_state`/`agents_by_type`, `--robot-snapshot` agents, session health rollups, `--robot-errors`, `--robot-activity`, the dashboard summary, `ntm activity` and `ntm errors`. A healthy service whose terminal has been quiet for hours can no longer turn its session `critical` with a phantom agent in `error`. Service panes stay visible instead of vanishing: `--robot-snapshot` reports them per session under `services`, and `--robot-health=<session>` lists them under `services`. An explicit `ntm adopt` (which records `@ntm_agent_type`) still outranks the tag, so a pane can be deliberately treated as an agent.
+
 ---
 
 ## [v1.32.0] -- 2026-09-04 [GitHub Release]

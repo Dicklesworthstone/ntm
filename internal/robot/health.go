@@ -809,7 +809,22 @@ type SessionHealthOutput struct {
 	Session   string               `json:"session"`
 	CheckedAt time.Time            `json:"checked_at"`
 	Agents    []SessionAgentHealth `json:"agents"`
-	Summary   SessionHealthSummary `json:"summary"`
+	// Services lists the session's tagged non-agent service panes. They carry
+	// no agent health of their own and are excluded from Summary (ntm#305);
+	// they are listed so a session made entirely of services reads as "two
+	// services, no agents" instead of as an empty session.
+	Services []SessionServicePane `json:"services,omitempty"`
+	Summary  SessionHealthSummary `json:"summary"`
+}
+
+// SessionServicePane is a long-lived, non-agent service pane identified by its
+// durable pane-option tag (see tmux.PaneOptionACFSService).
+type SessionServicePane struct {
+	Pane       int    `json:"pane"`
+	PaneTarget string `json:"pane_target"`
+	Name       string `json:"name"`
+	Manager    string `json:"manager"`
+	Command    string `json:"command,omitempty"`
 }
 
 // SessionAgentHealth contains health metrics for a single agent pane
@@ -881,6 +896,19 @@ func GetSessionHealth(session string) (*SessionHealthOutput, error) {
 
 	// Check health for each pane
 	for _, pane := range panes {
+		// A tagged service pane is not an agent — record it separately and
+		// never let it reach the agent health summary (ntm#305).
+		if pane.IsServicePane() {
+			output.Services = append(output.Services, SessionServicePane{
+				Pane:       pane.Index,
+				PaneTarget: tmux.PaneTargetKey(pane, multiWindow),
+				Name:       pane.Service,
+				Manager:    pane.ServiceManager,
+				Command:    pane.Command,
+			})
+			continue
+		}
+
 		agentType := detectAgentTypeFromPane(pane)
 		if agentType == "user" || agentType == "unknown" {
 			continue // Skip non-agent panes

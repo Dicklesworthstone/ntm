@@ -4650,6 +4650,31 @@ type SnapshotSession struct {
 	Name     string          `json:"name"`
 	Attached bool            `json:"attached"`
 	Agents   []SnapshotAgent `json:"agents"`
+	// Services lists the session's tagged non-agent service panes. They are
+	// excluded from every agent count, state summary and health rollup
+	// (ntm#305) and reported here so they stay visible.
+	Services []SnapshotService `json:"services,omitempty"`
+}
+
+// SnapshotService is a long-lived, non-agent service pane — an ACFS-managed
+// `cm` or `cass` process, say — identified by its durable pane-option tag
+// rather than by its title. A service's terminal going quiet is normal and
+// must never be reported as an agent error (ntm#305).
+type SnapshotService struct {
+	Pane    string `json:"pane"`
+	Name    string `json:"name"`
+	Manager string `json:"manager"`
+	Command string `json:"command,omitempty"`
+}
+
+// snapshotServiceFromPane renders a tagged service pane for robot output.
+func snapshotServiceFromPane(pane tmux.Pane) SnapshotService {
+	return SnapshotService{
+		Pane:    fmt.Sprintf("%d.%d", pane.WindowIndex, pane.Index),
+		Name:    pane.Service,
+		Manager: pane.ServiceManager,
+		Command: pane.Command,
+	}
 }
 
 // SnapshotAgent represents an agent in the snapshot
@@ -4850,6 +4875,14 @@ func GetSnapshotWithOptions(cfg *config.Config, opts PaginationOptions) (*Snapsh
 		paneTranscripts := resolvePaneTranscripts(panes)
 
 		for _, pane := range panes {
+			// A tagged service pane is not an agent: keep it out of the agent
+			// list (and therefore out of every count derived from it) but
+			// report it alongside (ntm#305).
+			if pane.IsServicePane() {
+				snapSession.Services = append(snapSession.Services, snapshotServiceFromPane(pane))
+				continue
+			}
+
 			// Capture output for state detection and enhanced type detection
 			captured := ""
 			capturedErr := error(nil)
@@ -5489,13 +5522,14 @@ func buildProjectionBackedSnapshotSessions(store *state.Store, tmuxSessions []tm
 		agentsBySession[sess.Name] = agents
 	}
 
-	paneLabels := snapshotPaneLabelMap(tmuxSessions)
+	paneLabels, paneServices := snapshotPaneIndex(tmuxSessions)
 	output := make([]SnapshotSession, 0, len(rows))
 	for _, sess := range rows {
 		item := SnapshotSession{
 			Name:     sess.Name,
 			Attached: sess.Attached,
 			Agents:   make([]SnapshotAgent, 0, len(agentsBySession[sess.Name])),
+			Services: paneServices[sess.Name],
 		}
 		for _, agent := range agentsBySession[sess.Name] {
 			snapshotAgent := snapshotAgentFromRuntime(sess.Name, agent, paneLabels)
@@ -5603,7 +5637,17 @@ func buildProjectionAgentMailPaneMap(store *state.Store, tmuxSessions []tmux.Ses
 }
 
 func snapshotPaneLabelMap(tmuxSessions []tmux.Session) map[string]string {
+	labels, _ := snapshotPaneIndex(tmuxSessions)
+	return labels
+}
+
+// snapshotPaneIndex walks the live panes of each session once and returns both
+// the pane-label map (session:pane_id -> "W.P") and the session's tagged
+// non-agent service panes (ntm#305), so the projection-backed snapshot can
+// report services without a second tmux enumeration.
+func snapshotPaneIndex(tmuxSessions []tmux.Session) (map[string]string, map[string][]SnapshotService) {
 	labels := make(map[string]string)
+	services := make(map[string][]SnapshotService)
 	for _, sess := range tmuxSessions {
 		panes := append([]tmux.Pane(nil), sess.Panes...)
 		if len(panes) == 0 {
@@ -5614,9 +5658,12 @@ func snapshotPaneLabelMap(tmuxSessions []tmux.Session) map[string]string {
 		for _, pane := range panes {
 			key := fmt.Sprintf("%s:%s", sess.Name, strings.TrimSpace(pane.ID))
 			labels[key] = fmt.Sprintf("%d.%d", pane.WindowIndex, pane.Index)
+			if pane.IsServicePane() {
+				services[sess.Name] = append(services[sess.Name], snapshotServiceFromPane(pane))
+			}
 		}
 	}
-	return labels
+	return labels, services
 }
 
 func snapshotAgentFromRuntime(sessionName string, row state.RuntimeAgent, paneLabels map[string]string) SnapshotAgent {
@@ -7889,6 +7936,11 @@ func collectNormalizedTmuxProjectionContext(ctx context.Context, projectDir stri
 	for _, sess := range sessions {
 		panes := allPanes[sess.Name]
 		for _, pane := range panes {
+			// Service panes are dropped from the agent projection below, so
+			// capturing their scrollback would be pure waste (ntm#305).
+			if pane.IsServicePane() {
+				continue
+			}
 			captureJobs = append(captureJobs, normalizedTmuxCaptureJob{
 				paneID:    pane.ID,
 				modelName: modelNameForPane(pane, cfg),
@@ -7916,6 +7968,12 @@ func collectNormalizedTmuxProjectionContext(ctx context.Context, projectDir stri
 		outputTails := make(map[string]string, len(panes))
 
 		for _, pane := range panes {
+			// Tagged service panes never enter the agent projection: they are
+			// not agents, so counting them made a quiet service look like a
+			// failed agent (ntm#305).
+			if pane.IsServicePane() {
+				continue
+			}
 			agent := Agent{
 				Pane:     pane.ID,
 				Window:   pane.WindowIndex,
@@ -10404,6 +10462,9 @@ func resolvePaneTranscripts(panes []tmux.Pane) map[string]*ntmctx.TranscriptUsag
 	type paneKey struct{ agentType, cwd string }
 	groups := make(map[paneKey][]string)
 	for _, pane := range panes {
+		if pane.IsServicePane() {
+			continue
+		}
 		agentType := paneAgentType(pane)
 		if agentType == "unknown" || agentType == "user" {
 			continue
@@ -10471,6 +10532,11 @@ func GetContext(session string, lines int) (*ContextOutput, error) {
 	paneTranscripts := resolvePaneTranscripts(panes)
 
 	for _, pane := range panes {
+		// Tagged service panes are not agents and hold no agent context
+		// (ntm#305).
+		if pane.IsServicePane() {
+			continue
+		}
 		agentType := paneAgentType(pane)
 		if agentType == "unknown" || agentType == "user" {
 			continue // Skip non-agent panes
@@ -10841,6 +10907,13 @@ func GetActivity(opts ActivityOptions) (*ActivityOutput, error) {
 			}
 		}
 
+		// Tagged service panes are not agents: a long-lived service whose
+		// terminal has gone quiet must never be reported busy, idle or in
+		// error (ntm#305).
+		if pane.IsServicePane() {
+			continue
+		}
+
 		agentType := paneAgentType(pane)
 
 		// Skip non-agent panes (user, unknown)
@@ -11166,6 +11239,10 @@ func GetDiff(opts DiffOptions) (*DiffOutput, error) {
 
 	// Analyze activity windows per pane
 	for _, pane := range panes {
+		// Tagged service panes are not agents (ntm#305).
+		if pane.IsServicePane() {
+			continue
+		}
 		// Capture pane output for state detection
 		captured, _ := tmux.CapturePaneOutput(pane.ID, 100)
 		detection := DetectAgentTypeEnhanced(pane, captured)

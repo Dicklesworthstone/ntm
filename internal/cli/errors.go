@@ -297,6 +297,12 @@ func runErrors(session string, opts ErrorsOptions) error {
 			}
 		}
 
+		// A tagged service pane is not an agent; its scrollback is service
+		// logging, not agent failure (ntm#305).
+		if pane.IsServicePane() {
+			continue
+		}
+
 		// Apply agent filter
 		if opts.Filter.IsEmpty() {
 			// By default, skip user pane

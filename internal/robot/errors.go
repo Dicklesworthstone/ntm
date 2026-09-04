@@ -205,6 +205,13 @@ func GetErrors(opts ErrorsOptions) (*ErrorsOutput, error) {
 			continue
 		}
 
+		// A tagged service pane is not an agent: its scrollback is service
+		// logging, not agent failure, and searching it would both cost a
+		// capture and manufacture errors nobody can act on (ntm#305).
+		if pane.IsServicePane() {
+			continue
+		}
+
 		// Capture pane output before filtering so enhanced detection can use it.
 		paneOutput, err := tmux.CapturePaneOutput(pane.ID, opts.Lines)
 		if err != nil {

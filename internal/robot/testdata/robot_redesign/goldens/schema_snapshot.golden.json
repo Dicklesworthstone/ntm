@@ -1129,6 +1129,32 @@
         ],
         "type": "object"
       },
+      "SnapshotService": {
+        "properties": {
+          "command": {
+            "description": "Command",
+            "type": "string"
+          },
+          "manager": {
+            "description": "Manager",
+            "type": "string"
+          },
+          "name": {
+            "description": "Name",
+            "type": "string"
+          },
+          "pane": {
+            "description": "Pane",
+            "type": "string"
+          }
+        },
+        "required": [
+          "pane",
+          "name",
+          "manager"
+        ],
+        "type": "object"
+      },
       "SnapshotSession": {
         "properties": {
           "agents": {
@@ -1145,6 +1171,13 @@
           "name": {
             "description": "Name",
             "type": "string"
+          },
+          "services": {
+            "description": "Services",
+            "items": {
+              "$ref": "#/definitions/SnapshotService"
+            },
+            "type": "array"
           }
         },
         "required": [

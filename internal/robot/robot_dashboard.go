@@ -184,6 +184,11 @@ func GetDashboard() (*DashboardOutput, error) {
 }
 
 func dashboardAgentType(pane tmux.Pane) (string, bool) {
+	// A tagged service pane is never an agent, whatever its command looks
+	// like (ntm#305).
+	if pane.IsServicePane() {
+		return "", false
+	}
 	agentType := agentTypeString(pane.Type)
 	if agentType == "user" {
 		return "", false

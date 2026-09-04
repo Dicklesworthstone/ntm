@@ -173,7 +173,9 @@ func getProductivity(opts ProductivityOptions, deps productivityDependencies) (*
 	agentPaneSeen := false
 	attributionComplete := true
 	for _, pane := range panes {
-		if pane.Type == tmux.AgentUser || pane.Type == tmux.AgentUnknown {
+		// Tagged service panes are not agents and produce no agent work
+		// (ntm#305).
+		if pane.IsServicePane() || pane.Type == tmux.AgentUser || pane.Type == tmux.AgentUnknown {
 			continue
 		}
 		agentPaneSeen = true
@@ -204,7 +206,9 @@ func getProductivity(opts ProductivityOptions, deps productivityDependencies) (*
 
 func paneProjectDir(session string, panes []tmux.Pane, panePath func(context.Context, string) string, ctx context.Context) string {
 	for _, pane := range panes {
-		if pane.Type == tmux.AgentUser || pane.Type == tmux.AgentUnknown {
+		// Tagged service panes are not agents and produce no agent work
+		// (ntm#305).
+		if pane.IsServicePane() || pane.Type == tmux.AgentUser || pane.Type == tmux.AgentUnknown {
 			continue
 		}
 		if path := strings.TrimSpace(panePath(ctx, pane.ID)); path != "" {

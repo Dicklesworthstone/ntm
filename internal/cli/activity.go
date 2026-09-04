@@ -277,6 +277,12 @@ func collectActivityData(session string, opts activityOptions) (*activityResult,
 	}
 
 	for _, pane := range panes {
+		// A tagged service pane (ACFS's cm/cass, say) is not an agent: its
+		// idle terminal must not land in the agent activity summary (ntm#305).
+		if pane.IsServicePane() {
+			continue
+		}
+
 		agentType := detectAgentTypeFromPane(pane)
 
 		// Skip non-agent panes
