@@ -1,0 +1,118 @@
+name: Verify and land ntm 298
+
+on:
+  push:
+    branches:
+      - automation/ntm-298-launch-affinity
+    paths:
+      - .github/workflows/ntm-298-apply.yml
+
+permissions:
+  contents: write
+
+jobs:
+  verify-and-land:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out staged implementation
+        uses: actions/checkout@v4
+        with:
+          ref: automation/ntm-298-launch-affinity
+          path: automation
+
+      - name: Check out current main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          path: repo
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: repo/go.mod
+          cache-dependency-path: repo/go.sum
+
+      - name: Apply transparent staged changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp automation/internal/resilience/launch_binding.go repo/internal/resilience/launch_binding.go
+          cp automation/internal/resilience/launch_binding_test.go repo/internal/resilience/launch_binding_test.go
+          cp automation/internal/resilience/monitor_launch_binding_test.go repo/internal/resilience/monitor_launch_binding_test.go
+          cp automation/internal/robot/restart_pane_affinity.go repo/internal/robot/restart_pane_affinity.go
+          cp automation/internal/robot/restart_pane_affinity_test.go repo/internal/robot/restart_pane_affinity_test.go
+          cd repo
+          python ../automation/.github/ntm298_apply.py
+          gofmt -w \
+            internal/resilience/launch_binding.go \
+            internal/resilience/launch_binding_test.go \
+            internal/resilience/manifest.go \
+            internal/resilience/monitor.go \
+            internal/resilience/monitor_launch.go \
+            internal/resilience/monitor_launch_binding_test.go \
+            internal/resilience/monitor_test.go \
+            internal/cli/add.go \
+            internal/cli/monitor.go \
+            internal/robot/restart_pane.go \
+            internal/robot/restart_pane_affinity.go \
+            internal/robot/restart_pane_affinity_test.go
+          git diff --check
+
+      - name: Run focused regressions
+        working-directory: repo
+        run: go test ./internal/resilience ./internal/robot ./internal/cli
+
+      - name: Run repository short suite
+        working-directory: repo
+        run: go test -short ./...
+
+      - name: Build ntm
+        working-directory: repo
+        run: go build ./cmd/ntm
+
+      - name: Run static and contract checks
+        working-directory: repo
+        run: |
+          go vet ./...
+          bash scripts/guards/contracts_lint.sh
+
+      - name: Commit verified change to main
+        working-directory: repo
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "OpenAI Codex"
+          git config user.email "noreply@openai.com"
+          git add \
+            internal/resilience/launch_binding.go \
+            internal/resilience/launch_binding_test.go \
+            internal/resilience/manifest.go \
+            internal/resilience/monitor.go \
+            internal/resilience/monitor_launch.go \
+            internal/resilience/monitor_launch_binding_test.go \
+            internal/resilience/monitor_test.go \
+            internal/cli/add.go \
+            internal/cli/monitor.go \
+            internal/robot/restart_pane.go \
+            internal/robot/restart_pane_affinity.go \
+            internal/robot/restart_pane_affinity_test.go
+          git commit -F - <<'EOF'
+          fix(resilience): preserve provider launch affinity
+
+          Persist only the opaque provider-scoped CAAM profile identifier,
+          preflight it before manual or monitor-driven relaunch, and report
+          legacy manifests as unknown affinity without replaying pane environment.
+
+          Add hermetic regressions for profile preservation, recovery identity
+          fallback, and fail-before-mutation behavior.
+
+          Fixes #298
+          EOF
+          git fetch origin main
+          git rebase origin/main
+          go test ./internal/resilience ./internal/robot ./internal/cli
+          go build ./cmd/ntm
+          git push origin HEAD:main
+          git push origin --delete automation/ntm-298-launch-affinity
