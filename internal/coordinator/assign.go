@@ -334,10 +334,10 @@ func (c *SessionCoordinator) recoverPendingAssignments(ctx context.Context, stor
 		}
 		work := coordinatorWorkAssignmentFromRecord(recorded)
 		if recorded.DispatchState == assignmentstore.DispatchSending {
-			results = append(results, AssignmentResult{
-				Assignment: work, ClaimActor: recorded.ClaimActor, IdempotencyKey: recorded.IdempotencyKey,
-				Error: assignmentstore.ErrDispatchOutcomeUnknown.Error(),
-			})
+			// A stranded outcome-unknown dispatch owns its pane until external
+			// evidence resolves it. See internal/coordinator/stranded_dispatch.go
+			// for the gate; the default remains fail-closed (ntm#304).
+			results = append(results, c.resolveStrandedDispatch(ctx, store, recorded, work))
 			continue
 		}
 		if !coordinatorAssignmentIsRecoverable(recorded) {
@@ -1110,7 +1110,7 @@ func (c *SessionCoordinator) newAtomicAssignmentCoordinator(store *assignmentsto
 				fmt.Errorf("validate Agent Mail dispatch project: %w", projectErr),
 			)
 		}
-		subject := fmt.Sprintf("Work Assignment: %s", req.BeadID)
+		subject := coordinatorAssignmentSubject(req.BeadID)
 		sent, err := c.mailClient.SendMessage(ctx, agentmail.SendMessageOptions{
 			ProjectKey:  c.projectKey,
 			SenderName:  c.agentName,

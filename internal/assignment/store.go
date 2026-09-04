@@ -133,6 +133,15 @@ type Assignment struct {
 	CompletionDetectedAt     *time.Time           `json:"completion_detected_at,omitempty"`
 	CompletionConsumerToken  string               `json:"completion_consumer_token,omitempty"`
 	CompletionLeaseExpiresAt *time.Time           `json:"completion_lease_expires_at,omitempty"`
+
+	// Audit record for a dispatch_state="sending" barrier that was resolved
+	// from external evidence rather than from its own transport outcome
+	// (ntm#304). The reason names the concrete observation that justified the
+	// resolution; it is never cleared by a later generation transition, so an
+	// operator can always see why an outcome-unknown dispatch stopped being
+	// unknown.
+	StrandedDispatchReason     string     `json:"stranded_dispatch_reason,omitempty"`
+	StrandedDispatchResolvedAt *time.Time `json:"stranded_dispatch_resolved_at,omitempty"`
 }
 
 // AssignmentUpdate describes mutable assignment metadata that can be updated
@@ -189,6 +198,7 @@ func cloneAssignment(a *Assignment) *Assignment {
 	cloned.ClearStartedAt = cloneTimePtr(a.ClearStartedAt)
 	cloned.CompletionDetectedAt = cloneTimePtr(a.CompletionDetectedAt)
 	cloned.CompletionLeaseExpiresAt = cloneTimePtr(a.CompletionLeaseExpiresAt)
+	cloned.StrandedDispatchResolvedAt = cloneTimePtr(a.StrandedDispatchResolvedAt)
 	cloned.ReservationRequested = append([]string(nil), a.ReservationRequested...)
 	cloned.ReservationInputPaths = append([]string(nil), a.ReservationInputPaths...)
 	cloned.ReservedPaths = append([]string(nil), a.ReservedPaths...)

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -50,9 +51,27 @@ type SessionCoordinator struct {
 	releaseWorkItemClaimFn      func(context.Context, string, string, string) (bool, error)
 	operatorGatedLabels         []string
 
+	// dispatchDeliveryProbeFn is the test seam for the mailbox probe that
+	// decides whether a stranded dispatch actually landed (ntm#304). Nil uses
+	// the real Agent Mail inbox probe.
+	dispatchDeliveryProbeFn dispatchDeliveryProbe
+
 	// Agent tracking
 	agents     map[string]*AgentState
 	lastUpdate time.Time
+
+	// Physical pane topology from the most recent *successful* whole-session
+	// observation: every pane tmux listed, including panes carrying no agent
+	// and panes whose agent type could not be identified. This is deliberately
+	// a different set from `agents`, which drops user/unknown panes and so
+	// cannot answer "does this pane still exist?" (ntm#304).
+	//
+	// livePaneTopologyValid is false until the first successful observation and
+	// is cleared again whenever a whole-session observation fails, so an
+	// absence is never inferred from a snapshot we could not take.
+	livePaneIDs           map[string]struct{}
+	livePaneTopologyAt    time.Time
+	livePaneTopologyValid bool
 
 	// Monitors
 	monitor *AgentMonitor
@@ -573,6 +592,16 @@ func (c *SessionCoordinator) updateAgentStatesContext(ctx context.Context) error
 		status    AgentStatusResult
 	}
 	updates := make([]agentUpdate, 0, len(observation.Panes))
+	// Physical topology is captured from every listed pane, before the
+	// agent-type filter below drops user/unknown panes. A pane whose agent
+	// went unrecognized still exists, and treating it as gone would be a
+	// license to re-dispatch work that may already be sitting in it (ntm#304).
+	livePaneIDs := make(map[string]struct{}, len(observation.Panes))
+	for _, pane := range observation.Panes {
+		if paneID := strings.TrimSpace(pane.Pane.ID); paneID != "" {
+			livePaneIDs[paneID] = struct{}{}
+		}
+	}
 	var observationErrors []error
 	for _, pane := range observation.Panes {
 		if pane.AgentType == string(tmux.AgentUser) || pane.AgentType == string(tmux.AgentUnknown) {
@@ -676,6 +705,9 @@ func (c *SessionCoordinator) updateAgentStatesContext(ctx context.Context) error
 	}
 
 	c.lastUpdate = observation.ObservedAt
+	c.livePaneIDs = livePaneIDs
+	c.livePaneTopologyAt = observation.ObservedAt
+	c.livePaneTopologyValid = true
 	c.mu.Unlock()
 
 	// Emit events outside the lock to prevent deadlocks if the event bus
@@ -695,6 +727,12 @@ func (c *SessionCoordinator) markAgentObservationsUnavailable(observedAt time.Ti
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	// The observation failed, so we know nothing about the current pane set.
+	// Retaining the previous snapshot would let a pane that merely became
+	// unobservable be read as a pane that no longer exists.
+	c.livePaneIDs = nil
+	c.livePaneTopologyAt = time.Time{}
+	c.livePaneTopologyValid = false
 	for _, agent := range c.agents {
 		if agent.ObservationFreshness == status.FreshnessFresh && agent.Status != robot.StateUnknown {
 			agent.LastKnownStatus = agent.Status
