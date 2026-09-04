@@ -44,7 +44,7 @@ jobs:
           cp automation/internal/robot/restart_pane_affinity.go repo/internal/robot/restart_pane_affinity.go
           cp automation/internal/robot/restart_pane_affinity_test.go repo/internal/robot/restart_pane_affinity_test.go
           cd repo
-          python ../automation/.github/ntm298_apply.py
+          python ../automation/.github/ntm298_apply.py 2>&1 | tee ../apply.log
           gofmt -w \
             internal/resilience/launch_binding.go \
             internal/resilience/launch_binding_test.go \
@@ -59,6 +59,13 @@ jobs:
             internal/robot/restart_pane_affinity.go \
             internal/robot/restart_pane_affinity_test.go
           git diff --check
+
+      - name: Upload patch assertion log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ntm298-apply-log-${{ github.run_id }}
+          path: apply.log
 
       - name: Run focused regressions
         working-directory: repo
