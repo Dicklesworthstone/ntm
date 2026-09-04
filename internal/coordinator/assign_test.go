@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -253,6 +255,14 @@ func TestAttemptAssignmentRequiresAgentMailIdentity(t *testing.T) {
 func TestAttemptAssignmentAtomicSuccessPersistsReceipt(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	projectDir := t.TempDir()
+	// Reservation candidates must resolve inside the repository (ntm#302), so
+	// the path this assignment reserves has to actually exist.
+	if err := os.MkdirAll(filepath.Join(projectDir, "internal", "coordinator"), 0o755); err != nil {
+		t.Fatalf("create repository path: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "internal", "coordinator", "assign.go"), []byte("package coordinator\n"), 0o600); err != nil {
+		t.Fatalf("write repository path: %v", err)
+	}
 	c := New("coordinator-atomic-success", projectDir, &agentmail.Client{}, "CoordinatorAgent")
 	var order []string
 	c.atomicCoordinatorFactory = func(store *assignmentstore.AssignmentStore) *assignmentstore.AtomicCoordinator {
@@ -2849,5 +2859,88 @@ func TestCoordinatorMailDispatchErrorTerminalizesOnlyToolRejection(t *testing.T)
 
 	if got := coordinatorMailDispatchError(nil); got != nil {
 		t.Fatalf("nil error changed to %v", got)
+	}
+}
+
+// TestRepositoryReservationPathsRequireRealRepositoryTargets pins ntm#302:
+// reservation candidates come from free-text bead titles, so slash-bearing
+// prose ("13714/2m", a date) used to become Agent Mail leases on paths that do
+// not exist. Only candidates that resolve inside the repository survive.
+func TestRepositoryReservationPathsRequireRealRepositoryTargets(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "internal", "coordinator"), 0o755); err != nil {
+		t.Fatalf("create repo tree: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "internal", "coordinator", "assign.go"), []byte("package coordinator\n"), 0o600); err != nil {
+		t.Fatalf("write repo file: %v", err)
+	}
+
+	got := repositoryReservationPaths(root, []string{
+		"internal/coordinator/assign.go", // real file
+		"internal/coordinator/*.go",      // glob with a real literal prefix
+		"internal/coordinator/assign.go", // duplicate
+		"13714/2m",                       // rate expression
+		"2026/09/03",                     // date
+		"internal/coordinator/new.go",    // to-be-created file: parent exists
+		"docs/does-not-exist.md",         // plausible but absent
+		"/etc/passwd",                    // absolute
+		"../outside/file.go",             // escapes the repo
+		"   ",                            // blank
+	})
+	want := []string{"internal/coordinator/assign.go", "internal/coordinator/*.go", "internal/coordinator/new.go"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("repositoryReservationPaths() = %v, want %v", got, want)
+	}
+
+	if got := repositoryReservationPaths("", []string{"internal/coordinator/assign.go"}); len(got) != 0 {
+		t.Fatalf("no project key must yield no reservations, got %v", got)
+	}
+}
+
+// TestIsFilePathRejectsLeadingDigitProse is the extraction-side half of the
+// same guard: "13714/2m" is a quantity, not a path.
+func TestIsFilePathRejectsLeadingDigitProse(t *testing.T) {
+	for _, s := range []string{"13714/2m", "2026/09/03", "3/4"} {
+		if isFilePath(s) {
+			t.Errorf("isFilePath(%q) = true, want false", s)
+		}
+	}
+	for _, s := range []string{"internal/coordinator/assign.go", "docs/README.md", "cmd/ntm", ".github/workflows"} {
+		if !isFilePath(s) {
+			t.Errorf("isFilePath(%q) = false, want true", s)
+		}
+	}
+}
+
+// TestCoordinatorDispatchRetryBackoff pins the spacing applied to retries of a
+// pre-actuation dispatch failure (ntm#294): retryable is not the same as
+// retry-immediately-every-cycle.
+func TestCoordinatorDispatchRetryBackoff(t *testing.T) {
+	now := time.Now().UTC()
+	recorded := &assignmentstore.Assignment{
+		DispatchState: assignmentstore.DispatchPending, DispatchAttempts: 1,
+		DispatchStartedAt: &now, LastDispatchError: "composer not ready",
+	}
+	if coordinatorDispatchRetryReady(recorded, now.Add(coordinatorDispatchRetryInitial-time.Millisecond)) {
+		t.Fatal("first retry became eligible before the initial backoff")
+	}
+	if !coordinatorDispatchRetryReady(recorded, now.Add(coordinatorDispatchRetryInitial)) {
+		t.Fatal("first retry did not become eligible at the initial backoff")
+	}
+
+	recorded.DispatchAttempts = 9
+	if coordinatorDispatchRetryReady(recorded, now.Add(coordinatorDispatchRetryMaximum-time.Millisecond)) {
+		t.Fatal("retry became eligible before the capped backoff")
+	}
+	if !coordinatorDispatchRetryReady(recorded, now.Add(coordinatorDispatchRetryMaximum)) {
+		t.Fatal("retry did not become eligible at the capped backoff")
+	}
+
+	// A row that has not failed yet is never held back.
+	if !coordinatorDispatchRetryReady(&assignmentstore.Assignment{DispatchStartedAt: &now}, now) {
+		t.Fatal("a row with no recorded dispatch error must not be delayed")
+	}
+	if !coordinatorDispatchRetryReady(nil, now) {
+		t.Fatal("a nil row must not be delayed")
 	}
 }

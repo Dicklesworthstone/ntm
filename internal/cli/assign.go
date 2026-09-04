@@ -3148,6 +3148,13 @@ func (p *cliAtomicPaneDispatchPort) Dispatch(ctx context.Context, req assignment
 	result, dispatchErr := service.Dispatch(ctx, prepared)
 	receipt := assignment.DispatchReceipt{Duration: time.Since(started)}
 	if dispatchErr != nil {
+		// A refusal raised before the first keystroke — pane not ready, dead
+		// agent CLI, an uncleared composer — cannot have delivered anything, so
+		// it is retryable behind the durable idempotency barrier rather than a
+		// permanent failure of the assignment (ntm#294).
+		if dispatchsvc.IsGuaranteedNoDeliveryActuation(dispatchErr) {
+			return receipt, assignment.GuaranteeNoActuation(dispatchErr)
+		}
 		return receipt, dispatchErr
 	}
 	delivery, err := validateSinglePaneDispatchResult(result, req.Target)

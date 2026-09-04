@@ -2880,3 +2880,31 @@ func TestAtomicOperationLockReleaseCancelRaceFailsClosed(t *testing.T) {
 		}
 	}
 }
+
+// TestTargetOccupiedErrorNamesStatusAndAge pins ntm#302: an occupied-target
+// refusal has to say who holds the pane, in what state, and for how long —
+// otherwise terminal residue is indistinguishable from live work.
+func TestTargetOccupiedErrorNamesStatusAndAge(t *testing.T) {
+	assignedAt := time.Date(2026, 9, 3, 10, 0, 0, 0, time.UTC)
+	err := targetOccupiedError("%42", &Assignment{
+		BeadID: "ntm-stale", Status: StatusCompleted, AssignedAt: assignedAt,
+	}, assignedAt.Add(90*time.Minute))
+	if !errors.Is(err, ErrTargetOccupied) {
+		t.Fatalf("targetOccupiedError() = %v, want ErrTargetOccupied", err)
+	}
+	for _, want := range []string{"owned by bead ntm-stale", "status=completed", "age=1h30m0s", "assigned_at=2026-09-03T10:00:00Z"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("targetOccupiedError() = %q, missing %q", err, want)
+		}
+	}
+
+	// A clock that runs backwards must not produce a negative age.
+	skewed := targetOccupiedError("%42", &Assignment{BeadID: "b", Status: StatusWorking, AssignedAt: assignedAt}, assignedAt.Add(-time.Hour))
+	if !strings.Contains(skewed.Error(), "age=0s") {
+		t.Fatalf("clock skew produced %q, want age=0s", skewed)
+	}
+
+	if err := targetOccupiedError("%42", nil, assignedAt); !errors.Is(err, ErrTargetOccupied) || !strings.Contains(err.Error(), "unknown owner") {
+		t.Fatalf("nil occupant error = %v", err)
+	}
+}

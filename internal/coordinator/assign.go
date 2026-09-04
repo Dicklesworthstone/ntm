@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -342,6 +343,9 @@ func (c *SessionCoordinator) recoverPendingAssignments(ctx context.Context, stor
 		if !coordinatorAssignmentIsRecoverable(recorded) {
 			continue
 		}
+		if !coordinatorDispatchRetryReady(recorded, time.Now()) {
+			continue
+		}
 		target := strings.TrimSpace(recorded.OccupancyKey)
 		if target == "" {
 			target = strings.TrimSpace(recorded.DispatchTarget)
@@ -364,6 +368,33 @@ func (c *SessionCoordinator) recoverPendingAssignments(ctx context.Context, stor
 		results = append(results, c.recoverPendingAssignment(ctx, store, recorded, work))
 	}
 	return results
+}
+
+const (
+	coordinatorDispatchRetryInitial = 5 * time.Second
+	coordinatorDispatchRetryMaximum = time.Minute
+)
+
+// coordinatorDispatchRetryReady spaces out retries of a dispatch that failed
+// before actuation. Such a failure is safe to retry (ntm#294), but a pane whose
+// composer stays stuck would otherwise be re-attempted on every cycle forever.
+// DispatchStartedAt anchors the last attempt and DispatchAttempts counts them,
+// both durably, so the backoff survives a coordinator restart.
+//
+// A row with no recorded dispatch error has not failed yet and is never held
+// back.
+func coordinatorDispatchRetryReady(recorded *assignmentstore.Assignment, now time.Time) bool {
+	if recorded == nil || recorded.LastDispatchError == "" || recorded.DispatchStartedAt == nil {
+		return true
+	}
+	delay := coordinatorDispatchRetryInitial
+	for attempt := 1; attempt < recorded.DispatchAttempts && delay < coordinatorDispatchRetryMaximum; attempt++ {
+		delay *= 2
+		if delay > coordinatorDispatchRetryMaximum {
+			delay = coordinatorDispatchRetryMaximum
+		}
+	}
+	return !now.Before(recorded.DispatchStartedAt.Add(delay))
 }
 
 func pendingRecoveryIdentityError(recorded *assignmentstore.Assignment, candidate *AgentState) error {
@@ -687,6 +718,7 @@ func (c *SessionCoordinator) attemptAssignment(ctx context.Context, assignment *
 	}
 	claimActor := assignmentstore.StableClaimActor(assignment.AgentMailName, idempotencyKey)
 	body := c.formatAssignmentMessage(assignment, rec, claimActor)
+	requestedPaths := repositoryReservationPaths(c.projectKey, assignment.FilesToReserve)
 
 	store, err := assignmentstore.LoadStoreStrict(c.session)
 	if err != nil {
@@ -703,11 +735,66 @@ func (c *SessionCoordinator) attemptAssignment(ctx context.Context, assignment *
 		Actor:              assignment.AgentMailName,
 		Prompt:             body,
 		IdempotencyKey:     idempotencyKey,
-		RequireReservation: len(assignment.FilesToReserve) > 0,
-		RequestedPaths:     append([]string(nil), assignment.FilesToReserve...),
+		RequireReservation: len(requestedPaths) > 0,
+		RequestedPaths:     requestedPaths,
 		ReservationTTL:     time.Hour,
 	}
 	return c.executeAtomicAssignment(ctx, store, assignment, request)
+}
+
+// repositoryReservationPaths keeps path-shaped prose out of Agent Mail
+// reservations. Reservation candidates are extracted from free-text bead
+// titles and bodies, so they include things that merely look like paths; a
+// candidate only survives if it actually resolves inside the repository. For a
+// glob, its literal prefix must resolve — that is the part that names a real
+// place in the tree.
+//
+// Relative, in-tree paths only: an absolute path or one that escapes the root
+// is never a reservation this coordinator may take (ntm#302).
+func repositoryReservationPaths(projectKey string, candidates []string) []string {
+	root := filepath.Clean(strings.TrimSpace(projectKey))
+	if root == "" || root == "." {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(candidates))
+	paths := make([]string, 0, len(candidates))
+	for _, raw := range candidates {
+		candidate := filepath.Clean(strings.TrimSpace(raw))
+		if candidate == "" || candidate == "." || filepath.IsAbs(candidate) {
+			continue
+		}
+		if candidate == ".." || strings.HasPrefix(candidate, ".."+string(filepath.Separator)) {
+			continue
+		}
+		prefix := candidate
+		if wildcard := strings.IndexAny(prefix, "*?["); wildcard >= 0 {
+			prefix = strings.TrimRight(prefix[:wildcard], string(filepath.Separator))
+			if prefix == "" {
+				prefix = "."
+			}
+		}
+		// The path itself, or — for a file the bead asks the agent to CREATE —
+		// its parent directory, must exist in the repository. Requiring the
+		// file itself would silently drop reservations for new files.
+		if !pathExistsUnder(root, prefix) && !pathExistsUnder(root, filepath.Dir(prefix)) {
+			continue
+		}
+		candidate = filepath.ToSlash(candidate)
+		if _, duplicate := seen[candidate]; duplicate {
+			continue
+		}
+		seen[candidate] = struct{}{}
+		paths = append(paths, candidate)
+	}
+	return paths
+}
+
+func pathExistsUnder(root, relative string) bool {
+	if relative == "" || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return false
+	}
+	_, err := os.Stat(filepath.Join(root, relative))
+	return err == nil
 }
 
 func (c *SessionCoordinator) executeAtomicAssignment(ctx context.Context, store *assignmentstore.AssignmentStore, work *WorkAssignment, request assignmentstore.AtomicRequest) AssignmentResult {
@@ -1611,6 +1698,13 @@ func ExtractMentionedFiles(title, description string) []string {
 // isFilePath checks if a string looks like a file path.
 func isFilePath(s string) bool {
 	if len(s) < 3 {
+		return false
+	}
+
+	// A leading digit means a quantity or a date, not a path: bead titles carry
+	// slash-bearing prose like "13714/2m" and "2026/09/03", and reserving those
+	// as repository paths put junk leases into Agent Mail (ntm#302).
+	if s[0] >= '0' && s[0] <= '9' {
 		return false
 	}
 

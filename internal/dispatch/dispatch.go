@@ -346,15 +346,42 @@ func RefuseDeadAgentPane(pane tmux.Pane) error {
 		pane.Ref().Physical(), pane.Title, pane.Command)
 }
 
+// GuaranteeNoDeliveryActuation marks a delivery failure that provably happened
+// BEFORE any byte of the message was typed into the target. Only such a failure
+// is safe for a caller with a durable idempotency barrier to retry; everything
+// after the first keystroke stays outcome-unknown and fails closed.
+func GuaranteeNoDeliveryActuation(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &guaranteedNoDeliveryActuationError{err: err}
+}
+
+// IsGuaranteedNoDeliveryActuation reports whether err is marked as having
+// happened before any actuation.
+func IsGuaranteedNoDeliveryActuation(err error) bool {
+	var marked *guaranteedNoDeliveryActuationError
+	return errors.As(err, &marked)
+}
+
+type guaranteedNoDeliveryActuationError struct{ err error }
+
+func (e *guaranteedNoDeliveryActuationError) Error() string { return e.err.Error() }
+func (e *guaranteedNoDeliveryActuationError) Unwrap() error { return e.err }
+
 func (TMUXDeliverer) Deliver(ctx context.Context, delivery Delivery) error {
+	// Everything down to the protocol switch below runs strictly before the
+	// first keystroke of the message, so every refusal here is provably
+	// pre-actuation and safe to retry. Without that mark, a transient composer
+	// or readiness refusal permanently failed the assignment (ntm#294).
 	if err := contextError(ctx); err != nil {
 		return err
 	}
 	if err := validateTMUXDeliveryProtocol(delivery); err != nil {
-		return err
+		return GuaranteeNoDeliveryActuation(err)
 	}
 	if err := RefuseDeadAgentPane(delivery.Target.Pane); err != nil {
-		return err
+		return GuaranteeNoDeliveryActuation(err)
 	}
 	target := delivery.Target.Ref.ID
 	if target == "" {
@@ -367,10 +394,10 @@ func (TMUXDeliverer) Deliver(ctx context.Context, delivery Delivery) error {
 	// unknown agent types, so it can only refuse when the screen positively
 	// shows neither a composer nor working-state chrome.
 	if ready, reason := tmux.ComposerReadyForDelivery(ctx, target, delivery.Target.AgentType, delivery.Target.Pane.Width); !ready {
-		return fmt.Errorf("pane %s not ready for delivery: %s", target, reason)
+		return GuaranteeNoDeliveryActuation(fmt.Errorf("pane %s not ready for delivery: %s", target, reason))
 	}
 	if err := ClearComposerForDelivery(ctx, target, delivery); err != nil {
-		return err
+		return GuaranteeNoDeliveryActuation(err)
 	}
 	switch delivery.Protocol {
 	case ProtocolStageOnly:
@@ -424,8 +451,8 @@ func composerBlockerDetail(result tmux.ComposerClearResult) string {
 		return fmt.Sprintf("still reports queued messages after %d clear rounds; a new prompt would not be the next thing the agent processes", result.Rounds)
 	default:
 		residual := strings.TrimSpace(result.Residual)
-		if len(residual) > 120 {
-			residual = residual[:120] + "…"
+		if runes := []rune(residual); len(runes) > 120 {
+			residual = string(runes[:120]) + "…"
 		}
 		if residual == "" {
 			return fmt.Sprintf("composer still holds text after %d clear rounds", result.Rounds)
