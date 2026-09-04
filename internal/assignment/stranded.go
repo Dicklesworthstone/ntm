@@ -33,8 +33,13 @@ func (s *AssignmentStore) AdoptStrandedDispatchReceiptIfCurrent(ctx context.Cont
 	if err := validateDispatchReceipt(receipt); err != nil {
 		return nil, false, err
 	}
-	return s.resolveStrandedDispatch(ctx, observed, evidence, func(current *Assignment, now time.Time) {
-		current.Status = StatusAssigned
+	adopted, applied, err := s.resolveStrandedDispatch(ctx, observed, evidence, func(current *Assignment, now time.Time) {
+		// A delivered dispatch exposes the row to assigned/working consumers,
+		// exactly as RecordAtomicDispatchSent does — but never walk a row that
+		// has already moved on backwards to "assigned".
+		if current.Status == StatusClaiming || current.Status == StatusClaimed {
+			current.Status = StatusAssigned
+		}
 		if strings.TrimSpace(current.PendingPrompt) != "" {
 			current.PromptSent = current.PendingPrompt
 		}
@@ -47,6 +52,11 @@ func (s *AssignmentStore) AdoptStrandedDispatchReceiptIfCurrent(ctx context.Cont
 		}
 		current.LastDispatchError = ""
 	})
+	if err != nil || !applied {
+		return adopted, applied, err
+	}
+	emitAtomicAssignmentEvent(s.SessionName, adopted)
+	return adopted, applied, nil
 }
 
 // ResolveStrandedDispatchIfCurrent resolves an outcome-unknown dispatch in the
