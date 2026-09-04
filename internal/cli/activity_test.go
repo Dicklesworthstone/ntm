@@ -477,3 +477,19 @@ func TestActivity_TwoWindowPaneIndexCollision(t *testing.T) {
 		t.Fatalf("window_index did not separate the colliding rows: %+v", envelope.Agents)
 	}
 }
+
+// TestActivityStateScopeSeparatesPaneLifetimes pins the scope key used for the
+// durable state-age watermark (ntm#301): tmux recycles pane IDs, so a scope
+// that ignored the pane PID would hand a fresh process the previous one's age.
+func TestActivityStateScopeSeparatesPaneLifetimes(t *testing.T) {
+	base := activityStateScope("agent-factory", tmux.Pane{ID: "%9", PID: 4242})
+	newProcess := activityStateScope("agent-factory", tmux.Pane{ID: "%9", PID: 5252})
+	otherSession := activityStateScope("workshop", tmux.Pane{ID: "%9", PID: 4242})
+	otherPane := activityStateScope("agent-factory", tmux.Pane{ID: "%10", PID: 4242})
+
+	for _, other := range []string{newProcess, otherSession, otherPane} {
+		if base == other {
+			t.Fatalf("activity state scope aliases distinct pane lifetimes: %q == %q", base, other)
+		}
+	}
+}

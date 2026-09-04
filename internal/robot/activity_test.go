@@ -2760,3 +2760,125 @@ func TestOutputSequenceScopesAreIndependent(t *testing.T) {
 		t.Errorf("scope B sequence = %d, want 0", b2.Sequence)
 	}
 }
+
+// TestObserveActivityStateSurvivesOneShotProcesses pins ntm#301: a StateClassifier
+// is per-process, so a one-shot `ntm activity` reported every state as brand
+// new. The durable watermark must hold state_since steady while the state is
+// unchanged, and move it only when the state actually changes.
+func TestObserveActivityStateSurvivesOneShotProcesses(t *testing.T) {
+	store := newMockWatermarkStore()
+	started := time.Date(2026, 9, 3, 11, 30, 0, 0, time.UTC)
+	scope := "agent-factory|%9|4242"
+
+	first, err := ObserveActivityState(store, scope, StateWaiting, started)
+	if err != nil {
+		t.Fatalf("first observation: %v", err)
+	}
+	second, err := ObserveActivityState(store, scope, StateWaiting, started.Add(37*time.Second))
+	if err != nil {
+		t.Fatalf("second observation: %v", err)
+	}
+	if !first.Equal(started) || !second.Equal(started) {
+		t.Fatalf("stable WAITING state_since = %v then %v, want %v both times", first, second, started)
+	}
+
+	changedAt := started.Add(38 * time.Second)
+	changed, err := ObserveActivityState(store, scope, StateThinking, changedAt)
+	if err != nil {
+		t.Fatalf("changed observation: %v", err)
+	}
+	if !changed.Equal(changedAt) {
+		t.Fatalf("THINKING state_since = %v, want the transition time %v", changed, changedAt)
+	}
+	stableAgain, err := ObserveActivityState(store, scope, StateThinking, changedAt.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("stable THINKING observation: %v", err)
+	}
+	if !stableAgain.Equal(changedAt) {
+		t.Fatalf("stable THINKING state_since = %v, want %v", stableAgain, changedAt)
+	}
+
+	// A different pane lifetime must not inherit that age.
+	other, err := ObserveActivityState(store, "agent-factory|%9|5252", StateThinking, changedAt.Add(2*time.Minute))
+	if err != nil {
+		t.Fatalf("other-scope observation: %v", err)
+	}
+	if other.Equal(changedAt) {
+		t.Fatal("a new pane PID inherited the previous pane's state age")
+	}
+}
+
+// TestObserveActivityStateWithoutStore keeps the degradation path honest: with
+// no runtime store the caller still gets a usable timestamp, never a zero time.
+func TestObserveActivityStateWithoutStore(t *testing.T) {
+	at := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
+	got, err := ObserveActivityState(nil, "s|%1|1", StateWaiting, at)
+	if err != nil {
+		t.Fatalf("nil store: %v", err)
+	}
+	if !got.Equal(at) {
+		t.Fatalf("nil store state_since = %v, want %v", got, at)
+	}
+	if got, err := ObserveActivityState(nil, "s|%1|1", StateWaiting, time.Time{}); err != nil || got.IsZero() {
+		t.Fatalf("zero observedAt must be filled in: %v, %v", got, err)
+	}
+}
+
+// TestObserveActivityStateIgnoresFutureWatermark guards against a corrupt or
+// clock-skewed watermark producing a negative age.
+func TestObserveActivityStateIgnoresFutureWatermark(t *testing.T) {
+	store := newMockWatermarkStore()
+	now := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
+	future := now.Add(time.Hour)
+	if err := store.SetWatermark(&state.OutputWatermark{
+		WatermarkType: WatermarkTypeActivityState,
+		Scope:         "s|%1|1",
+		LastTs:        &future,
+		Consumer:      string(StateWaiting),
+	}); err != nil {
+		t.Fatalf("seed watermark: %v", err)
+	}
+	got, err := ObserveActivityState(store, "s|%1|1", StateWaiting, now)
+	if err != nil {
+		t.Fatalf("observe: %v", err)
+	}
+	if !got.Equal(now) {
+		t.Fatalf("future watermark state_since = %v, want the observation time %v", got, now)
+	}
+}
+
+// TestStateClassifierLimitsTransientMarkersToVisiblePane pins the other half of
+// ntm#301: a capture includes scrollback, so on a short pane a codex "Working"
+// spinner that has scrolled off must not keep the pane in THINKING.
+func TestStateClassifierLimitsTransientMarkersToVisiblePane(t *testing.T) {
+	const offscreenSpinner = "• Working (12s • Esc to interrupt)\n" +
+		"historical output\n" +
+		"more historical output\n" +
+		"\n" +
+		"▌ Ask Codex to do something\n" +
+		"›\n" +
+		"  ⏎ send   ⌃J newline   ⌃T transcript   ⌃C quit\n"
+
+	idle := NewStateClassifier("%9", &ClassifierConfig{AgentType: "codex", PaneWidth: 80, PaneHeight: 4})
+	activity, err := idle.ClassifyWithOutput(offscreenSpinner)
+	if err != nil {
+		t.Fatalf("idle classification: %v", err)
+	}
+	if activity.State != StateWaiting {
+		t.Fatalf("off-screen spinner classified %s, want %s", activity.State, StateWaiting)
+	}
+
+	const onscreenSpinner = "historical output\n" +
+		"• Working (12s • Esc to interrupt)\n" +
+		"▌ Ask Codex to do something\n" +
+		"›\n" +
+		"  ⏎ send   ⌃J newline   ⌃T transcript   ⌃C quit\n"
+	working := NewStateClassifier("%10", &ClassifierConfig{AgentType: "codex", PaneWidth: 80, PaneHeight: 4})
+	activity, err = working.ClassifyWithOutput(onscreenSpinner)
+	if err != nil {
+		t.Fatalf("working classification: %v", err)
+	}
+	if activity.State != StateThinking {
+		t.Fatalf("on-screen spinner classified %s, want %s", activity.State, StateThinking)
+	}
+}

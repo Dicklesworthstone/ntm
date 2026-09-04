@@ -7775,3 +7775,23 @@ func TestRootVersionFlagRegistered(t *testing.T) {
 		t.Fatalf("version template %q does not match the 'ntm version' headline", tmpl)
 	}
 }
+
+// TestShouldInitializeRobotPersistenceForActivity pins that `ntm activity`
+// opens the runtime store: without it there is no watermark to make state_since
+// durable across one-shot invocations (ntm#301).
+func TestShouldInitializeRobotPersistenceForActivity(t *testing.T) {
+	origArgs := os.Args
+	t.Cleanup(func() { os.Args = origArgs })
+	os.Args = []string{"ntm", "activity", "agent-factory", "--json"}
+
+	cmd := &cobra.Command{Use: "activity"}
+	if !shouldInitializeRobotPersistence(cmd) {
+		t.Fatal("activity must initialize persistence for durable state_since")
+	}
+	if robotPersistenceRefreshesProjection(cmd) {
+		t.Fatal("activity must not pay for the bv/br projection refresh")
+	}
+	if !robotPersistenceRefreshesProjection(&cobra.Command{Use: "status"}) {
+		t.Fatal("other commands must keep the projection refresh")
+	}
+}

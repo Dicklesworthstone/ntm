@@ -105,9 +105,17 @@ type activityOptions struct {
 	filterPane        string
 	watchMode         bool
 	interval          time.Duration
+	// watermarkStore is the runtime store used to make state age durable
+	// across one-shot invocations. PersistentPreRun opens it for the real
+	// command path; carrying it explicitly keeps library/unit callers off the
+	// mutable package global.
+	watermarkStore robot.WatermarkStore
 }
 
 func runActivity(session string, opts activityOptions) error {
+	if opts.watermarkStore == nil {
+		opts.watermarkStore = robotStateStore
+	}
 	// bd-ixy2t: emit a JSON envelope on early-fail when --json is set so
 	// automation pipelines (`ntm activity --json | jq ...`) always see a
 	// parseable failure on stdout instead of a stderr "Error:" line.
@@ -263,7 +271,7 @@ func collectActivityData(session string, opts activityOptions) (*activityResult,
 
 	result := &activityResult{
 		Session:    session,
-		CapturedAt: time.Now(),
+		CapturedAt: time.Now().UTC(),
 		Agents:     make([]agentInfo, 0),
 		Summary:    make(map[string]int),
 	}
@@ -283,7 +291,9 @@ func collectActivityData(session string, opts activityOptions) (*activityResult,
 
 		// Create classifier and get state
 		classifier := robot.NewStateClassifier(pane.ID, &robot.ClassifierConfig{
-			AgentType: agentType,
+			AgentType:  agentType,
+			PaneWidth:  pane.Width,
+			PaneHeight: pane.Height,
 		})
 
 		activity, err := classifier.Classify()
@@ -300,10 +310,26 @@ func collectActivityData(session string, opts activityOptions) (*activityResult,
 			continue
 		}
 
-		// Calculate duration
+		// A one-shot `ntm activity` builds a fresh classifier, so its in-memory
+		// StateSince is necessarily "now" and every state looked brand new.
+		// Reconcile through the runtime store so state_since is stable and
+		// duration actually grows across invocations and watch ticks.
+		stateSince := activity.StateSince
+		if durableSince, persistErr := robot.ObserveActivityState(
+			opts.watermarkStore,
+			activityStateScope(session, pane),
+			activity.State,
+			result.CapturedAt,
+		); persistErr == nil {
+			stateSince = durableSince
+		}
+
+		// Measure against the frame's own timestamp so every row shares one
+		// clock, and a future or corrupt watermark cannot produce a negative
+		// duration.
 		var duration time.Duration
-		if !activity.StateSince.IsZero() {
-			duration = time.Since(activity.StateSince)
+		if !stateSince.IsZero() && !stateSince.After(result.CapturedAt) {
+			duration = result.CapturedAt.Sub(stateSince)
 		}
 
 		info := agentInfo{
@@ -315,7 +341,7 @@ func collectActivityData(session string, opts activityOptions) (*activityResult,
 			Confidence:  activity.Confidence,
 			Velocity:    activity.Velocity,
 			Duration:    duration,
-			StateSince:  activity.StateSince,
+			StateSince:  stateSince,
 		}
 
 		result.Agents = append(result.Agents, info)
@@ -323,6 +349,13 @@ func collectActivityData(session string, opts activityOptions) (*activityResult,
 	}
 
 	return result, nil
+}
+
+// activityStateScope identifies one pane LIFETIME for the durable state-age
+// watermark. tmux recycles pane IDs, and the same index can belong to a
+// different window, so the scope binds session, pane ID, and the pane's PID.
+func activityStateScope(session string, pane tmux.Pane) string {
+	return fmt.Sprintf("%s|%s|%d", session, pane.ID, pane.PID)
 }
 
 func detectAgentTypeFromPane(pane tmux.Pane) string {

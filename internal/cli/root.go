@@ -824,7 +824,7 @@ Shell Integration:
 		}
 
 		if shouldInitializeRobotPersistence(cmd) {
-			if err := initializeRobotPersistence(cmd.Context()); err != nil {
+			if err := initializeRobotPersistence(cmd.Context(), robotPersistenceRefreshesProjection(cmd)); err != nil {
 				return err
 			}
 		}
@@ -3380,6 +3380,11 @@ func shouldInitializeRobotPersistence(cmd *cobra.Command) bool {
 	if cmd != nil && cmd.Name() == "serve" {
 		return false
 	}
+	// `ntm activity` is not a --robot- command, but it needs the runtime store
+	// to keep pane state age stable across one-shot invocations (ntm#301).
+	if cmd != nil && cmd.Name() == activityCommandName {
+		return true
+	}
 
 	for _, arg := range os.Args[1:] {
 		if arg == "--schema" {
@@ -3411,7 +3416,19 @@ func robotFlagSkipsPersistence(arg string) bool {
 	}
 }
 
-func initializeRobotPersistence(ctx context.Context) error {
+// activityCommandName is the cobra name of the `ntm activity` command.
+const activityCommandName = "activity"
+
+// robotPersistenceRefreshesProjection reports whether opening the runtime store
+// should also refresh the normalized bv/br projection. `ntm activity` only
+// needs the store's watermarks; the projection refresh is a bv/br round trip
+// with a 10s budget that would tax a command whose whole point is a fast pane
+// snapshot.
+func robotPersistenceRefreshesProjection(cmd *cobra.Command) bool {
+	return cmd == nil || cmd.Name() != activityCommandName
+}
+
+func initializeRobotPersistence(ctx context.Context, refreshProjection bool) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -3437,6 +3454,10 @@ func initializeRobotPersistence(ctx context.Context) error {
 	))
 	robot.SetProjectionStore(store)
 	robotStateStore = store
+
+	if !refreshProjection {
+		return nil
+	}
 
 	// Assignment commands perform their own strict policy validation before
 	// consulting bv/br. Keep the persistence store available to the command, but
