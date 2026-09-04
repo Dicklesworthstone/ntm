@@ -303,7 +303,19 @@ func canUseLegacyLayoutFallback(panes []PaneState) bool {
 }
 
 func getSessionActivePaneID(sessionName string) (string, error) {
-	return tmux.DefaultClient.Run("display-message", "-p", "-t", tmux.TargetSession(sessionName), "#{pane_id}")
+	// `-t =name` resolves for most commands, but `display-message -p` on tmux
+	// 3.6 answers it with exit 0 and EMPTY output, which silently left the
+	// pane_active fallback (the last window's active pane) in charge. The
+	// `=name:` form resolves to the session's current window and its pane.
+	paneID, err := tmux.DefaultClient.Run("display-message", "-p", "-t", tmux.SessionOptionTarget(sessionName), "#{pane_id}")
+	if err != nil {
+		return "", err
+	}
+	paneID = strings.TrimSpace(paneID)
+	if paneID == "" {
+		return "", fmt.Errorf("tmux reported no selected pane for session %s", sessionName)
+	}
+	return paneID, nil
 }
 
 // isGitRepo checks if a directory is a git repository.

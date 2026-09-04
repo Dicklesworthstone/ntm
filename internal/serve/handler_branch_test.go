@@ -4794,7 +4794,12 @@ func TestHandleRunScan_SuccessWithPath(t *testing.T) {
 	resetScannerStoreForTest()
 	s, _ := setupTestServer(t)
 
-	customPath := t.TempDir()
+	// A custom scan path must stay inside the project directory (the handler
+	// refuses anything else with 400), so scan a subdirectory of it.
+	customPath := filepath.Join(s.projectDirSnapshot(), "scan-target")
+	if err := os.MkdirAll(customPath, 0o755); err != nil {
+		t.Fatalf("mkdir custom path: %v", err)
+	}
 	body := fmt.Sprintf(`{"path":%q}`, customPath)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/scanner/run", strings.NewReader(body))
 	req.Header.Set("Content-Length", fmt.Sprintf("%d", len(body)))
