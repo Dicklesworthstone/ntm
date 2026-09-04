@@ -2855,9 +2855,9 @@ func TestComposerLineEmpty_BottomMostMarkerOnly(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			found, empty := composerLineEmpty(tc.capture, []string{tc.marker}, nil)
+			found, empty, _ := composerBlockEmpty(tc.capture, []string{tc.marker}, nil)
 			if found != tc.wantFound || empty != tc.wantEmpty {
-				t.Fatalf("composerLineEmpty = (found=%v, empty=%v), want (found=%v, empty=%v)", found, empty, tc.wantFound, tc.wantEmpty)
+				t.Fatalf("composerBlockEmpty = (found=%v, empty=%v), want (found=%v, empty=%v)", found, empty, tc.wantFound, tc.wantEmpty)
 			}
 		})
 	}
@@ -2869,16 +2869,16 @@ func TestComposerLineEmpty_BottomMostMarkerOnly(t *testing.T) {
 // verified clear on an idle pane would false-fail.
 func TestComposerLineEmpty_PlaceholderCountsAsEmpty(t *testing.T) {
 	capture := "chat\n❯ Try \"refactor <filepath>\"\n────\n"
-	found, empty := composerLineEmpty(capture, []string{"❯"}, composerPlaceholderPrefixes(AgentClaude))
+	found, empty, _ := composerBlockEmpty(capture, []string{"❯"}, composerPlaceholderPrefixes(AgentClaude))
 	if !found || !empty {
 		t.Fatalf("claude placeholder: got (found=%v, empty=%v), want (true, true)", found, empty)
 	}
-	found, empty = composerLineEmpty("› Ask Codex to do anything\n", []string{"›"}, composerPlaceholderPrefixes(AgentCodex))
+	found, empty, _ = composerBlockEmpty("› Ask Codex to do anything\n", []string{"›"}, composerPlaceholderPrefixes(AgentCodex))
 	if !found || !empty {
 		t.Fatalf("codex placeholder: got (found=%v, empty=%v), want (true, true)", found, empty)
 	}
 	// Real residue must still read as non-empty.
-	found, empty = composerLineEmpty("❯ Try harder next time, agent\n", []string{"❯"}, composerPlaceholderPrefixes(AgentClaude))
+	found, empty, _ = composerBlockEmpty("❯ Try harder next time, agent\n", []string{"❯"}, composerPlaceholderPrefixes(AgentClaude))
 	if !found {
 		t.Fatalf("residue: marker not found")
 	}
@@ -2991,5 +2991,129 @@ func TestNewSendBufferNameUniqueUnderConcurrency(t *testing.T) {
 		if !strings.HasPrefix(name, prefix) {
 			t.Fatalf("buffer name %q missing PID prefix %q (cross-process uniqueness)", name, prefix)
 		}
+	}
+}
+
+// claudeComposerBox renders a bordered Claude Code composer around the given
+// rows, matching the frame shape a wrapped entry produces.
+func claudeComposerBox(rows ...string) string {
+	out := "⏺ Previous turn output\n\n╭──────────────────────────────────────────────╮\n"
+	for _, row := range rows {
+		out += "│ " + row + "  │\n"
+	}
+	out += "╰──────────────────────────────────────────────╯\n  ? for shortcuts\n"
+	return out
+}
+
+// TestComposerBlockEmptyCoversWrappedEntries is the ntm#300 regression: a
+// stranded Claude prompt long enough to wrap renders its tail on the rows BELOW
+// the marker, so a verifier that only reads the marker row calls a
+// half-cleared composer "empty" and lets the leftover text survive delivery.
+func TestComposerBlockEmptyCoversWrappedEntries(t *testing.T) {
+	markers := composerMarkersForAgent(AgentClaude)
+	placeholders := composerPlaceholderPrefixes(AgentClaude)
+
+	wrapped := claudeComposerBox(
+		"❯ this is a long stranded prompt that wrapped",
+		"  across several visual rows and is one entry",
+		"  that must be gone before delivery",
+	)
+	found, empty, text := composerBlockEmpty(wrapped, markers, placeholders)
+	if !found || empty {
+		t.Fatalf("wrapped entry: found=%v empty=%v, want found and not empty", found, empty)
+	}
+	if !strings.Contains(text, "across several visual rows") {
+		t.Fatalf("residual text lost the continuation rows: %q", text)
+	}
+
+	// The exact half-cleared shape the old single-row check accepted.
+	halfCleared := claudeComposerBox(
+		"❯ ",
+		"  across several visual rows and is one entry",
+	)
+	if _, empty, _ := composerBlockEmpty(halfCleared, markers, placeholders); empty {
+		t.Fatal("a composer whose marker row was cleared but whose continuation rows still hold text must NOT verify as empty")
+	}
+
+	// A genuinely empty composer stays empty.
+	if _, empty, _ := composerBlockEmpty(claudeComposerBox("❯ "), markers, placeholders); !empty {
+		t.Fatal("an empty bordered composer must verify as empty")
+	}
+	// Placeholder hint text counts as empty.
+	if _, empty, _ := composerBlockEmpty(claudeComposerBox(`❯ Try "fix the auth bug"`), markers, placeholders); !empty {
+		t.Fatal("TUI placeholder text must count as an empty composer")
+	}
+	// An unboxed marker line keeps the old single-row behavior.
+	if _, empty, _ := composerBlockEmpty("transcript\n❯ \n", markers, placeholders); !empty {
+		t.Fatal("an unboxed empty composer must verify as empty")
+	}
+	if _, empty, _ := composerBlockEmpty("transcript\n❯ stranded\n", markers, placeholders); empty {
+		t.Fatal("an unboxed composer holding text must not verify as empty")
+	}
+	// No marker at all is unverifiable, not empty.
+	if found, _, _ := composerBlockEmpty("no composer here\n", markers, placeholders); found {
+		t.Fatal("a capture with no marker must report found=false")
+	}
+}
+
+// TestInspectComposerReportsWrappedUnsubmittedInput pins that the
+// message-independent composer view sees a wrapped entry too, so
+// `unsubmitted_input` is true for exactly the panes --clear-input must handle.
+func TestInspectComposerReportsWrappedUnsubmittedInput(t *testing.T) {
+	state := InspectComposer(claudeComposerBox(
+		"❯ ",
+		"  a wrapped entry whose head row was cleared",
+	), AgentClaude)
+	if !state.MarkerVisible || !state.HoldsText {
+		t.Fatalf("InspectComposer(wrapped) = %+v, want MarkerVisible and HoldsText", state)
+	}
+	if state := InspectComposer(claudeComposerBox("❯ "), AgentClaude); !state.MarkerVisible || state.HoldsText {
+		t.Fatalf("InspectComposer(empty) = %+v, want MarkerVisible without HoldsText", state)
+	}
+}
+
+// TestComposerClearEscalationIsBoundedAndKeyOnly pins the escalation ladder
+// ntm#300 needs: the per-agent ritual, then end-of-entry + line-kill rounds,
+// then a measured backspace drain that depends on no editor binding at all.
+func TestComposerClearEscalationIsBoundedAndKeyOnly(t *testing.T) {
+	if composerClearMaxRounds < 2 {
+		t.Fatalf("composerClearMaxRounds = %d, want at least one escalation round", composerClearMaxRounds)
+	}
+	if got := composerClearEscalationKeys; len(got) != 2 || got[0] != "C-e" || got[1] != "C-u" {
+		t.Fatalf("composerClearEscalationKeys = %v, want [C-e C-u]", got)
+	}
+
+	if got := backspaceCount(""); got <= 0 {
+		t.Fatalf("backspaceCount(\"\") = %d, want a positive margin", got)
+	}
+	if got, want := backspaceCount("abcde"), len("abcde")+8; got != want {
+		t.Fatalf("backspaceCount = %d, want %d", got, want)
+	}
+	// Multi-byte runes count once each, not per byte.
+	if got, want := backspaceCount("héllo→"), 6+8; got != want {
+		t.Fatalf("backspaceCount(multibyte) = %d, want %d", got, want)
+	}
+	long := strings.Repeat("x", composerClearMaxBackspaces*2)
+	if got := backspaceCount(long); got != composerClearMaxBackspaces {
+		t.Fatalf("backspaceCount(long) = %d, want the cap %d", got, composerClearMaxBackspaces)
+	}
+}
+
+// TestComposerClearBlockerVocabularyIsDistinct pins that the typed reasons a
+// clear can report are distinct and non-empty except for "no blocker", so the
+// dispatch surface can render them without ambiguity (ntm#300).
+func TestComposerClearBlockerVocabularyIsDistinct(t *testing.T) {
+	if ComposerBlockerNone != "" {
+		t.Fatalf("ComposerBlockerNone = %q, want the empty string", ComposerBlockerNone)
+	}
+	seen := map[ComposerClearBlocker]bool{}
+	for _, blocker := range []ComposerClearBlocker{ComposerBlockerInput, ComposerBlockerQueued, ComposerBlockerModal} {
+		if blocker == ComposerBlockerNone {
+			t.Fatalf("blocker %q collides with ComposerBlockerNone", blocker)
+		}
+		if seen[blocker] {
+			t.Fatalf("duplicate blocker value %q", blocker)
+		}
+		seen[blocker] = true
 	}
 }

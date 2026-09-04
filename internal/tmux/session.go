@@ -2195,7 +2195,7 @@ func composerMarkersForAgent(agentType AgentType) []string {
 	case AgentGrok:
 		// Grok Build renders a bordered composer ("│ ❯ <text>  │"); the same
 		// heavy chevron is the live-composer marker. Lines are trimmed of the
-		// trailing box border before emptiness checks (see composerLineEmpty).
+		// trailing box border before emptiness checks (see composerBlockEmpty).
 		return []string{"❯"}
 	default:
 		return nil
@@ -2231,36 +2231,6 @@ func composerPlaceholderPrefixes(agentType AgentType) []string {
 	}
 }
 
-// composerLineEmpty reports whether the bottom-most marker line in the
-// capture carries no composer text. found=false means no marker line was
-// visible at all (verification impossible). Hint text the TUI renders in an
-// empty composer counts as empty.
-func composerLineEmpty(capture string, markers []string, placeholderPrefixes []string) (found, empty bool) {
-	lines := strings.Split(capture, "\n")
-	for i := len(lines) - 1; i >= 0; i-- {
-		idx, marker := indexAnyMarker(lines[i], markers)
-		if idx < 0 {
-			continue
-		}
-		text := strings.TrimSpace(lines[i][idx+len(marker):])
-		// Grok Build's composer is a bordered box, so the marker line ends
-		// with the box's right border ("│ ❯ <text>   │"). Strip trailing
-		// border glyphs before the emptiness check; harmless for TUIs whose
-		// composer line has no right border.
-		text = strings.TrimSpace(strings.TrimRight(text, "│"))
-		if text == "" {
-			return true, true
-		}
-		for _, prefix := range placeholderPrefixes {
-			if strings.HasPrefix(text, prefix) {
-				return true, true
-			}
-		}
-		return true, false
-	}
-	return false, false
-}
-
 // composerBlockMaxRows bounds how far below the marker line the composer
 // block scan looks for wrapped continuation rows. Claude Code's composer is a
 // bordered box that grows downward as the entry wraps; a bound keeps a
@@ -2274,7 +2244,7 @@ const boxRuleRunes = "─━╌┄┈╰╯└┘╭╮┌┐┏┓┗┛"
 // composerBlockEmpty reports whether the LIVE composer block — the bottom-most
 // marker line together with its wrapped continuation rows — carries any text.
 //
-// composerLineEmpty only looks at the marker row. A Claude Code entry long
+// Only the marker row used to be checked. A Claude Code entry long
 // enough to wrap renders its tail on the rows *below* the marker inside the
 // same bordered box, so a clear that emptied only the marker row verified as
 // "empty" while the logical entry was still there — and, symmetrically, a
@@ -2588,12 +2558,28 @@ func (c *Client) ClearComposerContext(ctx context.Context, target string, agentT
 			return result, fmt.Errorf("capture pane for composer clear verification: %w", err)
 		}
 
-		// Never send line-kill keys into a dialog: they act as menu
-		// navigation there, which is how a "recovery" can submit something.
+		// No marker at all (pane initializing, or an agent actively working
+		// with its composer off screen): unverifiable, so fire the ritual once
+		// and report a best-effort clear, exactly as before. Refusing here
+		// would break --clear-input sends that used to work.
+		markerVisible, _, _ := composerBlockEmpty(capture, markers, composerPlaceholderPrefixes(agentType))
+		if !markerVisible {
+			if err := sendKeys(ComposerClearKeys(agentType)); err != nil {
+				return result, err
+			}
+			result.Rounds = round
+			result.Cleared = true
+			return result, nil
+		}
+
+		// A marker that reads as dialog chrome is a selection cursor, not an
+		// input box. Never send line-kill keys there: they act as menu
+		// navigation, which is how a "recovery" can submit something.
 		if !composerVisibleForDelivery(capture, markers) {
 			result.Blocker = ComposerBlockerModal
 			result.Verified = true
 			result.Residual = ""
+			result.Rounds = round
 			return result, nil
 		}
 

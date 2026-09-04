@@ -86,12 +86,12 @@ func TestCodexComposerHoldsPayload_UltraGlyph(t *testing.T) {
 func TestComposerLineEmpty_UltraGlyph(t *testing.T) {
 	markers := composerMarkersForAgent(AgentCodex)
 
-	found, empty := composerLineEmpty(codexUltraIdleFrame, markers, composerPlaceholderPrefixes(AgentCodex))
+	found, empty, _ := composerBlockEmpty(codexUltraIdleFrame, markers, composerPlaceholderPrefixes(AgentCodex))
 	if !found || !empty {
 		t.Fatalf("ultra idle frame: got (found=%v, empty=%v), want (true, true)", found, empty)
 	}
 
-	found, empty = composerLineEmpty("transcript\n» stale half-typed prompt\n", markers, composerPlaceholderPrefixes(AgentCodex))
+	found, empty, _ = composerBlockEmpty("transcript\n» stale half-typed prompt\n", markers, composerPlaceholderPrefixes(AgentCodex))
 	if !found || empty {
 		t.Fatalf("ultra residue: got (found=%v, empty=%v), want (true, false)", found, empty)
 	}
