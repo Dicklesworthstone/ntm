@@ -21,10 +21,17 @@
 // features (per-pane options like allow-set-title), so no runtime version
 // guard is needed here.
 //
-// The ONE exception (verified empirically): session/window-scoped option
-// commands (`set-option`/`show-options` without `-p`) reject `=name` with
-// "no such session: =name" but accept `=name:`. Use SessionOptionTarget for
-// those call sites.
+// TWO exceptions (verified empirically):
+//
+//   - session/window-scoped option commands (`set-option`/`show-options`
+//     without `-p`) reject `=name` with "no such session: =name" but accept
+//     `=name:`. Use SessionOptionTarget for those call sites.
+//   - `display-message -p -t =name FORMAT` exits 0 with EMPTY output on tmux
+//     3.4 and 3.6a (even for a session that does not exist), so pane-format
+//     queries keyed on a bare exact session silently read as "" (ntm#310:
+//     checkpoints recorded an empty working_dir and skipped Git capture).
+//     Use SessionPaneTarget for those call sites; `=name:` resolves to the
+//     session's current window and its active pane.
 //
 // G6 single-definition convention: every `-t` argument that can carry a
 // session name MUST be routed through one of these helpers. Do not hand-roll
@@ -57,6 +64,25 @@ func ExactTarget(target string) string {
 // This is the canonical helper for `-t` arguments that are session names.
 func TargetSession(name string) string {
 	return ExactTarget(name)
+}
+
+// SessionPaneTarget returns the exact-match target that resolves a bare
+// session name to its current window's active pane (`=name:`). Use it for
+// pane-scoped format queries such as `display-message -p -t … '#{…}'`, which
+// answer the bare `=name` form with exit 0 and empty output (tmux 3.4, 3.6a).
+// Pane IDs, session/window IDs and current-session relative forms are
+// returned unchanged; an already exact `=name` gains the trailing colon.
+func SessionPaneTarget(name string) string {
+	if name == "" {
+		return name
+	}
+	switch name[0] {
+	case '%', '$', '@', ':', '.':
+		return name
+	case '=':
+		return name + ":"
+	}
+	return "=" + name + ":"
 }
 
 // SessionOptionTarget returns the exact-match target for session/window

@@ -134,7 +134,9 @@ func newRotationChecker(session, workDir string, coordCfg CoordinatorConfig, ntm
 		ctxMonitor:         ctxMonitor,
 		getPanes:           tmux.GetPanes,
 		sessionCreated: func(session string) (time.Time, bool) {
-			out, err := tmux.DefaultClient.Run("display-message", "-p", "-t", tmux.TargetSession(session), "#{session_created}")
+			// Pane-qualified exact target: the bare `=name` form yields empty
+			// output from `display-message -p` on tmux 3.4/3.6a (ntm#310).
+			out, err := tmux.DefaultClient.Run("display-message", "-p", "-t", tmux.SessionPaneTarget(session), "#{session_created}")
 			if err != nil {
 				return time.Time{}, false
 			}

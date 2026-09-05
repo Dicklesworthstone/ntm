@@ -304,12 +304,19 @@ func getSessionWorkDir(session string) (string, error) {
 	if !tmux.SessionExists(session) {
 		return "", fmt.Errorf("session %q does not exist", session)
 	}
-	cmd := exec.Command(tmux.BinaryPath(), "display-message", "-p", "-t", tmux.TargetSession(session), "#{pane_current_path}")
+	// Pane-qualified exact target: `display-message -p -t =name` answers with
+	// empty output on tmux 3.4/3.6a (ntm#310), and an empty directory here
+	// would silently point every git command at the caller's cwd.
+	cmd := exec.Command(tmux.BinaryPath(), "display-message", "-p", "-t", tmux.SessionPaneTarget(session), "#{pane_current_path}")
 	out, err := cmd.Output()
 	if err != nil {
 		return "", err
 	}
-	return strings.TrimSpace(string(out)), nil
+	workDir := strings.TrimSpace(string(out))
+	if workDir == "" {
+		return "", fmt.Errorf("tmux reported no current path for the active pane of session %q", session)
+	}
+	return workDir, nil
 }
 
 // hasUncommittedChanges checks if there are uncommitted changes.

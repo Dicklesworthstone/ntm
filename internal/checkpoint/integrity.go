@@ -184,7 +184,11 @@ func (c *Checkpoint) validateSchema(result *IntegrityResult) {
 	}
 
 	if c.WorkingDir == "" {
-		result.Warnings = append(result.Warnings, "checkpoint has no working_dir")
+		warning := "checkpoint has no working_dir"
+		if c.WorkingDirError != "" {
+			warning += ": " + c.WorkingDirError
+		}
+		result.Warnings = append(result.Warnings, warning)
 	}
 
 	if len(c.Session.Panes) == 0 {
@@ -339,7 +343,13 @@ func (c *Checkpoint) validateConsistency(result *IntegrityResult) {
 	}
 
 	result.Details["pane_count"] = fmt.Sprintf("%d", len(c.Session.Panes))
-	result.Details["has_git_state"] = fmt.Sprintf("%v", c.Git.Branch != "")
+	result.Details["has_git_state"] = fmt.Sprintf("%v", c.Git.HasState())
+	if c.Git.Unavailable() {
+		result.Details["git_skip_reason"] = c.Git.SkipReason
+		if c.Git.SkipReason != GitSkipDisabled && c.Git.SkipReason != GitSkipNotRepository {
+			result.Warnings = append(result.Warnings, "git state was not captured: "+describeGitSkip(c.Git))
+		}
+	}
 }
 
 // GenerateManifest creates a manifest with checksums for all checkpoint files.

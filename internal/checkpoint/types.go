@@ -22,8 +22,14 @@ type Checkpoint struct {
 	Description string `json:"description,omitempty"`
 	// SessionName is the tmux session this checkpoint belongs to
 	SessionName string `json:"session_name"`
-	// WorkingDir is the working directory at checkpoint time
+	// WorkingDir is the working directory at checkpoint time. Empty when the
+	// session's active pane path could not be resolved; WorkingDirError then
+	// says why.
 	WorkingDir string `json:"working_dir"`
+	// WorkingDirError explains an empty WorkingDir (tmux query failure or an
+	// empty pane path). Omitted when WorkingDir resolved. Checkpoints written
+	// before this field existed omit it as well.
+	WorkingDirError string `json:"working_dir_error,omitempty"`
 	// CreatedAt is when the checkpoint was created
 	CreatedAt time.Time `json:"created_at"`
 	// Session contains the captured session state
@@ -154,6 +160,17 @@ type PaneState struct {
 
 // GitState captures the git repository state at checkpoint time.
 type GitState struct {
+	// Captured is true when the state below was read from a git repository
+	// at checkpoint time. It is false when capture was skipped or failed
+	// (SkipReason says why) and absent in checkpoints written before the
+	// field existed; use HasState to interpret those.
+	Captured bool `json:"captured"`
+	// SkipReason is set when Captured is false and explains why the zero
+	// values below must not be read as a clean repository: one of the
+	// GitSkip* constants.
+	SkipReason string `json:"skip_reason,omitempty"`
+	// SkipDetail carries the underlying error text for SkipReason, when any.
+	SkipDetail string `json:"skip_detail,omitempty"`
 	// Branch is the current branch name
 	Branch string `json:"branch"`
 	// Commit is the current HEAD commit SHA
@@ -170,6 +187,53 @@ type GitState struct {
 	UnstagedCount int `json:"unstaged_count"`
 	// UntrackedCount is the number of untracked files
 	UntrackedCount int `json:"untracked_count"`
+}
+
+// Git capture skip reasons recorded in GitState.SkipReason.
+const (
+	// GitSkipDisabled: git capture was turned off for this checkpoint.
+	GitSkipDisabled = "capture_disabled"
+	// GitSkipWorkingDirUnavailable: the session's working directory could not
+	// be resolved from tmux, so there was nowhere to run git.
+	GitSkipWorkingDirUnavailable = "working_dir_unavailable"
+	// GitSkipNotRepository: the working directory is not inside a git repository.
+	GitSkipNotRepository = "not_git_repository"
+	// GitSkipCaptureFailed: git commands failed; SkipDetail has the error.
+	GitSkipCaptureFailed = "capture_failed"
+)
+
+// HasState reports whether the GitState carries real repository state.
+// Checkpoints written before Captured existed are recognised by a non-empty
+// branch or commit.
+func (g GitState) HasState() bool {
+	return g.Captured || g.Branch != "" || g.Commit != ""
+}
+
+// Unavailable reports whether git state is explicitly known to be missing,
+// as opposed to captured or simply undeclared by an older checkpoint.
+func (g GitState) Unavailable() bool {
+	return !g.HasState() && g.SkipReason != ""
+}
+
+// DescribeGitUnavailable explains why a checkpoint carries no git state, or
+// returns "" when it does (or when an older checkpoint left it undeclared).
+// A missing working directory is reported ahead of the derived git skip.
+func DescribeGitUnavailable(cp *Checkpoint) string {
+	if cp == nil || !cp.Git.Unavailable() {
+		return ""
+	}
+	if cp.Git.SkipReason == GitSkipWorkingDirUnavailable && cp.WorkingDirError != "" {
+		return GitSkipWorkingDirUnavailable + ": " + cp.WorkingDirError
+	}
+	return describeGitSkip(cp.Git)
+}
+
+// describeGitSkip renders SkipReason (and SkipDetail, if any) for humans.
+func describeGitSkip(g GitState) string {
+	if g.SkipDetail == "" {
+		return g.SkipReason
+	}
+	return g.SkipReason + " (" + g.SkipDetail + ")"
 }
 
 // Summary returns a brief summary of the checkpoint.

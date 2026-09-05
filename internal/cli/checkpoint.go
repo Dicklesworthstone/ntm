@@ -160,7 +160,10 @@ Examples:
 					"created_at":        cp.CreatedAt,
 					"description":       cp.Description,
 					"pane_count":        cp.PaneCount,
-					"has_git":           cp.Git.Commit != "",
+					"working_dir":       cp.WorkingDir,
+					"working_dir_error": cp.WorkingDirError,
+					"has_git":           cp.Git.HasState(),
+					"git_unavailable":   checkpoint.DescribeGitUnavailable(cp),
 					"assignments_count": len(cp.Assignments),
 					"assignments":       cp.Assignments,
 					"bv_summary":        cp.BVSummary,
@@ -181,6 +184,8 @@ Examples:
 					fmt.Printf("  Uncommitted: %d staged, %d unstaged\n",
 						cp.Git.StagedCount, cp.Git.UnstagedCount)
 				}
+			} else if reason := checkpoint.DescribeGitUnavailable(cp); reason != "" {
+				fmt.Printf("  Git: %snot captured%s (%s)\n", colorize(t.Warning), "\033[0m", reason)
 			}
 			if cp.Description != "" {
 				fmt.Printf("  Description: %s\n", cp.Description)
@@ -555,6 +560,9 @@ Examples:
 				} else {
 					fmt.Printf("    Status: %sclean%s\n", colorize(t.Success), "\033[0m")
 				}
+			} else if reason := checkpoint.DescribeGitUnavailable(cp); reason != "" {
+				fmt.Println()
+				fmt.Printf("  %sGit State:%s %snot captured%s (%s)\n", "\033[1m", "\033[0m", colorize(t.Warning), "\033[0m", reason)
 			}
 
 			if summary := summarizeAssignmentCounts(cp.Assignments); summary.total > 0 {

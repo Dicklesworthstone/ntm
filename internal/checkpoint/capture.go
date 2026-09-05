@@ -59,10 +59,13 @@ func (c *Capturer) Create(sessionName, name string, opts ...CheckpointOption) (*
 	// Generate checkpoint ID
 	checkpointID := GenerateID(name)
 
-	// Get working directory from session
-	workingDir, err := getSessionDir(sessionName)
-	if err != nil {
+	// Get working directory from session. An unresolvable directory is
+	// recorded on the checkpoint instead of silently degrading to clean
+	// defaults (ntm#310).
+	workingDir, workingDirErr := getSessionDir(sessionName)
+	if workingDirErr != nil {
 		workingDir = ""
+		slog.Warn("failed to resolve session working directory; git state will not be captured", "session", sessionName, "error", workingDirErr)
 	}
 
 	// Capture session state
@@ -81,7 +84,11 @@ func (c *Capturer) Create(sessionName, name string, opts ...CheckpointOption) (*
 		WorkingDir:  workingDir,
 		CreatedAt:   time.Now(),
 		Session:     sessionState,
+		Git:         gitStateNotCaptured(options.captureGit, workingDirErr),
 		PaneCount:   len(sessionState.Panes),
+	}
+	if workingDirErr != nil {
+		cp.WorkingDirError = workingDirErr.Error()
 	}
 
 	// Save checkpoint first so directory exists
@@ -101,11 +108,13 @@ func (c *Capturer) Create(sessionName, name string, opts ...CheckpointOption) (*
 		slog.Warn("failed to capture some scrollback", "error", err)
 	}
 
-	// Capture git state if enabled and in a git repo
+	// Capture git state if enabled and the working directory resolved. A
+	// failed capture is recorded as such rather than left looking clean.
 	if options.captureGit && workingDir != "" {
 		gitState, err := c.captureGitState(workingDir, sessionName, checkpointID)
 		if err != nil {
 			slog.Warn("failed to capture git state", "error", err)
+			cp.Git = GitState{SkipReason: GitSkipCaptureFailed, SkipDetail: err.Error()}
 		} else {
 			cp.Git = gitState
 		}
@@ -193,14 +202,28 @@ func (c *Capturer) captureSessionState(sessionName string) (SessionState, error)
 	}, nil
 }
 
+// gitStateNotCaptured describes why git capture did not run before it was
+// attempted: disabled by option, or no working directory to run it in.
+func gitStateNotCaptured(captureEnabled bool, workingDirErr error) GitState {
+	if !captureEnabled {
+		return GitState{SkipReason: GitSkipDisabled}
+	}
+	if workingDirErr != nil {
+		return GitState{SkipReason: GitSkipWorkingDirUnavailable, SkipDetail: workingDirErr.Error()}
+	}
+	return GitState{}
+}
+
 // captureGitState captures the git repository state.
 func (c *Capturer) captureGitState(workingDir, sessionName, checkpointID string) (GitState, error) {
 	state := GitState{}
 
 	// Check if it's a git repository
 	if !isGitRepo(workingDir) {
+		state.SkipReason = GitSkipNotRepository
 		return state, nil
 	}
+	state.Captured = true
 
 	// Get current branch
 	branch, err := gitCommand(workingDir, "rev-parse", "--abbrev-ref", "HEAD")
@@ -256,14 +279,28 @@ func (c *Capturer) captureGitState(workingDir, sessionName, checkpointID string)
 	return state, nil
 }
 
-// getSessionDir gets the working directory for a session.
+// getSessionDir gets the working directory of the session's active pane.
+//
+// The target must be the pane-qualified exact form (`=name:`): `display-message
+// -p -t =name` exits 0 with empty output on tmux 3.4/3.6a, which used to be
+// recorded as an empty working_dir with Git capture silently skipped (ntm#310).
+// An empty answer is an error here so callers cannot mistake it for a path.
 func getSessionDir(sessionName string) (string, error) {
-	return tmux.DefaultClient.Run("display-message", "-p", "-t", tmux.TargetSession(sessionName), "#{pane_current_path}")
+	out, err := tmux.DefaultClient.Run("display-message", "-p", "-t", tmux.SessionPaneTarget(sessionName), "#{pane_current_path}")
+	if err != nil {
+		return "", err
+	}
+	dir := strings.TrimSpace(out)
+	if dir == "" {
+		return "", fmt.Errorf("tmux reported no current path for the active pane of session %s", sessionName)
+	}
+	return dir, nil
 }
 
-// getSessionLayout gets the tmux layout string for a session.
+// getSessionLayout gets the tmux layout string for the session's current
+// window (pane-qualified exact target; see getSessionDir).
 func getSessionLayout(sessionName string) (string, error) {
-	return tmux.DefaultClient.Run("display-message", "-p", "-t", tmux.TargetSession(sessionName), "#{window_layout}")
+	return tmux.DefaultClient.Run("display-message", "-p", "-t", tmux.SessionPaneTarget(sessionName), "#{window_layout}")
 }
 
 func getSessionWindowLayouts(sessionName string) ([]WindowLayoutState, error) {
@@ -307,7 +344,7 @@ func getSessionActivePaneID(sessionName string) (string, error) {
 	// 3.6 answers it with exit 0 and EMPTY output, which silently left the
 	// pane_active fallback (the last window's active pane) in charge. The
 	// `=name:` form resolves to the session's current window and its pane.
-	paneID, err := tmux.DefaultClient.Run("display-message", "-p", "-t", tmux.SessionOptionTarget(sessionName), "#{pane_id}")
+	paneID, err := tmux.DefaultClient.Run("display-message", "-p", "-t", tmux.SessionPaneTarget(sessionName), "#{pane_id}")
 	if err != nil {
 		return "", err
 	}

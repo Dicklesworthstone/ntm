@@ -407,11 +407,14 @@ func runGitInfoCommand(dir string, timeout time.Duration, args ...string) string
 
 // getLayout gets the current tmux layout for the session.
 func getLayout(sessionName string) string {
-	output, err := tmux.DefaultClient.Run("display-message", "-t", tmux.TargetSession(sessionName), "-p", "#{window_layout}")
-	if err != nil {
+	// Pane-qualified exact target: the bare `=name` form yields empty output
+	// from `display-message -p` on tmux 3.4/3.6a (ntm#310).
+	output, err := tmux.DefaultClient.Run("display-message", "-t", tmux.SessionPaneTarget(sessionName), "-p", "#{window_layout}")
+	layout := strings.TrimSpace(output)
+	if err != nil || layout == "" {
 		return "tiled" // Default fallback
 	}
 	// Return the layout string as-is. tmux select-layout accepts both
 	// named layouts (tiled, even-horizontal) and serialized geometry strings.
-	return strings.TrimSpace(output)
+	return layout
 }
