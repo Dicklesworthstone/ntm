@@ -38,6 +38,8 @@
 // `"=" + name` elsewhere.
 package tmux
 
+import "strings"
+
 // ExactTarget pins the session portion of a tmux target to exact-match by
 // prefixing tmux's `=` sigil. Targets that cannot be (or are already)
 // prefix-ambiguous are returned unchanged:
@@ -71,32 +73,32 @@ func TargetSession(name string) string {
 // pane-scoped format queries such as `display-message -p -t … '#{…}'`, which
 // answer the bare `=name` form with exit 0 and empty output (tmux 3.4, 3.6a).
 // Pane IDs, session/window IDs and current-session relative forms are
-// returned unchanged; an already exact `=name` gains the trailing colon.
+// returned unchanged; an already exact `=name` gains the trailing colon; a
+// compound target that already names a window or pane (`name:1`, `=name:`)
+// is only pinned to exact-match, never given a second colon.
 func SessionPaneTarget(name string) string {
-	if name == "" {
-		return name
-	}
-	switch name[0] {
-	case '%', '$', '@', ':', '.':
-		return name
-	case '=':
-		return name + ":"
-	}
-	return "=" + name + ":"
+	return sessionQualifiedTarget(name)
 }
 
 // SessionOptionTarget returns the exact-match target for session/window
 // scoped option commands (`set-option`, `show-options` without `-p`), which
 // reject the bare `=name` form but accept `=name:` (verified on tmux 3.6a).
 func SessionOptionTarget(name string) string {
+	return sessionQualifiedTarget(name)
+}
+
+// sessionQualifiedTarget is the shared `=name:` construction behind
+// SessionPaneTarget and SessionOptionTarget.
+func sessionQualifiedTarget(name string) string {
 	if name == "" {
 		return name
 	}
 	switch name[0] {
 	case '%', '$', '@', ':', '.':
 		return name
-	case '=':
-		return name + ":"
 	}
-	return "=" + name + ":"
+	if strings.Contains(name, ":") {
+		return ExactTarget(name)
+	}
+	return ExactTarget(name) + ":"
 }

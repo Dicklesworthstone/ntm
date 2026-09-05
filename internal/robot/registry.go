@@ -243,12 +243,7 @@ var (
 
 // GetRobotRegistry returns a detached snapshot of the cached robot registry.
 func GetRobotRegistry() *RobotRegistry {
-	robotRegistryBuildMu.Lock()
-	defer robotRegistryBuildMu.Unlock()
-	robotRegistryOnce.Do(func() {
-		robotRegistry = buildRobotRegistry()
-	})
-	return cloneRobotRegistry(robotRegistry)
+	return cloneRobotRegistry(cachedRobotRegistry())
 }
 
 // Surface returns a registry surface by name.
