@@ -1,10 +1,13 @@
 package assignment
 
 import (
+	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"os"
 	"strings"
 	"sync"
 )
@@ -50,9 +53,38 @@ func (s *AssignmentStore) AcquireExternalCleanupLock(ctx context.Context, beadID
 }
 
 func acquireAtomicOperationLock(ctx context.Context, storePath, namespace, identity string) (func(), error) {
+	lockPath := atomicOperationLockPath(storePath, namespace, identity)
+	return acquireReapableAssignmentFileLock(ctx, lockPath, storePath+".atomic.lock")
+}
+
+func atomicOperationLockPath(storePath, namespace, identity string) string {
 	digest := sha256.Sum256([]byte(namespace + "\x00" + identity))
-	lockPath := storePath + ".atomic-" + namespace + "-" + hex.EncodeToString(digest[:16]) + ".lock"
-	return acquireAssignmentFileLock(ctx, lockPath)
+	return storePath + ".atomic-" + namespace + "-" + hex.EncodeToString(digest[:16]) + ".lock"
+}
+
+// markLockFile gives this acquisition an identity that survives Close. An inode
+// comparison is insufficient here because a remove-and-create can immediately
+// reuse the same inode number.
+func markLockFile(lockFile *os.File) ([]byte, error) {
+	token := make([]byte, 32)
+	if _, err := rand.Read(token); err != nil {
+		return nil, err
+	}
+	if err := lockFile.Truncate(0); err != nil {
+		return nil, err
+	}
+	if _, err := lockFile.WriteAt(token, 0); err != nil {
+		return nil, err
+	}
+	return token, nil
+}
+
+// removeLockFileWithToken refuses to remove a path replaced after acquisition.
+func removeLockFileWithToken(lockPath string, token []byte) {
+	currentToken, err := os.ReadFile(lockPath)
+	if err == nil && bytes.Equal(token, currentToken) {
+		_ = os.Remove(lockPath)
+	}
 }
 
 func lockAssignmentPathLocally(ctx context.Context, path string) (func(), error) {

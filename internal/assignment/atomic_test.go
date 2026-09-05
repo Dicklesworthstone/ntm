@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -2827,6 +2829,94 @@ func TestAtomicOperationLockWaitHonorsContext(t *testing.T) {
 	}
 	if elapsed := time.Since(started); elapsed > time.Second {
 		t.Fatalf("context cancellation took %s", elapsed)
+	}
+}
+
+func TestAtomicOperationLockReapsIdentityFileButPreservesStableLocks(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	storePath := NewStore("atomic-lock-reap").path
+	lockPath := atomicOperationLockPath(storePath, "bead", "agent-factory-uygc")
+	guardPath := storePath + ".atomic.lock"
+
+	unlock, err := acquireAtomicBeadOperationLock(context.Background(), storePath, "agent-factory-uygc")
+	if err != nil {
+		t.Fatalf("acquire atomic operation lock: %v", err)
+	}
+	lockToken, err := os.ReadFile(lockPath)
+	if err != nil {
+		t.Fatalf("identity lock must exist while held: %v", err)
+	}
+	if len(lockToken) != 32 {
+		t.Fatalf("identity lock token length = %d, want 32", len(lockToken))
+	}
+	if _, err := os.Stat(guardPath); err != nil {
+		t.Fatalf("stable atomic guard must exist: %v", err)
+	}
+	unlock()
+
+	if _, err := os.Stat(lockPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("identity lock survived release: %v", err)
+	}
+	if _, err := os.Stat(guardPath); err != nil {
+		t.Fatalf("stable atomic guard was removed: %v", err)
+	}
+
+	storeUnlock, err := acquireStoreFileLock(storePath)
+	if err != nil {
+		t.Fatalf("acquire whole-store lock: %v", err)
+	}
+	storeUnlock()
+	if _, err := os.Stat(storePath + ".lock"); err != nil {
+		t.Fatalf("whole-store lock was removed: %v", err)
+	}
+}
+
+func TestAtomicOperationLockFilesStayBoundedAcrossUniqueIdentities(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	storePath := NewStore("atomic-lock-bounded").path
+
+	for i := range 200 {
+		identity := fmt.Sprintf("never-repeated-%d", i)
+		unlock, err := acquireAtomicBeadOperationLock(context.Background(), storePath, identity)
+		if err != nil {
+			t.Fatalf("acquire identity %q: %v", identity, err)
+		}
+		unlock()
+	}
+
+	matches, err := filepath.Glob(storePath + ".atomic-*.lock")
+	if err != nil {
+		t.Fatalf("glob identity locks: %v", err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("unique identities left %d lock files: %v", len(matches), matches)
+	}
+	if _, err := os.Stat(storePath + ".atomic.lock"); err != nil {
+		t.Fatalf("stable atomic guard must remain for future operations: %v", err)
+	}
+}
+
+func TestRemoveLockFileWithTokenPreservesReplacement(t *testing.T) {
+	lockPath := filepath.Join(t.TempDir(), "assignments.json.atomic-bead-replaced.lock")
+	originalToken := []byte("original-token")
+	if err := os.WriteFile(lockPath, originalToken, 0600); err != nil {
+		t.Fatalf("write original lock: %v", err)
+	}
+	if err := os.Remove(lockPath); err != nil {
+		t.Fatalf("remove original lock: %v", err)
+	}
+	if err := os.WriteFile(lockPath, []byte("replacement"), 0600); err != nil {
+		t.Fatalf("write replacement lock: %v", err)
+	}
+
+	removeLockFileWithToken(lockPath, originalToken)
+
+	content, err := os.ReadFile(lockPath)
+	if err != nil {
+		t.Fatalf("replacement lock was removed: %v", err)
+	}
+	if string(content) != "replacement" {
+		t.Fatalf("replacement lock content = %q", content)
 	}
 }
 
