@@ -853,6 +853,18 @@ Shell Integration:
 				failRobotCommand(verbosityErr, robot.ErrCodeInvalidFlag, "Use terse, default, or debug", robotCommand)
 				return
 			}
+			// An explicit pane selector the surface does not read must
+			// fail before any actuation instead of silently broadening
+			// the target to the whole session (ntm#308).
+			if err := validateRobotPaneSelectorFlags(cmd, robotCommand); err != nil {
+				var selectorErr *robotPaneSelectorFlagError
+				hint := "Check the pane selector flags this robot command accepts"
+				if errors.As(err, &selectorErr) {
+					hint = selectorErr.hint
+				}
+				failRobotCommand(err, robot.ErrCodeInvalidFlag, hint, robotCommand)
+				return
+			}
 		} else {
 			if formatErr != nil {
 				fmt.Fprintf(os.Stderr, "Warning: %v, using default (auto)\n", formatErr)

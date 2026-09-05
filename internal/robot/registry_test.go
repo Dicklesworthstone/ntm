@@ -1178,3 +1178,47 @@ func TestGetSchema_InvalidTypeError(t *testing.T) {
 		t.Error("GetSchema should provide hint for invalid type")
 	}
 }
+
+func TestSurfaceParameterSupport(t *testing.T) {
+	tests := []struct {
+		command, parameter string
+		wantAccepts        bool
+		wantKnown          bool
+	}{
+		{"--robot-interrupt", "--panes", true, true},
+		{"robot-interrupt", "panes", true, true},
+		{"--robot-interrupt", "--pane", false, true},
+		{"--robot-send", "--pane", true, true},
+		{"--robot-history", "--panes", false, true},
+		{"--robot-not-a-surface", "--panes", false, false},
+		{"", "--panes", false, false},
+		{"--robot-interrupt", "", false, false},
+	}
+	for _, tt := range tests {
+		accepts, known := SurfaceParameterSupport(tt.command, tt.parameter)
+		if accepts != tt.wantAccepts || known != tt.wantKnown {
+			t.Errorf("SurfaceParameterSupport(%q, %q) = (%v, %v), want (%v, %v)", tt.command, tt.parameter, accepts, known, tt.wantAccepts, tt.wantKnown)
+		}
+	}
+}
+
+func TestSurfaceFlagsAcceptingParameter(t *testing.T) {
+	flags := SurfaceFlagsAcceptingParameter("--pane")
+	want := map[string]bool{"--robot-send": false, "--robot-history": false}
+	for _, flag := range flags {
+		if _, ok := want[flag]; ok {
+			want[flag] = true
+		}
+		if flag == "--robot-interrupt" {
+			t.Errorf("--robot-interrupt must not be listed as accepting --pane: %v", flags)
+		}
+	}
+	for flag, seen := range want {
+		if !seen {
+			t.Errorf("%s missing from surfaces accepting --pane: %v", flag, flags)
+		}
+	}
+	if got := SurfaceFlagsAcceptingParameter(""); got != nil {
+		t.Errorf("empty parameter should yield nil, got %v", got)
+	}
+}

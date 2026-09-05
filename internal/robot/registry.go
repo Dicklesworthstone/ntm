@@ -276,6 +276,65 @@ func (r *RobotRegistry) Surface(name string) (RobotSurfaceDescriptor, bool) {
 	return surface, ok
 }
 
+// SurfaceParameterSupport reports whether the robot surface invoked by
+// commandFlag (for example "--robot-interrupt") declares parameterFlag (for
+// example "--panes"). known is false when no surface is registered for
+// commandFlag, in which case accepts is meaningless.
+func SurfaceParameterSupport(commandFlag, parameterFlag string) (accepts bool, known bool) {
+	commandFlag = normalizeRobotFlagName(commandFlag)
+	parameterFlag = normalizeRobotFlagName(parameterFlag)
+	if commandFlag == "" || parameterFlag == "" {
+		return false, false
+	}
+	for _, surface := range cachedRobotRegistry().Surfaces {
+		if normalizeRobotFlagName(surface.Flag) != commandFlag {
+			continue
+		}
+		for _, parameter := range surface.Parameters {
+			if normalizeRobotFlagName(parameter.Flag) == parameterFlag {
+				return true, true
+			}
+		}
+		return false, true
+	}
+	return false, false
+}
+
+// SurfaceFlagsAcceptingParameter lists the robot surface flags (for example
+// "--robot-send") whose registered parameters include parameterFlag, in
+// registry order.
+func SurfaceFlagsAcceptingParameter(parameterFlag string) []string {
+	parameterFlag = normalizeRobotFlagName(parameterFlag)
+	if parameterFlag == "" {
+		return nil
+	}
+	var flags []string
+	for _, surface := range cachedRobotRegistry().Surfaces {
+		for _, parameter := range surface.Parameters {
+			if normalizeRobotFlagName(parameter.Flag) == parameterFlag {
+				flags = append(flags, "--"+normalizeRobotFlagName(surface.Flag))
+				break
+			}
+		}
+	}
+	return flags
+}
+
+func normalizeRobotFlagName(flag string) string {
+	return strings.TrimLeft(strings.TrimSpace(flag), "-")
+}
+
+// cachedRobotRegistry returns the shared registry without cloning it. Callers
+// must treat the result as read-only.
+func cachedRobotRegistry() *RobotRegistry {
+	robotRegistryBuildMu.Lock()
+	defer robotRegistryBuildMu.Unlock()
+	robotRegistryOnce.Do(func() {
+		robotRegistry = buildRobotRegistry()
+	})
+	return robotRegistry
+}
+
 // SchemaBinding returns the output type registered for a schema type.
 func (r *RobotRegistry) SchemaBinding(schemaType string) (interface{}, bool) {
 	if r == nil {
