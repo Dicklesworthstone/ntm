@@ -320,12 +320,29 @@ func (a *WorkCoordinationAdapter) Collect(ctx context.Context) (*SignalBatch, er
 	}
 
 	if (work == nil || !work.Available) && (coordination == nil || !coordination.Available) {
-		a.lastErr = fmt.Errorf("work/coordination sources unavailable")
+		a.lastErr = sourcesUnavailableError(work, coordination)
 		return batch, a.lastErr
 	}
 
 	a.lastErr = nil
 	return batch, nil
+}
+
+// sourcesUnavailableError names why neither section could be collected. The
+// per-section reasons ("br stats failed: …", "agent mail unavailable") are
+// what an operator needs to act on; a bare "sources unavailable" reached the
+// persisted source-health row and the snapshot as the only diagnostic while
+// the tracker itself was readable (#283, 2026-09-04 report).
+func sourcesUnavailableError(work *WorkSection, coordination *CoordinationSection) error {
+	workReason := "work section missing"
+	if work != nil {
+		workReason = firstNonEmpty(strings.TrimSpace(work.Reason), "work data unavailable")
+	}
+	coordinationReason := "coordination section missing"
+	if coordination != nil {
+		coordinationReason = firstNonEmpty(strings.TrimSpace(coordination.Reason), "coordination data unavailable")
+	}
+	return fmt.Errorf("work/coordination sources unavailable (work: %s; coordination: %s)", workReason, coordinationReason)
 }
 
 // LastError returns the most recent collection failure.
