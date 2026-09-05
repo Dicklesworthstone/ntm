@@ -1212,9 +1212,92 @@ type AssignOutputEnhanced struct {
 	Strategy    string                `json:"strategy"`
 	Assignments []AssignmentItem      `json:"assignments"`
 	Skipped     []SkippedItem         `json:"skipped"`
+	AgentPool   []AgentPoolEntry      `json:"agent_pool,omitempty"`
 	Summary     AssignSummaryEnhanced `json:"summary"`
 	Allocation  *AssignAllocationView `json:"allocation,omitempty"`
 	Errors      []string              `json:"-"`
+}
+
+// Placeability reasons. An empty Reason on a placeable entry is the only
+// combination that means "this pane can receive work right now".
+const (
+	AgentPoolReasonAgentTypeFiltered     = "agent_type_filtered"
+	AgentPoolReasonHoldsActiveAssignment = "holds_active_assignment"
+	AgentPoolReasonObservationStale      = "observation_stale"
+	AgentPoolReasonObservationError      = "observation_error"
+	AgentPoolReasonLowConfidence         = "low_confidence"
+	AgentPoolReasonStateNotIdle          = "state_not_idle"
+	AgentPoolReasonRoleIneligible        = "role_ineligible_for_template"
+)
+
+// AgentPoolEntry is one pane's placeability verdict, reported alongside its
+// activity state. `state` answers "what is this agent doing?"; `placeable`
+// answers "can I dispatch here?". Those are different questions, and a
+// consumer that infers the second from the first gets it wrong for every
+// state that is neither clearly working nor clearly idle. Reporting both
+// keeps the activity enum free to describe activity.
+type AgentPoolEntry struct {
+	PaneID     string  `json:"pane_id"`
+	PaneTarget string  `json:"pane_target,omitempty"`
+	AgentType  string  `json:"agent_type"`
+	State      string  `json:"state,omitempty"`
+	Confidence float64 `json:"confidence,omitempty"`
+	Freshness  string  `json:"freshness,omitempty"`
+	Placeable  bool    `json:"placeable"`
+	// Reason is empty when Placeable is true, and otherwise names the single
+	// gate that rejected this pane, in evaluation order.
+	Reason string `json:"reason,omitempty"`
+}
+
+// dispatchRejectionReason names the first SafeToDispatch condition a pane
+// fails. It mirrors status.PaneObservation.SafeToDispatch exactly; if that
+// predicate gains a clause, this must gain a matching case.
+func dispatchRejectionReason(p statuspkg.PaneObservation) string {
+	switch {
+	case p.Current.Freshness != statuspkg.FreshnessFresh:
+		return AgentPoolReasonObservationStale
+	case p.Current.Error != "":
+		return AgentPoolReasonObservationError
+	case !statuspkg.ObservationConfidenceIsActionable(p.Current.Confidence):
+		return AgentPoolReasonLowConfidence
+	case p.Current.Status.State != statuspkg.StateIdle:
+		return AgentPoolReasonStateNotIdle
+	case p.SafeToDispatch():
+		return ""
+	default:
+		// Every clause above passed and SafeToDispatch still refused, so it
+		// has grown a condition this function does not know about. Say that
+		// rather than reporting a pane as rejected for no reason; the
+		// agreement test fails on this value.
+		return "unknown"
+	}
+}
+
+// markRoleGatedPool records the panes that cleared dispatch but were then
+// dropped by persona role gating, which is otherwise invisible to an operator
+// reading a zero idle-agent count.
+func markRoleGatedPool(pool []AgentPoolEntry, before, after []assignAgentInfo, template string) []AgentPoolEntry {
+	if len(before) == len(after) {
+		return pool
+	}
+	survived := make(map[string]struct{}, len(after))
+	for _, agent := range after {
+		survived[agent.pane.ID] = struct{}{}
+	}
+	for i := range pool {
+		if !pool[i].Placeable {
+			continue
+		}
+		if _, ok := survived[pool[i].PaneID]; ok {
+			continue
+		}
+		pool[i].Placeable = false
+		pool[i].Reason = AgentPoolReasonRoleIneligible
+		if template != "" {
+			pool[i].Reason += " (" + template + ")"
+		}
+	}
+	return pool
 }
 
 // AssignmentItem represents a single assignment in JSON output.
@@ -1697,19 +1780,45 @@ func getAssignOutputEnhanced(ctx context.Context, opts *AssignCommandOptions) (*
 		return nil, err
 	}
 
+	// agentPool records one placeability verdict per pane so an operator can
+	// see WHY a pane was excluded. "Not placeable" is a conjunction of several
+	// independent gates; reporting only the count collapses them into a single
+	// opaque word and leaves "the seats are busy" as the natural (and often
+	// wrong) reading.
+	var agentPool []AgentPoolEntry
 	for _, pane := range panes {
 		at := agentTypeForPane(pane)
+		entry := AgentPoolEntry{
+			PaneID:     pane.ID,
+			PaneTarget: assignmentPaneTarget(pane),
+			AgentType:  at,
+		}
+
 		if at == "user" || at == "unknown" {
+			// Not an agent pane at all; not part of the pool.
 			continue
 		}
 
 		// Apply agent type filter
 		if opts.AgentTypeFilter != "" && at != opts.AgentTypeFilter {
+			entry.Reason = AgentPoolReasonAgentTypeFiltered
+			agentPool = append(agentPool, entry)
 			continue
 		}
 
-		// Skip panes that already hold an active assignment.
+		// Skip panes that already hold an active assignment. Report the
+		// observed state anyway, best-effort and without the error path that
+		// would abort the command: "idle AND fenced by an assignment" is the
+		// signature of a leaked claim on an otherwise free pane, and it is
+		// indistinguishable from "busy" without that state.
 		if assignmentPaneIsActive(activePanes, pane) {
+			entry.Reason = AgentPoolReasonHoldsActiveAssignment
+			if observed, ok := observation.PaneByID(pane.ID); ok {
+				entry.State = string(observed.Current.Status.State)
+				entry.Confidence = observed.Current.Confidence
+				entry.Freshness = string(observed.Current.Freshness)
+			}
+			agentPool = append(agentPool, entry)
 			continue
 		}
 
@@ -1719,8 +1828,13 @@ func getAssignOutputEnhanced(ctx context.Context, opts *AssignCommandOptions) (*
 		}
 		model := detectModelFromTitle(at, pane.Title)
 		state := string(paneObservation.Current.Status.State)
+		entry.State = state
+		entry.Confidence = paneObservation.Current.Confidence
+		entry.Freshness = string(paneObservation.Current.Freshness)
 
 		if paneObservation.SafeToDispatch() {
+			entry.Placeable = true
+			agentPool = append(agentPool, entry)
 			idleAgents = append(idleAgents, assignAgentInfo{
 				pane:       pane,
 				agentType:  at,
@@ -1728,7 +1842,10 @@ func getAssignOutputEnhanced(ctx context.Context, opts *AssignCommandOptions) (*
 				state:      state,
 				scrollback: paneObservation.RawOutput,
 			})
+			continue
 		}
+		entry.Reason = dispatchRejectionReason(paneObservation)
+		agentPool = append(agentPool, entry)
 	}
 
 	// Get beads from bv. Source candidates from the FULL dependency-aware
@@ -1834,15 +1951,18 @@ func getAssignOutputEnhanced(ctx context.Context, opts *AssignCommandOptions) (*
 
 	// Persona role gating: reviewer-only panes never receive impl work and
 	// implementer-only panes never receive review work.
-	idleAgents, err = assignRoleEligibleAgents(idleAgents, projectDir, opts.Template)
+	roleEligible, err := assignRoleEligibleAgents(idleAgents, projectDir, opts.Template)
 	if err != nil {
 		return nil, err
 	}
+	agentPool = markRoleGatedPool(agentPool, idleAgents, roleEligible, opts.Template)
+	idleAgents = roleEligible
 
 	result := &AssignOutputEnhanced{
 		Strategy:    opts.Strategy,
 		Assignments: make([]AssignmentItem, 0),
 		Skipped:     allSkipped, // Blocked + cyclic beads
+		AgentPool:   agentPool,
 		Summary: AssignSummaryEnhanced{
 			TotalBeadCount:  len(readyBeads) + len(blockedBeads) + cycleWarnings,
 			ActionableCount: len(readyBeads),
@@ -2514,13 +2634,25 @@ func displayAssignOutputEnhanced(out *AssignOutputEnhanced, verbose bool) {
 			}
 			fmt.Println()
 		}
+		if verbose {
+			printAgentPool(out.AgentPool, subtitleStyle)
+		}
 	} else {
 		fmt.Println()
 		fmt.Println(subtitleStyle.Render("No assignments to recommend."))
 		if out.Summary.IdleAgents == 0 {
-			fmt.Println(subtitleStyle.Render("  Reason: No idle agents available"))
+			fmt.Println(subtitleStyle.Render("  Reason: No placeable agents available"))
+			// Always show the per-pane breakdown here. "No idle agents" reads
+			// as "the seats are busy", and that is only one of the reasons a
+			// pane can be excluded. An operator looking at panes that visibly
+			// sit at an empty prompt needs the gate that actually rejected
+			// them, not a count.
+			printAgentPool(out.AgentPool, subtitleStyle)
 		} else if out.Summary.TotalBeadCount == 0 {
 			fmt.Println(subtitleStyle.Render("  Reason: No ready beads to assign"))
+			if verbose {
+				printAgentPool(out.AgentPool, subtitleStyle)
+			}
 		}
 	}
 
@@ -7045,3 +7177,34 @@ func dispatchPromptHash(prompt string) string {
 }
 
 // runWatchMode implements the --watch flag for continuous auto-assignment
+
+// printAgentPool renders one line per candidate pane with its placeability
+// verdict. Panes that are not agent panes at all are absent from the pool.
+func printAgentPool(pool []AgentPoolEntry, style lipgloss.Style) {
+	if len(pool) == 0 {
+		fmt.Println(style.Render("  Agent pool: no agent panes found in this session"))
+		return
+	}
+	fmt.Println(style.Render("  Agent pool:"))
+	for _, entry := range pool {
+		verdict := "NOT PLACEABLE"
+		detail := entry.Reason
+		if entry.Placeable {
+			verdict = "PLACEABLE"
+			detail = ""
+		}
+		line := fmt.Sprintf("    %-6s %-8s state=%-8s conf=%.2f %s",
+			entry.PaneID, entry.AgentType, valueOrDash(entry.State), entry.Confidence, verdict)
+		if detail != "" {
+			line += "  (" + detail + ")"
+		}
+		fmt.Println(style.Render(line))
+	}
+}
+
+func valueOrDash(v string) string {
+	if v == "" {
+		return "-"
+	}
+	return v
+}
