@@ -33,7 +33,6 @@ var robotPaneSelectorFlags = []struct {
 // the invoked robot surface does not read.
 type robotPaneSelectorFlagError struct {
 	flag    string // the flag the caller supplied, without dashes
-	value   string
 	command string // robot command, e.g. "robot-interrupt"
 	hint    string
 }
@@ -61,7 +60,6 @@ func validateRobotPaneSelectorFlags(cmd *cobra.Command, robotCommand string) err
 		value, _ := flags.GetString(selector.name)
 		return &robotPaneSelectorFlagError{
 			flag:    selector.name,
-			value:   strings.TrimSpace(value),
 			command: robotCommand,
 			hint:    robotPaneSelectorHint(robotCommand, selector.name, selector.canonical, strings.TrimSpace(value)),
 		}
@@ -74,10 +72,9 @@ func validateRobotPaneSelectorFlags(cmd *cobra.Command, robotCommand string) err
 // (e.g. --wait-panes) counts only on its own surface (--robot-wait), where
 // the resolver falls back to the canonical flag.
 func robotSurfaceReadsSelector(robotCommand, flagName, canonical string) bool {
-	if accepts, known := robot.SurfaceParameterSupport(robotCommand, flagName); !known {
+	accepts, known := robot.SurfaceParameterSupport(robotCommand, flagName)
+	if !known || accepts {
 		return true // unknown surface: nothing to validate against
-	} else if accepts {
-		return true
 	}
 	if flagName == canonical {
 		return false
@@ -87,8 +84,7 @@ func robotSurfaceReadsSelector(robotCommand, flagName, canonical string) bool {
 	if strings.TrimPrefix(flagName, surface+"-") != canonical {
 		return false
 	}
-	accepts, _ := robot.SurfaceParameterSupport(robotCommand, canonical)
-	return accepts
+	return surfaceAcceptsSelector(robotCommand, canonical)
 }
 
 func robotPaneSelectorHint(robotCommand, flagName, canonical, value string) string {
