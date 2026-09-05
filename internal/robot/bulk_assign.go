@@ -715,8 +715,19 @@ func ResolveLiveSessionProject(session string, panes []tmux.Pane, paneCurrentPat
 	})
 }
 
+// ErrNoLivePanes reports that a session offered no live pane to derive a
+// project root from: either it has no panes at all, or every pane is dead
+// (its process exited and remain-on-exit kept the pane for its scrollback).
+// Callers may fall back to persisted session metadata on this error; they
+// must not read it as a project-root disagreement.
+var ErrNoLivePanes = errors.New("no live panes")
+
 // ResolveLiveSessionProjectContext derives one authoritative project root
 // while honoring cancellation of every pane current-directory lookup.
+//
+// Dead panes (tmux #{pane_dead}) are skipped before any lookup: tmux reports
+// an empty current path for them, which is not evidence about the project
+// (ntm#311). An empty or relative path on a live pane still fails closed.
 func ResolveLiveSessionProjectContext(ctx context.Context, session string, panes []tmux.Pane, paneCurrentPath func(context.Context, string) (string, error)) (string, error) {
 	if ctx == nil {
 		return "", errors.New("live session project context is required")
@@ -724,6 +735,10 @@ func ResolveLiveSessionProjectContext(ctx context.Context, session string, panes
 	if paneCurrentPath == nil {
 		return "", fmt.Errorf("resolve live project for session %q: pane current-path lookup is not configured", session)
 	}
+	if len(panes) == 0 {
+		return "", fmt.Errorf("resolve live project for session %q: session has no panes: %w", session, ErrNoLivePanes)
+	}
+	deadPanes := 0
 	// Panes are grouped by physical repository identity, not by visible
 	// checkout path: a base checkout and its linked worktrees are different
 	// paths but one repository (they share one git common directory), and an
@@ -735,6 +750,10 @@ func ResolveLiveSessionProjectContext(ctx context.Context, session string, panes
 	for _, pane := range panes {
 		if err := ctx.Err(); err != nil {
 			return "", err
+		}
+		if pane.Dead {
+			deadPanes++
+			continue
 		}
 		paneID := strings.TrimSpace(pane.ID)
 		if paneID == "" {
@@ -774,6 +793,11 @@ func ResolveLiveSessionProjectContext(ctx context.Context, session string, panes
 		for _, identity := range identities {
 			return identity.canonicalProjectDir(), nil
 		}
+	}
+	if len(identities) == 0 {
+		// Every pane was dead: nothing disagreed, there was simply no live
+		// pane to ask. Do not report this as a multi-root conflict.
+		return "", fmt.Errorf("resolve live project for session %q: all %d panes are dead (remain-on-exit); %w", session, deadPanes, ErrNoLivePanes)
 	}
 
 	rootNames := make([]string, 0, len(roots))

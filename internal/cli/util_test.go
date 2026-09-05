@@ -13,6 +13,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/ensemble"
+	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
@@ -1339,5 +1340,106 @@ func TestNormalizeProjectScopedSessionName_RejectsAmbiguousConfiguredProjectPref
 	}
 	if !strings.Contains(err.Error(), "ambiguous") {
 		t.Fatalf("expected ambiguous error, got %v", err)
+	}
+}
+
+// ntm#311: `ntm add` failed project resolution when a retained dead pane
+// (remain-on-exit) reported an empty current path. Dead panes must be skipped
+// on the way through resolveExplicitProjectDirForSessionWithLookup, and an
+// all-dead session must surface a deliberate no-live-panes reason instead of
+// a multi-root conflict or the generic "getting project root failed".
+func TestResolveExplicitProjectDirForSession_SkipsDeadPanes(t *testing.T) {
+	isolateSessionAgentStorage(t)
+	origCfg := cfg
+	t.Cleanup(func() { cfg = origCfg })
+	cfg = &config.Config{ProjectsBase: t.TempDir()}
+
+	sessionProject := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(sessionProject, ".git"), 0o755); err != nil {
+		t.Fatalf("create project marker: %v", err)
+	}
+
+	panes := []tmux.Pane{{ID: "%1"}, {ID: "%2", Dead: true}}
+	var asked []string
+	got, err := resolveExplicitProjectDirForSessionWithLookup(
+		t.Context(),
+		"dead-pane-live-test",
+		func(context.Context, string) ([]tmux.Pane, error) { return panes, nil },
+		func(_ context.Context, paneID string) (string, error) {
+			asked = append(asked, paneID)
+			if paneID == "%2" {
+				return "", nil
+			}
+			return sessionProject, nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("resolveExplicitProjectDirForSessionWithLookup() error = %v", err)
+	}
+	if got != sessionProject {
+		t.Fatalf("resolveExplicitProjectDirForSessionWithLookup() = %q, want live project %q", got, sessionProject)
+	}
+	if len(asked) != 1 || asked[0] != "%1" {
+		t.Fatalf("current-path lookups = %v, want only the live pane", asked)
+	}
+}
+
+func TestResolveExplicitProjectDirForSession_LivePaneEmptyPathStillFails(t *testing.T) {
+	isolateSessionAgentStorage(t)
+	origCfg := cfg
+	t.Cleanup(func() { cfg = origCfg })
+	cfg = &config.Config{ProjectsBase: t.TempDir()}
+
+	panes := []tmux.Pane{{ID: "%1"}}
+	_, err := resolveExplicitProjectDirForSessionWithLookup(
+		t.Context(),
+		"live-empty-path-test",
+		func(context.Context, string) ([]tmux.Pane, error) { return panes, nil },
+		func(context.Context, string) (string, error) { return "", nil },
+	)
+	if err == nil || !strings.Contains(err.Error(), `current path "" is not absolute`) {
+		t.Fatalf("resolveExplicitProjectDirForSessionWithLookup() error = %v, want not-absolute rejection for a live pane", err)
+	}
+}
+
+func TestResolveExplicitProjectDirForSession_AllDeadPanes(t *testing.T) {
+	isolateSessionAgentStorage(t)
+	origCfg := cfg
+	t.Cleanup(func() { cfg = origCfg })
+
+	panes := []tmux.Pane{{ID: "%1", Dead: true}, {ID: "%2", Dead: true}}
+	listPanes := func(context.Context, string) ([]tmux.Pane, error) { return panes, nil }
+	paneCurrentPath := func(context.Context, string) (string, error) {
+		t.Fatal("current-path lookup must not run for dead panes")
+		return "", nil
+	}
+
+	// No persisted project metadata: the dead-pane reason is the error.
+	cfg = &config.Config{ProjectsBase: t.TempDir()}
+	_, err := resolveExplicitProjectDirForSessionWithLookup(t.Context(), "all-dead-test", listPanes, paneCurrentPath)
+	if err == nil {
+		t.Fatal("all-dead session with no saved project resolved a directory")
+	}
+	if !errors.Is(err, robot.ErrNoLivePanes) || !strings.Contains(err.Error(), "all 2 panes are dead") {
+		t.Fatalf("all-dead error = %v, want ErrNoLivePanes naming the dead panes", err)
+	}
+	if strings.Contains(err.Error(), "multiple project roots") || strings.Contains(err.Error(), "getting project root failed") {
+		t.Fatalf("all-dead error must be deliberate, got %v", err)
+	}
+
+	// A validated configured session directory is an acceptable fallback,
+	// exactly as it is when the live session cannot be listed at all.
+	projectsBase := t.TempDir()
+	cfg = &config.Config{ProjectsBase: projectsBase}
+	configured := cfg.GetProjectDir("all-dead-test")
+	if err := os.MkdirAll(filepath.Join(configured, ".git"), 0o755); err != nil {
+		t.Fatalf("create configured project: %v", err)
+	}
+	got, err := resolveExplicitProjectDirForSessionWithLookup(t.Context(), "all-dead-test", listPanes, paneCurrentPath)
+	if err != nil {
+		t.Fatalf("all-dead session with configured project: %v", err)
+	}
+	if got != configured {
+		t.Fatalf("all-dead fallback = %q, want configured session project %q", got, configured)
 	}
 }

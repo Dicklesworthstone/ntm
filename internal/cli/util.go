@@ -815,6 +815,7 @@ func resolveExplicitProjectDirForSessionWithLookup(
 		return "", err
 	}
 
+	var noLivePanesErr error
 	if listPanes != nil {
 		panes, err := listPanes(ctx, session)
 		if ctxErr := ctx.Err(); ctxErr != nil {
@@ -835,11 +836,19 @@ func resolveExplicitProjectDirForSessionWithLookup(
 		}
 		if len(panes) > 0 {
 			projectDir, err := robot.ResolveLiveSessionProjectContext(ctx, session, panes, paneCurrentPath)
-			if err != nil {
+			switch {
+			case err == nil:
+				if projectDir != "" {
+					return projectDir, nil
+				}
+			case errors.Is(err, robot.ErrNoLivePanes):
+				// Every retained pane is dead (ntm#311). Like a missing live
+				// session, that says nothing about the persisted project
+				// metadata, so the validated saved/configured fallback below
+				// still applies; without it the dead-pane reason is the error.
+				noLivePanesErr = err
+			default:
 				return "", err
-			}
-			if projectDir != "" {
-				return projectDir, nil
 			}
 		}
 	}
@@ -847,6 +856,9 @@ func resolveExplicitProjectDirForSessionWithLookup(
 	_, sessionProject, savedProject := projectDirCandidatesForSession(session, false)
 	if projectDir := bestUsableProjectDir(savedProject, sessionProject); projectDir != "" {
 		return projectDir, nil
+	}
+	if noLivePanesErr != nil {
+		return "", noLivePanesErr
 	}
 
 	return "", fmt.Errorf("getting project root failed")

@@ -73,6 +73,11 @@ type Pane struct {
 	Height      int
 	Active      bool
 	PID         int // Shell PID
+	// Dead is tmux's #{pane_dead}: the pane's process has exited and the pane
+	// is retained only because remain-on-exit kept its scrollback. A dead pane
+	// has no current path, no foreground process and cannot accept input, so
+	// callers that reason about live work must skip it (ntm#311).
+	Dead bool
 
 	// Service is the durable service tag carried by a non-agent service pane
 	// (PaneOptionACFSService / PaneOptionNTMService). A service such as `cm` or
@@ -1075,7 +1080,7 @@ func (c *Client) GetPanes(session string) ([]Pane, error) {
 // GetPanesContext returns all panes in a session with cancellation support.
 func (c *Client) GetPanesContext(ctx context.Context, session string) ([]Pane, error) {
 	sep := FieldSeparator
-	format := fmt.Sprintf("#{pane_id}%[1]s#{pane_index}%[1]s#{pane_title}%[1]s#{pane_current_command}%[1]s#{pane_width}%[1]s#{pane_height}%[1]s#{pane_active}%[1]s#{pane_pid}%[1]s#{window_index}%[1]s#{@ntm_agent_type}%[1]s#{"+PaneOptionACFSService+"}%[1]s#{"+PaneOptionNTMService+"}", sep)
+	format := fmt.Sprintf("#{pane_id}%[1]s#{pane_index}%[1]s#{pane_title}%[1]s#{pane_current_command}%[1]s#{pane_width}%[1]s#{pane_height}%[1]s#{pane_active}%[1]s#{pane_pid}%[1]s#{window_index}%[1]s#{@ntm_agent_type}%[1]s#{"+PaneOptionACFSService+"}%[1]s#{"+PaneOptionNTMService+"}%[1]s#{pane_dead}", sep)
 	output, err := c.RunContext(ctx, "list-panes", "-s", "-t", TargetSession(session), "-F", format)
 	if err != nil {
 		return nil, err
@@ -1423,7 +1428,7 @@ func waitForPaneProcessStartContext(
 func (c *Client) GetAllPanesContext(ctx context.Context) (map[string][]Pane, error) {
 	sep := FieldSeparator
 	// Add session_name at the beginning
-	format := fmt.Sprintf("#{session_name}%[1]s#{pane_id}%[1]s#{pane_index}%[1]s#{pane_title}%[1]s#{pane_current_command}%[1]s#{pane_width}%[1]s#{pane_height}%[1]s#{pane_active}%[1]s#{pane_pid}%[1]s#{window_index}%[1]s#{@ntm_agent_type}%[1]s#{"+PaneOptionACFSService+"}%[1]s#{"+PaneOptionNTMService+"}", sep)
+	format := fmt.Sprintf("#{session_name}%[1]s#{pane_id}%[1]s#{pane_index}%[1]s#{pane_title}%[1]s#{pane_current_command}%[1]s#{pane_width}%[1]s#{pane_height}%[1]s#{pane_active}%[1]s#{pane_pid}%[1]s#{window_index}%[1]s#{@ntm_agent_type}%[1]s#{"+PaneOptionACFSService+"}%[1]s#{"+PaneOptionNTMService+"}%[1]s#{pane_dead}", sep)
 	output, err := c.RunContext(ctx, "list-panes", "-a", "-F", format)
 	if err != nil {
 		// No server/no sessions is not an error; treat as empty result.
@@ -1445,17 +1450,17 @@ func (c *Client) GetAllPanesContext(ctx context.Context) (map[string][]Pane, err
 		}
 
 		parts := strings.Split(line, sep)
-		// 11 fields is the pre-#305 layout (no service tags); 13 is current.
-		// Both are accepted so a format change never turns into a hard parse
-		// failure across an upgrade.
-		if len(parts) < 11 || len(parts) > 13 {
-			return nil, fmt.Errorf("parse pane %d: expected 11 to 13 fields, got %d", lineNumber+1, len(parts))
+		// 11 fields is the pre-#305 layout (no service tags), 13 the pre-#311
+		// layout (no pane_dead); 14 is current. All are accepted so a format
+		// change never turns into a hard parse failure across an upgrade.
+		if len(parts) < 11 || len(parts) > 14 {
+			return nil, fmt.Errorf("parse pane %d: expected 11 to 14 fields, got %d", lineNumber+1, len(parts))
 		}
 
 		sessionName := parts[0]
-		// parts[1:] contains: id, index, title, command, width, height, active, pid, window_index, @ntm_agent_type, @acfs_service, @ntm_service
+		// parts[1:] contains: id, index, title, command, width, height, active, pid, window_index, @ntm_agent_type, @acfs_service, @ntm_service, pane_dead
 		// parts[1:8] = id(0), index(1), title(2), command(3), width(4), height(5), active(6)
-		// parts[8:] = pid(0), window_index(1), @ntm_agent_type(2), @acfs_service(3), @ntm_service(4)
+		// parts[8:] = pid(0), window_index(1), @ntm_agent_type(2), @acfs_service(3), @ntm_service(4), pane_dead(5)
 		p, err := parsePaneFromParts(parts[1:8], parts[8:])
 		if err != nil {
 			return nil, fmt.Errorf("parse pane %d: %w", lineNumber+1, err)
@@ -3392,7 +3397,7 @@ type PaneActivity struct {
 // GetPanesWithActivityContext returns all panes in a session with their activity times with cancellation support.
 func (c *Client) GetPanesWithActivityContext(ctx context.Context, session string) ([]PaneActivity, error) {
 	sep := FieldSeparator
-	format := fmt.Sprintf("#{pane_id}%[1]s#{pane_index}%[1]s#{pane_title}%[1]s#{pane_current_command}%[1]s#{pane_width}%[1]s#{pane_height}%[1]s#{pane_active}%[1]s#{window_activity}%[1]s#{pane_pid}%[1]s#{window_index}%[1]s#{@ntm_agent_type}%[1]s#{"+PaneOptionACFSService+"}%[1]s#{"+PaneOptionNTMService+"}", sep)
+	format := fmt.Sprintf("#{pane_id}%[1]s#{pane_index}%[1]s#{pane_title}%[1]s#{pane_current_command}%[1]s#{pane_width}%[1]s#{pane_height}%[1]s#{pane_active}%[1]s#{window_activity}%[1]s#{pane_pid}%[1]s#{window_index}%[1]s#{@ntm_agent_type}%[1]s#{"+PaneOptionACFSService+"}%[1]s#{"+PaneOptionNTMService+"}%[1]s#{pane_dead}", sep)
 	output, err := c.RunContext(ctx, "list-panes", "-s", "-t", TargetSession(session), "-F", format)
 	if err != nil {
 		return nil, err
@@ -3405,14 +3410,15 @@ func (c *Client) GetPanesWithActivityContext(ctx context.Context, session string
 		}
 
 		parts := strings.Split(line, sep)
-		// 11 fields is the pre-#305 layout (no service tags); 13 is current.
-		if len(parts) < 11 || len(parts) > 13 {
-			return nil, fmt.Errorf("parse pane activity %d from session %q: expected 11 to 13 fields, got %d", lineNumber+1, session, len(parts))
+		// 11 fields is the pre-#305 layout (no service tags), 13 the pre-#311
+		// layout (no pane_dead); 14 is current.
+		if len(parts) < 11 || len(parts) > 14 {
+			return nil, fmt.Errorf("parse pane activity %d from session %q: expected 11 to 14 fields, got %d", lineNumber+1, session, len(parts))
 		}
 
-		// Format: id(0), index(1), title(2), command(3), width(4), height(5), active(6), last_activity(7), pid(8), window_index(9), @ntm_agent_type(10), @acfs_service(11), @ntm_service(12)
+		// Format: id(0), index(1), title(2), command(3), width(4), height(5), active(6), last_activity(7), pid(8), window_index(9), @ntm_agent_type(10), @acfs_service(11), @ntm_service(12), pane_dead(13)
 		// parts[:7] = id..active
-		// parts[8:] = pid, window_index, @ntm_agent_type, @acfs_service, @ntm_service
+		// parts[8:] = pid, window_index, @ntm_agent_type, @acfs_service, @ntm_service, pane_dead
 		p, err := parsePaneFromParts(parts[:7], parts[8:])
 		if err != nil {
 			return nil, fmt.Errorf("parse pane activity %d from session %q: %w", lineNumber+1, session, err)
@@ -3438,11 +3444,12 @@ func (c *Client) GetPanesWithActivityContext(ctx context.Context, session string
 // parsePaneLine parses a single line from list-panes format into a Pane.
 func parsePaneLine(line, sep string) (*Pane, error) {
 	parts := strings.Split(line, sep)
-	// 10 fields is the pre-#305 layout (no service tags); 12 is current.
-	if len(parts) < 10 || len(parts) > 12 {
-		return nil, fmt.Errorf("expected 10 to 12 fields, got %d", len(parts))
+	// 10 fields is the pre-#305 layout (no service tags), 12 the pre-#311
+	// layout (no pane_dead); 13 is current.
+	if len(parts) < 10 || len(parts) > 13 {
+		return nil, fmt.Errorf("expected 10 to 13 fields, got %d", len(parts))
 	}
-	// For standard GetPanes: id, index, title, command, width, height, active, pid, window_index, @ntm_agent_type, @acfs_service, @ntm_service
+	// For standard GetPanes: id, index, title, command, width, height, active, pid, window_index, @ntm_agent_type, @acfs_service, @ntm_service, pane_dead
 	return parsePaneFromParts(parts[:7], parts[7:])
 }
 
@@ -3450,10 +3457,11 @@ func parsePaneLine(line, sep string) (*Pane, error) {
 // parts1: id, index, title, command, width, height, active
 // parts2: pid, window_index, and optionally the pane's @ntm_agent_type,
 // @acfs_service and @ntm_service user options (each empty when unset, and the
-// trailing ones absent entirely on a pre-#305 format string).
+// trailing ones absent entirely on a pre-#305 format string) followed by
+// #{pane_dead} (absent on a pre-#311 format string).
 func parsePaneFromParts(parts1, parts2 []string) (*Pane, error) {
-	if len(parts1) != 7 || len(parts2) < 2 || len(parts2) > 5 {
-		return nil, fmt.Errorf("expected 7 primary fields and 2 to 5 secondary fields, got %d and %d", len(parts1), len(parts2))
+	if len(parts1) != 7 || len(parts2) < 2 || len(parts2) > 6 {
+		return nil, fmt.Errorf("expected 7 primary fields and 2 to 6 secondary fields, got %d and %d", len(parts1), len(parts2))
 	}
 	optionalPart := func(i int) string {
 		if i < len(parts2) {
@@ -3464,6 +3472,7 @@ func parsePaneFromParts(parts1, parts2 []string) (*Pane, error) {
 	recordedType := optionalPart(2)
 	acfsService := ParsePaneServiceOption(optionalPart(3))
 	ntmService := ParsePaneServiceOption(optionalPart(4))
+	dead := strings.TrimSpace(optionalPart(5)) == "1"
 
 	index, err := strconv.Atoi(parts1[1])
 	if err != nil {
@@ -3497,6 +3506,7 @@ func parsePaneFromParts(parts1, parts2 []string) (*Pane, error) {
 		Height:      height,
 		Active:      active,
 		PID:         pid,
+		Dead:        dead,
 	}
 
 	// A service tag marks the pane as a non-agent service (ntm#305). ACFS's
