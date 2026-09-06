@@ -17,6 +17,7 @@ import (
 	"github.com/BurntSushi/toml"
 
 	"github.com/Dicklesworthstone/ntm/internal/agent"
+	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/models"
 	"github.com/Dicklesworthstone/ntm/internal/notify"
 	"github.com/Dicklesworthstone/ntm/internal/persona"
@@ -1176,6 +1177,21 @@ type AgentMailConfig struct {
 	// `am` process on port 8765. Set to true only when you explicitly want
 	// ntm to own the Agent Mail daemon lifecycle for a session.
 	SupervisorEnabled *bool `toml:"supervisor_enabled,omitempty"`
+	// PaneBadges shows each managed pane's assigned Agent Mail name in its
+	// tmux pane border next to the pane title, with a compact drift marker
+	// (`[BlueLake!]`) when the canonical identity file disagrees with the
+	// name NTM assigned (ntm#312). Badge state is cached in per-pane tmux user
+	// options written at identity assignment (before the agent launches) and
+	// reconciled on spawn/add/adopt/restart and `ntm mapping`; the border
+	// renders only the cached value. Default false (opt-in) so enabling NTM
+	// never changes an existing tmux layout unasked. Requires Enabled.
+	PaneBadges *bool `toml:"pane_badges,omitempty"`
+	// PaneBadgeFormat is the badge label template. Tokens: {name} (assigned
+	// name, "?" when unresolved), {drift} ("!" on any discrepancy) and
+	// {lifecycle} (" (starting)", " (exited)", " (unknown)", empty while
+	// running). Default "[{name}{drift}]{lifecycle}". tmux format syntax is
+	// not allowed; the rendered label is sanitised before it reaches tmux.
+	PaneBadgeFormat string `toml:"pane_badge_format,omitempty"`
 }
 
 // SupervisorEnabledOrDefault returns the effective value of
@@ -1185,6 +1201,36 @@ func (a AgentMailConfig) SupervisorEnabledOrDefault() bool {
 		return false
 	}
 	return *a.SupervisorEnabled
+}
+
+// PaneBadgesOrDefault returns the effective value of PaneBadges with the
+// documented default-false semantics applied. Badges also require Enabled:
+// with Agent Mail off there are no assigned identities to display.
+func (a AgentMailConfig) PaneBadgesOrDefault() bool {
+	if !a.Enabled || a.PaneBadges == nil {
+		return false
+	}
+	return *a.PaneBadges
+}
+
+// PaneBadgeFormatOrDefault returns the badge label template, falling back to
+// agentmail.DefaultBadgeTemplate when unset.
+func (a AgentMailConfig) PaneBadgeFormatOrDefault() string {
+	if strings.TrimSpace(a.PaneBadgeFormat) == "" {
+		return agentmail.DefaultBadgeTemplate
+	}
+	return a.PaneBadgeFormat
+}
+
+// ValidateAgentMailConfig validates Agent Mail settings.
+func ValidateAgentMailConfig(cfg *AgentMailConfig) error {
+	if cfg == nil {
+		return nil
+	}
+	if err := agentmail.ValidateBadgeTemplate(cfg.PaneBadgeFormat); err != nil {
+		return fmt.Errorf("pane_badge_format: %w", err)
+	}
+	return nil
 }
 
 // IntegrationsConfig holds external tool integration settings.
@@ -5728,6 +5774,11 @@ func Validate(cfg *Config) []error {
 	// Validate ensemble defaults
 	if err := ValidateEnsembleConfig(&cfg.Ensemble); err != nil {
 		errs = append(errs, fmt.Errorf("ensemble: %w", err))
+	}
+
+	// Validate Agent Mail config (pane badge template)
+	if err := ValidateAgentMailConfig(&cfg.AgentMail); err != nil {
+		errs = append(errs, fmt.Errorf("agent_mail: %w", err))
 	}
 
 	// Validate tmux activity indicators

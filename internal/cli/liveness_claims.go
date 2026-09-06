@@ -20,6 +20,8 @@ func init() {
 	config.RegisterReader("agent_mail.token", newAgentMailClient)
 	config.RegisterReader("agent_mail.auto_register", agentMailRegistrationEnabled)
 	config.RegisterReader("agent_mail.supervisor_enabled", shouldSuperviseAgentMailDaemon)
+	config.RegisterReader("agent_mail.pane_badges", paneBadgesEnabled)
+	config.RegisterReader("agent_mail.pane_badge_format", paneBadgeTemplate)
 
 	// Account rotation flows (rotate.go, coordinator.go).
 	config.RegisterReader("rotation.auto_open_browser", rotateAllLimited)

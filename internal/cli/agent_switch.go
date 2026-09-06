@@ -22,6 +22,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -36,6 +37,11 @@ type agentMappingEntry struct {
 	PaneIndex int    `json:"pane_index"`
 	PaneID    string `json:"pane_id"`
 	PaneTitle string `json:"pane_title,omitempty"`
+	// Identity is the pane's last identity reconciliation (ntm#312):
+	// assigned vs resolved name, assignment validity, observation/binding
+	// state, lifecycle and timestamps. Nil when the pane was not reconciled
+	// (tmux unavailable).
+	Identity *agentmail.PaneBadgeRecord `json:"identity,omitempty"`
 }
 
 // agentMappingOutput is the JSON envelope.
@@ -43,6 +49,26 @@ type agentMappingOutput struct {
 	Session string              `json:"session"`
 	Count   int                 `json:"count"`
 	Entries []agentMappingEntry `json:"entries"`
+	// Discrepancies lists every pane whose NTM assignment and canonical
+	// Agent Mail identity disagree in some way (plus registry bindings whose
+	// pane is gone and unregistered agent panes). Never empty-omitted so
+	// consumers can rely on the key.
+	Discrepancies []agentmail.PaneBadgeRecord `json:"discrepancies"`
+	// Badges summarises the pane-badge publication that this refresh
+	// performed.
+	Badges *agentMappingBadges `json:"badges,omitempty"`
+}
+
+// agentMappingBadges is the badge publication summary in `ntm mapping`.
+type agentMappingBadges struct {
+	Enabled         bool      `json:"enabled"`
+	Published       int       `json:"published"`
+	Cleared         int       `json:"cleared"`
+	WindowsPrepared int       `json:"windows_prepared"`
+	WindowsRestored int       `json:"windows_restored"`
+	Warnings        []string  `json:"warnings,omitempty"`
+	TmuxError       string    `json:"tmux_error,omitempty"`
+	AttemptedAt     time.Time `json:"attempted_at"`
 }
 
 // loadMappingForSession reads the persisted SessionAgentRegistry for
@@ -228,12 +254,21 @@ func newMappingCmd() *cobra.Command {
 		Long: `Lists the current Agent Mail name to tmux pane mapping. Drives
 both human-readable output and a stable JSON envelope for tooling.
 
+Each run is also the explicit identity refresh (ntm#312): every managed
+pane's NTM-assigned name is compared with its canonical Agent Mail identity
+file and the outcome is reported per pane (assignment validity, name
+agreement, binding verification, lifecycle, last attempt/success). With
+agent_mail.pane_badges enabled the result is published into the panes'
+tmux border badges; with it disabled any badges NTM published earlier are
+withdrawn and the border format restored. A disagreement is always reported,
+never repaired by relabelling.
+
 Examples:
 
   ntm mapping --session=my-project
   ntm mapping --session=my-project --json
 
-See ntm#139.`,
+See ntm#139, ntm#312.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if sessionFlag == "" {
 				return fmt.Errorf("--session is required")
@@ -243,26 +278,151 @@ See ntm#139.`,
 				return err
 			}
 			out := agentMappingOutput{
-				Session: sessionFlag,
-				Count:   len(entries),
-				Entries: entries,
+				Session:       sessionFlag,
+				Count:         len(entries),
+				Entries:       entries,
+				Discrepancies: []agentmail.PaneBadgeRecord{},
 			}
+
+			// Explicit refresh (ntm#312): compare every managed pane's NTM
+			// assignment with its canonical identity file, publish badges
+			// when enabled (or withdraw them when disabled), and report
+			// discrepancies. Failures here never fail the mapping.
+			report, reconcileErr := reconcileSessionIdentityBadges(cmd.Context(), badgeReconcileOptions{Session: sessionFlag})
+			if report != nil {
+				byPane := make(map[string]agentmail.PaneBadgeRecord, len(report.Records))
+				for _, rec := range report.Records {
+					byPane[rec.PaneID] = rec
+				}
+				for i := range out.Entries {
+					if rec, ok := byPane[out.Entries[i].PaneID]; ok {
+						copied := rec
+						out.Entries[i].Identity = &copied
+					}
+				}
+				if report.Discrepancies != nil {
+					out.Discrepancies = report.Discrepancies
+				}
+				out.Badges = &agentMappingBadges{
+					Enabled:         report.Enabled,
+					Published:       report.Published,
+					Cleared:         report.Cleared,
+					WindowsPrepared: report.WindowsPrepared,
+					WindowsRestored: report.WindowsRestored,
+					Warnings:        report.Warnings,
+					TmuxError:       report.TmuxError,
+					AttemptedAt:     report.AttemptedAt,
+				}
+				if reconcileErr != nil && out.Badges.TmuxError == "" {
+					out.Badges.TmuxError = reconcileErr.Error()
+				}
+			}
+
 			if IsJSONOutput() {
 				enc := json.NewEncoder(os.Stdout)
 				enc.SetIndent("", "  ")
 				return enc.Encode(out)
 			}
-			if len(entries) == 0 {
+			if len(entries) == 0 && len(out.Discrepancies) == 0 {
 				fmt.Printf("(no registered agents in session %q)\n", sessionFlag)
 				return nil
 			}
-			fmt.Printf("%-30s  %-6s  %s\n", "agent", "pane", "pane-id")
-			for _, e := range entries {
-				fmt.Printf("%-30s  %-6d  %s\n", e.Name, e.PaneIndex, e.PaneID)
+			if len(entries) > 0 {
+				fmt.Printf("%-30s  %-6s  %-8s  %-24s  %s\n", "agent", "pane", "pane-id", "badge", "identity")
+				for _, e := range entries {
+					badge, status := "-", "not reconciled"
+					if e.Identity != nil {
+						badge = e.Identity.Label
+						status = describeIdentityRecord(*e.Identity)
+					}
+					fmt.Printf("%-30s  %-6d  %-8s  %-24s  %s\n", e.Name, e.PaneIndex, e.PaneID, badge, status)
+				}
+			}
+			printIdentityDiscrepancies(out.Discrepancies)
+			if reconcileErr != nil {
+				fmt.Printf("\nIdentity reconciliation incomplete: %v\n", reconcileErr)
+			}
+			if out.Badges != nil {
+				printBadgeSummary(out.Badges)
 			}
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&sessionFlag, "session", "", "Session name (required)")
 	return cmd
+}
+
+// describeIdentityRecord renders the separate identity facts of a record
+// for the human table: assignment validity, name agreement, binding
+// verification and lifecycle.
+func describeIdentityRecord(rec agentmail.PaneBadgeRecord) string {
+	var parts []string
+	switch rec.AssignmentState {
+	case agentmail.PaneAssignmentCurrent:
+		switch rec.ObservationState {
+		case agentmail.PaneObservationMatched:
+			parts = append(parts, "names agree; AM binding verified")
+		case agentmail.PaneObservationLegacyUnverified:
+			parts = append(parts, "names agree; AM binding unverified (legacy file)")
+		case agentmail.PaneObservationNameDisagreement:
+			parts = append(parts, fmt.Sprintf("name disagreement: identity file resolves %q; NTM assignment retained", rec.ResolvedName))
+		default:
+			parts = append(parts, string(rec.ObservationState))
+		}
+	default:
+		parts = append(parts, "assignment-"+string(rec.AssignmentState))
+	}
+	if rec.Lifecycle != agentmail.PaneLifecycleRunning {
+		parts = append(parts, string(rec.Lifecycle))
+	}
+	if rec.PublishError != "" {
+		parts = append(parts, "badge not published")
+	}
+	return strings.Join(parts, "; ")
+}
+
+// printIdentityDiscrepancies prints the discrepancy report (ntm#312): every
+// simultaneous problem, with source paths, never a relabel.
+func printIdentityDiscrepancies(discrepancies []agentmail.PaneBadgeRecord) {
+	if len(discrepancies) == 0 {
+		return
+	}
+	fmt.Printf("\nIdentity discrepancies (%d):\n", len(discrepancies))
+	for _, rec := range discrepancies {
+		name := rec.AssignedName
+		if name == "" {
+			name = "(unassigned)"
+		}
+		fmt.Printf("  %s pane %d  %-24s  assigned=%s", rec.PaneID, rec.PaneIndex, rec.Label, name)
+		if rec.ResolvedName != "" && rec.ResolvedName != rec.AssignedName {
+			fmt.Printf("  resolved=%s", rec.ResolvedName)
+		}
+		fmt.Printf("  lifecycle=%s\n", rec.Lifecycle)
+		for _, problem := range rec.Problems {
+			fmt.Printf("      - %s\n", problem)
+		}
+		if rec.PublishError != "" {
+			fmt.Printf("      - badge not published: %s\n", rec.PublishError)
+		}
+		if rec.LastSuccessAt != nil {
+			fmt.Printf("      last attempt %s, last successful observation %s\n",
+				rec.LastAttemptAt.Format(time.RFC3339), rec.LastSuccessAt.Format(time.RFC3339))
+		} else {
+			fmt.Printf("      last attempt %s, never successfully observed\n", rec.LastAttemptAt.Format(time.RFC3339))
+		}
+	}
+}
+
+func printBadgeSummary(b *agentMappingBadges) {
+	switch {
+	case b.TmuxError != "":
+		fmt.Printf("\nPane badges: not updated (tmux unavailable: %s)\n", b.TmuxError)
+	case b.Enabled:
+		fmt.Printf("\nPane badges: enabled; published to %d pane(s), %d window(s) prepared\n", b.Published, b.WindowsPrepared)
+	default:
+		fmt.Printf("\nPane badges: disabled (agent_mail.pane_badges); %d pane(s) cleared, %d window(s) restored\n", b.Cleared, b.WindowsRestored)
+	}
+	for _, warning := range b.Warnings {
+		fmt.Printf("  warning: %s\n", warning)
+	}
 }

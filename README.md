@@ -320,6 +320,51 @@ command consumes that approval and executes exactly once. Use
 `never` to disable it entirely; the serve HTTP endpoint and the dashboard conflict
 action honor the same policy setting.
 
+#### Pane identity badges
+
+In a mixed session, pane titles name the harness (`payments__cc_1`) while
+coordination happens under Agent Mail names (`BlueLake`). NTM can show each managed
+pane's assigned name in its tmux pane border next to the existing title:
+
+```toml
+[agent_mail]
+enabled = true
+pane_badges = true                        # default false (opt-in)
+# pane_badge_format = "[{name}{drift}]{lifecycle}"
+```
+
+The badge is NTM's assigned identity (the session agent registry, keyed by stable
+pane id), never whatever a later process wrote to the pane identity file. At every
+reconciliation NTM compares the assignment with the canonical Agent Mail identity
+file (legacy plain-text name or the structured record Agent Mail >= 0.3.31 writes)
+and caches the outcome in per-pane tmux user options
+(`@ntm_agent_mail_name`, `@ntm_agent_mail_state`, `@ntm_agent_mail_lifecycle`,
+`@ntm_agent_mail_label`); the window's `pane-border-format` gains a fragment that
+renders only the cached label, so tmux never calls Agent Mail while drawing.
+
+| Border | Meaning |
+|---|---|
+| `[BlueLake]` | current assignment; names agree (binding verified, or a legacy file that cannot be verified) |
+| `[BlueLake!]` | current assignment; the identity file disagrees (`name-disagreement`), is `missing-file` / `unreadable-file` / `invalid-file`, or its binding is `binding-unverifiable` / `binding-stale` — the assigned name is retained |
+| `[?!]` | no current assignment: `assignment-stale` (pane generation changed), `assignment-unobservable` (tmux unreadable) or `assignment-unregistered` |
+| `… (starting)`, `… (exited)`, `… (unknown)` | lifecycle observed at the last reconciliation; running agents carry no marker |
+
+Badges are written alongside identity assignment before the agent launches
+(`(starting)`) and reconciled on `ntm spawn`, `ntm add`, `ntm adopt`, restart/respawn
+and on explicit refresh with `ntm mapping --session <session>`, which also prints the
+discrepancy report (assigned vs resolved name, source path, assignment/observation
+state, `last_attempt_at` / `last_success_at`) and carries the same data under
+`identity` and `discrepancies` in `--json`. They describe the last reconciliation, not
+continuous liveness. Badge failures warn and never block a launch or change an
+assignment.
+
+Set `pane_badges = false` and run `ntm mapping --session <session>` to withdraw the
+pane options and restore the window's previous `pane-border-format` (including
+inheritance). Opt a single session out with
+`tmux set-option -t =<session>: @ntm_agent_mail_badges off`. A `pane-border-format`
+you wrote yourself that references `@ntm_agent_mail_*` is left untouched, and windows
+linked into several sessions are skipped with a diagnostic.
+
 `coordinator enable` and `disable` persist the selected `--config` file, or the
 global config by default, without replacing unrelated settings or comments.
 Restart an already running `ntm coordinator run` daemon to apply a toggle.

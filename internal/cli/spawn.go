@@ -2869,6 +2869,7 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 	// run here. Lazily initialized — no Agent Mail traffic when registration
 	// is disabled or no agents launch.
 	identityCoordinator := newSpawnIdentityCoordinator(dir, opts.Session)
+	identityCoordinator.preLaunch = true
 
 	// Launch agents using flattened specs (preserves model info for pane naming)
 	for _, agent := range opts.Agents {
@@ -3646,6 +3647,11 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 		// Register session coordinator with Agent Mail (creates agent.json for ntm lock)
 		registerSessionAgent(ctx, opts.Session, dir)
 
+		// Every agent is launched: reconcile the pane badges published as
+		// "starting" before each launch so they reflect the running agents
+		// (ntm#312). Best-effort by contract.
+		identityCoordinator.reconcileBadges(ctx)
+
 		// Agent Mail identities were prepared and published per-pane before
 		// each launch (gh#255); assemble the accumulated status for output.
 		agentMailStatus := identityCoordinator.finalStatus()
@@ -4308,6 +4314,9 @@ func registerSpawnedAgents(parentCtx context.Context, workingDir, sessionName st
 	for _, agent := range agents {
 		coordinator.prepareAgent(parentCtx, agent)
 	}
+	// The agents are already running: reconcile their pane badges in one
+	// pass (ntm#312). Best-effort, never affects the registration status.
+	coordinator.reconcileBadges(parentCtx)
 	return coordinator.finalStatus()
 }
 
@@ -4348,6 +4357,12 @@ type spawnIdentityCoordinator struct {
 	// never a shared one (ntm#256).
 	livePanes map[string]int
 	liveness  agentmail.PaneLiveness
+	// preLaunch is true on the spawn path, where prepareAgent runs before
+	// the agent command is sent: each pane's identity badge is then
+	// published with lifecycle=starting right after its identity (ntm#312).
+	// The batch path (add/adopt/relaunch) reconciles once at the end
+	// instead, because its agents are already running.
+	preLaunch bool
 }
 
 // spawnIdentityPaneProbe lists a session's panes for liveness judgement. It
@@ -4490,6 +4505,7 @@ func (c *spawnIdentityCoordinator) prepareAgent(parentCtx context.Context, agent
 		c.registry.AddAgent(agent.paneTitle, agent.paneID, existingName)
 		c.recordPanePID(parentCtx, agent.paneID)
 		c.persistRegistry()
+		c.publishStartingBadge(parentCtx, agent)
 		return
 	}
 
@@ -4577,6 +4593,7 @@ func (c *spawnIdentityCoordinator) prepareAgent(parentCtx context.Context, agent
 		c.registry.SetRegistrationToken(registered.Name, registered.RegistrationToken)
 	}
 	c.persistRegistry()
+	c.publishStartingBadge(parentCtx, agent)
 
 	if !IsJSONOutput() {
 		output.PrintInfof("Registered agent pane %d as %s", agent.paneIndex, registered.Name)
