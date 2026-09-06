@@ -735,7 +735,8 @@ func TestJSONEnvelope_SkippedItemReason(t *testing.T) {
 
 	validReasons := []string{
 		"blocked_by_dependency",
-		"no_idle_agents",
+		"no_idle_agents",      // auto-reassignment path
+		"no_placeable_agents", // assign recommendation path (per-pane verdicts in pane_placeability)
 		"in_dependency_cycle",
 		"already_assigned",
 	}

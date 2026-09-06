@@ -1103,19 +1103,33 @@ func TestPaneObservationSafeToDispatchFailsClosed(t *testing.T) {
 	if !base.SafeToDispatch() {
 		t.Fatal("fresh, confident idle observation should be dispatchable")
 	}
+	if refusal := base.DispatchRefusal(); refusal != DispatchRefusalNone {
+		t.Fatalf("dispatchable observation reported refusal %q", refusal)
+	}
 
 	tests := []struct {
-		name   string
-		mutate func(*PaneObservation)
+		name    string
+		mutate  func(*PaneObservation)
+		refusal DispatchRefusal
 	}{
-		{name: "stale", mutate: func(p *PaneObservation) { p.Current.Freshness = FreshnessStale }},
-		{name: "unavailable", mutate: func(p *PaneObservation) { p.Current.Freshness = FreshnessUnavailable }},
-		{name: "low confidence", mutate: func(p *PaneObservation) { p.Current.Confidence = minimumDispatchConfidence - 0.01 }},
-		{name: "invalid high confidence", mutate: func(p *PaneObservation) { p.Current.Confidence = 1.01 }},
-		{name: "capture error", mutate: func(p *PaneObservation) { p.Current.Error = "capture failed" }},
-		{name: "working", mutate: func(p *PaneObservation) { p.Current.Status.State = StateWorking }},
-		{name: "error", mutate: func(p *PaneObservation) { p.Current.Status.State = StateError }},
-		{name: "unknown", mutate: func(p *PaneObservation) { p.Current.Status.State = StateUnknown }},
+		{name: "stale", mutate: func(p *PaneObservation) { p.Current.Freshness = FreshnessStale }, refusal: DispatchRefusalStale},
+		{name: "unavailable", mutate: func(p *PaneObservation) { p.Current.Freshness = FreshnessUnavailable }, refusal: DispatchRefusalStale},
+		{name: "low confidence", mutate: func(p *PaneObservation) { p.Current.Confidence = minimumDispatchConfidence - 0.01 }, refusal: DispatchRefusalLowConfidence},
+		{name: "invalid high confidence", mutate: func(p *PaneObservation) { p.Current.Confidence = 1.01 }, refusal: DispatchRefusalLowConfidence},
+		{name: "capture error", mutate: func(p *PaneObservation) { p.Current.Error = "capture failed" }, refusal: DispatchRefusalError},
+		{name: "working", mutate: func(p *PaneObservation) { p.Current.Status.State = StateWorking }, refusal: DispatchRefusalNotIdle},
+		{name: "error", mutate: func(p *PaneObservation) { p.Current.Status.State = StateError }, refusal: DispatchRefusalNotIdle},
+		{name: "unknown", mutate: func(p *PaneObservation) { p.Current.Status.State = StateUnknown }, refusal: DispatchRefusalNotIdle},
+		// Clause order: a stale capture that is also not idle is reported as
+		// stale, because evidence quality is judged before the state it carries.
+		{name: "stale outranks state", mutate: func(p *PaneObservation) {
+			p.Current.Freshness = FreshnessStale
+			p.Current.Status.State = StateWorking
+		}, refusal: DispatchRefusalStale},
+		{name: "error outranks confidence", mutate: func(p *PaneObservation) {
+			p.Current.Error = "capture failed"
+			p.Current.Confidence = 0.1
+		}, refusal: DispatchRefusalError},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -1123,6 +1137,9 @@ func TestPaneObservationSafeToDispatchFailsClosed(t *testing.T) {
 			test.mutate(&candidate)
 			if candidate.SafeToDispatch() {
 				t.Fatal("unsafe observation was accepted for dispatch")
+			}
+			if got := candidate.DispatchRefusal(); got != test.refusal {
+				t.Fatalf("DispatchRefusal() = %q, want %q", got, test.refusal)
 			}
 		})
 	}

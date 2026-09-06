@@ -162,7 +162,11 @@ type PaneObservation struct {
 	RawOutput string            `json:"-"`
 }
 
-const minimumDispatchConfidence = 0.75
+// MinimumDispatchConfidence is the classification confidence floor below which
+// an observation may not authorize a dispatch or a durable state transition.
+const MinimumDispatchConfidence = 0.75
+
+const minimumDispatchConfidence = MinimumDispatchConfidence
 
 // ObservationConfidenceIsActionable reports whether evidence is strong enough
 // to authorize a durable state transition or dispatch decision.
@@ -184,14 +188,48 @@ func DispatchObservationIsCurrent(observedAt, now time.Time) bool {
 	return now.Sub(observedAt) <= DispatchObservationMaxAge
 }
 
+// DispatchRefusal names the first SafeToDispatch clause an observation fails.
+// The empty value means the observation is safe to dispatch to.
+type DispatchRefusal string
+
+const (
+	// DispatchRefusalNone: the observation passes every SafeToDispatch clause.
+	DispatchRefusalNone DispatchRefusal = ""
+	// DispatchRefusalStale: the current capture is not fresh.
+	DispatchRefusalStale DispatchRefusal = "observation_stale"
+	// DispatchRefusalError: the current capture recorded an error.
+	DispatchRefusalError DispatchRefusal = "observation_error"
+	// DispatchRefusalLowConfidence: the classification is below the dispatch
+	// confidence floor (or above 1, which is invalid evidence).
+	DispatchRefusalLowConfidence DispatchRefusal = "low_confidence"
+	// DispatchRefusalNotIdle: the pane is classified as something other than
+	// idle (working, waiting, error, unknown, ...).
+	DispatchRefusalNotIdle DispatchRefusal = "not_idle"
+)
+
+// DispatchRefusal reports why SafeToDispatch rejects this observation, in
+// clause order, or DispatchRefusalNone when it does not. SafeToDispatch is
+// defined in terms of this method so the two cannot disagree.
+func (p PaneObservation) DispatchRefusal() DispatchRefusal {
+	switch {
+	case p.Current.Freshness != FreshnessFresh:
+		return DispatchRefusalStale
+	case p.Current.Error != "":
+		return DispatchRefusalError
+	case !ObservationConfidenceIsActionable(p.Current.Confidence):
+		return DispatchRefusalLowConfidence
+	case p.Current.Status.State != StateIdle:
+		return DispatchRefusalNotIdle
+	default:
+		return DispatchRefusalNone
+	}
+}
+
 // SafeToDispatch fails closed. Only a fresh, confident idle classification can
 // receive new work; stale, unknown, working, error, and failed observations are
-// all rejected.
+// all rejected. DispatchRefusal names the clause that rejected an observation.
 func (p PaneObservation) SafeToDispatch() bool {
-	return p.Current.Freshness == FreshnessFresh &&
-		p.Current.Error == "" &&
-		ObservationConfidenceIsActionable(p.Current.Confidence) &&
-		p.Current.Status.State == StateIdle
+	return p.DispatchRefusal() == DispatchRefusalNone
 }
 
 // ObservationFailure describes one failed observation stage without dropping

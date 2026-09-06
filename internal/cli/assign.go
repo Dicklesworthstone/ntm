@@ -1116,8 +1116,11 @@ func loadActiveAssignmentBeadIDs(session string) (map[string]struct{}, error) {
 // Errors are intentionally swallowed (an unreadable store is treated as empty,
 // matching loadActiveAssignmentBeadIDs): briefly double-dispatching is less bad
 // than blocking all assignment on a transient store-read failure.
-func loadActiveAssignmentPanes(session string) (map[string]struct{}, error) {
-	active := make(map[string]struct{})
+//
+// The map is keyed by canonical pane identity and carries the bead ID holding
+// the pane, so placeability output can name the fence.
+func loadActiveAssignmentPanes(session string) (map[string]string, error) {
+	active := make(map[string]string)
 	store, err := assignment.LoadStoreStrict(session)
 	if err != nil {
 		return active, fmt.Errorf("load active assignment panes: %w", err)
@@ -1127,22 +1130,9 @@ func loadActiveAssignmentPanes(session string) (map[string]struct{}, error) {
 		if identityErr != nil {
 			return active, identityErr
 		}
-		active[key] = struct{}{}
+		active[key] = item.BeadID
 	}
 	return active, nil
-}
-
-func assignmentPaneIsActive(active map[string]struct{}, pane tmux.Pane) bool {
-	keys := []string{
-		assignmentPaneStableKey(pane),
-		assignmentPaneTarget(pane),
-	}
-	for _, key := range keys {
-		if _, ok := active[key]; ok {
-			return true
-		}
-	}
-	return false
 }
 
 // countSkippedByReason counts SkippedItems matching a specific reason. Used to
@@ -1209,12 +1199,16 @@ type AssignCommandOptions struct {
 
 // AssignOutputEnhanced is the enhanced output structure matching the spec.
 type AssignOutputEnhanced struct {
-	Strategy    string                `json:"strategy"`
-	Assignments []AssignmentItem      `json:"assignments"`
-	Skipped     []SkippedItem         `json:"skipped"`
-	Summary     AssignSummaryEnhanced `json:"summary"`
-	Allocation  *AssignAllocationView `json:"allocation,omitempty"`
-	Errors      []string              `json:"-"`
+	Strategy    string           `json:"strategy"`
+	Assignments []AssignmentItem `json:"assignments"`
+	Skipped     []SkippedItem    `json:"skipped"`
+	// Panes carries one placeability verdict per pane in the session, in
+	// tmux order, so a zero idle-agent count can be traced to the gate that
+	// produced it. Present whenever the session was evaluated.
+	Panes      []AssignPanePlaceability `json:"pane_placeability,omitempty"`
+	Summary    AssignSummaryEnhanced    `json:"summary"`
+	Allocation *AssignAllocationView    `json:"allocation,omitempty"`
+	Errors     []string                 `json:"-"`
 }
 
 // AssignmentItem represents a single assignment in JSON output.
@@ -1263,6 +1257,10 @@ type AssignSummaryEnhanced struct {
 	SkippedCount      int `json:"skipped_count"`
 	IdleAgents        int `json:"idle_agent_count"`
 	CycleWarningCount int `json:"cycle_warning_count,omitempty"` // Beads in dependency cycles
+	// PlaceabilityCounts tallies Panes by verdict (placeable, not_agent_pane,
+	// agent_type_filtered, active_assignment, observation_*, low_confidence,
+	// not_idle, role_ineligible). IdleAgents equals the placeable count.
+	PlaceabilityCounts map[string]int `json:"placeability_counts,omitempty"`
 }
 
 // AssignError represents an error in assign JSON output.
@@ -1679,9 +1677,6 @@ func getAssignOutputEnhanced(ctx context.Context, opts *AssignCommandOptions) (*
 		return nil, fmt.Errorf("failed to get panes: %w", err)
 	}
 
-	// Build agent info and filter by type if needed
-	var idleAgents []assignAgentInfo
-
 	// Panes holding an active assignment must be excluded from the idle pool
 	// even if they momentarily show an idle prompt between turns (FIX C). This
 	// is the watch-dispatch path, so the guard is what keeps the periodic
@@ -1697,38 +1692,12 @@ func getAssignOutputEnhanced(ctx context.Context, opts *AssignCommandOptions) (*
 		return nil, err
 	}
 
-	for _, pane := range panes {
-		at := agentTypeForPane(pane)
-		if at == "user" || at == "unknown" {
-			continue
-		}
-
-		// Apply agent type filter
-		if opts.AgentTypeFilter != "" && at != opts.AgentTypeFilter {
-			continue
-		}
-
-		// Skip panes that already hold an active assignment.
-		if assignmentPaneIsActive(activePanes, pane) {
-			continue
-		}
-
-		paneObservation, observationErr := currentAssignPaneObservation(observation, pane.ID, time.Now())
-		if observationErr != nil {
-			return nil, observationErr
-		}
-		model := detectModelFromTitle(at, pane.Title)
-		state := string(paneObservation.Current.Status.State)
-
-		if paneObservation.SafeToDispatch() {
-			idleAgents = append(idleAgents, assignAgentInfo{
-				pane:       pane,
-				agentType:  at,
-				model:      model,
-				state:      state,
-				scrollback: paneObservation.RawOutput,
-			})
-		}
+	// Run every pane through the dispatch gates, keeping one verdict per pane
+	// so the output can say which gate excluded it rather than only how many
+	// agents survived.
+	idleAgents, paneVerdicts, err := evaluateAssignPanePlaceability(panes, activePanes, observation, opts.AgentTypeFilter, time.Now())
+	if err != nil {
+		return nil, err
 	}
 
 	// Get beads from bv. Source candidates from the FULL dependency-aware
@@ -1838,11 +1807,13 @@ func getAssignOutputEnhanced(ctx context.Context, opts *AssignCommandOptions) (*
 	if err != nil {
 		return nil, err
 	}
+	markRoleIneligiblePanes(paneVerdicts, idleAgents, opts.Template)
 
 	result := &AssignOutputEnhanced{
 		Strategy:    opts.Strategy,
 		Assignments: make([]AssignmentItem, 0),
 		Skipped:     allSkipped, // Blocked + cyclic beads
+		Panes:       paneVerdicts,
 		Summary: AssignSummaryEnhanced{
 			TotalBeadCount:  len(readyBeads) + len(blockedBeads) + cycleWarnings,
 			ActionableCount: len(readyBeads),
@@ -1850,18 +1821,20 @@ func getAssignOutputEnhanced(ctx context.Context, opts *AssignCommandOptions) (*
 			// by an upstream dependency. Other non-actionable reasons
 			// (in_progress, operator_gated, already_assigned) inflate the
 			// generic Skipped slice but not this metric.
-			BlockedCount:      countSkippedByReason(blockedBeads, "blocked_by_dependency"),
-			IdleAgents:        len(idleAgents),
-			CycleWarningCount: cycleWarnings,
+			BlockedCount:       countSkippedByReason(blockedBeads, "blocked_by_dependency"),
+			IdleAgents:         len(idleAgents),
+			CycleWarningCount:  cycleWarnings,
+			PlaceabilityCounts: placeabilityCounts(paneVerdicts),
 		},
 	}
 
-	// No idle agents available
+	// No pane cleared the placeability gates. The per-pane verdicts in
+	// result.Panes say which gate rejected each one.
 	if len(idleAgents) == 0 {
 		for _, bead := range readyBeads {
 			result.Skipped = append(result.Skipped, SkippedItem{
 				BeadID: bead.ID,
-				Reason: "no_idle_agents",
+				Reason: SkipReasonNoPlaceableAgents,
 			})
 		}
 		result.Summary.SkippedCount = len(readyBeads)
@@ -2514,13 +2487,34 @@ func displayAssignOutputEnhanced(out *AssignOutputEnhanced, verbose bool) {
 			}
 			fmt.Println()
 		}
+		if verbose {
+			for _, line := range formatPanePlaceabilityLines(out.Panes) {
+				fmt.Println(subtitleStyle.Render(line))
+			}
+		}
 	} else {
 		fmt.Println()
 		fmt.Println(subtitleStyle.Render("No assignments to recommend."))
 		if out.Summary.IdleAgents == 0 {
-			fmt.Println(subtitleStyle.Render("  Reason: No idle agents available"))
+			// "No idle agents" reads as "the seats are busy", which is only one
+			// of the gates. Name the breakdown and then every pane, so an
+			// operator looking at panes that visibly sit at an empty prompt
+			// sees the gate that actually excluded them.
+			reason := "  Reason: No placeable agents"
+			if breakdown := placeabilityBreakdown(out.Summary.PlaceabilityCounts); breakdown != "" {
+				reason += " (" + breakdown + ")"
+			}
+			fmt.Println(subtitleStyle.Render(reason))
+			for _, line := range formatPanePlaceabilityLines(out.Panes) {
+				fmt.Println(subtitleStyle.Render(line))
+			}
 		} else if out.Summary.TotalBeadCount == 0 {
 			fmt.Println(subtitleStyle.Render("  Reason: No ready beads to assign"))
+			if verbose {
+				for _, line := range formatPanePlaceabilityLines(out.Panes) {
+					fmt.Println(subtitleStyle.Render(line))
+				}
+			}
 		}
 	}
 
@@ -6204,8 +6198,6 @@ func getIdleAgents(ctx context.Context, session, agentTypeFilter string, verbose
 		return nil, err
 	}
 
-	var idleAgents []assignAgentInfo
-
 	// Panes holding an active assignment must be excluded from the idle pool
 	// even if they momentarily show an idle prompt between turns (FIX C).
 	activePanes, err := loadActiveAssignmentPanes(session)
@@ -6213,47 +6205,26 @@ func getIdleAgents(ctx context.Context, session, agentTypeFilter string, verbose
 		return nil, err
 	}
 
-	for _, pane := range panes {
-		agentType := agentTypeForPane(pane)
-		if agentType == "user" || agentType == "unknown" {
-			continue
-		}
-
-		// Apply agent type filter
-		if normalizedFilter != "" && agentType != normalizedFilter {
-			continue
-		}
-
-		// Skip panes that already hold an active assignment.
-		if assignmentPaneIsActive(activePanes, pane) {
-			if assignHumanDiagnostics(verbose) {
-				fmt.Fprintf(os.Stderr, "[AUTO] Skipping pane %d (%s): holds an active assignment\n", pane.Index, agentType)
-			}
-			continue
-		}
-
-		paneObservation, observationErr := currentAssignPaneObservation(observation, pane.ID, time.Now())
-		if observationErr != nil {
-			return nil, observationErr
-		}
-		model := detectModelFromTitle(agentType, pane.Title)
-		state := string(paneObservation.Current.Status.State)
-
-		if paneObservation.SafeToDispatch() {
-			idleAgents = append(idleAgents, assignAgentInfo{
-				pane:       pane,
-				agentType:  agentType,
-				model:      model,
-				state:      state,
-				scrollback: paneObservation.RawOutput,
-			})
-			if assignHumanDiagnostics(verbose) {
-				fmt.Fprintf(os.Stderr, "[AUTO] Found idle agent: pane %d (%s)\n", pane.Index, agentType)
-			}
-		}
+	idleAgents, verdicts, err := evaluateAssignPanePlaceability(panes, activePanes, observation, normalizedFilter, time.Now())
+	if err != nil {
+		return nil, err
 	}
 
 	if assignHumanDiagnostics(verbose) {
+		for _, verdict := range verdicts {
+			switch verdict.Verdict {
+			case PlaceabilityNotAgentPane:
+				continue
+			case PlaceabilityPlaceable:
+				fmt.Fprintf(os.Stderr, "[AUTO] Found idle agent: pane %s (%s)\n", verdict.PaneTarget, verdict.AgentType)
+			default:
+				detail := verdict.Verdict
+				if verdict.Detail != "" {
+					detail += " (" + verdict.Detail + ")"
+				}
+				fmt.Fprintf(os.Stderr, "[AUTO] Skipping pane %s (%s): %s\n", verdict.PaneTarget, verdict.AgentType, detail)
+			}
+		}
 		fmt.Fprintf(os.Stderr, "[AUTO] Total idle agents available: %d\n", len(idleAgents))
 	}
 
