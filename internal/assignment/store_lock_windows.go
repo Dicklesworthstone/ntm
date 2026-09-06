@@ -6,26 +6,25 @@ import (
 	"context"
 	"errors"
 	"os"
-	"path/filepath"
 	"time"
 
 	"golang.org/x/sys/windows"
 )
 
-func acquireAssignmentFileLock(ctx context.Context, lockPath string) (func(), error) {
-	localUnlock, err := lockAssignmentPathLocally(ctx, lockPath)
-	if err != nil {
-		return nil, err
-	}
+// lockedFile is an open lock file holding an exclusive LockFileEx byte lock.
+type lockedFile struct {
+	path       string
+	file       *os.File
+	overlapped *windows.Overlapped
+}
 
-	if err := os.MkdirAll(filepath.Dir(lockPath), 0700); err != nil {
-		localUnlock()
-		return nil, err
-	}
-
+// openLockedFile opens lockPath and takes an exclusive LockFileEx lock on its
+// first byte, polling until the lock is granted or ctx is done. Byte-range
+// locks belong to the handle, so every call contends independently even within
+// one process.
+func openLockedFile(ctx context.Context, lockPath string) (*lockedFile, error) {
 	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
-		localUnlock()
 		return nil, err
 	}
 	overlapped := new(windows.Overlapped)
@@ -39,11 +38,10 @@ func acquireAssignmentFileLock(ctx context.Context, lockPath string) (func(), er
 			overlapped,
 		)
 		if err == nil {
-			break
+			return &lockedFile{path: lockPath, file: lockFile, overlapped: overlapped}, nil
 		}
 		if !errors.Is(err, windows.ERROR_LOCK_VIOLATION) {
 			_ = lockFile.Close()
-			localUnlock()
 			return nil, err
 		}
 		timer := time.NewTimer(10 * time.Millisecond)
@@ -53,17 +51,36 @@ func acquireAssignmentFileLock(ctx context.Context, lockPath string) (func(), er
 				<-timer.C
 			}
 			_ = lockFile.Close()
-			localUnlock()
 			return nil, ctx.Err()
 		case <-timer.C:
 		}
 	}
+}
 
-	return func() {
-		_ = windows.UnlockFileEx(windows.Handle(lockFile.Fd()), 0, 1, 0, overlapped)
-		_ = lockFile.Close()
-		localUnlock()
-	}, nil
+func (l *lockedFile) unlockAndClose() {
+	_ = windows.UnlockFileEx(windows.Handle(l.file.Fd()), 0, 1, 0, l.overlapped)
+	_ = l.file.Close()
+}
+
+// release drops the lock. A transient lock file is removed AFTER the handle is
+// closed, the opposite order from Unix: os.OpenFile does not grant
+// FILE_SHARE_DELETE, so Windows refuses to delete the file while this handle or
+// any waiter's handle is still open. That refusal is what makes removal safe
+// here: a delete can only succeed when nobody holds the file, so no waiter can
+// be left locking a deleted file, and the file simply stays behind until the
+// last contender releases it. The identity captured before closing keeps a
+// replacement created in the meantime from being removed by this releaser.
+func (l *lockedFile) release(removePath bool) {
+	var held os.FileInfo
+	if removePath {
+		if info, err := l.file.Stat(); err == nil {
+			held = info
+		}
+	}
+	l.unlockAndClose()
+	if removePath {
+		removeLockFileIfSame(held, l.path)
+	}
 }
 
 func syncAssignmentDirectory(string) error {
