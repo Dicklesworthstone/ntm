@@ -17,7 +17,7 @@ import (
 
 const (
 	caamLaunchBinding = "caam"
-	caamProfileEnv     = "SHALLOW_PROFILE"
+	caamProfileEnv    = "SHALLOW_PROFILE"
 )
 
 // LaunchAffinity reports whether a relaunch is bound to the same provider
@@ -158,7 +158,16 @@ func prepareLaunchCommand(
 	if err := preflight(ctx, binary, binding); err != nil {
 		return "", "", fmt.Errorf("resolve launch binding %s: %w", binding.displayName(), err)
 	}
-	prepared := tmux.ShellQuote(binary) + " shallow-spawn " + tmux.ShellQuote(binding.Identifier) + " -- " + command
+	// caam exec()s the argv after "--" directly, without a shell, but the
+	// agent command is a shell string: templates carry env assignments
+	// (CODEX_SYSTEM_PROMPT="$(cat …)" codex …, GEMINI_SYSTEM_MD=… gemini),
+	// launch prefixes such as systemd-run, and operators write `a && b`. Hand
+	// the whole string to one shell running under the profile so every part
+	// of it inherits the profile's HOME. Passing it bare would either fail to
+	// exec an env assignment or, worse, run the part after `&&` OUTSIDE the
+	// profile while the restart reported the affinity as preserved.
+	prepared := tmux.ShellQuote(binary) + " shallow-spawn " + tmux.ShellQuote(binding.Identifier) +
+		" -- sh -c " + tmux.ShellQuote(command)
 	return prepared, LaunchAffinityPreserved, nil
 }
 

@@ -317,8 +317,9 @@ func (c *Client) EnableWindowBadgeBorderContext(ctx context.Context, windowID st
 		if alreadySet != "" {
 			// Our fragment is present but the local value drifted from what we
 			// set (user edited the format while badges were on). The user's
-			// edit still renders badges; keep it and refresh our record so
-			// disable restores relative to the current value.
+			// edit still renders badges; keep it. Disable handles this case
+			// by stripping only our fragment from the current value, so the
+			// recorded previous value needs no refresh.
 			return BorderChange{}, nil
 		}
 		return BorderChange{Skipped: "pane-border-format already references " + badgeOptionPrefix + "* options; left as-is"}, nil
@@ -387,7 +388,10 @@ func (c *Client) DisableWindowBadgeBorderContext(ctx context.Context, windowID s
 	target := ExactTarget(windowID)
 	var args []string
 	switch {
-	case current == set && prevScope == borderScopeLocal:
+	case current == set && prevScope == borderScopeLocal && prev != "":
+		// A local scope is only ever recorded with a non-empty value; an
+		// empty record means the marker was lost, and restoring "" would
+		// blank every pane title in the window. Fall through to -u instead.
 		args = append(args, "set-option", "-w", "-t", target, "pane-border-format", prev)
 	case current == set:
 		args = append(args, "set-option", "-w", "-u", "-t", target, "pane-border-format")

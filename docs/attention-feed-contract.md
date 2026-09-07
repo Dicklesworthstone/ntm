@@ -223,7 +223,7 @@ The `next_actions` array provides mechanical follow-up commands. These are NOT s
     },
     {
       "label": "Diagnose error",
-      "command": "ntm --robot-diagnose=myproject --pane=2",
+      "command": "ntm --robot-diagnose=myproject --diagnose-pane=2",
       "rationale": "Error pattern detected"
     }
   ]
@@ -964,7 +964,7 @@ Log contract mismatches when commands cannot satisfy guarantees:
   "next_actions": [
     {
       "label": "Diagnose",
-      "command": "ntm --robot-diagnose=myproject --pane=3"
+      "command": "ntm --robot-diagnose=myproject --diagnose-pane=3"
     },
     {
       "label": "Check tokens",

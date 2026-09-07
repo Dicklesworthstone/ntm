@@ -17,6 +17,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	dispatchsvc "github.com/Dicklesworthstone/ntm/internal/dispatch"
 	"github.com/Dicklesworthstone/ntm/internal/process"
+	"github.com/Dicklesworthstone/ntm/internal/resilience"
 	statuspkg "github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
@@ -66,6 +67,7 @@ type RestartPaneOutput struct {
 	// explicitly (#187). User/unknown panes are not included.
 	AgentRelaunched     map[string]bool                       `json:"agent_relaunched,omitempty"`
 	AgentRelaunchStatus map[string]RestartAgentRelaunchStatus `json:"agent_relaunch_status,omitempty"`
+	LaunchAffinity      map[string]resilience.LaunchAffinity  `json:"launch_affinity,omitempty"`
 
 	// PaneShellPIDs is the per-pane respawn evidence (ntm-tgkb): a real
 	// respawn replaces the pane's shell, so after MUST differ from before.
@@ -253,6 +255,8 @@ type RestartPaneDependencies struct {
 	ObserveSession         func(context.Context, string) (statuspkg.SessionObservation, error)
 	DispatchDeliverer      dispatchsvc.Deliverer
 	DispatchPacer          dispatchsvc.Pacer
+	LoadManifest           func(string) (*resilience.SpawnManifest, error)
+	PrepareLaunchCommand   func(context.Context, string, string, *resilience.LaunchBinding, string) (string, resilience.LaunchAffinity, error)
 }
 
 type restartBeadPreflight struct {
@@ -496,6 +500,28 @@ func GetRestartPaneContext(ctx context.Context, opts RestartPaneOptions) (*Resta
 		return output, nil
 	}
 
+	restartCfg := opts.Config
+	if beadPreflight != nil && beadPreflight.Policy != nil {
+		restartCfg = beadPreflight.Policy
+	}
+	if restartCfg == nil {
+		var cfgErr error
+		restartCfg, cfgErr = config.LoadMerged(mustGetwd(), config.DefaultPath())
+		if cfgErr != nil {
+			restartCfg = config.Default()
+		}
+	}
+	launchPlan, err := prepareRestartLaunchPlan(ctx, opts.Session, targetPanes, multiWindow, restartCfg, launchOverride, deps)
+	if err != nil {
+		output.RobotResponse = NewErrorResponse(
+			err,
+			ErrCodeInternalError,
+			"Restore the named launcher profile, remove the stale binding, or fix the agent launch template before retrying; no pane was respawned",
+		)
+		return output, nil
+	}
+	output.LaunchAffinity = launchPlan.Affinity
+
 	// Dry-run mode
 	if opts.DryRun {
 		output.DryRun = true
@@ -537,18 +563,6 @@ func GetRestartPaneContext(ctx context.Context, opts RestartPaneOptions) (*Resta
 	// prompt would be typed into zsh instead of an agent.
 	agentPaneReady := make(map[string]bool, len(output.Restarted))
 	if len(output.Restarted) > 0 {
-		cfg := opts.Config
-		if beadPreflight != nil && beadPreflight.Policy != nil {
-			cfg = beadPreflight.Policy
-		}
-		if cfg == nil {
-			var cfgErr error
-			cfg, cfgErr = config.LoadMerged(mustGetwd(), config.DefaultPath())
-			if cfgErr != nil {
-				cfg = config.Default()
-			}
-		}
-
 		// Let fresh shells initialize before typing into them.
 		if err := waitForRestartPaneDelay(ctx, restartPaneSettleDelay); err != nil {
 			appendRestartCancellationFailures(output, output.Restarted, 0, "agent relaunch canceled before shell settle completed", err)
@@ -576,9 +590,9 @@ func GetRestartPaneContext(ctx context.Context, opts RestartPaneOptions) (*Resta
 				continue
 			}
 
-			launchCmd, launchCmdErr := restartAgentLaunchCommandWithOverride(cfg, info.ResolvedType, info.Variant, launchOverride)
-			if launchCmdErr != nil {
-				appendRestartFailureOnce(output, paneKey, fmt.Sprintf("compose relaunch command: %v", launchCmdErr))
+			launchCmd, ok := launchPlan.Commands[paneKey]
+			if !ok {
+				appendRestartFailureOnce(output, paneKey, "missing preflighted relaunch command")
 				output.AgentRelaunched[paneKey] = false
 				output.AgentRelaunchStatus[paneKey] = RestartAgentRelaunchFailed
 				continue
@@ -770,6 +784,8 @@ func restartPaneDeps(custom *RestartPaneDependencies) RestartPaneDependencies {
 		ListPanes:              tmux.GetPanesContext,
 		ObserveSession:         observer.Observe,
 		DispatchDeliverer:      dispatchsvc.TMUXDeliverer{},
+		LoadManifest:           resilience.LoadManifest,
+		PrepareLaunchCommand:   resilience.PrepareLaunchCommand,
 	}
 	if custom == nil {
 		return deps
@@ -816,6 +832,12 @@ func restartPaneDeps(custom *RestartPaneDependencies) RestartPaneDependencies {
 	}
 	if custom.DispatchPacer != nil {
 		deps.DispatchPacer = custom.DispatchPacer
+	}
+	if custom.LoadManifest != nil {
+		deps.LoadManifest = custom.LoadManifest
+	}
+	if custom.PrepareLaunchCommand != nil {
+		deps.PrepareLaunchCommand = custom.PrepareLaunchCommand
 	}
 	return deps
 }

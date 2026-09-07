@@ -461,7 +461,7 @@ snapshot → status → inspect → diagnose
         "short": "Process exited 5m ago",
         "drill_down": {
           "label": "Full diagnostics",
-          "command": "ntm --robot-diagnose=myproject --panes=2",
+          "command": "ntm --robot-diagnose=myproject --diagnose-pane=2",
           "depth": "diagnose"
         }
       }

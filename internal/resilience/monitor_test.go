@@ -18,6 +18,7 @@ func saveHooks() func() {
 	hooksMu.Lock()
 	origSend := sendKeysFn
 	origBuild := buildPaneCmdFn
+	origPrepare := prepareLaunchCommandFn
 	origSleep := sleepFn
 	origCheckSession := checkSessionFn
 	origDisplayMessage := displayMessageFn
@@ -32,6 +33,7 @@ func saveHooks() func() {
 		hooksMu.Lock()
 		sendKeysFn = origSend
 		buildPaneCmdFn = origBuild
+		prepareLaunchCommandFn = origPrepare
 		sleepFn = origSleep
 		checkSessionFn = origCheckSession
 		displayMessageFn = origDisplayMessage

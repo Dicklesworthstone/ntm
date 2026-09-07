@@ -22,14 +22,15 @@ import (
 // Overridable hooks for tests.
 // Protected by hooksMu for concurrent access from spawned goroutines.
 var (
-	hooksMu          sync.RWMutex
-	sendKeysFn       = tmux.SendKeys
-	buildPaneCmdFn   = tmux.BuildPaneCommand
-	sleepFn          = time.Sleep
-	checkSessionFn   = health.CheckSession
-	displayMessageFn = tmux.DisplayMessage
-	isChildAliveFn   = process.IsChildAlive
-	panePresentFn    = panePresentInSession
+	hooksMu                sync.RWMutex
+	sendKeysFn             = tmux.SendKeys
+	buildPaneCmdFn         = tmux.BuildPaneCommand
+	prepareLaunchCommandFn = PrepareLaunchCommand
+	sleepFn                = time.Sleep
+	checkSessionFn         = health.CheckSession
+	displayMessageFn       = tmux.DisplayMessage
+	isChildAliveFn         = process.IsChildAlive
+	panePresentFn          = panePresentInSession
 )
 
 // panePresentInSession reports whether paneID currently exists in session.
@@ -57,7 +58,8 @@ type AgentState struct {
 	ShellPID            int    // Shell PID from tmux #{pane_pid} — used for PID-based liveness checks
 	AgentType           string // cc, cod, gmi
 	Model               string // Model variant (opus, sonnet, etc.)
-	Command             string // Original launch command
+	Command             string // Original environment-free launch command
+	LaunchBinding       *LaunchBinding
 	RestartCount        int
 	LastCrash           time.Time
 	LastRestart         time.Time // When agent was last restarted
@@ -125,17 +127,30 @@ func (m *Monitor) SetCodexThrottle(ct *ratelimit.CodexThrottle) {
 // RegisterAgent adds an agent to be monitored.
 // shellPID is the tmux pane's shell PID for PID-based liveness checking.
 func (m *Monitor) RegisterAgent(paneID string, paneIndex int, shellPID int, agentType, model, command string) {
+	m.RegisterAgentWithBinding(paneID, paneIndex, shellPID, agentType, model, command, nil)
+}
+
+// RegisterAgentWithBinding registers an agent together with its persisted,
+// provider-scoped launch affinity.
+func (m *Monitor) RegisterAgentWithBinding(
+	paneID string,
+	paneIndex int,
+	shellPID int,
+	agentType, model, command string,
+	binding *LaunchBinding,
+) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	m.agents[paneID] = &AgentState{
-		PaneID:    paneID,
-		PaneIndex: paneIndex,
-		ShellPID:  shellPID,
-		AgentType: agentType,
-		Model:     model,
-		Command:   command,
-		Healthy:   true,
+		PaneID:        paneID,
+		PaneIndex:     paneIndex,
+		ShellPID:      shellPID,
+		AgentType:     agentType,
+		Model:         model,
+		Command:       command,
+		LaunchBinding: CloneLaunchBinding(binding),
+		Healthy:       true,
 	}
 }
 
@@ -820,6 +835,7 @@ func (m *Monitor) restartAgent(ctx context.Context, agent *AgentState) {
 	// Snapshot hooks under lock for thread-safe access from spawned goroutines
 	hooksMu.RLock()
 	buildFunc := buildPaneCmdFn
+	prepareFunc := prepareLaunchCommandFn
 	sendFunc := sendKeysFn
 	isChildAliveFunc := isChildAliveFn
 	panePresentFunc := panePresentFn
@@ -842,15 +858,10 @@ func (m *Monitor) restartAgent(ctx context.Context, agent *AgentState) {
 	}
 	// Copy fields while holding lock to avoid race
 	agentCommand := currentAgent.Command
+	launchBinding := CloneLaunchBinding(currentAgent.LaunchBinding)
+	trackedAgentType := currentAgent.AgentType
 	shellPID := currentAgent.ShellPID
 	m.mu.Unlock()
-
-	// Re-run the agent command in the pane
-	paneCmd, err := buildFunc(m.projectDir, agentCommand)
-	if err != nil {
-		log.Printf("[resilience] Refusing to restart agent %s: %v", agent.PaneID, err)
-		return
-	}
 
 	// Final PID guard: last-second check before injecting keys.
 	// The restart delay may have allowed the agent to recover.
@@ -880,6 +891,24 @@ func (m *Monitor) restartAgent(ctx context.Context, agent *AgentState) {
 			delete(m.agents, agent.PaneID)
 			m.mu.Unlock()
 		}
+		return
+	}
+
+	caamBinary := ""
+	if m.cfg != nil {
+		caamBinary = m.cfg.Integrations.CAAM.BinaryPath
+	}
+	preparedAgentCommand, affinity, err := prepareFunc(ctx, trackedAgentType, caamBinary, launchBinding, agentCommand)
+	if err != nil {
+		log.Printf("[resilience] Refusing to restart agent %s: launch affinity preflight failed: %v", agent.PaneID, err)
+		return
+	}
+	if affinity == LaunchAffinityUnknown {
+		log.Printf("[resilience] Agent %s has legacy unknown launch affinity; restarting with the current controller environment", agent.PaneID)
+	}
+	paneCmd, err := buildFunc(m.projectDir, preparedAgentCommand)
+	if err != nil {
+		log.Printf("[resilience] Refusing to restart agent %s: %v", agent.PaneID, err)
 		return
 	}
 

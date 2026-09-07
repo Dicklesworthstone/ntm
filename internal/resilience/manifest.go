@@ -37,11 +37,12 @@ type SpawnManifest struct {
 
 // AgentConfig represents the configuration for a single agent
 type AgentConfig struct {
-	PaneID    string `json:"pane_id"`
-	PaneIndex int    `json:"pane_index"`
-	Type      string `json:"type"`
-	Model     string `json:"model"`
-	Command   string `json:"command"`
+	PaneID        string         `json:"pane_id"`
+	PaneIndex     int            `json:"pane_index"`
+	Type          string         `json:"type"`
+	Model         string         `json:"model"`
+	Command       string         `json:"command"`
+	LaunchBinding *LaunchBinding `json:"launch_binding,omitempty"`
 }
 
 // ManifestDir returns the directory for storing session manifests

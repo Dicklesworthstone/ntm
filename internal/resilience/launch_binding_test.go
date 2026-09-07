@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 func TestCaptureLaunchBindingPersistsOnlyOpaqueProfile(t *testing.T) {
@@ -69,8 +71,40 @@ func TestPrepareLaunchCommandPreservesCreationProfile(t *testing.T) {
 		t.Fatalf("preflight used binary=%q profile=%q, want /opt/caam profile-a", gotBinary, gotIdentifier)
 	}
 	if !strings.Contains(command, "shallow-spawn") || !strings.Contains(command, "profile-a") ||
-		strings.Contains(command, "profile-b") || !strings.HasSuffix(command, " -- claude --model opus") {
+		strings.Contains(command, "profile-b") || !strings.HasSuffix(command, " -- sh -c 'claude --model opus'") {
 		t.Fatalf("prepared command did not preserve profile-a: %q", command)
+	}
+}
+
+// caam exec()s the argv after "--" without a shell, but agent commands are
+// shell strings (env assignments, systemd-run prefixes, `a && b`). The whole
+// string must reach one shell running under the profile; a bare `a && b`
+// would run b outside the profile while the restart reported it preserved.
+func TestPrepareLaunchCommandRunsWholeShellCommandInsideProfile(t *testing.T) {
+	binding := &LaunchBinding{Provider: "cod", Launcher: "caam", Identifier: "profile-a"}
+	const original = `CODEX_SYSTEM_PROMPT="$(cat '/tmp/p.md')" codex --search && echo it's done`
+	command, affinity, err := prepareLaunchCommand(
+		context.Background(),
+		"codex",
+		"",
+		binding,
+		original,
+		func(context.Context, string, *LaunchBinding) error { return nil },
+	)
+	if err != nil {
+		t.Fatalf("prepareLaunchCommand: %v", err)
+	}
+	if affinity != LaunchAffinityPreserved {
+		t.Fatalf("affinity = %q, want %q", affinity, LaunchAffinityPreserved)
+	}
+	want := "'caam' shallow-spawn 'profile-a' -- sh -c " + tmux.ShellQuote(original)
+	if command != want {
+		t.Fatalf("prepared command = %q, want %q", command, want)
+	}
+	// The command must be the single argument of sh -c, so nothing after the
+	// binding's "--" can be parsed by the pane shell as a separate command.
+	if idx := strings.Index(command, " -- sh -c "); idx < 0 || command[idx+len(" -- sh -c "):] != tmux.ShellQuote(original) {
+		t.Fatalf("shell command is not a single quoted sh -c argument: %q", command)
 	}
 }
 

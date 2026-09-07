@@ -139,13 +139,17 @@ func buildSpawnManifest(req SpawnMonitorRequest) *SpawnManifest {
 		ProjectDir:  req.ProjectDir,
 		AutoRestart: req.AutoRestart,
 	}
-	for _, agent := range req.Agents {
-		if restartUnsupportedAgentTypes[agent.Type] {
+	for _, agentConfig := range req.Agents {
+		if restartUnsupportedAgentTypes[agentConfig.Type] {
 			// Restart remains unsupported for these types until lifecycle
 			// fixtures prove the necessary semantics.
 			continue
 		}
-		manifest.Agents = append(manifest.Agents, agent)
+		agentConfig.LaunchBinding = CloneLaunchBinding(agentConfig.LaunchBinding)
+		if agentConfig.LaunchBinding == nil {
+			agentConfig.LaunchBinding = CaptureLaunchBinding(agentConfig.Type)
+		}
+		manifest.Agents = append(manifest.Agents, agentConfig)
 	}
 	return manifest
 }

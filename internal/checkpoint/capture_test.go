@@ -942,7 +942,11 @@ func TestRunGitCommandReturnsWhenDescendantHoldsStdout(t *testing.T) {
 	if !errors.Is(err, exec.ErrWaitDelay) {
 		t.Fatalf("runGitCommand error = %v, want exec.ErrWaitDelay", err)
 	}
-	if elapsed := time.Since(started); elapsed > 3*time.Second {
+	// The descendant holds stdout for 10s; a WaitDelay-bounded return is ~2s
+	// plus two re-execs of this test binary, which under -race take well over
+	// a second on their own. 6s still separates "bounded" from "waited for
+	// the descendant" by a wide margin.
+	if elapsed := time.Since(started); elapsed > 6*time.Second {
 		t.Fatalf("runGitCommand returned after %s, want WaitDelay-bounded return", elapsed)
 	}
 	if cmd.ProcessState == nil {

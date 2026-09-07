@@ -388,7 +388,7 @@ When a summary surface identifies something interesting, it includes drill-down 
       "type": "error",
       "message": "Agent crashed",
       "drill_down": {
-        "command": "ntm --robot-diagnose=myproject --panes=2",
+        "command": "ntm --robot-diagnose=myproject --diagnose-pane=2",
         "returns": "Full diagnostic with root cause analysis"
       }
     }

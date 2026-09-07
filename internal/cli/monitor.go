@@ -140,7 +140,7 @@ func runMonitor(session string) error {
 
 	// Register agents
 	for _, agent := range manifest.Agents {
-		monitor.RegisterAgent(agent.PaneID, agent.PaneIndex, 0, agent.Type, agent.Model, agent.Command)
+		monitor.RegisterAgentWithBinding(agent.PaneID, agent.PaneIndex, 0, agent.Type, agent.Model, agent.Command, agent.LaunchBinding)
 	}
 
 	// Start monitoring

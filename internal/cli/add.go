@@ -26,6 +26,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/persona"
 	"github.com/Dicklesworthstone/ntm/internal/plugins"
 	"github.com/Dicklesworthstone/ntm/internal/ratelimit"
+	"github.com/Dicklesworthstone/ntm/internal/resilience"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/swarm"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
@@ -796,6 +797,15 @@ func executeAdd(ctx context.Context, opts AddOptions, emitResult bool) error {
 			return outputError(fmt.Errorf("generating command for %s agent: %w", agent.Type, err))
 		}
 
+		// Persist only the environment-free launch command. Credential
+		// isolation and plugin environment are applied below for the live
+		// process, but are deliberately excluded from restart metadata.
+		manifestAgentCmd, err := tmux.SanitizePaneCommand(finalCmd)
+		if err != nil {
+			return outputError(fmt.Errorf("invalid %s resilience command: %w", agent.Type, err))
+		}
+		launchBinding := resilience.CaptureLaunchBinding(agentTypeStr)
+
 		// Per-pane Claude credential isolation (GH#237). A pane added to an
 		// existing swarm joins the same subscription as the panes already in
 		// it, so skipping isolation here would put the whole session back into
@@ -861,6 +871,19 @@ func executeAdd(ctx context.Context, opts AddOptions, emitResult bool) error {
 					agent.Type, paneID, err,
 				))
 			}
+		}
+		if err := resilience.UpsertAgentConfig(session, dir, resilience.AgentConfig{
+			PaneID:        paneID,
+			PaneIndex:     num,
+			Type:          agentTypeStr,
+			Model:         agent.Model,
+			Command:       manifestAgentCmd,
+			LaunchBinding: launchBinding,
+		}); err != nil {
+			return outputError(fmt.Errorf(
+				"persisting restart metadata for pane %s: %w; the pane and launched agent still exist",
+				paneID, err,
+			))
 		}
 		if rateLimitTracker != nil && agent.Type == AgentTypeCodex {
 			rateLimitTracker.RecordSuccess("openai")
