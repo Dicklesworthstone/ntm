@@ -512,7 +512,7 @@ func NormalizeAgentType(t string) string {
 	switch normalized {
 	case "opus", "sonnet", "haiku":
 		return "claude"
-	case "gpt", "gpt-5", "gpt-5.5", "gpt-5.6-sol", "gpt-5-codex", "gpt-5.3-codex":
+	case "gpt", "gpt-5", "gpt-5.5", "gpt-5.6-sol", "gpt-6-astra", "gpt-5-codex", "gpt-5.3-codex":
 		return "codex"
 	case "gemini-pro", "gemini-ultra", "gemini-3-pro-preview":
 		return "gemini"
