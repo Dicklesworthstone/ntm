@@ -136,6 +136,14 @@ func (m *Model) handleWindowSize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
 	}
 	m.ensembleModes.SetSize(modesW, modesH)
 
+	// The spawn wizard's forms ask for the window size on Init and lay out
+	// against it, so the overlay must see resizes as well as the new bounds.
+	var wizardCmd tea.Cmd
+	if m.spawnWizard != nil {
+		m.spawnWizard.SetSize(width, height)
+		wizardCmd = m.forwardToSpawnWizard(msg)
+	}
+
 	m.resizePanelsForLayout()
 
 	if dashboardDebugEnabled(m) {
@@ -167,7 +175,7 @@ func (m *Model) handleWindowSize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
 	// window, or shrinking then growing - are not guaranteed to be erased,
 	// leaving stale glyphs ("scrambled" UI). tea.ClearScreen issues a hard
 	// EraseEntireScreen before the next render, guaranteeing a clean repaint.
-	return *m, tea.ClearScreen
+	return *m, tea.Batch(tea.ClearScreen, wizardCmd)
 }
 
 func (m Model) subscribeToConfig() tea.Cmd {
@@ -3850,10 +3858,40 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	}
 
+	// The spawn wizard's huh forms complete through their own internal
+	// messages (next-field, next-group, field refreshes), which the forms
+	// return as commands rather than receiving as key presses. Key input is
+	// routed to the overlay in the tea.KeyMsg branch above; every other
+	// message the switch did not consume must still reach the open wizard or
+	// the form never advances (#318).
+	if cmd := m.forwardToSpawnWizard(msg); cmd != nil {
+		cmds = append(cmds, cmd)
+	}
+
 	if len(cmds) > 0 {
 		return m, tea.Batch(cmds...)
 	}
 	return m, nil
+}
+
+// forwardToSpawnWizard delivers a non-key message to the open spawn wizard
+// and returns the command it produced. Key presses are handled by the
+// dedicated tea.KeyMsg branch in Update and are never forwarded twice; with
+// no wizard open the message is ignored. The wizard's own completion message
+// closes the overlay before Update reaches this point, so a finished form is
+// never fed its own SpawnWizardDoneMsg and cannot re-trigger the spawn.
+func (m *Model) forwardToSpawnWizard(msg tea.Msg) tea.Cmd {
+	if !m.showSpawnWizard || m.spawnWizard == nil {
+		return nil
+	}
+	if _, isKey := msg.(tea.KeyMsg); isKey {
+		return nil
+	}
+	updated, cmd := m.spawnWizard.Update(msg)
+	if wizard, ok := updated.(*panels.SpawnWizard); ok {
+		m.spawnWizard = wizard
+	}
+	return cmd
 }
 
 func (m *Model) selectByNumber(n int) tea.Cmd {

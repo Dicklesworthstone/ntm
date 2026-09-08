@@ -86,6 +86,11 @@ func (sw *SpawnWizard) SetSize(width, height int) {
 	sw.height = height
 }
 
+// Size returns the wizard's current width and height.
+func (sw *SpawnWizard) Size() (width, height int) {
+	return sw.width, sw.height
+}
+
 // Init implements tea.Model.
 func (sw *SpawnWizard) Init() tea.Cmd {
 	return sw.methodForm.Init()
