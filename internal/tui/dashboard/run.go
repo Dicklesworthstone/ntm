@@ -9,6 +9,7 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
+	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
 	"github.com/Dicklesworthstone/ntm/internal/tui/tuilog"
 )
 
@@ -40,6 +41,12 @@ func RunWithOptions(session, projectDir string, opts RunOptions) (*PostQuitActio
 	restoreLogs := tuilog.Redirect("dashboard", dashboardDebugEnabled(nil))
 	defer restoreLogs()
 
+	if opts.Config != nil {
+		// Panels resolve their theme while New builds them, so the merged
+		// config's theme (which may come from the session's project overlay
+		// rather than the launch directory) must be recorded first.
+		theme.SetConfigured(opts.Config.Theme)
+	}
 	model := New(session, projectDir)
 	if opts.Config != nil {
 		model.applyConfig(opts.Config)
