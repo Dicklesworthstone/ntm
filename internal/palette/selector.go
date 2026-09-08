@@ -14,6 +14,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/tui/icons"
 	"github.com/Dicklesworthstone/ntm/internal/tui/styles"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
+	"github.com/Dicklesworthstone/ntm/internal/tui/tuilog"
 )
 
 // SessionSelector is a TUI for selecting a tmux session
@@ -352,7 +353,10 @@ func RunSessionSelector(sessions []tmux.Session) (string, error) {
 	model := NewSessionSelector(sessions)
 	p := tea.NewProgram(model)
 
+	// Keep default-logger output off the terminal while the TUI owns it.
+	restoreLogs := tuilog.Redirect("session-selector", false)
 	finalModel, err := p.Run()
+	restoreLogs()
 	if err != nil {
 		return "", err
 	}

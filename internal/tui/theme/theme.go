@@ -350,9 +350,31 @@ func FromName(name string) Theme {
 	}
 }
 
-// Current returns the current theme based on env var or default
+var configuredTheme struct {
+	sync.RWMutex
+	name string
+}
+
+// SetConfigured records the theme name from configuration. Current falls
+// back to it whenever NTM_THEME is unset, so every caller that builds
+// styles from Current - panels, overlays, lipgloss defaults - agrees with
+// the config without each of them threading the name through.
+func SetConfigured(name string) {
+	configuredTheme.Lock()
+	configuredTheme.name = strings.TrimSpace(name)
+	configuredTheme.Unlock()
+}
+
+// Current returns the theme in effect: an explicit NTM_THEME wins, then the
+// configured theme, then auto-detection.
 func Current() Theme {
-	return FromName(os.Getenv("NTM_THEME"))
+	if env := strings.TrimSpace(os.Getenv("NTM_THEME")); env != "" {
+		return FromName(env)
+	}
+	configuredTheme.RLock()
+	name := configuredTheme.name
+	configuredTheme.RUnlock()
+	return FromName(name)
 }
 
 // IsPlain reports whether the theme is the plain/no-color theme.

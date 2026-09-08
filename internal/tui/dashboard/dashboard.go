@@ -188,6 +188,59 @@ func (m Model) subscribeToConfig() tea.Cmd {
 	}
 }
 
+// applyConfig makes cfg the dashboard's effective configuration: the values
+// background fetches consult (rano polling and its interval, Agent Mail,
+// model names, compaction recovery) plus theme, icons and help verbosity.
+// It runs for the initial load before the program starts and again on every
+// ConfigReloadMsg from the file watcher. Until the initial call existed,
+// m.cfg stayed nil - and every "enabled unless configured" default applied -
+// until the user edited a config file while the dashboard was open (#317).
+func (m *Model) applyConfig(cfg *config.Config) {
+	if cfg == nil {
+		return
+	}
+	m.cfg = cfg
+	m.helpVerbosity = normalizedHelpVerbosity(cfg.HelpVerbosity)
+	// Update theme: the configured name becomes the process-wide fallback so
+	// panels built later agree with it; an explicit NTM_THEME still wins.
+	theme.SetConfigured(cfg.Theme)
+	m.theme = theme.Current()
+	// Reload icons (if dependent on config in future, pass cfg)
+	m.icons = icons.Current()
+
+	// Follow integrations.rano.poll_interval_ms (default 1000ms).
+	if cfg.Integrations.Rano.PollIntervalMs > 0 {
+		m.ranoNetworkRefreshInterval = time.Duration(cfg.Integrations.Rano.PollIntervalMs) * time.Millisecond
+	}
+
+	// Issue #113: rebuild the compaction-recovery integration from
+	// `[context_rotation.recovery]` so user TOML actually reaches
+	// the runtime. Until this wired up, the dashboard would silently
+	// use NewCompactionRecoveryIntegrationDefault() regardless of
+	// what the config file said. Defaults still kick in when fields
+	// are zero — see compactionRecoveryConfigToRuntime — so this is
+	// a pure additive bridge.
+	m.compaction = status.NewCompactionRecoveryIntegration(
+		compactionRecoveryConfigToRuntime(&cfg.ContextRotation.Recovery),
+	)
+
+	// Re-initialize an existing renderer with the new theme colors. Before
+	// the deferred startup init has produced one there is nothing to
+	// rebuild; that init reads m.theme when it runs, so it picks the
+	// configured theme up on its own.
+	if m.renderer != nil {
+		_, detailWidth := layout.SplitProportions(m.width)
+		contentWidth := detailWidth - 4
+		if contentWidth < 20 {
+			contentWidth = 20
+		}
+		m.initRenderer(contentWidth)
+	}
+
+	// If help verbosity changed, ensure focused panel remains valid.
+	m.cycleFocus(0)
+}
+
 func (m Model) tick() tea.Cmd {
 	interval := m.getTickInterval()
 	return tea.Tick(interval, func(t time.Time) tea.Msg {
@@ -3023,39 +3076,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case ConfigReloadMsg:
 		if msg.Config != nil {
-			m.cfg = msg.Config
-			m.helpVerbosity = normalizedHelpVerbosity(msg.Config.HelpVerbosity)
-			// Update theme
-			m.theme = theme.FromName(msg.Config.Theme)
-			// Reload icons (if dependent on config in future, pass cfg)
-			m.icons = icons.Current()
-
-			// Follow integrations.rano.poll_interval_ms (default 1000ms).
-			if msg.Config.Integrations.Rano.PollIntervalMs > 0 {
-				m.ranoNetworkRefreshInterval = time.Duration(msg.Config.Integrations.Rano.PollIntervalMs) * time.Millisecond
-			}
-
-			// Issue #113: rebuild the compaction-recovery integration from
-			// `[context_rotation.recovery]` so user TOML actually reaches
-			// the runtime. Until this wired up, the dashboard would silently
-			// use NewCompactionRecoveryIntegrationDefault() regardless of
-			// what the config file said. Defaults still kick in when fields
-			// are zero — see compactionRecoveryConfigToRuntime — so this is
-			// a pure additive bridge.
-			m.compaction = status.NewCompactionRecoveryIntegration(
-				compactionRecoveryConfigToRuntime(&msg.Config.ContextRotation.Recovery),
-			)
-
-			// Re-initialize renderer with new theme colors
-			_, detailWidth := layout.SplitProportions(m.width)
-			contentWidth := detailWidth - 4
-			if contentWidth < 20 {
-				contentWidth = 20
-			}
-			m.initRenderer(contentWidth)
-
-			// If help verbosity changed, ensure focused panel remains valid.
-			m.cycleFocus(0)
+			m.applyConfig(msg.Config)
 		}
 		return m, m.subscribeToConfig()
 

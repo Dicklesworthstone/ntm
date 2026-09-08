@@ -15,6 +15,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/palette"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
+	"github.com/Dicklesworthstone/ntm/internal/tui/tuilog"
 	"github.com/Dicklesworthstone/ntm/internal/watcher"
 )
 
@@ -126,7 +127,10 @@ func runPalette(ctx context.Context, w io.Writer, errW io.Writer, session string
 		defer stopWatchers()
 	}
 
+	// Keep default-logger output off the terminal while the TUI owns it.
+	restoreLogs := tuilog.Redirect("palette", false)
 	finalModel, err := p.Run()
+	restoreLogs()
 	if err != nil {
 		return fmt.Errorf("running palette: %w", err)
 	}

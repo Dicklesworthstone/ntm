@@ -7,6 +7,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 
+	"github.com/Dicklesworthstone/ntm/internal/tui/tuilog"
 	"github.com/Dicklesworthstone/ntm/internal/tutorial"
 )
 
@@ -62,9 +63,13 @@ Navigation:
 			if v, ok := os.LookupEnv("NTM_MOUSE"); !ok || (v != "0" && v != "false") {
 				progOpts = append(progOpts, tea.WithMouseCellMotion())
 			}
+			// Keep default-logger output off the terminal while the TUI owns it.
+			restoreLogs := tuilog.Redirect("tutorial", false)
 			p := tea.NewProgram(m, progOpts...)
-			if _, err := p.Run(); err != nil {
-				return fmt.Errorf("failed to run tutorial: %w", err)
+			_, runErr := p.Run()
+			restoreLogs()
+			if runErr != nil {
+				return fmt.Errorf("failed to run tutorial: %w", runErr)
 			}
 
 			// Print a nice exit message

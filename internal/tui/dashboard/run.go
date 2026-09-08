@@ -7,7 +7,9 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
+	"github.com/Dicklesworthstone/ntm/internal/tui/tuilog"
 )
 
 // mouseEnabled returns true if NTM_MOUSE is not explicitly disabled.
@@ -24,11 +26,24 @@ type RunOptions struct {
 	PopupMode       bool
 	AttentionCursor int64
 	InitialPanes    []tmux.PaneActivity
+	// Config is the merged configuration in effect when the dashboard
+	// starts. When nil the dashboard runs with built-in defaults until the
+	// config watcher delivers a change.
+	Config *config.Config
 }
 
 // RunWithOptions starts the dashboard with configurable options.
 func RunWithOptions(session, projectDir string, opts RunOptions) (*PostQuitAction, error) {
+	// The program owns the terminal from here until it exits; anything the
+	// default loggers would print to stderr in the meantime corrupts the
+	// rendered frame (#317).
+	restoreLogs := tuilog.Redirect("dashboard", dashboardDebugEnabled(nil))
+	defer restoreLogs()
+
 	model := New(session, projectDir)
+	if opts.Config != nil {
+		model.applyConfig(opts.Config)
+	}
 	if len(opts.InitialPanes) > 0 {
 		model.seedInitialPanes(opts.InitialPanes)
 	}

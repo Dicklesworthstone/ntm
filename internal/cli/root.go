@@ -725,11 +725,13 @@ Shell Integration:
 				}
 				cfg = config.Default()
 			}
-			activeTheme := theme.Current()
-			if strings.TrimSpace(os.Getenv("NTM_THEME")) == "" && cfg != nil {
-				activeTheme = theme.FromName(cfg.Theme)
+			// Record the configured theme process-wide so every theme.Current()
+			// caller (dashboard panels and overlays included) honors it;
+			// an explicit NTM_THEME still takes precedence inside Current.
+			if cfg != nil {
+				theme.SetConfigured(cfg.Theme)
 			}
-			theme.ApplyLipGlossDefaults(activeTheme)
+			theme.ApplyLipGlossDefaults(theme.Current())
 
 			// Thread [retry] and [rotation.thresholds] policies into their
 			// consuming packages (WS6-wire, bd-ws6-config-truth-ienmd.1).

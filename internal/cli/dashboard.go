@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tui/dashboard"
 	"github.com/Dicklesworthstone/ntm/internal/watcher"
@@ -450,10 +451,18 @@ func runDashboard(ctx context.Context, w io.Writer, errW io.Writer, session stri
 		}
 	}
 
+	// Load the merged config up front so the first refresh already honors it
+	// (rano polling and interval, Agent Mail, model names, theme). The
+	// dashboard's file watcher only reports changes, so without this the
+	// user's config took effect only after they edited it mid-session (#317).
+	// Any parse warning prints here, before the TUI owns the terminal.
+	cfg := loadDashboardConfig(projectDir, errW)
+
 	action, err := dashboard.RunWithOptions(session, projectDir, dashboard.RunOptions{
 		PopupMode:       popup,
 		AttentionCursor: attentionCursor,
 		InitialPanes:    initialPanes,
+		Config:          cfg,
 	})
 	if err != nil {
 		return err
@@ -462,4 +471,22 @@ func runDashboard(ctx context.Context, w io.Writer, errW io.Writer, session stri
 		return tmux.AttachOrSwitch(action.AttachSession)
 	}
 	return nil
+}
+
+// loadDashboardConfig returns the merged global + project configuration for
+// the dashboard, resolving the project overlay from projectDir (or the
+// current directory when the session's project is unknown). A config that
+// cannot be loaded is reported on errW and yields nil, which keeps the
+// dashboard on built-in defaults exactly as before.
+func loadDashboardConfig(projectDir string, errW io.Writer) *config.Config {
+	cwd := strings.TrimSpace(projectDir)
+	if cwd == "" {
+		cwd, _ = os.Getwd()
+	}
+	cfg, err := config.LoadMerged(cwd, selectedConfigPath())
+	if err != nil {
+		fmt.Fprintf(errW, "Warning: could not load config (%v); dashboard is using built-in defaults\n", err)
+		return nil
+	}
+	return cfg
 }

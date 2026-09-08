@@ -166,7 +166,8 @@ func (m *PIDMap) RefreshContext(ctx context.Context) error {
 	}
 
 	m.lastRefresh = time.Now()
-	pidmapLogger().Info("refreshed PID map",
+	// Routine per-poll success; the dashboard refreshes this every second.
+	pidmapLogger().Debug("refreshed PID map",
 		"pane_count", len(m.paneToShellPID),
 		"total_pids", len(m.pidToPane),
 	)
