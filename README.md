@@ -7,7 +7,7 @@
 <div align="center">
 
 ![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS-blue.svg)
-![Go Version](https://img.shields.io/badge/go-1.26.5+-00ADD8.svg)
+![Go Version](https://img.shields.io/badge/go-1.26.8+-00ADD8.svg)
 ![License](https://img.shields.io/badge/License-MIT%2BOpenAI%2FAnthropic%20Rider-blue.svg)
 ![Release](https://img.shields.io/github/v/release/Dicklesworthstone/ntm?include_prereleases)
 
