@@ -4483,7 +4483,7 @@ func (c *spawnIdentityCoordinator) prepareAgent(parentCtx context.Context, agent
 		// registration token; prime the client's cache from the registry.
 		c.registry.HydrateClientTokens(c.client)
 		reregCtx, reregCancel := context.WithTimeout(parentCtx, 15*time.Second)
-		_, _ = c.client.RegisterAgent(reregCtx, agentmail.RegisterAgentOptions{
+		reregistered, reregErr := c.client.RegisterAgent(reregCtx, agentmail.RegisterAgentOptions{
 			ProjectKey: c.workingDir,
 			Program:    reuseProgram,
 			Model:      reuseModel,
@@ -4491,6 +4491,23 @@ func (c *spawnIdentityCoordinator) prepareAgent(parentCtx context.Context, agent
 			PaneID:     agent.paneID,
 		})
 		reregCancel()
+		// Re-registration can ROTATE this identity's registration token:
+		// mcp-agent-mail >=2.13 may issue a fresh credential when it re-binds
+		// an existing name to a new pane, and the previous one then stops
+		// authenticating the agent. Persisting the replacement in the session
+		// registry BEFORE the agent process starts is what makes a restarted
+		// worker inherit a credential the server still accepts (ntm#321).
+		//
+		// Deliberately conservative: a failed or timed-out re-registration,
+		// or a response carrying no token, leaves the recorded token
+		// untouched — reuse must survive an offline server (#69), and
+		// SetRegistrationToken("") would DELETE the entry. A response naming
+		// a different identity is not ours to record against this name.
+		if reregErr == nil && reregistered != nil &&
+			reregistered.RegistrationToken != "" &&
+			(reregistered.Name == "" || reregistered.Name == existingName) {
+			c.registry.SetRegistrationToken(existingName, reregistered.RegistrationToken)
+		}
 
 		c.status.AgentsRegistered++
 		c.status.AgentMap[agent.paneID] = existingName

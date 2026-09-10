@@ -382,8 +382,16 @@ func (c *Client) UpdateSessionActivity(ctx context.Context, sessionName, project
 		return nil // Silently skip server update
 	}
 
+	// Prime the client's token cache with the persisted token so the
+	// re-register below authenticates as the existing identity on
+	// mcp-agent-mail >=2.13 instead of being refused (mirrors the
+	// already-registered branch of EnsureSessionAgent).
+	if info.RegistrationToken != "" {
+		c.SetRegistrationToken(info.ProjectKey, info.AgentName, info.RegistrationToken)
+	}
+
 	// Re-register to update last_active_ts on server
-	_, err = c.RegisterAgent(ctx, RegisterAgentOptions{
+	agent, err := c.RegisterAgent(ctx, RegisterAgentOptions{
 		ProjectKey:      info.ProjectKey,
 		Program:         "ntm",
 		Model:           "coordinator",
@@ -392,6 +400,16 @@ func (c *Client) UpdateSessionActivity(ctx context.Context, sessionName, project
 	})
 	if err != nil {
 		return fmt.Errorf("updating server activity: %w", err)
+	}
+	// Same rotation hazard as the spawn identity path (ntm#321): re-claiming
+	// an existing name can return a replacement credential, and dropping it
+	// leaves the persisted token stale for every later process. An empty
+	// token in the response means "unchanged" and must not clear the record.
+	if agent != nil && agent.RegistrationToken != "" && agent.RegistrationToken != info.RegistrationToken {
+		info.RegistrationToken = agent.RegistrationToken
+		if err := SaveSessionAgent(sessionName, info.ProjectKey, info); err != nil {
+			return fmt.Errorf("persisting rotated registration token: %w", err)
+		}
 	}
 	return nil
 }

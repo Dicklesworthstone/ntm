@@ -570,6 +570,19 @@ func GetRestartPaneContext(ctx context.Context, opts RestartPaneOptions) (*Resta
 			return output, nil
 		}
 
+		// Restore Agent Mail identities BEFORE any agent CLI is launched
+		// (ntm#321). The respawn replaced each pane's process, so this
+		// re-runs the same gated registration flow spawn uses: it reuses
+		// existing identities from the session registry (#69), refreshes the
+		// server's pane binding, persists any rotated registration token, and
+		// rewrites the identity files. Running it after the relaunch loop
+		// meant the agent had already booted and resolved (or failed to
+		// resolve) its identity — and had already inherited the previous
+		// credential — before any of that landed. Best-effort by
+		// construction: the hook must never fail the restart, and it is
+		// invoked exactly once per restart.
+		notifyRestartPaneIdentityHook(ctx, opts.Session, targetPanes, output.Restarted, multiWindow)
+
 		output.AgentRelaunched = make(map[string]bool)
 		output.AgentRelaunchStatus = make(map[string]RestartAgentRelaunchStatus)
 		output.ProcessAlive = make(map[string]bool, len(output.Restarted))
@@ -630,13 +643,6 @@ func GetRestartPaneContext(ctx context.Context, opts RestartPaneOptions) (*Resta
 			}
 		}
 	}
-
-	// Restore Agent Mail identities for the relaunched panes (bd-vb7s3): the
-	// respawn replaced the pane's process, so re-run the same gated
-	// registration flow spawn uses (it reuses existing identities from the
-	// session registry, #69, and re-persists the registry). Best-effort: the
-	// hook must never fail the restart.
-	notifyRestartPaneIdentityHook(ctx, opts.Session, targetPanes, output.Restarted, multiWindow)
 
 	// Bead prompts cross the shared atomic claim-ledger-dispatch boundary.
 	// Ordinary restart prompts retain the direct best-effort behavior.
