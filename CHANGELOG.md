@@ -11,6 +11,18 @@ NTM is a tmux session management tool for orchestrating multiple AI coding agent
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- **CAAM seat selection for unpinned spawn/add panes, opt-in** ([#319](https://github.com/Dicklesworthstone/ntm/issues/319)): `[integrations.caam] seat_selection = true` makes a `spawn`/`add` pane that carries no persona ask `caam limits <provider> --rank earliest-reset-headroom` and launch under the matching `codex-<profile>` / `claude-<profile>` persona, so the included allowance that refreshes soonest is spent while it still has headroom and the later-resetting reserve seat is preserved. Before this, a bare `--cod=1` / `--cc=1` left `PersonaName` empty and the agent command template's else-branch pinned a static profile — on a three-seat pool, the reserve seat the quota law exists to protect. Default **off**: with the key unset nothing calls caam, no subprocess starts, and every launch path behaves exactly as before. An explicit `--persona` / `--profile-set` / recipe persona is never offered to the ranker, so a pin can never be re-ranked away. One caam invocation per provider per command, not one per pane. A pool that cannot be ranked — caam missing, a timeout, or caam answering that nothing has included headroom — **skips the affected panes with the reason reported** (`seat_skips` in `--json`, a warning otherwise) rather than aborting the batch or falling through to a static pin; siblings on a provider that answered still launch, so `ntm add --cod=2 --cc=2` against an exhausted Codex pool brings up the two Claude panes. The key is named for the policy rather than for caam so it does not read as a sibling of `auto_failover`, which it does not interact with. Claude and Codex only — `caam limits` answers for no other provider, and panes of every other agent type are untouched. Requires caam >= v0.1.19.
+
+### Fixed
+
+- **`--robot-account-status --provider=codex` sees the Codex pool, and both robot surfaces carry live CAAM windows** ([#319](https://github.com/Dicklesworthstone/ntm/issues/319), [bfcc31ce](https://github.com/Dicklesworthstone/ntm/commit/bfcc31ce)): `canonicalRobotProvider` folded the claude and gemini spellings but had no case for Codex, and ntm stores Codex accounts under the provider id `openai`, so a `codex` filter matched nothing and reported `available_accounts=0` with an empty `current` on a host with three healthy seats. `codex`, `cod`, `chatgpt`, `openai-codex` and `openai` now all fold onto `openai` (and `cc` onto `claude`), reaching accounts-list, switch-account and OAuth health, which had the same miss. `--robot-account-status` gained `recommended_seat` / `recommended_persona` / `tier` / `usage_percent` / `governing_window` / `resets_at` plus a per-profile `seats` array, and reports `limits_error` with no recommendation when the pool cannot be read, so an unreadable pool never looks like a healthy one. `--robot-quota-status` now includes CAAM's subscription windows for Claude and Codex, with caut authoritative wherever it has a figure.
+
+---
+
 ## [v1.33.1] -- 2026-09-08 [GitHub Release]
 
 **Dashboard patch: the two issues filed against v1.33.0, fixed, plus the Go 1.26.8 toolchain floor** (GitHub issues [#317](https://github.com/Dicklesworthstone/ntm/issues/317), [#318](https://github.com/Dicklesworthstone/ntm/issues/318)).

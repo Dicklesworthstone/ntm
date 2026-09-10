@@ -557,6 +557,55 @@ Configuration loading is strict: unknown fields are errors. The unused TOML
 `health_check_seconds`, and `crash_threshold`). The `ntm health` command remains
 available and is unrelated to that removed config section.
 
+### CAAM Seat Selection (opt-in, default off)
+
+If you run several interchangeable subscription seats through
+[CAAM](https://github.com/Dicklesworthstone/caam) — three Codex Pro logins, say
+— NTM can choose which one a new pane launches on instead of leaving that to
+whatever your agent command template pins:
+
+```toml
+[integrations.caam]
+seat_selection = true
+```
+
+With the key on, a `spawn`/`add` pane that carries **no** persona asks
+`caam limits <provider> --rank earliest-reset-headroom` and launches under the
+matching `codex-<profile>` / `claude-<profile>` persona. The rank spends the
+included allowance that refreshes **soonest while it still has headroom** and
+preserves the later-resetting reserve seat. (It is deliberately not
+`caam precheck --best`, which ranks lowest utilization and would pick the idle
+reserve — the opposite of the policy.)
+
+The semantics, exactly:
+
+- **A pin always wins.** `--persona=codex-acme`, `--profile-set`, and recipe
+  personas are never re-ranked and never overridden. Only a pane with no
+  persona at all is placed.
+- **One query per provider per command.** `ntm add --cod=4` shells out to caam
+  once, not four times; the ranked seat is a property of the pool.
+- **Later `ntm add`s re-rank.** A pane added to a running swarm is a new pane
+  and gets the seat that is right now, not the one that was right at spawn.
+  Credentials inside an already-running pane are never rotated.
+- **An unreadable pool skips those panes, loudly.** If caam is missing, times
+  out, or ranks the pool and finds nothing with included headroom, the affected
+  panes are **not launched** and the reason is printed (and reported in
+  `seat_skips` under `--json`). Siblings on a provider that answered still come
+  up: `ntm add --cod=2 --cc=2` with an exhausted Codex pool brings up the two
+  Claude panes. A skipped pane never falls through to a static profile pin —
+  that fallthrough is the failure this exists to prevent.
+- **Only Claude and Codex are affected.** `caam limits` answers for no other
+  provider, so gemini/grok/ollama/plugin panes are untouched.
+
+`seat_selection` is unrelated to `auto_failover` in the same table, despite
+sitting next to it: `auto_failover` swaps the **host** credential mid-session
+for a pane that hit a rate limit; `seat_selection` only chooses which account a
+**new** pane launches under. Enabling one does not enable the other, and
+`seat_selection` starts no caam subprocess when it is off.
+
+Requires caam >= v0.1.19 (the release that added the
+`earliest-reset-headroom` rank mode).
+
 ### Agent Plugins
 
 Custom agent types load from the `agents/` directory that sits next to the

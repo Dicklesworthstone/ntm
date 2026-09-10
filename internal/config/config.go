@@ -1514,6 +1514,27 @@ type CAAMConfig struct {
 	// explicit allow-list). Deliberately separate from Providers above,
 	// whose empty value means "all available".
 	FailoverProviders []string `toml:"failover_providers"`
+
+	// SeatSelection enables policy-driven seat selection at pane launch
+	// (ntm#319): a `spawn`/`add` pane that carries no persona pin asks caam
+	// which account to launch on, ranked by EARLIEST RESET WITH HEADROOM, so
+	// included quota that is about to refresh is spent first and a
+	// later-resetting reserve seat is preserved.
+	//
+	// The key is named for the POLICY, not for caam, precisely so it is not
+	// read as a sibling of AutoFailover above. The two are unrelated and do
+	// not interact: AutoFailover swaps the HOST credential mid-session for a
+	// running pane; seat selection only chooses which persona a NEW pane
+	// launches under, and never touches a pane that is already running.
+	//
+	// Default false. Off, nothing calls caam and launch behavior is
+	// byte-identical to a host without caam installed. On, an unpinned pane
+	// whose seat cannot be determined is SKIPPED with the reason printed —
+	// it never falls through to whatever the agent command template pins
+	// statically, because that fallthrough is the bug this exists to fix.
+	// A pinned pane (an explicit --persona / --profile-set) always keeps its
+	// pin and is never re-ranked.
+	SeatSelection bool `toml:"seat_selection"`
 }
 
 // DefaultCAAMConfig returns sensible defaults for CAAM integration.
@@ -1524,6 +1545,7 @@ func DefaultCAAMConfig() CAAMConfig {
 		AutoFailover:        false, // Coordinator auto-failover OFF by default (bd-um3uy)
 		ResetHorizonMinutes: 30,    // Only fail over when the reset is > 30 minutes away
 		FailoverProviders:   nil,   // Empty allow-list = no providers (doubly opt-in)
+		SeatSelection:       false, // Spawn/add seat selection OFF by default (ntm#319)
 	}
 }
 
@@ -3750,6 +3772,12 @@ func Print(cfg *Config, w io.Writer) error {
 	fmt.Fprintf(w, "auto_failover = %t\n", cfg.Integrations.CAAM.AutoFailover)
 	fmt.Fprintf(w, "reset_horizon_minutes = %d  # Only fail over when the reset is further away than this\n", cfg.Integrations.CAAM.ResetHorizonMinutes)
 	fmt.Fprintf(w, "failover_providers = %s  # Allow-list (\"claude\", \"openai\", \"gemini\"); empty = none\n", renderTOMLStringArray(cfg.Integrations.CAAM.FailoverProviders))
+	fmt.Fprintln(w, "# Seat selection for UNPINNED spawn/add panes (ntm#319). Unrelated to")
+	fmt.Fprintln(w, "# auto_failover above: this only picks which account a NEW pane launches on,")
+	fmt.Fprintln(w, "# ranked by earliest reset with headroom. An explicit --persona always wins;")
+	fmt.Fprintln(w, "# a pane whose seat cannot be read is skipped with a reason, never pinned")
+	fmt.Fprintln(w, "# statically. Off by default.")
+	fmt.Fprintf(w, "seat_selection = %t\n", cfg.Integrations.CAAM.SeatSelection)
 	fmt.Fprintln(w)
 
 	fmt.Fprintln(w, "[integrations.rch]")
@@ -4685,6 +4713,8 @@ func GetValue(cfg *Config, path string) (interface{}, error) {
 				return cfg.Integrations.CAAM.ResetHorizonMinutes, nil
 			case "failover_providers":
 				return cfg.Integrations.CAAM.FailoverProviders, nil
+			case "seat_selection":
+				return cfg.Integrations.CAAM.SeatSelection, nil
 			}
 		case "rch":
 			if len(parts) < 3 {
@@ -5489,6 +5519,7 @@ func Diff(cfg *Config) []ConfigDiff {
 	addDiff("integrations.caam.auto_failover", defaults.Integrations.CAAM.AutoFailover, cfg.Integrations.CAAM.AutoFailover)
 	addDiff("integrations.caam.reset_horizon_minutes", defaults.Integrations.CAAM.ResetHorizonMinutes, cfg.Integrations.CAAM.ResetHorizonMinutes)
 	addDiff("integrations.caam.failover_providers", defaults.Integrations.CAAM.FailoverProviders, cfg.Integrations.CAAM.FailoverProviders)
+	addDiff("integrations.caam.seat_selection", defaults.Integrations.CAAM.SeatSelection, cfg.Integrations.CAAM.SeatSelection)
 	addDiff("integrations.rch.enabled", defaults.Integrations.RCH.Enabled, cfg.Integrations.RCH.Enabled)
 	addDiff("integrations.rch.binary_path", defaults.Integrations.RCH.BinaryPath, cfg.Integrations.RCH.BinaryPath)
 	addDiff("integrations.rch.intercept_patterns", defaults.Integrations.RCH.InterceptPatterns, cfg.Integrations.RCH.InterceptPatterns)

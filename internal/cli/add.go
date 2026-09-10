@@ -618,6 +618,22 @@ func executeAdd(ctx context.Context, opts AddOptions, emitResult bool) error {
 		ollamaHost = resolveOllamaHost("")
 	}
 
+	// CAAM seat selection (ntm#319). Resolved BEFORE the first pane is split
+	// so a pane whose seat cannot be determined is never created at all —
+	// skipping after the split would leave an empty pane behind. Off by
+	// default; a pinned pane is not offered to the planner, so its pin stands.
+	seatCandidates := make([]caamSeatCandidate, 0, len(flatAgents))
+	for i, agent := range flatAgents {
+		_, pinned := opts.PersonaMap[agent.Model]
+		seatCandidates = append(seatCandidates, caamSeatCandidate{
+			Index:  i,
+			Type:   agent.Type,
+			Pinned: pinned,
+		})
+	}
+	seatPlan := planCAAMSeats(ctx, cfg, dir, seatCandidates)
+	var seatSkips []output.SeatSkipResponse
+
 	// Get pane initialization delay from config (same as spawn command)
 	paneInitDelay := time.Duration(cfg.Tmux.PaneInitDelayMs) * time.Millisecond
 	if flag.Lookup("test.v") != nil {
@@ -628,10 +644,26 @@ func executeAdd(ctx context.Context, opts AddOptions, emitResult bool) error {
 		}
 	}
 
-	for _, agent := range flatAgents {
+	for agentIdx, agent := range flatAgents {
 		agentTypeStr := string(agent.Type)
 		if err := ctx.Err(); err != nil {
 			return outputError(fmt.Errorf("add canceled before creating %s pane: %w", agentTypeStr, err))
+		}
+
+		// Seat selection refused this pane's pool. Skip the pane — do NOT
+		// create it and do NOT fall through to a static template pin — and
+		// keep placing its siblings, which may be on a provider that answered.
+		if reason, skipped := seatPlan.SkipReason(agentIdx); skipped {
+			decision, _ := seatPlan.For(agentIdx)
+			seatSkips = append(seatSkips, output.SeatSkipResponse{
+				AgentType: agentTypeStr,
+				Provider:  decision.Provider,
+				Reason:    reason,
+			})
+			if !IsJSONOutput() {
+				output.PrintWarningf("%s", caamSeatSkipMessage(agent.Type, reason))
+			}
+			continue
 		}
 
 		paneID, err := tmux.SplitWindowContext(ctx, session, dir)
@@ -778,6 +810,32 @@ func executeAdd(ctx context.Context, opts AddOptions, emitResult bool) error {
 				systemPromptFile = promptFile
 				// For persona agents, resolve the model from the persona config
 				resolvedModel = resolveAgentModel(agent.Type, p.Model, opts.PluginMap)
+			}
+		}
+
+		// No persona pin: take the seat CAAM ranked for this provider
+		// (ntm#319). Only reached when seat_selection is on — a pinned pane
+		// never gets here, because the planner records no decision for it.
+		if personaName == "" {
+			if seat, ok := seatPlan.Seat(agentIdx); ok {
+				personaName = seat.Persona
+				if p := seat.Registered; p != nil {
+					modelRequested = strings.TrimSpace(p.Model) != ""
+					if strings.TrimSpace(p.ReasoningEffort) != "" {
+						resolvedReasoningEffort = p.ReasoningEffort
+					}
+					promptFile, err := prepareRequiredPersonaSystemPrompt(p, dir)
+					if err != nil {
+						return outputError(fmt.Errorf(
+							"preparing system prompt for CAAM-selected seat persona %s after creating pane %s: %w; the pane still exists",
+							p.Name, paneID, err,
+						))
+					}
+					systemPromptFile = promptFile
+					resolvedModel = resolveAgentModel(agent.Type, p.Model, opts.PluginMap)
+				} else if seat.TypeMismatch && !IsJSONOutput() {
+					output.PrintWarningf("%s", caamSeatTypeMismatchMessage(agent.Type, seat.Persona))
+				}
 			}
 		}
 
@@ -1003,6 +1061,16 @@ func executeAdd(ctx context.Context, opts AddOptions, emitResult bool) error {
 		})
 	}
 
+	// Panes that seat selection refused were never created, so the requested
+	// count is no longer the added count. Report what actually launched
+	// (ntm#319) — a partially-placed add that claims the full number would
+	// hide the very refusal the feature exists to make loud. Counted from the
+	// panes that exist rather than by subtraction, so the number cannot drift
+	// from reality. Guarded so a run with no skips is untouched.
+	if len(seatSkips) > 0 {
+		totalAgents = len(newPanes)
+	}
+
 	// Register the newly added agents with Agent Mail so panes added to a live
 	// session get identities and inboxes just like spawned ones (#240). The
 	// helper self-guards on a disabled config or an unreachable server, and it
@@ -1066,6 +1134,7 @@ func executeAdd(ctx context.Context, opts AddOptions, emitResult bool) error {
 			TotalAdded:          totalAgents,
 			NewPanes:            newPanes,
 			AgentMail:           agentMailStatus,
+			SeatSkips:           seatSkips,
 		})
 	}
 

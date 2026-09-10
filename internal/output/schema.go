@@ -157,6 +157,23 @@ type SpawnResponse struct {
 	// persona set. Combined with each pane's `persona` field this gives an
 	// orchestrator a deterministic persona→pane mapping (ntm#149).
 	ProfileSet string `json:"profile_set,omitempty"`
+	// SeatSkips lists panes that CAAM seat selection refused to launch
+	// (ntm#319). Present only when [integrations.caam] seat_selection is on
+	// AND a pool could not be ranked, so the response shape is unchanged for
+	// every host that has not opted in.
+	SeatSkips []SeatSkipResponse `json:"seat_skips,omitempty"`
+}
+
+// SeatSkipResponse reports one pane that CAAM seat selection declined to
+// launch, and why (ntm#319). A skip is deliberate: an unpinned pane whose
+// seat cannot be determined must not fall through to whatever the agent
+// command template pins statically.
+type SeatSkipResponse struct {
+	AgentType string `json:"agent_type"`
+	// Provider is the caam provider token whose pool could not be ranked
+	// ("claude" or "codex").
+	Provider string `json:"provider,omitempty"`
+	Reason   string `json:"reason"`
 }
 
 // CreateResponse is the output format for create command (basic session)
@@ -190,6 +207,10 @@ type AddResponse struct {
 	// with Agent Mail too, so automation can read back the pane_id -> agent
 	// name mapping for panes that joined an existing session (#240).
 	AgentMail *AgentMailSpawnStatus `json:"agent_mail,omitempty"`
+	// SeatSkips mirrors SpawnResponse.SeatSkips: panes CAAM seat selection
+	// refused to launch, with the reason (ntm#319). Omitted entirely unless
+	// seat_selection is on and a pool could not be ranked.
+	SeatSkips []SeatSkipResponse `json:"seat_skips,omitempty"`
 }
 
 // SendResponse is the output format for send command

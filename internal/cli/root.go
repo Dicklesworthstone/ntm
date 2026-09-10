@@ -5987,6 +5987,7 @@ Examples:
 							"auto_failover":         effectiveCfg.Integrations.CAAM.AutoFailover,
 							"reset_horizon_minutes": effectiveCfg.Integrations.CAAM.ResetHorizonMinutes,
 							"failover_providers":    effectiveCfg.Integrations.CAAM.FailoverProviders,
+							"seat_selection":        effectiveCfg.Integrations.CAAM.SeatSelection,
 						},
 						"rch": map[string]interface{}{
 							"enabled": effectiveCfg.Integrations.RCH.Enabled,

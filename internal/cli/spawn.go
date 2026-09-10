@@ -2871,8 +2871,25 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 	identityCoordinator := newSpawnIdentityCoordinator(dir, opts.Session)
 	identityCoordinator.preLaunch = true
 
+	// CAAM seat selection (ntm#319). One ranked query per provider for the
+	// whole spawn, resolved before the first agent command is sent. Off by
+	// default. A pane that already carries a persona — from --persona,
+	// --profile-set, or a recipe — is not offered to the planner, so its pin
+	// is never overridden.
+	spawnSeatCandidates := make([]caamSeatCandidate, 0, len(opts.Agents))
+	for i, agent := range opts.Agents {
+		_, mapped := opts.PersonaMap[agent.Model]
+		spawnSeatCandidates = append(spawnSeatCandidates, caamSeatCandidate{
+			Index:  i,
+			Type:   agent.Type,
+			Pinned: agent.Persona != nil || mapped,
+		})
+	}
+	seatPlan := planCAAMSeats(ctx, cfg, dir, spawnSeatCandidates)
+	var seatSkips []output.SeatSkipResponse
+
 	// Launch agents using flattened specs (preserves model info for pane naming)
-	for _, agent := range opts.Agents {
+	for agentIdx, agent := range opts.Agents {
 		if agentNum >= len(panes) {
 			return outputError(fmt.Errorf(
 				"spawn pane assignment invariant failed for agent %q index %d: pane offset %d exceeds %d discovered panes",
@@ -2881,6 +2898,25 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 		}
 
 		pane := panes[agentNum]
+
+		// Seat selection refused this pane's pool: launch nothing into it and
+		// keep going, so a mixed spawn still brings up the providers that
+		// answered. The pane itself was already split before this loop, so it
+		// is left as a plain shell rather than silently launched on whatever
+		// the agent command template pins statically (ntm#319).
+		if reason, skipped := seatPlan.SkipReason(agentIdx); skipped {
+			decision, _ := seatPlan.For(agentIdx)
+			seatSkips = append(seatSkips, output.SeatSkipResponse{
+				AgentType: string(agent.Type),
+				Provider:  decision.Provider,
+				Reason:    reason,
+			})
+			if !IsJSONOutput() {
+				output.PrintWarningf("%s (pane %s left empty)", caamSeatSkipMessage(agent.Type, reason), pane.ID)
+			}
+			agentNum++
+			continue
+		}
 
 		if testPacing.agentDelay > 0 && staggerAgentIdx > 0 {
 			if err := waitContextDelay(ctx, testPacing.agentDelay); err != nil {
@@ -3034,6 +3070,36 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 			systemPromptFile = promptFile
 			if !IsJSONOutput() {
 				fmt.Printf("  → persona '%s' → pane %s_%d\n", profile.Name, agent.Type, agent.Index)
+			}
+		}
+
+		// No persona pin from either source: take the seat CAAM ranked for
+		// this provider (ntm#319). Only reached when seat_selection is on —
+		// the planner records no decision for a pinned pane, so this cannot
+		// override either branch above.
+		if personaName == "" {
+			if seat, ok := seatPlan.Seat(agentIdx); ok {
+				personaName = seat.Persona
+				if p := seat.Registered; p != nil {
+					modelRequested = strings.TrimSpace(p.Model) != ""
+					if strings.TrimSpace(p.ReasoningEffort) != "" {
+						resolvedReasoningEffort = p.ReasoningEffort
+					}
+					promptFile, err := prepareRequiredPersonaSystemPrompt(p, dir)
+					if err != nil {
+						return outputError(fmt.Errorf(
+							"preparing system prompt for CAAM-selected seat persona %s after configuring pane %s: %w; the session and pane still exist",
+							p.Name, pane.ID, err,
+						))
+					}
+					systemPromptFile = promptFile
+					resolvedModel = resolveAgentModel(agent.Type, p.Model, opts.PluginMap)
+				} else if seat.TypeMismatch && !IsJSONOutput() {
+					output.PrintWarningf("%s", caamSeatTypeMismatchMessage(agent.Type, seat.Persona))
+				}
+				if !IsJSONOutput() {
+					fmt.Printf("  → seat '%s' → pane %s_%d\n", seat.Persona, agent.Type, agent.Index)
+				}
 			}
 		}
 
@@ -3670,6 +3736,7 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 			AgentMail:           agentMailStatus,
 			Recovery:            newRecoverySpawnStatus(recoveryEnabled, rc),
 			ProfileSet:          opts.ProfileSetName,
+			SeatSkips:           seatSkips,
 		}
 
 		// If assignment is enabled, wait for agents and run assignment phase

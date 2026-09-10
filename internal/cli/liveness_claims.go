@@ -262,4 +262,8 @@ func init() {
 	config.RegisterReader("ensemble.budget.total", applyRobotEnsembleConfigDefaults)
 	config.RegisterReader("ensemble.budget.per_agent", applyRobotEnsembleConfigDefaults)
 	config.RegisterReader("ensemble.cache.enabled", applyRobotEnsembleConfigDefaults)
+
+	// CAAM seat selection for unpinned spawn/add panes (caam_seat.go,
+	// spawn.go, add.go). ntm#319.
+	config.RegisterReader("integrations.caam.seat_selection", caamSeatSelectionEnabled)
 }
