@@ -12046,6 +12046,8 @@
       "sections": [
         "quota"
       ],
+      "paginated": false,
+      "paginated_reason": "bounded: one seat entry per configured CAAM profile per provider (handful)",
       "parameters": [
         {
           "name": "provider",

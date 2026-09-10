@@ -45,12 +45,24 @@ type QuotaCheckOutput struct {
 	Quota    ProviderQuota `json:"quota"`
 }
 
+// canonicalRobotProvider folds every spelling of a provider onto the one key
+// the robot surfaces report it under.
+//
+// Codex is the case that bit ntm#319. ntm stores Codex accounts under the
+// provider id "openai" (caamProviderForNTM), caam's own limits command calls
+// it "codex", and the agent type is "cod" — so a controller filtering with
+// --provider=codex matched nothing and got available_accounts=0 on a host with
+// three healthy Codex seats. All of those spellings now resolve to the same
+// key. "openai" stays the canonical value so existing consumers of the
+// accounts map keep reading the key they already read.
 func canonicalRobotProvider(provider string) string {
 	switch strings.ToLower(strings.TrimSpace(provider)) {
-	case "claude", "anthropic":
+	case "claude", "anthropic", "cc":
 		return "claude"
 	case "gemini", "gmi", "google", "google-ai", "google_gemini", "google-gemini":
 		return "gemini"
+	case "openai", "codex", "cod", "chatgpt", "openai-codex", "openai_codex":
+		return "openai"
 	default:
 		return strings.ToLower(strings.TrimSpace(provider))
 	}
@@ -137,6 +149,25 @@ func GetQuotaStatus() (*QuotaStatusOutput, error) {
 		quotaInfo.Providers[providerName] = providerQuota
 	}
 
+	// Overlay CAAM's live subscription windows (ntm#319).
+	//
+	// Everything above reads only caut's poller cache, which covers API-key
+	// spend. A subscription seat (Claude Max, ChatGPT Pro) has no caut usage
+	// row at all, so on a host where `caam limits` answers happily this
+	// surface still reported providers:{} — the controller could see
+	// caut_available:true and conclude there were no windows to respect.
+	// caut's numbers stay authoritative where it has them; caam only fills
+	// what caut left blank.
+	//
+	// Deliberately NOT the ctx above: that one is a 5-second budget for a
+	// local availability probe, while `caam limits` queries provider APIs and
+	// caam allows itself 60s for them. Inheriting the 5s would make every
+	// overlay call time out and the fix silently do nothing in production
+	// while stubbed tests still passed.
+	limitsCtx, limitsCancel := context.WithTimeout(context.Background(), caamLimitsOverlayTimeout)
+	defer limitsCancel()
+	applyLiveProviderQuota(limitsCtx, &quotaInfo)
+
 	// Check for cache errors
 	if errTime, err := cache.GetLastError(); err != nil && !errTime.IsZero() {
 		output := &QuotaStatusOutput{
@@ -152,6 +183,100 @@ func GetQuotaStatus() (*QuotaStatusOutput, error) {
 		RobotResponse: NewRobotResponse(true),
 		Quota:         quotaInfo,
 	}, nil
+}
+
+// caamLimitsOverlayTimeout bounds the live-window overlay on the robot status
+// surfaces. `caam limits` reaches provider APIs and caam allows itself 60s for
+// them, so the budget has to be generous — but these are interactive robot
+// commands, so it is not caam's full 75s ceiling either. Exceeding it is
+// reported as an unreadable pool, never as a healthy one.
+const caamLimitsOverlayTimeout = 30 * time.Second
+
+// quotaStatusLimitsProviders are the providers whose subscription windows caam
+// can read. Kept explicit so the overlay never shells out for a provider caam
+// would reject.
+var quotaStatusLimitsProviders = []string{"claude", "openai"}
+
+// quotaStatusLimitsProbe reads one provider's ranked live quota. It is a
+// variable so tests can supply a pool without a caam binary or credentials.
+var quotaStatusLimitsProbe = func(ctx context.Context, provider string) (*tools.CAAMLimitsResult, error) {
+	return tools.NewCAAMAdapter().Limits(ctx, tools.CAAMLimitsOptions{
+		Provider: provider,
+		Rank:     tools.CAAMRankEarliestResetHeadroom,
+	})
+}
+
+// applyLiveProviderQuota merges CAAM's subscription windows into the quota
+// map. It reports the worst-off eligible seat per provider — the binding
+// constraint on new work — and never overwrites a figure caut already
+// supplied.
+func applyLiveProviderQuota(ctx context.Context, quotaInfo *QuotaInfo) {
+	if quotaInfo == nil {
+		return
+	}
+	if quotaInfo.Providers == nil {
+		quotaInfo.Providers = make(map[string]ProviderQuota)
+	}
+
+	for _, provider := range quotaStatusLimitsProviders {
+		result, err := quotaStatusLimitsProbe(ctx, provider)
+		if err != nil && result == nil {
+			// Nothing readable for this provider. Silence here is correct:
+			// most hosts have no caam seats at all, and an error row per
+			// provider would make a normal install look broken.
+			// --robot-account-status carries the per-provider limits_error for
+			// operators who do use caam.
+			continue
+		}
+		if result == nil || len(result.Profiles) == 0 {
+			continue
+		}
+
+		// The seat that governs new work: caam's top-ranked eligible profile,
+		// falling back to the highest utilization on record when nothing is
+		// eligible, because "every seat is at its cap" is the single most
+		// important thing this surface can report.
+		var governing *tools.CAAMRankedProfile
+		for i := range result.Profiles {
+			p := &result.Profiles[i]
+			if p.Eligible && p.Rank == 1 {
+				governing = p
+				break
+			}
+		}
+		if governing == nil {
+			for i := range result.Profiles {
+				p := &result.Profiles[i]
+				if governing == nil || p.UsedPercent > governing.UsedPercent {
+					governing = p
+				}
+			}
+		}
+		if governing == nil {
+			continue
+		}
+
+		key := canonicalRobotProvider(provider)
+		quota, exists := quotaInfo.Providers[key]
+		if !exists {
+			quota = ProviderQuota{}
+		}
+		// caut owns the number when it has one; a zero there means it had none.
+		if quota.UsagePercent == 0 {
+			quota.UsagePercent = float64(governing.UsedPercent)
+		}
+		if quota.ResetAt == "" && governing.ResetsAt != nil {
+			quota.ResetAt = FormatTimestamp(*governing.ResetsAt)
+		}
+		quota.Status = getQuotaStatus(quota.UsagePercent)
+		quotaInfo.Providers[key] = quota
+
+		if quota.UsagePercent >= 95.0 {
+			quotaInfo.HasCritical = true
+		} else if quota.UsagePercent >= 80.0 {
+			quotaInfo.HasWarning = true
+		}
+	}
 }
 
 // PrintQuotaStatus handles the --robot-quota-status command.

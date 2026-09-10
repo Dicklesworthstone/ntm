@@ -48,6 +48,7 @@ var SchemaPagination = map[string]SchemaPaginationFlag{
 	"ensemble_modes": {Paginated: true, Reason: "modes array pages via --limit/--offset"},
 
 	// --- Unpaginated by design ---------------------------------------------
+	"account_status":     {Reason: "bounded: one seat entry per configured CAAM profile per provider (handful)"},
 	"accounts_list":      {Reason: "bounded: configured provider accounts (handful)"},
 	"ack":                {Reason: "bounded: per-request acknowledgement results for addressed panes"},
 	"activity":           {Reason: "bounded: one entry per live agent pane"},
