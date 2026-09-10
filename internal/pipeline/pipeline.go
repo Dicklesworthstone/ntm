@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/agent"
+	"github.com/Dicklesworthstone/ntm/internal/dispatch"
 	"github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/util"
@@ -65,6 +66,16 @@ func Execute(ctx context.Context, p Pipeline) error {
 		// 3. Send prompt
 		if err := tmux.PasteKeys(paneID, prompt, true); err != nil {
 			return fmt.Errorf("stage %d sending prompt: %w", i+1, err)
+		}
+
+		// 3b. Establish that the prompt actually left the composer before
+		// treating pane idleness as completion (ntm#320). Without this an
+		// agent TUI that swallowed the paste's Enter leaves the instruction
+		// unsubmitted, the pane reads idle, and the stage advances having
+		// executed nothing.
+		if err := dispatch.VerifyAgentSubmission(ctx, paneID, prompt,
+			tmux.AgentType(normalizeAgentType(stage.AgentType)), 0); err != nil {
+			return fmt.Errorf("stage %d prompt was not submitted: %w", i+1, err)
 		}
 
 		// 4. Wait for working state (debounce)

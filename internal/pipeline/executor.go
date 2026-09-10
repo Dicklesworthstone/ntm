@@ -198,6 +198,16 @@ func (e *Executor) SetTmuxClient(client TmuxClient) {
 	e.resetPaneMetadataLoader()
 }
 
+// SetDetector swaps the agent-state detector backing completion waits.
+// Tests use this to drive waitForIdle without a live tmux server; a nil
+// detector restores the default.
+func (e *Executor) SetDetector(detector status.Detector) {
+	if detector == nil {
+		detector = status.NewDetector()
+	}
+	e.detector = detector
+}
+
 func (e *Executor) tmuxClient() TmuxClient {
 	if e.tmux == nil {
 		e.tmux = realTmuxClient{}
@@ -1207,6 +1217,27 @@ func (e *Executor) executeStepOnce(ctx context.Context, step *Step, workflow *Wo
 		return result
 	}
 
+	// Establish submission before any completion wait (ntm#320).
+	if err := e.confirmSubmission(ctx, paneID, prompt, agentType); err != nil {
+		if ctx.Err() != nil {
+			result.Status = StatusCancelled
+			result.SkipReason = "cancelled while confirming prompt submission"
+			result.SkipKind = SkipKindCancelled
+			result.FinishedAt = time.Now()
+			return result
+		}
+		result.Status = StatusFailed
+		result.Error = &StepError{
+			Type:       "send",
+			Message:    submissionFailureMessage(err),
+			PaneOutput: e.captureErrorContext(paneID, 50),
+			AgentState: e.detectAgentState(paneID),
+			Timestamp:  time.Now(),
+		}
+		result.FinishedAt = time.Now()
+		return result
+	}
+
 	// Handle wait condition
 	waitCondition := step.Wait
 	if waitCondition == "" {
@@ -1829,6 +1860,20 @@ func (e *Executor) executeTemplate(ctx context.Context, step *Step, workflow *Wo
 		result.Error = stepRuntimeError(step, "template", "send",
 			fmt.Sprintf("failed to send rendered template: %v", err),
 			"check that the target tmux pane still exists and accepts input",
+			err.Error())
+		result.FinishedAt = time.Now()
+		return result
+	}
+
+	// Establish submission before any completion wait (ntm#320).
+	if err := e.confirmSubmission(ctx, paneID, rendered, agentType); err != nil {
+		if ctx.Err() != nil {
+			return e.markTemplateCancelled(&result, step, workflow, paneID, ctx.Err().Error())
+		}
+		result.Status = StatusFailed
+		result.Error = stepRuntimeError(step, "template", "send",
+			submissionFailureMessage(err),
+			"the rendered template is still sitting in the agent's composer; submit it in the pane or re-run the step, and check that the pane is not blocked by a dialog",
 			err.Error())
 		result.FinishedAt = time.Now()
 		return result
@@ -2538,6 +2583,30 @@ func (e *Executor) executeParallelStep(ctx context.Context, step *Step, workflow
 			goto HANDLE_RESULT
 		}
 
+		// Establish submission before any completion wait (ntm#320). A
+		// stranded composer must fail this attempt rather than be waited on;
+		// the surrounding retry loop then re-dispatches it like any other
+		// delivery failure.
+		if err := e.confirmSubmission(ctx, paneID, prompt, agentType); err != nil {
+			if ctx.Err() != nil {
+				result.Status = StatusCancelled
+				result.SkipReason = "cancelled while confirming prompt submission"
+				result.SkipKind = SkipKindCancelled
+				result.FinishedAt = time.Now()
+				return result
+			}
+			result.Status = StatusFailed
+			result.Error = &StepError{
+				Type:       "send",
+				Message:    submissionFailureMessage(err),
+				PaneOutput: e.captureErrorContext(paneID, 50),
+				AgentState: e.detectAgentState(paneID),
+				Timestamp:  time.Now(),
+			}
+			result.FinishedAt = time.Now()
+			goto HANDLE_RESULT
+		}
+
 		switch waitCondition {
 		case WaitNone:
 			result.Status = StatusCompleted
@@ -3136,9 +3205,56 @@ func (e *Executor) parseOutput(output string, parse OutputParse) (interface{}, e
 // and capture pre-response screen debris as the step output (ntm#213).
 const idleStablePolls = 3
 
+// paneWidthFor returns the real tmux width of paneID, feeding the
+// width-adaptive working detectors the submission verifiers use. A width that
+// cannot be observed is reported as 0, which those detectors document as
+// "unknown" and answer with their calibrated default budget.
+func (e *Executor) paneWidthFor(paneID string) int {
+	panes, err := e.tmuxClient().GetPanes(e.config.Session)
+	if err != nil {
+		return 0
+	}
+	for _, pane := range panes {
+		if pane.ID == paneID {
+			return pane.Width
+		}
+	}
+	return 0
+}
+
+// confirmSubmission establishes that a prompt just pasted into paneID actually
+// left the agent's composer, before any completion wait is allowed to run
+// (ntm#320).
+//
+// Pipeline dispatch used to paste with a trailing Enter and go straight to
+// waitForIdle. When the agent TUI consumed that Enter as part of the bracketed
+// paste, the payload stayed in the composer and the pane read IDLE — so
+// waitForIdle's consecutive-idle streak completed immediately and the step was
+// reported successful with the instruction never submitted. The unattended run
+// then advanced while the worker sat waiting for an operator.
+//
+// This reuses the same agent-appropriate verification the restart prompt path
+// uses. It presses at most one bare Enter, and only when the payload is
+// visibly still in the composer, so an approval dialog (which appears only
+// AFTER a prompt was submitted, leaving the composer empty) is never answered
+// by it. The prompt is never resent.
+func (e *Executor) confirmSubmission(ctx context.Context, paneID, prompt, agentType string) error {
+	return e.tmuxClient().VerifySubmission(ctx, paneID, prompt, agentType, e.paneWidthFor(paneID))
+}
+
+// submissionFailureMessage renders the operator-facing reason a dispatch was
+// not delivered.
+func submissionFailureMessage(err error) string {
+	return fmt.Sprintf("prompt was not submitted: %v", err)
+}
+
 // waitForIdle waits for an agent to return to a *stable* idle state: the
 // detector must report idle for idleStablePolls consecutive polls. Any
 // non-idle reading (or detector error) resets the streak.
+//
+// This is only ever reached for a dispatch whose submission was confirmed:
+// idleness is meaningful evidence of completion for a prompt that is actually
+// running, and meaningless for one still sitting in the composer (ntm#320).
 func (e *Executor) waitForIdle(ctx context.Context, paneID string, timeout time.Duration) error {
 	ticker := time.NewTicker(e.config.ProgressInterval)
 	defer ticker.Stop()
