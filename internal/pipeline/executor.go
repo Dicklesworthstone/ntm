@@ -52,6 +52,12 @@ type ExecutorConfig struct {
 	RunID            string        // Optional: pre-generated run ID (if empty, one is generated)
 	BeadQueryRunBr   func(ctx context.Context, args []string) ([]byte, error)
 
+	// PaneLockWait bounds how long a dispatch waits for ANOTHER ntm process to
+	// release the target pane before failing the step as not-dispatched
+	// (ntm#324). Zero uses DefaultPaneLockWait. Requires ProjectDir: the
+	// cross-process lock lives under its .ntm state directory.
+	PaneLockWait time.Duration
+
 	// StartFromStep, when non-empty, instructs Run() to mark every transitive
 	// dependency of this step as StatusSkipped and begin actual execution at
 	// this step. The step ID must refer to a top-level step (not nested inside
@@ -1192,13 +1198,11 @@ func (e *Executor) executeStepOnce(ctx context.Context, step *Step, workflow *Wo
 	}
 
 	// Serialize the whole dispatch window (capture → paste → wait → capture)
-	// against other steps targeting the same pane (bd-jio7h).
-	releasePane, err := e.acquirePaneLock(ctx, paneID)
+	// against other steps targeting the same pane (bd-jio7h) and against
+	// other ntm processes targeting it (ntm#324).
+	releasePane, err := e.acquirePaneLockCrossProcess(ctx, paneID)
 	if err != nil {
-		result.Status = StatusCancelled
-		result.SkipReason = "cancelled while waiting for pane"
-		result.SkipKind = SkipKindCancelled
-		result.FinishedAt = time.Now()
+		applyPaneLockFailure(&result, paneID, err)
 		return result
 	}
 	defer releasePane()
@@ -1839,9 +1843,13 @@ func (e *Executor) executeTemplate(ctx context.Context, step *Step, workflow *Wo
 	}
 
 	// Serialize the whole dispatch window against other steps targeting the
-	// same pane (bd-jio7h).
-	releasePane, err := e.acquirePaneLock(ctx, paneID)
+	// same pane (bd-jio7h) and against other ntm processes (ntm#324).
+	releasePane, err := e.acquirePaneLockCrossProcess(ctx, paneID)
 	if err != nil {
+		if errors.Is(err, ErrPaneBusyOtherProcess) {
+			applyPaneLockFailure(&result, paneID, err)
+			return result
+		}
 		return e.markTemplateCancelled(&result, step, workflow, paneID, err.Error())
 	}
 	defer releasePane()
@@ -2481,14 +2489,12 @@ func (e *Executor) executeParallelStep(ctx context.Context, step *Step, workflow
 	// Serialize dispatch against other steps targeting the same pane. Within
 	// one parallel group usedPanes already prevents sharing, but concurrent
 	// top-level scheduling (bd-jio7h) can overlap two groups (or a group and
-	// a plain step) on the same pane. Held across retries: the pane was
+	// a plain step) on the same pane, and another ntm process can target it
+	// entirely independently (ntm#324). Held across retries: the pane was
 	// selected once for all attempts.
-	releasePane, err := e.acquirePaneLock(ctx, paneID)
+	releasePane, err := e.acquirePaneLockCrossProcess(ctx, paneID)
 	if err != nil {
-		result.Status = StatusCancelled
-		result.SkipReason = "cancelled while waiting for pane"
-		result.SkipKind = SkipKindCancelled
-		result.FinishedAt = time.Now()
+		applyPaneLockFailure(&result, paneID, err)
 		return result
 	}
 	defer releasePane()

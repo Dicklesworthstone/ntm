@@ -1316,6 +1316,11 @@ const (
 	// StatusSkipped by on_failure setting a runtime variable (bd-2ytru).
 	// Distinguishes user-driven recovery from unclassified skips.
 	SkipKindOnFailureAction SkipKind = "on_failure_action"
+	// SkipKindPaneBusy marks a step that was NOT dispatched because another
+	// ntm process held the target pane for the whole wait budget (ntm#324).
+	// It is deliberately distinct from cancelled: nothing was pasted and no
+	// prompt was queued, so the step is safe to re-run once the pane frees.
+	SkipKindPaneBusy SkipKind = "pane_busy_other_process"
 )
 
 // StepResult contains the result of executing a step
