@@ -3081,7 +3081,12 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 			if seat, ok := seatPlan.Seat(agentIdx); ok {
 				personaName = seat.Persona
 				if p := seat.Registered; p != nil {
-					modelRequested = strings.TrimSpace(p.Model) != ""
+					// Mirrors the --profile-set branch above, which guards its
+					// model override the same way.
+					if model, ok := caamSeatModelOverride(p, modelRequested); ok {
+						modelRequested = true
+						resolvedModel = resolveAgentModel(agent.Type, model, opts.PluginMap)
+					}
 					if strings.TrimSpace(p.ReasoningEffort) != "" {
 						resolvedReasoningEffort = p.ReasoningEffort
 					}
@@ -3093,7 +3098,6 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 						))
 					}
 					systemPromptFile = promptFile
-					resolvedModel = resolveAgentModel(agent.Type, p.Model, opts.PluginMap)
 				} else if seat.TypeMismatch && !IsJSONOutput() {
 					output.PrintWarningf("%s", caamSeatTypeMismatchMessage(agent.Type, seat.Persona))
 				}
@@ -3343,7 +3347,15 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 		// This prevents sequential blocking and ensures correct ordering (Context -> Prompt)
 		setupWg.Add(1)
 
-		panePrompt, promptResolveErr := resolveSpawnPanePrompt(opts, agent.Type, staggerAgentIdx)
+		// Keyed by the agent's position in opts.Agents, NOT by staggerAgentIdx.
+		// MarchingOrders is documented as "agent pane order (0-based)" and
+		// spawnHasPromptDelivery resolves it with exactly that index, so the
+		// two must agree. They happened to be the same number while every
+		// agent launched; a pane skipped by seat selection (ntm#319) advances
+		// the loop without advancing staggerAgentIdx, which would have handed
+		// the skipped pane's orders to the next surviving pane and dropped the
+		// last set entirely.
+		panePrompt, promptResolveErr := resolveSpawnPanePrompt(opts, agent.Type, agentIdx)
 		if promptResolveErr != nil {
 			recordSetupError(pane.ID, fmt.Errorf(
 				"agent %d (%s) default prompt resolution: %w",

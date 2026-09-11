@@ -355,9 +355,15 @@ func runScale(ctx context.Context, session string, targets []scaleTarget, dryRun
 		specs := AgentSpecs{
 			{Type: AgentType(action.AgentType), Count: action.Count},
 		}
+		// executeAdd runs with emitResult=false here, so scale sees neither
+		// its JSON response nor its warnings. Read the outcome instead of
+		// assuming the requested count landed: CAAM seat selection can refuse
+		// a pool and launch fewer panes without failing the add (ntm#319).
+		var outcome AddOutcome
 		opts := AddOptions{
 			Session: session,
 			Agents:  specs,
+			Outcome: &outcome,
 		}
 		if err := executeAdd(ctx, opts, false); err != nil {
 			stop := recordOperationError(fmt.Sprintf("spawn %s", action.AgentType), err)
@@ -368,9 +374,18 @@ func runScale(ctx context.Context, session string, targets []scaleTarget, dryRun
 				break
 			}
 		} else {
-			finalCounts[action.AgentType] += action.Count
+			finalCounts[action.AgentType] += outcome.Added
 			if !IsJSONOutput() {
-				fmt.Printf("  Spawned %d %s agent(s)\n", action.Count, action.AgentType)
+				fmt.Printf("  Spawned %d %s agent(s)\n", outcome.Added, action.AgentType)
+				for _, skip := range outcome.SeatSkips {
+					output.PrintWarningf("%s", caamSeatSkipMessage(AgentType(skip.AgentType), skip.Reason))
+				}
+			}
+			for _, skip := range outcome.SeatSkips {
+				recordOperationError(
+					fmt.Sprintf("spawn %s", action.AgentType),
+					fmt.Errorf("seat selection skipped a pane: %s", skip.Reason),
+				)
 			}
 		}
 	}

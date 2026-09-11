@@ -42,6 +42,23 @@ type AddOptions struct {
 	CassContextQuery string
 	NoCassContext    bool
 	Prompt           string
+
+	// Outcome, when non-nil, receives what the add ACTUALLY did. A composed
+	// caller (ntm scale) passes emitResult=false, so it sees neither the JSON
+	// response nor the terminal warnings and would otherwise have to assume
+	// every requested pane launched. That assumption is wrong whenever CAAM
+	// seat selection refuses a pool (ntm#319): the add succeeds, having
+	// launched fewer panes than asked for, and a caller that credits the
+	// requested count reports a swarm that does not exist.
+	Outcome *AddOutcome
+}
+
+// AddOutcome is the machine-readable summary of one add.
+type AddOutcome struct {
+	// Added is the number of panes that actually launched.
+	Added int
+	// SeatSkips lists the panes CAAM seat selection refused, with reasons.
+	SeatSkips []output.SeatSkipResponse
 }
 
 // promptSendFailure distinguishes a requested prompt delivery failure from
@@ -820,7 +837,10 @@ func executeAdd(ctx context.Context, opts AddOptions, emitResult bool) error {
 			if seat, ok := seatPlan.Seat(agentIdx); ok {
 				personaName = seat.Persona
 				if p := seat.Registered; p != nil {
-					modelRequested = strings.TrimSpace(p.Model) != ""
+					if model, ok := caamSeatModelOverride(p, modelRequested); ok {
+						modelRequested = true
+						resolvedModel = resolveAgentModel(agent.Type, model, opts.PluginMap)
+					}
 					if strings.TrimSpace(p.ReasoningEffort) != "" {
 						resolvedReasoningEffort = p.ReasoningEffort
 					}
@@ -832,7 +852,6 @@ func executeAdd(ctx context.Context, opts AddOptions, emitResult bool) error {
 						))
 					}
 					systemPromptFile = promptFile
-					resolvedModel = resolveAgentModel(agent.Type, p.Model, opts.PluginMap)
 				} else if seat.TypeMismatch && !IsJSONOutput() {
 					output.PrintWarningf("%s", caamSeatTypeMismatchMessage(agent.Type, seat.Persona))
 				}
@@ -1069,6 +1088,10 @@ func executeAdd(ctx context.Context, opts AddOptions, emitResult bool) error {
 	// from reality. Guarded so a run with no skips is untouched.
 	if len(seatSkips) > 0 {
 		totalAgents = len(newPanes)
+	}
+	if opts.Outcome != nil {
+		opts.Outcome.Added = totalAgents
+		opts.Outcome.SeatSkips = seatSkips
 	}
 
 	// Register the newly added agents with Agent Mail so panes added to a live

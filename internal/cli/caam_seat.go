@@ -315,6 +315,32 @@ func caamSeatErrorDetail(err error) string {
 	return text
 }
 
+// caamSeatModelOverride reports the model a ranked seat's persona contributes
+// to a pane, and whether it contributes one at all.
+//
+// Seat selection chooses the ACCOUNT, not the model, so two things must hold
+// and neither is automatic:
+//
+//   - An explicitly requested model wins. `ntm add --cod=1:gpt-5.1-codex-max`
+//     carries no persona pin, so it IS eligible for a seat; taking the seat
+//     persona's model as well would silently discard what the operator asked
+//     for.
+//   - A persona that declares no model contributes nothing. `model` is
+//     optional on a persona (only `name` and `agent_type` are required), and
+//     resolving an empty model falls through to the agent type's config
+//     default — so an unguarded assignment would demote an otherwise
+//     defaulted pane and, worse, do it invisibly.
+func caamSeatModelOverride(p *persona.Persona, modelRequested bool) (string, bool) {
+	if p == nil || modelRequested {
+		return "", false
+	}
+	model := strings.TrimSpace(p.Model)
+	if model == "" {
+		return "", false
+	}
+	return model, true
+}
+
 // caamSeatSkipMessage is the one-line operator-facing report for a skipped
 // pane. Kept here so spawn and add word it identically.
 func caamSeatSkipMessage(agentType AgentType, reason string) string {

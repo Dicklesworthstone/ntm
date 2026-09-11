@@ -586,14 +586,21 @@ The semantics, exactly:
   once, not four times; the ranked seat is a property of the pool.
 - **Later `ntm add`s re-rank.** A pane added to a running swarm is a new pane
   and gets the seat that is right now, not the one that was right at spawn.
-  Credentials inside an already-running pane are never rotated.
+  (Answers are memoized for 20 seconds, so two adds in quick succession share
+  one ranking — provider windows do not move on that timescale.) Credentials
+  inside an already-running pane are never rotated.
 - **An unreadable pool skips those panes, loudly.** If caam is missing, times
-  out, or ranks the pool and finds nothing with included headroom, the affected
-  panes are **not launched** and the reason is printed (and reported in
-  `seat_skips` under `--json`). Siblings on a provider that answered still come
-  up: `ntm add --cod=2 --cc=2` with an exhausted Codex pool brings up the two
-  Claude panes. A skipped pane never falls through to a static profile pin —
-  that fallthrough is the failure this exists to prevent.
+  out, or ranks the pool and finds nothing with included headroom, no agent is
+  launched into the affected panes and the reason is printed (and reported in
+  `seat_skips` under `--json`). In `ntm add` the pane is never created at all;
+  in `ntm spawn` the panes were already split before seats were resolved, so a
+  refused one is left as a plain shell and named in the warning. Siblings on a
+  provider that answered still come up: `ntm add --cod=2 --cc=2` with an
+  exhausted Codex pool brings up the two Claude panes. A skipped pane never
+  falls through to a static profile pin — that fallthrough is the failure this
+  exists to prevent.
+- **`ntm scale` honors it too.** Scale-up reports the number of panes that
+  actually launched, not the number requested, and surfaces each refusal.
 - **Only Claude and Codex are affected.** `caam limits` answers for no other
   provider, so gemini/grok/ollama/plugin panes are untouched.
 

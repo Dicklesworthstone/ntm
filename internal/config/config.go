@@ -1529,9 +1529,12 @@ type CAAMConfig struct {
 	//
 	// Default false. Off, nothing calls caam and launch behavior is
 	// byte-identical to a host without caam installed. On, an unpinned pane
-	// whose seat cannot be determined is SKIPPED with the reason printed —
-	// it never falls through to whatever the agent command template pins
-	// statically, because that fallthrough is the bug this exists to fix.
+	// whose seat cannot be determined is SKIPPED with the reason reported —
+	// printed for an interactive run, carried in `seat_skips` under --json,
+	// and surfaced through AddOptions.Outcome for composed callers like
+	// `ntm scale` that see neither. It never falls through to whatever the
+	// agent command template pins statically, because that fallthrough is the
+	// bug this exists to fix.
 	// A pinned pane (an explicit --persona / --profile-set) always keeps its
 	// pin and is never re-ranked.
 	SeatSelection bool `toml:"seat_selection"`

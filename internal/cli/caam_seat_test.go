@@ -24,6 +24,7 @@ import (
 	"testing"
 
 	"github.com/Dicklesworthstone/ntm/internal/config"
+	"github.com/Dicklesworthstone/ntm/internal/output"
 	"github.com/Dicklesworthstone/ntm/internal/persona"
 	"github.com/Dicklesworthstone/ntm/internal/tools"
 )
@@ -190,7 +191,36 @@ func TestSeatSelectionPlacesUnpinnedPaneOnRankedSeat(t *testing.T) {
 
 // TestSeatSelectionNeverOverridesAPin: a pinned pane is not even offered to
 // caam, so a --persona pin cannot be re-ranked away.
+//
+// The batch deliberately also carries an unpinned pane of ANOTHER provider, so
+// the planner returns a real plan rather than the nil "nothing to do" plan —
+// otherwise the pinned-pane assertion would pass vacuously.
 func TestSeatSelectionNeverOverridesAPin(t *testing.T) {
+	projectDir := isolatePersonaRegistry(t)
+	stub := &stubSeatResolver{seats: map[string]*tools.CAAMRankedProfile{
+		"claude": rankedSeat("claude", "also-me", 20),
+	}}
+	withStubSeatResolver(t, stub)
+
+	plan := planCAAMSeats(context.Background(), seatSelectionConfig(true), projectDir, []caamSeatCandidate{
+		{Index: 0, Type: AgentTypeCodex, Pinned: true},
+		{Index: 1, Type: AgentTypeClaude},
+	})
+
+	if plan == nil {
+		t.Fatal("fixture precondition: the unpinned claude pane must produce a plan")
+	}
+	if _, ok := plan.For(0); ok {
+		t.Fatal("a pinned pane must carry no seat decision")
+	}
+	if calls := stub.recorded(); len(calls) != 1 || calls[0] != "claude" {
+		t.Fatalf("only the unpinned pane's provider may be queried, got %v", calls)
+	}
+}
+
+// TestSeatSelectionOnlyPinnedPanesQueryNothing is the pure case: a batch in
+// which every pane is pinned produces no plan and starts no caam process.
+func TestSeatSelectionOnlyPinnedPanesQueryNothing(t *testing.T) {
 	projectDir := isolatePersonaRegistry(t)
 	stub := &stubSeatResolver{seats: map[string]*tools.CAAMRankedProfile{
 		"codex": rankedSeat("codex", "spend-me", 34),
@@ -199,15 +229,103 @@ func TestSeatSelectionNeverOverridesAPin(t *testing.T) {
 
 	plan := planCAAMSeats(context.Background(), seatSelectionConfig(true), projectDir, []caamSeatCandidate{
 		{Index: 0, Type: AgentTypeCodex, Pinned: true},
+		{Index: 1, Type: AgentTypeClaude, Pinned: true},
 	})
 
 	if plan != nil {
-		if _, ok := plan.For(0); ok {
-			t.Fatal("a pinned pane must carry no seat decision")
-		}
+		t.Fatalf("an all-pinned batch must produce no plan, got %+v", plan)
 	}
 	if calls := stub.recorded(); len(calls) != 0 {
-		t.Fatalf("a batch of only pinned panes must not query caam, got %v", calls)
+		t.Fatalf("an all-pinned batch must not query caam, got %v", calls)
+	}
+}
+
+// TestCAAMSeatModelOverride pins the model-precedence rule: seat selection
+// chooses the ACCOUNT, never the model.
+//
+// Both halves are real defects if they regress. An explicitly requested model
+// (`--cod=1:gpt-5.1-codex-max`) belongs to a pane with no persona pin, so it
+// IS eligible for a seat; taking the seat persona's model too would discard
+// what the operator asked for. And `model` is optional on a persona, so
+// adopting an empty one would resolve to the agent type's config default and
+// silently demote the pane.
+func TestCAAMSeatModelOverride(t *testing.T) {
+	withModel := &persona.Persona{Name: "codex-spend-me", AgentType: "codex", Model: "gpt-5.1-codex-max"}
+	withoutModel := &persona.Persona{Name: "codex-spend-me", AgentType: "codex"}
+	blankModel := &persona.Persona{Name: "codex-spend-me", AgentType: "codex", Model: "   "}
+
+	cases := []struct {
+		name           string
+		persona        *persona.Persona
+		modelRequested bool
+		wantModel      string
+		wantOK         bool
+	}{
+		{"persona model fills an unspecified model", withModel, false, "gpt-5.1-codex-max", true},
+		{"an explicit model wins", withModel, true, "", false},
+		{"a persona with no model contributes nothing", withoutModel, false, "", false},
+		{"a blank persona model contributes nothing", blankModel, false, "", false},
+		{"no persona contributes nothing", nil, false, "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			model, ok := caamSeatModelOverride(tc.persona, tc.modelRequested)
+			if ok != tc.wantOK {
+				t.Fatalf("ok = %v, want %v", ok, tc.wantOK)
+			}
+			if model != tc.wantModel {
+				t.Fatalf("model = %q, want %q", model, tc.wantModel)
+			}
+		})
+	}
+}
+
+// TestAddOutcomeReportsWhatActuallyLaunched pins the contract `ntm scale`
+// depends on: a composed caller passes emitResult=false and therefore sees
+// neither the JSON response nor the warnings, so AddOptions.Outcome is the
+// only way it can learn that seat selection refused panes. Crediting the
+// REQUESTED count there reports a swarm that does not exist.
+func TestAddOutcomeReportsWhatActuallyLaunched(t *testing.T) {
+	var outcome AddOutcome
+	if outcome.Added != 0 || outcome.SeatSkips != nil {
+		t.Fatal("a zero AddOutcome must claim nothing")
+	}
+	// The field is an out-parameter on AddOptions; a caller that does not want
+	// it leaves it nil and executeAdd must not touch it.
+	opts := AddOptions{Session: "s"}
+	if opts.Outcome != nil {
+		t.Fatal("AddOptions.Outcome must default to nil")
+	}
+	opts.Outcome = &outcome
+	opts.Outcome.Added = 2
+	opts.Outcome.SeatSkips = []output.SeatSkipResponse{{AgentType: "cod", Provider: "codex", Reason: "pool exhausted"}}
+	if outcome.Added != 2 || len(outcome.SeatSkips) != 1 {
+		t.Fatalf("the out-parameter must write through to the caller's value, got %+v", outcome)
+	}
+}
+
+// TestResolveSpawnPanePromptIsKeyedByAgentOrder pins the index space
+// MarchingOrders uses. The launch loop and spawnHasPromptDelivery must resolve
+// with the SAME key; they were only accidentally in agreement while every
+// agent launched, and a pane skipped by seat selection breaks that.
+func TestResolveSpawnPanePromptIsKeyedByAgentOrder(t *testing.T) {
+	opts := SpawnOptions{
+		MarchingOrders: map[int]string{
+			0: "audit auth",
+			1: "audit billing",
+		},
+	}
+	for order, want := range map[int]string{0: "audit auth", 1: "audit billing"} {
+		got, err := resolveSpawnPanePrompt(opts, AgentTypeCodex, order)
+		if err != nil {
+			t.Fatalf("order %d: %v", order, err)
+		}
+		if got != want {
+			t.Fatalf("order %d prompt = %q, want %q", order, got, want)
+		}
+	}
+	if got, _ := resolveSpawnPanePrompt(opts, AgentTypeCodex, 2); got != "" {
+		t.Fatalf("an order with no marching orders must fall back to the shared prompt, got %q", got)
 	}
 }
 
