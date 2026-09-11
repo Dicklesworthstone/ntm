@@ -5,30 +5,68 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/agentmail"
+	"github.com/Dicklesworthstone/ntm/internal/config"
 )
 
 // AMAdapter provides integration with Agent Mail MCP server
 type AMAdapter struct {
 	*BaseAdapter
+	// serverURL and token pin the probe to one endpoint. Empty means
+	// "resolve from configuration and environment at probe time", which is
+	// what every production caller does; the fields exist so a test can aim
+	// the adapter at an httptest server.
 	serverURL string
+	token     string
 }
 
 // NewAMAdapter creates a new Agent Mail adapter
 func NewAMAdapter() *AMAdapter {
 	return &AMAdapter{
 		BaseAdapter: NewBaseAdapter(ToolAM, "mcp-agent-mail"),
-		serverURL:   "http://127.0.0.1:8765", // Base URL without /mcp/ path (appended per-request)
 	}
 }
 
-// SetServerURL updates the Agent Mail server URL
+// SetServerURL pins the Agent Mail endpoint this adapter probes, overriding
+// the configured one.
 func (a *AMAdapter) SetServerURL(url string) {
 	a.serverURL = strings.TrimSuffix(url, "/")
+}
+
+// SetToken pins the bearer token this adapter probes with.
+func (a *AMAdapter) SetToken(token string) {
+	a.token = token
+}
+
+// client builds the Agent Mail client this adapter probes with.
+//
+// It is the same client every other Agent Mail surface in ntm uses, reading
+// the configured `[agent_mail] url`/`token` (and the AGENT_MAIL_URL /
+// AGENT_MAIL_TOKEN overrides) and attaching the bearer. The adapter used to
+// keep its own hard-coded 127.0.0.1:8765 base URL and send an unauthenticated
+// GET, so `ntm doctor` reported a correctly auth-walled server as unhealthy
+// while robot Mail talked to it happily (ntm#316).
+func (a *AMAdapter) client() *agentmail.Client {
+	if a.serverURL != "" {
+		opts := []agentmail.Option{agentmail.WithBaseURL(a.serverURL)}
+		if a.token != "" {
+			opts = append(opts, agentmail.WithToken(a.token))
+		}
+		return agentmail.NewClient(opts...)
+	}
+
+	var baseURL, token string
+	if wd, err := os.Getwd(); err == nil {
+		if cfg, err := config.LoadMerged(wd, config.DefaultPath()); err == nil && cfg != nil {
+			baseURL, token = cfg.AgentMail.URL, cfg.AgentMail.Token
+		}
+	}
+	return agentmail.NewClient(agentmail.ConfigOptions(baseURL, token)...)
 }
 
 // Detect checks if Agent Mail CLI is installed
@@ -101,24 +139,18 @@ func (a *AMAdapter) Health(ctx context.Context) (*HealthStatus, error) {
 	}, nil
 }
 
-// isServerHealthy checks if the Agent Mail server is responding
+// isServerHealthy checks if the Agent Mail server is responding.
+//
+// Availability is decided by the shared client, which probes the cheap
+// liveness endpoint with the bearer attached and falls back to the MCP
+// health_check tool when that endpoint is missing or auth-walled. A server
+// that requires authentication and gets it is therefore available here for
+// exactly the same reason it is available to robot Mail (ntm#316).
 func (a *AMAdapter) isServerHealthy(ctx context.Context) bool {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, "GET", a.serverURL+"/health/liveness", nil)
-	if err != nil {
-		return false
-	}
-
-	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return false
-	}
-	defer resp.Body.Close()
-
-	return resp.StatusCode == http.StatusOK
+	return a.client().IsAvailableContext(ctx)
 }
 
 // HasCapability checks if Agent Mail has a specific capability
@@ -143,32 +175,30 @@ func (a *AMAdapter) Info(ctx context.Context) (*ToolInfo, error) {
 // AM-specific methods
 
 // HealthCheck calls the server health endpoint
+// It runs the MCP health_check tool through the shared client, so it reaches
+// the configured endpoint with the bearer attached rather than a hard-coded
+// loopback URL with no credentials (ntm#316).
 func (a *AMAdapter) HealthCheck(ctx context.Context) (json.RawMessage, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, "GET", a.serverURL+"/health/liveness", nil)
+	status, err := a.client().HealthCheck(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("agent mail health check failed: %w", err)
 	}
 
-	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Do(req)
+	encoded, err := json.Marshal(status)
 	if err != nil {
-		return nil, fmt.Errorf("agent mail server not responding: %w", err)
+		return nil, fmt.Errorf("encode agent mail health: %w", err)
 	}
-	defer resp.Body.Close()
-
-	var buf bytes.Buffer
-	// Limit read to 1MB to prevent OOM
-	if _, err := buf.ReadFrom(io.LimitReader(resp.Body, 1024*1024)); err != nil {
-		return nil, err
-	}
-
-	return buf.Bytes(), nil
+	return encoded, nil
 }
 
-// ServerURL returns the configured server URL
+// ServerURL returns the endpoint this adapter probes: the pinned override
+// when one is set, otherwise the configured (or default) Agent Mail base URL.
 func (a *AMAdapter) ServerURL() string {
-	return a.serverURL
+	if a.serverURL != "" {
+		return a.serverURL
+	}
+	return a.client().BaseURL()
 }

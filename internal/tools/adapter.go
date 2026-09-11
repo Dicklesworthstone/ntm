@@ -176,6 +176,29 @@ type ToolInfo struct {
 	Capabilities []Capability `json:"capabilities,omitempty"`
 	Path         string       `json:"path,omitempty"`
 	Health       HealthStatus `json:"health"`
+	// Disabled reports that the caller's configuration turned this
+	// integration off, so the tool was never probed: no Detect, no
+	// `<tool> --version`, no health subprocess. Installed/Version/Path are
+	// unset on a disabled entry because nothing looked (ntm#313). It is
+	// distinct from Installed=false, which means "we looked and it is not
+	// on PATH".
+	Disabled bool `json:"disabled,omitempty"`
+}
+
+// DisabledToolInfo builds the inventory entry for a tool the configuration
+// has turned off. It is the single shape every disabled tool reports, and it
+// runs no subprocess.
+func DisabledToolInfo(name ToolName) *ToolInfo {
+	return &ToolInfo{
+		Name:      name,
+		Installed: false,
+		Disabled:  true,
+		Health: HealthStatus{
+			Healthy:     false,
+			Message:     "disabled by configuration (not probed)",
+			LastChecked: time.Now(),
+		},
+	}
 }
 
 // Adapter defines the interface that all tool adapters must implement

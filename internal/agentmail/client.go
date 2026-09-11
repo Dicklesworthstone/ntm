@@ -165,6 +165,29 @@ func WithBaseURL(url string) Option {
 	}
 }
 
+// ConfigOptions returns the client options implied by a configured Agent Mail
+// endpoint and bearer token, as read from `[agent_mail] url`/`token`.
+//
+// It is the one place that decides environment-versus-config precedence:
+// NewClient reads AGENT_MAIL_URL / AGENT_MAIL_TOKEN before applying options,
+// so a configured value is yielded only when the matching variable is unset
+// and the environment keeps overriding the file. Callers used to open-code
+// this, and the copies had drifted — some honoured the override, some did
+// not, and the doctor probe honoured neither (ntm#316).
+//
+// It deliberately takes strings rather than a *config.Config: internal/config
+// imports this package, so the dependency cannot run the other way.
+func ConfigOptions(baseURL, token string) []Option {
+	var opts []Option
+	if baseURL != "" && os.Getenv("AGENT_MAIL_URL") == "" {
+		opts = append(opts, WithBaseURL(baseURL))
+	}
+	if token != "" && os.Getenv("AGENT_MAIL_TOKEN") == "" {
+		opts = append(opts, WithToken(token))
+	}
+	return opts
+}
+
 // WithToken sets the bearer token for authentication.
 func WithToken(token string) Option {
 	return func(c *Client) {
