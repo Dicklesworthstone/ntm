@@ -268,9 +268,10 @@ func TestGetValue_MemoryPrivacySwarmAndRano(t *testing.T) {
 	}{
 		{"memory"},
 		{"memory.enabled"},
-		{"memory.include_in_recovery"},
-		{"memory.max_rules"},
 		{"memory.query_timeout_seconds"},
+		{"memory.send_injection"},
+		{"memory.send_max_rules"},
+		{"memory.send_budget_tokens"},
 		{"privacy"},
 		{"privacy.enabled"},
 		{"privacy.disable_prompt_history"},
@@ -1709,7 +1710,7 @@ func TestDiff_RecentConfigServiceSections(t *testing.T) {
 	cfg := Default()
 	defaults := Default()
 	cfg.FileReservation.Debug = !defaults.FileReservation.Debug
-	cfg.Memory.MaxRules = defaults.Memory.MaxRules + 1
+	cfg.Memory.SendMaxRules = defaults.Memory.SendMaxRules + 1
 	cfg.Privacy.Enabled = !defaults.Privacy.Enabled
 	cfg.Integrations.Rano.PollIntervalMs = defaults.Integrations.Rano.PollIntervalMs + 100
 	cfg.Swarm.DefaultScanDir = "/tmp/swarm-scan"
@@ -1717,7 +1718,7 @@ func TestDiff_RecentConfigServiceSections(t *testing.T) {
 	diffs := Diff(cfg)
 	wantPaths := []string{
 		"file_reservation.debug",
-		"memory.max_rules",
+		"memory.send_max_rules",
 		"privacy.enabled",
 		"integrations.rano.poll_interval_ms",
 		"swarm.default_scan_dir",

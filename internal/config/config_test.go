@@ -3803,18 +3803,23 @@ func TestValidateMemoryConfig(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name:    "max_rules zero is valid",
-			cfg:     MemoryConfig{MaxRules: 0, QueryTimeoutSeconds: 5},
+			name:    "send_max_rules zero is valid",
+			cfg:     MemoryConfig{SendMaxRules: 0, QueryTimeoutSeconds: 5},
 			wantErr: false,
 		},
 		{
-			name:    "max_rules negative",
-			cfg:     MemoryConfig{MaxRules: -1, QueryTimeoutSeconds: 5},
+			name:    "send_max_rules negative",
+			cfg:     MemoryConfig{SendMaxRules: -1, QueryTimeoutSeconds: 5},
+			wantErr: true,
+		},
+		{
+			name:    "send_budget_tokens negative",
+			cfg:     MemoryConfig{SendBudgetTokens: -1, QueryTimeoutSeconds: 5},
 			wantErr: true,
 		},
 		{
 			name:    "timeout too low",
-			cfg:     MemoryConfig{MaxRules: 10, QueryTimeoutSeconds: 0},
+			cfg:     MemoryConfig{QueryTimeoutSeconds: 0},
 			wantErr: true,
 		},
 	}

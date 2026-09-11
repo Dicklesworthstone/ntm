@@ -256,11 +256,18 @@ func TestDeadKeyLoadWarningIsOneLine(t *testing.T) {
 		t.Fatalf("stderr = %d line(s), want exactly 1:\n%s", len(lines), stderr)
 	}
 	warning := lines[0]
+	// The line counts the keys and points at migrate. It deliberately does
+	// NOT claim the keys never had an effect: the recovery-alias batch did
+	// have a reader, and migrate is the surface that explains per batch what
+	// carrying the value across requires (ntm#323).
 	if !strings.HasPrefix(warning, "ntm: config has ") ||
-		!strings.Contains(warning, "removed key(s) that never had an effect") ||
+		!strings.Contains(warning, "removed key(s)") ||
 		!strings.Contains(warning, "run 'ntm config migrate' to clean them (backup kept)") ||
 		!strings.Contains(warning, "details: ntm doctor") {
 		t.Errorf("one-line warning has wrong shape: %q", warning)
+	}
+	if strings.Contains(warning, "never had an effect") {
+		t.Errorf("warning claims every dead key was inert, which is false for the recovery-alias batch: %q", warning)
 	}
 	// The multi-key disposition wall must be gone from the human surface.
 	if strings.Contains(stderr, "delete it from your config file") {

@@ -4337,12 +4337,7 @@ func registerSessionAgent(parentCtx context.Context, sessionName, workingDir str
 	}
 	var opts []agentmail.Option
 	if cfg != nil {
-		if cfg.AgentMail.URL != "" {
-			opts = append(opts, agentmail.WithBaseURL(cfg.AgentMail.URL))
-		}
-		if cfg.AgentMail.Token != "" {
-			opts = append(opts, agentmail.WithToken(cfg.AgentMail.Token))
-		}
+		opts = append(opts, agentmail.ConfigOptions(cfg.AgentMail.URL, cfg.AgentMail.Token)...)
 	}
 	client := agentmail.NewClient(opts...)
 	ctx, cancel := context.WithTimeout(parentCtx, 15*time.Second)
@@ -4473,12 +4468,7 @@ func (c *spawnIdentityCoordinator) ensureInit(parentCtx context.Context) {
 
 	var opts []agentmail.Option
 	if cfg != nil {
-		if cfg.AgentMail.URL != "" {
-			opts = append(opts, agentmail.WithBaseURL(cfg.AgentMail.URL))
-		}
-		if cfg.AgentMail.Token != "" {
-			opts = append(opts, agentmail.WithToken(cfg.AgentMail.Token))
-		}
+		opts = append(opts, agentmail.ConfigOptions(cfg.AgentMail.URL, cfg.AgentMail.Token)...)
 	}
 	c.client = agentmail.NewClient(opts...)
 

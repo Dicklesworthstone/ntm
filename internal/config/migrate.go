@@ -31,7 +31,7 @@ import (
 type MigrationChange struct {
 	Key         string `json:"key"`
 	Disposition string `json:"disposition"`
-	Tier        string `json:"tier"` // DeadKeyTierRemoved | DeadKeyTierDeprecated
+	Tier        string `json:"tier"` // one of the DeadKeyTier* names
 }
 
 // MigrationResult reports what `ntm config migrate` did (or, under dry-run,
@@ -124,12 +124,12 @@ func MigrateDeadKeys(path string, dryRun bool) (*MigrationResult, error) {
 	if err != nil {
 		return nil, fmt.Errorf("internal error: migrated config would not parse (nothing was written): %w", err)
 	}
-	removed, deprecated, _ := classifyUndecodedKeys(undecodedConfigFields(md))
-	for _, knob := range removed {
-		result.Unresolved = append(result.Unresolved, MigrationChange{Key: knob.Key, Disposition: knob.Disposition, Tier: DeadKeyTierRemoved})
-	}
-	for _, knob := range deprecated {
-		result.Unresolved = append(result.Unresolved, MigrationChange{Key: knob.Key, Disposition: knob.Disposition, Tier: DeadKeyTierDeprecated})
+	byTier, _ := classifyUndecodedKeys(undecodedConfigFields(md))
+	// Tier order, not map order, so the unresolved list is deterministic.
+	for _, t := range deadKeyTiers {
+		for _, knob := range byTier[t.name] {
+			result.Unresolved = append(result.Unresolved, MigrationChange{Key: knob.Key, Disposition: knob.Disposition, Tier: t.name})
+		}
 	}
 
 	if len(changes) == 0 {

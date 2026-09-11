@@ -17,6 +17,20 @@ import (
 	"testing"
 )
 
+// removedKnobErrorLine and deprecatedKnobErrorLine name the strict-loader
+// error line for a knob in a specific removal batch. Production renders every
+// batch through the one deadKnobErrorLine, parameterized by the batch's own
+// release provenance (ntm#323); these are the test-side names for "the line
+// this tier produces", so an assertion cannot silently start comparing
+// against another batch's release text.
+func removedKnobErrorLine(knob RemovedKnob) string {
+	return deadKnobErrorLine(knob, deadKeyTierProvenance(DeadKeyTierRemoved))
+}
+
+func deprecatedKnobErrorLine(knob RemovedKnob) string {
+	return deadKnobErrorLine(knob, deadKeyTierProvenance(DeadKeyTierDeprecated))
+}
+
 // removedKnobFixtures covers every removed knob family: TOML that sets the
 // key, the dotted key the load error must name, and its full disposition
 // text.
@@ -206,7 +220,7 @@ func TestUnknownFieldStillErrors(t *testing.T) {
 // TestClassifyUndecodedKeys_TableHeaderDedup: when a removed table has
 // concrete child keys, only the children are reported.
 func TestClassifyUndecodedKeys_TableHeaderDedup(t *testing.T) {
-	removed, deprecated, unknown := classifyUndecodedKeys([]string{
+	byTier, unknown := classifyUndecodedKeys([]string{
 		"integrations.caut",
 		"integrations.caut.enabled",
 		"integrations.caut.currency",
@@ -214,9 +228,10 @@ func TestClassifyUndecodedKeys_TableHeaderDedup(t *testing.T) {
 	if len(unknown) != 0 {
 		t.Fatalf("unexpected unknown keys: %v", unknown)
 	}
-	if len(deprecated) != 0 {
+	if deprecated := byTier[DeadKeyTierDeprecated]; len(deprecated) != 0 {
 		t.Fatalf("unexpected deprecated keys: %v", deprecated)
 	}
+	removed := byTier[DeadKeyTierRemoved]
 	got := make([]string, 0, len(removed))
 	for _, k := range removed {
 		got = append(got, k.Key)

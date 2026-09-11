@@ -1052,17 +1052,23 @@ func ValidateFileReservationConfig(cfg *FileReservationConfig) error {
 // MemoryConfig holds configuration for CASS Memory (cm) integration.
 // When enabled, NTM can query the memory system for relevant context
 // before starting tasks and include learned rules in session recovery.
+//
+// Session-recovery tuning lives in [recovery], not here: include_cm_memories,
+// max_cm_rules and timeout_seconds are the single knobs for it. [memory]
+// keeps only what it actually owns — whether the integration is on at all,
+// how long a cm query may take, and the send-time injection budget. The
+// overlapping memory.include_in_recovery / memory.max_rules aliases were
+// removed (ntm#323); `ntm config migrate` strips them from existing files.
 type MemoryConfig struct {
-	Enabled             bool `toml:"enabled"`               // Top-level toggle for memory integration
-	IncludeInRecovery   bool `toml:"include_in_recovery"`   // Include memory context in session recovery
-	MaxRules            int  `toml:"max_rules"`             // Maximum number of rules to inject
-	QueryTimeoutSeconds int  `toml:"query_timeout_seconds"` // Timeout for cm command
+	Enabled bool `toml:"enabled"` // Top-level toggle for memory integration
+	// QueryTimeoutSeconds bounds a cm query issued for send-time injection.
+	// Session recovery has its own budget in recovery.timeout_seconds.
+	QueryTimeoutSeconds int `toml:"query_timeout_seconds"`
 
 	// Per-task rule injection at send time (--with-memory, bd-3j6hm).
 	// send_injection makes robot sends inject rules by default (the
 	// --with-memory flag enables it per call regardless); send_max_rules and
-	// send_budget_tokens bound the injected block. They are send-scoped so
-	// max_rules keeps governing recovery/spawn context independently.
+	// send_budget_tokens bound the injected block.
 	SendInjection    bool `toml:"send_injection"`     // Inject rules on robot sends by default
 	SendMaxRules     int  `toml:"send_max_rules"`     // Max rules injected per send
 	SendBudgetTokens int  `toml:"send_budget_tokens"` // Token budget for the injected block
@@ -1072,8 +1078,6 @@ type MemoryConfig struct {
 func DefaultMemoryConfig() MemoryConfig {
 	return MemoryConfig{
 		Enabled:             true,  // Enabled by default (when cm is available)
-		IncludeInRecovery:   true,  // Include in session recovery context
-		MaxRules:            10,    // Cap number of rules to inject
 		QueryTimeoutSeconds: 5,     // 5 second timeout for cm queries
 		SendInjection:       false, // Opt-in: --with-memory drives per-call injection
 		SendMaxRules:        5,     // Top-N rules injected per send
@@ -1083,9 +1087,6 @@ func DefaultMemoryConfig() MemoryConfig {
 
 // ValidateMemoryConfig validates the memory configuration.
 func ValidateMemoryConfig(cfg *MemoryConfig) error {
-	if cfg.MaxRules < 0 {
-		return fmt.Errorf("max_rules must be non-negative, got %d", cfg.MaxRules)
-	}
 	if cfg.QueryTimeoutSeconds < 1 {
 		return fmt.Errorf("query_timeout_seconds must be at least 1, got %d", cfg.QueryTimeoutSeconds)
 	}
@@ -2655,12 +2656,12 @@ func loadWithCWD(path, cwd string) (*Config, error) {
 			//
 			// All three kinds are reported together in ONE error so a single
 			// failed load lists everything the user must fix.
-			removed, deprecated, unknown := classifyUndecodedKeys(fields)
-			if len(removed) > 0 || len(deprecated) > 0 || len(unknown) > 0 {
+			byTier, unknown := classifyUndecodedKeys(fields)
+			if len(byTier) > 0 || len(unknown) > 0 {
 				// Typed error (message text unchanged) so the human CLI
 				// fallback can collapse dead-key failures into one line
 				// pointing at `ntm config migrate`.
-				return nil, &DeadKeyLoadError{Removed: removed, Deprecated: deprecated, Unknown: unknown}
+				return nil, &DeadKeyLoadError{ByTier: byTier, Unknown: unknown}
 			}
 		}
 
@@ -2682,12 +2683,11 @@ func loadWithCWD(path, cwd string) (*Config, error) {
 			cfg.Rotation.AutoTrigger = true
 		}
 
-		// WS6-wire (bd-ws6-config-truth-ienmd.1): [recovery] is the single
-		// section for session-recovery tuning; the overlapping memory.* keys
-		// are aliased into it for one release with a deprecation warning and
-		// will be removed in v1.27.0. An explicit [recovery] key always wins
-		// over its memory.* alias.
-		applyMemoryRecoveryAliases(cfg, &md, os.Stderr)
+		// [recovery] is the single section for session-recovery tuning. All
+		// that survives of the old memory.* overlap is one live rule:
+		// disabling the memory integration also disables the CM slice of
+		// recovery context, unless [recovery] says otherwise.
+		applyMemoryRecoveryLink(cfg, &md)
 	} else if !os.IsNotExist(err) {
 		return nil, err
 	}
@@ -3306,15 +3306,13 @@ func validateNTMConfigTOML(contents string) error {
 		// its v1.29.0 warn→error flip, so `ntm config set` cannot persist a
 		// config the strict loader would refuse; genuinely unknown fields
 		// keep the unknown-field error.
-		removed, deprecated, unknown := classifyUndecodedKeys(fields)
-		if len(removed) > 0 || len(deprecated) > 0 || len(unknown) > 0 {
-			var msgs []string
-			if len(unknown) > 0 {
-				msgs = append(msgs, "unknown field(s): "+strings.Join(unknown, ", "))
-			}
-			msgs = append(msgs, removedKnobErrorLines(removed)...)
-			msgs = append(msgs, deprecatedKnobErrorLines(deprecated)...)
-			return fmt.Errorf("%s", strings.Join(msgs, "\n"))
+		byTier, unknown := classifyUndecodedKeys(fields)
+		if len(byTier) > 0 || len(unknown) > 0 {
+			// Same rendering as the strict loader, so `config set` cannot
+			// persist a file the loader would refuse and the two surfaces
+			// cannot disagree about what is dead.
+			err := &DeadKeyLoadError{ByTier: byTier, Unknown: unknown}
+			return fmt.Errorf("%s", strings.TrimPrefix(err.Error(), "parsing config: "))
 		}
 	}
 	return nil
@@ -4284,10 +4282,10 @@ func Print(cfg *Config, w io.Writer) error {
 
 	fmt.Fprintln(w, "[memory]")
 	fmt.Fprintln(w, "# cass-memory integration defaults")
+	fmt.Fprintln(w, "# Session-recovery tuning lives in [recovery] (include_cm_memories,")
+	fmt.Fprintln(w, "# max_cm_rules, timeout_seconds), not here.")
 	fmt.Fprintf(w, "enabled = %t\n", cfg.Memory.Enabled)
-	fmt.Fprintf(w, "include_in_recovery = %t\n", cfg.Memory.IncludeInRecovery)
-	fmt.Fprintf(w, "max_rules = %d\n", cfg.Memory.MaxRules)
-	fmt.Fprintf(w, "query_timeout_seconds = %d\n", cfg.Memory.QueryTimeoutSeconds)
+	fmt.Fprintf(w, "query_timeout_seconds = %d          # Budget for a cm query behind send-time injection\n", cfg.Memory.QueryTimeoutSeconds)
 	fmt.Fprintf(w, "send_injection = %t             # Inject rules on robot sends by default (--with-memory)\n", cfg.Memory.SendInjection)
 	fmt.Fprintf(w, "send_max_rules = %d\n", cfg.Memory.SendMaxRules)
 	fmt.Fprintf(w, "send_budget_tokens = %d\n", cfg.Memory.SendBudgetTokens)
@@ -5045,10 +5043,6 @@ func GetValue(cfg *Config, path string) (interface{}, error) {
 		switch parts[1] {
 		case "enabled":
 			return cfg.Memory.Enabled, nil
-		case "include_in_recovery":
-			return cfg.Memory.IncludeInRecovery, nil
-		case "max_rules":
-			return cfg.Memory.MaxRules, nil
 		case "query_timeout_seconds":
 			return cfg.Memory.QueryTimeoutSeconds, nil
 		case "send_injection":
@@ -5632,8 +5626,6 @@ func Diff(cfg *Config) []ConfigDiff {
 
 	// Memory
 	addDiff("memory.enabled", defaults.Memory.Enabled, cfg.Memory.Enabled)
-	addDiff("memory.include_in_recovery", defaults.Memory.IncludeInRecovery, cfg.Memory.IncludeInRecovery)
-	addDiff("memory.max_rules", defaults.Memory.MaxRules, cfg.Memory.MaxRules)
 	addDiff("memory.query_timeout_seconds", defaults.Memory.QueryTimeoutSeconds, cfg.Memory.QueryTimeoutSeconds)
 	addDiff("memory.send_injection", defaults.Memory.SendInjection, cfg.Memory.SendInjection)
 	addDiff("memory.send_max_rules", defaults.Memory.SendMaxRules, cfg.Memory.SendMaxRules)

@@ -719,7 +719,7 @@ Shell Integration:
 				// envelopes, `ntm doctor`, and `ntm config migrate --dry-run`.
 				var deadErr *config.DeadKeyLoadError
 				if errors.As(err, &deadErr) && deadErr.DeadKeyCount() > 0 {
-					fmt.Fprintf(os.Stderr, "ntm: config has %d removed key(s) that never had an effect — run 'ntm config migrate' to clean them (backup kept); details: ntm doctor\n", deadErr.DeadKeyCount())
+					fmt.Fprintf(os.Stderr, "ntm: config has %d removed key(s) — run 'ntm config migrate' to clean them (backup kept); details: ntm doctor\n", deadErr.DeadKeyCount())
 				} else {
 					fmt.Fprintf(os.Stderr, "ntm: warning: config load failed (%v); using built-in defaults\n", err)
 				}
@@ -6022,8 +6022,6 @@ Examples:
 					},
 					"memory": map[string]interface{}{
 						"enabled":               effectiveCfg.Memory.Enabled,
-						"include_in_recovery":   effectiveCfg.Memory.IncludeInRecovery,
-						"max_rules":             effectiveCfg.Memory.MaxRules,
 						"query_timeout_seconds": effectiveCfg.Memory.QueryTimeoutSeconds,
 						"send_injection":        effectiveCfg.Memory.SendInjection,
 						"send_max_rules":        effectiveCfg.Memory.SendMaxRules,

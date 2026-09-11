@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"math"
 	"math/rand"
-	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -538,14 +537,7 @@ func (s *AgentScorer) wireReservationAffinity(cfg *config.Config, session string
 	}
 
 	opts := []agentmail.Option{agentmail.WithProjectKey(projectKey)}
-	// Environment variables override config; agentmail.NewClient reads env
-	// before applying options (same precedence as internal/cli's client).
-	if cfg.AgentMail.URL != "" && os.Getenv("AGENT_MAIL_URL") == "" {
-		opts = append(opts, agentmail.WithBaseURL(cfg.AgentMail.URL))
-	}
-	if cfg.AgentMail.Token != "" && os.Getenv("AGENT_MAIL_TOKEN") == "" {
-		opts = append(opts, agentmail.WithToken(cfg.AgentMail.Token))
-	}
+	opts = append(opts, agentmail.ConfigOptions(cfg.AgentMail.URL, cfg.AgentMail.Token)...)
 	client := agentmail.NewClient(opts...)
 	agentmail.HydrateClientTokensForProject(client, projectKey)
 

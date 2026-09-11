@@ -99,14 +99,14 @@ func TestShellIntegrationUsesGeneratedCompletion(t *testing.T) {
 	}{
 		{
 			shell:  "zsh",
-			script: generateZsh(cfg),
+			script: generateZsh(cfg, defaultShellIntegrationOptions()),
 			wire:   "source <(ntm completion zsh)",
 			// The old hand-rolled zsh completion declared a static command table.
 			banished: []string{"_ntm()", "'create:Create a new tmux session'", "compdef _ntm ntm"},
 		},
 		{
 			shell:  "bash",
-			script: generateBash(cfg),
+			script: generateBash(cfg, defaultShellIntegrationOptions()),
 			wire:   "source <(ntm completion bash)",
 			banished: []string{
 				"_ntm_completions()",
@@ -116,7 +116,7 @@ func TestShellIntegrationUsesGeneratedCompletion(t *testing.T) {
 		},
 		{
 			shell:    "fish",
-			script:   generateFish(cfg),
+			script:   generateFish(cfg, defaultShellIntegrationOptions()),
 			wire:     "ntm completion fish | source",
 			banished: []string{`__fish_use_subcommand" -a "create"`},
 		},

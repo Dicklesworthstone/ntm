@@ -4983,7 +4983,7 @@ func GetSnapshotWithOptions(cfg *config.Config, opts PaginationOptions) (*Snapsh
 	// Include tool inventory and health status
 	toolCtx, toolCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer toolCancel()
-	output.Tools = GetToolsSummary(toolCtx)
+	output.Tools = GetToolsSummary(toolCtx, DisabledTools(cfg))
 
 	// Generate and add detailed alerts using the alerts package
 	alertCfg := alertConfigForProject(cfg, projectKey)
@@ -5119,7 +5119,7 @@ func buildProjectionBackedSnapshot(
 
 	toolCtx, toolCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer toolCancel()
-	output.Tools = GetToolsSummary(toolCtx)
+	output.Tools = GetToolsSummary(toolCtx, DisabledTools(cfg))
 
 	alertCfg := alertConfigForProject(cfg, projectKey)
 	activeAlerts := alerts.GetActiveAlerts(alertCfg)

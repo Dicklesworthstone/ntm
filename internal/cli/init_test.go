@@ -487,7 +487,7 @@ func TestQuoteAlias(t *testing.T) {
 func TestGenerateZsh(t *testing.T) {
 
 	cfg := config.Default()
-	output := generateZsh(cfg)
+	output := generateZsh(cfg, defaultShellIntegrationOptions())
 
 	// Verify key elements are present
 	checks := []string{
@@ -514,7 +514,7 @@ func TestGenerateZsh(t *testing.T) {
 func TestGenerateBash(t *testing.T) {
 
 	cfg := config.Default()
-	output := generateBash(cfg)
+	output := generateBash(cfg, defaultShellIntegrationOptions())
 
 	// Verify key elements are present
 	checks := []string{
@@ -539,7 +539,7 @@ func TestGenerateBash(t *testing.T) {
 func TestGenerateFish(t *testing.T) {
 
 	cfg := config.Default()
-	output := generateFish(cfg)
+	output := generateFish(cfg, defaultShellIntegrationOptions())
 
 	// Verify key elements are present
 	checks := []string{
@@ -557,6 +557,96 @@ func TestGenerateFish(t *testing.T) {
 	}
 
 	t.Logf("TEST: GenerateFish | Output length: %d | All checks: passed", len(output))
+}
+
+// TestShellIntegrationNoAgentAliases verifies that --no-agent-aliases drops
+// cc/cod/gmi from every shell's integration while keeping the ntm command
+// aliases, completions and palette binding (ntm#314). `cc` shadows the
+// conventional C compiler, so opting out has to be possible without giving up
+// the rest of the integration.
+func TestShellIntegrationNoAgentAliases(t *testing.T) {
+	cfg := config.Default()
+	off := shellIntegrationOptions{AgentAliases: false}
+
+	cases := []struct {
+		shell string
+		// script generated with agent aliases suppressed
+		script string
+		// blocks that must survive the opt-out
+		keep []string
+	}{
+		{
+			shell:  "zsh",
+			script: generateZsh(cfg, off),
+			keep:   []string{"alias cnt='ntm create'", "alias bp='ntm send'", "ntm completion zsh", "_ntm_palette_widget"},
+		},
+		{
+			shell:  "bash",
+			script: generateBash(cfg, off),
+			keep:   []string{"alias cnt='ntm create'", "alias bp='ntm send'", "ntm completion bash", "_ntm_alias_session_completions"},
+		},
+		{
+			shell:  "fish",
+			script: generateFish(cfg, off),
+			keep:   []string{"abbr -a cnt", "ntm completion fish | source"},
+		},
+	}
+
+	// Agent aliases in both zsh/bash ("alias cc=") and fish ("alias cc ")
+	// syntax, so a shell that switched syntax cannot pass by accident.
+	banished := []string{"alias cc=", "alias cc ", "alias cod=", "alias cod ", "alias gmi=", "alias gmi ", "# Agent aliases"}
+
+	for _, tc := range cases {
+		t.Run(tc.shell, func(t *testing.T) {
+			for _, bad := range banished {
+				if strings.Contains(tc.script, bad) {
+					t.Errorf("%s: --no-agent-aliases still emitted %q", tc.shell, bad)
+				}
+			}
+			for _, keep := range tc.keep {
+				if !strings.Contains(tc.script, keep) {
+					t.Errorf("%s: --no-agent-aliases dropped %q, which is not an agent alias", tc.shell, keep)
+				}
+			}
+		})
+	}
+}
+
+// TestGenerateZshGuardsEveryCompdef verifies that no compdef call escapes the
+// $+functions[compdef] guard. A login shell that has not run compinit prints
+// "command not found: compdef" for an unguarded call while evaluating the
+// script (ntm#315).
+func TestGenerateZshGuardsEveryCompdef(t *testing.T) {
+	script := generateZsh(config.Default(), defaultShellIntegrationOptions())
+
+	guardDepth := 0
+	sawGuardedCompdef := false
+	for i, raw := range strings.Split(script, "\n") {
+		line := strings.TrimSpace(raw)
+		if strings.HasPrefix(line, "if (( $+functions[compdef] ))") {
+			guardDepth++
+			continue
+		}
+		if guardDepth > 0 && line == "fi" {
+			guardDepth--
+			continue
+		}
+		// Match the compdef *call*, not the guard's own mention of it.
+		if strings.HasPrefix(line, "compdef ") {
+			if guardDepth == 0 {
+				t.Errorf("line %d: unguarded compdef call: %q", i+1, line)
+				continue
+			}
+			sawGuardedCompdef = true
+		}
+	}
+
+	if !sawGuardedCompdef {
+		t.Error("expected at least one compdef call inside the compdef guard")
+	}
+	if guardDepth != 0 {
+		t.Errorf("unbalanced compdef guard: depth %d at end of script", guardDepth)
+	}
 }
 
 func TestCompletionSources_EnsemblePresetsAndModesNonEmpty(t *testing.T) {

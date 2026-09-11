@@ -277,14 +277,7 @@ func newAgentMailClient(projectKey string) *agentmail.Client {
 	var opts []agentmail.Option
 	opts = append(opts, agentmail.WithProjectKey(projectKey))
 	if cfg != nil {
-		// Environment variables should override config; agentmail.NewClient reads env
-		// before applying options.
-		if cfg.AgentMail.URL != "" && os.Getenv("AGENT_MAIL_URL") == "" {
-			opts = append(opts, agentmail.WithBaseURL(cfg.AgentMail.URL))
-		}
-		if cfg.AgentMail.Token != "" && os.Getenv("AGENT_MAIL_TOKEN") == "" {
-			opts = append(opts, agentmail.WithToken(cfg.AgentMail.Token))
-		}
+		opts = append(opts, agentmail.ConfigOptions(cfg.AgentMail.URL, cfg.AgentMail.Token)...)
 	}
 	client := agentmail.NewClient(opts...)
 	// Pull every cached registration_token for this project out of any

@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"testing"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/status"
 )
 
 // =============================================================================
@@ -200,7 +202,9 @@ func TestBuildRateLimitRecommendation_WaitSecondsVariations(t *testing.T) {
 }
 
 // =============================================================================
-// interrupt.go — getLastMeaningfulOutput (pure function), InterruptOutput struct
+// interrupt.go — last-output extraction (now status.LastMeaningfulOutputLines,
+// exercised here through the contract --robot-interrupt depends on),
+// InterruptOutput struct
 // =============================================================================
 
 func TestGetLastMeaningfulOutput(t *testing.T) {
@@ -222,15 +226,15 @@ func TestGetLastMeaningfulOutput(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := getLastMeaningfulOutput(tt.lines, tt.maxLen, tt.agentType)
+			got := status.LastMeaningfulOutputLines(tt.lines, tt.agentType, tt.maxLen)
 			if tt.wantEmpty && got != "" {
-				t.Errorf("getLastMeaningfulOutput() = %q, want empty", got)
+				t.Errorf("LastMeaningfulOutputLines() = %q, want empty", got)
 			}
 			if !tt.wantEmpty && got == "" {
-				t.Errorf("getLastMeaningfulOutput() = empty, want non-empty")
+				t.Errorf("LastMeaningfulOutputLines() = empty, want non-empty")
 			}
 			if tt.maxLen > 0 && len(got) > tt.maxLen {
-				t.Errorf("getLastMeaningfulOutput() length %d exceeds maxLen %d", len(got), tt.maxLen)
+				t.Errorf("LastMeaningfulOutputLines() length %d exceeds maxLen %d", len(got), tt.maxLen)
 			}
 		})
 	}
@@ -239,7 +243,7 @@ func TestGetLastMeaningfulOutput(t *testing.T) {
 func TestGetLastMeaningfulOutput_Truncation(t *testing.T) {
 
 	lines := []string{"this is a very long line that should be truncated when maxLen is small"}
-	got := getLastMeaningfulOutput(lines, 20, "cc")
+	got := status.LastMeaningfulOutputLines(lines, "cc", 20)
 	if len(got) > 20 {
 		t.Errorf("output length %d exceeds maxLen 20", len(got))
 	}

@@ -268,9 +268,11 @@ func TestMigrateDeadKeysInvalidTOMLRefused(t *testing.T) {
 // fmt.Errorf message so robot JSON envelopes and doctor output are unchanged.
 func TestDeadKeyLoadErrorTextUnchanged(t *testing.T) {
 	err := &DeadKeyLoadError{
-		Removed:    []RemovedKnob{{Key: "tmux.palette_key", Disposition: noEffect}},
-		Deprecated: []RemovedKnob{{Key: "cass.show_install_hints", Disposition: noEffect}},
-		Unknown:    []string{"totally.unknown"},
+		ByTier: map[string][]RemovedKnob{
+			DeadKeyTierRemoved:    {{Key: "tmux.palette_key", Disposition: noEffect}},
+			DeadKeyTierDeprecated: {{Key: "cass.show_install_hints", Disposition: noEffect}},
+		},
+		Unknown: []string{"totally.unknown"},
 	}
 	want := "parsing config: " + strings.Join([]string{
 		"unknown field(s): totally.unknown",

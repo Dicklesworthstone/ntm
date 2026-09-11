@@ -24,6 +24,11 @@ func init() {
 	config.RegisterReader("memory.send_injection", robotSendMemoryOptions)
 	config.RegisterReader("memory.send_max_rules", robotSendMemoryOptions)
 	config.RegisterReader("memory.send_budget_tokens", robotSendMemoryOptions)
+	// memory.query_timeout_seconds bounds the cm query behind send-time
+	// injection. It used to be claimed by the [recovery] alias fold as well;
+	// that fold is gone (ntm#323) and this is now its only reader, so the
+	// claim belongs here with the rest of the send-scoped keys.
+	config.RegisterReader("memory.query_timeout_seconds", robotSendMemoryOptions)
 }
 
 func robotSendMemoryOptions(flagEnabled bool, cfg *config.Config) (bool, *robot.CMInjectConfig) {
