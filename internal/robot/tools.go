@@ -4,9 +4,11 @@ package robot
 
 import (
 	"context"
+	"os"
 	"sort"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/tools"
 )
 
@@ -26,6 +28,10 @@ type ToolInfoOutput struct {
 	Capabilities []string          `json:"capabilities"`
 	Health       *ToolHealthOutput `json:"health"`
 	Required     bool              `json:"required,omitempty"`
+	// Disabled reports that configuration turned this integration off, so it
+	// was never probed — distinct from installed=false, which means the
+	// binary is genuinely absent from PATH (ntm#313).
+	Disabled bool `json:"disabled,omitempty"`
 }
 
 // ToolHealthOutput represents tool health in robot output
@@ -42,13 +48,52 @@ var RequiredTools = map[tools.ToolName]bool{
 	tools.ToolBV: true, // bv is required for triage
 }
 
-// GetTools collects tool inventory and health.
-// This function returns the data struct directly, enabling CLI/REST parity.
-func GetTools(ctx context.Context) (*ToolsOutput, error) {
-	// Get all tool info from registry
-	allInfo := tools.GetAllInfo(ctx)
+// DisabledTools maps the config toggles that gate an ecosystem integration
+// onto the registry adapters they gate, so a tool the operator turned off is
+// reported as disabled instead of being probed.
+//
+// Probing is not free: every adapter's Info runs the tool's `--version` and
+// its health command, so an inventory pass on a machine with `[cass] enabled
+// = false` still spent seconds inside `cass health --json` (ntm#313). Each
+// toggle below is documented in config as a top-level switch for its
+// integration, and every one defaults to true, so this only changes behaviour
+// for an operator who explicitly turned something off.
+//
+// A nil cfg disables nothing: without configuration we cannot claim an
+// integration is off, and probing is the safe default.
+func DisabledTools(cfg *config.Config) map[tools.ToolName]bool {
+	if cfg == nil {
+		return nil
+	}
 
-	// Convert to output format
+	disabled := make(map[tools.ToolName]bool, 7)
+	for name, enabled := range map[tools.ToolName]bool{
+		tools.ToolCASS: cfg.CASS.Enabled,
+		tools.ToolCM:   cfg.Memory.Enabled,
+		tools.ToolAM:   cfg.AgentMail.Enabled,
+		tools.ToolRCH:  cfg.Integrations.RCH.Enabled,
+		tools.ToolPT:   cfg.Integrations.ProcessTriage.Enabled,
+		tools.ToolRano: cfg.Integrations.Rano.Enabled,
+		tools.ToolXF:   cfg.Integrations.XF.Enabled,
+	} {
+		if !enabled {
+			disabled[name] = true
+		}
+	}
+
+	if len(disabled) == 0 {
+		return nil
+	}
+	return disabled
+}
+
+// collectToolInfo probes the registry (skipping the tools disabled names) and
+// renders the result as sorted robot output. It is the one conversion from
+// tools.ToolInfo to ToolInfoOutput, shared by the full inventory and the
+// snapshot summary.
+func collectToolInfo(ctx context.Context, disabled map[tools.ToolName]bool) []ToolInfoOutput {
+	allInfo := tools.GetAllInfoExcept(ctx, disabled)
+
 	toolOutputs := make([]ToolInfoOutput, 0, len(allInfo))
 	for _, info := range allInfo {
 		if info == nil {
@@ -70,7 +115,7 @@ func GetTools(ctx context.Context) (*ToolsOutput, error) {
 			LastChecked: FormatTimestamp(info.Health.LastChecked),
 		}
 
-		toolOutput := ToolInfoOutput{
+		toolOutputs = append(toolOutputs, ToolInfoOutput{
 			Name:         string(info.Name),
 			Installed:    info.Installed,
 			Version:      info.Version.String(),
@@ -78,9 +123,8 @@ func GetTools(ctx context.Context) (*ToolsOutput, error) {
 			Capabilities: caps,
 			Health:       healthOutput,
 			Required:     RequiredTools[info.Name],
-		}
-
-		toolOutputs = append(toolOutputs, toolOutput)
+			Disabled:     info.Disabled,
+		})
 	}
 
 	// Sort by name for stable output
@@ -88,13 +132,17 @@ func GetTools(ctx context.Context) (*ToolsOutput, error) {
 		return toolOutputs[i].Name < toolOutputs[j].Name
 	})
 
-	// Get health report summary
-	healthReport := tools.GetHealthReport(ctx)
+	return toolOutputs
+}
 
+// GetTools collects tool inventory and health, skipping the probes for every
+// integration disabled names.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetTools(ctx context.Context, disabled map[tools.ToolName]bool) (*ToolsOutput, error) {
 	return &ToolsOutput{
 		RobotResponse: NewRobotResponse(true),
-		Tools:         toolOutputs,
-		HealthReport:  healthReport,
+		Tools:         collectToolInfo(ctx, disabled),
+		HealthReport:  tools.GetHealthReportExcept(ctx, disabled),
 	}, nil
 }
 
@@ -104,55 +152,25 @@ func PrintTools() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	output, err := GetTools(ctx)
+	// The inventory answers "what does my configuration actually use", so it
+	// honours the same toggles as the snapshot: a disabled tool is reported,
+	// not executed (ntm#313).
+	var disabled map[tools.ToolName]bool
+	if wd, err := os.Getwd(); err == nil {
+		if cfg, err := config.LoadMerged(wd, config.DefaultPath()); err == nil {
+			disabled = DisabledTools(cfg)
+		}
+	}
+
+	output, err := GetTools(ctx, disabled)
 	if err != nil {
 		return err
 	}
 	return encodeTerminalRobotOutput(output, output.RobotResponse, "robot tools failed")
 }
 
-// GetToolsSummary returns a lightweight tools summary for inclusion in snapshots
-func GetToolsSummary(ctx context.Context) []ToolInfoOutput {
-	allInfo := tools.GetAllInfo(ctx)
-
-	toolOutputs := make([]ToolInfoOutput, 0, len(allInfo))
-	for _, info := range allInfo {
-		if info == nil {
-			continue
-		}
-
-		// Convert capabilities to strings
-		caps := make([]string, len(info.Capabilities))
-		for i, c := range info.Capabilities {
-			caps[i] = string(c)
-		}
-
-		// Convert health
-		healthOutput := &ToolHealthOutput{
-			Healthy:     info.Health.Healthy,
-			Message:     info.Health.Message,
-			Error:       info.Health.Error,
-			LatencyMs:   info.Health.Latency.Milliseconds(),
-			LastChecked: FormatTimestamp(info.Health.LastChecked),
-		}
-
-		toolOutput := ToolInfoOutput{
-			Name:         string(info.Name),
-			Installed:    info.Installed,
-			Version:      info.Version.String(),
-			Path:         info.Path,
-			Capabilities: caps,
-			Health:       healthOutput,
-			Required:     RequiredTools[info.Name],
-		}
-
-		toolOutputs = append(toolOutputs, toolOutput)
-	}
-
-	// Sort by name for stable output
-	sort.Slice(toolOutputs, func(i, j int) bool {
-		return toolOutputs[i].Name < toolOutputs[j].Name
-	})
-
-	return toolOutputs
+// GetToolsSummary returns a lightweight tools summary for inclusion in
+// snapshots, skipping the probes for every integration disabled names.
+func GetToolsSummary(ctx context.Context, disabled map[tools.ToolName]bool) []ToolInfoOutput {
+	return collectToolInfo(ctx, disabled)
 }

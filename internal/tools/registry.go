@@ -13,11 +13,15 @@ type Registry struct {
 
 // HealthReport summarizes tool health across the registry.
 type HealthReport struct {
-	Total     int               `json:"total"`
-	Healthy   int               `json:"healthy"`
-	Unhealthy int               `json:"unhealthy"`
-	Missing   int               `json:"missing"`
-	Tools     map[ToolName]bool `json:"tools"`
+	Total     int `json:"total"`
+	Healthy   int `json:"healthy"`
+	Unhealthy int `json:"unhealthy"`
+	Missing   int `json:"missing"`
+	// Disabled counts tools the configuration turned off, which are never
+	// probed and so are neither healthy, unhealthy, nor known-missing
+	// (ntm#313). Total = Healthy + Unhealthy + Missing + Disabled.
+	Disabled int               `json:"disabled,omitempty"`
+	Tools    map[ToolName]bool `json:"tools"`
 }
 
 // globalRegistry is the default registry instance
@@ -44,6 +48,18 @@ func (r *Registry) Get(name ToolName) (Adapter, bool) {
 
 // GetAllInfo returns ToolInfo for all registered tools
 func (r *Registry) GetAllInfo(ctx context.Context) []*ToolInfo {
+	return r.GetAllInfoExcept(ctx, nil)
+}
+
+// GetAllInfoExcept returns ToolInfo for all registered tools, reporting every
+// tool named in disabled as a not-probed entry instead of running its
+// detection, version, and health subprocesses.
+//
+// A disabled integration must not execute its binary just to fill in an
+// inventory row: a `[cass] enabled = false` snapshot used to spend five
+// seconds shelling out to `cass health --json` anyway (ntm#313). A nil or
+// empty disabled map probes everything, which is the default.
+func (r *Registry) GetAllInfoExcept(ctx context.Context, disabled map[ToolName]bool) []*ToolInfo {
 	r.mu.RLock()
 	adapters := make([]Adapter, 0, len(r.adapters))
 	for _, a := range r.adapters {
@@ -56,6 +72,11 @@ func (r *Registry) GetAllInfo(ctx context.Context) []*ToolInfo {
 	var wg sync.WaitGroup
 
 	for _, a := range adapters {
+		if disabled[a.Name()] {
+			// No goroutine and no probe: record the configured verdict.
+			infos = append(infos, DisabledToolInfo(a.Name()))
+			continue
+		}
 		wg.Add(1)
 		go func(adapter Adapter) {
 			defer wg.Done()
@@ -74,6 +95,14 @@ func (r *Registry) GetAllInfo(ctx context.Context) []*ToolInfo {
 
 // GetHealthReport returns a health summary for all registered tools
 func (r *Registry) GetHealthReport(ctx context.Context) *HealthReport {
+	return r.GetHealthReportExcept(ctx, nil)
+}
+
+// GetHealthReportExcept returns a health summary for all registered tools,
+// skipping the probes for every tool named in disabled. Disabled tools are
+// counted in Total and reported unhealthy-but-unprobed in Tools, so the
+// summary's arithmetic still covers the whole registry (ntm#313).
+func (r *Registry) GetHealthReportExcept(ctx context.Context, disabled map[ToolName]bool) *HealthReport {
 	r.mu.RLock()
 	adapters := make([]Adapter, 0, len(r.adapters))
 	for _, a := range r.adapters {
@@ -88,6 +117,12 @@ func (r *Registry) GetHealthReport(ctx context.Context) *HealthReport {
 	var wg sync.WaitGroup
 
 	for _, a := range adapters {
+		if disabled[a.Name()] {
+			report.Total++
+			report.Disabled++
+			report.Tools[a.Name()] = false
+			continue
+		}
 		wg.Add(1)
 		go func(adapter Adapter) {
 			defer wg.Done()
@@ -140,7 +175,19 @@ func GetAllInfo(ctx context.Context) []*ToolInfo {
 	return globalRegistry.GetAllInfo(ctx)
 }
 
+// GetAllInfoExcept returns all tool info from the global registry without
+// probing the tools named in disabled.
+func GetAllInfoExcept(ctx context.Context, disabled map[ToolName]bool) []*ToolInfo {
+	return globalRegistry.GetAllInfoExcept(ctx, disabled)
+}
+
 // GetHealthReport returns health report from the global registry
 func GetHealthReport(ctx context.Context) *HealthReport {
 	return globalRegistry.GetHealthReport(ctx)
+}
+
+// GetHealthReportExcept returns a health report from the global registry
+// without probing the tools named in disabled.
+func GetHealthReportExcept(ctx context.Context, disabled map[ToolName]bool) *HealthReport {
+	return globalRegistry.GetHealthReportExcept(ctx, disabled)
 }

@@ -1653,6 +1653,10 @@
             },
             "type": "array"
           },
+          "disabled": {
+            "description": "Disabled",
+            "type": "boolean"
+          },
           "health": {
             "$ref": "#/definitions/ToolHealthOutput",
             "description": "Health"
