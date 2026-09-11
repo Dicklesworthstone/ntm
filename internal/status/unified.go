@@ -76,7 +76,11 @@ func (d *UnifiedDetector) AnalyzeAt(paneID, paneName, agentType string, output s
 		LastActive: lastActivity,
 		UpdatedAt:  observedAt,
 		State:      StateUnknown,
-		LastOutput: truncateOutput(output, d.config.OutputPreviewLength),
+		// The preview is the agent's transcript, not the chrome pinned below
+		// it. A blind tail truncation showed the composer and the status line
+		// instead of any real output — on a multi-line status line, nothing
+		// but the status line (ntm#322).
+		LastOutput: LastMeaningfulOutput(output, normalizedAgentType, d.config.OutputPreviewLength),
 	}
 
 	state, errType := d.determineStateAt(output, normalizedAgentType, lastActivity, observedAt)

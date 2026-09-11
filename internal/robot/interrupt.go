@@ -528,7 +528,7 @@ func interruptPaneStateFromObservation(observation status.PaneObservation, agent
 
 	cleanOutput := stripANSI(observation.RawOutput)
 	shortAgentType := translateAgentTypeForStatus(agentType)
-	result.LastOutput = getLastMeaningfulOutput(splitLines(cleanOutput), 200, shortAgentType)
+	result.LastOutput = status.LastMeaningfulOutputLines(splitLines(cleanOutput), shortAgentType, 200)
 	result.State = determineState(observation.RawOutput, agentType)
 	switch observation.Current.Status.State {
 	case status.StateWorking:
@@ -561,53 +561,8 @@ type interruptMessageTarget struct {
 	AgentType tmux.AgentType
 }
 
-// getLastMeaningfulOutput extracts the last meaningful output lines up to maxLen chars
-func getLastMeaningfulOutput(lines []string, maxLen int, agentType string) string {
-	// Guard against invalid maxLen values that would cause slice panic
-	if maxLen < 4 {
-		if maxLen <= 0 {
-			return ""
-		}
-		// Too small for ellipsis, just truncate without it
-		var meaningful []string
-		totalLen := 0
-		for i := len(lines) - 1; i >= 0 && totalLen < maxLen; i-- {
-			line := strings.TrimSpace(lines[i])
-			if line == "" || status.IsPromptLine(line, agentType) {
-				continue
-			}
-			meaningful = append([]string{line}, meaningful...)
-			totalLen += len(line) + 1
-		}
-		result := strings.Join(meaningful, "\n")
-		if len(result) > maxLen {
-			return result[:maxLen]
-		}
-		return result
-	}
-
-	var meaningful []string
-	totalLen := 0
-
-	// Work backwards through lines
-	for i := len(lines) - 1; i >= 0 && totalLen < maxLen; i-- {
-		line := strings.TrimSpace(lines[i])
-		if line == "" {
-			continue
-		}
-
-		// Skip pure prompt lines
-		if status.IsPromptLine(line, agentType) {
-			continue
-		}
-
-		meaningful = append([]string{line}, meaningful...)
-		totalLen += len(line) + 1
-	}
-
-	result := strings.Join(meaningful, "\n")
-	if len(result) > maxLen {
-		return result[:maxLen-3] + "..."
-	}
-	return result
-}
+// The private last-meaningful-output extractor that used to live here was
+// subsumed by status.LastMeaningfulOutputLines (ORI: one reachable
+// implementation). It only skipped blank and prompt lines, so it shared the
+// dashboard's blind spot for the composer box and status line (ntm#322); the
+// shared helper strips those too.

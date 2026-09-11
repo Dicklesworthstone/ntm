@@ -764,12 +764,7 @@ func (m *Model) newAgentMailClient(projectKey string) *agentmail.Client {
 		if !m.cfg.AgentMail.Enabled {
 			return nil
 		}
-		if m.cfg.AgentMail.URL != "" {
-			opts = append(opts, agentmail.WithBaseURL(m.cfg.AgentMail.URL))
-		}
-		if m.cfg.AgentMail.Token != "" {
-			opts = append(opts, agentmail.WithToken(m.cfg.AgentMail.Token))
-		}
+		opts = append(opts, agentmail.ConfigOptions(m.cfg.AgentMail.URL, m.cfg.AgentMail.Token)...)
 	}
 	return agentmail.NewClient(opts...)
 }
