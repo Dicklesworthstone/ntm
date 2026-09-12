@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
@@ -17,12 +18,20 @@ import (
 // AMAdapter provides integration with Agent Mail MCP server
 type AMAdapter struct {
 	*BaseAdapter
+
+	mu sync.Mutex
 	// serverURL and token pin the probe to one endpoint. Empty means
 	// "resolve from configuration and environment at probe time", which is
 	// what every production caller does; the fields exist so a test can aim
 	// the adapter at an httptest server.
 	serverURL string
 	token     string
+	// cached is the resolved client, built once per adapter. Info() probes
+	// twice (Capabilities and Health), and a fresh client each time would
+	// re-read config, defeat the client's own 30s availability cache, and —
+	// because each client owns an http.Transport — open a new connection
+	// instead of reusing a pooled one.
+	cached *agentmail.Client
 }
 
 // NewAMAdapter creates a new Agent Mail adapter
@@ -35,15 +44,21 @@ func NewAMAdapter() *AMAdapter {
 // SetServerURL pins the Agent Mail endpoint this adapter probes, overriding
 // the configured one.
 func (a *AMAdapter) SetServerURL(url string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	a.serverURL = strings.TrimSuffix(url, "/")
+	a.cached = nil
 }
 
 // SetToken pins the bearer token this adapter probes with.
 func (a *AMAdapter) SetToken(token string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	a.token = token
+	a.cached = nil
 }
 
-// client builds the Agent Mail client this adapter probes with.
+// client returns the Agent Mail client this adapter probes with.
 //
 // It is the same client every other Agent Mail surface in ntm uses, reading
 // the configured `[agent_mail] url`/`token` (and the AGENT_MAIL_URL /
@@ -51,13 +66,26 @@ func (a *AMAdapter) SetToken(token string) {
 // keep its own hard-coded 127.0.0.1:8765 base URL and send an unauthenticated
 // GET, so `ntm doctor` reported a correctly auth-walled server as unhealthy
 // while robot Mail talked to it happily (ntm#316).
+//
+// Configuration is read once per adapter. A long-lived process (`ntm serve`,
+// the dashboard) therefore needs a restart to pick up a changed endpoint —
+// the same as before this adapter read configuration at all, and the setters
+// above drop the cache for tests.
 func (a *AMAdapter) client() *agentmail.Client {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if a.cached != nil {
+		return a.cached
+	}
+
 	if a.serverURL != "" {
 		opts := []agentmail.Option{agentmail.WithBaseURL(a.serverURL)}
 		if a.token != "" {
 			opts = append(opts, agentmail.WithToken(a.token))
 		}
-		return agentmail.NewClient(opts...)
+		a.cached = agentmail.NewClient(opts...)
+		return a.cached
 	}
 
 	var baseURL, token string
@@ -66,7 +94,8 @@ func (a *AMAdapter) client() *agentmail.Client {
 			baseURL, token = cfg.AgentMail.URL, cfg.AgentMail.Token
 		}
 	}
-	return agentmail.NewClient(agentmail.ConfigOptions(baseURL, token)...)
+	a.cached = agentmail.NewClient(agentmail.ConfigOptions(baseURL, token)...)
+	return a.cached
 }
 
 // Detect checks if Agent Mail CLI is installed
@@ -197,8 +226,13 @@ func (a *AMAdapter) HealthCheck(ctx context.Context) (json.RawMessage, error) {
 // ServerURL returns the endpoint this adapter probes: the pinned override
 // when one is set, otherwise the configured (or default) Agent Mail base URL.
 func (a *AMAdapter) ServerURL() string {
-	if a.serverURL != "" {
-		return a.serverURL
+	a.mu.Lock()
+	pinned := a.serverURL
+	a.mu.Unlock()
+
+	if pinned != "" {
+		return pinned
 	}
+	// client() takes the same lock, so it must not be called while held.
 	return a.client().BaseURL()
 }
