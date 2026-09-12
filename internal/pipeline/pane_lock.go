@@ -79,7 +79,31 @@ func paneLockFileName(paneID string) string {
 // paneLockPath returns the lock file path for a pane under the project's
 // pipeline state directory.
 func paneLockPath(projectDir, paneID string) string {
-	return filepath.Join(pipelineStateDir(projectDir), paneLockDirName, paneLockFileName(paneID))
+	return filepath.Join(pipelineStateDir(normalizeLockRoot(projectDir)), paneLockDirName, paneLockFileName(paneID))
+}
+
+// normalizeLockRoot resolves a project directory to one canonical form.
+//
+// The lock file IS the rendezvous between processes, so two processes that
+// mean the same project must compute the same path. They do not always start
+// from the same string: one may hold a relative path, another an absolute
+// one, and on macOS a temp or /var path resolves through a symlink to
+// /private/var. Left unnormalized, those processes would take locks on
+// different files and both believe they owned the pane — an exclusion failure
+// that looks exactly like no locking at all.
+//
+// Best effort by design: if the path cannot be resolved (it does not exist
+// yet, or is unreadable) the input is used as-is, which is no worse than not
+// normalizing.
+func normalizeLockRoot(projectDir string) string {
+	abs, err := filepath.Abs(projectDir)
+	if err != nil {
+		abs = projectDir
+	}
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		return resolved
+	}
+	return abs
 }
 
 // acquirePaneLockCrossProcess takes the in-process pane lock and then the

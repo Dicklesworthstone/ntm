@@ -280,6 +280,55 @@ func TestPaneLockFileNameIsPathSafe(t *testing.T) {
 	}
 }
 
+// TestPaneLockRendezvousSurvivesPathSpelling is the exclusion-failure guard
+// that matters most in practice: two processes that mean the same project may
+// hold different spellings of its path (relative vs absolute, or a symlinked
+// /var vs /private/var on macOS). If they normalize differently they lock
+// different files and BOTH proceed, which looks exactly like no locking.
+func TestPaneLockRendezvousSurvivesPathSpelling(t *testing.T) {
+	dir := t.TempDir()
+
+	// A symlink to the same project, the shape macOS temp paths take.
+	link := filepath.Join(t.TempDir(), "linked-project")
+	if err := os.Symlink(dir, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	// A relative spelling of the same directory.
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rel, err := filepath.Rel(wd, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, spelling := range []struct {
+		name string
+		path string
+	}{
+		{"symlinked path", link},
+		{"relative path", rel},
+	} {
+		t.Run(spelling.name, func(t *testing.T) {
+			direct := newLockExecutor(dir, 100*time.Millisecond)
+			other := newLockExecutor(spelling.path, 100*time.Millisecond)
+
+			release, err := direct.acquirePaneLockCrossProcess(context.Background(), "%77")
+			if err != nil {
+				t.Fatalf("acquire via canonical path: %v", err)
+			}
+			defer release()
+
+			if _, err := other.acquirePaneLockCrossProcess(context.Background(), "%77"); !errors.Is(err, ErrPaneBusyOtherProcess) {
+				t.Errorf("a %s of the same project did not contend (err=%v); the two spellings locked different files",
+					spelling.name, err)
+			}
+		})
+	}
+}
+
 // TestPaneLockCreatesLockUnderProjectState verifies the lock file lands in the
 // project's pipeline state tree, where a second process will look for it.
 func TestPaneLockCreatesLockUnderProjectState(t *testing.T) {
