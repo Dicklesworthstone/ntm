@@ -24,11 +24,11 @@ import (
 // this tier produces", so an assertion cannot silently start comparing
 // against another batch's release text.
 func removedKnobErrorLine(knob RemovedKnob) string {
-	return deadKnobErrorLine(knob, deadKeyTierProvenance(DeadKeyTierRemoved))
+	return deadKnobErrorLine(knob, DeadKeyTierProvenance(DeadKeyTierRemoved))
 }
 
 func deprecatedKnobErrorLine(knob RemovedKnob) string {
-	return deadKnobErrorLine(knob, deadKeyTierProvenance(DeadKeyTierDeprecated))
+	return deadKnobErrorLine(knob, DeadKeyTierProvenance(DeadKeyTierDeprecated))
 }
 
 // TestDeadKeyTiersAreWellFormed guards the table a future removal batch will
@@ -60,8 +60,8 @@ func TestDeadKeyTiersAreWellFormed(t *testing.T) {
 		if len(tier.exact) == 0 && len(tier.prefixes) == 0 {
 			t.Errorf("tier %q classifies no keys", tier.name)
 		}
-		if deadKeyTierProvenance(tier.name) != tier.provenance {
-			t.Errorf("deadKeyTierProvenance(%q) does not round-trip", tier.name)
+		if DeadKeyTierProvenance(tier.name) != tier.provenance {
+			t.Errorf("DeadKeyTierProvenance(%q) does not round-trip", tier.name)
 		}
 	}
 

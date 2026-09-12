@@ -273,16 +273,6 @@ func classifyDeadKey(key string) (disposition, tier string, ok bool) {
 	return "", "", false
 }
 
-// deadKeyTierProvenance returns the release text for a tier name.
-func deadKeyTierProvenance(tier string) string {
-	for _, t := range deadKeyTiers {
-		if t.name == tier {
-			return t.provenance
-		}
-	}
-	return ""
-}
-
 // DeadKeyTierProvenance returns the release provenance for a removal batch:
 // when its keys went away and where the migration table lives.
 //
@@ -291,7 +281,12 @@ func deadKeyTierProvenance(tier string) string {
 // batch's release numbers over every key they print. An unknown tier yields
 // the empty string; callers must render nothing rather than guess.
 func DeadKeyTierProvenance(tier string) string {
-	return deadKeyTierProvenance(tier)
+	for _, t := range deadKeyTiers {
+		if t.name == tier {
+			return t.provenance
+		}
+	}
+	return ""
 }
 
 // DeadKeyLoadError is the strict-loader failure for a config file containing
