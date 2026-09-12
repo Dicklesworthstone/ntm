@@ -179,7 +179,18 @@ func (a *AMAdapter) isServerHealthy(ctx context.Context) bool {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	return a.client().IsAvailableContext(ctx)
+	client := a.client()
+
+	// One cheap request decides the usual cases, including the one this fix
+	// is about: an auth-walled server that accepts the configured bearer.
+	// Escalating to the retrying MCP probe is reserved for a liveness
+	// endpoint that cannot answer — otherwise a machine with Agent Mail
+	// simply not running would spend the full retry budget on every tools
+	// inventory instead of failing on the refused connection.
+	if available, decided := client.QuickAvailable(ctx); decided {
+		return available
+	}
+	return client.IsAvailableContext(ctx)
 }
 
 // HasCapability checks if Agent Mail has a specific capability

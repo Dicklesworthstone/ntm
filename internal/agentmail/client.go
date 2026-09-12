@@ -452,6 +452,36 @@ func (c *Client) livenessURL() (string, error) {
 	return (&url.URL{Scheme: u.Scheme, Host: u.Host, Path: "/" + HealthCheckPath}).String(), nil
 }
 
+// QuickAvailable reports availability from a SINGLE cheap liveness probe,
+// with the bearer attached.
+//
+// It exists because IsAvailableContext is built to gate mutating verbs: it
+// retries availabilityProbeAttempts times with backoff inside a ~1.25s budget,
+// so when the server is simply not running it spends that whole budget before
+// answering. That is the right trade for "may I send this message", and the
+// wrong one for filling an inventory row — `ntm doctor` and the tools registry
+// probe Agent Mail on every snapshot, and a refused connection must cost a
+// millisecond, not a second.
+//
+// decided reports whether the liveness endpoint could answer the question at
+// all. When it is false the endpoint is missing or auth-walled and the caller
+// may escalate to IsAvailableContext, which asks the MCP health tool instead.
+func (c *Client) QuickAvailable(ctx context.Context) (available, decided bool) {
+	err := c.LivenessCheck(ctx)
+	switch {
+	case err == nil:
+		return true, true
+	case errors.Is(err, errLivenessUnsupported):
+		// The server is talking but this route cannot decide; escalating is
+		// the caller's choice.
+		return false, false
+	default:
+		// Transport failure or an explicit non-2xx: the server is down or
+		// broken, and we know it now without retrying.
+		return false, true
+	}
+}
+
 // LivenessCheck performs a cheap liveness probe (GET /health) against the
 // Agent Mail server. It exists because the MCP `health_check` tool is a full
 // diagnostic — on a large mailbox it inventories the git archive against
