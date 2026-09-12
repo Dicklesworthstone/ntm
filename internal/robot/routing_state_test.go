@@ -399,3 +399,47 @@ func TestRoutingState_ExplicitLastAgentWinsOverPersisted(t *testing.T) {
 		t.Fatalf("selected %+v, want explicit last-agent %%3", result.Selected)
 	}
 }
+
+// TestExplicitLastAgentStillPersistsRoutingState guards the path where the
+// caller supplies --robot-route-last-agent instead of letting the persisted
+// cursor decide. That decision is not derived from the stored row, but it must
+// still advance the stored row, or the next invocation (which does read it)
+// resumes from a stale cursor and the override is silently forgotten.
+//
+// The guarded write added for the concurrent-send race must not turn this into
+// a no-op: with no baseline read, an insert-only claim hits the existing row,
+// reports contention that never happened, and drops the write.
+func TestExplicitLastAgentStillPersistsRoutingState(t *testing.T) {
+	store := routingStateTestStore(t)
+
+	// Seed a prior rotation so a row already exists.
+	seed := RouteOptions{Session: "explicit", Strategy: StrategyRoundRobin}
+	if result := routeWithSessionState(routingStateTestAgents(), seed, store, true); result.Selected == nil {
+		t.Fatal("seed route selected nothing")
+	}
+	before, err := store.GetRoutingState("explicit", "")
+	if err != nil || before == nil {
+		t.Fatalf("seed state: %v (rs=%+v)", err, before)
+	}
+
+	// Now route with an explicit last agent: the caller is overriding the
+	// stored cursor rather than reading it.
+	opts := RouteOptions{Session: "explicit", Strategy: StrategyRoundRobin, LastAgent: "%1"}
+	result := routeWithSessionState(routingStateTestAgents(), opts, store, true)
+	if result.Selected == nil {
+		t.Fatal("explicit-last-agent route selected nothing")
+	}
+
+	after, err := store.GetRoutingState("explicit", "")
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if after == nil {
+		t.Fatal("routing state vanished")
+	}
+	if after.LastAgent != result.Selected.PaneID {
+		t.Errorf("persisted last_agent = %q, want the selected pane %q; "+
+			"an explicit last-agent route did not advance the stored cursor, so the next "+
+			"invocation resumes from a stale one", after.LastAgent, result.Selected.PaneID)
+	}
+}

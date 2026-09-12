@@ -135,18 +135,29 @@ func routeWithSessionState(agents []ScoredAgent, opts RouteOptions, store Routin
 	for attempt := 1; ; attempt++ {
 		ctx := baseCtx
 
+		// The row is read whenever there is a store, even when the caller
+		// supplied LastAgent and the decision will not be derived from it:
+		// the guarded write below needs a baseline either way. Reading only
+		// in the no-override case left that baseline nil, which turns the
+		// write into an insert that the existing row rejects — so an explicit
+		// --robot-route-last-agent stopped advancing the cursor at all and
+		// reported contention that never happened.
 		var observed *state.RoutingState
-		if store != nil && ctx.LastAgent == "" {
+		if store != nil {
 			rs, err := store.GetRoutingState(opts.Session, filterKey)
 			switch {
 			case err != nil:
 				slog.Warn("[robot.route] cannot load persisted routing state", "session", opts.Session, "error", err)
 			case rs != nil:
 				observed = rs
-				ctx.LastAgent = rs.LastAgent
-				if rs.RotationCursor >= 0 {
-					ctx.RotationCursor = rs.RotationCursor
-					ctx.HasRotationCursor = true
+				// An explicit LastAgent is an override: it wins over the
+				// persisted one, and the stored cursor is not consulted.
+				if ctx.LastAgent == "" {
+					ctx.LastAgent = rs.LastAgent
+					if rs.RotationCursor >= 0 {
+						ctx.RotationCursor = rs.RotationCursor
+						ctx.HasRotationCursor = true
+					}
 				}
 			}
 		}

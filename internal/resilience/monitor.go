@@ -85,9 +85,15 @@ type Monitor struct {
 	lifecycleMu sync.Mutex
 	mu          sync.RWMutex
 	agents      map[string]*AgentState // keyed by pane ID
-	cancel      context.CancelFunc
-	done        chan struct{}
-	wg          sync.WaitGroup // Waits for background tasks on shutdown
+	// retired holds pane IDs the monitor has deliberately stopped watching
+	// because the pane is verifiably gone from the session. The manifest on
+	// disk still lists them — nothing prunes it — so without this, manifest
+	// reconciliation would re-adopt a retired pane every tick and the monitor
+	// would retry a pane that will never come back, forever.
+	retired map[string]struct{}
+	cancel  context.CancelFunc
+	done    chan struct{}
+	wg      sync.WaitGroup // Waits for background tasks on shutdown
 }
 
 // NewMonitor creates a new resilience monitor for a session
@@ -199,6 +205,12 @@ func (m *Monitor) reconcileFromManifest() {
 			continue
 		}
 		if _, known := m.agents[agent.PaneID]; known {
+			continue
+		}
+		if _, gone := m.retired[agent.PaneID]; gone {
+			// Verified absent from the session and retired on purpose. The
+			// manifest still lists it, so re-adopting here would resurrect the
+			// binding every tick and defeat the retirement.
 			continue
 		}
 		m.agents[agent.PaneID] = newAgentState(
@@ -948,6 +960,13 @@ func (m *Monitor) restartAgent(ctx context.Context, agent *AgentState) {
 			log.Printf("[resilience] Retiring stale pane binding %s: pane no longer exists in session %s", agent.PaneID, m.session)
 			m.mu.Lock()
 			delete(m.agents, agent.PaneID)
+			// Remember the retirement: the pane is still listed in the
+			// manifest, and manifest reconciliation would otherwise re-adopt
+			// it on the next tick and undo this decision.
+			if m.retired == nil {
+				m.retired = make(map[string]struct{})
+			}
+			m.retired[agent.PaneID] = struct{}{}
 			m.mu.Unlock()
 		}
 		return

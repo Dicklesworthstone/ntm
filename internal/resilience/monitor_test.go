@@ -1716,3 +1716,56 @@ func TestReconcileFromManifestToleratesMissingManifest(t *testing.T) {
 		t.Errorf("monitored agents = %d, want the pre-existing 1", len(m.agents))
 	}
 }
+
+// TestReconcileFromManifestDoesNotResurrectRetiredPanes guards the interaction
+// between manifest reconciliation and the stale-binding retirement.
+//
+// When a tracked pane is verifiably gone from the session the monitor deletes
+// it "so the monitor stops retrying a pane that will never come back". Nothing
+// prunes the manifest, so reconciliation would re-adopt that pane on the very
+// next tick, health-check it, fail, retire it again — forever — turning a
+// one-time retirement into a permanent loop.
+func TestReconcileFromManifestDoesNotResurrectRetiredPanes(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	const session = "reconcile-retired"
+	if err := SaveManifest(&SpawnManifest{
+		Session:     session,
+		ProjectDir:  t.TempDir(),
+		AutoRestart: true,
+		Agents: []AgentConfig{
+			{PaneID: "%1", PaneIndex: 1, Type: "cc", Model: "opus", Command: "claude"},
+			{PaneID: "%dead", PaneIndex: 2, Type: "cod", Model: "gpt", Command: "codex"},
+		},
+	}); err != nil {
+		t.Fatalf("SaveManifest: %v", err)
+	}
+
+	m := NewMonitor(session, t.TempDir(), config.Default(), true)
+	m.RegisterAgent("%1", 1, 0, "cc", "opus", "claude")
+	m.RegisterAgent("%dead", 2, 0, "cod", "gpt", "codex")
+
+	// The monitor verifies %dead is gone from the session and retires it.
+	m.mu.Lock()
+	delete(m.agents, "%dead")
+	m.retired = map[string]struct{}{"%dead": {}}
+	m.mu.Unlock()
+
+	// Several ticks must not bring it back, even though the manifest still
+	// lists it.
+	for i := 0; i < 3; i++ {
+		m.reconcileFromManifest()
+	}
+
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if _, back := m.agents["%dead"]; back {
+		t.Error("reconciliation resurrected a deliberately retired pane; the monitor would retry it every tick forever")
+	}
+	if _, ok := m.agents["%1"]; !ok {
+		t.Error("reconciliation dropped a live agent")
+	}
+	if len(m.agents) != 1 {
+		t.Errorf("monitored agents = %d, want 1", len(m.agents))
+	}
+}
