@@ -11,8 +11,11 @@ import (
 )
 
 // lockedFile is an open lock file holding an exclusive flock.
+//
+// It deliberately carries no path: unlike internal/assignment's sibling type,
+// pane lock files are never unlinked (they are stable per-pane rendezvous
+// points), so there is nothing a stored path would be used for.
 type lockedFile struct {
-	path string
 	file *os.File
 }
 
@@ -29,7 +32,7 @@ func openLockedFile(ctx context.Context, lockPath string) (*lockedFile, error) {
 	for {
 		err = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
 		if err == nil {
-			return &lockedFile{path: lockPath, file: lockFile}, nil
+			return &lockedFile{file: lockFile}, nil
 		}
 		if !errors.Is(err, syscall.EWOULDBLOCK) && !errors.Is(err, syscall.EAGAIN) {
 			_ = lockFile.Close()

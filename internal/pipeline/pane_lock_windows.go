@@ -12,8 +12,11 @@ import (
 )
 
 // lockedFile is an open lock file holding an exclusive LockFileEx byte lock.
+//
+// It deliberately carries no path: unlike internal/assignment's sibling type,
+// pane lock files are never unlinked (they are stable per-pane rendezvous
+// points), so there is nothing a stored path would be used for.
 type lockedFile struct {
-	path       string
 	file       *os.File
 	overlapped *windows.Overlapped
 }
@@ -39,7 +42,7 @@ func openLockedFile(ctx context.Context, lockPath string) (*lockedFile, error) {
 			overlapped,
 		)
 		if err == nil {
-			return &lockedFile{path: lockPath, file: lockFile, overlapped: overlapped}, nil
+			return &lockedFile{file: lockFile, overlapped: overlapped}, nil
 		}
 		if !errors.Is(err, windows.ERROR_LOCK_VIOLATION) {
 			_ = lockFile.Close()

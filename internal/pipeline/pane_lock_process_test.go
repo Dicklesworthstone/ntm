@@ -13,7 +13,11 @@ import (
 const (
 	paneLockHelperEnv    = "NTM_TEST_PANE_LOCK_HELPER_DIR"
 	paneLockHelperPaneID = "%117"
-	paneLockHelperHold   = 3 * time.Second
+	// paneLockHelperHold is short on purpose. This test runs in the ordinary
+	// `go test -short ./...` gate — a regression test for a two-process bug
+	// that only runs outside the gate protects nothing — so it must stay
+	// about a second, not several.
+	paneLockHelperHold = 900 * time.Millisecond
 	// paneLockHelperReadyFile is touched once the lock is actually held, so
 	// the parent never races the child's startup.
 	paneLockHelperReadyFile = "helper-holds-lock"
@@ -60,10 +64,6 @@ func runPaneLockHelper(dir string) int {
 // never asked to clean up, so the lock's release is the OS closing its file
 // descriptors at exit.
 func TestPaneLockExcludesASeparateProcess(t *testing.T) {
-	if testing.Short() {
-		t.Skip("spawns a subprocess; skipped under -short")
-	}
-
 	dir := t.TempDir()
 	ready := dir + "/" + paneLockHelperReadyFile
 

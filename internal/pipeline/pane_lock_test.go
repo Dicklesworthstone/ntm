@@ -326,5 +326,35 @@ func TestApplyPaneLockFailureClassifies(t *testing.T) {
 		if result.SkipKind != SkipKindCancelled {
 			t.Errorf("SkipKind = %q, want %q", result.SkipKind, SkipKindCancelled)
 		}
+		if !strings.Contains(result.SkipReason, "cancelled") {
+			t.Errorf("reason = %q, want it to say cancelled", result.SkipReason)
+		}
+	})
+
+	t.Run("a lock failure names the real error, not a cancellation", func(t *testing.T) {
+		var result StepResult
+		applyPaneLockFailure(&result, "%117", errors.New("permission denied"))
+
+		if strings.Contains(result.SkipReason, "cancelled") {
+			t.Errorf("a lock failure was reported as a cancellation that never happened: %q", result.SkipReason)
+		}
+		if !strings.Contains(result.SkipReason, "permission denied") {
+			t.Errorf("reason must carry the underlying error: %q", result.SkipReason)
+		}
+		if !strings.Contains(result.SkipReason, "%117") {
+			t.Errorf("reason must name the pane: %q", result.SkipReason)
+		}
+	})
+
+	// Every outcome must leave the step re-runnable on resume: nothing was
+	// dispatched, so resume has to retry rather than treat it as done.
+	t.Run("every outcome is re-run on resume", func(t *testing.T) {
+		for _, err := range []error{ErrPaneBusyOtherProcess, context.Canceled, errors.New("disk full")} {
+			var result StepResult
+			applyPaneLockFailure(&result, "%117", err)
+			if !shouldRerunStep(result) {
+				t.Errorf("a step that never dispatched (%v) would not be re-run on resume", err)
+			}
+		}
 	})
 }

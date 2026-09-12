@@ -155,22 +155,33 @@ func (e *Executor) paneLockWait() time.Duration {
 
 // applyPaneLockFailure records a failed pane acquisition on a step result.
 //
-// The two outcomes are reported differently on purpose. A cancelled context is
-// the operator stopping the run; a busy pane is another process owning the
-// target, which is not this run's fault and is retryable the moment the pane
-// frees. Both mean nothing was dispatched — the lock is taken before the first
+// The outcomes are reported differently on purpose. A cancelled context is the
+// operator stopping the run; a busy pane is another process owning the target,
+// which is not this run's fault; anything else is the lock itself failing.
+// All of them mean nothing was dispatched — the lock is taken before the first
 // capture, so no prompt was pasted and none was queued.
+//
+// StatusCancelled is load-bearing, not cosmetic: shouldRerunStep re-runs a
+// cancelled step on resume, which is exactly right for a step that never
+// dispatched. Reclassifying any of these as StatusSkipped would make resume
+// treat an undelivered step as done.
 func applyPaneLockFailure(result *StepResult, paneID string, err error) {
 	result.Status = StatusCancelled
 	result.FinishedAt = time.Now()
 
-	if errors.Is(err, ErrPaneBusyOtherProcess) {
+	switch {
+	case errors.Is(err, ErrPaneBusyOtherProcess):
 		result.SkipKind = SkipKindPaneBusy
 		result.SkipReason = fmt.Sprintf(
 			"not dispatched: pane %s is held by another ntm process; nothing was sent", paneID)
-		return
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		result.SkipKind = SkipKindCancelled
+		result.SkipReason = "cancelled while waiting for pane"
+	default:
+		// The lock could not be taken at all (unreadable lock directory,
+		// permissions, a full disk). Naming it beats reporting a cancellation
+		// that never happened.
+		result.SkipKind = SkipKindCancelled
+		result.SkipReason = fmt.Sprintf("not dispatched: could not lock pane %s: %v", paneID, err)
 	}
-
-	result.SkipKind = SkipKindCancelled
-	result.SkipReason = "cancelled while waiting for pane"
 }
