@@ -14,6 +14,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/events"
 	"github.com/Dicklesworthstone/ntm/internal/integrations/pt"
+	"github.com/Dicklesworthstone/ntm/internal/redaction"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/serve"
 	"github.com/Dicklesworthstone/ntm/internal/state"
@@ -190,6 +191,21 @@ func runServe(opts serveOptions) error {
 		}()
 	}
 
+	// Scrub secrets/PII out of REST bodies and WebSocket frames when the operator
+	// configured a mode that is supposed to change content. `warn` — the shipped
+	// default — only logs findings, so honoring it here would add a regex scan to
+	// every HTTP response and every pane-output frame for every user while
+	// redacting nothing; root.go's write-time hooks already cover warn on the
+	// persistence surfaces. Leaving this nil reproduces the previous (always
+	// inert) behavior exactly.
+	var redactionCfg *serve.RedactionConfig
+	if cfg != nil {
+		libCfg := cfg.Redaction.ToRedactionLibConfig()
+		if libCfg.Mode == redaction.ModeRedact || libCfg.Mode == redaction.ModeBlock {
+			redactionCfg = &serve.RedactionConfig{Enabled: true, Config: libCfg}
+		}
+	}
+
 	serverCfg := serve.Config{
 		Host:           opts.Host,
 		Port:           opts.Port,
@@ -199,6 +215,7 @@ func runServe(opts serveOptions) error {
 		StateStore:     stateStore,
 		AllowedOrigins: opts.CORSAllowOrigins,
 		AuditStore:     auditStore,
+		Redaction:      redactionCfg,
 		Auth: serve.AuthConfig{
 			Mode:   mode,
 			APIKey: opts.APIKey,

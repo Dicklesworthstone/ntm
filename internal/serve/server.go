@@ -227,6 +227,15 @@ type Config struct {
 	// no UI is mounted and non-API paths 404 as before (`ntm serve` default;
 	// `ntm web` and `ntm serve --web` set it).
 	WebUI fs.FS
+	// Redaction scrubs secrets/PII from REST bodies and WebSocket event frames.
+	// Nil disables it, which is what every caller effectively did until now:
+	// redactionMiddleware has been mounted since b5d45e20 but the field behind
+	// it had no production writer, so the G1 dead-code gate deleted the
+	// Set/GetRedactionConfig setters in 670f6380 rather than wiring them, and
+	// the middleware has been a permanent no-op ever since. Same failure the
+	// AuditMiddleware comment in buildRouter describes. Ownership of the
+	// contents transfers to New, which deep-copies before storing.
+	Redaction *RedactionConfig
 }
 
 const (
@@ -1162,6 +1171,23 @@ func New(cfg Config) *Server {
 		waitAgents: robot.GetWaitContext,
 	}
 
+	// Wire redaction into both consumers: redactionMiddleware (REST bodies) and
+	// WSHub.broadcastEvent (event frames). Each gets its own deep copy so a
+	// caller mutating the config it passed in — or either consumer's reference
+	// typed Allowlist/ExtraPatterns/DisabledCategories — cannot reach the other
+	// (the hazard bd-oekc2 fixed in fa8045ea/0b0f0874). Assigning wsHub's field
+	// directly is safe without redactionMu: the hub's Run goroutine has not been
+	// started and s has not been published to any other goroutine yet.
+	if cfg.Redaction != nil {
+		restCfg := *cfg.Redaction
+		restCfg.Config = restCfg.Config.DeepCopy()
+		s.redactionCfg = &restCfg
+
+		hubCfg := *cfg.Redaction
+		hubCfg.Config = hubCfg.Config.DeepCopy()
+		s.wsHub.redactionCfg = &hubCfg
+	}
+
 	// Initialize pane output streaming
 	streamCfg := tmux.DefaultPaneStreamerConfig()
 	s.streamManager = tmux.NewStreamManager(tmux.DefaultClient, func(event tmux.StreamEvent) {
@@ -1220,7 +1246,10 @@ func (s *Server) buildRouter() chi.Router {
 	if s.auditStore != nil {
 		r.Use(s.AuditMiddleware(s.auditStore))
 	}
-	r.Use(s.redactionMiddleware) // Redact sensitive content in requests/responses
+	// Redact sensitive content in requests/responses. Inert unless Config.Redaction
+	// was supplied (see that field): the middleware is always mounted, but it
+	// passes through untouched when no redaction config reached New.
+	r.Use(s.redactionMiddleware)
 	// Idempotency-Key replay for EVERY mutating route — the single mount point
 	// (D4, bd-ws3-contract-breadth-psvyu.4). Deleting this one line disables the
 	// feature (rollback lever). The middleware is inert for requests without an

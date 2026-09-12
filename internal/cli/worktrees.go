@@ -192,14 +192,19 @@ By default, cleans up the current session. Use --session to specify
 }
 
 func newWorktreesRemoveCmd() *cobra.Command {
-	return &cobra.Command{
+	var force bool
+
+	cmd := &cobra.Command{
 		Use:   "remove <agent-name>",
 		Short: "Remove a specific agent's worktree",
 		Long: `Remove the worktree and branch for a specific agent.
 
 This will remove the worktree directory and delete the associated branch.
 Use with caution as this will permanently delete any uncommitted changes
-in the worktree.`,
+in the worktree.
+
+Prompts for confirmation, reporting the uncommitted changes and unmerged
+commits that would be destroyed. Pass --force to skip the prompt.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			agentName := args[0]
@@ -220,6 +225,24 @@ in the worktree.`,
 				return fmt.Errorf("no worktree found for agent: %s", agentName)
 			}
 
+			// Removal runs `git worktree remove --force` and `git branch -D`, so
+			// nothing downstream will refuse on dirty or unmerged work. The sibling
+			// `worktrees clean` has always confirmed before destroying many
+			// worktrees; this destroys one just as permanently.
+			if !force {
+				// Never prompt into a JSON stream: a half-written question would
+				// corrupt the caller's output, and answering for them is worse.
+				if IsJSONOutput() {
+					return fmt.Errorf("refusing to remove worktree for agent %s without confirmation in JSON mode: re-run with --force", agentName)
+				}
+				risk, riskErr := manager.AssessRemovalRisk(cmd.Context(), agentName)
+				title := fmt.Sprintf("Remove worktree for agent '%s'?", agentName)
+				if !confirmHuhDestructive(title, describeWorktreeRemoval(info, risk, riskErr)) {
+					fmt.Println("Removal cancelled.")
+					return nil
+				}
+			}
+
 			// Remove the worktree
 			if err := manager.RemoveWorktree(cmd.Context(), agentName); err != nil {
 				return fmt.Errorf("failed to remove worktree: %w", err)
@@ -229,6 +252,46 @@ in the worktree.`,
 			return nil
 		},
 	}
+
+	cmd.Flags().BoolVar(&force, "force", false, "Skip confirmation prompt")
+	return cmd
+}
+
+// describeWorktreeRemoval renders the confirmation body for `worktrees remove`.
+//
+// A failed assessment is reported as unknown rather than as "nothing at risk":
+// treating an inspection error as zero work is how a prompt talks an operator
+// into deleting something it never managed to look at.
+func describeWorktreeRemoval(info *worktrees.WorktreeInfo, risk worktrees.RemovalRisk, riskErr error) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Path:   %s\n", info.Path)
+	fmt.Fprintf(&b, "Branch: %s\n\n", info.BranchName)
+
+	switch {
+	case riskErr != nil:
+		fmt.Fprintf(&b, "Could not determine what would be lost: %v\n", riskErr)
+		b.WriteString("The worktree is deleted and the branch force-deleted regardless.")
+	case !risk.HasWork():
+		b.WriteString("No uncommitted changes and no unmerged commits detected.")
+	default:
+		b.WriteString("This permanently destroys:\n")
+		if risk.UncommittedFiles > 0 {
+			fmt.Fprintf(&b, "  - %s with uncommitted changes\n", countNoun(risk.UncommittedFiles, "file", "files"))
+		}
+		if risk.UnmergedCommits > 0 {
+			fmt.Fprintf(&b, "  - %s not merged into the default branch\n", countNoun(risk.UnmergedCommits, "commit", "commits"))
+		}
+	}
+
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// countNoun renders "1 file" / "3 files".
+func countNoun(n int, singular, plural string) string {
+	if n == 1 {
+		return fmt.Sprintf("%d %s", n, singular)
+	}
+	return fmt.Sprintf("%d %s", n, plural)
 }
 
 func resolveWorktreeScope(ctx context.Context, session string) (string, string, error) {

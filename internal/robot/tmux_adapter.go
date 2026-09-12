@@ -82,12 +82,11 @@ func NewTmuxAdapter(config TmuxAdapterConfig) *TmuxAdapter {
 // Session Normalization
 // =============================================================================
 
-// NormalizeSession transforms a tmux.Session into a RuntimeSession.
-func (a *TmuxAdapter) NormalizeSession(sess *tmux.Session, agents []Agent) *state.RuntimeSession {
-	return a.normalizeSessionWithTails(sess, agents, nil)
-}
+// The no-tails NormalizeSession wrapper lives in tmux_adapter_helpers_test.go:
+// #288 moved every production caller to normalizeSessionWithTails, leaving the
+// wrapper reachable only from tests and so flagged by the G1 dead-code gate.
 
-// normalizeSessionWithTails is NormalizeSession with the captured pane tails
+// normalizeSessionWithTails is the session normalizer with the captured pane tails
 // available, so the per-session state counts use the same tail-aware
 // classification as the agent rows (#288).
 func (a *TmuxAdapter) normalizeSessionWithTails(sess *tmux.Session, agents []Agent, outputTails map[string]string) *state.RuntimeSession {

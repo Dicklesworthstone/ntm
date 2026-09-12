@@ -27,7 +27,6 @@
 package errsig
 
 import (
-	"regexp"
 	"strings"
 )
 
@@ -86,21 +85,8 @@ const NonzeroExitPattern = `(?i)\b(?:exit(?:ed)?\s+(?:with\s+)?(?:status|code)|e
 // runtime that prints one has genuinely died.
 const FatalSignalPattern = `\b(?:SIGSEGV|SIGABRT|SIGBUS|SIGILL|SIGFPE|SIGKILL)\b`
 
-var (
-	nonzeroExit  = regexp.MustCompile(NonzeroExitPattern)
-	fatalSignal  = regexp.MustCompile(FatalSignalPattern)
-	leadStripper = regexp.MustCompile(`^` + LineLead)
-)
-
-// TrimLead removes decoration from the front of a single line, exposing its
-// substantive content. Useful for callers that classify with literal string
-// comparisons rather than regexes.
-func TrimLead(line string) string {
-	return leadStripper.ReplaceAllString(line, "")
-}
-
-// HasNonzeroExit reports whether text contains a nonzero process-exit report.
-func HasNonzeroExit(text string) bool { return nonzeroExit.MatchString(text) }
-
-// HasFatalSignal reports whether text names a fatal POSIX signal.
-func HasFatalSignal(text string) bool { return fatalSignal.MatchString(text) }
+// The compiled counterparts of the exported patterns, and the convenience
+// predicates over them, live in errsig_helpers_test.go: production consumers
+// (internal/robot, internal/alerts) compile the exported *Pattern constants
+// themselves, so keeping compiled copies here left them unreachable from
+// ./cmd/ntm and tripped the G1 dead-code gate.

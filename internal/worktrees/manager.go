@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -457,6 +458,76 @@ func (m *WorktreeManager) MergeBack(ctx context.Context, agentName string) error
 	}
 
 	return nil
+}
+
+// RemovalRisk summarizes the work that removing a worktree would destroy.
+//
+// RemoveWorktree runs `git worktree remove --force` followed by `git branch -D`,
+// so git refuses nothing on the operator's behalf: the force flag overrides the
+// dirty-tree check, and -D overrides the merged check. Callers that can prompt
+// should assess first and say what is about to be lost.
+type RemovalRisk struct {
+	// UncommittedFiles counts modified, staged, and untracked paths in the
+	// worktree. Ignored files are excluded. `--force` deletes these outright.
+	UncommittedFiles int
+	// UnmergedCommits counts commits on the agent branch that are unreachable
+	// from the repository's default branch — the same branch MergeBack merges
+	// into. `branch -D` orphans these (recoverable only via reflog).
+	UnmergedCommits int
+}
+
+// HasWork reports whether removal would destroy anything.
+func (r RemovalRisk) HasWork() bool {
+	return r.UncommittedFiles > 0 || r.UnmergedCommits > 0
+}
+
+// AssessRemovalRisk reports what RemoveWorktree would destroy for agentName.
+//
+// It never mutates the repository. An error means the risk could not be
+// determined — callers must treat that as "unknown", never as "nothing at
+// risk", since a silent zero here is exactly how work gets deleted unannounced.
+func (m *WorktreeManager) AssessRemovalRisk(ctx context.Context, agentName string) (RemovalRisk, error) {
+	var risk RemovalRisk
+	if ctx == nil {
+		return risk, errors.New("assessing worktree removal requires a context")
+	}
+	if err := ctx.Err(); err != nil {
+		return risk, err
+	}
+	info, err := m.buildWorktreeInfo(agentName)
+	if err != nil {
+		return risk, err
+	}
+
+	// --untracked-files=all, not the default "normal": the default collapses an
+	// untracked directory into a single `?? dir/` entry, so a worktree holding
+	// fifty new files would be announced as one. A prompt that undercounts what
+	// it is about to destroy is worse than no prompt.
+	statusOut, err := gitOutput(ctx, info.Path, "status", "--porcelain", "--untracked-files=all")
+	if err != nil {
+		return risk, fmt.Errorf("inspect uncommitted changes in %s: %w", info.Path, err)
+	}
+	for _, line := range strings.Split(string(statusOut), "\n") {
+		if strings.TrimSpace(line) != "" {
+			risk.UncommittedFiles++
+		}
+	}
+
+	defaultBranch, err := git.DefaultBranch(ctx, m.projectPath)
+	if err != nil {
+		return risk, fmt.Errorf("determine default branch for %s: %w", m.projectPath, err)
+	}
+	countOut, err := gitOutput(ctx, m.projectPath, "rev-list", "--count", defaultBranch+".."+info.BranchName)
+	if err != nil {
+		return risk, fmt.Errorf("count commits on %s not merged into %s: %w", info.BranchName, defaultBranch, err)
+	}
+	unmerged, err := strconv.Atoi(strings.TrimSpace(string(countOut)))
+	if err != nil {
+		return risk, fmt.Errorf("parse unmerged commit count for %s: %w", info.BranchName, err)
+	}
+	risk.UnmergedCommits = unmerged
+
+	return risk, nil
 }
 
 // RemoveWorktree removes a specific agent's worktree.

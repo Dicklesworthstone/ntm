@@ -102,11 +102,6 @@ func (r *Registry) GetAllInfoExcept(ctx context.Context, disabled map[ToolName]b
 	return infos
 }
 
-// GetHealthReport returns a health summary for all registered tools
-func (r *Registry) GetHealthReport(ctx context.Context) *HealthReport {
-	return r.GetHealthReportExcept(ctx, nil)
-}
-
 // GetHealthReportExcept returns a health summary for all registered tools,
 // skipping the probes for every tool named in disabled. Disabled tools are
 // counted in Total and reported unhealthy-but-unprobed in Tools, so the
@@ -197,11 +192,6 @@ func GetAllInfo(ctx context.Context) []*ToolInfo {
 // probing the tools named in disabled.
 func GetAllInfoExcept(ctx context.Context, disabled map[ToolName]bool) []*ToolInfo {
 	return globalRegistry.GetAllInfoExcept(ctx, disabled)
-}
-
-// GetHealthReport returns health report from the global registry
-func GetHealthReport(ctx context.Context) *HealthReport {
-	return globalRegistry.GetHealthReport(ctx)
 }
 
 // GetHealthReportExcept returns a health report from the global registry
