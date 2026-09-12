@@ -5416,6 +5416,14 @@ func GetValue(cfg *Config, path string) (interface{}, error) {
 		}
 	}
 
+	// A dead key is not merely unknown: the loader, `config migrate` and
+	// `ntm doctor` all recognize it and name its replacement, so this surface
+	// says the same thing rather than sending the user off to look for a
+	// typo (ntm#323).
+	if disposition, _, dead := classifyDeadKey(path); dead {
+		return nil, fmt.Errorf("config key %s was %s — it is no longer read; run 'ntm config migrate' to clean it up", path, disposition)
+	}
+
 	return nil, fmt.Errorf("unknown config path: %s", path)
 }
 

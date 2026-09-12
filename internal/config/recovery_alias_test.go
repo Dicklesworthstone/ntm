@@ -235,3 +235,65 @@ func TestMemoryQueryTimeoutStaysLive(t *testing.T) {
 			cfg.SessionRecovery.TimeoutSeconds, Default().SessionRecovery.TimeoutSeconds)
 	}
 }
+
+// TestGetValueNamesDeadKeysInsteadOfCallingThemUnknown keeps the four config
+// surfaces telling one story. The loader, `config migrate` and `ntm doctor`
+// all recognize a removed key and name its replacement; GetValue used to call
+// it an unknown path, sending a user who followed old docs off to hunt for a
+// typo (ntm#323).
+func TestGetValueNamesDeadKeysInsteadOfCallingThemUnknown(t *testing.T) {
+	cfg := Default()
+
+	tests := []struct {
+		name    string
+		path    string
+		wantHas []string
+		wantNot []string
+	}{
+		{
+			name:    "recovery-alias key names its replacement",
+			path:    "memory.max_rules",
+			wantHas: []string{"memory.max_rules", "recovery.max_cm_rules", "config migrate"},
+			wantNot: []string{"unknown config path"},
+		},
+		{
+			name:    "older removed key is also recognized",
+			path:    "tmux.palette_key",
+			wantHas: []string{"tmux.palette_key", "config migrate"},
+			wantNot: []string{"unknown config path"},
+		},
+		{
+			name:    "a genuine typo is still an unknown path",
+			path:    "memory.max_rulez",
+			wantHas: []string{"unknown config path"},
+			wantNot: []string{"config migrate"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := GetValue(cfg, tt.path)
+			if err == nil {
+				t.Fatalf("GetValue(%q) succeeded; the key is not readable", tt.path)
+			}
+			msg := err.Error()
+			for _, want := range tt.wantHas {
+				if !strings.Contains(msg, want) {
+					t.Errorf("error %q missing %q", msg, want)
+				}
+			}
+			for _, bad := range tt.wantNot {
+				if strings.Contains(msg, bad) {
+					t.Errorf("error %q should not contain %q", msg, bad)
+				}
+			}
+		})
+	}
+
+	// A live key must still resolve.
+	if got, err := GetValue(cfg, "memory.send_max_rules"); err != nil {
+		t.Errorf("live key memory.send_max_rules failed: %v", err)
+	} else if got != cfg.Memory.SendMaxRules {
+		t.Errorf("memory.send_max_rules = %v, want %v", got, cfg.Memory.SendMaxRules)
+	}
+}
