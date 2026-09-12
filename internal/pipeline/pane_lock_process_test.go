@@ -13,11 +13,15 @@ import (
 const (
 	paneLockHelperEnv    = "NTM_TEST_PANE_LOCK_HELPER_DIR"
 	paneLockHelperPaneID = "%117"
-	// paneLockHelperHold is short on purpose. This test runs in the ordinary
-	// `go test -short ./...` gate — a regression test for a two-process bug
-	// that only runs outside the gate protects nothing — so it must stay
-	// about a second, not several.
-	paneLockHelperHold = 900 * time.Millisecond
+	// paneLockHelperHold is short on purpose: this test runs in the ordinary
+	// `go test -short ./...` gate, and a regression test for a two-process
+	// bug that only runs outside the gate protects nothing.
+	//
+	// It still has to comfortably outlast the parent's 300ms acquire attempt
+	// even when the suite has saturated the machine and the parent is
+	// descheduled mid-probe — hence a 5x margin rather than the tightest
+	// value that passes on an idle box.
+	paneLockHelperHold = 1500 * time.Millisecond
 	// paneLockHelperReadyFile is touched once the lock is actually held, so
 	// the parent never races the child's startup.
 	paneLockHelperReadyFile = "helper-holds-lock"
