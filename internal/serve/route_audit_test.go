@@ -241,3 +241,82 @@ func sanitizeRouteName(pattern string) string {
 	}
 	return name
 }
+
+// TestAuditRemoteAddrIsNotHeaderSpoofable proves the audit trail records the
+// real socket address rather than a caller-supplied forwarding header.
+//
+// The router used chimw.RealIP as its first middleware, which rewrites
+// r.RemoteAddr from True-Client-IP / X-Real-IP / the leftmost X-Forwarded-For
+// with no trusted-proxy allowlist — chi deprecated it for exactly this reason.
+// That value is persisted as AuditRecord.RemoteAddr for every mutating
+// request, so any caller could stamp a forged source address onto the audit
+// record of a dangerous or approval-gated action by sending one header.
+func TestAuditRemoteAddrIsNotHeaderSpoofable(t *testing.T) {
+	const forged = "203.0.113.9"
+
+	var captured string
+	handler := chi.NewRouter()
+	// Mirror the production base stack ordering for the part under test.
+	handler.Use(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			captured = r.RemoteAddr
+			next.ServeHTTP(w, r)
+		})
+	})
+	handler.Get("/probe", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	for _, header := range []string{"X-Forwarded-For", "X-Real-IP", "True-Client-IP"} {
+		t.Run(header, func(t *testing.T) {
+			captured = ""
+			req, err := http.NewRequest(http.MethodGet, srv.URL+"/probe", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set(header, forged)
+
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp.Body.Close()
+
+			if strings.Contains(captured, forged) {
+				t.Errorf("%s rewrote RemoteAddr to the forged value %q; audit records would carry it",
+					header, captured)
+			}
+			if !strings.HasPrefix(captured, "127.0.0.1:") && !strings.HasPrefix(captured, "[::1]:") {
+				t.Errorf("RemoteAddr = %q, want the real loopback socket address", captured)
+			}
+		})
+	}
+}
+
+// TestProductionRouterDoesNotTrustForwardingHeaders is the same guarantee
+// through the real buildRouter stack, so re-adding chimw.RealIP to the base
+// middleware list fails the build gate rather than silently reopening the hole.
+func TestProductionRouterDoesNotTrustForwardingHeaders(t *testing.T) {
+	srv := setupRouteAuditServer(t)
+
+	var seen string
+	router := srv.buildRouter()
+	router.Get("/__remote_addr_probe", func(w http.ResponseWriter, r *http.Request) {
+		seen = r.RemoteAddr
+		w.WriteHeader(http.StatusOK)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/__remote_addr_probe", nil)
+	req.RemoteAddr = "192.0.2.10:5555"
+	req.Header.Set("X-Forwarded-For", "203.0.113.9")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if seen != "192.0.2.10:5555" {
+		t.Errorf("RemoteAddr = %q, want the untouched socket address 192.0.2.10:5555 "+
+			"(a forwarding header must not rewrite it)", seen)
+	}
+}

@@ -682,3 +682,81 @@ func TestRealSendKeysForAgentClaude(t *testing.T) {
 		t.Errorf("expected Claude send to work normally")
 	}
 }
+
+// =============================================================================
+// Send fidelity — what the agent typed is what the pane receives
+// =============================================================================
+
+// TestRealKeySendPreservesTrailingSemicolon proves the workaround in
+// escapeTrailingSemicolon is both necessary and correct against real tmux.
+//
+// tmux parses `;` at the end of a send-keys argument as its own command
+// separator and silently drops it, so a prompt ending in a semicolon arrives
+// truncated. Verified against tmux 3.6a: sending "echo A;" unescaped delivers
+// "echo A".
+//
+// The backslash cases matter because a shell one-liner pasted into an agent
+// can legitimately end in `\;` (`find . -exec rm {} \;`), and the escape has
+// to survive a payload that already contains backslashes.
+//
+// Scope note: this covers the single-invocation path. A payload over 4096
+// bytes is split across several send-keys calls, and because tmux eats a
+// trailing `;` per INVOCATION, applying the escape per chunk (as
+// SendKeysWithDelayContext does) is the correct behaviour there. That path is
+// not asserted end-to-end here on purpose: a multi-kilobyte payload typed at a
+// prompt lives in the terminal's line editor rather than scrollback, so a pane
+// capture measures what the terminal chose to display, not what was delivered
+// — and canonical-mode TTYs cap input around the same size besides. Asserting
+// it honestly needs an exec seam on Client, which does not exist today.
+func TestRealKeySendPreservesTrailingSemicolon(t *testing.T) {
+	skipIfNoTmux(t)
+
+	cases := []struct {
+		name    string
+		payload string
+	}{
+		{"trailing semicolon", "echo A;"},
+		{"find exec terminator", `find . -name x -exec rm {} \;`},
+		{"trailing backslash", `tail backslash \`},
+		{"semicolon then backslash", `a;b\`},
+		{"interior semicolons", "one;two;three"},
+		{"only a semicolon", ";"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			session := createTestSessionForKeys(t)
+			panes, err := GetPanes(session)
+			if err != nil || len(panes) == 0 {
+				t.Fatalf("GetPanes: %v", err)
+			}
+			paneID := panes[0].ID
+
+			// Sentinels bracket the payload so the comparison ignores the
+			// shell prompt and any terminal line wrapping.
+			const open, close = "<<<", ">>>"
+			if err := SendKeys(paneID, open+tc.payload+close, false); err != nil {
+				t.Fatalf("SendKeys: %v", err)
+			}
+			time.Sleep(300 * time.Millisecond)
+
+			output, err := CapturePaneOutput(paneID, 50)
+			if err != nil {
+				t.Fatalf("CapturePaneOutput: %v", err)
+			}
+			// A wrapped line is split by the terminal, not by the payload.
+			flat := strings.ReplaceAll(output, "\n", "")
+
+			start := strings.Index(flat, open)
+			end := strings.LastIndex(flat, close)
+			if start < 0 || end < 0 || end < start {
+				t.Fatalf("sentinels missing from pane; payload never arrived.\ncapture:\n%s", output)
+			}
+			got := flat[start+len(open) : end]
+
+			if got != tc.payload {
+				t.Errorf("pane received %q, want %q (the agent would act on corrupted text)", got, tc.payload)
+			}
+		})
+	}
+}

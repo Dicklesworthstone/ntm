@@ -1193,8 +1193,19 @@ func DefaultAuditDir() (string, error) {
 func (s *Server) buildRouter() chi.Router {
 	r := chi.NewRouter()
 
-	// Base middleware stack
-	r.Use(chimw.RealIP)
+	// Base middleware stack.
+	//
+	// chimw.RealIP is deliberately NOT used. It rewrites r.RemoteAddr from
+	// True-Client-IP / X-Real-IP / the leftmost X-Forwarded-For of whatever
+	// client sent them, with no trusted-proxy allowlist — chi itself has
+	// deprecated it for that reason (GHSA-3fxj-6jh8-hvhx and siblings). The
+	// value lands in every AuditRecord.RemoteAddr and in the auth-failure log,
+	// so trusting it let any caller stamp a forged source address onto the
+	// audit trail of a dangerous or approval-gated action with one header.
+	// ntm terminates connections directly (local mode is loopback-only), so
+	// the socket address is the truthful answer. If NTM ever needs to run
+	// behind a reverse proxy, that needs a configured trusted-proxy list
+	// (chi's ClientIPFromXFFTrustedProxies), never blanket header trust.
 	r.Use(s.maxBytesMiddleware)
 	r.Use(s.requestIDMiddlewareFunc)
 	r.Use(s.recovererMiddleware)

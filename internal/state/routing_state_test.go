@@ -1,6 +1,7 @@
 package state
 
 import (
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -228,5 +229,116 @@ func TestRoutingState_AdvisoryReadSucceedsUnderHeldWriteLock(t *testing.T) {
 	// write lock either (the pending pre-check short-circuits).
 	if err := reader.Migrate(); err != nil {
 		t.Fatalf("no-op Migrate under held write lock: %v", err)
+	}
+}
+
+// TestSaveRoutingStateIfUnchangedRejectsLostUpdate is the concurrency proof
+// for round-robin fairness. Selection is read-cursor → pick-next → write-cursor
+// with nothing held across the steps, and every `ntm send` opens its own Store,
+// so two dispatches could both read cursor N, both pick agent N+1, and both
+// write N+1 — one agent taking both messages while the agent whose turn it was
+// is skipped. The guarded write makes the second one observable instead.
+func TestSaveRoutingStateIfUnchangedRejectsLostUpdate(t *testing.T) {
+	store := routingStateStore(t)
+
+	seed := &RoutingState{SessionName: "proj", LastAgent: "%1", RotationCursor: 0}
+	if err := store.SaveRoutingState(seed); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Both "processes" read the same row.
+	observedA, err := store.GetRoutingState("proj", "")
+	if err != nil {
+		t.Fatalf("read A: %v", err)
+	}
+	observedB, err := store.GetRoutingState("proj", "")
+	if err != nil {
+		t.Fatalf("read B: %v", err)
+	}
+
+	// A advances the cursor first.
+	storedA, err := store.SaveRoutingStateIfUnchanged(
+		&RoutingState{SessionName: "proj", LastAgent: "%2", RotationCursor: 1}, observedA)
+	if err != nil {
+		t.Fatalf("write A: %v", err)
+	}
+	if !storedA {
+		t.Fatal("the first writer must win an uncontended write")
+	}
+
+	// B routed from the pre-A cursor, so its write must be refused.
+	storedB, err := store.SaveRoutingStateIfUnchanged(
+		&RoutingState{SessionName: "proj", LastAgent: "%2", RotationCursor: 1}, observedB)
+	if err != nil {
+		t.Fatalf("write B: %v", err)
+	}
+	if storedB {
+		t.Error("a write routed from a superseded cursor was accepted; the rotation loses a turn")
+	}
+
+	// A's value survives untouched.
+	final, err := store.GetRoutingState("proj", "")
+	if err != nil {
+		t.Fatalf("final read: %v", err)
+	}
+	if final.LastAgent != "%2" || final.RotationCursor != 1 {
+		t.Errorf("final = %+v, want last_agent=%%2 cursor=1", final)
+	}
+}
+
+// TestSaveRoutingStateIfUnchangedFirstWriterWins covers the no-row case: two
+// dispatches that both saw an empty table must not both believe they seeded it.
+func TestSaveRoutingStateIfUnchangedFirstWriterWins(t *testing.T) {
+	store := routingStateStore(t)
+
+	first, err := store.SaveRoutingStateIfUnchanged(
+		&RoutingState{SessionName: "fresh", LastAgent: "%1", RotationCursor: 0}, nil)
+	if err != nil {
+		t.Fatalf("first: %v", err)
+	}
+	if !first {
+		t.Fatal("the first insert into an empty table must succeed")
+	}
+
+	second, err := store.SaveRoutingStateIfUnchanged(
+		&RoutingState{SessionName: "fresh", LastAgent: "%9", RotationCursor: 4}, nil)
+	if err != nil {
+		t.Fatalf("second: %v", err)
+	}
+	if second {
+		t.Error("a second writer that also saw no row overwrote the first")
+	}
+
+	got, err := store.GetRoutingState("fresh", "")
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if got.LastAgent != "%1" {
+		t.Errorf("last_agent = %q, want %%1 (the first writer's value)", got.LastAgent)
+	}
+}
+
+// TestSaveRoutingStateIfUnchangedUncontendedAdvances is the ordinary path: a
+// sequential dispatch always persists.
+func TestSaveRoutingStateIfUnchangedUncontendedAdvances(t *testing.T) {
+	store := routingStateStore(t)
+
+	var observed *RoutingState
+	for i := 0; i < 4; i++ {
+		rs := &RoutingState{SessionName: "seq", LastAgent: fmt.Sprintf("%%%d", i), RotationCursor: i}
+		stored, err := store.SaveRoutingStateIfUnchanged(rs, observed)
+		if err != nil {
+			t.Fatalf("write %d: %v", i, err)
+		}
+		if !stored {
+			t.Fatalf("sequential write %d was refused; nothing else is writing", i)
+		}
+		observed, err = store.GetRoutingState("seq", "")
+		if err != nil {
+			t.Fatalf("read %d: %v", i, err)
+		}
+	}
+	if observed.RotationCursor != 3 {
+		t.Errorf("cursor = %d, want 3", observed.RotationCursor)
 	}
 }

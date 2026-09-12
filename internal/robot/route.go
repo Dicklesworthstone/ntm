@@ -22,8 +22,20 @@ import (
 type RoutingStateStore interface {
 	GetRoutingState(session, filterKey string) (*state.RoutingState, error)
 	SaveRoutingState(*state.RoutingState) error
+	// SaveRoutingStateIfUnchanged persists only while the stored row still
+	// matches what this decision was routed from, reporting false when
+	// another writer advanced it first. Stateful strategies need it because
+	// selection is a read-modify-write spread across two store calls in
+	// separate processes.
+	SaveRoutingStateIfUnchanged(rs *state.RoutingState, expected *state.RoutingState) (bool, error)
 	PurgeRoutingStateOlderThan(maxAge time.Duration) (int64, error)
 }
+
+// routingStateAttempts bounds the optimistic-concurrency retry. Contention is
+// two operators (or two agents) dispatching to one session at the same instant,
+// so a couple of attempts settles it; past that, taking the slightly unfair
+// route beats spinning while the operator waits.
+const routingStateAttempts = 3
 
 // openRoutingStateStore opens (and migrates) the state DB for routing state.
 // Best-effort: callers proceed without persistence when it fails. This is the
@@ -104,30 +116,47 @@ func routingStrategyIsStateful(strategy StrategyName) bool {
 // never fails the routing decision.
 func routeWithSessionState(agents []ScoredAgent, opts RouteOptions, store RoutingStateStore, persist bool) RoutingResult {
 	router := NewRouter()
-	ctx := RoutingContext{
+	filterKey := routingStateFilterKey(opts)
+
+	baseCtx := RoutingContext{
 		Prompt:       opts.Prompt,
 		LastAgent:    opts.LastAgent,
 		ExcludePanes: opts.ExcludePanes,
 		ExplicitPane: -1,
 	}
-	filterKey := routingStateFilterKey(opts)
-	if store != nil && ctx.LastAgent == "" {
-		rs, err := store.GetRoutingState(opts.Session, filterKey)
-		switch {
-		case err != nil:
-			slog.Warn("[robot.route] cannot load persisted routing state", "session", opts.Session, "error", err)
-		case rs != nil:
-			ctx.LastAgent = rs.LastAgent
-			if rs.RotationCursor >= 0 {
-				ctx.RotationCursor = rs.RotationCursor
-				ctx.HasRotationCursor = true
+
+	// Selection is a read-modify-write over the persisted cursor, so the load
+	// and the guarded store have to be one attempt: if another process
+	// advanced the cursor in between, this decision was made from a stale
+	// cursor and must be recomputed, not dispatched (see
+	// SaveRoutingStateIfUnchanged). A read-only or stateless route takes the
+	// single pass below and never loops.
+	var result RoutingResult
+	for attempt := 1; ; attempt++ {
+		ctx := baseCtx
+
+		var observed *state.RoutingState
+		if store != nil && ctx.LastAgent == "" {
+			rs, err := store.GetRoutingState(opts.Session, filterKey)
+			switch {
+			case err != nil:
+				slog.Warn("[robot.route] cannot load persisted routing state", "session", opts.Session, "error", err)
+			case rs != nil:
+				observed = rs
+				ctx.LastAgent = rs.LastAgent
+				if rs.RotationCursor >= 0 {
+					ctx.RotationCursor = rs.RotationCursor
+					ctx.HasRotationCursor = true
+				}
 			}
 		}
-	}
 
-	result := router.Route(agents, opts.Strategy, ctx)
+		result = router.Route(agents, opts.Strategy, ctx)
 
-	if persist && store != nil && result.Selected != nil && routingStrategyIsStateful(opts.Strategy) {
+		if !persist || store == nil || result.Selected == nil || !routingStrategyIsStateful(opts.Strategy) {
+			return result
+		}
+
 		cursor := -1
 		for i := range agents {
 			if agents[i].PaneID == result.Selected.PaneID {
@@ -141,10 +170,14 @@ func routeWithSessionState(agents []ScoredAgent, opts RouteOptions, store Routin
 			LastAgent:      result.Selected.PaneID,
 			RotationCursor: cursor,
 		}
-		if err := store.SaveRoutingState(rs); err != nil {
+
+		stored, err := store.SaveRoutingStateIfUnchanged(rs, observed)
+		switch {
+		case err != nil:
 			slog.Warn("[robot.route] cannot persist routing state",
 				"session", opts.Session, "strategy", opts.Strategy, "error", err)
-		} else {
+			return result
+		case stored:
 			slog.Info("[robot.route] routing state persisted",
 				"session", opts.Session, "strategy", opts.Strategy,
 				"pane_id", result.Selected.PaneID, "pane_index", result.Selected.PaneIndex,
@@ -154,9 +187,19 @@ func routeWithSessionState(agents []ScoredAgent, opts RouteOptions, store Routin
 			if purged, err := store.PurgeRoutingStateOlderThan(routingStateTTL); err == nil && purged > 0 {
 				slog.Debug("[robot.route] purged stale routing state rows", "purged", purged)
 			}
+			return result
+		case attempt >= routingStateAttempts:
+			// Give the caller the decision anyway: routing must not fail
+			// because a peer is dispatching to the same session, and the
+			// worst case is the fairness slip this guard usually prevents.
+			slog.Warn("[robot.route] routing state contended; using the last selection",
+				"session", opts.Session, "strategy", opts.Strategy, "attempts", attempt)
+			return result
+		default:
+			slog.Debug("[robot.route] routing state changed under us; re-selecting",
+				"session", opts.Session, "strategy", opts.Strategy, "attempt", attempt)
 		}
 	}
-	return result
 }
 
 // RouteOptions configures the routing recommendation request.

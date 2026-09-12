@@ -89,6 +89,76 @@ func (s *Store) SaveRoutingState(rs *RoutingState) error {
 	return nil
 }
 
+// SaveRoutingStateIfUnchanged upserts routing state only while the stored row
+// still matches what the caller routed from, and reports whether the write
+// landed.
+//
+// Round-robin selection is a read-modify-write: load the cursor, pick the next
+// agent from it, store the new cursor. GetRoutingState and SaveRoutingState are
+// separately locked round trips with nothing held across them, and every `ntm
+// send` opens its own Store — so two concurrent sends both read cursor N, both
+// select agent N+1, and both write N+1. One agent takes both messages and the
+// agent whose turn it was is skipped, which is precisely the rotation fairness
+// the persisted cursor exists to provide.
+//
+// expected is the row the caller read, or nil when it read no row at all. A
+// false return means another writer got there first and the caller must
+// re-read and re-select rather than dispatch on a stale decision.
+func (s *Store) SaveRoutingStateIfUnchanged(rs *RoutingState, expected *RoutingState) (bool, error) {
+	if rs == nil || rs.SessionName == "" {
+		return false, fmt.Errorf("routing state requires a session name")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	updated := rs.UpdatedAt
+	if updated.IsZero() {
+		updated = time.Now().UTC()
+	}
+
+	var (
+		result sql.Result
+		err    error
+	)
+	if expected == nil {
+		// The caller saw no row. Only an insert is correct here: if a row now
+		// exists, a concurrent writer created it and owns the cursor.
+		result, err = s.db.Exec(`
+			INSERT INTO routing_state (session_name, filter_key, last_agent, rotation_cursor, updated_at)
+			VALUES (?, ?, ?, ?, ?)
+			ON CONFLICT(session_name, filter_key) DO NOTHING`,
+			rs.SessionName, rs.FilterKey, rs.LastAgent, rs.RotationCursor, updated)
+	} else {
+		// Guard the update on the exact values that produced this decision. A
+		// row deleted in the meantime (session teardown) simply inserts, which
+		// is correct: nobody else holds a cursor.
+		result, err = s.db.Exec(`
+			INSERT INTO routing_state (session_name, filter_key, last_agent, rotation_cursor, updated_at)
+			VALUES (?, ?, ?, ?, ?)
+			ON CONFLICT(session_name, filter_key) DO UPDATE SET
+				last_agent = excluded.last_agent,
+				rotation_cursor = excluded.rotation_cursor,
+				updated_at = excluded.updated_at
+			WHERE routing_state.last_agent = ? AND routing_state.rotation_cursor = ?`,
+			rs.SessionName, rs.FilterKey, rs.LastAgent, rs.RotationCursor, updated,
+			expected.LastAgent, expected.RotationCursor)
+	}
+	if err != nil {
+		if routingStateSchemaMissing(err) {
+			// Unmigrated database: persistence is best-effort, and the caller
+			// treats this the same as any other failed save.
+			return false, nil
+		}
+		return false, fmt.Errorf("save routing state: %w", err)
+	}
+
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("save routing state: %w", err)
+	}
+	return affected > 0, nil
+}
+
 // DeleteRoutingState removes all routing state rows (every filter key) for a
 // session. Used when a session is torn down so a recreated session with the
 // same name does not inherit a stale last_agent/cursor (bd-88um4).
