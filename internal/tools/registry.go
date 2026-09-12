@@ -71,11 +71,20 @@ func (r *Registry) GetAllInfoExcept(ctx context.Context, disabled map[ToolName]b
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 
+	// Disabled tools are recorded FIRST, before any probing goroutine exists.
+	// Appending them inside the spawn loop instead would have this goroutine
+	// writing the shared slice while probe goroutines write it under the
+	// mutex — a data race, and the caller sorts the result anyway, so there is
+	// nothing to gain from interleaving them.
 	for _, a := range adapters {
 		if disabled[a.Name()] {
-			// No goroutine and no probe: record the configured verdict.
 			infos = append(infos, DisabledToolInfo(a.Name()))
-			continue
+		}
+	}
+
+	for _, a := range adapters {
+		if disabled[a.Name()] {
+			continue // recorded above; never probed
 		}
 		wg.Add(1)
 		go func(adapter Adapter) {
@@ -116,12 +125,21 @@ func (r *Registry) GetHealthReportExcept(ctx context.Context, disabled map[ToolN
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 
+	// Counted FIRST, before any probing goroutine exists: report.Tools is a
+	// plain map, and writing it here while a probe goroutine writes it under
+	// the mutex is a concurrent map write, which panics rather than merely
+	// racing.
 	for _, a := range adapters {
 		if disabled[a.Name()] {
 			report.Total++
 			report.Disabled++
 			report.Tools[a.Name()] = false
-			continue
+		}
+	}
+
+	for _, a := range adapters {
+		if disabled[a.Name()] {
+			continue // counted above; never probed
 		}
 		wg.Add(1)
 		go func(adapter Adapter) {

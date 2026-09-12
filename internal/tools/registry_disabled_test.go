@@ -144,6 +144,71 @@ func TestGetAllInfoExceptNilProbesEverything(t *testing.T) {
 	}
 }
 
+// slowAdapter probes slowly, so its goroutine is guaranteed to still be
+// running while the caller records the disabled tools.
+type slowAdapter struct {
+	*probeCountingAdapter
+	delay time.Duration
+}
+
+func (a *slowAdapter) Info(ctx context.Context) (*ToolInfo, error) {
+	time.Sleep(a.delay)
+	return a.probeCountingAdapter.Info(ctx)
+}
+
+func (a *slowAdapter) Detect() (string, bool) {
+	time.Sleep(a.delay)
+	return a.probeCountingAdapter.Detect()
+}
+
+// TestDisabledToolsDoNotRaceWithProbes must be run under -race. Recording a
+// disabled tool used to happen inside the goroutine-spawning loop, so this
+// goroutine appended to the shared slice — and wrote the shared
+// report.Tools map — while probe goroutines did the same. The map write in
+// particular is a fatal concurrent map write, not merely a race, and it would
+// fire on any real snapshot with one integration disabled.
+func TestDisabledToolsDoNotRaceWithProbes(t *testing.T) {
+	build := func() (*Registry, map[ToolName]bool) {
+		r := &Registry{adapters: make(map[ToolName]Adapter)}
+		// Several slow probes and several disabled tools, so the two kinds of
+		// write overlap in time.
+		for _, name := range []ToolName{ToolBV, ToolBD, ToolRU, ToolMS} {
+			r.Register(&slowAdapter{probeCountingAdapter: newProbeCountingAdapter(name), delay: 20 * time.Millisecond})
+		}
+		disabled := map[ToolName]bool{}
+		for _, name := range []ToolName{ToolCASS, ToolCM, ToolAM, ToolXF} {
+			r.Register(newProbeCountingAdapter(name))
+			disabled[name] = true
+		}
+		return r, disabled
+	}
+
+	t.Run("GetAllInfoExcept", func(t *testing.T) {
+		r, disabled := build()
+		infos := r.GetAllInfoExcept(context.Background(), disabled)
+		if len(infos) != 8 {
+			t.Errorf("got %d infos, want 8 (4 probed + 4 disabled)", len(infos))
+		}
+	})
+
+	t.Run("GetHealthReportExcept", func(t *testing.T) {
+		r, disabled := build()
+		report := r.GetHealthReportExcept(context.Background(), disabled)
+		if report.Total != 8 {
+			t.Errorf("Total = %d, want 8", report.Total)
+		}
+		if report.Disabled != 4 {
+			t.Errorf("Disabled = %d, want 4", report.Disabled)
+		}
+		if len(report.Tools) != 8 {
+			t.Errorf("Tools has %d entries, want 8", len(report.Tools))
+		}
+		if sum := report.Healthy + report.Unhealthy + report.Missing + report.Disabled; sum != report.Total {
+			t.Errorf("counts do not add up: %d != %d", sum, report.Total)
+		}
+	})
+}
+
 // TestGetHealthReportExceptCountsDisabledSeparately verifies the summary
 // arithmetic still covers the whole registry: a disabled tool is neither
 // healthy, unhealthy, nor known-missing.
