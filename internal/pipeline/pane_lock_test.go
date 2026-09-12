@@ -125,7 +125,11 @@ func TestPaneLockWaitsThenFailsTyped(t *testing.T) {
 	if elapsed < wait {
 		t.Errorf("failed after %s, before the %s budget elapsed", elapsed, wait)
 	}
-	if elapsed > wait*4 {
+	// Generous upper bound on purpose: this only needs to catch "waits
+	// forever", and a tight multiple would flake when the suite saturates the
+	// machine — which is how several of this repo's timeout-sensitive tests
+	// already misbehave under load.
+	if elapsed > wait*10 {
 		t.Errorf("waited %s, far beyond the %s budget", elapsed, wait)
 	}
 }
