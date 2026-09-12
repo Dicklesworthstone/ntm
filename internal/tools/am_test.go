@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 )
@@ -143,6 +144,33 @@ func TestAMAdapter_ProbesConfiguredEndpoint(t *testing.T) {
 	}
 	if hits.Load() == 0 {
 		t.Error("the configured endpoint was never contacted; the probe used a different URL")
+	}
+}
+
+// TestAMAdapter_DownServerFailsFast pins a performance contract, not just
+// behaviour. The tools registry probes Agent Mail on every inventory pass and
+// snapshot, and the overwhelmingly common case on a developer box is that the
+// server is not running at all.
+//
+// Routing the probe through the shared client (ntm#316) briefly made that case
+// cost ~1.25s: IsAvailableContext is built to gate mutating verbs, so it
+// retries three times with backoff before conceding. An inventory row must
+// instead resolve on the refused connection. The budget here is deliberately
+// far above the observed ~2ms and far below a single retry cycle, so it
+// catches a regression without being flaky on a loaded machine.
+func TestAMAdapter_DownServerFailsFast(t *testing.T) {
+	a := NewAMAdapter()
+	a.SetServerURL("http://127.0.0.1:1") // nothing listens on port 1
+
+	start := time.Now()
+	healthy := a.isServerHealthy(context.Background())
+	elapsed := time.Since(start)
+
+	if healthy {
+		t.Error("reported healthy against a port with no listener")
+	}
+	if elapsed > 300*time.Millisecond {
+		t.Errorf("a refused connection took %s; an inventory probe must fail fast, not retry", elapsed)
 	}
 }
 
