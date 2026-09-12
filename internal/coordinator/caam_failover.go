@@ -116,9 +116,11 @@ type failoverChecker struct {
 	listAccounts  func(provider string) ([]swarm.AccountInfo, error)
 	switchAccount func(provider, accountID string) (*robot.SwitchAccountOutput, error)
 	lastSwitchAt  func(scope string) (time.Time, bool)
-	recordSwitch  func(scope, provider string, at time.Time)
-	publish       func(record robot.ActuationRecord)
-	now           func() time.Time
+	// claimSwitch atomically takes the per-pane cooldown slot and reports
+	// whether this process won it; a false return must decline the switch.
+	claimSwitch func(scope, provider string, at time.Time, expected *time.Time) bool
+	publish     func(record robot.ActuationRecord)
+	now         func() time.Time
 
 	// Cooldown fallback when the runtime store is unavailable, and decline
 	// republish bookkeeping. Guarded by mu (runOnce may share the checker
@@ -218,7 +220,7 @@ func newFailoverChecker(session, workDir string, caamCfg config.CAAMConfig) *fai
 		lastPublished: make(map[string]declineMark),
 	}
 	fc.lastSwitchAt = fc.storedLastSwitch
-	fc.recordSwitch = fc.storeLastSwitch
+	fc.claimSwitch = fc.storeLastSwitch
 	return fc
 }
 
@@ -263,28 +265,53 @@ func (fc *failoverChecker) storedLastSwitch(scope string) (time.Time, bool) {
 	return at, ok
 }
 
-// storeLastSwitch persists the per-pane switch watermark (and always records
-// it in memory so cooldown survives a store outage within this process).
-func (fc *failoverChecker) storeLastSwitch(scope, provider string, at time.Time) {
+// storeLastSwitch claims the per-pane switch slot, reporting whether THIS
+// process won it (and always recording in memory so cooldown survives a store
+// outage within this process).
+//
+// A claim rather than a write because the cooldown gates an action, not a
+// report. checkPane reads the watermark, then runs the remaining gates —
+// including a real `caam list --json` subprocess with a multi-second budget —
+// and only then records. Nothing prevents two `ntm coordinator run` processes
+// from watching one session (no pid file, no lock, no DB singleton), so both
+// could read "not recently switched", both pass every gate, and both rotate
+// the same pane seconds apart, breaking the one-hour invariant this gate
+// documents and potentially leaving the pane on an unexpected account.
+//
+// A false return means a peer claimed the slot first; the caller must decline
+// instead of switching.
+func (fc *failoverChecker) storeLastSwitch(scope, provider string, at time.Time, expected *time.Time) bool {
 	fc.mu.Lock()
+	if prev, ok := fc.memLastSwitch[scope]; ok && at.Sub(prev) < failoverSwitchCooldown {
+		// Another goroutine in this process already claimed the slot.
+		fc.mu.Unlock()
+		return false
+	}
 	fc.memLastSwitch[scope] = at
 	fc.mu.Unlock()
 
 	store := fc.runtimeStore()
 	if store == nil {
-		return
+		// No shared store: the in-memory claim above is the only guard
+		// available, and it is what this process had before.
+		return true
 	}
 	ts := at.UTC()
-	if err := store.SetWatermark(&state.OutputWatermark{
+	claimed, err := store.ClaimWatermark(&state.OutputWatermark{
 		WatermarkType: watermarkTypeCaamFailover,
 		Scope:         scope,
 		LastTs:        &ts,
 		Consumer:      provider,
 		CreatedAt:     ts,
 		UpdatedAt:     ts,
-	}); err != nil {
-		slog.Debug("caam failover: watermark write failed", "scope", scope, "error", err)
+	}, expected)
+	if err != nil {
+		slog.Debug("caam failover: watermark claim failed", "scope", scope, "error", err)
+		// The store could not answer. Fall back to the in-memory claim rather
+		// than declining a legitimate failover on a storage hiccup.
+		return true
 	}
+	return claimed
 }
 
 // runOnce executes one failover check pass and returns the decisions made.
@@ -376,8 +403,17 @@ func (fc *failoverChecker) checkPane(pane tmux.Pane) (failoverDecision, bool) {
 	// Gate: never within failoverSwitchCooldown of the last auto-switch
 	// attempt for this pane.
 	scope := fc.cooldownScope(pane)
-	if last, ok := fc.lastSwitchAt(scope); ok && now.Sub(last) < failoverSwitchCooldown {
-		return fc.decline(decision, "cooldown", true), true
+	// observedSwitch is what the cooldown decision below is made from; the
+	// claim at fire time is guarded on it still being current, because the
+	// gates in between do real work (a caam subprocess) and a peer coordinator
+	// can take the slot during that window.
+	var observedSwitch *time.Time
+	if last, ok := fc.lastSwitchAt(scope); ok {
+		if now.Sub(last) < failoverSwitchCooldown {
+			return fc.decline(decision, "cooldown", true), true
+		}
+		observed := last.UTC()
+		observedSwitch = &observed
 	}
 
 	// Gate: only fail over when the detected reset is further away than the
@@ -435,9 +471,13 @@ func (fc *failoverChecker) checkPane(pane tmux.Pane) (failoverDecision, bool) {
 	}
 	decision.ChosenAccount = alternate
 
-	// Fire. Record the attempt FIRST so even a failing switch starts the
-	// per-pane cooldown (a broken caam must not be retried every tick).
-	fc.recordSwitch(scope, decision.Provider, now)
+	// Fire. Claim the cooldown slot FIRST so even a failing switch starts the
+	// per-pane cooldown (a broken caam must not be retried every tick), and so
+	// a peer coordinator that took the slot while the gates above ran loses
+	// the race here instead of rotating the same pane a second time.
+	if !fc.claimSwitch(scope, decision.Provider, now, observedSwitch) {
+		return fc.decline(decision, "cooldown", true), true
+	}
 
 	out, err := fc.switchAccount(decision.Provider, alternate)
 	success := err == nil && out != nil && out.Switch.Success

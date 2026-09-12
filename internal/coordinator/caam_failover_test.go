@@ -106,8 +106,9 @@ func newFailoverTestEnv(t *testing.T, providers []string, horizonMinutes int, pa
 		at, ok := env.watermark[scope]
 		return at, ok
 	}
-	fc.recordSwitch = func(scope, provider string, at time.Time) {
+	fc.claimSwitch = func(scope, provider string, at time.Time, _ *time.Time) bool {
 		env.watermark[scope] = at
+		return true
 	}
 	env.fc = fc
 	return env
@@ -412,7 +413,7 @@ func TestFailoverChecker_HonorsAccountPins(t *testing.T) {
 		return nil, nil
 	}
 	fc.lastSwitchAt = func(string) (time.Time, bool) { return time.Time{}, false }
-	fc.recordSwitch = func(string, string, time.Time) {}
+	fc.claimSwitch = func(string, string, time.Time, *time.Time) bool { return true }
 	fc.publish = func(r robot.ActuationRecord) { published = append(published, r) }
 
 	decisions := fc.runOnce(context.Background())
@@ -486,7 +487,7 @@ func TestFailoverChecker_CooldownPersistsInRealStore(t *testing.T) {
 		env.fc.store = store
 		env.fc.storeOnce.Do(func() {})
 		env.fc.lastSwitchAt = env.fc.storedLastSwitch
-		env.fc.recordSwitch = env.fc.storeLastSwitch
+		env.fc.claimSwitch = env.fc.storeLastSwitch
 		return env
 	}
 

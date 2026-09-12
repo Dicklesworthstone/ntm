@@ -2569,6 +2569,76 @@ func (s *Store) SetWatermark(wm *OutputWatermark) error {
 	return nil
 }
 
+// ClaimWatermark advances a watermark only while its stored last_ts still
+// matches expected, and reports whether the claim succeeded.
+//
+// It exists for watermarks that gate an ACTION rather than merely record
+// progress. Those callers read the watermark, decide, and write it back — and
+// between the read and the write they do real work (a subprocess, a network
+// round trip), so two processes can both read "not recently done", both pass
+// their gates, and both act. A plain SetWatermark cannot detect that; this can,
+// by refusing the second write.
+//
+// expected is the last_ts the caller read, or nil when it read no row (or a row
+// with no timestamp). A false return means another writer claimed the slot
+// first and the caller must not perform the action.
+func (s *Store) ClaimWatermark(wm *OutputWatermark, expected *time.Time) (bool, error) {
+	if wm == nil {
+		return false, fmt.Errorf("claim watermark requires a watermark")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var (
+		result sql.Result
+		err    error
+	)
+	if expected == nil {
+		// Nothing was there to gate on: only an insert is correct, because a
+		// row appearing now means a concurrent claimant created it.
+		result, err = s.db.Exec(`
+			INSERT INTO output_watermarks (
+				watermark_type, scope, last_cursor, last_ts,
+				baseline_cursor, baseline_ts, baseline_hash, consumer, created_at, updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(watermark_type, scope) DO NOTHING`,
+			wm.WatermarkType, wm.Scope, wm.LastCursor, wm.LastTs,
+			wm.BaselineCursor, wm.BaselineTs, wm.BaselineHash,
+			wm.Consumer, wm.CreatedAt, wm.UpdatedAt,
+		)
+	} else {
+		result, err = s.db.Exec(`
+			INSERT INTO output_watermarks (
+				watermark_type, scope, last_cursor, last_ts,
+				baseline_cursor, baseline_ts, baseline_hash, consumer, created_at, updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(watermark_type, scope) DO UPDATE SET
+				last_cursor = excluded.last_cursor,
+				last_ts = excluded.last_ts,
+				baseline_cursor = excluded.baseline_cursor,
+				baseline_ts = excluded.baseline_ts,
+				baseline_hash = excluded.baseline_hash,
+				consumer = excluded.consumer,
+				updated_at = excluded.updated_at
+			WHERE output_watermarks.last_ts = ?`,
+			wm.WatermarkType, wm.Scope, wm.LastCursor, wm.LastTs,
+			wm.BaselineCursor, wm.BaselineTs, wm.BaselineHash,
+			wm.Consumer, wm.CreatedAt, wm.UpdatedAt,
+			*expected,
+		)
+	}
+	if err != nil {
+		return false, fmt.Errorf("claim watermark: %w", err)
+	}
+
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("claim watermark: %w", err)
+	}
+	return affected > 0, nil
+}
+
 // SetWatermark inserts or updates a watermark in an existing transaction.
 func (tx *Tx) SetWatermark(wm *OutputWatermark) error {
 	_, err := tx.tx.Exec(`
