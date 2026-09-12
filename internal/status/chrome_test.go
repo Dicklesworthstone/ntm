@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 // claudePaneWithStatusLine reproduces the pane shape from ntm#322: a
@@ -168,6 +169,84 @@ func TestLastMeaningfulOutputBudget(t *testing.T) {
 		if len(got) > maxLen {
 			t.Errorf("maxLen %d: result length %d exceeds the budget", maxLen, len(got))
 		}
+	}
+}
+
+// TestLastMeaningfulOutputEdgeCases covers the inputs a live pane actually
+// produces that a hand-written fixture tends to miss: CRLF endings, chrome
+// wrapped in ANSI colour (a status line is almost always dim), multi-byte
+// transcript text, and degenerate budgets.
+func TestLastMeaningfulOutputEdgeCases(t *testing.T) {
+	cases := []struct {
+		name    string
+		in      string
+		agent   string
+		maxLen  int
+		wantNot []string
+		wantHas []string
+	}{
+		{name: "empty input", in: "", agent: "cc", maxLen: 200},
+		{name: "only newlines", in: "\n\n\n\n", agent: "cc", maxLen: 200},
+		{
+			name:    "CRLF line endings",
+			in:      "● done building\r\n╭────╮\r\n│ ❯  │\r\n╰────╯\r\n  ctx 5% | bypass on\r\n",
+			agent:   "cc",
+			maxLen:  200,
+			wantNot: []string{"bypass on", "❯", "╭"},
+			wantHas: []string{"done building"},
+		},
+		{
+			name:    "ANSI-dimmed chrome is still chrome",
+			in:      "● built ok\n\x1b[2m╭────╮\x1b[0m\n\x1b[2m│ ❯  │\x1b[0m\n\x1b[2m╰────╯\x1b[0m\n\x1b[2m ctx 9%\x1b[0m",
+			agent:   "cc",
+			maxLen:  200,
+			wantNot: []string{"ctx 9%"},
+			wantHas: []string{"built ok"},
+		},
+		{
+			name:    "multi-byte transcript survives intact",
+			in:      "● 完了しました — ünïcode ✓\n╭──╮\n│ ❯│\n╰──╯\n status",
+			agent:   "cc",
+			maxLen:  200,
+			wantHas: []string{"完了しました", "ünïcode"},
+		},
+		{
+			name:   "budget of one byte does not panic",
+			in:     "● hello world this is long\n│ ❯ │\n status",
+			agent:  "cc",
+			maxLen: 1,
+		},
+		{
+			name:    "unknown agent type falls back to the tail",
+			in:      "line one\nline two",
+			agent:   "totally-unknown",
+			maxLen:  200,
+			wantHas: []string{"line two"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := LastMeaningfulOutput(tc.in, tc.agent, tc.maxLen)
+
+			if tc.maxLen > 0 && len(got) > tc.maxLen {
+				t.Errorf("length %d exceeds maxLen %d: %q", len(got), tc.maxLen, got)
+			}
+			// Truncation walks bytes, so a mid-rune cut is a live hazard.
+			if !utf8.ValidString(got) {
+				t.Errorf("preview is not valid UTF-8: %q", got)
+			}
+			for _, bad := range tc.wantNot {
+				if strings.Contains(got, bad) {
+					t.Errorf("preview still contains %q:\n%s", bad, got)
+				}
+			}
+			for _, want := range tc.wantHas {
+				if !strings.Contains(got, want) {
+					t.Errorf("preview missing %q:\n%s", want, got)
+				}
+			}
+		})
 	}
 }
 
