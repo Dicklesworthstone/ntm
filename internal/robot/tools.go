@@ -87,9 +87,9 @@ func DisabledTools(cfg *config.Config) map[tools.ToolName]bool {
 	return disabled
 }
 
-// collectToolInfo probes the registry (skipping the tools disabled names) and
-// renders the result as sorted robot output. It is the one conversion from
-// tools.ToolInfo to ToolInfoOutput, shared by the full inventory and the
+// collectToolInfo probes the registry, skipping every tool named in disabled,
+// and renders the result as sorted robot output. It is the one conversion
+// from tools.ToolInfo to ToolInfoOutput, shared by the full inventory and the
 // snapshot summary.
 func collectToolInfo(ctx context.Context, disabled map[tools.ToolName]bool) []ToolInfoOutput {
 	allInfo := tools.GetAllInfoExcept(ctx, disabled)
@@ -136,7 +136,7 @@ func collectToolInfo(ctx context.Context, disabled map[tools.ToolName]bool) []To
 }
 
 // GetTools collects tool inventory and health, skipping the probes for every
-// integration disabled names.
+// tool named in disabled.
 // This function returns the data struct directly, enabling CLI/REST parity.
 func GetTools(ctx context.Context, disabled map[tools.ToolName]bool) (*ToolsOutput, error) {
 	return &ToolsOutput{
@@ -170,7 +170,7 @@ func PrintTools() error {
 }
 
 // GetToolsSummary returns a lightweight tools summary for inclusion in
-// snapshots, skipping the probes for every integration disabled names.
+// snapshots, skipping the probes for every tool named in disabled.
 func GetToolsSummary(ctx context.Context, disabled map[tools.ToolName]bool) []ToolInfoOutput {
 	return collectToolInfo(ctx, disabled)
 }

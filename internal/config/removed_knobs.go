@@ -39,11 +39,17 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
-// RemovedKnob is a config key found in a user's config file that was removed
-// in v1.26.0, together with its disposition sentence.
+// RemovedKnob is a dead config key found in a user's config file, together
+// with its disposition sentence and the removal batch it belongs to.
 type RemovedKnob struct {
 	Key         string // dotted key as written in the config file
 	Disposition string // names the replacement, or states there is none
+	// Tier is the DeadKeyTier* name of the batch that removed this key.
+	// Callers that print when a key stopped loading MUST read the release
+	// text from this batch (DeadKeyTierProvenance) rather than hard-coding
+	// one: `ntm doctor` used to tell every removed key it had failed loading
+	// "since v1.27.0", which is false for any later batch (ntm#323).
+	Tier string
 }
 
 // noEffect is the honest sentence: these keys were parsed, validated, and
@@ -277,6 +283,17 @@ func deadKeyTierProvenance(tier string) string {
 	return ""
 }
 
+// DeadKeyTierProvenance returns the release provenance for a removal batch:
+// when its keys went away and where the migration table lives.
+//
+// It is exported so surfaces outside this package (notably `ntm doctor`) can
+// tell the user when a specific key stopped loading instead of asserting one
+// batch's release numbers over every key they print. An unknown tier yields
+// the empty string; callers must render nothing rather than guess.
+func DeadKeyTierProvenance(tier string) string {
+	return deadKeyTierProvenance(tier)
+}
+
 // DeadKeyLoadError is the strict-loader failure for a config file containing
 // removed (v1.26.0 batch) and/or deprecated (v1.28.0 batch) keys, plus any
 // genuinely unknown fields found in the same pass. Its Error() text is
@@ -351,7 +368,7 @@ func classifyUndecodedKeys(fields []string) (byTier map[string][]RemovedKnob, un
 			continue
 		}
 		m := matched[key]
-		byTier[m.tier] = append(byTier[m.tier], RemovedKnob{Key: key, Disposition: m.disposition})
+		byTier[m.tier] = append(byTier[m.tier], RemovedKnob{Key: key, Disposition: m.disposition, Tier: m.tier})
 	}
 	return byTier, unknown
 }

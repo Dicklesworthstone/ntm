@@ -56,10 +56,14 @@ var ErrPaneBusyOtherProcess = errors.New("pane is held by another ntm process")
 
 // paneLockFileName maps a tmux pane identity to a lock file name.
 //
-// Pane ids are "%17"-shaped and targets can carry session/window text, so the
-// name is hashed rather than embedded: a pane identity must never be able to
-// introduce a path separator, a "..", or a platform-reserved name. A readable
-// prefix is kept for humans debugging a stuck lock directory.
+// Both selection paths hand back a canonical "%17"-shaped pane id today, which
+// is what makes the lock a reliable rendezvous — two processes naming the same
+// pane produce the same file. The name is still hashed rather than embedded so
+// that a future caller passing a richer target (session:window.pane, or
+// anything operator-supplied) cannot introduce a path separator, a "..", or a
+// platform-reserved name. The "pane-" prefix also keeps a Windows reserved
+// device name (CON, NUL, ...) from ever being the whole filename. A readable
+// fragment is kept for humans debugging a stuck lock directory.
 func paneLockFileName(paneID string) string {
 	sum := sha256.Sum256([]byte(paneID))
 	readable := strings.Map(func(r rune) rune {
@@ -131,6 +135,16 @@ func (e *Executor) acquirePaneLockCrossProcess(ctx context.Context, paneID strin
 	releaseLocal, err := e.acquirePaneLock(ctx, paneID)
 	if err != nil {
 		return nil, err
+	}
+
+	// A dry run dispatches nothing, so there is nothing to make exclusive.
+	// Taking the file lock here would be actively wrong twice over: --dry-run
+	// must not write to .ntm, and every dry-run step reports the same
+	// synthetic pane id ("dry-run-pane"), so two concurrent previews of the
+	// same project would serialize on one key and the second would sit out
+	// the whole wait budget before failing as "pane busy".
+	if e.config.DryRun {
+		return releaseLocal, nil
 	}
 
 	projectDir := e.config.ProjectDir

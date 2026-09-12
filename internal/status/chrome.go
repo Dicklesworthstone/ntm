@@ -117,6 +117,27 @@ func isComposerAdjacent(line string) bool {
 	return isBoxRuleLine(stripped) || isBorderedRow(stripped)
 }
 
+// boxBottomCornerRunes close a box. A rule row carrying one of them marks the
+// END of some box.
+const boxBottomCornerRunes = "╰╯└┘┗┛"
+
+// closesAnotherBox reports whether a rule row above the composer is some other
+// box's bottom edge.
+//
+// It is the boundary that stops the upward walk. The composer's own bottom
+// edge is BELOW its marker row, so any closing rule found ABOVE belongs to a
+// different box — a boxed diff or tool result in the transcript. Without this
+// the walk would absorb that box and everything it contained, discarding real
+// output, which is the same class of loss ntm#322 is about. A blank line stops
+// the walk too, but agents do not always leave one.
+func closesAnotherBox(line string) bool {
+	stripped := strings.TrimSpace(StripANSI(line))
+	if !isBoxRuleLine(stripped) {
+		return false
+	}
+	return strings.ContainsAny(stripped, boxBottomCornerRunes)
+}
+
 // trimAgentChrome drops the agent's pinned bottom chrome from a capture's
 // lines, returning only the transcript above it.
 //
@@ -148,9 +169,19 @@ func trimAgentChrome(lines []string, agentType string) []string {
 		return lines
 	}
 
-	// Walk up over the contiguous box rows to the box's top border.
+	// Walk up over the contiguous box rows to the box's top border. The walk
+	// is not bounded by the scan window: once an anchor is found, the real
+	// boundaries are a blank line or another box's closing rule, and a
+	// composer with many wrapped rows must still be trimmed whole.
 	cut := composerAt
-	for cut > start && (isComposerAdjacent(lines[cut-1]) || isComposerAnchor(lines[cut-1], markers)) {
+	for cut > 0 {
+		prev := lines[cut-1]
+		if closesAnotherBox(prev) {
+			break
+		}
+		if !isComposerAdjacent(prev) && !isComposerAnchor(prev, markers) {
+			break
+		}
 		cut--
 	}
 

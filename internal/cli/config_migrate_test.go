@@ -428,3 +428,60 @@ func TestMigrateBehaviorNoteIsHonestPerBatch(t *testing.T) {
 		})
 	}
 }
+
+// TestDoctorCitesEachKeysOwnRemovalBatch is the ntm#323 regression on the
+// doctor surface. removedKnobChecks/deprecatedKnobChecks each hard-coded one
+// batch's release text, which was fine while each scan returned exactly one
+// batch. Once ScanRemovedKnobs began carrying a later batch too, doctor told
+// users a key had failed loading "since v1.27.0" in releases where it still
+// worked — the same false version claim the issue is about.
+func TestDoctorCitesEachKeysOwnRemovalBatch(t *testing.T) {
+	tests := []struct {
+		name    string
+		knob    config.RemovedKnob
+		wantHas []string
+		wantNot []string
+	}{
+		{
+			name:    "v1.26.0 batch keeps its own release pair",
+			knob:    config.RemovedKnob{Key: "tmux.palette_key", Disposition: "removed", Tier: config.DeadKeyTierRemoved},
+			wantHas: []string{"v1.26.0", "v1.27.0"},
+		},
+		{
+			name:    "v1.28.0 batch keeps its own release pair",
+			knob:    config.RemovedKnob{Key: "preflight.enabled", Disposition: "removed", Tier: config.DeadKeyTierDeprecated},
+			wantHas: []string{"v1.28.0", "v1.29.0"},
+			wantNot: []string{"v1.26.0"},
+		},
+		{
+			name:    "recovery-alias batch borrows no release number",
+			knob:    config.RemovedKnob{Key: "memory.max_rules", Disposition: "superseded by recovery.max_cm_rules", Tier: config.DeadKeyTierRecoveryAlias},
+			wantHas: []string{"recovery.max_cm_rules", "ntm#323"},
+			wantNot: []string{"v1.26.0", "v1.27.0", "v1.28.0", "v1.29.0"},
+		},
+		{
+			name:    "an unknown tier renders no provenance rather than a guess",
+			knob:    config.RemovedKnob{Key: "some.key", Disposition: "removed", Tier: "not-a-tier"},
+			wantNot: []string{"v1.26.0", "v1.27.0", "()"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			msg := deadKnobDoctorMessage(tt.knob)
+			if !strings.Contains(msg, "delete it from your config file") {
+				t.Errorf("message lost its remediation: %q", msg)
+			}
+			for _, want := range tt.wantHas {
+				if !strings.Contains(msg, want) {
+					t.Errorf("message %q missing %q", msg, want)
+				}
+			}
+			for _, bad := range tt.wantNot {
+				if strings.Contains(msg, bad) {
+					t.Errorf("message %q borrowed %q from another batch", msg, bad)
+				}
+			}
+		})
+	}
+}

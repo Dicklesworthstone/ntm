@@ -725,15 +725,15 @@ func deprecatedKnobChecks() []ConfigCheck {
 			Name:    "deprecated config key: " + knob.Key,
 			Valid:   false,
 			Status:  "error",
-			Message: fmt.Sprintf("%s; the key fails config loading since v1.29.0 — delete it from your config file", knob.Disposition),
+			Message: deadKnobDoctorMessage(knob),
 		})
 	}
 	return checks
 }
 
-// removedKnobChecks reports every removed-in-v1.26.0 config key present in
-// the active config file, one error per key, with the exact disposition
-// text the strict loader uses in its load error.
+// removedKnobChecks reports every removed config key present in the active
+// config file, one error per key, with the exact disposition text the strict
+// loader uses in its load error and that key's own removal-batch provenance.
 func removedKnobChecks() []ConfigCheck {
 	knobs, err := config.ScanRemovedKnobs(selectedConfigPath())
 	if err != nil {
@@ -758,10 +758,24 @@ func removedKnobChecks() []ConfigCheck {
 			Name:    "removed config key: " + knob.Key,
 			Valid:   false,
 			Status:  "error",
-			Message: fmt.Sprintf("%s; the key fails config loading since v1.27.0 — delete it from your config file", knob.Disposition),
+			Message: deadKnobDoctorMessage(knob),
 		})
 	}
 	return checks
+}
+
+// deadKnobDoctorMessage renders doctor's per-key remediation line.
+//
+// The release text comes from the key's OWN removal batch. This function used
+// to be two copies that hard-coded "since v1.27.0" and "since v1.29.0", which
+// was fine while each scan returned exactly one batch — and became wrong the
+// moment ScanRemovedKnobs started carrying a later batch too, telling users a
+// key had failed loading since a release in which it still worked (ntm#323).
+func deadKnobDoctorMessage(knob config.RemovedKnob) string {
+	if provenance := config.DeadKeyTierProvenance(knob.Tier); provenance != "" {
+		return fmt.Sprintf("%s (%s) — delete it from your config file", knob.Disposition, provenance)
+	}
+	return fmt.Sprintf("%s — delete it from your config file", knob.Disposition)
 }
 
 func buildSafetyDefaults(cfg *config.Config) SafetyDefaults {

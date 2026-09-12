@@ -89,6 +89,31 @@ func TestLastMeaningfulOutputKeepsTranscriptBoxes(t *testing.T) {
 	}
 }
 
+// TestLastMeaningfulOutputKeepsBoxGluedToComposer covers the case with no
+// blank line between a transcript box and the input box. The upward walk must
+// stop at the transcript box's closing rule rather than absorbing it and the
+// content inside it.
+func TestLastMeaningfulOutputKeepsBoxGluedToComposer(t *testing.T) {
+	glued := `● Here is the diff:
+┌──────────────────────┐
+│ - old line           │
+│ + new KEEPME line    │
+└──────────────────────┘
+╭──────────────────────╮
+│ ❯                    │
+╰──────────────────────╯
+  ctx 12% | bypass on`
+
+	got := LastMeaningfulOutput(glued, "cc", 300)
+
+	if !strings.Contains(got, "KEEPME") {
+		t.Errorf("a transcript box glued to the composer was absorbed as chrome:\n%s", got)
+	}
+	if strings.Contains(got, "bypass on") || strings.Contains(got, "❯") {
+		t.Errorf("composer/status chrome survived:\n%s", got)
+	}
+}
+
 // TestLastMeaningfulOutputKeepsMarkdownBlockquotes guards the other
 // over-trim: a markdown blockquote in the transcript starts with ">", and
 // must not be mistaken for Claude's input box.

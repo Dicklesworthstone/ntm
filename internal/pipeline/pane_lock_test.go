@@ -240,6 +240,45 @@ func TestPaneLockWithoutProjectDirDegradesInProcess(t *testing.T) {
 	}
 }
 
+// TestPaneLockDryRunTakesNoFileLock covers the parallel dispatch path, which
+// (unlike the prompt and template paths) has no dry-run early return before
+// the lock. A dry run dispatches nothing, so it must not take a real lock:
+// --dry-run may not write to .ntm, and every dry-run step reports the same
+// synthetic pane id, so two previews of one project would otherwise serialize
+// on a single key and the second would fail as "pane busy".
+func TestPaneLockDryRunTakesNoFileLock(t *testing.T) {
+	dir := t.TempDir()
+
+	newDryRun := func() *Executor {
+		return NewExecutor(ExecutorConfig{
+			Session:      "dry",
+			ProjectDir:   dir,
+			DryRun:       true,
+			PaneLockWait: 200 * time.Millisecond,
+		})
+	}
+
+	a, b := newDryRun(), newDryRun()
+
+	releaseA, err := a.acquirePaneLockCrossProcess(context.Background(), "dry-run-pane")
+	if err != nil {
+		t.Fatalf("dry-run acquire: %v", err)
+	}
+	defer releaseA()
+
+	// A second preview of the same project must not be blocked by the first.
+	releaseB, err := b.acquirePaneLockCrossProcess(context.Background(), "dry-run-pane")
+	if err != nil {
+		t.Fatalf("a concurrent dry run was blocked by another dry run: %v", err)
+	}
+	releaseB()
+
+	// And nothing may have been written under .ntm.
+	if entries, err := os.ReadDir(filepath.Join(dir, ".ntm", pipelineStateDirName, paneLockDirName)); err == nil && len(entries) > 0 {
+		t.Errorf("--dry-run created %d lock file(s); a dry run must write nothing", len(entries))
+	}
+}
+
 // TestPaneLockEmptyPaneIDIsNoop covers steps with no pane target.
 func TestPaneLockEmptyPaneIDIsNoop(t *testing.T) {
 	e := newLockExecutor(t.TempDir(), time.Second)
