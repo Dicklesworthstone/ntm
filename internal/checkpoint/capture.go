@@ -270,9 +270,17 @@ func (c *Capturer) captureGitState(workingDir, sessionName, checkpointID string)
 			return state, fmt.Errorf("getting git diff: %w", err)
 		}
 		if patch != "" {
-			if err := c.storage.SaveGitPatch(sessionName, checkpointID, patch); err == nil {
-				state.PatchFile = GitPatchFile
+			// A failed write here is the one loss this whole capture exists to
+			// prevent: the uncommitted diff. Swallowing it produced a
+			// checkpoint that looked complete — Captured=true, IsDirty=true,
+			// PatchFile="" — while the work was gone, and neither Verify() nor
+			// the metadata said anything. Propagate it so Create records
+			// GitSkipCaptureFailed with the detail, exactly as it already does
+			// for a failed `git diff` four lines above.
+			if err := c.storage.SaveGitPatch(sessionName, checkpointID, patch); err != nil {
+				return state, fmt.Errorf("saving git patch: %w", err)
 			}
+			state.PatchFile = GitPatchFile
 		}
 	}
 

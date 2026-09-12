@@ -142,7 +142,19 @@ func (m *Monitor) RegisterAgentWithBinding(
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	m.agents[paneID] = &AgentState{
+	m.agents[paneID] = newAgentState(paneID, paneIndex, shellPID, agentType, model, command, binding)
+}
+
+// newAgentState builds the freshly-registered state for one pane. Shared by
+// explicit registration and manifest reconciliation so the two cannot drift.
+func newAgentState(
+	paneID string,
+	paneIndex int,
+	shellPID int,
+	agentType, model, command string,
+	binding *LaunchBinding,
+) *AgentState {
+	return &AgentState{
 		PaneID:        paneID,
 		PaneIndex:     paneIndex,
 		ShellPID:      shellPID,
@@ -151,6 +163,49 @@ func (m *Monitor) RegisterAgentWithBinding(
 		Command:       command,
 		LaunchBinding: CloneLaunchBinding(binding),
 		Healthy:       true,
+	}
+}
+
+// reconcileFromManifest adopts agents that joined the session after this
+// monitor process started.
+//
+// The monitored set is populated exactly once, externally, at process start
+// (internal/cli/monitor.go registers manifest.Agents and nothing re-reads the
+// manifest afterwards). `ntm add` appends the new agent to that manifest but
+// has no way to reach the running monitor — there is no signal handler, no
+// file watch, no reload — so a pane added to a live session was never
+// health-checked and never auto-restarted, silently and permanently, until
+// someone restarted the monitor by hand. That defeated the auto-restart
+// guarantee for the whole session with nothing surfaced to the operator.
+//
+// Only panes the monitor does not already know are adopted. Re-registering a
+// known pane would reset RestartCount/ConsecutiveFailures and quietly defeat
+// the crash-threshold and max-restarts accounting. Departures are deliberately
+// not reaped here: a pane missing from the manifest may still be alive, and
+// dropping it would stop watching a running agent.
+func (m *Monitor) reconcileFromManifest() {
+	manifest, err := LoadManifest(m.session)
+	if err != nil || manifest == nil {
+		// Best effort: a missing or unreadable manifest must never stop the
+		// health checks for the agents already being watched.
+		return
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for _, agent := range manifest.Agents {
+		if agent.PaneID == "" {
+			continue
+		}
+		if _, known := m.agents[agent.PaneID]; known {
+			continue
+		}
+		m.agents[agent.PaneID] = newAgentState(
+			agent.PaneID, agent.PaneIndex, 0, agent.Type, agent.Model, agent.Command, agent.LaunchBinding,
+		)
+		log.Printf("[resilience] Adopted agent added after monitor start: pane=%s type=%s",
+			agent.PaneID, agent.Type)
 	}
 }
 
@@ -337,6 +392,10 @@ func (m *Monitor) monitorLoop(ctx context.Context, done chan struct{}) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			// Pick up agents added to this session since startup before
+			// checking health, so a pane from `ntm add` is watched on the
+			// very first tick after it appears.
+			m.reconcileFromManifest()
 			m.checkHealth(ctx)
 		}
 	}

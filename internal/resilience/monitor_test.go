@@ -1594,3 +1594,125 @@ func TestCheckHealthFallsBackToRegisteredShellPID(t *testing.T) {
 		t.Fatalf("consecutive failures = %d, want 0", consecutiveFailures)
 	}
 }
+
+// TestReconcileFromManifestAdoptsLaterAgents is the auto-restart coverage gap
+// regression. The monitored set is populated once, at monitor-process start,
+// from the manifest; `ntm add` appends a new agent to that manifest but cannot
+// reach the running monitor (no signal, no watch, no reload). The added pane
+// was therefore never health-checked and never auto-restarted — silently, and
+// for the life of the session.
+func TestReconcileFromManifestAdoptsLaterAgents(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	const session = "reconcile-adopt"
+	if err := SaveManifest(&SpawnManifest{
+		Session:     session,
+		ProjectDir:  t.TempDir(),
+		AutoRestart: true,
+		Agents: []AgentConfig{
+			{PaneID: "%1", PaneIndex: 1, Type: "cc", Model: "opus", Command: "claude"},
+		},
+	}); err != nil {
+		t.Fatalf("SaveManifest: %v", err)
+	}
+
+	m := NewMonitor(session, t.TempDir(), config.Default(), true)
+	m.RegisterAgent("%1", 1, 0, "cc", "opus", "claude")
+
+	// `ntm add` appends a second agent to the manifest while the monitor runs.
+	manifest, err := LoadManifest(session)
+	if err != nil {
+		t.Fatalf("LoadManifest: %v", err)
+	}
+	manifest.Agents = append(manifest.Agents, AgentConfig{
+		PaneID: "%2", PaneIndex: 2, Type: "cod", Model: "gpt", Command: "codex",
+		LaunchBinding: &LaunchBinding{Provider: "codex", Launcher: "caam", Identifier: "codex-b"},
+	})
+	if err := SaveManifest(manifest); err != nil {
+		t.Fatalf("SaveManifest(update): %v", err)
+	}
+
+	m.reconcileFromManifest()
+
+	m.mu.RLock()
+	adopted, ok := m.agents["%2"]
+	total := len(m.agents)
+	m.mu.RUnlock()
+
+	if !ok {
+		t.Fatal("agent added after monitor start was never adopted; it would never be auto-restarted")
+	}
+	if total != 2 {
+		t.Errorf("monitored agents = %d, want 2", total)
+	}
+	if adopted.AgentType != "cod" || adopted.Command != "codex" {
+		t.Errorf("adopted agent = %+v, want type cod / command codex", adopted)
+	}
+	if adopted.LaunchBinding == nil || adopted.LaunchBinding.Identifier != "codex-b" {
+		t.Errorf("adopted agent lost its launch binding: %+v; a restart would use the wrong account",
+			adopted.LaunchBinding)
+	}
+	if !adopted.Healthy {
+		t.Error("a freshly adopted agent must start healthy, not pre-failed")
+	}
+}
+
+// TestReconcileFromManifestPreservesCrashAccounting guards the reason
+// reconciliation only adds: re-registering a known pane would reset its
+// restart bookkeeping, so a crash-looping agent would never reach
+// max-restarts and would be relaunched forever.
+func TestReconcileFromManifestPreservesCrashAccounting(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	const session = "reconcile-preserve"
+	if err := SaveManifest(&SpawnManifest{
+		Session:     session,
+		ProjectDir:  t.TempDir(),
+		AutoRestart: true,
+		Agents: []AgentConfig{
+			{PaneID: "%1", PaneIndex: 1, Type: "cc", Model: "opus", Command: "claude"},
+		},
+	}); err != nil {
+		t.Fatalf("SaveManifest: %v", err)
+	}
+
+	m := NewMonitor(session, t.TempDir(), config.Default(), true)
+	m.RegisterAgent("%1", 1, 0, "cc", "opus", "claude")
+
+	m.mu.Lock()
+	m.agents["%1"].RestartCount = 4
+	m.agents["%1"].ConsecutiveFailures = 3
+	m.agents["%1"].Healthy = false
+	m.mu.Unlock()
+
+	m.reconcileFromManifest()
+
+	m.mu.RLock()
+	got := *m.agents["%1"]
+	m.mu.RUnlock()
+
+	if got.RestartCount != 4 || got.ConsecutiveFailures != 3 {
+		t.Errorf("reconcile reset crash accounting: RestartCount=%d ConsecutiveFailures=%d, want 4/3",
+			got.RestartCount, got.ConsecutiveFailures)
+	}
+	if got.Healthy {
+		t.Error("reconcile flipped an unhealthy agent back to healthy")
+	}
+}
+
+// TestReconcileFromManifestToleratesMissingManifest: a monitor whose manifest
+// is absent or unreadable must keep health-checking what it already watches.
+func TestReconcileFromManifestToleratesMissingManifest(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	m := NewMonitor("no-manifest-here", t.TempDir(), config.Default(), true)
+	m.RegisterAgent("%1", 1, 0, "cc", "opus", "claude")
+
+	m.reconcileFromManifest() // must not panic or drop anything
+
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if len(m.agents) != 1 {
+		t.Errorf("monitored agents = %d, want the pre-existing 1", len(m.agents))
+	}
+}

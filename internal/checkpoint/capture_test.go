@@ -962,3 +962,62 @@ func mustParsePID(t *testing.T, raw string) int {
 	}
 	return pid
 }
+
+// TestCapturer_CaptureGitState_PatchWriteFailureIsReported is the silent
+// data-loss regression. The uncommitted diff is the single artifact a
+// checkpoint exists to preserve, and the write error was discarded:
+//
+//	if err := c.storage.SaveGitPatch(...); err == nil {
+//	    state.PatchFile = GitPatchFile
+//	}
+//
+// A full disk, a quota, or an EIO therefore produced a checkpoint that looked
+// complete — Captured=true, IsDirty=true, PatchFile="" — with the work gone and
+// nothing said in the metadata, the logs, or Verify(). Create() already maps a
+// git error to GitSkipCaptureFailed ("A failed capture is recorded as such
+// rather than left looking clean"), so the error has to reach it.
+func TestCapturer_CaptureGitState_PatchWriteFailureIsReported(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	if err := exec.Command("git", "-C", tmpDir, "init").Run(); err != nil {
+		t.Skipf("git unavailable: %v", err)
+	}
+	exec.Command("git", "-C", tmpDir, "config", "user.email", "test@example.com").Run()
+	exec.Command("git", "-C", tmpDir, "config", "user.name", "Test User").Run()
+
+	readme := filepath.Join(tmpDir, "README.md")
+	if err := os.WriteFile(readme, []byte("committed\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	exec.Command("git", "-C", tmpDir, "add", ".").Run()
+	exec.Command("git", "-C", tmpDir, "commit", "-m", "initial").Run()
+
+	// Uncommitted change: this is the content that must not vanish quietly.
+	if err := os.WriteFile(readme, []byte("uncommitted work\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Root the checkpoint store beneath a regular file so creating the
+	// checkpoint directory fails with ENOTDIR. This models a full disk or an
+	// unwritable store without depending on file permissions, which a test
+	// running as root would ignore.
+	blocker := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(blocker, []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	c := &Capturer{storage: &Storage{BaseDir: filepath.Join(blocker, "checkpoints")}}
+
+	state, err := c.captureGitState(tmpDir, "session", "chk-patchfail")
+
+	if err == nil {
+		t.Fatalf("captureGitState reported success while the patch could not be written; "+
+			"the checkpoint would claim IsDirty=%v with PatchFile=%q and the diff is lost",
+			state.IsDirty, state.PatchFile)
+	}
+	if !strings.Contains(err.Error(), "git patch") {
+		t.Errorf("error = %v, want it to name the git patch write", err)
+	}
+	if state.PatchFile != "" {
+		t.Errorf("PatchFile = %q, want empty when the write failed", state.PatchFile)
+	}
+}
