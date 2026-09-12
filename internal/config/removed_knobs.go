@@ -84,9 +84,11 @@ var removedKnobExact = map[string]string{
 // memory.query_timeout_seconds is deliberately absent: it was never purely a
 // recovery alias (internal/cli reads it to bound the cm query behind
 // send-time injection), so it stays live in [memory].
+// Dispositions read as the predicate of "config key X was ...", so they are
+// phrased to complete that sentence.
 var recoveryAliasKnobExact = map[string]string{
-	"memory.include_in_recovery": "removed — set recovery.include_cm_memories instead",
-	"memory.max_rules":           "removed — set recovery.max_cm_rules instead",
+	"memory.include_in_recovery": "superseded by recovery.include_cm_memories",
+	"memory.max_rules":           "superseded by recovery.max_cm_rules",
 }
 
 // removedKnobPrefixes maps removed table prefixes to their dispositions; a
@@ -239,9 +241,14 @@ var deadKeyTiers = []deadKeyTier{
 		provenance: "deprecated in v1.28.0, a config error since v1.29.0; see the v1.28.0 dead-knob migration table in CHANGELOG.md",
 	},
 	{
-		name:       DeadKeyTierRecoveryAlias,
-		exact:      recoveryAliasKnobExact,
-		provenance: "removed in v1.34.0; the [recovery] replacement carries the same value",
+		name:  DeadKeyTierRecoveryAlias,
+		exact: recoveryAliasKnobExact,
+		// Deliberately cites the issue rather than a release number. The
+		// predecessor of this batch promised removal "in v1.27.0" and then
+		// shipped that promise for seven more releases (ntm#323); naming a
+		// version that has not been cut yet is how that happens. The
+		// CHANGELOG entry carries the release.
+		provenance: "removed with the memory.*/[recovery] split (ntm#323); the [recovery] replacement carries the same value",
 	},
 }
 

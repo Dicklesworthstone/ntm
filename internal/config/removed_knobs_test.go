@@ -31,6 +31,53 @@ func deprecatedKnobErrorLine(knob RemovedKnob) string {
 	return deadKnobErrorLine(knob, deadKeyTierProvenance(DeadKeyTierDeprecated))
 }
 
+// TestDeadKeyTiersAreWellFormed guards the table a future removal batch will
+// be added to: every batch needs its own name, its own key set, and its own
+// release provenance. Two batches sharing a provenance string is how a key
+// ends up telling users it was removed in a release it had nothing to do with
+// (ntm#323).
+func TestDeadKeyTiersAreWellFormed(t *testing.T) {
+	seenName := map[string]bool{}
+	seenProvenance := map[string]string{}
+
+	for _, tier := range deadKeyTiers {
+		if tier.name == "" {
+			t.Error("a dead-key tier has no name")
+		}
+		if seenName[tier.name] {
+			t.Errorf("duplicate tier name %q", tier.name)
+		}
+		seenName[tier.name] = true
+
+		if tier.provenance == "" {
+			t.Errorf("tier %q has no provenance; its error line would not say when the key went away", tier.name)
+		}
+		if prev, dup := seenProvenance[tier.provenance]; dup {
+			t.Errorf("tiers %q and %q share a provenance string; each batch must cite its own release", prev, tier.name)
+		}
+		seenProvenance[tier.provenance] = tier.name
+
+		if len(tier.exact) == 0 && len(tier.prefixes) == 0 {
+			t.Errorf("tier %q classifies no keys", tier.name)
+		}
+		if deadKeyTierProvenance(tier.name) != tier.provenance {
+			t.Errorf("deadKeyTierProvenance(%q) does not round-trip", tier.name)
+		}
+	}
+
+	// A key may only belong to one batch, or its classification depends on
+	// table order rather than intent.
+	owner := map[string]string{}
+	for _, tier := range deadKeyTiers {
+		for key := range tier.exact {
+			if prev, dup := owner[key]; dup {
+				t.Errorf("key %q is claimed by both tier %q and tier %q", key, prev, tier.name)
+			}
+			owner[key] = tier.name
+		}
+	}
+}
+
 // removedKnobFixtures covers every removed knob family: TOML that sets the
 // key, the dotted key the load error must name, and its full disposition
 // text.
