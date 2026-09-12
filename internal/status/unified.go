@@ -401,7 +401,12 @@ func (d *UnifiedDetector) Detect(paneID string) (AgentStatus, error) {
 			output = retry
 		}
 	}
-	status.LastOutput = truncateOutput(output, d.config.OutputPreviewLength)
+	// A first, type-agnostic preview (blank and prompt lines dropped, no
+	// agent-specific chrome stripping yet). The agent type is only resolved
+	// further down, and there are error returns in between — this keeps those
+	// paths carrying a preview, as they always have. It is refined once the
+	// type is known (ntm#322).
+	status.LastOutput = LastMeaningfulOutput(output, "", d.config.OutputPreviewLength)
 
 	// Pane-local activity refinement (ntm#213): #{window_activity} is the best
 	// signal tmux offers, but it is window-scoped — any neighbor pane's output
@@ -429,6 +434,10 @@ func (d *UnifiedDetector) Detect(paneID string) (AgentStatus, error) {
 	}
 	status.PaneName = pane.Title
 	status.AgentType = string(pane.Type)
+
+	// Now that the agent type is known, the preview can drop that agent's
+	// composer and status line rather than showing them as "recent output".
+	status.LastOutput = LastMeaningfulOutput(output, status.AgentType, d.config.OutputPreviewLength)
 
 	// Use shared logic
 	state, errType := d.determineState(output, status.AgentType, status.LastActive)

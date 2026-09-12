@@ -191,6 +191,13 @@ func LastMeaningfulOutputLines(lines []string, agentType string, maxLen int) str
 		if line == "" || IsPromptLine(line, agentType) {
 			continue
 		}
+		// A row of nothing but box-drawing glyphs carries no information in a
+		// text preview, and dropping it here means a border that escaped
+		// trimAgentChrome — a box taller than the scan window, say — still
+		// cannot reach the reader as "recent output".
+		if isBoxRuleLine(line) {
+			continue
+		}
 		meaningful = append([]string{line}, meaningful...)
 		total += len(line) + 1
 	}

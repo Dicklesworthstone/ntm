@@ -3,6 +3,7 @@ package status
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 // claudePaneWithStatusLine reproduces the pane shape from ntm#322: a
@@ -114,6 +115,40 @@ func TestLastMeaningfulOutputComposerOnlyPaneFallsBack(t *testing.T) {
 
 	if got := LastMeaningfulOutput(composerOnly, "cc", 200); got == "" {
 		t.Error("a composer-only pane produced an empty preview instead of falling back to the raw tail")
+	}
+}
+
+// TestAnalyzeAtStripsChromeFromPreview pins the dashboard's actual producer,
+// not just the helper: AgentStatus.LastOutput is what "Recent Output" renders.
+func TestAnalyzeAtStripsChromeFromPreview(t *testing.T) {
+	d := NewDetector()
+
+	got := d.AnalyzeAt("%1", "proj__cc_1", "cc", claudePaneWithStatusLine, time.Time{}, time.Now()).LastOutput
+
+	if strings.Contains(got, "bypass permissions") || strings.Contains(got, "ctx 173k/1000k") {
+		t.Errorf("AnalyzeAt preview still carries the status line:\n%s", got)
+	}
+	if !strings.Contains(got, "The auth refactor is done") {
+		t.Errorf("AnalyzeAt preview lost the transcript:\n%s", got)
+	}
+}
+
+// TestBoxRuleLinesNeverReachThePreview covers the belt-and-braces filter: a
+// border row that escapes chrome trimming (a composer box taller than the
+// scan window, for instance) must still not be shown as recent output.
+func TestBoxRuleLinesNeverReachThePreview(t *testing.T) {
+	// No composer marker anywhere, so trimAgentChrome returns the input
+	// untouched and only the final filter can drop the rules.
+	withBareRules := "● build finished\n╭──────────────╮\n╰──────────────╯"
+
+	got := LastMeaningfulOutput(withBareRules, "cc", 200)
+	for _, glyph := range []string{"╭", "╰", "─"} {
+		if strings.Contains(got, glyph) {
+			t.Errorf("box glyph %q reached the preview:\n%s", glyph, got)
+		}
+	}
+	if !strings.Contains(got, "build finished") {
+		t.Errorf("filtering the rules also dropped the content:\n%s", got)
 	}
 }
 
