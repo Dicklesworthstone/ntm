@@ -23,6 +23,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/startup"
 )
 
@@ -368,5 +369,62 @@ func TestConfigMigrateUnresolvedOnlyNotClean(t *testing.T) {
 	after, _ := os.ReadFile(path)
 	if string(after) != "rotation = { prefer_restart = true }\n" {
 		t.Error("file was modified despite nothing being removable")
+	}
+}
+
+// TestMigrateBehaviorNoteIsHonestPerBatch pins the claim `config migrate`
+// makes about its own safety. Every earlier batch really was inert, so the
+// blanket "behavior is unchanged" sentence was true — but the recovery-alias
+// keys fed [recovery], and repeating that sentence for them would tell the
+// user their config still means what it used to when it may not (ntm#323).
+func TestMigrateBehaviorNoteIsHonestPerBatch(t *testing.T) {
+	tests := []struct {
+		name             string
+		changes          []config.MigrationChange
+		wantNoBehavior   bool
+		wantNoteContains string
+	}{
+		{
+			name:             "no changes",
+			changes:          nil,
+			wantNoBehavior:   true,
+			wantNoteContains: "provable no-op",
+		},
+		{
+			name:             "inert batches only",
+			changes:          []config.MigrationChange{{Key: "tmux.palette_key", Tier: config.DeadKeyTierRemoved}},
+			wantNoBehavior:   true,
+			wantNoteContains: "provable no-op",
+		},
+		{
+			name:             "recovery alias batch",
+			changes:          []config.MigrationChange{{Key: "memory.max_rules", Tier: config.DeadKeyTierRecoveryAlias}},
+			wantNoBehavior:   false,
+			wantNoteContains: "recovery.max_cm_rules",
+		},
+		{
+			name: "mixed batches must take the honest note",
+			changes: []config.MigrationChange{
+				{Key: "tmux.palette_key", Tier: config.DeadKeyTierRemoved},
+				{Key: "memory.include_in_recovery", Tier: config.DeadKeyTierRecoveryAlias},
+			},
+			wantNoBehavior:   false,
+			wantNoteContains: "NOT no-ops",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			noBehaviorChange, note := migrateBehaviorNote(tt.changes)
+			if noBehaviorChange != tt.wantNoBehavior {
+				t.Errorf("noBehaviorChange = %v, want %v", noBehaviorChange, tt.wantNoBehavior)
+			}
+			if !strings.Contains(note, tt.wantNoteContains) {
+				t.Errorf("note = %q, want it to contain %q", note, tt.wantNoteContains)
+			}
+			if !tt.wantNoBehavior && strings.Contains(note, "behavior is unchanged") {
+				t.Errorf("a behavior-changing migration still claimed behavior is unchanged: %q", note)
+			}
+		})
 	}
 }

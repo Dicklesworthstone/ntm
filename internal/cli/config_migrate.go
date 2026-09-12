@@ -44,10 +44,11 @@ func newConfigMigrateCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "migrate",
 		Short: "Remove removed/deprecated config keys (backup kept)",
-		Long: `Removes every removed (v1.26.0 batch) and deprecated (v1.28.0 batch) config
-key from the selected config file. The edit is text-surgical: all other keys,
-comments, ordering, and formatting are preserved; tables left empty by the
-removals lose their headers too.
+		Long: `Removes every dead config key — the v1.26.0 removed batch, the v1.28.0
+deprecated batch, and the memory.*/[recovery] alias batch — from the selected
+config file. The edit is text-surgical: all other keys, comments, ordering,
+and formatting are preserved; tables left empty by the removals lose their
+headers too.
 
 A timestamped backup (<config>.bak.<unix>) is always written next to the file
 before any change. Nearly every key removed was a provable no-op — it had no
