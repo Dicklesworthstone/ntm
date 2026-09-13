@@ -892,8 +892,12 @@ type AgentOutputSummary struct {
 	AgentType string `json:"agent_type"`
 
 	// Activity metrics
-	ActiveTime  time.Duration `json:"active_time"` // Time in generating state
-	IdleTime    time.Duration `json:"idle_time"`   // Time in waiting state
+	ActiveTime time.Duration `json:"active_time"` // Time in generating state
+	// IdleTime is omitted while unset rather than serialized as 0. Nothing
+	// tracks waiting-state duration, and emitting a zero next to the computed
+	// fields around it told readers a busy agent had never waited. It appears
+	// as soon as something measures it.
+	IdleTime    time.Duration `json:"idle_time,omitempty"` // Time in waiting state
 	OutputLines int           `json:"output_lines"`
 	OutputChars int           `json:"output_chars"`
 
