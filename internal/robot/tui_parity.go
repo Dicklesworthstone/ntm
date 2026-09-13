@@ -2565,7 +2565,34 @@ type MetricsOutput struct {
 	// DiskAttribution lists per-pane build-dir sizes; populated only when
 	// --disk-attribution is set (bounded du cost is real).
 	DiskAttribution []DiskAttributionEntry `json:"disk_attribution,omitempty"`
-	AgentHints      *AgentHints            `json:"_agent_hints,omitempty"`
+	// Unmeasured names the fields in this payload that nothing populates, so a
+	// consumer can tell "no activity" from "never measured". token_usage and
+	// every numeric in agent_stats serialize as 0 on the busiest session in the
+	// world: nothing records prompts, tokens, response times, restarts or
+	// uptime, and token accounting needs provider APIs that are not wired.
+	// Emitting those zeros unqualified told every reader the session was idle.
+	Unmeasured []string    `json:"unmeasured,omitempty"`
+	AgentHints *AgentHints `json:"_agent_hints,omitempty"`
+}
+
+// unmeasuredMetricsFields lists the MetricsOutput fields that no code path
+// populates. Delete an entry here the moment its field gets a real writer.
+func unmeasuredMetricsFields() []string {
+	return []string{
+		"token_usage.total_tokens",
+		"token_usage.total_cost_usd",
+		"token_usage.by_agent",
+		"token_usage.by_model",
+		"token_usage.context_current_percent",
+		"agent_stats[].prompts_received",
+		"agent_stats[].tokens_used",
+		"agent_stats[].avg_response_time_sec",
+		"agent_stats[].error_count",
+		"agent_stats[].restart_count",
+		"agent_stats[].uptime",
+		"session_stats.total_prompts",
+		"session_stats.session_duration",
+	}
 }
 
 // MetricsTokenUsage contains token consumption data
@@ -2667,18 +2694,17 @@ func GetMetrics(opts MetricsOptions) (*MetricsOutput, error) {
 		}
 	}
 
-	// Get file change count
-	fileStore := tracker.GlobalFileChanges
-	if fileStore != nil {
-		changes := fileStore.All()
-		uniqueFiles := make(map[string]struct{})
-		for _, c := range changes {
-			if opts.Session == "" || c.Session == opts.Session {
-				uniqueFiles[c.Change.Path] = struct{}{}
-			}
+	// Get file change count. Read through tracker.RecordedChanges, which
+	// consults the durable cross-process ledger: the session monitor is what
+	// records changes, so GlobalFileChanges in this one-shot process is always
+	// empty and this reported 0 files changed for every session.
+	uniqueFiles := make(map[string]struct{})
+	for _, c := range tracker.RecordedChanges() {
+		if opts.Session == "" || c.Session == opts.Session {
+			uniqueFiles[c.Change.Path] = struct{}{}
 		}
-		output.SessionStats.FilesChanged = len(uniqueFiles)
 	}
+	output.SessionStats.FilesChanged = len(uniqueFiles)
 
 	// Disk trajectory: one sample per invocation, delta vs the previous
 	// persisted sample (ntm-1k9g). Fires the disk_trajectory alert when the
@@ -2696,9 +2722,13 @@ func GetMetrics(opts MetricsOptions) (*MetricsOutput, error) {
 	if sessionDesc == "" {
 		sessionDesc = "all sessions"
 	}
+	output.Unmeasured = unmeasuredMetricsFields()
 	output.AgentHints = &AgentHints{
 		Summary: fmt.Sprintf("Metrics for %s over %s", sessionDesc, opts.Period),
-		Notes:   []string{"Token usage requires integration with provider APIs for accurate data"},
+		Notes: []string{
+			"Token usage requires integration with provider APIs for accurate data",
+			"Fields listed in `unmeasured` are always zero: nothing records them yet. Do not read them as activity.",
+		},
 	}
 
 	return output, nil
