@@ -61,9 +61,22 @@ type Preferences struct {
 // Performance tracks historical performance metrics for an agent.
 type Performance struct {
 	AvgCompletionTime time.Duration `json:"avg_completion_time"`
-	SuccessRate       float64       `json:"success_rate"` // 0.0 to 1.0
-	TasksCompleted    int           `json:"tasks_completed"`
-	LastUpdated       time.Time     `json:"last_updated"`
+	// SuccessRate is a static routing prior, not a measurement. Nothing in the
+	// shipped binary records task outcomes, so this holds whatever the profile
+	// was seeded with. Callers must not present it as observed performance
+	// without checking Measured first — `ntm agents profile` printed
+	// "Tasks Completed: 0" directly above "Success Rate: 90.0%".
+	SuccessRate    float64 `json:"success_rate"` // 0.0 to 1.0
+	TasksCompleted int     `json:"tasks_completed"`
+	// LastUpdated is the zero time until outcome recording exists.
+	LastUpdated time.Time `json:"last_updated"`
+}
+
+// Measured reports whether any real task outcome has been recorded for this
+// profile. While false, SuccessRate and AvgCompletionTime are seeded defaults
+// and must not be displayed as statistics.
+func (p Performance) Measured() bool {
+	return p.TasksCompleted > 0 || !p.LastUpdated.IsZero()
 }
 
 // ProfileMatcher matches tasks to the best available agents based on capabilities.
@@ -296,7 +309,10 @@ func (pm *ProfileMatcher) ScoreAssignment(agentType AgentType, task TaskInfo) Sc
 	result.LabelMatchScore = labelScore
 	score *= labelScore
 
-	// 5. Historical performance bonus
+	// 5. Performance prior. Not historical: nothing records task outcomes yet,
+	// so this reads the seeded SuccessRate. With the shipped seeds (0.9 for
+	// claude, 0.85 elsewhere) neither branch fires, and it becomes live only
+	// once outcome recording exists.
 	if profile.Performance.SuccessRate > 0.9 {
 		score *= 1.1
 		result.PerformanceBonus = 0.1

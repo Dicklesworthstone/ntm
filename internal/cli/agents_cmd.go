@@ -258,11 +258,19 @@ func runAgentsShow(agentName string) error {
 		}
 	}
 
+	// Only report performance that was actually observed. Nothing records task
+	// outcomes yet, so printing the seeded SuccessRate here produced
+	// "Tasks Completed: 0" above "Success Rate: 90.0%" — a statistic over no
+	// samples at all.
 	fmt.Printf("\nPerformance:\n")
-	fmt.Printf("  Tasks Completed: %d\n", profile.Performance.TasksCompleted)
-	fmt.Printf("  Success Rate:    %.1f%%\n", profile.Performance.SuccessRate*100)
-	if profile.Performance.AvgCompletionTime > 0 {
-		fmt.Printf("  Avg Time:        %s\n", profile.Performance.AvgCompletionTime)
+	if !profile.Performance.Measured() {
+		fmt.Printf("  No task outcomes recorded yet\n")
+	} else {
+		fmt.Printf("  Tasks Completed: %d\n", profile.Performance.TasksCompleted)
+		fmt.Printf("  Success Rate:    %.1f%%\n", profile.Performance.SuccessRate*100)
+		if profile.Performance.AvgCompletionTime > 0 {
+			fmt.Printf("  Avg Time:        %s\n", profile.Performance.AvgCompletionTime)
+		}
 	}
 
 	return nil
@@ -304,8 +312,14 @@ func runAgentsStats() error {
 		if p.AvgCompletionTime > 0 {
 			avgTime = p.AvgCompletionTime.String()
 		}
-		fmt.Fprintf(w, "%s\t%d\t%.1f%%\t%s\t%s\n",
-			t, p.TasksCompleted, p.SuccessRate*100, avgTime, lastActive)
+		// "-" rather than a seeded rate: with no outcomes recorded there is no
+		// success rate to report, and printing one invents a statistic.
+		successRate := "-"
+		if p.Measured() {
+			successRate = fmt.Sprintf("%.1f%%", p.SuccessRate*100)
+		}
+		fmt.Fprintf(w, "%s\t%d\t%s\t%s\t%s\n",
+			t, p.TasksCompleted, successRate, avgTime, lastActive)
 	}
 
 	return w.Flush()
