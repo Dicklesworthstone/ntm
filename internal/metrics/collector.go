@@ -13,7 +13,17 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/events"
 	"github.com/Dicklesworthstone/ntm/internal/state"
+	"github.com/Dicklesworthstone/ntm/internal/tracker"
 )
+
+// FileConflictWindow is how far back a report counts file conflicts. It matches
+// the default window of `ntm conflicts` so the two agree.
+const FileConflictWindow = 24 * time.Hour
+
+// countFileConflicts is the conflict source, injectable for tests.
+var countFileConflicts = func(session string) int64 {
+	return int64(len(tracker.ConflictsSince(time.Now().Add(-FileConflictWindow), session)))
+}
 
 // Collector tracks success metrics for NTM orchestration.
 // It subscribes to the event bus and persists metrics to the state store.
@@ -27,7 +37,10 @@ type Collector struct {
 	apiCalls        map[string]int64 // tool:operation -> count
 	latencies       map[string][]float64
 	blockedCommands int64
-	fileConflicts   int64
+	// No fileConflicts counter: nothing ever incremented the one that used to
+	// live here, so the metric and its Tier-0 target reported a clean 0 for
+	// every session. GenerateReport counts from the tracker instead, which
+	// keeps one source of truth rather than a copy that must be maintained.
 }
 
 // NewCollector creates a new metrics collector for the given session.
@@ -148,16 +161,22 @@ func (c *Collector) GenerateReport() (*MetricsReport, error) {
 	}
 
 	report.BlockedCommands = c.blockedCommands
-	report.FileConflicts = c.fileConflicts
+
+	// Counted from the tracker rather than from a counter of our own. Nothing
+	// ever incremented c.fileConflicts, so this metric — and the Tier-0
+	// file_conflicts target built on it — reported 0 and a green "met" for every
+	// session regardless of what the agents did. A safety target that cannot
+	// fail is worse than an absent one.
+	report.FileConflicts = countFileConflicts(c.sessionID)
 
 	// Generate target comparisons
-	report.TargetComparison = c.generateTargetComparisons()
+	report.TargetComparison = c.generateTargetComparisons(report.FileConflicts)
 
 	return report, nil
 }
 
 // generateTargetComparisons compares current metrics against targets.
-func (c *Collector) generateTargetComparisons() []TargetComparison {
+func (c *Collector) generateTargetComparisons(fileConflicts int64) []TargetComparison {
 	comparisons := make([]TargetComparison, 0)
 
 	// Blocked commands
@@ -172,10 +191,10 @@ func (c *Collector) generateTargetComparisons() []TargetComparison {
 	// File conflicts
 	comparisons = append(comparisons, TargetComparison{
 		Metric:   "file_conflicts",
-		Current:  float64(c.fileConflicts),
+		Current:  float64(fileConflicts),
 		Target:   Tier0Targets["file_conflicts"],
 		Baseline: Tier0Baselines["file_conflicts"],
-		Status:   getTargetStatus(float64(c.fileConflicts), Tier0Targets["file_conflicts"], true),
+		Status:   getTargetStatus(float64(fileConflicts), Tier0Targets["file_conflicts"], true),
 	})
 
 	// CM query latency
