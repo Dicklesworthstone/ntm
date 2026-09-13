@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/policy"
 )
 
 func TestAllInvariants(t *testing.T) {
@@ -84,11 +86,42 @@ func TestCheckAll(t *testing.T) {
 		t.Error("report timestamp is zero")
 	}
 
-	// All invariants should pass (they check for infrastructure, not enforcement)
+	// Every result must carry a recognized status and say something. This used
+	// to assert that all six passed, which was satisfiable only because every
+	// check ended in an unconditional `Passed = true`.
 	for id, result := range report.Results {
-		if !result.Passed {
-			t.Errorf("invariant %s failed unexpectedly: %s", id, result.Message)
+		switch result.Status {
+		case StatusOK, StatusWarning, StatusError, StatusUnverified:
+		default:
+			t.Errorf("invariant %s has unrecognized status %q", id, result.Status)
 		}
+		if result.Message == "" {
+			t.Errorf("invariant %s reported no message", id)
+		}
+		if result.Passed && result.Status != StatusOK {
+			t.Errorf("invariant %s claims Passed with status %q", id, result.Status)
+		}
+		if result.CheckedAt.IsZero() {
+			t.Errorf("invariant %s has no CheckedAt", id)
+		}
+	}
+}
+
+// A bare temp directory has no pre-commit guard, so the No Silent Data Loss
+// invariant must report that rather than tick. This is the regression that
+// matters: the check gathered this exact evidence and then ignored it.
+func TestCheckAllReportsMissingProtections(t *testing.T) {
+	checker := NewChecker(t.TempDir())
+	checker.loadPolicy = func() (*policy.Policy, error) { return policy.DefaultPolicy(), nil }
+
+	report := checker.CheckAll(context.Background())
+
+	result := report.Results[InvariantNoSilentDataLoss]
+	if result.Status != StatusWarning {
+		t.Errorf("status = %q, want %q with no pre-commit guard installed", result.Status, StatusWarning)
+	}
+	if result.Passed {
+		t.Error("reported a pass with no pre-commit guard installed")
 	}
 }
 
@@ -111,8 +144,10 @@ func TestCheckNoSilentDataLoss_WithPolicyFile(t *testing.T) {
 
 	result := checker.checkNoSilentDataLoss(ctx)
 
-	if !result.Passed {
-		t.Errorf("expected pass with policy file: %s", result.Message)
+	// A policy file alone does not establish the invariant: the verdict turns on
+	// whether a pre-commit guard is installed, and this fixture has none.
+	if result.Passed {
+		t.Error("a policy.yaml alone must not satisfy the invariant without a guard")
 	}
 
 	found := false
@@ -258,33 +293,30 @@ func TestInvariantViolationDetection(t *testing.T) {
 		}
 	})
 
-	t.Run("graceful degradation is structural", func(t *testing.T) {
+	// These two invariants are structural and nothing here measures them. They
+	// must say so rather than claim a pass — this test used to assert they
+	// "should always pass", which is what kept the fabricated tick in place.
+	t.Run("structural invariants report unverified, not ok", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		checker := NewChecker(tmpDir)
 		ctx := context.Background()
 
-		// Graceful degradation is verified through tests, not runtime checks
-		result := checker.checkGracefulDegradation(ctx)
-		if !result.Passed {
-			t.Error("graceful degradation should always pass (structural invariant)")
-		}
-		if len(result.Details) == 0 {
-			t.Error("should have details about degradation framework")
-		}
-	})
-
-	t.Run("idempotent orchestration is structural", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		checker := NewChecker(tmpDir)
-		ctx := context.Background()
-
-		// Idempotent orchestration is verified through tests
-		result := checker.checkIdempotentOrchestration(ctx)
-		if !result.Passed {
-			t.Error("idempotent orchestration should always pass (structural invariant)")
-		}
-		if len(result.Details) == 0 {
-			t.Error("should have details about idempotent patterns")
+		for name, result := range map[string]CheckResult{
+			"graceful degradation":     checker.checkGracefulDegradation(ctx),
+			"idempotent orchestration": checker.checkIdempotentOrchestration(ctx),
+		} {
+			if result.Status != StatusUnverified {
+				t.Errorf("%s: status = %q, want %q", name, result.Status, StatusUnverified)
+			}
+			if result.Passed {
+				t.Errorf("%s: reported a pass it never measured", name)
+			}
+			if result.Status == StatusOK {
+				t.Errorf("%s: an unmeasured invariant must not render as a tick", name)
+			}
+			if len(result.Details) == 0 {
+				t.Errorf("%s: should explain what is and is not covered", name)
+			}
 		}
 	})
 }

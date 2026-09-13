@@ -10,9 +10,12 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/policy"
 )
 
 // InvariantID uniquely identifies each design invariant.
@@ -152,6 +155,26 @@ func Definitions() map[InvariantID]Invariant {
 	}
 }
 
+// Check statuses.
+//
+// Every check in this file used to end with an unconditional
+// `Passed = true; Status = "ok"`, so `ntm doctor` printed six green ticks
+// whatever it found — including ticks sitting directly above details reporting
+// the protection was absent. A check that cannot fail carries no information;
+// it only teaches operators to trust a signal that never says anything.
+const (
+	// StatusOK means the check ran and the invariant holds.
+	StatusOK = "ok"
+	// StatusWarning means the check ran and found the invariant weakened.
+	StatusWarning = "warning"
+	// StatusError means the check ran and found the invariant violated.
+	StatusError = "error"
+	// StatusUnverified means the invariant is structural and this process did
+	// not measure it. doctor renders an unknown status as a muted "?", so this
+	// reads as an honest "not checked" rather than an invented pass.
+	StatusUnverified = "unverified"
+)
+
 // CheckResult represents the result of checking an invariant.
 type CheckResult struct {
 	InvariantID InvariantID `json:"invariant_id"`
@@ -175,6 +198,11 @@ type Report struct {
 type Checker struct {
 	ntmDir     string // Path to .ntm directory
 	projectDir string // Path to project directory
+
+	// loadPolicy resolves the policy in effect. Injectable so tests can drive
+	// the Safe-by-Default verdict without depending on the developer's own
+	// ~/.ntm/policy.yaml.
+	loadPolicy func() (*policy.Policy, error)
 }
 
 // NewChecker creates a new invariant checker.
@@ -189,6 +217,7 @@ func NewChecker(projectDir string) *Checker {
 	return &Checker{
 		ntmDir:     ntmDir,
 		projectDir: projectDir,
+		loadPolicy: policy.LoadOrDefault,
 	}
 }
 
@@ -250,30 +279,39 @@ func (c *Checker) checkNoSilentDataLoss(ctx context.Context) CheckResult {
 		details = append(details, "logs directory missing (will be created on first blocked command)")
 	}
 
-	// Check 3: Git hooks for pre-commit guards
+	// Check 3: Git hooks for pre-commit guards. This is the one piece of
+	// evidence that actually decides the verdict — the others describe
+	// defaults that hold either way.
+	guardInstalled := false
 	gitHooksDir := filepath.Join(c.projectDir, ".git", "hooks")
 	preCommit := filepath.Join(gitHooksDir, "pre-commit")
 	if _, err := os.Stat(preCommit); err == nil {
 		content, readErr := os.ReadFile(preCommit)
-		if readErr != nil {
+		switch {
+		case readErr != nil:
 			details = append(details, "pre-commit hook exists but unreadable")
-		} else if strings.Contains(string(content), "ntm-precommit-guard") ||
-			strings.Contains(string(content), "ntm guard") ||
-			strings.Contains(string(content), "ntm safety") {
+		case strings.Contains(string(content), "ntm-precommit-guard"),
+			strings.Contains(string(content), "ntm guard"),
+			strings.Contains(string(content), "ntm safety"):
 			details = append(details, "pre-commit guard installed")
-		} else {
+			guardInstalled = true
+		default:
 			details = append(details, "pre-commit hook exists but no ntm guard")
 		}
 	} else {
 		details = append(details, "no pre-commit hook (run ntm guards install)")
 	}
 
-	// Overall: pass if basic protections are in place
 	result.Details = details
-	result.Passed = true
-	result.Status = "ok"
-	result.Message = "destructive command protection configured"
-
+	if guardInstalled {
+		result.Passed = true
+		result.Status = StatusOK
+		result.Message = "pre-commit guard installed"
+		return result
+	}
+	result.Passed = false
+	result.Status = StatusWarning
+	result.Message = "no ntm pre-commit guard in this repository (ntm guards install)"
 	return result
 }
 
@@ -286,16 +324,18 @@ func (c *Checker) checkGracefulDegradation(ctx context.Context) CheckResult {
 
 	var details []string
 
-	// This invariant is structural - we verify that fallback code paths exist.
-	// The actual graceful degradation is tested in unit tests.
-	details = append(details, "Tool adapter framework provides detection and fallback")
-	details = append(details, "NTM continues if external tools unavailable")
-	details = append(details, "Warnings shown for degraded functionality")
+	// Structural invariant: it is a property of the code, enforced by the tool
+	// adapter tests, and nothing here measures it at runtime. The lines below
+	// describe the design; they are not evidence, so this reports unverified
+	// rather than claiming a pass it never established.
+	details = append(details, "design: tool adapter framework provides detection and fallback")
+	details = append(details, "design: NTM continues if external tools are unavailable")
+	details = append(details, "not measured by doctor; enforced by the internal/tools adapter tests")
 
 	result.Details = details
-	result.Passed = true
-	result.Status = "ok"
-	result.Message = "graceful degradation framework in place"
+	result.Passed = false
+	result.Status = StatusUnverified
+	result.Message = "structural invariant, not checked at runtime"
 
 	return result
 }
@@ -309,17 +349,17 @@ func (c *Checker) checkIdempotentOrchestration(ctx context.Context) CheckResult 
 
 	var details []string
 
-	// This invariant is primarily verified through tests.
-	// Here we document the mechanisms in place.
-	details = append(details, "Agent registration uses upsert semantics")
-	details = append(details, "File reservations extend TTL on re-request")
-	details = append(details, "Session spawn checks for existing tmux session")
-	details = append(details, "Message IDs enable deduplication")
+	// Structural invariant, verified by the spawn/reservation/dispatch tests.
+	// Nothing here exercises those paths, so it is reported as unmeasured.
+	details = append(details, "design: agent registration uses upsert semantics")
+	details = append(details, "design: file reservations extend TTL on re-request")
+	details = append(details, "design: session spawn checks for an existing tmux session")
+	details = append(details, "not measured by doctor; enforced by the spawn and reservation tests")
 
 	result.Details = details
-	result.Passed = true
-	result.Status = "ok"
-	result.Message = "idempotent operation patterns implemented"
+	result.Passed = false
+	result.Status = StatusUnverified
+	result.Message = "structural invariant, not checked at runtime"
 
 	return result
 }
@@ -349,13 +389,23 @@ func (c *Checker) checkRecoverableState(ctx context.Context) CheckResult {
 		details = append(details, "events.jsonl will be created when logging enabled")
 	}
 
-	// Check 3: tmux is available (sessions survive NTM death)
-	// This is checked in the doctor command, so we just note the mechanism
-	details = append(details, "tmux sessions survive NTM process death")
+	// Check 3: tmux must actually be present. Re-attaching after a crash is the
+	// whole invariant, and without tmux on PATH there is nothing to re-attach
+	// to — so this decides the verdict instead of being asserted.
+	tmuxPath, tmuxErr := exec.LookPath("tmux")
+	if tmuxErr != nil {
+		details = append(details, "tmux not found on PATH: sessions cannot survive NTM process death")
+		result.Details = details
+		result.Passed = false
+		result.Status = StatusError
+		result.Message = "tmux not available, sessions cannot be recovered"
+		return result
+	}
+	details = append(details, fmt.Sprintf("tmux present at %s; sessions survive NTM process death", tmuxPath))
 
 	result.Details = details
 	result.Passed = true
-	result.Status = "ok"
+	result.Status = StatusOK
 	result.Message = "state recovery mechanisms available"
 
 	return result
@@ -395,14 +445,35 @@ func (c *Checker) checkAuditableActions(ctx context.Context) CheckResult {
 		details = append(details, "logs directory will be created when needed")
 	}
 
-	// Check 2: Event types are defined
-	details = append(details, "Event types defined for all critical actions")
-	details = append(details, "Correlation IDs generated via uuid/nanoid")
+	// Check 2: the audit trail must be writable. An audit log that cannot be
+	// written is the failure this invariant exists to catch, so probe it rather
+	// than assert it.
+	if err := os.MkdirAll(logsDir, 0o755); err != nil {
+		details = append(details, fmt.Sprintf("cannot create audit log directory %s: %v", logsDir, err))
+		result.Details = details
+		result.Passed = false
+		result.Status = StatusError
+		result.Message = "audit log directory is not writable"
+		return result
+	}
+	probe := filepath.Join(logsDir, ".ntm-audit-write-probe")
+	if err := os.WriteFile(probe, []byte("probe\n"), 0o600); err != nil {
+		details = append(details, fmt.Sprintf("audit log directory %s is not writable: %v", logsDir, err))
+		result.Details = details
+		result.Passed = false
+		result.Status = StatusError
+		result.Message = "audit log directory is not writable"
+		return result
+	}
+	if err := os.Remove(probe); err != nil {
+		details = append(details, fmt.Sprintf("audit write probe left behind at %s: %v", probe, err))
+	}
+	details = append(details, fmt.Sprintf("audit log directory %s is writable", logsDir))
 
 	result.Details = details
 	result.Passed = true
-	result.Status = "ok"
-	result.Message = "audit logging infrastructure in place"
+	result.Status = StatusOK
+	result.Message = "audit log directory writable"
 
 	return result
 }
@@ -416,22 +487,54 @@ func (c *Checker) checkSafeByDefault(ctx context.Context) CheckResult {
 
 	var details []string
 
-	// Check 1: Default policy blocks dangerous commands
-	details = append(details, "Default policy blocks: git reset --hard, rm -rf, git push --force")
-	details = append(details, "Allowed exceptions require explicit policy rules")
+	// Read the policy actually in effect. This used to state that
+	// "automation.auto_commit defaults to false" without opening anything —
+	// which is not merely unverified but wrong, since DefaultPolicy sets
+	// AutoCommit true. Asserting a safe default while the operator has enabled
+	// risky automation is the exact failure this invariant exists to catch.
+	load := c.loadPolicy
+	if load == nil {
+		load = policy.LoadOrDefault
+	}
+	effective, err := load()
+	if err != nil || effective == nil {
+		details = append(details, fmt.Sprintf("could not load the effective policy: %v", err))
+		result.Details = details
+		result.Passed = false
+		result.Status = StatusWarning
+		result.Message = "effective policy could not be read"
+		return result
+	}
 
-	// Check 2: Automation is disabled by default
-	details = append(details, "automation.auto_push defaults to false")
-	details = append(details, "automation.auto_commit defaults to false")
-	details = append(details, "automation.force_release defaults to 'approval'")
+	var risky []string
+	if effective.Automation.AutoPush {
+		risky = append(risky, "automation.auto_push=true")
+	}
+	if effective.Automation.AutoCommit {
+		risky = append(risky, "automation.auto_commit=true")
+	}
+	forceRelease := effective.ForceReleasePolicy()
+	if forceRelease == "auto" {
+		risky = append(risky, "automation.force_release=auto")
+	}
 
-	// Check 3: SLB (two-person approval) for critical operations
-	details = append(details, "SLB support available for critical operations")
+	details = append(details,
+		fmt.Sprintf("automation.auto_push=%t", effective.Automation.AutoPush),
+		fmt.Sprintf("automation.auto_commit=%t", effective.Automation.AutoCommit),
+		fmt.Sprintf("automation.force_release=%s", forceRelease),
+		fmt.Sprintf("%d blocked rule(s), %d approval-required rule(s)",
+			len(effective.Blocked), len(effective.ApprovalRequired)),
+	)
 
 	result.Details = details
+	if len(risky) > 0 {
+		result.Passed = false
+		result.Status = StatusWarning
+		result.Message = "risky automation enabled: " + strings.Join(risky, ", ")
+		return result
+	}
 	result.Passed = true
-	result.Status = "ok"
-	result.Message = "safe defaults enforced by policy engine"
-
+	result.Status = StatusOK
+	result.Message = "risky automation is opt-in and currently disabled"
 	return result
 }
