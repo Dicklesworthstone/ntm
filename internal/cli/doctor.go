@@ -573,17 +573,37 @@ func checkDependencies(ctx context.Context) []DepCheck {
 	return checks
 }
 
+// daemonVerdict renders the status and message for one daemon probe.
+//
+// Both arms of this decision used to report "ok", so a daemon that was not
+// running drew a green tick reading "port 8765 available" — including one the
+// operator had switched on in config. A down daemon is now a warning when it is
+// expected, and an unjudged "?" when it is not.
+func daemonVerdict(running, expected bool, port int) (status, message string) {
+	switch {
+	case running:
+		return "ok", fmt.Sprintf("listening on port %d", port)
+	case expected:
+		return "warning", fmt.Sprintf("enabled in config but not listening on port %d", port)
+	default:
+		return "unknown", fmt.Sprintf("not running (port %d free)", port)
+	}
+}
+
 func checkDaemons(ctx context.Context) []DaemonCheck {
 	var checks []DaemonCheck
 
 	// Check common daemon ports in deterministic order
 	type daemonPort struct {
-		name string
-		port int
+		name     string
+		port     int
+		expected bool
 	}
+	// expected records whether this daemon is supposed to be up, so a daemon
+	// that is down can be reported as a problem rather than as a tick.
 	daemons := []daemonPort{
-		{"agent-mail", 8765},
-		{"cm-server", 8766},
+		{"agent-mail", 8765, cfg != nil && cfg.AgentMail.Enabled},
+		{"cm-server", 8766, false},
 	}
 
 	dialer := &net.Dialer{Timeout: time.Second}
@@ -599,13 +619,8 @@ func checkDaemons(ctx context.Context) []DaemonCheck {
 		if err == nil {
 			conn.Close()
 			check.Running = true
-			check.Status = "ok"
-			check.Message = fmt.Sprintf("listening on port %d", dp.port)
-		} else {
-			check.Running = false
-			check.Status = "ok"
-			check.Message = fmt.Sprintf("port %d available", dp.port)
 		}
+		check.Status, check.Message = daemonVerdict(check.Running, dp.expected, dp.port)
 
 		checks = append(checks, check)
 	}
