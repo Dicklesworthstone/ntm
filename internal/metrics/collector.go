@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"sort"
 	"sync"
 	"time"
@@ -160,7 +161,16 @@ func (c *Collector) GenerateReport() (*MetricsReport, error) {
 		report.LatencyStats[op] = calculateLatencyStats(samples)
 	}
 
+	// Prefer the persisted count. `ntm metrics` builds a Collector and reports
+	// immediately, so the in-memory counter is whatever this process happened to
+	// observe — zero, for a one-shot command — which made
+	// destructive_cmd_incidents report a green "met" for every session while
+	// the blocked_commands rows sat in the database unread. The counter remains
+	// the fallback for a collector with no store.
 	report.BlockedCommands = c.blockedCommands
+	if persisted, ok := c.persistedBlockedCommands(); ok {
+		report.BlockedCommands = persisted
+	}
 
 	// Counted from the tracker rather than from a counter of our own. Nothing
 	// ever incremented c.fileConflicts, so this metric — and the Tier-0
@@ -169,23 +179,25 @@ func (c *Collector) GenerateReport() (*MetricsReport, error) {
 	// fail is worse than an absent one.
 	report.FileConflicts = countFileConflicts(c.sessionID)
 
-	// Generate target comparisons
-	report.TargetComparison = c.generateTargetComparisons(report.FileConflicts)
+	// Generate target comparisons from the resolved report values, not from the
+	// in-memory counters: the counters are what made both Tier-0 targets report
+	// a green "met" for every session.
+	report.TargetComparison = c.generateTargetComparisons(report.BlockedCommands, report.FileConflicts)
 
 	return report, nil
 }
 
 // generateTargetComparisons compares current metrics against targets.
-func (c *Collector) generateTargetComparisons(fileConflicts int64) []TargetComparison {
+func (c *Collector) generateTargetComparisons(blockedCommands, fileConflicts int64) []TargetComparison {
 	comparisons := make([]TargetComparison, 0)
 
 	// Blocked commands
 	comparisons = append(comparisons, TargetComparison{
 		Metric:   "destructive_cmd_incidents",
-		Current:  float64(c.blockedCommands),
+		Current:  float64(blockedCommands),
 		Target:   Tier0Targets["destructive_cmd_incidents"],
 		Baseline: Tier0Baselines["destructive_cmd_incidents"],
-		Status:   getTargetStatus(float64(c.blockedCommands), Tier0Targets["destructive_cmd_incidents"], true),
+		Status:   getTargetStatus(float64(blockedCommands), Tier0Targets["destructive_cmd_incidents"], true),
 	})
 
 	// File conflicts
@@ -437,10 +449,34 @@ func (c *Collector) insertBlockedCommand(agentID, command, reason string) {
 		return
 	}
 
-	_, _ = db.Exec(`
+	if _, err := db.Exec(`
 		INSERT INTO blocked_commands (session_id, agent_id, command, reason)
 		VALUES (?, ?, ?, ?)`,
-		c.sessionID, agentID, command, reason)
+		c.sessionID, agentID, command, reason); err != nil {
+		// A blocked command is a safety event. Losing one silently is how a
+		// metric ends up under-reporting the incidents it exists to count.
+		log.Printf("metrics: recording blocked command for session %s: %v", c.sessionID, err)
+	}
+}
+
+// persistedBlockedCommands returns the blocked-command count recorded for this
+// session, and whether the database could answer.
+//
+// A false return means "unknown" — the caller keeps its in-memory count rather
+// than reporting a zero it did not measure.
+func (c *Collector) persistedBlockedCommands() (int64, bool) {
+	db := c.getDB()
+	if db == nil {
+		return 0, false
+	}
+	var count int64
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM blocked_commands WHERE session_id = ?`,
+		c.sessionID).Scan(&count); err != nil {
+		log.Printf("metrics: counting blocked commands for session %s: %v", c.sessionID, err)
+		return 0, false
+	}
+	return count, true
 }
 
 func (c *Collector) insertSnapshot(name, data string) error {
@@ -476,16 +512,20 @@ func (c *Collector) querySnapshot(name string) (string, error) {
 
 // getDB returns the underlying database connection.
 // This is a workaround until state.Store exposes metrics methods.
+// getDB returns the metrics connection, or nil when storage is unavailable.
+//
+// The nil check is on the concrete pointer, not an interface assertion. A nil
+// *state.Store wrapped in an interface is not a nil interface: the assertion
+// this used to do succeeded, called DB() on the nil receiver and dereferenced
+// nil. getMetricsCollector constructs exactly that — NewCollector(nil, id) when
+// the state store cannot be opened — so a blocked-command event on a machine
+// with an unreadable state.db crashed the process instead of quietly skipping
+// persistence.
 func (c *Collector) getDB() *sql.DB {
-	// Interface assertion: returns the connection when Store exposes DB(),
-	// nil otherwise (callers treat nil as "metrics storage unavailable").
-	type dbGetter interface {
-		DB() *sql.DB
+	if c.store == nil {
+		return nil
 	}
-	if getter, ok := interface{}(c.store).(dbGetter); ok {
-		return getter.DB()
-	}
-	return nil
+	return c.store.DB()
 }
 
 // Export formats for CLI commands
