@@ -175,7 +175,16 @@ func runMonitor(session string) error {
 	defer snapshotTicker.Stop()
 	lastOutputs := make(map[string]string)
 
+	// Sample file changes so the surfaces that read tracker.GlobalFileChanges —
+	// `ntm changes`, `ntm conflicts`, --robot-status, the dashboard Files panel
+	// and work-coordination's FileConflicts — have something to report. Each
+	// sample costs one `git status` plus a stat per dirty file.
+	changeRecorders := buildFileChangeRecorders(ctx, manifest)
+	fileChangeTicker := time.NewTicker(fileChangeSampleInterval)
+	defer fileChangeTicker.Stop()
+
 	fmt.Printf("Monitoring session '%s' for resilience...\n", session)
+	fmt.Println(describeFileChangeRecorders(changeRecorders))
 
 	missCount := 0
 	for {
@@ -234,6 +243,8 @@ func runMonitor(session string) error {
 			}
 		case <-snapshotTicker.C:
 			captureSessionOutputs(session, lastOutputs)
+		case <-fileChangeTicker.C:
+			sampleFileChanges(ctx, changeRecorders)
 		}
 	}
 }
