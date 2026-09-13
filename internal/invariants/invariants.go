@@ -203,6 +203,41 @@ type Checker struct {
 	// the Safe-by-Default verdict without depending on the developer's own
 	// ~/.ntm/policy.yaml.
 	loadPolicy func() (*policy.Policy, error)
+
+	// toolReport supplies the tool-availability evidence for the Graceful
+	// Degradation check. doctor passes the results it already computed, so the
+	// invariant is measured without probing every adapter a second time. Nil
+	// means no evidence reached this checker.
+	toolReport func() []ToolAvailability
+
+	// schemaConstraints reports the constraints present in the live state
+	// database, which is what makes retries safe for the Idempotent
+	// Orchestration check.
+	schemaConstraints func() ([]string, error)
+}
+
+// ToolAvailability is one external tool's observed state, as the caller already
+// measured it.
+type ToolAvailability struct {
+	Name      string
+	Available bool
+	// Reported is false when the tool is unavailable and nothing said so. That
+	// is the failure Graceful Degradation exists to prevent: degrading without
+	// telling anyone.
+	Reported bool
+}
+
+// WithToolReport supplies tool-availability evidence measured by the caller.
+func (c *Checker) WithToolReport(fn func() []ToolAvailability) *Checker {
+	c.toolReport = fn
+	return c
+}
+
+// WithSchemaConstraints supplies the live schema definitions used to check that
+// retry safety is actually enforced by the database.
+func (c *Checker) WithSchemaConstraints(fn func() ([]string, error)) *Checker {
+	c.schemaConstraints = fn
+	return c
 }
 
 // NewChecker creates a new invariant checker.
@@ -324,18 +359,62 @@ func (c *Checker) checkGracefulDegradation(ctx context.Context) CheckResult {
 
 	var details []string
 
-	// Structural invariant: it is a property of the code, enforced by the tool
-	// adapter tests, and nothing here measures it at runtime. The lines below
-	// describe the design; they are not evidence, so this reports unverified
-	// rather than claiming a pass it never established.
-	details = append(details, "design: tool adapter framework provides detection and fallback")
-	details = append(details, "design: NTM continues if external tools are unavailable")
-	details = append(details, "not measured by doctor; enforced by the internal/tools adapter tests")
+	// Measured from the tool availability the caller already observed. The
+	// invariant is that a missing tool is surfaced and survivable, so the check
+	// is: did anything actually report the unavailable ones?
+	if c.toolReport == nil {
+		details = append(details, "no tool availability evidence was supplied to this checker")
+		result.Details = details
+		result.Passed = false
+		result.Status = StatusUnverified
+		result.Message = "no tool evidence available to check"
+		return result
+	}
+
+	tools := c.toolReport()
+	if len(tools) == 0 {
+		details = append(details, "no external tools are registered, so there is nothing to degrade from")
+		result.Details = details
+		result.Passed = false
+		result.Status = StatusUnverified
+		result.Message = "no external tools registered"
+		return result
+	}
+
+	var unavailable, silent []string
+	for _, tool := range tools {
+		if tool.Available {
+			continue
+		}
+		unavailable = append(unavailable, tool.Name)
+		if !tool.Reported {
+			silent = append(silent, tool.Name)
+		}
+	}
+
+	details = append(details,
+		fmt.Sprintf("%d external tool(s) registered, %d unavailable", len(tools), len(unavailable)))
+	if len(unavailable) > 0 {
+		details = append(details, "unavailable and still running: "+strings.Join(unavailable, ", "))
+	}
 
 	result.Details = details
-	result.Passed = false
-	result.Status = StatusUnverified
-	result.Message = "structural invariant, not checked at runtime"
+	if len(silent) > 0 {
+		// Degrading silently is the failure this invariant names.
+		details = append(details, "degraded without a warning: "+strings.Join(silent, ", "))
+		result.Details = details
+		result.Passed = false
+		result.Status = StatusError
+		result.Message = "tools unavailable without any warning: " + strings.Join(silent, ", ")
+		return result
+	}
+	result.Passed = true
+	result.Status = StatusOK
+	if len(unavailable) == 0 {
+		result.Message = fmt.Sprintf("all %d external tools available", len(tools))
+		return result
+	}
+	result.Message = fmt.Sprintf("%d of %d tools unavailable, each reported", len(unavailable), len(tools))
 
 	return result
 }
@@ -349,17 +428,64 @@ func (c *Checker) checkIdempotentOrchestration(ctx context.Context) CheckResult 
 
 	var details []string
 
-	// Structural invariant, verified by the spawn/reservation/dispatch tests.
-	// Nothing here exercises those paths, so it is reported as unmeasured.
-	details = append(details, "design: agent registration uses upsert semantics")
-	details = append(details, "design: file reservations extend TTL on re-request")
-	details = append(details, "design: session spawn checks for an existing tmux session")
-	details = append(details, "not measured by doctor; enforced by the spawn and reservation tests")
+	// Retry safety for `ntm send` rests on a database constraint, not on code
+	// alone: send_operations is keyed (operation_id, session_name), so a
+	// replayed operation collides instead of dispatching twice (#245). If that
+	// constraint is missing from the live database — an unapplied migration, a
+	// hand-edited schema — retries silently duplicate work, which is exactly
+	// what this invariant forbids. So check the schema rather than describe it.
+	if c.schemaConstraints == nil {
+		details = append(details, "no schema evidence was supplied to this checker")
+		result.Details = details
+		result.Passed = false
+		result.Status = StatusUnverified
+		result.Message = "no schema evidence available to check"
+		return result
+	}
+
+	constraints, err := c.schemaConstraints()
+	if err != nil {
+		details = append(details, fmt.Sprintf("could not read the state schema: %v", err))
+		result.Details = details
+		result.Passed = false
+		result.Status = StatusWarning
+		result.Message = "state schema could not be inspected"
+		return result
+	}
+
+	var sendOps string
+	for _, stmt := range constraints {
+		if strings.Contains(stmt, "send_operations") {
+			sendOps = stmt
+			break
+		}
+	}
+
+	switch {
+	case sendOps == "":
+		details = append(details, "send_operations table is absent from the state database")
+		result.Details = details
+		result.Passed = false
+		result.Status = StatusError
+		result.Message = "send idempotency table missing: retries can duplicate work"
+		return result
+	case !strings.Contains(strings.ToLower(sendOps), "primary key (operation_id, session_name)"):
+		details = append(details, "send_operations exists but is not keyed (operation_id, session_name)")
+		result.Details = details
+		result.Passed = false
+		result.Status = StatusError
+		result.Message = "send idempotency key missing: retries can duplicate work"
+		return result
+	}
+
+	details = append(details,
+		"send_operations keyed (operation_id, session_name): a replayed send collides instead of dispatching twice")
+	details = append(details, "design: session spawn checks for an existing tmux session; reservations extend TTL on re-request")
 
 	result.Details = details
-	result.Passed = false
-	result.Status = StatusUnverified
-	result.Message = "structural invariant, not checked at runtime"
+	result.Passed = true
+	result.Status = StatusOK
+	result.Message = "send idempotency constraint present"
 
 	return result
 }

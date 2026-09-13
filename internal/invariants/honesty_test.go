@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/Dicklesworthstone/ntm/internal/policy"
@@ -187,5 +188,101 @@ func TestEveryMeasurableInvariantCanFail(t *testing.T) {
 			t.Errorf("%s reported ok in an environment that violates it (message: %q)",
 				name, result.Message)
 		}
+	}
+}
+
+// Graceful Degradation is measured from the tool availability doctor already
+// observed. The failure it names is degrading *silently*, so an unavailable
+// tool that nothing reported must fail the check.
+func TestGracefulDegradationFailsOnSilentDegradation(t *testing.T) {
+	c := checkerFor(t, t.TempDir())
+	c.WithToolReport(func() []ToolAvailability {
+		return []ToolAvailability{
+			{Name: "bd", Available: true, Reported: true},
+			{Name: "cass", Available: false, Reported: false}, // missing, nobody said so
+		}
+	})
+
+	result := c.checkGracefulDegradation(context.Background())
+	if result.Status != StatusError || result.Passed {
+		t.Errorf("silent degradation: status=%q passed=%v, want error/false", result.Status, result.Passed)
+	}
+	if !strings.Contains(result.Message, "cass") {
+		t.Errorf("message should name the silently-degraded tool, got %q", result.Message)
+	}
+}
+
+func TestGracefulDegradationPassesWhenUnavailableToolsAreReported(t *testing.T) {
+	c := checkerFor(t, t.TempDir())
+	c.WithToolReport(func() []ToolAvailability {
+		return []ToolAvailability{
+			{Name: "bd", Available: true, Reported: true},
+			{Name: "cass", Available: false, Reported: true},
+		}
+	})
+
+	result := c.checkGracefulDegradation(context.Background())
+	if result.Status != StatusOK || !result.Passed {
+		t.Errorf("reported degradation: status=%q passed=%v, want ok/true", result.Status, result.Passed)
+	}
+}
+
+// With no evidence supplied the check must say so rather than guess either way.
+func TestGracefulDegradationUnverifiedWithoutEvidence(t *testing.T) {
+	result := NewChecker(t.TempDir()).checkGracefulDegradation(context.Background())
+	if result.Status != StatusUnverified || result.Passed {
+		t.Errorf("no evidence: status=%q passed=%v, want unverified/false", result.Status, result.Passed)
+	}
+}
+
+// Retry safety for `ntm send` is enforced by a composite primary key (#245). If
+// that constraint is gone from the live database, retries duplicate work — so
+// the check reads the schema instead of describing the design.
+func TestIdempotentOrchestrationChecksTheSendKey(t *testing.T) {
+	cases := map[string]struct {
+		schema []string
+		want   string
+	}{
+		"constraint present": {
+			schema: []string{"CREATE TABLE send_operations (\n operation_id TEXT NOT NULL,\n PRIMARY KEY (operation_id, session_name)\n)"},
+			want:   StatusOK,
+		},
+		"table missing entirely": {
+			schema: []string{"CREATE TABLE sessions (id TEXT)"},
+			want:   StatusError,
+		},
+		"table present but unkeyed": {
+			schema: []string{"CREATE TABLE send_operations (operation_id TEXT NOT NULL)"},
+			want:   StatusError,
+		},
+		"keyed on operation_id alone (the pre-018 shape)": {
+			schema: []string{"CREATE TABLE send_operations (operation_id TEXT PRIMARY KEY)"},
+			want:   StatusError,
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			c := checkerFor(t, t.TempDir())
+			c.WithSchemaConstraints(func() ([]string, error) { return tc.schema, nil })
+
+			result := c.checkIdempotentOrchestration(context.Background())
+			if result.Status != tc.want {
+				t.Errorf("status = %q, want %q (message: %s)", result.Status, tc.want, result.Message)
+			}
+			if (result.Status == StatusOK) != result.Passed {
+				t.Errorf("Passed=%v disagrees with status %q", result.Passed, result.Status)
+			}
+		})
+	}
+}
+
+func TestIdempotentOrchestrationReportsUnreadableSchema(t *testing.T) {
+	c := checkerFor(t, t.TempDir())
+	c.WithSchemaConstraints(func() ([]string, error) { return nil, errors.New("db locked") })
+
+	result := c.checkIdempotentOrchestration(context.Background())
+	if result.Status != StatusWarning || result.Passed {
+		t.Errorf("unreadable schema: status=%q passed=%v, want warning/false", result.Status, result.Passed)
 	}
 }

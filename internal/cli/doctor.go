@@ -19,6 +19,7 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/invariants"
+	"github.com/Dicklesworthstone/ntm/internal/state"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tools"
 	processutil "github.com/shirou/gopsutil/v4/process"
@@ -353,8 +354,10 @@ func performDoctorCheck(ctx context.Context) *DoctorReport {
 	// Check configuration
 	report.Configuration = checkConfiguration()
 
-	// Check design invariants
-	report.Invariants = checkInvariants(ctx)
+	// Check design invariants. The tool results computed above are handed over
+	// as evidence so Graceful Degradation is measured rather than asserted,
+	// without probing every adapter a second time.
+	report.Invariants = checkInvariants(ctx, report.Tools)
 
 	// Calculate overall status
 	for _, t := range report.Tools {
@@ -815,7 +818,62 @@ func buildSafetyDefaults(cfg *config.Config) SafetyDefaults {
 	}
 }
 
-func checkInvariants(ctx context.Context) []InvariantCheck {
+// toolAvailabilityFromChecks converts doctor's tool results into the evidence
+// the Graceful Degradation invariant is measured from.
+//
+// "Reported" means the unavailable tool was actually surfaced to the operator —
+// a non-ok status with a message. A tool that is missing while doctor shows it
+// as fine is the silent degradation the invariant exists to catch.
+func toolAvailabilityFromChecks(tools []ToolCheck) []invariants.ToolAvailability {
+	out := make([]invariants.ToolAvailability, 0, len(tools))
+	for _, t := range tools {
+		out = append(out, invariants.ToolAvailability{
+			Name:      t.Name,
+			Available: t.Installed,
+			Reported:  t.Installed || (t.Status != "ok" && t.Message != ""),
+		})
+	}
+	return out
+}
+
+// liveSchemaConstraints returns the table definitions from the state database,
+// so the Idempotent Orchestration invariant can verify that retry safety is
+// enforced by the schema rather than merely intended.
+func liveSchemaConstraints() ([]string, error) {
+	store, err := state.Open("")
+	if err != nil {
+		return nil, fmt.Errorf("open state store: %w", err)
+	}
+	defer func() { _ = store.Close() }()
+	if err := store.Migrate(); err != nil {
+		return nil, fmt.Errorf("apply migrations: %w", err)
+	}
+
+	db := store.DB()
+	if db == nil {
+		return nil, fmt.Errorf("state store exposes no database handle")
+	}
+	rows, err := db.Query(`SELECT sql FROM sqlite_master WHERE type = 'table' AND sql IS NOT NULL`)
+	if err != nil {
+		return nil, fmt.Errorf("read schema: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var stmts []string
+	for rows.Next() {
+		var stmt string
+		if err := rows.Scan(&stmt); err != nil {
+			return nil, fmt.Errorf("scan schema row: %w", err)
+		}
+		stmts = append(stmts, stmt)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate schema: %w", err)
+	}
+	return stmts, nil
+}
+
+func checkInvariants(ctx context.Context, tools []ToolCheck) []InvariantCheck {
 	var checks []InvariantCheck
 
 	// Get current working directory for the checker
@@ -824,7 +882,11 @@ func checkInvariants(ctx context.Context) []InvariantCheck {
 		cwd = "."
 	}
 
-	checker := invariants.NewChecker(cwd)
+	checker := invariants.NewChecker(cwd).
+		WithToolReport(func() []invariants.ToolAvailability {
+			return toolAvailabilityFromChecks(tools)
+		}).
+		WithSchemaConstraints(liveSchemaConstraints)
 	report := checker.CheckAll(ctx)
 
 	// Convert invariant results to InvariantCheck format
