@@ -42,6 +42,10 @@ type CostAgentRow struct {
 	OutputTokens int
 	CostUSD      float64
 	Trend        CostTrend
+	// PricingKnown is false when this model was not in the price table and the
+	// default row was used instead. The cost shown is then priced at a guessed
+	// rate, which the panel marks rather than hiding.
+	PricingKnown bool
 }
 
 type CostPanelData struct {
@@ -66,8 +70,11 @@ type CostPanel struct {
 
 func costConfig() PanelConfig {
 	return PanelConfig{
-		ID:              "cost",
-		Title:           "Cost Tracking",
+		ID: "cost",
+		// Not "Cost Tracking": nothing here is tracked. Token counts are a
+		// ~3.5-chars-per-token estimate over scraped pane output, priced from a
+		// static table. Provider billing is not consulted.
+		Title:           "Cost (estimated)",
 		Priority:        PriorityNormal,
 		RefreshInterval: 10 * time.Second,
 		MinWidth:        30,
@@ -210,17 +217,28 @@ func (c *CostPanel) View() string {
 	}
 
 	// Totals
-	totalLine := fmt.Sprintf("Session Total: %s", cost.FormatCost(c.data.SessionTotalUSD))
+	totalLine := fmt.Sprintf("Session Total: %s", cost.FormatCostEstimate(c.data.SessionTotalUSD))
 	if c.data.LastHourUSD > 0 {
-		totalLine += fmt.Sprintf("  (1h: %s)", cost.FormatCost(c.data.LastHourUSD))
+		totalLine += fmt.Sprintf("  (1h: %s)", cost.FormatCostEstimate(c.data.LastHourUSD))
 	}
 	totals := []string{
 		lipgloss.NewStyle().Foreground(t.Text).Bold(true).Render(totalLine),
 	}
 
+	// State the basis. Without it a dollar figure in a dashboard reads as
+	// billing, and this one is a token estimate over scraped output.
+	basis := "est. from output volume, not provider billing"
+	for _, agent := range c.data.Agents {
+		if !agent.PricingKnown {
+			basis += "; ? = model not in price table"
+			break
+		}
+	}
+	totals = append(totals, lipgloss.NewStyle().Foreground(t.Overlay).Render(basis))
+
 	if c.data.DailyBudgetUSD > 0 {
 		remaining := c.data.DailyBudgetUSD - c.data.BudgetUsedUSD
-		remainingStr := cost.FormatCost(remaining)
+		remainingStr := cost.FormatCostEstimate(remaining)
 
 		budgetColor := t.Green
 		if remaining <= 0 {
@@ -234,6 +252,8 @@ func (c *CostPanel) View() string {
 			}
 		}
 
+		// The limit is a real number the operator set; the remainder is an
+		// estimate subtracted from it, so only the remainder carries the "~".
 		budgetLine := fmt.Sprintf("Budget Left: %s  (limit: %s)", remainingStr, cost.FormatCost(c.data.DailyBudgetUSD))
 		totals = append(totals, lipgloss.NewStyle().Foreground(budgetColor).Bold(true).Render(budgetLine))
 	}
@@ -389,7 +409,14 @@ func (c *CostPanel) costTableRows(cols []table.Column, maxRows int) []table.Row 
 		if showOut {
 			row = append(row, formatTokenShort(agent.OutputTokens))
 		}
-		row = append(row, cost.FormatCost(agent.CostUSD))
+		// "?" marks a row priced from the default table row because this model
+		// is not in the price table, so the amount is a guessed rate applied to
+		// an estimated token count.
+		costCell := cost.FormatCostEstimate(agent.CostUSD)
+		if !agent.PricingKnown {
+			costCell += "?"
+		}
+		row = append(row, costCell)
 		row = append(row, agent.Trend.Arrow())
 		rows = append(rows, row)
 	}

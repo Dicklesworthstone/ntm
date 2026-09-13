@@ -69,13 +69,27 @@ func normalizeModelName(model string) string {
 // GetModelPricing returns the pricing for a model.
 // If the model is not found, returns default pricing.
 func GetModelPricing(model string) ModelPricing {
+	pricing, _ := GetModelPricingInfo(model)
+	return pricing
+}
+
+// GetModelPricingInfo returns the pricing for a model and whether the model was
+// actually found in the table.
+//
+// A false second return means the caller is holding the "default" row, not this
+// model's price — the table was last updated in May 2025, so current models fall
+// through it. gpt-6-astra and gemini-3.1-pro-preview both land on the default,
+// and for Gemini that default overstates the real rate several-fold. Callers
+// that show money must surface the difference instead of presenting a guessed
+// rate as this model's price.
+func GetModelPricingInfo(model string) (ModelPricing, bool) {
 	if pricing, ok := modelPricing[model]; ok {
-		return pricing
+		return pricing, model != "default"
 	}
 
 	normalized := normalizeModelName(model)
 	if pricing, ok := modelPricing[normalized]; ok {
-		return pricing
+		return pricing, normalized != "default"
 	}
 
 	// Prefix match for variants (longest key first).
@@ -91,14 +105,14 @@ func GetModelPricing(model string) ModelPricing {
 	})
 	for _, key := range keys {
 		if strings.HasPrefix(normalized, key) {
-			return modelPricing[key]
+			return modelPricing[key], true
 		}
 	}
 
 	if pricing, ok := modelPricing["default"]; ok {
-		return pricing
+		return pricing, false
 	}
-	return ModelPricing{}
+	return ModelPricing{}, false
 }
 
 // EstimateTokens estimates the token count for text.
@@ -107,7 +121,8 @@ func EstimateTokens(text string) int {
 	return tokens.EstimateTokens(text)
 }
 
-// FormatCost formats a USD amount as a string.
+// FormatCost formats a USD amount as a string. Use it for amounts that came
+// from a provider; for locally estimated amounts use FormatCostEstimate.
 func FormatCost(usd float64) string {
 	if usd < 0.01 {
 		return fmt.Sprintf("$%.4f", usd)
@@ -116,4 +131,21 @@ func FormatCost(usd float64) string {
 		return fmt.Sprintf("$%.3f", usd)
 	}
 	return fmt.Sprintf("$%.2f", usd)
+}
+
+// FormatCostEstimate formats a locally estimated USD amount.
+//
+// Estimates come from a ~3.5-chars-per-token count of scraped pane output
+// multiplied by a price table, so the input is accurate to roughly a factor of
+// two. Rendering that as "$0.0137" claims precision to a hundredth of a cent
+// that the number does not have, so estimates carry a "~" and stop at cents,
+// and anything under a cent says so rather than inventing digits.
+func FormatCostEstimate(usd float64) string {
+	if usd <= 0 {
+		return "~$0"
+	}
+	if usd < 0.01 {
+		return "<$0.01"
+	}
+	return fmt.Sprintf("~$%.2f", usd)
 }
