@@ -42,10 +42,10 @@ type CostAgentRow struct {
 	OutputTokens int
 	CostUSD      float64
 	Trend        CostTrend
-	// PricingKnown is false when this model was not in the price table and the
-	// default row was used instead. The cost shown is then priced at a guessed
-	// rate, which the panel marks rather than hiding.
-	PricingKnown bool
+	// PricingMatch records how the rate was resolved. Anything short of an
+	// exact match means the amount was priced at a rate nobody verified for
+	// this model, which the panel marks rather than hiding.
+	PricingMatch cost.PricingMatch
 }
 
 type CostPanelData struct {
@@ -225,14 +225,24 @@ func (c *CostPanel) View() string {
 		lipgloss.NewStyle().Foreground(t.Text).Bold(true).Render(totalLine),
 	}
 
-	// State the basis. Without it a dollar figure in a dashboard reads as
-	// billing, and this one is a token estimate over scraped output.
-	basis := "est. from output volume, not provider billing"
+	// State the basis and the vintage. Without it a dollar figure in a dashboard
+	// reads as billing; this one is a token estimate over scraped output priced
+	// from a table older than most of the models it is pricing.
+	basis := "est. from output volume, not provider billing; prices as of " + cost.PricingTableVintage
+	var anyFamily, anyUnknown bool
 	for _, agent := range c.data.Agents {
-		if !agent.PricingKnown {
-			basis += "; ? = model not in price table"
-			break
+		switch agent.PricingMatch {
+		case cost.PricingUnknown:
+			anyUnknown = true
+		case cost.PricingFamily:
+			anyFamily = true
 		}
+	}
+	if anyFamily {
+		basis += "; ~ = priced from model family"
+	}
+	if anyUnknown {
+		basis += "; ? = model not in price table"
 	}
 	totals = append(totals, lipgloss.NewStyle().Foreground(t.Overlay).Render(basis))
 
@@ -409,12 +419,14 @@ func (c *CostPanel) costTableRows(cols []table.Column, maxRows int) []table.Row 
 		if showOut {
 			row = append(row, formatTokenShort(agent.OutputTokens))
 		}
-		// "?" marks a row priced from the default table row because this model
-		// is not in the price table, so the amount is a guessed rate applied to
-		// an estimated token count.
+		// Mark rates nobody verified for this model: "?" for the default row,
+		// "~" for a family prefix (claude-opus-5 priced from claude-opus).
 		costCell := cost.FormatCostEstimate(agent.CostUSD)
-		if !agent.PricingKnown {
+		switch agent.PricingMatch {
+		case cost.PricingUnknown:
 			costCell += "?"
+		case cost.PricingFamily:
+			costCell += "~"
 		}
 		row = append(row, costCell)
 		row = append(row, agent.Trend.Arrow())

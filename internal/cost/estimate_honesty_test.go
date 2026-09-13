@@ -10,34 +10,59 @@ import (
 // titled "Cost Tracking". Two separate claims the numbers cannot support:
 // that the amount is tracked, and that it is precise to a hundredth of a cent.
 
-func TestGetModelPricingInfoReportsUnknownModels(t *testing.T) {
-	cases := map[string]bool{
-		// In the table (May 2025), directly or by prefix.
-		"claude-opus":     true,
-		"claude-sonnet-4": true,
-		"gpt-4o":          true,
-		"claude-opus-5":   true, // prefix match on claude-opus
-		// Not in the table: these get the default row.
-		"gpt-6-astra":             false,
-		"gemini-3.1-pro-preview":  false,
-		"some-model-nobody-ships": false,
-		"":                        false,
+func TestGetModelPricingInfoClassifiesTheMatch(t *testing.T) {
+	cases := map[string]PricingMatch{
+		// Named in the table (vintage May 2025).
+		"claude-opus":     PricingExact,
+		"claude-sonnet-4": PricingExact,
+		"gpt-4o":          PricingExact,
+		// Not named; priced from a shorter family prefix. A new generation
+		// routinely reprices, so this is not knowledge of its rate.
+		"claude-opus-5":   PricingFamily,
+		"gpt-4o-20240513": PricingExact, // 8-digit date suffix stripped, then exact
+		"claude-haiku-99": PricingFamily,
+		// Nothing matched: the default row.
+		"gpt-6-astra":             PricingUnknown,
+		"gemini-3.1-pro-preview":  PricingUnknown,
+		"some-model-nobody-ships": PricingUnknown,
+		"":                        PricingUnknown,
 	}
 
-	for model, wantKnown := range cases {
+	for model, want := range cases {
 		t.Run(model, func(t *testing.T) {
-			_, known := GetModelPricingInfo(model)
-			if known != wantKnown {
-				t.Errorf("GetModelPricingInfo(%q) known = %v, want %v", model, known, wantKnown)
+			_, got := GetModelPricingInfo(model)
+			if got != want {
+				t.Errorf("GetModelPricingInfo(%q) match = %v, want %v", model, got, want)
 			}
 		})
 	}
 }
 
+// A family match must never be mistaken for knowing this model's price — that
+// was the original defect: claude-opus-5 reported as a known rate while being
+// charged at the claude-opus (Opus-4 era) figure.
+func TestFamilyMatchIsNotAnExactMatch(t *testing.T) {
+	_, match := GetModelPricingInfo("claude-opus-5")
+	if match == PricingExact {
+		t.Error("claude-opus-5 is not in the table; reporting an exact match claims a verified price")
+	}
+	if !match.Known() {
+		t.Error("a family match should still count as priced, just not exactly")
+	}
+}
+
 // Asking for "default" explicitly is still not knowledge of a model's price.
 func TestDefaultRowIsNeverReportedAsKnown(t *testing.T) {
-	if _, known := GetModelPricingInfo("default"); known {
+	if _, match := GetModelPricingInfo("default"); match.Known() {
 		t.Error(`the "default" row reported itself as a known model price`)
+	}
+}
+
+// The vintage has to be stated, since it is what tells an operator the table
+// predates the models it is pricing.
+func TestPricingTableVintageIsDeclared(t *testing.T) {
+	if PricingTableVintage == "" {
+		t.Error("the price table vintage is empty; prices must carry their age")
 	}
 }
 

@@ -5008,7 +5008,7 @@ func (m *Model) refreshCostPanel(now time.Time) {
 		inputTokens := m.costInputTokens[p.ID]
 		outputTokens := m.costOutputTokens[p.ID]
 
-		pricing, pricingKnown := cost.GetModelPricingInfo(modelName)
+		pricing, pricingMatch := cost.GetModelPricingInfo(modelName)
 		costUSD := (float64(inputTokens)/1000.0)*pricing.InputPer1K + (float64(outputTokens)/1000.0)*pricing.OutputPer1K
 		total += costUSD
 
@@ -5029,7 +5029,7 @@ func (m *Model) refreshCostPanel(now time.Time) {
 			OutputTokens: outputTokens,
 			CostUSD:      costUSD,
 			Trend:        trend,
-			PricingKnown: pricingKnown,
+			PricingMatch: pricingMatch,
 		})
 	}
 

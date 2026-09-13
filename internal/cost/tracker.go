@@ -66,23 +66,49 @@ func normalizeModelName(model string) string {
 	return model
 }
 
-// GetModelPricingInfo returns the pricing for a model and whether the model was
-// actually found in the table.
+// PricingMatch describes how a price was resolved, because "we have a number"
+// and "we know this model's price" are different claims.
+type PricingMatch int
+
+const (
+	// PricingUnknown means nothing matched and the default row was used. The
+	// amount is a guessed rate, not this model's price.
+	PricingUnknown PricingMatch = iota
+	// PricingFamily means a shorter family prefix matched — claude-opus-5
+	// priced from the claude-opus row. The family's rate is a reasonable
+	// stand-in but was never verified for this model, and a new generation
+	// routinely reprices.
+	PricingFamily
+	// PricingExact means this model is in the table by name.
+	PricingExact
+)
+
+// Known reports whether the price came from an entry for this model or its
+// family, as opposed to the default row.
+func (m PricingMatch) Known() bool { return m != PricingUnknown }
+
+// PricingTableVintage is when the price table below was last revised. Surface
+// it anywhere prices are shown: it is over a year old, and models released
+// since are priced by family prefix or by the default row rather than by any
+// figure anyone checked.
+const PricingTableVintage = "May 2025"
+
+// GetModelPricingInfo returns the pricing for a model and how it was resolved.
 //
-// A false second return means the caller is holding the "default" row, not this
-// model's price — the table was last updated in May 2025, so current models fall
-// through it. gpt-6-astra and gemini-3.1-pro-preview both land on the default,
-// and for Gemini that default overstates the real rate several-fold. Callers
-// that show money must surface the difference instead of presenting a guessed
-// rate as this model's price.
-func GetModelPricingInfo(model string) (ModelPricing, bool) {
-	if pricing, ok := modelPricing[model]; ok {
-		return pricing, model != "default"
+// Anything other than PricingExact means the caller is holding a rate that was
+// never verified for this model: gpt-6-astra and gemini-3.1-pro-preview fall to
+// the default row (which overstates Gemini severalfold), and claude-opus-5 is
+// priced from the claude-opus family entry. Callers that show money must
+// surface the difference rather than presenting any of it as this model's
+// price.
+func GetModelPricingInfo(model string) (ModelPricing, PricingMatch) {
+	if pricing, ok := modelPricing[model]; ok && model != "default" {
+		return pricing, PricingExact
 	}
 
 	normalized := normalizeModelName(model)
-	if pricing, ok := modelPricing[normalized]; ok {
-		return pricing, normalized != "default"
+	if pricing, ok := modelPricing[normalized]; ok && normalized != "default" {
+		return pricing, PricingExact
 	}
 
 	// Prefix match for variants (longest key first).
@@ -98,14 +124,14 @@ func GetModelPricingInfo(model string) (ModelPricing, bool) {
 	})
 	for _, key := range keys {
 		if strings.HasPrefix(normalized, key) {
-			return modelPricing[key], true
+			return modelPricing[key], PricingFamily
 		}
 	}
 
 	if pricing, ok := modelPricing["default"]; ok {
-		return pricing, false
+		return pricing, PricingUnknown
 	}
-	return ModelPricing{}, false
+	return ModelPricing{}, PricingUnknown
 }
 
 // EstimateTokens estimates the token count for text.
