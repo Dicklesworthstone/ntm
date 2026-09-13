@@ -15,8 +15,10 @@ func TestNewCostPanel(t *testing.T) {
 	if cfg.ID != "cost" {
 		t.Errorf("Expected ID 'cost', got %q", cfg.ID)
 	}
-	if cfg.Title != "Cost Tracking" {
-		t.Errorf("Expected Title 'Cost Tracking', got %q", cfg.Title)
+	// The title must not claim tracking: the figures are a token estimate over
+	// scraped pane output priced from a static table, never provider billing.
+	if cfg.Title != "Cost (estimated)" {
+		t.Errorf("Expected Title 'Cost (estimated)', got %q", cfg.Title)
 	}
 }
 
