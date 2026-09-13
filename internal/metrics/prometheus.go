@@ -57,10 +57,19 @@ func (r *MetricsReport) ExportPrometheus() string {
 	b.WriteString(fmt.Sprintf("ntm_blocked_commands_total{session=%q} %d\n", session, r.BlockedCommands))
 	b.WriteByte('\n')
 
-	// File conflicts gauge
-	b.WriteString("# HELP ntm_file_conflicts_total Total file reservation conflicts.\n")
-	b.WriteString("# TYPE ntm_file_conflicts_total counter\n")
-	b.WriteString(fmt.Sprintf("ntm_file_conflicts_total{session=%q} %d\n", session, r.FileConflicts))
+	// File conflicts. Declared a gauge, not a counter: this is the number of
+	// conflicts detected within the tracker's rolling window, so it falls as old
+	// conflicts age out. Exporting a decreasing series as a counter makes
+	// rate() read every decline as a counter reset and invent traffic that
+	// never happened.
+	//
+	// The HELP text also said "reservation conflicts". These are file *edit*
+	// conflicts from the tracker — two agents touching one path — which is a
+	// different thing from the reservation/lease conflicts in the
+	// file_conflicts table.
+	b.WriteString("# HELP ntm_file_conflicts_recent Files edited by more than one agent within the tracker window.\n")
+	b.WriteString("# TYPE ntm_file_conflicts_recent gauge\n")
+	b.WriteString(fmt.Sprintf("ntm_file_conflicts_recent{session=%q} %d\n", session, r.FileConflicts))
 	b.WriteByte('\n')
 
 	// Target comparison as gauges

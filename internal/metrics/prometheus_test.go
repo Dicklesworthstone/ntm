@@ -19,8 +19,8 @@ func TestExportPrometheus_Empty(t *testing.T) {
 	if !strings.Contains(out, "ntm_blocked_commands_total") {
 		t.Error("expected ntm_blocked_commands_total in output")
 	}
-	if !strings.Contains(out, "ntm_file_conflicts_total") {
-		t.Error("expected ntm_file_conflicts_total in output")
+	if !strings.Contains(out, "ntm_file_conflicts_recent") {
+		t.Error("expected ntm_file_conflicts_recent in output")
 	}
 	// Should NOT contain API calls or latency sections
 	if strings.Contains(out, "ntm_api_calls_total") {
@@ -140,7 +140,7 @@ func TestExportPrometheus_BlockedAndConflicts(t *testing.T) {
 	if !strings.Contains(out, `ntm_blocked_commands_total{session="sess"} 7`) {
 		t.Errorf("expected blocked_commands=7, output:\n%s", out)
 	}
-	if !strings.Contains(out, `ntm_file_conflicts_total{session="sess"} 3`) {
+	if !strings.Contains(out, `ntm_file_conflicts_recent{session="sess"} 3`) {
 		t.Errorf("expected file_conflicts=3, output:\n%s", out)
 	}
 }
@@ -212,7 +212,7 @@ func TestExportPrometheus_FullReport(t *testing.T) {
 		"ntm_api_calls_total",
 		"ntm_operation_duration_ms",
 		"ntm_blocked_commands_total",
-		"ntm_file_conflicts_total",
+		"ntm_file_conflicts_recent",
 		"ntm_target_current",
 		"ntm_target_goal",
 	}
@@ -348,7 +348,7 @@ func TestExportPrometheus_ZeroValues(t *testing.T) {
 	if !strings.Contains(out, `ntm_blocked_commands_total{session="zero"} 0`) {
 		t.Error("expected blocked_commands=0")
 	}
-	if !strings.Contains(out, `ntm_file_conflicts_total{session="zero"} 0`) {
+	if !strings.Contains(out, `ntm_file_conflicts_recent{session="zero"} 0`) {
 		t.Error("expected file_conflicts=0")
 	}
 }
