@@ -90,15 +90,14 @@ func DetectConflicts(changes []RecordedFileChange) []Conflict {
 	return conflicts
 }
 
-// DetectConflictsRecent analyzes global file changes within the given window.
+// DetectConflictsRecent analyzes recorded file changes within the given window.
 func DetectConflictsRecent(window time.Duration) []Conflict {
-	changes := GlobalFileChanges.Since(time.Now().Add(-window))
-	return DetectConflicts(changes)
+	return DetectConflicts(RecordedChangesSince(time.Now().Add(-window)))
 }
 
 // ConflictsSince returns files changed by more than one agent since the timestamp.
 func ConflictsSince(ts time.Time, session string) []Conflict {
-	changes := GlobalFileChanges.Since(ts)
+	changes := RecordedChangesSince(ts)
 	var filtered []RecordedFileChange
 	for _, c := range changes {
 		if session != "" && c.Session != session {

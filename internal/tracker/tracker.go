@@ -5,6 +5,8 @@ package tracker
 import (
 	"sync"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/state"
 )
 
 // ChangeType represents the type of state change
@@ -102,6 +104,32 @@ func NewFileChangeStore(limit int) *FileChangeStore {
 	}
 }
 
+// Add appends a change, overwriting the oldest entry once the buffer is full.
+//
+// This is the store's only write path. It was deleted as dead code in 670f6380
+// after its last caller went with the original capture pipeline, which left the
+// readers below reporting an all-clear over a store nothing could fill; see
+// git_recorder.go.
+func (s *FileChangeStore) Add(entry RecordedFileChange) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.limit <= 0 {
+		return
+	}
+	if entry.Timestamp.IsZero() {
+		entry.Timestamp = time.Now()
+	}
+
+	if len(s.entries) < s.limit {
+		s.entries = append(s.entries, entry)
+		return
+	}
+	s.full = true
+	s.entries[s.cursor] = entry
+	s.cursor = (s.cursor + 1) % s.limit
+}
+
 // Since returns changes after the provided timestamp.
 func (s *FileChangeStore) Since(ts time.Time) []RecordedFileChange {
 	s.mu.RLock()
@@ -149,18 +177,31 @@ func (s *FileChangeStore) All() []RecordedFileChange {
 // GlobalFileChanges is the shared change store.
 var GlobalFileChanges = NewFileChangeStore(500)
 
-// MaxConcurrentFileRecords limits pending RecordFileChanges goroutines to prevent unbounded growth
-const MaxConcurrentFileRecords = 50
+// The MaxConcurrentFileRecords/fileRecordSem pair that used to sit here bounded
+// the goroutine RecordFileChanges spawned per dispatch. Both outlived that
+// function's deletion, referenced nothing, and documented behavior the binary no
+// longer had. GitRecorder samples synchronously from the caller's loop, so there
+// are no per-dispatch goroutines left to bound.
 
-// fileRecordSem limits concurrent RecordFileChanges operations
-var fileRecordSem = make(chan struct{}, MaxConcurrentFileRecords)
-
-// RecordedChangesSince returns file changes after the provided timestamp.
+// RecordedChangesSince returns file changes after the provided timestamp for
+// the project the caller is standing in.
+//
+// Reads prefer the durable ledger (see persist.go): the session monitor records
+// in its own process, so anything this process happens to hold in memory is at
+// best a same-process fraction of the truth. The in-memory ring remains the
+// fallback for when the shared store cannot be opened.
 func RecordedChangesSince(ts time.Time) []RecordedFileChange {
+	if changes, ok := durableChangesSince(ts); ok {
+		return changes
+	}
 	return GlobalFileChanges.Since(ts)
 }
 
-// RecordedChanges returns all recorded file changes.
+// RecordedChanges returns recorded file changes for the current project within
+// the durable ledger's retention window.
 func RecordedChanges() []RecordedFileChange {
+	if changes, ok := durableChangesSince(time.Now().Add(-state.FileChangeRetention)); ok {
+		return changes
+	}
 	return GlobalFileChanges.All()
 }
