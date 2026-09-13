@@ -66,13 +66,6 @@ func normalizeModelName(model string) string {
 	return model
 }
 
-// GetModelPricing returns the pricing for a model.
-// If the model is not found, returns default pricing.
-func GetModelPricing(model string) ModelPricing {
-	pricing, _ := GetModelPricingInfo(model)
-	return pricing
-}
-
 // GetModelPricingInfo returns the pricing for a model and whether the model was
 // actually found in the table.
 //
