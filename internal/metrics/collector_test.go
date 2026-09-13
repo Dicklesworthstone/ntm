@@ -24,8 +24,8 @@ func TestCollectorBasicOperations(t *testing.T) {
 	// Test RecordBlockedCommand
 	c.RecordBlockedCommand("agent-1", "rm -rf /", "destructive")
 
-	// Test RecordFileConflict
-	recordFileConflictForTest(c, "agent-1", "agent-2", "*.go")
+	// One file conflict, reported by the tracker rather than a local counter.
+	stubFileConflicts(t, 1)
 
 	// Generate report
 	report, err := c.GenerateReport()
@@ -803,8 +803,6 @@ func recordLatencyForTest(c *Collector, operation string, d time.Duration) {
 	c.mu.Unlock()
 }
 
-func recordFileConflictForTest(c *Collector, _, _, _ string) {
-	c.mu.Lock()
-	c.fileConflicts++
-	c.mu.Unlock()
-}
+// File conflicts are no longer a counter on the Collector — GenerateReport
+// counts them from the tracker — so tests stub the source instead; see
+// stubFileConflicts in collector_conflicts_test.go.
