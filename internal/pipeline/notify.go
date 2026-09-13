@@ -62,6 +62,11 @@ type Notifier struct {
 	agentName     string
 }
 
+// notifierSenderName is the Agent Mail sender for workflow-level notifications.
+// Workflow settings carry a mail_recipient but no sender field, unlike mail_send
+// steps which take an explicit agent_name.
+const notifierSenderName = "ntm-pipeline"
+
 // NotifierConfig configures the notifier.
 type NotifierConfig struct {
 	Channels      []string
@@ -70,6 +75,48 @@ type NotifierConfig struct {
 	MailClient    *agentmail.Client
 	ProjectKey    string
 	AgentName     string
+}
+
+// NewNotifier builds a Notifier for the named channels. Unrecognized channel
+// names are ignored, and a config naming no usable channel yields a Notifier
+// whose Notify is a no-op.
+//
+// This constructor previously lived in notify_test.go: 670f6380 moved it there
+// as dead code because nothing wired the notifier up, which left the documented
+// pipeline notification feature (docs/WORKFLOW_SCHEMA.md `notify_channels`,
+// docs/ORCHESTRATION_FEATURES.md) silently inert in every shipped build. It is
+// production code again now that Executor.notifierForSettings builds one.
+func NewNotifier(cfg NotifierConfig) *Notifier {
+	channels := make([]NotificationChannel, 0, len(cfg.Channels))
+	for _, c := range cfg.Channels {
+		switch strings.ToLower(strings.TrimSpace(c)) {
+		case "desktop":
+			channels = append(channels, ChannelDesktop)
+		case "webhook":
+			channels = append(channels, ChannelWebhook)
+		case "mail", "agentmail":
+			channels = append(channels, ChannelMail)
+		}
+	}
+
+	return &Notifier{
+		channels:      channels,
+		webhookURL:    cfg.WebhookURL,
+		mailRecipient: cfg.MailRecipient,
+		mailClient:    cfg.MailClient,
+		projectKey:    cfg.ProjectKey,
+		agentName:     cfg.AgentName,
+	}
+}
+
+// usesChannel reports whether the notifier will deliver over c.
+func (n *Notifier) usesChannel(c NotificationChannel) bool {
+	for _, channel := range n.channels {
+		if channel == c {
+			return true
+		}
+	}
+	return false
 }
 
 // Notify sends a notification to all configured channels.

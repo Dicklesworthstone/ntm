@@ -296,6 +296,17 @@ settings:
   mail_recipient: user         # Agent mail recipient
 ```
 
+Notifications fire only for the events you enable: `notify_on_complete` covers a
+successful finish and `notify_on_error` a failed one. Cancellation does not
+notify. A channel with nothing to send is skipped — `webhook` without
+`webhook_url`, or `mail` without `mail_recipient` — and unrecognized channel
+names are ignored. Delivery is best-effort under a 10s budget: a webhook that
+hangs or errors is not allowed to fail or delay the run.
+
+The `mail` channel sends as `ntm-pipeline`, using the workflow's working
+directory as the Agent Mail project key (the same key `mail_send` steps take
+explicitly as `project_key`).
+
 ### Error Actions
 
 | Action | Behavior |

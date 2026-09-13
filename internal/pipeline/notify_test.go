@@ -14,32 +14,6 @@ import (
 	"time"
 )
 
-// NewNotifier is a test-only constructor retained after the production
-// NewNotifier was removed as dead code; live tests for Notifier's
-// notification paths still need a way to build a configured instance.
-func NewNotifier(cfg NotifierConfig) *Notifier {
-	channels := make([]NotificationChannel, 0, len(cfg.Channels))
-	for _, c := range cfg.Channels {
-		switch strings.ToLower(c) {
-		case "desktop":
-			channels = append(channels, ChannelDesktop)
-		case "webhook":
-			channels = append(channels, ChannelWebhook)
-		case "mail", "agentmail":
-			channels = append(channels, ChannelMail)
-		}
-	}
-
-	return &Notifier{
-		channels:      channels,
-		webhookURL:    cfg.WebhookURL,
-		mailRecipient: cfg.MailRecipient,
-		mailClient:    cfg.MailClient,
-		projectKey:    cfg.ProjectKey,
-		agentName:     cfg.AgentName,
-	}
-}
-
 func TestShouldNotify(t *testing.T) {
 	tests := []struct {
 		name     string

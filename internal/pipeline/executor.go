@@ -360,8 +360,9 @@ func (e *Executor) Run(ctx context.Context, workflow *Workflow, vars map[string]
 			e.state.FinishedAt = time.Now()
 			e.state.UpdatedAt = time.Now()
 			e.state.Status = StatusFailed
-			e.sendNotification(ctx, workflow, NotifyFailed)
+			pending := e.prepareNotification(workflow, NotifyFailed)
 			e.stateMu.Unlock()
+			e.deliverNotification(pending)
 		}
 		e.emitProgress("workflow_error", "", err.Error(), e.calculateProgress())
 	} else {
@@ -369,8 +370,9 @@ func (e *Executor) Run(ctx context.Context, workflow *Workflow, vars map[string]
 		e.state.FinishedAt = time.Now()
 		e.state.UpdatedAt = time.Now()
 		e.state.Status = StatusCompleted
-		e.sendNotification(ctx, workflow, NotifyCompleted)
+		pending := e.prepareNotification(workflow, NotifyCompleted)
 		e.stateMu.Unlock()
+		e.deliverNotification(pending)
 		e.emitProgress("workflow_complete", "", "Workflow completed successfully", 1.0)
 	}
 
@@ -531,8 +533,9 @@ func (e *Executor) Resume(ctx context.Context, workflow *Workflow, prior *Execut
 			e.state.FinishedAt = time.Now()
 			e.state.UpdatedAt = time.Now()
 			e.state.Status = StatusFailed
-			e.sendNotification(ctx, workflow, NotifyFailed)
+			pending := e.prepareNotification(workflow, NotifyFailed)
 			e.stateMu.Unlock()
+			e.deliverNotification(pending)
 		}
 		e.emitProgress("workflow_error", "", err.Error(), e.calculateProgress())
 	} else {
@@ -540,8 +543,9 @@ func (e *Executor) Resume(ctx context.Context, workflow *Workflow, prior *Execut
 		e.state.FinishedAt = time.Now()
 		e.state.UpdatedAt = time.Now()
 		e.state.Status = StatusCompleted
-		e.sendNotification(ctx, workflow, NotifyCompleted)
+		pending := e.prepareNotification(workflow, NotifyCompleted)
 		e.stateMu.Unlock()
+		e.deliverNotification(pending)
 		e.emitProgress("workflow_complete", "", "Workflow completed successfully", 1.0)
 	}
 
@@ -581,8 +585,12 @@ func (e *Executor) finalizeCancelledWorkflow(ctx context.Context, workflow *Work
 	e.state.FinishedAt = finishedAt
 	e.state.UpdatedAt = finishedAt
 	e.state.CurrentStep = ""
+	// Prepared before the unlock: BuildPayloadFromState walks state.Steps and
+	// state.Errors, which the old call-after-unlock would have read racily the
+	// moment a notifier existed.
+	pending := e.prepareNotification(workflow, NotifyCancelled)
 	e.stateMu.Unlock()
-	e.sendNotification(ctx, workflow, NotifyCancelled)
+	e.deliverNotification(pending)
 }
 
 func (e *Executor) runOnCancelSteps(workflow *Workflow) {
@@ -3361,21 +3369,97 @@ func (e *Executor) emitProgress(eventType, stepID, message string, progress floa
 	}
 }
 
-// sendNotification sends a notification if configured and appropriate for the event.
-func (e *Executor) sendNotification(ctx context.Context, workflow *Workflow, event NotificationEvent) {
-	if e.notifier == nil {
-		return
+// pendingNotification carries a notification from the locked section that can
+// safely read execution state to the delivery that must not hold that lock.
+type pendingNotification struct {
+	notifier *Notifier
+	payload  NotificationPayload
+}
+
+// prepareNotification snapshots a notification while the caller holds stateMu,
+// returning nil when nothing should be sent. The caller must hand the result to
+// deliverNotification *after* releasing stateMu.
+//
+// The payload is built here because BuildPayloadFromState walks state.Steps and
+// state.Errors, which is only race-free under the lock.
+func (e *Executor) prepareNotification(workflow *Workflow, event NotificationEvent) *pendingNotification {
+	if workflow == nil || e.state == nil {
+		return nil
 	}
 	if !ShouldNotify(workflow.Settings, event) {
-		return
+		return nil
 	}
 
-	payload := BuildPayloadFromState(e.state, workflow, event)
-	// Use a short timeout context to avoid blocking workflow completion
+	// Fall back to the notifier the workflow's own settings describe. Until this
+	// existed nothing ever called SetNotifier outside tests, so the notifier was
+	// always nil here and the documented notify_channels/webhook_url settings
+	// (docs/WORKFLOW_SCHEMA.md) parsed fine and then did nothing at all.
+	notifier := e.notifier
+	if notifier == nil {
+		notifier = e.notifierForSettings(workflow.Settings)
+	}
+	if notifier == nil {
+		return nil
+	}
+
+	return &pendingNotification{
+		notifier: notifier,
+		payload:  BuildPayloadFromState(e.state, workflow, event),
+	}
+}
+
+// deliverNotification sends a prepared notification, best-effort.
+//
+// It must NOT be called with stateMu held. Desktop, webhook and mail delivery
+// each leave the process under a 10s budget, and holding the state lock across
+// that would stall every reader of workflow state — progress emission, status
+// queries, cancellation — for as long as a slow webhook takes to answer.
+//
+// The timeout is deliberately built from context.Background() rather than the
+// workflow context so that a failed or cancelled run still reports its outcome.
+func (e *Executor) deliverNotification(pending *pendingNotification) {
+	if pending == nil {
+		return
+	}
 	notifyCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	// Ignore errors - notifications are best-effort
-	_ = e.notifier.Notify(notifyCtx, payload)
+	_ = pending.notifier.Notify(notifyCtx, pending.payload)
+}
+
+// notifierForSettings builds the notifier a workflow's settings describe, or nil
+// when the workflow asked for no channels.
+//
+// Mail needs a project key, which the settings schema has no field for; Agent
+// Mail defines that key as the working directory path, and this package already
+// resolves the project that way elsewhere (see robot.go). If the working
+// directory cannot be resolved the mail client is left nil, which notifyMail
+// treats as "not configured" rather than sending into an unknown project.
+func (e *Executor) notifierForSettings(settings WorkflowSettings) *Notifier {
+	if len(settings.NotifyChannels) == 0 {
+		return nil
+	}
+
+	notifier := NewNotifier(NotifierConfig{
+		Channels:      settings.NotifyChannels,
+		WebhookURL:    settings.WebhookURL,
+		MailRecipient: settings.MailRecipient,
+		AgentName:     notifierSenderName,
+	})
+	if len(notifier.channels) == 0 {
+		return nil
+	}
+
+	// Resolved from the notifier's channels rather than the raw settings so the
+	// client is built only when mail is genuinely in play — NewNotifier is what
+	// normalizes the "mail"/"agentmail" spellings and drops unknown names.
+	if settings.MailRecipient != "" && notifier.usesChannel(ChannelMail) {
+		if projectKey, err := os.Getwd(); err == nil {
+			notifier.projectKey = projectKey
+			notifier.mailClient = e.mailClient(projectKey)
+		}
+	}
+	return notifier
 }
 
 func workflowProgressMessage(action string, workflow *Workflow) string {

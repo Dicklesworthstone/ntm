@@ -1521,8 +1521,10 @@ func TestExecutor_Resume_NilState(t *testing.T) {
 	}
 }
 
-// TestExecutor_sendNotification tests notification sending
-func TestExecutor_sendNotification(t *testing.T) {
+// TestExecutor_prepareAndDeliverNotification tests notification sending.
+// Production prepares under stateMu and delivers after releasing it; this
+// single-goroutine test composes the two phases directly.
+func TestExecutor_prepareAndDeliverNotification(t *testing.T) {
 	cfg := DefaultExecutorConfig("test-session")
 	e := NewExecutor(cfg)
 
@@ -1545,7 +1547,7 @@ func TestExecutor_sendNotification(t *testing.T) {
 	}
 
 	// Test with nil notifier (should not panic)
-	e.sendNotification(t.Context(), workflow, NotifyCompleted)
+	e.deliverNotification(e.prepareNotification(workflow, NotifyCompleted))
 
 	type webhookRequest struct {
 		payload     NotificationPayload
@@ -1575,7 +1577,7 @@ func TestExecutor_sendNotification(t *testing.T) {
 	})
 	e.SetNotifier(notifier)
 
-	e.sendNotification(t.Context(), workflow, NotifyCompleted)
+	e.deliverNotification(e.prepareNotification(workflow, NotifyCompleted))
 	var request webhookRequest
 	select {
 	case request = <-received:
@@ -1594,7 +1596,7 @@ func TestExecutor_sendNotification(t *testing.T) {
 
 	// Test with event that shouldn't notify
 	workflow.Settings.NotifyOnComplete = false
-	e.sendNotification(t.Context(), workflow, NotifyCompleted)
+	e.deliverNotification(e.prepareNotification(workflow, NotifyCompleted))
 	select {
 	case request := <-received:
 		t.Fatalf("notification disabled but webhook received %+v", request.payload)
