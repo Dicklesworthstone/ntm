@@ -322,3 +322,23 @@ func TestIdempotencyKeyMatchSurvivesReformatting(t *testing.T) {
 		}
 	}
 }
+
+// doctor is a diagnostic and does not migrate, so it can meet a database whose
+// schema has never been created. That is not a missing guarantee — calling it
+// one would fail every fresh install — while a table absent from an
+// *initialized* schema still is.
+func TestIdempotentOrchestrationSeparatesFreshFromMissing(t *testing.T) {
+	fresh := checkerFor(t, t.TempDir())
+	fresh.WithSchemaConstraints(func() ([]string, error) { return nil, nil })
+	if got := fresh.checkIdempotentOrchestration(context.Background()); got.Status != StatusUnverified {
+		t.Errorf("empty schema: status = %q, want %q", got.Status, StatusUnverified)
+	}
+
+	initialized := checkerFor(t, t.TempDir())
+	initialized.WithSchemaConstraints(func() ([]string, error) {
+		return []string{"CREATE TABLE runtime_sessions (id TEXT)"}, nil
+	})
+	if got := initialized.checkIdempotentOrchestration(context.Background()); got.Status != StatusError {
+		t.Errorf("initialized schema missing send_operations: status = %q, want %q", got.Status, StatusError)
+	}
+}

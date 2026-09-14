@@ -845,10 +845,12 @@ func liveSchemaConstraints() ([]string, error) {
 		return nil, fmt.Errorf("open state store: %w", err)
 	}
 	defer func() { _ = store.Close() }()
-	if err := store.Migrate(); err != nil {
-		return nil, fmt.Errorf("apply migrations: %w", err)
-	}
 
+	// Deliberately does not migrate. doctor is a diagnostic, and migrating here
+	// would have it silently rewrite the operator's schema as a side effect of
+	// being asked a question — on a database still at the previous release that
+	// means running 023's table rebuild. An unmigrated database reports as
+	// unverified instead, which is the truth.
 	db := store.DB()
 	if db == nil {
 		return nil, fmt.Errorf("state store exposes no database handle")

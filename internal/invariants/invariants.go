@@ -474,8 +474,18 @@ func (c *Checker) checkIdempotentOrchestration(ctx context.Context) CheckResult 
 	}
 
 	switch {
+	case len(constraints) == 0:
+		// Nothing at all in the schema: a database that has never been opened
+		// for real work, so migrations have not run yet. That is not a missing
+		// guarantee, and calling it one would fail every fresh install.
+		details = append(details, "state database has no tables yet; migrations run on first use")
+		result.Details = details
+		result.Passed = false
+		result.Status = StatusUnverified
+		result.Message = "state schema not initialized yet"
+		return result
 	case sendOps == "":
-		details = append(details, "send_operations table is absent from the state database")
+		details = append(details, "send_operations table is absent from an initialized state database")
 		result.Details = details
 		result.Passed = false
 		result.Status = StatusError
