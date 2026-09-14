@@ -12,6 +12,7 @@ package tracker
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -124,8 +125,15 @@ func resolveProjectDir(cwd string) string {
 // persistChanges writes a batch to the durable ledger. Failures are reported to
 // the caller, which treats recording as best-effort telemetry.
 func persistChanges(projectDir string, entries []RecordedFileChange) error {
-	if projectDir == "" || len(entries) == 0 {
+	if len(entries) == 0 {
 		return nil
+	}
+	// An empty project is not a quiet success. The ledger is keyed by project,
+	// so these rows would be written nowhere and read back by nobody, while the
+	// caller advanced its baseline and reported them recorded — the silent loss
+	// this whole path exists to avoid. Report it instead.
+	if projectDir == "" {
+		return fmt.Errorf("refusing to record %d file change(s) with no project directory", len(entries))
 	}
 	backend, closeBackend, err := openBackend()
 	if err != nil {
