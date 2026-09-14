@@ -11,6 +11,30 @@ NTM is a tmux session management tool for orchestrating multiple AI coding agent
 
 ---
 
+## [v1.35.1] -- 2026-09-14 [GitHub Release]
+
+**Seven defects in v1.35.0's own file-change capture, found reviewing it with fresh eyes. No schema change; upgrading is a binary swap.**
+
+v1.35.0 replaced surfaces that reported nothing with surfaces that record for real. Reviewing that work turned up seven ways the new code could report nothing, or claim to have recorded something it had not — the same class it was written to fix.
+
+### Fixed
+
+- **Readers resolved the project from the working directory instead of the one they were handed** ([3bf417f3](https://github.com/Dicklesworthstone/ntm/commit/3bf417f3), [c8dc6273](https://github.com/Dicklesworthstone/ntm/commit/c8dc6273)): the ledger is keyed by project, and `RecordedChanges` derives that key by running `git rev-parse` against the current directory. That is correct for a one-shot command run inside the project and wrong for everything else. The dashboard is launched from anywhere and displays a session whose project directory may come from that session's overlay, so its Files panel read a different project's ledger — usually none — and showed nothing while the monitor recorded normally; it also paid for a subprocess on every refresh tick. `--robot-metrics` takes a session explicitly and is routinely run from elsewhere, so `files_changed` reported zero for any session outside the caller's checkout. Both now pass the project they already hold, through `tracker.ChangesForProject` / `ChangesForProjectSince` / `ConflictsForProject`; `--robot-metrics` resolves it from the named session's manifest. The working-directory resolution is memoized, since it only changes if the process chdirs.
+
+- **A failed ledger write silently dropped the changes it failed to write** ([3bf417f3](https://github.com/Dicklesworthstone/ntm/commit/3bf417f3)): `Sample` advanced its baseline before persisting, so a transient busy database lost those changes permanently — the next sample compared against a state whose changes had never been recorded anywhere. `AppendFileChanges` is a single transaction, so a failure wrote nothing; persisting first and advancing only on success costs a re-detect on the next tick instead.
+
+- **The ledger key could differ between writer and reader** ([3bf417f3](https://github.com/Dicklesworthstone/ntm/commit/3bf417f3)): a session manifest's project directory is not guaranteed to be the repository root, while a reader keys by its git toplevel. A session rooted at a subdirectory would have been written under one key and read under another, and every surface would have reported nothing while recording worked perfectly. The recorder now resolves its key exactly as a reader resolves its own location.
+
+- **The monitor's recorder set was fixed at startup** ([3bf417f3](https://github.com/Dicklesworthstone/ntm/commit/3bf417f3)): `ntm add` can give a running session new agents, and with worktree isolation new working trees. A set built once kept attributing everything to the session — and never looked inside the new trees at all, because worktrees live under the gitignored `.ntm`, so that work went entirely unrecorded. The sampler re-derives the set each tick and keeps the recorders it already has, since dropping one would discard its baseline and silently re-baseline past the changes since the last tick. Same build-once defect fixed for the resilience monitor's watched set in v1.34.0.
+
+- **Recording with no project directory reported success** ([b262a179](https://github.com/Dicklesworthstone/ntm/commit/b262a179)): the ledger is keyed by project, so those rows would be written nowhere and read back by nobody while the caller advanced its baseline and reported them recorded. Unreachable today — `Sample` refuses an empty root — but guarded, because the cost of being wrong is losing changes while claiming to have stored them.
+
+- **The dashboard cost column was too narrow for its own contents** ([3bf417f3](https://github.com/Dicklesworthstone/ntm/commit/3bf417f3)): v1.35.0 added a `~` prefix and a pricing-confidence marker, each a column wide, to a field sized at eight. `~$123.45?` rendered as `~$123.4` — a figure that reads as precise and is not even the right number.
+
+- **The send-idempotency check matched schema text literally** ([3bf417f3](https://github.com/Dicklesworthstone/ntm/commit/3bf417f3), [242b8435](https://github.com/Dicklesworthstone/ntm/commit/242b8435)): `sqlite_master` stores `CREATE TABLE` text exactly as the migration wrote it, so reflowing migration 018 would have made `ntm doctor` report the guarantee missing when it was intact. The match is whitespace-tolerant now. The same check also read the schema through `Migrate()`, so an invariant check rewrote the operator's database as a side effect of being asked a question; it reads without migrating, and distinguishes a schema that has simply never been initialized (reported unverified) from `send_operations` absent from an initialized one (still an error), which would otherwise have failed every fresh install.
+
+---
+
 ## [v1.35.0] -- 2026-09-13 [GitHub Release]
 
 **Output that reported things nothing had measured — six fabricated `doctor` ticks, two commands that could only ever return empty, a success rate over zero tasks — plus a redaction setting that never reached the REST API and a `metrics snapshot save` that had never once succeeded.**
