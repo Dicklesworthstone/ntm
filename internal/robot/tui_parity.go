@@ -17,6 +17,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/history"
 	"github.com/Dicklesworthstone/ntm/internal/kernel"
+	"github.com/Dicklesworthstone/ntm/internal/resilience"
 	"github.com/Dicklesworthstone/ntm/internal/robot/adapters"
 	"github.com/Dicklesworthstone/ntm/internal/state"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
@@ -2694,12 +2695,23 @@ func GetMetrics(opts MetricsOptions) (*MetricsOutput, error) {
 		}
 	}
 
-	// Get file change count. Read through tracker.RecordedChanges, which
-	// consults the durable cross-process ledger: the session monitor is what
-	// records changes, so GlobalFileChanges in this one-shot process is always
-	// empty and this reported 0 files changed for every session.
+	// Get file change count from the durable cross-process ledger: the session
+	// monitor is what records changes, so GlobalFileChanges in this one-shot
+	// process is always empty and this reported 0 files changed for every
+	// session.
+	//
+	// Scope by the named session's own project rather than the working
+	// directory. --robot-metrics takes a session explicitly and is routinely
+	// run from somewhere else, and the ledger is keyed by project, so resolving
+	// from cwd reports zero for any session outside the caller's checkout.
+	changes := tracker.RecordedChanges()
+	if opts.Session != "" {
+		if manifest, err := resilience.LoadManifest(opts.Session); err == nil && manifest.ProjectDir != "" {
+			changes = tracker.ChangesForProject(manifest.ProjectDir)
+		}
+	}
 	uniqueFiles := make(map[string]struct{})
-	for _, c := range tracker.RecordedChanges() {
+	for _, c := range changes {
 		if opts.Session == "" || c.Session == opts.Session {
 			uniqueFiles[c.Change.Path] = struct{}{}
 		}
