@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -154,6 +155,17 @@ func Definitions() map[InvariantID]Invariant {
 		},
 	}
 }
+
+// sendIdempotencyKeyRE matches the composite key that makes a replayed `ntm
+// send` collide instead of dispatching twice (#245).
+//
+// Matched with tolerant whitespace rather than a literal substring: sqlite_master
+// stores the CREATE TABLE text exactly as the migration wrote it, so reflowing
+// that migration — dropping the space before the paren, wrapping the clause —
+// would make this report the guarantee missing when it is intact. A check that
+// cries wolf is the same defect as one that cannot fail, pointed the other way.
+var sendIdempotencyKeyRE = regexp.MustCompile(
+	`(?i)primary\s+key\s*\(\s*operation_id\s*,\s*session_name\s*\)`)
 
 // Check statuses.
 //
@@ -469,7 +481,7 @@ func (c *Checker) checkIdempotentOrchestration(ctx context.Context) CheckResult 
 		result.Status = StatusError
 		result.Message = "send idempotency table missing: retries can duplicate work"
 		return result
-	case !strings.Contains(strings.ToLower(sendOps), "primary key (operation_id, session_name)"):
+	case !sendIdempotencyKeyRE.MatchString(sendOps):
 		details = append(details, "send_operations exists but is not keyed (operation_id, session_name)")
 		result.Details = details
 		result.Passed = false

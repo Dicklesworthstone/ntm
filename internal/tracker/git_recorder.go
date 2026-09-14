@@ -77,8 +77,13 @@ func NewGitRecorder(cfg GitRecorderConfig) *GitRecorder {
 		projectDir = cfg.Root
 	}
 	return &GitRecorder{
-		root:       cfg.Root,
-		projectDir: NormalizeProjectDir(projectDir),
+		root: cfg.Root,
+		// Resolved the same way a reader resolves its own location, not merely
+		// normalized. A reader keys the ledger by its git toplevel, so a
+		// manifest whose project dir is a subdirectory of the repository would
+		// be written under one key and read under another, and every surface
+		// would show nothing while recording worked perfectly.
+		projectDir: resolveProjectDir(projectDir),
 		session:    cfg.Session,
 		identity:   cfg.Identity,
 		store:      store,
@@ -108,26 +113,36 @@ func (r *GitRecorder) Sample(ctx context.Context) (int, error) {
 	}
 
 	changes := DetectFileChanges(r.root, r.prev, current)
-	r.prev = current
+	if len(changes) == 0 {
+		r.prev = current
+		return 0, nil
+	}
 
 	now := time.Now()
 	entries := make([]RecordedFileChange, 0, len(changes))
 	for _, change := range changes {
-		entry := RecordedFileChange{
+		entries = append(entries, RecordedFileChange{
 			Timestamp: now,
 			Session:   r.session,
 			Agents:    []string{r.identity},
 			Change:    change,
-		}
-		entries = append(entries, entry)
-		r.store.Add(entry)
+		})
 	}
 
-	// The readers all live in other processes, so the in-memory ring above is
-	// only a same-process convenience — the durable ledger is what actually
-	// reaches `ntm changes`, `ntm conflicts` and the dashboard.
+	// Persist before advancing. The readers all live in other processes, so the
+	// durable ledger is what actually reaches `ntm changes`, `ntm conflicts` and
+	// the dashboard, and AppendFileChanges is one transaction: a failure wrote
+	// nothing. Advancing prev first would compare the next sample against a
+	// state whose changes were never recorded anywhere, dropping them for good
+	// on a transient busy database. Leaving prev where it is costs a re-detect
+	// on the next tick instead.
 	if err := persistChanges(r.projectDir, entries); err != nil {
-		return len(entries), err
+		return 0, err
+	}
+
+	r.prev = current
+	for _, entry := range entries {
+		r.store.Add(entry)
 	}
 	return len(entries), nil
 }

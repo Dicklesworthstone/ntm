@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/state"
@@ -74,6 +75,15 @@ func NormalizeProjectDir(dir string) string {
 	return filepath.Clean(abs)
 }
 
+// projectDirCache memoizes the working-directory resolution. It runs a
+// `git rev-parse` subprocess, and callers on a refresh loop would otherwise pay
+// for one on every tick; the answer only changes if the process chdirs, so the
+// cache is keyed by the working directory rather than held as a single value.
+var (
+	projectDirCacheMu sync.Mutex
+	projectDirCache   = map[string]string{}
+)
+
 // CurrentProjectDir resolves the project a reader is standing in: the git
 // working tree root, or the working directory when that is not a repository.
 func CurrentProjectDir() string {
@@ -81,6 +91,23 @@ func CurrentProjectDir() string {
 	if err != nil {
 		return ""
 	}
+
+	projectDirCacheMu.Lock()
+	cached, ok := projectDirCache[cwd]
+	projectDirCacheMu.Unlock()
+	if ok {
+		return cached
+	}
+
+	resolved := resolveProjectDir(cwd)
+
+	projectDirCacheMu.Lock()
+	projectDirCache[cwd] = resolved
+	projectDirCacheMu.Unlock()
+	return resolved
+}
+
+func resolveProjectDir(cwd string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -131,8 +158,8 @@ func persistChanges(projectDir string, entries []RecordedFileChange) error {
 // The stat signatures (FileState before/after) are deliberately not persisted:
 // they exist only so the recorder can tell a second edit from a file that
 // merely stayed dirty, and no reader consumes them.
-func durableChangesSince(since time.Time) ([]RecordedFileChange, bool) {
-	projectDir := CurrentProjectDir()
+func durableChangesForProject(projectDir string, since time.Time) ([]RecordedFileChange, bool) {
+	projectDir = NormalizeProjectDir(projectDir)
 	if projectDir == "" {
 		return nil, false
 	}

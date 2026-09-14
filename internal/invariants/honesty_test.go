@@ -286,3 +286,39 @@ func TestIdempotentOrchestrationReportsUnreadableSchema(t *testing.T) {
 		t.Errorf("unreadable schema: status=%q passed=%v, want warning/false", result.Status, result.Passed)
 	}
 }
+
+// sqlite_master stores CREATE TABLE text exactly as the migration wrote it, so
+// the key check must survive reformatting. Reporting the guarantee missing when
+// it is intact is the same defect as a check that cannot fail, pointed the other
+// way.
+func TestIdempotencyKeyMatchSurvivesReformatting(t *testing.T) {
+	equivalent := []string{
+		"CREATE TABLE send_operations (\n  PRIMARY KEY (operation_id, session_name)\n)",
+		"CREATE TABLE send_operations (PRIMARY KEY(operation_id,session_name))",
+		"CREATE TABLE send_operations (\n  primary key (\n    operation_id,\n    session_name\n  )\n)",
+		"CREATE TABLE send_operations (PRIMARY  KEY  ( operation_id , session_name ))",
+	}
+
+	for _, schema := range equivalent {
+		c := checkerFor(t, t.TempDir())
+		c.WithSchemaConstraints(func() ([]string, error) { return []string{schema}, nil })
+
+		result := c.checkIdempotentOrchestration(context.Background())
+		if result.Status != StatusOK {
+			t.Errorf("status = %q for an equivalent schema spelling, want ok:\n%s",
+				result.Status, schema)
+		}
+	}
+
+	// A genuinely different key must still fail.
+	for _, schema := range []string{
+		"CREATE TABLE send_operations (operation_id TEXT PRIMARY KEY)",
+		"CREATE TABLE send_operations (PRIMARY KEY (session_name, operation_id))",
+	} {
+		c := checkerFor(t, t.TempDir())
+		c.WithSchemaConstraints(func() ([]string, error) { return []string{schema}, nil })
+		if got := c.checkIdempotentOrchestration(context.Background()).Status; got != StatusError {
+			t.Errorf("status = %q for a wrong key, want error:\n%s", got, schema)
+		}
+	}
+}

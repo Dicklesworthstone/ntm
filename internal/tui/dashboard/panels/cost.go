@@ -360,7 +360,12 @@ func (c *CostPanel) costTableColumns(tableWidth int) []table.Column {
 
 	inW := 7
 	outW := 7
-	costW := 8
+	// Wide enough for the longest estimate plus a confidence marker:
+	// "~$1234.50?" is ten columns. At the previous width of eight, the "~"
+	// prefix and the marker pushed ordinary amounts past the edge and the table
+	// truncated them, so "~$123.45?" rendered as "~$123.4" — a figure that reads
+	// as precise and is not even the right number.
+	costW := 10
 	trendW := 2
 
 	fixedW := costW + trendW

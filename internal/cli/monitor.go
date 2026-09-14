@@ -179,12 +179,12 @@ func runMonitor(session string) error {
 	// `ntm changes`, `ntm conflicts`, --robot-status, the dashboard Files panel
 	// and work-coordination's FileConflicts — have something to report. Each
 	// sample costs one `git status` plus a stat per dirty file.
-	changeRecorders := buildFileChangeRecorders(ctx, manifest)
+	changeSampler := newFileChangeSampler(manifest)
 	fileChangeTicker := time.NewTicker(fileChangeSampleInterval)
 	defer fileChangeTicker.Stop()
 
 	fmt.Printf("Monitoring session '%s' for resilience...\n", session)
-	fmt.Println(describeFileChangeRecorders(changeRecorders))
+	fmt.Println(describeFileChangeSampler(ctx, manifest))
 
 	missCount := 0
 	for {
@@ -244,7 +244,7 @@ func runMonitor(session string) error {
 		case <-snapshotTicker.C:
 			captureSessionOutputs(session, lastOutputs)
 		case <-fileChangeTicker.C:
-			sampleFileChanges(ctx, changeRecorders)
+			changeSampler.Sample(ctx)
 		}
 	}
 }

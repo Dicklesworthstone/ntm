@@ -555,10 +555,17 @@ func (m *Model) fetchHistoryCmd() tea.Cmd {
 // fetchFileChangesCmd queries tracker
 func (m *Model) fetchFileChangesCmd() tea.Cmd {
 	gen := m.nextGen(refreshFiles)
+	// Scope to the session's project rather than the process working directory.
+	// The dashboard is launched from anywhere — its project dir may come from
+	// the session's overlay, not the launch directory — so the cwd-resolving
+	// accessor would read the wrong project's ledger, or none, and show an
+	// empty panel while the monitor was recording normally. Passing it also
+	// keeps `git rev-parse` off a refresh loop.
+	projectDir := m.projectDir
 	return func() tea.Msg {
 		// The files panel owns time-window filtering, so fetch the full
 		// bounded change buffer instead of hard-capping the producer at 5m.
-		changes := tracker.RecordedChanges()
+		changes := tracker.ChangesForProject(projectDir)
 		return FileChangeMsg{Changes: changes, Gen: gen}
 	}
 }

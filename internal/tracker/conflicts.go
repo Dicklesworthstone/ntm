@@ -90,9 +90,17 @@ func DetectConflicts(changes []RecordedFileChange) []Conflict {
 	return conflicts
 }
 
-// DetectConflictsRecent analyzes recorded file changes within the given window.
-func DetectConflictsRecent(window time.Duration) []Conflict {
-	return DetectConflicts(RecordedChangesSince(time.Now().Add(-window)))
+// The cwd-resolving DetectConflictsRecent wrapper lives in
+// conflicts_helpers_test.go: the work-coordination adapter was its only
+// production caller and moved to ConflictsForProject, which is correct for a
+// component that runs wherever the caller happens to be.
+
+// ConflictsForProject analyzes recorded changes for an explicitly named project.
+// Callers holding a project directory must prefer this: resolving from the
+// working directory reads a different project's ledger whenever the process was
+// not launched inside the one it is reporting on.
+func ConflictsForProject(projectDir string, window time.Duration) []Conflict {
+	return DetectConflicts(ChangesForProjectSince(projectDir, time.Now().Add(-window)))
 }
 
 // ConflictsSince returns files changed by more than one agent since the timestamp.

@@ -3,6 +3,8 @@ package panels
 import (
 	"strings"
 	"testing"
+
+	"github.com/Dicklesworthstone/ntm/internal/cost"
 )
 
 func TestNewCostPanel(t *testing.T) {
@@ -120,5 +122,31 @@ func TestCostPanelViewShowsScrollIndicatorWhenOverflowing(t *testing.T) {
 	view := panel.View()
 	if !strings.Contains(view, "%") {
 		t.Fatalf("expected overflowing cost panel to show percent badge, got %q", view)
+	}
+}
+
+// The cost column has to hold the widest cell the panel can produce. The "~"
+// prefix and the confidence marker each add a column, and a truncated currency
+// figure reads as precise while being the wrong number.
+func TestCostColumnFitsTheWidestCell(t *testing.T) {
+	panel := NewCostPanel()
+	cols := panel.costTableColumns(80)
+
+	var costWidth int
+	for _, col := range cols {
+		if col.Title == "Cost" {
+			costWidth = col.Width
+		}
+	}
+	if costWidth == 0 {
+		t.Fatal("no Cost column")
+	}
+
+	// Longest producible cell: a four-figure estimate priced from the default
+	// row, which carries the "?" marker.
+	widest := cost.FormatCostEstimate(1234.5) + "?"
+	if len(widest) > costWidth {
+		t.Errorf("widest cost cell %q is %d columns, but the column is %d — it will be truncated",
+			widest, len(widest), costWidth)
 	}
 }

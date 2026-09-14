@@ -380,7 +380,9 @@ func (a *WorkCoordinationAdapter) collectCoordination(ctx context.Context, now t
 		ctx = context.Background()
 	}
 	inputs := CoordinationInputs{
-		FileConflicts:             tracker.DetectConflictsRecent(a.config.ConflictWindow),
+		// Scoped to the configured project, not the process working directory:
+		// this adapter runs wherever the caller happens to be.
+		FileConflicts:             tracker.ConflictsForProject(a.config.ProjectDir, a.config.ConflictWindow),
 		Handoff:                   latestHandoff(a.config.ProjectDir, a.config.SessionName),
 		ThreadStaleAfter:          a.config.ThreadStaleAfter,
 		ReservationExpiringWithin: a.config.ReservationExpiringWithin,

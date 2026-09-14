@@ -12,12 +12,6 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/worktrees"
 )
 
-// fileChangeSampleInterval is how often each monitored working tree is sampled.
-// Slow enough that `git status` stays negligible even with a monitor per
-// session, fast enough that two agents racing on one file land in the same
-// conflict window (tracker.CriticalConflictWindow is 10 minutes).
-const fileChangeSampleInterval = 15 * time.Second
-
 // File change capture for the session monitor.
 //
 // tracker.GlobalFileChanges is what backs `ntm changes`, `ntm conflicts`,
@@ -27,8 +21,60 @@ const fileChangeSampleInterval = 15 * time.Second
 // what the agents did. The monitor already runs one process per session for the
 // lifetime of that session, which makes it the natural place to sample from.
 
-// buildFileChangeRecorders returns one recorder per attribution unit for a
-// session.
+// fileChangeSampleInterval is how often each monitored working tree is sampled.
+// Slow enough that `git status` stays negligible even with a monitor per
+// session, fast enough that two agents racing on one file land in the same
+// conflict window (tracker.CriticalConflictWindow is 10 minutes).
+const fileChangeSampleInterval = 15 * time.Second
+
+// fileChangeSampler samples every working tree belonging to a session.
+//
+// The recorder set is re-derived on each tick rather than fixed at startup.
+// `ntm add` can give a running session new agents — and with worktree isolation,
+// new working trees — and a set built once would keep attributing everything to
+// the session. Worse, it would never look inside those trees at all: worktrees
+// live under .ntm, which is gitignored, so the project-root recorder cannot see
+// them and the agents' work would go unrecorded entirely.
+type fileChangeSampler struct {
+	manifest *resilience.SpawnManifest
+	// recorders is keyed by working tree so a recorder — and with it the
+	// baseline it has established — survives re-derivation. Entries are never
+	// dropped: a transient failure to list worktrees would otherwise discard
+	// baselines and the next sample would silently re-baseline, losing every
+	// change made in between.
+	recorders map[string]*tracker.GitRecorder
+}
+
+func newFileChangeSampler(manifest *resilience.SpawnManifest) *fileChangeSampler {
+	return &fileChangeSampler{
+		manifest:  manifest,
+		recorders: make(map[string]*tracker.GitRecorder),
+	}
+}
+
+// Sample takes one observation from every working tree the session currently
+// has.
+//
+// Sampling is best-effort telemetry: a tree that is not a git repository, or a
+// git invocation that fails or times out, is logged at debug and skipped rather
+// than allowed to disturb the monitor loop that drives it.
+func (s *fileChangeSampler) Sample(ctx context.Context) {
+	if s == nil {
+		return
+	}
+	for _, cfg := range fileChangeRecorderConfigs(ctx, s.manifest) {
+		recorder, ok := s.recorders[cfg.Root]
+		if !ok {
+			recorder = tracker.NewGitRecorder(cfg)
+			s.recorders[cfg.Root] = recorder
+		}
+		if _, err := recorder.Sample(ctx); err != nil {
+			slog.Default().Debug("file change sample failed", "root", cfg.Root, "error", err)
+		}
+	}
+}
+
+// fileChangeRecorderConfigs describes one recorder per attribution unit.
 //
 // Attribution is taken from the filesystem layout rather than guessed. When a
 // session uses worktree isolation each agent owns a separate working tree, so
@@ -39,7 +85,7 @@ const fileChangeSampleInterval = 15 * time.Second
 // recording nothing: tracker.DetectConflicts treats three distinct agents on one
 // path as a *critical* conflict, so one agent editing one file twice would be
 // reported as a critical three-way conflict.
-func buildFileChangeRecorders(ctx context.Context, manifest *resilience.SpawnManifest) []*tracker.GitRecorder {
+func fileChangeRecorderConfigs(ctx context.Context, manifest *resilience.SpawnManifest) []tracker.GitRecorderConfig {
 	if manifest == nil || manifest.ProjectDir == "" || manifest.Session == "" {
 		return nil
 	}
@@ -52,7 +98,7 @@ func buildFileChangeRecorders(ctx context.Context, manifest *resilience.SpawnMan
 			slog.Default().Debug("file change recorders: listing worktrees failed",
 				"session", session, "error", err)
 		} else if len(infos) > 0 {
-			recorders := make([]*tracker.GitRecorder, 0, len(infos))
+			configs := make([]tracker.GitRecorderConfig, 0, len(infos))
 			for _, info := range infos {
 				if info == nil || info.Path == "" || info.AgentName == "" {
 					continue
@@ -60,50 +106,36 @@ func buildFileChangeRecorders(ctx context.Context, manifest *resilience.SpawnMan
 				if stat, err := os.Stat(info.Path); err != nil || !stat.IsDir() {
 					continue
 				}
-				recorders = append(recorders, tracker.NewGitRecorder(tracker.GitRecorderConfig{
+				configs = append(configs, tracker.GitRecorderConfig{
 					Root:       info.Path,
 					ProjectDir: manifest.ProjectDir,
 					Session:    session,
 					Identity:   info.AgentName,
-				}))
+				})
 			}
-			if len(recorders) > 0 {
-				return recorders
+			if len(configs) > 0 {
+				return configs
 			}
 		}
 	}
 
-	return []*tracker.GitRecorder{tracker.NewGitRecorder(tracker.GitRecorderConfig{
+	return []tracker.GitRecorderConfig{{
 		Root:       manifest.ProjectDir,
 		ProjectDir: manifest.ProjectDir,
 		Session:    session,
 		Identity:   session,
-	})}
+	}}
 }
 
-// sampleFileChanges takes one observation from every recorder.
-//
-// Sampling is best-effort telemetry: a tree that is not a git repository, or a
-// git invocation that fails or times out, is logged at debug and skipped rather
-// than allowed to disturb the monitor loop that drives it.
-func sampleFileChanges(ctx context.Context, recorders []*tracker.GitRecorder) {
-	for _, recorder := range recorders {
-		if recorder == nil {
-			continue
-		}
-		if _, err := recorder.Sample(ctx); err != nil {
-			slog.Default().Debug("file change sample failed", "error", err)
-		}
-	}
-}
-
-// describeFileChangeRecorders renders the startup line for the monitor log.
-func describeFileChangeRecorders(recorders []*tracker.GitRecorder) string {
-	if len(recorders) == 0 {
-		return "file change tracking disabled (no project directory)"
-	}
-	if len(recorders) == 1 {
+// describeFileChangeSampler renders the startup line for the monitor log.
+func describeFileChangeSampler(ctx context.Context, manifest *resilience.SpawnManifest) string {
+	configs := fileChangeRecorderConfigs(ctx, manifest)
+	switch {
+	case len(configs) == 0:
+		return "File change tracking disabled (no project directory)"
+	case len(configs) == 1:
 		return "Tracking file changes for 1 working tree"
+	default:
+		return fmt.Sprintf("Tracking file changes for %d agent worktrees", len(configs))
 	}
-	return fmt.Sprintf("Tracking file changes for %d agent worktrees", len(recorders))
 }

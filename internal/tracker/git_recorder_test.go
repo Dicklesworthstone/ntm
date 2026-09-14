@@ -302,3 +302,80 @@ func TestFileChangeStoreAddWrapsAtLimit(t *testing.T) {
 		}
 	}
 }
+
+// A failed ledger write must not advance the baseline. AppendFileChanges is one
+// transaction, so a failure wrote nothing; advancing would compare the next
+// sample against a state whose changes were never recorded anywhere and drop
+// them for good on a transient busy database.
+func TestSampleRetriesAfterAFailedLedgerWrite(t *testing.T) {
+	fake := installFakeBackend(t)
+	repo := newGitRepo(t)
+	store := NewFileChangeStore(50)
+	r := newTestRecorder(repo, "cc-1", store)
+	sample(t, r)
+
+	writeFile(t, repo, "tracked.txt", "an edit that fails to persist")
+
+	fake.appendErr = errFakeBackend
+	if _, err := r.Sample(t.Context()); err == nil {
+		t.Fatal("expected the failing ledger write to be reported")
+	}
+	if got := len(store.All()); got != 0 {
+		t.Errorf("in-memory ring holds %d entries after a failed write, want 0", got)
+	}
+
+	// The ledger recovers; the change must still be found rather than lost.
+	fake.appendErr = nil
+	n, err := r.Sample(t.Context())
+	if err != nil {
+		t.Fatalf("Sample after recovery: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("recorded %d changes after recovery, want 1 (the edit was dropped)", n)
+	}
+	if len(fake.rows) != 1 || fake.rows[0].Path != "tracked.txt" {
+		t.Errorf("ledger rows = %+v, want the retried tracked.txt change", fake.rows)
+	}
+}
+
+// A manifest's project dir is not guaranteed to be the repository root. The
+// reader keys the ledger by its git toplevel, so a recorder pointed at a
+// subdirectory must resolve to the same key or every surface reports nothing
+// while recording works perfectly.
+func TestRecorderKeysLedgerByRepositoryRoot(t *testing.T) {
+	fake := installFakeBackend(t)
+	repo := newGitRepo(t)
+
+	sub := filepath.Join(repo, "services", "api")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatalf("mkdir sub: %v", err)
+	}
+
+	r := NewGitRecorder(GitRecorderConfig{
+		Root:       repo,
+		ProjectDir: sub, // a subdirectory, as a manifest may well carry
+		Session:    "sess",
+		Identity:   "cc-1",
+		Store:      NewFileChangeStore(50),
+	})
+	sample(t, r)
+	writeFile(t, repo, "tracked.txt", "an edit")
+	sample(t, r)
+
+	if len(fake.rows) != 1 {
+		t.Fatalf("recorded %d rows, want 1", len(fake.rows))
+	}
+	want := NormalizeProjectDir(repo)
+	if fake.rows[0].ProjectDir != want {
+		t.Errorf("ledger key = %q, want the repository root %q", fake.rows[0].ProjectDir, want)
+	}
+
+	// And a reader standing at the root finds it.
+	chdir(t, repo)
+	original := GlobalFileChanges
+	GlobalFileChanges = NewFileChangeStore(500)
+	t.Cleanup(func() { GlobalFileChanges = original })
+	if got := RecordedChangesSince(time.Now().Add(-time.Hour)); len(got) != 1 {
+		t.Errorf("reader at the repository root found %d changes, want 1", len(got))
+	}
+}

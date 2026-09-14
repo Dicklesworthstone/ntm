@@ -196,3 +196,75 @@ func chdir(t *testing.T, dir string) {
 	}
 	t.Cleanup(func() { _ = os.Chdir(previous) })
 }
+
+// The dashboard is launched from anywhere and displays a session whose project
+// dir may be unrelated to the working directory. Reading through the
+// cwd-resolving accessor showed an empty Files panel while the monitor was
+// recording normally, so the project-scoped reader must not consult cwd at all.
+func TestChangesForProjectIgnoresWorkingDirectory(t *testing.T) {
+	fake := installFakeBackend(t)
+	repo := newGitRepo(t)
+
+	fake.rows = append(fake.rows, state.FileChangeRow{
+		ProjectDir: NormalizeProjectDir(repo),
+		Session:    "sess",
+		Agent:      "cc-1",
+		Path:       "internal/serve/server.go",
+		ChangeType: string(FileModified),
+		CreatedAt:  time.Now(),
+	})
+
+	// Stand somewhere with no relationship to the project being reported on.
+	elsewhere := t.TempDir()
+	chdir(t, elsewhere)
+
+	original := GlobalFileChanges
+	GlobalFileChanges = NewFileChangeStore(500)
+	t.Cleanup(func() { GlobalFileChanges = original })
+
+	changes := ChangesForProject(repo)
+	if len(changes) != 1 {
+		t.Fatalf("project-scoped read returned %d changes from outside the project, want 1", len(changes))
+	}
+	if changes[0].Change.Path != "internal/serve/server.go" {
+		t.Errorf("path = %q", changes[0].Change.Path)
+	}
+
+	// And the cwd-resolving accessor correctly sees nothing from here, which is
+	// exactly why the explicit form had to exist.
+	if viaCwd := RecordedChanges(); len(viaCwd) != 0 {
+		t.Errorf("cwd-resolving read from an unrelated directory returned %d changes", len(viaCwd))
+	}
+}
+
+// Conflicts get the same treatment: the work-coordination adapter holds a
+// project dir and runs wherever the caller happens to be.
+func TestConflictsForProjectIgnoresWorkingDirectory(t *testing.T) {
+	fake := installFakeBackend(t)
+	repo := newGitRepo(t)
+	now := time.Now()
+
+	for _, agent := range []string{"cc-1", "cod-2"} {
+		fake.rows = append(fake.rows, state.FileChangeRow{
+			ProjectDir: NormalizeProjectDir(repo),
+			Session:    "sess",
+			Agent:      agent,
+			Path:       "shared.go",
+			ChangeType: string(FileModified),
+			CreatedAt:  now,
+		})
+	}
+
+	chdir(t, t.TempDir())
+	original := GlobalFileChanges
+	GlobalFileChanges = NewFileChangeStore(500)
+	t.Cleanup(func() { GlobalFileChanges = original })
+
+	conflicts := ConflictsForProject(repo, time.Hour)
+	if len(conflicts) != 1 {
+		t.Fatalf("detected %d conflicts from outside the project, want 1", len(conflicts))
+	}
+	if len(conflicts[0].Agents) != 2 {
+		t.Errorf("conflict agents = %v, want both", conflicts[0].Agents)
+	}
+}

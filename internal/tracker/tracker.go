@@ -191,7 +191,21 @@ var GlobalFileChanges = NewFileChangeStore(500)
 // best a same-process fraction of the truth. The in-memory ring remains the
 // fallback for when the shared store cannot be opened.
 func RecordedChangesSince(ts time.Time) []RecordedFileChange {
-	if changes, ok := durableChangesSince(ts); ok {
+	return ChangesForProjectSince(CurrentProjectDir(), ts)
+}
+
+// ChangesForProjectSince returns file changes after ts for an explicitly named
+// project.
+//
+// Callers that already know which project they are reporting on must use this
+// rather than RecordedChangesSince. The cwd-resolving accessors are correct for
+// a one-shot command run inside the project, but wrong for a long-lived process
+// whose working directory is unrelated to the session it displays — the
+// dashboard is launched from anywhere and would otherwise show an empty Files
+// panel while the monitor was recording normally. It also avoids re-running
+// `git rev-parse` on every refresh.
+func ChangesForProjectSince(projectDir string, ts time.Time) []RecordedFileChange {
+	if changes, ok := durableChangesForProject(projectDir, ts); ok {
 		return changes
 	}
 	return GlobalFileChanges.Since(ts)
@@ -200,7 +214,13 @@ func RecordedChangesSince(ts time.Time) []RecordedFileChange {
 // RecordedChanges returns recorded file changes for the current project within
 // the durable ledger's retention window.
 func RecordedChanges() []RecordedFileChange {
-	if changes, ok := durableChangesSince(time.Now().Add(-state.FileChangeRetention)); ok {
+	return ChangesForProject(CurrentProjectDir())
+}
+
+// ChangesForProject returns recorded changes for an explicitly named project
+// within the durable ledger's retention window.
+func ChangesForProject(projectDir string) []RecordedFileChange {
+	if changes, ok := durableChangesForProject(projectDir, time.Now().Add(-state.FileChangeRetention)); ok {
 		return changes
 	}
 	return GlobalFileChanges.All()
