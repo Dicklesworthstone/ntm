@@ -35,7 +35,7 @@ func TestExportedMetricTypesMatchSemantics(t *testing.T) {
 		"ntm_api_calls_total":        "counter", // cumulative per session
 		"ntm_operation_duration_ms":  "summary",
 		"ntm_blocked_commands_total": "counter", // rows only ever added
-		"ntm_file_conflicts_recent":  "gauge",   // windowed: can fall
+		"ntm_file_conflicts_total":   "gauge",   // windowed: can fall
 		"ntm_target_current":         "gauge",
 		"ntm_target_goal":            "gauge",
 	}
@@ -51,9 +51,14 @@ func TestExportedMetricTypesMatchSemantics(t *testing.T) {
 		}
 	}
 
-	// Nothing windowed may carry the counter-implying _total suffix.
-	if strings.Contains(out, "ntm_file_conflicts_total") {
-		t.Error("the windowed conflict series still uses the _total suffix, which implies a counter")
+	// ntm_file_conflicts_total deliberately keeps its counter-implying suffix so
+	// existing dashboards and alerts keep resolving; renaming it is a breaking
+	// change for scrapers and was declined. What must never regress is the
+	// declared type, which is what made rate() report resets that never
+	// happened — so assert it stays a gauge rather than asserting the name.
+	if declared["ntm_file_conflicts_total"] != "gauge" {
+		t.Errorf("ntm_file_conflicts_total is windowed and must stay a gauge, got %q",
+			declared["ntm_file_conflicts_total"])
 	}
 }
 
