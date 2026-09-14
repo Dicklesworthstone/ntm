@@ -268,3 +268,23 @@ func TestConflictsForProjectIgnoresWorkingDirectory(t *testing.T) {
 		t.Errorf("conflict agents = %v, want both", conflicts[0].Agents)
 	}
 }
+
+// The ledger is keyed by project, so recording with no project writes rows
+// nowhere while the caller advances its baseline and reports them recorded.
+// That must be an error, not a quiet success.
+func TestPersistRefusesAnEmptyProject(t *testing.T) {
+	installFakeBackend(t)
+
+	err := persistChanges("", []RecordedFileChange{{
+		Timestamp: time.Now(),
+		Change:    FileChange{Path: "a.go", Type: FileModified},
+	}})
+	if err == nil {
+		t.Error("recording with no project directory reported success")
+	}
+
+	// Nothing to record is still nothing to report.
+	if err := persistChanges("", nil); err != nil {
+		t.Errorf("an empty batch should not error: %v", err)
+	}
+}
