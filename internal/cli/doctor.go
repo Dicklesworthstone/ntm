@@ -321,14 +321,45 @@ type ConfigCheck struct {
 	Message string `json:"message,omitempty"`
 }
 
+// doctorExitFailure reports whether an overall verdict must produce a non-zero
+// process exit.
+//
+// Both output paths consult this one predicate so they cannot disagree about
+// what counts as failure. They previously did: renderDoctorTUITo mapped
+// "unhealthy" onto an error, while runDoctor's JSON branch returned
+// outputDoctorJSON's encode error and nothing else — so `ntm doctor --json`
+// exited 0 on an unhealthy ecosystem. JSON mode is precisely the mode a
+// preflight script gates on, so the surface that mattered was the silent one.
+//
+// Warnings deliberately do not fail: an optional tool being absent is the
+// normal state on most machines, and failing on it would make the command
+// useless as a gate. Callers who want to gate on warnings read `.warnings`.
+func doctorExitFailure(overall string) bool {
+	return overall == "unhealthy"
+}
+
+// doctorCheck is the seam tests use to drive runDoctor with a chosen verdict;
+// production always runs the real probe. Mirrors healthKernelRun in health.go.
+var doctorCheck = performDoctorCheck
+
 func runDoctor(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	report := performDoctorCheck(ctx)
+	report := doctorCheck(ctx)
 
 	if IsJSONOutput() {
-		return outputDoctorJSON(report)
+		if err := outputDoctorJSON(report); err != nil {
+			return err
+		}
+		if doctorExitFailure(report.Overall) {
+			// The report itself is the machine-readable failure surface: its
+			// `overall` field already says "unhealthy". errJSONFailure makes
+			// Execute exit non-zero without encoding a second JSON envelope
+			// after the report, which would break a single-document `jq`.
+			return errJSONFailure
+		}
+		return nil
 	}
 
 	return renderDoctorTUI(report)
@@ -1079,14 +1110,11 @@ func renderDoctorTUITo(w io.Writer, report *DoctorReport) error {
 	fmt.Fprintln(w, boxStyle.Render(statusStyle.Render(statusMsg)))
 	fmt.Fprintln(w)
 
-	// Return error to indicate non-healthy status (Cobra will set appropriate exit code)
-	switch report.Overall {
-	case "unhealthy":
+	// Return error to indicate non-healthy status (Cobra will set appropriate
+	// exit code). Shares doctorExitFailure with the JSON path so both surfaces
+	// agree on the exit contract.
+	if doctorExitFailure(report.Overall) {
 		return errors.New("ecosystem is unhealthy")
-	case "warning":
-		// Warnings are informational, don't fail
-		return nil
 	}
-
 	return nil
 }
