@@ -4575,6 +4575,46 @@ func GetValue(cfg *Config, path string) (interface{}, error) {
 	if path == "" {
 		return nil, fmt.Errorf("empty path")
 	}
+
+	// Paths whose value is not the raw struct field resolve here, ahead of
+	// everything else, so the exception is stated exactly once.
+	if override, ok := configValueOverrides[path]; ok {
+		return override(cfg), nil
+	}
+
+	// A dead key is not merely unknown: the loader, `config migrate` and
+	// `ntm doctor` all recognize it and name its replacement, so this surface
+	// says the same thing rather than sending the user off to look for a
+	// typo (ntm#323). Checked before resolution because a removed knob may
+	// still carry a struct field during its deprecation window.
+	if disposition, _, dead := classifyDeadKey(path); dead {
+		return nil, fmt.Errorf("config key %s was %s — it is no longer read; run 'ntm config migrate' to clean it up", path, disposition)
+	}
+
+	// Structural resolution over `toml` tags is the authority.
+	//
+	// The switch below is a hand-maintained index that had silently drifted
+	// from the struct: `agents.claude_isolate_credentials` and
+	// `agents.claude_token_file` are live keys read at spawn time
+	// (internal/swarm/claude_config_home.go) yet answered "unknown config
+	// path", as did `agent_mail.pane_badges` and every key under
+	// [command_hooks], [retry] and [routing]. An operator verifying a
+	// documented key with `ntm config get` was told it did not exist.
+	//
+	// It also *shadowed* deeper paths: `agents.plugins.<name>` returned the
+	// whole map because the case matched on `parts[1]` and ignored the rest.
+	// Resolving structurally first fixes that and makes reachability a
+	// property of the struct instead of of anyone remembering to add a case.
+	// TestGetValueReachesEveryTOMLLeaf enforces it.
+	switch value, outcome := configValueByTOMLPath(reflect.ValueOf(cfg).Elem(), strings.Split(path, ".")); outcome {
+	case configLookupFound:
+		return value, nil
+	case configLookupAbsentKey:
+		// The container exists and simply has no such entry. Definitive — do
+		// not let the switch below answer with the whole container instead.
+		return nil, fmt.Errorf("unknown config path: %s", path)
+	}
+
 	parts := strings.Split(path, ".")
 
 	switch parts[0] {
@@ -5416,15 +5456,113 @@ func GetValue(cfg *Config, path string) (interface{}, error) {
 		}
 	}
 
-	// A dead key is not merely unknown: the loader, `config migrate` and
-	// `ntm doctor` all recognize it and name its replacement, so this surface
-	// says the same thing rather than sending the user off to look for a
-	// typo (ntm#323).
-	if disposition, _, dead := classifyDeadKey(path); dead {
-		return nil, fmt.Errorf("config key %s was %s — it is no longer read; run 'ntm config migrate' to clean it up", path, disposition)
-	}
-
 	return nil, fmt.Errorf("unknown config path: %s", path)
+}
+
+// configValueOverrides holds the dotted paths whose read value is deliberately
+// not the struct field behind them. Everything else resolves structurally, so
+// this is the complete exception list.
+var configValueOverrides = map[string]func(cfg *Config) interface{}{
+	// The Agent Mail token is a secret; reading config must never print it.
+	"agent_mail.token": func(*Config) interface{} { return "[redacted]" },
+	// Report the effective value — what the supervisor actually does, and what
+	// `config show` and `config diff` print — not the raw zero value.
+	"agent_mail.supervisor_enabled": func(cfg *Config) interface{} {
+		return cfg.AgentMail.SupervisorEnabledOrDefault()
+	},
+}
+
+// configLookup distinguishes "this path is not structurally addressable" from
+// "the container resolved but holds no such key". The difference matters
+// because only the former may fall through to the legacy switch; letting a
+// map miss fall through made `agents.plugins.<absent>` return the whole map.
+type configLookup int
+
+const (
+	configLookupUnaddressable configLookup = iota // caller may try the legacy switch
+	configLookupFound
+	configLookupAbsentKey // definitive: container resolved, key is not in it
+)
+
+// configValueByTOMLPath walks v by `toml` tag names, one path segment at a
+// time, and returns the addressed value.
+//
+// Maps with string keys are traversable too, so a custom entry such as
+// `agents.plugins.<name>` resolves instead of returning its whole container.
+func configValueByTOMLPath(v reflect.Value, parts []string) (interface{}, configLookup) {
+	for _, part := range parts {
+		for v.Kind() == reflect.Ptr || v.Kind() == reflect.Interface {
+			if v.IsNil() {
+				return nil, configLookupUnaddressable
+			}
+			v = v.Elem()
+		}
+		switch v.Kind() {
+		case reflect.Struct:
+			field, ok := configStructFieldByTOMLName(v, part)
+			if !ok {
+				return nil, configLookupUnaddressable
+			}
+			v = field
+		case reflect.Map:
+			if v.Type().Key().Kind() != reflect.String {
+				return nil, configLookupUnaddressable
+			}
+			if v.IsNil() {
+				return nil, configLookupAbsentKey
+			}
+			entry := v.MapIndex(reflect.ValueOf(part).Convert(v.Type().Key()))
+			if !entry.IsValid() {
+				return nil, configLookupAbsentKey
+			}
+			v = entry
+		default:
+			// Path continues past a scalar: not addressable.
+			return nil, configLookupUnaddressable
+		}
+	}
+	// At the leaf, a nil pointer is an answer, not a miss: optional tri-state
+	// knobs such as `agent_mail.pane_badges` (*bool) are legitimately unset,
+	// and reporting "unknown config path" for them would repeat the very bug
+	// this resolver exists to fix.
+	for v.Kind() == reflect.Ptr || v.Kind() == reflect.Interface {
+		if v.IsNil() {
+			return nil, configLookupFound
+		}
+		v = v.Elem()
+	}
+	if !v.CanInterface() {
+		return nil, configLookupUnaddressable
+	}
+	return v.Interface(), configLookupFound
+}
+
+// configStructFieldByTOMLName finds the exported field of v whose `toml` tag
+// names it. Fields tagged `-` are intentionally not addressable; untagged
+// exported fields fall back to their lowercased Go name, matching how the TOML
+// decoder resolves them.
+func configStructFieldByTOMLName(v reflect.Value, name string) (reflect.Value, bool) {
+	t := v.Type()
+	for i := 0; i < t.NumField(); i++ {
+		field := t.Field(i)
+		if field.PkgPath != "" {
+			continue // unexported
+		}
+		tag := field.Tag.Get("toml")
+		if tag == "-" {
+			continue
+		}
+		if comma := strings.IndexByte(tag, ','); comma >= 0 {
+			tag = tag[:comma]
+		}
+		if tag == "" {
+			tag = strings.ToLower(field.Name)
+		}
+		if tag == name {
+			return v.Field(i), true
+		}
+	}
+	return reflect.Value{}, false
 }
 
 // Reset removes the config file at path and creates a new one with defaults.
