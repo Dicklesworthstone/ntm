@@ -1006,6 +1006,12 @@ func IsLiveBusy(scrollback string, agentType string, paneWidth int) bool {
 	if normalizeAgentType(agentType) == "claude" {
 		return agent.ClaudeActivelyWorking(scrollback, paneWidth)
 	}
+	// omp: the composer-anchored structural parser is the single source of
+	// truth (spinner+timer, Esc-hint line, pending steering), shared with the
+	// parser, status, and delivery layers.
+	if normalizeAgentType(agentType) == "omp" {
+		return agent.OmpActivelyWorking(scrollback, paneWidth)
+	}
 
 	live := lastNLines(scrollback, util.WidthAdaptiveTailLines(paneWidth, liveThinkingWindowLines))
 	if live == "" {
@@ -1183,7 +1189,10 @@ func isAuthoritativeLiveWorkPattern(name string) bool {
 		"codex_thinking_bullet",
 		"agy_esc_cancel",
 		"grok_spinner_phase",
-		"grok_esc_cancel":
+		"grok_esc_cancel",
+		"omp_status_timer",
+		"omp_esc_hint",
+		"omp_steering":
 		return true
 	default:
 		return false

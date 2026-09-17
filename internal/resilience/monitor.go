@@ -261,6 +261,8 @@ func (m *Monitor) ScanAndRegisterAgents() error {
 			agentCmdTemplate = m.cfg.Agents.Windsurf
 		case tmux.AgentAider:
 			agentCmdTemplate = m.cfg.Agents.Aider
+		case tmux.AgentOmp:
+			agentCmdTemplate = config.OmpCommandOrDefault(m.cfg.Agents.Omp)
 		default:
 			// Check plugins
 			if cmd, ok := m.cfg.Agents.Plugins[string(p.Type)]; ok {

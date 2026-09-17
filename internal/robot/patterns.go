@@ -152,6 +152,22 @@ func defaultPatterns() []Pattern {
 		{Name: "grok_composer_prompt", RegexStr: `(?m)^\s*│\s*❯`, Agent: "grok", State: StateWaiting, Category: CategoryIdle, Priority: 92, Description: "Grok Build bordered composer line (permanent chrome; outranked by the in-flight patterns above)"},
 		{Name: "grok_welcome_banner", RegexStr: `(?i)grok\s+build\s+\d+\.\d+`, Agent: "grok", State: StateWaiting, Category: CategoryIdle, Priority: 96, Description: "Grok Build welcome banner (fresh spawn readiness)"},
 
+		// Oh My Pi (omp) patterns, derived from live captures of omp v18.2.3
+		// across its nerd/unicode/ascii symbol presets. omp keeps a bordered
+		// composer box pinned to the bottom at all times; while a turn is in
+		// flight the box's top border swaps its status icon for a spinner +
+		// elapsed timer ("╭── ⠧ 1s   Union Alpha" / "+-- \ 5s > [M]"), an
+		// activity line opening with the Esc interrupt hint sits directly
+		// above it ("󱊷 Working…" / "⎋ Working…" / "esc Working…"), and a
+		// mid-turn message waits in a "Steering · N" block. Those outrank
+		// the empty-composer idle chrome the same way the grok patterns do.
+		{Name: "omp_status_timer", RegexStr: `(?m)^\s*(?:╭──|\+--)\s+\S\s+\d+[smh]\b`, Agent: "omp", State: StateThinking, Category: CategoryThinking, Priority: 115, Description: "omp composer top border carrying the in-flight spinner + elapsed timer"},
+		{Name: "omp_esc_hint", RegexStr: `(?m)^\s*(?:󱊷|⎋|esc)\s+\S`, Agent: "omp", State: StateThinking, Category: CategoryThinking, Priority: 115, Description: "omp activity line opening with the Esc interrupt hint (only during an in-flight turn)"},
+		{Name: "omp_steering", RegexStr: `(?m)^\s*Steering\s+·\s+\d+\s*$`, Agent: "omp", State: StateThinking, Category: CategoryThinking, Priority: 115, Description: "omp pending-steering block (a message submitted mid-turn, not yet consumed)"},
+		{Name: "omp_provider_error", RegexStr: `(?m)^\s*Dismissed when you send your next message\.`, Agent: "omp", State: StateError, Category: CategoryError, Priority: 180, Description: "omp provider error block footer (e.g. 401 Invalid API Key)"},
+		{Name: "omp_interrupted", RegexStr: `(?m)^\s*F5 to Retry\s*$`, Agent: "omp", State: StateWaiting, Category: CategoryCompletion, Priority: 95, Description: "omp post-interrupt acknowledgement above the idle composer"},
+		{Name: "omp_empty_composer", RegexStr: `(?m)^\s*(?:╰─|\+-)\s*(?:─╯|-\+)\s*$`, Agent: "omp", State: StateWaiting, Category: CategoryIdle, Priority: 92, Description: "omp empty composer bottom border (permanent chrome; outranked by the in-flight patterns above)"},
+
 		// Generic shell prompts (user/fallback)
 		{Name: "shell_dollar", RegexStr: `\$\s*$`, Agent: "*", State: StateWaiting, Category: CategoryIdle, Priority: 20, Description: "Shell dollar prompt"},
 		{Name: "shell_percent", RegexStr: `%\s*$`, Agent: "*", State: StateWaiting, Category: CategoryIdle, Priority: 20, Description: "Shell percent prompt"},
@@ -469,7 +485,7 @@ func isGenericShellIdlePattern(name string) bool {
 
 func isKnownAgentPatternType(agentType string) bool {
 	switch normalizeAgentType(agentType) {
-	case "claude", "codex", "gemini", "antigravity", "grok", "cursor", "windsurf", "aider", "oc", "ollama":
+	case "claude", "codex", "gemini", "antigravity", "grok", "cursor", "windsurf", "aider", "oc", "omp", "ollama":
 		return true
 	default:
 		return false

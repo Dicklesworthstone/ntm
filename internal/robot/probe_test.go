@@ -1714,7 +1714,7 @@ func TestProbeInterruptTest_Responsive(t *testing.T) {
 	CurrentTmuxClient = mockSeq
 	t.Cleanup(func() { CurrentTmuxClient = original })
 
-	result := probeInterruptTest("test:0", 100*time.Millisecond)
+	result := probeInterruptTest("test:0", tmux.AgentClaude, 100*time.Millisecond)
 
 	if !result.Responsive {
 		t.Error("expected responsive result")
@@ -1724,11 +1724,31 @@ func TestProbeInterruptTest_Responsive(t *testing.T) {
 	}
 }
 
+// TestProbeInterruptTest_OmpUsesEscape pins that the interrupt probe never
+// sends Ctrl-C to an omp pane (Ctrl-C only clears omp's draft and a double
+// press quits omp); Escape is omp's interrupt key.
+func TestProbeInterruptTest_OmpUsesEscape(t *testing.T) {
+	mockSeq := &MockTmuxClientSequence{
+		Outputs: []string{"baseline", "changed output"},
+	}
+	original := CurrentTmuxClient
+	CurrentTmuxClient = mockSeq
+	t.Cleanup(func() { CurrentTmuxClient = original })
+
+	result := probeInterruptTest("test:0", tmux.AgentOmp, 100*time.Millisecond)
+	if !result.Responsive || result.Details.InputSent != "Escape" {
+		t.Fatalf("omp interrupt probe = %+v, want responsive via Escape", result)
+	}
+	if mockSeq.InterruptCount != 0 {
+		t.Fatalf("InterruptCount = %d, want 0 (no Ctrl-C to omp)", mockSeq.InterruptCount)
+	}
+}
+
 func TestProbeInterruptTest_Unresponsive(t *testing.T) {
 	mock := setupMock(t)
 	mock.CaptureOutput = "static content"
 
-	result := probeInterruptTest("test:0", 50*time.Millisecond)
+	result := probeInterruptTest("test:0", tmux.AgentCodex, 50*time.Millisecond)
 
 	if result.Responsive {
 		t.Error("expected unresponsive result")

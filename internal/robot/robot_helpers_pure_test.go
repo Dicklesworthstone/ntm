@@ -1349,6 +1349,7 @@ func TestPrintDashboardMarkdown_RendersModernAgentCounts(t *testing.T) {
 					{Pane: "0.4", Type: "ollama"},
 					{Pane: "0.5", Type: "user"},
 					{Pane: "0.6", Type: "mystery"},
+					{Pane: "0.7", Type: "omp"},
 				},
 			},
 		},
@@ -1364,9 +1365,10 @@ func TestPrintDashboardMarkdown_RendersModernAgentCounts(t *testing.T) {
 		"| Windsurf | 1 |",
 		"| Aider | 1 |",
 		"| Ollama | 1 |",
+		"| Oh My Pi | 1 |",
 		"| Other Agents | 1 |",
-		"| Session | Attached | Panes | User | Claude | Codex | Gemini | Antigravity | Grok | Cursor | Windsurf | Aider | Ollama | Other |",
-		"| proj-modern | no | 6 | 1 | 0 | 0 | 0 | 0 | 0 | 1 | 1 | 1 | 1 | 1 |",
+		"| Session | Attached | Panes | User | Claude | Codex | Gemini | Antigravity | Grok | OMP | Cursor | Windsurf | Aider | Ollama | Other |",
+		"| proj-modern | no | 7 | 1 | 0 | 0 | 0 | 0 | 0 | 1 | 1 | 1 | 1 | 1 | 1 |",
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("dashboard markdown missing %q:\n%s", want, rendered)

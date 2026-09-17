@@ -1802,6 +1802,7 @@ type StatusSummary struct {
 	WindsurfCount    int            `json:"windsurf_count"`
 	AiderCount       int            `json:"aider_count"`
 	OpencodeCount    int            `json:"opencode_count"`
+	OmpCount         int            `json:"omp_count"`
 	OllamaCount      int            `json:"ollama_count"`
 	AgentsByState    map[string]int `json:"agents_by_state"`
 	AgentsByType     map[string]int `json:"agents_by_type"`
@@ -2033,7 +2034,7 @@ Common Modifiers:
 --robot-limit=N  Explicit pagination alias for robot list outputs
 --robot-offset=N Explicit pagination alias for robot list outputs
 --since=VALUE   Time filter for commands that support it (history, diff, and summary accept duration or RFC3339; snapshot requires RFC3339; mail-check uses YYYY-MM-DD)
---type=TYPE     Agent type filter for commands that support it (claude, codex, antigravity, grok, gemini, cursor, windsurf, aider)
+--type=TYPE     Agent type filter for commands that support it (claude, codex, antigravity, grok, omp, gemini, cursor, windsurf, aider)
 --timeout=VALUE Shared timeout for wait/ack/interrupt and spawn --spawn-wait
 --poll=VALUE    Shared polling interval for wait/ack/send --track
 --strategy=NAME Strategy override for assign, route, and spawn --spawn-assign-work
@@ -2305,6 +2306,7 @@ func cloneSnapshotOutput(base *SnapshotOutput) *SnapshotOutput {
 		WindsurfCount:    base.Summary.WindsurfCount,
 		AiderCount:       base.Summary.AiderCount,
 		OpencodeCount:    base.Summary.OpencodeCount,
+		OmpCount:         base.Summary.OmpCount,
 		OllamaCount:      base.Summary.OllamaCount,
 		AgentsByState:    make(map[string]int, len(base.Summary.AgentsByState)),
 		AgentsByType:     make(map[string]int, len(base.Summary.AgentsByType)),
@@ -2708,6 +2710,8 @@ func statusAccumulateAgentSummary(summary *StatusSummary, agentType, agentState 
 		summary.AiderCount++
 	case "oc":
 		summary.OpencodeCount++
+	case "omp":
+		summary.OmpCount++
 	case "ollama":
 		summary.OllamaCount++
 	}
@@ -3749,14 +3753,16 @@ func detectAgentType(title string) string {
 		return "windsurf"
 	case containsShortForm(titleLower, "oc"):
 		return "oc"
+	case containsShortForm(titleLower, "omp"):
+		return "omp"
 	}
 
 	return "unknown"
 }
 
 // DetectAgentType detects the agent type from a pane title.
-// Returns one of: "claude", "codex", "gemini", "cursor", "windsurf",
-// "aider", "oc" (opencode), "ollama", or "unknown".
+// Returns one of: "claude", "codex", "gemini", "antigravity", "grok",
+// "cursor", "windsurf", "aider", "oc" (opencode), "omp", "ollama", or "unknown".
 func DetectAgentType(title string) string {
 	return detectAgentType(title)
 }
@@ -3794,6 +3800,8 @@ func ResolveAgentType(t string) string {
 		return "aider"
 	case agent.AgentTypeOpencode:
 		return "oc"
+	case agent.AgentTypeOmp:
+		return "omp"
 	case agent.AgentTypeOllama:
 		return "ollama"
 	case agent.AgentTypeUser:
@@ -4931,10 +4939,15 @@ func GetSnapshotWithOptions(cfg *config.Config, opts PaginationOptions) (*Snapsh
 					if usage := tokens.GetUsageInfo(captured, detectModel(agent.Type, pane.Title)); usage != nil {
 						agent.ContextPercent = usage.UsagePercent
 					}
-					// Prefer ground truth from the agent CLI's own session
-					// transcript when one is unambiguously correlated to this
-					// pane (see resolvePaneTranscripts).
-					if tu, ok := paneTranscripts[pane.ID]; ok {
+					// Prefer ground truth: omp's own pane-attributed context
+					// gauge, else the agent CLI's session transcript when one
+					// is unambiguously correlated to this pane (see
+					// resolvePaneTranscripts).
+					tu, ok := ompStatusBarUsage(agent.Type, status.StripANSI(captured), time.Now())
+					if !ok {
+						tu, ok = paneTranscripts[pane.ID]
+					}
+					if ok {
 						limit := tu.ContextWindow
 						if limit <= 0 {
 							model := tu.Model
@@ -6053,6 +6066,8 @@ func agentTypeString(t tmux.AgentType) string {
 		return "aider"
 	case tmux.AgentOpencode:
 		return "oc"
+	case tmux.AgentOmp:
+		return "omp"
 	case tmux.AgentOllama:
 		return "ollama"
 	case tmux.AgentUser:
@@ -6117,6 +6132,10 @@ func modelNameForPane(pane tmux.Pane, cfg *config.Config) string {
 			if cfg.Models.DefaultOpencode != "" {
 				return cfg.Models.DefaultOpencode
 			}
+		case tmux.AgentOmp:
+			if cfg.Models.DefaultOmp != "" {
+				return cfg.Models.DefaultOmp
+			}
 		}
 	}
 	// Fall back to compiled-in defaults from config.DefaultModels() so the
@@ -6139,6 +6158,9 @@ func modelNameForPane(pane tmux.Pane, cfg *config.Config) string {
 		return "aider"
 	case tmux.AgentOpencode:
 		return "opencode"
+	case tmux.AgentOmp:
+		// Empty by default: omp's own config (modelRoles.default) chooses.
+		return defaults.DefaultOmp
 	case tmux.AgentOllama:
 		return defaults.DefaultOllama
 	default:
@@ -6964,8 +6986,13 @@ func robotPreparedDispatchRequest(allPanes, targetPanes []tmux.Pane, opts SendOp
 	for i, pane := range allPanes {
 		planningPanes[i] = pane
 		planningPanes[i].Tags = append([]string(nil), pane.Tags...)
-		if paneAgentType(pane) == "grok" {
+		switch paneAgentType(pane) {
+		case "grok":
 			planningPanes[i].Type = tmux.AgentGrok
+		case "omp":
+			// A title-only omp pane must still plan the omp composer gate,
+			// Ctrl+C clear, and submission verifier.
+			planningPanes[i].Type = tmux.AgentOmp
 		}
 	}
 	selectors := make([]string, 0, len(targetPanes))
@@ -10354,8 +10381,10 @@ type AgentContextInfo struct {
 	Confidence      string  `json:"confidence"`
 	State           string  `json:"state"`
 	// Source discriminates where the primary numbers came from:
-	// "transcript" (ground truth read from the agent CLI's own session
-	// transcript) or "scrollback_estimate" (legacy char-count heuristic).
+	// "status_bar" (the agent's own live context gauge, parsed from the
+	// pane; Oh My Pi), "transcript" (ground truth read from the agent CLI's
+	// own session transcript) or "scrollback_estimate" (legacy char-count
+	// heuristic).
 	Source string `json:"source"`
 	// Transcript* fields are populated only when Source == "transcript".
 	TranscriptTokens    int    `json:"transcript_tokens,omitempty"`
@@ -10489,6 +10518,16 @@ func resolvePaneTranscripts(panes []tmux.Pane) map[string]*ntmctx.TranscriptUsag
 	return result
 }
 
+// ompStatusBarUsage reads an omp pane's live context gauge (see
+// ntmctx.OmpStatusBarUsage); every other agent type reports false. The
+// reading always carries a positive ContextWindow.
+func ompStatusBarUsage(agentType, cleanCapture string, capturedAt time.Time) (*ntmctx.TranscriptUsage, bool) {
+	if agent.AgentType(agentType).Canonical() != agent.AgentTypeOmp {
+		return nil, false
+	}
+	return ntmctx.OmpStatusBarUsage(cleanCapture, capturedAt)
+}
+
 // GetContext retrieves context window usage information for all agents in a session.
 // This function returns the data struct directly, enabling CLI/REST parity.
 func GetContext(session string, lines int) (*ContextOutput, error) {
@@ -10579,10 +10618,20 @@ func GetContext(session string, lines int) (*ContextOutput, error) {
 			Source:          "scrollback_estimate",
 		}
 
-		// Ground truth beats scrollback heuristics: read the agent CLI's own
-		// session transcript (Claude Code / Codex usage records) when one is
-		// unambiguously correlated to this pane via its working directory.
-		if usage, ok := paneTranscripts[pane.ID]; ok {
+		// Ground truth beats scrollback heuristics. omp renders its own
+		// context gauge in the composer border: that reading belongs to this
+		// pane, so it wins even where several omp panes share a directory.
+		// Otherwise read the agent CLI's own session transcript (Claude Code
+		// / Codex / omp usage records) when one is unambiguously correlated
+		// to this pane via its working directory.
+		if gauge, ok := ompStatusBarUsage(agentType, cleanText, output.CapturedAt); ok {
+			agentInfo.Source = "status_bar"
+			agentInfo.EstimatedTokens = gauge.Tokens
+			agentInfo.WithOverhead = gauge.Tokens
+			agentInfo.ContextLimit = gauge.ContextWindow
+			agentInfo.UsagePercent = float64(gauge.Tokens) / float64(gauge.ContextWindow) * 100
+			agentInfo.Confidence = "high"
+		} else if usage, ok := paneTranscripts[pane.ID]; ok {
 			agentInfo.Source = "transcript"
 			agentInfo.TranscriptTokens = usage.Tokens
 			agentInfo.TranscriptModel = usage.Model

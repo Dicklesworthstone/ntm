@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	agentpkg "github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
@@ -172,8 +173,60 @@ func extractDialogOptions(capture string) []DialogOption {
 	return options
 }
 
+// ompSelectorFooterRe matches the key-hint footer of an omp selector overlay
+// (the /model picker renders "Enter assign roles · ↑/↓ providers · … · Esc
+// close" as its last bordered row, and the overlay replaces the composer).
+var ompSelectorFooterRe = regexp.MustCompile(`(?i)\besc\s+(?:close|cancel|back)\b`)
+
+// ompSelectorScanLines bounds the footer search to the overlay's bottom rows.
+const ompSelectorScanLines = 6
+
+// classifyOmpDialog recognises omp-specific blocking states from a live
+// capture (omp v18.2.3): a collapsed bracketed paste ("#N" token with its
+// "+N lines" preview box) sitting in an idle composer, and a selector overlay
+// that has replaced the composer. It reports ok=false when neither applies so
+// the shared classifier runs.
+func classifyOmpDialog(capture string) (DialogState, bool) {
+	composer := agentpkg.ParseOmpComposer(capture)
+	if composer.Found {
+		if composer.PasteToken && !composer.Working() {
+			return DialogState{Class: DialogPasteLimbo, Evidence: composer.Draft}, true
+		}
+		return DialogState{}, false
+	}
+	lines := strings.Split(capture, "\n")
+	seen := 0
+	for i := len(lines) - 1; i >= 0 && seen < ompSelectorScanLines; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+		seen++
+		if ompSelectorFooterRe.MatchString(line) {
+			return DialogState{Class: DialogUnknown, Evidence: strings.Trim(line, " │┃|")}, true
+		}
+	}
+	return DialogState{}, false
+}
+
+// adaptDialogKeysForAgent rewrites a resolved answer for TUIs whose keys
+// differ from the shared vocabulary. omp does not drop a staged paste on
+// Escape (a single Escape with a draft is a verified no-op); one Ctrl+C
+// clears the whole draft, paste token included.
+func adaptDialogKeysForAgent(keys []string, state DialogState, agentType string) []string {
+	if agentType == "omp" && state.Class == DialogPasteLimbo && len(keys) == 1 && keys[0] == "Escape" {
+		return []string{"C-c"}
+	}
+	return keys
+}
+
 // classifyDialog inspects one pane capture and returns its dialog state.
 func classifyDialog(capture string, agentType string) DialogState {
+	if agentType == "omp" {
+		if state, ok := classifyOmpDialog(capture); ok {
+			return state
+		}
+	}
 	lower := strings.ToLower(capture)
 	options := extractDialogOptions(capture)
 
@@ -403,6 +456,7 @@ func AnswerDialog(ctx context.Context, opts AnswerDialogOptions) (*AnswerDialogO
 			"Use --robot-dialogs to inspect the dialog class and extracted options first")
 		return output, nil
 	}
+	keys = adaptDialogKeysForAgent(keys, output.Before, restartPaneAgentType(pane))
 	for i, key := range keys {
 		if i > 0 {
 			select {

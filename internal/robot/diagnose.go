@@ -106,12 +106,25 @@ type diagnoseDependencies struct {
 	releaseBuildSlot    func(ctx context.Context, projectKey string, registry *agentmail.SessionAgentRegistry, lease agentmail.BuildSlotLease) error
 }
 
+// sendDiagnoseKey presses a tmux key NAME ("C-c", "Escape"). tmux.SendKeys
+// sends literally (-l), which typed the three characters "C-c" into the pane
+// instead of interrupting it.
+func sendDiagnoseKey(ctx context.Context, target, key string, enter bool) error {
+	if err := tmux.DefaultClient.SendKeyNameContext(ctx, target, key); err != nil {
+		return err
+	}
+	if enter {
+		return tmux.DefaultClient.SendKeyNameContext(ctx, target, "Enter")
+	}
+	return nil
+}
+
 func defaultDiagnoseDependencies() diagnoseDependencies {
 	return diagnoseDependencies{
 		sessionExists:       tmux.SessionExistsContext,
 		listPanes:           tmux.GetPanesContext,
 		restartPane:         GetRestartPaneContext,
-		sendKeys:            tmux.SendKeysContext,
+		sendKeys:            sendDiagnoseKey,
 		projectKey:          defaultDiagnoseProjectKey,
 		loadAgentRegistry:   defaultLoadAgentRegistry,
 		listBuildSlotLeases: defaultListBuildSlotLeases,
@@ -543,8 +556,10 @@ func executeDiagnoseFixWithDependencies(ctx context.Context, diag DiagnoseOutput
 	// --fix respawned a pane in the wrong window.
 	fixMultiWindow := tmux.PanesSpanMultipleWindows(fixPanes)
 	paneIDByTarget := map[string]string{}
+	paneTypeByTarget := map[string]tmux.AgentType{}
 	for _, p := range fixPanes {
 		paneIDByTarget[paneTargetKey(p, fixMultiWindow)] = p.ID
+		paneTypeByTarget[paneTargetKey(p, fixMultiWindow)] = p.Type
 	}
 	if err := validateDiagnoseFixTargets(diag, fixPanes); err != nil {
 		fixReport.RobotResponse = NewErrorResponse(err, ErrCodeNotImplemented, agent.GrokPhaseOneCapabilityHint)
@@ -605,15 +620,17 @@ func executeDiagnoseFixWithDependencies(ctx context.Context, diag DiagnoseOutput
 			}
 
 		case "interrupt":
-			// Send Ctrl+C to interrupt via the pane ID.
-			interruptErr := deps.sendKeys(ctx, paneTarget, "C-c", false)
+			// Interrupt via the pane ID with the agent's own interrupt key
+			// (Ctrl+C; Escape for omp).
+			paneType := paneTypeByTarget[diagnoseRecommendationKey(rec)]
+			interruptErr := deps.sendKeys(ctx, paneTarget, tmux.InterruptKeyForAgent(paneType), false)
 			if interruptErr != nil {
 				attempt.Success = false
 				attempt.Message = fmt.Sprintf("Failed to interrupt: %v", interruptErr)
 				failedCount++
 			} else {
 				attempt.Success = true
-				attempt.Message = "Interrupt sent (Ctrl+C)"
+				attempt.Message = fmt.Sprintf("Interrupt sent (%s)", tmux.InterruptKeyLabel(paneType))
 				fixedCount++
 			}
 			if cancelErr := diagnoseCancellationError(ctx, interruptErr); cancelErr != nil {

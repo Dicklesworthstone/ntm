@@ -293,6 +293,9 @@ func aggregateTokenStats(eventList []events.Event, days int, since, groupBy stri
 			if grok, ok := event.Data["grok_count"].(float64); ok && grok > 0 {
 				agentSpawns["grok"] += int(grok)
 			}
+			if omp, ok := event.Data["omp_count"].(float64); ok && omp > 0 {
+				agentSpawns["omp"] += int(omp)
+			}
 			if cursor, ok := event.Data["cursor_count"].(float64); ok && cursor > 0 {
 				agentSpawns["cursor"] += int(cursor)
 			}
@@ -483,7 +486,7 @@ func aggregateTokenStats(eventList []events.Event, days int, since, groupBy stri
 
 func isTrackedAgentType(agentType string) bool {
 	switch agentType {
-	case "claude", "codex", "gemini", "grok", "cursor", "windsurf", "aider", "oc", "ollama":
+	case "claude", "codex", "gemini", "grok", "cursor", "windsurf", "aider", "oc", "omp", "ollama":
 		return true
 	default:
 		return false

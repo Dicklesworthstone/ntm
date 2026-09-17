@@ -477,14 +477,20 @@ func probeKeystrokeEcho(target string, timeout time.Duration) ProbeResult {
 // aggressive but definitive - if a process responds to interrupt, it's alive.
 // WARNING: This may interrupt ongoing work and cause loss of in-progress output.
 
-// probeInterruptTest sends Ctrl-C and checks for response.
-// This is a definitive but disruptive test that may interrupt ongoing work.
-// Use only when keystroke_echo is ambiguous or with --aggressive flag.
-func probeInterruptTest(target string, timeout time.Duration) ProbeResult {
+// probeInterruptTest sends the pane's interrupt key (Ctrl-C; Escape for omp,
+// whose Ctrl-C only clears the draft and quits omp on a double press) and
+// checks for response. This is a definitive but disruptive test that may
+// interrupt ongoing work. Use only when keystroke_echo is ambiguous or with
+// --aggressive flag.
+func probeInterruptTest(target string, agentType tmux.AgentType, timeout time.Duration) ProbeResult {
+	inputSent := "Ctrl-C"
+	if tmux.InterruptKeyForAgent(agentType) == "Escape" {
+		inputSent = "Escape"
+	}
 	result := ProbeResult{
 		Responsive: false,
 		Details: ProbeDetails{
-			InputSent:     "Ctrl-C",
+			InputSent:     inputSent,
 			OutputChanged: false,
 			LatencyMs:     0,
 		},
@@ -500,10 +506,16 @@ func probeInterruptTest(target string, timeout time.Duration) ProbeResult {
 		return result
 	}
 
-	// 2. Send interrupt signal (Ctrl-C)
+	// 2. Send the interrupt key
 	probeStart := time.Now()
-	if err := CurrentTmuxClient.SendInterrupt(target); err != nil {
-		result.Reasoning = fmt.Sprintf("failed to send interrupt: %v", err)
+	var sendErr error
+	if inputSent == "Escape" {
+		sendErr = CurrentTmuxClient.SendKeyName(target, "Escape")
+	} else {
+		sendErr = CurrentTmuxClient.SendInterrupt(target)
+	}
+	if sendErr != nil {
+		result.Reasoning = fmt.Sprintf("failed to send interrupt: %v", sendErr)
 		return result
 	}
 
@@ -630,7 +642,7 @@ func probeResolvedPane(session string, targetPane tmux.Pane, multiWindow bool, s
 	case ProbeMethodKeystrokeEcho:
 		probeResult = probeKeystrokeEcho(target, timeout)
 	case ProbeMethodInterruptTest:
-		probeResult = probeInterruptTest(target, timeout)
+		probeResult = probeInterruptTest(target, targetPane.Type, timeout)
 	case ProbeMethodWakePing:
 		// Wake-ping is an agent-pane surface: probing the operator's shell
 		// answers nothing about rate limits and risks stray input there.
@@ -655,7 +667,7 @@ func probeResolvedPane(session string, targetPane tmux.Pane, multiWindow bool, s
 	// If keystroke_echo failed and aggressive mode is enabled, try interrupt_test
 	if !probeResult.Responsive && flags.Aggressive && flags.Method == ProbeMethodKeystrokeEcho {
 		// Escalate to interrupt_test for definitive answer
-		probeResult = probeInterruptTest(target, timeout)
+		probeResult = probeInterruptTest(target, targetPane.Type, timeout)
 		if probeResult.Responsive {
 			probeResult.Reasoning = "escalated from keystroke_echo: " + probeResult.Reasoning
 		}

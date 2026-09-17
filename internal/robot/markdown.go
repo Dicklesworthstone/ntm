@@ -279,6 +279,7 @@ var markdownAgentTypeOrder = []string{
 	"codex",
 	"gemini",
 	"grok",
+	"omp",
 	"cursor",
 	"windsurf",
 	"aider",
@@ -293,6 +294,7 @@ var markdownAgentTypeLabels = map[string]string{
 	"codex":    "cod",
 	"gemini":   "gmi",
 	"grok":     "grok",
+	"omp":      "omp",
 	"cursor":   "cur",
 	"windsurf": "ws",
 	"aider":    "aid",
@@ -329,7 +331,7 @@ func snapshotSessionCounts(agents []SnapshotAgent) (map[string]int, map[string]i
 
 	for _, agent := range agents {
 		switch normalizedType := normalizeAgentType(agent.Type); normalizedType {
-		case "claude", "codex", "gemini", "grok", "cursor", "windsurf", "aider", "ollama", "user":
+		case "claude", "codex", "gemini", "grok", "omp", "cursor", "windsurf", "aider", "oc", "ollama", "user":
 			counts[normalizedType]++
 		default:
 			counts["other"]++

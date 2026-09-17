@@ -64,10 +64,11 @@ type SpawnOptions struct {
 	GmiCount      int    // Gemini agents
 	AgyCount      int    // Antigravity agents
 	GrokCount     int    // Grok Build agents
+	OmpCount      int    // Oh My Pi (omp) agents
 	// Per-type model/effort overrides parsed from the CLI's
 	// `count[:model[:effort]]` spawn flag grammar (bd-rr8gn). Empty means the
 	// configured default. Efforts exist only for the agent types whose launch
-	// command has a reasoning-effort knob (cc/cod/grok — see
+	// command has a reasoning-effort knob (cc/cod/grok/omp — see
 	// config.agentTypeConsumesReasoningEffort); agy's model is hard-pinned by
 	// config, so it carries no override fields at all.
 	CCModel             string        // Claude model alias/name override
@@ -77,6 +78,8 @@ type SpawnOptions struct {
 	GmiModel            string        // Gemini model alias/name override
 	GrokModel           string        // Grok Build model alias/name override
 	GrokReasoningEffort string        // Grok Build reasoning-effort override
+	OmpModel            string        // Oh My Pi model override (omp fuzzy-matches it); empty = omp's own default
+	OmpReasoningEffort  string        // Oh My Pi --thinking level override
 	Preset              string        // Recipe/preset name
 	NoUserPane          bool          // Don't create user pane
 	WorkingDir          string        // Override working directory
@@ -224,14 +227,15 @@ func validateSpawnRequest(opts SpawnOptions) (string, error) {
 		{flag: "--spawn-gmi", value: opts.GmiCount},
 		{flag: "--spawn-agy", value: opts.AgyCount},
 		{flag: "--spawn-grok", value: opts.GrokCount},
+		{flag: "--spawn-omp", value: opts.OmpCount},
 	}
 	for _, count := range counts {
 		if count.value < 0 {
 			return "", fmt.Errorf("%s must be zero or greater, got %d", count.flag, count.value)
 		}
 	}
-	if opts.CCCount+opts.CodCount+opts.GmiCount+opts.AgyCount+opts.GrokCount <= 0 {
-		return "", errors.New("no agents specified (use cc, cod, gmi, agy, or grok counts)")
+	if opts.totalAgentCount() <= 0 {
+		return "", errors.New("no agents specified (use cc, cod, gmi, agy, grok, or omp counts)")
 	}
 	if opts.GrokCount > 0 && opts.WaitReady {
 		return "", errGrokSpawnWaitUnavailable
@@ -256,8 +260,14 @@ func spawnAgentPaneRange(opts SpawnOptions) (start, count int) {
 	if !opts.NoUserPane {
 		start = 1
 	}
-	count = opts.CCCount + opts.CodCount + opts.GmiCount + opts.AgyCount + opts.GrokCount
+	count = opts.totalAgentCount()
 	return start, count
+}
+
+// totalAgentCount is the number of agent panes a robot spawn requests across
+// every supported type.
+func (opts SpawnOptions) totalAgentCount() int {
+	return opts.CCCount + opts.CodCount + opts.GmiCount + opts.AgyCount + opts.GrokCount + opts.OmpCount
 }
 
 // validateSpawnPaneBaselines preflights every agent pane of the final
@@ -434,7 +444,7 @@ func spawnAdmissionAgentLimit(cfg *config.Config) int {
 	}
 	caps := cfg.SpawnPacing.AgentCaps
 	total := 0
-	for _, cap := range []int{caps.ClaudeMaxConcurrent, caps.CodexMaxConcurrent, caps.GeminiMaxConcurrent} {
+	for _, cap := range []int{caps.ClaudeMaxConcurrent, caps.CodexMaxConcurrent, caps.GeminiMaxConcurrent, caps.OmpMaxConcurrent} {
 		if cap > 0 {
 			total += cap
 		}
@@ -529,7 +539,7 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 	_ = audit.LogEvent(opts.Session, audit.EventTypeSpawn, audit.ActorSystem, "robot.spawn", map[string]interface{}{
 		"phase":           "start",
 		"session":         opts.Session,
-		"total_agents":    opts.CCCount + opts.CodCount + opts.GmiCount + opts.AgyCount + opts.GrokCount,
+		"total_agents":    opts.totalAgentCount(),
 		"preset":          opts.Preset,
 		"no_user_pane":    opts.NoUserPane,
 		"dry_run":         opts.DryRun,
@@ -547,7 +557,7 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 		payload := map[string]interface{}{
 			"phase":           "finish",
 			"session":         opts.Session,
-			"total_agents":    opts.CCCount + opts.CodCount + opts.GmiCount + opts.AgyCount + opts.GrokCount,
+			"total_agents":    opts.totalAgentCount(),
 			"preset":          opts.Preset,
 			"no_user_pane":    opts.NoUserPane,
 			"dry_run":         opts.DryRun,
@@ -691,7 +701,7 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 	// handoffCtx is available for use in work prompts below
 	_ = handoffCtx // silence unused warning when not in orchestrator mode
 
-	totalAgents := opts.CCCount + opts.CodCount + opts.GmiCount + opts.AgyCount + opts.GrokCount
+	totalAgents := opts.totalAgentCount()
 
 	// Calculate total panes needed
 	totalPanes := totalAgents
@@ -806,6 +816,17 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 				Name:  dryRunNameMap.AssignNew("grok", grokPane),
 				Type:  "grok",
 				Title: fmt.Sprintf("%s__grok_%d", opts.Session, i+1),
+			})
+			paneIdx++
+		}
+
+		for i := 0; i < opts.OmpCount; i++ {
+			ompPane := fmt.Sprintf("0.%d", paneIdx)
+			output.WouldCreate = append(output.WouldCreate, SpawnedAgent{
+				Pane:  ompPane,
+				Name:  dryRunNameMap.AssignNew("omp", ompPane),
+				Type:  "omp",
+				Title: fmt.Sprintf("%s__omp_%d", opts.Session, i+1),
 			})
 			paneIdx++
 		}
@@ -994,6 +1015,7 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 		{agentType: "gemini", count: opts.GmiCount},
 		{agentType: "antigravity", count: opts.AgyCount},
 		{agentType: "grok", count: opts.GrokCount},
+		{agentType: "omp", count: opts.OmpCount},
 	} {
 		for i := 0; i < spec.count; i++ {
 			launchRequests = append(launchRequests, launchRequest{agentType: spec.agentType, number: i + 1})
@@ -1423,9 +1445,16 @@ func waitForAgentsReadyWithCapture(
 	}
 }
 
-// isAgentReady checks if agent output indicates ready state.
-// Note: agentType is accepted for future type-specific detection but currently unused.
-func isAgentReady(output, _ string) bool {
+// isAgentReady checks if agent output indicates ready state. Most agent types
+// use the shared indicator substrings below; omp is decided structurally.
+func isAgentReady(output, agentType string) bool {
+	if tmux.AgentType(agentType).Canonical() == tmux.AgentOmp {
+		// omp paints nothing for ~1s after launch, then draws its banner and
+		// its status-line composer box in the same frame. The box (not a
+		// banner substring such as "Welcome back!") is the signal that a
+		// typed prompt will land in the composer.
+		return agentpkg.ParseOmpComposer(output).Found
+	}
 	lower := strings.ToLower(output)
 
 	// Common ready indicators (case-insensitive)
@@ -1493,6 +1522,10 @@ func agentTypeShort(agentType string) string {
 		return "windsurf"
 	case tmux.AgentAider:
 		return "aider"
+	case tmux.AgentOpencode:
+		return "oc"
+	case tmux.AgentOmp:
+		return "omp"
 	case tmux.AgentOllama:
 		return "ollama"
 	case tmux.AgentUser:
@@ -1519,6 +1552,7 @@ func spawnModelHints(cfg *config.Config, opts SpawnOptions) []string {
 		{"codex", opts.CodModel},
 		{"gemini", opts.GmiModel},
 		{"grok", opts.GrokModel},
+		{"omp", opts.OmpModel},
 	}
 	var hints []string
 	for _, req := range requested {
@@ -1545,6 +1579,7 @@ func getAgentCommandsWithOverrides(cfg *config.Config, opts SpawnOptions) (map[s
 		"gemini":      "gemini",
 		"antigravity": "agy",
 		"grok":        "grok --always-approve",
+		"omp":         config.DefaultOmpCommand,
 	}
 
 	if cfg != nil && cfg.Agents.Claude != "" {
@@ -1562,12 +1597,16 @@ func getAgentCommandsWithOverrides(cfg *config.Config, opts SpawnOptions) (map[s
 	if cfg != nil && cfg.Agents.Grok != "" {
 		defaults["grok"] = cfg.Agents.Grok
 	}
+	if cfg != nil {
+		defaults["omp"] = config.OmpCommandOrDefault(cfg.Agents.Omp)
+	}
 
 	overrides := map[string]struct{ model, effort string }{
 		"claude": {opts.CCModel, opts.CCReasoningEffort},
 		"codex":  {opts.CodModel, opts.CodReasoningEffort},
 		"gemini": {opts.GmiModel, ""},
 		"grok":   {opts.GrokModel, opts.GrokReasoningEffort},
+		"omp":    {opts.OmpModel, opts.OmpReasoningEffort},
 	}
 
 	for agentType, cmdTemplate := range defaults {

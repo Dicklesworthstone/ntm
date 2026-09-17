@@ -1064,7 +1064,7 @@ func TestPrintHelp_UsesCurrentSharedModifierDescriptions(t *testing.T) {
 
 	for _, want := range []string{
 		"--since=VALUE   Time filter for commands that support it (history, diff, and summary accept duration or RFC3339; snapshot requires RFC3339; mail-check uses YYYY-MM-DD)",
-		"--type=TYPE     Agent type filter for commands that support it (claude, codex, antigravity, grok, gemini, cursor, windsurf, aider)",
+		"--type=TYPE     Agent type filter for commands that support it (claude, codex, antigravity, grok, omp, gemini, cursor, windsurf, aider)",
 		"--timeout=VALUE Shared timeout for wait/ack/interrupt and spawn --spawn-wait",
 		"--strategy=NAME Strategy override for assign, route, and spawn --spawn-assign-work",
 		"--msg=TEXT      Shared message payload for send, ack echo detection, and interrupt retasks",
@@ -6144,16 +6144,95 @@ func TestGetSnapshotDelta_NoStoreIsHonest(t *testing.T) {
 }
 
 func TestAgentTypeStringPassesThroughRegisteredPlugins(t *testing.T) {
-	if got := agentTypeString(tmux.AgentType("omp")); got != "unknown" {
+	// "pix" is a fictional plugin agent; omp, which this test used to borrow,
+	// is a built-in type now.
+	if got := agentTypeString(tmux.AgentType("pix")); got != "unknown" {
 		t.Fatalf("unregistered type = %q, want unknown", got)
 	}
-	if err := agent.RegisterPlugin("omp", nil, nil, nil); err != nil {
+	if err := agent.RegisterPlugin("pix", nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	if got := agentTypeString(tmux.AgentType("OMP")); got != "omp" {
-		t.Fatalf("registered plugin type = %q, want omp", got)
+	if got := agentTypeString(tmux.AgentType("PIX")); got != "pix" {
+		t.Fatalf("registered plugin type = %q, want pix", got)
 	}
-	if got := paneAgentType(tmux.Pane{Type: tmux.AgentType("omp"), Title: "repro__omp_1"}); got != "omp" {
+	if got := paneAgentType(tmux.Pane{Type: tmux.AgentType("pix"), Title: "repro__pix_1"}); got != "pix" {
+		t.Fatalf("paneAgentType = %q, want pix", got)
+	}
+}
+
+func TestAgentTypeStringBuiltinOmp(t *testing.T) {
+	if got := agentTypeString(tmux.AgentOmp); got != "omp" {
+		t.Fatalf("agentTypeString(omp) = %q, want omp without any plugin registration", got)
+	}
+	if got := paneAgentType(tmux.Pane{Type: tmux.AgentType("oh-my-pi"), Title: "repro__omp_1"}); got != "omp" {
 		t.Fatalf("paneAgentType = %q, want omp", got)
+	}
+	if got := paneAgentType(tmux.Pane{Title: "repro__omp_3"}); got != "omp" {
+		t.Fatalf("title-only omp pane = %q, want omp", got)
+	}
+	if got := ResolveAgentType("OH_MY_PI"); got != "omp" {
+		t.Fatalf("ResolveAgentType = %q, want omp", got)
+	}
+}
+
+// TestOmpRobotStateDialogsAndContext drives the robot surfaces that classify
+// an omp pane from real omp v18.2.3 captures: tail state, tmux adapter state,
+// the dialog classifier (paste limbo, selector overlay), the dialog key
+// adaptation, and the status-bar context gauge.
+func TestOmpRobotStateDialogsAndContext(t *testing.T) {
+	idle := readAgentFixture(t, "omp_nerd_idle_done.txt")
+	working := readAgentFixture(t, "omp_nerd_working.txt")
+	toolWorking := readAgentFixture(t, "omp_nerd_tool_working.txt")
+	steering := readAgentFixture(t, "omp_unicode_steering.txt")
+	asciiWorking := readAgentFixture(t, "omp_ascii_working.txt")
+	paste := readAgentFixture(t, "omp_nerd_paste_token.txt")
+	selector := readAgentFixture(t, "omp_nerd_model_selector.txt")
+
+	for name, capture := range map[string]string{"working": working, "tool": toolWorking, "steering": steering, "ascii": asciiWorking} {
+		if got := determineState(capture, "omp"); got == "idle" {
+			t.Errorf("determineState(%s) = idle, want a busy state", name)
+		}
+	}
+	if got := determineState(idle, "oh-my-pi"); got != "idle" {
+		t.Errorf("determineState(idle) = %q, want idle", got)
+	}
+
+	a := NewTmuxAdapter(DefaultTmuxAdapterConfig())
+	if got := a.classifyAgentState(&Agent{Type: "omp", Pane: "%41", PID: 10}, idle); got != state.AgentStateIdle {
+		t.Errorf("adapter idle omp = %q, want idle", got)
+	}
+	if got := a.classifyAgentState(&Agent{Type: "omp", Pane: "%42", PID: 10}, working); got != state.AgentStateBusy {
+		t.Errorf("adapter working omp = %q, want busy", got)
+	}
+
+	if got := classifyDialog(paste, "omp"); got.Class != DialogPasteLimbo || !strings.Contains(got.Evidence, "#1") {
+		t.Errorf("paste token dialog = %+v, want paste_limbo with the #1 token", got)
+	}
+	if got := classifyDialog(selector, "omp"); got.Class != DialogUnknown || !strings.Contains(got.Evidence, "Esc close") {
+		t.Errorf("selector overlay dialog = %+v, want unknown with the Esc close footer", got)
+	}
+	for name, capture := range map[string]string{"idle": idle, "working": working, "steering": steering} {
+		if got := classifyDialog(capture, "omp"); got.Class != DialogNone {
+			t.Errorf("classifyDialog(%s) = %+v, want none", name, got)
+		}
+	}
+	limbo := DialogState{Class: DialogPasteLimbo}
+	if got := adaptDialogKeysForAgent([]string{"Escape"}, limbo, "omp"); len(got) != 1 || got[0] != "C-c" {
+		t.Errorf("omp paste-limbo dismiss keys = %v, want [C-c]", got)
+	}
+	if got := adaptDialogKeysForAgent([]string{"Escape"}, limbo, "codex"); len(got) != 1 || got[0] != "Escape" {
+		t.Errorf("codex paste-limbo dismiss keys = %v, want [Escape]", got)
+	}
+
+	at := time.Now()
+	gauge, ok := ompStatusBarUsage("omp", idle, at)
+	if !ok || gauge.ContextWindow != 262000 || gauge.Tokens != 18340 {
+		t.Errorf("omp gauge = (%+v, %v), want 7%% of 262000", gauge, ok)
+	}
+	if _, ok := ompStatusBarUsage("claude", idle, at); ok {
+		t.Error("the omp gauge must never be read for another agent type")
+	}
+	if _, ok := ompStatusBarUsage("omp", selector, at); ok {
+		t.Error("a selector overlay hides the composer; no gauge reading expected")
 	}
 }

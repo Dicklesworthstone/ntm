@@ -199,7 +199,8 @@ func GetInterrupt(opts InterruptOptions) (*InterruptOutput, error) {
 
 	publishInterruptActuationRequest(trace, opts, targetKeys)
 
-	// Send Ctrl+C to all targets
+	// Send each target its agent's interrupt key (Ctrl+C; Escape for omp,
+	// where Ctrl+C only clears the draft and a double press quits omp).
 	for _, pane := range targetPanes {
 		paneKey := paneTargetKey(pane, multiWindow)
 		prevState := output.PreviousStates[paneKey]
@@ -211,11 +212,12 @@ func GetInterrupt(opts InterruptOptions) (*InterruptOutput, error) {
 			continue
 		}
 
-		err := tmux.SendInterrupt(pane.ID)
+		agentType := interruptPaneTMUXAgentType(pane)
+		err := tmux.SendInterruptForAgent(pane.ID, agentType)
 		if err != nil {
 			output.Failed = append(output.Failed, InterruptError{
 				Pane:   paneKey,
-				Reason: fmt.Sprintf("failed to send Ctrl+C: %v", err),
+				Reason: fmt.Sprintf("failed to send %s: %v", tmux.InterruptKeyLabel(agentType), err),
 			})
 		} else {
 			output.Interrupted = append(output.Interrupted, paneKey)

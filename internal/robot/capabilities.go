@@ -699,7 +699,7 @@ func buildCommandRegistry() []RobotCommandInfo {
 			Parameters: []RobotParameter{
 				{Name: "session", Flag: "--robot-activity", Type: "string", Required: true, Description: "Session name"},
 				{Name: "panes", Flag: "--panes", Type: "string", Required: false, Description: "Comma-separated N, W.P, or %N pane selectors"},
-				{Name: "activity-type", Flag: "--activity-type", Type: "string", Required: false, Description: "Comma-separated agent types to filter: claude, codex, antigravity, grok, gemini"},
+				{Name: "activity-type", Flag: "--activity-type", Type: "string", Required: false, Description: "Comma-separated agent types to filter: claude, codex, antigravity, grok, omp, gemini"},
 			},
 			Examples: []string{
 				"ntm --robot-activity=myproject --activity-type=claude",
@@ -916,7 +916,7 @@ func buildCommandRegistry() []RobotCommandInfo {
 				{Name: "msg", Flag: "--msg", Type: "string", Required: true, Description: "Message content to send (or use --msg-file)"},
 				{Name: "msg-file", Flag: "--msg-file", Type: "string", Required: false, Description: "Read message content from file"},
 				{Name: "enter", Flag: "--enter", Type: "bool", Required: false, Description: "Send Enter after paste (default true). Alias: --submit"},
-				{Name: "type", Flag: "--type", Type: "string", Required: false, Description: "Filter by agent type: claude|cc, codex|cod, gemini|gmi, cursor, windsurf, aider"},
+				{Name: "type", Flag: "--type", Type: "string", Required: false, Description: "Filter by agent type: claude|cc, codex|cod, gemini|gmi, antigravity|agy, grok, omp, oc, cursor, windsurf, aider"},
 				{Name: "all", Flag: "--all", Type: "bool", Required: false, Description: "Include user pane (default: agents only)"},
 				{Name: "pane", Flag: "--pane", Type: "string", Required: false, Description: "Resolve exactly one N, W.P, or %N pane selector (mutually exclusive with --panes)"},
 				{Name: "panes", Flag: "--panes", Type: "string", Required: false, Description: "Filter to a set of N, W.P, or %N pane selectors"},
@@ -1223,6 +1223,7 @@ func buildCommandRegistry() []RobotCommandInfo {
 				{Name: "spawn-gmi", Flag: "--spawn-gmi", Type: "string", Required: false, Description: "Gemini agents (legacy): count[:model]"},
 				{Name: "spawn-agy", Flag: "--spawn-agy", Type: "string", Required: false, Description: "Antigravity (agy) agents: count (model is pinned by config)"},
 				{Name: "spawn-grok", Flag: "--spawn-grok", Type: "string", Required: false, Description: "Grok Build agents: count[:model[:effort]]"},
+				{Name: "spawn-omp", Flag: "--spawn-omp", Type: "string", Required: false, Description: "Oh My Pi (omp) agents: count[:model[:effort]] (effort maps to omp --thinking; no model = omp's own configured default)"},
 				{Name: "spawn-preset", Flag: "--spawn-preset", Type: "string", Required: false, Description: "Use recipe preset instead of counts"},
 				{Name: "spawn-no-user", Flag: "--spawn-no-user", Type: "bool", Required: false, Description: "Skip user pane creation"},
 				{Name: "spawn-wait", Flag: "--spawn-wait", Type: "bool", Required: false, Description: "Wait for agents to show ready state before returning"},
@@ -1237,6 +1238,7 @@ func buildCommandRegistry() []RobotCommandInfo {
 				"ntm --robot-spawn=myproject --spawn-cc=2 --spawn-cod=1 --spawn-wait --timeout=30s",
 				"ntm --robot-spawn=myproject --spawn-cod=8:gpt-5.3-codex:high",
 				"ntm --robot-spawn=myproject --spawn-grok=1",
+				"ntm --robot-spawn=myproject --spawn-omp=8 --spawn-no-user --spawn-wait",
 				"ntm --robot-spawn=myproject --spawn-preset=standard",
 				"ntm --robot-spawn=myproject --spawn-label=frontend --spawn-cc=3",
 				"ntm --robot-spawn=myproject --spawn-assign-work --strategy=dependency-aware",

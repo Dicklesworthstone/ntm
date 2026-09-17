@@ -2678,6 +2678,8 @@ func bulkAssignTMUXAgentType(agentType string) tmux.AgentType {
 		return tmux.AgentAider
 	case "oc":
 		return tmux.AgentOpencode
+	case "omp":
+		return tmux.AgentOmp
 	case "ollama":
 		return tmux.AgentOllama
 	case "user":

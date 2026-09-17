@@ -10,6 +10,7 @@ package serve
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -158,8 +159,8 @@ func (s *Server) jobSwarmSpawn(ctx context.Context, params map[string]interface{
 	if err := tmux.ValidateSessionName(req.Session); err != nil {
 		return nil, fmt.Errorf("invalid session name: %w", err)
 	}
-	if req.CCCount == 0 && req.CodCount == 0 && req.GmiCount == 0 && req.AgyCount == 0 && req.GrokCount == 0 && req.Preset == "" {
-		return nil, fmt.Errorf("at least one agent count (cc_count, cod_count, gmi_count, agy_count, grok_count) or preset required")
+	if !req.hasAgentCountOrPreset() {
+		return nil, errors.New(agentSpawnCountRequiredMessage)
 	}
 	if s.spawnAgents == nil {
 		return nil, fmt.Errorf("agent spawn service unavailable")
@@ -173,6 +174,7 @@ func (s *Server) jobSwarmSpawn(ctx context.Context, params map[string]interface{
 		GmiCount:  req.GmiCount,
 		AgyCount:  req.AgyCount,
 		GrokCount: req.GrokCount,
+		OmpCount:  req.OmpCount,
 		Preset:    req.Preset,
 		WaitReady: req.WaitReady,
 	})

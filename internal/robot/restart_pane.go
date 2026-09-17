@@ -230,9 +230,18 @@ func restartOverrideAppendFlags(resolvedType string, override restartLaunchOverr
 		if needEffort && override.Effort != "" {
 			flags.WriteString(" --effort " + tmux.ShellQuote(override.Effort))
 		}
+	case "omp":
+		// omp takes --model (fuzzy-matched) and --thinking for the reasoning
+		// level; both are last-flag-wins in `omp --help` (omp v18.2.3).
+		if needModel && override.Model != "" {
+			flags.WriteString(" --model " + tmux.ShellQuote(override.Model))
+		}
+		if needEffort && override.Effort != "" {
+			flags.WriteString(" --thinking " + tmux.ShellQuote(override.Effort))
+		}
 	default:
 		if override.Model != "" || override.Effort != "" {
-			return "", fmt.Errorf("agent type %q does not support a restart model override; supported: claude, codex, gemini, grok", resolvedType)
+			return "", fmt.Errorf("agent type %q does not support a restart model override; supported: claude, codex, gemini, grok, omp", resolvedType)
 		}
 	}
 	return flags.String(), nil
@@ -1737,6 +1746,8 @@ func restartAgentLaunchCommandWithOverride(cfg *config.Config, agentType, varian
 			if strings.TrimSpace(tmpl) == "" {
 				tmpl = config.DefaultOpencodeCommand
 			}
+		case "omp":
+			tmpl = config.OmpCommandOrDefault(cfg.Agents.Omp)
 		case "ollama":
 			tmpl = cfg.Agents.Ollama
 		}

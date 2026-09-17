@@ -41,7 +41,7 @@
           "flag": "--activity-type",
           "type": "string",
           "required": false,
-          "description": "Comma-separated agent types to filter: claude, codex, antigravity, grok, gemini"
+          "description": "Comma-separated agent types to filter: claude, codex, antigravity, grok, omp, gemini"
         }
       ],
       "examples": [
@@ -3045,7 +3045,7 @@
           "flag": "--type",
           "type": "string",
           "required": false,
-          "description": "Filter by agent type: claude|cc, codex|cod, gemini|gmi, cursor, windsurf, aider"
+          "description": "Filter by agent type: claude|cc, codex|cod, gemini|gmi, antigravity|agy, grok, omp, oc, cursor, windsurf, aider"
         },
         {
           "name": "all",
@@ -3593,6 +3593,13 @@
           "description": "Grok Build agents: count[:model[:effort]]"
         },
         {
+          "name": "spawn-omp",
+          "flag": "--spawn-omp",
+          "type": "string",
+          "required": false,
+          "description": "Oh My Pi (omp) agents: count[:model[:effort]] (effort maps to omp --thinking; no model = omp's own configured default)"
+        },
+        {
           "name": "spawn-preset",
           "flag": "--spawn-preset",
           "type": "string",
@@ -3662,6 +3669,7 @@
         "ntm --robot-spawn=myproject --spawn-cc=2 --spawn-cod=1 --spawn-wait --timeout=30s",
         "ntm --robot-spawn=myproject --spawn-cod=8:gpt-5.3-codex:high",
         "ntm --robot-spawn=myproject --spawn-grok=1",
+        "ntm --robot-spawn=myproject --spawn-omp=8 --spawn-no-user --spawn-wait",
         "ntm --robot-spawn=myproject --spawn-preset=standard",
         "ntm --robot-spawn=myproject --spawn-label=frontend --spawn-cc=3",
         "ntm --robot-spawn=myproject --spawn-assign-work --strategy=dependency-aware"
@@ -6918,7 +6926,7 @@
           "flag": "--activity-type",
           "type": "string",
           "required": false,
-          "description": "Comma-separated agent types to filter: claude, codex, antigravity, grok, gemini"
+          "description": "Comma-separated agent types to filter: claude, codex, antigravity, grok, omp, gemini"
         }
       ],
       "examples": [
@@ -10290,7 +10298,7 @@
           "flag": "--type",
           "type": "string",
           "required": false,
-          "description": "Filter by agent type: claude|cc, codex|cod, gemini|gmi, cursor, windsurf, aider"
+          "description": "Filter by agent type: claude|cc, codex|cod, gemini|gmi, antigravity|agy, grok, omp, oc, cursor, windsurf, aider"
         },
         {
           "name": "all",
@@ -10852,6 +10860,13 @@
           "description": "Grok Build agents: count[:model[:effort]]"
         },
         {
+          "name": "spawn-omp",
+          "flag": "--spawn-omp",
+          "type": "string",
+          "required": false,
+          "description": "Oh My Pi (omp) agents: count[:model[:effort]] (effort maps to omp --thinking; no model = omp's own configured default)"
+        },
+        {
           "name": "spawn-preset",
           "flag": "--spawn-preset",
           "type": "string",
@@ -10921,6 +10936,7 @@
         "ntm --robot-spawn=myproject --spawn-cc=2 --spawn-cod=1 --spawn-wait --timeout=30s",
         "ntm --robot-spawn=myproject --spawn-cod=8:gpt-5.3-codex:high",
         "ntm --robot-spawn=myproject --spawn-grok=1",
+        "ntm --robot-spawn=myproject --spawn-omp=8 --spawn-no-user --spawn-wait",
         "ntm --robot-spawn=myproject --spawn-preset=standard",
         "ntm --robot-spawn=myproject --spawn-label=frontend --spawn-cc=3",
         "ntm --robot-spawn=myproject --spawn-assign-work --strategy=dependency-aware"

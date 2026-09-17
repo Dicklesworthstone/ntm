@@ -16,6 +16,7 @@
         "windsurf_count": 0,
         "aider_count": 0,
         "opencode_count": 0,
+        "omp_count": 0,
         "ollama_count": 0,
         "agents_by_state": {
           "active": 20,

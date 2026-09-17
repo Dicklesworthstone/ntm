@@ -646,6 +646,10 @@ func normalizeEnsembleAgentType(value string) string {
 		return "windsurf"
 	case agent.AgentTypeAider:
 		return "aider"
+	case agent.AgentTypeOpencode:
+		return "oc"
+	case agent.AgentTypeOmp:
+		return "omp"
 	case agent.AgentTypeOllama:
 		return "ollama"
 	default:

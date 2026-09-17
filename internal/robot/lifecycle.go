@@ -242,8 +242,13 @@ func waitForBareShell(ctx context.Context, session, paneID string, timeout time.
 }
 
 // sendExitChoreography sends the graceful double Ctrl+C with the per-CLI
-// timing window encapsulated.
-func sendExitChoreography(ctx context.Context, paneID string) error {
+// timing window encapsulated. omp gets its own sequence: its Ctrl+C clears
+// the draft rather than interrupting, so a double tap with text in the
+// composer would never quit.
+func sendExitChoreography(ctx context.Context, paneID string, agentType tmux.AgentType) error {
+	if agentType.Canonical() == tmux.AgentOmp {
+		return tmux.SendOmpExitContext(ctx, paneID)
+	}
 	if err := tmux.DefaultClient.SendInterrupt(paneID); err != nil {
 		return err
 	}
@@ -322,7 +327,7 @@ func GetExitCLI(ctx context.Context, opts LifecycleOptions) (*ExitCLIOutput, err
 		} else {
 			exited := false
 			for attempt := 0; attempt < 2 && !exited; attempt++ {
-				if err := sendExitChoreography(ctx, pane.ID); err != nil {
+				if err := sendExitChoreography(ctx, pane.ID, tmux.AgentType(restartPaneAgentType(pane))); err != nil {
 					result.Detail = joinLifecycleDetail(result.Detail, fmt.Sprintf("exit keystrokes failed: %v", err))
 					break
 				}

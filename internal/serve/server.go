@@ -3836,13 +3836,15 @@ func (s *Server) handlePaneInterruptV1(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	paneTarget, ok := s.resolvePaneTargetForRequest(w, r, sessionID, paneIdx, reqID)
+	pane, ok := s.resolvePaneForRequest(w, r, sessionID, paneIdx, reqID)
 	if !ok {
 		return
 	}
+	paneTarget := pane.ID
 
-	// Send Ctrl+c to interrupt
-	if err := tmux.SendKeys(paneTarget, "C-c", false); err != nil {
+	// Press the agent's interrupt KEY (Ctrl+C; Escape for omp). SendKeys is
+	// literal (-l) and would have typed the characters "C-c" instead.
+	if err := tmux.SendInterruptForAgent(paneTarget, pane.Type); err != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
 		return
 	}
@@ -3850,6 +3852,7 @@ func (s *Server) handlePaneInterruptV1(w http.ResponseWriter, r *http.Request) {
 	writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
 		"interrupted": true,
 		"pane":        paneTarget,
+		"key":         tmux.InterruptKeyLabel(pane.Type),
 	}, reqID)
 }
 
@@ -4114,10 +4117,22 @@ type AgentSpawnRequest struct {
 	GmiCount  int    `json:"gmi_count,omitempty"`
 	AgyCount  int    `json:"agy_count,omitempty"`
 	GrokCount int    `json:"grok_count,omitempty"`
+	OmpCount  int    `json:"omp_count,omitempty"`
 	Preset    string `json:"preset,omitempty"`
 	WaitReady bool   `json:"wait_ready,omitempty"`
 	Label     string `json:"label,omitempty"` // Goal label for multi-session support
 }
+
+// hasAgentCountOrPreset reports whether the request names at least one agent
+// to spawn (by count for any supported type, or through a preset).
+func (req AgentSpawnRequest) hasAgentCountOrPreset() bool {
+	return req.CCCount != 0 || req.CodCount != 0 || req.GmiCount != 0 || req.AgyCount != 0 ||
+		req.GrokCount != 0 || req.OmpCount != 0 || req.Preset != ""
+}
+
+// agentSpawnCountRequiredMessage is the shared validation error for a spawn
+// request that names no agents.
+const agentSpawnCountRequiredMessage = "at least one agent count (cc_count, cod_count, gmi_count, agy_count, grok_count, omp_count) or preset required"
 
 // handleAgentSpawnV1 handles POST /api/v1/sessions/{sessionId}/agents/spawn.
 func (s *Server) handleAgentSpawnV1(w http.ResponseWriter, r *http.Request) {
@@ -4135,8 +4150,8 @@ func (s *Server) handleAgentSpawnV1(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// At least one agent count or preset must be specified
-	if req.CCCount == 0 && req.CodCount == 0 && req.GmiCount == 0 && req.AgyCount == 0 && req.GrokCount == 0 && req.Preset == "" {
-		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "at least one agent count (cc_count, cod_count, gmi_count, agy_count, grok_count) or preset required", nil, reqID)
+	if !req.hasAgentCountOrPreset() {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, agentSpawnCountRequiredMessage, nil, reqID)
 		return
 	}
 
@@ -4148,6 +4163,7 @@ func (s *Server) handleAgentSpawnV1(w http.ResponseWriter, r *http.Request) {
 		GmiCount:  req.GmiCount,
 		AgyCount:  req.AgyCount,
 		GrokCount: req.GrokCount,
+		OmpCount:  req.OmpCount,
 		Preset:    req.Preset,
 		WaitReady: req.WaitReady,
 	}

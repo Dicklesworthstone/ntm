@@ -1476,6 +1476,7 @@ func restartCanonicalAgentType(agentType string) agent.AgentType {
 		agent.AgentTypeWindsurf,
 		agent.AgentTypeAider,
 		agent.AgentTypeOpencode,
+		agent.AgentTypeOmp,
 		agent.AgentTypeOllama,
 		agent.AgentTypeUser,
 		agent.AgentTypeUnknown:
@@ -1492,6 +1493,10 @@ func restartLaunchAlias(agentType string) string {
 		// the official autonomous approval flag, matching the phase-1 spawn
 		// template (GH#251 phase 2).
 		return "grok --always-approve"
+	case agent.AgentTypeOmp:
+		// Relaunch omp with its skip-approval flag, matching the spawn
+		// default; omp picks its own default model.
+		return "omp --auto-approve"
 	case "", agent.AgentTypeUnknown:
 		return string(agent.AgentTypeClaudeCode)
 	default:

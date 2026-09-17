@@ -117,6 +117,14 @@ var contentPatterns = []struct {
 		},
 	},
 	{
+		// Oh My Pi (omp): the welcome banner's top edge ("╭─── omp v18.2.3",
+		// ascii "+--- omp v18.2.3"). A bare "omp" word is not evidence.
+		agentType: "omp",
+		patterns: []*regexp.Regexp{
+			regexp.MustCompile(`(?m)^\s*(?:╭─+|\+-+)\s+omp\s+v\d+\.\d+`),
+		},
+	},
+	{
 		agentType: "ollama",
 		patterns: []*regexp.Regexp{
 			regexp.MustCompile(`(?im)(^ollama>\s*$|\bollama\s+(run|chat|serve|pull)\b|^\s*ollama\s+cli\b)`),
@@ -186,6 +194,15 @@ func detectFromProcess(command string) AgentDetection {
 	if exactProcessExecutable(command, "grok") {
 		return AgentDetection{
 			Type:       "grok",
+			Confidence: 0.95,
+			Method:     MethodProcess,
+		}
+	}
+	// "omp" is short and appears in unrelated names (libomp, OpenMP); like
+	// grok it only identifies Oh My Pi as the exact executable basename.
+	if exactProcessExecutable(command, "omp") {
+		return AgentDetection{
+			Type:       "omp",
 			Confidence: 0.95,
 			Method:     MethodProcess,
 		}
@@ -270,6 +287,8 @@ func DetectFromNTMTitle(title string) AgentDetection {
 		return AgentDetection{Type: "gemini", Confidence: 0.9, Method: MethodTitle}
 	case containsShortForm(lower, "grok"):
 		return AgentDetection{Type: "grok", Confidence: 0.9, Method: MethodTitle}
+	case containsShortForm(lower, "omp"):
+		return AgentDetection{Type: "omp", Confidence: 0.9, Method: MethodTitle}
 	case containsShortForm(lower, "cursor"):
 		return AgentDetection{Type: "cursor", Confidence: 0.9, Method: MethodTitle}
 	case containsShortForm(lower, "windsurf"), containsShortForm(lower, "ws"):

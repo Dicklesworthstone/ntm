@@ -1008,6 +1008,7 @@ func TestSpawnOptions_DryRunAdmissionRefusesAgentCap(t *testing.T) {
 	cfg.SpawnPacing.AgentCaps.ClaudeMaxConcurrent = 1
 	cfg.SpawnPacing.AgentCaps.CodexMaxConcurrent = 0
 	cfg.SpawnPacing.AgentCaps.GeminiMaxConcurrent = 0
+	cfg.SpawnPacing.AgentCaps.OmpMaxConcurrent = 0
 
 	resp, err := GetSpawn(t.Context(), SpawnOptions{
 		Session:    "test_dryrun_admission_refuse",
@@ -1085,7 +1086,7 @@ func TestSpawnOptions_NoAgentsSpecified(t *testing.T) {
 	if resp.Error == "" {
 		t.Error("[E2E-SPAWN] Expected error for no agents specified")
 	}
-	if resp.Error != "no agents specified (use cc, cod, gmi, agy, or grok counts)" {
+	if resp.Error != "no agents specified (use cc, cod, gmi, agy, grok, or omp counts)" {
 		t.Errorf("[E2E-SPAWN] Unexpected error message: %s", resp.Error)
 	}
 

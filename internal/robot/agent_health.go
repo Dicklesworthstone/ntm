@@ -514,6 +514,8 @@ func findPTState(ptStates map[string]*pt.AgentState, session, paneStr, agentType
 		agentPrefix = "windsurf"
 	case agent.AgentTypeAider:
 		agentPrefix = "aider"
+	case agent.AgentTypeOmp:
+		agentPrefix = "omp"
 	case agent.AgentTypeOllama:
 		agentPrefix = "ollama"
 	}

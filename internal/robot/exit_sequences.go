@@ -20,6 +20,7 @@ import (
 // - Claude Code (cc): Double Ctrl+C with CRITICAL 0.1s timing
 // - Codex (cod): /exit command
 // - Gemini (gmi): Escape (exit shell mode if active) then /exit
+// - Oh My Pi (omp): Escape, Ctrl+C (clear draft), then Ctrl+D
 // - Unknown: Try Ctrl+C as fallback
 
 // exitAgent exits the current agent using the appropriate method. win is the
@@ -33,9 +34,22 @@ func exitAgent(ctx context.Context, session string, win, pane int, agentType str
 		return exitCodex(ctx, session, win, pane, seq)
 	case "gmi":
 		return exitGemini(ctx, session, win, pane, seq)
+	case "omp":
+		return exitOmp(ctx, session, win, pane, seq)
 	default:
 		return exitUnknown(ctx, session, win, pane, seq)
 	}
+}
+
+// exitOmp quits Oh My Pi with Escape (interrupt), Ctrl+C (clear draft), then
+// Ctrl+D (quit from an empty composer). The Ctrl+C fallback used for unknown
+// agents never quits omp on its own: a single press only clears the draft.
+func exitOmp(ctx context.Context, session string, win, pane int, seq *RestartSequence) error {
+	seq.ExitMethod = "escape_clear_ctrl_d"
+	if err := tmux.SendOmpExitContext(ctx, formatTargetWin(session, win, pane)); err != nil {
+		return wrapError("omp exit sequence failed", err)
+	}
+	return nil
 }
 
 // exitClaudeCode exits Claude Code with double Ctrl+C.
