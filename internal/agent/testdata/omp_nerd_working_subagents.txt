@@ -1,0 +1,24 @@
+ Transcribed from a live omp v18.2.3 swarm pane (nerd preset) mid-turn, with
+ project text neutralised: a running subagent is listed under the Subagents
+ panel between the TODO tree and the intent activity line.
+
+  Read crates/demo/tests/restricted_path_queries.rs:1-145
+
+ TODO
+  ├─ I. Oracle · 0/6
+  │  ├─  Document accepted restrictor semantics and refusals
+  │  ├─  Generate four graphs with deletion history
+  │  ├─  Compare bounded endpoints and captured path identities
+  │  ├─  Prove restrictor and topology coverage nonvacuous
+  │  ├─  Run comparison negative and restore evaluator
+  │  └─ … 1 more todo
+  ├─ II. Landing · 0/2
+  └─────
+
+ Subagents
+  └─ • RestrictorContracts ⟨scout⟩ Complete assignment thoroughly: ↵ # Tar…
+
+  󱊷 Reading executable restrictor facade fixture
+
+╭── ⠧ 3m   Union Alpha   /data/projects/demo   main *164 ?3 ──21%──󰁨262K─  1  Implement path restrictors oracle ──╮
+╰─                                                                                                                                        ─╯

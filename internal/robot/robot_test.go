@@ -6188,7 +6188,9 @@ func TestOmpRobotStateDialogsAndContext(t *testing.T) {
 	paste := readAgentFixture(t, "omp_nerd_paste_token.txt")
 	selector := readAgentFixture(t, "omp_nerd_model_selector.txt")
 
-	for name, capture := range map[string]string{"working": working, "tool": toolWorking, "steering": steering, "ascii": asciiWorking} {
+	subagents := readAgentFixture(t, "omp_nerd_working_subagents.txt")
+	todo := readAgentFixture(t, "omp_nerd_working_todo.txt")
+	for name, capture := range map[string]string{"working": working, "tool": toolWorking, "steering": steering, "ascii": asciiWorking, "subagents": subagents, "todo": todo} {
 		if got := determineState(capture, "omp"); got == "idle" {
 			t.Errorf("determineState(%s) = idle, want a busy state", name)
 		}

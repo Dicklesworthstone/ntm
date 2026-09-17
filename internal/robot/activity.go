@@ -1192,7 +1192,8 @@ func isAuthoritativeLiveWorkPattern(name string) bool {
 		"grok_esc_cancel",
 		"omp_status_timer",
 		"omp_esc_hint",
-		"omp_steering":
+		"omp_steering",
+		"omp_subagents":
 		return true
 	default:
 		return false

@@ -2,12 +2,33 @@
 
 All notable changes to **NTM** (Named Tmux Manager) are documented here.
 
-NTM is a tmux session management tool for orchestrating multiple AI coding agents (Claude Code, OpenAI Codex, Google Gemini CLI, Antigravity, Grok Build, Cursor, Windsurf, Aider, Opencode, Ollama) in parallel with a stunning TUI dashboard, robot mode APIs, and deep ecosystem integrations.
+NTM is a tmux session management tool for orchestrating multiple AI coding agents (Claude Code, OpenAI Codex, Google Gemini CLI, Antigravity, Grok Build, Oh My Pi, Cursor, Windsurf, Aider, Opencode, Ollama) in parallel with a stunning TUI dashboard, robot mode APIs, and deep ecosystem integrations.
 
 - Repository: <https://github.com/Dicklesworthstone/ntm>
 - Releases marked **[GitHub Release]** have published release assets on GitHub.
 - Releases marked **[Tag Only]** are git tags without a published GitHub Release.
 - Links point to individual commits for traceability.
+
+---
+
+## [Unreleased]
+
+### Added
+
+- **Oh My Pi (`omp`) is a first-class agent type.** `ntm spawn/add/create/adopt --omp=N[:model[:effort]]`, `--robot-spawn --spawn-omp`, REST `omp_count`, respawn/restart/resume, personas, recipes, session profiles, the spawn wizard, `ntm send --omp`, activity/assign/rebalance/review-queue filters, dashboards, analytics and events all accept omp. The default launch is `omp --auto-approve` (plus `--model`, `--thinking <effort>`, `--append-system-prompt` when requested); `[agents] omp`, `[models] default_omp` / `[models.omp]`, `[prompts] omp_default`, and `[spawn_pacing.agent_caps] omp_max_concurrent` (default 2) configure it.
+- **omp pane state from its live TUI** (captured against omp v18.2.3 in nerd, unicode and ascii presets): working = spinner and timer in the composer's top border, the Esc-hint/intent activity line, a pending `Steering · N` block, or a listed ` Subagents` panel; idle = a quiet composer with nothing below it; provider errors, `Error: No model selected.` and rate-limit text classify as error/rate-limited. `--robot-dialogs` reports a staged large paste as paste limbo and a selector overlay as a dialog.
+- **omp delivery and control.** Enter submits once; a message sent to a busy omp pane is queued as steering and confirmed when the payload leaves the composer. Interrupt uses **Escape** for omp (Ctrl+C only clears omp's draft and a double press quits), across `ntm interrupt`, `--robot-interrupt`, diagnose, ensemble stop, and the REST pane interrupt; graceful exit is Escape, Ctrl+C, Ctrl+D.
+- **omp context accounting.** `--robot-context` (`source: "status_bar"`), `--robot-snapshot`, `ntm status`, and the coordinator's context-rotation trigger read omp's own composer-border gauge (`7%` … `262K`, including the compressed `69%󰁨262K` form), so readings stay per pane when many omp panes share a directory; omp session transcripts under `~/.omp/agent/sessions` provide transcript usage too. `/compact` and `/clear` are used for compaction.
+- **omp session binding and resume.** `ntm sessions save` binds each omp pane to its session through the transcript omp holds open (sub-agent transcripts excluded; profile, XDG and `PI_CODING_AGENT_*` stores honoured) and resume relaunches with `omp --auto-approve --resume <id>`.
+
+### Changed
+
+- The `examples/agents/omp.toml` plugin preset is superseded by the built-in type; built-in agent types take precedence over a plugin of the same name.
+
+### Fixed
+
+- Diagnose, ensemble stop, and the REST pane interrupt typed the literal text `C-c` into panes instead of sending the Ctrl+C key.
+- `--robot-markdown` session tables counted Opencode panes as "other" agents.
 
 ---
 

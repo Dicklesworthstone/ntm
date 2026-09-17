@@ -189,9 +189,10 @@ across its nerd, unicode and ascii symbol presets):
 
 - **Ready / working / idle.** omp keeps a bordered composer at the bottom of the
   pane. A turn in flight shows a spinner and elapsed timer in the composer's top
-  border (`╭── ⠧ 1s`), an Esc-hint activity line above it (`⎋ Working…`), or a
-  queued `Steering · N` block; ` Subagents` and ` TODO` panels are working chrome
-  too. A quiet composer with nothing below it is idle.
+  border (`╭── ⠧ 1s`), an Esc-hint activity line above it (`⎋ Working…` or an
+  intent label), a queued `Steering · N` block, or a ` Subagents` panel listing
+  running subagents. A ` TODO` tree alone is not read as working, since a plan
+  can outlive its turn. A quiet composer with nothing below it is idle.
 - **Delivery.** Enter submits. A message sent to a busy pane is queued by omp
   as steering; delivery is confirmed when the payload leaves the composer. A
   staged large paste (`#1` token) is reported by `--robot-dialogs` as paste

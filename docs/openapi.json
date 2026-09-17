@@ -16574,6 +16574,10 @@
             "type": "integer",
             "description": "Ollama count"
           },
+          "omp_count": {
+            "type": "integer",
+            "description": "Omp count"
+          },
           "opencode_count": {
             "type": "integer",
             "description": "Opencode count"
@@ -16608,6 +16612,7 @@
           "windsurf_count",
           "aider_count",
           "opencode_count",
+          "omp_count",
           "ollama_count",
           "agents_by_state",
           "agents_by_type",

@@ -1,5 +1,12 @@
 # Oh My Pi (omp) agent-plugin preset for NTM (ntm#260 / ntm#262).
 #
+# SUPERSEDED: omp is now a built-in NTM agent type (`ntm spawn --omp=N`,
+# `[agents] omp`, see README "Oh My Pi"). Do not install this preset; a
+# leftover copy is ignored in favour of the built-in type, whose launch
+# command (`omp --auto-approve`), readiness detection, Escape interrupt and
+# context gauge parsing this plugin cannot express. Kept only as a worked
+# example of the agent-plugin format.
+#
 # Install — copy this file to the `agents/` directory that sits NEXT TO the
 # NTM config you actually use (NTM loads plugins from the selected config's
 # sibling `agents/` directory):

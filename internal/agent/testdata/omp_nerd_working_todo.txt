@@ -1,0 +1,24 @@
+ Captured live from omp v18.2.3 (nerd preset) mid-turn: background-job box,
+ TODO tree, intent activity line, and a crowded status line whose gauge
+ compresses to "69%󰁨262K".
+
+ cargo check -p demo now exits 0. Running the focused test:
+
+ waiting on 1 job
+└─ 󱑎 ⟨bash⟩ bg_2 cargo test -p demo --locked --test integration -j… · 8m54s
+
+ TODO
+  ├─ I. Implementation · 1/6
+  │  ├─  Build the adjacency index
+  │  ├─  Route expansion through the index
+  │  ├─  Add differential tests
+  │  ├─  Add a complexity test
+  │  ├─  Run the planted negative control
+  │  └─  Verify budget refusal semantics
+  ├─ II. Landing · 0/2
+  └─────
+
+  󱊷 Waiting for focused test to finish
+
+╭── ⠸ 1h   Union Alpha   /data/projects/demo   main *1 ?2 ──────69%󰁨262K─  1  Implement demo indexed expansion ──╮
+╰─                                                                                                                                       ─╯
