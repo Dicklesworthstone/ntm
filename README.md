@@ -224,6 +224,16 @@ across its nerd, unicode and ascii symbol presets):
   `Error: No model selected.` is an error too. No omp rate-limit screen has
   been captured yet, so omp panes are never marked rate-limited from
   transcript text; a provider 429 surfaces as a provider error.
+- **Quota.** omp has no quota or usage command. `ntm quota` lists omp panes as
+  "no quota API (provider-error classification)", `ntm rotate all-limited`
+  skips them with that reason, and `--robot-quota-check --provider=omp` answers
+  `NOT_IMPLEMENTED` (exit 2) naming the same fallback.
+- **Palette, assignment, boot checks.** In `ntm palette`, key `7` targets omp
+  panes (`6` still picks individual agents). `--assign` scores omp with the
+  per-task midpoint of the Claude and Codex capability profiles, since omp's
+  strengths follow whichever model it runs. `--verify-boot` counts a pane as
+  booted when it is idle, or when it received a spawn prompt (recovery context,
+  CASS context, or your prompt) and is working on it.
 
 Use labels when you want multiple coordinated swarms on the same project while
 keeping a shared project directory:
