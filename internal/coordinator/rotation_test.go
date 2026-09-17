@@ -357,6 +357,66 @@ func TestRotationChecker_AmbiguousCwdIsIgnored(t *testing.T) {
 	}
 }
 
+// ompGaugeCapture renders a live Oh My Pi composer (captured from omp v18.2.3,
+// unicode symbol preset) whose border gauge reports pct of a 262K window.
+// spinner is "" for an idle pane or e.g. "⠧ 1s > " for a running turn.
+func ompGaugeCapture(spinner, pct string) string {
+	return " ok\n\n" +
+		"╭── " + spinner + "⬢ Union Alpha > 🗑 omp-probe ▶─────" + pct + "─────────────────────────────────────────────────────────┃──────────262K───╮\n" +
+		"╰─                                                                                                                    ─╯\n"
+}
+
+func ompPane(id, title string) tmux.Pane {
+	return tmux.Pane{ID: id, Title: title, Type: tmux.AgentOmp, Width: 120}
+}
+
+// TestRotationChecker_OmpStatusBarGauge verifies omp panes are triggered from
+// their own composer-border context gauge: the reading is pane-attributed, so
+// two omp panes sharing one cwd (the swarm layout that leaves transcripts
+// ambiguous) are still judged individually, with omp's own window as the
+// limit and "status_bar" as the evidence source. A running turn is refused by
+// the omp working detector at fire time.
+func TestRotationChecker_OmpStatusBarGauge(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	redirectPendingStore(t)
+	cwd := "/Users/x/ompswarm"
+
+	env := newRotationTestEnv(t, 80, false,
+		[]tmux.Pane{ompPane("%5", "rotsess__omp_1"), ompPane("%6", "rotsess__omp_2"), ompPane("%7", "rotsess__omp_3")},
+		map[string]string{"%5": cwd, "%6": cwd, "%7": cwd},
+		map[string]string{
+			"%5": ompGaugeCapture("", "91%"),
+			"%6": ompGaugeCapture("", "20%"),
+			"%7": ompGaugeCapture("⠧ 1s > ", "95%"),
+		},
+		nil,
+	)
+	env.rc.contextLimit = func(string) int { t.Error("registry consulted despite omp's own window"); return 1 }
+
+	decisions := env.rc.runOnce(t.Context())
+	for _, d := range decisions {
+		t.Logf("decision: %+v", d)
+	}
+	if len(decisions) != 2 {
+		t.Fatalf("decisions = %+v, want the 91%% pane enqueued and the busy 95%% pane skipped", decisions)
+	}
+	got := map[string]rotationDecision{}
+	for _, d := range decisions {
+		got[d.PaneID] = d
+	}
+	idle := got["%5"]
+	if idle.Action != "enqueued" || idle.Limit != 262000 || idle.Tokens != 238420 || idle.Source != "status_bar" {
+		t.Errorf("idle 91%% pane decision = %+v, want enqueued tokens=238420 limit=262000 source=status_bar", idle)
+	}
+	if busy := got["%7"]; busy.Action != "skipped" || busy.SkipReason != "working" {
+		t.Errorf("busy pane decision = %+v, want skipped:working", busy)
+	}
+	if _, ok := got["%6"]; ok {
+		t.Errorf("20%% pane must stay below the threshold: %+v", got["%6"])
+	}
+}
+
 // TestRotationChecker_AutoConfirm verifies auto_confirm executes through the
 // confirm path after enqueueing, and that the rotator's monitor knows the
 // agent.

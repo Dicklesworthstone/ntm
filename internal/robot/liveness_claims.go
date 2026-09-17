@@ -34,6 +34,7 @@ func init() {
 	config.RegisterReader("spawn_pacing.agent_caps.claude_max_concurrent", spawnAdmissionAgentLimit)
 	config.RegisterReader("spawn_pacing.agent_caps.codex_max_concurrent", spawnAdmissionAgentLimit)
 	config.RegisterReader("spawn_pacing.agent_caps.gemini_max_concurrent", spawnAdmissionAgentLimit)
+	config.RegisterReader("spawn_pacing.agent_caps.omp_max_concurrent", spawnAdmissionAgentLimit)
 
 	// Swarm snapshot surface (robot.go).
 	config.RegisterReader("swarm.enabled", buildSwarmSnapshot)
@@ -84,6 +85,7 @@ func init() {
 		"models.windsurf",
 		"models.aider",
 		"models.opencode",
+		"models.omp",
 	} {
 		config.RegisterReader(key, restartModelVars)
 	}
@@ -92,6 +94,7 @@ func init() {
 	config.RegisterReader("models.default_grok", modelNameForPane)
 	config.RegisterReader("models.default_ollama", modelNameForPane)
 	config.RegisterReader("models.default_opencode", modelNameForPane)
+	config.RegisterReader("models.default_omp", modelNameForPane)
 
 	// DCG status surface (dcg_status.go).
 	config.RegisterReader("integrations.dcg.allow_override", resolveDCGSettings)

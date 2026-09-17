@@ -60,13 +60,14 @@ type AgentConfig struct {
 	Windsurf    int `json:"windsurf"`
 	Aider       int `json:"aider"`
 	Opencode    int `json:"oc"`
+	Omp         int `json:"omp,omitempty"`
 	Ollama      int `json:"ollama"`
 	User        int `json:"user"`
 }
 
 // Total returns the total number of agents.
 func (a AgentConfig) Total() int {
-	return a.Claude + a.Codex + a.Gemini + a.Antigravity + a.Grok + a.Cursor + a.Windsurf + a.Aider + a.Opencode + a.Ollama + a.User
+	return a.Claude + a.Codex + a.Gemini + a.Antigravity + a.Grok + a.Cursor + a.Windsurf + a.Aider + a.Opencode + a.Omp + a.Ollama + a.User
 }
 
 // ErrAutomatedRelaunchNotImplemented is the sentinel returned when a saved
@@ -92,7 +93,7 @@ type PaneState struct {
 	Title       string `json:"title"`             // e.g., "myproject__cc_1"
 	Index       int    `json:"index"`             // Pane index
 	WindowIndex int    `json:"window_index"`      // Window index
-	AgentType   string `json:"agent_type"`        // "cc", "cod", "gmi", "grok", "user"
+	AgentType   string `json:"agent_type"`        // "cc", "cod", "gmi", "grok", "omp", "user"
 	Model       string `json:"model,omitempty"`   // Model variant if any
 	Command     string `json:"command,omitempty"` // The agent launch command
 	Active      bool   `json:"active"`            // Was this the active pane?
@@ -150,6 +151,7 @@ type ConfigSnapshot struct {
 	WindsurfCmd    string `json:"windsurf_cmd,omitempty"`
 	AiderCmd       string `json:"aider_cmd,omitempty"`
 	OpencodeCmd    string `json:"opencode_cmd,omitempty"`
+	OmpCmd         string `json:"omp_cmd,omitempty"`
 	OllamaCmd      string `json:"ollama_cmd,omitempty"`
 }
 
@@ -163,6 +165,7 @@ type AgentCommands struct {
 	Windsurf    string
 	Aider       string
 	Opencode    string
+	Omp         string
 	Ollama      string
 }
 

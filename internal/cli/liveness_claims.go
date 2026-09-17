@@ -207,6 +207,7 @@ func init() {
 		"agents.windsurf",
 		"agents.aider",
 		"agents.oc",
+		"agents.omp",
 	} {
 		config.RegisterReader(key, spawnAgentCommandTemplate)
 	}
@@ -221,6 +222,8 @@ func init() {
 		"prompts.gmi_default_file",
 		"prompts.agy_default",
 		"prompts.agy_default_file",
+		"prompts.omp_default",
+		"prompts.omp_default_file",
 	} {
 		config.RegisterReader(key, resolveSpawnPanePrompt)
 	}

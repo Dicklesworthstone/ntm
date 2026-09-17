@@ -265,6 +265,8 @@ func (s *DefaultPaneSpawner) getAgentCommand(agentType string) string {
 			if s.config.Agents.Ollama != "" {
 				return s.config.Agents.Ollama
 			}
+		case agent.AgentTypeOmp:
+			return config.OmpCommandOrDefault(s.config.Agents.Omp)
 		}
 	}
 
@@ -282,6 +284,9 @@ func (s *DefaultPaneSpawner) getAgentCommand(agentType string) string {
 		// Relaunch with the official autonomous approval flag so a rotated
 		// pane does not block on tool approvals (GH#251 phase 2).
 		return "grok --always-approve"
+	case agent.AgentTypeOmp:
+		// Relaunch with omp's skip-approval flag, matching the spawn default.
+		return "omp --auto-approve"
 	case agent.AgentTypeCursor:
 		return "cursor"
 	case agent.AgentTypeWindsurf:

@@ -3,8 +3,9 @@
 //
 // When [rotation] usage_percent_threshold is > 0, every coordinator cycle
 // compares each agent pane's TRANSCRIPT-SOURCED context usage — ground truth
-// read from the agent CLI's own session transcript, never scrollback
-// estimates (that minimum-confidence gate is fixed by design, not
+// read from the agent CLI's own session transcript (or, for Oh My Pi, the
+// context gauge the agent itself renders in its composer border), never
+// scrollback estimates (that minimum-confidence gate is fixed by design, not
 // configurable) — against the threshold. Panes above it get a pending
 // rotation enqueued through internal/context's existing pending/confirm
 // machinery (the same storage `ntm rotate context pending/confirm` reads);
@@ -267,7 +268,7 @@ func (rc *rotationChecker) checkPane(pane tmux.Pane, usage *ntmctx.TranscriptUsa
 		UsagePct:   pct,
 		Tokens:     usage.Tokens,
 		Limit:      limit,
-		Source:     usage.Path,
+		Source:     rotationUsageSource(usage),
 		Confidence: ntmctx.TranscriptConfidence(usage.UpdatedAt, now),
 	}
 
@@ -406,6 +407,15 @@ func (rc *rotationChecker) publishDecision(record robot.ActuationRecord) {
 
 // rotationEvidence renders the triggering evidence (tokens, limit, source
 // path, confidence) for attention-feed consumers.
+// rotationUsageSource names a usage reading's evidence: the transcript path,
+// or "status_bar" for an agent-rendered gauge reading (which has no file).
+func rotationUsageSource(usage *ntmctx.TranscriptUsage) string {
+	if usage.Path == "" {
+		return "status_bar"
+	}
+	return usage.Path
+}
+
 func rotationEvidence(d rotationDecision) string {
 	return fmt.Sprintf("usage=%.1f%% tokens=%d limit=%d source=%s confidence=%s",
 		d.UsagePct, d.Tokens, d.Limit, d.Source, d.Confidence)
@@ -423,12 +433,12 @@ func rotationEvidence(d rotationDecision) string {
 //
 // This gate admits only agent types with an authoritative live working
 // detector; every other type is refused outright rather than typed into while
-// its state is unknown. Context rotation itself still only ever reaches this
-// gate for Claude Code and Codex panes (the only types with known transcript
-// locations, so the only ones that can produce a usage trigger), but the mail
-// nudge loop shares the gate and can reach it for Grok Build too: Grok's TUI
-// working detector and composer inspection are capture-based and independent
-// of transcript discovery.
+// its state is unknown. Context rotation itself reaches this gate for Claude
+// Code, Codex, and Oh My Pi panes (the types that can produce a ground-truth
+// usage trigger: transcripts, or omp's own context gauge), and the mail nudge
+// loop shares the gate and can reach it for Grok Build too: its TUI working
+// detector and composer inspection are capture-based and independent of
+// transcript discovery.
 func rotationSafetySkipReason(captured string, pane tmux.Pane) string {
 	canonical := pane.Type.Canonical()
 	switch canonical {
@@ -442,6 +452,13 @@ func rotationSafetySkipReason(captured string, pane tmux.Pane) string {
 		}
 	case agent.AgentTypeGrok:
 		if agent.GrokActivelyWorking(captured, pane.Width) {
+			return "working"
+		}
+	case agent.AgentTypeOmp:
+		// omp's composer-anchored detector (spinner+timer, Esc-hint line,
+		// pending steering) is authoritative; composer inspection below
+		// parses the same box for unsubmitted drafts.
+		if agent.OmpActivelyWorking(captured, pane.Width) {
 			return "working"
 		}
 	default:
@@ -481,9 +498,16 @@ func rotationSafetySkipReason(captured string, pane tmux.Pane) string {
 // panes costs one filesystem probe per group. robot does not export the
 // helper, hence this local implementation (kept in lockstep by the shared
 // ambiguity rule above).
+//
+// Oh My Pi panes are read from their own composer-border context gauge first
+// (ntmctx.OmpStatusBarUsage, the same reading robot's snapshot and context
+// views prefer): it is the agent's own live accounting and belongs to the
+// captured pane, so the shared-directory ambiguity never applies. Only an omp
+// pane whose gauge is not visible falls back to (type, cwd) transcripts.
 func (rc *rotationChecker) resolvePaneTranscripts(panes []tmux.Pane) map[string]*ntmctx.TranscriptUsage {
 	type paneKey struct{ agentType, cwd string }
 	groups := make(map[paneKey][]string)
+	gauges := make(map[string]*ntmctx.TranscriptUsage)
 	for _, pane := range panes {
 		var agentType string
 		switch pane.Type.Canonical() {
@@ -491,6 +515,20 @@ func (rc *rotationChecker) resolvePaneTranscripts(panes []tmux.Pane) map[string]
 			agentType = "claude"
 		case agent.AgentTypeCodex:
 			agentType = "codex"
+		case agent.AgentTypeOmp:
+			// omp renders its own context accounting in the composer border.
+			// That reading is attributed to this pane by construction, so it
+			// needs no cwd correlation and survives the shared-directory swarm
+			// layout that leaves transcripts ambiguous.
+			if rc.capturePane != nil {
+				if captured, err := rc.capturePane(pane.ID, rotationCaptureLines); err == nil {
+					if usage, ok := ntmctx.OmpStatusBarUsage(captured, rc.now()); ok {
+						gauges[pane.ID] = usage
+						continue
+					}
+				}
+			}
+			agentType = "omp"
 		default:
 			// Other agent CLIs have no known transcript locations; the fixed
 			// transcript-only confidence gate excludes them.
@@ -503,7 +541,7 @@ func (rc *rotationChecker) resolvePaneTranscripts(panes []tmux.Pane) map[string]
 		groups[paneKey{agentType: agentType, cwd: cwd}] = append(groups[paneKey{agentType: agentType, cwd: cwd}], pane.ID)
 	}
 
-	result := make(map[string]*ntmctx.TranscriptUsage)
+	result := gauges
 	for key, paneIDs := range groups {
 		if len(paneIDs) != 1 {
 			continue // ambiguous attribution: no transcript beats a wrong one

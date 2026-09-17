@@ -97,7 +97,7 @@ type PaneResponse struct {
 
 // AgentCountsResponse is the standard format for agent counts.
 //
-// Real agent types (claude/codex/gemini/cursor/windsurf/aider/opencode/
+// Real agent types (claude/codex/gemini/cursor/windsurf/aider/opencode/omp/
 // ollama) always emit even at 0 so consumers see a stable schema across
 // sessions. Only the metadata categories (user, other) use `omitempty` —
 // they're not agents per se, just fallback buckets.
@@ -112,6 +112,7 @@ type AgentCountsResponse struct {
 	Windsurf    int `json:"windsurf"`
 	Aider       int `json:"aider"`
 	Opencode    int `json:"opencode"`
+	Omp         int `json:"omp"`
 	User        int `json:"user,omitempty"`
 	Other       int `json:"other,omitempty"`
 	Total       int `json:"total"`
@@ -201,6 +202,7 @@ type AddResponse struct {
 	AddedWindsurf    int            `json:"added_windsurf"`
 	AddedAider       int            `json:"added_aider"`
 	AddedOpencode    int            `json:"added_opencode"`
+	AddedOmp         int            `json:"added_omp"`
 	TotalAdded       int            `json:"total_added"`
 	NewPanes         []PaneResponse `json:"new_panes,omitempty"`
 	// AgentMail mirrors SpawnResponse.AgentMail: added panes are registered

@@ -974,6 +974,10 @@ func restorableAgentCommand(pane PaneState) string {
 		// Relaunch with the official autonomous approval flag so the restored
 		// pane does not block on tool approvals (GH#251 phase 2).
 		return "grok --always-approve"
+	case agent.AgentTypeOmp:
+		// Relaunch with omp's skip-approval flag so the restored pane does
+		// not block on tool approvals; omp picks its own default model.
+		return "omp --auto-approve"
 	case agent.AgentTypeCursor:
 		return "cursor"
 	case agent.AgentTypeWindsurf:

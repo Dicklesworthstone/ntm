@@ -19,6 +19,7 @@ type TickerData struct {
 	CodexCount       int
 	GeminiCount      int
 	GrokCount        int
+	OmpCount         int
 	AntigravityCount int
 	CursorCount      int
 	WindsurfCount    int
@@ -239,6 +240,9 @@ func (m *TickerPanel) buildPlainFleetSegment() string {
 		}
 		if m.data.GrokCount > 0 {
 			agentParts = append(agentParts, fmt.Sprintf("Grk:%d", m.data.GrokCount))
+		}
+		if m.data.OmpCount > 0 {
+			agentParts = append(agentParts, fmt.Sprintf("Omp:%d", m.data.OmpCount))
 		}
 		if m.data.AntigravityCount > 0 {
 			agentParts = append(agentParts, fmt.Sprintf("A:%d", m.data.AntigravityCount))

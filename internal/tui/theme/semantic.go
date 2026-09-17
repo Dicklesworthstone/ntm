@@ -52,6 +52,7 @@ type SemanticPalette struct {
 	AgentCodex       lipgloss.Color // OpenAI Codex (blue)
 	AgentGemini      lipgloss.Color // Google Gemini (yellow)
 	AgentGrok        lipgloss.Color // Grok Build (pink)
+	AgentOmp         lipgloss.Color // Oh My Pi / omp (sky)
 	AgentAntigravity lipgloss.Color // Antigravity / agy (lavender)
 	AgentCursor      lipgloss.Color // Cursor (teal)
 	AgentWindsurf    lipgloss.Color // Windsurf (flamingo)
@@ -126,6 +127,7 @@ func (t Theme) Semantic() SemanticPalette {
 		AgentCodex:       t.Codex,
 		AgentGemini:      t.Gemini,
 		AgentGrok:        t.Pink,
+		AgentOmp:         t.Sky,
 		AgentAntigravity: t.Lavender,
 		AgentCursor:      t.Cursor,
 		AgentWindsurf:    t.Windsurf,
@@ -168,6 +170,8 @@ func (p SemanticPalette) AgentColor(agentType string) lipgloss.Color {
 		return p.AgentGemini
 	case agent.AgentTypeGrok:
 		return p.AgentGrok
+	case agent.AgentTypeOmp:
+		return p.AgentOmp
 	case agent.AgentTypeAntigravity:
 		return p.AgentAntigravity
 	case agent.AgentTypeCursor:

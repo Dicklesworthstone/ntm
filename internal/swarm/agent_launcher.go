@@ -213,6 +213,7 @@ var DefaultAgentCommands = map[string]string{
 	"gmi":      "gemini",       // Google Gemini CLI
 	"agy":      "agy",          // Antigravity CLI (resolved via config.AntigravityBinary at launch)
 	"grok":     "grok",         // xAI Grok Build CLI
+	"omp":      "omp",          // Oh My Pi (pi-agent fork)
 	"cursor":   "cursor-agent", // Cursor Agent CLI (not the GUI `cursor` launcher)
 	"windsurf": "windsurf",     // Windsurf CLI
 	"aider":    "aider",        // Aider CLI
@@ -236,6 +237,7 @@ var DefaultAgentArgs = map[string][]string{
 	// spaces straight into a shell command.
 	"agy":      {"--model", tmux.ShellQuote(config.AntigravityRequiredModel), "--dangerously-skip-permissions"},
 	"grok":     {"--always-approve"},
+	"omp":      {"--auto-approve"},
 	"cursor":   {"--yolo"},
 	"windsurf": {},
 	"aider":    {},
@@ -492,6 +494,7 @@ func normalizedSwarmLaunchableAgentType(agentType string) string {
 		agent.AgentTypeGemini,
 		agent.AgentTypeAntigravity,
 		agent.AgentTypeGrok,
+		agent.AgentTypeOmp,
 		agent.AgentTypeCursor,
 		agent.AgentTypeWindsurf,
 		agent.AgentTypeAider,

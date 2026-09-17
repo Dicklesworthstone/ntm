@@ -112,6 +112,16 @@ func GetAgentCapabilities(agentType string) AgentCapabilities {
 			BuiltinCompactCommand:  "",
 			HistoryClearCommand:    "/clear",
 		}
+	case agent.AgentTypeOmp:
+		// omp ships both as slash commands (omp v18.2.3): "/compact"
+		// ("Compact: context N% used") and "/clear" ("drop context, keep
+		// session").
+		return AgentCapabilities{
+			SupportsBuiltinCompact: true,
+			SupportsHistoryClear:   true,
+			BuiltinCompactCommand:  "/compact",
+			HistoryClearCommand:    "/clear",
+		}
 	case agent.AgentTypeCursor, agent.AgentTypeWindsurf, agent.AgentTypeAider, agent.AgentTypeOpencode, agent.AgentTypeOllama:
 		// These IDE-based agents typically manage their own context or don't support explicit compaction commands yet
 		return AgentCapabilities{

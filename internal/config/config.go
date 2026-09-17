@@ -726,6 +726,7 @@ type AgentConfig struct {
 	Windsurf    string            `toml:"windsurf"`
 	Aider       string            `toml:"aider"`
 	Opencode    string            `toml:"oc"`      // Opencode (https://opencode.ai) launch command — see ntm#116
+	Omp         string            `toml:"omp"`     // Oh My Pi (omp) launch command; empty uses DefaultOmpCommand
 	Plugins     map[string]string `toml:"plugins"` // Custom agent commands keyed by type
 
 	// ClaudeIsolateCredentials opts Claude panes into per-pane
@@ -1702,6 +1703,7 @@ type ModelsConfig struct {
 	// DefaultOpencode is the optional OpenCode default; empty delegates model
 	// selection to OpenCode's own config (ntm#261).
 	DefaultOpencode string            `toml:"default_opencode"`
+	DefaultOmp      string            `toml:"default_omp"`
 	Claude          map[string]string `toml:"claude"`   // Claude model aliases
 	Codex           map[string]string `toml:"codex"`    // Codex model aliases
 	Gemini          map[string]string `toml:"gemini"`   // Gemini model aliases
@@ -1711,6 +1713,7 @@ type ModelsConfig struct {
 	Windsurf        map[string]string `toml:"windsurf"` // Windsurf model aliases
 	Aider           map[string]string `toml:"aider"`    // Aider model aliases
 	Opencode        map[string]string `toml:"opencode"` // Opencode (oc) model aliases — see ntm#116
+	Omp             map[string]string `toml:"omp"`      // Oh My Pi (omp) model aliases; omp fuzzy-matches whatever is passed
 	// ContextLimits allows overriding built-in context window sizes for models.
 	// Keys are model names (e.g., "claude-opus-4-6"), values are token counts.
 	// These override the built-in defaults in internal/models/registry.go.
@@ -1727,6 +1730,9 @@ func DefaultModels() ModelsConfig {
 		DefaultGrok:     "",
 		DefaultOllama:   "llama3",
 		DefaultOpencode: "",
+		// Empty: omp's own config (modelRoles.default) chooses the model and
+		// no --model is injected.
+		DefaultOmp: "",
 		Claude: map[string]string{
 			"opus":      "claude-opus-4-8",
 			"sonnet":    "claude-sonnet-4-6",
@@ -1752,6 +1758,9 @@ func DefaultModels() ModelsConfig {
 			"llama3": "llama3",
 			"phi3":   "phi3",
 		},
+		// omp resolves models itself (fuzzy --model matching over every
+		// provider it is logged into), so the alias table starts empty.
+		Omp: map[string]string{},
 	}
 }
 func canonicalModelLookupAgentType(agentType string) string {
@@ -1776,6 +1785,8 @@ func canonicalModelLookupAgentType(agentType string) string {
 		return "aider"
 	case agent.AgentTypeOpencode:
 		return "opencode"
+	case agent.AgentTypeOmp:
+		return "omp"
 	default:
 		return strings.ToLower(strings.TrimSpace(agentType))
 	}
@@ -1816,6 +1827,8 @@ func (m *ModelsConfig) AliasesFor(agentType string) map[string]string {
 		return m.Aider
 	case "opencode":
 		return m.Opencode
+	case "omp":
+		return m.Omp
 	}
 	return nil
 }
@@ -1844,6 +1857,8 @@ func (m *ModelsConfig) GetModelName(agentType, alias string) string {
 			return m.DefaultOllama
 		case "opencode":
 			return m.DefaultOpencode
+		case "omp":
+			return m.DefaultOmp
 		}
 		return ""
 	}
@@ -2337,9 +2352,11 @@ type PromptsConfig struct {
 	GmiDefaultFile string `toml:"gmi_default_file"` // File path for Gemini default prompt
 	AgyDefault     string `toml:"agy_default"`      // Default prompt for Antigravity (agy) agents
 	AgyDefaultFile string `toml:"agy_default_file"` // File path for Antigravity default prompt
+	OmpDefault     string `toml:"omp_default"`      // Default prompt for Oh My Pi (omp) agents
+	OmpDefaultFile string `toml:"omp_default_file"` // File path for Oh My Pi default prompt
 }
 
-// ResolveForType returns the default prompt for a given agent type string (cc, cod, gmi).
+// ResolveForType returns the default prompt for a given agent type string (cc, cod, gmi, agy, omp).
 // It reads from the inline string first, falling back to the file if configured.
 func (p PromptsConfig) ResolveForType(agentType string) (string, error) {
 	var val, filePath string
@@ -2352,6 +2369,8 @@ func (p PromptsConfig) ResolveForType(agentType string) (string, error) {
 		val, filePath = p.GmiDefault, p.GmiDefaultFile
 	case "agy":
 		val, filePath = p.AgyDefault, p.AgyDefaultFile
+	case "omp":
+		val, filePath = p.OmpDefault, p.OmpDefaultFile
 	default:
 		return "", nil
 	}
@@ -3686,6 +3705,7 @@ func Print(cfg *Config, w io.Writer) error {
 	if cfg.Agents.Opencode != "" {
 		fmt.Fprintf(w, "oc = %q\n", cfg.Agents.Opencode)
 	}
+	fmt.Fprintf(w, "omp = %q\n", OmpCommandOrDefault(cfg.Agents.Omp))
 	fmt.Fprintln(w)
 
 	fmt.Fprintln(w, "[tmux]")
@@ -3946,6 +3966,16 @@ func Print(cfg *Config, w io.Writer) error {
 	} else {
 		fmt.Fprintln(w, "# agy_default_file = \"\"")
 	}
+	if cfg.Prompts.OmpDefault != "" {
+		fmt.Fprintf(w, "omp_default = %q\n", cfg.Prompts.OmpDefault)
+	} else {
+		fmt.Fprintln(w, "# omp_default = \"\"")
+	}
+	if cfg.Prompts.OmpDefaultFile != "" {
+		fmt.Fprintf(w, "omp_default_file = %q\n", cfg.Prompts.OmpDefaultFile)
+	} else {
+		fmt.Fprintln(w, "# omp_default_file = \"\"")
+	}
 	fmt.Fprintln(w)
 
 	// Write models configuration
@@ -3956,6 +3986,7 @@ func Print(cfg *Config, w io.Writer) error {
 	fmt.Fprintf(w, "default_gemini = %q\n", cfg.Models.DefaultGemini)
 	fmt.Fprintf(w, "default_grok = %q  # Empty delegates model selection to Grok Build\n", cfg.Models.DefaultGrok)
 	fmt.Fprintf(w, "default_opencode = %q  # Empty delegates model selection to OpenCode's own config\n", cfg.Models.DefaultOpencode)
+	fmt.Fprintf(w, "default_omp = %q  # Empty delegates model selection to omp's own config (modelRoles.default)\n", cfg.Models.DefaultOmp)
 	fmt.Fprintln(w)
 
 	// Write Claude model aliases
@@ -3991,6 +4022,16 @@ func Print(cfg *Config, w io.Writer) error {
 	fmt.Fprintln(w, "# Grok Build model aliases (e.g., --grok=1:MODEL_ID)")
 	for _, alias := range sortedStringMapKeys(cfg.Models.Grok) {
 		fullName := cfg.Models.Grok[alias]
+		fmt.Fprintf(w, "%s = %q\n", alias, fullName)
+	}
+	fmt.Fprintln(w)
+
+	// omp fuzzy-matches --model across every provider it is logged into, so
+	// the alias table is intentionally empty unless the operator configures it.
+	fmt.Fprintln(w, "[models.omp]")
+	fmt.Fprintln(w, "# Oh My Pi model aliases (e.g., --omp=2:opus or --omp=2:MODEL:high)")
+	for _, alias := range sortedStringMapKeys(cfg.Models.Omp) {
+		fullName := cfg.Models.Omp[alias]
 		fmt.Fprintf(w, "%s = %q\n", alias, fullName)
 	}
 	fmt.Fprintln(w)
@@ -4265,6 +4306,7 @@ func Print(cfg *Config, w io.Writer) error {
 	fmt.Fprintf(w, "claude_max_concurrent = %d\n", cfg.SpawnPacing.AgentCaps.ClaudeMaxConcurrent)
 	fmt.Fprintf(w, "codex_max_concurrent = %d\n", cfg.SpawnPacing.AgentCaps.CodexMaxConcurrent)
 	fmt.Fprintf(w, "gemini_max_concurrent = %d\n", cfg.SpawnPacing.AgentCaps.GeminiMaxConcurrent)
+	fmt.Fprintf(w, "omp_max_concurrent = %d\n", cfg.SpawnPacing.AgentCaps.OmpMaxConcurrent)
 	fmt.Fprintln(w)
 
 	fmt.Fprintln(w, "[file_reservation]")
@@ -4661,6 +4703,8 @@ func GetValue(cfg *Config, path string) (interface{}, error) {
 			return cfg.Agents.Aider, nil
 		case "oc":
 			return cfg.Agents.Opencode, nil
+		case "omp":
+			return cfg.Agents.Omp, nil
 		case "plugins":
 			return cfg.Agents.Plugins, nil
 		}
@@ -4817,6 +4861,8 @@ func GetValue(cfg *Config, path string) (interface{}, error) {
 			return cfg.Models.DefaultGrok, nil
 		case "default_opencode":
 			return cfg.Models.DefaultOpencode, nil
+		case "default_omp":
+			return cfg.Models.DefaultOmp, nil
 		case "claude":
 			return cfg.Models.Claude, nil
 		case "codex":
@@ -4825,6 +4871,8 @@ func GetValue(cfg *Config, path string) (interface{}, error) {
 			return cfg.Models.Gemini, nil
 		case "grok":
 			return cfg.Models.Grok, nil
+		case "omp":
+			return cfg.Models.Omp, nil
 		}
 	case "alerts":
 		if len(parts) < 2 {
@@ -5193,6 +5241,10 @@ func GetValue(cfg *Config, path string) (interface{}, error) {
 			return cfg.Prompts.AgyDefault, nil
 		case "agy_default_file":
 			return cfg.Prompts.AgyDefaultFile, nil
+		case "omp_default":
+			return cfg.Prompts.OmpDefault, nil
+		case "omp_default_file":
+			return cfg.Prompts.OmpDefaultFile, nil
 		}
 	case "spawn_pacing":
 		if len(parts) < 2 {
@@ -5214,6 +5266,8 @@ func GetValue(cfg *Config, path string) (interface{}, error) {
 				return cfg.SpawnPacing.AgentCaps.CodexMaxConcurrent, nil
 			case "gemini_max_concurrent":
 				return cfg.SpawnPacing.AgentCaps.GeminiMaxConcurrent, nil
+			case "omp_max_concurrent":
+				return cfg.SpawnPacing.AgentCaps.OmpMaxConcurrent, nil
 			}
 		}
 	case "swarm":
@@ -5632,6 +5686,7 @@ func Diff(cfg *Config) []ConfigDiff {
 	addDiff("agents.cursor", defaults.Agents.Cursor, cfg.Agents.Cursor)
 	addDiff("agents.windsurf", defaults.Agents.Windsurf, cfg.Agents.Windsurf)
 	addDiff("agents.aider", defaults.Agents.Aider, cfg.Agents.Aider)
+	addDiff("agents.omp", defaults.Agents.Omp, cfg.Agents.Omp)
 	addDiff("agents.plugins", defaults.Agents.Plugins, cfg.Agents.Plugins)
 
 	// Tmux
@@ -5679,10 +5734,12 @@ func Diff(cfg *Config) []ConfigDiff {
 	addDiff("models.default_gemini", defaults.Models.DefaultGemini, cfg.Models.DefaultGemini)
 	addDiff("models.default_grok", defaults.Models.DefaultGrok, cfg.Models.DefaultGrok)
 	addDiff("models.default_opencode", defaults.Models.DefaultOpencode, cfg.Models.DefaultOpencode)
+	addDiff("models.default_omp", defaults.Models.DefaultOmp, cfg.Models.DefaultOmp)
 	addDiff("models.claude", defaults.Models.Claude, cfg.Models.Claude)
 	addDiff("models.codex", defaults.Models.Codex, cfg.Models.Codex)
 	addDiff("models.gemini", defaults.Models.Gemini, cfg.Models.Gemini)
 	addDiff("models.grok", defaults.Models.Grok, cfg.Models.Grok)
+	addDiff("models.omp", defaults.Models.Omp, cfg.Models.Omp)
 
 	// Alerts
 	addDiff("alerts.enabled", defaults.Alerts.Enabled, cfg.Alerts.Enabled)
@@ -5810,6 +5867,8 @@ func Diff(cfg *Config) []ConfigDiff {
 	addDiff("prompts.gmi_default_file", defaults.Prompts.GmiDefaultFile, cfg.Prompts.GmiDefaultFile)
 	addDiff("prompts.agy_default", defaults.Prompts.AgyDefault, cfg.Prompts.AgyDefault)
 	addDiff("prompts.agy_default_file", defaults.Prompts.AgyDefaultFile, cfg.Prompts.AgyDefaultFile)
+	addDiff("prompts.omp_default", defaults.Prompts.OmpDefault, cfg.Prompts.OmpDefault)
+	addDiff("prompts.omp_default_file", defaults.Prompts.OmpDefaultFile, cfg.Prompts.OmpDefaultFile)
 
 	// Context Rotation
 	addDiff("context_rotation.enabled", defaults.ContextRotation.Enabled, cfg.ContextRotation.Enabled)

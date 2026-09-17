@@ -3246,6 +3246,76 @@ func SendInterrupt(target string) error {
 	return DefaultClient.SendInterrupt(target)
 }
 
+// InterruptKeyForAgent returns the tmux key that interrupts an in-flight turn
+// for agentType. Oh My Pi binds interrupt to Escape: Ctrl+C there only clears
+// the draft (a running turn keeps going) and two Ctrl+C presses on an empty
+// draft quit omp — both verified live against omp v18.2.3. Every other
+// supported agent TUI interrupts on Ctrl+C.
+func InterruptKeyForAgent(agentType AgentType) string {
+	if agentType.Canonical() == AgentOmp {
+		return "Escape"
+	}
+	return "C-c"
+}
+
+// InterruptKeyLabel is the human-readable name of InterruptKeyForAgent's key
+// for envelopes and messages.
+func InterruptKeyLabel(agentType AgentType) string {
+	if InterruptKeyForAgent(agentType) == "Escape" {
+		return "Escape"
+	}
+	return "Ctrl+C"
+}
+
+// SendInterruptForAgent interrupts an in-flight turn with the agent type's own
+// interrupt key (see InterruptKeyForAgent).
+func (c *Client) SendInterruptForAgent(target string, agentType AgentType) error {
+	return c.RunSilent("send-keys", "-t", ExactTarget(target), InterruptKeyForAgent(agentType))
+}
+
+// SendInterruptForAgent interrupts a pane with its agent type's interrupt key
+// (default client).
+func SendInterruptForAgent(target string, agentType AgentType) error {
+	return DefaultClient.SendInterruptForAgent(target, agentType)
+}
+
+// ompExitInterruptSettle is the pause after the exit choreography's Escape so
+// an interrupted turn has unwound before the draft is cleared.
+const ompExitInterruptSettle = 500 * time.Millisecond
+
+// SendOmpExitContext quits an omp process gracefully, verified live against
+// omp v18.2.3: Escape interrupts any in-flight turn (a single Escape at idle is
+// a no-op), one Ctrl+C clears any draft (a lone press never quits), and after
+// a pause well beyond omp's ~0.5s double-press window Ctrl+D quits from the now
+// empty composer. Ctrl+D on a non-empty draft would only delete a character,
+// which is why the clear comes first.
+func (c *Client) SendOmpExitContext(ctx context.Context, target string) error {
+	steps := []struct {
+		key   string
+		pause time.Duration
+	}{
+		{key: "Escape", pause: ompExitInterruptSettle},
+		{key: "C-c", pause: ompClearVerifyWait},
+		{key: "C-d"},
+	}
+	for _, step := range steps {
+		if err := c.RunSilentContext(ctx, "send-keys", "-t", ExactTarget(target), step.key); err != nil {
+			return fmt.Errorf("send omp exit key %q: %w", step.key, err)
+		}
+		if step.pause > 0 {
+			if err := waitForSendDelay(ctx, step.pause); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// SendOmpExitContext quits an omp process gracefully (default client).
+func SendOmpExitContext(ctx context.Context, target string) error {
+	return DefaultClient.SendOmpExitContext(ctx, target)
+}
+
 // SendEOF sends Ctrl+D (EOF) to a pane
 func (c *Client) SendEOF(target string) error {
 	return c.RunSilent("send-keys", "-t", ExactTarget(target), "C-d")

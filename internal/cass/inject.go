@@ -833,6 +833,8 @@ func agentCanonicalLongName(agentType string) string {
 		return "aider"
 	case agentpkg.AgentTypeOpencode:
 		return "oc"
+	case agentpkg.AgentTypeOmp:
+		return "omp"
 	case agentpkg.AgentTypeOllama:
 		return "ollama"
 	case agentpkg.AgentTypeUser:

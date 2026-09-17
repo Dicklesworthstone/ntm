@@ -3957,6 +3957,7 @@ func (m *Model) updateStats() {
 	m.codexCount = 0
 	m.geminiCount = 0
 	m.grokCount = 0
+	m.ompCount = 0
 	m.antigravityCount = 0
 	m.cursorCount = 0
 	m.windsurfCount = 0
@@ -3974,6 +3975,8 @@ func (m *Model) updateStats() {
 			m.geminiCount++
 		case tmux.AgentGrok:
 			m.grokCount++
+		case tmux.AgentOmp:
+			m.ompCount++
 		case tmux.AgentAntigravity:
 			m.antigravityCount++
 		case tmux.AgentCursor:
@@ -4029,7 +4032,7 @@ func (m *Model) updateTickerData() {
 	if activeAgents == 0 && len(m.panes) > 0 {
 		// Status detection hasn't populated yet; show total agents as placeholder
 		// This prevents showing "0/17" when we simply haven't fetched status yet
-		activeAgents = m.claudeCount + m.codexCount + m.geminiCount + m.grokCount + m.antigravityCount + m.cursorCount + m.windsurfCount + m.aiderCount + m.ollamaCount
+		activeAgents = m.claudeCount + m.codexCount + m.geminiCount + m.grokCount + m.ompCount + m.antigravityCount + m.cursorCount + m.windsurfCount + m.aiderCount + m.ollamaCount
 	}
 
 	// Count alerts by severity
@@ -4053,6 +4056,7 @@ func (m *Model) updateTickerData() {
 		CodexCount:       m.codexCount,
 		GeminiCount:      m.geminiCount,
 		GrokCount:        m.grokCount,
+		OmpCount:         m.ompCount,
 		AntigravityCount: m.antigravityCount,
 		CursorCount:      m.cursorCount,
 		WindsurfCount:    m.windsurfCount,
@@ -4273,6 +4277,10 @@ func (m Model) renderPaneGrid() string {
 		case tmux.AgentGrok:
 			borderColor = t.Pink
 			iconColor = t.Pink
+			agentIcon = ic.Robot
+		case tmux.AgentOmp:
+			borderColor = t.Sky
+			iconColor = t.Sky
 			agentIcon = ic.Robot
 		case tmux.AgentAntigravity:
 			borderColor = t.Lavender
@@ -6040,6 +6048,9 @@ func (m Model) renderPaneDetail(width int) string {
 		typeIcon = ic.Gemini
 	case tmux.AgentGrok:
 		typeColor = t.Pink
+		typeIcon = ic.Robot
+	case tmux.AgentOmp:
+		typeColor = t.Sky
 		typeIcon = ic.Robot
 	case tmux.AgentAntigravity:
 		typeColor = t.Lavender

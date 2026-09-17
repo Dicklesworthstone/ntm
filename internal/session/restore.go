@@ -586,6 +586,8 @@ func getAgentCommand(agentType string, cmds AgentCommands) string {
 		return cmds.Aider
 	case tmux.AgentOpencode:
 		return cmds.Opencode
+	case tmux.AgentOmp:
+		return cmds.Omp
 	case tmux.AgentOllama:
 		return cmds.Ollama
 	default:

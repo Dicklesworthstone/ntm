@@ -332,10 +332,10 @@ func TestToMap_AllTypes(t *testing.T) {
 		t.Parallel()
 		m := ToMap(SessionCreateData{
 			ClaudeCount: 3, CodexCount: 2, GeminiCount: 1, GrokCount: 1,
-			CursorCount: 1, WindsurfCount: 1, AiderCount: 1, OllamaCount: 2,
+			CursorCount: 1, WindsurfCount: 1, AiderCount: 1, OmpCount: 8, OllamaCount: 2,
 			WorkDir: "/work", Recipe: "code-review",
 		})
-		if m["claude_count"] != 3 || m["codex_count"] != 2 || m["gemini_count"] != 1 || m["grok_count"] != 1 || m["cursor_count"] != 1 || m["windsurf_count"] != 1 || m["aider_count"] != 1 || m["ollama_count"] != 2 {
+		if m["claude_count"] != 3 || m["codex_count"] != 2 || m["gemini_count"] != 1 || m["grok_count"] != 1 || m["cursor_count"] != 1 || m["windsurf_count"] != 1 || m["aider_count"] != 1 || m["omp_count"] != 8 || m["ollama_count"] != 2 {
 			t.Errorf("unexpected counts: %v", m)
 		}
 		if m["work_dir"] != "/work" || m["recipe"] != "code-review" {

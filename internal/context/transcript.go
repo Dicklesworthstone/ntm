@@ -13,6 +13,17 @@
 // payload.info.last_token_usage and payload.info.model_context_window, and
 // turn_context entries carry payload.model. The first line is a session_meta
 // entry whose payload.cwd identifies the working directory.
+//
+// Oh My Pi (omp) writes pi-family JSONL under
+// ~/.omp/agent/sessions/<safe-path>/<timestamp>_<uuid>.jsonl (profile, XDG,
+// and PI_CODING_AGENT_* overrides relocate the store). A padded "title" line
+// precedes the "session" header, whose cwd identifies the working directory;
+// assistant "message" entries carry message.usage (input, cacheRead,
+// cacheWrite, output, totalTokens) with message.provider and message.model.
+// Sub-agent transcripts live one directory deeper
+// (<timestamp>_<uuid>/<AgentName>.jsonl) and are never attributed to a pane.
+// omp also renders the same occupancy live in its composer border, which
+// OmpStatusBarUsage reads without any cwd correlation.
 package context
 
 import (
@@ -24,6 +35,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/agent"
 )
 
 // TranscriptUsage is the last usage record extracted from an agent's own
@@ -50,16 +63,28 @@ const transcriptTailWindow = 256 * 1024
 // considered current (confidence "high").
 const TranscriptFreshness = 10 * time.Minute
 
-// transcriptEntry is a permissive union of the Claude and Codex line shapes.
+// transcriptEntry is a permissive union of the Claude, Codex, and omp line
+// shapes.
 type transcriptEntry struct {
-	Type    string `json:"type"`
+	Type string `json:"type"`
+	// Model and Cwd are top-level on omp "model_change" and "session" lines.
+	Model   string `json:"model"`
+	Cwd     string `json:"cwd"`
 	Message struct {
-		Model string `json:"model"`
-		Usage struct {
+		Role     string `json:"role"`
+		Provider string `json:"provider"`
+		Model    string `json:"model"`
+		Usage    struct {
 			InputTokens              int `json:"input_tokens"`
 			CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
 			CacheReadInputTokens     int `json:"cache_read_input_tokens"`
 			OutputTokens             int `json:"output_tokens"`
+			// omp (pi-family) spelling.
+			Input       int `json:"input"`
+			CacheRead   int `json:"cacheRead"`
+			CacheWrite  int `json:"cacheWrite"`
+			Output      int `json:"output"`
+			TotalTokens int `json:"totalTokens"`
 		} `json:"usage"`
 	} `json:"message"`
 	Payload struct {
@@ -153,12 +178,34 @@ func parseLastUsage(buf []byte) *TranscriptUsage {
 		}
 
 		if e.Message.Model != "" {
-			lastModel = e.Message.Model
+			lastModel = ompQualifiedModel(e.Message.Provider, e.Message.Model)
 		} else if e.Payload.Model != "" {
 			lastModel = e.Payload.Model
+		} else if e.Type == "model_change" && e.Model != "" {
+			lastModel = e.Model // omp: already provider-qualified
 		}
 
 		switch {
+		case e.Type == "message" && e.Message.Role == "assistant" && hasUsage:
+			// omp shape: input excludes cache reads/writes; totalTokens is
+			// their sum with output. Aborted turns record all-zero usage and
+			// must not mask the previous real reading.
+			u := e.Message.Usage
+			total := u.TotalTokens
+			if total <= 0 {
+				total = u.Input + u.CacheRead + u.CacheWrite + u.Output
+			}
+			if total <= 0 {
+				continue
+			}
+			last = &TranscriptUsage{
+				Model:               ompQualifiedModel(e.Message.Provider, e.Message.Model),
+				Tokens:              total,
+				InputTokens:         u.Input,
+				CacheReadTokens:     u.CacheRead,
+				CacheCreationTokens: u.CacheWrite,
+				OutputTokens:        u.Output,
+			}
 		case e.Type == "assistant" && hasUsage:
 			// Claude Code shape.
 			u := e.Message.Usage
@@ -204,6 +251,16 @@ func parseLastUsage(buf []byte) *TranscriptUsage {
 		last.Model = lastModel
 	}
 	return last
+}
+
+// ompQualifiedModel joins omp's per-message provider and model into the
+// "provider/model" spelling omp's --model flag and model_change entries use.
+// Claude and Codex entries carry no provider and pass through unchanged.
+func ompQualifiedModel(provider, model string) string {
+	if provider == "" || model == "" || strings.HasPrefix(model, provider+"/") {
+		return model
+	}
+	return provider + "/" + model
 }
 
 // MungeProjectPath converts a working directory into the directory name
@@ -411,6 +468,181 @@ func codexSessionMatchesCwd(path, cwd string) bool {
 	return filepath.Clean(e.Payload.Cwd) == filepath.Clean(cwd)
 }
 
+// DefaultOmpSessionsDirs returns the omp session stores a pane launched from
+// this environment can write to, most specific first, following omp v18's
+// directory resolver: PI_CODING_AGENT_SESSION_DIR; then, for the default
+// profile, PI_CODING_AGENT_DIR/sessions, ~/<PI_CONFIG_DIR|.omp>/agent/sessions
+// and $XDG_DATA_HOME/omp/sessions; for a named profile (OMP_PROFILE, legacy
+// PI_PROFILE) the profile's agent/sessions and XDG profile sessions dirs.
+// Missing directories are tolerated by the finder.
+func DefaultOmpSessionsDirs() []string {
+	var dirs []string
+	if d := strings.TrimSpace(os.Getenv("PI_CODING_AGENT_SESSION_DIR")); d != "" {
+		dirs = append(dirs, d)
+	}
+	profile := strings.TrimSpace(os.Getenv("OMP_PROFILE"))
+	if profile == "" {
+		profile = strings.TrimSpace(os.Getenv("PI_PROFILE"))
+	}
+	if profile == "default" {
+		profile = ""
+	}
+	cfgName := strings.TrimLeft(strings.TrimSpace(os.Getenv("PI_CONFIG_DIR")), `/\`)
+	if cfgName == "" {
+		cfgName = ".omp"
+	}
+	home, _ := os.UserHomeDir()
+	xdg := strings.TrimSpace(os.Getenv("XDG_DATA_HOME"))
+	if profile == "" {
+		if d := strings.TrimSpace(os.Getenv("PI_CODING_AGENT_DIR")); d != "" {
+			dirs = append(dirs, filepath.Join(d, "sessions"))
+		}
+		if home != "" {
+			dirs = append(dirs, filepath.Join(home, cfgName, "agent", "sessions"))
+		}
+		if xdg != "" {
+			dirs = append(dirs, filepath.Join(xdg, "omp", "sessions"))
+		}
+		return dirs
+	}
+	if home != "" {
+		dirs = append(dirs, filepath.Join(home, cfgName, "profiles", profile, "agent", "sessions"))
+	}
+	if xdg != "" {
+		dirs = append(dirs, filepath.Join(xdg, "omp", "profiles", profile, "sessions"))
+	}
+	return dirs
+}
+
+// ompSessionProbeLimit bounds how many of a store directory's newest-named
+// transcripts are stat'ed. omp names transcripts <ISO-timestamp>_<uuid>.jsonl,
+// so name order is creation order and a live pane's session is among the
+// newest names without statting a project's whole history.
+const ompSessionProbeLimit = 8
+
+// FindOmpTranscript locates the most likely omp transcript for a pane
+// working in cwd. Each store holds one <safe-path> directory per working
+// directory (plus, for PI_CODING_AGENT_SESSION_DIR, possibly flat files), so
+// every directory is gated by the session-header cwd of its newest-named
+// transcript instead of re-deriving omp's path encoding; within matching
+// directories the newest mtime after newerThan wins, else the newest overall.
+func FindOmpTranscript(sessionsDirs []string, cwd string, newerThan time.Time) (string, bool) {
+	if cwd == "" {
+		return "", false
+	}
+	var newest, newestFresh string
+	var newestT, newestFreshT time.Time
+	seen := make(map[string]bool)
+	consider := func(dir string) {
+		dir = filepath.Clean(dir)
+		if seen[dir] {
+			return
+		}
+		seen[dir] = true
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			return
+		}
+		names := make([]string, 0, len(entries))
+		for _, e := range entries {
+			if !e.IsDir() && strings.HasSuffix(e.Name(), ".jsonl") {
+				names = append(names, e.Name())
+			}
+		}
+		if len(names) == 0 {
+			return
+		}
+		sort.Sort(sort.Reverse(sort.StringSlice(names)))
+		if len(names) > ompSessionProbeLimit {
+			names = names[:ompSessionProbeLimit]
+		}
+		if !ompSessionMatchesCwd(filepath.Join(dir, names[0]), cwd) {
+			return
+		}
+		for _, name := range names {
+			path := filepath.Join(dir, name)
+			fi, err := os.Stat(path)
+			if err != nil {
+				continue
+			}
+			mt := fi.ModTime()
+			if mt.After(newestT) {
+				newest, newestT = path, mt
+			}
+			if mt.After(newerThan) && mt.After(newestFreshT) {
+				newestFresh, newestFreshT = path, mt
+			}
+		}
+	}
+	for _, root := range sessionsDirs {
+		if root == "" {
+			continue
+		}
+		consider(root)
+		entries, err := os.ReadDir(root)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if e.IsDir() {
+				consider(filepath.Join(root, e.Name()))
+			}
+		}
+	}
+	if newestFresh != "" {
+		return newestFresh, true
+	}
+	if newest != "" {
+		return newest, true
+	}
+	return "", false
+}
+
+// ompSessionMatchesCwd reports whether an omp transcript's "session" header
+// records cwd. The header follows a space-padded "title" line (omp rewrites
+// the title in place), so a bounded head is scanned line by line.
+func ompSessionMatchesCwd(path, cwd string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	head := make([]byte, 64*1024)
+	n, _ := io.ReadFull(f, head)
+	for _, line := range bytes.Split(head[:n], []byte("\n")) {
+		line = bytes.TrimSpace(line)
+		if !bytes.Contains(line, []byte(`"session"`)) {
+			continue
+		}
+		var e transcriptEntry
+		if err := json.Unmarshal(line, &e); err != nil || e.Type != "session" {
+			continue
+		}
+		return e.Cwd != "" && filepath.Clean(e.Cwd) == filepath.Clean(cwd)
+	}
+	return false
+}
+
+// OmpStatusBarUsage converts the context gauge omp renders in its composer
+// border ("6%" … "262K", or annotated "6.0%/262K") into a usage reading. It
+// is the agent's own live accounting, attributed to the captured pane itself,
+// so unlike transcript correlation it stays unambiguous when several omp
+// panes share one working directory. Path and Model are empty; Tokens is
+// derived from the percentage and window. It reports false when no gauge
+// with a window is visible (for example while a selector overlay covers the
+// composer).
+func OmpStatusBarUsage(captured string, capturedAt time.Time) (*TranscriptUsage, bool) {
+	usedPct, window, ok := agent.OmpContextUsage(captured)
+	if !ok || window <= 0 {
+		return nil, false
+	}
+	return &TranscriptUsage{
+		Tokens:        int(float64(window)*usedPct/100 + 0.5),
+		ContextWindow: int(window),
+		UpdatedAt:     capturedAt,
+	}, true
+}
+
 // LatestAgentTranscriptUsage finds the transcript for an agent pane by agent
 // type and working directory and returns its last usage record. agentType is
 // NTM's normalized agent type string ("claude", "codex", ...). newerThan
@@ -424,6 +656,8 @@ func LatestAgentTranscriptUsage(agentType, cwd string, newerThan time.Time) (*Tr
 		path, ok = FindClaudeTranscript(DefaultClaudeProjectsDir(), cwd, newerThan)
 	case "codex", "cod":
 		path, ok = FindCodexTranscript(DefaultCodexSessionsDir(), cwd, newerThan)
+	case "omp":
+		path, ok = FindOmpTranscript(DefaultOmpSessionsDirs(), cwd, newerThan)
 	default:
 		// Seam: other agent CLIs (gemini, cursor, ...) do not yet have known
 		// transcript locations; fall back to scrollback estimation.

@@ -103,6 +103,8 @@ func (p *Persona) AgentTypeFlag() string {
 		return "aider"
 	case agentpkg.AgentTypeOpencode:
 		return "oc"
+	case agentpkg.AgentTypeOmp:
+		return "omp"
 	case agentpkg.AgentTypeOllama:
 		return "ollama"
 	default:
@@ -127,7 +129,7 @@ func (p *Persona) Validate() error {
 		switch agentpkg.AgentType(p.AgentType).Canonical() {
 		case agentpkg.AgentTypeClaudeCode, agentpkg.AgentTypeCodex, agentpkg.AgentTypeGemini,
 			agentpkg.AgentTypeAntigravity, agentpkg.AgentTypeGrok, agentpkg.AgentTypeCursor, agentpkg.AgentTypeWindsurf,
-			agentpkg.AgentTypeAider, agentpkg.AgentTypeOpencode, agentpkg.AgentTypeOllama:
+			agentpkg.AgentTypeAider, agentpkg.AgentTypeOpencode, agentpkg.AgentTypeOmp, agentpkg.AgentTypeOllama:
 			// valid
 		default:
 			return fmt.Errorf("persona %q: invalid agent_type %q", p.Name, p.AgentType)

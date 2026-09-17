@@ -295,7 +295,7 @@ func parseArgumentReferencesAnyField(node parse.Node, wanted map[string]struct{}
 // the `N:model@effort` spec shorthand for the same set.
 func agentTypeConsumesReasoningEffort(agentType string) bool {
 	switch strings.ToLower(strings.TrimSpace(agentType)) {
-	case "cc", "claude", "cod", "codex", "grok":
+	case "cc", "claude", "cod", "codex", "grok", "omp", "oh-my-pi":
 		return true
 	default:
 		return false
@@ -468,7 +468,34 @@ func DefaultAgentTemplates() AgentConfig {
 		// #7358 still open/unmerged), so injecting it here would make the pane
 		// fail to launch whenever an effort is supplied. See ntm#116, ntm#193.
 		Opencode: DefaultOpencodeCommand,
+		Omp:      DefaultOmpCommand,
 	}
+}
+
+// DefaultOmpCommand is the launch command used when [agents] omp is not
+// configured, verified against `omp --help` (omp v18.2.3):
+//   - --auto-approve ("Auto-approve all tool calls (skip approval prompts)")
+//     is omp's skip-permissions flag, so a swarm pane never blocks on a tool
+//     approval regardless of the operator's tools.approvalMode;
+//   - no --model by default: omp takes its default model from its own config
+//     (modelRoles.default in ~/.omp/agent/config.yml). --model is injected
+//     only for an explicit/configured model, and omp fuzzy-matches it;
+//   - reasoning effort maps to --thinking (off, minimal, low, medium, high,
+//     xhigh, max, auto);
+//   - personas use --append-system-prompt, which reads a file path's
+//     contents ("Append text or file contents to the system prompt") and
+//     keeps omp's own coding-agent system prompt intact.
+const DefaultOmpCommand = `omp --auto-approve{{if .Model}} --model {{shellQuote .Model}}{{end}}{{if .ReasoningEffort}} --thinking {{shellQuote .ReasoningEffort}}{{end}}{{if .SystemPromptFile}} --append-system-prompt {{shellQuote .SystemPromptFile}}{{end}}`
+
+// OmpCommandOrDefault returns the configured [agents] omp launch command, or
+// DefaultOmpCommand when it is unset or blank. Every launch path (spawn, add,
+// restart, respawn, rotation, restore) resolves omp through this one function
+// so an operator override applies everywhere.
+func OmpCommandOrDefault(configured string) string {
+	if strings.TrimSpace(configured) == "" {
+		return DefaultOmpCommand
+	}
+	return configured
 }
 
 // DefaultOpencodeCommand is the launch command used when [agents] oc is not

@@ -31,6 +31,7 @@ type AgentPacingConfig struct {
 	ClaudeMaxConcurrent int `toml:"claude_max_concurrent"` // Max concurrent claude spawns
 	CodexMaxConcurrent  int `toml:"codex_max_concurrent"`  // Max concurrent codex spawns
 	GeminiMaxConcurrent int `toml:"gemini_max_concurrent"` // Max concurrent gemini spawns
+	OmpMaxConcurrent    int `toml:"omp_max_concurrent"`    // Max concurrent omp (Oh My Pi) spawns
 }
 
 // DefaultSpawnPacingConfig returns sensible spawn pacing defaults.
@@ -42,6 +43,7 @@ func DefaultSpawnPacingConfig() SpawnPacingConfig {
 			ClaudeMaxConcurrent: 3,
 			CodexMaxConcurrent:  2,
 			GeminiMaxConcurrent: 2,
+			OmpMaxConcurrent:    2,
 		},
 	}
 }
@@ -64,6 +66,9 @@ func ValidateSpawnPacingConfig(cfg *SpawnPacingConfig) error {
 	}
 	if cfg.AgentCaps.GeminiMaxConcurrent < 0 {
 		return fmt.Errorf("agent_caps: gemini_max_concurrent must be non-negative, got %d", cfg.AgentCaps.GeminiMaxConcurrent)
+	}
+	if cfg.AgentCaps.OmpMaxConcurrent < 0 {
+		return fmt.Errorf("agent_caps: omp_max_concurrent must be non-negative, got %d", cfg.AgentCaps.OmpMaxConcurrent)
 	}
 	return nil
 }

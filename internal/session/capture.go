@@ -201,6 +201,8 @@ func countAgents(panes []tmux.Pane) AgentConfig {
 			config.Aider++
 		case tmux.AgentOpencode:
 			config.Opencode++
+		case tmux.AgentOmp:
+			config.Omp++
 		case tmux.AgentOllama:
 			config.Ollama++
 		case tmux.AgentUser:
