@@ -330,32 +330,69 @@ func gatherClaimActivity(dir, label string, window time.Duration, now time.Time)
 	if err != nil {
 		return out
 	}
-	out = countClaimsInWindow(raw, window, now)
-	out.available = true
-	return out
+	return countClaimsInWindow(raw, window, now)
 }
 
-// brListResponse is the subset of `br list --json` we parse.
+// brListIssue is the subset of a bead used as semantic work evidence.
+type brListIssue struct {
+	Status    string `json:"status"`
+	UpdatedAt string `json:"updated_at"`
+	ClosedAt  string `json:"closed_at"`
+}
+
+// brListResponse is the compatibility envelope used by some br wrappers.
 type brListResponse struct {
-	Issues []struct {
-		Status    string `json:"status"`
-		UpdatedAt string `json:"updated_at"`
-		ClosedAt  string `json:"closed_at"`
-	} `json:"issues"`
+	Issues []brListIssue `json:"issues"`
+}
+
+// decodeClaimIssues accepts the native br array and the compatibility envelope.
+// Missing/null lists and non-issue rows are unavailable evidence, not an empty
+// successful read: stop decisions must distinguish a broken schema from [] .
+func decodeClaimIssues(raw []byte) ([]brListIssue, bool) {
+	text := strings.TrimSpace(string(raw))
+	if text == "" {
+		return nil, false
+	}
+	if text[0] == '{' {
+		var envelope struct {
+			Issues json.RawMessage `json:"issues"`
+		}
+		if err := json.Unmarshal([]byte(text), &envelope); err != nil {
+			return nil, false
+		}
+		text = strings.TrimSpace(string(envelope.Issues))
+	}
+	if text == "" || text[0] != '[' {
+		return nil, false
+	}
+	var rows []*brListIssue
+	if err := json.Unmarshal([]byte(text), &rows); err != nil {
+		return nil, false
+	}
+	issues := make([]brListIssue, 0, len(rows))
+	for _, row := range rows {
+		if row == nil || strings.TrimSpace(row.Status) == "" {
+			return nil, false
+		}
+		issues = append(issues, *row)
+	}
+	return issues, true
 }
 
 // countClaimsInWindow is the PURE parser over `br list --json` output, separated
 // for direct fixture testing. It counts labeled beads whose status changed
-// (updated_at or closed_at) within the window.
+// (updated_at or closed_at) within the window. Availability is set only after a
+// recognized response has been decoded; command success alone is insufficient.
 func countClaimsInWindow(raw []byte, window time.Duration, now time.Time) claimActivity {
 	var out claimActivity
-	var resp brListResponse
-	if err := json.Unmarshal(raw, &resp); err != nil {
+	issues, ok := decodeClaimIssues(raw)
+	if !ok {
 		return out
 	}
-	out.anyLabeledBead = len(resp.Issues) > 0
+	out.available = true
+	out.anyLabeledBead = len(issues) > 0
 	cutoff := now.Add(-window)
-	for _, issue := range resp.Issues {
+	for _, issue := range issues {
 		if withinWindow(issue.ClosedAt, cutoff) || withinWindow(issue.UpdatedAt, cutoff) {
 			out.claimsInWindow++
 		}
