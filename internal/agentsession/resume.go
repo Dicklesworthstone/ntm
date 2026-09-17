@@ -16,7 +16,7 @@ const antigravityModel = "Gemini 3.8 Flash (High)"
 // when available, and falls back to the agent's native `--resume <id>` flag.
 //
 //	provider   casr/native provider name ("claude", "codex", "gemini",
-//	           "antigravity")
+//	           "antigravity", "omp")
 //	sessionID  the captured provider session id
 //	preferCASR when true (and casr is on PATH), use casr; otherwise native.
 //
@@ -61,6 +61,11 @@ func ResumeCommand(provider, sessionID string, preferCASR bool) string {
 		// agy resumes a conversation by id and REQUIRES the model pinned.
 		return "agy --conversation " + shellQuote(sessionID) +
 			" --model " + shellQuote(antigravityModel)
+	case "omp":
+		// omp resumes by session id (or id prefix / transcript path); the
+		// approval flag matches ntm's fresh omp launch so a resumed pane
+		// does not stall on tool approvals. casr has no omp provider.
+		return "omp --auto-approve --resume " + shellQuote(sessionID)
 	}
 	return ""
 }

@@ -1083,3 +1083,203 @@ func TestDiscoverAgyGmiDisambiguation(t *testing.T) {
 		t.Errorf("agy must not discover a gmi tmp session, got %+v", info)
 	}
 }
+
+// --- Oh My Pi (omp) --------------------------------------------------------
+
+const (
+	ompSessionUUID      = "01a0adc4-823b-70d0-aa1d-80adef4fd1b1"
+	ompSessionFileName  = "2026-09-17T05-08-51-899Z_" + ompSessionUUID + ".jsonl"
+	ompOtherSessionUUID = "01a0adc8-399e-7636-a3d9-8c0beb5249fb"
+)
+
+// writeOmpTranscript writes the head of a real omp v18.2.3 transcript: a
+// space-padded title line precedes the session header carrying cwd.
+func writeOmpTranscript(t *testing.T, dir, name, cwd string) string {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lines := []string{
+		`{"type":"title","v":1,"title":"Reply With the Word Ok","source":"auto","updatedAt":"2026-09-17T05:10:17.723Z","pad":"                "}`,
+		`{"type":"session","version":3,"id":"x","timestamp":"2026-09-17T05:08:51.899Z","cwd":"` + cwd + `","title":"Reply With the Word Ok"}`,
+	}
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func clearOmpEnv(t *testing.T) {
+	t.Helper()
+	for _, key := range []string{"PI_CODING_AGENT_SESSION_DIR", "PI_CODING_AGENT_DIR", "OMP_PROFILE", "PI_PROFILE", "PI_CONFIG_DIR", "XDG_DATA_HOME"} {
+		t.Setenv(key, "")
+	}
+}
+
+func TestOmpResumeProviderAndCommand(t *testing.T) {
+	for _, in := range []string{"omp", "OMP", "oh-my-pi", "oh_my_pi", " ohmypi "} {
+		if got := ResumeProvider(in); got != "omp" {
+			t.Errorf("ResumeProvider(%q) = %q, want omp", in, got)
+		}
+	}
+	if got := canonicalAgentType("oh-my-pi", "omp"); got != "omp" {
+		t.Errorf("canonicalAgentType = %q, want omp", got)
+	}
+
+	orig := lookPath
+	t.Cleanup(func() { lookPath = orig })
+	for _, casrOnPath := range []bool{false, true} {
+		lookPath = func(string) (string, error) {
+			if casrOnPath {
+				return "/usr/bin/casr", nil
+			}
+			return "", os.ErrNotExist
+		}
+		// casr has no omp provider, so omp always resumes natively.
+		if got := ResumeCommand("omp", ompSessionUUID, true); got != "omp --auto-approve --resume '"+ompSessionUUID+"'" {
+			t.Errorf("ResumeCommand(omp, casr=%v) = %q", casrOnPath, got)
+		}
+	}
+}
+
+func TestOmpProcessArgvAndSessionFiles(t *testing.T) {
+	for _, argv := range [][]string{{"omp"}, {"omp", "--auto-approve"}, {"/home/u/.bun/bin/omp", "--auto-approve"}} {
+		if !argvMatchesProvider("omp", argv) {
+			t.Errorf("argvMatchesProvider(omp, %q) = false", argv)
+		}
+	}
+	for _, argv := range [][]string{{"gcc", "compiler.c"}, {"/usr/lib/libomp.so"}, {"zsh", "-l"}, {"node", "component.js"}} {
+		if argvMatchesProvider("omp", argv) {
+			t.Errorf("argvMatchesProvider(omp, %q) = true; only the exact executable identifies omp", argv)
+		}
+	}
+
+	tests := []struct {
+		argv []string
+		want string
+	}{
+		{[]string{"omp", "--auto-approve", "--resume", "01a0adc4"}, "01a0adc4"},
+		{[]string{"omp", "-r", ompSessionUUID}, ompSessionUUID},
+		{[]string{"omp", "--resume=" + ompSessionUUID}, ompSessionUUID},
+		{[]string{"omp", "--resume", "/home/u/.omp/agent/sessions/--p--/" + ompSessionFileName}, ompSessionUUID},
+		{[]string{"omp", "--resume", "--auto-approve"}, ""}, // interactive picker
+		{[]string{"omp", "--continue"}, ""},
+		{[]string{"rg", "--resume", "x"}, ""},
+	}
+	for _, test := range tests {
+		if got := resumedSessionID("omp", test.argv); got != test.want {
+			t.Errorf("resumedSessionID(omp, %q) = %q, want %q", test.argv, got, test.want)
+		}
+	}
+
+	root := filepath.Join(t.TempDir(), ".omp", "agent", "sessions", "--data-projects-demo--")
+	mainPath := writeOmpTranscript(t, root, ompSessionFileName, "/data/projects/demo")
+	// omp also holds sub-agent transcripts open; they must never bind the pane.
+	subPath := writeOmpTranscript(t, filepath.Join(root, strings.TrimSuffix(ompSessionFileName, ".jsonl")), "ExecFuzz.jsonl", "/data/projects/demo")
+	if isProviderSessionFile("omp", subPath) || !isProviderSessionFile("omp", mainPath) {
+		t.Fatalf("isProviderSessionFile: sub=%v main=%v", isProviderSessionFile("omp", subPath), isProviderSessionFile("omp", mainPath))
+	}
+	info := processNodeSession("omp", "omp", []string{"omp", "--auto-approve", "--no-lsp"}, func() []string {
+		return []string{subPath, mainPath}
+	})
+	if info == nil || info.SessionID != ompSessionUUID || info.SourcePath != mainPath || info.AgentType != "omp" || info.Provider != "omp" {
+		t.Fatalf("omp process discovery = %+v, want %s from %s", info, ompSessionUUID, mainPath)
+	}
+}
+
+func TestOmpSessionRoots(t *testing.T) {
+	env := map[string]string{}
+	getenv := func(key string) string { return env[key] }
+	if got := OmpSessionRoots("/home/u", getenv); !reflect.DeepEqual(got, []string{"/home/u/.omp/agent/sessions"}) {
+		t.Fatalf("default roots = %v", got)
+	}
+	env["PI_CODING_AGENT_SESSION_DIR"] = "/launch/sessions"
+	env["PI_CODING_AGENT_DIR"] = "/agent-home"
+	env["XDG_DATA_HOME"] = "/xdg"
+	env["PI_CONFIG_DIR"] = "/.pi-alt"
+	want := []string{"/launch/sessions", "/agent-home/sessions", "/home/u/.pi-alt/agent/sessions", "/xdg/omp/sessions"}
+	if got := OmpSessionRoots("/home/u", getenv); !reflect.DeepEqual(got, want) {
+		t.Fatalf("override roots = %v, want %v", got, want)
+	}
+	// A named profile ignores PI_CODING_AGENT_DIR, as omp's resolver does;
+	// "default" is the default profile.
+	env["OMP_PROFILE"] = "work"
+	want = []string{"/launch/sessions", "/home/u/.pi-alt/profiles/work/agent/sessions", "/xdg/omp/profiles/work/sessions"}
+	if got := OmpSessionRoots("/home/u", getenv); !reflect.DeepEqual(got, want) {
+		t.Fatalf("profile roots = %v, want %v", got, want)
+	}
+	env["OMP_PROFILE"] = ""
+	env["PI_PROFILE"] = "default"
+	if got := OmpSessionRoots("/home/u", getenv); len(got) != 4 {
+		t.Fatalf("legacy PI_PROFILE=default must select the default profile, got %v", got)
+	}
+}
+
+func TestNewestOmpTranscriptForCwd(t *testing.T) {
+	sessions := t.TempDir()
+	projDir := filepath.Join(sessions, "--data-proj--")
+	older := writeOmpTranscript(t, projDir, "2026-09-16T01-00-00-000Z_"+ompOtherSessionUUID+".jsonl", "/data/proj")
+	newest := writeOmpTranscript(t, projDir, ompSessionFileName, "/data/proj")
+	writeOmpTranscript(t, filepath.Join(sessions, "--data-other--"), "2026-09-17T06-00-00-000Z_01a0adc8-398d-71c7-ad2b-e2959d588253.jsonl", "/data/other")
+	sub := writeOmpTranscript(t, filepath.Join(projDir, strings.TrimSuffix(ompSessionFileName, ".jsonl")), "Explorer.jsonl", "/data/proj")
+
+	past := time.Now().Add(-time.Hour)
+	future := time.Now().Add(time.Minute)
+	for path, at := range map[string]time.Time{older: past, sub: future} {
+		if err := os.Chtimes(path, at, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	roots := []string{filepath.Join(sessions, "missing"), sessions}
+	if got, _ := NewestOmpTranscriptForCwd(roots, "/data/proj/", time.Time{}, nil); got != newest {
+		t.Errorf("newest = %q, want main transcript %q (sub-agent files never compete)", got, newest)
+	}
+	claimed := map[string]bool{sessionClaimKey("omp", ompSessionUUID): true}
+	if got, _ := NewestOmpTranscriptForCwd(roots, "/data/proj", time.Time{}, claimed); got != older {
+		t.Errorf("with the newest claimed = %q, want %q", got, older)
+	}
+	// A resumed older session touched after newerThan beats a stale newer name.
+	if err := os.Chtimes(newest, past, past); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(older, future, future); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := NewestOmpTranscriptForCwd(roots, "/data/proj", time.Now(), nil); got != older {
+		t.Errorf("fresh pick = %q, want %q", got, older)
+	}
+	if got, _ := NewestOmpTranscriptForCwd(roots, "/data/nomatch", time.Time{}, nil); got != "" {
+		t.Errorf("unmatched cwd = %q, want none", got)
+	}
+	// Flat PI_CODING_AGENT_SESSION_DIR layout: transcripts directly in the root.
+	flat := t.TempDir()
+	flatPath := writeOmpTranscript(t, flat, ompSessionFileName, "/data/proj")
+	if got, _ := NewestOmpTranscriptForCwd([]string{flat}, "/data/proj", time.Time{}, nil); got != flatPath {
+		t.Errorf("flat store = %q, want %q", got, flatPath)
+	}
+}
+
+func TestDiscoverOmpNativeStore(t *testing.T) {
+	clearOmpEnv(t)
+	home := t.TempDir()
+	dir := filepath.Join(home, ".omp", "agent", "sessions", "--data-projects-demo--")
+	first := writeOmpTranscript(t, dir, ompSessionFileName, "/data/projects/demo")
+	second := writeOmpTranscript(t, dir, "2026-09-17T05-12-55-454Z_"+ompOtherSessionUUID+".jsonl", "/data/projects/demo")
+	older := time.Now().Add(-time.Minute)
+	if err := os.Chtimes(first, older, older); err != nil {
+		t.Fatal(err)
+	}
+
+	discoverer := nativeDiscoverer(home)
+	info := discoverer.Discover("omp", "/data/projects/demo", 0)
+	if info == nil || info.SessionID != ompOtherSessionUUID || info.SourcePath != second || info.Source != DiscoverySourceNativeStore {
+		t.Fatalf("first omp pane = %+v, want %s", info, ompOtherSessionUUID)
+	}
+	// Same-workspace panes are handed distinct unclaimed sessions.
+	next := discoverer.Discover("omp", "/data/projects/demo", 7)
+	if next == nil || next.SessionID != ompSessionUUID {
+		t.Fatalf("second omp pane = %+v, want %s", next, ompSessionUUID)
+	}
+}

@@ -37,6 +37,7 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/agent"
+	"github.com/Dicklesworthstone/ntm/internal/agentsession"
 )
 
 // TranscriptUsage is the last usage record extracted from an agent's own
@@ -67,9 +68,8 @@ const TranscriptFreshness = 10 * time.Minute
 // shapes.
 type transcriptEntry struct {
 	Type string `json:"type"`
-	// Model and Cwd are top-level on omp "model_change" and "session" lines.
+	// Model is top-level on omp "model_change" lines.
 	Model   string `json:"model"`
-	Cwd     string `json:"cwd"`
 	Message struct {
 		Role     string `json:"role"`
 		Provider string `json:"provider"`
@@ -468,161 +468,6 @@ func codexSessionMatchesCwd(path, cwd string) bool {
 	return filepath.Clean(e.Payload.Cwd) == filepath.Clean(cwd)
 }
 
-// DefaultOmpSessionsDirs returns the omp session stores a pane launched from
-// this environment can write to, most specific first, following omp v18's
-// directory resolver: PI_CODING_AGENT_SESSION_DIR; then, for the default
-// profile, PI_CODING_AGENT_DIR/sessions, ~/<PI_CONFIG_DIR|.omp>/agent/sessions
-// and $XDG_DATA_HOME/omp/sessions; for a named profile (OMP_PROFILE, legacy
-// PI_PROFILE) the profile's agent/sessions and XDG profile sessions dirs.
-// Missing directories are tolerated by the finder.
-func DefaultOmpSessionsDirs() []string {
-	var dirs []string
-	if d := strings.TrimSpace(os.Getenv("PI_CODING_AGENT_SESSION_DIR")); d != "" {
-		dirs = append(dirs, d)
-	}
-	profile := strings.TrimSpace(os.Getenv("OMP_PROFILE"))
-	if profile == "" {
-		profile = strings.TrimSpace(os.Getenv("PI_PROFILE"))
-	}
-	if profile == "default" {
-		profile = ""
-	}
-	cfgName := strings.TrimLeft(strings.TrimSpace(os.Getenv("PI_CONFIG_DIR")), `/\`)
-	if cfgName == "" {
-		cfgName = ".omp"
-	}
-	home, _ := os.UserHomeDir()
-	xdg := strings.TrimSpace(os.Getenv("XDG_DATA_HOME"))
-	if profile == "" {
-		if d := strings.TrimSpace(os.Getenv("PI_CODING_AGENT_DIR")); d != "" {
-			dirs = append(dirs, filepath.Join(d, "sessions"))
-		}
-		if home != "" {
-			dirs = append(dirs, filepath.Join(home, cfgName, "agent", "sessions"))
-		}
-		if xdg != "" {
-			dirs = append(dirs, filepath.Join(xdg, "omp", "sessions"))
-		}
-		return dirs
-	}
-	if home != "" {
-		dirs = append(dirs, filepath.Join(home, cfgName, "profiles", profile, "agent", "sessions"))
-	}
-	if xdg != "" {
-		dirs = append(dirs, filepath.Join(xdg, "omp", "profiles", profile, "sessions"))
-	}
-	return dirs
-}
-
-// ompSessionProbeLimit bounds how many of a store directory's newest-named
-// transcripts are stat'ed. omp names transcripts <ISO-timestamp>_<uuid>.jsonl,
-// so name order is creation order and a live pane's session is among the
-// newest names without statting a project's whole history.
-const ompSessionProbeLimit = 8
-
-// FindOmpTranscript locates the most likely omp transcript for a pane
-// working in cwd. Each store holds one <safe-path> directory per working
-// directory (plus, for PI_CODING_AGENT_SESSION_DIR, possibly flat files), so
-// every directory is gated by the session-header cwd of its newest-named
-// transcript instead of re-deriving omp's path encoding; within matching
-// directories the newest mtime after newerThan wins, else the newest overall.
-func FindOmpTranscript(sessionsDirs []string, cwd string, newerThan time.Time) (string, bool) {
-	if cwd == "" {
-		return "", false
-	}
-	var newest, newestFresh string
-	var newestT, newestFreshT time.Time
-	seen := make(map[string]bool)
-	consider := func(dir string) {
-		dir = filepath.Clean(dir)
-		if seen[dir] {
-			return
-		}
-		seen[dir] = true
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			return
-		}
-		names := make([]string, 0, len(entries))
-		for _, e := range entries {
-			if !e.IsDir() && strings.HasSuffix(e.Name(), ".jsonl") {
-				names = append(names, e.Name())
-			}
-		}
-		if len(names) == 0 {
-			return
-		}
-		sort.Sort(sort.Reverse(sort.StringSlice(names)))
-		if len(names) > ompSessionProbeLimit {
-			names = names[:ompSessionProbeLimit]
-		}
-		if !ompSessionMatchesCwd(filepath.Join(dir, names[0]), cwd) {
-			return
-		}
-		for _, name := range names {
-			path := filepath.Join(dir, name)
-			fi, err := os.Stat(path)
-			if err != nil {
-				continue
-			}
-			mt := fi.ModTime()
-			if mt.After(newestT) {
-				newest, newestT = path, mt
-			}
-			if mt.After(newerThan) && mt.After(newestFreshT) {
-				newestFresh, newestFreshT = path, mt
-			}
-		}
-	}
-	for _, root := range sessionsDirs {
-		if root == "" {
-			continue
-		}
-		consider(root)
-		entries, err := os.ReadDir(root)
-		if err != nil {
-			continue
-		}
-		for _, e := range entries {
-			if e.IsDir() {
-				consider(filepath.Join(root, e.Name()))
-			}
-		}
-	}
-	if newestFresh != "" {
-		return newestFresh, true
-	}
-	if newest != "" {
-		return newest, true
-	}
-	return "", false
-}
-
-// ompSessionMatchesCwd reports whether an omp transcript's "session" header
-// records cwd. The header follows a space-padded "title" line (omp rewrites
-// the title in place), so a bounded head is scanned line by line.
-func ompSessionMatchesCwd(path, cwd string) bool {
-	f, err := os.Open(path)
-	if err != nil {
-		return false
-	}
-	defer f.Close()
-	head := make([]byte, 64*1024)
-	n, _ := io.ReadFull(f, head)
-	for _, line := range bytes.Split(head[:n], []byte("\n")) {
-		line = bytes.TrimSpace(line)
-		if !bytes.Contains(line, []byte(`"session"`)) {
-			continue
-		}
-		var e transcriptEntry
-		if err := json.Unmarshal(line, &e); err != nil || e.Type != "session" {
-			continue
-		}
-		return e.Cwd != "" && filepath.Clean(e.Cwd) == filepath.Clean(cwd)
-	}
-	return false
-}
-
 // OmpStatusBarUsage converts the context gauge omp renders in its composer
 // border ("6%" … "262K", or annotated "6.0%/262K") into a usage reading. It
 // is the agent's own live accounting, attributed to the captured pane itself,
@@ -657,7 +502,11 @@ func LatestAgentTranscriptUsage(agentType, cwd string, newerThan time.Time) (*Tr
 	case "codex", "cod":
 		path, ok = FindCodexTranscript(DefaultCodexSessionsDir(), cwd, newerThan)
 	case "omp":
-		path, ok = FindOmpTranscript(DefaultOmpSessionsDirs(), cwd, newerThan)
+		// The omp store layout is owned by agentsession (shared with
+		// session capture/resume discovery).
+		home, _ := os.UserHomeDir()
+		path, _ = agentsession.NewestOmpTranscriptForCwd(agentsession.OmpSessionRoots(home, os.Getenv), cwd, newerThan, nil)
+		ok = path != ""
 	default:
 		// Seam: other agent CLIs (gemini, cursor, ...) do not yet have known
 		// transcript locations; fall back to scrollback estimation.

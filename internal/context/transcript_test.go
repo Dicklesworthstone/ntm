@@ -254,83 +254,27 @@ func TestReadLatestTranscriptUsage_Omp(t *testing.T) {
 	}
 }
 
-func TestFindOmpTranscript(t *testing.T) {
-	sessions := t.TempDir()
-	mk := func(parts ...string) string {
-		dir := filepath.Join(append([]string{sessions}, parts...)...)
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		return dir
-	}
-	projDir := mk("--data-proj--")
-	otherDir := mk("--data-other--")
-	older := writeTranscript(t, projDir, "2026-09-16T01-00-00-000Z_aaaa.jsonl", ompSessionHead("/data/proj")...)
-	newest := writeTranscript(t, projDir, "2026-09-17T05-08-51-899Z_bbbb.jsonl", ompSessionHead("/data/proj")...)
-	writeTranscript(t, otherDir, "2026-09-17T06-00-00-000Z_cccc.jsonl", ompSessionHead("/data/other")...)
-	// Sub-agent transcripts live one level deeper and are never candidates.
-	subDir := mk("--data-proj--", "2026-09-17T05-08-51-899Z_bbbb")
-	sub := writeTranscript(t, subDir, "Explorer.jsonl", ompSessionHead("/data/proj")...)
-
-	past := time.Now().Add(-time.Hour)
-	for _, p := range []string{older, sub} {
-		if err := os.Chtimes(p, past, past); err != nil {
-			t.Fatal(err)
-		}
-	}
-	future := time.Now().Add(time.Minute)
-	if err := os.Chtimes(sub, future, future); err != nil {
-		t.Fatal(err)
-	}
-
-	got, ok := FindOmpTranscript([]string{filepath.Join(sessions, "missing"), sessions}, "/data/proj", time.Time{})
-	if !ok || got != newest {
-		t.Errorf("got %q ok=%v, want newest main transcript %q", got, ok, newest)
-	}
-	// A resumed older session touched after newerThan wins over a stale newer name.
-	if err := os.Chtimes(newest, past, past); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chtimes(older, future, future); err != nil {
-		t.Fatal(err)
-	}
-	if got, ok := FindOmpTranscript([]string{sessions}, "/data/proj", time.Now()); !ok || got != older {
-		t.Errorf("fresh pick = %q ok=%v, want %q", got, ok, older)
-	}
-	if _, ok := FindOmpTranscript([]string{sessions}, "/data/nomatch", time.Time{}); ok {
-		t.Error("expected not found for unmatched cwd")
-	}
-	// Flat PI_CODING_AGENT_SESSION_DIR layout: transcripts directly in the root.
-	flat := t.TempDir()
-	flatPath := writeTranscript(t, flat, "2026-09-17T07-00-00-000Z_dddd.jsonl", ompSessionHead("/data/proj")...)
-	if got, ok := FindOmpTranscript([]string{flat}, "/data/proj", time.Time{}); !ok || got != flatPath {
-		t.Errorf("flat store = %q ok=%v, want %q", got, ok, flatPath)
-	}
-}
-
-func TestDefaultOmpSessionsDirs(t *testing.T) {
+// TestLatestAgentTranscriptUsage_Omp resolves an omp pane's transcript through
+// the real store layout under a temp HOME and reads its last usage record.
+func TestLatestAgentTranscriptUsage_Omp(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	for _, k := range []string{"PI_CODING_AGENT_SESSION_DIR", "PI_CODING_AGENT_DIR", "OMP_PROFILE", "PI_PROFILE", "PI_CONFIG_DIR", "XDG_DATA_HOME"} {
 		t.Setenv(k, "")
 	}
-	if got := DefaultOmpSessionsDirs(); len(got) != 1 || got[0] != filepath.Join(home, ".omp", "agent", "sessions") {
-		t.Fatalf("default dirs = %v", got)
+	dir := filepath.Join(home, ".omp", "agent", "sessions", "--data-proj--")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
 	}
+	path := writeTranscript(t, dir, "2026-09-17T05-08-51-899Z_01a0adc4-823b-70d0-aa1d-80adef4fd1b1.jsonl",
+		append(ompSessionHead("/data/proj"), ompAssistantLine(812, 52, 16503, 0))...)
 
-	t.Setenv("PI_CODING_AGENT_SESSION_DIR", "/launch/sessions")
-	t.Setenv("PI_CODING_AGENT_DIR", "/agent-home")
-	t.Setenv("XDG_DATA_HOME", "/xdg")
-	want := []string{"/launch/sessions", "/agent-home/sessions", filepath.Join(home, ".omp", "agent", "sessions"), "/xdg/omp/sessions"}
-	if got := DefaultOmpSessionsDirs(); strings.Join(got, "|") != strings.Join(want, "|") {
-		t.Fatalf("override dirs = %v, want %v", got, want)
+	u, ok := LatestAgentTranscriptUsage("omp", "/data/proj", time.Time{})
+	if !ok || u.Path != path || u.Tokens != 17367 {
+		t.Fatalf("LatestAgentTranscriptUsage(omp) = (%+v, %v), want 17367 tokens from %s", u, ok, path)
 	}
-
-	// A named profile ignores PI_CODING_AGENT_DIR, as omp's resolver does.
-	t.Setenv("OMP_PROFILE", "work")
-	want = []string{"/launch/sessions", filepath.Join(home, ".omp", "profiles", "work", "agent", "sessions"), "/xdg/omp/profiles/work/sessions"}
-	if got := DefaultOmpSessionsDirs(); strings.Join(got, "|") != strings.Join(want, "|") {
-		t.Fatalf("profile dirs = %v, want %v", got, want)
+	if _, ok := LatestAgentTranscriptUsage("omp", "/data/other", time.Time{}); ok {
+		t.Fatal("a transcript for another cwd must not be attributed")
 	}
 }
 
