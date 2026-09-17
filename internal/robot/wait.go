@@ -257,6 +257,7 @@ func GetWaitContext(ctx context.Context, opts WaitOptions) (*WaitResponse, int) 
 	initiallyInTarget := make(map[string]bool)
 	var lastPending []string
 	var lastAttentionResult *AttentionConditionResult
+	var attentionState attentionWaitState
 
 	for {
 		if err := ctx.Err(); err != nil {
@@ -397,7 +398,10 @@ func GetWaitContext(ctx context.Context, opts WaitOptions) (*WaitResponse, int) 
 
 		attentionMet := !hasAttention
 		if hasAttention {
-			lastAttentionResult = checkAttentionConditions(attentionConditions, attentionCursor, opts.Session, opts.Profile)
+			// Event predicates latch once witnessed; pane and convergence
+			// predicates below must still hold in the current poll. Do not
+			// consume later events while waiting for those live predicates.
+			lastAttentionResult = checkAttentionConditionsWithState(attentionConditions, attentionCursor, opts.Session, opts.Profile, &attentionState)
 			if lastAttentionResult != nil && lastAttentionResult.CursorExpired != nil {
 				cursorErr := lastAttentionResult.CursorExpired
 				details := cursorErr.ToDetails()
@@ -862,6 +866,18 @@ func newAttentionConditionResult(condition string, observedCursor, nextCursor, o
 // checkAttentionConditions checks if all requested attention-based conditions
 // are met. Multiple attention conditions are ANDed together.
 func checkAttentionConditions(conditions []string, sinceCursor int64, session, profile string) *AttentionConditionResult {
+	return checkAttentionConditionsWithState(conditions, sinceCursor, session, profile, &attentionWaitState{})
+}
+
+// checkAttentionConditionsWithState preserves witnesses across bounded replay
+// pages for a single wait. The stateless wrapper keeps one-shot checks isolated.
+func checkAttentionConditionsWithState(conditions []string, sinceCursor int64, session, profile string, waitState *attentionWaitState) *AttentionConditionResult {
+	if waitState != nil && waitState.completed != nil {
+		// Preserve the original cursor handoff while a mixed wait is still
+		// waiting for live pane/convergence predicates. Later events belong
+		// to the next consumer, and retention cannot erase a witnessed event.
+		return waitState.completed
+	}
 	feed := GetAttentionFeed()
 	if feed == nil {
 		return nil
@@ -911,41 +927,10 @@ func checkAttentionConditions(conditions []string, sinceCursor int64, session, p
 		result.Details["profile"] = profile
 	}
 
-	matchedConditions := make([]string, 0, len(conditions))
-	matchCounts := make(map[string]int, len(conditions))
-	var decisiveMatch *singleAttentionConditionMatch
-
-	for _, cond := range conditions {
-		c := strings.TrimSpace(cond)
-		if !isAttentionBasedCondition(c) {
-			continue
-		}
-
-		match := checkSingleAttentionCondition(c, events)
-		if match == nil {
-			return result
-		}
-
-		matchedConditions = append(matchedConditions, c)
-		matchCounts[c] = match.TriggerCount
-		if decisiveMatch == nil || (match.TriggerEvent != nil && decisiveMatch.TriggerEvent != nil &&
-			match.TriggerEvent.Cursor > decisiveMatch.TriggerEvent.Cursor) {
-			decisiveMatch = match
-		}
+	if waitState == nil {
+		waitState = &attentionWaitState{}
 	}
-
-	if decisiveMatch == nil {
-		return result
-	}
-
-	result.Met = true
-	result.Condition = decisiveMatch.Condition
-	result.TriggerEvent = decisiveMatch.TriggerEvent
-	result.TriggerCount = decisiveMatch.TriggerCount
-	result.ObservedCursor = decisiveMatch.TriggerEvent.Cursor
-	result.Details["matched_conditions"] = matchedConditions
-	result.Details["match_count_by_condition"] = matchCounts
-	return result
+	return waitState.observe(conditions, events, result)
 }
 
 // checkSingleAttentionCondition checks a single attention-based condition.
