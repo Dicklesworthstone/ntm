@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 // CoordinatorAgent is the runtime identity assigned to a workflow role.
@@ -102,6 +103,71 @@ func (c *RuntimeCoordinator) Start(ctx *TriggerContext) error {
 	}
 	c.started = true
 	return nil
+}
+
+// StartAt restores a checkpoint without replaying earlier transitions or
+// mutating the reusable template. Only the saved stage's watchers start.
+// Elapsed-time triggers retain their original start time, including downtime;
+// later transitions receive the live clock rather than this startup clock.
+func (c *RuntimeCoordinator) StartAt(ctx *TriggerContext, stage string, startedAt time.Time, nextByRole map[string]int) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.started {
+		return errors.New("workflow coordinator is already started")
+	}
+	if ctx == nil || startedAt.IsZero() || startedAt.After(ctx.now()) {
+		return errors.New("workflow checkpoint has an invalid stage start time")
+	}
+	validStage := c.template.Flow == nil && c.template.Coordination == CoordParallel && stage == ""
+	if flow := c.template.Flow; flow != nil && stage != "" {
+		validStage = flow.Initial == stage
+		for _, candidate := range flow.Stages {
+			validStage = validStage || candidate == stage
+		}
+		for _, tr := range flow.Transitions {
+			validStage = validStage || tr.From == stage || tr.To == stage
+		}
+	}
+	if !validStage {
+		return fmt.Errorf("workflow checkpoint stage %q is not in the template", stage)
+	}
+	counts := make(map[string]int)
+	for _, agent := range c.agents {
+		counts[agent.Role]++
+	}
+	routing := make(map[string]int, len(nextByRole))
+	for role, next := range nextByRole {
+		if counts[role] == 0 || next < 0 {
+			return fmt.Errorf("workflow checkpoint has invalid routing for role %q", role)
+		}
+		routing[role] = next % counts[role]
+	}
+	c.stage = stage
+	c.nextByRole = routing
+	c.triggerCtx = cloneTriggerContext(ctx)
+	if c.template.Flow != nil {
+		startCtx := cloneTriggerContext(ctx)
+		startCtx.Now = func() time.Time { return startedAt }
+		if err := c.startStageLocked(startCtx); err != nil {
+			c.triggerCtx = nil
+			return err
+		}
+	}
+	c.started = true
+	return nil
+}
+
+// RoutingState snapshots the round-robin cursors after choosing a stage's
+// participants, so a resumed run neither changes those participants nor
+// unfairly restarts every role at its first pane.
+func (c *RuntimeCoordinator) RoutingState() map[string]int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	result := make(map[string]int, len(c.nextByRole))
+	for role, next := range c.nextByRole {
+		result[role] = next
+	}
+	return result
 }
 
 // Stop stops all active trigger watchers. It may be called repeatedly.

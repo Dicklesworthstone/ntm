@@ -113,19 +113,23 @@ type TimeoutMonitor struct {
 	handler *ErrorHandler
 	current func() string
 	cancel  context.CancelFunc
+	done    chan struct{}
 }
 
 func NewTimeoutMonitor(timeout time.Duration, handler *ErrorHandler, current func() string) *TimeoutMonitor {
 	return &TimeoutMonitor{timeout: timeout, handler: handler, current: current}
 }
 func (m *TimeoutMonitor) Start(ctx context.Context, stage string) {
-	m.Stop()
+	m.StopAndWait()
 	if m.timeout <= 0 || m.handler == nil || m.current == nil {
 		return
 	}
 	run, cancel := context.WithCancel(ctx)
 	m.cancel = cancel
+	m.done = make(chan struct{})
+	done := m.done
 	go func() {
+		defer close(done)
 		timer := time.NewTimer(m.timeout)
 		defer timer.Stop()
 		select {
@@ -142,5 +146,16 @@ func (m *TimeoutMonitor) Stop() {
 	if m.cancel != nil {
 		m.cancel()
 		m.cancel = nil
+	}
+}
+
+// StopAndWait drains any in-flight action before the runner releases its
+// checkpoint lease. Start/StopAndWait are owner-goroutine operations and must
+// not be called from the timeout action itself.
+func (m *TimeoutMonitor) StopAndWait() {
+	m.Stop()
+	if m.done != nil {
+		<-m.done
+		m.done = nil
 	}
 }

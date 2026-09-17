@@ -11,6 +11,7 @@ package cli
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -48,6 +49,7 @@ type WorkflowRunResult struct {
 	Stages       []string           `json:"stages"`
 	Transitions  int                `json:"transitions"`
 	Completed    bool               `json:"completed"`
+	Resumed      bool               `json:"resumed,omitempty"`
 	Reason       string             `json:"reason"`
 	Error        string             `json:"error,omitempty"`
 }
@@ -90,11 +92,14 @@ type workflowRunOptions struct {
 	Session        string
 	ProjectRoot    string
 	Vars           map[string]string
+	PanePIDs       map[string]int // Live pane lifetimes, supplied by the tmux adapter.
 	MaxTransitions int
 	Interval       time.Duration
 	FireManual     bool
 	TriggerTimeout time.Duration
 	StateDir       string // defaults to <ProjectRoot>/.ntm/workflows/state
+	Resume         bool
+	Restart        bool
 }
 
 // workflowRunner drives one coordinator instance against a live session.
@@ -134,6 +139,20 @@ type workflowRunner struct {
 // (for --fire-manual) and applies the configured command-trigger timeout.
 func newWorkflowRunner(template *workflow.WorkflowTemplate, agents []workflow.CoordinatorAgent, opts workflowRunOptions, ports workflowRunPorts) (*workflowRunner, error) {
 	ports.fillDefaults()
+	if opts.Resume && opts.Restart {
+		return nil, errors.New("--resume and --restart are mutually exclusive")
+	}
+	if (opts.Resume || opts.Restart) && strings.TrimSpace(opts.StateDir) == "" {
+		return nil, errors.New("workflow resume/restart requires a durable state directory")
+	}
+	if ports.dispatch == nil || ports.capture == nil {
+		return nil, errors.New("workflow dispatch and capture ports are required")
+	}
+	root, err := filepath.Abs(opts.ProjectRoot)
+	if err != nil {
+		return nil, fmt.Errorf("resolve workflow project root: %w", err)
+	}
+	opts.ProjectRoot = filepath.Clean(root)
 	if opts.Interval <= 0 {
 		opts.Interval = 2 * time.Second
 	}
@@ -337,16 +356,191 @@ func stageLabel(stage string) string {
 func (r *workflowRunner) dispatchStage(ctx context.Context, stage string, targets []workflow.CoordinatorAgent) error {
 	r.dispatchMu.Lock()
 	defer r.dispatchMu.Unlock()
-	for _, agent := range targets {
-		r.mu.Lock()
-		r.turn++
-		turn := r.turn
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	// The coordinator starts manual triggers while holding its own mutex;
+	// those factories acquire r.mu. Never acquire the coordinator lock while
+	// holding r.mu, including on the timeout goroutine's retry path.
+	var nextByRole map[string]int
+	if routing, ok := r.coordinator.(interface{ RoutingState() map[string]int }); ok {
+		nextByRole = routing.RoutingState()
+	}
+	r.mu.Lock()
+	if r.state == nil || r.state.CurrentStage != stage {
 		r.mu.Unlock()
-		prompt := r.stagePrompt(stage, agent, turn)
-		r.ports.notify("workflow %s: stage %s → %s (%s), turn %d", r.template.Name, stageLabel(stage), agent.ID, agent.Role, turn)
+		return errors.New("workflow stage changed before dispatch; no prompt sent")
+	}
+	if r.state.Dispatches == nil {
+		r.state.Dispatches = make([]workflow.StageDispatch, 0, len(targets))
+		for _, agent := range targets {
+			r.turn++
+			r.state.Dispatches = append(r.state.Dispatches, workflow.StageDispatch{
+				Pane: agent.ID, Role: agent.Role, Turn: r.turn, Status: "pending",
+			})
+		}
+		r.state.Turn = r.turn
+		r.state.NextByRole = nextByRole
+		if err := r.saveCheckpointLocked(); err != nil {
+			r.mu.Unlock()
+			return err
+		}
+	}
+	plan := append([]workflow.StageDispatch(nil), r.state.Dispatches...)
+	r.mu.Unlock()
+	for i, delivery := range plan {
+		if delivery.Status == "delivered" {
+			continue
+		}
+		if delivery.Status != "pending" {
+			return fmt.Errorf("workflow delivery outcome unknown for pane %s at stage %q; refusing to resend", delivery.Pane, stage)
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		r.mu.Lock()
+		r.state.Dispatches[i].Status = "sending"
+		err := r.saveCheckpointLocked()
+		r.mu.Unlock()
+		if err != nil {
+			return err // Nothing is sent without its durable intent.
+		}
+		agent := workflow.CoordinatorAgent{ID: delivery.Pane, Role: delivery.Role}
+		prompt := r.stagePrompt(stage, agent, delivery.Turn)
+		r.ports.notify("workflow %s: stage %s → %s (%s), turn %d", r.template.Name, stageLabel(stage), agent.ID, agent.Role, delivery.Turn)
 		if err := r.ports.dispatch(ctx, r.opts.Session, agent.ID, prompt); err != nil {
+			// The port may have typed part or all of the prompt. Leave sending
+			// on disk: an error is NOT proof that replay would be safe.
 			return fmt.Errorf("dispatch stage %q to pane %s (%s): %w", stageLabel(stage), agent.ID, agent.Role, err)
 		}
+		r.mu.Lock()
+		r.state.Dispatches[i].Status = "delivered"
+		err = r.saveCheckpointLocked()
+		r.mu.Unlock()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// checkpointTargets reuses the saved plan rather than consuming another
+// round-robin slot or delivering to a different pane on resume.
+func (r *workflowRunner) checkpointTargets(stage string) ([]workflow.CoordinatorAgent, error) {
+	r.mu.Lock()
+	var targets []workflow.CoordinatorAgent
+	if r.state != nil && r.state.Dispatches != nil {
+		for _, delivery := range r.state.Dispatches {
+			targets = append(targets, workflow.CoordinatorAgent{ID: delivery.Pane, Role: delivery.Role})
+		}
+		r.mu.Unlock()
+		return targets, nil
+	}
+	r.mu.Unlock()
+	return r.stagePanes(stage)
+}
+
+func (r *workflowRunner) saveCheckpointLocked() error {
+	if r.store == nil {
+		return nil
+	}
+	if err := r.store.Save(r.state); err != nil {
+		return fmt.Errorf("persist workflow checkpoint before further execution: %w", err)
+	}
+	return nil
+}
+
+// loadCheckpoint validates identity and delivery evidence before touching the
+// saved pause or starting watchers. Versions without a delivery journal fail
+// closed, as do changed templates/variables/pane lifetimes and ambiguous sends.
+func (r *workflowRunner) loadCheckpoint() error {
+	if r.store == nil {
+		return nil
+	}
+	prior, err := r.store.Load(r.opts.Session)
+	if err != nil {
+		return err
+	}
+	if !r.opts.Resume {
+		if prior != nil && !prior.Completed && !r.opts.Restart {
+			return fmt.Errorf("workflow %s has an unfinished checkpoint at stage %q; use --resume to continue, or --restart to deliberately repeat the workflow", prior.WorkflowName, prior.CurrentStage)
+		}
+		return nil
+	}
+	if prior == nil {
+		return errors.New("no workflow checkpoint to resume")
+	}
+	hash, err := r.templateHash()
+	if err != nil {
+		return err
+	}
+	if prior.ResumeVersion != 1 || prior.TemplateHash != hash || prior.WorkflowName != r.template.Name || prior.ProjectRoot != r.opts.ProjectRoot {
+		return errors.New("workflow checkpoint version, template, or project differs; refusing unsafe resume (use --restart for a deliberate fresh run)")
+	}
+	if prior.StageStartedAt.IsZero() || prior.StageStartedAt.After(r.ports.now()) || prior.Turn < 0 {
+		return errors.New("workflow checkpoint has invalid timing or turn state")
+	}
+	if len(prior.Agents) != len(r.agents) {
+		return errors.New("workflow checkpoint pane assignment changed; refusing unsafe resume")
+	}
+	for _, agent := range r.agents {
+		if role, ok := prior.Agents[agent.ID]; !ok || role != agent.Role || prior.PanePIDs[agent.ID] != r.opts.PanePIDs[agent.ID] {
+			return fmt.Errorf("workflow pane %s changed role or lifetime; refusing unsafe resume", agent.ID)
+		}
+	}
+	for key, value := range r.opts.Vars {
+		if saved, ok := prior.Variables[key]; !ok || saved != value {
+			return fmt.Errorf("--var %s differs from the checkpoint; resume cannot change in-flight work", key)
+		}
+	}
+	seen := make(map[string]bool)
+	if prior.Dispatches != nil && len(prior.Dispatches) == 0 {
+		return errors.New("workflow checkpoint has an empty stage delivery plan")
+	}
+	if prior.Completed && (!r.stageIsTerminal(prior.CurrentStage) || prior.Paused) {
+		return errors.New("workflow checkpoint has inconsistent completion state")
+	}
+	for _, delivery := range prior.Dispatches {
+		if prior.Completed && delivery.Status != "delivered" {
+			return errors.New("completed workflow checkpoint contains unfinished deliveries")
+		}
+		if seen[delivery.Pane] || prior.Agents[delivery.Pane] != delivery.Role || delivery.Role == "" || delivery.Turn <= 0 || delivery.Turn > prior.Turn {
+			return errors.New("workflow checkpoint has an invalid stage delivery plan")
+		}
+		seen[delivery.Pane] = true
+		switch delivery.Status {
+		case "pending", "delivered":
+		case "sending":
+			return fmt.Errorf("workflow delivery outcome unknown for pane %s at stage %q; inspect the pane before a deliberate --restart; --resume will not duplicate the prompt", delivery.Pane, prior.CurrentStage)
+		default:
+			return fmt.Errorf("workflow checkpoint has invalid delivery status %q", delivery.Status)
+		}
+	}
+	r.opts.Vars = prior.Variables
+	r.state = prior
+	r.turn = prior.Turn
+	return nil
+}
+
+func (r *workflowRunner) templateHash() (string, error) {
+	copy := *r.template
+	copy.Source = "" // Same definition may be addressed by name or file path.
+	data, err := json.Marshal(copy)
+	if err != nil {
+		return "", fmt.Errorf("fingerprint workflow template: %w", err)
+	}
+	return fmt.Sprintf("%x", sha256.Sum256(data)), nil
+}
+
+func (r *workflowRunner) completeCheckpoint() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.state == nil || r.state.Completed {
+		return nil
+	}
+	r.state.Completed = true
+	if r.store != nil {
+		return r.store.RecordStage(r.state, "completed", "terminal", r.ports.now())
 	}
 	return nil
 }
@@ -495,12 +689,15 @@ func (a workflowRunActions) Pause(_ context.Context, reason string) error {
 	// Hold r.mu across the store write: recordTransition mutates the same
 	// WorkflowState from the main run loop under the same lock.
 	a.r.mu.Lock()
+	var saveErr error
 	if a.r.store != nil && a.r.state != nil {
-		if err := a.r.store.Pause(a.r.state, reason, a.r.ports.now()); err != nil {
-			a.r.ports.notify("workflow %s: persist pause: %v", a.r.template.Name, err)
-		}
+		saveErr = a.r.store.Pause(a.r.state, reason, a.r.ports.now())
 	}
 	a.r.mu.Unlock()
+	if saveErr != nil {
+		a.r.stop("checkpoint-failed", saveErr)
+		return saveErr
+	}
 	a.r.stop("paused", fmt.Errorf("workflow paused: %s", reason))
 	return nil
 }
@@ -531,13 +728,41 @@ func (a workflowRunActions) Abort(_ context.Context, err error) error {
 }
 
 func (a workflowRunActions) RetryStage(ctx context.Context) error {
+	a.r.dispatchMu.Lock()
 	stage := a.r.coordinator.CurrentStage()
+	a.r.mu.Lock()
+	if a.r.state == nil || a.r.state.CurrentStage != stage {
+		a.r.mu.Unlock()
+		a.r.dispatchMu.Unlock()
+		return errors.New("workflow stage changed before retry")
+	}
+	for _, delivery := range a.r.state.Dispatches {
+		if delivery.Status != "delivered" {
+			a.r.mu.Unlock()
+			a.r.dispatchMu.Unlock()
+			return errors.New("cannot retry a stage with unfinished or uncertain delivery")
+		}
+	}
+	// This is an intentional retry requested by the template's policy, not
+	// crash recovery. Save that new intent before assigning fresh turns.
+	a.r.state.Dispatches = nil
+	err := a.r.saveCheckpointLocked()
+	a.r.mu.Unlock()
+	a.r.dispatchMu.Unlock()
+	if err != nil {
+		a.r.stop("checkpoint-failed", err)
+		return err
+	}
 	targets, err := a.r.stagePanes(stage)
 	if err != nil {
 		return err
 	}
 	a.r.ports.notify("workflow %s: retrying stage %s", a.r.template.Name, stage)
-	return a.r.dispatchStage(ctx, stage, targets)
+	err = a.r.dispatchStage(ctx, stage, targets)
+	if err != nil {
+		a.r.stop("dispatch-failed", err)
+	}
+	return err
 }
 
 func (a workflowRunActions) Notify(_ context.Context, werr *workflow.WorkflowError, subject string) error {
@@ -568,21 +793,27 @@ func (r *workflowRunner) stopped() (string, error) {
 // recordTransition persists the stage change to the state store. It holds
 // r.mu for the duration: the TimeoutMonitor goroutine's Pause writes the same
 // WorkflowState under the same lock.
-func (r *workflowRunner) recordTransition(newStage string) {
+func (r *workflowRunner) recordTransition(newStage string) error {
+	r.dispatchMu.Lock()
+	defer r.dispatchMu.Unlock()
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.store == nil || r.state == nil {
-		return
+	if r.state == nil {
+		return nil
 	}
 	now := r.ports.now()
-	if err := r.store.RecordStage(r.state, "advanced", "trigger", now); err != nil {
-		r.ports.notify("workflow %s: record stage: %v", r.template.Name, err)
-	}
+	r.state.StageHistory = append(r.state.StageHistory, workflow.StageRecord{
+		Stage: r.state.CurrentStage, StartedAt: r.state.StageStartedAt,
+		CompletedAt: now, DurationSec: int(now.Sub(r.state.StageStartedAt).Seconds()),
+		Result: "advanced", Trigger: "trigger",
+	})
 	r.state.CurrentStage = newStage
 	r.state.StageStartedAt = now
-	if err := r.store.Save(r.state); err != nil {
-		r.ports.notify("workflow %s: save state: %v", r.template.Name, err)
-	}
+	r.state.Dispatches = nil
+	r.state.Completed = r.stageIsTerminal(newStage)
+	// History and destination commit in ONE snapshot. A crash between two
+	// separate saves must not resurrect a stage already marked advanced.
+	return r.saveCheckpointLocked()
 }
 
 // Run drives the workflow until completion, the transition budget, a
@@ -612,19 +843,32 @@ func (r *workflowRunner) Run(ctx context.Context) (WorkflowRunResult, error) {
 		}
 		return *result, err
 	}
+	if r.store != nil {
+		lockCtx, lockCancel := context.WithTimeout(runCtx, time.Second)
+		unlock, err := r.store.Acquire(lockCtx, r.opts.Session)
+		lockCancel()
+		if err != nil {
+			return fail("checkpoint-locked", err)
+		}
+		defer unlock()
+	}
+	if err := r.loadCheckpoint(); err != nil {
+		return fail("resume-rejected", err)
+	}
+	result.Resumed = r.opts.Resume
 
 	// Error handling per template policy.
 	if eh := r.template.ErrorHandling; eh != nil {
 		r.errorHandler = workflow.NewErrorHandler(workflow.ErrorHandlingConfig{
 			OnAgentCrash:       eh.OnAgentCrash,
 			OnAgentError:       eh.OnAgentError,
+			OnTriggerFailed:    workflow.ErrorActionAbort,
 			OnTimeout:          eh.OnTimeout,
 			MaxRetriesPerStage: eh.MaxRetriesPerStage,
 		}, workflowRunActions{r: r})
 		if eh.StageTimeoutMinutes > 0 {
 			r.timeoutMonitor = workflow.NewTimeoutMonitor(
 				time.Duration(eh.StageTimeoutMinutes)*time.Minute, r.errorHandler, r.coordinator.CurrentStage)
-			defer r.timeoutMonitor.Stop()
 		}
 	}
 
@@ -634,10 +878,24 @@ func (r *workflowRunner) Run(ctx context.Context) (WorkflowRunResult, error) {
 		Session:     r.opts.Session,
 		Now:         r.ports.now,
 	}
-	if err := r.coordinator.Start(tctx); err != nil {
+	if r.state != nil {
+		restorer, ok := r.coordinator.(interface {
+			StartAt(*workflow.TriggerContext, string, time.Time, map[string]int) error
+		})
+		if !ok {
+			return fail("resume-rejected", errors.New("coordinator does not support checkpoint resume"))
+		}
+		if err := restorer.StartAt(tctx, r.state.CurrentStage, r.state.StageStartedAt, r.state.NextByRole); err != nil {
+			return fail("resume-rejected", err)
+		}
+	} else if err := r.coordinator.Start(tctx); err != nil {
 		return fail("start-failed", err)
 	}
 	defer func() {
+		cancel()
+		if r.timeoutMonitor != nil {
+			r.timeoutMonitor.StopAndWait()
+		}
 		if err := r.coordinator.Stop(); err != nil {
 			r.ports.notify("workflow %s: stop coordinator: %v", r.template.Name, err)
 		}
@@ -645,12 +903,22 @@ func (r *workflowRunner) Run(ctx context.Context) (WorkflowRunResult, error) {
 
 	stage := r.coordinator.CurrentStage()
 	result.Stages = append(result.Stages, stageLabel(stage))
+	if r.state != nil && r.state.Completed {
+		result.Success, result.Completed, result.Reason = true, true, "completed"
+		return *result, nil
+	}
 
 	// Durable state checkpoint.
-	if r.store != nil {
+	if r.state == nil {
 		paneRoles := make(map[string]string, len(r.agents))
+		panePIDs := make(map[string]int, len(r.agents))
 		for _, agent := range r.agents {
 			paneRoles[agent.ID] = agent.Role
+			panePIDs[agent.ID] = r.opts.PanePIDs[agent.ID]
+		}
+		hash, err := r.templateHash()
+		if err != nil {
+			return fail("checkpoint-failed", err)
 		}
 		state := &workflow.WorkflowState{
 			WorkflowName:   r.template.Name,
@@ -659,13 +927,22 @@ func (r *workflowRunner) Run(ctx context.Context) (WorkflowRunResult, error) {
 			StageStartedAt: r.ports.now(),
 			Agents:         paneRoles,
 			Variables:      r.opts.Vars,
+			ResumeVersion:  1,
+			TemplateHash:   hash,
+			ProjectRoot:    r.opts.ProjectRoot,
+			PanePIDs:       panePIDs,
 		}
 		r.mu.Lock()
 		r.state = state
-		if err := r.store.Save(r.state); err != nil {
-			r.ports.notify("workflow %s: save state: %v", r.template.Name, err)
-		}
+		err = r.saveCheckpointLocked()
 		r.mu.Unlock()
+		if err != nil {
+			return fail("checkpoint-failed", err)
+		}
+	} else if r.state.Paused {
+		if err := r.store.Resume(r.state); err != nil {
+			return fail("checkpoint-failed", err)
+		}
 	}
 
 	// Parallel workflows without a flow dispatch everyone and are done.
@@ -673,13 +950,16 @@ func (r *workflowRunner) Run(ctx context.Context) (WorkflowRunResult, error) {
 		if err := r.dispatchStage(runCtx, stage, parallel.Agents()); err != nil {
 			return fail("dispatch-failed", err)
 		}
+		if err := r.completeCheckpoint(); err != nil {
+			return fail("checkpoint-failed", err)
+		}
 		result.Success = true
 		result.Completed = true
 		result.Reason = "completed"
 		return *result, nil
 	}
 
-	targets, err := r.stagePanes(stage)
+	targets, err := r.checkpointTargets(stage)
 	if err != nil {
 		return fail("stage-role-unresolved", err)
 	}
@@ -691,12 +971,6 @@ func (r *workflowRunner) Run(ctx context.Context) (WorkflowRunResult, error) {
 	}
 
 	for {
-		if r.stageIsTerminal(stage) {
-			result.Success = true
-			result.Completed = true
-			result.Reason = "completed"
-			return *result, nil
-		}
 		if reason, stopErr := r.stopped(); reason != "" {
 			return fail(reason, stopErr)
 		}
@@ -711,6 +985,15 @@ func (r *workflowRunner) Run(ctx context.Context) (WorkflowRunResult, error) {
 				reason = "timeout"
 			}
 			return fail(reason, fmt.Errorf("workflow run canceled: %w", context.Cause(ctx)))
+		}
+		if r.stageIsTerminal(stage) {
+			if err := r.completeCheckpoint(); err != nil {
+				return fail("checkpoint-failed", err)
+			}
+			result.Success = true
+			result.Completed = true
+			result.Reason = "completed"
+			return *result, nil
 		}
 
 		r.ports.sleep(runCtx, r.opts.Interval)
@@ -729,7 +1012,7 @@ func (r *workflowRunner) Run(ctx context.Context) (WorkflowRunResult, error) {
 				if handleErr := r.errorHandler.Handle(runCtx, &workflow.WorkflowError{
 					Type: workflow.ErrorTriggerFailed, Stage: stage, Message: err.Error(), Timestamp: r.ports.now(),
 				}); handleErr != nil {
-					r.ports.notify("workflow %s: error handler: %v", r.template.Name, handleErr)
+					return fail("error-handler-failed", handleErr)
 				}
 				continue
 			}
@@ -742,7 +1025,9 @@ func (r *workflowRunner) Run(ctx context.Context) (WorkflowRunResult, error) {
 		}
 		result.Transitions++
 		r.ports.notify("workflow %s: stage %s → %s (transition %d)", r.template.Name, stageLabel(stage), stageLabel(newStage), result.Transitions)
-		r.recordTransition(newStage)
+		if err := r.recordTransition(newStage); err != nil {
+			return fail("checkpoint-failed", err)
+		}
 		stage = newStage
 		result.Stages = append(result.Stages, stageLabel(stage))
 		if r.timeoutMonitor != nil {
@@ -957,6 +1242,7 @@ func newWorkflowsRunCmd() *cobra.Command {
 		fireManual     bool
 		triggerTimeout time.Duration
 		resumeFlag     bool
+		restartFlag    bool
 	)
 
 	cmd := &cobra.Command{
@@ -985,6 +1271,12 @@ role.
 Note: 'ntm spawn -t <workflow>' only uses a template's agent COUNTS to size a
 session; this command is what actually runs the coordination.
 
+--resume continues the saved stage with the same template, variables, and
+pane lifetimes. Confirmed prompts are not sent again; pending prompts resume
+their saved plan. An interrupted send with an unknown outcome is refused.
+Unfinished checkpoints require --resume, or --restart to deliberately repeat
+the entire workflow. --resume never silently means restart.
+
 Examples:
   ntm workflow run red-green --var feature="parser rewrite"
   ntm workflow run specialist-team --session myproj --fire-manual
@@ -1002,6 +1294,7 @@ Examples:
 				FireManual:     fireManual,
 				TriggerTimeout: triggerTimeout,
 				Resume:         resumeFlag,
+				Restart:        restartFlag,
 			})
 		},
 	}
@@ -1014,7 +1307,9 @@ Examples:
 	cmd.Flags().DurationVar(&timeout, "timeout", 15*time.Minute, "overall run deadline")
 	cmd.Flags().BoolVar(&fireManual, "fire-manual", false, "fire manual triggers automatically instead of waiting for an operator")
 	cmd.Flags().DurationVar(&triggerTimeout, "trigger-timeout", 0, "per-check deadline for command triggers (0 = library default)")
-	cmd.Flags().BoolVar(&resumeFlag, "resume", false, "clear a paused checkpoint for this session and run again from the initial stage")
+	cmd.Flags().BoolVar(&resumeFlag, "resume", false, "continue the saved stage without repeating confirmed prompt deliveries")
+	cmd.Flags().BoolVar(&restartFlag, "restart", false, "explicitly replace an unfinished checkpoint and repeat the workflow from the beginning")
+	cmd.MarkFlagsMutuallyExclusive("resume", "restart")
 	return cmd
 }
 
@@ -1028,6 +1323,7 @@ type workflowRunCLIFlags struct {
 	FireManual     bool
 	TriggerTimeout time.Duration
 	Resume         bool
+	Restart        bool
 }
 
 func runWorkflowRun(ctx context.Context, ref string, flags workflowRunCLIFlags) error {
@@ -1058,7 +1354,13 @@ func runWorkflowRun(ctx context.Context, ref string, flags workflowRunCLIFlags) 
 	if err != nil {
 		return failEarly(err)
 	}
-	vars, err := resolveWorkflowVars(template, flags.Vars)
+	varsTemplate := *template
+	if flags.Resume {
+		// Only explicit overrides are parsed here. The runner validates them
+		// against and restores required/default variables from the checkpoint.
+		varsTemplate.Prompts = nil
+	}
+	vars, err := resolveWorkflowVars(&varsTemplate, flags.Vars)
 	if err != nil {
 		return failEarly(err)
 	}
@@ -1081,6 +1383,10 @@ func runWorkflowRun(ctx context.Context, ref string, flags workflowRunCLIFlags) 
 	if err != nil {
 		return failEarly(err)
 	}
+	panePIDs := make(map[string]int, len(panes))
+	for _, pane := range panes {
+		panePIDs[pane.ID] = pane.PID
+	}
 
 	projectRoot := strings.TrimSpace(flags.ProjectRoot)
 	if projectRoot == "" {
@@ -1094,24 +1400,14 @@ func runWorkflowRun(ctx context.Context, ref string, flags workflowRunCLIFlags) 
 		Session:        session,
 		ProjectRoot:    projectRoot,
 		Vars:           vars,
+		PanePIDs:       panePIDs,
 		MaxTransitions: flags.MaxTransitions,
 		Interval:       flags.Interval,
 		FireManual:     flags.FireManual,
 		TriggerTimeout: flags.TriggerTimeout,
 		StateDir:       filepath.Join(projectRoot, ".ntm", "workflows", "state"),
-	}
-
-	// A paused checkpoint fails closed: --resume clears it (and reruns from
-	// the initial stage; mid-flow resume is not supported yet).
-	store := &workflow.StateStore{Dir: opts.StateDir}
-	if prior, loadErr := store.Load(session); loadErr == nil && prior != nil && prior.Paused {
-		if !flags.Resume {
-			return failEarly(fmt.Errorf("workflow %s for session %s is paused (%s); re-run with --resume to clear the pause",
-				prior.WorkflowName, session, prior.PauseReason))
-		}
-		if err := store.Resume(prior); err != nil {
-			return failEarly(fmt.Errorf("clear paused workflow state: %w", err))
-		}
+		Resume:         flags.Resume,
+		Restart:        flags.Restart,
 	}
 
 	notify := func(format string, args ...any) {

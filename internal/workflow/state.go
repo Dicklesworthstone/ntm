@@ -26,6 +26,28 @@ type WorkflowState struct {
 	Variables      map[string]string `json:"variables"`
 	StageHistory   []StageRecord     `json:"history"`
 	Errors         []WorkflowError   `json:"errors"`
+	// ResumeVersion distinguishes execution checkpoints with a write-ahead
+	// delivery journal from older observational snapshots. Missing evidence
+	// must never be interpreted as permission to resend a stage.
+	ResumeVersion int             `json:"resume_version,omitempty"`
+	TemplateHash  string          `json:"template_hash,omitempty"`
+	ProjectRoot   string          `json:"project_root,omitempty"`
+	PanePIDs      map[string]int  `json:"pane_pids,omitempty"`
+	NextByRole    map[string]int  `json:"next_by_role,omitempty"`
+	Turn          int             `json:"turn"`
+	Dispatches    []StageDispatch `json:"dispatches"`
+	Completed     bool            `json:"completed"`
+}
+
+// StageDispatch records one pane's prompt delivery in the current stage.
+// pending proves no attempt has started; sending has an unknown outcome after
+// a crash; delivered proves the dispatch port returned success. The sending
+// record is persisted BEFORE calling that port, and delivered afterward.
+type StageDispatch struct {
+	Pane   string `json:"pane"`
+	Role   string `json:"role"`
+	Turn   int    `json:"turn"`
+	Status string `json:"status"`
 }
 type StageRecord struct {
 	Stage       string    `json:"stage"`
@@ -343,10 +365,38 @@ func DefaultStateStore() (*StateStore, error) {
 	return &StateStore{Dir: filepath.Join(base, "ntm", "workflows")}, nil
 }
 func (s *StateStore) path(session string) (string, error) {
-	if strings.TrimSpace(session) == "" || filepath.Base(session) != session {
+	if s == nil || strings.TrimSpace(s.Dir) == "" {
+		return "", errors.New("workflow state directory is required")
+	}
+	if strings.TrimSpace(session) == "" || session == "." || session == ".." || filepath.Base(session) != session || strings.ContainsAny(session, "/\\\x00") {
 		return "", errors.New("workflow session name must be a single path component")
 	}
 	return filepath.Join(s.Dir, session+".json"), nil
+}
+
+// Acquire serializes a session's entire workflow run across processes. The
+// caller holds the returned lease from checkpoint load through its last
+// checkpoint write, not merely around individual saves. Atomic writes alone
+// cannot prevent two runners from dispatching the same stage concurrently.
+func (s *StateStore) Acquire(ctx context.Context, session string) (func(), error) {
+	if ctx == nil {
+		return nil, errors.New("workflow lock context is required")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	path, err := s.path(session)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(s.Dir, 0o755); err != nil {
+		return nil, fmt.Errorf("create workflow state directory: %w", err)
+	}
+	unlock, err := lockPaneSequenceFile(ctx, path+".lock")
+	if err != nil {
+		return nil, fmt.Errorf("acquire workflow run for session %q (another runner may be active): %w", session, err)
+	}
+	return unlock, nil
 }
 func (s *StateStore) Save(state *WorkflowState) error {
 	if state == nil {
@@ -383,6 +433,9 @@ func (s *StateStore) Load(session string) (*WorkflowState, error) {
 	var state WorkflowState
 	if err := json.Unmarshal(data, &state); err != nil {
 		return nil, fmt.Errorf("decode workflow state: %w", err)
+	}
+	if state.SessionName != session {
+		return nil, fmt.Errorf("workflow checkpoint session %q does not match requested session %q", state.SessionName, session)
 	}
 	return &state, nil
 }
