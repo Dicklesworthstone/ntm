@@ -10629,7 +10629,9 @@ func GetContext(session string, lines int) (*ContextOutput, error) {
 			agentInfo.EstimatedTokens = gauge.Tokens
 			agentInfo.WithOverhead = gauge.Tokens
 			agentInfo.ContextLimit = gauge.ContextWindow
-			agentInfo.UsagePercent = float64(gauge.Tokens) / float64(gauge.ContextWindow) * 100
+			// Multiply before dividing so a whole-percent gauge reads back
+			// exactly ("7", not "7.000000000000001").
+			agentInfo.UsagePercent = float64(gauge.Tokens) * 100 / float64(gauge.ContextWindow)
 			agentInfo.Confidence = "high"
 		} else if usage, ok := paneTranscripts[pane.ID]; ok {
 			agentInfo.Source = "transcript"
