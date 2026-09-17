@@ -156,3 +156,86 @@ func TestTimeoutMonitorDrainsActionBeforeLeaseRelease(t *testing.T) {
 		t.Fatal("StopAndWait returned with a checkpoint writer still active")
 	}
 }
+
+func TestReconcileDeliveryRejectsStaleOrUnsafeRequests(t *testing.T) {
+	store := &StateStore{Dir: t.TempDir()}
+	state := &WorkflowState{
+		SessionName: "s", WorkflowName: "flow", CurrentStage: "review", ResumeVersion: 1,
+		Agents: map[string]string{"%1": "review"}, Turn: 7,
+		Dispatches: []StageDispatch{{Pane: "%1", Role: "review", Turn: 7, Status: "sending"}},
+	}
+	if err := store.Save(state); err != nil {
+		t.Fatal(err)
+	}
+	path, _ := store.path("s")
+	before, _ := os.ReadFile(path)
+	token, err := state.CheckpointToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		pane, token string
+		outcome     string
+	}{
+		{"%1", "old-checkpoint", "delivered"},
+		{"%1", "", "not-sent"},
+		{"%9", token, "delivered"},
+		{"%1", token, "guess"},
+		{"", token, "delivered"},
+	} {
+		if _, err := store.ReconcileDelivery(context.Background(), "s", tc.pane, tc.token, tc.outcome); err == nil {
+			t.Fatalf("accepted stale/unsafe recovery: %+v", tc)
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := store.ReconcileDelivery(ctx, "s", "%1", token, "delivered"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled recovery = %v", err)
+	}
+	unlock, err := store.Acquire(context.Background(), "s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocked, release := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer release()
+	_, err = store.ReconcileDelivery(blocked, "s", "%1", token, "not-sent")
+	unlock()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("recovery ignored active runner: %v", err)
+	}
+	after, _ := os.ReadFile(path)
+	if string(before) != string(after) {
+		t.Fatal("rejected recovery mutated state")
+	}
+	if _, err := store.ReconcileDelivery(context.Background(), "s", "%1", token, "delivered"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ReconcileDelivery(context.Background(), "s", "%1", token, "not-sent"); err == nil {
+		t.Fatal("conflicting resolution made a confirmed prompt replayable")
+	}
+}
+
+func TestRecoveryTokenRejectsReusedStageAndTurnWithChangedTask(t *testing.T) {
+	store := &StateStore{Dir: t.TempDir()}
+	state := &WorkflowState{
+		SessionName: "s", WorkflowName: "flow", CurrentStage: "review", ResumeVersion: 1,
+		Agents: map[string]string{"%1": "review"}, Turn: 1,
+		Variables:  map[string]string{"task": "original"},
+		Dispatches: []StageDispatch{{Pane: "%1", Role: "review", Turn: 1, Status: "sending"}},
+	}
+	oldToken, err := state.CheckpointToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.Variables["task"] = "replacement"
+	if err := store.Save(state); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ReconcileDelivery(context.Background(), "s", "%1", oldToken, "delivered"); err == nil {
+		t.Fatal("an old recovery command changed a replacement task with the same pane/stage/turn")
+	}
+	loaded, err := store.Load("s")
+	if err != nil || loaded.Dispatches[0].Status != "sending" || loaded.Dispatches[0].Resolution != "" {
+		t.Fatalf("stale recovery changed state: %+v %v", loaded, err)
+	}
+}

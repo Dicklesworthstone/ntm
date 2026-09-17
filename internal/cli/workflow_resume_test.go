@@ -320,3 +320,54 @@ func TestWorkflowRunLeaseExcludesASecondRunner(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestWorkflowReconciledDeliveryResumesWithoutRestartingPriorStages(t *testing.T) {
+	for _, outcome := range []string{"delivered", "not-sent"} {
+		t.Run(outcome, func(t *testing.T) {
+			opts := resumeWorkflowOptions(t)
+			var sent []string
+			first := mustResumeWorkflowRunner(t, resumeWorkflowTemplate(), resumeWorkflowAgents(), opts, resumeWorkflowPorts(&sent))
+			if _, err := first.Run(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			store := &workflow.StateStore{Dir: opts.StateDir}
+			state := mustLoadWorkflowCheckpoint(t, opts)
+			state.Dispatches[0].Status = "sending" // The receipt was lost.
+			if err := store.Save(state); err != nil {
+				t.Fatal(err)
+			}
+			token, err := state.CheckpointToken()
+			if err != nil {
+				t.Fatal(err)
+			}
+			resolved, err := store.ReconcileDelivery(context.Background(), opts.Session, "%2", token, outcome)
+			if err != nil || resolved.Dispatches[0].Resolution != outcome || resolved.Dispatches[0].ResolvedAt == nil {
+				t.Fatalf("resolve = %+v, %v", resolved, err)
+			}
+			path := filepath.Join(opts.StateDir, opts.Session+".json")
+			before, _ := os.ReadFile(path)
+			if _, err := store.ReconcileDelivery(context.Background(), opts.Session, "%2", token, outcome); err != nil {
+				t.Fatal(err)
+			}
+			after, _ := os.ReadFile(path)
+			if string(before) != string(after) {
+				t.Fatal("idempotent resolution rewrote checkpoint")
+			}
+			opts.Resume, opts.Vars = true, nil
+			resumed := mustResumeWorkflowRunner(t, resumeWorkflowTemplate(), resumeWorkflowAgents(), opts, resumeWorkflowPorts(&sent))
+			result, err := resumed.Run(context.Background())
+			wantSends := 2
+			if outcome == "not-sent" {
+				wantSends++
+			}
+			if err != nil || !result.Completed || len(sent) != wantSends || !reflect.DeepEqual(result.Stages, []string{"review", "done"}) {
+				t.Fatalf("resume after %s: %+v %v sends=%d", outcome, result, err, len(sent))
+			}
+			for _, prompt := range sent[2:] {
+				if !strings.HasPrefix(prompt, "%2:") {
+					t.Fatal("recovery replayed a prior stage")
+				}
+			}
+		})
+	}
+}

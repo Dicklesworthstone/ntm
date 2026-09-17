@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -44,10 +45,13 @@ type WorkflowState struct {
 // a crash; delivered proves the dispatch port returned success. The sending
 // record is persisted BEFORE calling that port, and delivered afterward.
 type StageDispatch struct {
-	Pane   string `json:"pane"`
-	Role   string `json:"role"`
-	Turn   int    `json:"turn"`
-	Status string `json:"status"`
+	Pane            string     `json:"pane"`
+	Role            string     `json:"role"`
+	Turn            int        `json:"turn"`
+	Status          string     `json:"status"`
+	Resolution      string     `json:"resolution,omitempty"`
+	ResolvedAt      *time.Time `json:"resolved_at,omitempty"`
+	ResolutionToken string     `json:"resolution_token,omitempty"`
 }
 type StageRecord struct {
 	Stage       string    `json:"stage"`
@@ -398,6 +402,93 @@ func (s *StateStore) Acquire(ctx context.Context, session string) (func(), error
 	}
 	return unlock, nil
 }
+
+// CheckpointToken fingerprints the complete checkpoint, including task
+// variables and pane lifetimes, without exposing those values in status.
+func (s *WorkflowState) CheckpointToken() (string, error) {
+	if s == nil {
+		return "", errors.New("workflow checkpoint is required")
+	}
+	data, err := json.Marshal(s)
+	if err != nil {
+		return "", fmt.Errorf("fingerprint workflow checkpoint: %w", err)
+	}
+	return fmt.Sprintf("%x", sha256.Sum256(data)), nil
+}
+
+// ReconcileDelivery records an operator's verified outcome for an interrupted
+// send. It never types a prompt. The token from workflow status guards the
+// entire checkpoint, not just a stage/turn that a fresh run could reuse.
+// Only sending may change. Repeating the same resolution is a no-op.
+func (s *StateStore) ReconcileDelivery(ctx context.Context, session, pane, token, outcome string) (*WorkflowState, error) {
+	if strings.TrimSpace(pane) == "" || token == "" {
+		return nil, errors.New("delivery recovery requires a pane and checkpoint token from workflow status")
+	}
+	status := ""
+	switch outcome {
+	case "delivered":
+		status = "delivered"
+	case "not-sent":
+		status = "pending"
+	default:
+		return nil, errors.New("delivery outcome must be delivered or not-sent, based on independent verification")
+	}
+	unlock, err := s.Acquire(ctx, session)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+	state, err := s.Load(session)
+	if err != nil {
+		return nil, err
+	}
+	if state == nil || state.ResumeVersion != 1 || state.Completed {
+		return nil, errors.New("no unfinished execution checkpoint supports delivery recovery")
+	}
+	index := -1
+	for i, delivery := range state.Dispatches {
+		if delivery.Pane != pane {
+			continue
+		}
+		if index >= 0 {
+			return nil, errors.New("checkpoint contains duplicate pane deliveries")
+		}
+		index = i
+	}
+	if index < 0 {
+		return nil, fmt.Errorf("pane %s has no delivery in the current stage", pane)
+	}
+	delivery := &state.Dispatches[index]
+	if delivery.Turn <= 0 || delivery.Turn > state.Turn || delivery.Role == "" || state.Agents[pane] != delivery.Role {
+		return nil, errors.New("workflow delivery identity changed; refresh workflow status before recovery")
+	}
+	if delivery.Status == status && delivery.Resolution == outcome && delivery.ResolutionToken == token {
+		return state, nil // Preserve the original timestamp and file bytes.
+	}
+	currentToken, err := state.CheckpointToken()
+	if err != nil {
+		return nil, err
+	}
+	if currentToken != token {
+		return nil, errors.New("workflow checkpoint changed; refresh workflow status before recovery")
+	}
+	if delivery.Status != "sending" {
+		return nil, fmt.Errorf("pane %s turn %d is %s, not an uncertain send; refusing to change confirmed work", pane, delivery.Turn, delivery.Status)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC()
+	delivery.Status = status
+	delivery.Resolution = outcome
+	delivery.ResolvedAt = &now
+	delivery.ResolutionToken = token
+	if err := s.Save(state); err != nil {
+		return nil, err
+	}
+	return state, nil
+}
+
 func (s *StateStore) Save(state *WorkflowState) error {
 	if state == nil {
 		return errors.New("workflow state is required")
