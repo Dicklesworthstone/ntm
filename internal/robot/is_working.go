@@ -877,7 +877,8 @@ func selectIsWorkingPanes(session string, allPanes []tmux.Pane, requested []int)
 			}
 			continue
 		}
-		// Multiple panes: skip this window's lowest-index pane (control pane).
+		// Multiple panes: skip this window's lowest-index pane (control pane)
+		// unless ntm knows it runs an agent (see paneIsDefaultControlPane).
 		minIdx := wp[0].Index
 		for _, p := range wp[1:] {
 			if p.Index < minIdx {
@@ -885,12 +886,28 @@ func selectIsWorkingPanes(session string, allPanes []tmux.Pane, requested []int)
 			}
 		}
 		for _, p := range wp {
-			if p.Index != minIdx {
+			if p.Index != minIdx || !paneIsDefaultControlPane(p) {
 				out = append(out, build(p))
 			}
 		}
 	}
 	return out
+}
+
+// paneIsDefaultControlPane reports whether a lowest-index pane that the "all
+// agent panes" defaults would skip really is a control pane. A pane whose agent
+// type ntm knows — recorded by `ntm adopt` / spawn in @ntm_agent_type, carried
+// in an NTM title, or detected from its process — is an agent even at the
+// lowest index: adopted sessions and --no-user spawns have no user pane, and
+// with pane-base-index 1 their first agent is pane 1. Only user and
+// unclassifiable panes keep the historical control-pane skip.
+func paneIsDefaultControlPane(p tmux.Pane) bool {
+	switch paneAgentType(p) {
+	case "user", "unknown":
+		return true
+	default:
+		return false
+	}
 }
 
 // sessionSpansMultipleWindows reports whether the session's panes live in more

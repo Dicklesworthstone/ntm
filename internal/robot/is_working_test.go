@@ -3,7 +3,9 @@ package robot
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +13,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/agent"
 	statuspkg "github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
+	"github.com/Dicklesworthstone/ntm/tests/testutil"
 )
 
 func TestDefaultIsWorkingOptions(t *testing.T) {
@@ -780,6 +783,105 @@ func TestSelectIsWorkingPanes_SingleWindowDefaultSkipsControlPane(t *testing.T) 
 		if gotTargets[i] != w {
 			t.Fatalf("target[%d] = %q, want %q (all: %v)", i, gotTargets[i], w, gotTargets)
 		}
+	}
+}
+
+// adoptedOmpSwarmSession mirrors the live adopted frankengraphdb swarm: one
+// window, pane-base-index 1, no user pane, every pane recorded as omp by
+// `ntm adopt --omp=1-8` (@ntm_agent_type), one of them showing a title omp set
+// for itself.
+func adoptedOmpSwarmSession() []tmux.Pane {
+	panes := make([]tmux.Pane, 0, 8)
+	for i := 1; i <= 8; i++ {
+		title := fmt.Sprintf("frankengraphdb__omp_%d", i)
+		if i == 4 {
+			title = "π ⠙ Bulk Ingestion API Implementation Task"
+		}
+		panes = append(panes, tmux.Pane{ID: fmt.Sprintf("%%%d", i+2), WindowIndex: 1, Index: i, Title: title, Command: "omp", Type: tmux.AgentOmp})
+	}
+	return panes
+}
+
+// TestSelectIsWorkingPanes_AdoptedSessionWithoutUserPaneKeepsPaneOne is the
+// regression for the live report: --robot-is-working (and every surface built
+// on it: --robot-agent-health, --robot-smart-restart) silently dropped pane 1
+// of an adopted all-agent session because the lowest-index pane was assumed to
+// be the control pane.
+func TestSelectIsWorkingPanes_AdoptedSessionWithoutUserPaneKeepsPaneOne(t *testing.T) {
+	sel := selectIsWorkingPanes("frankengraphdb", adoptedOmpSwarmSession(), nil)
+	targets := selectedTargets(sel)
+	if len(sel) != 8 || targets[0] != "frankengraphdb:1.1" {
+		t.Fatalf("adopted all-agent session selected %v, want all 8 panes including 1.1", targets)
+	}
+
+	// A real user pane at the lowest index is still skipped, recorded or not.
+	withUser := append([]tmux.Pane{{ID: "%2", WindowIndex: 1, Index: 1, Title: "frankengraphdb__user", Command: "zsh", Type: tmux.AgentUser}},
+		adoptedOmpSwarmSession()...)
+	for i := 1; i < len(withUser); i++ {
+		withUser[i].Index++
+	}
+	if sel := selectIsWorkingPanes("frankengraphdb", withUser, nil); len(sel) != 8 || selectedTargets(sel)[0] != "frankengraphdb:1.2" {
+		t.Fatalf("user-pane session selected %v, want the 8 agents without pane 1", selectedTargets(sel))
+	}
+
+	if got := defaultMonitorPaneIndices(adoptedOmpSwarmSession()); len(got) != 8 || got[0] != 1 {
+		t.Fatalf("--robot-monitor default panes = %v, want 1..8", got)
+	}
+}
+
+// TestGetIsWorking_LiveAdoptedSessionIncludesPaneOne drives the real tmux path
+// (list-panes → @ntm_agent_type → default selection) on a pane-base-index 1
+// session whose panes were all recorded as agents, with no user pane.
+func TestGetIsWorking_LiveAdoptedSessionIncludesPaneOne(t *testing.T) {
+	testutil.RequireTmuxThrottled(t)
+	session := fmt.Sprintf("ntm-adopted-no-user-%d", time.Now().UnixNano())
+	if err := tmux.CreateSession(session, ""); err != nil {
+		t.Fatalf("create tmux session: %v", err)
+	}
+	defer tmux.KillSession(session)
+	if _, err := tmux.DefaultClient.Run("set-option", "-t", session, "pane-base-index", "1"); err != nil {
+		t.Fatalf("set pane-base-index: %v", err)
+	}
+	if _, err := tmux.DefaultClient.Run("respawn-pane", "-k", "-t", tmux.SessionPaneTarget(session)); err != nil {
+		t.Fatalf("respawn first pane under pane-base-index 1: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := tmux.DefaultClient.Run("split-window", "-d", "-t", session); err != nil {
+			t.Fatalf("split: %v", err)
+		}
+	}
+	panes, err := tmux.GetPanes(session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, pane := range panes {
+		if err := tmux.DefaultClient.SetPaneAgentType(pane.ID, tmux.AgentOmp); err != nil {
+			t.Fatalf("record omp on %s: %v", pane.ID, err)
+		}
+	}
+	panes, err = tmux.GetPanes(session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	minIdx := panes[0].Index
+	for _, pane := range panes {
+		if pane.Type != tmux.AgentOmp {
+			t.Fatalf("pane %s type = %q, want recorded omp", pane.ID, pane.Type)
+		}
+		if pane.Index < minIdx {
+			minIdx = pane.Index
+		}
+	}
+
+	out, err := GetIsWorking(t.Context(), IsWorkingOptions{Session: session, LinesCaptured: 20})
+	if err != nil || !out.Success {
+		t.Fatalf("GetIsWorking = (%+v, %v)", out, err)
+	}
+	if out.Summary.TotalPanes != len(panes) {
+		t.Fatalf("total_panes = %d (requested %v), want all %d recorded agent panes", out.Summary.TotalPanes, out.Query.PanesRequested, len(panes))
+	}
+	if _, ok := out.Panes[strconv.Itoa(minIdx)]; !ok {
+		t.Fatalf("lowest-index pane %d missing from %v", minIdx, out.Query.PanesRequested)
 	}
 }
 

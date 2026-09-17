@@ -170,7 +170,8 @@ func (m *Monitor) getAgentPanes() ([]tmux.Pane, error) {
 		return agentPanes, nil
 	}
 	for _, p := range allPanes {
-		if p.Index != controlPane { // Skip control pane (first pane)
+		// Skip the control pane (first pane) unless it is a known agent pane.
+		if p.Index != controlPane || !paneIsDefaultControlPane(p) {
 			agentPanes = append(agentPanes, p)
 		}
 	}
@@ -196,9 +197,9 @@ func defaultMonitorPaneIndices(panes []tmux.Pane) []int {
 		return nil
 	}
 
-	indices := make([]int, 0, len(panes)-1)
+	indices := make([]int, 0, len(panes))
 	for _, p := range panes {
-		if p.Index != controlPane {
+		if p.Index != controlPane || !paneIsDefaultControlPane(p) {
 			indices = append(indices, p.Index)
 		}
 	}
