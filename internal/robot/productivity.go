@@ -4,9 +4,7 @@ package robot
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -86,8 +84,11 @@ type productivityDependencies struct {
 	panePath      func(context.Context, string) string
 	processes     func(context.Context) ([]productivityProcess, error)
 	readyBeads    func(context.Context, string) (int, error)
-	progress      func(PaneAddr, string, time.Duration, bool, time.Time) (*SemanticProgress, bool)
-	now           func() time.Time
+	// progress is the legacy test/embedding override; production uses the
+	// context-aware collector so every pane shares the observation budget.
+	progress        func(PaneAddr, string, time.Duration, bool, time.Time) (*SemanticProgress, bool)
+	progressContext func(context.Context, PaneAddr, string, time.Duration, bool, time.Time) (*SemanticProgress, bool)
+	now             func() time.Time
 }
 
 type productivityProcess struct {
@@ -100,7 +101,13 @@ type productivityProcess struct {
 // still producing work. It never infers convergence from unavailable git,
 // Beads, tmux, or process data; those cases return "unknown".
 func GetProductivity(opts ProductivityOptions) (*ProductivityOutput, error) {
-	return getProductivity(opts, defaultProductivityDependencies())
+	return GetProductivityContext(context.Background(), opts)
+}
+
+// GetProductivityContext collects evidence with caller cancellation. Metadata
+// lookups retain their existing tmux bounds; attribution reads share one budget.
+func GetProductivityContext(ctx context.Context, opts ProductivityOptions) (*ProductivityOutput, error) {
+	return getProductivityWithContext(ctx, opts, defaultProductivityDependencies())
 }
 
 // PrintProductivity executes the productivity observation and emits the
@@ -121,17 +128,27 @@ func PrintProductivity(opts ProductivityOptions) int {
 
 func defaultProductivityDependencies() productivityDependencies {
 	return productivityDependencies{
-		sessionExists: tmux.SessionExists,
-		getPanes:      tmux.GetPanes,
-		panePath:      paneCurrentPathForTarget,
-		processes:     liveBuildProcesses,
-		readyBeads:    readyBeadCount,
-		progress:      paneSemanticProgressWithAvailability,
-		now:           time.Now,
+		sessionExists:   tmux.SessionExists,
+		getPanes:        tmux.GetPanes,
+		panePath:        paneCurrentPathForTarget,
+		processes:       liveBuildProcesses,
+		readyBeads:      readyBeadCount,
+		progressContext: paneSemanticProgressWithContext,
+		now:             time.Now,
 	}
 }
 
 func getProductivity(opts ProductivityOptions, deps productivityDependencies) (*ProductivityOutput, error) {
+	return getProductivityWithContext(context.Background(), opts, deps)
+}
+
+func getProductivityWithContext(parent context.Context, opts ProductivityOptions, deps productivityDependencies) (*ProductivityOutput, error) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	if err := parent.Err(); err != nil {
+		return nil, err
+	}
 	window := opts.Window
 	if window <= 0 {
 		window = defaultProductivityWindow
@@ -161,7 +178,7 @@ func getProductivity(opts ProductivityOptions, deps productivityDependencies) (*
 		return output, nil
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), productivityReadTimeout)
+	ctx, cancel := context.WithTimeout(parent, productivityReadTimeout)
 	defer cancel()
 	processes, processErr := deps.processes(ctx)
 	readyCount, beadsErr := deps.readyBeads(ctx, paneProjectDir(opts.Session, panes, deps.panePath, ctx))
@@ -180,7 +197,14 @@ func getProductivity(opts ProductivityOptions, deps productivityDependencies) (*
 		}
 		agentPaneSeen = true
 		path := deps.panePath(ctx, pane.ID)
-		progress, progressAvailable := deps.progress(PaneAddr{Session: opts.Session, Window: pane.WindowIndex, Pane: pane.Index}, path, window, false, now)
+		addr := PaneAddr{Session: opts.Session, Window: pane.WindowIndex, Pane: pane.Index}
+		var progress *SemanticProgress
+		var progressAvailable bool
+		if deps.progress != nil {
+			progress, progressAvailable = deps.progress(addr, path, window, false, now)
+		} else if deps.progressContext != nil {
+			progress, progressAvailable = deps.progressContext(ctx, addr, path, window, false, now)
+		}
 		attributionComplete = attributionComplete && progressAvailable
 		paneBuilds := matchingBuildProcesses(processes, path)
 		for _, build := range paneBuilds {
@@ -199,7 +223,7 @@ func getProductivity(opts ProductivityOptions, deps productivityDependencies) (*
 	}
 	sort.Slice(output.BuildProcesses, func(i, j int) bool { return output.BuildProcesses[i].PID < output.BuildProcesses[j].PID })
 
-	output.EvidenceComplete = agentPaneSeen && attributionComplete && processErr == nil && beadsErr == nil
+	output.EvidenceComplete = agentPaneSeen && attributionComplete && processErr == nil && beadsErr == nil && ctx.Err() == nil
 	output.Decision, output.DecisionReason = evaluateProductivity(output)
 	return output, nil
 }
@@ -330,15 +354,9 @@ func readyBeadCount(ctx context.Context, dir string) (int, error) {
 	if strings.TrimSpace(dir) == "" {
 		return 0, fmt.Errorf("no pane working directory")
 	}
-	command := exec.CommandContext(ctx, "br", "ready", "--json")
-	command.Dir = dir
-	raw, err := command.Output()
+	raw, err := semanticCommandOutput(ctx, dir, "br", "ready", "--json")
 	if err != nil {
 		return 0, err
 	}
-	var issues []json.RawMessage
-	if err := json.Unmarshal(raw, &issues); err != nil {
-		return 0, err
-	}
-	return len(issues), nil
+	return decodeReadyBeadCount(raw)
 }

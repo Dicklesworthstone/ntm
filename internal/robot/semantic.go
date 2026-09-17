@@ -32,7 +32,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os/exec"
 	"strings"
 	"time"
 )
@@ -166,17 +165,32 @@ func PaneSemanticProgress(addr PaneAddr, repoDir string, window time.Duration, v
 // deliberately keeps its long-standing best-effort behavior, while callers
 // that make a stop decision can fail closed on unavailable attribution.
 func paneSemanticProgressWithAvailability(addr PaneAddr, repoDir string, window time.Duration, velocityPositive bool, now time.Time) (*SemanticProgress, bool) {
+	return paneSemanticProgressWithContext(context.Background(), addr, repoDir, window, velocityPositive, now)
+}
+
+// paneSemanticProgressWithContext shares one deadline across the independent
+// git and bead reads, and inherits the enclosing productivity poll's budget.
+func paneSemanticProgressWithContext(ctx context.Context, addr PaneAddr, repoDir string, window time.Duration, velocityPositive bool, now time.Time) (*SemanticProgress, bool) {
 	if window <= 0 {
 		window = defaultSemanticWindow
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(ctx, semanticReadTimeout)
+	defer cancel()
 	token := PaneWorkToken(addr.Session, addr.Window, addr.Pane)
 	label := PaneBeadLabel(addr.Session, addr.Window, addr.Pane)
 
-	git := gatherGitTokenActivity(repoDir, token, window, now)
-	claims := gatherClaimActivity(repoDir, label, window, now)
+	gitResult := make(chan gitTokenActivity, 1)
+	go func() {
+		gitResult <- gatherGitTokenActivityWithContext(ctx, repoDir, token, window, now)
+	}()
+	claims := gatherClaimActivityWithContext(ctx, repoDir, label, window, now)
+	git := <-gitResult
 
 	sp := buildSemanticProgress(token, window, velocityPositive, git, claims, now)
-	return &sp, git.available && claims.available
+	return &sp, sp.EvidenceComplete
 }
 
 // buildSemanticProgress is the PURE core (no I/O). Keeping it pure makes the
@@ -239,25 +253,20 @@ func buildSemanticProgress(token string, window time.Duration, velocityPositive 
 // genuinely-working pane could read as source="token" + stale and trip a false
 // wedge tell, the exact failure the design forbids.
 func gatherGitTokenActivity(repoDir, token string, window time.Duration, now time.Time) gitTokenActivity {
-	var out gitTokenActivity
-	if strings.TrimSpace(repoDir) == "" {
-		return out
+	return gatherGitTokenActivityWithContext(context.Background(), repoDir, token, window, now)
+}
+
+func gatherGitTokenActivityWithContext(ctx context.Context, repoDir, token string, window time.Duration, now time.Time) gitTokenActivity {
+	if strings.TrimSpace(repoDir) == "" || strings.TrimSpace(token) == "" {
+		return gitTokenActivity{}
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), semanticReadTimeout)
-	defer cancel()
-
-	// -F: treat the token as a literal (it contains '.', '/'), not a regex.
-	// --all: attribute the pane's commits regardless of which branch they land
-	// on. -n caps the scan. -z NUL-terminates each commit so multi-line bodies
-	// parse unambiguously; %cI is the strict-ISO committer date and %B the raw
-	// body, joined by a unit separator (%x1f) that cannot occur in the date.
-	cmd := exec.CommandContext(ctx, "git", "-C", repoDir,
+	// Literal prefilter plus exact-token confirmation, across all branches.
+	// NUL-separated records retain multiline commit bodies unambiguously.
+	raw, err := semanticCommandOutput(ctx, "", "git", "-C", repoDir,
 		"log", "--all", "-F", "--grep="+token,
 		fmt.Sprintf("-n%d", semanticGitLogCap), "-z", "--format=%cI%x1f%B")
-	raw, err := cmd.Output()
 	if err != nil {
-		return out
+		return gitTokenActivity{}
 	}
 	return parseGitTokenActivity(raw, token, window, now)
 }
@@ -291,19 +300,16 @@ func commitBodyHasTokenLine(body, token string) bool {
 // confidence or suppresses the advisory wedge tell. Any error (br missing, no
 // .beads workspace, timeout) degrades to zero — never a wedge.
 func gatherClaimActivity(dir, label string, window time.Duration, now time.Time) claimActivity {
-	var out claimActivity
+	return gatherClaimActivityWithContext(context.Background(), dir, label, window, now)
+}
+
+func gatherClaimActivityWithContext(ctx context.Context, dir, label string, window time.Duration, now time.Time) claimActivity {
 	if strings.TrimSpace(dir) == "" || strings.TrimSpace(label) == "" {
-		return out
+		return claimActivity{}
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), semanticReadTimeout)
-	defer cancel()
-
-	cmd := exec.CommandContext(ctx, "br", "list", "--label", label, "--include-closed", "--json")
-	cmd.Dir = dir
-	raw, err := cmd.Output()
+	raw, err := semanticCommandOutput(ctx, dir, "br", "list", "--label", label, "--include-closed", "--json")
 	if err != nil {
-		return out
+		return claimActivity{}
 	}
 	return countClaimsInWindow(raw, window, now)
 }
