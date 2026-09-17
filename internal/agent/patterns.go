@@ -637,10 +637,10 @@ var (
 	ompHeaderPattern = regexp.MustCompile(`(?m)^\s*(?:╭─+|\+-+)\s+omp\s+v\d+\.\d+`)
 
 	// ompComposerTopRe matches the composer's top border: exactly two rule
-	// glyphs after the corner, a space, then the status line. Tool-output
+	// glyphs after the corner, whitespace, then the status line. Tool-output
 	// boxes ("╭────╮"), the banner ("╭─── omp v…") and the model selector
 	// ("╭─ Models ─") never have that shape.
-	ompComposerTopRe = regexp.MustCompile(`^\s*(?:╭──|\+--) (\S.*)$`)
+	ompComposerTopRe = regexp.MustCompile(`^\s*(?:╭──|\+--)\s+(\S.*)$`)
 	// ompComposerBottomRe matches the composer's bottom border, which is also
 	// the draft's last input row.
 	ompComposerBottomRe = regexp.MustCompile(`^\s*(?:╰─|\+-)(.*?)(?:─╯|-\+)\s*$`)

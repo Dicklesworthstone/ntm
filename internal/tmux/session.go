@@ -50,6 +50,7 @@ const (
 	AgentWindsurf    = agent.AgentTypeWindsurf
 	AgentAider       = agent.AgentTypeAider
 	AgentOpencode    = agent.AgentTypeOpencode
+	AgentOmp         = agent.AgentTypeOmp
 	AgentOllama      = agent.AgentTypeOllama
 	AgentUser        = agent.AgentTypeUser
 	AgentUnknown     = agent.AgentTypeUnknown
@@ -512,6 +513,14 @@ func detectAgentFromCommand(command string) AgentType {
 		return AgentAntigravity
 	}
 
+	// Oh My Pi ships as a single compiled `omp` binary, so tmux reports it as
+	// the pane's current command. "omp" is a short token that also shows up in
+	// unrelated names (libomp, OpenMP flags, `rg omp`), so like grok and agy it
+	// only classifies as the command's exact executable basename.
+	if commandExecutableIs(cmd, "omp") {
+		return AgentOmp
+	}
+
 	// Helper to check if a command matches an agent
 	isAgent := func(name string) bool {
 		return cmd == name ||
@@ -603,12 +612,17 @@ func detectAgentFromArgv(argv []string) AgentType {
 		return AgentAntigravity
 	}
 
+	// omp: executable-only, same rule as grok/agy.
+	if commandExecutableIs(argv[0], "omp") {
+		return AgentOmp
+	}
+
 	joined := strings.Join(argv, " ")
-	if t := detectAgentFromCommand(joined); t != AgentUser && t != AgentGrok && t != AgentAntigravity {
+	if t := detectAgentFromCommand(joined); t != AgentUser && t != AgentGrok && t != AgentAntigravity && t != AgentOmp {
 		return t
 	}
 	for _, arg := range argv {
-		if t := detectAgentFromCommand(arg); t != AgentUser && t != AgentGrok && t != AgentAntigravity {
+		if t := detectAgentFromCommand(arg); t != AgentUser && t != AgentGrok && t != AgentAntigravity && t != AgentOmp {
 			return t
 		}
 	}

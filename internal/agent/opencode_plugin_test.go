@@ -106,72 +106,111 @@ func TestRegisterPlugin(t *testing.T) {
 		t.Fatal("a rejected registration must not leave the type registered")
 	}
 
-	if err := RegisterPlugin(" OMP ", []string{`^\s*╰─.*─╯\s*$`}, []string{`⟨esc⟩`}, []string{`(?i)^error:`}); err != nil {
+	if err := RegisterPlugin(" PIX ", []string{`^\s*┃ pix ready ┃\s*$`}, []string{`\[stop\]`}, []string{`(?i)^error:`}); err != nil {
 		t.Fatal(err)
 	}
-	if !IsPluginType("omp") || !IsPluginType("OMP") {
+	if !IsPluginType("pix") || !IsPluginType("PIX") {
 		t.Fatal("plugin type lookup must be case-insensitive and trimmed")
 	}
-	pp, ok := LookupPluginPatterns("omp")
+	pp, ok := LookupPluginPatterns("pix")
 	if !ok || len(pp.Idle) != 1 || len(pp.Working) != 1 || len(pp.Error) != 1 || !pp.Declared() {
 		t.Fatalf("patterns = %+v", pp)
 	}
 	// Re-registration replaces.
-	if err := RegisterPlugin("omp", nil, nil, nil); err != nil {
+	if err := RegisterPlugin("pix", nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	if pp, _ := LookupPluginPatterns("omp"); pp.Declared() {
+	if pp, _ := LookupPluginPatterns("pix"); pp.Declared() {
 		t.Fatal("re-registration must replace the previous patterns")
 	}
 }
 
-// Chrome captured live from omp v18 in tmux: idle shows the composer box;
-// a turn in flight adds "⠙ Working… ⟨esc⟩" above it.
+// Chrome of a fictional plugin agent ("pix"): idle shows a ready bar; a turn
+// in flight adds a "[stop]" hint above it. The generic heuristics know
+// neither line, so any verdict below comes from the declared patterns.
+// (omp, whose chrome these tests used to borrow, is a built-in type now.)
 const (
-	ompIdle = "Connected to MCP servers: node_repl.\n" +
-		"╭──  Ox Alpha ·  max  …/proj ─3%──1M───╮\n" +
-		"╰─                                    ─╯\n"
-	ompWorking = "Reply with exactly the single word PONG and nothing else.\n" +
-		" ⠙ Working… ⟨esc⟩\n" +
-		"╭──  Ox Alpha ·  max  …/proj ─3%──1M───╮\n" +
-		"╰─                                    ─╯\n"
+	pixIdle = "Connected to MCP servers: node_repl.\n" +
+		"┃ pix ready ┃\n"
+	pixWorking = "Reply with exactly the single word PONG and nothing else.\n" +
+		" ⠙ thinking [stop]\n" +
+		"┃ pix ready ┃\n"
 )
 
 func TestParser_PluginPatternsDriveClassification(t *testing.T) {
 	resetPluginPatternsForTest()
 	t.Cleanup(resetPluginPatternsForTest)
-	if err := RegisterPlugin("omp", []string{`^\s*╰─.*─╯\s*$`}, []string{`⟨esc⟩`}, nil); err != nil {
+	if err := RegisterPlugin("pix", []string{`^\s*┃ pix ready ┃\s*$`}, []string{`\[stop\]`}, nil); err != nil {
 		t.Fatal(err)
 	}
 	p := NewParser()
 
-	idle, err := p.ParseWithHint(ompIdle, "omp")
+	idle, err := p.ParseWithHint(pixIdle, "pix")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !idle.IsIdle || idle.IsWorking {
-		t.Fatalf("omp idle composer: IsIdle=%v IsWorking=%v", idle.IsIdle, idle.IsWorking)
+		t.Fatalf("pix idle bar: IsIdle=%v IsWorking=%v", idle.IsIdle, idle.IsWorking)
 	}
-	working, err := p.ParseWithHint(ompWorking, "omp")
+	working, err := p.ParseWithHint(pixWorking, "pix")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if working.IsIdle || !working.IsWorking {
+		t.Fatalf("pix working: IsIdle=%v IsWorking=%v", working.IsIdle, working.IsWorking)
+	}
+	if !PluginActivelyWorking(pixWorking, "pix", 0) || PluginActivelyWorking(pixIdle, "pix", 0) {
+		t.Fatal("PluginActivelyWorking disagrees with the declared working pattern")
+	}
+
+	// Unregistered type: the same screens fall back to the generic union,
+	// which knows nothing about the pix bar — proving the plugin patterns
+	// are what produced the verdicts above.
+	resetPluginPatternsForTest()
+	fallback, err := p.ParseWithHint(pixIdle, "pix")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fallback.IsIdle {
+		t.Fatal("without registration the pix ready bar must not be recognised as idle")
+	}
+}
+
+// TestParser_OmpBuiltinClassifiesEarlierV18Chrome keeps the earlier omp v18
+// frames the plugin preset was verified against (captured live in tmux:
+// "⠙ Working… ⟨esc⟩" above a status-line composer without the timer) green
+// under the built-in omp arm, with no plugin registered.
+func TestParser_OmpBuiltinClassifiesEarlierV18Chrome(t *testing.T) {
+	resetPluginPatternsForTest()
+	t.Cleanup(resetPluginPatternsForTest)
+	const (
+		idleFrame = "Connected to MCP servers: node_repl.\n" +
+			"╭──  Ox Alpha ·  max  …/proj ─3%──1M───╮\n" +
+			"╰─                                    ─╯\n"
+		workingFrame = "Reply with exactly the single word PONG and nothing else.\n" +
+			" ⠙ Working… ⟨esc⟩\n" +
+			"╭──  Ox Alpha ·  max  …/proj ─3%──1M───╮\n" +
+			"╰─                                    ─╯\n"
+	)
+	p := NewParser()
+	idle, err := p.ParseWithHint(idleFrame, "omp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if idle.Type != AgentTypeOmp || !idle.IsIdle || idle.IsWorking {
+		t.Fatalf("omp idle composer: type=%q IsIdle=%v IsWorking=%v", idle.Type, idle.IsIdle, idle.IsWorking)
+	}
+	if idle.ContextRemaining == nil || *idle.ContextRemaining != 97 {
+		t.Fatalf("ContextRemaining = %v, want 97", idle.ContextRemaining)
+	}
+	working, err := p.ParseWithHint(workingFrame, "omp")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if working.IsIdle || !working.IsWorking {
 		t.Fatalf("omp working: IsIdle=%v IsWorking=%v", working.IsIdle, working.IsWorking)
 	}
-	if !PluginActivelyWorking(ompWorking, "omp", 0) || PluginActivelyWorking(ompIdle, "omp", 0) {
-		t.Fatal("PluginActivelyWorking disagrees with the declared working pattern")
-	}
-
-	// Unregistered type: the same screens fall back to the generic union,
-	// which knows nothing about the omp box — proving the plugin patterns
-	// are what produced the verdicts above.
-	resetPluginPatternsForTest()
-	fallback, err := p.ParseWithHint(ompIdle, "omp")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if fallback.IsIdle {
-		t.Fatal("without registration the omp composer must not be recognised as idle")
+	if _, window, ok := OmpContextUsage(idleFrame); !ok || window != 1000000 {
+		t.Fatalf("context window = %d (ok=%v), want 1M", window, ok)
 	}
 }
