@@ -65,7 +65,7 @@ NTM gives you a single local system for:
 NTM is a pure Go project, but the runtime experience is intentionally integration-heavy.
 
 - Required: `tmux`
-- Required for agent spawning: whichever CLIs you want to run, typically Claude Code, Codex, Antigravity CLI, or Grok Build (Gemini CLI is supported as legacy)
+- Required for agent spawning: whichever CLIs you want to run, typically Claude Code, Codex, Antigravity CLI, Oh My Pi (`omp`), or Grok Build (Gemini CLI is supported as legacy)
 - Optional but powerful: `br`, `bv`, Agent Mail, `cass`, `dcg`, `pt`
 - Sanity check everything with `ntm deps -v`
 
@@ -156,6 +156,62 @@ automated prompt delivery/assignment, interrupt-with-message, restart, and
 restore-time process relaunch are not yet claimed. Those operations fail closed
 before pane mutation; interact with an authenticated Grok pane directly. Robot
 `--spawn-wait` and `--spawn-assign-work` also fail closed for Grok panes.
+
+#### Oh My Pi (`omp`)
+
+NTM operates [Oh My Pi](https://omp.sh) as the built-in `omp` agent type (panes
+are named `session__omp_N`; `oh-my-pi` is accepted as an alias). Finish omp's
+own setup once before the first spawn, otherwise the first prompt lands in the
+setup wizard:
+
+```bash
+omp setup
+ntm deps -v                               # probes the omp binary
+ntm spawn swarm --omp=8                   # omp --auto-approve, omp picks its default model
+ntm spawn swarm --omp=2:MODEL             # adds --model MODEL (omp fuzzy-matches it)
+ntm spawn swarm --omp=2:MODEL:high        # adds --thinking high (also MODEL@high)
+ntm add swarm --omp=1
+ntm adopt swarm --omp=1,2,3               # adopt existing omp panes
+ntm --robot-spawn=swarm --spawn-omp=8 --spawn-wait
+ntm send swarm --omp "Run the test suite and report failures"
+```
+
+The launch command is `omp --auto-approve`, plus `--model`, `--thinking`, and
+`--append-system-prompt <file>` (personas) when requested. Override it with
+`[agents] omp = "..."` (a template; keep `{{.ReasoningEffort}}` if you want
+effort specs honoured, otherwise NTM rejects them rather than dropping them),
+set `[models] default_omp` or `[models.omp]` aliases, and `[prompts]
+omp_default`. Robot spawns admit at most `[spawn_pacing.agent_caps]
+omp_max_concurrent` (default 2) omp launches at a time.
+
+Everything NTM does to an omp pane is derived from omp's live TUI (v18.2.3,
+across its nerd, unicode and ascii symbol presets):
+
+- **Ready / working / idle.** omp keeps a bordered composer at the bottom of the
+  pane. A turn in flight shows a spinner and elapsed timer in the composer's top
+  border (`╭── ⠧ 1s`), an Esc-hint activity line above it (`⎋ Working…`), or a
+  queued `Steering · N` block; ` Subagents` and ` TODO` panels are working chrome
+  too. A quiet composer with nothing below it is idle.
+- **Delivery.** Enter submits. A message sent to a busy pane is queued by omp
+  as steering; delivery is confirmed when the payload leaves the composer. A
+  staged large paste (`#1` token) is reported by `--robot-dialogs` as paste
+  limbo and cleared with Ctrl+C.
+- **Interrupt and exit.** omp interrupts on **Escape** (Ctrl+C only clears the
+  draft, and a double Ctrl+C quits), so `ntm interrupt`, `--robot-interrupt`,
+  restart, and the REST interrupt send Escape to omp panes. Graceful exit is
+  Escape, Ctrl+C, then Ctrl+D.
+- **Context.** `--robot-context`, `--robot-snapshot`, `ntm status`, and the
+  coordinator's context-rotation trigger read omp's own context gauge from the
+  composer border (`7%` … `262K`), reported as `source: "status_bar"`, so the
+  reading stays per-pane even when many omp panes share one directory. `/compact`
+  and `/clear` are used for compaction.
+- **Sessions.** `ntm sessions save` binds each pane to its omp session (omp
+  holds its transcript under `~/.omp/agent/sessions/` open, so the binding is
+  exact per pane; profile, XDG and `PI_CODING_AGENT_*` stores are honoured), and
+  resume relaunches with `omp --auto-approve --resume <id>`.
+- **Errors.** Provider errors (`Dismissed when you send your next message.`),
+  `Error: No model selected.`, and rate-limit text classify as error or
+  rate-limited states.
 
 Use labels when you want multiple coordinated swarms on the same project while
 keeping a shared project directory:
@@ -625,29 +681,10 @@ idle/working/error classification for `status`, `--robot-tail`, and
 `--verify-boot` exactly like the built-in agents. NTM never modifies files in
 `agents/` — an existing preset you have customised is yours.
 
-A maintained, verified preset for **Oh My Pi (`omp`)** ships in
-[`examples/agents/omp.toml`](examples/agents/omp.toml). Setup:
-
-```bash
-# One-time: complete OMP's interactive setup BEFORE the first spawn,
-# otherwise the first prompt lands in the setup wizard.
-omp setup
-
-# Install the preset next to your NTM config, then verify it is visible.
-mkdir -p ~/.config/ntm/agents
-cp examples/agents/omp.toml ~/.config/ntm/agents/
-ntm plugins list
-ntm deps -v          # probes `omp (plugin)` on PATH
-
-# Exercise it.
-ntm spawn repro --omp=1 --verify-boot
-ntm --robot-tail=repro --fresh
-ntm send repro --omp "Reply exactly NTM_OMP_OK"
-```
-
-Model and thinking overrides render through the preset's command template
-(e.g. `--omp=1:MODEL`); omitting a default model in the preset deliberately
-lets OMP's own configuration choose.
+Oh My Pi is now a built-in agent type (see [Oh My Pi](#oh-my-pi-omp)), so the
+former `examples/agents/omp.toml` plugin preset is no longer needed. A leftover
+`~/.config/ntm/agents/omp.toml` is harmless: built-in flags and the built-in
+omp detectors take precedence over a plugin of the same name.
 
 ## Design Principles
 
