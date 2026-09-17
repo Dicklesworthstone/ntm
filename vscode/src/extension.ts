@@ -103,7 +103,7 @@ export function activate(context: vscode.ExtensionContext) {
             currentSession = chosenSession;
 
             const target = await vscode.window.showQuickPick(
-                ['Claude (--cc)', 'Codex (--cod)', 'Gemini (--gmi)', 'All (--all)'],
+                ['Claude (--cc)', 'Codex (--cod)', 'Gemini (--gmi)', 'Oh My Pi (--omp)', 'All (--all)'],
                 { placeHolder: 'Select Target Agents' }
             );
             if (!target) return;
@@ -113,6 +113,7 @@ export function activate(context: vscode.ExtensionContext) {
             else if (target.includes('--cc')) targets = ['cc'];
             else if (target.includes('--cod')) targets = ['cod'];
             else if (target.includes('--gmi')) targets = ['gmi'];
+            else if (target.includes('--omp')) targets = ['omp'];
 
             const instruction = await vscode.window.showInputBox({ prompt: 'Additional Instructions (optional)' });
             const fullPrompt = content + (instruction ? `\nInstructions: ${instruction}` : '');

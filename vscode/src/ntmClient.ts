@@ -146,6 +146,7 @@ export class NtmClient {
             if (targets.includes('cc')) args.push('--cc');
             if (targets.includes('cod')) args.push('--cod');
             if (targets.includes('gmi')) args.push('--gmi');
+            if (targets.includes('omp')) args.push('--omp');
         }
 
         // Use -- to separate flags from positional arguments (the prompt)

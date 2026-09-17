@@ -77,6 +77,7 @@ const AGENT_TYPE_LABELS: Record<string, string> = {
   gmi: "Gemini",
   agy: "Antigravity",
   grok: "Grok",
+  omp: "Oh My Pi",
 };
 
 const STATUS_CLASSES: Record<string, string> = {
