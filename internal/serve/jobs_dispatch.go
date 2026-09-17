@@ -63,6 +63,17 @@ func (s *Server) dispatchJob(jobID string, req CreateJobRequest) {
 	s.jobStore.SetCancel(jobID, cancel)
 	defer s.jobStore.ClearCancel(jobID)
 
+	// DELETE can mark the job cancelled before SetCancel registers its handle.
+	// Publish the handle first, then check the row: an earlier cancellation is
+	// observed here and a later one reaches the registered context.
+	job := s.jobStore.Get(jobID)
+	if job == nil || job.Status == JobStatusCancelled || job.Status == JobStatusCompleted || job.Status == JobStatusFailed {
+		return
+	}
+	if err := ctx.Err(); err != nil {
+		s.jobStore.Update(jobID, JobStatusCancelled, 0, nil, err.Error())
+		return
+	}
 	s.jobStore.Update(jobID, JobStatusRunning, 0, nil, "")
 
 	var (
@@ -82,8 +93,17 @@ func (s *Server) dispatchJob(jobID string, req CreateJobRequest) {
 		err = fmt.Errorf("job type %q accepted but has no dispatcher", req.Type)
 	}
 
+	// Some operations can return a useful partial result on failure. Retain
+	// its run/session identity so the caller can inspect effects before retrying.
+	if ctx.Err() != nil {
+		err = errors.Join(err, ctx.Err())
+	}
 	if err != nil {
-		s.jobStore.Update(jobID, JobStatusFailed, 0, nil, err.Error())
+		status := JobStatusFailed
+		if errors.Is(err, context.Canceled) {
+			status = JobStatusCancelled
+		}
+		s.jobStore.Update(jobID, status, 0, result, err.Error())
 		return
 	}
 	s.jobStore.Update(jobID, JobStatusCompleted, 100, result, "")
@@ -105,6 +125,9 @@ func decodeJobParams(params map[string]interface{}, into interface{}) error {
 // jobPipelineRun executes a workflow through the same path as
 // POST /api/v1/pipelines/run.
 func (s *Server) jobPipelineRun(ctx context.Context, params map[string]interface{}) (map[string]interface{}, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	var req PipelineRunRequest
 	if err := decodeJobParams(params, &req); err != nil {
 		return nil, err
@@ -119,25 +142,51 @@ func (s *Server) jobPipelineRun(ctx context.Context, params map[string]interface
 		return nil, fmt.Errorf("invalid session name: %w", err)
 	}
 
-	result := s.runPipelineWithResult(ctx, pipeline.PipelineRunOptions{
+	return executePipelineJob(ctx, pipeline.PipelineRunOptions{
 		WorkflowFile: req.WorkflowFile,
 		Session:      req.Session,
 		ProjectDir:   s.projectDirSnapshot(),
 		Variables:    req.Variables,
 		DryRun:       req.DryRun,
 		Background:   req.Background,
-	})
-	if !result.Success {
-		return nil, fmt.Errorf("pipeline run failed [%s]: %s", result.ErrorCode, result.Error)
+	}, s.runPipelineWithResult)
+}
+
+// executePipelineJob owns the entire pipeline lifetime, not just its launch.
+// The jobs endpoint is already asynchronous: detaching a second time would
+// discard its timeout/cancel handle and report success before the work ends.
+func executePipelineJob(ctx context.Context, opts pipeline.PipelineRunOptions, run func(context.Context, pipeline.PipelineRunOptions) pipeline.PipelineRunOutput) (map[string]interface{}, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
-	return map[string]interface{}{
-		"run_id":      result.RunID,
-		"workflow_id": result.WorkflowID,
-		"session":     result.Session,
-		"status":      result.Status,
-		"dry_run":     result.DryRun,
-		"progress":    result.Progress,
-	}, nil
+	opts.Background = false
+	out := run(ctx, opts)
+	result := map[string]interface{}{
+		"run_id": out.RunID, "workflow_id": out.WorkflowID, "session": out.Session,
+		"status": out.Status, "dry_run": out.DryRun, "progress": out.Progress,
+	}
+	if out.Session == "" {
+		result["session"] = opts.Session
+	}
+	if len(out.Warnings) > 0 {
+		result["warnings"] = out.Warnings
+	}
+	if out.SideEffects != nil {
+		result["side_effect_manifest"] = out.SideEffects
+	}
+	if err := ctx.Err(); err != nil {
+		return result, err
+	}
+	if !out.Success {
+		return result, fmt.Errorf("pipeline run failed [%s]: %s", out.ErrorCode, out.Error)
+	}
+	if opts.DryRun && out.DryRun && out.Status == "validated" {
+		return result, nil
+	}
+	if !opts.DryRun && !out.DryRun && out.Status == "completed" {
+		return result, nil
+	}
+	return result, fmt.Errorf("pipeline run returned status %q instead of a terminal successful outcome", out.Status)
 }
 
 // jobSwarmSpawnParams mirrors AgentSpawnRequest plus the target session.
@@ -149,6 +198,9 @@ type jobSwarmSpawnParams struct {
 // jobSwarmSpawn spawns agents through the same seam as
 // POST /api/v1/sessions/{sessionId}/agents/spawn.
 func (s *Server) jobSwarmSpawn(ctx context.Context, params map[string]interface{}) (map[string]interface{}, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	var req jobSwarmSpawnParams
 	if err := decodeJobParams(params, &req); err != nil {
 		return nil, err
