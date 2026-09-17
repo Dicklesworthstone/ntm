@@ -113,8 +113,8 @@ func TestBuildSemanticProgress_WedgeTellRequiresAllConditions(t *testing.T) {
 	// in window => advisory wedge fires.
 	wedge := buildSemanticProgress(
 		PaneWorkToken("s", 0, 1), window, true,
-		gitTokenActivity{commitsInWindow: 0, anyTokenCommit: true, lastCommitAt: &stale},
-		claimActivity{}, now,
+		gitTokenActivity{commitsInWindow: 0, anyTokenCommit: true, lastCommitAt: &stale, available: true},
+		claimActivity{available: true}, now,
 	)
 	if wedge.SuspectedWedge == "" {
 		t.Fatalf("expected suspected_wedge to fire (stamped + stale + velocity + no progress)")
@@ -123,8 +123,8 @@ func TestBuildSemanticProgress_WedgeTellRequiresAllConditions(t *testing.T) {
 	// Same, but velocity NEGATIVE => no wedge (defer to velocity signal).
 	noVel := buildSemanticProgress(
 		PaneWorkToken("s", 0, 1), window, false,
-		gitTokenActivity{commitsInWindow: 0, anyTokenCommit: true, lastCommitAt: &stale},
-		claimActivity{}, now,
+		gitTokenActivity{commitsInWindow: 0, anyTokenCommit: true, lastCommitAt: &stale, available: true},
+		claimActivity{available: true}, now,
 	)
 	if noVel.SuspectedWedge != "" {
 		t.Fatalf("velocity-negative pane must never be flagged wedge, got %q", noVel.SuspectedWedge)
@@ -133,8 +133,8 @@ func TestBuildSemanticProgress_WedgeTellRequiresAllConditions(t *testing.T) {
 	// Same, but a claim landed in the window => not a wedge (forward motion).
 	withClaim := buildSemanticProgress(
 		PaneWorkToken("s", 0, 1), window, true,
-		gitTokenActivity{commitsInWindow: 0, anyTokenCommit: true, lastCommitAt: &stale},
-		claimActivity{claimsInWindow: 1, anyLabeledBead: true}, now,
+		gitTokenActivity{commitsInWindow: 0, anyTokenCommit: true, lastCommitAt: &stale, available: true},
+		claimActivity{claimsInWindow: 1, anyLabeledBead: true, available: true}, now,
 	)
 	if withClaim.SuspectedWedge != "" {
 		t.Fatalf("a claim within the window means forward motion; must not be wedge, got %q", withClaim.SuspectedWedge)
@@ -147,6 +147,7 @@ func TestBuildSemanticProgress_WedgeTellRequiresAllConditions(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestSemanticNeverFlipsIsWorking(t *testing.T) {
+	installUnavailableSemanticBR(t)
 	dir := initTempRepo(t)
 	// One stale token commit -> a wedge scenario, the most "dangerous" case.
 	stale := time.Now().Add(-2 * time.Hour)
@@ -164,8 +165,11 @@ func TestSemanticNeverFlipsIsWorking(t *testing.T) {
 	if status.IsIdle {
 		t.Fatalf("semantic signal flipped IsIdle to true — guardrail violation")
 	}
-	if status.SemanticProgress == nil || status.SemanticProgress.SuspectedWedge == "" {
-		t.Fatalf("expected the wedge advisory to be present in this scenario")
+	if status.SemanticProgress == nil || status.SemanticProgress.Source != "token" {
+		t.Fatalf("expected the positive commit attribution to be preserved")
+	}
+	if status.SemanticProgress.EvidenceComplete || status.SemanticProgress.SuspectedWedge != "" {
+		t.Fatalf("unavailable bead evidence must not produce a wedge advisory")
 	}
 	if status.Recommendation != "" {
 		t.Fatalf("semantic signal must not set a recommendation on its own, got %q", status.Recommendation)

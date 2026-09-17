@@ -78,6 +78,9 @@ type SemanticProgress struct {
 	// WindowSeconds echoes the window used so a consumer can interpret the
 	// counts without guessing the default.
 	WindowSeconds int `json:"window_seconds"`
+	// EvidenceComplete distinguishes observed inactivity from unavailable or
+	// truncated reads. Positive counts remain useful even when it is false.
+	EvidenceComplete bool `json:"evidence_complete"`
 	// SuspectedWedge is an ADVISORY indicator string set only when there is
 	// sustained terminal velocity AND the pane was stamped AND no
 	// token-attributed forward motion landed within the window. It is purely
@@ -194,12 +197,13 @@ func buildSemanticProgress(token string, window time.Duration, velocityPositive 
 	}
 
 	sp := SemanticProgress{
-		Source:          source,
-		Token:           token,
-		CommitsInWindow: git.commitsInWindow,
-		ClaimsInWindow:  claims.claimsInWindow,
-		LastCommitAt:    lastCommitStr,
-		WindowSeconds:   int(window / time.Second),
+		Source:           source,
+		Token:            token,
+		CommitsInWindow:  git.commitsInWindow,
+		ClaimsInWindow:   claims.claimsInWindow,
+		LastCommitAt:     lastCommitStr,
+		WindowSeconds:    int(window / time.Second),
+		EvidenceComplete: git.available && claims.available,
 	}
 
 	// Advisory wedge tell — ADVISORY ONLY. Fires only when the pane is BOTH
@@ -208,7 +212,9 @@ func buildSemanticProgress(token string, window time.Duration, velocityPositive 
 	// window (no commits, no claims, and the last token commit is stale or
 	// absent). It sets an informational string and nothing else; is_working is
 	// untouched, and there is deliberately no kill/reassign recommendation.
-	if velocityPositive && source == "token" {
+	// Missing evidence is not evidence of missing work. In particular, a
+	// stale git commit plus a failed br read must never diagnose a wedge.
+	if velocityPositive && source == "token" && sp.EvidenceComplete {
 		stale := git.lastCommitAt == nil || now.Sub(*git.lastCommitAt) > window
 		if stale && git.commitsInWindow == 0 && claims.claimsInWindow == 0 {
 			sp.SuspectedWedge = "sustained terminal velocity but no token-attributed commit or bead claim within the window; verify forward progress before any restart"
@@ -253,38 +259,7 @@ func gatherGitTokenActivity(repoDir, token string, window time.Duration, now tim
 	if err != nil {
 		return out
 	}
-	out.available = true
-
-	cutoff := now.Add(-window)
-	// Records are NUL-separated (git -z) and newest-first.
-	for _, record := range strings.Split(string(raw), "\x00") {
-		if strings.TrimSpace(record) == "" {
-			continue
-		}
-		date, body, ok := strings.Cut(record, "\x1f")
-		if !ok {
-			continue
-		}
-		// Exact-line confirmation: reject prefilter substring hits where the
-		// token is only a prefix of a sibling pane's token line.
-		if !commitBodyHasTokenLine(body, token) {
-			continue
-		}
-		ts, perr := time.Parse(time.RFC3339, strings.TrimSpace(date))
-		if perr != nil {
-			continue
-		}
-		out.anyTokenCommit = true
-		// First confirmed record is the most recent → last commit.
-		if out.lastCommitAt == nil {
-			t := ts
-			out.lastCommitAt = &t
-		}
-		if !ts.Before(cutoff) {
-			out.commitsInWindow++
-		}
-	}
-	return out
+	return parseGitTokenActivity(raw, token, window, now)
 }
 
 // commitBodyHasTokenLine reports whether any trimmed line of the commit body
@@ -347,7 +322,7 @@ type brListResponse struct {
 
 // decodeClaimIssues accepts the native br array and the compatibility envelope.
 // Missing/null lists and non-issue rows are unavailable evidence, not an empty
-// successful read: stop decisions must distinguish a broken schema from [] .
+// successful read: stop decisions must distinguish a broken schema from [].
 func decodeClaimIssues(raw []byte) ([]brListIssue, bool) {
 	text := strings.TrimSpace(string(raw))
 	if text == "" {
@@ -393,9 +368,11 @@ func countClaimsInWindow(raw []byte, window time.Duration, now time.Time) claimA
 	out.anyLabeledBead = len(issues) > 0
 	cutoff := now.Add(-window)
 	for _, issue := range issues {
-		if withinWindow(issue.ClosedAt, cutoff) || withinWindow(issue.UpdatedAt, cutoff) {
+		recent, available := claimTimestampEvidence(issue, cutoff, now)
+		if recent {
 			out.claimsInWindow++
 		}
+		out.available = out.available && available
 	}
 	return out
 }
