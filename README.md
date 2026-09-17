@@ -219,8 +219,10 @@ across its nerd, unicode and ascii symbol presets):
   an error, never as idle-after-completion: `--robot-is-working` returns
   `ERROR_STATE` with `indicator_basis: "provider_error"` and a retry hint, the
   status observation and coordinator report an error (`auth` for 401/403,
-  otherwise generic), and assignment will not feed the pane new work. Sending
-  any message, such as a continue prompt, dismisses the block and retries.
+  otherwise generic), and assignment will not feed the pane new work. An
+  `F5 to Retry` hint may sit between the block and the input box. Press `F5`
+  (omp's retry key) to re-run the failed turn, or send any message, such as a
+  continue prompt, which dismisses the block and retries.
   `Error: No model selected.` is an error too. No omp rate-limit screen has
   been captured yet, so omp panes are never marked rate-limited from
   transcript text; a provider 429 surfaces as a provider error.
