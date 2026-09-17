@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
@@ -51,9 +53,17 @@ type RobotSequenceOutput struct {
 	Pane     *workflow.PaneSequencePosition `json:"pane,omitempty"`
 }
 
+// robotSequenceExpectedPositionFlag is the root --sequence-expected-position
+// flag. It is looked up once in init rather than through rootCmd inside
+// printRobotSequence: rootCmd's initializer reaches printRobotSequence via its
+// Run closure, so a direct rootCmd reference there is an initialization cycle
+// that fails the whole package build.
+var robotSequenceExpectedPositionFlag *pflag.Flag
+
 func init() {
 	rootCmd.Flags().Int("sequence-expected-position", 0,
 		"Zero-based position being completed; makes retries safe without skipping prompts. Optional with --robot-sequence and --sequence-action=advance")
+	robotSequenceExpectedPositionFlag = rootCmd.Flags().Lookup("sequence-expected-position")
 	robot.MustRegisterSchemaCommand("sequence", RobotSequenceOutput{})
 	robot.MustRegisterSchemaPagination("sequence", robot.SchemaPaginationFlag{
 		Reason: "bounded: one pane sequence echo with its nested step list",
@@ -70,10 +80,10 @@ func printRobotSequence(projectDir, name, action, pane, rawSteps string) error {
 		action = "next"
 	}
 	var expectedPosition []int
-	if rootCmd.Flags().Changed("sequence-expected-position") {
-		expected, err := rootCmd.Flags().GetInt("sequence-expected-position")
+	if robotSequenceExpectedPositionFlag != nil && robotSequenceExpectedPositionFlag.Changed {
+		expected, err := strconv.Atoi(robotSequenceExpectedPositionFlag.Value.String())
 		if err != nil {
-			return err
+			return fmt.Errorf("--sequence-expected-position: %w", err)
 		}
 		if expected < 0 {
 			return fmt.Errorf("--sequence-expected-position must be non-negative")
