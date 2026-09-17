@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -9,6 +10,87 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/workflow"
 )
+
+func TestRobotSequenceExpectedPositionFlag(t *testing.T) {
+	flag := rootCmd.Flags().Lookup("sequence-expected-position")
+	if flag == nil {
+		t.Fatal("retry-safe sequence flag is not registered")
+	}
+	originalValue, originalChanged := flag.Value.String(), flag.Changed
+	t.Cleanup(func() {
+		_ = flag.Value.Set(originalValue)
+		flag.Changed = originalChanged
+	})
+	flag.Changed = false
+	projectDir := t.TempDir()
+	run := func(action, pane, steps string) RobotSequenceOutput {
+		t.Helper()
+		stdout, err := captureStdout(t, func() error {
+			return printRobotSequence(projectDir, "review", action, pane, steps)
+		})
+		if err != nil {
+			t.Fatalf("sequence %s: %v", action, err)
+		}
+		var result RobotSequenceOutput
+		if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+			t.Fatalf("sequence output %q: %v", stdout, err)
+		}
+		if !result.Success {
+			t.Fatalf("sequence reported failure: %s", stdout)
+		}
+		return result
+	}
+	run("create", "", `["inspect","challenge","summarize"]`)
+	first := run("next", "%1", "")
+	if first.Pane == nil || first.Pane.Position != 0 {
+		t.Fatalf("initial position = %+v", first.Pane)
+	}
+	if err := rootCmd.Flags().Set("sequence-expected-position", "0"); err != nil {
+		t.Fatal(err)
+	}
+	advanced := run("advance", "%1", "")
+	if advanced.Pane == nil || !advanced.Pane.Advanced || advanced.Pane.Position != 1 {
+		t.Fatalf("advance = %+v", advanced.Pane)
+	}
+	retry := run("advance", "%1", "")
+	if retry.Pane == nil || retry.Pane.Advanced || retry.Pane.Position != 1 || retry.Pane.Prompt != "challenge" {
+		t.Fatalf("retry skipped a prompt: %+v", retry.Pane)
+	}
+	for _, tc := range []struct{ action, value, want string }{
+		{"advance", "2", "before expected position"},
+		{"advance", "-1", "must be non-negative"},
+		{"next", "0", "requires --sequence-action=advance"},
+		{"create", "0", "requires --sequence-action=advance"},
+	} {
+		if err := rootCmd.Flags().Set("sequence-expected-position", tc.value); err != nil {
+			t.Fatal(err)
+		}
+		stdout, err := captureStdout(t, func() error {
+			return printRobotSequence(projectDir, "review", tc.action, "%1", `["replacement"]`)
+		})
+		if err == nil || !strings.Contains(err.Error(), tc.want) || stdout != "" {
+			t.Errorf("action=%s expected=%s: output=%q error=%v", tc.action, tc.value, stdout, err)
+		}
+	}
+	store, err := workflow.NewPaneSequenceStore(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persisted, err := store.Next("review", "%1")
+	if err != nil || persisted.Position != 1 || persisted.Prompt != "challenge" {
+		t.Fatalf("rejected request changed state: %+v, %v", persisted, err)
+	}
+	// Omitting the guard retains explicitly requested unconditional advancement.
+	flag.Changed = false
+	unconditional := run("advance", "%1", "")
+	if unconditional.Pane == nil || unconditional.Pane.Position != 2 || !unconditional.Pane.Advanced {
+		t.Fatalf("unconditional advance = %+v", unconditional.Pane)
+	}
+	other := run("next", "%2", "")
+	if other.Pane == nil || other.Pane.Position != 0 {
+		t.Fatalf("other pane inherited progress: %+v", other.Pane)
+	}
+}
 
 func TestWorkflowsJSONFailuresAreTerminal(t *testing.T) {
 	originalJSON := jsonOutput

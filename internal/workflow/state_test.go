@@ -74,6 +74,12 @@ func TestPaneSequenceSubprocess(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
+	case "retry":
+		for i := 0; i < 20; i++ {
+			if _, err := store.Advance("shared", os.Getenv("NTM_SEQUENCE_TEST_PANE"), 0); err != nil {
+				t.Fatal(err)
+			}
+		}
 	default:
 		t.Fatalf("unknown helper mode %q", mode)
 	}
@@ -171,6 +177,102 @@ func TestPaneSequenceConcurrentProcessesPreserveProgress(t *testing.T) {
 func TestPaneSequenceConcurrentCreateHasOneWinner(t *testing.T) {
 	if created := runPaneSequenceProcesses(t, t.TempDir(), "create", false); created != 1 {
 		t.Fatalf("concurrent create succeeded %d times, want exactly one", created)
+	}
+}
+
+func TestPaneSequenceConcurrentRetriesConsumeEachPromptOnce(t *testing.T) {
+	for _, samePane := range []bool{false, true} {
+		t.Run(fmt.Sprintf("same_pane_%t", samePane), func(t *testing.T) {
+			store, err := NewPaneSequenceStore(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.Create("shared", []string{"inspect", "challenge", "summarize"}); err != nil {
+				t.Fatal(err)
+			}
+			runPaneSequenceProcesses(t, store.ProjectDir, "retry", samePane)
+			sequence, err := store.Load("shared")
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantPanes := 8
+			if samePane {
+				wantPanes = 1
+			}
+			if len(sequence.Positions) != wantPanes {
+				t.Fatalf("got %d panes, want %d", len(sequence.Positions), wantPanes)
+			}
+			for pane, position := range sequence.Positions {
+				if position != 1 {
+					t.Errorf("retries skipped work for %s: got position %d, want 1", pane, position)
+				}
+			}
+		})
+	}
+}
+
+func TestPaneSequenceExpectedPositionSurvivesLostResponse(t *testing.T) {
+	projectDir := t.TempDir()
+	store, err := NewPaneSequenceStore(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Create("review", []string{"inspect", "challenge", "summarize"}); err != nil {
+		t.Fatal(err)
+	}
+	first, err := store.Next("review", "%1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	advanced, err := store.Advance("review", "%1", first.Position)
+	if err != nil || !advanced.Advanced || advanced.Position != 1 {
+		t.Fatalf("first advance = %+v, %v", advanced, err)
+	}
+	path, err := store.path("review")
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The client lost the response and retries the same completion after restart.
+	reloaded, err := NewPaneSequenceStore(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retry, err := reloaded.Advance("review", "%1", first.Position)
+	if err != nil || retry.Advanced || retry.Position != 1 || retry.Prompt != "challenge" {
+		t.Fatalf("retry = %+v, %v", retry, err)
+	}
+	for _, invalid := range [][]int{{-1}, {1, 2}, {2}, {99}} {
+		if _, err := reloaded.Advance("review", "%1", invalid...); err == nil {
+			t.Errorf("accepted invalid/future expected positions %v", invalid)
+		}
+	}
+	if after, err := os.ReadFile(path); err != nil || !bytes.Equal(before, after) {
+		t.Fatalf("retry or rejected request rewrote durable state: %v", err)
+	}
+	if _, err := reloaded.Advance("review", "%1", 1); err != nil {
+		t.Fatal(err)
+	}
+	stale, err := reloaded.Advance("review", "%1", 0)
+	if err != nil || stale.Advanced || stale.Position != 2 || stale.Prompt != "summarize" {
+		t.Fatalf("older retry = %+v, %v", stale, err)
+	}
+	completed, err := reloaded.Advance("review", "%1", 2)
+	if err != nil || !completed.Complete || !completed.Advanced {
+		t.Fatalf("completion = %+v, %v", completed, err)
+	}
+	for _, expected := range []int{0, 2, 3} {
+		retry, err := reloaded.Advance("review", "%1", expected)
+		if err != nil || !retry.Complete || retry.Advanced || retry.Position != 3 {
+			t.Fatalf("completed retry at %d = %+v, %v", expected, retry, err)
+		}
+	}
+	other, err := reloaded.Next("review", "%2")
+	if err != nil || other.Position != 0 || other.Prompt != "inspect" {
+		t.Fatalf("unrelated pane changed: %+v, %v", other, err)
 	}
 }
 

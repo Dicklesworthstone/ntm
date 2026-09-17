@@ -52,6 +52,8 @@ type RobotSequenceOutput struct {
 }
 
 func init() {
+	rootCmd.Flags().Int("sequence-expected-position", 0,
+		"Zero-based position being completed; makes retries safe without skipping prompts. Optional with --robot-sequence and --sequence-action=advance")
 	robot.MustRegisterSchemaCommand("sequence", RobotSequenceOutput{})
 	robot.MustRegisterSchemaPagination("sequence", robot.SchemaPaginationFlag{
 		Reason: "bounded: one pane sequence echo with its nested step list",
@@ -66,6 +68,20 @@ func printRobotSequence(projectDir, name, action, pane, rawSteps string) error {
 	action = strings.ToLower(strings.TrimSpace(action))
 	if action == "" {
 		action = "next"
+	}
+	var expectedPosition []int
+	if rootCmd.Flags().Changed("sequence-expected-position") {
+		expected, err := rootCmd.Flags().GetInt("sequence-expected-position")
+		if err != nil {
+			return err
+		}
+		if expected < 0 {
+			return fmt.Errorf("--sequence-expected-position must be non-negative")
+		}
+		if action != "advance" {
+			return fmt.Errorf("--sequence-expected-position requires --sequence-action=advance")
+		}
+		expectedPosition = []int{expected}
 	}
 	output := RobotSequenceOutput{
 		RobotResponse: robot.NewRobotResponse(true),
@@ -89,7 +105,7 @@ func printRobotSequence(projectDir, name, action, pane, rawSteps string) error {
 		}
 		output.Pane = &position
 	case "advance":
-		position, err := store.Advance(name, pane)
+		position, err := store.Advance(name, pane, expectedPosition...)
 		if err != nil {
 			return err
 		}
@@ -117,6 +133,11 @@ Sources (in precedence order):
   1. Built-in templates (lowest priority)
   2. User templates (~/.config/ntm/workflows/)
   3. Project templates (.ntm/workflows/) (highest priority)
+
+For durable per-pane review progress, use --robot-sequence. Complete a prompt
+with --sequence-action=advance --sequence-expected-position=N, where N is the
+position returned by the preceding query. Repeating that request is a no-op
+once N has been consumed, even after restart; future positions are rejected.
 
 Examples:
   ntm workflows list                # List all available templates
