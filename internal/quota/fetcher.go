@@ -48,6 +48,12 @@ func (f *PTYFetcher) FetchQuota(ctx context.Context, paneID string, provider Pro
 		captureLines = 100
 	}
 
+	if provider == ProviderOmp {
+		// Never type a guessed usage command into an omp composer: omp has
+		// no quota API, so report that explicitly instead of a fake reading.
+		return &QuotaInfo{Provider: provider, FetchedAt: time.Now(), Unsupported: OmpQuotaUnsupported}, nil
+	}
+
 	cmds, ok := providerCommands[provider]
 	if !ok {
 		return nil, fmt.Errorf("unknown provider: %s", provider)

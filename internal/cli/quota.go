@@ -89,6 +89,9 @@ func runQuota(session string) error {
 				fmt.Printf("    Error: %s\n", info.Error)
 			}
 		}
+		if info.Unsupported != "" && !IsJSONOutput() {
+			fmt.Printf("    %s: %s\n", provider, info.Unsupported)
+		}
 		info.PaneIndex = p.Index
 		results = append(results, info)
 	}
@@ -110,6 +113,9 @@ func quotaProviderForAgentType(agentType tmux.AgentType) (quota.Provider, bool) 
 	case tmux.AgentGemini, tmux.AgentAntigravity:
 		// Antigravity (agy) shares Google's quota/auth with the Gemini CLI.
 		return quota.ProviderGemini, true
+	case tmux.AgentOmp:
+		// Reported explicitly as unsupported rather than silently skipped.
+		return quota.ProviderOmp, true
 	default:
 		return "", false
 	}
@@ -143,6 +149,9 @@ func printQuotaTable(results []*quota.QuotaInfo) {
 		account := r.AccountID
 		if account == "" {
 			account = "-"
+		}
+		if r.Unsupported != "" {
+			account = "no quota API (provider-error classification)"
 		}
 
 		reset := r.ResetString

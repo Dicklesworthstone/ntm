@@ -173,6 +173,7 @@ func TestQuotaProviderForAgentType_CanonicalizesAliases(t *testing.T) {
 		{name: "claude alias", agentType: tmux.AgentType("claude_code"), want: quota.ProviderClaude, ok: true},
 		{name: "codex alias", agentType: tmux.AgentType("openai-codex"), want: quota.ProviderCodex, ok: true},
 		{name: "gemini alias", agentType: tmux.AgentType("google-gemini"), want: quota.ProviderGemini, ok: true},
+		{name: "omp is reported, not skipped", agentType: tmux.AgentType("oh-my-pi"), want: quota.ProviderOmp, ok: true},
 		{name: "unsupported cursor", agentType: tmux.AgentCursor, ok: false},
 	}
 

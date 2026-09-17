@@ -338,6 +338,11 @@ func rotateAllLimited(ctx context.Context, session, targetAccount string, dryRun
 			fmt.Printf("Error: %v\n", err)
 			continue
 		}
+		if info != nil && info.Unsupported != "" {
+			// No quota reading exists; never report such a pane as "OK".
+			fmt.Printf("SKIPPED (%s)\n", info.Unsupported)
+			continue
+		}
 
 		// [rotation.thresholds] governs the classification (WS6-wire): a pane
 		// is rotation-eligible when the provider reports a hard limit OR its

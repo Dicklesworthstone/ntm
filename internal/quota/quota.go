@@ -15,7 +15,16 @@ const (
 	ProviderClaude Provider = "claude"
 	ProviderCodex  Provider = "codex"
 	ProviderGemini Provider = "gemini"
+	// ProviderOmp is Oh My Pi. omp exposes no quota or usage command, so its
+	// readings are always Unsupported (see OmpQuotaUnsupported).
+	ProviderOmp Provider = "omp"
 )
+
+// OmpQuotaUnsupported explains why an omp pane never has a quota reading and
+// where quota exhaustion shows up instead.
+const OmpQuotaUnsupported = "no quota API; relies on provider-error classification " +
+	"(omp ends a failed turn with a dismissable provider-error block, reported by " +
+	"--robot-is-working as ERROR_STATE with indicator_basis provider_error)"
 
 // QuotaInfo represents current quota state for an account
 type QuotaInfo struct {
@@ -34,6 +43,9 @@ type QuotaInfo struct {
 	FetchedAt    time.Time `json:"fetched_at"`
 	RawOutput    string    `json:"raw_output,omitempty"` // For debugging
 	Error        string    `json:"error,omitempty"`      // If fetch failed
+	// Unsupported explains why the provider has no quota reading at all (as
+	// opposed to a failed fetch). Such a reading is never healthy or limited.
+	Unsupported string `json:"unsupported,omitempty"`
 }
 
 // IsStale returns true if the quota info is older than the given duration
@@ -64,7 +76,7 @@ const (
 // info yields HealthUnknown, never HealthHealthy — a fetch failure leaves
 // usage fields at zero, and those zeros must not read as good news.
 func (q *QuotaInfo) Health() HealthState {
-	if q == nil || q.Error != "" {
+	if q == nil || q.Error != "" || q.Unsupported != "" {
 		return HealthUnknown
 	}
 	if q.IsLimited {

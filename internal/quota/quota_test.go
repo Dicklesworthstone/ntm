@@ -2,6 +2,7 @@ package quota
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -247,4 +248,27 @@ func (m *MockFetcher) CallCount() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.calls
+}
+
+// TestOmpQuotaIsExplicitlyUnsupported pins that omp is reported as having no
+// quota API instead of being silently skipped or read as healthy, and that no
+// keys are ever typed into an omp pane to probe for one (the pane ID below
+// does not exist, so any tmux call would surface as a fetch error).
+func TestOmpQuotaIsExplicitlyUnsupported(t *testing.T) {
+	info, err := (&PTYFetcher{CommandTimeout: time.Millisecond}).FetchQuota(context.Background(), "%nonexistent-omp-pane", ProviderOmp)
+	if err != nil || info == nil {
+		t.Fatalf("FetchQuota(omp) = (%+v, %v)", info, err)
+	}
+	if info.Provider != ProviderOmp || info.Error != "" || info.Unsupported != OmpQuotaUnsupported {
+		t.Fatalf("omp reading = %+v, want an unsupported (not errored) reading", info)
+	}
+	if !strings.Contains(info.Unsupported, "provider-error classification") {
+		t.Fatalf("unsupported reason must name the fallback: %q", info.Unsupported)
+	}
+	if info.Health() != HealthUnknown || info.IsHealthy() {
+		t.Fatalf("an unsupported omp reading must never read healthy, got %s", info.Health())
+	}
+	if ClassifyRotation(info) != RotationOK {
+		t.Fatalf("absence of a quota API must never select an omp pane for rotation")
+	}
 }

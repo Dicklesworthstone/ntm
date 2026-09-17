@@ -2,6 +2,7 @@ package robot
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/Dicklesworthstone/ntm/internal/integrations/caut"
@@ -300,5 +301,24 @@ func TestGetQuotaStatus_CanonicalizesProviderNames(t *testing.T) {
 	}
 	if _, exists := output.Quota.Providers["gemini"]; !exists {
 		t.Fatalf("providers missing gemini key: %+v", output.Quota.Providers)
+	}
+}
+
+// TestGetQuotaCheck_OmpReportsNoQuotaAPI pins that omp (and its aliases) gets
+// an explicit NOT_IMPLEMENTED answer naming the provider-error fallback, not
+// "provider not found".
+func TestGetQuotaCheck_OmpReportsNoQuotaAPI(t *testing.T) {
+	for _, provider := range []string{"omp", "oh-my-pi", " OMP "} {
+		out, err := GetQuotaCheck(provider)
+		if err != nil {
+			t.Fatalf("GetQuotaCheck(%q): %v", provider, err)
+		}
+		if out.Success || out.ErrorCode != ErrCodeNotImplemented || ExitCodeForResponse(out.RobotResponse) != 2 {
+			t.Fatalf("GetQuotaCheck(%q) = success:%v code:%s, want NOT_IMPLEMENTED (exit 2)", provider, out.Success, out.ErrorCode)
+		}
+		if out.Provider != "omp" || out.Quota.Status != "unsupported" ||
+			!strings.Contains(out.Hint, "no quota API") || !strings.Contains(out.Hint, "provider-error classification") {
+			t.Fatalf("GetQuotaCheck(%q) = provider:%q status:%q hint:%q", provider, out.Provider, out.Quota.Status, out.Hint)
+		}
 	}
 }

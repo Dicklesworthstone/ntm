@@ -2,10 +2,13 @@ package robot
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/integrations/caut"
+	"github.com/Dicklesworthstone/ntm/internal/quota"
 	"github.com/Dicklesworthstone/ntm/internal/tools"
 )
 
@@ -300,6 +303,19 @@ func GetQuotaCheck(provider string) (*QuotaCheckOutput, error) {
 				"Specify a provider with --provider=<name> (alias: --quota-check-provider)",
 			),
 			Provider: provider,
+		}, nil
+	}
+	if agent.AgentType(strings.TrimSpace(provider)).Canonical() == agent.AgentTypeOmp {
+		// omp is a harness over arbitrary providers with no quota API; say so
+		// (exit 2, skip gracefully) instead of "provider not found".
+		return &QuotaCheckOutput{
+			RobotResponse: NewErrorResponse(
+				errors.New("omp exposes no quota API"),
+				ErrCodeNotImplemented,
+				"omp: "+quota.OmpQuotaUnsupported,
+			),
+			Provider: string(agent.AgentTypeOmp),
+			Quota:    ProviderQuota{Status: "unsupported"},
 		}, nil
 	}
 	canonicalProvider := canonicalRobotProvider(provider)

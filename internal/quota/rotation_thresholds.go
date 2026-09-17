@@ -56,7 +56,7 @@ const (
 // [rotation.thresholds]. A nil or errored reading classifies as OK — absence
 // of data is never grounds for rotating an account.
 func ClassifyRotation(info *QuotaInfo) RotationClass {
-	if info == nil || info.Error != "" {
+	if info == nil || info.Error != "" || info.Unsupported != "" {
 		return RotationOK
 	}
 	rotationThresholdMu.RLock()
