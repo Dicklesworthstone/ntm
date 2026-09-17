@@ -23,6 +23,7 @@ const (
 	AgentTypeWindsurf    AgentType = "windsurf" // Windsurf IDE
 	AgentTypeAider       AgentType = "aider"    // Aider CLI
 	AgentTypeOpencode    AgentType = "oc"       // Opencode (https://opencode.ai) — see ntm#116
+	AgentTypeOmp         AgentType = "omp"      // Oh My Pi (omp), the pi-agent fork (https://omp.sh)
 	AgentTypeUser        AgentType = "user"     // User/Shell pane
 	AgentTypeUnknown     AgentType = "unknown"  // Unable to determine agent type
 )
@@ -74,6 +75,8 @@ func (t AgentType) Canonical() AgentType {
 		return AgentTypeAider
 	case "oc", "opencode":
 		return AgentTypeOpencode
+	case "omp", "oh-my-pi", "oh_my_pi", "ohmypi":
+		return AgentTypeOmp
 	case "ollama":
 		return AgentTypeOllama
 	case "user":
@@ -108,6 +111,8 @@ func (t AgentType) DisplayName() string {
 		return "Aider"
 	case AgentTypeOpencode:
 		return "Opencode"
+	case AgentTypeOmp:
+		return "Oh My Pi"
 	case AgentTypeUser:
 		return "User"
 	default:
@@ -138,6 +143,8 @@ func (t AgentType) ProfileName() string {
 		return "Aider"
 	case AgentTypeOpencode:
 		return "Opencode"
+	case AgentTypeOmp:
+		return "OMP"
 	case AgentTypeUser:
 		return "User"
 	default:
@@ -154,7 +161,7 @@ func (t AgentType) ProfileName() string {
 // IsValid returns true if this is a known agent type.
 func (t AgentType) IsValid() bool {
 	switch t.Canonical() {
-	case AgentTypeClaudeCode, AgentTypeCodex, AgentTypeGemini, AgentTypeAntigravity, AgentTypeGrok, AgentTypeOllama, AgentTypeCursor, AgentTypeWindsurf, AgentTypeAider, AgentTypeOpencode, AgentTypeUser:
+	case AgentTypeClaudeCode, AgentTypeCodex, AgentTypeGemini, AgentTypeAntigravity, AgentTypeGrok, AgentTypeOllama, AgentTypeCursor, AgentTypeWindsurf, AgentTypeAider, AgentTypeOpencode, AgentTypeOmp, AgentTypeUser:
 		return true
 	default:
 		return false
