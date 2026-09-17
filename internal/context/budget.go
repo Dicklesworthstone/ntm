@@ -135,5 +135,7 @@ func truncateJSON(data json.RawMessage, tokenBudget int) json.RawMessage {
 func escapeXMLText(text string) string {
 	var out strings.Builder
 	_ = xml.EscapeText(&out, []byte(text))
-	return out.String()
+	// This helper is for element character data, not attributes. Quotes are
+	// safe here and keeping them literal preserves readable JSON payloads.
+	return strings.NewReplacer("&#34;", "\"", "&#39;", "'").Replace(out.String())
 }

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -127,16 +128,34 @@ func cacheKey(opts BuildOptions, alloc BudgetAllocation) string {
 
 // Build constructs a context pack for a task
 func (b *ContextPackBuilder) Build(ctx context.Context, opts BuildOptions) (*ContextPackFull, error) {
-	opts.AgentType = canonicalContextPackAgentType(opts.AgentType)
-
-	// Check cache
-	key := cacheKey(opts, b.allocation)
-	globalCacheMu.RLock()
-	if cached, ok := globalCache[key]; ok {
-		globalCacheMu.RUnlock()
-		return cached, nil
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
-	globalCacheMu.RUnlock()
+	opts.AgentType = canonicalContextPackAgentType(opts.AgentType)
+	if opts.ProjectDir == "" {
+		opts.ProjectDir = "."
+	}
+	projectDir, err := filepath.Abs(opts.ProjectDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve context project directory: %w", err)
+	}
+	opts.ProjectDir = projectDir
+
+	// A revision and filename list cannot describe working-tree edits, new
+	// glob matches, or a previously missing file. Always rebuild source packs.
+	useCache := len(opts.Files) == 0
+	key := cacheKey(opts, b.allocation)
+	if useCache {
+		globalCacheMu.RLock()
+		cached, ok := globalCache[key]
+		globalCacheMu.RUnlock()
+		if ok && cached != nil {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			return cached, nil
+		}
+	}
 
 	// Determine budget from canonical registry
 	budget := GetTokenBudget(opts.AgentType)
@@ -232,6 +251,9 @@ func (b *ContextPackBuilder) Build(ctx context.Context, opts BuildOptions) (*Con
 	}()
 
 	wg.Wait()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 
 	// Render to agent-specific format
 	pack.RenderedPrompt = b.render(pack)
@@ -245,18 +267,25 @@ func (b *ContextPackBuilder) Build(ctx context.Context, opts BuildOptions) (*Con
 		return nil, fmt.Errorf("context pack metadata exceeds the %d-token estimated budget", budget)
 	}
 
-	// Cache with simple eviction
-	globalCacheMu.Lock()
-	if len(globalCache) >= 20 {
-		// Simple eviction: clear everything to prevent unlimited growth
-		globalCache = make(map[string]*ContextPackFull)
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
-	globalCache[key] = pack
-	globalCacheMu.Unlock()
 
 	// Store in database if store is available
 	if b.store != nil {
 		_ = b.store.CreateContextPack(&pack.ContextPack)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	if useCache {
+		globalCacheMu.Lock()
+		if len(globalCache) >= 20 {
+			globalCache = make(map[string]*ContextPackFull)
+		}
+		globalCache[key] = pack
+		globalCacheMu.Unlock()
 	}
 
 	return pack, nil
@@ -483,6 +512,10 @@ func (b *ContextPackBuilder) buildS2PComponent(ctx context.Context, dir string, 
 
 	if len(files) == 0 {
 		component.Error = "no files specified"
+		return component
+	}
+	if len(files) > maxSourceFiles {
+		component.Error = fmt.Sprintf("source selection exceeds %d patterns", maxSourceFiles)
 		return component
 	}
 

@@ -97,3 +97,20 @@ func TestXMLRendererEscapesMetadataErrorsAndSource(t *testing.T) {
 		t.Fatalf("XML altered content or accepted injected tags: %+v", parsed)
 	}
 }
+
+func TestOverflowRetainsSmallMSPayload(t *testing.T) {
+	b := &ContextPackBuilder{}
+	pack := &ContextPackFull{}
+	pack.ID, pack.AgentType = "pack-overflow", "cod"
+	skills := make([]string, 20)
+	for i := range skills {
+		skills[i] = `{"id":"skill-` + string(rune('a'+i)) + `","name":"Skill","summary":"` + strings.Repeat("x", 200) + `"}`
+	}
+	pack.Components = map[string]*PackComponent{
+		"ms": {Type: "ms", Data: json.RawMessage(`{"source":"ms","query":"test","skills":[` + strings.Join(skills, ",") + `]}`)},
+	}
+	b.truncateOverflow(pack, 50)
+	if pack.Components["ms"].Data == nil || pack.Components["ms"].TokenCount == 0 || len(pack.RenderedPrompt) > 200 {
+		t.Fatalf("small MS payload was lost or exceeded budget: %s", pack.RenderedPrompt)
+	}
+}

@@ -53,6 +53,9 @@ func TestTextBudgetBoundaries(t *testing.T) {
 }
 
 func TestXMLTextRoundTrip(t *testing.T) {
+	if got := escapeXMLText(`{"source":"ms"}`); got != `{"source":"ms"}` {
+		t.Fatalf("XML element data needlessly escaped JSON quotes: %s", got)
+	}
 	text := "<&>\"' 日本語🙂\n</context_pack><injected/>"
 	var got string
 	if err := xml.Unmarshal([]byte("<root>"+escapeXMLText(text)+"</root>"), &got); err != nil || got != text {
