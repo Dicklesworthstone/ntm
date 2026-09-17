@@ -6248,6 +6248,20 @@ func TestOmpRobotStateDialogsAndContext(t *testing.T) {
 	if determineState(providerErr, "omp") == "idle" {
 		t.Error("determineState must not report a failed omp turn as idle")
 	}
+	// Live swarm false negative: "F5 to Retry" between the error block and the
+	// composer read as plain idle in --robot-is-working.
+	providerErrF5 := readAgentFixture(t, "omp_nerd_provider_error_f5.txt")
+	wsF5 := PaneWorkStatus{IsIdle: true, Recommendation: string(agent.RecommendSafeToRestart)}
+	if !applyProviderErrorOverride(&wsF5, agent.AgentTypeOmp, providerErrF5) || wsF5.IsIdle ||
+		wsF5.Recommendation != string(agent.RecommendErrorState) || !strings.Contains(wsF5.RecommendationReason, "press F5") {
+		t.Errorf("F5 provider-error work status = %+v", wsF5)
+	}
+	if got := a.classifyAgentState(&Agent{Type: "omp", Pane: "%44", PID: 10}, providerErrF5); got != state.AgentStateError {
+		t.Errorf("adapter F5 provider-error omp = %q, want error", got)
+	}
+	if got := determineState(providerErrF5, "omp"); got != "error" {
+		t.Errorf("determineState(F5 provider error) = %q, want error", got)
+	}
 
 	at := time.Now()
 	gauge, ok := ompStatusBarUsage("omp", idle, at)

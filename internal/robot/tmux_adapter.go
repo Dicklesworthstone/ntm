@@ -331,7 +331,7 @@ func (a *TmuxAdapter) classifyStateReason(agent *Agent, agentState state.AgentSt
 		}
 		if normalizeAgentType(agent.Type) == "omp" {
 			if summary, ok := agentpkg.OmpProviderError(outputTail); ok {
-				return fmt.Sprintf("provider error (retryable, send a continue prompt): %s", summary)
+				return fmt.Sprintf("provider error (%s): %s", agentpkg.OmpProviderErrorRecovery, summary)
 			}
 		}
 		if agent.SecondsSinceOutput > a.config.StallThreshold {

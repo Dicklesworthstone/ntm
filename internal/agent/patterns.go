@@ -677,6 +677,9 @@ var (
 	ompRuleRe = regexp.MustCompile(`^\s*(?:─{8,}|-{8,})\s*$`)
 	// ompDismissedRe matches that block's footer line.
 	ompDismissedRe = regexp.MustCompile(`^\s*Dismissed when you send your next message\.\s*$`)
+	// ompRetryHintRe matches the "F5 to Retry" hint omp draws between a failed
+	// or interrupted turn and the composer (nerd preset prefixes a glyph).
+	ompRetryHintRe = regexp.MustCompile(`^\s*(?:\S\s+)?F5 to Retry\s*$`)
 )
 
 const (
@@ -844,12 +847,13 @@ func parseOmpComposerAt(lines []string, bottomIdx int, bottomText string) (OmpCo
 
 // ompProviderErrorAbove returns the summary line of a provider-error block
 // whose closing rule sits directly above the composer top border at
-// lines[top] (blank rows allowed between), or "" when there is none. The
-// block must be complete: closing rule, "Dismissed when …" footer, error
-// text, opening rule.
+// lines[top], or "" when there is none. Blank rows and omp's "F5 to Retry"
+// hint (live swarm capture) may sit between the rule and the composer; any
+// other row means the block is history. The block must be complete: closing
+// rule, "Dismissed when …" footer, error text, opening rule.
 func ompProviderErrorAbove(lines []string, top int) string {
 	k := top - 1
-	for k >= 0 && top-k <= 3 && strings.TrimSpace(lines[k]) == "" {
+	for k >= 0 && top-k <= 4 && (strings.TrimSpace(lines[k]) == "" || ompRetryHintRe.MatchString(lines[k])) {
 		k--
 	}
 	if k < 1 || !ompRuleRe.MatchString(lines[k]) || !ompDismissedRe.MatchString(lines[k-1]) {
@@ -871,6 +875,14 @@ func ompProviderErrorAbove(lines []string, top int) string {
 	}
 	return ""
 }
+
+// OmpRetryKey is omp's retry key: pressing F5 at the "F5 to Retry" hint
+// re-runs the failed or interrupted turn (verified live, omp v18.2.3).
+const OmpRetryKey = "F5"
+
+// OmpProviderErrorRecovery is the recovery guidance for an omp provider error.
+const OmpProviderErrorRecovery = "retryable: press " + OmpRetryKey + " (omp's retry key) to re-run the failed turn, " +
+	"or send a continue prompt (omp dismisses the error on the next message)"
 
 // OmpProviderError reports the summary of the dismissable provider-error
 // block an omp pane shows after a failed turn ("server_error: ERROR"). It

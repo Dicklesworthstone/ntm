@@ -1,0 +1,14 @@
+ Live omp v18.2.3 swarm pane (nerd preset) at 04:36 after an OpenRouter failure, as
+ reported from the frankengraphdb swarm: an "F5 to Retry" hint now sits between the
+ provider-error block's closing rule and the composer (project text neutralised;
+ chrome from the same pane's earlier capture).
+
+ The hypothesis is unconfirmed. I will fix and assert the executed count before resuming the fuzz campaign.
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  server_error: ERROR
+ Dismissed when you send your next message.
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  F5 to Retry
+╭── 󰵗   Union Alpha   /data/projects/demo   main *1 ?3 ───────────────────────────────────────────────────────────────────────41%────────────────────────────────────────────────────────────────────────󰁨─────────────────────────262K─ Fuzz No-Panic Harness ──╮
+╰─                                                                                                                                                                                                                                                                                    ─╯

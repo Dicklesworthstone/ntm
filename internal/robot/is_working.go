@@ -701,7 +701,7 @@ func applyProviderErrorOverride(workStatus *PaneWorkStatus, agentType agent.Agen
 	}
 	workStatus.IsIdle = false
 	workStatus.Recommendation = string(agent.RecommendErrorState)
-	workStatus.RecommendationReason = fmt.Sprintf("Provider error %q ended the turn; retryable: send a continue prompt (omp dismisses the error on the next message)", summary)
+	workStatus.RecommendationReason = fmt.Sprintf("Provider error %q ended the turn; %s", summary, agent.OmpProviderErrorRecovery)
 	workStatus.IndicatorBasis = "provider_error"
 	return true
 }

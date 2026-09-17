@@ -115,6 +115,9 @@ func TestOmpProviderError(t *testing.T) {
 	for file, want := range map[string]string{
 		"omp_nerd_provider_error.txt": "server_error: ERROR",
 		"omp_nerd_api_error.txt":      "401 Invalid API Key",
+		// Live swarm frame: "F5 to Retry" between the closing rule and the
+		// composer (was a false negative that read as idle).
+		"omp_nerd_provider_error_f5.txt": "server_error: ERROR",
 	} {
 		got, ok := OmpProviderError(loadTestData(t, file))
 		if !ok || got != want {
@@ -145,6 +148,28 @@ func TestOmpProviderError(t *testing.T) {
 	pushedUp := strings.Replace(live, "\n\n╭── 󰵗 ", "\n\n later transcript line\n\n╭── 󰵗 ", 1)
 	if _, ok := OmpProviderError(pushedUp); ok {
 		t.Fatal("a provider-error block with transcript below it is no longer current")
+	}
+
+	// The retry hint is the only non-blank row allowed between block and
+	// composer, with or without its nerd glyph and surrounding blank rows.
+	withHint := loadTestData(t, "omp_nerd_provider_error_f5.txt")
+	for name, variant := range map[string]string{
+		"plain hint":         strings.Replace(withHint, "  F5 to Retry\n", "  F5 to Retry\n", 1),
+		"hint between blank": strings.Replace(withHint, "  F5 to Retry\n", "\n  F5 to Retry\n\n", 1),
+	} {
+		if got, ok := OmpProviderError(variant); !ok || got != "server_error: ERROR" {
+			t.Errorf("%s: OmpProviderError = (%q, %v), want server_error", name, got, ok)
+		}
+	}
+	if _, ok := OmpProviderError(strings.Replace(withHint, "  F5 to Retry\n", "  F5 to Retry\n some later line\n", 1)); ok {
+		t.Fatal("an arbitrary row after the retry hint means the block is history")
+	}
+	state, _ := NewParser().ParseWithHint(withHint, AgentTypeOmp)
+	if !state.IsInError || state.IsIdle || state.IsWorking {
+		t.Fatalf("live F5 frame parsed as error=%v idle=%v working=%v, want error only", state.IsInError, state.IsIdle, state.IsWorking)
+	}
+	if !strings.Contains(OmpProviderErrorRecovery, "F5") || !strings.Contains(OmpProviderErrorRecovery, "continue prompt") {
+		t.Fatalf("recovery guidance must name both F5 and a continue prompt: %q", OmpProviderErrorRecovery)
 	}
 }
 
