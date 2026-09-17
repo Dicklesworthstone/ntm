@@ -46,6 +46,7 @@ type PackComponent struct {
 	Type       string          `json:"type"`
 	Data       json.RawMessage `json:"data,omitempty"`
 	TokenCount int             `json:"token_count"`
+	Truncated  bool            `json:"truncated,omitempty"`
 	Error      string          `json:"error,omitempty"`
 }
 
@@ -237,8 +238,11 @@ func (b *ContextPackBuilder) Build(ctx context.Context, opts BuildOptions) (*Con
 	pack.TokenCount = estimateTokens(pack.RenderedPrompt)
 
 	// Final overflow check
-	if pack.TokenCount > budget {
+	if len(pack.RenderedPrompt) > tokenByteBudget(budget) {
 		pack = b.truncateOverflow(pack, budget)
+	}
+	if len(pack.RenderedPrompt) > tokenByteBudget(budget) {
+		return nil, fmt.Errorf("context pack metadata exceeds the %d-token estimated budget", budget)
 	}
 
 	// Cache with simple eviction
@@ -275,6 +279,7 @@ func (b *ContextPackBuilder) buildTriageComponent(ctx context.Context, dir strin
 	}
 
 	component.Data = truncateJSON(data, tokenBudget)
+	component.Truncated = string(component.Data) != string(data)
 	component.TokenCount = estimateTokens(string(component.Data))
 	return component
 }
@@ -301,6 +306,7 @@ func (b *ContextPackBuilder) buildCMComponent(ctx context.Context, opts BuildOpt
 	}
 
 	component.Data = truncateJSON(data, tokenBudget)
+	component.Truncated = string(component.Data) != string(data)
 	component.TokenCount = estimateTokens(string(component.Data))
 	return component
 }
@@ -336,6 +342,7 @@ func (b *ContextPackBuilder) buildCASSComponent(ctx context.Context, query strin
 	}
 
 	component.Data = truncateJSON(data, tokenBudget)
+	component.Truncated = string(component.Data) != string(data)
 	component.TokenCount = estimateTokens(string(component.Data))
 	return component
 }
@@ -464,6 +471,7 @@ func (b *ContextPackBuilder) buildMSComponent(ctx context.Context, query string,
 	}
 
 	component.Data = truncateJSON(raw, tokenBudget)
+	component.Truncated = string(component.Data) != string(raw)
 	component.TokenCount = estimateTokens(string(component.Data))
 	return component
 }
@@ -547,24 +555,34 @@ func (b *ContextPackBuilder) renderXML(pack *ContextPackFull) string {
 	var sb strings.Builder
 
 	sb.WriteString("<context_pack>\n")
-	sb.WriteString(fmt.Sprintf("  <id>%s</id>\n", pack.ID))
-	sb.WriteString(fmt.Sprintf("  <bead_id>%s</bead_id>\n", pack.BeadID))
-	sb.WriteString(fmt.Sprintf("  <repo_rev>%s</repo_rev>\n", pack.RepoRev))
+	sb.WriteString(fmt.Sprintf("  <id>%s</id>\n", escapeXMLText(pack.ID)))
+	sb.WriteString(fmt.Sprintf("  <bead_id>%s</bead_id>\n", escapeXMLText(pack.BeadID)))
+	sb.WriteString(fmt.Sprintf("  <repo_rev>%s</repo_rev>\n", escapeXMLText(pack.RepoRev)))
 
 	// Use consistent ordering (same as renderMarkdown)
 	order := []string{"triage", "cm", "ms", "cass", "s2p"}
 	for _, name := range order {
 		comp, ok := pack.Components[name]
-		if !ok {
+		if !ok || comp == nil {
 			continue
 		}
 		if comp.Error != "" {
-			sb.WriteString(fmt.Sprintf("  <%s unavailable=\"true\">%s</%s>\n", name, comp.Error, name))
+			sb.WriteString(fmt.Sprintf("  <%s unavailable=\"true\">%s</%s>\n", name, escapeXMLText(comp.Error), name))
 			continue
 		}
 		if len(comp.Data) > 0 {
 			sb.WriteString(fmt.Sprintf("  <%s>\n", name))
-			sb.WriteString(fmt.Sprintf("    %s\n", string(comp.Data)))
+			if comp.Truncated {
+				sb.WriteString("    [truncated: context pack budget]\n")
+			}
+			text := string(comp.Data)
+			if name == "s2p" {
+				var source string
+				if json.Unmarshal(comp.Data, &source) == nil {
+					text = source
+				}
+			}
+			sb.WriteString(fmt.Sprintf("    %s\n", escapeXMLText(text)))
 			sb.WriteString(fmt.Sprintf("  </%s>\n", name))
 		}
 	}
@@ -585,7 +603,7 @@ func (b *ContextPackBuilder) renderMarkdown(pack *ContextPackFull) string {
 	order := []string{"triage", "cm", "ms", "cass", "s2p"}
 	for _, name := range order {
 		comp, ok := pack.Components[name]
-		if !ok {
+		if !ok || comp == nil {
 			continue
 		}
 
@@ -598,6 +616,9 @@ func (b *ContextPackBuilder) renderMarkdown(pack *ContextPackFull) string {
 		}
 
 		if len(comp.Data) > 0 {
+			if comp.Truncated {
+				sb.WriteString("*[Truncated: context pack budget]*\n\n")
+			}
 			// For JSON data, format as code block
 			if name == "s2p" {
 				// S2P is quoted text, unquote it
@@ -641,24 +662,6 @@ func componentTitle(name string) string {
 	}
 }
 
-// truncateOverflow trims the pack to fit within budget
-func (b *ContextPackBuilder) truncateOverflow(pack *ContextPackFull, budget int) *ContextPackFull {
-	// Re-render with reduced content
-	// Priority: keep triage and s2p, reduce cass and cm first
-	if cass, ok := pack.Components["cass"]; ok && cass.Data != nil {
-		cass.Data = truncateJSON(cass.Data, len(cass.Data)/2)
-		cass.TokenCount = estimateTokens(string(cass.Data))
-	}
-	if ms, ok := pack.Components["ms"]; ok && ms.Data != nil {
-		ms.Data = truncateJSON(ms.Data, len(ms.Data)/2)
-		ms.TokenCount = estimateTokens(string(ms.Data))
-	}
-
-	pack.RenderedPrompt = b.render(pack)
-	pack.TokenCount = estimateTokens(pack.RenderedPrompt)
-	return pack
-}
-
 // ClearCache clears the context pack cache
 func (b *ContextPackBuilder) ClearCache() {
 	globalCacheMu.Lock()
@@ -688,65 +691,6 @@ func generatePackID() string {
 // estimateTokens estimates token count (rough: 4 chars per token)
 func estimateTokens(s string) int {
 	return len(s) / 4
-}
-
-// truncateJSON truncates JSON to fit within token budget while keeping it valid
-func truncateJSON(data json.RawMessage, tokenBudget int) json.RawMessage {
-	charBudget := tokenBudget * 4 // rough conversion
-	if len(data) <= charBudget {
-		return data
-	}
-
-	// Try to parse as array and truncate elements
-	var arr []json.RawMessage
-	if err := json.Unmarshal(data, &arr); err == nil {
-		// Binary search for max elements that fit
-		lo, hi := 0, len(arr)
-		for lo < hi {
-			mid := (lo + hi + 1) / 2
-			truncated := arr[:mid]
-			result, _ := json.Marshal(truncated)
-			if len(result) <= charBudget {
-				lo = mid
-			} else {
-				hi = mid - 1
-			}
-		}
-		if lo > 0 {
-			result, _ := json.Marshal(arr[:lo])
-			return result
-		}
-	}
-
-	// Try to parse as object and include a truncation indicator
-	var obj map[string]json.RawMessage
-	if err := json.Unmarshal(data, &obj); err == nil {
-		// Create truncated version with indicator
-		truncated := map[string]interface{}{
-			"_truncated":     true,
-			"_original_size": len(data),
-		}
-		// Add fields until we hit budget
-		for k, v := range obj {
-			truncated[k] = v
-			result, _ := json.Marshal(truncated)
-			if len(result) > charBudget {
-				delete(truncated, k)
-				break
-			}
-		}
-		result, _ := json.Marshal(truncated)
-		return result
-	}
-
-	// Fallback: wrap raw bytes in a truncation indicator object
-	// This ensures we return valid JSON even for edge cases
-	fallback := map[string]interface{}{
-		"_truncated": true,
-		"_message":   "data too large to include",
-	}
-	result, _ := json.Marshal(fallback)
-	return result
 }
 
 // optimizeFilesForBudget applies agent-specific file selection strategies
@@ -853,40 +797,5 @@ func (b *ContextPackBuilder) selectS2PFormat(tokenBudget int) string {
 
 // intelligentTruncate preserves important content structure when truncating
 func (b *ContextPackBuilder) intelligentTruncate(text string, tokenBudget int) string {
-	charBudget := tokenBudget * 4
-	if len(text) <= charBudget {
-		return text
-	}
-
-	lines := strings.Split(text, "\n")
-	var result strings.Builder
-	var currentSize int
-
-	// Phase 1: Include file headers and important structural elements
-	for i, line := range lines {
-		lineSize := len(line) + 1 // +1 for newline
-
-		// Always include file boundaries and headers
-		if strings.HasPrefix(line, "=== ") ||
-			strings.HasPrefix(line, "# ") ||
-			strings.Contains(line, "File: ") ||
-			i < 3 { // First few lines often contain metadata
-			if currentSize+lineSize <= charBudget {
-				result.WriteString(line + "\n")
-				currentSize += lineSize
-				continue
-			}
-		}
-
-		// For regular content, check budget
-		if currentSize+lineSize > charBudget {
-			result.WriteString("\n...[truncated - content exceeded budget]\n")
-			break
-		}
-
-		result.WriteString(line + "\n")
-		currentSize += lineSize
-	}
-
-	return result.String()
+	return truncateTextBytes(text, tokenByteBudget(tokenBudget))
 }
