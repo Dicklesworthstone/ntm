@@ -4975,6 +4975,13 @@ func (m *Model) resolveCostModelForPane(pane tmux.Pane) string {
 			return m.cfg.Models.DefaultGemini
 		}
 		return "gemini-2.0-flash"
+	case tmux.AgentOmp:
+		// omp chooses its own model when none is configured, so there is no
+		// safe hardcoded pricing fallback.
+		if m.cfg != nil {
+			return m.cfg.Models.DefaultOmp
+		}
+		return ""
 	default:
 		return ""
 	}

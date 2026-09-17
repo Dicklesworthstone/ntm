@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/ensemble"
 	"github.com/Dicklesworthstone/ntm/internal/persona"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
@@ -1088,4 +1089,23 @@ func TestStatsBarIncludesAttentionBadgeWhenNotPopup(t *testing.T) {
 			t.Errorf("expected exactly 1 action indicator in popup mode, got %d in %q", count, got)
 		}
 	})
+}
+
+// TestResolveCostModelForPane_Omp: omp picks its own model unless configured,
+// so the cost panel prices omp panes by [models] default_omp (or a variant)
+// and never borrows another vendor's pricing fallback.
+func TestResolveCostModelForPane_Omp(t *testing.T) {
+	m := &Model{}
+	if got := m.resolveCostModelForPane(tmux.Pane{Type: tmux.AgentOmp}); got != "" {
+		t.Fatalf("unconfigured omp cost model = %q, want empty", got)
+	}
+	cfg := config.Default()
+	cfg.Models.DefaultOmp = "openrouter/stealth/union-alpha"
+	m.cfg = cfg
+	if got := m.resolveCostModelForPane(tmux.Pane{Type: tmux.AgentOmp}); got != "openrouter/stealth/union-alpha" {
+		t.Fatalf("configured omp cost model = %q", got)
+	}
+	if got := m.resolveCostModelForPane(tmux.Pane{Type: tmux.AgentOmp, Variant: "opus"}); got != "opus" {
+		t.Fatalf("omp variant cost model = %q, want opus", got)
+	}
 }
