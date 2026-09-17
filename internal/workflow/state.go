@@ -214,9 +214,17 @@ func (s *PaneSequenceStore) Next(name, pane string) (PaneSequencePosition, error
 // Advance records that a pane consumed its current prompt and returns the new
 // next prompt. Advancing a completed pane is idempotent and reports Advanced
 // false, which lets recovery code retry safely after observing completion.
-func (s *PaneSequenceStore) Advance(name, pane string) (PaneSequencePosition, error) {
+//
+// Supply the zero-based position returned by Next to make every advance safe
+// to retry, not just completion. An already-consumed position returns the
+// current snapshot with Advanced false; a future position is rejected. The
+// comparison and write happen under the same cross-process sequence lock.
+func (s *PaneSequenceStore) Advance(name, pane string, expectedPosition ...int) (PaneSequencePosition, error) {
 	if s == nil {
 		return PaneSequencePosition{}, errors.New("sequence store is required")
+	}
+	if len(expectedPosition) > 1 || (len(expectedPosition) == 1 && expectedPosition[0] < 0) {
+		return PaneSequencePosition{}, errors.New("expected position must be a single non-negative integer")
 	}
 	if strings.TrimSpace(pane) == "" {
 		return PaneSequencePosition{}, errors.New("sequence pane is required")
@@ -236,6 +244,15 @@ func (s *PaneSequenceStore) Advance(name, pane string) (PaneSequencePosition, er
 		return PaneSequencePosition{}, err
 	}
 	position := sequence.Positions[pane]
+	if len(expectedPosition) == 1 {
+		expected := expectedPosition[0]
+		if expected > position {
+			return PaneSequencePosition{}, fmt.Errorf("sequence pane %q is at position %d, before expected position %d; refresh its next prompt", pane, position, expected)
+		}
+		if expected < position {
+			return sequencePosition(sequence, pane, false), nil
+		}
+	}
 	if position >= len(sequence.Steps) {
 		return sequencePosition(sequence, pane, false), nil
 	}
