@@ -262,6 +262,8 @@ func ProfileToAgentType(profile string) string {
 		return string(agent.AgentTypeGemini)
 	case agent.AgentTypeAntigravity:
 		return string(agent.AgentTypeAntigravity)
+	case agent.AgentTypeOmp:
+		return string(agent.AgentTypeOmp)
 	case agent.AgentTypeCursor:
 		return string(agent.AgentTypeCursor)
 	case agent.AgentTypeWindsurf:

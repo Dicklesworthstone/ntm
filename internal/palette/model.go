@@ -1921,6 +1921,7 @@ func isKnownPaletteAgentCategory(category agent.AgentType) bool {
 	case agent.AgentTypeClaudeCode,
 		agent.AgentTypeCodex,
 		agent.AgentTypeGemini,
+		agent.AgentTypeOmp,
 		agent.AgentTypeCursor,
 		agent.AgentTypeWindsurf,
 		agent.AgentTypeAider,

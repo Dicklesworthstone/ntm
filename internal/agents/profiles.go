@@ -543,6 +543,8 @@ func NormalizeAgentType(t string) string {
 		return "gemini"
 	case agentpkg.AgentTypeAntigravity:
 		return "antigravity"
+	case agentpkg.AgentTypeOmp:
+		return "omp"
 	case agentpkg.AgentTypeCursor:
 		return "cursor"
 	case agentpkg.AgentTypeWindsurf:

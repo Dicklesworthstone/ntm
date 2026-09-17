@@ -305,6 +305,7 @@ func isValidWebhookAgentType(agentType string) bool {
 	case agent.AgentTypeClaudeCode,
 		agent.AgentTypeCodex,
 		agent.AgentTypeGemini,
+		agent.AgentTypeOmp,
 		agent.AgentTypeCursor,
 		agent.AgentTypeWindsurf,
 		agent.AgentTypeAider,

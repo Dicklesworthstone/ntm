@@ -374,6 +374,8 @@ func agentTypeShort(agentType string) string {
 		return "gmi"
 	case agent.AgentTypeAntigravity:
 		return "agy"
+	case agent.AgentTypeOmp:
+		return "omp"
 	case agent.AgentTypeCursor:
 		return "cursor"
 	case agent.AgentTypeWindsurf:
@@ -400,6 +402,8 @@ func agentTypeLong(shortType string) string {
 		return "gemini"
 	case agent.AgentTypeAntigravity:
 		return "antigravity"
+	case agent.AgentTypeOmp:
+		return "omp"
 	case agent.AgentTypeCursor:
 		return "cursor"
 	case agent.AgentTypeWindsurf:

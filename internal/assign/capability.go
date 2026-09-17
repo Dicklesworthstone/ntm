@@ -218,6 +218,8 @@ func ParseAgentType(s string) tmux.AgentType {
 		return tmux.AgentGemini
 	case agent.AgentTypeAntigravity:
 		return tmux.AgentAntigravity
+	case agent.AgentTypeOmp:
+		return tmux.AgentOmp
 	case agent.AgentTypeCursor:
 		return tmux.AgentCursor
 	case agent.AgentTypeWindsurf:
