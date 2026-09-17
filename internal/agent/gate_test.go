@@ -143,3 +143,48 @@ func TestDetectInteractiveGate_NarrowPaneWindowScales(t *testing.T) {
 		t.Error("DetectInteractiveGate did not scale the window for a narrow pane")
 	}
 }
+
+func TestTrustDialogVisibleRequiresLiveDecisionFrame(t *testing.T) {
+	t.Parallel()
+	grok := "Grok Build may run or modify contents in this directory,\nposing security risks.\nYes, proceed  y\nNo, quit  n\n"
+	claude := "Quick safety check: Is this a project you created or one you trust?\n❯ No, exit\n  Yes, I trust this folder\nEnter to confirm · Esc to cancel\n"
+	for _, tc := range []struct {
+		name, capture string
+		want          bool
+	}{
+		{"antigravity", gateTrustDialogFixture, true},
+		{"claude", claude, true},
+		{"grok hotkeys", grok, true},
+		{"no visible cursor still owns input", strings.Replace(claude, "❯", " ", 1), true},
+		{"numbered", strings.Replace(claude, "❯ No, exit\n  Yes", "❯ 1. No, exit\n  2. Yes", 1), true},
+		{"wrapped question", strings.Replace(claude, "you created or one", "you created\nor one", 1), true},
+		{"ANSI selection", strings.Replace(claude, "❯", "\x1b[32m❯\x1b[0m", 1), true},
+		{"idle quote", claude + "❯ ", false},
+		{"codex idle quote", claude + "› Ask Codex", false},
+		{"grok idle quote", grok + "│ ❯ │", false},
+		{"fenced quote", "```text\n" + claude + "```", false},
+		{"normal response after menu", grok + "The workspace is ready.", false},
+		{"unrelated yes no prose", "We should trust user input.\nYes, it is fine\nNo, it is not", false},
+		{"not workspace trust", "Run the tests?\n❯ Yes, run\n  No, cancel\nEnter to confirm", false},
+		{"no decision frame", "Do you trust this folder?", false},
+		{"hotkey pair incomplete", strings.Replace(grok, "  n", "", 1), false},
+		{"empty", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := TrustDialogVisible(tc.capture); got != tc.want {
+				t.Errorf("TrustDialogVisible = %v, want %v for %q", got, tc.want, tc.capture)
+			}
+		})
+	}
+}
+
+func TestDetectInteractiveGateGrokTrustMenu(t *testing.T) {
+	t.Parallel()
+	fixture := "Grok Build may run or modify contents in this directory,\nposing security risks.\nYes, proceed  y\nNo, quit  n"
+	if gate, ok := DetectInteractiveGate(fixture, 0); !ok || gate != "workspace trust dialog" {
+		t.Fatalf("Grok trust gate = %q, %v", gate, ok)
+	}
+	if _, ok := DetectInteractiveGate(fixture+"\n│ ❯ │", 0); ok {
+		t.Fatal("Grok menu remaining above the live composer is not a gate")
+	}
+}

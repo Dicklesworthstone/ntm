@@ -240,7 +240,7 @@ No, quit                     n
 func TestDialogUnnumberedProviderProtocols(t *testing.T) {
 	for _, tc := range []struct {
 		name, capture, agent, mode, choice string
-		keys                              []string
+		keys                               []string
 	}{
 		{"claude accept is second", claudeCursorTrustFixture, "claude", "cursor", "option-2", []string{"Down", "Enter"}},
 		{"claude decline is selected", claudeCursorTrustFixture, "claude", "cursor", "decline", []string{"Enter"}},

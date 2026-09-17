@@ -12,6 +12,7 @@ package agent
 // "✓ OK / active" while it could never accept work.
 
 import (
+	"regexp"
 	"strings"
 
 	"github.com/Dicklesworthstone/ntm/internal/util"
@@ -106,5 +107,81 @@ func DetectInteractiveGate(content string, paneWidth int) (gate string, found bo
 			return marker, true
 		}
 	}
+	// Grok's workspace gate never says "trust". Require its actual decision
+	// frame, rather than adding generic "security risks" prose as a marker.
+	if TrustDialogVisible(clean) {
+		return "workspace trust dialog", true
+	}
 	return "", false
+}
+
+var (
+	trustDialogChoicePattern = regexp.MustCompile(`(?i)^\s*([❯>]\s*)?(?:[1-9]\.\s+)?(yes|no)\b.*$`)
+	trustDialogHotkeyPattern = regexp.MustCompile(`(?i)[\t ]{2,}([yn])\s*$`)
+)
+
+// TrustDialogVisible reports a live workspace-trust decision frame, not just
+// a trust phrase in a transcript. Unlike the advisory health detector above,
+// this predicate is strict enough to gate prompt delivery: a current yes/no
+// menu must end the capture and show confirmation chrome or explicit y/n
+// hotkeys. A new composer, a response, or a closing Markdown fence below the
+// menu proves it is history and never blocks delivery.
+//
+// No choice is made here. A menu without a selected cursor still owns input,
+// and therefore still blocks a normal send, even if it cannot yet be answered
+// safely by --robot-answer-dialog. This also covers agent families for which
+// the generic composer readiness check has no known composer glyph.
+func TrustDialogVisible(content string) bool {
+	lines := strings.Split(strings.TrimSpace(stripANSICodes(content)), "\n")
+	confirm, yes, no := false, false, false
+	choices, hotkeys := 0, 0
+	first := len(lines)
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+		lower := strings.ToLower(line)
+		if choices == 0 && ((strings.Contains(lower, "enter") && strings.Contains(lower, "confirm")) ||
+			(strings.Contains(lower, "esc") && strings.Contains(lower, "cancel"))) {
+			confirm = true
+			continue
+		}
+		match := trustDialogChoicePattern.FindStringSubmatch(line)
+		if match == nil {
+			break
+		}
+		first = i
+		choices++
+		if choices > 9 {
+			return false
+		}
+		decision := strings.ToLower(match[2])
+		yes = yes || decision == "yes"
+		no = no || decision == "no"
+		if key := trustDialogHotkeyPattern.FindStringSubmatch(line); key != nil &&
+			strings.EqualFold(key[1], decision[:1]) {
+			hotkeys++
+		}
+	}
+	if !yes || !no || (!confirm && hotkeys != choices) {
+		return false
+	}
+	// Collapse hard wraps in the explanatory text, so narrow panes retain
+	// the same trust evidence as a full-width capture. Never match arbitrary
+	// "trust" or "security" words from source code or agent discussion.
+	header := strings.ToLower(strings.Join(strings.Fields(strings.Join(lines[:first], "\n")), " "))
+	for _, marker := range []string{
+		"is this a project you created or one you trust",
+		"do you trust the contents of this project",
+		"do you trust the files in this folder",
+		"do you trust this folder",
+		"trust this workspace",
+	} {
+		if strings.Contains(header, marker) {
+			return true
+		}
+	}
+	return strings.Contains(header, "grok build may run or modify contents") &&
+		strings.Contains(header, "security risks")
 }
