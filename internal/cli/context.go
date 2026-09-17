@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -244,13 +243,16 @@ func newContextClearCmd() *cobra.Command {
 
 // ContextInjectResult is the JSON output for the context inject command.
 type ContextInjectResult struct {
-	Success       bool     `json:"success"`
-	Session       string   `json:"session"`
-	InjectedFiles []string `json:"injected_files"`
-	TotalBytes    int      `json:"total_bytes"`
-	Truncated     bool     `json:"truncated"`
-	PanesInjected []int    `json:"panes_injected"`
-	Error         string   `json:"error,omitempty"`
+	Success       bool                  `json:"success"`
+	Session       string                `json:"session"`
+	InjectedFiles []string              `json:"injected_files"`
+	TotalBytes    int                   `json:"total_bytes"`
+	Truncated     bool                  `json:"truncated"`
+	PanesInjected []int                 `json:"panes_injected"`
+	Error         string                `json:"error,omitempty"`
+	DryRun        bool                  `json:"dry_run"`
+	PanesPlanned  []int                 `json:"panes_planned,omitempty"`
+	Deliveries    []ContextPaneDelivery `json:"deliveries,omitempty"`
 }
 
 func init() {
@@ -315,39 +317,24 @@ func selectContextInjectTargetPanes(panes []tmux.Pane, paneIdx int, targetAll bo
 
 type contextInjectSender func(target, content string, enter bool) error
 
-// injectContextIntoPanes preflights the complete batch before the first write.
-// This preserves all-or-nothing admission even though individual tmux delivery
-// failures retain the command's existing best-effort behavior.
+// injectContextIntoPanes adapts the uniform-content robot injection path to
+// the same batch dispatcher used by context inject. Its error includes the
+// delivered pane IDs so a partial delivery must not be blindly replayed.
 func injectContextIntoPanes(session string, panes []tmux.Pane, content string, dryRun bool, sender contextInjectSender) ([]int, error) {
-	for _, pane := range panes {
-		if err := pane.Type.ValidateAutomatedPromptDelivery(); err != nil {
-			return []int{}, fmt.Errorf("context injection for pane %d: %w", pane.Index, err)
+	var send contextPaneSender
+	if sender != nil {
+		send = func(_ context.Context, pane tmux.Pane, text string) error {
+			return sender(pane.ID, text, true)
 		}
 	}
-
-	injectedPanes := make([]int, 0, len(panes))
-	if dryRun {
-		for _, pane := range panes {
-			injectedPanes = append(injectedPanes, pane.Index)
+	receipts, err := dispatchContextRequests(context.Background(), session, uniformContextRequests(panes, content), dryRun, send)
+	injected := make([]int, 0, len(receipts))
+	for _, receipt := range receipts {
+		if receipt.Status == "delivered" || (dryRun && receipt.Status == "planned") {
+			injected = append(injected, receipt.Pane)
 		}
-		return injectedPanes, nil
 	}
-	if sender == nil {
-		return []int{}, fmt.Errorf("context injection sender is required")
-	}
-
-	for _, pane := range panes {
-		if err := sender(pane.ID, content, true); err != nil {
-			slog.Warn("failed to send context to pane",
-				"session", session,
-				"pane", pane.Index,
-				"error", err,
-			)
-			continue
-		}
-		injectedPanes = append(injectedPanes, pane.Index)
-	}
-	return injectedPanes, nil
+	return injected, err
 }
 
 // formatContextInjectContent reads files and formats them for injection.
@@ -524,34 +511,21 @@ Use --files to override the file list.`,
 				return err
 			}
 
-			injectedPanes, err := injectContextIntoPanes(session, targetPanes, content, dryRun, tmux.SendKeys)
-			if err != nil {
-				if IsJSONOutput() {
-					return emitInjectFailure(ContextInjectResult{
-						Success: false,
-						Session: session,
-						Error:   err.Error(),
-					})
-				}
-				return err
-			}
-
-			result := ContextInjectResult{
-				Success:       true,
-				Session:       session,
-				InjectedFiles: injected,
-				TotalBytes:    len(content),
-				Truncated:     truncated,
-				PanesInjected: injectedPanes,
-			}
+			receipts, sendErr := dispatchContextRequests(cmd.Context(), session, uniformContextRequests(targetPanes, content), dryRun, sendContextToPane)
+			result := contextInjectionResult(session, injected, len(content), truncated, dryRun, receipts, sendErr)
 
 			if IsJSONOutput() {
+				if sendErr != nil {
+					return emitInjectFailure(result)
+				}
 				return output.PrintJSON(result)
 			}
 
 			// Human-readable output
 			if dryRun {
 				fmt.Println("[dry-run] Would inject context:")
+			} else if sendErr != nil {
+				fmt.Println("Context injection incomplete:")
 			} else {
 				fmt.Println("Context injected:")
 			}
@@ -561,9 +535,12 @@ Use --files to override the file list.`,
 			if truncated {
 				fmt.Println("  (content was truncated)")
 			}
-			fmt.Printf("  Panes:   %v\n", injectedPanes)
+			fmt.Printf("  Delivered panes: %v\n", result.PanesInjected)
+			if dryRun {
+				fmt.Printf("  Planned panes:   %v\n", result.PanesPlanned)
+			}
 
-			return nil
+			return sendErr
 		},
 	}
 
