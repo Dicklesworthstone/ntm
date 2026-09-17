@@ -1475,6 +1475,10 @@ func calculateMatchConfidence(agentType string, bead bv.BeadPreview, strategy st
 		"claude": {"analysis": 0.9, "refactor": 0.9, "documentation": 0.8, "feature": 0.8, "bug": 0.7},
 		"codex":  {"feature": 0.9, "bug": 0.8, "task": 0.8, "refactor": 0.6},
 		"gemini": {"documentation": 0.9, "analysis": 0.8, "feature": 0.8},
+		// omp follows whichever frontier model its roles select: the midpoint
+		// of the claude and codex rows (0.7 base where a row is silent), the
+		// same basis as its assign.DefaultCapabilities profile.
+		"omp": {"analysis": 0.8, "refactor": 0.75, "documentation": 0.75, "feature": 0.85, "bug": 0.75, "task": 0.75},
 	}
 
 	if agentStrengths, ok := strengths[agentType]; ok {

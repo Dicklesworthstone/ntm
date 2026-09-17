@@ -113,6 +113,24 @@ var DefaultCapabilities = map[tmux.AgentType]map[TaskType]float64{
 		TaskChore:         0.85,
 		TaskEpic:          0.60,
 	},
+	// Oh My Pi (omp) is a model-agnostic frontier coding harness: its
+	// strengths follow whichever model its model roles select (Claude,
+	// GPT-class, and other frontier models behind one TUI), so no single
+	// vendor's skew applies. Basis: the per-task midpoint of the Claude and
+	// Codex profiles above, the two frontier CLI agents it is deployed
+	// alongside (rounded half up to two decimals).
+	tmux.AgentOmp: {
+		TaskRefactor:      0.85, // (0.95 + 0.75) / 2
+		TaskAnalysis:      0.80, // (0.90 + 0.70) / 2
+		TaskDocs:          0.78, // (0.85 + 0.70) / 2
+		TaskDocumentation: 0.78,
+		TaskBug:           0.85, // (0.80 + 0.90) / 2
+		TaskFeature:       0.88, // (0.85 + 0.90) / 2
+		TaskTesting:       0.80, // (0.75 + 0.85) / 2
+		TaskTask:          0.83, // (0.80 + 0.85) / 2
+		TaskChore:         0.75, // (0.70 + 0.80) / 2
+		TaskEpic:          0.75, // (0.90 + 0.60) / 2
+	},
 	tmux.AgentOllama: {
 		TaskRefactor:      0.70,
 		TaskAnalysis:      0.75,

@@ -8,6 +8,8 @@ import (
 	"time"
 
 	agentpkg "github.com/Dicklesworthstone/ntm/internal/agent"
+	"github.com/Dicklesworthstone/ntm/internal/assign"
+	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/output"
 	statuspkg "github.com/Dicklesworthstone/ntm/internal/status"
@@ -317,5 +319,27 @@ func TestOmpVerifyBootAcceptsWorkingOnInjectedPrompt(t *testing.T) {
 		map[string]bool{pane.ID: true, other.ID: true})
 	if ready != 1 || err == nil || !strings.Contains(err.Error(), "pane 2") || strings.Contains(err.Error(), "pane 1 ") {
 		t.Fatalf("mixed session: ready=%d err=%v, want only pane 2 named", ready, err)
+	}
+}
+
+// TestOmpAssignmentScoring pins omp's profile on both CLI assignment scorers:
+// the capability matrix used by allocation/quality planning and the
+// strategy confidence table, so --assign never scores omp as unprofiled.
+func TestOmpAssignmentScoring(t *testing.T) {
+	if got := assign.GetAgentScoreByString("omp", string(assign.TaskFeature)); got != 0.88 {
+		t.Fatalf("matrix omp feature = %.2f, want 0.88", got)
+	}
+	for title, want := range map[string]float64{
+		"Implement the new export endpoint": 0.85,
+		"Investigate slow startup":          0.8,
+	} {
+		bead := bv.BeadPreview{Title: title}
+		got := calculateMatchConfidence("omp", bead, "balanced")
+		if got != want {
+			t.Errorf("calculateMatchConfidence(omp, %q) = %.2f, want %.2f", title, got, want)
+		}
+		if unprofiled := calculateMatchConfidence("not-a-harness", bead, "balanced"); got == unprofiled {
+			t.Errorf("omp scored like an unprofiled agent (%.2f) for %q", got, title)
+		}
 	}
 }
