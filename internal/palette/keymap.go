@@ -73,6 +73,7 @@ type targetKeyMap struct {
 	Target3      key.Binding
 	Target4      key.Binding
 	Target5      key.Binding
+	TargetOmp    key.Binding
 	SelectAgents key.Binding
 	Edit         key.Binding
 	Help         key.Binding
@@ -86,6 +87,7 @@ var targetKeys = targetKeyMap{
 	Target3:      key.NewBinding(key.WithKeys("3"), key.WithHelp("3", "codex")),
 	Target4:      key.NewBinding(key.WithKeys("4"), key.WithHelp("4", "gemini")),
 	Target5:      key.NewBinding(key.WithKeys("5"), key.WithHelp("5", "antigravity")),
+	TargetOmp:    key.NewBinding(key.WithKeys("7"), key.WithHelp("7", "omp")),
 	SelectAgents: key.NewBinding(key.WithKeys("6"), key.WithHelp("6", "pick agents")),
 	Edit:         key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "edit prompt")),
 	Help:         key.NewBinding(key.WithKeys("?", "f1"), key.WithHelp("?", "help")),
@@ -255,6 +257,7 @@ func targetHelpEntries() []helpEntry {
 	k := targetKeys
 	return []helpEntry{
 		entryLabeled("1-5", "select target", k.Target1, k.Target2, k.Target3, k.Target4, k.Target5),
+		entry("omp", k.TargetOmp),
 		entry("pick agents", k.SelectAgents),
 		entry("edit prompt", k.Edit),
 		entry("help", k.Help),
@@ -269,6 +272,7 @@ func targetOverlayEntries() []helpEntry {
 	return []helpEntry{
 		entryLabeled("1-5", "Send to all / claude / codex / gemini / antigravity",
 			k.Target1, k.Target2, k.Target3, k.Target4, k.Target5),
+		entry("Send to Oh My Pi (omp) agents", k.TargetOmp),
 		entry("Pick specific agent panes", k.SelectAgents),
 		entry("Edit prompt before sending", k.Edit),
 		entry("Toggle this help", k.Help),

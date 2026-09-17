@@ -1310,6 +1310,70 @@ func TestSendDeliversMixedGrokBatchToEveryPane(t *testing.T) {
 	}
 }
 
+// TestOmpQuickTarget pins the palette's omp quick-select: key 7 targets only omp
+// panes (the documented "6 = pick agents" binding is unchanged), the target
+// rows advertise omp with its pane count and samples, and help lists the key.
+func TestOmpQuickTarget(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	m := New("omp-swarm", testCommands)
+	m.phase = PhaseTarget
+	m.selected = &testCommands[0]
+	m.paneCountsKnown = true
+	m.paneCounts = paneCounts{totalAgents: 3, claude: 1, omp: 2,
+		allSamples: []string{"omp-swarm__cc_1", "omp-swarm__omp_1", "omp-swarm__omp_2"},
+		ompSamples: []string{"omp-swarm__omp_1", "omp-swarm__omp_2"}}
+	newModel, _ := m.Update(tea.WindowSizeMsg{Width: 220, Height: 50})
+	m = newModel.(Model)
+	view := stripANSI(m.View())
+	for _, want := range []string{"Oh My Pi (omp) (2)", "omp-swarm__omp_1", "7"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("target phase view missing %q:\n%s", want, view)
+		}
+	}
+	if !key.Matches(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'7'}}, targetKeys.TargetOmp) ||
+		key.Matches(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'6'}}, targetKeys.TargetOmp) {
+		t.Fatal("key 7 (and only 7) must select omp; 6 stays pick-agents")
+	}
+	pressed, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'7'}})
+	if pressed.(Model).target != TargetOmp {
+		t.Fatalf("pressing 7 in the target phase set target %v, want TargetOmp", pressed.(Model).target)
+	}
+	found := false
+	for _, e := range targetOverlayEntries() {
+		if strings.Contains(e.desc, "Oh My Pi") && e.label == "7" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("help overlay must list the omp quick-select key")
+	}
+
+	m.target = TargetOmp
+	sentTargets := []string{}
+	model, _ := m.sendWith(
+		func(string) ([]tmux.Pane, error) {
+			return []tmux.Pane{
+				{ID: "%1", Index: 1, Type: tmux.AgentClaude},
+				{ID: "%2", Index: 2, Type: tmux.AgentOmp},
+				{ID: "%3", Index: 3, Type: tmux.AgentType("oh-my-pi")},
+				{ID: "%4", Index: 4, Type: tmux.AgentUser},
+			}, nil
+		},
+		func(target, _ string, agentType tmux.AgentType) error {
+			if agentType.Canonical() != tmux.AgentOmp {
+				t.Fatalf("omp target dispatched to %s (%s)", target, agentType)
+			}
+			sentTargets = append(sentTargets, target)
+			return nil
+		},
+	)
+	got := model.(Model)
+	if got.err != nil || !reflect.DeepEqual(sentTargets, []string{"%2", "%3"}) {
+		t.Fatalf("omp quick target sent to %v (err %v), want the two omp panes", sentTargets, got.err)
+	}
+}
+
 // --- #205: granular per-agent multi-select ---
 
 func newAgentSelectModel() Model {

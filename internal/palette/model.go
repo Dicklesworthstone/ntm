@@ -51,6 +51,9 @@ const (
 	TargetGemini
 	TargetAntigravity
 	TargetSelected // explicit per-pane selection (#205)
+	// TargetOmp is appended (key 7) so existing target values and the
+	// documented "6 = pick agents" binding stay stable.
+	TargetOmp
 )
 
 // ReloadMsg is emitted when palette commands are reloaded from config changes.
@@ -64,6 +67,7 @@ type paneCounts struct {
 	codex       int
 	gemini      int
 	antigravity int
+	omp         int
 
 	// Representative pane titles per target (best-effort, used for UI clarity).
 	allSamples         []string
@@ -71,6 +75,7 @@ type paneCounts struct {
 	codexSamples       []string
 	geminiSamples      []string
 	antigravitySamples []string
+	ompSamples         []string
 }
 
 type paneCountsMsg struct {
@@ -363,6 +368,9 @@ func (m Model) fetchPaneCounts() tea.Cmd {
 			case tmux.AgentAntigravity:
 				counts.antigravity++
 				addSample(&counts.antigravitySamples, title, maxTypeSamples)
+			case tmux.AgentOmp:
+				counts.omp++
+				addSample(&counts.ompSamples, title, maxTypeSamples)
 			}
 		}
 
@@ -848,6 +856,10 @@ func (m *Model) updateTargetPhase(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.target = TargetAntigravity
 		return m.send()
 
+	case key.Matches(msg, targetKeys.TargetOmp):
+		m.target = TargetOmp
+		return m.send()
+
 	case key.Matches(msg, targetKeys.SelectAgents):
 		return m.enterSelectAgentsPhase()
 	}
@@ -1319,6 +1331,8 @@ func (m *Model) sendWith(
 			shouldSend = p.Type == tmux.AgentGemini
 		case TargetAntigravity:
 			shouldSend = p.Type == tmux.AgentAntigravity
+		case TargetOmp:
+			shouldSend = p.Type.Canonical() == tmux.AgentOmp
 		case TargetSelected:
 			// Explicit per-pane selection (#205): send only to checked agent panes.
 			shouldSend = p.Type != tmux.AgentUser && m.agentChecked[p.ID]
@@ -1516,6 +1530,10 @@ func (m Model) viewQuitting() string {
 			targetName = "Antigravity"
 			targetColor = string(t.Lavender)
 			targetIcon = ic.Gemini
+		case TargetOmp:
+			targetName = "Oh My Pi"
+			targetColor = string(t.Sky)
+			targetIcon = ic.Robot
 		case TargetSelected:
 			targetName = "selected agents"
 			targetColor = string(t.Mauve)
@@ -1994,6 +2012,8 @@ func (m Model) samplePaneTitlesForTargetKey(key string, max int) []string {
 		src = m.paneCounts.geminiSamples
 	case "5":
 		src = m.paneCounts.antigravitySamples
+	case "7":
+		src = m.paneCounts.ompSamples
 	}
 
 	if len(src) > max {
@@ -2167,6 +2187,7 @@ func (m Model) viewTargetPhase() string {
 		{"3", ic.Codex, "Codex (cod)", "OpenAI agents", t.Codex, t.Surface0},
 		{"4", ic.Gemini, "Gemini (gmi)", "Google agents (legacy)", t.Gemini, t.Surface0},
 		{"5", ic.Gemini, "Antigravity (agy)", "Google agents", t.Lavender, t.Surface0},
+		{"7", ic.Robot, "Oh My Pi (omp)", "omp agents", t.Sky, t.Surface0},
 		{"6", ic.Target, "Select agents…", "pick specific panes", t.Mauve, t.Surface0},
 	}
 
@@ -2185,6 +2206,8 @@ func (m Model) viewTargetPhase() string {
 				countSuffix = fmt.Sprintf(" (%d)", m.paneCounts.gemini)
 			case "5":
 				countSuffix = fmt.Sprintf(" (%d)", m.paneCounts.antigravity)
+			case "7":
+				countSuffix = fmt.Sprintf(" (%d)", m.paneCounts.omp)
 			case "6":
 				countSuffix = fmt.Sprintf(" (%d)", m.paneCounts.totalAgents)
 			}
