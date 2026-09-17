@@ -1,6 +1,6 @@
 // jobs_dispatch.go is the real async job dispatcher behind POST /api/v1/jobs
-// (D5, bd-ws3-contract-breadth-psvyu.5). The Jobs API accepts exactly three
-// genuinely long operations — pipeline run, swarm spawn, checkpoint restore —
+// (D5, bd-ws3-contract-breadth-psvyu.5). The Jobs API accepts long operations —
+// pipeline run/exec/resume, swarm spawn, and checkpoint restore —
 // and each dispatches to the same production code path the synchronous REST
 // handlers use. A job's terminal state reflects the REAL operation's outcome:
 // a failing operation reaches JobStatusFailed carrying the real error, never a
@@ -24,13 +24,15 @@ import (
 // NOT_IMPLEMENTED at POST time — see handleCreateJob.
 const (
 	JobTypePipelineRun       = "pipeline_run"
+	JobTypePipelineExec      = "pipeline_exec"
+	JobTypePipelineResume    = "pipeline_resume"
 	JobTypeSwarmSpawn        = "swarm_spawn"
 	JobTypeCheckpointRestore = "checkpoint_restore"
 )
 
 // implementedJobTypes lists the allow-listed async operations in the order
 // they are documented.
-var implementedJobTypes = []string{JobTypePipelineRun, JobTypeSwarmSpawn, JobTypeCheckpointRestore}
+var implementedJobTypes = []string{JobTypePipelineRun, JobTypePipelineExec, JobTypePipelineResume, JobTypeSwarmSpawn, JobTypeCheckpointRestore}
 
 func isImplementedJobType(jobType string) bool {
 	for _, t := range implementedJobTypes {
@@ -83,6 +85,10 @@ func (s *Server) dispatchJob(jobID string, req CreateJobRequest) {
 	switch req.Type {
 	case JobTypePipelineRun:
 		result, err = s.jobPipelineRun(ctx, req.Params)
+	case JobTypePipelineExec:
+		result, err = s.jobPipelineExec(ctx, req.Params)
+	case JobTypePipelineResume:
+		result, err = s.jobPipelineResume(ctx, req.Params)
 	case JobTypeSwarmSpawn:
 		result, err = s.jobSwarmSpawn(ctx, req.Params)
 	case JobTypeCheckpointRestore:
