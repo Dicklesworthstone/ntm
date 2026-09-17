@@ -652,11 +652,13 @@ var (
 	// ompEscHintRe matches the activity line's interrupt hint in every symbol
 	// preset, plus the trailing "⟨esc⟩" form earlier omp v18 builds rendered.
 	ompEscHintRe = regexp.MustCompile(`^\s*(?:󱊷|⎋|esc)\s+\S|(?:⟨esc⟩|\[esc\])\s*$|^\s*[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]\s*Working…`)
-	// ompContextPctRe extracts the embedded/annotated context-usage percentage
-	// ("────6%────" or "6.0%/262K").
-	ompContextPctRe = regexp.MustCompile(`(?:^|[\s─\-])(\d{1,3}(?:\.\d+)?)%`)
-	// ompContextWindowRe extracts the context window size ("262K", "1M").
-	ompContextWindowRe = regexp.MustCompile(`(?:%/|[\s─\-])(\d+(?:\.\d+)?)([KkMm])(?:[\s─\-╮+]|$)`)
+	// ompContextGaugeRe extracts the context gauge: the usage percentage and,
+	// when shown, the window size that follows it separated only by rule
+	// fill, dividers and icons ("────6%────┃────262K─", "6.0%/262K", and the
+	// compressed "──69%󰁨262K─" a crowded status line renders). Requiring the
+	// window to follow the percentage keeps a size-like token in the session
+	// title ("… 10K rows") from being read as the window.
+	ompContextGaugeRe = regexp.MustCompile(`(?:^|[\s─\-])(\d{1,3}(?:\.\d+)?)%(?:[^\p{L}\p{N}]*?(\d+(?:\.\d+)?)([KkMm])(?:[^\p{L}\p{N}]|$))?`)
 	// ompPasteTokenRe matches a collapsed bracketed-paste token in the draft.
 	ompPasteTokenRe = regexp.MustCompile(`(?:^|\s)#\d+(?:\s|$)`)
 	// ompPastePreviewFooterRe matches the paste preview box's bottom edge.
@@ -665,6 +667,12 @@ var (
 	// above the activity line when a message is submitted mid-turn
 	// (" Steering · 1", then "   1. <message>" rows and an edit hint).
 	ompSteeringHeaderRe = regexp.MustCompile(`^\s*Steering\s+·\s+(\d+)\s*$`)
+	// ompSubagentsHeaderRe matches the running-subagents panel header omp
+	// draws in the HUD above the activity line while subagents run
+	// (" Subagents", then "  └─ • <Name> ⟨<role>⟩ <task>…" rows).
+	ompSubagentsHeaderRe = regexp.MustCompile(`^\s*Subagents\s*$`)
+	// ompSubagentRowRe matches one running-subagent row under that header.
+	ompSubagentRowRe = regexp.MustCompile(`^\s*(?:[├└]─|[|\\+` + "`" + `]-)\s+[•*]\s+\S`)
 )
 
 const (
@@ -679,6 +687,10 @@ const (
 	// steering header is searched for (header + queued-message previews +
 	// edit hint + activity line).
 	ompSteeringScanLines = 16
+	// ompSubagentsScanLines bounds how far above the composer the subagents
+	// panel header is searched for (header + one row per running subagent +
+	// steering block + activity line).
+	ompSubagentsScanLines = 24
 )
 
 // OmpComposer is the parsed live composer box of an omp pane.
@@ -705,6 +717,10 @@ type OmpComposer struct {
 	// turn runs; 0 when no steering is pending. Pending steering means omp
 	// is busy and will act on it, so it is in-flight evidence too.
 	Steering int
+	// Subagents counts the rows of the running-subagents panel (" Subagents"
+	// header, "└─ • <Name> …" rows) in the HUD above the composer; 0 when no
+	// subagent is listed. Listed subagents are in-flight work.
+	Subagents int
 	// StatusLine is the top border's text after the corner glyphs.
 	StatusLine string
 	// TopLine is the index (in the capture's "\n"-split lines) of the
@@ -716,7 +732,7 @@ type OmpComposer struct {
 
 // Working reports whether the composer shows an in-flight turn.
 func (c OmpComposer) Working() bool {
-	return c.Found && (c.Busy || c.EscHint || c.Steering > 0)
+	return c.Found && (c.Busy || c.EscHint || c.Steering > 0 || c.Subagents > 0)
 }
 
 // ParseOmpComposer locates and parses the bottom-most omp composer box.
@@ -785,6 +801,15 @@ func parseOmpComposerAt(lines []string, bottomIdx int, bottomText string) (OmpCo
 					break
 				}
 			}
+			for k := j - 1; k >= 0 && j-k <= ompSubagentsScanLines; k-- {
+				if !ompSubagentsHeaderRe.MatchString(lines[k]) {
+					continue
+				}
+				for r := k + 1; r < j && ompSubagentRowRe.MatchString(lines[r]); r++ {
+					composer.Subagents++
+				}
+				break
+			}
 			if composer.Draft != "" && ompPasteTokenRe.MatchString(composer.Draft) {
 				for k := j - 1; k >= 0 && j-k <= 2; k-- {
 					if ompPastePreviewFooterRe.MatchString(lines[k]) {
@@ -805,8 +830,9 @@ func parseOmpComposerAt(lines []string, bottomIdx int, bottomText string) (OmpCo
 }
 
 // OmpActivelyWorking reports whether an omp pane shows an in-flight turn: the
-// composer's top border carries the spinner + elapsed timer, or the activity
-// line above it carries the Esc interrupt hint. paneWidth is accepted for
+// composer's top border carries the spinner + elapsed timer, the activity
+// line above it carries the Esc interrupt hint, steering is pending, or the
+// HUD lists running subagents. paneWidth is accepted for
 // parity with the other detectors; omp's chrome is anchored to the composer
 // box, not to a width-dependent tail window.
 func OmpActivelyWorking(output string, _ int) bool {
@@ -829,7 +855,7 @@ func OmpContextUsage(output string) (usedPct float64, windowTokens int64, ok boo
 	if !c.Found {
 		return 0, 0, false
 	}
-	m := ompContextPctRe.FindStringSubmatch(c.StatusLine)
+	m := ompContextGaugeRe.FindStringSubmatch(c.StatusLine)
 	if m == nil {
 		return 0, 0, false
 	}
@@ -837,11 +863,10 @@ func OmpContextUsage(output string) (usedPct float64, windowTokens int64, ok boo
 	if err != nil || pct < 0 || pct > 100 {
 		return 0, 0, false
 	}
-	if w := ompContextWindowRe.FindAllStringSubmatch(c.StatusLine, -1); len(w) > 0 {
-		last := w[len(w)-1]
-		if size, err := strconv.ParseFloat(last[1], 64); err == nil {
+	if m[2] != "" {
+		if size, err := strconv.ParseFloat(m[2], 64); err == nil {
 			multiplier := 1000.0
-			if strings.EqualFold(last[2], "m") {
+			if strings.EqualFold(m[3], "m") {
 				multiplier = 1000000.0
 			}
 			windowTokens = int64(size * multiplier)

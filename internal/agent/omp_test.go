@@ -51,6 +51,7 @@ func TestParseOmpComposer_RealCaptures(t *testing.T) {
 		pasteToken bool
 		rowsBelow  int
 		steering   int
+		subagents  int
 	}{
 		{file: "omp_nerd_idle_fresh.txt", found: true},
 		{file: "omp_nerd_draft.txt", found: true, draft: "reply with the word ok"},
@@ -72,15 +73,20 @@ func TestParseOmpComposer_RealCaptures(t *testing.T) {
 		{file: "omp_unicode_steering.txt", found: true, busy: true, escHint: true, steering: 1},
 		{file: "omp_ascii_working.txt", found: true, busy: true, escHint: true},
 		{file: "omp_ascii_idle_done.txt", found: true},
+		// A long turn in a real swarm pane: background-job box, TODO tree and
+		// an intent label ("Waiting for …") in place of "Working…"; the tree's
+		// "└─────" edge must not be mistaken for the composer.
+		{file: "omp_nerd_working_todo.txt", found: true, busy: true, escHint: true},
+		{file: "omp_nerd_working_subagents.txt", found: true, busy: true, escHint: true, subagents: 1},
 	}
 	for _, tc := range tests {
 		t.Run(tc.file, func(t *testing.T) {
 			got := ParseOmpComposer(loadTestData(t, tc.file))
 			if got.Found != tc.found || got.Busy != tc.busy || got.EscHint != tc.escHint ||
 				got.Draft != tc.draft || got.PasteToken != tc.pasteToken || got.RowsBelow != tc.rowsBelow ||
-				got.Steering != tc.steering {
-				t.Fatalf("ParseOmpComposer = %+v\nwant found=%v busy=%v escHint=%v draft=%q pasteToken=%v rowsBelow=%d steering=%d",
-					got, tc.found, tc.busy, tc.escHint, tc.draft, tc.pasteToken, tc.rowsBelow, tc.steering)
+				got.Steering != tc.steering || got.Subagents != tc.subagents {
+				t.Fatalf("ParseOmpComposer = %+v\nwant found=%v busy=%v escHint=%v draft=%q pasteToken=%v rowsBelow=%d steering=%d subagents=%d",
+					got, tc.found, tc.busy, tc.escHint, tc.draft, tc.pasteToken, tc.rowsBelow, tc.steering, tc.subagents)
 			}
 		})
 	}
@@ -99,6 +105,32 @@ func TestOmpSteeringAloneIsWorking(t *testing.T) {
 	}
 	if !OmpActivelyWorking(quiet, 0) || OmpIdlePromptShowing(quiet) {
 		t.Fatal("pending steering must read as working, never idle")
+	}
+}
+
+// TestOmpSubagentsPanelIsWorking pins the running-subagents panel as in-flight
+// chrome on its own, and that the TODO tree alone is not: a plan can outlive
+// the turn that wrote it, and reading it as busy would wedge delivery.
+func TestOmpSubagentsPanelIsWorking(t *testing.T) {
+	live := loadTestData(t, "omp_nerd_working_subagents.txt")
+	quiet := strings.Replace(live, "  󱊷 Reading executable restrictor facade fixture\n", "", 1)
+	quiet = strings.Replace(quiet, "╭── ⠧ 3m ", "╭── 󰵗 ", 1)
+	c := ParseOmpComposer(quiet)
+	if c.Busy || c.EscHint || c.Subagents != 1 {
+		t.Fatalf("fixture edit did not isolate the subagents panel: %+v", c)
+	}
+	if !OmpActivelyWorking(quiet, 0) || OmpIdlePromptShowing(quiet) {
+		t.Fatal("a listed running subagent must read as working, never idle")
+	}
+
+	todoOnly := strings.Replace(quiet, " Subagents\n  └─ • RestrictorContracts ⟨scout⟩ Complete assignment thoroughly: ↵ # Tar…\n", "", 1)
+	if c := ParseOmpComposer(todoOnly); c.Subagents != 0 || c.Working() {
+		t.Fatalf("the TODO tree alone must not read as working: %+v", c)
+	}
+	// A transcript line that merely says "Subagents" with no rows is not a panel.
+	prose := strings.Replace(todoOnly, " TODO\n", " Subagents\n\n TODO\n", 1)
+	if c := ParseOmpComposer(prose); c.Subagents != 0 {
+		t.Fatalf("a bare Subagents line without rows must not count: %+v", c)
 	}
 }
 
@@ -294,6 +326,15 @@ func TestOmpContextUsage(t *testing.T) {
 		{name: "embedded gauge", capture: loadTestData(t, "omp_nerd_idle_done.txt"), pct: 7, window: 262000, ok: true},
 		{name: "ascii gauge", capture: loadTestData(t, "omp_ascii_working.txt"), pct: 6, window: 262000, ok: true},
 		{name: "provider error frame", capture: loadTestData(t, "omp_nerd_api_error.txt"), pct: 12, window: 131000, ok: true},
+		// A crowded status line drops the rule fill between the percentage
+		// and the window ("──69%󰁨262K─"); the session title follows.
+		{name: "crowded status line", capture: loadTestData(t, "omp_nerd_working_todo.txt"), pct: 69, window: 262000, ok: true},
+		{
+			// A size-like token in the session title is never the window.
+			name:    "title token after a window-less gauge",
+			capture: "╭── 󰵗   Union Alpha   omp-probe ────41%──────  Load 10K rows ──╮\n╰─                                  ─╯",
+			pct:     41, ok: true,
+		},
 		{
 			// statusLine.contextLine=annotated renders "6.0%/262K" (live capture).
 			name:    "annotated",
