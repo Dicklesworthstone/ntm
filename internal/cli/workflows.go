@@ -159,6 +159,8 @@ Examples:
 	cmd.AddCommand(newWorkflowsListCmd())
 	cmd.AddCommand(newWorkflowsShowCmd())
 	cmd.AddCommand(newWorkflowsRunCmd())
+	cmd.AddCommand(newWorkflowCheckpointCmd("status"))
+	cmd.AddCommand(newWorkflowCheckpointCmd("recover"))
 
 	return cmd
 }
