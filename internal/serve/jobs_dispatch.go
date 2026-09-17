@@ -242,11 +242,12 @@ func (s *Server) jobSwarmSpawn(ctx context.Context, params map[string]interface{
 	return toJSONMap(result)
 }
 
-// jobCheckpointRestoreParams mirrors RestoreCheckpointRequest plus the target
-// session and checkpoint identity carried in the URL for the synchronous route.
+// jobCheckpointRestoreParams identifies the source artifact separately from
+// the optional destination. The source remains the storage namespace.
 type jobCheckpointRestoreParams struct {
-	Session      string `json:"session"`
-	CheckpointID string `json:"checkpoint_id"`
+	Session       string `json:"session"`
+	CheckpointID  string `json:"checkpoint_id"`
+	TargetSession string `json:"target_session,omitempty"`
 	RestoreCheckpointRequest
 }
 
@@ -266,6 +267,11 @@ func (s *Server) jobCheckpointRestore(ctx context.Context, params map[string]int
 	if req.CheckpointID == "" {
 		return nil, fmt.Errorf("checkpoint_id is required")
 	}
+	if req.TargetSession != "" {
+		if err := tmux.ValidateSessionName(req.TargetSession); err != nil {
+			return nil, fmt.Errorf("invalid restore target session: %w", err)
+		}
+	}
 	if err := tmux.ValidateSessionName(req.Session); err != nil {
 		return nil, fmt.Errorf("invalid session name: %w", err)
 	}
@@ -281,6 +287,7 @@ func (s *Server) jobCheckpointRestore(ctx context.Context, params map[string]int
 
 	restorer := checkpoint.NewRestorerWithStorage(storage)
 	result, err := restorer.RestoreFromCheckpointContext(ctx, cp, checkpoint.RestoreOptions{
+		TargetSession:   req.TargetSession,
 		Force:           req.Force,
 		SkipGitCheck:    req.SkipGitCheck,
 		InjectContext:   req.InjectContext,
@@ -292,6 +299,7 @@ func (s *Server) jobCheckpointRestore(ctx context.Context, params map[string]int
 	if result != nil {
 		payload = map[string]interface{}{
 			"session_name":     result.SessionName,
+			"source_session":   result.SourceSession,
 			"panes_restored":   result.PanesRestored,
 			"context_injected": result.ContextInjected,
 			"dry_run":          result.DryRun,

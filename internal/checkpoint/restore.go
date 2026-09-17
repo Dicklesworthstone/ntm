@@ -29,6 +29,10 @@ var errWorkingDirNotDirectory = errors.New("not a directory")
 
 // RestoreOptions configures how a checkpoint is restored.
 type RestoreOptions struct {
+	// TargetSession restores into a different tmux session without renaming the
+	// stored checkpoint. Empty uses its original session. This isolates tmux
+	// state, not files: use CustomDirectory for a separate working tree.
+	TargetSession string
 	// Force kills any existing session with the same name
 	Force bool
 	// SkipGitCheck skips warning about git state mismatch
@@ -47,6 +51,8 @@ type RestoreOptions struct {
 type RestoreResult struct {
 	// SessionName is the restored session name
 	SessionName string
+	// SourceSession is the immutable storage namespace of the checkpoint.
+	SourceSession string
 	// PanesRestored is the number of panes created
 	PanesRestored int
 	// ContextInjected indicates if scrollback was sent to agents
@@ -75,6 +81,9 @@ type Restorer struct {
 	// ctx is set only on an operation-local copy, never on a shared Restorer.
 	// This keeps one implementation for the context-aware and convenience APIs.
 	ctx context.Context
+	// sourceSession remains the checkpoint's storage namespace when restoring
+	// into another session. Like ctx, it belongs only to an operation-local copy.
+	sourceSession string
 }
 
 // NewRestorer creates a new Restorer with default storage.
@@ -104,8 +113,38 @@ func (r *Restorer) RestoreFromCheckpointContext(ctx context.Context, cp *Checkpo
 	if ctx == nil {
 		return nil, errors.New("restore context is required")
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if cp == nil {
+		return nil, ErrNilCheckpoint
+	}
+	if err := tmux.ValidateSessionName(cp.SessionName); err != nil {
+		return nil, fmt.Errorf("invalid checkpoint source session: %w", err)
+	}
+	if opts.TargetSession != "" {
+		if err := tmux.ValidateSessionName(opts.TargetSession); err != nil {
+			return nil, fmt.Errorf("invalid restore target session: %w", err)
+		}
+	}
 	op := *r
 	op.ctx = ctx
+	op.sourceSession = cp.SessionName
+	if opts.TargetSession != "" && opts.TargetSession != cp.SessionName {
+		// Never rewrite the caller's checkpoint or persist a renamed copy.
+		// Pane IDs and scrollback references still identify the source artifact.
+		copy := *cp
+		copy.SessionName = opts.TargetSession
+		copy.Session.Panes = append([]PaneState(nil), cp.Session.Panes...)
+		prefix := cp.SessionName + "__"
+		for i := range copy.Session.Panes {
+			title := copy.Session.Panes[i].Title
+			if strings.HasPrefix(title, prefix) {
+				copy.Session.Panes[i].Title = opts.TargetSession + "__" + strings.TrimPrefix(title, prefix)
+			}
+		}
+		cp = &copy
+	}
 	return op.restoreFromCheckpoint(cp, opts)
 }
 
@@ -164,11 +203,12 @@ func (r *Restorer) restoreFromCheckpoint(cp *Checkpoint, opts RestoreOptions) (r
 	}
 
 	result = &RestoreResult{
-		SessionName: cp.SessionName,
-		DryRun:      opts.DryRun,
-		Assignments: cp.Assignments,
-		BVSummary:   cp.BVSummary,
-		Stage:       "validating",
+		SessionName:   cp.SessionName,
+		SourceSession: r.sourceSession,
+		DryRun:        opts.DryRun,
+		Assignments:   cp.Assignments,
+		BVSummary:     cp.BVSummary,
+		Stage:         "validating",
 	}
 	defer func() {
 		if err := ctx.Err(); err != nil {
@@ -809,7 +849,11 @@ func (r *Restorer) injectContext(cp *Checkpoint, maxLines int) error {
 		}
 
 		// Load scrollback content
-		content, err := r.loadPaneScrollbackForPane(cp.SessionName, cp.ID, paneState)
+		sourceSession := r.sourceSession
+		if sourceSession == "" {
+			sourceSession = cp.SessionName
+		}
+		content, err := r.loadPaneScrollbackForPane(sourceSession, cp.ID, paneState)
 		if err != nil {
 			lastErr = err
 			continue
