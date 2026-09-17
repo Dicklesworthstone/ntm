@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -8,10 +10,13 @@ import (
 	"testing"
 
 	ntmctx "github.com/Dicklesworthstone/ntm/internal/context"
+	"github.com/Dicklesworthstone/ntm/internal/state"
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
-// Test the shipped command, not just a file-preparation helper. In particular,
-// --files must work when s2p and every optional context tool are absent.
+// Exercise the shipped build -> SQLite -> inject --pack workflow. Only live
+// tmux resolution/delivery is substituted; source preparation and storage are
+// real, and no optional context tool is available.
 func TestContextBuildCommandNativeSource(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
@@ -54,5 +59,48 @@ func TestContextBuildCommandNativeSource(t *testing.T) {
 	source := pack.Components["s2p"]
 	if source == nil || source.Error != "" || !strings.Contains(pack.RenderedPrompt, "cli-native-source-proof") {
 		t.Fatalf("context build omitted native source: %s", raw)
+	}
+
+	store, err := state.Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	stored, err := store.GetContextPack(pack.ID)
+	if err != nil || stored == nil || stored.RenderedPrompt != pack.RenderedPrompt {
+		t.Fatalf("build printed an unusable pack ID: %+v, %v", stored, err)
+	}
+	// Pin database timestamp round-tripping as well as same-store idempotency.
+	if err := persistContextPack(context.Background(), store, &pack.ContextPack); err != nil {
+		t.Fatalf("persisting the identical stored artifact must be a no-op: %v", err)
+	}
+	calls := 0
+	deps := contextInjectDeps{
+		resolve: func(context.Context, string) (string, error) { return "demo", nil },
+		panes: func(string) ([]tmux.Pane, error) {
+			return []tmux.Pane{{ID: "%2", Index: 2, Type: tmux.AgentCodex}}, nil
+		},
+		load: store.GetContextPack,
+		send: func(_ context.Context, pane tmux.Pane, text string) error {
+			calls++
+			if pane.ID != "%2" || text != pack.RenderedPrompt {
+				t.Fatalf("stored source artifact changed during delivery to %+v", pane)
+			}
+			return nil
+		},
+	}
+	var out bytes.Buffer
+	inject := newContextInjectCmdWithDeps(&deps)
+	inject.SetOut(&out)
+	inject.SetArgs([]string{"demo", "--pack", pack.ID, "--pane", "2"})
+	if err := inject.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	var result ContextInjectResult
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatalf("inject did not emit one JSON envelope: %v: %s", err, out.String())
+	}
+	if calls != 1 || !result.Success || result.Mode != "pack" || len(result.Deliveries) != 1 || result.Deliveries[0].PackID != pack.ID {
+		t.Fatalf("build/store/inject workflow failed: calls=%d result=%+v", calls, result)
 	}
 }
