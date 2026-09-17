@@ -189,6 +189,19 @@ func (d *UnifiedDetector) determineStateAt(output, agentType string, lastActivit
 		}
 	}
 
+	// Oh My Pi draws its status-line composer box at all times; the spinner +
+	// elapsed timer in the box's top border and the Esc-hint activity line
+	// above it exist only while a turn runs, so they outrank velocity and the
+	// quiet box is idle evidence once both are gone (live omp v18.2.3).
+	if agentType == string(agent.AgentTypeOmp) {
+		if agent.OmpActivelyWorking(output, 0) {
+			return StateWorking, ErrorNone
+		}
+		if DetectIdleFromOutput(output, agentType) {
+			return StateIdle, ErrorNone
+		}
+	}
+
 	// Registered plugin agents with declared readiness patterns get the same
 	// treatment as the built-ins above (ntm#260): their Working patterns are
 	// authoritative and their Idle patterns outrank the velocity gate, which
@@ -279,6 +292,7 @@ func isKnownAgentType(agentType string) bool {
 		agent.AgentTypeWindsurf,
 		agent.AgentTypeAider,
 		agent.AgentTypeOpencode,
+		agent.AgentTypeOmp,
 		agent.AgentTypeOllama:
 		return true
 	default:

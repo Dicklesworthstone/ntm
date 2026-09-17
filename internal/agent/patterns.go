@@ -661,6 +661,10 @@ var (
 	ompPasteTokenRe = regexp.MustCompile(`(?:^|\s)#\d+(?:\s|$)`)
 	// ompPastePreviewFooterRe matches the paste preview box's bottom edge.
 	ompPastePreviewFooterRe = regexp.MustCompile(`^\s*(?:╰|\+) \+\d+ lines [─\-]`)
+	// ompSteeringHeaderRe matches the pending-steering block header omp draws
+	// above the activity line when a message is submitted mid-turn
+	// (" Steering · 1", then "   1. <message>" rows and an edit hint).
+	ompSteeringHeaderRe = regexp.MustCompile(`^\s*Steering\s+·\s+(\d+)\s*$`)
 )
 
 const (
@@ -671,6 +675,10 @@ const (
 	// ompComposerMaxRows bounds the continuation rows walked between the
 	// bottom and top borders (omp caps the editor at 18 rows).
 	ompComposerMaxRows = 24
+	// ompSteeringScanLines bounds how far above the composer the pending-
+	// steering header is searched for (header + queued-message previews +
+	// edit hint + activity line).
+	ompSteeringScanLines = 16
 )
 
 // OmpComposer is the parsed live composer box of an omp pane.
@@ -692,13 +700,23 @@ type OmpComposer struct {
 	// RowsBelow counts non-blank rows rendered under the box (the
 	// slash-command autocomplete list, or a shell prompt after omp exited).
 	RowsBelow int
+	// Steering is the count from the pending-steering block ("Steering · N")
+	// omp draws above the activity line after a message is submitted while a
+	// turn runs; 0 when no steering is pending. Pending steering means omp
+	// is busy and will act on it, so it is in-flight evidence too.
+	Steering int
 	// StatusLine is the top border's text after the corner glyphs.
 	StatusLine string
+	// TopLine is the index (in the capture's "\n"-split lines) of the
+	// composer's top border; ActivityLine is the index of the Esc-hint
+	// activity line above it, or -1. Both are meaningful only when Found.
+	TopLine      int
+	ActivityLine int
 }
 
 // Working reports whether the composer shows an in-flight turn.
 func (c OmpComposer) Working() bool {
-	return c.Found && (c.Busy || c.EscHint)
+	return c.Found && (c.Busy || c.EscHint || c.Steering > 0)
 }
 
 // ParseOmpComposer locates and parses the bottom-most omp composer box.
@@ -736,9 +754,11 @@ func parseOmpComposerAt(lines []string, bottomIdx int, bottomText string) (OmpCo
 		if top := ompComposerTopRe.FindStringSubmatch(line); top != nil {
 			status := strings.TrimSpace(top[1])
 			composer := OmpComposer{
-				Found:      true,
-				Busy:       ompBusyStatusRe.MatchString(status),
-				StatusLine: status,
+				Found:        true,
+				Busy:         ompBusyStatusRe.MatchString(status),
+				StatusLine:   status,
+				TopLine:      j,
+				ActivityLine: -1,
 			}
 			// Rows were collected bottom-up; restore reading order and drop
 			// blank leading/trailing rows so an empty box reads as "".
@@ -751,8 +771,19 @@ func parseOmpComposerAt(lines []string, bottomIdx int, bottomText string) (OmpCo
 				if strings.TrimSpace(above) == "" {
 					continue
 				}
-				composer.EscHint = ompEscHintRe.MatchString(above)
+				if ompEscHintRe.MatchString(above) {
+					composer.EscHint = true
+					composer.ActivityLine = k
+				}
 				break
+			}
+			for k := j - 1; k >= 0 && j-k <= ompSteeringScanLines; k-- {
+				if m := ompSteeringHeaderRe.FindStringSubmatch(lines[k]); m != nil {
+					if n, err := strconv.Atoi(m[1]); err == nil {
+						composer.Steering = n
+					}
+					break
+				}
 			}
 			if composer.Draft != "" && ompPasteTokenRe.MatchString(composer.Draft) {
 				for k := j - 1; k >= 0 && j-k <= 2; k-- {

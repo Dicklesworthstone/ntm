@@ -147,6 +147,9 @@ func closesAnotherBox(line string) bool {
 // composer is found the input is returned unchanged — trimming is a
 // refinement, never a reason to show nothing.
 func trimAgentChrome(lines []string, agentType string) []string {
+	if agent.AgentType(agentType).Canonical() == agent.AgentTypeOmp {
+		return trimOmpChrome(lines)
+	}
 	markers := composerMarkers(agentType)
 	if len(markers) == 0 || len(lines) == 0 {
 		return lines
@@ -188,6 +191,26 @@ func trimAgentChrome(lines []string, agentType string) []string {
 	// A composer that consumed the whole capture means we found a box but no
 	// transcript; showing the raw tail is more useful than showing nothing.
 	if cut == 0 {
+		return lines
+	}
+	return lines[:cut]
+}
+
+// trimOmpChrome drops omp's pinned chrome: the status-line composer box (and
+// any completion list under it) plus the Esc-hint activity line directly
+// above the box while a turn runs. omp's composer has no marker glyph, so the
+// structural parser in internal/agent locates the box instead of the marker
+// walk above.
+func trimOmpChrome(lines []string) []string {
+	composer := agent.ParseOmpComposer(strings.Join(lines, "\n"))
+	if !composer.Found {
+		return lines
+	}
+	cut := composer.TopLine
+	if composer.ActivityLine >= 0 {
+		cut = composer.ActivityLine
+	}
+	if cut <= 0 || cut > len(lines) {
 		return lines
 	}
 	return lines[:cut]

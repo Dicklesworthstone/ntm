@@ -1,0 +1,40 @@
+│       ████████████       │ ! to run bash                                                         │
+│          ██  ██          │ $ to run python                                                       │
+│          ██  ██          │ ───────────────────────────────────────────────────────────────────── │
+│          ▒▒  ██          │ LSP Servers                                                           │
+│              ██          │ No LSP servers                                                        │
+│                          │                                                                       │
+│       Union Alpha        │                                                                       │
+│        openrouter        │                                                                       │
+│                          │ ───────────────────────────────────────────────────────────────────── │
+│                          │ Recent sessions                                                       │
+│                          │ No recent sessions                                                    │
+│                          │                                                                       │
+│                          │                                                                       │
+│                          │                                                                       │
+│                          │                                                                       │
+╰──────────────────────────┴───────────────────────────────────────────────────────────────────────╯
+ Tip: Say `orchestrate` in your message to drive a multi-phase task with parallel subagents — watch
+      it glow as you type
+
+
+ reply with the word ok
+
+
+ ok
+
+ ※ recap: Goal was to reply "ok" to your request, which is complete. No work is in progress; next action is none,
+ awaiting your next instruction.
+
+
+ without using any tools, write the integers from 1 to 250 separated by single spaces, nothing else
+
+
+ Steering · 1
+   1. after that, also reply with the word steer
+   └ Alt+Up/Shift+Up to edit
+
+  ⎋ Working…
+
+╭── ⠸ 4s > ⬢ Union Alpha > 🗑 omp-probe ▶───7%───────────────────────────────────┃──────262K─◀ Reply With the Word OK ──╮
+╰─                                                                                                                    ─╯

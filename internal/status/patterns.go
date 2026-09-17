@@ -158,6 +158,7 @@ var knownAgentTypes = map[string]bool{
 	"ollama":   true,
 	"grok":     true, // Grok Build renders a bordered "│ ❯" composer (GH#251)
 	"oc":       true, // OpenCode renders an "Ask anything..." composer (ntm#261)
+	"omp":      true, // Oh My Pi renders a status-line composer box
 }
 
 // knownAgentPromptPrefixes matches prompts that belong to specific agent types.
@@ -249,6 +250,14 @@ func DetectIdleFromOutput(output string, agentType string) bool {
 	// and vetoes the composer-hint idle pattern (ntm#261).
 	if agentType == string(agent.AgentTypeOpencode) && agent.OpencodeActivelyWorking(output, 0) {
 		return false
+	}
+
+	// Oh My Pi has no prompt glyph to scan for: its idle signal is the
+	// structurally parsed composer box with no in-flight spinner/timer or
+	// Esc-hint line and nothing rendered below it. A line scan would match
+	// look-alike tool-output box borders, so the shared parser decides.
+	if agentType == string(agent.AgentTypeOmp) {
+		return agent.OmpIdlePromptShowing(output)
 	}
 
 	// Registered plugin agents: declared Working patterns veto idle; declared

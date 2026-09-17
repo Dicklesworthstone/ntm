@@ -491,6 +491,9 @@ func VerifyAgentSubmission(ctx context.Context, target, message string, agentTyp
 	case tmux.AgentGrok:
 		kind = "grok"
 		confirmed, rescued, err = tmux.VerifyGrokSubmissionContext(ctx, target, message, paneWidth)
+	case tmux.AgentOmp:
+		kind = "omp"
+		confirmed, rescued, err = tmux.VerifyOmpSubmissionContext(ctx, target, message, paneWidth)
 	default:
 		return nil
 	}

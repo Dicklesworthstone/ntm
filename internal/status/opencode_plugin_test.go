@@ -10,8 +10,11 @@ import (
 const (
 	ocIdle    = "╭────────────╮\n│ Ask anything... \"fix the failing test\" │\n╰────────────╯\n"
 	ocWorking = "⠹ Thinking\n╭────────────╮\n│            │\n╰────────────╯\n  esc interrupt\n"
-	ompIdle   = "Connected to MCP servers.\n╭──  Ox Alpha ·  max  …/proj ─3%──1M───╮\n╰─                         ─╯\n"
-	ompWork   = "prompt\n ⠙ Working… ⟨esc⟩\n╭──  Ox Alpha ·  max ─╮\n╰─                   ─╯\n"
+	// A fictional plugin agent ("pix"): the generic heuristics recognise
+	// neither its ready bar nor its "[stop]" hint. (omp, whose chrome this test
+	// used to borrow, is a built-in type now; see TestDetermineState_Omp.)
+	pixIdle = "Connected to MCP servers.\n┃ pix · awaiting the next instruction ┃\n"
+	pixWork = "prompt\n ⠙ thinking [stop]\n┃ pix · awaiting the next instruction ┃\n"
 )
 
 func TestDetectIdleFromOutput_Opencode(t *testing.T) {
@@ -50,28 +53,28 @@ func TestDetermineState_Opencode(t *testing.T) {
 }
 
 func TestPluginReadinessPatterns(t *testing.T) {
-	// Before registration the omp box is unknown to every heuristic.
+	// Before registration the pix bar is unknown to every heuristic.
 	d := NewDetector()
-	if state, _ := d.determineState(ompIdle, "omp", time.Now().Add(-time.Hour)); state == StateIdle {
+	if state, _ := d.determineState(pixIdle, "pix", time.Now().Add(-time.Hour)); state == StateIdle {
 		t.Fatal("unregistered plugin chrome must not read as idle (nothing recognises it)")
 	}
 
-	if err := agent.RegisterPlugin("omp", []string{`^\s*╰─.*─╯\s*$`}, []string{`⟨esc⟩`}, nil); err != nil {
+	if err := agent.RegisterPlugin("pix", []string{`^\s*┃ pix · awaiting the next instruction ┃\s*$`}, []string{`\[stop\]`}, nil); err != nil {
 		t.Fatal(err)
 	}
-	if !DetectIdleFromOutput(ompIdle, "omp") {
+	if !DetectIdleFromOutput(pixIdle, "pix") {
 		t.Fatal("declared idle pattern must be honoured")
 	}
-	if DetectIdleFromOutput(ompWork, "omp") {
+	if DetectIdleFromOutput(pixWork, "pix") {
 		t.Fatal("declared working pattern must veto idle")
 	}
-	if state, _ := d.determineState(ompIdle, "omp", time.Now()); state != StateIdle {
+	if state, _ := d.determineState(pixIdle, "pix", time.Now()); state != StateIdle {
 		t.Fatalf("registered plugin idle state = %v, want idle despite recent activity", state)
 	}
-	if state, _ := d.determineState(ompWork, "omp", time.Now().Add(-time.Hour)); state != StateWorking {
+	if state, _ := d.determineState(pixWork, "pix", time.Now().Add(-time.Hour)); state != StateWorking {
 		t.Fatalf("registered plugin working state = %v, want working", state)
 	}
-	if c := observationConfidence(AgentStatus{State: StateIdle, AgentType: "omp"}, ompIdle); c < 0.9 {
+	if c := observationConfidence(AgentStatus{State: StateIdle, AgentType: "pix"}, pixIdle); c < 0.9 {
 		t.Fatalf("plugin idle confidence = %v, want actionable", c)
 	}
 }

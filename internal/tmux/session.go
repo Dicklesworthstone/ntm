@@ -2142,6 +2142,12 @@ func needsBufferSend(agentType AgentType, content string) bool {
 		// Use buffer for Codex when content contains newlines or is large (>512 chars)
 		// This avoids the "[Pasted Content N chars]" truncation and auto-execute issues
 		return strings.Contains(content, "\n") || len(content) > 512
+	case AgentOmp:
+		// omp honours bracketed paste: a pasted newline stays in the draft
+		// (large pastes collapse into a "#N" token) and only the protocol's
+		// Enter submits — verified live. Typed newlines would not survive
+		// send-keys -l, so multi-line prompts go through the buffer.
+		return strings.Contains(content, "\n")
 	default:
 		return false
 	}
@@ -2245,6 +2251,11 @@ func ComposerClearKeys(agentType AgentType) []string {
 		return []string{"Escape", "Escape", "Escape", "C-u"}
 	case AgentClaude:
 		return []string{"Escape", "C-u"}
+	case AgentOmp:
+		// One Ctrl+C drains an omp draft of any shape (Ctrl+U only kills the
+		// current row). ClearComposerContext sends it only at a positively
+		// non-empty draft, spaced beyond omp's double-press quit window.
+		return []string{"C-c"}
 	default:
 		return []string{"C-u"}
 	}
@@ -2423,6 +2434,17 @@ func InspectComposer(capture string, agentType AgentType) ComposerState {
 			break
 		}
 	}
+	if agentType.Canonical() == AgentOmp {
+		// omp has no marker glyph: its composer is the bottom-pinned status-
+		// line box, whose bottom border is the draft's input row. omp steers
+		// a message sent mid-turn straight into the running turn, so it never
+		// holds queued messages outside the composer.
+		composer := agent.ParseOmpComposer(capture)
+		state.QueuedMessages = false
+		state.MarkerVisible = composer.Found
+		state.HoldsText = composer.Found && composer.Draft != ""
+		return state
+	}
 	markers := composerMarkersForAgent(agentType)
 	if len(markers) == 0 {
 		return state
@@ -2453,6 +2475,9 @@ func InspectComposer(capture string, agentType AgentType) ComposerState {
 // detectors (bd-eeifh); pass 0 when unknown.
 func (c *Client) ComposerReadyForDelivery(ctx context.Context, target string, agentType AgentType, paneWidth int) (ready bool, reason string) {
 	canonical := agentType.Canonical()
+	if canonical == AgentOmp {
+		return c.ompComposerReadyForDelivery(ctx, target)
+	}
 	markers := composerMarkersForAgent(canonical)
 	if len(markers) == 0 {
 		return true, ""
@@ -2479,6 +2504,31 @@ func (c *Client) ComposerReadyForDelivery(ctx context.Context, target string, ag
 		}
 	}
 	return false, fmt.Sprintf("%s composer not visible: pane appears to be initializing or showing a dialog; a typed prompt would be swallowed", canonical)
+}
+
+// ompComposerReadyForDelivery is the omp arm of ComposerReadyForDelivery.
+// omp draws nothing for about a second after launch and then renders its
+// composer box in the same frame as the banner, so unlike the marker-based
+// arms a BLANK capture is positively "still booting" and refuses. A box with
+// rows under it is an open completion list: Enter there selects an entry, so
+// the pane must be cleared first. A capture error still fails open.
+func (c *Client) ompComposerReadyForDelivery(ctx context.Context, target string) (bool, string) {
+	capture, err := c.CapturePaneVisibleContext(ctx, target)
+	if err != nil {
+		return true, ""
+	}
+	if strings.TrimSpace(capture) == "" {
+		return false, "omp composer not drawn yet: pane is still booting; a typed prompt would be swallowed"
+	}
+	composer := agent.ParseOmpComposer(capture)
+	switch {
+	case composer.Found && composer.RowsBelow == 0:
+		return true, ""
+	case composer.Found:
+		return false, "omp composer has a completion list open below it; Enter would select an entry instead of submitting (clear the draft first)"
+	default:
+		return false, "omp composer not visible: pane appears to be initializing or showing a selector/dialog; a typed prompt would be swallowed"
+	}
 }
 
 // ComposerReadyForDelivery checks delivery readiness (default client).
@@ -2596,6 +2646,9 @@ const composerClearMaxBackspaces = 4096
 // too. A pane parked on a dialog is refused with ComposerBlockerModal rather
 // than hammered with line-kill keys, which would pick menu entries.
 func (c *Client) ClearComposerContext(ctx context.Context, target string, agentType AgentType) (ComposerClearResult, error) {
+	if agentType.Canonical() == AgentOmp {
+		return c.clearOmpComposerContext(ctx, target)
+	}
 	markers := composerMarkersForAgent(agentType)
 
 	sendKeys := func(keys []string) error {
@@ -2870,6 +2923,133 @@ func (c *Client) VerifyGrokSubmissionContext(ctx context.Context, target, messag
 // VerifyGrokSubmissionContext verifies grok prompt submission (default client).
 func VerifyGrokSubmissionContext(ctx context.Context, target, message string, paneWidth int) (bool, bool, error) {
 	return DefaultClient.VerifyGrokSubmissionContext(ctx, target, message, paneWidth)
+}
+
+// ompComposerHoldsPayload reports whether an omp pane capture shows the
+// delivered message still sitting unsubmitted in the composer box. omp echoes
+// submitted prompts into the transcript as plain lines, so only the parsed
+// bottom-pinned composer draft is evidence. A collapsed bracketed-paste token
+// ("#1" with its preview box) is the payload by construction; otherwise the
+// first non-empty message line (whitespace-normalised, because the draft's
+// wrapped rows are re-joined line by line) must appear in the draft.
+func ompComposerHoldsPayload(capture, message string) bool {
+	composer := agent.ParseOmpComposer(capture)
+	if !composer.Found || composer.Draft == "" {
+		return false
+	}
+	if composer.PasteToken {
+		return true
+	}
+	snippet := ""
+	for _, line := range strings.Split(message, "\n") {
+		line = strings.Join(strings.Fields(line), " ")
+		if line != "" {
+			if runes := []rune(line); len(runes) > 32 {
+				line = string(runes[:32])
+			}
+			snippet = line
+			break
+		}
+	}
+	draft := strings.Join(strings.Fields(composer.Draft), " ")
+	return snippet != "" && strings.Contains(draft, snippet)
+}
+
+// ompClearVerifyWait spaces omp composer-clear rounds. Ctrl+C is omp's
+// draft-clear key, but two presses within ~0.5s on an EMPTY draft quit omp
+// (verified live against omp v18.2.3), so consecutive rounds stay well
+// outside that window and a press is only ever sent at a non-empty draft.
+const ompClearVerifyWait = 1200 * time.Millisecond
+
+// clearOmpComposerContext is the omp composer clear. A single Ctrl+C drains
+// the whole draft — multi-line drafts and paste tokens included, and while a
+// turn is in flight without interrupting it — whereas Ctrl+U only kills the
+// current row. Ctrl+C is sent only when the parsed composer positively holds
+// text, so the clear can never contribute to omp's double-press quit.
+func (c *Client) clearOmpComposerContext(ctx context.Context, target string) (ComposerClearResult, error) {
+	sent := 0
+	for {
+		capture, err := c.CapturePaneVisibleContext(ctx, target)
+		if err != nil {
+			return ComposerClearResult{Rounds: sent}, fmt.Errorf("capture pane for composer clear verification: %w", err)
+		}
+		composer := agent.ParseOmpComposer(capture)
+		if !composer.Found {
+			// No composer box (booting, or a selector owns the screen): the
+			// clear is unverifiable, and Ctrl+C there would cancel a
+			// selector, so nothing is sent — the same best-effort contract
+			// as an unknown TUI.
+			return ComposerClearResult{Cleared: true, Rounds: sent}, nil
+		}
+		if composer.Draft == "" {
+			return ComposerClearResult{Cleared: true, Verified: true, Rounds: sent}, nil
+		}
+		if sent == composerClearMaxRounds {
+			return ComposerClearResult{
+				Verified: true,
+				Blocker:  ComposerBlockerInput,
+				Rounds:   sent,
+				Residual: composer.Draft,
+			}, nil
+		}
+		if err := c.RunSilentContext(ctx, "send-keys", "-t", ExactTarget(target), "C-c"); err != nil {
+			return ComposerClearResult{Rounds: sent}, fmt.Errorf("send composer clear key %q: %w", "C-c", err)
+		}
+		sent++
+		if err := waitForSendDelay(ctx, ompClearVerifyWait); err != nil {
+			return ComposerClearResult{Rounds: sent}, err
+		}
+	}
+}
+
+// VerifyOmpSubmissionContext confirms that a prompt delivered to an omp pane
+// actually submitted. omp submits on Enter, but an Enter pressed while the
+// "@file" or "/command" completion list is open selects the completion
+// instead (verified live), so a draft ending in a partial mention can survive
+// the protocol's Enters. When the payload is still visibly in the composer,
+// one more Enter finishes the job — an Enter into an empty or busy omp
+// composer is a verified no-op — followed by bounded polling. Returns
+// (confirmed, rescued) like the other verifiers.
+//
+// The postcondition is "the payload left the composer", NOT "the pane is
+// working": omp keeps its composer live mid-turn, and a message submitted
+// then moves into the "Steering · N" block above the activity line, so a busy
+// pane whose composer still holds the payload is exactly the stranded case.
+//
+// paneWidth is accepted for signature parity; omp's chrome is anchored to the
+// composer box rather than a width-dependent tail.
+func (c *Client) VerifyOmpSubmissionContext(ctx context.Context, target, message string, _ int) (bool, bool, error) {
+	if err := waitForSendDelay(ctx, codexVerifyInitialDelay); err != nil {
+		return false, false, err
+	}
+	capture, err := c.CapturePaneVisibleContext(ctx, target)
+	if err != nil {
+		return false, false, fmt.Errorf("capture omp pane for submission verification: %w", err)
+	}
+	if !ompComposerHoldsPayload(capture, message) {
+		return true, false, nil
+	}
+	if err := c.RunSilentContext(ctx, "send-keys", "-t", ExactTarget(target), "Enter"); err != nil {
+		return false, true, fmt.Errorf("send rescue Enter to omp pane: %w", err)
+	}
+	for poll := 0; poll < codexVerifyMaxPolls; poll++ {
+		if err := waitForSendDelay(ctx, codexVerifyPollInterval); err != nil {
+			return false, true, err
+		}
+		capture, err = c.CapturePaneVisibleContext(ctx, target)
+		if err != nil {
+			return false, true, fmt.Errorf("capture omp pane after rescue Enter: %w", err)
+		}
+		if !ompComposerHoldsPayload(capture, message) {
+			return true, true, nil
+		}
+	}
+	return false, true, nil
+}
+
+// VerifyOmpSubmissionContext verifies omp prompt submission (default client).
+func VerifyOmpSubmissionContext(ctx context.Context, target, message string, paneWidth int) (bool, bool, error) {
+	return DefaultClient.VerifyOmpSubmissionContext(ctx, target, message, paneWidth)
 }
 
 // VerifyCodexSubmissionContext confirms that a prompt delivered to a codex
@@ -3648,8 +3828,16 @@ func detectAgentFromSelfTitle(title string) AgentType {
 	if strings.EqualFold(strings.TrimSpace(head), "opencode") {
 		return AgentOpencode
 	}
+	if ompSelfTitleRe.MatchString(trimmed) {
+		return AgentOmp
+	}
 	return AgentUser
 }
+
+// ompSelfTitleRe matches the terminal title omp sets for itself: "π" then a
+// state glyph — ">" at idle, a braille spinner frame mid-turn — then the
+// session title ("π > Fix the parser", "π ⠙ Fix the parser"; verified live).
+var ompSelfTitleRe = regexp.MustCompile(`^π [>⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] `)
 
 func parsePaneActivityTimestamp(raw string, now time.Time) (time.Time, error) {
 	raw = strings.TrimSpace(raw)

@@ -50,6 +50,7 @@ func TestParseOmpComposer_RealCaptures(t *testing.T) {
 		draft      string
 		pasteToken bool
 		rowsBelow  int
+		steering   int
 	}{
 		{file: "omp_nerd_idle_fresh.txt", found: true},
 		{file: "omp_nerd_draft.txt", found: true, draft: "reply with the word ok"},
@@ -66,6 +67,9 @@ func TestParseOmpComposer_RealCaptures(t *testing.T) {
 		{file: "omp_nerd_model_selector.txt", found: false},
 		{file: "omp_unicode_working.txt", found: true, busy: true, escHint: true},
 		{file: "omp_unicode_idle_done.txt", found: true},
+		// A message submitted mid-turn waits in a "Steering · 1" block drawn
+		// above the activity line.
+		{file: "omp_unicode_steering.txt", found: true, busy: true, escHint: true, steering: 1},
 		{file: "omp_ascii_working.txt", found: true, busy: true, escHint: true},
 		{file: "omp_ascii_idle_done.txt", found: true},
 	}
@@ -73,11 +77,28 @@ func TestParseOmpComposer_RealCaptures(t *testing.T) {
 		t.Run(tc.file, func(t *testing.T) {
 			got := ParseOmpComposer(loadTestData(t, tc.file))
 			if got.Found != tc.found || got.Busy != tc.busy || got.EscHint != tc.escHint ||
-				got.Draft != tc.draft || got.PasteToken != tc.pasteToken || got.RowsBelow != tc.rowsBelow {
-				t.Fatalf("ParseOmpComposer = %+v\nwant found=%v busy=%v escHint=%v draft=%q pasteToken=%v rowsBelow=%d",
-					got, tc.found, tc.busy, tc.escHint, tc.draft, tc.pasteToken, tc.rowsBelow)
+				got.Draft != tc.draft || got.PasteToken != tc.pasteToken || got.RowsBelow != tc.rowsBelow ||
+				got.Steering != tc.steering {
+				t.Fatalf("ParseOmpComposer = %+v\nwant found=%v busy=%v escHint=%v draft=%q pasteToken=%v rowsBelow=%d steering=%d",
+					got, tc.found, tc.busy, tc.escHint, tc.draft, tc.pasteToken, tc.rowsBelow, tc.steering)
 			}
 		})
+	}
+}
+
+// TestOmpSteeringAloneIsWorking pins that a pending-steering block keeps the
+// pane working even in a frame where the timer and Esc hint are absent (omp
+// acts on queued steering as soon as the current step yields).
+func TestOmpSteeringAloneIsWorking(t *testing.T) {
+	steering := loadTestData(t, "omp_unicode_steering.txt")
+	quiet := strings.Replace(steering, "  ⎋ Working…\n", "", 1)
+	quiet = strings.Replace(quiet, "╭── ⠸ 4s > ", "╭── π > ", 1)
+	c := ParseOmpComposer(quiet)
+	if c.Busy || c.EscHint || c.Steering != 1 {
+		t.Fatalf("fixture edit did not isolate the steering block: %+v", c)
+	}
+	if !OmpActivelyWorking(quiet, 0) || OmpIdlePromptShowing(quiet) {
+		t.Fatal("pending steering must read as working, never idle")
 	}
 }
 
@@ -127,6 +148,7 @@ func TestOmpIdleAndWorking_NeverBothAndNeverFalseIdle(t *testing.T) {
 		"omp_nerd_api_error.txt":       {idle: true},
 		"omp_nerd_model_selector.txt":  {},
 		"omp_unicode_working.txt":      {working: true},
+		"omp_unicode_steering.txt":     {working: true},
 		"omp_unicode_idle_done.txt":    {idle: true},
 		"omp_ascii_working.txt":        {working: true},
 		"omp_ascii_idle_done.txt":      {idle: true},
