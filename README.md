@@ -167,9 +167,9 @@ setup wizard:
 ```bash
 omp setup
 ntm deps -v                               # probes the omp binary
-ntm spawn swarm --omp=8                   # omp --auto-approve, omp picks its default model
-ntm spawn swarm --omp=2:MODEL             # adds --model MODEL (omp fuzzy-matches it)
-ntm spawn swarm --omp=2:MODEL:high        # adds --thinking high (also MODEL@high)
+ntm spawn swarm --omp=8                   # omp picks its default model
+ntm spawn swarm --omp=2:MODEL             # pins MODEL (omp fuzzy-matches it)
+ntm spawn swarm --omp=2:MODEL:high        # also sets the thinking level (or MODEL@high)
 ntm add swarm --omp=1
 ntm adopt swarm --omp=1,2,3               # adopt existing omp panes
 ntm --robot-spawn=swarm --spawn-omp=8 --spawn-wait
