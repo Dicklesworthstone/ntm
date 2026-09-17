@@ -1,0 +1,32 @@
+
+╭─── omp v18.2.3 ──────────────────────────────────────────────────────────────────────────────────╮
+│                          │ Tips                                                                  │
+│      Welcome back!       │ # for prompt actions                                                  │
+│                          │ / for commands                                                        │
+│       ████████████       │ ! to run bash                                                         │
+│          ██  ██          │ $ to run python                                                       │
+│          ██  ██          │ ───────────────────────────────────────────────────────────────────── │
+│          ▒▒  ██          │ LSP Servers                                                           │
+│              ██          │ No LSP servers                                                        │
+│                          │                                                                       │
+│       Union Alpha        │                                                                       │
+│        openrouter        │                                                                       │
+│                          │ ───────────────────────────────────────────────────────────────────── │
+│                          │ Recent sessions                                                       │
+│                          │ No recent sessions                                                    │
+│                          │                                                                       │
+│                          │                                                                       │
+│                          │                                                                       │
+│                          │                                                                       │
+╰──────────────────────────┴───────────────────────────────────────────────────────────────────────╯
+ Tip: Drop the word `ultrathink` in your message for harder multi-step reasoning — watch it glow
+      rainbow as you type
+
+
+ Closing session…
+
+
+╭── 󰵗   Union Alpha   omp-probe ────6%──────────────────────────────────────────────────────────󰁨──────────262K───╮
+╰─                                                                                                                    ─╯
+
+  /data/tmp/omp-probe                                                               ✔ took 3m 34s   at 01:30:21 AM 

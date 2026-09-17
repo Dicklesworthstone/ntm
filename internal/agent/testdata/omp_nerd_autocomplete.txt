@@ -1,0 +1,40 @@
+│                          │ No recent sessions                                                    │
+│                          │                                                                       │
+│                          │                                                                       │
+│                          │                                                                       │
+│                          │                                                                       │
+╰──────────────────────────┴───────────────────────────────────────────────────────────────────────╯
+ Tip: With default keybindings, Ctrl+D deletes the character under the cursor instead of quitting
+      your draft — see /hotkeys for your exit key
+
+
+
+ reply with the word ok
+
+
+ ok
+
+
+ run the bash command: sleep 25 (foreground) then reply with the word done
+
+
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ $ sleep 25                                                                                                           │
+├─── Output ───────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ Command aborted                                                                                                      │
+│ ⟨Timeout: 60s⟩                                                                                                       │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+  F5 to Retry
+
+╭── 󰵗   Union Alpha   omp-probe ────7%─────────────────────────────────────󰁨──────262K─ Reply With the Word Ok ──╮
+╰─ /mod                                                                                                               ─╯
+  model         Model: openrouter/stealth/union-alpha                                                                █
+  󰉘 remove-dir    Remove a workspace directory from this session                                                       █
+   loop          Loop: off                                                                                            █
+   plan          Plan: off                                                                                            │
+   plan-review   Plan review: plan mode inactive                                                                      │
+  󰥛 vibe          Vibe: off                                                                                            │
+   goal          Goal: off                                                                                            │
+   guided-goal   Have the agent interview you in chat, then set up goal mode                                          │
+  󰓡 switch        Model: openrouter/stealth/union-alpha                                                                │
+   prewalk       Arm or restart a one-shot model handoff                                                              │

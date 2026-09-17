@@ -1,0 +1,32 @@
+
+╭─── omp v18.2.3 ──────────────────────────────────────────────────────────────────────────────────╮
+│                          │ Tips                                                                  │
+│      Welcome back!       │ # for prompt actions                                                  │
+│                          │ / for commands                                                        │
+│       ████████████       │ ! to run bash                                                         │
+│          ██  ██          │ $ to run python                                                       │
+│          ██  ██          │ ───────────────────────────────────────────────────────────────────── │
+│          ▒▒  ██          │ LSP Servers                                                           │
+│              ██          │ No LSP servers                                                        │
+│                          │                                                                       │
+│       Union Alpha        │                                                                       │
+│        openrouter        │                                                                       │
+│                          │ ───────────────────────────────────────────────────────────────────── │
+│                          │ Recent sessions                                                       │
+│                          │ No recent sessions                                                    │
+│                          │                                                                       │
+│                          │                                                                       │
+│                          │                                                                       │
+│                          │                                                                       │
+╰──────────────────────────┴───────────────────────────────────────────────────────────────────────╯
+ Tip: Say `orchestrate` in your message to drive a multi-phase task with parallel subagents — watch
+      it glow as you type
+
+
+ reply with the word ok
+
+
+  ⎋ Working…
+
+╭── ⠧ 1s > ⬢ Union Alpha > 🗑 omp-probe ▶────6%───────────────────────────────────────────────────────┃──────────262K───╮
+╰─                                                                                                                    ─╯

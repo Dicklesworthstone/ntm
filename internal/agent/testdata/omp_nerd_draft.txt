@@ -1,0 +1,27 @@
+
+╭─── omp v18.2.3 ──────────────────────────────────────────────────────────────────────────────────╮
+│                          │ Tips                                                                  │
+│      Welcome back!       │ # for prompt actions                                                  │
+│                          │ / for commands                                                        │
+│       ████████████       │ ! to run bash                                                         │
+│          ██  ██          │ $ to run python                                                       │
+│          ██  ██          │ ───────────────────────────────────────────────────────────────────── │
+│          ▒▒  ██          │ LSP Servers                                                           │
+│              ██          │ No LSP servers                                                        │
+│                          │                                                                       │
+│       Union Alpha        │                                                                       │
+│        openrouter        │                                                                       │
+│                          │ ───────────────────────────────────────────────────────────────────── │
+│                          │ Recent sessions                                                       │
+│                          │ No recent sessions                                                    │
+│                          │                                                                       │
+│                          │                                                                       │
+│                          │                                                                       │
+│                          │                                                                       │
+╰──────────────────────────┴───────────────────────────────────────────────────────────────────────╯
+ Tip: With default keybindings, Ctrl+D deletes the character under the cursor instead of quitting
+      your draft — see /hotkeys for your exit key
+
+
+╭── 󰵗   Union Alpha   omp-probe ────6%──────────────────────────────────────────────────────────󰁨──────────262K───╮
+╰─ reply with the word ok                                                                                             ─╯

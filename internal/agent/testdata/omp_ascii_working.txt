@@ -1,0 +1,32 @@
+
++--- omp v18.2.3 ----------------------------------------------------------------------------------+
+|                          | Tips                                                                  |
+|      Welcome back!       | # for prompt actions                                                  |
+|                          | / for commands                                                        |
+|       ████████████       | ! to run bash                                                         |
+|          ██  ██          | $ to run python                                                       |
+|          ██  ██          | --------------------------------------------------------------------- |
+|          ▒▒  ██          | LSP Servers                                                           |
+|              ██          | No LSP servers                                                        |
+|                          |                                                                       |
+|       Union Alpha        |                                                                       |
+|        openrouter        |                                                                       |
+|                          | --------------------------------------------------------------------- |
+|                          | Recent sessions                                                       |
+|                          | No recent sessions                                                    |
+|                          |                                                                       |
+|                          |                                                                       |
+|                          |                                                                       |
+|                          |                                                                       |
++--------------------------+-----------------------------------------------------------------------+
+ Tip: Press alt+p (or /switch) to switch provider, and ctrl+p to cycle role models smol -> slow ->
+      etc
+
+
+ reply with the word ok
+
+
+  esc Working…
+
++-- \ 1s > [M] Union Alpha > [T] omp-probe >----6%----------------------------------------------------|---------262K---+
++-                                                                                                                    -+
