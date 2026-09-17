@@ -210,9 +210,17 @@ across its nerd, unicode and ascii symbol presets):
   holds its transcript under `~/.omp/agent/sessions/` open, so the binding is
   exact per pane; profile, XDG and `PI_CODING_AGENT_*` stores are honoured), and
   resume relaunches with `omp --auto-approve --resume <id>`.
-- **Errors.** Provider errors (`Dismissed when you send your next message.`),
-  `Error: No model selected.`, and rate-limit text classify as error or
-  rate-limited states.
+- **Errors.** A failed turn leaves a provider-error block framed by rules
+  directly above the quiet composer (`server_error: ERROR`, `401 Invalid API
+  Key`, then `Dismissed when you send your next message.`). NTM reports it as
+  an error, never as idle-after-completion: `--robot-is-working` returns
+  `ERROR_STATE` with `indicator_basis: "provider_error"` and a retry hint, the
+  status observation and coordinator report an error (`auth` for 401/403,
+  otherwise generic), and assignment will not feed the pane new work. Sending
+  any message, such as a continue prompt, dismisses the block and retries.
+  `Error: No model selected.` is an error too. No omp rate-limit screen has
+  been captured yet, so omp panes are never marked rate-limited from
+  transcript text; a provider 429 surfaces as a provider error.
 
 Use labels when you want multiple coordinated swarms on the same project while
 keeping a shared project directory:

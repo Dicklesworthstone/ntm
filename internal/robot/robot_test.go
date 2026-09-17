@@ -6226,6 +6226,29 @@ func TestOmpRobotStateDialogsAndContext(t *testing.T) {
 		t.Errorf("codex paste-limbo dismiss keys = %v, want [Escape]", got)
 	}
 
+	// Provider error (live OpenRouter server_error frame): an error in the
+	// projection and in --robot-is-working, retryable, never idle.
+	providerErr := readAgentFixture(t, "omp_nerd_provider_error.txt")
+	if got := a.classifyAgentState(&Agent{Type: "omp", Pane: "%43", PID: 10}, providerErr); got != state.AgentStateError {
+		t.Errorf("adapter provider-error omp = %q, want error", got)
+	}
+	if reason := a.classifyStateReason(&Agent{Type: "omp", Pane: "%43"}, state.AgentStateError, providerErr); !strings.Contains(reason, "server_error: ERROR") || !strings.Contains(reason, "retryable") {
+		t.Errorf("provider-error reason = %q", reason)
+	}
+	ws := PaneWorkStatus{IsIdle: true, Recommendation: string(agent.RecommendSafeToRestart)}
+	if !applyProviderErrorOverride(&ws, agent.AgentTypeOmp, providerErr) || ws.IsIdle ||
+		ws.Recommendation != string(agent.RecommendErrorState) || ws.IndicatorBasis != "provider_error" ||
+		!strings.Contains(ws.RecommendationReason, "continue prompt") {
+		t.Errorf("provider-error work status = %+v", ws)
+	}
+	idleWS := PaneWorkStatus{IsIdle: true}
+	if applyProviderErrorOverride(&idleWS, agent.AgentTypeOmp, idle) || !idleWS.IsIdle {
+		t.Error("an idle omp pane after a completed turn must not be flagged as a provider error")
+	}
+	if determineState(providerErr, "omp") == "idle" {
+		t.Error("determineState must not report a failed omp turn as idle")
+	}
+
 	at := time.Now()
 	gauge, ok := ompStatusBarUsage("omp", idle, at)
 	if !ok || gauge.ContextWindow != 262000 || gauge.Tokens != 18340 {

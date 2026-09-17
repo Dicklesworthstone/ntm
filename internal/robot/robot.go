@@ -4300,6 +4300,18 @@ func determineState(output, agentType string) string {
 	if detectedError == status.ErrorRateLimit {
 		return "error"
 	}
+	// Oh My Pi's composer-anchored chrome is authoritative in both directions:
+	// in-flight signals mean active whatever the transcript says, and a
+	// dismissable provider-error block framed above the quiet composer is the
+	// current (retryable) error, never idle-after-completion.
+	if normalizedType == "omp" {
+		if agent.OmpActivelyWorking(output, 0) {
+			return "active"
+		}
+		if _, failed := agent.OmpProviderError(output); failed {
+			return "error"
+		}
+	}
 	// A shell prompt in a Claude pane means the agent process exited. Preserve
 	// that guard before considering an older completion marker as idle TUI state.
 	if normalizedType == "claude" &&

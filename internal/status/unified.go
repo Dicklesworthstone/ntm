@@ -197,6 +197,12 @@ func (d *UnifiedDetector) determineStateAt(output, agentType string, lastActivit
 		if agent.OmpActivelyWorking(output, 0) {
 			return StateWorking, ErrorNone
 		}
+		// A failed turn leaves a dismissable provider-error block above the
+		// quiet composer. It is an error (retryable by sending any message),
+		// not idle-after-completion, so it must outrank the idle composer.
+		if summary, failed := agent.OmpProviderError(output); failed {
+			return StateError, ompProviderErrorType(summary)
+		}
 		if DetectIdleFromOutput(output, agentType) {
 			return StateIdle, ErrorNone
 		}
@@ -298,6 +304,20 @@ func isKnownAgentType(agentType string) bool {
 	default:
 		return false
 	}
+}
+
+// ompProviderErrorType classifies an omp provider-error summary. Only the
+// authentication shape has been captured live ("401 Invalid API Key");
+// everything else ("server_error: ERROR") is a generic, retryable provider
+// error. No omp rate-limit frame has been captured, so none is inferred.
+func ompProviderErrorType(summary string) ErrorType {
+	lower := strings.ToLower(summary)
+	for _, auth := range []string{"401", "403", "invalid api key", "unauthorized", "forbidden", "authentication"} {
+		if strings.Contains(lower, auth) {
+			return ErrorAuth
+		}
+	}
+	return ErrorGeneric
 }
 
 // looksLikeIdle applies heuristics to detect likely idle state when

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	agentpkg "github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/state"
 	"github.com/Dicklesworthstone/ntm/internal/status"
@@ -261,6 +262,12 @@ func (a *TmuxAdapter) classifyAgentState(agent *Agent, outputTail string) state.
 	if tailState == status.StateIdle {
 		return state.AgentStateIdle
 	}
+	// Oh My Pi's error verdict is structural (a dismissable provider-error
+	// block framed above its quiet composer), so it is current state rather
+	// than scrollback history: project it as an error, not busy/active.
+	if tailState == status.StateError && normalizeAgentType(agent.Type) == "omp" {
+		return state.AgentStateError
+	}
 
 	// Check for stalled state: output was seen at some point, then nothing
 	// for longer than the stall threshold, and the tail does not show a
@@ -321,6 +328,11 @@ func (a *TmuxAdapter) classifyStateReason(agent *Agent, agentState state.AgentSt
 		}
 		if agent.ProcessState == "T" {
 			return "process stopped"
+		}
+		if normalizeAgentType(agent.Type) == "omp" {
+			if summary, ok := agentpkg.OmpProviderError(outputTail); ok {
+				return fmt.Sprintf("provider error (retryable, send a continue prompt): %s", summary)
+			}
 		}
 		if agent.SecondsSinceOutput > a.config.StallThreshold {
 			return fmt.Sprintf("stalled: no output for %ds", agent.SecondsSinceOutput)

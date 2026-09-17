@@ -74,6 +74,17 @@ func TestDetermineState_Omp(t *testing.T) {
 			}
 		})
 	}
+	// A failed turn (dismissable provider-error block above the quiet
+	// composer) is an error, not idle-after-completion, even while a busy
+	// sibling keeps the activity clock fresh.
+	for file, wantType := range map[string]ErrorType{
+		"omp_nerd_provider_error.txt": ErrorGeneric,
+		"omp_nerd_api_error.txt":      ErrorAuth,
+	} {
+		if got, errType := d.determineState(loadOmpFixture(t, file), "omp", recent); got != StateError || errType != wantType {
+			t.Fatalf("determineState(%s) = (%v, %v), want (error, %v)", file, got, errType, wantType)
+		}
+	}
 	if c := observationConfidence(AgentStatus{State: StateIdle, AgentType: "omp"}, loadOmpFixture(t, "omp_nerd_idle_done.txt")); c < 0.9 {
 		t.Fatalf("idle omp confidence = %v, want actionable", c)
 	}

@@ -4,6 +4,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/Dicklesworthstone/ntm/internal/util"
 )
@@ -606,28 +607,26 @@ func OpencodeActivelyWorking(output string, paneWidth int) bool {
 //     "📄 #1", "txt #1") with a preview box above whose bottom edge reads
 //     "╰ +15 lines ─╯" ("+ +15 lines -+" in ascii).
 //   - Typing "/" opens the slash-command autocomplete list BELOW the box.
-//   - Provider failures render as a rule-framed block ending in "Dismissed
-//     when you send your next message." (e.g. "401 Invalid API Key"); an
-//     unknown --model boots with `Warning: Model "x" not found` and a prompt
-//     then fails with "Error: No model selected.".
+//   - Provider failures end the turn and render a rule-framed block directly
+//     above the quiet composer, ending in "Dismissed when you send your next
+//     message." (" 401 Invalid API Key" from a bad key, " server_error:
+//     ERROR" from an OpenRouter failure in a live swarm pane); sending any
+//     new message dismisses it and resumes. An unknown --model boots with
+//     `Warning: Model "x" not found` and a prompt then fails with "Error: No
+//     model selected.".
+//   - No omp rate-limit frame has been captured yet, so omp has no
+//     rate-limit patterns: transcript text that merely mentions rate limits
+//     must not park a pane in RATE_LIMITED_WAIT. A provider 429 surfaces as a
+//     provider error.
 var (
-	ompRateLimitPatterns = []string{
-		"rate limit",
-		"rate_limit",
-		"too many requests",
-		"quota exceeded",
-		"exceeded your current quota",
-		"usage limit",
-		"resource_exhausted",
-	}
-
 	ompWorkingPatterns = []string{
 		"working…",
 		"interrupting…",
 	}
 
+	// ompErrorPatterns are the non-framed error lines; the framed provider
+	// error block is recognised structurally (OmpProviderError).
 	ompErrorPatterns = []string{
-		"dismissed when you send your next message",
 		"error: no model selected",
 		"warning: model \"",
 	}
@@ -673,6 +672,11 @@ var (
 	ompSubagentsHeaderRe = regexp.MustCompile(`^\s*Subagents\s*$`)
 	// ompSubagentRowRe matches one running-subagent row under that header.
 	ompSubagentRowRe = regexp.MustCompile(`^\s*(?:[├└]─|[|\\+` + "`" + `]-)\s+[•*]\s+\S`)
+	// ompRuleRe matches the full-width horizontal rule that frames omp's
+	// dismissable provider-error block.
+	ompRuleRe = regexp.MustCompile(`^\s*(?:─{8,}|-{8,})\s*$`)
+	// ompDismissedRe matches that block's footer line.
+	ompDismissedRe = regexp.MustCompile(`^\s*Dismissed when you send your next message\.\s*$`)
 )
 
 const (
@@ -691,6 +695,9 @@ const (
 	// panel header is searched for (header + one row per running subagent +
 	// steering block + activity line).
 	ompSubagentsScanLines = 24
+	// ompProviderErrorMaxRows bounds the error text walked between the
+	// provider-error block's footer and its opening rule.
+	ompProviderErrorMaxRows = 12
 )
 
 // OmpComposer is the parsed live composer box of an omp pane.
@@ -721,6 +728,11 @@ type OmpComposer struct {
 	// header, "└─ • <Name> …" rows) in the HUD above the composer; 0 when no
 	// subagent is listed. Listed subagents are in-flight work.
 	Subagents int
+	// ProviderError is the first line of the dismissable provider-error block
+	// ("server_error: ERROR", "401 Invalid API Key") framed by rules directly
+	// above the composer, with any leading icon glyph removed; "" when no such
+	// block is shown. omp clears it when the next message is sent.
+	ProviderError string
 	// StatusLine is the top border's text after the corner glyphs.
 	StatusLine string
 	// TopLine is the index (in the capture's "\n"-split lines) of the
@@ -810,6 +822,7 @@ func parseOmpComposerAt(lines []string, bottomIdx int, bottomText string) (OmpCo
 				}
 				break
 			}
+			composer.ProviderError = ompProviderErrorAbove(lines, j)
 			if composer.Draft != "" && ompPasteTokenRe.MatchString(composer.Draft) {
 				for k := j - 1; k >= 0 && j-k <= 2; k-- {
 					if ompPastePreviewFooterRe.MatchString(lines[k]) {
@@ -827,6 +840,50 @@ func parseOmpComposerAt(lines []string, bottomIdx int, bottomText string) (OmpCo
 		draftRows = append(draftRows, strings.TrimSpace(row[1]))
 	}
 	return OmpComposer{}, false
+}
+
+// ompProviderErrorAbove returns the summary line of a provider-error block
+// whose closing rule sits directly above the composer top border at
+// lines[top] (blank rows allowed between), or "" when there is none. The
+// block must be complete: closing rule, "Dismissed when …" footer, error
+// text, opening rule.
+func ompProviderErrorAbove(lines []string, top int) string {
+	k := top - 1
+	for k >= 0 && top-k <= 3 && strings.TrimSpace(lines[k]) == "" {
+		k--
+	}
+	if k < 1 || !ompRuleRe.MatchString(lines[k]) || !ompDismissedRe.MatchString(lines[k-1]) {
+		return ""
+	}
+	summary := ""
+	for r := k - 2; r >= 0 && k-2-r < ompProviderErrorMaxRows; r-- {
+		if ompRuleRe.MatchString(lines[r]) {
+			if summary == "" {
+				summary = "provider error"
+			}
+			return summary
+		}
+		if text := strings.TrimLeftFunc(lines[r], func(c rune) bool {
+			return !unicode.IsLetter(c) && !unicode.IsDigit(c)
+		}); strings.TrimSpace(text) != "" {
+			summary = strings.TrimSpace(text) // walking upward: the last kept is the first row
+		}
+	}
+	return ""
+}
+
+// OmpProviderError reports the summary of the dismissable provider-error
+// block an omp pane shows after a failed turn ("server_error: ERROR"). It
+// requires the block to sit directly above a quiet composer: once any
+// in-flight signal returns the turn is running again and the pane is not in
+// error. Sending any new message (a "continue" prompt) dismisses the block
+// and retries, so the state is retryable rather than terminal.
+func OmpProviderError(output string) (string, bool) {
+	c := ParseOmpComposer(output)
+	if !c.Found || c.Working() || c.ProviderError == "" {
+		return "", false
+	}
+	return c.ProviderError, true
 }
 
 // OmpActivelyWorking reports whether an omp pane shows an in-flight turn: the

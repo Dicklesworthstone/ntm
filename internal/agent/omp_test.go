@@ -108,6 +108,46 @@ func TestOmpSteeringAloneIsWorking(t *testing.T) {
 	}
 }
 
+// TestOmpProviderError pins the dismissable provider-error block from live
+// captures (an OpenRouter server_error in a swarm pane, a bad-key 401) and its
+// boundaries: the block must be complete and directly above a quiet composer.
+func TestOmpProviderError(t *testing.T) {
+	for file, want := range map[string]string{
+		"omp_nerd_provider_error.txt": "server_error: ERROR",
+		"omp_nerd_api_error.txt":      "401 Invalid API Key",
+	} {
+		got, ok := OmpProviderError(loadTestData(t, file))
+		if !ok || got != want {
+			t.Errorf("OmpProviderError(%s) = (%q, %v), want %q", file, got, ok, want)
+		}
+	}
+	for _, file := range []string{"omp_nerd_idle_done.txt", "omp_nerd_working.txt", "omp_nerd_interrupted.txt", "omp_nerd_model_selector.txt"} {
+		if got, ok := OmpProviderError(loadTestData(t, file)); ok {
+			t.Errorf("OmpProviderError(%s) = %q, want none", file, got)
+		}
+	}
+
+	live := loadTestData(t, "omp_nerd_provider_error.txt")
+	// Once a retried turn runs, the lingering block is history, not state.
+	retrying := strings.Replace(live, "╭── 󰵗 ", "╭── ⠧ 2s ", 1)
+	if c := ParseOmpComposer(retrying); !c.Busy || c.ProviderError == "" {
+		t.Fatalf("fixture edit did not make the retry busy: %+v", c)
+	}
+	if _, ok := OmpProviderError(retrying); ok {
+		t.Fatal("a provider-error block under a running turn must not read as an error")
+	}
+	// Transcript text quoting the footer, not framed above the composer.
+	quoted := strings.Replace(loadTestData(t, "omp_nerd_idle_done.txt"), " ok\n\n╭──", " the TUI said: Dismissed when you send your next message.\n\n╭──", 1)
+	if _, ok := OmpProviderError(quoted); ok {
+		t.Fatal("a quoted footer without the rule frame must not read as a provider error")
+	}
+	// The block must be the last thing above the composer.
+	pushedUp := strings.Replace(live, "\n\n╭── 󰵗 ", "\n\n later transcript line\n\n╭── 󰵗 ", 1)
+	if _, ok := OmpProviderError(pushedUp); ok {
+		t.Fatal("a provider-error block with transcript below it is no longer current")
+	}
+}
+
 // TestOmpSubagentsPanelIsWorking pins the running-subagents panel as in-flight
 // chrome on its own, and that the TODO tree alone is not: a plan can outlive
 // the turn that wrote it, and reading it as busy would wedge delivery.
@@ -228,7 +268,9 @@ func TestParser_Omp_RealCaptures(t *testing.T) {
 		{file: "omp_nerd_tool_working.txt", working: true, contextLeft: 93},
 		{file: "omp_nerd_idle_done.txt", idle: true, contextLeft: 93},
 		{file: "omp_nerd_interrupted.txt", idle: true, contextLeft: 93},
-		{file: "omp_nerd_api_error.txt", idle: true, inError: true, contextLeft: 88},
+		// A failed turn is an error, never idle-after-completion.
+		{file: "omp_nerd_api_error.txt", inError: true, contextLeft: 88},
+		{file: "omp_nerd_provider_error.txt", inError: true, contextLeft: 59},
 		{file: "omp_unicode_working.txt", working: true, contextLeft: 94},
 		{file: "omp_ascii_working.txt", working: true, contextLeft: 94},
 		{file: "omp_ascii_idle_done.txt", idle: true, contextLeft: 93},
@@ -277,13 +319,18 @@ func TestParser_Omp_RateLimitAndErrors(t *testing.T) {
 	if !strings.Contains(idle, reply) {
 		t.Fatalf("fixture no longer contains %q", reply)
 	}
-	limited := strings.Replace(idle, reply, " 429 Too Many Requests\n Rate limit reached for requests\n Dismissed when you send your next message.\n\n╭──", 1)
-	state, _ := p.ParseWithHint(limited, AgentTypeOmp)
-	if !state.IsRateLimited || state.IsWorking || state.IsIdle {
-		t.Fatalf("rate-limited omp: limited=%v working=%v idle=%v", state.IsRateLimited, state.IsWorking, state.IsIdle)
+	// No omp rate-limit frame has been captured, so omp infers none: a
+	// transcript that discusses rate limits leaves the pane idle, and a framed
+	// provider 429 is a (retryable) provider error rather than a wait state.
+	chattyLimits := strings.Replace(idle, reply, " Added retry with backoff for the rate limit / too many requests path.\n\n╭──", 1)
+	if state, _ := p.ParseWithHint(chattyLimits, AgentTypeOmp); state.IsRateLimited || !state.IsIdle || state.IsInError {
+		t.Fatalf("transcript mentioning rate limits: limited=%v idle=%v error=%v", state.IsRateLimited, state.IsIdle, state.IsInError)
 	}
-	if len(state.LimitIndicators) == 0 {
-		t.Fatal("rate-limited omp must report limit indicators")
+	rule := strings.Repeat("─", 40)
+	framed429 := strings.Replace(idle, reply, " ok\n\n"+rule+"\n  429 Too Many Requests\n Dismissed when you send your next message.\n"+rule+"\n\n╭──", 1)
+	state, _ := p.ParseWithHint(framed429, AgentTypeOmp)
+	if state.IsRateLimited || !state.IsInError || state.IsIdle || state.IsWorking {
+		t.Fatalf("framed 429: limited=%v error=%v idle=%v working=%v", state.IsRateLimited, state.IsInError, state.IsIdle, state.IsWorking)
 	}
 
 	noModel := strings.Replace(idle, reply, " Error: No model selected.\n Then use /model to select a model.\n\n╭──", 1)

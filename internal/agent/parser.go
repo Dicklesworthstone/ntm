@@ -326,6 +326,14 @@ func (p *parserImpl) detectStateFlags(output string, state *AgentState) {
 			state.IsInError = p.detectError(output, state.Type)
 			return
 		}
+		if _, failed := OmpProviderError(output); failed {
+			// A failed turn is not a completed one: the composer accepts input,
+			// but the pane is waiting for a retry ("continue"), not new work.
+			state.IsIdle = false
+			state.IsWorking = false
+			state.IsInError = true
+			return
+		}
 		if state.IsIdle {
 			state.IsWorking = false
 		} else {
@@ -394,7 +402,9 @@ func (p *parserImpl) detectRateLimit(output string, agentType AgentType) bool {
 	case AgentTypeGrok:
 		return matchAny(recentOutput, grokRateLimitPatterns)
 	case AgentTypeOmp:
-		return matchAny(recentOutput, ompRateLimitPatterns)
+		// No omp rate-limit frame has been captured; transcript mentions of
+		// rate limits must not park the pane (see the omp pattern notes).
+		return false
 	default:
 		// Check all patterns for unknown type
 		return matchAny(recentOutput, ccRateLimitPatterns) ||
@@ -594,6 +604,12 @@ func (p *parserImpl) detectError(output string, agentType AgentType) bool {
 	case AgentTypeOpencode:
 		return matchAny(recentOutput, ocErrorPatterns)
 	case AgentTypeOmp:
+		// The dismissable provider-error block is recognised structurally
+		// (framed above a quiet composer), so a block left over while a
+		// retried turn runs never reads as an error.
+		if _, ok := OmpProviderError(output); ok {
+			return true
+		}
 		return matchAny(recentOutput, ompErrorPatterns)
 	default:
 		if pp, ok := LookupPluginPatterns(agentType); ok && len(pp.Error) > 0 {
@@ -635,7 +651,7 @@ func (p *parserImpl) collectLimitIndicators(output string, agentType AgentType) 
 	case AgentTypeGrok:
 		return collectMatches(recentOutput, grokRateLimitPatterns)
 	case AgentTypeOmp:
-		return collectMatches(recentOutput, ompRateLimitPatterns)
+		return nil
 	default:
 		// Collect from all for unknown type
 		matches := collectMatches(recentOutput, ccRateLimitPatterns)

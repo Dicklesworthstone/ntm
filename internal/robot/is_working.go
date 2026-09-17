@@ -530,6 +530,7 @@ func GetIsWorking(ctx context.Context, opts IsWorkingOptions) (*IsWorkingOutput,
 		applyCanonicalWorkSafety(&status, paneObservation, liveBusy)
 		status.IndicatorBasis = workIndicatorBasis(state, liveBusy, parsedStatus, status, paneObservation)
 		applyInteractiveGateOverride(&status, state.Type, content, paneObservation.Metadata.Width)
+		applyProviderErrorOverride(&status, state.Type, content)
 
 		// Ensure indicators are never nil
 		if status.Indicators.Work == nil {
@@ -681,6 +682,27 @@ func applyInteractiveGateOverride(workStatus *PaneWorkStatus, agentType agent.Ag
 	workStatus.Recommendation = "MANUAL_INTERVENTION"
 	workStatus.RecommendationReason = fmt.Sprintf("Blocked on interactive gate screen (%q); needs a keystroke before the pane can accept work", gate)
 	workStatus.IndicatorBasis = "interactive_gate"
+	return true
+}
+
+// applyProviderErrorOverride names a retryable provider failure. Oh My Pi ends
+// a failed turn with a dismissable error block above its quiet composer
+// ("server_error: ERROR" from a live OpenRouter failure); the pane accepts
+// input and any new message retries, so it is neither idle-after-completion
+// (orchestrators must not treat the task as done or feed unrelated work) nor
+// a dead pane that needs a restart. Reports true when the override fired.
+func applyProviderErrorOverride(workStatus *PaneWorkStatus, agentType agent.AgentType, content string) bool {
+	if workStatus == nil || workStatus.IsWorking || agentType.Canonical() != agent.AgentTypeOmp {
+		return false
+	}
+	summary, ok := agent.OmpProviderError(content)
+	if !ok {
+		return false
+	}
+	workStatus.IsIdle = false
+	workStatus.Recommendation = string(agent.RecommendErrorState)
+	workStatus.RecommendationReason = fmt.Sprintf("Provider error %q ended the turn; retryable: send a continue prompt (omp dismisses the error on the next message)", summary)
+	workStatus.IndicatorBasis = "provider_error"
 	return true
 }
 
