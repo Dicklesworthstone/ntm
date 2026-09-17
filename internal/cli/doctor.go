@@ -37,7 +37,7 @@ func newDoctorCmd() *cobra.Command {
 and configured. Checks:
 
   - Tool detection (bv, bd, am, cm, cass, s2p)
-  - Version compatibility (including optional Grok Build discovery)
+  - Version compatibility (including optional Grok Build and Oh My Pi discovery)
   - Daemon health and port availability
   - Configuration files
 
@@ -603,6 +603,24 @@ func checkDependencies(ctx context.Context) []DepCheck {
 		grokCheck.Message = "optional agent not found"
 	}
 	checks = append(checks, grokCheck)
+
+	// Oh My Pi is optional too: absence is healthy, presence reports the
+	// sanitized `omp --version` ("omp/18.2.3").
+	ompStatus, ompVersion, _ := checkDepWithPath(depCheck{
+		Name:        "Oh My Pi (omp)",
+		Command:     "omp",
+		VersionArgs: []string{"--version"},
+	})
+	ompCheck := DepCheck{
+		Name:      "omp",
+		Installed: ompStatus == "found",
+		Version:   ompVersion,
+		Status:    "ok",
+	}
+	if !ompCheck.Installed {
+		ompCheck.Message = "optional agent not found"
+	}
+	checks = append(checks, ompCheck)
 
 	return checks
 }

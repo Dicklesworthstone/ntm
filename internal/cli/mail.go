@@ -1114,6 +1114,8 @@ func resolveAgentName(p tmux.Pane) string {
 		prefix = "Aider"
 	case tmux.AgentOpencode:
 		prefix = "Opencode"
+	case tmux.AgentOmp:
+		prefix = "Omp"
 	case tmux.AgentOllama:
 		prefix = "Ollama"
 	default:

@@ -248,7 +248,7 @@ func completionAgentID(p tmux.Pane) (string, bool) {
 		return "", false
 	}
 	switch canonical := p.Type.Canonical(); canonical {
-	case tmux.AgentClaude, tmux.AgentCodex, tmux.AgentGemini, tmux.AgentAntigravity, tmux.AgentGrok, tmux.AgentCursor, tmux.AgentWindsurf, tmux.AgentAider, tmux.AgentOpencode, tmux.AgentOllama:
+	case tmux.AgentClaude, tmux.AgentCodex, tmux.AgentGemini, tmux.AgentAntigravity, tmux.AgentGrok, tmux.AgentCursor, tmux.AgentWindsurf, tmux.AgentAider, tmux.AgentOpencode, tmux.AgentOmp, tmux.AgentOllama:
 		return fmt.Sprintf("%s_%d", canonical, p.NTMIndex), true
 	default:
 		return "", false

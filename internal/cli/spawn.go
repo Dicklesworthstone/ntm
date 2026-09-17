@@ -324,8 +324,10 @@ func parseLocalFallbackProvider(raw string) (AgentType, error) {
 		return AgentTypeGemini, nil
 	case agentpkg.AgentTypeAntigravity:
 		return AgentTypeAntigravity, nil
+	case agentpkg.AgentTypeOmp:
+		return AgentTypeOmp, nil
 	default:
-		return "", fmt.Errorf("invalid --local-fallback-provider %q (expected one of: cc|cod|gmi|agy)", raw)
+		return "", fmt.Errorf("invalid --local-fallback-provider %q (expected one of: cc|cod|gmi|agy|omp)", raw)
 	}
 }
 
@@ -349,6 +351,8 @@ func canonicalSpawnAgentType(raw string) (AgentType, bool) {
 		return AgentTypeAider, true
 	case agentpkg.AgentTypeOpencode:
 		return AgentTypeOpencode, true
+	case agentpkg.AgentTypeOmp:
+		return AgentTypeOmp, true
 	case agentpkg.AgentTypeOllama:
 		return AgentTypeOllama, true
 	default:
@@ -367,6 +371,7 @@ func orderedSpawnAgentTypes() []AgentType {
 		AgentTypeWindsurf,
 		AgentTypeAider,
 		AgentTypeOpencode,
+		AgentTypeOmp,
 		AgentTypeOllama,
 	}
 }
@@ -595,6 +600,7 @@ func recomputeSpawnAgentCounts(opts *SpawnOptions) {
 	opts.WindsurfCount = 0
 	opts.AiderCount = 0
 	opts.OpencodeCount = 0
+	opts.OmpCount = 0
 	opts.OllamaCount = 0
 
 	for _, agent := range opts.Agents {
@@ -617,6 +623,8 @@ func recomputeSpawnAgentCounts(opts *SpawnOptions) {
 			opts.AiderCount++
 		case AgentTypeOpencode:
 			opts.OpencodeCount++
+		case AgentTypeOmp:
+			opts.OmpCount++
 		case AgentTypeOllama:
 			opts.OllamaCount++
 		}
@@ -642,6 +650,7 @@ func populateSpawnAgentsFromCounts(opts *SpawnOptions) {
 		{agentType: AgentTypeWindsurf, count: opts.WindsurfCount},
 		{agentType: AgentTypeAider, count: opts.AiderCount},
 		{agentType: AgentTypeOpencode, count: opts.OpencodeCount},
+		{agentType: AgentTypeOmp, count: opts.OmpCount},
 		{agentType: AgentTypeOllama, count: opts.OllamaCount},
 	}
 	for _, entry := range legacyCounts {
@@ -737,7 +746,7 @@ func validateSpawnAgentTypes(agents []FlatAgent, pluginMap map[string]plugins.Ag
 	for _, agent := range agents {
 		switch agent.Type {
 		case AgentTypeClaude, AgentTypeCodex, AgentTypeGemini, AgentTypeAntigravity, AgentTypeGrok,
-			AgentTypeOllama, AgentTypeCursor, AgentTypeWindsurf, AgentTypeAider, AgentTypeOpencode:
+			AgentTypeOllama, AgentTypeCursor, AgentTypeWindsurf, AgentTypeAider, AgentTypeOpencode, AgentTypeOmp:
 			continue
 		default:
 			if _, ok := pluginMap[string(agent.Type)]; !ok {
@@ -795,6 +804,10 @@ func spawnAgentCommandTemplate(agentType AgentType, pluginMap map[string]plugins
 		// `[agents] oc = "..."` to point at a wrapper script or pin a
 		// specific provider/model. See ntm#193.
 		return opencodeCommandOrDefault(cfg.Agents.Opencode), nil, nil
+	case AgentTypeOmp:
+		// `omp --auto-approve` with --model/--thinking/--append-system-prompt
+		// injected only when requested; `[agents] omp = "..."` overrides.
+		return config.OmpCommandOrDefault(cfg.Agents.Omp), nil, nil
 	default:
 		if p, ok := pluginMap[string(agentType)]; ok {
 			return p.Command, p.Env, nil
@@ -1030,7 +1043,7 @@ func sortPanesForAssignment(panes []tmux.Pane) {
 }
 
 func legacySpawnTotalAgentCount(opts SpawnOptions) int {
-	return opts.CCCount + opts.CodCount + opts.GmiCount + opts.AgyCount + opts.GrokCount + opts.CursorCount + opts.WindsurfCount + opts.AiderCount + opts.OpencodeCount + opts.OllamaCount
+	return opts.CCCount + opts.CodCount + opts.GmiCount + opts.AgyCount + opts.GrokCount + opts.CursorCount + opts.WindsurfCount + opts.AiderCount + opts.OpencodeCount + opts.OmpCount + opts.OllamaCount
 }
 
 func spawnHookCountEnv(totalAgents int, opts SpawnOptions) map[string]string {
@@ -1044,6 +1057,7 @@ func spawnHookCountEnv(totalAgents int, opts SpawnOptions) map[string]string {
 		"NTM_AGENT_COUNT_WINDSURF": fmt.Sprintf("%d", opts.WindsurfCount),
 		"NTM_AGENT_COUNT_AIDER":    fmt.Sprintf("%d", opts.AiderCount),
 		"NTM_AGENT_COUNT_OC":       fmt.Sprintf("%d", opts.OpencodeCount),
+		"NTM_AGENT_COUNT_OMP":      fmt.Sprintf("%d", opts.OmpCount),
 		"NTM_AGENT_COUNT_OLLAMA":   fmt.Sprintf("%d", opts.OllamaCount),
 		"NTM_AGENT_COUNT_TOTAL":    fmt.Sprintf("%d", totalAgents),
 	}
@@ -1063,6 +1077,7 @@ func spawnSessionCreatedEventFields(opts SpawnOptions, dir string) map[string]st
 		"agent_windsurf": fmt.Sprintf("%d", opts.WindsurfCount),
 		"agent_aider":    fmt.Sprintf("%d", opts.AiderCount),
 		"agent_oc":       fmt.Sprintf("%d", opts.OpencodeCount),
+		"agent_omp":      fmt.Sprintf("%d", opts.OmpCount),
 		"agent_ollama":   fmt.Sprintf("%d", opts.OllamaCount),
 	}
 }
@@ -1208,6 +1223,7 @@ type SpawnOptions struct {
 	WindsurfCount      int
 	AiderCount         int
 	OpencodeCount      int
+	OmpCount           int
 	OllamaCount        int
 	UserPane           bool
 	AutoRestart        bool
@@ -1742,7 +1758,7 @@ Worktree isolation (--worktrees):
 Local fallback (--local-fallback):
   If Ollama is unavailable or model preflight fails, local agents can be
   converted to cloud agents instead of failing spawn.
-  --local-fallback-provider selects fallback target (cc, cod, gmi, agy).
+  --local-fallback-provider selects fallback target (cc, cod, gmi, agy, omp).
 
 For running multiple agent swarms on the same project with different goals,
 use --label:
@@ -1757,6 +1773,8 @@ Examples:
   ntm spawn myproject --cc=2 --cod=2           # 2 Claude, 2 Codex + user pane
   ntm spawn myproject --cc=3 --cod=3 --agy=1   # 3 Claude, 3 Codex, 1 Antigravity
   ntm spawn myproject --cc=3 --cod=3 --gmi=1   # legacy: Gemini CLI instead of Antigravity
+  ntm spawn myproject --omp=8 --no-user        # 8 Oh My Pi agents on omp's configured default model
+  ntm spawn myproject --omp=2:opus:high        # omp with --model opus --thinking high
   ntm spawn myproject --cc=4 --no-user         # 4 Claude, no user pane
   ntm spawn myproject -r full-stack            # Use full-stack recipe
   ntm spawn myproject -t red-green             # Use red-green workflow template
@@ -2063,11 +2081,12 @@ Examples:
 	cmd.Flags().StringVar(&localModel, "local-model", "codellama:latest", "Ollama model to run for --local/--ollama agents")
 	cmd.Flags().StringVar(&localHost, "local-host", "", "Ollama host URL for --local/--ollama agents (overrides OLLAMA_HOST/NTM_OLLAMA_HOST)")
 	cmd.Flags().BoolVar(&localFallback, "local-fallback", false, "Fallback local Ollama agents to cloud provider when preflight fails")
-	cmd.Flags().StringVar(&localFallbackProvider, "local-fallback-provider", "cod", "Provider for --local-fallback: cc|cod|gmi|agy")
+	cmd.Flags().StringVar(&localFallbackProvider, "local-fallback-provider", "cod", "Provider for --local-fallback: cc|cod|gmi|agy|omp")
 	cmd.Flags().Var(NewAgentSpecsValue(AgentTypeCursor, &agentSpecs), "cursor", "Cursor agents (N or N:model)")
 	cmd.Flags().Var(NewAgentSpecsValue(AgentTypeWindsurf, &agentSpecs), "windsurf", "Windsurf agents (N or N:model)")
 	cmd.Flags().Var(NewAgentSpecsValue(AgentTypeAider, &agentSpecs), "aider", "Aider agents (N or N:model)")
 	cmd.Flags().Var(NewAgentSpecsValue(AgentTypeOpencode, &agentSpecs), "oc", "Opencode agents (N or N:model)")
+	cmd.Flags().Var(NewAgentSpecsValue(AgentTypeOmp, &agentSpecs), "omp", "Oh My Pi (omp) agents (N, N:model, N:model:effort, or N:model@effort; effort maps to omp --thinking)")
 	cmd.Flags().Var(&personaSpecs, "persona", "Persona-defined agents (name or name:count)")
 	cmd.Flags().BoolVar(&noUserPane, "no-user", false, "don't reserve a pane for the user")
 	cmd.Flags().StringVarP(&recipeName, "recipe", "r", "", "use a recipe for agent configuration")
@@ -2256,7 +2275,7 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 	if len(opts.Agents) == 0 {
 		totalAgents = legacySpawnTotalAgentCount(opts)
 		if totalAgents == 0 {
-			return outputError(fmt.Errorf("no agents specified (use --cc, --cod, --gmi, --agy, --grok, --cursor, --windsurf, --aider, --ollama or plugin flags)"))
+			return outputError(fmt.Errorf("no agents specified (use --cc, --cod, --gmi, --agy, --grok, --omp, --cursor, --windsurf, --aider, --oc, --ollama or plugin flags)"))
 		}
 	} else {
 		totalAgents = len(opts.Agents)
@@ -3647,6 +3666,7 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 		WindsurfCount:    opts.WindsurfCount,
 		AiderCount:       opts.AiderCount,
 		OpencodeCount:    opts.OpencodeCount,
+		OmpCount:         opts.OmpCount,
 		OllamaCount:      opts.OllamaCount,
 		WorkDir:          dir,
 		Recipe:           opts.RecipeName,
@@ -4800,6 +4820,8 @@ func modelDefaultKeyForType(agentType string) string {
 		return "opencode"
 	case agentpkg.AgentTypeGrok:
 		return "grok"
+	case agentpkg.AgentTypeOmp:
+		return "omp"
 	case agentpkg.AgentTypeClaudeCode:
 		return "claude"
 	case agentpkg.AgentTypeCodex:

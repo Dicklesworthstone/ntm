@@ -382,7 +382,7 @@ Examples:
 	cmd.Flags().IntVar(&assignLimit, "limit", 0, "Maximum number of assignments (0 = unlimited)")
 
 	// Agent type filters
-	cmd.Flags().StringVar(&assignAgentType, "agent", "", "Filter by agent type: any (no filter), claude, codex, gemini")
+	cmd.Flags().StringVar(&assignAgentType, "agent", "", "Filter by agent type: any (no filter), claude, codex, gemini, antigravity, grok, omp, oc")
 	cmd.Flags().BoolVar(&assignCCOnly, "cc-only", false, "Only assign to Claude agents (alias for --agent=claude)")
 	cmd.Flags().BoolVar(&assignCodOnly, "cod-only", false, "Only assign to Codex agents (alias for --agent=codex)")
 	cmd.Flags().BoolVar(&assignGmiOnly, "gmi-only", false, "Only assign to Gemini agents (alias for --agent=gemini)")
@@ -1342,6 +1342,10 @@ func detectAgentTypeFromTitle(title string) string {
 			return "aider"
 		case agent.AgentTypeOpencode:
 			return "oc"
+		case agent.AgentTypeGrok:
+			return "grok"
+		case agent.AgentTypeOmp:
+			return "omp"
 		case agent.AgentTypeOllama:
 			return "ollama"
 		case agent.AgentTypeUser:

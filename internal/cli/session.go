@@ -99,6 +99,11 @@ func sessionPanePresentation(pane tmux.Pane, th theme.Theme, ic icons.IconSet) (
 		return string(th.Lavender), ic.AgentIcon(string(agentpkg.AgentTypeAntigravity))
 	case agentpkg.AgentTypeGrok:
 		return string(th.Pink), ic.AgentIcon(string(agentpkg.AgentTypeGrok))
+	case agentpkg.AgentTypeOmp:
+		// omp (Oh My Pi) gets the sky accent, matching the semantic palette.
+		return string(th.Sky), ic.AgentIcon(string(agentpkg.AgentTypeOmp))
+	case agentpkg.AgentTypeOpencode:
+		return string(th.Opencode), ic.AgentIcon(string(agentpkg.AgentTypeOpencode))
 	case agentpkg.AgentTypeCursor:
 		return string(th.Cursor), ic.AgentIcon(string(agentpkg.AgentTypeCursor))
 	case agentpkg.AgentTypeWindsurf:
@@ -475,6 +480,12 @@ func runListPaged(tags []string, project string, limit, offset int) error {
 				if s.AgentCounts.Grok > 0 {
 					parts = append(parts, fmt.Sprintf("%d Grok", s.AgentCounts.Grok))
 				}
+				if s.AgentCounts.Omp > 0 {
+					parts = append(parts, fmt.Sprintf("%d OMP", s.AgentCounts.Omp))
+				}
+				if s.AgentCounts.Opencode > 0 {
+					parts = append(parts, fmt.Sprintf("%d OC", s.AgentCounts.Opencode))
+				}
 				if s.AgentCounts.Ollama > 0 {
 					parts = append(parts, fmt.Sprintf("%d OLL", s.AgentCounts.Ollama))
 				}
@@ -675,6 +686,12 @@ func estimatePaneContextUsage(p tmux.Pane) (paneContextUsage, bool) {
 	if p.Type == tmux.AgentUser {
 		return paneContextUsage{}, false
 	}
+	if tmux.AgentType(p.Type).Canonical() == tmux.AgentOmp {
+		// omp reports its own context gauge ("6%…262K") in the composer's
+		// status line, which is exact where the transcript-size estimate below
+		// is not, and works without knowing omp's configured model.
+		return ompPaneContextUsage(p)
+	}
 	modelName := modelNameForPane(p)
 	if modelName == "" {
 		return paneContextUsage{}, false
@@ -699,6 +716,31 @@ func estimatePaneContextUsage(p tmux.Pane) (paneContextUsage, bool) {
 		Percent: usage.UsagePercent,
 		Model:   usage.Model,
 	}, true
+}
+
+// ompPaneContextUsage reads the context gauge omp renders in its composer's
+// status line. Tokens are derived from the gauge percentage and the window
+// omp displays next to it.
+func ompPaneContextUsage(p tmux.Pane) (paneContextUsage, bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	out, err := tmux.CapturePaneVisibleContext(ctx, p.ID)
+	if err != nil || out == "" {
+		return paneContextUsage{}, false
+	}
+	usedPct, window, ok := agentpkg.OmpContextUsage(out)
+	if !ok {
+		return paneContextUsage{}, false
+	}
+	model := p.Variant
+	if model == "" {
+		model = "omp"
+	}
+	usage := paneContextUsage{Percent: usedPct, Limit: int(window), Model: model}
+	if window > 0 {
+		usage.Tokens = int(float64(window) * usedPct / 100)
+	}
+	return usage, true
 }
 
 func buildStatusResponse(ctx context.Context, session string, opts statusOptions) (output.StatusResponse, error) {
@@ -1110,6 +1152,8 @@ func runStatusOnce(ctx context.Context, w io.Writer, session string, opts status
 	gmiCount := counts.Gemini
 	agyCount := counts.Antigravity
 	grokCount := counts.Grok
+	ompCount := counts.Omp
+	opencodeCount := counts.Opencode
 	ollamaCount := counts.Ollama
 	cursorCount := counts.Cursor
 	windsurfCount := counts.Windsurf
@@ -1410,6 +1454,14 @@ func runStatusOnce(ctx context.Context, w io.Writer, session string, opts status
 		grokColorKey, grokIcon := sessionPanePresentation(tmux.Pane{Type: tmux.AgentGrok}, t, ic)
 		fmt.Fprintf(w, "    %s%s Grok%s    %s%d instance(s)%s\n", color(grokColorKey), grokIcon, reset, text, grokCount, reset)
 	}
+	if ompCount > 0 {
+		ompColorKey, ompIcon := sessionPanePresentation(tmux.Pane{Type: tmux.AgentOmp}, t, ic)
+		fmt.Fprintf(w, "    %s%s OMP%s     %s%d instance(s)%s\n", color(ompColorKey), ompIcon, reset, text, ompCount, reset)
+	}
+	if opencodeCount > 0 {
+		ocColorKey, ocIcon := sessionPanePresentation(tmux.Pane{Type: tmux.AgentOpencode}, t, ic)
+		fmt.Fprintf(w, "    %s%s OpenCode%s %s%d instance(s)%s\n", color(ocColorKey), ocIcon, reset, text, opencodeCount, reset)
+	}
 	if ollamaCount > 0 {
 		fmt.Fprintf(w, "    %s%s Ollama%s %s%d instance(s)%s\n", ollama, ic.Ollama, reset, text, ollamaCount, reset)
 	}
@@ -1434,7 +1486,7 @@ func runStatusOnce(ctx context.Context, w io.Writer, session string, opts status
 		fmt.Fprintf(w, "    %s%s Other%s   %s%d pane(s)%s\n", color(otherColorKey), otherIcon, reset, text, otherCount, reset)
 	}
 
-	totalAgents := ccCount + codCount + gmiCount + agyCount + grokCount + ollamaCount + cursorCount + windsurfCount + aiderCount + otherCount
+	totalAgents := ccCount + codCount + gmiCount + agyCount + grokCount + ompCount + opencodeCount + ollamaCount + cursorCount + windsurfCount + aiderCount + otherCount
 	if totalAgents == 0 {
 		fmt.Fprintf(w, "    %sNo agents running%s\n", overlay, reset)
 	}
@@ -1798,6 +1850,10 @@ func modelNameForPane(p tmux.Pane) string {
 			if cfg.Models.DefaultOpencode != "" {
 				return cfg.Models.DefaultOpencode
 			}
+		case tmux.AgentOmp:
+			if cfg.Models.DefaultOmp != "" {
+				return cfg.Models.DefaultOmp
+			}
 		}
 	}
 	// Fall back to compiled-in defaults from config.DefaultModels() so the
@@ -1812,6 +1868,8 @@ func modelNameForPane(p tmux.Pane) string {
 		return defaults.DefaultGemini
 	case tmux.AgentGrok:
 		return defaults.DefaultGrok
+	case tmux.AgentOmp:
+		return defaults.DefaultOmp
 	case tmux.AgentOllama:
 		return defaults.DefaultOllama
 	default:

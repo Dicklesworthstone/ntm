@@ -81,6 +81,7 @@ func newResumeCmd() *cobra.Command {
 		codCount int
 		gmiCount int
 		agyCount int
+		ompCount int
 	)
 
 	cmd := &cobra.Command{
@@ -106,7 +107,7 @@ Examples:
 			}
 			effectiveJSON := IsJSONOutput()
 			err := runResume(cmd, sessionName, fromPath, spawn, inject, dryRun,
-				ccCount, codCount, gmiCount, agyCount, effectiveJSON)
+				resumeSpawnCounts{CC: ccCount, Cod: codCount, Gmi: gmiCount, Agy: agyCount, Omp: ompCount}, effectiveJSON)
 			return outputResumeCommandError(cmd, resumeAction(spawn, inject), effectiveJSON, err)
 		},
 	}
@@ -119,12 +120,22 @@ Examples:
 	cmd.Flags().IntVar(&codCount, "cod", 0, "Number of Codex agents to spawn (requires --spawn)")
 	cmd.Flags().IntVar(&gmiCount, "gmi", 0, "Number of Gemini agents to spawn (requires --spawn)")
 	cmd.Flags().IntVar(&agyCount, "agy", 0, "Number of Antigravity agents to spawn (requires --spawn)")
+	cmd.Flags().IntVar(&ompCount, "omp", 0, "Number of Oh My Pi (omp) agents to spawn (requires --spawn)")
 
 	return cmd
 }
 
+// resumeSpawnCounts carries the per-type agent counts for `resume --spawn`.
+type resumeSpawnCounts struct {
+	CC, Cod, Gmi, Agy, Omp int
+}
+
+func (c resumeSpawnCounts) total() int {
+	return c.CC + c.Cod + c.Gmi + c.Agy + c.Omp
+}
+
 func runResume(cmd *cobra.Command, sessionName, fromPath string, spawn, inject, dryRun bool,
-	ccCount, codCount, gmiCount, agyCount int, jsonFormat bool) error {
+	counts resumeSpawnCounts, jsonFormat bool) error {
 
 	// Check global JSON flag
 	if IsJSONOutput() {
@@ -274,7 +285,7 @@ func runResume(cmd *cobra.Command, sessionName, fromPath string, spawn, inject, 
 			}
 		}
 		return spawnWithHandoff(cmd, sessionName, h, path, handoffInfo,
-			ccCount, codCount, gmiCount, agyCount, projectDir, jsonFormat)
+			counts, projectDir, jsonFormat)
 	}
 
 	if inject {
@@ -341,22 +352,22 @@ func displayHandoff(cmd *cobra.Command, h *handoff.Handoff, path string, age tim
 }
 
 func spawnWithHandoff(cmd *cobra.Command, sessionName string, h *handoff.Handoff, path string,
-	info *ResumeHandoffInfo, ccCount, codCount, gmiCount, agyCount int, projectDir string, jsonFormat bool) error {
+	info *ResumeHandoffInfo, counts resumeSpawnCounts, projectDir string, jsonFormat bool) error {
 
 	if !jsonFormat {
 		slog.Info("spawning with handoff",
 			"session", sessionName,
-			"cc", ccCount,
-			"cod", codCount,
-			"gmi", gmiCount,
-			"agy", agyCount,
+			"cc", counts.CC,
+			"cod", counts.Cod,
+			"gmi", counts.Gmi,
+			"agy", counts.Agy,
+			"omp", counts.Omp,
 		)
 	}
 
 	// Validate counts
-	totalAgents := ccCount + codCount + gmiCount + agyCount
-	if totalAgents == 0 {
-		return fmt.Errorf("--spawn requires at least one agent count (--cc, --cod, --gmi, or --agy)")
+	if counts.total() == 0 {
+		return fmt.Errorf("--spawn requires at least one agent count (--cc, --cod, --gmi, --agy, or --omp)")
 	}
 
 	// Format context for injection
@@ -374,10 +385,11 @@ func spawnWithHandoff(cmd *cobra.Command, sessionName string, h *handoff.Handoff
 	opts := SpawnOptions{
 		Session:            sessionName,
 		ProjectDirOverride: projectDir,
-		CCCount:            ccCount,
-		CodCount:           codCount,
-		GmiCount:           gmiCount,
-		AgyCount:           agyCount,
+		CCCount:            counts.CC,
+		CodCount:           counts.Cod,
+		GmiCount:           counts.Gmi,
+		AgyCount:           counts.Agy,
+		OmpCount:           counts.Omp,
 		UserPane:           true,
 		NoHooks:            true,
 	}
@@ -410,7 +422,7 @@ func spawnWithHandoff(cmd *cobra.Command, sessionName string, h *handoff.Handoff
 	var dispatchErr error
 	agentPanes := resumeAgentPanes(panes)
 	if len(agentPanes) == 0 {
-		failedCount = totalAgents
+		failedCount = counts.total()
 		dispatchErr = errors.New("no agent panes found after spawn; handoff context was not delivered")
 	} else {
 		service, serviceErr := dispatchsvc.NewService(dispatchsvc.Ports{

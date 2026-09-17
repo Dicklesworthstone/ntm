@@ -125,6 +125,9 @@ func (r *SessionsSaveResult) Text(w io.Writer) error {
 		if r.State.Agents.Grok > 0 {
 			fmt.Fprintf(w, "  Grok: %d\n", r.State.Agents.Grok)
 		}
+		if r.State.Agents.Omp > 0 {
+			fmt.Fprintf(w, "  Oh My Pi: %d\n", r.State.Agents.Omp)
+		}
 		if r.State.GitBranch != "" {
 			fmt.Fprintf(w, "  Git: %s\n", r.State.GitBranch)
 		}
@@ -354,6 +357,9 @@ func (r *SessionsShowResult) Text(w io.Writer) error {
 	if s.Agents.Grok > 0 {
 		fmt.Fprintf(w, "  Grok:   %d\n", s.Agents.Grok)
 	}
+	if s.Agents.Omp > 0 {
+		fmt.Fprintf(w, "  Omp:    %d\n", s.Agents.Omp)
+	}
 	if s.Agents.User > 0 {
 		fmt.Fprintf(w, "  User:   %d\n", s.Agents.User)
 	}
@@ -540,6 +546,9 @@ func (r *SessionsRestoreResult) Text(w io.Writer) error {
 			r.State.Agents.Claude, r.State.Agents.Codex, r.State.Agents.Gemini)
 		if r.State.Agents.Grok > 0 {
 			fmt.Fprintf(w, "  Grok: %d\n", r.State.Agents.Grok)
+		}
+		if r.State.Agents.Omp > 0 {
+			fmt.Fprintf(w, "  Oh My Pi: %d\n", r.State.Agents.Omp)
 		}
 	}
 	if r.PromptSent > 0 || r.PromptFailed > 0 {
@@ -849,6 +858,7 @@ func buildAgentCommands(state *session.SessionState) session.AgentCommands {
 		Windsurf:    render(cfg.Agents.Windsurf, "windsurf"),
 		Aider:       render(cfg.Agents.Aider, "aider"),
 		Opencode:    render(opencodeCommandOrDefault(cfg.Agents.Opencode), "opencode"),
+		Omp:         render(config.OmpCommandOrDefault(cfg.Agents.Omp), "omp"),
 		Ollama:      render(cfg.Agents.Ollama, "ollama"),
 	}
 }
@@ -914,6 +924,8 @@ func agentTemplateAndType(agentType string) (string, AgentType, bool) {
 		return cfg.Agents.Aider, AgentTypeAider, true
 	case tmux.AgentOpencode:
 		return opencodeCommandOrDefault(cfg.Agents.Opencode), AgentTypeOpencode, true
+	case tmux.AgentOmp:
+		return config.OmpCommandOrDefault(cfg.Agents.Omp), AgentTypeOmp, true
 	case tmux.AgentOllama:
 		return cfg.Agents.Ollama, AgentTypeOllama, true
 	default:

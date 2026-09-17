@@ -206,14 +206,21 @@ func TestDashboardPaneTypeSummary(t *testing.T) {
 	}{
 		{
 			name: "empty",
-			want: "Claude=0 Codex=0 Gemini=0 Grok=0 Cursor=0 Windsurf=0 Aider=0 Opencode=0 Ollama=0 User=0 Other=0",
+			want: "Claude=0 Codex=0 Gemini=0 Grok=0 Cursor=0 Windsurf=0 Aider=0 Opencode=0 Omp=0 Ollama=0 User=0 Other=0",
 		},
 		{
 			name: "grok alias",
 			panes: []tmux.Pane{
 				{Type: tmux.AgentType("grok-build")},
 			},
-			want: "Claude=0 Codex=0 Gemini=0 Grok=1 Cursor=0 Windsurf=0 Aider=0 Opencode=0 Ollama=0 User=0 Other=0",
+			want: "Claude=0 Codex=0 Gemini=0 Grok=1 Cursor=0 Windsurf=0 Aider=0 Opencode=0 Omp=0 Ollama=0 User=0 Other=0",
+		},
+		{
+			name: "omp alias",
+			panes: []tmux.Pane{
+				{Type: tmux.AgentType("oh-my-pi")},
+			},
+			want: "Claude=0 Codex=0 Gemini=0 Grok=0 Cursor=0 Windsurf=0 Aider=0 Opencode=0 Omp=1 Ollama=0 User=0 Other=0",
 		},
 		{
 			name: "mixed",
@@ -228,7 +235,7 @@ func TestDashboardPaneTypeSummary(t *testing.T) {
 				{Type: tmux.AgentType("openai-codex")},
 				{Type: tmux.AgentUnknown},
 			},
-			want: "Claude=1 Codex=1 Gemini=0 Grok=1 Cursor=1 Windsurf=1 Aider=1 Opencode=0 Ollama=1 User=1 Other=1",
+			want: "Claude=1 Codex=1 Gemini=0 Grok=1 Cursor=1 Windsurf=1 Aider=1 Opencode=0 Omp=0 Ollama=1 User=1 Other=1",
 		},
 	}
 

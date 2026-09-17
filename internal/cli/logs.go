@@ -335,6 +335,8 @@ func shortAgentTypeLocal(agentType string) string {
 		return "aid"
 	case agent.AgentTypeOpencode:
 		return "oc"
+	case agent.AgentTypeOmp:
+		return "omp"
 	case agent.AgentTypeOllama:
 		return "oll"
 	case agent.AgentTypeUser:
@@ -371,6 +373,8 @@ func logsAgentTypeColor(agentType string, th theme.Theme) lipgloss.Color {
 		return th.Aider
 	case agent.AgentTypeOpencode:
 		return th.Opencode
+	case agent.AgentTypeOmp:
+		return th.Sky
 	case agent.AgentTypeOllama:
 		return th.Ollama
 	case agent.AgentTypeUser:

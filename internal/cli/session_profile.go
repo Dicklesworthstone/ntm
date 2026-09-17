@@ -28,6 +28,7 @@ type SessionProfile struct {
 	Windsurf  int    `toml:"windsurf,omitempty" json:"windsurf,omitempty"`
 	Aider     int    `toml:"aider,omitempty" json:"aider,omitempty"`
 	Opencode  int    `toml:"oc,omitempty" json:"oc,omitempty"`
+	Omp       int    `toml:"omp,omitempty" json:"omp,omitempty"`
 	UserPane  *bool  `toml:"user_pane,omitempty" json:"user_pane,omitempty"`
 	Prompt    string `toml:"prompt,omitempty" json:"prompt,omitempty"`
 	InitFile  string `toml:"init_file,omitempty" json:"init_file,omitempty"`
@@ -76,6 +77,7 @@ func (p SessionProfile) Validate() error {
 		"windsurf": p.Windsurf,
 		"aider":    p.Aider,
 		"oc":       p.Opencode,
+		"omp":      p.Omp,
 	}
 	for name, count := range counts {
 		if count < 0 {
@@ -299,7 +301,7 @@ func newSessionProfileSaveCmd() *cobra.Command {
 	var (
 		cc, cod, gmi, agy, ollamaCount int
 		cursorCount, wsCount           int
-		aiderCount                     int
+		aiderCount, ompCount           int
 		userPane, safety, wt           bool
 		prompt, initFile               string
 	)
@@ -325,6 +327,9 @@ func newSessionProfileSaveCmd() *cobra.Command {
 			}
 			if aiderCount > 0 {
 				cfg.Aider = aiderCount
+			}
+			if ompCount > 0 {
+				cfg.Omp = ompCount
 			}
 			if prompt != "" {
 				cfg.Prompt = prompt
@@ -357,6 +362,7 @@ func newSessionProfileSaveCmd() *cobra.Command {
 	cmd.Flags().IntVar(&cursorCount, "cursor", 0, "Number of Cursor agents")
 	cmd.Flags().IntVar(&wsCount, "windsurf", 0, "Number of Windsurf agents")
 	cmd.Flags().IntVar(&aiderCount, "aider", 0, "Number of Aider agents")
+	cmd.Flags().IntVar(&ompCount, "omp", 0, "Number of Oh My Pi (omp) agents")
 	cmd.Flags().BoolVar(&userPane, "user-pane", false, "Include user pane")
 	cmd.Flags().BoolVar(&safety, "safety", false, "Enable safety mode")
 	cmd.Flags().BoolVar(&wt, "worktrees", false, "Enable git worktree isolation")
@@ -479,6 +485,9 @@ func ApplySessionProfileToSpawnOptions(opts *SpawnOptions, profile *SessionProfi
 	}
 	if opts.AiderCount == 0 && profile.Aider > 0 {
 		opts.AiderCount = profile.Aider
+	}
+	if opts.OmpCount == 0 && profile.Omp > 0 {
+		opts.OmpCount = profile.Omp
 	}
 	if profile.UserPane != nil && *profile.UserPane {
 		opts.UserPane = true

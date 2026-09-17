@@ -139,7 +139,7 @@ func TestValidateAdoptAssignments(t *testing.T) {
 		{
 			name:        "no panes",
 			assignments: map[agentpkg.AgentType][]paneSpec{},
-			wantErr:     "use one or more of --cc, --cod, --gmi, --agy, --grok, --cursor, --windsurf, --aider, --oc, --ollama, or --user",
+			wantErr:     "use one or more of --cc, --cod, --gmi, --agy, --grok, --cursor, --windsurf, --aider, --oc, --omp, --ollama, or --user",
 		},
 	}
 

@@ -455,7 +455,7 @@ func normalizeAgentTypeFilter(filter string) (string, error) {
 	}
 	normalized := normalizeAgentTypeLike(trimmed)
 	if normalized == "" {
-		return "", fmt.Errorf("invalid agent filter %q: must be one of claude|cc, codex|cod, gemini|gmi, antigravity|agy, cursor, windsurf|ws, aider, ollama", filter)
+		return "", fmt.Errorf("invalid agent filter %q: must be one of claude|cc, codex|cod, gemini|gmi, antigravity|agy, omp, cursor, windsurf|ws, aider, ollama", filter)
 	}
 	return normalized, nil
 }
@@ -480,7 +480,7 @@ func isSupportedWorkAgentType(agentType agentpkg.AgentType) bool {
 	switch agentType {
 	case agentpkg.AgentTypeClaudeCode, agentpkg.AgentTypeCodex, agentpkg.AgentTypeGemini,
 		agentpkg.AgentTypeAntigravity, agentpkg.AgentTypeCursor, agentpkg.AgentTypeWindsurf,
-		agentpkg.AgentTypeAider, agentpkg.AgentTypeOpencode, agentpkg.AgentTypeOllama:
+		agentpkg.AgentTypeAider, agentpkg.AgentTypeOpencode, agentpkg.AgentTypeOmp, agentpkg.AgentTypeOllama:
 		return true
 	default:
 		return false

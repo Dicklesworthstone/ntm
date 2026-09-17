@@ -675,6 +675,8 @@ func paneOutputPrefixColor(agentType tmux.AgentType, t theme.Theme) lipgloss.Col
 		return t.Aider
 	case agent.AgentTypeOpencode:
 		return t.Opencode
+	case agent.AgentTypeOmp:
+		return t.Sky
 	case agent.AgentTypeOllama:
 		return t.Ollama
 	case agent.AgentTypeUser:

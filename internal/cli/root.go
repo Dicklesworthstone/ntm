@@ -3849,6 +3849,7 @@ var (
 	robotSpawnGmi        string // Gemini agents: count[:model]
 	robotSpawnAgy        string // Antigravity agents: count (model pinned)
 	robotSpawnGrok       string // Grok Build agents: count[:model[:effort]]
+	robotSpawnOmp        string // Oh My Pi (omp) agents: count[:model[:effort]]
 	robotSpawnPreset     string // recipe/preset name
 	robotSpawnNoUser     bool   // don't create user pane
 	robotSpawnWait       bool   // wait for agents to be ready
@@ -4528,6 +4529,7 @@ func init() {
 	rootCmd.Flags().StringVar(&robotSpawnGmi, "spawn-gmi", "", "Gemini CLI agents to spawn: count[:model]. Use with --robot-spawn. Example: --spawn-gmi=1")
 	rootCmd.Flags().StringVar(&robotSpawnAgy, "spawn-agy", "", "Antigravity CLI agents to spawn: count (model is pinned to Gemini 3.8 Flash (High)). Use with --robot-spawn. Example: --spawn-agy=1")
 	rootCmd.Flags().StringVar(&robotSpawnGrok, "spawn-grok", "", "Grok Build agents to spawn: count[:model[:effort]] (effort also as model@effort). Use with --robot-spawn. Example: --spawn-grok=1")
+	rootCmd.Flags().StringVar(&robotSpawnOmp, "spawn-omp", "", "Oh My Pi (omp) agents to spawn: count[:model[:effort]] (effort maps to omp --thinking; no model = omp's own default). Use with --robot-spawn. Example: --spawn-omp=8 or --spawn-omp=2:opus:high")
 	rootCmd.Flags().StringVar(&robotSpawnPreset, "spawn-preset", "", "Use recipe preset instead of counts. See --robot-recipes. Example: --spawn-preset=standard")
 	rootCmd.Flags().BoolVar(&robotSpawnNoUser, "spawn-no-user", false, "Skip user pane creation. Optional with --robot-spawn. For headless/automation")
 	rootCmd.Flags().BoolVar(&robotSpawnWait, "spawn-wait", false, "Wait for agents to show ready state before returning. Recommended for automation")
@@ -4675,7 +4677,7 @@ func init() {
 
 	// Robot-activity flags for agent activity detection
 	rootCmd.Flags().StringVar(&robotActivity, "robot-activity", "", "Get agent activity state (idle/busy/error). Required: SESSION. Example: ntm --robot-activity=myproject")
-	rootCmd.Flags().StringVar(&robotActivityType, "activity-type", "", "Filter by agent type: claude, codex, antigravity, grok, gemini. Optional with --robot-activity. Example: --activity-type=grok")
+	rootCmd.Flags().StringVar(&robotActivityType, "activity-type", "", "Filter by agent type: claude, codex, antigravity, grok, omp, gemini. Optional with --robot-activity. Example: --activity-type=omp")
 	rootCmd.Flags().StringVar(&robotProductivity, "robot-productivity", "", "Get evidence-backed swarm productivity. Required: SESSION. Example: ntm --robot-productivity=myproject")
 	rootCmd.Flags().StringVar(&robotProductivityWindow, "productivity-window", "30m", "Observation window for --robot-productivity and --wait-until=converged. Example: --productivity-window=1h")
 	rootCmd.Flags().IntVar(&robotConvergedStreak, "converged-streak", 3, "Consecutive converged observations required by --wait-until=converged")
@@ -5461,6 +5463,7 @@ func parseRobotSpawnAgentSpecs() (map[AgentType]AgentSpec, error) {
 		{name: "--spawn-gmi", value: robotSpawnGmi, agentType: AgentTypeGemini},
 		{name: "--spawn-agy", value: robotSpawnAgy, agentType: AgentTypeAntigravity},
 		{name: "--spawn-grok", value: robotSpawnGrok, agentType: AgentTypeGrok},
+		{name: "--spawn-omp", value: robotSpawnOmp, agentType: AgentTypeOmp},
 	}
 	specs := make(map[AgentType]AgentSpec, len(flags))
 	for _, flag := range flags {
@@ -5488,11 +5491,12 @@ func robotSpawnOptionsFromFlags(cmd *cobra.Command, readyTimeout time.Duration, 
 		GmiCount:      specs[AgentTypeGemini].Count,
 		AgyCount:      specs[AgentTypeAntigravity].Count,
 		GrokCount:     specs[AgentTypeGrok].Count,
+		OmpCount:      specs[AgentTypeOmp].Count,
 		// Model/effort overrides from the count[:model[:effort]] specs. agy is
 		// intentionally absent: its model is hard-pinned by config, and parsing
 		// rejects any --spawn-agy model override before options are built.
 		// Efforts flow only for the types whose
-		// launch command consumes them (cc/cod/grok), mirroring the CLI spawn
+		// launch command consumes them (cc/cod/grok/omp), mirroring the CLI spawn
 		// path where other types drop the hint at template-render time.
 		CCModel:             specs[AgentTypeClaude].Model,
 		CCReasoningEffort:   specs[AgentTypeClaude].ReasoningEffort,
@@ -5501,6 +5505,8 @@ func robotSpawnOptionsFromFlags(cmd *cobra.Command, readyTimeout time.Duration, 
 		GmiModel:            specs[AgentTypeGemini].Model,
 		GrokModel:           specs[AgentTypeGrok].Model,
 		GrokReasoningEffort: specs[AgentTypeGrok].ReasoningEffort,
+		OmpModel:            specs[AgentTypeOmp].Model,
+		OmpReasoningEffort:  specs[AgentTypeOmp].ReasoningEffort,
 		Preset:              robotSpawnPreset,
 		NoUserPane:          robotSpawnNoUser,
 		WorkingDir:          robotSpawnDir,
@@ -5939,6 +5945,7 @@ Examples:
 						"antigravity": effectiveCfg.Agents.Antigravity,
 						"gemini":      effectiveCfg.Agents.Gemini,
 						"grok":        effectiveCfg.Agents.Grok,
+						"omp":         config.OmpCommandOrDefault(effectiveCfg.Agents.Omp),
 						"cursor":      effectiveCfg.Agents.Cursor,
 						"windsurf":    effectiveCfg.Agents.Windsurf,
 						"aider":       effectiveCfg.Agents.Aider,

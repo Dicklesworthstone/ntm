@@ -64,6 +64,7 @@ var supportedAdoptTypes = []adoptTypeSpec{
 	{Flag: "windsurf", AgentType: agentpkg.AgentTypeWindsurf, Description: "Windsurf agents", Example: "7"},
 	{Flag: "aider", AgentType: agentpkg.AgentTypeAider, Description: "Aider agents", Example: "8"},
 	{Flag: "oc", AgentType: agentpkg.AgentTypeOpencode, Description: "Opencode agents", Example: "9"},
+	{Flag: "omp", AgentType: agentpkg.AgentTypeOmp, Description: "Oh My Pi (omp) agents", Example: "9"},
 	{Flag: "ollama", AgentType: agentpkg.AgentTypeOllama, Description: "Ollama agents", Example: "10"},
 	{Flag: "user", AgentType: agentpkg.AgentTypeUser, Description: "User panes", Example: "10"},
 }
@@ -108,6 +109,9 @@ Examples:
 
   # Adopt with mixed agent types
   ntm adopt my_session --cc=0,1,2 --cod=3,4 --gmi=5 --grok=6 --cursor=7
+
+  # Adopt panes already running omp (Oh My Pi)
+  ntm adopt my_session --omp=1,2,3,4
 
   # Window-per-agent layout: address each window's pane explicitly
   ntm adopt my_session --cc=1.0,2.0 --cod=3.0
@@ -236,12 +240,13 @@ type AdoptedAgentCounts struct {
 	Windsurf int `json:"windsurf"`
 	Aider    int `json:"aider"`
 	Opencode int `json:"oc"`
+	Omp      int `json:"omp"`
 	Ollama   int `json:"ollama"`
 	User     int `json:"user"`
 }
 
 func (a AdoptedAgentCounts) Total() int {
-	return a.CC + a.Cod + a.Gmi + a.Agy + a.Grok + a.Cursor + a.Windsurf + a.Aider + a.Opencode + a.Ollama + a.User
+	return a.CC + a.Cod + a.Gmi + a.Agy + a.Grok + a.Cursor + a.Windsurf + a.Aider + a.Opencode + a.Omp + a.Ollama + a.User
 }
 
 func (a AdoptedAgentCounts) Summary() string {
@@ -278,6 +283,8 @@ func (a *AdoptedAgentCounts) increment(agentType agentpkg.AgentType) {
 		a.Aider++
 	case agentpkg.AgentTypeOpencode:
 		a.Opencode++
+	case agentpkg.AgentTypeOmp:
+		a.Omp++
 	case agentpkg.AgentTypeOllama:
 		a.Ollama++
 	case agentpkg.AgentTypeUser:
@@ -305,6 +312,8 @@ func (a AdoptedAgentCounts) countFor(agentType agentpkg.AgentType) int {
 		return a.Aider
 	case agentpkg.AgentTypeOpencode:
 		return a.Opencode
+	case agentpkg.AgentTypeOmp:
+		return a.Omp
 	case agentpkg.AgentTypeOllama:
 		return a.Ollama
 	case agentpkg.AgentTypeUser:

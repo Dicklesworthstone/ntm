@@ -53,6 +53,10 @@ const (
 	// the wrong pane title / detection. Launch command resolves through the
 	// `[agents] oc = "..."` config key (or the default `opencode` binary).
 	AgentTypeOpencode AgentType = "oc"
+	// AgentTypeOmp covers Oh My Pi (`omp`) panes: `--omp=N[:model[:effort]]`
+	// on spawn/add/adopt/send, launched through `[agents] omp` or
+	// config.DefaultOmpCommand.
+	AgentTypeOmp AgentType = "omp"
 )
 
 // AgentSpec represents a parsed agent specification with optional model
@@ -113,7 +117,7 @@ func (s *AgentSpecs) Type() string {
 // separator (ntm-mjf7).
 func agentTypeSupportsEffortSuffix(agentType AgentType) bool {
 	switch agentType {
-	case AgentTypeClaude, AgentTypeCodex, AgentTypeGrok:
+	case AgentTypeClaude, AgentTypeCodex, AgentTypeGrok, AgentTypeOmp:
 		return true
 	default:
 		return false

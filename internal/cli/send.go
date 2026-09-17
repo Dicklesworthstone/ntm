@@ -531,7 +531,7 @@ func matchesLegacySendTypeFilter(pane tmux.Pane, targetCC, targetCod, targetGmi 
 
 func isInterruptibleAgentPane(pane tmux.Pane) bool {
 	switch tmux.AgentType(pane.Type).Canonical() {
-	case tmux.AgentClaude, tmux.AgentCodex, tmux.AgentGemini, tmux.AgentGrok, tmux.AgentCursor, tmux.AgentWindsurf, tmux.AgentAider, tmux.AgentOpencode, tmux.AgentOllama:
+	case tmux.AgentClaude, tmux.AgentCodex, tmux.AgentGemini, tmux.AgentGrok, tmux.AgentCursor, tmux.AgentWindsurf, tmux.AgentAider, tmux.AgentOpencode, tmux.AgentOmp, tmux.AgentOllama:
 		return true
 	default:
 		return false
@@ -934,6 +934,8 @@ func newSendCmd() *cobra.Command {
 	cmd.Flags().Lookup("grok").NoOptDefVal = "true"
 	cmd.Flags().Var(newSendTargetValue(AgentTypeOpencode, &targets), "oc", "send to OpenCode agents (optional :variant filter)")
 	cmd.Flags().Lookup("oc").NoOptDefVal = "true"
+	cmd.Flags().Var(newSendTargetValue(AgentTypeOmp, &targets), "omp", "send to Oh My Pi (omp) agents (optional :variant filter)")
+	cmd.Flags().Lookup("omp").NoOptDefVal = "true"
 	// Agent plugins get the same selectors spawn/add expose (ntm#260).
 	for _, p := range registerAgentPluginTypes(pluginAgentsDirForArgs(os.Args[1:])) {
 		registerPluginSendFlags(cmd, p, &targets)
@@ -2530,6 +2532,7 @@ func runInterrupt(session string, tags []string) error {
 	// Best-effort sweep: a tmux error on one pane must not leave the
 	// remaining panes un-interrupted (bd-ws7-docs-ux-truth-tqh3l.6).
 	count := 0
+	escapeCount := 0
 	var failures []string
 	for _, p := range panes {
 		// Only interrupt agent panes
@@ -2541,15 +2544,23 @@ func runInterrupt(session string, tags []string) error {
 				}
 			}
 
-			if err := tmux.SendInterrupt(p.ID); err != nil {
+			// Each TUI's own interrupt key: Escape for omp, Ctrl+C elsewhere.
+			if err := tmux.SendInterruptForAgent(p.ID, p.Type); err != nil {
 				failures = append(failures, fmt.Sprintf("pane %d: %v", p.Index, err))
 				continue
 			}
 			count++
+			if tmux.InterruptKeyForAgent(p.Type) == "Escape" {
+				escapeCount++
+			}
 		}
 	}
 
-	fmt.Printf("Sent Ctrl+C to %d agent pane(s)\n", count)
+	if escapeCount == 0 {
+		fmt.Printf("Sent Ctrl+C to %d agent pane(s)\n", count)
+	} else {
+		fmt.Printf("Sent interrupt to %d agent pane(s) (Ctrl+C: %d, Escape: %d)\n", count, count-escapeCount, escapeCount)
+	}
 	if len(failures) > 0 {
 		return fmt.Errorf("interrupt partially failed (%d interrupted, %d failed): %s",
 			count, len(failures), strings.Join(failures, "; "))
@@ -2607,7 +2618,7 @@ func buildInterruptResponse(ctx context.Context, session string, tags []string) 
 				PaneID:    p.ID,
 				AgentType: tmux.AgentType(p.Type).Canonical().String(),
 			}
-			if err := tmux.SendInterrupt(p.ID); err != nil {
+			if err := tmux.SendInterruptForAgent(p.ID, p.Type); err != nil {
 				result.Status = "failed"
 				result.Error = err.Error()
 				failed++

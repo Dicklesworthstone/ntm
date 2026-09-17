@@ -39,6 +39,8 @@ Optional agents:
   - grok (Grok Build CLI, xAI)
   - gemini (Google Gemini CLI, legacy)
   - cursor-agent (Cursor Agent CLI; not the 'cursor' IDE binary)
+  - opencode (OpenCode)
+  - omp (Oh My Pi, the pi-agent fork)
 
 Also checks for recommended tools like fzf.
 
@@ -189,6 +191,14 @@ func builtinDepChecks() []depCheck {
 			Required:    false,
 			Category:    "AI Agents",
 			InstallHint: "curl -fsSL https://opencode.ai/install | bash (or `npm install -g opencode-ai`)",
+		},
+		{
+			Name:        "Oh My Pi (omp)",
+			Command:     "omp",
+			VersionArgs: []string{"--version"},
+			Required:    false,
+			Category:    "AI Agents",
+			InstallHint: "bun install -g @oh-my-pi/pi-coding-agent (see https://omp.sh), then run `omp setup` once interactively before the first spawn",
 		},
 
 		// Recommended

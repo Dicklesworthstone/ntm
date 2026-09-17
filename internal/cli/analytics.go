@@ -58,7 +58,7 @@ func newAnalyticsCmd() *cobra.Command {
 
 Shows summary statistics including:
   - Total sessions created
-  - Agent spawn counts by type (Claude, Codex, Gemini, Grok)
+  - Agent spawn counts by type (Claude, Codex, Gemini, Grok, OMP)
   - Prompts sent and character counts
   - Error occurrences
 
@@ -184,6 +184,10 @@ func aggregateStats(eventList []events.Event, days int, since string, cutoff tim
 				stats.TotalAgents += int(grok)
 				updateAgentStats(stats.AgentBreakdown, "grok", int(grok), 0, 0, 0)
 			}
+			if omp, ok := event.Data["omp_count"].(float64); ok {
+				stats.TotalAgents += int(omp)
+				updateAgentStats(stats.AgentBreakdown, "omp", int(omp), 0, 0, 0)
+			}
 			if cursor, ok := event.Data["cursor_count"].(float64); ok {
 				stats.TotalAgents += int(cursor)
 				updateAgentStats(stats.AgentBreakdown, "cursor", int(cursor), 0, 0, 0)
@@ -285,7 +289,7 @@ func updateAgentStats(breakdown map[string]AgentStats, agentType string, countDe
 
 func isAnalyticsAgentType(agentType string) bool {
 	switch agentType {
-	case "claude", "codex", "gemini", "grok", "cursor", "windsurf", "aider", "oc", "ollama":
+	case "claude", "codex", "gemini", "grok", "cursor", "windsurf", "aider", "oc", "omp", "ollama":
 		return true
 	default:
 		return false
@@ -362,6 +366,9 @@ func buildSessionDetails(eventList []events.Event) []SessionSummary {
 			}
 			if grok, ok := event.Data["grok_count"].(float64); ok {
 				summary.AgentCount += int(grok)
+			}
+			if omp, ok := event.Data["omp_count"].(float64); ok {
+				summary.AgentCount += int(omp)
 			}
 			if cursor, ok := event.Data["cursor_count"].(float64); ok {
 				summary.AgentCount += int(cursor)

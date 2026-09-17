@@ -215,6 +215,8 @@ func resolveAddAgentCommandTemplate(agentType AgentType, pluginMap map[string]pl
 		// `ntm spawn --oc=N` and `ntm add --oc=N` behave identically and a
 		// model override is honored. See ntm#193.
 		return opencodeCommandOrDefault(cfg.Agents.Opencode), nil, nil
+	case AgentTypeOmp:
+		return config.OmpCommandOrDefault(cfg.Agents.Omp), nil, nil
 	default:
 		if p, ok := pluginMap[string(agentType)]; ok {
 			return p.Command, p.Env, nil
@@ -365,6 +367,7 @@ func newAddCmd() *cobra.Command {
 	cmd.Flags().Var(NewAgentSpecsValue(AgentTypeWindsurf, &agentSpecs), "windsurf", "Windsurf agents (N or N:model)")
 	cmd.Flags().Var(NewAgentSpecsValue(AgentTypeAider, &agentSpecs), "aider", "Aider agents (N or N:model)")
 	cmd.Flags().Var(NewAgentSpecsValue(AgentTypeOpencode, &agentSpecs), "oc", "Opencode agents (N or N:model)")
+	cmd.Flags().Var(NewAgentSpecsValue(AgentTypeOmp, &agentSpecs), "omp", "Oh My Pi (omp) agents (N or N:model[:effort]; effort maps to omp --thinking)")
 	cmd.Flags().Var(&personaSpecs, "persona", "Persona-defined agents (name or name:count)")
 
 	// Goal label for multi-session support (bd-1933u)
@@ -608,7 +611,7 @@ func executeAdd(ctx context.Context, opts AddOptions, emitResult bool) error {
 
 	// Add agents
 	flatAgents := opts.Agents.Flatten()
-	ccCount, codCount, gmiCount, agyCount, grokCount, ollamaCount, cursorCount, windsurfCount, aiderCount, opencodeCount := 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+	ccCount, codCount, gmiCount, agyCount, grokCount, ollamaCount, cursorCount, windsurfCount, aiderCount, opencodeCount, ompCount := 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
 	var rateLimitTracker *ratelimit.RateLimitTracker
 	openAICooldownWaited := false
 	ollamaHost := ""
@@ -735,6 +738,8 @@ func executeAdd(ctx context.Context, opts AddOptions, emitResult bool) error {
 			aiderCount++
 		case AgentTypeOpencode:
 			opencodeCount++
+		case AgentTypeOmp:
+			ompCount++
 		}
 
 		// Configure Claude hooks for DCG and RCH integrations
@@ -941,7 +946,7 @@ func executeAdd(ctx context.Context, opts AddOptions, emitResult bool) error {
 			}
 			return outputError(launchErr)
 		}
-		if agent.Type == AgentTypeGrok {
+		if agent.Type == AgentTypeGrok || agent.Type == AgentTypeOmp {
 			if _, err := tmux.WaitForPaneProcessStartContext(ctx, session, paneID); err != nil {
 				return outputError(fmt.Errorf(
 					"launching %s agent in pane %s did not start a stable process: %w",
@@ -1154,6 +1159,7 @@ func executeAdd(ctx context.Context, opts AddOptions, emitResult bool) error {
 			AddedWindsurf:       windsurfCount,
 			AddedAider:          aiderCount,
 			AddedOpencode:       opencodeCount,
+			AddedOmp:            ompCount,
 			TotalAdded:          totalAgents,
 			NewPanes:            newPanes,
 			AgentMail:           agentMailStatus,

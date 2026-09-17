@@ -48,7 +48,7 @@ Examples:
 
 	cmd.Flags().BoolVarP(&force, "force", "f", false, "skip confirmation")
 	cmd.Flags().StringVarP(&panes, "panes", "p", "", "comma-separated pane indices to restart (e.g., 1,2,3)")
-	cmd.Flags().StringVarP(&agentType, "type", "t", "", "filter by agent type (cc, claude, cod, codex, gmi, gemini, agy, antigravity, grok, grok-build)")
+	cmd.Flags().StringVarP(&agentType, "type", "t", "", "filter by agent type (cc, claude, cod, codex, gmi, gemini, agy, antigravity, grok, grok-build, omp, oh-my-pi)")
 	cmd.Flags().BoolVarP(&all, "all", "a", false, "include all panes (including user pane)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "preview which panes would be restarted")
 

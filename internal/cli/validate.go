@@ -300,6 +300,7 @@ func validateMainConfigReferences(cfg *config.Config, result *ValidationResult, 
 	validateRegularFileReference("prompts.cod_default_file", cfg.Prompts.CodDefaultFile, result)
 	validateRegularFileReference("prompts.gmi_default_file", cfg.Prompts.GmiDefaultFile, result)
 	validateRegularFileReference("prompts.agy_default_file", cfg.Prompts.AgyDefaultFile, result)
+	validateRegularFileReference("prompts.omp_default_file", cfg.Prompts.OmpDefaultFile, result)
 	if cfg.Encryption.Enabled && strings.EqualFold(strings.TrimSpace(cfg.Encryption.KeySource), "file") {
 		validateRegularFileReference("encryption.key_file", cfg.Encryption.KeyFile, result)
 	}
@@ -331,6 +332,7 @@ func validateAgentExecutables(cfg *config.Config, result *ValidationResult) {
 		"agents.codex":  cfg.Agents.Codex,
 		"agents.gemini": cfg.Agents.Gemini,
 		"agents.grok":   cfg.Agents.Grok,
+		"agents.omp":    config.OmpCommandOrDefault(cfg.Agents.Omp),
 	}
 
 	for field, cmd := range agents {

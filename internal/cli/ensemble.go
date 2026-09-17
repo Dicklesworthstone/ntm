@@ -90,6 +90,8 @@ func normalizeEnsembleAgentType(value string) string {
 		return "aider"
 	case agentpkg.AgentTypeOpencode:
 		return "oc"
+	case agentpkg.AgentTypeOmp:
+		return "omp"
 	case agentpkg.AgentTypeOllama:
 		return "ollama"
 	default:
@@ -395,11 +397,12 @@ func runEnsembleStop(w io.Writer, session string, opts ensembleStopOptions) erro
 	stoppedCount := 0
 	var stopErrors []error
 
-	// Graceful shutdown: send Ctrl+C to each pane
+	// Graceful shutdown: send each pane its agent's interrupt key
 	if !opts.Force && len(panes) > 0 {
 		for _, pane := range panes {
-			// Send Ctrl+C (interrupt signal)
-			if err := tmux.SendKeys(pane.ID, "C-c", false); err != nil {
+			// Press the interrupt KEY (Ctrl+C; Escape for omp). SendKeys is
+			// literal and would type the characters "C-c" instead.
+			if err := tmux.SendInterruptForAgent(pane.ID, pane.Type); err != nil {
 				slog.Default().Warn("failed to send interrupt to pane",
 					"pane", pane.ID,
 					"error", err,
