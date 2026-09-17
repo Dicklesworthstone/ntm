@@ -252,7 +252,10 @@ type jobCheckpointRestoreParams struct {
 
 // jobCheckpointRestore restores a checkpoint through the same path as
 // POST /api/v1/sessions/{sessionName}/checkpoints/{checkpointId}/restore.
-func (s *Server) jobCheckpointRestore(_ context.Context, params map[string]interface{}) (map[string]interface{}, error) {
+func (s *Server) jobCheckpointRestore(ctx context.Context, params map[string]interface{}) (map[string]interface{}, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	var req jobCheckpointRestoreParams
 	if err := decodeJobParams(params, &req); err != nil {
 		return nil, err
@@ -272,9 +275,12 @@ func (s *Server) jobCheckpointRestore(_ context.Context, params map[string]inter
 	if err != nil {
 		return nil, fmt.Errorf("load checkpoint %s/%s: %w", req.Session, req.CheckpointID, err)
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 
 	restorer := checkpoint.NewRestorerWithStorage(storage)
-	result, err := restorer.RestoreFromCheckpoint(cp, checkpoint.RestoreOptions{
+	result, err := restorer.RestoreFromCheckpointContext(ctx, cp, checkpoint.RestoreOptions{
 		Force:           req.Force,
 		SkipGitCheck:    req.SkipGitCheck,
 		InjectContext:   req.InjectContext,
@@ -282,14 +288,23 @@ func (s *Server) jobCheckpointRestore(_ context.Context, params map[string]inter
 		CustomDirectory: req.CustomDirectory,
 		ScrollbackLines: req.ScrollbackLines,
 	})
-	if err != nil {
-		return nil, fmt.Errorf("restore checkpoint: %w", err)
+	var payload map[string]interface{}
+	if result != nil {
+		payload = map[string]interface{}{
+			"session_name":     result.SessionName,
+			"panes_restored":   result.PanesRestored,
+			"context_injected": result.ContextInjected,
+			"dry_run":          result.DryRun,
+			"warnings":         result.Warnings,
+			"stage":            result.Stage,
+			"interrupted":      result.Interrupted,
+		}
 	}
-	return map[string]interface{}{
-		"session_name":     result.SessionName,
-		"panes_restored":   result.PanesRestored,
-		"context_injected": result.ContextInjected,
-		"dry_run":          result.DryRun,
-		"warnings":         result.Warnings,
-	}, nil
+	if err != nil {
+		return payload, fmt.Errorf("restore checkpoint: %w", err)
+	}
+	if result == nil {
+		return nil, errors.New("restore checkpoint returned no result")
+	}
+	return payload, nil
 }

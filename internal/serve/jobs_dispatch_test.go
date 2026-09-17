@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -18,6 +19,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/checkpoint"
 	"github.com/Dicklesworthstone/ntm/internal/pipeline"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 // D5a (bd-ws3-contract-breadth-psvyu.5.1): hermetic E2E over the real async
@@ -225,13 +227,24 @@ func installFakeTmux(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "tmux-calls.log")
+	t.Setenv("NTM_JOB_RESTORE_FAIL", "")
+	t.Setenv("NTM_JOB_RESTORE_BLOCK", "")
+	t.Setenv("NTM_JOB_RESTORE_READY", filepath.Join(dir, "ready"))
 	script := fmt.Sprintf(`#!/bin/sh
 echo "$@" >> %q
+if [ "$1" = "$NTM_JOB_RESTORE_FAIL" ]; then
+  echo 'fixture operation failed' >&2
+  exit 2
+fi
+if [ "$1" = "$NTM_JOB_RESTORE_BLOCK" ]; then
+  echo ready > "$NTM_JOB_RESTORE_READY"
+  exec sleep 30
+fi
 case "$1" in
-  has-session) exit 1 ;;
+  has-session) echo "can't find session" >&2; exit 1 ;;
   split-window|new-window) echo "%%9" ;;
   list-windows) echo "0" ;;
-  list-panes) echo "0" ;;
+  list-panes) echo "%%0_NTM_SEP_0_NTM_SEP__NTM_SEP_bash_NTM_SEP_80_NTM_SEP_24_NTM_SEP_1_NTM_SEP_0_NTM_SEP_0_NTM_SEP_user_NTM_SEP__NTM_SEP__NTM_SEP_0" ;;
   *) : ;;
 esac
 exit 0
@@ -241,6 +254,9 @@ exit 0
 		t.Fatalf("write fake tmux: %v", err)
 	}
 	t.Setenv("NTM_TMUX_BINARY", binPath)
+	old := tmux.DefaultClient
+	tmux.DefaultClient = tmux.NewClient("")
+	t.Cleanup(func() { tmux.DefaultClient = old })
 	return logPath
 }
 
@@ -319,6 +335,114 @@ func TestJobDispatchCheckpointRestoreFailure(t *testing.T) {
 	}
 	if !strings.Contains(final.Job.Error, "load checkpoint") {
 		t.Fatalf("job error %q does not carry the real load failure", final.Job.Error)
+	}
+}
+
+func TestCheckpointJobPrecancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	out, err := (&Server{}).jobCheckpointRestore(ctx, nil)
+	if !errors.Is(err, context.Canceled) || out != nil {
+		t.Fatalf("cancelled job entered validation/storage: %+v, %v", out, err)
+	}
+}
+
+func saveJobRestoreFixture(t *testing.T, paneCount int) map[string]interface{} {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	cp := &checkpoint.Checkpoint{
+		Version: 1, ID: "cp-job-lifetime", Name: "job-lifetime",
+		SessionName: "restorejoblife", WorkingDir: t.TempDir(),
+		CreatedAt: time.Now(), PaneCount: paneCount,
+	}
+	for i := 0; i < paneCount; i++ {
+		cp.Session.Panes = append(cp.Session.Panes, checkpoint.PaneState{Index: i, WindowIndex: 0, AgentType: "user"})
+	}
+	if err := checkpoint.NewStorage().Save(cp); err != nil {
+		t.Fatal(err)
+	}
+	return map[string]interface{}{"session": cp.SessionName, "checkpoint_id": cp.ID, "skip_git_check": true}
+}
+
+func TestCheckpointJobFailureRetainsPartialResult(t *testing.T) {
+	installFakeTmux(t)
+	t.Setenv("NTM_JOB_RESTORE_FAIL", "split-window")
+	params := saveJobRestoreFixture(t, 2)
+	srv := &Server{jobStore: NewJobStore()}
+	job := srv.jobStore.Create(JobTypeCheckpointRestore)
+	srv.dispatchJob(job.ID, CreateJobRequest{Type: JobTypeCheckpointRestore, Params: params})
+	got := srv.jobStore.Get(job.ID)
+	if got.Status != JobStatusFailed || got.Result["panes_restored"] != 1 || got.Result["stage"] != "restoring_layout" || got.Result["session_name"] != "restorejoblife" {
+		t.Fatalf("partial restoration lost its error or inspectable result: %+v", got)
+	}
+}
+
+func TestCheckpointJobCancellationStopsWorker(t *testing.T) {
+	log := installFakeTmux(t)
+	t.Setenv("NTM_JOB_RESTORE_BLOCK", "new-session")
+	params := saveJobRestoreFixture(t, 1)
+	srv := &Server{jobStore: NewJobStore()}
+	job := srv.jobStore.Create(JobTypeCheckpointRestore)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		srv.dispatchJob(job.ID, CreateJobRequest{Type: JobTypeCheckpointRestore, Params: params})
+	}()
+	t.Cleanup(func() {
+		srv.jobStore.Update(job.ID, JobStatusCancelled, 0, nil, "test cleanup")
+		srv.jobStore.Cancel(job.ID)
+		select {
+		case <-done:
+		case <-time.After(4 * time.Second):
+			t.Error("restore worker did not stop during cleanup")
+		}
+	})
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(os.Getenv("NTM_JOB_RESTORE_READY")); err == nil {
+			break
+		}
+		select {
+		case <-done:
+			t.Fatalf("worker returned before rendezvous: %+v", srv.jobStore.Get(job.ID))
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("restore worker did not reach new-session")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	// Exactly the order used by DELETE /api/v1/jobs/{id}.
+	srv.jobStore.Update(job.ID, JobStatusCancelled, 0, nil, "cancelled by user")
+	srv.jobStore.Cancel(job.ID)
+	select {
+	case <-done:
+	case <-time.After(4 * time.Second):
+		t.Fatal("cancel affected only the job row, not the restore worker")
+	}
+	if got := srv.jobStore.Get(job.ID); got.Status != JobStatusCancelled {
+		t.Fatalf("cancelled job changed status: %+v", got)
+	}
+	calls, _ := os.ReadFile(log)
+	if strings.Contains(string(calls), "respawn-pane") || strings.Contains(string(calls), "kill-session") || strings.Contains(string(calls), "set-option") {
+		t.Fatalf("cancelled worker continued mutating session: %s", calls)
+	}
+}
+
+func TestCheckpointJobHTTPPartialFailure(t *testing.T) {
+	installFakeTmux(t)
+	t.Setenv("NTM_JOB_RESTORE_FAIL", "split-window")
+	params := saveJobRestoreFixture(t, 2)
+	srv := NewHermeticServer("test")
+	defer srv.Stop()
+	raw, err := json.Marshal(CreateJobRequest{Type: JobTypeCheckpointRestore, Params: params})
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := postJob(t, srv, string(raw))
+	final := pollJobTerminal(t, srv, env.Job.ID)
+	if final.Job.Status != string(JobStatusFailed) || final.Job.Result["stage"] != "restoring_layout" || final.Job.Result["panes_restored"] != float64(1) {
+		t.Fatalf("HTTP job hid partial failure: %+v", final.Job)
 	}
 }
 
