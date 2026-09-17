@@ -27,6 +27,12 @@ type SpawnPacingConfig struct {
 }
 
 // AgentPacingConfig holds per-agent-type concurrency caps.
+//
+// Enforcement note: robot spawn admission sums these caps into ONE host-wide
+// agent budget (running agents + requested agents must not exceed the sum;
+// see robot.spawnAdmissionAgentLimit and pressure.EvaluateSpawnAdmission). No
+// runtime paces or serializes launches per agent type, so each cap is that
+// type's contribution to the shared budget.
 type AgentPacingConfig struct {
 	ClaudeMaxConcurrent int `toml:"claude_max_concurrent"` // Max concurrent claude spawns
 	CodexMaxConcurrent  int `toml:"codex_max_concurrent"`  // Max concurrent codex spawns
@@ -43,7 +49,13 @@ func DefaultSpawnPacingConfig() SpawnPacingConfig {
 			ClaudeMaxConcurrent: 3,
 			CodexMaxConcurrent:  2,
 			GeminiMaxConcurrent: 2,
-			OmpMaxConcurrent:    2,
+			// omp's term covers one full canonical omp swarm (`--omp=8`),
+			// so an 8-pane omp spawn is admitted alongside the default
+			// Claude/Codex/Gemini budget (3+2+2) rather than refused as
+			// agent_limit_exceeded once a couple of other agents run. omp
+			// routes each pane through its own configured providers, so no
+			// single subscription seat bounds it the way cc/cod/gmi are.
+			OmpMaxConcurrent: 8,
 		},
 	}
 }

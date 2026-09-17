@@ -1033,6 +1033,38 @@ func TestSpawnOptions_DryRunAdmissionRefusesAgentCap(t *testing.T) {
 	}
 }
 
+// TestSpawnAdmission_OmpSwarmOfEightIsAdmitted pins that the default budget
+// admits a whole 8-pane omp swarm in one robot spawn, even with a default-size
+// Claude/Codex/Gemini swarm already running on the host. Caps are summed into
+// one host budget (running + requested), so omp's term must cover the swarm;
+// at the former omp default of 2 the same request was refused outright.
+func TestSpawnAdmission_OmpSwarmOfEightIsAdmitted(t *testing.T) {
+	cfg := config.Default()
+	// Isolate the agent-cap clause: a request below the large-spawn threshold
+	// is never deferred by live host pressure, which would make this flaky.
+	cfg.SpawnPacing.MaxConcurrentSpawns = 1000
+	running := map[string][]tmux.Pane{"other": {
+		{ID: "%1", Type: tmux.AgentClaude}, {ID: "%2", Type: tmux.AgentClaude}, {ID: "%3", Type: tmux.AgentClaude},
+		{ID: "%4", Type: tmux.AgentCodex}, {ID: "%5", Type: tmux.AgentCodex},
+		{ID: "%6", Type: tmux.AgentGemini}, {ID: "%7", Type: tmux.AgentGemini},
+	}}
+	panes := func(context.Context) (map[string][]tmux.Pane, error) { return running, nil }
+	opts := SpawnOptions{Session: "omp-swarm", OmpCount: 8, NoUserPane: true}
+
+	input := collectSpawnAdmissionInputWithPanes(t.Context(), opts, cfg, opts.totalAgentCount(), 8, panes)
+	decision := pressure.EvaluateSpawnAdmission(input)
+	if input.MaxAgents != 15 || input.RunningAgents != 7 || decision.Decision != pressure.SpawnAdmissionAdmit {
+		t.Fatalf("default budget: max=%d running=%d decision=%s (%s), want 15/7/admit",
+			input.MaxAgents, input.RunningAgents, decision.Decision, decision.Reason)
+	}
+
+	cfg.SpawnPacing.AgentCaps.OmpMaxConcurrent = 2
+	input = collectSpawnAdmissionInputWithPanes(t.Context(), opts, cfg, opts.totalAgentCount(), 8, panes)
+	if decision := pressure.EvaluateSpawnAdmission(input); decision.Decision != pressure.SpawnAdmissionRefuse || decision.Reason != "agent_limit_exceeded" {
+		t.Fatalf("control at omp cap 2: decision=%s (%s), want refuse agent_limit_exceeded", decision.Decision, decision.Reason)
+	}
+}
+
 func TestCollectSpawnAdmissionInputCancellationReachesTopology(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	started := make(chan struct{})

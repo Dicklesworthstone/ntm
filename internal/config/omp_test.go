@@ -160,8 +160,8 @@ func TestOmpModelDefaultsDelegateToOmp(t *testing.T) {
 
 func TestSpawnPacing_OmpCap(t *testing.T) {
 	cfg := DefaultSpawnPacingConfig()
-	if cfg.AgentCaps.OmpMaxConcurrent != 2 {
-		t.Fatalf("OmpMaxConcurrent default = %d, want 2", cfg.AgentCaps.OmpMaxConcurrent)
+	if cfg.AgentCaps.OmpMaxConcurrent != 8 {
+		t.Fatalf("OmpMaxConcurrent default = %d, want 8 (one full --omp=8 swarm)", cfg.AgentCaps.OmpMaxConcurrent)
 	}
 	cfg.AgentCaps.OmpMaxConcurrent = -1
 	if err := ValidateSpawnPacingConfig(&cfg); err == nil || !strings.Contains(err.Error(), "omp_max_concurrent") {

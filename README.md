@@ -181,8 +181,11 @@ The launch command is `omp --auto-approve`, plus `--model`, `--thinking`, and
 `[agents] omp = "..."` (a template; keep `{{.ReasoningEffort}}` if you want
 effort specs honoured, otherwise NTM rejects them rather than dropping them),
 set `[models] default_omp` or `[models.omp]` aliases, and `[prompts]
-omp_default`. Robot spawns admit at most `[spawn_pacing.agent_caps]
-omp_max_concurrent` (default 2) omp launches at a time.
+omp_default`. `[spawn_pacing.agent_caps] omp_max_concurrent` (default 8) is
+omp's share of the host-wide agent budget robot spawn admission enforces
+(running plus requested agents may not exceed the sum of all agent caps);
+launches are never serialized per type, and the default admits a full
+`--spawn-omp=8` swarm alongside the default Claude/Codex/Gemini budget.
 
 Everything NTM does to an omp pane is derived from omp's live TUI (v18.2.3,
 across its nerd, unicode and ascii symbol presets):

@@ -1167,12 +1167,14 @@ func resolveStaggerInterval(mode string, opts SpawnOptions, tracker *ratelimit.R
 			hasAnthropic := opts.CCCount > 0
 			hasOpenAI := opts.CodCount > 0
 			hasGoogle := opts.GmiCount > 0 || opts.AgyCount > 0
+			hasOmp := opts.OmpCount > 0
 
 			// Check detailed agent list if available (source of truth)
 			if len(opts.Agents) > 0 {
 				hasAnthropic = false
 				hasOpenAI = false
 				hasGoogle = false
+				hasOmp = false
 				for _, a := range opts.Agents {
 					switch a.Type {
 					case AgentTypeClaude:
@@ -1183,6 +1185,8 @@ func resolveStaggerInterval(mode string, opts SpawnOptions, tracker *ratelimit.R
 						hasGoogle = true
 					case AgentTypeAntigravity:
 						hasGoogle = true
+					case AgentTypeOmp:
+						hasOmp = true
 					}
 				}
 			}
@@ -1193,6 +1197,12 @@ func resolveStaggerInterval(mode string, opts SpawnOptions, tracker *ratelimit.R
 				provider = "openai"
 			} else if hasGoogle {
 				provider = "google"
+			} else if hasOmp {
+				// omp routes panes through its own configured providers, so an
+				// omp-only spawn uses the tracker's own "omp" bucket (what
+				// ratelimit.NormalizeProvider("omp") records into) instead of
+				// inheriting Anthropic's learned, strictest delay.
+				provider = ratelimit.NormalizeProvider(string(AgentTypeOmp))
 			}
 
 			interval = tracker.GetOptimalDelay(provider)

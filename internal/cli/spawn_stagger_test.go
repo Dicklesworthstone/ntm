@@ -552,6 +552,33 @@ func TestResolveStaggerInterval_SmartUsesRateLimitTracker(t *testing.T) {
 	}
 }
 
+// TestResolveStaggerInterval_SmartOmpUsesOwnBucket pins that an omp-only
+// spawn is not staggered on Anthropic's learned backoff: omp has its own
+// tracker bucket, while a mixed cc+omp spawn keeps the strictest provider.
+func TestResolveStaggerInterval_SmartOmpUsesOwnBucket(t *testing.T) {
+	tracker := ratelimit.NewRateLimitTracker("")
+	for i := 0; i < 3; i++ {
+		tracker.RecordRateLimit("anthropic", "spawn")
+	}
+	anthropic := tracker.GetOptimalDelay("anthropic")
+	omp := tracker.GetOptimalDelay("omp")
+	if anthropic == omp {
+		t.Fatalf("control: anthropic backoff (%v) must differ from the omp bucket (%v)", anthropic, omp)
+	}
+
+	ompOnly := SpawnOptions{Stagger: 90 * time.Second, Agents: []FlatAgent{{Type: AgentTypeOmp, Index: 1}, {Type: AgentTypeOmp, Index: 2}}}
+	if got := resolveStaggerInterval("smart", ompOnly, tracker); got != omp {
+		t.Fatalf("omp-only smart interval = %v, want the omp bucket %v (not anthropic %v)", got, omp, anthropic)
+	}
+	if got := resolveStaggerInterval("smart", SpawnOptions{OmpCount: 8}, tracker); got != omp {
+		t.Fatalf("--omp=8 smart interval = %v, want %v", got, omp)
+	}
+	mixed := SpawnOptions{Agents: []FlatAgent{{Type: AgentTypeClaude, Index: 1}, {Type: AgentTypeOmp, Index: 1}}}
+	if got := resolveStaggerInterval("smart", mixed, tracker); got != anthropic {
+		t.Fatalf("cc+omp smart interval = %v, want strictest anthropic %v", got, anthropic)
+	}
+}
+
 func TestResolveEffectiveStaggerMode_LegacyRequiresPositiveDuration(t *testing.T) {
 	opts := SpawnOptions{
 		StaggerMode:    "none",
