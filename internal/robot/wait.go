@@ -255,7 +255,6 @@ func GetWaitContext(ctx context.Context, opts WaitOptions) (*WaitResponse, int) 
 	// Key: paneID, Value: true if agent was in target state at start AND has since left it
 	sawTransition := make(map[string]bool)
 	initiallyInTarget := make(map[string]bool)
-	firstPoll := true
 	var lastPending []string
 	var lastAttentionResult *AttentionConditionResult
 
@@ -308,6 +307,7 @@ func GetWaitContext(ctx context.Context, opts WaitOptions) (*WaitResponse, int) 
 		}
 
 		var activities []*AgentActivity
+		var unobservedPanes []string
 		needPaneState := len(paneConditions) > 0 || opts.ExitOnError || opts.RequireTransition || len(waitPaneSelectors(opts)) > 0
 		if needPaneState {
 			panes, err := tmux.GetPanes(opts.Session)
@@ -353,22 +353,17 @@ func GetWaitContext(ctx context.Context, opts WaitOptions) (*WaitResponse, int) 
 					classifier.SetAgentType(at)
 				}
 				activity, err := classifier.Classify()
-				if err != nil {
-					// Pane may have disappeared, continue.
+				if err != nil || activity == nil {
+					// A failed observation is not evidence that this target is
+					// ready. Keep it pending instead of shrinking the ALL set.
+					unobservedPanes = append(unobservedPanes, pane.ID)
 					continue
 				}
 				activities = append(activities, activity)
 			}
 
 			if opts.RequireTransition && len(paneConditions) > 0 {
-				for _, a := range activities {
-					inTarget := meetsAllWaitConditions(a, paneConditions)
-					if firstPoll {
-						initiallyInTarget[a.PaneID] = inTarget
-					} else if initiallyInTarget[a.PaneID] && !inTarget {
-						sawTransition[a.PaneID] = true
-					}
-				}
+				recordWaitTransitions(activities, paneConditions, initiallyInTarget, sawTransition)
 			}
 
 			if opts.ExitOnError {
@@ -394,17 +389,11 @@ func GetWaitContext(ctx context.Context, opts WaitOptions) (*WaitResponse, int) 
 				}
 			}
 		}
-		firstPoll = false
 
-		paneMet := len(paneConditions) == 0
-		var matching []WaitAgentInfo
-		if len(paneConditions) > 0 {
-			var met bool
-			met, matching, lastPending = checkWaitConditionMetWithTransition(activities, opts, paneConditions, initiallyInTarget, sawTransition)
-			paneMet = met
-		} else {
-			lastPending = nil
-		}
+		paneMet, matching, pending := checkWaitPaneObservations(
+			activities, unobservedPanes, opts, paneConditions, initiallyInTarget, sawTransition,
+		)
+		lastPending = pending
 
 		attentionMet := !hasAttention
 		if hasAttention {
