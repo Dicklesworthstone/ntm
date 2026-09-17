@@ -1,0 +1,24 @@
+ Transcribed from a live omp v18.2.3 pane (nerd preset) during `ntm spawn
+ omp-e2e --omp=1 --verify-boot`: NTM delivered the session recovery context and
+ omp began working on it seconds after boot.
+
+ Session Recovery Context
+ Your Previous Work
+ - Last checkpoint: 2026-09-17 03:12 — Auto-checkpoint: broadcast (before
+   sending to all-agents)
+ Reread AGENTS.md and continue from where you left off.
+
+  Read AGENTS.md
+  Glob: * 7 files · in .
+ ├─  .ntm/
+ ├─  .ntm/human_inbox/
+ ├─  .ntm/human_inbox/2026-09-17_07-18-47_agent_crashed.md
+ ├─  .ntm/summaries/
+ ├─  .ntm/summaries/omp-e2e-20260917-031530.json
+ ├─  .ntm/logs/
+ └─  .ntm/pids/
+
+  󱊷 Finding context files
+
+╭── ⠹ 39s   Union Alpha   omp-e2e ──7%────────────────────────󰁨────262K───╮
+╰─                                                                            ─╯

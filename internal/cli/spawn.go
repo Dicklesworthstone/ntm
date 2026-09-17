@@ -2798,6 +2798,17 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 		setupErrors[paneID] = errors.Join(setupErrors[paneID], setupErr)
 		setupErrorsMu.Unlock()
 	}
+	// promptedPanes records panes that received a delivered spawn prompt
+	// (recovery context, CASS context, or the user prompt). Delivery already
+	// waited for the pane to be idle at its prompt, so such a pane has booted;
+	// --verify-boot then accepts it working on that prompt (see
+	// bootedAgentPanesFromObservation).
+	promptedPanes := make(map[string]bool)
+	recordPromptDelivered := func(paneID string) {
+		setupErrorsMu.Lock()
+		promptedPanes[paneID] = true
+		setupErrorsMu.Unlock()
+	}
 
 	// Initialize rate limit tracker for smart stagger mode or Codex cooldown gating (bd-3qoly)
 	var rateLimitTracker *ratelimit.RateLimitTracker
@@ -3432,10 +3443,13 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 					}
 				}
 			}
-			_, promptErr := dispatchSpawnPromptSequence(
+			promptReceipts, promptErr := dispatchSpawnPromptSequence(
 				setupCtx, opts.Session, paneID, promptSteps,
 				spawnObserver, spawnDispatcher, spawnPromptReadyTimeout, spawnReadyPollInterval,
 			)
+			if len(promptReceipts) > 0 {
+				recordPromptDelivered(paneID)
+			}
 			if promptErr != nil {
 				if spawnPromptSequenceIsCassOnly(promptSteps) {
 					if !IsJSONOutput() {
@@ -3688,8 +3702,14 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 		if !IsJSONOutput() {
 			steps.Start(fmt.Sprintf("Verifying %d agent(s) reached a working prompt", len(opts.Agents)))
 		}
-		readyCount, bootErr := waitForAgentsReadyWithObserver(
-			ctx, opts.Session, spawnVerifyBootTimeout, spawnReadyPollInterval, spawnObserver,
+		setupErrorsMu.Lock()
+		booted := make(map[string]bool, len(promptedPanes))
+		for paneID := range promptedPanes {
+			booted[paneID] = true
+		}
+		setupErrorsMu.Unlock()
+		readyCount, bootErr := waitForAgentsBootedWithObserver(
+			ctx, opts.Session, spawnVerifyBootTimeout, spawnReadyPollInterval, spawnObserver, booted,
 		)
 		if bootErr != nil {
 			if !IsJSONOutput() {
@@ -6120,6 +6140,26 @@ func waitForAgentsReadyWithObserver(
 	timeout, pollInterval time.Duration,
 	observer spawnSessionObserver,
 ) (int, error) {
+	return waitForAgentsBootedWithObserver(ctx, session, timeout, pollInterval, observer, nil)
+}
+
+// waitForAgentsBootedWithObserver is the --verify-boot form of
+// waitForAgentsReadyWithObserver. A pane in prompted (keyed by tmux pane ID)
+// received a delivered spawn prompt — delivery itself waited for the pane to
+// sit idle at its prompt — so it counts as booted while it is idle OR freshly
+// observed working on that prompt. Every agent type that NTM injects recovery,
+// CASS, or user prompts into at spawn behaves this way (an omp or Claude pane
+// handed "Reread AGENTS.md and continue" starts a turn at once); requiring
+// idle there made --verify-boot time out on healthy panes. Error, rate-limit,
+// unknown, stale, and dead-agent observations never count. A nil prompted set
+// is the idle-only readiness wait used before assignment.
+func waitForAgentsBootedWithObserver(
+	ctx context.Context,
+	session string,
+	timeout, pollInterval time.Duration,
+	observer spawnSessionObserver,
+	prompted map[string]bool,
+) (int, error) {
 	if observer == nil {
 		return 0, errors.New("waiting for agents requires a session observer")
 	}
@@ -6139,7 +6179,7 @@ func waitForAgentsReadyWithObserver(
 		observation, observeErr := observer.Observe(ctx, session)
 		lastObservation = observation
 		lastObserveErr = observeErr
-		readyPanes, agentCount := readyAgentPanesFromObservation(observation)
+		readyPanes, agentCount := bootedAgentPanesFromObservation(observation, prompted)
 		lastReady = len(readyPanes)
 		lastAgents = agentCount
 		if observeErr == nil && agentCount > 0 && lastReady == agentCount {
@@ -6148,7 +6188,7 @@ func waitForAgentsReadyWithObserver(
 		if !time.Now().Before(deadline) {
 			return lastReady, spawnReadinessError(
 				fmt.Sprintf("timeout waiting for agents to become ready (%d/%d ready)", lastReady, lastAgents),
-				lastObservation, lastObserveErr, "",
+				withoutBootedPanes(lastObservation, prompted), lastObserveErr, "",
 			)
 		}
 		if err := waitUntilNextSpawnPoll(ctx, deadline, pollInterval); err != nil {
@@ -6228,6 +6268,13 @@ func sendInitPromptToReadyAgentsWith(
 }
 
 func readyAgentPanesFromObservation(observation statuspkg.SessionObservation) ([]tmux.Pane, int) {
+	return bootedAgentPanesFromObservation(observation, nil)
+}
+
+// bootedAgentPanesFromObservation returns the agent panes that are idle and
+// safe to dispatch, plus — for panes in prompted — panes freshly observed
+// working on their delivered spawn prompt, along with the agent pane count.
+func bootedAgentPanesFromObservation(observation statuspkg.SessionObservation, prompted map[string]bool) ([]tmux.Pane, int) {
 	readyPanes := make([]tmux.Pane, 0, len(observation.Panes))
 	agentCount := 0
 	for _, pane := range observation.Panes {
@@ -6236,11 +6283,49 @@ func readyAgentPanesFromObservation(observation statuspkg.SessionObservation) ([
 			continue
 		}
 		agentCount++
-		if spawnPaneObservationSafeToDispatch(pane) && statuspkg.DispatchObservationIsCurrent(pane.Current.ObservedAt, time.Now()) {
+		if spawnPaneBooted(pane, prompted) {
 			readyPanes = append(readyPanes, pane.Metadata)
 		}
 	}
 	return readyPanes, agentCount
+}
+
+// spawnPaneBooted reports whether one agent pane counts as booted: idle and
+// safe to dispatch, or (only when it received a delivered spawn prompt) a
+// fresh, confident, current working observation whose agent process has
+// replaced the shell.
+func spawnPaneBooted(pane statuspkg.PaneObservation, prompted map[string]bool) bool {
+	if !statuspkg.DispatchObservationIsCurrent(pane.Current.ObservedAt, time.Now()) {
+		return false
+	}
+	if spawnPaneObservationSafeToDispatch(pane) {
+		return true
+	}
+	if !prompted[pane.Metadata.ID] {
+		return false
+	}
+	current := pane.Current
+	return current.Error == "" &&
+		current.Freshness == statuspkg.FreshnessFresh &&
+		current.Status.State == statuspkg.StateWorking &&
+		statuspkg.ObservationConfidenceIsActionable(current.Confidence) &&
+		!spawnPaneCommandIsShell(pane.Metadata.Command)
+}
+
+// withoutBootedPanes drops booted panes from an observation so a readiness
+// timeout names only the panes that actually failed to boot.
+func withoutBootedPanes(observation statuspkg.SessionObservation, prompted map[string]bool) statuspkg.SessionObservation {
+	if len(prompted) == 0 {
+		return observation
+	}
+	filtered := observation
+	filtered.Panes = make([]statuspkg.PaneObservation, 0, len(observation.Panes))
+	for _, pane := range observation.Panes {
+		if !spawnPaneBooted(pane, prompted) {
+			filtered.Panes = append(filtered.Panes, pane)
+		}
+	}
+	return filtered
 }
 
 func readinessIssuesForAgentPanes(observation statuspkg.SessionObservation) []string {

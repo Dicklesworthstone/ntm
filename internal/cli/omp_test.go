@@ -1,12 +1,16 @@
 package cli
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	agentpkg "github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/output"
+	statuspkg "github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
 )
@@ -223,5 +227,95 @@ func TestOmpDepsAndDoctor(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("ntm deps must probe the omp binary as an optional AI agent with a setup hint")
+	}
+}
+
+// ompBootObservation builds a canonical pane observation from a real omp
+// capture, classified by the production status detector.
+func ompBootObservation(t *testing.T, fixture string, pane tmux.Pane) statuspkg.PaneObservation {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join("..", "agent", "testdata", fixture))
+	if err != nil {
+		t.Fatalf("read fixture %s: %v", fixture, err)
+	}
+	now := time.Now().UTC()
+	st := statuspkg.NewDetector().AnalyzeAt(pane.ID, pane.Title, "omp", string(raw), now.Add(-time.Hour), now)
+	return statuspkg.PaneObservation{
+		Pane:      pane.Ref(),
+		PaneName:  pane.Title,
+		AgentType: "omp",
+		Metadata:  pane,
+		Current: statuspkg.StateObservation{
+			Status:     st,
+			ObservedAt: now,
+			Freshness:  statuspkg.FreshnessFresh,
+			Confidence: 0.95,
+		},
+		RawOutput: string(raw),
+	}
+}
+
+// TestOmpVerifyBootAcceptsWorkingOnInjectedPrompt pins --verify-boot against
+// the live repro: NTM delivered session recovery context and omp started a
+// turn on it within seconds. That pane booted; only an idle-only wait timed
+// out. A pane that never received a spawn prompt must still be idle, and an
+// errored pane never counts.
+func TestOmpVerifyBootAcceptsWorkingOnInjectedPrompt(t *testing.T) {
+	pane := tmux.Pane{ID: "%71", Index: 1, Type: tmux.AgentOmp, Title: "omp-e2e__omp_1", Command: "omp"}
+	working := ompBootObservation(t, "omp_nerd_working_recovery_prompt.txt", pane)
+	if working.Current.Status.State != statuspkg.StateWorking {
+		t.Fatalf("fixture classifies as %s, want working", working.Current.Status.State)
+	}
+	session := statuspkg.SessionObservation{Session: "omp-e2e", ObservedAt: working.Current.ObservedAt, Complete: true,
+		Panes: []statuspkg.PaneObservation{working}, Failures: []statuspkg.ObservationFailure{}}
+
+	prompted := map[string]bool{pane.ID: true}
+	ready, err := waitForAgentsBootedWithObserver(t.Context(), "omp-e2e", 0, time.Millisecond,
+		&scriptedSpawnObserver{observations: []statuspkg.SessionObservation{session}}, prompted)
+	if err != nil || ready != 1 {
+		t.Fatalf("prompted working omp pane: ready=%d err=%v, want booted", ready, err)
+	}
+
+	// Without a delivered prompt the idle-only contract stands (and --assign
+	// keeps using it).
+	ready, err = waitForAgentsReadyWithObserver(t.Context(), "omp-e2e", 0, time.Millisecond,
+		&scriptedSpawnObserver{observations: []statuspkg.SessionObservation{session}})
+	if err == nil || ready != 0 || !strings.Contains(err.Error(), "state=working") {
+		t.Fatalf("unprompted working pane: ready=%d err=%v, want a working-state timeout", ready, err)
+	}
+
+	// Idle still boots whether or not a prompt was delivered.
+	idle := ompBootObservation(t, "omp_nerd_idle_done.txt", pane)
+	if !spawnPaneBooted(idle, nil) || !spawnPaneBooted(idle, prompted) {
+		t.Fatal("an idle omp pane is booted with or without a delivered prompt")
+	}
+
+	// A provider error after delivery is not a boot, and the timeout names it.
+	failed := ompBootObservation(t, "omp_nerd_provider_error.txt", pane)
+	if failed.Current.Status.State != statuspkg.StateError || spawnPaneBooted(failed, prompted) {
+		t.Fatalf("provider-error pane: state=%s booted=%v, want error and not booted",
+			failed.Current.Status.State, spawnPaneBooted(failed, prompted))
+	}
+	// So is a pane whose agent process has not replaced the shell, and a stale reading.
+	shell := working
+	shell.Metadata.Command = "zsh"
+	stale := working
+	stale.Current.Freshness = statuspkg.FreshnessStale
+	for name, obs := range map[string]statuspkg.PaneObservation{"shell": shell, "stale": stale} {
+		if spawnPaneBooted(obs, prompted) {
+			t.Fatalf("%s working observation must not count as booted", name)
+		}
+	}
+
+	// Mixed session: the booted pane is dropped from the timeout detail.
+	other := tmux.Pane{ID: "%72", Index: 2, Type: tmux.AgentOmp, Title: "omp-e2e__omp_2", Command: "omp"}
+	failedOther := ompBootObservation(t, "omp_nerd_provider_error.txt", other)
+	mixed := session
+	mixed.Panes = []statuspkg.PaneObservation{working, failedOther}
+	ready, err = waitForAgentsBootedWithObserver(t.Context(), "omp-e2e", 0, time.Millisecond,
+		&scriptedSpawnObserver{observations: []statuspkg.SessionObservation{mixed}},
+		map[string]bool{pane.ID: true, other.ID: true})
+	if ready != 1 || err == nil || !strings.Contains(err.Error(), "pane 2") || strings.Contains(err.Error(), "pane 1 ") {
+		t.Fatalf("mixed session: ready=%d err=%v, want only pane 2 named", ready, err)
 	}
 }
