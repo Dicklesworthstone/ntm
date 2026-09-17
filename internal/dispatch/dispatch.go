@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
@@ -386,6 +387,23 @@ func (TMUXDeliverer) Deliver(ctx context.Context, delivery Delivery) error {
 	target := delivery.Target.Ref.ID
 	if target == "" {
 		target = fmt.Sprintf("%s:%s", delivery.Session, delivery.Target.Ref.Physical())
+	}
+	// An unnumbered trust menu can reuse the composer's cursor (GH#325),
+	// while Antigravity has no composer detector at all. Check the actual
+	// decision frame BEFORE composer clearing or any prompt bytes: text
+	// containing 'n' can otherwise quit Grok straight into the user's shell.
+	// This refusal is retry-safe; explicit dialog answers use a different
+	// surface and do not pass through normal prompt delivery.
+	canonical := delivery.Target.AgentType.Canonical()
+	if canonical.IsValid() && canonical != tmux.AgentUser && canonical != tmux.AgentUnknown {
+		capture, captureErr := tmux.CapturePaneVisibleContext(ctx, target)
+		if err := contextError(ctx); err != nil {
+			return GuaranteeNoDeliveryActuation(err)
+		}
+		if captureErr == nil && agent.TrustDialogVisible(capture) {
+			return GuaranteeNoDeliveryActuation(fmt.Errorf(
+				"PANE_INTERACTIVE_GATE: pane %s is showing a workspace trust dialog; no prompt or clearing keys were sent; inspect with --robot-dialogs and explicitly answer with --robot-answer-dialog before retrying", target))
+		}
 	}
 	// Fail closed on panes that cannot accept typed input yet (bd-dp9oy):
 	// a Claude/codex TUI still initializing, or showing a trust dialog or

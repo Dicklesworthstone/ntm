@@ -1,6 +1,7 @@
 package robot
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -202,5 +203,165 @@ func TestApplyDialogResolution(t *testing.T) {
 				t.Fatalf("Error = %q, want it to mention %q", out.Error, tt.wantErrContain)
 			}
 		})
+	}
+}
+
+// Live captures from GH#325, not inferred provider layouts. Claude's default
+// selection is the DECLINE option and differs from Antigravity's default.
+const claudeCursorTrustFixture = `
+ Accessing workspace:
+ /tmp/project
+ Quick safety check: Is this a project you created or one you trust?
+ Claude Code'll be able to read, edit, and execute files here.
+ Security guide
+ ❯ No, exit
+   Yes, I trust this folder
+ Enter to confirm · Esc to cancel
+`
+
+const antigravityCursorTrustFixture = `
+Accessing workspace:
+/tmp/project
+Do you trust the contents of this project?
+Antigravity CLI requires permission to read, edit, and execute files here.
+> Yes, I trust this folder
+  No, exit
+  ↑/↓ Navigate · enter Confirm
+`
+
+const grokHotkeyTrustFixture = `
+/tmp/project
+Grok Build may run or modify contents in this directory,
+posing security risks.
+Yes, proceed                 y
+No, quit                     n
+`
+
+func TestDialogUnnumberedProviderProtocols(t *testing.T) {
+	for _, tc := range []struct {
+		name, capture, agent, mode, choice string
+		keys                               []string
+	}{
+		{"claude accept is second", claudeCursorTrustFixture, "claude", "cursor", "option-2", []string{"Down", "Enter"}},
+		{"claude decline is selected", claudeCursorTrustFixture, "claude", "cursor", "decline", []string{"Enter"}},
+		{"antigravity decline is second", antigravityCursorTrustFixture, "antigravity", "cursor", "decline", []string{"Down", "Enter"}},
+		{"antigravity accept is selected", antigravityCursorTrustFixture, "antigravity", "cursor", "option-1", []string{"Enter"}},
+		{"grok accept is immediate", grokHotkeyTrustFixture, "grok", "hotkey", "option-1", []string{"y"}},
+		{"grok decline is immediate", grokHotkeyTrustFixture, "grok", "hotkey", "decline", []string{"n"}},
+		{"numbered still works", trustPromptFixture, "claude", "numbered", "decline", []string{"2", "Enter"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			state := classifyDialog(tc.capture, tc.agent)
+			if state.Class != DialogTrustPrompt || state.InputMode != tc.mode || len(state.Options) != 2 {
+				t.Fatalf("unexpected classification: %+v", state)
+			}
+			for i, option := range state.Options {
+				if option.Number != i+1 {
+					t.Fatalf("unstable display order: %+v", state.Options)
+				}
+			}
+			keys, err := resolveDialogAnswer(state, tc.choice)
+			if err != nil || !reflect.DeepEqual(keys, tc.keys) {
+				t.Fatalf("answer = %v, %v; want %v", keys, err, tc.keys)
+			}
+		})
+	}
+}
+
+func TestDialogCursorNavigationUsesActualSelection(t *testing.T) {
+	capture := "Usage limit reached\n  Wait for the limit to reset\n  Use extra usage\n❯ Upgrade my plan\nEnter to confirm"
+	state := classifyDialog(capture, "claude")
+	keys, err := resolveDialogAnswer(state, "extra-usage")
+	if state.Class != DialogRateLimitOptions || err != nil || !reflect.DeepEqual(keys, []string{"Up", "Enter"}) {
+		t.Fatalf("extra-usage = %v, %v, state=%+v", keys, err, state)
+	}
+	keys, err = resolveDialogAnswer(state, "option-1")
+	if err != nil || !reflect.DeepEqual(keys, []string{"Up", "Up", "Enter"}) {
+		t.Fatalf("option-1 = %v, %v", keys, err)
+	}
+}
+
+func TestDialogUnnumberedRejectsNonLiveMenus(t *testing.T) {
+	for _, capture := range []string{
+		"We discussed trust.\nYes, that looks good\nNo, that is not necessary",
+		"```text\n" + claudeCursorTrustFixture + "```",
+		claudeCursorTrustFixture + "\n❯ Try refactoring a file",
+		grokHotkeyTrustFixture + "\nThe workspace is ready.\n❯",
+		trustPromptFixture + "\nThe job finished.\n❯",
+		"trust\n1. Yes\ntext interrupting the menu\n2. No\nEnter to confirm",
+		"trust\n1. Yes\n2. No\n3. Maybe\n4. A\n5. B\n6. C\n7. D\n8. E\n9. F\n10. G",
+		"trust\nYes, proceed  y\nNo, quit  y",
+	} {
+		if state := classifyDialog(capture, "claude"); state.Class != DialogNone {
+			t.Errorf("non-live/invalid menu classified as %+v: %q", state, capture)
+		}
+	}
+}
+
+func TestDialogUnnumberedDoesNotWeakenDestructivePolicy(t *testing.T) {
+	for _, capture := range []string{
+		"Run git push --force origin main?\n❯ Yes, run it\n  No, cancel\nEnter to confirm",
+		"Run git reset --hard?\nYes, proceed  y\nNo, quit  n",
+	} {
+		state := classifyDialog(capture, "claude")
+		if state.Class != DialogDestructiveConfirm {
+			t.Fatalf("not classified destructive: %+v", state)
+		}
+		if keys, err := resolveDialogAnswer(state, "option-1"); err == nil || !strings.Contains(err.Error(), "POLICY_REFUSED") || len(keys) != 0 {
+			t.Fatalf("destructive acceptance not refused: keys=%v err=%v", keys, err)
+		}
+		if _, err := resolveDialogAnswer(state, "decline"); err != nil {
+			t.Fatalf("decline should remain possible: %v", err)
+		}
+	}
+}
+
+func TestDialogCursorAnswerFailsClosedWithoutUniqueSelection(t *testing.T) {
+	for _, capture := range []string{
+		strings.Replace(claudeCursorTrustFixture, "❯ No", "  No", 1),
+		strings.Replace(claudeCursorTrustFixture, "   Yes", " ❯ Yes", 1),
+	} {
+		state := classifyDialog(capture, "claude")
+		if state.Class != DialogTrustPrompt {
+			t.Fatalf("gate must remain visible even without usable cursor: %+v", state)
+		}
+		if keys, err := resolveDialogAnswer(state, "option-2"); err == nil || len(keys) != 0 {
+			t.Fatalf("ambiguous cursor allowed actuation: keys=%v err=%v", keys, err)
+		}
+	}
+}
+
+func TestDialogNewestMenuWins(t *testing.T) {
+	capture := trustPromptFixture + "\nOld dialog answered\n" + claudeCursorTrustFixture
+	state := classifyDialog(capture, "claude")
+	if state.InputMode != "cursor" || len(state.Options) != 2 || state.Options[0].Label != "No, exit" {
+		t.Fatalf("historical numbered menu displaced the live one: %+v", state)
+	}
+	for _, choice := range []string{"option-0", "option-3", "option-9999999999999999999999999", "approve"} {
+		if keys, err := resolveDialogAnswer(state, choice); err == nil || len(keys) != 0 {
+			t.Errorf("invalid choice %q actuated: keys=%v err=%v", choice, keys, err)
+		}
+	}
+}
+
+func TestCursorDialogRequiresVerifiedSelectionBeforeEnter(t *testing.T) {
+	before := classifyDialog(claudeCursorTrustFixture, "claude")
+	selected := strings.Replace(claudeCursorTrustFixture, "❯ No, exit\n   Yes, I trust this folder", "  No, exit\n ❯ Yes, I trust this folder", 1)
+	if err := verifyCursorDialogSelection(before, classifyDialog(selected, "claude"), "option-2"); err != nil {
+		t.Fatalf("correctly selected option refused: %v", err)
+	}
+	for _, capture := range []string{
+		claudeCursorTrustFixture,      // dropped Down: decline remains selected
+		idleClaudeFixture,             // original dialog vanished
+		antigravityCursorTrustFixture, // option order changed
+		strings.Replace(selected, "trust this folder", "trust a different folder", 1),
+		"git reset --hard\n" + selected, // destructive follow-up
+	} {
+		if err := verifyCursorDialogSelection(before, classifyDialog(capture, "claude"), "option-2"); err == nil {
+			t.Errorf("unverified Enter was permitted: %q", capture)
+		}
+	}
+	if err := verifyCursorDialogSelection(before, before, "decline"); err != nil {
+		t.Fatalf("already-selected decline refused: %v", err)
 	}
 }
