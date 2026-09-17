@@ -5,11 +5,11 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
-	"strings"
 	"time"
 )
 
-// S2PAdapter provides integration with Source-to-Prompt tool
+// S2PAdapter reports availability of the interactive Source-to-Prompt tool.
+// Context packs prepare source files natively; s2p has no headless interface.
 type S2PAdapter struct {
 	*BaseAdapter
 }
@@ -47,9 +47,10 @@ func (a *S2PAdapter) Version(ctx context.Context) (Version, error) {
 	return ParseStandardVersion(stdout.String())
 }
 
-// Capabilities returns s2p capabilities
+// Capabilities does not advertise automated context generation: the installed
+// tool is interactive, and its hypothetical --format interface never existed.
 func (a *S2PAdapter) Capabilities(ctx context.Context) ([]Capability, error) {
-	return []Capability{CapContextPack}, nil
+	return []Capability{}, nil
 }
 
 // Health checks if s2p is functioning
@@ -104,47 +105,4 @@ func (a *S2PAdapter) HasCapability(ctx context.Context, cap Capability) bool {
 // Info returns complete s2p tool information
 func (a *S2PAdapter) Info(ctx context.Context) (*ToolInfo, error) {
 	return a.BaseAdapter.Info(ctx, a)
-}
-
-// S2P-specific methods
-
-// GenerateContext generates context for given files/patterns
-func (a *S2PAdapter) GenerateContext(ctx context.Context, dir string, patterns []string, format string) ([]byte, error) {
-	args := []string{}
-	if format != "" {
-		args = append(args, "--format", format)
-	}
-	args = append(args, patterns...)
-
-	return a.runCommand(ctx, dir, args...)
-}
-
-func (a *S2PAdapter) runCommand(ctx context.Context, dir string, args ...string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(ctx, a.Timeout())
-	defer cancel()
-
-	cmd := exec.CommandContext(ctx, a.BinaryName(), args...)
-	cmd.WaitDelay = time.Second
-	if dir != "" {
-		cmd.Dir = dir
-	}
-
-	// Limit output to 10MB
-	stdout := &LimitedBuffer{Limit: 10 * 1024 * 1024}
-	var stderr bytes.Buffer
-	cmd.Stdout = stdout
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		if ctx.Err() == context.DeadlineExceeded {
-			return nil, ErrTimeout
-		}
-		// Check if it was our limit error
-		if strings.Contains(err.Error(), "output limit exceeded") {
-			return nil, fmt.Errorf("s2p output exceeded 10MB limit")
-		}
-		return nil, fmt.Errorf("s2p failed: %w: %s", err, stderr.String())
-	}
-
-	return stdout.Bytes(), nil
 }

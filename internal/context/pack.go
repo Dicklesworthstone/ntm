@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -60,7 +61,7 @@ type BuildOptions struct {
 	AgentType       string // Canonical short code or alias (cc/cod/gmi/cursor/windsurf/aider, etc.)
 	RepoRev         string
 	Task            string   // Task description for CM context
-	Files           []string // Files for S2P context
+	Files           []string // Project-relative files or globs for native source context
 	CorrelationID   string
 	ProjectDir      string
 	SessionID       string // For CM client connection
@@ -79,7 +80,6 @@ type ContextPackBuilder struct {
 	cmAdapter   *tools.CMAdapter
 	cassAdapter *tools.CASSAdapter
 	msAdapter   *tools.MSAdapter
-	s2pAdapter  *tools.S2PAdapter
 	store       *state.Store
 	allocation  BudgetAllocation
 }
@@ -91,7 +91,6 @@ func NewContextPackBuilder(store *state.Store) *ContextPackBuilder {
 		cmAdapter:   tools.NewCMAdapter(),
 		cassAdapter: tools.NewCASSAdapter(),
 		msAdapter:   tools.NewMSAdapter(),
-		s2pAdapter:  tools.NewS2PAdapter(),
 		store:       store,
 		allocation:  DefaultBudgetAllocation(),
 	}
@@ -469,34 +468,50 @@ func (b *ContextPackBuilder) buildMSComponent(ctx context.Context, query string,
 	return component
 }
 
-// buildS2PComponent generates S2P context with agent-aware budget enforcement
+// buildS2PComponent prepares source context natively. The component key remains
+// s2p, but no interactive s2p executable or unsupported headless flags are used.
 func (b *ContextPackBuilder) buildS2PComponent(ctx context.Context, dir string, files []string, tokenBudget int) *PackComponent {
 	component := &PackComponent{Type: "s2p"}
-
-	_, installed := b.s2pAdapter.Detect()
-	if !installed {
-		component.Error = "s2p not installed"
-		return component
-	}
 
 	if len(files) == 0 {
 		component.Error = "no files specified"
 		return component
 	}
 
-	// Apply agent-specific file limits and processing strategies
-	optimizedFiles := b.optimizeFilesForBudget(files, tokenBudget)
-	format := b.selectS2PFormat(tokenBudget)
+	if dir == "" {
+		dir = "."
+	}
+	// Root.FS prevents both parent traversal and symlink escapes, including
+	// changes between path validation and opening a selected source file.
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		component.Error = fmt.Sprintf("open source project: %v", err)
+		return component
+	}
+	defer root.Close()
 
-	data, err := b.s2pAdapter.GenerateContext(ctx, dir, optimizedFiles, format)
+	optimizedFiles := b.optimizeFilesForBudget(files, tokenBudget)
+	// Preserve the existing importance ordering, but never silently discard
+	// explicitly selected files after the old three-to-twenty-file heuristic.
+	orderedFiles := make([]string, 0, len(files))
+	seen := make(map[string]bool, len(files))
+	for _, group := range [][]string{optimizedFiles, files} {
+		for _, file := range group {
+			if !seen[file] {
+				orderedFiles = append(orderedFiles, file)
+				seen[file] = true
+			}
+		}
+	}
+	format := b.selectS2PFormat(tokenBudget)
+	data, err := prepareSourceContext(ctx, root.FS(), orderedFiles, tokenBudget, format)
 	if err != nil {
 		component.Error = err.Error()
 		return component
 	}
 
-	// Apply intelligent truncation that preserves structure
-	truncated := b.intelligentTruncate(string(data), tokenBudget)
-	component.Data = json.RawMessage(fmt.Sprintf("%q", truncated))
+	truncated := b.intelligentTruncate(data, tokenBudget)
+	component.Data, _ = json.Marshal(truncated)
 	component.TokenCount = estimateTokens(truncated)
 	return component
 }
@@ -827,11 +842,11 @@ func (b *ContextPackBuilder) calculateFilePriority(file string) int {
 	return priority
 }
 
-// selectS2PFormat chooses optimal s2p format based on token budget
+// selectS2PFormat chooses the native source renderer's format based on budget.
 func (b *ContextPackBuilder) selectS2PFormat(tokenBudget int) string {
 	// Use more compact formats for smaller budgets
 	if tokenBudget < 30000 { // Less than ~30k tokens
-		return "compact" // More concise output if s2p supports it
+		return "compact" // More concise native file headers
 	}
 	return "" // Default format
 }
