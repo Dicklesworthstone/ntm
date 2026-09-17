@@ -1108,6 +1108,7 @@ func TestNormalizeAgentType(t *testing.T) {
 		{"openai", "codex"},
 		{"openai-codex", "codex"},
 		{" codex-cli ", "codex"},
+		{"OH_MY_PI", "omp"},
 		{"gemini", "gemini"},
 		{"gmi", "gemini"},
 		{"google", "gemini"},
@@ -1166,6 +1167,8 @@ func TestIsValidAgentType(t *testing.T) {
 		{"windsurf", true},
 		{"aider", true},
 		{"ollama", true},
+		{"omp", true},
+		{"oh-my-pi", true},
 		// Case-insensitive handling
 		{"Claude", true},
 		{"CLAUDE", true},

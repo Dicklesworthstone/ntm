@@ -428,6 +428,9 @@ func TestProfileToAgentType(t *testing.T) {
 		// Aider variants
 		{"aider", "aider"},
 		{"AIDER", "aider"},
+		// Oh My Pi variants
+		{"omp", "omp"},
+		{"oh-my-pi", "omp"},
 		// Unknown profiles default to Claude
 		{"tester", "cc"},
 		{"implementer", "cc"},

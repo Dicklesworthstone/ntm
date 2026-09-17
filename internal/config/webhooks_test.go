@@ -261,6 +261,8 @@ func TestIsValidWebhookAgentType(t *testing.T) {
 		{"ws", true},
 		{"aider", true},
 		{"ollama", true},
+		{"omp", true},
+		{"oh-my-pi", true},
 		{"claude-code", true},
 		{"codex-cli", true},
 		{"google-gemini", true},
