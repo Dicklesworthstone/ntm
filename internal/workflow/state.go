@@ -1,13 +1,13 @@
 package workflow
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/util"
@@ -68,7 +68,7 @@ type PaneSequenceStore struct {
 	Now        func() time.Time
 }
 
-var paneSequenceMu sync.Mutex
+const paneSequenceLockTimeout = 10 * time.Second
 
 func NewPaneSequenceStore(projectDir string) (*PaneSequenceStore, error) {
 	if strings.TrimSpace(projectDir) == "" {
@@ -91,6 +91,22 @@ func (s *PaneSequenceStore) path(name string) (string, error) {
 		return "", fmt.Errorf("invalid sequence name %q", name)
 	}
 	return filepath.Join(s.sequenceDir(), name+".json"), nil
+}
+
+// Lock a stable sidecar, not the JSON file: AtomicWriteFile replaces the JSON
+// inode. Never unlink the sidecar, since that would let writers lock different
+// inodes for the same sequence. The OS releases the lock if a writer crashes.
+func (s *PaneSequenceStore) lockSequence(path string) (func(), error) {
+	if err := os.MkdirAll(s.sequenceDir(), 0o755); err != nil {
+		return nil, fmt.Errorf("create sequence directory: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), paneSequenceLockTimeout)
+	defer cancel()
+	unlock, err := lockPaneSequenceFile(ctx, path+".lock")
+	if err != nil {
+		return nil, fmt.Errorf("lock sequence: %w", err)
+	}
+	return unlock, nil
 }
 
 func (s *PaneSequenceStore) now() time.Time {
@@ -147,15 +163,18 @@ func (s *PaneSequenceStore) Create(name string, steps []string) (*PaneSequence, 
 		return nil, err
 	}
 
-	paneSequenceMu.Lock()
-	defer paneSequenceMu.Unlock()
-	if _, err := os.Stat(path); err == nil {
+	unlock, err := s.lockSequence(path)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+	if _, err := os.Lstat(path); err == nil {
 		return nil, fmt.Errorf("sequence %q already exists", name)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("inspect sequence %q: %w", name, err)
 	}
 	sequence := &PaneSequence{
-		Name:      name,
+		Name:      strings.TrimSpace(name),
 		Steps:     normalized,
 		Positions: make(map[string]int),
 		CreatedAt: s.now(),
@@ -175,8 +194,8 @@ func (s *PaneSequenceStore) Load(name string) (*PaneSequence, error) {
 	if err != nil {
 		return nil, err
 	}
-	paneSequenceMu.Lock()
-	defer paneSequenceMu.Unlock()
+	// Atomic replacement gives readers a complete old or new snapshot without
+	// waiting for a writer (including a paused or stalled writer).
 	return s.loadLocked(path)
 }
 
@@ -207,8 +226,11 @@ func (s *PaneSequenceStore) Advance(name, pane string) (PaneSequencePosition, er
 		return PaneSequencePosition{}, err
 	}
 
-	paneSequenceMu.Lock()
-	defer paneSequenceMu.Unlock()
+	unlock, err := s.lockSequence(path)
+	if err != nil {
+		return PaneSequencePosition{}, err
+	}
+	defer unlock()
 	sequence, err := s.loadLocked(path)
 	if err != nil {
 		return PaneSequencePosition{}, err
@@ -242,6 +264,10 @@ func (s *PaneSequenceStore) loadLocked(path string) (*PaneSequence, error) {
 	}
 	if err := validatePaneSequence(sequence); err != nil {
 		return nil, fmt.Errorf("invalid persisted sequence: %w", err)
+	}
+	sequence.Name = strings.TrimSpace(sequence.Name)
+	if sequence.Name != strings.TrimSuffix(filepath.Base(path), ".json") {
+		return nil, fmt.Errorf("persisted sequence name %q does not match requested sequence", sequence.Name)
 	}
 	return &sequence, nil
 }
