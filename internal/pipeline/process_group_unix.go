@@ -32,18 +32,10 @@ func configureCommandProcessGroup(cmd *exec.Cmd) {
 	}
 }
 
-// cancelCommandProcessGroup is the cmd.Cancel handler used for shell
-// subprocesses that opt into process-group isolation. Sending SIGKILL to
-// -pid kills the whole group; if that fails (e.g. the process already
-// exited), fall back to a single-process Kill.
+// cancelCommandProcessGroup force-stops an owned group. The caller must still
+// hold its leader identity; it must not be used after a competing Cmd.Wait.
 func cancelCommandProcessGroup(cmd *exec.Cmd) error {
-	if cmd == nil || cmd.Process == nil {
-		return nil
-	}
-	if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err == nil {
-		return nil
-	}
-	return cmd.Process.Kill()
+	return signalCommandProcessGroup(cmd, syscall.SIGKILL)
 }
 
 func signalCommandProcessGroup(cmd *exec.Cmd, sig syscall.Signal) error {

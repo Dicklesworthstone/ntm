@@ -33,14 +33,15 @@ func (e *Executor) resolveBranch(ctx context.Context, step *Step) (string, error
 			"command", shellCmd,
 		)
 
-		cmd := exec.CommandContext(ctx, "/bin/sh", "-c", shellCmd)
-		configureCommandProcessGroup(cmd)
-		cmd.Cancel = func() error { return cancelCommandProcessGroup(cmd) }
+		cmd := exec.Command("/bin/sh", "-c", shellCmd)
 		if e.config.ProjectDir != "" {
 			cmd.Dir = e.config.ProjectDir
 		}
 
-		out, err := cmd.Output()
+		// A partial key must not select a branch (including its default).
+		// Share command-step ownership and enforce the workflow's byte limits.
+		limits := e.limits.EffectiveLimits()
+		out, err := runCommandOutput(ctx, cmd, limits.MaxCommandStdoutBytes, limits.MaxCommandStderrBytes)
 		if err != nil {
 			return "", fmt.Errorf("branch shell command failed: %w", err)
 		}

@@ -58,7 +58,7 @@ func waitCommandWithProcessGroupCleanup(ctx context.Context, cmd *exec.Cmd) comm
 			if observationErr == nil {
 				// Close the enumeration/fork race while the group ID is still
 				// pinned. Normal background writers have already finished.
-				err := signalCommandProcessGroup(cmd, syscall.SIGKILL)
+				err := cancelCommandProcessGroup(cmd)
 				if errors.Is(err, os.ErrProcessDone) {
 					err = nil
 				}
@@ -71,7 +71,7 @@ func waitCommandWithProcessGroupCleanup(ctx context.Context, cmd *exec.Cmd) comm
 	if observationErr != nil && ctx.Err() == nil {
 		// The leader is pinned, but failed procfs inspection cannot prove
 		// quiescence. Terminate the owned group and surface that failure.
-		_ = signalCommandProcessGroup(cmd, syscall.SIGKILL)
+		_ = cancelCommandProcessGroup(cmd)
 		return commandCleanupResult{Err: errors.Join(observationErr, cmd.Wait())}
 	}
 
@@ -82,7 +82,7 @@ func waitCommandWithProcessGroupCleanup(ctx context.Context, cmd *exec.Cmd) comm
 	cancel()
 	if quietErr != nil {
 		result.SignalSent = "SIGTERM,SIGKILL"
-		killErr := signalCommandProcessGroup(cmd, syscall.SIGKILL)
+		killErr := cancelCommandProcessGroup(cmd)
 		settle, stop := context.WithTimeout(context.Background(), commandPipeDrainTimeout)
 		quietErr = waitCommandGroupQuiescent(settle, cmd.Process.Pid)
 		stop()

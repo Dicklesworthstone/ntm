@@ -37,7 +37,7 @@ func waitCommandWithProcessGroupCleanup(ctx context.Context, cmd *exec.Cmd) comm
 			case result.Err = <-done:
 			default:
 				result.SignalSent = "SIGTERM,SIGKILL"
-				_ = signalCommandProcessGroup(cmd, syscall.SIGKILL)
+				_ = cancelCommandProcessGroup(cmd)
 				result.Err = <-done
 			}
 		}
