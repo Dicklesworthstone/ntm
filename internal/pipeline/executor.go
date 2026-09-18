@@ -955,6 +955,11 @@ func (e *Executor) executeStep(ctx context.Context, step *Step, workflow *Workfl
 			result = stepResult
 			result.Attempts = attempt
 			result.FinishedAt = time.Now()
+			// Publish canonical outputs before success hooks for every kind.
+			// Named output_var merging remains the containing scheduler's job.
+			e.varMu.Lock()
+			StoreStepOutput(e.state, step.ID, result.Output, result.ParsedData)
+			e.varMu.Unlock()
 			e.emitProgress("step_complete", step.ID,
 				stepProgressMessage("Step completed", step, ""), e.calculateProgress())
 			// bd-w6nth.7: run OnSuccess steps after a successful parent.
@@ -1286,7 +1291,7 @@ func (e *Executor) executeStepOnce(ctx context.Context, step *Step, workflow *Wo
 	result.Output = util.ExtractNewOutput(beforeOutput, afterOutput)
 
 	// Parse output if configured
-	if step.OutputVar != "" && step.OutputParse.Type != "" && step.OutputParse.Type != "none" {
+	if step.OutputParse.Type != "" && step.OutputParse.Type != "none" {
 		parsed, err := e.parseOutput(result.Output, step.OutputParse)
 		if err != nil {
 			// Non-fatal - just warn
@@ -1669,7 +1674,7 @@ func (e *Executor) executeCommand(ctx context.Context, step *Step, workflow *Wor
 		return result
 	}
 
-	if step.OutputVar != "" && step.OutputParse.Type != "" && step.OutputParse.Type != "none" {
+	if step.OutputParse.Type != "" && step.OutputParse.Type != "none" {
 		parsed, err := e.parseOutput(output, step.OutputParse)
 		if err != nil {
 			e.stateMu.Lock()
@@ -1920,7 +1925,7 @@ func (e *Executor) executeTemplate(ctx context.Context, step *Step, workflow *Wo
 
 	result.Output = util.ExtractNewOutput(beforeOutput, afterOutput)
 
-	if step.OutputVar != "" && step.OutputParse.Type != "" && step.OutputParse.Type != "none" {
+	if step.OutputParse.Type != "" && step.OutputParse.Type != "none" {
 		parsed, err := e.parseOutput(result.Output, step.OutputParse)
 		if err != nil {
 			e.stateMu.Lock()
@@ -2378,342 +2383,30 @@ func (e *Executor) executeLoop(ctx context.Context, step *Step, workflow *Workfl
 	return result
 }
 
-// executeParallelStep executes a single step within a parallel group,
-// coordinating agent selection to avoid using the same agent for multiple parallel steps.
-// Note: Nested parallel steps and loops are not supported.
+// parallelPaneSelection pins a direct parallel child's routing decision across
+// retries. The shared usedPanes set spreads automatic selections across agents;
+// explicit pane targets still win. A success hook or nested body has a different
+// step ID and must not accidentally inherit its parent's pinned target.
+type parallelPaneSelectionKey struct{}
+
+type parallelPaneSelection struct {
+	stepID    string
+	usedPanes map[string]bool
+	panesMu   *sync.Mutex
+	once      sync.Once
+	paneID    string
+	agentType string
+	err       error
+}
+
+// executeParallelStep uses the canonical step executor for every child kind.
+// Only routing coordination is parallel-specific: commands, queries, mail,
+// templates and nested containers must not enter a second prompt-only engine.
+// Pane locks are acquired by the actual dispatch and released before success
+// hooks, which may legitimately target the same pane as their parent.
 func (e *Executor) executeParallelStep(ctx context.Context, step *Step, workflow *Workflow, usedPanes map[string]bool, panesMu *sync.Mutex) StepResult {
-	result := StepResult{
-		StepID:    step.ID,
-		Status:    StatusRunning,
-		StartedAt: time.Now(),
-	}
-	e.markStepInFlight(step.ID, "parallel_step", -1)
-	e.persistState()
-	defer e.clearStepInFlight(step.ID)
-	if e.stopBeforeDispatch(ctx, &result) {
-		return result
-	}
-
-	// Check for unsupported nested structures
-	if len(step.Parallel.Steps) > 0 || step.Loop != nil {
-		result.Status = StatusFailed
-		result.Error = &StepError{
-			Type:      "validation",
-			Message:   "nested parallel or loop steps are not supported within parallel groups",
-			Timestamp: time.Now(),
-		}
-		result.FinishedAt = time.Now()
-		return result
-	}
-
-	// Check context before starting
-	if ctx.Err() != nil {
-		result.Status = StatusCancelled
-		result.FinishedAt = time.Now()
-		result.SkipReason = "context cancelled"
-		result.SkipKind = SkipKindCancelled
-		return result
-	}
-
-	// Evaluate condition if present. bd-s2edh: ctx-aware so foreach
-	// max_rounds overlays reach parallel sub-step When conditions.
-	if step.When != "" {
-		skip, err := e.evaluateConditionCtx(ctx, step.When)
-		if err != nil {
-			result.Status = StatusFailed
-			result.Error = &StepError{
-				Type:      "condition",
-				Message:   fmt.Sprintf("condition evaluation failed: %v", err),
-				Timestamp: time.Now(),
-			}
-			result.FinishedAt = time.Now()
-			return result
-		}
-		if skip {
-			result.Status = StatusSkipped
-			result.SkipReason = fmt.Sprintf("condition '%s' evaluated to false", step.When)
-			result.SkipKind = SkipKindWhenCondition
-			result.FinishedAt = time.Now()
-			return result
-		}
-	}
-
-	// Agent Mail step kinds inside a parallel block: short-circuit before
-	// pane selection because they don't dispatch through tmux (bd-hz1tl).
-	if step.hasMailStep() {
-		return e.executeMailStep(ctx, step)
-	}
-
-	// Select pane with coordination to avoid reusing agents
-	// We select once and reuse for retries to avoid "self-exclusion" issues
-	paneID, agentType, err := e.selectAndMarkPane(ctx, step, usedPanes, panesMu)
-	if err != nil {
-		result.Status = StatusFailed
-		result.Error = &StepError{
-			Type:      "routing",
-			Message:   fmt.Sprintf("failed to select agent: %v", err),
-			Timestamp: time.Now(),
-		}
-		result.FinishedAt = time.Now()
-		return result
-	}
-
-	result.PaneUsed = paneID
-	result.AgentType = agentType
-
-	// Serialize dispatch against other steps targeting the same pane. Within
-	// one parallel group usedPanes already prevents sharing, but concurrent
-	// top-level scheduling (bd-jio7h) can overlap two groups (or a group and
-	// a plain step) on the same pane, and another ntm process can target it
-	// entirely independently (ntm#324). Held across retries: the pane was
-	// selected once for all attempts.
-	releasePane, err := e.acquirePaneLockCrossProcess(ctx, paneID)
-	if err != nil {
-		applyPaneLockFailure(&result, paneID, err)
-		return result
-	}
-	defer releasePane()
-
-	// Calculate retry parameters
-	maxAttempts := 1
-	if resolveErrorAction(step.OnError, workflow.Settings.OnError) == ErrorActionRetry {
-		maxAttempts = step.RetryCount + 1
-		if maxAttempts < 1 {
-			maxAttempts = 1
-		}
-	}
-
-	retryDelay := step.RetryDelay.Duration
-	if retryDelay == 0 {
-		retryDelay = 5 * time.Second
-	}
-
-	// Execute with retries
-	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		result.Attempts = attempt
-		result.Status = StatusRunning // Reset status for retry
-		var afterOutput string        // Declare early to allow goto jumps
-		var beforeOutput string       // Declare early to allow goto jumps
-
-		// Initialize wait parameters early to avoid goto jumps over declarations
-		waitCondition := step.Wait
-		if waitCondition == "" {
-			waitCondition = WaitCompletion
-		}
-		timeout := e.config.DefaultTimeout
-		if step.Timeout.Duration > 0 {
-			timeout = step.Timeout.Duration
-		}
-
-		e.emitProgress("step_start", step.ID,
-			stepProgressMessage("Executing parallel step", step, fmt.Sprintf("attempt %d/%d on %s", attempt, maxAttempts, agentType)),
-			e.calculateProgress())
-
-		// --- Execution Logic (inlined from executeStepOnce) ---
-
-		// Resolve and substitute prompt
-		prompt, err := e.resolvePrompt(step)
-		if err != nil {
-			result.Status = StatusFailed
-			result.Error = &StepError{
-				Type:      "prompt",
-				Message:   err.Error(),
-				Timestamp: time.Now(),
-			}
-			// Prompt resolution failure is likely permanent, but we follow retry logic
-			goto HANDLE_RESULT
-		}
-
-		// bd-s2edh: ctx-aware so foreach max_rounds overlays reach
-		// parallel sub-step prompt substitution (and its retries).
-		prompt, err = e.substituteVariablesStrictCtx(ctx, prompt)
-		if err != nil {
-			result.Status = StatusFailed
-			result.Error = &StepError{
-				Type:      "substitution",
-				Message:   fmt.Sprintf("failed to substitute variables in prompt: %v", err),
-				Timestamp: time.Now(),
-			}
-			goto HANDLE_RESULT
-		}
-
-		// Dry run mode. bd-g40ad: sanitize before truncate — same attack
-		// class as bd-82zsc, mirrored here for parallel sub-step retries.
-		// bd-2g48y: fall through to HANDLE_RESULT instead of return so the
-		// OnSuccess hook fires for dry-run completions too; otherwise an
-		// on_success chain attached to a parallel substep would be skipped
-		// during dry-run validation, hiding contract violations.
-		if e.config.DryRun {
-			result.Status = StatusCompleted
-			result.Output = dryRunOutput(step, "Would execute: "+truncatePrompt(SanitizeDescriptionForTerminal(prompt), 100))
-			result.FinishedAt = time.Now()
-			goto HANDLE_RESULT
-		}
-
-		// Capture state before sending
-		beforeOutput, _ = e.tmuxClient().CapturePaneOutput(paneID, 2000)
-
-		// Send prompt
-		if e.stopBeforeDispatch(ctx, &result) {
-			return result
-		}
-		if err := e.tmuxClient().PasteKeys(paneID, prompt, true); err != nil {
-			result.Status = StatusFailed
-			result.Error = &StepError{
-				Type:      "send",
-				Message:   fmt.Sprintf("failed to send prompt: %v", err),
-				Timestamp: time.Now(),
-			}
-			goto HANDLE_RESULT
-		}
-
-		// Establish submission before any completion wait (ntm#320). A
-		// stranded composer must fail this attempt rather than be waited on;
-		// the surrounding retry loop then re-dispatches it like any other
-		// delivery failure.
-		if err := e.confirmSubmission(ctx, paneID, prompt, agentType); err != nil {
-			if ctx.Err() != nil {
-				result.Status = StatusCancelled
-				result.SkipReason = "cancelled while confirming prompt submission"
-				result.SkipKind = SkipKindCancelled
-				result.FinishedAt = time.Now()
-				return result
-			}
-			result.Status = StatusFailed
-			result.Error = &StepError{
-				Type:       "send",
-				Message:    submissionFailureMessage(err),
-				PaneOutput: e.captureErrorContext(paneID, 50),
-				AgentState: e.detectAgentState(paneID),
-				Timestamp:  time.Now(),
-			}
-			result.FinishedAt = time.Now()
-			goto HANDLE_RESULT
-		}
-
-		switch waitCondition {
-		case WaitNone:
-			result.Status = StatusCompleted
-			result.FinishedAt = time.Now()
-			// Success, proceed to capture/parse (though capture might be early)
-
-		case WaitTime:
-			select {
-			case <-ctx.Done():
-				result.Status = StatusCancelled
-				result.SkipReason = "context cancelled during wait"
-				result.SkipKind = SkipKindCancelled
-				result.FinishedAt = time.Now()
-				return result
-			case <-time.After(timeout):
-				result.Status = StatusCompleted
-				result.FinishedAt = time.Now()
-			}
-
-		case WaitCompletion, WaitIdle:
-			if err := e.waitForIdle(ctx, paneID, timeout); err != nil {
-				if ctx.Err() != nil {
-					result.Status = StatusCancelled
-					result.SkipReason = "context cancelled during execution"
-					result.SkipKind = SkipKindCancelled
-					result.FinishedAt = time.Now()
-					return result
-				}
-				result.Status = StatusFailed
-				result.Error = &StepError{
-					Type:       "timeout",
-					Message:    fmt.Sprintf("timeout waiting for completion: %v", err),
-					PaneOutput: e.captureErrorContext(paneID, 50),
-					AgentState: e.detectAgentState(paneID),
-					Timestamp:  time.Now(),
-				}
-				goto HANDLE_RESULT
-			}
-		}
-
-		// Capture output
-		{
-			var captureErr error
-			afterOutput, captureErr = e.tmuxClient().CapturePaneOutput(paneID, 2000)
-			if captureErr != nil {
-				result.Status = StatusFailed
-				result.Error = &StepError{
-					Type:       "capture",
-					Message:    fmt.Sprintf("failed to capture output: %v", captureErr),
-					PaneOutput: e.captureErrorContext(paneID, 50),
-					AgentState: e.detectAgentState(paneID),
-					Timestamp:  time.Now(),
-				}
-				goto HANDLE_RESULT
-			}
-		}
-
-		result.Output = util.ExtractNewOutput(beforeOutput, afterOutput)
-		result.Status = StatusCompleted
-		result.FinishedAt = time.Now()
-
-		// Parse output if configured
-		if step.OutputParse.Type != "" && step.OutputParse.Type != "none" {
-			parsed, err := e.parseOutput(result.Output, step.OutputParse)
-			if err != nil {
-				e.emitProgress("step_warning", step.ID,
-					fmt.Sprintf("output parse warning: %v", err),
-					e.calculateProgress())
-			} else {
-				result.ParsedData = parsed
-			}
-		}
-
-	HANDLE_RESULT:
-		// Check success
-		if result.Status == StatusCompleted {
-			// Store output
-			e.varMu.Lock()
-			StoreStepOutput(e.state, step.ID, result.Output, result.ParsedData)
-			e.varMu.Unlock()
-
-			// bd-2g48y: parallel substeps run through this inlined dispatch
-			// path, so they need their own OnSuccess hook on the same
-			// Completed contract as executeStep's common success tail.
-			// step.ID is already namespaced via scopedChildStepID, so
-			// OnSuccess child results land at
-			// <parent>_<substep>_on_success_<...>.
-			e.runOnSuccessSteps(ctx, step, workflow)
-
-			return result
-		}
-
-		// Handle retry
-		if attempt < maxAttempts {
-			delay := e.calculateRetryDelay(retryDelay, attempt, step.RetryBackoff)
-			e.emitProgress("step_retry", step.ID,
-				fmt.Sprintf("Parallel step %s failed, retrying in %s: %v", step.ID, delay, result.Error.Message),
-				e.calculateProgress())
-
-			select {
-			case <-ctx.Done():
-				result.Status = StatusCancelled
-				result.FinishedAt = time.Now()
-				return result
-			case <-time.After(delay):
-				// Continue loop
-			}
-		}
-	}
-
-	// Failed after all attempts. Mirror the top-level executeStep tail so a
-	// parallel child step honors the on_failure runtime-action contract
-	// (bd-afwly): a custom action sets ${runtime.<id>_failure_action},
-	// converts the failure to StatusSkipped, and emits the on_failure
-	// event. Recovery (on_failure.steps) also applies.
-	if result.Status == StatusFailed {
-		result = e.executeOnFailureAction(step, result)
-		if result.Status == StatusSkipped {
-			return result
-		}
-		result = e.executeOnFailureRecovery(ctx, step, workflow, result)
-	}
-	return result
+	selection := &parallelPaneSelection{stepID: step.ID, usedPanes: usedPanes, panesMu: panesMu}
+	return e.executeStep(context.WithValue(ctx, parallelPaneSelectionKey{}, selection), step, workflow)
 }
 
 // buildParallelCompletionOrder returns the substep StepIDs in the order
@@ -2919,6 +2612,12 @@ func filterAgentsByType(agents []robot.ScoredAgent, requestedType string) []robo
 
 // selectPane finds the appropriate pane for a step
 func (e *Executor) selectPane(ctx context.Context, step *Step) (paneID string, agentType string, err error) {
+	if selection, ok := ctx.Value(parallelPaneSelectionKey{}).(*parallelPaneSelection); ok && selection.stepID == step.ID {
+		selection.once.Do(func() {
+			selection.paneID, selection.agentType, selection.err = e.selectAndMarkPane(ctx, step, selection.usedPanes, selection.panesMu)
+		})
+		return selection.paneID, selection.agentType, selection.err
+	}
 	// In dry run mode, return dummy pane info
 	if e.config.DryRun {
 		return "dry-run-pane", "dry-run-agent", nil

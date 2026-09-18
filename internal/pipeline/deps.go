@@ -3,6 +3,7 @@ package pipeline
 import (
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 )
 
@@ -445,8 +446,21 @@ func (g *DependencyGraph) ResolveScopedRuntimeStep(id string) (*Step, string, bo
 
 func resolveScopedRuntimeStepFromSteps(parentID, runtimeID string, steps []Step) (*Step, string, bool) {
 	for i := range steps {
-		if scopedChildStepID(parentID, steps[i].ID, i+1) == runtimeID {
+		scopedID := scopedChildStepID(parentID, steps[i].ID, i+1)
+		if scopedID == runtimeID {
 			return &steps[i], steps[i].ID, true
+		}
+		// A nested parallel/branch container keeps the enclosing runtime
+		// namespace, not just its authored ID. Without this descent, resume
+		// drops completed grandchildren as orphans and repeats their work.
+		if !strings.HasPrefix(runtimeID, scopedID+"_") && !strings.HasPrefix(runtimeID, scopedID+".") {
+			continue
+		}
+		if child, canonicalID, ok := resolveScopedRuntimeStepFromSteps(scopedID, runtimeID, steps[i].Parallel.Steps); ok {
+			return child, canonicalID, true
+		}
+		if child, canonicalID, ok := resolveScopedRuntimeBranchStep(scopedID, runtimeID, steps[i].Branches); ok {
+			return child, canonicalID, true
 		}
 	}
 	return nil, "", false
