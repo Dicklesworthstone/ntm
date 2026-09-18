@@ -347,3 +347,45 @@ func TestBackgroundDryRunCreatesNoWorkerArtifacts(t *testing.T) {
 		t.Fatalf("dry-run wrote worker artifacts: %v", err)
 	}
 }
+
+func TestBackgroundTemplateResolutionPreservesSourcePrecedence(t *testing.T) {
+	root := t.TempDir()
+	source := filepath.Join(root, "workflows")
+	if err := os.MkdirAll(source, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{filepath.Join(source, "prompt.md"), filepath.Join(root, "prompt.md"), filepath.Join(root, "fallback.md")} {
+		if err := os.WriteFile(path, []byte("prompt"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := DefaultExecutorConfig("templates")
+	cfg.ProjectDir, cfg.WorkflowFile = root, filepath.Join(source, "workflow.yaml")
+	workflow := &Workflow{
+		Steps:             []Step{{ID: "beside-source", Template: "prompt.md"}, {ID: "project-fallback", Template: "fallback.md"}},
+		PostPipelineSteps: []Step{{ID: "after", Template: "prompt.md"}},
+	}
+	workflow.Settings.OnCancel = []Step{{ID: "cleanup", Template: "fallback.md"}}
+	workflow.Steps = append(workflow.Steps, Step{ID: "parallel"})
+	workflow.Steps[2].Parallel.Steps = []Step{{ID: "nested", Template: "prompt.md"}}
+	if err := resolveBackgroundTemplates(workflow, NewExecutor(cfg)); err != nil {
+		t.Fatal(err)
+	}
+	if workflow.Steps[0].Template != filepath.Join(source, "prompt.md") || workflow.Steps[1].Template != filepath.Join(root, "fallback.md") {
+		t.Fatalf("changed template search order: %+v", workflow.Steps)
+	}
+	if workflow.PostPipelineSteps[0].Template != filepath.Join(source, "prompt.md") || workflow.Settings.OnCancel[0].Template != filepath.Join(root, "fallback.md") {
+		t.Fatal("lost lifecycle template paths")
+	}
+	if workflow.Steps[2].Parallel.Steps[0].Template != filepath.Join(source, "prompt.md") {
+		t.Fatal("lost nested template path")
+	}
+	workflow.Steps[0].Template = "generated-${item}.md"
+	if err := resolveBackgroundTemplates(workflow, NewExecutor(cfg)); err == nil {
+		t.Fatal("guessed a future relative template location")
+	}
+	workflow.Steps[0].Template = filepath.Join(source, "generated-${item}.md")
+	if err := resolveBackgroundTemplates(workflow, NewExecutor(cfg)); err != nil {
+		t.Fatalf("absolute generated template rejected: %v", err)
+	}
+}

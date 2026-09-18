@@ -102,7 +102,7 @@ func startDetachedPipeline(workflow *Workflow, vars map[string]interface{}, cfg 
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), backgroundStartupTimeout)
 	defer cancel()
-	frozen, snapshot, err := SnapshotWorkflow(ctx, root, workflow)
+	frozen, snapshot, err := snapshotBackgroundWorkflow(ctx, root, workflow, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -206,6 +206,79 @@ func startDetachedPipeline(workflow *Workflow, vars map[string]interface{}, cfg 
 		case <-ticker.C:
 		}
 	}
+}
+
+// Snapshotting moves the workflow file, but the template executor resolves
+// relative paths beside that file before searching ProjectDir. Freeze the
+// actual existing template paths in a private workflow copy before relocating
+// it. Generated templates need absolute paths: guessing which search root will
+// contain a future file could silently select the wrong prompt.
+func snapshotBackgroundWorkflow(ctx context.Context, root string, workflow *Workflow, cfg ExecutorConfig) (*Workflow, string, error) {
+	data, err := marshalWorkflowSnapshot(workflow)
+	if err != nil {
+		return nil, "", err
+	}
+	if len(data) > maxWorkflowSnapshotBytes {
+		return nil, "", errors.New("background workflow snapshot exceeds size limit")
+	}
+	copy, validation, err := parseWorkflowSnapshot(data)
+	if err != nil {
+		return nil, "", err
+	}
+	if !validation.Valid {
+		return nil, "", fmt.Errorf("invalid background workflow: %v", validation.Errors)
+	}
+	cfg.ProjectDir = root
+	if err := resolveBackgroundTemplates(copy, NewExecutor(cfg)); err != nil {
+		return nil, "", err
+	}
+	return SnapshotWorkflow(ctx, root, copy)
+}
+
+func resolveBackgroundTemplates(workflow *Workflow, executor *Executor) error {
+	var walk func([]Step) error
+	walk = func(steps []Step) error {
+		for i := range steps {
+			step := &steps[i]
+			if step.Template != "" && !filepath.IsAbs(step.Template) {
+				resolved := executor.resolveTemplatePath(step.Template)
+				if resolved == "" {
+					return fmt.Errorf("background step %q cannot resolve template %q; use an absolute template path for files generated during execution", step.ID, step.Template)
+				}
+				absolute, err := filepath.Abs(resolved)
+				if err != nil {
+					return err
+				}
+				step.Template = absolute
+			}
+			if err := walk(step.Parallel.Steps); err != nil {
+				return err
+			}
+			if step.Loop != nil {
+				if err := walk(step.Loop.Steps); err != nil {
+					return err
+				}
+			}
+			if step.Foreach != nil {
+				if err := walk(step.Foreach.Steps); err != nil {
+					return err
+				}
+			}
+			if step.ForeachPane != nil {
+				if err := walk(step.ForeachPane.Steps); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	if err := walk(workflow.Steps); err != nil {
+		return err
+	}
+	if err := walk(workflow.PostPipelineSteps); err != nil {
+		return err
+	}
+	return walk(workflow.Settings.OnCancel)
 }
 
 func backgroundCommand(projectDir, runID string) (*exec.Cmd, error) {

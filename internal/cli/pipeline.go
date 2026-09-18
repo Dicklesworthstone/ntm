@@ -254,6 +254,7 @@ and agent routing. Variables can be passed via --var or --var-file.
 Background runs use a detached worker that survives this command's exit.
 State and private worker logs are stored under .ntm/pipelines/ in the project.
 Run status/cancel from that project directory. Dry runs never spawn a worker.
+Templates must exist at launch or use absolute paths when generated later.
 
 Examples:
   # Basic execution
@@ -394,11 +395,9 @@ Examples:
 			} else if fromState != "" {
 				return fmt.Errorf("--from-state requires --start-from")
 			}
-			executor := pipeline.NewExecutor(execCfg)
-
 			// Create progress channel
 			progress := make(chan pipeline.ProgressEvent, 100)
-			ctx := context.Background()
+			ctx := cmd.Context()
 
 			if background && !dryRun {
 				exec := pipeline.StartBackgroundPipeline(workflow, vars, execCfg)
@@ -414,16 +413,21 @@ Examples:
 			}
 
 			// Foreground mode - show progress
-			done := make(chan *pipeline.ExecutionState)
+			type executionResult struct {
+				state *pipeline.ExecutionState
+				err   error
+			}
+			done := make(chan executionResult, 1)
 			go func() {
+				var result executionResult
 				defer func() {
 					if r := recover(); r != nil {
-						close(done)
+						result.err = fmt.Errorf("pipeline execution panicked: %v", r)
 					}
+					done <- result
 				}()
 				defer close(progress)
-				state, _ := executor.Run(ctx, workflow, vars, progress)
-				done <- state
+				result.state, result.err = pipeline.RunControlledPipeline(ctx, workflow, vars, execCfg, progress)
 			}()
 
 			// Display progress
@@ -435,7 +439,7 @@ Examples:
 						continue
 					}
 					printProgressEvent(event)
-				case state := <-done:
+				case result := <-done:
 					// Drain remaining events
 					if progress != nil {
 						for event := range progress {
@@ -444,6 +448,10 @@ Examples:
 					}
 
 					fmt.Println()
+					if result.err != nil {
+						return result.err
+					}
+					state := result.state
 					if state == nil {
 						fmt.Fprintf(os.Stderr, "❌ Pipeline crashed unexpectedly\n")
 						os.Exit(1)
@@ -672,6 +680,24 @@ Examples:
 				return err
 			}
 
+			// Join the same ownership protocol as API and detached executions.
+			// Load the checkpoint only AFTER acquiring it: no stale snapshot
+			// may queue behind an owner and replay work the owner completed.
+			control, err := pipeline.AcquireRunControl(cmd.Context(), projectDir, runID)
+			if err != nil {
+				if jsonOutput {
+					code := "CONTROL_UNAVAILABLE"
+					if errors.Is(err, pipeline.ErrRunAlreadyOwned) {
+						code = "PIPELINE_RUNNING"
+					}
+					return emitJSONFailureEnvelopeWithCause(map[string]interface{}{
+						"success": false, "run_id": runID, "error": err.Error(), "error_code": code,
+					}, err)
+				}
+				return fmt.Errorf("acquire pipeline resume ownership: %w", err)
+			}
+			defer control.Close()
+
 			state, err := pipeline.LoadState(projectDir, runID)
 			if err != nil {
 				if jsonOutput {
@@ -725,7 +751,7 @@ Examples:
 				workflowFile = filepath.Join(projectDir, workflowFile)
 			}
 
-			workflow, result, err := pipeline.LoadAndValidate(workflowFile)
+			workflow, result, err := pipeline.LoadResumeWorkflow(workflowFile)
 			if err != nil {
 				return fmt.Errorf("failed to load workflow: %w", err)
 			}
@@ -764,7 +790,7 @@ Examples:
 
 			state.WorkflowFile = workflowFile
 
-			ctx := context.Background()
+			ctx := control.Context()
 
 			if jsonOutput {
 				finalState, err := executor.Resume(ctx, workflow, state, nil)

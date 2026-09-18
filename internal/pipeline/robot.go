@@ -372,10 +372,9 @@ func PrintPipelineRun(opts PipelineRunOptions) int {
 		}
 		execCfg.StartFromState = prior
 	}
-	executor := NewExecutor(execCfg)
-
 	// Create context
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	// Create progress channel
 	progress := make(chan ProgressEvent, 100)
@@ -409,7 +408,7 @@ func PrintPipelineRun(opts PipelineRunOptions) int {
 	}
 
 	// Foreground execution - run to completion
-	state, err := executor.Run(ctx, workflow, opts.Variables, progress)
+	state, err := RunControlledPipeline(ctx, workflow, opts.Variables, execCfg, progress)
 	cancel()
 	close(progress)
 
