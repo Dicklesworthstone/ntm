@@ -3,7 +3,6 @@
 package pipeline
 
 import (
-	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -13,7 +12,10 @@ import (
 	"time"
 )
 
-const commandCancelGracePeriod = 5 * time.Second
+const (
+	commandCancelGracePeriod = 5 * time.Second
+	commandPipeDrainTimeout  = time.Second
+)
 
 type commandCleanupResult struct {
 	Err        error
@@ -23,6 +25,11 @@ type commandCleanupResult struct {
 
 func configureCommandProcessGroup(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// A descendant that deliberately leaves the group can still inherit
+	// stdout/stderr. It must not hold cmd.Wait (and run ownership) forever.
+	if cmd.WaitDelay == 0 {
+		cmd.WaitDelay = commandPipeDrainTimeout
+	}
 }
 
 // cancelCommandProcessGroup is the cmd.Cancel handler used for shell
@@ -37,63 +44,6 @@ func cancelCommandProcessGroup(cmd *exec.Cmd) error {
 		return nil
 	}
 	return cmd.Process.Kill()
-}
-
-func waitCommandWithProcessGroupCleanup(ctx context.Context, cmd *exec.Cmd) commandCleanupResult {
-	done := make(chan error, 1)
-	go func() {
-		done <- cmd.Wait()
-	}()
-
-	select {
-	case err := <-done:
-		return commandCleanupResult{Err: err}
-	case <-ctx.Done():
-		// bd-8fyws: there is a tiny window between ctx.Done() firing and
-		// us sending SIGTERM where the child can exit naturally and Wait
-		// can already have reaped the PID. The kernel can then recycle
-		// that PID for an unrelated process and our `kill(-pid, SIGTERM)`
-		// would target a stranger. Check `done` non-blockingly first so
-		// we skip signaling whenever the child is already gone.
-		select {
-		case err := <-done:
-			return commandCleanupResult{Cancelled: true, Err: err}
-		default:
-		}
-		result := commandCleanupResult{
-			Cancelled:  true,
-			SignalSent: "SIGTERM",
-		}
-		_ = signalCommandProcessGroup(cmd, syscall.SIGTERM)
-
-		select {
-		case err := <-done:
-			result.Err = err
-			if result.Err == nil {
-				result.Err = ctx.Err()
-			}
-			return result
-		case <-time.After(commandCancelGracePeriod):
-			// Same race-narrowing check before SIGKILL.
-			select {
-			case err := <-done:
-				result.Err = err
-				if result.Err == nil {
-					result.Err = ctx.Err()
-				}
-				return result
-			default:
-			}
-			result.SignalSent = "SIGTERM,SIGKILL"
-			_ = signalCommandProcessGroup(cmd, syscall.SIGKILL)
-			err := <-done
-			result.Err = err
-			if result.Err == nil {
-				result.Err = ctx.Err()
-			}
-			return result
-		}
-	}
 }
 
 func signalCommandProcessGroup(cmd *exec.Cmd, sig syscall.Signal) error {
