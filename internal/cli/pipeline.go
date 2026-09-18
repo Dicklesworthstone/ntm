@@ -616,6 +616,7 @@ func newPipelineCancelCmd() *cobra.Command {
 func newPipelineResumeCmd() *cobra.Command {
 	var (
 		session        string
+		background     bool
 		mode           string
 		keepState      bool
 		maxResumeAge   string
@@ -635,6 +636,9 @@ This allows resuming from the last completed step if a pipeline is interrupted.
 Examples:
   # Resume a specific pipeline
   ntm pipeline resume run-20241230-123456-abcd --session myproject
+
+  # Continue recovery after this terminal exits
+  ntm pipeline resume run-20241230-123456-abcd --background --mode=restart-failed
 
   # Resume will pick up from the last incomplete step`,
 		Args: cobra.ExactArgs(1),
@@ -678,6 +682,32 @@ Examples:
 			projectDir, err := resolvePipelineProjectDirForSession(cmd.Context(), resolvedSession)
 			if err != nil {
 				return err
+			}
+
+			if background {
+				execution, err := pipeline.StartBackgroundResume(cmd.Context(), projectDir, runID, resolvedSession, resumeOpts)
+				if err != nil {
+					if jsonOutput {
+						code := "RESUME_START_FAILED"
+						if errors.Is(err, pipeline.ErrRunAlreadyOwned) {
+							code = "PIPELINE_RUNNING"
+						}
+						return emitJSONFailureEnvelopeWithCause(map[string]interface{}{
+							"success": false, "run_id": runID, "error": err.Error(), "error_code": code,
+						}, err)
+					}
+					return fmt.Errorf("start background pipeline resume: %w", err)
+				}
+				if jsonOutput {
+					return json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]interface{}{
+						"success": true, "run_id": execution.RunID, "status": execution.Status,
+						"workflow": execution.WorkflowID, "session": execution.Session,
+						"mode": string(resumeOpts.Mode), "background": true,
+					})
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "Pipeline %s resume started in background (%s).\n", execution.RunID, execution.Session)
+				fmt.Fprintf(cmd.OutOrStdout(), "Inspect with 'ntm pipeline status %s'; cancel with 'ntm pipeline cancel %s'.\n", execution.RunID, execution.RunID)
+				return nil
 			}
 
 			// Join the same ownership protocol as API and detached executions.
@@ -883,6 +913,7 @@ Examples:
 	}
 
 	cmd.Flags().StringVarP(&session, "session", "s", "", "Tmux session name (uses saved session if not specified)")
+	cmd.Flags().BoolVar(&background, "background", false, "Resume in a detached worker that survives this command's exit")
 	cmd.Flags().StringVar(&mode, "mode", string(pipeline.ResumeModeContinue), "Resume mode: continue, restart-failed, force-iter")
 	cmd.Flags().BoolVar(&keepState, "keep-state", true, "Preserve completed step outputs while resuming")
 	cmd.Flags().StringVar(&maxResumeAge, "max-resume-age", "", "Refuse to resume state older than this duration (for example 7d, 24h)")

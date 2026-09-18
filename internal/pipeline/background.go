@@ -38,6 +38,7 @@ type backgroundRequest struct {
 	ExpiresAt time.Time                `json:"expires_at"`
 	Config    backgroundExecutorConfig `json:"config"`
 	Variables map[string]interface{}   `json:"variables,omitempty"`
+	Resume    bool                     `json:"resume,omitempty"`
 }
 
 // List the serializable execution options explicitly: ExecutorConfig also has
@@ -68,8 +69,12 @@ func (c backgroundExecutorConfig) executorConfig() ExecutorConfig {
 }
 
 type backgroundReady struct {
-	Token string `json:"token"`
-	Error string `json:"error,omitempty"`
+	Token      string `json:"token"`
+	Error      string `json:"error,omitempty"`
+	ErrorCode  string `json:"error_code,omitempty"`
+	WorkflowID string `json:"workflow_id,omitempty"`
+	Session    string `json:"session,omitempty"`
+	Total      int    `json:"total,omitempty"`
 }
 
 // LaunchBackgroundPipeline gives REST callers the same detached worker as the
@@ -124,11 +129,7 @@ func startDetachedPipeline(workflow *Workflow, vars map[string]interface{}, cfg 
 	if err != nil {
 		return nil, err
 	}
-	frozen, snapshot, err := snapshotBackgroundWorkflow(ctx, root, workflow, cfg)
-	if err != nil {
-		return nil, err
-	}
-	dir, err := prepareBackgroundDirectory(root)
+	_, snapshot, err := snapshotBackgroundWorkflow(ctx, root, workflow, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -147,6 +148,24 @@ func startDetachedPipeline(workflow *Workflow, vars map[string]interface{}, cfg 
 			ResumeOptions: cfg.ResumeOptions,
 		}, Variables: prepared,
 	}
+	return launchBackgroundWorker(ctx, root, cfg.RunID, req, command)
+}
+
+// launchBackgroundWorker is the single detached transport for new runs and
+// recovery attempts. requestID names an immutable launch request, not necessarily
+// the run being resumed. Only the worker may read that run's checkpoint, after
+// acquiring its ownership lock; the parent never transports a stale state copy.
+func launchBackgroundWorker(ctx context.Context, root, requestID string, req backgroundRequest, command func(string, string) (*exec.Cmd, error)) (*PipelineExecution, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := validateRunID(requestID); err != nil {
+		return nil, err
+	}
+	dir, err := prepareBackgroundDirectory(root)
+	if err != nil {
+		return nil, err
+	}
 	raw, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("encode background request: %w", err)
@@ -156,11 +175,11 @@ func startDetachedPipeline(workflow *Workflow, vars map[string]interface{}, cfg 
 	}
 	// Never reuse a run's request, even after a failed launch. That would let a
 	// delayed worker execute a different request under the same identity.
-	requestPath := filepath.Join(dir, cfg.RunID+".json")
+	requestPath := filepath.Join(dir, requestID+".json")
 	if err := writeNewBackgroundFile(requestPath, raw); err != nil {
 		return nil, err
 	}
-	cmd, err := command(root, cfg.RunID)
+	cmd, err := command(root, requestID)
 	if err != nil {
 		return nil, err
 	}
@@ -170,7 +189,7 @@ func startDetachedPipeline(workflow *Workflow, vars map[string]interface{}, cfg 
 	if err := detachBackgroundProcess(cmd); err != nil {
 		return nil, err
 	}
-	logPath := filepath.Join(dir, cfg.RunID+".log")
+	logPath := filepath.Join(dir, requestID+".log")
 	logFile, err := os.OpenFile(logPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
 		return nil, fmt.Errorf("open background log: %w", err)
@@ -201,7 +220,7 @@ func startDetachedPipeline(workflow *Workflow, vars map[string]interface{}, cfg 
 			_ = cmd.Process.Kill()
 		}
 	}()
-	readyPath := filepath.Join(dir, cfg.RunID+".ready")
+	readyPath := filepath.Join(dir, requestID+".ready")
 	ticker := time.NewTicker(runControlPollInterval)
 	defer ticker.Stop()
 	for {
@@ -211,10 +230,10 @@ func startDetachedPipeline(workflow *Workflow, vars map[string]interface{}, cfg 
 		var ready backgroundReady
 		if err := readBackgroundJSON(readyPath, 4096, &ready); err == nil && ready.Token == req.Token {
 			if ready.Error != "" {
-				return nil, fmt.Errorf("background worker: %s (log: %s)", ready.Error, logPath)
+				return nil, backgroundStartupError(ready, logPath)
 			}
-			// Two-phase startup: the worker has persisted pending state and
-			// owns the run, but cannot dispatch until this token reaches it.
+			// Two-phase startup: the worker owns the run and has prepared its
+			// definition/state, but cannot dispatch until this token reaches it.
 			// Parent death/timeout before this point closes the pipe: no work.
 			if err := ctx.Err(); err != nil {
 				return nil, err
@@ -224,19 +243,32 @@ func startDetachedPipeline(workflow *Workflow, vars map[string]interface{}, cfg 
 			}
 			committed = true
 			return &PipelineExecution{
-				RunID: cfg.RunID, WorkflowID: frozen.Name, Session: cfg.Session,
+				RunID: req.Config.RunID, WorkflowID: ready.WorkflowID, Session: ready.Session,
 				Status: "pending", StartedAt: time.Now(), Steps: make(map[string]PipelineStep),
-				Progress: PipelineProgress{Total: len(frozen.Steps), Pending: len(frozen.Steps)},
+				Progress: PipelineProgress{Total: ready.Total, Pending: ready.Total},
 			}, nil
 		}
 		select {
 		case err := <-exited:
+			// The worker can publish a typed refusal and exit between polls.
+			// Read its final receipt before reducing the failure to an exit code.
+			if readBackgroundJSON(readyPath, 4096, &ready) == nil && ready.Token == req.Token && ready.Error != "" {
+				return nil, backgroundStartupError(ready, logPath)
+			}
 			return nil, fmt.Errorf("background worker exited before startup acknowledgment: %v (log: %s)", err, logPath)
 		case <-ctx.Done():
 			return nil, fmt.Errorf("background worker startup timed out; no execution authorized (log: %s): %w", logPath, ctx.Err())
 		case <-ticker.C:
 		}
 	}
+}
+
+func backgroundStartupError(ready backgroundReady, logPath string) error {
+	err := fmt.Errorf("background worker: %s (log: %s)", ready.Error, logPath)
+	if ready.ErrorCode == "PIPELINE_RUNNING" {
+		return errors.Join(ErrRunAlreadyOwned, err)
+	}
+	return err
 }
 
 // Snapshotting moves the workflow file, but the template executor resolves
@@ -389,7 +421,7 @@ func readBackgroundJSON(path string, limit int64, into interface{}) error {
 // the existing Executor and run-control protocol, not a second workflow engine.
 // The caller must supply its actual stdin so parent death before authorization
 // produces EOF. A bounded startup wait cannot strand an owner indefinitely.
-func RunBackgroundWorker(ctx context.Context, projectDir, runID string, input io.ReadCloser) (retErr error) {
+func RunBackgroundWorker(ctx context.Context, projectDir, requestID string, input io.ReadCloser) (retErr error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -397,30 +429,42 @@ func RunBackgroundWorker(ctx context.Context, projectDir, runID string, input io
 		return errors.New("background worker requires an authorization pipe")
 	}
 	defer input.Close()
-	if err := validateRunID(runID); err != nil {
+	if err := validateRunID(requestID); err != nil {
 		return err
 	}
 	root := normalizeLockRoot(projectDir)
 	dir := filepath.Join(pipelineStateDir(root), "background")
 	var req backgroundRequest
-	if err := readBackgroundJSON(filepath.Join(dir, runID+".json"), maxBackgroundRequestBytes, &req); err != nil {
+	if err := readBackgroundJSON(filepath.Join(dir, requestID+".json"), maxBackgroundRequestBytes, &req); err != nil {
 		return err
 	}
-	if req.Version != backgroundRequestVersion || len(req.Token) != 32 || req.Config.RunID != runID || req.Config.ProjectDir != root {
+	if req.Version != backgroundRequestVersion || len(req.Token) != 32 || req.Config.ProjectDir != root {
 		return errors.New("invalid background request version or identity")
+	}
+	runID := req.Config.RunID
+	if err := validateRunID(runID); err != nil {
+		return err
+	}
+	if (!req.Resume && runID != requestID) || (req.Resume && requestID != "resume-"+req.Token) {
+		return errors.New("background request does not match its launch identity")
 	}
 	if req.ExpiresAt.IsZero() || !time.Now().Before(req.ExpiresAt) {
 		return errors.New("background request expired before startup")
 	}
 	var st *ExecutionState
 	var control *RunControl
+	publishReady := !req.Resume
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			retErr = fmt.Errorf("background worker panic: %v", recovered)
 		}
-		if retErr != nil {
-			data, _ := json.Marshal(backgroundReady{Token: req.Token, Error: retErr.Error()})
-			_ = util.AtomicWriteFile(filepath.Join(dir, runID+".ready"), data, 0600)
+		if retErr != nil && publishReady {
+			ready := backgroundReady{Token: req.Token, Error: retErr.Error()}
+			if errors.Is(retErr, ErrRunAlreadyOwned) {
+				ready.ErrorCode = "PIPELINE_RUNNING"
+			}
+			data, _ := json.Marshal(ready)
+			_ = util.AtomicWriteFile(filepath.Join(dir, requestID+".ready"), data, 0600)
 		}
 		// Retire ownership only after every worker-side state/receipt write.
 		if control != nil {
@@ -428,27 +472,53 @@ func RunBackgroundWorker(ctx context.Context, projectDir, runID string, input io
 		}
 	}()
 	var err error
+	if req.Resume {
+		// A failed/abandoned resume can be retried with a NEW request, never
+		// by replaying this request after its original owner has gone away.
+		if err := writeNewBackgroundFile(filepath.Join(dir, requestID+".claimed"), []byte(req.Token)); err != nil {
+			return fmt.Errorf("claim background resume attempt: %w", err)
+		}
+		publishReady = true
+	}
 	control, err = AcquireRunControl(ctx, root, runID)
 	if err != nil {
 		return err
 	}
 	runCtx := control.Context()
-	// Only the owner can publish state. A replayed request must not rerun a
-	// completed pipeline, and cannot overwrite another attempt's checkpoint.
-	if _, err := os.Lstat(pipelineStatePath(root, runID)); !errors.Is(err, os.ErrNotExist) {
-		if err == nil {
-			return errors.New("background run already has state; use resume")
+	var workflow *Workflow
+	cfg := req.Config.executorConfig()
+	if req.Resume {
+		// No checkpoint writes before authorization, including policy failures,
+		// EOF and malformed tokens. Recovery reads only under run ownership.
+		workflow, st, cfg, err = prepareBackgroundResume(root, req)
+		if err != nil {
+			return err
 		}
-		return err
+	} else {
+		// Creation must not replace an interrupted or completed checkpoint.
+		if _, err := os.Lstat(pipelineStatePath(root, runID)); !errors.Is(err, os.ErrNotExist) {
+			if err == nil {
+				return errors.New("background run already has state; use resume")
+			}
+			return err
+		}
+		var validation ValidationResult
+		workflow, validation, err = LoadResumeWorkflow(cfg.WorkflowFile)
+		if err != nil {
+			return err
+		}
+		if !validation.Valid {
+			return fmt.Errorf("invalid background workflow: %v", validation.Errors)
+		}
+		st = &ExecutionState{
+			RunID: runID, WorkflowID: workflow.Name, WorkflowFile: cfg.WorkflowFile,
+			Session: cfg.Session, Status: StatusPending, StartedAt: time.Now(), UpdatedAt: time.Now(),
+			Steps: make(map[string]StepResult), Variables: req.Variables,
+		}
 	}
-	workflow, validation, err := LoadResumeWorkflow(req.Config.WorkflowFile)
-	if err != nil {
-		return err
-	}
-	if !validation.Valid {
-		return fmt.Errorf("invalid background workflow: %v", validation.Errors)
-	}
-	progress, finishProgress, err := openBackgroundProgress(dir, runID)
+	// New runs retain their run-ID journal. Recovery attempts get a distinct
+	// journal so repeated resumes cannot overwrite or collide with old events.
+	progress, finishProgress, err := openBackgroundProgress(dir, requestID)
 	if err != nil {
 		return err
 	}
@@ -457,23 +527,22 @@ func RunBackgroundWorker(ctx context.Context, projectDir, runID string, input io
 			slog.Warn("background pipeline progress incomplete", "run_id", runID, "error", err)
 		}
 	}()
-	st = &ExecutionState{
-		RunID: runID, WorkflowID: workflow.Name, WorkflowFile: req.Config.WorkflowFile,
-		Session: req.Config.Session, Status: StatusPending, StartedAt: time.Now(), UpdatedAt: time.Now(),
-		Steps: make(map[string]StepResult), Variables: req.Variables,
-	}
+	dispatched := false
 	// Persist failure while still holding ownership, including panics and
 	// pre-execution pipe failures. Executor.Run itself owns normal cleanup.
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			retErr = fmt.Errorf("background worker panic: %v", recovered)
 		}
-		if retErr != nil && (st.Status == StatusPending || st.Status == StatusRunning) {
+		if retErr != nil && (!req.Resume || dispatched) {
 			// A panic may interrupt Run before it returns its state. Preserve
 			// any completed steps it already checkpointed instead of replacing
 			// them with our initial pending record.
 			if latest, err := LoadState(root, runID); err == nil {
 				st = latest
+			}
+			if st.Status != StatusPending && st.Status != StatusRunning {
+				return
 			}
 			st.Status = StatusFailed
 			if runCtx.Err() != nil {
@@ -484,11 +553,13 @@ func RunBackgroundWorker(ctx context.Context, projectDir, runID string, input io
 			retErr = errors.Join(retErr, SaveState(root, st))
 		}
 	}()
-	if err := SaveState(root, st); err != nil {
-		return err
+	if !req.Resume {
+		if err := SaveState(root, st); err != nil {
+			return err
+		}
 	}
-	ready, _ := json.Marshal(backgroundReady{Token: req.Token})
-	if err := util.AtomicWriteFile(filepath.Join(dir, runID+".ready"), ready, 0600); err != nil {
+	ready, _ := json.Marshal(backgroundReady{Token: req.Token, WorkflowID: workflow.Name, Session: cfg.Session, Total: len(workflow.Steps)})
+	if err := util.AtomicWriteFile(filepath.Join(dir, requestID+".ready"), ready, 0600); err != nil {
 		return err
 	}
 	deadline := req.ExpiresAt
@@ -504,8 +575,14 @@ func RunBackgroundWorker(ctx context.Context, projectDir, runID string, input io
 	if err := runCtx.Err(); err != nil {
 		return err
 	}
-	executor := NewExecutor(req.Config.executorConfig())
-	final, err := executor.Run(runCtx, workflow, req.Variables, progress)
+	executor := NewExecutor(cfg)
+	dispatched = true
+	var final *ExecutionState
+	if req.Resume {
+		final, err = executor.Resume(runCtx, workflow, st, progress)
+	} else {
+		final, err = executor.Run(runCtx, workflow, req.Variables, progress)
+	}
 	if final != nil {
 		st = final
 	}
