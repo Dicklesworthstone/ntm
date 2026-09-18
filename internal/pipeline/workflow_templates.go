@@ -25,13 +25,16 @@ const (
 	maxSnapshotTemplateBytes = 16 << 20
 )
 
-// snapshotWorkflowTemplates replaces existing template dependencies with
+// snapshotWorkflowTemplates replaces existing template and prompt_file inputs with
 // content-addressed copies. Call it on the private parsed workflow, never the
 // caller's object. Resolve paths BEFORE relocating the workflow definition:
 // the executor's source-directory-first search order must not change.
 //
 // An absent absolute path denotes a template generated during execution and
-// stays a live dependency. Missing relative paths are ambiguous and rejected.
+// stays a live dependency. Missing relative template paths are ambiguous and
+// rejected. Plain prompt_file paths follow os.ReadFile's working-directory
+// semantics, not the template search order. Generated prompt files keep that
+// absolute location; variable-dependent paths stay explicitly live.
 // Existing managed copies are verified, never re-hashed into trusted artifacts
 // after corruption. Template bytes are not rendered during snapshotting, so
 // runtime variables, parameters, and output substitution keep their semantics.
@@ -48,13 +51,42 @@ func snapshotWorkflowTemplates(ctx context.Context, root, sourceFile string, wor
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		original := step.Template
+		path := &step.Template
+		if step.Template == "" {
+			path = &step.PromptFile
+		}
+		original := *path
 		if managedTemplateSnapshot(original) {
 			if _, err := readTemplateSnapshot(original, limit); err != nil {
 				return fmt.Errorf("snapshot step %q: %w", step.ID, err)
 			}
 		}
-		resolved := resolver.resolveTemplatePath(original)
+		var resolved string
+		if step.PromptFile != "" && step.Template == "" {
+			// Foreach materializes variable-dependent prompt_file paths at
+			// runtime. Do not read a literal placeholder or prefix an absolute
+			// path expression with the current working directory.
+			if !managedTemplateSnapshot(original) && strings.Contains(original, "${") {
+				slog.Warn("pipeline prompt_file remains a live variable-dependent input", "step_id", step.ID, "prompt_file", original)
+				return nil
+			}
+			var err error
+			resolved, err = filepath.Abs(original)
+			if err != nil {
+				return fmt.Errorf("resolve prompt_file for step %q: %w", step.ID, err)
+			}
+			if _, err := os.Stat(resolved); errors.Is(err, os.ErrNotExist) {
+				// Unlike a missing template, there is exactly one location:
+				// os.ReadFile never searches beside the workflow or project.
+				*path = resolved
+				slog.Warn("pipeline prompt_file remains a live generated input", "step_id", step.ID, "prompt_file", resolved)
+				return nil
+			} else if err != nil {
+				return fmt.Errorf("stat prompt_file for step %q: %w", step.ID, err)
+			}
+		} else {
+			resolved = resolver.resolveTemplatePath(original)
+		}
 		if resolved == "" {
 			if filepath.IsAbs(original) {
 				if _, err := os.Stat(original); errors.Is(err, os.ErrNotExist) {
@@ -73,7 +105,7 @@ func snapshotWorkflowTemplates(ctx context.Context, root, sourceFile string, wor
 			return err
 		}
 		if saved, ok := copied[canonical]; ok {
-			step.Template = saved
+			*path = saved
 			return nil
 		}
 		readLimit := limit
@@ -99,7 +131,7 @@ func snapshotWorkflowTemplates(ctx context.Context, root, sourceFile string, wor
 			return fmt.Errorf("persist template for step %q: %w", step.ID, err)
 		}
 		copied[canonical] = saved
-		step.Template = saved
+		*path = saved
 		return nil
 	})
 }
@@ -121,6 +153,9 @@ func verifyWorkflowTemplates(workflowPath string, workflow *Workflow) error {
 	remaining := int64(maxSnapshotTemplateBytes)
 	return visitWorkflowTemplates(workflow, false, func(step *Step) error {
 		path := step.Template
+		if path == "" {
+			path = step.PromptFile
+		}
 		if !managedTemplateSnapshot(path) || checked[path] {
 			return nil
 		}
@@ -147,6 +182,15 @@ func visitWorkflowTemplates(workflow *Workflow, rewriteBranches bool, visit func
 				if err := visit(step); err != nil {
 					return err
 				}
+			}
+			if step.PromptFile != "" {
+				// Keep the field kind intact: promoting prompt_file to Template
+				// would change rendering, parameter substitution, and dispatch.
+				dependency := Step{ID: step.ID, PromptFile: step.PromptFile}
+				if err := visit(&dependency); err != nil {
+					return err
+				}
+				step.PromptFile = dependency.PromptFile
 			}
 			children := [][]Step{step.Parallel.Steps, step.OnSuccess}
 			if step.Loop != nil {
