@@ -202,18 +202,40 @@ type PipelineHints struct {
 	Suggestions []string `json:"suggestions,omitempty"`
 }
 
-// StartBackgroundPipeline registers and starts a background pipeline execution.
-// The returned execution is the registry entry that status and cancel operations use.
+// StartBackgroundPipeline launches a detached CLI worker and returns only after
+// it acknowledges ownership and durable state. Launch failures carry a failed
+// status and Error; callers must not print a successful launch for those results.
+// Dry runs execute synchronously in-process and never create worker artifacts.
 func StartBackgroundPipeline(workflow *Workflow, vars map[string]interface{}, execCfg ExecutorConfig) *PipelineExecution {
 	runID := execCfg.RunID
 	if runID == "" {
 		runID = GenerateRunID()
 	}
 	execCfg.RunID = runID
+	failed := func(err error) *PipelineExecution {
+		now := time.Now()
+		exec := &PipelineExecution{RunID: runID, Session: execCfg.Session,
+			Status: "failed", Error: err.Error(), StartedAt: now, FinishedAt: &now,
+			Steps: make(map[string]PipelineStep)}
+		if workflow != nil {
+			exec.WorkflowID = workflow.Name
+		}
+		return exec
+	}
+	if workflow == nil {
+		return failed(errors.New("workflow is required"))
+	}
+	if !execCfg.DryRun {
+		exec, err := startDetachedPipeline(workflow, vars, execCfg, backgroundCommand)
+		if err != nil {
+			return failed(err)
+		}
+		return exec
+	}
 
 	executor := NewExecutor(execCfg)
 	ctx, cancel := context.WithCancel(context.Background())
-	progress := make(chan ProgressEvent, 100)
+	defer cancel()
 
 	exec := &PipelineExecution{
 		RunID:      runID,
@@ -232,13 +254,11 @@ func StartBackgroundPipeline(workflow *Workflow, vars map[string]interface{}, ex
 
 	registerPipeline(exec)
 
-	go func() {
-		defer cancel()
-		defer close(progress)
-
-		state, _ := executor.Run(ctx, workflow, vars, progress)
-		updatePipelineFromState(runID, state)
-	}()
+	state, err := executor.Run(ctx, workflow, vars, nil)
+	if state == nil {
+		return failed(fmt.Errorf("dry-run execution returned no state: %v", err))
+	}
+	updatePipelineFromState(runID, state)
 
 	return exec
 }
@@ -361,7 +381,7 @@ func PrintPipelineRun(opts PipelineRunOptions) int {
 	progress := make(chan ProgressEvent, 100)
 
 	// Start execution
-	if opts.Background {
+	if opts.Background && !opts.DryRun {
 		cancel()
 		exec := StartBackgroundPipeline(workflow, opts.Variables, execCfg)
 
@@ -369,9 +389,15 @@ func PrintPipelineRun(opts PipelineRunOptions) int {
 		output.RunID = exec.RunID
 		output.WorkflowID = workflow.Name
 		output.Session = opts.Session
-		output.Status = "running"
+		output.Status = exec.Status
 		output.DryRun = opts.DryRun
 		output.Progress = exec.Progress
+		if exec.Error != "" || exec.Status == "failed" {
+			output.RobotResponse = NewErrorResponse(errors.New(exec.Error), ErrCodeInternalError,
+				"Background startup failed; inspect the worker log before retrying")
+			outputJSON(output)
+			return 1
+		}
 		output.AgentHints = &PipelineHints{
 			Summary:   fmt.Sprintf("Started pipeline '%s' in background", workflow.Name),
 			StatusCmd: fmt.Sprintf("ntm --robot-pipeline=%s", exec.RunID),
@@ -556,7 +582,7 @@ func PrintPipelineCancel(runID string) int {
 		return 1
 	}
 
-	exec := getPipeline(runID)
+	exec := GetPipelineSnapshot(runID)
 	if exec == nil {
 		output.RobotResponse = NewErrorResponse(
 			fmt.Errorf("pipeline not found: %s", runID),
@@ -568,7 +594,7 @@ func PrintPipelineCancel(runID string) int {
 	}
 
 	// Check if already finished
-	if exec.Status != "running" {
+	if exec.Status != "running" && exec.Status != "pending" {
 		output.RobotResponse = NewRobotResponse(true)
 		output.RunID = runID
 		output.Status = exec.Status
@@ -577,20 +603,26 @@ func PrintPipelineCancel(runID string) int {
 		return 0
 	}
 
-	// Cancel the execution
-	if exec.cancelFn != nil {
-		exec.cancelFn()
+	// Detached workers and cooperating API owners live in another process.
+	// A persisted status row is not a cancel handle: require acknowledgment
+	// from its actual owner and leave final status to executor cleanup.
+	if exec.cancelFn == nil && exec.executor == nil {
+		root := persistedStateRootFn()
+		err := RequestRunCancellation(context.Background(), root, runID)
+		if err != nil {
+			output.RobotResponse = NewErrorResponse(err, "CONTROL_UNAVAILABLE",
+				"No cancellation was confirmed; inspect the run from its project directory")
+			output.RunID, output.Status = runID, exec.Status
+			outputJSON(output)
+			return 1
+		}
+		output.RobotResponse = NewRobotResponse(true)
+		output.RunID, output.Status = runID, "cancellation_requested"
+		output.Message = "Owner acknowledged cancellation; inspect status for cleanup completion"
+		outputJSON(output)
+		return 0
 	}
-	if exec.executor != nil {
-		exec.executor.Cancel()
-	}
-
-	// Update status
-	pipelineMu.Lock()
-	exec.Status = "cancelled"
-	now := time.Now()
-	exec.FinishedAt = &now
-	pipelineMu.Unlock()
+	CancelPipeline(runID)
 
 	output.RobotResponse = NewRobotResponse(true)
 	output.RunID = runID

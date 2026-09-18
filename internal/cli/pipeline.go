@@ -251,6 +251,10 @@ func newPipelineRunCmd() *cobra.Command {
 The workflow file defines steps with prompts, dependencies, conditionals,
 and agent routing. Variables can be passed via --var or --var-file.
 
+Background runs use a detached worker that survives this command's exit.
+State and private worker logs are stored under .ntm/pipelines/ in the project.
+Run status/cancel from that project directory. Dry runs never spawn a worker.
+
 Examples:
   # Basic execution
   ntm pipeline run workflow.yaml --session myproject
@@ -396,8 +400,11 @@ Examples:
 			progress := make(chan pipeline.ProgressEvent, 100)
 			ctx := context.Background()
 
-			if background {
+			if background && !dryRun {
 				exec := pipeline.StartBackgroundPipeline(workflow, vars, execCfg)
+				if exec.Error != "" || exec.Status == "failed" {
+					return fmt.Errorf("background pipeline %s failed to start: %s", exec.RunID, exec.Error)
+				}
 
 				fmt.Printf("✓ Pipeline started in background\n")
 				fmt.Printf("   Run ID: %s\n", exec.RunID)
@@ -588,9 +595,10 @@ func newPipelineCancelCmd() *cobra.Command {
 			// Human-friendly cancel
 			fmt.Printf("Cancelling pipeline: %s\n", runID)
 			exitCode := pipeline.PrintPipelineCancel(runID)
-			if exitCode == 0 {
-				output.SuccessCheck("Pipeline cancelled")
+			if exitCode != 0 {
+				return fmt.Errorf("pipeline cancellation was not confirmed")
 			}
+			output.SuccessCheck("Cancellation acknowledged; inspect status for cleanup completion")
 			return nil
 		},
 	}

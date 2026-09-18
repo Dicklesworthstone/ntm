@@ -1,0 +1,433 @@
+package pipeline
+
+import (
+	"bufio"
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/util"
+)
+
+const (
+	backgroundRequestVersion  = 1
+	maxBackgroundRequestBytes = 8 << 20
+	backgroundStartupTimeout  = 15 * time.Second
+)
+
+// BackgroundWorkerFlags supplies CLI-owned global options to the re-exec.
+// The CLI installs this once during initialization, before any launch. Keeping
+// the callback here avoids an import cycle and preserves --config/--ssh rather
+// than silently running the worker against a different tmux server.
+var BackgroundWorkerFlags func() ([]string, error)
+
+type backgroundRequest struct {
+	Version   int                      `json:"version"`
+	Token     string                   `json:"token"`
+	ExpiresAt time.Time                `json:"expires_at"`
+	Config    backgroundExecutorConfig `json:"config"`
+	Variables map[string]interface{}   `json:"variables,omitempty"`
+}
+
+// List the serializable execution options explicitly: ExecutorConfig also has
+// an in-process function hook, which must never be silently lost on re-exec.
+type backgroundExecutorConfig struct {
+	Session          string          `json:"session"`
+	ProjectDir       string          `json:"project_dir"`
+	WorkflowFile     string          `json:"workflow_file"`
+	RunID            string          `json:"run_id"`
+	DefaultTimeout   time.Duration   `json:"default_timeout"`
+	GlobalTimeout    time.Duration   `json:"global_timeout"`
+	ProgressInterval time.Duration   `json:"progress_interval"`
+	PaneLockWait     time.Duration   `json:"pane_lock_wait"`
+	Verbose          bool            `json:"verbose,omitempty"`
+	StartFromStep    string          `json:"start_from_step,omitempty"`
+	StartFromState   *ExecutionState `json:"start_from_state,omitempty"`
+	ResumeOptions    ResumeOptions   `json:"resume_options,omitempty"`
+}
+
+func (c backgroundExecutorConfig) executorConfig() ExecutorConfig {
+	return ExecutorConfig{
+		Session: c.Session, ProjectDir: c.ProjectDir, WorkflowFile: c.WorkflowFile, RunID: c.RunID,
+		DefaultTimeout: c.DefaultTimeout, GlobalTimeout: c.GlobalTimeout,
+		ProgressInterval: c.ProgressInterval, PaneLockWait: c.PaneLockWait,
+		Verbose: c.Verbose, StartFromStep: c.StartFromStep, StartFromState: c.StartFromState,
+		ResumeOptions: c.ResumeOptions,
+	}
+}
+
+type backgroundReady struct {
+	Token string `json:"token"`
+	Error string `json:"error,omitempty"`
+}
+
+// startDetachedPipeline implements the CLI background lifetime. No parent
+// registry entry is installed: it would shadow the child's durable updates.
+func startDetachedPipeline(workflow *Workflow, vars map[string]interface{}, cfg ExecutorConfig, command func(string, string) (*exec.Cmd, error)) (*PipelineExecution, error) {
+	if workflow == nil {
+		return nil, errors.New("workflow is required")
+	}
+	if strings.TrimSpace(cfg.Session) == "" {
+		return nil, errors.New("session is required")
+	}
+	if cfg.BeadQueryRunBr != nil {
+		return nil, errors.New("background execution cannot transfer an in-process BeadQueryRunBr hook")
+	}
+	if err := validateRunID(cfg.RunID); err != nil {
+		return nil, err
+	}
+	if cfg.DryRun {
+		return nil, errors.New("a dry run must not launch a background worker")
+	}
+	root := normalizeLockRoot(cfg.ProjectDir)
+	if _, err := os.Lstat(pipelineStatePath(root, cfg.RunID)); !errors.Is(err, os.ErrNotExist) {
+		if err == nil {
+			return nil, fmt.Errorf("pipeline run %q already has state; use resume", cfg.RunID)
+		}
+		return nil, err
+	}
+	prepared, err := PrepareWorkflowVariables(workflow, vars)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), backgroundStartupTimeout)
+	defer cancel()
+	frozen, snapshot, err := SnapshotWorkflow(ctx, root, workflow)
+	if err != nil {
+		return nil, err
+	}
+	dir, err := prepareBackgroundDirectory(root)
+	if err != nil {
+		return nil, err
+	}
+	var token [16]byte
+	if _, err := rand.Read(token[:]); err != nil {
+		return nil, err
+	}
+	deadline, _ := ctx.Deadline()
+	req := backgroundRequest{
+		Version: backgroundRequestVersion, Token: hex.EncodeToString(token[:]), ExpiresAt: deadline,
+		Config: backgroundExecutorConfig{
+			Session: cfg.Session, ProjectDir: root, WorkflowFile: snapshot, RunID: cfg.RunID,
+			DefaultTimeout: cfg.DefaultTimeout, GlobalTimeout: cfg.GlobalTimeout,
+			ProgressInterval: cfg.ProgressInterval, PaneLockWait: cfg.PaneLockWait,
+			Verbose: cfg.Verbose, StartFromStep: cfg.StartFromStep, StartFromState: cfg.StartFromState,
+			ResumeOptions: cfg.ResumeOptions,
+		}, Variables: prepared,
+	}
+	raw, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("encode background request: %w", err)
+	}
+	if len(raw) > maxBackgroundRequestBytes {
+		return nil, errors.New("background request exceeds 8 MiB")
+	}
+	// Never reuse a run's request, even after a failed launch. That would let a
+	// delayed worker execute a different request under the same identity.
+	requestPath := filepath.Join(dir, cfg.RunID+".json")
+	if err := writeNewBackgroundFile(requestPath, raw); err != nil {
+		return nil, err
+	}
+	cmd, err := command(root, cfg.RunID)
+	if err != nil {
+		return nil, err
+	}
+	if cmd == nil {
+		return nil, errors.New("background command builder returned nil")
+	}
+	if err := detachBackgroundProcess(cmd); err != nil {
+		return nil, err
+	}
+	logPath := filepath.Join(dir, cfg.RunID+".log")
+	logFile, err := os.OpenFile(logPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		return nil, fmt.Errorf("open background log: %w", err)
+	}
+	defer logFile.Close()
+	cmd.Stdout, cmd.Stderr = logFile, logFile
+	input, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, err
+	}
+	defer input.Close()
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("start background worker: %w", err)
+	}
+	// Reap while the caller lives. Once its CLI exits, the detached process
+	// belongs to the OS, not to this goroutine or an HTTP request context.
+	exited := make(chan error, 1)
+	go func() { exited <- cmd.Wait() }()
+	committed := false
+	defer func() {
+		if !committed {
+			// No token has been sent, so the child is forbidden to execute any
+			// workflow step. Closing stdin also aborts a worker still booting.
+			_ = input.Close()
+			_ = cmd.Process.Kill()
+		}
+	}()
+	readyPath := filepath.Join(dir, cfg.RunID+".ready")
+	ticker := time.NewTicker(runControlPollInterval)
+	defer ticker.Stop()
+	for {
+		var ready backgroundReady
+		if err := readBackgroundJSON(readyPath, 4096, &ready); err == nil && ready.Token == req.Token {
+			if ready.Error != "" {
+				return nil, fmt.Errorf("background worker: %s (log: %s)", ready.Error, logPath)
+			}
+			// Two-phase startup: the worker has persisted pending state and
+			// owns the run, but cannot dispatch until this token reaches it.
+			// Parent death/timeout before this point closes the pipe: no work.
+			if _, err := io.WriteString(input, req.Token+"\n"); err != nil {
+				return nil, fmt.Errorf("authorize background worker: %w", err)
+			}
+			committed = true
+			return &PipelineExecution{
+				RunID: cfg.RunID, WorkflowID: frozen.Name, Session: cfg.Session,
+				Status: "pending", StartedAt: time.Now(), Steps: make(map[string]PipelineStep),
+				Progress: PipelineProgress{Total: len(frozen.Steps), Pending: len(frozen.Steps)},
+			}, nil
+		}
+		select {
+		case err := <-exited:
+			return nil, fmt.Errorf("background worker exited before startup acknowledgment: %v (log: %s)", err, logPath)
+		case <-ctx.Done():
+			return nil, fmt.Errorf("background worker startup timed out; no execution authorized (log: %s): %w", logPath, ctx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
+func backgroundCommand(projectDir, runID string) (*exec.Cmd, error) {
+	binary, err := os.Executable()
+	if err != nil {
+		return nil, err
+	}
+	var flags []string
+	if BackgroundWorkerFlags != nil {
+		flags, err = BackgroundWorkerFlags()
+		if err != nil {
+			return nil, err
+		}
+	}
+	args := append(append([]string(nil), flags...), "__pipeline-worker", "--", projectDir, runID)
+	return exec.Command(binary, args...), nil
+}
+
+func prepareBackgroundDirectory(root string) (string, error) {
+	dir := filepath.Join(pipelineStateDir(root), "background")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return "", err
+	}
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return "", err
+	}
+	rel, err := filepath.Rel(root, resolved)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", errors.New("background directory escapes project")
+	}
+	return resolved, nil
+}
+
+func writeNewBackgroundFile(path string, data []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		return fmt.Errorf("create background request: %w", err)
+	}
+	defer f.Close()
+	if _, err := f.Write(data); err != nil {
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return util.SyncDirectory(filepath.Dir(path))
+}
+
+func readBackgroundJSON(path string, limit int64, into interface{}) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() || info.Size() > limit {
+		return errors.New("background record is not a bounded regular file")
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, limit+1))
+	if err != nil {
+		return err
+	}
+	if int64(len(data)) > limit {
+		return errors.New("background record exceeds size limit")
+	}
+	return json.Unmarshal(data, into)
+}
+
+// RunBackgroundWorker is invoked by the hidden CLI re-exec command. It uses
+// the existing Executor and run-control protocol, not a second workflow engine.
+// The caller must supply its actual stdin so parent death before authorization
+// produces EOF. A bounded startup wait cannot strand an owner indefinitely.
+func RunBackgroundWorker(ctx context.Context, projectDir, runID string, input io.ReadCloser) (retErr error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if input == nil {
+		return errors.New("background worker requires an authorization pipe")
+	}
+	defer input.Close()
+	if err := validateRunID(runID); err != nil {
+		return err
+	}
+	root := normalizeLockRoot(projectDir)
+	dir := filepath.Join(pipelineStateDir(root), "background")
+	var req backgroundRequest
+	if err := readBackgroundJSON(filepath.Join(dir, runID+".json"), maxBackgroundRequestBytes, &req); err != nil {
+		return err
+	}
+	if req.Version != backgroundRequestVersion || len(req.Token) != 32 || req.Config.RunID != runID || req.Config.ProjectDir != root {
+		return errors.New("invalid background request version or identity")
+	}
+	if req.ExpiresAt.IsZero() || !time.Now().Before(req.ExpiresAt) {
+		return errors.New("background request expired before startup")
+	}
+	var st *ExecutionState
+	var control *RunControl
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			retErr = fmt.Errorf("background worker panic: %v", recovered)
+		}
+		if retErr != nil {
+			data, _ := json.Marshal(backgroundReady{Token: req.Token, Error: retErr.Error()})
+			_ = util.AtomicWriteFile(filepath.Join(dir, runID+".ready"), data, 0600)
+		}
+		// Retire ownership only after every worker-side state/receipt write.
+		if control != nil {
+			control.Close()
+		}
+	}()
+	var err error
+	control, err = AcquireRunControl(ctx, root, runID)
+	if err != nil {
+		return err
+	}
+	runCtx := control.Context()
+	// Only the owner can publish state. A replayed request must not rerun a
+	// completed pipeline, and cannot overwrite another attempt's checkpoint.
+	if _, err := os.Lstat(pipelineStatePath(root, runID)); !errors.Is(err, os.ErrNotExist) {
+		if err == nil {
+			return errors.New("background run already has state; use resume")
+		}
+		return err
+	}
+	workflow, validation, err := LoadResumeWorkflow(req.Config.WorkflowFile)
+	if err != nil {
+		return err
+	}
+	if !validation.Valid {
+		return fmt.Errorf("invalid background workflow: %v", validation.Errors)
+	}
+	st = &ExecutionState{
+		RunID: runID, WorkflowID: workflow.Name, WorkflowFile: req.Config.WorkflowFile,
+		Session: req.Config.Session, Status: StatusPending, StartedAt: time.Now(), UpdatedAt: time.Now(),
+		Steps: make(map[string]StepResult), Variables: req.Variables,
+	}
+	// Persist failure while still holding ownership, including panics and
+	// pre-execution pipe failures. Executor.Run itself owns normal cleanup.
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			retErr = fmt.Errorf("background worker panic: %v", recovered)
+		}
+		if retErr != nil && (st.Status == StatusPending || st.Status == StatusRunning) {
+			// A panic may interrupt Run before it returns its state. Preserve
+			// any completed steps it already checkpointed instead of replacing
+			// them with our initial pending record.
+			if latest, err := LoadState(root, runID); err == nil {
+				st = latest
+			}
+			st.Status = StatusFailed
+			if runCtx.Err() != nil {
+				st.Status = StatusCancelled
+			}
+			st.FinishedAt, st.UpdatedAt = time.Now(), time.Now()
+			st.Errors = append(st.Errors, ExecutionError{Type: "background", Message: retErr.Error(), Timestamp: time.Now(), Fatal: true})
+			retErr = errors.Join(retErr, SaveState(root, st))
+		}
+	}()
+	if err := SaveState(root, st); err != nil {
+		return err
+	}
+	ready, _ := json.Marshal(backgroundReady{Token: req.Token})
+	if err := util.AtomicWriteFile(filepath.Join(dir, runID+".ready"), ready, 0600); err != nil {
+		return err
+	}
+	deadline := req.ExpiresAt
+	if bound := time.Now().Add(backgroundStartupTimeout); deadline.After(bound) {
+		deadline = bound
+	}
+	startupCtx, cancel := context.WithDeadline(runCtx, deadline)
+	err = awaitBackgroundAuthorization(startupCtx, input, req.Token)
+	cancel()
+	if err != nil {
+		return err
+	}
+	if err := runCtx.Err(); err != nil {
+		return err
+	}
+	executor := NewExecutor(req.Config.executorConfig())
+	final, err := executor.Run(runCtx, workflow, req.Variables, nil)
+	if final != nil {
+		st = final
+	}
+	if final == nil && err == nil {
+		err = errors.New("background executor returned no state")
+	}
+	if err == nil && st.Status != StatusCompleted {
+		err = fmt.Errorf("background pipeline ended with status %q", st.Status)
+	}
+	if final != nil {
+		err = errors.Join(err, SaveState(root, final))
+	}
+	return err
+}
+
+func awaitBackgroundAuthorization(ctx context.Context, input io.ReadCloser, token string) error {
+	var closeOnce sync.Once
+	closeInput := func() { closeOnce.Do(func() { _ = input.Close() }) }
+	defer closeInput()
+	result := make(chan error, 1)
+	go func() {
+		line, err := bufio.NewReader(io.LimitReader(input, 128)).ReadString('\n')
+		if err == nil && line != token+"\n" {
+			err = errors.New("invalid background authorization token")
+		}
+		result <- err
+	}()
+	select {
+	case err := <-result:
+		if err != nil {
+			return fmt.Errorf("background execution was not authorized: %w", err)
+		}
+		return ctx.Err()
+	case <-ctx.Done():
+		closeInput()
+		return ctx.Err()
+	}
+}
