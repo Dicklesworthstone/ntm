@@ -310,3 +310,112 @@ func TestAPIDetachedPipelineProcess(t *testing.T) {
 		os.Exit(0)
 	}
 }
+
+func TestRESTPipelineCancellationUsesProjectOwnerNotCollidingRegistry(t *testing.T) {
+	for _, hasOwner := range []bool{true, false} {
+		t.Run(fmt.Sprintf("owner=%v", hasOwner), func(t *testing.T) {
+			root, foreignRoot := t.TempDir(), t.TempDir()
+			id := pipeline.GenerateRunID()
+			state := &pipeline.ExecutionState{RunID: id, WorkflowID: "local", Session: "local", Status: pipeline.StatusRunning}
+			if err := pipeline.SaveState(root, state); err != nil {
+				t.Fatal(err)
+			}
+			before, err := os.ReadFile(filepath.Join(root, ".ntm", "pipelines", id+".json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			foreignCtx, cancelForeign := context.WithCancel(context.Background())
+			defer cancelForeign()
+			foreignConfig := pipeline.DefaultExecutorConfig("foreign")
+			foreignConfig.ProjectDir = foreignRoot
+			pipeline.RegisterPipeline(pipeline.NewTrackedExecution(id, "foreign", "foreign", 1, pipeline.NewExecutor(foreignConfig), cancelForeign))
+			t.Cleanup(func() {
+				pipeline.UpdatePipelineFromState(id, &pipeline.ExecutionState{RunID: id, Status: pipeline.StatusCompleted})
+			})
+			var owner *pipeline.RunControl
+			if hasOwner {
+				owner, err = pipeline.AcquireRunControl(context.Background(), root, id)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer owner.Close()
+			}
+			srv := &Server{projectDir: root}
+			rec := httptest.NewRecorder()
+			srv.handleCancelPipeline(rec, apiDetachedRequest(http.MethodDelete, id))
+			if foreignCtx.Err() != nil {
+				t.Fatal("cancellation selected another project's colliding registry entry")
+			}
+			if hasOwner {
+				if rec.Code != http.StatusAccepted || owner.Context().Err() == nil || !strings.Contains(rec.Body.String(), `"cancellation_requested"`) {
+					t.Fatalf("configured owner did not acknowledge cancellation: %d %s", rec.Code, rec.Body.String())
+				}
+			} else if rec.Code != http.StatusConflict {
+				t.Fatalf("unowned state cancelled a registry handle: %d %s", rec.Code, rec.Body.String())
+			}
+			after, err := os.ReadFile(filepath.Join(root, ".ntm", "pipelines", id+".json"))
+			if err != nil || !bytes.Equal(before, after) {
+				t.Fatal("controller forged terminal state before executor cleanup")
+			}
+		})
+	}
+}
+
+func TestRESTPipelineCancellationHonorsPreCanceledRequests(t *testing.T) {
+	root := t.TempDir()
+	id := pipeline.GenerateRunID()
+	if err := pipeline.SaveState(root, &pipeline.ExecutionState{RunID: id, Status: pipeline.StatusRunning}); err != nil {
+		t.Fatal(err)
+	}
+	owner, err := pipeline.AcquireRunControl(context.Background(), root, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer owner.Close()
+	registeredCtx, cancelRegistered := context.WithCancel(context.Background())
+	defer cancelRegistered()
+	pipeline.RegisterPipeline(pipeline.NewTrackedExecution(id, "local", "local", 1, pipeline.NewExecutor(pipeline.DefaultExecutorConfig("local")), cancelRegistered))
+	t.Cleanup(func() {
+		pipeline.UpdatePipelineFromState(id, &pipeline.ExecutionState{RunID: id, Status: pipeline.StatusCompleted})
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	rec := httptest.NewRecorder()
+	req := apiDetachedRequest(http.MethodPost, id)
+	// Preserve the route context while replacing its cancellation parent.
+	route := chi.NewRouteContext()
+	route.URLParams.Add("id", id)
+	req = req.WithContext(context.WithValue(ctx, chi.RouteCtxKey, route))
+	(&Server{projectDir: root}).handleCancelPipeline(rec, req)
+	if rec.Code != http.StatusConflict || owner.Context().Err() != nil || registeredCtx.Err() != nil {
+		t.Fatalf("pre-canceled request changed a live execution: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestRESTPipelineInspectionNeverFallsBackToForeignRegistry(t *testing.T) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := pipeline.GenerateRunID()
+	foreignConfig := pipeline.DefaultExecutorConfig("foreign")
+	foreignConfig.ProjectDir = t.TempDir()
+	foreignCtx, cancelForeign := context.WithCancel(context.Background())
+	defer cancelForeign()
+	pipeline.RegisterPipeline(pipeline.NewTrackedExecution(id, "foreign-secret", "foreign", 1, pipeline.NewExecutor(foreignConfig), cancelForeign))
+	t.Cleanup(func() {
+		pipeline.UpdatePipelineFromState(id, &pipeline.ExecutionState{RunID: id, Status: pipeline.StatusCompleted})
+	})
+	srv := &Server{projectDir: cwd}
+	for _, method := range []string{http.MethodGet, http.MethodDelete} {
+		rec := httptest.NewRecorder()
+		if method == http.MethodGet {
+			srv.handleGetPipeline(rec, apiDetachedRequest(method, id))
+		} else {
+			srv.handleCancelPipeline(rec, apiDetachedRequest(method, id))
+		}
+		if rec.Code != http.StatusNotFound || strings.Contains(rec.Body.String(), "foreign-secret") || foreignCtx.Err() != nil {
+			t.Fatalf("cwd-scoped request used a foreign registry entry: %d %s", rec.Code, rec.Body.String())
+		}
+	}
+}

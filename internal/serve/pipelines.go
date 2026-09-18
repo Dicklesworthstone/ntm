@@ -397,27 +397,23 @@ func (s *Server) handleCancelPipeline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Prefer the live handle, then ask a cooperating owner in another process.
-	// Persisted status alone is not proof that cancellation was delivered.
-	if !pipeline.CancelPipeline(runID) {
-		if err := pipeline.RequestRunCancellation(r.Context(), s.pipelineProjectDir(), runID); err != nil {
-			writeErrorResponse(w, http.StatusConflict, ErrCodeConflict,
-				"pipeline is not cancellable from this server: no acknowledging execution owner", map[string]interface{}{
-					"run_id": runID, "status": exec.Status, "error": err.Error(),
-				}, reqID)
-			return
-		}
-		writeSuccessResponse(w, http.StatusAccepted, map[string]interface{}{
-			"run_id": runID, "status": "cancellation_requested",
-			"message": "owning process acknowledged cancellation; poll the pipeline for its terminal state",
-		}, reqID)
+	// Run IDs are scoped to a project by the ownership protocol. The global
+	// in-process registry is keyed only by run ID: a colliding entry can belong
+	// to another project and must never select the cancellation target. Ask the
+	// configured project's owner even when it lives in this same process.
+	if err := pipeline.RequestRunCancellation(r.Context(), s.pipelineProjectDir(), runID); err != nil {
+		writeErrorResponse(w, http.StatusConflict, ErrCodeConflict,
+			"pipeline is not cancellable from this server: no acknowledging execution owner", map[string]interface{}{
+				"run_id": runID, "status": exec.Status, "error": err.Error(),
+			}, reqID)
 		return
 	}
 
-	writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
-		"run_id":  runID,
-		"status":  "cancelled",
-		"message": "pipeline cancellation requested",
+	// An acknowledged cancellation is not terminal completion. The executor
+	// still owns cleanup and is solely responsible for persisting that outcome.
+	writeSuccessResponse(w, http.StatusAccepted, map[string]interface{}{
+		"run_id": runID, "status": "cancellation_requested",
+		"message": "owning process acknowledged cancellation; poll the pipeline for its terminal state",
 	}, reqID)
 }
 
@@ -856,26 +852,9 @@ func (s *Server) resumePipelineWithResult(ctx context.Context, runID, session st
 }
 
 func (s *Server) pipelineSnapshot(runID string) *pipeline.PipelineExecution {
-	if snapshot := pipeline.LoadPipelineSnapshot(s.pipelineProjectDir(), runID); snapshot != nil {
-		return snapshot
-	}
-	// A local execution can be registered just before its first checkpoint.
-	// The global registry/cwd fallback is valid only for this same project;
-	// otherwise a colliding run ID could expose another project's execution.
-	cwd, err := os.Getwd()
-	root, rootErr := filepath.Abs(s.pipelineProjectDir())
-	if err == nil && rootErr == nil {
-		if resolved, err := filepath.EvalSymlinks(root); err == nil {
-			root = resolved
-		}
-		if resolved, err := filepath.EvalSymlinks(cwd); err == nil {
-			cwd = resolved
-		}
-		if root == cwd {
-			return pipeline.GetPipelineSnapshot(runID)
-		}
-	}
-	return nil
+	// Even when projectDir equals cwd, the process-global registry can contain
+	// runs started for other project roots. No unscoped fallback is safe here.
+	return pipeline.LoadPipelineSnapshot(s.pipelineProjectDir(), runID)
 }
 
 func pipelineControlError(err error) pipeline.RobotResponse {
