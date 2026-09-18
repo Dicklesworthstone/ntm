@@ -8,7 +8,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"log"
 	"log/slog"
 	"maps"
 	"math"
@@ -119,7 +118,8 @@ type Executor struct {
 	// persistMu serializes snapshot-and-save transactions. Multiple workers may
 	// checkpoint concurrently; without this lock an older snapshot whose fsync
 	// finishes last can overwrite a newer state revision on disk.
-	persistMu sync.Mutex
+	persistMu     sync.Mutex
+	checkpointErr error // First save failure in this attempt; protected by persistMu.
 
 	// adjudicatorHistory records the order in which rotate_adjudicator picked
 	// adjudicator panes during this run. Each entry is the chosen pane ID;
@@ -230,6 +230,7 @@ func (e *Executor) SetNotifier(n *Notifier) {
 // Returns the final execution state and any fatal error.
 // Progress events are sent to the provided channel if non-nil.
 func (e *Executor) Run(ctx context.Context, workflow *Workflow, vars map[string]interface{}, progress chan<- ProgressEvent) (*ExecutionState, error) {
+	e.resetCheckpointFailure()
 	// Create cancellable context
 	ctx, cancel := context.WithCancel(ctx)
 	e.cancelFn = cancel
@@ -288,8 +289,7 @@ func (e *Executor) Run(ctx context.Context, workflow *Workflow, vars map[string]
 			Fatal:     true,
 		})
 		e.stateMu.Unlock()
-		e.persistState()
-		return e.state, err
+		return e.state, errors.Join(err, e.persistState())
 	}
 	e.varMu.Lock()
 	e.state.Variables = preparedVars
@@ -299,7 +299,9 @@ func (e *Executor) Run(ctx context.Context, workflow *Workflow, vars map[string]
 	e.limits = workflow.Settings.Limits.EffectiveLimits()
 	e.resetPaneMetadataLoader()
 
-	e.persistState()
+	if err := e.persistState(); err != nil {
+		return e.state, err
+	}
 
 	// Build dependency graph
 	e.graph = NewDependencyGraph(workflow)
@@ -315,8 +317,7 @@ func (e *Executor) Run(ctx context.Context, workflow *Workflow, vars map[string]
 			})
 		}
 		e.stateMu.Unlock()
-		e.persistState()
-		return e.state, fmt.Errorf("workflow has dependency errors: %v", errors[0])
+		return e.state, joinCheckpointError(fmt.Errorf("workflow has dependency errors: %v", errors[0]), e.persistState())
 	}
 
 	if err := e.applyStartFrom(workflow); err != nil {
@@ -329,8 +330,7 @@ func (e *Executor) Run(ctx context.Context, workflow *Workflow, vars map[string]
 			Fatal:     true,
 		})
 		e.stateMu.Unlock()
-		e.persistState()
-		return e.state, err
+		return e.state, errors.Join(err, e.persistState())
 	}
 
 	// Emit start event
@@ -351,34 +351,7 @@ func (e *Executor) Run(ctx context.Context, workflow *Workflow, vars map[string]
 		e.validateDeclaredOutputs(workflow)
 	}
 
-	// Finalize state
-	if err != nil {
-		if ctx.Err() != nil {
-			e.finalizeCancelledWorkflow(ctx, workflow)
-		} else {
-			e.stateMu.Lock()
-			e.state.FinishedAt = time.Now()
-			e.state.UpdatedAt = time.Now()
-			e.state.Status = StatusFailed
-			pending := e.prepareNotification(workflow, NotifyFailed)
-			e.stateMu.Unlock()
-			e.deliverNotification(pending)
-		}
-		e.emitProgress("workflow_error", "", err.Error(), e.calculateProgress())
-	} else {
-		e.stateMu.Lock()
-		e.state.FinishedAt = time.Now()
-		e.state.UpdatedAt = time.Now()
-		e.state.Status = StatusCompleted
-		pending := e.prepareNotification(workflow, NotifyCompleted)
-		e.stateMu.Unlock()
-		e.deliverNotification(pending)
-		e.emitProgress("workflow_complete", "", "Workflow completed successfully", 1.0)
-	}
-
-	e.persistState()
-
-	return e.state, err
+	return e.finishExecution(ctx, workflow, err)
 }
 
 // Resume continues execution from a previously persisted state.
@@ -398,6 +371,7 @@ func (e *Executor) Resume(ctx context.Context, workflow *Workflow, prior *Execut
 		return nil, fmt.Errorf("resume state %q was captured for workflow %q but target workflow is %q", prior.RunID, prior.WorkflowID, workflow.Name)
 	}
 
+	e.resetCheckpointFailure()
 	// Create cancellable context
 	ctx, cancel := context.WithCancel(ctx)
 	e.cancelFn = cancel
@@ -475,8 +449,7 @@ func (e *Executor) Resume(ctx context.Context, workflow *Workflow, prior *Execut
 			})
 		}
 		e.stateMu.Unlock()
-		e.persistState()
-		return e.state, fmt.Errorf("workflow has dependency errors: %v", errors[0])
+		return e.state, joinCheckpointError(fmt.Errorf("workflow has dependency errors: %v", errors[0]), e.persistState())
 	}
 
 	if err := e.applyResumeOptions(workflow, e.config.ResumeOptions); err != nil {
@@ -516,7 +489,9 @@ func (e *Executor) Resume(ctx context.Context, workflow *Workflow, prior *Execut
 	e.stateMu.Unlock()
 
 	e.applyResumeState()
-	e.persistState()
+	if err := e.persistState(); err != nil {
+		return e.state, err
+	}
 
 	// Emit start event
 	e.emitProgress("workflow_start", "", workflowProgressMessage("Resuming workflow", workflow), e.calculateProgress())
@@ -524,34 +499,7 @@ func (e *Executor) Resume(ctx context.Context, workflow *Workflow, prior *Execut
 	// Execute steps in dependency order
 	err := e.executeWorkflow(ctx, workflow)
 
-	// Finalize state
-	if err != nil {
-		if ctx.Err() != nil {
-			e.finalizeCancelledWorkflow(ctx, workflow)
-		} else {
-			e.stateMu.Lock()
-			e.state.FinishedAt = time.Now()
-			e.state.UpdatedAt = time.Now()
-			e.state.Status = StatusFailed
-			pending := e.prepareNotification(workflow, NotifyFailed)
-			e.stateMu.Unlock()
-			e.deliverNotification(pending)
-		}
-		e.emitProgress("workflow_error", "", err.Error(), e.calculateProgress())
-	} else {
-		e.stateMu.Lock()
-		e.state.FinishedAt = time.Now()
-		e.state.UpdatedAt = time.Now()
-		e.state.Status = StatusCompleted
-		pending := e.prepareNotification(workflow, NotifyCompleted)
-		e.stateMu.Unlock()
-		e.deliverNotification(pending)
-		e.emitProgress("workflow_complete", "", "Workflow completed successfully", 1.0)
-	}
-
-	e.persistState()
-
-	return e.state, err
+	return e.finishExecution(ctx, workflow, err)
 }
 
 func (e *Executor) finalizeCancelledWorkflow(ctx context.Context, workflow *Workflow) {
@@ -585,12 +533,7 @@ func (e *Executor) finalizeCancelledWorkflow(ctx context.Context, workflow *Work
 	e.state.FinishedAt = finishedAt
 	e.state.UpdatedAt = finishedAt
 	e.state.CurrentStep = ""
-	// Prepared before the unlock: BuildPayloadFromState walks state.Steps and
-	// state.Errors, which the old call-after-unlock would have read racily the
-	// moment a notifier existed.
-	pending := e.prepareNotification(workflow, NotifyCancelled)
 	e.stateMu.Unlock()
-	e.deliverNotification(pending)
 }
 
 func (e *Executor) runOnCancelSteps(workflow *Workflow) {
@@ -620,7 +563,8 @@ func (e *Executor) runOnCancelSteps(workflow *Workflow) {
 		e.state.UpdatedAt = time.Now()
 		e.stateMu.Unlock()
 
-		stepCtx, stepCancel := context.WithTimeout(context.Background(), cleanupTimeout)
+		cleanupCtx := context.WithValue(context.Background(), checkpointCleanupKey{}, true)
+		stepCtx, stepCancel := context.WithTimeout(cleanupCtx, cleanupTimeout)
 		result := e.executeStep(stepCtx, &step, &cleanupWorkflow)
 		stepCancel()
 		if result.FinishedAt.IsZero() {
@@ -785,7 +729,9 @@ func (e *Executor) executeWorkflow(ctx context.Context, workflow *Workflow) erro
 		e.stateMu.Lock()
 		e.state.UpdatedAt = time.Now()
 		e.stateMu.Unlock()
-		e.persistState()
+		if err := e.persistState(); err != nil {
+			return err
+		}
 
 		// Mark skipped steps as failed ONLY if skipped due to failed dependencies.
 		// This ensures transitive dependents are also skipped (A fails -> B skipped -> C skipped).
@@ -931,9 +877,15 @@ func (e *Executor) executeStep(ctx context.Context, step *Step, workflow *Workfl
 		StartedAt: time.Now(),
 		Attempts:  0,
 	}
+	if e.stopBeforeDispatch(ctx, &result) {
+		return result
+	}
 	e.markStepInFlight(step.ID, stepKind(step), -1)
 	e.persistState()
 	defer e.clearStepInFlight(step.ID)
+	if e.stopBeforeDispatch(ctx, &result) {
+		return result
+	}
 
 	// Check for failed dependencies (in CONTINUE mode, skip steps with failed deps)
 	if e.graph.HasFailedDependency(step.ID) {
@@ -1077,6 +1029,9 @@ func (e *Executor) finalizeFailedStep(ctx context.Context, step *Step, workflow 
 	if result.Status != StatusFailed {
 		return result
 	}
+	if e.stopBeforeDispatch(ctx, &result) {
+		return result
+	}
 
 	result = e.executeOnFailureAction(step, result)
 	if result.Status == StatusSkipped {
@@ -1100,6 +1055,9 @@ func (e *Executor) executeStepOnce(ctx context.Context, step *Step, workflow *Wo
 		StepID:    step.ID,
 		Status:    StatusRunning,
 		StartedAt: time.Now(),
+	}
+	if e.stopBeforeDispatch(ctx, &result) {
+		return result
 	}
 
 	// Keep composite steps inside executeStep's retry/failure tail.
@@ -1219,6 +1177,9 @@ func (e *Executor) executeStepOnce(ctx context.Context, step *Step, workflow *Wo
 	beforeOutput, _ := e.tmuxClient().CapturePaneOutput(paneID, 2000)
 
 	// Send prompt
+	if e.stopBeforeDispatch(ctx, &result) {
+		return result
+	}
 	if err := e.tmuxClient().PasteKeys(paneID, prompt, true); err != nil {
 		result.Status = StatusFailed
 		result.Error = &StepError{
@@ -1423,7 +1384,7 @@ func (e *Executor) executeCommand(ctx context.Context, step *Step, workflow *Wor
 	}
 
 	// bd-6xlxl: run pipeline substitution over Args string values so
-	// `${vars.x}`, `${env.X}`, `${steps.s.output}`, etc. resolve before they
+	// `${vars.x}`, `${env.X}`, `${steps.X.output}`, etc. resolve before they
 	// are exported as environment variables. Without this, args:
 	// {TOKEN: "${env.API_TOKEN}"} ships the literal text instead of the
 	// runtime value.
@@ -1524,6 +1485,9 @@ func (e *Executor) executeCommand(ctx context.Context, step *Step, workflow *Wor
 		waitCondition = WaitCompletion
 	}
 
+	if e.stopBeforeDispatch(cmdCtx, &result) {
+		return result
+	}
 	if err := cmd.Start(); err != nil {
 		result.Status = StatusFailed
 		result.Error = stepRuntimeError(step, "command", "command",
@@ -1864,8 +1828,8 @@ func (e *Executor) executeTemplate(ctx context.Context, step *Step, workflow *Wo
 
 	beforeOutput, _ := e.tmuxClient().CapturePaneOutput(paneID, 2000)
 
-	if ctx.Err() != nil {
-		return e.markTemplateCancelled(&result, step, workflow, paneID, ctx.Err().Error())
+	if e.stopBeforeDispatch(ctx, &result) {
+		return result
 	}
 
 	if err := e.tmuxClient().PasteKeys(paneID, rendered, true); err != nil {
@@ -2426,6 +2390,9 @@ func (e *Executor) executeParallelStep(ctx context.Context, step *Step, workflow
 	e.markStepInFlight(step.ID, "parallel_step", -1)
 	e.persistState()
 	defer e.clearStepInFlight(step.ID)
+	if e.stopBeforeDispatch(ctx, &result) {
+		return result
+	}
 
 	// Check for unsupported nested structures
 	if len(step.Parallel.Steps) > 0 || step.Loop != nil {
@@ -2587,6 +2554,9 @@ func (e *Executor) executeParallelStep(ctx context.Context, step *Step, workflow
 		beforeOutput, _ = e.tmuxClient().CapturePaneOutput(paneID, 2000)
 
 		// Send prompt
+		if e.stopBeforeDispatch(ctx, &result) {
+			return result
+		}
 		if err := e.tmuxClient().PasteKeys(paneID, prompt, true); err != nil {
 			result.Status = StatusFailed
 			result.Error = &StepError{
@@ -2839,7 +2809,7 @@ func (e *Executor) selectAndMarkPane(ctx context.Context, step *Step, usedPanes 
 	// ${defaults.triage_pane}) into PaneSpec.Index before looking up the
 	// pane. Foreach materialization handles its own pane assignment; this
 	// path covers normal step dispatch.
-	// bd-s2edh: ctx variant so foreach max_rounds round overlays reach
+	// bd-s2edh: ctx variant so foreach max_rounds overlays reach
 	// pane.expr substitution.
 	if err := e.resolvePaneExprCtx(ctx, step); err != nil {
 		return "", "", err
@@ -3789,6 +3759,7 @@ func (e *Executor) snapshotState() *ExecutionState {
 	}
 
 	snapshot := *e.state
+	snapshot.Errors = append([]ExecutionError(nil), e.state.Errors...)
 
 	if e.state.Steps != nil {
 		snapshot.Steps = make(map[string]StepResult, len(e.state.Steps))
@@ -3848,46 +3819,6 @@ func (e *Executor) snapshotState() *ExecutionState {
 	}
 
 	return &snapshot
-}
-
-func (e *Executor) persistState() {
-	e.persistMu.Lock()
-	defer e.persistMu.Unlock()
-
-	if e.state == nil {
-		return
-	}
-
-	now := time.Now()
-	e.stateMu.Lock()
-	if e.state == nil {
-		e.stateMu.Unlock()
-		return
-	}
-	e.state.LastCheckpointAt = now
-	e.state.UpdatedAt = now
-	e.stateMu.Unlock()
-
-	projectDir := e.config.ProjectDir
-	if projectDir == "" {
-		cwd, err := os.Getwd()
-		if err != nil {
-			if e.config.Verbose {
-				log.Printf("pipeline: unable to resolve project dir for state persistence: %v", err)
-			}
-			return
-		}
-		projectDir = cwd
-	}
-
-	snapshot := e.snapshotState()
-	if snapshot == nil {
-		return
-	}
-
-	if err := SaveState(projectDir, snapshot); err != nil && e.config.Verbose {
-		log.Printf("pipeline: state persistence failed: %v", err)
-	}
 }
 
 // markFireAndForgetCancelled flags a WaitNone (fire-and-forget) command's

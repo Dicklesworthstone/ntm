@@ -1,9 +1,11 @@
 package pipeline
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,6 +21,180 @@ const (
 	// pipeline execution state files.
 	PipelineStateSchemaVersion = 1
 )
+
+// ErrCheckpointFailed means execution stopped because recovery state could not
+// be made durable. Retrying individual steps or on_error: continue must never
+// hide this failure: the last saved checkpoint may precede external effects.
+var ErrCheckpointFailed = errors.New("pipeline checkpoint persistence failed")
+
+// Only explicit, bounded on_cancel steps may dispatch after a checkpoint
+// failure. They release resources; ordinary retries and success hooks do not.
+type checkpointCleanupKey struct{}
+
+func (e *Executor) resetCheckpointFailure() {
+	e.persistMu.Lock()
+	e.checkpointErr = nil
+	e.persistMu.Unlock()
+}
+
+func (e *Executor) checkpointFailure() error {
+	e.persistMu.Lock()
+	defer e.persistMu.Unlock()
+	return e.checkpointErr
+}
+
+func joinCheckpointError(err, checkpointErr error) error {
+	if checkpointErr == nil || errors.Is(err, checkpointErr) {
+		return err
+	}
+	return errors.Join(err, checkpointErr)
+}
+
+// persistState serializes snapshot/save/publication as one transaction. The
+// timestamp in memory advances only after SaveState has synced the checkpoint.
+// Once a save fails, its error is sticky for this attempt, even if cleanup can
+// later save a FAILED checkpoint. Never silently resume dispatch after storage
+// recovers, and never write state during a dry run.
+func (e *Executor) persistState() error {
+	e.persistMu.Lock()
+	defer e.persistMu.Unlock()
+	if e.config.DryRun {
+		return nil
+	}
+	if e.checkpointErr != nil {
+		e.stateMu.Lock()
+		if e.state != nil {
+			e.state.Status = StatusFailed
+		}
+		e.stateMu.Unlock()
+	}
+	snapshot := e.snapshotState()
+	if snapshot == nil {
+		return e.checkpointErr
+	}
+	projectDir := e.config.ProjectDir
+	if projectDir == "" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return e.failCheckpointLocked(snapshot.RunID, err)
+		}
+		projectDir = cwd
+	}
+	now := time.Now()
+	snapshot.LastCheckpointAt = now
+	if snapshot.UpdatedAt.Before(now) {
+		snapshot.UpdatedAt = now
+	}
+	if err := SaveState(projectDir, snapshot); err != nil {
+		return e.failCheckpointLocked(snapshot.RunID, err)
+	}
+	e.stateMu.Lock()
+	e.state.LastCheckpointAt = now
+	// A concurrent worker may have changed state while the snapshot was saved.
+	// Do not roll its newer activity timestamp backwards.
+	if e.state.UpdatedAt.Before(now) {
+		e.state.UpdatedAt = now
+	}
+	e.stateMu.Unlock()
+	return e.checkpointErr
+}
+
+// Caller holds persistMu, never stateMu. Preserve the first cause (including
+// errors.Is/As), cancel active work, and retain one diagnostic rather than
+// flooding state/logs when parallel workers discover the same storage fault.
+func (e *Executor) failCheckpointLocked(runID string, cause error) error {
+	first := e.checkpointErr == nil
+	if first {
+		e.checkpointErr = fmt.Errorf("%w for run %q: %w", ErrCheckpointFailed, runID, cause)
+	}
+	e.stateMu.Lock()
+	if e.state != nil {
+		e.state.Status = StatusFailed
+		if first {
+			e.state.Errors = append(e.state.Errors, ExecutionError{
+				Type: "checkpoint", Message: e.checkpointErr.Error(),
+				Timestamp: time.Now(), Fatal: true,
+			})
+		}
+	}
+	e.stateMu.Unlock()
+	e.Cancel()
+	if first {
+		slog.Error("pipeline checkpoint failed; stopping execution", "run_id", runID, "error", e.checkpointErr)
+	}
+	return e.checkpointErr
+}
+
+// stopBeforeDispatch is checked after checkpointing and at the final command
+// start/pane-paste boundary. Already-dispatched work is cancelled and joined by
+// its existing owner; this is not a rollback or an exactly-once guarantee.
+func (e *Executor) stopBeforeDispatch(ctx context.Context, result *StepResult) bool {
+	cleanup, _ := ctx.Value(checkpointCleanupKey{}).(bool)
+	if !cleanup {
+		if err := e.checkpointFailure(); err != nil {
+			result.Status = StatusFailed
+			result.FinishedAt = time.Now()
+			result.Error = &StepError{Type: "checkpoint", Message: err.Error(), Timestamp: result.FinishedAt}
+			return true
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		result.Status = StatusCancelled
+		result.SkipKind = SkipKindCancelled
+		result.SkipReason = err.Error()
+		result.FinishedAt = time.Now()
+		return true
+	}
+	return false
+}
+
+// finishExecution is shared by new and resumed runs. Settle all command
+// cleanup and persist the final outcome BEFORE emitting a terminal event or
+// notification. Otherwise a WaitNone cleanup save (or the final save itself)
+// can fail after consumers have already been told the workflow succeeded.
+func (e *Executor) finishExecution(ctx context.Context, workflow *Workflow, err error) (*ExecutionState, error) {
+	err = joinCheckpointError(err, e.checkpointFailure())
+	// Observe cancellation before stopping normal fire-and-forget commands.
+	// Cancelling their lifetime on successful completion is not a cancelled run.
+	cancelled := ctx.Err() != nil
+	if cancelled {
+		if err == nil {
+			err = ctx.Err()
+		}
+		e.finalizeCancelledWorkflow(ctx, workflow)
+	}
+	e.Cancel()
+	e.backgroundCommandWG.Wait()
+	err = joinCheckpointError(err, e.checkpointFailure())
+
+	status, notification := StatusCompleted, NotifyCompleted
+	switch {
+	case e.checkpointFailure() != nil || (err != nil && !cancelled):
+		status, notification = StatusFailed, NotifyFailed
+	case cancelled:
+		status, notification = StatusCancelled, NotifyCancelled
+	}
+	e.stateMu.Lock()
+	e.state.Status = status
+	e.state.FinishedAt = time.Now()
+	e.state.UpdatedAt = e.state.FinishedAt
+	e.state.CurrentStep = ""
+	e.stateMu.Unlock()
+	if saveErr := e.persistState(); saveErr != nil {
+		err = joinCheckpointError(err, saveErr)
+		notification = NotifyFailed
+	}
+	e.stateMu.Lock()
+	pending := e.prepareNotification(workflow, notification)
+	e.stateMu.Unlock()
+	e.deliverNotification(pending)
+	if err != nil {
+		e.emitProgress("workflow_error", "", err.Error(), e.calculateProgress())
+	} else {
+		e.emitProgress("workflow_complete", "", "Workflow completed successfully", 1.0)
+	}
+	return e.state, err
+}
 
 func pipelineStateDir(projectDir string) string {
 	return filepath.Join(projectDir, ".ntm", pipelineStateDirName)
