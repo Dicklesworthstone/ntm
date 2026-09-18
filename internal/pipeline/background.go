@@ -232,7 +232,7 @@ func snapshotBackgroundWorkflow(ctx context.Context, root string, workflow *Work
 	if err := resolveBackgroundTemplates(copy, NewExecutor(cfg)); err != nil {
 		return nil, "", err
 	}
-	return SnapshotWorkflow(ctx, root, copy)
+	return SnapshotWorkflow(ctx, root, copy, cfg.WorkflowFile)
 }
 
 func resolveBackgroundTemplates(workflow *Workflow, executor *Executor) error {

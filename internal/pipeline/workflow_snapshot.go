@@ -31,7 +31,9 @@ const (
 //
 // The content hash in the filename is retained in ExecutionState.WorkflowFile.
 // Existing artifacts are verified, never silently repaired or overwritten.
-func SnapshotWorkflow(ctx context.Context, projectDir string, workflow *Workflow) (*Workflow, string, error) {
+// sourceFile optionally supplies the original workflow location for relative
+// template lookup. Omit it for inline workflows rooted at projectDir.
+func SnapshotWorkflow(ctx context.Context, projectDir string, workflow *Workflow, sourceFile ...string) (*Workflow, string, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -40,6 +42,17 @@ func SnapshotWorkflow(ctx context.Context, projectDir string, workflow *Workflow
 	}
 	if strings.TrimSpace(projectDir) == "" || workflow == nil {
 		return nil, "", errors.New("project directory and workflow are required for a resumable run")
+	}
+	if len(sourceFile) > 1 {
+		return nil, "", errors.New("at most one workflow source file is allowed")
+	}
+	root := normalizeLockRoot(projectDir)
+	source := ""
+	if len(sourceFile) == 1 && sourceFile[0] != "" {
+		source = sourceFile[0]
+		if !filepath.IsAbs(source) {
+			source = filepath.Join(root, source)
+		}
 	}
 	data, err := marshalWorkflowSnapshot(workflow)
 	if err != nil {
@@ -56,6 +69,9 @@ func SnapshotWorkflow(ctx context.Context, projectDir string, workflow *Workflow
 	}
 	if !validation.Valid {
 		return nil, "", fmt.Errorf("invalid workflow snapshot: %v", validation.Errors)
+	}
+	if err := snapshotWorkflowTemplates(ctx, root, source, frozen); err != nil {
+		return nil, "", err
 	}
 	// Persist normalized defaults, not just the request's shorthand. Reparse
 	// the final representation so the live run uses precisely its saved form.
@@ -76,7 +92,6 @@ func SnapshotWorkflow(ctx context.Context, projectDir string, workflow *Workflow
 	if err := ctx.Err(); err != nil {
 		return nil, "", err
 	}
-	root := normalizeLockRoot(projectDir)
 	dir := filepath.Join(pipelineStateDir(root), workflowSnapshotDir)
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, "", fmt.Errorf("create workflow snapshot directory: %w", err)
@@ -92,7 +107,9 @@ func SnapshotWorkflow(ctx context.Context, projectDir string, workflow *Workflow
 		return nil, "", errors.New("workflow snapshot directory escapes project")
 	}
 	digest := sha256.Sum256(data)
-	path := filepath.Join(resolved, "sha256-"+hex.EncodeToString(digest[:])+".yaml")
+	// Keep the managed namespace in the locator even if an in-project parent
+	// is symlinked. Resolving away the marker would bypass resume verification.
+	path := filepath.Join(dir, "sha256-"+hex.EncodeToString(digest[:])+".yaml")
 	existing, err := readWorkflowSnapshot(path)
 	switch {
 	case err == nil:
@@ -146,7 +163,14 @@ func LoadResumeWorkflow(path string) (*Workflow, ValidationResult, error) {
 	if !bytes.Equal(expected, actual[:]) {
 		return nil, ValidationResult{}, errors.New("workflow snapshot content hash mismatch; restore the original artifact before resuming")
 	}
-	return parseWorkflowSnapshot(data)
+	workflow, validation, err := parseWorkflowSnapshot(data)
+	if err != nil || !validation.Valid {
+		return workflow, validation, err
+	}
+	if err := verifyWorkflowTemplates(path, workflow); err != nil {
+		return nil, ValidationResult{}, err
+	}
+	return workflow, validation, nil
 }
 
 func parseWorkflowSnapshot(data []byte) (*Workflow, ValidationResult, error) {
