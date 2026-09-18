@@ -683,9 +683,8 @@ func (s *Server) runPipelineWithResult(ctx context.Context, opts pipeline.Pipeli
 	config.WorkflowFile = workflowPath
 	config.RunID = pipeline.GenerateRunID()
 
-	executor := pipeline.NewExecutor(config)
-
 	if opts.DryRun {
+		executor := pipeline.NewExecutor(config)
 		validation := executor.Validate(workflow)
 		output.RobotResponse = pipeline.NewRobotResponse(validation.Valid)
 		output.RunID = config.RunID
@@ -723,6 +722,16 @@ func (s *Server) runPipelineWithResult(ctx context.Context, opts pipeline.Pipeli
 		return output
 	}
 	runCtx = control.Context()
+	frozen, snapshotPath, err := pipeline.SnapshotWorkflow(runCtx, config.ProjectDir, workflow)
+	if err != nil {
+		control.Close()
+		cancelRun()
+		output.RobotResponse = pipeline.NewErrorResponse(err, ErrCodeInvalidWorkflow, "workflow was not started; repair snapshot storage or workflow serialization")
+		return output
+	}
+	workflow = frozen
+	config.WorkflowFile = snapshotPath
+	executor := pipeline.NewExecutor(config)
 	if !opts.Background {
 		defer control.Close()
 	}
@@ -845,8 +854,6 @@ func (s *Server) execPipelineInline(ctx context.Context, workflow *pipeline.Work
 	config.ProjectDir = s.pipelineProjectDir()
 	config.RunID = pipeline.GenerateRunID()
 
-	executor := pipeline.NewExecutor(config)
-
 	output.RobotResponse = pipeline.NewRobotResponse(true)
 	output.RunID = config.RunID
 	output.WorkflowID = workflow.Name
@@ -880,6 +887,16 @@ func (s *Server) execPipelineInline(ctx context.Context, workflow *pipeline.Work
 		return output
 	}
 	runCtx = control.Context()
+	frozen, snapshotPath, err := pipeline.SnapshotWorkflow(runCtx, config.ProjectDir, workflow)
+	if err != nil {
+		control.Close()
+		cancelRun()
+		output.RobotResponse = pipeline.NewErrorResponse(err, ErrCodeInvalidWorkflow, "workflow was not started; repair snapshot storage or workflow serialization")
+		return output
+	}
+	workflow = frozen
+	config.WorkflowFile = snapshotPath
+	executor := pipeline.NewExecutor(config)
 	if !background {
 		defer control.Close()
 	}
@@ -1008,9 +1025,27 @@ func (s *Server) resumePipelineWithResult(ctx context.Context, runID, session st
 		return output
 	}
 
-	workflow, _, err := pipeline.LoadAndValidate(state.WorkflowFile)
+	workflowPath := state.WorkflowFile
+	if !filepath.IsAbs(workflowPath) {
+		workflowPath = filepath.Join(s.pipelineProjectDir(), workflowPath)
+	}
+	// Check the resolved destination but preserve the original snapshot
+	// locator: resolving a substituted symlink must not bypass hash checking.
+	if _, err := s.resolveWorkflowPath(workflowPath); err != nil {
+		output.RobotResponse = pipeline.NewErrorResponse(err, ErrCodeInvalidWorkflow, "saved workflow must remain inside the configured project")
+		return output
+	}
+	workflow, validation, err := pipeline.LoadResumeWorkflow(workflowPath)
 	if err != nil {
 		output.RobotResponse = pipeline.NewErrorResponse(err, ErrCodeInvalidWorkflow, "failed to reload workflow")
+		return output
+	}
+	if !validation.Valid {
+		output.RobotResponse = pipeline.NewErrorResponse(fmt.Errorf("saved workflow is invalid: %v", validation.Errors), ErrCodeInvalidWorkflow, "repair the saved workflow before resuming")
+		return output
+	}
+	if state.WorkflowID != "" && state.WorkflowID != workflow.Name {
+		output.RobotResponse = pipeline.NewErrorResponse(errors.New("saved workflow identity does not match execution state"), ErrCodeInvalidWorkflow, "resume with the original workflow definition")
 		return output
 	}
 
