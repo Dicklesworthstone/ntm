@@ -157,10 +157,9 @@ func (s *Server) registerPipelineRoutes(r chi.Router) {
 	})
 }
 
-// detachedRunContext returns a context for a background pipeline run plus its
-// cancel function. The run outlives the HTTP request, so the caller hands the
-// cancel to the run goroutine (which defers it) and to the pipeline registry,
-// where CancelPipeline can reach it.
+// detachedRunContext is used by the best-effort worker progress observer, not
+// by an in-server executor. Cancelling an HTTP request or an observer must not
+// terminate an authorized detached worker; run control owns that operation.
 func detachedRunContext() (context.Context, context.CancelFunc) {
 	return context.WithCancel(context.Background())
 }
@@ -171,12 +170,13 @@ func (s *Server) handleListPipelines(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("pipelines list", "request_id", reqID)
 
-	// Snapshots merge this process's live registry with the runs persisted
-	// under .ntm/pipelines. Reading the bare registry made this endpoint
-	// permanently empty in `ntm serve`, which never registers a pipeline: it
-	// builds its own executor inline, so nothing ever reached the registry
-	// (bd-fresh-eyes-audit .26).
-	pipelines := pipeline.GetAllPipelineSnapshots()
+	// Detached workers have no server-local registry entry. Inspect the
+	// configured project's durable runs, not the server process's cwd.
+	pipelines, warnings, err := s.projectPipelineSnapshots()
+	if err != nil {
+		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, "read pipeline state", map[string]interface{}{"error": err.Error()}, reqID)
+		return
+	}
 
 	// Convert to summary format
 	summaries := make([]pipeline.PipelineSummary, 0, len(pipelines))
@@ -200,10 +200,14 @@ func (s *Server) handleListPipelines(w http.ResponseWriter, r *http.Request) {
 		summaries = []pipeline.PipelineSummary{}
 	}
 
-	writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
+	response := map[string]interface{}{
 		"pipelines": summaries,
 		"count":     len(summaries),
-	}, reqID)
+	}
+	if len(warnings) > 0 {
+		response["warnings"] = warnings
+	}
+	writeSuccessResponse(w, http.StatusOK, response, reqID)
 }
 
 // handleRunPipeline handles POST /api/v1/pipelines/run
@@ -665,15 +669,10 @@ func (s *Server) runPipelineWithResult(ctx context.Context, opts pipeline.Pipeli
 				hint = validationResult.Errors[0].Hint
 			}
 		}
-		output.RobotResponse = pipeline.NewErrorResponse(
-			errors.New(errMsg),
-			ErrCodeInvalidWorkflow,
-			hint,
-		)
+		output.RobotResponse = pipeline.NewErrorResponse(errors.New(errMsg), ErrCodeInvalidWorkflow, hint)
 		return output
 	}
 
-	// Create executor config
 	config := pipeline.DefaultExecutorConfig(opts.Session)
 	config.DryRun = opts.DryRun
 	config.ProjectDir = opts.ProjectDir
@@ -693,306 +692,70 @@ func (s *Server) runPipelineWithResult(ctx context.Context, opts pipeline.Pipeli
 		output.DryRun = true
 		return output
 	}
-
-	runCtx := ctx
-	if runCtx == nil {
-		runCtx = context.Background()
-	}
-	// Every path gets a cancel handle so vet's context-leak check is satisfied
-	// and, more importantly, so a background run can actually be stopped:
-	// without one it kept driving tmux to completion with nothing able to
-	// interrupt it (bd-fresh-eyes-audit .26). Background runs detach from the
-	// request lifecycle; synchronous runs cancel when this function returns.
-	var cancelRun context.CancelFunc
 	if opts.Background {
-		// Ownership of this cancel passes to the run goroutine below, which
-		// defers it; the handle is also stored in the registry so
-		// CancelPipeline can stop the run.
-		runCtx, cancelRun = detachedRunContext()
-	} else {
-		var cancelSync context.CancelFunc
-		runCtx, cancelSync = context.WithCancel(runCtx)
-		cancelRun = cancelSync
-		defer cancelSync()
+		return s.startBackgroundPipeline(ctx, workflow, opts.Variables, config)
 	}
-	control, err := pipeline.AcquireRunControl(runCtx, config.ProjectDir, config.RunID)
-	if err != nil {
-		cancelRun()
-		output.RobotResponse = pipelineControlError(err)
-		return output
-	}
-	runCtx = control.Context()
-	frozen, snapshotPath, err := pipeline.SnapshotWorkflow(runCtx, config.ProjectDir, workflow)
-	if err != nil {
-		control.Close()
-		cancelRun()
-		output.RobotResponse = pipeline.NewErrorResponse(err, ErrCodeInvalidWorkflow, "workflow was not started; repair snapshot storage or workflow serialization")
-		return output
-	}
-	workflow = frozen
-	config.WorkflowFile = snapshotPath
-	executor := pipeline.NewExecutor(config)
-	if !opts.Background {
-		defer control.Close()
-	}
-
-	// Start execution
-	output.RobotResponse = pipeline.NewRobotResponse(true)
-	output.RunID = config.RunID
-	output.WorkflowID = workflow.Name
-	output.Session = opts.Session
-	output.Status = "started"
-	output.Progress = pipeline.PipelineProgress{
-		Pending: len(workflow.Steps),
-		Total:   len(workflow.Steps),
-		Percent: 0,
-	}
-
-	progress := make(chan pipeline.ProgressEvent, 256)
-	done := make(chan struct{})
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				slog.Error("pipelines: panic recovered", "panic", r)
-			}
-		}()
-		for {
-			select {
-			case ev := <-progress:
-				eventType, ok := pipelineEventTypeFromProgressType(ev.Type)
-				if !ok {
-					continue
-				}
-				payload := map[string]interface{}{
-					"run_id":      config.RunID,
-					"workflow_id": workflow.Name,
-					"session":     opts.Session,
-					"step_id":     ev.StepID,
-					"message":     ev.Message,
-					"progress":    ev.Progress,
-					"timestamp":   ev.Timestamp.UTC().Format(time.RFC3339Nano),
-				}
-				if ev.Type == "workflow_error" {
-					payload["success"] = false
-				}
-				if ev.Type == "workflow_complete" {
-					payload["success"] = true
-				}
-				s.publishPipelineEvent(opts.Session, eventType, payload)
-			case <-done:
-				for {
-					select {
-					case ev := <-progress:
-						eventType, ok := pipelineEventTypeFromProgressType(ev.Type)
-						if !ok {
-							continue
-						}
-						payload := map[string]interface{}{
-							"run_id":      config.RunID,
-							"workflow_id": workflow.Name,
-							"session":     opts.Session,
-							"step_id":     ev.StepID,
-							"message":     ev.Message,
-							"progress":    ev.Progress,
-							"timestamp":   ev.Timestamp.UTC().Format(time.RFC3339Nano),
-						}
-						if ev.Type == "workflow_error" {
-							payload["success"] = false
-						}
-						if ev.Type == "workflow_complete" {
-							payload["success"] = true
-						}
-						s.publishPipelineEvent(opts.Session, eventType, payload)
-					default:
-						return
-					}
-				}
-			}
-		}
-	}()
-
-	// Foreground executions include Jobs and need live inspection/cancellation
-	// too. Registration occurs only after acquiring exclusive run ownership.
-	pipeline.RegisterPipeline(pipeline.NewTrackedExecution(
-		config.RunID, workflow.Name, opts.Session, len(workflow.Steps), executor, cancelRun,
-	))
-	if opts.Background {
-		go func() {
-			defer func() {
-				if r := recover(); r != nil {
-					slog.Error("pipelines: panic recovered", "panic", r)
-				}
-			}()
-			defer cancelRun()
-			defer control.Close()
-			defer close(done)
-			state, err := executor.Run(runCtx, workflow, opts.Variables, progress)
-			finishPipelineExecution(config.RunID, state, err)
-		}()
-		output.Status = "running"
-	} else {
-		// Synchronous execution
-		defer close(done)
-		state, err := executor.Run(runCtx, workflow, opts.Variables, progress)
-		finishPipelineExecution(config.RunID, state, err)
-		if err != nil {
-			output.RobotResponse = pipeline.NewErrorResponse(err, ErrCodePipelineFailed, "pipeline execution failed")
-			return output
-		}
-		output.RunID = state.RunID
-		output.Status = string(state.Status)
-	}
-
-	return output
+	return s.executeOwnedPipeline(ctx, workflow, opts.Variables, config)
 }
 
-// execPipelineInline executes an inline workflow definition
+// execPipelineInline executes an inline workflow definition.
 func (s *Server) execPipelineInline(ctx context.Context, workflow *pipeline.Workflow, session string, variables map[string]interface{}, background bool) pipeline.PipelineRunOutput {
-	output := pipeline.PipelineRunOutput{}
-
 	config := pipeline.DefaultExecutorConfig(session)
 	config.ProjectDir = s.pipelineProjectDir()
 	config.RunID = pipeline.GenerateRunID()
-
-	output.RobotResponse = pipeline.NewRobotResponse(true)
-	output.RunID = config.RunID
-	output.WorkflowID = workflow.Name
-	output.Session = session
-	output.Status = "started"
-	output.Progress = pipeline.PipelineProgress{
-		Pending: len(workflow.Steps),
-		Total:   len(workflow.Steps),
-		Percent: 0,
-	}
-
-	runCtx := ctx
-	if runCtx == nil {
-		runCtx = context.Background()
-	}
-	// Detached from the request when background, but always cancellable —
-	// see runPipelineWithResult.
-	var cancelRun context.CancelFunc
 	if background {
-		runCtx, cancelRun = detachedRunContext()
-	} else {
-		var cancelSync context.CancelFunc
-		runCtx, cancelSync = context.WithCancel(runCtx)
-		cancelRun = cancelSync
-		defer cancelSync()
+		return s.startBackgroundPipeline(ctx, workflow, variables, config)
 	}
+	return s.executeOwnedPipeline(ctx, workflow, variables, config)
+}
+
+// executeOwnedPipeline is the synchronous REST/Jobs path. Background requests
+// never enter this executor: the authorized worker runs the canonical engine in
+// its own process. Jobs continue to own their cancellation and timeout contexts.
+func (s *Server) executeOwnedPipeline(ctx context.Context, workflow *pipeline.Workflow, variables map[string]interface{}, config pipeline.ExecutorConfig) pipeline.PipelineRunOutput {
+	output := pipeline.PipelineRunOutput{RunID: config.RunID, Session: config.Session}
+	if workflow == nil {
+		output.RobotResponse = pipeline.NewErrorResponse(errors.New("workflow is required"), ErrCodeInvalidWorkflow, "provide a workflow")
+		return output
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	runCtx, cancelRun := context.WithCancel(ctx)
+	defer cancelRun()
 	control, err := pipeline.AcquireRunControl(runCtx, config.ProjectDir, config.RunID)
 	if err != nil {
-		cancelRun()
 		output.RobotResponse = pipelineControlError(err)
 		return output
 	}
+	defer control.Close()
 	runCtx = control.Context()
-	frozen, snapshotPath, err := pipeline.SnapshotWorkflow(runCtx, config.ProjectDir, workflow)
+	frozen, snapshotPath, err := pipeline.SnapshotWorkflow(runCtx, config.ProjectDir, workflow, config.WorkflowFile)
 	if err != nil {
-		control.Close()
-		cancelRun()
 		output.RobotResponse = pipeline.NewErrorResponse(err, ErrCodeInvalidWorkflow, "workflow was not started; repair snapshot storage or workflow serialization")
 		return output
 	}
 	workflow = frozen
 	config.WorkflowFile = snapshotPath
 	executor := pipeline.NewExecutor(config)
-	if !background {
-		defer control.Close()
+	output.RobotResponse = pipeline.NewRobotResponse(true)
+	output.WorkflowID = workflow.Name
+	output.Status = "started"
+	output.Progress = pipeline.PipelineProgress{Pending: len(workflow.Steps), Total: len(workflow.Steps)}
+	progress, finishProgress := s.consumePipelineProgress(config.RunID, workflow.Name, config.Session)
+	defer finishProgress()
+	pipeline.RegisterPipeline(pipeline.NewTrackedExecution(config.RunID, workflow.Name, config.Session, len(workflow.Steps), executor, cancelRun))
+	state, err := executor.Run(runCtx, workflow, variables, progress)
+	finishPipelineExecution(config.RunID, state, err)
+	if state == nil && err == nil {
+		err = errors.New("pipeline returned no execution state")
 	}
-
-	progress := make(chan pipeline.ProgressEvent, 256)
-	done := make(chan struct{})
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				slog.Error("pipelines: panic recovered", "panic", r)
-			}
-		}()
-		for {
-			select {
-			case ev := <-progress:
-				eventType, ok := pipelineEventTypeFromProgressType(ev.Type)
-				if !ok {
-					continue
-				}
-				payload := map[string]interface{}{
-					"run_id":      config.RunID,
-					"workflow_id": workflow.Name,
-					"session":     session,
-					"step_id":     ev.StepID,
-					"message":     ev.Message,
-					"progress":    ev.Progress,
-					"timestamp":   ev.Timestamp.UTC().Format(time.RFC3339Nano),
-				}
-				if ev.Type == "workflow_error" {
-					payload["success"] = false
-				}
-				if ev.Type == "workflow_complete" {
-					payload["success"] = true
-				}
-				s.publishPipelineEvent(session, eventType, payload)
-			case <-done:
-				for {
-					select {
-					case ev := <-progress:
-						eventType, ok := pipelineEventTypeFromProgressType(ev.Type)
-						if !ok {
-							continue
-						}
-						payload := map[string]interface{}{
-							"run_id":      config.RunID,
-							"workflow_id": workflow.Name,
-							"session":     session,
-							"step_id":     ev.StepID,
-							"message":     ev.Message,
-							"progress":    ev.Progress,
-							"timestamp":   ev.Timestamp.UTC().Format(time.RFC3339Nano),
-						}
-						if ev.Type == "workflow_error" {
-							payload["success"] = false
-						}
-						if ev.Type == "workflow_complete" {
-							payload["success"] = true
-						}
-						s.publishPipelineEvent(session, eventType, payload)
-					default:
-						return
-					}
-				}
-			}
-		}
-	}()
-
-	pipeline.RegisterPipeline(pipeline.NewTrackedExecution(
-		config.RunID, workflow.Name, session, len(workflow.Steps), executor, cancelRun,
-	))
-	if background {
-		go func() {
-			defer func() {
-				if r := recover(); r != nil {
-					slog.Error("pipelines: panic recovered", "panic", r)
-				}
-			}()
-			defer cancelRun()
-			defer control.Close()
-			defer close(done)
-			state, err := executor.Run(runCtx, workflow, variables, progress)
-			finishPipelineExecution(config.RunID, state, err)
-		}()
-		output.Status = "running"
-	} else {
-		defer close(done)
-		state, err := executor.Run(runCtx, workflow, variables, progress)
-		finishPipelineExecution(config.RunID, state, err)
-		if err != nil {
-			output.RobotResponse = pipeline.NewErrorResponse(err, ErrCodePipelineFailed, "pipeline execution failed")
-			return output
-		}
-		output.RunID = state.RunID
-		output.Status = string(state.Status)
+	if err != nil {
+		output.RobotResponse = pipeline.NewErrorResponse(err, ErrCodePipelineFailed, "pipeline execution failed")
+		return output
 	}
-
+	output.RunID = state.RunID
+	output.Status = string(state.Status)
 	return output
 }
 
@@ -1071,73 +834,13 @@ func (s *Server) resumePipelineWithResult(ctx context.Context, runID, session st
 	pipeline.RegisterPipeline(pipeline.NewTrackedExecution(
 		runID, workflow.Name, session, len(workflow.Steps), executor, cancelRun,
 	))
-
-	progress := make(chan pipeline.ProgressEvent, 256)
-	done := make(chan struct{})
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				slog.Error("pipelines: panic recovered", "panic", r)
-			}
-		}()
-		for {
-			select {
-			case ev := <-progress:
-				eventType, ok := pipelineEventTypeFromProgressType(ev.Type)
-				if !ok {
-					continue
-				}
-				payload := map[string]interface{}{
-					"run_id":      config.RunID,
-					"workflow_id": workflow.Name,
-					"session":     session,
-					"step_id":     ev.StepID,
-					"message":     ev.Message,
-					"progress":    ev.Progress,
-					"timestamp":   ev.Timestamp.UTC().Format(time.RFC3339Nano),
-				}
-				if ev.Type == "workflow_error" {
-					payload["success"] = false
-				}
-				if ev.Type == "workflow_complete" {
-					payload["success"] = true
-				}
-				s.publishPipelineEvent(session, eventType, payload)
-			case <-done:
-				for {
-					select {
-					case ev := <-progress:
-						eventType, ok := pipelineEventTypeFromProgressType(ev.Type)
-						if !ok {
-							continue
-						}
-						payload := map[string]interface{}{
-							"run_id":      config.RunID,
-							"workflow_id": workflow.Name,
-							"session":     session,
-							"step_id":     ev.StepID,
-							"message":     ev.Message,
-							"progress":    ev.Progress,
-							"timestamp":   ev.Timestamp.UTC().Format(time.RFC3339Nano),
-						}
-						if ev.Type == "workflow_error" {
-							payload["success"] = false
-						}
-						if ev.Type == "workflow_complete" {
-							payload["success"] = true
-						}
-						s.publishPipelineEvent(session, eventType, payload)
-					default:
-						return
-					}
-				}
-			}
-		}
-	}()
-
-	defer close(done)
+	progress, finishProgress := s.consumePipelineProgress(config.RunID, workflow.Name, session)
+	defer finishProgress()
 	newState, err := executor.Resume(runCtx, workflow, state, progress)
 	finishPipelineExecution(runID, newState, err)
+	if newState == nil && err == nil {
+		err = errors.New("pipeline returned no execution state")
+	}
 	if err != nil {
 		output.RobotResponse = pipeline.NewErrorResponse(err, ErrCodePipelineFailed, "pipeline resume failed")
 		return output
@@ -1153,12 +856,26 @@ func (s *Server) resumePipelineWithResult(ctx context.Context, runID, session st
 }
 
 func (s *Server) pipelineSnapshot(runID string) *pipeline.PipelineExecution {
-	if snapshot := pipeline.GetPipelineSnapshot(runID); snapshot != nil {
+	if snapshot := pipeline.LoadPipelineSnapshot(s.pipelineProjectDir(), runID); snapshot != nil {
 		return snapshot
 	}
-	// A server can be configured for a project other than its own cwd. Remote
-	// control and inspection must find that project's persisted executions.
-	return pipeline.LoadPipelineSnapshot(s.pipelineProjectDir(), runID)
+	// A local execution can be registered just before its first checkpoint.
+	// The global registry/cwd fallback is valid only for this same project;
+	// otherwise a colliding run ID could expose another project's execution.
+	cwd, err := os.Getwd()
+	root, rootErr := filepath.Abs(s.pipelineProjectDir())
+	if err == nil && rootErr == nil {
+		if resolved, err := filepath.EvalSymlinks(root); err == nil {
+			root = resolved
+		}
+		if resolved, err := filepath.EvalSymlinks(cwd); err == nil {
+			cwd = resolved
+		}
+		if root == cwd {
+			return pipeline.GetPipelineSnapshot(runID)
+		}
+	}
+	return nil
 }
 
 func pipelineControlError(err error) pipeline.RobotResponse {

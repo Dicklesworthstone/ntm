@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -71,9 +72,32 @@ type backgroundReady struct {
 	Error string `json:"error,omitempty"`
 }
 
-// startDetachedPipeline implements the CLI background lifetime. No parent
-// registry entry is installed: it would shadow the child's durable updates.
-func startDetachedPipeline(workflow *Workflow, vars map[string]interface{}, cfg ExecutorConfig, command func(string, string) (*exec.Cmd, error)) (*PipelineExecution, error) {
+// LaunchBackgroundPipeline gives REST callers the same detached worker as the
+// CLI. The context owns startup only; after authorization the worker owns its
+// lifetime and is cancelled through run control, not an HTTP connection.
+func LaunchBackgroundPipeline(ctx context.Context, workflow *Workflow, vars map[string]interface{}, cfg ExecutorConfig) (*PipelineExecution, error) {
+	if cfg.RunID == "" {
+		cfg.RunID = GenerateRunID()
+	}
+	return startDetachedPipeline(workflow, vars, cfg, backgroundCommand, ctx)
+}
+
+// startDetachedPipeline implements the CLI and REST background lifetime. No
+// parent registry entry is installed: it would shadow the child's durable updates.
+// The optional context bounds startup; legacy CLI callers use the same deadline.
+func startDetachedPipeline(workflow *Workflow, vars map[string]interface{}, cfg ExecutorConfig, command func(string, string) (*exec.Cmd, error), startup ...context.Context) (*PipelineExecution, error) {
+	if len(startup) > 1 {
+		return nil, errors.New("at most one startup context is allowed")
+	}
+	parent := context.Background()
+	if len(startup) == 1 && startup[0] != nil {
+		parent = startup[0]
+	}
+	ctx, cancel := context.WithTimeout(parent, backgroundStartupTimeout)
+	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if workflow == nil {
 		return nil, errors.New("workflow is required")
 	}
@@ -100,8 +124,6 @@ func startDetachedPipeline(workflow *Workflow, vars map[string]interface{}, cfg 
 	if err != nil {
 		return nil, err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), backgroundStartupTimeout)
-	defer cancel()
 	frozen, snapshot, err := snapshotBackgroundWorkflow(ctx, root, workflow, cfg)
 	if err != nil {
 		return nil, err
@@ -160,6 +182,9 @@ func startDetachedPipeline(workflow *Workflow, vars map[string]interface{}, cfg 
 		return nil, err
 	}
 	defer input.Close()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start background worker: %w", err)
 	}
@@ -180,6 +205,9 @@ func startDetachedPipeline(workflow *Workflow, vars map[string]interface{}, cfg 
 	ticker := time.NewTicker(runControlPollInterval)
 	defer ticker.Stop()
 	for {
+		if err := ctx.Err(); err != nil {
+			return nil, fmt.Errorf("background startup stopped before authorization: %w", err)
+		}
 		var ready backgroundReady
 		if err := readBackgroundJSON(readyPath, 4096, &ready); err == nil && ready.Token == req.Token {
 			if ready.Error != "" {
@@ -188,6 +216,9 @@ func startDetachedPipeline(workflow *Workflow, vars map[string]interface{}, cfg 
 			// Two-phase startup: the worker has persisted pending state and
 			// owns the run, but cannot dispatch until this token reaches it.
 			// Parent death/timeout before this point closes the pipe: no work.
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			if _, err := io.WriteString(input, req.Token+"\n"); err != nil {
 				return nil, fmt.Errorf("authorize background worker: %w", err)
 			}
@@ -417,6 +448,15 @@ func RunBackgroundWorker(ctx context.Context, projectDir, runID string, input io
 	if !validation.Valid {
 		return fmt.Errorf("invalid background workflow: %v", validation.Errors)
 	}
+	progress, finishProgress, err := openBackgroundProgress(dir, runID)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := finishProgress(); err != nil {
+			slog.Warn("background pipeline progress incomplete", "run_id", runID, "error", err)
+		}
+	}()
 	st = &ExecutionState{
 		RunID: runID, WorkflowID: workflow.Name, WorkflowFile: req.Config.WorkflowFile,
 		Session: req.Config.Session, Status: StatusPending, StartedAt: time.Now(), UpdatedAt: time.Now(),
@@ -465,7 +505,7 @@ func RunBackgroundWorker(ctx context.Context, projectDir, runID string, input io
 		return err
 	}
 	executor := NewExecutor(req.Config.executorConfig())
-	final, err := executor.Run(runCtx, workflow, req.Variables, nil)
+	final, err := executor.Run(runCtx, workflow, req.Variables, progress)
 	if final != nil {
 		st = final
 	}
