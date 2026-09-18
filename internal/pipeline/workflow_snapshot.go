@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/Dicklesworthstone/ntm/internal/util"
 )
 
@@ -21,8 +23,8 @@ const (
 	maxWorkflowSnapshotBytes = 16 << 20
 )
 
-// SnapshotWorkflow freezes the workflow before the first step can run. JSON
-// is also valid YAML: the artifact is parsed by the SAME strict YAML parser
+// SnapshotWorkflow freezes the workflow before the first step can run. The
+// artifact uses the schema's YAML marshalers and the SAME strict YAML parser
 // used for ordinary workflow files, so CLI resume can read it too. Execute
 // the returned copy, not the caller's mutable object. File-backed workflows
 // are frozen as well; editing their source later cannot change a saved run.
@@ -39,7 +41,7 @@ func SnapshotWorkflow(ctx context.Context, projectDir string, workflow *Workflow
 	if strings.TrimSpace(projectDir) == "" || workflow == nil {
 		return nil, "", errors.New("project directory and workflow are required for a resumable run")
 	}
-	data, err := json.Marshal(workflow)
+	data, err := marshalWorkflowSnapshot(workflow)
 	if err != nil {
 		return nil, "", fmt.Errorf("encode workflow snapshot: %w", err)
 	}
@@ -57,7 +59,7 @@ func SnapshotWorkflow(ctx context.Context, projectDir string, workflow *Workflow
 	}
 	// Persist normalized defaults, not just the request's shorthand. Reparse
 	// the final representation so the live run uses precisely its saved form.
-	data, err = json.Marshal(frozen)
+	data, err = marshalWorkflowSnapshot(frozen)
 	if err != nil {
 		return nil, "", fmt.Errorf("encode normalized workflow snapshot: %w", err)
 	}
@@ -107,6 +109,20 @@ func SnapshotWorkflow(ctx context.Context, projectDir string, workflow *Workflow
 		return nil, "", fmt.Errorf("verify existing workflow snapshot: %w", err)
 	}
 	return frozen, path, nil
+}
+
+func marshalWorkflowSnapshot(workflow *Workflow) ([]byte, error) {
+	// Reject cycles, unsupported values and excessive input before YAML's
+	// recursive encoder. This is validation only: JSON's struct representation
+	// is NOT the YAML wire shape for PaneSpec, IntOrExpr, ParallelSpec, etc.
+	encoded, err := json.Marshal(workflow)
+	if err != nil {
+		return nil, err
+	}
+	if len(encoded) > maxWorkflowSnapshotBytes {
+		return nil, errors.New("workflow snapshot exceeds 16 MiB")
+	}
+	return yaml.Marshal(workflow)
 }
 
 // LoadResumeWorkflow verifies a managed snapshot before parsing it. Ordinary
