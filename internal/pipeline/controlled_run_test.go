@@ -79,8 +79,11 @@ func TestRobotForegroundPipelineHasExternalCancellation(t *testing.T) {
 		t.Fatal("foreground executor ignored cancellation")
 	}
 	st := awaitBackgroundState(t, root, id, StatusCancelled)
-	if st.WorkflowFile != filepath.Join(root, "workflow.yaml") {
-		t.Fatal("foreground run changed its original workflow location")
+	if filepath.Base(filepath.Dir(st.WorkflowFile)) != workflowSnapshotDir {
+		t.Fatal("foreground recovery still depends on a mutable workflow file")
+	}
+	if _, validation, err := LoadResumeWorkflow(st.WorkflowFile); err != nil || !validation.Valid {
+		t.Fatalf("cancelled foreground run has no verified recovery definition: %v %+v", err, validation)
 	}
 	if _, err := os.Stat(filepath.Join(root, "marker")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("cancelled foreground run completed blocked work")

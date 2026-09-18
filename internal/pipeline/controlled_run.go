@@ -10,8 +10,10 @@ import (
 
 // RunControlledPipeline is the foreground CLI/robot entry to the existing
 // Executor. Like REST and detached workers, it owns a run until execution and
-// cleanup return. It retains the caller's workflow location and relative asset
-// semantics. Dry runs bypass ownership because they must not write .ntm.
+// cleanup return. It freezes the definition and existing template dependencies
+// before dispatch, preserving source-directory-first template lookup. Recovery
+// therefore never depends on the caller's subsequently edited workflow file.
+// Dry runs bypass ownership and snapshots because they must not write .ntm.
 func RunControlledPipeline(ctx context.Context, workflow *Workflow, vars map[string]interface{}, cfg ExecutorConfig, progress chan<- ProgressEvent) (*ExecutionState, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -45,5 +47,13 @@ func RunControlledPipeline(ctx context.Context, workflow *Workflow, vars map[str
 		}
 		return nil, err
 	}
-	return NewExecutor(cfg).Run(control.Context(), workflow, vars, progress)
+	frozen, path, err := SnapshotWorkflow(control.Context(), cfg.ProjectDir, workflow, cfg.WorkflowFile)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot foreground pipeline: %w", err)
+	}
+	cfg.WorkflowFile = path
+	if err := control.Context().Err(); err != nil {
+		return nil, err
+	}
+	return NewExecutor(cfg).Run(control.Context(), frozen, vars, progress)
 }
