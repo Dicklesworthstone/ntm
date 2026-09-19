@@ -21,7 +21,10 @@ import (
 // the round overlay from withRoundOverrides instead of falling back to
 // the (post-bd-2ubxp.20 unpopulated) state.Variables["round"].
 func (e *Executor) resolveBranch(ctx context.Context, step *Step) (string, error) {
-	expr := e.substituteVariablesCtx(ctx, step.Branch)
+	expr, err := e.substituteVariablesStrictCtx(ctx, step.Branch)
+	if err != nil {
+		return "", fmt.Errorf("branch predicate substitution failed: %w", err)
+	}
 
 	if strings.HasPrefix(expr, "$(") && strings.HasSuffix(expr, ")") {
 		shellCmd := expr[2 : len(expr)-1]
@@ -117,6 +120,9 @@ func (e *Executor) executeBranch(ctx context.Context, step *Step, workflow *Work
 		StepID:    step.ID,
 		Status:    StatusRunning,
 		StartedAt: time.Now(),
+	}
+	if e.stopBeforeDispatch(ctx, &result) {
+		return result
 	}
 
 	slog.Info("branch step starting",
@@ -243,34 +249,41 @@ func (e *Executor) executeBranch(ctx context.Context, step *Step, workflow *Work
 		// keys this branch owns. Nested constructs namespace their own children
 		// under this ID, so a prefix match covers them too.
 		bodyStepIDs = append(bodyStepIDs, bs.ID)
-		sr := e.executeStepOnce(ctx, &bs, workflow)
-
-		// bd-afwly: branch body steps now honor the on_failure runtime
-		// action / recovery contract used by top-level executeStep, so
-		// fallback_to_ntm_inbox / suppress_failure work the same inside
-		// a branch as outside it.
-		if sr.Status == StatusFailed {
-			sr = e.executeOnFailureAction(&bs, sr)
-			if sr.Status == StatusFailed {
-				sr = e.executeOnFailureRecovery(ctx, &bs, workflow, sr)
-			}
-		}
+		// Use the canonical lifecycle, not just its one-shot dispatcher.
+		// This enforces when, retries, in-flight checkpoints and cancellation,
+		// and fires success/failure hooks exactly once at their normal boundary.
+		sr := e.executeStep(ctx, &bs, workflow)
 		outputs = append(outputs, sr.Output)
 
 		e.stateMu.Lock()
 		e.state.Steps[bs.ID] = sr
+		e.state.UpdatedAt = time.Now()
 		e.stateMu.Unlock()
 
-		// bd-2g48y: branch body steps reach this seam via executeStepOnce
-		// (not the executeStep retry loop), so the OnSuccess hook at
-		// executor.go:847 was never fired for an on_success chain attached
-		// to a branch body step. Fire it here on the same Completed
-		// contract (matches command-step parents and bd-h8lc4's top-level
-		// Parallel/Loop fix). bs.ID is already namespaced via
-		// scopedChildStepID above so OnSuccess child results land at
-		// <branch.ID>_<branchKey>_<chosenChild>_on_success_<...>.
+		// Branch-local outputs must be available to the next body step before
+		// it evaluates its condition or substitutes its command. Foreach owns
+		// its aggregate output_var shape; do not replace it with a summary.
 		if sr.Status == StatusCompleted {
-			e.runOnSuccessSteps(ctx, &bs, workflow)
+			e.varMu.Lock()
+			StoreStepOutput(e.state, bs.ID, sr.Output, sr.ParsedData)
+			if bs.OutputVar != "" && !stepOwnsForeachOutputVar(&bs) {
+				e.state.Variables[bs.OutputVar] = sr.Output
+				delete(e.state.Variables, bs.OutputVar+"_parsed")
+				if sr.ParsedData != nil {
+					e.state.Variables[bs.OutputVar+"_parsed"] = sr.ParsedData
+				}
+			}
+			e.varMu.Unlock()
+		}
+		// executeStep has retired this child's in-flight marker. Persist the
+		// settled result before another child (or any of its side effects) can
+		// begin. A storage fault is fatal even under on_error: continue.
+		if err := e.persistState(); err != nil {
+			result.Output = strings.Join(outputs, "\n")
+			result.Status = StatusFailed
+			result.FinishedAt = time.Now()
+			result.Error = &StepError{Type: "checkpoint", Message: err.Error(), Timestamp: result.FinishedAt}
+			return result
 		}
 
 		if sr.Status == StatusFailed || sr.Status == StatusCancelled {

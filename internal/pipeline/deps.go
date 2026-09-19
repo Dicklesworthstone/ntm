@@ -391,6 +391,11 @@ func (g *DependencyGraph) IsFailed(id string) bool {
 
 // HasFailedDependency returns true if any of the step's dependencies failed
 func (g *DependencyGraph) HasFailedDependency(id string) bool {
+	// Direct composite execution may have no outer scheduling graph. Its
+	// child lifecycle still enforces conditions, retries and checkpoints.
+	if g == nil {
+		return false
+	}
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 	for _, dep := range g.edges[id] {

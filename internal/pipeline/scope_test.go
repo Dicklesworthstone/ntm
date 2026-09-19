@@ -107,7 +107,12 @@ func TestRestoreBranchVariablesLeavesConcurrentSiblingWrites(t *testing.T) {
 
 	// The branch body writes its own keys and mutates a pre-existing one.
 	bodyStepIDs := []string{"route_child_1", "route_child_2"}
-	ownedOutputVars := branchBodyOutputVars([]Step{{ID: "emit", OutputVar: "branch_local"}})
+	// A real branch can shadow a named value only by declaring that output.
+	// Unrelated pre-existing keys may belong to concurrently running siblings.
+	ownedOutputVars := branchBodyOutputVars([]Step{
+		{ID: "emit", OutputVar: "branch_local"},
+		{ID: "shadow", OutputVar: "global"},
+	})
 	state.Variables["global"] = "branch-local"
 	state.Variables["branch_local"] = "body output"
 	state.Variables["steps.route_child_1.output"] = "body step output"

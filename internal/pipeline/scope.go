@@ -92,7 +92,7 @@ func captureAllVariables(vars map[string]interface{}) map[string]interface{} {
 // every output_var and steps.<id>.* key a sibling iteration wrote while the
 // branch body ran. This instead:
 //
-//   - reverts keys that existed in the snapshot to their snapshot value, and
+//   - reverts branch-owned keys in the snapshot to their previous value, and
 //   - removes keys added since the snapshot only when the branch owns them,
 //     meaning a steps.* key namespaced under one of the executed body step IDs,
 //     or an output_var declared by the body.
@@ -104,15 +104,13 @@ func restoreBranchVariables(state *ExecutionState, snapshot map[string]interface
 	if state == nil {
 		return
 	}
-	if state.Variables == nil {
-		if snapshot != nil {
-			state.Variables = captureAllVariables(snapshot)
-		}
-		return
-	}
-
 	for key, prev := range snapshot {
-		state.Variables[key] = prev
+		if branchOwnsVariable(key, bodyStepIDs, ownedOutputVars) {
+			if state.Variables == nil {
+				state.Variables = make(map[string]interface{})
+			}
+			state.Variables[key] = prev
+		}
 	}
 
 	for key := range state.Variables {
@@ -153,6 +151,7 @@ func branchBodyOutputVars(steps []Step) map[string]struct{} {
 	for _, step := range steps {
 		if name := strings.TrimSpace(step.OutputVar); name != "" {
 			owned[name] = struct{}{}
+			owned[name+"_parsed"] = struct{}{}
 		}
 	}
 	return owned
