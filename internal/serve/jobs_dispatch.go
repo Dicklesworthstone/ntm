@@ -8,6 +8,7 @@
 package serve
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -144,12 +145,16 @@ func (s *JobStore) retainCancelledResult(id string, result map[string]interface{
 
 // decodeJobParams round-trips the untyped params map into a typed request
 // struct so job params share field names with the synchronous REST handlers.
+// Unknown fields must fail closed: silently dropping a misspelled dry_run or
+// reservation flag can turn an intended preview into an unguarded mutation.
 func decodeJobParams(params map[string]interface{}, into interface{}) error {
 	raw, err := json.Marshal(params)
 	if err != nil {
 		return fmt.Errorf("encode job params: %w", err)
 	}
-	if err := json.Unmarshal(raw, into); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(into); err != nil {
 		return fmt.Errorf("decode job params: %w", err)
 	}
 	return nil
@@ -222,10 +227,31 @@ func executePipelineJob(ctx context.Context, opts pipeline.PipelineRunOptions, r
 	return result, fmt.Errorf("pipeline run returned status %q instead of a terminal successful outcome", out.Status)
 }
 
-// jobSwarmSpawnParams mirrors AgentSpawnRequest plus the target session.
+// jobSwarmSpawnParams extends the basic REST spawn request with the robot
+// engine's launch, preview, and work-assignment controls. All behavior stays
+// in the shared spawn service, including model and reservation policy checks.
 type jobSwarmSpawnParams struct {
 	Session string `json:"session"`
 	AgentSpawnRequest
+	WorkingDir          string   `json:"working_dir,omitempty"`
+	DryRun              bool     `json:"dry_run,omitempty"`
+	Safety              bool     `json:"safety,omitempty"`
+	NoUserPane          bool     `json:"no_user_pane,omitempty"`
+	ReadyTimeout        string   `json:"ready_timeout,omitempty"` // Positive Go duration, e.g. "45s".
+	CCModel             string   `json:"cc_model,omitempty"`
+	CCReasoningEffort   string   `json:"cc_reasoning_effort,omitempty"`
+	CodModel            string   `json:"cod_model,omitempty"`
+	CodReasoningEffort  string   `json:"cod_reasoning_effort,omitempty"`
+	GmiModel            string   `json:"gmi_model,omitempty"`
+	GrokModel           string   `json:"grok_model,omitempty"`
+	GrokReasoningEffort string   `json:"grok_reasoning_effort,omitempty"`
+	OmpModel            string   `json:"omp_model,omitempty"`
+	OmpReasoningEffort  string   `json:"omp_reasoning_effort,omitempty"`
+	AssignWork          bool     `json:"assign_work,omitempty"`
+	AssignStrategy      string   `json:"assign_strategy,omitempty"`
+	CustomNames         []string `json:"custom_names,omitempty"`
+	RequireReservation  bool     `json:"require_reservation,omitempty"`
+	ReservationPaths    []string `json:"reservation_paths,omitempty"`
 }
 
 // jobSwarmSpawn spawns agents through the same seam as
@@ -247,21 +273,51 @@ func (s *Server) jobSwarmSpawn(ctx context.Context, params map[string]interface{
 	if !req.hasAgentCountOrPreset() {
 		return nil, errors.New(agentSpawnCountRequiredMessage)
 	}
+	var readyTimeout time.Duration
+	if req.ReadyTimeout != "" {
+		var err error
+		readyTimeout, err = time.ParseDuration(req.ReadyTimeout)
+		if err != nil || readyTimeout <= 0 {
+			return nil, fmt.Errorf("ready_timeout must be a positive duration such as 45s")
+		}
+	}
+	if !req.AssignWork && (req.AssignStrategy != "" || req.RequireReservation || len(req.ReservationPaths) > 0) {
+		return nil, fmt.Errorf("assign_strategy, require_reservation, and reservation_paths require assign_work=true")
+	}
 	if s.spawnAgents == nil {
 		return nil, fmt.Errorf("agent spawn service unavailable")
 	}
 
 	result, err := s.spawnAgents(ctx, robot.SpawnOptions{
-		Session:   req.Session,
-		Label:     req.Label,
-		CCCount:   req.CCCount,
-		CodCount:  req.CodCount,
-		GmiCount:  req.GmiCount,
-		AgyCount:  req.AgyCount,
-		GrokCount: req.GrokCount,
-		OmpCount:  req.OmpCount,
-		Preset:    req.Preset,
-		WaitReady: req.WaitReady,
+		Session:             req.Session,
+		Label:               req.Label,
+		CCCount:             req.CCCount,
+		CodCount:            req.CodCount,
+		GmiCount:            req.GmiCount,
+		AgyCount:            req.AgyCount,
+		GrokCount:           req.GrokCount,
+		OmpCount:            req.OmpCount,
+		Preset:              req.Preset,
+		WaitReady:           req.WaitReady,
+		WorkingDir:          req.WorkingDir,
+		DryRun:              req.DryRun,
+		Safety:              req.Safety,
+		NoUserPane:          req.NoUserPane,
+		ReadyTimeout:        readyTimeout,
+		CCModel:             req.CCModel,
+		CCReasoningEffort:   req.CCReasoningEffort,
+		CodModel:            req.CodModel,
+		CodReasoningEffort:  req.CodReasoningEffort,
+		GmiModel:            req.GmiModel,
+		GrokModel:           req.GrokModel,
+		GrokReasoningEffort: req.GrokReasoningEffort,
+		OmpModel:            req.OmpModel,
+		OmpReasoningEffort:  req.OmpReasoningEffort,
+		AssignWork:          req.AssignWork,
+		AssignStrategy:      req.AssignStrategy,
+		CustomNames:         req.CustomNames,
+		RequireReservation:  req.RequireReservation,
+		ReservationPaths:    req.ReservationPaths,
 	})
 	// A spawn can create its session and some agents before failing or being
 	// cancelled. Serialize that output BEFORE inspecting either error channel

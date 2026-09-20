@@ -3,8 +3,10 @@ package serve
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -42,6 +44,126 @@ func TestSwarmJobFailureRecoveryHTTP(t *testing.T) {
 			}
 			assertSpawnJobRecovery(t, final)
 		})
+	}
+}
+
+func TestSwarmJobLaunchControlsHTTP(t *testing.T) {
+	srv := NewHermeticServer("test")
+	defer srv.Stop()
+	options := make(chan robot.SpawnOptions, 1)
+	srv.spawnAgents = func(_ context.Context, opts robot.SpawnOptions) (*robot.SpawnOutput, error) {
+		options <- opts
+		out := &robot.SpawnOutput{Session: opts.Session, WorkingDir: opts.WorkingDir, DryRun: opts.DryRun}
+		out.Success = true
+		return out, nil
+	}
+	env := postJob(t, srv, `{"type":"swarm_spawn","params":{
+		"session":"controlled","label":"lane","cc_count":2,"cod_count":1,"omp_count":1,
+		"working_dir":"/chosen/project","dry_run":true,"safety":true,"no_user_pane":true,
+		"wait_ready":true,"ready_timeout":"45s",
+		"cc_model":"opus","cc_reasoning_effort":"high",
+		"cod_model":"codex","cod_reasoning_effort":"high","gmi_model":"pro",
+		"grok_model":"custom-grok","grok_reasoning_effort":"high",
+		"omp_model":"custom-omp","omp_reasoning_effort":"high",
+		"assign_work":true,"assign_strategy":"top-n","custom_names":["worker-one"],
+		"require_reservation":true,"reservation_paths":["internal/**"]
+	}}`)
+	final := pollJobTerminal(t, srv, env.Job.ID)
+	if final.Job.Status != string(JobStatusCompleted) || final.Job.Result["dry_run"] != true || final.Job.Result["working_dir"] != "/chosen/project" {
+		t.Fatalf("launch controls lost on jobs surface: %+v", final.Job)
+	}
+	want := robot.SpawnOptions{
+		Session: "controlled", Label: "lane", CCCount: 2, CodCount: 1, OmpCount: 1,
+		WorkingDir: "/chosen/project", DryRun: true, Safety: true, NoUserPane: true,
+		WaitReady: true, ReadyTimeout: 45 * time.Second,
+		CCModel: "opus", CCReasoningEffort: "high", CodModel: "codex", CodReasoningEffort: "high",
+		GmiModel: "pro", GrokModel: "custom-grok", GrokReasoningEffort: "high",
+		OmpModel: "custom-omp", OmpReasoningEffort: "high",
+		AssignWork: true, AssignStrategy: "top-n", CustomNames: []string{"worker-one"},
+		RequireReservation: true, ReservationPaths: []string{"internal/**"},
+	}
+	select {
+	case got := <-options:
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("spawn service received %+v, want %+v", got, want)
+		}
+	default:
+		t.Fatal("job completed without reaching the spawn service")
+	}
+}
+
+func TestSwarmJobLaunchControlsRejectInvalidInputHTTP(t *testing.T) {
+	for _, extra := range []string{
+		`"ready_timeout":"0s"`, `"ready_timeout":"-1s"`, `"ready_timeout":"invalid"`,
+		`"ready_timeout":"999999999999999999999h"`, `"ready_timeout":10`,
+		`"dry_rnu":true`, `"dry_run":"true"`,
+		`"require_reservation":true`, `"reservation_paths":["internal/**"]`,
+		`"assign_strategy":"top-n"`,
+	} {
+		t.Run(extra, func(t *testing.T) {
+			srv := NewHermeticServer("test")
+			defer srv.Stop()
+			called := make(chan struct{}, 1)
+			srv.spawnAgents = func(context.Context, robot.SpawnOptions) (*robot.SpawnOutput, error) {
+				called <- struct{}{}
+				return nil, errors.New("unexpected spawn")
+			}
+			env := postJob(t, srv, fmt.Sprintf(`{"type":"swarm_spawn","params":{"session":"guarded","cc_count":1,%s}}`, extra))
+			final := pollJobTerminal(t, srv, env.Job.ID)
+			if final.Job.Status != string(JobStatusFailed) || final.Job.Error == "" {
+				t.Fatalf("invalid launch accepted: %+v", final.Job)
+			}
+			select {
+			case <-called:
+				t.Fatal("invalid controls reached the mutating spawn service")
+			default:
+			}
+		})
+	}
+}
+
+func TestJobUnknownParametersFailClosedHTTP(t *testing.T) {
+	srv := NewHermeticServer("test")
+	defer srv.Stop()
+	for _, kind := range implementedJobTypes {
+		t.Run(kind, func(t *testing.T) {
+			env := postJob(t, srv, fmt.Sprintf(`{"type":%q,"params":{"dry_rnu":true}}`, kind))
+			final := pollJobTerminal(t, srv, env.Job.ID)
+			if final.Job.Status != string(JobStatusFailed) || !strings.Contains(final.Job.Error, `unknown field "dry_rnu"`) {
+				t.Fatalf("job type %s ignored unknown safety parameter: %+v", kind, final.Job)
+			}
+		})
+	}
+}
+
+func TestDecodeJobParamsStrict(t *testing.T) {
+	type request struct {
+		DryRun    bool                   `json:"dry_run"`
+		Variables map[string]interface{} `json:"variables"`
+		Nested    struct {
+			Force bool `json:"force"`
+		} `json:"nested"`
+	}
+	for _, params := range []map[string]interface{}{
+		{"dry_rnu": true},
+		{"dry_run": "true"},
+		{"nested": map[string]interface{}{"froce": true}},
+		{"variables": map[string]interface{}{"non_json": make(chan int)}},
+	} {
+		var req request
+		if err := decodeJobParams(params, &req); err == nil {
+			t.Fatalf("invalid params accepted: %#v", params)
+		}
+	}
+	var req request
+	if err := decodeJobParams(map[string]interface{}{
+		"dry_run":   true,
+		"variables": map[string]interface{}{"custom_user_key": "keep", "nested": map[string]interface{}{"arbitrary": true}},
+	}, &req); err != nil {
+		t.Fatalf("strict decoding rejected free-form workflow variables: %v", err)
+	}
+	if !req.DryRun || req.Variables["custom_user_key"] != "keep" {
+		t.Fatalf("strict decoding lost declared fields: %+v", req)
 	}
 }
 
