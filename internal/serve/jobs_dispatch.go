@@ -52,11 +52,14 @@ const jobExecutionTimeout = 2 * time.Hour
 // dispatchJob runs one allow-listed job to its real terminal state. It is the
 // production replacement for the deleted time.Sleep simulator.
 func (s *Server) dispatchJob(jobID string, req CreateJobRequest) {
-	defer func() {
-		if r := recover(); r != nil {
-			s.jobStore.Update(jobID, JobStatusFailed, 0, nil, fmt.Sprintf("panic: %v", r))
-		}
-	}()
+	// Take the worker fence before looking at the row. Shutdown cancels even
+	// not-yet-started rows; a late dispatcher then exits without any writes.
+	release, err := s.fenceJobWorker(jobID)
+	if err != nil {
+		s.jobStore.Update(jobID, JobStatusFailed, 0, nil, fmt.Sprintf("job journal unavailable: %v", err))
+		return
+	}
+	defer release()
 
 	ctx, cancel := context.WithTimeout(context.Background(), jobExecutionTimeout)
 	defer cancel()
@@ -73,6 +76,22 @@ func (s *Server) dispatchJob(jobID string, req CreateJobRequest) {
 	if job == nil || job.Status == JobStatusCancelled || job.Status == JobStatusCompleted || job.Status == JobStatusFailed {
 		return
 	}
+	// This defer runs before ClearCancel and before releasing the worker
+	// fence, so shutdown/recovery cannot race the final checkpoint.
+	defer func() {
+		if r := recover(); r != nil {
+			s.jobStore.Update(jobID, JobStatusFailed, 0, nil, fmt.Sprintf("panic: %v", r))
+		}
+		if err := s.persistJobHistory(jobID); err != nil {
+			s.recordJobJournalError(jobID, err)
+		}
+	}()
+	// No pipeline, agent spawn, or checkpoint restore may act without a
+	// recoverable pre-dispatch record when a durable state store is supplied.
+	if err := s.persistJobHistory(jobID); err != nil {
+		s.jobStore.Update(jobID, JobStatusFailed, 0, nil, fmt.Sprintf("checkpoint job before execution: %v", err))
+		return
+	}
 	if err := ctx.Err(); err != nil {
 		s.jobStore.Update(jobID, JobStatusCancelled, 0, nil, err.Error())
 		return
@@ -81,7 +100,6 @@ func (s *Server) dispatchJob(jobID string, req CreateJobRequest) {
 
 	var (
 		result map[string]interface{}
-		err    error
 	)
 	switch req.Type {
 	case JobTypePipelineRun:

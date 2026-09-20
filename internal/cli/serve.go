@@ -243,7 +243,21 @@ func runServe(opts serveOptions) error {
 	}
 	// Create server with default event bus
 	srv := serve.New(serverCfg)
-	defer srv.Stop()
+	closeJobs, err := srv.RestoreJobHistory()
+	if err != nil {
+		srv.Stop()
+		return fmt.Errorf("restore asynchronous job history: %w", err)
+	}
+	defer func() {
+		// Stop accepting requests before draining job workers and relinquishing
+		// journal ownership. The state store outlives this cleanup.
+		srv.Stop()
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer shutdownCancel()
+		if err := closeJobs(shutdownCtx); err != nil {
+			slog.Warn("serve: asynchronous jobs still draining", "error", err)
+		}
+	}()
 
 	// Setup signal handling for graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
