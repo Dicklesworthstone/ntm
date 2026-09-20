@@ -104,15 +104,42 @@ func (s *Server) dispatchJob(jobID string, req CreateJobRequest) {
 	if ctx.Err() != nil {
 		err = errors.Join(err, ctx.Err())
 	}
+	status := JobStatusCompleted
+	progress := float64(100)
+	message := ""
 	if err != nil {
-		status := JobStatusFailed
+		status = JobStatusFailed
+		progress = 0
+		message = err.Error()
 		if errors.Is(err, context.Canceled) {
 			status = JobStatusCancelled
 		}
-		s.jobStore.Update(jobID, status, 0, result, err.Error())
+	}
+	s.jobStore.Update(jobID, status, progress, result, message)
+	// Cancellation may have won the terminal-state race, making Update a
+	// no-op. The worker's recovery evidence is still valuable: cancelling a
+	// request does not undo sessions, panes, or pipeline runs already created.
+	// Run this AFTER Update so cancellation between the two cannot lose it.
+	s.jobStore.retainCancelledResult(jobID, result)
+}
+
+// retainCancelledResult fills in recovery evidence when a worker finishes
+// after DELETE has already made its job terminal. It never changes the
+// cancellation status/reason, replaces an existing result, or revives an
+// evicted job. Callers can keep polling GET /jobs/{id} for these late results;
+// a cancelled status by itself does not mean the operation rolled back.
+func (s *JobStore) retainCancelledResult(id string, result map[string]interface{}) {
+	if len(result) == 0 {
 		return
 	}
-	s.jobStore.Update(jobID, JobStatusCompleted, 100, result, "")
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	job := s.jobs[id]
+	if job == nil || job.Status != JobStatusCancelled || job.Result != nil {
+		return
+	}
+	job.Result = result
+	job.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 }
 
 // decodeJobParams round-trips the untyped params map into a typed request
@@ -236,16 +263,31 @@ func (s *Server) jobSwarmSpawn(ctx context.Context, params map[string]interface{
 		Preset:    req.Preset,
 		WaitReady: req.WaitReady,
 	})
+	// A spawn can create its session and some agents before failing or being
+	// cancelled. Serialize that output BEFORE inspecting either error channel
+	// so operators retain pane identities and recovery instructions on failure.
+	var payload map[string]interface{}
+	if result != nil {
+		var encodeErr error
+		payload, encodeErr = toJSONMap(result)
+		if encodeErr != nil {
+			return nil, errors.Join(err, fmt.Errorf("encode agent spawn result: %w", encodeErr))
+		}
+	}
 	if err != nil {
-		return nil, err
+		return payload, err
 	}
 	if result == nil {
 		return nil, fmt.Errorf("agent spawn returned no result")
 	}
 	if !result.Success {
-		return nil, fmt.Errorf("agent spawn failed [%s]: %s", result.ErrorCode, result.Error)
+		message := result.Error
+		if message == "" {
+			message = result.RobotResponse.Error
+		}
+		return payload, fmt.Errorf("agent spawn failed [%s]: %s", result.ErrorCode, message)
 	}
-	return toJSONMap(result)
+	return payload, nil
 }
 
 // jobCheckpointRestoreParams identifies the source artifact separately from
