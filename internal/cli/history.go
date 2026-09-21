@@ -270,15 +270,16 @@ func runHistoryList(ctx context.Context, limit, offset int, session, since, unti
 
 	var entries []history.HistoryEntry
 
-	// Get entries based on filters
-	if resolvedSession != "" {
-		entries, err = history.ReadForSession(resolvedSession)
-	} else if search != "" {
+	// Search must run even when a session is selected, both to apply the
+	// query and to reject invalid regular expressions consistently.
+	if search != "" {
 		if searchRegex {
 			entries, err = history.SearchRegex(search)
 		} else {
 			entries, err = history.Search(search)
 		}
+	} else if resolvedSession != "" {
+		entries, err = history.ReadForSession(resolvedSession)
 	} else {
 		// Read everything so pagination totals and has_more are honest
 		// (ReadRecent(limit) would make page 0 lie about older entries).
@@ -286,6 +287,18 @@ func runHistoryList(ctx context.Context, limit, offset int, session, since, unti
 	}
 	if err != nil {
 		return err
+	}
+
+	// When both are supplied, intersect the search results with the session
+	// before time/source filtering and pagination compute their totals.
+	if search != "" && resolvedSession != "" {
+		var filtered []history.HistoryEntry
+		for _, e := range entries {
+			if e.Session == resolvedSession {
+				filtered = append(filtered, e)
+			}
+		}
+		entries = filtered
 	}
 
 	// Apply time filters
@@ -493,7 +506,8 @@ func runHistoryShow(idOrIndex string) error {
 			}
 		}
 	} else {
-		entry, matchCount := historyEntryByIDPrefix(entries, idOrIndex)
+		var matchCount int
+		entry, matchCount = historyEntryByIDPrefix(entries, idOrIndex)
 		if matchCount > 1 {
 			return fmt.Errorf("entry prefix %q is ambiguous (%d matches)", idOrIndex, matchCount)
 		}
