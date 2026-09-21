@@ -1,1 +1,4 @@
-{ "name": "release-canary-fake-deliverable", "private": true }
+{
+  "name": "release-canary-fake-deliverable",
+  "private": true
+}
