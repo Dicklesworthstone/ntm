@@ -1,8 +1,12 @@
 package history
 
 import (
+	"bytes"
 	"crypto/rand"
+	"encoding/json"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -251,4 +255,210 @@ func encryptionEnabledForTest() bool {
 	encryptMu.RLock()
 	defer encryptMu.RUnlock()
 	return encryptionEnabled
+}
+
+// Pruning may replace the only copy of a prompt. Unlike best-effort reads,
+// it must not turn an unavailable key or damaged row into permanent data loss.
+func TestHistoryPrunePreservesUnreadableRecords(t *testing.T) {
+	for _, operation := range []string{"count", "time"} {
+		for _, failure := range []string{"malformed", "missing_key", "wrong_key"} {
+			t.Run(operation+"/"+failure, func(t *testing.T) {
+				t.Setenv("XDG_DATA_HOME", t.TempDir())
+				SetEncryptionConfig(nil)
+				t.Cleanup(func() { SetEncryptionConfig(nil) })
+				opaque := []byte(`{"prompt":"sensitive-broken-prompt"`)
+				if failure != "malformed" {
+					var err error
+					opaque, err = encryption.EncryptLine(testKey(t), []byte(`{"id":"hidden","prompt":"private"}`))
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				if failure == "wrong_key" {
+					key := testKey(t)
+					SetEncryptionConfig(&EncryptionConfig{Enabled: true, EncryptKey: key, DecryptKeys: [][]byte{key}})
+				}
+				original := []byte("{\"id\":\"old\",\"ts\":\"2026-01-01T00:00:00Z\"}\n" + string(opaque) +
+					"\n{\"id\":\"recent\",\"ts\":\"2026-01-03T00:00:00Z\"}\n")
+				writeHistoryFixture(t, original)
+				// Browsing remains best-effort; mutation must not use this partial view.
+				if entries, err := ReadAll(); err != nil || len(entries) != 2 {
+					t.Fatalf("ReadAll() = %d entries, %v; want two readable entries", len(entries), err)
+				}
+				var removed int
+				var err error
+				if operation == "count" {
+					removed, err = Prune(1)
+				} else {
+					removed, err = PruneByTime(time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC))
+				}
+				if err == nil || removed != 0 {
+					t.Errorf("prune = (%d, %v), want (0, error)", removed, err)
+				} else if !strings.Contains(err.Error(), "line 2") || strings.Contains(err.Error(), "sensitive-broken-prompt") {
+					t.Errorf("error must locate the unreadable row without exposing its payload: %v", err)
+				}
+				assertHistoryUnchanged(t, original)
+			})
+		}
+	}
+}
+
+func TestHistoryPruneAbortsOnEncryptionFailure(t *testing.T) {
+	for _, operation := range []string{"count", "time"} {
+		t.Run(operation, func(t *testing.T) {
+			t.Setenv("XDG_DATA_HOME", t.TempDir())
+			SetEncryptionConfig(&EncryptionConfig{Enabled: true, EncryptKey: []byte("invalid-key")})
+			t.Cleanup(func() { SetEncryptionConfig(nil) })
+			original := []byte("{\"id\":\"old\",\"ts\":\"2026-01-01T00:00:00Z\"}\n" +
+				"{\"id\":\"recent\",\"ts\":\"2026-01-03T00:00:00Z\"}\n")
+			writeHistoryFixture(t, original)
+			var removed int
+			var err error
+			if operation == "count" {
+				removed, err = Prune(1)
+			} else {
+				removed, err = PruneByTime(time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC))
+			}
+			if err == nil || removed != 0 || !encryption.IsKind(err, encryption.ErrInvalidKey) {
+				t.Errorf("prune = (%d, %v), want wrapped invalid-key failure", removed, err)
+			}
+			assertHistoryUnchanged(t, original)
+		})
+	}
+}
+
+func TestHistoryPruneEncryptedBoundaryAndValidation(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	key := testKey(t)
+	SetEncryptionConfig(&EncryptionConfig{Enabled: true, EncryptKey: key, DecryptKeys: [][]byte{key}})
+	t.Cleanup(func() { SetEncryptionConfig(nil) })
+	cutoff := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	for _, entry := range []*HistoryEntry{
+		{ID: "old", Timestamp: cutoff.Add(-time.Second)},
+		{ID: "boundary", Timestamp: cutoff},
+		{ID: "recent", Timestamp: cutoff.Add(time.Second)},
+	} {
+		if err := Append(entry); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Run("negative retention", func(t *testing.T) {
+		original, err := os.ReadFile(StoragePath())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			if value := recover(); value != nil {
+				t.Errorf("negative retention panicked: %v", value)
+			}
+			assertHistoryUnchanged(t, original)
+		}()
+		if removed, err := Prune(-1); err == nil || removed != 0 {
+			t.Errorf("Prune(-1) = (%d, %v), want (0, error)", removed, err)
+		}
+	})
+	if removed, err := PruneByTime(cutoff); err != nil || removed != 1 {
+		t.Fatalf("PruneByTime = (%d, %v), want only the strictly older entry removed", removed, err)
+	}
+	entries, err := ReadAll()
+	if err != nil || len(entries) != 2 || entries[0].ID != "boundary" || entries[1].ID != "recent" {
+		t.Fatalf("retained entries = %+v, %v", entries, err)
+	}
+	if removed, err := Prune(0); err != nil || removed != 2 {
+		t.Fatalf("Prune(0) = (%d, %v), want (2, nil)", removed, err)
+	}
+	assertHistoryUnchanged(t, []byte{})
+}
+
+func TestHistoryCountLargeEncryptedPrompt(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	key := testKey(t)
+	SetEncryptionConfig(&EncryptionConfig{Enabled: true, EncryptKey: key, DecryptKeys: [][]byte{key}})
+	t.Cleanup(func() { SetEncryptionConfig(nil) })
+	if err := Append(&HistoryEntry{ID: "large", Prompt: strings.Repeat("x", 128*1024)}); err != nil {
+		t.Fatal(err)
+	}
+	if entries, err := ReadAll(); err != nil || len(entries) != 1 {
+		t.Fatalf("ReadAll() = %d entries, %v", len(entries), err)
+	}
+	if count, err := Count(); err != nil || count != 1 {
+		t.Fatalf("Count() = (%d, %v), want (1, nil)", count, err)
+	}
+}
+
+func TestHistoryPruneRejectsOversizedEncryptedRewrite(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	SetEncryptionConfig(nil)
+	t.Cleanup(func() { SetEncryptionConfig(nil) })
+	if err := Append(&HistoryEntry{ID: "old"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := Append(&HistoryEntry{ID: "large", Prompt: strings.Repeat("x", 4*1024*1024)}); err != nil {
+		t.Fatal(err)
+	}
+	original, err := os.ReadFile(StoragePath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := testKey(t)
+	SetEncryptionConfig(&EncryptionConfig{Enabled: true, EncryptKey: key, DecryptKeys: [][]byte{key}})
+	if removed, err := Prune(1); err == nil || removed != 0 {
+		t.Errorf("Prune() = (%d, %v), want rejection of an unreadable encoded row", removed, err)
+	}
+	assertHistoryUnchanged(t, original)
+}
+
+func TestHistoryAppendLineLimit(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	SetEncryptionConfig(nil)
+	t.Cleanup(func() { SetEncryptionConfig(nil) })
+	entry := &HistoryEntry{ID: "boundary"}
+	empty, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The scanner's bound includes the newline appended on disk.
+	entry.Prompt = strings.Repeat("x", 5*1024*1024-1-len(empty))
+	if err := Append(entry); err != nil {
+		t.Fatalf("largest readable plaintext entry rejected: %v", err)
+	}
+	if count, err := Count(); err != nil || count != 1 {
+		t.Fatalf("boundary row is not readable: count=%d, err=%v", count, err)
+	}
+	original, err := os.ReadFile(StoragePath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry.Prompt += "x"
+	if err := Append(entry); err == nil {
+		t.Error("oversized plaintext entry accepted")
+	}
+	assertHistoryUnchanged(t, original)
+	key := testKey(t)
+	SetEncryptionConfig(&EncryptionConfig{Enabled: true, EncryptKey: key, DecryptKeys: [][]byte{key}})
+	if err := Append(entry); err == nil {
+		t.Error("oversized encrypted entry accepted")
+	}
+	assertHistoryUnchanged(t, original)
+}
+
+func writeHistoryFixture(t *testing.T, data []byte) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(StoragePath()), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(StoragePath(), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assertHistoryUnchanged(t *testing.T, original []byte) {
+	t.Helper()
+	got, err := os.ReadFile(StoragePath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, original) {
+		t.Errorf("history was unexpectedly rewritten: got %d bytes, want %d unchanged bytes", len(got), len(original))
+	}
 }
