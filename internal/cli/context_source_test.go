@@ -32,6 +32,22 @@ func TestContextBuildCommandNativeSource(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n// cli-native-source-proof\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
+	// Directories and ** globs must survive the real command, pack rendering,
+	// SQLite round-trip, and the stored-artifact delivery path below.
+	for file, content := range map[string]string{
+		"src/nested/worker.go": "package worker\n// cli-directory-source-proof\n",
+		"lib/root.go":          "package lib\n// cli-zero-depth-glob-proof\n",
+		"lib/deep/helper.go":   "package helper\n// cli-recursive-glob-proof\n",
+		"lib/deep/ignored.txt": "cli-nonmatching-file-must-not-be-included",
+	} {
+		name := filepath.Join(dir, filepath.FromSlash(file))
+		if err := os.MkdirAll(filepath.Dir(name), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(name, []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	capture, err := os.CreateTemp(t.TempDir(), "context-output-")
 	if err != nil {
@@ -42,7 +58,7 @@ func TestContextBuildCommandNativeSource(t *testing.T) {
 	os.Stdout = capture
 	t.Cleanup(func() { os.Stdout = oldStdout })
 	cmd := newContextCmd()
-	cmd.SetArgs([]string{"build", "--agent", "cod", "--files", "main.go"})
+	cmd.SetArgs([]string{"build", "--agent", "cod", "--files", "main.go,src,lib/**/*.go"})
 	err = cmd.Execute()
 	os.Stdout = oldStdout
 	if err != nil {
@@ -59,6 +75,14 @@ func TestContextBuildCommandNativeSource(t *testing.T) {
 	source := pack.Components["s2p"]
 	if source == nil || source.Error != "" || !strings.Contains(pack.RenderedPrompt, "cli-native-source-proof") {
 		t.Fatalf("context build omitted native source: %s", raw)
+	}
+	for _, marker := range []string{"cli-directory-source-proof", "cli-zero-depth-glob-proof", "cli-recursive-glob-proof"} {
+		if !strings.Contains(pack.RenderedPrompt, marker) {
+			t.Fatalf("context build omitted %s: %s", marker, raw)
+		}
+	}
+	if strings.Contains(pack.RenderedPrompt, "cli-nonmatching-file-must-not-be-included") {
+		t.Fatalf("context build included a nonmatching file: %s", raw)
 	}
 
 	store, err := state.Open("")

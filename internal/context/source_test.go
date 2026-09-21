@@ -3,12 +3,17 @@ package context
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"io/fs"
 	"math"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 	"testing/fstest"
+	"time"
 	"unicode/utf8"
 )
 
@@ -54,7 +59,7 @@ func TestSourceBudgetPreservesEverySelectedFile(t *testing.T) {
 
 func TestSourceContextInputErrors(t *testing.T) {
 	files := fstest.MapFS{"ok.go": &fstest.MapFile{Data: []byte("package ok")}}
-	for _, names := range [][]string{nil, {"../secret"}, {"/etc/passwd"}, {"."}, {"a/../ok.go"}, {"missing"}, {"missing*.go"}, {"["}, {"bad\nname"}} {
+	for _, names := range [][]string{nil, {"../secret"}, {"/etc/passwd"}, {"a/../ok.go"}, {"missing"}, {"missing*.go"}, {"["}, {"bad\nname"}} {
 		if _, err := prepareSourceContext(context.Background(), files, names, 100, ""); err == nil {
 			t.Errorf("accepted invalid selection %q", names)
 		}
@@ -140,3 +145,190 @@ func TestSourceFenceAndTruncationBoundaries(t *testing.T) {
 		}
 	}
 }
+
+func TestSourceDirectoryAndRecursiveSelections(t *testing.T) {
+	files := fstest.MapFS{
+		"README.md":             {Data: []byte("overview")},
+		"src/main.go":           {Data: []byte("package main")},
+		"src/lib/a.go":          {Data: []byte("package lib")},
+		"src/lib/deep/b.go":     {Data: []byte("package deep")},
+		"src/lib/notes.txt":     {Data: []byte("notes")},
+		".git/config":           {Data: []byte("private git configuration")},
+		"src/.git/objects/data": {Data: []byte("git object")},
+		"src/link":              {Mode: fs.ModeSymlink, Data: []byte("lib")},
+	}
+	for _, tc := range []struct {
+		pattern string
+		want    []string
+	}{
+		{"src", []string{"src/lib/a.go", "src/lib/deep/b.go", "src/lib/notes.txt", "src/main.go"}},
+		{"./src/", []string{"src/lib/a.go", "src/lib/deep/b.go", "src/lib/notes.txt", "src/main.go"}},
+		{"src/**/*.go", []string{"src/lib/a.go", "src/lib/deep/b.go", "src/main.go"}},
+		{"src/**/**/?.go", []string{"src/lib/a.go", "src/lib/deep/b.go"}},
+		{"src/*.go", []string{"src/main.go"}},
+		{"src/*/*.go", []string{"src/lib/a.go"}},
+		{".", []string{"README.md", "src/lib/a.go", "src/lib/deep/b.go", "src/lib/notes.txt", "src/main.go"}},
+	} {
+		t.Run(tc.pattern, func(t *testing.T) {
+			got, err := expandSourceFiles(context.Background(), files, []string{tc.pattern})
+			if err != nil || !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("selection %q = %v, %v; want %v", tc.pattern, got, err, tc.want)
+			}
+		})
+	}
+	names, err := expandSourceFiles(context.Background(), files, []string{"src/main.go", "src/**/*.go", "src"})
+	want := []string{"src/main.go", "src/lib/a.go", "src/lib/deep/b.go", "src/lib/notes.txt"}
+	if err != nil || !reflect.DeepEqual(names, want) {
+		t.Fatalf("selection order/deduplication = %v, %v; want %v", names, err, want)
+	}
+	got, err := prepareSourceContext(context.Background(), files, []string{"src/**/*.go"}, 1000, "")
+	if err != nil || strings.Count(got, "### File:") != 3 || !strings.Contains(got, "package deep") {
+		t.Fatalf("recursive source did not reach rendered pack: %q, %v", got, err)
+	}
+}
+
+func TestSourceRecursiveSelectionLimits(t *testing.T) {
+	files := fstest.MapFS{}
+	for i := 0; i <= maxSourceFiles; i++ {
+		files[fmt.Sprintf("src/%04d.go", i)] = &fstest.MapFile{Data: []byte("package p")}
+	}
+	for _, pattern := range []string{"src", "src/*.go", "src/**/*.go"} {
+		got, err := expandSourceFiles(context.Background(), files, []string{pattern})
+		if err == nil || got != nil || !strings.Contains(err.Error(), "exceeds") {
+			t.Fatalf("oversized %q selection returned partial success: %v, %v", pattern, got, err)
+		}
+	}
+}
+
+type sourceFailingFS struct {
+	fs.FS
+	failPath string
+	cancel   context.CancelFunc
+}
+
+func (f sourceFailingFS) Open(name string) (fs.File, error) {
+	if name == f.failPath {
+		if f.cancel != nil {
+			f.cancel()
+		} else {
+			return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrPermission}
+		}
+	}
+	return f.FS.Open(name)
+}
+
+func TestSourceRecursiveSelectionFailureIsNotPartialSuccess(t *testing.T) {
+	files := fstest.MapFS{
+		"src/a.go":         {Data: []byte("package a")},
+		"src/nested/b.go":  {Data: []byte("package b")},
+		"unrelated/bad.go": {Data: []byte("unrelated")},
+	}
+	for _, cancelDuringRead := range []bool{false, true} {
+		ctx, cancel := context.WithCancel(context.Background())
+		wrapped := sourceFailingFS{FS: files, failPath: "src/nested"}
+		want := fs.ErrPermission
+		if cancelDuringRead {
+			wrapped.cancel = cancel
+			want = context.Canceled
+		}
+		got, err := expandSourceFiles(ctx, wrapped, []string{"src/**/*.go"})
+		cancel()
+		if got != nil || !errors.Is(err, want) {
+			t.Fatalf("partial selection leaked on traversal failure: %v, %v; want %v", got, err, want)
+		}
+	}
+	// A narrow pattern must not inspect an irrelevant subtree, even if it is unreadable.
+	wrapped := sourceFailingFS{FS: files, failPath: "src/nested"}
+	got, err := expandSourceFiles(context.Background(), wrapped, []string{"src/*.go"})
+	if err != nil || !reflect.DeepEqual(got, []string{"src/a.go"}) {
+		t.Fatalf("single-segment glob descended into unrelated directories: %v, %v", got, err)
+	}
+}
+
+func TestSourceDirectoryLiteralGlobNamesAndEmptySelections(t *testing.T) {
+	files := fstest.MapFS{
+		"[literal]/a.go": {Data: []byte("literal directory")},
+		"empty":          {Mode: fs.ModeDir},
+	}
+	got, err := expandSourceFiles(context.Background(), files, []string{"[literal]"})
+	if err != nil || !reflect.DeepEqual(got, []string{"[literal]/a.go"}) {
+		t.Fatalf("literal directory treated as glob: %v, %v", got, err)
+	}
+	for _, pattern := range []string{"empty", "empty/**", "**/*.rs", "**/[", "[literal]/../secret"} {
+		if got, err := expandSourceFiles(context.Background(), files, []string{pattern}); err == nil || got != nil {
+			t.Errorf("invalid/empty selection %q = %v, %v", pattern, got, err)
+		}
+	}
+}
+
+func TestSourceDirectoryDoesNotFollowDiscoveredSymlinks(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.go"), []byte("package a"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(dir, filepath.Join(dir, "loop")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := os.Symlink(filepath.Join(dir, "a.go"), filepath.Join(dir, "link.go")); err != nil {
+		t.Fatal(err)
+	}
+	got, err := expandSourceFiles(context.Background(), os.DirFS(dir), []string{"**/*.go"})
+	if err != nil || !reflect.DeepEqual(got, []string{"a.go"}) {
+		t.Fatalf("followed discovered symlink: %v, %v", got, err)
+	}
+}
+
+// A directory with only nonmatching entries must still be bounded. Generating
+// entries lazily also detects accidental ReadDir(-1) or unbounded read batches.
+type sourceEndlessDirectory struct {
+	fs.File
+	read int
+}
+
+func (d *sourceEndlessDirectory) ReadDir(n int) ([]fs.DirEntry, error) {
+	if n <= 0 || n > 128 {
+		return nil, fmt.Errorf("unbounded ReadDir request: %d", n)
+	}
+	entries := make([]fs.DirEntry, n)
+	for i := range entries {
+		entries[i] = fs.FileInfoToDirEntry(sourceEntryInfo{name: fmt.Sprintf("entry-%08d.txt", d.read)})
+		d.read++
+	}
+	return entries, nil
+}
+
+func (d *sourceEndlessDirectory) Close() error { return nil }
+
+type sourceEntryInfo struct{ name string }
+
+func (i sourceEntryInfo) Name() string       { return i.name }
+func (i sourceEntryInfo) Size() int64        { return 0 }
+func (i sourceEntryInfo) Mode() fs.FileMode  { return 0 }
+func (i sourceEntryInfo) ModTime() time.Time { return time.Time{} }
+func (i sourceEntryInfo) IsDir() bool        { return false }
+func (i sourceEntryInfo) Sys() any           { return nil }
+
+func TestSourceDiscoveryEntryAndDepthBounds(t *testing.T) {
+	dir := &sourceEndlessDirectory{}
+	remaining := maxSourceEntries
+	_, err := readSourceDirectory(context.Background(), sourceOpenFS{file: dir}, ".", &remaining)
+	if err == nil || !strings.Contains(err.Error(), "directory entries") || dir.read != maxSourceEntries+1 {
+		t.Fatalf("unbounded directory enumeration: read=%d err=%v", dir.read, err)
+	}
+	files := fstest.MapFS{strings.Repeat("deep/", maxSourceDepth) + "a.go": {Data: []byte("deep")}}
+	if got, err := expandSourceFiles(context.Background(), files, []string{"**/*.go"}); err == nil || got != nil || !strings.Contains(err.Error(), "depth") {
+		t.Fatalf("unbounded recursion: %v, %v", got, err)
+	}
+	remaining = 5
+	if _, err := readSourceDirectory(context.Background(), sourceOpenFS{file: &sourceEmptyDirectory{}}, ".", &remaining); !errors.Is(err, io.ErrNoProgress) {
+		t.Fatalf("non-progressing directory did not fail: %v", err)
+	}
+}
+
+type sourceOpenFS struct{ file fs.File }
+
+func (f sourceOpenFS) Open(string) (fs.File, error) { return f.file, nil }
+
+type sourceEmptyDirectory struct{ sourceEndlessDirectory }
+
+func (d *sourceEmptyDirectory) ReadDir(int) ([]fs.DirEntry, error) { return nil, nil }
