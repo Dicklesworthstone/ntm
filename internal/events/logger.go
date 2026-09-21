@@ -42,6 +42,7 @@ type Logger struct {
 	lastRotation  time.Time
 	closed        bool
 	rotationWg    sync.WaitGroup
+	rotationMu    sync.Mutex // Serializes snapshot/filter/commit cycles.
 }
 
 // LoggerOptions configures the event logger.
@@ -119,6 +120,11 @@ func (l *Logger) Log(event *Event) error {
 	if err != nil {
 		return fmt.Errorf("encrypting event: %w", err)
 	}
+	// Include room for the newline in the scanner's buffer limit. Reject the
+	// final stored representation, since encryption can increase its size.
+	if len(data) >= maxEventLineBytes {
+		return fmt.Errorf("event exceeds log line limit of %d bytes", maxEventLineBytes-1)
+	}
 
 	// Write to file with newline
 	if _, err := l.file.Write(append(data, '\n')); err != nil {
@@ -175,55 +181,62 @@ func (l *Logger) maybeRotate() {
 	}
 }
 
-// rotateOldEntries removes entries older than retention period using streaming.
-// It avoids blocking concurrent LogEvent calls and guarantees no events are lost.
+// rotateOldEntries filters a bounded snapshot without moving the active log.
+// Writes through this Logger continue during filtering and are merged before
+// replacement. Any pre-commit failure leaves both the log and its writer intact.
 func (l *Logger) rotateOldEntries() error {
-	oldPath := l.path + ".old"
-	tmpPath := l.path + ".tmp"
+	l.rotationMu.Lock()
+	defer l.rotationMu.Unlock()
 
-	// 1. Swap the active log file out quickly
 	l.mu.Lock()
-	if l.file != nil {
-		l.file.Close()
-		l.file = nil
-	}
-	if err := os.Rename(l.path, oldPath); err != nil && !os.IsNotExist(err) {
+	if l.closed || !l.enabled || l.file == nil {
 		l.mu.Unlock()
-		return fmt.Errorf("renaming to old path: %w", err)
+		return nil
 	}
-	// Create fresh log file for incoming events
-	f, err := os.OpenFile(l.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	activeInfo, err := l.file.Stat()
 	if err != nil {
 		l.mu.Unlock()
-		return fmt.Errorf("reopening active log file: %w", err)
+		return fmt.Errorf("stat active log: %w", err)
 	}
-	l.file = f
+	srcFile, err := os.Open(l.path)
+	if err != nil {
+		l.mu.Unlock()
+		return fmt.Errorf("opening log snapshot: %w", err)
+	}
+	defer srcFile.Close()
+	snapshot, err := srcFile.Stat()
 	l.mu.Unlock()
-
-	// Ensure cleanup of oldPath if something panics
-	defer os.Remove(oldPath)
-	defer os.Remove(tmpPath)
-
-	// 2. Filter old events into tmpPath (can take a long time, lock is NOT held)
-	tmpFile, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {
-		return fmt.Errorf("creating temp file: %w", err)
+		return fmt.Errorf("stat log snapshot: %w", err)
+	}
+	if !snapshot.Mode().IsRegular() || !os.SameFile(activeInfo, snapshot) {
+		return fmt.Errorf("active log changed before rotation")
 	}
 
-	srcFile, err := os.Open(oldPath)
+	// A private, uniquely named staging file cannot truncate another rotation
+	// or a recovery artifact left by an earlier version of the logger.
+	tmpFile, err := os.CreateTemp(filepath.Dir(l.path), "."+filepath.Base(l.path)+".rotate-*")
 	if err != nil {
-		tmpFile.Close()
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return fmt.Errorf("opening old log file: %w", err)
+		return fmt.Errorf("creating rotation file: %w", err)
 	}
+	defer func() {
+		_ = tmpFile.Close()
+		_ = os.Remove(tmpFile.Name())
+	}()
 
 	cutoff := time.Now().AddDate(0, 0, -l.retentionDays)
-	scanner := bufio.NewScanner(srcFile)
-	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)
-	writer := bufio.NewWriter(tmpFile)
+	if err := filterRetainedEvents(io.NewSectionReader(srcFile, 0, snapshot.Size()), tmpFile, cutoff); err != nil {
+		return err
+	}
+	return l.commitRotation(srcFile, snapshot, tmpFile)
+}
 
+// filterRetainedEvents expires only records with a known, old timestamp.
+// Malformed or undecryptable records must not silently disappear on rotation.
+func filterRetainedEvents(src io.Reader, dst io.Writer, cutoff time.Time) error {
+	scanner := bufio.NewScanner(src)
+	scanner.Buffer(make([]byte, 64*1024), maxEventLineBytes)
+	writer := bufio.NewWriter(dst)
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		if len(line) == 0 {
@@ -231,65 +244,74 @@ func (l *Logger) rotateOldEntries() error {
 		}
 
 		plain, decErr := decryptJSONLine(line)
-		if decErr != nil {
-			writer.Write(line)
-			writer.WriteByte('\n')
-			continue
-		}
-
 		var event Event
-		if err := json.Unmarshal(plain, &event); err != nil {
-			writer.Write(line)
-			writer.WriteByte('\n')
+		if decErr == nil && json.Unmarshal(plain, &event) == nil &&
+			!event.Timestamp.IsZero() && !event.Timestamp.After(cutoff) {
 			continue
 		}
-
-		if event.Timestamp.After(cutoff) {
-			writer.Write(line)
-			writer.WriteByte('\n')
+		if _, err := writer.Write(line); err != nil {
+			return fmt.Errorf("writing retained event: %w", err)
+		}
+		if err := writer.WriteByte('\n'); err != nil {
+			return fmt.Errorf("writing retained event newline: %w", err)
 		}
 	}
-
-	srcFile.Close()
 	if err := scanner.Err(); err != nil {
-		tmpFile.Close()
-		return fmt.Errorf("scanning old log file: %w", err)
+		return fmt.Errorf("scanning log snapshot: %w", err)
 	}
 	if err := writer.Flush(); err != nil {
-		tmpFile.Close()
-		return fmt.Errorf("flushing temp file: %w", err)
+		return fmt.Errorf("flushing retained events: %w", err)
 	}
+	return nil
+}
 
-	// 3. Merge the newly arrived events from active l.path into tmpPath and swap back
+// commitRotation merges writes accepted after the snapshot, then replaces the
+// file only after every read, write, sync, and replacement-writer open succeeds.
+func (l *Logger) commitRotation(src *os.File, snapshot os.FileInfo, tmp *os.File) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-
-	// Sync and close active file
-	l.file.Sync()
-	l.file.Close()
-
-	// Open active file to read new events
-	activeReader, err := os.Open(l.path)
-	if err == nil {
-		_, _ = io.Copy(tmpFile, activeReader)
-		activeReader.Close()
+	if l.closed || !l.enabled || l.file == nil {
+		return nil
 	}
 
-	tmpFile.Close()
-
-	// Swap tmp file to become the new active log file
-	if err := os.Rename(tmpPath, l.path); err != nil {
-		// Recovery fallback
-		l.file, _ = os.OpenFile(l.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
-		return fmt.Errorf("renaming tmp to active: %w", err)
-	}
-
-	// Reopen active file
-	l.file, err = os.OpenFile(l.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	activeInfo, err := l.file.Stat()
 	if err != nil {
-		return fmt.Errorf("reopening final log file: %w", err)
+		return fmt.Errorf("stat active log before rotation commit: %w", err)
 	}
-
+	pathInfo, err := os.Stat(l.path)
+	if err != nil {
+		return fmt.Errorf("stat log path before rotation commit: %w", err)
+	}
+	if !os.SameFile(snapshot, activeInfo) || !os.SameFile(snapshot, pathInfo) || activeInfo.Size() < snapshot.Size() {
+		return fmt.Errorf("active log changed during rotation")
+	}
+	added := activeInfo.Size() - snapshot.Size()
+	if _, err := io.CopyN(tmp, io.NewSectionReader(src, snapshot.Size(), added), added); err != nil {
+		return fmt.Errorf("merging new log events: %w", err)
+	}
+	if err := tmp.Chmod(activeInfo.Mode().Perm()); err != nil {
+		return fmt.Errorf("preserving log permissions: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		return fmt.Errorf("syncing rotated log: %w", err)
+	}
+	writer, err := os.OpenFile(tmp.Name(), os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		return fmt.Errorf("opening rotated log writer: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		_ = writer.Close()
+		return fmt.Errorf("closing rotation file: %w", err)
+	}
+	if err := os.Rename(tmp.Name(), l.path); err != nil {
+		_ = writer.Close()
+		return fmt.Errorf("replacing active log: %w", err)
+	}
+	previous := l.file
+	l.file = writer
+	if err := previous.Close(); err != nil {
+		return fmt.Errorf("closing previous log after rotation: %w", err)
+	}
 	return nil
 }
 
