@@ -12,7 +12,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -674,24 +673,7 @@ func (m *WebhookManager) send(d *Delivery) (int, error) {
 		req.Header.Set("X-NTM-Signature", "sha256="+sig)
 	}
 
-	// Send request
-	resp, err := m.httpClient.Do(req)
-	if err != nil {
-		return 0, fmt.Errorf("request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// Read response body (limited to prevent memory issues)
-	body, readErr := io.ReadAll(io.LimitReader(resp.Body, 4096))
-	if readErr != nil {
-		m.log("failed to read response body: %v", readErr)
-	}
-
-	if resp.StatusCode >= 400 {
-		return resp.StatusCode, fmt.Errorf("webhook returned %d: %s", resp.StatusCode, string(body))
-	}
-
-	return resp.StatusCode, nil
+	return sendWebhookRequest(m.httpClient, req)
 }
 
 // buildPayload constructs the webhook payload from the template
@@ -733,21 +715,16 @@ func (m *WebhookManager) shouldRetry(d *Delivery, statusCode int, err error) boo
 		return false
 	}
 
-	// Don't retry 4xx errors (client errors) except rate limiting
-	if statusCode >= 400 && statusCode < 500 && statusCode != 429 {
-		return false
-	}
-
-	// Retry on 5xx, 429 (rate limit), and connection errors
-	return true
+	return retryableWebhookFailure(statusCode, err)
 }
 
 // calculateNextRetry determines when to retry with exponential backoff. The
 // backoff shape (factor, cap, jitter) follows the central [retry] policy;
-// per-webhook base/max delays take precedence when set.
+// per-webhook base/max delays take precedence when set. Receiver Retry-After
+// deadlines are a lower bound, even when they exceed the local backoff cap.
 func (m *WebhookManager) calculateNextRetry(d *Delivery) time.Time {
 	delay := nextRetryDelay(d.Attempt, d.Webhook.Retry.BaseDelay, d.Webhook.Retry.MaxDelay)
-	return time.Now().Add(delay)
+	return webhookRetryDeadline(d.Error, time.Now().Add(delay))
 }
 
 // scheduleRetry adds a delivery to the retry queue
