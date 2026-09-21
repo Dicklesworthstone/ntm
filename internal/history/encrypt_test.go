@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -440,6 +441,214 @@ func TestHistoryAppendLineLimit(t *testing.T) {
 		t.Error("oversized encrypted entry accepted")
 	}
 	assertHistoryUnchanged(t, original)
+}
+
+func TestHistoryExportPrivatePlaintext(t *testing.T) {
+	for _, existing := range []bool{false, true} {
+		name := "new"
+		if existing {
+			name = "existing"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("XDG_DATA_HOME", t.TempDir())
+			key := testKey(t)
+			SetEncryptionConfig(&EncryptionConfig{Enabled: true, EncryptKey: key, DecryptKeys: [][]byte{key}})
+			t.Cleanup(func() { SetEncryptionConfig(nil) })
+			if err := Append(&HistoryEntry{ID: "private", Prompt: "private prompt"}); err != nil {
+				t.Fatal(err)
+			}
+			original, err := os.ReadFile(StoragePath())
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(t.TempDir(), "export.jsonl")
+			if existing {
+				if err := os.WriteFile(path, []byte("previous export"), 0644); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chmod(path, 0644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := ExportTo(path); err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var entry HistoryEntry
+			if err := json.Unmarshal(data, &entry); err != nil || entry.ID != "private" || entry.Prompt != "private prompt" {
+				t.Fatalf("invalid plaintext export: %+v, %v", entry, err)
+			}
+			info, err := os.Stat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if runtime.GOOS != "windows" && info.Mode().Perm() != 0600 {
+				t.Errorf("plaintext export permissions = %o, want 600", info.Mode().Perm())
+			}
+			assertHistoryUnchanged(t, original)
+		})
+	}
+}
+
+func TestHistoryExportRejectsSourceAliases(t *testing.T) {
+	for _, alias := range []string{"direct", "relative", "symlink", "hardlink"} {
+		t.Run(alias, func(t *testing.T) {
+			t.Setenv("XDG_DATA_HOME", t.TempDir())
+			key := testKey(t)
+			SetEncryptionConfig(&EncryptionConfig{Enabled: true, EncryptKey: key, DecryptKeys: [][]byte{key}})
+			t.Cleanup(func() { SetEncryptionConfig(nil) })
+			if err := Append(&HistoryEntry{ID: "private", Prompt: "private prompt"}); err != nil {
+				t.Fatal(err)
+			}
+			original, err := os.ReadFile(StoragePath())
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := StoragePath()
+			switch alias {
+			case "relative":
+				wd, err := os.Getwd()
+				if err != nil {
+					t.Fatal(err)
+				}
+				path, err = filepath.Rel(wd, path)
+				if err != nil {
+					t.Fatal(err)
+				}
+			case "symlink", "hardlink":
+				path = filepath.Join(t.TempDir(), "alias.jsonl")
+				link := os.Symlink
+				if alias == "hardlink" {
+					link = os.Link
+				}
+				if err := link(StoragePath(), path); err != nil {
+					t.Skipf("cannot create %s: %v", alias, err)
+				}
+			}
+			if err := ExportTo(path); err == nil {
+				t.Error("export accepted an alias of its encrypted source")
+			}
+			assertHistoryUnchanged(t, original)
+		})
+	}
+}
+
+func TestHistoryExportRefusesIncompleteRead(t *testing.T) {
+	for _, malformed := range []bool{false, true} {
+		name := "missing_key"
+		if malformed {
+			name = "malformed"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("XDG_DATA_HOME", t.TempDir())
+			SetEncryptionConfig(nil)
+			t.Cleanup(func() { SetEncryptionConfig(nil) })
+			row := []byte(`{"prompt":"broken"`)
+			if !malformed {
+				var err error
+				row, err = encryption.EncryptLine(testKey(t), []byte(`{"id":"hidden"}`))
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			original := append([]byte("{\"id\":\"readable\"}\n"), row...)
+			original = append(original, '\n')
+			writeHistoryFixture(t, original)
+			path := filepath.Join(t.TempDir(), "export.jsonl")
+			previous := []byte("previous complete export")
+			if err := os.WriteFile(path, previous, 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := ExportTo(path); err == nil || !strings.Contains(err.Error(), "line 2") {
+				t.Errorf("ExportTo() = %v, want unreadable line error", err)
+			}
+			got, err := os.ReadFile(path)
+			if err != nil || !bytes.Equal(got, previous) {
+				t.Errorf("incomplete export overwrote previous output: %v", err)
+			}
+			assertHistoryUnchanged(t, original)
+		})
+	}
+}
+
+func TestHistoryExportDoesNotCreateItsSource(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	if err := ExportTo(StoragePath()); err == nil {
+		t.Error("export accepted the source path when history is absent")
+	}
+	if _, err := os.Stat(StoragePath()); !os.IsNotExist(err) {
+		t.Fatalf("export created the history source: %v", err)
+	}
+}
+
+func TestHistoryExportEmptyAndWriteFailure(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	SetEncryptionConfig(nil)
+	t.Cleanup(func() { SetEncryptionConfig(nil) })
+	path := filepath.Join(t.TempDir(), "empty.jsonl")
+	if err := ExportTo(path); err != nil {
+		t.Fatalf("export of absent history: %v", err)
+	}
+	if data, err := os.ReadFile(path); err != nil || len(data) != 0 {
+		t.Fatalf("empty export = %q, %v", data, err)
+	}
+	if err := Append(&HistoryEntry{ID: "retained"}); err != nil {
+		t.Fatal(err)
+	}
+	original, err := os.ReadFile(StoragePath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Renaming a prepared export over a directory must fail, without
+	// damaging either the history source or existing destination contents.
+	destination := t.TempDir()
+	marker := filepath.Join(destination, "keep")
+	if err := os.WriteFile(marker, []byte("unchanged"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ExportTo(destination); err == nil {
+		t.Error("export replaced a destination directory")
+	}
+	if data, err := os.ReadFile(marker); err != nil || string(data) != "unchanged" {
+		t.Fatalf("export damaged existing destination: %q, %v", data, err)
+	}
+	assertHistoryUnchanged(t, original)
+}
+
+func TestHistoryStrictReadAcceptsWhitespaceAndRejectsNonRecords(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	key := testKey(t)
+	SetEncryptionConfig(&EncryptionConfig{Enabled: true, EncryptKey: key, DecryptKeys: [][]byte{key}})
+	t.Cleanup(func() { SetEncryptionConfig(nil) })
+	// Whitespace around a valid plaintext row must not be mistaken for
+	// ciphertext when encryption is enabled for newly appended records.
+	writeHistoryFixture(t, []byte(" \t{\"id\":\"valid\"} \r\n\n"))
+	path := filepath.Join(t.TempDir(), "export.jsonl")
+	if err := ExportTo(path); err != nil {
+		t.Fatalf("export rejected valid whitespace: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var entry HistoryEntry
+	if err := json.Unmarshal(data, &entry); err != nil || entry.ID != "valid" {
+		t.Fatalf("invalid exported record: %+v, %v", entry, err)
+	}
+	for _, row := range []string{"null", "[]"} {
+		original := []byte("{\"id\":\"valid\"}\n" + row + "\n")
+		writeHistoryFixture(t, original)
+		if err := ExportTo(path); err == nil {
+			t.Errorf("export accepted non-record %q", row)
+		}
+		if removed, err := Prune(0); err == nil || removed != 0 {
+			t.Errorf("prune accepted non-record %q: (%d, %v)", row, removed, err)
+		}
+		assertHistoryUnchanged(t, original)
+	}
 }
 
 func writeHistoryFixture(t *testing.T, data []byte) {

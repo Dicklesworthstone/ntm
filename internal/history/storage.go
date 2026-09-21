@@ -495,7 +495,8 @@ func Exists() bool {
 	return info.Size() > 0
 }
 
-// ExportTo writes history to a specific file.
+// ExportTo writes a complete plaintext snapshot to a private file atomically.
+// The destination must not alias the active history file.
 func ExportTo(path string) error {
 	unlock, err := acquireLock()
 	if err != nil {
@@ -503,38 +504,51 @@ func ExportTo(path string) error {
 	}
 	defer unlock()
 
-	entries, err := readAllLocked(false)
+	// Compare normalized paths even when history does not exist yet. File
+	// identity additionally catches aliases through symlinks and hard links.
+	source, err := filepath.Abs(StoragePath())
+	if err != nil {
+		return err
+	}
+	destination, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+	if source == destination {
+		return errors.New("history export destination must not be the active history file")
+	}
+	sourceInfo, err := os.Stat(source)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("stat history source: %w", err)
+	}
+	destinationInfo, err := os.Stat(destination)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("stat history export destination: %w", err)
+	}
+	if sourceInfo != nil && destinationInfo != nil && os.SameFile(sourceInfo, destinationInfo) {
+		return errors.New("history export destination must not alias the active history file")
+	}
+
+	// A partial read is useful for browsing, but cannot be advertised as a
+	// complete export or replace a previous backup.
+	entries, err := readAllLocked(true)
 	if err != nil {
 		return err
 	}
 
-	f, err := os.Create(path)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	writer := bufio.NewWriter(f)
-	skipped := 0
-	for _, entry := range entries {
+	var buf bytes.Buffer
+	for i, entry := range entries {
 		data, err := json.Marshal(entry)
 		if err != nil {
-			slog.Warn("history: export: skipping entry that failed to marshal", "error", err)
-			skipped++
-			continue
+			return fmt.Errorf("encode history export entry %d: %w", i+1, err)
 		}
-		if _, err := writer.Write(data); err != nil {
-			return err
-		}
-		if err := writer.WriteByte('\n'); err != nil {
-			return err
-		}
+		buf.Write(data)
+		buf.WriteByte('\n')
 	}
-	if skipped > 0 {
-		slog.Warn("history: export: entries skipped during export", "skipped", skipped)
-	}
-
-	return writer.Flush()
+	// Exports deliberately contain plaintext even when history is encrypted.
+	// Replace, rather than truncate, to enforce private permissions for both
+	// new and existing files and leave old contents intact on write failure.
+	return util.AtomicWriteFile(destination, buf.Bytes(), 0600)
 }
 
 // Stats returns summary statistics about history.
