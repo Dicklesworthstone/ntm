@@ -523,42 +523,6 @@ func (c *Client) SummarizeThread(ctx context.Context, opts SummarizeThreadOption
 	}, nil
 }
 
-// ReservePaths requests file path reservations.
-func (c *Client) ReservePaths(ctx context.Context, opts FileReservationOptions) (*ReservationResult, error) {
-	args := map[string]interface{}{
-		"project_key": opts.ProjectKey,
-		"agent_name":  opts.AgentName,
-		"paths":       opts.Paths,
-	}
-	if opts.TTLSeconds > 0 {
-		args["ttl_seconds"] = opts.TTLSeconds
-	}
-	if opts.Exclusive {
-		args["exclusive"] = true
-	}
-	if opts.Reason != "" {
-		args["reason"] = opts.Reason
-	}
-
-	c.attachRegistrationToken(args)
-	result, err := c.callTool(ctx, "file_reservation_paths", args)
-	if err != nil {
-		return nil, err
-	}
-
-	var reservationResult ReservationResult
-	if err := json.Unmarshal(result, &reservationResult); err != nil {
-		return nil, NewAPIError("file_reservation_paths", 0, err)
-	}
-
-	// Check for conflicts
-	if len(reservationResult.Conflicts) > 0 {
-		return &reservationResult, fmt.Errorf("%w: %d conflicts", ErrReservationConflict, len(reservationResult.Conflicts))
-	}
-
-	return &reservationResult, nil
-}
-
 // ReleaseReservations releases file path reservations.
 func (c *Client) ReleaseReservations(ctx context.Context, projectKey, agentName string, paths []string, ids []int) (*ReleaseReservationsResult, error) {
 	args := map[string]interface{}{
@@ -641,6 +605,11 @@ func (c *Client) RenewReservations(ctx context.Context, opts RenewReservationsOp
 // If the Agent Mail server does not support this tool, callers will receive an error rather
 // than an empty slice so the CLI can surface the limitation instead of misreporting "no locks".
 func (c *Client) ListReservations(ctx context.Context, projectKey, agentName string, allAgents bool) ([]FileReservation, error) {
+	if ctx == nil {
+		return nil, fmt.Errorf("reservation listing requires a context")
+	}
+	ctx, cancel := context.WithTimeout(ctx, LongTimeout)
+	defer cancel()
 	// Preferred: use the MCP resource view.
 	// Resource URI: resource://file_reservations/{slug}?active_only=true
 	//
@@ -650,6 +619,9 @@ func (c *Client) ListReservations(ctx context.Context, projectKey, agentName str
 
 	result, err := c.ReadResource(ctx, uri)
 	if err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		// Fallback for older Agent Mail deployments: try legacy tools.
 		args := map[string]interface{}{
 			"project_key": projectKey,
@@ -690,70 +662,7 @@ func (c *Client) ListReservations(ctx context.Context, projectKey, agentName str
 		return reservations, nil
 	}
 
-	var resourceResp struct {
-		Contents []struct {
-			Text string `json:"text"`
-		} `json:"contents"`
-	}
-	if unmarshalErr := json.Unmarshal(result, &resourceResp); unmarshalErr != nil {
-		return nil, NewAPIError("resource://file_reservations", 0, unmarshalErr)
-	}
-	if len(resourceResp.Contents) == 0 || strings.TrimSpace(resourceResp.Contents[0].Text) == "" {
-		return []FileReservation{}, nil
-	}
-
-	// Resource format:
-	// [
-	//   { "id": 1, "agent": "BlueLake", "path_pattern": "...", ... },
-	//   ...
-	// ]
-	var raw []struct {
-		ID          int       `json:"id"`
-		ProjectID   int       `json:"project_id"`
-		Agent       string    `json:"agent"`
-		AgentName   string    `json:"agent_name"`
-		PathPattern string    `json:"path_pattern"`
-		Exclusive   bool      `json:"exclusive"`
-		Reason      string    `json:"reason"`
-		CreatedTS   FlexTime  `json:"created_ts"`
-		ExpiresTS   FlexTime  `json:"expires_ts"`
-		ReleasedTS  *FlexTime `json:"released_ts,omitempty"`
-	}
-
-	if unmarshalErr := json.Unmarshal([]byte(resourceResp.Contents[0].Text), &raw); unmarshalErr != nil {
-		return nil, NewAPIError("resource://file_reservations", 0, unmarshalErr)
-	}
-
-	reservations := make([]FileReservation, 0, len(raw))
-	for _, r := range raw {
-		name := r.Agent
-		if name == "" {
-			name = r.AgentName
-		}
-		reservations = append(reservations, FileReservation{
-			ID:          r.ID,
-			ProjectID:   r.ProjectID,
-			PathPattern: r.PathPattern,
-			AgentName:   name,
-			Exclusive:   r.Exclusive,
-			Reason:      r.Reason,
-			CreatedTS:   r.CreatedTS,
-			ExpiresTS:   r.ExpiresTS,
-			ReleasedTS:  r.ReleasedTS,
-		})
-	}
-
-	if agentName != "" && !allAgents {
-		filtered := make([]FileReservation, 0, len(reservations))
-		for _, r := range reservations {
-			if r.AgentName == agentName {
-				filtered = append(filtered, r)
-			}
-		}
-		reservations = filtered
-	}
-
-	return reservations, nil
+	return c.readReservationPages(ctx, projectKey, agentName, allAgents, uri, result)
 }
 
 // StartSession is a macro that starts a project session (ensure project, register agent, fetch inbox).
