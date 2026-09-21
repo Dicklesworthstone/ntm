@@ -12,7 +12,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -179,6 +181,8 @@ type WebhookManager struct {
 	retryQueue   []Delivery
 	retryQueueMu sync.Mutex
 	retryCond    *sync.Cond
+	retryReady   chan Delivery // Unbuffered handoff to the bounded worker pool.
+	retryStop    chan struct{} // Closed at the beginning of each shutdown.
 
 	// Dead letter queue
 	deadLetters   []DeadLetter
@@ -225,6 +229,7 @@ func NewManager(cfg ManagerConfig) *WebhookManager {
 		webhooks:    make(map[string]*WebhookConfig),
 		queue:       make(chan Delivery, cfg.QueueSize),
 		retryQueue:  make([]Delivery, 0, 100),
+		retryReady:  make(chan Delivery),
 		deadLetters: make([]DeadLetter, 0, cfg.DeadLetterLimit),
 		httpClient: &http.Client{
 			Timeout: cfg.DefaultTimeout,
@@ -282,6 +287,10 @@ func (m *WebhookManager) Register(cfg WebhookConfig) error {
 			return err
 		}
 	}
+	// Registration transfers a snapshot, not ownership of caller-owned maps
+	// and slices. Queued attempts must keep the same headers and subscriptions.
+	cfg.Headers = maps.Clone(cfg.Headers)
+	cfg.Events = slices.Clone(cfg.Events)
 
 	m.webhooksMu.Lock()
 	defer m.webhooksMu.Unlock()
@@ -292,6 +301,16 @@ func (m *WebhookManager) Register(cfg WebhookConfig) error {
 
 // Dispatch queues an event for delivery to all matching webhooks
 func (m *WebhookManager) Dispatch(event Event) error {
+	// Fence acceptance against Stop's drain. Logging callbacks run only after
+	// releasing the lifecycle lock, so a callback can inspect or stop us.
+	var notices []string
+	defer func() {
+		for _, notice := range notices {
+			m.log("%s", notice)
+		}
+	}()
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
 	if !m.started.Load() {
 		return errors.New("webhook manager not started")
 	}
@@ -303,6 +322,9 @@ func (m *WebhookManager) Dispatch(event Event) error {
 		event.Timestamp = time.Now().UTC()
 	}
 
+	// Keep payloads stable across asynchronous delivery and retries even when
+	// redaction is disabled and callers reuse their Details map after return.
+	event.Details = maps.Clone(event.Details)
 	event = m.sanitizeEvent(event)
 
 	m.webhooksMu.RLock()
@@ -338,8 +360,8 @@ func (m *WebhookManager) Dispatch(event Event) error {
 			case dropped := <-m.queue:
 				// Count actual dropped deliveries (oldest).
 				m.queueFull.Add(1)
-				m.completePendingDelivery()
-				m.log("webhook queue full, dropping oldest delivery %s", dropped.ID)
+				m.finishUndelivered(dropped, "delivery queue full: replaced by newer event")
+				notices = append(notices, fmt.Sprintf("webhook queue full, dropping oldest delivery %s", dropped.ID))
 			default:
 				// Race: another worker/drainer freed space before we could drop.
 			}
@@ -348,8 +370,8 @@ func (m *WebhookManager) Dispatch(event Event) error {
 			default:
 				// Queue still full. Drop the new delivery too.
 				m.queueFull.Add(1)
-				m.completePendingDelivery()
-				m.log("webhook queue full, dropping event %s for webhook %s", event.ID, wh.ID)
+				m.finishUndelivered(delivery, "delivery queue full: event not queued")
+				notices = append(notices, fmt.Sprintf("webhook queue full, dropping event %s for webhook %s", event.ID, wh.ID))
 			}
 		}
 	}
@@ -408,6 +430,7 @@ func (m *WebhookManager) Start() error {
 		}
 
 		m.ctx, m.cancel = newManagerContext()
+		m.retryStop = make(chan struct{})
 		m.stopping.Store(false)
 		m.started.Store(true)
 
@@ -442,20 +465,11 @@ func (m *WebhookManager) Stop() error {
 
 	m.started.Store(false)
 	m.stopping.Store(true)
+	close(m.retryStop)
 	cancel := m.cancel
+	ctx := m.ctx
 	done := make(chan struct{})
 	m.stopDone = done
-	go func(done chan struct{}) {
-		m.wg.Wait()
-		close(done)
-		m.lifecycleMu.Lock()
-		if m.stopDone == done {
-			m.stopDone = nil
-			m.ctx = nil
-			m.cancel = nil
-		}
-		m.lifecycleMu.Unlock()
-	}(done)
 	m.lifecycleMu.Unlock()
 
 	m.log("stopping webhook manager...")
@@ -463,9 +477,14 @@ func (m *WebhookManager) Stop() error {
 	// Retries that have not started yet cannot outlive shutdown. Convert them to
 	// dead letters now so Stop only has to wait for queued or in-flight work.
 	m.abandonPendingRetries()
+	// Pair the signal with the predicate lock: otherwise shutdown can race
+	// between retryProcessor's empty-queue check and its Cond.Wait.
+	m.retryQueueMu.Lock()
+	m.retryCond.Broadcast()
+	m.retryQueueMu.Unlock()
 
 	deadline := time.Now().Add(10 * time.Second)
-	for m.pending.Load() > 0 && time.Now().Before(deadline) {
+	for m.pending.Load() > 0 && ctx.Err() == nil && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
 	}
 
@@ -473,9 +492,21 @@ func (m *WebhookManager) Stop() error {
 	if cancel != nil {
 		cancel()
 	}
-
-	// Signal retry processor to wake up and exit.
-	m.retryCond.Broadcast()
+	// Only open the generation fence after this Stop has finished its own
+	// queue work as well as the workers. Otherwise a concurrent Start could
+	// race the old Stop's cleanup and lose new-generation deliveries.
+	go func() {
+		m.wg.Wait()
+		m.abandonPendingDeliveries()
+		m.lifecycleMu.Lock()
+		if m.stopDone == done {
+			m.stopDone = nil
+			m.ctx = nil
+			m.cancel = nil
+		}
+		close(done)
+		m.lifecycleMu.Unlock()
+	}()
 
 	// Give workers a small grace period to acknowledge cancellation and exit
 	waitTimeout := time.Until(deadline)
@@ -518,6 +549,12 @@ func (m *WebhookManager) worker(id int) {
 				return
 			}
 			m.processDelivery(&delivery)
+		case delivery := <-m.retryReady:
+			if m.stopping.Load() {
+				m.finishUndelivered(delivery, "manager stopping before retry")
+				continue
+			}
+			m.processDelivery(&delivery)
 		}
 	}
 }
@@ -530,12 +567,12 @@ func (m *WebhookManager) retryProcessor() {
 		m.retryQueueMu.Lock()
 
 		// Wait until there's something to retry or we're shutting down
-		for len(m.retryQueue) == 0 && m.ctx.Err() == nil {
+		for len(m.retryQueue) == 0 && !m.stopping.Load() && m.ctx.Err() == nil {
 			m.retryCond.Wait()
 		}
 
 		// Check for shutdown
-		if m.ctx.Err() != nil {
+		if m.stopping.Load() || m.ctx.Err() != nil {
 			m.retryQueueMu.Unlock()
 			return
 		}
@@ -560,10 +597,15 @@ func (m *WebhookManager) retryProcessor() {
 		m.retryQueue = notReady
 		m.retryQueueMu.Unlock()
 
-		// Process ready deliveries
-		for i := range ready {
-			delivery := ready[i]
-			m.processDelivery(&delivery)
+		// Scheduling must never execute HTTP synchronously: one slow endpoint
+		// used to stall every other due retry. Reuse the same bounded workers
+		// as first attempts, without an unbounded goroutine per failed event.
+		for _, delivery := range ready {
+			select {
+			case <-m.retryStop:
+				m.finishUndelivered(delivery, "manager stopping before retry")
+			case m.retryReady <- delivery:
+			}
 		}
 
 		// If we processed items, check again immediately as new items might have been added
@@ -586,7 +628,7 @@ func (m *WebhookManager) retryProcessor() {
 		// Sleep until next retry or shutdown
 		timer := time.NewTimer(sleepDuration)
 		select {
-		case <-m.ctx.Done():
+		case <-m.retryStop:
 			timer.Stop()
 			return
 		case <-timer.C:
@@ -634,9 +676,10 @@ func (m *WebhookManager) processDelivery(d *Delivery) {
 	// Schedule retry
 	d.Error = err
 	d.NextRetry = m.calculateNextRetry(d)
-	m.scheduleRetry(*d)
-	m.log("webhook %s failed (attempt %d), retrying at %s: %v",
-		d.ID, d.Attempt, d.NextRetry.Format(time.RFC3339), err)
+	if m.scheduleRetry(*d) {
+		m.log("webhook %s failed (attempt %d), retrying at %s: %v",
+			d.ID, d.Attempt, d.NextRetry.Format(time.RFC3339), err)
+	}
 }
 
 // send performs the actual HTTP request
@@ -727,12 +770,26 @@ func (m *WebhookManager) calculateNextRetry(d *Delivery) time.Time {
 	return webhookRetryDeadline(d.Error, time.Now().Add(delay))
 }
 
-// scheduleRetry adds a delivery to the retry queue
-func (m *WebhookManager) scheduleRetry(d Delivery) {
+// scheduleRetry admits a retry only while the manager is accepting retries.
+// QueueSize also bounds this queue so a long receiver cooldown cannot cause
+// unbounded memory growth during a sustained outage.
+func (m *WebhookManager) scheduleRetry(d Delivery) bool {
 	m.retryQueueMu.Lock()
+	if m.stopping.Load() {
+		m.retryQueueMu.Unlock()
+		m.finishUndelivered(d, "manager stopping before retry")
+		return false
+	}
+	if len(m.retryQueue) >= m.config.QueueSize {
+		m.retryQueueMu.Unlock()
+		m.queueFull.Add(1)
+		m.finishUndelivered(d, "retry queue full")
+		return false
+	}
 	m.retryQueue = append(m.retryQueue, d)
-	m.retryQueueMu.Unlock()
 	m.retryCond.Signal()
+	m.retryQueueMu.Unlock()
+	return true
 }
 
 func webhookTemplateFuncMap() template.FuncMap {
@@ -764,18 +821,41 @@ func (m *WebhookManager) abandonPendingRetries() {
 	m.retryQueueMu.Unlock()
 
 	for _, delivery := range pendingRetries {
-		lastError := "manager stopping before retry"
-		if delivery.Error != nil {
-			lastError = fmt.Sprintf("manager stopping before retry: %v", delivery.Error)
-		}
-		m.addToDeadLetter(delivery, AttemptLog{
-			Attempt:   delivery.Attempt,
-			Timestamp: time.Now().UTC(),
-			Error:     lastError,
-		})
-		m.failures.Add(1)
-		m.completePendingDelivery()
+		m.finishUndelivered(delivery, "manager stopping before retry")
 	}
+}
+
+// abandonPendingDeliveries runs only after every worker exits and admission
+// is closed. All accepted deliveries then have a terminal outcome before the
+// stopDone fence opens and permits another generation to start.
+func (m *WebhookManager) abandonPendingDeliveries() {
+	for {
+		select {
+		case delivery := <-m.queue:
+			m.finishUndelivered(delivery, "manager stopped before delivery")
+		default:
+			m.abandonPendingRetries()
+			return
+		}
+	}
+}
+
+// finishUndelivered records local loss/backpressure without inventing an HTTP
+// attempt. Preserve the last receiver status when a retry could not be queued.
+func (m *WebhookManager) finishUndelivered(d Delivery, reason string) {
+	statusCode := 0
+	if d.Error != nil {
+		var responseErr *webhookHTTPError
+		if errors.As(d.Error, &responseErr) {
+			statusCode = responseErr.statusCode
+		}
+		reason = fmt.Sprintf("%s: %v", reason, d.Error)
+	}
+	m.addToDeadLetter(d, AttemptLog{
+		Attempt: d.Attempt, Timestamp: time.Now().UTC(), StatusCode: statusCode, Error: reason,
+	})
+	m.failures.Add(1)
+	m.completePendingDelivery()
 }
 
 // addToDeadLetter adds a failed delivery to the dead letter queue
