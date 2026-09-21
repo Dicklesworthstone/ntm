@@ -46,14 +46,37 @@ func prepareSourceContext(ctx context.Context, fsys fs.FS, patterns []string, to
 		byteBudget = tokenBudget * 4
 	}
 
-	var out strings.Builder
+	// Read small files first so their unused shares can fund larger files,
+	// regardless of the requested output order. Size is only a scheduling hint:
+	// every actual read and rendered section still has an independent bound.
+	order := make([]int, len(files))
+	costs := make([]int64, len(files))
 	for i, name := range files {
 		if err := ctx.Err(); err != nil {
 			return "", err
 		}
+		info, err := fs.Stat(fsys, name)
+		if err != nil {
+			return "", fmt.Errorf("source file %q: %w", name, err)
+		}
+		if !info.Mode().IsRegular() || info.Size() < 0 {
+			return "", fmt.Errorf("source file %q: invalid regular file metadata", name)
+		}
+		order[i] = i
+		headerBytes := len(renderSourceFile(name, "", maxSourcePackBytes, false, format == "compact"))
+		costs[i] = min(info.Size(), int64(maxSourceFileBytes)) + int64(headerBytes)
+	}
+	sort.SliceStable(order, func(i, j int) bool { return costs[order[i]] < costs[order[j]] })
+	sections := make([]string, len(files))
+	used := 0
+	for step, i := range order {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		name := files[i]
 		// Give each remaining file a share, carrying unused space forward.
-		// A large first file must not consume all later files' context.
-		share := (byteBudget - out.Len()) / (len(files) - i)
+		// Sorting reads by cost prevents space being stranded behind small files.
+		share := (byteBudget - used) / (len(files) - step)
 		data, truncated, err := readSourceFile(ctx, fsys, name, min(share, maxSourceFileBytes))
 		if err != nil {
 			return "", fmt.Errorf("source file %q: %w", name, err)
@@ -70,18 +93,19 @@ func prepareSourceContext(ctx context.Context, fsys fs.FS, patterns []string, to
 		if section == "" {
 			return "", fmt.Errorf("source token budget too small to represent %d files; increase budget or select fewer files", len(files))
 		}
-		out.WriteString(section)
+		sections[i] = section
+		used += len(section)
 	}
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	return out.String(), nil
+	return strings.Join(sections, ""), nil
 }
 
 // expandSourceFiles accepts literal files, directories, and globs. A complete
 // ** segment matches zero or more directories; other segments use path.Match.
 // Selections retain argument order, with sorted, deduplicated matches. Discovery
-// never follows encountered symlinks or enters VCS metadata directories. It does
+// skips encountered symlinks and VCS metadata directories. It does
 // not interpret .gitignore; callers should select the source subtrees they need.
 func expandSourceFiles(ctx context.Context, fsys fs.FS, patterns []string) ([]string, error) {
 	if len(patterns) == 0 {

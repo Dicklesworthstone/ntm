@@ -299,10 +299,13 @@ func (d *sourceEndlessDirectory) ReadDir(n int) ([]fs.DirEntry, error) {
 
 func (d *sourceEndlessDirectory) Close() error { return nil }
 
-type sourceEntryInfo struct{ name string }
+type sourceEntryInfo struct {
+	name string
+	size int64
+}
 
 func (i sourceEntryInfo) Name() string       { return i.name }
-func (i sourceEntryInfo) Size() int64        { return 0 }
+func (i sourceEntryInfo) Size() int64        { return i.size }
 func (i sourceEntryInfo) Mode() fs.FileMode  { return 0 }
 func (i sourceEntryInfo) ModTime() time.Time { return time.Time{} }
 func (i sourceEntryInfo) IsDir() bool        { return false }
@@ -332,3 +335,78 @@ func (f sourceOpenFS) Open(string) (fs.File, error) { return f.file, nil }
 type sourceEmptyDirectory struct{ sourceEndlessDirectory }
 
 func (d *sourceEmptyDirectory) ReadDir(int) ([]fs.DirEntry, error) { return nil, nil }
+
+func TestSourceBudgetReclaimsSmallFileShares(t *testing.T) {
+	files := fstest.MapFS{"large.go": {Data: []byte(strings.Repeat("L", 20000))}}
+	selected := []string{"large.go"}
+	for i := 0; i < 12; i++ {
+		name := fmt.Sprintf("small-%02d.go", i)
+		files[name] = &fstest.MapFile{Data: []byte("package small\n")}
+		selected = append(selected, name)
+	}
+	for _, format := range []string{"", "compact"} {
+		first, err := prepareSourceContext(context.Background(), files, selected, 1500, format)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(first) < 5900 || len(first) > 6000 || strings.Count(first, "L") < 5000 {
+			t.Fatalf("budget stranded behind small files (%s): %d of 6000 bytes used, %d payload bytes", format, len(first), strings.Count(first, "L"))
+		}
+		t.Logf("format=%q used=%d/6000 large_file_payload=%d", format, len(first), strings.Count(first, "L"))
+		if strings.Index(first, `File: "large.go"`) > strings.Index(first, `File: "small-00.go"`) {
+			t.Fatal("allocation order changed selected output order")
+		}
+		for _, name := range selected[1:] {
+			if !strings.Contains(first, fmt.Sprintf("File: %q", name)) {
+				t.Fatalf("lost selected small file %s", name)
+			}
+		}
+		lastSelection := append(append([]string{}, selected[1:]...), selected[0])
+		last, err := prepareSourceContext(context.Background(), files, lastSelection, 1500, format)
+		if err != nil || strings.Count(first, "L") != strings.Count(last, "L") {
+			t.Fatalf("source payload depends on selection order: first=%d last=%d err=%v", strings.Count(first, "L"), strings.Count(last, "L"), err)
+		}
+		if strings.Index(last, `File: "large.go"`) < strings.Index(last, `File: "small-00.go"`) {
+			t.Fatal("original output order not retained")
+		}
+	}
+}
+
+func TestSourceBudgetAccountsForLongFileHeaders(t *testing.T) {
+	longName := strings.Repeat("long", 60) + ".go"
+	files := fstest.MapFS{
+		longName: {Data: []byte("package long")},
+		"s.go":   {Data: []byte("package short")},
+	}
+	for _, format := range []string{"", "compact"} {
+		want := renderSourceFile(longName, "package long", 4096, false, format == "compact") +
+			renderSourceFile("s.go", "package short", 4096, false, format == "compact")
+		budget := (len(want) + 3) / 4
+		got, err := prepareSourceContext(context.Background(), files, []string{longName, "s.go"}, budget, format)
+		if err != nil || got != want {
+			t.Fatalf("sufficient whole-pack budget rejected or truncated (%s): %q, %v; want %q", format, got, err, want)
+		}
+	}
+}
+
+type sourceSizeHintFS struct {
+	fs.FS
+	size int64
+}
+
+func (f sourceSizeHintFS) Stat(name string) (fs.FileInfo, error) {
+	return sourceEntryInfo{name: name, size: f.size}, nil
+}
+
+func TestSourceBudgetSizeHintsCannotBypassBounds(t *testing.T) {
+	files := fstest.MapFS{
+		"a.go": {Data: []byte(strings.Repeat("日本語🙂", 1000))},
+		"b.go": {Data: []byte(strings.Repeat("B", 10000))},
+	}
+	for _, size := range []int64{0, math.MaxInt64} {
+		got, err := prepareSourceContext(context.Background(), sourceSizeHintFS{FS: files, size: size}, []string{"a.go", "b.go"}, 200, "")
+		if err != nil || len(got) > 800 || !utf8.ValidString(got) || strings.Count(got, "### File:") != 2 {
+			t.Fatalf("size hint %d defeated read/render bounds: bytes=%d err=%v", size, len(got), err)
+		}
+	}
+}
