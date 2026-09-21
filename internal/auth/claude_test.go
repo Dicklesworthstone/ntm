@@ -570,3 +570,36 @@ func TestClaudeAuthFlow_InitiatePreservesSendError(t *testing.T) {
 		t.Fatal("failed login changed the active attempt baseline")
 	}
 }
+
+func TestClaudeAuthFlow_RecognizesRepeatedSuccessAfterRedraw(t *testing.T) {
+	t.Parallel()
+	flow := NewClaudeAuthFlow(false)
+	flow.pollInterval = time.Millisecond
+	frames := []string{
+		"Login successful",                  // Previous login, captured before /login.
+		"https://claude.ai/login?state=new", // New attempt replaces the viewport.
+		"Enter code:",
+		"Login successful", // The new attempt legitimately uses the same text.
+	}
+	captures := 0
+	flow.captureOutput = func(string, int) (string, error) {
+		if captures == len(frames) {
+			return "", errors.New("new success was ignored")
+		}
+		frame := frames[captures]
+		captures++
+		return frame, nil
+	}
+	flow.sendKeys = func(string, string, bool) error { return nil }
+	if err := flow.InitiateAuth("%42"); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := flow.WaitForAuth(ctx, "%42", nil); err != nil {
+		t.Fatal(err)
+	}
+	if captures != len(frames) {
+		t.Fatalf("authenticated before the fresh success frame: captures=%d", captures)
+	}
+}

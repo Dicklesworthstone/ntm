@@ -38,8 +38,8 @@ type ClaudeAuthFlow struct {
 	pollInterval  time.Duration
 	sleep         func(time.Duration)
 
-	baselineMu sync.RWMutex
-	baselines  map[string]string // Pane output observed before sending /login.
+	baselineMu sync.Mutex
+	baselines  map[string]string // Last observed pane output, seeded before /login.
 }
 
 // NewClaudeAuthFlow creates a new Claude auth flow handler
@@ -74,7 +74,8 @@ func (f *ClaudeAuthFlow) InitiateAuth(paneID string) error {
 	return nil
 }
 
-// MonitorAuth watches the pane output for auth prompts and handles them
+// MonitorAuth watches pane output for auth prompts and terminal results.
+// After InitiateAuth, only newly observed output can advance the attempt.
 func (f *ClaudeAuthFlow) MonitorAuth(ctx context.Context, paneID string) (*AuthResult, error) {
 	pollInterval := f.pollInterval
 	if pollInterval <= 0 {
@@ -99,9 +100,14 @@ func (f *ClaudeAuthFlow) MonitorAuth(ctx context.Context, paneID string) (*AuthR
 				return nil, fmt.Errorf("capture auth pane %q: %w", paneID, err)
 			}
 
-			f.baselineMu.RLock()
-			baseline := f.baselines[paneID]
-			f.baselineMu.RUnlock()
+			f.baselineMu.Lock()
+			baseline, initiated := f.baselines[paneID]
+			if initiated {
+				// Advance with the viewport. Keeping the original baseline forever
+				// suppresses a genuinely new, identical success after a screen redraw.
+				f.baselines[paneID] = output
+			}
+			f.baselineMu.Unlock()
 			output = authOutputAfterBaseline(baseline, output)
 
 			// Pending signals participate in ordering too: a newer browser URL
@@ -151,9 +157,9 @@ func (f *ClaudeAuthFlow) WaitForAuth(ctx context.Context, paneID string, progres
 }
 
 // authOutputAfterBaseline removes unchanged leading lines already visible
-// before /login. The viewport may scroll or replace its last prompt line, so
-// match complete lines at each possible old viewport offset, not byte prefixes
-// that could accidentally strip part of a new authentication signal.
+// in the preceding capture. The viewport may scroll or replace its last prompt
+// line, so match complete lines at each possible old viewport offset, not byte
+// prefixes that could accidentally strip part of a new authentication signal.
 func authOutputAfterBaseline(baseline, output string) string {
 	baseline = strings.TrimRight(baseline, " \t\r\n")
 	if baseline == "" {
