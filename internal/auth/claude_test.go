@@ -49,6 +49,12 @@ func TestClaudeAuthFlow_InitiateAuth(t *testing.T) {
 	var gotPane string
 	var gotKeys string
 	var gotEnter bool
+	flow.captureOutput = func(paneID string, lines int) (string, error) {
+		if paneID != "pane-1" || lines != 30 {
+			t.Fatalf("baseline capture = (%q, %d), want (pane-1, 30)", paneID, lines)
+		}
+		return "", nil
+	}
 
 	flow.sendKeys = func(paneID, keys string, enter bool) error {
 		gotPane = paneID
@@ -259,10 +265,10 @@ func TestClaudeAuthFlow_DetectBrowserURL(t *testing.T) {
 // =============================================================================
 
 // =============================================================================
-// DetectChallengeCode
+// Challenge prompt classification
 // =============================================================================
 
-func TestClaudeAuthFlow_DetectChallengeCode(t *testing.T) {
+func TestClaudeAuthFlow_ChallengePromptState(t *testing.T) {
 	t.Parallel()
 	flow := NewClaudeAuthFlow(false)
 
@@ -284,9 +290,9 @@ func TestClaudeAuthFlow_DetectChallengeCode(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			_, got := flow.DetectChallengeCode(tt.output)
+			got := flow.latestAuthResult(tt.output) == AuthNeedsChallenge
 			if got != tt.want {
-				t.Errorf("DetectChallengeCode(%q) = %v, want %v", tt.output, got, tt.want)
+				t.Errorf("challenge prompt in %q = %v, want %v", tt.output, got, tt.want)
 			}
 		})
 	}
@@ -310,5 +316,257 @@ func TestAuthStateConstants(t *testing.T) {
 		if s == "" {
 			t.Error("AuthState constant should not be empty")
 		}
+	}
+}
+
+func TestClaudeAuthFlow_MonitorAuthUsesLatestPendingSignal(t *testing.T) {
+	t.Parallel()
+	const url = "https://claude.ai/login?state=current"
+	for _, tc := range []struct {
+		name, output string
+		want         AuthState
+	}{
+		{"old success then browser", "Login successful\n" + url, AuthNeedsBrowser},
+		{"old success then challenge", "Successfully logged in\nEnter code:", AuthNeedsChallenge},
+		{"old failure then browser", "Authentication failed\n" + url, AuthNeedsBrowser},
+		{"old failure then challenge", "Login failed\nEnter the code from your browser", AuthNeedsChallenge},
+		{"old challenge then new browser", "Enter code:\n" + url, AuthNeedsBrowser},
+		{"browser then challenge", url + "\nEnter code:", AuthNeedsChallenge},
+		{"browser then current success", url + "\nLogin successful", AuthSuccess},
+		{"challenge then current failure", "Enter code:\nError logging in", AuthFailed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			flow := NewClaudeAuthFlow(false)
+			flow.pollInterval = time.Millisecond
+			flow.captureOutput = func(string, int) (string, error) { return tc.output, nil }
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			got, err := flow.MonitorAuth(ctx, "%42")
+			if err != nil || got == nil || got.State != tc.want {
+				t.Fatalf("MonitorAuth() = %+v, %v; want %s", got, err, tc.want)
+			}
+			if tc.want == AuthNeedsBrowser && got.URL != url {
+				t.Fatalf("current browser URL = %q, want %q", got.URL, url)
+			}
+		})
+	}
+}
+
+func TestClaudeAuthFlow_DetectBrowserURLUsesNewestLink(t *testing.T) {
+	t.Parallel()
+	flow := NewClaudeAuthFlow(true)
+	got, ok := flow.DetectBrowserURL("https://claude.ai/login?state=expired\nOpen (https://claude.ai/login?state=current).")
+	if !ok || got != "https://claude.ai/login?state=current" {
+		t.Fatalf("returned an expired browser flow: %q, found=%v", got, ok)
+	}
+}
+
+func TestClaudeAuthFlow_CancellationDuringCaptureIsNotSuccess(t *testing.T) {
+	t.Parallel()
+	flow := NewClaudeAuthFlow(false)
+	flow.pollInterval = time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	flow.captureOutput = func(string, int) (string, error) {
+		cancel()
+		return "Login successful", nil
+	}
+	got, err := flow.MonitorAuth(ctx, "%42")
+	if got != nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled auth reported success: result=%+v err=%v", got, err)
+	}
+}
+
+func TestClaudeAuthFlow_InitiateIgnoresPriorScrollback(t *testing.T) {
+	t.Parallel()
+	const before = "banner\nLogin successful\n> \n \n\n"
+	const url = "https://claude.ai/login?state=current"
+	flow := NewClaudeAuthFlow(false)
+	flow.pollInterval = time.Millisecond
+	sent, polls := false, 0
+	flow.sendKeys = func(string, string, bool) error { sent = true; return nil }
+	flow.captureOutput = func(string, int) (string, error) {
+		if !sent {
+			return before, nil
+		}
+		polls++
+		if polls == 1 {
+			return before, nil // /login has not redrawn the pane yet.
+		}
+		// The viewport has scrolled and the prompt line has changed.
+		return "Login successful\n> /login\n" + url, nil
+	}
+	if err := flow.InitiateAuth("%42"); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	got, err := flow.MonitorAuth(ctx, "%42")
+	if err != nil || got == nil || got.State != AuthNeedsBrowser || got.URL != url || polls != 2 {
+		t.Fatalf("accepted previous login as this attempt: result=%+v polls=%d err=%v", got, polls, err)
+	}
+}
+
+func TestClaudeAuthFlow_InitiateFailsBeforeSendingWithoutBaseline(t *testing.T) {
+	t.Parallel()
+	flow := NewClaudeAuthFlow(false)
+	failure := errors.New("pane unavailable")
+	flow.captureOutput = func(string, int) (string, error) { return "", failure }
+	sent := false
+	flow.sendKeys = func(string, string, bool) error { sent = true; return nil }
+	if err := flow.InitiateAuth("%42"); !errors.Is(err, failure) || sent {
+		t.Fatalf("started auth without knowing previous output: sent=%v err=%v", sent, err)
+	}
+}
+
+func TestClaudeAuthFlow_WaitForAuthHandlesRepeatedPromptsAndTransitions(t *testing.T) {
+	t.Parallel()
+	flow := NewClaudeAuthFlow(false)
+	flow.pollInterval = time.Millisecond
+	frames := []string{
+		"Login successful\n> ", // Pre-/login baseline.
+		"Login successful\n> ", // No new output yet.
+		"Login successful\n> /login\nhttps://claude.ai/login?state=first",
+		"Login successful\n> /login\nhttps://claude.ai/login?state=first",
+		"https://claude.ai/login?state=first\nhttps://claude.ai/login?state=second",
+		"https://claude.ai/login?state=second\nEnter code:",
+		"https://claude.ai/login?state=second\nEnter code:",
+		"Enter code:\nSuccessfully logged in as the new account",
+	}
+	captures := 0
+	flow.captureOutput = func(string, int) (string, error) {
+		if captures >= len(frames) {
+			return "", errors.New("auth read beyond successful frame")
+		}
+		frame := frames[captures]
+		captures++
+		return frame, nil
+	}
+	flow.sendKeys = func(string, string, bool) error {
+		if captures != 1 {
+			t.Fatal("/login sent before baseline was captured")
+		}
+		return nil
+	}
+	flow.sleep = func(time.Duration) {}
+	continued := false
+	flow.pasteKeys = func(string, string, bool) error {
+		if captures != len(frames) {
+			t.Fatal("continuation reached pane before current authentication completed")
+		}
+		continued = true
+		return nil
+	}
+	if err := flow.InitiateAuth("%42"); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	var prompts []AuthResult
+	if err := flow.WaitForAuth(ctx, "%42", func(result AuthResult) { prompts = append(prompts, result) }); err != nil {
+		t.Fatal(err)
+	}
+	if len(prompts) != 3 || prompts[0].URL != "https://claude.ai/login?state=first" ||
+		prompts[1].URL != "https://claude.ai/login?state=second" || prompts[2].State != AuthNeedsChallenge {
+		t.Fatalf("pending transitions lost or spammed: %+v", prompts)
+	}
+	if err := flow.SendContinuation("%42", "continue"); err != nil || !continued {
+		t.Fatalf("successful auth did not continue: sent=%v err=%v", continued, err)
+	}
+}
+
+func TestClaudeAuthFlow_WaitForAuthPropagatesFailure(t *testing.T) {
+	t.Parallel()
+	for _, captureFailure := range []bool{false, true} {
+		flow := NewClaudeAuthFlow(false)
+		flow.pollInterval = time.Millisecond
+		captures := 0
+		failure := errors.New("pane disappeared during login")
+		flow.captureOutput = func(string, int) (string, error) {
+			captures++
+			if captures == 1 {
+				return "Enter code:", nil
+			}
+			if captureFailure {
+				return "", failure
+			}
+			return "Enter code:\nAuthentication failed", nil
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		err := flow.WaitForAuth(ctx, "%42", nil)
+		cancel()
+		if err == nil || captures != 2 {
+			t.Fatalf("auth failure was not terminal: captures=%d err=%v", captures, err)
+		}
+		if captureFailure && !errors.Is(err, failure) {
+			t.Fatalf("lost capture error identity: %v", err)
+		}
+	}
+}
+
+func TestClaudeAuthFlow_WaitForAuthKeepsPendingUntilDeadline(t *testing.T) {
+	t.Parallel()
+	flow := NewClaudeAuthFlow(true)
+	flow.pollInterval = time.Millisecond
+	flow.captureOutput = func(string, int) (string, error) {
+		return "https://claude.ai/login?state=pending", nil
+	}
+	prompts := 0
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancel()
+	err := flow.WaitForAuth(ctx, "%42", func(AuthResult) { prompts++ })
+	if !errors.Is(err, context.DeadlineExceeded) || prompts > 1 {
+		t.Fatalf("pending prompt failed early or spammed: prompts=%d err=%v", prompts, err)
+	}
+}
+
+func TestClaudeAuthFlow_WaitForAuthHonorsCancellationFromProgress(t *testing.T) {
+	t.Parallel()
+	flow := NewClaudeAuthFlow(false)
+	flow.pollInterval = time.Millisecond
+	captures := 0
+	flow.captureOutput = func(string, int) (string, error) {
+		captures++
+		return "Enter code:", nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	err := flow.WaitForAuth(ctx, "%42", func(AuthResult) { cancel() })
+	if !errors.Is(err, context.Canceled) || captures != 1 {
+		t.Fatalf("cancelled wait kept polling: captures=%d err=%v", captures, err)
+	}
+}
+
+func TestAuthOutputAfterBaseline(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ name, before, after, want string }{
+		{"unchanged", "Login successful\n> \n \n", "Login successful\n> \n \n", ""},
+		{"appended", "banner\n> ", "banner\n> \nLogin successful", "> \nLogin successful"},
+		{"scrolled", "banner\nLogin successful\n>", "Login successful\n> /login\nEnter code:", "> /login\nEnter code:"},
+		{"cleared", "Login successful\n>", "Enter code:", "Enter code:"},
+		{"matching first letter is not a line", "Error logging in", "Enter code:", "Enter code:"},
+		{"empty baseline", "", "Login successful", "Login successful"},
+		{"empty output", "Login successful", "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := authOutputAfterBaseline(tc.before, tc.after); got != tc.want {
+				t.Fatalf("new auth output = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestClaudeAuthFlow_InitiatePreservesSendError(t *testing.T) {
+	t.Parallel()
+	flow := NewClaudeAuthFlow(false)
+	flow.captureOutput = func(string, int) (string, error) { return "Login successful", nil }
+	failure := errors.New("could not send /login")
+	flow.sendKeys = func(string, string, bool) error { return failure }
+	if err := flow.InitiateAuth("%42"); !errors.Is(err, failure) {
+		t.Fatalf("lost send failure: %v", err)
+	}
+	if len(flow.baselines) != 0 {
+		t.Fatal("failed login changed the active attempt baseline")
 	}
 }
