@@ -259,3 +259,263 @@ func TestReservationReadbackExplicitEmptyAndCompleteRows(t *testing.T) {
 		t.Fatal("cancelled context accepted")
 	}
 }
+
+func reservationCompactGrant() map[string]any {
+	return map[string]any{"id": 41, "path_pattern": "src/file41.go", "exclusive": true, "reason": "bead assignment: bd-work", "expires_ts": "2099-01-01T01:00:00Z"}
+}
+
+func TestReservePathsVerifiesRustGrantsByExactID(t *testing.T) {
+	t.Parallel()
+	for _, envelope := range []string{"raw", "structured", "text"} {
+		t.Run(envelope, func(t *testing.T) {
+			var mutations, reads atomic.Int32
+			c := reservationReadbackClient(t, func(_ *http.Request, req JSONRPCRequest) (any, *JSONRPCError) {
+				params, _ := req.Params.(map[string]interface{})
+				if req.Method == "tools/call" {
+					mutations.Add(1)
+					if params["name"] != "file_reservation_paths" {
+						t.Errorf("unexpected mutation: %v", params["name"])
+					}
+					args, _ := params["arguments"].(map[string]interface{})
+					if args["registration_token"] != "lease-token" {
+						t.Error("reservation lost agent credentials")
+					}
+					data := map[string]any{"granted": []any{reservationCompactGrant()}, "conflicts": []any{}}
+					switch envelope {
+					case "structured":
+						return map[string]any{"structuredContent": data}, nil
+					case "text":
+						raw, _ := json.Marshal(data)
+						return map[string]any{"content": []map[string]string{{"type": "text", "text": string(raw)}}}, nil
+					default:
+						return data, nil
+					}
+				}
+				reads.Add(1)
+				uri, _ := params["uri"].(string)
+				if strings.HasPrefix(uri, "resource://project/") {
+					return reservationResourceFixture(`{"id":73,"slug":"test","human_key":"/test/project"}`), nil
+				}
+				q, _ := url.ParseQuery(strings.SplitN(uri, "?", 2)[1])
+				offset, _ := strconv.Atoi(q.Get("offset"))
+				count := 20
+				if offset == 40 {
+					count = 1
+				}
+				rows := reservationRowsFixture(offset, count)
+				// Earlier rows deliberately have the requested path but the wrong
+				// durable ID and owner. Path-only matching would accept a impostor.
+				for _, row := range rows {
+					row["path_pattern"] = "src/file41.go"
+				}
+				raw, _ := json.Marshal(rows)
+				return reservationResourceFixture(string(raw)), nil
+			})
+			c.SetRegistrationToken("/test/project", "BlueLake", "lease-token")
+			result, err := c.ReservePaths(context.Background(), FileReservationOptions{ProjectKey: "/test/project", AgentName: "BlueLake", Paths: []string{"src/file41.go"}, Exclusive: true, Reason: "bead assignment: bd-work"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result == nil || len(result.Granted) != 1 {
+				t.Fatalf("no verified grant: %+v", result)
+			}
+			grant := result.Granted[0]
+			if grant.ID != 41 || grant.ProjectID != 73 || grant.AgentName != "BlueLake" {
+				t.Fatalf("wrong verified identity: %+v", grant)
+			}
+			if mutations.Load() != 1 || reads.Load() != 5 {
+				t.Fatalf("unexpected side effects/reads: writes=%d reads=%d", mutations.Load(), reads.Load())
+			}
+		})
+	}
+}
+
+func TestReservePathsReadbackRefusesMismatchesAndRetainsHandles(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{"wrong owner", "wrong project", "wrong identity resource", "missing ID", "wrong path", "unrequested path", "wrong reason", "wrong exclusivity", "expired row", "expired grant", "released row", "explicit zero project", "explicit null owner", "explicit wrong owner", "duplicate grant", "malformed grant"} {
+		t.Run(mode, func(t *testing.T) {
+			var mutations atomic.Int32
+			c := reservationReadbackClient(t, func(_ *http.Request, req JSONRPCRequest) (any, *JSONRPCError) {
+				params, _ := req.Params.(map[string]interface{})
+				if req.Method == "tools/call" {
+					mutations.Add(1)
+					if params["name"] != "file_reservation_paths" {
+						t.Errorf("unexpected tool: %v", params["name"])
+					}
+					grant := reservationCompactGrant()
+					switch mode {
+					case "explicit zero project":
+						grant["project_id"] = 0
+					case "explicit null owner":
+						grant["agent_name"] = nil
+					case "explicit wrong owner":
+						grant["agent_name"] = "OtherAgent"
+					case "expired grant":
+						grant["expires_ts"] = "2000-01-01T00:00:00Z"
+					case "unrequested path":
+						grant["path_pattern"] = "unexpected.go"
+					case "malformed grant":
+						grant["expires_ts"] = "not a timestamp"
+					}
+					grants := []any{grant}
+					if mode == "duplicate grant" {
+						grants = append(grants, grant)
+					}
+					return map[string]any{"granted": grants, "conflicts": []any{}}, nil
+				}
+				uri, _ := params["uri"].(string)
+				if strings.HasPrefix(uri, "resource://project/") {
+					key := "/test/project"
+					if mode == "wrong identity resource" {
+						key = "/another/project"
+					}
+					raw, _ := json.Marshal(map[string]any{"id": 73, "slug": "test", "human_key": key})
+					return reservationResourceFixture(string(raw)), nil
+				}
+				row := reservationRowsFixture(40, 1)[0]
+				switch mode {
+				case "wrong owner":
+					row["agent"] = "OtherAgent"
+				case "wrong project":
+					row["project_id"] = 99
+				case "missing ID":
+					row["id"] = 42
+				case "wrong path":
+					row["path_pattern"] = "different.go"
+				case "unrequested path":
+					row["path_pattern"] = "unexpected.go"
+				case "wrong reason":
+					row["reason"] = "bead assignment: unrelated"
+				case "wrong exclusivity":
+					row["exclusive"] = false
+				case "expired row":
+					row["expires_ts"] = "2000-01-01T00:00:00Z"
+				case "released row":
+					row["released_ts"] = "2026-01-01T00:00:00Z"
+				}
+				raw, _ := json.Marshal([]any{row})
+				return reservationResourceFixture(string(raw)), nil
+			})
+			result, err := c.ReservePaths(context.Background(), FileReservationOptions{ProjectKey: "/test/project", AgentName: "BlueLake", Paths: []string{"src/file41.go"}, Exclusive: true, Reason: "bead assignment: bd-work"})
+			if err == nil || result == nil || len(result.Granted) == 0 || result.Granted[0].ID != 41 {
+				t.Fatalf("failure lost recovery handles or was accepted: %+v %v", result, err)
+			}
+			if result.Granted[0].ProjectID != 0 {
+				t.Fatalf("failed readback changed original evidence: %+v", result.Granted)
+			}
+			if mutations.Load() != 1 {
+				t.Fatalf("readback made %d mutations, want only the initial reservation", mutations.Load())
+			}
+		})
+	}
+}
+
+func TestReservePathsPartialConflictPreservesVerifiedGrants(t *testing.T) {
+	t.Parallel()
+	for _, unavailable := range []bool{false, true} {
+		t.Run(fmt.Sprintf("unavailable=%v", unavailable), func(t *testing.T) {
+			c := reservationReadbackClient(t, func(_ *http.Request, req JSONRPCRequest) (any, *JSONRPCError) {
+				params, _ := req.Params.(map[string]interface{})
+				if req.Method == "tools/call" {
+					return map[string]any{"granted": []any{reservationCompactGrant()}, "conflicts": []any{map[string]any{"path": "blocked.go", "holders": []any{map[string]any{"agent": "OtherAgent", "exclusive": true}}}}}, nil
+				}
+				if unavailable {
+					return nil, &JSONRPCError{Code: -32000, Message: "project readback unavailable"}
+				}
+				uri, _ := params["uri"].(string)
+				if strings.HasPrefix(uri, "resource://project/") {
+					return reservationResourceFixture(`{"id":73,"slug":"test","human_key":"/test/project"}`), nil
+				}
+				raw, _ := json.Marshal(reservationRowsFixture(40, 1))
+				return reservationResourceFixture(string(raw)), nil
+			})
+			result, err := c.ReservePaths(context.Background(), FileReservationOptions{ProjectKey: "/test/project", AgentName: "BlueLake", Paths: []string{"src/file41.go", "blocked.go"}, Exclusive: true, Reason: "bead assignment: bd-work"})
+			if !errors.Is(err, ErrReservationConflict) || result == nil || len(result.Granted) != 1 || len(result.Conflicts) != 1 {
+				t.Fatalf("lost partial conflict evidence: %+v %v", result, err)
+			}
+			if result.Conflicts[0].Holders[0] != "OtherAgent" {
+				t.Fatalf("Rust holder shape not decoded: %+v", result.Conflicts)
+			}
+			wantProject := 73
+			if unavailable {
+				wantProject = 0
+				if !strings.Contains(err.Error(), "project readback unavailable") {
+					t.Fatal("lost readback cause")
+				}
+			}
+			if result.Granted[0].ProjectID != wantProject {
+				t.Fatalf("grant ownership=%d, want %d", result.Granted[0].ProjectID, wantProject)
+			}
+		})
+	}
+}
+
+func TestReservePathsReadbackNeverExtendsGrantExpiry(t *testing.T) {
+	t.Parallel()
+	for _, expiry := range []string{"2098-01-01T00:00:00Z", "2100-01-01T00:00:00Z"} {
+		c := reservationReadbackClient(t, func(_ *http.Request, req JSONRPCRequest) (any, *JSONRPCError) {
+			params, _ := req.Params.(map[string]interface{})
+			if req.Method == "tools/call" {
+				return map[string]any{"granted": []any{reservationCompactGrant()}}, nil
+			}
+			uri, _ := params["uri"].(string)
+			if strings.HasPrefix(uri, "resource://project/") {
+				return reservationResourceFixture(`{"id":73,"slug":"test","human_key":"/test/project"}`), nil
+			}
+			row := reservationRowsFixture(40, 1)[0]
+			row["expires_ts"] = expiry
+			raw, _ := json.Marshal([]any{row})
+			return reservationResourceFixture(string(raw)), nil
+		})
+		result, err := c.ReservePaths(context.Background(), FileReservationOptions{ProjectKey: "/test/project", AgentName: "BlueLake", Paths: []string{"src/file41.go"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := expiry
+		if strings.HasPrefix(expiry, "2100") {
+			want = "2099-01-01T01:00:00Z"
+		}
+		if result.Granted[0].ExpiresTS.Format(time.RFC3339) != want {
+			t.Fatalf("unsafe expiry: %+v", result.Granted[0])
+		}
+	}
+}
+
+func TestReservePathsReadbackCancellationRetainsMutationReceipt(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var writes, reads atomic.Int32
+	c := reservationReadbackClient(t, func(_ *http.Request, req JSONRPCRequest) (any, *JSONRPCError) {
+		if req.Method == "tools/call" {
+			writes.Add(1)
+			return map[string]any{"granted": []any{reservationCompactGrant()}}, nil
+		}
+		reads.Add(1)
+		cancel()
+		return nil, &JSONRPCError{Code: -32000, Message: "cancelled during readback"}
+	})
+	result, err := c.ReservePaths(ctx, FileReservationOptions{ProjectKey: "/test/project", AgentName: "BlueLake", Paths: []string{"src/file41.go"}})
+	if !errors.Is(err, context.Canceled) || result == nil || len(result.Granted) != 1 || result.Granted[0].ID != 41 {
+		t.Fatalf("cancellation lost receipt: %+v %v", result, err)
+	}
+	if writes.Load() != 1 || reads.Load() != 1 {
+		t.Fatalf("unexpected work after cancellation: %d %d", writes.Load(), reads.Load())
+	}
+}
+
+func TestReservePathsKeepsExplicitMetadataForCallerValidation(t *testing.T) {
+	t.Parallel()
+	var calls atomic.Int32
+	c := reservationReadbackClient(t, func(_ *http.Request, req JSONRPCRequest) (any, *JSONRPCError) {
+		calls.Add(1)
+		if req.Method != "tools/call" {
+			t.Error("explicit metadata must not be silently rewritten")
+		}
+		return ReservationResult{Granted: []FileReservation{{ID: 41, ProjectID: 0, AgentName: "BlueLake", PathPattern: "src/file41.go"}}}, nil
+	})
+	result, err := c.ReservePaths(context.Background(), FileReservationOptions{ProjectKey: "/test/project", AgentName: "BlueLake", Paths: []string{"src/file41.go"}})
+	if err != nil || calls.Load() != 1 || result.Granted[0].ProjectID != 0 {
+		t.Fatalf("explicit invalid identity was laundered: %+v %v", result, err)
+	}
+}

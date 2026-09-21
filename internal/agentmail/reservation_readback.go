@@ -9,9 +9,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
+	"time"
 )
 
 const (
@@ -178,6 +180,15 @@ func (c *Client) readReservationPages(ctx context.Context, projectKey, agentName
 
 // ReservePaths requests file path reservations.
 func (c *Client) ReservePaths(ctx context.Context, opts FileReservationOptions) (*ReservationResult, error) {
+	if ctx == nil {
+		return nil, fmt.Errorf("reservation request requires a context")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	// One budget includes the mutation and any independent ownership reads.
+	ctx, cancel := context.WithTimeout(ctx, LongTimeout)
+	defer cancel()
 	args := map[string]interface{}{
 		"project_key": opts.ProjectKey,
 		"agent_name":  opts.AgentName,
@@ -199,15 +210,144 @@ func (c *Client) ReservePaths(ctx context.Context, opts FileReservationOptions) 
 		return nil, err
 	}
 
-	var reservationResult ReservationResult
-	if err := json.Unmarshal(result, &reservationResult); err != nil {
-		return nil, NewAPIError("file_reservation_paths", 0, err)
+	reservationResult, err := decodeReservationReply(result)
+	if err != nil {
+		return reservationResult, NewAPIError("file_reservation_paths", 0, err)
 	}
 
-	// Check for conflicts
+	var conflictErr error
 	if len(reservationResult.Conflicts) > 0 {
-		return &reservationResult, fmt.Errorf("%w: %d conflicts", ErrReservationConflict, len(reservationResult.Conflicts))
+		conflictErr = fmt.Errorf("%w: %d conflicts", ErrReservationConflict, len(reservationResult.Conflicts))
 	}
+	if err := c.completeReservationGrantOwnership(ctx, opts, result, reservationResult); err != nil {
+		return reservationResult, errors.Join(conflictErr, NewAPIError("file_reservation_paths", 0, err))
+	}
+	return reservationResult, conflictErr
+}
 
-	return &reservationResult, nil
+// decodeReservationReply decodes rows independently. A bad timestamp or
+// conflict record must not discard lease IDs from an otherwise valid JSON
+// mutation receipt. Recovered handles remain unverified and accompany an error.
+func decodeReservationReply(raw json.RawMessage) (*ReservationResult, error) {
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return nil, fmt.Errorf("reservation server returned null instead of a result")
+	}
+	var wire struct {
+		Granted   []json.RawMessage `json:"granted"`
+		Conflicts json.RawMessage   `json:"conflicts"`
+	}
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		return nil, err
+	}
+	result := &ReservationResult{Granted: make([]FileReservation, len(wire.Granted))}
+	var decodeErrors []error
+	for i, rawGrant := range wire.Granted {
+		if err := json.Unmarshal(rawGrant, &result.Granted[i]); err != nil {
+			decodeErrors = append(decodeErrors, fmt.Errorf("decode grant %d: %w", i, err))
+			var handle struct {
+				ID          int    `json:"id"`
+				PathPattern string `json:"path_pattern"`
+			}
+			if handleErr := json.Unmarshal(rawGrant, &handle); handleErr == nil {
+				result.Granted[i].ID = handle.ID
+				result.Granted[i].PathPattern = handle.PathPattern
+			}
+		}
+	}
+	if len(wire.Conflicts) > 0 {
+		if err := json.Unmarshal(wire.Conflicts, &result.Conflicts); err != nil {
+			decodeErrors = append(decodeErrors, fmt.Errorf("decode reservation conflicts: %w", err))
+		}
+	}
+	return result, errors.Join(decodeErrors...)
+}
+
+// completeReservationGrantOwnership fills only omitted ownership fields, and
+// only after exact-ID verification against independent, live server reads.
+// Explicit zero/empty/wrong values are not silently repaired. All grants stay
+// untouched if any check fails, preserving the original recovery evidence.
+func (c *Client) completeReservationGrantOwnership(ctx context.Context, opts FileReservationOptions, raw json.RawMessage, result *ReservationResult) error {
+	var wire struct {
+		Granted []struct {
+			ProjectID json.RawMessage `json:"project_id"`
+			AgentName json.RawMessage `json:"agent_name"`
+		} `json:"granted"`
+	}
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		return fmt.Errorf("decode grant ownership fields: %w", err)
+	}
+	needsReadback := false
+	for _, grant := range wire.Granted {
+		needsReadback = needsReadback || len(grant.ProjectID) == 0 || len(grant.AgentName) == 0
+	}
+	if !needsReadback {
+		return ctx.Err()
+	}
+	if strings.TrimSpace(opts.AgentName) == "" {
+		return fmt.Errorf("grant ownership readback requires an agent name")
+	}
+	project, err := c.readReservationProject(ctx, opts.ProjectKey)
+	if err != nil {
+		return err
+	}
+	reservations, err := c.ListReservations(ctx, opts.ProjectKey, "", true)
+	if err != nil {
+		return fmt.Errorf("read back granted reservations: %w", err)
+	}
+	byID := make(map[int]FileReservation, len(reservations))
+	for _, reservation := range reservations {
+		if _, duplicate := byID[reservation.ID]; duplicate {
+			return fmt.Errorf("readback repeated reservation ID %d", reservation.ID)
+		}
+		byID[reservation.ID] = reservation
+	}
+	wantedPaths := make(map[string]bool, len(opts.Paths))
+	for _, path := range opts.Paths {
+		wantedPaths[path] = true
+	}
+	verified := make([]FileReservation, len(result.Granted))
+	seen := make(map[int]bool, len(result.Granted))
+	now := time.Now()
+	for i, grant := range result.Granted {
+		if grant.ID <= 0 || seen[grant.ID] {
+			return fmt.Errorf("grant has missing or repeated durable reservation ID %d", grant.ID)
+		}
+		seen[grant.ID] = true
+		row, found := byID[grant.ID]
+		if !found {
+			return fmt.Errorf("granted reservation %d is absent from active readback", grant.ID)
+		}
+		if row.ProjectID != project.ID || row.AgentName != opts.AgentName {
+			return fmt.Errorf("reservation %d ownership mismatch: got project=%d agent=%q, want project=%d agent=%q", grant.ID, row.ProjectID, row.AgentName, project.ID, opts.AgentName)
+		}
+		if len(wire.Granted[i].ProjectID) != 0 && grant.ProjectID != row.ProjectID {
+			return fmt.Errorf("reservation %d explicit grant project ID disagrees with readback", grant.ID)
+		}
+		if len(wire.Granted[i].AgentName) != 0 && grant.AgentName != row.AgentName {
+			return fmt.Errorf("reservation %d explicit grant owner disagrees with readback", grant.ID)
+		}
+		if !wantedPaths[grant.PathPattern] || row.PathPattern != grant.PathPattern || row.Reason != grant.Reason || (opts.Reason != "" && row.Reason != opts.Reason) {
+			return fmt.Errorf("reservation %d path or reason does not match the requested grant", grant.ID)
+		}
+		if row.Exclusive != grant.Exclusive || (opts.Exclusive && !row.Exclusive) {
+			return fmt.Errorf("reservation %d exclusivity does not match the requested grant", grant.ID)
+		}
+		if row.ReleasedTS != nil || grant.ReleasedTS != nil || !row.ExpiresTS.After(now) || !grant.ExpiresTS.After(now) {
+			return fmt.Errorf("reservation %d is released or expired", grant.ID)
+		}
+		// Keep the original grant's path and reason. Use the earlier expiry:
+		// neither a renewal nor a shortened lease may overstate its validity.
+		verified[i] = grant
+		if row.ExpiresTS.Before(grant.ExpiresTS.Time) {
+			verified[i].ExpiresTS = row.ExpiresTS
+		}
+		verified[i].ProjectID = row.ProjectID
+		verified[i].AgentName = row.AgentName
+		verified[i].CreatedTS = row.CreatedTS
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	result.Granted = verified
+	return nil
 }
