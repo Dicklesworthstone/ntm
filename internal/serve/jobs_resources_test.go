@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -354,7 +357,9 @@ func TestJobExecutionResourcesMatchEngineTargets(t *testing.T) {
 		{"empty label", JobTypeSwarmSpawn, map[string]interface{}{"session": "project", "label": ""}, []string{"session:project"}},
 		{"invalid label", JobTypeSwarmSpawn, map[string]interface{}{"session": "project", "label": 1}, []string{"*"}},
 		{"restore destination", JobTypeCheckpointRestore, map[string]interface{}{"session": "archive", "target_session": "destination"}, []string{"session:destination"}},
-		{"implicit restore", JobTypeCheckpointRestore, map[string]interface{}{"session": "archive"}, []string{"*"}},
+		{"implicit restore", JobTypeCheckpointRestore, map[string]interface{}{"session": "archive"}, []string{"session:archive"}},
+		{"empty restore override", JobTypeCheckpointRestore, map[string]interface{}{"session": "archive", "target_session": ""}, []string{"session:archive"}},
+		{"invalid restore override", JobTypeCheckpointRestore, map[string]interface{}{"session": "archive", "target_session": true}, []string{"*"}},
 		{"resume", JobTypePipelineResume, map[string]interface{}{"session": "project", "run_id": "run"}, []string{"*"}},
 		{"implicit resume", JobTypePipelineResume, map[string]interface{}{"run_id": "run"}, []string{"*"}},
 		{"empty request", JobTypePipelineRun, nil, []string{"*"}},
@@ -366,5 +371,242 @@ func TestJobExecutionResourcesMatchEngineTargets(t *testing.T) {
 				t.Fatalf("resources = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+func resourceResumeProject(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".ntm", "pipelines"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	root, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
+func TestJobResumeTargetPinsImplicitSessionWithoutCopyingState(t *testing.T) {
+	project := resourceResumeProject(t)
+	params := map[string]interface{}{"run_id": "saved", "operation_id": "retry-once"}
+	savedSession := "admitted-session"
+	calls := 0
+	target := resolveJobResumeTarget(project, params, func(root, run string) (string, error) {
+		calls++
+		if root != project || run != "saved" {
+			t.Fatalf("readback used wrong namespace: %q %q", root, run)
+		}
+		return savedSession, nil
+	})
+	if target == nil || calls != 1 || target.Session != savedSession || target.RunID != "saved" {
+		t.Fatalf("implicit target not bound: %+v, calls=%d", target, calls)
+	}
+	if len(params) != 2 || params["session"] != nil || params["operation_id"] != "retry-once" {
+		t.Fatalf("binding changed public operation identity: %v", params)
+	}
+	ctx := context.WithValue(context.Background(), jobResumeTargetKey{}, *target)
+	savedSession = "later-session"
+	params["run_id"] = "other"
+	target.Session = "caller-mutated"
+	got, err := applyJobResumeTarget(ctx, project, "saved", "")
+	if err != nil || got != "admitted-session" {
+		t.Fatalf("saved-state or caller changes redirected admitted work: %q, %v", got, err)
+	}
+	if calls != 1 {
+		t.Fatal("binding reloaded mutable state to choose its target")
+	}
+}
+
+func TestJobResumeTargetExplicitSessionDoesNotRequireReadback(t *testing.T) {
+	project := resourceResumeProject(t)
+	target := resolveJobResumeTarget(project, map[string]interface{}{"run_id": "saved", "session": "override"}, nil)
+	if target == nil || target.Session != "override" {
+		t.Fatalf("explicit target needs no state readback: %+v", target)
+	}
+	ctx := context.WithValue(context.Background(), jobResumeTargetKey{}, *target)
+	if got, err := applyJobResumeTarget(ctx, project, "saved", "override"); err != nil || got != "override" {
+		t.Fatalf("explicit target changed: %q, %v", got, err)
+	}
+}
+
+func TestJobResumeResourcesSeparateSessionsAndCanonicalRuns(t *testing.T) {
+	project := resourceResumeProject(t)
+	otherProject := resourceResumeProject(t)
+	bind := func(project, run, session string) *jobResumeTarget {
+		t.Helper()
+		target := resolveJobResumeTarget(project, map[string]interface{}{"run_id": run, "session": session}, nil)
+		if target == nil {
+			t.Fatal("explicit target not resolved")
+		}
+		return target
+	}
+	first := bind(project, "run", "A")
+	second := bind(project, "run", "B")
+	otherRun := bind(project, "other", "C")
+	otherRoot := bind(otherProject, "run", "D")
+	if first.resources()[0] == second.resources()[0] || first.resources()[1] != second.resources()[1] {
+		t.Fatal("same run in different sessions must retain its shared run scope")
+	}
+	if first.resources()[1] == otherRun.resources()[1] || first.resources()[1] == otherRoot.resources()[1] {
+		t.Fatal("independent run namespaces should not conflict")
+	}
+	alias := filepath.Join(t.TempDir(), "project-alias")
+	if err := os.Symlink(project, alias); err != nil {
+		t.Fatal(err)
+	}
+	aliased := bind(alias, "run", "A")
+	if aliased.ProjectDir != first.ProjectDir || !reflect.DeepEqual(aliased.resources(), first.resources()) {
+		t.Fatalf("symlink alias bypassed run identity: %+v %+v", first, aliased)
+	}
+	shared := t.TempDir()
+	if err := os.Symlink(filepath.Join(project, ".ntm"), filepath.Join(shared, ".ntm")); err != nil {
+		t.Fatal(err)
+	}
+	sharedTarget := bind(shared, "run", "B")
+	if first.resources()[1] != sharedTarget.resources()[1] {
+		t.Fatal("shared state directory aliases bypassed run identity")
+	}
+}
+
+func TestJobResumeTargetFailureKeepsConservativeFallback(t *testing.T) {
+	project := resourceResumeProject(t)
+	for _, params := range []map[string]interface{}{
+		nil, {"run_id": ""}, {"run_id": " "}, {"run_id": 1},
+		{"run_id": ".."}, {"run_id": "a/b"}, {"run_id": "a\\b"}, {"run_id": "a\x00b"},
+		{"run_id": "run", "session": true}, {"run_id": "run", "session": " "},
+	} {
+		if got := resolveJobResumeTarget(project, params, nil); got != nil {
+			t.Fatalf("invalid target bound: %v -> %+v", params, got)
+		}
+	}
+	params := map[string]interface{}{"run_id": "run"}
+	for _, loader := range []func(string, string) (string, error){
+		nil,
+		func(string, string) (string, error) { return "", errors.New("state unavailable") },
+		func(string, string) (string, error) { return "", nil },
+	} {
+		if got := resolveJobResumeTarget(project, params, loader); got != nil {
+			t.Fatalf("unproven implicit target bound: %+v", got)
+		}
+	}
+	for _, root := range []string{"", filepath.Join(project, "missing"), t.TempDir()} {
+		if got := resolveJobResumeTarget(root, map[string]interface{}{"run_id": "run", "session": "explicit"}, nil); got != nil {
+			t.Fatalf("unresolved state namespace bound: %+v", got)
+		}
+	}
+	// Without a proven binding, dispatch preserves the old implicit-session
+	// behavior under its global queue barrier. This also keeps durable replays
+	// independent of saved state that no longer exists.
+	if got, err := applyJobResumeTarget(context.Background(), project, "run", ""); err != nil || got != "" {
+		t.Fatalf("unbound dispatch changed: %q, %v", got, err)
+	}
+}
+
+func TestJobResumeTargetRejectsIdentityAndNamespaceDrift(t *testing.T) {
+	project := resourceResumeProject(t)
+	target := resolveJobResumeTarget(project, map[string]interface{}{"run_id": "run", "session": "A"}, nil)
+	if target == nil {
+		t.Fatal("target not resolved")
+	}
+	ctx := context.WithValue(context.Background(), jobResumeTargetKey{}, *target)
+	for _, tc := range []struct{ project, run, session string }{
+		{project, "different-run", "A"}, {project, "run", "B"}, {t.TempDir(), "run", "A"},
+	} {
+		if _, err := applyJobResumeTarget(ctx, tc.project, tc.run, tc.session); err == nil {
+			t.Fatalf("changed identity accepted: %+v", tc)
+		}
+	}
+	stateDir := filepath.Join(project, ".ntm", "pipelines")
+	if err := os.Rename(stateDir, stateDir+"-original"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := applyJobResumeTarget(ctx, project, "run", "A"); err == nil {
+		t.Fatal("missing bound namespace accepted")
+	}
+	if err := os.Symlink(t.TempDir(), stateDir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := applyJobResumeTarget(ctx, project, "run", "A"); err == nil || !strings.Contains(err.Error(), "namespace changed") {
+		t.Fatalf("changed state namespace not rejected: %v", err)
+	}
+}
+
+func TestJobResumeResourcesSerializeSameRunButAllowIndependentRecovery(t *testing.T) {
+	project := resourceResumeProject(t)
+	bind := func(run, session string) *jobResumeTarget {
+		t.Helper()
+		target := resolveJobResumeTarget(project, map[string]interface{}{"run_id": run, "session": session}, nil)
+		if target == nil {
+			t.Fatal("resume target not bound")
+		}
+		return target
+	}
+	e := resourceExecutor(t, 4, 8)
+	firstGate, releaseFirst := resourceGate(t)
+	otherGate, _ := resourceGate(t)
+	events := make(chan string, 8)
+	resourceSubmit(t, e, "resume-A", bind("same-run", "A").resources(), events, firstGate)
+	resourceWait(t, events, "resume-A")
+	resourceSubmit(t, e, "resume-B", bind("same-run", "B").resources(), events, otherGate)
+	resourceSubmit(t, e, "other-run", bind("other-run", "C").resources(), events, otherGate)
+	resourceWait(t, events, "other-run")
+	resourceSubmit(t, e, "restore-A", jobExecutionResources(JobTypeCheckpointRestore, map[string]interface{}{"session": "A"}), events, otherGate)
+	if got := e.snapshot(); got.Running != 2 || got.Queued != 2 || got.WaitingForResources != 2 {
+		t.Fatalf("resume/restore scopes do not compose: %+v", got)
+	}
+	releaseFirst()
+	seen := map[string]bool{}
+	for i := 0; i < 2; i++ {
+		select {
+		case event := <-events:
+			seen[event] = true
+		case <-time.After(3 * time.Second):
+			t.Fatal("released recovery scopes remained blocked")
+		}
+	}
+	if !seen["resume-B"] || !seen["restore-A"] {
+		t.Fatalf("wrong recovered work: %v", seen)
+	}
+}
+
+func TestJobResourcesConcurrentCancellationAndShutdownExactlyOnce(t *testing.T) {
+	for round := 0; round < 100; round++ {
+		e := &jobExecutor{maxConcurrent: 3, maxQueued: 9}
+		var finals [12]atomic.Int32
+		for i := range finals {
+			index := i
+			if err := e.submit(context.Background(), func(root context.Context) (*scheduledJob, error) {
+				ctx, cancel := context.WithCancel(root)
+				return &scheduledJob{
+					id: fmt.Sprint(index), ctx: ctx, cancel: cancel,
+					resources: []string{fmt.Sprintf("session:%d", index%3), fmt.Sprintf("run:%d", index%2)},
+					run:       func() { <-ctx.Done(); finals[index].Add(1) },
+					discard:   func() { finals[index].Add(1) },
+				}, nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		var wg sync.WaitGroup
+		for i := range finals {
+			wg.Add(1)
+			go func(id string) { defer wg.Done(); e.cancelQueued(id) }(fmt.Sprint(i))
+		}
+		e.closeAdmission()
+		wg.Wait()
+		select {
+		case <-e.drained:
+		case <-time.After(3 * time.Second):
+			t.Fatal("resource cancellations did not drain")
+		}
+		for i := range finals {
+			if finals[i].Load() != 1 {
+				t.Fatalf("round %d job %d finalized %d times", round, i, finals[i].Load())
+			}
+		}
+		if len(e.running) != 0 || e.snapshot().WaitingForResources != 0 {
+			t.Fatal("completed cancellation retained execution scopes")
+		}
 	}
 }

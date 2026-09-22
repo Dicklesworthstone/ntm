@@ -61,10 +61,26 @@ restore with `target_session` locks the destination, not its source archive name
 The normalized top-level/parameter session binding is shared with dispatch;
 conflicting explicit sessions fail admission rather than locking the wrong one.
 
-Jobs whose target is still implicit use an exclusive queue barrier. This includes
-pipeline resume (which also writes saved run state) and checkpoint restore without
-an explicit destination. They wait for preceding executions and prevent later
-jobs from passing until finished. The queue never guesses an implicit target.
+Pipeline resumes bind their effective session at admission: an explicit override
+wins, otherwise the shared saved-state reader supplies the session. They acquire
+both that session and the canonical saved-run pathname as execution scopes. Two
+resumes of one saved run cannot overlap even with different session overrides;
+unrelated runs and sessions may proceed concurrently. Project and state-directory
+symlink aliases share the same saved-run scope.
+
+This binding freezes identity, not execution state. Dispatch retains the admitted
+session even if a newer saved checkpoint names another session, but reloads the
+actual state through the existing engine and run lock so completed steps are not
+replayed from an old snapshot. A detected state-directory redirection fails before
+loading state or entering the engine. The private binding does not change public
+parameters or durable operation-ID fingerprints.
+
+When the run namespace or implicit session cannot be resolved, the job retains
+an exclusive queue barrier and the existing dispatcher error path. This permits
+a completed operation-ID retry to replay its durable result even after its saved
+state is gone. The queue does not invent a destination or replay uncertain work.
+A checkpoint restore without `target_session` uses its source session: the shared
+checkpoint loader verifies metadata matches that namespace before restoring.
 
 All scopes for a job are acquired together. Earlier blocked multi-scope jobs keep
 their ordering on every required scope, so younger jobs cannot starve them.
@@ -118,11 +134,13 @@ queued pipeline's relative workflow path, working directory, or resume-state
 lookup to another project. The pending job receipt exposes that selection as
 `project_dir`, and the ordinary shared pipeline methods execute against it.
 
-This is a namespace snapshot, not a copy of files, immutable symlink targets,
-provider configuration, or an execution permission grant. Workflow validation,
-path confinement, run locks, and current policy checks still run normally.
-Direct synchronous routes retain their existing behavior. Swarm default-directory
-resolution and checkpoint source/destination resolution are not changed.
+This is a namespace snapshot, not a copy of files, an adversarial filesystem
+isolation boundary, a provider-configuration snapshot, or an execution permission
+grant. Resumes additionally canonicalize their project selection and reject
+detected state-directory redirection at dispatch. Workflow validation, path
+confinement, run locks, and current policy checks still run normally. Direct
+synchronous routes retain their existing behavior. Swarm default-directory
+resolution and checkpoint source/destination execution are not changed.
 
 The private execution binding is not included in the public request fingerprint:
 retrying an existing `operation_id` still asks for its original recorded outcome,

@@ -89,10 +89,21 @@ func (s *Server) submitJob(ctx context.Context, req CreateJobRequest) (*Job, err
 			return nil, fmt.Errorf("%w: %v", errInvalidJobRequest, err)
 		}
 		resources := jobExecutionResources(frozen.Type, params)
+		var resumeTarget *jobResumeTarget
+		if frozen.Type == JobTypePipelineResume {
+			resumeTarget = resolveJobResumeTarget(frozen.executionProjectDir, params, loadJobResumeSession)
+			if resumeTarget != nil {
+				frozen.executionProjectDir = resumeTarget.ProjectDir
+				resources = resumeTarget.resources()
+			}
+		}
 		if err := owner.Err(); err != nil {
 			return nil, errJobAdmissionClosed
 		}
 		jobCtx, cancel := context.WithCancel(owner)
+		if resumeTarget != nil {
+			jobCtx = context.WithValue(jobCtx, jobResumeTargetKey{}, *resumeTarget)
+		}
 		ready := false
 		defer func() {
 			if !ready {

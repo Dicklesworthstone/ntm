@@ -59,6 +59,19 @@ type jobPipelineResumeParams struct {
 	PipelineResumeRequest
 }
 
+// loadJobResumeSession reads only identity for queue scheduling. The engine
+// reloads the actual checkpoint at dispatch and again under its run fence.
+func loadJobResumeSession(projectDir, runID string) (string, error) {
+	prior, err := pipeline.LoadState(projectDir, runID)
+	if err != nil {
+		return "", err
+	}
+	if prior == nil || prior.RunID != runID {
+		return "", fmt.Errorf("saved resume identity does not match run %q", runID)
+	}
+	return prior.Session, nil
+}
+
 func (s *Server) jobPipelineResume(ctx context.Context, params map[string]interface{}) (map[string]interface{}, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -80,6 +93,10 @@ func executeResumePipelineJob(ctx context.Context, projectDir string, req jobPip
 	if strings.TrimSpace(req.RunID) == "" {
 		return nil, fmt.Errorf("run_id is required")
 	}
+	session, err := applyJobResumeTarget(ctx, projectDir, req.RunID, req.Session)
+	if err != nil {
+		return nil, err
+	}
 	// LoadState confines run IDs to the project's pipeline state directory.
 	// Do not accept an arbitrary state path or search another project's cwd.
 	prior, err := load(projectDir, req.RunID)
@@ -92,7 +109,6 @@ func executeResumePipelineJob(ctx context.Context, projectDir string, req jobPip
 	if prior.RunID != req.RunID {
 		return nil, fmt.Errorf("resume state run_id %q does not match requested run %q", prior.RunID, req.RunID)
 	}
-	session := req.Session
 	if session == "" {
 		session = prior.Session
 	}
