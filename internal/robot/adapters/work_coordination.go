@@ -38,6 +38,8 @@ type WorkSection struct {
 	Graph      *WorkGraph   `json:"graph,omitempty"`
 	Available  bool         `json:"available"`
 	Reason     string       `json:"reason,omitempty"`
+
+	Verification *WorkVerification `json:"verification,omitempty"`
 }
 
 // WorkItem is a normalized bead record suitable for robot surfaces.
@@ -226,6 +228,8 @@ type WorkCoordinationAdapterConfig struct {
 	ConflictWindow            time.Duration
 	MailBacklogThreshold      int
 	AgentMailClient           *agentmail.Client
+
+	VerificationPolicy WorkVerificationPolicy
 }
 
 // DefaultWorkCoordinationAdapterConfig returns conservative defaults.
@@ -300,7 +304,7 @@ func (a *WorkCoordinationAdapter) Collect(ctx context.Context) (*SignalBatch, er
 		ctx = context.Background()
 	}
 	now := time.Now()
-	work, workErr := a.collectWork(ctx)
+	work, workErr := a.collectVerifiedWork(ctx)
 	coordination := a.collectCoordination(ctx, now)
 
 	batch := &SignalBatch{
@@ -351,7 +355,10 @@ func (a *WorkCoordinationAdapter) LastError() error {
 }
 
 func (a *WorkCoordinationAdapter) collectWork(ctx context.Context) (*WorkSection, error) {
-	triage, _ := bv.GetTriageContext(ctx, a.config.ProjectDir)
+	triage, triageErr := bv.GetTriageContext(ctx, a.config.ProjectDir)
+	if isStaleWorkSourceError(triageErr) {
+		return rejectWorkSource(nil, triageErr), triageErr
+	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
