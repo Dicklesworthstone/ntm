@@ -39,6 +39,12 @@ func restoreLifecycleFixture(t *testing.T) (string, string) {
 	t.Setenv("NTM_RESTORE_TEST_DELIVERIES", filepath.Join(dir, "deliveries"))
 	t.Setenv("NTM_RESTORE_TEST_LAUNCH_LOG", filepath.Join(dir, "launches"))
 	t.Setenv("NTM_RESTORE_TEST_OBSERVATIONS", filepath.Join(dir, "observations"))
+	t.Setenv("NTM_RESTORE_TEST_SCREEN", filepath.Join(dir, "screen"))
+	t.Setenv("NTM_RESTORE_TEST_CAPTURE_LOG", filepath.Join(dir, "captures"))
+	t.Setenv("NTM_RESTORE_TEST_BOOT_CAPTURES", "0")
+	if err := os.WriteFile(os.Getenv("NTM_RESTORE_TEST_SCREEN"), []byte("captured checkpoint context\n❯ \n"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("NTM_RESTORE_TEST_START_COMMAND", "claude")
 	t.Setenv("NTM_RESTORE_TEST_AGENT_TYPE", "cc")
 	t.Setenv("NTM_RESTORE_TEST_PANE_OFFSET", "0")
@@ -121,7 +127,14 @@ case "$1" in
       '#{pane_current_path}') printf '%s\n' "$NTM_RESTORE_TEST_DIR" ;;
       '#{pane_id}') printf '%%0\n' ;;
     esac ;;
-  capture-pane) printf 'captured checkpoint context\n' ;;
+  capture-pane)
+    printf '%s\n' "$*" >> "$NTM_RESTORE_TEST_CAPTURE_LOG"
+    captures=$(wc -l < "$NTM_RESTORE_TEST_CAPTURE_LOG")
+    if [ "$captures" -le "$NTM_RESTORE_TEST_BOOT_CAPTURES" ]; then
+      printf 'Loading agent UI...\n'
+    else
+      cat "$NTM_RESTORE_TEST_SCREEN"
+    fi ;;
   load-buffer) cat >> "$NTM_RESTORE_TEST_PAYLOAD" ;;
   paste-buffer|send-keys) printf '%s\n' "$*" >> "$NTM_RESTORE_TEST_DELIVERIES" ;;
 esac

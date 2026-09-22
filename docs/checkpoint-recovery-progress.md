@@ -40,8 +40,32 @@ and the restorer's final result remain authoritative for terminal completion;
 normal journal recovery still marks interrupted execution as outcome unknown.
 
 Dry runs do not publish execution events or mutate tmux. Direct CLI and
-synchronous REST restores keep their current behavior. Embedders may opt into
+synchronous REST restores do not attach a journal observer. Embedders may opt into
 this same observer with `checkpoint.WithRestoreProgress`; it receives the actual
 execution context, including downstream journal hooks, and is synchronous,
 ordered, and scoped to one restore. A failing or panicking observer stops further
 actions. It must not reenter its own restore callback.
+
+## Context delivery waits for the agent UI
+
+Every restore that requests context injection, including CLI and synchronous
+REST, waits for two separately captured, fresh, confidently idle observations
+of the exact created pane. Only its visible screen is classified, not historical
+scrollback or a sibling pane's activity. The shared status detector supplies the
+idle classification; last-known state and display-only idle heuristics do not
+authorize delivery. Known interactive gates, existing composer drafts, queued
+messages, and omp completion lists withhold context instead of consuming input.
+
+Each recipient has a 30-second readiness budget, with 200-millisecond polling;
+an earlier caller cancellation or deadline wins. Missing or ambiguous panes,
+changed agent identity, shell/dead/service panes, and capture failures refuse
+without sending. The readiness check runs after the pre-delivery journal flush,
+and physical identity is checked again immediately before the existing send.
+
+Waiting never clears a draft, dismisses a dialog, sends an interrupt, or launches
+the agent again. Failure returns `ErrRestoreContextNotReady` with the pane and
+reason, retains already-completed deliveries, and leaves the restored session
+available for inspection. Dry runs do not wait. These observations are not an
+atomic lock on the UI: an independent user or process can still change a pane
+between observation and input. A completed send is not proof the agent finished
+processing the context.

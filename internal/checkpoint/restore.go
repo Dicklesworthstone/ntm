@@ -940,6 +940,11 @@ func (r *Restorer) injectContext(cp *Checkpoint, maxLines int) (int, error) {
 		}
 		paneID := r.restoredPaneIDs[restoredIndex]
 		_, err = runRestoreMutation(ctx, restorePaneProgress("inject_context", paneID, paneState), func() (string, error) {
+			// A running process may still be booting, busy, or blocked by a
+			// modal. Wait after the journal flush, without typing into its UI.
+			if err := waitForRestoreContextReady(ctx, cp.SessionName, paneID, tmux.ParsePaneAgentTypeOption(paneState.AgentType)); err != nil {
+				return "", err
+			}
 			// Revalidate AFTER the before-checkpoint: that write can block, and
 			// another process could have replaced or retagged the target meanwhile.
 			panes, err := tmux.DefaultClient.GetPanesContext(ctx, cp.SessionName)
