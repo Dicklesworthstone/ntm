@@ -3,9 +3,14 @@
 package context
 
 import (
+	stdcontext "context"
+	"crypto/rand"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -15,6 +20,8 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/alerts"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/persona"
+	"github.com/Dicklesworthstone/ntm/internal/resilience"
+	"github.com/Dicklesworthstone/ntm/internal/swarm"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
@@ -146,6 +153,22 @@ type PaneSpawner interface {
 	GetPanes(session string) ([]tmux.Pane, error)
 }
 
+// rotationPaneLifecycle lets a spawner bind replacement operations to the
+// original process, replay its launch settings, and observe prompt readiness.
+// Custom spawners that implement only PaneSpawner retain responsibility for
+// their own startup and delivery protocol.
+type rotationPaneLifecycle interface {
+	SpawnReplacementContext(stdcontext.Context, string, tmux.Pane, int, string) (tmux.Pane, error)
+	DeliverHandoffContext(stdcontext.Context, string, tmux.Pane, string) error
+	KillRotationPaneContext(stdcontext.Context, string, tmux.Pane) error
+}
+
+type rotationContextTransport interface {
+	GetPanesContext(stdcontext.Context, string) ([]tmux.Pane, error)
+	SendBufferContext(stdcontext.Context, string, string, bool) error
+	SendKeysContext(stdcontext.Context, string, string, bool) error
+}
+
 type paneInputSender interface {
 	SendKeys(paneID, text string, enter bool) error
 	SendBuffer(paneID, text string, enter bool) error
@@ -172,48 +195,129 @@ func (s *DefaultPaneSpawner) SpawnAgent(session, agentType string, index int, va
 	// Resolve the original launch spec before creating a pane. Configured
 	// commands are Go templates, and passing them directly to the shell leaves
 	// the replacement at a shell error instead of starting an agent.
-	agentCmd, err := s.agentLaunchCommand(session, agentType, index, variant, workDir)
+	spec, err := s.agentLaunchSpec(session, agentType, index, variant, workDir)
 	if err != nil {
 		return "", fmt.Errorf("preparing replacement agent: %w", err)
 	}
+	ctx, cancel := stdcontext.WithTimeout(stdcontext.Background(), rotationReadyTimeout)
+	defer cancel()
+	pane, err := s.spawnAgentWithSpec(ctx, session, index, variant, workDir, spec)
+	return pane.ID, err
+}
+
+// SpawnReplacementContext uses creation-time metadata whenever it exists.
+// Corrupt or incomplete metadata must never fall back to title inference: that
+// would silently turn an exact launch into a different model, persona, or
+// account. Only panes created before launch metadata existed use that fallback.
+func (s *DefaultPaneSpawner) SpawnReplacementContext(ctx stdcontext.Context, session string, predecessor tmux.Pane, index int, workDir string) (tmux.Pane, error) {
+	if ctx == nil {
+		return tmux.Pane{}, errors.New("replacement launch context is required")
+	}
+	launchCtx, cancel := stdcontext.WithTimeout(ctx, rotationReadyTimeout)
+	defer cancel()
+	if err := validateAutomatedRotation(predecessor.Type); err != nil {
+		return tmux.Pane{}, err
+	}
+	if _, err := currentRotationPane(launchCtx, session, predecessor, tmux.GetPanesContext); err != nil {
+		return tmux.Pane{}, fmt.Errorf("original agent changed before replacement: %w", err)
+	}
+	// Agents may run in separate worktrees inside one session. The caller's
+	// session/project directory is not evidence of this pane's working tree.
+	observedDir, err := tmux.DefaultClient.RunContext(launchCtx, "display-message", "-p", "-t", tmux.ExactTarget(predecessor.ID), "#{pane_current_path}")
+	if err != nil {
+		return tmux.Pane{}, fmt.Errorf("reading original agent working directory: %w", err)
+	}
+	workDir = strings.TrimSpace(observedDir)
+	if workDir == "" || !filepath.IsAbs(workDir) {
+		return tmux.Pane{}, errors.New("original agent working directory is unavailable or not absolute")
+	}
+	if _, err := currentRotationPane(launchCtx, session, predecessor, tmux.GetPanesContext); err != nil {
+		return tmux.Pane{}, fmt.Errorf("original agent changed while reading its working directory: %w", err)
+	}
+	spec, err := tmux.ReadPaneLaunchSpecContext(launchCtx, predecessor.ID)
+	if err != nil {
+		return tmux.Pane{}, fmt.Errorf("reading original launch settings: %w", err)
+	}
+	if spec == nil {
+		reconstructed, err := s.agentLaunchSpec(session, string(predecessor.Type), index, predecessor.Variant, workDir)
+		if err != nil {
+			return tmux.Pane{}, fmt.Errorf("reconstructing legacy launch settings: %w", err)
+		}
+		spec = &reconstructed
+	}
+	if err := spec.ValidateReplay(predecessor.Type); err != nil {
+		return tmux.Pane{}, fmt.Errorf("cannot replay original launch settings: %w", err)
+	}
+	return s.spawnAgentWithSpec(launchCtx, session, index, predecessor.Variant, workDir, *spec)
+}
+
+func (s *DefaultPaneSpawner) spawnAgentWithSpec(ctx stdcontext.Context, session string, index int, variant, workDir string, spec tmux.AgentLaunchSpec) (tmux.Pane, error) {
+	isolationSession := session
+	if spec.ClaudeIsolateCredentials {
+		// The old and new panes overlap. Reusing their logical title/index for
+		// credential isolation would make them share a mutable credential dir.
+		isolationSession = "ntm-rotation-" + rand.Text()
+	}
+	agentCmd, err := resilience.PrepareAgentLaunchSpec(ctx, s.config, spec, workDir, isolationSession, index)
+	if err != nil {
+		return tmux.Pane{}, fmt.Errorf("preparing replacement launch environment: %w", err)
+	}
 	cmd, err := tmux.BuildPaneCommand(workDir, agentCmd)
 	if err != nil {
-		return "", fmt.Errorf("building command: %w", err)
+		return tmux.Pane{}, fmt.Errorf("building command: %w", err)
 	}
 
 	// Create a new pane
-	paneID, err := tmux.SplitWindow(session, workDir)
+	paneID, err := tmux.SplitWindowContext(ctx, session, workDir)
 	if err != nil {
-		return "", fmt.Errorf("creating pane: %w", err)
+		return tmux.Pane{}, fmt.Errorf("creating pane: %w", err)
+	}
+	pane := tmux.Pane{ID: paneID, Type: spec.AgentType}
+	// Preserve uncertain panes for inspection. In particular, a failed identity
+	// observation is not permission to kill a process that may have replaced it.
+	fail := func(stage string, err error) (tmux.Pane, error) {
+		return pane, fmt.Errorf("%s for replacement %s (pane preserved): %w", stage, paneID, err)
 	}
 
 	// Persist the replacement provider separately from its mutable title.
-	shortType := agentTypeShort(agentType)
+	shortType := agentTypeShort(string(spec.AgentType))
 	title := tmux.FormatPaneName(session, shortType, index, variant)
-	if err := tmux.SetPaneAgentIdentity(paneID, title, tmux.AgentType(agentType)); err != nil {
-		// Clean up orphaned pane on failure
-		_ = tmux.KillPane(paneID)
-		return "", fmt.Errorf("setting pane identity: %w", err)
+	if err := tmux.SetPaneAgentIdentityContext(ctx, paneID, title, spec.AgentType); err != nil {
+		return fail("setting pane identity", err)
+	}
+	if err := tmux.SetPaneLaunchSpecContext(ctx, paneID, spec); err != nil {
+		return fail("persisting launch settings", err)
+	}
+	panes, err := tmux.GetPanesContext(ctx, session)
+	if err != nil {
+		return fail("observing new pane", err)
+	}
+	observed, err := findLiveAgentPane(panes, title, paneID)
+	if err != nil {
+		return fail("pinning new pane", err)
+	}
+	pane = observed
+	if pane.PID <= 0 || pane.Dead || pane.IsServicePane() || pane.Type.Canonical() != spec.AgentType.Canonical() || !pane.IdleShell() {
+		return fail("checking new pane", errors.New("expected a live, unoccupied agent-tagged shell with a known process identity"))
 	}
 
 	// Launch the agent
-	if err := tmux.SendKeys(paneID, cmd, true); err != nil {
-		_ = tmux.KillPane(paneID)
-		return "", fmt.Errorf("launching agent: %w", err)
+	if err := tmux.SendKeysContext(ctx, paneID, cmd, true); err != nil {
+		return fail("launching agent", err)
 	}
 
 	// Apply tiled layout (best-effort)
-	if err := tmux.ApplyTiledLayout(session); err != nil {
+	if err := tmux.ApplyTiledLayoutContext(ctx, session); err != nil {
 		slog.Warn("failed to apply tiled layout after spawn", "session", session, "error", err)
 	}
 
-	return paneID, nil
+	return pane, nil
 }
 
-// agentLaunchCommand restores the model, reasoning effort, and registered
+// agentLaunchSpec restores the model, reasoning effort, and registered
 // persona encoded in the predecessor's variant using the same model registry
 // and guarded template renderer as ordinary agent creation.
-func (s *DefaultPaneSpawner) agentLaunchCommand(session, agentType string, index int, variant, workDir string) (string, error) {
+func (s *DefaultPaneSpawner) agentLaunchSpec(session, agentType string, index int, variant, workDir string) (tmux.AgentLaunchSpec, error) {
 	models := config.DefaultModels()
 	if s.config != nil {
 		models = s.config.Models
@@ -233,7 +337,7 @@ func (s *DefaultPaneSpawner) agentLaunchCommand(session, agentType string, index
 	if modelAlias != "" && effort == "" {
 		registry, err := persona.LoadRegistry(workDir)
 		if err != nil {
-			return "", fmt.Errorf("loading replacement persona: %w", err)
+			return tmux.AgentLaunchSpec{}, fmt.Errorf("loading replacement persona: %w", err)
 		}
 		if p, ok := registry.Get(modelAlias); ok && p != nil {
 			// Bare titles do not record whether the operator selected a model
@@ -249,10 +353,10 @@ func (s *DefaultPaneSpawner) agentLaunchCommand(session, agentType string, index
 				}
 			}
 			if ambiguous {
-				return "", fmt.Errorf("ambiguous replacement variant %q matches both a configured model and a persona; cannot safely restore the original launch settings", modelAlias)
+				return tmux.AgentLaunchSpec{}, fmt.Errorf("ambiguous replacement variant %q matches both a configured model and a persona; cannot safely restore the original launch settings", modelAlias)
 			}
 			if agent.AgentType(p.AgentType).Canonical() != agent.AgentType(agentType).Canonical() {
-				return "", fmt.Errorf("persona %q belongs to %s, cannot rotate a %s pane into that persona", p.Name, p.AgentType, agentType)
+				return tmux.AgentLaunchSpec{}, fmt.Errorf("persona %q belongs to %s, cannot rotate a %s pane into that persona", p.Name, p.AgentType, agentType)
 			}
 			vars.PersonaName = p.Name
 			vars.ModelAlias = strings.TrimSpace(p.Model)
@@ -261,23 +365,46 @@ func (s *DefaultPaneSpawner) agentLaunchCommand(session, agentType string, index
 			vars.SystemPrompt = p.SystemPrompt
 			vars.SystemPromptFile, err = persona.PrepareSystemPrompt(p, workDir)
 			if err != nil {
-				return "", fmt.Errorf("preparing replacement persona %q: %w", p.Name, err)
+				return tmux.AgentLaunchSpec{}, fmt.Errorf("preparing replacement persona %q: %w", p.Name, err)
 			}
 		}
 	}
 	if agent.AgentType(agentType).Canonical() == agent.AgentTypeAntigravity &&
 		vars.ModelAlias != "" && vars.ModelAlias != config.AntigravityRequiredModel {
-		return "", fmt.Errorf("antigravity model is pinned to %q, cannot restore model %q", config.AntigravityRequiredModel, vars.ModelAlias)
+		return tmux.AgentLaunchSpec{}, fmt.Errorf("antigravity model is pinned to %q, cannot restore model %q", config.AntigravityRequiredModel, vars.ModelAlias)
 	}
 	vars.Model = models.GetModelName(agentType, vars.ModelAlias)
 	command, err := config.GenerateAgentCommand(s.getAgentCommand(agentType), vars)
 	if err != nil {
-		return "", err
+		return tmux.AgentLaunchSpec{}, err
 	}
 	if strings.TrimSpace(command) == "" {
-		return "", fmt.Errorf("configured %s agent command rendered empty", agentType)
+		return tmux.AgentLaunchSpec{}, fmt.Errorf("configured %s agent command rendered empty", agentType)
 	}
-	return command, nil
+	spec := tmux.AgentLaunchSpec{
+		Version: tmux.AgentLaunchSpecVersion, AgentType: tmux.AgentType(agentType).Canonical(),
+		Command: command, Model: vars.Model, ModelAlias: vars.ModelAlias,
+		Persona: vars.PersonaName, ReasoningEffort: vars.ReasoningEffort,
+	}
+	if vars.SystemPromptFile != "" {
+		prompt, err := os.ReadFile(vars.SystemPromptFile)
+		if err != nil {
+			return tmux.AgentLaunchSpec{}, fmt.Errorf("recording replacement system prompt: %w", err)
+		}
+		if len(prompt) > 1<<20 {
+			return tmux.AgentLaunchSpec{}, errors.New("replacement system prompt exceeds 1 MiB")
+		}
+		spec.SystemPromptFile = vars.SystemPromptFile
+		spec.SystemPromptSHA256 = fmt.Sprintf("%x", sha256.Sum256(prompt))
+	}
+	if s.config != nil && spec.AgentType == tmux.AgentClaude && s.config.Agents.ClaudeIsolateCredentials {
+		spec.ClaudeIsolateCredentials = true
+		spec.ClaudeTokenFile, err = swarm.ResolveClaudeSetupTokenFile(s.config.Agents.ClaudeTokenFile)
+		if err != nil {
+			return tmux.AgentLaunchSpec{}, fmt.Errorf("recording replacement token-file reference: %w", err)
+		}
+	}
+	return spec, nil
 }
 
 // KillPane terminates a pane.
@@ -298,6 +425,346 @@ func (s *DefaultPaneSpawner) SendBuffer(paneID, text string, enter bool) error {
 // GetPanes returns all panes in a session.
 func (s *DefaultPaneSpawner) GetPanes(session string) ([]tmux.Pane, error) {
 	return tmux.GetPanes(session)
+}
+
+func (s *DefaultPaneSpawner) GetPanesContext(ctx stdcontext.Context, session string) ([]tmux.Pane, error) {
+	return tmux.GetPanesContext(ctx, session)
+}
+
+func (s *DefaultPaneSpawner) SendBufferContext(ctx stdcontext.Context, paneID, text string, enter bool) error {
+	return tmux.DefaultClient.SendBufferContext(ctx, paneID, text, enter)
+}
+
+func (s *DefaultPaneSpawner) SendKeysContext(ctx stdcontext.Context, paneID, text string, enter bool) error {
+	return tmux.SendKeysContext(ctx, paneID, text, enter)
+}
+
+const (
+	rotationReadyTimeout = 45 * time.Second
+	rotationReadyPoll    = 200 * time.Millisecond
+)
+
+type rotationPaneLister func(stdcontext.Context, string) ([]tmux.Pane, error)
+type rotationPaneCapture func(stdcontext.Context, string) (string, error)
+type rotationOutputCapture func(stdcontext.Context, string, int) (string, error)
+
+func rotationProcessRunning(pane tmux.Pane) bool {
+	command := strings.TrimSpace(pane.Command)
+	if command == "" || tmux.PaneCommandIsStarting(command) {
+		return false
+	}
+	// Match the shared startup observer's process evidence: a sh -c wrapper
+	// can own the foreground process group without changing its command name.
+	return !tmux.PaneCommandIsShell(command) || pane.ForegroundJobRunning()
+}
+
+// currentRotationPane never substitutes a title/index match for a missing
+// physical pane and never accepts a respawn of that pane's original process.
+func currentRotationPane(ctx stdcontext.Context, session string, expected tmux.Pane, list rotationPaneLister) (tmux.Pane, error) {
+	if expected.ID == "" || expected.PID <= 0 {
+		return tmux.Pane{}, errors.New("pane process identity is unavailable")
+	}
+	panes, err := list(ctx, session)
+	if err != nil {
+		return tmux.Pane{}, fmt.Errorf("observe pane %s: %w", expected.ID, err)
+	}
+	pane, err := findLiveAgentPane(panes, "", expected.ID)
+	if err != nil {
+		return tmux.Pane{}, err
+	}
+	if pane.PID != expected.PID || pane.Type.Canonical() != expected.Type.Canonical() || pane.IsServicePane() {
+		return tmux.Pane{}, fmt.Errorf("pane %s process or agent identity changed", expected.ID)
+	}
+	if pane.Dead {
+		return tmux.Pane{}, fmt.Errorf("pane %s process exited", expected.ID)
+	}
+	return pane, nil
+}
+
+// rotationPromptReady is stricter than ordinary best-effort prompt delivery.
+// Retiring the predecessor requires successful, nonempty observations of a
+// ready input prompt; blank output, boot banners and dialogs are not evidence.
+func rotationPromptReady(captured string, pane tmux.Pane) (bool, string) {
+	if strings.TrimSpace(captured) == "" {
+		return false, "agent has not drawn its input prompt"
+	}
+	if gate, found := agent.DetectInteractiveGate(captured, pane.Width); found {
+		return false, "agent is showing " + gate
+	}
+	working := false
+	switch pane.Type.Canonical() {
+	case agent.AgentTypeClaudeCode:
+		working = agent.ClaudeActivelyWorking(captured, pane.Width)
+	case agent.AgentTypeCodex:
+		working = agent.CodexActivelyWorking(captured, pane.Width)
+	case agent.AgentTypeGrok:
+		working = agent.GrokActivelyWorking(captured, pane.Width)
+	case agent.AgentTypeOmp:
+		working = agent.OmpActivelyWorking(captured, pane.Width)
+	case agent.AgentTypeAntigravity:
+		working = agent.AntigravityActivelyWorking(captured, pane.Width)
+	case agent.AgentTypeOpencode:
+		working = agent.OpencodeActivelyWorking(captured, pane.Width)
+	}
+	if working {
+		return false, "agent is still processing a turn"
+	}
+	parser := agent.NewParser()
+	observed := parser.DetectAgentType(captured)
+	if observed.IsValid() && observed != agent.AgentTypeUser && observed.Canonical() != pane.Type.Canonical() {
+		return false, fmt.Sprintf("visible output belongs to %s, expected %s", observed, pane.Type.Canonical())
+	}
+	composer := tmux.InspectComposer(captured, pane.Type)
+	switch pane.Type.Canonical() {
+	case agent.AgentTypeClaudeCode, agent.AgentTypeCodex, agent.AgentTypeGrok, agent.AgentTypeOmp:
+		if !composer.MarkerVisible {
+			return false, "agent composer is not visible"
+		}
+	default:
+		// For providers without a structural composer parser, corroborate
+		// their prompt with an independently recognized banner or executable.
+		// A node/python REPL's generic '>' is not an agent-ready signal.
+		commandType := agent.AgentType(filepath.Base(strings.TrimSpace(pane.Command))).Canonical()
+		if commandType != pane.Type.Canonical() && observed.Canonical() != pane.Type.Canonical() {
+			return false, "input prompt has no recognizable agent identity"
+		}
+	}
+	if composer.HoldsText || composer.QueuedMessages {
+		return false, "agent has unsubmitted or queued input"
+	}
+	if pane.Type.Canonical() == agent.AgentTypeOmp {
+		if box := agent.ParseOmpComposer(captured); box.Found && box.RowsBelow != 0 {
+			return false, "agent composer has an open completion list"
+		}
+	}
+	state, err := parser.ParseWithHint(captured, pane.Type)
+	if err != nil || state == nil || !state.IsIdle || state.IsWorking || state.IsInError || state.IsRateLimited {
+		return false, "agent has not reached an idle input prompt"
+	}
+	return true, ""
+}
+
+func waitForRotationReady(ctx stdcontext.Context, session string, expected tmux.Pane, timeout, poll time.Duration, list rotationPaneLister, capture rotationPaneCapture) (tmux.Pane, error) {
+	if ctx == nil || list == nil || capture == nil {
+		return tmux.Pane{}, errors.New("rotation readiness requires a context and observation dependencies")
+	}
+	if timeout <= 0 {
+		timeout = rotationReadyTimeout
+	}
+	if poll <= 0 {
+		poll = rotationReadyPoll
+	}
+	waitCtx, cancel := stdcontext.WithTimeout(ctx, timeout)
+	defer cancel()
+	stableCommand := ""
+	stableObservations := 0
+	lastReason := "agent startup has not been observed"
+	for {
+		if err := waitCtx.Err(); err != nil {
+			return tmux.Pane{}, fmt.Errorf("replacement %s did not become ready: %s: %w", expected.ID, lastReason, err)
+		}
+		pane, err := currentRotationPane(waitCtx, session, expected, list)
+		if err != nil {
+			return tmux.Pane{}, err
+		}
+		ready := false
+		command := strings.TrimSpace(pane.Command)
+		if !rotationProcessRunning(pane) {
+			lastReason = "pane is still at a shell or has no foreground command"
+		} else {
+			captured, err := capture(waitCtx, expected.ID)
+			if err != nil {
+				return tmux.Pane{}, fmt.Errorf("observe replacement input prompt: %w", err)
+			}
+			ready, lastReason = rotationPromptReady(captured, pane)
+		}
+		if ready {
+			command = strings.ToLower(filepath.Base(command))
+			if command != stableCommand {
+				stableCommand, stableObservations = command, 0
+			}
+			stableObservations++
+			if stableObservations >= 2 {
+				// Capture is a subprocess too. Recheck the pinned identity and
+				// foreground command after it, immediately before handoff.
+				latest, err := currentRotationPane(waitCtx, session, expected, list)
+				if err != nil {
+					return tmux.Pane{}, err
+				}
+				if rotationProcessRunning(latest) && strings.ToLower(filepath.Base(strings.TrimSpace(latest.Command))) == command {
+					return latest, nil
+				}
+				lastReason = "foreground command changed after observing the input prompt"
+				stableCommand, stableObservations = "", 0
+			}
+		} else {
+			stableCommand, stableObservations = "", 0
+		}
+		if err := waitForRotationDelay(waitCtx, poll); err != nil {
+			return tmux.Pane{}, fmt.Errorf("replacement %s did not become ready: %s: %w", expected.ID, lastReason, err)
+		}
+	}
+}
+
+func rotationSummaryRequest(summary *SummaryGenerator) (prompt, startMarker, endMarker string) {
+	requestID := rand.Text()[:16]
+	startMarker, endMarker = "NTM_START_"+requestID, "NTM_END_"+requestID
+	// Keep the marker tokens inline in the request. A terminal echo of these
+	// instructions cannot masquerade as the standalone response boundary lines.
+	prompt = summary.GeneratePrompt() + fmt.Sprintf("\n\nBegin your completed response with `%s` on its own line and end it with `%s` on its own line. Put only your actual handoff summary between those lines; do not repeat these instructions.", startMarker, endMarker)
+	return prompt, startMarker, endMarker
+}
+
+func completedRotationSummary(captured, startMarker, endMarker string) string {
+	lines := strings.Split(captured, "\n")
+	start := -1
+	for i, line := range lines {
+		switch strings.TrimSpace(line) {
+		case startMarker:
+			start = i + 1
+		case endMarker:
+			if start >= 0 && start < i {
+				return strings.TrimSpace(strings.Join(lines[start:i], "\n"))
+			}
+		}
+	}
+	return ""
+}
+
+// waitForRotationSummary accepts only a fresh, complete response to this
+// rotation's request. The old five-second capture could parse the echoed
+// template's own questions as the answer and retire the only real context.
+func waitForRotationSummary(ctx stdcontext.Context, session, agentID string, expected tmux.Pane, summary *SummaryGenerator, startMarker, endMarker string, poll time.Duration, list rotationPaneLister, capture rotationOutputCapture, visible rotationPaneCapture) (*HandoffSummary, error) {
+	if summary == nil || ctx == nil || list == nil || capture == nil || visible == nil {
+		return nil, errors.New("handoff summary requires a context and observation dependencies")
+	}
+	if poll <= 0 {
+		poll = rotationReadyPoll
+	}
+	timeout := summary.promptTimeout
+	if timeout <= 0 {
+		timeout = rotationReadyTimeout
+	}
+	waitCtx, cancel := stdcontext.WithTimeout(ctx, timeout)
+	defer cancel()
+	for {
+		if err := waitCtx.Err(); err != nil {
+			return nil, fmt.Errorf("original agent did not return a complete handoff summary: %w", err)
+		}
+		pane, err := currentRotationPane(waitCtx, session, expected, list)
+		if err != nil {
+			return nil, err
+		}
+		if !rotationProcessRunning(pane) {
+			return nil, errors.New("original agent exited while generating its handoff summary")
+		}
+		captured, err := capture(waitCtx, expected.ID, 500)
+		if err != nil {
+			return nil, fmt.Errorf("capture original agent handoff response: %w", err)
+		}
+		body := completedRotationSummary(captured, startMarker, endMarker)
+		if body != "" {
+			parsed := summary.ParseAgentResponse(agentID, agentTypeLong(string(expected.Type)), session, body)
+			// Independently reject the template even if a narrow terminal wrapped
+			// request marker tokens onto their own lines. Actual task/progress
+			// sections are required; a fallback cannot authorize retirement.
+			valid := strings.TrimSpace(parsed.CurrentTask) != "" && strings.TrimSpace(parsed.Progress) != "" &&
+				!strings.Contains(body, "What task are you currently working on?") &&
+				!strings.Contains(body, "What have you accomplished so far?") &&
+				!strings.Contains(body, "HANDOFF SUMMARY REQUIRED")
+			if valid {
+				if _, err := waitForRotationReady(waitCtx, session, expected, timeout, poll, list, visible); err != nil {
+					return nil, fmt.Errorf("original agent has not finished its handoff response: %w", err)
+				}
+				return parsed, nil
+			}
+		}
+		if err := waitForRotationDelay(waitCtx, poll); err != nil {
+			return nil, fmt.Errorf("original agent did not return a complete handoff summary: %w", err)
+		}
+	}
+}
+
+func waitForRotationDelay(ctx stdcontext.Context, duration time.Duration) error {
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+// DeliverHandoffContext observes readiness before typing and uses the provider's
+// existing submission check to catch input stranded in the composer. These are
+// process/input observations, not an application-level acknowledgment of context.
+func (s *DefaultPaneSpawner) DeliverHandoffContext(ctx stdcontext.Context, session string, replacement tmux.Pane, prompt string) error {
+	ready, err := waitForRotationReady(ctx, session, replacement, rotationReadyTimeout, rotationReadyPoll, tmux.GetPanesContext, tmux.CapturePaneVisibleContext)
+	if err != nil {
+		return err
+	}
+	deliveryCtx, cancel := stdcontext.WithTimeout(ctx, rotationReadyTimeout)
+	defer cancel()
+	if err := tmux.DefaultClient.SendBufferContext(deliveryCtx, ready.ID, prompt, true); err != nil {
+		return err
+	}
+	confirmed := true
+	switch ready.Type.Canonical() {
+	case agent.AgentTypeClaudeCode:
+		confirmed, _, err = tmux.VerifyClaudeSubmissionContext(deliveryCtx, ready.ID, prompt, ready.Width)
+	case agent.AgentTypeCodex:
+		confirmed, _, err = tmux.VerifyCodexSubmissionContext(deliveryCtx, ready.ID, prompt, ready.Width)
+	case agent.AgentTypeGrok:
+		confirmed, _, err = tmux.VerifyGrokSubmissionContext(deliveryCtx, ready.ID, prompt, ready.Width)
+	case agent.AgentTypeOmp:
+		confirmed, _, err = tmux.VerifyOmpSubmissionContext(deliveryCtx, ready.ID, prompt, ready.Width)
+	}
+	if err != nil {
+		return fmt.Errorf("checking handoff submission: %w", err)
+	}
+	if !confirmed {
+		return errors.New("handoff remains unsubmitted in the replacement composer")
+	}
+	latest, err := currentRotationPane(deliveryCtx, session, replacement, tmux.GetPanesContext)
+	if err != nil {
+		return err
+	}
+	if !rotationProcessRunning(latest) {
+		return errors.New("replacement agent exited during handoff")
+	}
+	captured, err := tmux.CapturePaneVisibleContext(deliveryCtx, latest.ID)
+	if err != nil || strings.TrimSpace(captured) == "" {
+		return errors.New("replacement input state could not be observed after handoff")
+	}
+	composer := tmux.InspectComposer(captured, latest.Type)
+	if composer.HoldsText || composer.QueuedMessages {
+		return errors.New("replacement still has unsubmitted or queued input after handoff")
+	}
+	if gate, found := agent.DetectInteractiveGate(captured, latest.Width); found {
+		return fmt.Errorf("replacement is showing %s after handoff", gate)
+	}
+	state, err := agent.NewParser().ParseWithHint(captured, latest.Type)
+	if err != nil || state == nil || state.IsInError || state.IsRateLimited || !state.IsIdle && !state.IsWorking {
+		return errors.New("replacement did not retain a usable agent input state after handoff")
+	}
+	// A capture can race a respawn just as the earlier readiness capture can.
+	// Revalidate after the final observation before permitting retirement.
+	finalPane, err := currentRotationPane(deliveryCtx, session, replacement, tmux.GetPanesContext)
+	if err != nil {
+		return err
+	}
+	if !rotationProcessRunning(finalPane) {
+		return errors.New("replacement agent exited after handoff observation")
+	}
+	return nil
+}
+
+func (s *DefaultPaneSpawner) KillRotationPaneContext(ctx stdcontext.Context, session string, pane tmux.Pane) error {
+	if _, err := currentRotationPane(ctx, session, pane, tmux.GetPanesContext); err != nil {
+		return fmt.Errorf("preserving pane whose identity cannot be verified: %w", err)
+	}
+	return tmux.KillPaneContext(ctx, pane.ID)
 }
 
 func (s *DefaultPaneSpawner) getAgentCommand(agentType string) string {
@@ -391,6 +858,16 @@ func sendRotationPrompt(spawner PaneSpawner, paneID, prompt string) error {
 	return spawner.SendBuffer(paneID, prompt, true)
 }
 
+func sendRotationPromptContext(ctx stdcontext.Context, spawner PaneSpawner, paneID, prompt string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if transport, ok := spawner.(rotationContextTransport); ok {
+		return transport.SendBufferContext(ctx, paneID, prompt, true)
+	}
+	return sendRotationPrompt(spawner, paneID, prompt)
+}
+
 func validateAutomatedRotation(agentType agent.AgentType) error {
 	if err := agentType.ValidateAutomatedRelaunch(); err != nil {
 		return err
@@ -405,6 +882,7 @@ func findLiveAgentPane(panes []tmux.Pane, agentID, paneID string) (tmux.Pane, er
 				return pane, nil
 			}
 		}
+		return tmux.Pane{}, fmt.Errorf("pane %s not found for agent %s", paneID, agentID)
 	}
 	for _, pane := range panes {
 		if pane.Title == agentID {
@@ -428,10 +906,20 @@ func validateAutomatedRotationBatch(panes []tmux.Pane, agentInfos []AgentContext
 }
 
 func (r *Rotator) resolveLiveAgentType(session, agentID, paneID string) (agent.AgentType, error) {
+	return r.resolveLiveAgentTypeContext(stdcontext.Background(), session, agentID, paneID)
+}
+
+func (r *Rotator) resolveLiveAgentTypeContext(ctx stdcontext.Context, session, agentID, paneID string) (agent.AgentType, error) {
 	if r.spawner == nil {
 		return agent.AgentTypeUnknown, errors.New("no spawner available")
 	}
-	panes, err := r.spawner.GetPanes(session)
+	var panes []tmux.Pane
+	var err error
+	if transport, ok := r.spawner.(rotationContextTransport); ok {
+		panes, err = transport.GetPanesContext(ctx, session)
+	} else {
+		panes, err = r.spawner.GetPanes(session)
+	}
 	if err != nil {
 		return agent.AgentTypeUnknown, fmt.Errorf("get panes for session %s: %w", session, err)
 	}
@@ -803,6 +1291,10 @@ func (r *Rotator) processExpiredPending(_, _ string) {
 // rotateAgent performs the full rotation flow for a single agent.
 // method specifies why the rotation was triggered (threshold, manual, etc.).
 func (r *Rotator) rotateAgent(session, agentID, workDir string, method ...RotationMethod) (result RotationResult) {
+	return r.rotateAgentContext(stdcontext.Background(), session, agentID, workDir, method...)
+}
+
+func (r *Rotator) rotateAgentContext(ctx stdcontext.Context, session, agentID, workDir string, method ...RotationMethod) (result RotationResult) {
 	startTime := time.Now()
 	m := RotationThresholdExceeded
 	if len(method) > 0 {
@@ -813,6 +1305,16 @@ func (r *Rotator) rotateAgent(session, agentID, workDir string, method ...Rotati
 		Method:     m,
 		State:      RotationStateInProgress,
 		Timestamp:  startTime,
+	}
+	if ctx == nil {
+		result.State = RotationStateFailed
+		result.Error = "rotation context is required"
+		return result
+	}
+	if err := ctx.Err(); err != nil {
+		result.State = RotationStateFailed
+		result.Error = err.Error()
+		return result
 	}
 	contextUsage := 0.0
 	defer func() {
@@ -851,7 +1353,13 @@ func (r *Rotator) rotateAgent(session, agentID, workDir string, method ...Rotati
 	}
 
 	// Find the pane for this agent
-	panes, err := r.spawner.GetPanes(session)
+	var panes []tmux.Pane
+	var err error
+	if transport, ok := r.spawner.(rotationContextTransport); ok {
+		panes, err = transport.GetPanesContext(ctx, session)
+	} else {
+		panes, err = r.spawner.GetPanes(session)
+	}
 	if err != nil {
 		result.Success = false
 		result.State = RotationStateFailed
@@ -865,16 +1373,8 @@ func (r *Rotator) rotateAgent(session, agentID, workDir string, method ...Rotati
 		return result
 	}
 
-	var oldPane *tmux.Pane
-	for i := range panes {
-		// Use exact match only to avoid matching cc_1 against cc_10
-		if panes[i].Title == agentID {
-			oldPane = &panes[i]
-			break
-		}
-	}
-
-	if oldPane == nil {
+	oldPaneValue, paneErr := findLiveAgentPane(panes, agentID, state.PaneID)
+	if paneErr != nil {
 		result.Success = false
 		result.State = RotationStateFailed
 		result.Error = "pane not found for agent"
@@ -886,7 +1386,16 @@ func (r *Rotator) rotateAgent(session, agentID, workDir string, method ...Rotati
 		recordRotationToHistory(result, session, deriveAgentTypeFromID(agentID), contextBefore)
 		return result
 	}
+	oldPane := &oldPaneValue
 	result.OldPaneID = oldPane.ID
+	if _, observedLifecycle := r.spawner.(rotationPaneLifecycle); observedLifecycle &&
+		(oldPane.PID <= 0 || oldPane.Dead || oldPane.IsServicePane() || !rotationProcessRunning(*oldPane)) {
+		result.State = RotationStateFailed
+		result.Error = "original agent is not a live agent process; refusing to type a summary request"
+		result.Duration = time.Since(startTime)
+		recordRotationToHistory(result, session, agentTypeLong(string(oldPane.Type)), contextUsage)
+		return result
+	}
 	if err := validateAutomatedRotation(oldPane.Type); err != nil {
 		result.Success = false
 		result.State = RotationStateFailed
@@ -902,7 +1411,7 @@ func (r *Rotator) rotateAgent(session, agentID, workDir string, method ...Rotati
 
 	// Try compaction first if configured
 	if r.config.TryCompactFirst && r.compactor != nil {
-		compactResult := r.tryCompaction(agentID, oldPane.ID, oldPane.Type)
+		compactResult := r.tryCompactionContext(ctx, agentID, oldPane.ID, oldPane.Type)
 		if compactResult != nil && compactResult.Success {
 			// Check if we're now below threshold
 			estimate := r.monitor.GetEstimate(agentID)
@@ -928,7 +1437,20 @@ func (r *Rotator) rotateAgent(session, agentID, workDir string, method ...Rotati
 
 	// Request handoff summary from the old agent
 	summaryPrompt := r.summary.GeneratePrompt()
-	if err := sendRotationPrompt(r.spawner, oldPane.ID, summaryPrompt); err != nil {
+	transport, observeSource := r.spawner.(rotationContextTransport)
+	startMarker, endMarker := "", ""
+	if observeSource {
+		summaryPrompt, startMarker, endMarker = rotationSummaryRequest(r.summary)
+		var latest tmux.Pane
+		latest, err = currentRotationPane(ctx, session, *oldPane, transport.GetPanesContext)
+		if err == nil && !rotationProcessRunning(latest) {
+			err = errors.New("original agent exited before the summary request")
+		}
+	}
+	if err == nil {
+		err = sendRotationPromptContext(ctx, r.spawner, oldPane.ID, summaryPrompt)
+	}
+	if err != nil {
 		result.Success = false
 		result.State = RotationStateFailed
 		result.Error = fmt.Sprintf("failed to request summary: %v", err)
@@ -941,29 +1463,34 @@ func (r *Rotator) rotateAgent(session, agentID, workDir string, method ...Rotati
 		return result
 	}
 
-	// Wait for agent to respond
-	time.Sleep(5 * time.Second)
-
-	// Capture the summary response
-	summaryText, captureErr := tmux.CapturePaneOutput(oldPane.ID, 100)
-	if captureErr != nil {
-		slog.Warn("failed to capture summary from agent", "agent", agentID, "error", captureErr)
-		summaryText = ""
-	}
-
-	// Parse the summary
 	agentTypeName := agentTypeLong(string(oldPane.Type))
 	var handoffSummary *HandoffSummary
-	if summaryText != "" {
-		handoffSummary = r.summary.ParseAgentResponse(agentID, agentTypeName, session, summaryText)
-	}
-	if handoffSummary == nil {
-		// Generate fallback summary from recent output (reuse captured text if available)
-		fallbackText := summaryText
-		if fallbackText == "" {
-			fallbackText, _ = tmux.CapturePaneOutput(oldPane.ID, 50)
+	if observeSource {
+		handoffSummary, err = waitForRotationSummary(ctx, session, agentID, *oldPane, r.summary, startMarker, endMarker, rotationReadyPoll,
+			transport.GetPanesContext, tmux.CapturePaneOutputContext, tmux.CapturePaneVisibleContext)
+		if err != nil {
+			result.State = RotationStateFailed
+			result.Error = fmt.Sprintf("waiting for handoff summary; original agent preserved: %v", err)
+			result.Duration = time.Since(startTime)
+			recordRotationToHistory(result, session, agentTypeName, contextUsage)
+			return result
 		}
-		handoffSummary = r.summary.GenerateFallbackSummary(agentID, agentTypeName, session, []string{fallbackText})
+	} else {
+		// An external PaneSpawner owns its summary/input protocol. Retain its
+		// existing capture path without imposing tmux-only process observations.
+		if err := waitForRotationDelay(ctx, 5*time.Second); err != nil {
+			result.State = RotationStateFailed
+			result.Error = fmt.Sprintf("waiting for handoff summary; original agent preserved: %v", err)
+			result.Duration = time.Since(startTime)
+			recordRotationToHistory(result, session, agentTypeName, contextUsage)
+			return result
+		}
+		summaryText, captureErr := tmux.CapturePaneOutputContext(ctx, oldPane.ID, 100)
+		if captureErr == nil && strings.TrimSpace(summaryText) != "" {
+			handoffSummary = r.summary.ParseAgentResponse(agentID, agentTypeName, session, summaryText)
+		} else {
+			handoffSummary = r.summary.GenerateFallbackSummary(agentID, agentTypeName, session, []string{summaryText})
+		}
 	}
 	if handoffSummary != nil {
 		result.SummaryTokens = handoffSummary.TokenEstimate
@@ -972,7 +1499,17 @@ func (r *Rotator) rotateAgent(session, agentID, workDir string, method ...Rotati
 	// Spawn replacement agent with same type
 	agentType := agentTypeLong(string(oldPane.Type))
 	newIndex := extractAgentIndex(agentID)
-	newPaneID, err := r.spawner.SpawnAgent(session, agentType, newIndex, oldPane.Variant, workDir)
+	lifecycle, hasLifecycle := r.spawner.(rotationPaneLifecycle)
+	var replacement tmux.Pane
+	if err = ctx.Err(); err == nil {
+		if hasLifecycle {
+			replacement, err = lifecycle.SpawnReplacementContext(ctx, session, *oldPane, newIndex, workDir)
+		} else {
+			replacement.ID, err = r.spawner.SpawnAgent(session, agentType, newIndex, oldPane.Variant, workDir)
+		}
+	}
+	newPaneID := replacement.ID
+	result.NewPaneID = newPaneID
 	if err != nil {
 		result.Success = false
 		result.State = RotationStateFailed
@@ -985,21 +1522,30 @@ func (r *Rotator) rotateAgent(session, agentID, workDir string, method ...Rotati
 		recordRotationToHistory(result, session, agentType, contextBefore)
 		return result
 	}
-	result.NewPaneID = newPaneID
 	result.NewAgentID = tmux.FormatPaneName(session, agentTypeShort(agentType), newIndex, oldPane.Variant)
-
-	// Wait for new agent to be ready
-	time.Sleep(3 * time.Second)
 
 	// Deliver the handoff before retiring the original agent or replacing its
 	// monitor state. A live replacement without the task context is not a
 	// successful rotation: the original pane remains the recovery source.
 	if handoffSummary != nil {
 		handoffContext := handoffSummary.FormatForNewAgent()
-		if err := sendRotationPrompt(r.spawner, newPaneID, handoffContext); err != nil {
+		if hasLifecycle {
+			err = lifecycle.DeliverHandoffContext(ctx, session, replacement, handoffContext)
+		} else {
+			err = sendRotationPromptContext(ctx, r.spawner, newPaneID, handoffContext)
+		}
+		if err != nil {
 			result.State = RotationStateFailed
 			result.Error = fmt.Sprintf("failed to send handoff context; original agent preserved: %v", err)
-			if cleanupErr := r.spawner.KillPane(newPaneID); cleanupErr != nil {
+			var cleanupErr error
+			if hasLifecycle {
+				cleanupCtx, cancel := stdcontext.WithTimeout(stdcontext.WithoutCancel(ctx), 5*time.Second)
+				cleanupErr = lifecycle.KillRotationPaneContext(cleanupCtx, session, replacement)
+				cancel()
+			} else {
+				cleanupErr = r.spawner.KillPane(newPaneID)
+			}
+			if cleanupErr != nil {
 				result.Error += fmt.Sprintf("; failed to remove replacement pane %s: %v", newPaneID, cleanupErr)
 			}
 			result.Duration = time.Since(startTime)
@@ -1019,7 +1565,12 @@ func (r *Rotator) rotateAgent(session, agentID, workDir string, method ...Rotati
 	r.monitor.ResetAgent(result.NewAgentID)
 
 	// Kill the old pane
-	if err := r.spawner.KillPane(oldPane.ID); err != nil {
+	if hasLifecycle {
+		err = lifecycle.KillRotationPaneContext(ctx, session, *oldPane)
+	} else {
+		err = r.spawner.KillPane(oldPane.ID)
+	}
+	if err != nil {
 		// Non-fatal: new agent is running
 		if result.Error != "" {
 			result.Error += "; "
@@ -1086,6 +1637,10 @@ func recordRotationToHistory(result RotationResult, session, agentType string, c
 
 // tryCompaction attempts to compact the agent's context.
 func (r *Rotator) tryCompaction(agentID, paneID string, agentType agent.AgentType) *CompactionResult {
+	return r.tryCompactionContext(stdcontext.Background(), agentID, paneID, agentType)
+}
+
+func (r *Rotator) tryCompactionContext(ctx stdcontext.Context, agentID, paneID string, agentType agent.AgentType) *CompactionResult {
 	if r.compactor == nil {
 		return nil
 	}
@@ -1105,8 +1660,20 @@ func (r *Rotator) tryCompaction(agentID, paneID string, agentType agent.AgentTyp
 	}
 
 	for _, cmd := range cmds {
+		if err := ctx.Err(); err != nil {
+			return &CompactionResult{Success: false, Method: CompactionFailed, Error: err.Error()}
+		}
 		// Both slash commands and prompts need enter=true to be submitted.
-		if err := sendCompactionCommandToPane(r.spawner, paneID, cmd); err != nil {
+		if transport, ok := r.spawner.(rotationContextTransport); ok {
+			if cmd.IsPrompt {
+				err = transport.SendBufferContext(ctx, paneID, cmd.Command, true)
+			} else {
+				err = transport.SendKeysContext(ctx, paneID, cmd.Command, true)
+			}
+		} else {
+			err = sendCompactionCommandToPane(r.spawner, paneID, cmd)
+		}
+		if err != nil {
 			slog.Error("failed to send compaction command", "pane_id", paneID, "error", err)
 			continue
 		}
@@ -1114,7 +1681,9 @@ func (r *Rotator) tryCompaction(agentID, paneID string, agentType agent.AgentTyp
 		state.UpdateState(cmd, compactionMethodForCommand(cmd))
 
 		// Wait for compaction to complete.
-		time.Sleep(cmd.WaitTime)
+		if err := waitForRotationDelay(ctx, cmd.WaitTime); err != nil {
+			return &CompactionResult{Success: false, Method: CompactionFailed, Error: err.Error()}
+		}
 
 		// Finish and evaluate.
 		result, err := r.compactor.FinishCompaction(state)
@@ -1337,6 +1906,19 @@ func (r *Rotator) EnqueuePendingRotation(session, agentID, paneID string, contex
 // ConfirmRotation handles user confirmation of a pending rotation.
 // Returns the result of the action taken.
 func (r *Rotator) ConfirmRotation(agentID string, action ConfirmAction, postponeMinutes int) RotationResult {
+	return r.ConfirmRotationContext(stdcontext.Background(), agentID, action, postponeMinutes)
+}
+
+// ConfirmRotationContext executes the confirmed rotation with caller
+// cancellation covering launch, readiness observation and handoff delivery.
+func (r *Rotator) ConfirmRotationContext(ctx stdcontext.Context, agentID string, action ConfirmAction, postponeMinutes int) RotationResult {
+	if ctx == nil || ctx.Err() != nil {
+		err := errors.New("rotation context is required")
+		if ctx != nil {
+			err = ctx.Err()
+		}
+		return RotationResult{OldAgentID: agentID, State: RotationStateFailed, Error: err.Error(), Timestamp: time.Now()}
+	}
 	r.mu.Lock()
 	pending := r.pending[agentID]
 	if pending == nil {
@@ -1357,7 +1939,7 @@ func (r *Rotator) ConfirmRotation(agentID string, action ConfirmAction, postpone
 
 	switch action {
 	case ConfirmRotate:
-		agentType, err := r.resolveLiveAgentType(pendingCopy.SessionName, agentID, pendingCopy.PaneID)
+		agentType, err := r.resolveLiveAgentTypeContext(ctx, pendingCopy.SessionName, agentID, pendingCopy.PaneID)
 		if err == nil {
 			err = validateAutomatedRotation(agentType)
 		}
@@ -1373,7 +1955,7 @@ func (r *Rotator) ConfirmRotation(agentID string, action ConfirmAction, postpone
 		if err := RemovePendingRotation(agentID); err != nil {
 			slog.Warn("failed to remove pending rotation from store", "agent", agentID, "error", err)
 		}
-		return r.rotateAgent(pendingCopy.SessionName, agentID, pendingCopy.WorkDir)
+		return r.rotateAgentContext(ctx, pendingCopy.SessionName, agentID, pendingCopy.WorkDir)
 
 	case ConfirmCompact:
 		// Try compaction first
@@ -1383,7 +1965,7 @@ func (r *Rotator) ConfirmRotation(agentID string, action ConfirmAction, postpone
 			result.Error = "cannot compact: pane ID unknown"
 			return result
 		}
-		agentType, err := r.resolveLiveAgentType(pendingCopy.SessionName, agentID, pendingCopy.PaneID)
+		agentType, err := r.resolveLiveAgentTypeContext(ctx, pendingCopy.SessionName, agentID, pendingCopy.PaneID)
 		if err == nil {
 			err = agentType.ValidateAutomatedPromptDelivery()
 		}
@@ -1398,7 +1980,7 @@ func (r *Rotator) ConfirmRotation(agentID string, action ConfirmAction, postpone
 		if err := RemovePendingRotation(agentID); err != nil {
 			slog.Warn("failed to remove pending rotation from store", "agent", agentID, "error", err)
 		}
-		compactResult := r.tryCompaction(agentID, pendingCopy.PaneID, agentType)
+		compactResult := r.tryCompactionContext(ctx, agentID, pendingCopy.PaneID, agentType)
 		if compactResult != nil && compactResult.Success {
 			result.Success = true
 			result.State = RotationStateAborted

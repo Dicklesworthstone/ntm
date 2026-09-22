@@ -89,7 +89,7 @@ type rotationChecker struct {
 	sessionCreated  func(session string) (time.Time, bool)
 	storedPending   func(agentID string) (*ntmctx.PendingRotation, error)
 	enqueue         func(agentID, paneID string, usagePct float64) *ntmctx.PendingRotation
-	confirm         func(agentID string) ntmctx.RotationResult
+	confirm         func(ctx context.Context, agentID string) ntmctx.RotationResult
 	publish         func(record robot.ActuationRecord)
 	now             func() time.Time
 }
@@ -169,8 +169,8 @@ func newRotationChecker(session, workDir string, coordCfg CoordinatorConfig, ntm
 	rc.enqueue = func(agentID, paneID string, usagePct float64) *ntmctx.PendingRotation {
 		return rc.rotator.EnqueuePendingRotation(rc.session, agentID, paneID, usagePct, rc.workDir)
 	}
-	rc.confirm = func(agentID string) ntmctx.RotationResult {
-		return rc.rotator.ConfirmRotation(agentID, ntmctx.ConfirmRotate, 0)
+	rc.confirm = func(ctx context.Context, agentID string) ntmctx.RotationResult {
+		return rc.rotator.ConfirmRotationContext(ctx, agentID, ntmctx.ConfirmRotate, 0)
 	}
 	return rc
 }
@@ -213,7 +213,7 @@ func (rc *rotationChecker) runOnce(ctx context.Context) []rotationDecision {
 		if ctx != nil && ctx.Err() != nil {
 			break
 		}
-		if decision, acted := rc.checkPane(pane, usages[pane.ID]); acted {
+		if decision, acted := rc.checkPane(ctx, pane, usages[pane.ID]); acted {
 			decisions = append(decisions, decision)
 		}
 	}
@@ -223,7 +223,7 @@ func (rc *rotationChecker) runOnce(ctx context.Context) []rotationDecision {
 // checkPane evaluates one pane's transcript usage against the threshold and,
 // when exceeded, runs the safety gates and enqueues/auto-confirms a rotation.
 // The bool result reports whether a decision (enqueue/confirm/skip) was made.
-func (rc *rotationChecker) checkPane(pane tmux.Pane, usage *ntmctx.TranscriptUsage) (rotationDecision, bool) {
+func (rc *rotationChecker) checkPane(ctx context.Context, pane tmux.Pane, usage *ntmctx.TranscriptUsage) (rotationDecision, bool) {
 	now := rc.now()
 
 	// Usage percent: transcript-reported window when available (Codex),
@@ -336,7 +336,7 @@ func (rc *rotationChecker) checkPane(pane tmux.Pane, usage *ntmctx.TranscriptUsa
 		rc.ctxMonitor.RegisterAgent(decision.AgentID, pane.ID, usage.Model)
 		rc.ctxMonitor.SetAgentType(decision.AgentID, string(pane.Type.Canonical()))
 	}
-	result := rc.confirm(decision.AgentID)
+	result := rc.confirm(ctx, decision.AgentID)
 	if result.Success {
 		decision.Action = "auto_confirmed"
 		slog.Info("context rotation auto-confirmed",

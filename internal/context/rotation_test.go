@@ -1,8 +1,11 @@
 package context
 
 import (
+	stdcontext "context"
 	"errors"
+	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -13,6 +16,309 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
+
+const rotationReadyClaudeScreen = "Welcome to Claude Code\n────────────────────────\n❯ \n────────────────────────\n  ⏵⏵ bypass permissions on (shift+tab to cycle)\n"
+
+func TestRotationSummaryWaitsForFreshCompletedResponse(t *testing.T) {
+	generator := NewSummaryGenerator(SummaryGeneratorConfig{PromptTimeout: time.Second})
+	prompt, startMarker, endMarker := rotationSummaryRequest(generator)
+	body := "## CURRENT TASK\nImplement durable scheduling.\n\n## PROGRESS\nQueue admission is complete; recovery remains.\n\n## ACTIVE FILES\n- internal/serve/jobs.go"
+	expected := tmux.Pane{ID: "%1", PID: 123, Type: tmux.AgentClaude, Command: "node", Width: 120}
+	list := func(stdcontext.Context, string) ([]tmux.Pane, error) { return []tmux.Pane{expected}, nil }
+	captures, visibleCaptures := 0, 0
+	capture := func(stdcontext.Context, string, int) (string, error) {
+		captures++
+		switch captures {
+		case 1:
+			return prompt, nil // The request echo has the same section headers.
+		case 2:
+			return prompt + "\n" + startMarker + "\n" + body, nil // Still streaming.
+		default:
+			return prompt + "\n" + startMarker + "\n" + body + "\n" + endMarker, nil
+		}
+	}
+	visible := func(stdcontext.Context, string) (string, error) {
+		visibleCaptures++
+		if visibleCaptures == 1 {
+			return "✻ Sautéing… (ctrl+c to interrupt · 12s · thinking)\n" + rotationReadyClaudeScreen, nil
+		}
+		return rotationReadyClaudeScreen, nil
+	}
+	summary, err := waitForRotationSummary(stdcontext.Background(), "test", "test__cc_1", expected, generator, startMarker, endMarker, time.Millisecond, list, capture, visible)
+	if err != nil || summary == nil || summary.CurrentTask != "Implement durable scheduling." || summary.Progress != "Queue admission is complete; recovery remains." {
+		t.Fatalf("completed summary = %+v, %v", summary, err)
+	}
+	if captures < 3 || visibleCaptures < 3 || strings.Contains(summary.RawSummary, "What task") {
+		t.Fatalf("accepted request/partial/busy response: captures=%d visible=%d summary=%+v", captures, visibleCaptures, summary)
+	}
+}
+
+func TestRotationSummaryRejectsEchoPartialAndUnrelatedResponses(t *testing.T) {
+	for _, kind := range []string{"echo", "wrapped_echo", "partial", "unrelated"} {
+		t.Run(kind, func(t *testing.T) {
+			generator := NewSummaryGenerator(SummaryGeneratorConfig{PromptTimeout: 20 * time.Millisecond})
+			prompt, startMarker, endMarker := rotationSummaryRequest(generator)
+			captured := prompt
+			switch kind {
+			case "wrapped_echo":
+				captured = startMarker + "\n" + SummaryPromptTemplate + "\n" + endMarker
+			case "partial":
+				captured = startMarker + "\n## CURRENT TASK\nBuild scheduling.\n## PROGRESS\nAdmission complete."
+			case "unrelated":
+				captured = "NTM_START_old\n## CURRENT TASK\nBuild scheduling.\n## PROGRESS\nAdmission complete.\nNTM_END_old"
+			}
+			expected := tmux.Pane{ID: "%1", PID: 123, Type: tmux.AgentClaude, Command: "node"}
+			list := func(stdcontext.Context, string) ([]tmux.Pane, error) { return []tmux.Pane{expected}, nil }
+			capture := func(stdcontext.Context, string, int) (string, error) { return captured, nil }
+			visible := func(stdcontext.Context, string) (string, error) { return rotationReadyClaudeScreen, nil }
+			summary, err := waitForRotationSummary(stdcontext.Background(), "test", "test__cc_1", expected, generator, startMarker, endMarker, time.Millisecond, list, capture, visible)
+			if summary != nil || !errors.Is(err, stdcontext.DeadlineExceeded) {
+				t.Fatalf("invalid summary accepted: %+v, %v", summary, err)
+			}
+		})
+	}
+}
+
+func TestRotationReadinessRequiresStableLivePrompt(t *testing.T) {
+	for _, initial := range []struct {
+		name    string
+		command string
+		screen  string
+	}{
+		{"shell_with_stale_prompt", "bash", rotationReadyClaudeScreen},
+		{"blank_startup", "node", ""},
+		{"banner_without_composer", "node", "Welcome to Claude Code"},
+		{"version_banner_without_composer", "node", "Claude Code v1.0.0\nWelcome back"},
+		{"interpreter_prompt", "node", "Welcome to Node.js\n> "},
+		{"unsubmitted_draft", "node", strings.Replace(rotationReadyClaudeScreen, "❯ ", "❯ unfinished instructions", 1)},
+	} {
+		t.Run(initial.name, func(t *testing.T) {
+			expected := tmux.Pane{ID: "%99", PID: 321, Type: tmux.AgentClaude, Command: "node"}
+			observations, captures := 0, 0
+			list := func(ctx stdcontext.Context, session string) ([]tmux.Pane, error) {
+				if session != "rotation" {
+					t.Fatalf("unexpected session %q", session)
+				}
+				observations++
+				pane := expected
+				if observations == 1 {
+					pane.Command = initial.command
+				}
+				// A title rewrite and logical-index change cannot move the target.
+				pane.Title, pane.Index = "agent changed its title", 8
+				return []tmux.Pane{{ID: "%2", PID: 2, Title: "rotation__cc_1"}, pane}, nil
+			}
+			capture := func(ctx stdcontext.Context, paneID string) (string, error) {
+				if paneID != "%99" {
+					t.Fatalf("capture target = %q, want physical replacement", paneID)
+				}
+				captures++
+				if observations == 1 {
+					return initial.screen, nil
+				}
+				return rotationReadyClaudeScreen, nil
+			}
+			pane, err := waitForRotationReady(stdcontext.Background(), "rotation", expected, time.Second, time.Millisecond, list, capture)
+			if err != nil || pane.ID != expected.ID || observations < 4 || captures < 2 {
+				t.Fatalf("readiness = %+v, %v; observations=%d captures=%d", pane, err, observations, captures)
+			}
+		})
+	}
+}
+
+func TestRotationReadinessRejectsBusyComposerChrome(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		agentType tmux.AgentType
+		output    string
+	}{
+		{"codex", tmux.AgentCodex, "OpenAI Codex\n• Working (4m 51s • esc to interrupt)\n› \n47% context left · ? for shortcuts"},
+		{"claude", tmux.AgentClaude, "Welcome to Claude Code\n✻ Sautéing… (ctrl+c to interrupt · 12s · thinking)\n────────────────────────\n❯ \n────────────────────────\n  ⏵⏵ bypass permissions on"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pane := tmux.Pane{ID: "%99", PID: 321, Type: tc.agentType, Command: "node", Width: 120}
+			if ready, reason := rotationPromptReady(tc.output, pane); ready || !strings.Contains(reason, "processing") {
+				t.Fatalf("busy composer readiness = %v, %q", ready, reason)
+			}
+		})
+	}
+}
+
+func TestRotationReadinessRejectsChangedOrUnobservableReplacement(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		mutate     func(*tmux.Pane)
+		listErr    error
+		captureErr error
+		missing    bool
+		want       string
+	}{
+		{name: "respawned", mutate: func(p *tmux.Pane) { p.PID++ }, want: "identity changed"},
+		{name: "wrong_agent", mutate: func(p *tmux.Pane) { p.Type = tmux.AgentCodex }, want: "identity changed"},
+		{name: "service", mutate: func(p *tmux.Pane) { p.Service = "cm" }, want: "identity changed"},
+		{name: "dead", mutate: func(p *tmux.Pane) { p.Dead = true }, want: "process exited"},
+		{name: "missing_same_title", missing: true, want: "not found"},
+		{name: "pane_read_failure", listErr: errors.New("topology unavailable"), want: "topology unavailable"},
+		{name: "capture_failure", captureErr: errors.New("capture unavailable"), want: "capture unavailable"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			expected := tmux.Pane{ID: "%99", PID: 321, Type: tmux.AgentClaude, Command: "node"}
+			list := func(stdcontext.Context, string) ([]tmux.Pane, error) {
+				pane := expected
+				if tc.mutate != nil {
+					tc.mutate(&pane)
+				}
+				if tc.missing {
+					pane.ID, pane.Title = "%100", expected.Title
+				}
+				return []tmux.Pane{pane}, tc.listErr
+			}
+			capture := func(stdcontext.Context, string) (string, error) { return rotationReadyClaudeScreen, tc.captureErr }
+			_, err := waitForRotationReady(stdcontext.Background(), "rotation", expected, time.Second, time.Millisecond, list, capture)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("readiness error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestRotationReadinessRechecksIdentityAfterCapture(t *testing.T) {
+	expected := tmux.Pane{ID: "%99", PID: 321, Type: tmux.AgentClaude, Command: "node"}
+	observed := expected
+	captures := 0
+	list := func(stdcontext.Context, string) ([]tmux.Pane, error) { return []tmux.Pane{observed}, nil }
+	capture := func(stdcontext.Context, string) (string, error) {
+		captures++
+		if captures == 2 {
+			observed.PID++
+		}
+		return rotationReadyClaudeScreen, nil
+	}
+	_, err := waitForRotationReady(stdcontext.Background(), "rotation", expected, time.Second, time.Millisecond, list, capture)
+	if err == nil || !strings.Contains(err.Error(), "identity changed") {
+		t.Fatalf("readiness after capture-time respawn = %v", err)
+	}
+}
+
+func TestRotationReadinessBoundsShellAndBlockingCapture(t *testing.T) {
+	for _, blockingCapture := range []bool{false, true} {
+		t.Run(strconv.FormatBool(blockingCapture), func(t *testing.T) {
+			expected := tmux.Pane{ID: "%99", PID: 321, Type: tmux.AgentClaude, Command: "bash"}
+			if blockingCapture {
+				expected.Command = "node"
+			}
+			list := func(stdcontext.Context, string) ([]tmux.Pane, error) { return []tmux.Pane{expected}, nil }
+			capture := func(ctx stdcontext.Context, _ string) (string, error) {
+				<-ctx.Done()
+				return "", ctx.Err()
+			}
+			started := time.Now()
+			_, err := waitForRotationReady(stdcontext.Background(), "rotation", expected, 20*time.Millisecond, time.Millisecond, list, capture)
+			if !errors.Is(err, stdcontext.DeadlineExceeded) || time.Since(started) > time.Second {
+				t.Fatalf("bounded readiness = %v, elapsed=%s", err, time.Since(started))
+			}
+		})
+	}
+}
+
+type observedRotationSpawner struct {
+	*MockPaneSpawner
+	replacement tmux.Pane
+	deliveryErr error
+	cleanupErr  error
+	delivered   bool
+}
+
+func (s *observedRotationSpawner) SpawnReplacementContext(stdcontext.Context, string, tmux.Pane, int, string) (tmux.Pane, error) {
+	s.spawnedPanes = append(s.spawnedPanes, s.replacement.ID)
+	return s.replacement, nil
+}
+
+func (s *observedRotationSpawner) DeliverHandoffContext(ctx stdcontext.Context, _ string, pane tmux.Pane, prompt string) error {
+	if pane.ID != s.replacement.ID || pane.PID != s.replacement.PID || !strings.Contains(prompt, "handoff") && !strings.Contains(strings.ToLower(prompt), "context") {
+		return errors.New("incorrect replacement or missing handoff")
+	}
+	s.delivered = true
+	return s.deliveryErr
+}
+
+func (s *observedRotationSpawner) KillRotationPaneContext(_ stdcontext.Context, _ string, pane tmux.Pane) error {
+	s.killAttempts = append(s.killAttempts, pane.ID)
+	if s.cleanupErr != nil {
+		return s.cleanupErr
+	}
+	s.killedPanes = append(s.killedPanes, pane.ID)
+	return nil
+}
+
+func TestConfirmRotationReadinessFailurePreservesOriginalMonitor(t *testing.T) {
+	workDir, _ := setupRotationTmux(t)
+	t.Setenv("ROTATION_CAPTURE", "Work in progress: implement the durable scheduler and preserve pending jobs.")
+	monitor := NewContextMonitor(DefaultMonitorConfig())
+	const agentID = "test__cc_1"
+	monitor.RegisterAgent(agentID, "%1", "claude-opus-4")
+	monitor.RecordMessage(agentID, 1000, 1000)
+	original := *monitor.GetState(agentID)
+	spawner := &observedRotationSpawner{
+		MockPaneSpawner: NewMockPaneSpawner(),
+		replacement:     tmux.Pane{ID: "%99", PID: 321, Type: tmux.AgentClaude, Command: "node"},
+		deliveryErr:     fmt.Errorf("replacement never drew a composer: %w", stdcontext.DeadlineExceeded),
+		cleanupErr:      errors.New("replacement process identity changed"),
+	}
+	spawner.panes = []tmux.Pane{{ID: "%1", PID: 123, Title: agentID, Type: tmux.AgentClaude, Command: "node"}}
+	cfg := config.DefaultContextRotationConfig()
+	cfg.TryCompactFirst = false
+	r := NewRotator(RotatorConfig{Monitor: monitor, Spawner: spawner, Config: cfg})
+	r.EnqueuePendingRotation("test", agentID, "%1", 95, workDir)
+	result := r.ConfirmRotationContext(stdcontext.Background(), agentID, ConfirmRotate, 0)
+	if result.Success || result.State != RotationStateFailed || !spawner.delivered || !strings.Contains(result.Error, "original agent preserved") {
+		t.Fatalf("failed readiness result = %+v, delivered=%v", result, spawner.delivered)
+	}
+	if !strings.Contains(result.Error, "identity changed") || len(spawner.killedPanes) != 0 || len(spawner.killAttempts) != 1 || spawner.killAttempts[0] != "%99" {
+		t.Fatalf("cleanup did not preserve uncertain process: %+v, killed=%v attempts=%v", result, spawner.killedPanes, spawner.killAttempts)
+	}
+	if current := monitor.GetState(agentID); current == nil || *current != original {
+		t.Fatalf("original monitor changed: %+v, want %+v", current, original)
+	}
+}
+
+func TestConfirmRotationCancellationPreservesPendingAndPredecessor(t *testing.T) {
+	monitor := NewContextMonitor(DefaultMonitorConfig())
+	monitor.RegisterAgent("test__cc_1", "%1", "claude-opus-4")
+	spawner := NewMockPaneSpawner()
+	r := NewRotator(RotatorConfig{Monitor: monitor, Spawner: spawner})
+	r.EnqueuePendingRotation("test", "test__cc_1", "%1", 95, t.TempDir())
+	ctx, cancel := stdcontext.WithCancel(stdcontext.Background())
+	cancel()
+	result := r.ConfirmRotationContext(ctx, "test__cc_1", ConfirmRotate, 0)
+	if result.Success || !strings.Contains(result.Error, "canceled") || !r.HasPendingRotation("test__cc_1") || len(spawner.spawnedPanes) != 0 || len(spawner.sentBuffers) != 0 {
+		t.Fatalf("canceled confirmation mutated pending work: %+v", result)
+	}
+}
+
+func TestConfirmRotationContextCancelsCompactionBeforeFurtherCommands(t *testing.T) {
+	for _, action := range []ConfirmAction{ConfirmCompact, ConfirmRotate} {
+		t.Run(string(action), func(t *testing.T) {
+			monitor := NewContextMonitor(DefaultMonitorConfig())
+			monitor.RegisterAgent("test__cc_1", "%1", "claude-opus-4")
+			monitor.UpdateFromRobotMode("test__cc_1", `{"context_used":180000,"context_limit":200000}`)
+			spawner := NewMockPaneSpawner()
+			spawner.panes = []tmux.Pane{{ID: "%1", Title: "test__cc_1", Type: tmux.AgentClaude}}
+			r := NewRotator(RotatorConfig{Monitor: monitor, Spawner: spawner, Config: config.DefaultContextRotationConfig()})
+			r.EnqueuePendingRotation("test", "test__cc_1", "%1", 95, t.TempDir())
+			ctx, cancel := stdcontext.WithTimeout(stdcontext.Background(), 20*time.Millisecond)
+			defer cancel()
+			started := time.Now()
+			result := r.ConfirmRotationContext(ctx, "test__cc_1", action, 0)
+			if result.Success || !strings.Contains(result.Error, "deadline exceeded") || time.Since(started) > time.Second {
+				t.Fatalf("compaction cancellation = %+v, elapsed=%s", result, time.Since(started))
+			}
+			if len(spawner.sentKeys["%1"])+len(spawner.sentBuffers["%1"]) != 1 || len(spawner.spawnedPanes) != 0 || len(spawner.killedPanes) != 0 {
+				t.Fatalf("commands continued after cancellation: keys=%v buffers=%v spawned=%v killed=%v", spawner.sentKeys, spawner.sentBuffers, spawner.spawnedPanes, spawner.killedPanes)
+			}
+		})
+	}
+}
 
 // MockPaneSpawner is a test double for PaneSpawner.
 type MockPaneSpawner struct {

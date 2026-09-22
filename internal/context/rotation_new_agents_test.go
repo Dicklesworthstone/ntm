@@ -1,12 +1,17 @@
 package context
 
 import (
+	stdcontext "context"
+	"encoding/base64"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/config"
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 func TestDeriveAgentTypeFromID_NewAgents(t *testing.T) {
@@ -193,6 +198,217 @@ system_prompt = "Review changes against the project's correctness requirements."
 	}
 }
 
+func TestDefaultPaneSpawner_ReplaysDurableLaunchInsteadOfTitleOrCurrentConfig(t *testing.T) {
+	workDir, logPath := setupRotationTmux(t)
+	t.Setenv("ROTATION_ORIGINAL_PRESENT", "1")
+	worktree := filepath.Join(workDir, "agent worktree")
+	if err := os.MkdirAll(worktree, 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ROTATION_PREDECESSOR_CWD", worktree)
+	spec := tmux.AgentLaunchSpec{
+		Version: tmux.AgentLaunchSpecVersion, AgentType: tmux.AgentClaude,
+		Command: "/custom/agent-wrapper --model 'private-model' --effort high --persona 'creation-time persona'",
+		Model:   "private-model", Persona: "architect", ReasoningEffort: "high",
+	}
+	record, err := json.Marshal(struct {
+		PaneID string               `json:"pane_id"`
+		Spec   tmux.AgentLaunchSpec `json:"spec"`
+	}{PaneID: "%1", Spec: spec})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ROTATION_LAUNCH_SPEC", base64.StdEncoding.EncodeToString(record))
+	cfg := config.Default()
+	cfg.Agents.Claude = "invalid current template {{.Missing"
+	spawner := NewDefaultPaneSpawner(cfg)
+	original := tmux.Pane{ID: "%1", PID: 123, Title: "test__cc_1_architect", Type: tmux.AgentClaude, Command: "node", Variant: "architect"}
+	pane, err := spawner.SpawnReplacementContext(stdcontext.Background(), "test", original, 1, workDir)
+	if err != nil || pane.ID != "%99" || pane.PID != 321 {
+		t.Fatalf("replacement = %+v, %v", pane, err)
+	}
+	commands, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(commands), spec.Command) || strings.Contains(string(commands), "invalid current template") {
+		t.Fatalf("launch did not preserve exact creation command:\n%s", commands)
+	}
+	if !strings.Contains(string(commands), "-c "+worktree) || !strings.Contains(string(commands), "cd "+tmux.ShellQuote(worktree)) {
+		t.Fatalf("replacement lost its predecessor's worktree in favor of caller directory %s:\n%s", workDir, commands)
+	}
+	foundRecord := false
+	for _, line := range strings.Split(string(commands), "\n") {
+		if !strings.Contains(line, tmux.PaneLaunchSpecOption+" ") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if fields[0] != "set-option" {
+			continue
+		}
+		data, err := base64.StdEncoding.DecodeString(fields[len(fields)-1])
+		if err != nil {
+			t.Fatal(err)
+		}
+		var saved struct {
+			PaneID string               `json:"pane_id"`
+			Spec   tmux.AgentLaunchSpec `json:"spec"`
+		}
+		if err := json.Unmarshal(data, &saved); err != nil {
+			t.Fatal(err)
+		}
+		if saved.PaneID != "%99" || saved.Spec.Command != spec.Command || saved.Spec.Persona != "architect" {
+			t.Fatalf("replacement saved incorrect launch metadata: %+v", saved)
+		}
+		foundRecord = true
+	}
+	if !foundRecord {
+		t.Fatal("replacement lost durable launch metadata")
+	}
+}
+
+func TestDefaultPaneSpawner_LegacyIsolationRecordsAbsoluteTokenReference(t *testing.T) {
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+	tokenFile := filepath.Join(workDir, "setup-token")
+	if err := os.WriteFile(tokenFile, []byte("test-token-reference-only\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.Agents.ClaudeIsolateCredentials = true
+	cfg.Agents.ClaudeTokenFile = "setup-token"
+	spec, err := NewDefaultPaneSpawner(cfg).agentLaunchSpec("test", "claude", 1, "", workDir)
+	if err != nil {
+		t.Fatalf("legacy launch specification: %v", err)
+	}
+	if !spec.ClaudeIsolateCredentials || spec.ClaudeTokenFile != tokenFile {
+		t.Fatalf("token reference = %q, isolation=%v; want %q", spec.ClaudeTokenFile, spec.ClaudeIsolateCredentials, tokenFile)
+	}
+	if err := spec.ValidateReplay(tmux.AgentClaude); err != nil {
+		t.Fatalf("resolved token reference is not replayable: %v", err)
+	}
+	if strings.Contains(spec.Command, "test-token-reference-only") {
+		t.Fatal("token value leaked into durable command")
+	}
+}
+
+func TestDefaultPaneSpawner_RejectsUnreadableOrIncompleteLaunchBeforeReplacement(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		encoded string
+		readErr bool
+		want    string
+	}{
+		{"corrupt", "invalid base64", false, "reading original launch settings"},
+		{"read_failure", "", true, "reading original launch settings"},
+		{"wrong_provider", base64.StdEncoding.EncodeToString([]byte(`{"pane_id":"%1","spec":{"version":1,"agent_type":"cod","command":"codex"}}`)), false, "does not match"},
+		{"omitted_environment", base64.StdEncoding.EncodeToString([]byte(`{"pane_id":"%1","spec":{"version":1,"agent_type":"cc","command":"claude","omitted_env":["API_KEY"]}}`)), false, "API_KEY"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			workDir, logPath := setupRotationTmux(t)
+			t.Setenv("ROTATION_ORIGINAL_PRESENT", "1")
+			t.Setenv("ROTATION_LAUNCH_SPEC", tc.encoded)
+			if tc.readErr {
+				t.Setenv("ROTATION_SPEC_ERROR", "1")
+			}
+			spawner := NewDefaultPaneSpawner(config.Default())
+			original := tmux.Pane{ID: "%1", PID: 123, Type: tmux.AgentClaude, Command: "node"}
+			pane, err := spawner.SpawnReplacementContext(stdcontext.Background(), "test", original, 1, workDir)
+			if err == nil || pane.ID != "" || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("replacement = %+v, %v; want %q", pane, err, tc.want)
+			}
+			commands, err := os.ReadFile(logPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(commands), "split-window") || strings.Contains(string(commands), "send-keys") {
+				t.Fatalf("invalid launch metadata mutated tmux:\n%s", commands)
+			}
+		})
+	}
+}
+
+func TestDefaultPaneSpawner_ObservesReadinessAndHandoffSubmission(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		afterShell bool
+		wantErr    string
+	}{
+		{name: "working_after_submission"},
+		{name: "agent_exits_during_delivery", afterShell: true, wantErr: "exited during handoff"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, logPath := setupRotationTmux(t)
+			t.Setenv("ROTATION_RECORD_DELIVERY", "1")
+			t.Setenv("ROTATION_READY_CAPTURE", rotationReadyClaudeScreen)
+			t.Setenv("ROTATION_AFTER_CAPTURE", "Welcome to Claude Code\n✻ Sautéing… (ctrl+c to interrupt · 12s · thinking)\n────────────────────────\n❯ \n────────────────────────\n  ⏵⏵ bypass permissions on")
+			if tc.afterShell {
+				t.Setenv("ROTATION_AFTER_SHELL", "1")
+			}
+			for suffix, value := range map[string]string{".type": "cc", ".title": "test__cc_1", ".launched": "1"} {
+				if err := os.WriteFile(logPath+suffix, []byte(value), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			spawner := NewDefaultPaneSpawner(config.Default())
+			expected := tmux.Pane{ID: "%99", PID: 321, Type: tmux.AgentClaude, Command: "node"}
+			err := spawner.DeliverHandoffContext(stdcontext.Background(), "test", expected, "Handoff context: continue the durable scheduler task.")
+			if tc.wantErr == "" && err != nil || tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)) {
+				t.Fatalf("handoff error = %v, want %q", err, tc.wantErr)
+			}
+			commands, err := os.ReadFile(logPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			lines := strings.Split(string(commands), "\n")
+			capturesBeforePaste := 0
+			for _, line := range lines {
+				if strings.HasPrefix(line, "paste-buffer ") {
+					break
+				}
+				if strings.HasPrefix(line, "capture-pane ") {
+					capturesBeforePaste++
+				}
+			}
+			if capturesBeforePaste < 2 || !strings.Contains(string(commands), "paste-buffer") || strings.Contains(string(commands), "kill-pane") {
+				t.Fatalf("handoff skipped stable readiness or retired a pane directly:\n%s", commands)
+			}
+		})
+	}
+}
+
+func TestConfirmRotationDefaultTransportPreservesSourceOnSummaryEcho(t *testing.T) {
+	workDir, logPath := setupRotationTmux(t)
+	t.Setenv("ROTATION_ORIGINAL_PRESENT", "1")
+	t.Setenv("ROTATION_CAPTURE_REQUEST", "1")
+	const agentID = "test__cc_1_architect"
+	monitor := NewContextMonitor(DefaultMonitorConfig())
+	monitor.RegisterAgent(agentID, "%1", "claude-opus-4")
+	monitor.RecordMessage(agentID, 1000, 1000)
+	original := *monitor.GetState(agentID)
+	cfg := config.DefaultContextRotationConfig()
+	cfg.TryCompactFirst = false
+	r := NewRotator(RotatorConfig{
+		Monitor: monitor, Spawner: NewDefaultPaneSpawner(config.Default()), Config: cfg,
+		Summary: NewSummaryGenerator(SummaryGeneratorConfig{PromptTimeout: 30 * time.Millisecond}),
+	})
+	r.EnqueuePendingRotation("test", agentID, "%1", 95, workDir)
+	result := r.ConfirmRotationContext(stdcontext.Background(), agentID, ConfirmRotate, 0)
+	if result.Success || !strings.Contains(result.Error, "complete handoff summary") || !strings.Contains(result.Error, "original agent preserved") {
+		t.Fatalf("summary echo result = %+v", result)
+	}
+	if current := monitor.GetState(agentID); current == nil || *current != original {
+		t.Fatalf("summary echo reset original monitor: %+v", current)
+	}
+	commands, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(commands), "split-window") || strings.Contains(string(commands), "kill-pane") {
+		t.Fatalf("summary echo replaced the source:\n%s", commands)
+	}
+}
+
 func TestDefaultPaneSpawner_RejectsInvalidLaunchBeforePaneCreation(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -275,7 +491,62 @@ printf '%s\n' "$*" >> "$ROTATION_TMUX_LOG"
 case "$1" in
   list-windows) printf '0\n' ;;
   split-window) printf '%%99\n' ;;
-  display-message) printf '0\n' ;;
+  display-message)
+    case "$*" in
+      *'#{pane_current_path}'*) printf '%s\n' "$ROTATION_PREDECESSOR_CWD" ;;
+      *) printf '0\n' ;;
+    esac
+    ;;
+  select-pane)
+    for value do last="$value"; done
+    printf '%s' "$last" > "$ROTATION_TMUX_LOG.title"
+    ;;
+  set-option)
+    case "$*" in
+      *'@ntm_agent_type '*)
+        for value do last="$value"; done
+        printf '%s' "$last" > "$ROTATION_TMUX_LOG.type"
+        ;;
+    esac
+    ;;
+  list-panes)
+    if [ "$ROTATION_ORIGINAL_PRESENT" = 1 ]; then
+      printf '%%1_NTM_SEP_1_NTM_SEP_test__cc_1_architect_NTM_SEP_node_NTM_SEP_120_NTM_SEP_40_NTM_SEP_0_NTM_SEP_123_NTM_SEP_0_NTM_SEP_cc_NTM_SEP__NTM_SEP__NTM_SEP_0\n'
+    fi
+    if [ -f "$ROTATION_TMUX_LOG.type" ]; then
+      agent_type=$(cat "$ROTATION_TMUX_LOG.type")
+      title=$(cat "$ROTATION_TMUX_LOG.title")
+      command=bash
+      if [ -f "$ROTATION_TMUX_LOG.launched" ]; then command=node; fi
+      if [ "$ROTATION_AFTER_SHELL" = 1 ] && [ -f "$ROTATION_TMUX_LOG.handoff" ]; then command=bash; fi
+      printf '%%99_NTM_SEP_0_NTM_SEP_%s_NTM_SEP_%s_NTM_SEP_120_NTM_SEP_40_NTM_SEP_0_NTM_SEP_321_NTM_SEP_0_NTM_SEP_%s_NTM_SEP__NTM_SEP__NTM_SEP_0\n' "$title" "$command" "$agent_type"
+    fi
+    ;;
+  capture-pane)
+    if [ "$ROTATION_CAPTURE_REQUEST" = 1 ]; then
+      cat "$ROTATION_TMUX_LOG.buffer"
+    elif [ "$ROTATION_RECORD_DELIVERY" = 1 ]; then
+      if [ -f "$ROTATION_TMUX_LOG.handoff" ]; then
+        printf '%s\n' "$ROTATION_AFTER_CAPTURE"
+      else
+        printf '%s\n' "$ROTATION_READY_CAPTURE"
+      fi
+    else
+      printf '%s\n' "$ROTATION_CAPTURE"
+    fi
+    ;;
+  load-buffer) cat > "$ROTATION_TMUX_LOG.buffer" ;;
+  paste-buffer)
+    if [ "$ROTATION_RECORD_DELIVERY" = 1 ]; then printf '1' > "$ROTATION_TMUX_LOG.handoff"; fi
+    ;;
+  show-options)
+    if [ "$ROTATION_SPEC_ERROR" = 1 ]; then exit 1; fi
+    if [ -z "$ROTATION_LAUNCH_SPEC" ]; then
+      printf 'invalid option: @ntm_agent_launch\n' >&2
+      exit 1
+    fi
+    printf '%s\n' "$ROTATION_LAUNCH_SPEC"
+    ;;
 esac
 `
 	if err := os.WriteFile(stub, []byte(script), 0755); err != nil {
@@ -283,6 +554,7 @@ esac
 	}
 	t.Setenv("NTM_TMUX_BINARY", stub)
 	t.Setenv("ROTATION_TMUX_LOG", logPath)
+	t.Setenv("ROTATION_PREDECESSOR_CWD", workDir)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(workDir, "config"))
 	return workDir, logPath
 }

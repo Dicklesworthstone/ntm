@@ -132,7 +132,7 @@ func newRotationTestEnv(t *testing.T, threshold float64, autoConfirm bool, panes
 	rc.enqueue = func(agentID, paneID string, usagePct float64) *ntmctx.PendingRotation {
 		return rc.rotator.EnqueuePendingRotation(rc.session, agentID, paneID, usagePct, rc.workDir)
 	}
-	rc.confirm = func(agentID string) ntmctx.RotationResult {
+	rc.confirm = func(_ context.Context, agentID string) ntmctx.RotationResult {
 		env.confirmed = append(env.confirmed, agentID)
 		return ntmctx.RotationResult{
 			Success:    true,
