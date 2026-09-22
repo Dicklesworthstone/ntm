@@ -481,6 +481,12 @@ func (s *Storage) importTarGz(archivePath string, opts ImportOptions) (result *C
 		}
 	}
 
+	// Tar EOF can precede gzip checksum validation. Finish the compressed
+	// stream before any imported checkpoint can be created or overwritten.
+	if err := validateTarGzipEnd(gr); err != nil {
+		return nil, err
+	}
+
 	if cp == nil {
 		return nil, fmt.Errorf("archive missing %s", MetadataFile)
 	}
