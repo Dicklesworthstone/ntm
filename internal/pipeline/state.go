@@ -195,10 +195,19 @@ func (e *Executor) finishExecution(ctx context.Context, workflow *Workflow, err 
 			}
 		}
 		if !recorded {
-			e.state.Errors = append(e.state.Errors, ExecutionError{
+			// The terminal cause outranks earlier warnings, but a trailing
+			// on_failure diagnostic explains why recovery also failed. Keep
+			// that more specific cause last for public status consumers.
+			insertAt := len(e.state.Errors)
+			for insertAt > 0 && e.state.Errors[insertAt-1].Type == "on_failure" {
+				insertAt--
+			}
+			e.state.Errors = append(e.state.Errors, ExecutionError{})
+			copy(e.state.Errors[insertAt+1:], e.state.Errors[insertAt:])
+			e.state.Errors[insertAt] = ExecutionError{
 				Type: "execution", Message: message,
 				Timestamp: e.state.FinishedAt, Fatal: true,
-			})
+			}
 		}
 	}
 	e.stateMu.Unlock()

@@ -190,6 +190,27 @@ func TestBackgroundPipelineFailurePersistsRealOutcome(t *testing.T) {
 	}
 }
 
+func TestPipelineFatalOutcomeOutranksEarlierParseWarning(t *testing.T) {
+	cfg := DefaultExecutorConfig("parse-then-fail")
+	cfg.ProjectDir = t.TempDir()
+	workflow := &Workflow{SchemaVersion: SchemaVersion, Name: "parse-then-fail", Steps: []Step{
+		{ID: "parse", Command: "printf invalid-json", OutputParse: OutputParse{Type: "json"}},
+		{ID: "fail", Command: "exit 9", DependsOn: []string{"parse"}},
+	}}
+	state, err := NewExecutor(cfg).Run(context.Background(), workflow, nil, nil)
+	if err == nil || state == nil || state.Status != StatusFailed || state.Steps["parse"].Status != StatusCompleted {
+		t.Fatalf("expected a successful parse-warning step followed by command failure: %+v %v", state, err)
+	}
+	persisted, err := LoadState(cfg.ProjectDir, state.RunID)
+	if err != nil || len(persisted.Errors) != 2 || persisted.Errors[0].Type != "parse" || persisted.Errors[0].Fatal || !persisted.Errors[1].Fatal {
+		t.Fatalf("persisted diagnostics lost the warning or terminal failure: %+v %v", persisted, err)
+	}
+	t.Chdir(cfg.ProjectDir)
+	if snapshot := GetPipelineSnapshot(state.RunID); snapshot == nil || snapshot.Status != string(StatusFailed) || !strings.Contains(snapshot.Error, "exit_code=9") {
+		t.Fatalf("earlier parse warning obscured the terminal command failure: %+v", snapshot)
+	}
+}
+
 func TestPipelineHandledFailureDoesNotPersistFatalOutcome(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
