@@ -230,7 +230,7 @@ func GetTriageQuickRef(dir string) (*TriageQuickRef, error) {
 	return &triage.Triage.QuickRef, nil
 }
 
-// GetActionableRecommendationsContext returns recommendations sourced from the FULL
+// getActionableRecommendationsFromToolsContext collects the FULL
 // dependency-aware actionable set (bv --robot-plan), ranked by triage scoring.
 //
 // bv --robot-triage is hardcoded to ≤10 recommendations (see beads_viewer
@@ -256,7 +256,7 @@ func GetTriageQuickRef(dir string) (*TriageQuickRef, error) {
 // authorizing raw triage candidates.
 //
 // It honors caller cancellation across triage, plan, and label enrichment.
-func GetActionableRecommendationsContext(ctx context.Context, dir string, n int) ([]TriageRecommendation, error) {
+func getActionableRecommendationsFromToolsContext(ctx context.Context, dir string, n int) ([]TriageRecommendation, error) {
 	if ctx == nil {
 		return nil, fmt.Errorf("actionable recommendations context is required")
 	}
