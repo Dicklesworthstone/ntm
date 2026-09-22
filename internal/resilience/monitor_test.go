@@ -10,6 +10,7 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/health"
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 // saveHooks saves all original hooks and returns a restore function.
@@ -19,14 +20,22 @@ func saveHooks() func() {
 	origSend := sendKeysFn
 	origBuild := buildPaneCmdFn
 	origPrepare := prepareLaunchCommandFn
+	origReadSpec := readPaneLaunchSpecFn
+	origPrepareSpec := prepareAgentLaunchSpecFn
+	origWorkingDir := paneWorkingDirFn
 	origSleep := sleepFn
 	origCheckSession := checkSessionFn
 	origDisplayMessage := displayMessageFn
 	origIsChildAlive := isChildAliveFn
-	origPanePresent := panePresentFn
+	origFindPane := findPaneFn
 	// Default for tests: the pane exists. Tests exercising the stale-binding
 	// guard override this explicitly.
-	panePresentFn = func(string, string) (bool, error) { return true, nil }
+	findPaneFn = func(_ context.Context, _, paneID string) (*tmux.Pane, error) {
+		return &tmux.Pane{ID: paneID, Index: 1}, nil
+	}
+	// Existing fixtures represent legacy sessions with no durable pane option.
+	// Tests for recorded launches provide a physical pane ID and a saved spec.
+	readPaneLaunchSpecFn = func(context.Context, string) (*tmux.AgentLaunchSpec, error) { return nil, nil }
 	hooksMu.Unlock()
 
 	return func() {
@@ -34,11 +43,14 @@ func saveHooks() func() {
 		sendKeysFn = origSend
 		buildPaneCmdFn = origBuild
 		prepareLaunchCommandFn = origPrepare
+		readPaneLaunchSpecFn = origReadSpec
+		prepareAgentLaunchSpecFn = origPrepareSpec
+		paneWorkingDirFn = origWorkingDir
 		sleepFn = origSleep
 		checkSessionFn = origCheckSession
 		displayMessageFn = origDisplayMessage
 		isChildAliveFn = origIsChildAlive
-		panePresentFn = origPanePresent
+		findPaneFn = origFindPane
 		hooksMu.Unlock()
 	}
 }
@@ -54,8 +66,8 @@ func TestRestartAgentStalePaneBindingRetiredWithoutKeys(t *testing.T) {
 	var mu sync.Mutex
 	sendCalls := 0
 	setHooksLocked(func() {
-		panePresentFn = func(string, string) (bool, error) { return false, nil }
-		sendKeysFn = func(string, string, bool) error {
+		findPaneFn = func(context.Context, string, string) (*tmux.Pane, error) { return nil, nil }
+		sendKeysFn = func(context.Context, string, string, bool) error {
 			mu.Lock()
 			defer mu.Unlock()
 			sendCalls++
@@ -98,8 +110,8 @@ func TestRestartAgentMembershipCheckErrorSkipsButKeepsBinding(t *testing.T) {
 	var mu sync.Mutex
 	sendCalls := 0
 	setHooksLocked(func() {
-		panePresentFn = func(string, string) (bool, error) { return false, fmt.Errorf("tmux unreachable") }
-		sendKeysFn = func(string, string, bool) error {
+		findPaneFn = func(context.Context, string, string) (*tmux.Pane, error) { return nil, fmt.Errorf("tmux unreachable") }
+		sendKeysFn = func(context.Context, string, string, bool) error {
 			mu.Lock()
 			defer mu.Unlock()
 			sendCalls++
@@ -148,7 +160,7 @@ func TestRestartAgentUsesBuiltPaneCommandAndSendKeys(t *testing.T) {
 	var mu sync.Mutex
 	var capturedCmd string
 	setHooksLocked(func() {
-		sendKeysFn = func(paneID, cmd string, enter bool) error {
+		sendKeysFn = func(_ context.Context, paneID, cmd string, enter bool) error {
 			mu.Lock()
 			defer mu.Unlock()
 			capturedCmd = cmd
@@ -210,7 +222,7 @@ func TestRestartAgentRestartsGrokLikeOtherAgents(t *testing.T) {
 			buildCalls++
 			return "grok --always-approve", nil
 		}
-		sendKeysFn = func(paneID, cmd string, enter bool) error {
+		sendKeysFn = func(_ context.Context, paneID, cmd string, enter bool) error {
 			mu.Lock()
 			defer mu.Unlock()
 			sendCalls++
@@ -266,7 +278,7 @@ func TestHandleCrashSchedulesGrokRestart(t *testing.T) {
 			buildCalls++
 			return "grok --always-approve", nil
 		}
-		sendKeysFn = func(paneID, cmd string, enter bool) error {
+		sendKeysFn = func(_ context.Context, paneID, cmd string, enter bool) error {
 			mu.Lock()
 			defer mu.Unlock()
 			sendCalls++
@@ -500,7 +512,7 @@ func TestCheckHealthDetectsCrash(t *testing.T) {
 
 		// Don't actually restart
 		sleepFn = func(d time.Duration) {}
-		sendKeysFn = func(paneID, cmd string, enter bool) error { return nil }
+		sendKeysFn = func(_ context.Context, paneID, cmd string, enter bool) error { return nil }
 		buildPaneCmdFn = func(projectDir, agentCmd string) (string, error) {
 			return agentCmd, nil
 		}
@@ -545,7 +557,7 @@ func TestCheckHealthDetectsPaneMissing(t *testing.T) {
 		}
 
 		sleepFn = func(d time.Duration) {}
-		sendKeysFn = func(paneID, cmd string, enter bool) error { return nil }
+		sendKeysFn = func(_ context.Context, paneID, cmd string, enter bool) error { return nil }
 		buildPaneCmdFn = func(projectDir, agentCmd string) (string, error) {
 			return agentCmd, nil
 		}
@@ -784,7 +796,7 @@ func TestHandleCrashMaxRestartsExceeded(t *testing.T) {
 
 	var restartAttempted bool
 	setHooksLocked(func() {
-		sendKeysFn = func(paneID, cmd string, enter bool) error {
+		sendKeysFn = func(_ context.Context, paneID, cmd string, enter bool) error {
 			restartAttempted = true
 			return nil
 		}
@@ -849,7 +861,7 @@ func TestRestartAgentIncreasesCount(t *testing.T) {
 
 	setHooksLocked(func() {
 		sleepFn = func(d time.Duration) {}
-		sendKeysFn = func(paneID, cmd string, enter bool) error { return nil }
+		sendKeysFn = func(_ context.Context, paneID, cmd string, enter bool) error { return nil }
 		buildPaneCmdFn = func(projectDir, agentCmd string) (string, error) {
 			return agentCmd, nil
 		}
@@ -886,7 +898,7 @@ func TestRestartAgentSkipsIfHealthy(t *testing.T) {
 	var sendKeysCalled bool
 	setHooksLocked(func() {
 		sleepFn = func(d time.Duration) {}
-		sendKeysFn = func(paneID, cmd string, enter bool) error {
+		sendKeysFn = func(_ context.Context, paneID, cmd string, enter bool) error {
 			sendKeysCalled = true
 			return nil
 		}
@@ -918,7 +930,7 @@ func TestRestartAgentHandlesBuildError(t *testing.T) {
 		buildPaneCmdFn = func(projectDir, agentCmd string) (string, error) {
 			return "", fmt.Errorf("build error")
 		}
-		sendKeysFn = func(paneID, cmd string, enter bool) error {
+		sendKeysFn = func(_ context.Context, paneID, cmd string, enter bool) error {
 			sendKeysCalled = true
 			return nil
 		}
@@ -950,7 +962,7 @@ func TestRestartAgentHandlesSendKeysError(t *testing.T) {
 		buildPaneCmdFn = func(projectDir, agentCmd string) (string, error) {
 			return agentCmd, nil
 		}
-		sendKeysFn = func(paneID, cmd string, enter bool) error {
+		sendKeysFn = func(_ context.Context, paneID, cmd string, enter bool) error {
 			return fmt.Errorf("send keys error")
 		}
 	})
@@ -1434,7 +1446,7 @@ func TestCheckHealthIsWorkingGuardSkipsCrash(t *testing.T) {
 		}
 
 		sleepFn = func(d time.Duration) {}
-		sendKeysFn = func(paneID, cmd string, enter bool) error {
+		sendKeysFn = func(_ context.Context, paneID, cmd string, enter bool) error {
 			restartAttempted = true
 			return nil
 		}
@@ -1503,7 +1515,7 @@ func TestCheckHealthKnownDeadPIDBypassesActiveOutputGuard(t *testing.T) {
 		buildPaneCmdFn = func(_ string, agentCmd string) (string, error) {
 			return agentCmd, nil
 		}
-		sendKeysFn = func(_ string, _ string, _ bool) error {
+		sendKeysFn = func(_ context.Context, _ string, _ string, _ bool) error {
 			restartMu.Lock()
 			restartAttempts++
 			restartMu.Unlock()

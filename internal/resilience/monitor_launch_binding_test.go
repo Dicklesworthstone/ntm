@@ -17,7 +17,6 @@ func TestMonitorLaunchBindingFailureSendsNoKeysAndConsumesNoAttempt(t *testing.T
 	setHooksLocked(func() {
 		buildPaneCmdFn = func(string, string) (string, error) { return "claude", nil }
 		isChildAliveFn = func(int) bool { return false }
-		panePresentFn = func(string, string) (bool, error) { return true, nil }
 		prepareLaunchCommandFn = func(
 			_ context.Context,
 			provider, _ string,
@@ -30,7 +29,7 @@ func TestMonitorLaunchBindingFailureSendsNoKeysAndConsumesNoAttempt(t *testing.T
 			}
 			return "", "", errors.New("cannot resolve caam:cc/profile-a")
 		}
-		sendKeysFn = func(string, string, bool) error {
+		sendKeysFn = func(context.Context, string, string, bool) error {
 			sendCalls++
 			return nil
 		}

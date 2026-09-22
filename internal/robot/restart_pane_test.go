@@ -1637,18 +1637,18 @@ func TestRestartAgentLaunchCommandWithOverride(t *testing.T) {
 		wantErr   string
 	}{
 		{
-			name:      "legacy codex config gets appended last-flag-wins override",
+			name:      "legacy codex config replaces scalar options",
 			agentType: "codex",
 			codexCmd:  legacyCodex,
 			override:  restartLaunchOverride{Model: "gpt-5.6-terra", Effort: "high"},
-			want:      []string{"-m gpt-5.6-sol", "-m 'gpt-5.6-terra'", "model_reasoning_effort='high'"},
+			want:      []string{"-m 'gpt-5.6-terra'", "model_reasoning_effort='high'"},
 		},
 		{
 			name:      "template codex config renders override directly",
 			agentType: "codex",
 			codexCmd:  templateCodex,
 			override:  restartLaunchOverride{Model: "gpt-5.6-terra", Effort: "high"},
-			want:      []string{"-m gpt-5.6-terra", "model_reasoning_effort=high"},
+			want:      []string{"-m 'gpt-5.6-terra'", "model_reasoning_effort='high'"},
 		},
 		{
 			name:      "claude legacy config appends --model/--effort",
@@ -1698,11 +1698,11 @@ func TestRestartAgentLaunchCommandWithOverride(t *testing.T) {
 					t.Errorf("command %q missing %q", got, want)
 				}
 			}
-			// last-flag-wins: the override model must come after the configured one.
-			if tc.override.Model != "" && strings.Contains(got, "-m gpt-5.6-sol") {
-				if strings.LastIndex(got, tc.override.Model) < strings.Index(got, "gpt-5.6-sol") {
-					t.Errorf("override model does not come after configured model: %q", got)
-				}
+			if tc.override.Model != "" && strings.Contains(got, "gpt-5.6-sol") {
+				t.Errorf("old model remained in override command: %q", got)
+			}
+			if tc.override.Model != "" && tc.agentType == "codex" && strings.Count(got, "-m ") != 1 {
+				t.Errorf("Codex scalar model flag must occur exactly once: %q", got)
 			}
 		})
 	}

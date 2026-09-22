@@ -2,7 +2,9 @@ package auth
 
 import (
 	"bytes"
+	"context"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -50,6 +52,9 @@ func TestNewOrchestrator(t *testing.T) {
 	}
 	if orch.sanitizePaneCommand == nil {
 		t.Error("sanitizePaneCommand should be set")
+	}
+	if orch.setLaunchSpec == nil {
+		t.Error("setLaunchSpec should be set")
 	}
 	if orch.promptBrowserAuth == nil {
 		t.Error("promptBrowserAuth should be set")
@@ -303,6 +308,9 @@ func TestOrchestrator_ExecuteRestartStrategyPromptsBeforeStarting(t *testing.T) 
 	cfg.Agents.Claude = "claude --model {{.Model}}"
 
 	orch := NewOrchestrator(cfg)
+	orch.setLaunchSpec = func(_ context.Context, _ string, spec tmux.AgentLaunchSpec) error {
+		return spec.Validate(tmux.AgentClaude)
+	}
 	orch.sleep = func(time.Duration) {}
 	orch.captureOutput = func(string, int) (string, error) {
 		return "$ ", nil
@@ -415,6 +423,12 @@ func TestOrchestrator_ExecuteRestartStrategyPromptFailureStopsRestart(t *testing
 // instead of refusing before any mutation.
 func TestOrchestrator_GrokRestartFlowsLikeClaude(t *testing.T) {
 	orch := NewOrchestrator(config.Default())
+	orch.setLaunchSpec = func(_ context.Context, _ string, spec tmux.AgentLaunchSpec) error {
+		if !strings.Contains(spec.Command, "grok") || strings.Contains(spec.Command, "claude") {
+			t.Fatalf("Grok auth restart recorded a different provider command: %q", spec.Command)
+		}
+		return spec.Validate(tmux.AgentGrok)
+	}
 	calls := map[string]int{}
 	orch.sendKeys = func(string, string, bool) error {
 		calls["send_keys"]++
@@ -606,6 +620,9 @@ func TestOrchestrator_StartNewAgentSession(t *testing.T) {
 
 		orch := NewOrchestrator(cfg)
 		orch.sleep = func(time.Duration) {}
+		orch.setLaunchSpec = func(_ context.Context, _ string, spec tmux.AgentLaunchSpec) error {
+			return spec.Validate(tmux.AgentClaude)
+		}
 
 		var sanitizeInput string
 		orch.sanitizePaneCommand = func(cmd string) (string, error) {
@@ -733,6 +750,11 @@ func TestStartNewAgentSession_ReappliesClaudeCredentialIsolation(t *testing.T) {
 	cfg.Agents.ClaudeTokenFile = ""
 
 	orch := NewOrchestrator(cfg)
+	var saved tmux.AgentLaunchSpec
+	orch.setLaunchSpec = func(_ context.Context, _ string, spec tmux.AgentLaunchSpec) error {
+		saved = spec
+		return spec.Validate(tmux.AgentClaude)
+	}
 	var sent string
 	orch.sanitizePaneCommand = func(cmd string) (string, error) { return cmd, nil }
 	orch.buildPaneCommand = func(dir, cmd string) (string, error) { return cmd, nil }
@@ -766,6 +788,9 @@ func TestStartNewAgentSession_ReappliesClaudeCredentialIsolation(t *testing.T) {
 	if !strings.Contains(sent, "claude-homes") {
 		t.Fatalf("relaunch command does not point at the pane-private config dir: %q", sent)
 	}
+	if !saved.ClaudeIsolateCredentials || strings.Contains(saved.Command, "CLAUDE_CONFIG_DIR") {
+		t.Fatalf("saved launch must reprovision isolation rather than replay its directory: %+v", saved)
+	}
 }
 
 // A non-Claude relaunch must be untouched by the isolation logic.
@@ -774,6 +799,9 @@ func TestStartNewAgentSession_LeavesNonClaudeRelaunchAlone(t *testing.T) {
 	cfg.Agents.ClaudeIsolateCredentials = true
 
 	orch := NewOrchestrator(cfg)
+	orch.setLaunchSpec = func(_ context.Context, _ string, spec tmux.AgentLaunchSpec) error {
+		return spec.Validate(tmux.AgentCodex)
+	}
 	var sent string
 	orch.sanitizePaneCommand = func(cmd string) (string, error) { return cmd, nil }
 	orch.buildPaneCommand = func(dir, cmd string) (string, error) { return cmd, nil }
@@ -795,5 +823,54 @@ func TestStartNewAgentSession_LeavesNonClaudeRelaunchAlone(t *testing.T) {
 	}
 	if strings.Contains(sent, "CLAUDE_CONFIG_DIR") {
 		t.Fatalf("codex relaunch picked up claude isolation env: %q", sent)
+	}
+}
+
+func TestAuthRestartReplacesLaunchMetadataBeforeDelivery(t *testing.T) {
+	t.Setenv("SHALLOW_PROFILE", "previous-account")
+	for _, persistFails := range []bool{false, true} {
+		t.Run(fmt.Sprintf("persist_failure_%t", persistFails), func(t *testing.T) {
+			cfg := config.Default()
+			cfg.Agents.Codex = "codex --model {{.Model}}"
+			orch := NewOrchestrator(cfg)
+			var saved tmux.AgentLaunchSpec
+			orch.setLaunchSpec = func(_ context.Context, paneID string, spec tmux.AgentLaunchSpec) error {
+				if paneID != "%41" {
+					t.Fatalf("recorded wrong pane %q", paneID)
+				}
+				saved = spec
+				if persistFails {
+					return errors.New("metadata unavailable")
+				}
+				return spec.Validate(tmux.AgentCodex)
+			}
+			var sent string
+			orch.sendKeysForAgent = func(_ string, command string, _ bool, typ tmux.AgentType) error {
+				if saved.Command == "" || typ != tmux.AgentCodex {
+					t.Fatal("launched before metadata was recorded")
+				}
+				sent = command
+				return nil
+			}
+			err := orch.StartNewAgentSession(RestartContext{
+				PaneID: "%41", Provider: "Codex", AgentType: "cod", ModelAlias: "new-model",
+				SessionName: "reauthed", PaneIndex: 1, ProjectDir: t.TempDir(),
+			})
+			if persistFails {
+				if err == nil || !strings.Contains(err.Error(), "metadata unavailable") || sent != "" {
+					t.Fatalf("persistence failure must prevent launch: sent=%q err=%v", sent, err)
+				}
+				return
+			}
+			if err != nil || sent == "" {
+				t.Fatalf("auth relaunch failed: %v", err)
+			}
+			if saved.CAAMProfile != "" || saved.ModelAlias != "new-model" || !strings.Contains(saved.Command, "new-model") {
+				t.Fatalf("saved stale account or model: %+v", saved)
+			}
+			if !strings.Contains(sent, saved.Command) {
+				t.Fatalf("metadata differs from command sent: saved=%q sent=%q", saved.Command, sent)
+			}
+		})
 	}
 }

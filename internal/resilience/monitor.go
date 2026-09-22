@@ -5,6 +5,9 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -22,33 +25,61 @@ import (
 // Overridable hooks for tests.
 // Protected by hooksMu for concurrent access from spawned goroutines.
 var (
-	hooksMu                sync.RWMutex
-	sendKeysFn             = tmux.SendKeys
-	buildPaneCmdFn         = tmux.BuildPaneCommand
-	prepareLaunchCommandFn = PrepareLaunchCommand
-	sleepFn                = time.Sleep
-	checkSessionFn         = health.CheckSession
-	displayMessageFn       = tmux.DisplayMessage
-	isChildAliveFn         = process.IsChildAlive
-	panePresentFn          = panePresentInSession
+	hooksMu                  sync.RWMutex
+	sendKeysFn               = tmux.SendKeysContext
+	buildPaneCmdFn           = tmux.BuildPaneCommand
+	prepareLaunchCommandFn   = PrepareLaunchCommand
+	readPaneLaunchSpecFn     = tmux.ReadPaneLaunchSpecContext
+	prepareAgentLaunchSpecFn = PrepareAgentLaunchSpec
+	paneWorkingDirFn         = monitorPaneWorkingDirectory
+	sleepFn                  = time.Sleep
+	checkSessionFn           = health.CheckSession
+	displayMessageFn         = tmux.DisplayMessage
+	isChildAliveFn           = process.IsChildAlive
+	findPaneFn               = findPaneInSession
 )
 
-// panePresentInSession reports whether paneID currently exists in session.
+// findPaneInSession returns the current pane identity, or nil if it has left.
 // Restart key injection must be gated on this: pane IDs are only unique per
 // tmux server lifetime, so after a server restart (or a session teardown and
 // recreation under the same name) a remembered ID can point at a pane that
 // now belongs to a different agent entirely.
-func panePresentInSession(session, paneID string) (bool, error) {
-	panes, err := tmux.GetPanes(session)
+func findPaneInSession(ctx context.Context, session, paneID string) (*tmux.Pane, error) {
+	panes, err := tmux.GetPanesContext(ctx, session)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	for _, pane := range panes {
 		if pane.ID == paneID {
-			return true, nil
+			return &pane, nil
 		}
 	}
-	return false, nil
+	return nil, nil
+}
+
+func monitorPaneWorkingDirectory(ctx context.Context, paneID string) (string, error) {
+	out, err := tmux.DefaultClient.RunContext(ctx, "display-message", "-p", "-t", tmux.ExactTarget(paneID), "#{pane_current_path}")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSuffix(out, "\n"), nil
+}
+
+func validateRestartWorkingDirectory(dir string) error {
+	if !filepath.IsAbs(dir) {
+		return fmt.Errorf("saved launch requires an absolute pane working directory")
+	}
+	if _, err := tmux.SanitizePaneCommand(dir); err != nil {
+		return fmt.Errorf("invalid pane working directory: %w", err)
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		return fmt.Errorf("inspect pane working directory: %w", err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("pane working directory is not a directory")
+	}
+	return nil
 }
 
 // AgentState tracks the state of an individual agent for restart purposes
@@ -909,9 +940,12 @@ func (m *Monitor) restartAgent(ctx context.Context, agent *AgentState) {
 	hooksMu.RLock()
 	buildFunc := buildPaneCmdFn
 	prepareFunc := prepareLaunchCommandFn
+	readSpecFunc := readPaneLaunchSpecFn
+	prepareSpecFunc := prepareAgentLaunchSpecFn
+	workingDirFunc := paneWorkingDirFn
 	sendFunc := sendKeysFn
 	isChildAliveFunc := isChildAliveFn
-	panePresentFunc := panePresentFn
+	findPaneFunc := findPaneFn
 	hooksMu.RUnlock()
 
 	select {
@@ -934,20 +968,18 @@ func (m *Monitor) restartAgent(ctx context.Context, agent *AgentState) {
 	launchBinding := CloneLaunchBinding(currentAgent.LaunchBinding)
 	trackedAgentType := currentAgent.AgentType
 	shellPID := currentAgent.ShellPID
+	registeredShellPID := shellPID
 	m.mu.Unlock()
-
-	// Final PID guard: last-second check before injecting keys.
-	// The restart delay may have allowed the agent to recover.
-	// This prevents the most damaging outcome: injecting the spawn
-	// command as literal keystrokes into a running agent.
-	if shellPID > 0 && isChildAliveFunc(shellPID) {
-		log.Printf("[resilience] Agent %s: final PID guard — process recovered during restart delay, aborting restart", agent.PaneID)
+	if err := validateAutomatedMonitorRestart(trackedAgentType); err != nil {
+		log.Printf("[resilience] Refusing to restart agent %s: %v", agent.PaneID, err)
+		return
+	}
+	markRecovered := func() {
 		m.mu.Lock()
-		if a, ok := m.agents[agent.PaneID]; ok {
+		if a := m.agents[agent.PaneID]; a == currentAgent {
 			a.Healthy = true
 		}
 		m.mu.Unlock()
-		return
 	}
 
 	// Stale-binding guard: a tracked pane ID can outlive the pane it named
@@ -955,52 +987,155 @@ func (m *Monitor) restartAgent(ctx context.Context, agent *AgentState) {
 	// inject keys unless the ID is verifiably a member of our session right
 	// now — and retire the binding when it is not, so the monitor stops
 	// retrying a pane that will never come back.
-	if present, presentErr := panePresentFunc(m.session, agent.PaneID); presentErr != nil || !present {
-		if presentErr != nil {
-			log.Printf("[resilience] Refusing to restart agent %s: cannot verify pane membership in session %s: %v", agent.PaneID, m.session, presentErr)
-		} else {
+	lookupPane := func() *tmux.Pane {
+		pane, err := findPaneFunc(ctx, m.session, agent.PaneID)
+		if err != nil {
+			log.Printf("[resilience] Refusing to restart agent %s: cannot verify pane membership in session %s: %v", agent.PaneID, m.session, err)
+			return nil
+		}
+		if pane == nil {
 			log.Printf("[resilience] Retiring stale pane binding %s: pane no longer exists in session %s", agent.PaneID, m.session)
 			m.mu.Lock()
-			delete(m.agents, agent.PaneID)
 			// Remember the retirement: the pane is still listed in the
 			// manifest, and manifest reconciliation would otherwise re-adopt
 			// it on the next tick and undo this decision.
-			if m.retired == nil {
-				m.retired = make(map[string]struct{})
+			if m.agents[agent.PaneID] == currentAgent {
+				delete(m.agents, agent.PaneID)
+				if m.retired == nil {
+					m.retired = make(map[string]struct{})
+				}
+				m.retired[agent.PaneID] = struct{}{}
 			}
-			m.retired[agent.PaneID] = struct{}{}
 			m.mu.Unlock()
+			return nil
 		}
+		if pane.IsServicePane() || pane.Dead {
+			log.Printf("[resilience] Refusing to restart agent %s: destination is a service or dead pane", agent.PaneID)
+			return nil
+		}
+		return pane
+	}
+	livePane := lookupPane()
+	if livePane == nil {
+		return
+	}
+	// A manual respawn can replace the pane's shell while this daemon stays
+	// alive. Probe the current shell, retaining the registered PID only as a
+	// fallback for older observations, so a stale PID cannot block recovery.
+	if livePane.PID > 0 {
+		shellPID = livePane.PID
+	}
+	if shellPID > 0 && isChildAliveFunc(shellPID) {
+		log.Printf("[resilience] Agent %s: final PID guard — process recovered during restart delay, aborting restart", agent.PaneID)
+		markRecovered()
 		return
 	}
 
-	caamBinary := ""
-	if m.cfg != nil {
-		caamBinary = m.cfg.Integrations.CAAM.BinaryPath
-	}
-	preparedAgentCommand, affinity, err := prepareFunc(ctx, trackedAgentType, caamBinary, launchBinding, agentCommand)
+	// The pane option is authoritative. A manual restart can change the model,
+	// persona, or account while this monitor retains its original manifest row.
+	// Only an absent option is legacy; malformed or unreadable metadata must
+	// never send the remembered command with silently different launch inputs.
+	launchSpec, err := readSpecFunc(ctx, agent.PaneID)
 	if err != nil {
-		log.Printf("[resilience] Refusing to restart agent %s: launch affinity preflight failed: %v", agent.PaneID, err)
+		log.Printf("[resilience] Refusing to restart agent %s: cannot read launch specification: %v", agent.PaneID, err)
 		return
 	}
-	if affinity == LaunchAffinityUnknown {
-		log.Printf("[resilience] Agent %s has legacy unknown launch affinity; restarting with the current controller environment", agent.PaneID)
+	var preparedAgentCommand string
+	workDir := m.projectDir
+	if launchSpec != nil {
+		if err := launchSpec.ValidateReplay(tmux.AgentType(trackedAgentType)); err != nil {
+			log.Printf("[resilience] Refusing to restart agent %s: invalid tracked launch specification: %v", agent.PaneID, err)
+			return
+		}
+		if err := launchSpec.Validate(livePane.Type); err != nil {
+			log.Printf("[resilience] Refusing to restart agent %s: live pane identity changed: %v", agent.PaneID, err)
+			return
+		}
+		// Worktree agents run outside the session's shared project directory.
+		// The saved command deliberately excludes cd, so recover the physical
+		// pane's current directory rather than moving its work into that root.
+		workDir, err = workingDirFunc(ctx, agent.PaneID)
+		if err == nil {
+			err = validateRestartWorkingDirectory(workDir)
+		}
+		if err != nil {
+			log.Printf("[resilience] Refusing to restart agent %s: cannot preserve working directory: %v", agent.PaneID, err)
+			return
+		}
+		preparedAgentCommand, err = prepareSpecFunc(ctx, m.cfg, *launchSpec, workDir, m.session, livePane.Index)
+	} else {
+		if registeredShellPID > 0 && livePane.PID > 0 && livePane.PID != registeredShellPID {
+			log.Printf("[resilience] Refusing to restart agent %s: changed shell has no launch specification; stale manifest cannot establish its identity", agent.PaneID)
+			return
+		}
+		caamBinary := ""
+		if m.cfg != nil {
+			caamBinary = m.cfg.Integrations.CAAM.BinaryPath
+		}
+		var affinity LaunchAffinity
+		preparedAgentCommand, affinity, err = prepareFunc(ctx, trackedAgentType, caamBinary, launchBinding, agentCommand)
+		if err == nil && affinity == LaunchAffinityUnknown {
+			log.Printf("[resilience] Agent %s has legacy unknown launch affinity; restarting with the current controller environment", agent.PaneID)
+		}
 	}
-	paneCmd, err := buildFunc(m.projectDir, preparedAgentCommand)
+	if err != nil {
+		log.Printf("[resilience] Refusing to restart agent %s: launch preflight failed: %v", agent.PaneID, err)
+		return
+	}
+	paneCmd, err := buildFunc(workDir, preparedAgentCommand)
 	if err != nil {
 		log.Printf("[resilience] Refusing to restart agent %s: %v", agent.PaneID, err)
 		return
 	}
 
-	m.mu.Lock()
-	var attemptRestartCount int
-	if a, ok := m.agents[agent.PaneID]; ok {
-		a.RestartCount++
-		attemptRestartCount = a.RestartCount
+	// Account resolution and credential provisioning can take time. Recheck
+	// the exact destination, launch inputs, and liveness before injecting keys
+	// so a concurrent manual recovery wins over this pending restart.
+	if ctx.Err() != nil {
+		return
 	}
+	latestPane := lookupPane()
+	if latestPane == nil {
+		return
+	}
+	if latestPane.Index != livePane.Index || latestPane.PID != livePane.PID || latestPane.Type != livePane.Type {
+		log.Printf("[resilience] Refusing to restart agent %s: pane identity changed during launch preflight", agent.PaneID)
+		return
+	}
+	latestSpec, err := readSpecFunc(ctx, agent.PaneID)
+	if err != nil || !reflect.DeepEqual(launchSpec, latestSpec) {
+		log.Printf("[resilience] Refusing to restart agent %s: launch specification changed or became unreadable during preflight", agent.PaneID)
+		return
+	}
+	if launchSpec != nil {
+		latestDir, err := workingDirFunc(ctx, agent.PaneID)
+		if err != nil || latestDir != workDir || validateRestartWorkingDirectory(latestDir) != nil {
+			log.Printf("[resilience] Refusing to restart agent %s: working directory changed or became unavailable during preflight", agent.PaneID)
+			return
+		}
+	}
+	latestPID := latestPane.PID
+	if latestPID == 0 {
+		latestPID = shellPID
+	}
+	if latestPID > 0 && isChildAliveFunc(latestPID) {
+		log.Printf("[resilience] Agent %s recovered during launch preflight, aborting restart", agent.PaneID)
+		markRecovered()
+		return
+	}
+	if ctx.Err() != nil {
+		return
+	}
+	m.mu.Lock()
+	if m.agents[agent.PaneID] != currentAgent || currentAgent.Healthy {
+		m.mu.Unlock()
+		return
+	}
+	currentAgent.RestartCount++
+	attemptRestartCount := currentAgent.RestartCount
 	m.mu.Unlock()
 
-	if err := sendFunc(agent.PaneID, paneCmd, true); err != nil {
+	if err := sendFunc(ctx, agent.PaneID, paneCmd, true); err != nil {
 		log.Printf("[resilience] Failed to restart agent %s (attempt %d/%d): %v",
 			agent.PaneID, attemptRestartCount, m.cfg.Resilience.MaxRestarts, err)
 		return
@@ -1008,9 +1143,23 @@ func (m *Monitor) restartAgent(ctx context.Context, agent *AgentState) {
 
 	m.mu.Lock()
 	var finalRestartCount int
-	if a, ok := m.agents[agent.PaneID]; ok {
+	if a := m.agents[agent.PaneID]; a == currentAgent {
 		a.Healthy = true
 		a.LastRestart = time.Now()
+		a.PaneIndex = latestPane.Index
+		if latestPane.PID > 0 {
+			a.ShellPID = latestPane.PID
+		}
+		if launchSpec != nil {
+			a.Command = launchSpec.Command
+			a.Model = launchSpec.Model
+			a.LaunchBinding = nil
+			if launchSpec.CAAMProfile != "" {
+				a.LaunchBinding = &LaunchBinding{
+					Provider: canonicalLaunchProvider(trackedAgentType), Launcher: caamLaunchBinding, Identifier: launchSpec.CAAMProfile,
+				}
+			}
+		}
 		finalRestartCount = a.RestartCount
 		log.Printf("[resilience] Agent %s restarted (attempt %d/%d)",
 			agent.PaneID, a.RestartCount, m.cfg.Resilience.MaxRestarts)
@@ -1049,12 +1198,4 @@ func (m *Monitor) restartAgent(ctx context.Context, agent *AgentState) {
 			log.Printf("[resilience] notification error: %v", err)
 		}
 	}
-
-	// Mark as healthy again (will be rechecked on next health cycle)
-	m.mu.Lock()
-	if a, ok := m.agents[agent.PaneID]; ok {
-		a.Healthy = true
-		a.LastRestart = time.Now()
-	}
-	m.mu.Unlock()
 }

@@ -303,6 +303,10 @@ func buildControllerResponse(ctx context.Context, opts ControllerInput) (*Contro
 	if err != nil {
 		return nil, fmt.Errorf("rendering agent command template: %w", err)
 	}
+	launchSpec, err := captureAgentLaunchSpec(AgentType(tmux.AgentType(agentTypeFull).Canonical()), agentCmd, "", "", "", "", "")
+	if err != nil {
+		return nil, fmt.Errorf("capture controller launch settings: %w", err)
+	}
 
 	// Per-pane Claude credential isolation (GH#237, bd-4tz2d). Every path that
 	// renders a Claude launch command must apply it, or the relaunched pane
@@ -357,6 +361,9 @@ func buildControllerResponse(ctx context.Context, opts ControllerInput) (*Contro
 	title := tmux.FormatPaneName(session, "controller_"+agentTypeFull, 1, "")
 	if err := tmux.SetPaneAgentIdentity(targetPaneID, title, tmux.AgentType(agentTypeFull)); err != nil {
 		return nil, fmt.Errorf("setting controller pane identity: %w", err)
+	}
+	if err := tmux.SetPaneLaunchSpecContext(ctx, targetPaneID, launchSpec); err != nil {
+		return nil, fmt.Errorf("record controller launch settings: %w", err)
 	}
 
 	// Launch the agent

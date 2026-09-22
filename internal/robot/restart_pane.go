@@ -138,8 +138,8 @@ type RestartPaneOptions struct {
 	// variant grammar (`model` or `model@effort`). Validated against every
 	// target pane's agent type before any respawn (ntm-yusj).
 	Model string
-	// AgentArgs are raw arguments appended after the relaunch command
-	// (last-flag-wins), for overrides the model grammar cannot express.
+	// AgentArgs are literal arguments appended after the relaunch command for
+	// options the model grammar cannot express. Model/effort use Model above.
 	AgentArgs string
 	Deps      *RestartPaneDependencies
 }
@@ -193,10 +193,9 @@ func parseRestartLaunchOverride(model, args string) (restartLaunchOverride, erro
 }
 
 // restartOverrideAppendFlags composes the per-agent-type flags that carry a
-// model/effort override when the configured relaunch command does not render
-// them itself. Appending after the configured args relies on last-flag-wins
-// parsing, which claude, codex, and gemini all honor. Agent types without a
-// known model flag reject the override loudly instead of dropping it.
+// model/effort override. Callers remove existing scalar options first because
+// some agent CLIs reject duplicates. Agent types without a known model flag
+// reject the override loudly instead of dropping it.
 func restartOverrideAppendFlags(resolvedType string, override restartLaunchOverride, needModel, needEffort bool) (string, error) {
 	var flags strings.Builder
 	switch resolvedType {
@@ -266,6 +265,9 @@ type RestartPaneDependencies struct {
 	DispatchPacer          dispatchsvc.Pacer
 	LoadManifest           func(string) (*resilience.SpawnManifest, error)
 	PrepareLaunchCommand   func(context.Context, string, string, *resilience.LaunchBinding, string) (string, resilience.LaunchAffinity, error)
+	ReadLaunchSpec         func(context.Context, string) (*tmux.AgentLaunchSpec, error)
+	SetLaunchSpec          func(context.Context, string, tmux.AgentLaunchSpec) error
+	PaneWorkingDir         func(context.Context, string) (string, error)
 }
 
 type restartBeadPreflight struct {
@@ -590,7 +592,14 @@ func GetRestartPaneContext(ctx context.Context, opts RestartPaneOptions) (*Resta
 		// credential — before any of that landed. Best-effort by
 		// construction: the hook must never fail the restart, and it is
 		// invoked exactly once per restart.
-		notifyRestartPaneIdentityHook(ctx, opts.Session, targetPanes, output.Restarted, multiWindow)
+		verifiedRestarts := make([]string, 0, len(output.Restarted))
+		for _, paneKey := range output.Restarted {
+			pids := output.PaneShellPIDs[paneKey]
+			if pids.After > 0 && pids.After != pids.Before {
+				verifiedRestarts = append(verifiedRestarts, paneKey)
+			}
+		}
+		notifyRestartPaneIdentityHook(ctx, opts.Session, targetPanes, verifiedRestarts, multiWindow)
 
 		output.AgentRelaunched = make(map[string]bool)
 		output.AgentRelaunchStatus = make(map[string]RestartAgentRelaunchStatus)
@@ -615,6 +624,34 @@ func GetRestartPaneContext(ctx context.Context, opts RestartPaneOptions) (*Resta
 			launchCmd, ok := launchPlan.Commands[paneKey]
 			if !ok {
 				appendRestartFailureOnce(output, paneKey, "missing preflighted relaunch command")
+				output.AgentRelaunched[paneKey] = false
+				output.AgentRelaunchStatus[paneKey] = RestartAgentRelaunchFailed
+				continue
+			}
+			pids := output.PaneShellPIDs[paneKey]
+			if pids.After <= 0 || pids.After == pids.Before {
+				appendRestartFailureOnce(output, paneKey, "agent relaunch withheld: replacement pane PID was not verified; saved launch specification was left unchanged")
+				output.AgentRelaunched[paneKey] = false
+				output.AgentRelaunchStatus[paneKey] = RestartAgentRelaunchUnknown
+				continue
+			}
+			if replay := launchPlan.Replay[paneKey]; replay != nil {
+				launchCmd, err = replay.Prepare(ctx, launchPlan.Directories[paneKey], opts.Session, launchPlan.Indices[paneKey])
+				if err == nil {
+					launchCmd, err = tmux.BuildPaneCommand(launchPlan.Directories[paneKey], launchCmd)
+				}
+				if err != nil {
+					appendRestartFailureOnce(output, paneKey, fmt.Sprintf("prepare saved launch after respawn: %v", err))
+					output.AgentRelaunched[paneKey] = false
+					output.AgentRelaunchStatus[paneKey] = RestartAgentRelaunchFailed
+					continue
+				}
+			}
+			// Respawn preserves pane options. Refresh the saved command only
+			// after it has replaced the old process, before delivering the new
+			// launch, so a failed respawn cannot mislabel a still-running agent.
+			if err := deps.SetLaunchSpec(ctx, info.Target, launchPlan.Specs[paneKey]); err != nil {
+				appendRestartFailureOnce(output, paneKey, fmt.Sprintf("record launch specification after respawn: %v", err))
 				output.AgentRelaunched[paneKey] = false
 				output.AgentRelaunchStatus[paneKey] = RestartAgentRelaunchFailed
 				continue
@@ -801,6 +838,9 @@ func restartPaneDeps(custom *RestartPaneDependencies) RestartPaneDependencies {
 		DispatchDeliverer:      dispatchsvc.TMUXDeliverer{},
 		LoadManifest:           resilience.LoadManifest,
 		PrepareLaunchCommand:   resilience.PrepareLaunchCommand,
+		ReadLaunchSpec:         tmux.ReadPaneLaunchSpecContext,
+		SetLaunchSpec:          tmux.SetPaneLaunchSpecContext,
+		PaneWorkingDir:         restartPaneWorkingDirectory,
 	}
 	if custom == nil {
 		return deps
@@ -853,6 +893,15 @@ func restartPaneDeps(custom *RestartPaneDependencies) RestartPaneDependencies {
 	}
 	if custom.PrepareLaunchCommand != nil {
 		deps.PrepareLaunchCommand = custom.PrepareLaunchCommand
+	}
+	if custom.ReadLaunchSpec != nil {
+		deps.ReadLaunchSpec = custom.ReadLaunchSpec
+	}
+	if custom.SetLaunchSpec != nil {
+		deps.SetLaunchSpec = custom.SetLaunchSpec
+	}
+	if custom.PaneWorkingDir != nil {
+		deps.PaneWorkingDir = custom.PaneWorkingDir
 	}
 	return deps
 }
@@ -1718,6 +1767,9 @@ func restartAgentLaunchCommand(cfg *config.Config, agentType, variant string) st
 func restartAgentLaunchCommandWithOverride(cfg *config.Config, agentType, variant string, override restartLaunchOverride) (string, error) {
 	alias := restartLaunchAlias(agentType)
 	resolved := ResolveAgentType(agentType)
+	if err := validateRestartExtraArguments(override.Args, resolved); err != nil {
+		return "", err
+	}
 
 	var tmpl string
 	if cfg != nil {
@@ -1810,14 +1862,28 @@ func restartAgentLaunchCommandWithOverride(cfg *config.Config, agentType, varian
 		return "", fmt.Errorf("render relaunch command with override: %w", err)
 	}
 
-	needModel := override.Model != "" && !referencesModel
-	needEffort := override.Effort != "" && !referencesEffort
-	if needModel || needEffort || override.Model != "" || override.Effort != "" {
-		flags, err := restartOverrideAppendFlags(resolved, override, needModel, needEffort)
+	if override.Model != "" || override.Effort != "" {
+		if err := validateRestartOverrideCommand(rendered, resolved); err != nil {
+			return "", err
+		}
+		rendered, err = removeRestartScalarOverrides(rendered, resolved, override.Model != "", override.Effort != "")
+		if err != nil {
+			return "", err
+		}
+		effectiveOverride := override
+		if override.Model != "" {
+			effectiveOverride.Model = vars.Model
+		}
+		flags, err := restartOverrideAppendFlags(resolved, effectiveOverride, override.Model != "", override.Effort != "")
 		if err != nil {
 			return "", err
 		}
 		rendered += flags
+	}
+	if override.Args != "" {
+		if err := validateRestartOverrideCommand(rendered, resolved); err != nil {
+			return "", err
+		}
 	}
 	rendered = appendArgs(rendered)
 
