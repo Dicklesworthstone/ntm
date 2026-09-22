@@ -216,32 +216,48 @@ func TestPaneLockFailedAcquireReleasesLocalLock(t *testing.T) {
 	}
 }
 
-// TestPaneLockWithoutProjectDirDegradesInProcess pins the documented
-// degradation: with no project root there is no agreed lock location, so the
-// lock is in-process only rather than a lock file somewhere useless.
-func TestPaneLockWithoutProjectDirDegradesInProcess(t *testing.T) {
-	a := NewExecutor(ExecutorConfig{Session: "s"})
-	b := NewExecutor(ExecutorConfig{Session: "s"})
+// A missing project directory disables project state, not pane ownership.
+// The shared per-user lock must still serialize independent executors.
+func TestPaneLockWithoutProjectDirIsExclusive(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	a := newLockExecutor("", 50*time.Millisecond)
+	b := newLockExecutor("", 50*time.Millisecond)
 
 	releaseA, err := a.acquirePaneLockCrossProcess(context.Background(), "%1")
 	if err != nil {
 		t.Fatalf("acquire without ProjectDir: %v", err)
 	}
-	defer releaseA()
+	held := true
+	defer func() {
+		if held {
+			releaseA()
+		}
+	}()
 
-	// No cross-process exclusion is claimed here, so b succeeds.
-	releaseB, err := b.acquirePaneLockCrossProcess(context.Background(), "%1")
-	if err != nil {
-		t.Fatalf("without ProjectDir the lock must degrade to in-process, got %v", err)
+	if unexpected, err := b.acquirePaneLockCrossProcess(context.Background(), "%1"); !errors.Is(err, ErrPaneBusyOtherProcess) {
+		if unexpected != nil {
+			unexpected()
+		}
+		t.Fatalf("missing ProjectDir bypassed pane ownership: %v", err)
 	}
-	releaseB()
 
 	// The same executor still serializes itself.
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
-	if _, err := a.acquirePaneLockCrossProcess(ctx, "%1"); err == nil {
-		t.Error("the in-process lock stopped serializing the same executor")
+	if unexpected, err := a.acquirePaneLockCrossProcess(ctx, "%1"); !errors.Is(err, context.DeadlineExceeded) {
+		if unexpected != nil {
+			unexpected()
+		}
+		t.Fatalf("in-process contention did not honor cancellation: %v", err)
 	}
+
+	releaseA()
+	held = false
+	releaseB, err := b.acquirePaneLockCrossProcess(context.Background(), "%1")
+	if err != nil {
+		t.Fatalf("failed acquisition leaked a lock: %v", err)
+	}
+	releaseB()
 }
 
 // TestPaneLockDryRunTakesNoFileLock covers the parallel dispatch path, which

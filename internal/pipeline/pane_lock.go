@@ -111,13 +111,10 @@ func normalizeLockRoot(projectDir string) string {
 }
 
 // acquirePaneLockCrossProcess takes the in-process pane lock and then the
-// cross-process file lock, returning a release func that drops both.
-//
-// projectDir empty disables the cross-process half: without a project root
-// there is no agreed location for the lock file, and a lock in a
-// process-specific temp directory would be exclusion theatre — it would appear
-// to work while excluding nobody. In that case this degrades to exactly the
-// previous in-process behaviour rather than pretending to more.
+// user-wide file lock, returning a release func that drops both. A project
+// directory adds the legacy project lock for compatibility with older NTM
+// processes; it is not required for cross-process exclusion. Dry runs are
+// the only dispatches that deliberately bypass file locking.
 //
 // The lock files are never unlinked. A pane's lock file is a stable rendezvous
 // point reused by every process that ever dispatches to that pane, and
@@ -127,6 +124,12 @@ func normalizeLockRoot(projectDir string) string {
 func (e *Executor) acquirePaneLockCrossProcess(ctx context.Context, paneID string) (func(), error) {
 	if paneID == "" {
 		return func() {}, nil
+	}
+
+	// A cancelled run must not create state or acquire a free local lock just
+	// because both branches of acquirePaneLock's select are ready.
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 
 	// Fast path first: same-process contention is settled without a syscall,
@@ -147,17 +150,15 @@ func (e *Executor) acquirePaneLockCrossProcess(ctx context.Context, paneID strin
 		return releaseLocal, nil
 	}
 
-	projectDir := e.config.ProjectDir
-	if projectDir == "" {
-		return releaseLocal, nil
-	}
-
-	lockPath := paneLockPath(projectDir, paneID)
-	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
-		// A pipeline that cannot create its lock directory must not silently
-		// dispatch unprotected: that is the exact failure this prevents.
-		releaseLocal()
-		return nil, fmt.Errorf("prepare pane lock directory: %w", err)
+	var lockPath string
+	if projectDir := e.config.ProjectDir; projectDir != "" {
+		lockPath = paneLockPath(projectDir, paneID)
+		if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
+			// Never dispatch unprotected when the legacy compatibility lock
+			// cannot be prepared, even though the shared lock is available.
+			releaseLocal()
+			return nil, fmt.Errorf("prepare pane lock directory: %w", err)
+		}
 	}
 
 	waitCtx, cancel := context.WithTimeout(ctx, e.paneLockWait())
