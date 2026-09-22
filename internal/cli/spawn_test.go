@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -107,6 +108,64 @@ func TestSpawnPaneEnvExpansionAndValidation(t *testing.T) {
 	}
 	if err := validateSpawnPaneEnv(map[string]string{"GOOD": "bad\x00value"}); err == nil {
 		t.Fatal("validateSpawnPaneEnv accepted NUL value")
+	}
+}
+
+func TestCaptureAgentLaunchSpecPreservesPreparedPersonaAndExcludesEnvironmentValues(t *testing.T) {
+	oldCfg := cfg
+	t.Cleanup(func() { cfg = oldCfg })
+	cfg = config.Default()
+	cfg.Agents.ClaudeIsolateCredentials = true
+	launchDir := t.TempDir()
+	t.Chdir(launchDir)
+	cfg.Agents.ClaudeTokenFile = "token-reference"
+	tokenPath := filepath.Join(launchDir, cfg.Agents.ClaudeTokenFile)
+	if err := os.WriteFile(tokenPath, []byte("token-value-not-persisted"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SHALLOW_PROFILE", "creation-profile")
+	promptPath := filepath.Join(t.TempDir(), "prepared.md")
+	prompt := []byte("You are the architect.\nProject: /work/rendered-project\n")
+	if err := os.WriteFile(promptPath, prompt, 0600); err != nil {
+		t.Fatal(err)
+	}
+	command := `claude --model 'custom/model' --effort 'high' --append-system-prompt-file ` + tmux.ShellQuote(promptPath)
+	spec, err := captureAgentLaunchSpec(AgentTypeClaude, command, "custom/model", "architect", "architect", "high", promptPath,
+		map[string]string{"API_TOKEN": "must-not-persist", "CUSTOM_PROFILE": "also-private"},
+		map[string]string{"API_TOKEN": "override-not-persisted"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.Command != command || spec.Model != "custom/model" || spec.Persona != "architect" || spec.ReasoningEffort != "high" || spec.CAAMProfile != "creation-profile" {
+		t.Fatalf("resolved launch settings lost: %+v", spec)
+	}
+	wantDigest := fmt.Sprintf("%x", sha256.Sum256(prompt))
+	if spec.SystemPromptFile != promptPath || spec.SystemPromptSHA256 != wantDigest {
+		t.Fatalf("prepared prompt identity lost: %+v", spec)
+	}
+	if !spec.ClaudeIsolateCredentials || spec.ClaudeTokenFile != tokenPath {
+		t.Fatalf("isolation policy lost: %+v", spec)
+	}
+	t.Chdir(t.TempDir())
+	if data, err := os.ReadFile(spec.ClaudeTokenFile); err != nil || string(data) != "token-value-not-persisted" {
+		t.Fatalf("saved token reference changed with working directory: %q (%v)", data, err)
+	}
+	if strings.Join(spec.OmittedEnv, ",") != "API_TOKEN,CUSTOM_PROFILE" {
+		t.Fatalf("omitted environment keys=%v", spec.OmittedEnv)
+	}
+	data, err := json.Marshal(spec)
+	if err != nil || strings.Contains(string(data), "must-not-persist") || strings.Contains(string(data), "also-private") || strings.Contains(string(data), "override-not-persisted") || strings.Contains(string(data), "token-value-not-persisted") {
+		t.Fatalf("injected environment values leaked: %s (%v)", data, err)
+	}
+	if err := spec.Validate(tmux.AgentClaude); err != nil {
+		t.Fatalf("incomplete launch must remain capturable: %v", err)
+	}
+	if err := spec.ValidateReplay(tmux.AgentClaude); err == nil {
+		t.Fatal("replay silently discarded supplied environment")
+	}
+	cfg.Agents.ClaudeTokenFile = tokenPath
+	if _, err := captureAgentLaunchSpec(AgentTypeClaude, command, "", "", "architect", "", filepath.Join(t.TempDir(), "missing.md")); err == nil {
+		t.Fatal("missing prepared persona prompt accepted")
 	}
 }
 
@@ -1044,6 +1103,10 @@ func TestSpawnSessionLogic(t *testing.T) {
 	}
 	if !foundClaude {
 		t.Fatalf("spawned pane %s lost its durable Claude type after title rewrite: %+v", claudePaneID, panes)
+	}
+	spec, err := tmux.ReadPaneLaunchSpecContext(t.Context(), claudePaneID)
+	if err != nil || spec == nil || spec.Model != agents[0].Model || spec.AgentType != tmux.AgentClaude || strings.Contains(spec.Command, "NTM_SPAWN_") {
+		t.Fatalf("spawned launch specification lost or retained runtime environment: spec=%+v err=%v", spec, err)
 	}
 
 	// Verify project directory creation

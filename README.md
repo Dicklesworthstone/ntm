@@ -536,6 +536,17 @@ still uses the checkpoint's working directory unless `--directory` (REST:
 JSON responses retain the last restore stage, pane count, warnings, and
 interruption status so partially restored sessions can be inspected before retrying.
 
+Newly spawned agents also record their rendered launch command independently of
+the pane title. Checkpoints preserve that command and its model, persona,
+reasoning effort, and account-profile reference. Restore validates these inputs
+before replacing an existing session, then recreates any configured Claude
+credential isolation for the destination pane. Prepared persona prompt files
+remain external references: a missing file or changed contents stops automatic
+replay. Explicit pane or plugin environment values are not copied into this
+record; recovery reports missing inputs instead of silently substituting the
+current environment. Older panes without a launch record retain the existing
+command-reconstruction path.
+
 ## Robot Mode and Local API
 
 NTM has two automation layers:

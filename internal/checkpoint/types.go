@@ -146,6 +146,11 @@ type PaneState struct {
 	AgentType string `json:"agent_type"`
 	// Command is the running command
 	Command string `json:"command,omitempty"`
+	// LaunchSpec preserves the rendered agent launch command and its settings.
+	// Command alone is tmux's foreground executable and may only name an
+	// interpreter. Older checkpoints without launch metadata use the legacy
+	// command reconstruction path.
+	LaunchSpec *tmux.AgentLaunchSpec `json:"launch_spec,omitempty"`
 	// Width is the pane width in columns
 	Width int `json:"width"`
 	// Height is the pane height in rows

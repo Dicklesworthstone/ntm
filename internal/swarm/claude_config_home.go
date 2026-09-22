@@ -288,6 +288,14 @@ func ProvisionClaudeIsolation(cfg *config.Config, projectDir, session string, pa
 	return provisioner.EnvForPane(session, pane, tokenFile), nil
 }
 
+// CheckClaudeCredentialIsolation reports whether this platform's credential
+// store supports pane-private configuration. It performs only the existing
+// read-only store probe, so recovery can reject unsupported isolation before
+// replacing a running session or provisioning any files.
+func CheckClaudeCredentialIsolation() error {
+	return credentialStoreIsolable()
+}
+
 // ResolveClaudeSetupTokenFile validates the non-rotating setup token file and
 // returns its absolute path. An unset path is allowed (the pane gets an
 // isolated but uncredentialed config dir and will prompt for login); a

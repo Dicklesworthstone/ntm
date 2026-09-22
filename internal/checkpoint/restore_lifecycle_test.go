@@ -2,14 +2,19 @@ package checkpoint
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/agent"
+	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
@@ -20,6 +25,12 @@ func restoreLifecycleFixture(t *testing.T) (string, string) {
 	t.Helper()
 	dir := t.TempDir()
 	log, ready := filepath.Join(dir, "calls"), filepath.Join(dir, "ready")
+	optionsDir := filepath.Join(dir, "options")
+	if err := os.Mkdir(optionsDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NTM_RESTORE_TEST_OPTIONS", optionsDir)
+	t.Setenv("NTM_RESTORE_TEST_DIR", dir)
 	t.Setenv("NTM_RESTORE_TEST_LOG", log)
 	t.Setenv("NTM_RESTORE_TEST_READY", ready)
 	t.Setenv("NTM_RESTORE_TEST_COUNT", filepath.Join(dir, "count"))
@@ -29,10 +40,13 @@ func restoreLifecycleFixture(t *testing.T) (string, string) {
 	t.Setenv("NTM_RESTORE_TEST_LAUNCH_LOG", filepath.Join(dir, "launches"))
 	t.Setenv("NTM_RESTORE_TEST_OBSERVATIONS", filepath.Join(dir, "observations"))
 	t.Setenv("NTM_RESTORE_TEST_START_COMMAND", "claude")
+	t.Setenv("NTM_RESTORE_TEST_AGENT_TYPE", "cc")
+	t.Setenv("NTM_RESTORE_TEST_PANE_OFFSET", "0")
 	t.Setenv("NTM_RESTORE_TEST_START_DEAD", "0")
 	t.Setenv("NTM_RESTORE_TEST_INJECT_STATE", "")
 	t.Setenv("NTM_RESTORE_TEST_BLOCK", "")
 	t.Setenv("NTM_RESTORE_TEST_FAIL", "")
+	t.Setenv("NTM_RESTORE_TEST_FAIL_LAUNCH_METADATA", "")
 	t.Setenv("NTM_RESTORE_TEST_EXISTS", "")
 	bin := filepath.Join(dir, "tmux")
 	const script = `#!/bin/sh
@@ -54,7 +68,7 @@ case "$1" in
   split-window|new-window)
     n=$(cat "$NTM_RESTORE_TEST_COUNT")
     echo $((n + 1)) > "$NTM_RESTORE_TEST_COUNT"
-    printf '%%%s\n' "$n" ;;
+    printf '%%%s\n' "$((n + NTM_RESTORE_TEST_PANE_OFFSET))" ;;
   list-windows) echo 0 ;;
   list-panes)
     n=$(cat "$NTM_RESTORE_TEST_COUNT")
@@ -68,10 +82,10 @@ case "$1" in
     if [ "$state" = read-error ]; then echo 'fixture read failed' >&2; exit 2; fi
     i=0
     while [ "$i" -lt "$n" ]; do
-      id="$i"
+      id="$((i + NTM_RESTORE_TEST_PANE_OFFSET))"
       index="$i"
       command="$NTM_RESTORE_TEST_START_COMMAND"
-      type=cc
+      type="$NTM_RESTORE_TEST_AGENT_TYPE"
       dead="$NTM_RESTORE_TEST_START_DEAD"
       case "$state" in
         shell) command=bash ;;
@@ -90,6 +104,24 @@ case "$1" in
     printf '%s\n' "$*" >> "$NTM_RESTORE_TEST_LAUNCH_LOG"
     echo launched > "$NTM_RESTORE_TEST_LAUNCHED"
     echo 0 > "$NTM_RESTORE_TEST_OBSERVATIONS" ;;
+  set-option)
+    if [ "$5" = '@ntm_agent_launch' ]; then
+      if [ "$NTM_RESTORE_TEST_FAIL_LAUNCH_METADATA" = 1 ]; then echo 'metadata write failed' >&2; exit 2; fi
+      printf '%s' "$6" > "$NTM_RESTORE_TEST_OPTIONS/$4"
+    fi ;;
+  show-options)
+    if [ -f "$NTM_RESTORE_TEST_OPTIONS/$5" ]; then
+      cat "$NTM_RESTORE_TEST_OPTIONS/$5"
+    else
+      echo 'invalid option: @ntm_agent_launch' >&2
+      exit 1
+    fi ;;
+  display-message)
+    case "$5" in
+      '#{pane_current_path}') printf '%s\n' "$NTM_RESTORE_TEST_DIR" ;;
+      '#{pane_id}') printf '%%0\n' ;;
+    esac ;;
+  capture-pane) printf 'captured checkpoint context\n' ;;
   load-buffer) cat >> "$NTM_RESTORE_TEST_PAYLOAD" ;;
   paste-buffer|send-keys) printf '%s\n' "$*" >> "$NTM_RESTORE_TEST_DELIVERIES" ;;
 esac
@@ -500,5 +532,267 @@ func TestRestoreLifecyclePreservesPaneAfterUncertainStartup(t *testing.T) {
 				t.Fatalf("uncertain startup was retried destructively or received context: %s", calls)
 			}
 		})
+	}
+}
+
+func TestCheckpointLaunchSpecRoundTripPreservesCommandAndRecoveryDirectory(t *testing.T) {
+	_, _ = restoreLifecycleFixture(t)
+	t.Setenv("NTM_RESTORE_TEST_EXISTS", "1")
+	t.Setenv("NTM_RESTORE_TEST_PANE_OFFSET", "100")
+	t.Setenv("NTM_RESTORE_TEST_START_COMMAND", "node")
+	if err := os.WriteFile(os.Getenv("NTM_RESTORE_TEST_COUNT"), []byte("1\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	spec := tmux.AgentLaunchSpec{
+		Version: tmux.AgentLaunchSpecVersion, AgentType: tmux.AgentClaude,
+		Command: `node '/opt/agent tools/custom-cli.js' --model custom-v2 --effort high --system-prompt 'read all contracts'`,
+		Model:   "custom-v2", ModelAlias: "architect", Persona: "architect", ReasoningEffort: "high",
+		AgentMailProject: "/source project",
+	}
+	if err := tmux.SetPaneLaunchSpecContext(context.Background(), "%100", spec); err != nil {
+		t.Fatal(err)
+	}
+	storage := NewStorageWithDir(t.TempDir())
+	cp, err := NewCapturerWithStorage(storage).Create("source_session", "launch-round-trip", WithGitCapture(false), func(opts *checkpointOptions) {
+		opts.captureAssignments = false
+		opts.captureBVSnapshot = false
+	})
+	if err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+	if len(cp.Session.Panes) != 1 || cp.Session.Panes[0].Command != "node" || !reflect.DeepEqual(cp.Session.Panes[0].LaunchSpec, &spec) {
+		t.Fatalf("capture lost rendered launch configuration: %+v", cp.Session.Panes)
+	}
+	loaded, err := storage.Load(cp.SessionName, cp.ID)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if !reflect.DeepEqual(loaded.Session.Panes[0].LaunchSpec, &spec) {
+		t.Fatalf("saved metadata lost launch specification: %+v", loaded.Session.Panes[0].LaunchSpec)
+	}
+	original, err := json.Marshal(loaded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NTM_RESTORE_TEST_EXISTS", "")
+	t.Setenv("NTM_RESTORE_TEST_PANE_OFFSET", "0")
+	recoveryDir := t.TempDir()
+	out, err := NewRestorerWithStorage(storage).RestoreFromCheckpointContext(context.Background(), loaded, RestoreOptions{
+		TargetSession: "recovery_session", CustomDirectory: recoveryDir, SkipGitCheck: true,
+	})
+	if err != nil || out == nil || out.Stage != "completed" || out.SourceSession != "source_session" {
+		t.Fatalf("restore: %+v, %v", out, err)
+	}
+	launches, err := os.ReadFile(os.Getenv("NTM_RESTORE_TEST_LAUNCH_LOG"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantCommand := "AGENT_MAIL_PROJECT=" + tmux.ShellQuote(spec.AgentMailProject) + " " + spec.Command
+	if !strings.Contains(string(launches), "-c "+recoveryDir+" -t %0 "+wantCommand) {
+		t.Fatalf("recovery changed command/settings or ignored directory: %s", launches)
+	}
+	for _, warning := range out.Warnings {
+		if strings.Contains(warning, "without launch arguments") {
+			t.Fatalf("exact saved launch was treated as lossy runtime fallback: %s", warning)
+		}
+	}
+	restoredSpec, err := tmux.ReadPaneLaunchSpecContext(context.Background(), "%0")
+	if err != nil || !reflect.DeepEqual(restoredSpec, &spec) {
+		t.Fatalf("replacement did not retain base launch metadata: %+v, %v", restoredSpec, err)
+	}
+	after, err := json.Marshal(loaded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(original) {
+		t.Fatal("alternate-session restore rewrote its source checkpoint")
+	}
+	again, err := storage.Load(cp.SessionName, cp.ID)
+	if err != nil || !reflect.DeepEqual(again, loaded) {
+		t.Fatalf("restore changed persisted source checkpoint: %+v, %v", again, err)
+	}
+}
+
+func TestRestoreLaunchSpecPreflightRejectsInvalidMetadata(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*tmux.AgentLaunchSpec)
+	}{
+		{"unsupported version", func(spec *tmux.AgentLaunchSpec) { spec.Version++ }},
+		{"provider mismatch", func(spec *tmux.AgentLaunchSpec) { spec.AgentType = tmux.AgentCodex }},
+		{"empty command", func(spec *tmux.AgentLaunchSpec) { spec.Command = "" }},
+		{"control character", func(spec *tmux.AgentLaunchSpec) { spec.Command = "claude\x00unsafe" }},
+		{"oversized command", func(spec *tmux.AgentLaunchSpec) { spec.Command = strings.Repeat("x", 64*1024) }},
+		{"omitted environment", func(spec *tmux.AgentLaunchSpec) { spec.OmittedEnv = []string{"MODEL_ENDPOINT"} }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			log, _ := restoreLifecycleFixture(t)
+			t.Setenv("NTM_RESTORE_TEST_EXISTS", "1")
+			// A same-named ambient variable is not proof of the original value.
+			t.Setenv("MODEL_ENDPOINT", "different-endpoint")
+			cp := lifecycleCheckpoint(t, 1)
+			cp.Session.Panes[0].LaunchSpec = &tmux.AgentLaunchSpec{
+				Version: tmux.AgentLaunchSpecVersion, AgentType: tmux.AgentClaude, Command: "claude --model saved",
+			}
+			tc.mutate(cp.Session.Panes[0].LaunchSpec)
+			if _, err := NewRestorer().RestoreFromCheckpointContext(context.Background(), cp, RestoreOptions{Force: true, SkipGitCheck: true}); err == nil {
+				t.Fatal("invalid launch specification was accepted")
+			}
+			if data, err := os.ReadFile(log); err == nil && len(data) != 0 {
+				t.Fatalf("launch preflight failure reached tmux: %s", data)
+			}
+		})
+	}
+}
+
+func TestCaptureLaunchSpecRejectsBrokenOrMismatchedMetadata(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		raw  string
+	}{
+		{"invalid encoding", "broken base64"},
+		{"unknown schema", base64.StdEncoding.EncodeToString([]byte(`{"pane_id":"%0","spec":{"version":99,"agent_type":"cc","command":"claude"}}`))},
+		{"wrong provider", base64.StdEncoding.EncodeToString([]byte(`{"pane_id":"%0","spec":{"version":1,"agent_type":"cod","command":"codex"}}`))},
+		{"wrong physical pane", base64.StdEncoding.EncodeToString([]byte(`{"pane_id":"%99","spec":{"version":1,"agent_type":"cc","command":"claude"}}`))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _ = restoreLifecycleFixture(t)
+			if err := os.WriteFile(os.Getenv("NTM_RESTORE_TEST_COUNT"), []byte("1\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(os.Getenv("NTM_RESTORE_TEST_OPTIONS"), "%0"), []byte(tc.raw), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := NewCapturer().captureSessionState("source_session"); err == nil {
+				t.Fatal("capture silently downgraded a present invalid launch record")
+			}
+		})
+	}
+}
+
+func TestCaptureLaunchSpecPreservesIncompleteEnvironmentRecord(t *testing.T) {
+	_, _ = restoreLifecycleFixture(t)
+	if err := os.WriteFile(os.Getenv("NTM_RESTORE_TEST_COUNT"), []byte("1\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	spec := tmux.AgentLaunchSpec{
+		Version: tmux.AgentLaunchSpecVersion, AgentType: tmux.AgentClaude, Command: "claude --model custom",
+		OmittedEnv: []string{"CUSTOM_API_TOKEN"},
+	}
+	if err := tmux.SetPaneLaunchSpecContext(context.Background(), "%0", spec); err != nil {
+		t.Fatal(err)
+	}
+	state, err := NewCapturer().captureSessionState("source_session")
+	if err != nil || len(state.Panes) != 1 || !reflect.DeepEqual(state.Panes[0].LaunchSpec, &spec) {
+		t.Fatalf("capture lost incomplete launch diagnostic: %+v, %v", state, err)
+	}
+}
+
+func TestRestoreLaunchSpecPersistenceFailurePreservesSessionBeforeLaunch(t *testing.T) {
+	log, _ := restoreLifecycleFixture(t)
+	t.Setenv("NTM_RESTORE_TEST_FAIL_LAUNCH_METADATA", "1")
+	cp := lifecycleCheckpoint(t, 1)
+	cp.Session.Panes[0].LaunchSpec = &tmux.AgentLaunchSpec{
+		Version: tmux.AgentLaunchSpecVersion, AgentType: tmux.AgentClaude, Command: "claude --model saved",
+	}
+	out, err := NewRestorer().RestoreFromCheckpointContext(context.Background(), cp, RestoreOptions{SkipGitCheck: true})
+	if err == nil || out == nil || out.Stage != "starting_agents" || out.PanesRestored != 1 {
+		t.Fatalf("metadata failure was hidden: %+v, %v", out, err)
+	}
+	calls, _ := os.ReadFile(log)
+	if strings.Contains(string(calls), "respawn-pane") || strings.Contains(string(calls), "kill-session") {
+		t.Fatalf("metadata failure launched or destroyed partial recovery: %s", calls)
+	}
+}
+
+func TestRestoreLaunchSpecAccountPreflightRunsBeforeForce(t *testing.T) {
+	log, _ := restoreLifecycleFixture(t)
+	t.Setenv("NTM_RESTORE_TEST_EXISTS", "1")
+	cp := lifecycleCheckpoint(t, 1)
+	cp.Session.Panes[0].LaunchSpec = &tmux.AgentLaunchSpec{
+		Version: tmux.AgentLaunchSpecVersion, AgentType: tmux.AgentClaude, Command: "claude --model saved", CAAMProfile: "saved-profile",
+	}
+	cfg := config.Default()
+	cfg.Integrations.CAAM.BinaryPath = "/bin/false"
+	out, err := NewRestorer().RestoreFromCheckpointContext(context.Background(), cp, RestoreOptions{Force: true, SkipGitCheck: true, Config: cfg})
+	if err == nil || out == nil || out.Stage != "validating" || !strings.Contains(err.Error(), "saved-profile") {
+		t.Fatalf("missing account preflight failure: %+v, %v", out, err)
+	}
+	if data, err := os.ReadFile(log); err == nil && len(data) != 0 {
+		t.Fatalf("account preflight failure reached tmux: %s", data)
+	}
+}
+
+func TestRestoreLaunchSpecDryRunDoesNotProvisionCredentials(t *testing.T) {
+	log, _ := restoreLifecycleFixture(t)
+	t.Setenv("NTM_RESTORE_TEST_EXISTS", "1")
+	cp := lifecycleCheckpoint(t, 1)
+	cp.Session.Panes[0].LaunchSpec = &tmux.AgentLaunchSpec{
+		Version: tmux.AgentLaunchSpecVersion, AgentType: tmux.AgentClaude, Command: "claude --model saved",
+		ClaudeIsolateCredentials: true,
+	}
+	out, err := NewRestorer().RestoreFromCheckpointContext(context.Background(), cp, RestoreOptions{
+		DryRun: true, Force: true, SkipGitCheck: true, Config: config.Default(),
+	})
+	if err != nil || out == nil || out.Stage != "validated" || !out.DryRun {
+		t.Fatalf("credential-aware dry run failed: %+v, %v", out, err)
+	}
+	entries, err := os.ReadDir(cp.WorkingDir)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("dry run created credential files in recovery directory: %v, %v", entries, err)
+	}
+	calls, err := os.ReadFile(log)
+	if err != nil || strings.TrimSpace(string(calls)) != "has-session" {
+		t.Fatalf("dry run mutated tmux: %s, %v", calls, err)
+	}
+}
+
+func TestCheckpointLaunchSpecPreservesRegisteredPluginAgent(t *testing.T) {
+	const plugin = "checkpoint-launch-plugin"
+	if err := agent.RegisterPlugin(plugin, nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = restoreLifecycleFixture(t)
+	t.Setenv("NTM_RESTORE_TEST_AGENT_TYPE", plugin)
+	t.Setenv("NTM_RESTORE_TEST_START_COMMAND", "node")
+	if err := os.WriteFile(os.Getenv("NTM_RESTORE_TEST_COUNT"), []byte("1\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	spec := tmux.AgentLaunchSpec{
+		Version: tmux.AgentLaunchSpecVersion, AgentType: tmux.AgentType(plugin),
+		Command: "node /opt/custom-plugin.js --model specialist", Model: "specialist",
+	}
+	if err := tmux.SetPaneLaunchSpecContext(context.Background(), "%0", spec); err != nil {
+		t.Fatal(err)
+	}
+	state, err := NewCapturer().captureSessionState("plugin_session")
+	if err != nil || len(state.Panes) != 1 || !reflect.DeepEqual(state.Panes[0].LaunchSpec, &spec) {
+		t.Fatalf("plugin launch specification was dropped during capture: %+v, %v", state, err)
+	}
+	cp := &Checkpoint{SessionName: "plugin_session", WorkingDir: t.TempDir(), Session: state}
+	out, err := NewRestorer().RestoreFromCheckpointContext(context.Background(), cp, RestoreOptions{SkipGitCheck: true})
+	if err != nil || out == nil || out.Stage != "completed" {
+		t.Fatalf("plugin restore failed: %+v, %v", out, err)
+	}
+	launches, err := os.ReadFile(os.Getenv("NTM_RESTORE_TEST_LAUNCH_LOG"))
+	if err != nil || !strings.HasSuffix(strings.TrimSpace(string(launches)), " "+spec.Command) {
+		t.Fatalf("plugin pane did not receive its saved launch command: %s, %v", launches, err)
+	}
+}
+
+func TestRestoreRegisteredPluginWithoutLaunchSpecFailsBeforeForce(t *testing.T) {
+	const plugin = "checkpoint-legacy-plugin"
+	if err := agent.RegisterPlugin(plugin, nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	log, _ := restoreLifecycleFixture(t)
+	t.Setenv("NTM_RESTORE_TEST_EXISTS", "1")
+	cp := lifecycleCheckpoint(t, 1)
+	cp.Session.Panes[0].AgentType = plugin
+	if _, err := NewRestorer().RestoreFromCheckpointContext(context.Background(), cp, RestoreOptions{Force: true}); err == nil || !strings.Contains(err.Error(), "no saved launch specification") {
+		t.Fatalf("legacy plugin checkpoint silently restored a shell: %v", err)
+	}
+	if data, err := os.ReadFile(log); err == nil && len(data) != 0 {
+		t.Fatalf("unrecoverable plugin checkpoint reached tmux: %s", data)
 	}
 }

@@ -2,10 +2,12 @@ package cli
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -737,6 +739,65 @@ func prependSpawnPaneEnv(command string, env map[string]string) string {
 		fmt.Fprintf(&prefix, "%s=%s ", key, tmux.ShellQuote(env[key]))
 	}
 	return prefix.String() + command
+}
+
+// captureAgentLaunchSpec records the rendered template before runtime-only
+// environment is injected. Explicit environment values remain outside durable
+// metadata; their names prevent recovery from silently launching without them.
+func captureAgentLaunchSpec(agentType AgentType, command, model, modelAlias, personaName, effort, systemPromptFile string, environments ...map[string]string) (tmux.AgentLaunchSpec, error) {
+	spec := tmux.AgentLaunchSpec{
+		Version:         tmux.AgentLaunchSpecVersion,
+		AgentType:       tmux.AgentType(agentType).Canonical(),
+		Command:         command,
+		Model:           model,
+		ModelAlias:      modelAlias,
+		Persona:         personaName,
+		ReasoningEffort: effort,
+	}
+	if binding := resilience.CaptureLaunchBinding(string(agentType)); binding != nil {
+		spec.CAAMProfile = binding.Identifier
+	}
+	if agentType == AgentTypeClaude && cfg != nil && cfg.Agents.ClaudeIsolateCredentials {
+		spec.ClaudeIsolateCredentials = true
+		var err error
+		spec.ClaudeTokenFile, err = swarm.ResolveClaudeSetupTokenFile(cfg.Agents.ClaudeTokenFile)
+		if err != nil {
+			return spec, fmt.Errorf("capture Claude token file reference: %w", err)
+		}
+	}
+	if systemPromptFile != "" {
+		file, err := os.Open(systemPromptFile)
+		if err != nil {
+			return spec, fmt.Errorf("open prepared persona prompt: %w", err)
+		}
+		defer file.Close()
+		info, err := file.Stat()
+		if err != nil || !info.Mode().IsRegular() {
+			return spec, errors.New("prepared persona prompt must be a readable regular file")
+		}
+		hash := sha256.New()
+		const maxPromptBytes = 1 << 20
+		count, err := io.Copy(hash, io.LimitReader(file, maxPromptBytes+1))
+		if err != nil {
+			return spec, fmt.Errorf("read prepared persona prompt: %w", err)
+		}
+		if count > maxPromptBytes {
+			return spec, errors.New("prepared persona prompt exceeds launch metadata verification limit")
+		}
+		spec.SystemPromptFile = systemPromptFile
+		spec.SystemPromptSHA256 = fmt.Sprintf("%x", hash.Sum(nil))
+	}
+	keys := make(map[string]bool)
+	for _, environment := range environments {
+		for name := range environment {
+			keys[name] = true
+		}
+	}
+	for name := range keys {
+		spec.OmittedEnv = append(spec.OmittedEnv, name)
+	}
+	sort.Strings(spec.OmittedEnv)
+	return spec, nil
 }
 
 func validateSpawnAgentTypes(agents []FlatAgent, pluginMap map[string]plugins.AgentPlugin, personaMap map[string]*persona.Persona) error {
@@ -3159,13 +3220,9 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 			}
 		}
 
-		// Settle the pane title now that model, persona, and reasoning effort
-		// are all resolved. The variant carries model AND effort, because the
-		// title is the only record of the launch spec that survives into a
-		// respawn: encoding just the model let a recovery silently relaunch the
-		// pane on the config DEFAULT effort, with no operator signal that the
-		// swarm's reasoning budget had changed underneath them (bd-qs6rj).
-		// A persona name replaces the model in the variant, as before.
+		// Keep the resolved model/effort or persona visible in the title. The
+		// pane-local launch specification below preserves the full command
+		// independently of this human-readable label.
 		titleVariant := tmux.FormatPaneVariant(agent.Model, resolvedReasoningEffort)
 		if personaName != "" {
 			titleVariant = personaName
@@ -3194,6 +3251,10 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 		})
 		if err != nil {
 			return outputError(fmt.Errorf("generating command for %s agent: %w", agent.Type, err))
+		}
+		launchSpec, err := captureAgentLaunchSpec(agent.Type, agentCmd, resolvedModel, agent.Model, personaName, resolvedReasoningEffort, systemPromptFile, envVars, opts.PaneEnv)
+		if err != nil {
+			return outputError(fmt.Errorf("capturing %s launch specification: %w", agent.Type, err))
 		}
 
 		// Per-pane Claude credential isolation (GH#237). Claude Code rewrites
@@ -3228,6 +3289,7 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 						envVars = make(map[string]string)
 					}
 					envVars["AGENT_MAIL_PROJECT"] = dir
+					launchSpec.AgentMailProject = dir
 				}
 			}
 		}
@@ -3352,6 +3414,9 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 				"refusing to launch %s agent %d into pane %s: %w",
 				agent.Type, agent.Index, pane.ID, err,
 			))
+		}
+		if err := tmux.SetPaneLaunchSpecContext(ctx, pane.ID, launchSpec); err != nil {
+			return outputError(fmt.Errorf("recording launch specification for %s agent in pane %s: %w; the session and pane still exist", agent.Type, pane.ID, err))
 		}
 
 		if err := tmux.SendKeysContext(ctx, pane.ID, cmd, true); err != nil {

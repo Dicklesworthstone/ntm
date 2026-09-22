@@ -878,6 +878,10 @@ func executeAdd(ctx context.Context, opts AddOptions, emitResult bool) error {
 		if err != nil {
 			return outputError(fmt.Errorf("generating command for %s agent: %w", agent.Type, err))
 		}
+		launchSpec, err := captureAgentLaunchSpec(agent.Type, finalCmd, resolvedModel, agent.Model, personaName, resolvedReasoningEffort, systemPromptFile, envVars)
+		if err != nil {
+			return outputError(fmt.Errorf("capturing %s launch specification: %w", agent.Type, err))
+		}
 
 		// Persist only the environment-free launch command. Credential
 		// isolation and plugin environment are applied below for the live
@@ -937,6 +941,9 @@ func executeAdd(ctx context.Context, opts AddOptions, emitResult bool) error {
 		cmd, err := tmux.BuildPaneCommand(dir, safeCmd)
 		if err != nil {
 			return outputError(fmt.Errorf("building agent command: %w", err))
+		}
+		if err := tmux.SetPaneLaunchSpecContext(ctx, paneID, launchSpec); err != nil {
+			return outputError(fmt.Errorf("recording launch specification for %s agent in pane %s: %w; the pane still exists", agent.Type, paneID, err))
 		}
 
 		if err := tmux.SendKeysContext(ctx, paneID, cmd, true); err != nil {

@@ -773,6 +773,7 @@ Examples:
 			}
 
 			opts := checkpoint.RestoreOptions{
+				Config:          cfg,
 				TargetSession:   targetSession,
 				Force:           force,
 				SkipGitCheck:    skipGitCheck,

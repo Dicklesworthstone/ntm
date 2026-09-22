@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -248,6 +249,94 @@ func TestGetSpawnGrokUsesConfiguredDefaultModelWithFakeLifecycle(t *testing.T) {
 	}
 	if gotCommand != "grok --always-approve --model 'account/model'" {
 		t.Fatalf("configured Grok command=%q", gotCommand)
+	}
+}
+
+func TestGetSpawnPersistsLaunchSpecBeforeCommandDelivery(t *testing.T) {
+	for _, fail := range []string{"", "metadata-failure"} {
+		t.Run(fail, func(t *testing.T) {
+			root := t.TempDir()
+			path := filepath.Join(root, "tmux")
+			script := `#!/bin/sh
+set -eu
+printf '%s\n' "$1" >> "$NTM_SPAWN_SPEC_TEST_ROOT/calls"
+case "$1" in
+  list-panes)
+    command=''
+    if [ -f "$NTM_SPAWN_SPEC_TEST_ROOT/launched" ]; then command='node'; fi
+    printf '%%17_NTM_SEP_0_NTM_SEP_wrapper title_NTM_SEP_%s_NTM_SEP_80_NTM_SEP_24_NTM_SEP_1_NTM_SEP_0_NTM_SEP_0_NTM_SEP_cod_NTM_SEP__NTM_SEP__NTM_SEP_0\n' "$command"
+    ;;
+  set-option)
+    if [ "${5:-}" = '@ntm_agent_launch' ]; then
+      [ "$4" = '%17' ] || exit 63
+      if [ "$NTM_SPAWN_SPEC_TEST_FAIL" = 'metadata-failure' ]; then exit 64; fi
+      printf '%s' "$6" > "$NTM_SPAWN_SPEC_TEST_ROOT/spec"
+    fi
+    ;;
+  show-options)
+    [ "$5" = '%17' ] && [ "$6" = '@ntm_agent_launch' ] || exit 65
+    cat "$NTM_SPAWN_SPEC_TEST_ROOT/spec"
+    ;;
+  send-keys)
+    [ -f "$NTM_SPAWN_SPEC_TEST_ROOT/spec" ] || exit 66
+    if [ "${4:-}" = 'Enter' ]; then : > "$NTM_SPAWN_SPEC_TEST_ROOT/launched"; fi
+    ;;
+  select-pane) ;;
+  *) exit 67 ;;
+esac
+`
+			if err := os.WriteFile(path, []byte(script), 0700); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestGetSpawnLaunchSpecTransportHelper$")
+			cmd.Env = append(os.Environ(), "NTM_TEST_TMUX_ENV_OWNED=1", "NTM_TMUX_BINARY="+path,
+				"NTM_SPAWN_SPEC_TEST_ROOT="+root, "NTM_SPAWN_SPEC_TEST_FAIL="+fail, "SHALLOW_PROFILE=creation-profile")
+			if output, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("spawn launch metadata: %v\n%s", err, output)
+			}
+		})
+	}
+}
+
+func TestGetSpawnLaunchSpecTransportHelper(t *testing.T) {
+	root := os.Getenv("NTM_SPAWN_SPEC_TEST_ROOT")
+	if root == "" {
+		return
+	}
+	panes := []tmux.Pane{{ID: "%17", WindowIndex: 0, Index: 0}}
+	deps := testSpawnLifecycleDependencies(panes)
+	deps.LaunchAgent = launchAgent
+	cfg := testSpawnConfig()
+	cfg.Agents.Codex = `codex --model {{shellQuote .Model}} --effort {{shellQuote .ReasoningEffort}} --custom 'literal;flag'`
+	out, err := GetSpawn(t.Context(), SpawnOptions{
+		Session: "saved-launch", CodCount: 1, CodModel: "pinned/model", CodReasoningEffort: "high",
+		NoUserPane: true, WorkingDir: root, LifecycleDeps: deps,
+	}, cfg)
+	if os.Getenv("NTM_SPAWN_SPEC_TEST_FAIL") != "" {
+		if err != nil || out.Success || !strings.Contains(out.Error, "recording launch specification") {
+			t.Fatalf("metadata failure should refuse launch: output=%+v err=%v", out, err)
+		}
+		calls, err := os.ReadFile(filepath.Join(root, "calls"))
+		if err != nil || strings.Contains(string(calls), "send-keys") {
+			t.Fatalf("launch was delivered without durable specification: %q (%v)", calls, err)
+		}
+		return
+	}
+	if err != nil || !out.Success {
+		t.Fatalf("spawn output=%+v err=%v", out, err)
+	}
+	spec, err := tmux.ReadPaneLaunchSpecContext(t.Context(), "%17")
+	if err != nil || spec == nil {
+		t.Fatalf("persisted specification=(%+v,%v)", spec, err)
+	}
+	want := `codex --model 'pinned/model' --effort 'high' --custom 'literal;flag'`
+	if spec.Command != want || spec.CAAMProfile != "creation-profile" || spec.AgentType != tmux.AgentCodex {
+		t.Fatalf("persisted launch=%+v, want exact rendered command and original profile", spec)
+	}
+	if err := spec.ValidateReplay(tmux.AgentCodex); err != nil {
+		t.Fatalf("normal spawned agent must be recoverable: %v", err)
 	}
 }
 

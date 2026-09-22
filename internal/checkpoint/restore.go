@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/agent"
+	"github.com/Dicklesworthstone/ntm/internal/config"
+	"github.com/Dicklesworthstone/ntm/internal/resilience"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
@@ -46,6 +48,10 @@ type RestoreOptions struct {
 	CustomDirectory string
 	// ScrollbackLines is how many lines of scrollback to inject (0 = all captured)
 	ScrollbackLines int
+	// Config supplies the caller's configured account launcher. Saved commands
+	// and settings remain authoritative. When nil, replay loads configuration
+	// from the recovery directory only if account affinity or isolation needs it.
+	Config *config.Config
 }
 
 // RestoreResult contains details about what was restored.
@@ -92,6 +98,9 @@ type Restorer struct {
 	// created for it. Re-reading pane positions after a pane exits must never
 	// redirect its launch command or context into a different pane.
 	restoredPaneIDs []string
+	// launchPlans follows sortedCheckpointPanes and belongs to this restore
+	// operation. Account checks complete before --force can remove a session.
+	launchPlans []*resilience.AgentLaunchPlan
 }
 
 // NewRestorer creates a new Restorer with default storage.
@@ -139,6 +148,7 @@ func (r *Restorer) RestoreFromCheckpointContext(ctx context.Context, cp *Checkpo
 	op.ctx = ctx
 	op.sourceSession = cp.SessionName
 	op.restoredPaneIDs = nil
+	op.launchPlans = nil
 	if opts.TargetSession != "" && opts.TargetSession != cp.SessionName {
 		// Never rewrite the caller's checkpoint or persist a renamed copy.
 		// Pane IDs and scrollback references still identify the source artifact.
@@ -211,6 +221,15 @@ func (r *Restorer) restoreFromCheckpoint(cp *Checkpoint, opts RestoreOptions) (r
 		return nil, err
 	}
 	for _, pane := range cp.Session.Panes {
+		agentType := tmux.ParsePaneAgentTypeOption(pane.AgentType)
+		if !agentType.IsValid() && agent.IsPluginType(agentType) && pane.LaunchSpec == nil {
+			return nil, fmt.Errorf("checkpoint pane %d plugin %s has no saved launch specification; relaunch it with its configured command", pane.Index, pane.AgentType)
+		}
+		if pane.LaunchSpec != nil {
+			if err := pane.LaunchSpec.ValidateReplay(agentType); err != nil {
+				return nil, fmt.Errorf("checkpoint pane %d launch specification: %w", pane.Index, err)
+			}
+		}
 		if command := restorableAgentCommand(pane); command != "" {
 			if _, err := tmux.SanitizePaneCommand(command); err != nil {
 				return nil, fmt.Errorf("checkpoint pane %d command: %w", pane.Index, err)
@@ -230,7 +249,7 @@ func (r *Restorer) restoreFromCheckpoint(cp *Checkpoint, opts RestoreOptions) (r
 		Stage:         "validating",
 	}
 	for _, pane := range cp.Session.Panes {
-		if command := restorableAgentCommand(pane); command != "" && isBareAgentRuntimeCommand(pane.Command) {
+		if command := restorableAgentCommand(pane); command != "" && pane.LaunchSpec == nil && isBareAgentRuntimeCommand(pane.Command) {
 			result.Warnings = append(result.Warnings, fmt.Sprintf(
 				"checkpoint pane %d captured runtime %q without launch arguments; restoring %q for agent %s",
 				pane.Index, strings.TrimSpace(pane.Command), command, pane.AgentType))
@@ -278,6 +297,22 @@ func (r *Restorer) restoreFromCheckpoint(cp *Checkpoint, opts RestoreOptions) (r
 			}
 		}
 	}
+	// Resolve every saved account/profile requirement before replacing any
+	// session. This phase is read-only: private Claude directories are created
+	// only when the corresponding replacement pane is ready to launch.
+	restoreDir := effectiveRestoreDir(workDir)
+	sortedStates := sortedCheckpointPanes(cp.Session.Panes)
+	r.launchPlans = make([]*resilience.AgentLaunchPlan, len(sortedStates))
+	for i, pane := range sortedStates {
+		if pane.LaunchSpec == nil {
+			continue
+		}
+		plan, err := resilience.PreflightAgentLaunchSpec(ctx, opts.Config, *pane.LaunchSpec, restoreDir)
+		if err != nil {
+			return result, fmt.Errorf("checkpoint pane %d launch preflight: %w", pane.Index, err)
+		}
+		r.launchPlans[i] = plan
+	}
 	// Advisory git inspection is read-only and also precedes replacement.
 	if !opts.SkipGitCheck && cp.Git.Commit != "" && workDir != "" {
 		if warning := r.checkGitState(cp, workDir); warning != "" {
@@ -314,8 +349,6 @@ func (r *Restorer) restoreFromCheckpoint(cp *Checkpoint, opts RestoreOptions) (r
 				fmt.Sprintf("would kill existing session %q", cp.SessionName))
 		}
 	}
-	restoreDir := effectiveRestoreDir(workDir)
-
 	if opts.DryRun {
 		result.PanesRestored = len(cp.Session.Panes)
 		result.Stage = "validated"
@@ -557,6 +590,20 @@ func (r *Restorer) restoreAgents(cp *Checkpoint, workDir string) error {
 		agentCmd := restorableAgentCommand(paneState)
 		if agentCmd == "" {
 			continue
+		}
+		if paneState.LaunchSpec != nil {
+			if i >= len(r.launchPlans) || r.launchPlans[i] == nil {
+				return fmt.Errorf("checkpoint pane %d launch specification was not preflighted", paneState.Index)
+			}
+			// Window-local pane indices may repeat. The sorted position gives
+			// each replacement an independent credential directory.
+			agentCmd, err = r.launchPlans[i].Prepare(ctx, workDir, cp.SessionName, i+1)
+			if err != nil {
+				return fmt.Errorf("preparing restored pane %s launch: %w", paneID, err)
+			}
+			if err := tmux.SetPaneLaunchSpecContext(ctx, paneID, *paneState.LaunchSpec); err != nil {
+				return fmt.Errorf("recording restored pane %s launch specification: %w", paneID, err)
+			}
 		}
 
 		attempted++
@@ -1172,9 +1219,12 @@ func sameCheckpointPane(a, b PaneState) bool {
 }
 
 func restorableAgentCommand(pane PaneState) string {
-	agentType := agent.AgentType(pane.AgentType).Canonical()
-	if !agentType.IsValid() || agentType == agent.AgentTypeUser || agentType == agent.AgentTypeUnknown {
+	agentType := tmux.ParsePaneAgentTypeOption(pane.AgentType)
+	if agentType == agent.AgentTypeUser || agentType == agent.AgentTypeUnknown {
 		return ""
+	}
+	if pane.LaunchSpec != nil {
+		return pane.LaunchSpec.Command
 	}
 	command := strings.TrimSpace(pane.Command)
 	if command != "" && !looksLikeShellCommand(command) && !isBareAgentRuntimeCommand(command) {

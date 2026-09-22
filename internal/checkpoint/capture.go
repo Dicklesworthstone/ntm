@@ -160,6 +160,24 @@ func (c *Capturer) captureSessionState(sessionName string) (SessionState, error)
 
 	for i, p := range panes {
 		state := FromTmuxPane(p)
+		// A pane-local launch record survives wrapper execs and foreground
+		// command changes. Absence is legitimate for older/external panes;
+		// a present but unreadable record must not silently become a lossy
+		// checkpoint that appears to preserve the agent's configuration.
+		if agentType := tmux.ParsePaneAgentTypeOption(string(p.Type)); agentType != tmux.AgentUnknown && agentType != tmux.AgentUser {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			launchSpec, err := tmux.ReadPaneLaunchSpecContext(ctx, p.ID)
+			cancel()
+			if err != nil {
+				return SessionState{}, fmt.Errorf("reading pane %s launch specification: %w", p.ID, err)
+			}
+			if launchSpec != nil {
+				if err := launchSpec.Validate(agentType); err != nil {
+					return SessionState{}, fmt.Errorf("pane %s launch specification: %w", p.ID, err)
+				}
+				state.LaunchSpec = launchSpec
+			}
+		}
 		if p.Active {
 			activeIndex = i
 		}

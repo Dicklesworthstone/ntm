@@ -1307,6 +1307,19 @@ func launchAgent(ctx context.Context, pane tmux.Pane, session, agentType string,
 		agent.StartupMs = time.Since(startTime).Milliseconds()
 		return agent, fmt.Errorf("launch canceled: %w", err)
 	}
+	launchSpec := tmux.AgentLaunchSpec{
+		Version:   tmux.AgentLaunchSpecVersion,
+		AgentType: tmux.AgentType(agentType).Canonical(),
+		Command:   safeCommand,
+	}
+	if binding := resilience.CaptureLaunchBinding(agentType); binding != nil {
+		launchSpec.CAAMProfile = binding.Identifier
+	}
+	if err := tmux.SetPaneLaunchSpecContext(ctx, pane.ID, launchSpec); err != nil {
+		agent.Error = fmt.Sprintf("recording launch specification: %v", err)
+		agent.StartupMs = time.Since(startTime).Milliseconds()
+		return agent, fmt.Errorf("recording launch specification: %w", err)
+	}
 
 	// Use the agent-aware context path so cancellation covers staging and Enter.
 	if err := tmux.SendKeysForAgentContext(ctx, pane.ID, cmd, true, tmux.AgentType(agentTypeShort(agentType))); err != nil {

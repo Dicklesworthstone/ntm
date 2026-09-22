@@ -233,6 +233,10 @@ func TestAddPersistsAgentTypeAcrossWrapperTitleRewrite(t *testing.T) {
 	if err := tmux.SetPaneTitle(codexPaneID, "caam | title replaced by wrapper"); err != nil {
 		t.Fatalf("rewrite added pane title: %v", err)
 	}
+	spec, err := tmux.ReadPaneLaunchSpecContext(t.Context(), codexPaneID)
+	if err != nil || spec == nil || spec.AgentType != tmux.AgentCodex || spec.Command == "" {
+		t.Fatalf("added launch specification lost after title rewrite: spec=%+v err=%v", spec, err)
+	}
 	panes, err = tmux.GetPanes(sessionName)
 	if err != nil {
 		t.Fatalf("GetPanes after title rewrite: %v", err)
