@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -28,7 +29,7 @@ type PaneLauncher struct {
 	// If nil, a default builder is created.
 	CmdBuilder *LaunchCommandBuilder
 
-	// CDDelay is the delay after cd command before launching agent.
+	// CDDelay lets a fresh shell settle before changing directory and launching.
 	// Default: 100ms
 	CDDelay time.Duration
 
@@ -75,7 +76,7 @@ func (pl *PaneLauncher) WithCmdBuilder(builder *LaunchCommandBuilder) *PaneLaunc
 	return pl
 }
 
-// WithCDDelay sets the delay after cd command.
+// WithCDDelay sets the delay before changing directory and launching.
 func (pl *PaneLauncher) WithCDDelay(delay time.Duration) *PaneLauncher {
 	pl.CDDelay = delay
 	return pl
@@ -121,13 +122,6 @@ func (pl *PaneLauncher) logger() *slog.Logger {
 		return pl.Logger
 	}
 	return slog.Default()
-}
-
-// changeDirectoryCommand renders a project directory for the pane's POSIX
-// shell. Go's %q emits double quotes, which still allow command and variable
-// expansion; project paths are data and must remain literal shell arguments.
-func changeDirectoryCommand(projectPath string) string {
-	return "cd " + tmux.ShellQuote(projectPath)
 }
 
 func (pl *PaneLauncher) sessionOrchestrator() *SessionOrchestrator {
@@ -181,10 +175,6 @@ func (pl *PaneLauncher) LaunchAgentInPane(ctx context.Context, sessionName strin
 		Project:     paneSpec.Project,
 	}
 
-	// Default target format (fallback if session targeting can't be resolved)
-	paneTarget := formatPaneTarget(sessionName, paneSpec.Index)
-	result.PaneTarget = paneTarget
-
 	// Check for context cancellation
 	select {
 	case <-ctx.Done():
@@ -211,18 +201,68 @@ func (pl *PaneLauncher) LaunchAgentInPane(ctx context.Context, sessionName strin
 	}
 
 	client := pl.tmuxClient()
+	fail := func(err error) (*PaneLaunchResult, error) {
+		result.Error = err.Error()
+		result.Duration = time.Since(start)
+		return result, err
+	}
+	targeting, ok := pl.resolveSessionTargeting(ctx, sessionName)
+	if !ok {
+		if err := ctx.Err(); err != nil {
+			return fail(err)
+		}
+		return fail(fmt.Errorf("cannot resolve launch session %q", sessionName))
+	}
+	panes, err := client.GetPanesContext(ctx, sessionName)
+	if err != nil {
+		return fail(fmt.Errorf("resolve launch pane: %w", err))
+	}
+	// Match the identity assigned during creation, then pin every subsequent
+	// operation to its physical ID. Pane reordering must not launch into a
+	// different project or an already running agent.
+	title := pl.sessionOrchestrator().formatPaneTitle(sessionName, paneSpec)
+	paneTarget := ""
+	for _, pane := range panes {
+		if pane.WindowIndex != targeting.WindowIndex || pane.Title != title {
+			continue
+		}
+		if paneTarget != "" {
+			return fail(fmt.Errorf("ambiguous launch pane identity %q", title))
+		}
+		if pane.Dead || pane.IsServicePane() || pane.Type.Canonical() != tmux.AgentType(paneSpec.AgentType).Canonical() {
+			return fail(fmt.Errorf("pane %s no longer has the planned agent identity", pane.ID))
+		}
+		if err := tmux.ValidatePaneLaunchBaseline(pane); err != nil {
+			return fail(err)
+		}
+		paneTarget = pane.ID
+	}
+	if paneTarget == "" {
+		return fail(fmt.Errorf("launch pane %q was not found", title))
+	}
+	result.PaneTarget = paneTarget
 
-	if targeting, ok := pl.resolveSessionTargeting(ctx, sessionName); ok {
-		if resolved, err := swarmPaneTargetFromPlanIndex(sessionName, targeting, paneSpec.Index); err == nil {
-			paneTarget = resolved
-			result.PaneTarget = resolved
-		} else {
-			pl.logger().Warn("[PaneLauncher] pane_target_resolve_failed",
-				"session", sessionName,
-				"pane_index", paneSpec.Index,
-				"error", err)
+	launchCmd := pl.cmdBuilder().BuildLaunchCommand(paneSpec, paneSpec.Project)
+	durableCmd := launchCmd
+	durableCmd.Env = nil
+	spec := tmux.AgentLaunchSpec{
+		Version:     tmux.AgentLaunchSpecVersion,
+		AgentType:   tmux.AgentType(paneSpec.AgentType),
+		Command:     durableCmd.ToShellCommand(),
+		CAAMProfile: strings.TrimSpace(os.Getenv("SHALLOW_PROFILE")),
+	}
+	for _, entry := range launchCmd.Env {
+		if key, _, found := strings.Cut(entry, "="); found {
+			spec.OmittedEnv = append(spec.OmittedEnv, key)
 		}
 	}
+	sort.Strings(spec.OmittedEnv)
+	if err := client.SetPaneLaunchSpecContext(ctx, paneTarget, spec); err != nil {
+		return fail(fmt.Errorf("record launch command: %w", err))
+	}
+	// Execution receipts and logs omit runtime environment values just like
+	// the durable record. The actual launch below still applies them.
+	result.Command = spec.Command
 
 	pl.logger().Info("[PaneLauncher] launch_start",
 		"session", sessionName,
@@ -231,49 +271,48 @@ func (pl *PaneLauncher) LaunchAgentInPane(ctx context.Context, sessionName strin
 		"project", paneSpec.Project,
 		"agent_type", paneSpec.AgentType)
 
-	// Step 1: Change to project directory (if specified)
-	if paneSpec.Project != "" {
-		cdCmd := changeDirectoryCommand(paneSpec.Project)
-		if err := client.SendKeys(paneTarget, cdCmd, true); err != nil {
-			pl.logger().Error("[PaneLauncher] cd_failed",
-				"pane_target", paneTarget,
-				"project", paneSpec.Project,
-				"error", err)
-			result.Success = false
-			result.Error = fmt.Sprintf("cd to project: %v", err)
-			result.Duration = time.Since(start)
-			return result, fmt.Errorf("cd to project: %w", err)
-		}
-
-		pl.logger().Debug("[PaneLauncher] cd_success",
-			"pane_target", paneTarget,
-			"project", paneSpec.Project)
-
-		// Brief pause to ensure cd completes
-		if pl.CDDelay > 0 {
-			time.Sleep(pl.CDDelay)
+	if pl.CDDelay > 0 {
+		select {
+		case <-ctx.Done():
+			return fail(ctx.Err())
+		case <-time.After(pl.CDDelay):
 		}
 	}
 
-	// Check for context cancellation again
-	select {
-	case <-ctx.Done():
-		result.Success = false
-		result.Error = ctx.Err().Error()
-		result.Duration = time.Since(start)
-		return result, ctx.Err()
-	default:
-	}
-
-	// Step 2: Build and send launch command
-	launchCmd := pl.cmdBuilder().BuildLaunchCommand(paneSpec, paneSpec.Project)
+	// Bind the directory change and launch in one shell command. A failed cd
+	// must never start an agent in the shell's previous project.
 	shellCmd := launchCmd.ToShellCommand()
-	result.Command = shellCmd
+	if paneSpec.Project != "" {
+		shellCmd, err = tmux.BuildPaneCommand(paneSpec.Project, shellCmd)
+		if err != nil {
+			return fail(err)
+		}
+	}
+	live, err := client.GetPanesContext(ctx, sessionName)
+	if err != nil {
+		return fail(fmt.Errorf("revalidate launch pane: %w", err))
+	}
+	found := false
+	for _, pane := range live {
+		if pane.ID != paneTarget {
+			continue
+		}
+		found = true
+		if pane.Dead || pane.IsServicePane() || pane.Title != title || pane.Type.Canonical() != spec.AgentType.Canonical() {
+			return fail(fmt.Errorf("pane %s changed identity before launch", paneTarget))
+		}
+		if err := tmux.ValidatePaneLaunchBaseline(pane); err != nil {
+			return fail(err)
+		}
+	}
+	if !found {
+		return fail(fmt.Errorf("pane %s disappeared before launch", paneTarget))
+	}
 
-	if err := client.SendKeys(paneTarget, shellCmd, true); err != nil {
+	if err := client.SendKeysContext(ctx, paneTarget, shellCmd, true); err != nil {
 		pl.logger().Error("[PaneLauncher] launch_failed",
 			"pane_target", paneTarget,
-			"command", shellCmd,
+			"command", result.Command,
 			"error", err)
 		result.Success = false
 		result.Error = fmt.Sprintf("launch agent: %v", err)
@@ -299,7 +338,7 @@ func (pl *PaneLauncher) LaunchAgentInPane(ctx context.Context, sessionName strin
 		"pane_target", paneTarget,
 		"agent_type", paneSpec.AgentType,
 		"project", filepath.Base(paneSpec.Project),
-		"command", shellCmd,
+		"command", result.Command,
 		"duration", result.Duration)
 
 	return result, nil

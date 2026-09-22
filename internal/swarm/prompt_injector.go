@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/ratelimit"
@@ -60,9 +61,10 @@ type BatchInjectionResult struct {
 
 type promptInjectionTmuxClient interface {
 	CaptureForStatusDetectionContext(context.Context, string) (string, error)
-	GetPanes(string) ([]tmux.Pane, error)
-	SendKeys(string, string, bool) error
-	SendKeysForAgent(string, string, bool, tmux.AgentType) error
+	GetPanesContext(context.Context, string) ([]tmux.Pane, error)
+	RunContext(context.Context, ...string) (string, error)
+	SendKeyNameContext(context.Context, string, string) error
+	SendKeysForAgentContext(context.Context, string, string, bool, tmux.AgentType) error
 }
 
 // PromptInjector sends prompts (marching orders) to agent panes.
@@ -213,6 +215,11 @@ func (p *PromptInjector) SetTemplate(name, template string) {
 // agentType is used to handle agent-specific quirks (e.g., Codex needs double-Enter).
 // This method satisfies the ensemble.BasicInjector interface.
 func (p *PromptInjector) InjectPrompt(sessionPane, agentType, prompt string) error {
+	return p.InjectPromptContext(context.Background(), sessionPane, agentType, prompt)
+}
+
+// InjectPromptContext honors cancellation during readiness and every send.
+func (p *PromptInjector) InjectPromptContext(ctx context.Context, sessionPane, agentType, prompt string) error {
 	if err := validatePromptInjectionTarget(InjectionTarget{SessionPane: sessionPane, AgentType: agentType}); err != nil {
 		return err
 	}
@@ -222,7 +229,7 @@ func (p *PromptInjector) InjectPrompt(sessionPane, agentType, prompt string) err
 		"agent_type", agentType,
 		"prompt_len", len(prompt))
 
-	if err := p.sendToPane(sessionPane, agentType, prompt); err != nil {
+	if err := p.sendToPane(ctx, sessionPane, agentType, prompt); err != nil {
 		p.logger().Error("[PromptInjector] inject_error",
 			"session_pane", sessionPane,
 			"agent_type", agentType,
@@ -244,6 +251,11 @@ func (p *PromptInjector) InjectPrompt(sessionPane, agentType, prompt string) err
 // InjectPromptWithResult sends a prompt to a single pane and returns detailed result.
 // agentType is used to handle agent-specific quirks (e.g., Codex needs double-Enter).
 func (p *PromptInjector) InjectPromptWithResult(sessionPane, agentType, prompt string) (*InjectionResult, error) {
+	return p.InjectPromptWithResultContext(context.Background(), sessionPane, agentType, prompt)
+}
+
+// InjectPromptWithResultContext retains a failed receipt when interrupted.
+func (p *PromptInjector) InjectPromptWithResultContext(ctx context.Context, sessionPane, agentType, prompt string) (*InjectionResult, error) {
 	start := time.Now()
 	result := &InjectionResult{
 		SessionPane: sessionPane,
@@ -251,7 +263,7 @@ func (p *PromptInjector) InjectPromptWithResult(sessionPane, agentType, prompt s
 		SentAt:      start,
 	}
 
-	if err := p.InjectPrompt(sessionPane, agentType, prompt); err != nil {
+	if err := p.InjectPromptContext(ctx, sessionPane, agentType, prompt); err != nil {
 		result.Success = false
 		result.Error = err.Error()
 		result.Duration = time.Since(start)
@@ -264,45 +276,107 @@ func (p *PromptInjector) InjectPromptWithResult(sessionPane, agentType, prompt s
 }
 
 // sendToPane sends a prompt to a specific pane, handling agent-specific quirks.
-func (p *PromptInjector) sendToPane(sessionPane, agentType string, prompt string) error {
+func (p *PromptInjector) sendToPane(ctx context.Context, sessionPane, agentType string, prompt string) error {
+	if ctx == nil {
+		return fmt.Errorf("prompt injection context is required")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := validatePromptInjectionTarget(InjectionTarget{SessionPane: sessionPane, AgentType: agentType}); err != nil {
 		return err
 	}
 
 	client := p.tmuxClient()
+	session, err := client.RunContext(ctx, "display-message", "-p", "-t", tmux.SessionPaneTarget(sessionPane), "#{session_name}")
+	if err != nil {
+		return fmt.Errorf("resolve prompt session: %w", err)
+	}
+	session = strings.TrimSpace(session)
+	if session == "" {
+		return fmt.Errorf("prompt target %q has no session", sessionPane)
+	}
+	panes, err := client.GetPanesContext(ctx, session)
+	if err != nil {
+		return fmt.Errorf("resolve prompt pane: %w", err)
+	}
+	selector := sessionPane
+	if _, panePart, found := strings.Cut(sessionPane, ":"); found {
+		selector = panePart
+	}
+	selected, err := tmux.ResolvePaneSelectors(panes, []string{selector}, true)
+	if err != nil {
+		return fmt.Errorf("resolve prompt pane: %w", err)
+	}
+	bound := selected[0]
+	aType := tmux.AgentType(agentType).Canonical()
+	if bound.Type.Canonical() != aType || bound.Dead || bound.IsServicePane() {
+		return fmt.Errorf("pane %s does not have the requested live agent identity", bound.ID)
+	}
+	sessionPane = bound.ID
+	// Re-read before each mutation; an idle-looking capture alone is not proof
+	// that the agent is still running in the pane that was originally selected.
+	validateLive := func() error {
+		panes, err := client.GetPanesContext(ctx, session)
+		if err != nil {
+			return err
+		}
+		for _, pane := range panes {
+			if pane.ID != bound.ID {
+				continue
+			}
+			if pane.Type.Canonical() != aType || pane.Title != bound.Title || pane.Dead || pane.IsServicePane() || pane.AgentCLIDead() || strings.TrimSpace(pane.Command) == "" || tmux.PaneCommandIsStarting(pane.Command) {
+				return fmt.Errorf("pane %s no longer contains the live agent selected for prompt delivery", bound.ID)
+			}
+			return nil
+		}
+		return fmt.Errorf("prompt pane %s disappeared", bound.ID)
+	}
 
 	// Wait for agent to be ready (at idle prompt)
 	// This prevents race conditions where we send input before the agent process is fully started
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	readyCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	if err := p.WaitForReady(ctx, sessionPane, agentType); err != nil {
-		p.logger().Warn("[PromptInjector] wait_ready_failed",
-			"target", sessionPane,
-			"error", err,
-			"proceeding", true)
+	if err := p.WaitForReady(readyCtx, sessionPane, agentType); err != nil {
+		return fmt.Errorf("agent in pane %s did not become ready: %w", sessionPane, err)
+	}
+	if err := validateLive(); err != nil {
+		return err
 	}
 
 	// Use agent-aware send method for reliable multi-line prompt delivery
 	// For Gemini, this uses buffer-based paste to avoid newline interpretation issues
 	// Send without Enter first
-	aType := tmux.AgentType(agentType)
-	if err := client.SendKeysForAgent(sessionPane, prompt, false, aType); err != nil {
+	if err := client.SendKeysForAgentContext(ctx, sessionPane, prompt, false, aType); err != nil {
 		return fmt.Errorf("send prompt text: %w", err)
 	}
-
 	// Wait before sending Enter
-	time.Sleep(p.EnterDelay)
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(p.EnterDelay):
+	}
+	if err := validateLive(); err != nil {
+		return err
+	}
 
 	// Send first Enter
-	if err := client.SendKeys(sessionPane, "", true); err != nil {
+	if err := client.SendKeyNameContext(ctx, sessionPane, "Enter"); err != nil {
 		return fmt.Errorf("send first enter: %w", err)
 	}
 
 	// AGENT QUIRK: Codex and some other agents need double-Enter
 	// The first Enter may not be recognized immediately
 	if aType.NeedsDoubleEnter() {
-		time.Sleep(p.DoubleEnterDelay)
-		if err := client.SendKeys(sessionPane, "", true); err != nil {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(p.DoubleEnterDelay):
+		}
+		if err := validateLive(); err != nil {
+			return err
+		}
+		if err := client.SendKeyNameContext(ctx, sessionPane, "Enter"); err != nil {
 			return fmt.Errorf("send second enter: %w", err)
 		}
 	}
@@ -344,6 +418,9 @@ func (p *PromptInjector) InjectBatch(targets []InjectionTarget, prompt string) (
 // All targets receive the same prompt. The operation can be cancelled via context.
 // When UseAdaptiveDelay is true, delays are obtained from the RateLimitTracker.
 func (p *PromptInjector) InjectBatchWithContext(ctx context.Context, targets []InjectionTarget, prompt string) (*BatchInjectionResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	start := time.Now()
 	result := &BatchInjectionResult{
 		TotalPanes: len(targets),
@@ -396,7 +473,7 @@ func (p *PromptInjector) InjectBatchWithContext(ctx context.Context, targets []I
 			}
 		}
 
-		injResult, err := p.InjectPromptWithResult(target.SessionPane, target.AgentType, prompt)
+		injResult, err := p.InjectPromptWithResultContext(ctx, target.SessionPane, target.AgentType, prompt)
 		if err != nil {
 			// Error already logged in InjectPrompt
 			result.Failed++
@@ -404,6 +481,10 @@ func (p *PromptInjector) InjectBatchWithContext(ctx context.Context, targets []I
 			result.Successful++
 		}
 		result.Results = append(result.Results, *injResult)
+		if err := ctx.Err(); err != nil {
+			result.Duration = time.Since(start)
+			return result, err
+		}
 
 		p.logger().Info("[PromptInjector] batch_progress",
 			"sent", i+1,
@@ -524,7 +605,7 @@ func (p *PromptInjector) InjectToSession(session, prompt string) (*BatchInjectio
 func (p *PromptInjector) InjectToSessionWithContext(ctx context.Context, session, prompt string) (*BatchInjectionResult, error) {
 	client := p.tmuxClient()
 
-	panes, err := client.GetPanes(session)
+	panes, err := client.GetPanesContext(ctx, session)
 	if err != nil {
 		return nil, fmt.Errorf("get panes for session %q: %w", session, err)
 	}

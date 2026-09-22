@@ -239,7 +239,7 @@ type fakeSessionCreator struct {
 	err    error
 }
 
-func (f *fakeSessionCreator) CreateSessions(plan *SwarmPlan) (*OrchestrationResult, error) {
+func (f *fakeSessionCreator) CreateSessionsContext(ctx context.Context, plan *SwarmPlan) (*OrchestrationResult, error) {
 	f.called = true
 	return f.result, f.err
 }
@@ -260,16 +260,16 @@ func (f *fakePaneLauncher) LaunchSwarm(ctx context.Context, plan *SwarmPlan, sta
 }
 
 type fakePromptInjector struct {
-	called   bool
-	lastPlan *SwarmPlan
-	lastText string
-	result   *BatchInjectionResult
-	err      error
+	called      bool
+	lastTargets []InjectionTarget
+	lastText    string
+	result      *BatchInjectionResult
+	err         error
 }
 
-func (f *fakePromptInjector) InjectSwarmWithContext(ctx context.Context, plan *SwarmPlan, prompt string) (*BatchInjectionResult, error) {
+func (f *fakePromptInjector) InjectBatchWithContext(ctx context.Context, targets []InjectionTarget, prompt string) (*BatchInjectionResult, error) {
 	f.called = true
-	f.lastPlan = plan
+	f.lastTargets = targets
 	f.lastText = prompt
 	return f.result, f.err
 }
@@ -283,7 +283,7 @@ func TestSwarmOrchestrator_Execute_SkipsInjectionWhenPromptEmpty(t *testing.T) {
 	}
 
 	sess := &fakeSessionCreator{result: sessionRes}
-	launcher := &fakePaneLauncher{result: &BatchLaunchResult{}}
+	launcher := &fakePaneLauncher{result: &BatchLaunchResult{Results: []PaneLaunchResult{{Success: true, PaneTarget: "%1", AgentType: "cc"}}}}
 	injector := &fakePromptInjector{result: &BatchInjectionResult{}}
 
 	orch := &SwarmOrchestrator{
@@ -323,7 +323,10 @@ func TestSwarmOrchestrator_Execute_FiltersFailedSessions(t *testing.T) {
 	}
 
 	sess := &fakeSessionCreator{result: sessionRes}
-	launcher := &fakePaneLauncher{result: &BatchLaunchResult{}}
+	launcher := &fakePaneLauncher{result: &BatchLaunchResult{Successful: 1, Results: []PaneLaunchResult{
+		{Success: true, PaneTarget: "%1", AgentType: "cc"},
+		{Success: false, PaneTarget: "%2", AgentType: "cod", Error: "launch failed"},
+	}}}
 	injector := &fakePromptInjector{result: &BatchInjectionResult{}}
 
 	orch := &SwarmOrchestrator{
@@ -342,8 +345,8 @@ func TestSwarmOrchestrator_Execute_FiltersFailedSessions(t *testing.T) {
 		t.Fatalf("expected launcher plan filtered to only cc_agents_1, got %+v", launcher.lastPlan)
 	}
 
-	if injector.lastPlan == nil || len(injector.lastPlan.Sessions) != 1 || injector.lastPlan.Sessions[0].Name != "cc_agents_1" {
-		t.Fatalf("expected injector plan filtered to only cc_agents_1, got %+v", injector.lastPlan)
+	if len(injector.lastTargets) != 1 || injector.lastTargets[0].SessionPane != "%1" {
+		t.Fatalf("expected injection into successfully launched physical pane only, got %+v", injector.lastTargets)
 	}
 }
 

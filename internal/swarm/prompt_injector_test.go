@@ -2,6 +2,7 @@ package swarm
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -20,6 +21,9 @@ type countingPromptInjectionTmuxClient struct {
 	captureOutput string
 	// sentForAgent records (pane, agentType) for every SendKeysForAgent call.
 	sentForAgent []promptInjectionSend
+	panes        []tmux.Pane
+	afterCapture func()
+	afterSend    func()
 }
 
 type promptInjectionSend struct {
@@ -29,23 +33,101 @@ type promptInjectionSend struct {
 
 func (c *countingPromptInjectionTmuxClient) CaptureForStatusDetectionContext(context.Context, string) (string, error) {
 	c.captureCount++
+	if c.afterCapture != nil {
+		c.afterCapture()
+	}
 	return c.captureOutput, nil
 }
 
-func (c *countingPromptInjectionTmuxClient) GetPanes(string) ([]tmux.Pane, error) {
+func (c *countingPromptInjectionTmuxClient) GetPanesContext(context.Context, string) ([]tmux.Pane, error) {
 	c.getPanesCount++
-	return nil, nil
+	if c.panes != nil {
+		return c.panes, nil
+	}
+	return []tmux.Pane{
+		{ID: "%1", Index: 1, WindowIndex: 1, Title: "proj__cc_1", Type: tmux.AgentClaude, Command: "claude"},
+		{ID: "%2", Index: 2, WindowIndex: 1, Title: "proj__grok_2", Type: tmux.AgentGrok, Command: "grok"},
+		{ID: "%3", Index: 3, WindowIndex: 1, Title: "proj__cod_3", Type: tmux.AgentCodex, Command: "codex"},
+	}, nil
 }
 
-func (c *countingPromptInjectionTmuxClient) SendKeys(string, string, bool) error {
+func (c *countingPromptInjectionTmuxClient) RunContext(context.Context, ...string) (string, error) {
+	return "proj", nil
+}
+
+func (c *countingPromptInjectionTmuxClient) SendKeyNameContext(context.Context, string, string) error {
 	c.sendKeysCount++
 	return nil
 }
 
-func (c *countingPromptInjectionTmuxClient) SendKeysForAgent(pane string, _ string, _ bool, agentType tmux.AgentType) error {
+func (c *countingPromptInjectionTmuxClient) SendKeysForAgentContext(_ context.Context, pane string, _ string, _ bool, agentType tmux.AgentType) error {
 	c.sendForAgentCount++
 	c.sentForAgent = append(c.sentForAgent, promptInjectionSend{pane: pane, agentType: agentType})
+	if c.afterSend != nil {
+		c.afterSend()
+	}
 	return nil
+}
+
+func TestPromptInjectorContextDeadlineNeverSendsIntoUnreadyPane(t *testing.T) {
+	client := &countingPromptInjectionTmuxClient{}
+	injector := NewPromptInjector()
+	injector.tmuxClientOverride = client
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	result, err := injector.InjectBatchWithContext(ctx, []InjectionTarget{{SessionPane: "%1", AgentType: "cc"}}, "implement the feature")
+	if !errors.Is(err, context.DeadlineExceeded) || result == nil || result.Successful != 0 || len(result.Results) != 1 || result.Results[0].Success {
+		t.Fatalf("expected retained failed readiness receipt, got %+v, %v", result, err)
+	}
+	if client.sendForAgentCount != 0 || client.sendKeysCount != 0 {
+		t.Fatal("prompt or Enter was sent despite failed readiness")
+	}
+}
+
+func TestPromptInjectorRevalidatesAgentAfterReadiness(t *testing.T) {
+	for _, change := range []string{"shell", "dead", "provider", "disappeared"} {
+		t.Run(change, func(t *testing.T) {
+			client := &countingPromptInjectionTmuxClient{captureOutput: "claude>"}
+			client.afterCapture = func() {
+				pane := tmux.Pane{ID: "%1", Title: "proj__cc_1", Type: tmux.AgentClaude, Command: "claude"}
+				switch change {
+				case "shell":
+					pane.Command = "bash"
+				case "dead":
+					pane.Dead = true
+				case "provider":
+					pane.Type = tmux.AgentCodex
+				case "disappeared":
+					pane.ID = "%99"
+				}
+				client.panes = []tmux.Pane{pane}
+			}
+			injector := NewPromptInjector()
+			injector.tmuxClientOverride = client
+			if err := injector.InjectPromptContext(context.Background(), "%1", "cc", "implement the feature"); err == nil {
+				t.Fatal("changed pane was accepted after a stale ready capture")
+			}
+			if client.sendForAgentCount != 0 || client.sendKeysCount != 0 {
+				t.Fatal("prompt or Enter reached a changed pane")
+			}
+		})
+	}
+}
+
+func TestPromptInjectorDoesNotSubmitIfAgentExitsAfterText(t *testing.T) {
+	client := &countingPromptInjectionTmuxClient{captureOutput: "claude>"}
+	client.afterSend = func() {
+		client.panes = []tmux.Pane{{ID: "%1", Title: "proj__cc_1", Type: tmux.AgentClaude, Command: "bash"}}
+	}
+	injector := NewPromptInjector()
+	injector.tmuxClientOverride = client
+	injector.EnterDelay = 0
+	if err := injector.InjectPromptContext(context.Background(), "%1", "cc", "implement the feature"); err == nil {
+		t.Fatal("agent exited between prompt text and Enter but send succeeded")
+	}
+	if client.sendForAgentCount != 1 || client.sendKeysCount != 0 {
+		t.Fatalf("text sends %d, Enter sends %d; want one text, no Enter", client.sendForAgentCount, client.sendKeysCount)
+	}
 }
 
 func TestNewPromptInjector(t *testing.T) {
@@ -275,7 +357,7 @@ func TestPromptInjector_GrokDirectPathsDeliverViaTmux(t *testing.T) {
 			return injector.InjectPrompt("proj:1.2", "grok-build", "continue")
 		}},
 		{name: "direct helper", inject: func() error {
-			return injector.sendToPane("proj:1.2", "xai_grok_build", "continue")
+			return injector.sendToPane(context.Background(), "proj:1.2", "xai_grok_build", "continue")
 		}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -292,8 +374,8 @@ func TestPromptInjector_GrokDirectPathsDeliverViaTmux(t *testing.T) {
 		t.Fatalf("SendKeys (enter) calls = %d, want at least 2", client.sendKeysCount)
 	}
 	for _, send := range client.sentForAgent {
-		if send.pane != "proj:1.2" {
-			t.Fatalf("delivery pane = %q, want proj:1.2", send.pane)
+		if send.pane != "%2" {
+			t.Fatalf("delivery pane = %q, want pinned physical pane %%2", send.pane)
 		}
 	}
 }
@@ -327,7 +409,7 @@ func TestPromptInjector_MixedBatchDeliversToGrok(t *testing.T) {
 	}
 	grokDelivered := false
 	for _, send := range client.sentForAgent {
-		if send.pane == "proj:1.2" {
+		if send.pane == "%2" {
 			grokDelivered = true
 		}
 	}

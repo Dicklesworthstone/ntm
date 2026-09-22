@@ -2,6 +2,7 @@ package swarm
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -69,8 +70,13 @@ func (o *SessionOrchestrator) tmuxClient() *tmux.Client {
 type CreateSessionResult struct {
 	SessionSpec SessionSpec
 	SessionName string
-	PaneIDs     []string
-	Error       error
+	Created     bool
+	// CreationUncertain means the create command failed after it was attempted;
+	// tmux may have created the session before a later configuration error or
+	// cancellation. The caller must inspect it rather than assuming no effect.
+	CreationUncertain bool
+	PaneIDs           []string
+	Error             error
 }
 
 // OrchestrationResult contains the complete result of session orchestration.
@@ -85,6 +91,15 @@ type OrchestrationResult struct {
 // CreateSessions creates all sessions defined in the SwarmPlan.
 // It creates sessions, splits panes, sets titles, and applies tiled layout.
 func (o *SessionOrchestrator) CreateSessions(plan *SwarmPlan) (*OrchestrationResult, error) {
+	return o.CreateSessionsContext(context.Background(), plan)
+}
+
+// CreateSessionsContext preserves completed creations if cancellation interrupts
+// the workflow. Sessions and panes remain available for inspection and recovery.
+func (o *SessionOrchestrator) CreateSessionsContext(ctx context.Context, plan *SwarmPlan) (*OrchestrationResult, error) {
+	if ctx == nil {
+		return nil, fmt.Errorf("context is required")
+	}
 	if plan == nil {
 		return nil, fmt.Errorf("plan cannot be nil")
 	}
@@ -101,11 +116,18 @@ func (o *SessionOrchestrator) CreateSessions(plan *SwarmPlan) (*OrchestrationRes
 
 	isFirstSession := true
 	for _, spec := range plan.Sessions {
+		if err := ctx.Err(); err != nil {
+			return result, err
+		}
 		if !isFirstSession && o.StaggerDelay > 0 {
-			time.Sleep(o.StaggerDelay)
+			select {
+			case <-ctx.Done():
+				return result, ctx.Err()
+			case <-time.After(o.StaggerDelay):
+			}
 		}
 
-		sessionResult := o.createSession(client, spec)
+		sessionResult := o.createSession(ctx, client, spec)
 		result.Sessions = append(result.Sessions, sessionResult)
 
 		if sessionResult.Error != nil {
@@ -116,13 +138,16 @@ func (o *SessionOrchestrator) CreateSessions(plan *SwarmPlan) (*OrchestrationRes
 		result.SuccessfulPanes += len(sessionResult.PaneIDs)
 		result.FailedPanes += spec.PaneCount - len(sessionResult.PaneIDs)
 		isFirstSession = false
+		if err := ctx.Err(); err != nil {
+			return result, err
+		}
 	}
 
 	return result, nil
 }
 
 // createSession creates a single tmux session with its panes.
-func (o *SessionOrchestrator) createSession(client *tmux.Client, spec SessionSpec) CreateSessionResult {
+func (o *SessionOrchestrator) createSession(ctx context.Context, client *tmux.Client, spec SessionSpec) CreateSessionResult {
 	result := CreateSessionResult{
 		SessionSpec: spec,
 		SessionName: spec.Name,
@@ -136,7 +161,12 @@ func (o *SessionOrchestrator) createSession(client *tmux.Client, spec SessionSpe
 	}
 
 	// Check if session already exists
-	if client.SessionExists(spec.Name) {
+	exists, err := client.SessionExistsContext(ctx, spec.Name)
+	if err != nil {
+		result.Error = fmt.Errorf("checking session %q: %w", spec.Name, err)
+		return result
+	}
+	if exists {
 		result.Error = fmt.Errorf("session %q already exists", spec.Name)
 		return result
 	}
@@ -148,13 +178,15 @@ func (o *SessionOrchestrator) createSession(client *tmux.Client, spec SessionSpe
 	}
 
 	// Create the session
-	if err := client.CreateSession(spec.Name, directory); err != nil {
+	if err := client.CreateSessionContext(ctx, spec.Name, directory); err != nil {
+		result.CreationUncertain = true
 		result.Error = fmt.Errorf("failed to create session %q: %w", spec.Name, err)
 		return result
 	}
+	result.Created = true
 
 	// Get the initial pane ID
-	panes, err := client.GetPanes(spec.Name)
+	panes, err := client.GetPanesContext(ctx, spec.Name)
 	if err != nil || len(panes) == 0 {
 		result.Error = fmt.Errorf("failed to get initial pane for session %q: %v", spec.Name, err)
 		return result
@@ -163,23 +195,32 @@ func (o *SessionOrchestrator) createSession(client *tmux.Client, spec SessionSpe
 	// Set up the first pane — always track it even if spec.Panes is empty,
 	// since tmux creates it unconditionally with CreateSession.
 	firstPaneID := panes[0].ID
+	result.PaneIDs = append(result.PaneIDs, firstPaneID)
 	if len(spec.Panes) > 0 {
 		paneSpec := spec.Panes[0]
 		title := o.formatPaneTitle(spec.Name, paneSpec)
-		if err := o.setPaneIdentityWithRetry(client, firstPaneID, title, paneSpec.AgentType); err != nil {
+		if err := o.setPaneIdentityWithRetry(ctx, client, firstPaneID, title, paneSpec.AgentType); err != nil {
 			result.Error = fmt.Errorf("setting initial pane identity for session %q: %w", spec.Name, err)
 			return result
 		}
 	}
-	result.PaneIDs = append(result.PaneIDs, firstPaneID)
 
 	// Create additional panes
 	for i := 1; i < len(spec.Panes); i++ {
+		if err := ctx.Err(); err != nil {
+			result.Error = err
+			return result
+		}
 		paneSpec := spec.Panes[i]
 
 		// Stagger pane creation to avoid rate limits
 		if o.StaggerDelay > 0 && i > 0 {
-			time.Sleep(o.StaggerDelay)
+			select {
+			case <-ctx.Done():
+				result.Error = ctx.Err()
+				return result
+			case <-time.After(o.StaggerDelay):
+			}
 		}
 
 		// Determine directory for this pane
@@ -189,8 +230,12 @@ func (o *SessionOrchestrator) createSession(client *tmux.Client, spec SessionSpe
 		}
 
 		// Split the window to create a new pane
-		paneID, err := client.SplitWindow(spec.Name, paneDir)
+		paneID, err := client.SplitWindowContext(ctx, spec.Name, paneDir)
+		if paneID != "" {
+			result.PaneIDs = append(result.PaneIDs, paneID)
+		}
 		if err != nil {
+			result.Error = errors.Join(result.Error, fmt.Errorf("creating pane %d for session %q: %w", i, spec.Name, err))
 			slog.Warn("[SessionOrchestrator] split_window_failed",
 				"session", spec.Name,
 				"pane_index", i,
@@ -201,16 +246,14 @@ func (o *SessionOrchestrator) createSession(client *tmux.Client, spec SessionSpe
 
 		// Persist pane title and provider before the launch phase.
 		title := o.formatPaneTitle(spec.Name, paneSpec)
-		if err := o.setPaneIdentityWithRetry(client, paneID, title, paneSpec.AgentType); err != nil {
-			result.Error = fmt.Errorf("setting pane %d identity for session %q: %w", i, spec.Name, err)
+		if err := o.setPaneIdentityWithRetry(ctx, client, paneID, title, paneSpec.AgentType); err != nil {
+			result.Error = errors.Join(result.Error, fmt.Errorf("setting pane %d identity for session %q: %w", i, spec.Name, err))
 			return result
 		}
-
-		result.PaneIDs = append(result.PaneIDs, paneID)
 	}
 
 	// Apply tiled layout for even pane distribution
-	if err := client.ApplyTiledLayout(spec.Name); err != nil {
+	if err := client.ApplyTiledLayoutContext(ctx, spec.Name); err != nil {
 		slog.Warn("[SessionOrchestrator] apply_tiled_layout_failed", "session", spec.Name, "error", err)
 	}
 
@@ -544,19 +587,23 @@ func (o *SessionOrchestrator) GetRemoteConnectionInfo() *RemoteConnectionInfo {
 	return info
 }
 
-func (o *SessionOrchestrator) setPaneIdentityWithRetry(client *tmux.Client, paneID, title, agentType string) error {
+func (o *SessionOrchestrator) setPaneIdentityWithRetry(ctx context.Context, client *tmux.Client, paneID, title, agentType string) error {
 	var err error
 	for i := 0; i < 3; i++ {
-		if err = client.SetPaneAgentIdentityContext(context.Background(), paneID, title, tmux.AgentType(agentType)); err == nil {
+		if err = client.SetPaneAgentIdentityContext(ctx, paneID, title, tmux.AgentType(agentType)); err == nil {
 			return nil
 		}
-		time.Sleep(100 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
 	}
 	return err
 }
 
 type swarmSessionCreator interface {
-	CreateSessions(plan *SwarmPlan) (*OrchestrationResult, error)
+	CreateSessionsContext(ctx context.Context, plan *SwarmPlan) (*OrchestrationResult, error)
 }
 
 type swarmPaneLauncher interface {
@@ -564,7 +611,7 @@ type swarmPaneLauncher interface {
 }
 
 type swarmPromptInjector interface {
-	InjectSwarmWithContext(ctx context.Context, plan *SwarmPlan, prompt string) (*BatchInjectionResult, error)
+	InjectBatchWithContext(ctx context.Context, targets []InjectionTarget, prompt string) (*BatchInjectionResult, error)
 }
 
 // SwarmOrchestrator executes a full swarm launch workflow.
@@ -717,6 +764,7 @@ func (o *SwarmOrchestrator) Execute(ctx context.Context, plan *SwarmPlan, prompt
 		StartedAt: time.Now().UTC(),
 		Plan:      plan,
 	}
+	defer func() { result.ErrorCount = len(result.Errors) }()
 
 	logger.Info("[SwarmOrchestrator] execute_start",
 		"total_sessions", len(plan.Sessions),
@@ -728,15 +776,17 @@ func (o *SwarmOrchestrator) Execute(ctx context.Context, plan *SwarmPlan, prompt
 		return result, err
 	}
 	logger.Info("[SwarmOrchestrator] phase_sessions_start", "sessions", len(plan.Sessions))
-	sessionsResult, err := o.sessionOrchestrator().CreateSessions(plan)
+	sessionsResult, err := o.sessionOrchestrator().CreateSessionsContext(ctx, plan)
+	result.Sessions = sessionsResult
+	if sessionsResult != nil {
+		result.Errors = append(result.Errors, sessionsResult.Errors...)
+	}
 	if err != nil {
 		return result, err
 	}
 	if sessionsResult == nil {
 		return result, fmt.Errorf("session orchestrator returned nil result")
 	}
-	result.Sessions = sessionsResult
-	result.Errors = append(result.Errors, sessionsResult.Errors...)
 	logger.Info("[SwarmOrchestrator] phase_sessions_complete",
 		"successful_panes", sessionsResult.SuccessfulPanes,
 		"failed_panes", sessionsResult.FailedPanes)
@@ -774,7 +824,13 @@ func (o *SwarmOrchestrator) Execute(ctx context.Context, plan *SwarmPlan, prompt
 		logger.Info("[SwarmOrchestrator] phase_inject_start",
 			"total_agents", execPlan.TotalAgents,
 			"prompt_len", len(prompt))
-		injectionResult, err := o.promptInjector().InjectSwarmWithContext(ctx, execPlan, prompt)
+		targets := make([]InjectionTarget, 0, launchResult.Successful)
+		for _, launch := range launchResult.Results {
+			if launch.Success {
+				targets = append(targets, InjectionTarget{SessionPane: launch.PaneTarget, AgentType: launch.AgentType})
+			}
+		}
+		injectionResult, err := o.promptInjector().InjectBatchWithContext(ctx, targets, prompt)
 		result.Injection = injectionResult
 		if injectionResult != nil && injectionResult.Failed > 0 {
 			result.Errors = append(result.Errors, fmt.Errorf("prompt injection failed for %d/%d panes", injectionResult.Failed, injectionResult.TotalPanes))

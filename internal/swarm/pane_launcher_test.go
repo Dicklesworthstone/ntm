@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 func TestNewPaneLauncher(t *testing.T) {
@@ -70,8 +72,9 @@ func TestChangeDirectoryCommandQuotesShellSyntaxLiterally(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			if got := changeDirectoryCommand(tc.path); got != tc.want {
-				t.Errorf("changeDirectoryCommand(%q) = %q, want %q", tc.path, got, tc.want)
+			got, err := tmux.BuildPaneCommand(tc.path, "cod")
+			if err != nil || got != tc.want+" && cod" {
+				t.Errorf("BuildPaneCommand(%q) = %q, %v; want guarded literal directory change", tc.path, got, err)
 			}
 		})
 	}

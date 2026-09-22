@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -172,6 +173,8 @@ Examples:
   ntm swarm                           # Scan /dp and create swarm
   ntm swarm --scan-dir=/projects      # Scan custom directory
   ntm swarm --dry-run                 # Preview plan without executing
+  ntm swarm --json                    # Launch and return a JSON execution receipt
+  ntm swarm plan --json               # Return a plan without launching
   ntm swarm --projects=foo,bar        # Only include specific projects
   ntm swarm --remote=user@host        # Execute on remote host via SSH`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -260,17 +263,45 @@ type swarmOptions struct {
 // SwarmPlanOutput is the JSON output format for swarm plan
 type SwarmPlanOutput struct {
 	robot.RobotResponse
-	ScanDir         string             `json:"scan_dir"`
-	TotalCC         int                `json:"total_cc"`
-	TotalCod        int                `json:"total_cod"`
-	TotalGmi        int                `json:"total_gmi"`
-	TotalAgy        int                `json:"total_agy"`
-	TotalAgents     int                `json:"total_agents"`
-	SessionsPerType int                `json:"sessions_per_type"`
-	PanesPerSession int                `json:"panes_per_session"`
-	Allocations     []AllocationOutput `json:"allocations"`
-	Sessions        []SessionOutput    `json:"sessions"`
-	DryRun          bool               `json:"dry_run"`
+	ScanDir         string                `json:"scan_dir"`
+	TotalCC         int                   `json:"total_cc"`
+	TotalCod        int                   `json:"total_cod"`
+	TotalGmi        int                   `json:"total_gmi"`
+	TotalAgy        int                   `json:"total_agy"`
+	TotalAgents     int                   `json:"total_agents"`
+	SessionsPerType int                   `json:"sessions_per_type"`
+	PanesPerSession int                   `json:"panes_per_session"`
+	Allocations     []AllocationOutput    `json:"allocations"`
+	Sessions        []SessionOutput       `json:"sessions"`
+	DryRun          bool                  `json:"dry_run"`
+	Execution       *SwarmExecutionOutput `json:"execution,omitempty"`
+}
+
+// SwarmExecutionOutput records attempted operations separately from the desired
+// allocation. It remains present on cancellation and partial launch failure.
+type SwarmExecutionOutput struct {
+	StartedAt       time.Time                    `json:"started_at"`
+	Sessions        []SwarmSessionCreationOutput `json:"sessions"`
+	SuccessfulPanes int                          `json:"successful_panes"`
+	FailedPanes     int                          `json:"failed_panes"`
+	Launch          *swarm.BatchLaunchResult     `json:"launch,omitempty"`
+	Injection       *swarm.BatchInjectionResult  `json:"injection,omitempty"`
+	Readiness       *SwarmReadinessOutput        `json:"readiness,omitempty"`
+	Interrupted     bool                         `json:"interrupted"`
+	Errors          []string                     `json:"errors"`
+}
+
+type SwarmSessionCreationOutput struct {
+	Name              string   `json:"name"`
+	Created           bool     `json:"created"`
+	CreationUncertain bool     `json:"creation_uncertain,omitempty"`
+	PaneIDs           []string `json:"pane_ids"`
+	Error             string   `json:"error,omitempty"`
+}
+
+type SwarmReadinessOutput struct {
+	Ready int `json:"ready"`
+	Total int `json:"total"`
 }
 
 type AllocationOutput struct {
@@ -298,11 +329,42 @@ type PaneOutput struct {
 	AgentType string `json:"agent_type"`
 }
 
-func runSwarm(ctx context.Context, opts swarmOptions) error {
+func runSwarm(ctx context.Context, opts swarmOptions) (runErr error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	logger := slog.Default()
+	out := SwarmPlanOutput{
+		RobotResponse: robot.NewRobotResponse(true),
+		ScanDir:       opts.ScanDir,
+		Allocations:   []AllocationOutput{},
+		Sessions:      []SessionOutput{},
+		DryRun:        opts.DryRun,
+	}
+	// Own exactly one terminal JSON document, including preflight errors and
+	// execution failures. JSON selects a format; only DryRun skips execution.
+	defer func() {
+		if !opts.JSONOutput {
+			return
+		}
+		if runErr != nil {
+			code, hint := classifyRobotExecuteError(runErr)
+			if out.ErrorCode != "" {
+				code = out.ErrorCode
+			}
+			out.RobotResponse = robot.NewErrorResponse(runErr, code, hint)
+			out.Meta = robot.NewResponseMeta("swarm").WithExitCode(1)
+			out.OutputFormat = robot.FormatJSON.String()
+			runErr = emitJSONFailureEnvelopeWithCause(out, runErr)
+			return
+		}
+		out.OutputFormat = robot.FormatJSON.String()
+		out.Meta = robot.NewResponseMeta("swarm").WithExitCode(0)
+		runErr = printSwarmJSON(out)
+	}()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	initialPrompt, promptSource, promptPath, err := resolveSwarmInitialPrompt(opts.InitialPrompt, opts.PromptFile)
 	if err != nil {
@@ -333,7 +395,7 @@ func runSwarm(ctx context.Context, opts swarmOptions) error {
 		"force_global_auth_clobber", swarmCfg.ForceGlobalAuthClobber)
 
 	if opts.SessionsPerType < 1 {
-		return fmt.Errorf("--sessions-per-type must be at least 1, got %d", opts.SessionsPerType)
+		return fmt.Errorf("%w: --sessions-per-type must be at least 1, got %d", errCLIInvalidInput, opts.SessionsPerType)
 	}
 	if opts.SessionsPerType > 10 {
 		logger.Warn("high sessions-per-type may impact performance", "value", opts.SessionsPerType)
@@ -341,7 +403,7 @@ func runSwarm(ctx context.Context, opts swarmOptions) error {
 	swarmCfg.SessionsPerType = opts.SessionsPerType
 
 	if opts.PanesPerSession < 0 {
-		return fmt.Errorf("--panes-per-session cannot be negative, got %d", opts.PanesPerSession)
+		return fmt.Errorf("%w: --panes-per-session cannot be negative, got %d", errCLIInvalidInput, opts.PanesPerSession)
 	}
 	if opts.PanesPerSession > 20 {
 		logger.Warn("high panes-per-session may impact performance", "value", opts.PanesPerSession)
@@ -354,30 +416,14 @@ func runSwarm(ctx context.Context, opts swarmOptions) error {
 	}
 
 	// Discover projects
-	projects, err := discoverProjects(opts.ScanDir, opts.Projects)
+	projects, err := discoverProjectsContext(ctx, opts.ScanDir, opts.Projects)
 	if err != nil {
 		return fmt.Errorf("failed to discover projects: %w", err)
 	}
 
 	if len(projects) == 0 {
-		cause := fmt.Errorf("no projects found in %s", opts.ScanDir)
-		if opts.JSONOutput {
-			response := robot.NewErrorResponse(
-				cause,
-				robot.ErrCodeNotFound,
-				"Add a project containing Beads data or pass it explicitly with --projects",
-			)
-			response.OutputFormat = robot.FormatJSON.String()
-			response.Meta = robot.NewResponseMeta("swarm").WithExitCode(1)
-			return emitJSONFailureEnvelopeWithCause(SwarmPlanOutput{
-				RobotResponse: response,
-				ScanDir:       opts.ScanDir,
-				Allocations:   []AllocationOutput{},
-				Sessions:      []SessionOutput{},
-				DryRun:        opts.DryRun,
-			}, cause)
-		}
-		return cause
+		out.ErrorCode = robot.ErrCodeNotFound
+		return fmt.Errorf("no projects found in %s; add a project or pass --projects", opts.ScanDir)
 	}
 
 	// Calculate allocations
@@ -410,18 +456,21 @@ func runSwarm(ctx context.Context, opts swarmOptions) error {
 	}
 
 	// Build output
-	out := buildSwarmPlanOutput(plan, opts.DryRun)
-
-	if opts.JSONOutput {
-		return printSwarmJSON(out)
-	}
+	out = buildSwarmPlanOutput(plan, opts.DryRun)
 
 	// Pretty print plan
-	printSwarmPlan(out)
+	if !opts.JSONOutput {
+		printSwarmPlan(out)
+	}
 
 	if opts.DryRun {
-		output.PrintInfo("Dry run - no sessions created")
+		if !opts.JSONOutput {
+			output.PrintInfo("Dry run - no sessions created")
+		}
 		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 
 	staggerDelay := time.Duration(swarmCfg.StaggerDelayMs) * time.Millisecond
@@ -434,7 +483,9 @@ func runSwarm(ctx context.Context, opts swarmOptions) error {
 	if opts.Remote != "" {
 		sessOrch = swarm.NewRemoteSessionOrchestrator(opts.Remote)
 		sessOrch.StaggerDelay = staggerDelay
-		output.PrintInfof("Creating swarm on remote host: %s", opts.Remote)
+		if !opts.JSONOutput {
+			output.PrintInfof("Creating swarm on remote host: %s", opts.Remote)
+		}
 	} else {
 		sessOrch = swarm.NewSessionOrchestrator()
 		sessOrch.StaggerDelay = staggerDelay
@@ -465,12 +516,10 @@ func runSwarm(ctx context.Context, opts swarmOptions) error {
 	_ = snapshotClaudeModelForSwarm(plan, logger)
 
 	execResult, err := executor.Execute(ctx, plan, initialPrompt)
-	if err != nil {
-		return err
-	}
+	out.Execution = buildSwarmExecutionOutput(execResult, err)
 
 	// Report results
-	if execResult.Sessions != nil {
+	if !opts.JSONOutput && execResult != nil && execResult.Sessions != nil {
 		output.PrintSuccessf("Created %d sessions with %d/%d panes",
 			len(execResult.Sessions.Sessions), execResult.Sessions.SuccessfulPanes, execResult.Sessions.TotalPanes)
 
@@ -482,37 +531,109 @@ func runSwarm(ctx context.Context, opts swarmOptions) error {
 		}
 	}
 
-	if execResult.Launch != nil {
+	if !opts.JSONOutput && execResult != nil && execResult.Launch != nil {
 		output.PrintSuccessf("Launched agents: %d succeeded, %d failed", execResult.Launch.Successful, execResult.Launch.Failed)
 		if execResult.Launch.Failed > 0 {
 			output.PrintWarningf("%d agents failed to launch (see logs)", execResult.Launch.Failed)
 		}
 	}
 
-	if initialPrompt != "" && execResult.Injection != nil {
+	if !opts.JSONOutput && execResult != nil && initialPrompt != "" && execResult.Injection != nil {
 		output.PrintSuccessf("Injected initial prompt: %d succeeded, %d failed", execResult.Injection.Successful, execResult.Injection.Failed)
 		if execResult.Injection.Failed > 0 {
 			output.PrintWarningf("%d panes failed prompt injection (see logs)", execResult.Injection.Failed)
 		}
 	}
+	if err != nil {
+		return err
+	}
+	if err := swarmExecutionFailure(execResult); err != nil {
+		return err
+	}
 
 	// Phase 4 (optional): Wait for agents to reach idle/ready state.
 	// This gates external callers (e.g., --robot-send) from sending prompts
 	// before agents have fully initialized their TUIs.
-	if opts.WaitReady && execResult.Sessions != nil {
+	if opts.WaitReady && execResult.Launch != nil {
 		timeout := time.Duration(opts.ReadyTimeout) * time.Second
 		if timeout <= 0 {
 			timeout = 30 * time.Second
 		}
-		output.PrintInfof("Waiting for agents to reach ready state (timeout: %s)...", timeout)
-		ready, total := waitForSwarmAgentsReady(ctx, plan, tmuxClient, timeout, logger)
-		if ready == total {
+		if !opts.JSONOutput {
+			output.PrintInfof("Waiting for agents to reach ready state (timeout: %s)...", timeout)
+		}
+		ready, total := waitForSwarmAgentsReady(ctx, execResult.Launch, tmuxClient, timeout, logger)
+		out.Execution.Readiness = &SwarmReadinessOutput{Ready: ready, Total: total}
+		if err := ctx.Err(); err != nil {
+			out.Execution.Interrupted = true
+			out.Execution.Errors = append(out.Execution.Errors, err.Error())
+			return err
+		}
+		if ready != total {
+			err := fmt.Errorf("%d/%d agents reached ready state: %w", ready, total, context.DeadlineExceeded)
+			out.Execution.Errors = append(out.Execution.Errors, err.Error())
+			return err
+		}
+		if !opts.JSONOutput {
 			output.PrintSuccessf("All %d agents are ready", total)
-		} else {
-			output.PrintWarningf("%d/%d agents reached ready state (timeout reached)", ready, total)
 		}
 	}
 
+	return nil
+}
+
+func buildSwarmExecutionOutput(result *swarm.SwarmOrchestrationResult, cause error) *SwarmExecutionOutput {
+	if result == nil {
+		return nil
+	}
+	out := &SwarmExecutionOutput{
+		StartedAt:   result.StartedAt,
+		Sessions:    []SwarmSessionCreationOutput{},
+		Launch:      result.Launch,
+		Injection:   result.Injection,
+		Interrupted: errors.Is(cause, context.Canceled) || errors.Is(cause, context.DeadlineExceeded),
+		Errors:      []string{},
+	}
+	if result.Sessions != nil {
+		out.SuccessfulPanes = result.Sessions.SuccessfulPanes
+		out.FailedPanes = result.Sessions.FailedPanes
+		for _, session := range result.Sessions.Sessions {
+			created := SwarmSessionCreationOutput{
+				Name:              session.SessionName,
+				Created:           session.Created,
+				CreationUncertain: session.CreationUncertain,
+				PaneIDs:           append([]string{}, session.PaneIDs...),
+			}
+			if session.Error != nil {
+				created.Error = session.Error.Error()
+			}
+			out.Sessions = append(out.Sessions, created)
+		}
+	}
+	for _, err := range result.Errors {
+		if err != nil {
+			out.Errors = append(out.Errors, err.Error())
+		}
+	}
+	if cause != nil {
+		out.Errors = append(out.Errors, cause.Error())
+	}
+	return out
+}
+
+func swarmExecutionFailure(result *swarm.SwarmOrchestrationResult) error {
+	if result == nil || result.Sessions == nil || result.Launch == nil {
+		return fmt.Errorf("swarm execution did not complete")
+	}
+	if len(result.Errors) > 0 {
+		return errors.Join(result.Errors...)
+	}
+	if result.Sessions.FailedPanes > 0 || result.Launch.Failed > 0 {
+		return fmt.Errorf("swarm launch incomplete: %d panes failed creation, %d agents failed launch", result.Sessions.FailedPanes, result.Launch.Failed)
+	}
+	if result.Injection != nil && result.Injection.Failed > 0 {
+		return fmt.Errorf("initial prompt injection failed for %d panes", result.Injection.Failed)
+	}
 	return nil
 }
 
@@ -535,6 +656,10 @@ func resolveSwarmInitialPrompt(prompt, promptFile string) (resolved string, sour
 
 // discoverProjects finds projects with bead counts using BeadScanner
 func discoverProjects(scanDir string, explicitProjects []string) ([]swarm.ProjectBeadCount, error) {
+	return discoverProjectsContext(context.Background(), scanDir, explicitProjects)
+}
+
+func discoverProjectsContext(ctx context.Context, scanDir string, explicitProjects []string) ([]swarm.ProjectBeadCount, error) {
 	var opts []swarm.BeadScannerOption
 
 	if len(explicitProjects) > 0 {
@@ -542,9 +667,12 @@ func discoverProjects(scanDir string, explicitProjects []string) ([]swarm.Projec
 	}
 
 	scanner := swarm.NewBeadScanner(scanDir, opts...)
-	result, err := scanner.Scan(context.Background())
+	result, err := scanner.Scan(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("scan projects: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 
 	return result.Projects, nil
@@ -665,8 +793,10 @@ func writePlanToFile(plan *swarm.SwarmPlan, path string) error {
 // Subcommand: swarm plan
 func newSwarmPlanCmd() *cobra.Command {
 	var (
-		scanDir  string
-		projects []string
+		scanDir         string
+		projects        []string
+		sessionsPerType int
+		panesPerSession int
 	)
 
 	cmd := &cobra.Command{
@@ -678,11 +808,13 @@ func newSwarmPlanCmd() *cobra.Command {
 				return err
 			}
 			return runSwarm(cmd.Context(), swarmOptions{
-				ScanDir:    scanDir,
-				Projects:   projects,
-				DryRun:     true,
-				JSONOutput: jsonOutput,
-				AutoRotate: autoRotate,
+				ScanDir:         scanDir,
+				Projects:        projects,
+				DryRun:          true,
+				JSONOutput:      IsJSONOutput(),
+				AutoRotate:      autoRotate,
+				SessionsPerType: sessionsPerType,
+				PanesPerSession: panesPerSession,
 			})
 		},
 	}
@@ -691,9 +823,15 @@ func newSwarmPlanCmd() *cobra.Command {
 	if cfg != nil && cfg.Swarm.DefaultScanDir != "" {
 		defaultScanDir = cfg.Swarm.DefaultScanDir
 	}
+	defaultSessionsPerType := 3
+	if cfg != nil && cfg.Swarm.SessionsPerType > 0 {
+		defaultSessionsPerType = cfg.Swarm.SessionsPerType
+	}
 
 	cmd.Flags().StringVar(&scanDir, "scan-dir", defaultScanDir, "Directory to scan for projects")
 	cmd.Flags().StringSliceVar(&projects, "projects", nil, "Explicit list of project paths")
+	cmd.Flags().IntVar(&sessionsPerType, "sessions-per-type", defaultSessionsPerType, "Number of tmux sessions per agent type")
+	cmd.Flags().IntVar(&panesPerSession, "panes-per-session", 0, "Max panes per session (0 = auto-calculate from total agents)")
 
 	return cmd
 }
@@ -1032,11 +1170,12 @@ var swarmAgentTypeToLong = map[string]string{
 	"agy": "antigravity",
 }
 
-// waitForSwarmAgentsReady polls all agent panes in the swarm plan until they
+// waitForSwarmAgentsReady polls successfully launched panes until they
 // show idle/ready state or the timeout expires.  Returns (readyCount, totalCount).
 // This implements the readiness gate for --wait-ready (issue #61).
-func waitForSwarmAgentsReady(ctx context.Context, plan *swarm.SwarmPlan, client *tmux.Client, timeout time.Duration, logger *slog.Logger) (int, int) {
-	deadline := time.Now().Add(timeout)
+func waitForSwarmAgentsReady(ctx context.Context, launches *swarm.BatchLaunchResult, client *tmux.Client, timeout time.Duration, logger *slog.Logger) (int, int) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	pollInterval := 500 * time.Millisecond
 
 	// Collect all pane targets: "session:0.index"
@@ -1047,43 +1186,33 @@ func waitForSwarmAgentsReady(ctx context.Context, plan *swarm.SwarmPlan, client 
 		ready     bool
 	}
 	var panes []paneInfo
-	for _, sess := range plan.Sessions {
-		longType := swarmAgentTypeToLong[sess.AgentType]
+	for _, launch := range launches.Results {
+		if !launch.Success {
+			continue
+		}
+		longType := swarmAgentTypeToLong[launch.AgentType]
 		if longType == "" {
-			longType = sess.AgentType
+			longType = launch.AgentType
 		}
-
-		firstWin, err := client.GetFirstWindow(sess.Name)
-		if err != nil {
-			firstWin = 1 // fallback
-		}
-
-		for _, ps := range sess.Panes {
-			target := fmt.Sprintf("%s:%d.%d", sess.Name, firstWin, ps.Index)
-			panes = append(panes, paneInfo{
-				target:    target,
-				shortType: sess.AgentType,
-				longType:  longType,
-			})
-		}
+		panes = append(panes, paneInfo{
+			target:    launch.PaneTarget,
+			shortType: launch.AgentType,
+			longType:  longType,
+		})
 	}
 
 	if len(panes) == 0 {
 		return 0, 0
 	}
 
-	for time.Now().Before(deadline) {
-		if ctx.Err() != nil {
-			break
-		}
-
+	for ctx.Err() == nil {
 		allReady := true
 		for i := range panes {
 			if panes[i].ready {
 				continue
 			}
 
-			captured, err := client.CapturePaneOutput(panes[i].target, 50)
+			captured, err := client.CapturePaneOutputContext(ctx, panes[i].target, 50)
 			if err != nil {
 				allReady = false
 				continue
@@ -1104,7 +1233,10 @@ func waitForSwarmAgentsReady(ctx context.Context, plan *swarm.SwarmPlan, client 
 			return len(panes), len(panes)
 		}
 
-		time.Sleep(pollInterval)
+		select {
+		case <-ctx.Done():
+		case <-time.After(pollInterval):
+		}
 	}
 
 	readyCount := 0

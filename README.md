@@ -547,6 +547,23 @@ record; recovery reports missing inputs instead of silently substituting the
 current environment. Older panes without a launch record retain the existing
 command-reconstruction path.
 
+### 8. Multi-Project Swarm Execution
+
+`ntm swarm --json` launches the requested swarm and returns an execution receipt.
+Use `swarm plan` or `--dry-run` to preview allocations without creating sessions.
+
+```bash
+ntm swarm plan --scan-dir=/projects --json
+ntm swarm --scan-dir=/projects --json --wait-ready
+ntm swarm --scan-dir=/projects --json --prompt="Run the tests and report failures"
+```
+
+The receipt distinguishes planned allocations, created sessions and physical
+panes, agent launches, initial prompt delivery, and optional readiness results.
+Partial failures and cancellation return a nonzero exit status while retaining
+the actual outcomes. Prompts go only to successfully launched agents that pass
+readiness and identity checks; surviving sessions remain available for inspection.
+
 ## Robot Mode and Local API
 
 NTM has two automation layers:
