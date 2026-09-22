@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -1504,5 +1505,182 @@ func TestRestoreAgents_RefusesWhenPanesCannotHoldTheAgents(t *testing.T) {
 	err := RestoreAgents(state.Name, state, AgentCommands{Claude: "claude"}, nil)
 	if err == nil {
 		t.Fatal("RestoreAgents returned nil for a session whose panes could not be read; a restore that launches nothing must not report success")
+	}
+}
+
+// Use the real tmux command boundary with deterministic replacement/dispatch
+// failures. Each invocation is logged so preflight tests prove no live session
+// was touched, rather than only checking the returned error.
+func savedSessionRestoreFixture(t *testing.T) string {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("tmux fixture requires a POSIX shell")
+	}
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	logPath := filepath.Join(dir, "calls")
+	t.Setenv("NTM_SESSION_TEST_LOG", logPath)
+	t.Setenv("NTM_SESSION_TEST_FAIL_PANE", "")
+	t.Setenv("NTM_SESSION_TEST_PROBE_ERROR", "")
+	t.Setenv("NTM_SESSION_TEST_PANES", "2")
+	bin := filepath.Join(dir, "tmux")
+	const script = `#!/bin/sh
+printf '%s\n' "$*" >> "$NTM_SESSION_TEST_LOG"
+case "$1" in
+  has-session)
+    if [ -n "$NTM_SESSION_TEST_PROBE_ERROR" ]; then
+      echo 'permission denied opening tmux socket' >&2
+      exit 1
+    fi ;;
+  list-windows) echo 0 ;;
+  list-panes)
+    i=0
+    while [ "$i" -lt "$NTM_SESSION_TEST_PANES" ]; do
+      printf '%%%s_NTM_SEP_%s_NTM_SEP__NTM_SEP_bash_NTM_SEP_80_NTM_SEP_24_NTM_SEP_1_NTM_SEP_0_NTM_SEP_0_NTM_SEP_cod_NTM_SEP__NTM_SEP__NTM_SEP_0\n' "$i" "$i"
+      i=$((i + 1))
+    done ;;
+  send-keys)
+    if [ "$3" = "$NTM_SESSION_TEST_FAIL_PANE" ]; then
+      echo 'fixture pane dispatch failed' >&2
+      exit 2
+    fi ;;
+esac
+`
+	if err := os.WriteFile(bin, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NTM_TMUX_BINARY", bin)
+	oldClient := tmux.DefaultClient
+	tmux.DefaultClient = tmux.NewClient("")
+	t.Cleanup(func() { tmux.DefaultClient = oldClient })
+	return logPath
+}
+
+func TestSavedSessionRestorePreflightPreservesExistingSession(t *testing.T) {
+	for _, scenario := range []string{"invalid name", "file cwd", "missing cwd", "control cwd", "duplicate pane", "negative pane", "probe failure"} {
+		t.Run(scenario, func(t *testing.T) {
+			logPath := savedSessionRestoreFixture(t)
+			state := &SessionState{Name: "recovery", WorkDir: t.TempDir(), Panes: []PaneState{{Index: 0, AgentType: "cod"}}}
+			switch scenario {
+			case "invalid name":
+				state.Name = "invalid:name"
+			case "file cwd":
+				state.WorkDir = filepath.Join(t.TempDir(), "file")
+				if err := os.WriteFile(state.WorkDir, []byte("not a directory"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			case "missing cwd":
+				state.WorkDir = filepath.Join(t.TempDir(), "missing")
+			case "control cwd":
+				state.WorkDir += "\nother-command"
+			case "duplicate pane":
+				state.Panes = append(state.Panes, state.Panes[0])
+			case "negative pane":
+				state.Panes[0].Index = -1
+			case "probe failure":
+				t.Setenv("NTM_SESSION_TEST_PROBE_ERROR", "1")
+			}
+			if err := Restore(state, RestoreOptions{Force: true}); err == nil {
+				t.Fatal("invalid restore reported success")
+			}
+			data, err := os.ReadFile(logPath)
+			if err != nil && !os.IsNotExist(err) {
+				t.Fatal(err)
+			}
+			if scenario == "probe failure" {
+				if got := strings.Fields(string(data)); len(got) != 3 || got[0] != "has-session" {
+					t.Fatalf("probe failure permitted further tmux operations: %s", data)
+				}
+			} else if len(data) != 0 {
+				t.Fatalf("invalid state touched tmux before preflight: %s", data)
+			}
+		})
+	}
+}
+
+func TestSavedSessionAgentCommandsPreflightWholeBatch(t *testing.T) {
+	for _, resume := range []bool{false, true} {
+		t.Run(map[bool]string{false: "restore", true: "resume"}[resume], func(t *testing.T) {
+			logPath := savedSessionRestoreFixture(t)
+			state := &SessionState{Name: "recovery", WorkDir: t.TempDir(), Panes: []PaneState{
+				{Index: 0, AgentType: "cod", Command: "codex"},
+				{Index: 1, AgentType: "cod", Command: "codex\nmalformed"},
+			}}
+			var err error
+			if resume {
+				_, err = Resume(state, AgentCommands{}, ResumeOptions{Force: true})
+			} else {
+				err = RestoreAgents(state.Name, state, AgentCommands{}, nil)
+			}
+			if err == nil || !strings.Contains(err.Error(), "0.1") {
+				t.Fatalf("bad second launch command was not identified: %v", err)
+			}
+			if data, err := os.ReadFile(logPath); err == nil && len(data) != 0 {
+				t.Fatalf("invalid later launch command permitted earlier effects: %s", data)
+			}
+		})
+	}
+}
+
+func TestSavedSessionRestoreReportsPartialDispatch(t *testing.T) {
+	logPath := savedSessionRestoreFixture(t)
+	t.Setenv("NTM_SESSION_TEST_FAIL_PANE", "%1")
+	state := &SessionState{Name: "recovery", WorkDir: t.TempDir(), Panes: []PaneState{
+		{Index: 0, AgentType: "cod", Command: "codex"},
+		{Index: 1, AgentType: "cod", Command: "codex"},
+	}}
+	err := RestoreAgents(state.Name, state, AgentCommands{}, nil)
+	if err == nil || !strings.Contains(err.Error(), "launched 1 of 2") || !strings.Contains(err.Error(), "0.1") {
+		t.Fatalf("partial restore reported success or lost its failed pane: %v", err)
+	}
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "send-keys -t %0") || strings.Contains(string(data), "kill-session") {
+		t.Fatalf("partial failure did not preserve successful dispatch: %s", data)
+	}
+}
+
+func TestSavedSessionResumeRetainsEveryPaneOutcome(t *testing.T) {
+	for _, paneCount := range []string{"2", "1"} {
+		t.Run("available_"+paneCount, func(t *testing.T) {
+			savedSessionRestoreFixture(t)
+			t.Setenv("NTM_SESSION_TEST_FAIL_PANE", "%1")
+			t.Setenv("NTM_SESSION_TEST_PANES", paneCount)
+			state := &SessionState{Name: "recovery", WorkDir: t.TempDir(), Panes: []PaneState{
+				{Index: 0, AgentType: "cod", SessionID: "resume-me", SessionFreshness: agentsession.BindingFresh, SessionConfidence: 1},
+				{Index: 1, AgentType: "cod", Command: "codex"},
+			}}
+			result, err := Resume(state, AgentCommands{}, ResumeOptions{Force: true})
+			if err == nil || result == nil || result.Resumed != 1 || result.Launched != 0 || result.Failed != 1 || result.Skipped != 0 || len(result.Panes) != 2 {
+				t.Fatalf("partial resume lost outcomes: result=%+v err=%v", result, err)
+			}
+			if result.Panes[0].Action != "resumed" || result.Panes[0].SessionID != "resume-me" || result.Panes[1].Action != "failed" || result.Panes[1].Error == "" {
+				t.Fatalf("per-pane resume outcomes are inaccurate: %+v", result.Panes)
+			}
+		})
+	}
+}
+
+func TestSavedSessionResumeFreshFallbackAndDefaultDirectory(t *testing.T) {
+	logPath := savedSessionRestoreFixture(t)
+	state := &SessionState{Name: "recovery", Panes: []PaneState{
+		{Index: 0, AgentType: "aider"},
+		{Index: 1, AgentType: "user"},
+	}}
+	result, err := Resume(state, AgentCommands{Aider: "aider --model saved-model"}, ResumeOptions{Force: true})
+	if err != nil || result == nil || result.Launched != 1 || result.Skipped != 1 || result.Failed != 0 {
+		t.Fatalf("agent without native resume was not freshly launched: result=%+v err=%v", result, err)
+	}
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "cd "+tmux.ShellQuote(os.Getenv("HOME"))+" && aider --model saved-model") {
+		t.Fatalf("agent did not use the topology's effective working directory: %s", data)
+	}
+	if state.WorkDir != "" {
+		t.Fatal("resume rewrote the saved snapshot")
 	}
 }

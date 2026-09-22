@@ -612,6 +612,18 @@ func runSessionsRestore(ctx context.Context, savedName string, opts session.Rest
 			Error:     err.Error(),
 		})
 	}
+	var cmds session.AgentCommands
+	if launchAgents {
+		// Render and validate the whole batch before --force can replace the
+		// running session. A malformed later pane must not destroy the original.
+		applyModelCommands(state)
+		cmds = buildAgentCommands(state)
+		if err := session.ValidateRestoreAgentCommands(state, cmds); err != nil {
+			return emitRestoreFailure(&SessionsRestoreResult{
+				Success: false, SavedName: savedName, Error: err.Error(),
+			})
+		}
+	}
 
 	// Restore session
 	if err := session.Restore(state, opts); err != nil {
@@ -643,20 +655,10 @@ func runSessionsRestore(ctx context.Context, savedName string, opts session.Rest
 	agentCount := 0
 	promptSent, promptFailed := 0, 0
 	if launchAgents {
-		if cfg != nil {
-			// Render each pane's captured model into its launch command so the
-			// relaunch honors the saved model (ntm-boi0).
-			applyModelCommands(state)
-			// Render the agent command templates before launching: the raw
-			// cfg.Agents.* values are Go templates and must not be sent into a
-			// pane verbatim (a literal `{{memLimitPrefix}} claude ...` would fail
-			// to exec and the agent would never launch).
-			cmds := buildAgentCommands(state)
-			launchErr = session.RestoreAgents(restoredName, state, cmds, cfg)
-			// Optionally inject an initial prompt into the launched panes.
-			if launchErr == nil && strings.TrimSpace(prompt) != "" {
-				promptSent, promptFailed, promptErr = sendResumePrompt(ctx, restoredName, prompt)
-			}
+		launchErr = session.RestoreAgents(restoredName, state, cmds, cfg)
+		// Optionally inject an initial prompt into the launched panes.
+		if launchErr == nil && strings.TrimSpace(prompt) != "" {
+			promptSent, promptFailed, promptErr = sendResumePrompt(ctx, restoredName, prompt)
 		}
 		agentCount = state.Agents.Total()
 	}
@@ -765,6 +767,7 @@ type SessionsResumeResult struct {
 	Resumed      int                  `json:"resumed"`
 	Launched     int                  `json:"launched"`
 	Skipped      int                  `json:"skipped"`
+	Failed       int                  `json:"failed"`
 	Panes        []session.ResumePane `json:"panes,omitempty"`
 	PromptSent   int                  `json:"prompt_sent,omitempty"`
 	PromptFailed int                  `json:"prompt_failed,omitempty"`
@@ -776,13 +779,17 @@ func (r *SessionsResumeResult) Text(w io.Writer) error {
 	if !r.Success {
 		fmt.Fprintf(w, "%s✗%s Failed to resume session: %s\n",
 			colorize(t.Red), colorize(t.Text), r.Error)
-		return nil
+		if r.ResumedAs == "" {
+			return nil
+		}
+		fmt.Fprintf(w, "  Session '%s' remains available for inspection\n", r.ResumedAs)
+	} else {
+		fmt.Fprintf(w, "%s✓%s Resumed session '%s'\n",
+			colorize(t.Success), colorize(t.Text), r.ResumedAs)
 	}
 
-	fmt.Fprintf(w, "%s✓%s Resumed session '%s'\n",
-		colorize(t.Success), colorize(t.Text), r.ResumedAs)
-	fmt.Fprintf(w, "  %d agent(s) resumed, %d launched fresh, %d skipped\n",
-		r.Resumed, r.Launched, r.Skipped)
+	fmt.Fprintf(w, "  %d agent(s) resumed, %d launched fresh, %d skipped, %d failed\n",
+		r.Resumed, r.Launched, r.Skipped, r.Failed)
 	for _, p := range r.Panes {
 		marker := "·"
 		switch p.Action {
@@ -790,12 +797,17 @@ func (r *SessionsResumeResult) Text(w io.Writer) error {
 			marker = "↻"
 		case "launched":
 			marker = "+"
+		case "failed":
+			marker = "✗"
 		}
 		idInfo := ""
 		if p.SessionID != "" {
 			idInfo = fmt.Sprintf(" [%s:%s]", p.Provider, p.SessionID)
 		}
 		fmt.Fprintf(w, "  %s [%d] %s (%s)%s\n", marker, p.Index, p.Title, p.Action, idInfo)
+		if p.Error != "" {
+			fmt.Fprintf(w, "    %s\n", p.Error)
+		}
 	}
 	if r.PromptSent > 0 || r.PromptFailed > 0 {
 		fmt.Fprintf(w, "  Prompt injected into %d pane(s)", r.PromptSent)
@@ -1030,18 +1042,23 @@ func runSessionsResume(ctx context.Context, savedName, name string, force, attac
 		Force:      force,
 		PreferCASR: preferCASR,
 	})
-	if err != nil {
+	if err != nil && res == nil {
 		return emitFailure(&SessionsResumeResult{Success: false, SavedName: savedName, Error: err.Error()})
 	}
 
 	result := &SessionsResumeResult{
-		Success:   true,
+		Success:   err == nil,
 		SavedName: savedName,
 		ResumedAs: res.Session,
 		Resumed:   res.Resumed,
 		Launched:  res.Launched,
 		Skipped:   res.Skipped,
+		Failed:    res.Failed,
 		Panes:     res.Panes,
+	}
+	if err != nil {
+		result.Error = err.Error()
+		return emitFailure(result)
 	}
 
 	// Optionally inject an initial prompt into the relaunched agent panes.

@@ -1,14 +1,19 @@
 package cli
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/session"
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 // TestBuildAgentCommands_RendersTemplates covers the #175 unrendered-template
@@ -147,6 +152,142 @@ func TestSessionsRestoreOperationErrorIncludesAgentLaunchFailure(t *testing.T) {
 	}
 	if got := sessionsRestoreOperationError(nil, nil); got != nil {
 		t.Fatalf("successful restore operation error = %v, want nil", got)
+	}
+}
+
+func sessionRecoveryCommandFixture(t *testing.T) string {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("tmux fixture requires a POSIX shell")
+	}
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	logPath := filepath.Join(dir, "tmux-calls")
+	t.Setenv("NTM_SESSION_CLI_LOG", logPath)
+	t.Setenv("NTM_SESSION_CLI_FAIL_PANE", "")
+	bin := filepath.Join(dir, "tmux")
+	const script = `#!/bin/sh
+printf '%s\n' "$*" >> "$NTM_SESSION_CLI_LOG"
+case "$1" in
+  -V) echo 'tmux 3.4' ;;
+  list-windows) echo 0 ;;
+  list-panes)
+    for i in 0 1; do
+      printf '%%%s_NTM_SEP_%s_NTM_SEP__NTM_SEP_bash_NTM_SEP_80_NTM_SEP_24_NTM_SEP_1_NTM_SEP_0_NTM_SEP_0_NTM_SEP_cod_NTM_SEP__NTM_SEP__NTM_SEP_0\n' "$i" "$i"
+    done ;;
+  send-keys)
+    if [ "$3" = "$NTM_SESSION_CLI_FAIL_PANE" ]; then
+      echo 'fixture pane dispatch failed' >&2
+      exit 2
+    fi ;;
+esac
+`
+	if err := os.WriteFile(bin, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NTM_TMUX_BINARY", bin)
+	previousClient, previousCfg, previousJSON := tmux.DefaultClient, cfg, jsonOutput
+	tmux.DefaultClient, cfg, jsonOutput = tmux.NewClient(""), config.Default(), true
+	t.Cleanup(func() { tmux.DefaultClient, cfg, jsonOutput = previousClient, previousCfg, previousJSON })
+	return logPath
+}
+
+func TestSessionsRecoveryCommandPreflightPreservesLiveSession(t *testing.T) {
+	for _, command := range []string{"restore", "resume"} {
+		for _, malformed := range []string{"command", "directory"} {
+			t.Run(command+"_"+malformed, func(t *testing.T) {
+				logPath := sessionRecoveryCommandFixture(t)
+				state := &session.SessionState{Name: "recovery", WorkDir: t.TempDir(), Panes: []session.PaneState{
+					{Index: 0, AgentType: "cod", Command: "codex"},
+					{Index: 1, AgentType: "cod", Command: "codex"},
+				}}
+				if malformed == "command" {
+					state.Panes[1].Command = "codex\ninvalid"
+				} else {
+					state.WorkDir = filepath.Join(t.TempDir(), "file")
+					if err := os.WriteFile(state.WorkDir, []byte("not a directory"), 0600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if _, err := session.Save(state, session.SaveOptions{}); err != nil {
+					t.Fatal(err)
+				}
+				cmd := newSessionPersistCmd()
+				args := []string{command, "recovery", "--force"}
+				if command == "restore" {
+					args = append(args, "--launch")
+				}
+				cmd.SetArgs(args)
+				cmd.SetOut(io.Discard)
+				cmd.SetErr(io.Discard)
+				stdout, err := captureStdout(t, cmd.Execute)
+				if !errors.Is(err, errJSONFailure) {
+					t.Fatalf("invalid forced %s did not exit with failure: %v; %s", command, err, stdout)
+				}
+				var envelope struct {
+					Success bool   `json:"success"`
+					Error   string `json:"error"`
+				}
+				if err := json.Unmarshal([]byte(stdout), &envelope); err != nil || envelope.Success || envelope.Error == "" {
+					t.Fatalf("invalid recovery response: %s; %v", stdout, err)
+				}
+				data, err := os.ReadFile(logPath)
+				if err != nil && !os.IsNotExist(err) {
+					t.Fatal(err)
+				}
+				if strings.Contains(string(data), "kill-session") || strings.Contains(string(data), "new-session") || strings.Contains(string(data), "send-keys") {
+					t.Fatalf("failed preflight changed the live session: %s", data)
+				}
+			})
+		}
+	}
+}
+
+func TestSessionsRecoveryCommandReportsPartialLaunchFailure(t *testing.T) {
+	for _, command := range []string{"restore", "resume"} {
+		t.Run(command, func(t *testing.T) {
+			logPath := sessionRecoveryCommandFixture(t)
+			t.Setenv("NTM_SESSION_CLI_FAIL_PANE", "%1")
+			state := &session.SessionState{Name: "recovery", WorkDir: t.TempDir(), Agents: session.AgentConfig{Codex: 2}, Panes: []session.PaneState{
+				{Index: 0, AgentType: "cod", Command: "codex"},
+				{Index: 1, AgentType: "cod", Command: "codex"},
+			}}
+			if _, err := session.Save(state, session.SaveOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			cmd := newSessionPersistCmd()
+			args := []string{command, "recovery", "--force"}
+			if command == "restore" {
+				args = append(args, "--launch")
+			}
+			cmd.SetArgs(args)
+			cmd.SetOut(io.Discard)
+			cmd.SetErr(io.Discard)
+			stdout, err := captureStdout(t, cmd.Execute)
+			if !errors.Is(err, errJSONFailure) {
+				t.Fatalf("partial %s reported success: %v; %s", command, err, stdout)
+			}
+			var envelope SessionsResumeResult
+			if err := json.Unmarshal([]byte(stdout), &envelope); err != nil || envelope.Success || !strings.Contains(envelope.Error, "0.1") {
+				t.Fatalf("partial recovery response lost its failure: %s; %v", stdout, err)
+			}
+			if command == "resume" {
+				if envelope.ResumedAs != "recovery" || envelope.Launched != 1 || envelope.Failed != 1 || envelope.Skipped != 0 || len(envelope.Panes) != 2 {
+					t.Fatalf("partial resume lost pane outcomes: %+v", envelope)
+				}
+				var text bytes.Buffer
+				if err := envelope.Text(&text); err != nil || !strings.Contains(text.String(), "1 launched fresh") || !strings.Contains(text.String(), "1 failed") || !strings.Contains(text.String(), "available for inspection") {
+					t.Fatalf("partial resume text lost recovery progress: %s; %v", text.String(), err)
+				}
+			}
+			data, err := os.ReadFile(logPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Count(string(data), "kill-session") != 1 || !strings.Contains(string(data), "send-keys -t %0") {
+				t.Fatalf("partial failure destroyed successful panes: %s", data)
+			}
+		})
 	}
 }
 
