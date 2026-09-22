@@ -165,11 +165,12 @@ func (e *Executor) finishExecution(ctx context.Context, workflow *Workflow, err 
 	}
 	e.Cancel()
 	e.backgroundCommandWG.Wait()
-	err = joinCheckpointError(err, e.checkpointFailure())
+	checkpointErr := e.checkpointFailure()
+	err = joinCheckpointError(err, checkpointErr)
 
 	status, notification := StatusCompleted, NotifyCompleted
 	switch {
-	case e.checkpointFailure() != nil || (err != nil && !cancelled):
+	case checkpointErr != nil || (err != nil && !cancelled):
 		status, notification = StatusFailed, NotifyFailed
 	case cancelled:
 		status, notification = StatusCancelled, NotifyCancelled
@@ -179,6 +180,27 @@ func (e *Executor) finishExecution(ctx context.Context, workflow *Workflow, err 
 	e.state.FinishedAt = time.Now()
 	e.state.UpdatedAt = e.state.FinishedAt
 	e.state.CurrentStep = ""
+	// The returned error disappears with a foreground launcher or detached
+	// worker. Persist its terminal cause for later status/list queries, which
+	// read Errors rather than reconstructing it from individual step results.
+	// Checkpoint failures already record their own fatal diagnostic; handled
+	// step failures and cancellation must not gain a new execution failure.
+	if status == StatusFailed && !cancelled && checkpointErr == nil && err != nil {
+		message := err.Error()
+		recorded := false
+		for _, existing := range e.state.Errors {
+			if existing.Fatal && existing.Message == message {
+				recorded = true
+				break
+			}
+		}
+		if !recorded {
+			e.state.Errors = append(e.state.Errors, ExecutionError{
+				Type: "execution", Message: message,
+				Timestamp: e.state.FinishedAt, Fatal: true,
+			})
+		}
+	}
 	e.stateMu.Unlock()
 	if saveErr := e.persistState(); saveErr != nil {
 		err = joinCheckpointError(err, saveErr)

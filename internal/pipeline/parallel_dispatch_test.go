@@ -230,15 +230,14 @@ func TestParallelDispatchParsesCommandOutputWithoutNamedVariable(t *testing.T) {
 // This transport models only pane I/O. Commands, template rendering, retries,
 // dependency scheduling, state writes and pane locks use production code.
 type parallelDispatchTransport struct {
-	mu                    sync.Mutex
-	panes                 []tmux.Pane
-	outputs               map[string]string
-	pastes                []string
-	messages              []string
-	lookups               int
-	failFirst             bool
-	changePaneAfterLookup bool
-	verified              int
+	mu                   sync.Mutex
+	panes                []tmux.Pane
+	outputs              map[string]string
+	pastes               []string
+	messages             []string
+	failFirst            bool
+	changePaneAfterPaste bool
+	verified             int
 }
 
 func newParallelDispatchTransport() *parallelDispatchTransport {
@@ -250,9 +249,11 @@ func newParallelDispatchTransport() *parallelDispatchTransport {
 func (m *parallelDispatchTransport) GetPanes(string) ([]tmux.Pane, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.lookups++
 	panes := append([]tmux.Pane(nil), m.panes...)
-	if m.changePaneAfterLookup && m.lookups > 1 {
+	// Metadata loading also enumerates panes before routing. Change topology
+	// only after the first dispatch, so this fixture tests a retry retaining
+	// the selected target rather than depending on the metadata lookup count.
+	if m.changePaneAfterPaste && len(m.pastes) > 0 {
 		panes[0].ID = "%99"
 	}
 	return panes, nil
@@ -289,7 +290,7 @@ func TestParallelDispatchTemplateRetriesStayOnSelectedPane(t *testing.T) {
 	workflow := parallelDispatchWorkflow(Step{ID: "template", Template: path, Params: map[string]interface{}{"TASK": "real work"},
 		Pane: PaneSpec{Index: 1}, Wait: WaitNone, OnError: ErrorActionRetry, RetryCount: 1, RetryDelay: Duration{Duration: time.Millisecond}})
 	transport := newParallelDispatchTransport()
-	transport.failFirst, transport.changePaneAfterLookup = true, true
+	transport.failFirst, transport.changePaneAfterPaste = true, true
 	executor := NewExecutor(cfg)
 	executor.SetTmuxClient(transport)
 	state, err := executor.Run(context.Background(), workflow, nil, nil)

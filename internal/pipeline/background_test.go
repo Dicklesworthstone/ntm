@@ -176,8 +176,49 @@ func TestBackgroundPipelineFailurePersistsRealOutcome(t *testing.T) {
 		t.Fatal(err)
 	}
 	st := awaitBackgroundState(t, root, "run-fails", StatusFailed)
-	if len(st.Errors) == 0 {
-		t.Fatal("failed workflow has no error evidence")
+	if len(st.Errors) != 1 || !st.Errors[0].Fatal || !strings.Contains(st.Errors[0].Message, "exit_code=9") {
+		t.Fatalf("failed workflow must retain one fatal command cause: %+v", st.Errors)
+	}
+	if step := st.Steps["gate"]; step.Status != StatusFailed || step.Error == nil || !strings.Contains(step.Error.Message, "exit_code=9") {
+		t.Fatalf("persisted command failure lost its exit status: %+v", step)
+	}
+	// The launcher and worker have both exited. Public status must recover the
+	// failure cause from disk without their in-memory error return values.
+	t.Chdir(root)
+	if snapshot := GetPipelineSnapshot("run-fails"); snapshot == nil || snapshot.Status != string(StatusFailed) || !strings.Contains(snapshot.Error, "exit_code=9") {
+		t.Fatalf("public persisted status lost command failure: %+v", snapshot)
+	}
+}
+
+func TestPipelineHandledFailureDoesNotPersistFatalOutcome(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		onError    ErrorAction
+		onFailure  OnFailureSpec
+		stepStatus ExecutionStatus
+	}{
+		{name: "continue", onError: ErrorActionContinue, stepStatus: StatusFailed},
+		{name: "partial_success", onFailure: OnFailureSpec{Action: "partial_success"}, stepStatus: StatusSkipped},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := DefaultExecutorConfig("handled-failure")
+			cfg.ProjectDir = t.TempDir()
+			workflow := &Workflow{SchemaVersion: SchemaVersion, Name: "handled-failure", Steps: []Step{
+				{ID: "gate", Command: "exit 9", OnError: tc.onError, OnFailure: tc.onFailure},
+			}}
+			state, err := NewExecutor(cfg).Run(context.Background(), workflow, nil, nil)
+			if err != nil || state == nil || state.Status != StatusCompleted || state.Steps["gate"].Status != tc.stepStatus {
+				t.Fatalf("handled failure changed workflow outcome: %+v %v", state, err)
+			}
+			persisted, err := LoadState(cfg.ProjectDir, state.RunID)
+			if err != nil || len(persisted.Errors) != 0 {
+				t.Fatalf("handled failure gained fatal diagnostics: %+v %v", persisted, err)
+			}
+			t.Chdir(cfg.ProjectDir)
+			if snapshot := GetPipelineSnapshot(state.RunID); snapshot == nil || snapshot.Status != string(StatusCompleted) || snapshot.Error != "" {
+				t.Fatalf("public status misreported handled failure: %+v", snapshot)
+			}
+		})
 	}
 }
 
@@ -199,7 +240,10 @@ func TestBackgroundPipelineCanBeCanceledFromAnotherProcess(t *testing.T) {
 	if !response.Success || response.Status != "cancellation_requested" {
 		t.Fatalf("cancel fabricated a terminal outcome: %+v", response)
 	}
-	awaitBackgroundState(t, root, "run-cancel", StatusCancelled)
+	st := awaitBackgroundState(t, root, "run-cancel", StatusCancelled)
+	if len(st.Errors) != 0 {
+		t.Fatalf("operator cancellation gained fatal error records: %+v", st.Errors)
+	}
 	if _, err := os.Stat(filepath.Join(root, "marker")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("canceled worker passed unreleased gate")
 	}
