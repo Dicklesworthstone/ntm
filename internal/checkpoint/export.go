@@ -187,12 +187,17 @@ func (s *Storage) Export(sessionName, checkpointID string, destPath string, opts
 		return nil, err
 	}
 
-	// Create the archive
+	// Finish and close every archive stream before atomically publishing the
+	// result. A failed export must not truncate an existing recovery archive.
 	switch opts.Format {
 	case FormatTarGz:
-		err = s.exportTarGz(destPath, cpDir, cpData, files, opts, manifest, redactedScrollbackFiles)
+		err = writeCheckpointExport(destPath, cpDir, func(w io.Writer) error {
+			return s.exportTarGz(w, cpDir, cpData, files, opts, manifest, redactedScrollbackFiles)
+		})
 	case FormatZip:
-		err = s.exportZip(destPath, cpDir, cpData, files, opts, manifest, redactedScrollbackFiles)
+		err = writeCheckpointExport(destPath, cpDir, func(w io.Writer) error {
+			return s.exportZip(w, cpDir, cpData, files, opts, manifest, redactedScrollbackFiles)
+		})
 	default:
 		return nil, fmt.Errorf("unsupported export format: %s", opts.Format)
 	}
@@ -204,18 +209,8 @@ func (s *Storage) Export(sessionName, checkpointID string, destPath string, opts
 	return manifest, nil
 }
 
-func (s *Storage) exportTarGz(destPath, cpDir string, cp *Checkpoint, files []string, opts ExportOptions, manifest *ExportManifest, preparedFiles map[string][]byte) (err error) {
-	f, err := os.Create(destPath)
-	if err != nil {
-		return fmt.Errorf("failed to create export file: %w", err)
-	}
-	defer func() {
-		if closeErr := f.Close(); err == nil && closeErr != nil {
-			err = fmt.Errorf("closing export file: %w", closeErr)
-		}
-	}()
-
-	gw := gzip.NewWriter(f)
+func (s *Storage) exportTarGz(w io.Writer, cpDir string, cp *Checkpoint, files []string, opts ExportOptions, manifest *ExportManifest, preparedFiles map[string][]byte) (err error) {
+	gw := gzip.NewWriter(w)
 	defer func() {
 		if closeErr := gw.Close(); err == nil && closeErr != nil {
 			err = fmt.Errorf("closing gzip export stream: %w", closeErr)
@@ -307,18 +302,8 @@ func (s *Storage) exportTarGz(destPath, cpDir string, cp *Checkpoint, files []st
 	return nil
 }
 
-func (s *Storage) exportZip(destPath, cpDir string, cp *Checkpoint, files []string, opts ExportOptions, manifest *ExportManifest, preparedFiles map[string][]byte) (err error) {
-	f, err := os.Create(destPath)
-	if err != nil {
-		return fmt.Errorf("failed to create export file: %w", err)
-	}
-	defer func() {
-		if closeErr := f.Close(); err == nil && closeErr != nil {
-			err = fmt.Errorf("closing export file: %w", closeErr)
-		}
-	}()
-
-	zw := zip.NewWriter(f)
+func (s *Storage) exportZip(w io.Writer, cpDir string, cp *Checkpoint, files []string, opts ExportOptions, manifest *ExportManifest, preparedFiles map[string][]byte) (err error) {
+	zw := zip.NewWriter(w)
 	defer func() {
 		if closeErr := zw.Close(); err == nil && closeErr != nil {
 			err = fmt.Errorf("closing zip export stream: %w", closeErr)
