@@ -352,3 +352,52 @@ func TestSplitJobOperationRequest(t *testing.T) {
 		t.Fatalf("operation ID escaped namespace: %s", path)
 	}
 }
+
+func TestJobExecutionParamsSessionBinding(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		req     CreateJobRequest
+		want    string
+		wantErr string
+	}{
+		{name: "saved resume session", req: CreateJobRequest{Type: "pipeline_resume"}},
+		{name: "nested only", req: CreateJobRequest{Params: map[string]interface{}{"session": "nested"}}, want: "nested"},
+		{name: "envelope only", req: CreateJobRequest{Session: "chosen"}, want: "chosen"},
+		{name: "envelope with params", req: CreateJobRequest{Session: "chosen", Params: map[string]interface{}{"dry_run": true}}, want: "chosen"},
+		{name: "matching", req: CreateJobRequest{Session: "chosen", Params: map[string]interface{}{"session": "chosen"}}, want: "chosen"},
+		{name: "conflict", req: CreateJobRequest{Session: "chosen", Params: map[string]interface{}{"session": "other"}}, wantErr: "session conflict"},
+		{name: "case-sensitive", req: CreateJobRequest{Session: "Chosen", Params: map[string]interface{}{"session": "chosen"}}, wantErr: "session conflict"},
+		{name: "explicit empty", req: CreateJobRequest{Session: "chosen", Params: map[string]interface{}{"session": ""}}, wantErr: "session conflict"},
+		{name: "explicit null", req: CreateJobRequest{Session: "chosen", Params: map[string]interface{}{"session": nil}}, wantErr: "must be a string"},
+		{name: "explicit number", req: CreateJobRequest{Session: "chosen", Params: map[string]interface{}{"session": 3}}, wantErr: "must be a string"},
+		{name: "explicit bool", req: CreateJobRequest{Session: "chosen", Params: map[string]interface{}{"session": true}}, wantErr: "must be a string"},
+		{name: "blank envelope", req: CreateJobRequest{Session: " \t"}, wantErr: "must not be whitespace"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			before, err := jobOperationFingerprint(tc.req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			params, err := jobExecutionParams(tc.req)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("invalid binding accepted: %#v %v", params, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if session, _ := params["session"].(string); session != tc.want {
+				t.Fatalf("target = %q, want %q", session, tc.want)
+			}
+			if tc.req.Session != "" {
+				params["session"] = "caller-mutation"
+			}
+			after, err := jobOperationFingerprint(tc.req)
+			if err != nil || before != after {
+				t.Fatalf("session normalization mutated durable request identity: %s %s %v", before, after, err)
+			}
+		})
+	}
+}

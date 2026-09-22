@@ -81,8 +81,8 @@ kernel lock fences concurrent writers and is released on process death. An
 atomic, flushed execution marker is published before calling the engine; the
 terminal result is published before reporting completion. Unreadable, malformed,
 unsupported, oversized, or wrongly identified receipts are errors, never evidence
-that an operation is new. A failed final save retains the original marker and
-blocks blind retries. A receipt is limited to 8 MiB.
+that an operation is new. If a terminal receipt cannot be published, the original
+marker blocks blind retries. A receipt is limited to 8 MiB.
 
 Receipts are not automatically expired or discarded with the in-memory job list.
 Deleting the persistent namespace or operation receipts removes retry protection.
@@ -93,3 +93,19 @@ The existing `Idempotency-Key` HTTP cache is separate and remains process-local.
 Use `params.operation_id` for durable execution identity; an HTTP header alone
 does not opt into this guarantee. Omitting `operation_id` preserves ordinary job
 execution behavior. These controls do not change direct non-job REST operations.
+
+## Session targeting
+
+Jobs accept `session` either in the top-level request envelope or in `params`.
+The shared dispatcher passes the top-level value into the same typed engine
+request used by nested parameters. When a nonempty top-level session and a nested
+session are both supplied, they must be identical: a different value, an empty
+nested value, or a non-string nested value fails before engine execution. It never
+silently chooses a target.
+Normal provider/session validation still applies.
+
+For checkpoint restore, `session` names the source checkpoint namespace;
+`params.target_session` remains the separate destination. For pipeline resume,
+omitting both session fields still retains the saved session. Durable operation
+identity fingerprints the original request envelope before normalization, so
+retries should keep the same submitted shape as well as the same operation ID.

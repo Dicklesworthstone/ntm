@@ -123,3 +123,49 @@ func TestJobOperationHTTPKeepsStrictParametersForEveryJobType(t *testing.T) {
 		})
 	}
 }
+
+func TestJobSessionEnvelopeTargetsSpawnHTTP(t *testing.T) {
+	srv := NewHermeticServer("test")
+	defer srv.Stop()
+	opts := make(chan robot.SpawnOptions, 1)
+	srv.spawnAgents = func(_ context.Context, got robot.SpawnOptions) (*robot.SpawnOutput, error) {
+		opts <- got
+		out := &robot.SpawnOutput{Session: got.Session, DryRun: got.DryRun}
+		out.Success = true
+		return out, nil
+	}
+	env := postJob(t, srv, `{"type":"swarm_spawn","session":"envelope-target","params":{"cc_count":2,"dry_run":true,"label":"lane"}}`)
+	got := pollJobTerminal(t, srv, env.Job.ID)
+	if got.Job.Status != string(JobStatusCompleted) || got.Job.Result["session"] != "envelope-target" || got.Job.Result["dry_run"] != true {
+		t.Fatalf("job envelope session did not reach spawn: %+v", got.Job)
+	}
+	select {
+	case options := <-opts:
+		if options.Session != "envelope-target" || options.CCCount != 2 || !options.DryRun || options.Label != "lane" {
+			t.Fatalf("normalization lost launch controls: %+v", options)
+		}
+	default:
+		t.Fatal("job completed without invoking the spawn service")
+	}
+}
+
+func TestJobSessionConflictFailsBeforeEveryEngineHTTP(t *testing.T) {
+	srv := NewHermeticServer("test")
+	defer srv.Stop()
+	var calls atomic.Int32
+	srv.spawnAgents = func(context.Context, robot.SpawnOptions) (*robot.SpawnOutput, error) { calls.Add(1); return nil, nil }
+	for _, kind := range implementedJobTypes {
+		for _, session := range []string{`"different"`, `""`, `null`, `true`, `42`} {
+			body := fmt.Sprintf(`{"type":%q,"session":"requested","params":{"session":%s}}`, kind, session)
+			env := postJob(t, srv, body)
+			got := pollJobTerminal(t, srv, env.Job.ID)
+			want := "session conflict"
+			if session == `null` || session == `true` || session == `42` {
+				want = "params.session must be a string"
+			}
+			if got.Job.Status != string(JobStatusFailed) || !strings.Contains(got.Job.Error, want) || calls.Load() != 0 {
+				t.Fatalf("%s reached its engine before resolving the target: %+v", kind, got.Job)
+			}
+		}
+	}
+}

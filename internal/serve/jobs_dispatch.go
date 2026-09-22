@@ -127,17 +127,21 @@ func (s *Server) dispatchJob(jobID string, req CreateJobRequest) {
 // executeJobRequest is the one execution switch, shared by ordinary dispatch
 // and first-time durable operations. A replay never reaches this function.
 func (s *Server) executeJobRequest(ctx context.Context, req CreateJobRequest) (map[string]interface{}, error) {
+	params, err := jobExecutionParams(req)
+	if err != nil {
+		return nil, err
+	}
 	switch req.Type {
 	case JobTypePipelineRun:
-		return s.jobPipelineRun(ctx, req.Params)
+		return s.jobPipelineRun(ctx, params)
 	case JobTypePipelineExec:
-		return s.jobPipelineExec(ctx, req.Params)
+		return s.jobPipelineExec(ctx, params)
 	case JobTypePipelineResume:
-		return s.jobPipelineResume(ctx, req.Params)
+		return s.jobPipelineResume(ctx, params)
 	case JobTypeSwarmSpawn:
-		return s.jobSwarmSpawn(ctx, req.Params)
+		return s.jobSwarmSpawn(ctx, params)
 	case JobTypeCheckpointRestore:
-		return s.jobCheckpointRestore(ctx, req.Params)
+		return s.jobCheckpointRestore(ctx, params)
 	default:
 		return nil, fmt.Errorf("job type %q accepted but has no dispatcher", req.Type)
 	}

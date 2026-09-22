@@ -75,6 +75,34 @@ func splitJobOperationRequest(req CreateJobRequest) (string, CreateJobRequest, e
 	return id, req, nil
 }
 
+// jobExecutionParams binds the public job envelope's session to the engine's
+// request. Two explicit targets must agree exactly; silently preferring either
+// can run a pipeline or restore against the wrong session. The original request
+// remains untouched for durable fingerprinting and caller-owned map safety.
+func jobExecutionParams(req CreateJobRequest) (map[string]interface{}, error) {
+	if req.Session == "" {
+		return req.Params, nil // Resume may intentionally retain its saved session.
+	}
+	if strings.TrimSpace(req.Session) == "" {
+		return nil, errors.New("job session must not be whitespace")
+	}
+	if raw, present := req.Params["session"]; present {
+		session, ok := raw.(string)
+		if !ok {
+			return nil, errors.New("params.session must be a string when job session is specified")
+		}
+		if session != req.Session {
+			return nil, fmt.Errorf("job session conflict: top-level session %q does not match params.session %q", req.Session, session)
+		}
+	}
+	params := make(map[string]interface{}, len(req.Params)+1)
+	for key, value := range req.Params {
+		params[key] = value
+	}
+	params["session"] = req.Session
+	return params, nil
+}
+
 func jobOperationFingerprint(req CreateJobRequest) (string, error) {
 	// encoding/json orders map keys. The complete parameter set is covered,
 	// not an 8 MiB prefix; changes late in a large inline workflow conflict.
