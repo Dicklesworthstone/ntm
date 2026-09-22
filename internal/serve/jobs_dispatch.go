@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/checkpoint"
@@ -76,11 +77,20 @@ func (s *Server) dispatchJob(jobID string, req CreateJobRequest) {
 	if job == nil || job.Status == JobStatusCancelled || job.Status == JobStatusCompleted || job.Status == JobStatusFailed {
 		return
 	}
+	var progressMu sync.Mutex
+	var lastProgress map[string]interface{}
+	finishProgress := func(result map[string]interface{}) map[string]interface{} {
+		progressMu.Lock()
+		defer progressMu.Unlock()
+		return finishJobProgress(lastProgress, result)
+	}
 	// This defer runs before ClearCancel and before releasing the worker
 	// fence, so shutdown/recovery cannot race the final checkpoint.
 	defer func() {
 		if r := recover(); r != nil {
-			s.jobStore.Update(jobID, JobStatusFailed, 0, nil, fmt.Sprintf("panic: %v", r))
+			result := finishProgress(nil)
+			s.jobStore.Update(jobID, JobStatusFailed, 0, result, fmt.Sprintf("panic: %v", r))
+			s.jobStore.retainCancelledResult(jobID, result)
 		}
 		if err := s.persistJobHistory(jobID); err != nil {
 			s.recordJobJournalError(jobID, err)
@@ -97,8 +107,27 @@ func (s *Server) dispatchJob(jobID string, req CreateJobRequest) {
 		return
 	}
 	s.jobStore.Update(jobID, JobStatusRunning, 0, nil, "")
+	// Persistent servers expose live recovery evidence through the existing
+	// job GET/list surfaces. In-memory callers retain their original ports.
+	dir, err := s.jobJournalDir()
+	if err != nil {
+		s.jobStore.Update(jobID, JobStatusFailed, 0, nil, err.Error())
+		return
+	}
+	if dir != "" {
+		ctx = context.WithValue(ctx, jobProgressContextKey{}, jobProgressReporter(func(result map[string]interface{}) error {
+			progressMu.Lock()
+			defer progressMu.Unlock()
+			snapshot, err := s.checkpointJobProgress(jobID, result)
+			if snapshot != nil {
+				lastProgress = snapshot
+			}
+			return err
+		}))
+	}
 
 	result, err := s.executeJobOperation(ctx, jobID, req)
+	result = finishProgress(result)
 
 	// Some operations can return a useful partial result on failure. Retain
 	// its run/session identity so the caller can inspect effects before retrying.
@@ -112,7 +141,7 @@ func (s *Server) dispatchJob(jobID string, req CreateJobRequest) {
 		status = JobStatusFailed
 		progress = 0
 		message = err.Error()
-		if errors.Is(err, context.Canceled) {
+		if errors.Is(err, context.Canceled) && !errors.Is(err, errJobProgressCheckpoint) {
 			status = JobStatusCancelled
 		}
 	}
@@ -149,7 +178,7 @@ func (s *Server) executeJobRequest(ctx context.Context, req CreateJobRequest) (m
 
 // retainCancelledResult fills in recovery evidence when a worker finishes
 // after DELETE has already made its job terminal. It never changes the
-// cancellation status/reason, replaces an existing result, or revives an
+// cancellation status/reason, replaces a final result, or revives an
 // evicted job. Callers can keep polling GET /jobs/{id} for these late results;
 // a cancelled status by itself does not mean the operation rolled back.
 func (s *JobStore) retainCancelledResult(id string, result map[string]interface{}) {
@@ -159,7 +188,10 @@ func (s *JobStore) retainCancelledResult(id string, result map[string]interface{
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	job := s.jobs[id]
-	if job == nil || job.Status != JobStatusCancelled || job.Result != nil {
+	if job == nil || job.Status != JobStatusCancelled {
+		return
+	}
+	if job.Result != nil && job.Result["_execution_in_progress"] != true {
 		return
 	}
 	job.Result = result
@@ -329,7 +361,7 @@ func (s *Server) jobSwarmSpawn(ctx context.Context, params map[string]interface{
 		return nil, fmt.Errorf("agent spawn service unavailable")
 	}
 
-	opts, err := robot.WithSpawnLaunchInterval(robot.SpawnOptions{
+	opts := robot.SpawnOptions{
 		Session:             req.Session,
 		Label:               req.Label,
 		CCCount:             req.CCCount,
@@ -359,9 +391,6 @@ func (s *Server) jobSwarmSpawn(ctx context.Context, params map[string]interface{
 		CustomNames:         req.CustomNames,
 		RequireReservation:  req.RequireReservation,
 		ReservationPaths:    req.ReservationPaths,
-	}, launchInterval)
-	if err != nil {
-		return nil, err
 	}
 	spawnCtx := ctx
 	if startupTimeout > 0 {
@@ -369,12 +398,23 @@ func (s *Server) jobSwarmSpawn(ctx context.Context, params map[string]interface{
 		spawnCtx, cancel = context.WithTimeout(ctx, startupTimeout)
 		defer cancel()
 	}
+	if _, ok := spawnCtx.Value(jobProgressContextKey{}).(jobProgressReporter); ok && !req.DryRun {
+		var cancel context.CancelCauseFunc
+		spawnCtx, cancel = context.WithCancelCause(spawnCtx)
+		defer cancel(nil)
+		opts = robot.WithSpawnProgress(opts, spawnJobProgressObserver(spawnCtx, cancel))
+	}
+	// The progress observer runs inside pacing, after a wait has completed.
+	opts, err := robot.WithSpawnLaunchInterval(opts, launchInterval)
+	if err != nil {
+		return nil, err
+	}
 	result, err := s.spawnAgents(spawnCtx, opts)
 	// A backend may return a structured failure (or even success) rather than
 	// its context error. The caller's startup budget remains authoritative.
 	// Keep the partial output below, but never report a timed-out spawn as done.
 	if ctxErr := spawnCtx.Err(); ctxErr != nil {
-		err = errors.Join(err, fmt.Errorf("swarm startup stopped: %w", ctxErr))
+		err = errors.Join(err, fmt.Errorf("swarm startup stopped: %w", context.Cause(spawnCtx)))
 	}
 	// A spawn can create its session and some agents before failing or being
 	// cancelled. Serialize that output BEFORE inspecting either error channel
@@ -407,6 +447,77 @@ func (s *Server) jobSwarmSpawn(ctx context.Context, params map[string]interface{
 		return payload, fmt.Errorf("agent spawn failed [%s]: %s", result.ErrorCode, message)
 	}
 	return payload, nil
+}
+
+// spawnJobProgressObserver accumulates lifecycle evidence, not a second spawn
+// model. The final SpawnOutput remains authoritative for completion/readiness.
+func spawnJobProgressObserver(ctx context.Context, cancel context.CancelCauseFunc) func(robot.SpawnProgress) error {
+	var mu sync.Mutex
+	var sequence int
+	var session, workingDir string
+	sessionCreated := false
+	createdPanes := []string{}
+	agents := []robot.SpawnedAgent{}
+	agentPositions := make(map[string]int)
+	paneIDs := make(map[string]string)
+	return func(event robot.SpawnProgress) error {
+		mu.Lock()
+		defer mu.Unlock()
+		sequence++
+		if event.Session != "" {
+			session = event.Session
+		}
+		if event.WorkingDir != "" {
+			workingDir = event.WorkingDir
+		}
+		if event.Phase == "finished" {
+			if event.Stage == "create_session" && event.Error == "" {
+				sessionCreated = true
+			}
+			if event.Stage == "split_window" && event.PaneID != "" {
+				createdPanes = append(createdPanes, event.PaneID)
+			}
+			if event.Agent != nil {
+				agent := *event.Agent
+				if event.Error != "" {
+					agent.Error = event.Error
+				}
+				if index, exists := agentPositions[agent.Pane]; exists {
+					agents[index] = agent
+				} else {
+					agentPositions[agent.Pane] = len(agents)
+					agents = append(agents, agent)
+				}
+				paneIDs[agent.Pane] = event.PaneID
+			}
+			if event.Stage == "wait_ready" && event.Agents != nil {
+				agents = append([]robot.SpawnedAgent{}, event.Agents...)
+				agentPositions = make(map[string]int, len(agents))
+				for i, agent := range agents {
+					agentPositions[agent.Pane] = i
+				}
+			}
+		}
+		// Clone through JSON before publishing so later events cannot change a
+		// previously handed-off snapshot's slices, maps, or agent pointers.
+		snapshot, err := toJSONMap(map[string]interface{}{
+			"session": session, "working_dir": workingDir, "agents": agents,
+			"spawn_progress": map[string]interface{}{
+				"sequence": sequence, "observed_at": time.Now().UTC().Format(time.RFC3339Nano),
+				"last_event": event, "session_created": sessionCreated,
+				"created_pane_ids": createdPanes, "agent_pane_ids": paneIDs,
+				"observed_agents": agents,
+			},
+		})
+		if err == nil {
+			err = reportJobProgress(ctx, snapshot)
+		}
+		if err != nil {
+			// Stop GetSpawn's assignment path as well as its lifecycle ports.
+			cancel(err)
+		}
+		return err
+	}
 }
 
 // jobCheckpointRestoreParams identifies the source artifact separately from

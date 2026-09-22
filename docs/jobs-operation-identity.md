@@ -109,3 +109,33 @@ For checkpoint restore, `session` names the source checkpoint namespace;
 omitting both session fields still retains the saved session. Durable operation
 identity fingerprints the original request envelope before normalization, so
 retries should keep the same submitted shape as well as the same operation ID.
+
+## Live startup recovery
+
+On a persistent server, `swarm_spawn` jobs checkpoint their lifecycle as it runs.
+No extra request flag is needed. Poll the existing `GET /api/v1/jobs/{id}` or job
+list: `result._execution_in_progress: true` identifies a partial snapshot, not a
+terminal outcome. The snapshot includes session/directory identity, observed
+agents, and `spawn_progress` with a sequence, timestamp, last lifecycle event,
+created pane IDs, and the mapping from physical pane addresses to tmux `%N` IDs.
+
+The lifecycle stages are `create_session`, `split_window`, `layout`,
+`launch_agent`, `start_monitor`, and `wait_ready`. Each has a `started` intent
+checkpoint before the operation and a `finished` checkpoint afterwards. An
+intent is not proof of completion; an error can accompany partial side effects.
+The independent `observed_agents` list preserves recovery evidence even when a
+backend returns an empty final agent list. Use the job's terminal status and
+final spawn output for completion/readiness, not a lifecycle event alone.
+
+Launch pacing waits occur before the launch-intent checkpoint. Finished events
+are recorded even after cancellation. A checkpoint failure stops later lifecycle
+effects and cancels the spawn context before later assignment can proceed. No
+launch command or prompt is added to the progress schema.
+
+If the backend returns no result or panics, its last progress remains in the job
+receipt instead of disappearing. After process restart, interrupted progress is
+marked `outcome_unknown` and is no longer reported as executing; work is not
+replayed. A cancellation remains cancelled and keeps its original reason. When
+a worker finishes normally, its final result replaces the partial snapshot and
+removes `_execution_in_progress`. In-memory servers do not enable durable
+lifecycle checkpointing.

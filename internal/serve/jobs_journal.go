@@ -209,7 +209,21 @@ func (j *jobJournal) recover(now time.Time) ([]*Job, error) {
 		return nil, err // Never turn unreadable history into an empty, healthy view.
 	}
 	for _, job := range jobs {
+		// A cancelled row can still belong to a worker that was unwinding
+		// when the process died. Its progress is evidence, not a final result.
+		unfinished := job.Result["_execution_in_progress"] == true
+		if unfinished {
+			delete(job.Result, "_execution_in_progress")
+			job.Result["interrupted"] = true
+			job.Result["outcome_unknown"] = true
+			job.UpdatedAt = now.UTC().Format(time.RFC3339)
+		}
 		if job.Status != JobStatusPending && job.Status != JobStatusRunning {
+			if unfinished {
+				if err := j.save(job); err != nil {
+					return nil, fmt.Errorf("record interrupted job %s: %w", job.ID, err)
+				}
+			}
 			continue
 		}
 		job.Status = JobStatusFailed
@@ -225,6 +239,77 @@ func (j *jobJournal) recover(now time.Time) ([]*Job, error) {
 		}
 	}
 	return jobs, nil
+}
+
+type jobProgressContextKey struct{}
+type jobProgressReporter func(map[string]interface{}) error
+
+var errJobProgressCheckpoint = errors.New("job progress checkpoint failed")
+
+func reportJobProgress(ctx context.Context, result map[string]interface{}) error {
+	if report, ok := ctx.Value(jobProgressContextKey{}).(jobProgressReporter); ok && report != nil {
+		// Finished side effects must be recorded even when ctx was cancelled.
+		if err := report(result); err != nil {
+			return fmt.Errorf("%w: %w", errJobProgressCheckpoint, err)
+		}
+	}
+	return nil
+}
+
+// checkpointJobProgress publishes an immutable snapshot while the worker owns
+// its fence. Cancellation may change status/reason but must not prevent late
+// evidence from being recorded. An absent/finished row is never resurrected.
+func (s *Server) checkpointJobProgress(id string, result map[string]interface{}) (map[string]interface{}, error) {
+	snapshot, err := toJSONMap(result)
+	if err != nil {
+		return nil, fmt.Errorf("encode progress: %w", err)
+	}
+	if snapshot == nil {
+		snapshot = make(map[string]interface{})
+	}
+	snapshot["_execution_in_progress"] = true
+	dir, err := s.jobJournalDir()
+	if err != nil {
+		return snapshot, err
+	}
+	s.jobStore.mu.Lock()
+	defer s.jobStore.mu.Unlock()
+	job := s.jobStore.jobs[id]
+	if job == nil {
+		return snapshot, fmt.Errorf("job %s disappeared before progress was checkpointed", id)
+	}
+	if job.Status != JobStatusRunning && job.Status != JobStatusPending && job.Status != JobStatusCancelled {
+		return snapshot, fmt.Errorf("job %s already has a terminal outcome", id)
+	}
+	checkpoint := *job
+	checkpoint.Result = snapshot
+	checkpoint.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	if dir != "" {
+		if err := (&jobJournal{dir: dir}).save(&checkpoint); err != nil {
+			return snapshot, err
+		}
+	}
+	job.Result = snapshot
+	job.UpdatedAt = checkpoint.UpdatedAt
+	return snapshot, nil
+}
+
+// finishJobProgress keeps evidence if an engine returns nil or panics. An
+// actual final result wins over an earlier progress value, without mutating
+// either input; nested snapshots are immutable after publication.
+func finishJobProgress(progress, result map[string]interface{}) map[string]interface{} {
+	if progress == nil && result == nil {
+		return nil
+	}
+	out := make(map[string]interface{}, len(progress)+len(result))
+	for key, value := range progress {
+		out[key] = value
+	}
+	for key, value := range result {
+		out[key] = value
+	}
+	delete(out, "_execution_in_progress")
+	return out
 }
 
 // RestoreJobHistory is called before serving requests. The returned shutdown

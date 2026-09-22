@@ -2,6 +2,7 @@ package serve
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -155,5 +156,70 @@ func TestJobJournalFailurePreventsExecution(t *testing.T) {
 	got := srv.jobStore.Get(job.ID)
 	if got.Status != JobStatusFailed || calls.Load() != 0 || !strings.Contains(got.Error, "checkpoint job before execution") {
 		t.Fatalf("unrecordable execution was allowed: %+v calls=%d", got, calls.Load())
+	}
+}
+
+func TestJobJournalHTTPLiveProgressSurvivesNilResultAndPanic(t *testing.T) {
+	for _, panics := range []bool{false, true} {
+		t.Run(map[bool]string{false: "nil-result", true: "panic"}[panics], func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "state.db")
+			srv, closeServer := newJournalHTTPServer(t, path)
+			started, release := make(chan struct{}), make(chan struct{})
+			var once sync.Once
+			finish := func() { once.Do(func() { close(release) }) }
+			defer finish()
+			srv.spawnAgents = func(ctx context.Context, opts robot.SpawnOptions) (*robot.SpawnOutput, error) {
+				if opts.LifecycleDeps == nil || opts.LifecycleDeps.LaunchAgent == nil {
+					return nil, errors.New("durable spawn did not install lifecycle checkpoints")
+				}
+				if err := reportJobProgress(ctx, map[string]interface{}{
+					"session": opts.Session, "agents": []robot.SpawnedAgent{{Pane: "0.1", Type: "claude"}},
+					"spawn_progress": map[string]interface{}{"agent_pane_ids": map[string]string{"0.1": "%7"}},
+				}); err != nil {
+					return nil, err
+				}
+				close(started)
+				select {
+				case <-release:
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+				if panics {
+					panic("backend stopped after first agent")
+				}
+				return nil, errors.New("backend stopped after first agent")
+			}
+			env := postJob(t, srv, `{"type":"swarm_spawn","params":{"session":"liveprogress","cc_count":2}}`)
+			select {
+			case <-started:
+			case <-time.After(5 * time.Second):
+				t.Fatal("job did not publish progress")
+			}
+			rec := httptest.NewRecorder()
+			srv.Router().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/jobs/"+env.Job.ID, nil))
+			var live jobEnvelope
+			if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &live) != nil || live.Job.Status != string(JobStatusRunning) || live.Job.Result["_execution_in_progress"] != true {
+				t.Fatalf("running job hides progress: %d %s", rec.Code, rec.Body.String())
+			}
+			dir, err := srv.jobJournalDir()
+			if err != nil {
+				t.Fatal(err)
+			}
+			checkpoints, err := (&jobJournal{dir: dir}).load()
+			if err != nil || len(checkpoints) != 1 || checkpoints[0].Result["session"] != "liveprogress" {
+				t.Fatalf("GET exposed uncheckpointed progress: %+v %v", checkpoints, err)
+			}
+			finish()
+			final := pollJobTerminal(t, srv, env.Job.ID)
+			if final.Job.Status != string(JobStatusFailed) || !strings.Contains(final.Job.Error, "backend stopped") || final.Job.Result["spawn_progress"] == nil || final.Job.Result["_execution_in_progress"] != nil {
+				t.Fatalf("terminal failure lost progress: %+v", final.Job)
+			}
+			closeServer()
+			restarted, _ := newJournalHTTPServer(t, path)
+			got := pollJobTerminal(t, restarted, env.Job.ID)
+			if got.Job.Result["spawn_progress"] == nil || got.Job.Result["session"] != "liveprogress" || got.Job.Status != string(JobStatusFailed) {
+				t.Fatalf("restart lost live checkpoint: %+v", got.Job)
+			}
+		})
 	}
 }

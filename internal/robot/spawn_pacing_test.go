@@ -2,12 +2,15 @@ package robot
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/resilience"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
@@ -150,5 +153,178 @@ func TestSpawnLaunchIntervalConcurrentWaitIsCancellable(t *testing.T) {
 	}
 	if calls.Load() != 1 {
 		t.Fatalf("concurrent waiter bypassed the launch gate: calls=%d", calls.Load())
+	}
+}
+
+func TestSpawnProgressRecordsLifecycleBoundaries(t *testing.T) {
+	var events []SpawnProgress
+	var effects []string
+	checkIntent := func(stage string) {
+		t.Helper()
+		if len(events) == 0 || events[len(events)-1].Stage != stage || events[len(events)-1].Phase != "started" {
+			t.Fatalf("%s ran without its intent: %+v", stage, events)
+		}
+		effects = append(effects, stage)
+	}
+	ports := &SpawnLifecycleDependencies{
+		CreateSession: func(_ context.Context, session, dir string, history int) error {
+			checkIntent("create_session")
+			if session != "progress" || dir != "/project" || history != 123 {
+				t.Fatal("session arguments changed")
+			}
+			return nil
+		},
+		SplitWindow: func(context.Context, string, string) (string, error) {
+			checkIntent("split_window")
+			return "%7", nil
+		},
+		ApplyTiledLayout: func(context.Context, string) error { checkIntent("layout"); return nil },
+		LaunchAgent: func(_ context.Context, pane tmux.Pane, session, kind string, number int, dir, command string) (SpawnedAgent, error) {
+			checkIntent("launch_agent")
+			if pane.ID != "%7" || session != "progress" || kind != "claude" || number != 2 || dir != "/project" || command != "PRIVATE-LAUNCH-COMMAND" {
+				t.Fatal("launch arguments changed")
+			}
+			return SpawnedAgent{Title: "original"}, nil
+		},
+		WaitForReady: func(_ context.Context, output *SpawnOutput, _ time.Duration) error {
+			checkIntent("wait_ready")
+			output.Agents[0].Ready = true
+			return nil
+		},
+		StartSessionMonitor: func(context.Context, resilience.SpawnMonitorRequest) (*resilience.SpawnMonitorResult, error) {
+			checkIntent("start_monitor")
+			return &resilience.SpawnMonitorResult{MonitorPID: 42}, nil
+		},
+	}
+	original := SpawnOptions{Session: "progress", CCCount: 2, LifecycleDeps: ports}
+	if WithSpawnProgress(original, nil).LifecycleDeps != ports {
+		t.Fatal("nil observer changed lifecycle ports")
+	}
+	opts := WithSpawnProgress(original, func(event SpawnProgress) error { events = append(events, event); return nil })
+	if opts.LifecycleDeps == ports || opts.Session != original.Session || opts.CCCount != original.CCCount {
+		t.Fatal("observer mutated original ports or controls")
+	}
+	ctx := context.Background()
+	deps := opts.LifecycleDeps
+	if err := deps.CreateSession(ctx, "progress", "/project", 123); err != nil {
+		t.Fatal(err)
+	}
+	if id, err := deps.SplitWindow(ctx, "progress", "/project"); err != nil || id != "%7" {
+		t.Fatalf("split receipt: %q %v", id, err)
+	}
+	if err := deps.ApplyTiledLayout(ctx, "progress"); err != nil {
+		t.Fatal(err)
+	}
+	agent, err := deps.LaunchAgent(ctx, tmux.Pane{ID: "%7", WindowIndex: 2, Index: 3}, "progress", "claude", 2, "/project", "PRIVATE-LAUNCH-COMMAND")
+	if err != nil || agent.Title != "original" || agent.Pane != "" {
+		t.Fatalf("observer changed the original launch receipt: %+v %v", agent, err)
+	}
+	launchEvent := events[len(events)-1]
+	if launchEvent.PaneID != "%7" || launchEvent.Agent.Pane != "2.3" || launchEvent.Agent.Type != "claude" {
+		t.Fatalf("observation lost durable or physical identity: %+v", launchEvent)
+	}
+	launchEvent.Agent.Title = "observer mutation"
+	if agent.Title != "original" {
+		t.Fatal("observer aliases launch receipt")
+	}
+	output := &SpawnOutput{Session: "progress", WorkingDir: "/project", Agents: []SpawnedAgent{{Pane: "2.3"}}}
+	if err := deps.WaitForReady(ctx, output, time.Second); err != nil || !output.Agents[0].Ready {
+		t.Fatalf("readiness result lost: %+v %v", output, err)
+	}
+	events[len(events)-1].Agents[0].Ready = false
+	if !output.Agents[0].Ready {
+		t.Fatal("readiness observation aliases spawn output")
+	}
+	result, err := deps.StartSessionMonitor(ctx, resilience.SpawnMonitorRequest{Session: "progress", ProjectDir: "/project"})
+	if err != nil || result.MonitorPID != 42 || events[len(events)-1].MonitorPID != 42 {
+		t.Fatalf("monitor receipt lost: %+v %v", result, err)
+	}
+	if len(effects) != 6 || len(events) != 12 {
+		t.Fatalf("unbalanced lifecycle observations: effects=%v events=%+v", effects, events)
+	}
+	for i := 0; i < len(events); i += 2 {
+		if events[i].Phase != "started" || events[i+1].Phase != "finished" || events[i].Stage != events[i+1].Stage {
+			t.Fatalf("invalid boundary order at %d: %+v", i, events)
+		}
+	}
+	data, err := json.Marshal(events)
+	if err != nil || strings.Contains(string(data), "PRIVATE-LAUNCH-COMMAND") {
+		t.Fatalf("observations contain executable parameters: %s %v", data, err)
+	}
+}
+
+func TestSpawnProgressCheckpointFailureStopsLaterEffects(t *testing.T) {
+	for _, phase := range []string{"started", "finished"} {
+		t.Run(phase, func(t *testing.T) {
+			checkpointErr, launchErr := errors.New("disk full"), errors.New("launch partially failed")
+			calls := 0
+			opts := WithSpawnProgress(SpawnOptions{LifecycleDeps: &SpawnLifecycleDependencies{
+				LaunchAgent: func(context.Context, tmux.Pane, string, string, int, string, string) (SpawnedAgent, error) {
+					calls++
+					return SpawnedAgent{Pane: "0.1"}, launchErr
+				},
+				ApplyTiledLayout: func(context.Context, string) error { calls++; return nil },
+			}}, func(event SpawnProgress) error {
+				if event.Phase == phase {
+					return checkpointErr
+				}
+				return nil
+			})
+			agent, err := opts.LifecycleDeps.LaunchAgent(context.Background(), tmux.Pane{ID: "%7"}, "progress", "claude", 1, "", "")
+			if !errors.Is(err, checkpointErr) {
+				t.Fatalf("checkpoint cause lost: %v", err)
+			}
+			if phase == "started" && calls != 0 {
+				t.Fatal("unrecorded launch ran")
+			}
+			if phase == "finished" && (calls != 1 || agent.Pane != "0.1" || !errors.Is(err, launchErr)) {
+				t.Fatalf("partial receipt or original error lost: %+v %v", agent, err)
+			}
+			before := calls
+			if err := opts.LifecycleDeps.ApplyTiledLayout(context.Background(), "progress"); !errors.Is(err, checkpointErr) || calls != before {
+				t.Fatalf("later effect bypassed failed observer: %v calls=%d", err, calls)
+			}
+		})
+	}
+}
+
+func TestSpawnProgressCancellationPreservesFinishedEvidence(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var events []SpawnProgress
+	opts := WithSpawnProgress(SpawnOptions{LifecycleDeps: &SpawnLifecycleDependencies{
+		LaunchAgent: func(context.Context, tmux.Pane, string, string, int, string, string) (SpawnedAgent, error) {
+			cancel()
+			return SpawnedAgent{Pane: "0.1"}, context.Canceled
+		},
+	}}, func(event SpawnProgress) error { events = append(events, event); return nil })
+	agent, err := opts.LifecycleDeps.LaunchAgent(ctx, tmux.Pane{ID: "%9"}, "progress", "claude", 1, "", "")
+	if !errors.Is(err, context.Canceled) || agent.Pane != "0.1" || len(events) != 2 || events[1].Phase != "finished" || events[1].Agent.Pane != "0.1" || events[1].Error == "" {
+		t.Fatalf("cancellation swallowed late effects: %+v %+v %v", agent, events, err)
+	}
+	_, _ = opts.LifecycleDeps.LaunchAgent(ctx, tmux.Pane{}, "progress", "claude", 2, "", "")
+	if len(events) != 2 {
+		t.Fatal("cancelled next launch emitted new intent")
+	}
+}
+
+func TestSpawnProgressDoesNotAnnounceLaunchDuringPacingWait(t *testing.T) {
+	var events []SpawnProgress
+	opts := WithSpawnProgress(SpawnOptions{LifecycleDeps: &SpawnLifecycleDependencies{
+		LaunchAgent: func(context.Context, tmux.Pane, string, string, int, string, string) (SpawnedAgent, error) {
+			return SpawnedAgent{}, nil
+		},
+	}}, func(event SpawnProgress) error { events = append(events, event); return nil })
+	opts, err := WithSpawnLaunchInterval(opts, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := opts.LifecycleDeps.LaunchAgent(context.Background(), tmux.Pane{}, "progress", "claude", 1, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	if _, err := opts.LifecycleDeps.LaunchAgent(ctx, tmux.Pane{}, "progress", "claude", 2, "", ""); !errors.Is(err, context.DeadlineExceeded) || len(events) != 2 {
+		t.Fatalf("pacing wait generated false launch evidence: %+v %v", events, err)
 	}
 }
