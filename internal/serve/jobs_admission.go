@@ -82,6 +82,13 @@ func (s *Server) submitJob(ctx context.Context, req CreateJobRequest) (*Job, err
 		if err != nil {
 			return nil, err
 		}
+		// Use the same top-level/params session binding as execution. Choosing
+		// a different precedence here would lock one session and mutate another.
+		params, err := jobExecutionParams(frozen)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", errInvalidJobRequest, err)
+		}
+		resources := jobExecutionResources(frozen.Type, params)
 		if err := owner.Err(); err != nil {
 			return nil, errJobAdmissionClosed
 		}
@@ -104,7 +111,7 @@ func (s *Server) submitJob(ctx context.Context, req CreateJobRequest) (*Job, err
 		}
 		id := receipt.ID
 		work := &scheduledJob{
-			id: id, ctx: jobCtx, cancel: cancel,
+			id: id, ctx: jobCtx, cancel: cancel, resources: resources,
 			run:     func() { s.dispatchJob(id, frozen) },
 			discard: func() { s.discardQueuedJob(id) },
 		}
@@ -173,4 +180,3 @@ type jobOwnership struct {
 	cancel     context.CancelFunc
 	projectDir string
 }
-

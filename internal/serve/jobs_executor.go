@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"sync"
 )
 
@@ -24,18 +25,21 @@ var (
 // callbacks must release the store's cancellation registration only after that
 // checkpoint. discard must never invoke an operation engine.
 type scheduledJob struct {
-	id      string
-	ctx     context.Context
-	cancel  context.CancelFunc
-	run     func()
-	discard func()
+	id        string
+	ctx       context.Context
+	cancel    context.CancelFunc
+	run       func()
+	discard   func()
+	resources []string // Exclusive execution scopes; "*" conflicts with all jobs.
 }
 
 // jobExecutor bounds active operations AND waiting/preparing requests. Its zero
 // value starts no goroutines. Receipt I/O runs outside mu, but preparation keeps
 // a capacity reservation so shutdown cannot release the journal underneath it.
-// Accepted waiting jobs run FIFO; concurrent admissions are ordered when their
-// receipts finish preparation, not by request arrival or random job IDs.
+// Jobs sharing resources run FIFO in receipt-preparation order. Independent jobs
+// may pass a resource-blocked job, but never an earlier waiter on the same scope.
+// The total owned/preparing bound remains maxConcurrent+maxQueued; resource
+// waiters can use capacity that would otherwise belong to idle workers.
 type jobExecutor struct {
 	mu            sync.Mutex
 	maxConcurrent int
@@ -44,6 +48,7 @@ type jobExecutor struct {
 	preparing     int
 	queue         []*scheduledJob
 	owned         map[string]*scheduledJob
+	running       map[string]*scheduledJob
 	stopped       bool
 	root          context.Context
 	cancelRoot    context.CancelFunc
@@ -54,13 +59,14 @@ type jobExecutor struct {
 // JobExecutionStatus is exposed by GET /api/v1/jobs. Owned includes preparation
 // and callbacks still checkpointing an otherwise terminal outcome.
 type JobExecutionStatus struct {
-	MaxConcurrent int  `json:"max_concurrent"`
-	QueueCapacity int  `json:"queue_capacity"`
-	Running       int  `json:"running"`
-	Queued        int  `json:"queued"`
-	Preparing     int  `json:"preparing"`
-	Owned         int  `json:"owned"`
-	Accepting     bool `json:"accepting"`
+	MaxConcurrent       int  `json:"max_concurrent"`
+	QueueCapacity       int  `json:"queue_capacity"`
+	Running             int  `json:"running"`
+	Queued              int  `json:"queued"`
+	WaitingForResources int  `json:"waiting_for_resources"`
+	Preparing           int  `json:"preparing"`
+	Owned               int  `json:"owned"`
+	Accepting           bool `json:"accepting"`
 }
 
 func validateJobLimits(concurrency, capacity int) error {
@@ -84,6 +90,7 @@ func (e *jobExecutor) initLocked() {
 		e.root, e.cancelRoot = context.WithCancel(context.Background())
 		e.drained = make(chan struct{})
 		e.owned = make(map[string]*scheduledJob)
+		e.running = make(map[string]*scheduledJob)
 	}
 }
 
@@ -155,6 +162,12 @@ func (e *jobExecutor) submit(ctx context.Context, prepare func(context.Context) 
 		work.cancel()
 		return fmt.Errorf("job %q already admitted", work.id)
 	}
+	// Own a detached descriptor as well as its resource slice. The preparation
+	// caller must not be able to redirect a queued job's execution scopes.
+	copy := *work
+	copy.resources = append([]string(nil), work.resources...)
+	sort.Strings(copy.resources)
+	work = &copy
 	e.owned[work.id] = work
 	admissionErr := ctx.Err()
 	if e.stopped {
@@ -172,15 +185,80 @@ func (e *jobExecutor) submit(ctx context.Context, prepare func(context.Context) 
 		e.mu.Unlock()
 		return admissionErr
 	}
-	if e.active < e.maxConcurrent {
-		e.active++
-		e.mu.Unlock()
-		go e.worker(work)
-		return nil
-	}
 	e.queue = append(e.queue, work)
+	e.startReadyLocked()
 	e.mu.Unlock()
 	return nil
+}
+
+// jobResourceSet represents both running owners and earlier resource waiters.
+// any also records unscoped jobs, which must not overlap a wildcard owner.
+type jobResourceSet struct {
+	keys map[string]bool
+	any  bool
+	all  bool
+}
+
+func (set *jobResourceSet) add(resources []string) {
+	set.any = true
+	for _, resource := range resources {
+		if resource == "*" {
+			set.all = true
+		}
+		if set.keys == nil {
+			set.keys = make(map[string]bool)
+		}
+		set.keys[resource] = true
+	}
+}
+
+func (set *jobResourceSet) conflicts(resources []string) bool {
+	if !set.any {
+		return false
+	}
+	if set.all {
+		return true
+	}
+	for _, resource := range resources {
+		if resource == "*" || set.keys[resource] {
+			return true
+		}
+	}
+	return false
+}
+
+func (e *jobExecutor) runningResourcesLocked() jobResourceSet {
+	var held jobResourceSet
+	for _, work := range e.running {
+		held.add(work.resources)
+	}
+	return held
+}
+
+// startReadyLocked acquires all of a job's scopes together, before dispatch.
+// No goroutine waits for a resource while occupying a worker slot. Earlier
+// blocked multi-resource jobs reserve queue order on EVERY scope they need, so
+// a stream of younger jobs cannot starve them. Cancelled jobs need no engine
+// access and may bypass resource barriers to finalize their receipts promptly.
+func (e *jobExecutor) startReadyLocked() {
+	held := e.runningResourcesLocked()
+	var earlier jobResourceSet
+	for i := 0; i < len(e.queue) && e.active < e.maxConcurrent; {
+		work := e.queue[i]
+		discard := e.stopped || work.ctx.Err() != nil
+		if !discard && (held.conflicts(work.resources) || earlier.conflicts(work.resources)) {
+			earlier.add(work.resources)
+			i++
+			continue
+		}
+		copy(e.queue[i:], e.queue[i+1:])
+		e.queue[len(e.queue)-1] = nil
+		e.queue = e.queue[:len(e.queue)-1]
+		e.running[work.id] = work
+		e.active++
+		held.add(work.resources)
+		go e.worker(work, discard)
+	}
 }
 
 func (e *jobExecutor) invoke(work *scheduledJob, discard bool) {
@@ -199,22 +277,17 @@ func (e *jobExecutor) invoke(work *scheduledJob, discard bool) {
 	work.run()
 }
 
-func (e *jobExecutor) worker(work *scheduledJob) {
-	for {
-		e.invoke(work, false)
-		e.mu.Lock()
-		delete(e.owned, work.id)
-		if len(e.queue) == 0 {
-			e.active--
-			e.notifyDrainedLocked()
-			e.mu.Unlock()
-			return
-		}
-		work = e.queue[0]
-		e.queue[0] = nil // Release completed request bodies in the backing array.
-		e.queue = e.queue[1:]
-		e.mu.Unlock()
-	}
+func (e *jobExecutor) worker(work *scheduledJob, discard bool) {
+	e.invoke(work, discard)
+	e.mu.Lock()
+	// Keep resource ownership through all callback finalizers, not merely
+	// through the engine returning or the visible job status becoming terminal.
+	delete(e.running, work.id)
+	delete(e.owned, work.id)
+	e.active--
+	e.startReadyLocked()
+	e.notifyDrainedLocked()
+	e.mu.Unlock()
 }
 
 // cancelQueued reclaims a waiting slot after its cancellation receipt is saved,
@@ -232,6 +305,8 @@ func (e *jobExecutor) cancelQueued(id string) bool {
 			break
 		}
 	}
+	// Removing a multi-resource waiter may unblock independent queued jobs.
+	e.startReadyLocked()
 	e.mu.Unlock()
 	if work == nil {
 		return false
@@ -246,7 +321,7 @@ func (e *jobExecutor) cancelQueued(id string) bool {
 }
 
 // closeAdmission is permanent and nonblocking. It cancels active/preparing
-// requests; waiting jobs are discarded by the bounded workers, not by creating
+// requests; waiting jobs are discarded by bounded workers, not by creating
 // another goroutine for each cancellation.
 func (e *jobExecutor) closeAdmission() {
 	e.mu.Lock()
@@ -254,9 +329,8 @@ func (e *jobExecutor) closeAdmission() {
 	e.stopped = true
 	// Publish cancellation before a worker can select another queued job.
 	// This is our own standard-library context, not a user callback or I/O.
-	// Releasing mu first leaves a window where stopped is true but queued
-	// contexts are still live and a newly selected engine can start.
 	e.cancelRoot()
+	e.startReadyLocked()
 	e.notifyDrainedLocked()
 	e.mu.Unlock()
 }
@@ -284,10 +358,21 @@ func (e *jobExecutor) snapshot() JobExecutionStatus {
 	if capacity == 0 {
 		capacity = DefaultJobQueueCapacity
 	}
+	held := e.runningResourcesLocked()
+	var earlier jobResourceSet
+	waiting := 0
+	for _, work := range e.queue {
+		if e.stopped || work.ctx.Err() != nil {
+			continue
+		}
+		if held.conflicts(work.resources) || earlier.conflicts(work.resources) {
+			waiting++
+		}
+		earlier.add(work.resources)
+	}
 	return JobExecutionStatus{
 		MaxConcurrent: concurrency, QueueCapacity: capacity,
-		Running: e.active, Queued: len(e.queue), Preparing: e.preparing,
-		Owned: len(e.owned) + e.preparing, Accepting: !e.stopped,
+		Running: e.active, Queued: len(e.queue), WaitingForResources: waiting,
+		Preparing: e.preparing, Owned: len(e.owned) + e.preparing, Accepting: !e.stopped,
 	}
 }
-
