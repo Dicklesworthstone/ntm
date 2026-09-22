@@ -34,6 +34,9 @@ type Eligibility struct {
 // Filter checks candidates against the canonical export rather than trusting
 // BV scores or cached readiness counts. Candidate order survives; duplicate IDs
 // are removed; exclusions/reasons are deterministic and independent of map order.
+// Eligible candidates form a conflict-free mutex batch in rank order. This is
+// planning evidence, not a lease: independent calls must still claim/reserve
+// their work atomically and revalidate ownership before dispatch.
 func (s *Snapshot) Filter(candidates []string, policy EligibilityPolicy) Eligibility {
 	result := Eligibility{EligibleIDs: []string{}, Excluded: []Exclusion{}}
 	if s == nil || s.issues == nil {
@@ -59,6 +62,9 @@ func (s *Snapshot) Filter(candidates []string, policy EligibilityPolicy) Eligibi
 			}
 		}
 	}
+	// Existing holders and choices made by this call are different evidence.
+	// Keep them separate so a skipped alternative is not reported as claimed.
+	selectedMutexes := make(map[string]bool)
 	seen := make(map[string]bool)
 	for _, candidate := range candidates {
 		id := strings.TrimSpace(candidate)
@@ -127,7 +133,23 @@ func (s *Snapshot) Filter(candidates []string, policy EligibilityPolicy) Eligibi
 			}
 		}
 		if len(exclusion.Reasons) == 0 {
+			for _, label := range row.Labels {
+				if key, ok := mutexKey(label); ok && selectedMutexes[key] {
+					exclusion.Reasons = append(exclusion.Reasons, "mutex_conflict")
+					break
+				}
+			}
+		}
+		if len(exclusion.Reasons) == 0 {
 			result.EligibleIDs = append(result.EligibleIDs, id)
+			// Acquire the entire label set only after every eligibility and
+			// conflict check passes. A rejected multi-mutex candidate must not
+			// consume its uncontended groups and starve independent work.
+			for _, label := range row.Labels {
+				if key, ok := mutexKey(label); ok {
+					selectedMutexes[key] = true
+				}
+			}
 		} else {
 			exclusion.Reasons = sortedUnique(exclusion.Reasons)
 			result.Excluded = append(result.Excluded, exclusion)
