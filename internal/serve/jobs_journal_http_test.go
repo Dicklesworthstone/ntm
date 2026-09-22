@@ -223,3 +223,52 @@ func TestJobJournalHTTPLiveProgressSurvivesNilResultAndPanic(t *testing.T) {
 		})
 	}
 }
+
+func TestJobOperationHTTPProgressSurvivesOriginalJobEviction(t *testing.T) {
+	for _, panics := range []bool{false, true} {
+		t.Run(map[bool]string{false: "failed", true: "interrupted"}[panics], func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "state.db")
+			srv, closeServer := newJournalHTTPServer(t, path)
+			var calls atomic.Int32
+			srv.spawnAgents = func(ctx context.Context, opts robot.SpawnOptions) (*robot.SpawnOutput, error) {
+				calls.Add(1)
+				if opts.LifecycleDeps == nil {
+					return nil, errors.New("operation did not install lifecycle reporting")
+				}
+				if err := reportJobProgress(ctx, map[string]interface{}{"session": opts.Session, "pane_id": "%17"}); err != nil {
+					return nil, err
+				}
+				if panics {
+					panic("lost backend")
+				}
+				return nil, errors.New("lost backend")
+			}
+			body := `{"type":"swarm_spawn","params":{"operation_id":"progress-once","session":"opprogress","cc_count":2}}`
+			first := postJob(t, srv, body)
+			pollJobTerminal(t, srv, first.Job.ID)
+			closeServer()
+			restarted, _ := newJournalHTTPServer(t, path)
+			// Model the bounded job list evicting the original transport row.
+			restarted.jobStore.mu.Lock()
+			delete(restarted.jobStore.jobs, first.Job.ID)
+			restarted.jobStore.mu.Unlock()
+			restarted.spawnAgents = func(context.Context, robot.SpawnOptions) (*robot.SpawnOutput, error) {
+				calls.Add(1)
+				return nil, errors.New("must not execute twice")
+			}
+			retry := postJob(t, restarted, body)
+			got := pollJobTerminal(t, restarted, retry.Job.ID)
+			if got.Job.Status != string(JobStatusFailed) || got.Job.Result["pane_id"] != "%17" || got.Job.Result["_execution_in_progress"] != nil || calls.Load() != 1 {
+				t.Fatalf("operation retry lost or repeated effects: %+v calls=%d", got.Job, calls.Load())
+			}
+			meta := got.Job.Result["_operation"].(map[string]interface{})
+			wantStatus := "failed"
+			if panics {
+				wantStatus = "outcome_unknown"
+			}
+			if meta["original_job_id"] != first.Job.ID || meta["status"] != wantStatus || meta["replayed"] != !panics {
+				t.Fatalf("retry did not preserve operation semantics: %+v", meta)
+			}
+		})
+	}
+}

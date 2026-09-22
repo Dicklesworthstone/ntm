@@ -139,3 +139,17 @@ replayed. A cancellation remains cancelled and keeps its original reason. When
 a worker finishes normally, its final result replaces the partial snapshot and
 removes `_execution_in_progress`. In-memory servers do not enable durable
 lifecycle checkpointing.
+
+For jobs with `operation_id`, progress is also flushed into the operation receipt
+before it is forwarded to the ordinary job journal. An in-flight duplicate can
+return that snapshot with `_operation.status: "in_progress"`. After a crash, a
+retry returns the latest durable snapshot with `outcome_unknown`, including its
+pane identities, even when the original job is no longer in the retained job
+list. It still refuses to execute the operation again. No synthetic completion
+is inferred from progress, and the abandoned worker is not reported as live.
+
+An operation keeps progress if its backend returns no final result. A failed
+final receipt write leaves the last durable in-flight snapshot available for
+recovery. Reporting errors are sticky and cancel the execution context; a backend
+that ignores them cannot turn a checkpoint failure into recorded success. Late
+reports after completion or panic are rejected before touching the receipt.

@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 )
@@ -177,7 +178,9 @@ func runJobOperation(ctx context.Context, dir, id, jobID string, req CreateJobRe
 			return jobOperationResult(nil, id, prior.JobID, "conflict", false), errors.New("operation_id conflicts with a different job type or parameter set")
 		}
 		if prior.Status == JobStatusRunning {
-			return jobOperationResult(prior.Result, id, prior.JobID, "outcome_unknown", false), errors.New("previous operation outcome is unknown; inspect the original job, sessions, and pipeline state before starting any new operation; work was not re-executed")
+			// Owning the fence proves there is no live writer. Preserve its
+			// latest evidence, but never describe the abandoned worker as live.
+			return jobOperationResult(finishJobProgress(prior.Result, nil), id, prior.JobID, "outcome_unknown", false), errors.New("previous operation outcome is unknown; inspect the original job, sessions, and pipeline state before starting any new operation; work was not re-executed")
 		}
 		return jobOperationResult(prior.Result, id, prior.JobID, string(prior.Status), true), prior.executionError()
 	}
@@ -193,20 +196,83 @@ func runJobOperation(ctx context.Context, dir, id, jobID string, req CreateJobRe
 	if err := receipt.save(path); err != nil {
 		return nil, fmt.Errorf("checkpoint operation before execution: %w", err)
 	}
+	// Keep recovery evidence in the operation receipt itself, not only in
+	// the bounded job list. A crash during execution must leave more than an
+	// opaque operation ID. This reporter owns the same fence as the engine.
+	var progressMu sync.Mutex
+	var progress map[string]interface{}
+	var checkpointErr error
+	acceptingProgress := true
+	operationCtx, cancelOperation := context.WithCancelCause(ctx)
+	defer cancelOperation(nil)
+	defer func() {
+		// Also closes on panic, before releasing the operation fence. A late
+		// callback must never write an old generation over its terminal receipt.
+		progressMu.Lock()
+		acceptingProgress = false
+		progressMu.Unlock()
+	}()
+	operationCtx = context.WithValue(operationCtx, jobProgressContextKey{}, jobProgressReporter(func(partial map[string]interface{}) error {
+		progressMu.Lock()
+		defer progressMu.Unlock()
+		if !acceptingProgress {
+			return fmt.Errorf("%w: operation reporter is closed", errJobProgressCheckpoint)
+		}
+		if checkpointErr != nil {
+			return checkpointErr
+		}
+		snapshot, err := toJSONMap(partial)
+		if err == nil {
+			if snapshot == nil {
+				snapshot = make(map[string]interface{})
+			}
+			snapshot["_execution_in_progress"] = true
+			progress = snapshot
+			candidate := *receipt
+			candidate.Result = snapshot
+			candidate.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+			err = candidate.save(path)
+			if err == nil {
+				receipt.Result = snapshot
+				receipt.UpdatedAt = candidate.UpdatedAt
+				// Forward a detached value to the outer job journal only AFTER
+				// the operation receipt is durable. Parent ctx avoids recursion.
+				var forwarded map[string]interface{}
+				forwarded, err = toJSONMap(snapshot)
+				if err == nil {
+					err = reportJobProgress(ctx, forwarded)
+				}
+			}
+		}
+		if err != nil {
+			checkpointErr = fmt.Errorf("%w: save operation progress: %w", errJobProgressCheckpoint, err)
+			cancelOperation(checkpointErr)
+		}
+		return checkpointErr
+	}))
 	var result map[string]interface{}
-	runErr := ctx.Err()
+	runErr := operationCtx.Err()
 	if runErr == nil {
-		result, runErr = run(ctx, req)
+		result, runErr = run(operationCtx, req)
 	}
-	if ctx.Err() != nil {
-		runErr = errors.Join(runErr, ctx.Err())
+	progressMu.Lock()
+	acceptingProgress = false
+	result = finishJobProgress(progress, result)
+	if checkpointErr != nil && !errors.Is(runErr, checkpointErr) {
+		runErr = errors.Join(runErr, checkpointErr)
+	}
+	progressMu.Unlock()
+	if cause := context.Cause(operationCtx); cause != nil && !errors.Is(runErr, cause) {
+		runErr = errors.Join(runErr, cause)
 	}
 	receipt.Result = result
 	receipt.Status = JobStatusCompleted
 	if runErr != nil {
 		receipt.Status = JobStatusFailed
 		receipt.Error = runErr.Error()
-		if errors.Is(runErr, context.Canceled) {
+		if errors.Is(runErr, errJobProgressCheckpoint) {
+			receipt.ErrorKind = "checkpoint"
+		} else if errors.Is(runErr, context.Canceled) {
 			receipt.Status = JobStatusCancelled
 			receipt.ErrorKind = "cancelled"
 		} else if errors.Is(runErr, context.DeadlineExceeded) {
@@ -273,7 +339,7 @@ func readJobOperation(path string) (*jobOperationReceipt, error) {
 			return nil, errors.New("operation receipt has inconsistent outcome")
 		}
 	case JobStatusFailed, JobStatusCancelled:
-		if receipt.Error == "" || (receipt.ErrorKind != "" && receipt.ErrorKind != "cancelled" && receipt.ErrorKind != "deadline") ||
+		if receipt.Error == "" || (receipt.ErrorKind != "" && receipt.ErrorKind != "cancelled" && receipt.ErrorKind != "deadline" && receipt.ErrorKind != "checkpoint") ||
 			(receipt.Status == JobStatusCancelled) != (receipt.ErrorKind == "cancelled") {
 			return nil, errors.New("operation receipt has inconsistent error")
 		}
@@ -311,6 +377,8 @@ func (r *jobOperationReceipt) executionError() error {
 		cause = context.Canceled
 	case "deadline":
 		cause = context.DeadlineExceeded
+	case "checkpoint":
+		cause = errJobProgressCheckpoint
 	}
 	return &jobOperationError{message: r.Error, cause: cause}
 }

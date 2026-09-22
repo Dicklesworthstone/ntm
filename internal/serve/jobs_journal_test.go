@@ -456,3 +456,225 @@ func TestJobProgressFailedWriteKeepsPublishedCheckpoint(t *testing.T) {
 		t.Fatal("late progress overwrote a terminal outcome")
 	}
 }
+
+func TestJobOperationProgressCrashRecovery(t *testing.T) {
+	req := CreateJobRequest{Type: JobTypeSwarmSpawn, Params: map[string]interface{}{"session": "partial", "cc_count": 2}}
+	if dir := os.Getenv("NTM_JOB_PROGRESS_CRASH"); dir != "" {
+		_, err := runJobOperation(context.Background(), dir, "progress-crash", "original-job", req,
+			func(ctx context.Context, _ CreateJobRequest) (map[string]interface{}, error) {
+				if err := os.WriteFile(filepath.Join(dir, "effect"), []byte("created"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := reportJobProgress(ctx, map[string]interface{}{"session": "partial", "pane_id": "%17", "stage": "launch_agent"}); err != nil {
+					t.Fatal(err)
+				}
+				os.Exit(23) // No terminal receipt; the kernel releases the fence.
+				return nil, nil
+			})
+		t.Fatalf("crash fixture returned: %v", err)
+	}
+	dir := t.TempDir()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestJobOperationProgressCrashRecovery$")
+	cmd.Env = append(os.Environ(), "NTM_JOB_PROGRESS_CRASH="+dir)
+	output, err := cmd.CombinedOutput()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 23 {
+		t.Fatalf("child did not reach crash boundary: %v %s", err, output)
+	}
+	if data, err := os.ReadFile(filepath.Join(dir, "effect")); err != nil || string(data) != "created" {
+		t.Fatalf("child did not reach the side effect: %q %v", data, err)
+	}
+	result, err := runJobOperation(context.Background(), dir, "progress-crash", "retry-job", req,
+		func(context.Context, CreateJobRequest) (map[string]interface{}, error) {
+			t.Fatal("crashed work was invoked again")
+			return nil, nil
+		})
+	if err == nil || result["pane_id"] != "%17" || result["stage"] != "launch_agent" || result["_execution_in_progress"] != nil {
+		t.Fatalf("crash recovery lost progress or invented a live worker: %+v %v", result, err)
+	}
+	meta := result["_operation"].(map[string]interface{})
+	if meta["status"] != "outcome_unknown" || meta["original_job_id"] != "original-job" || meta["replayed"] != false {
+		t.Fatalf("crash uncertainty or original identity lost: %+v", meta)
+	}
+}
+
+func TestJobOperationProgressTerminalAndLateReporting(t *testing.T) {
+	for _, fails := range []bool{false, true} {
+		t.Run(fmt.Sprint(fails), func(t *testing.T) {
+			dir := t.TempDir()
+			req := CreateJobRequest{Type: JobTypeSwarmSpawn}
+			var savedCtx context.Context
+			result, err := runJobOperation(context.Background(), dir, "terminal-progress", "original", req,
+				func(ctx context.Context, _ CreateJobRequest) (map[string]interface{}, error) {
+					savedCtx = ctx
+					partial := map[string]interface{}{"agents": []interface{}{map[string]interface{}{"pane_id": "%17"}}}
+					if err := reportJobProgress(ctx, partial); err != nil {
+						return nil, err
+					}
+					partial["agents"].([]interface{})[0].(map[string]interface{})["pane_id"] = "changed"
+					if fails {
+						return nil, errors.New("backend lost its final output")
+					}
+					return map[string]interface{}{"finished": true}, nil
+				})
+			if (err != nil) != fails || result["agents"] == nil || result["_execution_in_progress"] != nil {
+				t.Fatalf("terminal progress missing: %+v %v", result, err)
+			}
+			if result["agents"].([]interface{})[0].(map[string]interface{})["pane_id"] != "%17" {
+				t.Fatal("producer mutation corrupted progress")
+			}
+			path := jobOperationPath(dir, "terminal-progress")
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := reportJobProgress(savedCtx, map[string]interface{}{"late": true}); !errors.Is(err, errJobProgressCheckpoint) {
+				t.Fatalf("late reporter accepted after releasing its fence: %v", err)
+			}
+			after, err := os.ReadFile(path)
+			if err != nil || string(before) != string(after) {
+				t.Fatal("late progress rewrote a terminal receipt")
+			}
+			replay, replayErr := runJobOperation(context.Background(), dir, "terminal-progress", "retry", req,
+				func(context.Context, CreateJobRequest) (map[string]interface{}, error) {
+					t.Fatal("terminal work was executed again")
+					return nil, nil
+				})
+			if (replayErr != nil) != fails || !reflect.DeepEqual(result["agents"], replay["agents"]) || replay["_operation"].(map[string]interface{})["replayed"] != true {
+				t.Fatalf("retry lost terminal progress: %+v %v", replay, replayErr)
+			}
+		})
+	}
+}
+
+func TestJobOperationProgressFailureCannotBeIgnored(t *testing.T) {
+	dir := t.TempDir()
+	diskErr := errors.New("outer checkpoint unavailable")
+	var reports int
+	ctx := context.WithValue(context.Background(), jobProgressContextKey{}, jobProgressReporter(func(map[string]interface{}) error {
+		reports++
+		return diskErr
+	}))
+	req := CreateJobRequest{Type: JobTypeSwarmSpawn}
+	result, err := runJobOperation(ctx, dir, "ignored-error", "original", req,
+		func(ctx context.Context, _ CreateJobRequest) (map[string]interface{}, error) {
+			_ = reportJobProgress(ctx, map[string]interface{}{"pane_id": "%17"})
+			_ = reportJobProgress(ctx, map[string]interface{}{"pane_id": "%18"})
+			return map[string]interface{}{"claimed_success": true}, nil // Backend ignores cancellation and both errors.
+		})
+	if !errors.Is(err, diskErr) || !errors.Is(err, errJobProgressCheckpoint) || reports != 1 || result["pane_id"] != "%17" {
+		t.Fatalf("ignored checkpoint failure became success or lost evidence: %+v %v reports=%d", result, err, reports)
+	}
+	if result["_operation"].(map[string]interface{})["status"] != "failed" {
+		t.Fatalf("checkpoint failure misclassified as cancellation: %+v", result)
+	}
+	replay, err := runJobOperation(context.Background(), dir, "ignored-error", "retry", req,
+		func(context.Context, CreateJobRequest) (map[string]interface{}, error) {
+			t.Fatal("failed operation executed again")
+			return nil, nil
+		})
+	if !errors.Is(err, errJobProgressCheckpoint) || !strings.Contains(err.Error(), diskErr.Error()) || replay["pane_id"] != "%17" {
+		t.Fatalf("checkpoint cause or progress lost across replay: %+v %v", replay, err)
+	}
+}
+
+func TestJobOperationProgressVisibleToConcurrentRetry(t *testing.T) {
+	dir := t.TempDir()
+	req := CreateJobRequest{Type: JobTypeSwarmSpawn}
+	_, err := runJobOperation(context.Background(), dir, "inflight-progress", "original", req,
+		func(ctx context.Context, _ CreateJobRequest) (map[string]interface{}, error) {
+			if err := reportJobProgress(ctx, map[string]interface{}{"pane_id": "%17"}); err != nil {
+				return nil, err
+			}
+			duplicate, err := runJobOperation(context.Background(), dir, "inflight-progress", "duplicate", req,
+				func(context.Context, CreateJobRequest) (map[string]interface{}, error) {
+					t.Fatal("duplicate engine ran while original holds its fence")
+					return nil, nil
+				})
+			if err == nil || duplicate["pane_id"] != "%17" || duplicate["_operation"].(map[string]interface{})["status"] != "in_progress" {
+				t.Fatalf("inflight retry lacks recovery details: %+v %v", duplicate, err)
+			}
+			return nil, nil
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestJobOperationFailedFinalSaveRetainsProgress(t *testing.T) {
+	dir := t.TempDir()
+	req := CreateJobRequest{Type: JobTypeSwarmSpawn}
+	_, err := runJobOperation(context.Background(), dir, "lost-final", "original", req,
+		func(ctx context.Context, _ CreateJobRequest) (map[string]interface{}, error) {
+			if err := reportJobProgress(ctx, map[string]interface{}{"pane_id": "%17"}); err != nil {
+				return nil, err
+			}
+			return map[string]interface{}{"unserializable": make(chan int)}, nil
+		})
+	if err == nil || !strings.Contains(err.Error(), "checkpoint operation outcome") {
+		t.Fatalf("invalid final receipt was accepted: %v", err)
+	}
+	result, err := runJobOperation(context.Background(), dir, "lost-final", "retry", req,
+		func(context.Context, CreateJobRequest) (map[string]interface{}, error) {
+			t.Fatal("operation with lost final receipt ran twice")
+			return nil, nil
+		})
+	if err == nil || result["pane_id"] != "%17" || result["_execution_in_progress"] != nil || result["_operation"].(map[string]interface{})["status"] != "outcome_unknown" {
+		t.Fatalf("failed final save erased partial recovery: %+v %v", result, err)
+	}
+}
+
+func TestJobOperationProgressFailedSaveKeepsLastDurableEvidence(t *testing.T) {
+	dir := t.TempDir()
+	req := CreateJobRequest{Type: JobTypeSwarmSpawn}
+	_, err := runJobOperation(context.Background(), dir, "oversized-progress", "original", req,
+		func(ctx context.Context, _ CreateJobRequest) (map[string]interface{}, error) {
+			if err := reportJobProgress(ctx, map[string]interface{}{"pane_id": "%17"}); err != nil {
+				return nil, err
+			}
+			err := reportJobProgress(ctx, map[string]interface{}{"too_large": strings.Repeat("x", jobJournalMaxRecordBytes)})
+			if !errors.Is(err, errJobProgressCheckpoint) || ctx.Err() == nil {
+				t.Fatalf("unwritable progress did not stop execution: %v %v", err, ctx.Err())
+			}
+			return nil, err
+		})
+	if !errors.Is(err, errJobProgressCheckpoint) {
+		t.Fatalf("checkpoint failure identity lost: %v", err)
+	}
+	result, err := runJobOperation(context.Background(), dir, "oversized-progress", "retry", req,
+		func(context.Context, CreateJobRequest) (map[string]interface{}, error) {
+			t.Fatal("uncheckpointed operation repeated")
+			return nil, nil
+		})
+	if err == nil || result["pane_id"] != "%17" || result["too_large"] != nil || result["_operation"].(map[string]interface{})["status"] != "outcome_unknown" {
+		t.Fatalf("unwritable snapshot destroyed previous evidence: %+v %v", result, err)
+	}
+}
+
+func TestJobOperationProgressAfterCancellationIsRetained(t *testing.T) {
+	dir := t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req := CreateJobRequest{Type: JobTypeSwarmSpawn}
+	result, err := runJobOperation(ctx, dir, "cancelled-progress", "original", req,
+		func(ctx context.Context, _ CreateJobRequest) (map[string]interface{}, error) {
+			cancel()
+			if err := reportJobProgress(ctx, map[string]interface{}{"pane_id": "%17"}); err != nil {
+				return nil, err
+			}
+			return nil, ctx.Err()
+		})
+	if !errors.Is(err, context.Canceled) || result["pane_id"] != "%17" || result["_operation"].(map[string]interface{})["status"] != "cancelled" {
+		t.Fatalf("cancellation discarded finished effects: %+v %v", result, err)
+	}
+	result, err = runJobOperation(context.Background(), dir, "cancelled-progress", "retry", req,
+		func(context.Context, CreateJobRequest) (map[string]interface{}, error) {
+			t.Fatal("cancelled operation repeated")
+			return nil, nil
+		})
+	if !errors.Is(err, context.Canceled) || result["pane_id"] != "%17" || result["_execution_in_progress"] != nil {
+		t.Fatalf("cancelled replay lost partial effects: %+v %v", result, err)
+	}
+}
