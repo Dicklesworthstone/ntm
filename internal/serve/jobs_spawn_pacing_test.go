@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
@@ -90,6 +91,85 @@ func TestSwarmJobLaunchPacingHTTP(t *testing.T) {
 				}
 			default:
 				t.Fatal("job finished without calling the spawn service")
+			}
+		})
+	}
+}
+
+func TestSwarmJobStartupTimeoutHTTP(t *testing.T) {
+	for _, returnError := range []bool{false, true} {
+		t.Run(fmt.Sprintf("backend_error=%t", returnError), func(t *testing.T) {
+			srv := NewHermeticServer("test")
+			defer srv.Stop()
+			srv.spawnAgents = func(ctx context.Context, opts robot.SpawnOptions) (*robot.SpawnOutput, error) {
+				<-ctx.Done()
+				out := &robot.SpawnOutput{
+					Session: opts.Session,
+					Agents:  []robot.SpawnedAgent{{Pane: "%42", Type: "claude"}},
+				}
+				// A success envelope after the deadline must not mask a timeout.
+				out.Success = true
+				if returnError {
+					return out, errors.New("launcher interrupted")
+				}
+				return out, nil
+			}
+			env := postJob(t, srv, `{"type":"swarm_spawn","params":{"session":"recoverable","cc_count":2,"launch_interval":"1h","startup_timeout":"20ms"}}`)
+			defer srv.jobStore.Cancel(env.Job.ID)
+			final := pollJobTerminal(t, srv, env.Job.ID)
+			if final.Job.Status != string(JobStatusFailed) || !strings.Contains(final.Job.Error, "context deadline exceeded") {
+				t.Fatalf("startup deadline was not authoritative: %+v", final.Job)
+			}
+			if returnError && !strings.Contains(final.Job.Error, "launcher interrupted") {
+				t.Fatalf("startup timeout discarded the backend error: %+v", final.Job)
+			}
+			if final.Job.Result["startup_timeout"] != "20ms" || final.Job.Result["launch_interval"] != "1h0m0s" {
+				t.Fatalf("lost requested startup controls: %+v", final.Job.Result)
+			}
+			assertSpawnJobRecovery(t, final)
+		})
+	}
+}
+
+func TestSwarmJobStartupTimeoutRespectsParentCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	srv := &Server{spawnAgents: func(spawnCtx context.Context, opts robot.SpawnOptions) (*robot.SpawnOutput, error) {
+		cancel()
+		select {
+		case <-spawnCtx.Done():
+		case <-time.After(time.Second):
+			return nil, errors.New("startup context detached from parent")
+		}
+		return &robot.SpawnOutput{Session: opts.Session}, nil
+	}}
+	result, err := srv.jobSwarmSpawn(ctx, map[string]interface{}{
+		"session": "cancelled", "cc_count": 1, "startup_timeout": "1h",
+	})
+	if !errors.Is(err, context.Canceled) || result["session"] != "cancelled" {
+		t.Fatalf("lost parent cancellation or recovery result: %+v, %v", result, err)
+	}
+}
+
+func TestSwarmJobStartupTimeoutRejectsInvalidInputHTTP(t *testing.T) {
+	for _, value := range []string{`"0s"`, `"-1s"`, `"invalid"`, `"999999999999999999h"`, `10`} {
+		t.Run(value, func(t *testing.T) {
+			srv := NewHermeticServer("test")
+			defer srv.Stop()
+			called := make(chan struct{}, 1)
+			srv.spawnAgents = func(context.Context, robot.SpawnOptions) (*robot.SpawnOutput, error) {
+				called <- struct{}{}
+				return nil, errors.New("unexpected mutation")
+			}
+			env := postJob(t, srv, fmt.Sprintf(`{"type":"swarm_spawn","params":{"session":"guarded","cc_count":1,"startup_timeout":%s}}`, value))
+			final := pollJobTerminal(t, srv, env.Job.ID)
+			if final.Job.Status != string(JobStatusFailed) || !strings.Contains(final.Job.Error, "startup_timeout") {
+				t.Fatalf("invalid startup budget was not diagnosed: %+v", final.Job)
+			}
+			select {
+			case <-called:
+				t.Fatal("invalid startup budget reached the mutating spawn service")
+			default:
 			}
 		})
 	}

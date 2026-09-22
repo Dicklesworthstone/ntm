@@ -257,6 +257,7 @@ type jobSwarmSpawnParams struct {
 	NoUserPane          bool     `json:"no_user_pane,omitempty"`
 	ReadyTimeout        string   `json:"ready_timeout,omitempty"`   // Positive Go duration, e.g. "45s".
 	LaunchInterval      string   `json:"launch_interval,omitempty"` // Minimum launch start interval, e.g. "2s"; zero disables pacing.
+	StartupTimeout      string   `json:"startup_timeout,omitempty"` // Whole spawn budget, including pacing and assignment.
 	CCModel             string   `json:"cc_model,omitempty"`
 	CCReasoningEffort   string   `json:"cc_reasoning_effort,omitempty"`
 	CodModel            string   `json:"cod_model,omitempty"`
@@ -311,6 +312,14 @@ func (s *Server) jobSwarmSpawn(ctx context.Context, params map[string]interface{
 			return nil, fmt.Errorf("launch_interval must be a non-negative duration such as 2s")
 		}
 	}
+	var startupTimeout time.Duration
+	if req.StartupTimeout != "" {
+		var err error
+		startupTimeout, err = time.ParseDuration(req.StartupTimeout)
+		if err != nil || startupTimeout <= 0 {
+			return nil, fmt.Errorf("startup_timeout must be a positive duration such as 2m")
+		}
+	}
 	if s.spawnAgents == nil {
 		return nil, fmt.Errorf("agent spawn service unavailable")
 	}
@@ -349,7 +358,19 @@ func (s *Server) jobSwarmSpawn(ctx context.Context, params map[string]interface{
 	if err != nil {
 		return nil, err
 	}
-	result, err := s.spawnAgents(ctx, opts)
+	spawnCtx := ctx
+	if startupTimeout > 0 {
+		var cancel context.CancelFunc
+		spawnCtx, cancel = context.WithTimeout(ctx, startupTimeout)
+		defer cancel()
+	}
+	result, err := s.spawnAgents(spawnCtx, opts)
+	// A backend may return a structured failure (or even success) rather than
+	// its context error. The caller's startup budget remains authoritative.
+	// Keep the partial output below, but never report a timed-out spawn as done.
+	if ctxErr := spawnCtx.Err(); ctxErr != nil {
+		err = errors.Join(err, fmt.Errorf("swarm startup stopped: %w", ctxErr))
+	}
 	// A spawn can create its session and some agents before failing or being
 	// cancelled. Serialize that output BEFORE inspecting either error channel
 	// so operators retain pane identities and recovery instructions on failure.
@@ -362,6 +383,9 @@ func (s *Server) jobSwarmSpawn(ctx context.Context, params map[string]interface{
 		}
 		if req.LaunchInterval != "" {
 			payload["launch_interval"] = launchInterval.String()
+		}
+		if req.StartupTimeout != "" {
+			payload["startup_timeout"] = startupTimeout.String()
 		}
 	}
 	if err != nil {

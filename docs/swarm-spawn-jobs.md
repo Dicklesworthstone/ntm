@@ -12,6 +12,7 @@ startup request at once. Submit `POST /api/v1/jobs` with type `swarm_spawn`:
     "cod_count": 2,
     "safety": true,
     "launch_interval": "2s",
+    "startup_timeout": "3m",
     "wait_ready": true,
     "ready_timeout": "90s"
   }
@@ -20,9 +21,9 @@ startup request at once. Submit `POST /api/v1/jobs` with type `swarm_spawn`:
 
 `launch_interval` is a non-negative Go duration string, such as `500ms`, `2s`,
 or `1m`. Omit it or set it to `0s` to keep the existing unpaced behavior.
-Malformed, negative, overflowing, numeric, boolean, or object values fail the job before the
-spawn service is called. Read the terminal job error, not just the initial
-HTTP acceptance response.
+Malformed, negative, overflowing, numeric, boolean, or object values fail the
+job before the spawn service is called. Read the terminal job error, not just
+ the initial HTTP acceptance response.
 
 The first launch starts immediately after normal preflight and session setup.
 Later launch attempts start at least one interval apart, across agent types.
@@ -38,6 +39,15 @@ normalized `launch_interval` is retained in the job result, including partial
 failure results. The existing two-hour job timeout includes pacing time;
 `ready_timeout` remains the separate agent-readiness budget.
 
+Set `startup_timeout` to a positive duration to bound the whole shared spawn
+operation: preflight, session setup, paced launches, readiness, and work
+assignment. Omit it to inherit the job's existing deadline. An earlier parent
+deadline always wins, and cancelling the job still stops the child operation.
+Zero, negative, malformed, or overflowing budgets fail before spawning.
+The normalized requested budget is retained as `startup_timeout` in the result.
+A deadline makes the job fail even if the backend returns a success envelope;
+the original backend error and any partial session/agent result are preserved.
+
 Poll `GET /api/v1/jobs/{id}` to inspect progress and terminal results. Cancel via
 `DELETE /api/v1/jobs/{id}`. Cancellation interrupts a pacing wait and prevents
 later launches. It does not roll back a session or agents already created.
@@ -49,6 +59,7 @@ This control is on the asynchronous `swarm_spawn` Jobs API. It does not add a
 `ntm spawn --stagger` prompt-stagger behavior.
 
 Regression coverage: `TestSpawnLaunchInterval*` in `internal/robot` exercises
-real pacing, receipt preservation, and cancellation; `TestSwarmJobLaunchPacing*`
-in `internal/serve` exercises HTTP job dispatch, strict validation, previews,
-and recovery-result propagation.
+real pacing, receipt preservation, and cancellation. `TestSwarmJobLaunchPacing*`
+and `TestSwarmJobStartupTimeout*` in `internal/serve` exercise HTTP job dispatch,
+strict validation, previews, parent cancellation, authoritative deadlines, and
+recovery-result propagation.
