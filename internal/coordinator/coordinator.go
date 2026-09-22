@@ -452,6 +452,11 @@ func (c *SessionCoordinator) RunCycle(ctx context.Context) ([]AssignmentResult, 
 	// (bd-ws2-wire-or-delete-ykmcz.1): runs before the AutoAssign early
 	// return so notify/negotiate work even when auto-assignment is off.
 	c.runConflictCycle(ctx)
+	// Existing work still owns its leases when the operator disables new
+	// auto-assignment. Keep those exact leases alive before admitting more work.
+	if err := c.maintainAssignmentReservations(ctx); err != nil {
+		return nil, err
+	}
 	if !c.config.AutoAssign {
 		return nil, nil
 	}

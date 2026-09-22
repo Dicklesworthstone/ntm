@@ -134,6 +134,11 @@ type Assignment struct {
 	CompletionConsumerToken  string               `json:"completion_consumer_token,omitempty"`
 	CompletionLeaseExpiresAt *time.Time           `json:"completion_lease_expires_at,omitempty"`
 
+	// Renewal diagnostics keep lost/uncertain protection visible without
+	// altering the original claim, dispatch, or reservation recovery barriers.
+	ReservationRenewalCheckedAt *time.Time `json:"reservation_renewal_checked_at,omitempty"`
+	ReservationRenewalError     string     `json:"reservation_renewal_error,omitempty"`
+
 	// Audit record for a dispatch_state="sending" barrier that was resolved
 	// from external evidence rather than from its own transport outcome
 	// (ntm#304). The reason names the concrete observation that justified the
@@ -192,6 +197,7 @@ func cloneAssignment(a *Assignment) *Assignment {
 	cloned.ClaimedAt = cloneTimePtr(a.ClaimedAt)
 	cloned.ClaimStartedAt = cloneTimePtr(a.ClaimStartedAt)
 	cloned.ReservationExpiresAt = cloneTimePtr(a.ReservationExpiresAt)
+	cloned.ReservationRenewalCheckedAt = cloneTimePtr(a.ReservationRenewalCheckedAt)
 	cloned.ReservationStartedAt = cloneTimePtr(a.ReservationStartedAt)
 	cloned.DispatchStartedAt = cloneTimePtr(a.DispatchStartedAt)
 	cloned.DispatchedAt = cloneTimePtr(a.DispatchedAt)
@@ -1559,6 +1565,8 @@ func (s *AssignmentStore) recordClearLeasesReleasedWithOperationLock(beadID stri
 	assignment.ReservationIDs = nil
 	assignment.ReservationExpiresAt = nil
 	assignment.ReservationError = ""
+	assignment.ReservationRenewalCheckedAt = nil
+	assignment.ReservationRenewalError = ""
 	if s.replace == nil {
 		s.replace = make(map[string]struct{})
 	}
@@ -1660,6 +1668,8 @@ func (s *AssignmentStore) CompleteTerminalReconciliation(ctx context.Context, be
 	assignment.ReservationIDs = nil
 	assignment.ReservationExpiresAt = nil
 	assignment.ReservationError = ""
+	assignment.ReservationRenewalCheckedAt = nil
+	assignment.ReservationRenewalError = ""
 	assignment.ClearState = ClearStateNone
 	assignment.ClearStartedAt = nil
 	assignment.ClearError = ""
@@ -2200,6 +2210,84 @@ func (s *AssignmentStore) transitionIfCurrent(ctx context.Context, observed *Ass
 		emitAgentIdle(s.SessionName, cloned, previousStatus, newStatus)
 	}
 	return true, nil
+}
+
+// RefreshReservationIfCurrent verifies or renews a delivered assignment's
+// leases while holding the same cross-process locks as assignment replacement
+// and external cleanup. The callback must return an independently verified
+// expiry; zero with no error means no renewal is appropriate (for example,
+// the tracker has closed the work). A failure records a diagnostic without
+// releasing the occupied pane or changing dispatch/recovery state.
+func (s *AssignmentStore) RefreshReservationIfCurrent(ctx context.Context, observed *Assignment, refresh func(context.Context, *Assignment) (time.Time, error)) (bool, error) {
+	if observed == nil || strings.TrimSpace(observed.BeadID) == "" || refresh == nil {
+		return false, errors.New("observed assignment and reservation refresh callback are required")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	cleanupUnlock, err := s.AcquireExternalCleanupLock(ctx, observed.BeadID)
+	if err != nil {
+		return false, fmt.Errorf("lock reservation refresh cleanup %s: %w", observed.BeadID, err)
+	}
+	defer cleanupUnlock()
+	operationUnlock, err := acquireAtomicBeadOperationLock(ctx, s.path, observed.BeadID)
+	if err != nil {
+		return false, fmt.Errorf("lock reservation refresh %s: %w", observed.BeadID, err)
+	}
+	defer operationUnlock()
+	if err := s.LoadStrict(); err != nil {
+		return false, fmt.Errorf("refresh reservation assignment %s: %w", observed.BeadID, err)
+	}
+	current := s.Get(observed.BeadID)
+	eligible := func(a *Assignment) bool {
+		return SameAssignmentGeneration(observed, a) && a.ClearState == ClearStateNone &&
+			(a.Status == StatusAssigned || a.Status == StatusWorking) && a.DispatchState == DispatchSent &&
+			a.ReservationState == ReservationReserved && a.ReservationCompleted
+	}
+	if !eligible(current) {
+		return false, nil
+	}
+	expiresAt, refreshErr := refresh(ctx, cloneAssignment(current))
+	if refreshErr == nil && expiresAt.IsZero() {
+		return false, nil
+	}
+	checkedAt := time.Now().UTC()
+	if refreshErr == nil && !expiresAt.After(checkedAt) {
+		refreshErr = errors.New("reservation refresh returned an expired lease")
+	}
+	if err := s.LoadStrict(); err != nil {
+		return false, errors.Join(refreshErr, fmt.Errorf("reload reservation refresh result: %w", err))
+	}
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	latest := s.Assignments[observed.BeadID]
+	if !eligible(latest) || latest.ClaimActor != current.ClaimActor || latest.AgentName != current.AgentName || latest.OccupancyKey != current.OccupancyKey ||
+		latest.ReservationAgent != current.ReservationAgent || latest.ReservationTarget != current.ReservationTarget ||
+		!reflect.DeepEqual(latest.ReservationIDs, current.ReservationIDs) || !reflect.DeepEqual(latest.ReservedPaths, current.ReservedPaths) {
+		return false, refreshErr
+	}
+	previous := cloneAssignment(latest)
+	latest.ReservationRenewalCheckedAt = &checkedAt
+	latest.ReservationRenewalError = ""
+	if refreshErr != nil {
+		latest.ReservationRenewalError = refreshErr.Error()
+	} else {
+		expiresAt = expiresAt.UTC()
+		latest.ReservationExpiresAt = &expiresAt
+	}
+	if s.replace == nil {
+		s.replace = make(map[string]struct{})
+	}
+	s.replace[observed.BeadID] = struct{}{}
+	if err := s.saveLocked(); err != nil {
+		var concurrentMutation *ConcurrentMutationError
+		if !errors.As(err, &concurrentMutation) {
+			s.Assignments[observed.BeadID] = previous
+			delete(s.replace, observed.BeadID)
+		}
+		return false, errors.Join(refreshErr, err)
+	}
+	return true, refreshErr
 }
 
 // SameAssignmentGeneration reports whether two snapshots identify the same

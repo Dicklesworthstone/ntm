@@ -34,6 +34,199 @@ func TestNewStore(t *testing.T) {
 	}
 }
 
+func TestRefreshReservationIfCurrentSerializesExternalRenewal(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	const session, beadID = "reservation-renewal", "bd-renew"
+	seed := NewStore(session)
+	expiresAt := time.Now().UTC().Add(time.Minute)
+	seed.Assignments[beadID] = &Assignment{
+		BeadID: beadID, Status: StatusWorking, AssignedAt: time.Now(), IdempotencyKey: "lease-generation",
+		DispatchState: DispatchSent, ReservationState: ReservationReserved, ReservationCompleted: true,
+		ReservationAgent: "BlueLake", ReservationTarget: "%7", ReservationIDs: []int{71}, ReservedPaths: []string{"a.go"},
+		ReservationExpiresAt: &expiresAt,
+	}
+	if err := seed.Save(); err != nil {
+		t.Fatal(err)
+	}
+	stores := make([]*AssignmentStore, 2)
+	for i := range stores {
+		var err error
+		stores[i], err = LoadStoreStrict(session)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	var calls atomic.Int32
+	start := make(chan struct{})
+	results := make(chan error, len(stores))
+	for _, store := range stores {
+		observed := store.Get(beadID)
+		go func() {
+			<-start
+			_, err := store.RefreshReservationIfCurrent(t.Context(), observed, func(_ context.Context, current *Assignment) (time.Time, error) {
+				if current.ReservationExpiresAt.After(time.Now().Add(15 * time.Minute)) {
+					return time.Time{}, nil
+				}
+				calls.Add(1)
+				return time.Now().UTC().Add(time.Hour), nil
+			})
+			results <- err
+		}()
+	}
+	close(start)
+	for range stores {
+		select {
+		case err := <-results:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("reservation renewal deadlocked")
+		}
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("external renewals = %d, want one", calls.Load())
+	}
+	if err := seed.LoadStrict(); err != nil {
+		t.Fatal(err)
+	}
+	got := seed.Get(beadID)
+	if got.ReservationExpiresAt.Before(time.Now().Add(50*time.Minute)) || got.ReservationRenewalCheckedAt == nil || got.Status != StatusWorking {
+		t.Fatalf("renewal not durable: %+v", got)
+	}
+}
+
+func TestRefreshReservationIfCurrentRejectsSupersededOrClearingGeneration(t *testing.T) {
+	for _, kind := range []string{"generation", "clearing", "terminal", "sending"} {
+		t.Run(kind, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			store := NewStore("renewal-stale")
+			store.Assignments["bd-renew"] = &Assignment{
+				BeadID: "bd-renew", Status: StatusWorking, AssignedAt: time.Now(), IdempotencyKey: "old-generation",
+				DispatchState: DispatchSent, ReservationState: ReservationReserved, ReservationCompleted: true,
+				ReservationIDs: []int{71}, ReservedPaths: []string{"a.go"},
+			}
+			if err := store.Save(); err != nil {
+				t.Fatal(err)
+			}
+			observed := store.Get("bd-renew")
+			writer, err := LoadStoreStrict("renewal-stale")
+			if err != nil {
+				t.Fatal(err)
+			}
+			switch kind {
+			case "generation":
+				writer.Assignments["bd-renew"].IdempotencyKey = "replacement-generation"
+			case "clearing":
+				writer.Assignments["bd-renew"].ClearState = ClearStateReservationReleasing
+			case "terminal":
+				writer.Assignments["bd-renew"].Status = StatusCompleted
+			case "sending":
+				writer.Assignments["bd-renew"].DispatchState = DispatchSending
+			}
+			if err := writer.Save(); err != nil {
+				t.Fatal(err)
+			}
+			called := false
+			applied, err := store.RefreshReservationIfCurrent(t.Context(), observed, func(context.Context, *Assignment) (time.Time, error) {
+				called = true
+				return time.Now().Add(time.Hour), nil
+			})
+			if err != nil || applied || called {
+				t.Fatalf("stale %s refresh = applied:%v called:%v err:%v", kind, applied, called, err)
+			}
+		})
+	}
+}
+
+func TestRefreshReservationIfCurrentPreservesOccupancyOnFailure(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	store := NewStore("renewal-failure")
+	expiresAt := time.Now().UTC().Add(time.Minute)
+	store.Assignments["bd-renew"] = &Assignment{
+		BeadID: "bd-renew", Status: StatusWorking, AssignedAt: time.Now(), IdempotencyKey: "generation",
+		OccupancyKey: "%7", DispatchState: DispatchSent, ReservationState: ReservationReserved, ReservationCompleted: true,
+		ReservationIDs: []int{71}, ReservedPaths: []string{"a.go"}, ReservationExpiresAt: &expiresAt,
+	}
+	if err := store.Save(); err != nil {
+		t.Fatal(err)
+	}
+	failure := errors.New("renewal outcome unknown")
+	applied, err := store.RefreshReservationIfCurrent(t.Context(), store.Get("bd-renew"), func(context.Context, *Assignment) (time.Time, error) { return time.Time{}, failure })
+	if !applied || !errors.Is(err, failure) {
+		t.Fatalf("refresh failure = %v, %v", applied, err)
+	}
+	reloaded, err := LoadStoreStrict(store.SessionName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failed := reloaded.Get("bd-renew")
+	if failed.ReservationRenewalError != failure.Error() || failed.ReservationRenewalCheckedAt == nil || failed.OccupancyKey != "%7" || failed.Status != StatusWorking || !failed.ReservationCompleted || !failed.ReservationExpiresAt.Equal(expiresAt) {
+		t.Fatalf("failure erased protection evidence or occupancy: %+v", failed)
+	}
+	// Returned diagnostic timestamps must not alias the store's state.
+	*failed.ReservationRenewalCheckedAt = time.Time{}
+	if reloaded.Get("bd-renew").ReservationRenewalCheckedAt.IsZero() {
+		t.Fatal("renewal timestamp aliases stored state")
+	}
+	applied, err = reloaded.RefreshReservationIfCurrent(t.Context(), failed, func(context.Context, *Assignment) (time.Time, error) { return time.Now().Add(time.Hour), nil })
+	if !applied || err != nil {
+		t.Fatalf("renewal recovery = %v, %v", applied, err)
+	}
+	if got := reloaded.Get("bd-renew"); got.ReservationRenewalError != "" || got.ReservationExpiresAt.Before(time.Now().Add(50*time.Minute)) {
+		t.Fatalf("recovery not recorded: %+v", got)
+	}
+}
+
+func TestRefreshReservationIfCurrentPreservesReplacementDuringCallback(t *testing.T) {
+	for _, kind := range []string{"generation", "owner", "lease"} {
+		t.Run(kind, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			store := NewStore("renewal-concurrent-replacement")
+			expiresAt := time.Now().UTC().Add(time.Minute)
+			store.Assignments["bd-renew"] = &Assignment{
+				BeadID: "bd-renew", Status: StatusWorking, AssignedAt: time.Now(), IdempotencyKey: "generation",
+				AgentName: "BlueLake", ClaimActor: "BlueLake:generation", OccupancyKey: "%7", DispatchState: DispatchSent,
+				ReservationState: ReservationReserved, ReservationCompleted: true,
+				ReservationIDs: []int{71}, ReservedPaths: []string{"a.go"}, ReservationExpiresAt: &expiresAt,
+			}
+			if err := store.Save(); err != nil {
+				t.Fatal(err)
+			}
+			var replacement *Assignment
+			applied, err := store.RefreshReservationIfCurrent(t.Context(), store.Get("bd-renew"), func(context.Context, *Assignment) (time.Time, error) {
+				// A legacy writer does not hold the per-bead operation lock.
+				writer, err := LoadStoreStrict(store.SessionName)
+				if err != nil {
+					return time.Time{}, err
+				}
+				row := writer.Assignments["bd-renew"]
+				switch kind {
+				case "generation":
+					row.IdempotencyKey = "replacement-generation"
+				case "owner":
+					row.ClaimActor = "RedHill:generation"
+				case "lease":
+					row.ReservationIDs = []int{72}
+				}
+				if err := writer.Save(); err != nil {
+					return time.Time{}, err
+				}
+				replacement = writer.Get("bd-renew")
+				return time.Now().Add(time.Hour), nil
+			})
+			if err != nil || applied {
+				t.Fatalf("refresh overwrote concurrent %s replacement: applied=%v err=%v", kind, applied, err)
+			}
+			for label, row := range map[string]*Assignment{"memory": store.Get("bd-renew"), "durable": mustLoadAssignment(t, store.SessionName, "bd-renew")} {
+				if !reflect.DeepEqual(row, replacement) {
+					t.Fatalf("%s replaced authoritative assignment: got=%+v want=%+v", label, row, replacement)
+				}
+			}
+		})
+	}
+}
+
 func TestAssign(t *testing.T) {
 	// Use temp directory
 	tmpDir := t.TempDir()

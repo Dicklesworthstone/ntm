@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -80,9 +81,7 @@ func newConflictWireMailServer(t *testing.T, reservationsJSON string) (*agentmai
 
 		switch rpc.Method {
 		case "resources/read":
-			contents, _ := json.Marshal(map[string]any{
-				"contents": []map[string]any{{"text": reservationsJSON}},
-			})
+			contents := conflictWireResourceResponse(t, rpc.Params, reservationsJSON)
 			fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":%s}`, idJSON, contents)
 		case "tools/call":
 			var params struct {
@@ -103,6 +102,35 @@ func newConflictWireMailServer(t *testing.T, reservationsJSON string) (*agentmai
 
 	client := agentmail.NewClient(agentmail.WithBaseURL(server.URL))
 	return client, recorder
+}
+
+// Current Agent Mail resource rows may omit project_id; the client's
+// independent project-identity read must receive a project, not the lock list.
+func conflictWireResourceResponse(t *testing.T, paramsJSON json.RawMessage, reservationsJSON string) []byte {
+	t.Helper()
+	var params struct {
+		URI string `json:"uri"`
+	}
+	if err := json.Unmarshal(paramsJSON, &params); err != nil {
+		t.Errorf("decode resource params: %v", err)
+	}
+	text := reservationsJSON
+	if strings.HasPrefix(params.URI, "resource://project/") {
+		key, err := url.PathUnescape(strings.TrimPrefix(params.URI, "resource://project/"))
+		if err != nil {
+			t.Errorf("decode project resource key: %v", err)
+		}
+		project, err := json.Marshal(agentmail.Project{ID: 9, HumanKey: key})
+		if err != nil {
+			t.Errorf("encode project resource: %v", err)
+		}
+		text = string(project)
+	}
+	contents, err := json.Marshal(map[string]any{"contents": []map[string]any{{"text": text}}})
+	if err != nil {
+		t.Errorf("encode resource response: %v", err)
+	}
+	return contents
 }
 
 // conflictingPairReservationsJSON builds the resource payload for a genuine
@@ -420,9 +448,7 @@ func TestRunConflictCycle_FailedSendRetriesNextTick(t *testing.T) {
 		idJSON, _ := json.Marshal(rpc.ID)
 		switch rpc.Method {
 		case "resources/read":
-			contents, _ := json.Marshal(map[string]any{
-				"contents": []map[string]any{{"text": conflictingPairReservationsJSON(pattern)}},
-			})
+			contents := conflictWireResourceResponse(t, rpc.Params, conflictingPairReservationsJSON(pattern))
 			fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":%s}`, idJSON, contents)
 		case "tools/call":
 			var params struct {

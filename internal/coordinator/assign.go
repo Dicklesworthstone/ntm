@@ -18,6 +18,8 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/persona"
 	"github.com/Dicklesworthstone/ntm/internal/redaction"
+	"github.com/Dicklesworthstone/ntm/internal/robot"
+	"github.com/Dicklesworthstone/ntm/internal/status"
 )
 
 // ScoreConfig controls how work assignments are scored.
@@ -200,6 +202,223 @@ func coordinatorWorkAssignedEventDetails(result AssignmentResult, planned *WorkA
 		details["bead_title"] = result.Assignment.BeadTitle
 	}
 	return details
+}
+
+const assignmentReservationRenewalLead = 15 * time.Minute
+
+// maintainAssignmentReservations renews only leases belonging to delivered,
+// still-owned work. The file-output watcher owns a separate set of reservations
+// and cannot maintain the durable assignment ledger's one-hour leases.
+func (c *SessionCoordinator) maintainAssignmentReservations(ctx context.Context) error {
+	store, err := assignmentstore.LoadStoreStrictReadOnly(c.session)
+	if err != nil {
+		return fmt.Errorf("load assignment reservation heartbeat: %w", err)
+	}
+	var failures []error
+	for _, current := range store.ListActive() {
+		if current.DispatchState != assignmentstore.DispatchSent || current.ReservationState != assignmentstore.ReservationReserved || !current.ReservationCompleted ||
+			current.ClearState != assignmentstore.ClearStateNone || (current.Status != assignmentstore.StatusAssigned && current.Status != assignmentstore.StatusWorking) {
+			continue
+		}
+		if current.ReservationRenewalError == "" && current.ReservationExpiresAt != nil && current.ReservationExpiresAt.After(time.Now().Add(assignmentReservationRenewalLead)) {
+			continue
+		}
+		_, err := store.RefreshReservationIfCurrent(ctx, current, c.refreshAssignmentReservation)
+		if err != nil {
+			failures = append(failures, fmt.Errorf("reservation protection for %s is unverified; assignment retained, inspect its leases before reassigning: %w", current.BeadID, err))
+		}
+		if ctx.Err() != nil {
+			break
+		}
+	}
+	return errors.Join(failures...)
+}
+
+func (c *SessionCoordinator) refreshAssignmentReservation(ctx context.Context, current *assignmentstore.Assignment) (time.Time, error) {
+	// Another cycle may have renewed this generation while we waited for its
+	// external-operation lock. Recheck the persisted deadline under that lock.
+	now := time.Now().UTC()
+	if current.ReservationRenewalError == "" && current.ReservationExpiresAt != nil && current.ReservationExpiresAt.After(now.Add(assignmentReservationRenewalLead)) {
+		return time.Time{}, nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	lookup := c.workItemDetailsFn
+	if lookup == nil {
+		lookup = func(ctx context.Context, beadID string) (*bv.BeadAssignmentDetails, error) {
+			return bv.GetBeadAssignmentDetailsContext(ctx, c.projectKey, beadID)
+		}
+	}
+	details, err := lookup(ctx, current.BeadID)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("read live claim before renewal: %w", err)
+	}
+	if details == nil || details.ID != current.BeadID {
+		return time.Time{}, errors.New("live claim did not identify the assigned bead")
+	}
+	switch strings.ToLower(strings.TrimSpace(details.Status)) {
+	case "closed", "tombstone":
+		return time.Time{}, nil // Normal terminal reconciliation owns release.
+	case "open", "in_progress":
+	default:
+		return time.Time{}, fmt.Errorf("live work status %q does not authorize renewal", details.Status)
+	}
+	if current.ClaimActor == "" || strings.TrimSpace(details.Assignee) != current.ClaimActor {
+		return time.Time{}, fmt.Errorf("live claim owner %q differs from assignment owner %q", details.Assignee, current.ClaimActor)
+	}
+	target, err := assignmentstore.CanonicalPaneIdentity(current)
+	if err != nil {
+		return time.Time{}, err
+	}
+	lease := coordinatorLeaseFromAssignment(current)
+	if err := c.checkAssignmentReservationOwner(ctx, current, lease, target); err != nil {
+		return time.Time{}, err
+	}
+	port := &coordinatorAgentMailReservationPort{client: c.reservationClient, projectKey: agentmail.CanonicalProjectKey(c.projectKey)}
+	projectID, err := port.ensureProject(ctx)
+	if err != nil {
+		return time.Time{}, err
+	}
+	var verifiedRows []agentmail.FileReservation
+	readExpiry := func() (time.Time, error) {
+		rows, err := c.reservationClient.ListReservations(ctx, port.projectKey, lease.AgentName, false)
+		if err != nil {
+			return time.Time{}, fmt.Errorf("read assignment lease ownership: %w", err)
+		}
+		expiresAt, err := verifiedAssignmentReservationExpiry(current, lease, rows, projectID, time.Now())
+		if err == nil {
+			verifiedRows = rows
+		}
+		return expiresAt, err
+	}
+	expiresAt, err := readExpiry()
+	if err != nil {
+		return time.Time{}, err
+	}
+	if expiresAt.After(time.Now().Add(assignmentReservationRenewalLead)) {
+		// Reconcile a prior successful renewal whose response or local
+		// persistence was lost, without extending the server lease twice.
+		return expiresAt, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return time.Time{}, err
+	}
+	// Project and lease reads can outlast a pane observation. Refresh liveness
+	// again before mutation rather than starving later agents in a slow batch.
+	if err := c.checkAssignmentReservationOwner(ctx, current, lease, target); err != nil {
+		return time.Time{}, err
+	}
+	// A partial previous renewal must not add another hour to already healthy
+	// IDs on every retry. Select only the saved IDs still inside the lead window.
+	if _, err := verifiedAssignmentReservationExpiry(current, lease, verifiedRows, projectID, time.Now()); err != nil {
+		return time.Time{}, err
+	}
+	dueIDs := make([]int, 0, len(lease.ReservationIDs))
+	for _, id := range lease.ReservationIDs {
+		for _, row := range verifiedRows {
+			if row.ID == id && !row.ExpiresTS.After(time.Now().Add(assignmentReservationRenewalLead)) {
+				dueIDs = append(dueIDs, id)
+				break
+			}
+		}
+	}
+	if len(dueIDs) == 0 {
+		return time.Time{}, errors.New("no exact assignment reservation IDs are eligible for renewal")
+	}
+	_, renewalErr := c.reservationClient.RenewReservations(ctx, agentmail.RenewReservationsOptions{
+		ProjectKey: port.projectKey, AgentName: lease.AgentName,
+		ExtendSeconds: 3600, ReservationIDs: dueIDs,
+	})
+	// The active listing is the authority, including when the server committed
+	// but its response was lost. A count-only receipt cannot prove protection.
+	renewedExpiry, readErr := readExpiry()
+	if readErr != nil {
+		return time.Time{}, errors.Join(renewalErr, fmt.Errorf("verify renewed assignment leases: %w", readErr))
+	}
+	if !renewedExpiry.After(expiresAt) || !renewedExpiry.After(time.Now().Add(assignmentReservationRenewalLead)) {
+		return time.Time{}, errors.Join(renewalErr, errors.New("renewal did not extend every assignment lease beyond the renewal window"))
+	}
+	return renewedExpiry, nil
+}
+
+func (c *SessionCoordinator) checkAssignmentReservationOwner(ctx context.Context, current *assignmentstore.Assignment, lease assignmentstore.LeaseReceipt, target string) error {
+	readObserved := func() *AgentState {
+		c.mu.RLock()
+		defer c.mu.RUnlock()
+		if pane := c.agents[target]; pane != nil {
+			copy := *pane
+			return &copy
+		}
+		return nil
+	}
+	observed := readObserved()
+	if observed == nil || !status.DispatchObservationIsCurrent(observed.ObservedAt, time.Now()) {
+		if err := c.updateAgentStatesContext(ctx); err != nil {
+			return fmt.Errorf("refresh pane observation before reservation renewal: %w", err)
+		}
+		observed = readObserved()
+	}
+	if observed == nil || !observed.Healthy || observed.ObservationFreshness != status.FreshnessFresh ||
+		!status.DispatchObservationIsCurrent(observed.ObservedAt, time.Now()) || observed.Status == robot.StateUnknown || observed.Status == robot.StateError {
+		return fmt.Errorf("pane %s has no fresh healthy agent observation", target)
+	}
+	if err := pendingRecoveryIdentityError(current, observed); err != nil {
+		return err
+	}
+	// Re-read registration instead of trusting a cached AgentState after a
+	// registry read failure or an agent replacement between monitor cycles.
+	registry, err := agentmail.LoadSessionAgentRegistry(c.session, c.projectKey)
+	if err != nil {
+		return fmt.Errorf("read pane identity before renewal: %w", err)
+	}
+	registeredName, registered := registry.GetAgent("", target)
+	if !registered || lease.AgentName == "" || registeredName != lease.AgentName || registeredName != current.AgentName || lease.Target != target {
+		return fmt.Errorf("pane %s no longer has the assignment's registered reservation owner", target)
+	}
+	return nil
+}
+
+// verifiedAssignmentReservationExpiry requires the exact saved ID set and all
+// its original bindings. Missing/expired leases are never reacquired here:
+// another agent may already have reserved the now-unprotected files.
+func verifiedAssignmentReservationExpiry(current *assignmentstore.Assignment, lease assignmentstore.LeaseReceipt, rows []agentmail.FileReservation, projectID int, now time.Time) (time.Time, error) {
+	if len(lease.ReservationIDs) == 0 || len(lease.Granted) == 0 {
+		return time.Time{}, errors.New("assignment lease has no exact durable IDs or paths")
+	}
+	wanted := make(map[int]bool, len(lease.ReservationIDs))
+	for _, id := range lease.ReservationIDs {
+		if id <= 0 || wanted[id] {
+			return time.Time{}, fmt.Errorf("invalid or repeated assignment reservation ID %d", id)
+		}
+		wanted[id] = true
+	}
+	paths := make(map[string]bool, len(lease.Granted))
+	for _, path := range lease.Granted {
+		if path == "" || paths[path] {
+			return time.Time{}, fmt.Errorf("empty or repeated assignment reservation path %q", path)
+		}
+		paths[path] = true
+	}
+	seen := make(map[int]bool, len(wanted))
+	seenPaths := make(map[string]bool, len(paths))
+	var expiresAt time.Time
+	for _, row := range rows {
+		if !wanted[row.ID] {
+			continue
+		}
+		if seen[row.ID] || !paths[row.PathPattern] || seenPaths[row.PathPattern] || row.ProjectID != projectID || row.AgentName != lease.AgentName ||
+			row.Reason != "bead assignment: "+current.BeadID || !row.Exclusive || row.ReleasedTS != nil || !row.ExpiresTS.After(now) {
+			return time.Time{}, fmt.Errorf("reservation %d lost its exact project, owner, bead, path, or live exclusive lease binding", row.ID)
+		}
+		seen[row.ID], seenPaths[row.PathPattern] = true, true
+		if expiresAt.IsZero() || row.ExpiresTS.Before(expiresAt) {
+			expiresAt = row.ExpiresTS.Time
+		}
+	}
+	if len(seen) != len(wanted) || len(seenPaths) != len(paths) {
+		return time.Time{}, errors.New("one or more exact assignment reservations are missing; refusing to renew or reacquire partial protection")
+	}
+	return expiresAt, nil
 }
 
 func (c *SessionCoordinator) filterActionableRecommendations(ctx context.Context, recommendations []bv.TriageRecommendation, activeBeads map[string]struct{}) ([]bv.TriageRecommendation, bool, error) {
