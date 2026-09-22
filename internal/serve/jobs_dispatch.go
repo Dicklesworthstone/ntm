@@ -255,7 +255,8 @@ type jobSwarmSpawnParams struct {
 	DryRun              bool     `json:"dry_run,omitempty"`
 	Safety              bool     `json:"safety,omitempty"`
 	NoUserPane          bool     `json:"no_user_pane,omitempty"`
-	ReadyTimeout        string   `json:"ready_timeout,omitempty"` // Positive Go duration, e.g. "45s".
+	ReadyTimeout        string   `json:"ready_timeout,omitempty"`   // Positive Go duration, e.g. "45s".
+	LaunchInterval      string   `json:"launch_interval,omitempty"` // Minimum launch start interval, e.g. "2s"; zero disables pacing.
 	CCModel             string   `json:"cc_model,omitempty"`
 	CCReasoningEffort   string   `json:"cc_reasoning_effort,omitempty"`
 	CodModel            string   `json:"cod_model,omitempty"`
@@ -302,11 +303,19 @@ func (s *Server) jobSwarmSpawn(ctx context.Context, params map[string]interface{
 	if !req.AssignWork && (req.AssignStrategy != "" || req.RequireReservation || len(req.ReservationPaths) > 0) {
 		return nil, fmt.Errorf("assign_strategy, require_reservation, and reservation_paths require assign_work=true")
 	}
+	var launchInterval time.Duration
+	if req.LaunchInterval != "" {
+		var err error
+		launchInterval, err = time.ParseDuration(req.LaunchInterval)
+		if err != nil || launchInterval < 0 {
+			return nil, fmt.Errorf("launch_interval must be a non-negative duration such as 2s")
+		}
+	}
 	if s.spawnAgents == nil {
 		return nil, fmt.Errorf("agent spawn service unavailable")
 	}
 
-	result, err := s.spawnAgents(ctx, robot.SpawnOptions{
+	opts, err := robot.WithSpawnLaunchInterval(robot.SpawnOptions{
 		Session:             req.Session,
 		Label:               req.Label,
 		CCCount:             req.CCCount,
@@ -336,7 +345,11 @@ func (s *Server) jobSwarmSpawn(ctx context.Context, params map[string]interface{
 		CustomNames:         req.CustomNames,
 		RequireReservation:  req.RequireReservation,
 		ReservationPaths:    req.ReservationPaths,
-	})
+	}, launchInterval)
+	if err != nil {
+		return nil, err
+	}
+	result, err := s.spawnAgents(ctx, opts)
 	// A spawn can create its session and some agents before failing or being
 	// cancelled. Serialize that output BEFORE inspecting either error channel
 	// so operators retain pane identities and recovery instructions on failure.
@@ -346,6 +359,9 @@ func (s *Server) jobSwarmSpawn(ctx context.Context, params map[string]interface{
 		payload, encodeErr = toJSONMap(result)
 		if encodeErr != nil {
 			return nil, errors.Join(err, fmt.Errorf("encode agent spawn result: %w", encodeErr))
+		}
+		if req.LaunchInterval != "" {
+			payload["launch_interval"] = launchInterval.String()
 		}
 	}
 	if err != nil {
