@@ -9,6 +9,8 @@ import (
 	"io"
 	"path/filepath"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/checkpoint"
 )
 
 var (
@@ -103,6 +105,11 @@ func (s *Server) submitJob(ctx context.Context, req CreateJobRequest) (*Job, err
 		jobCtx, cancel := context.WithCancel(owner)
 		if resumeTarget != nil {
 			jobCtx = context.WithValue(jobCtx, jobResumeTargetKey{}, *resumeTarget)
+		}
+		if frozen.Type == JobTypeCheckpointRestore {
+			// The observer receives the eventual execution context, including
+			// the worker and operation-ID journal reporters installed at dispatch.
+			jobCtx = checkpoint.WithRestoreProgress(jobCtx, restoreJobProgressObserver())
 		}
 		ready := false
 		defer func() {
