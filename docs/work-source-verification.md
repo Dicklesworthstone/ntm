@@ -64,6 +64,42 @@ and the top recommendation, and retain available mismatch evidence. Optional
 triage enrichment must not swallow this failure. Cancellation and ordinary tool
 failures keep their actual error identity instead of being labeled mismatches.
 
+## Live Agent Mail reservation evidence
+
+The live adapter reads project-wide reservations before eligibility, mutex
+selection and preview limiting. All owners count, including peers and the
+querying agent. It uses the existing complete paginated reader, independently
+verifies numeric project identity, and checks that identity again after listing.
+The final canonical source check also covers the reservation-read interval.
+Inspection never ensures a project, registers an agent, acquires or renews a
+lease, or repairs tracker state.
+
+Only NTM's exact `bead assignment: <id>` reason establishes a bead binding.
+Expired or released reservations do not exclude candidates. Other live path
+reservations are counted as unmapped, never guessed from arbitrary prose,
+paths, or prefixes. A live reservation on a closed bead still holds that
+bead's canonical mutex groups while its worker unwinds. Independent work below
+reserved candidates can fill the preview normally.
+
+`work.verification.reservations` distinguishes these observation states:
+
+- `observed`: both project identity checks and the complete paginated read
+  succeeded. Includes `project_id`, `observed_at`, `active`, `mapped_beads` and
+  `unmapped`. An observed empty set has zero counts.
+- `unavailable`: a failed, inconsistent, malformed or timed-out read. `reason`
+  uses the normal disclosure/redaction path. Zero counts do not mean no locks.
+- `not_checked`: no reader or no canonical JSONL source was available.
+
+One 1.5-second budget covers the optional identity and reservation reads.
+A parent cancellation stops collection; an Agent Mail outage does not turn a
+readable Beads backlog into an empty queue. Its reservation receipt instead says
+unavailable. `verified_candidates` still describes canonical-source validation,
+not a claim that unavailable external ownership checks succeeded.
+
+This observation is not a cross-service transaction or a lease. Ownership can
+change after the read, and unmapped path reservations still require the final
+live path-reservation checks at dispatch.
+
 ## Database-only workspaces
 
 A workspace with no JSONL export retains its existing tool-backed counts,
@@ -74,19 +110,24 @@ list is bounded after that read. An export appearing during collection is
 rejected rather than silently mixing the two modes. An unreadable, malformed,
 disappearing, or unstable export is not a database-only fallback. Explicit
 source/program policies cannot be satisfied through this unverified path.
+Reservation evidence is marked `not_checked` in this mode.
 
 ## Scope
 
 This change covers live adapter collection. Persisted SQLite `RuntimeWork`
 readers still need source-receipt storage and read-time validation; the receipt
-is not a claim that those readers are already protected. External Agent Mail
-reservation and assignment evidence is not imported into this filter, and
-strict policy fields are Go adapter options, not new CLI flags.
+is not a claim that those readers are already protected. Active assignment-ledger
+barriers are not imported into this filter. Reservation evidence is connected
+only to the live adapter, not the BV planning API. Strict policy fields are Go
+adapter options, not new CLI flags. Final atomic claim and reservation gates
+remain required on every dispatch path.
 
 Tests cover immutable filtering, source changes, cross-project expected
 identities, database-only behavior, export appearance, malformed JSONL,
 cancellation, bounded complete candidate reads, excluded-prefix starvation,
 verified totals independent of preview size, and the actual adapter `Collect`
-entry point with hermetic tool fixtures. The focused helper tests can run with
-the real worksource package; the full adapter surface test requires the
-repository's normal dependencies.
+entry point with hermetic tool fixtures. Reservation regressions cover peer and
+last-page ownership, closing-owner mutexes, expiry, invalid/foreign records,
+project recreation, read failures, and cancellation. The focused helper tests
+can run with the real worksource package; the full adapter surface tests require
+the repository's normal dependencies.

@@ -14,27 +14,35 @@ import (
 type WorkVerificationPolicy struct {
 	Source        worksource.Policy
 	ProgramLabels []string
+
+	// Set per collection from the adapter's configured Agent Mail client.
+	// Kept private so external callers cannot replace ownership evidence.
+	readReservations workReservationReader
 }
 
 // WorkVerification distinguishes a verified preview from a tool's unchecked
-// total. It is not proof of live Agent Mail reservations or an atomic claim.
+// total. Reservations records an independent live observation when available;
+// neither source identity nor that observation replaces an atomic claim.
 type WorkVerification struct {
-	Source             *worksource.Identity   `json:"source,omitempty"`
-	Dirty              bool                   `json:"dirty,omitempty"`
-	Excluded           []worksource.Exclusion `json:"excluded"`
-	ReasonCode         string                 `json:"reason_code,omitempty"`
-	ReportedReady      int                    `json:"reported_ready"`
-	CountScope         string                 `json:"count_scope"`
-	CandidatesObserved int                    `json:"candidates_observed,omitempty"`
-	VerifiedReady      *int                   `json:"verified_ready,omitempty"`
-	PreviewLimit       int                    `json:"preview_limit,omitempty"`
-	PreviewTruncated   bool                   `json:"preview_truncated,omitempty"`
-	Remediation        string                 `json:"remediation,omitempty"`
-	Mismatch           *worksource.StaleError `json:"mismatch,omitempty"`
+	Source             *worksource.Identity         `json:"source,omitempty"`
+	Dirty              bool                         `json:"dirty,omitempty"`
+	Excluded           []worksource.Exclusion       `json:"excluded"`
+	ReasonCode         string                       `json:"reason_code,omitempty"`
+	ReportedReady      int                          `json:"reported_ready"`
+	CountScope         string                       `json:"count_scope"`
+	CandidatesObserved int                          `json:"candidates_observed,omitempty"`
+	VerifiedReady      *int                         `json:"verified_ready,omitempty"`
+	PreviewLimit       int                          `json:"preview_limit,omitempty"`
+	PreviewTruncated   bool                         `json:"preview_truncated,omitempty"`
+	Remediation        string                       `json:"remediation,omitempty"`
+	Mismatch           *worksource.StaleError       `json:"mismatch,omitempty"`
+	Reservations       *WorkReservationVerification `json:"reservations,omitempty"`
 }
 
 func (a *WorkCoordinationAdapter) collectVerifiedWork(ctx context.Context) (*WorkSection, error) {
-	work, err := collectWorkWithSource(ctx, a.config.ProjectDir, a.config.VerificationPolicy, func(ctx context.Context) (*WorkSection, error) {
+	policy := a.config.VerificationPolicy
+	policy.readReservations = a.mailClient().ReadWorkReservations
+	work, err := collectWorkWithSource(ctx, a.config.ProjectDir, policy, func(ctx context.Context) (*WorkSection, error) {
 		work, err := a.collectWork(ctx)
 		if err != nil || work == nil || !work.Available {
 			return work, err
@@ -145,6 +153,7 @@ func collectWorkWithSource(ctx context.Context, project string, policy WorkVerif
 			Excluded: []worksource.Exclusion{}, CountScope: "tool_reported_unverified",
 			ReportedReady: reportedWorkReady(work),
 			Remediation:   "No canonical JSONL export is available; tool results are not source-verified. Final claim and reservation checks remain required.",
+			Reservations:  &WorkReservationVerification{State: "not_checked", Reason: "canonical work source unavailable"},
 		}
 		return out, nil
 	}
@@ -159,6 +168,13 @@ func collectWorkWithSource(ctx context.Context, project string, policy WorkVerif
 	if err != nil {
 		return rejectWorkSource(work, err), err
 	}
+	// Observe all project owners before the final source check and before
+	// mutex-batch selection. Filtering only the displayed preview would miss
+	// a peer's reservation and could starve independent lower-ranked work.
+	reserved, reservationReceipt, err := collectWorkReservationEvidence(ctx, project, policy.readReservations, workReservationBudget)
+	if err != nil {
+		return rejectWorkSource(work, err), err
+	}
 	// Recheck strict policy as well as identity. Cleanliness and required refs
 	// may change during collection without changing the captured HEAD/JSONL.
 	policy.Source.Expected = &source.Identity
@@ -166,10 +182,13 @@ func collectWorkWithSource(ctx context.Context, project string, policy WorkVerif
 	if err != nil {
 		return rejectWorkSource(work, err), err
 	}
-	return filterVerifiedWork(work, current, worksource.EligibilityPolicy{
+	out := filterVerifiedWork(work, current, worksource.EligibilityPolicy{
 		GatedLabels:   bv.OperatorGatedLabelsForProject(project),
 		ProgramLabels: policy.ProgramLabels,
-	}), nil
+		ReservedBeads: reserved,
+	})
+	out.Verification.Reservations = reservationReceipt
+	return out, nil
 }
 
 func workSourceFailure(err error) error {
