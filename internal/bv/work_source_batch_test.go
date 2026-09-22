@@ -67,4 +67,32 @@ esac
 	if err != nil || string(after) != data {
 		t.Fatalf("planning changed tracker: %v", err)
 	}
+	// A source-owned task need not appear in BV's proposed candidates to
+	// protect its mutex. Closure releases a historical assignee, but an open
+	// claim must protect peers even before its status changes to in_progress.
+	for _, lifecycle := range []string{"open", "closed"} {
+		ownedData := data + `{"id":"owner","status":"` + lifecycle + `","assignee":"ExistingAgent","labels":["mutex:db"]}` + "\n"
+		if err := os.WriteFile(path, []byte(ownedData), 0600); err != nil {
+			t.Fatal(err)
+		}
+		got, err := GetActionableRecommendationsContext(context.Background(), project, 2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids := make([]string, 0, len(got))
+		for _, candidate := range got {
+			ids = append(ids, candidate.ID)
+		}
+		want := []string{"first", "independent"}
+		if lifecycle == "open" {
+			want = []string{"independent"}
+		}
+		if !reflect.DeepEqual(ids, want) {
+			t.Fatalf("owner=%s: got %v, want %v", lifecycle, ids, want)
+		}
+		after, err := os.ReadFile(path)
+		if err != nil || string(after) != ownedData {
+			t.Fatalf("planner changed owned tracker: %v", err)
+		}
+	}
 }

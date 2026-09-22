@@ -142,3 +142,76 @@ func TestEligibilityBatchLeavesIndependentWorkAndEmptyMutexesAlone(t *testing.T)
 		t.Fatalf("independent work was unnecessarily serialized: %+v", got)
 	}
 }
+
+func TestEligibilityMutexClaimsProtectPeersBeforeRunning(t *testing.T) {
+	for _, lifecycle := range []string{"open", "blocked", "deferred", "awaiting_review", "in_progress"} {
+		t.Run(lifecycle, func(t *testing.T) {
+			source := batchSource(t,
+				`{"id":"owner","status":"`+lifecycle+`","assignee":"ExistingAgent","labels":["private","mutex:db"],"title":"private task text"}`,
+				`{"id":"peer","status":"open","labels":["mutex:db"]}`,
+				`{"id":"other","status":"open","labels":["mutex:docs"]}`,
+			)
+			// The owner is deliberately absent from the proposed candidate list.
+			got := source.Filter([]string{"peer", "other"}, EligibilityPolicy{})
+			if !reflect.DeepEqual(got.EligibleIDs, []string{"other"}) || len(got.Excluded) != 1 ||
+				!reflect.DeepEqual(got.Excluded[0].Reasons, []string{"mutex_held"}) {
+				t.Fatalf("owned %s task failed to protect its mutex: %+v", lifecycle, got)
+			}
+			encoded, err := json.Marshal(got)
+			if err != nil || strings.Contains(string(encoded), "ExistingAgent") || strings.Contains(string(encoded), "private task text") {
+				t.Fatalf("mutex refusal exposed private owner data: %s %v", encoded, err)
+			}
+		})
+	}
+}
+
+func TestEligibilityMutexExternalOwnershipOutlivesTrackerClosure(t *testing.T) {
+	for _, lifecycle := range []string{"open", "closed", "tombstone"} {
+		for _, reservation := range []bool{false, true} {
+			source := batchSource(t,
+				`{"id":"owner","status":"`+lifecycle+`","labels":["mutex:db"]}`,
+				`{"id":"peer","status":"open","labels":["mutex:db"]}`,
+			)
+			policy := EligibilityPolicy{}
+			if reservation {
+				policy.ReservedBeads = map[string][]string{"owner": {"lease-holder"}}
+			} else {
+				policy.OwnedBeads = map[string]string{"owner": "active-assignment"}
+			}
+			before, _ := json.Marshal(policy)
+			got := source.Filter([]string{"peer"}, policy)
+			if len(got.EligibleIDs) != 0 || got.ReasonCode != NoClaimableCode || len(got.Excluded) != 1 ||
+				!reflect.DeepEqual(got.Excluded[0].Reasons, []string{"mutex_held"}) {
+				t.Fatalf("live external ownership bypassed by %s (reservation=%v): %+v", lifecycle, reservation, got)
+			}
+			after, _ := json.Marshal(policy)
+			if string(before) != string(after) {
+				t.Fatal("filter rewrote external ownership evidence")
+			}
+		}
+	}
+}
+
+func TestEligibilityMutexHistoricalAssigneeDoesNotHoldClosedWork(t *testing.T) {
+	for _, lifecycle := range []string{"closed", "tombstone"} {
+		source := batchSource(t,
+			`{"id":"historical","status":"`+lifecycle+`","assignee":"OldAgent","labels":["mutex:db"]}`,
+			`{"id":"peer","status":"open","labels":["mutex:db"]}`,
+		)
+		got := source.Filter([]string{"peer"}, EligibilityPolicy{})
+		if !reflect.DeepEqual(got.EligibleIDs, []string{"peer"}) || len(got.Excluded) != 0 {
+			t.Fatalf("historical closed assignee permanently starved the mutex: %+v", got)
+		}
+	}
+}
+
+func TestEligibilityMutexUnownedDeferredWorkDoesNotHoldGroups(t *testing.T) {
+	source := batchSource(t,
+		`{"id":"deferred","status":"deferred","assignee":"  ","labels":["mutex:db"]}`,
+		`{"id":"peer","status":"open","labels":["mutex:db"]}`,
+	)
+	got := source.Filter([]string{"peer"}, EligibilityPolicy{OwnedBeads: map[string]string{"deferred": ""}, ReservedBeads: map[string][]string{"deferred": {}}})
+	if !reflect.DeepEqual(got.EligibleIDs, []string{"peer"}) {
+		t.Fatalf("unowned work fabricated a mutex holder: %+v", got)
+	}
+}

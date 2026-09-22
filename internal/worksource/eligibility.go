@@ -52,8 +52,15 @@ func (s *Snapshot) Filter(candidates []string, policy EligibilityPolicy) Eligibi
 	for key := range policy.HeldMutexes {
 		mutexes[normalized(key)] = true
 	}
-	for _, row := range s.issues {
-		if row.Status != "in_progress" {
+	for id, row := range s.issues {
+		// A claim/reservation can exist before the tracker says in_progress,
+		// and its worker may still be unwinding after tracker closure. Live
+		// external ownership wins over lifecycle; an old assignee retained on
+		// a closed/tombstoned row alone does not keep the mutex forever.
+		externalOwner := policy.OwnedBeads[id] != "" || len(policy.ReservedBeads[id]) > 0
+		terminal := row.Status == "closed" || row.Status == "tombstone"
+		assigned := !terminal && strings.TrimSpace(row.Assignee) != ""
+		if row.Status != "in_progress" && !externalOwner && !assigned {
 			continue
 		}
 		for _, label := range row.Labels {

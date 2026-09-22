@@ -12,6 +12,15 @@ mutex groups within the batch. A task requiring several groups acquires all or
 none in that plan. A rejected or blocked candidate never reserves an unrelated
 group. Group names use the existing case/whitespace normalization.
 
+Existing holders include in-progress work, non-terminal tasks with an assignee,
+and tasks named in caller-supplied live ownership or reservation evidence. They
+protect their groups even when omitted from the proposed candidates, outside
+the selected program, private, blocked, or not yet running. Closing a tracker
+row does not cancel an externally reported assignment or reservation: that
+evidence must be retired by its owner. A historical assignee on a closed or
+tombstoned row, with no live external ownership, does not retain a group forever.
+Unassigned deferred work alone does not reserve a mutex.
+
 Exclusion reason `mutex_held` means the source/policy already reported a holder.
 `mutex_conflict` instead means an earlier eligible candidate in this same plan
 uses a required group. It does not claim that the earlier recommendation was
