@@ -13,6 +13,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -27,12 +29,29 @@ func newStubAgentMailReservationServer(t *testing.T, reservationsJSON string) *h
 		var req struct {
 			ID     any    `json:"id"`
 			Method string `json:"method"`
+			Params struct {
+				URI string `json:"uri"`
+			} `json:"params"`
 		}
-		body, _ := json.Marshal(map[string]any{})
-		_ = body
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
+		}
+		payload := reservationsJSON
+		if req.Method == "resources/read" && strings.HasPrefix(req.Params.URI, "resource://project/") {
+			// The real reservation rows carry no project_id, so the client
+			// resolves the numeric project identity through the read-only
+			// project resource before trusting any row (GH#328). Echo the
+			// requested key back as the project's slug, like the server does.
+			key, err := url.PathUnescape(strings.TrimPrefix(req.Params.URI, "resource://project/"))
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			project, _ := json.Marshal(map[string]any{
+				"id": 1, "slug": key, "human_key": key, "created_at": "2026-01-01T00:00:00Z",
+			})
+			payload = string(project)
 		}
 		if req.Method != "resources/read" {
 			// The wiring path only reads the reservation resource; anything
@@ -49,7 +68,7 @@ func newStubAgentMailReservationServer(t *testing.T, reservationsJSON string) *h
 			"jsonrpc": "2.0",
 			"id":      req.ID,
 			"result": map[string]any{
-				"contents": []map[string]any{{"text": reservationsJSON}},
+				"contents": []map[string]any{{"text": payload}},
 			},
 		}
 		w.Header().Set("Content-Type", "application/json")
