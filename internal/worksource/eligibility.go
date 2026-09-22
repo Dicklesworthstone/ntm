@@ -58,13 +58,11 @@ func (s *Snapshot) Filter(candidates []string, policy EligibilityPolicy) Eligibi
 		// external ownership wins over lifecycle; an old assignee retained on
 		// a closed/tombstoned row alone does not keep the mutex forever.
 		externalOwner := policy.OwnedBeads[id] != "" || len(policy.ReservedBeads[id]) > 0
-		terminal := row.Status == "closed" || row.Status == "tombstone"
-		assigned := !terminal && strings.TrimSpace(row.Assignee) != ""
-		if row.Status != "in_progress" && !externalOwner && !assigned {
+		if !externalOwner && !ClaimHoldsMutex(row.Status, row.Assignee) {
 			continue
 		}
 		for _, label := range row.Labels {
-			if key, ok := mutexKey(label); ok {
+			if key, ok := MutexKey(label); ok {
 				mutexes[key] = true
 			}
 		}
@@ -117,7 +115,7 @@ func (s *Snapshot) Filter(candidates []string, policy EligibilityPolicy) Eligibi
 				if programs[label] {
 					programAllowed = true
 				}
-				if key, ok := mutexKey(label); ok && mutexes[key] {
+				if key, ok := MutexKey(label); ok && mutexes[key] {
 					exclusion.Reasons = append(exclusion.Reasons, "mutex_held")
 				}
 			}
@@ -141,7 +139,7 @@ func (s *Snapshot) Filter(candidates []string, policy EligibilityPolicy) Eligibi
 		}
 		if len(exclusion.Reasons) == 0 {
 			for _, label := range row.Labels {
-				if key, ok := mutexKey(label); ok && selectedMutexes[key] {
+				if key, ok := MutexKey(label); ok && selectedMutexes[key] {
 					exclusion.Reasons = append(exclusion.Reasons, "mutex_conflict")
 					break
 				}
@@ -153,7 +151,7 @@ func (s *Snapshot) Filter(candidates []string, policy EligibilityPolicy) Eligibi
 			// conflict check passes. A rejected multi-mutex candidate must not
 			// consume its uncontended groups and starve independent work.
 			for _, label := range row.Labels {
-				if key, ok := mutexKey(label); ok {
+				if key, ok := MutexKey(label); ok {
 					selectedMutexes[key] = true
 				}
 			}
@@ -179,10 +177,19 @@ func normalizedSet(values []string) map[string]bool {
 	return result
 }
 
-func mutexKey(label string) (string, bool) {
+// MutexKey is the canonical group identity used by both planning and the
+// transactional claim gate. Empty groups and non-mutex labels do not reserve.
+func MutexKey(label string) (string, bool) {
 	value, ok := strings.CutPrefix(normalized(label), "mutex:")
 	value = strings.TrimSpace(value)
 	return value, ok && value != ""
+}
+
+// ClaimHoldsMutex reports tracker ownership, independent of task visibility or
+// eligibility. External assignment/reservation evidence is checked separately.
+func ClaimHoldsMutex(status, assignee string) bool {
+	status = normalized(status)
+	return status == "in_progress" || (status != "closed" && status != "tombstone" && strings.TrimSpace(assignee) != "")
 }
 
 func sortedUnique(values []string) []string {
