@@ -219,6 +219,13 @@ func (r *Restorer) restoreFromCheckpoint(cp *Checkpoint, opts RestoreOptions) (r
 		BVSummary:     cp.BVSummary,
 		Stage:         "validating",
 	}
+	for _, pane := range cp.Session.Panes {
+		if command := restorableAgentCommand(pane); command != "" && isBareAgentRuntimeCommand(pane.Command) {
+			result.Warnings = append(result.Warnings, fmt.Sprintf(
+				"checkpoint pane %d captured runtime %q without launch arguments; restoring %q for agent %s",
+				pane.Index, strings.TrimSpace(pane.Command), command, pane.AgentType))
+		}
+	}
 	defer func() {
 		if err := ctx.Err(); err != nil {
 			retErr = errors.Join(retErr, err)
@@ -527,7 +534,7 @@ func (r *Restorer) restoreAgents(cp *Checkpoint, workDir string) error {
 		}
 
 		attempted++
-		if err := relaunchRestoredPane(ctx, paneID, workDir, agentCmd); err != nil {
+		if err := relaunchRestoredPane(ctx, cp.SessionName, paneID, workDir, agentCmd); err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
@@ -552,72 +559,34 @@ func (r *Restorer) restoreAgents(cp *Checkpoint, workDir string) error {
 	return ctx.Err()
 }
 
-func relaunchRestoredPane(ctx context.Context, paneID, workDir, agentCmd string) error {
+func relaunchRestoredPane(ctx context.Context, sessionName, paneID, workDir, agentCmd string) error {
 	safeCommand, err := tmux.SanitizePaneCommand(agentCmd)
 	if err != nil {
 		return err
 	}
 
-	expected := expectedPaneCommand(agentCmd)
-	if expected == "" {
+	if expectedPaneCommand(agentCmd) == "" {
 		return fmt.Errorf("determine expected pane command for %q", agentCmd)
 	}
-	var lastErr error
-	for attempt := 0; attempt < 3; attempt++ {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if attempt > 0 {
-			if err := waitForRestore(ctx, 200*time.Millisecond); err != nil {
-				return err
-			}
-		}
-
-		// Respawn the pane directly into the target command instead of typing into
-		// a shell prompt. This avoids lost-input races while panes are still initializing.
-		if err := tmux.DefaultClient.RunSilentContext(ctx, "respawn-pane", "-k", "-c", workDir, "-t", tmux.ExactTarget(paneID), safeCommand); err != nil {
-			lastErr = err
-			continue
-		}
-		if err := waitForPaneCommand(ctx, paneID, expected, 2*time.Second); err == nil {
-			return nil
-		} else {
-			lastErr = err
-		}
-	}
-
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if lastErr != nil {
-		return lastErr
+	// Launch once. A wrapper may exec into a different executable, and an
+	// observation failure is not evidence that the process failed to start.
+	// Retrying respawn-pane -k would kill that potentially healthy agent.
+	if err := tmux.DefaultClient.RunSilentContext(ctx, "respawn-pane", "-k", "-c", workDir, "-t", tmux.ExactTarget(paneID), safeCommand); err != nil {
+		return fmt.Errorf("launching pane %s (inspect before retrying): %w", paneID, err)
 	}
-	return fmt.Errorf("pane %s did not start %q", paneID, expected)
-}
-
-func waitForPaneCommand(ctx context.Context, paneID, expected string, timeout time.Duration) error {
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	for {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		current, err := currentPaneCommand(ctx, paneID)
-		if err == nil && current == expected {
-			return ctx.Err()
-		}
-		if err := waitForRestore(ctx, 100*time.Millisecond); err != nil {
-			return fmt.Errorf("pane %s did not start %q: %w", paneID, expected, err)
-		}
-	}
-}
-
-func currentPaneCommand(ctx context.Context, paneID string) (string, error) {
-	output, err := tmux.DefaultClient.RunContext(ctx, "display-message", "-p", "-t", tmux.ExactTarget(paneID), "#{pane_current_command}")
+	// Share spawn's stable process observation instead of requiring the
+	// foreground executable to have the same name as its launch wrapper.
+	pane, err := tmux.WaitForPaneProcessStartContext(ctx, sessionName, paneID)
 	if err != nil {
-		return "", fmt.Errorf("getting pane current command: %w", err)
+		return fmt.Errorf("observing restored pane %s (pane was preserved): %w", paneID, err)
 	}
-	return strings.TrimSpace(output), nil
+	if pane.Dead {
+		return fmt.Errorf("restored pane %s exited during startup; pane was preserved", paneID)
+	}
+	return ctx.Err()
 }
 
 func expectedPaneCommand(agentCmd string) string {
@@ -1162,7 +1131,7 @@ func restorableAgentCommand(pane PaneState) string {
 		return ""
 	}
 	command := strings.TrimSpace(pane.Command)
-	if command != "" && !looksLikeShellCommand(command) {
+	if command != "" && !looksLikeShellCommand(command) && !isBareAgentRuntimeCommand(command) {
 		return command
 	}
 
@@ -1185,7 +1154,7 @@ func restorableAgentCommand(pane PaneState) string {
 		// not block on tool approvals; omp picks its own default model.
 		return "omp --auto-approve"
 	case agent.AgentTypeCursor:
-		return "cursor"
+		return "cursor-agent"
 	case agent.AgentTypeWindsurf:
 		return "windsurf"
 	case agent.AgentTypeAider:
@@ -1197,6 +1166,25 @@ func restorableAgentCommand(pane PaneState) string {
 	default:
 		return ""
 	}
+}
+
+// Checkpoints populated from tmux retain pane_current_command, which names
+// only the foreground executable. A bare interpreter is missing the script
+// that made it an agent; launching it alone can open a language REPL. Explicit
+// argv is different evidence and must remain intact for custom launchers.
+func isBareAgentRuntimeCommand(command string) bool {
+	token, remaining := nextShellToken(strings.TrimSpace(command))
+	if token == "" || strings.TrimSpace(remaining) != "" {
+		return false
+	}
+	name := strings.ToLower(filepath.Base(trimMatchingQuotes(token)))
+	switch name {
+	case "node", "nodejs", "bun", "deno", "npx", "npm", "python", "python2", "python3", "ruby", "perl", "uv", "uvx":
+		return true
+	}
+	// Python processes can report their full installed minor version.
+	version, python := strings.CutPrefix(name, "python")
+	return python && version != "" && strings.Trim(version, "0123456789.") == ""
 }
 
 func looksLikeShellCommand(command string) bool {

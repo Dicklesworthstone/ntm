@@ -888,6 +888,26 @@ func TestExpectedPaneCommand(t *testing.T) {
 	}
 }
 
+func TestIsBareAgentRuntimeCommand(t *testing.T) {
+	for _, command := range []string{
+		"node", "nodejs", "bun", "deno", "npx", "npm", "python", "python3", "python3.13", "ruby", "perl", "uv", "uvx",
+		"  /usr/bin/node  ", `"/opt/runtime dir/python3.14"`, `'/opt/bun'`,
+	} {
+		if !isBareAgentRuntimeCommand(command) {
+			t.Errorf("bare runtime %q was treated as a complete agent launch", command)
+		}
+	}
+	for _, command := range []string{
+		"", "claude", "codex", "sleep 30", "python-agent", "python3.13-config",
+		"node /opt/agent.js", `node "/path with spaces/agent.js"`, "bun run agent", "python3 -m aider",
+		"env FOO=bar node /opt/agent.js", "/opt/agent-launcher --fast", "exec node /opt/agent.js",
+	} {
+		if isBareAgentRuntimeCommand(command) {
+			t.Errorf("explicit command %q would lose its argv", command)
+		}
+	}
+}
+
 func TestSortedCheckpointPanes(t *testing.T) {
 	panes := []PaneState{
 		{WindowIndex: 2, Index: 0, Title: "w2p0"},

@@ -26,6 +26,10 @@ func restoreLifecycleFixture(t *testing.T) (string, string) {
 	t.Setenv("NTM_RESTORE_TEST_LAUNCHED", filepath.Join(dir, "launched"))
 	t.Setenv("NTM_RESTORE_TEST_PAYLOAD", filepath.Join(dir, "payload"))
 	t.Setenv("NTM_RESTORE_TEST_DELIVERIES", filepath.Join(dir, "deliveries"))
+	t.Setenv("NTM_RESTORE_TEST_LAUNCH_LOG", filepath.Join(dir, "launches"))
+	t.Setenv("NTM_RESTORE_TEST_OBSERVATIONS", filepath.Join(dir, "observations"))
+	t.Setenv("NTM_RESTORE_TEST_START_COMMAND", "claude")
+	t.Setenv("NTM_RESTORE_TEST_START_DEAD", "0")
 	t.Setenv("NTM_RESTORE_TEST_INJECT_STATE", "")
 	t.Setenv("NTM_RESTORE_TEST_BLOCK", "")
 	t.Setenv("NTM_RESTORE_TEST_FAIL", "")
@@ -33,7 +37,7 @@ func restoreLifecycleFixture(t *testing.T) (string, string) {
 	bin := filepath.Join(dir, "tmux")
 	const script = `#!/bin/sh
 printf '%s\n' "$1" >> "$NTM_RESTORE_TEST_LOG"
-if [ "$1" = "$NTM_RESTORE_TEST_BLOCK" ]; then
+if [ "$1" = "$NTM_RESTORE_TEST_BLOCK" ] && { [ "$1" != list-panes ] || [ -f "$NTM_RESTORE_TEST_LAUNCHED" ]; }; then
   echo ready > "$NTM_RESTORE_TEST_READY"
   exec sleep 30
 fi
@@ -56,16 +60,19 @@ case "$1" in
     n=$(cat "$NTM_RESTORE_TEST_COUNT")
     state=''
     if [ -f "$NTM_RESTORE_TEST_LAUNCHED" ]; then
-      state="$NTM_RESTORE_TEST_INJECT_STATE"
+      observations=$(cat "$NTM_RESTORE_TEST_OBSERVATIONS")
+      observations=$((observations + 1))
+      echo "$observations" > "$NTM_RESTORE_TEST_OBSERVATIONS"
+      if [ "$observations" -gt 2 ]; then state="$NTM_RESTORE_TEST_INJECT_STATE"; fi
     fi
     if [ "$state" = read-error ]; then echo 'fixture read failed' >&2; exit 2; fi
     i=0
     while [ "$i" -lt "$n" ]; do
       id="$i"
       index="$i"
-      command=claude
+      command="$NTM_RESTORE_TEST_START_COMMAND"
       type=cc
-      dead=0
+      dead="$NTM_RESTORE_TEST_START_DEAD"
       case "$state" in
         shell) command=bash ;;
         dead) dead=1 ;;
@@ -79,7 +86,10 @@ case "$1" in
       printf '%%%s_NTM_SEP_%s_NTM_SEP__NTM_SEP_%s_NTM_SEP_80_NTM_SEP_24_NTM_SEP_1_NTM_SEP_0_NTM_SEP_0_NTM_SEP_%s_NTM_SEP__NTM_SEP__NTM_SEP_%s\n' "$id" "$index" "$command" "$type" "$dead"
       i=$((i + 1))
     done ;;
-  display-message) echo launched > "$NTM_RESTORE_TEST_LAUNCHED"; echo claude ;;
+  respawn-pane)
+    printf '%s\n' "$*" >> "$NTM_RESTORE_TEST_LAUNCH_LOG"
+    echo launched > "$NTM_RESTORE_TEST_LAUNCHED"
+    echo 0 > "$NTM_RESTORE_TEST_OBSERVATIONS" ;;
   load-buffer) cat >> "$NTM_RESTORE_TEST_PAYLOAD" ;;
   paste-buffer|send-keys) printf '%s\n' "$*" >> "$NTM_RESTORE_TEST_DELIVERIES" ;;
 esac
@@ -134,7 +144,7 @@ func TestRestoreLifecyclePreflightDoesNotReplaceSession(t *testing.T) {
 }
 
 func TestRestoreLifecycleCancelsInFlightOperations(t *testing.T) {
-	for _, operation := range []string{"new-session", "split-window", "respawn-pane", "display-message"} {
+	for _, operation := range []string{"new-session", "split-window", "respawn-pane", "list-panes"} {
 		t.Run(operation, func(t *testing.T) {
 			log, ready := restoreLifecycleFixture(t)
 			t.Setenv("NTM_RESTORE_TEST_BLOCK", operation)
@@ -250,7 +260,7 @@ func TestRestoreLifecycleCompletesRealStages(t *testing.T) {
 		t.Fatalf("restore failed: %+v, %v", out, err)
 	}
 	calls, _ := os.ReadFile(log)
-	for _, op := range []string{"new-session", "split-window", "respawn-pane", "display-message"} {
+	for _, op := range []string{"new-session", "split-window", "respawn-pane", "list-panes"} {
 		if !strings.Contains(string(calls), op) {
 			t.Fatalf("restore skipped %s: %s", op, calls)
 		}
@@ -410,4 +420,85 @@ func TestRestoreLifecycleReportsOnlyCompletedContextDeliveries(t *testing.T) {
 			t.Fatalf("restore discarded individual delivery failures: %v", err)
 		}
 	})
+}
+
+func TestRestoreLifecycleReconstructsBareRuntimeAgentLaunch(t *testing.T) {
+	for _, tc := range []struct {
+		name, agentType, captured, launched string
+		fallback                            bool
+	}{
+		{"node-backed codex", "codex", "node", "codex", true},
+		{"bun-backed claude", "cc", "/usr/bin/bun", "claude", true},
+		{"versioned python", "aider", `"/opt/python3.13"`, "aider", true},
+		{"node-backed cursor", "cursor", "node", "cursor-agent", true},
+		{"explicit node script", "codex", `node "/opt/my agents/codex.js" --model o3`, `node "/opt/my agents/codex.js" --model o3`, false},
+		{"explicit runtime flags and script", "cc", `bun --cwd "/my project" /opt/agent.js`, `bun --cwd "/my project" /opt/agent.js`, false},
+		{"explicit env and script", "cc", `env FOO=bar node /opt/agent.js`, `env FOO=bar node /opt/agent.js`, false},
+		{"custom launcher", "cc", `/opt/custom-launcher --fast`, `/opt/custom-launcher --fast`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			log, _ := restoreLifecycleFixture(t)
+			// The launched CLI is observed under its interpreter. It need not
+			// retain the basename of the command that started it.
+			t.Setenv("NTM_RESTORE_TEST_START_COMMAND", "node")
+			cp := lifecycleCheckpoint(t, 1)
+			cp.Session.Panes[0].AgentType, cp.Session.Panes[0].Command = tc.agentType, tc.captured
+			out, err := NewRestorer().RestoreFromCheckpointContext(context.Background(), cp, RestoreOptions{SkipGitCheck: true})
+			if err != nil || out == nil || out.Stage != "completed" {
+				t.Fatalf("runtime-backed restoration failed: %+v, %v", out, err)
+			}
+			launches, err := os.ReadFile(os.Getenv("NTM_RESTORE_TEST_LAUNCH_LOG"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.HasSuffix(strings.TrimSpace(string(launches)), " "+tc.launched) {
+				t.Fatalf("restored command changed or omitted launch argv: %s; want %s", launches, tc.launched)
+			}
+			fallbackWarned := false
+			for _, warning := range out.Warnings {
+				fallbackWarned = fallbackWarned || strings.Contains(warning, "without launch arguments")
+			}
+			if fallbackWarned != tc.fallback {
+				t.Fatalf("fallback warning = %v, want %v: %v", fallbackWarned, tc.fallback, out.Warnings)
+			}
+			calls, err := os.ReadFile(log)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Count(string(calls), "respawn-pane") != 1 {
+				t.Fatalf("startup observation killed a healthy wrapped agent: %s", calls)
+			}
+		})
+	}
+}
+
+func TestRestoreLifecyclePreservesPaneAfterUncertainStartup(t *testing.T) {
+	for _, failure := range []string{"launch error", "idle shell", "empty command", "dead process"} {
+		t.Run(failure, func(t *testing.T) {
+			log, _ := restoreLifecycleFixture(t)
+			switch failure {
+			case "launch error":
+				t.Setenv("NTM_RESTORE_TEST_FAIL", "respawn-pane")
+			case "idle shell":
+				t.Setenv("NTM_RESTORE_TEST_START_COMMAND", "bash")
+			case "empty command":
+				t.Setenv("NTM_RESTORE_TEST_START_COMMAND", "")
+			case "dead process":
+				t.Setenv("NTM_RESTORE_TEST_START_DEAD", "1")
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+			defer cancel()
+			out, err := NewRestorer().RestoreFromCheckpointContext(ctx, lifecycleCheckpoint(t, 1), RestoreOptions{SkipGitCheck: true, InjectContext: true})
+			if err == nil || out == nil || out.Stage != "starting_agents" || out.ContextInjected {
+				t.Fatalf("startup failure claimed success: %+v, %v", out, err)
+			}
+			calls, err := os.ReadFile(log)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Count(string(calls), "respawn-pane") != 1 || strings.Contains(string(calls), "kill-session") || strings.Contains(string(calls), "paste-buffer") {
+				t.Fatalf("uncertain startup was retried destructively or received context: %s", calls)
+			}
+		})
+	}
 }
