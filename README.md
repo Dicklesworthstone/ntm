@@ -520,6 +520,10 @@ ntm checkpoint list payments
 ntm checkpoint restore payments
 ntm checkpoint restore payments last --as payments-recovered --directory /path/to/recovery-worktree
 
+ntm sessions save payments
+ntm sessions restore payments --name payments-restored --launch
+ntm sessions resume payments --name payments-resumed
+
 ntm timeline list
 ntm timeline show <session-id>
 ntm history search "authentication error"
@@ -546,6 +550,19 @@ replay. Explicit pane or plugin environment values are not copied into this
 record; recovery reports missing inputs instead of silently substituting the
 current environment. Older panes without a launch record retain the existing
 command-reconstruction path.
+
+Saved sessions preserve each pane's working directory and the same recorded
+launch settings, so panes in separate worktrees return to their own directories.
+`sessions restore --launch` replays those settings; `sessions resume` also
+replaces the native conversation selector when the save contains a fresh
+provider binding. Recorded commands keep their model, reasoning, persona, and
+account settings instead of taking current defaults. Native resume refuses
+ambiguous shell commands or conflicting conversation selectors before `--force`
+replaces a live session. Older saves without a recorded command retain the
+existing CASR preference. Missing worktrees, changed persona files, unavailable
+profiles, and omitted environment inputs prevent automatic relaunch. Agent
+counts report successful command dispatch; they do not assert that an agent has
+finished starting.
 
 ### 8. Multi-Project Swarm Execution
 

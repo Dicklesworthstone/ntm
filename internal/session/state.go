@@ -7,6 +7,7 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/agentsession"
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 // StateVersion is the schema version for migrations
@@ -90,16 +91,18 @@ func ValidateAutomatedRelaunch(state *SessionState) error {
 
 // PaneState represents the state of a single pane.
 type PaneState struct {
-	Title       string `json:"title"`             // e.g., "myproject__cc_1"
-	Index       int    `json:"index"`             // Pane index
-	WindowIndex int    `json:"window_index"`      // Window index
-	AgentType   string `json:"agent_type"`        // "cc", "cod", "gmi", "grok", "omp", "user"
-	Model       string `json:"model,omitempty"`   // Model variant if any
-	Command     string `json:"command,omitempty"` // The agent launch command
-	Active      bool   `json:"active"`            // Was this the active pane?
-	Width       int    `json:"width,omitempty"`   // Pane width
-	Height      int    `json:"height,omitempty"`  // Pane height
-	PaneID      string `json:"pane_id,omitempty"` // Original pane ID
+	Title       string                `json:"title"`                 // e.g., "myproject__cc_1"
+	Index       int                   `json:"index"`                 // Pane index
+	WindowIndex int                   `json:"window_index"`          // Window index
+	AgentType   string                `json:"agent_type"`            // "cc", "cod", "gmi", "grok", "omp", "user"
+	Model       string                `json:"model,omitempty"`       // Model variant if any
+	Command     string                `json:"command,omitempty"`     // The agent launch command
+	Active      bool                  `json:"active"`                // Was this the active pane?
+	Width       int                   `json:"width,omitempty"`       // Pane width
+	Height      int                   `json:"height,omitempty"`      // Pane height
+	PaneID      string                `json:"pane_id,omitempty"`     // Original pane ID
+	WorkDir     string                `json:"cwd,omitempty"`         // Pane-specific project/worktree directory
+	LaunchSpec  *tmux.AgentLaunchSpec `json:"launch_spec,omitempty"` // Exact rendered launch and recovery settings
 
 	// Agent CLI session linkage (for resume). Captured best-effort by
 	// discovering the most-recent provider session for the pane's cwd+agent.

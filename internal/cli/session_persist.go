@@ -618,15 +618,21 @@ func runSessionsRestore(ctx context.Context, savedName string, opts session.Rest
 		// running session. A malformed later pane must not destroy the original.
 		applyModelCommands(state)
 		cmds = buildAgentCommands(state)
-		if err := session.ValidateRestoreAgentCommands(state, cmds); err != nil {
-			return emitRestoreFailure(&SessionsRestoreResult{
-				Success: false, SavedName: savedName, Error: err.Error(),
-			})
-		}
 	}
 
-	// Restore session
-	if err := session.Restore(state, opts); err != nil {
+	// Launching restore performs shared replay preflight before replacing the
+	// topology, then uses those pinned plans and physical pane targets.
+	var launchErr error
+	var launchResult *session.ResumeResult
+	if launchAgents {
+		launchResult, err = session.RestoreWithAgents(ctx, state, cmds, cfg, opts)
+		if launchResult != nil {
+			launchErr, err = err, nil
+		}
+	} else {
+		err = session.RestoreContext(ctx, state, opts)
+	}
+	if err != nil {
 		return emitRestoreFailure(&SessionsRestoreResult{
 			Success:   false,
 			SavedName: savedName,
@@ -650,17 +656,17 @@ func runSessionsRestore(ctx context.Context, savedName string, opts session.Rest
 	}
 
 	// Optionally launch agents
-	var launchErr error
 	var promptErr error
 	agentCount := 0
 	promptSent, promptFailed := 0, 0
 	if launchAgents {
-		launchErr = session.RestoreAgents(restoredName, state, cmds, cfg)
 		// Optionally inject an initial prompt into the launched panes.
 		if launchErr == nil && strings.TrimSpace(prompt) != "" {
 			promptSent, promptFailed, promptErr = sendResumePrompt(ctx, restoredName, prompt)
 		}
-		agentCount = state.Agents.Total()
+		if launchResult != nil {
+			agentCount = launchResult.Launched
+		}
 	}
 	operationErr := sessionsRestoreOperationError(launchErr, promptErr)
 
@@ -729,12 +735,14 @@ func newSessionsResumeCmd() *cobra.Command {
 		Short: "Resume a saved session (rebuild topology + resume agents)",
 		Long: `Resume a saved session.
 
-Reconstructs the tmux topology (windows, panes, splits, cwd, layout) and
-relaunches each pane's agent. Panes that captured a provider session id at
-save time are resumed via casr (Cross Agent Session Resumer) when available,
-or the agent's native --resume <id>. Panes without a captured id are launched
-fresh. ntm owns the topology restore; per-pane agent-session resume is
-delegated to casr, not reimplemented here.
+Reconstructs the tmux topology (windows, panes, splits, worktrees, layout) and
+relaunches each pane's agent with its recorded launch settings. Fresh provider
+session bindings use native resume while preserving the saved model, arguments,
+persona and account. Older saves without a recorded command may use casr
+(Cross Agent Session Resumer) when available, or the agent's native resume.
+Panes without a fresh binding receive their saved launch command. Required
+settings and native resume commands are validated before --force replaces a
+running session; ambiguous commands fail with an explanation.
 
 Examples:
   ntm sessions resume myproject            # Resume topology + agents
@@ -878,6 +886,7 @@ func buildAgentCommands(state *session.SessionState) session.AgentCommands {
 // applyModelCommands renders each agent pane's launch command with that pane's
 // captured model alias and stores it in PaneState.Command, so resume/restore
 // relaunch the agent on the same model instead of the account default (ntm-boi0).
+// Recorded launch specifications and commands are authoritative and unchanged.
 // The session-layer launch path prefers PaneState.Command over the type-default.
 // Panes without a captured model are left untouched (Command stays empty) and
 // fall back to the no-model type command. Render failures are non-fatal: the
@@ -888,6 +897,9 @@ func applyModelCommands(state *session.SessionState) {
 	}
 	for i := range state.Panes {
 		ps := &state.Panes[i]
+		if ps.LaunchSpec != nil || ps.Command != "" {
+			continue
+		}
 		modelAlias := strings.TrimSpace(ps.Model)
 		if modelAlias == "" {
 			continue
@@ -1037,10 +1049,11 @@ func runSessionsResume(ctx context.Context, savedName, name string, force, attac
 	// values are Go templates and must not be sent into a pane verbatim.
 	cmds := buildAgentCommands(state)
 
-	res, err := session.Resume(state, cmds, session.ResumeOptions{
+	res, err := session.ResumeContext(ctx, state, cmds, session.ResumeOptions{
 		Name:       name,
 		Force:      force,
 		PreferCASR: preferCASR,
+		Config:     cfg,
 	})
 	if err != nil && res == nil {
 		return emitFailure(&SessionsResumeResult{Success: false, SavedName: savedName, Error: err.Error()})

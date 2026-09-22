@@ -10,6 +10,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/config"
+	"github.com/Dicklesworthstone/ntm/internal/shellword"
 )
 
 func nativeDiscoverer(home string) *Discoverer {
@@ -164,6 +167,160 @@ func TestResumeCommandCASR(t *testing.T) {
 	// preferCASR=false must still use native even when casr is available.
 	if got := ResumeCommand("claude", "x", false); got != "claude --resume 'x'" {
 		t.Errorf("native override failed: got %q", got)
+	}
+}
+
+func TestResumeLaunchCommandPreservesSettingsAndReplacesSelector(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name, provider, command, want string
+	}{
+		{"claude settings", "claude", `MODE='literal value' '/opt/agent bin/claude'  --model 'custom/model' --effort high --system-prompt-file '/work/persona.md' --custom='literal;value'`, `MODE='literal value' '/opt/agent bin/claude'  --model 'custom/model' --effort high --system-prompt-file '/work/persona.md' --custom='literal;value' --resume 'new-id'`},
+		{"claude existing", "claude", `claude --resume 'old-id' --model model`, `claude --resume 'new-id' --model model`},
+		{"claude inline", "claude", `claude --model model -r='old-id' --effort high`, `claude --model model --resume 'new-id' --effort high`},
+		{"codex settings", "codex", `MODE=literal /opt/codex -m'custom/model' -c 'model_reasoning_effort="high"' --search --custom='quoted value'`, `MODE=literal /opt/codex resume 'new-id' -m'custom/model' -c 'model_reasoning_effort="high"' --search --custom='quoted value'`},
+		{"codex existing", "codex", `codex --model custom resume 'old-id' --search`, `codex --model custom resume 'new-id' --search`},
+		{"codex existing options before ID", "codex", `codex resume --model custom old-id --search`, `codex resume --model custom 'new-id' --search`},
+		{"gemini persona", "gemini", `GEMINI_SYSTEM_MD='/work/persona.md' gemini --model custom --yolo`, `GEMINI_SYSTEM_MD='/work/persona.md' gemini --model custom --yolo --resume 'new-id'`},
+		{"gemini inline", "gemini", `gemini --resume=old-id --model custom`, `gemini --resume 'new-id' --model custom`},
+		{"antigravity locked", "antigravity", `/opt/agy-locked --model 'Gemini 3.8 Flash (High)' --dangerously-skip-permissions`, `/opt/agy-locked --model 'Gemini 3.8 Flash (High)' --dangerously-skip-permissions --conversation 'new-id'`},
+		{"antigravity existing", "antigravity", `agy --conversation=old-id --model 'Gemini 3.8 Flash (High)'`, `agy --conversation 'new-id' --model 'Gemini 3.8 Flash (High)'`},
+		{"omp settings", "omp", `omp --auto-approve --model 'provider/custom' --thinking high --append-system-prompt '/work/persona.md'`, `omp --auto-approve --model 'provider/custom' --thinking high --append-system-prompt '/work/persona.md' --resume 'new-id'`},
+		{"omp existing", "omp", `omp --auto-approve --resume=old-id --thinking high`, `omp --auto-approve --resume 'new-id' --thinking high`},
+		{"ntm memory wrapper", "claude", `systemd-run --user --scope -q -p MemoryMax=8192M claude --model custom --effort high`, `systemd-run --user --scope -q -p MemoryMax=8192M claude --model custom --effort high --resume 'new-id'`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ResumeLaunchCommand(tc.provider, "new-id", tc.command, ResumeLaunchOptions{})
+			if err != nil || got != tc.want {
+				t.Fatalf("resume = %q (%v), want %q", got, err, tc.want)
+			}
+			for _, nextID := range []string{"next-id", "last-id"} {
+				got, err = ResumeLaunchCommand(tc.provider, nextID, got, ResumeLaunchOptions{})
+				if err != nil {
+					t.Fatalf("repeated resume: %v", err)
+				}
+				want := strings.Replace(tc.want, "'new-id'", shellQuote(nextID), 1)
+				if got != want {
+					t.Fatalf("repeated resume lost settings or duplicated selector: %q, want %q", got, want)
+				}
+			}
+		})
+	}
+}
+
+func TestResumeLaunchCommandGeneratedTemplates(t *testing.T) {
+	t.Parallel()
+	templates := config.DefaultAgentTemplates()
+	for provider, template := range map[string]string{
+		"claude": templates.Claude, "codex": templates.Codex, "gemini": templates.Gemini,
+		"antigravity": templates.Antigravity, "omp": templates.Omp,
+	} {
+		t.Run(provider, func(t *testing.T) {
+			command, err := config.GenerateAgentCommand(template, config.AgentTemplateVars{Model: "selected/model", ReasoningEffort: "high"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			resumed, err := ResumeLaunchCommand(provider, "saved-id", command, ResumeLaunchOptions{})
+			if err != nil {
+				t.Fatalf("default template cannot resume: %q: %v", command, err)
+			}
+			before, err := shellword.Literal(command)
+			if err != nil {
+				t.Fatal(err)
+			}
+			after, err := shellword.Literal(resumed)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var retained []string
+			for i := 0; i < len(after); i++ {
+				if after[i].Value == "--resume" || after[i].Value == "resume" || after[i].Value == "--conversation" {
+					i++
+					continue
+				}
+				retained = append(retained, after[i].Value)
+			}
+			var original []string
+			for _, word := range before {
+				original = append(original, word.Value)
+			}
+			if !reflect.DeepEqual(original, retained) {
+				t.Fatalf("default launch settings changed: before=%q after=%q", original, retained)
+			}
+		})
+	}
+}
+
+func TestResumeLaunchCommandCodexPreparedPersona(t *testing.T) {
+	t.Parallel()
+	path := "/work/persona's context.md"
+	command, err := config.GenerateAgentCommand(config.DefaultAgentTemplates().Codex, config.AgentTemplateVars{Model: "custom", SystemPromptFile: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := ResumeLaunchCommand("codex", "first-id", command, ResumeLaunchOptions{SystemPromptFile: path})
+	if err != nil || got != strings.Replace(command, " codex ", " codex resume 'first-id' ", 1) {
+		t.Fatalf("prepared persona resume lost exact expansion: %q (%v)", got, err)
+	}
+	got, err = ResumeLaunchCommand("codex", "second-id", got, ResumeLaunchOptions{SystemPromptFile: path})
+	if err != nil || !strings.Contains(got, " codex resume 'second-id' ") || strings.Contains(got, "first-id") {
+		t.Fatalf("repeated prepared persona resume: %q (%v)", got, err)
+	}
+	for _, opts := range []ResumeLaunchOptions{{}, {SystemPromptFile: "/other.md"}, {SystemPromptFile: "relative.md"}} {
+		if _, err := ResumeLaunchCommand("codex", "id", command, opts); err == nil {
+			t.Fatalf("unbound persona expansion accepted: %+v", opts)
+		}
+	}
+	for _, opaque := range []string{
+		`CODEX_SYSTEM_PROMPT="$(cat '/work/persona.md'; touch /tmp/unexpected)" codex --model custom`,
+		`CODEX_SYSTEM_PROMPT="$(cat '/work/persona.md')" codex --model "$MODEL"`,
+		`CODEX_SYSTEM_PROMPT="$(cat '/other.md')" codex --model custom`,
+	} {
+		if _, err := ResumeLaunchCommand("codex", "id", opaque, ResumeLaunchOptions{SystemPromptFile: "/work/persona.md"}); err == nil {
+			t.Fatalf("opaque expansion accepted: %q", opaque)
+		}
+	}
+}
+
+func TestResumeLaunchCommandRejectsAmbiguousOrConflictingModes(t *testing.T) {
+	t.Parallel()
+	cases := map[string][]string{
+		"claude": {
+			`claude --continue`, `claude -c`, `claude --resume old --resume other`, `claude --resume=`,
+			`claude --resume --model custom`, `claude --resume`, `claude --fork-session`, `claude --session-id other`,
+			`claude --model`, `claude --model --effort high`, `claude --custom value`, `claude --custom`,
+			`claude mcp`, `claude --model custom auth login`, `claude 'initial task'`, `claude -- task`,
+			`claude --print`, `claude -p 'task'`, `claude --worktree new`, `wrapper claude`, `sh -c 'claude'`,
+			`claude --model "$MODEL"`, `claude $(cat flags)`, `claude; echo later`, `claude && echo later`,
+			`claude | cat`, `claude > log`, `claude # comment`, `claude --model *`, `claude --model ~/alias`,
+			`'MODE=x' claude`, `BAD-NAME=x claude`, `claude 'unterminated`, "claude \\",
+			`systemd-run --scope -p MemoryMax=8192M claude`, `systemd-run --user --scope -q -p MemoryMax=1GM claude`,
+		},
+		"codex":       {`codex exec`, `codex fork old`, `codex resume`, `codex resume --last`, `codex resume old --all`, `codex resume old resume new`, `codex resume old prompt`, `codex --resume old`, `codex -c`, `codex --model custom review`},
+		"gemini":      {`gemini --prompt-interactive task`, `gemini -p task`, `gemini --resume old -r other`, `gemini --list-sessions`},
+		"antigravity": {`agy --conversation old`, `agy --model pinned --conversation old --conversation other`, `agy --model pinned --prompt-interactive task`},
+		"omp":         {`omp --continue`, `omp -c`, `omp --session other`, `omp --mode json`, `omp --resume old --resume other`},
+	}
+	for provider, commands := range cases {
+		for _, command := range commands {
+			t.Run(provider+"/"+command, func(t *testing.T) {
+				if got, err := ResumeLaunchCommand(provider, "id", command, ResumeLaunchOptions{}); err == nil || got != "" {
+					t.Fatalf("unsafe resume accepted: %q (%v)", got, err)
+				}
+			})
+		}
+	}
+	for _, id := range []string{"", " ", "--last", "id\nnext", "id\x00next"} {
+		if _, err := ResumeLaunchCommand("claude", id, "claude", ResumeLaunchOptions{}); err == nil {
+			t.Fatalf("invalid session ID accepted: %q", id)
+		}
+	}
+	if got, err := ResumeLaunchCommand("claude", "session's name", "claude", ResumeLaunchOptions{}); err != nil || got != `claude --resume 'session'\''s name'` {
+		t.Fatalf("session ID escaping = %q (%v)", got, err)
+	}
+	if _, err := ResumeLaunchCommand("unknown", "id", "unknown", ResumeLaunchOptions{}); err == nil {
+		t.Fatal("unknown provider accepted")
 	}
 }
 

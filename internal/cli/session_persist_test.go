@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Dicklesworthstone/ntm/internal/agentsession"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/session"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
@@ -128,6 +129,70 @@ func TestApplyModelCommands_NilConfigSafe(t *testing.T) {
 	}
 }
 
+func TestApplyModelCommandsPreservesRecordedLaunches(t *testing.T) {
+	previous := cfg
+	cfg = config.Default()
+	t.Cleanup(func() { cfg = previous })
+	spec := &tmux.AgentLaunchSpec{Version: tmux.AgentLaunchSpecVersion, AgentType: tmux.AgentCodex, Command: "codex --model exact -c 'model_reasoning_effort=high'"}
+	state := &session.SessionState{Panes: []session.PaneState{
+		{AgentType: "cod", Model: "stale-title", LaunchSpec: spec},
+		{AgentType: "cc", Model: "stale-title", Command: "/opt/claude --model recorded --effort high"},
+	}}
+	applyModelCommands(state)
+	if state.Panes[0].Command != "" || state.Panes[0].LaunchSpec != spec || state.Panes[1].Command != "/opt/claude --model recorded --effort high" {
+		t.Fatalf("current configuration overwrote recorded launch settings: %+v", state.Panes)
+	}
+}
+
+func TestSessionsCommandRestoresDurableSettingsAndNativeContext(t *testing.T) {
+	for _, operation := range []string{"restore", "resume"} {
+		t.Run(operation, func(t *testing.T) {
+			logPath := sessionRecoveryCommandFixture(t)
+			worktree := t.TempDir()
+			baseCommand := "/opt/codex --model saved-model -c 'model_reasoning_effort=high'"
+			state := &session.SessionState{Name: "fidelity", WorkDir: t.TempDir(), Panes: []session.PaneState{{
+				Index: 0, AgentType: "cod", Model: "stale-title", WorkDir: worktree,
+				LaunchSpec: &tmux.AgentLaunchSpec{Version: tmux.AgentLaunchSpecVersion, AgentType: tmux.AgentCodex, Command: baseCommand},
+				SessionID:  "native-context", SessionProvider: "codex", SessionFreshness: agentsession.BindingFresh, SessionConfidence: 1,
+			}}}
+			if _, err := session.Save(state, session.SaveOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			cmd := newSessionPersistCmd()
+			args := []string{operation, "fidelity", "--force"}
+			if operation == "restore" {
+				args = append(args, "--launch")
+			}
+			cmd.SetArgs(args)
+			cmd.SetOut(io.Discard)
+			cmd.SetErr(io.Discard)
+			stdout, err := captureStdout(t, cmd.Execute)
+			if err != nil {
+				t.Fatalf("command failed: %v; %s", err, stdout)
+			}
+			var result struct {
+				Success    bool `json:"success"`
+				Resumed    int  `json:"resumed"`
+				AgentCount int  `json:"agent_count"`
+			}
+			if err := json.Unmarshal([]byte(stdout), &result); err != nil || !result.Success {
+				t.Fatalf("invalid recovery result: %s, %v", stdout, err)
+			}
+			expected := baseCommand
+			if operation == "resume" {
+				expected = "/opt/codex resume 'native-context' --model saved-model -c 'model_reasoning_effort=high'"
+				if result.Resumed != 1 {
+					t.Fatalf("native resume was not reported: %s", stdout)
+				}
+			}
+			calls, _ := os.ReadFile(logPath)
+			if !strings.Contains(string(calls), "cd "+tmux.ShellQuote(worktree)+" && "+expected) || strings.Contains(string(calls), "stale-title") {
+				t.Fatalf("public command dropped settings or worktree: %s", calls)
+			}
+		})
+	}
+}
+
 // GH#251 phase 2: Grok Build relaunch is implemented, so launching restores
 // of saved grok panes now validate like topology-only restores.
 func TestValidateSessionsAutomatedRelaunchAcceptsGrok(t *testing.T) {
@@ -173,7 +238,7 @@ case "$1" in
   list-windows) echo 0 ;;
   list-panes)
     for i in 0 1; do
-      printf '%%%s_NTM_SEP_%s_NTM_SEP__NTM_SEP_bash_NTM_SEP_80_NTM_SEP_24_NTM_SEP_1_NTM_SEP_0_NTM_SEP_0_NTM_SEP_cod_NTM_SEP__NTM_SEP__NTM_SEP_0\n' "$i" "$i"
+      printf '%%%s_NTM_SEP_%s_NTM_SEP__NTM_SEP_bash_NTM_SEP_80_NTM_SEP_24_NTM_SEP_1_NTM_SEP_9999998_NTM_SEP_0_NTM_SEP_cod_NTM_SEP__NTM_SEP__NTM_SEP_0\n' "$i" "$i"
     done ;;
   send-keys)
     if [ "$3" = "$NTM_SESSION_CLI_FAIL_PANE" ]; then

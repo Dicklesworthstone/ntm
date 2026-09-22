@@ -1356,6 +1356,15 @@ func TestRestoreLeavesUserPaneReclassifiable(t *testing.T) {
 // before the pane had an isolated config dir, so it never carries one.
 func TestApplyClaudeIsolation(t *testing.T) {
 	t.Setenv(swarm.ClaudeCredentialStoreEnvVar, "file")
+	applyClaudeIsolation := func(cfg *config.Config, workDir, sessionName string, pane PaneState, command string) (string, error) {
+		pane.Command = command
+		state := &SessionState{Name: sessionName, WorkDir: workDir, Panes: []PaneState{pane}}
+		launches, err := preflightSavedLaunches(t.Context(), state, AgentCommands{}, cfg, nil)
+		if err != nil {
+			return "", err
+		}
+		return launches[0].plan.Prepare(t.Context(), workDir, sessionName, 0)
+	}
 
 	cfg := config.Default()
 	cfg.Agents.ClaudeIsolateCredentials = true
@@ -1523,6 +1532,10 @@ func savedSessionRestoreFixture(t *testing.T) string {
 	t.Setenv("NTM_SESSION_TEST_FAIL_PANE", "")
 	t.Setenv("NTM_SESSION_TEST_PROBE_ERROR", "")
 	t.Setenv("NTM_SESSION_TEST_PANES", "2")
+	t.Setenv("NTM_SESSION_TEST_RECORD_DIR", dir)
+	t.Setenv("NTM_SESSION_TEST_CWD", dir)
+	t.Setenv("NTM_SESSION_TEST_METADATA_FAIL", "")
+	t.Setenv("NTM_SESSION_TEST_PID", "9999998")
 	bin := filepath.Join(dir, "tmux")
 	const script = `#!/bin/sh
 printf '%s\n' "$*" >> "$NTM_SESSION_TEST_LOG"
@@ -1536,9 +1549,28 @@ case "$1" in
   list-panes)
     i=0
     while [ "$i" -lt "$NTM_SESSION_TEST_PANES" ]; do
-      printf '%%%s_NTM_SEP_%s_NTM_SEP__NTM_SEP_bash_NTM_SEP_80_NTM_SEP_24_NTM_SEP_1_NTM_SEP_0_NTM_SEP_0_NTM_SEP_cod_NTM_SEP__NTM_SEP__NTM_SEP_0\n' "$i" "$i"
+      type=cod
+      if [ -f "$NTM_SESSION_TEST_RECORD_DIR/type%$i" ]; then type=$(cat "$NTM_SESSION_TEST_RECORD_DIR/type%$i"); fi
+      printf '%%%s_NTM_SEP_%s_NTM_SEP__NTM_SEP_bash_NTM_SEP_80_NTM_SEP_24_NTM_SEP_1_NTM_SEP_%s_NTM_SEP_0_NTM_SEP_%s_NTM_SEP__NTM_SEP__NTM_SEP_0\n' "$i" "$i" "$NTM_SESSION_TEST_PID" "$type"
       i=$((i + 1))
     done ;;
+  display-message) printf '%s\n' "$NTM_SESSION_TEST_CWD" ;;
+  set-option)
+    if [ "$5" = '@ntm_agent_type' ]; then printf '%s\n' "$6" > "$NTM_SESSION_TEST_RECORD_DIR/type$4"; fi
+    if [ "$5" = '@ntm_agent_launch' ]; then
+      if [ "$4" = "$NTM_SESSION_TEST_METADATA_FAIL" ]; then
+        echo 'metadata persistence failed' >&2
+        exit 2
+      fi
+      printf '%s\n' "$6" > "$NTM_SESSION_TEST_RECORD_DIR/$4"
+    fi ;;
+  show-options)
+    if [ -f "$NTM_SESSION_TEST_RECORD_DIR/$5" ]; then
+      cat "$NTM_SESSION_TEST_RECORD_DIR/$5"
+    else
+      echo 'invalid option: @ntm_agent_launch' >&2
+      exit 1
+    fi ;;
   send-keys)
     if [ "$3" = "$NTM_SESSION_TEST_FAIL_PANE" ]; then
       echo 'fixture pane dispatch failed' >&2

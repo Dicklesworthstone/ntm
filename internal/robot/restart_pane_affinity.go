@@ -11,6 +11,7 @@ import (
 	agentpkg "github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/resilience"
+	"github.com/Dicklesworthstone/ntm/internal/shellword"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
@@ -299,16 +300,11 @@ func restartEnvironmentName(name string) bool {
 	return true
 }
 
-type restartShellWord struct {
-	value      string
-	start, end int
-}
-
 // removeRestartScalarOverrides removes complete option/value token spans before
 // appending a replacement. In particular Codex's scalar --model/-m rejects
 // duplicate occurrences; sending a duplicate would kill the replacement CLI.
 func removeRestartScalarOverrides(command, resolvedType string, model, effort bool) (string, error) {
-	words, err := restartSimpleShellTokens(command)
+	words, err := shellword.Literal(command)
 	if err != nil {
 		return "", err
 	}
@@ -316,9 +312,9 @@ func removeRestartScalarOverrides(command, resolvedType string, model, effort bo
 	copiedThrough := 0
 	for i := 0; i < len(words); i++ {
 		word := words[i]
-		flag, _, inline := strings.Cut(word.value, "=")
+		flag, _, inline := strings.Cut(word.Value, "=")
 		remove := model && (flag == "--model" || (resolvedType == "codex" || resolvedType == "gemini") && flag == "-m")
-		if model && resolvedType == "codex" && strings.HasPrefix(word.value, "-m") && !strings.HasPrefix(word.value, "--") && len(word.value) > 2 {
+		if model && resolvedType == "codex" && strings.HasPrefix(word.Value, "-m") && !strings.HasPrefix(word.Value, "--") && len(word.Value) > 2 {
 			remove, inline = true, true
 		}
 		if effort {
@@ -330,9 +326,9 @@ func removeRestartScalarOverrides(command, resolvedType string, model, effort bo
 			}
 		}
 		if resolvedType == "codex" && (model || effort) {
-			if setting, attached, configOption := restartCodexConfigSetting(word.value); configOption {
+			if setting, attached, configOption := restartCodexConfigSetting(word.Value); configOption {
 				if !attached && i+1 < len(words) {
-					setting = words[i+1].value
+					setting = words[i+1].Value
 				}
 				key, _, _ := strings.Cut(setting, "=")
 				remove = model && strings.TrimSpace(key) == "model" || effort && strings.TrimSpace(key) == "model_reasoning_effort"
@@ -342,22 +338,22 @@ func removeRestartScalarOverrides(command, resolvedType string, model, effort bo
 		if !remove {
 			continue
 		}
-		if command[word.start] == '\'' || command[word.start] == '"' {
+		if command[word.Start] == '\'' || command[word.Start] == '"' {
 			return "", errors.New("saved scalar option is quoted and may be a literal value for another option")
 		}
-		if i > 0 && words[i-1].end > copiedThrough && strings.HasPrefix(words[i-1].value, "-") &&
-			!strings.Contains(words[i-1].value, "=") && !restartKnownBooleanOption(words[i-1].value) {
+		if i > 0 && words[i-1].End > copiedThrough && strings.HasPrefix(words[i-1].Value, "-") &&
+			!strings.Contains(words[i-1].Value, "=") && !restartKnownBooleanOption(words[i-1].Value) {
 			return "", errors.New("saved scalar option is ambiguous with a preceding custom option value")
 		}
-		end := word.end
+		end := word.End
 		if !inline {
-			if i+1 >= len(words) || strings.HasPrefix(words[i+1].value, "-") {
+			if i+1 >= len(words) || strings.HasPrefix(words[i+1].Value, "-") {
 				return "", errors.New("saved scalar agent option has no literal value")
 			}
 			i++
-			end = words[i].end
+			end = words[i].End
 		}
-		result.WriteString(command[copiedThrough:word.start])
+		result.WriteString(command[copiedThrough:word.Start])
 		copiedThrough = end
 	}
 	result.WriteString(command[copiedThrough:])
@@ -375,81 +371,13 @@ func restartKnownBooleanOption(word string) bool {
 }
 
 func restartSimpleShellWords(command string) ([]string, error) {
-	tokens, err := restartSimpleShellTokens(command)
+	tokens, err := shellword.Literal(command)
 	if err != nil {
 		return nil, err
 	}
 	words := make([]string, len(tokens))
 	for i, token := range tokens {
-		words[i] = token.value
-	}
-	return words, nil
-}
-
-func restartSimpleShellTokens(command string) ([]restartShellWord, error) {
-	var words []restartShellWord
-	var word strings.Builder
-	var quote rune
-	escaped, started := false, false
-	wordStart := 0
-	for i, r := range command {
-		if !started && r != ' ' && r != '\t' {
-			wordStart = i
-		}
-		if escaped {
-			if quote == '"' && !strings.ContainsRune("$`\"\\", r) {
-				word.WriteRune('\\')
-			}
-			word.WriteRune(r)
-			escaped, started = false, true
-			continue
-		}
-		if quote == '\'' {
-			if r == '\'' {
-				quote = 0
-			} else {
-				word.WriteRune(r)
-			}
-			continue
-		}
-		if r == '$' || r == '`' || r == '\n' || r == '\r' {
-			return nil, errors.New("shell expansion or control sequence is present")
-		}
-		if r == '\\' {
-			escaped, started = true, true
-			continue
-		}
-		if quote == '"' {
-			if r == '"' {
-				quote = 0
-			} else {
-				word.WriteRune(r)
-			}
-			continue
-		}
-		if r == '\'' || r == '"' {
-			quote, started = r, true
-			continue
-		}
-		if strings.ContainsRune(";&|<>()#*?[]{}~", r) {
-			return nil, errors.New("shell operator, expansion, or comment is present")
-		}
-		if r == ' ' || r == '\t' {
-			if started {
-				words = append(words, restartShellWord{value: word.String(), start: wordStart, end: i})
-				word.Reset()
-				started = false
-			}
-			continue
-		}
-		word.WriteRune(r)
-		started = true
-	}
-	if quote != 0 || escaped {
-		return nil, errors.New("shell quoting is incomplete")
-	}
-	if started {
-		words = append(words, restartShellWord{value: word.String(), start: wordStart, end: len(command)})
+		words[i] = token.Value
 	}
 	return words, nil
 }
