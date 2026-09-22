@@ -163,7 +163,7 @@ func (e *Executor) acquirePaneLockCrossProcess(ctx context.Context, paneID strin
 	waitCtx, cancel := context.WithTimeout(ctx, e.paneLockWait())
 	defer cancel()
 
-	locked, err := openLockedFile(waitCtx, lockPath)
+	releaseFiles, err := acquireSharedPaneLock(waitCtx, paneID, lockPath)
 	if err != nil {
 		releaseLocal()
 		// Distinguish "the caller cancelled" from "we waited out the budget";
@@ -178,7 +178,7 @@ func (e *Executor) acquirePaneLockCrossProcess(ctx context.Context, paneID strin
 	}
 
 	return func() {
-		locked.unlockAndClose()
+		releaseFiles()
 		releaseLocal()
 	}, nil
 }
