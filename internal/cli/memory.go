@@ -139,7 +139,7 @@ func runMemoryServe(ctx context.Context, out io.Writer, port int) error {
 				lastState = d.State
 			}
 			if d.State == supervisor.StateFailed && d.Restarts > supervisor.DefaultMaxRestarts {
-				return fmt.Errorf("cm daemon failed permanently after %d restarts; see .ntm/logs/cm-%s.log", d.Restarts-1, sessionID)
+				return fmt.Errorf("cm daemon failed permanently after %d restart attempts; see .ntm/logs/cm-%s.log", d.Restarts-1, sessionID)
 			}
 		}
 	}

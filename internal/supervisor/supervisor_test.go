@@ -7,7 +7,9 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -310,6 +312,300 @@ func TestStartDuplicateDaemon(t *testing.T) {
 	}
 }
 
+func TestStartRejectsLiveAndRecoveringGenerations(t *testing.T) {
+	s, err := New(Config{SessionID: "start-admission", ProjectDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Shutdown()
+	spec := DaemonSpec{Name: "daemon", Command: "sleep", Args: []string{"60"}}
+	if err := s.Start(spec); err != nil {
+		t.Fatal(err)
+	}
+	s.mu.RLock()
+	original := s.daemons[spec.Name]
+	s.mu.RUnlock()
+	defer func() {
+		original.mu.Lock()
+		original.State = StateStarting
+		original.mu.Unlock()
+		_ = s.stopDaemon(original)
+	}()
+
+	for _, state := range []DaemonState{StateStarting, StateRunning, StateUnhealthy, StateStopping, StateRestarting} {
+		t.Run(string(state), func(t *testing.T) {
+			original.mu.Lock()
+			original.State = state
+			original.mu.Unlock()
+			if err := s.Start(spec); err == nil {
+				t.Fatalf("Start replaced a %s daemon", state)
+			}
+			current, _ := s.GetDaemon(spec.Name)
+			if current.PID != original.PID {
+				t.Fatalf("Start changed managed PID from %d to %d", original.PID, current.PID)
+			}
+		})
+	}
+
+	// Health transitions race with external Start calls in a real supervisor.
+	// Both states reject the duplicate, and admission must read them under mu.
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for range 250 {
+			original.mu.Lock()
+			original.State = StateStarting
+			original.mu.Unlock()
+			original.mu.Lock()
+			original.State = StateRunning
+			original.mu.Unlock()
+		}
+	}()
+	for range 250 {
+		if err := s.Start(spec); err == nil {
+			t.Error("Start replaced a live daemon during a health transition")
+		}
+	}
+	wg.Wait()
+}
+
+func restartTestSpec(t *testing.T) DaemonSpec {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("restart fault injection requires unix executable permissions")
+	}
+	sleepPath, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(sleepPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := filepath.Join(t.TempDir(), "daemon")
+	if err := os.WriteFile(command, data, 0755); err != nil {
+		t.Fatal(err)
+	}
+	return DaemonSpec{Name: "daemon", Command: command, Args: []string{"60"}}
+}
+
+func waitForRestartCount(t *testing.T, s *Supervisor, name string, count int) *ManagedDaemon {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if d, ok := s.GetDaemon(name); ok && d.Restarts >= count {
+			return d
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("daemon %s never reached restart attempt %d", name, count)
+	return nil
+}
+
+func TestRestartRetriesLaunchFailuresAndRecovers(t *testing.T) {
+	for _, fault := range []string{"missing binary", "permission denied", "occupied port"} {
+		t.Run(fault, func(t *testing.T) {
+			spec := restartTestSpec(t)
+			port, err := findAvailablePort()
+			if err != nil {
+				t.Fatal(err)
+			}
+			spec.DefaultPort = port
+			spec.NoPortFallback = true
+			s, err := New(Config{
+				SessionID: "retry-launch", ProjectDir: t.TempDir(),
+				MaxRestarts: 5, RestartBackoffMax: 150 * time.Millisecond,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer s.Shutdown()
+			if err := s.Start(spec); err != nil {
+				t.Fatal(err)
+			}
+			s.mu.RLock()
+			first := s.daemons[spec.Name]
+			s.mu.RUnlock()
+
+			var restore func() error
+			switch fault {
+			case "missing binary":
+				if err := os.Rename(spec.Command, spec.Command+".unavailable"); err != nil {
+					t.Fatal(err)
+				}
+				restore = func() error { return os.Rename(spec.Command+".unavailable", spec.Command) }
+			case "permission denied":
+				if err := os.Chmod(spec.Command, 0644); err != nil {
+					t.Fatal(err)
+				}
+				restore = func() error { return os.Chmod(spec.Command, 0755) }
+			case "occupied port":
+				ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = ln.Close() })
+				restore = ln.Close
+			}
+			if err := first.cmd.Process.Kill(); err != nil {
+				t.Fatal(err)
+			}
+
+			// The first process has exited, and the first relaunch has failed.
+			// Recovery must advance its budget instead of pinning forever at 1.
+			pending := waitForRestartCount(t, s, spec.Name, 2)
+			if pending.State != StateRestarting || pending.PID != first.PID {
+				t.Fatalf("expected original generation awaiting retry; got %+v", pending)
+			}
+			if err := s.Start(spec); err == nil {
+				t.Fatal("public Start bypassed recovery ownership")
+			}
+			if err := restore(); err != nil {
+				t.Fatal(err)
+			}
+
+			deadline := time.Now().Add(3 * time.Second)
+			var recovered *ManagedDaemon
+			for time.Now().Before(deadline) {
+				d, _ := s.GetDaemon(spec.Name)
+				if d.PID != first.PID {
+					recovered = d
+					break
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			if recovered == nil || recovered.Restarts < 2 || recovered.Port != port {
+				t.Fatalf("daemon did not recover on its requested port with preserved budget: %+v", recovered)
+			}
+			pidData, err := os.ReadFile(s.pidPath(spec.Name))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var info PIDFileInfo
+			if err := json.Unmarshal(pidData, &info); err != nil || info.PID != recovered.PID {
+				t.Fatalf("recovery did not replace PID file: %s (error: %v)", pidData, err)
+			}
+			logData, err := os.ReadFile(s.logPath(spec.Name))
+			if err != nil || !strings.Contains(string(logData), "restart failed:") {
+				t.Fatalf("launch failure missing from recovery log: %s (error: %v)", logData, err)
+			}
+		})
+	}
+}
+
+func TestRestartLaunchFailuresExhaustBudgetAndAllowFreshStart(t *testing.T) {
+	spec := restartTestSpec(t)
+	s, err := New(Config{
+		SessionID: "retry-exhaustion", ProjectDir: t.TempDir(),
+		MaxRestarts: 2, RestartBackoffMax: 50 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Shutdown()
+	if err := s.Start(spec); err != nil {
+		t.Fatal(err)
+	}
+	s.mu.RLock()
+	first := s.daemons[spec.Name]
+	s.mu.RUnlock()
+	if err := os.Chmod(spec.Command, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.cmd.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	failed := waitForDaemonState(t, s, spec.Name, StateFailed, 3*time.Second)
+	if failed.Restarts != 3 || failed.PID != first.PID {
+		t.Fatalf("exhausted generation = %+v; want original PID and 3 failures", failed)
+	}
+	logData, err := os.ReadFile(s.logPath(spec.Name))
+	if err != nil || strings.Count(string(logData), "restart failed:") != 2 || !strings.Contains(string(logData), "max restarts (2) exceeded") {
+		t.Fatalf("log must explain both failed attempts and exhaustion: %s (error: %v)", logData, err)
+	}
+
+	if err := os.Chmod(spec.Command, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Start(spec); err != nil {
+		t.Fatalf("fresh Start after exhaustion: %v", err)
+	}
+	fresh, _ := s.GetDaemon(spec.Name)
+	if fresh.PID == first.PID || fresh.Restarts != 0 {
+		t.Fatalf("fresh Start did not reset generation and budget: %+v", fresh)
+	}
+	// Delayed callbacks from the old generation cannot affect the replacement,
+	// even if their old local state claims that recovery is still in progress.
+	first.mu.Lock()
+	first.State = StateRunning
+	first.mu.Unlock()
+	s.handleDaemonFailure(first)
+	first.mu.Lock()
+	first.State = StateRestarting
+	first.mu.Unlock()
+	if attempted, err := s.restartDaemon(first); attempted || err != nil {
+		t.Fatalf("stale generation attempted restart: attempted=%v error=%v", attempted, err)
+	}
+	current, _ := s.GetDaemon(spec.Name)
+	if current.PID != fresh.PID || current.Restarts != 0 {
+		t.Fatalf("stale callback replaced fresh daemon: %+v", current)
+	}
+}
+
+func TestStopDuringBackoffCancelsOldGeneration(t *testing.T) {
+	spec := restartTestSpec(t)
+	s, err := New(Config{
+		SessionID: "cancel-recovery", ProjectDir: t.TempDir(),
+		RestartBackoffMax: 150 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Shutdown()
+	if err := s.Start(spec); err != nil {
+		t.Fatal(err)
+	}
+	s.mu.RLock()
+	first := s.daemons[spec.Name]
+	s.mu.RUnlock()
+	if err := first.cmd.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	waitForRestartCount(t, s, spec.Name, 1)
+	if err := supervisorStopForTest(s, spec.Name); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Start(spec); err != nil {
+		t.Fatal(err)
+	}
+	fresh, _ := s.GetDaemon(spec.Name)
+	time.Sleep(2 * s.restartBackoffMax)
+	current, _ := s.GetDaemon(spec.Name)
+	if current.PID != fresh.PID || current.Restarts != 0 {
+		t.Fatalf("cancelled recovery replaced fresh daemon: %+v", current)
+	}
+}
+
+func TestRestartBackoffSaturates(t *testing.T) {
+	for _, tt := range []struct {
+		attempt int
+		cap     time.Duration
+		want    time.Duration
+	}{
+		{1, 60 * time.Second, time.Second},
+		{3, 60 * time.Second, 4 * time.Second},
+		{64, 60 * time.Second, 60 * time.Second},
+		{1000, time.Duration(1<<63 - 1), time.Duration(1<<63 - 1)},
+		{1, 50 * time.Millisecond, 50 * time.Millisecond},
+	} {
+		s := &Supervisor{restartBackoffMax: tt.cap}
+		if got := s.restartBackoff(tt.attempt); got != tt.want {
+			t.Errorf("attempt %d with cap %v: got %v, want %v", tt.attempt, tt.cap, got, tt.want)
+		}
+	}
+}
+
 func TestGetDaemonReturnsSnapshot(t *testing.T) {
 	tmpDir := t.TempDir()
 
@@ -608,16 +904,14 @@ func TestHandleDaemonFailure_IdempotentWhenAlreadyFailed(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	s, err := New(Config{
-		SessionID:  "test-session",
-		ProjectDir: tmpDir,
+		SessionID:   "test-session",
+		ProjectDir:  tmpDir,
+		MaxRestarts: -1,
 	})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
 	defer s.Shutdown()
-
-	// Force ctx done so handleDaemonFailure exits quickly (no time.After backoff).
-	s.cancel()
 
 	d := &ManagedDaemon{
 		Spec: DaemonSpec{
@@ -628,6 +922,7 @@ func TestHandleDaemonFailure_IdempotentWhenAlreadyFailed(t *testing.T) {
 		Restarts: 0,
 		OwnerID:  "test-session",
 	}
+	s.daemons[d.Spec.Name] = d
 
 	s.handleDaemonFailure(d)
 	if d.Restarts != 1 {

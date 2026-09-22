@@ -114,8 +114,8 @@ type Config struct {
 
 // DefaultMaxRestarts is the default restart budget applied when
 // Config.MaxRestarts is zero. Exported so foreground callers (ntm memory
-// serve) can tell "transiently failed, restart pending" apart from
-// "restart budget exhausted".
+// serve) can report exhaustion, which is recorded as StateFailed with
+// Restarts one greater than the configured budget.
 const DefaultMaxRestarts = 5
 
 // New creates a new Supervisor for the given session.
@@ -140,7 +140,7 @@ func New(cfg Config) (*Supervisor, error) {
 	if cfg.MaxRestarts == 0 {
 		cfg.MaxRestarts = DefaultMaxRestarts
 	}
-	if cfg.RestartBackoffMax == 0 {
+	if cfg.RestartBackoffMax <= 0 {
 		cfg.RestartBackoffMax = 60 * time.Second
 	}
 	if cfg.StartupHealthTimeout <= 0 {
@@ -192,14 +192,54 @@ func (s *Supervisor) Start(spec DaemonSpec) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Check if already running or starting
-	// Note: StateRestarting is allowed because handleDaemonFailure sets it before calling Start()
+	// Only an explicitly stopped daemon or an exhausted recovery may be
+	// replaced by a public start. Unhealthy processes are still alive, and a
+	// pending restart owns this name until recovery completes or is stopped.
 	if d, exists := s.daemons[spec.Name]; exists {
-		if d.State == StateRunning || d.State == StateStarting {
-			return fmt.Errorf("daemon %s already running (state: %s)", spec.Name, d.State)
+		d.mu.RLock()
+		state := d.State
+		d.mu.RUnlock()
+		if state != StateStopped && state != StateFailed {
+			return fmt.Errorf("daemon %s already managed (state: %s)", spec.Name, state)
 		}
 	}
 
+	return s.startDaemonLocked(spec, 0)
+}
+
+// restartDaemon admits a replacement only while the failed generation still
+// owns its name and recovery state. A stopped or superseded generation must
+// never launch over a newer process. The bool reports whether a launch was
+// attempted; false means recovery was cancelled, not a retryable launch error.
+func (s *Supervisor) restartDaemon(previous *ManagedDaemon) (bool, error) {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+
+	if s.stopped {
+		return false, nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.daemons[previous.Spec.Name] != previous {
+		return false, nil
+	}
+
+	previous.mu.RLock()
+	state := previous.State
+	restarts := previous.Restarts
+	previous.mu.RUnlock()
+	if state != StateRestarting {
+		return false, nil
+	}
+
+	return true, s.startDaemonLocked(previous.Spec, restarts)
+}
+
+// startDaemonLocked launches an admitted generation. The caller holds both
+// lifecycleMu and mu, so shutdown and other launches cannot replace its owner
+// between admission and registration.
+func (s *Supervisor) startDaemonLocked(spec DaemonSpec, restartCount int) error {
 	// Fail fast and loud when the daemon binary does not exist. Without this
 	// check a missing binary would only surface as a launch-retry loop in the
 	// log file — silence is the sin (bd-ws1-truth-safety-l5ddi.2).
@@ -258,12 +298,6 @@ func (s *Supervisor) Start(spec DaemonSpec) error {
 		logFile.Close()
 		cancel()
 		return fmt.Errorf("start daemon %s: %w", spec.Name, err)
-	}
-
-	// Preserve restart count from existing daemon if this is a restart
-	var restartCount int
-	if existing, exists := s.daemons[spec.Name]; exists && existing.State == StateRestarting {
-		restartCount = existing.Restarts
 	}
 
 	daemon := &ManagedDaemon{
@@ -452,12 +486,23 @@ func (s *Supervisor) monitorDaemon(d *ManagedDaemon) {
 	ticker := time.NewTicker(s.healthInterval)
 	defer ticker.Stop()
 
-	// Wait a bit for daemon to start
-	time.Sleep(2 * time.Second)
+	// Wait a bit for daemon to start, without keeping monitors alive after an
+	// early exit or supervisor shutdown.
+	startupTimer := time.NewTimer(2 * time.Second)
+	defer startupTimer.Stop()
+	select {
+	case <-s.shutdownCh:
+		return
+	case <-d.done:
+		return
+	case <-startupTimer.C:
+	}
 
 	for {
 		select {
 		case <-s.shutdownCh:
+			return
+		case <-d.done:
 			return
 		case <-ticker.C:
 			d.mu.RLock()
@@ -476,14 +521,11 @@ func (s *Supervisor) monitorDaemon(d *ManagedDaemon) {
 				// Reading cmd.ProcessState here would race with the
 				// waitForExit goroutine's cmd.Wait(), which writes it
 				// (bd-2c0yh.5) — so observe the done channel that waitForExit
-				// closes after Wait returns instead. waitForExit already calls
-				// handleDaemonFailure for unexpected exits; that call is
-				// idempotent per failure, so this monitor-side signal is a
-				// belt-and-suspenders no-op when the wait goroutine got there
-				// first.
+				// closes after Wait returns instead. waitForExit owns recovery
+				// and the exited process's log until that recovery finishes.
 				select {
 				case <-d.done:
-					s.handleDaemonFailure(d)
+					return
 				default:
 				}
 				continue
@@ -577,61 +619,84 @@ func (s *Supervisor) waitForExit(d *ManagedDaemon) {
 
 // handleDaemonFailure handles a daemon crash and potentially restarts it.
 func (s *Supervisor) handleDaemonFailure(d *ManagedDaemon) {
+	s.mu.RLock()
+	if s.daemons[d.Spec.Name] != d {
+		s.mu.RUnlock()
+		return
+	}
 	d.mu.Lock()
-	// Avoid double-handling the same failure (e.g. monitor + wait goroutines).
+	// Avoid double-handling the same failure after repeated notifications.
 	// If a daemon is already in a terminal/recovery state, a second failure signal is noise.
 	if d.State == StateStopping || d.State == StateStopped || d.State == StateFailed || d.State == StateRestarting {
 		d.mu.Unlock()
-		return
-	}
-	d.Restarts++
-	restarts := d.Restarts
-	d.State = StateFailed
-	logFile := d.logFile
-	d.mu.Unlock()
-
-	// Check if we should restart
-	if restarts > s.maxRestarts {
-		if logFile != nil {
-			fmt.Fprintf(logFile, "[supervisor] max restarts (%d) exceeded, not restarting\n", s.maxRestarts)
-		}
-		return
-	}
-
-	// Calculate backoff
-	backoff := time.Duration(1<<uint(restarts-1)) * time.Second
-	if backoff > s.restartBackoffMax {
-		backoff = s.restartBackoffMax
-	}
-
-	if logFile != nil {
-		fmt.Fprintf(logFile, "[supervisor] restarting in %v (attempt %d/%d)\n", backoff, restarts, s.maxRestarts)
-	}
-
-	select {
-	case <-s.shutdownCh:
-		return
-	case <-time.After(backoff):
-	}
-
-	d.mu.Lock()
-	// Don't restart if daemon was explicitly stopped
-	if d.State == StateStopping || d.State == StateStopped {
-		d.mu.Unlock()
+		s.mu.RUnlock()
 		return
 	}
 	d.State = StateRestarting
 	d.mu.Unlock()
+	s.mu.RUnlock()
 
-	// Restart the daemon
-	if err := s.Start(d.Spec); err != nil {
-		d.mu.RLock()
-		logFile = d.logFile
-		d.mu.RUnlock()
-		if logFile != nil {
-			fmt.Fprintf(logFile, "[supervisor] restart failed: %v\n", err)
+	for {
+		d.mu.Lock()
+		if d.State != StateRestarting {
+			d.mu.Unlock()
+			return
 		}
+		d.Restarts++
+		restarts := d.Restarts
+		if restarts > s.maxRestarts {
+			d.State = StateFailed
+			if d.logFile != nil {
+				fmt.Fprintf(d.logFile, "[supervisor] max restarts (%d) exceeded, not restarting\n", s.maxRestarts)
+			}
+			d.mu.Unlock()
+			return
+		}
+
+		backoff := s.restartBackoff(restarts)
+		if d.logFile != nil {
+			fmt.Fprintf(d.logFile, "[supervisor] restarting in %v (attempt %d/%d)\n", backoff, restarts, s.maxRestarts)
+		}
+		d.mu.Unlock()
+
+		timer := time.NewTimer(backoff)
+		select {
+		case <-s.shutdownCh:
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+
+		attempted, err := s.restartDaemon(d)
+		if !attempted || err == nil {
+			return
+		}
+
+		// Port collisions, binary upgrades and launch errors all consume the
+		// same bounded restart budget as a new process that immediately exits.
+		// Retain this generation and its log while the next attempt is pending.
+		d.mu.Lock()
+		if d.logFile != nil {
+			fmt.Fprintf(d.logFile, "[supervisor] restart failed: %v\n", err)
+		}
+		d.mu.Unlock()
 	}
+}
+
+// restartBackoff doubles the delay until the configured cap, without shifts
+// or duration multiplication overflowing when a large budget is configured.
+func (s *Supervisor) restartBackoff(attempt int) time.Duration {
+	backoff := time.Second
+	for i := 1; i < attempt && backoff < s.restartBackoffMax; i++ {
+		if backoff > s.restartBackoffMax/2 {
+			return s.restartBackoffMax
+		}
+		backoff *= 2
+	}
+	if backoff > s.restartBackoffMax {
+		return s.restartBackoffMax
+	}
+	return backoff
 }
 
 // healthCheckClient is a shared HTTP client for health checks with appropriate timeouts.

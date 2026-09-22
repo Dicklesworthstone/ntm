@@ -91,6 +91,21 @@ import (
 )
 
 func main() {
+	// Simulate an executable becoming unavailable during an upgrade after
+	// the first successful launch. Subsequent attempts fail before a new
+	// process exists, exercising the supervisor's launch-error budget.
+	if os.Getenv("STUB_CM_DISABLE_RESTARTS") == "1" {
+		exe, err := os.Executable()
+		if err == nil {
+			err = os.Chmod(exe, 0644)
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
+		os.Exit(1)
+	}
+
 	args := os.Args[1:]
 	if len(args) > 0 && args[0] == "serve" {
 		args = args[1:]
@@ -284,6 +299,54 @@ func TestMemoryServeRefusesOccupiedPort(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), fmt.Sprintf("%d", port)) {
 		t.Errorf("error must name the contested port %d, got: %v", port, err)
+	}
+}
+
+func TestMemoryServeReportsExhaustedRestartLaunchFailures(t *testing.T) {
+	binDir := t.TempDir()
+	buildStubCMBinary(t, binDir)
+	projDir := t.TempDir()
+	t.Chdir(projDir)
+	t.Setenv("PATH", binDir)
+	t.Setenv("STUB_CM_DISABLE_RESTARTS", "1")
+	port, err := freeLocalPort()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Exercise the actual Cobra surface with the production restart budget
+	// and backoff (1+2+4+8+16 seconds). A wedged StateRestarting used to keep
+	// this command alive until the operator interrupted it.
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	var out bytes.Buffer
+	cmd := newMemoryServeCmd()
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"--port", fmt.Sprint(port)})
+	err = cmd.ExecuteContext(ctx)
+	if ctx.Err() != nil {
+		t.Fatalf("memory serve hung after restart launch failure: %v\n%s", ctx.Err(), out.String())
+	}
+	if err == nil || !strings.Contains(err.Error(), "failed permanently after 5 restart attempts") {
+		t.Fatalf("memory serve must report exhausted recovery, got %v\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), "restarting -> failed") {
+		t.Fatalf("terminal recovery state missing from command output:\n%s", out.String())
+	}
+
+	sessionID := fmt.Sprintf("memory-serve-%d", os.Getpid())
+	logPath := filepath.Join(projDir, ".ntm", "logs", fmt.Sprintf("cm-%s.log", sessionID))
+	logData, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(string(logData), "restart failed:") != supervisor.DefaultMaxRestarts || !strings.Contains(string(logData), "max restarts (5) exceeded") {
+		t.Fatalf("supervisor log must explain every failed launch and exhaustion:\n%s", logData)
+	}
+	pidPath := filepath.Join(projDir, ".ntm", "pids", fmt.Sprintf("cm-%s.pid", sessionID))
+	if _, err := os.Stat(pidPath); !os.IsNotExist(err) {
+		t.Fatalf("memory serve left a PID file after permanent failure: %v", err)
 	}
 }
 

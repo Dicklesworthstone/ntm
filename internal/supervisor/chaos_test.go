@@ -58,7 +58,7 @@ func TestDaemonRestartOnCrash(t *testing.T) {
 	}
 
 	// After max restarts, should be in failed state
-	if restarts >= int(s.maxRestarts) && state != StateFailed {
+	if restarts > s.maxRestarts && state != StateFailed {
 		t.Errorf("daemon should be in StateFailed after %d restarts (max: %d), but state = %v",
 			restarts, s.maxRestarts, state)
 	}
@@ -147,8 +147,8 @@ func TestMaxRestartBackoff(t *testing.T) {
 	}
 
 	// Poll until daemon exhausts all restarts (with timeout)
-	// The supervisor sets StateFailed before each backoff wait, then restarts.
-	// We need to wait until restarts exceed maxRestarts (meaning no more restarts will happen).
+	// StateRestarting includes backoff waits and failed launch attempts.
+	// StateFailed and a count above maxRestarts mark exhausted recovery.
 	deadline := time.Now().Add(15 * time.Second)
 	var restarts int
 	var state DaemonState
