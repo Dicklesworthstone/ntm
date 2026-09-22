@@ -303,12 +303,9 @@ func (c *SessionCoordinator) Start(ctx context.Context) error {
 	c.stopping = false
 	c.mu.Unlock()
 
-	// Initialize monitor
-	c.monitor = NewAgentMonitor(c.session, c.mailClient, c.projectKey)
-
 	// Perform initial update synchronously to ensure state is ready. A coordinator
 	// that cannot observe its target session must not announce a healthy runtime.
-	if err := c.updateAgentStatesContext(ctx); err != nil {
+	if err := c.Observe(ctx); err != nil {
 		c.mu.Lock()
 		c.started = false
 		c.stopCh = nil
@@ -433,16 +430,28 @@ func (c *SessionCoordinator) monitorLoop(ctx context.Context, stopCh <-chan stru
 	}
 }
 
-// RunCycle refreshes the canonical session observation and, when enabled,
-// performs one auto-assignment pass from that exact fresh snapshot.
+// Observe refreshes agent state once without starting background coordination,
+// sending messages, or changing assignments and reservations. Inspection
+// surfaces can use it even when automatic actions are enabled in the config.
+func (c *SessionCoordinator) Observe(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	c.mu.Lock()
+	if c.monitor == nil {
+		c.monitor = NewAgentMonitor(c.session, c.mailClient, c.projectKey)
+	}
+	c.mu.Unlock()
+	return c.updateAgentStatesContext(ctx)
+}
+
+// RunCycle refreshes the canonical session observation, maintains existing
+// assignments, and, when enabled, performs one auto-assignment pass.
 func (c *SessionCoordinator) RunCycle(ctx context.Context) ([]AssignmentResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if c.monitor == nil {
-		c.monitor = NewAgentMonitor(c.session, c.mailClient, c.projectKey)
-	}
-	if err := c.updateAgentStatesContext(ctx); err != nil {
+	if err := c.Observe(ctx); err != nil {
 		return nil, err
 	}
 	c.maybeCheckMailNudge(ctx)
@@ -452,9 +461,10 @@ func (c *SessionCoordinator) RunCycle(ctx context.Context) ([]AssignmentResult, 
 	// (bd-ws2-wire-or-delete-ykmcz.1): runs before the AutoAssign early
 	// return so notify/negotiate work even when auto-assignment is off.
 	c.runConflictCycle(ctx)
-	// Existing work still owns its leases when the operator disables new
-	// auto-assignment. Keep those exact leases alive before admitting more work.
-	if err := c.maintainAssignmentReservations(ctx); err != nil {
+	// Disabling new assignments must still retire finished work and protect
+	// live work. A maintenance failure blocks admission, not unrelated cleanup
+	// or heartbeat progress inside this pass.
+	if err := c.maintainAssignments(ctx); err != nil {
 		return nil, err
 	}
 	if !c.config.AutoAssign {

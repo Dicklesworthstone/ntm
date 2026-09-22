@@ -146,27 +146,19 @@ func runCoordinatorStatus(cmd *cobra.Command, args []string) error {
 	}
 
 	coordConfig := loadCoordinatorRuntimeConfig()
-	runtimeConfig := coordConfig
-	runtimeConfig.AutoAssign = false
-	runtimeConfig.SendDigests = false
-	// Status is a read-only surface: never let its brief coordinator run
-	// enqueue context rotations (bd-rpmg8).
-	runtimeConfig.RotationUsageThreshold = 0
-
-	// Create coordinator to get status without enabling configured side effects.
+	// Inspection reads the saved identity without registering or refreshing
+	// it on the server, and never starts the coordinator's maintenance loops.
 	mailClient := newAgentMailClient(projectKey)
-	coordName := resolveCoordinatorIdentity(cmd.Context(), mailClient, session, projectKey)
-	coord := coordinator.New(session, projectKey, mailClient, coordName).WithConfig(runtimeConfig)
+	coordName := resolveCoordinatorIdentity(cmd.Context(), nil, session, projectKey)
+	coord := coordinator.New(session, projectKey, mailClient, coordName).WithConfig(coordConfig)
 
 	// Get agent states
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(cmd.Context(), 10*time.Second)
 	defer cancel()
 
-	// Start coordinator briefly to get current state
-	if err := coord.Start(ctx); err != nil {
-		return fmt.Errorf("starting coordinator: %w", err)
+	if err := coord.Observe(ctx); err != nil {
+		return fmt.Errorf("observing coordinator: %w", err)
 	}
-	defer coord.Stop()
 
 	agents := coord.GetAgents()
 	idleAgents := coord.GetIdleAgents()
@@ -352,21 +344,21 @@ func runCoordinatorDigest(cmd *cobra.Command, args []string, sendMail bool) erro
 
 	mailClient := newAgentMailClient(projectKey)
 	runtimeConfig := loadCoordinatorRuntimeConfig()
-	runtimeConfig.AutoAssign = false
-	runtimeConfig.SendDigests = false
-	// Digest is a read-only surface: never let its brief coordinator run
-	// enqueue context rotations (bd-rpmg8).
-	runtimeConfig.RotationUsageThreshold = 0
-	coordName := resolveCoordinatorIdentity(cmd.Context(), mailClient, session, projectKey)
+	// Only an explicit --send needs to register a sender. Generating a
+	// digest is observation and must not run assignment maintenance.
+	identityClient := mailClient
+	if !sendMail {
+		identityClient = nil
+	}
+	coordName := resolveCoordinatorIdentity(cmd.Context(), identityClient, session, projectKey)
 	coord := coordinator.New(session, projectKey, mailClient, coordName).WithConfig(runtimeConfig)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(cmd.Context(), 10*time.Second)
 	defer cancel()
 
-	if err := coord.Start(ctx); err != nil {
-		return fmt.Errorf("starting coordinator: %w", err)
+	if err := coord.Observe(ctx); err != nil {
+		return fmt.Errorf("observing coordinator: %w", err)
 	}
-	defer coord.Stop()
 
 	digest := coord.GenerateDigest()
 
@@ -401,10 +393,13 @@ func newCoordinatorRunCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "run [session]",
 		Short: "Run the session coordinator until interrupted",
-		Long: `Run continuous session observation, configured digest delivery, and
-opt-in automatic assignment. The command exits cleanly on SIGINT or SIGTERM.
+		Long: `Run continuous session observation, assignment cleanup and lease renewal,
+configured digest delivery, and opt-in automatic assignment. Disabling new
+automatic assignments still releases finished work and maintains active leases.
+The command exits cleanly on SIGINT or SIGTERM.
 
-Use --once to execute exactly one fresh observation and assignment cycle.`,
+Use --once to execute exactly one fresh observation and maintenance cycle,
+including new assignments when enabled.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runCoordinatorRun(cmd, args, once)

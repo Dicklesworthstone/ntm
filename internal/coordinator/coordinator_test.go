@@ -495,6 +495,7 @@ func TestStartStop(t *testing.T) {
 }
 
 func TestAutoAssignCycleRunsAfterFreshMonitorUpdate(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	c := New("test-session", "/tmp/test", nil, "TestAgent")
 	c.config.PollInterval = MinPollInterval
 	c.config.AutoAssign = true

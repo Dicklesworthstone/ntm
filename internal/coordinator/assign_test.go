@@ -151,6 +151,9 @@ func newAssignmentHeartbeatTestCoordinator(t *testing.T) (*SessionCoordinator, *
 	c.workItemDetailsFn = func(context.Context, string) (*bv.BeadAssignmentDetails, error) {
 		return &bv.BeadAssignmentDetails{ID: beadID, Status: "in_progress", Assignee: "BlueLake:heartbeat-generation"}, nil
 	}
+	c.workItemStatusFn = func(context.Context, string) (string, error) {
+		return "in_progress", nil
+	}
 	c.monitor = NewAgentMonitor(session, nil, projectDir)
 	c.monitor.observer = status.NewSessionObserverWithDependencies(status.NewDetector(), status.SessionObserverConfig{}, status.SessionObserverDependencies{
 		ListPanes: func(context.Context, string) ([]tmux.PaneActivity, error) {
@@ -190,6 +193,207 @@ func TestRunCycleRenewsAssignmentReservationsWithAutoAssignOff(t *testing.T) {
 	}
 	if len(client.renewRequests) != 1 {
 		t.Fatal("renewed again while durable expiry was outside the lead window")
+	}
+}
+
+func TestRunCycleRetiresTerminalAssignmentsWithAutoAssignOff(t *testing.T) {
+	for _, trackerStatus := range []string{"closed", "tombstone"} {
+		t.Run(trackerStatus, func(t *testing.T) {
+			c, store, client := newAssignmentHeartbeatTestCoordinator(t)
+			before := store.Get("ntm-heartbeat")
+			// A newly acquired lease still needs prompt release when its task
+			// ends; maintenance must not wait until the renewal lead window.
+			expiresAt := time.Now().UTC().Add(time.Hour)
+			store.Assignments[before.BeadID].ReservationExpiresAt = &expiresAt
+			if err := store.Save(); err != nil {
+				t.Fatal(err)
+			}
+			c.workItemStatusFn = func(context.Context, string) (string, error) {
+				return trackerStatus, nil
+			}
+			c.assignWorkFn = func(context.Context) ([]AssignmentResult, error) {
+				t.Fatal("disabled auto-assignment admitted new work")
+				return nil, nil
+			}
+			claimReleases := 0
+			c.releaseWorkItemClaimFn = func(_ context.Context, projectKey, beadID, actor string) (bool, error) {
+				claimReleases++
+				if projectKey != c.projectKey || beadID != before.BeadID || actor != before.ClaimActor {
+					t.Fatalf("claim cleanup changed ownership: project=%q bead=%q actor=%q", projectKey, beadID, actor)
+				}
+				return true, nil
+			}
+
+			if results, err := c.RunCycle(t.Context()); err != nil || len(results) != 0 {
+				t.Fatalf("paused admission maintenance results=%+v error=%v", results, err)
+			}
+			if err := store.LoadStrict(); err != nil {
+				t.Fatal(err)
+			}
+			wantStatus := assignmentstore.StatusCompleted
+			if trackerStatus == "tombstone" {
+				wantStatus = assignmentstore.StatusFailed
+			}
+			after := store.Get(before.BeadID)
+			if after.Status != wantStatus || after.ClearState != assignmentstore.ClearStateNone ||
+				after.ReservationState != assignmentstore.ReservationReleased || len(after.ReservationIDs) != 0 ||
+				after.IdempotencyKey != before.IdempotencyKey || after.DispatchTarget != before.DispatchTarget || len(store.ListActive()) != 0 {
+				t.Fatalf("terminal assignment retained occupancy or lost its receipt: %+v", after)
+			}
+			if len(client.releaseIDs) != 1 || !reflect.DeepEqual(client.releaseIDs[0], before.ReservationIDs) || claimReleases != 1 || len(client.renewRequests) != 0 {
+				t.Fatalf("terminal cleanup effects: releases=%v claims=%d renewals=%v", client.releaseIDs, claimReleases, client.renewRequests)
+			}
+			if len(client.reservations) != 1 || client.reservations[0].ID != 999 {
+				t.Fatalf("terminal cleanup released an unrelated task's lease: %+v", client.reservations)
+			}
+			if _, err := c.RunCycle(t.Context()); err != nil || len(client.releaseIDs) != 1 || claimReleases != 1 {
+				t.Fatalf("completed cleanup replayed external effects: releases=%v claims=%d error=%v", client.releaseIDs, claimReleases, err)
+			}
+		})
+	}
+}
+
+func TestObservePreservesAssignmentsWithAutomaticActionsEnabled(t *testing.T) {
+	c, store, client := newAssignmentHeartbeatTestCoordinator(t)
+	before := store.Get("ntm-heartbeat")
+	c.config.AutoAssign = true
+	c.config.ConflictNotify = true
+	c.config.ConflictNegotiate = true
+	c.config.MailNudge = true
+	c.config.SendDigests = true
+	c.config.RotationUsageThreshold = 1
+	c.config.PollInterval = MinPollInterval
+	c.workItemStatusFn = func(context.Context, string) (string, error) {
+		t.Fatal("observation inspected assignment lifecycle")
+		return "closed", nil
+	}
+	c.assignWorkFn = func(context.Context) ([]AssignmentResult, error) {
+		t.Fatal("observation admitted new work")
+		return nil, nil
+	}
+	c.detectConflictsFn = func(context.Context) ([]Conflict, error) {
+		t.Fatal("observation ran conflict negotiation")
+		return nil, nil
+	}
+	if err := c.Observe(t.Context()); err != nil {
+		t.Fatalf("Observe: %v", err)
+	}
+	if got := c.GetAgents()["%94"]; got == nil || !got.Healthy || got.ObservationFreshness != status.FreshnessFresh || got.AgentMailName != "BlueLake" {
+		t.Fatalf("observation did not produce current agent state: %+v", got)
+	}
+	if c.started || c.rotation != nil || c.mailNudge != nil || c.conflictDetector != nil {
+		t.Fatal("observation started background coordination")
+	}
+	if err := store.LoadStrict(); err != nil {
+		t.Fatal(err)
+	}
+	if after := store.Get(before.BeadID); !reflect.DeepEqual(before, after) || len(client.renewRequests) != 0 || len(client.releaseIDs) != 0 {
+		t.Fatalf("observation changed durable assignment state: before=%+v after=%+v", before, after)
+	}
+}
+
+func TestRunCycleMaintainsIndependentAssignmentsDespiteFailures(t *testing.T) {
+	for _, failure := range []string{"renewal", "terminal_cleanup", "both"} {
+		t.Run(failure, func(t *testing.T) {
+			c, store, client := newAssignmentHeartbeatTestCoordinator(t)
+			const closedBead = "ntm-terminal-maintenance"
+			terminal := store.Get("ntm-heartbeat")
+			terminal.BeadID = closedBead
+			terminal.Pane = 2
+			terminal.IdempotencyKey = "terminal-maintenance-generation"
+			terminal.ClaimActor = "BlueLake:terminal-maintenance-generation"
+			terminal.DispatchTarget, terminal.OccupancyKey, terminal.ReservationTarget = "%95", "%95", "%95"
+			terminal.ReservationRequested, terminal.ReservedPaths = []string{"finished.go"}, []string{"finished.go"}
+			terminal.ReservationIDs = []int{951}
+			store.Assignments[closedBead] = terminal
+			if err := store.Save(); err != nil {
+				t.Fatal(err)
+			}
+			client.reservations = append(client.reservations, agentmail.FileReservation{
+				ID: 951, ProjectID: 9, AgentName: "BlueLake", PathPattern: "finished.go", Exclusive: true,
+				Reason: "bead assignment: " + closedBead, ExpiresTS: agentmail.FlexTime{Time: time.Now().Add(time.Hour)},
+			})
+			c.config.AutoAssign = true
+			c.assignWorkFn = func(context.Context) ([]AssignmentResult, error) {
+				t.Fatal("maintenance failure admitted new work")
+				return nil, nil
+			}
+			c.workItemStatusFn = func(_ context.Context, beadID string) (string, error) {
+				if beadID == closedBead {
+					return "closed", nil
+				}
+				return "in_progress", nil
+			}
+			claimReleases := 0
+			c.releaseWorkItemClaimFn = func(_ context.Context, projectKey, beadID, actor string) (bool, error) {
+				claimReleases++
+				if projectKey != c.projectKey || beadID != closedBead || actor != terminal.ClaimActor {
+					t.Fatalf("claim cleanup changed ownership: project=%q bead=%q actor=%q", projectKey, beadID, actor)
+				}
+				return true, nil
+			}
+			failsRenewal := failure == "renewal" || failure == "both"
+			failsCleanup := failure == "terminal_cleanup" || failure == "both"
+			if failsRenewal {
+				client.reservations[0].AgentName = "DifferentOwner"
+			}
+			if failsCleanup {
+				client.releaseErr = errors.New("terminal release unavailable")
+			}
+
+			_, err := c.RunCycle(t.Context())
+			if err == nil || failsRenewal && !strings.Contains(err.Error(), "reservation protection for ntm-heartbeat") ||
+				failsCleanup && !strings.Contains(err.Error(), "release terminal assignment "+closedBead) {
+				t.Fatalf("cycle did not retain every maintenance failure: %v", err)
+			}
+			if err := store.LoadStrict(); err != nil {
+				t.Fatal(err)
+			}
+			active := store.Get("ntm-heartbeat")
+			if active.Status != assignmentstore.StatusWorking || !reflect.DeepEqual(active.ReservationIDs, []int{941, 942}) {
+				t.Fatalf("unrelated cleanup changed active ownership: %+v", active)
+			}
+			if failsRenewal {
+				if active.ReservationRenewalError == "" || len(client.renewRequests) != 0 {
+					t.Fatalf("uncertain reservation was renewed or lost its diagnostic: %+v", active)
+				}
+			} else if len(client.renewRequests) != 1 || active.ReservationExpiresAt.Before(time.Now().Add(50*time.Minute)) {
+				t.Fatalf("failed terminal cleanup prevented healthy lease renewal: %+v requests=%v", active, client.renewRequests)
+			}
+			closed := store.Get(closedBead)
+			if failsCleanup {
+				if closed.ClearState != assignmentstore.ClearStateReservationReleasing || closed.ClearError == "" ||
+					closed.PendingTerminalStatus != assignmentstore.StatusCompleted || !reflect.DeepEqual(closed.ReservationIDs, []int{951}) || claimReleases != 0 {
+					t.Fatalf("failed cleanup lost its durable retry barrier: %+v claims=%d", closed, claimReleases)
+				}
+			} else if closed.Status != assignmentstore.StatusCompleted || len(closed.ReservationIDs) != 0 || claimReleases != 1 {
+				t.Fatalf("failed renewal prevented terminal cleanup: %+v claims=%d", closed, claimReleases)
+			}
+
+			// Maintenance can finish after admission is disabled, resuming the
+			// durable cleanup barrier without asking the tracker to reopen it.
+			c.config.AutoAssign = false
+			client.releaseErr = nil
+			client.reservations[0].AgentName = "BlueLake"
+			c.workItemStatusFn = func(_ context.Context, beadID string) (string, error) {
+				if beadID == closedBead {
+					t.Fatal("durable terminal barrier re-read tracker status")
+				}
+				return "in_progress", nil
+			}
+			if _, err := c.RunCycle(t.Context()); err != nil {
+				t.Fatalf("maintenance recovery while admission paused: %v", err)
+			}
+			if err := store.LoadStrict(); err != nil {
+				t.Fatal(err)
+			}
+			if closed := store.Get(closedBead); closed.Status != assignmentstore.StatusCompleted || closed.ClearState != assignmentstore.ClearStateNone || len(closed.ReservationIDs) != 0 || claimReleases != 1 {
+				t.Fatalf("terminal maintenance recovery lost progress: %+v claims=%d", closed, claimReleases)
+			}
+			if active := store.Get("ntm-heartbeat"); active.Status != assignmentstore.StatusWorking || active.ReservationRenewalError != "" || active.ReservationExpiresAt.Before(time.Now().Add(50*time.Minute)) || len(store.ListActive()) != 1 {
+				t.Fatalf("active maintenance recovery failed: %+v", active)
+			}
+		})
 	}
 }
 

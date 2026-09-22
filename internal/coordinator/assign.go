@@ -206,15 +206,22 @@ func coordinatorWorkAssignedEventDetails(result AssignmentResult, planned *WorkA
 
 const assignmentReservationRenewalLead = 15 * time.Minute
 
-// maintainAssignmentReservations renews only leases belonging to delivered,
-// still-owned work. The file-output watcher owns a separate set of reservations
-// and cannot maintain the durable assignment ledger's one-hour leases.
-func (c *SessionCoordinator) maintainAssignmentReservations(ctx context.Context) error {
+// maintainAssignments retires terminal work and renews leases belonging to
+// delivered, still-owned work independently of new assignment admission. The
+// file-output watcher owns a separate set of reservations and cannot maintain
+// the durable assignment ledger's one-hour leases.
+func (c *SessionCoordinator) maintainAssignments(ctx context.Context) error {
 	store, err := assignmentstore.LoadStoreStrictReadOnly(c.session)
 	if err != nil {
-		return fmt.Errorf("load assignment reservation heartbeat: %w", err)
+		return fmt.Errorf("load assignment maintenance ledger: %w", err)
 	}
 	var failures []error
+	// Terminal work no longer needs protection, even when the operator has
+	// paused new assignments or another task's lease cannot be renewed. Keep
+	// maintaining healthy leases if one terminal cleanup needs a later retry.
+	if err := c.reconcileTerminalAssignments(ctx, store); err != nil {
+		failures = append(failures, fmt.Errorf("reconciling assignment ledger: %w", err))
+	}
 	for _, current := range store.ListActive() {
 		if current.DispatchState != assignmentstore.DispatchSent || current.ReservationState != assignmentstore.ReservationReserved || !current.ReservationCompleted ||
 			current.ClearState != assignmentstore.ClearStateNone || (current.Status != assignmentstore.StatusAssigned && current.Status != assignmentstore.StatusWorking) {

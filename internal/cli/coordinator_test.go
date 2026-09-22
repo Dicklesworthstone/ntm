@@ -3,15 +3,20 @@ package cli
 import (
 	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
+	"github.com/Dicklesworthstone/ntm/internal/assignment"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/coordinator"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
@@ -147,6 +152,124 @@ func TestCoordinatorRunCommandExposesDeterministicOnceMode(t *testing.T) {
 	}
 	if flag := cmd.Flags().Lookup("once"); flag == nil || flag.DefValue != "false" {
 		t.Fatalf("--once flag = %+v", flag)
+	}
+}
+
+func TestCoordinatorInspectionCommandsDoNotStartMaintenanceOrRegisterIdentity(t *testing.T) {
+	for _, surface := range []string{"status", "digest"} {
+		t.Run(surface, func(t *testing.T) {
+			isolateIdentityDirs(t)
+			const session = "coordinator-inspection"
+			project := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(project, ".git"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			stubCoordinatorLiveTopology(t, []tmux.Pane{{ID: "%94", Index: 1}}, map[string]string{"%94": project})
+			priorConfigFile, priorJSON, priorTmux := cfgFile, jsonOutput, tmux.DefaultClient
+			t.Cleanup(func() { cfgFile, jsonOutput, tmux.DefaultClient = priorConfigFile, priorJSON, priorTmux })
+			cfgFile = filepath.Join(t.TempDir(), "config.toml")
+			if err := os.WriteFile(cfgFile, []byte("[coordinator]\nauto_assign=true\npoll_interval='100ms'\nsend_digests=true\nconflict_notify=true\nconflict_negotiate=true\nmail_nudge=true\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			jsonOutput = true
+			tmux.DefaultClient = tmux.NewClient("")
+			binDir := t.TempDir()
+			logPath := filepath.Join(binDir, "tmux-calls")
+			t.Setenv("NTM_COORDINATOR_INSPECTION_LOG", logPath)
+			const tmuxScript = `#!/bin/sh
+printf '%s\n' "$*" >> "$NTM_COORDINATOR_INSPECTION_LOG"
+case "$1" in
+  list-sessions) echo 'coordinator-inspection_NTM_SEP_1_NTM_SEP_0_NTM_SEP_today' ;;
+  list-panes|has-session) ;;
+  *) echo "unexpected tmux action: $*" >&2; exit 1 ;;
+esac
+`
+			bin := filepath.Join(binDir, "tmux")
+			if err := os.WriteFile(bin, []byte(tmuxScript), 0700); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("NTM_TMUX_BINARY", bin)
+			if err := os.WriteFile(filepath.Join(binDir, "bv"), []byte("#!/bin/sh\nexit 1\n"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+			var callsMu sync.Mutex
+			var toolCalls []string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var request struct {
+					ID     any    `json:"id"`
+					Method string `json:"method"`
+					Params struct {
+						Name string `json:"name"`
+						URI  string `json:"uri"`
+					} `json:"params"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+					http.Error(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				if request.Method == "resources/read" {
+					// A slow digest source must not give an accidentally started
+					// monitor time to renew leases or negotiate conflicts.
+					time.Sleep(3 * coordinator.MinPollInterval)
+					_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": request.ID, "result": map[string]any{
+						"contents": []map[string]any{{"uri": request.Params.URI, "mimeType": "application/json", "text": "[]"}},
+					}})
+					return
+				}
+				if request.Method == "tools/call" {
+					callsMu.Lock()
+					toolCalls = append(toolCalls, request.Params.Name)
+					callsMu.Unlock()
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": request.ID, "error": map[string]any{"code": -32601, "message": "inspection must not call mutation tools"}})
+			}))
+			t.Cleanup(server.Close)
+			enableFakeAgentMail(t, server.URL)
+			store := assignment.NewStore(session)
+			store.Assignments["ntm-inspection"] = &assignment.Assignment{
+				BeadID: "ntm-inspection", Status: assignment.StatusWorking, AssignedAt: time.Now().UTC(),
+				DispatchTarget: "%94", OccupancyKey: "%94", DispatchState: assignment.DispatchSent,
+			}
+			if err := store.Save(); err != nil {
+				t.Fatal(err)
+			}
+			before := store.Get("ntm-inspection")
+			cmd := newCoordinatorStatusCmd()
+			if surface == "digest" {
+				cmd = newCoordinatorDigestCmd()
+			}
+			cmd.SetOut(io.Discard)
+			cmd.SetErr(io.Discard)
+			cmd.SetArgs([]string{session})
+			out, err := captureStdout(t, cmd.Execute)
+			if err != nil {
+				t.Fatalf("coordinator %s: %v; output=%s", surface, err, out)
+			}
+			var response struct {
+				Session string `json:"session"`
+			}
+			if err := json.Unmarshal([]byte(out), &response); err != nil || response.Session != session {
+				t.Fatalf("inspection output=%s decode=%v", out, err)
+			}
+			callsMu.Lock()
+			calls := append([]string(nil), toolCalls...)
+			callsMu.Unlock()
+			if len(calls) != 0 {
+				t.Fatalf("inspection registered an identity or called mutation tools: %v", calls)
+			}
+			log, err := os.ReadFile(logPath)
+			if err != nil || strings.Count(string(log), "list-panes") != 1 {
+				t.Fatalf("inspection started background observations: %s error=%v", log, err)
+			}
+			if err := store.LoadStrict(); err != nil {
+				t.Fatal(err)
+			}
+			if after := store.Get(before.BeadID); !reflect.DeepEqual(before, after) {
+				t.Fatalf("inspection changed assignment state: before=%+v after=%+v", before, after)
+			}
+		})
 	}
 }
 
