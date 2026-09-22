@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/util"
+	"github.com/Dicklesworthstone/ntm/internal/worksource"
 )
 
 // ErrActionableLabelsUnverified marks a fail-closed planning error: bv plan
@@ -30,13 +31,18 @@ var ErrActionablePlanUnverified = errors.New("actionable bv plan could not be ve
 // TriageCacheTTL is the default cache TTL for triage results
 const TriageCacheTTL = 30 * time.Second
 
+// ErrStaleWorkCoordination means a work projection no longer matches its
+// local tracker/checkout source. Callers must refresh rather than dispatch it.
+var ErrStaleWorkCoordination = worksource.ErrChanged
+
 var (
-	triageCache     *TriageResponse
-	triageCacheDir  string
-	triageCacheTime time.Time
-	triageCacheTTL  = TriageCacheTTL
-	triageCacheMu   sync.RWMutex
-	triageRunMu     sync.Mutex
+	triageCache       *TriageResponse
+	triageCacheDir    string
+	triageCacheSource worksource.Identity
+	triageCacheTime   time.Time
+	triageCacheTTL    = TriageCacheTTL
+	triageCacheMu     sync.RWMutex
+	triageRunMu       sync.Mutex
 )
 
 func acquireTriageRunLock(ctx context.Context, deadline time.Time, timeout time.Duration) (func(), error) {
@@ -124,10 +130,21 @@ func getTriageContext(ctx context.Context, dir string, timeout time.Duration) (*
 		timeout = CommandTimeout()
 	}
 	deadline := time.Now().Add(timeout)
+	ctx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
+	source, err := captureTriageSource(ctx, normalizedDir)
+	if err != nil {
+		return nil, err
+	}
 
 	triageCacheMu.RLock()
-	// Return cached result if still valid and for the same directory
-	if triageCache != nil && triageCacheDir == normalizedDir && time.Since(triageCacheTime) < triageCacheTTL {
+	if triageCache != nil && triageCacheDir == normalizedDir && triageCacheSource.Bound() && !source.Bound() {
+		triageCacheMu.RUnlock()
+		return nil, fmt.Errorf("%w: previously bound tracker export is missing", ErrStaleWorkCoordination)
+	}
+	// A TTL is a performance policy, not authority to reuse different work.
+	// Check the actual tracker bytes and checkout even during a cache hit.
+	if triageCache != nil && triageCacheDir == normalizedDir && triageCacheSource == source && time.Since(triageCacheTime) < triageCacheTTL {
 		cached := triageCache
 		triageCacheMu.RUnlock()
 		return cached, nil
@@ -141,9 +158,19 @@ func getTriageContext(ctx context.Context, dir string, timeout time.Duration) (*
 	}
 	defer releaseRunLock()
 
+	// The source can change while another collector owns the runner lock.
+	source, err = captureTriageSource(ctx, normalizedDir)
+	if err != nil {
+		return nil, err
+	}
+
 	// Double-check cache after acquiring run lock
 	triageCacheMu.RLock()
-	if triageCache != nil && triageCacheDir == normalizedDir && time.Since(triageCacheTime) < triageCacheTTL {
+	if triageCache != nil && triageCacheDir == normalizedDir && triageCacheSource.Bound() && !source.Bound() {
+		triageCacheMu.RUnlock()
+		return nil, fmt.Errorf("%w: previously bound tracker export is missing", ErrStaleWorkCoordination)
+	}
+	if triageCache != nil && triageCacheDir == normalizedDir && triageCacheSource == source && time.Since(triageCacheTime) < triageCacheTTL {
 		cached := triageCache
 		triageCacheMu.RUnlock()
 		return cached, nil
@@ -164,10 +191,19 @@ func getTriageContext(ctx context.Context, dir string, timeout time.Duration) (*
 		return nil, fmt.Errorf("parsing triage: %w", err)
 	}
 
-	// Update cache
+	current, err := captureTriageSource(ctx, normalizedDir)
+	if err != nil {
+		return nil, err
+	}
+	if err := source.Verify(current); err != nil {
+		return nil, err
+	}
+
+	// Publish only results observed entirely within one source revision.
 	triageCacheMu.Lock()
 	triageCache = &resp
 	triageCacheDir = normalizedDir
+	triageCacheSource = source
 	triageCacheTime = time.Now()
 	triageCacheMu.Unlock()
 
@@ -180,6 +216,7 @@ func InvalidateTriageCache() {
 	triageCacheMu.Lock()
 	triageCache = nil
 	triageCacheDir = ""
+	triageCacheSource = worksource.Identity{}
 	triageCacheTTL = TriageCacheTTL // Reset to default
 	triageCacheMu.Unlock()
 }
@@ -222,6 +259,15 @@ func GetTriageQuickRef(dir string) (*TriageQuickRef, error) {
 func GetActionableRecommendationsContext(ctx context.Context, dir string, n int) ([]TriageRecommendation, error) {
 	if ctx == nil {
 		return nil, fmt.Errorf("actionable recommendations context is required")
+	}
+	resolvedDir, err := normalizeTriageDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	dir = resolvedDir
+	source, err := captureTriageSource(ctx, dir)
+	if err != nil {
+		return nil, err
 	}
 	triage, err := GetTriageContext(ctx, dir)
 	if err != nil {
@@ -364,6 +410,14 @@ func GetActionableRecommendationsContext(ctx context.Context, dir string, n int)
 			Labels:      append([]string(nil), labelsByID[item.ID]...),
 			UnblocksIDs: append([]string(nil), item.Unblocks...),
 		})
+	}
+
+	current, err := captureTriageSource(ctx, dir)
+	if err != nil {
+		return nil, err
+	}
+	if err := source.Verify(current); err != nil {
+		return nil, err
 	}
 
 	if n > 0 && len(recs) > n {
@@ -518,8 +572,16 @@ func GetNextRecommendation(dir string) (*TriageRecommendation, error) {
 // IsCacheValid checks if the cache is still valid
 func IsCacheValid() bool {
 	triageCacheMu.RLock()
-	defer triageCacheMu.RUnlock()
-	return triageCache != nil && time.Since(triageCacheTime) < triageCacheTTL
+	valid := triageCache != nil && time.Since(triageCacheTime) < triageCacheTTL
+	dir, source := triageCacheDir, triageCacheSource
+	triageCacheMu.RUnlock()
+	if !valid {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	current, err := captureTriageSource(ctx, dir)
+	return err == nil && source.Verify(current) == nil
 }
 
 // GetCacheAge returns how long the cache has been in place
@@ -530,4 +592,18 @@ func GetCacheAge() time.Duration {
 		return 0
 	}
 	return time.Since(triageCacheTime)
+}
+
+// captureTriageSource fails closed on an unreadable existing export. Missing
+// JSONL exports keep the historical DB-only TTL behavior, without claiming a
+// source binding. No caller's cancellation is reclassified as source drift.
+func captureTriageSource(ctx context.Context, dir string) (worksource.Identity, error) {
+	source, err := worksource.Capture(ctx, dir)
+	if err == nil {
+		return source, nil
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return worksource.Identity{}, err
+	}
+	return worksource.Identity{}, fmt.Errorf("%w: cannot verify work source: %w", ErrStaleWorkCoordination, err)
 }
