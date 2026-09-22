@@ -40,6 +40,9 @@ func openJobJournal(dir string) (*jobJournal, error) {
 	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return nil, fmt.Errorf("job journal must be a real directory: %s", dir)
 	}
+	if err := syncJobJournalDirectory(filepath.Dir(dir)); err != nil {
+		return nil, fmt.Errorf("persist job journal directory: %w", err)
+	}
 	release, err := lockJobJournal(filepath.Join(dir, ".owner.lock"))
 	if err != nil {
 		return nil, err
@@ -82,9 +85,18 @@ func (j *jobJournal) save(job *Job) error {
 	if len(data) > jobJournalMaxRecordBytes {
 		return fmt.Errorf("job %s exceeds journal record limit", job.ID)
 	}
+	return writeJobJournalRecord(j.dir, path, data)
+}
+
+// writeJobJournalRecord is the single publication path for execution history
+// and durable operation receipts. Callers own the appropriate journal fence.
+func writeJobJournalRecord(directory, path string, data []byte) error {
+	if len(data) > jobJournalMaxRecordBytes {
+		return errors.New("job journal record exceeds size limit")
+	}
 	// Never truncate the last known checkpoint. The rename publishes a fully
 	// flushed record; syncing the directory makes that publication durable.
-	file, err := os.CreateTemp(j.dir, ".job-*.tmp")
+	file, err := os.CreateTemp(directory, ".job-*.tmp")
 	if err != nil {
 		return err
 	}
@@ -100,7 +112,11 @@ func (j *jobJournal) save(job *Job) error {
 	if err := os.Rename(name, path); err != nil {
 		return err
 	}
-	dir, err := os.Open(j.dir)
+	return syncJobJournalDirectory(directory)
+}
+
+func syncJobJournalDirectory(directory string) error {
+	dir, err := os.Open(directory)
 	if err != nil {
 		return err
 	}

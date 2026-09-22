@@ -98,25 +98,7 @@ func (s *Server) dispatchJob(jobID string, req CreateJobRequest) {
 	}
 	s.jobStore.Update(jobID, JobStatusRunning, 0, nil, "")
 
-	var (
-		result map[string]interface{}
-	)
-	switch req.Type {
-	case JobTypePipelineRun:
-		result, err = s.jobPipelineRun(ctx, req.Params)
-	case JobTypePipelineExec:
-		result, err = s.jobPipelineExec(ctx, req.Params)
-	case JobTypePipelineResume:
-		result, err = s.jobPipelineResume(ctx, req.Params)
-	case JobTypeSwarmSpawn:
-		result, err = s.jobSwarmSpawn(ctx, req.Params)
-	case JobTypeCheckpointRestore:
-		result, err = s.jobCheckpointRestore(ctx, req.Params)
-	default:
-		// handleCreateJob rejects unknown types before a job exists; reaching
-		// this arm means the allow-lists drifted apart.
-		err = fmt.Errorf("job type %q accepted but has no dispatcher", req.Type)
-	}
+	result, err := s.executeJobOperation(ctx, jobID, req)
 
 	// Some operations can return a useful partial result on failure. Retain
 	// its run/session identity so the caller can inspect effects before retrying.
@@ -140,6 +122,25 @@ func (s *Server) dispatchJob(jobID string, req CreateJobRequest) {
 	// request does not undo sessions, panes, or pipeline runs already created.
 	// Run this AFTER Update so cancellation between the two cannot lose it.
 	s.jobStore.retainCancelledResult(jobID, result)
+}
+
+// executeJobRequest is the one execution switch, shared by ordinary dispatch
+// and first-time durable operations. A replay never reaches this function.
+func (s *Server) executeJobRequest(ctx context.Context, req CreateJobRequest) (map[string]interface{}, error) {
+	switch req.Type {
+	case JobTypePipelineRun:
+		return s.jobPipelineRun(ctx, req.Params)
+	case JobTypePipelineExec:
+		return s.jobPipelineExec(ctx, req.Params)
+	case JobTypePipelineResume:
+		return s.jobPipelineResume(ctx, req.Params)
+	case JobTypeSwarmSpawn:
+		return s.jobSwarmSpawn(ctx, req.Params)
+	case JobTypeCheckpointRestore:
+		return s.jobCheckpointRestore(ctx, req.Params)
+	default:
+		return nil, fmt.Errorf("job type %q accepted but has no dispatcher", req.Type)
+	}
 }
 
 // retainCancelledResult fills in recovery evidence when a worker finishes
