@@ -19,6 +19,7 @@ func restoreTargetFixture(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	log := filepath.Join(dir, "calls")
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	t.Setenv("NTM_TARGET_TEST_LOG", log)
 	t.Setenv("NTM_TARGET_TEST_EXISTS", "")
 	bin := filepath.Join(dir, "tmux")
@@ -152,5 +153,174 @@ func TestRestoreTargetDryRunPreservesCustomTitles(t *testing.T) {
 	}
 	if cp.Session.Panes[0].Title != "custom title referring to source" {
 		t.Fatal("custom title was rewritten")
+	}
+}
+
+func TestRestoreForceJoinsDestinationMonitorBeforeReplacement(t *testing.T) {
+	log := restoreTargetFixture(t)
+	t.Setenv("NTM_TARGET_TEST_EXISTS", "1")
+	oldStop := stopRestoreSessionMonitor
+	t.Cleanup(func() { stopRestoreSessionMonitor = oldStop })
+	entered, release := make(chan string, 1), make(chan struct{})
+	stopRestoreSessionMonitor = func(ctx context.Context, session string) error {
+		entered <- session
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-release:
+			return nil
+		}
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	beforeStop := make(chan RestoreProgress, 1)
+	ctx = WithRestoreProgress(ctx, func(_ context.Context, event RestoreProgress) error {
+		if event.Stage == "stop_session" && event.Phase == "before" {
+			beforeStop <- event
+		}
+		return nil
+	})
+	cp := targetCheckpoint(t)
+	done := make(chan error, 1)
+	completed := make(chan struct{})
+	t.Cleanup(func() {
+		cancel()
+		<-completed
+	})
+	go func() {
+		defer close(completed)
+		_, err := NewRestorer().RestoreFromCheckpointContext(ctx, cp, RestoreOptions{TargetSession: "recovery", Force: true, SkipGitCheck: true})
+		done <- err
+	}()
+	select {
+	case session := <-entered:
+		if session != "recovery" {
+			t.Fatalf("stopped %q, want selected destination recovery", session)
+		}
+	case err := <-done:
+		t.Fatalf("restore returned before monitor stop: %v", err)
+	case <-ctx.Done():
+		t.Fatal("restore never reached monitor stop")
+	}
+	calls, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(calls), "kill-session") || strings.Contains(string(calls), "new-session") {
+		t.Fatalf("replacement began before monitor joined: %s", calls)
+	}
+	select {
+	case <-beforeStop:
+	default:
+		t.Fatal("monitor stop must follow the durable before event")
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatalf("restore after monitor joined: %v", err)
+	}
+	calls, err = os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kill, create := strings.Index(string(calls), "kill-session -t =recovery"), strings.Index(string(calls), "new-session")
+	if kill < 0 || create <= kill || strings.Contains(string(calls), "-t =source") {
+		t.Fatalf("restore did not replace only the destination after joining: %s", calls)
+	}
+}
+
+func TestRestoreForceMonitorStopHonorsPreviewCancellationAndJournal(t *testing.T) {
+	stopFailure := errors.New("resident cleanup is incomplete")
+	journalFailure := errors.New("journal write unavailable")
+	for _, tc := range []struct {
+		name      string
+		dryRun    bool
+		stopError error
+		reject    bool
+		cancel    bool
+		wantError error
+		wantStops int
+	}{
+		{name: "preview", dryRun: true},
+		{name: "resident failure", stopError: stopFailure, wantError: stopFailure, wantStops: 1},
+		{name: "journal before failure", reject: true, wantError: journalFailure},
+		{name: "canceled during journal before write", cancel: true, wantError: context.Canceled},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			log := restoreTargetFixture(t)
+			t.Setenv("NTM_TARGET_TEST_EXISTS", "1")
+			oldStop := stopRestoreSessionMonitor
+			t.Cleanup(func() { stopRestoreSessionMonitor = oldStop })
+			stops := 0
+			stopRestoreSessionMonitor = func(_ context.Context, session string) error {
+				stops++
+				if session != "recovery" {
+					t.Errorf("stopped %q, want recovery", session)
+				}
+				return tc.stopError
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			ctx = WithRestoreProgress(ctx, func(_ context.Context, event RestoreProgress) error {
+				if event.Stage == "stop_session" && event.Phase == "before" {
+					if tc.cancel {
+						cancel()
+					}
+					if tc.reject {
+						return journalFailure
+					}
+				}
+				return nil
+			})
+			_, err := NewRestorer().RestoreFromCheckpointContext(ctx, targetCheckpoint(t), RestoreOptions{
+				TargetSession: "recovery", Force: true, DryRun: tc.dryRun, SkipGitCheck: true,
+			})
+			if !errors.Is(err, tc.wantError) || stops != tc.wantStops {
+				t.Fatalf("restore error=%v stops=%d, want %v and %d", err, stops, tc.wantError, tc.wantStops)
+			}
+			calls, err := os.ReadFile(log)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(calls), "kill-session") || strings.Contains(string(calls), "new-session") {
+				t.Fatalf("restore mutated topology despite an unfulfilled shutdown boundary: %s", calls)
+			}
+		})
+	}
+}
+
+func TestRestoreRemoteTargetKeepsSameNamedLocalMonitor(t *testing.T) {
+	logPath := restoreTargetFixture(t)
+	t.Setenv("NTM_TARGET_TEST_EXISTS", "1")
+	dir := filepath.Dir(logPath)
+	const sshScript = `#!/bin/sh
+if [ "$1" != -- ] || [ "$2" != operator@remote.example ]; then exit 2; fi
+printf 'remote-host %s\n' "$2" >> "$NTM_TARGET_TEST_LOG"
+exec /bin/sh -c "$3"
+`
+	if err := os.WriteFile(filepath.Join(dir, "ssh"), []byte(sshScript), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	tmux.DefaultClient = tmux.NewClient("operator@remote.example")
+	oldStop := stopRestoreSessionMonitor
+	t.Cleanup(func() { stopRestoreSessionMonitor = oldStop })
+	stops := 0
+	stopRestoreSessionMonitor = func(context.Context, string) error {
+		stops++
+		return errors.New("same-named local resident must remain running")
+	}
+	result, err := NewRestorer().RestoreFromCheckpointContext(t.Context(), targetCheckpoint(t), RestoreOptions{
+		TargetSession: "recovery", Force: true, SkipGitCheck: true,
+	})
+	if err != nil || result == nil || result.SessionName != "recovery" || stops != 0 {
+		t.Fatalf("remote restore touched local monitor: result=%+v err=%v local stops=%d", result, err, stops)
+	}
+	calls, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(calls), "remote-host operator@remote.example") ||
+		!strings.Contains(string(calls), "kill-session -t =recovery") || !strings.Contains(string(calls), "new-session") {
+		t.Fatalf("remote destination was not replaced: %s", calls)
 	}
 }

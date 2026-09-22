@@ -5,11 +5,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/agentsession"
 	"github.com/Dicklesworthstone/ntm/internal/config"
@@ -126,6 +128,13 @@ func TestSavedLaunchPreflightProtectsExistingSession(t *testing.T) {
 		for _, scenario := range []string{"omitted env", "wrong provider", "future schema", "missing worktree", "changed prompt", "missing account launcher", "opaque resume", "wrong resume provider", "cancelled"} {
 			t.Run(operation+"/"+scenario, func(t *testing.T) {
 				logPath := savedSessionRestoreFixture(t)
+				previousStop := stopRestoreSessionMonitor
+				t.Cleanup(func() { stopRestoreSessionMonitor = previousStop })
+				stops := 0
+				stopRestoreSessionMonitor = func(context.Context, string) error {
+					stops++
+					return nil
+				}
 				state := &SessionState{Name: "protect_me", WorkDir: t.TempDir(), Panes: []PaneState{
 					{Index: 0, AgentType: "cod", LaunchSpec: savedLaunchSpec("codex --model first")},
 					{Index: 1, AgentType: "cod", LaunchSpec: savedLaunchSpec("codex --model second")},
@@ -174,6 +183,9 @@ func TestSavedLaunchPreflightProtectsExistingSession(t *testing.T) {
 				}
 				if err == nil {
 					t.Fatal("invalid later pane passed whole-batch preflight")
+				}
+				if stops != 0 {
+					t.Fatal("invalid saved launch stopped the existing resident monitor")
 				}
 				calls, _ := os.ReadFile(logPath)
 				if len(calls) != 0 {
@@ -247,5 +259,200 @@ func TestSavedLaunchRejectsMissingProcessIdentity(t *testing.T) {
 	calls, _ := os.ReadFile(logPath)
 	if strings.Contains(string(calls), "send-keys") || strings.Contains(string(calls), "@ntm_agent_launch") {
 		t.Fatalf("unverified process received launch metadata or a command: %s", calls)
+	}
+}
+
+func TestSavedSessionForceWaitsForDestinationMonitor(t *testing.T) {
+	for _, operation := range []string{"topology", "restore", "resume"} {
+		t.Run(operation, func(t *testing.T) {
+			logPath := savedSessionRestoreFixture(t)
+			previousStop := stopRestoreSessionMonitor
+			t.Cleanup(func() { stopRestoreSessionMonitor = previousStop })
+			entered, release := make(chan string, 1), make(chan struct{})
+			stopRestoreSessionMonitor = func(ctx context.Context, session string) error {
+				entered <- session
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-release:
+					return nil
+				}
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			state := &SessionState{Name: "source", WorkDir: t.TempDir(), Panes: []PaneState{{Index: 0, AgentType: "cod", Command: "codex"}}}
+			done, completed := make(chan error, 1), make(chan struct{})
+			t.Cleanup(func() {
+				cancel()
+				<-completed
+			})
+			go func() {
+				defer close(completed)
+				var err error
+				switch operation {
+				case "topology":
+					err = RestoreContext(ctx, state, RestoreOptions{Name: "destination", Force: true})
+				case "restore":
+					_, err = RestoreWithAgents(ctx, state, AgentCommands{}, nil, RestoreOptions{Name: "destination", Force: true})
+				case "resume":
+					_, err = ResumeContext(ctx, state, AgentCommands{}, ResumeOptions{Name: "destination", Force: true})
+				}
+				done <- err
+			}()
+			select {
+			case session := <-entered:
+				if session != "destination" {
+					t.Fatalf("stopped monitor for %q, want destination", session)
+				}
+			case err := <-done:
+				t.Fatalf("restore returned before resident shutdown: %v", err)
+			case <-ctx.Done():
+				t.Fatal("restore did not reach resident shutdown")
+			}
+			calls, err := os.ReadFile(logPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(calls), "kill-session") || strings.Contains(string(calls), "new-session") {
+				t.Fatalf("session was replaced before the resident stopped: %s", calls)
+			}
+			close(release)
+			if err := <-done; err != nil {
+				t.Fatalf("restore after resident shutdown: %v", err)
+			}
+			calls, err = os.ReadFile(logPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			kill, create := strings.Index(string(calls), "kill-session -t =destination"), strings.Index(string(calls), "new-session")
+			if kill < 0 || create <= kill || strings.Contains(string(calls), "-t =source") {
+				t.Fatalf("restore did not replace only its destination after shutdown: %s", calls)
+			}
+		})
+	}
+}
+
+func TestSavedSessionForcePreservesExistingSessionWhenMonitorCannotStop(t *testing.T) {
+	for _, mode := range []string{"failure", "canceled", "canceled-after-join"} {
+		t.Run(mode, func(t *testing.T) {
+			logPath := savedSessionRestoreFixture(t)
+			previousStop := stopRestoreSessionMonitor
+			t.Cleanup(func() { stopRestoreSessionMonitor = previousStop })
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			stopError := errors.New("resident recovery has not stopped")
+			stops := 0
+			stopRestoreSessionMonitor = func(stopCtx context.Context, session string) error {
+				stops++
+				if stopCtx != ctx || session != "existing" {
+					t.Fatalf("monitor stop lost target or context: %q, %v", session, stopCtx)
+				}
+				if mode == "failure" {
+					return stopError
+				}
+				cancel()
+				if mode == "canceled-after-join" {
+					return nil
+				}
+				return stopCtx.Err()
+			}
+			state := &SessionState{Name: "existing", WorkDir: t.TempDir()}
+			err := RestoreContext(ctx, state, RestoreOptions{Force: true})
+			wantError := stopError
+			if mode != "failure" {
+				wantError = context.Canceled
+			}
+			if !errors.Is(err, wantError) || stops != 1 {
+				t.Fatalf("error=%v stops=%d, want %v and 1", err, stops, wantError)
+			}
+			calls, err := os.ReadFile(logPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(calls), "kill-session") || strings.Contains(string(calls), "new-session") {
+				t.Fatalf("shutdown refusal or cancellation still replaced the session: %s", calls)
+			}
+		})
+	}
+}
+
+func TestSavedSessionMonitorStopOnlyAppliesToForcedReplacement(t *testing.T) {
+	for _, scenario := range []struct {
+		name   string
+		exists bool
+		force  bool
+	}{
+		{name: "existing without force", exists: true},
+		{name: "new session"},
+		{name: "new session with force", force: true},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			logPath := savedSessionRestoreFixture(t)
+			if !scenario.exists {
+				t.Setenv("NTM_SESSION_TEST_EXISTS", "0")
+			}
+			previousStop := stopRestoreSessionMonitor
+			t.Cleanup(func() { stopRestoreSessionMonitor = previousStop })
+			stopRestoreSessionMonitor = func(context.Context, string) error {
+				t.Fatal("restore stopped a monitor without replacing an existing session")
+				return nil
+			}
+			state := &SessionState{Name: "destination", WorkDir: t.TempDir()}
+			err := RestoreContext(t.Context(), state, RestoreOptions{Force: scenario.force})
+			if scenario.exists != (err != nil) {
+				t.Fatalf("restore error=%v, existing=%t force=%t", err, scenario.exists, scenario.force)
+			}
+			calls, readErr := os.ReadFile(logPath)
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			if strings.Contains(string(calls), "kill-session") || strings.Contains(string(calls), "new-session") == scenario.exists {
+				t.Fatalf("restore performed the wrong topology mutation: %s", calls)
+			}
+		})
+	}
+}
+
+func TestSavedSessionForceOnRemoteHostLeavesLocalMonitorRunning(t *testing.T) {
+	logPath := savedSessionRestoreFixture(t)
+	dir := filepath.Dir(logPath)
+	sshLog := filepath.Join(dir, "ssh-calls")
+	t.Setenv("NTM_SESSION_SSH_LOG", sshLog)
+	const script = `#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "$NTM_SESSION_SSH_LOG"
+[ "$1" = '--' ] && [ "$2" = 'operator@remote.example' ] || exit 42
+exec /bin/sh -c "$3"
+`
+	if err := os.WriteFile(filepath.Join(dir, "ssh"), []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	tmux.DefaultClient = tmux.NewClient("operator@remote.example")
+	previousStop := stopRestoreSessionMonitor
+	t.Cleanup(func() { stopRestoreSessionMonitor = previousStop })
+	stops := 0
+	stopRestoreSessionMonitor = func(context.Context, string) error {
+		stops++
+		return errors.New("local monitor belongs to another host")
+	}
+	state := &SessionState{Name: "same-name", WorkDir: dir}
+	if err := RestoreContext(t.Context(), state, RestoreOptions{Force: true}); err != nil {
+		t.Fatalf("remote restore was blocked by a local monitor: %v", err)
+	}
+	if stops != 0 {
+		t.Fatalf("remote replacement stopped %d local monitors", stops)
+	}
+	calls, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kill, create := strings.Index(string(calls), "kill-session -t =same-name"), strings.Index(string(calls), "new-session")
+	if kill < 0 || create <= kill {
+		t.Fatalf("remote replacement did not complete: %s", calls)
+	}
+	transport, err := os.ReadFile(sshLog)
+	if err != nil || !strings.Contains(string(transport), "-- operator@remote.example") || !strings.Contains(string(transport), "'kill-session'") {
+		t.Fatalf("restore did not use its SSH target: calls=%s error=%v", transport, err)
 	}
 }

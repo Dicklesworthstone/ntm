@@ -14,8 +14,11 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/audit"
 	"github.com/Dicklesworthstone/ntm/internal/config"
+	"github.com/Dicklesworthstone/ntm/internal/resilience"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
+
+var stopRestoreSessionMonitor = resilience.StopSessionMonitor
 
 // Restore recreates a session from saved state.
 func Restore(state *SessionState, opts RestoreOptions) (err error) {
@@ -115,6 +118,14 @@ func restoreSession(ctx context.Context, state *SessionState, opts RestoreOption
 	if exists {
 		if !opts.Force {
 			return fmt.Errorf("session '%s' already exists (use --force to overwrite)", name)
+		}
+		// Local residents must finish in-flight recovery before replacement.
+		// Their names do not identify monitors on an SSH target: stopping a
+		// local namesake would affect an unrelated session on this host.
+		if tmux.DefaultClient.Remote == "" {
+			if err := stopRestoreSessionMonitor(ctx, name); err != nil {
+				return fmt.Errorf("stopping existing session monitor: %w", err)
+			}
 		}
 		if err := tmux.DefaultClient.RunSilentContext(ctx, "kill-session", "-t", tmux.TargetSession(name)); err != nil {
 			return fmt.Errorf("killing existing session: %w", err)

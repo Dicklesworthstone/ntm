@@ -197,3 +197,31 @@ func TestSaveManifest_EmptyAgents(t *testing.T) {
 		t.Errorf("Agents count = %d, want 0", len(loaded.Agents))
 	}
 }
+
+func TestRotationManifestPersistsExplicitPolicyAndPaneProjects(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	opts := &RotationMonitorOptions{ForceGlobalAuthClobber: true, Providers: []string{"claude", "openai"},
+		CAAMBinary: "/opt/bin/caam", ResetHorizonMinutes: 10, PollSeconds: 3}
+	manifest := buildSpawnManifest(SpawnMonitorRequest{
+		Session: "multi-project", SessionIdentity: "111:$3:12345", ProjectDir: "/projects", ConfigPath: "/config/ntm.toml", AccountRotation: opts,
+		Agents: []AgentConfig{{PaneID: "%30", Type: "cc", ProjectDir: "/projects/first"},
+			{PaneID: "%45", Type: "cod", ProjectDir: "/projects/second"}},
+	})
+	opts.Providers[0] = "changed"
+	manifest.MonitorGeneration = strings.Repeat("c", 32)
+	if err := SaveManifest(manifest); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadManifest(manifest.Session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.AccountRotation == nil || !loaded.AccountRotation.ForceGlobalAuthClobber || loaded.AccountRotation.Providers[0] != "claude" ||
+		loaded.AccountRotation.CAAMBinary != "/opt/bin/caam" || loaded.AccountRotation.PollSeconds != 3 || loaded.AccountRotation.ResetHorizonMinutes != 10 {
+		t.Fatalf("lost rotation intent: %+v", loaded.AccountRotation)
+	}
+	if loaded.ConfigPath != "/config/ntm.toml" || loaded.SessionIdentity != "111:$3:12345" || loaded.MonitorGeneration != manifest.MonitorGeneration ||
+		loaded.Agents[0].ProjectDir != "/projects/first" || loaded.Agents[1].ProjectDir != "/projects/second" {
+		t.Fatalf("lost launch provenance: %+v", loaded)
+	}
+}

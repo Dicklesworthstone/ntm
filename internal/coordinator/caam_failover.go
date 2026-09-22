@@ -1,52 +1,28 @@
-// Package coordinator: caam_failover.go wires automatic CAAM account failover
-// into the coordinator tick (bd-um3uy), mirroring rotation.go's structure.
+// The coordinator and resident swarm monitor share this account-recovery
+// engine. It is opt-in, provider-allowlisted, and limited to Linux Claude/Codex
+// panes with proven global credentials and an opened native conversation.
+// Fresh pane captures must show a rate limit beyond the wait horizon without
+// active work. Saved launch settings, physical identity, worktree, conversation
+// and operator pins are rechecked before the shared robot restart executor acts.
 //
-// When [integrations.caam] auto_failover = true AND failover_providers is
-// non-empty (the feature is doubly opt-in), every coordinator cycle inspects
-// each agent pane's fresh capture with the same detector is-working uses
-// (ratelimit.DetectRateLimitForAgent). A pane that shows a banner-verified
-// rate limit for an allow-listed provider, whose detected reset lies beyond
-// [integrations.caam] reset_horizon_minutes, triggers an account switch
-// through the same machinery --robot-switch-account uses — but ONLY after a
-// verified alternate caam account with headroom is found.
-//
-// Safety gates, all mandatory and checked at fire time on a fresh capture:
-//
-//  1. provider allow-list      — only providers in failover_providers
-//  2. not working              — the agent working detectors (Claude/Codex);
-//     agent types without a working detector are refused outright (fail
-//     closed, like rotation.go's unsupported_agent_type)
-//  3. per-pane switch cooldown — never within 1 hour of the last auto-switch
-//     for that pane, persisted in the runtime store as a 'caam_failover'
-//     watermark (disk_sample/output_seq precedent); switch ATTEMPTS start
-//     the cooldown too, so a failing caam is never hammered every tick
-//  4. reset horizon            — limits that reset within the horizon are
-//     waited out; an UNPARSEABLE reset hint is treated as beyond the horizon
-//     (long-lived limits are the common case for odd phrasing, and gates
-//     1-3 plus the verified-alternate check bound the blast radius)
-//  5. caam availability        — when caam is not installed/responsive the
-//     checker degrades SILENTLY to off (debug log only, no attention noise)
-//  6. rotation safety guard    — the same guardrails swarm's automatic
-//     OnLimitHit rotation passes: operator account pins (`ntm rotate lock`)
-//     and the global-Codex-auth clobber protections (proven pane isolation +
-//     caam safe-restore capability); refusals decline as rotation_blocked
-//  7. verified alternate       — caam is queried (swarm's `caam list --json`
-//     fail-closed parse path) and the switch fires only when a non-active,
-//     non-rate-limited account exists
-//
-// Every decision — switch, switch failure, and every decline with its reason
-// — is logged and published to the attention feed with evidence (provider,
-// matched banner, reset hint, chosen account). Identical consecutive decline
-// reasons for a pane are re-published only every failoverRepublishInterval so
-// a pane that stays rate-limited for an hour does not flood the feed on every
-// 5-second tick (each decision is still slog-logged).
+// Provider locks and durable attempt cooldowns prevent sessions from racing to
+// overwrite shared credentials. A successful activation receipt lets sibling
+// panes resume on that account without activating another account. A ready
+// process counts as recovered only after its native conversation is independently
+// confirmed. Account activation and conversation recovery have separate receipts.
+// Identical declines are published at most every failoverRepublishInterval.
 package coordinator
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
+	"reflect"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -55,6 +31,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/Dicklesworthstone/ntm/internal/agent"
+	"github.com/Dicklesworthstone/ntm/internal/agentsession"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/ratelimit"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
@@ -86,36 +63,157 @@ const failoverRepublishInterval = 10 * time.Minute
 //	Consumer   — the caam provider that was switched, informational only
 const watermarkTypeCaamFailover = "caam_failover"
 
+// Provider rows share the user's global credential scope, across all sessions
+// and selected NTM configuration files. Consumer contains an opaque CAAM
+// account identifier, never a credential. A success receipt is written only
+// after both activation and a fresh active-account query succeed.
+const watermarkTypeCaamProviderAttempt = "caam_provider_attempt"
+const watermarkTypeCaamProviderActivated = "caam_provider_activated"
+
 // failoverDecision records one failover decision for logging and tests.
-type failoverDecision struct {
-	PaneID        string // tmux pane ID (%N)
-	AgentID       string // canonical agent ID (pane title, e.g. sess__cc_1)
-	Provider      string // caam provider ("claude", "openai", "gemini")
-	Action        string // "switched", "switch_failed", "declined"
-	DeclineReason string // populated when Action == "declined"
-	Banner        string // evidence: matched rate-limit banner line (best-effort)
-	ResetHint     string // evidence: human-readable reset phrase, if any
-	WaitSeconds   int    // evidence: parsed wait seconds, if any
-	ChosenAccount string // evidence: alternate account selected (switch attempts)
-	PrevAccount   string // evidence: account switched away from (successful switches)
+type AccountFailoverDecision struct {
+	PaneID                     string // tmux pane ID (%N)
+	AgentID                    string // canonical agent ID (pane title, e.g. sess__cc_1)
+	Provider                   string // caam provider ("claude", "openai", "gemini")
+	Action                     string // "switched", "switch_failed", "declined"
+	DeclineReason              string // populated when Action == "declined"
+	Banner                     string // evidence: matched rate-limit banner line (best-effort)
+	ResetHint                  string // evidence: human-readable reset phrase, if any
+	WaitSeconds                int    // evidence: parsed wait seconds, if any
+	ChosenAccount              string // evidence: alternate account selected (switch attempts)
+	PrevAccount                string // evidence: account switched away from (successful switches)
+	AccountActivationAttempted bool
+	AccountActivated           bool
+	AccountActivationUnknown   bool
+	ConversationRecovered      bool
+	NativeSessionID            string
+	Error                      string
+}
+
+type failoverDecision = AccountFailoverDecision
+
+// AccountFailoverTarget restricts a resident swarm monitor to a successfully
+// launched physical pane and its original project, excluding later additions.
+type AccountFailoverTarget struct {
+	AgentType  string
+	ProjectDir string
+}
+
+type AccountFailoverOptions struct {
+	Config                 *config.Config
+	Targets                map[string]AccountFailoverTarget
+	ForceGlobalAuthClobber bool
+}
+
+// AccountFailoverMonitor exposes the coordinator's existing decision engine to
+// the resident internal monitor. It does not start assignments or other daemons.
+type AccountFailoverMonitor struct{ checker *failoverChecker }
+
+func NewAccountFailoverMonitor(session string, opts AccountFailoverOptions) (*AccountFailoverMonitor, error) {
+	if err := tmux.ValidateSessionName(session); err != nil {
+		return nil, err
+	}
+	if opts.Config == nil || !opts.Config.Integrations.CAAM.AutoFailover || len(opts.Targets) == 0 {
+		return nil, errors.New("account failover requires enabled configuration and explicit pane targets")
+	}
+	fc := newFailoverChecker(session, "", opts.Config.Integrations.CAAM)
+	fc.config = opts.Config
+	fc.forceGlobal = opts.ForceGlobalAuthClobber
+	fc.targets = make(map[string]AccountFailoverTarget, len(opts.Targets))
+	for paneID, target := range opts.Targets {
+		if !regexp.MustCompile(`^%[0-9]+$`).MatchString(paneID) || !filepath.IsAbs(target.ProjectDir) ||
+			!hasWorkingDetector(agent.AgentType(target.AgentType).Canonical()) {
+			return nil, fmt.Errorf("invalid account failover target %q", paneID)
+		}
+		fc.targets[paneID] = target
+	}
+	return &AccountFailoverMonitor{checker: fc}, nil
+}
+
+func (m *AccountFailoverMonitor) RunOnce(ctx context.Context) []AccountFailoverDecision {
+	if m == nil || m.checker == nil {
+		return nil
+	}
+	return m.checker.runOnce(ctx)
+}
+
+// Close releases runtime-store resources after the caller cancels and joins
+// its monitor loop. It does not stop a loop owned by another process.
+func (m *AccountFailoverMonitor) Close() error {
+	if m == nil || m.checker == nil || m.checker.store == nil {
+		return nil
+	}
+	return m.checker.store.Close()
+}
+
+// PreflightAccountRotation rejects unavailable account infrastructure before a
+// swarm creates sessions. Live credential scope, pins, and native conversation
+// proof are intentionally checked again against each actual pane at fire time.
+func PreflightAccountRotation(ctx context.Context, cfg config.CAAMConfig) error {
+	if ctx == nil {
+		return errors.New("account rotation preflight requires a context")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if runtime.GOOS != "linux" {
+		return errors.New("automatic global account recovery requires Linux process and credential proof")
+	}
+	if len(cfg.FailoverProviders) == 0 {
+		return errors.New("account rotation requires an explicit provider allowlist")
+	}
+	r := swarm.NewAccountRotator()
+	if strings.TrimSpace(cfg.BinaryPath) != "" {
+		r = r.WithCaamPath(cfg.BinaryPath)
+	}
+	for _, requested := range cfg.FailoverProviders {
+		provider := canonicalFailoverProvider(requested)
+		if provider != "claude" && provider != "openai" {
+			return fmt.Errorf("automatic account recovery does not support provider %q", requested)
+		}
+		accounts, err := r.ListAccountsContext(ctx, provider)
+		if err != nil {
+			return fmt.Errorf("account rotation preflight for %s: %w", provider, err)
+		}
+		_, alternate, err := verifiedFailoverAccounts(accounts, "", time.Now())
+		if err != nil {
+			return fmt.Errorf("account rotation preflight for %s: %w", provider, err)
+		}
+		if alternate == nil {
+			return fmt.Errorf("account rotation preflight for %s: no alternate account with headroom", provider)
+		}
+	}
+	return nil
 }
 
 // failoverChecker performs the per-tick rate-limit failover check. All
 // collaborators are injectable for tests; production wiring is installed by
 // newFailoverChecker.
 type failoverChecker struct {
-	session   string
-	horizon   time.Duration
-	providers map[string]bool // canonical caam provider allow-list
+	session     string
+	workDir     string
+	config      *config.Config
+	forceGlobal bool
+	targets     map[string]AccountFailoverTarget
+	horizon     time.Duration
+	providers   map[string]bool // canonical caam provider allow-list
 
 	// Seams (default to real implementations).
-	getPanes      func(session string) ([]tmux.Pane, error)
-	capturePane   func(paneID string, lines int) (string, error)
-	caamAvailable func() bool
-	guardSwitch   func(provider string) error
-	listAccounts  func(provider string) ([]swarm.AccountInfo, error)
-	switchAccount func(provider, accountID string) (*robot.SwitchAccountOutput, error)
-	lastSwitchAt  func(scope string) (time.Time, bool)
+	getPanes               func(context.Context, string) ([]tmux.Pane, error)
+	capturePane            func(context.Context, string, int) (string, error)
+	caamAvailable          func() bool
+	guardSwitch            func(context.Context, tmux.Pane, string) error
+	listAccounts           func(context.Context, string) ([]swarm.AccountInfo, error)
+	recoverPane            func(context.Context, tmux.Pane, string, accountRecoveryRequest) (accountRecoveryOutcome, error)
+	activateAccount        func(context.Context, string, string, swarm.AccountActivationPreflight) (*swarm.RotationRecord, error)
+	paneCwd                func(context.Context, string) (string, error)
+	readSpec               func(context.Context, string) (*tmux.AgentLaunchSpec, error)
+	observeBinding         func(context.Context, string, string, int) (agentsession.GlobalCredentialBinding, error)
+	restartPane            func(context.Context, robot.RestartPaneOptions) (*robot.RestartPaneOutput, error)
+	lockProvider           func(context.Context, string) (func(), error)
+	readProviderState      func(string) (accountProviderState, error)
+	writeProviderWatermark func(string, string, string, time.Time) error
+	lastSwitchAt           func(scope string) (time.Time, bool)
 	// claimSwitch atomically takes the per-pane cooldown slot and reports
 	// whether this process won it; a false return must decline the switch.
 	claimSwitch func(scope, provider string, at time.Time, expected *time.Time) bool
@@ -169,49 +267,29 @@ func newFailoverChecker(session, workDir string, caamCfg config.CAAMConfig) *fai
 	if customPath {
 		rotator = rotator.WithCaamPath(caamCfg.BinaryPath)
 	}
-	// Honor operator pins (`ntm rotate lock`), persisted per project under
-	// <workDir>/.ntm/account_pins.json. A load failure only weakens the pin
-	// gate, never the feature: log and continue.
-	if err := rotator.LoadPins(workDir); err != nil {
-		slog.Debug("caam failover: account pins unavailable",
-			"session", session, "work_dir", workDir, "error", err)
-	}
-
+	fullConfig := config.Default()
+	fullConfig.Integrations.CAAM = caamCfg
 	fc := &failoverChecker{
 		session:       session,
+		workDir:       workDir,
+		config:        fullConfig,
 		horizon:       horizon,
 		providers:     providers,
-		getPanes:      tmux.GetPanes,
-		capturePane:   tmux.CapturePaneOutput,
+		getPanes:      tmux.GetPanesContext,
+		capturePane:   tmux.CapturePaneOutputContext,
 		caamAvailable: rotator.IsAvailable,
-		guardSwitch:   rotator.GuardAutoSwitch,
-		listAccounts:  rotator.ListAvailableAccounts,
-		switchAccount: func(provider, accountID string) (*robot.SwitchAccountOutput, error) {
-			if customPath {
-				// robot.GetSwitchAccount resolves `caam` from PATH only; with a
-				// configured binary_path the switch must go through the same
-				// rotator the probe/list path used, or a caam reachable only at
-				// the custom path would probe healthy yet fail every switch.
-				record, err := rotator.SwitchToAccount(provider, accountID)
-				if err != nil {
-					return &robot.SwitchAccountOutput{Switch: robot.SwitchAccountResult{
-						Provider: provider,
-						Error:    err.Error(),
-					}}, nil
-				}
-				return &robot.SwitchAccountOutput{Switch: robot.SwitchAccountResult{
-					Success:         true,
-					Provider:        provider,
-					PreviousAccount: record.FromAccount,
-					NewAccount:      record.ToAccount,
-				}}, nil
-			}
-			// The exact machinery --robot-switch-account uses.
-			return robot.GetSwitchAccount(robot.SwitchAccountOptions{
-				Provider:  provider,
-				AccountID: accountID,
-			})
+		listAccounts:  rotator.ListAccountsContext,
+		activateAccount: func(ctx context.Context, provider, account string, preflight swarm.AccountActivationPreflight) (*swarm.RotationRecord, error) {
+			return rotator.SwitchToAccountContext(ctx, provider, account, preflight)
 		},
+		paneCwd: func(ctx context.Context, paneID string) (string, error) {
+			out, err := tmux.DefaultClient.RunContext(ctx, "display-message", "-p", "-t", tmux.ExactTarget(paneID), "#{pane_current_path}")
+			return strings.TrimSuffix(out, "\n"), err
+		},
+		readSpec:       tmux.ReadPaneLaunchSpecContext,
+		observeBinding: agentsession.ObserveGlobalCredentialBinding,
+		restartPane:    robot.GetRestartPaneContext,
+		lockProvider:   acquireFailoverProviderLock,
 		publish: func(record robot.ActuationRecord) {
 			robot.GetAttentionFeed().PublishActuation(record)
 		},
@@ -221,6 +299,10 @@ func newFailoverChecker(session, workDir string, caamCfg config.CAAMConfig) *fai
 	}
 	fc.lastSwitchAt = fc.storedLastSwitch
 	fc.claimSwitch = fc.storeLastSwitch
+	fc.guardSwitch = fc.guardPaneSwitch
+	fc.recoverPane = fc.recoverLimitedPane
+	fc.readProviderState = fc.storedProviderState
+	fc.writeProviderWatermark = fc.storeProviderWatermark
 	return fc
 }
 
@@ -228,16 +310,20 @@ func newFailoverChecker(session, workDir string, caamCfg config.CAAMConfig) *fai
 // unavailable; the in-memory cooldown map still bounds this process.
 func (fc *failoverChecker) runtimeStore() *state.Store {
 	fc.storeOnce.Do(func() {
-		store, err := state.Open("")
+		path, err := accountFailoverStatePath()
 		if err != nil {
-			slog.Debug("caam failover: runtime store unavailable; cooldown is process-local",
+			return
+		}
+		store, err := state.Open(path)
+		if err != nil {
+			slog.Debug("caam failover: runtime store unavailable; global recovery is blocked",
 				"session", fc.session, "error", err)
 			return
 		}
 		// The watermark tables live in the runtime migrations; applying them
 		// is idempotent and is what every other store consumer does on open.
 		if err := store.Migrate(); err != nil {
-			slog.Debug("caam failover: runtime store migration failed; cooldown is process-local",
+			slog.Debug("caam failover: runtime store migration failed; global recovery is blocked",
 				"session", fc.session, "error", err)
 			_ = store.Close()
 			return
@@ -314,17 +400,468 @@ func (fc *failoverChecker) storeLastSwitch(scope, provider string, at time.Time,
 	return claimed
 }
 
+type accountProviderState struct {
+	AttemptAt   time.Time
+	ActivatedAt time.Time
+	Account     string
+}
+
+type accountRecoveryRequest struct {
+	Account        string
+	Previous       string
+	Reuse          bool
+	ActivatedAt    time.Time
+	Scope          string
+	ObservedSwitch *time.Time
+}
+
+type accountRecoveryOutcome struct {
+	ActivationAttempted   bool
+	AccountActivated      bool
+	ActivationUnknown     bool
+	ConversationRecovered bool
+	NativeSessionID       string
+	PrevAccount           string
+}
+
+type accountRecoveryDecline struct{ reason string }
+
+func (e *accountRecoveryDecline) Error() string { return e.reason }
+
+func accountFailoverStatePath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil || !filepath.IsAbs(home) {
+		return "", errors.New("global account recovery requires an absolute credential HOME")
+	}
+	// Selected config paths and XDG overrides cannot split ownership of the
+	// same ~/.claude or ~/.codex credentials between independent monitors.
+	return filepath.Join(home, ".config", "ntm", "state.db"), nil
+}
+
+func (fc *failoverChecker) storedProviderState(provider string) (accountProviderState, error) {
+	var result accountProviderState
+	store := fc.runtimeStore()
+	if store == nil {
+		return result, errors.New("provider cooldown store is unavailable")
+	}
+	for _, kind := range []string{watermarkTypeCaamProviderAttempt, watermarkTypeCaamProviderActivated} {
+		wm, err := store.GetWatermark(kind, provider)
+		if err != nil {
+			return result, err
+		}
+		if wm == nil {
+			continue
+		}
+		if wm.LastTs == nil || wm.LastTs.IsZero() || wm.Consumer == "" {
+			return result, errors.New("provider recovery watermark is incomplete")
+		}
+		if kind == watermarkTypeCaamProviderAttempt {
+			result.AttemptAt = *wm.LastTs
+		} else {
+			result.ActivatedAt, result.Account = *wm.LastTs, wm.Consumer
+		}
+	}
+	return result, nil
+}
+
+func (fc *failoverChecker) storeProviderWatermark(kind, provider, account string, at time.Time) error {
+	store := fc.runtimeStore()
+	if store == nil {
+		return errors.New("provider cooldown store is unavailable")
+	}
+	ts := at.UTC()
+	return store.SetWatermark(&state.OutputWatermark{WatermarkType: kind, Scope: provider,
+		LastTs: &ts, Consumer: account, CreatedAt: ts, UpdatedAt: ts})
+}
+
+// Inventory is usable only with one unambiguous active account. A duplicate
+// account ID or multiple active flags must never select a global credential.
+func verifiedFailoverAccounts(accounts []swarm.AccountInfo, required string, now time.Time) (*swarm.AccountInfo, *swarm.AccountInfo, error) {
+	var active, alternate *swarm.AccountInfo
+	seen := make(map[string]bool)
+	for i := range accounts {
+		account := &accounts[i]
+		if strings.TrimSpace(account.AccountName) == "" || seen[account.AccountName] {
+			return nil, nil, errors.New("active_account_unverified")
+		}
+		seen[account.AccountName] = true
+		if account.IsActive {
+			if active != nil {
+				return nil, nil, errors.New("active_account_unverified")
+			}
+			active = account
+		} else if !account.RateLimited && !account.CooldownUntil.After(now) &&
+			(required == "" || account.AccountName == required) && alternate == nil {
+			alternate = account
+		}
+	}
+	if active == nil {
+		return nil, nil, errors.New("active_account_unverified")
+	}
+	return active, alternate, nil
+}
+
+func selectAccountRecovery(accounts []swarm.AccountInfo, state accountProviderState, now time.Time) (accountRecoveryRequest, error) {
+	var result accountRecoveryRequest
+	active, alternate, err := verifiedFailoverAccounts(accounts, "", now)
+	if err != nil {
+		return result, err
+	}
+	result.Previous = active.AccountName
+	if !state.AttemptAt.IsZero() && now.Sub(state.AttemptAt) < failoverSwitchCooldown {
+		if state.Account != active.AccountName || state.ActivatedAt.IsZero() ||
+			state.ActivatedAt.Before(state.AttemptAt) || state.ActivatedAt.After(now) ||
+			active.RateLimited || active.CooldownUntil.After(now) {
+			return result, errors.New("provider_cooldown")
+		}
+		result.Account, result.Reuse, result.ActivatedAt = state.Account, true, state.ActivatedAt
+		return result, nil
+	}
+	if alternate == nil {
+		return result, errors.New("no_alternate_account")
+	}
+	result.Account = alternate.AccountName
+	return result, nil
+}
+
+func (fc *failoverChecker) guardPaneSwitch(ctx context.Context, pane tmux.Pane, provider string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	dir, err := fc.paneCwd(ctx, pane.ID)
+	if err != nil || !filepath.IsAbs(dir) {
+		return errors.New("pane workspace is unavailable")
+	}
+	if target, ok := fc.targets[pane.ID]; ok && filepath.Clean(dir) != filepath.Clean(target.ProjectDir) {
+		return errors.New("pane left its monitored project")
+	}
+	rotator := swarm.NewAccountRotator()
+	// A new rotator on every check ensures removing a pin really removes it,
+	// and malformed/unreadable policy never falls back to stale cached pins.
+	if err := rotator.LoadPins(dir); err != nil {
+		return err
+	}
+	rotator.ForceGlobalAuthClobber = fc.forceGlobal
+	return rotator.GuardAutoSwitch(provider)
+}
+
+func sameRecoveryPane(expected, actual tmux.Pane) bool {
+	return expected.ID != "" && expected.PID > 0 && expected.ID == actual.ID && expected.PID == actual.PID &&
+		expected.Title == actual.Title && expected.Type.Canonical() == actual.Type.Canonical() &&
+		expected.Index == actual.Index && expected.WindowIndex == actual.WindowIndex && expected.NTMIndex == actual.NTMIndex &&
+		!actual.Dead && !actual.IsServicePane()
+}
+
+func (fc *failoverChecker) observeRecoveryPane(ctx context.Context, expected tmux.Pane, saved *tmux.AgentLaunchSpec, cwd string) (tmux.AgentLaunchSpec, string, error) {
+	var empty tmux.AgentLaunchSpec
+	panes, err := fc.getPanes(ctx, fc.session)
+	if err != nil {
+		return empty, "", err
+	}
+	found := false
+	for _, actual := range panes {
+		if actual.ID != expected.ID {
+			continue
+		}
+		if !sameRecoveryPane(expected, actual) {
+			return empty, "", errors.New("pane identity changed")
+		}
+		found = true
+	}
+	if !found {
+		return empty, "", errors.New("pane is no longer in the monitored session")
+	}
+	spec, err := fc.readSpec(ctx, expected.ID)
+	if err != nil {
+		return empty, "", err
+	}
+	if spec == nil {
+		return empty, "", errors.New("pane has no saved launch specification")
+	}
+	if err := spec.ValidateReplay(expected.Type); err != nil {
+		return empty, "", err
+	}
+	if spec.CAAMProfile != "" || spec.ClaudeIsolateCredentials || spec.ClaudeTokenFile != "" || len(spec.OmittedEnv) != 0 {
+		return empty, "", errors.New("pane does not use replayable global credentials")
+	}
+	if err := agentsession.ValidateGlobalCredentialLaunchCommand(string(expected.Type), spec.Command, agentsession.ResumeLaunchOptions{SystemPromptFile: spec.SystemPromptFile}); err != nil {
+		return empty, "", err
+	}
+	if saved != nil && !reflect.DeepEqual(*saved, *spec) {
+		return empty, "", errors.New("pane launch specification changed")
+	}
+	dir, err := fc.paneCwd(ctx, expected.ID)
+	if err != nil || !filepath.IsAbs(dir) || (cwd != "" && cwd != dir) {
+		return empty, "", errors.New("pane workspace changed or is unavailable")
+	}
+	if target, ok := fc.targets[expected.ID]; ok && filepath.Clean(dir) != filepath.Clean(target.ProjectDir) {
+		return empty, "", errors.New("pane left its monitored project")
+	}
+	captured, err := fc.capturePane(ctx, expected.ID, failoverCaptureLines)
+	if err != nil {
+		return empty, "", err
+	}
+	detection := ratelimit.DetectRateLimitForAgent(captured, string(expected.Type.Canonical()))
+	if !detection.RateLimited || agentWorking(expected.Type.Canonical(), captured, expected.Width) {
+		return empty, "", errors.New("pane is no longer stalled at a rate limit")
+	}
+	if beyond, _ := resetBeyondHorizon(detection, fc.now(), fc.horizon); !beyond {
+		return empty, "", errors.New("pane rate limit now resets within the wait horizon")
+	}
+	if err := fc.guardSwitch(ctx, expected, providerForAgentType(expected.Type.Canonical())); err != nil {
+		return empty, "", err
+	}
+	if err := ctx.Err(); err != nil {
+		return empty, "", err
+	}
+	return *spec, dir, nil
+}
+
+func sameRecoveryBinding(a, b agentsession.GlobalCredentialBinding) bool {
+	return a.ProcessPID > 0 && a.ProcessPID == b.ProcessPID && a.ProcessStartedAt > 0 && a.ProcessStartedAt == b.ProcessStartedAt &&
+		a.CredentialHome != "" && a.CredentialHome == b.CredentialHome && a.Session.SessionID != "" && a.Session.SessionID == b.Session.SessionID &&
+		a.Session.SourcePath != "" && a.Session.SourcePath == b.Session.SourcePath
+}
+
+// recoverLimitedPane runs while the caller owns the provider lock. Its typed
+// restart callback is reached only after the ordinary replay preflight, and
+// rechecks live conversation/account/policy evidence immediately before the
+// activation. The same robot executor then owns the physical respawn.
+func (fc *failoverChecker) recoverLimitedPane(ctx context.Context, pane tmux.Pane, provider string, request accountRecoveryRequest) (accountRecoveryOutcome, error) {
+	out := accountRecoveryOutcome{PrevAccount: request.Previous}
+	spec, dir, err := fc.observeRecoveryPane(ctx, pane, nil, "")
+	if err != nil {
+		return out, &accountRecoveryDecline{reason: "pane_recovery_unverified"}
+	}
+	before, err := fc.observeBinding(ctx, string(pane.Type), dir, pane.PID)
+	if err != nil {
+		return out, &accountRecoveryDecline{reason: "native_binding_unverified"}
+	}
+	if !sameRecoveryBinding(before, before) {
+		return out, &accountRecoveryDecline{reason: "native_binding_unverified"}
+	}
+	out.NativeSessionID = before.Session.SessionID
+	if request.Reuse && before.ProcessStartedAt >= request.ActivatedAt.UnixMilli() {
+		return out, &accountRecoveryDecline{reason: "pane_already_uses_current_account"}
+	}
+	command, err := agentsession.ResumeLaunchCommand(agentsession.ResumeProvider(string(pane.Type)), out.NativeSessionID, spec.Command, agentsession.ResumeLaunchOptions{SystemPromptFile: spec.SystemPromptFile})
+	if err != nil {
+		return out, &accountRecoveryDecline{reason: "native_resume_unsupported"}
+	}
+	resumedSpec := spec
+	resumedSpec.Command = command
+	checkBefore := func(checkCtx context.Context) error {
+		binding, err := fc.observeBinding(checkCtx, string(pane.Type), dir, pane.PID)
+		if err != nil || !sameRecoveryBinding(before, binding) {
+			return errors.New("native conversation changed before recovery")
+		}
+		_, _, err = fc.observeRecoveryPane(checkCtx, pane, &spec, dir)
+		return err
+	}
+	requestRecovery := &robot.NativeSessionRecovery{ExpectedPane: pane, ExpectedSpec: spec,
+		WorkingDir: dir, NativeSessionID: out.NativeSessionID}
+	claimed := false
+	claim := func() error {
+		if !claimed {
+			if !fc.claimSwitch(request.Scope, provider, fc.now(), request.ObservedSwitch) {
+				return &accountRecoveryDecline{reason: "cooldown"}
+			}
+			claimed = true
+		}
+		return nil
+	}
+	requestRecovery.BeforeRespawn = func(actionCtx context.Context) error {
+		if err := checkBefore(actionCtx); err != nil {
+			return err
+		}
+		accounts, err := fc.listAccounts(actionCtx, provider)
+		if err != nil {
+			return err
+		}
+		active, alternate, err := verifiedFailoverAccounts(accounts, request.Account, fc.now())
+		if err != nil {
+			return err
+		}
+		if request.Reuse {
+			state, err := fc.readProviderState(provider)
+			if err != nil || state.Account != request.Account || !state.ActivatedAt.Equal(request.ActivatedAt) || state.ActivatedAt.Before(state.AttemptAt) ||
+				active.AccountName != request.Account || active.RateLimited || active.CooldownUntil.After(fc.now()) {
+				return errors.New("active account no longer matches the successful activation receipt")
+			}
+		} else if active.AccountName != request.Previous || alternate == nil {
+			return errors.New("account inventory changed before activation")
+		}
+		// Inventory queries can take seconds. Recheck the physical generation,
+		// saved command, workspace, policy and stalled state after they finish.
+		if err := checkBefore(actionCtx); err != nil {
+			return err
+		}
+		if !request.Reuse {
+			_, activationErr := fc.activateAccount(actionCtx, provider, request.Account, func(finalCtx context.Context, current *swarm.AccountInfo) error {
+				if current == nil || current.AccountName != request.Previous {
+					return errors.New("active account changed at the activation boundary")
+				}
+				if err := checkBefore(finalCtx); err != nil {
+					return err
+				}
+				if err := claim(); err != nil {
+					return err
+				}
+				if err := fc.writeProviderWatermark(watermarkTypeCaamProviderAttempt, provider, request.Account, fc.now()); err != nil {
+					return err
+				}
+				if err := finalCtx.Err(); err != nil {
+					return err
+				}
+				out.ActivationAttempted = true
+				return nil
+			})
+			if !out.ActivationAttempted {
+				if activationErr == nil {
+					activationErr = errors.New("account executor did not confirm the activation boundary")
+				}
+				return activationErr
+			}
+			// Cancellation may have interrupted an activation after its side
+			// effect. Report uncertainty; never retry or write a success receipt.
+			if actionCtx.Err() != nil {
+				out.ActivationUnknown = true
+				return actionCtx.Err()
+			}
+			accounts, queryErr := fc.listAccounts(actionCtx, provider)
+			if queryErr != nil {
+				out.ActivationUnknown = true
+				return queryErr
+			}
+			current, _, queryErr := verifiedFailoverAccounts(accounts, "", fc.now())
+			if queryErr != nil {
+				out.ActivationUnknown = true
+				return queryErr
+			}
+			out.AccountActivated = current.AccountName == request.Account
+			if activationErr != nil {
+				return activationErr
+			}
+			if !out.AccountActivated {
+				return errors.New("CAAM activation did not select the requested account")
+			}
+			if err := fc.writeProviderWatermark(watermarkTypeCaamProviderActivated, provider, request.Account, fc.now()); err != nil {
+				return err
+			}
+		}
+		if err := checkBefore(actionCtx); err != nil {
+			return err
+		}
+		if request.Reuse {
+			return claim()
+		}
+		return nil
+	}
+	restarted, err := fc.restartPane(ctx, robot.RestartPaneOptions{Session: fc.session, Panes: []string{pane.ID},
+		Config: fc.config, ProjectDir: dir, Recovery: requestRecovery})
+	if err != nil {
+		return out, err
+	}
+	if restarted == nil || !restarted.Success || len(restarted.Restarted) != 1 || len(restarted.Failed) != 0 {
+		return out, errors.New("native pane restart did not complete")
+	}
+	key := restarted.Restarted[0]
+	pids := restarted.PaneShellPIDs[key]
+	if !restarted.AgentRelaunched[key] || pids.Before != pane.PID || pids.After <= 0 || pids.After == pane.PID {
+		return out, errors.New("native pane restart has no verified ready replacement process")
+	}
+	// Startup readiness can precede opening the transcript. Wait a bounded
+	// interval for independent native-session proof, retaining the provider
+	// lock so a sibling cannot activate another account during verification.
+	verifyCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		panes, err := fc.getPanes(verifyCtx, fc.session)
+		if err != nil {
+			return out, err
+		}
+		var current tmux.Pane
+		for _, candidate := range panes {
+			if candidate.ID == pane.ID {
+				current = candidate
+				break
+			}
+		}
+		expected := pane
+		expected.PID = pids.After
+		if !sameRecoveryPane(expected, current) {
+			return out, errors.New("replacement pane identity changed")
+		}
+		liveSpec, err := fc.readSpec(verifyCtx, pane.ID)
+		if err != nil || liveSpec == nil || !reflect.DeepEqual(*liveSpec, resumedSpec) {
+			return out, errors.New("replacement launch settings changed")
+		}
+		liveDir, err := fc.paneCwd(verifyCtx, pane.ID)
+		if err != nil || liveDir != dir {
+			return out, errors.New("replacement workspace changed")
+		}
+		after, bindingErr := fc.observeBinding(verifyCtx, string(pane.Type), dir, pids.After)
+		if bindingErr == nil && after.ProcessPID > 0 && after.ProcessPID != before.ProcessPID && after.ProcessStartedAt > before.ProcessStartedAt &&
+			after.CredentialHome == before.CredentialHome && after.Session.SessionID == before.Session.SessionID &&
+			after.Session.SourcePath == before.Session.SourcePath {
+			accounts, err := fc.listAccounts(verifyCtx, provider)
+			if err != nil {
+				return out, err
+			}
+			active, _, err := verifiedFailoverAccounts(accounts, "", fc.now())
+			if err != nil || active.AccountName != request.Account {
+				return out, errors.New("active account changed while confirming recovery")
+			}
+			finalSpec, err := fc.readSpec(verifyCtx, pane.ID)
+			if err != nil || finalSpec == nil || !reflect.DeepEqual(*finalSpec, resumedSpec) {
+				return out, errors.New("replacement launch settings changed during confirmation")
+			}
+			finalDir, err := fc.paneCwd(verifyCtx, pane.ID)
+			if err != nil || finalDir != dir {
+				return out, errors.New("replacement workspace changed during confirmation")
+			}
+			finalBinding, err := fc.observeBinding(verifyCtx, string(pane.Type), dir, pids.After)
+			if err != nil || !sameRecoveryBinding(after, finalBinding) {
+				return out, errors.New("replacement native conversation changed during account confirmation")
+			}
+			finalPanes, err := fc.getPanes(verifyCtx, fc.session)
+			if err != nil {
+				return out, err
+			}
+			confirmed := false
+			for _, final := range finalPanes {
+				if sameRecoveryPane(expected, final) {
+					confirmed = true
+					break
+				}
+			}
+			if !confirmed {
+				return out, errors.New("replacement pane changed during account confirmation")
+			}
+			out.ConversationRecovered = true
+			return out, nil
+		}
+		select {
+		case <-verifyCtx.Done():
+			return out, errors.New("replacement native conversation could not be confirmed")
+		case <-ticker.C:
+		}
+	}
+}
+
 // runOnce executes one failover check pass and returns the decisions made.
 // Panes without a detected rate limit produce no decision at all.
 func (fc *failoverChecker) runOnce(ctx context.Context) []failoverDecision {
 	if fc == nil {
 		return nil
 	}
-	if ctx != nil && ctx.Err() != nil {
+	if ctx == nil || ctx.Err() != nil {
 		return nil
 	}
 
-	panes, err := fc.getPanes(fc.session)
+	panes, err := fc.getPanes(ctx, fc.session)
 	if err != nil {
 		slog.Warn("caam failover check could not list panes",
 			"session", fc.session, "error", err)
@@ -340,7 +877,13 @@ func (fc *failoverChecker) runOnce(ctx context.Context) []failoverDecision {
 		if ctx != nil && ctx.Err() != nil {
 			break
 		}
-		if decision, acted := fc.checkPane(pane); acted {
+		if fc.targets != nil {
+			target, selected := fc.targets[pane.ID]
+			if !selected || agent.AgentType(target.AgentType).Canonical() != pane.Type.Canonical() {
+				continue
+			}
+		}
+		if decision, acted := fc.checkPane(ctx, pane); acted {
 			decisions = append(decisions, decision)
 		}
 	}
@@ -354,13 +897,16 @@ func (fc *failoverChecker) runOnce(ctx context.Context) []failoverDecision {
 // Gate order (documented invariant, mirrored by the tests): detection →
 // allow-list → working → cooldown → reset horizon → caam availability →
 // rotation safety guard → verified alternate → switch.
-func (fc *failoverChecker) checkPane(pane tmux.Pane) (failoverDecision, bool) {
+func (fc *failoverChecker) checkPane(ctx context.Context, pane tmux.Pane) (failoverDecision, bool) {
 	now := fc.now()
 	canonical := pane.Type.Canonical()
 
 	// A pane we cannot observe is a pane whose rate-limit state is unknown:
 	// nothing to decide (detection never happened).
-	captured, err := fc.capturePane(pane.ID, failoverCaptureLines)
+	if pane.IsServicePane() || pane.Dead {
+		return failoverDecision{}, false
+	}
+	captured, err := fc.capturePane(ctx, pane.ID, failoverCaptureLines)
 	if err != nil {
 		slog.Debug("caam failover: capture failed; pane skipped",
 			"session", fc.session, "pane", pane.ID, "error", err)
@@ -437,7 +983,7 @@ func (fc *failoverChecker) checkPane(pane tmux.Pane) (failoverDecision, bool) {
 	// proven pane isolation and caam safe-restore). An unattended
 	// coordinator switch must never bypass it.
 	if fc.guardSwitch != nil {
-		if err := fc.guardSwitch(decision.Provider); err != nil {
+		if err := fc.guardSwitch(ctx, pane, decision.Provider); err != nil {
 			slog.Info("caam failover blocked by rotation safety guard",
 				"session", fc.session, "pane", pane.ID, "agent", agentID,
 				"provider", decision.Provider, "error", err)
@@ -445,62 +991,67 @@ func (fc *failoverChecker) checkPane(pane tmux.Pane) (failoverDecision, bool) {
 		}
 	}
 
-	// Gate: NEVER switch without verifying an alternate exists. Reuses
-	// swarm's fail-closed `caam list --json` query; a query error is a
-	// decline, not a best-effort switch.
-	accounts, err := fc.listAccounts(decision.Provider)
+	// Global credentials are shared by panes in every session. Keep selection,
+	// activation, native restart, and confirmation under one provider lock.
+	unlock, err := fc.lockProvider(ctx, decision.Provider)
+	if err != nil {
+		return fc.decline(decision, "provider_lock_unavailable", true), true
+	}
+	defer unlock()
+	providerState, err := fc.readProviderState(decision.Provider)
+	if err != nil {
+		return fc.decline(decision, "provider_state_unavailable", true), true
+	}
+	accounts, err := fc.listAccounts(ctx, decision.Provider)
 	if err != nil {
 		return fc.decline(decision, "caam_query_failed", true), true
 	}
-	alternate := ""
-	for _, acc := range accounts {
-		// ListAvailableAccounts already excludes rate-limited/cooldown
-		// accounts; also exclude the active account (switching to itself is
-		// not a failover) and respect any still-running cooldown timestamp.
-		if acc.IsActive || acc.RateLimited {
-			continue
-		}
-		if !acc.CooldownUntil.IsZero() && acc.CooldownUntil.After(now) {
-			continue
-		}
-		alternate = acc.AccountName
-		break
+	now = fc.now()
+	request, err := selectAccountRecovery(accounts, providerState, now)
+	if err != nil {
+		return fc.decline(decision, err.Error(), true), true
 	}
-	if alternate == "" {
-		return fc.decline(decision, "no_alternate_account", true), true
-	}
-	decision.ChosenAccount = alternate
+	decision.ChosenAccount = request.Account
 
-	// Fire. Claim the cooldown slot FIRST so even a failing switch starts the
-	// per-pane cooldown (a broken caam must not be retried every tick), and so
-	// a peer coordinator that took the slot while the gates above ran loses
-	// the race here instead of rotating the same pane a second time.
-	if !fc.claimSwitch(scope, decision.Provider, now, observedSwitch) {
-		return fc.decline(decision, "cooldown", true), true
-	}
+	// The final eligible actuation boundary claims the per-pane cooldown.
+	// A temporarily unopened transcript or failed replay preflight can then
+	// be observed again next tick without suppressing recovery for an hour.
+	request.Scope, request.ObservedSwitch = scope, observedSwitch
 
-	out, err := fc.switchAccount(decision.Provider, alternate)
-	success := err == nil && out != nil && out.Switch.Success
+	out, err := fc.recoverPane(ctx, pane, decision.Provider, request)
+	decision.AccountActivationAttempted = out.ActivationAttempted
+	decision.AccountActivated = out.AccountActivated
+	decision.AccountActivationUnknown = out.ActivationUnknown
+	decision.ConversationRecovered = out.ConversationRecovered
+	decision.NativeSessionID = out.NativeSessionID
+	decision.PrevAccount = out.PrevAccount
+	var declined *accountRecoveryDecline
+	if errors.As(err, &declined) && !out.ActivationAttempted && !out.AccountActivated {
+		return fc.decline(decision, declined.reason, true), true
+	}
+	success := err == nil && out.ConversationRecovered
 	if success {
-		decision.Action = "switched"
-		decision.PrevAccount = out.Switch.PreviousAccount
-		slog.Info("caam failover switched account",
+		decision.Action = "recovered"
+		slog.Info("caam failover recovered native conversation",
 			"session", fc.session, "pane", pane.ID, "agent", agentID,
 			"provider", decision.Provider,
 			"previous_account", decision.PrevAccount,
-			"new_account", out.Switch.NewAccount,
+			"new_account", request.Account,
 			"banner", decision.Banner, "reset_hint", decision.ResetHint)
 	} else {
-		decision.Action = "switch_failed"
+		decision.Action = "recovery_failed"
+		if out.ActivationUnknown {
+			decision.Action = "activation_unknown"
+		}
 		errText := ""
 		if err != nil {
 			errText = err.Error()
-		} else if out != nil {
-			errText = out.Switch.Error
 		}
-		slog.Warn("caam failover switch failed",
+		decision.Error = errText
+		slog.Warn("caam failover recovery failed",
 			"session", fc.session, "pane", pane.ID, "agent", agentID,
-			"provider", decision.Provider, "account", alternate, "error", errText)
+			"provider", decision.Provider, "account", request.Account, "error", errText,
+			"account_activated", out.AccountActivated, "activation_unknown", out.ActivationUnknown)
 	}
 
 	severity := robot.SeverityInfo
@@ -512,8 +1063,8 @@ func (fc *failoverChecker) checkPane(pane tmux.Pane) (failoverDecision, bool) {
 	fc.publishDecision(robot.ActuationRecord{
 		Stage:          robot.ActuationStageOutcome,
 		Targets:        []string{fc.declineTarget(decision)},
-		Summary:        fmt.Sprintf("caam auto-failover %s for %s: provider %s -> account %s", resultWord, fc.declineTarget(decision), decision.Provider, alternate),
-		ReasonCode:     "caam_failover_switch",
+		Summary:        fmt.Sprintf("caam auto-failover %s for %s: provider %s -> account %s; account_activated=%t conversation_recovered=%t", resultWord, fc.declineTarget(decision), decision.Provider, request.Account, out.AccountActivated, out.ConversationRecovered),
+		ReasonCode:     "caam_failover_recovery",
 		MessagePreview: failoverEvidence(decision),
 		Result:         resultWord,
 		Severity:       severity,

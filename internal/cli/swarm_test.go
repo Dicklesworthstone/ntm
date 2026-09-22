@@ -46,6 +46,7 @@ func swarmCommandFixture(t *testing.T) (string, string) {
 	t.Setenv("NTM_SWARM_FAIL_METADATA", "")
 	t.Setenv("NTM_SWARM_BLOCK", "")
 	t.Setenv("NTM_SWARM_NOT_READY", "")
+	t.Setenv("NTM_SWARM_EXISTING", "")
 	t.Setenv("SHALLOW_PROFILE", "")
 	const script = `#!/bin/sh
 printf '%s\n' "$*" >> "$NTM_SWARM_FIXTURE/calls"
@@ -76,7 +77,15 @@ if [ "$action" = "$NTM_SWARM_BLOCK" ]; then
   fi
 fi
 case "$action" in
-  has-session) echo "can't find session" >&2; exit 1 ;;
+  has-session)
+    if [ -n "$NTM_SWARM_EXISTING" ]; then exit 0; fi
+    echo "can't find session" >&2; exit 1
+    ;;
+  list-sessions)
+    if [ -n "$NTM_SWARM_EXISTING" ]; then
+      printf '%s\n' 'cc_agents_1_NTM_SEP_1_NTM_SEP_0_NTM_SEP_today' 'cod_agents_1_NTM_SEP_1_NTM_SEP_0_NTM_SEP_today'
+    fi
+    ;;
   new-session)
     if [ "$name" = "$NTM_SWARM_FAIL_CREATE" ]; then echo 'creation refused' >&2; exit 1; fi
     echo created > "$NTM_SWARM_FIXTURE/$name"
@@ -105,7 +114,10 @@ case "$action" in
     esac
     ;;
   display-message)
-    if [ "$value" = '#{session_name}' ]; then echo "$session"; else echo 0; fi
+    if [ "$value" = '#{session_name}' ]; then echo "$session"
+    elif [ "$value" = '#{pid}:#{session_id}:#{session_created}' ]; then
+      if [ -f "$NTM_SWARM_FIXTURE/identity" ]; then cat "$NTM_SWARM_FIXTURE/identity"; else echo '700:$1:1770000000'; fi
+    else echo 0; fi
     ;;
   capture-pane)
     if [ -z "$NTM_SWARM_NOT_READY" ]; then

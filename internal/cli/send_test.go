@@ -2654,3 +2654,194 @@ func TestSendLoopModeFlag(t *testing.T) {
 		t.Fatalf("--loop-mode default = %q, want false", flag.DefValue)
 	}
 }
+
+func killResidentFixture(t *testing.T) string {
+	t.Helper()
+	isolateIdentityDirs(t)
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	oldConfig, oldJSON, oldClient := cfg, jsonOutput, tmux.DefaultClient
+	cfg, jsonOutput, tmux.DefaultClient = config.Default(), false, tmux.NewClient("")
+	cfg.AgentMail.Enabled = false
+	t.Cleanup(func() { cfg, jsonOutput, tmux.DefaultClient = oldConfig, oldJSON, oldClient })
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "calls")
+	t.Setenv("NTM_KILL_TEST_LOG", logPath)
+	t.Setenv("NTM_KILL_TEST_CWD", dir)
+	const script = `#!/bin/sh
+printf '%s\n' "$*" >> "$NTM_KILL_TEST_LOG"
+case "$1" in
+  list-sessions) echo 'shutdown-target_NTM_SEP_1_NTM_SEP_0_NTM_SEP_today' ;;
+  list-panes) echo '%91_NTM_SEP_1_NTM_SEP_shutdown-target__cc_1[work]_NTM_SEP_claude_NTM_SEP_80_NTM_SEP_24_NTM_SEP_1_NTM_SEP_0_NTM_SEP_0_NTM_SEP_cc_NTM_SEP__NTM_SEP__NTM_SEP_0' ;;
+  display-message) printf '%s\n' "$NTM_KILL_TEST_CWD" ;;
+esac
+`
+	bin := filepath.Join(dir, "tmux")
+	if err := os.WriteFile(bin, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NTM_TMUX_BINARY", bin)
+	return logPath
+}
+
+func TestKillWaitsForResidentShutdownBeforeSessionMutation(t *testing.T) {
+	for _, surface := range []string{"plain", "response"} {
+		for _, cancelStop := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/cancel=%t", surface, cancelStop), func(t *testing.T) {
+				logPath := killResidentFixture(t)
+				oldStop := stopKillSessionMonitor
+				t.Cleanup(func() { stopKillSessionMonitor = oldStop })
+				entered, release := make(chan string, 1), make(chan struct{})
+				stopKillSessionMonitor = func(ctx context.Context, session string) error {
+					entered <- session
+					select {
+					case <-ctx.Done():
+						return ctx.Err()
+					case <-release:
+						log, err := os.OpenFile(logPath, os.O_WRONLY|os.O_APPEND, 0600)
+						if err != nil {
+							return err
+						}
+						defer log.Close()
+						_, err = fmt.Fprintln(log, "monitor-joined")
+						return err
+					}
+				}
+				ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+				done, completed := make(chan error, 1), make(chan struct{})
+				t.Cleanup(func() {
+					cancel()
+					<-completed
+				})
+				go func() {
+					defer close(completed)
+					if surface == "plain" {
+						done <- runKill(ctx, io.Discard, "shutdown-target", true, nil, true, false)
+						return
+					}
+					response, err := buildKillResponse(ctx, "shutdown-target", true, nil, true, false)
+					if err == nil && (response == nil || !response.Killed || response.Session != "shutdown-target") {
+						err = fmt.Errorf("invalid session kill receipt: %+v", response)
+					}
+					done <- err
+				}()
+				select {
+				case session := <-entered:
+					if session != "shutdown-target" {
+						t.Fatalf("stop session=%q, want resolved shutdown-target", session)
+					}
+				case err := <-done:
+					t.Fatalf("kill returned without joining resident: %v", err)
+				case <-ctx.Done():
+					t.Fatal("kill did not reach resident shutdown")
+				}
+				before, err := os.ReadFile(logPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if strings.Contains(string(before), "kill-session") || strings.Contains(string(before), "kill-pane") {
+					t.Fatalf("kill acted before the resident joined: %s", before)
+				}
+				if cancelStop {
+					cancel()
+				} else {
+					close(release)
+				}
+				err = <-done
+				after, readErr := os.ReadFile(logPath)
+				if readErr != nil {
+					t.Fatal(readErr)
+				}
+				if cancelStop {
+					if !errors.Is(err, context.Canceled) || string(after) != string(before) {
+						t.Fatalf("canceled shutdown err=%v; tmux changed from %s to %s", err, before, after)
+					}
+					return
+				}
+				joined := strings.Index(string(after), "monitor-joined")
+				killed := strings.Index(string(after), "kill-session -t =shutdown-target")
+				if err != nil || joined < 0 || killed <= joined || !strings.Contains(string(after)[joined:], "list-panes") {
+					t.Fatalf("kill must snapshot and mutate only after resident joined: err=%v calls=%s", err, after)
+				}
+			})
+		}
+	}
+}
+
+func TestKillTaggedPanesKeepsResidentRunning(t *testing.T) {
+	for _, surface := range []string{"plain", "response"} {
+		t.Run(surface, func(t *testing.T) {
+			logPath := killResidentFixture(t)
+			oldStop := stopKillSessionMonitor
+			t.Cleanup(func() { stopKillSessionMonitor = oldStop })
+			stopKillSessionMonitor = func(context.Context, string) error {
+				t.Error("partial pane kill stopped the session resident")
+				return errors.New("must keep the resident")
+			}
+			var err error
+			if surface == "plain" {
+				err = runKill(t.Context(), io.Discard, "shutdown-target", true, []string{"work"}, true, false)
+			} else {
+				_, err = buildKillResponse(t.Context(), "shutdown-target", true, []string{"work"}, true, false)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			calls, err := os.ReadFile(logPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(calls), "kill-pane -t %91") || strings.Contains(string(calls), "kill-session") {
+				t.Fatalf("partial kill did not keep the session: %s", calls)
+			}
+		})
+	}
+}
+
+func TestKillRemoteSessionKeepsLocalMonitorAndProcesses(t *testing.T) {
+	for _, surface := range []string{"plain", "response"} {
+		t.Run(surface, func(t *testing.T) {
+			logPath := killResidentFixture(t)
+			dir := filepath.Dir(logPath)
+			const sshScript = `#!/bin/sh
+if [ "$1" != -- ] || [ "$2" != operator@remote.example ]; then exit 2; fi
+printf 'remote-host %s\n' "$2" >> "$NTM_KILL_TEST_LOG"
+exec /bin/sh -c "$3"
+`
+			if err := os.WriteFile(filepath.Join(dir, "ssh"), []byte(sshScript), 0700); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+			tmux.DefaultClient = tmux.NewClient("operator@remote.example")
+			oldStop, oldCollect, oldReap := stopKillSessionMonitor, collectKillPaneDescendants, reapKillOrphans
+			t.Cleanup(func() {
+				stopKillSessionMonitor, collectKillPaneDescendants, reapKillOrphans = oldStop, oldCollect, oldReap
+			})
+			stops, collections, reaps := 0, 0, 0
+			stopKillSessionMonitor = func(context.Context, string) error {
+				stops++
+				return errors.New("same-named local resident must remain running")
+			}
+			collectKillPaneDescendants = func([]int) []int {
+				collections++
+				return []int{12345}
+			}
+			reapKillOrphans = func([]int) { reaps++ }
+			var err error
+			if surface == "plain" {
+				err = runKill(t.Context(), io.Discard, "shutdown-target", true, nil, true, false)
+			} else {
+				_, err = buildKillResponse(t.Context(), "shutdown-target", true, nil, true, false)
+			}
+			if err != nil || stops != 0 || collections != 0 || reaps != 0 {
+				t.Fatalf("remote kill crossed local process boundary: err=%v stops=%d collections=%d reaps=%d", err, stops, collections, reaps)
+			}
+			calls, err := os.ReadFile(logPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(calls), "remote-host operator@remote.example") || !strings.Contains(string(calls), "kill-session -t =shutdown-target") {
+				t.Fatalf("remote session was not killed: %s", calls)
+			}
+		})
+	}
+}

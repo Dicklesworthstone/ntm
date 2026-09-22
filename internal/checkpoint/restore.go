@@ -29,6 +29,7 @@ var (
 
 var errWorkingDirNotDirectory = errors.New("not a directory")
 var errRestoreLayoutAppearance = errors.New("restored layout appearance could not be applied")
+var stopRestoreSessionMonitor = resilience.StopSessionMonitor
 
 // RestoreOptions configures how a checkpoint is restored.
 type RestoreOptions struct {
@@ -337,6 +338,15 @@ func (r *Restorer) restoreFromCheckpoint(cp *Checkpoint, opts RestoreOptions) (r
 		if !opts.DryRun {
 			result.Stage = "stopping_existing_session"
 			if _, err := runRestoreMutation(ctx, RestoreProgress{Stage: "stop_session"}, func() (string, error) {
+				// Join the existing resident's actuation before replacing its
+				// session. A same-name replacement must not inherit an old
+				// monitor racing recovery against the new topology.
+				// Residents are local; a remote target must leave them alone.
+				if tmux.DefaultClient.Remote == "" {
+					if err := stopRestoreSessionMonitor(ctx, cp.SessionName); err != nil {
+						return "", fmt.Errorf("stopping session monitor: %w", err)
+					}
+				}
 				return "", tmux.DefaultClient.RunSilentContext(ctx, "kill-session", "-t", tmux.TargetSession(cp.SessionName))
 			}); err != nil {
 				return result, fmt.Errorf("killing existing session: %w", err)

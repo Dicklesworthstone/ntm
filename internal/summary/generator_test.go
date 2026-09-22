@@ -2,11 +2,13 @@ package summary
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 type stubSummarizer struct {
@@ -122,6 +124,50 @@ func TestSummarizeSessionIncludesGitChanges(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected git-created file in summary, got: %#v", summary.Files)
+	}
+}
+
+func TestSummarizeSessionCancellationStopsGitEnrichment(t *testing.T) {
+	dir := t.TempDir()
+	started := filepath.Join(dir, "git-started")
+	const script = "#!/bin/sh\nprintf ready > \"$NTM_SUMMARY_GIT_STARTED\"\nexec sleep 30\n"
+	if err := os.WriteFile(filepath.Join(dir, "git"), []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("NTM_SUMMARY_GIT_STARTED", started)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := SummarizeSession(ctx, Options{
+			Session: "stopping", Outputs: []AgentOutput{{AgentID: "a1", AgentType: "cc", Output: "Finished the task"}},
+			Format: FormatHandoff, ProjectDir: dir, IncludeGitDiff: true,
+		})
+		done <- err
+	}()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if _, err := os.Stat(started); err == nil {
+			break
+		}
+		select {
+		case err := <-done:
+			t.Fatalf("summary returned before the git subprocess started: %v", err)
+		case <-ctx.Done():
+			t.Fatal("git enrichment never started")
+		case <-ticker.C:
+		}
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("summary cancellation = %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("summary ignored owner cancellation while git was running")
 	}
 }
 

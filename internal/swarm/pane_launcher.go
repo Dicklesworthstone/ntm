@@ -29,6 +29,11 @@ type PaneLauncher struct {
 	// If nil, a default builder is created.
 	CmdBuilder *LaunchCommandBuilder
 
+	// BuildLaunchSpec supplies a preflighted command and its durable settings.
+	// The command uses the same identity checks and launch path as CmdBuilder.
+	// A nil result retains CmdBuilder's ordinary command and environment.
+	BuildLaunchSpec func(session string, pane PaneSpec) (*tmux.AgentLaunchSpec, error)
+
 	// CDDelay lets a fresh shell settle before changing directory and launching.
 	// Default: 100ms
 	CDDelay time.Duration
@@ -257,6 +262,16 @@ func (pl *PaneLauncher) LaunchAgentInPane(ctx context.Context, sessionName strin
 		}
 	}
 	sort.Strings(spec.OmittedEnv)
+	if pl.BuildLaunchSpec != nil {
+		override, err := pl.BuildLaunchSpec(sessionName, paneSpec)
+		if err != nil {
+			return fail(fmt.Errorf("prepare launch command: %w", err))
+		}
+		if override != nil {
+			spec = *override
+			launchCmd = LaunchCommand{Binary: spec.Command, AgentType: paneSpec.AgentType, WorkDir: paneSpec.Project}
+		}
+	}
 	if err := client.SetPaneLaunchSpecContext(ctx, paneTarget, spec); err != nil {
 		return fail(fmt.Errorf("record launch command: %w", err))
 	}

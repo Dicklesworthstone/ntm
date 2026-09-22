@@ -29,16 +29,32 @@ func sanitizeSessionName(session string) (string, error) {
 
 // SpawnManifest represents the configuration of a spawned session for monitoring
 type SpawnManifest struct {
-	Session     string        `json:"session"`
-	ProjectDir  string        `json:"project_dir"`
-	Agents      []AgentConfig `json:"agents"`
-	AutoRestart bool          `json:"auto_restart"`
+	Session           string                  `json:"session"`
+	SessionIdentity   string                  `json:"session_identity,omitempty"`
+	ProjectDir        string                  `json:"project_dir"`
+	Agents            []AgentConfig           `json:"agents"`
+	AutoRestart       bool                    `json:"auto_restart"`
+	ConfigPath        string                  `json:"config_path,omitempty"`
+	MonitorGeneration string                  `json:"monitor_generation,omitempty"`
+	AccountRotation   *RotationMonitorOptions `json:"account_rotation,omitempty"`
+}
+
+// RotationMonitorOptions is the explicit operator intent carried into the
+// resident process. A non-nil value selects rotation-only monitoring; it does
+// not opt the swarm into unrelated restart, daemon or assignment features.
+type RotationMonitorOptions struct {
+	ForceGlobalAuthClobber bool     `json:"force_global_auth_clobber"`
+	Providers              []string `json:"providers"`
+	CAAMBinary             string   `json:"caam_binary,omitempty"`
+	ResetHorizonMinutes    int      `json:"reset_horizon_minutes"`
+	PollSeconds            int      `json:"poll_seconds"`
 }
 
 // AgentConfig represents the configuration for a single agent
 type AgentConfig struct {
 	PaneID        string         `json:"pane_id"`
 	PaneIndex     int            `json:"pane_index"`
+	ProjectDir    string         `json:"project_dir,omitempty"`
 	Type          string         `json:"type"`
 	Model         string         `json:"model"`
 	Command       string         `json:"command"`

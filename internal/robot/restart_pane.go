@@ -142,6 +142,10 @@ type RestartPaneOptions struct {
 	// options the model grammar cannot express. Model/effort use Model above.
 	AgentArgs string
 	Deps      *RestartPaneDependencies
+	// Recovery is an internal, single-pane native-session recovery request.
+	// It is not populated by robot flags and cannot be combined with prompts,
+	// assignments, or model/argument overrides.
+	Recovery *NativeSessionRecovery
 }
 
 // restartLaunchOverride is the parsed relaunch override (ntm-yusj).
@@ -444,7 +448,9 @@ func GetRestartPaneContext(ctx context.Context, opts RestartPaneOptions) (*Resta
 	targetPanes := selectRestartPaneTargets(panes, paneFilterMap, opts.Type, opts.All)
 
 	if len(targetPanes) == 0 {
-		if strings.TrimSpace(opts.Bead) != "" {
+		if opts.Recovery != nil {
+			output.RobotResponse = NewErrorResponse(errors.New("native recovery target is no longer present"), ErrCodePaneNotFound, "Reobserve the exact physical pane before recovery")
+		} else if strings.TrimSpace(opts.Bead) != "" {
 			err := errors.New("--restart-bead requires exactly one target pane, resolved none")
 			output.RobotResponse = NewErrorResponse(err, ErrCodeInvalidFlag, "Use --panes with one canonical agent-pane selector")
 		}
@@ -478,6 +484,12 @@ func GetRestartPaneContext(ctx context.Context, opts RestartPaneOptions) (*Resta
 				output.RobotResponse = NewErrorResponse(err, ErrCodeInvalidFlag, "Use --restart-model only with claude, codex, or gemini panes")
 				return output, nil
 			}
+		}
+	}
+	if opts.Recovery != nil {
+		if len(targetPanes) != 1 || !launchOverride.empty() || strings.TrimSpace(opts.Bead) != "" || strings.TrimSpace(opts.Prompt) != "" {
+			output.RobotResponse = NewErrorResponse(errors.New("native recovery requires one exact pane and cannot change assignment, prompt, model, or arguments"), ErrCodeInvalidFlag, "Use the internal recovery request without additional overrides")
+			return output, nil
 		}
 	}
 
@@ -523,6 +535,9 @@ func GetRestartPaneContext(ctx context.Context, opts RestartPaneOptions) (*Resta
 		}
 	}
 	launchPlan, err := prepareRestartLaunchPlan(ctx, opts.Session, targetPanes, multiWindow, restartCfg, launchOverride, deps)
+	if err == nil && opts.Recovery != nil {
+		err = prepareNativeRecoveryLaunchPlan(ctx, targetPanes[0], multiWindow, restartCfg, opts.Recovery, &launchPlan)
+	}
 	if err != nil {
 		output.RobotResponse = NewErrorResponse(
 			err,
@@ -546,17 +561,49 @@ func GetRestartPaneContext(ctx context.Context, opts RestartPaneOptions) (*Resta
 		applyRestartAssignmentReplay(output, beadPreflight.Recovery)
 		return output, nil
 	}
+	if opts.Recovery != nil {
+		if err := opts.Recovery.beforeRespawn(ctx, opts.Session, deps); err != nil {
+			output.RobotResponse = NewErrorResponse(err, ErrCodeInternalError, "Native recovery was stopped before respawning the pane; inspect the account activation outcome")
+			return output, nil
+		}
+	}
 
 	// Restart targets — track pane IDs for post-restart relaunch/liveness steps.
 	// The helper repeats the batch preflight defensively so no future caller can
 	// accidentally move validation after the first respawn.
+	respawnPane := tmux.RespawnPaneContext
+	observePID := paneShellPIDContext
+	if opts.Recovery != nil {
+		expectedPID := opts.Recovery.ExpectedPane.PID
+		observedBefore := false
+		observePID = func(probeCtx context.Context, target string) (int, error) {
+			pid, err := paneShellPIDContext(probeCtx, target)
+			if !observedBefore {
+				observedBefore = true
+				if err == nil && pid != expectedPID {
+					return 0, errors.New("native recovery pane changed before respawn")
+				}
+			}
+			return pid, err
+		}
+		respawnPane = func(respawnCtx context.Context, target string, kill bool) error {
+			pid, err := paneShellPIDContext(respawnCtx, target)
+			if err != nil {
+				return err
+			}
+			if pid != expectedPID {
+				return errors.New("native recovery pane changed at the respawn boundary")
+			}
+			return tmux.RespawnPaneContext(respawnCtx, target, kill)
+		}
+	}
 	restartedPaneInfo, err := respawnRestartPaneTargetsContext(
 		ctx,
 		targetPanes,
 		multiWindow,
 		output,
-		tmux.RespawnPaneContext,
-		paneShellPIDContext,
+		respawnPane,
+		observePID,
 	)
 	if err != nil {
 		if cancelErr := restartPaneCancellationError(ctx, err); cancelErr != nil {

@@ -18,6 +18,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/claudeconfig"
 	"github.com/Dicklesworthstone/ntm/internal/health"
 	"github.com/Dicklesworthstone/ntm/internal/output"
+	"github.com/Dicklesworthstone/ntm/internal/resilience"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/swarm"
@@ -263,19 +264,51 @@ type swarmOptions struct {
 // SwarmPlanOutput is the JSON output format for swarm plan
 type SwarmPlanOutput struct {
 	robot.RobotResponse
-	ScanDir         string                `json:"scan_dir"`
-	TotalCC         int                   `json:"total_cc"`
-	TotalCod        int                   `json:"total_cod"`
-	TotalGmi        int                   `json:"total_gmi"`
-	TotalAgy        int                   `json:"total_agy"`
-	TotalAgents     int                   `json:"total_agents"`
-	SessionsPerType int                   `json:"sessions_per_type"`
-	PanesPerSession int                   `json:"panes_per_session"`
-	Allocations     []AllocationOutput    `json:"allocations"`
-	Sessions        []SessionOutput       `json:"sessions"`
-	DryRun          bool                  `json:"dry_run"`
-	Execution       *SwarmExecutionOutput `json:"execution,omitempty"`
+	ScanDir         string                      `json:"scan_dir"`
+	TotalCC         int                         `json:"total_cc"`
+	TotalCod        int                         `json:"total_cod"`
+	TotalGmi        int                         `json:"total_gmi"`
+	TotalAgy        int                         `json:"total_agy"`
+	TotalAgents     int                         `json:"total_agents"`
+	SessionsPerType int                         `json:"sessions_per_type"`
+	PanesPerSession int                         `json:"panes_per_session"`
+	Allocations     []AllocationOutput          `json:"allocations"`
+	Sessions        []SessionOutput             `json:"sessions"`
+	DryRun          bool                        `json:"dry_run"`
+	Execution       *SwarmExecutionOutput       `json:"execution,omitempty"`
+	AccountRotation *SwarmAccountRotationOutput `json:"account_rotation,omitempty"`
 }
+
+// SwarmAccountRotationOutput distinguishes the requested policy from resident
+// monitors that have actually acknowledged ownership and startup.
+type SwarmAccountRotationOutput struct {
+	Providers     []string                     `json:"providers"`
+	EligiblePanes int                          `json:"eligible_panes"`
+	Declined      []SwarmRotationDecline       `json:"declined"`
+	Monitors      []SwarmRotationMonitorOutput `json:"monitors"`
+}
+
+type SwarmRotationDecline struct {
+	Session   string `json:"session"`
+	PaneIndex int    `json:"pane_index"`
+	AgentType string `json:"agent_type"`
+	Reason    string `json:"reason"`
+}
+
+type SwarmRotationMonitorOutput struct {
+	Session    string   `json:"session"`
+	Started    bool     `json:"started"`
+	PID        int      `json:"pid,omitempty"`
+	Generation string   `json:"generation,omitempty"`
+	PaneIDs    []string `json:"pane_ids"`
+	Error      string   `json:"error,omitempty"`
+}
+
+// These seams retain the shared resident implementation while command tests
+// exercise receipts without starting the Go test binary recursively.
+var swarmPreflightSessionMonitor = resilience.PreflightSessionMonitor
+var swarmStartSessionMonitor = resilience.StartSessionMonitor
+var swarmStopSessionMonitor = resilience.StopSessionMonitor
 
 // SwarmExecutionOutput records attempted operations separately from the desired
 // allocation. It remains present on cancellation and partial launch failure.
@@ -473,6 +506,17 @@ func runSwarm(ctx context.Context, opts swarmOptions) (runErr error) {
 		return err
 	}
 
+	var rotation *swarmRotationPlan
+	if opts.AutoRotate {
+		rotation, err = prepareSwarmAccountRotation(ctx, plan, opts)
+		if rotation != nil {
+			out.AccountRotation = rotation.output
+		}
+		if err != nil {
+			return fmt.Errorf("account rotation preflight: %w", err)
+		}
+	}
+
 	staggerDelay := time.Duration(swarmCfg.StaggerDelayMs) * time.Millisecond
 	if staggerDelay < 0 {
 		staggerDelay = 0
@@ -497,14 +541,17 @@ func runSwarm(ctx context.Context, opts swarmOptions) (runErr error) {
 		tmuxClient = tmux.DefaultClient
 	}
 
+	paneLauncher := swarm.NewPaneLauncherWithClient(tmuxClient).WithLogger(logger)
+	if rotation != nil {
+		paneLauncher.BuildLaunchSpec = rotation.launchSpec
+	}
 	executor := &swarm.SwarmOrchestrator{
 		SessionOrchestrator: sessOrch,
-		PaneLauncher:        swarm.NewPaneLauncherWithClient(tmuxClient).WithLogger(logger),
+		PaneLauncher:        paneLauncher,
 		PromptInjector:      swarm.NewPromptInjectorWithClient(tmuxClient).WithLogger(logger),
 		Logger:              logger,
 		StaggerDelay:        staggerDelay,
 	}
-
 	// Reconcile any stale Claude Code model snapshot from a previous swarm
 	// that crashed / was killed before its shutdown path ran. Safe no-op when
 	// there's nothing to reconcile (issue #110).
@@ -517,6 +564,25 @@ func runSwarm(ctx context.Context, opts swarmOptions) (runErr error) {
 
 	execResult, err := executor.Execute(ctx, plan, initialPrompt)
 	out.Execution = buildSwarmExecutionOutput(execResult, err)
+	if rotation != nil && execResult != nil && execResult.Launch != nil {
+		if monitorErr := rotation.startMonitors(ctx, execResult.Launch); monitorErr != nil {
+			out.Execution.Errors = append(out.Execution.Errors, monitorErr.Error())
+			out.Execution.Interrupted = out.Execution.Interrupted || errors.Is(monitorErr, context.Canceled) || errors.Is(monitorErr, context.DeadlineExceeded)
+			err = errors.Join(err, monitorErr)
+		}
+		if !opts.JSONOutput {
+			for _, monitor := range rotation.output.Monitors {
+				if monitor.Started {
+					output.PrintSuccessf("Account rotation monitor ready for %s (PID %d)", monitor.Session, monitor.PID)
+				} else {
+					output.PrintWarningf("Account rotation monitor for %s: %s", monitor.Session, monitor.Error)
+				}
+			}
+			for _, declined := range rotation.output.Declined {
+				output.PrintWarningf("Account rotation unavailable for %s pane %d: %s", declined.Session, declined.PaneIndex, declined.Reason)
+			}
+		}
+	}
 
 	// Report results
 	if !opts.JSONOutput && execResult != nil && execResult.Sessions != nil {
@@ -863,9 +929,11 @@ func newSwarmStatusCmd() *cobra.Command {
 			sort.Strings(swarmSessions)
 
 			type swarmSessionStatus struct {
-				Session string                `json:"session"`
-				Health  *health.SessionHealth `json:"health,omitempty"`
-				Error   string                `json:"error,omitempty"`
+				Session         string                           `json:"session"`
+				Health          *health.SessionHealth            `json:"health,omitempty"`
+				Error           string                           `json:"error,omitempty"`
+				AccountRotation *resilience.SessionMonitorStatus `json:"account_rotation,omitempty"`
+				MonitorError    string                           `json:"monitor_error,omitempty"`
 			}
 
 			type swarmStatusOutput struct {
@@ -907,6 +975,14 @@ func newSwarmStatusCmd() *cobra.Command {
 				sessionHealth, err := health.CheckSession(ctx, name)
 				cancel()
 				entry := swarmSessionStatus{Session: name}
+				if tmux.DefaultClient.Remote == "" {
+					monitorStatus, monitorErr := resilience.ReadSessionMonitorStatus(name)
+					if monitorErr != nil && !os.IsNotExist(monitorErr) {
+						entry.MonitorError = monitorErr.Error()
+					} else if monitorStatus != nil && monitorStatus.AccountRotation {
+						entry.AccountRotation = monitorStatus
+					}
+				}
 				if err != nil {
 					entry.Error = err.Error()
 					out.Sessions = append(out.Sessions, entry)
@@ -935,6 +1011,12 @@ func newSwarmStatusCmd() *cobra.Command {
 
 			output.PrintInfof("Swarm sessions: %d", len(out.Sessions))
 			for _, sess := range out.Sessions {
+				if sess.AccountRotation != nil {
+					output.PrintInfof("  %s account rotation: %s (healthy:%t, PID:%d)", sess.Session, sess.AccountRotation.State, sess.AccountRotation.Healthy, sess.AccountRotation.PID)
+				}
+				if sess.MonitorError != "" {
+					output.PrintWarningf("  %s account monitor status: %s", sess.Session, sess.MonitorError)
+				}
 				if sess.Health == nil {
 					output.PrintWarningf("  %s: error (%s)", sess.Session, sess.Error)
 					continue
@@ -980,9 +1062,10 @@ By default, discovers and stops all swarm sessions (cc_agents_*, cod_agents_*, g
 Optionally specify session name patterns to stop specific sessions.
 
 The graceful shutdown process:
-  1. Send exit signals to all agents (Ctrl+C for Claude, /exit for Codex, etc.)
-  2. Wait for graceful timeout to allow agents to exit cleanly
-  3. Destroy all tmux sessions
+  1. Stop resident monitors and wait for in-flight account recovery to finish
+  2. Send exit signals to all agents (Ctrl+C for Claude, /exit for Codex, etc.)
+  3. Wait for graceful timeout to allow agents to exit cleanly
+  4. Destroy all tmux sessions
 
 Examples:
   ntm swarm stop                    # Stop all swarm sessions gracefully
@@ -1063,6 +1146,19 @@ Examples:
 			}
 
 			// Execute shutdown
+			// Quiesce the resident owner before interrupting agents. Its stop
+			// acknowledgment joins any in-flight failover, so shutdown cannot
+			// race a delayed account switch or agent restart.
+			if tmux.DefaultClient.Remote == "" {
+				for _, session := range sessions {
+					stopCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+					err := swarmStopSessionMonitor(stopCtx, session)
+					cancel()
+					if err != nil {
+						return fmt.Errorf("stop account monitor for %s before shutdown: %w", session, err)
+					}
+				}
+			}
 			orchestrator := swarm.NewSwarmOrchestrator()
 			result, err := orchestrator.GracefulShutdown(ctx, sessions, cfg)
 			if err != nil {

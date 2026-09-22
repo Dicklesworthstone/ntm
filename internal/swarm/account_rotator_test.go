@@ -1,6 +1,8 @@
 package swarm
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -8,6 +10,84 @@ import (
 	"testing"
 	"time"
 )
+
+func TestAccountRotatorContextOperationsStopTheirCAAMProcess(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake CAAM uses /bin/sh")
+	}
+	for _, operation := range []string{"list", "current", "activate"} {
+		t.Run(operation, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "caam")
+			script := "#!/bin/sh\n"
+			if operation == "activate" {
+				script += "if [ \"$1\" = list ]; then printf '%s\\n' '{\"profiles\":[{\"tool\":\"claude\",\"name\":\"primary\",\"active\":true,\"system\":false,\"health\":{\"status\":\"ok\"}}],\"count\":1}'; exit 0; fi\n"
+			}
+			script += "exec sleep 30\n"
+			if err := os.WriteFile(path, []byte(script), 0755); err != nil {
+				t.Fatal(err)
+			}
+			rotator := NewAccountRotator().WithCaamPath(path)
+			rotator.CommandTimeout = time.Minute
+			ctx, cancel := context.WithTimeout(t.Context(), 40*time.Millisecond)
+			defer cancel()
+			started := time.Now()
+			var err error
+			switch operation {
+			case "list":
+				_, err = rotator.ListAccountsContext(ctx, "claude")
+			case "current":
+				_, err = rotator.GetCurrentAccountContext(ctx, "claude")
+			case "activate":
+				_, err = rotator.SwitchToAccountContext(ctx, "claude", "alternate")
+			}
+			if err == nil || !errors.Is(ctx.Err(), context.DeadlineExceeded) || time.Since(started) > 2*time.Second {
+				t.Fatalf("operation outlived caller cancellation: err=%v context=%v elapsed=%s", err, ctx.Err(), time.Since(started))
+			}
+		})
+	}
+}
+
+func TestAccountRotatorFinalPreflightRunsAfterCurrentQueryBeforeActivation(t *testing.T) {
+	dir := t.TempDir()
+	stateFile := filepath.Join(dir, "active-account")
+	if err := os.WriteFile(stateFile, []byte("claude-a"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	rotator := NewAccountRotator().WithCaamPath(writeFakeCAAM(t, dir, stateFile))
+	wanted := errors.New("native process changed during the current-account query")
+	called := false
+	_, err := rotator.SwitchToAccountContext(t.Context(), "claude", "claude-b", func(ctx context.Context, current *AccountInfo) error {
+		called = true
+		if current == nil || current.AccountName != "claude-a" {
+			t.Errorf("final preflight has no fresh current account: %+v", current)
+		}
+		return wanted
+	})
+	if !called || !errors.Is(err, wanted) {
+		t.Fatalf("preflight refusal ignored: called=%t err=%v", called, err)
+	}
+	data, err := os.ReadFile(stateFile)
+	if err != nil || string(data) != "claude-a" {
+		t.Fatalf("account mutated after refusal: account=%q err=%v", data, err)
+	}
+}
+
+func TestAccountRotatorFinalPreflightRefusesAmbiguousCurrentAccount(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake CAAM uses /bin/sh")
+	}
+	path := filepath.Join(t.TempDir(), "caam")
+	script := "#!/bin/sh\nif [ \"$1\" = list ]; then printf '%s\\n' '{\"profiles\":[{\"tool\":\"claude\",\"name\":\"one\",\"active\":true,\"health\":{\"status\":\"ok\"}},{\"tool\":\"claude\",\"name\":\"two\",\"active\":true,\"health\":{\"status\":\"ok\"}}],\"count\":2}'; exit 0; fi\nexit 9\n"
+	if err := os.WriteFile(path, []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+	rotator := NewAccountRotator().WithCaamPath(path)
+	called := false
+	_, err := rotator.SwitchToAccountContext(t.Context(), "claude", "alternate", func(context.Context, *AccountInfo) error { called = true; return nil })
+	if err == nil || called {
+		t.Fatalf("ambiguous current account reached activation boundary: callback=%t err=%v", called, err)
+	}
+}
 
 func writeFakeCAAM(t *testing.T, dir, stateFile string) string {
 	t.Helper()

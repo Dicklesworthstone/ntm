@@ -2,7 +2,17 @@
 
 package resilience
 
-import "os/exec"
+import (
+	"errors"
+	"os"
+	"os/exec"
+)
+
+func monitorPlatformSupported() error {
+	return errors.New("detached session monitoring requires Unix process and locking support")
+}
+
+func tryMonitorLock(string) (*os.File, error) { return nil, monitorPlatformSupported() }
 
 // setDetachedProcess is a no-op on non-Unix platforms.
 // Process detachment requires platform-specific implementation on Windows.

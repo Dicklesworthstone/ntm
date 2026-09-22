@@ -581,6 +581,40 @@ Partial failures and cancellation return a nonzero exit status while retaining
 the actual outcomes. Prompts go only to successfully launched agents that pass
 readiness and identity checks; surviving sessions remain available for inspection.
 
+`--auto-rotate-accounts` starts an acknowledged resident monitor for eligible
+local Claude and Codex panes. It checks CAAM account availability and the actual
+configured launch commands before creating sessions. JSON receipts identify
+eligible panes, declined providers, and each monitor's PID and generation;
+`swarm status --json` checks the resident's live process and heartbeat.
+If monitor startup partially fails, the command returns a nonzero exit status
+and preserves launched agents, successful monitors, and their startup receipts.
+
+```bash
+ntm swarm --scan-dir=/projects --auto-rotate-accounts --json
+ntm swarm --scan-dir=/projects --auto-rotate-accounts --force-global-auth-clobber --json
+```
+
+This recovery lane requires Linux, default global credentials, and a live
+provider process with a verifiable open main conversation transcript. Codex
+also requires consent through the global-auth flag above or
+`swarm.force_global_auth_clobber = true` in the configuration. Scoped profiles,
+isolated credentials, custom credential homes or providers, and ambiguous
+commands for otherwise eligible panes fail preflight before session creation.
+Unsupported or excluded providers and Codex without global-auth consent can
+launch unmonitored, provided at least one eligible pane remains. A temporary
+lack of transcript evidence defers recovery until another observation; NTM does
+not infer a conversation from the newest file in a worktree. Configured provider
+restrictions and reset horizons still apply.
+
+Recovery preserves the recorded command and native conversation, verifies the
+replacement process and conversation, and reports account activation separately
+from successful conversation recovery. A provider lock and durable activation
+receipt coordinate multiple sessions: stalled sibling panes can resume using
+the already activated account without repeatedly switching the global account.
+Local session kill and forced checkpoint or saved-session replacement wait for
+their resident to finish any in-flight recovery before destroying the session.
+Remote tmux operations leave local monitors and processes untouched.
+
 ## Robot Mode and Local API
 
 NTM has two automation layers:

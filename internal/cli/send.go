@@ -11,7 +11,6 @@ import (
 	"io"
 	"log/slog"
 	"os"
-	"os/exec"
 	"sort"
 	"strconv"
 	"strings"
@@ -2757,6 +2756,12 @@ func runKillPane(ctx context.Context, w io.Writer, session, selector string, for
 	return nil
 }
 
+var (
+	stopKillSessionMonitor     = resilience.StopSessionMonitor
+	collectKillPaneDescendants = collectPaneDescendants
+	reapKillOrphans            = reapOrphanProcesses
+)
+
 func runKill(ctx context.Context, w io.Writer, session string, force bool, tags []string, noHooks bool, summarize bool) (err error) {
 	// Use kernel for JSON output mode
 	if IsJSONOutput() {
@@ -2942,6 +2947,14 @@ func runKill(ctx context.Context, w io.Writer, session string, force bool, tags 
 		}
 	}
 
+	// Join the owning resident before recording the process subtree or ending
+	// its timeline. Recovery must not create another agent during shutdown.
+	local := tmux.DefaultClient.Remote == ""
+	if local {
+		if err := stopKillSessionMonitor(ctx, session); err != nil {
+			return fmt.Errorf("stopping session monitor before kill: %w", err)
+		}
+	}
 	panesForStop, err := tmux.GetPanes(session)
 	if err == nil {
 		addTimelineStopMarkers(session, panesForStop)
@@ -2961,17 +2974,15 @@ func runKill(ctx context.Context, w io.Writer, session string, force bool, tags 
 	// kill-session SIGHUP they can survive, reparent to init, and leak —
 	// holding agent-mail registrations and file locks. We snapshot the subtree
 	// now while the shells are still alive, then reap any survivors after the
-	// session is gone.
-	var panePIDs []int
-	for _, p := range panesForStop {
-		panePIDs = append(panePIDs, p.PID)
-	}
-	orphanCandidates := collectPaneDescendants(panePIDs)
-
-	// Kill the monitor process before destroying the session
-	if output, err := exec.Command("pkill", "-f", resilience.MonitorProcessPattern(session)).CombinedOutput(); err != nil {
-		// Monitor may not be running — that's fine
-		_ = output
+	// session is gone. Remote pane PIDs belong to another host and cannot
+	// identify local processes for collection or signaling.
+	var orphanCandidates []int
+	if local {
+		var panePIDs []int
+		for _, p := range panesForStop {
+			panePIDs = append(panePIDs, p.PID)
+		}
+		orphanCandidates = collectKillPaneDescendants(panePIDs)
 	}
 
 	if err := tmux.KillSession(session); err != nil {
@@ -2980,7 +2991,9 @@ func runKill(ctx context.Context, w io.Writer, session string, force bool, tags 
 	auditKilled = true
 
 	// Reap any agent process subtrees that survived kill-session.
-	reapOrphanProcesses(orphanCandidates)
+	if local {
+		reapKillOrphans(orphanCandidates)
+	}
 
 	// Best-effort: release Agent Mail reservations held by the session's
 	// registered pane agents and drop stale pane identities (bd-1bdvy).
@@ -3343,6 +3356,11 @@ func buildKillResponse(ctx context.Context, session string, force bool, tags []s
 		auditKilledPanes = len(toKill)
 		message = fmt.Sprintf("Killed %d pane(s) matching tags", len(toKill))
 	} else {
+		if tmux.DefaultClient.Remote == "" {
+			if err := stopKillSessionMonitor(ctx, session); err != nil {
+				return nil, fmt.Errorf("stopping session monitor before kill: %w", err)
+			}
+		}
 		panesForStop, err := tmux.GetPanes(session)
 		if err == nil {
 			addTimelineStopMarkers(session, panesForStop)
@@ -3350,11 +3368,6 @@ func buildKillResponse(ctx context.Context, session string, force bool, tags []s
 
 		// Finalize timeline persistence before killing the session
 		_ = state.EndSessionTimeline(session) // Ignore error - not critical
-
-		// Kill the monitor process before destroying the session (same as runKill)
-		if output, err := exec.Command("pkill", "-f", resilience.MonitorProcessPattern(session)).CombinedOutput(); err != nil {
-			_ = output // Monitor may not be running — that's fine
-		}
 
 		if err := tmux.KillSession(session); err != nil {
 			return nil, err

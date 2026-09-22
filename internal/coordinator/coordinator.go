@@ -509,6 +509,10 @@ func (c *SessionCoordinator) maybeCheckCaamFailover(ctx context.Context) {
 	}
 	if c.caamFailover == nil {
 		c.caamFailover = newFailoverChecker(c.session, c.projectKey, c.ntmConfig.Integrations.CAAM)
+		if c.caamFailover != nil {
+			c.caamFailover.config = c.ntmConfig
+			c.caamFailover.forceGlobal = c.ntmConfig.Swarm.ForceGlobalAuthClobber
+		}
 	}
 	checker := c.caamFailover
 	c.mu.Unlock()

@@ -92,6 +92,9 @@ func SummarizeSession(ctx context.Context, opts Options) (*SessionSummary, error
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if len(opts.Outputs) == 0 {
 		return nil, errors.New("no outputs provided")
 	}
@@ -106,8 +109,11 @@ func SummarizeSession(ctx context.Context, opts Options) (*SessionSummary, error
 
 	// Enrich with git state if requested
 	if opts.IncludeGitDiff && opts.ProjectDir != "" {
-		gitFiles := getGitFileChanges(opts.ProjectDir)
+		gitFiles := getGitFileChanges(ctx, opts.ProjectDir)
 		data.files = mergeFileChanges(data.files, gitFiles)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 
 	// Agent Mail thread summaries
@@ -1060,9 +1066,9 @@ func yamlMarshal(h *handoff.Handoff) ([]byte, error) {
 
 // getGitFileChanges retrieves file changes from git working directory.
 // Returns modified, untracked, and deleted files.
-func getGitFileChanges(projectDir string) []FileChange {
+func getGitFileChanges(ctx context.Context, projectDir string) []FileChange {
 	var changes []FileChange
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	// Get modified files from git diff

@@ -1531,6 +1531,7 @@ func savedSessionRestoreFixture(t *testing.T) string {
 	t.Setenv("NTM_SESSION_TEST_LOG", logPath)
 	t.Setenv("NTM_SESSION_TEST_FAIL_PANE", "")
 	t.Setenv("NTM_SESSION_TEST_PROBE_ERROR", "")
+	t.Setenv("NTM_SESSION_TEST_EXISTS", "1")
 	t.Setenv("NTM_SESSION_TEST_PANES", "2")
 	t.Setenv("NTM_SESSION_TEST_RECORD_DIR", dir)
 	t.Setenv("NTM_SESSION_TEST_CWD", dir)
@@ -1543,6 +1544,10 @@ case "$1" in
   has-session)
     if [ -n "$NTM_SESSION_TEST_PROBE_ERROR" ]; then
       echo 'permission denied opening tmux socket' >&2
+      exit 1
+    fi
+    if [ "$NTM_SESSION_TEST_EXISTS" != '1' ]; then
+      echo "can't find session" >&2
       exit 1
     fi ;;
   list-windows) echo 0 ;;
