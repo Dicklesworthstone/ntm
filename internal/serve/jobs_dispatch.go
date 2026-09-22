@@ -53,6 +53,9 @@ const jobExecutionTimeout = 2 * time.Hour
 // dispatchJob runs one allow-listed job to its real terminal state. It is the
 // production replacement for the deleted time.Sleep simulator.
 func (s *Server) dispatchJob(jobID string, req CreateJobRequest) {
+	// Admission already registered ownership. Every exit, including failure
+	// to acquire a worker fence, must release it AFTER all deferred writes.
+	defer s.jobStore.ClearCancel(jobID)
 	// Take the worker fence before looking at the row. Shutdown cancels even
 	// not-yet-started rows; a late dispatcher then exits without any writes.
 	release, err := s.fenceJobWorker(jobID)
@@ -62,13 +65,16 @@ func (s *Server) dispatchJob(jobID string, req CreateJobRequest) {
 	}
 	defer release()
 
-	ctx, cancel := context.WithTimeout(context.Background(), jobExecutionTimeout)
+	parent := req.executionContext
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, jobExecutionTimeout)
 	defer cancel()
 	// Register the cancel func so DELETE /api/v1/jobs/{id} stops the real
 	// work; the terminal-state guard in JobStore.Update keeps the cancelled
 	// status from being overwritten when this goroutine unwinds.
 	s.jobStore.SetCancel(jobID, cancel)
-	defer s.jobStore.ClearCancel(jobID)
 
 	// DELETE can mark the job cancelled before SetCancel registers its handle.
 	// Publish the handle first, then check the row: an earlier cancellation is
@@ -156,6 +162,7 @@ func (s *Server) dispatchJob(jobID string, req CreateJobRequest) {
 // executeJobRequest is the one execution switch, shared by ordinary dispatch
 // and first-time durable operations. A replay never reaches this function.
 func (s *Server) executeJobRequest(ctx context.Context, req CreateJobRequest) (map[string]interface{}, error) {
+	s = s.jobExecutionServer(req)
 	params, err := jobExecutionParams(req)
 	if err != nil {
 		return nil, err

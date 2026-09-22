@@ -85,7 +85,8 @@ type Server struct {
 	idempotencyStore *IdempotencyStore
 
 	// Job management
-	jobStore *JobStore
+	jobStore    *JobStore
+	jobExecutor jobExecutor
 
 	// Chi router for /api/v1
 	router chi.Router
@@ -236,6 +237,11 @@ type Config struct {
 	// AuditMiddleware comment in buildRouter describes. Ownership of the
 	// contents transfers to New, which deep-copies before storing.
 	Redaction *RedactionConfig
+
+	// Async job limits. Zero selects the default; negative values are invalid.
+	// These limits are fixed for the server lifetime, including after Stop.
+	JobConcurrency   int
+	JobQueueCapacity int
 }
 
 const (
@@ -467,6 +473,9 @@ type Job struct {
 	Error     string                 `json:"error,omitempty"`
 	CreatedAt string                 `json:"created_at"`
 	UpdatedAt string                 `json:"updated_at"`
+
+	// Admission-time namespace for queued pipeline execution and recovery.
+	ProjectDir string `json:"project_dir,omitempty"`
 }
 
 // JobStatus represents the state of a job.
@@ -499,8 +508,13 @@ func NewJobStore() *JobStore {
 // cancel actually stops the underlying work, not just the bookkeeping row.
 func (s *JobStore) SetCancel(id string, cancel context.CancelFunc) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.cancels[id] = cancel
+	job := s.jobs[id]
+	stopped := job == nil || job.Status == JobStatusCancelled || job.Status == JobStatusCompleted || job.Status == JobStatusFailed
+	s.mu.Unlock()
+	if stopped && cancel != nil {
+		cancel()
+	}
 }
 
 // ClearCancel drops the registered cancel func once dispatch has finished.
@@ -525,8 +539,9 @@ func (s *JobStore) Cancel(id string) {
 // failed / cancelled) jobs. Pending and running jobs are never evicted.
 const maxRetainedJobs = 1000
 
-// Create creates a new job.
-func (s *JobStore) Create(jobType string) *Job {
+// Create installs optional execution ownership atomically with the pending row.
+// Terminal rows with live owners cannot be evicted before their final writes.
+func (s *JobStore) Create(jobType string, ownership ...jobOwnership) *Job {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.evictTerminalLocked(maxRetainedJobs - 1)
@@ -538,6 +553,12 @@ func (s *JobStore) Create(jobType string) *Job {
 		Status:    JobStatusPending,
 		CreatedAt: now,
 		UpdatedAt: now,
+	}
+	if len(ownership) > 0 {
+		job.ProjectDir = ownership[0].projectDir
+		if ownership[0].cancel != nil {
+			s.cancels[id] = ownership[0].cancel
+		}
 	}
 	s.jobs[id] = job
 	return s.cloneJob(job)
@@ -618,6 +639,11 @@ func (s *JobStore) evictTerminalLocked(limit int) {
 	type victim struct{ id, createdAt string }
 	terminal := make([]victim, 0, len(s.jobs))
 	for id, job := range s.jobs {
+		// Cancellation is not proof of worker completion. Retain its row and
+		// handle until the final checkpoint and worker fence are released.
+		if _, owned := s.cancels[id]; owned {
+			continue
+		}
 		switch job.Status {
 		case JobStatusCompleted, JobStatusFailed, JobStatusCancelled:
 			terminal = append(terminal, victim{id: id, createdAt: job.CreatedAt})
@@ -1110,6 +1136,9 @@ func applyDefaults(cfg *Config) {
 // ValidateConfig checks server configuration for security and completeness.
 func ValidateConfig(cfg Config) error {
 	applyDefaults(&cfg)
+	if err := validateJobLimits(cfg.JobConcurrency, cfg.JobQueueCapacity); err != nil {
+		return err
+	}
 
 	mode, err := ParseAuthMode(string(cfg.Auth.Mode))
 	if err != nil {
@@ -1164,6 +1193,7 @@ func New(cfg Config) *Server {
 		jwksCache:          newJWKSCache(cfg.Auth.OIDC.CacheTTL),
 		idempotencyStore:   NewIdempotencyStore(24 * time.Hour),
 		jobStore:           NewJobStore(),
+		jobExecutor:        jobExecutor{maxConcurrent: cfg.JobConcurrency, maxQueued: cfg.JobQueueCapacity},
 		wsHub:              NewWSHub(),
 		spawnAgents: func(ctx context.Context, opts robot.SpawnOptions) (*robot.SpawnOutput, error) {
 			return robot.GetSpawn(ctx, opts, nil)
@@ -1462,6 +1492,14 @@ func (s *Server) Start(ctx context.Context) error {
 
 	// Cleanup pane streaming on shutdown
 	defer s.streamManager.StopAll()
+	// Keep output consumers alive until accepted workers have checkpointed.
+	defer func() {
+		drainCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := s.drainJobWorkers(drainCtx); err != nil {
+			slog.Warn("job workers still shutting down", "error", err)
+		}
+	}()
 
 	// Subscribe to events for SSE and WebSocket broadcasting
 	if s.eventBus != nil {
@@ -1515,6 +1553,7 @@ func (s *Server) Start(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
 		log.Println("Shutting down server...")
+		s.jobExecutor.closeAdmission()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		return s.server.Shutdown(shutdownCtx)
@@ -1561,6 +1600,10 @@ func (s *Server) ensureWSEventStore() {
 }
 
 func (s *Server) validate() error {
+	limits := s.jobExecutor.snapshot()
+	if err := validateJobLimits(limits.MaxConcurrent, limits.QueueCapacity); err != nil {
+		return err
+	}
 	cfg := Config{
 		Host:           s.host,
 		Port:           s.port,
@@ -4477,8 +4520,9 @@ func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
-		"jobs":  jobs,
-		"count": len(jobs),
+		"jobs":      jobs,
+		"count":     len(jobs),
+		"execution": s.jobExecutor.snapshot(),
 	}, reqID)
 }
 
@@ -4487,15 +4531,19 @@ type CreateJobRequest struct {
 	Type    string                 `json:"type"`
 	Params  map[string]interface{} `json:"params,omitempty"`
 	Session string                 `json:"session,omitempty"`
+
+	// Internal service ownership; never accepted from JSON or fingerprinted.
+	executionContext    context.Context
+	executionProjectDir string
 }
 
 // handleCreateJob handles POST /api/v1/jobs.
 func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
 
-	var req CreateJobRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", nil, reqID)
+	req, err := decodeCreateJobRequest(r.Body)
+	if err != nil {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body: "+err.Error(), nil, reqID)
 		return
 	}
 
@@ -4515,10 +4563,23 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	job := s.jobStore.Create(req.Type)
-
-	// Start real job execution in background
-	go s.dispatchJob(job.ID, req)
+	job, err := s.submitJob(r.Context(), req)
+	if err != nil {
+		code, status := ErrCodeServiceUnavail, http.StatusServiceUnavailable
+		if errors.Is(err, errInvalidJobRequest) {
+			code, status = ErrCodeBadRequest, http.StatusBadRequest
+		}
+		if errors.Is(err, errJobQueueFull) {
+			w.Header().Set("Retry-After", "1")
+		}
+		details := map[string]interface{}{"execution": s.jobExecutor.snapshot()}
+		if job != nil {
+			details["job"] = job
+		}
+		writeErrorResponse(w, status, code, err.Error(), details, reqID)
+		return
+	}
+	w.Header().Set("Location", "/api/v1/jobs/"+job.ID)
 
 	writeSuccessResponse(w, http.StatusAccepted, map[string]interface{}{
 		"job": job,
@@ -4546,27 +4607,29 @@ func (s *Server) handleCancelJob(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
 	jobID := chi.URLParam(r, "id")
 
-	job := s.jobStore.Get(jobID)
-	if job == nil {
+	job, err := s.cancelJob(jobID)
+	if errors.Is(err, errJobNotFound) {
 		writeErrorResponse(w, http.StatusNotFound, ErrCodeNotFound, "job not found", nil, reqID)
 		return
 	}
 
-	// Only allow cancelling pending or running jobs
-	if job.Status != JobStatusPending && job.Status != JobStatusRunning {
+	if errors.Is(err, errJobNotCancellable) {
 		writeErrorResponse(w, http.StatusConflict, ErrCodeConflict, "job cannot be cancelled", map[string]interface{}{
 			"status": job.Status,
 		}, reqID)
 		return
 	}
 
-	s.jobStore.Update(jobID, JobStatusCancelled, job.Progress, nil, "cancelled by user")
-	// Stop the real work, not just the bookkeeping: cancel the dispatch
-	// goroutine's context (no-op for jobs that already finished).
-	s.jobStore.Cancel(jobID)
+	if err != nil {
+		writeErrorResponse(w, http.StatusServiceUnavailable, ErrCodeServiceUnavail,
+			"cancellation signalled but checkpoint failed: "+err.Error(), map[string]interface{}{
+				"job": job, "cancellation_requested": true,
+			}, reqID)
+		return
+	}
 
 	writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
-		"job": s.jobStore.Get(jobID),
+		"job": job,
 	}, reqID)
 }
 
@@ -6674,6 +6737,13 @@ func parseCSVParam(value string) []string {
 
 // Stop cleans up resources used by the Server.
 func (s *Server) Stop() {
+	if s.jobStore != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := s.drainJobWorkers(ctx); err != nil {
+			slog.Warn("job workers still shutting down", "error", err)
+		}
+		cancel()
+	}
 	if s.idempotencyStore != nil {
 		s.idempotencyStore.Stop()
 	}

@@ -57,6 +57,8 @@ Examples:
 
 	cmd.Flags().StringVar(&opts.Host, "host", opts.Host, "HTTP bind host (default 127.0.0.1)")
 	cmd.Flags().IntVar(&opts.Port, "port", opts.Port, "HTTP server port")
+	cmd.Flags().IntVar(&opts.JobConcurrency, "job-concurrency", serve.DefaultJobConcurrency, "Maximum concurrent async jobs")
+	cmd.Flags().IntVar(&opts.JobQueueCapacity, "job-queue-capacity", serve.DefaultJobQueueCapacity, "Maximum waiting async jobs")
 	cmd.Flags().StringVar(&opts.AuthMode, "auth-mode", opts.AuthMode, "Auth mode: local|api_key|oidc|mtls")
 	cmd.Flags().StringVar(&opts.APIKey, "api-key", "", "API key for api_key auth mode")
 	cmd.Flags().StringVar(&opts.OIDCIssuer, "oidc-issuer", "", "OIDC issuer URL for oidc auth mode")
@@ -99,6 +101,8 @@ Examples:
 
 	cmd.Flags().StringVar(&opts.Host, "host", opts.Host, "HTTP bind host (default 127.0.0.1)")
 	cmd.Flags().IntVar(&opts.Port, "port", opts.Port, "HTTP server port")
+	cmd.Flags().IntVar(&opts.JobConcurrency, "job-concurrency", serve.DefaultJobConcurrency, "Maximum concurrent async jobs")
+	cmd.Flags().IntVar(&opts.JobQueueCapacity, "job-queue-capacity", serve.DefaultJobQueueCapacity, "Maximum waiting async jobs")
 	cmd.Flags().StringVar(&opts.AuthMode, "auth-mode", opts.AuthMode, "Auth mode: local|api_key|oidc|mtls")
 	cmd.Flags().StringVar(&opts.APIKey, "api-key", "", "API key for api_key auth mode")
 
@@ -106,6 +110,9 @@ Examples:
 }
 
 type serveOptions struct {
+	JobConcurrency   int
+	JobQueueCapacity int
+
 	Web              bool
 	Host             string
 	Port             int
@@ -207,6 +214,9 @@ func runServe(opts serveOptions) error {
 	}
 
 	serverCfg := serve.Config{
+		JobConcurrency:   opts.JobConcurrency,
+		JobQueueCapacity: opts.JobQueueCapacity,
+
 		Host:           opts.Host,
 		Port:           opts.Port,
 		PublicBaseURL:  opts.PublicBaseURL,

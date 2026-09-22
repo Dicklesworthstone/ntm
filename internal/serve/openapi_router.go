@@ -368,8 +368,10 @@ func buildRouterOperation(rt RouterRoute, components *OpenAPIComponents) *Operat
 		op.Responses["202"] = accepted
 		delete(op.Responses, "200")
 		op.Responses["501"] = errorResponse("Job type not implemented")
+		op.Responses["503"] = errorResponse("Job admission closed, queue full, or receipt could not be checkpointed")
 	case "handleCancelJob":
 		op.Responses["409"] = errorResponse("Job is not cancellable in its current state")
+		op.Responses["503"] = errorResponse("Cancellation signalled but its receipt could not be checkpointed")
 	}
 
 	if rt.Method == "POST" || rt.Method == "PUT" || rt.Method == "PATCH" {

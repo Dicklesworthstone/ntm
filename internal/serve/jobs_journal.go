@@ -322,7 +322,7 @@ func (s *Server) RestoreJobHistory() (func(context.Context) error, error) {
 		return nil, err
 	}
 	if dir == "" {
-		return func(context.Context) error { return nil }, nil
+		return s.drainJobWorkers, nil
 	}
 	journal, err := openJobJournal(dir)
 	if err != nil {
@@ -419,14 +419,23 @@ func (s *Server) recordJobJournalError(id string, err error) {
 	}
 }
 
-// drainJobWorkers cancels execution, not just rows. ClearCancel is deferred
-// until AFTER the final journal write. A not-yet-started dispatcher observes
-// its cancelled row and returns without acting or writing after ownership ends.
+// drainJobWorkers closes admission before cancelling execution. Preparation
+// and finalizing workers remain owned even when no runnable row remains.
 func (s *Server) drainJobWorkers(ctx context.Context) error {
+	s.jobExecutor.closeAdmission()
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		s.jobStore.mu.Lock()
+		// A slow fsync holds the store lock. Do not let that mutex defeat
+		// the caller's shutdown deadline; executor cancellation is already sent.
+		if !s.jobStore.mu.TryLock() {
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("job checkpoint still draining: %w", ctx.Err())
+			case <-ticker.C:
+				continue
+			}
+		}
 		for _, job := range s.jobStore.jobs {
 			if job.Status == JobStatusPending || job.Status == JobStatusRunning {
 				job.Status = JobStatusCancelled
@@ -442,7 +451,7 @@ func (s *Server) drainJobWorkers(ctx context.Context) error {
 		for _, cancel := range cancels {
 			cancel()
 		}
-		if len(cancels) == 0 {
+		if len(cancels) == 0 && s.jobExecutor.idle() {
 			return nil
 		}
 		select {
