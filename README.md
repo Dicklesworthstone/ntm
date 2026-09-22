@@ -518,6 +518,7 @@ for analysis or resumption.
 ntm checkpoint save payments -m "pre-migration"
 ntm checkpoint list payments
 ntm checkpoint restore payments
+ntm checkpoint restore payments last --as payments-recovered --directory /path/to/recovery-worktree
 
 ntm timeline list
 ntm timeline show <session-id>
@@ -526,6 +527,14 @@ ntm audit show payments
 ntm conflicts payments
 ntm resume payments
 ```
+
+Checkpoint restoration accepts `--as` to recover into a different tmux session
+without replacing the source session or rewriting its checkpoint. The REST
+restore endpoint accepts the same option as `target_session`. A separate session
+still uses the checkpoint's working directory unless `--directory` (REST:
+`custom_directory`) selects another working tree. Restores honor cancellation;
+JSON responses retain the last restore stage, pane count, warnings, and
+interruption status so partially restored sessions can be inspected before retrying.
 
 ## Robot Mode and Local API
 

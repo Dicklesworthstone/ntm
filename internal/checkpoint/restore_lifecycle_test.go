@@ -3,6 +3,7 @@ package checkpoint
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -22,6 +23,10 @@ func restoreLifecycleFixture(t *testing.T) (string, string) {
 	t.Setenv("NTM_RESTORE_TEST_LOG", log)
 	t.Setenv("NTM_RESTORE_TEST_READY", ready)
 	t.Setenv("NTM_RESTORE_TEST_COUNT", filepath.Join(dir, "count"))
+	t.Setenv("NTM_RESTORE_TEST_LAUNCHED", filepath.Join(dir, "launched"))
+	t.Setenv("NTM_RESTORE_TEST_PAYLOAD", filepath.Join(dir, "payload"))
+	t.Setenv("NTM_RESTORE_TEST_DELIVERIES", filepath.Join(dir, "deliveries"))
+	t.Setenv("NTM_RESTORE_TEST_INJECT_STATE", "")
 	t.Setenv("NTM_RESTORE_TEST_BLOCK", "")
 	t.Setenv("NTM_RESTORE_TEST_FAIL", "")
 	t.Setenv("NTM_RESTORE_TEST_EXISTS", "")
@@ -49,12 +54,34 @@ case "$1" in
   list-windows) echo 0 ;;
   list-panes)
     n=$(cat "$NTM_RESTORE_TEST_COUNT")
+    state=''
+    if [ -f "$NTM_RESTORE_TEST_LAUNCHED" ]; then
+      state="$NTM_RESTORE_TEST_INJECT_STATE"
+    fi
+    if [ "$state" = read-error ]; then echo 'fixture read failed' >&2; exit 2; fi
     i=0
     while [ "$i" -lt "$n" ]; do
-      printf '%%%s_NTM_SEP_%s_NTM_SEP__NTM_SEP_claude_NTM_SEP_80_NTM_SEP_24_NTM_SEP_1_NTM_SEP_0_NTM_SEP_0_NTM_SEP_cc_NTM_SEP__NTM_SEP__NTM_SEP_0\n' "$i" "$i"
+      id="$i"
+      index="$i"
+      command=claude
+      type=cc
+      dead=0
+      case "$state" in
+        shell) command=bash ;;
+        dead) dead=1 ;;
+        empty) command='' ;;
+        starting) command=tmux ;;
+        retagged) type=cod ;;
+        missing) i=$((i + 1)); continue ;;
+        replacement) id=$((i + 99)) ;;
+        reordered) index=$((n - i - 1)) ;;
+      esac
+      printf '%%%s_NTM_SEP_%s_NTM_SEP__NTM_SEP_%s_NTM_SEP_80_NTM_SEP_24_NTM_SEP_1_NTM_SEP_0_NTM_SEP_0_NTM_SEP_%s_NTM_SEP__NTM_SEP__NTM_SEP_%s\n' "$id" "$index" "$command" "$type" "$dead"
       i=$((i + 1))
     done ;;
-  display-message) echo claude ;;
+  display-message) echo launched > "$NTM_RESTORE_TEST_LAUNCHED"; echo claude ;;
+  load-buffer) cat >> "$NTM_RESTORE_TEST_PAYLOAD" ;;
+  paste-buffer|send-keys) printf '%s\n' "$*" >> "$NTM_RESTORE_TEST_DELIVERIES" ;;
 esac
 `
 	if err := os.WriteFile(bin, []byte(script), 0700); err != nil {
@@ -169,14 +196,21 @@ func TestRestoreLifecycleReportsPartialFailure(t *testing.T) {
 	for _, tc := range []struct {
 		operation, stage string
 		panes            int
+		titleIndex       int
 	}{
-		{"split-window", "restoring_layout", 1},
-		{"respawn-pane", "starting_agents", 2},
+		{"split-window", "restoring_layout", 1, -1},
+		{"respawn-pane", "starting_agents", 2, -1},
+		{"select-pane", "creating_session", 1, 0},
+		{"select-pane", "restoring_layout", 2, 1},
 	} {
-		t.Run(tc.operation, func(t *testing.T) {
+		t.Run(tc.stage+"/"+tc.operation, func(t *testing.T) {
 			log, _ := restoreLifecycleFixture(t)
 			t.Setenv("NTM_RESTORE_TEST_FAIL", tc.operation)
-			out, err := NewRestorer().RestoreFromCheckpointContext(context.Background(), lifecycleCheckpoint(t, 2), RestoreOptions{SkipGitCheck: true, InjectContext: true})
+			cp := lifecycleCheckpoint(t, 2)
+			if tc.titleIndex >= 0 {
+				cp.Session.Panes[tc.titleIndex].Title = "restore_lifecycle__cc_1"
+			}
+			out, err := NewRestorer().RestoreFromCheckpointContext(context.Background(), cp, RestoreOptions{SkipGitCheck: true, InjectContext: true})
 			if err == nil || out == nil || out.PanesRestored != tc.panes || out.Stage != tc.stage {
 				t.Fatalf("partial failure was hidden: %+v, %v", out, err)
 			}
@@ -232,4 +266,148 @@ func TestWaitForRestoreInterruptsDelay(t *testing.T) {
 	if err := waitForRestore(context.Background(), 0); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func saveLifecycleScrollback(t *testing.T, cp *Checkpoint, contents []string) *Storage {
+	t.Helper()
+	cp.ID = "context-safety"
+	cp.Version = CurrentVersion
+	cp.CreatedAt = time.Now()
+	cp.PaneCount = len(cp.Session.Panes)
+	storage := NewStorageWithDir(t.TempDir())
+	if err := storage.Save(cp); err != nil {
+		t.Fatal(err)
+	}
+	for i, content := range contents {
+		cp.Session.Panes[i].ID = fmt.Sprintf("%%%d", i+100)
+		path, err := storage.SaveScrollback(cp.SessionName, cp.ID, cp.Session.Panes[i].ID, content)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cp.Session.Panes[i].ScrollbackFile = path
+	}
+	return storage
+}
+
+func TestRestoreLifecycleInjectsContextOnlyIntoAgents(t *testing.T) {
+	log, _ := restoreLifecycleFixture(t)
+	cp := lifecycleCheckpoint(t, 4)
+	cp.Session.Panes[0].AgentType = "user"
+	cp.Session.Panes[0].Command = "bash"
+	cp.Session.Panes[2].AgentType = "unknown"
+	cp.Session.Panes[2].Command = "claude"
+	cp.Session.Panes[3].AgentType = "unrecognized-type"
+	cp.Session.Panes[3].Command = "claude"
+	storage := saveLifecycleScrollback(t, cp, []string{
+		"printf 'shell transcript must never run'\n",
+		"Only this agent context should be delivered",
+		"unknown pane transcript must never be submitted",
+		"unrecognized pane transcript must never be submitted",
+	})
+	out, err := NewRestorerWithStorage(storage).RestoreFromCheckpointContext(context.Background(), cp, RestoreOptions{
+		SkipGitCheck: true, InjectContext: true,
+	})
+	if err != nil || out == nil || out.Stage != "completed" || !out.ContextInjected || out.ContextPanesInjected != 1 {
+		t.Fatalf("mixed pane restore failed: %+v, %v", out, err)
+	}
+	payload, err := os.ReadFile(os.Getenv("NTM_RESTORE_TEST_PAYLOAD"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(payload), "Only this agent context") || strings.Contains(string(payload), "transcript") {
+		t.Fatalf("non-agent scrollback reached transport: %s", payload)
+	}
+	deliveries, err := os.ReadFile(os.Getenv("NTM_RESTORE_TEST_DELIVERIES"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, delivery := range strings.Split(strings.TrimSpace(string(deliveries)), "\n") {
+		if !strings.Contains(delivery, "-t %1") {
+			t.Fatalf("context was sent to a non-agent pane: %s", deliveries)
+		}
+	}
+	calls, _ := os.ReadFile(log)
+	if strings.Count(string(calls), "load-buffer") != 1 || strings.Count(string(calls), "paste-buffer") != 1 {
+		t.Fatalf("expected exactly one context delivery: %s", calls)
+	}
+}
+
+func TestRestoreLifecycleRechecksContextRecipient(t *testing.T) {
+	for _, state := range []string{"shell", "dead", "empty", "starting", "retagged", "missing", "replacement", "read-error"} {
+		t.Run(state, func(t *testing.T) {
+			log, _ := restoreLifecycleFixture(t)
+			t.Setenv("NTM_RESTORE_TEST_INJECT_STATE", state)
+			cp := lifecycleCheckpoint(t, 1)
+			storage := saveLifecycleScrollback(t, cp, []string{"agent context"})
+			out, err := NewRestorerWithStorage(storage).RestoreFromCheckpointContext(context.Background(), cp, RestoreOptions{
+				SkipGitCheck: true, InjectContext: true,
+			})
+			if err == nil || out == nil || out.Stage != "injecting_context" || out.ContextInjected || out.ContextPanesInjected != 0 {
+				t.Fatalf("unsafe/unavailable recipient was accepted: %+v, %v", out, err)
+			}
+			calls, _ := os.ReadFile(log)
+			if strings.Contains(string(calls), "load-buffer") || strings.Contains(string(calls), "paste-buffer") || strings.Contains(string(calls), "send-keys") {
+				t.Fatalf("unsafe/unavailable pane received context: %s", calls)
+			}
+		})
+	}
+}
+
+func TestRestoreLifecycleContextFollowsCreatedPaneIDs(t *testing.T) {
+	restoreLifecycleFixture(t)
+	t.Setenv("NTM_RESTORE_TEST_INJECT_STATE", "reordered")
+	cp := lifecycleCheckpoint(t, 2)
+	storage := saveLifecycleScrollback(t, cp, []string{"first agent context", "second agent context"})
+	out, err := NewRestorerWithStorage(storage).RestoreFromCheckpointContext(context.Background(), cp, RestoreOptions{
+		SkipGitCheck: true, InjectContext: true,
+	})
+	if err != nil || out == nil || out.ContextPanesInjected != 2 {
+		t.Fatalf("restore with reordered panes failed: %+v, %v", out, err)
+	}
+	deliveries, err := os.ReadFile(os.Getenv("NTM_RESTORE_TEST_DELIVERIES"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(deliveries)), "\n")
+	if len(lines) != 4 || !strings.Contains(lines[0], "-t %0") || !strings.Contains(lines[2], "-t %1") {
+		t.Fatalf("reordered pane indexes redirected saved context: %s", deliveries)
+	}
+}
+
+func TestRestoreLifecycleReportsOnlyCompletedContextDeliveries(t *testing.T) {
+	t.Run("no captured agent context", func(t *testing.T) {
+		log, _ := restoreLifecycleFixture(t)
+		cp := lifecycleCheckpoint(t, 1)
+		out, err := NewRestorer().RestoreFromCheckpointContext(context.Background(), cp, RestoreOptions{SkipGitCheck: true, InjectContext: true})
+		if err != nil || out == nil || out.ContextInjected || out.ContextPanesInjected != 0 {
+			t.Fatalf("restore claimed a nonexistent delivery: %+v, %v", out, err)
+		}
+		calls, _ := os.ReadFile(log)
+		if strings.Contains(string(calls), "load-buffer") {
+			t.Fatalf("restore sent uncaptured context: %s", calls)
+		}
+	})
+	t.Run("dry run", func(t *testing.T) {
+		restoreLifecycleFixture(t)
+		cp := lifecycleCheckpoint(t, 1)
+		storage := saveLifecycleScrollback(t, cp, []string{"agent context"})
+		out, err := NewRestorerWithStorage(storage).RestoreFromCheckpointContext(context.Background(), cp, RestoreOptions{DryRun: true, InjectContext: true})
+		if err != nil || out == nil || out.ContextInjected || out.ContextPanesInjected != 0 {
+			t.Fatalf("dry run claimed delivery: %+v, %v", out, err)
+		}
+	})
+	t.Run("partial failure", func(t *testing.T) {
+		restoreLifecycleFixture(t)
+		cp := lifecycleCheckpoint(t, 3)
+		storage := saveLifecycleScrollback(t, cp, []string{"delivered agent context"})
+		cp.Session.Panes[1].ScrollbackFile = "panes/missing-first.txt"
+		cp.Session.Panes[2].ScrollbackFile = "panes/missing-second.txt"
+		out, err := NewRestorerWithStorage(storage).RestoreFromCheckpointContext(context.Background(), cp, RestoreOptions{SkipGitCheck: true, InjectContext: true})
+		if err == nil || out == nil || !out.ContextInjected || out.ContextPanesInjected != 1 || out.Stage != "injecting_context" {
+			t.Fatalf("partial delivery was lost: %+v, %v", out, err)
+		}
+		if !strings.Contains(err.Error(), "checkpoint pane 1") || !strings.Contains(err.Error(), "checkpoint pane 2") {
+			t.Fatalf("restore discarded individual delivery failures: %v", err)
+		}
+	})
 }

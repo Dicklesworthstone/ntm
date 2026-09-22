@@ -669,6 +669,7 @@ func newCheckpointRestoreCmd() *cobra.Command {
 		injectContext   bool
 		dryRun          bool
 		customDirectory string
+		targetSession   string
 		scrollbackLines int
 	)
 
@@ -679,6 +680,11 @@ func newCheckpointRestoreCmd() *cobra.Command {
 
 If checkpoint-id is omitted, the most recent checkpoint is restored.
 
+Use --as to restore into a different tmux session while retaining the original
+session and checkpoint. This isolates panes, not files; use --directory to
+select a separate working tree. Cancellation leaves partial progress available
+for inspection and stops further restoration.
+
 The checkpoint-id can be:
 - A full checkpoint ID (e.g. 20251210-143052)
 - A partial ID prefix or checkpoint name
@@ -688,6 +694,7 @@ Examples:
   ntm checkpoint restore myproject
   ntm checkpoint restore myproject 20251210-143052
   ntm checkpoint restore myproject ~2 --dry-run
+  ntm checkpoint restore myproject last --as myproject-recovered
   ntm checkpoint restore myproject --inject-context
   ntm checkpoint restore myproject last --force`,
 		Args: cobra.RangeArgs(1, 2),
@@ -700,6 +707,11 @@ Examples:
 			}
 			if scrollbackLines < 0 {
 				return fmt.Errorf("--scrollback must be >= 0")
+			}
+			if targetSession != "" {
+				if err := tmux.ValidateSessionName(targetSession); err != nil {
+					return fmt.Errorf("invalid --as session: %w", err)
+				}
 			}
 
 			sessionName, err := resolveCheckpointStorageSessionArg(args[0])
@@ -761,6 +773,7 @@ Examples:
 			}
 
 			opts := checkpoint.RestoreOptions{
+				TargetSession:   targetSession,
 				Force:           force,
 				SkipGitCheck:    skipGitCheck,
 				InjectContext:   injectContext,
@@ -770,36 +783,57 @@ Examples:
 			}
 
 			restorer := checkpoint.NewRestorer()
-			result, err := restorer.RestoreFromCheckpoint(cp, opts)
+			result, err := restorer.RestoreFromCheckpointContext(cmd.Context(), cp, opts)
 			if err != nil {
-				if jsonOutput {
-					cause := fmt.Errorf("restoring checkpoint: %w", err)
-					return emitJSONFailureEnvelopeWithCause(map[string]interface{}{
-						"success":        false,
-						"session":        sessionName,
-						"checkpoint_ref": checkpointRef,
-						"checkpoint_id":  cp.ID,
-						"error":          err.Error(),
-					}, cause)
+				cause := fmt.Errorf("restoring checkpoint: %w", err)
+				payload := map[string]interface{}{
+					"success":        false,
+					"session":        sessionName,
+					"source_session": sessionName,
+					"checkpoint_ref": checkpointRef,
+					"checkpoint_id":  cp.ID,
+					"error":          err.Error(),
 				}
-				return fmt.Errorf("restoring checkpoint: %w", err)
+				if targetSession != "" {
+					payload["session"] = targetSession
+				}
+				if result != nil {
+					payload["session"] = result.SessionName
+					payload["panes_restored"] = result.PanesRestored
+					payload["context_injected"] = result.ContextInjected
+					payload["context_panes_injected"] = result.ContextPanesInjected
+					payload["stage"] = result.Stage
+					payload["interrupted"] = result.Interrupted
+					payload["warnings"] = result.Warnings
+					payload["dry_run"] = result.DryRun
+					cause = fmt.Errorf("%w (session %q, stage %s, %d panes restored; inspect the session before retrying)",
+						cause, result.SessionName, result.Stage, result.PanesRestored)
+				}
+				if jsonOutput {
+					return emitJSONFailureEnvelopeWithCause(payload, cause)
+				}
+				return cause
 			}
 
 			if jsonOutput {
 				return json.NewEncoder(os.Stdout).Encode(map[string]interface{}{
-					"success":           true,
-					"session":           result.SessionName,
-					"checkpoint_id":     cp.ID,
-					"checkpoint_ref":    checkpointRef,
-					"created_at":        cp.CreatedAt,
-					"description":       cp.Description,
-					"panes_restored":    result.PanesRestored,
-					"context_injected":  result.ContextInjected,
-					"dry_run":           result.DryRun,
-					"warnings":          result.Warnings,
-					"assignments_count": len(result.Assignments),
-					"assignments":       result.Assignments,
-					"bv_summary":        result.BVSummary,
+					"success":                true,
+					"session":                result.SessionName,
+					"source_session":         result.SourceSession,
+					"checkpoint_id":          cp.ID,
+					"checkpoint_ref":         checkpointRef,
+					"created_at":             cp.CreatedAt,
+					"description":            cp.Description,
+					"panes_restored":         result.PanesRestored,
+					"context_injected":       result.ContextInjected,
+					"context_panes_injected": result.ContextPanesInjected,
+					"dry_run":                result.DryRun,
+					"stage":                  result.Stage,
+					"interrupted":            result.Interrupted,
+					"warnings":               result.Warnings,
+					"assignments_count":      len(result.Assignments),
+					"assignments":            result.Assignments,
+					"bv_summary":             result.BVSummary,
 				})
 			}
 
@@ -881,6 +915,7 @@ Examples:
 	cmd.Flags().BoolVar(&skipGitCheck, "skip-git-check", false, "skip git branch and commit mismatch warnings")
 	cmd.Flags().BoolVar(&injectContext, "inject-context", false, "inject captured scrollback into restored panes")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "preview the restore without making changes")
+	cmd.Flags().StringVar(&targetSession, "as", "", "restore into another tmux session, retaining the source session and checkpoint")
 	cmd.Flags().StringVar(&customDirectory, "directory", "", "override the checkpoint working directory")
 	cmd.Flags().IntVar(&scrollbackLines, "scrollback", 0, "lines of captured scrollback to inject (0 = all captured)")
 

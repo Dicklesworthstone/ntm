@@ -2,6 +2,7 @@
 package serve
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -68,6 +69,7 @@ type CheckpointSessionSummary struct {
 
 // RestoreCheckpointRequest is the payload for restoring a checkpoint.
 type RestoreCheckpointRequest struct {
+	TargetSession   string `json:"target_session,omitempty"`
 	Force           bool   `json:"force,omitempty"`
 	SkipGitCheck    bool   `json:"skip_git_check,omitempty"`
 	InjectContext   bool   `json:"inject_context,omitempty"`
@@ -78,11 +80,15 @@ type RestoreCheckpointRequest struct {
 
 // RestoreCheckpointResponse is the response after restoring a checkpoint.
 type RestoreCheckpointResponse struct {
-	SessionName     string   `json:"session_name"`
-	PanesRestored   int      `json:"panes_restored"`
-	ContextInjected bool     `json:"context_injected"`
-	DryRun          bool     `json:"dry_run"`
-	Warnings        []string `json:"warnings,omitempty"`
+	SessionName          string   `json:"session_name"`
+	SourceSession        string   `json:"source_session"`
+	PanesRestored        int      `json:"panes_restored"`
+	ContextInjected      bool     `json:"context_injected"`
+	ContextPanesInjected int      `json:"context_panes_injected"`
+	DryRun               bool     `json:"dry_run"`
+	Warnings             []string `json:"warnings,omitempty"`
+	Stage                string   `json:"stage"`
+	Interrupted          bool     `json:"interrupted"`
 }
 
 // VerifyCheckpointResponse is the response from checkpoint verification.
@@ -392,9 +398,28 @@ func (s *Server) handleRestoreCheckpoint(w http.ResponseWriter, r *http.Request)
 	reqID := requestIDFromContext(r.Context())
 
 	var req RestoreCheckpointRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil && err != io.EOF {
 		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest,
 			"invalid request body", nil, reqID)
+		return
+	}
+	if err := decoder.Decode(new(interface{})); err != io.EOF {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest,
+			"request body must contain one JSON object", nil, reqID)
+		return
+	}
+	if req.TargetSession != "" {
+		if err := tmux.ValidateSessionName(req.TargetSession); err != nil {
+			writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest,
+				"invalid target_session: "+err.Error(), nil, reqID)
+			return
+		}
+	}
+	if req.ScrollbackLines < 0 {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest,
+			"scrollback_lines must be non-negative", nil, reqID)
 		return
 	}
 
@@ -406,6 +431,7 @@ func (s *Server) handleRestoreCheckpoint(w http.ResponseWriter, r *http.Request)
 	}
 
 	opts := checkpoint.RestoreOptions{
+		TargetSession:   req.TargetSession,
 		Force:           req.Force,
 		SkipGitCheck:    req.SkipGitCheck,
 		InjectContext:   req.InjectContext,
@@ -414,14 +440,38 @@ func (s *Server) handleRestoreCheckpoint(w http.ResponseWriter, r *http.Request)
 		ScrollbackLines: req.ScrollbackLines,
 	}
 
-	result, err := restorer.RestoreFromCheckpoint(cp, opts)
+	result, err := restorer.RestoreFromCheckpointContext(r.Context(), cp, opts)
+	payload := map[string]interface{}{
+		"checkpoint_id":  cp.ID,
+		"source_session": sessionName,
+		"session_name":   sessionName,
+	}
+	if req.TargetSession != "" {
+		payload["session_name"] = req.TargetSession
+	}
+	if result != nil {
+		payload["session_name"] = result.SessionName
+		payload["panes_restored"] = result.PanesRestored
+		payload["context_injected"] = result.ContextInjected
+		payload["context_panes_injected"] = result.ContextPanesInjected
+		payload["dry_run"] = result.DryRun
+		payload["warnings"] = result.Warnings
+		payload["stage"] = result.Stage
+		payload["interrupted"] = result.Interrupted
+	}
 	if err != nil {
 		log.Printf("REST: checkpoint restore failed session=%s id=%s error=%v request_id=%s",
 			sessionName, checkpointID, err, reqID)
 
 		statusCode := http.StatusInternalServerError
 		errCode := ErrCodeInternalError
-		if errors.Is(err, checkpoint.ErrSessionExists) {
+		if errors.Is(err, context.DeadlineExceeded) {
+			statusCode = http.StatusGatewayTimeout
+			errCode = ErrCodeTimeout
+		} else if errors.Is(err, context.Canceled) {
+			statusCode = http.StatusRequestTimeout
+			errCode = "CANCELLED"
+		} else if errors.Is(err, checkpoint.ErrSessionExists) {
 			statusCode = http.StatusConflict
 			errCode = "SESSION_EXISTS"
 		} else if errors.Is(err, checkpoint.ErrDirectoryNotFound) || errors.Is(err, checkpoint.ErrWorkingDirInvalid) {
@@ -430,20 +480,14 @@ func (s *Server) handleRestoreCheckpoint(w http.ResponseWriter, r *http.Request)
 		}
 
 		writeErrorResponse(w, statusCode, errCode,
-			fmt.Sprintf("failed to restore checkpoint: %v", err), nil, reqID)
+			fmt.Sprintf("failed to restore checkpoint: %v", err), payload, reqID)
 		return
 	}
 
 	log.Printf("REST: checkpoint restored session=%s id=%s panes=%d dry_run=%v request_id=%s",
 		sessionName, checkpointID, result.PanesRestored, result.DryRun, reqID)
 
-	writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
-		"session_name":     result.SessionName,
-		"panes_restored":   result.PanesRestored,
-		"context_injected": result.ContextInjected,
-		"dry_run":          result.DryRun,
-		"warnings":         result.Warnings,
-	}, reqID)
+	writeSuccessResponse(w, http.StatusOK, payload, reqID)
 }
 
 // handleVerifyCheckpoint verifies checkpoint integrity.

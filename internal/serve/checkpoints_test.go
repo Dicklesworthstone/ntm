@@ -2,10 +2,12 @@ package serve
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,6 +15,129 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/checkpoint"
 )
+
+func restoreCheckpointHTTPFixture(t *testing.T, paneCount int) (*checkpoint.Checkpoint, string) {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	logPath := installFakeTmux(t)
+	cp := &checkpoint.Checkpoint{
+		Version: 1, ID: "cp-http-restore", Name: "recovery", SessionName: "restore-source",
+		WorkingDir: t.TempDir(), CreatedAt: time.Now(), PaneCount: paneCount,
+	}
+	for i := 0; i < paneCount; i++ {
+		cp.Session.Panes = append(cp.Session.Panes, checkpoint.PaneState{Index: i, AgentType: "user"})
+	}
+	if err := checkpoint.NewStorage().Save(cp); err != nil {
+		t.Fatal(err)
+	}
+	return cp, logPath
+}
+
+func checkpointRestoreRequest(ctx context.Context, cp *checkpoint.Checkpoint, body string) *http.Request {
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("sessionName", cp.SessionName)
+	rctx.URLParams.Add("checkpointId", cp.ID)
+	return httptest.NewRequest(http.MethodPost, "/restore", strings.NewReader(body)).WithContext(context.WithValue(ctx, chi.RouteCtxKey, rctx))
+}
+
+func TestRestoreCheckpointHTTP_TargetSessionPreservesSource(t *testing.T) {
+	cp, logPath := restoreCheckpointHTTPFixture(t, 1)
+	req := checkpointRestoreRequest(context.Background(), cp, `{"target_session":"restore-copy","skip_git_check":true}`)
+	rec := httptest.NewRecorder()
+	(&Server{}).handleRestoreCheckpoint(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var result map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result["session_name"] != "restore-copy" || result["source_session"] != cp.SessionName || result["panes_restored"] != float64(1) || result["interrupted"] != false {
+		t.Fatalf("incorrect restore response: %#v", result)
+	}
+	stored, err := checkpoint.NewStorage().Load(cp.SessionName, cp.ID)
+	if err != nil || stored.SessionName != cp.SessionName {
+		t.Fatalf("source checkpoint changed: %#v, %v", stored, err)
+	}
+	calls, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(calls), "new-session -d -s restore-copy") || strings.Contains(string(calls), "kill-session") {
+		t.Fatalf("wrong restore target: %s", calls)
+	}
+}
+
+func TestRestoreCheckpointHTTP_CancellationRetainsPartialProgress(t *testing.T) {
+	cp, logPath := restoreCheckpointHTTPFixture(t, 2)
+	t.Setenv("NTM_JOB_RESTORE_BLOCK", "split-window")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req := checkpointRestoreRequest(ctx, cp, `{"target_session":"restore-copy","skip_git_check":true}`)
+	rec := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		(&Server{}).handleRestoreCheckpoint(rec, req)
+	}()
+	deadline := time.After(5 * time.Second)
+	for {
+		if _, err := os.Stat(os.Getenv("NTM_JOB_RESTORE_READY")); err == nil {
+			break
+		}
+		select {
+		case <-done:
+			t.Fatalf("restore returned before blocking: %d %s", rec.Code, rec.Body.String())
+		case <-deadline:
+			cancel()
+			<-done
+			t.Fatal("restore did not reach split-window")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("cancelled request did not stop restore")
+	}
+	var result APIError
+	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if rec.Code != http.StatusRequestTimeout || result.Success || result.ErrorCode != "CANCELLED" || result.Details["session_name"] != "restore-copy" || result.Details["stage"] != "restoring_layout" || result.Details["panes_restored"] != float64(1) || result.Details["interrupted"] != true {
+		t.Fatalf("partial recovery evidence lost: %d %#v", rec.Code, result)
+	}
+	calls, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(calls), "kill-session") || strings.Contains(string(calls), "respawn-pane") {
+		t.Fatalf("cancellation caused further mutations: %s", calls)
+	}
+}
+
+func TestRestoreCheckpointHTTP_InvalidRequestsDoNotMutate(t *testing.T) {
+	cp, logPath := restoreCheckpointHTTPFixture(t, 1)
+	for _, body := range []string{
+		`{"target_session":"bad:name","force":true}`,
+		`{"target_sesion":"restore-copy","force":true}`,
+		`{"scrollback_lines":-1,"force":true}`,
+		`{"force":true} {"dry_run":true}`,
+	} {
+		t.Run(body, func(t *testing.T) {
+			req := checkpointRestoreRequest(context.Background(), cp, body)
+			rec := httptest.NewRecorder()
+			(&Server{}).handleRestoreCheckpoint(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+	if data, err := os.ReadFile(logPath); err == nil && len(data) != 0 {
+		t.Fatalf("invalid request reached tmux: %s", data)
+	}
+}
 
 func TestRollbackResponseToMap(t *testing.T) {
 

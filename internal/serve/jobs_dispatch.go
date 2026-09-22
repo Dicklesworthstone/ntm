@@ -583,14 +583,15 @@ func (s *Server) jobCheckpointRestore(ctx context.Context, params map[string]int
 	var payload map[string]interface{}
 	if result != nil {
 		payload = map[string]interface{}{
-			"session_name":     result.SessionName,
-			"source_session":   result.SourceSession,
-			"panes_restored":   result.PanesRestored,
-			"context_injected": result.ContextInjected,
-			"dry_run":          result.DryRun,
-			"warnings":         result.Warnings,
-			"stage":            result.Stage,
-			"interrupted":      result.Interrupted,
+			"session_name":           result.SessionName,
+			"source_session":         result.SourceSession,
+			"panes_restored":         result.PanesRestored,
+			"context_injected":       result.ContextInjected,
+			"context_panes_injected": result.ContextPanesInjected,
+			"dry_run":                result.DryRun,
+			"warnings":               result.Warnings,
+			"stage":                  result.Stage,
+			"interrupted":            result.Interrupted,
 		}
 	}
 	if err != nil {

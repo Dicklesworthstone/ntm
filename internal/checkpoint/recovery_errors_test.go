@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -522,17 +523,14 @@ func TestRestorer_RestoreFromCheckpoint_EmptySessionName(t *testing.T) {
 		},
 	}
 
-	// Empty session name may match tmux behavior (existing session check)
-	// With Force option and DryRun, it should proceed
+	// A dry run must reject the same invalid source identity as a real
+	// restore. Force authorizes replacement; it never weakens validation.
 	result, err := r.RestoreFromCheckpoint(cp, RestoreOptions{DryRun: true, Force: true})
-	if err != nil {
-		t.Fatalf("DryRun with empty session name and Force failed: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "invalid checkpoint source session") {
+		t.Fatalf("DryRun with an invalid source must fail validation: %v", err)
 	}
-	if result.SessionName != "" {
-		t.Errorf("SessionName should be empty, got %q", result.SessionName)
-	}
-	if result.PanesRestored != 1 {
-		t.Errorf("PanesRestored = %d, want 1", result.PanesRestored)
+	if result != nil {
+		t.Fatalf("invalid source produced a restore plan: %+v", result)
 	}
 }
 
