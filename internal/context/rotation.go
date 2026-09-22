@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/alerts"
 	"github.com/Dicklesworthstone/ntm/internal/config"
+	"github.com/Dicklesworthstone/ntm/internal/persona"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
@@ -167,6 +169,18 @@ func (s *DefaultPaneSpawner) SpawnAgent(session, agentType string, index int, va
 		return "", fmt.Errorf("spawning replacement %s agent: %w", agent.AgentType(agentType).Canonical(), err)
 	}
 
+	// Resolve the original launch spec before creating a pane. Configured
+	// commands are Go templates, and passing them directly to the shell leaves
+	// the replacement at a shell error instead of starting an agent.
+	agentCmd, err := s.agentLaunchCommand(session, agentType, index, variant, workDir)
+	if err != nil {
+		return "", fmt.Errorf("preparing replacement agent: %w", err)
+	}
+	cmd, err := tmux.BuildPaneCommand(workDir, agentCmd)
+	if err != nil {
+		return "", fmt.Errorf("building command: %w", err)
+	}
+
 	// Create a new pane
 	paneID, err := tmux.SplitWindow(session, workDir)
 	if err != nil {
@@ -182,14 +196,6 @@ func (s *DefaultPaneSpawner) SpawnAgent(session, agentType string, index int, va
 		return "", fmt.Errorf("setting pane identity: %w", err)
 	}
 
-	// Get the agent command
-	agentCmd := s.getAgentCommand(agentType)
-	cmd, err := tmux.BuildPaneCommand(workDir, agentCmd)
-	if err != nil {
-		_ = tmux.KillPane(paneID)
-		return "", fmt.Errorf("building command: %w", err)
-	}
-
 	// Launch the agent
 	if err := tmux.SendKeys(paneID, cmd, true); err != nil {
 		_ = tmux.KillPane(paneID)
@@ -202,6 +208,76 @@ func (s *DefaultPaneSpawner) SpawnAgent(session, agentType string, index int, va
 	}
 
 	return paneID, nil
+}
+
+// agentLaunchCommand restores the model, reasoning effort, and registered
+// persona encoded in the predecessor's variant using the same model registry
+// and guarded template renderer as ordinary agent creation.
+func (s *DefaultPaneSpawner) agentLaunchCommand(session, agentType string, index int, variant, workDir string) (string, error) {
+	models := config.DefaultModels()
+	if s.config != nil {
+		models = s.config.Models
+	}
+	modelAlias, effort := tmux.ParsePaneVariant(variant)
+	vars := config.AgentTemplateVars{
+		ModelAlias:      modelAlias,
+		ModelRequested:  modelAlias != "",
+		ReasoningEffort: effort,
+		SessionName:     session,
+		PaneIndex:       index,
+		AgentType:       agentTypeShort(agentType),
+		ProjectDir:      workDir,
+	}
+	// A bare variant can name a persona. A model@effort variant records an
+	// explicit model selection and is never interpreted as a persona.
+	if modelAlias != "" && effort == "" {
+		registry, err := persona.LoadRegistry(workDir)
+		if err != nil {
+			return "", fmt.Errorf("loading replacement persona: %w", err)
+		}
+		if p, ok := registry.Get(modelAlias); ok && p != nil {
+			// Bare titles do not record whether the operator selected a model
+			// alias or a persona. Both can legitimately be named "architect",
+			// including in the default configuration. Refuse a known collision
+			// instead of injecting a persona into a model-only agent or changing
+			// a persona's model. The original pane remains available to recover.
+			ambiguous := strings.EqualFold(models.GetModelName(agentType, ""), modelAlias)
+			for alias, model := range models.AliasesFor(agentType) {
+				if strings.EqualFold(alias, modelAlias) || strings.EqualFold(model, modelAlias) {
+					ambiguous = true
+					break
+				}
+			}
+			if ambiguous {
+				return "", fmt.Errorf("ambiguous replacement variant %q matches both a configured model and a persona; cannot safely restore the original launch settings", modelAlias)
+			}
+			if agent.AgentType(p.AgentType).Canonical() != agent.AgentType(agentType).Canonical() {
+				return "", fmt.Errorf("persona %q belongs to %s, cannot rotate a %s pane into that persona", p.Name, p.AgentType, agentType)
+			}
+			vars.PersonaName = p.Name
+			vars.ModelAlias = strings.TrimSpace(p.Model)
+			vars.ModelRequested = vars.ModelAlias != ""
+			vars.ReasoningEffort = strings.TrimSpace(p.ReasoningEffort)
+			vars.SystemPrompt = p.SystemPrompt
+			vars.SystemPromptFile, err = persona.PrepareSystemPrompt(p, workDir)
+			if err != nil {
+				return "", fmt.Errorf("preparing replacement persona %q: %w", p.Name, err)
+			}
+		}
+	}
+	if agent.AgentType(agentType).Canonical() == agent.AgentTypeAntigravity &&
+		vars.ModelAlias != "" && vars.ModelAlias != config.AntigravityRequiredModel {
+		return "", fmt.Errorf("antigravity model is pinned to %q, cannot restore model %q", config.AntigravityRequiredModel, vars.ModelAlias)
+	}
+	vars.Model = models.GetModelName(agentType, vars.ModelAlias)
+	command, err := config.GenerateAgentCommand(s.getAgentCommand(agentType), vars)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(command) == "" {
+		return "", fmt.Errorf("configured %s agent command rendered empty", agentType)
+	}
+	return command, nil
 }
 
 // KillPane terminates a pane.
@@ -267,34 +343,37 @@ func (s *DefaultPaneSpawner) getAgentCommand(agentType string) string {
 			}
 		case agent.AgentTypeOmp:
 			return config.OmpCommandOrDefault(s.config.Agents.Omp)
+		case agent.AgentTypeOpencode:
+			if s.config.Agents.Opencode != "" {
+				return s.config.Agents.Opencode
+			}
 		}
 	}
 
+	defaults := config.DefaultAgentTemplates()
 	switch canonical {
 	case agent.AgentTypeClaudeCode:
-		return "claude"
+		return defaults.Claude
 	case agent.AgentTypeCodex:
-		return "codex"
+		return defaults.Codex
 	case agent.AgentTypeGemini:
-		return "gemini"
+		return defaults.Gemini
 	case agent.AgentTypeAntigravity:
-		// The Antigravity launch binary is `agy`, not its long display name.
-		return "agy"
+		return defaults.Antigravity
 	case agent.AgentTypeGrok:
-		// Relaunch with the official autonomous approval flag so a rotated
-		// pane does not block on tool approvals (GH#251 phase 2).
-		return "grok --always-approve"
+		return defaults.Grok
 	case agent.AgentTypeOmp:
-		// Relaunch with omp's skip-approval flag, matching the spawn default.
-		return "omp --auto-approve"
+		return defaults.Omp
+	case agent.AgentTypeOpencode:
+		return defaults.Opencode
 	case agent.AgentTypeCursor:
-		return "cursor"
+		return defaults.Cursor
 	case agent.AgentTypeWindsurf:
-		return "windsurf"
+		return defaults.Windsurf
 	case agent.AgentTypeAider:
-		return "aider"
+		return defaults.Aider
 	case agent.AgentTypeOllama:
-		return "ollama"
+		return defaults.Ollama
 	}
 	// Fall back to using the agent type name as the command.
 	// This handles unknown/future agent types that match their CLI name.
@@ -909,28 +988,35 @@ func (r *Rotator) rotateAgent(session, agentID, workDir string, method ...Rotati
 	result.NewPaneID = newPaneID
 	result.NewAgentID = tmux.FormatPaneName(session, agentTypeShort(agentType), newIndex, oldPane.Variant)
 
-	// The replacement begins with an empty context window. Keep the monitor
-	// aligned with that replacement so a long-running agent is not immediately
-	// selected for a second rotation using the exhausted predecessor's usage.
-	// Custom pane titles can produce a different canonical replacement ID, so
-	// remove the old monitor entry before registering the replacement.
+	// Wait for new agent to be ready
+	time.Sleep(3 * time.Second)
+
+	// Deliver the handoff before retiring the original agent or replacing its
+	// monitor state. A live replacement without the task context is not a
+	// successful rotation: the original pane remains the recovery source.
+	if handoffSummary != nil {
+		handoffContext := handoffSummary.FormatForNewAgent()
+		if err := sendRotationPrompt(r.spawner, newPaneID, handoffContext); err != nil {
+			result.State = RotationStateFailed
+			result.Error = fmt.Sprintf("failed to send handoff context; original agent preserved: %v", err)
+			if cleanupErr := r.spawner.KillPane(newPaneID); cleanupErr != nil {
+				result.Error += fmt.Sprintf("; failed to remove replacement pane %s: %v", newPaneID, cleanupErr)
+			}
+			result.Duration = time.Since(startTime)
+			recordRotationToHistory(result, session, agentType, contextUsage)
+			return result
+		}
+	}
+
+	// The replacement begins with an empty context window. Only now commit the
+	// monitor transition, so failed handoffs retain the predecessor's usage and
+	// remain eligible for a later retry. Custom titles can produce a different
+	// canonical replacement ID.
 	if result.NewAgentID != agentID {
 		r.monitor.UnregisterAgent(agentID)
 	}
 	r.monitor.RegisterAgent(result.NewAgentID, newPaneID, state.Model)
 	r.monitor.ResetAgent(result.NewAgentID)
-
-	// Wait for new agent to be ready
-	time.Sleep(3 * time.Second)
-
-	// Send handoff context to new agent
-	if handoffSummary != nil {
-		handoffContext := handoffSummary.FormatForNewAgent()
-		if err := sendRotationPrompt(r.spawner, newPaneID, handoffContext); err != nil {
-			// Non-fatal: agent is spawned but may not have context
-			result.Error = fmt.Sprintf("warning: failed to send handoff context: %v", err)
-		}
-	}
 
 	// Kill the old pane
 	if err := r.spawner.KillPane(oldPane.ID); err != nil {
@@ -1052,14 +1138,16 @@ func (r *Rotator) tryCompaction(agentID, paneID string, agentType agent.AgentTyp
 // extractAgentIndex extracts the numeric index from an agent ID.
 // e.g., "myproject__cc_2" -> 2
 func extractAgentIndex(agentID string) int {
-	parts := strings.Split(agentID, "_")
-	if len(parts) < 2 {
-		return 1
+	// Read only the type_index part. Models and persona names can contain
+	// numbers and underscores; scanning from the end can change agent 1 into
+	// agent 2026 when its model variant contains a release date.
+	suffix := tmux.PaneTitleSuffix(agentID)
+	if suffix == "" {
+		suffix = agentID
 	}
-	// Find the last numeric part
-	for i := len(parts) - 1; i >= 0; i-- {
-		var n int
-		if _, err := fmt.Sscanf(parts[i], "%d", &n); err == nil {
+	parts := strings.SplitN(suffix, "_", 3)
+	if len(parts) >= 2 {
+		if n, err := strconv.Atoi(parts[1]); err == nil && n > 0 {
 			return n
 		}
 	}

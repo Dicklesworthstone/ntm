@@ -16,17 +16,19 @@ import (
 
 // MockPaneSpawner is a test double for PaneSpawner.
 type MockPaneSpawner struct {
-	spawnedPanes []string
-	killedPanes  []string
-	sentKeys     map[string][]string
-	sentBuffers  map[string][]string
-	getPanesFor  []string
-	panes        []tmux.Pane
-	spawnError   error
-	killError    error
-	sendError    error
-	panesError   error
-	getPanesFunc func(string) ([]tmux.Pane, error)
+	spawnedPanes  []string
+	killedPanes   []string
+	killAttempts  []string
+	sentKeys      map[string][]string
+	sentBuffers   map[string][]string
+	getPanesFor   []string
+	panes         []tmux.Pane
+	spawnError    error
+	killError     error
+	sendError     error
+	sendPaneError map[string]error
+	panesError    error
+	getPanesFunc  func(string) ([]tmux.Pane, error)
 }
 
 func NewMockPaneSpawner() *MockPaneSpawner {
@@ -47,6 +49,7 @@ func (m *MockPaneSpawner) SpawnAgent(session, agentType string, index int, varia
 }
 
 func (m *MockPaneSpawner) KillPane(paneID string) error {
+	m.killAttempts = append(m.killAttempts, paneID)
 	if m.killError != nil {
 		return m.killError
 	}
@@ -55,6 +58,9 @@ func (m *MockPaneSpawner) KillPane(paneID string) error {
 }
 
 func (m *MockPaneSpawner) SendKeys(paneID, text string, enter bool) error {
+	if err := m.sendPaneError[paneID]; err != nil {
+		return err
+	}
 	if m.sendError != nil {
 		return m.sendError
 	}
@@ -63,6 +69,9 @@ func (m *MockPaneSpawner) SendKeys(paneID, text string, enter bool) error {
 }
 
 func (m *MockPaneSpawner) SendBuffer(paneID, text string, enter bool) error {
+	if err := m.sendPaneError[paneID]; err != nil {
+		return err
+	}
 	if m.sendError != nil {
 		return m.sendError
 	}
@@ -404,6 +413,53 @@ func TestCheckAndRotate_LongSessionResetsReplacementMonitorState(t *testing.T) {
 	}
 }
 
+func TestManualRotate_HandoffFailurePreservesOriginalAgent(t *testing.T) {
+	for _, cleanupFails := range []bool{false, true} {
+		name := "replacement_removed"
+		if cleanupFails {
+			name = "replacement_cleanup_failed"
+		}
+		t.Run(name, func(t *testing.T) {
+			monitor := NewContextMonitor(DefaultMonitorConfig())
+			const agentID = "test__cc_1"
+			monitor.RegisterAgent(agentID, "%0", "claude-opus-4")
+			monitor.RecordMessage(agentID, 1000, 1000)
+			monitor.UpdateFromRobotMode(agentID, `{"context_used":180000,"context_limit":200000}`)
+			original := *monitor.GetState(agentID)
+
+			spawner := NewMockPaneSpawner()
+			spawner.panes = []tmux.Pane{{ID: "%0", Title: agentID, Type: tmux.AgentClaude}}
+			spawner.sendPaneError = map[string]error{"%new-pane": errors.New("handoff paste failed")}
+			if cleanupFails {
+				spawner.killError = errors.New("replacement still running")
+			}
+			cfg := config.DefaultContextRotationConfig()
+			cfg.TryCompactFirst = false
+			r := NewRotator(RotatorConfig{Monitor: monitor, Spawner: spawner, Config: cfg})
+
+			result := r.ManualRotate("test", agentID, t.TempDir())
+			if result.Success || result.State != RotationStateFailed || result.Method != RotationManual {
+				t.Fatalf("ManualRotate() = %+v, want failed manual rotation", result)
+			}
+			if !strings.Contains(result.Error, "handoff paste failed") || !strings.Contains(result.Error, "original agent preserved") {
+				t.Errorf("error = %q, want handoff failure and recovery information", result.Error)
+			}
+			if len(spawner.killAttempts) != 1 || spawner.killAttempts[0] != "%new-pane" {
+				t.Errorf("kill attempts = %v, only the replacement may be removed", spawner.killAttempts)
+			}
+			if cleanupFails && !strings.Contains(result.Error, "replacement still running") {
+				t.Errorf("error = %q, want replacement cleanup failure", result.Error)
+			}
+			if current := monitor.GetState(agentID); current == nil || *current != original {
+				t.Errorf("original monitor state changed after failed handoff: %+v, want %+v", current, original)
+			}
+			if history := r.GetHistory(); len(history) != 0 {
+				t.Errorf("successful rotation history = %+v, want none", history)
+			}
+		})
+	}
+}
+
 // GH#251 phase 2: grok relaunch/prompt delivery is first-class, so a mixed
 // claude+grok batch now passes rotation preflight and both agents are
 // scheduled — the grok member no longer vetoes the batch.
@@ -602,6 +658,11 @@ func TestExtractAgentIndex(t *testing.T) {
 		{"myproject__cc_2", 2},
 		{"myproject__cod_10", 10},
 		{"myproject__gmi_3_variant", 3},
+		{"myproject__cod_1_gpt_custom_2026@high", 1},
+		{"myproject__cc_2_reviewer_42", 2},
+		{"myproject__cc_2oops", 1},
+		{"session__nested__cod_7_gpt_2026", 7},
+		{"myproject__cc_-1", 1},
 		{"invalid", 1},
 		{"", 1},
 	}
@@ -841,8 +902,8 @@ func TestDefaultPaneSpawnerGrokCommand(t *testing.T) {
 	t.Parallel()
 
 	spawner := NewDefaultPaneSpawner(nil)
-	if got := spawner.getAgentCommand("grok-build"); got != "grok --always-approve" {
-		t.Fatalf("getAgentCommand(grok-build) = %q, want %q", got, "grok --always-approve")
+	if got := spawner.getAgentCommand("grok-build"); got != config.DefaultAgentTemplates().Grok {
+		t.Fatalf("getAgentCommand(grok-build) = %q, want default Grok template", got)
 	}
 
 	cfg := &config.Config{}
@@ -858,19 +919,21 @@ func TestDefaultPaneSpawnerGetAgentCommand(t *testing.T) {
 
 	// Without config
 	spawner := NewDefaultPaneSpawner(nil)
+	defaults := config.DefaultAgentTemplates()
 
 	tests := []struct {
 		agentType string
 		want      string
 	}{
-		{"claude", "claude"},
-		{"claude_code", "claude"},
-		{"codex", "codex"},
-		{"openai-codex", "codex"},
-		{"gemini", "gemini"},
-		{"google-gemini", "gemini"},
-		{"ws", "windsurf"},
-		{"ollama", "ollama"},
+		{"claude", defaults.Claude},
+		{"claude_code", defaults.Claude},
+		{"codex", defaults.Codex},
+		{"openai-codex", defaults.Codex},
+		{"gemini", defaults.Gemini},
+		{"google-gemini", defaults.Gemini},
+		{"ws", defaults.Windsurf},
+		{"ollama", defaults.Ollama},
+		{"oc", defaults.Opencode},
 	}
 
 	for _, tt := range tests {

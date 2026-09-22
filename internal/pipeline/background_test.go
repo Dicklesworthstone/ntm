@@ -103,7 +103,7 @@ func backgroundHelper(t *testing.T, mode, root, id string) ([]byte, error) {
 	return cmd.CombinedOutput()
 }
 
-func awaitBackgroundState(t *testing.T, root, id string, wanted Status) *ExecutionState {
+func awaitBackgroundState(t *testing.T, root, id string, wanted ExecutionStatus) *ExecutionState {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {

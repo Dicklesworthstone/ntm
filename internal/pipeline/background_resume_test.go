@@ -117,7 +117,7 @@ func resumeFixture(t *testing.T, id string) (string, *ExecutionState) {
 	return root, state
 }
 
-func awaitResumeState(t *testing.T, root, id string, status Status) *ExecutionState {
+func awaitResumeState(t *testing.T, root, id string, status ExecutionStatus) *ExecutionState {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
