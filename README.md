@@ -546,10 +546,21 @@ ntm pipeline resume run-20241230-123456-abcd --mode=continue
 ntm pipeline cleanup --older=7d
 ```
 
-Pipeline resume preserves completed step outputs by default and re-runs the first incomplete
-step or loop iteration. Commands, templates, and foreach/loop iteration bodies should be
-idempotent when resumed, or operators should resume with `--keep-state=false` or
-`--mode=force-iter --step-id=<id> --iteration=<n>` to deliberately re-run work.
+Pipeline resume preserves completed step outputs. Prompt and template steps also
+save their delivery and response evidence: `--mode=continue` resumes observing a
+confirmed request on its original tmux host and physical pane without submitting
+it again. Partial output survives interruption, and a completed response can be
+restored even if the process stopped before saving the enclosing step result.
+Recognized composer and footer redraws are excluded from response evidence; an
+idle pane showing only the submitted prompt is not counted as completed work.
+
+Unknown submission outcomes, replaced pane processes or hosts, and missing output
+boundaries stop recovery with the receipt preserved. Inspect the original pane
+before using `--mode=restart-failed` to deliberately resend failed or interrupted
+agent work; that mode still preserves completed delivery receipts. Use
+`--keep-state=false` or `--mode=force-iter --step-id=<id> --iteration=<n>` for an
+intentional reset or iteration replay. Incomplete command steps retain their
+existing rerun behavior and should be idempotent.
 
 ### 7. Durable State, Audit, and Recovery
 

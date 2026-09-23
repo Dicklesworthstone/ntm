@@ -245,6 +245,7 @@ role=<ROLE> model=<MODEL> domain=<DOMAIN>
 	e.state = &ExecutionState{
 		RunID:      "run-pane-template",
 		WorkflowID: "workflow",
+		Session:    cfg.Session,
 		Variables:  map[string]interface{}{},
 		Steps:      map[string]StepResult{},
 	}

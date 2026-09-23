@@ -32,8 +32,21 @@ type TmuxClient interface {
 
 type realTmuxClient struct{}
 
+// Endpoint identifies the tmux server namespace used by physical pane IDs.
+// It is optional on TmuxClient so existing injected clients remain compatible.
+func (realTmuxClient) Endpoint() string {
+	if tmux.DefaultClient.Remote == "" {
+		return "local"
+	}
+	return "ssh:" + tmux.DefaultClient.Remote
+}
+
 func (realTmuxClient) GetPanes(session string) ([]tmux.Pane, error) {
 	return tmux.GetPanes(session)
+}
+
+func (realTmuxClient) GetPanesContext(ctx context.Context, session string) ([]tmux.Pane, error) {
+	return tmux.GetPanesContext(ctx, session)
 }
 
 func (realTmuxClient) PasteKeys(target, content string, enter bool) error {
@@ -42,6 +55,10 @@ func (realTmuxClient) PasteKeys(target, content string, enter bool) error {
 
 func (realTmuxClient) CapturePaneOutput(target string, lines int) (string, error) {
 	return tmux.CapturePaneOutput(target, lines)
+}
+
+func (realTmuxClient) CapturePaneOutputContext(ctx context.Context, target string, lines int) (string, error) {
+	return tmux.CapturePaneOutputContext(ctx, target, lines)
 }
 
 func (realTmuxClient) VerifySubmission(ctx context.Context, target, message, agentType string, paneWidth int) error {
@@ -82,6 +99,8 @@ type MockTmuxClient struct {
 	verifier      func(target, message, agentType string) error
 	verifications []MockTmuxVerification
 }
+
+func (*MockTmuxClient) Endpoint() string { return "local" }
 
 // SetSubmissionVerifier installs the outcome of future VerifySubmission calls.
 // Returning a non-nil error models a composer that is still holding the
@@ -336,6 +355,9 @@ func normalizeMockPane(pane tmux.Pane, ordinal int) tmux.Pane {
 	}
 	if pane.Index == 0 {
 		pane.Index = ordinal
+	}
+	if pane.PID == 0 {
+		pane.PID = 10000 + ordinal
 	}
 	return pane
 }

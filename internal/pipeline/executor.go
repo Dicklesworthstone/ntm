@@ -5,6 +5,7 @@ package pipeline
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -23,7 +24,7 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/status"
-	"github.com/Dicklesworthstone/ntm/internal/util"
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 // dispatchLogSeq is a process-local sequence counter that breaks ties when
@@ -994,6 +995,11 @@ func (e *Executor) executeStep(ctx context.Context, step *Step, workflow *Workfl
 		// metadata survive retry exhaustion and on_failure recovery.
 		result = stepResult
 		result.Attempts = attempt
+		if delivery, ok := e.loadAgentDelivery(step.ID); ok && delivery.Status == agentDeliverySending {
+			// A transport error is not proof of non-delivery. Automatic retry
+			// cannot resolve this uncertainty by submitting the request again.
+			break
+		}
 
 		if attempt < maxAttempts {
 			// Wait before retry
@@ -1056,6 +1062,10 @@ func (e *Executor) finalizeFailedStep(ctx context.Context, step *Step, workflow 
 
 // executeStepOnce executes a step once without retry logic
 func (e *Executor) executeStepOnce(ctx context.Context, step *Step, workflow *Workflow) StepResult {
+	// Routing may resolve pane expressions in place. Keep the immutable step
+	// definition intact so recovery validates the same request before routing.
+	copy := *step
+	step = &copy
 	result := StepResult{
 		StepID:    step.ID,
 		Status:    StatusRunning,
@@ -1104,6 +1114,15 @@ func (e *Executor) executeStepOnce(ctx context.Context, step *Step, workflow *Wo
 	// rather than tmux pane dispatch.
 	if step.hasMailStep() {
 		return e.executeMailStep(ctx, step)
+	}
+	stepHash, err := agentStepHash(step)
+	if err != nil {
+		result.Status = StatusFailed
+		result.Error = stepRuntimeError(step, StepKindPrompt, "recovery", err.Error(), "inspect the saved step definition", "")
+		return result
+	}
+	if _, recorded := e.loadAgentDelivery(step.ID); recorded && !e.config.DryRun {
+		return e.executeAgentDelivery(ctx, step, workflow, StepKindPrompt, stepHash, "", "", "")
 	}
 
 	// bd-2xka8: bind pane metadata for the step's tmux pane before
@@ -1168,150 +1187,7 @@ func (e *Executor) executeStepOnce(ctx context.Context, step *Step, workflow *Wo
 		return result
 	}
 
-	// Serialize the whole dispatch window (capture → paste → wait → capture)
-	// against other steps targeting the same pane (bd-jio7h) and against
-	// other ntm processes targeting it (ntm#324).
-	releasePane, err := e.acquirePaneLockCrossProcess(ctx, paneID)
-	if err != nil {
-		applyPaneLockFailure(&result, paneID, err)
-		return result
-	}
-	defer releasePane()
-
-	// Capture state before sending
-	beforeOutput, _ := e.tmuxClient().CapturePaneOutput(paneID, 2000)
-
-	// Send prompt
-	if e.stopBeforeDispatch(ctx, &result) {
-		return result
-	}
-	if err := e.tmuxClient().PasteKeys(paneID, prompt, true); err != nil {
-		result.Status = StatusFailed
-		result.Error = &StepError{
-			Type:      "send",
-			Message:   fmt.Sprintf("failed to send prompt: %v", err),
-			Timestamp: time.Now(),
-		}
-		return result
-	}
-
-	// Establish submission before any completion wait (ntm#320).
-	if err := e.confirmSubmission(ctx, paneID, prompt, agentType); err != nil {
-		if ctx.Err() != nil {
-			result.Status = StatusCancelled
-			result.SkipReason = "cancelled while confirming prompt submission"
-			result.SkipKind = SkipKindCancelled
-			result.FinishedAt = time.Now()
-			return result
-		}
-		result.Status = StatusFailed
-		result.Error = &StepError{
-			Type:       "send",
-			Message:    submissionFailureMessage(err),
-			PaneOutput: e.captureErrorContext(paneID, 50),
-			AgentState: e.detectAgentState(paneID),
-			Timestamp:  time.Now(),
-		}
-		result.FinishedAt = time.Now()
-		return result
-	}
-
-	// Handle wait condition
-	waitCondition := step.Wait
-	if waitCondition == "" {
-		waitCondition = WaitCompletion
-	}
-
-	// Calculate step timeout
-	timeout := e.config.DefaultTimeout
-	if step.Timeout.Duration > 0 {
-		timeout = step.Timeout.Duration
-	}
-
-	switch waitCondition {
-	case WaitNone:
-		// Fire and forget
-		result.Status = StatusCompleted
-		result.FinishedAt = time.Now()
-		return result
-
-	case WaitTime:
-		// Just wait for timeout
-		select {
-		case <-ctx.Done():
-			result.Status = StatusCancelled
-			result.FinishedAt = time.Now()
-			return result
-		case <-time.After(timeout):
-			result.Status = StatusCompleted
-			result.FinishedAt = time.Now()
-		}
-
-	case WaitCompletion, WaitIdle:
-		// Wait for agent to return to idle
-		if err := e.waitForIdle(ctx, paneID, timeout); err != nil {
-			if ctx.Err() != nil {
-				result.Status = StatusCancelled
-			} else {
-				result.Status = StatusFailed
-				result.Error = &StepError{
-					Type:       "timeout",
-					Message:    fmt.Sprintf("timeout waiting for completion: %v", err),
-					PaneOutput: e.captureErrorContext(paneID, 50),
-					AgentState: e.detectAgentState(paneID),
-					Timestamp:  time.Now(),
-				}
-				// ntm#213: idle detection is heuristic and can miss a
-				// finished TUI turn entirely, timing out even though the
-				// agent's answer is sitting in the pane. Salvage the
-				// before/after diff so the response isn't dropped — the
-				// step still fails, but downstream consumers (retries,
-				// ignore_errors flows, humans debugging) get the output.
-				if after, capErr := e.tmuxClient().CapturePaneOutput(paneID, 2000); capErr == nil {
-					result.Output = util.ExtractNewOutput(beforeOutput, after)
-				}
-			}
-			result.FinishedAt = time.Now()
-			return result
-		}
-	}
-
-	// Capture output
-	afterOutput, err := e.tmuxClient().CapturePaneOutput(paneID, 2000)
-	if err != nil {
-		result.Status = StatusFailed
-		result.Error = &StepError{
-			Type:      "capture",
-			Message:   fmt.Sprintf("failed to capture output: %v", err),
-			Timestamp: time.Now(),
-		}
-		return result
-	}
-
-	result.Output = util.ExtractNewOutput(beforeOutput, afterOutput)
-
-	// Parse output if configured
-	if step.OutputParse.Type != "" && step.OutputParse.Type != "none" {
-		parsed, err := e.parseOutput(result.Output, step.OutputParse)
-		if err != nil {
-			// Non-fatal - just warn
-			e.stateMu.Lock()
-			e.state.Errors = append(e.state.Errors, ExecutionError{
-				StepID:    step.ID,
-				Type:      "parse",
-				Message:   fmt.Sprintf("failed to parse output: %v", err),
-				Timestamp: time.Now(),
-				Fatal:     false,
-			})
-			e.stateMu.Unlock()
-		} else {
-			result.ParsedData = parsed
-		}
-	}
-
-	result.Status = StatusCompleted
-	result.FinishedAt = time.Now()
-	return result
+	return e.executeAgentDelivery(ctx, step, workflow, StepKindPrompt, stepHash, prompt, paneID, agentType)
 }
 
 func stepRuntimeError(step *Step, kind, typ, reason, hint, details string) *StepError {
@@ -1704,11 +1580,22 @@ func (e *Executor) executeCommand(ctx context.Context, step *Step, workflow *Wor
 // step Params/Args, validates declared placeholders, and dispatches the
 // rendered text to a pane. Wait/timeout behavior mirrors the prompt path.
 func (e *Executor) executeTemplate(ctx context.Context, step *Step, workflow *Workflow) StepResult {
+	copy := *step
+	step = &copy
 	result := StepResult{
 		StepID:    step.ID,
 		Status:    StatusRunning,
 		StartedAt: time.Now(),
 		AgentType: "template",
+	}
+	stepHash, err := agentStepHash(step)
+	if err != nil {
+		result.Status = StatusFailed
+		result.Error = stepRuntimeError(step, StepKindTemplate, "recovery", err.Error(), "inspect the saved step definition", "")
+		return result
+	}
+	if _, recorded := e.loadAgentDelivery(step.ID); recorded && !e.config.DryRun {
+		return e.executeAgentDelivery(ctx, step, workflow, StepKindTemplate, stepHash, "", "", "")
 	}
 
 	// bd-2xka8: bind pane metadata before rendering+substitution so
@@ -1819,137 +1706,7 @@ func (e *Executor) executeTemplate(ctx context.Context, step *Step, workflow *Wo
 		})
 	}
 
-	// Serialize the whole dispatch window against other steps targeting the
-	// same pane (bd-jio7h) and against other ntm processes (ntm#324).
-	releasePane, err := e.acquirePaneLockCrossProcess(ctx, paneID)
-	if err != nil {
-		if errors.Is(err, ErrPaneBusyOtherProcess) {
-			applyPaneLockFailure(&result, paneID, err)
-			return result
-		}
-		return e.markTemplateCancelled(&result, step, workflow, paneID, err.Error())
-	}
-	defer releasePane()
-
-	beforeOutput, _ := e.tmuxClient().CapturePaneOutput(paneID, 2000)
-
-	if e.stopBeforeDispatch(ctx, &result) {
-		return result
-	}
-
-	if err := e.tmuxClient().PasteKeys(paneID, rendered, true); err != nil {
-		if ctx.Err() != nil {
-			return e.markTemplateCancelled(&result, step, workflow, paneID, ctx.Err().Error())
-		}
-		result.Status = StatusFailed
-		result.Error = stepRuntimeError(step, "template", "send",
-			fmt.Sprintf("failed to send rendered template: %v", err),
-			"check that the target tmux pane still exists and accepts input",
-			err.Error())
-		result.FinishedAt = time.Now()
-		return result
-	}
-
-	// Establish submission before any completion wait (ntm#320).
-	if err := e.confirmSubmission(ctx, paneID, rendered, agentType); err != nil {
-		if ctx.Err() != nil {
-			return e.markTemplateCancelled(&result, step, workflow, paneID, ctx.Err().Error())
-		}
-		result.Status = StatusFailed
-		result.Error = stepRuntimeError(step, "template", "send",
-			submissionFailureMessage(err),
-			"the rendered template is still sitting in the agent's composer; submit it in the pane or re-run the step, and check that the pane is not blocked by a dialog",
-			err.Error())
-		result.FinishedAt = time.Now()
-		return result
-	}
-
-	waitCondition := step.Wait
-	if waitCondition == "" {
-		waitCondition = WaitCompletion
-	}
-
-	timeout := e.config.DefaultTimeout
-	if step.Timeout.Duration > 0 {
-		timeout = step.Timeout.Duration
-	}
-
-	switch waitCondition {
-	case WaitNone:
-		result.Status = StatusCompleted
-		result.FinishedAt = time.Now()
-		return result
-
-	case WaitTime:
-		select {
-		case <-ctx.Done():
-			return e.markTemplateCancelled(&result, step, workflow, paneID, ctx.Err().Error())
-		case <-time.After(timeout):
-			result.Status = StatusCompleted
-			result.FinishedAt = time.Now()
-		}
-
-	case WaitCompletion, WaitIdle:
-		if err := e.waitForIdle(ctx, paneID, timeout); err != nil {
-			if ctx.Err() != nil {
-				return e.markTemplateCancelled(&result, step, workflow, paneID, ctx.Err().Error())
-			} else {
-				result.Status = StatusFailed
-				result.Error = stepRuntimeError(step, "template", "timeout",
-					fmt.Sprintf("timeout waiting for completion: %v", err),
-					"increase step.timeout or change wait mode",
-					err.Error())
-				result.Error.PaneOutput = e.captureErrorContext(paneID, 50)
-				result.Error.AgentState = e.detectAgentState(paneID)
-				// ntm#213: salvage the visible response on timeout (see the
-				// prompt-step WaitCompletion branch for rationale).
-				if after, capErr := e.tmuxClient().CapturePaneOutput(paneID, 2000); capErr == nil {
-					result.Output = util.ExtractNewOutput(beforeOutput, after)
-				}
-			}
-			result.FinishedAt = time.Now()
-			return result
-		}
-	}
-
-	afterOutput, err := e.tmuxClient().CapturePaneOutput(paneID, 2000)
-	if err != nil {
-		result.Status = StatusFailed
-		result.Error = stepRuntimeError(step, "template", "capture",
-			fmt.Sprintf("failed to capture output: %v", err),
-			"check that the target tmux pane still exists",
-			err.Error())
-		result.FinishedAt = time.Now()
-		return result
-	}
-
-	result.Output = util.ExtractNewOutput(beforeOutput, afterOutput)
-
-	if step.OutputParse.Type != "" && step.OutputParse.Type != "none" {
-		parsed, err := e.parseOutput(result.Output, step.OutputParse)
-		if err != nil {
-			e.stateMu.Lock()
-			e.state.Errors = append(e.state.Errors, ExecutionError{
-				StepID:    step.ID,
-				Type:      "parse",
-				Message:   fmt.Sprintf("failed to parse output: %v", err),
-				Timestamp: time.Now(),
-				Fatal:     false,
-			})
-			e.stateMu.Unlock()
-		} else {
-			result.ParsedData = parsed
-		}
-	}
-
-	result.Status = StatusCompleted
-	result.FinishedAt = time.Now()
-	slog.Info("template step completed",
-		"run_id", e.state.RunID,
-		"step_id", step.ID,
-		"pane_id", paneID,
-	)
-	return result
+	return e.executeAgentDelivery(ctx, step, workflow, StepKindTemplate, stepHash, rendered, paneID, agentType)
 }
 
 func (e *Executor) markTemplateCancelled(result *StepResult, step *Step, workflow *Workflow, paneID string, reason string) StepResult {
@@ -1973,6 +1730,309 @@ func (e *Executor) markTemplateCancelled(result *StepResult, step *Step, workflo
 		FieldDurationMS, result.FinishedAt.Sub(result.StartedAt).Milliseconds(),
 	)
 	return *result
+}
+
+// executeAgentDelivery is the shared prompt/template delivery lifecycle. The
+// journal outlives InFlightSteps: cancellation stops observation, not the agent
+// process in tmux, and ordinary recovery must never submit that work again.
+func (e *Executor) executeAgentDelivery(ctx context.Context, step *Step, workflow *Workflow, kind, stepHash, prompt, paneID, agentType string) StepResult {
+	result := StepResult{StepID: step.ID, Status: StatusRunning, StartedAt: time.Now(), PaneUsed: paneID, AgentType: agentType}
+	fail := func(typ string, err error) StepResult {
+		result.FinishedAt = time.Now()
+		if checkpointErr := e.checkpointFailure(); checkpointErr != nil {
+			err, typ = errors.Join(err, checkpointErr), "checkpoint"
+		} else if ctx.Err() != nil {
+			if kind == StepKindTemplate {
+				return e.markTemplateCancelled(&result, step, workflow, result.PaneUsed, ctx.Err().Error())
+			}
+			result.Status, result.SkipKind, result.SkipReason = StatusCancelled, SkipKindCancelled, ctx.Err().Error()
+			return result
+		}
+		result.Status = StatusFailed
+		result.Error = stepRuntimeError(step, kind, typ, err.Error(), "inspect the original pane and saved delivery before an intentional --mode=restart-failed or reset", err.Error())
+		return result
+	}
+	record, recorded := e.loadAgentDelivery(step.ID)
+	if recorded {
+		result.PaneUsed, result.AgentType, result.StartedAt = record.PaneID, record.AgentType, record.StartedAt
+		if record.Version != agentDeliveryVersion || record.StepID != step.ID || record.Kind != kind || record.StepHash != stepHash || record.Session != e.config.Session {
+			return fail("recovery", errors.New("saved agent delivery does not match this step, session, or definition; refusing to replay"))
+		}
+		if record.Endpoint != e.agentDeliveryEndpoint() {
+			return fail("recovery", fmt.Errorf("saved agent delivery belongs to tmux endpoint %q, not %q; refusing to redirect it", record.Endpoint, e.agentDeliveryEndpoint()))
+		}
+		if record.Status == agentDeliverySending {
+			return fail("delivery_unknown", errors.New("agent prompt delivery outcome is unknown; ordinary resume and automatic retry will not submit it again"))
+		}
+		if record.Status != agentDeliveryDelivered && record.Status != agentDeliveryCompleted {
+			return fail("recovery", fmt.Errorf("invalid saved agent delivery status %q", record.Status))
+		}
+		result.Output = record.Output
+		if record.Status == agentDeliveryCompleted {
+			return e.completedAgentDelivery(step, result, record.CompletedAt)
+		}
+		paneID, agentType = record.PaneID, record.AgentType
+	}
+
+	release, err := e.acquirePaneLockCrossProcess(ctx, paneID)
+	if err != nil {
+		applyPaneLockFailure(&result, paneID, err)
+		return result
+	}
+	defer release()
+	if e.stopBeforeDispatch(ctx, &result) {
+		return result
+	}
+	if !recorded {
+		endpoint := e.agentDeliveryEndpoint()
+		pane, err := e.agentDeliveryPane(ctx, paneID, 0, endpoint)
+		if err != nil {
+			return fail("recovery", err)
+		}
+		if agentType == "" {
+			agentType = "unknown"
+		}
+		sum := sha256.Sum256([]byte(prompt))
+		echoSum := sha256.Sum256([]byte(normalizeAgentEcho(prompt)))
+		record = AgentDeliveryState{
+			Version: agentDeliveryVersion, StepID: step.ID, Kind: kind,
+			Session: e.config.Session, Endpoint: endpoint, PaneID: paneID, PanePID: pane.PID,
+			AgentType: agentType, StepHash: stepHash, PromptHash: hex.EncodeToString(sum[:]),
+			PromptEchoHash: hex.EncodeToString(echoSum[:]),
+			Status:         agentDeliverySending, StartedAt: time.Now(),
+		}
+		record.BeforeOutput, err = e.captureAgentDelivery(ctx, record)
+		if err != nil {
+			return fail("capture", err)
+		}
+		// Write the uncertain attempt before transport. A failed save, paste,
+		// or submission verifier never authorizes a second automatic send.
+		if err := e.saveAgentDelivery(record); err != nil {
+			return fail("checkpoint", err)
+		}
+		// The intent write can take time. Refresh the last pre-transport
+		// boundary so output from an earlier turn during preparation is excluded.
+		boundary, err := e.captureAgentDelivery(ctx, record)
+		if err != nil {
+			return fail("capture", err)
+		}
+		if boundary != record.BeforeOutput {
+			record.BeforeOutput = boundary
+			if err := e.saveAgentDelivery(record); err != nil {
+				return fail("checkpoint", err)
+			}
+		}
+		if e.stopBeforeDispatch(ctx, &result) {
+			return result
+		}
+		if _, err := e.agentDeliveryPane(ctx, record.PaneID, record.PanePID, record.Endpoint); err != nil {
+			return fail("recovery", err)
+		}
+		if err := e.tmuxClient().PasteKeys(paneID, prompt, true); err != nil {
+			return fail("send", fmt.Errorf("failed to send prompt; delivery outcome is unknown: %w", err))
+		}
+		if err := e.confirmSubmission(ctx, paneID, prompt, agentType); err != nil {
+			return fail("send", fmt.Errorf("%s; delivery outcome is unknown", submissionFailureMessage(err)))
+		}
+		if _, err := e.agentDeliveryPane(ctx, record.PaneID, record.PanePID, record.Endpoint); err != nil {
+			return fail("recovery", err)
+		}
+		record.Status, record.DeliveredAt = agentDeliveryDelivered, time.Now()
+		if err := e.saveAgentDelivery(record); err != nil {
+			return fail("checkpoint", err)
+		}
+	}
+	result.PaneUsed, result.AgentType, result.StartedAt = record.PaneID, record.AgentType, record.StartedAt
+	collect := func() (bool, error) {
+		current, err := e.captureAgentDelivery(ctx, record)
+		if err != nil {
+			return false, err
+		}
+		delta, err := agentDeliveryNewOutput(record.BeforeOutput, current)
+		if err != nil {
+			return false, err
+		}
+		if len(record.Output)+len(delta) > agentDeliveryMaxOutputBytes {
+			return false, fmt.Errorf("agent response exceeds the %d-byte recovery evidence limit", agentDeliveryMaxOutputBytes)
+		}
+		if current != record.BeforeOutput {
+			record.BeforeOutput, record.Output = current, record.Output+delta
+			if err := e.saveAgentDelivery(record); err != nil {
+				return false, err
+			}
+		}
+		result.Output = record.Output
+		response := normalizeAgentEcho(record.Output)
+		echo := sha256.Sum256([]byte(response))
+		return response != "" && hex.EncodeToString(echo[:]) != record.PromptEchoHash, nil
+	}
+	wait := step.Wait
+	if wait == "" {
+		wait = WaitCompletion
+	}
+	timeout := e.config.DefaultTimeout
+	if step.Timeout.Duration > 0 {
+		timeout = step.Timeout.Duration
+	}
+	switch wait {
+	case WaitNone:
+		// Submission itself fulfills this explicit fire-and-forget contract.
+		// Do not turn the immediate prompt echo into a response or wait for one.
+	case WaitTime:
+		remaining := time.Until(record.DeliveredAt.Add(timeout))
+		if remaining > 0 {
+			timer := time.NewTimer(remaining)
+			defer timer.Stop()
+			select {
+			case <-ctx.Done():
+				return fail("cancelled", ctx.Err())
+			case <-timer.C:
+			}
+		}
+		if _, err := collect(); err != nil {
+			return fail("capture", err)
+		}
+	case WaitCompletion, WaitIdle:
+		if err := e.waitForIdle(ctx, paneID, timeout, collect); err != nil {
+			// Preserve partial output even when the deadline precedes the first
+			// idle poll. Cancellation never starts a new uncancelled capture.
+			if ctx.Err() == nil && e.checkpointFailure() == nil {
+				if _, captureErr := collect(); captureErr != nil {
+					err = errors.Join(err, captureErr)
+				}
+			}
+			return fail("timeout", fmt.Errorf("waiting for the original agent delivery: %w", err))
+		}
+	}
+	// Preserve completion before releasing pane ownership or returning to the
+	// containing foreach/parallel scheduler, which may checkpoint later.
+	record.Status, record.CompletedAt, record.BeforeOutput = agentDeliveryCompleted, time.Now(), ""
+	if err := e.saveAgentDelivery(record); err != nil {
+		return fail("checkpoint", err)
+	}
+	return e.completedAgentDelivery(step, result, record.CompletedAt)
+}
+
+func (e *Executor) completedAgentDelivery(step *Step, result StepResult, finished time.Time) StepResult {
+	if step.Wait != WaitNone && step.OutputParse.Type != "" && step.OutputParse.Type != "none" {
+		parsed, err := e.parseOutput(result.Output, step.OutputParse)
+		if err != nil {
+			e.stateMu.Lock()
+			e.state.Errors = append(e.state.Errors, ExecutionError{StepID: step.ID, Type: "parse", Message: fmt.Sprintf("failed to parse output: %v", err), Timestamp: time.Now()})
+			e.stateMu.Unlock()
+		} else {
+			result.ParsedData = parsed
+		}
+	}
+	result.Status, result.FinishedAt = StatusCompleted, finished
+	return result
+}
+
+func (e *Executor) agentDeliveryEndpoint() string {
+	if client, ok := e.tmuxClient().(interface{ Endpoint() string }); ok {
+		return client.Endpoint()
+	}
+	return "local"
+}
+
+func (e *Executor) agentDeliveryPane(ctx context.Context, paneID string, expectedPID int, endpoint string) (tmux.Pane, error) {
+	if err := ctx.Err(); err != nil {
+		return tmux.Pane{}, err
+	}
+	if e.agentDeliveryEndpoint() != endpoint {
+		return tmux.Pane{}, fmt.Errorf("tmux endpoint changed from %q; refusing to redirect saved delivery", endpoint)
+	}
+	var panes []tmux.Pane
+	var err error
+	if client, ok := e.tmuxClient().(interface {
+		GetPanesContext(context.Context, string) ([]tmux.Pane, error)
+	}); ok {
+		panes, err = client.GetPanesContext(ctx, e.config.Session)
+	} else {
+		panes, err = e.tmuxClient().GetPanes(e.config.Session)
+	}
+	if err != nil {
+		return tmux.Pane{}, err
+	}
+	var found *tmux.Pane
+	for _, pane := range panes {
+		if pane.ID == paneID {
+			if found != nil {
+				return tmux.Pane{}, fmt.Errorf("agent pane %s has ambiguous membership", paneID)
+			}
+			copy := pane
+			found = &copy
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return tmux.Pane{}, err
+	}
+	if e.agentDeliveryEndpoint() != endpoint {
+		return tmux.Pane{}, fmt.Errorf("tmux endpoint changed from %q while observing saved delivery", endpoint)
+	}
+	if found == nil || found.Dead || found.PID <= 0 || (expectedPID > 0 && found.PID != expectedPID) {
+		return tmux.Pane{}, fmt.Errorf("agent pane %s changed process lifetime or is unavailable; refusing to redirect its saved delivery", paneID)
+	}
+	return *found, nil
+}
+
+func (e *Executor) captureAgentDelivery(ctx context.Context, record AgentDeliveryState) (string, error) {
+	if _, err := e.agentDeliveryPane(ctx, record.PaneID, record.PanePID, record.Endpoint); err != nil {
+		return "", err
+	}
+	var output string
+	var err error
+	if client, ok := e.tmuxClient().(interface {
+		CapturePaneOutputContext(context.Context, string, int) (string, error)
+	}); ok {
+		output, err = client.CapturePaneOutputContext(ctx, record.PaneID, 2000)
+	} else {
+		output, err = e.tmuxClient().CapturePaneOutput(record.PaneID, 2000)
+	}
+	if err != nil {
+		return "", err
+	}
+	if len(output) > agentDeliveryMaxCaptureBytes {
+		return "", fmt.Errorf("agent pane %s exceeds the %d-byte capture limit", record.PaneID, agentDeliveryMaxCaptureBytes)
+	}
+	if _, err := e.agentDeliveryPane(ctx, record.PaneID, record.PanePID, record.Endpoint); err != nil {
+		return "", err
+	}
+	return strings.TrimRight(status.AgentTranscript(output, record.AgentType), "\n"), nil
+}
+
+// A submitted prompt may be echoed with the agent's input-row marker. Ignore
+// that decoration only for the echo comparison; saved output remains intact.
+func normalizeAgentEcho(output string) string {
+	lines := strings.Split(status.StripANSI(output), "\n")
+	for i, line := range lines {
+		line = strings.TrimSpace(line)
+		for _, marker := range []string{"❯", "›", "»", ">"} {
+			if strings.HasPrefix(line, marker) {
+				line = strings.TrimSpace(strings.TrimPrefix(line, marker))
+				break
+			}
+		}
+		lines[i] = line
+	}
+	return strings.Join(strings.Fields(strings.Join(lines, "\n")), " ")
+}
+
+// A retained complete-line overlap supports normal scrollback rollover.
+// A replacement screen is not evidence that the original request completed.
+func agentDeliveryNewOutput(before, after string) (string, error) {
+	if strings.HasPrefix(after, before) {
+		return after[len(before):], nil
+	}
+	for i := 0; i < len(before); i++ {
+		if before[i] == '\n' && i+1 < len(before) {
+			suffix := before[i+1:]
+			if strings.TrimSpace(suffix) != "" && strings.HasPrefix(after, suffix) {
+				return after[len(suffix):], nil
+			}
+		}
+	}
+	return "", errors.New("saved agent output boundary is no longer visible; inspect the original pane before an intentional restart")
 }
 
 // resolveTemplatePath resolves a template reference to an absolute file path.
@@ -2938,7 +2998,7 @@ func submissionFailureMessage(err error) string {
 // This is only ever reached for a dispatch whose submission was confirmed:
 // idleness is meaningful evidence of completion for a prompt that is actually
 // running, and meaningless for one still sitting in the composer (ntm#320).
-func (e *Executor) waitForIdle(ctx context.Context, paneID string, timeout time.Duration) error {
+func (e *Executor) waitForIdle(ctx context.Context, paneID string, timeout time.Duration, evidence ...func() (bool, error)) error {
 	ticker := time.NewTicker(e.config.ProgressInterval)
 	defer ticker.Stop()
 
@@ -2964,12 +3024,20 @@ func (e *Executor) waitForIdle(ctx context.Context, paneID string, timeout time.
 		case <-deadline.C:
 			return fmt.Errorf("timeout after %s", timeout)
 		case <-ticker.C:
+			fresh := true
+			for _, observe := range evidence {
+				ready, err := observe()
+				if err != nil {
+					return err
+				}
+				fresh = fresh && ready
+			}
 			state, err := e.detector.Detect(paneID)
 			if err != nil {
 				idleStreak = 0
 				continue
 			}
-			if state.State == status.StateIdle {
+			if state.State == status.StateIdle && fresh {
 				idleStreak++
 				if idleStreak >= idleStablePolls {
 					return nil
@@ -3495,6 +3563,9 @@ func (e *Executor) snapshotState() *ExecutionState {
 		for key, value := range e.state.InFlightSteps {
 			snapshot.InFlightSteps[key] = value
 		}
+	}
+	if e.state.AgentDeliveries != nil {
+		snapshot.AgentDeliveries = maps.Clone(e.state.AgentDeliveries)
 	}
 	e.stateMu.RUnlock()
 

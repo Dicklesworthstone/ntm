@@ -236,14 +236,15 @@ type parallelDispatchTransport struct {
 	pastes               []string
 	messages             []string
 	failFirst            bool
+	failFirstObservation bool
 	changePaneAfterPaste bool
 	verified             int
 }
 
 func newParallelDispatchTransport() *parallelDispatchTransport {
 	return &parallelDispatchTransport{panes: []tmux.Pane{
-		{ID: "%1", Index: 1, Type: tmux.AgentType("claude"), Width: 100},
-		{ID: "%2", Index: 2, Type: tmux.AgentType("claude"), Width: 100},
+		{ID: "%1", Index: 1, PID: 4101, Type: tmux.AgentType("claude"), Width: 100},
+		{ID: "%2", Index: 2, PID: 4102, Type: tmux.AgentType("claude"), Width: 100},
 	}, outputs: make(map[string]string)}
 }
 func (m *parallelDispatchTransport) GetPanes(string) ([]tmux.Pane, error) {
@@ -254,7 +255,8 @@ func (m *parallelDispatchTransport) GetPanes(string) ([]tmux.Pane, error) {
 	// only after the first dispatch, so this fixture tests a retry retaining
 	// the selected target rather than depending on the metadata lookup count.
 	if m.changePaneAfterPaste && len(m.pastes) > 0 {
-		panes[0].ID = "%99"
+		panes[0].Index = 3
+		panes = append(panes, tmux.Pane{ID: "%99", Index: 1, PID: 4199, Type: tmux.AgentClaude, Width: 100})
 	}
 	return panes, nil
 }
@@ -272,6 +274,10 @@ func (m *parallelDispatchTransport) PasteKeys(target, content string, enter bool
 func (m *parallelDispatchTransport) CapturePaneOutput(target string, _ int) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.failFirstObservation && m.verified > 0 {
+		m.failFirstObservation = false
+		return "", errors.New("temporary capture failure after confirmed delivery")
+	}
 	return m.outputs[target], nil
 }
 func (m *parallelDispatchTransport) VerifySubmission(ctx context.Context, _, _, _ string, _ int) error {
@@ -288,9 +294,10 @@ func TestParallelDispatchTemplateRetriesStayOnSelectedPane(t *testing.T) {
 		t.Fatal(err)
 	}
 	workflow := parallelDispatchWorkflow(Step{ID: "template", Template: path, Params: map[string]interface{}{"TASK": "real work"},
-		Pane: PaneSpec{Index: 1}, Wait: WaitNone, OnError: ErrorActionRetry, RetryCount: 1, RetryDelay: Duration{Duration: time.Millisecond}})
+		Pane: PaneSpec{Index: 1}, Wait: WaitTime, Timeout: Duration{Duration: time.Millisecond},
+		OnError: ErrorActionRetry, RetryCount: 1, RetryDelay: Duration{Duration: time.Millisecond}})
 	transport := newParallelDispatchTransport()
-	transport.failFirst, transport.changePaneAfterPaste = true, true
+	transport.failFirstObservation, transport.changePaneAfterPaste = true, true
 	executor := NewExecutor(cfg)
 	executor.SetTmuxClient(transport)
 	state, err := executor.Run(context.Background(), workflow, nil, nil)
@@ -300,11 +307,35 @@ func TestParallelDispatchTemplateRetriesStayOnSelectedPane(t *testing.T) {
 	if got := state.Steps["work_template"]; got.Attempts != 2 || got.PaneUsed != "%1" || got.Error != nil {
 		t.Fatalf("template retry: %+v", got)
 	}
-	if !reflect.DeepEqual(transport.pastes, []string{"%1", "%1"}) || !reflect.DeepEqual(transport.messages, []string{"Do real work", "Do real work"}) {
-		t.Fatalf("template re-routed or was not rendered: %v %q", transport.pastes, transport.messages)
+	if !reflect.DeepEqual(transport.pastes, []string{"%1"}) || !reflect.DeepEqual(transport.messages, []string{"Do real work"}) {
+		t.Fatalf("confirmed template was resent or re-routed: %v %q", transport.pastes, transport.messages)
 	}
 	if transport.verified != 1 {
 		t.Fatalf("submission verification calls = %d, want 1 successful paste", transport.verified)
+	}
+}
+
+func TestParallelDispatchUnknownTemplateDeliveryIsNotRetried(t *testing.T) {
+	cfg := parallelDispatchConfig(t)
+	path := filepath.Join(cfg.ProjectDir, "instructions.md")
+	if err := os.WriteFile(path, []byte("Do <TASK>"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	workflow := parallelDispatchWorkflow(Step{ID: "template", Template: path, Params: map[string]interface{}{"TASK": "real work"},
+		Pane: PaneSpec{Index: 1}, Wait: WaitNone, OnError: ErrorActionRetry, RetryCount: 1, RetryDelay: Duration{Duration: time.Millisecond}})
+	transport := newParallelDispatchTransport()
+	transport.failFirst, transport.changePaneAfterPaste = true, true
+	executor := NewExecutor(cfg)
+	executor.SetTmuxClient(transport)
+	state, err := executor.Run(context.Background(), workflow, nil, nil)
+	if err == nil || state == nil || state.Status != StatusFailed {
+		t.Fatalf("unknown template delivery was accepted: %+v %v", state, err)
+	}
+	if got := state.Steps["work_template"]; got.Attempts != 1 || got.PaneUsed != "%1" || got.Error == nil || !strings.Contains(got.Error.Message, "unknown") {
+		t.Fatalf("unknown template outcome lost: %+v", got)
+	}
+	if !reflect.DeepEqual(transport.pastes, []string{"%1"}) || transport.verified != 0 || state.AgentDeliveries["work_template"].Status != agentDeliverySending {
+		t.Fatalf("ambiguous delivery was repeated or discarded: pastes=%v verified=%d receipt=%+v", transport.pastes, transport.verified, state.AgentDeliveries["work_template"])
 	}
 }
 

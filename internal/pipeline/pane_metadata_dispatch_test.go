@@ -41,6 +41,7 @@ func TestExecuteTemplate_PaneMetadataAutomaticallyBound(t *testing.T) {
 	e.state = &ExecutionState{
 		RunID:      "test-run",
 		WorkflowID: "workflow",
+		Session:    cfg.Session,
 		Variables:  map[string]interface{}{},
 		Steps:      map[string]StepResult{},
 	}

@@ -2,9 +2,255 @@ package pipeline
 
 import (
 	"context"
+	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
+	"time"
 )
+
+func testAgentDelivery(stepID, status string) AgentDeliveryState {
+	started := time.Date(2026, time.September, 23, 12, 0, 0, 0, time.UTC)
+	record := AgentDeliveryState{
+		Version: agentDeliveryVersion, StepID: stepID, Kind: StepKindPrompt,
+		Session: "resume-session", Endpoint: "local", PaneID: "%17", PanePID: 2718, AgentType: "claude",
+		StepHash: strings.Repeat("a", 64), PromptHash: strings.Repeat("b", 64),
+		PromptEchoHash: strings.Repeat("c", 64),
+		Status:         status, BeforeOutput: "previous task", StartedAt: started,
+	}
+	if status == agentDeliveryDelivered || status == agentDeliveryCompleted {
+		record.DeliveredAt = started.Add(time.Second)
+	}
+	if status == agentDeliveryCompleted {
+		record.CompletedAt = started.Add(2 * time.Second)
+		record.Output = "current result"
+	}
+	return record
+}
+
+func TestAgentDeliveryJournalPersistsAndReturnsCopies(t *testing.T) {
+	cfg := DefaultExecutorConfig("resume-session")
+	cfg.ProjectDir = t.TempDir()
+	executor := NewExecutor(cfg)
+	executor.state = &ExecutionState{
+		RunID: "agent-delivery-roundtrip", WorkflowID: "delivery-workflow", Session: cfg.Session,
+		Status: StatusRunning, Steps: map[string]StepResult{}, Variables: map[string]interface{}{},
+	}
+	for _, status := range []string{agentDeliverySending, agentDeliveryDelivered, agentDeliveryCompleted} {
+		record := testAgentDelivery("review", status)
+		if err := executor.saveAgentDelivery(record); err != nil {
+			t.Fatalf("save %s: %v", status, err)
+		}
+		persisted, err := LoadState(cfg.ProjectDir, executor.state.RunID)
+		if err != nil {
+			t.Fatalf("load %s: %v", status, err)
+		}
+		if got := persisted.AgentDeliveries["review"]; !reflect.DeepEqual(got, record) {
+			t.Fatalf("persisted %s receipt = %#v, want %#v", status, got, record)
+		}
+		loaded, ok := executor.loadAgentDelivery("review")
+		if !ok {
+			t.Fatal("saved delivery missing")
+		}
+		loaded.Status = "mutated"
+		loaded.Output = "mutated"
+		again, _ := executor.loadAgentDelivery("review")
+		if !reflect.DeepEqual(again, record) {
+			t.Fatalf("caller mutated journal through load: %#v", again)
+		}
+	}
+	if _, ok := executor.loadAgentDelivery("unknown"); ok {
+		t.Fatal("unknown step has a delivery")
+	}
+
+	// A failed durable write must propagate to the dispatch caller. Keeping the
+	// intent in memory still prevents another attempt from treating it as new.
+	blocked := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(blocked, []byte("blocked"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	executor.config.ProjectDir = blocked
+	if err := executor.saveAgentDelivery(testAgentDelivery("next", agentDeliverySending)); !errors.Is(err, ErrCheckpointFailed) {
+		t.Fatalf("failed save = %v, want ErrCheckpointFailed", err)
+	}
+	if _, ok := executor.loadAgentDelivery("next"); !ok {
+		t.Fatal("failed persistence erased in-memory dispatch intent")
+	}
+}
+
+func TestAgentStepHashUsesCompleteStableDefinition(t *testing.T) {
+	step := Step{ID: "review", Template: "review", Params: map[string]interface{}{"a": "first", "b": "second"}}
+	hash, err := agentStepHash(&step)
+	if err != nil {
+		t.Fatal(err)
+	}
+	copy := cloneStep(step)
+	copy.Params = map[string]interface{}{"b": "second", "a": "first"}
+	got, err := agentStepHash(&copy)
+	if err != nil || got != hash {
+		t.Fatalf("equivalent definition hash = %q, %v, want %q", got, err, hash)
+	}
+	copy.Params["a"] = "changed"
+	got, err = agentStepHash(&copy)
+	if err != nil || got == hash {
+		t.Fatalf("changed definition hash = %q, %v, original %q", got, err, hash)
+	}
+	copy.Params["unsupported"] = make(chan int)
+	if _, err := agentStepHash(&copy); err == nil {
+		t.Fatal("non-serializable definition was accepted")
+	}
+	if _, err := agentStepHash(nil); err == nil {
+		t.Fatal("nil definition was accepted")
+	}
+}
+
+func TestResumeRejectsInvalidAgentDeliveriesBeforeReset(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(*AgentDeliveryState)
+	}{
+		{"unknown status", func(r *AgentDeliveryState) { r.Status = "maybe-sent" }},
+		{"unsupported version", func(r *AgentDeliveryState) { r.Version++ }},
+		{"different step", func(r *AgentDeliveryState) { r.StepID = "other" }},
+		{"different session", func(r *AgentDeliveryState) { r.Session = "other" }},
+		{"missing endpoint", func(r *AgentDeliveryState) { r.Endpoint = "" }},
+		{"empty remote endpoint", func(r *AgentDeliveryState) { r.Endpoint = "ssh: " }},
+		{"unsupported endpoint", func(r *AgentDeliveryState) { r.Endpoint = "socket:other" }},
+		{"command kind", func(r *AgentDeliveryState) { r.Kind = StepKindCommand }},
+		{"logical pane", func(r *AgentDeliveryState) { r.PaneID = "resume-session:0.1" }},
+		{"missing PID", func(r *AgentDeliveryState) { r.PanePID = 0 }},
+		{"missing agent", func(r *AgentDeliveryState) { r.AgentType = "" }},
+		{"invalid step hash", func(r *AgentDeliveryState) { r.StepHash = "broken" }},
+		{"invalid prompt hash", func(r *AgentDeliveryState) { r.PromptHash = strings.Repeat("z", 64) }},
+		{"oversized baseline", func(r *AgentDeliveryState) { r.BeforeOutput = strings.Repeat("x", agentDeliveryMaxCaptureBytes+1) }},
+		{"oversized result", func(r *AgentDeliveryState) { r.Output = strings.Repeat("x", agentDeliveryMaxOutputBytes+1) }},
+		{"missing start", func(r *AgentDeliveryState) { r.StartedAt = time.Time{} }},
+		{"missing delivery", func(r *AgentDeliveryState) { r.DeliveredAt = time.Time{} }},
+		{"completion before delivery", func(r *AgentDeliveryState) { r.CompletedAt = r.StartedAt }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, opts := range []ResumeOptions{{Reset: true}, {Mode: ResumeModeRestartFailed}, {Mode: ResumeModeForceIter, StepID: "fanout", Iteration: 0}} {
+				executor := NewExecutor(DefaultExecutorConfig("resume-session"))
+				record := testAgentDelivery("fanout_iter0_work", agentDeliveryCompleted)
+				tc.mutate(&record)
+				executor.state = &ExecutionState{
+					Session: "resume-session", Steps: map[string]StepResult{record.StepID: {Status: StatusFailed}},
+					AgentDeliveries: map[string]AgentDeliveryState{"fanout_iter0_work": record},
+				}
+				err := executor.applyResumeOptions(nil, opts)
+				if err == nil || !strings.Contains(err.Error(), "invalid agent delivery") {
+					t.Fatalf("opts %#v: invalid journal accepted: %v", opts, err)
+				}
+				if tc.name == "unknown status" && !strings.Contains(err.Error(), "unknown delivery status") {
+					t.Fatalf("unknown status diagnosis = %v", err)
+				}
+				if got := executor.state.AgentDeliveries["fanout_iter0_work"]; !reflect.DeepEqual(got, record) {
+					t.Fatalf("opts %#v discarded invalid dispatch evidence", opts)
+				}
+				if len(executor.state.Steps) != 1 || executor.state.ForeachState != nil {
+					t.Fatalf("opts %#v mutated state before validation", opts)
+				}
+			}
+		})
+	}
+}
+
+func TestResumeAgentDeliveryPolicies(t *testing.T) {
+	for _, mode := range []ResumeMode{ResumeModeContinue, ResumeModeRestartFailed} {
+		t.Run(string(mode), func(t *testing.T) {
+			executor := NewExecutor(DefaultExecutorConfig("resume-session"))
+			executor.state = &ExecutionState{
+				Session: "resume-session", Steps: map[string]StepResult{},
+				InFlightSteps:   map[string]InFlightStepState{"inflight": {StepID: "inflight", Kind: StepKindPrompt}},
+				AgentDeliveries: map[string]AgentDeliveryState{},
+			}
+			for _, status := range []ExecutionStatus{StatusCompleted, StatusFailed, StatusCancelled, StatusRunning, StatusPending} {
+				id := string(status)
+				executor.state.Steps[id] = StepResult{StepID: id, Status: status}
+				executor.state.AgentDeliveries[id] = testAgentDelivery(id, agentDeliveryDelivered)
+			}
+			executor.state.AgentDeliveries["inflight"] = testAgentDelivery("inflight", agentDeliverySending)
+			executor.state.AgentDeliveries["receipt-only"] = testAgentDelivery("receipt-only", agentDeliverySending)
+			executor.state.AgentDeliveries["completed-receipt"] = testAgentDelivery("completed-receipt", agentDeliveryCompleted)
+			executor.state.Steps["completed-receipt"] = StepResult{Status: StatusRunning}
+			executor.state.InFlightSteps["completed-receipt"] = InFlightStepState{StepID: "completed-receipt", Kind: StepKindPrompt}
+			if err := executor.applyResumeOptions(nil, ResumeOptions{Mode: mode}); err != nil {
+				t.Fatal(err)
+			}
+			for _, id := range []string{"completed", "failed", "cancelled", "running", "pending", "inflight", "receipt-only", "completed-receipt"} {
+				_, exists := executor.loadAgentDelivery(id)
+				want := mode == ResumeModeContinue || id == "completed" || id == "receipt-only" || id == "completed-receipt"
+				if exists != want {
+					t.Fatalf("receipt %q present = %t, want %t", id, exists, want)
+				}
+			}
+		})
+	}
+}
+
+func TestResumeAgentDeliveryCannotMoveSessionsWithoutReset(t *testing.T) {
+	for _, reset := range []bool{false, true} {
+		executor := NewExecutor(DefaultExecutorConfig("new-session"))
+		record := testAgentDelivery("review", agentDeliveryDelivered)
+		executor.state = &ExecutionState{
+			Session: "resume-session", Steps: map[string]StepResult{"review": {Status: StatusRunning}},
+			AgentDeliveries: map[string]AgentDeliveryState{"review": record},
+		}
+		err := executor.applyResumeOptions(nil, ResumeOptions{Reset: reset, OnRosterChange: ResumeRosterProceed})
+		if reset {
+			if err != nil || executor.state.Session != "new-session" || len(executor.state.AgentDeliveries) != 0 {
+				t.Fatalf("explicit reset failed to migrate: session=%q receipts=%#v err=%v", executor.state.Session, executor.state.AgentDeliveries, err)
+			}
+		} else {
+			if err == nil || !strings.Contains(err.Error(), "explicit reset") {
+				t.Fatalf("preserved delivery moved to another session: %v", err)
+			}
+			if executor.state.Session != "resume-session" || executor.state.AgentDeliveries["review"] != record {
+				t.Fatal("refused session migration mutated delivery identity")
+			}
+		}
+	}
+}
+
+func TestResumeLegacyAgentLeafRequiresExplicitRestart(t *testing.T) {
+	workflow := &Workflow{Name: "legacy", Steps: []Step{
+		{ID: "prompt", Prompt: "review"},
+		{ID: "template", Template: "review"},
+		{ID: "command", Command: "echo allowed"},
+		{ID: "group", Parallel: ParallelSpec{Steps: []Step{{ID: "nested", Prompt: "review nested"}}}},
+	}}
+	for _, stepID := range []string{"prompt", "template", "group_nested", "command"} {
+		t.Run(stepID, func(t *testing.T) {
+			for _, mode := range []ResumeMode{ResumeModeContinue, ResumeModeRestartFailed} {
+				executor := NewExecutor(DefaultExecutorConfig("resume-session"))
+				executor.graph = NewDependencyGraph(workflow)
+				executor.state = &ExecutionState{
+					Session: "resume-session", Steps: map[string]StepResult{stepID: {StepID: stepID, Status: StatusRunning}},
+				}
+				err := executor.applyResumeOptions(workflow, ResumeOptions{Mode: mode})
+				wantErr := mode == ResumeModeContinue && stepID != "command"
+				if (err != nil) != wantErr {
+					t.Fatalf("mode %s error = %v, want error %t", mode, err, wantErr)
+				}
+				if wantErr && !strings.Contains(err.Error(), "no durable delivery evidence") {
+					t.Fatalf("missing recovery diagnosis: %v", err)
+				}
+			}
+		})
+	}
+	executor := NewExecutor(DefaultExecutorConfig("resume-session"))
+	executor.graph = NewDependencyGraph(workflow)
+	executor.state = &ExecutionState{
+		Session:       "resume-session",
+		InFlightSteps: map[string]InFlightStepState{"group_nested": {StepID: "group_nested", Kind: StepKindPrompt}},
+	}
+	if err := executor.applyResumeOptions(workflow, ResumeOptions{}); err == nil || !strings.Contains(err.Error(), "no durable delivery evidence") {
+		t.Fatalf("legacy in-flight leaf without a StepResult was replayable: %v", err)
+	}
+}
 
 func TestResumeResetClearsDurableWorkStateAndStepVariables(t *testing.T) {
 	executor := NewExecutor(DefaultExecutorConfig("resume-session"))
@@ -33,9 +279,10 @@ func TestResumeResetClearsDurableWorkStateAndStepVariables(t *testing.T) {
 		ParallelState: map[string]ParallelGroupState{
 			"group": {StepID: "group", Total: 2, InFlightStepIDs: []string{"child"}},
 		},
-		ScopeStack:    []ScopeFrame{{Kind: StepKindLoop, Name: "item"}},
-		InFlightSteps: map[string]InFlightStepState{"fanout": {StepID: "fanout", Kind: "foreach"}},
-		Errors:        []ExecutionError{{StepID: "top", Message: "old failure"}},
+		ScopeStack:      []ScopeFrame{{Kind: StepKindLoop, Name: "item"}},
+		InFlightSteps:   map[string]InFlightStepState{"fanout": {StepID: "fanout", Kind: "foreach"}},
+		AgentDeliveries: map[string]AgentDeliveryState{"top": testAgentDelivery("top", agentDeliveryCompleted)},
+		Errors:          []ExecutionError{{StepID: "top", Message: "old failure"}},
 	}
 	workflow := &Workflow{
 		SchemaVersion: SchemaVersion,
@@ -59,6 +306,9 @@ func TestResumeResetClearsDurableWorkStateAndStepVariables(t *testing.T) {
 	}
 	if len(executor.state.Steps) != 0 {
 		t.Fatalf("Steps = %#v, want empty map", executor.state.Steps)
+	}
+	if executor.state.AgentDeliveries != nil {
+		t.Fatalf("agent deliveries survived reset: %#v", executor.state.AgentDeliveries)
 	}
 	if executor.state.ForeachState != nil || executor.state.ParallelState != nil || executor.state.ScopeStack != nil || executor.state.InFlightSteps != nil || executor.state.Errors != nil {
 		t.Fatalf("resume bookkeeping not cleared: foreach=%#v parallel=%#v scopes=%#v in_flight=%#v errors=%#v",
@@ -90,6 +340,12 @@ func TestForceResumeIterationPrunesFutureIterationState(t *testing.T) {
 			"fanout_iter3_work": {StepID: "fanout_iter3_work", Status: StatusCompleted},
 			"other_iter9":       {StepID: "other_iter9", Status: StatusCompleted},
 		},
+		AgentDeliveries: map[string]AgentDeliveryState{
+			"fanout_iter0":      testAgentDelivery("fanout_iter0", agentDeliveryCompleted),
+			"fanout_iter2":      testAgentDelivery("fanout_iter2", agentDeliveryCompleted),
+			"fanout_iter4_work": testAgentDelivery("fanout_iter4_work", agentDeliverySending),
+			"other_iter9":       testAgentDelivery("other_iter9", agentDeliveryDelivered),
+		},
 		// bd-a3fwf: seed flat substitution keys for both pre-pivot iterations
 		// (must survive) and post-pivot iterations (must be scrubbed).
 		Variables: map[string]interface{}{
@@ -112,6 +368,13 @@ func TestForceResumeIterationPrunesFutureIterationState(t *testing.T) {
 	}
 
 	executor.forceResumeIteration("fanout", 2)
+	for _, id := range []string{"fanout_iter0", "fanout_iter2", "fanout_iter4_work", "other_iter9"} {
+		_, exists := executor.loadAgentDelivery(id)
+		want := id == "fanout_iter0" || id == "other_iter9"
+		if exists != want {
+			t.Fatalf("receipt %q present = %t after force iteration, want %t", id, exists, want)
+		}
+	}
 
 	state := executor.state.ForeachState["fanout"]
 	if state.CurrentIteration != 2 {

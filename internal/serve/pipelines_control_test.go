@@ -12,12 +12,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 
 	"github.com/Dicklesworthstone/ntm/internal/pipeline"
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 func pipelineControlRequest(method, runID string) *http.Request {
@@ -225,5 +227,114 @@ func TestPipelineRemoteControlProcessHelper(t *testing.T) {
 	state, err := pipeline.LoadState(srv.projectDir, out.RunID)
 	if err != nil || state.Status != pipeline.StatusCancelled {
 		t.Fatalf("cancellation did not reach executor: %+v %v", state, err)
+	}
+}
+
+func TestPipelineResumeHTTPRecoversConfirmedDeliveryWithoutResending(t *testing.T) {
+	root := t.TempDir()
+	workflow := &pipeline.Workflow{SchemaVersion: pipeline.SchemaVersion, Name: "http-agent-recovery", Steps: []pipeline.Step{
+		{ID: "agent", Pane: pipeline.PaneSpec{Index: 1}, Prompt: "Work on this HTTP request", Wait: pipeline.WaitTime, Timeout: pipeline.Duration{Duration: time.Second}},
+		{ID: "consume", Command: "cat", Stdin: "${steps.agent.output}", DependsOn: []string{"agent"}},
+	}}
+	frozen, workflowPath, err := pipeline.SnapshotWorkflow(context.Background(), root, workflow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mock := pipeline.NewMockTmuxClient(tmux.Pane{ID: "%17", Index: 1, NTMIndex: 1, PID: 2718, Type: tmux.AgentClaude, Width: 120, Height: 40})
+	t.Cleanup(mock.Reset)
+	if err := mock.SetPaneOutput("%17", "OLD-ANSWER\n"); err != nil {
+		t.Fatal(err)
+	}
+	cfg := pipeline.DefaultExecutorConfig("delivery-session")
+	cfg.ProjectDir, cfg.WorkflowFile, cfg.RunID = root, workflowPath, pipeline.GenerateRunID()
+	executor := pipeline.NewExecutor(cfg)
+	executor.SetTmuxClient(mock)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	watchDone := make(chan struct{})
+	delivered := false
+	go func() {
+		defer close(watchDone)
+		ticker := time.NewTicker(5 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				state, err := pipeline.LoadState(root, cfg.RunID)
+				if err == nil && state.AgentDeliveries["agent"].Status == "delivered" {
+					delivered = true
+					cancel()
+					return
+				}
+			}
+		}
+	}()
+	state, runErr := executor.Run(ctx, frozen, nil, nil)
+	cancel()
+	<-watchDone
+	if !delivered || runErr == nil || state == nil || state.Status != pipeline.StatusCancelled {
+		t.Fatalf("initial dispatch did not stop after confirmed delivery: delivered=%t state=%+v err=%v", delivered, state, runErr)
+	}
+	history, err := mock.PasteHistory("%17")
+	if err != nil || len(history) != 1 || len(mock.VerificationHistory()) != 1 {
+		t.Fatalf("initial dispatch was not sent and verified exactly once: pastes=%+v verifications=%+v err=%v", history, mock.VerificationHistory(), err)
+	}
+	prior, err := pipeline.LoadState(root, cfg.RunID)
+	if err != nil || prior.AgentDeliveries["agent"].Status != "delivered" {
+		t.Fatalf("initial delivery was not durably resumable: %+v %v", prior, err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "recovery-pane-output"), []byte(prior.AgentDeliveries["agent"].BeforeOutput+"\nFRESH-HTTP-ANSWER\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NTM_HTTP_PIPELINE_RECOVERY_ROOT", root)
+	const script = `#!/bin/sh
+printf '%s\n' "$*" >> "$NTM_HTTP_PIPELINE_RECOVERY_ROOT/recovery-tmux-calls"
+case "$1" in
+  -V) echo 'tmux 3.4' ;;
+  list-panes) echo '%17_NTM_SEP_1_NTM_SEP_delivery-session__cc_1_NTM_SEP_claude_NTM_SEP_120_NTM_SEP_40_NTM_SEP_1_NTM_SEP_2718_NTM_SEP_0_NTM_SEP_cc_NTM_SEP__NTM_SEP__NTM_SEP_0' ;;
+  capture-pane) cat "$NTM_HTTP_PIPELINE_RECOVERY_ROOT/recovery-pane-output" ;;
+  display-message) printf '%s\n' "$NTM_HTTP_PIPELINE_RECOVERY_ROOT" ;;
+  load-buffer|paste-buffer|send-keys) exit 97 ;;
+esac
+`
+	bin := filepath.Join(root, "recovery-tmux")
+	if err := os.WriteFile(bin, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NTM_TMUX_BINARY", bin)
+	oldClient := tmux.DefaultClient
+	tmux.DefaultClient = tmux.NewClient("")
+	t.Cleanup(func() { tmux.DefaultClient = oldClient })
+	srv := &Server{projectDir: root}
+	request := pipelineControlRequest(http.MethodPost, prior.RunID)
+	resumeCtx, cancelResume := context.WithTimeout(request.Context(), 10*time.Second)
+	defer cancelResume()
+	recorder := httptest.NewRecorder()
+	srv.handleResumePipeline(recorder, request.WithContext(resumeCtx))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("HTTP recovery failed: %d %s", recorder.Code, recorder.Body.String())
+	}
+	final, err := pipeline.LoadState(root, prior.RunID)
+	if err != nil || final.Status != pipeline.StatusCompleted {
+		t.Fatalf("HTTP recovery did not persist completion: %+v %v", final, err)
+	}
+	for _, stepID := range []string{"agent", "consume"} {
+		if got := strings.TrimSpace(final.Steps[stepID].Output); got != "FRESH-HTTP-ANSWER" {
+			t.Fatalf("HTTP recovery %s used stale or missing response: %q", stepID, got)
+		}
+	}
+	if receipt := final.AgentDeliveries["agent"]; receipt.Status != "completed" || receipt.DeliveredAt != prior.AgentDeliveries["agent"].DeliveredAt {
+		t.Fatalf("HTTP resume did not complete the original delivery: %+v", receipt)
+	}
+	calls, err := os.ReadFile(filepath.Join(root, "recovery-tmux-calls"))
+	if err != nil || !strings.Contains(string(calls), "capture-pane") {
+		t.Fatalf("HTTP resume did not observe original pane: %s %v", calls, err)
+	}
+	for _, transport := range []string{"load-buffer", "paste-buffer", "send-keys"} {
+		if strings.Contains(string(calls), transport) {
+			t.Fatalf("HTTP resume repeated transport %s: %s", transport, calls)
+		}
 	}
 }

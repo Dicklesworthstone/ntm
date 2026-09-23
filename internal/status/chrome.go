@@ -144,8 +144,8 @@ func closesAnotherBox(line string) bool {
 // The composer box is the anchor: a status line is arbitrary user-configured
 // text that cannot be recognised on its own, but it always renders BELOW the
 // input box, so everything from the box's top border down is chrome. When no
-// composer is found the input is returned unchanged — trimming is a
-// refinement, never a reason to show nothing.
+// composer is found the input is returned unchanged. A capture containing
+// only chrome has an empty transcript.
 func trimAgentChrome(lines []string, agentType string) []string {
 	if agent.AgentType(agentType).Canonical() == agent.AgentTypeOmp {
 		return trimOmpChrome(lines)
@@ -188,11 +188,6 @@ func trimAgentChrome(lines []string, agentType string) []string {
 		cut--
 	}
 
-	// A composer that consumed the whole capture means we found a box but no
-	// transcript; showing the raw tail is more useful than showing nothing.
-	if cut == 0 {
-		return lines
-	}
 	return lines[:cut]
 }
 
@@ -210,10 +205,19 @@ func trimOmpChrome(lines []string) []string {
 	if composer.ActivityLine >= 0 {
 		cut = composer.ActivityLine
 	}
-	if cut <= 0 || cut > len(lines) {
+	if cut < 0 || cut > len(lines) {
 		return lines
 	}
 	return lines[:cut]
+}
+
+// AgentTranscript removes recognized pinned composer and footer chrome while
+// preserving the transcript's text and spacing. Unlike a display preview, an
+// empty transcript stays empty and content is never truncated. This provides a
+// stable boundary across composer redraws; it does not prove who authored the
+// remaining terminal text.
+func AgentTranscript(output, agentType string) string {
+	return strings.Join(trimAgentChrome(strings.Split(StripANSI(output), "\n"), agentType), "\n")
 }
 
 // LastMeaningfulOutput returns the last maxLen characters of an agent pane's
@@ -236,7 +240,11 @@ func LastMeaningfulOutputLines(lines []string, agentType string, maxLen int) str
 		return ""
 	}
 
-	lines = trimAgentChrome(lines, agentType)
+	if transcript := trimAgentChrome(lines, agentType); len(transcript) > 0 {
+		// A preview may still show a chrome-only capture; recovery callers use
+		// AgentTranscript, where that fallback would fabricate evidence.
+		lines = transcript
+	}
 
 	var meaningful []string
 	total := 0

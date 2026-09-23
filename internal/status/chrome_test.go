@@ -7,6 +7,20 @@ import (
 	"unicode/utf8"
 )
 
+func TestAgentTranscriptPreservesTextAndExcludesChromeOnlyCapture(t *testing.T) {
+	transcript := "prior answer\n\n  indented response\n"
+	chrome := "╭──────────╮\n│ ❯       │\n╰──────────╯\ncustom status text"
+	if got := AgentTranscript(transcript+chrome, "cc"); got != strings.TrimSuffix(transcript, "\n") {
+		t.Fatalf("transcript text changed: got %q", got)
+	}
+	if got := AgentTranscript(chrome, "cc"); got != "" {
+		t.Fatalf("chrome-only capture became response evidence: %q", got)
+	}
+	if got := AgentTranscript("plain\n  output\n", "unknown"); got != "plain\n  output\n" {
+		t.Fatalf("plain output changed: %q", got)
+	}
+}
+
 // claudePaneWithStatusLine reproduces the pane shape from ntm#322: a
 // transcript, then Claude Code's bordered composer, then a two-line
 // user-configured status line pinned at the very bottom. The status line text

@@ -631,7 +631,15 @@ func newPipelineResumeCmd() *cobra.Command {
 		Long: `Resume a previously interrupted pipeline from its last checkpoint.
 
 Pipeline state is persisted to .ntm/pipelines/<run-id>.json after each step.
-This allows resuming from the last completed step if a pipeline is interrupted.
+Confirmed prompt/template deliveries resume observation of the original physical
+pane and process, without sending again. Saved completed responses are reused.
+Unknown delivery outcomes, replaced panes, and lost output boundaries require
+operator inspection. Command steps retain their existing rerun semantics.
+
+After inspection, --mode=restart-failed deliberately resubmits failed or
+interrupted agent steps; --keep-state=false repeats the entire workflow.
+--mode=force-iter deliberately repeats the selected iteration and later ones.
+These explicit restart choices may repeat side effects.
 
 Examples:
   # Resume a specific pipeline

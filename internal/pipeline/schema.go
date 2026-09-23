@@ -1380,6 +1380,7 @@ type ExecutionState struct {
 	ParallelState    map[string]ParallelGroupState    `json:"parallel_state,omitempty"`
 	ScopeStack       []ScopeFrame                     `json:"scope_stack,omitempty"`
 	InFlightSteps    map[string]InFlightStepState     `json:"in_flight_steps,omitempty"`
+	AgentDeliveries  map[string]AgentDeliveryState    `json:"agent_deliveries,omitempty"`
 
 	// OutputValidation records the post-run check of Workflow.Outputs (bd-3uqce).
 	// nil when the workflow declared no outputs or validation was skipped (e.g.

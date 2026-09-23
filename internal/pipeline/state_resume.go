@@ -125,6 +125,144 @@ type InFlightStepState struct {
 	Output    string    `json:"output,omitempty"`
 }
 
+const (
+	agentDeliveryVersion         = 1
+	agentDeliverySending         = "sending"
+	agentDeliveryDelivered       = "delivered"
+	agentDeliveryCompleted       = "completed"
+	agentDeliveryMaxCaptureBytes = 1 << 20
+	agentDeliveryMaxOutputBytes  = 1 << 20
+)
+
+// AgentDeliveryState journals a single runtime leaf's external dispatch. The
+// enclosing ExecutionState binds it to a run and workflow; StepID includes any
+// iteration or parallel namespace. A sending record is deliberately ambiguous:
+// recovery must not assume that absence of a delivered timestamp means no send.
+type AgentDeliveryState struct {
+	Version        int       `json:"version"`
+	StepID         string    `json:"step_id"`
+	Kind           string    `json:"kind"`
+	Session        string    `json:"session"`
+	Endpoint       string    `json:"endpoint"`
+	PaneID         string    `json:"pane_id"`
+	PanePID        int       `json:"pane_pid"`
+	AgentType      string    `json:"agent_type"`
+	StepHash       string    `json:"step_hash"`
+	PromptHash     string    `json:"prompt_hash"`
+	PromptEchoHash string    `json:"prompt_echo_hash"`
+	Status         string    `json:"status"`
+	BeforeOutput   string    `json:"before_output,omitempty"`
+	Output         string    `json:"output,omitempty"`
+	StartedAt      time.Time `json:"started_at"`
+	DeliveredAt    time.Time `json:"delivered_at,omitempty"`
+	CompletedAt    time.Time `json:"completed_at,omitempty"`
+}
+
+func agentStepHash(step *Step) (string, error) {
+	if step == nil {
+		return "", fmt.Errorf("cannot hash a nil agent step")
+	}
+	encoded, err := json.Marshal(step)
+	if err != nil {
+		return "", fmt.Errorf("hash agent step %q: %w", step.ID, err)
+	}
+	digest := sha256.Sum256(encoded)
+	return hex.EncodeToString(digest[:]), nil
+}
+
+func (e *Executor) loadAgentDelivery(stepID string) (AgentDeliveryState, bool) {
+	e.stateMu.RLock()
+	defer e.stateMu.RUnlock()
+	if e.state == nil {
+		return AgentDeliveryState{}, false
+	}
+	// Records contain only value fields, so callers cannot mutate the journal.
+	record, ok := e.state.AgentDeliveries[stepID]
+	return record, ok
+}
+
+func (e *Executor) saveAgentDelivery(record AgentDeliveryState) error {
+	e.stateMu.Lock()
+	if e.state == nil {
+		e.stateMu.Unlock()
+		return fmt.Errorf("cannot save agent delivery without execution state")
+	}
+	if err := validateAgentDelivery(record.StepID, record, e.state.Session); err != nil {
+		e.stateMu.Unlock()
+		return err
+	}
+	if e.state.AgentDeliveries == nil {
+		e.state.AgentDeliveries = make(map[string]AgentDeliveryState)
+	}
+	e.state.AgentDeliveries[record.StepID] = record
+	e.stateMu.Unlock()
+	return e.persistState()
+}
+
+func validateAgentDelivery(key string, record AgentDeliveryState, session string) error {
+	invalid := func(reason string) error {
+		return fmt.Errorf("invalid agent delivery for step %q: %s", key, reason)
+	}
+	if strings.TrimSpace(key) == "" || record.StepID != key {
+		return invalid("journal key does not match its step identity")
+	}
+	if record.Version != agentDeliveryVersion {
+		return invalid(fmt.Sprintf("unsupported version %d", record.Version))
+	}
+	if record.Kind != StepKindPrompt && record.Kind != StepKindTemplate {
+		return invalid(fmt.Sprintf("unsupported step kind %q", record.Kind))
+	}
+	if strings.TrimSpace(record.Session) == "" || record.Session != session {
+		return invalid("session identity does not match execution state")
+	}
+	if record.Endpoint != "local" && (!strings.HasPrefix(record.Endpoint, "ssh:") || strings.TrimSpace(strings.TrimPrefix(record.Endpoint, "ssh:")) == "") {
+		return invalid("tmux endpoint must be local or ssh: followed by a remote target")
+	}
+	if len(record.PaneID) < 2 || record.PaneID[0] != '%' || record.PanePID <= 0 {
+		return invalid("physical pane ID and positive pane PID are required")
+	}
+	for _, digit := range record.PaneID[1:] {
+		if digit < '0' || digit > '9' {
+			return invalid("physical pane ID must contain only % followed by digits")
+		}
+	}
+	if strings.TrimSpace(record.AgentType) == "" {
+		return invalid("agent type is missing")
+	}
+	for _, hash := range []string{record.StepHash, record.PromptHash, record.PromptEchoHash} {
+		decoded, err := hex.DecodeString(hash)
+		if err != nil || len(decoded) != sha256.Size {
+			return invalid("step and prompt hashes must be SHA-256 hex digests")
+		}
+	}
+	if len(record.BeforeOutput) > agentDeliveryMaxCaptureBytes || len(record.Output) > agentDeliveryMaxOutputBytes {
+		return invalid("captured output exceeds the agent delivery size limit")
+	}
+	if record.StartedAt.IsZero() {
+		return invalid("start timestamp is missing")
+	}
+	switch record.Status {
+	case agentDeliverySending:
+		if !record.DeliveredAt.IsZero() || !record.CompletedAt.IsZero() {
+			return invalid("sending record contains delivery or completion timestamps")
+		}
+	case agentDeliveryDelivered, agentDeliveryCompleted:
+		if record.DeliveredAt.IsZero() || record.DeliveredAt.Before(record.StartedAt) {
+			return invalid("delivery timestamp is missing or precedes dispatch")
+		}
+		if record.Status == agentDeliveryCompleted {
+			if record.CompletedAt.IsZero() || record.CompletedAt.Before(record.DeliveredAt) {
+				return invalid("completion timestamp is missing or precedes delivery")
+			}
+		} else if !record.CompletedAt.IsZero() {
+			return invalid("delivered record contains a completion timestamp")
+		}
+	default:
+		return invalid(fmt.Sprintf("unknown delivery status %q; refusing to discard dispatch evidence", record.Status))
+	}
+	return nil
+}
+
 func defaultResumeOptions() ResumeOptions {
 	return ResumeOptions{
 		Mode:           ResumeModeContinue,
@@ -195,6 +333,23 @@ func (e *Executor) applyResumeOptions(workflow *Workflow, opts ResumeOptions) er
 	checkpoint := resumeCheckpointTime(state)
 	priorSession := state.Session
 	targetSession := e.config.Session
+	// Check every record before interpreting an explicit restart. In particular,
+	// a future or corrupt status must not be erased and mistaken for permission
+	// to send the same prompt again.
+	for stepID, record := range state.AgentDeliveries {
+		if err := validateAgentDelivery(stepID, record, priorSession); err != nil {
+			e.stateMu.RUnlock()
+			return err
+		}
+		if targetSession != "" && priorSession != targetSession && !resumeResetsAgentDelivery(state, opts, stepID) {
+			e.stateMu.RUnlock()
+			return fmt.Errorf("agent delivery for step %q belongs to session %q; explicit reset is required before moving to session %q", stepID, priorSession, targetSession)
+		}
+	}
+	if err := e.validateLegacyAgentResumeLocked(state, opts); err != nil {
+		e.stateMu.RUnlock()
+		return err
+	}
 	e.stateMu.RUnlock()
 
 	if opts.MaxResumeAge > 0 && !checkpoint.IsZero() && time.Since(checkpoint) > opts.MaxResumeAge {
@@ -219,8 +374,72 @@ func (e *Executor) applyResumeOptions(workflow *Workflow, opts ResumeOptions) er
 
 	if opts.Mode == ResumeModeForceIter {
 		e.forceResumeIteration(opts.StepID, opts.Iteration)
+	} else if opts.Mode == ResumeModeRestartFailed {
+		e.stateMu.Lock()
+		for stepID := range e.state.AgentDeliveries {
+			if resumeResetsAgentDelivery(e.state, opts, stepID) {
+				delete(e.state.AgentDeliveries, stepID)
+			}
+		}
+		e.stateMu.Unlock()
 	}
 
+	return nil
+}
+
+func resumeResetsAgentDelivery(state *ExecutionState, opts ResumeOptions, stepID string) bool {
+	if !opts.KeepState {
+		return true
+	}
+	switch opts.Mode {
+	case ResumeModeRestartFailed:
+		// The receipt may reach disk before the containing step checkpoints its
+		// result or clears its in-flight marker. Its completion is authoritative.
+		if record, ok := state.AgentDeliveries[stepID]; ok && record.Status == agentDeliveryCompleted {
+			return false
+		}
+		if _, inFlight := state.InFlightSteps[stepID]; inFlight {
+			return true
+		}
+		switch state.Steps[stepID].Status {
+		case StatusFailed, StatusCancelled, StatusRunning, StatusPending:
+			return true
+		}
+	case ResumeModeForceIter:
+		return iterationIndexFromID(stepID, opts.StepID+"_iter") >= opts.Iteration
+	}
+	return false
+}
+
+// The caller holds stateMu. Legacy checkpoints have no way to distinguish a
+// delivered prompt from work that never reached tmux. Only an explicit restart
+// can authorize redispatch of a known unfinished agent leaf without a receipt.
+func (e *Executor) validateLegacyAgentResumeLocked(state *ExecutionState, opts ResumeOptions) error {
+	if !opts.KeepState || e.graph == nil {
+		return nil
+	}
+	unfinished := make(map[string]bool)
+	for stepID, result := range state.Steps {
+		switch result.Status {
+		case StatusFailed, StatusCancelled, StatusRunning, StatusPending:
+			unfinished[stepID] = true
+		}
+	}
+	for stepID := range state.InFlightSteps {
+		unfinished[stepID] = true
+	}
+	for stepID := range unfinished {
+		if _, recorded := state.AgentDeliveries[stepID]; recorded || resumeResetsAgentDelivery(state, opts, stepID) {
+			continue
+		}
+		step, ok := e.graph.GetStep(stepID)
+		if !ok {
+			step, _, ok = e.graph.ResolveScopedRuntimeStep(stepID)
+		}
+		if ok && (stepKind(step) == StepKindPrompt || stepKind(step) == StepKindTemplate) {
+			return fmt.Errorf("unfinished agent step %q has no durable delivery evidence; use an explicit restart-failed or reset to authorize resending", stepID)
+		}
+	}
 	return nil
 }
 
@@ -235,6 +454,7 @@ func (e *Executor) resetResumeState(workflow *Workflow) {
 	e.state.ParallelState = nil
 	e.state.ScopeStack = nil
 	e.state.InFlightSteps = nil
+	e.state.AgentDeliveries = nil
 	e.state.CurrentStep = ""
 	e.state.Errors = nil
 	e.stateMu.Unlock()
@@ -309,6 +529,11 @@ func (e *Executor) forceResumeIteration(stepID string, iteration int) {
 		if iterationIndexFromID(id, prefix) >= iteration {
 			delete(e.state.Steps, id)
 			prunedStepIDs = append(prunedStepIDs, id)
+		}
+	}
+	for id := range e.state.AgentDeliveries {
+		if iterationIndexFromID(id, prefix) >= iteration {
+			delete(e.state.AgentDeliveries, id)
 		}
 	}
 	e.stateMu.Unlock()
