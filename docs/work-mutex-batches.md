@@ -34,3 +34,35 @@ optimizer. Callers must still perform live atomic claims and reservation checks;
 this is not a distributed lease and cannot exclude a competing process after
 source verification. Projects without a JSONL export retain their existing
 DB-only behavior rather than claiming source-verified mutex coordination.
+
+## Claim-time enforcement
+
+The ordinary assignment and guarded stale-work claim transactions now recheck
+all requested mutex groups inside the same `BEGIN IMMEDIATE` transaction that
+changes the issue's status and assignee. Independent NTM processes using these
+claim paths against one SQLite database cannot both newly claim different tasks
+sharing a group. The issue row is the ownership record; there is no additional
+lock table, lease timer, or cleanup daemon. This check also works for DB-only
+workspaces, independently of whether recommendations had JSONL provenance.
+
+Planning and claims share the same Unicode case/whitespace normalization and
+tracker ownership predicate. In-progress tasks hold groups even without an
+assignee; any other nonterminal assigned task also holds them. Historical owners
+on closed/tombstoned rows do not. A retry excludes only its exact issue ID, not
+all tasks owned by its actor. Even idempotent and stale-recovery claims recheck
+for conflicting peers before returning permission to continue.
+
+A refused multi-group claim changes no task, event, dirty marker or mutex
+ownership. Failed writes and commits roll back together. Existing exact-owner
+claim release makes the groups available again. `AssignmentMutexError` wraps
+both `ErrAssignmentMutexHeld` and `ErrBeadAssignmentIneligible` and names only
+the requested task and its conflicting groups, not holder identities or private
+text. Typed eligibility refusals never trigger corruption-rebuild recovery,
+even when a task/group name contains words resembling a SQLite diagnostic.
+
+This is transactional tracker ownership, not a distributed lease over agent
+lifetimes. Direct `br`/SQL edits, generic unguarded claims, independently copied
+Beads databases, and Agent Mail reservations are outside this database gate.
+Mutating labels or prematurely closing/releasing an active task can remove its
+tracker protection; callers must retain their existing live reservation and
+assignment-lifecycle checks and inspect uncertain external effects before retry.

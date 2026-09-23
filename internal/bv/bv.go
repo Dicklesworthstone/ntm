@@ -939,6 +939,12 @@ func isBeadsDBCorruptionError(err error) bool {
 	if err == nil {
 		return false
 	}
+	// Typed authorization/ownership refusals can contain task IDs or mutex
+	// names that happen to match a SQLite diagnostic. They are not evidence
+	// of database corruption and must never trigger a destructive rebuild.
+	if errors.Is(err, ErrBeadAssignmentIneligible) || errors.Is(err, ErrBeadAlreadyClaimed) || errors.Is(err, ErrBeadTerminal) {
+		return false
+	}
 	message := strings.ToLower(err.Error())
 	for _, signature := range beadsDBCorruptionSignatures {
 		if strings.Contains(message, signature) {
@@ -1572,6 +1578,9 @@ func claimBeadForAssignmentTransaction(ctx context.Context, databasePath, beadID
 			Template: issue.Template, Wisp: wisp,
 		}
 	}
+	if err := requireAssignmentMutexes(ctx, tx, beadID); err != nil {
+		return BeadClaimResult{}, false, err
+	}
 	if sameActorInProgress {
 		if err := tx.Commit(); err != nil {
 			return BeadClaimResult{}, false, fmt.Errorf("commit idempotent assignment Beads claim: %w", err)
@@ -1758,6 +1767,9 @@ func claimBeadNonTerminalTransaction(ctx context.Context, databasePath, beadID, 
 			Deferred: issue.Deferred, Pinned: issue.Pinned, Ephemeral: issue.Ephemeral,
 			Template: issue.Template, Wisp: wisp,
 		}
+	}
+	if err := requireAssignmentMutexes(ctx, tx, beadID); err != nil {
+		return BeadClaimResult{}, false, err
 	}
 	if status == "in_progress" && currentAssignee == actor {
 		if err := tx.Commit(); err != nil {
