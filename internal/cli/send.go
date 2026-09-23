@@ -382,6 +382,10 @@ type SendOptions struct {
 	// Runtime: composing commands use collect mode to own terminal output.
 	executionPolicy sendExecutionPolicy
 	executionResult *sendExecutionResult
+	// Composing runtimes can bind a prepared message to their durable pane
+	// identity and reject prompt-echo ambiguity after all enrichment. The
+	// canonical service invokes this immediately before any delivery.
+	beforeDispatch func(context.Context, dispatchsvc.Request, []dispatchsvc.Delivery) error
 }
 
 // SendTarget represents a send target with optional variant filter.
@@ -2139,7 +2143,7 @@ func runSendInternal(opts SendOptions) (err error) {
 	}
 
 	dispatchRedactCfg := activeShellDispatchRedactionConfig()
-	dispatchService, err := newShellDispatchService(session, selectedPanes, dispatchRedactCfg)
+	dispatchService, err := newShellDispatchServiceWithGate(session, selectedPanes, dispatchRedactCfg, opts.beforeDispatch)
 	if err != nil {
 		return outputError(err)
 	}

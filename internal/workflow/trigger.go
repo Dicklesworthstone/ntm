@@ -50,6 +50,13 @@ type TriggerContext struct {
 	Outputs     []AgentOutput
 	Activities  []AgentActivity
 	Now         func() time.Time
+
+	// TransitionEvidence contains verified agent_says receipts for the current
+	// stage visit, keyed by the template's complete Flow.Transitions indexes.
+	// A nonnil map replaces raw-output matching for those transitions, allowing
+	// durable receipts to survive scrollback rollover and runner restarts.
+	// Nil preserves ordinary trigger evaluation against Outputs.
+	TransitionEvidence map[int]bool
 }
 
 func (c *TriggerContext) now() time.Time {

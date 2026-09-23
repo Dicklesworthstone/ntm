@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -24,6 +25,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	dispatchsvc "github.com/Dicklesworthstone/ntm/internal/dispatch"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/workflow"
 )
@@ -31,6 +33,12 @@ import (
 // workflowRunCaptureLines is how much pane scrollback feeds agent_says and
 // idle observation on each poll.
 const workflowRunCaptureLines = 200
+
+const (
+	workflowEvidenceVersion  = 1
+	workflowCaptureMaxBytes  = 512 << 10
+	workflowEvidenceMaxBytes = 64 << 10
+)
 
 // WorkflowRunAgent reports one role→pane assignment in the run result.
 type WorkflowRunAgent struct {
@@ -61,7 +69,10 @@ type workflowRunPorts struct {
 	// submission verification fails.
 	dispatch func(ctx context.Context, session, paneID, prompt string) error
 	// capture returns recent pane output for trigger observation.
-	capture func(paneID string, lines int) (string, error)
+	capture func(ctx context.Context, paneID string, lines int) (string, error)
+	// validate binds production observations to the same physical pane/PID
+	// throughout the run. Custom test transports own their pane identities.
+	validate func(context.Context) error
 	// notify surfaces progress/warnings on the human path.
 	notify func(format string, args ...any)
 	now    func() time.Time
@@ -122,14 +133,12 @@ type workflowRunner struct {
 	// dispatchStage from the main run loop.
 	dispatchMu sync.Mutex
 
-	mu           sync.Mutex
-	manuals      []*workflow.ManualTrigger
-	lastCapture  map[string]string
-	lastActivity map[string]time.Time
-	turn         int
-	stopReason   string
-	stopErr      error
-	cancel       context.CancelFunc
+	mu         sync.Mutex
+	manuals    []*workflow.ManualTrigger
+	turn       int
+	stopReason string
+	stopErr    error
+	cancel     context.CancelFunc
 
 	result WorkflowRunResult
 }
@@ -160,12 +169,10 @@ func newWorkflowRunner(template *workflow.WorkflowTemplate, agents []workflow.Co
 		opts.MaxTransitions = 8
 	}
 	r := &workflowRunner{
-		template:     template,
-		agents:       append([]workflow.CoordinatorAgent(nil), agents...),
-		opts:         opts,
-		ports:        ports,
-		lastCapture:  make(map[string]string),
-		lastActivity: make(map[string]time.Time),
+		template: template,
+		agents:   append([]workflow.CoordinatorAgent(nil), agents...),
+		opts:     opts,
+		ports:    ports,
 	}
 
 	defaults := workflow.NewTriggerRegistry()
@@ -356,6 +363,10 @@ func stageLabel(stage string) string {
 func (r *workflowRunner) dispatchStage(ctx context.Context, stage string, targets []workflow.CoordinatorAgent) error {
 	r.dispatchMu.Lock()
 	defer r.dispatchMu.Unlock()
+	return r.dispatchStageLocked(ctx, stage, targets)
+}
+
+func (r *workflowRunner) dispatchStageLocked(ctx context.Context, stage string, targets []workflow.CoordinatorAgent) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -366,6 +377,20 @@ func (r *workflowRunner) dispatchStage(ctx context.Context, stage string, target
 	if routing, ok := r.coordinator.(interface{ RoutingState() map[string]int }); ok {
 		nextByRole = routing.RoutingState()
 	}
+	if err := r.validatePanes(ctx); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	needsBoundary := r.state != nil && r.state.Evidence == nil
+	r.mu.Unlock()
+	var boundary map[string]workflow.StagePaneEvidence
+	if needsBoundary {
+		var err error
+		boundary, err = r.captureStageBoundary(ctx)
+		if err != nil {
+			return err
+		}
+	}
 	r.mu.Lock()
 	if r.state == nil || r.state.CurrentStage != stage {
 		r.mu.Unlock()
@@ -375,16 +400,26 @@ func (r *workflowRunner) dispatchStage(ctx context.Context, stage string, target
 		r.state.Dispatches = make([]workflow.StageDispatch, 0, len(targets))
 		for _, agent := range targets {
 			r.turn++
+			if err := r.validateVerdictPrompt(stage, agent.Role, r.stagePrompt(stage, agent, r.turn)); err != nil {
+				r.mu.Unlock()
+				return err
+			}
 			r.state.Dispatches = append(r.state.Dispatches, workflow.StageDispatch{
 				Pane: agent.ID, Role: agent.Role, Turn: r.turn, Status: "pending",
 			})
 		}
 		r.state.Turn = r.turn
 		r.state.NextByRole = nextByRole
-		if err := r.saveCheckpointLocked(); err != nil {
-			r.mu.Unlock()
-			return err
+	}
+	if r.state.Evidence == nil {
+		r.state.Evidence = &workflow.StageEvidence{
+			Version: workflowEvidenceVersion, Stage: stage, StartedAt: r.state.StageStartedAt,
+			Round: r.state.Turn, Panes: boundary, Matches: make(map[int][]string),
 		}
+	}
+	if err := r.saveCheckpointLocked(); err != nil {
+		r.mu.Unlock()
+		return err
 	}
 	plan := append([]workflow.StageDispatch(nil), r.state.Dispatches...)
 	r.mu.Unlock()
@@ -396,6 +431,12 @@ func (r *workflowRunner) dispatchStage(ctx context.Context, stage string, target
 			return fmt.Errorf("workflow delivery outcome unknown for pane %s at stage %q; refusing to resend", delivery.Pane, stage)
 		}
 		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := r.validatePanes(ctx); err != nil {
+			return err
+		}
+		if err := r.refreshDeliveryBoundary(ctx, delivery.Pane); err != nil {
 			return err
 		}
 		r.mu.Lock()
@@ -516,9 +557,64 @@ func (r *workflowRunner) loadCheckpoint() error {
 			return fmt.Errorf("workflow checkpoint has invalid delivery status %q", delivery.Status)
 		}
 	}
+	if err := r.validateSavedEvidence(prior); err != nil {
+		return err
+	}
 	r.opts.Vars = prior.Variables
 	r.state = prior
 	r.turn = prior.Turn
+	return nil
+}
+
+func (r *workflowRunner) stageHasVerdict(stage string) bool {
+	if r.template.Flow != nil {
+		for _, tr := range r.template.Flow.Transitions {
+			if tr.From == stage && tr.Trigger.Type == workflow.TriggerAgentSays {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (r *workflowRunner) validateSavedEvidence(state *workflow.WorkflowState) error {
+	if state.Evidence == nil {
+		if !state.Completed && r.stageHasVerdict(state.CurrentStage) {
+			for _, delivery := range state.Dispatches {
+				if delivery.Status != "pending" {
+					return errors.New("workflow checkpoint lacks the output boundary for an already-dispatched agent_says stage; inspect the stage before a deliberate --restart")
+				}
+			}
+		}
+		return nil
+	}
+	e := state.Evidence
+	if e.Version != workflowEvidenceVersion || e.Stage != state.CurrentStage || !e.StartedAt.Equal(state.StageStartedAt) || e.Round <= 0 || e.Round != state.Turn || len(e.Panes) != len(r.agents) {
+		return errors.New("workflow checkpoint has invalid stage output evidence")
+	}
+	for _, agent := range r.agents {
+		pane, ok := e.Panes[agent.ID]
+		if !ok || pane.PID != state.PanePIDs[agent.ID] || len(pane.Capture) > workflowCaptureMaxBytes || len(pane.Fresh) > workflowEvidenceMaxBytes || pane.LastActivity.IsZero() || pane.LastActivity.After(r.ports.now()) {
+			return fmt.Errorf("workflow checkpoint has invalid output evidence for pane %s", agent.ID)
+		}
+	}
+	for index, panes := range e.Matches {
+		if r.template.Flow == nil || index < 0 || index >= len(r.template.Flow.Transitions) {
+			return errors.New("workflow checkpoint evidence names an unknown transition")
+		}
+		tr := r.template.Flow.Transitions[index]
+		if tr.From != state.CurrentStage || tr.Trigger.Type != workflow.TriggerAgentSays {
+			return errors.New("workflow checkpoint evidence belongs to a different stage or trigger")
+		}
+		seen := make(map[string]bool, len(panes))
+		for _, pane := range panes {
+			role, ok := state.Agents[pane]
+			if !ok || seen[pane] || (tr.Trigger.Role != "" && role != tr.Trigger.Role) {
+				return errors.New("workflow checkpoint verdict has an invalid pane or role binding")
+			}
+			seen[pane] = true
+		}
+	}
 	return nil
 }
 
@@ -545,116 +641,312 @@ func (r *workflowRunner) completeCheckpoint() error {
 	return nil
 }
 
-// observe builds the trigger context from live pane captures. Activity
-// timestamps derive from observed content changes between polls.
-func (r *workflowRunner) observe(ctx context.Context) *workflow.TriggerContext {
-	tctx := &workflow.TriggerContext{
-		Context:     ctx,
-		ProjectRoot: r.opts.ProjectRoot,
-		Session:     r.opts.Session,
-		Now:         r.ports.now,
+func (r *workflowRunner) validatePanes(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
 	}
-	now := r.ports.now()
-	for _, agent := range r.agents {
-		text, err := r.ports.capture(agent.ID, workflowRunCaptureLines)
-		if err != nil {
-			r.ports.notify("workflow %s: capture pane %s: %v", r.template.Name, agent.ID, err)
-			continue
+	if r.ports.validate != nil {
+		if err := r.ports.validate(ctx); err != nil {
+			return fmt.Errorf("workflow pane identity changed; no further dispatch or transition: %w", err)
 		}
-		r.mu.Lock()
-		if r.lastCapture[agent.ID] != text {
-			r.lastCapture[agent.ID] = text
-			r.lastActivity[agent.ID] = now
-		}
-		last := r.lastActivity[agent.ID]
-		r.mu.Unlock()
-		tctx.Outputs = append(tctx.Outputs, workflow.AgentOutput{Role: agent.Role, Text: text})
-		tctx.Activities = append(tctx.Activities, workflow.AgentActivity{Role: agent.Role, LastActivity: last})
 	}
-	return tctx
+	return nil
 }
 
-// applyReviewGate wires ReviewGateCoordinator.Approve as the approval
-// threshold: reviewer outputs matching an approval transition's pattern are
-// recorded as approvals, and until the configured any/all/quorum threshold is
-// met those matching outputs are withheld from trigger evaluation so the
-// approval transition cannot fire early.
-func (r *workflowRunner) applyReviewGate(tctx *workflow.TriggerContext) *workflow.TriggerContext {
-	gate, ok := r.coordinator.(*workflow.ReviewGateCoordinator)
-	if !ok || r.template.Flow == nil || !r.template.Flow.RequireApproval {
-		return tctx
-	}
-	stage := r.coordinator.CurrentStage()
-	// Every agent_says transition out of the current stage is an approval
-	// transition while require_approval is set — regardless of the trigger's
-	// role name or whether its target stage is terminal. The trigger's role
-	// names the approver role; an empty role lets any agent approve.
-	var approvalTriggers []workflow.Trigger
-	for _, tr := range r.template.Flow.Transitions {
-		if tr.From == stage && tr.Trigger.Type == workflow.TriggerAgentSays {
-			approvalTriggers = append(approvalTriggers, tr.Trigger)
-		}
-	}
-	if len(approvalTriggers) == 0 {
-		return tctx
-	}
-	met := false
-	registry := workflow.NewTriggerRegistry()
+// captureStageBoundary must finish for every pane before the first stage
+// prompt. A partial roster is never interpreted as "all agents idle" or a
+// smaller approval quorum.
+func (r *workflowRunner) captureStageBoundary(ctx context.Context) (map[string]workflow.StagePaneEvidence, error) {
+	panes := make(map[string]workflow.StagePaneEvidence, len(r.agents))
 	for _, agent := range r.agents {
-		text := ""
-		r.mu.Lock()
-		text = r.lastCapture[agent.ID]
+		pane, err := r.captureWorkflowPane(ctx, agent.ID)
+		if err != nil {
+			return nil, err
+		}
+		panes[agent.ID] = pane
+	}
+	return panes, nil
+}
+
+func (r *workflowRunner) captureWorkflowPane(ctx context.Context, pane string) (workflow.StagePaneEvidence, error) {
+	if err := r.validatePanes(ctx); err != nil {
+		return workflow.StagePaneEvidence{}, err
+	}
+	text, err := r.ports.capture(ctx, pane, workflowRunCaptureLines)
+	if err != nil {
+		return workflow.StagePaneEvidence{}, fmt.Errorf("capture workflow pane %s before trusting its output: %w", pane, err)
+	}
+	if len(text) > workflowCaptureMaxBytes {
+		return workflow.StagePaneEvidence{}, fmt.Errorf("workflow pane %s capture exceeds %d bytes; output evidence is unavailable", pane, workflowCaptureMaxBytes)
+	}
+	if err := r.validatePanes(ctx); err != nil {
+		return workflow.StagePaneEvidence{}, err
+	}
+	return workflow.StagePaneEvidence{
+		PID: r.opts.PanePIDs[pane], Capture: strings.TrimRight(text, "\n"), LastActivity: r.ports.now(),
+	}, nil
+}
+
+// A pending recipient may finish unrelated work while earlier recipients are
+// being prompted, or during a pause. Start its boundary at its own dispatch,
+// keeping already-delivered recipients' boundaries and votes intact.
+func (r *workflowRunner) refreshDeliveryBoundary(ctx context.Context, pane string) error {
+	captured, err := r.captureWorkflowPane(ctx, pane)
+	if err != nil {
+		return err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.state == nil || r.state.Evidence == nil {
+		return errors.New("workflow delivery has no stage output boundary")
+	}
+	found := false
+	for _, delivery := range r.state.Dispatches {
+		if delivery.Pane == pane && (delivery.Status == "pending" || delivery.Status == "sending") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return fmt.Errorf("workflow pane %s is not awaiting this stage's delivery", pane)
+	}
+	r.state.Evidence.Panes[pane] = captured
+	for index, receipts := range r.state.Evidence.Matches {
+		kept := make([]string, 0, len(receipts))
+		for _, receipt := range receipts {
+			if receipt != pane {
+				kept = append(kept, receipt)
+			}
+		}
+		r.state.Evidence.Matches[index] = kept
+	}
+	return r.saveCheckpointLocked()
+}
+
+// workflowNewEvidence accepts append-only text or a retained complete-line
+// overlap after scrolling. Unlike display diffs, a missing boundary is an
+// error: a redraw or history reset must not turn old text into a new verdict.
+func workflowNewEvidence(before, after string) (string, error) {
+	if strings.HasPrefix(after, before) {
+		return after[len(before):], nil
+	}
+	for i := 0; i < len(before); i++ {
+		if before[i] != '\n' || i+1 >= len(before) {
+			continue
+		}
+		suffix := before[i+1:]
+		// Require an actual retained content line, never blank terminal rows.
+		if strings.TrimSpace(suffix) != "" && strings.HasPrefix(after, suffix) {
+			return after[len(suffix):], nil
+		}
+	}
+	return "", errors.New("the saved output boundary is no longer visible (scrollback loss or screen redraw); inspect the stage before a deliberate --restart")
+}
+
+// validateVerdictPrompt refuses ambiguous templates before they can echo their
+// own completion phrase into the observation stream. The production dispatch
+// hook repeats this check after enrichment, redaction, and prompt stamping.
+func (r *workflowRunner) validateVerdictPrompt(stage, role, prompt string) error {
+	if r.template.Flow == nil {
+		return nil
+	}
+	for _, tr := range r.template.Flow.Transitions {
+		if tr.From != stage || tr.Trigger.Type != workflow.TriggerAgentSays || (tr.Trigger.Role != "" && tr.Trigger.Role != role) {
+			continue
+		}
+		pattern, err := regexp.Compile(tr.Trigger.Pattern)
+		if err != nil {
+			return err
+		}
+		if pattern.MatchString(prompt) {
+			return fmt.Errorf("stage %q prompt itself matches agent_says pattern %q; remove the verdict phrase from the prompt or use a more specific response pattern", stage, tr.Trigger.Pattern)
+		}
+	}
+	return nil
+}
+
+type workflowObservation struct {
+	context *workflow.TriggerContext
+	stage   string
+	round   int
+}
+
+// observe persists fresh stage evidence before the coordinator may act on it.
+// Receipts remain useful after their text scrolls away or the runner pauses.
+func (r *workflowRunner) observe(ctx context.Context) (*workflowObservation, error) {
+	r.dispatchMu.Lock()
+	defer r.dispatchMu.Unlock()
+	coordinatorStage := r.coordinator.CurrentStage()
+	r.mu.Lock()
+	if r.state != nil && r.state.CurrentStage != coordinatorStage && r.state.Evidence != nil {
+		// A timeout policy deliberately skipped the stage. The serialized
+		// advance helper will record that move without evaluating another one.
+		observation := &workflowObservation{stage: r.state.CurrentStage, round: r.state.Evidence.Round}
 		r.mu.Unlock()
-		for _, trigger := range approvalTriggers {
-			if trigger.Role != "" && agent.Role != trigger.Role {
-				continue
-			}
-			probe, err := registry.Create(trigger)
+		return observation, nil
+	}
+	r.mu.Unlock()
+	current, err := r.captureStageBoundary(ctx)
+	if err != nil {
+		return nil, err
+	}
+	r.mu.Lock()
+	if r.state == nil || r.state.Evidence == nil {
+		r.mu.Unlock()
+		return nil, errors.New("workflow stage is missing its durable output boundary")
+	}
+	evidence := *r.state.Evidence
+	evidence.Panes = make(map[string]workflow.StagePaneEvidence, len(current))
+	evidence.Matches = make(map[int][]string, len(r.state.Evidence.Matches))
+	for index, panes := range r.state.Evidence.Matches {
+		evidence.Matches[index] = append([]string(nil), panes...)
+	}
+	tctx := &workflow.TriggerContext{
+		Context: ctx, ProjectRoot: r.opts.ProjectRoot, Session: r.opts.Session,
+		Now: r.ports.now, TransitionEvidence: make(map[int]bool),
+	}
+	changed := false
+	for _, agent := range r.agents {
+		prior, ok := r.state.Evidence.Panes[agent.ID]
+		if !ok || prior.PID != current[agent.ID].PID {
+			r.mu.Unlock()
+			return nil, fmt.Errorf("workflow pane %s lost its stage identity", agent.ID)
+		}
+		delta := ""
+		if r.stageHasVerdict(r.state.CurrentStage) {
+			var err error
+			delta, err = workflowNewEvidence(prior.Capture, current[agent.ID].Capture)
 			if err != nil {
-				continue
-			}
-			fired, err := probe.Check(&workflow.TriggerContext{Outputs: []workflow.AgentOutput{{Role: agent.Role, Text: text}}})
-			if err != nil || !fired {
-				continue
-			}
-			ok, err := gate.ApproveFromRole(agent.ID, trigger.Role)
-			if err != nil {
-				r.ports.notify("workflow %s: approval from %s rejected: %v", r.template.Name, agent.ID, err)
-				continue
-			}
-			r.ports.notify("workflow %s: recorded approval from %s (%s)", r.template.Name, agent.ID, agent.Role)
-			if ok {
-				met = true
+				r.mu.Unlock()
+				return nil, fmt.Errorf("workflow pane %s: %w", agent.ID, err)
 			}
 		}
+		if prior.Capture != current[agent.ID].Capture {
+			prior.LastActivity = r.ports.now()
+			changed = true
+		}
+		prior.Capture = current[agent.ID].Capture
+		// Keep the exact response prefix until its applicable verdicts have
+		// been recorded. Trimming changes regexp anchors and can manufacture
+		// an approval at the beginning of a retained suffix.
+		prior.Fresh += delta
+		evidence.Panes[agent.ID] = prior
+		tctx.Activities = append(tctx.Activities, workflow.AgentActivity{Role: agent.Role, LastActivity: prior.LastActivity})
 	}
-	if met {
-		return tctx
-	}
-	// Threshold not reached: withhold approver outputs that would satisfy an
-	// approval trigger so Evaluate cannot advance past the gate.
-	filtered := *tctx
-	filtered.Outputs = nil
-	for _, output := range tctx.Outputs {
-		blocked := false
-		for _, trigger := range approvalTriggers {
-			if trigger.Role != "" && output.Role != trigger.Role {
+	stage := r.state.CurrentStage
+	r.mu.Unlock()
+
+	registry := workflow.NewTriggerRegistry()
+	unmatched := make(map[string]bool, len(r.agents))
+	if r.template.Flow != nil {
+		for index, tr := range r.template.Flow.Transitions {
+			if tr.From != stage || tr.Trigger.Type != workflow.TriggerAgentSays {
 				continue
 			}
-			probe, err := registry.Create(trigger)
+			probe, err := registry.Create(tr.Trigger)
 			if err != nil {
-				continue
+				return nil, err
 			}
-			if fired, err := probe.Check(&workflow.TriggerContext{Outputs: []workflow.AgentOutput{output}}); err == nil && fired {
-				blocked = true
-				break
+			for _, agent := range r.agents {
+				if tr.Trigger.Role != "" && agent.Role != tr.Trigger.Role {
+					continue
+				}
+				if containsWorkflowPane(evidence.Matches[index], agent.ID) {
+					continue
+				}
+				text := evidence.Panes[agent.ID].Fresh
+				fired := false
+				if text != "" {
+					fired, err = probe.Check(&workflow.TriggerContext{Outputs: []workflow.AgentOutput{{Role: agent.Role, Text: text}}})
+					if err != nil {
+						return nil, err
+					}
+				}
+				if fired {
+					evidence.Matches[index] = append(evidence.Matches[index], agent.ID)
+					changed = true
+				} else {
+					unmatched[agent.ID] = true
+				}
 			}
-		}
-		if !blocked {
-			filtered.Outputs = append(filtered.Outputs, output)
+			met := len(evidence.Matches[index]) > 0
+			if gate, ok := r.coordinator.(*workflow.ReviewGateCoordinator); ok && r.template.Flow.RequireApproval {
+				met, err = gate.CheckApprovals(index, evidence.Matches[index])
+				if err != nil {
+					return nil, err
+				}
+			}
+			tctx.TransitionEvidence[index] = met
 		}
 	}
-	return &filtered
+	for pane, value := range evidence.Panes {
+		if !unmatched[pane] {
+			// All of this pane's applicable verdicts are durable receipts;
+			// their text is no longer needed for matching or later resume.
+			value.Fresh = ""
+		} else if len(value.Fresh) > workflowEvidenceMaxBytes {
+			return nil, fmt.Errorf("workflow pane %s response evidence exceeds %d bytes before all verdicts were observed; inspect the stage before a deliberate --restart", pane, workflowEvidenceMaxBytes)
+		}
+		evidence.Panes[pane] = value
+	}
+	if err := r.validatePanes(ctx); err != nil {
+		return nil, err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.state.CurrentStage != stage || r.state.Evidence.Round != evidence.Round {
+		return nil, errors.New("workflow stage changed while collecting output evidence")
+	}
+	if changed {
+		r.state.Evidence = &evidence
+		if err := r.saveCheckpointLocked(); err != nil {
+			return nil, err
+		}
+	}
+	return &workflowObservation{context: tctx, stage: stage, round: evidence.Round}, nil
+}
+
+// advanceObservation holds the same lease as retry/skip through evaluation
+// and the durable transition. A response observed before a retry cannot approve
+// the replacement round even if it was waiting for this lock during dispatch.
+func (r *workflowRunner) advanceObservation(ctx context.Context, observed *workflowObservation) (bool, string, bool, error) {
+	r.dispatchMu.Lock()
+	defer r.dispatchMu.Unlock()
+	r.mu.Lock()
+	current := observed != nil && r.state != nil && r.state.Evidence != nil &&
+		r.state.CurrentStage == observed.stage && r.state.Evidence.Round == observed.round
+	r.mu.Unlock()
+	if !current {
+		return false, "", true, nil
+	}
+	if err := r.validatePanes(ctx); err != nil {
+		return false, "", false, err
+	}
+	newStage := r.coordinator.CurrentStage()
+	fired := newStage != observed.stage
+	if !fired {
+		var err error
+		fired, err = r.evaluate(observed.context)
+		if err != nil {
+			return false, "", false, err
+		}
+		newStage = r.coordinator.CurrentStage()
+	}
+	if fired || newStage != observed.stage {
+		if err := r.recordTransitionLocked(newStage); err != nil {
+			return false, newStage, false, err
+		}
+	}
+	return fired, newStage, false, nil
+}
+
+func containsWorkflowPane(panes []string, pane string) bool {
+	for _, candidate := range panes {
+		if candidate == pane {
+			return true
+		}
+	}
+	return false
 }
 
 // fireManualTriggers fires every manual trigger the registry has created.
@@ -703,6 +995,8 @@ func (a workflowRunActions) Pause(_ context.Context, reason string) error {
 }
 
 func (a workflowRunActions) SkipStage(_ context.Context) error {
+	a.r.dispatchMu.Lock()
+	defer a.r.dispatchMu.Unlock()
 	stage := a.r.coordinator.CurrentStage()
 	if a.r.template.Flow != nil {
 		for _, tr := range a.r.template.Flow.Transitions {
@@ -729,26 +1023,29 @@ func (a workflowRunActions) Abort(_ context.Context, err error) error {
 
 func (a workflowRunActions) RetryStage(ctx context.Context) error {
 	a.r.dispatchMu.Lock()
+	defer a.r.dispatchMu.Unlock()
 	stage := a.r.coordinator.CurrentStage()
 	a.r.mu.Lock()
 	if a.r.state == nil || a.r.state.CurrentStage != stage {
 		a.r.mu.Unlock()
-		a.r.dispatchMu.Unlock()
 		return errors.New("workflow stage changed before retry")
+	}
+	if len(a.r.state.Dispatches) == 0 || a.r.state.Evidence == nil {
+		a.r.mu.Unlock()
+		return errors.New("cannot retry a stage before its initial dispatch is established")
 	}
 	for _, delivery := range a.r.state.Dispatches {
 		if delivery.Status != "delivered" {
 			a.r.mu.Unlock()
-			a.r.dispatchMu.Unlock()
 			return errors.New("cannot retry a stage with unfinished or uncertain delivery")
 		}
 	}
 	// This is an intentional retry requested by the template's policy, not
 	// crash recovery. Save that new intent before assigning fresh turns.
 	a.r.state.Dispatches = nil
+	a.r.state.Evidence = nil
 	err := a.r.saveCheckpointLocked()
 	a.r.mu.Unlock()
-	a.r.dispatchMu.Unlock()
 	if err != nil {
 		a.r.stop("checkpoint-failed", err)
 		return err
@@ -758,7 +1055,7 @@ func (a workflowRunActions) RetryStage(ctx context.Context) error {
 		return err
 	}
 	a.r.ports.notify("workflow %s: retrying stage %s", a.r.template.Name, stage)
-	err = a.r.dispatchStage(ctx, stage, targets)
+	err = a.r.dispatchStageLocked(ctx, stage, targets)
 	if err != nil {
 		a.r.stop("dispatch-failed", err)
 	}
@@ -796,6 +1093,10 @@ func (r *workflowRunner) stopped() (string, error) {
 func (r *workflowRunner) recordTransition(newStage string) error {
 	r.dispatchMu.Lock()
 	defer r.dispatchMu.Unlock()
+	return r.recordTransitionLocked(newStage)
+}
+
+func (r *workflowRunner) recordTransitionLocked(newStage string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.state == nil {
@@ -810,6 +1111,7 @@ func (r *workflowRunner) recordTransition(newStage string) error {
 	r.state.CurrentStage = newStage
 	r.state.StageStartedAt = now
 	r.state.Dispatches = nil
+	r.state.Evidence = nil
 	r.state.Completed = r.stageIsTerminal(newStage)
 	// History and destination commit in ONE snapshot. A crash between two
 	// separate saves must not resurrect a stage already marked advanced.
@@ -1005,9 +1307,28 @@ func (r *workflowRunner) Run(ctx context.Context) (WorkflowRunResult, error) {
 			r.fireManualTriggers()
 		}
 
-		observed := r.applyReviewGate(r.observe(runCtx))
-		fired, err := r.evaluate(observed)
+		observed, err := r.observe(runCtx)
 		if err != nil {
+			if runCtx.Err() != nil {
+				continue // Classify cancellation/timeout at the loop boundary.
+			}
+			r.mu.Lock()
+			if r.state != nil {
+				now := r.ports.now()
+				r.state.Paused, r.state.PausedAt, r.state.PauseReason = true, &now, "output evidence unavailable: "+err.Error()
+				err = errors.Join(err, r.saveCheckpointLocked())
+			}
+			r.mu.Unlock()
+			return fail("observation-failed", err)
+		}
+		fired, newStage, stale, err := r.advanceObservation(runCtx, observed)
+		if stale {
+			continue
+		}
+		if err != nil {
+			if runCtx.Err() != nil {
+				continue // Preserve the stop policy or cancellation/timeout reason.
+			}
 			if r.errorHandler != nil {
 				if handleErr := r.errorHandler.Handle(runCtx, &workflow.WorkflowError{
 					Type: workflow.ErrorTriggerFailed, Stage: stage, Message: err.Error(), Timestamp: r.ports.now(),
@@ -1019,15 +1340,11 @@ func (r *workflowRunner) Run(ctx context.Context) (WorkflowRunResult, error) {
 			return fail("trigger-failed", err)
 		}
 
-		newStage := r.coordinator.CurrentStage()
 		if !fired && newStage == stage {
 			continue
 		}
 		result.Transitions++
 		r.ports.notify("workflow %s: stage %s → %s (transition %d)", r.template.Name, stageLabel(stage), stageLabel(newStage), result.Transitions)
-		if err := r.recordTransition(newStage); err != nil {
-			return fail("checkpoint-failed", err)
-		}
 		stage = newStage
 		result.Stages = append(result.Stages, stageLabel(stage))
 		if r.timeoutMonitor != nil {
@@ -1204,7 +1521,7 @@ func assignWorkflowPanes(template *workflow.WorkflowTemplate, panes []tmux.Pane)
 // workflowGatedDispatch is the production dispatch port: a single-pane send
 // through runSendWithTargets, i.e. the same liveness-gated, composer-verified
 // path as `ntm send` — never raw send-keys.
-func workflowGatedDispatch(workflowName string) func(ctx context.Context, session, paneID, prompt string) error {
+func workflowGatedDispatch(workflowName string, beforeDispatch func(context.Context, dispatchsvc.Request, []dispatchsvc.Delivery) error) func(ctx context.Context, session, paneID, prompt string) error {
 	return func(ctx context.Context, session, paneID, prompt string) error {
 		collected := &sendExecutionResult{}
 		err := runSendWithTargets(SendOptions{
@@ -1217,6 +1534,7 @@ func workflowGatedDispatch(workflowName string) func(ctx context.Context, sessio
 			ForceNonInteractive: true,
 			executionPolicy:     sendExecutionCollect,
 			executionResult:     collected,
+			beforeDispatch:      beforeDispatch,
 		})
 		if err != nil {
 			return err
@@ -1229,6 +1547,29 @@ func workflowGatedDispatch(workflowName string) func(ctx context.Context, sessio
 		}
 		return nil
 	}
+}
+
+// validateWorkflowPaneLifetimes observes the exact configured tmux server,
+// including SSH mode. Remote PIDs are compared as identifiers only.
+func validateWorkflowPaneLifetimes(ctx context.Context, session string, expected map[string]int) error {
+	panes, err := tmux.GetPanesContext(ctx, session)
+	if err != nil {
+		return err
+	}
+	live := make(map[string]tmux.Pane, len(panes))
+	for _, pane := range panes {
+		if _, duplicate := live[pane.ID]; duplicate {
+			return fmt.Errorf("workflow pane %s has ambiguous session membership", pane.ID)
+		}
+		live[pane.ID] = pane
+	}
+	for id, pid := range expected {
+		pane, ok := live[id]
+		if pid <= 0 || !ok || pane.PID != pid || pane.Dead {
+			return fmt.Errorf("workflow pane %s changed process lifetime or is unavailable", id)
+		}
+	}
+	return ctx.Err()
 }
 
 func newWorkflowsRunCmd() *cobra.Command {
@@ -1383,9 +1724,20 @@ func runWorkflowRun(ctx context.Context, ref string, flags workflowRunCLIFlags) 
 	if err != nil {
 		return failEarly(err)
 	}
-	panePIDs := make(map[string]int, len(panes))
-	for _, pane := range panes {
-		panePIDs[pane.ID] = pane.PID
+	panePIDs := make(map[string]int, len(agents))
+	for _, agent := range agents {
+		for _, pane := range panes {
+			if pane.ID == agent.ID {
+				panePIDs[pane.ID] = pane.PID
+				break
+			}
+		}
+	}
+	validatePanes := func(ctx context.Context) error {
+		return validateWorkflowPaneLifetimes(ctx, session, panePIDs)
+	}
+	if err := validatePanes(ctx); err != nil {
+		return failEarly(err)
 	}
 
 	projectRoot := strings.TrimSpace(flags.ProjectRoot)
@@ -1415,9 +1767,46 @@ func runWorkflowRun(ctx context.Context, ref string, flags workflowRunCLIFlags) 
 			fmt.Fprintf(os.Stderr, format+"\n", args...)
 		}
 	}
-	runner, err := newWorkflowRunner(template, agents, opts, workflowRunPorts{
-		dispatch: workflowGatedDispatch(template.Name),
-		capture:  tmux.CapturePaneOutput,
+	var runner *workflowRunner
+	beforeDispatch := func(ctx context.Context, request dispatchsvc.Request, deliveries []dispatchsvc.Delivery) error {
+		if request.Session != session || len(deliveries) != 1 {
+			return errors.New("workflow dispatch changed its session or single-pane target")
+		}
+		if err := validatePanes(ctx); err != nil {
+			return err
+		}
+		stage := runner.coordinator.CurrentStage()
+		runner.mu.Lock()
+		matchesStage := runner.state != nil && runner.state.CurrentStage == stage && runner.state.Evidence != nil
+		runner.mu.Unlock()
+		if !matchesStage {
+			return errors.New("workflow stage changed before the prepared prompt could be delivered")
+		}
+		for _, delivery := range deliveries {
+			pane := delivery.Target.Pane
+			if pid, ok := panePIDs[pane.ID]; !ok || pid <= 0 || pane.PID != pid {
+				return fmt.Errorf("prepared workflow delivery changed pane %s lifetime", pane.ID)
+			}
+			role := ""
+			for _, agent := range agents {
+				if agent.ID == pane.ID {
+					role = agent.Role
+					break
+				}
+			}
+			if err := runner.validateVerdictPrompt(stage, role, delivery.Message); err != nil {
+				return err
+			}
+			if err := runner.refreshDeliveryBoundary(ctx, pane.ID); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	runner, err = newWorkflowRunner(template, agents, opts, workflowRunPorts{
+		dispatch: workflowGatedDispatch(template.Name, beforeDispatch),
+		capture:  tmux.CapturePaneOutputContext,
+		validate: validatePanes,
 		notify:   notify,
 	})
 	if err != nil {

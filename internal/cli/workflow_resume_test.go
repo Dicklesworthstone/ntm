@@ -51,7 +51,7 @@ func resumeWorkflowPorts(sent *[]string) workflowRunPorts {
 			*sent = append(*sent, pane+":"+prompt)
 			return nil
 		},
-		capture: func(string, int) (string, error) { return "", nil },
+		capture: func(context.Context, string, int) (string, error) { return "", nil },
 	}
 }
 
@@ -203,6 +203,13 @@ func TestWorkflowResumeRejectsMismatchedOrInvalidCheckpointWithoutMutation(t *te
 		{"invalid routing", func(s *workflow.WorkflowState) { s.NextByRole["review"] = -1 }},
 		{"unknown delivery status", func(s *workflow.WorkflowState) { s.Dispatches[0].Status = "accepted-maybe" }},
 		{"duplicate pane", func(s *workflow.WorkflowState) { s.Dispatches = append(s.Dispatches, s.Dispatches[0]) }},
+		{"evidence version", func(s *workflow.WorkflowState) { s.Evidence.Version++ }},
+		{"evidence stage", func(s *workflow.WorkflowState) { s.Evidence.Stage = "build" }},
+		{"evidence round", func(s *workflow.WorkflowState) { s.Evidence.Round = s.Turn + 1 }},
+		{"stale evidence round", func(s *workflow.WorkflowState) { s.Evidence.Round = s.Turn - 1 }},
+		{"evidence pane lifetime", func(s *workflow.WorkflowState) { p := s.Evidence.Panes["%2"]; p.PID++; s.Evidence.Panes["%2"] = p }},
+		{"evidence transition", func(s *workflow.WorkflowState) { s.Evidence.Matches = map[int][]string{99: {"%2"}} }},
+		{"evidence wrong trigger", func(s *workflow.WorkflowState) { s.Evidence.Matches = map[int][]string{1: {"%2"}} }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -369,5 +376,138 @@ func TestWorkflowReconciledDeliveryResumesWithoutRestartingPriorStages(t *testin
 				}
 			}
 		})
+	}
+}
+
+func TestWorkflowResumeRetainsFreshReviewVotesWithoutRepeatingPrompts(t *testing.T) {
+	opts := resumeWorkflowOptions(t)
+	opts.MaxTransitions = 5
+	opts.PanePIDs["%3"] = 1003
+	template := reviewGateTemplate("all")
+	template.Flow.Initial = "review"
+	agents := []workflow.CoordinatorAgent{{ID: "%1", Role: "author"}, {ID: "%2", Role: "reviewer"}, {ID: "%3", Role: "reviewer"}}
+	fake := newFakeWorkflowSession()
+	fake.onDispatch = func(pane, _ string) {
+		if pane == "%2" {
+			fake.say(pane, "SHIP-VERDICT\nretained progress anchor")
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ports := fake.ports()
+	polls := 0
+	ports.sleep = func(context.Context, time.Duration) {
+		polls++
+		if polls == 2 {
+			// Ordinary scrollback rollover retains an overlap but no verdict.
+			fake.mu.Lock()
+			fake.outputs["%2"] = "retained progress anchor\n" + strings.Repeat("work in progress ", 5000)
+			fake.mu.Unlock()
+		}
+		if polls == 3 {
+			cancel()
+		}
+	}
+	first := mustResumeWorkflowRunner(t, template, agents, opts, ports)
+	if result, err := first.Run(ctx); !errors.Is(err, context.Canceled) || result.Transitions != 0 {
+		t.Fatalf("initial partial review = %+v, %v", result, err)
+	}
+	prior := mustLoadWorkflowCheckpoint(t, opts)
+	if prior.Evidence == nil || len(prior.Evidence.Matches[1]) != 1 || strings.Contains(prior.Evidence.Panes["%2"].Capture, "SHIP-VERDICT") || strings.Contains(prior.Evidence.Panes["%2"].Fresh, "SHIP-VERDICT") {
+		t.Fatalf("durable approval did not survive its text scrolling away: %+v", prior.Evidence)
+	}
+	if err := (&workflow.StateStore{Dir: opts.StateDir}).Pause(prior, "operator pause", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	fake.say("%3", "SHIP-VERDICT") // The second reviewer finishes while paused.
+	opts.Resume, opts.Vars = true, nil
+	resumePorts := fake.ports()
+	resumePorts.sleep = func(context.Context, time.Duration) {}
+	resumed := mustResumeWorkflowRunner(t, template, agents, opts, resumePorts)
+	result, err := resumed.Run(context.Background())
+	if err != nil || !result.Completed || !result.Resumed || len(fake.dispatchedPanes()) != 2 {
+		t.Fatalf("resume lost fresh votes or repeated prompts: %+v, %v, sends=%v", result, err, fake.dispatchedPanes())
+	}
+}
+
+func TestWorkflowResumeRefusesMissingVerdictBoundaryWithoutChangingCheckpoint(t *testing.T) {
+	opts := resumeWorkflowOptions(t)
+	template := reviewGateTemplate("all")
+	template.Flow.Initial = "review"
+	agents := []workflow.CoordinatorAgent{{ID: "%1", Role: "author"}, {ID: "%2", Role: "reviewer"}, {ID: "%3", Role: "reviewer"}}
+	opts.PanePIDs["%3"] = 1003
+	fake := newFakeWorkflowSession()
+	ctx, cancel := context.WithCancel(context.Background())
+	ports := fake.ports()
+	ports.sleep = func(context.Context, time.Duration) { cancel() }
+	first := mustResumeWorkflowRunner(t, template, agents, opts, ports)
+	if _, err := first.Run(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+	prior := mustLoadWorkflowCheckpoint(t, opts)
+	prior.Evidence = nil
+	store := &workflow.StateStore{Dir: opts.StateDir}
+	if err := store.Save(prior); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(opts.StateDir, opts.Session+".json")
+	before, _ := os.ReadFile(path)
+	opts.Resume, opts.Vars = true, nil
+	resumed := mustResumeWorkflowRunner(t, template, agents, opts, fake.ports())
+	result, err := resumed.Run(context.Background())
+	after, _ := os.ReadFile(path)
+	if err == nil || result.Reason != "resume-rejected" || !strings.Contains(err.Error(), "output boundary") || string(before) != string(after) || len(fake.dispatchedPanes()) != 2 {
+		t.Fatalf("missing boundary was trusted or changed: %+v, %v, sends=%v", result, err, fake.dispatchedPanes())
+	}
+}
+
+func TestWorkflowResumePendingRecipientExcludesItsEarlierTaskVerdict(t *testing.T) {
+	opts := resumeWorkflowOptions(t)
+	opts.MaxTransitions = 5
+	opts.PanePIDs["%3"] = 1003
+	template := reviewGateTemplate("all")
+	template.Flow.Initial = "review"
+	agents := []workflow.CoordinatorAgent{{ID: "%1", Role: "author"}, {ID: "%2", Role: "reviewer"}, {ID: "%3", Role: "reviewer"}}
+	fake := newFakeWorkflowSession()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	fake.onDispatch = func(pane, _ string) {
+		if pane == "%2" {
+			fake.say(pane, "SHIP-VERDICT")
+			cancel() // The first prompt arrived; the second has not been sent.
+		}
+	}
+	first := mustResumeWorkflowRunner(t, template, agents, opts, fake.ports())
+	if _, err := first.Run(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+	fake.say("%3", "SHIP-VERDICT") // Completion of an earlier, unrelated task.
+	resumeCtx, resumeCancel := context.WithCancel(context.Background())
+	defer resumeCancel()
+	ports := fake.ports()
+	polls := 0
+	ports.sleep = func(context.Context, time.Duration) {
+		polls++
+		if polls == 3 {
+			resumeCancel()
+		}
+	}
+	opts.Resume, opts.Vars = true, nil
+	resumed := mustResumeWorkflowRunner(t, template, agents, opts, ports)
+	result, err := resumed.Run(resumeCtx)
+	if !errors.Is(err, context.Canceled) || result.Completed || result.Transitions != 0 || len(fake.dispatchedPanes()) != 2 {
+		t.Fatalf("pending recipient's old task satisfied new review: %+v, %v sends=%v", result, err, fake.dispatchedPanes())
+	}
+	prior := mustLoadWorkflowCheckpoint(t, opts)
+	if len(prior.Evidence.Matches[1]) != 1 || prior.Evidence.Matches[1][0] != "%2" {
+		t.Fatalf("wrong reviewer receipt retained: %+v", prior.Evidence.Matches)
+	}
+	fake.say("%3", "SHIP-VERDICT") // The prompted review now actually finishes.
+	ports = fake.ports()
+	ports.sleep = func(context.Context, time.Duration) {}
+	finished := mustResumeWorkflowRunner(t, template, agents, opts, ports)
+	result, err = finished.Run(context.Background())
+	if err != nil || !result.Completed || len(fake.dispatchedPanes()) != 2 {
+		t.Fatalf("confirmed recipients were repeated or fresh review lost: %+v, %v sends=%v", result, err, fake.dispatchedPanes())
 	}
 }

@@ -38,6 +38,34 @@ type WorkflowState struct {
 	Turn          int             `json:"turn"`
 	Dispatches    []StageDispatch `json:"dispatches"`
 	Completed     bool            `json:"completed"`
+	// Evidence belongs to this particular visit to a stage. Its capture
+	// boundary is saved before prompts, and observed verdicts are saved before
+	// advancing. Resuming never substitutes old pane history for that boundary.
+	Evidence *StageEvidence `json:"evidence,omitempty"`
+}
+
+// StageEvidence binds incremental pane observations to one stage dispatch.
+// Matches uses the transition's index in the immutable workflow definition;
+// different verdict patterns never share approvals.
+type StageEvidence struct {
+	Version   int                          `json:"version"`
+	Stage     string                       `json:"stage"`
+	StartedAt time.Time                    `json:"started_at"`
+	Round     int                          `json:"round"`
+	Panes     map[string]StagePaneEvidence `json:"panes"`
+	Matches   map[int][]string             `json:"matches,omitempty"`
+}
+
+// StagePaneEvidence retains a bounded overlap boundary and exact response text.
+// Matched verdicts live in StageEvidence.Matches, so a long-running agent cannot
+// erase an already-observed approval by scrolling it out of the capture window.
+// Fresh is discarded only after all applicable verdicts have been recorded;
+// trimming it would change the meaning of anchored regular expressions.
+type StagePaneEvidence struct {
+	PID          int       `json:"pid"`
+	Capture      string    `json:"capture"`
+	Fresh        string    `json:"fresh,omitempty"`
+	LastActivity time.Time `json:"last_activity"`
 }
 
 // StageDispatch records one pane's prompt delivery in the current stage.

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -38,7 +39,7 @@ func (f *fakeWorkflowSession) ports() workflowRunPorts {
 			}
 			return nil
 		},
-		capture: func(paneID string, _ int) (string, error) {
+		capture: func(_ context.Context, paneID string, _ int) (string, error) {
 			f.mu.Lock()
 			defer f.mu.Unlock()
 			return f.outputs[paneID], nil
@@ -174,7 +175,7 @@ func TestWorkflowRunnerReviewGateRequiresAllApprovals(t *testing.T) {
 	agents := []workflow.CoordinatorAgent{{ID: "%1", Role: "author"}, {ID: "%2", Role: "reviewer"}, {ID: "%3", Role: "reviewer"}}
 	ports := fake.ports()
 	baseCapture := ports.capture
-	ports.capture = func(paneID string, lines int) (string, error) {
+	ports.capture = func(ctx context.Context, paneID string, lines int) (string, error) {
 		pollMu.Lock()
 		polls++
 		// Second reviewer approves only well after the first (poll 12+ is
@@ -185,7 +186,7 @@ func TestWorkflowRunnerReviewGateRequiresAllApprovals(t *testing.T) {
 		} else {
 			pollMu.Unlock()
 		}
-		return baseCapture(paneID, lines)
+		return baseCapture(ctx, paneID, lines)
 	}
 	runner, err := newWorkflowRunner(reviewGateTemplate("all"), agents,
 		workflowRunOptions{Session: "s", MaxTransitions: 5, Interval: 2 * time.Millisecond, FireManual: true}, ports)
@@ -244,7 +245,7 @@ func TestWorkflowRunnerReviewGateNonReviewerRoleNonTerminalTarget(t *testing.T) 
 	agents := []workflow.CoordinatorAgent{{ID: "%1", Role: "author"}, {ID: "%2", Role: "qa"}, {ID: "%3", Role: "qa"}}
 	ports := fake.ports()
 	baseCapture := ports.capture
-	ports.capture = func(paneID string, lines int) (string, error) {
+	ports.capture = func(ctx context.Context, paneID string, lines int) (string, error) {
 		pollMu.Lock()
 		polls++
 		late := polls > 12
@@ -252,7 +253,7 @@ func TestWorkflowRunnerReviewGateNonReviewerRoleNonTerminalTarget(t *testing.T) 
 		if late {
 			fake.say("%3", "QA-SHIP") // second qa approves several rounds later
 		}
-		return baseCapture(paneID, lines)
+		return baseCapture(ctx, paneID, lines)
 	}
 	runner, err := newWorkflowRunner(tmpl, agents,
 		workflowRunOptions{Session: "s", MaxTransitions: 5, Interval: 2 * time.Millisecond, FireManual: true}, ports)
@@ -540,5 +541,241 @@ func TestAssignWorkflowPanes(t *testing.T) {
 	}
 	if _, err := assignWorkflowPanes(tmpl, panes[:2]); err == nil || !strings.Contains(err.Error(), "needs 2 agent pane(s)") {
 		t.Fatalf("insufficient panes must error, got %v", err)
+	}
+}
+
+func TestWorkflowRunnerIgnoresVerdictsBeforeStageAndOnReentry(t *testing.T) {
+	for _, reenter := range []bool{false, true} {
+		t.Run(map[bool]string{false: "initial history", true: "second round"}[reenter], func(t *testing.T) {
+			fake := newFakeWorkflowSession()
+			fake.say("%1", "RED-HANDOFF")
+			fake.say("%2", "GREEN-HANDOFF")
+			redTurns := 0
+			if reenter {
+				fake.onDispatch = func(pane, _ string) {
+					if pane == "%1" {
+						redTurns++
+						if redTurns == 1 {
+							fake.say(pane, "RED-HANDOFF")
+						}
+					} else {
+						fake.say(pane, "GREEN-HANDOFF")
+					}
+				}
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			ports := fake.ports()
+			polls := 0
+			ports.sleep = func(context.Context, time.Duration) {
+				polls++
+				if polls == 5 {
+					cancel()
+				}
+			}
+			runner, err := newWorkflowRunner(pingPongTemplate(), []workflow.CoordinatorAgent{{ID: "%1", Role: "red"}, {ID: "%2", Role: "green"}},
+				workflowRunOptions{Session: "s", MaxTransitions: 6}, ports)
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := runner.Run(ctx)
+			wantTransitions, wantSends := 0, 1
+			if reenter {
+				wantTransitions, wantSends = 2, 3
+			}
+			if !errors.Is(err, context.Canceled) || result.Transitions != wantTransitions || len(fake.dispatchedPanes()) != wantSends {
+				t.Fatalf("stale verdict advanced workflow: result=%+v err=%v sends=%v", result, err, fake.dispatchedPanes())
+			}
+		})
+	}
+}
+
+func TestWorkflowRunnerKeepsDifferentReviewVerdictsSeparate(t *testing.T) {
+	template := reviewGateTemplate("all")
+	template.Flow.Initial = "review"
+	template.Flow.Transitions = []workflow.Transition{
+		{From: "review", To: "revise", Trigger: workflow.Trigger{Type: workflow.TriggerAgentSays, Pattern: "REVISE-VERDICT", Role: "reviewer"}},
+		{From: "review", To: "complete", Trigger: workflow.Trigger{Type: workflow.TriggerAgentSays, Pattern: "SHIP-VERDICT", Role: "reviewer"}},
+	}
+	fake := newFakeWorkflowSession()
+	fake.onDispatch = func(pane, _ string) {
+		if pane == "%2" {
+			fake.say(pane, "REVISE-VERDICT")
+		} else if pane == "%3" {
+			fake.say(pane, "SHIP-VERDICT")
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ports := fake.ports()
+	polls := 0
+	ports.sleep = func(context.Context, time.Duration) {
+		polls++
+		if polls == 3 {
+			cancel()
+		}
+	}
+	runner, err := newWorkflowRunner(template, []workflow.CoordinatorAgent{{ID: "%1", Role: "author"}, {ID: "%2", Role: "reviewer"}, {ID: "%3", Role: "reviewer"}},
+		workflowRunOptions{Session: "s", StateDir: t.TempDir()}, ports)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := runner.Run(ctx)
+	if !errors.Is(err, context.Canceled) || result.Completed || result.Transitions != 0 {
+		t.Fatalf("mixed verdicts satisfied a quorum: %+v %v", result, err)
+	}
+	state, err := runner.store.Load("s")
+	if err != nil || state.Evidence == nil || len(state.Evidence.Matches[0]) != 1 || len(state.Evidence.Matches[1]) != 1 {
+		t.Fatalf("independent verdict receipts = %+v, %v", state, err)
+	}
+}
+
+func TestWorkflowRunnerRefusesItsOwnVerdictPrompt(t *testing.T) {
+	fake := newFakeWorkflowSession()
+	runner, err := newWorkflowRunner(pingPongTemplate(), []workflow.CoordinatorAgent{{ID: "%1", Role: "red"}, {ID: "%2", Role: "green"}},
+		workflowRunOptions{Session: "s", Vars: map[string]string{"instructions": "Reply RED-HANDOFF after finishing"}}, fake.ports())
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := runner.Run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "prompt itself matches") || result.Success || len(fake.dispatchedPanes()) != 0 {
+		t.Fatalf("ambiguous prompt was delivered: %+v %v sends=%v", result, err, fake.dispatchedPanes())
+	}
+}
+
+func TestWorkflowRunnerPreservesReceiptsWhenOutputEvidenceFails(t *testing.T) {
+	for _, lostBoundary := range []bool{false, true} {
+		t.Run(map[bool]string{false: "capture failure", true: "screen replacement"}[lostBoundary], func(t *testing.T) {
+			fake := newFakeWorkflowSession()
+			fake.say("%1", "original unique screen")
+			ports := fake.ports()
+			capture := ports.capture
+			ports.capture = func(ctx context.Context, pane string, lines int) (string, error) {
+				if pane == "%1" && len(fake.dispatchedPanes()) > 0 {
+					if lostBoundary {
+						return "unrelated screen contains RED-HANDOFF", nil
+					}
+					return "", errors.New("recorded tmux capture failure")
+				}
+				return capture(ctx, pane, lines)
+			}
+			ports.sleep = func(context.Context, time.Duration) {}
+			runner, err := newWorkflowRunner(pingPongTemplate(), []workflow.CoordinatorAgent{{ID: "%1", Role: "red"}, {ID: "%2", Role: "green"}},
+				workflowRunOptions{Session: "s", StateDir: t.TempDir()}, ports)
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := runner.Run(context.Background())
+			if err == nil || result.Reason != "observation-failed" || result.Transitions != 0 || len(fake.dispatchedPanes()) != 1 {
+				t.Fatalf("untrusted capture advanced: %+v %v", result, err)
+			}
+			state, loadErr := runner.store.Load("s")
+			if loadErr != nil || !state.Paused || state.Dispatches[0].Status != "delivered" || state.Evidence == nil || len(state.Evidence.Matches) != 0 {
+				t.Fatalf("failure lost original evidence or receipt: %+v, %v", state, loadErr)
+			}
+		})
+	}
+}
+
+func TestWorkflowObservationCannotApproveRetriedRound(t *testing.T) {
+	fake := newFakeWorkflowSession()
+	fake.onDispatch = func(pane, _ string) {
+		if len(fake.dispatchedPanes()) == 1 {
+			fake.say(pane, "RED-HANDOFF")
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ports := fake.ports()
+	ports.sleep = func(context.Context, time.Duration) { cancel() }
+	runner, err := newWorkflowRunner(pingPongTemplate(), []workflow.CoordinatorAgent{{ID: "%1", Role: "red"}, {ID: "%2", Role: "green"}},
+		workflowRunOptions{Session: "s"}, ports)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runner.Run(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+	// Restart only the in-memory watcher at the persisted stage to inject the
+	// race deterministically; no prompt is repeated by observation itself.
+	if err := runner.coordinator.Start(&workflow.TriggerContext{Context: context.Background()}); err != nil {
+		t.Fatal(err)
+	}
+	defer runner.coordinator.Stop()
+	observed, err := runner.observe(context.Background())
+	if err != nil || !observed.context.TransitionEvidence[0] {
+		t.Fatalf("first round evidence = %+v, %v", observed, err)
+	}
+	if err := (workflowRunActions{r: runner}).RetryStage(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if fired, _, stale, err := runner.advanceObservation(context.Background(), observed); err != nil || fired || !stale {
+		t.Fatalf("old round observation applied after retry: fired=%v stale=%v err=%v", fired, stale, err)
+	}
+	if runner.coordinator.CurrentStage() != "red" || len(runner.state.Evidence.Matches) != 0 || len(fake.dispatchedPanes()) != 2 {
+		t.Fatalf("retry reused old verdict: %+v sends=%v", runner.state, fake.dispatchedPanes())
+	}
+}
+
+func TestWorkflowRunnerDoesNotManufactureAnchorsByTrimmingEvidence(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		pattern string
+		prefix  string
+	}{
+		{name: "multiline partial line", pattern: `(?m)^APPROVED`, prefix: "NOT "},
+		{name: "string partial line", pattern: `\AAPPROVED`, prefix: "NOT "},
+		{name: "string complete line", pattern: `\AAPPROVED`, prefix: "preamble\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			template := pingPongTemplate()
+			template.Flow.Transitions[0].Trigger.Pattern = tc.pattern
+			fake := newFakeWorkflowSession()
+			fake.onDispatch = func(pane, _ string) {
+				// The exact response cannot match, but a 64 KiB suffix would
+				// begin with APPROVED and invent a new regexp string/line start.
+				fake.mu.Lock()
+				fake.outputs[pane] = tc.prefix + "APPROVED" + strings.Repeat("x", workflowEvidenceMaxBytes-len("APPROVED"))
+				fake.mu.Unlock()
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			ports := fake.ports()
+			polls := 0
+			ports.sleep = func(context.Context, time.Duration) {
+				polls++
+				if polls == 3 {
+					cancel()
+				}
+			}
+			opts := workflowRunOptions{
+				Session: "s", StateDir: t.TempDir(), PanePIDs: map[string]int{"%1": 1001, "%2": 1002},
+			}
+			agents := []workflow.CoordinatorAgent{{ID: "%1", Role: "red"}, {ID: "%2", Role: "green"}}
+			runner, err := newWorkflowRunner(template, agents, opts, ports)
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := runner.Run(ctx)
+			if err == nil || !strings.Contains(err.Error(), "response evidence exceeds") || result.Reason != "observation-failed" || result.Transitions != 0 {
+				t.Fatalf("unbounded response acquired a false anchor: %+v, %v", result, err)
+			}
+			state, err := runner.store.Load(opts.Session)
+			if err != nil || !state.Paused || len(state.Evidence.Matches) != 0 || len(state.Evidence.Panes["%1"].Fresh) > workflowEvidenceMaxBytes || len(state.Dispatches) != 1 || state.Dispatches[0].Status != "delivered" {
+				t.Fatalf("evidence-limit pause lost the bounded checkpoint or receipt: %+v, %v", state, err)
+			}
+			// The saved boundary is unchanged on failure: resume cannot turn
+			// the same oversized response into a fresh suffix or resend a prompt.
+			opts.Resume = true
+			resumed, err := newWorkflowRunner(template, agents, opts, ports)
+			if err != nil {
+				t.Fatal(err)
+			}
+			polls = 0
+			result, err = resumed.Run(ctx)
+			if err == nil || !strings.Contains(err.Error(), "response evidence exceeds") || result.Transitions != 0 || len(fake.dispatchedPanes()) != 1 {
+				t.Fatalf("resume trusted truncated evidence or repeated delivery: %+v, %v, sends=%v", result, err, fake.dispatchedPanes())
+			}
+		})
 	}
 }

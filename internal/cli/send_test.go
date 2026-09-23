@@ -571,6 +571,47 @@ func TestUnifiedDistributeServiceStopsBeforeDeliveryWhenIdleGateFails(t *testing
 	}
 }
 
+func TestRunSendWithTargetsGateSeesFinalMessageAndRefusesTransport(t *testing.T) {
+	_, logPath := workflowCommandTmuxFixture(t, "stable")
+	cfg.Redaction.Mode = string(redaction.ModeRedact)
+	cfg.Robot.Semantic.Stamp = true
+	refusal := errors.New("workflow stage evidence changed")
+	gateCalls := 0
+	collected := &sendExecutionResult{}
+	err := runSendWithTargets(SendOptions{
+		Context: t.Context(), Session: "evidence-run", PaneSelector: "%91",
+		BasePrompt: "Review all changes carefully", Prompt: "Inspect the update with password=hunter2hunter2",
+		PromptSource: "workflow", ForceNonInteractive: true, NoHooks: true, NoCASS: true,
+		executionPolicy: sendExecutionCollect, executionResult: collected,
+		beforeDispatch: func(ctx context.Context, request dispatchsvc.Request, deliveries []dispatchsvc.Delivery) error {
+			gateCalls++
+			if err := ctx.Err(); err != nil {
+				t.Fatalf("gate received cancelled context: %v", err)
+			}
+			if request.Session != "evidence-run" || len(deliveries) != 1 || deliveries[0].Target.Pane.ID != "%91" || deliveries[0].Target.Pane.PID != 4242 {
+				t.Fatalf("gate lost exact delivery identity: request=%+v deliveries=%+v", request, deliveries)
+			}
+			message := deliveries[0].Message
+			if !strings.Contains(message, "Review all changes carefully") || !strings.Contains(message, "Inspect the update") || !strings.Contains(message, "[REDACTED:PASSWORD:") || strings.Contains(message, "hunter2hunter2") || !strings.Contains(message, "NTM-Pane: evidence-run/0.1") {
+				t.Fatalf("gate did not receive final composed, redacted, stamped message: %q", message)
+			}
+			return refusal
+		},
+	})
+	if !errors.Is(err, refusal) || gateCalls != 1 || !collected.recorded || collected.result.Success || collected.result.Delivered != 0 {
+		t.Fatalf("send ignored gate refusal: calls=%d result=%+v error=%v", gateCalls, collected, err)
+	}
+	log, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, operation := range []string{"load-buffer", "paste-buffer", "send-keys"} {
+		if strings.Contains(string(log), operation) {
+			t.Fatalf("refused final message reached %s: %s", operation, log)
+		}
+	}
+}
+
 // TestSendRealSession tests sending a prompt to a real tmux session
 func TestSendRealSession(t *testing.T) {
 	testutil.RequireTmuxThrottled(t)

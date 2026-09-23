@@ -164,8 +164,46 @@ How a run works:
 Useful flags: `--fire-manual` fires `manual` triggers automatically,
 `--interval` sets the trigger poll cadence, `--trigger-timeout` bounds
 command triggers, `--project-root` anchors file/command triggers, and
-`--resume` clears a paused checkpoint recorded by the template's
-`error_handling` pause action.
+`--resume` continues the saved stage, including a paused checkpoint recorded
+by the template's `error_handling` pause action. Confirmed prompt deliveries
+are retained, and unfinished deliveries keep their original pane plan.
+
+For TOML orchestration templates, `agent_says` observes output from configured
+workflow participants with the transition's role, added after the current
+stage's saved pane boundary. An empty transition role includes all configured
+participants. Old verdicts in scrollback do not
+complete a new stage or a later visit to the same stage. Review gates count
+distinct eligible panes separately for each outgoing verdict pattern:
+`changes requested` cannot contribute toward an `approved` quorum. Observed
+votes are checkpointed, so a partial review survives a pause or restart even
+after its text scrolls out of the retained response buffer. `--resume` also
+observes responses produced while the runner was stopped without sending
+confirmed prompts again.
+
+A review gate requiring several replies must prompt those reviewers: use
+`parallel_within_stage = true` or stage-to-role routing that selects the full
+reviewer role. A stage named exactly after its role otherwise uses the
+coordinator's round-robin selection for a single pane.
+
+Each capture and prepared dispatch is bound to the original physical pane
+and positive process ID. A missing pane, changed process, failed capture, or
+lost output boundary stops automatic advancement. Evidence captures cover
+200 scrollback lines and at most 512 KiB per pane; unmatched response text is
+retained exactly, up to 64 KiB. The runner pauses if this limit is exceeded
+before the pane's applicable verdicts have been observed, because trimming
+the response could change an anchored pattern's meaning. Recorded votes no
+longer require their response text. A missing overlap after a screen redraw
+or extensive scrollback loss is also reported explicitly. Inspect that stage before choosing
+an intentional `--restart`; the runner never interprets the whole replacement
+screen as a fresh response.
+
+An outgoing prompt must not match its own `agent_says` pattern. For example,
+putting the literal verdict phrase in a description or `--var` can make the
+terminal's prompt echo look like an agent response. Such a prompt is refused
+before transport, including when enrichment introduces the phrase. Use a
+distinct response pattern and keep it out of the outgoing prompt. Older
+checkpoints that lack a boundary for an already-dispatched `agent_says` stage
+are refused on resume rather than reconstructed from historical output.
 
 Note: `ntm spawn -t <template>` uses only the template's agent COUNTS to
 size a new session — it does not run the coordination. Spawn the session
