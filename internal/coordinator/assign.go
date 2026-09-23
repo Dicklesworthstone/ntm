@@ -225,6 +225,9 @@ func (c *SessionCoordinator) maintainAssignments(ctx context.Context) error {
 	if err := c.reconcileTerminalAssignments(ctx, store); err != nil {
 		failures = append(failures, fmt.Errorf("reconciling assignment ledger: %w", err))
 	}
+	if err := c.reconcileLostAssignments(ctx, store); err != nil {
+		failures = append(failures, fmt.Errorf("recovering lost assignment owners: %w", err))
+	}
 	for _, current := range store.ListActive() {
 		if err := ctx.Err(); err != nil {
 			failures = append(failures, err)
@@ -771,6 +774,13 @@ func (c *SessionCoordinator) reconcileTerminalAssignments(ctx context.Context, s
 }
 
 func (c *SessionCoordinator) reconcileTerminalAssignment(ctx context.Context, store *assignmentstore.AssignmentStore, observed *assignmentstore.Assignment, terminalStatus assignmentstore.AssignmentStatus, terminalReason string) (bool, error) {
+	return c.reconcileTerminalAssignmentAuthorized(ctx, store, observed, terminalStatus, terminalReason, nil)
+}
+
+// authorize runs against the current generation under its external cleanup
+// lock, before the terminal barrier is persisted. Once a barrier exists its
+// recorded outcome owns retries, including retries after the proof disappears.
+func (c *SessionCoordinator) reconcileTerminalAssignmentAuthorized(ctx context.Context, store *assignmentstore.AssignmentStore, observed *assignmentstore.Assignment, terminalStatus assignmentstore.AssignmentStatus, terminalReason string, authorize func(context.Context, *assignmentstore.Assignment) error) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
@@ -795,6 +805,10 @@ func (c *SessionCoordinator) reconcileTerminalAssignment(ctx context.Context, st
 	if current.PendingTerminalStatus == assignmentstore.StatusCompleted || current.PendingTerminalStatus == assignmentstore.StatusFailed {
 		terminalStatus = current.PendingTerminalStatus
 		terminalReason = current.PendingTerminalReason
+	} else if authorize != nil {
+		if err := authorize(ctx, current); err != nil {
+			return false, fmt.Errorf("authorize terminal assignment %s: %w", observed.BeadID, err)
+		}
 	}
 
 	begin := store.BeginTerminalReconciliationIfCurrent

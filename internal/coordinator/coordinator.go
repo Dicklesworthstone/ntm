@@ -49,6 +49,7 @@ type SessionCoordinator struct {
 	workItemDetailsFn           func(context.Context, string) (*bv.BeadAssignmentDetails, error)
 	claimBeadForAssignmentFn    func(context.Context, string, string, string, []string) (bv.BeadClaimResult, error)
 	releaseWorkItemClaimFn      func(context.Context, string, string, string) (bool, error)
+	allPanesForRecoveryFn       func(context.Context) (map[string][]tmux.Pane, error)
 	operatorGatedLabels         []string
 
 	// dispatchDeliveryProbeFn is the test seam for the mailbox probe that
@@ -647,12 +648,17 @@ func (c *SessionCoordinator) updateAgentStatesContext(ctx context.Context) error
 	// went unrecognized still exists, and treating it as gone would be a
 	// license to re-dispatch work that may already be sitting in it (ntm#304).
 	livePaneIDs := make(map[string]struct{}, len(observation.Panes))
-	for _, pane := range observation.Panes {
-		if paneID := strings.TrimSpace(pane.Pane.ID); paneID != "" {
-			livePaneIDs[paneID] = struct{}{}
-		}
-	}
+	topologyComplete := true
 	var observationErrors []error
+	for _, pane := range observation.Panes {
+		paneID := strings.TrimSpace(pane.Pane.ID)
+		if _, duplicate := livePaneIDs[paneID]; paneID == "" || duplicate {
+			topologyComplete = false
+			observationErrors = append(observationErrors, fmt.Errorf("incomplete physical pane topology: empty or repeated pane ID %q", paneID))
+			continue
+		}
+		livePaneIDs[paneID] = struct{}{}
+	}
 	for _, pane := range observation.Panes {
 		if pane.AgentType == string(tmux.AgentUser) || pane.AgentType == string(tmux.AgentUnknown) {
 			continue
@@ -757,7 +763,7 @@ func (c *SessionCoordinator) updateAgentStatesContext(ctx context.Context) error
 	c.lastUpdate = observation.ObservedAt
 	c.livePaneIDs = livePaneIDs
 	c.livePaneTopologyAt = observation.ObservedAt
-	c.livePaneTopologyValid = true
+	c.livePaneTopologyValid = topologyComplete
 	c.mu.Unlock()
 
 	// Emit events outside the lock to prevent deadlocks if the event bus

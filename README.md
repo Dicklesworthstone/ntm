@@ -487,6 +487,15 @@ assignments remain in the ledger, and a degraded coordinator cycle reports an
 error without dispatching new work. Watch mode checks the current saved ledger
 before exiting with `--stop-when-done`.
 
+The coordinator also recovers a delivered assignment when its original physical
+pane disappears. It verifies absence across the entire tmux server, rereads agent
+registries to rule out a moved or rebound owner, and checks the exact current
+Beads claim and recorded reservations. Only then does it persist task failure,
+release that assignment's leases, and reopen its claim for ordinary reassignment.
+Incomplete observations, a remaining pane, changed ownership, or failed cleanup
+keep the assignment protected. Interrupted cleanup resumes from its durable
+record; the previous prompt remains recorded as sent and is not replayed.
+
 ### 5. Safety Policy and Approvals
 
 NTM includes a first-class safety system for destructive or sensitive actions. Policy

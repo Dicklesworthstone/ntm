@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,6 +23,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/coordinator"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
+	"github.com/Dicklesworthstone/ntm/internal/sqliteutil"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
@@ -261,6 +263,7 @@ case "$1" in
   list-sessions) echo 'coordinator-maintenance_NTM_SEP_1_NTM_SEP_0_NTM_SEP_today' ;;
   list-panes)
     case "$*" in
+      *" -a "*) cat "$NTM_MAINTENANCE_FIXTURE/all-panes" ;;
       *window_activity*) cat "$NTM_MAINTENANCE_FIXTURE/activity" ;;
       *) cat "$NTM_MAINTENANCE_FIXTURE/panes" ;;
     esac ;;
@@ -417,6 +420,168 @@ func TestCoordinatorRunOnceMaintainsHealthyAssignmentsDespiteSiblingCaptureFailu
 		if call == "send_message" || call == "file_reservation_paths" {
 			t.Fatalf("degraded coordinator started new work: %v", f.toolCalls)
 		}
+	}
+}
+
+func TestCoordinatorRunOnceRecoversLostOwnerWithExactExternalCleanup(t *testing.T) {
+	for _, state := range []string{"lost", "recipient rebound", "pane moved to another session", "topology unavailable"} {
+		t.Run(state, func(t *testing.T) {
+			f := newCoordinatorMaintenanceCLIFixture(t, false)
+			current := f.store.Assignments["ntm-maintenance"]
+			current.DispatchReceiptID = "agent-mail-message-94"
+			expires := time.Now().UTC().Add(time.Hour)
+			current.ReservationExpiresAt = &expires
+			if err := f.store.Save(); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(cfgFile, []byte("[coordinator]\nauto_assign=false\nconflict_notify=false\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			binDir := os.Getenv("NTM_MAINTENANCE_FIXTURE")
+			userPane := []string{"%97", "4", "user", "bash", "100", "30", "0", fmt.Sprint(time.Now().Unix()), "4242", "0", "user"}
+			if err := os.WriteFile(filepath.Join(binDir, "activity"), []byte(strings.Join(userPane, tmux.FieldSeparator)+"\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			allPane := []string{f.session, "%97", "4", "user", "bash", "100", "30", "0", "4242", "0", "user"}
+			allPaneOutput := strings.Join(allPane, tmux.FieldSeparator) + "\n"
+			if state == "pane moved to another session" {
+				movedPane := []string{"other-session", "%94", "1", "moved", "claude", "100", "30", "0", "4243", "0", "cc"}
+				allPaneOutput += strings.Join(movedPane, tmux.FieldSeparator) + "\n"
+			}
+			if err := os.WriteFile(filepath.Join(binDir, "all-panes"), []byte(allPaneOutput), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if state == "recipient rebound" {
+				registry, err := agentmail.LoadSessionAgentRegistry(f.session, f.project)
+				if err != nil {
+					t.Fatal(err)
+				}
+				registry.AddAgent("user", "%97", current.AgentName)
+				if err := agentmail.SaveSessionAgentRegistry(registry); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if state == "topology unavailable" {
+				const unavailableTmux = `#!/bin/sh
+case "$1" in
+  -V) echo 'tmux 3.4' ;;
+  has-session) ;;
+  list-sessions) echo 'coordinator-maintenance_NTM_SEP_1_NTM_SEP_0_NTM_SEP_today' ;;
+  list-panes) echo 'topology unavailable' >&2; exit 1 ;;
+  *) echo 'unexpected tmux operation' >&2; exit 1 ;;
+esac
+`
+				if err := os.WriteFile(filepath.Join(binDir, "tmux"), []byte(unavailableTmux), 0700); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			// The command executes production Beads claim release against a real
+			// SQLite database; only br's process transport is recorded here.
+			databasePath := filepath.Join(f.project, "lost-owner.db")
+			db, err := sql.Open(sqliteutil.DriverName, sqliteutil.FileDSN(databasePath, "busy_timeout(5000)"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { db.Close() })
+			for _, statement := range []string{
+				`CREATE TABLE issues (id TEXT PRIMARY KEY, title TEXT NOT NULL DEFAULT '', status TEXT,
+ assignee TEXT, updated_at TEXT NOT NULL, content_hash TEXT, defer_until TEXT,
+ pinned INTEGER DEFAULT 0, ephemeral INTEGER DEFAULT 0, is_template INTEGER DEFAULT 0,
+ description TEXT NOT NULL DEFAULT '', design TEXT NOT NULL DEFAULT '', acceptance_criteria TEXT NOT NULL DEFAULT '',
+ notes TEXT NOT NULL DEFAULT '', priority INTEGER DEFAULT 1, issue_type TEXT DEFAULT 'task',
+ owner TEXT, created_by TEXT, external_ref TEXT, source_system TEXT)`,
+				`CREATE TABLE events (issue_id TEXT, event_type TEXT, actor TEXT, old_value TEXT,
+ new_value TEXT, comment TEXT, created_at TEXT, agent_name TEXT, harness TEXT, model TEXT)`,
+				`CREATE TABLE dirty_issues (issue_id TEXT PRIMARY KEY, marked_at TEXT)`,
+				`CREATE TABLE export_hashes (issue_id TEXT PRIMARY KEY, content_hash TEXT)`,
+				`CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT)`,
+			} {
+				if _, err := db.Exec(statement); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := db.Exec(`INSERT INTO issues (id, title, status, assignee, updated_at, content_hash) VALUES (?, ?, 'in_progress', ?, ?, 'original')`,
+				current.BeadID, current.BeadTitle, current.ClaimActor, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("NTM_LOST_ASSIGNMENT_DB", databasePath)
+			const claimBr = `#!/bin/sh
+printf '%s\n' "$*" >> "$NTM_MAINTENANCE_FIXTURE/br-calls"
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    info) printf '{"database_path":"%s"}\n' "$NTM_LOST_ASSIGNMENT_DB"; exit ;;
+    sync) printf '{}\n'; exit ;;
+    show)
+      case "$2" in
+        ntm-maintenance) echo '[{"id":"ntm-maintenance","title":"Interrupted work","issue_type":"task","status":"in_progress","assignee":"BlueLake:ntm-maintenance","labels":[],"dependencies":[]}]' ;;
+        ntm-finished) echo '[{"id":"ntm-finished","title":"Finished work","issue_type":"task","status":"closed","assignee":"","labels":[],"dependencies":[]}]' ;;
+        *) echo 'unexpected bead' >&2; exit 1 ;;
+      esac
+      exit ;;
+  esac
+  shift
+done
+echo 'unexpected br operation' >&2
+exit 1
+`
+			if err := os.WriteFile(filepath.Join(binDir, "br"), []byte(claimBr), 0700); err != nil {
+				t.Fatal(err)
+			}
+			run := func() {
+				t.Helper()
+				var output bytes.Buffer
+				cmd := newCoordinatorRunCmd()
+				cmd.SilenceUsage, cmd.SilenceErrors = true, true
+				cmd.SetOut(&output)
+				cmd.SetErr(io.Discard)
+				cmd.SetArgs([]string{f.session, "--once"})
+				err := cmd.Execute()
+				var response coordinatorRunOutput
+				if decodeErr := json.Unmarshal(output.Bytes(), &response); decodeErr != nil {
+					t.Fatalf("decode recovery result: %v command=%v output=%s", decodeErr, err, output.String())
+				}
+				if state == "lost" && (err != nil || !response.Success) || state != "lost" && (err == nil || response.Success) {
+					t.Fatalf("unexpected recovery result: %+v err=%v", response, err)
+				}
+			}
+			run()
+			if err := f.store.LoadStrict(); err != nil {
+				t.Fatal(err)
+			}
+			after := f.store.Get(current.BeadID)
+			var trackerStatus string
+			var actor sql.NullString
+			if err := db.QueryRow("SELECT status, assignee FROM issues WHERE id = ?", current.BeadID).Scan(&trackerStatus, &actor); err != nil {
+				t.Fatal(err)
+			}
+			var claimEvents int
+			if err := db.QueryRow("SELECT COUNT(*) FROM events WHERE issue_id = ?", current.BeadID).Scan(&claimEvents); err != nil {
+				t.Fatal(err)
+			}
+			if state == "lost" {
+				if after.Status != assignment.StatusFailed || after.ClearState != assignment.ClearStateNone || after.DispatchReceiptID != current.DispatchReceiptID ||
+					len(after.ReservationIDs) != 0 || trackerStatus != "open" || actor.String != "" || claimEvents != 2 || len(f.store.ListActive()) != 0 {
+					t.Fatalf("lost owner recovery did not finish its real claim transaction: row=%+v tracker=%s owner=%q events=%d", after, trackerStatus, actor.String, claimEvents)
+				}
+				run()
+			} else if after.Status != assignment.StatusWorking || after.ClearState != assignment.ClearStateNone || trackerStatus != "in_progress" || actor.String != current.ClaimActor || claimEvents != 0 {
+				t.Fatalf("unknown/live owner was released: row=%+v tracker=%s owner=%q events=%d", after, trackerStatus, actor.String, claimEvents)
+			}
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			ownerReleases := 0
+			for _, ids := range f.releaseIDs {
+				if reflect.DeepEqual(ids, []int{941, 942}) {
+					ownerReleases++
+				} else if !reflect.DeepEqual(ids, []int{961}) {
+					t.Fatalf("recovery released unrelated reservation IDs: %v", ids)
+				}
+			}
+			if state == "lost" && ownerReleases != 1 || state != "lost" && ownerReleases != 0 || len(f.renewals) != 0 {
+				t.Fatalf("lost owner cleanup repeated or widened lease effects: releases=%v renewals=%v", f.releaseIDs, f.renewals)
+			}
+		})
 	}
 }
 
