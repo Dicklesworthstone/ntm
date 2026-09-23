@@ -3,6 +3,7 @@
 package robot
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -129,7 +130,11 @@ const (
 	ProbeRecommendationHealthy         ProbeRecommendation = "healthy"
 	ProbeRecommendationLikelyStuck     ProbeRecommendation = "likely_stuck"
 	ProbeRecommendationDefinitelyStuck ProbeRecommendation = "definitely_stuck"
+	// Unknown is an observation/transport failure, not evidence of a hung agent.
+	ProbeRecommendationUnknown ProbeRecommendation = "unknown"
 )
+
+var ErrProbeTargetChanged = errors.New("probe target is unavailable or changed")
 
 // ProbeFlags contains the parsed and validated CLI flags for --robot-probe
 type ProbeFlags struct {
@@ -160,6 +165,9 @@ type ProbeDetails struct {
 	OutputChanged    bool   `json:"output_changed"`     // Whether output changed
 	LatencyMs        int64  `json:"latency_ms"`         // Time between probe and response
 	OutputDeltaLines int    `json:"output_delta_lines"` // How many lines changed
+	InputAttempted   bool   `json:"input_attempted"`
+	CleanupAttempted bool   `json:"cleanup_attempted"`
+	CleanupSucceeded bool   `json:"cleanup_succeeded"` // The cleanup key call succeeded, not proof of UI consumption.
 
 	// Wake-ping extras (ProbeMethodWakePing only): whether the post-probe
 	// screen still shows rate-limit patterns, and the last few visible
@@ -178,6 +186,7 @@ type ProbeOutput struct {
 	// Pane echoes the SELECTOR that was requested, which on a multi-window
 	// session names a whole window and can match more than one pane.
 	PaneRef        string              `json:"pane_ref,omitempty"`
+	PaneID         string              `json:"pane_id,omitempty"`
 	Responsive     bool                `json:"responsive"`
 	ProbeMethod    ProbeMethod         `json:"probe_method"`
 	ProbeDetails   ProbeDetails        `json:"probe_details"`
@@ -191,6 +200,7 @@ type ProbeEntry struct {
 	Pane int `json:"pane"`
 	// PaneRef names exactly which pane this entry describes; see ProbeOutput.
 	PaneRef        string              `json:"pane_ref,omitempty"`
+	PaneID         string              `json:"pane_id,omitempty"`
 	Responsive     bool                `json:"responsive"`
 	ProbeMethod    ProbeMethod         `json:"probe_method"`
 	ProbeDetails   ProbeDetails        `json:"probe_details"`
@@ -207,6 +217,7 @@ type ProbeSummary struct {
 	TotalProbed  int `json:"total_probed"`
 	Responsive   int `json:"responsive"`
 	Unresponsive int `json:"unresponsive"`
+	Errors       int `json:"errors"` // Probes whose responsiveness could not be established reliably.
 }
 
 // ProbeSessionOutput is the response for --robot-probe with multi-pane support.
@@ -347,6 +358,7 @@ type ProbeResult struct {
 	Confidence     ProbeConfidence // Confidence level of the result
 	Recommendation ProbeRecommendation
 	Reasoning      string
+	Err            error // Operational failure; must never authorize aggressive escalation.
 }
 
 // Probe poll interval for checking output changes
@@ -360,14 +372,22 @@ const probePollInterval = 50 * time.Millisecond
 // short tail sample (ntm-7rgt). Responsive means the TUI is alive;
 // still_rate_limited answers whether the wall is up — the two are
 // independent facts and are reported separately.
-func probeWakePing(target string, agentType string, timeout time.Duration) ProbeResult {
-	result := probeKeystrokeEcho(target, timeout)
+func probeWakePing(target string, agentType string, timeout time.Duration, guards ...func() error) ProbeResult {
+	result := probeKeystrokeEcho(target, timeout, guards...)
+	if result.Err != nil {
+		return result
+	}
 	result.Details.InputSent = "Space+Backspace (wake-ping)"
+	if err := checkProbeGuards(guards); err != nil {
+		return failProbe(result, err)
+	}
 
 	capture, err := CurrentTmuxClient.CapturePaneOutput(target, 15)
 	if err != nil {
-		result.Reasoning = strings.TrimSpace(result.Reasoning + "; post-probe capture failed: " + err.Error())
-		return result
+		return failProbe(result, fmt.Errorf("post-probe capture failed: %w", err))
+	}
+	if err := checkProbeGuards(guards); err != nil {
+		return failProbe(result, err)
 	}
 	clean := status.StripANSI(capture)
 	limited := isRateLimitPatternMatch(DefaultLibrary.Match(clean, agentType))
@@ -387,11 +407,10 @@ func probeWakePing(target string, agentType string, timeout time.Duration) Probe
 	return result
 }
 
-func probeKeystrokeEcho(target string, timeout time.Duration) ProbeResult {
-	result := ProbeResult{
+func probeKeystrokeEcho(target string, timeout time.Duration, guards ...func() error) (result ProbeResult) {
+	result = ProbeResult{
 		Responsive: false,
 		Details: ProbeDetails{
-			InputSent:     "Space+Backspace",
 			OutputChanged: false,
 			LatencyMs:     0,
 		},
@@ -403,8 +422,11 @@ func probeKeystrokeEcho(target string, timeout time.Duration) ProbeResult {
 	// 1. Capture baseline state
 	baseline, err := CapturePaneBaseline(target)
 	if err != nil {
-		result.Reasoning = fmt.Sprintf("failed to capture baseline: %v", err)
-		return result
+		return failProbe(result, fmt.Errorf("failed to capture baseline: %w", err))
+	}
+	// Baseline collection may block. Revalidate after it, before input.
+	if err := checkProbeGuards(guards); err != nil {
+		return failProbe(result, err)
 	}
 
 	// 2. Send an OBSERVABLE stimulus: a single space, cleaned up only after we
@@ -419,21 +441,31 @@ func probeKeystrokeEcho(target string, timeout time.Duration) ProbeResult {
 	// or token counter) rather than from the probe — uncorrelated with what
 	// the surface claims to measure (bd-5bexl).
 	probeStart := time.Now()
+	result.Details.InputAttempted = true
 	if err := CurrentTmuxClient.SendKeys(target, " ", false); err != nil {
-		result.Reasoning = fmt.Sprintf("failed to send probe space: %v", err)
-		return result
+		return failProbe(result, fmt.Errorf("failed to send probe space (inspect before retrying): %w", err))
 	}
-	// Erase the probe character on every exit path, including timeout and
-	// capture failure, so the probe never leaves a stray space in a live
-	// composer. Registered only after the space actually went out, so a
-	// failed send cannot delete a real character the operator typed.
+	result.Details.InputSent = "Space"
+	// Cleanup may only target the same observed pane/process. A failed or
+	// uncertain send must not backspace an unrelated character. If the target
+	// changed, preserve the uncertainty instead of typing into its replacement.
 	defer func() {
 		// BSpace is a tmux KEY NAME, so it must not go through SendKeys,
 		// which sends literally (-l) and would type the six characters
 		// "BSpace" into the pane — leaving text the operator's next Enter
 		// submits. This was the pre-existing behavior and is why the probe
 		// polluted live composers.
-		_ = CurrentTmuxClient.SendKeyName(target, "BSpace")
+		if err := checkProbeGuards(guards); err != nil {
+			result = failProbe(result, fmt.Errorf("probe cleanup withheld: %w", err))
+			return
+		}
+		result.Details.CleanupAttempted = true
+		if err := CurrentTmuxClient.SendKeyName(target, "BSpace"); err != nil {
+			result = failProbe(result, fmt.Errorf("probe cleanup failed; inspect remaining input: %w", err))
+			return
+		}
+		result.Details.CleanupSucceeded = true
+		result.Details.InputSent = "Space+Backspace"
 	}()
 
 	// 3. Poll for response until timeout
@@ -441,9 +473,10 @@ func probeKeystrokeEcho(target string, timeout time.Duration) ProbeResult {
 	for time.Now().Before(deadline) {
 		current, err := CapturePaneBaseline(target)
 		if err != nil {
-			// Capture error, try again
-			time.Sleep(probePollInterval)
-			continue
+			return failProbe(result, fmt.Errorf("capture probe response: %w", err))
+		}
+		if err := checkProbeGuards(guards); err != nil {
+			return failProbe(result, err)
 		}
 
 		change := ComparePaneState(baseline, current)
@@ -482,7 +515,7 @@ func probeKeystrokeEcho(target string, timeout time.Duration) ProbeResult {
 // checks for response. This is a definitive but disruptive test that may
 // interrupt ongoing work. Use only when keystroke_echo is ambiguous or with
 // --aggressive flag.
-func probeInterruptTest(target string, agentType tmux.AgentType, timeout time.Duration) ProbeResult {
+func probeInterruptTest(target string, agentType tmux.AgentType, timeout time.Duration, guards ...func() error) ProbeResult {
 	inputSent := "Ctrl-C"
 	if tmux.InterruptKeyForAgent(agentType) == "Escape" {
 		inputSent = "Escape"
@@ -490,7 +523,6 @@ func probeInterruptTest(target string, agentType tmux.AgentType, timeout time.Du
 	result := ProbeResult{
 		Responsive: false,
 		Details: ProbeDetails{
-			InputSent:     inputSent,
 			OutputChanged: false,
 			LatencyMs:     0,
 		},
@@ -502,12 +534,15 @@ func probeInterruptTest(target string, agentType tmux.AgentType, timeout time.Du
 	// 1. Capture baseline state
 	baseline, err := CapturePaneBaseline(target)
 	if err != nil {
-		result.Reasoning = fmt.Sprintf("failed to capture baseline: %v", err)
-		return result
+		return failProbe(result, fmt.Errorf("failed to capture baseline: %w", err))
+	}
+	if err := checkProbeGuards(guards); err != nil {
+		return failProbe(result, err)
 	}
 
 	// 2. Send the interrupt key
 	probeStart := time.Now()
+	result.Details.InputAttempted = true
 	var sendErr error
 	if inputSent == "Escape" {
 		sendErr = CurrentTmuxClient.SendKeyName(target, "Escape")
@@ -515,18 +550,19 @@ func probeInterruptTest(target string, agentType tmux.AgentType, timeout time.Du
 		sendErr = CurrentTmuxClient.SendInterrupt(target)
 	}
 	if sendErr != nil {
-		result.Reasoning = fmt.Sprintf("failed to send interrupt: %v", sendErr)
-		return result
+		return failProbe(result, fmt.Errorf("failed to send interrupt (inspect before retrying): %w", sendErr))
 	}
+	result.Details.InputSent = inputSent
 
 	// 3. Poll for response until timeout
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		current, err := CapturePaneBaseline(target)
 		if err != nil {
-			// Capture error, try again
-			time.Sleep(probePollInterval)
-			continue
+			return failProbe(result, fmt.Errorf("capture interrupt response: %w", err))
+		}
+		if err := checkProbeGuards(guards); err != nil {
+			return failProbe(result, err)
 		}
 
 		change := ComparePaneState(baseline, current)
@@ -550,6 +586,25 @@ func probeInterruptTest(target string, agentType tmux.AgentType, timeout time.Du
 	result.Confidence = ProbeConfidenceHigh
 	result.Recommendation = ProbeRecommendationDefinitelyStuck
 	result.Reasoning = fmt.Sprintf("no response to Ctrl-C within %dms - process appears hung", timeout.Milliseconds())
+	return result
+}
+
+func checkProbeGuards(guards []func() error) error {
+	for _, guard := range guards {
+		if guard != nil {
+			if err := guard(); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func failProbe(result ProbeResult, err error) ProbeResult {
+	result.Err = errors.Join(result.Err, err)
+	result.Confidence = ProbeConfidenceLow
+	result.Recommendation = ProbeRecommendationUnknown
+	result.Reasoning = result.Err.Error()
 	return result
 }
 
@@ -616,6 +671,7 @@ func probeResolvedPane(session string, targetPane tmux.Pane, multiWindow bool, s
 		Session:        session,
 		Pane:           selector,
 		PaneRef:        probePaneRef(targetPane, multiWindow),
+		PaneID:         targetPane.ID,
 		ProbeMethod:    flags.Method,
 		ProbeDetails:   ProbeDetails{},
 		Responsive:     false,
@@ -624,25 +680,28 @@ func probeResolvedPane(session string, targetPane tmux.Pane, multiWindow bool, s
 	}
 
 	if err := validateProbePane(targetPane); err != nil {
-		output.RobotResponse = NewErrorResponse(err, ErrCodeNotImplemented, agent.GrokPromptDeliveryCapabilityHint)
+		code, hint := ErrCodeNotImplemented, agent.GrokPromptDeliveryCapabilityHint
+		if errors.Is(err, ErrProbeTargetChanged) {
+			code, hint = ErrCodePaneNotFound, "Inspect current pane identities before retrying the probe"
+		}
+		output.RobotResponse = NewErrorResponse(err, code, hint)
+		output.Recommendation = ProbeRecommendationUnknown
 		return output
 	}
 
-	// The pane component must be the pane's OWN window-local index. Building it
-	// from the selector addressed a pane that either does not exist (every
-	// capture fails, so every healthy agent reads back "likely_stuck") or, in a
-	// split window, belongs to a different agent that then receives the probe
-	// keystrokes and the interrupt-test Ctrl-C.
-	target := fmt.Sprintf("%s:%d.%d", session, targetPane.WindowIndex, targetPane.Index)
+	// Addresses can be renumbered while another pane is being probed. Bind all
+	// captures, stimulus, cleanup and escalation to the physical ID instead.
+	target := targetPane.ID
+	guard := func() error { return recheckProbeTarget(session, targetPane) }
 	timeout := time.Duration(flags.TimeoutMs) * time.Millisecond
 
 	// Execute probe based on method
 	var probeResult ProbeResult
 	switch flags.Method {
 	case ProbeMethodKeystrokeEcho:
-		probeResult = probeKeystrokeEcho(target, timeout)
+		probeResult = probeKeystrokeEcho(target, timeout, guard)
 	case ProbeMethodInterruptTest:
-		probeResult = probeInterruptTest(target, targetPane.Type, timeout)
+		probeResult = probeInterruptTest(target, targetPane.Type, timeout, guard)
 	case ProbeMethodWakePing:
 		// Wake-ping is an agent-pane surface: probing the operator's shell
 		// answers nothing about rate limits and risks stray input there.
@@ -654,7 +713,7 @@ func probeResolvedPane(session string, targetPane tmux.Pane, multiWindow bool, s
 			)
 			return output
 		}
-		probeResult = probeWakePing(target, string(targetPane.Type), timeout)
+		probeResult = probeWakePing(target, string(targetPane.Type), timeout, guard)
 	default:
 		output.RobotResponse = NewErrorResponse(
 			fmt.Errorf("unknown probe method: %s", flags.Method),
@@ -665,9 +724,10 @@ func probeResolvedPane(session string, targetPane tmux.Pane, multiWindow bool, s
 	}
 
 	// If keystroke_echo failed and aggressive mode is enabled, try interrupt_test
-	if !probeResult.Responsive && flags.Aggressive && flags.Method == ProbeMethodKeystrokeEcho {
+	if probeResult.Err == nil && !probeResult.Responsive && flags.Aggressive && flags.Method == ProbeMethodKeystrokeEcho {
 		// Escalate to interrupt_test for definitive answer
-		probeResult = probeInterruptTest(target, targetPane.Type, timeout)
+		probeResult = probeInterruptTest(target, targetPane.Type, timeout, guard)
+		output.ProbeMethod = ProbeMethodInterruptTest
 		if probeResult.Responsive {
 			probeResult.Reasoning = "escalated from keystroke_echo: " + probeResult.Reasoning
 		}
@@ -679,6 +739,13 @@ func probeResolvedPane(session string, targetPane tmux.Pane, multiWindow bool, s
 	output.Confidence = probeResult.Confidence
 	output.Recommendation = probeResult.Recommendation
 	output.Reasoning = probeResult.Reasoning
+	if probeResult.Err != nil {
+		code := ErrCodeInternalError
+		if errors.Is(probeResult.Err, ErrProbeTargetChanged) {
+			code = ErrCodePaneNotFound
+		}
+		output.RobotResponse = NewErrorResponse(probeResult.Err, code, "Inspect the named pane and probe input; an observation failure is not evidence that an agent needs restarting")
+	}
 
 	return output
 }
@@ -687,6 +754,7 @@ func probeEntryFromOutput(output *ProbeOutput) ProbeEntry {
 	entry := ProbeEntry{
 		Pane:           output.Pane,
 		PaneRef:        output.PaneRef,
+		PaneID:         output.PaneID,
 		Responsive:     output.Responsive,
 		ProbeMethod:    output.ProbeMethod,
 		ProbeDetails:   output.ProbeDetails,
@@ -703,8 +771,44 @@ func probeEntryFromOutput(output *ProbeOutput) ProbeEntry {
 }
 
 func validateProbePane(pane tmux.Pane) error {
+	if !validProbePaneID(pane.ID) || pane.Dead || pane.Service != "" {
+		return fmt.Errorf("%w: pane %q cannot accept probe input", ErrProbeTargetChanged, pane.ID)
+	}
 	if err := pane.Type.ValidateAutomatedPromptDelivery(); err != nil {
 		return fmt.Errorf("pane %d (%s) does not support automated probe input: %w", pane.Index, pane.Type.Canonical(), err)
+	}
+	return nil
+}
+
+func validProbePaneID(id string) bool {
+	if len(id) < 2 || id[0] != '%' {
+		return false
+	}
+	for _, c := range id[1:] {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func recheckProbeTarget(session string, expected tmux.Pane) error {
+	panes, err := CurrentTmuxClient.GetPanes(session)
+	if err != nil {
+		return fmt.Errorf("verify probe target: %w", err)
+	}
+	var current tmux.Pane
+	matches := 0
+	for _, pane := range panes {
+		if pane.ID == expected.ID {
+			matches++
+			current = pane
+		}
+	}
+	if matches != 1 || current.Dead || current.Service != "" ||
+		current.Type.Canonical() != expected.Type.Canonical() || current.PID != expected.PID ||
+		current.Command != expected.Command {
+		return fmt.Errorf("%w: pane %s no longer matches its admitted identity", ErrProbeTargetChanged, expected.ID)
 	}
 	return nil
 }
@@ -785,6 +889,15 @@ func GetProbeSession(opts ProbeSessionOptions) (*ProbeSessionOutput, int) {
 		)
 		return output, 1
 	}
+	// Ambiguous discovery must not silently discard physical targets.
+	knownIDs := make(map[string]bool, len(panes))
+	for _, pane := range panes {
+		if !validProbePaneID(pane.ID) || knownIDs[pane.ID] {
+			output.RobotResponse = NewErrorResponse(fmt.Errorf("%w: invalid or duplicate pane ID %q", ErrProbeTargetChanged, pane.ID), ErrCodePaneNotFound, "Refresh session topology before probing")
+			return output, 1
+		}
+		knownIDs[pane.ID] = true
+	}
 
 	multiWindow := sessionSpansMultipleWindows(panes)
 
@@ -810,7 +923,7 @@ func GetProbeSession(opts ProbeSessionOptions) (*ProbeSessionOutput, int) {
 
 	if len(opts.Panes) == 0 {
 		for _, pane := range panes {
-			if detectAgentTypeFromPane(pane) == "user" {
+			if detectAgentTypeFromPane(pane) == "user" || pane.Service != "" || pane.Dead {
 				continue
 			}
 			selector := pane.Index
@@ -821,7 +934,12 @@ func GetProbeSession(opts ProbeSessionOptions) (*ProbeSessionOutput, int) {
 		}
 	} else {
 		for _, selector := range opts.Panes {
-			for _, pane := range resolveProbePanes(panes, selector) {
+			matches := resolveProbePanes(panes, selector)
+			if len(matches) == 0 {
+				output.RobotResponse = NewErrorResponse(fmt.Errorf("pane selector %d did not match session %q; no probes started", selector, opts.Session), ErrCodePaneNotFound, "Every requested selector must resolve before any probe input is sent")
+				return output, 1
+			}
+			for _, pane := range matches {
 				appendTarget(selector, pane)
 			}
 		}
@@ -847,8 +965,16 @@ func GetProbeSession(opts ProbeSessionOptions) (*ProbeSessionOutput, int) {
 	// input at panes that cannot accept it.
 	for _, target := range targets {
 		if err := validateProbePane(target.pane); err != nil {
+			if errors.Is(err, ErrProbeTargetChanged) {
+				output.RobotResponse = NewErrorResponse(err, ErrCodePaneNotFound, "Select live, non-service panes")
+				return output, 1
+			}
 			output.RobotResponse = NewErrorResponse(err, ErrCodeNotImplemented, agent.GrokPromptDeliveryCapabilityHint)
 			return output, 2
+		}
+		if canonical := target.pane.Type.Canonical(); opts.Flags.Method == ProbeMethodWakePing && (canonical == tmux.AgentUser || !canonical.IsValid()) {
+			output.RobotResponse = NewErrorResponse(fmt.Errorf("wake_ping requires agent panes; pane %s is %q", target.pane.ID, target.pane.Type), ErrCodeInvalidFlag, "Select only agent panes for wake_ping")
+			return output, 1
 		}
 	}
 
@@ -857,7 +983,9 @@ func GetProbeSession(opts ProbeSessionOptions) (*ProbeSessionOutput, int) {
 		entry := probeEntryFromOutput(probeOutput)
 		output.Probes = append(output.Probes, entry)
 		output.Summary.TotalProbed++
-		if entry.Error == "" && entry.Responsive {
+		if entry.Error != "" {
+			output.Summary.Errors++
+		} else if entry.Responsive {
 			output.Summary.Responsive++
 		} else {
 			output.Summary.Unresponsive++
@@ -885,7 +1013,7 @@ func GetProbeSession(opts ProbeSessionOptions) (*ProbeSessionOutput, int) {
 		}
 	}
 	output.RobotResponse = NewErrorResponse(
-		fmt.Errorf("%d of %d probed panes were unresponsive", output.Summary.Unresponsive, output.Summary.TotalProbed),
+		fmt.Errorf("%d of %d probes were unresponsive; %d probes failed", output.Summary.Unresponsive, output.Summary.TotalProbed, output.Summary.Errors),
 		errorCode,
 		hint,
 	)
