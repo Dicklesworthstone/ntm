@@ -67,6 +67,7 @@ type BuildOptions struct {
 	CorrelationID   string
 	ProjectDir      string
 	SessionID       string // For CM client connection
+	Remote          bool   // Remote project paths do not identify local CM workspaces
 	IncludeMSSkills bool   // Include Meta Skill suggestions as an optional component
 }
 
@@ -114,6 +115,7 @@ func cacheKey(opts BuildOptions, alloc BudgetAllocation) string {
 	writePart(opts.CorrelationID)
 	writePart(opts.ProjectDir)
 	writePart(opts.SessionID)
+	writePart(fmt.Sprintf("remote:%t", opts.Remote))
 	if opts.IncludeMSSkills {
 		writePart("ms:on")
 	} else {
@@ -316,6 +318,10 @@ func (b *ContextPackBuilder) buildTriageComponent(ctx context.Context, dir strin
 // buildCMComponent fetches CM context data
 func (b *ContextPackBuilder) buildCMComponent(ctx context.Context, opts BuildOptions, tokenBudget int) *PackComponent {
 	component := &PackComponent{Type: "cm"}
+	if opts.Remote {
+		component.Error = "local CM memory is unavailable for a remote project"
+		return component
+	}
 
 	_, installed := b.cmAdapter.Detect()
 	if !installed {
@@ -323,12 +329,7 @@ func (b *ContextPackBuilder) buildCMComponent(ctx context.Context, opts BuildOpt
 		return component
 	}
 
-	// Try to connect if we have session info
-	if opts.ProjectDir != "" && opts.SessionID != "" {
-		_ = b.cmAdapter.Connect(opts.ProjectDir, opts.SessionID)
-	}
-
-	data, err := b.cmAdapter.GetContext(ctx, opts.Task)
+	data, err := b.cmAdapter.GetContext(ctx, opts.Task, opts.ProjectDir, opts.SessionID)
 	if err != nil {
 		component.Error = err.Error()
 		return component

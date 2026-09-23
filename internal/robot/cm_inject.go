@@ -26,6 +26,7 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/cm"
 	"github.com/Dicklesworthstone/ntm/internal/process"
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 // DefaultCMQueryTimeout bounds the cm context query during a send. A wedged
@@ -76,14 +77,17 @@ type CMInjectConfig struct {
 	// OutcomeTimeout bounds the automatic outcome report.
 	OutcomeTimeout time.Duration
 
-	// ProjectDir is the daemon-discovery root (contains .ntm/pids). Empty
-	// means the current working directory.
+	// ProjectDir is the daemon-discovery root (contains .ntm/pids).
+	// Send operations bind it to the verified target project.
 	ProjectDir string
 
 	// Workspace is passed to cm as the workspace scope so same-basename
 	// projects do not bleed memory into each other (#132). Empty means
 	// ProjectDir.
 	Workspace string
+	// SessionID identifies the target session's daemon PID file. Discovery
+	// never substitutes another session's daemon from the same project.
+	SessionID string
 
 	// CLIBinary overrides the cm binary used by the CLI fallback. Empty
 	// means "cm" from PATH. Tests point it at a nonexistent path to make
@@ -124,11 +128,6 @@ func (c CMInjectConfig) normalized() CMInjectConfig {
 	if c.OutcomeTimeout <= 0 {
 		c.OutcomeTimeout = DefaultCMOutcomeTimeout
 	}
-	if c.ProjectDir == "" {
-		if wd, err := os.Getwd(); err == nil {
-			c.ProjectDir = wd
-		}
-	}
 	if c.Workspace == "" {
 		c.Workspace = c.ProjectDir
 	}
@@ -149,6 +148,40 @@ type CMInjectionInfo struct {
 	SkippedReason string `json:"skipped_reason,omitempty"`
 	// Source records which transport produced the rules: "daemon" or "cli".
 	Source string `json:"source,omitempty"`
+	// Workspace is the absolute project used for this retrieval.
+	Workspace string `json:"workspace,omitempty"`
+	outcome   CMOutcomeClient
+}
+
+// prepareCMSendContext binds optional memory to the selected live targets.
+// A remote cwd is not evidence of a matching local project, and an unresolved
+// scope must never fall back to the caller's cwd or a supplied stale default.
+func prepareCMSendContext(ctx context.Context, session string, panes []tmux.Pane, cfg CMInjectConfig) (CMInjectConfig, *CMInjectionInfo) {
+	info := &CMInjectionInfo{Enabled: cfg.Enabled}
+	if !cfg.Enabled {
+		info.SkippedReason = "memory integration disabled in config (memory.enabled=false)"
+		return cfg, info
+	}
+	if err := ctx.Err(); err != nil {
+		info.SkippedReason = fmt.Sprintf("memory scope resolution canceled: %v", err)
+		return cfg, info
+	}
+	if tmux.DefaultClient.Remote != "" {
+		info.SkippedReason = "local CM memory is unavailable for a remote session"
+		return cfg, info
+	}
+	cfg = cfg.normalized()
+	scopeCtx, cancel := context.WithTimeout(ctx, cfg.QueryTimeout)
+	defer cancel()
+	projectDir, err := ResolveLiveSessionProjectContext(scopeCtx, session, panes, func(ctx context.Context, paneID string) (string, error) {
+		return tmux.DefaultClient.RunContext(ctx, "display-message", "-p", "-t", tmux.ExactTarget(paneID), "#{pane_current_path}")
+	})
+	if err != nil {
+		info.SkippedReason = fmt.Sprintf("memory target project is unavailable: %v", err)
+		return cfg, info
+	}
+	cfg.ProjectDir, cfg.Workspace, cfg.SessionID = projectDir, projectDir, session
+	return cfg, nil
 }
 
 // cmCLIContextAdapter adapts the cm CLI client to CMContextClient.
@@ -161,6 +194,9 @@ func (a cmCLIContextAdapter) GetContext(ctx context.Context, task string, worksp
 	if err != nil || resp == nil {
 		return nil, err
 	}
+	if !resp.Success {
+		return nil, fmt.Errorf("cm context returned an unsuccessful result")
+	}
 	return &cm.ContextResult{
 		Task:             resp.Task,
 		RelevantBullets:  resp.RelevantBullets,
@@ -170,39 +206,20 @@ func (a cmCLIContextAdapter) GetContext(ctx context.Context, task string, worksp
 	}, nil
 }
 
-// discoverCMDaemonClient scans projectDir/.ntm/pids for a live cm daemon and
-// returns a connected MCP client for it. This is the same discovery contract
-// as internal/serve's checkMemoryDaemon (PID file named cm-<sessionID>.pid,
-// liveness-verified), reimplemented here because robot cannot depend on serve.
-func discoverCMDaemonClient(projectDir string) (*cm.Client, bool) {
-	pidsDir := filepath.Join(projectDir, ".ntm", "pids")
-	entries, err := os.ReadDir(pidsDir)
+// discoverCMDaemonClient resolves only the requested session's live daemon.
+func discoverCMDaemonClient(projectDir, sessionID string) (*cm.Client, bool) {
+	if !filepath.IsAbs(projectDir) || strings.TrimSpace(sessionID) == "" || tmux.ValidateSessionName(sessionID) != nil {
+		return nil, false
+	}
+	data, err := os.ReadFile(filepath.Join(projectDir, ".ntm", "pids", "cm-"+sessionID+".pid"))
 	if err != nil {
 		return nil, false
 	}
-	for _, entry := range entries {
-		name := entry.Name()
-		if !strings.HasPrefix(name, "cm-") || !strings.HasSuffix(name, ".pid") {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join(pidsDir, name))
-		if err != nil {
-			continue
-		}
-		var info cm.PIDFileInfo
-		if err := json.Unmarshal(data, &info); err != nil {
-			continue
-		}
-		if info.PID <= 0 || !process.IsAlive(info.PID) {
-			continue
-		}
-		sessionID := strings.TrimSuffix(strings.TrimPrefix(name, "cm-"), ".pid")
-		if info.Port <= 0 {
-			continue
-		}
-		return cm.NewPortClient(info.Port, sessionID), true
+	var info cm.PIDFileInfo
+	if json.Unmarshal(data, &info) != nil || info.PID <= 0 || !process.IsAlive(info.PID) || info.Port <= 0 || info.Port > 65535 {
+		return nil, false
 	}
-	return nil, false
+	return cm.NewPortClient(info.Port, sessionID), true
 }
 
 // resolveCMContextClient picks the query transport: explicit override first,
@@ -212,7 +229,7 @@ func resolveCMContextClient(cfg CMInjectConfig) (CMContextClient, string, bool) 
 	if cfg.Client != nil {
 		return cfg.Client, "daemon", true
 	}
-	if client, ok := discoverCMDaemonClient(cfg.ProjectDir); ok {
+	if client, ok := discoverCMDaemonClient(cfg.ProjectDir, cfg.SessionID); ok {
 		return client, "daemon", true
 	}
 	cli := cm.NewCLIClient(cm.WithCLIBinaryPath(cfg.CLIBinary), cm.WithCLITimeout(cfg.QueryTimeout))
@@ -311,6 +328,15 @@ func InjectCMRules(ctx context.Context, task, message string, cfg CMInjectConfig
 		return message, info
 	}
 	cfg = cfg.normalized()
+	if err := ctx.Err(); err != nil {
+		info.SkippedReason = fmt.Sprintf("cm context query canceled: %v", err)
+		return message, info
+	}
+	if !filepath.IsAbs(cfg.ProjectDir) || !filepath.IsAbs(cfg.Workspace) {
+		info.SkippedReason = "cm context requires an absolute target project and workspace"
+		return message, info
+	}
+	info.Workspace = cfg.Workspace
 
 	client, source, ok := resolveCMContextClient(cfg)
 	if !ok {
@@ -323,6 +349,9 @@ func InjectCMRules(ctx context.Context, task, message string, cfg CMInjectConfig
 	defer cancel()
 
 	result, err := client.GetContext(queryCtx, task, cfg.Workspace)
+	if queryCtx.Err() != nil {
+		err = queryCtx.Err()
+	}
 	if err != nil {
 		info.SkippedReason = fmt.Sprintf("cm context query failed: %v", err)
 		return message, info
@@ -340,6 +369,10 @@ func InjectCMRules(ctx context.Context, task, message string, cfg CMInjectConfig
 
 	info.RulesInjected = ids
 	info.TokensAdded = estimateCMTokens(block)
+	info.outcome = cfg.Outcome
+	if info.outcome == nil {
+		info.outcome, _ = client.(CMOutcomeClient)
+	}
 	return block + "\n---\n\n" + message, info
 }
 
@@ -367,15 +400,14 @@ func reportCMOutcome(cfg CMInjectConfig, status cm.OutcomeStatus, ruleIDs []stri
 		return
 	}
 	cfg = cfg.normalized()
+	if !filepath.IsAbs(cfg.ProjectDir) || !filepath.IsAbs(cfg.Workspace) {
+		return
+	}
 
 	client := cfg.Outcome
 	if client == nil {
-		daemon, ok := discoverCMDaemonClient(cfg.ProjectDir)
-		if !ok {
-			slog.Debug("cm outcome skipped: no daemon available", "rules", ruleIDs)
-			return
-		}
-		client = daemon
+		slog.Debug("cm outcome skipped: query had no outcome transport", "rules", ruleIDs)
+		return
 	}
 
 	done := make(chan struct{})

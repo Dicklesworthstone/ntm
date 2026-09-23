@@ -2107,6 +2107,7 @@ Shell Integration:
 				withCASS, cassQuery, cassFilter, cassInject := robotSendCASSOptions(robotSendWithCASS, robotSendNoCASS, cfg)
 				opts := robot.SendAndAckOptions{
 					SendOptions: robot.SendOptions{
+						Context:      cmd.Context(),
 						Session:      session,
 						Message:      robotSendMsg,
 						All:          robotSendAll,
@@ -2141,6 +2142,7 @@ Shell Integration:
 			withMemory, memoryInject := robotSendMemoryOptions(robotSendWithMemory, cfg)
 			withCASS, cassQuery, cassFilter, cassInject := robotSendCASSOptions(robotSendWithCASS, robotSendNoCASS, cfg)
 			opts := robot.SendOptions{
+				Context:        cmd.Context(),
 				Session:        session,
 				Message:        robotSendMsg,
 				All:            robotSendAll,

@@ -5,17 +5,21 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -383,7 +387,7 @@ func TestDiscoverCMDaemonClient(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, ok := discoverCMDaemonClient(dir); ok {
+	if _, ok := discoverCMDaemonClient(dir, "mysession"); ok {
 		t.Fatal("discovered a daemon in an empty pids dir")
 	}
 
@@ -398,7 +402,7 @@ func TestDiscoverCMDaemonClient(t *testing.T) {
 	}
 
 	writePID(os.Getpid(), 8321)
-	client, ok := discoverCMDaemonClient(dir)
+	client, ok := discoverCMDaemonClient(dir, "mysession")
 	if !ok {
 		t.Fatal("live daemon pid file not discovered")
 	}
@@ -408,7 +412,7 @@ func TestDiscoverCMDaemonClient(t *testing.T) {
 
 	// Dead PID must not be discovered.
 	writePID(1<<30+12345, 8321)
-	if _, ok := discoverCMDaemonClient(dir); ok {
+	if _, ok := discoverCMDaemonClient(dir, "mysession"); ok {
 		t.Error("discovered a daemon from a dead pid file")
 	}
 }
@@ -723,5 +727,220 @@ func TestGetSendWithMemoryDeliversInjectedBlockRealTmux(t *testing.T) {
 	// caller's message in the delivered keystrokes.
 	if strings.Index(captured, "## Project rules") > strings.Index(captured, baseMarker) {
 		t.Errorf("rules block should precede the original message: %q", captured)
+	}
+}
+
+// Exercise the public send engines with real CM HTTP/CLI traffic and recording
+// tmux/SSH transports. Each subprocess isolates tmux discovery and global state.
+func TestSendMemoryTargetScope(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("recording transport requires a POSIX shell")
+	}
+	for _, tracked := range []bool{false, true} {
+		for _, mode := range []string{"daemon", "cli", "dry-run", "unknown", "remote", "canceled", "cancel-query", "disabled", "changed-daemon"} {
+			t.Run(fmt.Sprintf("tracked=%t/%s", tracked, mode), func(t *testing.T) {
+				root := t.TempDir()
+				const transport = `#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "$NTM_CM_SCOPE_ROOT/tmux-calls"
+case "$1" in
+  -V) printf 'tmux 3.4\n' ;;
+  has-session) ;;
+  list-panes)
+    printf '%%7_NTM_SEP_1_NTM_SEP_target__aider_1_NTM_SEP_aider_NTM_SEP_120_NTM_SEP_40_NTM_SEP_1_NTM_SEP_%s_NTM_SEP_0_NTM_SEP_aider_NTM_SEP__NTM_SEP__NTM_SEP_0\n' "$NTM_CM_SCOPE_PID"
+    ;;
+  display-message)
+    if [ "$NTM_CM_SCOPE_MODE" = unknown ]; then printf 'relative/app\n'; else printf '%s\n' "$NTM_CM_SCOPE_TARGET"; fi
+    ;;
+  capture-pane)
+    printf 'Ready for work\n'
+    if [ -f "$NTM_CM_SCOPE_ROOT/delivered" ]; then printf 'Understood; working on the requested task.\n'; fi
+    ;;
+  load-buffer) cat >> "$NTM_CM_SCOPE_ROOT/payload" ;;
+  paste-buffer) : > "$NTM_CM_SCOPE_ROOT/delivered" ;;
+  send-keys)
+    printf '%s\n' "$@" >> "$NTM_CM_SCOPE_ROOT/payload"
+    : > "$NTM_CM_SCOPE_ROOT/delivered"
+    ;;
+  delete-buffer) ;;
+  *) printf 'unexpected tmux command: %s\n' "$*" >&2; exit 21 ;;
+esac
+`
+				const ssh = `#!/bin/sh
+set -eu
+for command do :; done
+exec /bin/sh -c "$command"
+`
+				const cli = `#!/bin/sh
+set -eu
+printf '%s\n' "$@" > "$NTM_CM_SCOPE_ROOT/cm-argv"
+if [ "$1" = context ] && [ "$4" = --workspace ] && [ "$5" = "$NTM_CM_SCOPE_TARGET" ]; then
+  printf '%s\n' '{"success":true,"data":{"relevantBullets":[{"id":"target-rule","content":"TARGET_PROJECT_RULE"}]}}'
+else
+  printf '%s\n' '{"success":true,"data":{"relevantBullets":[{"id":"wrong-rule","content":"CALLER_PROJECT_RULE"}]}}'
+fi
+`
+				for name, script := range map[string]string{"tmux": transport, "ssh": ssh, "cm": cli} {
+					if err := os.WriteFile(filepath.Join(root, name), []byte(script), 0700); err != nil {
+						t.Fatal(err)
+					}
+				}
+				ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+				defer cancel()
+				cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestSendMemoryTargetScopeHelper$")
+				cmd.Env = append(os.Environ(), "NTM_TEST_TMUX_ENV_OWNED=1", "NTM_TMUX_BINARY="+filepath.Join(root, "tmux"),
+					"NTM_CM_SCOPE_ROOT="+root, "NTM_CM_SCOPE_MODE="+mode, "NTM_CM_SCOPE_TRACKED="+strconv.FormatBool(tracked))
+				if output, err := cmd.CombinedOutput(); err != nil {
+					t.Fatalf("scoped memory: %v\n%s", err, output)
+				}
+			})
+		}
+	}
+}
+
+func TestSendMemoryTargetScopeHelper(t *testing.T) {
+	root := os.Getenv("NTM_CM_SCOPE_ROOT")
+	if root == "" {
+		return
+	}
+	mode := os.Getenv("NTM_CM_SCOPE_MODE")
+	tracked := os.Getenv("NTM_CM_SCOPE_TRACKED") == "true"
+	caller, target := filepath.Join(root, "client A", "app"), filepath.Join(root, "client B", "app")
+	for _, dir := range []string{caller, target} {
+		if err := os.MkdirAll(filepath.Join(dir, ".ntm", "pids"), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Chdir(caller)
+	t.Setenv("PATH", root+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("NTM_CM_SCOPE_PID", strconv.Itoa(os.Getpid()))
+	t.Setenv("NTM_CM_SCOPE_TARGET", target)
+	t.Setenv("NTM_CONFIG", filepath.Join(root, "config.toml"))
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	var wrongQueries, queries, outcomes atomic.Int32
+	_, wrongPort := newFakeCMDaemon(t, map[string]func(*testing.T, http.ResponseWriter, any, json.RawMessage){
+		"cm_context": func(t *testing.T, w http.ResponseWriter, id any, args json.RawMessage) {
+			wrongQueries.Add(1)
+			cmWriteToolText(t, w, id, cmContextPayload(cm.Rule{ID: "wrong", Content: "CALLER_PROJECT_RULE"}))
+		},
+		"cm_outcome": func(t *testing.T, w http.ResponseWriter, id any, args json.RawMessage) {
+			wrongQueries.Add(1)
+			cmWriteToolText(t, w, id, map[string]bool{"recorded": true})
+		},
+	})
+	writePID := func(dir, session string, port int) {
+		t.Helper()
+		data, err := json.Marshal(cm.PIDFileInfo{PID: os.Getpid(), Port: port})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, ".ntm", "pids", "cm-"+session+".pid"), data, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, targetPort := newFakeCMDaemon(t, map[string]func(*testing.T, http.ResponseWriter, any, json.RawMessage){
+		"cm_context": func(t *testing.T, w http.ResponseWriter, id any, args json.RawMessage) {
+			queries.Add(1)
+			var request struct {
+				Workspace string `json:"workspace"`
+			}
+			if err := json.Unmarshal(args, &request); err != nil || request.Workspace != target {
+				t.Errorf("target daemon received wrong workspace: %s (%v)", args, err)
+			}
+			if mode == "changed-daemon" {
+				writePID(target, "target", wrongPort)
+			}
+			if mode == "cancel-query" {
+				cancel()
+			}
+			cmWriteToolText(t, w, id, cmContextPayload(cm.Rule{ID: "target-rule", Content: "TARGET_PROJECT_RULE"}))
+		},
+		"cm_outcome": func(t *testing.T, w http.ResponseWriter, id any, args json.RawMessage) {
+			outcomes.Add(1)
+			var report outcomeCall
+			if err := json.Unmarshal(args, &report); err != nil || report.SessionID != "target" || len(report.RulesUsed) != 1 || report.RulesUsed[0] != "target-rule" {
+				t.Errorf("feedback lost retrieval identity: %s (%v)", args, err)
+			}
+			cmWriteToolText(t, w, id, map[string]bool{"recorded": true})
+		},
+	})
+	// The alphabetically-first same-project daemon and caller's identically
+	// named session must both be ignored. Feedback retains the queried daemon.
+	writePID(caller, "target", wrongPort)
+	writePID(target, "aaa-other-session", wrongPort)
+	if mode != "cli" {
+		writePID(target, "target", targetPort)
+	}
+	oldClient := tmux.DefaultClient
+	tmux.DefaultClient = tmux.NewClient("")
+	t.Cleanup(func() { tmux.DefaultClient = oldClient })
+	if mode == "remote" {
+		tmux.DefaultClient.Remote = "test-host"
+	}
+	mem := DefaultCMInjectConfig()
+	// Stale caller defaults must never override observed send targets.
+	mem.ProjectDir, mem.Workspace = caller, caller
+	mem.CLIBinary = filepath.Join(root, "cm")
+	mem.Enabled = mode != "disabled"
+	opts := SendOptions{Context: ctx, Session: "target", Pane: "%7", Message: "SCOPED_MEMORY_TASK", WithMemory: true, MemoryInject: &mem, DryRun: mode == "dry-run"}
+	if mode == "canceled" {
+		cancel()
+	}
+	var output *SendOutput
+	var err error
+	if tracked {
+		var combined *SendAndAckOutput
+		combined, err = GetSendAndAck(SendAndAckOptions{SendOptions: opts, AckTimeoutMs: 1000, AckPollMs: 10})
+		if combined != nil {
+			output = &combined.Send
+			if err == nil && !combined.Success {
+				t.Errorf("tracked operation failed: %+v", combined)
+			}
+		}
+	} else {
+		output, err = GetSend(opts)
+	}
+	payload, _ := os.ReadFile(filepath.Join(root, "payload"))
+	argv, _ := os.ReadFile(filepath.Join(root, "cm-argv"))
+	if wrongQueries.Load() != 0 || strings.Contains(string(payload), "CALLER_PROJECT_RULE") {
+		t.Fatalf("memory crossed target scope: wrong queries=%d payload=%s", wrongQueries.Load(), payload)
+	}
+	if mode == "canceled" || mode == "cancel-query" {
+		if !errors.Is(err, context.Canceled) || len(payload) != 0 || outcomes.Load() != 0 {
+			t.Fatalf("cancellation queried feedback or dispatched: err=%v payload=%s outcomes=%d", err, payload, outcomes.Load())
+		}
+		return
+	}
+	if err != nil || output == nil || !output.Success || output.MemoryInjection == nil {
+		t.Fatalf("send failed: output=%+v err=%v", output, err)
+	}
+	info := output.MemoryInjection
+	skipped := mode == "unknown" || mode == "remote" || mode == "disabled"
+	if skipped {
+		if info.SkippedReason == "" || queries.Load() != 0 || len(argv) != 0 || outcomes.Load() != 0 || strings.Contains(string(payload), "TARGET_PROJECT_RULE") {
+			t.Fatalf("unsafe scope did not skip memory: info=%+v queries=%d argv=%s payload=%s", info, queries.Load(), argv, payload)
+		}
+	} else {
+		if info.SkippedReason != "" || info.Workspace != target || len(info.RulesInjected) != 1 || info.RulesInjected[0] != "target-rule" {
+			t.Fatalf("wrong memory receipt: %+v", info)
+		}
+		if mode == "cli" && !strings.Contains(string(argv), "--workspace\n"+target+"\n") {
+			t.Fatalf("CM CLI lost target workspace: %s", argv)
+		}
+		wantOutcomes := int32(0)
+		if tracked && mode != "cli" && mode != "dry-run" {
+			wantOutcomes = 1
+		}
+		if outcomes.Load() != wantOutcomes {
+			t.Fatalf("feedback count=%d want=%d", outcomes.Load(), wantOutcomes)
+		}
+	}
+	if mode == "dry-run" {
+		if len(payload) != 0 || !output.DryRun {
+			t.Fatalf("dry run actuated: payload=%s output=%+v", payload, output)
+		}
+	} else if !strings.Contains(string(payload), "SCOPED_MEMORY_TASK") || (!skipped && !strings.Contains(string(payload), "TARGET_PROJECT_RULE")) {
+		t.Fatalf("actual delivery omitted target memory/task: %s", payload)
 	}
 }

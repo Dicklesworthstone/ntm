@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -169,20 +170,35 @@ func (a *CMAdapter) Info(ctx context.Context) (*ToolInfo, error) {
 
 // CM-specific methods
 
-// GetContext retrieves contextual information for a task. The CMAdapter
-// itself doesn't carry workspace identity (it's called from generic tool
-// adapters with no workingDir context), so it forwards an empty workspace
-// to CM's unscoped query. Callers that need workspace-scoped retrieval
-// should use the workspace-aware paths in `internal/cm/client.go` directly.
-func (a *CMAdapter) GetContext(ctx context.Context, taskDescription string) (json.RawMessage, error) {
-	if a.client != nil {
-		res, err := a.client.GetContext(ctx, taskDescription, "")
-		if err == nil {
-			return json.Marshal(res)
+// GetContext retrieves rules for the explicit workspace using the same typed
+// daemon and CLI clients as recovery. An absent scope never becomes a query
+// against the caller's current directory.
+func (a *CMAdapter) GetContext(ctx context.Context, taskDescription, workspace, sessionID string) (json.RawMessage, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if !filepath.IsAbs(workspace) {
+		return nil, fmt.Errorf("cm context requires an absolute workspace")
+	}
+	// Discover a client for this request, rather than mutating the adapter's
+	// connected endpoint when a builder serves several projects concurrently.
+	if sessionID != "" {
+		if client, err := cm.NewClient(workspace, sessionID); err == nil {
+			if res, err := client.GetContext(ctx, taskDescription, workspace); err == nil {
+				return json.Marshal(res)
+			}
 		}
 		// Fallback to CLI if HTTP fails
 	}
-	return a.runCommand(ctx, "context", taskDescription, "--json")
+	client := cm.NewCLIClient(cm.WithCLIBinaryPath(a.BinaryName()), cm.WithCLITimeout(a.Timeout()))
+	result, err := client.GetContext(ctx, taskDescription, workspace)
+	if err != nil {
+		return nil, err
+	}
+	if result == nil || !result.Success {
+		return nil, fmt.Errorf("cm context returned no successful result")
+	}
+	return json.Marshal(result)
 }
 
 // OnboardStatus returns onboarding status

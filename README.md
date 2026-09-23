@@ -662,6 +662,20 @@ ntm --robot-mail-check --mail-project=payments --urgent-only
 ntm --robot-cass-search="authentication error"
 ```
 
+Optional CM memory injection (`--with-memory` or `memory.send_injection`) uses
+the selected panes' verified project directory and the target session's daemon.
+Running the command from another checkout cannot select that checkout's memory,
+including when both projects have the same directory name. The JSON memory
+receipt identifies the queried workspace or explains why injection was skipped.
+Remote sessions and unresolved or mixed project scopes skip local CM retrieval
+and continue ordinary prompt delivery. Context-pack builds use the same explicit
+workspace scope.
+
+With `--track`, successful acknowledgment reports memory feedback to the daemon
+that supplied the rules. Changing daemon PID records while the send is pending
+does not redirect that feedback. Canceling the command stops pending memory
+retrieval and acknowledgment tracking.
+
 ### REST, SSE, WebSocket, and OpenAPI
 
 Run the local server:

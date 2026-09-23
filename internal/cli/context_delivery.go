@@ -158,6 +158,7 @@ type contextInjectDeps struct {
 	load      func(string) (*state.ContextPack, error)
 	send      contextPaneSender
 	includeMS bool
+	remote    bool
 }
 
 // runContextInjection is the command's preparation-to-delivery transaction.
@@ -333,6 +334,7 @@ func runContextInjection(ctx context.Context, opts contextInjectOptions, deps co
 				if !ok {
 					full, err = deps.build(ctx, ntmctx.BuildOptions{
 						AgentType: string(typ), ProjectDir: projectDir, SessionID: session,
+						Remote:  deps.remote,
 						RepoRev: getRepoRev(projectDir), Files: append([]string{}, files...),
 						Task: opts.Task, BeadID: opts.BeadID, IncludeMSSkills: deps.includeMS,
 					})

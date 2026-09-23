@@ -6304,8 +6304,9 @@ type SendError struct {
 
 // SendOptions configures the PrintSend operation
 type SendOptions struct {
-	Session        string // Target session name
-	Message        string // Message to send
+	Context        context.Context `json:"-"` // Optional caller cancellation; nil uses a background context
+	Session        string          // Target session name
+	Message        string          // Message to send
 	Redaction      redaction.Config
 	All            bool     // Send to all panes (including user)
 	Pane           string   // Singular N, W.P, or %N selector; mutually exclusive with Panes
@@ -7073,6 +7074,13 @@ func finalizeRobotSendDispatchStatus(output *SendOutput) {
 // GetSend sends a message to multiple panes atomically and returns structured results.
 // This function returns the data struct directly, enabling CLI/REST parity.
 func GetSend(opts SendOptions) (*SendOutput, error) {
+	ctx := opts.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	trace := normalizeActuationTrace(opts.RequestID, opts.CorrelationID, opts.IdempotencyKey)
 	redactCfg := normalizeSendRedactionConfig(opts.Redaction)
 	_, initialPreview, initialSummary, initialWarnings, initialBlocked := applySendMessageRedaction(opts.Message, redactCfg)
@@ -7243,11 +7251,13 @@ func GetSend(opts SendOptions) (*SendOutput, error) {
 		if opts.MemoryInject != nil {
 			memCfg = *opts.MemoryInject
 		}
-		modified, memInfo := InjectCMRules(context.Background(), opts.Message, messageToSend, memCfg)
-		output.MemoryInjection = memInfo
-		if modified != "" {
-			messageToSend = modified
+		memCfg, output.MemoryInjection = prepareCMSendContext(ctx, opts.Session, targetPanes, memCfg)
+		if output.MemoryInjection == nil {
+			messageToSend, output.MemoryInjection = InjectCMRules(ctx, opts.Message, messageToSend, memCfg)
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 
 	sendEnter := true
@@ -7382,7 +7392,7 @@ func GetSend(opts SendOptions) (*SendOutput, error) {
 		return finalizeTerminalSendActuation(trace, opts, &output), nil
 	}
 	prepared, prepareErr := service.Prepare(
-		context.Background(),
+		ctx,
 		robotPreparedDispatchRequest(panes, targetPanes, opts, messageToSend, sendEnter),
 	)
 	preview, summary, warnings := finalRedactor.outputView()
@@ -7409,7 +7419,7 @@ func GetSend(opts SendOptions) (*SendOutput, error) {
 	}
 
 	if opts.DryRun {
-		result, dispatchErr := service.Dispatch(context.Background(), prepared)
+		result, dispatchErr := service.Dispatch(ctx, prepared)
 		if dispatchErr != nil {
 			output.RobotResponse = NewErrorResponse(dispatchErr, ErrCodeInternalError, "Dispatch dry-run failed")
 			return finalizeTerminalSendActuation(trace, opts, &output), nil
@@ -7422,7 +7432,7 @@ func GetSend(opts SendOptions) (*SendOutput, error) {
 
 	publishSendActuationRequest(trace, opts, output.Targets, output.MessagePreview)
 	dispatchAttempted = true
-	result, _ := service.Dispatch(context.Background(), prepared)
+	result, _ := service.Dispatch(ctx, prepared)
 	applyRobotDispatchResult(&output, result)
 	if opts.VerifyRender {
 		output.RenderEvidence = verifySendRenderEvidence(targetPanes, targetKeys, output.Successful, renderBaselines)

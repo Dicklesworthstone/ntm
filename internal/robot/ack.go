@@ -491,6 +491,13 @@ type SendAndAckOutput struct {
 // GetSendAndAck sends a message and waits for acknowledgment, returning the result.
 // This function returns the data struct directly, enabling CLI/REST parity.
 func GetSendAndAck(opts SendAndAckOptions) (*SendAndAckOutput, error) {
+	ctx := opts.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	// First, send the message
 	sentAt := time.Now().UTC()
 	trace := normalizeActuationTrace(opts.RequestID, opts.CorrelationID, opts.IdempotencyKey)
@@ -660,11 +667,16 @@ func GetSendAndAck(opts SendAndAckOptions) (*SendAndAckOutput, error) {
 		memCfg = *opts.MemoryInject
 	}
 	if opts.WithMemory && len(targetPanes) > 0 {
-		modified, memInfo := InjectCMRules(context.Background(), opts.Message, opts.Message, memCfg)
-		memoryInfo = memInfo
-		if modified != "" {
-			opts.Message = modified
+		memCfg, memoryInfo = prepareCMSendContext(ctx, opts.Session, targetPanes, memCfg)
+		if memoryInfo == nil {
+			opts.Message, memoryInfo = InjectCMRules(ctx, opts.Message, opts.Message, memCfg)
+			// Feedback belongs to the exact daemon/session that supplied the
+			// rules, even if PID files change while acknowledgment is pending.
+			memCfg.Outcome = memoryInfo.outcome
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 
 	// A pane with no baseline is excluded from acknowledgment tracking below
@@ -676,7 +688,7 @@ func GetSendAndAck(opts SendAndAckOptions) (*SendAndAckOutput, error) {
 		paneKey := targetKeys[i]
 		// Capture initial state before sending
 		captured, err := func() (string, error) {
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 			defer cancel()
 			return tmux.CapturePaneOutputContext(ctx, pane.ID, ackCaptureLines)
 		}()
@@ -715,7 +727,7 @@ func GetSendAndAck(opts SendAndAckOptions) (*SendAndAckOutput, error) {
 			sendOutput.Failed = append(sendOutput.Failed, SendError{Pane: "dispatch", Error: serviceErr.Error()})
 		} else {
 			prepared, prepareErr := service.Prepare(
-				context.Background(),
+				ctx,
 				robotPreparedDispatchRequest(panes, targetPanes, opts.SendOptions, opts.Message, sendEnter),
 			)
 			finalPreview, finalSummary, finalWarnings := finalRedactor.outputView()
@@ -728,7 +740,7 @@ func GetSendAndAck(opts SendAndAckOptions) (*SendAndAckOutput, error) {
 				sendOutput.RobotResponse = robotDispatchPrepareErrorResponse(prepareErr)
 				sendOutput.Failed = append(sendOutput.Failed, SendError{Pane: "dispatch", Error: prepareErr.Error()})
 			} else if opts.DryRun {
-				result, dispatchErr := service.Dispatch(context.Background(), prepared)
+				result, dispatchErr := service.Dispatch(ctx, prepared)
 				if dispatchErr != nil {
 					sendOutput.RobotResponse = NewErrorResponse(dispatchErr, ErrCodeInternalError, "Dispatch dry-run failed")
 					sendOutput.Failed = append(sendOutput.Failed, SendError{Pane: "dispatch", Error: dispatchErr.Error()})
@@ -739,7 +751,7 @@ func GetSendAndAck(opts SendAndAckOptions) (*SendAndAckOutput, error) {
 				}
 			} else {
 				publishSendActuationRequest(trace, opts.SendOptions, targetKeys, sendOutput.MessagePreview)
-				result, _ := service.Dispatch(context.Background(), prepared)
+				result, _ := service.Dispatch(ctx, prepared)
 				applyRobotDispatchResult(&sendOutput, result)
 			}
 		}
@@ -785,14 +797,14 @@ func GetSendAndAck(opts SendAndAckOptions) (*SendAndAckOutput, error) {
 		opts.AckPollMs = 500
 	}
 
-	// Wait for initial processing delay
-	time.Sleep(100 * time.Millisecond)
+	// Wait for initial processing without retaining a canceled command.
+	waitAckPoll(ctx, 100*time.Millisecond)
 
 	// Poll for acknowledgments
 	deadline := time.Now().Add(time.Duration(opts.AckTimeoutMs) * time.Millisecond)
 	pollInterval := time.Duration(opts.AckPollMs) * time.Millisecond
 
-	for time.Now().Before(deadline) && len(ackOutput.Pending) > 0 {
+	for ctx.Err() == nil && time.Now().Before(deadline) && len(ackOutput.Pending) > 0 {
 		stillPending := []string{}
 
 		for _, paneKey := range ackOutput.Pending {
@@ -810,7 +822,7 @@ func GetSendAndAck(opts SendAndAckOptions) (*SendAndAckOutput, error) {
 			}
 
 			captured, err := func() (string, error) {
-				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 				defer cancel()
 				return tmux.CapturePaneOutputContext(ctx, targetPane.ID, ackCaptureLines)
 			}()
@@ -849,7 +861,7 @@ func GetSendAndAck(opts SendAndAckOptions) (*SendAndAckOutput, error) {
 		ackOutput.Pending = stillPending
 
 		if len(ackOutput.Pending) > 0 {
-			time.Sleep(pollInterval)
+			waitAckPoll(ctx, pollInterval)
 		}
 	}
 
@@ -863,13 +875,16 @@ func GetSendAndAck(opts SendAndAckOptions) (*SendAndAckOutput, error) {
 	}
 
 	ackOutput.CompletedAt = time.Now().UTC()
+	if err := ctx.Err(); err != nil {
+		ackOutput.RobotResponse = NewErrorResponse(err, ErrCodeTimeout, "Send completed; acknowledgment tracking was canceled")
+	}
 	publishSendActuationVerification(trace, opts, sendOutput, ackOutput)
 
 	// Automatic outcome feedback (bd-3j6hm): only clear evidence is reported.
 	// A confirmed acknowledgment with no panes left pending is a success for
 	// the injected rules; an ack timeout is ambiguous and reports nothing.
 	// reportCMOutcome is bounded and never fails the send.
-	if shouldReportCMSendOutcome(opts.WithMemory, memoryInfo, len(ackOutput.Confirmations), ackOutput.TimedOut) {
+	if ctx.Err() == nil && shouldReportCMSendOutcome(opts.WithMemory, memoryInfo, len(ackOutput.Confirmations), ackOutput.TimedOut) {
 		reportCMOutcome(memCfg, cm.OutcomeSuccess, memoryInfo.RulesInjected)
 	}
 
@@ -885,6 +900,15 @@ func GetSendAndAck(opts SendAndAckOptions) (*SendAndAckOutput, error) {
 		Send:          sendOutput,
 		Ack:           ackOutput,
 	}, nil
+}
+
+func waitAckPoll(ctx context.Context, delay time.Duration) {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+	case <-timer.C:
+	}
 }
 
 // PrintSendAndAck sends a message and waits for acknowledgment.

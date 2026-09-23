@@ -86,6 +86,7 @@ func newContextBuildCmd() *cobra.Command {
 				Files:           files,
 				ProjectDir:      dir,
 				SessionID:       session,
+				Remote:          tmux.DefaultClient.Remote != "",
 				IncludeMSSkills: cfg != nil && cfg.Context.MSSkills,
 			}
 
@@ -518,6 +519,7 @@ func defaultContextInjectDeps(w io.Writer) contextInjectDeps {
 		},
 		send:      sendContextToPane,
 		includeMS: cfg != nil && cfg.Context.MSSkills,
+		remote:    tmux.DefaultClient.Remote != "",
 	}
 }
 

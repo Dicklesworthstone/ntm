@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -134,4 +136,70 @@ func mustServerPort(t *testing.T, rawURL string) int {
 		t.Fatalf("Atoi(port=%q) error = %v", u.Port(), err)
 	}
 	return port
+}
+
+func TestCMAdapterContextUsesRequestedWorkspace(t *testing.T) {
+	caller := filepath.Join(t.TempDir(), "client A", "app")
+	target := filepath.Join(t.TempDir(), "client B", "app")
+	for _, dir := range []string{caller, target} {
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Chdir(caller)
+	var callerQueries atomic.Int32
+	callerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callerQueries.Add(1)
+		t.Error("context retrieval used the caller's connected daemon")
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer callerServer.Close()
+	workspaces := make(chan string, 1)
+	targetServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Params struct {
+				Name      string `json:"name"`
+				Arguments struct {
+					Workspace string `json:"workspace"`
+					Task      string `json:"task"`
+				} `json:"arguments"`
+			} `json:"params"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Error(err)
+		}
+		gotWorkspace := request.Params.Arguments.Workspace
+		workspaces <- gotWorkspace
+		if request.Params.Name != "cm_context" || request.Params.Arguments.Task != "fix auth" || gotWorkspace != target {
+			t.Errorf("wrong scoped query: %+v", request)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"jsonrpc": "2.0", "id": 1,
+			"result": map[string]any{"relevantBullets": []map[string]string{{"id": "target", "content": "target project guidance"}}},
+		})
+	}))
+	defer targetServer.Close()
+	writeCMPIDFile(t, caller, "demo", mustServerPort(t, callerServer.URL))
+	writeCMPIDFile(t, target, "demo", mustServerPort(t, targetServer.URL))
+	adapter := NewCMAdapter()
+	if err := adapter.Connect(caller, "demo"); err != nil {
+		t.Fatal(err)
+	}
+	data, err := adapter.GetContext(t.Context(), "fix auth", target, "demo")
+	var gotWorkspace string
+	select {
+	case gotWorkspace = <-workspaces:
+	default:
+	}
+	if err != nil || !strings.Contains(string(data), "target project guidance") || gotWorkspace != target || callerQueries.Load() != 0 {
+		t.Fatalf("scoped context = %s, workspace=%q caller queries=%d err=%v", data, gotWorkspace, callerQueries.Load(), err)
+	}
+	if _, err := adapter.GetContext(t.Context(), "fix auth", "", "demo"); err == nil {
+		t.Fatal("empty workspace inherited the caller's project")
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := adapter.GetContext(ctx, "fix auth", target, "demo"); err == nil {
+		t.Fatal("canceled query was accepted")
+	}
 }
