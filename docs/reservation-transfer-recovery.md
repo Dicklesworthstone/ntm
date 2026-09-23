@@ -10,6 +10,14 @@ further mutation. The transfer retains the reported grant paths and confirmed
 source-release paths, sets `outcome_unknown`, and stops without automatically
 releasing untrusted paths, retrying acquisition, or claiming rollback.
 
+The Agent Mail client labels decode and ownership-readback failures with
+`ErrReservationUnverified`, retaining the underlying cause and any recovered
+handles. Transfer recovery recognizes that classification even when every
+returned path looks requested and a conflict is also present. It does not issue
+cleanup, retry, or rollback mutations from that unverified receipt. This also
+stops the transfer when a later shared group fails verification after an earlier
+exclusive grant; all reported paths remain available for inspection.
+
 Exclusive and shared groups use the same acquisition helper. A failure in the
 first group stops before acquiring the second. Conflict errors remain errors
 even when the server omits the conflict detail array; conversely, conflict

@@ -294,6 +294,12 @@ func reserveGroup(ctx context.Context, client ReservationTransferClient, project
 		TTLSeconds: ttlSeconds, Exclusive: exclusive,
 		Reason: fmt.Sprintf("handoff transfer from %s", fromAgent),
 	})
+	if errors.Is(err, agentmail.ErrReservationUnverified) {
+		// Decoding/readback can preserve plausible requested paths while
+		// rejecting their ownership. Never turn those diagnostic handles into
+		// a cleanup scope, including when the error also carries a conflict.
+		err = errors.Join(ErrTransferGrantEvidence, err)
+	}
 	var granted []string
 	var conflicts []agentmail.ReservationConflict
 	if res == nil {

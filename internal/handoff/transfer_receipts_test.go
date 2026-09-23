@@ -286,3 +286,58 @@ func TestTransferDoesNotMutateRequestedPaths(t *testing.T) {
 		t.Fatalf("port mutated transfer scope: %+v, %v", result, err)
 	}
 }
+
+// A grant can name an expected path and still be unverified: Agent Mail keeps
+// the original receipt when decoding or independent ownership readback fails.
+func TestTransferUnverifiedOwnershipNeverAuthorizesCompensation(t *testing.T) {
+	cause := errors.New("active grant belongs to a different agent")
+	for _, tc := range []struct {
+		name                               string
+		conflict, noReceipt, sharedFailure bool
+	}{
+		{name: "readback failure"},
+		{name: "mixed conflict", conflict: true},
+		{name: "no receipt", noReceipt: true},
+		{name: "later shared group", sharedFailure: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := &receiptTransferClient{reserve: func(_ context.Context, o agentmail.FileReservationOptions) (*agentmail.ReservationResult, error) {
+				if o.AgentName != "new" {
+					t.Fatal("unverified receipt authorized source reacquisition")
+				}
+				if tc.sharedFailure && o.Exclusive {
+					return receiptGrants(o.Paths...), nil
+				}
+				err := errors.Join(agentmail.ErrReservationUnverified, cause)
+				if tc.conflict {
+					err = errors.Join(err, agentmail.ErrReservationConflict)
+				}
+				if tc.noReceipt {
+					return nil, err
+				}
+				return receiptGrants(o.Paths...), err
+			}}
+			opts := receiptTransferOptions()
+			if tc.sharedFailure {
+				opts.Reservations[1].Exclusive = false
+			}
+			result, err := TransferReservations(context.Background(), client, opts)
+			if !errors.Is(err, cause) || !errors.Is(err, agentmail.ErrReservationUnverified) || !errors.Is(err, ErrTransferGrantEvidence) || result.Success || result.RolledBack || !result.OutcomeUnknown {
+				t.Fatalf("ownership uncertainty was lost: result=%+v error=%v", result, err)
+			}
+			if result.Attempts != 1 || result.Stage != "reserve" || result.CleanupError != "" || result.RollbackError != "" {
+				t.Fatalf("unverified ownership reached compensation: %+v", result)
+			}
+			wantCalls := 2
+			if tc.sharedFailure {
+				wantCalls = 3
+			}
+			if len(client.calls) != wantCalls {
+				t.Fatalf("unexpected post-verification mutation: %v", client.calls)
+			}
+			if !tc.noReceipt && !reflect.DeepEqual(result.GrantedPaths, []string{"a.go", "b.go"}) {
+				t.Fatalf("partial evidence discarded: %+v", result)
+			}
+		})
+	}
+}

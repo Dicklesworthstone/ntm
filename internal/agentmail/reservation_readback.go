@@ -24,6 +24,12 @@ const (
 	maxReservationReadbackRows = 10000
 )
 
+// ErrReservationUnverified accompanies mutation receipts that could not be
+// decoded or whose ownership readback failed. Returned paths and IDs remain
+// inspection evidence, not authority to release, retry, or transfer a lease.
+// The original cause (including cancellation) remains in the error chain.
+var ErrReservationUnverified = errors.New("reservation grant evidence is unverified")
+
 type reservationResourceRow struct {
 	ID          int       `json:"id"`
 	ProjectID   *int      `json:"project_id"`
@@ -211,13 +217,12 @@ func (c *Client) ReservePaths(ctx context.Context, opts FileReservationOptions) 
 	}
 
 	reservationResult, err := decodeReservationReply(result)
-	if err != nil {
-		return reservationResult, NewAPIError("file_reservation_paths", 0, err)
-	}
-
 	var conflictErr error
-	if len(reservationResult.Conflicts) > 0 {
+	if reservationResult != nil && len(reservationResult.Conflicts) > 0 {
 		conflictErr = fmt.Errorf("%w: %d conflicts", ErrReservationConflict, len(reservationResult.Conflicts))
+	}
+	if err != nil {
+		return reservationResult, errors.Join(conflictErr, NewAPIError("file_reservation_paths", 0, err))
 	}
 	if err := c.completeReservationGrantOwnership(ctx, opts, result, reservationResult); err != nil {
 		return reservationResult, errors.Join(conflictErr, NewAPIError("file_reservation_paths", 0, err))
@@ -228,7 +233,12 @@ func (c *Client) ReservePaths(ctx context.Context, opts FileReservationOptions) 
 // decodeReservationReply decodes rows independently. A bad timestamp or
 // conflict record must not discard lease IDs from an otherwise valid JSON
 // mutation receipt. Recovered handles remain unverified and accompany an error.
-func decodeReservationReply(raw json.RawMessage) (*ReservationResult, error) {
+func decodeReservationReply(raw json.RawMessage) (result *ReservationResult, err error) {
+	defer func() {
+		if err != nil {
+			err = fmt.Errorf("%w: %w", ErrReservationUnverified, err)
+		}
+	}()
 	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
 		return nil, fmt.Errorf("reservation server returned null instead of a result")
 	}
@@ -239,7 +249,7 @@ func decodeReservationReply(raw json.RawMessage) (*ReservationResult, error) {
 	if err := json.Unmarshal(raw, &wire); err != nil {
 		return nil, err
 	}
-	result := &ReservationResult{Granted: make([]FileReservation, len(wire.Granted))}
+	result = &ReservationResult{Granted: make([]FileReservation, len(wire.Granted))}
 	var decodeErrors []error
 	for i, rawGrant := range wire.Granted {
 		if err := json.Unmarshal(rawGrant, &result.Granted[i]); err != nil {
@@ -266,7 +276,12 @@ func decodeReservationReply(raw json.RawMessage) (*ReservationResult, error) {
 // only after exact-ID verification against independent, live server reads.
 // Explicit zero/empty/wrong values are not silently repaired. All grants stay
 // untouched if any check fails, preserving the original recovery evidence.
-func (c *Client) completeReservationGrantOwnership(ctx context.Context, opts FileReservationOptions, raw json.RawMessage, result *ReservationResult) error {
+func (c *Client) completeReservationGrantOwnership(ctx context.Context, opts FileReservationOptions, raw json.RawMessage, result *ReservationResult) (err error) {
+	defer func() {
+		if err != nil {
+			err = fmt.Errorf("%w: %w", ErrReservationUnverified, err)
+		}
+	}()
 	var wire struct {
 		Granted []struct {
 			ProjectID json.RawMessage `json:"project_id"`
