@@ -219,6 +219,7 @@ func TestPersistedWorkSnapshotRejectsMalformedAndUnverifiedPayloads(t *testing.T
 	failed := NewWorkSection()
 	failed.Reason = "tracker could not be read"
 	failed.Verification = &WorkVerification{ProjectDir: project}
+	stampWorkSnapshotProject(failed, project)
 	_, marker, err := MarshalWorkSnapshot(failed)
 	if err != nil {
 		t.Fatal(err)

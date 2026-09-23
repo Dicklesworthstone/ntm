@@ -17,13 +17,29 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/worksource"
 )
 
-const workSnapshotVersion = 1
+const workSnapshotVersion = 2
 const maxWorkSnapshotBytes = 32 << 20
 
 // ErrWorkSnapshotUnavailable means this collection cannot be reused as a
 // source-verified cache. A caller may make an explicit fresh live collection;
 // it must never fall back to inferring ready work from old RuntimeWork rows.
 var ErrWorkSnapshotUnavailable = errors.New("WORK_SNAPSHOT_UNAVAILABLE")
+
+// ErrWorkSnapshotReadOnly rejects publication of a cache read, including a
+// failed read. Revalidation is not a new tracker observation and cannot extend
+// the lifetime of the old candidate set or replace a newer failure marker.
+var ErrWorkSnapshotReadOnly = errors.New("WORK_SNAPSHOT_READ_ONLY")
+
+// Keep publication authority private and separate from mutable display fields.
+// The payload is frozen when the complete candidate read is verified, not when
+// a later consumer serializes the preview. Strings cannot share mutable slices
+// or pointers with the collector's input or the returned WorkSection.
+type workSnapshotPublication struct {
+	project     string
+	collectedAt time.Time
+	payload     string
+	readOnly    bool
+}
 
 type workSnapshotPolicy struct {
 	RequiredRef   string   `json:"required_ref,omitempty"`
@@ -38,6 +54,7 @@ type workSnapshotPolicy struct {
 type workSnapshotEnvelope struct {
 	Version     int                  `json:"version"`
 	ProjectDir  string               `json:"project_dir"`
+	CollectedAt time.Time            `json:"collected_at"`
 	Source      *worksource.Identity `json:"source,omitempty"`
 	Policy      workSnapshotPolicy   `json:"policy"`
 	Work        *WorkSection         `json:"work,omitempty"`
@@ -84,9 +101,16 @@ func savedWorkSnapshotPolicy(policy WorkVerificationPolicy) workSnapshotPolicy {
 	}
 }
 
-func attachWorkSnapshot(verified, candidates *WorkSection, source *worksource.Snapshot, policy WorkVerificationPolicy, started time.Time) {
+func attachWorkSnapshot(verified, candidates *WorkSection, source *worksource.Snapshot, policy WorkVerificationPolicy, started time.Time) error {
 	if verified == nil || verified.Verification == nil || !verified.Available || candidates == nil || !candidates.Available {
-		return
+		return nil
+	}
+	if source == nil || !source.Identity.Bound() || started.IsZero() {
+		return errors.New("complete work publication requires a source and collection time")
+	}
+	if candidates.Verification != nil && (candidates.Verification.FromCache ||
+		(candidates.Verification.snapshot != nil && candidates.Verification.snapshot.readOnly)) {
+		return ErrWorkSnapshotReadOnly
 	}
 	// The verifier copies candidates rather than mutating them. Drop any old
 	// verification metadata so encoding cannot carry a recursive cache, an old
@@ -94,20 +118,42 @@ func attachWorkSnapshot(verified, candidates *WorkSection, source *worksource.Sn
 	input := copyWorkForVerification(candidates)
 	input.Verification = nil
 	identity := source.Identity
-	verified.Verification.ProjectDir = identity.ProjectDir
-	verified.Verification.snapshot = &workSnapshotEnvelope{
+	envelope := &workSnapshotEnvelope{
 		Version: workSnapshotVersion, ProjectDir: identity.ProjectDir,
-		Source: &identity, Policy: savedWorkSnapshotPolicy(policy), Work: input,
+		CollectedAt: started.UTC(),
+		Source:      &identity, Policy: savedWorkSnapshotPolicy(policy), Work: input,
 		RecollectAt: source.NextEligibilityChange(started),
 	}
+	if err := validateWorkSnapshotCandidates(input); err != nil {
+		return err
+	}
+	payload, err := encodeWorkSnapshot(envelope)
+	if err != nil {
+		return err
+	}
+	verified.Verification.ProjectDir = identity.ProjectDir
+	verified.Verification.snapshot = &workSnapshotPublication{
+		project: identity.ProjectDir, collectedAt: started.UTC(), payload: string(payload),
+	}
+	return nil
 }
 
-func stampWorkSnapshotProject(work *WorkSection, project string) {
+func stampWorkSnapshotProject(work *WorkSection, project string, originalStart ...time.Time) {
+	started := time.Now().UTC()
+	if len(originalStart) > 0 {
+		started = originalStart[0]
+	}
 	if work == nil || work.Verification == nil {
+		return
+	}
+	// A verified collection already carries the identity and beginning of its
+	// own read. Do not retimestamp it at the end of the enclosing collection.
+	if work.Verification.snapshot != nil {
 		return
 	}
 	if canonical, err := canonicalWorkSnapshotProject(project); err == nil {
 		work.Verification.ProjectDir = canonical
+		work.Verification.snapshot = &workSnapshotPublication{project: canonical, collectedAt: started.UTC()}
 	}
 }
 
@@ -115,25 +161,50 @@ func stampWorkSnapshotProject(work *WorkSection, project string) {
 // projection. Even a failed/DB-only collection produces a scoped unavailable
 // marker, so a newer failure cannot leave an older healthy cache in its place.
 func MarshalWorkSnapshot(work *WorkSection) (string, []byte, error) {
-	if work == nil || work.Verification == nil || work.Verification.ProjectDir == "" {
-		return "", nil, ErrWorkSnapshotUnavailable
+	project, payload, _, err := marshalWorkSnapshotObservation(work)
+	return project, payload, err
+}
+
+// marshalWorkSnapshotObservation also returns the immutable collection start.
+// A publisher must not replace it with the time of serialization or cache reuse.
+func marshalWorkSnapshotObservation(work *WorkSection) (string, []byte, time.Time, error) {
+	if work == nil || work.Verification == nil {
+		return "", nil, time.Time{}, ErrWorkSnapshotUnavailable
 	}
-	project := work.Verification.ProjectDir
-	envelope := work.Verification.snapshot
-	if envelope == nil || !work.Available {
-		envelope = &workSnapshotEnvelope{
-			Version: workSnapshotVersion, ProjectDir: project,
+	publication := work.Verification.snapshot
+	if work.Verification.FromCache || (publication != nil && publication.readOnly) {
+		return "", nil, time.Time{}, ErrWorkSnapshotReadOnly
+	}
+	if publication == nil || publication.project == "" || publication.collectedAt.IsZero() {
+		return "", nil, time.Time{}, ErrWorkSnapshotUnavailable
+	}
+	if work.Verification.ProjectDir != publication.project {
+		return "", nil, time.Time{}, errors.New("work publication project changed after collection")
+	}
+	payload := []byte(publication.payload)
+	if len(payload) == 0 || !work.Available {
+		var err error
+		payload, err = encodeWorkSnapshot(&workSnapshotEnvelope{
+			Version: workSnapshotVersion, ProjectDir: publication.project,
+			CollectedAt: publication.collectedAt,
 			Unavailable: firstNonEmpty(work.Reason, "collection has no complete source-verified candidate snapshot"),
+		})
+		if err != nil {
+			return "", nil, time.Time{}, err
 		}
 	}
+	return publication.project, payload, publication.collectedAt, nil
+}
+
+func encodeWorkSnapshot(envelope *workSnapshotEnvelope) ([]byte, error) {
 	payload, err := json.Marshal(envelope)
 	if err != nil {
-		return "", nil, fmt.Errorf("encode work snapshot: %w", err)
+		return nil, fmt.Errorf("encode work snapshot: %w", err)
 	}
 	if len(payload) > maxWorkSnapshotBytes {
-		return "", nil, errors.New("work snapshot exceeds 32 MiB; refusing partial persistence")
+		return nil, errors.New("work snapshot exceeds 32 MiB; refusing partial persistence")
 	}
-	return project, payload, nil
+	return payload, nil
 }
 
 // RestoreWorkSnapshot is the cache counterpart of live Collect. Its caller
@@ -142,14 +213,18 @@ func MarshalWorkSnapshot(work *WorkSection) (string, []byte, error) {
 func (a *WorkCoordinationAdapter) RestoreWorkSnapshot(ctx context.Context, payload []byte) (*WorkSection, error) {
 	policy := a.config.VerificationPolicy
 	policy.readReservations = a.mailClient().ReadWorkReservations
-	work, err := restoreWorkSnapshot(ctx, a.config.ProjectDir, policy, a.config.WorkItemLimit, payload)
-	if work != nil && work.Verification != nil {
-		work.Verification.FromCache = true
-	}
-	return work, err
+	return restoreWorkSnapshot(ctx, a.config.ProjectDir, policy, a.config.WorkItemLimit, payload)
 }
 
-func restoreWorkSnapshot(ctx context.Context, project string, policy WorkVerificationPolicy, limit int, payload []byte) (*WorkSection, error) {
+func restoreWorkSnapshot(ctx context.Context, project string, policy WorkVerificationPolicy, limit int, payload []byte) (work *WorkSection, restoreErr error) {
+	defer func() {
+		if work != nil && work.Verification != nil {
+			verification := *work.Verification
+			verification.FromCache = true
+			verification.snapshot = &workSnapshotPublication{readOnly: true}
+			work.Verification = &verification
+		}
+	}()
 	if ctx == nil {
 		err := errors.New("work snapshot requires a context")
 		return rejectWorkSource(nil, err), err
@@ -178,8 +253,17 @@ func restoreWorkSnapshot(ctx context.Context, project string, policy WorkVerific
 	if err := decoder.Decode(&trailing); err != io.EOF {
 		return fail("cached work contains trailing data", nil)
 	}
+	// Version 1 did not bind an original observation time into the payload.
+	// Treat that old format as a cache miss during upgrade, not as fresh work.
+	if envelope.Version == 1 && envelope.ProjectDir == canonical {
+		err := fmt.Errorf("%w: legacy work snapshot requires a fresh observation", ErrWorkSnapshotUnavailable)
+		return rejectWorkSource(nil, err), err
+	}
 	if envelope.Version != workSnapshotVersion || envelope.ProjectDir != canonical {
 		return fail("cached work version or project does not match the requested collection", nil)
+	}
+	if envelope.CollectedAt.IsZero() || envelope.CollectedAt.After(time.Now()) {
+		return fail("cached work has no valid original collection time", nil)
 	}
 	if envelope.Unavailable != "" {
 		err := fmt.Errorf("%w: %s", ErrWorkSnapshotUnavailable, envelope.Unavailable)
@@ -208,7 +292,7 @@ func restoreWorkSnapshot(ctx context.Context, project string, policy WorkVerific
 		return fail("cached candidate collection is incomplete", err)
 	}
 	policy.Source.Expected = envelope.Source
-	work, err := collectWorkWithSource(ctx, canonical, policy, func(context.Context) (*WorkSection, error) {
+	work, err = collectWorkWithSource(ctx, canonical, policy, func(context.Context) (*WorkSection, error) {
 		return envelope.Work, nil
 	})
 	if err != nil {
@@ -219,7 +303,7 @@ func restoreWorkSnapshot(ctx context.Context, project string, policy WorkVerific
 		return rejectWorkSource(nil, err), err
 	}
 	work = limitVerifiedWorkPreview(work, limit)
-	work.Verification.FromCache = true
+	work.Verification.CacheCollectedAt = envelope.CollectedAt.UTC().Format(time.RFC3339Nano)
 	return work, nil
 }
 

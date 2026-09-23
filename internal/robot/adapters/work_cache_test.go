@@ -196,10 +196,10 @@ func TestDurableWorkRejectsExpiryOrReplacementDuringRestore(t *testing.T) {
 			project := durableProjectFixture(t)
 			ctx := context.Background()
 			c := &durableCollectorFixture{project: project, input: snapshotCandidateFixture("a")}
-			clock := time.Now().UTC()
-			if _, err := collectDurableWork(ctx, store, project, c, false, func() time.Time { return clock }); err != nil {
+			if _, err := collectDurableWork(ctx, store, project, c, false, time.Now); err != nil {
 				t.Fatal(err)
 			}
+			clock := time.Now().UTC()
 			c.afterRestore = func() {
 				if !replace {
 					clock = clock.Add(WorkCacheLifetime)

@@ -62,14 +62,20 @@ func collectDurableWork(ctx context.Context, store *state.Store, project string,
 	if batch != nil {
 		work = batch.Work
 	}
+	// Do not turn a restored success OR failure into a new observation. In
+	// particular, rejection must not strip the private marker before stamping.
+	if work != nil && work.Verification != nil && (work.Verification.FromCache ||
+		(work.Verification.snapshot != nil && work.Verification.snapshot.readOnly)) {
+		return rejectWorkSource(work, ErrWorkSnapshotReadOnly), errors.Join(collectErr, ErrWorkSnapshotReadOnly)
+	}
 	if collectErr != nil || work == nil || !work.Available {
 		if collectErr == nil {
 			collectErr = fmt.Errorf("%w: live work collection is unavailable", ErrWorkSnapshotUnavailable)
 		}
 		work = rejectWorkSource(work, collectErr)
 	}
-	stampWorkSnapshotProject(work, project)
-	storedProject, payload, err := MarshalWorkSnapshot(work)
+	stampWorkSnapshotProject(work, project, started)
+	storedProject, payload, observedAt, err := marshalWorkSnapshotObservation(work)
 	if err != nil {
 		return rejectWorkSource(work, err), errors.Join(collectErr, err)
 	}
@@ -77,7 +83,7 @@ func collectDurableWork(ctx context.Context, store *state.Store, project string,
 		err := &worksource.StaleError{Reason: "collector returned a different work project"}
 		return rejectWorkSource(work, err), err
 	}
-	record, err := state.NewRuntimeWorkSnapshot(project, payload, started, started.Add(WorkCacheLifetime))
+	record, err := state.NewRuntimeWorkSnapshot(project, payload, observedAt, observedAt.Add(WorkCacheLifetime))
 	if err != nil {
 		return rejectWorkSource(work, err), errors.Join(collectErr, err)
 	}
@@ -113,6 +119,10 @@ func readDurableWork(ctx context.Context, store *state.Store, project string, co
 	if work == nil || !work.Available || work.Verification == nil || work.Verification.Source == nil || !work.Verification.Source.Bound() || work.Verification.Source.ProjectDir != project {
 		return nil, &worksource.StaleError{Reason: "persisted work restoration returned no source-bound observation"}
 	}
+	observedAt, stampErr := time.Parse(time.RFC3339Nano, work.Verification.CacheCollectedAt)
+	if stampErr != nil || !observedAt.Equal(record.CollectedAt) || record.StaleAfter.Sub(record.CollectedAt) > WorkCacheLifetime {
+		return nil, &worksource.StaleError{Reason: "persisted work timestamps do not match the original collection"}
+	}
 	if err := checkDurableWorkCurrent(ctx, store, record, now); err != nil {
 		return nil, err
 	}
@@ -120,6 +130,7 @@ func readDurableWork(ctx context.Context, store *state.Store, project string, co
 	out := copyWorkForVerification(work)
 	out.Verification = &verification
 	verification.FromCache = true
+	verification.snapshot = &workSnapshotPublication{readOnly: true}
 	verification.CacheCollectedAt = record.CollectedAt.UTC().Format(time.RFC3339Nano)
 	verification.CacheExpiresAt = record.StaleAfter.UTC().Format(time.RFC3339Nano)
 	return out, nil

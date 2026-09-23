@@ -42,10 +42,11 @@ type WorkVerification struct {
 	Remediation        string                       `json:"remediation,omitempty"`
 	Mismatch           *worksource.StaleError       `json:"mismatch,omitempty"`
 	Reservations       *WorkReservationVerification `json:"reservations,omitempty"`
-	snapshot           *workSnapshotEnvelope        `json:"-"`
+	snapshot           *workSnapshotPublication     `json:"-"`
 }
 
 func (a *WorkCoordinationAdapter) collectVerifiedWork(ctx context.Context) (*WorkSection, error) {
+	started := time.Now().UTC()
 	policy := a.config.VerificationPolicy
 	policy.readReservations = a.mailClient().ReadWorkReservations
 	work, err := collectWorkWithSource(ctx, a.config.ProjectDir, policy, func(ctx context.Context) (*WorkSection, error) {
@@ -62,7 +63,7 @@ func (a *WorkCoordinationAdapter) collectVerifiedWork(ctx context.Context) (*Wor
 		}
 		return workWithReadyCandidates(work, candidates), nil
 	})
-	stampWorkSnapshotProject(work, a.config.ProjectDir)
+	stampWorkSnapshotProject(work, a.config.ProjectDir, started)
 	if err != nil || work == nil || !work.Available {
 		return work, err
 	}
@@ -196,7 +197,9 @@ func collectWorkWithSource(ctx context.Context, project string, policy WorkVerif
 		ReservedBeads: reserved,
 	})
 	out.Verification.Reservations = reservationReceipt
-	attachWorkSnapshot(out, work, current, policy, collectionStarted)
+	if err := attachWorkSnapshot(out, work, current, policy, collectionStarted); err != nil {
+		return rejectWorkSource(work, err), err
+	}
 	return out, nil
 }
 
@@ -277,6 +280,13 @@ func rejectWorkSource(work *WorkSection, err error) *WorkSection {
 		CountScope: "unverified", ReportedReady: reportedWorkReady(work),
 		Excluded:    []worksource.Exclusion{},
 		Remediation: "Recollect work from the intended local checkout; do not repair or dispatch from the stale projection.",
+	}
+	// Refusal must not erase the private read-only/publication identity. A
+	// cache error is still a cache read, not a fresh failed observation.
+	if work != nil && work.Verification != nil {
+		out.Verification.ProjectDir = work.Verification.ProjectDir
+		out.Verification.FromCache = work.Verification.FromCache
+		out.Verification.snapshot = work.Verification.snapshot
 	}
 	if isStaleWorkSourceError(err) {
 		out.Verification.ReasonCode = worksource.StaleCode
