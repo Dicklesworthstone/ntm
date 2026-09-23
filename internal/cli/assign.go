@@ -28,6 +28,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/completion"
 	"github.com/Dicklesworthstone/ntm/internal/config"
+	"github.com/Dicklesworthstone/ntm/internal/coordinator"
 	dispatchsvc "github.com/Dicklesworthstone/ntm/internal/dispatch"
 	"github.com/Dicklesworthstone/ntm/internal/events"
 	"github.com/Dicklesworthstone/ntm/internal/output"
@@ -6330,7 +6331,39 @@ func terminalReconciliationAlreadyCompleted(current *assignment.Assignment, stat
 	return status == assignment.StatusCompleted
 }
 
-// WatchLoop manages the continuous auto-assignment watch mode
+// assignWatchMaintainer is the existing assignment lifecycle, without new work.
+type assignWatchMaintainer interface {
+	MaintainAssignments(context.Context) error
+}
+
+func newAssignWatchMaintainer(ctx context.Context, session, projectDir string) (assignWatchMaintainer, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	projectDir = strings.TrimSpace(projectDir)
+	if projectDir == "" {
+		var err error
+		projectDir, err = resolveAssignProjectDir(ctx, session)
+		if err != nil {
+			return nil, fmt.Errorf("resolve assignment maintenance project: %w", err)
+		}
+	}
+	if projectDir == "" {
+		return nil, errors.New("assignment maintenance requires an authoritative project directory")
+	}
+	projectDir, err := filepath.Abs(projectDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve assignment maintenance project: %w", err)
+	}
+	projectDir = agentmail.CanonicalProjectKey(projectDir)
+	// Existing assignments already carry their registered pane owner. Reading
+	// the saved coordinator identity is sufficient; maintenance must not create
+	// a new identity, send mail, or start the coordinator's other automations.
+	name := resolveCoordinatorIdentity(ctx, nil, session, projectDir)
+	return coordinator.New(session, projectDir, newAgentMailClient(projectDir), name).WithCompletionEvents(), nil
+}
+
+// WatchLoop manages the continuous auto-assignment watch mode.
 type WatchLoop struct {
 	session  string
 	strategy string
@@ -6364,6 +6397,16 @@ type WatchLoop struct {
 	// scanFn performs one ready-work scan pass. Defaults to scanReadyWork;
 	// overridable in tests to observe ticker-driven scans without tmux/bv.
 	scanFn func(context.Context) error
+
+	// Reservation maintenance owns an independent worker so a slow ready-work
+	// scan, completion handler, or --delay cannot expire active assignments.
+	// It reuses the coordinator's exact-receipt maintenance without starting
+	// background coordination or admitting any new work.
+	maintenanceInterval time.Duration
+	maintenanceTimeout  time.Duration
+	newMaintainer       func(context.Context, string, string) (assignWatchMaintainer, error)
+	maintenanceMu       sync.Mutex
+	maintenanceError    string
 
 	// Concurrency control
 	completionCh            chan completion.CompletionEvent
@@ -6399,17 +6442,19 @@ func NewWatchLoop(session string, store *assignment.AssignmentStore, opts *AutoR
 	}
 
 	return &WatchLoop{
-		session:       session,
-		strategy:      opts.Strategy,
-		store:         store,
-		opts:          opts,
-		stopWhenDone:  assignStopWhenDone,
-		delay:         assignDelay,
-		limit:         assignLimit,
-		quiet:         opts.Quiet,
-		verbose:       opts.Verbose,
-		idleThreshold: opts.IdleThreshold,
-		scanInterval:  scanInterval,
+		session:             session,
+		strategy:            opts.Strategy,
+		store:               store,
+		opts:                opts,
+		stopWhenDone:        assignStopWhenDone,
+		delay:               assignDelay,
+		limit:               assignLimit,
+		quiet:               opts.Quiet,
+		verbose:             opts.Verbose,
+		idleThreshold:       opts.IdleThreshold,
+		scanInterval:        scanInterval,
+		maintenanceInterval: 30 * time.Second,
+		maintenanceTimeout:  30 * time.Second,
 		scanOpts: &AssignCommandOptions{
 			Session:         session,
 			ProjectDir:      opts.ProjectDir,
@@ -6458,6 +6503,28 @@ func (w *WatchLoop) Run(ctx context.Context) error {
 	runDone := w.runDone
 	w.lifecycleMu.Unlock()
 	defer close(runDone)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	var maintainer assignWatchMaintainer
+	if w.opts != nil && w.opts.ReserveFiles && !w.opts.DryRun {
+		factory := w.newMaintainer
+		if factory == nil {
+			factory = newAssignWatchMaintainer
+		}
+		initCtx, cancel := context.WithTimeout(ctx, w.assignmentMaintenanceTimeout())
+		var err error
+		maintainer, err = factory(initCtx, w.session, w.opts.ProjectDir)
+		contextErr := initCtx.Err()
+		cancel()
+		if err != nil || contextErr != nil {
+			return fmt.Errorf("initialize assignment maintenance: %w", errors.Join(err, contextErr))
+		}
+		if maintainer == nil {
+			return errors.New("assignment maintenance is unavailable")
+		}
+	}
 
 	// Create completion detector. The idle threshold deliberately defaults to
 	// config.DefaultAssignIdleThreshold (15m), NOT the detector package's
@@ -6521,11 +6588,20 @@ func (w *WatchLoop) Run(ctx context.Context) error {
 		}
 	}()
 	var scanWG sync.WaitGroup
+	var maintenanceWG sync.WaitGroup
 	defer func() {
 		watchCancel()
 		w.wg.Wait()
 		scanWG.Wait()
+		maintenanceWG.Wait()
 	}()
+	if maintainer != nil {
+		maintenanceWG.Add(1)
+		go func() {
+			defer maintenanceWG.Done()
+			w.maintainAssignmentLeases(watchCtx, maintainer)
+		}()
+	}
 
 	w.logf("Starting watch mode with strategy=%s", w.strategy)
 
@@ -6627,6 +6703,65 @@ func (w *WatchLoop) Run(ctx context.Context) error {
 			w.logf("Watch mode stopped.")
 			return nil
 		}
+	}
+}
+
+func (w *WatchLoop) assignmentMaintenanceTimeout() time.Duration {
+	if w.maintenanceTimeout > 0 && w.maintenanceTimeout < 30*time.Second {
+		return w.maintenanceTimeout
+	}
+	return 30 * time.Second
+}
+
+func (w *WatchLoop) maintainAssignmentLeases(ctx context.Context, maintainer assignWatchMaintainer) {
+	interval := w.maintenanceInterval
+	if interval <= 0 || interval > 30*time.Second {
+		interval = 30 * time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		// Maintain once immediately: a restarted watcher can inherit receipts
+		// already due for renewal. The single worker never overlaps passes.
+		passCtx, cancel := context.WithTimeout(ctx, w.assignmentMaintenanceTimeout())
+		err := maintainer.MaintainAssignments(passCtx)
+		err = errors.Join(err, passCtx.Err())
+		cancel()
+		if ctx.Err() != nil {
+			return
+		}
+		w.reportAssignmentMaintenance(err)
+		select {
+		case <-ctx.Done():
+			return
+		case <-w.stopCh:
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func (w *WatchLoop) reportAssignmentMaintenance(err error) {
+	message := ""
+	if err != nil {
+		message = err.Error()
+	}
+	w.maintenanceMu.Lock()
+	previous := w.maintenanceError
+	w.maintenanceError = message
+	w.maintenanceMu.Unlock()
+	if message == previous {
+		return
+	}
+	if message != "" {
+		// Loss of protection is essential even with --quiet. The canonical
+		// maintainer retains affected assignments and never reacquires leases.
+		fmt.Fprintf(os.Stderr, "[%s] Warning: assignment reservation maintenance degraded: %s\n", time.Now().Format("15:04:05"), message)
+	} else {
+		w.logf("Assignment reservation maintenance recovered")
 	}
 }
 
@@ -6889,10 +7024,19 @@ func (w *WatchLoop) shouldStop(ctx context.Context) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
-	// Check if there are any active assignments
-	active := w.store.ListActive()
+	// Dispatch and maintenance persist through separate store instances. The
+	// watcher's original snapshot can predate initial dispatch or terminal
+	// cleanup, so only the current durable ledger can authorize stopping.
+	store, err := assignment.LoadStoreStrictReadOnly(w.session)
+	if err != nil {
+		return false, fmt.Errorf("read assignment ledger before stopping watch: %w", err)
+	}
+	active := store.ListActive()
 	if len(active) > 0 {
 		return false, nil // Still have work in progress
+	}
+	if len(store.ListPendingCompletionEvents()) > 0 {
+		return false, nil // Completion consumption must finish before stopping.
 	}
 
 	// Check the same dependency-aware, label-verified candidate surface used by
@@ -6946,6 +7090,9 @@ func (w *WatchLoop) shouldStop(ctx context.Context) (bool, error) {
 
 // Summary returns statistics about the watch session
 func (w *WatchLoop) Summary() string {
+	w.maintenanceMu.Lock()
+	maintenanceError := w.maintenanceError
+	w.maintenanceMu.Unlock()
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -6953,6 +7100,9 @@ func (w *WatchLoop) Summary() string {
 	suffix := ""
 	if w.opts != nil && w.opts.DryRun {
 		suffix = " [dry-run: no panes were dispatched]"
+	}
+	if maintenanceError != "" {
+		suffix += " [reservation maintenance degraded: " + maintenanceError + "]"
 	}
 	return fmt.Sprintf("Watch session: %d assigned, %d completed, %d failed in %v%s",
 		w.totalAssigned, w.totalCompleted, w.totalFailed, duration, suffix)

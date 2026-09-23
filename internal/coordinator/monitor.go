@@ -44,8 +44,8 @@ func NewAgentMonitor(session string, mailClient *agentmail.Client, projectKey st
 		detector,
 		status.DefaultSessionObserverConfig(detector.Config()),
 		status.SessionObserverDependencies{
-			ListPanes: func(_ context.Context, session string) ([]tmux.PaneActivity, error) {
-				return getPanesWithActivity(session)
+			ListPanes: func(ctx context.Context, session string) ([]tmux.PaneActivity, error) {
+				return getPanesWithActivity(ctx, session)
 			},
 			CapturePane: func(ctx context.Context, paneID string, _ int) (string, error) {
 				return captureForHealthCheckWithCtx(ctx, paneID)

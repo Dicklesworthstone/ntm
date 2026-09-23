@@ -401,7 +401,7 @@ func TestUpdateAgentStatesRecordsEveryPhysicalPane(t *testing.T) {
 	})
 
 	lastActivity := time.Now().Add(-time.Minute).UTC()
-	getPanesWithActivity = func(string) ([]tmux.PaneActivity, error) {
+	getPanesWithActivity = func(context.Context, string) ([]tmux.PaneActivity, error) {
 		return []tmux.PaneActivity{
 			{Pane: tmux.Pane{ID: "%0", Index: 0, Title: "test-session__cc_1", Type: tmux.AgentClaude}, LastActivity: lastActivity},
 			{Pane: tmux.Pane{ID: "%1", Index: 1, Title: "shell", Type: tmux.AgentUser}, LastActivity: lastActivity},
@@ -432,7 +432,7 @@ func TestUpdateAgentStatesRecordsEveryPhysicalPane(t *testing.T) {
 
 	// A failed observation must clear the snapshot rather than let a stale one
 	// answer "does this pane exist?".
-	getPanesWithActivity = func(string) ([]tmux.PaneActivity, error) { return nil, errors.New("topology failed") }
+	getPanesWithActivity = func(context.Context, string) ([]tmux.PaneActivity, error) { return nil, errors.New("topology failed") }
 	_ = c.updateAgentStatesContext(context.Background())
 	if _, _, ok := c.livePaneTopology(); ok {
 		t.Fatal("a failed observation left the previous topology snapshot usable")

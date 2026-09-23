@@ -211,6 +211,9 @@ const assignmentReservationRenewalLead = 15 * time.Minute
 // file-output watcher owns a separate set of reservations and cannot maintain
 // the durable assignment ledger's one-hour leases.
 func (c *SessionCoordinator) maintainAssignments(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	store, err := assignmentstore.LoadStoreStrictReadOnly(c.session)
 	if err != nil {
 		return fmt.Errorf("load assignment maintenance ledger: %w", err)
@@ -223,6 +226,10 @@ func (c *SessionCoordinator) maintainAssignments(ctx context.Context) error {
 		failures = append(failures, fmt.Errorf("reconciling assignment ledger: %w", err))
 	}
 	for _, current := range store.ListActive() {
+		if err := ctx.Err(); err != nil {
+			failures = append(failures, err)
+			break
+		}
 		if current.DispatchState != assignmentstore.DispatchSent || current.ReservationState != assignmentstore.ReservationReserved || !current.ReservationCompleted ||
 			current.ClearState != assignmentstore.ClearStateNone || (current.Status != assignmentstore.StatusAssigned && current.Status != assignmentstore.StatusWorking) {
 			continue
@@ -233,9 +240,6 @@ func (c *SessionCoordinator) maintainAssignments(ctx context.Context) error {
 		_, err := store.RefreshReservationIfCurrent(ctx, current, c.refreshAssignmentReservation)
 		if err != nil {
 			failures = append(failures, fmt.Errorf("reservation protection for %s is unverified; assignment retained, inspect its leases before reassigning: %w", current.BeadID, err))
-		}
-		if ctx.Err() != nil {
-			break
 		}
 	}
 	return errors.Join(failures...)
@@ -349,6 +353,9 @@ func (c *SessionCoordinator) refreshAssignmentReservation(ctx context.Context, c
 }
 
 func (c *SessionCoordinator) checkAssignmentReservationOwner(ctx context.Context, current *assignmentstore.Assignment, lease assignmentstore.LeaseReceipt, target string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	readObserved := func() *AgentState {
 		c.mu.RLock()
 		defer c.mu.RUnlock()
@@ -359,15 +366,22 @@ func (c *SessionCoordinator) checkAssignmentReservationOwner(ctx context.Context
 		return nil
 	}
 	observed := readObserved()
+	var refreshErr error
 	if observed == nil || !status.DispatchObservationIsCurrent(observed.ObservedAt, time.Now()) {
 		if err := c.updateAgentStatesContext(ctx); err != nil {
-			return fmt.Errorf("refresh pane observation before reservation renewal: %w", err)
+			refreshErr = fmt.Errorf("refresh pane observation before reservation renewal: %w", err)
 		}
+		// A successful topology refresh can contain an unrelated pane's capture
+		// error. The freshly installed target observation is the authorization
+		// evidence; a sibling's failure must not expire its valid leases.
 		observed = readObserved()
+	}
+	if err := ctx.Err(); err != nil {
+		return errors.Join(refreshErr, err)
 	}
 	if observed == nil || !observed.Healthy || observed.ObservationFreshness != status.FreshnessFresh ||
 		!status.DispatchObservationIsCurrent(observed.ObservedAt, time.Now()) || observed.Status == robot.StateUnknown || observed.Status == robot.StateError {
-		return fmt.Errorf("pane %s has no fresh healthy agent observation", target)
+		return errors.Join(refreshErr, fmt.Errorf("pane %s has no fresh healthy agent observation", target))
 	}
 	if err := pendingRecoveryIdentityError(current, observed); err != nil {
 		return err
@@ -708,6 +722,10 @@ func (c *SessionCoordinator) reconcileTerminalAssignments(ctx context.Context, s
 
 	var reconcileErrors []error
 	for _, active := range store.ListActive() {
+		if err := ctx.Err(); err != nil {
+			reconcileErrors = append(reconcileErrors, err)
+			break
+		}
 		if active == nil {
 			continue
 		}
@@ -753,6 +771,9 @@ func (c *SessionCoordinator) reconcileTerminalAssignments(ctx context.Context, s
 }
 
 func (c *SessionCoordinator) reconcileTerminalAssignment(ctx context.Context, store *assignmentstore.AssignmentStore, observed *assignmentstore.Assignment, terminalStatus assignmentstore.AssignmentStatus, terminalReason string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
 	cleanupUnlock, err := store.AcquireExternalCleanupLock(ctx, observed.BeadID)
 	if err != nil {
 		return false, fmt.Errorf("lock terminal assignment %s external cleanup: %w", observed.BeadID, err)
@@ -766,6 +787,9 @@ func (c *SessionCoordinator) reconcileTerminalAssignment(ctx context.Context, st
 		return false, nil
 	}
 	if current.ClearState == assignmentstore.ClearStateNone && (current.Status == assignmentstore.StatusCompleted || current.Status == assignmentstore.StatusFailed) {
+		// A competing watcher may already have consumed and acknowledged the
+		// completion. Its cleared outbox is not proof an event was never made;
+		// do not resurrect one from an older active assignment observation.
 		return false, nil
 	}
 	if current.PendingTerminalStatus == assignmentstore.StatusCompleted || current.PendingTerminalStatus == assignmentstore.StatusFailed {
@@ -773,7 +797,11 @@ func (c *SessionCoordinator) reconcileTerminalAssignment(ctx context.Context, st
 		terminalReason = current.PendingTerminalReason
 	}
 
-	barrier, applied, err := store.BeginTerminalReconciliationIfCurrent(ctx, current, terminalStatus, terminalReason)
+	begin := store.BeginTerminalReconciliationIfCurrent
+	if c.completionEvents {
+		begin = store.BeginTerminalReconciliationWithCompletionEventIfCurrent
+	}
+	barrier, applied, err := begin(ctx, current, terminalStatus, terminalReason)
 	if err != nil {
 		return false, fmt.Errorf("begin terminal reconciliation for %s: %w", observed.BeadID, err)
 	}

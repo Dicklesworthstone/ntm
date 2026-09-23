@@ -167,7 +167,7 @@ func newConflictWireCoordinator(t *testing.T, client *agentmail.Client, cfg Coor
 	t.Helper()
 	origGetPanes := getPanesWithActivity
 	t.Cleanup(func() { getPanesWithActivity = origGetPanes })
-	getPanesWithActivity = func(string) ([]tmux.PaneActivity, error) { return nil, nil }
+	getPanesWithActivity = func(context.Context, string) ([]tmux.PaneActivity, error) { return nil, nil }
 
 	return New("conflict-wire-test", t.TempDir(), client, "TestCoordinator").WithConfig(cfg)
 }

@@ -24,7 +24,7 @@ import (
 )
 
 var (
-	getPanesWithActivity         = tmux.GetPanesWithActivity
+	getPanesWithActivity         = tmux.GetPanesWithActivityContext
 	captureForHealthCheckWithCtx = tmux.CaptureForHealthCheckContext
 )
 
@@ -100,6 +100,10 @@ type SessionCoordinator struct {
 
 	// Configuration
 	config CoordinatorConfig
+	// completionEvents is enabled only by a caller with a durable event
+	// consumer, such as assign --watch. Standalone coordination has no such
+	// consumer and must not leave unacknowledgeable completion barriers.
+	completionEvents bool
 
 	// Full NTM config, when the caller has one loaded. Only used by the
 	// context rotation trigger (replacement launch commands and
@@ -270,6 +274,15 @@ func (c *SessionCoordinator) WithConfig(cfg CoordinatorConfig) *SessionCoordinat
 // is accepted and keeps built-in defaults.
 func (c *SessionCoordinator) WithNTMConfig(cfg *config.Config) *SessionCoordinator {
 	c.ntmConfig = cfg
+	return c
+}
+
+// WithCompletionEvents preserves task completion in the assignment outbox
+// before maintenance releases its leases. Only callers that consume and
+// acknowledge those events may enable this option. Set it before maintenance
+// starts; ordinary coordinator commands leave it disabled.
+func (c *SessionCoordinator) WithCompletionEvents() *SessionCoordinator {
+	c.completionEvents = true
 	return c
 }
 
@@ -445,13 +458,37 @@ func (c *SessionCoordinator) Observe(ctx context.Context) error {
 	return c.updateAgentStatesContext(ctx)
 }
 
+// MaintainAssignments observes the session and maintains only existing durable
+// assignments. A failed pane observation does not prevent terminal cleanup or
+// renewal for independently verified healthy panes. Missing or stale target
+// evidence never authorizes renewal. Observation and maintenance failures are
+// returned together so callers can report degraded protection without stopping
+// unrelated cleanup. This entry point never starts background coordination,
+// sends digests or nudges, rotates agents, or admits new work.
+func (c *SessionCoordinator) MaintainAssignments(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	observationErr := c.Observe(ctx)
+	if err := ctx.Err(); err != nil {
+		return errors.Join(observationErr, err)
+	}
+	return errors.Join(observationErr, c.maintainAssignments(ctx))
+}
+
 // RunCycle refreshes the canonical session observation, maintains existing
 // assignments, and, when enabled, performs one auto-assignment pass.
 func (c *SessionCoordinator) RunCycle(ctx context.Context) ([]AssignmentResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if err := c.Observe(ctx); err != nil {
+	// Protect existing work before potentially slow agent recovery and before
+	// admitting new work. Degraded observation still permits independently
+	// authorized maintenance, but blocks the other automatic actions below.
+	if err := c.MaintainAssignments(ctx); err != nil {
 		return nil, err
 	}
 	c.maybeCheckMailNudge(ctx)
@@ -461,12 +498,6 @@ func (c *SessionCoordinator) RunCycle(ctx context.Context) ([]AssignmentResult, 
 	// (bd-ws2-wire-or-delete-ykmcz.1): runs before the AutoAssign early
 	// return so notify/negotiate work even when auto-assignment is off.
 	c.runConflictCycle(ctx)
-	// Disabling new assignments must still retire finished work and protect
-	// live work. A maintenance failure blocks admission, not unrelated cleanup
-	// or heartbeat progress inside this pass.
-	if err := c.maintainAssignments(ctx); err != nil {
-		return nil, err
-	}
 	if !c.config.AutoAssign {
 		return nil, nil
 	}

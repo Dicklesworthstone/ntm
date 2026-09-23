@@ -208,7 +208,7 @@ func TestUpdateAgentStates_CaptureFailureMarksCurrentUnavailableAndRetainsLastKn
 	})
 
 	lastActivity := time.Now().Add(-1 * time.Minute).UTC()
-	getPanesWithActivity = func(session string) ([]tmux.PaneActivity, error) {
+	getPanesWithActivity = func(_ context.Context, session string) ([]tmux.PaneActivity, error) {
 		return []tmux.PaneActivity{
 			{
 				Pane: tmux.Pane{
@@ -276,7 +276,7 @@ func TestUpdateAgentStates_TopologyFailureInvalidatesCurrentWithoutRefreshingLas
 		captureForHealthCheckWithCtx = origCaptureForHealthCheckWithCtx
 	})
 
-	getPanesWithActivity = func(string) ([]tmux.PaneActivity, error) {
+	getPanesWithActivity = func(context.Context, string) ([]tmux.PaneActivity, error) {
 		return nil, errors.New("topology failed")
 	}
 	captureForHealthCheckWithCtx = func(context.Context, string) (string, error) {
@@ -333,7 +333,7 @@ func TestUpdateAgentStates_UsesFreshObservationForDispatchSafety(t *testing.T) {
 	})
 
 	lastActivity := time.Now().Add(-time.Minute).UTC()
-	getPanesWithActivity = func(string) ([]tmux.PaneActivity, error) {
+	getPanesWithActivity = func(context.Context, string) ([]tmux.PaneActivity, error) {
 		return []tmux.PaneActivity{
 			{Pane: tmux.Pane{ID: "%2", Index: 2, Title: "test-session__cc_2", Type: tmux.AgentClaude}, LastActivity: lastActivity},
 			{Pane: tmux.Pane{ID: "%1", Index: 1, Title: "test-session__cc_1", Type: tmux.AgentClaude}, LastActivity: lastActivity},
@@ -384,7 +384,7 @@ func TestUpdateAgentStatesLoadsPersistedAgentMailIdentity(t *testing.T) {
 		captureForHealthCheckWithCtx = originalCapture
 	})
 	lastActivity := time.Now().Add(-time.Minute).UTC()
-	getPanesWithActivity = func(string) ([]tmux.PaneActivity, error) {
+	getPanesWithActivity = func(context.Context, string) ([]tmux.PaneActivity, error) {
 		return []tmux.PaneActivity{{
 			Pane:         tmux.Pane{ID: paneID, Index: 1, Title: paneTitle, Type: tmux.AgentCodex},
 			LastActivity: lastActivity,
@@ -472,7 +472,7 @@ func TestEmitEvent_PublishesToEventsBus(t *testing.T) {
 func TestStartStop(t *testing.T) {
 	originalGetPanes := getPanesWithActivity
 	t.Cleanup(func() { getPanesWithActivity = originalGetPanes })
-	getPanesWithActivity = func(string) ([]tmux.PaneActivity, error) { return nil, nil }
+	getPanesWithActivity = func(context.Context, string) ([]tmux.PaneActivity, error) { return nil, nil }
 
 	c := New("test-session", "/tmp/test", nil, "TestAgent")
 	c.config.PollInterval = 100 * time.Millisecond
@@ -508,7 +508,7 @@ func TestAutoAssignCycleRunsAfterFreshMonitorUpdate(t *testing.T) {
 
 	var mu sync.Mutex
 	monitorCalls := 0
-	getPanesWithActivity = func(string) ([]tmux.PaneActivity, error) {
+	getPanesWithActivity = func(context.Context, string) ([]tmux.PaneActivity, error) {
 		mu.Lock()
 		monitorCalls++
 		mu.Unlock()
@@ -546,7 +546,7 @@ func TestAutoAssignCycleRunsAfterFreshMonitorUpdate(t *testing.T) {
 func TestStart_DoubleStartRejected(t *testing.T) {
 	originalGetPanes := getPanesWithActivity
 	t.Cleanup(func() { getPanesWithActivity = originalGetPanes })
-	getPanesWithActivity = func(string) ([]tmux.PaneActivity, error) { return nil, nil }
+	getPanesWithActivity = func(context.Context, string) ([]tmux.PaneActivity, error) { return nil, nil }
 
 	c := New("test-session", "/tmp/test", nil, "TestAgent")
 	c.config.PollInterval = 100 * time.Millisecond
@@ -567,7 +567,7 @@ func TestStart_DoubleStartRejected(t *testing.T) {
 func TestRunCyclePropagatesTopologyObservationFailure(t *testing.T) {
 	originalGetPanes := getPanesWithActivity
 	t.Cleanup(func() { getPanesWithActivity = originalGetPanes })
-	getPanesWithActivity = func(string) ([]tmux.PaneActivity, error) {
+	getPanesWithActivity = func(context.Context, string) ([]tmux.PaneActivity, error) {
 		return nil, errors.New("topology unavailable")
 	}
 
@@ -582,10 +582,44 @@ func TestRunCyclePropagatesTopologyObservationFailure(t *testing.T) {
 	}
 }
 
+func TestMaintainAssignmentsCancelsCanonicalTopologyObservation(t *testing.T) {
+	originalGetPanes := getPanesWithActivity
+	t.Cleanup(func() { getPanesWithActivity = originalGetPanes })
+	started := make(chan struct{})
+	getPanesWithActivity = func(ctx context.Context, session string) ([]tmux.PaneActivity, error) {
+		close(started)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	c := New("maintenance-cancellation", t.TempDir(), nil, "Coordinator")
+	c.workItemStatusFn = func(context.Context, string) (string, error) {
+		t.Error("canceled observation continued into assignment maintenance")
+		return "closed", nil
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- c.MaintainAssignments(ctx) }()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("canonical topology observation did not start")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("maintenance cancellation error=%v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("maintenance failed to cancel the canonical topology observation")
+	}
+}
+
 func TestStartObservationFailureCanBeRetried(t *testing.T) {
 	originalGetPanes := getPanesWithActivity
 	t.Cleanup(func() { getPanesWithActivity = originalGetPanes })
-	getPanesWithActivity = func(string) ([]tmux.PaneActivity, error) {
+	getPanesWithActivity = func(context.Context, string) ([]tmux.PaneActivity, error) {
 		return nil, errors.New("initial topology unavailable")
 	}
 
@@ -594,7 +628,7 @@ func TestStartObservationFailureCanBeRetried(t *testing.T) {
 		t.Fatalf("first Start() error = %v, want initial observation failure", err)
 	}
 
-	getPanesWithActivity = func(string) ([]tmux.PaneActivity, error) { return nil, nil }
+	getPanesWithActivity = func(context.Context, string) ([]tmux.PaneActivity, error) { return nil, nil }
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	if err := c.Start(ctx); err != nil {
@@ -617,7 +651,7 @@ func TestStop_WaitsForInFlightMonitorCycle(t *testing.T) {
 	blocked := make(chan struct{})
 	release := make(chan struct{})
 
-	getPanesWithActivity = func(session string) ([]tmux.PaneActivity, error) {
+	getPanesWithActivity = func(_ context.Context, session string) ([]tmux.PaneActivity, error) {
 		calls++
 		if calls == 1 {
 			return nil, nil
@@ -675,7 +709,7 @@ func TestStop_WaitsForConcurrentStartInitialization(t *testing.T) {
 	release := make(chan struct{})
 	var releaseOnce sync.Once
 
-	getPanesWithActivity = func(session string) ([]tmux.PaneActivity, error) {
+	getPanesWithActivity = func(_ context.Context, session string) ([]tmux.PaneActivity, error) {
 		close(blocked)
 		<-release
 		return nil, nil

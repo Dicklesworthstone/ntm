@@ -1,8 +1,10 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -152,6 +154,269 @@ func TestCoordinatorRunCommandExposesDeterministicOnceMode(t *testing.T) {
 	}
 	if flag := cmd.Flags().Lookup("once"); flag == nil || flag.DefValue != "false" {
 		t.Fatalf("--once flag = %+v", flag)
+	}
+}
+
+type coordinatorMaintenanceCLIFixture struct {
+	session string
+	project string
+	store   *assignment.AssignmentStore
+	renewed chan struct{}
+
+	mu           sync.Mutex
+	reservations []agentmail.FileReservation
+	renewals     []agentmail.RenewReservationsOptions
+	releaseIDs   [][]int
+	toolCalls    []string
+	renewOnce    sync.Once
+}
+
+// newCoordinatorMaintenanceCLIFixture exercises the real coordinator through
+// recording tmux/br processes and the actual Agent Mail client. Watch mode
+// uses the same fixture to prove its maintenance worker reaches this engine.
+func newCoordinatorMaintenanceCLIFixture(t *testing.T, unobservableSibling bool) *coordinatorMaintenanceCLIFixture {
+	t.Helper()
+	isolateIdentityDirs(t)
+	f := &coordinatorMaintenanceCLIFixture{
+		session: "coordinator-maintenance", project: t.TempDir(), renewed: make(chan struct{}),
+	}
+	if err := os.MkdirAll(filepath.Join(f.project, ".git"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	f.store = assignment.NewStore(f.session)
+	expires := time.Now().UTC().Add(2 * time.Minute)
+	registry := agentmail.NewSessionAgentRegistry(f.session, f.project)
+	var activityLines, paneLines []string
+	for _, seed := range []struct {
+		bead, pane, owner, path string
+		index, id               int
+	}{
+		{"ntm-maintenance", "%94", "BlueLake", "active.go", 1, 941},
+		{"ntm-unobservable", "%95", "RedLake", "unknown.go", 2, 951},
+		{"ntm-finished", "%96", "GreenLake", "finished.go", 3, 961},
+	} {
+		if seed.bead == "ntm-unobservable" && !unobservableSibling {
+			continue
+		}
+		actor := seed.owner + ":" + seed.bead
+		if seed.bead == "ntm-finished" {
+			// Legacy assignments can have no claim actor; exact-ID reservation
+			// cleanup still applies. Actor-guarded cleanup has package coverage.
+			actor = ""
+		}
+		row := &assignment.Assignment{
+			BeadID: seed.bead, BeadTitle: "Maintain " + seed.path, Pane: seed.index, AgentType: "cc", AgentName: seed.owner,
+			Status: assignment.StatusWorking, AssignedAt: time.Now().UTC().Add(-58 * time.Minute), IdempotencyKey: seed.bead,
+			ClaimActor: actor, DispatchTarget: seed.pane, OccupancyKey: seed.pane, DispatchState: assignment.DispatchSent,
+			ReservationRequired: true, ReservationState: assignment.ReservationReserved, ReservationCompleted: true,
+			ReservationAgent: seed.owner, ReservationTarget: seed.pane, ReservationRequested: []string{seed.path},
+			ReservedPaths: []string{seed.path}, ReservationIDs: []int{seed.id}, ReservationExpiresAt: &expires,
+		}
+		f.reservations = append(f.reservations, agentmail.FileReservation{
+			ID: seed.id, ProjectID: 9, AgentName: seed.owner, PathPattern: seed.path,
+			Reason: "bead assignment: " + seed.bead, Exclusive: true, ExpiresTS: agentmail.FlexTime{Time: expires},
+		})
+		if seed.bead == "ntm-maintenance" {
+			row.ReservationRequested = append(row.ReservationRequested, "active_test.go")
+			row.ReservedPaths = append(row.ReservedPaths, "active_test.go")
+			row.ReservationIDs = append(row.ReservationIDs, 942)
+			f.reservations = append(f.reservations, agentmail.FileReservation{
+				ID: 942, ProjectID: 9, AgentName: seed.owner, PathPattern: "active_test.go",
+				Reason: "bead assignment: " + seed.bead, Exclusive: true, ExpiresTS: agentmail.FlexTime{Time: expires},
+			})
+		}
+		f.store.Assignments[seed.bead] = row
+		if seed.bead != "ntm-finished" {
+			title := fmt.Sprintf("%s__cc_%d", f.session, seed.index)
+			registry.AddAgent(title, seed.pane, seed.owner)
+			primary := []string{seed.pane, fmt.Sprint(seed.index), title, "claude", "100", "30", "0"}
+			activity := append(append([]string(nil), primary...), fmt.Sprint(time.Now().Unix()), "4242", "0", "cc")
+			plain := append(append([]string(nil), primary...), "4242", "0", "cc")
+			activityLines = append(activityLines, strings.Join(activity, tmux.FieldSeparator))
+			paneLines = append(paneLines, strings.Join(plain, tmux.FieldSeparator))
+		}
+	}
+	f.reservations = append(f.reservations, agentmail.FileReservation{
+		ID: 999, ProjectID: 9, AgentName: "BlueLake", PathPattern: "unrelated.go", Reason: "another task",
+		Exclusive: true, ExpiresTS: agentmail.FlexTime{Time: expires},
+	})
+	if err := f.store.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if err := agentmail.SaveSessionAgentRegistry(registry); err != nil {
+		t.Fatal(err)
+	}
+	binDir := t.TempDir()
+	for name, data := range map[string]string{"activity": strings.Join(activityLines, "\n") + "\n", "panes": strings.Join(paneLines, "\n") + "\n"} {
+		if err := os.WriteFile(filepath.Join(binDir, name), []byte(data), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("NTM_MAINTENANCE_FIXTURE", binDir)
+	const tmuxScript = `#!/bin/sh
+printf '%s\n' "$*" >> "$NTM_MAINTENANCE_FIXTURE/tmux-calls"
+case "$1" in
+  -V) echo 'tmux 3.4' ;;
+  has-session) ;;
+  list-sessions) echo 'coordinator-maintenance_NTM_SEP_1_NTM_SEP_0_NTM_SEP_today' ;;
+  list-panes)
+    case "$*" in
+      *window_activity*) cat "$NTM_MAINTENANCE_FIXTURE/activity" ;;
+      *) cat "$NTM_MAINTENANCE_FIXTURE/panes" ;;
+    esac ;;
+  capture-pane)
+    case "$*" in
+      *%95*) echo 'sibling capture unavailable' >&2; exit 1 ;;
+      *) printf '● Done. All tests pass.\n\n❯ \n' ;;
+    esac ;;
+  *) echo "unexpected tmux action: $*" >&2; exit 1 ;;
+esac
+`
+	const brScript = `#!/bin/sh
+printf '%s\n' "$*" >> "$NTM_MAINTENANCE_FIXTURE/br-calls"
+while [ "$#" -gt 0 ] && [ "$1" != show ]; do shift; done
+if [ "$#" -lt 2 ]; then echo 'unexpected br mutation' >&2; exit 1; fi
+case "$2" in
+  ntm-maintenance) echo '[{"id":"ntm-maintenance","title":"Maintain active.go","issue_type":"task","status":"in_progress","assignee":"BlueLake:ntm-maintenance","labels":[],"dependencies":[]}]' ;;
+  ntm-unobservable) echo '[{"id":"ntm-unobservable","title":"Maintain unknown.go","issue_type":"task","status":"in_progress","assignee":"RedLake:ntm-unobservable","labels":[],"dependencies":[]}]' ;;
+  ntm-finished) echo '[{"id":"ntm-finished","title":"Finished work","issue_type":"task","status":"closed","assignee":"","labels":[],"dependencies":[]}]' ;;
+  *) echo 'unexpected bead' >&2; exit 1 ;;
+esac
+`
+	for name, data := range map[string]string{"tmux": tmuxScript, "br": brScript} {
+		if err := os.WriteFile(filepath.Join(binDir, name), []byte(data), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("NTM_TMUX_BINARY", filepath.Join(binDir, "tmux"))
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	previousClient, previousConfigFile, previousJSON := tmux.DefaultClient, cfgFile, jsonOutput
+	t.Cleanup(func() { tmux.DefaultClient, cfgFile, jsonOutput = previousClient, previousConfigFile, previousJSON })
+	tmux.DefaultClient = tmux.NewClient("")
+	cfgFile = filepath.Join(binDir, "config.toml")
+	if err := os.WriteFile(cfgFile, []byte("[coordinator]\nauto_assign=true\nconflict_notify=false\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	jsonOutput = true
+	stubCoordinatorLiveTopology(t, []tmux.Pane{{ID: "%94", Index: 1}}, map[string]string{"%94": f.project})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			ID     any    `json:"id"`
+			Method string `json:"method"`
+			Params struct {
+				Name      string `json:"name"`
+				URI       string `json:"uri"`
+				Arguments struct {
+					HumanKey       string   `json:"human_key"`
+					ProjectKey     string   `json:"project_key"`
+					AgentName      string   `json:"agent_name"`
+					ExtendSeconds  int      `json:"extend_seconds"`
+					ReservationIDs []int    `json:"file_reservation_ids"`
+					Paths          []string `json:"paths"`
+				} `json:"arguments"`
+			} `json:"params"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		writeResult := func(result any) {
+			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": request.ID, "result": result})
+		}
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		if request.Method == "resources/read" {
+			rows, _ := json.Marshal(f.reservations)
+			writeResult(map[string]any{"contents": []map[string]any{{"uri": request.Params.URI, "mimeType": "application/json", "text": string(rows)}}})
+			return
+		}
+		f.toolCalls = append(f.toolCalls, request.Params.Name)
+		args := request.Params.Arguments
+		switch request.Params.Name {
+		case "ensure_project":
+			writeResult(map[string]any{"id": 9, "slug": "maintenance", "human_key": args.HumanKey})
+		case "register_agent":
+			writeResult(map[string]any{"id": 1, "name": "AmberLake", "project_id": 9, "program": "ntm", "model": "coordinator"})
+		case "renew_file_reservations":
+			f.renewals = append(f.renewals, agentmail.RenewReservationsOptions{
+				ProjectKey: args.ProjectKey, AgentName: args.AgentName, ExtendSeconds: args.ExtendSeconds,
+				ReservationIDs: append([]int(nil), args.ReservationIDs...), Paths: append([]string(nil), args.Paths...),
+			})
+			for i := range f.reservations {
+				for _, id := range args.ReservationIDs {
+					if f.reservations[i].ID == id {
+						f.reservations[i].ExpiresTS.Time = f.reservations[i].ExpiresTS.Add(time.Duration(args.ExtendSeconds) * time.Second)
+					}
+				}
+			}
+			writeResult(map[string]any{"renewed": len(args.ReservationIDs)})
+			f.renewOnce.Do(func() { close(f.renewed) })
+		case "release_file_reservations":
+			f.releaseIDs = append(f.releaseIDs, append([]int(nil), args.ReservationIDs...))
+			for i := range f.reservations {
+				for _, id := range args.ReservationIDs {
+					if f.reservations[i].ID == id {
+						f.reservations[i].ReleasedTS = &agentmail.FlexTime{Time: time.Now().UTC()}
+					}
+				}
+			}
+			writeResult(map[string]any{"released": len(args.ReservationIDs)})
+		default:
+			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": request.ID, "error": map[string]any{"code": -32601, "message": "unexpected tool " + request.Params.Name}})
+		}
+	}))
+	t.Cleanup(server.Close)
+	enableFakeAgentMail(t, server.URL)
+	return f
+}
+
+func TestCoordinatorRunOnceMaintainsHealthyAssignmentsDespiteSiblingCaptureFailure(t *testing.T) {
+	f := newCoordinatorMaintenanceCLIFixture(t, true)
+	beforeUnknown := f.store.Get("ntm-unobservable")
+	var output bytes.Buffer
+	cmd := newCoordinatorRunCmd()
+	cmd.SilenceUsage, cmd.SilenceErrors = true, true // Inherited from the production root command.
+	cmd.SetOut(&output)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{f.session, "--once"})
+	if err := cmd.Execute(); err == nil {
+		t.Fatalf("degraded observation reported success: %s", output.String())
+	}
+	var response coordinatorRunOutput
+	if err := json.Unmarshal(output.Bytes(), &response); err != nil {
+		t.Fatalf("decode coordinator output: %v\n%s", err, output.String())
+	}
+	if response.Success || response.ErrorCode != "COORDINATOR_CYCLE_FAILED" || !strings.Contains(response.Error, "sibling capture unavailable") ||
+		!response.Once || !response.AutoAssign || len(response.Assignments) != 0 {
+		t.Fatalf("coordinator hid observation failure or admitted new work: %+v", response)
+	}
+	if err := f.store.LoadStrict(); err != nil {
+		t.Fatal(err)
+	}
+	if active := f.store.Get("ntm-maintenance"); active.ReservationRenewalError != "" || active.ReservationExpiresAt.Before(time.Now().Add(time.Hour)) {
+		t.Fatalf("healthy assignment lost protection: %+v", active)
+	}
+	if unknown := f.store.Get("ntm-unobservable"); unknown.Status != assignment.StatusWorking || unknown.ReservationRenewalError == "" ||
+		!reflect.DeepEqual(unknown.ReservationIDs, beforeUnknown.ReservationIDs) || !unknown.ReservationExpiresAt.Equal(*beforeUnknown.ReservationExpiresAt) {
+		t.Fatalf("unobservable assignment lost its ownership barrier: %+v", unknown)
+	}
+	if terminal := f.store.Get("ntm-finished"); terminal.Status != assignment.StatusCompleted || len(terminal.ReservationIDs) != 0 {
+		t.Fatalf("closed assignment retained stale leases: %+v", terminal)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.renewals) != 1 || !reflect.DeepEqual(f.renewals[0].ReservationIDs, []int{941, 942}) || len(f.renewals[0].Paths) != 0 ||
+		f.renewals[0].AgentName != "BlueLake" || f.renewals[0].ProjectKey != f.project || f.renewals[0].ExtendSeconds != 3600 {
+		t.Fatalf("renewal changed lease scope: %+v", f.renewals)
+	}
+	if len(f.releaseIDs) != 1 || !reflect.DeepEqual(f.releaseIDs[0], []int{961}) {
+		t.Fatalf("terminal cleanup changed lease scope: %+v", f.releaseIDs)
+	}
+	for _, call := range f.toolCalls {
+		if call == "send_message" || call == "file_reservation_paths" {
+			t.Fatalf("degraded coordinator started new work: %v", f.toolCalls)
+		}
 	}
 }
 

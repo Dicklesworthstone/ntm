@@ -925,7 +925,7 @@ func TestRunCycle_CaamFailoverGating(t *testing.T) {
 		getPanesWithActivity = origGetPanesWithActivity
 		captureForHealthCheckWithCtx = origCaptureForHealthCheckWithCtx
 	})
-	getPanesWithActivity = func(session string) ([]tmux.PaneActivity, error) {
+	getPanesWithActivity = func(_ context.Context, session string) ([]tmux.PaneActivity, error) {
 		return nil, nil
 	}
 	captureForHealthCheckWithCtx = func(_ context.Context, paneID string) (string, error) {

@@ -453,6 +453,21 @@ such as `coordinator.auto_assign = false`. A whole-section inline assignment
 such as `coordinator = { auto_assign = false }` is rejected without changing
 the file; convert it to either supported form before toggling a feature.
 
+`ntm assign <session> --watch --reserve-files` maintains the saved file
+reservations for active assignments immediately on startup and every 30 seconds,
+including while scans or completion handlers are busy. Each maintenance pass is
+bounded to 30 seconds. The watcher renews the exact recorded leases only after
+verifying the current task claim and pane owner, and releases recorded leases
+when the task is confirmed terminal. It does not recreate expired or missing
+leases; failures remain visible, including under `--quiet`, and are retried.
+
+`ntm coordinator run` uses the same maintenance path before admitting new work.
+If one pane cannot be observed, independently verified healthy assignments can
+still renew and confirmed terminal work can still be cleaned up. Unverified
+assignments remain in the ledger, and a degraded coordinator cycle reports an
+error without dispatching new work. Watch mode checks the current saved ledger
+before exiting with `--stop-when-done`.
+
 ### 5. Safety Policy and Approvals
 
 NTM includes a first-class safety system for destructive or sensitive actions. Policy

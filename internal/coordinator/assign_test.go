@@ -16,6 +16,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	assignmentstore "github.com/Dicklesworthstone/ntm/internal/assignment"
 	"github.com/Dicklesworthstone/ntm/internal/bv"
+	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/persona"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/status"
@@ -196,6 +197,221 @@ func TestRunCycleRenewsAssignmentReservationsWithAutoAssignOff(t *testing.T) {
 	}
 }
 
+func TestRunCycleMaintainsProvenAssignmentsDespiteObservationFailures(t *testing.T) {
+	for _, failure := range []string{"sibling_capture", "whole_topology", "capture_and_cleanup"} {
+		t.Run(failure, func(t *testing.T) {
+			c, store, client := newAssignmentHeartbeatTestCoordinator(t)
+			const unknownBead, closedBead = "ntm-unobservable", "ntm-finished"
+			for _, sibling := range []struct {
+				bead, pane, owner string
+				id                int
+			}{
+				{unknownBead, "%95", "RedLake", 951},
+				{closedBead, "%96", "GreenLake", 961},
+			} {
+				row := store.Get("ntm-heartbeat")
+				row.BeadID, row.AgentName, row.ReservationAgent = sibling.bead, sibling.owner, sibling.owner
+				row.IdempotencyKey = sibling.bead + "-generation"
+				row.ClaimActor = sibling.owner + ":" + row.IdempotencyKey
+				row.DispatchTarget, row.OccupancyKey, row.ReservationTarget = sibling.pane, sibling.pane, sibling.pane
+				row.ReservationRequested, row.ReservedPaths = []string{sibling.bead + ".go"}, []string{sibling.bead + ".go"}
+				row.ReservationIDs = []int{sibling.id}
+				store.Assignments[sibling.bead] = row
+				client.reservations = append(client.reservations, agentmail.FileReservation{
+					ID: sibling.id, ProjectID: 9, AgentName: sibling.owner, PathPattern: row.ReservedPaths[0],
+					Reason: "bead assignment: " + sibling.bead, Exclusive: true, ExpiresTS: agentmail.FlexTime{Time: *row.ReservationExpiresAt},
+				})
+			}
+			if err := store.Save(); err != nil {
+				t.Fatal(err)
+			}
+			beforeUnknown := store.Get(unknownBead)
+			beforeHealthy := store.Get("ntm-heartbeat")
+			registry := agentmail.NewSessionAgentRegistry(c.session, c.projectKey)
+			registry.AddAgent(c.session+"__cc_1", "%94", "BlueLake")
+			registry.AddAgent(c.session+"__cc_2", "%95", "RedLake")
+			if err := agentmail.SaveSessionAgentRegistry(registry); err != nil {
+				t.Fatal(err)
+			}
+			c.workItemStatusFn = func(_ context.Context, beadID string) (string, error) {
+				if beadID == closedBead {
+					return "closed", nil
+				}
+				return "in_progress", nil
+			}
+			c.workItemDetailsFn = func(_ context.Context, beadID string) (*bv.BeadAssignmentDetails, error) {
+				return &bv.BeadAssignmentDetails{ID: beadID, Status: "in_progress", Assignee: store.Get(beadID).ClaimActor}, nil
+			}
+			claimReleases := 0
+			c.releaseWorkItemClaimFn = func(_ context.Context, project, beadID, actor string) (bool, error) {
+				if project != c.projectKey || beadID != closedBead || actor != store.Get(closedBead).ClaimActor {
+					t.Fatalf("cleanup changed claim identity: %q %q %q", project, beadID, actor)
+				}
+				claimReleases++
+				return true, nil
+			}
+			c.config.AutoAssign = true
+			c.config.ConflictNotify = true
+			c.config.ConflictNegotiate = true
+			c.config.MailNudge = true
+			c.config.RotationUsageThreshold = 1
+			c.assignWorkFn = func(context.Context) ([]AssignmentResult, error) {
+				t.Fatal("degraded observation admitted new work")
+				return nil, nil
+			}
+			c.detectConflictsFn = func(context.Context) ([]Conflict, error) {
+				t.Fatal("degraded observation started conflict actions")
+				return nil, nil
+			}
+			c.monitor.observer = status.NewSessionObserverWithDependencies(status.NewDetector(), status.SessionObserverConfig{}, status.SessionObserverDependencies{
+				ListPanes: func(context.Context, string) ([]tmux.PaneActivity, error) {
+					if failure == "whole_topology" {
+						return nil, errors.New("topology unavailable")
+					}
+					return []tmux.PaneActivity{
+						{Pane: tmux.Pane{ID: "%94", Index: 1, Title: c.session + "__cc_1", Type: tmux.AgentClaude}},
+						{Pane: tmux.Pane{ID: "%95", Index: 2, Title: c.session + "__cc_2", Type: tmux.AgentClaude}},
+					}, nil
+				},
+				CapturePane: func(_ context.Context, paneID string, _ int) (string, error) {
+					if paneID == "%95" {
+						return "", errors.New("sibling capture unavailable")
+					}
+					return idleCapture, nil
+				},
+			})
+			if failure == "capture_and_cleanup" {
+				client.releaseErr = errors.New("terminal release unavailable")
+			}
+
+			results, err := c.RunCycle(t.Context())
+			wantObservationError := "sibling capture unavailable"
+			if failure == "whole_topology" {
+				wantObservationError = "topology unavailable"
+			}
+			if err == nil || !strings.Contains(err.Error(), wantObservationError) || !strings.Contains(err.Error(), unknownBead) || len(results) != 0 {
+				t.Fatalf("missing observation and target-maintenance errors: results=%+v err=%v", results, err)
+			}
+			if c.rotation != nil || c.caamFailover != nil || c.mailNudge != nil || c.conflictDetector != nil {
+				t.Fatal("degraded observation started automatic agent actions")
+			}
+			if err := store.LoadStrict(); err != nil {
+				t.Fatal(err)
+			}
+			healthy := store.Get("ntm-heartbeat")
+			if failure == "whole_topology" {
+				if len(client.renewRequests) != 0 || healthy.ReservationRenewalError == "" || !healthy.ReservationExpiresAt.Equal(*beforeHealthy.ReservationExpiresAt) {
+					t.Fatalf("unavailable topology renewed an unproven owner: %+v requests=%+v", healthy, client.renewRequests)
+				}
+			} else if len(client.renewRequests) != 1 || !reflect.DeepEqual(client.renewRequests[0].ReservationIDs, []int{941, 942}) || healthy.ReservationRenewalError != "" || healthy.ReservationExpiresAt.Before(time.Now().Add(time.Hour)) {
+				t.Fatalf("sibling failure prevented exact healthy renewal: %+v requests=%+v", healthy, client.renewRequests)
+			}
+			unknown := store.Get(unknownBead)
+			if unknown.Status != assignmentstore.StatusWorking || unknown.ReservationRenewalError == "" ||
+				!unknown.ReservationExpiresAt.Equal(*beforeUnknown.ReservationExpiresAt) ||
+				!reflect.DeepEqual(unknown.ReservationIDs, beforeUnknown.ReservationIDs) || unknown.IdempotencyKey != beforeUnknown.IdempotencyKey {
+				t.Fatalf("unobservable assignment lost its ownership barrier: %+v", unknown)
+			}
+			closed := store.Get(closedBead)
+			if failure == "capture_and_cleanup" {
+				if !strings.Contains(err.Error(), "exact reservations for bead "+closedBead+" remain active") ||
+					!strings.Contains(closed.ClearError, "remain active") || closed.ClearState != assignmentstore.ClearStateReservationReleasing ||
+					closed.PendingTerminalStatus != assignmentstore.StatusCompleted || len(closed.ReservationIDs) != 1 || claimReleases != 0 {
+					t.Fatalf("cleanup error or durable retry barrier lost: %+v err=%v", closed, err)
+				}
+			} else if closed.Status != assignmentstore.StatusCompleted || len(closed.ReservationIDs) != 0 || claimReleases != 1 {
+				t.Fatalf("observation failure prevented authoritative terminal cleanup: %+v claims=%d", closed, claimReleases)
+			}
+			if len(client.releaseIDs) == 0 || failure != "capture_and_cleanup" && len(client.releaseIDs) != 1 {
+				t.Fatalf("unexpected terminal release attempts: %+v", client.releaseIDs)
+			}
+			for _, ids := range client.releaseIDs {
+				if !reflect.DeepEqual(ids, []int{961}) {
+					t.Fatalf("terminal cleanup widened release scope: %+v", client.releaseIDs)
+				}
+			}
+		})
+	}
+}
+
+func TestMaintainAssignmentsDoesNotStartOtherConfiguredActions(t *testing.T) {
+	c, store, client := newAssignmentHeartbeatTestCoordinator(t)
+	c.mailClient = &agentmail.Client{}
+	c.config.AutoAssign, c.config.SendDigests, c.config.MailNudge = true, true, true
+	c.config.ConflictNotify, c.config.ConflictNegotiate = true, true
+	c.config.RotationUsageThreshold = 1
+	c.ntmConfig = config.Default()
+	c.ntmConfig.Integrations.CAAM.AutoFailover = true
+	c.assignWorkFn = func(context.Context) ([]AssignmentResult, error) {
+		t.Fatal("maintenance assigned new work")
+		return nil, nil
+	}
+	c.detectConflictsFn = func(context.Context) ([]Conflict, error) {
+		t.Fatal("maintenance ran conflict actions")
+		return nil, nil
+	}
+	if err := c.MaintainAssignments(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if c.started || c.rotation != nil || c.caamFailover != nil || c.mailNudge != nil || c.conflictDetector != nil {
+		t.Fatal("maintenance started an unrelated subsystem")
+	}
+	if err := store.LoadStrict(); err != nil {
+		t.Fatal(err)
+	}
+	if len(client.renewRequests) != 1 || store.Get("ntm-heartbeat").ReservationExpiresAt.Before(time.Now().Add(time.Hour)) {
+		t.Fatalf("maintenance did not protect existing work: %+v", store.Get("ntm-heartbeat"))
+	}
+}
+
+func TestMaintainAssignmentsCancellationDoesNotReleaseOrRenew(t *testing.T) {
+	for _, stage := range []string{"before_observation", "during_observation", "before_terminal_cleanup"} {
+		t.Run(stage, func(t *testing.T) {
+			c, store, client := newAssignmentHeartbeatTestCoordinator(t)
+			before := store.Get("ntm-heartbeat")
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			observations, statusReads := 0, 0
+			c.monitor.observer = status.NewSessionObserverWithDependencies(status.NewDetector(), status.SessionObserverConfig{}, status.SessionObserverDependencies{
+				ListPanes: func(context.Context, string) ([]tmux.PaneActivity, error) {
+					observations++
+					return []tmux.PaneActivity{{Pane: tmux.Pane{ID: "%94", Index: 1, Title: c.session + "__cc_1", Type: tmux.AgentClaude}}}, nil
+				},
+				CapturePane: func(context.Context, string, int) (string, error) {
+					if stage == "during_observation" {
+						cancel()
+						return "", context.Canceled
+					}
+					return idleCapture, nil
+				},
+			})
+			c.workItemStatusFn = func(context.Context, string) (string, error) {
+				statusReads++
+				cancel()
+				return "closed", nil
+			}
+			if stage == "before_observation" {
+				cancel()
+			}
+			if err := c.MaintainAssignments(ctx); !errors.Is(err, context.Canceled) {
+				t.Fatalf("cancellation error=%v", err)
+			}
+			if stage == "before_observation" && observations != 0 || stage != "before_terminal_cleanup" && statusReads != 0 {
+				t.Fatalf("work continued after cancellation: observations=%d statusReads=%d", observations, statusReads)
+			}
+			if len(client.releaseIDs) != 0 || len(client.renewRequests) != 0 {
+				t.Fatalf("cancellation caused lease mutation: releases=%v renewals=%v", client.releaseIDs, client.renewRequests)
+			}
+			if err := store.LoadStrict(); err != nil {
+				t.Fatal(err)
+			}
+			if after := store.Get(before.BeadID); !reflect.DeepEqual(before, after) {
+				t.Fatalf("cancellation changed durable assignment: before=%+v after=%+v", before, after)
+			}
+		})
+	}
+}
+
 func TestRunCycleRetiresTerminalAssignmentsWithAutoAssignOff(t *testing.T) {
 	for _, trackerStatus := range []string{"closed", "tombstone"} {
 		t.Run(trackerStatus, func(t *testing.T) {
@@ -237,7 +453,8 @@ func TestRunCycleRetiresTerminalAssignmentsWithAutoAssignOff(t *testing.T) {
 			after := store.Get(before.BeadID)
 			if after.Status != wantStatus || after.ClearState != assignmentstore.ClearStateNone ||
 				after.ReservationState != assignmentstore.ReservationReleased || len(after.ReservationIDs) != 0 ||
-				after.IdempotencyKey != before.IdempotencyKey || after.DispatchTarget != before.DispatchTarget || len(store.ListActive()) != 0 {
+				after.IdempotencyKey != before.IdempotencyKey || after.DispatchTarget != before.DispatchTarget || len(store.ListActive()) != 0 ||
+				after.PendingCompletionEventID != "" {
 				t.Fatalf("terminal assignment retained occupancy or lost its receipt: %+v", after)
 			}
 			if len(client.releaseIDs) != 1 || !reflect.DeepEqual(client.releaseIDs[0], before.ReservationIDs) || claimReleases != 1 || len(client.renewRequests) != 0 {
@@ -250,6 +467,119 @@ func TestRunCycleRetiresTerminalAssignmentsWithAutoAssignOff(t *testing.T) {
 				t.Fatalf("completed cleanup replayed external effects: releases=%v claims=%d error=%v", client.releaseIDs, claimReleases, err)
 			}
 		})
+	}
+}
+
+func TestMaintainAssignmentsPreservesCompletionOutboxThroughCleanupRetry(t *testing.T) {
+	c, store, client := newAssignmentHeartbeatTestCoordinator(t)
+	c.WithCompletionEvents()
+	c.workItemStatusFn = func(context.Context, string) (string, error) { return "closed", nil }
+	claimReleases := 0
+	c.releaseWorkItemClaimFn = func(context.Context, string, string, string) (bool, error) {
+		claimReleases++
+		return true, nil
+	}
+	client.releaseErr = errors.New("release response unavailable")
+	if err := c.MaintainAssignments(t.Context()); err == nil {
+		t.Fatal("failed external cleanup reported success")
+	}
+	if err := store.LoadStrict(); err != nil {
+		t.Fatal(err)
+	}
+	barrier := store.Get("ntm-heartbeat")
+	eventID := barrier.PendingCompletionEventID
+	if eventID == "" || barrier.CompletionDetectedAt == nil || barrier.ClearState != assignmentstore.ClearStateReservationReleasing || len(store.ListPendingCompletionEvents()) != 0 {
+		t.Fatalf("cleanup did not preserve an undeliverable pending event: %+v", barrier)
+	}
+	failedReleaseAttempts := len(client.releaseIDs)
+	if failedReleaseAttempts == 0 || !strings.Contains(barrier.ClearError, "remain active") {
+		t.Fatalf("failed cleanup did not record its unresolved leases: %+v releases=%v", barrier, client.releaseIDs)
+	}
+	for _, ids := range client.releaseIDs {
+		if !reflect.DeepEqual(ids, []int{941, 942}) {
+			t.Fatalf("cleanup retry widened release scope: %+v", client.releaseIDs)
+		}
+	}
+	client.releaseErr = nil
+	c.workItemStatusFn = func(context.Context, string) (string, error) {
+		t.Fatal("maintenance re-read a durably terminal outcome")
+		return "", nil
+	}
+	if err := c.MaintainAssignments(t.Context()); err != nil {
+		t.Fatalf("resume terminal cleanup: %v", err)
+	}
+	if err := store.LoadStrict(); err != nil {
+		t.Fatal(err)
+	}
+	terminal := store.Get("ntm-heartbeat")
+	if terminal.Status != assignmentstore.StatusCompleted || terminal.PendingCompletionEventID != eventID ||
+		terminal.ClearState != assignmentstore.ClearStateNone || len(store.ListPendingCompletionEvents()) != 1 || claimReleases != 1 || len(client.releaseIDs) != failedReleaseAttempts+1 {
+		t.Fatalf("cleanup lost or duplicated the completion event: %+v claims=%d releases=%v", terminal, claimReleases, client.releaseIDs)
+	}
+	if err := c.MaintainAssignments(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.LoadStrict(); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.Get(terminal.BeadID); got.PendingCompletionEventID != eventID || len(client.releaseIDs) != failedReleaseAttempts+1 || claimReleases != 1 {
+		t.Fatalf("maintenance replay repeated completion cleanup: %+v", got)
+	}
+	const consumer = "watch-completion-consumer"
+	if _, claimed, err := store.ClaimPendingCompletionEvent(t.Context(), terminal.BeadID, eventID, consumer, time.Minute); err != nil || !claimed {
+		t.Fatalf("claim completion event: claimed=%t error=%v", claimed, err)
+	}
+	if acknowledged, err := store.AcknowledgeCompletionEvent(t.Context(), terminal.BeadID, eventID, consumer); err != nil || !acknowledged {
+		t.Fatalf("acknowledge completion event: acknowledged=%t error=%v", acknowledged, err)
+	}
+	if err := c.MaintainAssignments(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.LoadStrict(); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.Get(terminal.BeadID); got.PendingCompletionEventID != "" || len(store.ListPendingCompletionEvents()) != 0 || len(client.releaseIDs) != failedReleaseAttempts+1 || claimReleases != 1 {
+		t.Fatalf("maintenance resurrected an acknowledged completion: %+v", got)
+	}
+}
+
+func TestMaintenanceDoesNotRecreateAcknowledgedCompletionFromStaleObservation(t *testing.T) {
+	c, store, client := newAssignmentHeartbeatTestCoordinator(t)
+	c.WithCompletionEvents()
+	observed := store.Get("ntm-heartbeat")
+	c.workItemStatusFn = func(context.Context, string) (string, error) { return "closed", nil }
+	claimReleases := 0
+	c.releaseWorkItemClaimFn = func(context.Context, string, string, string) (bool, error) {
+		claimReleases++
+		return true, nil
+	}
+	if err := c.MaintainAssignments(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.LoadStrict(); err != nil {
+		t.Fatal(err)
+	}
+	eventID := store.Get(observed.BeadID).PendingCompletionEventID
+	if eventID == "" {
+		t.Fatal("watch maintenance lost its completion event")
+	}
+	const consumer = "competing-watch-consumer"
+	if _, claimed, err := store.ClaimPendingCompletionEvent(t.Context(), observed.BeadID, eventID, consumer, time.Minute); err != nil || !claimed {
+		t.Fatalf("claim completion event: claimed=%t error=%v", claimed, err)
+	}
+	if acknowledged, err := store.AcknowledgeCompletionEvent(t.Context(), observed.BeadID, eventID, consumer); err != nil || !acknowledged {
+		t.Fatalf("acknowledge completion event: acknowledged=%t error=%v", acknowledged, err)
+	}
+	// This maintenance pass captured an active generation before a competing
+	// watcher completed cleanup and consumed its event under the same locks.
+	if completed, err := c.reconcileTerminalAssignment(t.Context(), store, observed, assignmentstore.StatusCompleted, ""); err != nil || completed {
+		t.Fatalf("stale maintenance revisited terminal generation: completed=%t err=%v", completed, err)
+	}
+	if err := store.LoadStrict(); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.Get(observed.BeadID); got.Status != assignmentstore.StatusCompleted || got.PendingCompletionEventID != "" || len(client.releaseIDs) != 1 || claimReleases != 1 {
+		t.Fatalf("stale maintenance resurrected completion or repeated cleanup: %+v claims=%d releases=%v", got, claimReleases, client.releaseIDs)
 	}
 }
 
@@ -416,7 +746,7 @@ func TestRunCycleReconcilesLostAssignmentRenewalResponse(t *testing.T) {
 }
 
 func TestRunCycleRefreshesStalePaneObservationBeforeReservationRenewal(t *testing.T) {
-	for _, stage := range []string{"claim", "lease", "replacement"} {
+	for _, stage := range []string{"claim", "lease", "replacement", "unrelated_capture"} {
 		t.Run(stage, func(t *testing.T) {
 			c, _, client := newAssignmentHeartbeatTestCoordinator(t)
 			observations := 0
@@ -426,9 +756,20 @@ func TestRunCycleRefreshesStalePaneObservationBeforeReservationRenewal(t *testin
 					if stage == "replacement" && observations > 1 {
 						return []tmux.PaneActivity{{Pane: tmux.Pane{ID: "%94", Index: 1, Title: "shell", Type: tmux.AgentUser}}}, nil
 					}
+					if stage == "unrelated_capture" && observations > 1 {
+						return []tmux.PaneActivity{
+							{Pane: tmux.Pane{ID: "%94", Index: 1, Title: c.session + "__cc_1", Type: tmux.AgentClaude}},
+							{Pane: tmux.Pane{ID: "%95", Index: 2, Title: c.session + "__cc_2", Type: tmux.AgentClaude}},
+						}, nil
+					}
 					return []tmux.PaneActivity{{Pane: tmux.Pane{ID: "%94", Index: 1, Title: c.session + "__cc_1", Type: tmux.AgentClaude}, LastActivity: time.Now().Add(-time.Minute)}}, nil
 				},
-				CapturePane: func(context.Context, string, int) (string, error) { return idleCapture, nil },
+				CapturePane: func(_ context.Context, paneID string, _ int) (string, error) {
+					if paneID == "%95" {
+						return "", errors.New("unrelated capture failed during refresh")
+					}
+					return idleCapture, nil
+				},
 			})
 			ageObservation := func() {
 				c.mu.Lock()
