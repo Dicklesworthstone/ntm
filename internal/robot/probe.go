@@ -183,9 +183,13 @@ type ProbeOutput struct {
 	Pane    int    `json:"pane"`
 	// PaneRef is the unambiguous address of the pane that was actually probed:
 	// "window.pane" on a multi-window session, the bare pane index otherwise.
-	// Pane echoes the SELECTOR that was requested, which on a multi-window
-	// session names a whole window and can match more than one pane.
-	PaneRef        string              `json:"pane_ref,omitempty"`
+	// Pane echoes a bare-integer SELECTOR that was requested, which on a
+	// multi-window session names a whole window and can match more than one
+	// pane. For W.P and %N selectors it is the window-local pane index.
+	PaneRef string `json:"pane_ref,omitempty"`
+	// Selector is the requested N, W.P, or %N selector that resolved to this
+	// pane. It is empty when no --panes filter was given.
+	Selector       string              `json:"selector,omitempty"`
 	PaneID         string              `json:"pane_id,omitempty"`
 	Responsive     bool                `json:"responsive"`
 	ProbeMethod    ProbeMethod         `json:"probe_method"`
@@ -199,7 +203,9 @@ type ProbeOutput struct {
 type ProbeEntry struct {
 	Pane int `json:"pane"`
 	// PaneRef names exactly which pane this entry describes; see ProbeOutput.
-	PaneRef        string              `json:"pane_ref,omitempty"`
+	PaneRef string `json:"pane_ref,omitempty"`
+	// Selector is the requested selector that resolved to this pane.
+	Selector       string              `json:"selector,omitempty"`
 	PaneID         string              `json:"pane_id,omitempty"`
 	Responsive     bool                `json:"responsive"`
 	ProbeMethod    ProbeMethod         `json:"probe_method"`
@@ -231,8 +237,12 @@ type ProbeSessionOutput struct {
 // ProbeSessionOptions configures multi-pane probe operations.
 type ProbeSessionOptions struct {
 	Session string
-	Panes   []int
-	Flags   ProbeFlags
+	// PaneSelectors holds validated N, W.P, or %N selectors (the grammar shared
+	// by every robot --panes flag). It takes precedence over Panes.
+	PaneSelectors []string
+	// Panes is the legacy bare-index form; each entry is treated as selector N.
+	Panes []int
+	Flags ProbeFlags
 }
 
 // ProbeFlagError is the error output for invalid probe flags
@@ -754,6 +764,7 @@ func probeEntryFromOutput(output *ProbeOutput) ProbeEntry {
 	entry := ProbeEntry{
 		Pane:           output.Pane,
 		PaneRef:        output.PaneRef,
+		Selector:       output.Selector,
 		PaneID:         output.PaneID,
 		Responsive:     output.Responsive,
 		ProbeMethod:    output.ProbeMethod,
@@ -811,35 +822,6 @@ func recheckProbeTarget(session string, expected tmux.Pane) error {
 		return fmt.Errorf("%w: pane %s no longer matches its admitted identity", ErrProbeTargetChanged, expected.ID)
 	}
 	return nil
-}
-
-// resolveProbePanes maps a --panes selector to every pane it addresses.
-//
-// pane_index is WINDOW-LOCAL, so a bare int is not a unique key on a
-// multi-window session. The project-wide convention — implemented canonically
-// by tmux.PaneSelector.Matches and shared by send, interrupt, restart-pane and
-// --robot-is-working — is that on a multi-window session a bare index selects a
-// whole WINDOW, and on a single-window session it is the window-local pane
-// index.
-//
-// Probe used to resolve the same flag as an NTM agent index instead, so an
-// agent that read pane numbers off --robot-is-working and fed them to
-// --robot-probe addressed different panes on the two surfaces (bd-13squ). A
-// selector may legitimately match several panes (a split window); every match
-// is probed, exactly as send would deliver to every pane in the window.
-func resolveProbePanes(panes []tmux.Pane, selector int) []tmux.Pane {
-	multiWindow := sessionSpansMultipleWindows(panes)
-	var matches []tmux.Pane
-	for _, pane := range panes {
-		key := pane.Index
-		if multiWindow {
-			key = pane.WindowIndex
-		}
-		if key == selector {
-			matches = append(matches, pane)
-		}
-	}
-	return matches
 }
 
 // probePaneRef is the unambiguous address of a probed pane: "window.pane" on a
@@ -907,40 +889,65 @@ func GetProbeSession(opts ProbeSessionOptions) (*ProbeSessionOutput, int) {
 	// keeps each physical pane probed exactly once even when the caller passes
 	// overlapping selectors.
 	type probeTarget struct {
-		selector int
-		pane     tmux.Pane
+		pane     int    // legacy "pane" field: bare selector N, else window-local index
+		selector string // requested selector; empty when enumerating
+		physical tmux.Pane
 	}
 	var targets []probeTarget
 	seenPane := make(map[string]struct{}, len(panes))
 
-	appendTarget := func(selector int, pane tmux.Pane) {
-		if _, ok := seenPane[pane.ID]; ok {
+	appendTarget := func(target probeTarget) {
+		if _, ok := seenPane[target.physical.ID]; ok {
 			return
 		}
-		seenPane[pane.ID] = struct{}{}
-		targets = append(targets, probeTarget{selector: selector, pane: pane})
+		seenPane[target.physical.ID] = struct{}{}
+		targets = append(targets, target)
 	}
 
-	if len(opts.Panes) == 0 {
+	selectors := opts.PaneSelectors
+	if len(selectors) == 0 && len(opts.Panes) > 0 {
+		selectors = make([]string, 0, len(opts.Panes))
+		for _, pane := range opts.Panes {
+			selectors = append(selectors, strconv.Itoa(pane))
+		}
+	}
+
+	if len(selectors) == 0 {
 		for _, pane := range panes {
 			if detectAgentTypeFromPane(pane) == "user" || pane.Service != "" || pane.Dead {
 				continue
 			}
-			selector := pane.Index
+			legacy := pane.Index
 			if multiWindow {
-				selector = pane.WindowIndex
+				legacy = pane.WindowIndex
 			}
-			appendTarget(selector, pane)
+			appendTarget(probeTarget{pane: legacy, physical: pane})
 		}
 	} else {
-		for _, selector := range opts.Panes {
-			matches := resolveProbePanes(panes, selector)
-			if len(matches) == 0 {
-				output.RobotResponse = NewErrorResponse(fmt.Errorf("pane selector %d did not match session %q; no probes started", selector, opts.Session), ErrCodePaneNotFound, "Every requested selector must resolve before any probe input is sent")
+		// Resolve every selector through the shared N / W.P / %N resolver
+		// before any input is sent, so a typo or stale address cannot leave a
+		// batch half-probed.
+		for _, raw := range selectors {
+			parsed, err := tmux.ParsePaneSelector(raw)
+			if err != nil {
+				output.RobotResponse = NewErrorResponse(err, ErrCodeInvalidFlag, "Use comma-separated N, W.P, or %N pane selectors")
+				return output, 1
+			}
+			matches, err := tmux.ResolvePaneSelectors(panes, []string{parsed.Raw}, false)
+			if err != nil {
+				output.RobotResponse = NewErrorResponse(
+					fmt.Errorf("%w; no probes started", err),
+					paneSelectorRobotErrorCode(err),
+					"Every requested selector must resolve before any probe input is sent",
+				)
 				return output, 1
 			}
 			for _, pane := range matches {
-				appendTarget(selector, pane)
+				legacy := pane.Index
+				if parsed.Kind == tmux.PaneSelectorPaneIndex {
+					legacy = parsed.Index
+				}
+				appendTarget(probeTarget{pane: legacy, selector: parsed.Raw, physical: pane})
 			}
 		}
 	}
@@ -955,16 +962,16 @@ func GetProbeSession(opts ProbeSessionOptions) (*ProbeSessionOutput, int) {
 	}
 
 	sort.SliceStable(targets, func(i, j int) bool {
-		if targets[i].pane.WindowIndex != targets[j].pane.WindowIndex {
-			return targets[i].pane.WindowIndex < targets[j].pane.WindowIndex
+		if targets[i].physical.WindowIndex != targets[j].physical.WindowIndex {
+			return targets[i].physical.WindowIndex < targets[j].physical.WindowIndex
 		}
-		return targets[i].pane.Index < targets[j].pane.Index
+		return targets[i].physical.Index < targets[j].physical.Index
 	})
 
 	// Capability gate: refuse the whole batch up front rather than sending
 	// input at panes that cannot accept it.
 	for _, target := range targets {
-		if err := validateProbePane(target.pane); err != nil {
+		if err := validateProbePane(target.physical); err != nil {
 			if errors.Is(err, ErrProbeTargetChanged) {
 				output.RobotResponse = NewErrorResponse(err, ErrCodePaneNotFound, "Select live, non-service panes")
 				return output, 1
@@ -972,14 +979,15 @@ func GetProbeSession(opts ProbeSessionOptions) (*ProbeSessionOutput, int) {
 			output.RobotResponse = NewErrorResponse(err, ErrCodeNotImplemented, agent.GrokPromptDeliveryCapabilityHint)
 			return output, 2
 		}
-		if canonical := target.pane.Type.Canonical(); opts.Flags.Method == ProbeMethodWakePing && (canonical == tmux.AgentUser || !canonical.IsValid()) {
-			output.RobotResponse = NewErrorResponse(fmt.Errorf("wake_ping requires agent panes; pane %s is %q", target.pane.ID, target.pane.Type), ErrCodeInvalidFlag, "Select only agent panes for wake_ping")
+		if canonical := target.physical.Type.Canonical(); opts.Flags.Method == ProbeMethodWakePing && (canonical == tmux.AgentUser || !canonical.IsValid()) {
+			output.RobotResponse = NewErrorResponse(fmt.Errorf("wake_ping requires agent panes; pane %s is %q", target.physical.ID, target.physical.Type), ErrCodeInvalidFlag, "Select only agent panes for wake_ping")
 			return output, 1
 		}
 	}
 
 	for _, target := range targets {
-		probeOutput := probeResolvedPane(opts.Session, target.pane, multiWindow, target.selector, opts.Flags)
+		probeOutput := probeResolvedPane(opts.Session, target.physical, multiWindow, target.pane, opts.Flags)
+		probeOutput.Selector = target.selector
 		entry := probeEntryFromOutput(probeOutput)
 		output.Probes = append(output.Probes, entry)
 		output.Summary.TotalProbed++

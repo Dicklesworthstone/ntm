@@ -2648,9 +2648,9 @@ Shell Integration:
 				failRobotCommand(err, robot.ErrCodeSessionNotFound, "Use 'ntm list' to see available sessions", "robot-probe")
 				return
 			}
-			panes, err := robot.ParsePanesArg(robotPanes)
+			paneSelectors, err := robot.ParsePaneSelectorsArg(robotPanes)
 			if err != nil {
-				failRobotCommand(err, robot.ErrCodeInvalidFlag, "Use comma-separated numeric pane indices", "robot-probe")
+				failRobotCommand(err, robot.ErrCodeInvalidFlag, "Use comma-separated N, W.P, or %N pane selectors", "robot-probe")
 				return
 			}
 			flags, err := robot.ParseProbeFlags(robotProbeMethod, robotProbeTimeout, robotProbeAggressive)
@@ -2659,9 +2659,9 @@ Shell Integration:
 				return
 			}
 			opts := robot.ProbeSessionOptions{
-				Session: session,
-				Panes:   panes,
-				Flags:   *flags,
+				Session:       session,
+				PaneSelectors: paneSelectors,
+				Flags:         *flags,
 			}
 			exitCode := robot.PrintProbeSession(opts)
 			recordLegacyRobotExit(exitCode)
@@ -4340,7 +4340,7 @@ func init() {
 	rootCmd.Flags().StringVar(&robotWatchBeadID, "bead", "", "Bead ID for --robot-watch-bead. Example: --bead=bd-abc123")
 	rootCmd.Flags().StringVar(&robotErrors, "robot-errors", "", "Filter pane output to show only errors. Required: SESSION. Example: ntm --robot-errors=myproject --lines=100")
 	rootCmd.Flags().IntVar(&robotLines, "lines", 20, "Lines to capture per pane. Optional with --robot-tail, --robot-errors, --robot-watch-bead, --robot-is-working, --robot-agent-health, --robot-smart-restart, and --robot-monitor. Example: --lines=100")
-	rootCmd.Flags().StringVar(&robotPanes, "panes", "", "Filter with comma-separated N, W.P, or %N pane selectors. Optional with --robot-tail, --robot-watch-bead, --robot-errors, --robot-send, --robot-ack, --robot-interrupt, --robot-wait, --robot-is-working, --robot-agent-health, --robot-smart-restart, --robot-restart-pane, and --robot-monitor. Example: --panes=1,2.0,%7")
+	rootCmd.Flags().StringVar(&robotPanes, "panes", "", "Filter with comma-separated N, W.P, or %N pane selectors. Optional with --robot-tail, --robot-watch-bead, --robot-errors, --robot-send, --robot-ack, --robot-interrupt, --robot-wait, --robot-is-working, --robot-agent-health, --robot-smart-restart, --robot-restart-pane, --robot-probe, and --robot-monitor. Example: --panes=1,2.0,%7")
 	rootCmd.Flags().StringVar(&robotIsWorking, "robot-is-working", "", "Check if agents are working. Returns work state with recommendations. Required: SESSION. Example: ntm --robot-is-working=myproject --panes=2,3")
 	rootCmd.Flags().BoolVar(&robotIsWorkingVerbose, "is-working-verbose", false, "Include raw sample output in --robot-is-working response. Example: --is-working-verbose")
 	rootCmd.Flags().BoolVar(&robotSemantic, "semantic", false, "Add an optional ground-truth semantic_progress field to --robot-is-working (token-attributed git commits / bead claims). Advisory only; never flips is_working. Off by default (no git/br calls). Example: ntm --robot-is-working=myproject --semantic")
@@ -4567,7 +4567,7 @@ func init() {
 	rootCmd.Flags().StringVar(&robotRestartPanePrompt, "restart-prompt", "", "Custom prompt to send after restart. Overrides --restart-bead template. Use with --robot-restart-pane")
 	rootCmd.Flags().StringVar(&robotRestartPaneModel, "restart-model", "", "Relaunch with a model override using the spawn variant grammar (model or model@effort). Use with --robot-restart-pane. Example: --restart-model=gpt-5.6-terra@high")
 	rootCmd.Flags().StringVar(&robotRestartPaneArgs, "restart-agent-args", "", "Raw arguments appended to the relaunch command (last-flag-wins). Use with --robot-restart-pane")
-	rootCmd.Flags().StringVar(&robotProbe, "robot-probe", "", "Probe pane responsiveness. Required: SESSION. Example: ntm --robot-probe=proj --panes=1,2")
+	rootCmd.Flags().StringVar(&robotProbe, "robot-probe", "", "Probe pane responsiveness. Required: SESSION. Example: ntm --robot-probe=proj --panes=1.2,%3")
 	rootCmd.Flags().StringVar(&robotPaneAddress, "robot-pane-address", "", "Per-pane addressing cards: canonical selector, stable %pane_id, topology, and a ready-to-paste tmux target (immune to base-index settings). Required: SESSION. Example: ntm --robot-pane-address=proj")
 	rootCmd.Flags().StringVar(&robotProbeMethod, "probe-method", "", "Probe method: keystroke_echo, interrupt_test, wake_ping (rate-limit liveness: responsiveness + still_rate_limited + tail sample; agent panes only). Used with --robot-probe")
 	rootCmd.Flags().IntVar(&robotProbeTimeout, "probe-timeout", 0, "Probe timeout in ms (100-60000, used with --robot-probe)")

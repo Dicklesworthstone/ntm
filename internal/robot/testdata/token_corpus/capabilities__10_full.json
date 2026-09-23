@@ -1306,7 +1306,7 @@
           "flag": "--panes",
           "type": "string",
           "required": false,
-          "description": "Comma-separated pane selectors to probe. On a multi-window session a bare index selects a WINDOW (the shared convention used by send/interrupt/restart-pane/is-working) and every pane in it is probed; on a single-window session it is the window-local pane index. Each result carries pane_ref with the exact window.pane address probed."
+          "description": "Comma-separated N, W.P, or %N pane selectors to probe. W.P and %N name exactly one pane. On a multi-window session a bare index selects a WINDOW (the shared convention used by send/interrupt/restart-pane/is-working) and every pane in it is probed; on a single-window session it is the window-local pane index. Each result carries pane_ref with the exact window.pane address probed."
         },
         {
           "name": "probe-method",
@@ -8342,7 +8342,7 @@
           "flag": "--panes",
           "type": "string",
           "required": false,
-          "description": "Comma-separated pane selectors to probe. On a multi-window session a bare index selects a WINDOW (the shared convention used by send/interrupt/restart-pane/is-working) and every pane in it is probed; on a single-window session it is the window-local pane index. Each result carries pane_ref with the exact window.pane address probed."
+          "description": "Comma-separated N, W.P, or %N pane selectors to probe. W.P and %N name exactly one pane. On a multi-window session a bare index selects a WINDOW (the shared convention used by send/interrupt/restart-pane/is-working) and every pane in it is probed; on a single-window session it is the window-local pane index. Each result carries pane_ref with the exact window.pane address probed."
         },
         {
           "name": "probe-method",

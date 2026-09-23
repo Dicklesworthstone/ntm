@@ -294,3 +294,90 @@ func TestProbeExecutionPreservesFailureCause(t *testing.T) {
 	}
 	assertNoProbeInput(t, client.calls)
 }
+
+// ntm#329: --robot-probe must accept the same N, W.P, and %N selectors as every
+// other robot --panes flag, and an explicit W.P or %N must reach exactly the
+// named pane rather than the first pane of a same-numbered window.
+func TestProbeExecutionAcceptsSharedPaneSelectorGrammar(t *testing.T) {
+	windowPane := func(id string, window, index int) tmux.Pane {
+		pane := executionPane(id, index)
+		pane.WindowIndex = window
+		return pane
+	}
+	topology := []tmux.Pane{
+		windowPane("%1", 1, 1),
+		windowPane("%2", 1, 2),
+		windowPane("%3", 2, 1),
+	}
+	probeInputs := func(calls []string) []string {
+		var targets []string
+		for _, call := range calls {
+			if strings.HasPrefix(call, "input:") && strings.HasSuffix(call, ": ") {
+				targets = append(targets, strings.TrimSuffix(strings.TrimPrefix(call, "input:"), ": "))
+			}
+		}
+		return targets
+	}
+
+	for _, tc := range []struct {
+		name      string
+		selectors []string
+		wantIDs   []string
+		wantRefs  []string
+		wantSel   []string
+		wantPane  []int
+	}{
+		{"window.pane names one pane in a split window", []string{"1.2"}, []string{"%2"}, []string{"1.2"}, []string{"1.2"}, []int{2}},
+		{"pane id names one pane", []string{"%3"}, []string{"%3"}, []string{"2.1"}, []string{"%3"}, []int{1}},
+		{"bare N keeps the shared window meaning", []string{"1"}, []string{"%1", "%2"}, []string{"1.1", "1.2"}, []string{"1", "1"}, []int{1, 1}},
+		{"aliases of one pane probe it once", []string{"%2", "1.2"}, []string{"%2"}, []string{"1.2"}, []string{"%2"}, []int{2}},
+		{"mixed selectors", []string{"2", "%1"}, []string{"%1", "%3"}, []string{"1.1", "2.1"}, []string{"%1", "2"}, []int{1, 2}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := newProbeExecutionClient(t, topology...)
+			out, exit := GetProbeSession(ProbeSessionOptions{
+				Session:       "session",
+				PaneSelectors: tc.selectors,
+				Flags:         ProbeFlags{Method: ProbeMethodKeystrokeEcho, TimeoutMs: 1},
+			})
+			if exit != 0 || !out.Success {
+				t.Fatalf("probe %v failed: %+v exit=%d", tc.selectors, out.RobotResponse, exit)
+			}
+			if got := probeInputs(client.calls); !reflect.DeepEqual(got, tc.wantIDs) {
+				t.Fatalf("probe input reached %v, want %v (calls=%v)", got, tc.wantIDs, client.calls)
+			}
+			if len(out.Probes) != len(tc.wantRefs) {
+				t.Fatalf("got %d probe entries, want %d: %+v", len(out.Probes), len(tc.wantRefs), out.Probes)
+			}
+			for i, probe := range out.Probes {
+				if probe.PaneID != tc.wantIDs[i] || probe.PaneRef != tc.wantRefs[i] || probe.Selector != tc.wantSel[i] || probe.Pane != tc.wantPane[i] {
+					t.Fatalf("entry %d = {id:%s ref:%s selector:%q pane:%d}, want {id:%s ref:%s selector:%q pane:%d}",
+						i, probe.PaneID, probe.PaneRef, probe.Selector, probe.Pane, tc.wantIDs[i], tc.wantRefs[i], tc.wantSel[i], tc.wantPane[i])
+				}
+			}
+		})
+	}
+
+	for _, tc := range []struct {
+		name      string
+		selectors []string
+		wantCode  string
+	}{
+		{"unknown window.pane", []string{"1.1", "1.9"}, ErrCodePaneNotFound},
+		{"unknown pane id", []string{"%99"}, ErrCodePaneNotFound},
+		{"malformed selector", []string{"1.x"}, ErrCodeInvalidFlag},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := newProbeExecutionClient(t, topology...)
+			out, exit := GetProbeSession(ProbeSessionOptions{
+				Session:       "session",
+				PaneSelectors: tc.selectors,
+				Flags:         ProbeFlags{Method: ProbeMethodKeystrokeEcho, TimeoutMs: 1},
+			})
+			if exit == 0 || out.Success || out.ErrorCode != tc.wantCode || len(out.Probes) != 0 {
+				t.Fatalf("selectors %v: %+v exit=%d, want %s with no probes", tc.selectors, out.RobotResponse, exit, tc.wantCode)
+			}
+			assertNoProbeInput(t, client.calls)
+		})
+	}
+}
