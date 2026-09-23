@@ -17,6 +17,11 @@ const (
 	defaultTransferCleanupTime  = 10 * time.Second
 )
 
+// ErrTransferGrantEvidence means the reservation reply did not establish the
+// requested coverage. Its paths are evidence for inspection, not permission to
+// release reservations or repeat a possibly committed acquisition.
+var ErrTransferGrantEvidence = errors.New("invalid reservation transfer grant evidence")
+
 // ReservationTransferClient is the subset of Agent Mail client methods needed for transfers.
 type ReservationTransferClient interface {
 	ReservePaths(ctx context.Context, opts agentmail.FileReservationOptions) (*agentmail.ReservationResult, error)
@@ -50,11 +55,23 @@ type ReservationTransferResult struct {
 	RolledBack     bool                            `json:"rolled_back,omitempty"`
 	Success        bool                            `json:"success"`
 	Error          string                          `json:"error,omitempty"`
+
+	// Stage identifies the last attempted phase, including compensation.
+	Stage string `json:"stage,omitempty"`
+	// Attempts counts destination acquisition attempts, not rollback calls.
+	Attempts int `json:"attempts,omitempty"`
+	// These errors remain visible alongside the original operation failure.
+	CleanupError  string `json:"cleanup_error,omitempty"`
+	RollbackError string `json:"rollback_error,omitempty"`
+	// OutcomeUnknown prohibits interpreting an error as proof of no effects.
+	// RolledBack only records restored source coverage, not an atomic transfer.
+	OutcomeUnknown bool `json:"outcome_unknown,omitempty"`
 }
 
 // TransferReservations moves reservations from one agent to another.
-// It releases the old reservations, attempts to reserve for the new agent,
-// and rolls back on conflicts where possible to approximate atomicity.
+// Release/acquire is not atomic: a failure can leave effects requiring manual
+// inspection. Only a complete grant set is success, and an unconfirmed cleanup
+// must never authorize another acquisition or a claimed successful rollback.
 func TransferReservations(ctx context.Context, client ReservationTransferClient, opts TransferReservationsOptions) (*ReservationTransferResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -63,26 +80,22 @@ func TransferReservations(ctx context.Context, client ReservationTransferClient,
 	if logger == nil {
 		logger = slog.Default()
 	}
-	result := &ReservationTransferResult{
-		FromAgent: opts.FromAgent,
-		ToAgent:   opts.ToAgent,
-		Success:   false,
-	}
-
-	if client == nil {
-		err := errors.New("reservation transfer requires an Agent Mail client")
+	result := &ReservationTransferResult{FromAgent: opts.FromAgent, ToAgent: opts.ToAgent, Stage: "validate"}
+	fail := func(err error) (*ReservationTransferResult, error) {
 		result.Error = err.Error()
 		return result, err
+	}
+	if err := ctx.Err(); err != nil {
+		return fail(err)
+	}
+	if client == nil {
+		return fail(errors.New("reservation transfer requires an Agent Mail client"))
 	}
 	if opts.ProjectKey == "" {
-		err := errors.New("reservation transfer requires project_key")
-		result.Error = err.Error()
-		return result, err
+		return fail(errors.New("reservation transfer requires project_key"))
 	}
 	if opts.FromAgent == "" || opts.ToAgent == "" {
-		err := errors.New("reservation transfer requires both from_agent and to_agent")
-		result.Error = err.Error()
-		return result, err
+		return fail(errors.New("reservation transfer requires both from_agent and to_agent"))
 	}
 
 	ttlSeconds := opts.TTLSeconds
@@ -93,125 +106,131 @@ func TransferReservations(ctx context.Context, client ReservationTransferClient,
 	if grace <= 0 {
 		grace = time.Duration(defaultTransferGraceSeconds) * time.Second
 	}
-
 	exclusivePaths, sharedPaths, requested := splitReservationPaths(opts.Reservations)
 	result.RequestedPaths = requested
-
 	if len(requested) == 0 {
 		result.Success = true
+		result.Stage = "complete"
 		return result, nil
 	}
+	logger.Info("starting reservation transfer", "from_agent", opts.FromAgent, "to_agent", opts.ToAgent, "paths", len(requested))
 
-	logger.Info("starting reservation transfer",
-		"from_agent", opts.FromAgent,
-		"to_agent", opts.ToAgent,
-		"paths", len(requested),
-	)
-
-	// If transferring to the same agent, just refresh TTL.
 	if opts.FromAgent == opts.ToAgent {
-		renewResult, err := client.RenewReservations(ctx, agentmail.RenewReservationsOptions{
-			ProjectKey:    opts.ProjectKey,
-			AgentName:     opts.ToAgent,
-			ExtendSeconds: ttlSeconds,
-			Paths:         requested,
+		result.Stage = "renew"
+		renewed, err := client.RenewReservations(ctx, agentmail.RenewReservationsOptions{
+			ProjectKey: opts.ProjectKey, AgentName: opts.ToAgent, ExtendSeconds: ttlSeconds, Paths: append([]string(nil), requested...),
 		})
+		err = errors.Join(err, ctx.Err())
 		if err != nil {
-			result.Error = err.Error()
-			logger.Warn("reservation refresh failed", "error", err)
-			return result, err
+			result.OutcomeUnknown = true
+			return fail(err)
 		}
-		if renewResult == nil || renewResult.Renewed < len(requested) {
-			renewedCount := 0
-			if renewResult != nil {
-				renewedCount = renewResult.Renewed
-			}
-			err := fmt.Errorf("renewed %d of %d reservations for %s", renewedCount, len(requested), opts.ToAgent)
-			result.Error = err.Error()
-			logger.Warn("reservation refresh incomplete", "error", err)
-			return result, err
+		count := 0
+		if renewed != nil {
+			count = renewed.Renewed
 		}
-		result.GrantedPaths = append(result.GrantedPaths, requested...)
+		if count != len(requested) {
+			result.OutcomeUnknown = true
+			return fail(fmt.Errorf("renewed %d of %d reservations for %s", count, len(requested), opts.ToAgent))
+		}
+		result.GrantedPaths = append([]string(nil), requested...)
 		result.Success = true
-		logger.Info("reservation refresh complete", "agent", opts.ToAgent, "paths", len(requested))
+		result.Stage = "complete"
 		return result, nil
 	}
 
-	// Release old reservations first.
-	releaseResult, err := client.ReleaseReservations(ctx, opts.ProjectKey, opts.FromAgent, requested, nil)
+	result.Stage = "release"
+	if err := ctx.Err(); err != nil {
+		return fail(err)
+	}
+	released, err := client.ReleaseReservations(ctx, opts.ProjectKey, opts.FromAgent, append([]string(nil), requested...), nil)
 	if err != nil {
-		result.Error = err.Error()
-		logger.Warn("reservation release failed", "error", err)
-		return result, err
+		result.OutcomeUnknown = true
+		return fail(errors.Join(err, ctx.Err()))
 	}
-	releasedCount := 0
-	if releaseResult != nil {
-		releasedCount = releaseResult.Released
+	count := 0
+	if released != nil {
+		count = released.Released
 	}
-	if releasedCount < len(requested) {
-		err := fmt.Errorf("released %d of %d requested reservations", releasedCount, len(requested))
-		result.Error = err.Error()
-		logger.Warn("reservation release incomplete",
-			"released", releasedCount,
-			"requested", len(requested),
-			"from_agent", opts.FromAgent,
-		)
-		return result, err
+	if count != len(requested) {
+		result.OutcomeUnknown = true
+		return fail(fmt.Errorf("released %d of %d requested reservations", count, len(requested)))
 	}
-	result.ReleasedPaths = requested
+	result.ReleasedPaths = append([]string(nil), requested...)
 
-	// Attempt reservation for the new agent, with one retry for propagation.
-	grant, conflicts, err := reserveAll(ctx, client, opts.ProjectKey, opts.ToAgent, ttlSeconds, opts.FromAgent, exclusivePaths, sharedPaths)
-	if agentmail.IsReservationConflict(err) && grace > 0 {
-		// Release any partial grants before retrying to keep atomic semantics.
-		cleanupCtx, cleanupCancel := newCleanupContext()
-		if releaseErr := releaseGrantedReservations(cleanupCtx, client, opts.ProjectKey, opts.ToAgent, grant); releaseErr != nil {
-			logger.Warn("failed to release partial transfer grants before retry", "error", releaseErr)
+	// Compensation gets its own bounded context after caller cancellation.
+	// A failed cleanup stops here: blindly clearing the grant slice and retrying
+	// would lose evidence and can acquire more leases while the old ones remain.
+	cleanup := func(granted []string) error {
+		if len(granted) == 0 {
+			return nil
 		}
-		cleanupCancel()
-		grant = nil
-		if waitErr := waitWithContext(ctx, grace); waitErr != nil {
-			result.Error = waitErr.Error()
-			rollbackCtx, rollbackCancel := newCleanupContext()
-			if rollbackErr := rollbackTransfer(rollbackCtx, client, opts.ProjectKey, opts.FromAgent, opts.ToAgent, ttlSeconds, exclusivePaths, sharedPaths, nil); rollbackErr != nil {
-				logger.Warn("reservation rollback failed after retry wait", "error", rollbackErr)
-			} else {
-				result.RolledBack = true
+		result.Stage = "cleanup"
+		cleanupCtx, cancel := newCleanupContext()
+		defer cancel()
+		if err := releaseGrantedReservations(cleanupCtx, client, opts.ProjectKey, opts.ToAgent, granted); err != nil {
+			result.CleanupError = err.Error()
+			result.OutcomeUnknown = true
+			return fmt.Errorf("clean up destination grants: %w", err)
+		}
+		return nil
+	}
+	rollback := func() error {
+		result.Stage = "rollback"
+		rollbackCtx, cancel := newCleanupContext()
+		defer cancel()
+		if err := rollbackReservations(rollbackCtx, client, opts.ProjectKey, opts.FromAgent, ttlSeconds, exclusivePaths, sharedPaths); err != nil {
+			result.RollbackError = err.Error()
+			result.OutcomeUnknown = true
+			return fmt.Errorf("restore source reservations: %w", err)
+		}
+		result.RolledBack = true
+		return nil
+	}
+
+	for attempt := 1; attempt <= 2; attempt++ {
+		// Cancellation after a confirmed source release still needs rollback,
+		// but must not enter the destination mutation even for a lax client.
+		if err := ctx.Err(); err != nil {
+			return fail(errors.Join(err, rollback()))
+		}
+		result.Stage = "reserve"
+		result.Attempts = attempt
+		granted, conflicts, reserveErr := reserveAll(ctx, client, opts.ProjectKey, opts.ToAgent, ttlSeconds, opts.FromAgent, exclusivePaths, sharedPaths)
+		result.GrantedPaths = append([]string(nil), granted...)
+		result.Conflicts = append([]agentmail.ReservationConflict(nil), conflicts...)
+		reserveErr = errors.Join(reserveErr, ctx.Err())
+		if reserveErr == nil {
+			result.Success = true
+			result.Stage = "complete"
+			logger.Info("reservation transfer complete", "from_agent", opts.FromAgent, "to_agent", opts.ToAgent, "paths", len(granted))
+			return result, nil
+		}
+
+		if errors.Is(reserveErr, ErrTransferGrantEvidence) {
+			// An omitted or foreign path is not a trustworthy cleanup scope.
+			// Preserve all returned paths and the source release evidence rather
+			// than broadening a release or claiming rollback on uncertain data.
+			result.OutcomeUnknown = true
+			return fail(reserveErr)
+		}
+		retryable := transferRetryableConflict(reserveErr, 0)
+		if !retryable {
+			result.OutcomeUnknown = true
+		}
+		if cleanupErr := cleanup(granted); cleanupErr != nil {
+			return fail(errors.Join(reserveErr, cleanupErr))
+		}
+		if attempt == 1 && retryable && ctx.Err() == nil {
+			result.Stage = "retry_wait"
+			if waitErr := waitWithContext(ctx, grace); waitErr != nil {
+				return fail(errors.Join(reserveErr, waitErr, rollback()))
 			}
-			rollbackCancel()
-			return result, waitErr
+			continue
 		}
-		grant, conflicts, err = reserveAll(ctx, client, opts.ProjectKey, opts.ToAgent, ttlSeconds, opts.FromAgent, exclusivePaths, sharedPaths)
+		return fail(errors.Join(reserveErr, rollback()))
 	}
-
-	if err != nil {
-		result.GrantedPaths = grant
-		result.Conflicts = conflicts
-		result.Error = err.Error()
-
-		// Roll back to old agent for any failure after the old reservations were released.
-		if len(requested) > 0 {
-			rollbackCtx, rollbackCancel := newCleanupContext()
-			rollbackErr := rollbackTransfer(rollbackCtx, client, opts.ProjectKey, opts.FromAgent, opts.ToAgent, ttlSeconds, exclusivePaths, sharedPaths, grant)
-			rollbackCancel()
-			if rollbackErr != nil {
-				logger.Warn("reservation rollback failed", "error", rollbackErr)
-			} else {
-				result.RolledBack = true
-			}
-		}
-		logger.Warn("reservation transfer failed", "error", err, "conflicts", len(conflicts))
-		return result, err
-	}
-
-	result.GrantedPaths = grant
-	result.Success = true
-	logger.Info("reservation transfer complete",
-		"from_agent", opts.FromAgent,
-		"to_agent", opts.ToAgent,
-		"paths", len(grant),
-	)
-	return result, nil
+	panic("unreachable reservation transfer attempt")
 }
 
 func splitReservationPaths(reservations []ReservationSnapshot) (exclusive []string, shared []string, requested []string) {
@@ -250,84 +269,117 @@ func splitReservationPaths(reservations []ReservationSnapshot) (exclusive []stri
 func reserveAll(ctx context.Context, client ReservationTransferClient, projectKey, agentName string, ttlSeconds int, fromAgent string, exclusive, shared []string) ([]string, []agentmail.ReservationConflict, error) {
 	var granted []string
 	var conflicts []agentmail.ReservationConflict
-
-	if len(exclusive) > 0 {
-		grant, conflict, err := reserveGroup(ctx, client, projectKey, agentName, exclusive, ttlSeconds, true, fromAgent)
+	for i, paths := range [][]string{exclusive, shared} {
+		if len(paths) == 0 {
+			continue
+		}
+		grant, conflict, err := reserveGroup(ctx, client, projectKey, agentName, paths, ttlSeconds, i == 0, fromAgent)
 		granted = append(granted, grant...)
 		conflicts = append(conflicts, conflict...)
-		if err != nil && !agentmail.IsReservationConflict(err) {
+		if err != nil {
+			// Keep the actual error even when a server returns a conflict code
+			// without a conflict array. Do not acquire the next group on failure.
 			return granted, conflicts, err
 		}
-	}
-
-	if len(shared) > 0 {
-		grant, conflict, err := reserveGroup(ctx, client, projectKey, agentName, shared, ttlSeconds, false, fromAgent)
-		granted = append(granted, grant...)
-		conflicts = append(conflicts, conflict...)
-		if err != nil && !agentmail.IsReservationConflict(err) {
-			return granted, conflicts, err
-		}
-	}
-
-	if len(conflicts) > 0 {
-		return granted, conflicts, fmt.Errorf("%w: %d conflicts", agentmail.ErrReservationConflict, len(conflicts))
 	}
 	return granted, conflicts, nil
 }
 
 func reserveGroup(ctx context.Context, client ReservationTransferClient, projectKey, agentName string, paths []string, ttlSeconds int, exclusive bool, fromAgent string) ([]string, []agentmail.ReservationConflict, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
 	res, err := client.ReservePaths(ctx, agentmail.FileReservationOptions{
-		ProjectKey: projectKey,
-		AgentName:  agentName,
-		Paths:      paths,
-		TTLSeconds: ttlSeconds,
-		Exclusive:  exclusive,
-		Reason:     fmt.Sprintf("handoff transfer from %s", fromAgent),
+		ProjectKey: projectKey, AgentName: agentName, Paths: append([]string(nil), paths...),
+		TTLSeconds: ttlSeconds, Exclusive: exclusive,
+		Reason: fmt.Sprintf("handoff transfer from %s", fromAgent),
 	})
-
 	var granted []string
 	var conflicts []agentmail.ReservationConflict
-	if res != nil {
-		for _, g := range res.Granted {
-			granted = append(granted, g.PathPattern)
+	if res == nil {
+		if err == nil {
+			err = fmt.Errorf("%w: server returned no reservation result", ErrTransferGrantEvidence)
 		}
-		conflicts = append(conflicts, res.Conflicts...)
+		return nil, nil, errors.Join(err, ctx.Err())
 	}
-
-	return granted, conflicts, err
+	wanted := make(map[string]bool, len(paths))
+	for _, path := range paths {
+		wanted[path] = true
+	}
+	seen := make(map[string]bool, len(res.Granted))
+	var evidenceErr error
+	for _, g := range res.Granted {
+		granted = append(granted, g.PathPattern)
+		if !wanted[g.PathPattern] || seen[g.PathPattern] {
+			evidenceErr = errors.Join(evidenceErr, fmt.Errorf("%w: unexpected or duplicate grant path %q", ErrTransferGrantEvidence, g.PathPattern))
+		}
+		seen[g.PathPattern] = true
+	}
+	conflicts = append(conflicts, res.Conflicts...)
+	if len(conflicts) > 0 && !agentmail.IsReservationConflict(err) {
+		err = errors.Join(err, fmt.Errorf("%w: %d conflicts", agentmail.ErrReservationConflict, len(conflicts)))
+	}
+	// Partial coverage is legitimate only as evidence accompanying failure.
+	// A nil error, even with a non-nil result, must cover every requested path.
+	if err == nil && len(seen) != len(wanted) {
+		evidenceErr = errors.Join(evidenceErr, fmt.Errorf("%w: granted %d of %d requested paths", ErrTransferGrantEvidence, len(seen), len(wanted)))
+	}
+	return granted, conflicts, errors.Join(err, evidenceErr, ctx.Err())
 }
 
 func rollbackReservations(ctx context.Context, client ReservationTransferClient, projectKey, agentName string, ttlSeconds int, exclusive, shared []string) error {
 	_, _, err := reserveAll(ctx, client, projectKey, agentName, ttlSeconds, agentName, exclusive, shared)
-	if err != nil {
-		return err
-	}
-	return nil
+	return err
 }
 
 func releaseGrantedReservations(ctx context.Context, client ReservationTransferClient, projectKey, agentName string, granted []string) error {
 	if len(granted) == 0 {
 		return nil
 	}
-	res, err := client.ReleaseReservations(ctx, projectKey, agentName, granted, nil)
-	if err != nil {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	res, err := client.ReleaseReservations(ctx, projectKey, agentName, append([]string(nil), granted...), nil)
+	if err = errors.Join(err, ctx.Err()); err != nil {
 		return err
 	}
 	released := 0
 	if res != nil {
 		released = res.Released
 	}
-	if released < len(granted) {
+	if released != len(granted) {
 		return fmt.Errorf("released %d of %d partial grants for %s", released, len(granted), agentName)
 	}
 	return nil
 }
 
-func rollbackTransfer(ctx context.Context, client ReservationTransferClient, projectKey, fromAgent, toAgent string, ttlSeconds int, exclusive, shared, granted []string) error {
-	if err := releaseGrantedReservations(ctx, client, projectKey, toAgent, granted); err != nil {
-		return err
+// IsReservationConflict also matches joined errors carrying a failed ownership
+// readback or transport error. Those are NOT authorization to acquire again.
+// Only wrapped/joined conflict-only causes may take the propagation retry.
+func transferRetryableConflict(err error, depth int) bool {
+	if err == nil || depth > 32 {
+		return false
 	}
-	return rollbackReservations(ctx, client, projectKey, fromAgent, ttlSeconds, exclusive, shared)
+	if err == agentmail.ErrReservationConflict {
+		return true
+	}
+	switch e := err.(type) {
+	case interface{ Unwrap() []error }:
+		causes := e.Unwrap()
+		if len(causes) == 0 {
+			return false
+		}
+		for _, cause := range causes {
+			if !transferRetryableConflict(cause, depth+1) {
+				return false
+			}
+		}
+		return true
+	case interface{ Unwrap() error }:
+		return transferRetryableConflict(e.Unwrap(), depth+1)
+	default:
+		return false
+	}
 }
 
 func newCleanupContext() (context.Context, context.CancelFunc) {
@@ -335,6 +387,9 @@ func newCleanupContext() (context.Context, context.CancelFunc) {
 }
 
 func waitWithContext(ctx context.Context, d time.Duration) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if d <= 0 {
 		return nil
 	}
