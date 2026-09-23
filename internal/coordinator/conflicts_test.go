@@ -291,7 +291,7 @@ func TestFormatNegotiationRequest_NoReason(t *testing.T) {
 
 	// Should NOT contain "Reason:" line when reason is empty
 	if strings.Contains(body, "**Reason:**") {
-		t.Error("expected no Reason line when holder reason is empty")
+		t.Error("expected no Reason line when reason is empty")
 	}
 }
 
@@ -376,7 +376,7 @@ func TestMatchesSuffixPattern_TooFewSegments(t *testing.T) {
 	t.Parallel()
 
 	// path has fewer segments than suffix pattern requires
-	if matchesSuffixPattern("main.go", "foo/bar/*.go") {
+	if matchesPattern("main.go", "**/foo/bar/*.go") {
 		t.Error("expected false when path has fewer segments than suffix pattern")
 	}
 }

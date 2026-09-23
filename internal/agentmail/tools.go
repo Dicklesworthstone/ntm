@@ -8,10 +8,11 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	pathpkg "path"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/reservationpath"
 )
 
 // attachTokenFromField adds a cached token to an MCP tool arg map.
@@ -1156,6 +1157,11 @@ func reservationActiveAt(reservation FileReservation, now time.Time) bool {
 	if reservation.ReleasedTS != nil {
 		return false
 	}
+	// Missing expiry evidence cannot clear an exclusive lease. This also
+	// protects legacy listing responses, which may omit expires_ts.
+	if reservation.ExpiresTS.Time.IsZero() {
+		return true
+	}
 	return !now.After(reservation.ExpiresTS.Time)
 }
 
@@ -1170,93 +1176,11 @@ func reservationsConflict(a, b FileReservation) bool {
 }
 
 func reservationPatternsOverlap(a, b string) bool {
-	a = strings.TrimSpace(a)
-	b = strings.TrimSpace(b)
-	if a == "" || b == "" {
-		return false
-	}
-	if a == b {
-		return true
-	}
-	return matchesReservationPattern(a, b) || matchesReservationPattern(b, a)
+	return reservationpath.MayOverlap(a, b)
 }
 
 func matchesReservationPattern(path, pattern string) bool {
-	if path == pattern {
-		return true
-	}
-
-	if strings.Contains(pattern, "**") {
-		parts := strings.SplitN(pattern, "**", 2)
-		prefix := parts[0]
-		suffix := ""
-		if len(parts) > 1 {
-			suffix = strings.TrimPrefix(parts[1], "/")
-		}
-
-		if !strings.HasPrefix(path, prefix) {
-			return false
-		}
-		if suffix == "" {
-			return true
-		}
-
-		remaining := strings.TrimPrefix(path, prefix)
-		if strings.Contains(suffix, "*") {
-			return matchesReservationSuffixPattern(remaining, suffix)
-		}
-		return strings.HasSuffix(remaining, suffix)
-	}
-
-	if strings.Contains(pattern, "*") {
-		matched, err := pathpkg.Match(pattern, path)
-		if err == nil && matched {
-			return true
-		}
-		// path.Match keeps '*' within one path segment. The fallback is only
-		// for basename globs (for example, "*.go") that deliberately apply
-		// anywhere in the repository; applying it to a qualified pattern
-		// would allow '*' to cross a directory boundary.
-		if strings.Contains(pattern, "/") {
-			return false
-		}
-		return matchesReservationWildcardPattern(path, pattern)
-	}
-
-	return strings.HasPrefix(path, pattern+"/")
-}
-
-func matchesReservationWildcardPattern(path, pattern string) bool {
-	parts := strings.Split(pattern, "*")
-	if !strings.HasPrefix(path, parts[0]) {
-		return false
-	}
-	if !strings.HasSuffix(path, parts[len(parts)-1]) {
-		return false
-	}
-
-	remaining := path
-	for _, part := range parts {
-		if part == "" {
-			continue
-		}
-		idx := strings.Index(remaining, part)
-		if idx == -1 {
-			return false
-		}
-		remaining = remaining[idx+len(part):]
-	}
-	return true
-}
-
-func matchesReservationSuffixPattern(path, suffixPattern string) bool {
-	suffixSegments := strings.Count(suffixPattern, "/") + 1
-	pathParts := strings.Split(path, "/")
-	if len(pathParts) < suffixSegments {
-		return false
-	}
-	trailingPath := strings.Join(pathParts[len(pathParts)-suffixSegments:], "/")
-	return matchesReservationWildcardPattern(trailingPath, suffixPattern)
+	return reservationpath.Matches(pattern, path)
 }
 
 // GetReservation retrieves a specific file reservation by ID.

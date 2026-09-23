@@ -34,7 +34,12 @@ func (c *Client) CheckStagedReservations(ctx context.Context, projectKey, selfAg
 		return nil, err
 	}
 
-	now := time.Now()
+	return stagedReservationConflicts(reservations, selfAgent, paths, time.Now()), nil
+}
+
+// stagedReservationConflicts evaluates one collected reservation snapshot.
+// Transport errors are handled by the caller, never interpreted as no locks.
+func stagedReservationConflicts(reservations []FileReservation, selfAgent string, paths []string, now time.Time) []StagedReservationConflict {
 	var conflicts []StagedReservationConflict
 	for _, path := range paths {
 		// No TrimSpace: filenames with leading/trailing whitespace are legal
@@ -53,7 +58,9 @@ func (c *Client) CheckStagedReservations(ctx context.Context, projectKey, selfAg
 			if selfAgent != "" && reservation.AgentName == selfAgent {
 				continue
 			}
-			if !reservationPatternsOverlap(path, reservation.PathPattern) {
+			// A staged path is a concrete filename, not a second reservation
+			// glob or a subtree. Preserve its metacharacters and whitespace.
+			if !matchesReservationPattern(path, reservation.PathPattern) {
 				continue
 			}
 			conflicts = append(conflicts, StagedReservationConflict{
@@ -72,5 +79,5 @@ func (c *Client) CheckStagedReservations(ctx context.Context, projectKey, selfAg
 		}
 		return conflicts[i].ReservationID < conflicts[j].ReservationID
 	})
-	return conflicts, nil
+	return conflicts
 }

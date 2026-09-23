@@ -42,7 +42,6 @@ var (
 // This is read-only planning evidence, not an atomic reservation or a release
 // authorization. In particular, callers must never use it to broaden releases.
 func MayOverlap(a, b string) bool {
-	a, b = strings.TrimSpace(a), strings.TrimSpace(b)
 	if a == "" || b == "" {
 		return false
 	}
@@ -60,8 +59,8 @@ func MayOverlap(a, b string) bool {
 // Matches checks one concrete path against a reservation. Unlike MayOverlap,
 // glob metacharacters in name are always literal filename characters. Invalid
 // patterns and exhausted bounds fail closed just as they do in MayOverlap.
+// Neither input is trimmed: whitespace is part of a filename, not syntax.
 func Matches(pattern, name string) bool {
-	pattern, name = strings.TrimSpace(pattern), strings.TrimSpace(name)
 	if pattern == "" || name == "" {
 		return false
 	}

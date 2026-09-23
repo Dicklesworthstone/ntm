@@ -55,7 +55,7 @@ func TestMayOverlap(t *testing.T) {
 		{"src/[z-a]", "src/*", false},
 		{"src/[^z-a]", "src/a", true},
 		{"", "**", false},
-		{"**", " \t", false},
+		{"**", " \t", true}, // Whitespace is a legal filename, not an empty reservation.
 	}
 	for _, tc := range tests {
 		t.Run(tc.a+" vs "+tc.b, func(t *testing.T) {
@@ -96,6 +96,12 @@ func TestMatchesKeepsConcretePathLiteral(t *testing.T) {
 		{"src/[!a]", "src/!", true}, // path.Match, not shell ! negation.
 		{"src/[!a]", "src/a", true},
 		{"src/[!a]", "src/b", false},
+		{"src/file.go", " src/file.go", false},
+		{" src/*.go", " src/file.go", true},
+		{"*.go", "src/file.go ", false},
+		{"*.go ", "src/file.go ", true},
+		{" ", " ", true},
+		{" src/file.go ", " src/file.go ", true},
 	} {
 		if got := Matches(tc.pattern, tc.name); got != tc.want {
 			t.Errorf("Matches(%q, %q) = %v, want %v", tc.pattern, tc.name, got, tc.want)
