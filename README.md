@@ -547,6 +547,21 @@ ntm conflicts payments
 ntm resume payments
 ```
 
+Ordinary `ntm spawn payments --cc=2` also restores the latest readable local handoff for
+that session from the resolved project directory. The previous goal, immediate
+task, decisions, and next steps are delivered before the new user prompt through
+the same readiness and submission checks as other spawn prompts. This works
+without Beads, Agent Mail, or CM being installed. The handoff uses a bounded
+recovery budget, and JSON output reports its source as `recovery.handoff_path`.
+`--no-recovery`, `recovery.enabled = false`, or
+`recovery.auto_inject_on_spawn = false` disables this injection. The shared
+handoff reader can fall back to an older readable file if the newest is corrupt;
+the reported source identifies the file actually used. If no handoff can be read,
+or its session or project does not match, spawn reports partial recovery and can
+proceed with its other available context.
+Remote tmux sessions skip local handoffs and report that source as unavailable;
+NTM does not treat a matching local path as proof of the remote project's identity.
+
 Checkpoint restoration accepts `--as` to recover into a different tmux session
 without replacing the source session or rewriting its checkpoint. The REST
 restore endpoint accepts the same option as `target_session`. A separate session

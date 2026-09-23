@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -10,12 +11,265 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/checkpoint"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/handoff"
+	"github.com/Dicklesworthstone/ntm/internal/output"
+	"github.com/Dicklesworthstone/ntm/internal/recovery"
+	statuspkg "github.com/Dicklesworthstone/ntm/internal/status"
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
+
+func writeSpawnRecoveryHandoff(t *testing.T, project, session, goal string) string {
+	t.Helper()
+	h := handoff.New(session).WithGoalAndNow(goal, "Resume the interrupted migration")
+	h.Decisions = map[string]string{"compatibility": "Preserve existing client behavior"}
+	h.Next = []string{"Verify the migration before changing callers"}
+	path, err := handoff.NewWriter(project).Write(h, "continuity")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// Exercise the Cobra command, actual project resolution, canonical dispatcher,
+// and tmux submission protocol. Only the external tmux process and its observed
+// readiness are simulated; prepared recovery is not substituted by the test.
+func TestSpawnCommandHandoffContinuity(t *testing.T) {
+	for _, mode := range []string{"enabled", "no-recovery", "disabled", "no-auto-inject"} {
+		t.Run(mode, func(t *testing.T) {
+			base := t.TempDir()
+			caller := t.TempDir()
+			session := "handoff-spawn"
+			project := filepath.Join(base, session)
+			wantPath := writeSpawnRecoveryHandoff(t, project, session, "TARGET PROJECT migration")
+			writeSpawnRecoveryHandoff(t, caller, session, "UNRELATED CALLER task")
+			t.Chdir(caller)
+			t.Setenv("HOME", t.TempDir())
+			t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+			t.Setenv("XDG_DATA_HOME", t.TempDir())
+			t.Setenv("NTM_HANDOFF_SPAWN_TEST_ROOT", t.TempDir())
+			t.Setenv("NTM_HANDOFF_SPAWN_TEST_PROJECT", project)
+			tmuxScript := filepath.Join(t.TempDir(), "tmux")
+			const script = `#!/bin/sh
+set -eu
+root="$NTM_HANDOFF_SPAWN_TEST_ROOT"
+while [ "${1:-}" = "-L" ] || [ "${1:-}" = "-S" ] || [ "${1:-}" = "-f" ]; do shift 2; done
+action="${1:-}"
+shift
+printf '%s\n' "$action $*" >> "$root/commands"
+case "$action" in
+  -V) printf 'tmux 3.4\n' ;;
+  has-session)
+    if [ ! -f "$root/created" ]; then printf "can't find session: handoff-spawn\n" >&2; exit 1; fi ;;
+  new-session) : > "$root/created" ;;
+  list-windows) printf '0\n' ;;
+  list-panes)
+    current=''
+    if [ -f "$root/launched" ]; then current='claude'; fi
+    printf '%%91_NTM_SEP_0_NTM_SEP_handoff-spawn__cc_1_NTM_SEP_%s_NTM_SEP_100_NTM_SEP_30_NTM_SEP_1_NTM_SEP_4242_NTM_SEP_0_NTM_SEP_cc_NTM_SEP__NTM_SEP__NTM_SEP_0\n' "$current" ;;
+  display-message)
+    for arg do last="$arg"; done
+    case "$last" in
+      '#{pane_pid}') printf '4242\n' ;;
+      '#{pane_current_path}') printf '%s\n' "$NTM_HANDOFF_SPAWN_TEST_PROJECT" ;;
+      '#{pane_id}') printf '%%91\n' ;;
+      '#{session_name}') printf 'handoff-spawn\n' ;;
+      '#{pane_title}') printf 'handoff-spawn__cc_1\n' ;;
+      *) printf '0\n' ;;
+    esac ;;
+  send-keys)
+    literal=0
+    for arg do
+      if [ "$arg" = '-l' ]; then literal=1; fi
+      last="$arg"
+    done
+    if [ "$literal" = 1 ]; then
+      printf '\n---delivery---\n%s\n' "$last" >> "$root/deliveries"
+      : > "$root/launched"
+    fi ;;
+  capture-pane) printf 'Claude Code v0.0.0\n❯ \n' ;;
+  load-buffer) cat >> "$root/deliveries" ;;
+  set-option|set-window-option|set-environment|select-pane|select-layout|resize-pane|show-options|show-option|show-environment|paste-buffer|delete-buffer) ;;
+  *) printf 'unsupported test tmux action: %s\n' "$action" >&2; exit 2 ;;
+esac
+`
+			if err := os.WriteFile(tmuxScript, []byte(script), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("NTM_TMUX_BINARY", tmuxScript)
+			oldCfg, oldJSON, oldClient, oldObserver := cfg, jsonOutput, tmux.DefaultClient, newSpawnSessionObserver
+			t.Cleanup(func() {
+				cfg, jsonOutput, tmux.DefaultClient, newSpawnSessionObserver = oldCfg, oldJSON, oldClient, oldObserver
+			})
+			cfg = newTmuxIntegrationTestConfig(base)
+			cfg.SessionRecovery.Enabled = mode != "disabled"
+			cfg.SessionRecovery.AutoInjectOnSpawn = mode != "no-auto-inject"
+			jsonOutput = true
+			tmux.DefaultClient = tmux.NewClient("")
+			pane := tmux.Pane{ID: "%91", Index: 0, WindowIndex: 0, Title: session + "__cc_1", Type: tmux.AgentClaude, Command: "claude", PID: 4242}
+			now := time.Now()
+			observation := testSpawnSessionObservation(now, testSpawnPaneObservation(now, pane, statuspkg.StateIdle))
+			observation.Session = session
+			newSpawnSessionObserver = func() spawnSessionObserver {
+				return &scriptedSpawnObserver{observations: []statuspkg.SessionObservation{observation}}
+			}
+			args := []string{session, "--cc=1", "--no-user", "--no-hooks", "--no-cass-context", "--prompt=USER REQUEST after recovery"}
+			if mode == "no-recovery" {
+				args = append(args, "--no-recovery")
+			}
+			cmd := newSpawnCmd()
+			cmd.SetArgs(args)
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			stdout, err := captureStdout(t, func() error { return cmd.ExecuteContext(ctx) })
+			if err != nil {
+				commands, _ := os.ReadFile(filepath.Join(os.Getenv("NTM_HANDOFF_SPAWN_TEST_ROOT"), "commands"))
+				t.Fatalf("spawn: %v\nstdout: %s\ntmux: %s", err, stdout, commands)
+			}
+			var result output.SpawnResponse
+			if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+				t.Fatalf("decode spawn response: %v\n%s", err, stdout)
+			}
+			data, err := os.ReadFile(filepath.Join(os.Getenv("NTM_HANDOFF_SPAWN_TEST_ROOT"), "deliveries"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			deliveries := string(data)
+			if strings.Contains(deliveries, "UNRELATED CALLER") || !strings.Contains(deliveries, "USER REQUEST after recovery") {
+				t.Fatalf("wrong project context or missing user prompt: %s", deliveries)
+			}
+			if mode == "enabled" {
+				for _, want := range []string{"TARGET PROJECT migration", "Resume the interrupted migration", "Preserve existing client behavior", "Verify the migration before changing callers"} {
+					if !strings.Contains(deliveries, want) {
+						t.Errorf("handoff context %q never reached tmux: %s", want, deliveries)
+					}
+				}
+				if strings.Index(deliveries, "TARGET PROJECT migration") > strings.Index(deliveries, "USER REQUEST after recovery") {
+					t.Error("handoff was sent after the user prompt")
+				}
+				resolvedPath, _ := filepath.EvalSymlinks(wantPath)
+				if result.Recovery == nil || !result.Recovery.Applied || result.Recovery.HandoffPath != resolvedPath {
+					t.Fatalf("missing handoff provenance: %+v", result.Recovery)
+				}
+			} else if strings.Contains(deliveries, "TARGET PROJECT migration") || (result.Recovery != nil && result.Recovery.Applied) {
+				t.Fatalf("disabled recovery was delivered: %+v\n%s", result.Recovery, deliveries)
+			}
+		})
+	}
+}
+
+func TestBuildRecoveryContextHandoffIsolationAndFailure(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	settings := newTmuxIntegrationTestConfig(t.TempDir()).SessionRecovery
+	settings.Enabled = true
+	for _, kind := range []string{"missing", "malformed", "wrong-session", "outside-project"} {
+		t.Run(kind, func(t *testing.T) {
+			project := t.TempDir()
+			dir := filepath.Join(project, ".ntm", "handoffs", "recovery-test")
+			if kind != "missing" {
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			switch kind {
+			case "malformed", "wrong-session":
+				content := "[invalid YAML"
+				if kind == "wrong-session" {
+					content = "session: another-session\ngoal: Wrong session work\nnow: Do not inject me\n"
+				}
+				if err := os.WriteFile(filepath.Join(dir, "20260101-120000-bad.yaml"), []byte(content), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			case "outside-project":
+				external := t.TempDir()
+				writeSpawnRecoveryHandoff(t, external, "recovery-test", "External project work")
+				// A directory symlink is traversed by the shared reader; the
+				// spawn boundary must reject the resolved source afterwards.
+				project = t.TempDir()
+				if err := os.Symlink(filepath.Join(external, ".ntm"), filepath.Join(project, ".ntm")); err != nil {
+					t.Skipf("symlink unsupported: %v", err)
+				}
+			}
+			rc, err := buildRecoveryContext(context.Background(), "recovery-test", project, settings)
+			if err != nil || rc == nil {
+				t.Fatalf("optional handoff source aborted recovery: rc=%+v err=%v", rc, err)
+			}
+			if rc.Handoff != nil || FormatRecoveryPrompt(rc, AgentTypeClaude) != "" {
+				t.Fatalf("unusable handoff was injected: %+v", rc)
+			}
+			if kind == "missing" {
+				if rc.Error != nil {
+					t.Fatalf("new session should have no warning: %+v", rc.Error)
+				}
+			} else if rc.Error == nil || rc.Error.Code != "PARTIAL_RECOVERY" || !strings.Contains(strings.Join(rc.Error.Details, " "), "handoff:") {
+				t.Fatalf("missing named partial-recovery warning: %+v", rc.Error)
+			}
+		})
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if rc, err := buildRecoveryContext(ctx, "recovery-test", t.TempDir(), settings); rc != nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancellation must remain terminal: rc=%+v err=%v", rc, err)
+	}
+}
+
+func TestLoadRecoveryHandoffPreservesLatestReadableFallback(t *testing.T) {
+	project := t.TempDir()
+	path := writeSpawnRecoveryHandoff(t, project, "recovery-test", "Last readable handoff")
+	if err := os.WriteFile(filepath.Join(filepath.Dir(path), "99999999-corrupt.yaml"), []byte("[invalid YAML"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h, err := loadRecoveryHandoff(context.Background(), "recovery-test", project)
+	if err != nil || h == nil {
+		t.Fatalf("latest readable fallback: handoff=%+v err=%v", h, err)
+	}
+	resolvedPath, _ := filepath.EvalSymlinks(path)
+	if h.Path != resolvedPath || !strings.Contains(h.Prompt, "Last readable handoff") {
+		t.Fatalf("fallback must identify its actual source: %+v", h)
+	}
+}
+
+func TestBuildRecoveryContextRejectsLocalHandoffForRemoteTmux(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	project := t.TempDir()
+	writeSpawnRecoveryHandoff(t, project, "recovery-test", "Local project only")
+	oldClient := tmux.DefaultClient
+	t.Cleanup(func() { tmux.DefaultClient = oldClient })
+	tmux.DefaultClient = tmux.NewClient("user@remote")
+	settings := newTmuxIntegrationTestConfig(project).SessionRecovery
+	settings.Enabled = true
+	rc, err := buildRecoveryContext(context.Background(), "recovery-test", project, settings)
+	if err != nil || rc == nil || rc.Handoff != nil {
+		t.Fatalf("local handoff must not cross into a remote session: rc=%+v err=%v", rc, err)
+	}
+	if rc.Error == nil || rc.Error.Code != "PARTIAL_RECOVERY" || !strings.Contains(strings.Join(rc.Error.Details, " "), "remote tmux") {
+		t.Fatalf("remote handoff omission must be explained: %+v", rc.Error)
+	}
+}
+
+func TestRecoveryHandoffBudgetPreservesUTF8(t *testing.T) {
+	prompt := "Resume migration first\n" + strings.Repeat("界", recovery.MaxHandoffTokens*4)
+	bounded := truncateRecoveryHandoff(prompt, recovery.MaxHandoffTokens*4)
+	if !utf8.ValidString(bounded) || len(bounded) > recovery.MaxHandoffTokens*4 || !strings.HasPrefix(bounded, "Resume migration first") {
+		t.Fatalf("handoff budget corrupted content: length=%d valid=%v", len(bounded), utf8.ValidString(bounded))
+	}
+	rc := &RecoveryContext{Handoff: &RecoveryHandoff{Path: "/project/handoff.yaml", Prompt: bounded}}
+	if estimateRecoveryTokens(rc) <= estimateRecoveryTokens(&RecoveryContext{}) {
+		t.Fatal("handoff content was omitted from the recovery budget")
+	}
+	truncateRecoveryContext(rc, 200)
+	if rc.Handoff == nil || !utf8.ValidString(rc.Handoff.Prompt) || estimateRecoveryTokens(rc) > 200 {
+		t.Fatalf("combined recovery budget not enforced: %+v", rc)
+	}
+	truncateRecoveryContext(rc, 100)
+	if rc.Handoff != nil {
+		t.Fatal("handoff survived a budget with no remaining space")
+	}
+}
 
 type recoveryMailStub struct {
 	inboxByAgent      map[string][]agentmail.InboxMessage

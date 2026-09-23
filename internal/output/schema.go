@@ -141,6 +141,8 @@ type RecoverySpawnStatus struct {
 	Partial   bool     `json:"partial"`
 	ErrorCode string   `json:"error_code,omitempty"`
 	Warnings  []string `json:"warnings"`
+	// HandoffPath identifies the local handoff included in prepared recovery.
+	HandoffPath string `json:"handoff_path,omitempty"`
 }
 
 // SpawnResponse is the output format for spawn command (with agents)

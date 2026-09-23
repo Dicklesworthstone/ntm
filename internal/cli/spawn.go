@@ -19,6 +19,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/spf13/cobra"
 
@@ -42,6 +43,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/plugins"
 	"github.com/Dicklesworthstone/ntm/internal/ratelimit"
 	"github.com/Dicklesworthstone/ntm/internal/recipe"
+	"github.com/Dicklesworthstone/ntm/internal/recovery"
 	"github.com/Dicklesworthstone/ntm/internal/resilience"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/state"
@@ -1569,6 +1571,8 @@ func cloneSpawnActionableRecommendations(source []bv.TriageRecommendation) []bv.
 // RecoveryContext holds all the information needed to help an agent recover
 // from a previous session, including beads, messages, and procedural memories.
 type RecoveryContext struct {
+	// Handoff preserves the previous session's authored task and decisions.
+	Handoff *RecoveryHandoff `json:"handoff,omitempty"`
 	// Checkpoint contains checkpoint info for recovery
 	Checkpoint *RecoveryCheckpoint `json:"checkpoint,omitempty"`
 	// Beads contains in-progress beads from BV
@@ -1593,6 +1597,13 @@ type RecoveryContext struct {
 	TokenCount int `json:"token_count,omitempty"`
 	// Error contains error info if recovery was partial
 	Error *RecoveryError `json:"error,omitempty"`
+}
+
+// RecoveryHandoff retains the selected source and the bounded shared recovery
+// formatter output. The prepared text is reused for every newly spawned agent.
+type RecoveryHandoff struct {
+	Path   string `json:"path"`
+	Prompt string `json:"prompt"`
 }
 
 // RecoveryError represents an error during recovery context building.
@@ -5072,7 +5083,7 @@ func recoveryContextTermination(err error) error {
 }
 
 // buildRecoveryContext builds the full recovery context for session recovery.
-// It gathers information from BV (beads), Agent Mail (messages), and CM (memories).
+// It gathers the local handoff, BV beads, Agent Mail messages, and CM memories.
 func buildRecoveryContext(ctx context.Context, sessionName, workingDir string, recoveryCfg config.SessionRecoveryConfig) (*RecoveryContext, error) {
 	if !recoveryCfg.Enabled {
 		return nil, nil
@@ -5114,6 +5125,21 @@ func buildRecoveryContext(ctx context.Context, sessionName, workingDir string, r
 		}
 		return true
 	}
+
+	// A local handoff is useful even when all optional integrations are off.
+	// Scope it to the resolved spawn project and session, never the caller's
+	// current directory or a similarly named session in another repository.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		h, err := loadRecoveryHandoff(ctx, sessionName, workingDir)
+		if recordSourceError("handoff", err) {
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		rc.Handoff = h
+	}()
 
 	// Load beads if enabled
 	if recoveryCfg.IncludeBeadsContext {
@@ -5200,7 +5226,7 @@ func buildRecoveryContext(ctx context.Context, sessionName, workingDir string, r
 		return nil, terminalErr
 	}
 
-	// bd-wnzhl: errs accumulates from 4 parallel goroutines under a
+	// bd-wnzhl: errs accumulates from parallel goroutines under a
 	// mutex, so without sorting it ends up in goroutine-completion
 	// order — sibling of bd-brr6h / bd-c9wr1 / bd-aj2qv. Sort
 	// alphabetically so rc.Error.Details (and the printed warnings
@@ -5247,12 +5273,85 @@ func newRecoverySpawnStatus(enabled bool, rc *RecoveryContext) *output.RecoveryS
 		return status
 	}
 	status.Applied = FormatRecoveryPrompt(rc, AgentTypeClaude) != ""
+	if rc.Handoff != nil && rc.Handoff.Prompt != "" {
+		status.HandoffPath = rc.Handoff.Path
+	}
 	if rc.Error != nil {
 		status.Partial = true
 		status.ErrorCode = rc.Error.Code
 		status.Warnings = append(status.Warnings, rc.Error.Details...)
 	}
 	return status
+}
+
+func loadRecoveryHandoff(ctx context.Context, sessionName, workingDir string) (*RecoveryHandoff, error) {
+	if ctx == nil {
+		return nil, errors.New("recovery handoff requires a command context")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if tmux.DefaultClient != nil && tmux.DefaultClient.Remote != "" {
+		return nil, errors.New("local handoff recovery is unavailable for remote tmux sessions")
+	}
+	if err := tmux.ValidateSessionName(sessionName); err != nil {
+		return nil, fmt.Errorf("invalid handoff session: %w", err)
+	}
+	if !filepath.IsAbs(workingDir) {
+		return nil, errors.New("recovery handoff requires an absolute project directory")
+	}
+	projectDir, err := filepath.EvalSymlinks(workingDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve handoff project: %w", err)
+	}
+	h, path, err := handoff.NewReader(projectDir).FindLatest(sessionName)
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return nil, ctxErr
+	}
+	if err != nil || h == nil {
+		return nil, err
+	}
+	if h.Session != sessionName {
+		return nil, fmt.Errorf("handoff session %q does not match spawn session %q", h.Session, sessionName)
+	}
+	resolvedPath, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return nil, fmt.Errorf("resolve handoff source: %w", err)
+	}
+	relative, err := filepath.Rel(projectDir, resolvedPath)
+	if err != nil || filepath.IsAbs(relative) || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return nil, errors.New("handoff source is outside the spawn project")
+	}
+	if strings.TrimSpace(h.Goal) == "" && strings.TrimSpace(h.Now) == "" &&
+		len(h.Next)+len(h.Decisions)+len(h.Findings)+len(h.Blockers) == 0 {
+		return nil, nil
+	}
+	handoffContext := recovery.HandoffContextFromHandoff(h, resolvedPath)
+	prompt := recovery.GetInjectionForType(recovery.SessionFreshSpawn, handoffContext, nil)
+	return &RecoveryHandoff{
+		Path:   resolvedPath,
+		Prompt: truncateRecoveryHandoff(prompt, recovery.MaxHandoffTokens*4),
+	}, nil
+}
+
+// Keep a prefix so the shared formatter's immediate-task-first ordering also
+// determines which context survives a tight budget. Never split a UTF-8 rune.
+func truncateRecoveryHandoff(prompt string, maxBytes int) string {
+	if maxBytes <= 0 {
+		return ""
+	}
+	if len(prompt) <= maxBytes {
+		return prompt
+	}
+	const suffix = "\n[Handoff truncated to fit recovery budget.]\n"
+	if maxBytes <= len(suffix) {
+		return ""
+	}
+	end := maxBytes - len(suffix)
+	for end > 0 && !utf8.RuneStart(prompt[end]) {
+		end--
+	}
+	return strings.TrimSpace(prompt[:end]) + suffix
 }
 
 // loadRecoveryBeads loads in-progress, completed, and blocked beads from BV.
@@ -5736,6 +5835,9 @@ func estimateRecoveryTokens(rc *RecoveryContext) int {
 	}
 
 	chars := 0
+	if rc.Handoff != nil {
+		chars += len(rc.Handoff.Prompt)
+	}
 
 	// Count checkpoint
 	if rc.Checkpoint != nil {
@@ -5830,6 +5932,18 @@ func truncateRecoveryContext(rc *RecoveryContext, maxTokens int) {
 		rc.Messages = rc.Messages[:2]
 	}
 
+	if rc.Handoff != nil && estimateRecoveryTokens(rc) > maxTokens {
+		h := rc.Handoff
+		rc.Handoff = nil
+		remaining := maxTokens - estimateRecoveryTokens(rc)
+		if remaining > 0 {
+			h.Prompt = truncateRecoveryHandoff(h.Prompt, remaining*4)
+			if h.Prompt != "" {
+				rc.Handoff = h
+			}
+		}
+	}
+
 	rc.TokenCount = estimateRecoveryTokens(rc)
 }
 
@@ -5840,6 +5954,10 @@ func generateRecoverySummary(rc *RecoveryContext) string {
 	}
 
 	var parts []string
+
+	if rc.Handoff != nil && rc.Handoff.Prompt != "" {
+		parts = append(parts, "previous session handoff")
+	}
 
 	if len(rc.Beads) > 0 {
 		parts = append(parts, fmt.Sprintf("%d in-progress bead(s)", len(rc.Beads)))
@@ -5895,7 +6013,8 @@ func FormatRecoveryPrompt(rc *RecoveryContext, agentType AgentType) string {
 	}
 
 	// Check if there's any meaningful content
-	hasMeaningfulContent := len(rc.Beads) > 0 ||
+	hasMeaningfulContent := (rc.Handoff != nil && rc.Handoff.Prompt != "") ||
+		len(rc.Beads) > 0 ||
 		len(rc.CompletedBeads) > 0 ||
 		len(rc.BlockedBeads) > 0 ||
 		len(rc.Messages) > 0 ||
@@ -5909,6 +6028,11 @@ func FormatRecoveryPrompt(rc *RecoveryContext, agentType AgentType) string {
 
 	var sb strings.Builder
 	sb.WriteString("# Session Recovery Context\n\n")
+
+	if rc.Handoff != nil && rc.Handoff.Prompt != "" {
+		sb.WriteString(escapeForShell(rc.Handoff.Prompt))
+		sb.WriteString("\n")
+	}
 
 	// Your Previous Work section
 	if rc.Checkpoint != nil || len(rc.Beads) > 0 || len(rc.FileReservations) > 0 {
