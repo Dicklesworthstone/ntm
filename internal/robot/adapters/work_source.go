@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/worksource"
@@ -24,6 +25,10 @@ type WorkVerificationPolicy struct {
 // total. Reservations records an independent live observation when available;
 // neither source identity nor that observation replaces an atomic claim.
 type WorkVerification struct {
+	ProjectDir         string                       `json:"project_dir,omitempty"`
+	FromCache          bool                         `json:"from_cache,omitempty"`
+	CacheCollectedAt   string                       `json:"cache_collected_at,omitempty"`
+	CacheExpiresAt     string                       `json:"cache_expires_at,omitempty"`
 	Source             *worksource.Identity         `json:"source,omitempty"`
 	Dirty              bool                         `json:"dirty,omitempty"`
 	Excluded           []worksource.Exclusion       `json:"excluded"`
@@ -37,6 +42,7 @@ type WorkVerification struct {
 	Remediation        string                       `json:"remediation,omitempty"`
 	Mismatch           *worksource.StaleError       `json:"mismatch,omitempty"`
 	Reservations       *WorkReservationVerification `json:"reservations,omitempty"`
+	snapshot           *workSnapshotEnvelope        `json:"-"`
 }
 
 func (a *WorkCoordinationAdapter) collectVerifiedWork(ctx context.Context) (*WorkSection, error) {
@@ -56,6 +62,7 @@ func (a *WorkCoordinationAdapter) collectVerifiedWork(ctx context.Context) (*Wor
 		}
 		return workWithReadyCandidates(work, candidates), nil
 	})
+	stampWorkSnapshotProject(work, a.config.ProjectDir)
 	if err != nil || work == nil || !work.Available {
 		return work, err
 	}
@@ -118,6 +125,7 @@ func limitVerifiedWorkPreview(work *WorkSection, limit int) *WorkSection {
 // Missing exports preserve the existing DB-only mode but are never represented
 // as JSONL-verified. An export appearing during that collection is a mismatch.
 func collectWorkWithSource(ctx context.Context, project string, policy WorkVerificationPolicy, collect func(context.Context) (*WorkSection, error)) (*WorkSection, error) {
+	collectionStarted := time.Now()
 	if ctx == nil || collect == nil {
 		err := errors.New("work verification requires a context and collector")
 		return rejectWorkSource(nil, err), err
@@ -188,6 +196,7 @@ func collectWorkWithSource(ctx context.Context, project string, policy WorkVerif
 		ReservedBeads: reserved,
 	})
 	out.Verification.Reservations = reservationReceipt
+	attachWorkSnapshot(out, work, current, policy, collectionStarted)
 	return out, nil
 }
 
