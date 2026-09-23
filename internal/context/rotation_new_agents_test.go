@@ -381,6 +381,7 @@ func TestConfirmRotationDefaultTransportPreservesSourceOnSummaryEcho(t *testing.
 	workDir, logPath := setupRotationTmux(t)
 	t.Setenv("ROTATION_ORIGINAL_PRESENT", "1")
 	t.Setenv("ROTATION_CAPTURE_REQUEST", "1")
+	t.Setenv("ROTATION_READY_CAPTURE", rotationReadyClaudeScreen)
 	const agentID = "test__cc_1_architect"
 	monitor := NewContextMonitor(DefaultMonitorConfig())
 	monitor.RegisterAgent(agentID, "%1", "claude-opus-4")
@@ -406,6 +407,35 @@ func TestConfirmRotationDefaultTransportPreservesSourceOnSummaryEcho(t *testing.
 	}
 	if strings.Contains(string(commands), "split-window") || strings.Contains(string(commands), "kill-pane") {
 		t.Fatalf("summary echo replaced the source:\n%s", commands)
+	}
+}
+
+func TestNativeCompactionRejectsProviderInAnotherSession(t *testing.T) {
+	workDir, logPath := setupRotationTmux(t)
+	t.Setenv("HOME", workDir)
+	t.Setenv("ROTATION_ORIGINAL_PRESENT", "1")
+	t.Setenv("ROTATION_GLOBAL_CONFLICT", "1")
+	t.Setenv("ROTATION_CAPTURE", rotationReadyClaudeScreen)
+	transcript := filepath.Join(workDir, ".claude", "projects", MungeProjectPath(workDir), "session.jsonl")
+	if err := os.MkdirAll(filepath.Dir(transcript), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(transcript, []byte(`{"type":"assistant","message":{"model":"claude-opus-4","usage":{"input_tokens":150000}}}`+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	monitor := NewContextMonitor(DefaultMonitorConfig())
+	monitor.RegisterAgent("test__cc_1_architect", "%1", "claude-opus-4")
+	r := NewRotator(RotatorConfig{Monitor: monitor, Spawner: NewDefaultPaneSpawner(config.Default()), Config: config.DefaultContextRotationConfig()})
+	result := r.tryCompactionContext(t.Context(), "test", "test__cc_1_architect", "%1", tmux.AgentClaude)
+	if result == nil || result.Success || !strings.Contains(result.Error, "ambiguous across tmux sessions") {
+		t.Fatalf("cross-session attribution = %+v", result)
+	}
+	commands, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(commands), "list-panes -a") || strings.Contains(string(commands), "send-keys") || strings.Contains(string(commands), "paste-buffer") {
+		t.Fatalf("ambiguous transcript allowed compaction input:\n%s", commands)
 	}
 }
 
@@ -484,6 +514,12 @@ system_prompt = "This prompt must not be injected into a model-only agent."
 func setupRotationTmux(t *testing.T) (workDir, logPath string) {
 	t.Helper()
 	workDir = t.TempDir()
+	originalPending, originalHistory := DefaultPendingRotationStore, DefaultRotationHistoryStore
+	DefaultPendingRotationStore = NewPendingRotationStoreWithPath(filepath.Join(workDir, "pending.jsonl"))
+	DefaultRotationHistoryStore = NewRotationHistoryStoreWithPath(filepath.Join(workDir, "rotations.jsonl"))
+	t.Cleanup(func() {
+		DefaultPendingRotationStore, DefaultRotationHistoryStore = originalPending, originalHistory
+	})
 	logPath = filepath.Join(workDir, "tmux.log")
 	stub := filepath.Join(workDir, "tmux")
 	const script = `#!/bin/sh
@@ -510,8 +546,13 @@ case "$1" in
     esac
     ;;
   list-panes)
+    prefix=
+    case " $* " in *' -a '*) prefix=test_NTM_SEP_ ;; esac
     if [ "$ROTATION_ORIGINAL_PRESENT" = 1 ]; then
-      printf '%%1_NTM_SEP_1_NTM_SEP_test__cc_1_architect_NTM_SEP_node_NTM_SEP_120_NTM_SEP_40_NTM_SEP_0_NTM_SEP_123_NTM_SEP_0_NTM_SEP_cc_NTM_SEP__NTM_SEP__NTM_SEP_0\n'
+      printf '%s%%1_NTM_SEP_1_NTM_SEP_test__cc_1_architect_NTM_SEP_node_NTM_SEP_120_NTM_SEP_40_NTM_SEP_0_NTM_SEP_123_NTM_SEP_0_NTM_SEP_cc_NTM_SEP__NTM_SEP__NTM_SEP_0\n' "$prefix"
+    fi
+    if [ -n "$prefix" ] && [ "$ROTATION_GLOBAL_CONFLICT" = 1 ]; then
+      printf 'other_NTM_SEP_%%2_NTM_SEP_1_NTM_SEP_other__cc_1_NTM_SEP_node_NTM_SEP_120_NTM_SEP_40_NTM_SEP_0_NTM_SEP_456_NTM_SEP_0_NTM_SEP_cc_NTM_SEP__NTM_SEP__NTM_SEP_0\n'
     fi
     if [ -f "$ROTATION_TMUX_LOG.type" ]; then
       agent_type=$(cat "$ROTATION_TMUX_LOG.type")
@@ -519,12 +560,16 @@ case "$1" in
       command=bash
       if [ -f "$ROTATION_TMUX_LOG.launched" ]; then command=node; fi
       if [ "$ROTATION_AFTER_SHELL" = 1 ] && [ -f "$ROTATION_TMUX_LOG.handoff" ]; then command=bash; fi
-      printf '%%99_NTM_SEP_0_NTM_SEP_%s_NTM_SEP_%s_NTM_SEP_120_NTM_SEP_40_NTM_SEP_0_NTM_SEP_321_NTM_SEP_0_NTM_SEP_%s_NTM_SEP__NTM_SEP__NTM_SEP_0\n' "$title" "$command" "$agent_type"
+      printf '%s%%99_NTM_SEP_0_NTM_SEP_%s_NTM_SEP_%s_NTM_SEP_120_NTM_SEP_40_NTM_SEP_0_NTM_SEP_321_NTM_SEP_0_NTM_SEP_%s_NTM_SEP__NTM_SEP__NTM_SEP_0\n' "$prefix" "$title" "$command" "$agent_type"
     fi
     ;;
   capture-pane)
     if [ "$ROTATION_CAPTURE_REQUEST" = 1 ]; then
-      cat "$ROTATION_TMUX_LOG.buffer"
+      if [ -f "$ROTATION_TMUX_LOG.buffer" ]; then
+        cat "$ROTATION_TMUX_LOG.buffer"
+      else
+        printf '%s\n' "$ROTATION_READY_CAPTURE"
+      fi
     elif [ "$ROTATION_RECORD_DELIVERY" = 1 ]; then
       if [ -f "$ROTATION_TMUX_LOG.handoff" ]; then
         printf '%s\n' "$ROTATION_AFTER_CAPTURE"

@@ -207,8 +207,8 @@ across its nerd, unicode and ascii symbol presets):
 - **Context.** `--robot-context`, `--robot-snapshot`, `ntm status`, and the
   coordinator's context-rotation trigger read omp's own context gauge from the
   composer border (`7%` … `262K`), reported as `source: "status_bar"`, so the
-  reading stays per-pane even when many omp panes share one directory. `/compact`
-  and `/clear` are used for compaction.
+  reading stays per-pane even when many omp panes share one directory. Compaction
+  uses native `/compact` and verifies a fresh reduction in the context gauge.
 - **Sessions.** `ntm sessions save` binds each pane to its omp session (omp
   holds its transcript under `~/.omp/agent/sessions/` open, so the binding is
   exact per pane; profile, XDG and `PI_CODING_AGENT_*` stores are honoured), and
@@ -284,6 +284,25 @@ ntm diff payments cc_1 cod_1
 ntm grep "timeout" payments -C 3
 ntm analytics --days 7
 ```
+
+Pending context rotations can be acted on directly:
+
+```bash
+ntm rotate context pending
+ntm rotate context confirm payments__cc_1 --action=rotate
+ntm rotate context confirm payments__cc_1 --action=compact
+```
+
+CLI and dashboard confirmation execute the selected action and report its actual
+result. Rotation verifies the original process, requests a fresh handoff, and
+delivers it to a ready replacement before retiring the old pane. Confirmation
+ownership and results survive process interruption: repeating a completed choice
+returns its saved result, while a failed or interrupted choice remains visible in
+`pending`. Inspect the affected panes before using the same action with `--retry`.
+Native compaction preserves the conversation and requires fresh provider context
+accounting to prove a reduction; it does not automatically clear history. Claude
+compaction refuses ambiguous transcript scope, including another Claude pane in a
+different session using the same transcript directory.
 
 ### 3. Work Graph Triage and Assignment
 

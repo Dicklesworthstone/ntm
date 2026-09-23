@@ -1167,62 +1167,19 @@ type RotationConfirmResultMsg struct {
 // executeRotationConfirmAction executes a rotation confirmation action.
 func (m Model) executeRotationConfirmAction(agentID string, action ctxmon.ConfirmAction) tea.Cmd {
 	return func() tea.Msg {
-		// Get the pending rotation
-		pending, err := ctxmon.GetPendingRotationByID(agentID)
-		if err != nil {
-			return RotationConfirmResultMsg{
-				AgentID: agentID,
-				Action:  action,
-				Success: false,
-				Err:     err,
-			}
-		}
-		if pending == nil {
-			return RotationConfirmResultMsg{
-				AgentID: agentID,
-				Action:  action,
-				Success: false,
-				Message: fmt.Sprintf("No pending rotation found for agent %s", agentID),
-			}
-		}
-
-		var resultMsg string
-		switch action {
-		case ctxmon.ConfirmRotate:
-			// Remove pending and mark for rotation on next check
-			if err := ctxmon.RemovePendingRotation(agentID); err != nil {
-				return RotationConfirmResultMsg{AgentID: agentID, Action: action, Success: false, Err: err}
-			}
-			resultMsg = fmt.Sprintf("Rotation confirmed for %s", agentID)
-
-		case ctxmon.ConfirmCompact:
-			// Remove pending and mark for compaction
-			if err := ctxmon.RemovePendingRotation(agentID); err != nil {
-				return RotationConfirmResultMsg{AgentID: agentID, Action: action, Success: false, Err: err}
-			}
-			resultMsg = fmt.Sprintf("Compaction requested for %s", agentID)
-
-		case ctxmon.ConfirmIgnore:
-			// Simply remove the pending rotation
-			if err := ctxmon.RemovePendingRotation(agentID); err != nil {
-				return RotationConfirmResultMsg{AgentID: agentID, Action: action, Success: false, Err: err}
-			}
-			resultMsg = fmt.Sprintf("Rotation cancelled for %s", agentID)
-
-		case ctxmon.ConfirmPostpone:
-			// Extend the timeout by 30 minutes
-			pending.TimeoutAt = pending.TimeoutAt.Add(30 * time.Minute)
-			if err := ctxmon.AddPendingRotation(pending); err != nil {
-				return RotationConfirmResultMsg{AgentID: agentID, Action: action, Success: false, Err: err}
-			}
-			resultMsg = fmt.Sprintf("Rotation postponed 30 minutes for %s", agentID)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+		result := ctxmon.ConfirmPendingRotationContext(ctx, agentID, action, 30, false, m.cfg)
+		message := result.Error
+		if result.Success {
+			message = fmt.Sprintf("%s completed for %s", action, agentID)
 		}
 
 		return RotationConfirmResultMsg{
 			AgentID: agentID,
 			Action:  action,
-			Success: true,
-			Message: resultMsg,
+			Success: result.Success,
+			Message: message,
 		}
 	}
 }

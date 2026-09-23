@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -12,9 +13,210 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/auth"
 	"github.com/Dicklesworthstone/ntm/internal/config"
+	ctxmon "github.com/Dicklesworthstone/ntm/internal/context"
 	"github.com/Dicklesworthstone/ntm/internal/quota"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
+
+// Exercise the public command against the actual rotation engine and recording
+// tmux transport. The default coordinator policy requires manual confirmation;
+// successful JSON must correspond to a submitted operation, not dequeuing it.
+func TestContextConfirmCommandExecutesPersistedChoice(t *testing.T) {
+	for _, mode := range []string{"rotate", "compact", "launch-failure", "changed-pid", "busy", "canceled", "cross-session"} {
+		t.Run(mode, func(t *testing.T) {
+			root := t.TempDir()
+			workDir := filepath.Join(root, "project")
+			if err := os.MkdirAll(workDir, 0700); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("HOME", root)
+			t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
+			t.Setenv("NTM_CONFIRM_ROOT", root)
+			t.Setenv("NTM_CONFIRM_WORKDIR", workDir)
+			t.Setenv("NTM_CONFIRM_MODE", mode)
+			stub := filepath.Join(root, "tmux")
+			if err := os.WriteFile(stub, []byte(contextConfirmTmuxFixture), 0700); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("NTM_TMUX_BINARY", stub)
+			transcript := filepath.Join(root, ".claude", "projects", ctxmon.MungeProjectPath(workDir), "agent.jsonl")
+			if err := os.MkdirAll(filepath.Dir(transcript), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(transcript, []byte("{\"type\":\"assistant\",\"message\":{\"model\":\"claude-opus-4\",\"usage\":{\"input_tokens\":150000}}}\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			past := time.Now().Add(-time.Second)
+			if err := os.Chtimes(transcript, past, past); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("NTM_CONFIRM_TRANSCRIPT", transcript)
+			oldCfg, oldJSON, oldClient := cfg, jsonOutput, tmux.DefaultClient
+			oldStore, oldHistory := ctxmon.DefaultPendingRotationStore, ctxmon.DefaultRotationHistoryStore
+			cfg, jsonOutput, tmux.DefaultClient = config.Default(), true, tmux.NewClient("")
+			if cfg.Rotation.AutoConfirm {
+				t.Fatal("fixture must exercise manual confirmation with default auto-confirm disabled")
+			}
+			if !cfg.ContextRotation.TryCompactFirst {
+				t.Fatal("fixture must preserve the default automatic compaction preference")
+			}
+			ctxmon.DefaultPendingRotationStore = ctxmon.NewPendingRotationStoreWithPath(filepath.Join(root, "pending.jsonl"))
+			ctxmon.DefaultRotationHistoryStore = ctxmon.NewRotationHistoryStore()
+			t.Cleanup(func() {
+				cfg, jsonOutput, tmux.DefaultClient = oldCfg, oldJSON, oldClient
+				ctxmon.DefaultPendingRotationStore, ctxmon.DefaultRotationHistoryStore = oldStore, oldHistory
+			})
+			pending := &ctxmon.PendingRotation{AgentID: "demo__cc_1", SessionName: "demo", PaneID: "%1", PanePID: 123, PaneType: "cc", WorkDir: workDir, ContextPercent: 75, CreatedAt: time.Now(), TimeoutAt: time.Now().Add(time.Hour), DefaultAction: ctxmon.ConfirmRotate}
+			if err := ctxmon.AddPendingRotation(pending); err != nil {
+				t.Fatal(err)
+			}
+			action := "rotate"
+			if mode == "compact" || mode == "cross-session" {
+				action = "compact"
+			}
+			run := func(ctx context.Context) (ConfirmRotationResult, error) {
+				command := newRotateContextConfirmCmd()
+				// Match the production root policy when exercising the command
+				// directly: failures retain one parseable JSON outcome.
+				command.SilenceUsage, command.SilenceErrors = rootCmd.SilenceUsage, rootCmd.SilenceErrors
+				var out bytes.Buffer
+				command.SetOut(&out)
+				command.SetErr(new(bytes.Buffer))
+				command.SetArgs([]string{pending.AgentID, "--action=" + action})
+				err := command.ExecuteContext(ctx)
+				var result ConfirmRotationResult
+				if decodeErr := json.Unmarshal(bytes.TrimSpace(out.Bytes()), &result); decodeErr != nil {
+					t.Fatalf("confirmation did not emit structured outcome: %v, command error=%v, output=%q", decodeErr, err, out.String())
+				}
+				return result, err
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+			defer cancel()
+			if mode == "canceled" {
+				cancel()
+			}
+			result, err := run(ctx)
+			commands, _ := os.ReadFile(filepath.Join(root, "commands"))
+			log := string(commands)
+			wantSuccess := mode == "rotate" || mode == "compact"
+			if wantSuccess != result.Success || wantSuccess && err != nil || !wantSuccess && err == nil {
+				t.Fatalf("confirmation success=%v, err=%v, result=%+v\n%s", wantSuccess, err, result, log)
+			}
+			stored, getErr := ctxmon.GetPendingRotationByID(pending.AgentID)
+			if getErr != nil {
+				t.Fatal(getErr)
+			}
+			if wantSuccess {
+				if stored != nil || result.Rotation == nil {
+					t.Fatalf("successful operation did not persist acknowledgment: %+v / %+v", result, stored)
+				}
+				if mode == "rotate" {
+					if strings.Contains(log, "/compact") {
+						t.Fatalf("explicit rotation was replaced by automatic compaction:\n%s", log)
+					}
+					payload, readErr := os.ReadFile(filepath.Join(root, "delivered"))
+					if readErr != nil || !strings.Contains(string(payload), "Continue durable scheduler implementation") || result.Rotation.NewPaneID != "%99" {
+						t.Fatalf("replacement did not receive source handoff: %+v, %v, %q", result, readErr, payload)
+					}
+					deliveredAt, retiredAt := strings.Index(log, "HANDOFF_DELIVERED"), strings.Index(log, "kill-pane -t %1")
+					if deliveredAt < 0 || retiredAt < 0 || deliveredAt > retiredAt {
+						t.Fatalf("source retired before handoff submission:\n%s", log)
+					}
+				} else if !strings.Contains(log, "/compact") || strings.Contains(log, "/clear") || strings.Contains(log, "split-window") || strings.Contains(log, "kill-pane") {
+					t.Fatalf("compact failed to preserve native context:\n%s", log)
+				}
+				before := len(commands)
+				replayed, replayErr := run(t.Context())
+				after, _ := os.ReadFile(filepath.Join(root, "commands"))
+				if replayErr != nil || !replayed.Success || len(after) != before {
+					t.Fatalf("repeated confirmation executed again: %+v, %v\n%s", replayed, replayErr, after)
+				}
+			} else {
+				if stored == nil {
+					t.Fatal("failed confirmation consumed request")
+				}
+				if mode == "launch-failure" && (!strings.Contains(result.Message, "failed to spawn replacement") || !strings.Contains(log, "split-window") || strings.Contains(log, "HANDOFF_DELIVERED") || strings.Contains(log, "kill-pane")) {
+					t.Fatalf("launch failure did not preserve the summarized predecessor: %+v\n%s", result, log)
+				}
+				if mode == "canceled" && (stored.SelectedAction != "" || len(commands) != 0) {
+					t.Fatalf("pre-canceled command changed state: %+v\n%s", stored, commands)
+				}
+				if mode != "launch-failure" && (strings.Contains(log, "send-keys") || strings.Contains(log, "paste-buffer") || strings.Contains(log, "kill-pane")) {
+					t.Fatalf("unsafe or canceled confirmation delivered input:\n%s", log)
+				}
+			}
+		})
+	}
+}
+
+const contextConfirmTmuxFixture = `#!/bin/sh
+printf '%s\n' "$*" >> "$NTM_CONFIRM_ROOT/commands"
+target=
+previous=
+for value do
+  if [ "$previous" = -t ]; then target="$value"; fi
+  previous="$value"
+done
+ready() { printf 'Welcome to Claude Code\n────────────────────────\n❯ \n────────────────────────\n  ⏵⏵ bypass permissions on (shift+tab to cycle)\n'; }
+case "$1" in
+  list-windows) printf '0\n' ;;
+  has-session) exit 0 ;;
+  display-message) printf '%s\n' "$NTM_CONFIRM_WORKDIR" ;;
+  list-panes)
+    prefix=
+    case "$*" in *' -a '*) prefix=demo_NTM_SEP_ ;; esac
+    if [ ! -f "$NTM_CONFIRM_ROOT/retired" ]; then
+      pid=123
+      if [ "$NTM_CONFIRM_MODE" = changed-pid ]; then pid=456; fi
+      printf '%s%%1_NTM_SEP_1_NTM_SEP_demo__cc_1_NTM_SEP_node_NTM_SEP_120_NTM_SEP_40_NTM_SEP_0_NTM_SEP_%s_NTM_SEP_0_NTM_SEP_cc_NTM_SEP__NTM_SEP__NTM_SEP_0\n' "$prefix" "$pid"
+    fi
+    if [ -f "$NTM_CONFIRM_ROOT/created" ]; then
+      command=bash
+      if [ -f "$NTM_CONFIRM_ROOT/launched" ]; then command=node; fi
+      printf '%s%%99_NTM_SEP_2_NTM_SEP_demo__cc_1_NTM_SEP_%s_NTM_SEP_120_NTM_SEP_40_NTM_SEP_0_NTM_SEP_321_NTM_SEP_0_NTM_SEP_cc_NTM_SEP__NTM_SEP__NTM_SEP_0\n' "$prefix" "$command"
+    fi
+    if [ -n "$prefix" ] && [ "$NTM_CONFIRM_MODE" = cross-session ]; then
+      printf 'other_NTM_SEP_%%2_NTM_SEP_1_NTM_SEP_other__cc_1_NTM_SEP_node_NTM_SEP_120_NTM_SEP_40_NTM_SEP_0_NTM_SEP_456_NTM_SEP_0_NTM_SEP_cc_NTM_SEP__NTM_SEP__NTM_SEP_0\n'
+    fi
+    ;;
+  capture-pane)
+    if [ "$NTM_CONFIRM_MODE" = busy ]; then
+      printf 'Welcome to Claude Code\n✻ Sautéing… (ctrl+c to interrupt · 12s · thinking)\n────────────────────────\n❯ \n────────────────────────\n  ⏵⏵ bypass permissions on\n'
+    elif [ "$target" = '%99' ] && [ -f "$NTM_CONFIRM_ROOT/delivered" ]; then
+      printf 'Welcome to Claude Code\n✻ Sautéing… (ctrl+c to interrupt · 12s · thinking)\n────────────────────────\n❯ \n────────────────────────\n  ⏵⏵ bypass permissions on\n'
+    else
+      if [ "$target" = '%1' ] && [ -f "$NTM_CONFIRM_ROOT/summary" ]; then cat "$NTM_CONFIRM_ROOT/summary"; fi
+      ready
+    fi
+    ;;
+  load-buffer) cat > "$NTM_CONFIRM_ROOT/buffer" ;;
+  paste-buffer)
+    if [ "$target" = '%1' ]; then
+      start_marker=$(sed -n 's/.*\(NTM_START_[A-Za-z0-9]*\).*/\1/p' "$NTM_CONFIRM_ROOT/buffer")
+      end_marker=$(sed -n 's/.*\(NTM_END_[A-Za-z0-9]*\).*/\1/p' "$NTM_CONFIRM_ROOT/buffer")
+      printf '%s\n' "$start_marker" > "$NTM_CONFIRM_ROOT/summary"
+      printf '## Current Task\nContinue durable scheduler implementation\n## Progress\nScheduling state is persisted.\n## Next Steps\nAdd recovery tests.\n' >> "$NTM_CONFIRM_ROOT/summary"
+      printf '%s\n' "$end_marker" >> "$NTM_CONFIRM_ROOT/summary"
+    else
+      cat "$NTM_CONFIRM_ROOT/buffer" > "$NTM_CONFIRM_ROOT/delivered"
+      printf 'HANDOFF_DELIVERED\n' >> "$NTM_CONFIRM_ROOT/commands"
+    fi
+    ;;
+  show-options) printf 'invalid option: @ntm_agent_launch\n' >&2; exit 1 ;;
+  split-window)
+    if [ "$NTM_CONFIRM_MODE" = launch-failure ]; then exit 1; fi
+    printf '1' > "$NTM_CONFIRM_ROOT/created"
+    printf '%%99\n'
+    ;;
+  send-keys)
+    case "$*" in
+      *'/compact'*) printf '{"type":"assistant","message":{"model":"claude-opus-4","usage":{"input_tokens":30000}}}\n' > "$NTM_CONFIRM_TRANSCRIPT" ;;
+    esac
+    if [ "$target" = '%99' ]; then printf '1' > "$NTM_CONFIRM_ROOT/launched"; fi
+    ;;
+  kill-pane) if [ "$target" = '%1' ]; then printf '1' > "$NTM_CONFIRM_ROOT/retired"; fi ;;
+esac
+`
 
 type rotateTestQuotaFetcher struct {
 	info *quota.QuotaInfo

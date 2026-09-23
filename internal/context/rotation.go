@@ -94,14 +94,21 @@ const (
 
 // PendingRotation represents a rotation awaiting user confirmation.
 type PendingRotation struct {
-	AgentID        string        `json:"agent_id"`
-	SessionName    string        `json:"session_name"`
-	PaneID         string        `json:"pane_id"`
-	ContextPercent float64       `json:"context_percent"`
-	CreatedAt      time.Time     `json:"created_at"`
-	TimeoutAt      time.Time     `json:"timeout_at"`
-	DefaultAction  ConfirmAction `json:"default_action"`
-	WorkDir        string        `json:"-"` // Not serialized
+	AgentID        string          `json:"agent_id"`
+	SessionName    string          `json:"session_name"`
+	PaneID         string          `json:"pane_id"`
+	ContextPercent float64         `json:"context_percent"`
+	CreatedAt      time.Time       `json:"created_at"`
+	TimeoutAt      time.Time       `json:"timeout_at"`
+	DefaultAction  ConfirmAction   `json:"default_action"`
+	WorkDir        string          `json:"-"` // Not serialized
+	PanePID        int             `json:"pane_pid,omitempty"`
+	PaneType       string          `json:"pane_type,omitempty"`
+	Remote         string          `json:"remote,omitempty"`
+	SelectedAction ConfirmAction   `json:"selected_action,omitempty"`
+	ExecutionState RotationState   `json:"execution_state,omitempty"`
+	ExecutionID    string          `json:"execution_id,omitempty"`
+	Result         *RotationResult `json:"result,omitempty"`
 }
 
 // PendingRotationOutput provides robot mode JSON output for pending rotations.
@@ -128,7 +135,7 @@ func (p *PendingRotation) RemainingSeconds() int {
 
 // IsExpired returns true if the pending rotation has timed out.
 func (p *PendingRotation) IsExpired() bool {
-	return time.Now().After(p.TimeoutAt)
+	return p.ExecutionState == "" && time.Now().After(p.TimeoutAt)
 }
 
 func clonePendingRotation(p *PendingRotation) *PendingRotation {
@@ -136,6 +143,10 @@ func clonePendingRotation(p *PendingRotation) *PendingRotation {
 		return nil
 	}
 	cloned := *p
+	if p.Result != nil {
+		result := *p.Result
+		cloned.Result = &result
+	}
 	return &cloned
 }
 
@@ -1000,7 +1011,11 @@ type Rotator struct {
 	history []RotationEvent
 
 	// Pending rotations awaiting confirmation (keyed by agentID)
-	pending map[string]*PendingRotation
+	pending    map[string]*PendingRotation
+	confirming map[string]bool
+	// The public confirmation service owns the durable claim and its outcome.
+	durableConfirmation bool
+	expectedSource      *tmux.Pane
 }
 
 // RotatorConfig holds configuration for creating a Rotator.
@@ -1024,13 +1039,14 @@ func NewRotator(cfg RotatorConfig) *Rotator {
 	}
 
 	return &Rotator{
-		monitor:   cfg.Monitor,
-		compactor: cfg.Compactor,
-		summary:   cfg.Summary,
-		spawner:   cfg.Spawner,
-		config:    cfg.Config,
-		history:   make([]RotationEvent, 0),
-		pending:   make(map[string]*PendingRotation),
+		monitor:    cfg.Monitor,
+		compactor:  cfg.Compactor,
+		summary:    cfg.Summary,
+		spawner:    cfg.Spawner,
+		config:     cfg.Config,
+		history:    make([]RotationEvent, 0),
+		pending:    make(map[string]*PendingRotation),
+		confirming: make(map[string]bool),
 	}
 }
 
@@ -1161,6 +1177,17 @@ func (r *Rotator) createPendingRotation(session, agentID, paneID string, context
 		DefaultAction:  defaultAction,
 		WorkDir:        workDir,
 	}
+	if _, ok := r.spawner.(*DefaultPaneSpawner); ok {
+		pending.Remote = tmux.DefaultClient.Remote
+	}
+	if r.spawner != nil {
+		if panes, err := r.spawner.GetPanes(session); err == nil {
+			if pane, err := findLiveAgentPane(panes, agentID, paneID); err == nil && pane.PID > 0 && !pane.Dead && !pane.IsServicePane() {
+				pending.PanePID = pane.PID
+				pending.PaneType = string(pane.Type.Canonical())
+			}
+		}
+	}
 
 	r.mu.Lock()
 	r.pending[agentID] = pending
@@ -1189,7 +1216,7 @@ func (r *Rotator) processExpiredPending(_, _ string) {
 
 	r.mu.RLock()
 	for _, pending := range r.pending {
-		if !now.After(pending.TimeoutAt) {
+		if !pending.IsExpired() {
 			continue
 		}
 		actions = append(actions, expiredPendingAction{
@@ -1199,6 +1226,15 @@ func (r *Rotator) processExpiredPending(_, _ string) {
 		})
 	}
 	r.mu.RUnlock()
+	if spawner, ok := r.spawner.(*DefaultPaneSpawner); ok && !r.durableConfirmation {
+		for _, action := range actions {
+			result := confirmStoredRotation(stdcontext.Background(), action.snapshot.AgentID, action.action, 30, false, spawner.config, r, true)
+			if !result.Success {
+				slog.Warn("expired pending confirmation failed", "agent", action.snapshot.AgentID, "action", action.action, "error", result.Error)
+			}
+		}
+		return
+	}
 
 	// Validate every expired lifecycle action before changing pending state.
 	// A supported action must not run merely because map iteration encountered it
@@ -1225,6 +1261,9 @@ func (r *Rotator) processExpiredPending(_, _ string) {
 			if err == nil {
 				err = pendingAction.agentType.ValidateAutomatedPromptDelivery()
 			}
+			if err == nil && !GetAgentCapabilities(string(pendingAction.agentType)).SupportsBuiltinCompact {
+				err = fmt.Errorf("native context-preserving compaction is unavailable for %s; use rotate", pendingAction.agentType)
+			}
 		}
 		if err != nil {
 			slog.Warn("expired pending rotation batch rejected",
@@ -1242,6 +1281,7 @@ func (r *Rotator) processExpiredPending(_, _ string) {
 		pending := r.pending[pendingAction.snapshot.AgentID]
 		if pending == nil ||
 			pending != pendingAction.source ||
+			pending.ExecutionState != "" ||
 			!pending.TimeoutAt.Equal(pendingAction.snapshot.TimeoutAt) ||
 			pending.DefaultAction != pendingAction.action ||
 			!now.After(pending.TimeoutAt) {
@@ -1388,6 +1428,12 @@ func (r *Rotator) rotateAgentContext(ctx stdcontext.Context, session, agentID, w
 	}
 	oldPane := &oldPaneValue
 	result.OldPaneID = oldPane.ID
+	if r.expectedSource != nil && (oldPane.ID != r.expectedSource.ID || oldPane.PID != r.expectedSource.PID || oldPane.Type.Canonical() != r.expectedSource.Type.Canonical()) {
+		result.State = RotationStateFailed
+		result.Error = "original agent process identity changed since confirmation"
+		result.Duration = time.Since(startTime)
+		return result
+	}
 	if _, observedLifecycle := r.spawner.(rotationPaneLifecycle); observedLifecycle &&
 		(oldPane.PID <= 0 || oldPane.Dead || oldPane.IsServicePane() || !rotationProcessRunning(*oldPane)) {
 		result.State = RotationStateFailed
@@ -1411,11 +1457,10 @@ func (r *Rotator) rotateAgentContext(ctx stdcontext.Context, session, agentID, w
 
 	// Try compaction first if configured
 	if r.config.TryCompactFirst && r.compactor != nil {
-		compactResult := r.tryCompactionContext(ctx, agentID, oldPane.ID, oldPane.Type)
+		compactResult := r.tryCompactionContext(ctx, session, agentID, oldPane.ID, oldPane.Type)
 		if compactResult != nil && compactResult.Success {
 			// Check if we're now below threshold
-			estimate := r.monitor.GetEstimate(agentID)
-			if estimate != nil && estimate.UsagePercent < r.config.RotateThreshold*100 {
+			if compactResult.UsageAfter < r.config.RotateThreshold*100 {
 				// Compaction worked, no rotation needed
 				result.Success = true
 				result.State = RotationStateAborted
@@ -1441,11 +1486,8 @@ func (r *Rotator) rotateAgentContext(ctx stdcontext.Context, session, agentID, w
 	startMarker, endMarker := "", ""
 	if observeSource {
 		summaryPrompt, startMarker, endMarker = rotationSummaryRequest(r.summary)
-		var latest tmux.Pane
-		latest, err = currentRotationPane(ctx, session, *oldPane, transport.GetPanesContext)
-		if err == nil && !rotationProcessRunning(latest) {
-			err = errors.New("original agent exited before the summary request")
-		}
+		_, err = waitForRotationReady(ctx, session, *oldPane, rotationReadyTimeout, rotationReadyPoll,
+			transport.GetPanesContext, tmux.CapturePaneVisibleContext)
 	}
 	if err == nil {
 		err = sendRotationPromptContext(ctx, r.spawner, oldPane.ID, summaryPrompt)
@@ -1637,15 +1679,192 @@ func recordRotationToHistory(result RotationResult, session, agentType string, c
 
 // tryCompaction attempts to compact the agent's context.
 func (r *Rotator) tryCompaction(agentID, paneID string, agentType agent.AgentType) *CompactionResult {
-	return r.tryCompactionContext(stdcontext.Background(), agentID, paneID, agentType)
+	return r.tryCompactionContext(stdcontext.Background(), "", agentID, paneID, agentType)
 }
 
-func (r *Rotator) tryCompactionContext(ctx stdcontext.Context, agentID, paneID string, agentType agent.AgentType) *CompactionResult {
+// compactLivePane obtains fresh provider accounting rather than comparing the
+// same cached monitor estimate before and after a command. Unsupported or
+// ambiguous accounting never authorizes clearing the original conversation.
+func (r *Rotator) compactLivePane(ctx stdcontext.Context, session, agentID, paneID string, agentType agent.AgentType, transport rotationContextTransport) *CompactionResult {
+	commands := r.compactor.GetCompactionCommands(string(agentType))
+	if len(commands) == 0 {
+		return &CompactionResult{Method: CompactionFailed, Error: "native context-preserving compaction is unavailable for this provider; use rotate"}
+	}
+	panes, err := transport.GetPanesContext(ctx, session)
+	if err != nil {
+		return &CompactionResult{Method: CompactionFailed, Error: err.Error()}
+	}
+	pane, err := findLiveAgentPane(panes, agentID, paneID)
+	if err != nil {
+		return &CompactionResult{Method: CompactionFailed, Error: err.Error()}
+	}
+	if r.expectedSource != nil && (pane.ID != r.expectedSource.ID || pane.PID != r.expectedSource.PID || pane.Type.Canonical() != r.expectedSource.Type.Canonical()) {
+		return &CompactionResult{Method: CompactionFailed, Error: "original agent process identity changed since confirmation"}
+	}
+	usage := func(ctx stdcontext.Context, captured string, before *TranscriptUsage) (*TranscriptUsage, error) {
+		if pane.Type.Canonical() == agent.AgentTypeOmp {
+			if reading, ok := OmpStatusBarUsage(captured, time.Now()); ok {
+				return reading, nil
+			}
+			return nil, errors.New("agent context gauge is unavailable")
+		}
+		if tmux.DefaultClient.Remote != "" {
+			return nil, errors.New("local transcript cannot verify a remote agent's compaction")
+		}
+		if before != nil {
+			reading, err := ReadLatestTranscriptUsage(before.Path)
+			if err != nil || reading == nil {
+				return nil, errors.New("original transcript accounting is unavailable")
+			}
+			return reading, nil
+		}
+		cwd, err := tmux.DefaultClient.RunContext(ctx, "display-message", "-p", "-t", tmux.ExactTarget(pane.ID), "#{pane_current_path}")
+		cwd = strings.TrimSpace(cwd)
+		if err != nil || !filepath.IsAbs(cwd) {
+			return nil, errors.New("original agent working directory is unavailable")
+		}
+		// The provider's project transcript directory spans every tmux session.
+		// A session-local pane list cannot rule out another conversation in it.
+		allPanes, err := tmux.GetAllPanesContext(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("cannot establish server-wide transcript attribution: %w", err)
+		}
+		foundSource := false
+		for siblingSession, siblings := range allPanes {
+			for _, sibling := range siblings {
+				if sibling.ID == pane.ID {
+					if siblingSession != session || sibling.PID != pane.PID || sibling.Type.Canonical() != pane.Type.Canonical() || sibling.Dead || sibling.IsServicePane() {
+						return nil, errors.New("original agent identity changed during transcript attribution")
+					}
+					foundSource = true
+					continue
+				}
+				if sibling.Type.Canonical() != pane.Type.Canonical() || sibling.IsServicePane() {
+					continue
+				}
+				other, err := tmux.DefaultClient.RunContext(ctx, "display-message", "-p", "-t", tmux.ExactTarget(sibling.ID), "#{pane_current_path}")
+				other = strings.TrimSpace(other)
+				if err != nil || !filepath.IsAbs(other) || MungeProjectPath(other) == MungeProjectPath(cwd) {
+					return nil, errors.New("provider transcript attribution is ambiguous across tmux sessions; use rotate")
+				}
+			}
+		}
+		if !foundSource {
+			return nil, errors.New("original agent is absent from the server-wide pane inventory")
+		}
+		reading, ok := LatestAgentTranscriptUsage(agentTypeLong(string(pane.Type)), cwd, time.Time{})
+		if !ok || reading == nil || time.Since(reading.UpdatedAt) > TranscriptFreshness {
+			return nil, errors.New("fresh provider context accounting is unavailable; use rotate")
+		}
+		return reading, nil
+	}
+	timeout := r.compactor.builtinTimeout
+	if timeout < rotationReadyTimeout {
+		timeout = rotationReadyTimeout
+	}
+	return runNativeCompaction(ctx, session, pane, commands[0], r.compactor, timeout, rotationReadyPoll,
+		transport.GetPanesContext, tmux.CapturePaneVisibleContext, transport.SendKeysContext, usage)
+}
+
+type rotationUsageReader func(stdcontext.Context, string, *TranscriptUsage) (*TranscriptUsage, error)
+
+func runNativeCompaction(ctx stdcontext.Context, session string, expected tmux.Pane, command CompactionCommand, compactor *Compactor, timeout, poll time.Duration,
+	list rotationPaneLister, capture rotationPaneCapture, send func(stdcontext.Context, string, string, bool) error, usage rotationUsageReader) *CompactionResult {
+	started := time.Now()
+	fail := func(err error) *CompactionResult {
+		return &CompactionResult{Method: CompactionFailed, Error: err.Error(), Duration: time.Since(started)}
+	}
+	if ctx == nil || compactor == nil || list == nil || capture == nil || send == nil || usage == nil {
+		return fail(errors.New("compaction requires a context and observation dependencies"))
+	}
+	waitCtx, cancel := stdcontext.WithTimeout(ctx, timeout)
+	defer cancel()
+	if _, err := waitForRotationReady(waitCtx, session, expected, timeout, poll, list, capture); err != nil {
+		return fail(err)
+	}
+	captured, err := capture(waitCtx, expected.ID)
+	if err != nil {
+		return fail(err)
+	}
+	before, err := usage(waitCtx, captured, nil)
+	if err != nil || before == nil {
+		return fail(fmt.Errorf("cannot establish pre-compaction usage: %v", err))
+	}
+	limit := int64(before.ContextWindow)
+	if limit <= 0 {
+		limit = GetContextLimit(before.Model)
+	}
+	if limit <= 0 || before.Tokens <= 0 {
+		return fail(errors.New("provider did not report usable context accounting"))
+	}
+	// Reobserve immediately before typing: usage discovery can take time.
+	pane, err := currentRotationPane(waitCtx, session, expected, list)
+	if err != nil {
+		return fail(err)
+	}
+	captured, err = capture(waitCtx, expected.ID)
+	if err != nil {
+		return fail(err)
+	}
+	if ready, reason := rotationPromptReady(captured, pane); !ready || !rotationProcessRunning(pane) {
+		return fail(fmt.Errorf("original agent is not ready for compaction: %s", reason))
+	}
+	if _, err := currentRotationPane(waitCtx, session, expected, list); err != nil {
+		return fail(err)
+	}
+	if err := send(waitCtx, expected.ID, command.Command, true); err != nil {
+		return fail(fmt.Errorf("native compaction submission failed: %w", err))
+	}
+	stable := 0
+	for {
+		if err := waitCtx.Err(); err != nil {
+			return fail(fmt.Errorf("native compaction did not produce fresh completed usage: %w", err))
+		}
+		pane, err := currentRotationPane(waitCtx, session, expected, list)
+		if err != nil {
+			return fail(err)
+		}
+		if !rotationProcessRunning(pane) {
+			return fail(errors.New("original agent exited during compaction"))
+		}
+		captured, err := capture(waitCtx, expected.ID)
+		if err != nil {
+			return fail(err)
+		}
+		ready, _ := rotationPromptReady(captured, pane)
+		after, readErr := usage(waitCtx, captured, before)
+		fresh := readErr == nil && after != nil && after.Path == before.Path && after.Model == before.Model &&
+			after.ContextWindow == before.ContextWindow && after.UpdatedAt.After(before.UpdatedAt) && after.Tokens != before.Tokens
+		if ready && fresh {
+			stable++
+			if stable >= 2 {
+				if _, err := currentRotationPane(waitCtx, session, expected, list); err != nil {
+					return fail(err)
+				}
+				result := compactor.EvaluateCompactionResult(
+					&ContextEstimate{TokensUsed: int64(before.Tokens), UsagePercent: float64(before.Tokens) / float64(limit) * 100},
+					&ContextEstimate{TokensUsed: int64(after.Tokens), UsagePercent: float64(after.Tokens) / float64(limit) * 100})
+				result.Method, result.Duration = CompactionBuiltin, time.Since(started)
+				return result
+			}
+		} else {
+			stable = 0
+		}
+		if err := waitForRotationDelay(waitCtx, poll); err != nil {
+			return fail(fmt.Errorf("native compaction did not produce fresh completed usage: %w", err))
+		}
+	}
+}
+
+func (r *Rotator) tryCompactionContext(ctx stdcontext.Context, session, agentID, paneID string, agentType agent.AgentType) *CompactionResult {
 	if r.compactor == nil {
 		return nil
 	}
 	if r.spawner == nil {
 		return &CompactionResult{Success: false, Method: CompactionFailed, Error: "no spawner available"}
+	}
+	if transport, ok := r.spawner.(rotationContextTransport); ok {
+		return r.compactLivePane(ctx, session, agentID, paneID, agentType, transport)
 	}
 
 	// Start compaction state
@@ -1909,15 +2128,166 @@ func (r *Rotator) ConfirmRotation(agentID string, action ConfirmAction, postpone
 	return r.ConfirmRotationContext(stdcontext.Background(), agentID, action, postponeMinutes)
 }
 
+// ConfirmPendingRotationContext executes a persisted choice through the same
+// lifecycle as coordinator rotation. The durable claim spans all effects and
+// stores the actual result, so a reported success can be replayed safely.
+func ConfirmPendingRotationContext(ctx stdcontext.Context, agentID string, action ConfirmAction, minutes int, retry bool, cfg *config.Config) RotationResult {
+	return confirmStoredRotation(ctx, agentID, action, minutes, retry, cfg, nil, false)
+}
+
+func confirmStoredRotation(ctx stdcontext.Context, agentID string, action ConfirmAction, minutes int, retry bool, cfg *config.Config, owner *Rotator, allowExpired bool) (result RotationResult) {
+	started := time.Now()
+	result = RotationResult{OldAgentID: agentID, State: RotationStateFailed, Timestamp: started}
+	if action == ConfirmPostpone && minutes <= 0 {
+		result.Error = "postpone minutes must be positive"
+		return result
+	}
+	var pending *PendingRotation
+	var release func()
+	var err error
+	if allowExpired {
+		pending, release, err = DefaultPendingRotationStore.BeginExpiredConfirmation(ctx, agentID, action)
+	} else {
+		pending, release, err = DefaultPendingRotationStore.BeginConfirmation(ctx, agentID, action, retry)
+	}
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+	defer release()
+	if pending.ExecutionState == RotationStateCompleted && pending.Result != nil {
+		if owner != nil {
+			owner.mu.Lock()
+			delete(owner.pending, agentID)
+			owner.mu.Unlock()
+		}
+		return *pending.Result
+	}
+	result.OldPaneID = pending.PaneID
+	defer func() {
+		result.Duration = time.Since(started)
+		if err := DefaultPendingRotationStore.FinishConfirmation(ctx, pending, result); err != nil {
+			result.Success = false
+			result.State = RotationStateFailed
+			result.Error += fmt.Sprintf("; confirmation outcome could not be persisted: %v", err)
+		}
+		if owner != nil {
+			owner.mu.Lock()
+			if result.Success && action != ConfirmPostpone {
+				delete(owner.pending, agentID)
+			} else {
+				retained := clonePendingRotation(pending)
+				if action == ConfirmPostpone && result.Success {
+					retained.SelectedAction, retained.ExecutionState, retained.ExecutionID, retained.Result = "", "", "", nil
+				} else {
+					retained.ExecutionState = RotationStateFailed
+					copyResult := result
+					retained.Result = &copyResult
+				}
+				owner.pending[agentID] = retained
+			}
+			owner.mu.Unlock()
+		}
+	}()
+	if err := ctx.Err(); err != nil {
+		result.Error = err.Error()
+		return result
+	}
+	// Administrative choices do not need a live provider or physical pane.
+	if action == ConfirmIgnore {
+		result.Success, result.State = true, RotationStateAborted
+		return result
+	}
+	if action == ConfirmPostpone {
+		pending.TimeoutAt = time.Now().Add(time.Duration(minutes) * time.Minute)
+		result.Success, result.State = true, RotationStatePending
+		return result
+	}
+	if pending.Remote != tmux.DefaultClient.Remote {
+		result.Error = "pending rotation belongs to a different tmux host; use the same --ssh target that enqueued it"
+		return result
+	}
+	if pending.PaneID == "" || pending.PanePID <= 0 || pending.PaneType == "" {
+		result.Error = "pending rotation has no recorded pane process identity; acknowledge it with --action=ignore --retry, then let the coordinator create a fresh request"
+		return result
+	}
+	if err := tmux.ValidateSessionName(pending.SessionName); err != nil {
+		result.Error = fmt.Sprintf("invalid pending session: %v", err)
+		return result
+	}
+	expected := tmux.Pane{ID: pending.PaneID, PID: pending.PanePID, Type: tmux.AgentType(pending.PaneType)}
+	if err := validateAutomatedRotation(expected.Type); err != nil {
+		result.Error = err.Error()
+		return result
+	}
+	observed, err := currentRotationPane(ctx, pending.SessionName, expected, tmux.GetPanesContext)
+	if err != nil {
+		result.Error = fmt.Sprintf("pending source identity cannot be verified: %v", err)
+		return result
+	}
+	if !rotationProcessRunning(observed) {
+		result.Error = "pending source is no longer a running agent"
+		return result
+	}
+	captured, err := tmux.CapturePaneVisibleContext(ctx, observed.ID)
+	if err != nil {
+		result.Error = fmt.Sprintf("cannot observe pending source: %v", err)
+		return result
+	}
+	if ready, reason := rotationPromptReady(captured, observed); !ready {
+		result.Error = "pending source is not ready: " + reason
+		return result
+	}
+	if cfg == nil {
+		cfg = config.Default()
+	}
+	monitor := NewContextMonitor(DefaultMonitorConfig())
+	rotCfg := RotatorConfig{Monitor: monitor, Spawner: NewDefaultPaneSpawner(cfg), Config: cfg.ContextRotation}
+	if owner != nil {
+		rotCfg.Monitor, rotCfg.Compactor, rotCfg.Summary, rotCfg.Spawner, rotCfg.Config = owner.monitor, owner.compactor, owner.summary, owner.spawner, owner.config
+		monitor = owner.monitor
+	}
+	if action == ConfirmRotate && owner == nil && !allowExpired {
+		// An explicit CLI/dashboard choice must replace the agent even when
+		// automatic rotation prefers compaction. Modify this execution's copy;
+		// coordinator auto-confirm and timeout policy keep their preference.
+		rotCfg.Config.TryCompactFirst = false
+	}
+	model := ""
+	if state := monitor.GetState(agentID); state != nil {
+		model = state.Model
+	}
+	if spec, err := tmux.ReadPaneLaunchSpecContext(ctx, observed.ID); err != nil {
+		result.Error = fmt.Sprintf("cannot read source launch settings: %v", err)
+		return result
+	} else if spec != nil {
+		model = spec.Model
+	}
+	if monitor.GetState(agentID) == nil {
+		monitor.RegisterAgent(agentID, observed.ID, model)
+		monitor.SetAgentType(agentID, string(observed.Type.Canonical()))
+	}
+	runtime := NewRotator(rotCfg)
+	runtime.durableConfirmation = true
+	runtime.expectedSource = &expected
+	runtime.pending[agentID] = clonePendingRotation(pending)
+	return runtime.ConfirmRotationContext(ctx, agentID, action, minutes)
+}
+
 // ConfirmRotationContext executes the confirmed rotation with caller
 // cancellation covering launch, readiness observation and handoff delivery.
-func (r *Rotator) ConfirmRotationContext(ctx stdcontext.Context, agentID string, action ConfirmAction, postponeMinutes int) RotationResult {
+func (r *Rotator) ConfirmRotationContext(ctx stdcontext.Context, agentID string, action ConfirmAction, postponeMinutes int) (result RotationResult) {
 	if ctx == nil || ctx.Err() != nil {
 		err := errors.New("rotation context is required")
 		if ctx != nil {
 			err = ctx.Err()
 		}
 		return RotationResult{OldAgentID: agentID, State: RotationStateFailed, Error: err.Error(), Timestamp: time.Now()}
+	}
+	// All production confirmations, including coordinator auto-confirm, own
+	// the same persisted claim. A CLI claim must never race a second engine.
+	if spawner, ok := r.spawner.(*DefaultPaneSpawner); ok && !r.durableConfirmation {
+		return confirmStoredRotation(ctx, agentID, action, postponeMinutes, false, spawner.config, r, false)
 	}
 	r.mu.Lock()
 	pending := r.pending[agentID]
@@ -1931,9 +2301,37 @@ func (r *Rotator) ConfirmRotationContext(ctx stdcontext.Context, agentID string,
 		}
 	}
 	pendingCopy := clonePendingRotation(pending)
+	if r.confirming[agentID] {
+		r.mu.Unlock()
+		return RotationResult{OldAgentID: agentID, State: RotationStateFailed, Error: "confirmation is already executing", Timestamp: time.Now()}
+	}
+	r.confirming[agentID] = true
+	r.mu.Unlock()
+	defer func() {
+		r.mu.Lock()
+		delete(r.confirming, agentID)
+		if result.Success && action != ConfirmPostpone {
+			delete(r.pending, agentID)
+		}
+		r.mu.Unlock()
+		if result.Success && !r.durableConfirmation {
+			var err error
+			if action == ConfirmPostpone {
+				err = AddPendingRotation(pendingCopy)
+			} else {
+				err = RemovePendingRotation(agentID)
+			}
+			if err != nil {
+				result.Success = false
+				result.State = RotationStateFailed
+				result.Error = fmt.Sprintf("action finished but pending state could not be acknowledged: %v", err)
+			}
+		}
+	}()
 
-	result := RotationResult{
+	result = RotationResult{
 		OldAgentID: agentID,
+		OldPaneID:  pendingCopy.PaneID,
 		Timestamp:  time.Now(),
 	}
 
@@ -1944,23 +2342,15 @@ func (r *Rotator) ConfirmRotationContext(ctx stdcontext.Context, agentID string,
 			err = validateAutomatedRotation(agentType)
 		}
 		if err != nil {
-			r.mu.Unlock()
 			result.State = RotationStateFailed
 			result.Error = err.Error()
 			return result
-		}
-		// Remove from pending and perform the rotation
-		delete(r.pending, agentID)
-		r.mu.Unlock()
-		if err := RemovePendingRotation(agentID); err != nil {
-			slog.Warn("failed to remove pending rotation from store", "agent", agentID, "error", err)
 		}
 		return r.rotateAgentContext(ctx, pendingCopy.SessionName, agentID, pendingCopy.WorkDir)
 
 	case ConfirmCompact:
 		// Try compaction first
 		if pendingCopy.PaneID == "" {
-			r.mu.Unlock()
 			result.State = RotationStateFailed
 			result.Error = "cannot compact: pane ID unknown"
 			return result
@@ -1970,17 +2360,11 @@ func (r *Rotator) ConfirmRotationContext(ctx stdcontext.Context, agentID string,
 			err = agentType.ValidateAutomatedPromptDelivery()
 		}
 		if err != nil {
-			r.mu.Unlock()
 			result.State = RotationStateFailed
 			result.Error = err.Error()
 			return result
 		}
-		delete(r.pending, agentID)
-		r.mu.Unlock()
-		if err := RemovePendingRotation(agentID); err != nil {
-			slog.Warn("failed to remove pending rotation from store", "agent", agentID, "error", err)
-		}
-		compactResult := r.tryCompactionContext(ctx, agentID, pendingCopy.PaneID, agentType)
+		compactResult := r.tryCompactionContext(ctx, pendingCopy.SessionName, agentID, pendingCopy.PaneID, agentType)
 		if compactResult != nil && compactResult.Success {
 			result.Success = true
 			result.State = RotationStateAborted
@@ -1995,12 +2379,6 @@ func (r *Rotator) ConfirmRotationContext(ctx stdcontext.Context, agentID string,
 		return result
 
 	case ConfirmIgnore:
-		// Cancel the rotation
-		delete(r.pending, agentID)
-		r.mu.Unlock()
-		if err := RemovePendingRotation(agentID); err != nil {
-			slog.Warn("failed to remove pending rotation from store", "agent", agentID, "error", err)
-		}
 		result.Success = true
 		result.State = RotationStateAborted
 		result.Error = "rotation cancelled by user"
@@ -2012,20 +2390,16 @@ func (r *Rotator) ConfirmRotationContext(ctx stdcontext.Context, agentID string,
 		if minutes <= 0 {
 			minutes = 30 // Default postpone duration
 		}
-		pending.TimeoutAt = time.Now().Add(time.Duration(minutes) * time.Minute)
-		pendingCopy = clonePendingRotation(pending)
+		pendingCopy.TimeoutAt = time.Now().Add(time.Duration(minutes) * time.Minute)
+		r.mu.Lock()
+		r.pending[agentID] = clonePendingRotation(pendingCopy)
 		r.mu.Unlock()
-		// Update persistent store with new timeout
-		if err := AddPendingRotation(pendingCopy); err != nil {
-			slog.Warn("failed to persist postponed rotation", "agent", agentID, "error", err)
-		}
 		result.Success = true
 		result.State = RotationStatePending
 		result.Error = fmt.Sprintf("rotation postponed for %d minutes", minutes)
 		return result
 
 	default:
-		r.mu.Unlock()
 		result.State = RotationStateFailed
 		result.Error = fmt.Sprintf("unknown action: %s", action)
 		return result

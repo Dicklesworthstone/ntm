@@ -90,28 +90,6 @@ func TestGetAgentCapabilities(t *testing.T) {
 	}
 }
 
-func TestGenerateCompactionPrompt(t *testing.T) {
-	t.Parallel()
-
-	monitor := NewContextMonitor(DefaultMonitorConfig())
-	c := NewCompactor(monitor, DefaultCompactorConfig())
-
-	prompt := c.GenerateCompactionPrompt()
-
-	requiredContent := []string{
-		"context window",
-		"SUMMARIZE",
-		"critical context",
-		"in-progress tasks",
-	}
-
-	for _, content := range requiredContent {
-		if !strings.Contains(prompt, content) {
-			t.Errorf("prompt missing: %s", content)
-		}
-	}
-}
-
 func TestGetCompactionCommands(t *testing.T) {
 	t.Parallel()
 
@@ -125,18 +103,19 @@ func TestGetCompactionCommands(t *testing.T) {
 	}{
 		{
 			agentType:    "claude",
-			wantCommands: []string{"/compact", "/clear", CompactionPromptTemplate},
-			wantMethods:  []CompactionMethod{CompactionBuiltin, CompactionClearHistory, CompactionSummarize},
+			wantCommands: []string{"/compact"},
+			wantMethods:  []CompactionMethod{CompactionBuiltin},
 		},
 		{
-			agentType:    "codex",
-			wantCommands: []string{CompactionPromptTemplate},
-			wantMethods:  []CompactionMethod{CompactionSummarize},
+			agentType: "codex",
 		},
 		{
-			agentType:    "gemini",
-			wantCommands: []string{"/clear", CompactionPromptTemplate},
-			wantMethods:  []CompactionMethod{CompactionClearHistory, CompactionSummarize},
+			agentType: "gemini",
+		},
+		{
+			agentType:    "omp",
+			wantCommands: []string{"/compact"},
+			wantMethods:  []CompactionMethod{CompactionBuiltin},
 		},
 	}
 

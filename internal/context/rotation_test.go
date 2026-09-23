@@ -19,6 +19,143 @@ import (
 
 const rotationReadyClaudeScreen = "Welcome to Claude Code\n────────────────────────\n❯ \n────────────────────────\n  ⏵⏵ bypass permissions on (shift+tab to cycle)\n"
 
+func TestExpiredProductionConfirmationSharesDurableOwnership(t *testing.T) {
+	for _, mode := range []string{"already_acknowledged", "failed_legacy_identity"} {
+		t.Run(mode, func(t *testing.T) {
+			originalStore := DefaultPendingRotationStore
+			DefaultPendingRotationStore = NewPendingRotationStoreWithPath(filepath.Join(t.TempDir(), "pending.jsonl"))
+			t.Cleanup(func() { DefaultPendingRotationStore = originalStore })
+			pending := &PendingRotation{
+				AgentID: "test__cc_1", SessionName: "test", PaneID: "%1",
+				CreatedAt: time.Now().Add(-time.Minute), TimeoutAt: time.Now().Add(time.Minute),
+				DefaultAction: ConfirmIgnore,
+			}
+			if mode == "failed_legacy_identity" {
+				pending.DefaultAction = ConfirmRotate
+				pending.TimeoutAt = time.Now().Add(-time.Second)
+			}
+			if err := AddPendingRotation(pending); err != nil {
+				t.Fatal(err)
+			}
+			r := NewRotator(RotatorConfig{
+				Monitor: NewContextMonitor(DefaultMonitorConfig()),
+				Spawner: NewDefaultPaneSpawner(config.Default()),
+				Config:  config.DefaultContextRotationConfig(),
+			})
+			stale := clonePendingRotation(pending)
+			stale.TimeoutAt = time.Now().Add(-time.Second)
+			r.pending[pending.AgentID] = stale
+			if mode == "already_acknowledged" {
+				result := ConfirmPendingRotationContext(stdcontext.Background(), pending.AgentID, ConfirmIgnore, 0, false, config.Default())
+				if !result.Success {
+					t.Fatalf("manual acknowledgment: %+v", result)
+				}
+			}
+			r.processExpiredPending("test", t.TempDir())
+			if mode == "already_acknowledged" {
+				if r.HasPendingRotation(pending.AgentID) {
+					t.Fatal("expiry retained stale in-memory request after completed receipt replay")
+				}
+				return
+			}
+			stored, err := GetPendingRotationByID(pending.AgentID)
+			if err != nil || stored == nil || stored.ExecutionState != RotationStateFailed || stored.Result == nil || !strings.Contains(stored.Result.Error, "process identity") {
+				t.Fatalf("expiry lost failed choice: %+v, %v", stored, err)
+			}
+			executionID := stored.ExecutionID
+			r.processExpiredPending("test", t.TempDir())
+			stored, err = GetPendingRotationByID(pending.AgentID)
+			if err != nil || stored == nil || stored.ExecutionID != executionID {
+				t.Fatalf("expiry retried unresolved execution: %+v, %v", stored, err)
+			}
+		})
+	}
+}
+
+func TestNativeCompactionRequiresFreshAccountingAndCompletedInputState(t *testing.T) {
+	for _, mode := range []string{"reduced", "busy_then_reduced", "stale", "same_usage", "different_transcript", "identity_changed", "canceled", "missing_baseline"} {
+		t.Run(mode, func(t *testing.T) {
+			expected := tmux.Pane{ID: "%1", PID: 123, Type: tmux.AgentClaude, Command: "node", Width: 120}
+			ctx, cancel := stdcontext.WithCancel(stdcontext.Background())
+			defer cancel()
+			sent, afterCaptures := 0, 0
+			before := &TranscriptUsage{Path: "/project/session.jsonl", Model: "claude-opus-4", Tokens: 150000, ContextWindow: 200000, UpdatedAt: time.Now().Add(-time.Second)}
+			list := func(stdcontext.Context, string) ([]tmux.Pane, error) {
+				pane := expected
+				if sent > 0 && mode == "identity_changed" {
+					pane.PID++
+				}
+				return []tmux.Pane{pane}, nil
+			}
+			capture := func(stdcontext.Context, string) (string, error) {
+				if sent > 0 {
+					afterCaptures++
+					if mode == "busy_then_reduced" && afterCaptures <= 2 {
+						return "✻ Sautéing… (ctrl+c to interrupt · 12s · thinking)\n" + rotationReadyClaudeScreen, nil
+					}
+				}
+				return rotationReadyClaudeScreen, nil
+			}
+			usage := func(_ stdcontext.Context, _ string, prior *TranscriptUsage) (*TranscriptUsage, error) {
+				if prior == nil {
+					if mode == "missing_baseline" {
+						return nil, errors.New("no trustworthy usage")
+					}
+					copy := *before
+					return &copy, nil
+				}
+				if prior.Path != before.Path {
+					t.Fatalf("lost original transcript identity: %+v", prior)
+				}
+				after := *before
+				after.Tokens, after.UpdatedAt = 30000, time.Now()
+				switch mode {
+				case "stale":
+					after.UpdatedAt = before.UpdatedAt
+				case "same_usage":
+					after.Tokens = before.Tokens
+				case "different_transcript":
+					after.Path = "/project/other-agent.jsonl"
+				}
+				return &after, nil
+			}
+			send := func(_ stdcontext.Context, pane, text string, enter bool) error {
+				if pane != expected.ID || text != "/compact" || !enter {
+					t.Fatalf("unsafe native command: %q %q enter=%v", pane, text, enter)
+				}
+				sent++
+				if mode == "canceled" {
+					cancel()
+				}
+				return nil
+			}
+			monitor := NewContextMonitor(DefaultMonitorConfig())
+			monitor.RegisterAgent("test__cc_1", expected.ID, before.Model)
+			monitor.UpdateFromRobotMode("test__cc_1", `{"context_used":199000,"context_limit":200000}`)
+			compactor := NewCompactor(monitor, DefaultCompactorConfig())
+			result := runNativeCompaction(ctx, "test", expected, CompactionCommand{Command: "/compact"}, compactor,
+				25*time.Millisecond, time.Millisecond, list, capture, send, usage)
+			wantSuccess := mode == "reduced" || mode == "busy_then_reduced"
+			if result.Success != wantSuccess {
+				t.Fatalf("native compaction = %+v, want success=%v", result, wantSuccess)
+			}
+			if wantSuccess && (result.TokensBefore != 150000 || result.TokensAfter != 30000 || result.UsageAfter != 15 || result.Method != CompactionBuiltin) {
+				t.Fatalf("used cached monitor data instead of live accounting: %+v", result)
+			}
+			if mode == "busy_then_reduced" && afterCaptures < 4 {
+				t.Fatalf("accepted compaction before stable idle observations: %d", afterCaptures)
+			}
+			wantSends := 1
+			if mode == "missing_baseline" {
+				wantSends = 0
+			}
+			if sent != wantSends {
+				t.Fatalf("sent %d native commands, want %d; %+v", sent, wantSends, result)
+			}
+		})
+	}
+}
+
 func TestRotationSummaryWaitsForFreshCompletedResponse(t *testing.T) {
 	generator := NewSummaryGenerator(SummaryGeneratorConfig{PromptTimeout: time.Second})
 	prompt, startMarker, endMarker := rotationSummaryRequest(generator)
@@ -280,6 +417,9 @@ func TestConfirmRotationReadinessFailurePreservesOriginalMonitor(t *testing.T) {
 	if current := monitor.GetState(agentID); current == nil || *current != original {
 		t.Fatalf("original monitor changed: %+v, want %+v", current, original)
 	}
+	if !r.HasPendingRotation(agentID) {
+		t.Fatal("failed handoff consumed the pending confirmation")
+	}
 }
 
 func TestConfirmRotationCancellationPreservesPendingAndPredecessor(t *testing.T) {
@@ -315,6 +455,9 @@ func TestConfirmRotationContextCancelsCompactionBeforeFurtherCommands(t *testing
 			}
 			if len(spawner.sentKeys["%1"])+len(spawner.sentBuffers["%1"]) != 1 || len(spawner.spawnedPanes) != 0 || len(spawner.killedPanes) != 0 {
 				t.Fatalf("commands continued after cancellation: keys=%v buffers=%v spawned=%v killed=%v", spawner.sentKeys, spawner.sentBuffers, spawner.spawnedPanes, spawner.killedPanes)
+			}
+			if !r.HasPendingRotation("test__cc_1") {
+				t.Fatal("canceled execution consumed the pending confirmation")
 			}
 		})
 	}
@@ -1354,7 +1497,7 @@ func TestSendRotationPrompt_UsesBuffer(t *testing.T) {
 	}
 }
 
-func TestTryCompaction_ExhaustsFallbackCommandsViaSpawner(t *testing.T) {
+func TestTryCompaction_PreservesHistoryWhenNativeCommandDoesNotReduceUsage(t *testing.T) {
 	monitor := NewContextMonitor(DefaultMonitorConfig())
 	monitor.RegisterAgent("test__cc_1", "%0", "claude-opus-4")
 	monitor.RecordMessage("test__cc_1", 500, 500)
@@ -1387,14 +1530,11 @@ func TestTryCompaction_ExhaustsFallbackCommandsViaSpawner(t *testing.T) {
 		t.Fatalf("Error = %q, want exhausted message", result.Error)
 	}
 
-	if got := spawner.sentKeys["%0"]; len(got) != 2 || got[0] != "/compact" || got[1] != "/clear" {
-		t.Fatalf("sentKeys = %#v, want [/compact /clear]", got)
+	if got := spawner.sentKeys["%0"]; len(got) != 1 || got[0] != "/compact" {
+		t.Fatalf("sentKeys = %#v, want only native /compact", got)
 	}
-	if got := len(spawner.sentBuffers["%0"]); got != 1 {
-		t.Fatalf("buffer sends = %d, want 1", got)
-	}
-	if got := spawner.sentBuffers["%0"][0]; got != CompactionPromptTemplate {
-		t.Fatalf("buffer payload mismatch: got %q", got)
+	if got := len(spawner.sentBuffers["%0"]); got != 0 {
+		t.Fatalf("buffer sends = %d, want no extra summary turn", got)
 	}
 }
 
@@ -1572,12 +1712,10 @@ func TestProcessExpiredPending_UsesStoredSession(t *testing.T) {
 	}
 }
 
-// GH#251 phase 2: grok prompt delivery is first-class, so an expired mixed
-// claude+grok batch now passes preflight and BOTH pending actions are
-// committed — the grok member no longer causes the whole batch to be kept.
-// Both entries use ConfirmCompact and a millisecond-timeout compactor so the
-// test stays fast and never spawns/kills panes.
-func TestProcessExpiredPending_MixedGrokBatchCommitsBothActions(t *testing.T) {
+// Prompt delivery support does not establish native compaction support.
+// A mixed batch must preserve its choices when one provider cannot compact;
+// sending a summarization prompt would not reclaim that provider's context.
+func TestProcessExpiredPending_MixedGrokBatchRejectsUnsupportedCompaction(t *testing.T) {
 	oldStore := DefaultPendingRotationStore
 	DefaultPendingRotationStore = NewPendingRotationStoreWithPath(filepath.Join(t.TempDir(), "pending.jsonl"))
 	t.Cleanup(func() {
@@ -1637,24 +1775,19 @@ func TestProcessExpiredPending_MixedGrokBatchCommitsBothActions(t *testing.T) {
 	r.processExpiredPending("caller-session", "/caller/workdir")
 
 	for _, item := range pending {
-		if r.HasPendingRotation(item.AgentID) {
-			t.Fatalf("pending rotation %s was not committed by the mixed batch", item.AgentID)
+		if !r.HasPendingRotation(item.AgentID) {
+			t.Fatalf("unsupported compaction consumed pending rotation %s", item.AgentID)
 		}
 		stored, err := GetPendingRotationByID(item.AgentID)
 		if err != nil {
 			t.Fatalf("GetPendingRotationByID(%s) error = %v", item.AgentID, err)
 		}
-		if stored != nil {
-			t.Fatalf("persisted pending rotation %s was not removed after commit", item.AgentID)
+		if stored == nil {
+			t.Fatalf("unsupported compaction removed persisted request %s", item.AgentID)
 		}
 	}
-	// Compaction input must reach BOTH panes: claude's builtin slash commands
-	// via SendKeys and the summarize prompt (claude and grok) via SendBuffer.
-	if len(spawner.sentKeys["%1"]) == 0 {
-		t.Fatalf("claude pane %%1 received no compaction commands: keys=%v", spawner.sentKeys)
-	}
-	if len(spawner.sentBuffers["%2"]) == 0 {
-		t.Fatalf("grok pane %%2 received no compaction prompt: buffers=%v", spawner.sentBuffers)
+	if len(spawner.sentKeys) != 0 || len(spawner.sentBuffers) != 0 {
+		t.Fatalf("unsupported compaction batch delivered input: keys=%v buffers=%v", spawner.sentKeys, spawner.sentBuffers)
 	}
 	if len(spawner.spawnedPanes) != 0 || len(spawner.killedPanes) != 0 {
 		t.Fatalf("compaction batch spawned/killed panes: spawned=%v killed=%v", spawner.spawnedPanes, spawner.killedPanes)
@@ -1879,8 +2012,8 @@ func TestConfirmRotation_CustomTitleGrokAdmitted(t *testing.T) {
 		if result.State != RotationStateFailed || !strings.Contains(result.Error, "agent not found in monitor") {
 			t.Fatalf("ConfirmRotation(rotate) result = %+v, want post-admission monitor failure", result)
 		}
-		if r.HasPendingRotation("operator-selected-title") {
-			t.Fatal("ConfirmRotation(rotate) kept pending state after capability admission")
+		if !r.HasPendingRotation("operator-selected-title") {
+			t.Fatal("ConfirmRotation(rotate) lost pending state after failed execution")
 		}
 		if len(spawner.sentKeys) != 0 || len(spawner.sentBuffers) != 0 || len(spawner.spawnedPanes) != 0 || len(spawner.killedPanes) != 0 {
 			t.Fatalf("ConfirmRotation(rotate) mutated panes on early failure: %+v", spawner)
@@ -1913,11 +2046,11 @@ func TestConfirmRotation_CustomTitleGrokAdmitted(t *testing.T) {
 		if strings.Contains(result.Error, agent.GrokPromptDeliveryCapabilityHint) {
 			t.Fatalf("ConfirmRotation(compact) error = %q, grok must not be refused by the capability gate", result.Error)
 		}
-		if r.HasPendingRotation("operator-selected-title") {
-			t.Fatal("ConfirmRotation(compact) kept pending state after capability admission")
+		if !r.HasPendingRotation("operator-selected-title") {
+			t.Fatal("ConfirmRotation(compact) lost pending state for unsupported native compaction")
 		}
-		if len(spawner.sentBuffers["%7"]) == 0 {
-			t.Fatalf("grok pane %%7 received no compaction prompt: buffers=%v", spawner.sentBuffers)
+		if result.Success || !strings.Contains(result.Error, "no compaction commands") || len(spawner.sentBuffers["%7"]) != 0 {
+			t.Fatalf("unsupported native compaction changed the conversation: result=%+v buffers=%v", result, spawner.sentBuffers)
 		}
 		if len(spawner.spawnedPanes) != 0 || len(spawner.killedPanes) != 0 {
 			t.Fatalf("ConfirmRotation(compact) spawned/killed panes: %+v", spawner)
