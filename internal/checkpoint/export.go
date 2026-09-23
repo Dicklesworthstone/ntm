@@ -18,7 +18,6 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/redaction"
-	"github.com/Dicklesworthstone/ntm/internal/util"
 )
 
 // ExportFormat specifies the archive format for export.
@@ -88,7 +87,8 @@ type ImportOptions struct {
 	TargetDir string
 	// VerifyChecksums validates file integrity on import
 	VerifyChecksums bool
-	// AllowOverwrite permits overwriting existing checkpoints
+	// AllowOverwrite permits overwriting existing checkpoints. Replacement
+	// requires native atomic directory exchange; no partial overwrite is used.
 	AllowOverwrite bool
 }
 
@@ -388,7 +388,9 @@ func (s *Storage) exportZip(w io.Writer, cpDir string, cp *Checkpoint, files []s
 	return nil
 }
 
-// Import loads a checkpoint from an exported archive.
+// Import loads a checkpoint from an exported archive. A non-nil checkpoint
+// together with an ImportPublicationError means the complete checkpoint was
+// published but finalization failed; callers must inspect rather than replay.
 func (s *Storage) Import(archivePath string, opts ImportOptions) (*Checkpoint, error) {
 	var format ExportFormat
 	switch {
@@ -410,28 +412,18 @@ func (s *Storage) Import(archivePath string, opts ImportOptions) (*Checkpoint, e
 	}
 }
 
-func (s *Storage) importTarGz(archivePath string, opts ImportOptions) (result *Checkpoint, err error) {
+func (s *Storage) importTarGz(archivePath string, opts ImportOptions) (*Checkpoint, error) {
 	f, err := os.Open(archivePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open archive: %w", err)
 	}
-	defer func() {
-		if closeErr := f.Close(); err == nil && closeErr != nil {
-			result = nil
-			err = fmt.Errorf("closing archive file: %w", closeErr)
-		}
-	}()
+	defer f.Close()
 
 	gr, err := gzip.NewReader(f)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create gzip reader: %w", err)
 	}
-	defer func() {
-		if closeErr := gr.Close(); err == nil && closeErr != nil {
-			result = nil
-			err = fmt.Errorf("closing gzip archive reader: %w", closeErr)
-		}
-	}()
+	defer gr.Close()
 
 	tr := tar.NewReader(gr)
 
@@ -486,121 +478,23 @@ func (s *Storage) importTarGz(archivePath string, opts ImportOptions) (result *C
 	if err := validateTarGzipEnd(gr); err != nil {
 		return nil, err
 	}
-
-	if cp == nil {
-		return nil, fmt.Errorf("archive missing %s", MetadataFile)
+	// Close all input streams before publication too: a close error must not
+	// discard the identity of an import that already changed recovery state.
+	if err := gr.Close(); err != nil {
+		return nil, fmt.Errorf("closing gzip archive reader: %w", err)
 	}
-
-	// Verify checksums if requested
-	if opts.VerifyChecksums {
-		if err := verifyImportChecksums(fileContents, manifest); err != nil {
-			return nil, err
-		}
+	if err := f.Close(); err != nil {
+		return nil, fmt.Errorf("closing archive file: %w", err)
 	}
-	if err := validateImportedSessionState(fileContents, cp); err != nil {
-		return nil, err
-	}
-	if err := validateImportedManifestMetadata(manifest, cp); err != nil {
-		return nil, err
-	}
-	if err := validateImportedArchiveFiles(fileContents, cp); err != nil {
-		return nil, err
-	}
-
-	sessionName := cp.SessionName
-
-	// Apply overrides
-	if opts.TargetSession != "" {
-		sessionName = opts.TargetSession
-	}
-	cp.SessionName = sessionName
-
-	// Apply TargetDir override or expand ${WORKING_DIR} placeholder
-	if opts.TargetDir != "" {
-		cp.WorkingDir = opts.TargetDir
-	} else if cp.WorkingDir == "${WORKING_DIR}" {
-		// No explicit target dir and checkpoint was exported with path rewriting
-		// Use current working directory as default
-		cwd, err := os.Getwd()
-		if err != nil {
-			return nil, fmt.Errorf("failed to get current directory for path expansion: %w", err)
-		}
-		cp.WorkingDir = cwd
-	}
-
-	cpJSON, err := json.MarshalIndent(cp, "", "  ")
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal imported checkpoint: %w", err)
-	}
-	fileContents[MetadataFile] = cpJSON
-
-	sessionJSON, err := json.MarshalIndent(cp.Session, "", "  ")
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal imported session state: %w", err)
-	}
-	fileContents[SessionFile] = sessionJSON
-
-	// Check for existing checkpoint
-	cpDir, err := s.safeCheckpointDir(sessionName, cp.ID)
-	if err != nil {
-		return nil, fmt.Errorf("invalid imported checkpoint metadata: %w", err)
-	}
-	if _, err := os.Stat(cpDir); err == nil && !opts.AllowOverwrite {
-		return nil, fmt.Errorf("checkpoint %s already exists (use AllowOverwrite to replace)", cp.ID)
-	}
-	if opts.AllowOverwrite {
-		if err := validateImportOverwrite(cpDir, fileContents); err != nil {
-			return nil, err
-		}
-	}
-
-	// Create checkpoint directory
-	if err := os.MkdirAll(cpDir, 0755); err != nil {
-		return nil, fmt.Errorf("failed to create checkpoint directory: %w", err)
-	}
-
-	// Write all files
-	for name, data := range fileContents {
-		if name == "MANIFEST.json" {
-			continue
-		}
-
-		// Validate path doesn't escape checkpoint directory (path traversal protection)
-		// First pass: textual validation before creating directories
-		if !isPathWithinDir(cpDir, name) {
-			return nil, fmt.Errorf("invalid path in archive (path traversal attempt): %s", name)
-		}
-
-		destPath := filepath.Join(cpDir, name)
-		if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
-			return nil, fmt.Errorf("failed to create directory for %s: %w", name, err)
-		}
-
-		// Second pass: symlink-safe validation after directories are created (TOCTOU protection)
-		resolvedPath, err := isPathWithinDirResolved(cpDir, name)
-		if err != nil {
-			return nil, fmt.Errorf("invalid path in archive (symlink escape): %s", name)
-		}
-
-		if err := util.AtomicWriteFile(resolvedPath, data, 0600); err != nil {
-			return nil, fmt.Errorf("failed to write %s: %w", name, err)
-		}
-	}
-
-	return cp, nil
+	return s.finishCheckpointImport(cp, manifest, fileContents, opts)
 }
 
-func (s *Storage) importZip(archivePath string, opts ImportOptions) (result *Checkpoint, err error) {
+func (s *Storage) importZip(archivePath string, opts ImportOptions) (*Checkpoint, error) {
 	zr, err := zip.OpenReader(archivePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open zip archive: %w", err)
 	}
-	defer func() {
-		if closeErr := zr.Close(); err == nil && closeErr != nil {
-			result = nil
-			err = fmt.Errorf("closing zip archive: %w", closeErr)
-		}
-	}()
+	defer zr.Close()
 
 	var manifest *ExportManifest
 	var cp *Checkpoint
@@ -649,12 +543,18 @@ func (s *Storage) importZip(archivePath string, opts ImportOptions) (result *Che
 			}
 		}
 	}
+	if err := zr.Close(); err != nil {
+		return nil, fmt.Errorf("closing zip archive: %w", err)
+	}
+	return s.finishCheckpointImport(cp, manifest, fileContents, opts)
+}
 
+// Both archive readers share all validation, override and publication rules.
+func (s *Storage) finishCheckpointImport(cp *Checkpoint, manifest *ExportManifest, fileContents map[string][]byte, opts ImportOptions) (*Checkpoint, error) {
 	if cp == nil {
 		return nil, fmt.Errorf("archive missing %s", MetadataFile)
 	}
 
-	// Verify checksums
 	if opts.VerifyChecksums {
 		if err := verifyImportChecksums(fileContents, manifest); err != nil {
 			return nil, err
@@ -703,54 +603,15 @@ func (s *Storage) importZip(archivePath string, opts ImportOptions) (result *Che
 	}
 	fileContents[SessionFile] = sessionJSON
 
-	// Check for existing
 	cpDir, err := s.safeCheckpointDir(sessionName, cp.ID)
 	if err != nil {
 		return nil, fmt.Errorf("invalid imported checkpoint metadata: %w", err)
 	}
-	if _, err := os.Stat(cpDir); err == nil && !opts.AllowOverwrite {
-		return nil, fmt.Errorf("checkpoint %s already exists", cp.ID)
+	published, err := publishCheckpointImport(cpDir, fileContents, opts.AllowOverwrite)
+	if err != nil && !published {
+		return nil, err
 	}
-	if opts.AllowOverwrite {
-		if err := validateImportOverwrite(cpDir, fileContents); err != nil {
-			return nil, err
-		}
-	}
-
-	// Create checkpoint directory
-	if err := os.MkdirAll(cpDir, 0755); err != nil {
-		return nil, fmt.Errorf("failed to create checkpoint directory: %w", err)
-	}
-
-	// Write all files
-	for name, data := range fileContents {
-		if name == "MANIFEST.json" {
-			continue
-		}
-
-		// Validate path doesn't escape checkpoint directory (path traversal protection)
-		// First pass: textual validation before creating directories
-		if !isPathWithinDir(cpDir, name) {
-			return nil, fmt.Errorf("invalid path in archive (path traversal attempt): %s", name)
-		}
-
-		destPath := filepath.Join(cpDir, name)
-		if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
-			return nil, fmt.Errorf("failed to create directory for %s: %w", name, err)
-		}
-
-		// Second pass: symlink-safe validation after directories are created (TOCTOU protection)
-		resolvedPath, err := isPathWithinDirResolved(cpDir, name)
-		if err != nil {
-			return nil, fmt.Errorf("invalid path in archive (symlink escape): %s", name)
-		}
-
-		if err := util.AtomicWriteFile(resolvedPath, data, 0600); err != nil {
-			return nil, fmt.Errorf("failed to write %s: %w", name, err)
-		}
-	}
-
-	return cp, nil
+	return cp, err
 }
 
 // Helper functions
