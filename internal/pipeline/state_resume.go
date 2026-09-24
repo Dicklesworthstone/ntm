@@ -730,10 +730,11 @@ func computeForeachItemsFingerprint(items []interface{}) string {
 // verifyForeachItemsFingerprint compares the supplied fingerprint against
 // the one persisted on prior foreach state. Returns nil if no prior state
 // exists, the fingerprints match, or there is no recorded fingerprint
-// (legacy state files predate this field). Returns an error when the prior
-// run completed at least one iteration with a fingerprint that no longer
-// matches — that is the unsafe-resume case where iteration N's completion
-// record applies to a different items[N] than the resume sees.
+// (legacy state files predate this field). Any iteration-local progress binds
+// the items, not just whole-iteration completion: interrupted rounds, nested
+// checkpoints and dispatch receipts can all predate the first completed
+// iteration. Reusing them against changed items would skip work or attribute
+// an earlier dispatch to a different item.
 func (e *Executor) verifyForeachItemsFingerprint(stepID, fingerprint string) error {
 	e.stateMu.RLock()
 	defer e.stateMu.RUnlock()
@@ -744,14 +745,35 @@ func (e *Executor) verifyForeachItemsFingerprint(stepID, fingerprint string) err
 	if !ok {
 		return nil
 	}
-	if prior.ItemsFingerprint == "" || len(prior.CompletedIterationIDs) == 0 {
+	if prior.ItemsFingerprint == "" || prior.ItemsFingerprint == fingerprint {
 		return nil
 	}
-	if prior.ItemsFingerprint == fingerprint {
+	prefix := fmt.Sprintf("%s_iter", stepID)
+	hasProgress := len(prior.CompletedIterationIDs) > 0 ||
+		len(prior.CompletedRounds) > 0 || len(prior.CollectedOutputs) > 0 ||
+		hasIterationEntries(e.state.Steps, prefix) ||
+		hasIterationEntries(e.state.AgentDeliveries, prefix) ||
+		hasIterationEntries(e.state.InFlightSteps, prefix) ||
+		hasIterationEntries(e.state.ForeachState, prefix) ||
+		hasIterationEntries(e.state.ParallelState, prefix)
+	if !hasProgress {
 		return nil
 	}
-	return fmt.Errorf("foreach %q items changed since prior run (completed=%d, prior_fingerprint=%s, current_fingerprint=%s); resume would apply old iteration records to different items",
-		stepID, len(prior.CompletedIterationIDs), prior.ItemsFingerprint[:12], fingerprint[:12])
+	// Precision bounds diagnostics without slicing unchecked checkpoint data.
+	// A corrupt/short fingerprint must produce an error, not panic on resume.
+	return fmt.Errorf("foreach %q items changed since prior run (completed=%d, prior_fingerprint=%.12s, current_fingerprint=%.12s); resume would apply old iteration records to different items",
+		stepID, len(prior.CompletedIterationIDs), prior.ItemsFingerprint, fingerprint)
+}
+
+// hasIterationEntries recognizes only this loop's runtime namespace. Callers
+// hold the read lock protecting entries; unrelated steps do not bind its items.
+func hasIterationEntries[T any](entries map[string]T, prefix string) bool {
+	for id := range entries {
+		if iterationIndexFromID(id, prefix) >= 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // appendForeachCollectedOutput persists a single loop.Collect output for
