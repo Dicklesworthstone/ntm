@@ -3172,15 +3172,31 @@ func (s *Server) handleSessionsV1(w http.ResponseWriter, r *http.Request) {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
 		return
 	}
-
-	// Ensure sessions is never null
-	if sessions == nil {
-		sessions = []state.Session{}
+	live, err := tmux.ListSessionsContext(r.Context())
+	if err != nil {
+		slog.Warn("failed to list live tmux sessions", "request_id", reqID, "error", err)
+		live = nil
+	}
+	visible := make([]interface{}, 0, len(sessions)+len(live))
+	known := make(map[string]bool, len(sessions))
+	for _, session := range sessions {
+		visible = append(visible, session)
+		known[session.Name] = true
+	}
+	for _, session := range live {
+		if known[session.Name] {
+			continue
+		}
+		visible = append(visible, map[string]interface{}{
+			"id":     session.Name,
+			"name":   session.Name,
+			"status": state.SessionActive,
+		})
 	}
 
 	writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
-		"sessions": sessions,
-		"count":    len(sessions),
+		"sessions": visible,
+		"count":    len(visible),
 	}, reqID)
 }
 
@@ -3204,6 +3220,23 @@ func (s *Server) handleSessionV1(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if session == nil {
+		live, err := tmux.ListSessionsContext(r.Context())
+		if err != nil {
+			writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
+			return
+		}
+		for _, candidate := range live {
+			if candidate.Name == sessionID {
+				writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
+					"session": map[string]interface{}{
+						"id":     sessionID,
+						"name":   sessionID,
+						"status": state.SessionActive,
+					},
+				}, reqID)
+				return
+			}
+		}
 		writeErrorResponse(w, http.StatusNotFound, ErrCodeNotFound, "session not found", nil, reqID)
 		return
 	}
@@ -4132,17 +4165,22 @@ func (s *Server) handleListAgentsV1(w http.ResponseWriter, r *http.Request) {
 	agents := make([]map[string]interface{}, 0, len(panes))
 	for _, p := range panes {
 		agentType := string(p.Type)
-		if agentType == "" || agentType == "unknown" || agentType == "user" {
+		if agentType == "" || agentType == "unknown" || agentType == "user" || p.Dead {
 			continue
 		}
 		agents = append(agents, map[string]interface{}{
-			"pane_index": p.Index,
-			"pane_id":    p.ID,
-			"agent_type": agentType,
-			"title":      p.Title,
-			"variant":    p.Variant,
-			"tags":       p.Tags,
-			"active":     p.Active,
+			"id":           p.ID,
+			"session_id":   sessionID,
+			"name":         p.Title,
+			"type":         agentType,
+			"tmux_pane_id": p.ID,
+			"pane_index":   p.Index,
+			"pane_id":      p.ID,
+			"agent_type":   agentType,
+			"title":        p.Title,
+			"variant":      p.Variant,
+			"tags":         p.Tags,
+			"active":       p.Active,
 		})
 	}
 
