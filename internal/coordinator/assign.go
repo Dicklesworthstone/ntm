@@ -1595,10 +1595,10 @@ func (c *SessionCoordinator) formatAssignmentMessage(assignment *WorkAssignment,
 	return sb.String()
 }
 
-// ScoreAndSelectAssignments computes optimal agent-task pairings using multi-factor scoring.
-// It scores every agent-recommendation combination, then greedily selects the
-// highest-scoring non-conflicting set (each agent and each task appear at most
-// once). AssignWork calls it every auto-assignment cycle (bd-v394r).
+// ScoreAndSelectAssignments maximizes total score across eligible agent-task
+// pairings, with each agent and each task used at most once. Semantic gates
+// remain in force, and the original scored records carry all dispatch metadata.
+// AssignWork calls this planner every auto-assignment cycle (bd-v394r).
 func ScoreAndSelectAssignments(
 	idleAgents []*AgentState,
 	recommendations []bv.TriageRecommendation,
@@ -1610,9 +1610,13 @@ func ScoreAndSelectAssignments(
 	}
 
 	var candidates []ScoredAssignment
+	var edges []assignmentMatchEdge
 
-	// Score all possible agent-task combinations
+	// Score all eligible agent-task combinations before selecting a batch.
 	for _, agent := range idleAgents {
+		if agent == nil || strings.TrimSpace(agent.PaneID) == "" {
+			continue
+		}
 		for i := range recommendations {
 			rec := &recommendations[i]
 
@@ -1623,45 +1627,29 @@ func ScoreAndSelectAssignments(
 			}
 
 			scored := scoreAssignment(agent, rec, config, existingReservations)
-			if scored.TotalScore > 0 {
+			edge := assignmentMatchEdge{agentID: agent.PaneID, taskID: rec.ID, score: scored.TotalScore}
+			if validAssignmentMatchEdge(edge) {
 				candidates = append(candidates, scored)
+				edges = append(edges, edge)
 			}
 		}
 	}
 
-	// Sort by total score (highest first)
-	sortScoredAssignments(candidates)
-
-	// Select non-conflicting assignments (each agent gets at most one task)
 	var selected []ScoredAssignment
-	assignedAgents := make(map[string]bool)
-	assignedTasks := make(map[string]bool)
-
-	for _, candidate := range candidates {
-		agentID := candidate.Agent.PaneID
-		taskID := candidate.Recommendation.ID
-
-		if assignedAgents[agentID] || assignedTasks[taskID] {
-			continue
-		}
-
-		selected = append(selected, candidate)
-		assignedAgents[agentID] = true
-		assignedTasks[taskID] = true
+	for _, index := range maximumWeightAssignment(edges) {
+		selected = append(selected, candidates[index])
 	}
-
+	// Only the selected batch needs ordering, not every A*T candidate.
+	// The solver supplies canonical identity order as the tie-break baseline.
+	sortScoredAssignments(selected)
 	return selected
 }
 
 // sortScoredAssignments sorts assignments by total score (highest first).
 func sortScoredAssignments(candidates []ScoredAssignment) {
-	for i := 0; i < len(candidates)-1; i++ {
-		for j := i + 1; j < len(candidates); j++ {
-			if candidates[j].TotalScore > candidates[i].TotalScore {
-				candidates[i], candidates[j] = candidates[j], candidates[i]
-			}
-		}
-	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return candidates[i].TotalScore > candidates[j].TotalScore
+	})
 }
 
 // scoreAssignment computes the score for a single agent-task pairing.
