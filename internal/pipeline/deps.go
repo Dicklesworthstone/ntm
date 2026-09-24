@@ -3,6 +3,7 @@ package pipeline
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -439,14 +440,114 @@ func (g *DependencyGraph) ResolveScopedRuntimeStep(id string) (*Step, string, bo
 
 	for _, parentID := range parentIDs {
 		parent := g.steps[parentID]
-		if child, canonicalID, ok := resolveScopedRuntimeStepFromSteps(parentID, id, parent.Parallel.Steps); ok {
-			return child, canonicalID, true
-		}
-		if child, canonicalID, ok := resolveScopedRuntimeBranchStep(parentID, id, parent.Branches); ok {
+		if child, canonicalID, ok := resolveScopedRuntimeChildren(parentID, id, parent); ok {
 			return child, canonicalID, true
 		}
 	}
 	return nil, "", false
+}
+
+// resolveScopedRuntimeChildren follows the same namespaces as the dispatchers.
+// Recovery must recognize iteration leaves too: dropping them as orphans loses
+// completed outputs and prevents the legacy agent-delivery guard from knowing
+// that an unfinished prompt could already have reached its pane.
+func resolveScopedRuntimeChildren(parentID, runtimeID string, parent *Step) (*Step, string, bool) {
+	if child, canonicalID, ok := resolveScopedRuntimeStepFromSteps(parentID, runtimeID, parent.Parallel.Steps); ok {
+		return child, canonicalID, true
+	}
+	if child, canonicalID, ok := resolveScopedRuntimeBranchStep(parentID, runtimeID, parent.Branches); ok {
+		return child, canonicalID, true
+	}
+	if parent.Loop != nil {
+		if child, canonicalID, ok := resolveScopedRuntimeIterationStep(parentID, runtimeID, parent.Loop.Steps, nil); ok {
+			return child, canonicalID, true
+		}
+	}
+	for _, config := range []*ForeachConfig{parent.Foreach, parent.ForeachPane} {
+		if config == nil {
+			continue
+		}
+		// Reuse the dispatcher's body selection, including body aliases and
+		// template shorthand. Recovery must not invent a second schema.
+		body, err := foreachBodySteps(parent, config)
+		if err != nil {
+			continue
+		}
+		if child, canonicalID, ok := resolveScopedRuntimeIterationStep(parentID, runtimeID, body, config); ok {
+			return child, canonicalID, true
+		}
+	}
+	return nil, "", false
+}
+
+func resolveScopedRuntimeIterationStep(parentID, runtimeID string, steps []Step, config *ForeachConfig) (*Step, string, bool) {
+	iterationID, ok := scopedRuntimeOrdinal(runtimeID, parentID+"_iter", 0)
+	if !ok || !strings.HasPrefix(runtimeID, iterationID+"_") {
+		return nil, "", false
+	}
+	// Multi-round foreach appends _round<N> AFTER the body ID. Use the
+	// configured dialect so an authored leaf_round3 cannot steal leaf's
+	// third-round receipt. Expression-driven round counts can use either
+	// dialect; reject an ambiguous match rather than guessing ownership.
+	plain := config == nil || config.MaxRounds.Expr != "" || config.MaxRounds.Value <= 1
+	rounded := config != nil && (config.MaxRounds.Expr != "" || config.MaxRounds.Value > 1)
+	var found *Step
+	var foundID string
+	for pass := 0; pass < 2; pass++ {
+		if (pass == 0 && !plain) || (pass == 1 && !rounded) {
+			continue
+		}
+		for i := range steps {
+			name := steps[i].ID
+			if name == "" && config != nil {
+				name = fmt.Sprintf("step%d", i)
+			}
+			scopedID := iterationID + "_" + name
+			if pass == 1 {
+				var roundOK bool
+				scopedID, roundOK = scopedRuntimeOrdinal(runtimeID, scopedID+"_round", 1)
+				if !roundOK {
+					continue
+				}
+			}
+			var child *Step
+			var canonicalID string
+			if scopedID == runtimeID {
+				child, canonicalID = &steps[i], steps[i].ID
+			} else if strings.HasPrefix(runtimeID, scopedID+"_") || strings.HasPrefix(runtimeID, scopedID+".") {
+				child, canonicalID, _ = resolveScopedRuntimeChildren(scopedID, runtimeID, &steps[i])
+			}
+			if child != nil {
+				if found != nil {
+					return nil, "", false
+				}
+				found, foundID = child, canonicalID
+			}
+		}
+	}
+	return found, foundID, found != nil
+}
+
+// scopedRuntimeOrdinal consumes only the canonical nonnegative decimal IDs
+// produced by fmt.Sprintf in the iteration/round dispatchers. It is an identity
+// parser, not an assertion that an iteration or round has completed.
+func scopedRuntimeOrdinal(runtimeID, prefix string, minimum int) (string, bool) {
+	if !strings.HasPrefix(runtimeID, prefix) {
+		return "", false
+	}
+	rest := strings.TrimPrefix(runtimeID, prefix)
+	end := 0
+	for end < len(rest) && rest[end] >= '0' && rest[end] <= '9' {
+		end++
+	}
+	if end == 0 || (end < len(rest) && rest[end] != '_' && rest[end] != '.') {
+		return "", false
+	}
+	ordinal, err := strconv.Atoi(rest[:end])
+	if err != nil || ordinal < minimum || strconv.Itoa(ordinal) != rest[:end] {
+		return "", false
+	}
+	return prefix + rest[:end], true
 }
 
 func resolveScopedRuntimeStepFromSteps(parentID, runtimeID string, steps []Step) (*Step, string, bool) {
@@ -455,16 +556,13 @@ func resolveScopedRuntimeStepFromSteps(parentID, runtimeID string, steps []Step)
 		if scopedID == runtimeID {
 			return &steps[i], steps[i].ID, true
 		}
-		// A nested parallel/branch container keeps the enclosing runtime
+		// A nested container keeps the enclosing runtime
 		// namespace, not just its authored ID. Without this descent, resume
 		// drops completed grandchildren as orphans and repeats their work.
 		if !strings.HasPrefix(runtimeID, scopedID+"_") && !strings.HasPrefix(runtimeID, scopedID+".") {
 			continue
 		}
-		if child, canonicalID, ok := resolveScopedRuntimeStepFromSteps(scopedID, runtimeID, steps[i].Parallel.Steps); ok {
-			return child, canonicalID, true
-		}
-		if child, canonicalID, ok := resolveScopedRuntimeBranchStep(scopedID, runtimeID, steps[i].Branches); ok {
+		if child, canonicalID, ok := resolveScopedRuntimeChildren(scopedID, runtimeID, &steps[i]); ok {
 			return child, canonicalID, true
 		}
 	}
