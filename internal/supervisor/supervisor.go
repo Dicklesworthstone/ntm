@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -62,11 +63,13 @@ type ManagedDaemon struct {
 	LastHealth time.Time   `json:"last_health"`
 	Restarts   int         `json:"restarts"`
 	OwnerID    string      `json:"owner_id"` // Session ID that owns this daemon
+	LastError  string      `json:"last_error,omitempty"`
 
 	cmd        *exec.Cmd
 	logFile    *os.File
 	cancelFunc context.CancelFunc
 	done       chan struct{}
+	ownership  *daemonOwnership
 	mu         sync.RWMutex
 }
 
@@ -125,6 +128,10 @@ func New(cfg Config) (*Supervisor, error) {
 	}
 	if cfg.ProjectDir == "" {
 		return nil, fmt.Errorf("project directory required")
+	}
+
+	if err := validateDaemonComponent(cfg.SessionID, "session ID"); err != nil {
+		return nil, err
 	}
 
 	ntmDir := filepath.Join(cfg.ProjectDir, ".ntm")
@@ -204,7 +211,19 @@ func (s *Supervisor) Start(spec DaemonSpec) error {
 		}
 	}
 
-	return s.startDaemonLocked(spec, 0)
+	if err := validateDaemonComponent(spec.Name, "daemon name"); err != nil {
+		return err
+	}
+	owner, err := acquireDaemonOwnership(s.ntmDir, spec.Name, s.sessionID)
+	if err != nil {
+		return err
+	}
+	if err := s.startDaemonLocked(spec, 0, owner); err != nil {
+		// Failed preflight/exec must not leak the fence. If a child did
+		// start, startDaemonLocked has stopped and reaped that child first.
+		return errors.Join(err, owner.finish())
+	}
+	return nil
 }
 
 // restartDaemon admits a replacement only while the failed generation still
@@ -233,13 +252,16 @@ func (s *Supervisor) restartDaemon(previous *ManagedDaemon) (bool, error) {
 		return false, nil
 	}
 
-	return true, s.startDaemonLocked(previous.Spec, restarts)
+	return true, s.startDaemonLocked(previous.Spec, restarts, previous.ownership)
 }
 
 // startDaemonLocked launches an admitted generation. The caller holds both
 // lifecycleMu and mu, so shutdown and other launches cannot replace its owner
 // between admission and registration.
-func (s *Supervisor) startDaemonLocked(spec DaemonSpec, restartCount int) error {
+func (s *Supervisor) startDaemonLocked(spec DaemonSpec, restartCount int, owner *daemonOwnership) error {
+	if owner == nil {
+		return fmt.Errorf("%w: daemon %s has no ownership fence", ErrDaemonRecoveryRequired, spec.Name)
+	}
 	// Fail fast and loud when the daemon binary does not exist. Without this
 	// check a missing binary would only surface as a launch-retry loop in the
 	// log file — silence is the sin (bd-ws1-truth-safety-l5ddi.2).
@@ -293,11 +315,19 @@ func (s *Supervisor) startDaemonLocked(spec DaemonSpec, restartCount int) error 
 	// Set process group for clean shutdown (platform-specific)
 	setSysProcAttr(cmd)
 
+	// Journal the launch boundary before exec; an unlocked fence after a
+	// supervisor crash is not proof that no daemon was launched.
+	if err := owner.prepare(); err != nil {
+		_ = logFile.Close()
+		cancel()
+		return err
+	}
+
 	// Start the process
 	if err := cmd.Start(); err != nil {
 		logFile.Close()
 		cancel()
-		return fmt.Errorf("start daemon %s: %w", spec.Name, err)
+		return errors.Join(fmt.Errorf("start daemon %s: %w", spec.Name, err), owner.startFailed())
 	}
 
 	daemon := &ManagedDaemon{
@@ -312,6 +342,7 @@ func (s *Supervisor) startDaemonLocked(spec DaemonSpec, restartCount int) error 
 		logFile:    logFile,
 		cancelFunc: cancel,
 		done:       make(chan struct{}),
+		ownership:  owner,
 	}
 
 	// Update health URL with actual port, preserving the original path
@@ -327,6 +358,28 @@ func (s *Supervisor) startDaemonLocked(spec DaemonSpec, restartCount int) error 
 	}
 
 	s.daemons[spec.Name] = daemon
+	if err := owner.started(daemon.PID); err != nil {
+		// Do not launch a replacement after a successful exec whose PID
+		// could not be checkpointed. Stop only this known child and reap it.
+		daemon.LastError = err.Error()
+		daemon.State = StateStopping
+		terminateProcess(cmd.Process)
+		// No exit/restart worker exists yet. Wait exactly once here.
+		waited := make(chan error, 1)
+		go func() { waited <- cmd.Wait() }()
+		select {
+		case <-waited:
+		case <-time.After(2 * time.Second):
+			forceKillProcess(cmd.Process)
+			<-waited
+		}
+		cancel()
+		close(daemon.done)
+		_ = logFile.Close()
+		daemon.logFile = nil
+		daemon.State = StateFailed
+		return errors.Join(err, owner.finish())
+	}
 
 	// Log the launch so every attempt (first start and each restart) is
 	// diagnosable from the log alone.
@@ -379,7 +432,7 @@ func (s *Supervisor) stopAllOwnedDaemons() error {
 	}
 
 	if len(errs) > 0 {
-		return fmt.Errorf("errors stopping daemons: %v", errs)
+		return fmt.Errorf("errors stopping daemons: %w", errors.Join(errs...))
 	}
 	return nil
 }
@@ -408,6 +461,7 @@ func snapshotDaemonLocked(d *ManagedDaemon) *ManagedDaemon {
 		LastHealth: d.LastHealth,
 		Restarts:   d.Restarts,
 		OwnerID:    d.OwnerID,
+		LastError:  d.LastError,
 	}
 }
 
@@ -451,7 +505,15 @@ func (s *Supervisor) stopDaemon(d *ManagedDaemon) error {
 	// calls Process.Kill, which races (and usually wins) against the graceful
 	// platform-specific termination signal below. waitForExit cancels the
 	// context after Wait has reaped the process.
-	if cmd != nil && cmd.Process != nil {
+	alreadyExited := false
+	if done != nil {
+		select {
+		case <-done:
+			alreadyExited = true
+		default:
+		}
+	}
+	if !alreadyExited && cmd != nil && cmd.Process != nil {
 		terminateProcess(cmd.Process)
 		if done != nil {
 			const gracefulShutdownTimeout = 2 * time.Second
@@ -464,9 +526,6 @@ func (s *Supervisor) stopDaemon(d *ManagedDaemon) error {
 		}
 	}
 
-	// Clean up PID file
-	s.removePIDFile(d.Spec.Name)
-
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -477,8 +536,12 @@ func (s *Supervisor) stopDaemon(d *ManagedDaemon) error {
 		d.logFile = nil
 	}
 
+	err := d.ownership.finishWithCleanup(func() { s.removePIDFile(d.Spec.Name) })
+	if err != nil {
+		d.LastError = err.Error()
+	}
 	d.State = StateStopped
-	return nil
+	return err
 }
 
 // monitorDaemon runs health checks for a daemon.
@@ -645,6 +708,9 @@ func (s *Supervisor) handleDaemonFailure(d *ManagedDaemon) {
 		d.Restarts++
 		restarts := d.Restarts
 		if restarts > s.maxRestarts {
+			if err := d.ownership.finish(); err != nil {
+				d.LastError = err.Error()
+			}
 			d.State = StateFailed
 			if d.logFile != nil {
 				fmt.Fprintf(d.logFile, "[supervisor] max restarts (%d) exceeded, not restarting\n", s.maxRestarts)
@@ -669,6 +735,16 @@ func (s *Supervisor) handleDaemonFailure(d *ManagedDaemon) {
 
 		attempted, err := s.restartDaemon(d)
 		if !attempted || err == nil {
+			return
+		}
+
+		if errors.Is(err, ErrDaemonRecoveryRequired) {
+			d.mu.Lock()
+			d.LastError = errors.Join(err, d.ownership.finish()).Error()
+			if d.State == StateRestarting {
+				d.State = StateFailed
+			}
+			d.mu.Unlock()
 			return
 		}
 
