@@ -76,3 +76,56 @@ func TestPlanAllocationsBatchRetainsSafetyGates(t *testing.T) {
 		t.Fatalf("batch bypassed critical-pressure deferral: %+v", plan)
 	}
 }
+
+func TestPlanAllocationsOptimizesWholeBatch(t *testing.T) {
+	matrix := NewCapabilityMatrix()
+	matrix.base["specialist"] = map[TaskType]float64{TaskFeature: 0.99, TaskBug: 0.95}
+	matrix.base["generalist"] = map[TaskType]float64{TaskFeature: 0.94, TaskBug: 0.25}
+	in := AllocationInput{
+		Matrix: matrix,
+		ReadyBeads: []AllocationReadyBead{
+			{ID: "flexible", TaskType: TaskFeature, Priority: 2},
+			{ID: "constrained", TaskType: TaskBug, Priority: 2},
+		},
+		Agents: []AllocationAgent{
+			{ID: "specialist", Session: "s", AgentType: "specialist", Idle: true},
+			{ID: "generalist", Session: "s", AgentType: "generalist", Idle: true},
+		},
+	}
+	for _, minimum := range []float64{0, 0.50} {
+		// The higher threshold removes the poor fallback entirely. The same
+		// rerouting must then preserve cardinality as well as overall fit.
+		in.MinScore = minimum
+		plan := PlanAllocations(in)
+		if len(plan.Recommendations) != 2 || len(plan.UnassignedBeads) != 0 {
+			t.Fatalf("minimum %.2f: feasible work was stranded: %+v", minimum, plan)
+		}
+		got := make(map[string]string)
+		for _, rec := range plan.Recommendations {
+			got[rec.BeadID] = rec.AgentID
+			if minimum > 0 && rec.Score < minimum {
+				t.Fatalf("optimizer relaxed the minimum score: %+v", rec)
+			}
+		}
+		if got["flexible"] != "generalist" || got["constrained"] != "specialist" {
+			t.Fatalf("minimum %.2f: selected locally greedy rather than best batch: %v", minimum, got)
+		}
+		logged := 0
+		for _, row := range plan.Logs {
+			if row.Decision == AllocationDecisionRecommend {
+				logged++
+				if got[row.BeadID] != row.AgentID {
+					t.Fatalf("audit row describes a superseded choice: %+v", row)
+				}
+			}
+		}
+		if logged != 2 || plan.Summary.Recommended != 2 {
+			t.Fatalf("final batch and audit disagree: %+v", plan)
+		}
+	}
+	in.MaxRecommendations = 1
+	plan := PlanAllocations(in)
+	if len(plan.Recommendations) != 1 || plan.Recommendations[0].BeadID != "flexible" || plan.Recommendations[0].AgentID != "specialist" {
+		t.Fatalf("one-slot plan did not optimize for its actual limit: %+v", plan)
+	}
+}
