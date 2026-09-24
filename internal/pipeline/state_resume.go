@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 )
@@ -346,7 +347,13 @@ func (e *Executor) applyResumeOptions(workflow *Workflow, opts ResumeOptions) er
 			return fmt.Errorf("agent delivery for step %q belongs to session %q; explicit reset is required before moving to session %q", stepID, priorSession, targetSession)
 		}
 	}
-	if err := e.validateLegacyAgentResumeLocked(state, opts); err != nil {
+	if opts.KeepState && opts.Mode == ResumeModeForceIter {
+		if err := validateForceResumeIteration(workflow, state, opts); err != nil {
+			e.stateMu.RUnlock()
+			return err
+		}
+	}
+	if err := e.validateLegacyAgentResumeLocked(state, opts, workflow); err != nil {
 		e.stateMu.RUnlock()
 		return err
 	}
@@ -387,6 +394,114 @@ func (e *Executor) applyResumeOptions(workflow *Workflow, opts ResumeOptions) er
 	return nil
 }
 
+// validateForceResumeIteration checks the replay scope before any checkpoint
+// or session mutation. A forced suffix authorizes iteration replay, not reuse
+// of downstream results produced from the old loop output, nor automatic
+// redispatch of those consumers. Such recovery needs an explicit whole-run
+// reset. The caller holds stateMu for the supplied state.
+func validateForceResumeIteration(workflow *Workflow, state *ExecutionState, opts ResumeOptions) error {
+	if workflow == nil {
+		return fmt.Errorf("force-iter requires a workflow")
+	}
+	var target *Step
+	for i := range workflow.Steps {
+		if workflow.Steps[i].ID == opts.StepID {
+			target = &workflow.Steps[i]
+			break
+		}
+	}
+	if target == nil {
+		return fmt.Errorf("force-iter requires a top-level iteration step; %q is not one", opts.StepID)
+	}
+	if target.Foreach == nil && target.ForeachPane == nil && (target.Loop == nil || target.Loop.Items == "") {
+		return fmt.Errorf("force-iter step %q must use foreach, foreach_pane, or loop.items; while/times loops have no durable iteration cursor", opts.StepID)
+	}
+	if prior, ok := state.ForeachState[opts.StepID]; ok {
+		if prior.StepID != "" && prior.StepID != opts.StepID {
+			return fmt.Errorf("force-iter checkpoint for %q names a different step %q", opts.StepID, prior.StepID)
+		}
+		if prior.Total <= 0 || opts.Iteration >= prior.Total {
+			return fmt.Errorf("force-iter iteration %d is outside the %d recorded iterations for %q", opts.Iteration, prior.Total, opts.StepID)
+		}
+	} else if opts.Iteration != 0 {
+		return fmt.Errorf("force-iter step %q has no recorded iterations; only iteration 0 can restart an unstarted loop", opts.StepID)
+	}
+	if _, recorded := state.AgentDeliveries[opts.StepID]; recorded {
+		return fmt.Errorf("force-iter step %q has a leaf agent-delivery receipt; inspect it before an explicit reset", opts.StepID)
+	}
+	for _, step := range workflow.Steps {
+		if iterationIndexFromID(step.ID, opts.StepID+"_iter") >= opts.Iteration {
+			return fmt.Errorf("force-iter namespace for %q overlaps top-level step %q; refusing to discard unrelated work", opts.StepID, step.ID)
+		}
+	}
+
+	// Dependency edges are structural and independent of the live scheduler.
+	// Build from the supplied workflow so detached-worker preflight (before an
+	// executor graph exists) enforces the same boundary as foreground resume.
+	graph := NewDependencyGraph(workflow)
+	seen := map[string]bool{opts.StepID: true}
+	consumerSet := make(map[string]bool)
+	queue := []string{opts.StepID}
+	var consumers []string
+	for len(queue) > 0 {
+		id := queue[0]
+		queue = queue[1:]
+		for _, dependent := range graph.GetDependents(id) {
+			if seen[dependent] {
+				continue
+			}
+			seen[dependent] = true
+			queue = append(queue, dependent)
+			// A dependency declared in a nested body belongs to its owning
+			// top-level container's runtime namespace, not the authored child
+			// name. Inspect that container and follow its consumers as well.
+			owner := dependent
+			owners := make(map[string]bool)
+			for graph.container[owner] != "" {
+				if owners[owner] {
+					return fmt.Errorf("force-iter dependency %q has ambiguous container ownership", dependent)
+				}
+				owners[owner] = true
+				owner = graph.container[owner]
+			}
+			if owner == opts.StepID {
+				continue
+			}
+			if !consumerSet[owner] {
+				consumerSet[owner] = true
+				consumers = append(consumers, owner)
+			}
+			if !seen[owner] {
+				seen[owner] = true
+				queue = append(queue, owner)
+			}
+		}
+	}
+	sort.Strings(consumers)
+	for _, consumer := range consumers {
+		if hasRuntimeCheckpoint(state.Steps, consumer) ||
+			hasRuntimeCheckpoint(state.AgentDeliveries, consumer) ||
+			hasRuntimeCheckpoint(state.InFlightSteps, consumer) ||
+			hasRuntimeCheckpoint(state.ForeachState, consumer) ||
+			hasRuntimeCheckpoint(state.ParallelState, consumer) {
+			return fmt.Errorf("force-iter step %q has downstream recovery evidence for %q; inspect that work and use an explicit reset instead of retaining stale dependent results", opts.StepID, consumer)
+		}
+	}
+	return nil
+}
+
+// A consumer's nested runtime work is evidence even when the containing step
+// has not checkpointed a result. Ambiguous textual overlaps only refuse replay;
+// they never authorize deleting another step's receipts.
+func hasRuntimeCheckpoint[T any](entries map[string]T, root string) bool {
+	for id := range entries {
+		if id == root || strings.HasPrefix(id, root+"_") || strings.HasPrefix(id, root+".") {
+			return true
+		}
+	}
+	return false
+}
+
 func resumeResetsAgentDelivery(state *ExecutionState, opts ResumeOptions, stepID string) bool {
 	if !opts.KeepState {
 		return true
@@ -414,8 +529,18 @@ func resumeResetsAgentDelivery(state *ExecutionState, opts ResumeOptions, stepID
 // The caller holds stateMu. Legacy checkpoints have no way to distinguish a
 // delivered prompt from work that never reached tmux. Only an explicit restart
 // can authorize redispatch of a known unfinished agent leaf without a receipt.
-func (e *Executor) validateLegacyAgentResumeLocked(state *ExecutionState, opts ResumeOptions) error {
-	if !opts.KeepState || e.graph == nil {
+func (e *Executor) validateLegacyAgentResumeLocked(state *ExecutionState, opts ResumeOptions, workflow *Workflow) error {
+	if !opts.KeepState {
+		return nil
+	}
+	graph := e.graph
+	if graph == nil && workflow != nil {
+		// Detached resume preflight precedes executor graph construction.
+		// Classify against the same workflow there instead of silently
+		// bypassing the missing-delivery guard until after worker launch.
+		graph = NewDependencyGraph(workflow)
+	}
+	if graph == nil {
 		return nil
 	}
 	unfinished := make(map[string]bool)
@@ -432,11 +557,19 @@ func (e *Executor) validateLegacyAgentResumeLocked(state *ExecutionState, opts R
 		if _, recorded := state.AgentDeliveries[stepID]; recorded || resumeResetsAgentDelivery(state, opts, stepID) {
 			continue
 		}
-		step, ok := e.graph.GetStep(stepID)
+		step, ok := graph.GetStep(stepID)
 		if !ok {
-			step, _, ok = e.graph.ResolveScopedRuntimeStep(stepID)
+			step, _, ok = graph.ResolveScopedRuntimeStep(stepID)
 		}
-		if ok && (stepKind(step) == StepKindPrompt || stepKind(step) == StepKindTemplate) {
+		// A changed/ambiguous runtime namespace must not erase explicit
+		// evidence that the old execution dispatched agent work. The saved
+		// kind is independent of the current workflow's interpretation.
+		kind := state.InFlightSteps[stepID].Kind
+		agentWork := kind == StepKindPrompt || kind == StepKindTemplate
+		if ok {
+			agentWork = agentWork || stepKind(step) == StepKindPrompt || stepKind(step) == StepKindTemplate
+		}
+		if agentWork {
 			return fmt.Errorf("unfinished agent step %q has no durable delivery evidence; use an explicit restart-failed or reset to authorize resending", stepID)
 		}
 	}
@@ -530,6 +663,12 @@ func (e *Executor) forceResumeIteration(stepID string, iteration int) {
 	}
 	state.UpdatedAt = time.Now()
 	e.state.ForeachState[stepID] = state
+	// Reopen the containing scheduler node as well as its iteration suffix.
+	// Keeping a completed parent result would make applyResumeState mark the
+	// whole loop executed and silently skip the requested replay.
+	delete(e.state.Steps, stepID)
+	delete(e.state.InFlightSteps, stepID)
+	prunedStepIDs = append(prunedStepIDs, stepID)
 
 	// All iteration-local checkpoints participate in the rewind. Nested
 	// loops and parallel groups otherwise restore stale completion markers;
@@ -583,9 +722,14 @@ func (e *Executor) forceResumeIteration(stepID string, iteration int) {
 				if !ok {
 					step, _, ok = e.graph.ResolveScopedRuntimeStep(id)
 				}
-				if ok && step.OutputVar != "" {
-					delete(e.state.Variables, step.OutputVar)
-					delete(e.state.Variables, step.OutputVar+"_parsed")
+				if ok {
+					if step.OutputVar != "" {
+						delete(e.state.Variables, step.OutputVar)
+						delete(e.state.Variables, step.OutputVar+"_parsed")
+					}
+					if step.Loop != nil && step.Loop.Collect != "" {
+						delete(e.state.Variables, step.Loop.Collect)
+					}
 				}
 			}
 		}

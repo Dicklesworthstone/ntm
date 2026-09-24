@@ -441,6 +441,14 @@ func (g *DependencyGraph) ResolveScopedRuntimeStep(id string) (*Step, string, bo
 	for _, parentID := range parentIDs {
 		parent := g.steps[parentID]
 		if child, canonicalID, ok := resolveScopedRuntimeChildren(parentID, id, parent); ok {
+			// Dynamic bodies are not necessarily nodes in the scheduling
+			// graph. An authored name can coincide with an unrelated top-level
+			// step; only the exact structural node may inherit completion.
+			// Returning the runtime ID otherwise lets resume retain its output
+			// without marking that unrelated authored step as executed.
+			if node, exists := g.steps[canonicalID]; !exists || node != child {
+				canonicalID = id
+			}
 			return child, canonicalID, true
 		}
 	}
