@@ -152,7 +152,13 @@ func TestDaemonOwnershipConcurrentProjectLaunches(t *testing.T) {
 	if wins != 1 {
 		t.Fatalf("launched %d competing daemons, want one", wins)
 	}
-	ownershipWait(t, "daemon launch", func() bool { _, e := os.Stat(filepath.Join(dir, "service-launches")); return e == nil })
+	// Creating the file precedes writing its PID. Wait for that write rather
+	// than racing an empty newly-created file; the one-winner assertion above
+	// and the exact child-count assertion below remain independent checks.
+	ownershipWait(t, "daemon launch", func() bool {
+		data, err := os.ReadFile(filepath.Join(dir, "service-launches"))
+		return err == nil && len(strings.Fields(string(data))) > 0
+	})
 	data, err := os.ReadFile(filepath.Join(dir, "service-launches"))
 	if err != nil || len(strings.Fields(string(data))) != 1 {
 		t.Fatalf("actual child launches: %q, %v", data, err)

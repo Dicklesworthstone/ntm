@@ -61,7 +61,7 @@ command run the supervisor. This is the one obvious way to run cm by hand.`,
 var memoryServePollInterval = 500 * time.Millisecond
 
 // runMemoryServe supervises the cm daemon in the foreground until ctx is
-// cancelled (Ctrl-C) or the daemon exhausts its restart budget.
+// cancelled (Ctrl-C) or the daemon reaches a terminal recovery failure.
 func runMemoryServe(ctx context.Context, out io.Writer, port int) error {
 	// Fail fast and loud when cm is not installed: the most common real-world
 	// failure must not become a silent launch-retry loop.
@@ -138,7 +138,12 @@ func runMemoryServe(ctx context.Context, out io.Writer, port int) error {
 				fmt.Fprintf(out, "cm daemon state: %s -> %s (pid=%d restarts=%d)\n", lastState, d.State, d.PID, d.Restarts)
 				lastState = d.State
 			}
-			if d.State == supervisor.StateFailed && d.Restarts > supervisor.DefaultMaxRestarts {
+			if d.State == supervisor.StateFailed {
+				// Ownership/persistence failures can stop recovery before the
+				// retry budget is exhausted. Do not wait forever in that state.
+				if d.LastError != "" {
+					return fmt.Errorf("cm daemon recovery stopped: %s; see .ntm/logs/cm-%s.log", d.LastError, sessionID)
+				}
 				return fmt.Errorf("cm daemon failed permanently after %d restart attempts; see .ntm/logs/cm-%s.log", d.Restarts-1, sessionID)
 			}
 		}

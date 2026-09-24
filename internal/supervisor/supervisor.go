@@ -3,12 +3,10 @@
 package supervisor
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -55,22 +53,29 @@ type DaemonSpec struct {
 
 // ManagedDaemon represents a running daemon process.
 type ManagedDaemon struct {
-	Spec       DaemonSpec  `json:"spec"`
-	State      DaemonState `json:"state"`
-	PID        int         `json:"pid"`
-	Port       int         `json:"port"`
-	StartedAt  time.Time   `json:"started_at"`
-	LastHealth time.Time   `json:"last_health"`
-	Restarts   int         `json:"restarts"`
-	OwnerID    string      `json:"owner_id"` // Session ID that owns this daemon
-	LastError  string      `json:"last_error,omitempty"`
+	Spec        DaemonSpec  `json:"spec"`
+	State       DaemonState `json:"state"`
+	PID         int         `json:"pid"`
+	Port        int         `json:"port"`
+	StartedAt   time.Time   `json:"started_at"`
+	LastHealth  time.Time   `json:"last_health"`
+	Restarts    int         `json:"restarts"`
+	OwnerID     string      `json:"owner_id"` // Session ID that owns this daemon
+	LastError   string      `json:"last_error,omitempty"`
+	HealthMode  string      `json:"health_mode"` // process, http, mcp, command
+	HealthError string      `json:"health_error,omitempty"`
 
-	cmd        *exec.Cmd
-	logFile    *os.File
-	cancelFunc context.CancelFunc
-	done       chan struct{}
-	ownership  *daemonOwnership
-	mu         sync.RWMutex
+	cmd          *exec.Cmd
+	logFile      *os.File
+	cancelFunc   context.CancelFunc
+	done         chan struct{}
+	ownership    *daemonOwnership
+	healthCtx    context.Context
+	healthCancel context.CancelFunc
+	monitorDone  chan struct{}
+	healthDir    string
+	healthEnv    []string
+	mu           sync.RWMutex
 }
 
 // PIDFileInfo stores information written to PID files.
@@ -98,6 +103,7 @@ type Supervisor struct {
 	restartBackoffMax    time.Duration
 	startupHealthTimeout time.Duration
 
+	healthCtx  context.Context
 	shutdownCh chan struct{}
 	cancel     func()
 }
@@ -165,10 +171,12 @@ func New(cfg Config) (*Supervisor, error) {
 		}
 	}
 
+	healthCtx, cancelHealth := context.WithCancel(context.Background())
 	shutdownCh := make(chan struct{})
 	var cancelOnce sync.Once
 	cancel := func() {
 		cancelOnce.Do(func() {
+			cancelHealth()
 			close(shutdownCh)
 		})
 	}
@@ -182,6 +190,7 @@ func New(cfg Config) (*Supervisor, error) {
 		maxRestarts:          cfg.MaxRestarts,
 		restartBackoffMax:    cfg.RestartBackoffMax,
 		startupHealthTimeout: cfg.StartupHealthTimeout,
+		healthCtx:            healthCtx,
 		shutdownCh:           shutdownCh,
 		cancel:               cancel,
 	}, nil
@@ -310,6 +319,15 @@ func (s *Supervisor) startDaemonLocked(spec DaemonSpec, restartCount int, owner 
 	if cmd.Dir == "" {
 		cmd.Dir = s.projectDir
 	}
+	// Freeze the effective launch scope before exec. Later parent cwd/env
+	// changes must not point a health command at a different store.
+	launchDir, err := filepath.Abs(cmd.Dir)
+	if err != nil {
+		_ = logFile.Close()
+		cancel()
+		return fmt.Errorf("resolve daemon working directory: %w", err)
+	}
+	cmd.Dir = launchDir
 	cmd.Env = append(os.Environ(), spec.Env...)
 
 	// Set process group for clean shutdown (platform-specific)
@@ -330,19 +348,30 @@ func (s *Supervisor) startDaemonLocked(spec DaemonSpec, restartCount int, owner 
 		return errors.Join(fmt.Errorf("start daemon %s: %w", spec.Name, err), owner.startFailed())
 	}
 
+	healthParent := s.healthCtx
+	if healthParent == nil {
+		healthParent = context.Background()
+	}
+	healthCtx, cancelHealth := context.WithCancel(healthParent)
 	daemon := &ManagedDaemon{
-		Spec:       copyDaemonSpec(spec),
-		State:      StateStarting,
-		PID:        cmd.Process.Pid,
-		Port:       port,
-		StartedAt:  time.Now(),
-		Restarts:   restartCount,
-		OwnerID:    s.sessionID,
-		cmd:        cmd,
-		logFile:    logFile,
-		cancelFunc: cancel,
-		done:       make(chan struct{}),
-		ownership:  owner,
+		Spec:         copyDaemonSpec(spec),
+		State:        StateStarting,
+		PID:          cmd.Process.Pid,
+		Port:         port,
+		StartedAt:    time.Now(),
+		Restarts:     restartCount,
+		OwnerID:      s.sessionID,
+		cmd:          cmd,
+		logFile:      logFile,
+		cancelFunc:   cancel,
+		done:         make(chan struct{}),
+		ownership:    owner,
+		healthCtx:    healthCtx,
+		healthCancel: cancelHealth,
+		monitorDone:  make(chan struct{}),
+		HealthMode:   daemonHealthMode(spec),
+		healthDir:    launchDir,
+		healthEnv:    append([]string(nil), cmd.Env...),
 	}
 
 	// Update health URL with actual port, preserving the original path
@@ -374,6 +403,8 @@ func (s *Supervisor) startDaemonLocked(spec DaemonSpec, restartCount int, owner 
 			<-waited
 		}
 		cancel()
+		cancelHealth()
+		close(daemon.monitorDone)
 		close(daemon.done)
 		_ = logFile.Close()
 		daemon.logFile = nil
@@ -453,15 +484,17 @@ func (s *Supervisor) GetDaemon(name string) (*ManagedDaemon, bool) {
 
 func snapshotDaemonLocked(d *ManagedDaemon) *ManagedDaemon {
 	return &ManagedDaemon{
-		Spec:       copyDaemonSpec(d.Spec),
-		State:      d.State,
-		PID:        d.PID,
-		Port:       d.Port,
-		StartedAt:  d.StartedAt,
-		LastHealth: d.LastHealth,
-		Restarts:   d.Restarts,
-		OwnerID:    d.OwnerID,
-		LastError:  d.LastError,
+		Spec:        copyDaemonSpec(d.Spec),
+		State:       d.State,
+		PID:         d.PID,
+		Port:        d.Port,
+		StartedAt:   d.StartedAt,
+		LastHealth:  d.LastHealth,
+		Restarts:    d.Restarts,
+		OwnerID:     d.OwnerID,
+		LastError:   d.LastError,
+		HealthMode:  d.HealthMode,
+		HealthError: d.HealthError,
 	}
 }
 
@@ -499,7 +532,12 @@ func (s *Supervisor) stopDaemon(d *ManagedDaemon) error {
 	d.State = StateStopping
 	cmd := d.cmd
 	done := d.done
+	cancelHealth := d.healthCancel
+	monitorDone := d.monitorDone
 	d.mu.Unlock()
+	if cancelHealth != nil {
+		cancelHealth()
+	}
 
 	// Do not cancel the CommandContext here: its default cancellation handler
 	// calls Process.Kill, which races (and usually wins) against the graceful
@@ -526,6 +564,9 @@ func (s *Supervisor) stopDaemon(d *ManagedDaemon) error {
 		}
 	}
 
+	if monitorDone != nil {
+		<-monitorDone
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -544,96 +585,89 @@ func (s *Supervisor) stopDaemon(d *ManagedDaemon) error {
 	return err
 }
 
-// monitorDaemon runs health checks for a daemon.
+// monitorDaemon runs health checks for one process generation. A cancelled or
+// retired generation cannot publish a delayed health result or keep probing
+// after the ownership fence is handed to another controller.
 func (s *Supervisor) monitorDaemon(d *ManagedDaemon) {
+	if d.monitorDone != nil {
+		defer close(d.monitorDone)
+	}
+	ctx := d.healthCtx
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	ticker := time.NewTicker(s.healthInterval)
 	defer ticker.Stop()
-
-	// Wait a bit for daemon to start, without keeping monitors alive after an
-	// early exit or supervisor shutdown.
 	startupTimer := time.NewTimer(2 * time.Second)
 	defer startupTimer.Stop()
 	select {
+	case <-ctx.Done():
+		return
 	case <-s.shutdownCh:
 		return
 	case <-d.done:
 		return
 	case <-startupTimer.C:
 	}
-
 	for {
 		select {
+		case <-ctx.Done():
+			return
 		case <-s.shutdownCh:
 			return
 		case <-d.done:
 			return
 		case <-ticker.C:
 			d.mu.RLock()
-			state := d.State
-			healthURL := d.Spec.HealthURL
-			healthCmd := d.Spec.HealthCmd
-			healthMCP := d.Spec.HealthMCP
+			state, spec := d.State, copyDaemonSpec(d.Spec)
 			d.mu.RUnlock()
-
 			if state != StateRunning && state != StateStarting && state != StateUnhealthy {
 				return
 			}
-
-			if healthURL == "" && len(healthCmd) == 0 {
-				// No health check configured, just check if process is running.
-				// Reading cmd.ProcessState here would race with the
-				// waitForExit goroutine's cmd.Wait(), which writes it
-				// (bd-2c0yh.5) — so observe the done channel that waitForExit
-				// closes after Wait returns instead. waitForExit owns recovery
-				// and the exited process's log until that recovery finishes.
-				select {
-				case <-d.done:
-					return
-				default:
-				}
-				continue
-			}
-
-			// Perform health check
-			var healthy bool
-			switch {
-			case healthMCP:
-				healthy = s.checkHealthMCP(healthURL)
-			case healthURL != "":
-				healthy = s.checkHealthHTTP(healthURL)
-			case len(healthCmd) > 0:
-				healthy = s.checkHealthCmd(healthCmd)
-			}
-
+			probeCtx, cancel := context.WithTimeout(ctx, daemonHealthTimeout)
+			err := probeDaemonHealthInScope(probeCtx, spec, d.healthDir, d.healthEnv)
+			cancel()
 			d.mu.Lock()
-			logFile := d.logFile
-			if healthy {
-				d.LastHealth = time.Now()
+			if ctx.Err() != nil || (d.State != StateRunning && d.State != StateStarting && d.State != StateUnhealthy) {
+				d.mu.Unlock()
+				return
+			}
+			select {
+			case <-d.done:
+				d.mu.Unlock()
+				return
+			default:
+			}
+			d.HealthMode = daemonHealthMode(spec)
+			if err == nil {
+				d.HealthError = ""
+				// No configured probe means process liveness, not a fabricated
+				// successful protocol check. Expose the distinction explicitly.
+				if d.HealthMode != "process" {
+					d.LastHealth = time.Now()
+				}
 				if d.State == StateStarting || d.State == StateUnhealthy {
 					prev := d.State
 					d.State = StateRunning
-					if logFile != nil {
-						fmt.Fprintf(logFile, "[supervisor] daemon %s health probe passed; state %s -> %s\n",
-							d.Spec.Name, prev, StateRunning)
+					if d.logFile != nil {
+						evidence := "health probe passed"
+						if d.HealthMode == "process" {
+							evidence = "process liveness observed"
+						}
+						fmt.Fprintf(d.logFile, "[supervisor] daemon %s %s (mode=%s); state %s -> %s\n", d.Spec.Name, evidence, d.HealthMode, prev, StateRunning)
 					}
 				}
 			} else {
-				// A daemon must never pin in "starting" (or silently rot in
-				// "running") while its probe keeps failing: after the startup
-				// health timeout it transitions to unhealthy, loudly.
-				var sinceOK time.Duration
-				switch d.State {
-				case StateStarting:
-					sinceOK = time.Since(d.StartedAt)
-				case StateRunning:
+				d.HealthError = err.Error()
+				sinceOK := time.Since(d.StartedAt)
+				if d.State == StateRunning {
 					sinceOK = time.Since(d.LastHealth)
 				}
 				if (d.State == StateStarting || d.State == StateRunning) && sinceOK > s.startupHealthTimeout {
 					prev := d.State
 					d.State = StateUnhealthy
-					if logFile != nil {
-						fmt.Fprintf(logFile, "[supervisor] daemon %s health probe failing for %v (timeout %v); state %s -> %s\n",
-							d.Spec.Name, sinceOK.Round(time.Millisecond), s.startupHealthTimeout, prev, StateUnhealthy)
+					if d.logFile != nil {
+						fmt.Fprintf(d.logFile, "[supervisor] daemon %s health probe failing for %v (timeout %v); state %s -> %s\n", d.Spec.Name, sinceOK.Round(time.Millisecond), s.startupHealthTimeout, prev, StateUnhealthy)
 					}
 				}
 			}
@@ -652,8 +686,14 @@ func (s *Supervisor) waitForExit(d *ManagedDaemon) {
 	if d.cancelFunc != nil {
 		d.cancelFunc()
 	}
+	if d.healthCancel != nil {
+		d.healthCancel()
+	}
 	if d.done != nil {
 		close(d.done)
+	}
+	if d.monitorDone != nil {
+		<-d.monitorDone
 	}
 
 	d.mu.Lock()
@@ -708,7 +748,7 @@ func (s *Supervisor) handleDaemonFailure(d *ManagedDaemon) {
 		d.Restarts++
 		restarts := d.Restarts
 		if restarts > s.maxRestarts {
-			if err := d.ownership.finish(); err != nil {
+			if err := d.ownership.finishWithCleanup(func() { s.removePIDFile(d.Spec.Name) }); err != nil {
 				d.LastError = err.Error()
 			}
 			d.State = StateFailed
@@ -791,125 +831,30 @@ var healthCheckClient = &http.Client{
 	},
 }
 
-// checkHealthHTTP performs an HTTP health check.
+const daemonHealthTimeout = 3 * time.Second
+const daemonHealthWaitDelay = 2 * time.Second
+
+// Compatibility helpers use the same bounded probes as the live monitor.
 func (s *Supervisor) checkHealthHTTP(url string) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), daemonHealthTimeout)
 	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-	if err != nil {
-		return false
-	}
-
-	resp, err := healthCheckClient.Do(req)
-	if err != nil {
-		return false
-	}
-	defer resp.Body.Close()
-	io.Copy(io.Discard, resp.Body) // Drain body
-
-	return resp.StatusCode >= 200 && resp.StatusCode < 300
+	_, err := daemonHealthResponse(ctx, http.MethodGet, url, nil, false)
+	return err == nil
 }
 
-// checkHealthMCP performs an MCP-aware health check: a JSON-RPC `initialize`
-// round-trip POSTed to the daemon root. cm 0.2.x speaks MCP JSON-RPC at its
-// root and has NO REST /health endpoint, so a GET probe can never pass
-// (bd-ws1-truth-safety-l5ddi.2). Two traps this probe defends against:
-//   - 200-with-error: cm answers HTTP 200 with a JSON-RPC error object in the
-//     body; that is UNHEALTHY, not healthy.
-//   - arbitrary HTTP squatters: a service that answers 200 with non-JSON-RPC
-//     content (a REST server, a proxy error page) must not be blessed, so a
-//     response without a JSON-RPC result object is unhealthy.
-func (s *Supervisor) checkHealthMCP(baseURL string) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+func (s *Supervisor) checkHealthMCP(url string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), daemonHealthTimeout)
 	defer cancel()
-
-	reqBody := map[string]any{
-		"jsonrpc": "2.0",
-		"id":      1,
-		"method":  "initialize",
-		"params": map[string]any{
-			"protocolVersion": "2024-11-05",
-			"capabilities":    map[string]any{},
-			"clientInfo": map[string]any{
-				"name":    "ntm-supervisor",
-				"version": "health-probe",
-			},
-		},
-	}
-	data, err := json.Marshal(reqBody)
-	if err != nil {
-		return false
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL, bytes.NewReader(data))
-	if err != nil {
-		return false
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := healthCheckClient.Do(req)
-	if err != nil {
-		return false
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		io.Copy(io.Discard, resp.Body)
-		return false
-	}
-
-	var envelope struct {
-		JSONRPC string          `json:"jsonrpc"`
-		Result  json.RawMessage `json:"result"`
-		Error   json.RawMessage `json:"error"`
-	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&envelope); err != nil {
-		return false
-	}
-	if len(envelope.Error) > 0 && string(envelope.Error) != "null" {
-		return false // the 200-with-error trap
-	}
-	if len(envelope.Result) == 0 || string(envelope.Result) == "null" {
-		return false // not a JSON-RPC answer at all
-	}
-	// Squatter defense (bd-2c0yh.3): a 200 whose JSON merely has a non-null
-	// "result" is NOT proof of an MCP server. Require the JSON-RPC 2.0
-	// version marker AND an initialize-shaped result carrying serverInfo,
-	// which the MCP spec mandates — a REST server or proxy error page that
-	// happens to answer {"result": ...} no longer gets blessed.
-	if envelope.JSONRPC != "2.0" {
-		return false
-	}
-	var initResult struct {
-		ServerInfo json.RawMessage `json:"serverInfo"`
-	}
-	if err := json.Unmarshal(envelope.Result, &initResult); err != nil {
-		return false // result is not a JSON object (e.g. a bare string/number)
-	}
-	if len(initResult.ServerInfo) == 0 || string(initResult.ServerInfo) == "null" {
-		return false // no serverInfo: not an MCP initialize response
-	}
-	return true
+	return probeDaemonMCP(ctx, url) == nil
 }
 
-// checkHealthCmd performs a command-based health check.
-func (s *Supervisor) checkHealthCmd(cmdArgs []string) bool {
-	if len(cmdArgs) == 0 {
+func (s *Supervisor) checkHealthCmd(args []string) bool {
+	if len(args) == 0 {
 		return false
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), daemonHealthTimeout)
 	defer cancel()
-
-	cmd := exec.CommandContext(ctx, cmdArgs[0], cmdArgs[1:]...)
-	cmd.WaitDelay = 2 * time.Second
-	cmd.Dir = s.projectDir // Execute in project dir context
-
-	if err := cmd.Run(); err != nil {
-		return false
-	}
-	return true
+	return probeDaemonHealth(ctx, DaemonSpec{HealthCmd: args}, s.projectDir) == nil
 }
 
 // writePIDFile writes the PID file for a daemon.
