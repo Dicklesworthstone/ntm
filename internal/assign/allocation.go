@@ -324,16 +324,26 @@ func (p *AllocationPlanner) Plan(in AllocationInput) AllocationPlan {
 		return plan
 	}
 
-	usedBeads := make(map[string]bool)
-	usedAgents := make(map[string]bool)
-	for _, candidate := range allCandidates {
-		if len(plan.Recommendations) >= maxRecommendations {
-			break
+	// Scoring checks the snapshot's existing assignments. Batch selection must
+	// also consume capacity for recommendations made in this same plan.
+	slots := make(map[string]int, len(sessions))
+	for name, session := range sessions {
+		if session.AssignmentLimit > 0 {
+			slots[name] = max(0, session.AssignmentLimit-max(0, session.ActiveAssignments))
 		}
-		if usedBeads[candidate.BeadID] || usedAgents[candidate.AgentID] {
-			continue
+	}
+	edges := make([]allocationBatchEdge, len(allCandidates))
+	for i, candidate := range allCandidates {
+		edges[i] = allocationBatchEdge{
+			bead:   candidate.BeadID,
+			worker: allocationBatchWorker{session: candidate.Session, id: candidate.AgentID},
+			score:  int(candidate.Score*1000 + 0.5),
 		}
+	}
 
+	usedBeads := make(map[string]bool)
+	for _, index := range selectAllocationBatch(edges, slots, maxRecommendations) {
+		candidate := allCandidates[index]
 		candidate.Decision = AllocationDecisionRecommend
 		markRecommendedAllocationLog(plan.Logs, candidate)
 		recommendation := AllocationRecommendation{
@@ -356,7 +366,6 @@ func (p *AllocationPlanner) Plan(in AllocationInput) AllocationPlan {
 		plan.Recommendations = append(plan.Recommendations, recommendation)
 		plan.Summary.Alternatives += len(recommendation.Alternatives)
 		usedBeads[candidate.BeadID] = true
-		usedAgents[candidate.AgentID] = true
 	}
 
 	plan.Summary.Recommended = len(plan.Recommendations)
@@ -675,7 +684,10 @@ func sortAllocationCandidates(candidates []AllocationCandidate) {
 		if candidates[i].BeadID != candidates[j].BeadID {
 			return candidates[i].BeadID < candidates[j].BeadID
 		}
-		return candidates[i].AgentID < candidates[j].AgentID
+		if candidates[i].AgentID != candidates[j].AgentID {
+			return candidates[i].AgentID < candidates[j].AgentID
+		}
+		return candidates[i].Session < candidates[j].Session
 	})
 }
 
