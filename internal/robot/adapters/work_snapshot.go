@@ -117,6 +117,22 @@ func attachWorkSnapshot(verified, candidates *WorkSection, source *worksource.Sn
 	// reservation verdict, or a precomputed ready count into a later read.
 	input := copyWorkForVerification(candidates)
 	input.Verification = nil
+	if candidates.Ready == nil {
+		return errors.New("missing complete pre-verification work section")
+	}
+	// Match the live verifier's ID normalization without sharing its caller's
+	// backing array. The direct tracker candidate decoder still rejects
+	// malformed/duplicate ready responses before reaching this adapter.
+	input.Ready = make([]WorkItem, 0, len(candidates.Ready))
+	seen := make(map[string]bool, len(candidates.Ready))
+	for _, item := range candidates.Ready {
+		item.ID = strings.TrimSpace(item.ID)
+		if seen[item.ID] {
+			continue
+		}
+		seen[item.ID] = true
+		input.Ready = append(input.Ready, item)
+	}
 	identity := source.Identity
 	envelope := &workSnapshotEnvelope{
 		Version: workSnapshotVersion, ProjectDir: identity.ProjectDir,

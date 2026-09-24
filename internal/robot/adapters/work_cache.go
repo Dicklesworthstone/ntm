@@ -19,6 +19,28 @@ type durableWorkCollector interface {
 	RestoreWorkSnapshot(context.Context, []byte) (*WorkSection, error)
 }
 
+// CollectWork reads only the work section. Source verification and the complete
+// live reservation check remain mandatory, but unrelated inbox, handoff and
+// conflict enrichment cannot consume a work query's deadline after it succeeds.
+func (a *WorkCoordinationAdapter) CollectWork(ctx context.Context) (*WorkSection, error) {
+	if ctx == nil || a == nil {
+		return nil, errors.New("work collection requires a context and adapter")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return a.collectVerifiedWork(ctx)
+}
+
+// A durable work query narrows the batch adapter to one section. Cache reuse
+// retains the same adapter's RestoreWorkSnapshot and reservation client.
+type workSnapshotCollector struct{ *WorkCoordinationAdapter }
+
+func (c workSnapshotCollector) Collect(ctx context.Context) (*SignalBatch, error) {
+	work, err := c.CollectWork(ctx)
+	return &SignalBatch{Work: work}, err
+}
+
 // CollectDurableWork is a project-scoped, restart-safe work query. A cache miss,
 // expired collection or unavailable marker permits a fresh observation. Source
 // mismatch and corrupt evidence do not: refresh must be explicitly requested.
@@ -37,7 +59,7 @@ func CollectDurableWork(ctx context.Context, store *state.Store, cfg WorkCoordin
 		return nil, &worksource.StaleError{Reason: "cannot resolve durable work project", Cause: err}
 	}
 	cfg.ProjectDir = project
-	return collectDurableWork(ctx, store, project, NewWorkCoordinationAdapter(cfg), refresh, time.Now)
+	return collectDurableWork(ctx, store, project, workSnapshotCollector{NewWorkCoordinationAdapter(cfg)}, refresh, time.Now)
 }
 
 func collectDurableWork(ctx context.Context, store *state.Store, project string, collector durableWorkCollector, refresh bool, now func() time.Time) (*WorkSection, error) {
