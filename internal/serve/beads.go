@@ -25,8 +25,8 @@ func normalizeSingularBeadPayload(payload interface{}) interface{} {
 	return beads[0]
 }
 
-// beadIDPattern matches a beads issue ID such as "bd-2euwg" or "ntm-y9cd".
-var beadIDPattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*-[A-Za-z0-9]+$`)
+// beadIDPattern matches root and child IDs, such as "bd-2euwg" or "bc-fwh.14".
+var beadIDPattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*-[A-Za-z0-9]+(?:[-.][A-Za-z0-9]+)*$`)
 
 // validateBeadIDParam checks that a bead ID from a URL parameter is a real ID
 // before it becomes an argv element for br. br is executed without a shell, but

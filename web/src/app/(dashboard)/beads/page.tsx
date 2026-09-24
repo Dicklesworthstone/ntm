@@ -11,6 +11,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiRequestSignal, getAuthHeaders, getBaseUrl } from "@/lib/api/client";
 
 type BeadStatus = "open" | "in_progress" | "closed";
+type BeadFilter = "open" | "in_progress" | "blocked" | "ready";
 
 interface Bead {
   id: string;
@@ -25,6 +26,14 @@ interface Bead {
   dependent_count?: number;
 }
 
+interface BeadDetail extends Bead {
+  description?: string;
+  acceptance_criteria?: string;
+  notes?: string;
+  created_at?: string;
+  dependencies?: { id: string; title?: string; dependency_type?: string }[];
+}
+
 interface ApiEnvelope {
   success: boolean;
   timestamp: string;
@@ -36,6 +45,10 @@ interface ApiEnvelope {
 interface BeadsListResponse extends ApiEnvelope {
   beads: Bead[];
   count: number;
+}
+
+interface BeadDetailResponse extends ApiEnvelope {
+  bead: BeadDetail;
 }
 
 interface BeadsStatsResponse extends ApiEnvelope {
@@ -99,6 +112,12 @@ const COLUMN_DEFS: { key: BeadStatus; label: string; helper: string }[] = [
 ];
 
 const ASSIGNEE_STORAGE_KEY = "ntm-beads-assignee";
+const FILTER_LABELS: Record<BeadFilter, string> = {
+  open: "Open",
+  in_progress: "In Progress",
+  blocked: "Blocked",
+  ready: "Ready",
+};
 
 async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> {
   const baseUrl = getBaseUrl();
@@ -139,13 +158,20 @@ function getErrorMessage(error: unknown): string {
   return "Unexpected error";
 }
 
+function formatBeadText(value: string): string {
+  return value.replace(/\\n/g, "\n");
+}
+
 export default function BeadsPage() {
   const queryClient = useQueryClient();
   const [assignee, setAssignee] = useState("");
   const [notice, setNotice] = useState<Notice | null>(null);
   const [dragOver, setDragOver] = useState<BeadStatus | null>(null);
   const [movingBeadId, setMovingBeadId] = useState<string | null>(null);
+  const [activeFilter, setActiveFilter] = useState<BeadFilter | null>(null);
+  const [selectedBeadId, setSelectedBeadId] = useState<string | null>(null);
   const noticeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const detailDialogRef = useRef<HTMLDialogElement | null>(null);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -198,6 +224,19 @@ export default function BeadsPage() {
     refetchInterval: 60000,
   });
 
+  const detailQuery = useQuery({
+    queryKey: ["beads", "detail", selectedBeadId],
+    queryFn: () => apiFetch<BeadDetailResponse>(`/api/v1/beads/${encodeURIComponent(selectedBeadId || "")}`),
+    enabled: selectedBeadId !== null,
+  });
+
+  useEffect(() => {
+    const dialog = detailDialogRef.current;
+    if (!dialog) return;
+    if (selectedBeadId && !dialog.open) dialog.showModal();
+    if (!selectedBeadId && dialog.open) dialog.close();
+  }, [selectedBeadId]);
+
   const triageQuery = useQuery({
     queryKey: ["beads", "triage"],
     queryFn: () => apiFetch<TriageResponse>("/api/v1/beads/triage?limit=10"),
@@ -227,6 +266,23 @@ export default function BeadsPage() {
       closed: closedQuery.data?.beads || [],
     } as Record<BeadStatus, Bead[]>;
   }, [openQuery.data, inProgressQuery.data, closedQuery.data]);
+
+  const filteredBeads = activeFilter === "open"
+    ? openQuery.data?.beads || []
+    : activeFilter === "in_progress"
+      ? inProgressQuery.data?.beads || []
+      : activeFilter === "blocked"
+        ? blockedQuery.data?.beads || []
+        : activeFilter === "ready"
+          ? readyQuery.data?.beads || []
+          : [];
+  const filteredQuery = activeFilter === "open"
+    ? openQuery
+    : activeFilter === "in_progress"
+      ? inProgressQuery
+      : activeFilter === "blocked"
+        ? blockedQuery
+        : readyQuery;
 
   useEffect(() => {
     return () => {
@@ -363,26 +419,80 @@ export default function BeadsPage() {
           title="Open"
           value={statsSummary?.open_issues ?? 0}
           helper="Total open beads"
+          selected={activeFilter === "open"}
+          onClick={() => setActiveFilter(activeFilter === "open" ? null : "open")}
         />
         <StatCard
           title="In Progress"
           value={statsSummary?.in_progress_issues ?? 0}
           helper="Active work"
+          selected={activeFilter === "in_progress"}
+          onClick={() => setActiveFilter(activeFilter === "in_progress" ? null : "in_progress")}
         />
         <StatCard
           title="Blocked"
           value={statsSummary?.blocked_issues ?? 0}
           helper="Needs unblocking"
+          selected={activeFilter === "blocked"}
+          onClick={() => setActiveFilter(activeFilter === "blocked" ? null : "blocked")}
         />
         <StatCard
           title="Ready"
           value={statsSummary?.ready_issues ?? 0}
           helper="Actionable now"
+          selected={activeFilter === "ready"}
+          onClick={() => setActiveFilter(activeFilter === "ready" ? null : "ready")}
         />
       </div>
 
       <div className="grid gap-6 lg:grid-cols-3">
         <section className="lg:col-span-2 space-y-4">
+          {activeFilter ? (
+            <>
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <h2 className="text-lg font-semibold text-gray-900 dark:text-white">
+                    {FILTER_LABELS[activeFilter]} Beads
+                  </h2>
+                  <p className="text-sm text-gray-500 dark:text-gray-400">
+                    {filteredBeads.length} bead{filteredBeads.length !== 1 ? "s" : ""} in this view.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setActiveFilter(null)}
+                  className="text-sm text-blue-600 hover:underline dark:text-blue-400"
+                >
+                  Back to Kanban
+                </button>
+              </div>
+              {filteredQuery.error && (
+                <div className="rounded-md border border-red-200 bg-red-50 p-4 text-sm text-red-700 dark:border-red-700 dark:bg-red-900/20 dark:text-red-300">
+                  {getErrorMessage(filteredQuery.error)}
+                </div>
+              )}
+              {filteredQuery.isLoading ? (
+                <div className="py-12 text-center text-sm text-gray-400">Loading beads...</div>
+              ) : filteredBeads.length === 0 && !filteredQuery.error ? (
+                <div className="py-12 text-center text-sm text-gray-400">No beads in this view.</div>
+              ) : (
+                <div className="grid gap-3 md:grid-cols-2">
+                  {filteredBeads.map((bead) => (
+                    <BeadCard
+                      key={bead.id}
+                      bead={bead}
+                      blocked={blockedIds.has(bead.id)}
+                      ready={readyIds.has(bead.id)}
+                      isMoving={movingBeadId === bead.id}
+                      onOpen={() => setSelectedBeadId(bead.id)}
+                      draggable={false}
+                    />
+                  ))}
+                </div>
+              )}
+            </>
+          ) : (
+            <>
           <div className="flex flex-col gap-1">
             <h2 className="text-lg font-semibold text-gray-900 dark:text-white">
               Kanban Board
@@ -487,6 +597,7 @@ export default function BeadsPage() {
                           blocked={blockedIds.has(bead.id)}
                           ready={readyIds.has(bead.id)}
                           isMoving={movingBeadId === bead.id}
+                          onOpen={() => setSelectedBeadId(bead.id)}
                         />
                       ))
                     )}
@@ -495,6 +606,8 @@ export default function BeadsPage() {
               );
             })}
           </div>
+            </>
+          )}
         </section>
 
         <section className="space-y-4">
@@ -629,21 +742,118 @@ export default function BeadsPage() {
         isLoading={insightsQuery.isLoading}
         error={insightsQuery.error}
       />
+
+      <dialog
+        ref={detailDialogRef}
+        onClose={() => setSelectedBeadId(null)}
+        className="m-auto max-h-[85vh] w-[min(92vw,48rem)] overflow-y-auto rounded-xl border border-gray-200 bg-white p-0 text-gray-900 shadow-2xl backdrop:bg-gray-950/60 dark:border-gray-700 dark:bg-gray-900 dark:text-white"
+      >
+        <div className="sticky top-0 flex items-start justify-between gap-4 border-b border-gray-200 bg-white p-5 dark:border-gray-700 dark:bg-gray-900">
+          <div>
+            <div className="text-xs font-semibold text-gray-500 dark:text-gray-400">
+              {selectedBeadId}
+            </div>
+            <h2 className="mt-1 text-lg font-semibold">
+              {detailQuery.data?.bead?.title || "Bead details"}
+            </h2>
+          </div>
+          <button
+            type="button"
+            onClick={() => setSelectedBeadId(null)}
+            aria-label="Close bead details"
+            className="rounded-md px-2 py-1 text-xl text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800"
+          >
+            ×
+          </button>
+        </div>
+        <div className="space-y-5 p-5 text-sm">
+          {detailQuery.isLoading && <p className="text-gray-500">Loading bead details...</p>}
+          {detailQuery.error && (
+            <p className="text-red-700 dark:text-red-400">
+              {getErrorMessage(detailQuery.error)}
+            </p>
+          )}
+          {detailQuery.data?.bead && (
+            <>
+              <div className="flex flex-wrap gap-2 text-xs">
+                <span className="rounded bg-gray-100 px-2 py-1 dark:bg-gray-800">
+                  {detailQuery.data.bead.status}
+                </span>
+                <span className="rounded bg-gray-100 px-2 py-1 dark:bg-gray-800">
+                  P{detailQuery.data.bead.priority ?? "?"}
+                </span>
+                {detailQuery.data.bead.issue_type && (
+                  <span className="rounded bg-gray-100 px-2 py-1 dark:bg-gray-800">
+                    {detailQuery.data.bead.issue_type}
+                  </span>
+                )}
+                {detailQuery.data.bead.assignee && (
+                  <span className="rounded bg-gray-100 px-2 py-1 dark:bg-gray-800">
+                    Assigned to {detailQuery.data.bead.assignee}
+                  </span>
+                )}
+              </div>
+              {detailQuery.data.bead.description && (
+                <section>
+                  <h3 className="mb-2 font-semibold">Description</h3>
+                  <div className="whitespace-pre-wrap break-words text-gray-700 dark:text-gray-300">
+                    {formatBeadText(detailQuery.data.bead.description)}
+                  </div>
+                </section>
+              )}
+              {detailQuery.data.bead.acceptance_criteria && (
+                <section>
+                  <h3 className="mb-2 font-semibold">Acceptance Criteria</h3>
+                  <div className="whitespace-pre-wrap break-words text-gray-700 dark:text-gray-300">
+                    {formatBeadText(detailQuery.data.bead.acceptance_criteria)}
+                  </div>
+                </section>
+              )}
+              {detailQuery.data.bead.dependencies && detailQuery.data.bead.dependencies.length > 0 && (
+                <section>
+                  <h3 className="mb-2 font-semibold">Dependencies</h3>
+                  <ul className="space-y-2">
+                    {detailQuery.data.bead.dependencies.map((dependency) => (
+                      <li key={dependency.id} className="rounded border border-gray-200 p-2 dark:border-gray-700">
+                        <span className="font-medium">{dependency.id}</span>
+                        {dependency.title && <span> · {dependency.title}</span>}
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+              )}
+            </>
+          )}
+        </div>
+      </dialog>
     </div>
   );
 }
 
-function StatCard({ title, value, helper }: { title: string; value: number; helper: string }) {
+function StatCard({ title, value, helper, selected, onClick }: {
+  title: string;
+  value: number;
+  helper: string;
+  selected: boolean;
+  onClick: () => void;
+}) {
   return (
-    <div className="rounded-lg border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-800">
-      <div className="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={selected}
+      className={`rounded-lg border bg-white p-4 text-left transition hover:border-blue-400 focus-visible:outline-2 focus-visible:outline-blue-500 dark:bg-gray-800 ${
+        selected ? "border-blue-500 ring-2 ring-blue-200 dark:ring-blue-900" : "border-gray-200 dark:border-gray-700"
+      }`}
+    >
+      <span className="block text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">
         {title}
-      </div>
-      <div className="mt-2 text-2xl font-semibold text-gray-900 dark:text-white">
+      </span>
+      <span className="mt-2 block text-2xl font-semibold text-gray-900 dark:text-white">
         {value}
-      </div>
-      <div className="mt-1 text-xs text-gray-400 dark:text-gray-500">{helper}</div>
-    </div>
+      </span>
+      <span className="mt-1 block text-xs text-gray-400 dark:text-gray-500">{helper}</span>
+    </button>
   );
 }
 
@@ -652,18 +862,31 @@ function BeadCard({
   blocked,
   ready,
   isMoving,
+  onOpen,
+  draggable = true,
 }: {
   bead: Bead;
   blocked: boolean;
   ready: boolean;
   isMoving: boolean;
+  onOpen: () => void;
+  draggable?: boolean;
 }) {
   const priorityLabel =
     typeof bead.priority === "number" ? `P${bead.priority}` : "P?";
 
   return (
     <div
-      draggable
+      role="button"
+      tabIndex={0}
+      onClick={onOpen}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onOpen();
+        }
+      }}
+      draggable={draggable}
       onDragStart={(event) => {
         event.dataTransfer.setData(
           "application/ntm-bead",
@@ -671,7 +894,7 @@ function BeadCard({
         );
         event.dataTransfer.effectAllowed = "move";
       }}
-      className={`rounded-md border border-gray-200 bg-white p-3 text-sm text-gray-700 shadow-sm transition hover:border-blue-300 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 ${
+      className={`cursor-pointer rounded-md border border-gray-200 bg-white p-3 text-sm text-gray-700 shadow-sm transition hover:border-blue-300 focus-visible:outline-2 focus-visible:outline-blue-500 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 ${
         isMoving ? "opacity-60" : ""
       }`}
     >

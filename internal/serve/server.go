@@ -4160,6 +4160,10 @@ func (s *Server) handleListAgentsV1(w http.ResponseWriter, r *http.Request) {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
 		return
 	}
+	registry, err := agentmail.LoadBestSessionAgentRegistry(sessionID, s.projectDirSnapshot())
+	if err != nil {
+		slog.Warn("failed to load session agent registry", "session", sessionID, "error", err)
+	}
 
 	// Filter to only include recognized agent panes (not user/unknown)
 	agents := make([]map[string]interface{}, 0, len(panes))
@@ -4168,10 +4172,15 @@ func (s *Server) handleListAgentsV1(w http.ResponseWriter, r *http.Request) {
 		if agentType == "" || agentType == "unknown" || agentType == "user" || p.Dead {
 			continue
 		}
+		agentName := ""
+		if registry != nil && p.PID != 0 && registry.PanePID(p.ID) == p.PID {
+			agentName, _ = registry.GetAgentByID(p.ID)
+		}
 		agents = append(agents, map[string]interface{}{
 			"id":           p.ID,
 			"session_id":   sessionID,
 			"name":         p.Title,
+			"agent_name":   agentName,
 			"type":         agentType,
 			"tmux_pane_id": p.ID,
 			"pane_index":   p.Index,

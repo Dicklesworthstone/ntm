@@ -514,7 +514,7 @@ function SessionDetailView({ sessionId }: { sessionId: string }) {
 
             <div
               ref={outputRef}
-              className="mt-4 h-80 overflow-y-auto rounded-md border border-gray-200 bg-gray-50 p-3 text-xs font-mono text-gray-700 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200"
+              className="mt-4 h-160 overflow-y-auto rounded-md border border-gray-200 bg-gray-50 p-3 text-xs font-mono text-gray-700 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200"
             >
               {outputSnapshot.lines.length === 0 && (
                 <div className="text-gray-400">No output yet.</div>

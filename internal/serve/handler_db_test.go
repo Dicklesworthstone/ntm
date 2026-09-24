@@ -13,6 +13,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/state"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
@@ -34,6 +35,13 @@ esac
 		t.Fatal(err)
 	}
 	t.Setenv("NTM_TMUX_BINARY", bin)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	registry := agentmail.NewSessionAgentRegistry("live-session", "/tmp/test")
+	registry.AddAgent("live-session__cod_1", "%2", "BlueStone")
+	registry.SetPanePID("%2", 123)
+	if err := agentmail.SaveSessionAgentRegistry(registry); err != nil {
+		t.Fatal(err)
+	}
 	old := tmux.DefaultClient
 	tmux.DefaultClient = tmux.NewClient("")
 	t.Cleanup(func() { tmux.DefaultClient = old })
@@ -63,7 +71,7 @@ esac
 			}
 			if endpoint.key == "agents" {
 				agent, ok := value[0].(map[string]interface{})
-				if !ok || agent["type"] != "cod" || agent["session_id"] != "live-session" || agent["tmux_pane_id"] != "%2" {
+				if !ok || agent["type"] != "cod" || agent["session_id"] != "live-session" || agent["tmux_pane_id"] != "%2" || agent["agent_name"] != "BlueStone" {
 					t.Fatalf("%s: unexpected agent payload: %v", endpoint.path, value[0])
 				}
 			}

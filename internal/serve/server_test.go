@@ -2157,6 +2157,37 @@ func TestSessionsEndpoint(t *testing.T) {
 	}
 }
 
+func TestBeadDetailAcceptsChildID(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("stub br uses sh")
+	}
+	writeStubBr(t, "bc-fwh.14")
+	srv, _ := setupTestServer(t)
+	srv.projectDir = t.TempDir()
+
+	rec := httptest.NewRecorder()
+	srv.router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/beads/bc-fwh.14", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var response struct {
+		Bead struct {
+			ID string `json:"id"`
+		} `json:"bead"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Bead.ID != "bc-fwh.14" {
+		t.Fatalf("bead ID = %q", response.Bead.ID)
+	}
+	for _, invalid := range []string{"--db=/tmp/other", "bc-fwh..14", "bc-fwh/14"} {
+		if beadIDPattern.MatchString(invalid) {
+			t.Errorf("accepted invalid bead ID %q", invalid)
+		}
+	}
+}
+
 func TestHandleListBeadsStub(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("stub br uses sh")

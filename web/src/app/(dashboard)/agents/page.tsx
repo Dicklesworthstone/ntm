@@ -34,6 +34,7 @@ interface AgentRecord {
   id: string;
   session_id: string;
   name: string;
+  agent_name?: string;
   type: string;
   model?: string;
   tmux_pane_id?: string;
@@ -125,7 +126,7 @@ export default function AgentsPage() {
     if (!filter) return agentList;
     const q = filter.toLowerCase();
     return agentList.filter((agent) =>
-      [agent.name, agent.type, agent.session_id, agent.status, agent.model]
+      [agent.name, agent.agent_name, agent.type, agent.session_id, agent.status, agent.model]
         .filter(Boolean)
         .some((field) => String(field).toLowerCase().includes(q))
     );
@@ -147,7 +148,7 @@ export default function AgentsPage() {
             Agents
           </h1>
           <p className="text-sm text-gray-500 dark:text-gray-400">
-            All registered agents across sessions.
+            Live agent panes across sessions.
           </p>
         </div>
         <span className="text-sm text-gray-500 dark:text-gray-400">
@@ -203,7 +204,7 @@ export default function AgentsPage() {
           <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700 text-sm">
             <thead className="bg-gray-50 dark:bg-gray-800">
               <tr>
-                {["Agent", "Type", "Session", "Status", "Pane", "Last Seen"].map(
+                {["Agent Name", "Pane Title", "Type", "Session", "Status", "Pane", "Last Seen"].map(
                   (heading) => (
                     <th
                       key={heading}
@@ -218,6 +219,9 @@ export default function AgentsPage() {
             <tbody className="divide-y divide-gray-200 dark:divide-gray-700 bg-white dark:bg-gray-900">
               {filtered.map((agent) => (
                 <tr key={`${agent.session_id}-${agent.id}`}>
+                  <td className="px-4 py-3 font-medium text-gray-900 dark:text-white">
+                    {agent.agent_name || "—"}
+                  </td>
                   <td className="px-4 py-3">
                     <div className="font-medium text-gray-900 dark:text-white">
                       {agent.name || agent.id}
