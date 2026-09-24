@@ -1935,58 +1935,166 @@ func ExtractTaskTags(title, description string) []string {
 	return tags
 }
 
-// ExtractMentionedFiles extracts file paths mentioned in task text.
+// ExtractMentionedFiles extracts local file intent from task text, preserving
+// first-mention order. Links and source locations are not reservation paths:
+// strip their presentation syntax before classification, but leave project
+// confinement and glob validation to the authoritative reservation boundary.
 func ExtractMentionedFiles(title, description string) []string {
-	text := title + " " + description
-	words := strings.Fields(text)
 	var files []string
-
-	for _, word := range words {
-		// Clean punctuation
-		word = strings.Trim(word, ",.;:()[]{}\"'`")
-		if isFilePath(word) {
-			files = append(files, word)
+	seen := make(map[string]bool)
+	for _, word := range strings.Fields(title + " " + description) {
+		path := normalizeAssignmentFileMention(word)
+		if isFilePath(path) && !seen[path] {
+			seen[path] = true
+			files = append(files, path)
 		}
 	}
 	return files
 }
 
-// isFilePath checks if a string looks like a file path.
+func normalizeAssignmentFileMention(word string) string {
+	word = trimAssignmentMentionDecorations(word)
+	// A Markdown link's destination is its resource. Do not mistake a remote
+	// URL (or the whole "[label](URL)" token) for a repository path.
+	if link := strings.Index(word, "]("); link >= 1 && strings.HasPrefix(word, "[") && strings.HasSuffix(word, ")") {
+		word = trimAssignmentMentionDecorations(word[link+2 : len(word)-1])
+	}
+	if fragment := strings.IndexByte(word, '#'); fragment > 0 {
+		base := word[:fragment]
+		if assignmentMentionHasFileName(base) {
+			word = base // src/file.go#L12-L20 or README.md#design
+		} else if assignmentMentionDigits(word[fragment+1:]) {
+			return "" // owner/repository#123 is an issue reference, not a file.
+		}
+	}
+	// Compiler/editor locations name a file, not a file literally ending in
+	// ":line:column". A Windows drive prefix is retained because its suffix
+	// is not all digits. URI classification below still rejects URL schemes.
+	for {
+		colon := strings.LastIndexByte(word, ':')
+		if colon <= 0 || !assignmentMentionDigits(word[colon+1:]) {
+			break
+		}
+		word = word[:colon]
+	}
+	return word
+}
+
+func trimAssignmentMentionDecorations(word string) string {
+	// Handle the common quote/emphasis/parenthesis layers without becoming a
+	// Markdown parser. In particular, never strip balanced glob braces.
+	for pass := 0; pass < 2; pass++ {
+		word = strings.TrimRight(word, ",.;:")
+		word = strings.Trim(word, "\"'`")
+		for _, marker := range []string{"**", "__"} {
+			if len(word) > 2*len(marker) && strings.HasPrefix(word, marker) && strings.HasSuffix(word, marker) {
+				word = word[len(marker) : len(word)-len(marker)]
+			}
+		}
+		for _, pair := range []string{"()", "[]", "<>"} {
+			if assignmentMentionOuterPair(word, pair[0], pair[1]) {
+				word = word[1 : len(word)-1]
+				break
+			}
+		}
+	}
+	for _, pair := range []string{"()", "[]", "<>"} {
+		extra := strings.Count(word, pair[1:]) - strings.Count(word, pair[:1])
+		for extra > 0 && strings.HasSuffix(word, pair[1:]) {
+			word = word[:len(word)-1]
+			extra--
+		}
+	}
+	return word
+}
+
+func assignmentMentionOuterPair(word string, open, close byte) bool {
+	if len(word) < 2 || word[0] != open || word[len(word)-1] != close {
+		return false
+	}
+	depth := 0
+	for i := range word {
+		switch word[i] {
+		case open:
+			depth++
+		case close:
+			depth--
+		}
+		if depth == 0 && i != len(word)-1 {
+			return false // [ab]/file.go is a glob, not an outer wrapper.
+		}
+	}
+	return depth == 0
+}
+
+func assignmentMentionDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := range s {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// isFilePath classifies a normalized mention, not arbitrary remote resources.
 func isFilePath(s string) bool {
-	if len(s) < 3 {
+	if len(s) < 3 || strings.HasPrefix(s, "-") || strings.Contains(s, "=") || strings.ContainsAny(s, " \t\r\n") {
 		return false
 	}
-
-	// A leading digit means a quantity or a date, not a path: bead titles carry
-	// slash-bearing prose like "13714/2m" and "2026/09/03", and reserving those
-	// as repository paths put junk leases into Agent Mail (ntm#302).
-	if s[0] >= '0' && s[0] <= '9' {
+	lower := strings.ToLower(s)
+	if strings.Contains(s, "://") || strings.HasPrefix(lower, "www.") || strings.HasPrefix(lower, "git@") || assignmentMentionIsURI(s) {
 		return false
 	}
-
-	// Contains path separator or file extension
-	if strings.Contains(s, "/") || strings.Contains(s, "\\") {
-		return true
+	fileName := assignmentMentionHasFileName(s)
+	// Preserve the date/quantity exclusion (ntm#302), but allow explicit
+	// numeric filenames such as migrations/001_init.sql and 2026/report.md.
+	if s[0] >= '0' && s[0] <= '9' && !fileName {
+		return false
 	}
+	return fileName || strings.ContainsAny(s, "/\\*") || strings.HasPrefix(s, ".")
+}
 
-	// Has common file extensions
-	extensions := []string{".go", ".ts", ".js", ".py", ".rs", ".md", ".yaml", ".yml", ".json", ".toml"}
-	for _, ext := range extensions {
-		if strings.HasSuffix(s, ext) {
+func assignmentMentionIsURI(s string) bool {
+	colon := strings.IndexByte(s, ':')
+	if colon < 1 {
+		return false
+	}
+	isLetter := func(c byte) bool { return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' }
+	if !isLetter(s[0]) {
+		return false
+	}
+	if colon == 1 && len(s) > 2 && (s[2] == '/' || s[2] == '\\') {
+		return false // Drive-qualified local path; confinement is checked later.
+	}
+	for i := 1; i < colon; i++ {
+		c := s[i]
+		if !isLetter(c) && !(c >= '0' && c <= '9') && c != '+' && c != '-' && c != '.' {
+			return false
+		}
+	}
+	return true
+}
+
+func assignmentMentionHasFileName(s string) bool {
+	lower := strings.ToLower(s)
+	for _, extension := range []string{
+		".go", ".ts", ".tsx", ".js", ".jsx", ".py", ".rs", ".md", ".yaml", ".yml", ".json", ".toml",
+		".c", ".h", ".cc", ".cpp", ".hpp", ".cs", ".java", ".kt", ".kts", ".swift", ".rb", ".php",
+		".sh", ".bash", ".zsh", ".sql", ".proto", ".xml", ".html", ".css", ".scss", ".vue", ".svelte",
+		".mod", ".sum", ".lock", ".txt", ".ini", ".conf", ".cfg",
+	} {
+		if strings.HasSuffix(lower, extension) {
 			return true
 		}
 	}
-
-	// Contains glob patterns
-	if strings.Contains(s, "*") || strings.Contains(s, "**") {
+	base := s[strings.LastIndexAny(s, "/\\")+1:]
+	switch base {
+	case "Makefile", "GNUmakefile", "Dockerfile", "Containerfile", "Jenkinsfile", "Justfile", "README", "LICENSE", "NOTICE":
 		return true
 	}
-
-	// Starts with dot (hidden file/directory)
-	if strings.HasPrefix(s, ".") && len(s) > 1 {
-		return true
-	}
-
 	return false
 }
 
