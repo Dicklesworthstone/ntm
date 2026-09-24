@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -467,7 +468,7 @@ func TestReservePathsReadbackNeverExtendsGrantExpiry(t *testing.T) {
 			raw, _ := json.Marshal([]any{row})
 			return reservationResourceFixture(string(raw)), nil
 		})
-		result, err := c.ReservePaths(context.Background(), FileReservationOptions{ProjectKey: "/test/project", AgentName: "BlueLake", Paths: []string{"src/file41.go"}})
+		result, err := c.ReservePaths(context.Background(), FileReservationOptions{ProjectKey: "/test/project", AgentName: "BlueLake", Paths: []string{"src/file41.go"}, Exclusive: true})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -504,18 +505,207 @@ func TestReservePathsReadbackCancellationRetainsMutationReceipt(t *testing.T) {
 	}
 }
 
-func TestReservePathsKeepsExplicitMetadataForCallerValidation(t *testing.T) {
+func TestReservePathsRejectsExplicitInvalidMetadataWithoutRepair(t *testing.T) {
 	t.Parallel()
 	var calls atomic.Int32
 	c := reservationReadbackClient(t, func(_ *http.Request, req JSONRPCRequest) (any, *JSONRPCError) {
 		calls.Add(1)
-		if req.Method != "tools/call" {
-			t.Error("explicit metadata must not be silently rewritten")
+		if req.Method == "resources/read" {
+			params, _ := req.Params.(map[string]interface{})
+			uri, _ := params["uri"].(string)
+			if strings.HasPrefix(uri, "resource://project/") {
+				return reservationResourceFixture(`{"id":73,"slug":"test","human_key":"/test/project"}`), nil
+			}
+			raw, _ := json.Marshal(reservationRowsFixture(40, 1))
+			return reservationResourceFixture(string(raw)), nil
 		}
 		return ReservationResult{Granted: []FileReservation{{ID: 41, ProjectID: 0, AgentName: "BlueLake", PathPattern: "src/file41.go"}}}, nil
 	})
 	result, err := c.ReservePaths(context.Background(), FileReservationOptions{ProjectKey: "/test/project", AgentName: "BlueLake", Paths: []string{"src/file41.go"}})
-	if err != nil || calls.Load() != 1 || result.Granted[0].ProjectID != 0 {
+	if !errors.Is(err, ErrReservationUnverified) || calls.Load() < 3 || result == nil || len(result.Granted) != 1 || result.Granted[0].ProjectID != 0 {
 		t.Fatalf("explicit invalid identity was laundered: %+v %v", result, err)
+	}
+}
+
+// Explicit fields are assertions in a mutation receipt, not proof of current
+// ownership. Exercise the public API so all dialects have the same contract.
+func TestReservePathsExplicitGrantsRequireIndependentEvidence(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{
+		"valid", "foreign owner", "foreign project", "foreign project resource",
+		"zero project", "null project", "empty owner", "null owner", "wrong receipt owner",
+		"same path different ID", "different path", "different reason", "released row",
+		"released receipt", "expired row", "expired receipt", "exclusive upgrade",
+		"exclusive downgrade", "project unavailable", "listing unavailable", "cancelled",
+		"shorter expiry", "longer expiry", "partial conflict", "unverified conflict",
+	} {
+		t.Run(mode, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			grant := reservationCompactGrant()
+			grant["project_id"], grant["agent_name"] = 73, "BlueLake"
+			row := reservationRowsFixture(40, 1)[0]
+			row["project_id"] = 73
+			row["created_ts"] = "2026-01-01T00:00:00Z"
+			opts := FileReservationOptions{ProjectKey: "/test/project", AgentName: "BlueLake", Paths: []string{"src/file41.go"}, Exclusive: true, Reason: "bead assignment: bd-work"}
+			conflicts := []any{}
+			switch mode {
+			case "foreign owner", "unverified conflict":
+				row["agent"] = "OtherAgent"
+			case "foreign project":
+				row["project_id"] = 99
+			case "zero project":
+				grant["project_id"] = 0
+			case "null project":
+				grant["project_id"] = nil
+			case "empty owner":
+				grant["agent_name"] = ""
+			case "null owner":
+				grant["agent_name"] = nil
+			case "wrong receipt owner":
+				grant["agent_name"] = "OtherAgent"
+			case "same path different ID":
+				row["id"] = 42
+			case "different path":
+				row["path_pattern"] = "unrelated.go"
+			case "different reason":
+				row["reason"] = "different assignment"
+			case "released row":
+				row["released_ts"] = "2026-01-01T00:00:00Z"
+			case "released receipt":
+				grant["released_ts"] = "2026-01-01T00:00:00Z"
+			case "expired row":
+				row["expires_ts"] = "2000-01-01T00:00:00Z"
+			case "expired receipt":
+				grant["expires_ts"] = "2000-01-01T00:00:00Z"
+			case "exclusive upgrade":
+				opts.Exclusive = false
+			case "exclusive downgrade":
+				grant["exclusive"], row["exclusive"] = false, false
+			case "shorter expiry":
+				row["expires_ts"] = "2098-01-01T00:00:00Z"
+			case "longer expiry":
+				row["expires_ts"] = "2100-01-01T00:00:00Z"
+			}
+			if mode == "partial conflict" || mode == "unverified conflict" {
+				opts.Paths = append(opts.Paths, "blocked.go")
+				conflicts = append(conflicts, map[string]any{"path": "blocked.go", "holders": []string{"OtherAgent"}})
+			}
+			reply := map[string]any{"granted": []any{grant}, "conflicts": conflicts}
+			raw, _ := json.Marshal(reply)
+			original, err := decodeReservationReply(raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var writes, reads atomic.Int32
+			c := reservationReadbackClient(t, func(_ *http.Request, req JSONRPCRequest) (any, *JSONRPCError) {
+				params, _ := req.Params.(map[string]interface{})
+				if req.Method == "tools/call" {
+					writes.Add(1)
+					if params["name"] != "file_reservation_paths" {
+						t.Errorf("verification attempted mutation %v", params["name"])
+					}
+					return reply, nil
+				}
+				reads.Add(1)
+				uri, _ := params["uri"].(string)
+				if mode == "cancelled" {
+					cancel()
+					return nil, &JSONRPCError{Code: -32000, Message: "cancelled"}
+				}
+				if strings.HasPrefix(uri, "resource://project/") {
+					if mode == "project unavailable" {
+						return nil, &JSONRPCError{Code: -32000, Message: "identity unavailable"}
+					}
+					key := "/test/project"
+					if mode == "foreign project resource" {
+						key = "/another/project"
+					}
+					data, _ := json.Marshal(map[string]any{"id": 73, "slug": "test", "human_key": key})
+					return reservationResourceFixture(string(data)), nil
+				}
+				if mode == "listing unavailable" {
+					return nil, &JSONRPCError{Code: -32000, Message: "listing unavailable"}
+				}
+				data, _ := json.Marshal([]any{row})
+				return reservationResourceFixture(string(data)), nil
+			})
+			result, err := c.ReservePaths(ctx, opts)
+			verified := mode == "valid" || mode == "shorter expiry" || mode == "longer expiry" || mode == "partial conflict"
+			if verified {
+				if mode == "partial conflict" {
+					if !errors.Is(err, ErrReservationConflict) || errors.Is(err, ErrReservationUnverified) {
+						t.Fatalf("valid partial evidence rejected: %v", err)
+					}
+				} else if err != nil {
+					t.Fatal(err)
+				}
+				if result == nil || len(result.Granted) != 1 || result.Granted[0].CreatedTS.IsZero() {
+					t.Fatalf("missing independent readback: %+v", result)
+				}
+				wantExpiry := "2099-01-01T01:00:00Z"
+				if mode == "shorter expiry" {
+					wantExpiry = "2098-01-01T00:00:00Z"
+				}
+				if result.Granted[0].ExpiresTS.Format(time.RFC3339) != wantExpiry {
+					t.Fatalf("validity overstated: %+v", result.Granted)
+				}
+			} else if !errors.Is(err, ErrReservationUnverified) || !reflect.DeepEqual(original, result) {
+				t.Fatalf("unverified explicit receipt accepted or rewritten: %+v %v", result, err)
+			}
+			if mode == "cancelled" && !errors.Is(err, context.Canceled) {
+				t.Fatalf("lost cancellation cause: %v", err)
+			}
+			if mode == "unverified conflict" && !errors.Is(err, ErrReservationConflict) {
+				t.Fatalf("lost conflict cause: %v", err)
+			}
+			if writes.Load() != 1 || reads.Load() == 0 {
+				t.Fatalf("expected one mutation and independent reads: writes=%d reads=%d", writes.Load(), reads.Load())
+			}
+		})
+	}
+}
+
+func TestReservePathsLateVerificationFailureLeavesEntireReceiptUntouched(t *testing.T) {
+	t.Parallel()
+	for _, mixed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("mixed_dialect=%v", mixed), func(t *testing.T) {
+			first := reservationCompactGrant()
+			first["project_id"], first["agent_name"] = 73, "BlueLake"
+			second := reservationCompactGrant()
+			second["id"], second["path_pattern"] = 42, "src/file42.go"
+			if !mixed {
+				second["project_id"], second["agent_name"] = 73, "BlueLake"
+			}
+			reply := map[string]any{"granted": []any{first, second}}
+			raw, _ := json.Marshal(reply)
+			original, err := decodeReservationReply(raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			c := reservationReadbackClient(t, func(_ *http.Request, req JSONRPCRequest) (any, *JSONRPCError) {
+				if req.Method == "tools/call" {
+					return reply, nil
+				}
+				params, _ := req.Params.(map[string]interface{})
+				uri, _ := params["uri"].(string)
+				if strings.HasPrefix(uri, "resource://project/") {
+					return reservationResourceFixture(`{"id":73,"slug":"test","human_key":"/test/project"}`), nil
+				}
+				rows := reservationRowsFixture(40, 2)
+				rows[0]["expires_ts"] = "2098-01-01T00:00:00Z"
+				// Row 42 belongs to OtherAgent. Row 41 must not be rewritten
+				// to its verified (shorter) expiry before row 42 is rejected.
+				data, _ := json.Marshal(rows)
+				return reservationResourceFixture(string(data)), nil
+			})
+			result, err := c.ReservePaths(context.Background(), FileReservationOptions{
+				ProjectKey: "/test/project", AgentName: "BlueLake", Exclusive: true,
+				Paths: []string{"src/file41.go", "src/file42.go"}, Reason: "bead assignment: bd-work",
+			})
+			if !errors.Is(err, ErrReservationUnverified) || !reflect.DeepEqual(original, result) {
+				t.Fatalf("partially published verification or accepted foreign lease: %+v %v", result, err)
+			}
+		})
 	}
 }

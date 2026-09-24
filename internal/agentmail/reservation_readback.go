@@ -271,8 +271,8 @@ func decodeReservationReply(raw json.RawMessage) (result *ReservationResult, err
 	return result, errors.Join(decodeErrors...)
 }
 
-// completeReservationGrantOwnership fills only omitted ownership fields, and
-// only after exact-ID verification against independent, live server reads.
+// completeReservationGrantOwnership verifies every granted lease by exact ID
+// against independent, live server reads, even when ownership is explicit.
 // Explicit zero/empty/wrong values are not silently repaired. All grants stay
 // untouched if any check fails, preserving the original recovery evidence.
 func (c *Client) completeReservationGrantOwnership(ctx context.Context, opts FileReservationOptions, raw json.RawMessage, result *ReservationResult) (err error) {
@@ -324,11 +324,10 @@ func (c *Client) completeReservationGrantOwnership(ctx context.Context, opts Fil
 	if len(result.Conflicts) == 0 && len(seenPaths) != len(wantedPaths) {
 		return fmt.Errorf("granted %d of %d requested paths without a conflict", len(seenPaths), len(wantedPaths))
 	}
-	needsReadback := false
-	for _, grant := range wire.Granted {
-		needsReadback = needsReadback || len(grant.ProjectID) == 0 || len(grant.AgentName) == 0
-	}
-	if !needsReadback {
+	// Complete-looking mutation receipts are not independent ownership
+	// evidence. Only a receipt without grants (for example a conflict-only
+	// reply) can skip readback, after the coverage checks above.
+	if len(result.Granted) == 0 {
 		return ctx.Err()
 	}
 	if strings.TrimSpace(opts.AgentName) == "" {
@@ -373,7 +372,7 @@ func (c *Client) completeReservationGrantOwnership(ctx context.Context, opts Fil
 		if !wantedPaths[grant.PathPattern] || row.PathPattern != grant.PathPattern || row.Reason != grant.Reason || (opts.Reason != "" && row.Reason != opts.Reason) {
 			return fmt.Errorf("reservation %d path or reason does not match the requested grant", grant.ID)
 		}
-		if row.Exclusive != grant.Exclusive || (opts.Exclusive && !row.Exclusive) {
+		if row.Exclusive != grant.Exclusive || row.Exclusive != opts.Exclusive {
 			return fmt.Errorf("reservation %d exclusivity does not match the requested grant", grant.ID)
 		}
 		if row.ReleasedTS != nil || grant.ReleasedTS != nil || !row.ExpiresTS.After(now) || !grant.ExpiresTS.After(now) {

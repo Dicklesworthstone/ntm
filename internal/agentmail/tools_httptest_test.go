@@ -620,19 +620,23 @@ func TestSummarizeThread_OmitsIncludeExamplesWhenUnset(t *testing.T) {
 func TestReservePaths(t *testing.T) {
 	t.Parallel()
 
-	server := httptest.NewServer(mockMCPHandler(t, map[string]func(args map[string]interface{}) (interface{}, *JSONRPCError){
-		"file_reservation_paths": func(args map[string]interface{}) (interface{}, *JSONRPCError) {
-			return ReservationResult{
-				Granted: []FileReservation{
-					{ID: 1, PathPattern: "internal/agentmail/*", AgentName: "TestAgent", Exclusive: true},
-				},
-				Conflicts: nil,
-			}, nil
-		},
-	}))
-	defer server.Close()
-
-	c := NewClient(WithBaseURL(server.URL + "/"))
+	lease := FileReservation{
+		ID: 1, ProjectID: 7, PathPattern: "internal/agentmail/*", AgentName: "TestAgent",
+		Exclusive: true, Reason: "testing",
+		ExpiresTS: FlexTime{Time: time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC)},
+	}
+	c := reservationReadbackClient(t, func(_ *http.Request, req JSONRPCRequest) (any, *JSONRPCError) {
+		params, _ := req.Params.(map[string]interface{})
+		if req.Method == "tools/call" {
+			return ReservationResult{Granted: []FileReservation{lease}}, nil
+		}
+		uri, _ := params["uri"].(string)
+		if strings.HasPrefix(uri, "resource://project/") {
+			return reservationResourceFixture(`{"id":7,"slug":"test","human_key":"/test"}`), nil
+		}
+		raw, _ := json.Marshal([]FileReservation{lease})
+		return reservationResourceFixture(string(raw)), nil
+	})
 	result, err := c.ReservePaths(context.Background(), FileReservationOptions{
 		ProjectKey: "/test",
 		AgentName:  "TestAgent",
