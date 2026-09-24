@@ -19,6 +19,7 @@ import (
 // the public transfer entry point with the exact replies under examination.
 type receiptTransferClient struct {
 	calls   []string
+	grants  map[int]string
 	reserve func(context.Context, agentmail.FileReservationOptions) (*agentmail.ReservationResult, error)
 	release func(context.Context, string, []string) (*agentmail.ReleaseReservationsResult, error)
 	renew   func(context.Context, agentmail.RenewReservationsOptions) (*agentmail.RenewReservationsResult, error)
@@ -26,16 +27,41 @@ type receiptTransferClient struct {
 
 func (c *receiptTransferClient) ReservePaths(ctx context.Context, o agentmail.FileReservationOptions) (*agentmail.ReservationResult, error) {
 	c.calls = append(c.calls, "reserve:"+o.AgentName+":"+strings.Join(o.Paths, ","))
+	result := receiptGrants(o.Paths...)
+	var err error
 	if c.reserve != nil {
-		return c.reserve(ctx, o)
+		result, err = c.reserve(ctx, o)
 	}
-	return receiptGrants(o.Paths...), nil
+	if result != nil {
+		if c.grants == nil {
+			c.grants = make(map[int]string)
+		}
+		for _, grant := range result.Granted {
+			c.grants[grant.ID] = grant.PathPattern
+		}
+	}
+	return result, err
 }
 func (c *receiptTransferClient) ReleaseReservations(ctx context.Context, _, owner string, paths []string, ids []int) (*agentmail.ReleaseReservationsResult, error) {
-	c.calls = append(c.calls, "release:"+owner+":"+strings.Join(paths, ","))
-	if len(ids) != 0 {
-		return nil, errors.New("unexpected ID release in path-based transfer")
+	if owner == "new" && (len(paths) != 0 || len(ids) == 0) {
+		return nil, errors.New("destination cleanup must use exact IDs only")
 	}
+	if len(ids) != 0 {
+		if len(paths) != 0 {
+			return nil, errors.New("release mixed paths and IDs")
+		}
+		// Emulate server ID selection for the existing sequencing assertions;
+		// never repair the mutation receipts themselves.
+		paths = make([]string, 0, len(ids))
+		for _, id := range ids {
+			path, ok := c.grants[id]
+			if !ok {
+				return nil, fmt.Errorf("unknown grant ID %d", id)
+			}
+			paths = append(paths, path)
+		}
+	}
+	c.calls = append(c.calls, "release:"+owner+":"+strings.Join(paths, ","))
 	if c.release != nil {
 		return c.release(ctx, owner, paths)
 	}
@@ -50,8 +76,15 @@ func (c *receiptTransferClient) RenewReservations(ctx context.Context, o agentma
 }
 func receiptGrants(paths ...string) *agentmail.ReservationResult {
 	out := &agentmail.ReservationResult{}
-	for _, p := range paths {
-		out.Granted = append(out.Granted, agentmail.FileReservation{PathPattern: p})
+	for i, p := range paths {
+		id := 1000 + i
+		switch p {
+		case "a.go":
+			id = 101
+		case "b.go":
+			id = 102
+		}
+		out.Granted = append(out.Granted, agentmail.FileReservation{ID: id, PathPattern: p})
 	}
 	return out
 }
@@ -340,4 +373,150 @@ func TestTransferUnverifiedOwnershipNeverAuthorizesCompensation(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestTransferCleanupPreservesReplacementLease(t *testing.T) {
+	// The destination's original lease disappears before cleanup. Another
+	// process using the same agent name acquires the same path with a new ID.
+	live := map[int]string{202: "a.go"}
+	client := &fakeTransferClient{}
+	client.reserveFn = func(o agentmail.FileReservationOptions) (*agentmail.ReservationResult, error) {
+		if o.AgentName != "new" {
+			t.Fatal("source compensation ran after uncertain cleanup")
+		}
+		return &agentmail.ReservationResult{Granted: []agentmail.FileReservation{
+			{ID: 201, PathPattern: "a.go"},
+		}}, agentmail.ErrReservationConflict
+	}
+	client.releaseFn = func(_, owner string, paths []string, ids []int) (*agentmail.ReleaseReservationsResult, error) {
+		if owner == "old" {
+			return &agentmail.ReleaseReservationsResult{Released: len(paths) + len(ids)}, nil
+		}
+		count := 0
+		// Emulate union-selector semantics, so the old path-based code really
+		// deletes the replacement. The test's oracle is the surviving lease.
+		for id, path := range live {
+			selected := false
+			for _, requested := range paths {
+				selected = selected || requested == path
+			}
+			for _, requested := range ids {
+				selected = selected || requested == id
+			}
+			if selected {
+				delete(live, id)
+				count++
+			}
+		}
+		return &agentmail.ReleaseReservationsResult{Released: count}, nil
+	}
+	opts := receiptTransferOptions()
+	opts.Reservations = opts.Reservations[:1]
+	result, err := TransferReservations(context.Background(), client, opts)
+	if live[202] != "a.go" {
+		t.Fatal("cleanup released a replacement lease on the same path")
+	}
+	if !errors.Is(err, agentmail.ErrReservationConflict) || result.Success || result.RolledBack || !result.OutcomeUnknown || result.CleanupError == "" || result.Attempts != 1 {
+		t.Fatalf("uncertain cleanup authorized further work: result=%+v error=%v", result, err)
+	}
+	if len(client.releaseCalls) != 2 || len(client.reserveCalls) != 1 {
+		t.Fatalf("unexpected mutations: release=%v reserve=%v", client.releaseCalls, client.reserveCalls)
+	}
+	cleanup := client.releaseCalls[1]
+	if len(cleanup.paths) != 0 || !reflect.DeepEqual(cleanup.ids, []int{201}) || !reflect.DeepEqual(transferResultIDs(t, result), []int{201}) {
+		t.Fatalf("lost exact cleanup identity: call=%+v result=%+v", cleanup, result)
+	}
+}
+
+func TestTransferCleanupUsesPriorAttemptIDsOnly(t *testing.T) {
+	client := &fakeTransferClient{}
+	attempt := 0
+	client.reserveFn = func(o agentmail.FileReservationOptions) (*agentmail.ReservationResult, error) {
+		attempt++
+		if attempt == 1 {
+			return &agentmail.ReservationResult{Granted: []agentmail.FileReservation{
+				{ID: 201, PathPattern: "a.go"},
+			}}, agentmail.ErrReservationConflict
+		}
+		return &agentmail.ReservationResult{Granted: []agentmail.FileReservation{
+			{ID: 301, PathPattern: "a.go"}, {ID: 302, PathPattern: "b.go"},
+		}}, nil
+	}
+	client.releaseFn = func(_, owner string, paths []string, ids []int) (*agentmail.ReleaseReservationsResult, error) {
+		if owner == "new" {
+			if len(paths) != 0 || !reflect.DeepEqual(ids, []int{201}) {
+				t.Fatalf("cleanup broadened its lease scope: paths=%v IDs=%v", paths, ids)
+			}
+			ids[0] = -1 // A port must not be able to corrupt returned evidence.
+			return &agentmail.ReleaseReservationsResult{Released: 1}, nil
+		}
+		return &agentmail.ReleaseReservationsResult{Released: len(paths) + len(ids)}, nil
+	}
+	result, err := TransferReservations(context.Background(), client, receiptTransferOptions())
+	if err != nil || !result.Success || result.Attempts != 2 || !reflect.DeepEqual(transferResultIDs(t, result), []int{301, 302}) {
+		t.Fatalf("retry lost its new lease identities: result=%+v error=%v", result, err)
+	}
+	wire, err := json.Marshal(result)
+	if err != nil || !strings.Contains(string(wire), `"granted_ids":[301,302]`) {
+		t.Fatalf("lease identity missing from recovery output: %s %v", wire, err)
+	}
+}
+
+func TestTransferRejectsUnusableGrantIDs(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		ids      []int
+		shared   bool
+		conflict bool
+	}{
+		{name: "missing", ids: []int{0, 102}},
+		{name: "negative", ids: []int{-1, 102}},
+		{name: "duplicate within group", ids: []int{101, 101}},
+		{name: "duplicate across groups", ids: []int{101, 101}, shared: true},
+		{name: "missing partial-conflict identity", ids: []int{0, 102}, conflict: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := &fakeTransferClient{}
+			client.reserveFn = func(o agentmail.FileReservationOptions) (*agentmail.ReservationResult, error) {
+				result := &agentmail.ReservationResult{}
+				for _, path := range o.Paths {
+					i := 0
+					if path == "b.go" {
+						i = 1
+					}
+					result.Granted = append(result.Granted, agentmail.FileReservation{ID: tc.ids[i], PathPattern: path})
+				}
+				if tc.conflict {
+					return result, agentmail.ErrReservationConflict
+				}
+				return result, nil
+			}
+			opts := receiptTransferOptions()
+			if tc.shared {
+				opts.Reservations[1].Exclusive = false
+			}
+			result, err := TransferReservations(context.Background(), client, opts)
+			if !errors.Is(err, ErrTransferGrantEvidence) || result.Success || result.RolledBack || !result.OutcomeUnknown || len(client.releaseCalls) != 1 {
+				t.Fatalf("bad identity authorized cleanup or retry: result=%+v error=%v calls=%+v", result, err, client.releaseCalls)
+			}
+			if !reflect.DeepEqual(transferResultIDs(t, result), tc.ids) || !reflect.DeepEqual(result.GrantedPaths, []string{"a.go", "b.go"}) {
+				t.Fatalf("discarded unverified receipt evidence: %+v", result)
+			}
+		})
+	}
+}
+
+func transferResultIDs(t *testing.T, result *ReservationTransferResult) []int {
+	t.Helper()
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire struct {
+		IDs []int `json:"granted_ids"`
+	}
+	if err := json.Unmarshal(encoded, &wire); err != nil {
+		t.Fatal(err)
+	}
+	return wire.IDs
 }

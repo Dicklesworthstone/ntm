@@ -46,15 +46,18 @@ type TransferReservationsOptions struct {
 
 // ReservationTransferResult reports transfer outcomes for debugging and recovery.
 type ReservationTransferResult struct {
-	FromAgent      string                          `json:"from_agent"`
-	ToAgent        string                          `json:"to_agent"`
-	RequestedPaths []string                        `json:"requested_paths"`
-	GrantedPaths   []string                        `json:"granted_paths"`
-	ReleasedPaths  []string                        `json:"released_paths"`
-	Conflicts      []agentmail.ReservationConflict `json:"conflicts,omitempty"`
-	RolledBack     bool                            `json:"rolled_back,omitempty"`
-	Success        bool                            `json:"success"`
-	Error          string                          `json:"error,omitempty"`
+	FromAgent      string   `json:"from_agent"`
+	ToAgent        string   `json:"to_agent"`
+	RequestedPaths []string `json:"requested_paths"`
+	GrantedPaths   []string `json:"granted_paths"`
+	// GrantedIDs parallels GrantedPaths and retains exact lease handles even
+	// when verification or cleanup fails. Unverified handles are evidence only.
+	GrantedIDs    []int                           `json:"granted_ids,omitempty"`
+	ReleasedPaths []string                        `json:"released_paths"`
+	Conflicts     []agentmail.ReservationConflict `json:"conflicts,omitempty"`
+	RolledBack    bool                            `json:"rolled_back,omitempty"`
+	Success       bool                            `json:"success"`
+	Error         string                          `json:"error,omitempty"`
 
 	// Stage identifies the last attempted phase, including compensation.
 	Stage string `json:"stage,omitempty"`
@@ -161,7 +164,7 @@ func TransferReservations(ctx context.Context, client ReservationTransferClient,
 	// Compensation gets its own bounded context after caller cancellation.
 	// A failed cleanup stops here: blindly clearing the grant slice and retrying
 	// would lose evidence and can acquire more leases while the old ones remain.
-	cleanup := func(granted []string) error {
+	cleanup := func(granted []agentmail.FileReservation) error {
 		if len(granted) == 0 {
 			return nil
 		}
@@ -197,7 +200,12 @@ func TransferReservations(ctx context.Context, client ReservationTransferClient,
 		result.Stage = "reserve"
 		result.Attempts = attempt
 		granted, conflicts, reserveErr := reserveAll(ctx, client, opts.ProjectKey, opts.ToAgent, ttlSeconds, opts.FromAgent, exclusivePaths, sharedPaths)
-		result.GrantedPaths = append([]string(nil), granted...)
+		result.GrantedPaths = nil
+		result.GrantedIDs = nil
+		for _, grant := range granted {
+			result.GrantedPaths = append(result.GrantedPaths, grant.PathPattern)
+			result.GrantedIDs = append(result.GrantedIDs, grant.ID)
+		}
 		result.Conflicts = append([]agentmail.ReservationConflict(nil), conflicts...)
 		reserveErr = errors.Join(reserveErr, ctx.Err())
 		if reserveErr == nil {
@@ -266,9 +274,10 @@ func splitReservationPaths(reservations []ReservationSnapshot) (exclusive []stri
 	return exclusive, shared, requested
 }
 
-func reserveAll(ctx context.Context, client ReservationTransferClient, projectKey, agentName string, ttlSeconds int, fromAgent string, exclusive, shared []string) ([]string, []agentmail.ReservationConflict, error) {
-	var granted []string
+func reserveAll(ctx context.Context, client ReservationTransferClient, projectKey, agentName string, ttlSeconds int, fromAgent string, exclusive, shared []string) ([]agentmail.FileReservation, []agentmail.ReservationConflict, error) {
+	var granted []agentmail.FileReservation
 	var conflicts []agentmail.ReservationConflict
+	seenIDs := make(map[int]bool)
 	for i, paths := range [][]string{exclusive, shared} {
 		if len(paths) == 0 {
 			continue
@@ -276,6 +285,14 @@ func reserveAll(ctx context.Context, client ReservationTransferClient, projectKe
 		grant, conflict, err := reserveGroup(ctx, client, projectKey, agentName, paths, ttlSeconds, i == 0, fromAgent)
 		granted = append(granted, grant...)
 		conflicts = append(conflicts, conflict...)
+		// Exclusive and shared acquisition are separate calls, but their
+		// receipts form one transfer. A repeated ID cannot name two leases.
+		for _, g := range grant {
+			if seenIDs[g.ID] {
+				err = errors.Join(err, fmt.Errorf("%w: repeated grant ID %d across transfer groups", ErrTransferGrantEvidence, g.ID))
+			}
+			seenIDs[g.ID] = true
+		}
 		if err != nil {
 			// Keep the actual error even when a server returns a conflict code
 			// without a conflict array. Do not acquire the next group on failure.
@@ -285,7 +302,7 @@ func reserveAll(ctx context.Context, client ReservationTransferClient, projectKe
 	return granted, conflicts, nil
 }
 
-func reserveGroup(ctx context.Context, client ReservationTransferClient, projectKey, agentName string, paths []string, ttlSeconds int, exclusive bool, fromAgent string) ([]string, []agentmail.ReservationConflict, error) {
+func reserveGroup(ctx context.Context, client ReservationTransferClient, projectKey, agentName string, paths []string, ttlSeconds int, exclusive bool, fromAgent string) ([]agentmail.FileReservation, []agentmail.ReservationConflict, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, nil, err
 	}
@@ -300,7 +317,7 @@ func reserveGroup(ctx context.Context, client ReservationTransferClient, project
 		// a cleanup scope, including when the error also carries a conflict.
 		err = errors.Join(ErrTransferGrantEvidence, err)
 	}
-	var granted []string
+	var granted []agentmail.FileReservation
 	var conflicts []agentmail.ReservationConflict
 	if res == nil {
 		if err == nil {
@@ -313,9 +330,14 @@ func reserveGroup(ctx context.Context, client ReservationTransferClient, project
 		wanted[path] = true
 	}
 	seen := make(map[string]bool, len(res.Granted))
+	seenIDs := make(map[int]bool, len(res.Granted))
 	var evidenceErr error
 	for _, g := range res.Granted {
-		granted = append(granted, g.PathPattern)
+		granted = append(granted, g)
+		if g.ID <= 0 || seenIDs[g.ID] {
+			evidenceErr = errors.Join(evidenceErr, fmt.Errorf("%w: missing or duplicate grant ID %d", ErrTransferGrantEvidence, g.ID))
+		}
+		seenIDs[g.ID] = true
 		if !wanted[g.PathPattern] || seen[g.PathPattern] {
 			evidenceErr = errors.Join(evidenceErr, fmt.Errorf("%w: unexpected or duplicate grant path %q", ErrTransferGrantEvidence, g.PathPattern))
 		}
@@ -338,14 +360,25 @@ func rollbackReservations(ctx context.Context, client ReservationTransferClient,
 	return err
 }
 
-func releaseGrantedReservations(ctx context.Context, client ReservationTransferClient, projectKey, agentName string, granted []string) error {
+func releaseGrantedReservations(ctx context.Context, client ReservationTransferClient, projectKey, agentName string, granted []agentmail.FileReservation) error {
 	if len(granted) == 0 {
 		return nil
 	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	res, err := client.ReleaseReservations(ctx, projectKey, agentName, append([]string(nil), granted...), nil)
+	ids := make([]int, 0, len(granted))
+	seen := make(map[int]bool, len(granted))
+	for _, grant := range granted {
+		if grant.ID <= 0 || seen[grant.ID] {
+			return fmt.Errorf("%w: cannot clean up missing or duplicate lease ID %d", ErrTransferGrantEvidence, grant.ID)
+		}
+		seen[grant.ID] = true
+		ids = append(ids, grant.ID)
+	}
+	// Paths are reusable names, not lease identities. Sending them alongside
+	// IDs may broaden the server selector and release a newer same-path lease.
+	res, err := client.ReleaseReservations(ctx, projectKey, agentName, nil, ids)
 	if err = errors.Join(err, ctx.Err()); err != nil {
 		return err
 	}

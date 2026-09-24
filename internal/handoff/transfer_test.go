@@ -13,6 +13,7 @@ type releaseCall struct {
 	projectKey string
 	agentName  string
 	paths      []string
+	ids        []int
 }
 
 type renewCall struct {
@@ -62,8 +63,8 @@ func (f *fakeTransferClient) ReservePaths(ctx context.Context, opts agentmail.Fi
 		return f.reserveFn(opts)
 	}
 	var granted []agentmail.FileReservation
-	for _, p := range opts.Paths {
-		granted = append(granted, agentmail.FileReservation{PathPattern: p})
+	for i, p := range opts.Paths {
+		granted = append(granted, agentmail.FileReservation{ID: len(f.reserveCalls)*100 + i + 1, PathPattern: p})
 	}
 	return &agentmail.ReservationResult{Granted: granted}, nil
 }
@@ -73,6 +74,7 @@ func (f *fakeTransferClient) ReleaseReservations(ctx context.Context, projectKey
 		projectKey: projectKey,
 		agentName:  agentName,
 		paths:      paths,
+		ids:        append([]int(nil), ids...),
 	})
 	if f.releaseFn != nil {
 		return f.releaseFn(projectKey, agentName, paths, ids)
@@ -132,14 +134,14 @@ func TestTransferReservationsConflictRollback(t *testing.T) {
 		if opts.AgentName == "new" {
 			conflict := agentmail.ReservationConflict{Path: "internal/a.go", Holders: []string{"someone"}}
 			res := &agentmail.ReservationResult{
-				Granted:   []agentmail.FileReservation{{PathPattern: "internal/a.go"}},
+				Granted:   []agentmail.FileReservation{{ID: callCount, PathPattern: "internal/a.go"}},
 				Conflicts: []agentmail.ReservationConflict{conflict},
 			}
 			return res, agentmail.ErrReservationConflict
 		}
 		// rollback for old agent
 		return &agentmail.ReservationResult{
-			Granted: []agentmail.FileReservation{{PathPattern: "internal/a.go"}},
+			Granted: []agentmail.FileReservation{{ID: callCount, PathPattern: "internal/a.go"}},
 		}, nil
 	}
 
@@ -177,11 +179,11 @@ func TestTransferReservationsReserveErrorRollsBackAfterPartialGrant(t *testing.T
 	client.reserveFn = func(opts agentmail.FileReservationOptions) (*agentmail.ReservationResult, error) {
 		if opts.AgentName == "new" {
 			return &agentmail.ReservationResult{
-				Granted: []agentmail.FileReservation{{PathPattern: "internal/a.go"}},
+				Granted: []agentmail.FileReservation{{ID: 201, PathPattern: "internal/a.go"}},
 			}, errors.New("reserve failed")
 		}
 		return &agentmail.ReservationResult{
-			Granted: []agentmail.FileReservation{{PathPattern: "internal/a.go"}},
+			Granted: []agentmail.FileReservation{{ID: 301, PathPattern: "internal/a.go"}},
 		}, nil
 	}
 
@@ -217,12 +219,12 @@ func TestTransferReservationsRetryWaitFailureRollsBackOldReservations(t *testing
 		if opts.AgentName == "new" {
 			cancel()
 			return &agentmail.ReservationResult{
-				Granted:   []agentmail.FileReservation{{PathPattern: "internal/a.go"}},
+				Granted:   []agentmail.FileReservation{{ID: 201, PathPattern: "internal/a.go"}},
 				Conflicts: []agentmail.ReservationConflict{{Path: "internal/a.go", Holders: []string{"other"}}},
 			}, agentmail.ErrReservationConflict
 		}
 		return &agentmail.ReservationResult{
-			Granted: []agentmail.FileReservation{{PathPattern: "internal/a.go"}},
+			Granted: []agentmail.FileReservation{{ID: 301, PathPattern: "internal/a.go"}},
 		}, nil
 	}
 
@@ -254,11 +256,11 @@ func TestTransferReservationsRollbackUsesCleanupContextAfterCancellation(t *test
 	base.reserveFn = func(opts agentmail.FileReservationOptions) (*agentmail.ReservationResult, error) {
 		if opts.AgentName == "new" {
 			return &agentmail.ReservationResult{
-				Granted: []agentmail.FileReservation{{PathPattern: "internal/a.go"}},
+				Granted: []agentmail.FileReservation{{ID: 201, PathPattern: "internal/a.go"}},
 			}, errors.New("reserve failed")
 		}
 		return &agentmail.ReservationResult{
-			Granted: []agentmail.FileReservation{{PathPattern: "internal/a.go"}},
+			Granted: []agentmail.FileReservation{{ID: 301, PathPattern: "internal/a.go"}},
 		}, nil
 	}
 
@@ -300,11 +302,11 @@ func TestTransferReservationsRollbackReleasesPartialGrantOnlyOnce(t *testing.T) 
 	client.reserveFn = func(opts agentmail.FileReservationOptions) (*agentmail.ReservationResult, error) {
 		if opts.AgentName == "new" {
 			return &agentmail.ReservationResult{
-				Granted: []agentmail.FileReservation{{PathPattern: "internal/a.go"}},
+				Granted: []agentmail.FileReservation{{ID: 201, PathPattern: "internal/a.go"}},
 			}, errors.New("reserve failed")
 		}
 		return &agentmail.ReservationResult{
-			Granted: []agentmail.FileReservation{{PathPattern: "internal/a.go"}},
+			Granted: []agentmail.FileReservation{{ID: 301, PathPattern: "internal/a.go"}},
 		}, nil
 	}
 	client.releaseFn = func(projectKey, agentName string, paths []string, ids []int) (*agentmail.ReleaseReservationsResult, error) {
@@ -532,18 +534,18 @@ func TestTransferReservationsGraceRetrySuccess(t *testing.T) {
 	client.reserveFn = func(opts agentmail.FileReservationOptions) (*agentmail.ReservationResult, error) {
 		if opts.AgentName != "new" {
 			return &agentmail.ReservationResult{
-				Granted: []agentmail.FileReservation{{PathPattern: "internal/a.go"}},
+				Granted: []agentmail.FileReservation{{ID: 301, PathPattern: "internal/a.go"}},
 			}, nil
 		}
 		callCount++
 		if callCount == 1 {
 			return &agentmail.ReservationResult{
-				Granted:   []agentmail.FileReservation{{PathPattern: "internal/a.go"}},
+				Granted:   []agentmail.FileReservation{{ID: callCount, PathPattern: "internal/a.go"}},
 				Conflicts: []agentmail.ReservationConflict{{Path: "internal/a.go", Holders: []string{"other"}}},
 			}, agentmail.ErrReservationConflict
 		}
 		return &agentmail.ReservationResult{
-			Granted: []agentmail.FileReservation{{PathPattern: "internal/a.go"}},
+			Granted: []agentmail.FileReservation{{ID: callCount, PathPattern: "internal/a.go"}},
 		}, nil
 	}
 
@@ -697,7 +699,7 @@ func TestTransferReservationsContextCancellation(t *testing.T) {
 			}, agentmail.ErrReservationConflict
 		}
 		return &agentmail.ReservationResult{
-			Granted: []agentmail.FileReservation{{PathPattern: "a.go"}},
+			Granted: []agentmail.FileReservation{{ID: callCount, PathPattern: "a.go"}},
 		}, nil
 	}
 
