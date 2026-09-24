@@ -199,12 +199,11 @@ func (c *Client) ReservePaths(ctx context.Context, opts FileReservationOptions) 
 		"project_key": opts.ProjectKey,
 		"agent_name":  opts.AgentName,
 		"paths":       opts.Paths,
+		// False is a requested shared lease, not an omitted server default.
+		"exclusive": opts.Exclusive,
 	}
 	if opts.TTLSeconds > 0 {
 		args["ttl_seconds"] = opts.TTLSeconds
-	}
-	if opts.Exclusive {
-		args["exclusive"] = true
 	}
 	if opts.Reason != "" {
 		args["reason"] = opts.Reason
@@ -282,6 +281,15 @@ func (c *Client) completeReservationGrantOwnership(ctx context.Context, opts Fil
 			err = fmt.Errorf("%w: %w", ErrReservationUnverified, err)
 		}
 	}()
+	if ctx == nil {
+		return errors.New("grant ownership verification requires a context")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if result == nil {
+		return errors.New("grant ownership verification requires a mutation receipt")
+	}
 	var wire struct {
 		Granted []struct {
 			ProjectID json.RawMessage `json:"project_id"`
@@ -290,6 +298,31 @@ func (c *Client) completeReservationGrantOwnership(ctx context.Context, opts Fil
 	}
 	if err := json.Unmarshal(raw, &wire); err != nil {
 		return fmt.Errorf("decode grant ownership fields: %w", err)
+	}
+	if len(wire.Granted) != len(result.Granted) {
+		return errors.New("grant ownership fields do not match the decoded receipt")
+	}
+	// A successful mutation must cover the entire request, regardless of the
+	// server's ownership-field dialect. Failure receipts may legitimately
+	// contain partial grants, but never duplicate or unrequested lease handles.
+	wantedPaths := make(map[string]bool, len(opts.Paths))
+	for _, path := range opts.Paths {
+		if path == "" {
+			return errors.New("grant ownership verification requires nonempty paths")
+		}
+		wantedPaths[path] = true
+	}
+	seenPaths := make(map[string]bool, len(result.Granted))
+	seenIDs := make(map[int]bool, len(result.Granted))
+	for _, grant := range result.Granted {
+		if grant.ID <= 0 || seenIDs[grant.ID] || !wantedPaths[grant.PathPattern] || seenPaths[grant.PathPattern] {
+			return fmt.Errorf("grant has missing, repeated, or unrequested lease identity: %d", grant.ID)
+		}
+		seenIDs[grant.ID] = true
+		seenPaths[grant.PathPattern] = true
+	}
+	if len(result.Conflicts) == 0 && len(seenPaths) != len(wantedPaths) {
+		return fmt.Errorf("granted %d of %d requested paths without a conflict", len(seenPaths), len(wantedPaths))
 	}
 	needsReadback := false
 	for _, grant := range wire.Granted {
@@ -315,10 +348,6 @@ func (c *Client) completeReservationGrantOwnership(ctx context.Context, opts Fil
 			return fmt.Errorf("readback repeated reservation ID %d", reservation.ID)
 		}
 		byID[reservation.ID] = reservation
-	}
-	wantedPaths := make(map[string]bool, len(opts.Paths))
-	for _, path := range opts.Paths {
-		wantedPaths[path] = true
 	}
 	verified := make([]FileReservation, len(result.Granted))
 	seen := make(map[int]bool, len(result.Granted))
