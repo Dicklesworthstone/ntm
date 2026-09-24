@@ -500,6 +500,9 @@ func clearWorkflowStepVariables(vars map[string]interface{}, workflow *Workflow)
 }
 
 func (e *Executor) forceResumeIteration(stepID string, iteration int) {
+	if strings.TrimSpace(stepID) == "" || iteration < 0 {
+		return
+	}
 	var prunedStepIDs []string
 	e.stateMu.Lock()
 	if e.state == nil {
@@ -513,6 +516,10 @@ func (e *Executor) forceResumeIteration(stepID string, iteration int) {
 	state.StepID = stepID
 	state.CurrentIteration = iteration
 	state.CompletedIterationIDs = filterCompletedIterationsBefore(state.CompletedIterationIDs, stepID, iteration)
+	prefix := fmt.Sprintf("%s_iter", stepID)
+	// A forced iteration must restart its rounds too. Otherwise max_rounds
+	// can skip every round even after its StepResults have been removed.
+	removeIterationEntries(state.CompletedRounds, prefix, iteration)
 	// bd-t3q8a: sequential foreach (loops.go) appends collected outputs in
 	// iteration order, so truncating to length=iteration drops the entries
 	// for the iterations that are about to rerun. Without this, the
@@ -524,18 +531,14 @@ func (e *Executor) forceResumeIteration(stepID string, iteration int) {
 	state.UpdatedAt = time.Now()
 	e.state.ForeachState[stepID] = state
 
-	prefix := fmt.Sprintf("%s_iter", stepID)
-	for id := range e.state.Steps {
-		if iterationIndexFromID(id, prefix) >= iteration {
-			delete(e.state.Steps, id)
-			prunedStepIDs = append(prunedStepIDs, id)
-		}
-	}
-	for id := range e.state.AgentDeliveries {
-		if iterationIndexFromID(id, prefix) >= iteration {
-			delete(e.state.AgentDeliveries, id)
-		}
-	}
+	// All iteration-local checkpoints participate in the rewind. Nested
+	// loops and parallel groups otherwise restore stale completion markers;
+	// receipts and in-flight markers can exist before any StepResult does.
+	prunedStepIDs = append(prunedStepIDs, removeIterationEntries(e.state.Steps, prefix, iteration)...)
+	prunedStepIDs = append(prunedStepIDs, removeIterationEntries(e.state.AgentDeliveries, prefix, iteration)...)
+	prunedStepIDs = append(prunedStepIDs, removeIterationEntries(e.state.InFlightSteps, prefix, iteration)...)
+	prunedStepIDs = append(prunedStepIDs, removeIterationEntries(e.state.ParallelState, prefix, iteration)...)
+	prunedStepIDs = append(prunedStepIDs, removeIterationEntries(e.state.ForeachState, prefix, iteration)...)
 	e.stateMu.Unlock()
 
 	// bd-a3fwf: deleting StepResults is not enough — Substitutor.resolveSteps
@@ -550,22 +553,44 @@ func (e *Executor) forceResumeIteration(stepID string, iteration int) {
 	// can be invoked before the workflow graph is rebuilt (and in unit tests
 	// the graph is never set), and the executor helper would NPE on
 	// e.graph.GetStep(id) in those cases.
-	if len(prunedStepIDs) > 0 {
-		e.varMu.Lock()
-		if e.state != nil && e.state.Variables != nil {
-			for _, id := range prunedStepIDs {
-				delete(e.state.Variables, "steps."+id+".output")
-				delete(e.state.Variables, "steps."+id+".data")
-				if e.graph != nil {
-					if step, ok := e.graph.GetStep(id); ok && step.OutputVar != "" {
-						delete(e.state.Variables, step.OutputVar)
-						delete(e.state.Variables, step.OutputVar+"_parsed")
-					}
+	e.varMu.Lock()
+	if e.state != nil && e.state.Variables != nil {
+		// Flat output keys may survive a checkpoint without a StepResult.
+		// Scan them independently rather than relying on prunedStepIDs alone.
+		for key := range e.state.Variables {
+			if !strings.HasPrefix(key, "steps.") {
+				continue
+			}
+			id := strings.TrimPrefix(key, "steps.")
+			switch {
+			case strings.HasSuffix(id, ".output"):
+				id = strings.TrimSuffix(id, ".output")
+			case strings.HasSuffix(id, ".data"):
+				id = strings.TrimSuffix(id, ".data")
+			default:
+				continue
+			}
+			if iterationIndexFromID(id, prefix) >= iteration {
+				delete(e.state.Variables, key)
+				prunedStepIDs = append(prunedStepIDs, id)
+			}
+		}
+		for _, id := range prunedStepIDs {
+			delete(e.state.Variables, "steps."+id+".output")
+			delete(e.state.Variables, "steps."+id+".data")
+			if e.graph != nil {
+				step, ok := e.graph.GetStep(id)
+				if !ok {
+					step, _, ok = e.graph.ResolveScopedRuntimeStep(id)
+				}
+				if ok && step.OutputVar != "" {
+					delete(e.state.Variables, step.OutputVar)
+					delete(e.state.Variables, step.OutputVar+"_parsed")
 				}
 			}
 		}
-		e.varMu.Unlock()
 	}
+	e.varMu.Unlock()
 }
 
 func filterCompletedIterationsBefore(ids []string, stepID string, iteration int) []string {
@@ -587,7 +612,9 @@ func iterationIndexFromID(id, prefix string) int {
 	rest := strings.TrimPrefix(id, prefix)
 	for i, r := range rest {
 		if r < '0' || r > '9' {
-			if i == 0 {
+			// Runtime descendants are separated with underscores. An arbitrary
+			// textual suffix may instead name an unrelated workflow step.
+			if i == 0 || r != '_' {
 				return -1
 			}
 			var idx int
@@ -602,6 +629,24 @@ func iterationIndexFromID(id, prefix string) int {
 		return -1
 	}
 	return idx
+}
+
+// removeIterationEntries clears a suffix of a loop's runtime namespace while
+// preserving prior iterations and unrelated work. Callers hold the lock that
+// protects entries. Returning the removed IDs also permits output-var cleanup
+// for checkpoints that have no corresponding StepResult yet.
+func removeIterationEntries[T any](entries map[string]T, prefix string, iteration int) []string {
+	if iteration < 0 {
+		return nil
+	}
+	var removed []string
+	for id := range entries {
+		if iterationIndexFromID(id, prefix) >= iteration {
+			delete(entries, id)
+			removed = append(removed, id)
+		}
+	}
+	return removed
 }
 
 func (e *Executor) markStepInFlight(stepID, kind string, iteration int) {
