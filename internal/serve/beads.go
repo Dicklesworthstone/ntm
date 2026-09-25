@@ -3,12 +3,10 @@
 package serve
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -410,14 +408,25 @@ func (s *Server) handleCloseBead(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if async {
-		dir, err := filepath.Abs(s.projectDirSnapshot())
+		job, err := s.submitJob(r.Context(), CreateJobRequest{
+			Type:   jobTypeBeadClose,
+			Params: map[string]interface{}{"bead_id": beadID},
+		})
 		if err != nil {
-			writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
+			code, status := ErrCodeServiceUnavail, http.StatusServiceUnavailable
+			if errors.Is(err, errInvalidJobRequest) {
+				code, status = ErrCodeBadRequest, http.StatusBadRequest
+			}
+			if errors.Is(err, errJobQueueFull) {
+				w.Header().Set("Retry-After", "1")
+			}
+			details := map[string]interface{}{"bead_id": beadID, "execution": s.jobExecutor.snapshot()}
+			if job != nil {
+				details["job"] = job
+			}
+			writeErrorResponse(w, status, code, err.Error(), details, reqID)
 			return
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), jobExecutionTimeout)
-		job := s.jobStore.Create("bead_close", jobOwnership{cancel: cancel, projectDir: dir})
-		go s.executeBeadCloseJob(ctx, job.ID, dir, beadID)
 		w.Header().Set("Location", "/api/v1/jobs/"+job.ID)
 		writeSuccessResponse(w, http.StatusAccepted, map[string]interface{}{
 			"job":     job,
@@ -441,38 +450,6 @@ func (s *Server) handleCloseBead(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeSuccessResponse(w, http.StatusOK, result, reqID)
-}
-
-// executeBeadCloseJob owns the cancellation handle until the last result write.
-// The project is captured at acceptance, not reread after a concurrent config
-// change. A cancelled row retains evidence even if the close already committed.
-func (s *Server) executeBeadCloseJob(ctx context.Context, jobID, dir, beadID string) {
-	defer s.jobStore.ClearCancel(jobID)
-	defer s.jobStore.Cancel(jobID)
-	s.jobStore.Update(jobID, JobStatusRunning, 0, nil, "")
-
-	result, err := runBeadClose(ctx, dir, beadID, bv.RunBdContext)
-	if err != nil {
-		status := JobStatusFailed
-		if errors.Is(err, context.Canceled) {
-			status = JobStatusCancelled
-		}
-		s.jobStore.Update(jobID, status, 0, result, err.Error())
-		s.jobStore.retainCancelledResult(jobID, result)
-		s.publishAsyncBeadCloseAttention(jobID, beadID, false, err)
-		return
-	}
-
-	alreadyClosed := result["already_closed"] == true
-	if !alreadyClosed && s.wsHub != nil {
-		s.wsHub.Publish("beads:*", "bead.closed", map[string]interface{}{
-			"id":   beadID,
-			"bead": result["bead"],
-		})
-	}
-	s.jobStore.Update(jobID, JobStatusCompleted, 100, result, "")
-	s.jobStore.retainCancelledResult(jobID, result)
-	s.publishAsyncBeadCloseAttention(jobID, beadID, alreadyClosed, nil)
 }
 
 func (s *Server) publishAsyncBeadCloseAttention(jobID, beadID string, alreadyClosed bool, closeErr error) {

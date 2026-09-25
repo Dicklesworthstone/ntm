@@ -71,6 +71,7 @@ func (s *Server) dispatchJob(jobID string, req CreateJobRequest) {
 	}
 	ctx, cancel := context.WithTimeout(parent, jobExecutionTimeout)
 	defer cancel()
+	ctx = context.WithValue(ctx, jobExecutionIDKey{}, jobID)
 	// Register the cancel func so DELETE /api/v1/jobs/{id} stops the real
 	// work; the terminal-state guard in JobStore.Update keeps the cancelled
 	// status from being overwritten when this goroutine unwinds.
@@ -84,7 +85,7 @@ func (s *Server) dispatchJob(jobID string, req CreateJobRequest) {
 		return
 	}
 	var progressMu sync.Mutex
-	var lastProgress map[string]interface{}
+	lastProgress := job.Result
 	finishProgress := func(result map[string]interface{}) map[string]interface{} {
 		progressMu.Lock()
 		defer progressMu.Unlock()
@@ -168,6 +169,8 @@ func (s *Server) executeJobRequest(ctx context.Context, req CreateJobRequest) (m
 		return nil, err
 	}
 	switch req.Type {
+	case jobTypeBeadClose:
+		return s.executeBeadCloseJob(ctx, params)
 	case JobTypePipelineRun:
 		return s.jobPipelineRun(ctx, params)
 	case JobTypePipelineExec:

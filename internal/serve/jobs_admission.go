@@ -50,10 +50,21 @@ func (s *Server) prepareJobRequest(req CreateJobRequest) (CreateJobRequest, erro
 	if err != nil {
 		return req, fmt.Errorf("%w: %v", errInvalidJobRequest, err)
 	}
-	// A queued pipeline must not follow a later PATCH /config to another
+	// Queued project-scoped work must not follow PATCH /config to another
 	// project. Freeze the absolute selection, not mutable workflow contents.
 	// Keep this private so it cannot alter the operation-ID fingerprint.
 	switch frozen.Type {
+	case jobTypeBeadClose:
+		if _, err := decodeBeadCloseJob(frozen.Params); err != nil {
+			return req, fmt.Errorf("%w: %v", errInvalidJobRequest, err)
+		}
+		if frozen.Session != "" {
+			return req, fmt.Errorf("%w: bead close does not accept a session", errInvalidJobRequest)
+		}
+		frozen.executionProjectDir, err = filepath.Abs(s.projectDirSnapshot())
+		if err != nil {
+			return req, fmt.Errorf("%w: resolve bead project: %v", errInvalidJobRequest, err)
+		}
 	case JobTypePipelineRun, JobTypePipelineExec, JobTypePipelineResume:
 		frozen.executionProjectDir, err = filepath.Abs(s.pipelineProjectDir())
 		if err != nil {
@@ -63,10 +74,10 @@ func (s *Server) prepareJobRequest(req CreateJobRequest) (CreateJobRequest, erro
 	return frozen, nil
 }
 
-// jobExecutionServer selects the admitted pipeline namespace without copying
+// jobExecutionServer selects the admitted project namespace without copying
 // live mutexes or rereading mutable server configuration. Operation ownership
 // and journal callbacks stay on the original server/context; only the existing
-// pipeline engine and its event publisher use this execution view.
+// project-scoped engine and its event publisher use this execution view.
 func (s *Server) jobExecutionServer(req CreateJobRequest) *Server {
 	if req.executionProjectDir == "" {
 		return s
@@ -74,7 +85,7 @@ func (s *Server) jobExecutionServer(req CreateJobRequest) *Server {
 	return &Server{projectDir: req.executionProjectDir, wsHub: s.wsHub}
 }
 
-// submitJob is the only admission path for generic async jobs. Capacity is
+// submitJob is the shared admission path for managed async jobs. Capacity is
 // reserved before preparation and the pending receipt is flushed before 202 or
 // dispatch. Execution deadlines start at dispatch, not while waiting in queue.
 func (s *Server) submitJob(ctx context.Context, req CreateJobRequest) (*Job, error) {
@@ -91,6 +102,11 @@ func (s *Server) submitJob(ctx context.Context, req CreateJobRequest) (*Job, err
 			return nil, fmt.Errorf("%w: %v", errInvalidJobRequest, err)
 		}
 		resources := jobExecutionResources(frozen.Type, params)
+		if frozen.Type == jobTypeBeadClose {
+			// Hold ownership across show/close/reconciliation for one bead.
+			// Unrelated sessions must not wait on a global sessionless barrier.
+			resources = []string{"bead:" + frozen.executionProjectDir + ":" + params["bead_id"].(string)}
+		}
 		var resumeTarget *jobResumeTarget
 		if frozen.Type == JobTypePipelineResume {
 			resumeTarget = resolveJobResumeTarget(frozen.executionProjectDir, params, loadJobResumeSession)
@@ -121,9 +137,17 @@ func (s *Server) submitJob(ctx context.Context, req CreateJobRequest) (*Job, err
 			}
 		}()
 		receipt = s.jobStore.Create(frozen.Type, jobOwnership{cancel: cancel, projectDir: frozen.executionProjectDir})
+		if frozen.Type == jobTypeBeadClose {
+			// Persist target identity, not an executable request. A queued or
+			// interrupted close must remain inspectable after a server restart.
+			s.jobStore.Update(receipt.ID, JobStatusPending, 0, map[string]interface{}{
+				"bead_id": params["bead_id"], "project_dir": frozen.executionProjectDir,
+			}, "")
+			receipt = s.jobStore.Get(receipt.ID)
+		}
 		frozen.executionContext = jobCtx
 		if err := s.persistJobHistory(receipt.ID); err != nil {
-			s.jobStore.Update(receipt.ID, JobStatusFailed, 0, nil,
+			s.jobStore.Update(receipt.ID, JobStatusFailed, 0, receipt.Result,
 				fmt.Sprintf("checkpoint job before acceptance: %v", err))
 			return nil, fmt.Errorf("checkpoint job before acceptance: %w", err)
 		}
@@ -155,7 +179,11 @@ func (s *Server) discardQueuedJob(id string) {
 			s.recordJobJournalError(id, err)
 		}
 	}()
-	s.jobStore.Update(id, JobStatusCancelled, 0, nil, "job cancelled before execution")
+	var result map[string]interface{}
+	if job := s.jobStore.Get(id); job != nil {
+		result = job.Result
+	}
+	s.jobStore.Update(id, JobStatusCancelled, 0, result, "job cancelled before execution")
 }
 
 // cancelJob transitions atomically against completion. Signal the worker even
