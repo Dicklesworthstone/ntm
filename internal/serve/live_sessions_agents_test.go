@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -257,5 +258,53 @@ func TestBeadIDPattern(t *testing.T) {
 		if beadIDPattern.MatchString(id) {
 			t.Errorf("invalid bead ID %q accepted", id)
 		}
+	}
+}
+
+// A wedged tmux server must not hang the sessions endpoints: the live listing
+// is bounded, the list endpoint degrades to the stored rows, and the detail
+// endpoint answers instead of blocking.
+func TestHandleSessionsV1_HungTmuxDegradesToStoredSessions(t *testing.T) {
+	srv, store := setupTestServer(t)
+	createTestSessionForServe(t, store, "stored")
+	srv.liveSessionsTimeout = 50 * time.Millisecond
+	srv.listLiveSessions = func(ctx context.Context) ([]tmux.Session, error) {
+		<-ctx.Done() // tmux never answers
+		return nil, ctx.Err()
+	}
+
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		rec := httptest.NewRecorder()
+		srv.handleSessionsV1(rec, httptest.NewRequest(http.MethodGet, "/api/v1/sessions", nil))
+		done <- rec
+	}()
+	select {
+	case rec := <-done:
+		sessions, count := decodeSessionsList(t, rec)
+		if count != 1 || sessions[0]["name"] != "stored" {
+			t.Fatalf("sessions = %#v (count %d), want the stored row only", sessions, count)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("list endpoint hung on an unresponsive tmux")
+	}
+
+	detail := make(chan int, 1)
+	go func() {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions/absent", nil)
+		rctx := chi.NewRouteContext()
+		rctx.URLParams.Add("id", "absent")
+		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+		rec := httptest.NewRecorder()
+		srv.handleSessionV1(rec, req)
+		detail <- rec.Code
+	}()
+	select {
+	case code := <-detail:
+		if code == http.StatusOK {
+			t.Fatalf("detail status = %d for a session tmux never reported", code)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("detail endpoint hung on an unresponsive tmux")
 	}
 }

@@ -112,6 +112,9 @@ type Server struct {
 	// listLiveSessions lists the tmux sessions that are running right now.
 	// Nil in production (tmux.ListSessionsContext); tests inject fixtures.
 	listLiveSessions func(context.Context) ([]tmux.Session, error)
+	// liveSessionsTimeout bounds each live tmux session listing; zero means
+	// defaultLiveSessionsTimeout. Tests shorten it.
+	liveSessionsTimeout time.Duration
 	// policyWriteFile is optional test-only fault injection for policy updates.
 	// Production servers leave it nil and use os.WriteFile directly.
 	policyWriteFile func(string, []byte, os.FileMode) error
@@ -3206,12 +3209,24 @@ func (s *Server) handleSessionsV1(w http.ResponseWriter, r *http.Request) {
 	}, reqID)
 }
 
+// defaultLiveSessionsTimeout bounds the tmux query behind the sessions
+// endpoints. The web UI polls them every few seconds; without a bound, a wedged
+// tmux server would hang every poll (and pile up tmux processes) instead of
+// degrading to the stored rows.
+const defaultLiveSessionsTimeout = 5 * time.Second
+
 // liveTmuxSessions returns the running tmux sessions sorted by name.
 func (s *Server) liveTmuxSessions(ctx context.Context) ([]tmux.Session, error) {
 	list := tmux.ListSessionsContext
 	if s.listLiveSessions != nil {
 		list = s.listLiveSessions
 	}
+	timeout := s.liveSessionsTimeout
+	if timeout <= 0 {
+		timeout = defaultLiveSessionsTimeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	live, err := list(ctx)
 	if err != nil {
 		return nil, err
