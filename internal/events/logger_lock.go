@@ -43,7 +43,9 @@ func openEventLogWriter(path string) (*os.File, error) {
 	} else if !os.IsNotExist(err) {
 		return nil, err
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	// Read access lets appenders check the final delimiter without opening a
+	// second descriptor or accidentally inspecting a different generation.
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_RDWR, 0644)
 	if err != nil {
 		return nil, err
 	}

@@ -148,6 +148,9 @@ func (l *Logger) Log(event *Event) error {
 	if err := l.refreshWriter(); err != nil {
 		return err
 	}
+	if err := ensureEventLogNewline(l.file); err != nil {
+		return err
+	}
 
 	// Write to file with newline
 	if _, err := l.file.Write(append(data, '\n')); err != nil {
@@ -251,8 +254,11 @@ func (l *Logger) rotationSnapshot() (*os.File, os.FileInfo, error) {
 		return nil, nil, err
 	}
 	defer releaseEventLogLock(lock)
-	if err := l.refreshWriter(); err != nil {
-		return nil, nil, err
+	// A stale appender may rebind on its next Log, but retention must not
+	// adopt and rewrite an unrelated replacement merely because it exists.
+	active, err := l.file.Stat()
+	if err != nil {
+		return nil, nil, fmt.Errorf("stat active log: %w", err)
 	}
 	src, err := os.Open(l.path)
 	if err != nil {
@@ -263,7 +269,39 @@ func (l *Logger) rotationSnapshot() (*os.File, os.FileInfo, error) {
 		_ = src.Close()
 		return nil, nil, fmt.Errorf("stat log snapshot: %w", err)
 	}
+	if !os.SameFile(active, info) {
+		_ = src.Close()
+		return nil, nil, fmt.Errorf("active log changed before rotation")
+	}
+	if err := verifyEventLogFile(src, l.path); err != nil {
+		_ = src.Close()
+		return nil, nil, err
+	}
 	return src, info, nil
+}
+
+// ensureEventLogNewline preserves an interrupted final record verbatim and
+// separates it from the next append. Never truncate crash evidence or let a
+// malformed tail swallow a newly acknowledged event. The caller holds the
+// process lock, so another cooperating writer cannot race the tail check.
+func ensureEventLogNewline(f *os.File) error {
+	info, err := f.Stat()
+	if err != nil {
+		return fmt.Errorf("stat event log tail: %w", err)
+	}
+	if info.Size() == 0 {
+		return nil
+	}
+	var last [1]byte
+	if _, err := f.ReadAt(last[:], info.Size()-1); err != nil {
+		return fmt.Errorf("read event log tail: %w", err)
+	}
+	if last[0] != '\n' {
+		if _, err := f.Write([]byte{'\n'}); err != nil {
+			return fmt.Errorf("separate interrupted event log tail: %w", err)
+		}
+	}
+	return nil
 }
 
 // refreshWriter requires both l.mu and the stable cross-process log lock.
@@ -370,7 +408,7 @@ func (l *Logger) commitRotation(src *os.File, snapshot os.FileInfo, tmp *os.File
 	if err := tmp.Sync(); err != nil {
 		return fmt.Errorf("syncing rotated log: %w", err)
 	}
-	writer, err := os.OpenFile(tmp.Name(), os.O_APPEND|os.O_WRONLY, 0)
+	writer, err := os.OpenFile(tmp.Name(), os.O_APPEND|os.O_RDWR, 0)
 	if err != nil {
 		return fmt.Errorf("opening rotated log writer: %w", err)
 	}
@@ -447,8 +485,21 @@ func ReadSince(path string, since time.Time) ([]Event, error) {
 		return nil, err
 	}
 	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("event log must be a regular file")
+	}
+	return readEventSnapshot(f, info.Size(), path, since)
+}
 
-	scanner := bufio.NewScanner(f)
+// Bound each read to the observed file size. An active swarm can append
+// indefinitely; a history query must not chase a moving EOF. Later appends
+// belong to the next query, and replacement leaves this descriptor intact.
+func readEventSnapshot(src io.ReaderAt, size int64, path string, since time.Time) ([]Event, error) {
+	scanner := bufio.NewScanner(io.NewSectionReader(src, 0, size))
 	scanner.Buffer(make([]byte, 64*1024), maxEventLineBytes)
 
 	var result []Event
