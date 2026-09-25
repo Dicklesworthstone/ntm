@@ -57,11 +57,29 @@ func TestPatternsOverlap_GlobMatrix(t *testing.T) {
 		{"**", "anyfile.go", true},
 		{"foo/bar.go", "**", true},  // symmetric
 		{"/**", "foo/bar.go", true}, // already worked — pin it
+
+		// Reservation languages can intersect even when neither pattern
+		// matches the other pattern's literal spelling.
+		{"src/*/main.go", "src/service/*.go", true},
+		{"src/[ab].go", "src/[bc].go", true},
+		{"src/**/main.go", "src/main.go", true},
+		{"*.go", "src/nested/main.go", true},
+		{"src", "src/nested/main.go", true},
+		{"src/[ab].go", "src/[cd].go", false},
+		{"src/*.go", "src/nested/*.go", false},
+		{"src/**/main.go", "other/**/main.go", false},
+		{"src", "src-other/main.go", false},
+		{" src/*.go", "src/main.go", false},
+		{"src/file.go ", "src/file.go", false},
+		{"[broken", "src/main.go", true},
+		{"", "[broken", false},
 	}
 	for _, c := range cases {
-		got := patternsOverlap(c.a, c.b)
-		if got != c.want {
-			t.Errorf("patternsOverlap(%q, %q) = %v, want %v", c.a, c.b, got, c.want)
+		for _, pair := range [][2]string{{c.a, c.b}, {c.b, c.a}} {
+			got := patternsOverlap(pair[0], pair[1])
+			if got != c.want {
+				t.Errorf("patternsOverlap(%q, %q) = %v, want %v", pair[0], pair[1], got, c.want)
+			}
 		}
 	}
 }

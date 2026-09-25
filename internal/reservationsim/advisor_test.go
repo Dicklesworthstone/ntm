@@ -1,6 +1,7 @@
 package reservationsim
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -133,5 +134,71 @@ func requireReservationText(t *testing.T, got, want string) {
 	t.Helper()
 	if strings.Compare(got, want) != 0 {
 		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestAdviseReservations_IntersectionEvidence(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, first, second             string
+		firstExclusive, secondExclusive bool
+		sameHolder, wantOverlap         bool
+	}{
+		{"crossing globs", "src/*/main.go", "src/service/*.go", true, true, false, true},
+		{"shared versus exclusive", "src/*/main.go", "src/service/*.go", false, true, false, true},
+		{"both shared", "src/*/main.go", "src/service/*.go", false, false, false, false},
+		{"same holder", "src/*/main.go", "src/service/*.go", true, true, true, false},
+		{"basename glob", "*.go", "src/nested/main.go", true, true, false, true},
+		{"literal subtree", "src", "src/nested/main.go", true, true, false, true},
+		{"invalid is unverified", "[broken", "src/main.go", true, true, false, true},
+		{"disjoint", "src/*.go", "docs/*.md", true, true, false, false},
+		{"whitespace is data", " src/*.go", "src/main.go", true, true, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			now := anchor()
+			rows := []ReservationRiskInput{
+				{ID: 1, PathPattern: tc.first, AgentName: "BlueLake", Exclusive: tc.firstExclusive, CreatedAt: now, ExpiresAt: now.Add(time.Hour)},
+				{ID: 2, PathPattern: tc.second, AgentName: "GreenHill", Exclusive: tc.secondExclusive, CreatedAt: now, ExpiresAt: now.Add(time.Hour)},
+			}
+			if tc.sameHolder {
+				rows[1].AgentName = rows[0].AgentName
+			}
+			report := AdviseReservations(rows, ReservationAdvisorOptions{Now: now})
+			// Exercise the report shape consumed by ntm locks advise --json,
+			// not just the internal matcher. No file needs to exist on disk.
+			data, err := json.Marshal(report)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var decoded ReservationAdvisorReport
+			if err := json.Unmarshal(data, &decoded); err != nil {
+				t.Fatal(err)
+			}
+			if decoded.SchemaVersion != ReservationAdvisorSchemaVersion || decoded.Mode != "proof" || len(decoded.Recommendations) != 2 || len(decoded.LogRows) != 2 {
+				t.Fatalf("unexpected report: %s", data)
+			}
+			for _, rec := range decoded.Recommendations {
+				gotOverlap := containsReservationString(rec.ReasonCodes, "overlapping_reservation")
+				if gotOverlap != tc.wantOverlap {
+					t.Fatalf("overlap = %v, want %v: %s", gotOverlap, tc.wantOverlap, data)
+				}
+				if tc.wantOverlap && (!containsReservationString(rec.Evidence, "overlapping_reservations=1") || rec.Action != ReservationActionMessageHolder) {
+					t.Fatalf("missing holder coordination evidence: %+v", rec)
+				}
+				row := rows[rec.ReservationID-1]
+				if rec.PathPattern != row.PathPattern {
+					t.Fatalf("pattern mutated: %q became %q", row.PathPattern, rec.PathPattern)
+				}
+				alone := AdviseReservations([]ReservationRiskInput{row}, ReservationAdvisorOptions{Now: now}).Recommendations[0]
+				wantScore := alone.RiskScore
+				if tc.wantOverlap {
+					wantScore += 25
+				}
+				if rec.RiskScore != wantScore {
+					t.Fatalf("risk score = %d, want %d", rec.RiskScore, wantScore)
+				}
+			}
+		})
 	}
 }

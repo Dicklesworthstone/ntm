@@ -9,9 +9,9 @@
 package reservationsim
 
 import (
-	"path"
-	"strings"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/reservationpath"
 )
 
 // Outcome is the documented result token for a single Acquire call.
@@ -89,68 +89,20 @@ type Clock interface {
 // fixedClock is a small Clock used by tests.
 type fixedClock struct{ now time.Time }
 
-// patternsOverlap returns true when the two reservation patterns
-// could ever cover a common path. Supports exact match, trailing
-// "/**" deep glob, trailing "/*" one-segment glob, and falls back
-// to path.Match for generic globs. Two patterns overlap iff one of
-// these holds:
-//   - they are equal,
-//   - one is a /** prefix of the other,
-//   - one is a /* of a one-segment match,
-//   - the simpler pattern matches the more-specific path,
-//   - generic glob match in either direction.
+// patternsOverlap uses the same bounded path-language intersection as live
+// Agent Mail and coordinator conflict checks. Matching one glob's spelling
+// against another misses crossing scopes, basename globs and literal subtrees.
+// Invalid or overly complex patterns cannot establish disjointness, so advice
+// conservatively surfaces them as potential conflicts. This is read-only risk
+// evidence, never authorization to release another holder's reservation.
 func patternsOverlap(a, b string) bool {
-	a = strings.TrimSpace(a)
-	b = strings.TrimSpace(b)
-	if a == "" || b == "" {
-		return false
+	// Preserve the advisor's historical repository-wide /** alias. Apart
+	// from this alias, pass patterns verbatim: whitespace belongs to paths.
+	if a == "/**" {
+		a = "**"
 	}
-	if a == b {
-		return true
+	if b == "/**" {
+		b = "**"
 	}
-	if patternCovers(a, b) || patternCovers(b, a) {
-		return true
-	}
-	return false
-}
-
-// patternCovers reports whether pattern p could match a path that
-// the more-specific pattern q targets.
-func patternCovers(p, q string) bool {
-	if p == q {
-		return true
-	}
-	// bd-6286k: bare "**" is a catch-all just like "/**". Without this,
-	// strings.HasSuffix("**", "/**") returns false (the pattern is
-	// shorter than the suffix), and path.Match("**", "foo/bar.go")
-	// returns false too (path.Match's `*` cannot cross `/`), so plain
-	// `**` would silently fail to overlap deep paths.
-	if p == "**" {
-		return true
-	}
-	if strings.HasSuffix(p, "/**") {
-		prefix := strings.TrimSuffix(p, "/**")
-		if prefix == "" {
-			return true // p == "/**"
-		}
-		// Strip any trailing wildcard from q so we compare prefixes.
-		qp := strings.TrimSuffix(q, "/**")
-		qp = strings.TrimSuffix(qp, "/*")
-		return qp == prefix || strings.HasPrefix(qp, prefix+"/")
-	}
-	if strings.HasSuffix(p, "/*") {
-		prefix := strings.TrimSuffix(p, "/*")
-		// q must be a single-segment child of prefix.
-		if !strings.HasPrefix(q, prefix+"/") {
-			return false
-		}
-		rest := strings.TrimPrefix(q, prefix+"/")
-		// p covers q iff q is an exact one-segment match. /** matches
-		// here because /** ⊃ /*; covered by the prefix-equality branch.
-		return rest != "" && !strings.Contains(rest, "/")
-	}
-	if matched, err := path.Match(p, q); err == nil && matched {
-		return true
-	}
-	return false
+	return reservationpath.MayOverlap(a, b)
 }
