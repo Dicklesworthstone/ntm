@@ -574,7 +574,7 @@ func buildCommandRegistry() []RobotCommandInfo {
 			Parameters: []RobotParameter{
 				{Name: "session", Flag: "--robot-watch-bead", Type: "string", Required: true, Description: "Session name"},
 				{Name: "bead", Flag: "--bead", Type: "string", Required: true, Description: "Bead ID to track"},
-				{Name: "panes", Flag: "--panes", Type: "string", Required: false, Description: "Comma-separated pane indices to filter"},
+				{Name: "panes", Flag: "--panes", Type: "string", Required: false, Description: "Comma-separated N, W.P, or %N pane selectors"},
 				{Name: "lines", Flag: "--lines", Type: "int", Required: false, Default: "200", Description: "Lines captured per pane"},
 				{Name: "interval", Flag: "--interval", Type: "string", Required: false, Default: "30s", Description: "Status polling interval"},
 			},

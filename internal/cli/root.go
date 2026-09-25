@@ -1777,9 +1777,9 @@ Shell Integration:
 				failRobotCommand(err, robot.ErrCodeSessionNotFound, "Use 'ntm list' to see available sessions", "robot-watch-bead")
 				return
 			}
-			panes, err := robot.ParsePanesArg(robotPanes)
+			paneSelectors, err := robot.ParsePaneSelectorsArg(robotPanes)
 			if err != nil {
-				failRobotCommand(err, robot.ErrCodeInvalidFlag, "Use comma-separated numeric pane indices", "robot-watch-bead")
+				failRobotCommand(err, robot.ErrCodeInvalidFlag, "Use comma-separated N, W.P, or %N pane selectors", "robot-watch-bead")
 				return
 			}
 
@@ -1798,11 +1798,11 @@ Shell Integration:
 			}
 
 			opts := robot.WatchBeadOptions{
-				Session:     session,
-				BeadID:      robotWatchBeadID,
-				PaneIndices: panes,
-				Lines:       lines,
-				Interval:    interval,
+				Session:       session,
+				BeadID:        robotWatchBeadID,
+				PaneSelectors: paneSelectors,
+				Lines:         lines,
+				Interval:      interval,
 			}
 			if err := robot.PrintWatchBead(opts); err != nil {
 				recordRobotProcessExit(err)
@@ -1815,10 +1815,10 @@ Shell Integration:
 				failRobotCommand(err, robot.ErrCodeSessionNotFound, "Use 'ntm list' to see available sessions", "robot-errors")
 				return
 			}
-			// Parse pane filter
-			var paneFilter []string
-			if robotPanes != "" {
-				paneFilter = strings.Split(robotPanes, ",")
+			paneFilter, err := robot.ParsePaneSelectorsArg(robotPanes)
+			if err != nil {
+				failRobotCommand(err, robot.ErrCodeInvalidFlag, "Use comma-separated N, W.P, or %N pane selectors", "robot-errors")
+				return
 			}
 			// Parse agent type filter
 			agentType := ""
@@ -1931,9 +1931,9 @@ Shell Integration:
 				return
 			}
 			// Parse pane filter
-			panes, err := robot.ParsePanesArg(robotPanes)
+			paneSelectors, err := robot.ParsePaneSelectorsArg(robotPanes)
 			if err != nil {
-				failRobotCommand(err, robot.ErrCodeInvalidFlag, "Use comma-separated numeric pane indices", "robot-monitor")
+				failRobotCommand(err, robot.ErrCodeInvalidFlag, "Use comma-separated N, W.P, or %N pane selectors", "robot-monitor")
 				return
 			}
 			// Parse interval
@@ -1965,7 +1965,7 @@ Shell Integration:
 			}
 			config := robot.MonitorConfig{
 				Session:        session,
-				Panes:          panes,
+				PaneSelectors:  paneSelectors,
 				Interval:       interval,
 				InfoThreshold:  infoThresh,
 				WarnThreshold:  warnThresh,
@@ -2592,7 +2592,8 @@ Shell Integration:
 				failRobotCommand(err, robot.ErrCodeSessionNotFound, "Use 'ntm list' to see available sessions", "robot-restart-pane")
 				return
 			}
-			// Parse pane filter (reuse --panes flag)
+			// Parse pane filter (reuse --panes flag). The restart engine
+			// validates each selector against the shared N / W.P / %N grammar.
 			var paneFilter []string
 			if robotPanes != "" {
 				paneFilter = strings.Split(robotPanes, ",")

@@ -326,3 +326,22 @@ func TestRespawnWithPaneFilter(t *testing.T) {
 		t.Errorf("respawn with pane filter failed: %v", err)
 	}
 }
+
+// A malformed --panes selector must fail before the confirmation prompt (and
+// dry-run listing) instead of silently narrowing the restart to the
+// well-formed part of the list.
+func TestRespawnRejectsMalformedPaneSelector(t *testing.T) {
+	testutil.RequireTmuxThrottled(t)
+	sessionName := fmt.Sprintf("ntm-respawn-selector-%d", time.Now().UnixNano())
+	if err := tmux.CreateSession(sessionName, t.TempDir()); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	defer func() { _ = tmux.KillSession(sessionName) }()
+
+	for _, panes := range []string{"0,0.x", "all", "0,"} {
+		err := runRespawn(t.Context(), sessionName, true, panes, "", false, true)
+		if err == nil || !strings.Contains(err.Error(), "invalid pane selector") {
+			t.Fatalf("runRespawn(--panes=%q) error = %v, want an invalid pane selector error", panes, err)
+		}
+	}
+}

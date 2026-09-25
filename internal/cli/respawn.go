@@ -89,6 +89,11 @@ func runRespawn(ctx context.Context, session string, force bool, panesFlag strin
 		paneFilter = strings.Split(panesFlag, ",")
 		for i := range paneFilter {
 			paneFilter[i] = strings.TrimSpace(paneFilter[i])
+			// Reject malformed selectors before the confirmation prompt; the
+			// restart engine refuses them anyway.
+			if _, err := tmux.ParsePaneSelector(paneFilter[i]); err != nil {
+				return fmt.Errorf("--panes: %w", err)
+			}
 		}
 	}
 

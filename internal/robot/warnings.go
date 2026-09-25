@@ -43,7 +43,8 @@ type Warning struct {
 // MonitorConfig holds configuration for the monitoring loop.
 type MonitorConfig struct {
 	Session        string        // Tmux session name (required)
-	Panes          []int         // Pane indices to check (empty = all agent panes)
+	PaneSelectors  []string      // N, W.P, or %N selectors; takes precedence over Panes
+	Panes          []int         // Legacy bare selectors N (empty with no PaneSelectors = all agent panes)
 	Interval       time.Duration // Polling interval
 	InfoThreshold  float64       // Context % to emit INFO (default: 40)
 	WarnThreshold  float64       // Context % to emit WARNING (default: 25)

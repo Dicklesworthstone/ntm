@@ -5,7 +5,7 @@ package robot
 import (
 	"fmt"
 	"regexp"
-	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -15,8 +15,12 @@ import (
 
 // WatchBeadOptions configures the --robot-watch-bead operation.
 type WatchBeadOptions struct {
-	Session     string
-	BeadID      string
+	Session string
+	BeadID  string
+	// PaneSelectors holds N, W.P, or %N selectors (the grammar shared by every
+	// robot --panes flag). It takes precedence over PaneIndices.
+	PaneSelectors []string
+	// PaneIndices is the legacy bare-index form; each entry is selector N.
 	PaneIndices []int
 	Lines       int
 	Interval    time.Duration
@@ -24,7 +28,11 @@ type WatchBeadOptions struct {
 
 // BeadMention describes a bead mention found in pane output.
 type BeadMention struct {
-	Pane      int       `json:"pane"`
+	Pane int `json:"pane"`
+	// PaneRef is the unambiguous address of the pane: "window.pane" on a
+	// multi-window session, the bare pane index otherwise.
+	PaneRef   string    `json:"pane_ref,omitempty"`
+	PaneID    string    `json:"pane_id,omitempty"`
 	AgentType string    `json:"agent_type"`
 	Line      string    `json:"line"`
 	LineNum   int       `json:"line_num"`
@@ -115,16 +123,31 @@ func GetWatchBead(opts WatchBeadOptions) (*WatchBeadOutput, error) {
 		return output, nil
 	}
 
-	filter := make(map[int]bool, len(opts.PaneIndices))
-	for _, idx := range opts.PaneIndices {
-		filter[idx] = true
+	selectors := opts.PaneSelectors
+	if len(selectors) == 0 && len(opts.PaneIndices) > 0 {
+		selectors = make([]string, 0, len(opts.PaneIndices))
+		for _, idx := range opts.PaneIndices {
+			selectors = append(selectors, strconv.Itoa(idx))
+		}
 	}
 
-	for _, pane := range panes {
-		if len(filter) > 0 && !filter[pane.Index] {
-			continue
+	multiWindow := tmux.PanesSpanMultipleWindows(panes)
+	scanned := tmux.SortPanesByTopology(panes)
+	if len(selectors) > 0 {
+		// Shared N / W.P / %N resolution: a malformed or unknown selector fails
+		// the scan instead of silently watching fewer panes than requested.
+		scanned, err = tmux.ResolvePaneSelectors(panes, selectors, false)
+		if err != nil {
+			output.RobotResponse = NewErrorResponse(
+				err,
+				paneSelectorRobotErrorCode(err),
+				"Use comma-separated N, W.P, or %N pane selectors, e.g. --panes=1,2.0,%7",
+			)
+			return output, nil
 		}
+	}
 
+	for _, pane := range scanned {
 		agentType := detectAgentTypeFromPane(pane)
 		if agentType == "user" {
 			continue
@@ -140,6 +163,8 @@ func GetWatchBead(opts WatchBeadOptions) (*WatchBeadOutput, error) {
 		for _, match := range matches {
 			output.Mentions = append(output.Mentions, BeadMention{
 				Pane:      pane.Index,
+				PaneRef:   tmux.PaneTargetKey(pane, multiWindow),
+				PaneID:    pane.ID,
 				AgentType: agentType,
 				Line:      match.Line,
 				LineNum:   match.LineNum,
@@ -149,12 +174,9 @@ func GetWatchBead(opts WatchBeadOptions) (*WatchBeadOutput, error) {
 		output.PanesScanned++
 	}
 
-	sort.Slice(output.Mentions, func(i, j int) bool {
-		if output.Mentions[i].Pane != output.Mentions[j].Pane {
-			return output.Mentions[i].Pane < output.Mentions[j].Pane
-		}
-		return output.Mentions[i].LineNum < output.Mentions[j].LineNum
-	})
+	// Mentions are appended in topology order (window, pane, then line), so
+	// no re-sort is needed; sorting on the window-local pane index alone would
+	// interleave panes from different windows.
 
 	status, statusErr := bv.GetBeadStatus("", output.BeadID)
 	if statusErr != nil {

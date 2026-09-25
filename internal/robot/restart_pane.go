@@ -398,6 +398,16 @@ func GetRestartPaneContext(ctx context.Context, opts RestartPaneOptions) (*Resta
 	}
 	deps := restartPaneDeps(opts.Deps)
 
+	// Validate the shared N / W.P / %N grammar before touching tmux. Target
+	// matching treats a malformed token as matching nothing, so without this a
+	// typo'd list would silently restart only its well-formed part.
+	for _, selector := range opts.Panes {
+		if _, err := tmux.ParsePaneSelector(selector); err != nil {
+			output.RobotResponse = NewErrorResponse(err, ErrCodeInvalidFlag, "Use comma-separated N, W.P, or %N pane selectors")
+			return output, nil
+		}
+	}
+
 	exists, err := tmux.SessionExistsContext(ctx, opts.Session)
 	if err != nil {
 		if cancelErr := restartPaneCancellationError(ctx, err); cancelErr != nil {

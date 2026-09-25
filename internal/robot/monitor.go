@@ -135,7 +135,8 @@ func (m *Monitor) checkOnce(ctx context.Context) error {
 }
 
 func (m *Monitor) getPanesToCheck() ([]tmux.Pane, error) {
-	if len(m.config.Panes) == 0 {
+	selectors := monitorPaneSelectors(m.config)
+	if len(selectors) == 0 {
 		return m.getAgentPanes()
 	}
 
@@ -143,19 +144,26 @@ func (m *Monitor) getPanesToCheck() ([]tmux.Pane, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Re-resolve every tick: topology can change while the monitor runs, and a
+	// selector that stops resolving must surface as an error rather than
+	// silently shrinking the watched set.
+	return tmux.ResolvePaneSelectors(allPanes, selectors, false)
+}
 
-	indexSet := make(map[int]struct{}, len(m.config.Panes))
-	for _, idx := range m.config.Panes {
-		indexSet[idx] = struct{}{}
+// monitorPaneSelectors returns the configured selectors in the shared
+// N / W.P / %N grammar, converting legacy bare indices to selector N.
+func monitorPaneSelectors(config MonitorConfig) []string {
+	if len(config.PaneSelectors) > 0 {
+		return config.PaneSelectors
 	}
-
-	var selected []tmux.Pane
-	for _, p := range allPanes {
-		if _, ok := indexSet[p.Index]; ok {
-			selected = append(selected, p)
-		}
+	if len(config.Panes) == 0 {
+		return nil
 	}
-	return selected, nil
+	selectors := make([]string, 0, len(config.Panes))
+	for _, idx := range config.Panes {
+		selectors = append(selectors, strconv.Itoa(idx))
+	}
+	return selectors
 }
 
 func (m *Monitor) getAgentPanes() ([]tmux.Pane, error) {
@@ -334,8 +342,12 @@ func formatProviderUsageMessage(threshold float64) string {
 // MonitorOutput is the initial response when starting the monitor.
 type MonitorOutput struct {
 	RobotResponse
-	Session     string        `json:"session"`
-	Panes       []int         `json:"panes"`
+	Session string `json:"session"`
+	Panes   []int  `json:"panes"`
+	// PaneRefs and Selectors are set when --panes was given: the canonical
+	// address of every resolved pane and the selectors as requested.
+	PaneRefs    []string      `json:"pane_refs,omitempty"`
+	Selectors   []string      `json:"selectors,omitempty"`
 	Interval    string        `json:"interval"`
 	Thresholds  MonitorThresh `json:"thresholds"`
 	CautEnabled bool          `json:"caut_enabled"`
@@ -365,22 +377,45 @@ func PrintMonitor(config MonitorConfig) error {
 		return encodeTerminalRobotOutput(&output, output.RobotResponse, "robot monitor failed")
 	}
 
-	// Determine panes
-	panes := config.Panes
-	if len(panes) == 0 {
-		allPanes, err := tmux.GetPanes(config.Session)
-		if err != nil {
+	// Determine panes. Explicit selectors must all resolve before the monitor
+	// starts, so a typo cannot leave it watching the wrong or no panes.
+	selectors := monitorPaneSelectors(config)
+	allPanes, err := tmux.GetPanes(config.Session)
+	if err != nil {
+		output := MonitorOutput{
+			RobotResponse: NewErrorResponse(
+				fmt.Errorf("failed to get panes: %w", err),
+				ErrCodeInternalError,
+				"Check tmux session health and retry",
+			),
+			Session: config.Session,
+		}
+		return encodeTerminalRobotOutput(&output, output.RobotResponse, "robot monitor failed")
+	}
+	var panes []int
+	var paneRefs []string
+	if len(selectors) == 0 {
+		panes = defaultMonitorPaneIndices(allPanes)
+	} else {
+		resolved, resolveErr := tmux.ResolvePaneSelectors(allPanes, selectors, false)
+		if resolveErr != nil {
 			output := MonitorOutput{
 				RobotResponse: NewErrorResponse(
-					fmt.Errorf("failed to get panes: %w", err),
-					ErrCodeInternalError,
-					"Check tmux session health and retry",
+					resolveErr,
+					paneSelectorRobotErrorCode(resolveErr),
+					"Use comma-separated N, W.P, or %N pane selectors, e.g. --panes=1,2.0,%7",
 				),
 				Session: config.Session,
 			}
 			return encodeTerminalRobotOutput(&output, output.RobotResponse, "robot monitor failed")
 		}
-		panes = defaultMonitorPaneIndices(allPanes)
+		multiWindow := tmux.PanesSpanMultipleWindows(allPanes)
+		panes = make([]int, 0, len(resolved))
+		paneRefs = make([]string, 0, len(resolved))
+		for _, pane := range resolved {
+			panes = append(panes, pane.Index)
+			paneRefs = append(paneRefs, tmux.PaneTargetKey(pane, multiWindow))
+		}
 	}
 
 	// Create monitor
@@ -403,6 +438,8 @@ func PrintMonitor(config MonitorConfig) error {
 		RobotResponse: NewRobotResponse(true),
 		Session:       config.Session,
 		Panes:         panes,
+		PaneRefs:      paneRefs,
+		Selectors:     selectors,
 		Interval:      config.Interval.String(),
 		Thresholds: MonitorThresh{
 			Info:     config.InfoThreshold,

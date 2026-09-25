@@ -158,7 +158,7 @@
           "flag": "--panes",
           "type": "string",
           "required": false,
-          "description": "Comma-separated pane indices to filter"
+          "description": "Comma-separated N, W.P, or %N pane selectors"
         },
         {
           "name": "lines",
@@ -1060,7 +1060,7 @@
           "flag": "--panes",
           "type": "string",
           "required": false,
-          "description": "Comma-separated pane indices to filter"
+          "description": "Comma-separated N, W.P, or %N pane selectors"
         },
         {
           "name": "lines",
