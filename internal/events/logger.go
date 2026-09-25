@@ -86,9 +86,21 @@ func NewLogger(opts LoggerOptions) (*Logger, error) {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return nil, fmt.Errorf("creating log directory: %w", err)
 	}
+	// All processes, including those using a symlinked project/home path,
+	// must lock the same sidecar and rotate the actual file, not its alias.
+	path, err := canonicalEventLogPath(l.path)
+	if err != nil {
+		return nil, err
+	}
+	l.path = path
+	lock, err := lockEventLog(l.path)
+	if err != nil {
+		return nil, err
+	}
+	defer releaseEventLogLock(lock)
 
 	// Open file for appending
-	f, err := os.OpenFile(l.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	f, err := openEventLogWriter(l.path)
 	if err != nil {
 		return nil, fmt.Errorf("opening log file: %w", err)
 	}
@@ -124,6 +136,17 @@ func (l *Logger) Log(event *Event) error {
 	// final stored representation, since encryption can increase its size.
 	if len(data) >= maxEventLineBytes {
 		return fmt.Errorf("event exceeds log line limit of %d bytes", maxEventLineBytes-1)
+	}
+
+	// Rotation in another process replaces the inode. Take the same stable
+	// lock used by rotation, then reopen a stale descriptor BEFORE writing.
+	lock, err := lockEventLog(l.path)
+	if err != nil {
+		return err
+	}
+	defer releaseEventLogLock(lock)
+	if err := l.refreshWriter(); err != nil {
+		return err
 	}
 
 	// Write to file with newline
@@ -182,36 +205,20 @@ func (l *Logger) maybeRotate() {
 }
 
 // rotateOldEntries filters a bounded snapshot without moving the active log.
-// Writes through this Logger continue during filtering and are merged before
+// Writes from all cooperating loggers continue during filtering and are merged before
 // replacement. Any pre-commit failure leaves both the log and its writer intact.
 func (l *Logger) rotateOldEntries() error {
 	l.rotationMu.Lock()
 	defer l.rotationMu.Unlock()
 
-	l.mu.Lock()
-	if l.closed || !l.enabled || l.file == nil {
-		l.mu.Unlock()
+	srcFile, snapshot, err := l.rotationSnapshot()
+	if err != nil {
+		return err
+	}
+	if srcFile == nil {
 		return nil
 	}
-	activeInfo, err := l.file.Stat()
-	if err != nil {
-		l.mu.Unlock()
-		return fmt.Errorf("stat active log: %w", err)
-	}
-	srcFile, err := os.Open(l.path)
-	if err != nil {
-		l.mu.Unlock()
-		return fmt.Errorf("opening log snapshot: %w", err)
-	}
 	defer srcFile.Close()
-	snapshot, err := srcFile.Stat()
-	l.mu.Unlock()
-	if err != nil {
-		return fmt.Errorf("stat log snapshot: %w", err)
-	}
-	if !snapshot.Mode().IsRegular() || !os.SameFile(activeInfo, snapshot) {
-		return fmt.Errorf("active log changed before rotation")
-	}
 
 	// A private, uniquely named staging file cannot truncate another rotation
 	// or a recovery artifact left by an earlier version of the logger.
@@ -229,6 +236,64 @@ func (l *Logger) rotateOldEntries() error {
 		return err
 	}
 	return l.commitRotation(srcFile, snapshot, tmpFile)
+}
+
+// rotationSnapshot holds the process lock only while selecting a complete
+// append boundary. Filtering never blocks writers in another NTM process.
+func (l *Logger) rotationSnapshot() (*os.File, os.FileInfo, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.closed || !l.enabled || l.file == nil {
+		return nil, nil, nil
+	}
+	lock, err := lockEventLog(l.path)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer releaseEventLogLock(lock)
+	if err := l.refreshWriter(); err != nil {
+		return nil, nil, err
+	}
+	src, err := os.Open(l.path)
+	if err != nil {
+		return nil, nil, fmt.Errorf("opening log snapshot: %w", err)
+	}
+	info, err := src.Stat()
+	if err != nil {
+		_ = src.Close()
+		return nil, nil, fmt.Errorf("stat log snapshot: %w", err)
+	}
+	return src, info, nil
+}
+
+// refreshWriter requires both l.mu and the stable cross-process log lock.
+func (l *Logger) refreshWriter() error {
+	current, err := l.file.Stat()
+	if err != nil {
+		return fmt.Errorf("stat active log: %w", err)
+	}
+	visible, err := os.Lstat(l.path)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("stat log path: %w", err)
+	}
+	if err == nil {
+		if !visible.Mode().IsRegular() {
+			return fmt.Errorf("event log path is no longer a regular file")
+		}
+		if os.SameFile(current, visible) {
+			return nil
+		}
+	}
+	writer, err := openEventLogWriter(l.path)
+	if err != nil {
+		return fmt.Errorf("reopening rotated event log: %w", err)
+	}
+	previous := l.file
+	l.file = writer
+	if err := previous.Close(); err != nil {
+		return fmt.Errorf("closing stale event log writer: %w", err)
+	}
+	return nil
 }
 
 // filterRetainedEvents expires only records with a known, old timestamp.
@@ -272,6 +337,16 @@ func (l *Logger) commitRotation(src *os.File, snapshot os.FileInfo, tmp *os.File
 	defer l.mu.Unlock()
 	if l.closed || !l.enabled || l.file == nil {
 		return nil
+	}
+	// The lock spans the final tail measurement, tail copy and rename. A
+	// process waiting to append will then rebind its writer to the new inode.
+	lock, err := lockEventLog(l.path)
+	if err != nil {
+		return err
+	}
+	defer releaseEventLogLock(lock)
+	if err := l.refreshWriter(); err != nil {
+		return err
 	}
 
 	activeInfo, err := l.file.Stat()
