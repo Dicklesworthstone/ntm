@@ -143,7 +143,11 @@ func TestTransferSourceLeaseSelectorsAndEvidence(t *testing.T) {
 			if err != nil || !result.Success || result.OutcomeUnknown || result.RolledBack {
 				t.Fatalf("valid source leases rejected: %+v %v", result, err)
 			}
-			if client.reads != 1 || len(client.mutations) != 1 || len(client.mutations[0].paths) != 0 ||
+			wantReads := 1
+			if sameAgent {
+				wantReads = 2 // Preflight and independent post-renewal evidence.
+			}
+			if client.reads != wantReads || len(client.mutations) != 1 || len(client.mutations[0].paths) != 0 ||
 				!reflect.DeepEqual(client.mutations[0].ids, []int{11, 22}) || client.mutations[0].owner != "old" {
 				t.Fatalf("source selection is not exact-ID scoped: %+v reads=%d", client.mutations, client.reads)
 			}
@@ -343,7 +347,7 @@ func TestTransferSourceAllowsRenewedExpiryButNotChangedMode(t *testing.T) {
 	}
 	opts.ToAgent = opts.FromAgent
 	result, err := TransferReservations(context.Background(), client, opts)
-	if err != nil || !result.Success || client.reads != 1 {
+	if err != nil || !result.Success || client.reads != 2 {
 		t.Fatalf("renewed lease with unchanged identity rejected: %+v %v", result, err)
 	}
 	client, opts = sourceLeaseFixture()

@@ -59,13 +59,16 @@ type ReservationTransferResult struct {
 	GrantedPaths   []string `json:"granted_paths"`
 	// GrantedIDs parallels GrantedPaths and retains exact lease handles even
 	// when verification or cleanup fails. Unverified handles are evidence only.
-	GrantedIDs    []int                           `json:"granted_ids,omitempty"`
-	ReleasedPaths []string                        `json:"released_paths"`
-	ReleasedIDs   []int                           `json:"released_ids,omitempty"`
-	Conflicts     []agentmail.ReservationConflict `json:"conflicts,omitempty"`
-	RolledBack    bool                            `json:"rolled_back,omitempty"`
-	Success       bool                            `json:"success"`
-	Error         string                          `json:"error,omitempty"`
+	GrantedIDs    []int    `json:"granted_ids,omitempty"`
+	ReleasedPaths []string `json:"released_paths"`
+	ReleasedIDs   []int    `json:"released_ids,omitempty"`
+	// CleanedIDs records destination receipt IDs independently observed absent
+	// after cleanup. Earlier confirmed cleanups survive a later attempt failure.
+	CleanedIDs []int                           `json:"cleaned_ids,omitempty"`
+	Conflicts  []agentmail.ReservationConflict `json:"conflicts,omitempty"`
+	RolledBack bool                            `json:"rolled_back,omitempty"`
+	Success    bool                            `json:"success"`
+	Error      string                          `json:"error,omitempty"`
 
 	// Stage identifies the last attempted phase, including compensation.
 	Stage string `json:"stage,omitempty"`
@@ -82,6 +85,11 @@ type ReservationTransferResult struct {
 	// OutcomeUnknown prohibits interpreting an error as proof of no effects.
 	// RolledBack only records restored source coverage, not an atomic transfer.
 	OutcomeUnknown bool `json:"outcome_unknown,omitempty"`
+	// RenewalVerified means an independent read observed the captured leases
+	// with at least the requested lifetime measured from renewal dispatch.
+	// These rows are an observation, not a guarantee against later changes.
+	RenewalVerified     bool                        `json:"renewal_verified,omitempty"`
+	RenewedReservations []agentmail.FileReservation `json:"renewed_reservations,omitempty"`
 }
 
 // TransferReservations moves reservations from one agent to another.
@@ -118,6 +126,9 @@ func TransferReservations(ctx context.Context, client ReservationTransferClient,
 	if ttlSeconds <= 0 {
 		ttlSeconds = defaultTransferTTLSeconds
 	}
+	if int64(ttlSeconds) > int64((1<<63-1)/time.Second) {
+		return fail(errors.New("reservation transfer ttl_seconds exceeds supported duration"))
+	}
 	grace := opts.GracePeriod
 	if grace <= 0 {
 		grace = time.Duration(defaultTransferGraceSeconds) * time.Second
@@ -147,6 +158,10 @@ func TransferReservations(ctx context.Context, client ReservationTransferClient,
 		if err := ctx.Err(); err != nil {
 			return fail(err)
 		}
+		// Second precision supports servers that serialize whole-second expiry.
+		// Measure before dispatch so transport latency does not overstate the
+		// required deadline or manufacture an extension relative to read time.
+		minimumExpiry := time.Now().Truncate(time.Second).Add(time.Duration(ttlSeconds) * time.Second)
 		renewed, err := client.RenewReservations(ctx, agentmail.RenewReservationsOptions{
 			ProjectKey: opts.ProjectKey, AgentName: opts.ToAgent, ExtendSeconds: ttlSeconds,
 			ReservationIDs: append([]int(nil), result.RequestedIDs...),
@@ -164,6 +179,14 @@ func TransferReservations(ctx context.Context, client ReservationTransferClient,
 			result.OutcomeUnknown = true
 			return fail(fmt.Errorf("renewed %d of %d reservations for %s", count, len(requested), opts.ToAgent))
 		}
+		result.Stage = "verify_renewal"
+		observed, err := verifyTransferRenewal(ctx, client, opts.ProjectKey, sources, minimumExpiry)
+		if err != nil {
+			result.OutcomeUnknown = true
+			return fail(err)
+		}
+		result.RenewalVerified = true
+		result.RenewedReservations = observed
 		result.GrantedPaths = append([]string(nil), requested...)
 		result.GrantedIDs = append([]int(nil), result.RequestedIDs...)
 		result.Success = true
@@ -203,10 +226,13 @@ func TransferReservations(ctx context.Context, client ReservationTransferClient,
 		result.Stage = "cleanup"
 		cleanupCtx, cancel := newCleanupContext()
 		defer cancel()
-		if err := releaseGrantedReservations(cleanupCtx, client, opts.ProjectKey, opts.ToAgent, granted); err != nil {
+		if err := releaseGrantedReservations(cleanupCtx, client, opts.ProjectKey, opts.ToAgent, sources[0].ProjectID, granted); err != nil {
 			result.CleanupError = err.Error()
 			result.OutcomeUnknown = true
 			return fmt.Errorf("clean up destination grants: %w", err)
+		}
+		for _, grant := range granted {
+			result.CleanedIDs = append(result.CleanedIDs, grant.ID)
 		}
 		return nil
 	}
@@ -453,7 +479,7 @@ func rollbackReservations(ctx context.Context, client ReservationTransferClient,
 	return reserveAll(ctx, client, projectKey, agentName, ttlSeconds, agentName, exclusive, shared)
 }
 
-func releaseGrantedReservations(ctx context.Context, client ReservationTransferClient, projectKey, agentName string, granted []agentmail.FileReservation) error {
+func releaseGrantedReservations(ctx context.Context, client ReservationTransferClient, projectKey, agentName string, projectID int, granted []agentmail.FileReservation) error {
 	if len(granted) == 0 {
 		return nil
 	}
@@ -471,7 +497,7 @@ func releaseGrantedReservations(ctx context.Context, client ReservationTransferC
 	}
 	// Paths are reusable names, not lease identities. Sending them alongside
 	// IDs may broaden the server selector and release a newer same-path lease.
-	res, err := client.ReleaseReservations(ctx, projectKey, agentName, nil, ids)
+	res, err := client.ReleaseReservations(ctx, projectKey, agentName, nil, append([]int(nil), ids...))
 	if err = errors.Join(err, ctx.Err()); err != nil {
 		return err
 	}
@@ -482,7 +508,7 @@ func releaseGrantedReservations(ctx context.Context, client ReservationTransferC
 	if released != len(granted) {
 		return fmt.Errorf("released %d of %d partial grants for %s", released, len(granted), agentName)
 	}
-	return nil
+	return verifyTransferRelease(ctx, client, projectKey, projectID, ids)
 }
 
 // IsReservationConflict also matches joined errors carrying a failed ownership

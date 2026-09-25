@@ -39,6 +39,25 @@ compensation and records uncertainty. `requested_ids` parallels
 release acknowledgement. A successful same-agent renewal reports the captured
 IDs in `granted_ids`, not newly acquired leases.
 
+## Renewal readback
+
+A complete renewal count is followed by one bounded, independent project-wide
+active listing. Every captured lease must still have its original identity,
+be unreleased and unexpired, and cover the requested TTL measured from immediately
+before renewal dispatch. The lower bound uses whole seconds to accommodate
+servers that store whole-second expiries. An already-long-enough lease satisfies
+this contract without requiring an artificial expiry change. Excessive TTLs
+that cannot be represented safely are rejected before any I/O.
+
+Only a complete verified batch publishes `renewal_verified: true` and
+`renewed_reservations`, containing the actual observed leases and expiry times.
+The result retains the captured IDs in `granted_ids`; it does not invent new
+leases. A matching count with missing, changed, expired, short-lived, or released
+leases is a failure at `stage: verify_renewal`, with `ErrTransferPostcondition`
+and `outcome_unknown: true`. An unavailable or malformed listing also fails,
+preserving read/cancellation causes. Neither failure retries renewal or triggers
+release, acquisition, or rollback. No partial verified batch is published.
+
 ## Destination receipts and compensation
 
 Destination acquisition requires a non-nil receipt covering every requested
@@ -66,8 +85,22 @@ details cannot be converted into success merely by omitting the Go error.
 
 A propagation retry is permitted once, after successful partial-grant cleanup,
 and only for a conflict-only error. Cleanup selects the verified destination
-receipt IDs, never paths that might now identify replacement leases. A joined
-conflict plus ownership-readback, transport, or cancellation error cannot
+receipt IDs, never paths that might now identify replacement leases. A complete
+cleanup count must be followed by an independent project-wide read showing every
+selected ID absent before any retry or source compensation. A surviving ID,
+missing listing, duplicate identity, foreign project, or failed read produces
+`ErrTransferPostcondition` and stops the operation at `stage: cleanup` with
+`cleanup_error` and `outcome_unknown`. The original conflict/cancellation cause
+and destination receipt IDs remain available. Verification is bounded by the
+same cleanup deadline, including cleanup after caller cancellation. Replacement
+IDs on the same paths are neither adopted nor released.
+
+`cleaned_ids` records only destination IDs independently observed absent after
+acknowledged cleanup. Earlier successful cleanups remain recorded if a later
+attempt fails; they do not describe the current `granted_ids` unless those IDs
+also appear in `cleaned_ids`.
+
+A joined conflict plus ownership-readback, transport, or cancellation error cannot
 authorize another acquisition. Failed or incomplete cleanup preserves the
 partial grant evidence and stops both retry and rollback. Cleanup and rollback
 failures are returned together with the original cause, not only logged.
@@ -81,6 +114,14 @@ was atomic or that the old source IDs were restored. Capture fresh identity
 before another transfer after rollback. An uncertain transport result can
 remain `outcome_unknown` even after source coverage was restored.
 
+`rollback_grants` and `rollback_conflicts` retain the actual source-compensation
+receipts, including partial or unverified responses when restoration fails.
+These contain the new source lease IDs, not the original released IDs. Returned
+metadata is detached from later client-buffer reuse. It is not silently repaired
+from request fields or used to authorize additional cleanup or retries. A failed
+rollback can therefore report newly created leases without claiming complete
+restoration; operators must independently inspect them before further mutation.
+
 A caller cancelled before transfer makes no mutation calls. Cancellation after
 a confirmed source release stops destination dispatch and uses a separate,
 bounded context to attempt source recovery. Uncertain effects and failed
@@ -92,9 +133,12 @@ These checks bind source mutations to captured lease identity and destination
 cleanup to verified receipt IDs. They rely on the server honoring ID selectors
 and retaining unique lease identities. They do not authenticate a replacement
 server, protect against out-of-band database ID reuse, persist a crash-replay
-journal, or make the remote release/acquire sequence atomic. Release and renewal
-still rely on count acknowledgements: independent post-mutation verification
-is not provided. The source read and its subsequent mutation are not a server
-transaction; exact-ID selection prevents a path fallback but cannot prevent
-all concurrent remote changes. Ownership authentication and destination grant
-readback remain the Agent Mail client's responsibility.
+journal, or make the remote release/acquire sequence atomic. Source release
+still relies on a count acknowledgement without post-release verification;
+renewal and destination cleanup now require independent post-mutation readback.
+Readback is an observation, not a transaction or proof that no subsequent remote
+change can occur. TTL checks also depend on meaningful server/client clock
+alignment; clock skew can cause a safe refusal. Exact-ID selection prevents a
+path fallback but cannot prevent all concurrent remote changes. Ownership
+authentication and destination grant readback remain the Agent Mail client's
+responsibility.
