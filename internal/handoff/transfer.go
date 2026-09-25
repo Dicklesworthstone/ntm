@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
@@ -22,8 +23,13 @@ const (
 // release reservations or repeat a possibly committed acquisition.
 var ErrTransferGrantEvidence = errors.New("invalid reservation transfer grant evidence")
 
+// ErrTransferSourceEvidence means the captured source leases cannot be verified.
+// No release, renewal, or acquisition is attempted on this preflight failure.
+var ErrTransferSourceEvidence = errors.New("unverified reservation transfer source")
+
 // ReservationTransferClient is the subset of Agent Mail client methods needed for transfers.
 type ReservationTransferClient interface {
+	ListReservations(ctx context.Context, projectKey, agentName string, allAgents bool) ([]agentmail.FileReservation, error)
 	ReservePaths(ctx context.Context, opts agentmail.FileReservationOptions) (*agentmail.ReservationResult, error)
 	ReleaseReservations(ctx context.Context, projectKey, agentName string, paths []string, ids []int) (*agentmail.ReleaseReservationsResult, error)
 	RenewReservations(ctx context.Context, opts agentmail.RenewReservationsOptions) (*agentmail.RenewReservationsResult, error)
@@ -49,11 +55,13 @@ type ReservationTransferResult struct {
 	FromAgent      string   `json:"from_agent"`
 	ToAgent        string   `json:"to_agent"`
 	RequestedPaths []string `json:"requested_paths"`
+	RequestedIDs   []int    `json:"requested_ids,omitempty"`
 	GrantedPaths   []string `json:"granted_paths"`
 	// GrantedIDs parallels GrantedPaths and retains exact lease handles even
 	// when verification or cleanup fails. Unverified handles are evidence only.
 	GrantedIDs    []int                           `json:"granted_ids,omitempty"`
 	ReleasedPaths []string                        `json:"released_paths"`
+	ReleasedIDs   []int                           `json:"released_ids,omitempty"`
 	Conflicts     []agentmail.ReservationConflict `json:"conflicts,omitempty"`
 	RolledBack    bool                            `json:"rolled_back,omitempty"`
 	Success       bool                            `json:"success"`
@@ -94,10 +102,10 @@ func TransferReservations(ctx context.Context, client ReservationTransferClient,
 	if client == nil {
 		return fail(errors.New("reservation transfer requires an Agent Mail client"))
 	}
-	if opts.ProjectKey == "" {
+	if strings.TrimSpace(opts.ProjectKey) == "" {
 		return fail(errors.New("reservation transfer requires project_key"))
 	}
-	if opts.FromAgent == "" || opts.ToAgent == "" {
+	if strings.TrimSpace(opts.FromAgent) == "" || strings.TrimSpace(opts.ToAgent) == "" {
 		return fail(errors.New("reservation transfer requires both from_agent and to_agent"))
 	}
 
@@ -109,19 +117,34 @@ func TransferReservations(ctx context.Context, client ReservationTransferClient,
 	if grace <= 0 {
 		grace = time.Duration(defaultTransferGraceSeconds) * time.Second
 	}
-	exclusivePaths, sharedPaths, requested := splitReservationPaths(opts.Reservations)
+	sources, err := validateTransferSources(opts.Reservations, opts.FromAgent)
+	if err != nil {
+		return fail(err)
+	}
+	exclusivePaths, sharedPaths, requested := splitReservationPaths(sources)
 	result.RequestedPaths = requested
+	for _, source := range sources {
+		result.RequestedIDs = append(result.RequestedIDs, source.ID)
+	}
 	if len(requested) == 0 {
 		result.Success = true
 		result.Stage = "complete"
 		return result, nil
 	}
 	logger.Info("starting reservation transfer", "from_agent", opts.FromAgent, "to_agent", opts.ToAgent, "paths", len(requested))
+	result.Stage = "verify_source"
+	if err := verifyTransferSources(ctx, client, opts.ProjectKey, sources); err != nil {
+		return fail(err)
+	}
 
 	if opts.FromAgent == opts.ToAgent {
 		result.Stage = "renew"
+		if err := ctx.Err(); err != nil {
+			return fail(err)
+		}
 		renewed, err := client.RenewReservations(ctx, agentmail.RenewReservationsOptions{
-			ProjectKey: opts.ProjectKey, AgentName: opts.ToAgent, ExtendSeconds: ttlSeconds, Paths: append([]string(nil), requested...),
+			ProjectKey: opts.ProjectKey, AgentName: opts.ToAgent, ExtendSeconds: ttlSeconds,
+			ReservationIDs: append([]int(nil), result.RequestedIDs...),
 		})
 		err = errors.Join(err, ctx.Err())
 		if err != nil {
@@ -137,6 +160,7 @@ func TransferReservations(ctx context.Context, client ReservationTransferClient,
 			return fail(fmt.Errorf("renewed %d of %d reservations for %s", count, len(requested), opts.ToAgent))
 		}
 		result.GrantedPaths = append([]string(nil), requested...)
+		result.GrantedIDs = append([]int(nil), result.RequestedIDs...)
 		result.Success = true
 		result.Stage = "complete"
 		return result, nil
@@ -146,7 +170,9 @@ func TransferReservations(ctx context.Context, client ReservationTransferClient,
 	if err := ctx.Err(); err != nil {
 		return fail(err)
 	}
-	released, err := client.ReleaseReservations(ctx, opts.ProjectKey, opts.FromAgent, append([]string(nil), requested...), nil)
+	// A replacement lease may appear after verification. Never send paths:
+	// even a server that unions its selectors must only touch captured IDs.
+	released, err := client.ReleaseReservations(ctx, opts.ProjectKey, opts.FromAgent, nil, append([]int(nil), result.RequestedIDs...))
 	if err != nil {
 		result.OutcomeUnknown = true
 		return fail(errors.Join(err, ctx.Err()))
@@ -160,6 +186,7 @@ func TransferReservations(ctx context.Context, client ReservationTransferClient,
 		return fail(fmt.Errorf("released %d of %d requested reservations", count, len(requested)))
 	}
 	result.ReleasedPaths = append([]string(nil), requested...)
+	result.ReleasedIDs = append([]int(nil), result.RequestedIDs...)
 
 	// Compensation gets its own bounded context after caller cancellation.
 	// A failed cleanup stops here: blindly clearing the grant slice and retrying
@@ -239,6 +266,65 @@ func TransferReservations(ctx context.Context, client ReservationTransferClient,
 		return fail(errors.Join(reserveErr, rollback()))
 	}
 	panic("unreachable reservation transfer attempt")
+}
+
+// validateTransferSources makes a detached, deterministic mutation scope. Do
+// not resolve legacy path-only handoffs to today's IDs: those can name leases
+// that did not exist when the handoff was captured.
+func validateTransferSources(reservations []ReservationSnapshot, fromAgent string) ([]ReservationSnapshot, error) {
+	sources := append([]ReservationSnapshot(nil), reservations...)
+	sort.Slice(sources, func(i, j int) bool { return sources[i].PathPattern < sources[j].PathPattern })
+	seenIDs := make(map[int]bool, len(sources))
+	seenPaths := make(map[string]bool, len(sources))
+	projectID := 0
+	for _, source := range sources {
+		if source.ID <= 0 || source.ProjectID <= 0 || source.AgentName != fromAgent ||
+			strings.TrimSpace(source.PathPattern) == "" || source.CreatedAt.IsZero() ||
+			!source.ExpiresAt.After(source.CreatedAt) {
+			return nil, fmt.Errorf("%w: path %q lacks a complete captured lease identity; capture a new handoff after inspecting current reservations", ErrTransferSourceEvidence, source.PathPattern)
+		}
+		if seenIDs[source.ID] || seenPaths[source.PathPattern] || (projectID != 0 && source.ProjectID != projectID) {
+			return nil, fmt.Errorf("%w: duplicate or inconsistent source lease %d for %q", ErrTransferSourceEvidence, source.ID, source.PathPattern)
+		}
+		projectID = source.ProjectID
+		seenIDs[source.ID] = true
+		seenPaths[source.PathPattern] = true
+	}
+	return sources, nil
+}
+
+// verifyTransferSources checks every captured lease against one independent
+// project listing before any mutation. A renewal may change expiry, but cannot
+// change the lease's creation timestamp, path, owner, mode, or reason.
+func verifyTransferSources(ctx context.Context, client ReservationTransferClient, projectKey string, sources []ReservationSnapshot) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	rows, err := client.ListReservations(ctx, projectKey, "", true)
+	if err = errors.Join(err, ctx.Err()); err != nil {
+		return errors.Join(ErrTransferSourceEvidence, fmt.Errorf("read source reservations: %w", err))
+	}
+	byID := make(map[int]agentmail.FileReservation, len(rows))
+	for _, row := range rows {
+		if row.ID <= 0 {
+			return fmt.Errorf("%w: source listing contains a missing lease ID", ErrTransferSourceEvidence)
+		}
+		if _, duplicate := byID[row.ID]; duplicate {
+			return fmt.Errorf("%w: source listing repeats lease ID %d", ErrTransferSourceEvidence, row.ID)
+		}
+		byID[row.ID] = row
+	}
+	now := time.Now()
+	for _, source := range sources {
+		row, found := byID[source.ID]
+		if !found || row.ProjectID != source.ProjectID || row.AgentName != source.AgentName ||
+			row.PathPattern != source.PathPattern || row.Exclusive != source.Exclusive ||
+			row.Reason != source.Reason || !row.CreatedTS.Time.Equal(source.CreatedAt) ||
+			row.ReleasedTS != nil || !row.ExpiresTS.After(now) {
+			return fmt.Errorf("%w: captured lease %d for %q is absent, changed, expired, or released", ErrTransferSourceEvidence, source.ID, source.PathPattern)
+		}
+	}
+	return ctx.Err()
 }
 
 func splitReservationPaths(reservations []ReservationSnapshot) (exclusive []string, shared []string, requested []string) {

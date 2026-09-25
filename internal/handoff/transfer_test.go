@@ -21,9 +21,11 @@ type renewCall struct {
 	agentName     string
 	extendSeconds int
 	paths         []string
+	ids           []int
 }
 
 type fakeTransferClient struct {
+	sources      []agentmail.FileReservation
 	reserveCalls []agentmail.FileReservationOptions
 	releaseCalls []releaseCall
 	renewCalls   []renewCall
@@ -88,11 +90,39 @@ func (f *fakeTransferClient) RenewReservations(ctx context.Context, opts agentma
 		agentName:     opts.AgentName,
 		extendSeconds: opts.ExtendSeconds,
 		paths:         append([]string(nil), opts.Paths...),
+		ids:           append([]int(nil), opts.ReservationIDs...),
 	})
 	if f.renewFn != nil {
 		return f.renewFn(opts)
 	}
-	return &agentmail.RenewReservationsResult{Renewed: len(opts.Paths)}, nil
+	return &agentmail.RenewReservationsResult{Renewed: len(opts.Paths) + len(opts.ReservationIDs)}, nil
+}
+
+func (f *fakeTransferClient) ListReservations(ctx context.Context, projectKey, agentName string, allAgents bool) ([]agentmail.FileReservation, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return append([]agentmail.FileReservation(nil), f.sources...), nil
+}
+
+// Existing compensation tests describe paths/modes rather than a registry.
+// Explicitly instantiate their source fixture before transfer; adversarial
+// source-identity tests use a separate registry and never repair their input.
+func (f *fakeTransferClient) prepareSource(opts *TransferReservationsOptions) {
+	f.sources = nil
+	for i := range opts.Reservations {
+		source := &opts.Reservations[i]
+		source.ID = 1001 + i
+		source.ProjectID = 73
+		source.AgentName = opts.FromAgent
+		source.CreatedAt = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+		source.ExpiresAt = time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC)
+		f.sources = append(f.sources, agentmail.FileReservation{
+			ID: source.ID, ProjectID: source.ProjectID, AgentName: source.AgentName,
+			PathPattern: source.PathPattern, Exclusive: source.Exclusive, Reason: source.Reason,
+			CreatedTS: agentmail.FlexTime{Time: source.CreatedAt}, ExpiresTS: agentmail.FlexTime{Time: source.ExpiresAt},
+		})
+	}
 }
 
 func TestTransferReservationsSuccess(t *testing.T) {
@@ -108,6 +138,7 @@ func TestTransferReservationsSuccess(t *testing.T) {
 		TTLSeconds: 120,
 	}
 
+	client.prepareSource(&opts)
 	result, err := TransferReservations(context.Background(), client, opts)
 	if err != nil {
 		t.Fatalf("TransferReservations error: %v", err)
@@ -156,6 +187,7 @@ func TestTransferReservationsConflictRollback(t *testing.T) {
 		GracePeriod: 0,
 	}
 
+	client.prepareSource(&opts)
 	result, err := TransferReservations(context.Background(), client, opts)
 	if err == nil {
 		t.Fatalf("expected conflict error")
@@ -197,6 +229,7 @@ func TestTransferReservationsReserveErrorRollsBackAfterPartialGrant(t *testing.T
 		GracePeriod: 0,
 	}
 
+	client.prepareSource(&opts)
 	result, err := TransferReservations(context.Background(), client, opts)
 	if err == nil {
 		t.Fatal("expected reserve failure")
@@ -238,6 +271,7 @@ func TestTransferReservationsRetryWaitFailureRollsBackOldReservations(t *testing
 		GracePeriod: 50 * time.Millisecond,
 	}
 
+	client.prepareSource(&opts)
 	result, err := TransferReservations(ctx, client, opts)
 	if err == nil {
 		t.Fatal("expected context cancellation during retry wait")
@@ -281,6 +315,7 @@ func TestTransferReservationsRollbackUsesCleanupContextAfterCancellation(t *test
 		},
 	}
 
+	client.prepareSource(&opts)
 	result, err := TransferReservations(ctx, client, opts)
 	if err == nil {
 		t.Fatal("expected reserve failure")
@@ -328,6 +363,7 @@ func TestTransferReservationsRollbackReleasesPartialGrantOnlyOnce(t *testing.T) 
 		},
 	}
 
+	client.prepareSource(&opts)
 	result, err := TransferReservations(context.Background(), client, opts)
 	if err == nil {
 		t.Fatal("expected reserve failure")
@@ -355,6 +391,7 @@ func TestTransferReservationsSameAgentRefresh(t *testing.T) {
 		TTLSeconds: 90,
 	}
 
+	client.prepareSource(&opts)
 	result, err := TransferReservations(context.Background(), client, opts)
 	if err != nil {
 		t.Fatalf("TransferReservations error: %v", err)
@@ -365,8 +402,8 @@ func TestTransferReservationsSameAgentRefresh(t *testing.T) {
 	if len(client.renewCalls) != 1 {
 		t.Fatalf("expected 1 renew call, got %d", len(client.renewCalls))
 	}
-	if got := client.renewCalls[0].paths; len(got) != 1 || got[0] != "internal/a.go" {
-		t.Fatalf("expected renew scoped to requested path, got %#v", got)
+	if got := client.renewCalls[0]; len(got.paths) != 0 || len(got.ids) != 1 || got.ids[0] != 1001 {
+		t.Fatalf("expected renew scoped only to captured lease ID, got %#v", got)
 	}
 	if len(result.GrantedPaths) != 1 || result.GrantedPaths[0] != "internal/a.go" {
 		t.Fatalf("expected granted paths to mirror refreshed reservation, got %#v", result.GrantedPaths)
@@ -376,14 +413,14 @@ func TestTransferReservationsSameAgentRefresh(t *testing.T) {
 	}
 }
 
-func TestTransferReservationsSameAgentRefreshScopesRenewalToRequestedPaths(t *testing.T) {
+func TestTransferReservationsSameAgentRefreshScopesRenewalToRequestedIDs(t *testing.T) {
 	client := &fakeTransferClient{}
 	client.renewFn = func(opts agentmail.RenewReservationsOptions) (*agentmail.RenewReservationsResult, error) {
-		if len(opts.Paths) != 2 {
-			t.Fatalf("expected 2 requested paths, got %#v", opts.Paths)
+		if len(opts.Paths) != 0 || len(opts.ReservationIDs) != 2 {
+			t.Fatalf("expected only 2 captured IDs, got %#v", opts)
 		}
-		if opts.Paths[0] != "internal/a.go" || opts.Paths[1] != "internal/b.go" {
-			t.Fatalf("expected deduplicated requested paths, got %#v", opts.Paths)
+		if opts.ReservationIDs[0] != 1001 || opts.ReservationIDs[1] != 1002 {
+			t.Fatalf("expected captured lease IDs, got %#v", opts.ReservationIDs)
 		}
 		return &agentmail.RenewReservationsResult{Renewed: 2}, nil
 	}
@@ -395,11 +432,11 @@ func TestTransferReservationsSameAgentRefreshScopesRenewalToRequestedPaths(t *te
 		Reservations: []ReservationSnapshot{
 			{PathPattern: "internal/a.go", Exclusive: true},
 			{PathPattern: "internal/b.go", Exclusive: false},
-			{PathPattern: "internal/a.go", Exclusive: false},
 		},
 		TTLSeconds: 90,
 	}
 
+	client.prepareSource(&opts)
 	result, err := TransferReservations(context.Background(), client, opts)
 	if err != nil {
 		t.Fatalf("TransferReservations error: %v", err)
@@ -434,6 +471,7 @@ func TestTransferReservationsSameAgentRefreshIncomplete(t *testing.T) {
 		TTLSeconds: 90,
 	}
 
+	client.prepareSource(&opts)
 	result, err := TransferReservations(context.Background(), client, opts)
 	if err == nil {
 		t.Fatal("expected incomplete refresh error")
@@ -458,6 +496,7 @@ func TestTransferReservationsReleaseFailure(t *testing.T) {
 		},
 	}
 
+	client.prepareSource(&opts)
 	result, err := TransferReservations(context.Background(), client, opts)
 	if err == nil {
 		t.Fatal("expected release error")
@@ -485,6 +524,7 @@ func TestTransferReservationsReleaseIncomplete(t *testing.T) {
 		},
 	}
 
+	client.prepareSource(&opts)
 	result, err := TransferReservations(context.Background(), client, opts)
 	if err == nil {
 		t.Fatal("expected incomplete release error")
@@ -516,6 +556,7 @@ func TestTransferReservationsRenewFailure(t *testing.T) {
 		TTLSeconds: 60,
 	}
 
+	client.prepareSource(&opts)
 	result, err := TransferReservations(context.Background(), client, opts)
 	if err == nil {
 		t.Fatal("expected renew error")
@@ -559,6 +600,7 @@ func TestTransferReservationsGraceRetrySuccess(t *testing.T) {
 		GracePeriod: 5 * time.Millisecond,
 	}
 
+	client.prepareSource(&opts)
 	result, err := TransferReservations(context.Background(), client, opts)
 	if err != nil {
 		t.Fatalf("unexpected error after retry: %v", err)
@@ -618,6 +660,7 @@ func TestTransferReservationsEmptyProjectKey(t *testing.T) {
 		Reservations: []ReservationSnapshot{{PathPattern: "a.go"}},
 	}
 
+	client.prepareSource(&opts)
 	result, err := TransferReservations(context.Background(), client, opts)
 	if err == nil {
 		t.Fatal("expected error for empty project key")
@@ -651,6 +694,7 @@ func TestTransferReservationsMissingAgents(t *testing.T) {
 				Reservations: []ReservationSnapshot{{PathPattern: "a.go"}},
 			}
 
+			client.prepareSource(&opts)
 			result, err := TransferReservations(context.Background(), client, opts)
 			if err == nil {
 				t.Fatalf("expected error for %s", tt.name)
@@ -673,6 +717,7 @@ func TestTransferReservationsEmptyReservations(t *testing.T) {
 		Reservations: []ReservationSnapshot{}, // Empty
 	}
 
+	client.prepareSource(&opts)
 	result, err := TransferReservations(context.Background(), client, opts)
 	if err != nil {
 		t.Fatalf("unexpected error for empty reservations: %v", err)
@@ -715,6 +760,7 @@ func TestTransferReservationsContextCancellation(t *testing.T) {
 		GracePeriod:  100 * time.Millisecond,
 	}
 
+	client.prepareSource(&opts)
 	result, err := TransferReservations(ctx, client, opts)
 	// With cancelled context, should fail during grace wait
 	if result.Success && err == nil {
@@ -738,7 +784,8 @@ func TestTransferReservationsNilContext(t *testing.T) {
 	}
 
 	// nil context should be handled gracefully
-	result, err := TransferReservations(context.TODO(), client, opts)
+	client.prepareSource(&opts)
+	result, err := TransferReservations(nil, client, opts)
 	if err != nil {
 		t.Fatalf("unexpected error with nil context: %v", err)
 	}
@@ -761,6 +808,7 @@ func TestTransferReservationsDefaultTTL(t *testing.T) {
 		TTLSeconds: 0, // Should use default
 	}
 
+	client.prepareSource(&opts)
 	result, err := TransferReservations(context.Background(), client, opts)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -933,6 +981,7 @@ func TestTransferReservationsResultFields(t *testing.T) {
 		TTLSeconds: 120,
 	}
 
+	client.prepareSource(&opts)
 	result, err := TransferReservations(context.Background(), client, opts)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

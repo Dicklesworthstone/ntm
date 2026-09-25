@@ -18,11 +18,33 @@ import (
 // Deliberately does not repair sparse or malformed responses. These tests drive
 // the public transfer entry point with the exact replies under examination.
 type receiptTransferClient struct {
-	calls   []string
-	grants  map[int]string
-	reserve func(context.Context, agentmail.FileReservationOptions) (*agentmail.ReservationResult, error)
-	release func(context.Context, string, []string) (*agentmail.ReleaseReservationsResult, error)
-	renew   func(context.Context, agentmail.RenewReservationsOptions) (*agentmail.RenewReservationsResult, error)
+	sourceBShared bool
+	calls         []string
+	grants        map[int]string
+	reserve       func(context.Context, agentmail.FileReservationOptions) (*agentmail.ReservationResult, error)
+	release       func(context.Context, string, []string) (*agentmail.ReleaseReservationsResult, error)
+	renew         func(context.Context, agentmail.RenewReservationsOptions) (*agentmail.RenewReservationsResult, error)
+}
+
+func (c *receiptTransferClient) ListReservations(ctx context.Context, _, _ string, _ bool) ([]agentmail.FileReservation, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	// These fixed source rows enable the existing destination-receipt tests;
+	// they are independent of the malformed mutation replies under test.
+	created := agentmail.FlexTime{Time: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	expires := agentmail.FlexTime{Time: time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC)}
+	rows := []agentmail.FileReservation{
+		{ID: 1001, ProjectID: 73, AgentName: "old", PathPattern: "a.go", Exclusive: true, CreatedTS: created, ExpiresTS: expires},
+		{ID: 1002, ProjectID: 73, AgentName: "old", PathPattern: "b.go", Exclusive: !c.sourceBShared, CreatedTS: created, ExpiresTS: expires},
+	}
+	if c.grants == nil {
+		c.grants = make(map[int]string)
+	}
+	for _, row := range rows {
+		c.grants[row.ID] = row.PathPattern
+	}
+	return rows, nil
 }
 
 func (c *receiptTransferClient) ReservePaths(ctx context.Context, o agentmail.FileReservationOptions) (*agentmail.ReservationResult, error) {
@@ -43,8 +65,8 @@ func (c *receiptTransferClient) ReservePaths(ctx context.Context, o agentmail.Fi
 	return result, err
 }
 func (c *receiptTransferClient) ReleaseReservations(ctx context.Context, _, owner string, paths []string, ids []int) (*agentmail.ReleaseReservationsResult, error) {
-	if owner == "new" && (len(paths) != 0 || len(ids) == 0) {
-		return nil, errors.New("destination cleanup must use exact IDs only")
+	if len(paths) != 0 || len(ids) == 0 {
+		return nil, errors.New("source release and destination cleanup must use exact IDs only")
 	}
 	if len(ids) != 0 {
 		if len(paths) != 0 {
@@ -72,7 +94,7 @@ func (c *receiptTransferClient) RenewReservations(ctx context.Context, o agentma
 	if c.renew != nil {
 		return c.renew(ctx, o)
 	}
-	return &agentmail.RenewReservationsResult{Renewed: len(o.Paths)}, nil
+	return &agentmail.RenewReservationsResult{Renewed: len(o.ReservationIDs)}, nil
 }
 func receiptGrants(paths ...string) *agentmail.ReservationResult {
 	out := &agentmail.ReservationResult{}
@@ -89,10 +111,15 @@ func receiptGrants(paths ...string) *agentmail.ReservationResult {
 	return out
 }
 func receiptTransferOptions() TransferReservationsOptions {
+	created := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	expires := time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC)
 	return TransferReservationsOptions{
 		ProjectKey: "project", FromAgent: "old", ToAgent: "new", GracePeriod: time.Nanosecond,
-		Reservations: []ReservationSnapshot{{PathPattern: "a.go", Exclusive: true}, {PathPattern: "b.go", Exclusive: true}},
-		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Reservations: []ReservationSnapshot{
+			{ID: 1001, ProjectID: 73, AgentName: "old", CreatedAt: created, ExpiresAt: expires, PathPattern: "a.go", Exclusive: true},
+			{ID: 1002, ProjectID: 73, AgentName: "old", CreatedAt: created, ExpiresAt: expires, PathPattern: "b.go", Exclusive: true},
+		},
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 }
 
@@ -139,6 +166,7 @@ func TestTransferPreservesConflictWithoutDetails(t *testing.T) {
 	}}
 	opts := receiptTransferOptions()
 	opts.Reservations[1].Exclusive = false
+	client.sourceBShared = true
 	result, err := TransferReservations(context.Background(), client, opts)
 	if !errors.Is(err, agentmail.ErrReservationConflict) || result.Success || !result.RolledBack || result.Attempts != 2 {
 		t.Fatalf("conflict disappeared without a conflict array: result=%+v error=%v", result, err)
@@ -353,6 +381,7 @@ func TestTransferUnverifiedOwnershipNeverAuthorizesCompensation(t *testing.T) {
 			opts := receiptTransferOptions()
 			if tc.sharedFailure {
 				opts.Reservations[1].Exclusive = false
+				client.sourceBShared = true
 			}
 			result, err := TransferReservations(context.Background(), client, opts)
 			if !errors.Is(err, cause) || !errors.Is(err, agentmail.ErrReservationUnverified) || !errors.Is(err, ErrTransferGrantEvidence) || result.Success || result.RolledBack || !result.OutcomeUnknown {
@@ -412,6 +441,7 @@ func TestTransferCleanupPreservesReplacementLease(t *testing.T) {
 	}
 	opts := receiptTransferOptions()
 	opts.Reservations = opts.Reservations[:1]
+	client.prepareSource(&opts)
 	result, err := TransferReservations(context.Background(), client, opts)
 	if live[202] != "a.go" {
 		t.Fatal("cleanup released a replacement lease on the same path")
@@ -452,7 +482,9 @@ func TestTransferCleanupUsesPriorAttemptIDsOnly(t *testing.T) {
 		}
 		return &agentmail.ReleaseReservationsResult{Released: len(paths) + len(ids)}, nil
 	}
-	result, err := TransferReservations(context.Background(), client, receiptTransferOptions())
+	opts := receiptTransferOptions()
+	client.prepareSource(&opts)
+	result, err := TransferReservations(context.Background(), client, opts)
 	if err != nil || !result.Success || result.Attempts != 2 || !reflect.DeepEqual(transferResultIDs(t, result), []int{301, 302}) {
 		t.Fatalf("retry lost its new lease identities: result=%+v error=%v", result, err)
 	}
@@ -495,6 +527,7 @@ func TestTransferRejectsUnusableGrantIDs(t *testing.T) {
 			if tc.shared {
 				opts.Reservations[1].Exclusive = false
 			}
+			client.prepareSource(&opts)
 			result, err := TransferReservations(context.Background(), client, opts)
 			if !errors.Is(err, ErrTransferGrantEvidence) || result.Success || result.RolledBack || !result.OutcomeUnknown || len(client.releaseCalls) != 1 {
 				t.Fatalf("bad identity authorized cleanup or retry: result=%+v error=%v calls=%+v", result, err, client.releaseCalls)
