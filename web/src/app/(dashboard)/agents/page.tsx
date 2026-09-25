@@ -3,8 +3,9 @@
 /**
  * Agents Page
  *
- * Lists all registered agents across sessions, aggregated from
- * GET /api/v1/sessions and GET /api/v1/sessions/{id}/agents.
+ * Lists the live agent panes across sessions, aggregated from
+ * GET /api/v1/sessions and GET /api/v1/sessions/{id}/agents. `name` is the
+ * Agent Mail name when one is registered for the pane, else the pane title.
  */
 
 import Link from "next/link";
@@ -34,6 +35,8 @@ interface AgentRecord {
   id: string;
   session_id: string;
   name: string;
+  title?: string;
+  agent_mail_name?: string;
   type: string;
   model?: string;
   tmux_pane_id?: string;
@@ -85,6 +88,7 @@ const STATUS_CLASSES: Record<string, string> = {
   working: "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300",
   idle: "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300",
   stuck: "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300",
+  dead: "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300",
 };
 
 export default function AgentsPage() {
@@ -125,7 +129,7 @@ export default function AgentsPage() {
     if (!filter) return agentList;
     const q = filter.toLowerCase();
     return agentList.filter((agent) =>
-      [agent.name, agent.type, agent.session_id, agent.status, agent.model]
+      [agent.name, agent.title, agent.type, agent.session_id, agent.status, agent.model]
         .filter(Boolean)
         .some((field) => String(field).toLowerCase().includes(q))
     );
@@ -147,7 +151,7 @@ export default function AgentsPage() {
             Agents
           </h1>
           <p className="text-sm text-gray-500 dark:text-gray-400">
-            All registered agents across sessions.
+            Live agent panes across sessions.
           </p>
         </div>
         <span className="text-sm text-gray-500 dark:text-gray-400">
@@ -222,6 +226,11 @@ export default function AgentsPage() {
                     <div className="font-medium text-gray-900 dark:text-white">
                       {agent.name || agent.id}
                     </div>
+                    {agent.title && agent.title !== agent.name && (
+                      <div className="text-xs text-gray-500 dark:text-gray-400">
+                        {agent.title}
+                      </div>
+                    )}
                     {agent.model && (
                       <div className="text-xs text-gray-500 dark:text-gray-400">
                         {agent.model}
