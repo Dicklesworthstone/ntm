@@ -74,6 +74,11 @@ type ReservationTransferResult struct {
 	// These errors remain visible alongside the original operation failure.
 	CleanupError  string `json:"cleanup_error,omitempty"`
 	RollbackError string `json:"rollback_error,omitempty"`
+	// RollbackGrants and RollbackConflicts retain the actual source-acquisition
+	// replies, including partial and unverified handles when restoration fails.
+	// They are detached evidence, not permission to retry or release leases.
+	RollbackGrants    []agentmail.FileReservation     `json:"rollback_grants,omitempty"`
+	RollbackConflicts []agentmail.ReservationConflict `json:"rollback_conflicts,omitempty"`
 	// OutcomeUnknown prohibits interpreting an error as proof of no effects.
 	// RolledBack only records restored source coverage, not an atomic transfer.
 	OutcomeUnknown bool `json:"outcome_unknown,omitempty"`
@@ -209,7 +214,10 @@ func TransferReservations(ctx context.Context, client ReservationTransferClient,
 		result.Stage = "rollback"
 		rollbackCtx, cancel := newCleanupContext()
 		defer cancel()
-		if err := rollbackReservations(rollbackCtx, client, opts.ProjectKey, opts.FromAgent, ttlSeconds, exclusivePaths, sharedPaths); err != nil {
+		grants, conflicts, err := rollbackReservations(rollbackCtx, client, opts.ProjectKey, opts.FromAgent, ttlSeconds, exclusivePaths, sharedPaths)
+		result.RollbackGrants = cloneTransferGrants(grants)
+		result.RollbackConflicts = cloneTransferConflicts(conflicts)
+		if err != nil {
 			result.RollbackError = err.Error()
 			result.OutcomeUnknown = true
 			return fmt.Errorf("restore source reservations: %w", err)
@@ -418,7 +426,7 @@ func reserveGroup(ctx context.Context, client ReservationTransferClient, project
 	seen := make(map[string]bool, len(res.Granted))
 	seenIDs := make(map[int]bool, len(res.Granted))
 	var evidenceErr error
-	for _, g := range res.Granted {
+	for _, g := range cloneTransferGrants(res.Granted) {
 		granted = append(granted, g)
 		if g.ID <= 0 || seenIDs[g.ID] {
 			evidenceErr = errors.Join(evidenceErr, fmt.Errorf("%w: missing or duplicate grant ID %d", ErrTransferGrantEvidence, g.ID))
@@ -429,7 +437,7 @@ func reserveGroup(ctx context.Context, client ReservationTransferClient, project
 		}
 		seen[g.PathPattern] = true
 	}
-	conflicts = append(conflicts, res.Conflicts...)
+	conflicts = cloneTransferConflicts(res.Conflicts)
 	if len(conflicts) > 0 && !agentmail.IsReservationConflict(err) {
 		err = errors.Join(err, fmt.Errorf("%w: %d conflicts", agentmail.ErrReservationConflict, len(conflicts)))
 	}
@@ -441,9 +449,8 @@ func reserveGroup(ctx context.Context, client ReservationTransferClient, project
 	return granted, conflicts, errors.Join(err, evidenceErr, ctx.Err())
 }
 
-func rollbackReservations(ctx context.Context, client ReservationTransferClient, projectKey, agentName string, ttlSeconds int, exclusive, shared []string) error {
-	_, _, err := reserveAll(ctx, client, projectKey, agentName, ttlSeconds, agentName, exclusive, shared)
-	return err
+func rollbackReservations(ctx context.Context, client ReservationTransferClient, projectKey, agentName string, ttlSeconds int, exclusive, shared []string) ([]agentmail.FileReservation, []agentmail.ReservationConflict, error) {
+	return reserveAll(ctx, client, projectKey, agentName, ttlSeconds, agentName, exclusive, shared)
 }
 
 func releaseGrantedReservations(ctx context.Context, client ReservationTransferClient, projectKey, agentName string, granted []agentmail.FileReservation) error {
