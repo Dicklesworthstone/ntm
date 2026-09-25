@@ -3272,7 +3272,14 @@ func (s *Server) handleSessionV1(w http.ResponseWriter, r *http.Request) {
 		// store row is still a session the dashboard can open.
 		live, err := s.liveTmuxSessions(r.Context())
 		if err != nil {
-			writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
+			// tmux, not the server, failed: a bounded listing that ran out of
+			// time is a timeout, anything else (circuit open, tmux error) is
+			// an unavailable dependency. Neither is an internal error.
+			status, code := http.StatusServiceUnavailable, ErrCodeServiceUnavail
+			if errors.Is(err, context.DeadlineExceeded) {
+				status, code = http.StatusGatewayTimeout, ErrCodeTimeout
+			}
+			writeErrorResponse(w, status, code, "listing live tmux sessions failed: "+err.Error(), nil, reqID)
 			return
 		}
 		for _, candidate := range live {

@@ -289,7 +289,7 @@ func TestHandleSessionsV1_HungTmuxDegradesToStoredSessions(t *testing.T) {
 		t.Fatal("list endpoint hung on an unresponsive tmux")
 	}
 
-	detail := make(chan int, 1)
+	detail := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions/absent", nil)
 		rctx := chi.NewRouteContext()
@@ -297,14 +297,46 @@ func TestHandleSessionsV1_HungTmuxDegradesToStoredSessions(t *testing.T) {
 		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 		rec := httptest.NewRecorder()
 		srv.handleSessionV1(rec, req)
-		detail <- rec.Code
+		detail <- rec
 	}()
 	select {
-	case code := <-detail:
-		if code == http.StatusOK {
-			t.Fatalf("detail status = %d for a session tmux never reported", code)
-		}
+	case rec := <-detail:
+		// The bounded tmux listing timed out: a gateway timeout, not an
+		// internal server error.
+		assertSessionDetailError(t, rec, http.StatusGatewayTimeout, ErrCodeTimeout)
 	case <-time.After(10 * time.Second):
 		t.Fatal("detail endpoint hung on an unresponsive tmux")
+	}
+}
+
+// Any other tmux failure behind the detail endpoint is an unavailable
+// dependency (503), not an internal server error.
+func TestHandleSessionV1_TmuxFailureIsServiceUnavailable(t *testing.T) {
+	srv, _ := setupTestServer(t)
+	srv.listLiveSessions = func(context.Context) ([]tmux.Session, error) {
+		return nil, errors.New("tmux circuit breaker open")
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions/absent", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "absent")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+	srv.handleSessionV1(rec, req)
+	assertSessionDetailError(t, rec, http.StatusServiceUnavailable, ErrCodeServiceUnavail)
+}
+
+func assertSessionDetailError(t *testing.T, rec *httptest.ResponseRecorder, status int, code string) {
+	t.Helper()
+	if rec.Code != status {
+		t.Fatalf("detail status = %d, want %d; body: %s", rec.Code, status, rec.Body.String())
+	}
+	var body struct {
+		ErrorCode string `json:"error_code"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode detail error: %v; body: %s", err, rec.Body.String())
+	}
+	if body.ErrorCode != code {
+		t.Fatalf("detail error_code = %q, want %q", body.ErrorCode, code)
 	}
 }
