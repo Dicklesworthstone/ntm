@@ -394,18 +394,12 @@ func (c *CostPanel) costTableColumns(tableWidth int) []table.Column {
 }
 
 // costTableRows builds table rows from the current data.
+//
+// Each row carries exactly one cell per column, derived from the column titles
+// themselves. bubbles/table indexes its columns by cell position, so a row with
+// more cells than columns panics (GH #331: at table widths 36-43 the "In"
+// column is dropped but rows still carried an input-token cell).
 func (c *CostPanel) costTableRows(cols []table.Column, maxRows int) []table.Row {
-	showTokens := len(cols) >= 4 // Agent + In + ... (4+ columns means In is present)
-	showOut := len(cols) >= 4    // Check by column title presence instead
-	for _, col := range cols {
-		if col.Title == "In" {
-			showTokens = true
-		}
-		if col.Title == "Out" {
-			showOut = true
-		}
-	}
-
 	nameW := 8
 	if len(cols) > 0 {
 		nameW = cols[0].Width
@@ -416,25 +410,31 @@ func (c *CostPanel) costTableRows(cols []table.Column, maxRows int) []table.Row 
 		if i >= maxRows {
 			break
 		}
-		name := layout.TruncatePaneTitle(agent.PaneTitle, nameW)
-		row := []string{name}
-		if showTokens {
-			row = append(row, formatTokenShort(agent.InputTokens))
+		row := make(table.Row, 0, len(cols))
+		for _, col := range cols {
+			switch col.Title {
+			case "Agent":
+				row = append(row, layout.TruncatePaneTitle(agent.PaneTitle, nameW))
+			case "In":
+				row = append(row, formatTokenShort(agent.InputTokens))
+			case "Out":
+				row = append(row, formatTokenShort(agent.OutputTokens))
+			case "Cost":
+				// Mark rates nobody verified for this model: "?" for the default row,
+				// "~" for a family prefix (claude-opus-5 priced from claude-opus).
+				costCell := cost.FormatCostEstimate(agent.CostUSD)
+				switch agent.PricingMatch {
+				case cost.PricingUnknown:
+					costCell += "?"
+				case cost.PricingFamily:
+					costCell += "~"
+				}
+				row = append(row, costCell)
+			default:
+				// The untitled trailing column holds the trend arrow.
+				row = append(row, agent.Trend.Arrow())
+			}
 		}
-		if showOut {
-			row = append(row, formatTokenShort(agent.OutputTokens))
-		}
-		// Mark rates nobody verified for this model: "?" for the default row,
-		// "~" for a family prefix (claude-opus-5 priced from claude-opus).
-		costCell := cost.FormatCostEstimate(agent.CostUSD)
-		switch agent.PricingMatch {
-		case cost.PricingUnknown:
-			costCell += "?"
-		case cost.PricingFamily:
-			costCell += "~"
-		}
-		row = append(row, costCell)
-		row = append(row, agent.Trend.Arrow())
 		rows = append(rows, row)
 	}
 	return rows
