@@ -93,6 +93,12 @@ type ReservationTransfer struct {
 
 // ReservationSnapshot captures a single reservation for transfer.
 type ReservationSnapshot struct {
+	// Preserve the server's lease identity, not just its reusable path. Older
+	// handoffs remain readable, but missing identity cannot authorize transfer.
+	ID          int       `yaml:"id,omitempty"`
+	ProjectID   int       `yaml:"project_id,omitempty"`
+	AgentName   string    `yaml:"agent_name,omitempty"`
+	CreatedAt   time.Time `yaml:"created_at,omitempty"`
 	PathPattern string    `yaml:"path_pattern"`
 	Exclusive   bool      `yaml:"exclusive,omitempty"`
 	Reason      string    `yaml:"reason,omitempty"`

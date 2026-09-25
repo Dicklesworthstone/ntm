@@ -852,6 +852,10 @@ func buildReservationTransfer(opts GenerateHandoffOptions, projectKey string, re
 	}
 	for _, r := range reservations {
 		transfer.Reservations = append(transfer.Reservations, ReservationSnapshot{
+			ID:          r.ID,
+			ProjectID:   r.ProjectID,
+			AgentName:   r.AgentName,
+			CreatedAt:   r.CreatedTS.Time,
 			PathPattern: r.PathPattern,
 			Exclusive:   r.Exclusive,
 			Reason:      r.Reason,
