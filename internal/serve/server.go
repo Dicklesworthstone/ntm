@@ -109,6 +109,9 @@ type Server struct {
 	waitAgents      func(context.Context, robot.WaitOptions) (*robot.WaitResponse, int)
 	resolvePane     func(context.Context, string, int) (tmux.Pane, error)
 	sendPaneKeys    func(string, string, bool) error
+	// listLiveSessions lists the tmux sessions that are running right now.
+	// Nil in production (tmux.ListSessionsContext); tests inject fixtures.
+	listLiveSessions func(context.Context) ([]tmux.Session, error)
 	// policyWriteFile is optional test-only fault injection for policy updates.
 	// Production servers leave it nil and use os.WriteFile directly.
 	policyWriteFile func(string, []byte, os.FileMode) error
@@ -3173,15 +3176,61 @@ func (s *Server) handleSessionsV1(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Ensure sessions is never null
-	if sessions == nil {
-		sessions = []state.Session{}
+	// The runtime store only knows sessions that were recorded through it, and
+	// ordinary `ntm spawn` sessions never are. Merge in the sessions tmux is
+	// running right now so the dashboard does not report "no sessions" while
+	// agents are live. A tmux failure degrades to the stored rows.
+	live, err := s.liveTmuxSessions(r.Context())
+	if err != nil {
+		slog.Warn("listing live tmux sessions failed", "request_id", reqID, "error", err)
+		live = nil
+	}
+
+	visible := make([]interface{}, 0, len(sessions)+len(live))
+	known := make(map[string]struct{}, len(sessions))
+	for _, session := range sessions {
+		visible = append(visible, session)
+		known[session.Name] = struct{}{}
+	}
+	for _, session := range live {
+		if _, ok := known[session.Name]; ok {
+			continue
+		}
+		known[session.Name] = struct{}{}
+		visible = append(visible, liveSessionRecord(session))
 	}
 
 	writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
-		"sessions": sessions,
-		"count":    len(sessions),
+		"sessions": visible,
+		"count":    len(visible),
 	}, reqID)
+}
+
+// liveTmuxSessions returns the running tmux sessions sorted by name.
+func (s *Server) liveTmuxSessions(ctx context.Context) ([]tmux.Session, error) {
+	list := tmux.ListSessionsContext
+	if s.listLiveSessions != nil {
+		list = s.listLiveSessions
+	}
+	live, err := list(ctx)
+	if err != nil {
+		return nil, err
+	}
+	sort.SliceStable(live, func(i, j int) bool { return live[i].Name < live[j].Name })
+	return live, nil
+}
+
+// liveSessionRecord describes a running tmux session the runtime store has no
+// row for, using the same field names as state.Session.
+func liveSessionRecord(session tmux.Session) map[string]interface{} {
+	return map[string]interface{}{
+		"id":       session.Name,
+		"name":     session.Name,
+		"status":   state.SessionActive,
+		"windows":  session.Windows,
+		"attached": session.Attached,
+		"source":   "tmux",
+	}
 }
 
 // handleSessionV1 handles GET /api/v1/sessions/{id}.
@@ -3204,6 +3253,21 @@ func (s *Server) handleSessionV1(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if session == nil {
+		// Same fallback as the list endpoint: a live tmux session without a
+		// store row is still a session the dashboard can open.
+		live, err := s.liveTmuxSessions(r.Context())
+		if err != nil {
+			writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
+			return
+		}
+		for _, candidate := range live {
+			if candidate.Name == sessionID {
+				writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
+					"session": liveSessionRecord(candidate),
+				}, reqID)
+				return
+			}
+		}
 		writeErrorResponse(w, http.StatusNotFound, ErrCodeNotFound, "session not found", nil, reqID)
 		return
 	}
@@ -4128,6 +4192,15 @@ func (s *Server) handleListAgentsV1(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Agent Mail names ("GreenLake") are recorded per pane. Only trust a
+	// mapping whose recorded pane PID still matches: tmux reuses pane IDs
+	// after a server restart, and a stale registry must not rename a new pane.
+	registry, err := agentmail.LoadBestSessionAgentRegistry(sessionID, s.projectDirSnapshot())
+	if err != nil {
+		slog.Debug("loading agent registry failed", "request_id", reqID, "session", sessionID, "error", err)
+		registry = nil
+	}
+
 	// Filter to only include recognized agent panes (not user/unknown)
 	agents := make([]map[string]interface{}, 0, len(panes))
 	for _, p := range panes {
@@ -4135,7 +4208,24 @@ func (s *Server) handleListAgentsV1(w http.ResponseWriter, r *http.Request) {
 		if agentType == "" || agentType == "unknown" || agentType == "user" {
 			continue
 		}
-		agents = append(agents, map[string]interface{}{
+		name := p.Title
+		agentMailName := ""
+		if registry != nil && p.PID != 0 && registry.PanePID(p.ID) == p.PID {
+			if registered, ok := registry.GetAgentByID(p.ID); ok && registered != "" {
+				agentMailName = registered
+				name = registered
+			}
+		}
+		agent := map[string]interface{}{
+			// Generic agent-record fields shared with the stored agent schema
+			// (id, session_id, name, type, tmux_pane_id) so clients such as
+			// the web dashboard can render live panes and stored rows alike.
+			"id":           p.ID,
+			"session_id":   sessionID,
+			"name":         name,
+			"type":         agentType,
+			"tmux_pane_id": p.ID,
+			// Pane-specific fields.
 			"pane_index": p.Index,
 			"pane_id":    p.ID,
 			"agent_type": agentType,
@@ -4143,7 +4233,17 @@ func (s *Server) handleListAgentsV1(w http.ResponseWriter, r *http.Request) {
 			"variant":    p.Variant,
 			"tags":       p.Tags,
 			"active":     p.Active,
-		})
+			"dead":       p.Dead,
+		}
+		if agentMailName != "" {
+			agent["agent_mail_name"] = agentMailName
+		}
+		if p.Dead {
+			// tmux reports the pane's process has exited: that is known,
+			// unlike working/idle, which this endpoint cannot observe.
+			agent["status"] = "dead"
+		}
+		agents = append(agents, agent)
 	}
 
 	writeSuccessResponse(w, http.StatusOK, map[string]interface{}{

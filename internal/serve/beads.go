@@ -25,8 +25,14 @@ func normalizeSingularBeadPayload(payload interface{}) interface{} {
 	return beads[0]
 }
 
-// beadIDPattern matches a beads issue ID such as "bd-2euwg" or "ntm-y9cd".
-var beadIDPattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*-[A-Za-z0-9]+$`)
+// beadIDPattern matches a beads issue ID: a prefix that starts with a letter
+// and may itself contain hyphens ("bd-2euwg", "ntm-y9cd", "my-proj-a1b2"),
+// optionally followed by dotted child segments for hierarchical issues
+// ("bd-1aae9.1", "bd-1aae9.1.2"). Rejecting children made every sub-issue's
+// detail, update, claim and dependency endpoints answer 400. The leading
+// letter and the closed character set still keep an ID from ever parsing as a
+// br flag or smuggling an "=value" or path.
+var beadIDPattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*(?:-[A-Za-z0-9_]+)+(?:\.[A-Za-z0-9]+)*$`)
 
 // validateBeadIDParam checks that a bead ID from a URL parameter is a real ID
 // before it becomes an argv element for br. br is executed without a shell, but
@@ -41,7 +47,7 @@ func validateBeadIDParam(w http.ResponseWriter, beadID, reqID string) bool {
 	}
 	if !beadIDPattern.MatchString(beadID) {
 		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest,
-			"invalid bead ID: expected a prefixed identifier such as bd-2euwg", nil, reqID)
+			"invalid bead ID: expected a prefixed identifier such as bd-2euwg or bd-2euwg.1", nil, reqID)
 		return false
 	}
 	return true
