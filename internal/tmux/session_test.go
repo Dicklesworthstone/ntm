@@ -602,6 +602,81 @@ func TestValidateSessionName(t *testing.T) {
 	}
 }
 
+func TestCreateSessionUsesReadableDetachedDimensions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires a POSIX shell for the tmux transport")
+	}
+	root := t.TempDir()
+	tmuxPath := filepath.Join(root, "tmux")
+	script := `#!/bin/sh
+printf '%s\000' "$@" >> "$NTM_SESSION_SIZE_LOG"
+printf '\n' >> "$NTM_SESSION_SIZE_LOG"
+if [ "${1:-}" = "${NTM_SESSION_SIZE_FAIL:-}" ]; then
+  printf 'requested session failure\n' >&2
+  exit 81
+fi
+case "${1:-}" in
+  new-session|set-option) exit 0 ;;
+  *) exit 64 ;;
+esac
+`
+	if err := os.WriteFile(tmuxPath, []byte(script), 0o700); err != nil {
+		t.Fatalf("write tmux transport: %v", err)
+	}
+	t.Setenv("NTM_TMUX_BINARY", tmuxPath)
+
+	for _, tt := range []struct {
+		name         string
+		historyLimit int
+		useDefault   bool
+		failCommand  string
+		wantError    string
+	}{
+		{name: "default history", historyLimit: 50000, useDefault: true},
+		{name: "custom history", historyLimit: 1234},
+		{name: "tmux history default", historyLimit: 0},
+		{name: "creation failure", historyLimit: 50000, failCommand: "new-session", wantError: "requested session failure"},
+		{name: "history failure", historyLimit: 50000, failCommand: "set-option", wantError: `tmux session "detached-size" was created but setting history limit failed`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			logPath := filepath.Join(t.TempDir(), "commands")
+			t.Setenv("NTM_SESSION_SIZE_LOG", logPath)
+			t.Setenv("NTM_SESSION_SIZE_FAIL", tt.failCommand)
+			directory := filepath.Join(root, "project with spaces")
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			client := NewClient("")
+			var err error
+			if tt.useDefault {
+				err = client.CreateSessionContext(ctx, "detached-size", directory)
+			} else {
+				err = client.CreateSessionWithHistoryLimitContext(ctx, "detached-size", directory, tt.historyLimit)
+			}
+			if tt.wantError == "" {
+				if err != nil {
+					t.Fatalf("create detached session: %v", err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), tt.wantError) {
+				t.Fatalf("create detached session error = %v, want %q", err, tt.wantError)
+			}
+
+			// Record argument boundaries and every command: the size must be set
+			// at creation, without freezing later resizes via window-size manual.
+			want := strings.Join([]string{"new-session", "-d", "-s", "detached-size", "-c", directory, "-x", "320", "-y", "100", ""}, "\x00") + "\n"
+			if tt.historyLimit > 0 && tt.failCommand != "new-session" {
+				want += strings.Join([]string{"set-option", "-t", "=detached-size:", "history-limit", fmt.Sprint(tt.historyLimit), ""}, "\x00") + "\n"
+			}
+			got, readErr := os.ReadFile(logPath)
+			if readErr != nil {
+				t.Fatalf("read tmux command log: %v", readErr)
+			}
+			if string(got) != want {
+				t.Fatalf("tmux commands = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
 func TestCreateSessionRejectsInvalidNameBeforeInvokingTmux(t *testing.T) {
 	client := NewClient("")
 

@@ -1042,6 +1042,15 @@ func GetSession(name string) (*Session, error) {
 // previous output in panes created via the palette or spawn commands.
 const DefaultHistoryLimit = 50000
 
+// DefaultSessionWidth and DefaultSessionHeight give detached agent sessions
+// room for readable dialogs and output before any client attaches. Explicit
+// new-session dimensions preserve tmux's window-size policy, so attached
+// clients can still resize windows normally.
+const (
+	DefaultSessionWidth  = 320
+	DefaultSessionHeight = 100
+)
+
 // CreateSession creates a new tmux session with a generous scrollback buffer.
 // The history-limit is set to DefaultHistoryLimit (50000 lines) to ensure pane
 // scrollback is accessible. Use CreateSessionWithHistoryLimit for a custom value.
@@ -1070,7 +1079,8 @@ func (c *Client) CreateSessionWithHistoryLimitContext(ctx context.Context, name,
 	if err := ValidateSessionName(name); err != nil {
 		return fmt.Errorf("invalid session name: %w", err)
 	}
-	if err := c.RunSilentContext(ctx, "new-session", "-d", "-s", name, "-c", directory); err != nil {
+	if err := c.RunSilentContext(ctx, "new-session", "-d", "-s", name, "-c", directory,
+		"-x", strconv.Itoa(DefaultSessionWidth), "-y", strconv.Itoa(DefaultSessionHeight)); err != nil {
 		return err
 	}
 	if err := ctx.Err(); err != nil {
