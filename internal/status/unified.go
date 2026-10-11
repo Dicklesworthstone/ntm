@@ -164,6 +164,20 @@ func (d *UnifiedDetector) determineStateAt(output, agentType string, lastActivit
 		}
 	}
 
+	// Antigravity's composer remains visible while a turn runs, so its live
+	// cancel hint must win over both the prompt and activity recency. Once
+	// that hint is gone, a quiet composer is authoritative even on the first
+	// observation: a busy sibling refreshes the window-scoped timestamp, not
+	// this pane's work state (GH#344).
+	if agentType == string(agent.AgentTypeAntigravity) {
+		if agent.AntigravityActivelyWorking(output, 0) {
+			return StateWorking, ErrorNone
+		}
+		if DetectIdleFromOutput(output, agentType) {
+			return StateIdle, ErrorNone
+		}
+	}
+
 	// Grok Build mirrors the Claude/Codex arms above: its bordered composer is
 	// permanent chrome and its live activity line renders ABOVE the composer,
 	// so the shared in-flight classifier outranks both velocity and the

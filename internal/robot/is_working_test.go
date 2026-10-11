@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -65,6 +68,82 @@ func TestGetIsWorkingCanceledContextReturnsTimeoutWithoutObservation(t *testing.
 	}
 	if out == nil || out.Success || out.ErrorCode != ErrCodeTimeout || !strings.Contains(strings.ToLower(out.Error), "canceled") {
 		t.Fatalf("canceled is-working output=%+v", out)
+	}
+}
+
+// Exercise the public JSON surface with two Antigravity panes sharing one
+// active window. Every invocation creates a fresh observer, matching a robot
+// polling loop: the idle verdict cannot depend on prior capture history.
+func TestPrintIsWorkingAntigravityIdleWithBusySibling(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("deterministic tmux transport requires a POSIX shell")
+	}
+	const transport = `#!/bin/sh
+set -eu
+case "$1" in
+  -V) printf 'tmux 3.6a\n' ;;
+  has-session) ;;
+  list-panes) printf '%s\n' "$NTM_AGY_TEST_PANES" ;;
+  capture-pane)
+    target=
+    while [ "$#" -gt 0 ]; do
+      if [ "$1" = -t ]; then shift; target="$1"; break; fi
+      shift
+    done
+    case "$target" in
+      %1) printf '%s\n' "$NTM_AGY_TEST_IDLE" ;;
+      %2) printf '%s\n' "$NTM_AGY_TEST_WORKING" ;;
+      *) printf 'unexpected capture target: %s\n' "$target" >&2; exit 1 ;;
+    esac
+    ;;
+  *) printf 'unexpected tmux command: %s\n' "$*" >&2; exit 1 ;;
+esac
+`
+	binary := filepath.Join(t.TempDir(), "tmux")
+	if err := os.WriteFile(binary, []byte(transport), 0o700); err != nil {
+		t.Fatalf("write tmux transport: %v", err)
+	}
+	t.Setenv("NTM_TMUX_BINARY", binary)
+	t.Setenv("NTM_AGY_TEST_IDLE", "Implemented the requested change.\n──────────────────────────────────────────────────\n>\n──────────────────────────────────────────────────\n? for shortcuts")
+	t.Setenv("NTM_AGY_TEST_WORKING", "Inspecting the project.\n──────────────────────────────────────────────────\n>\n──────────────────────────────────────────────────\nesc to cancel")
+	originalFormat := GetOutputFormat()
+	SetOutputFormat(FormatJSON)
+	t.Cleanup(func() { SetOutputFormat(originalFormat) })
+
+	for range 2 {
+		activity := strconv.FormatInt(time.Now().Unix(), 10)
+		rows := make([]string, 0, 2)
+		for index := 1; index <= 2; index++ {
+			rows = append(rows, strings.Join([]string{
+				fmt.Sprintf("%%%d", index), strconv.Itoa(index), fmt.Sprintf("s__agy_%d", index),
+				"agy", "160", "40", "0", activity, strconv.Itoa(os.Getpid()), "0", "agy", "", "", "0",
+			}, tmux.FieldSeparator))
+		}
+		t.Setenv("NTM_AGY_TEST_PANES", strings.Join(rows, "\n"))
+		stdout, err := captureStdout(t, func() error {
+			return PrintIsWorking(t.Context(), IsWorkingOptions{Session: "s", LinesCaptured: 100})
+		})
+		if err != nil {
+			t.Fatalf("PrintIsWorking() error = %v; stdout = %q", err, stdout)
+		}
+		var output IsWorkingOutput
+		if err := json.Unmarshal([]byte(stdout), &output); err != nil {
+			t.Fatalf("PrintIsWorking() did not emit one JSON document: %v; stdout = %q", err, stdout)
+		}
+		if !output.Success || output.Summary.TotalPanes != 2 || output.Summary.IdleCount != 1 || output.Summary.WorkingCount != 1 {
+			t.Fatalf("unexpected work-state summary: %+v", output)
+		}
+		idle, ok := output.Panes["1"]
+		if !ok || idle.AgentType != "agy" || !idle.IsIdle || idle.IsWorking || !idle.SafeToDispatch || idle.Recommendation != string(agent.RecommendSafeToRestart) {
+			t.Fatalf("idle agy pane in a busy window = %+v, want dispatchable idle", idle)
+		}
+		if idle.ObservationState != "idle" || idle.ObservationFreshness != "fresh" {
+			t.Fatalf("idle agy observation = %q/%q, want idle/fresh", idle.ObservationState, idle.ObservationFreshness)
+		}
+		working, ok := output.Panes["2"]
+		if !ok || !working.IsWorking || working.IsIdle || working.SafeToDispatch || working.Recommendation != string(agent.RecommendDoNotInterrupt) {
+			t.Fatalf("working agy sibling = %+v, want protected active work", working)
+		}
 	}
 }
 

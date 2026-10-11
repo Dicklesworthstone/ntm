@@ -943,6 +943,50 @@ func TestDetermineStateCodexIdleBeatsWindowVelocity(t *testing.T) {
 	}
 }
 
+func TestDetermineStateAntigravityIdleBeatsWindowVelocity(t *testing.T) {
+	t.Parallel()
+
+	const idle = "Implemented the requested change.\n" +
+		"──────────────────────────────────────────────────\n" +
+		">\n" +
+		"──────────────────────────────────────────────────\n" +
+		"? for shortcuts\n"
+	const working = "Inspecting the project.\n" +
+		"──────────────────────────────────────────────────\n" +
+		">\n" +
+		"──────────────────────────────────────────────────\n" +
+		"esc to cancel\n"
+	observedAt := time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name      string
+		agentType string
+		output    string
+		quietFor  time.Duration
+		want      AgentState
+	}{
+		{name: "idle with busy sibling", agentType: "agy", output: idle, want: StateIdle},
+		{name: "idle alias with busy sibling", agentType: " Antigravity ", output: idle, want: StateIdle},
+		{name: "idle with quiet window", agentType: "agy", output: idle, quietFor: time.Hour, want: StateIdle},
+		{name: "working with fresh activity", agentType: "agy", output: working, want: StateWorking},
+		{name: "working during quiet tool call", agentType: "agy", output: working, quietFor: time.Hour, want: StateWorking},
+		{name: "ANSI cancel hint", agentType: "AGY", output: strings.ReplaceAll(working, "esc to cancel", "\x1b[33mesc to cancel\x1b[0m"), quietFor: time.Hour, want: StateWorking},
+		{name: "historical cancel hint is not live", agentType: "agy", output: working + strings.Repeat("Previous response line.\n", 20) + idle, want: StateIdle},
+		{name: "no idle evidence keeps fresh activity", agentType: "agy", output: "Inspecting the source tree before choosing the next change", want: StateWorking},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := NewDetector()
+			got := d.AnalyzeAt("%4", "s__agy_1", tt.agentType, tt.output, observedAt.Add(-tt.quietFor), observedAt)
+			if got.State != tt.want || got.ErrorType != ErrorNone {
+				t.Fatalf("AnalyzeAt() = %v/%v, want %v without an error", got.State, got.ErrorType, tt.want)
+			}
+			if got.AgentType != "agy" {
+				t.Fatalf("AnalyzeAt() agent type = %q, want agy", got.AgentType)
+			}
+		})
+	}
+}
+
 // TestSessionObserverAppliesPaneLocalActivityBound covers the second half of
 // #234: the pane-content fingerprint bound from ntm#213 lived only in
 // UnifiedDetector.Detect, not in SessionObserver.buildPaneObservation — and the

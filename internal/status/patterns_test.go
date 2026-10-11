@@ -68,6 +68,11 @@ func TestIsPromptLine(t *testing.T) {
 		{name: "gemini long-form alias", line: "gemini>", agentType: "gemini", expected: true},
 		{name: "Gemini prompt", line: "Gemini>", agentType: "gmi", expected: true},
 
+		// An exited Antigravity CLI must not look idle at a shell prompt.
+		{name: "antigravity bare composer", line: ">", agentType: "agy", expected: true},
+		{name: "antigravity shell prompt means exited", line: "user@host:~$", agentType: "agy", expected: false},
+		{name: "antigravity alias shell prompt means exited", line: "user@host:~$", agentType: " Antigravity ", expected: false},
+
 		// User shell prompts
 		{name: "dollar prompt", line: "user@host:~$ ", agentType: "user", expected: true},
 		{name: "percent prompt", line: "user@host %", agentType: "user", expected: true},

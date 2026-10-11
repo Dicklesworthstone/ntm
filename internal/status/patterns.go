@@ -152,6 +152,7 @@ var knownAgentTypes = map[string]bool{
 	"cc":       true, // Claude Code uses "claude>" or ">" prompts
 	"cod":      true, // Codex uses "codex>" prompt
 	"gmi":      true, // Gemini uses "gemini>" prompt
+	"agy":      true, // Antigravity uses a bare > composer, not a shell $ prompt
 	"cursor":   true,
 	"windsurf": true,
 	"aider":    true,
