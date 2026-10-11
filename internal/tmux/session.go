@@ -2334,13 +2334,11 @@ const (
 // "[Pasted ..." stand-in there. Idle suggestion hints also render after "›",
 // so composer text alone is not evidence — the line must carry the payload
 // snippet or a paste marker.
-// Composer-clear choreography (ntm-5p0b). AP-16 doctrine — "always Escape
-// Escape Escape C-u before sending fresh prompts into any codex pane that had
-// a prior interrupt" — was operator muscle memory driven with raw tmux
-// send-keys. The sequence is per-agent because the same keys mean different
-// things per TUI: codex tolerates the triple-Escape ritual; Claude Code maps
-// double-Escape to history jump-back, so it gets a single Escape; unknown
-// TUIs get only the line-kill.
+// Composer-clear choreography (ntm-5p0b) is per-agent because the same keys
+// mean different things per TUI. Escape pairs open transcript browsing in
+// current Codex (GH#345), so its draft is cleared with editing keys and a
+// history modal is dismissed separately with verified readback. Claude Code
+// gets a single Escape to avoid its history jump; unknown TUIs get line-kill.
 const (
 	composerClearKeyGap     = 120 * time.Millisecond
 	composerClearVerifyWait = 300 * time.Millisecond
@@ -2351,7 +2349,10 @@ const (
 func ComposerClearKeys(agentType AgentType) []string {
 	switch agentType.Canonical() {
 	case AgentCodex:
-		return []string{"Escape", "Escape", "Escape", "C-u"}
+		// Escape pairs open transcript browsing in current Codex (GH#345).
+		// Edit the draft without entering history; modal dismissal is verified
+		// separately by ClearComposerContext.
+		return []string{"C-e", "C-u"}
 	case AgentClaude:
 		return []string{"Escape", "C-u"}
 	case AgentOmp:
@@ -2548,6 +2549,9 @@ func InspectComposer(capture string, agentType AgentType) ComposerState {
 		state.HoldsText = composer.Found && composer.Draft != ""
 		return state
 	}
+	if agentType.Canonical() == AgentCodex && codexTranscriptBrowsing(capture) {
+		return state
+	}
 	markers := composerMarkersForAgent(agentType)
 	if len(markers) == 0 {
 		return state
@@ -2588,6 +2592,9 @@ func (c *Client) ComposerReadyForDelivery(ctx context.Context, target string, ag
 	capture, err := c.CapturePaneVisibleContext(ctx, target)
 	if err != nil || strings.TrimSpace(capture) == "" {
 		return true, ""
+	}
+	if canonical == AgentCodex && codexTranscriptBrowsing(capture) {
+		return false, ErrCodexTranscriptBrowsing.Error()
 	}
 	if composerVisibleForDelivery(capture, markers) {
 		return true, ""
@@ -2654,6 +2661,26 @@ var dialogOptionLineRe = regexp.MustCompile(`^\d{1,2}[.)]\s`)
 // keeps transcript text far above the composer from vetoing a live pane.
 const dialogChromeScanLines = 6
 
+// ErrCodexTranscriptBrowsing means the keyboard belongs to transcript history,
+// where Enter rewinds the conversation instead of submitting a fresh prompt.
+var ErrCodexTranscriptBrowsing = errors.New("codex is browsing transcript: Enter would rewind the conversation; return with Escape or use --clear-input before resending")
+
+// Codex shortens this footer as the pane narrows, down to just "Browsing".
+// These are the alternatives from its prompt_navigation_footer renderer.
+var codexTranscriptFooterRe = regexp.MustCompile(`(?i)^Browsing(?: transcript)?(?: · (?:↑↓/jk scroll|←→/hl prompts|\S+(?: \S+)? details|↵ rewind|esc(?: back)?|↑↓/jk ←→/hl))*$`)
+
+func codexTranscriptBrowsing(capture string) bool {
+	lines := strings.Split(strings.TrimSpace(capture), "\n")
+	start := max(0, len(lines)-queuedMarkerTailLines)
+	for i := start; i < len(lines); i++ {
+		footer := strings.Join(strings.Fields(strings.Join(lines[i:], " ")), " ")
+		if codexTranscriptFooterRe.MatchString(footer) {
+			return true
+		}
+	}
+	return false
+}
+
 // composerVisibleForDelivery reports whether the capture POSITIVELY shows a
 // live composer rather than dialog chrome reusing the marker glyph. Only the
 // BOTTOM-MOST marker line counts — the composer is bottom-pinned in every
@@ -2662,6 +2689,11 @@ const dialogChromeScanLines = 6
 // enter to continue" at or just below the marker, is a selection cursor, not
 // an input box (GH#273 root cause 3).
 func composerVisibleForDelivery(capture string, markers []string) bool {
+	for _, marker := range markers {
+		if (marker == "›" || marker == "»") && codexTranscriptBrowsing(capture) {
+			return false
+		}
+	}
 	lines := strings.Split(capture, "\n")
 	for i := len(lines) - 1; i >= 0; i-- {
 		idx, marker := indexAnyMarker(lines[i], markers)
@@ -2708,8 +2740,8 @@ type ComposerClearResult struct {
 	// Cleared is false only when verification POSITIVELY shows leftover
 	// state.
 	Cleared bool
-	// Verified is false when the sequence was sent but emptiness could not
-	// be confirmed (no marker visible / unknown TUI).
+	// Verified is false when emptiness could not be confirmed (no marker
+	// visible / unknown TUI).
 	Verified bool
 	// Blocker names what stopped the clear when Cleared is false.
 	Blocker ComposerClearBlocker
@@ -2749,7 +2781,8 @@ const composerClearMaxBackspaces = 4096
 // too. A pane parked on a dialog is refused with ComposerBlockerModal rather
 // than hammered with line-kill keys, which would pick menu entries.
 func (c *Client) ClearComposerContext(ctx context.Context, target string, agentType AgentType) (ComposerClearResult, error) {
-	if agentType.Canonical() == AgentOmp {
+	canonical := agentType.Canonical()
+	if canonical == AgentOmp {
 		return c.clearOmpComposerContext(ctx, target)
 	}
 	markers := composerMarkersForAgent(agentType)
@@ -2778,18 +2811,44 @@ func (c *Client) ClearComposerContext(ctx context.Context, target string, agentT
 	}
 
 	result := ComposerClearResult{}
+	transcriptDismissed := false
 	for round := 1; round <= composerClearMaxRounds; round++ {
 		capture, err := c.CapturePaneVisibleContext(ctx, target)
 		if err != nil {
 			return result, fmt.Errorf("capture pane for composer clear verification: %w", err)
 		}
+		if canonical == AgentCodex && codexTranscriptBrowsing(capture) {
+			result.Verified = true
+			result.Blocker = ComposerBlockerModal
+			result.Residual = "Codex transcript browsing (Enter rewinds the conversation)"
+			if transcriptDismissed {
+				return result, nil
+			}
+			// One Escape returns from history. Re-capture before any editing;
+			// a second Escape could prime or reopen browsing again.
+			if err := sendKeys([]string{"Escape"}); err != nil {
+				return result, err
+			}
+			transcriptDismissed = true
+			result.Rounds = round
+			if err := waitForSendDelay(ctx, composerClearVerifyWait); err != nil {
+				return result, err
+			}
+			continue
+		}
 
 		// No marker at all (pane initializing, or an agent actively working
-		// with its composer off screen): unverifiable, so fire the ritual once
-		// and report a best-effort clear, exactly as before. Refusing here
-		// would break --clear-input sends that used to work.
-		markerVisible, _, _ := composerBlockEmpty(capture, markers, composerPlaceholderPrefixes(agentType))
+		// with its composer off screen) is unverifiable. Codex receives no
+		// blind editing keys; other agents retain their best-effort clear.
+		markerVisible, empty, _ := composerBlockEmpty(capture, markers, composerPlaceholderPrefixes(agentType))
 		if !markerVisible {
+			if canonical == AgentCodex {
+				// After dismissing history, require positive recovery proof.
+				if transcriptDismissed {
+					return result, nil
+				}
+				return ComposerClearResult{Cleared: true, Rounds: result.Rounds}, nil
+			}
 			if err := sendKeys(ComposerClearKeys(agentType)); err != nil {
 				return result, err
 			}
@@ -2810,6 +2869,9 @@ func (c *Client) ClearComposerContext(ctx context.Context, target string, agentT
 		}
 
 		queued := InspectComposer(capture, agentType).QueuedMessages
+		if canonical == AgentCodex && empty && !queued {
+			return ComposerClearResult{Cleared: true, Verified: true, Rounds: result.Rounds}, nil
+		}
 		keys := ComposerClearKeys(agentType)
 		drain := 0
 		switch {
@@ -2848,6 +2910,12 @@ func (c *Client) ClearComposerContext(ctx context.Context, target string, agentT
 		if err != nil {
 			return result, fmt.Errorf("capture pane for composer clear verification: %w", err)
 		}
+		if canonical == AgentCodex && codexTranscriptBrowsing(after) {
+			result.Verified = true
+			result.Blocker = ComposerBlockerModal
+			result.Residual = "Codex transcript browsing (Enter rewinds the conversation)"
+			continue
+		}
 		found, empty, residual := composerBlockEmpty(after, markers, composerPlaceholderPrefixes(agentType))
 		stillQueued := InspectComposer(after, agentType).QueuedMessages
 		if !found {
@@ -2856,9 +2924,7 @@ func (c *Client) ClearComposerContext(ctx context.Context, target string, agentT
 			return result, nil
 		}
 		if empty && !stillQueued {
-			result.Cleared = true
-			result.Verified = true
-			return result, nil
+			return ComposerClearResult{Cleared: true, Verified: true, Rounds: result.Rounds}, nil
 		}
 		result.Verified = true
 		result.Residual = residual
@@ -3177,6 +3243,9 @@ func (c *Client) VerifyCodexSubmissionContext(ctx context.Context, target, messa
 	if err != nil {
 		return false, false, fmt.Errorf("capture codex pane for submission verification: %w", err)
 	}
+	if codexTranscriptBrowsing(capture) {
+		return false, false, ErrCodexTranscriptBrowsing
+	}
 	if codexLooksWorking(capture) || !codexComposerHoldsPayload(capture, message) {
 		return true, false, nil
 	}
@@ -3193,6 +3262,9 @@ func (c *Client) VerifyCodexSubmissionContext(ctx context.Context, target, messa
 		capture, err = c.CapturePaneVisibleContext(ctx, target)
 		if err != nil {
 			return false, true, fmt.Errorf("capture codex pane after rescue Enter: %w", err)
+		}
+		if codexTranscriptBrowsing(capture) {
+			return false, true, ErrCodexTranscriptBrowsing
 		}
 		if codexLooksWorking(capture) || !codexComposerHoldsPayload(capture, message) {
 			return true, true, nil

@@ -3140,7 +3140,7 @@
           "flag": "--clear-input",
           "type": "bool",
           "required": false,
-          "description": "Clear residual composer text (per-agent Escape ritual + C-u, verified) before typing; recommended after interrupts on codex panes"
+          "description": "Clear residual composer text (agent-specific keys, verified) before typing; recommended after interrupts on codex panes"
         },
         {
           "name": "verify-render",

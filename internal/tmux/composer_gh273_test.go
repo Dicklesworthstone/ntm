@@ -1,6 +1,9 @@
 package tmux
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // Captured frames from GH#273 (codex-cli 0.150.1/0.151.0). Codex swaps the
 // composer prompt glyph with the reasoning effort — "›" (U+203A) everywhere
@@ -99,5 +102,51 @@ func TestComposerLineEmpty_UltraGlyph(t *testing.T) {
 	state := InspectComposer("chat\n» leftover draft\n", AgentCodex)
 	if !state.MarkerVisible || !state.HoldsText {
 		t.Fatalf("InspectComposer ultra residue = %+v, want marker visible and holding text", state)
+	}
+}
+
+func TestCodexTranscriptBrowsingFooterIsCurrent(t *testing.T) {
+	footers := []string{
+		"Browsing transcript · ↑↓/jk scroll · ←→/hl prompts · ⌃t details · ↵ rewind · esc back",
+		"Browsing transcript · ↑↓/jk scroll · ←→/hl prompts · ⌃x ⌃t details · ↵ rewind · esc back",
+		"Browsing · ↑↓/jk scroll · ←→/hl prompts · ⌃t details · ↵ rewind · esc back",
+		"Browsing · ↑↓/jk ←→/hl · ⌃t details · ↵ rewind · esc back",
+		"Browsing · ↑↓/jk ←→/hl · ↵ rewind · esc",
+		"Browsing · ↵ rewind · esc back",
+		"Browsing · esc back",
+		"Browsing · esc",
+		"Browsing",
+	}
+	for _, footer := range footers {
+		t.Run(footer, func(t *testing.T) {
+			capture := "› an earlier user prompt\n" + footer + "\n\n"
+			if !codexTranscriptBrowsing(capture) {
+				t.Fatalf("live transcript browsing footer was missed: %q", footer)
+			}
+			if composerVisibleForDelivery(capture, composerMarkersForAgent(AgentCodex)) {
+				t.Fatal("history selection was accepted as a live composer")
+			}
+			if state := InspectComposer(capture, AgentCodex); state.MarkerVisible || state.HoldsText {
+				t.Fatalf("history prompt was reported as unsent draft: %+v", state)
+			}
+		})
+	}
+	for _, capture := range []string{
+		footers[0] + "\n" + codexXhighIdleFrame,
+		"The status said " + footers[0],
+		"› Browsing\n47% context left",
+		"Browsing the project files\n",
+		"Browsing transcript is explained here\n",
+	} {
+		if codexTranscriptBrowsing(capture) {
+			t.Fatalf("quoted or stale browsing text was treated as a modal:\n%s", capture)
+		}
+	}
+	wrapped := "› old prompt\n" + strings.ReplaceAll(footers[0], " · ", " ·\n")
+	if !codexTranscriptBrowsing(wrapped) {
+		t.Fatal("wrapped live footer was missed")
+	}
+	if !composerVisibleForDelivery("❯ keep this draft\nBrowsing", []string{"❯"}) {
+		t.Fatal("Codex history detection affected another agent's composer")
 	}
 }

@@ -323,7 +323,7 @@ type SendOptions struct {
 	// typed into the operator's shell was one of the most-documented swarm
 	// footguns (every broadcast recipe carried --skip-first to dodge it).
 	IncludeUser bool
-	// ClearInput performs the per-agent composer clear (Escape ritual + C-u)
+	// ClearInput performs the per-agent composer clear (agent-specific keys)
 	// with emptiness verification before typing each prompt (ntm-5p0b).
 	ClearInput     bool
 	SkipFirst      bool
@@ -1015,7 +1015,7 @@ func newSendCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&targetAll, "all", false, "send to all agent panes, overriding type/tag filters (the user pane is excluded unless --include-user)")
 	cmd.Flags().BoolVar(&includeUser, "include-user", false, "opt the user/control pane into a --all broadcast (deliberate shell input only)")
-	cmd.Flags().BoolVar(&clearInput, "clear-input", false, "clear residual composer text (per-agent Escape ritual + C-u, verified) before typing each prompt; recommended after interrupts on codex panes")
+	cmd.Flags().BoolVar(&clearInput, "clear-input", false, "clear residual composer text (agent-specific keys, verified) before typing each prompt; recommended after interrupts on codex panes")
 	cmd.Flags().BoolVarP(&skipFirst, "skip-first", "s", false, "skip the first pane in deterministic topology order")
 	cmd.Flags().StringVarP(&paneSelector, "pane", "p", "", "send to one pane (N, W.P, or %N)")
 	cmd.Flags().StringVarP(&panesArg, "panes", "", "", "send to panes (comma-separated N, W.P, or %N selectors)")
@@ -4085,6 +4085,11 @@ func newShellDispatchServiceWithGate(
 			}
 			if err := dispatchsvc.ClearComposerForDelivery(ctx, target.ID, delivery); err != nil {
 				return err
+			}
+			if delivery.Target.AgentType.Canonical() == tmux.AgentCodex {
+				if ready, reason := tmux.ComposerReadyForDelivery(ctx, target.ID, delivery.Target.AgentType, target.Width); !ready {
+					return dispatchsvc.GuaranteeNoDeliveryActuation(fmt.Errorf("pane %s not ready for delivery: %s", target.ID, reason))
+				}
 			}
 			switch delivery.Protocol {
 			case dispatchsvc.ProtocolSingleEnter:

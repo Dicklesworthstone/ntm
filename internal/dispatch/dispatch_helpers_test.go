@@ -42,6 +42,20 @@ func installTrustDialogTMUX(t *testing.T, capture string) (screen, log string) {
 printf '%s\n' "$*" >> "$NTM_TEST_TRUST_LOG"
 case " $* " in
   *" capture-pane "*) cat "$NTM_TEST_TRUST_SCREEN" ;;
+  *" send-keys "*)
+    case "$*" in
+      *" Escape")
+        if [ -n "${NTM_TEST_COMPOSER_AFTER_ESCAPE:-}" ]; then
+          cat "$NTM_TEST_COMPOSER_AFTER_ESCAPE" > "$NTM_TEST_TRUST_SCREEN"
+        fi
+        ;;
+      *" C-u")
+        if [ -n "${NTM_TEST_COMPOSER_AFTER_CLEAR:-}" ]; then
+          cat "$NTM_TEST_COMPOSER_AFTER_CLEAR" > "$NTM_TEST_TRUST_SCREEN"
+        fi
+        ;;
+    esac
+    ;;
 esac
 `), 0700); err != nil {
 		t.Fatal(err)
@@ -49,6 +63,8 @@ esac
 	t.Setenv("NTM_TMUX_BINARY", binary)
 	t.Setenv("NTM_TEST_TRUST_LOG", log)
 	t.Setenv("NTM_TEST_TRUST_SCREEN", screen)
+	t.Setenv("NTM_TEST_COMPOSER_AFTER_ESCAPE", "")
+	t.Setenv("NTM_TEST_COMPOSER_AFTER_CLEAR", "")
 	original := tmux.DefaultClient
 	tmux.DefaultClient = tmux.NewClient("")
 	t.Cleanup(func() { tmux.DefaultClient = original })
@@ -185,5 +201,100 @@ func TestTMUXDelivererOmpEmptyComposerHintDoesNotClearOrQuit(t *testing.T) {
 	}
 	if strings.Count(string(commands), message) != 1 {
 		t.Fatalf("prompt must reach the actual transport exactly once:\n%s", commands)
+	}
+}
+
+func TestTMUXDelivererCodexComposerClearAndModalRefusal(t *testing.T) {
+	const idle = "› Ask Codex to do anything\n47% context left\n"
+	const modal = "› an earlier user prompt\nBrowsing transcript · ↑↓/jk scroll · ←→/hl prompts · ⌃t details · ↵ rewind · esc back\n"
+	cases := []struct {
+		name, capture, afterEscape, afterClear, wantError string
+		clearInput                                      bool
+		escapes, clears                                 int
+	}{
+		{name: "empty composer receives no clearing keys", capture: idle, clearInput: true},
+		{name: "ultra empty composer receives no clearing keys", capture: "» Ask Codex to do anything\n47% context left\n", clearInput: true},
+		{name: "initializing pane receives no blind clearing keys", capture: "initializing\n", clearInput: true, wantError: "not ready for delivery"},
+		{name: "draft clears without entering history", capture: "› old draft\n47% context left\n", afterClear: idle, clearInput: true, clears: 1},
+		{name: "one Escape restores the live composer", capture: modal, afterEscape: idle, clearInput: true, escapes: 1},
+		{name: "history restores a draft before clearing", capture: modal, afterEscape: "› preserved draft\n47% context left\n", afterClear: idle, clearInput: true, escapes: 1, clears: 1},
+		{name: "markerless history still recovers", capture: "Browsing · esc back\n", afterEscape: idle, clearInput: true, escapes: 1},
+		{name: "persistent history refuses without more keys", capture: modal, clearInput: true, escapes: 1, wantError: "COMPOSER_NOT_CLEARED"},
+		{name: "history exit requires a visible composer", capture: modal, afterEscape: "initializing\n", clearInput: true, escapes: 1, wantError: "COMPOSER_NOT_CLEARED"},
+		{name: "ordinary send cannot rewind", capture: modal, wantError: "Enter would rewind"},
+		{name: "history overrides old working chrome", capture: "• Working (5s • esc to interrupt)\n" + modal, wantError: "Enter would rewind"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			screen, log := installTrustDialogTMUX(t, tc.capture)
+			for key, capture := range map[string]string{
+				"NTM_TEST_COMPOSER_AFTER_ESCAPE": tc.afterEscape,
+				"NTM_TEST_COMPOSER_AFTER_CLEAR":  tc.afterClear,
+			} {
+				if capture == "" {
+					continue
+				}
+				path := filepath.Join(filepath.Dir(screen), key)
+				if err := os.WriteFile(path, []byte(capture), 0600); err != nil {
+					t.Fatal(err)
+				}
+				t.Setenv(key, path)
+			}
+			svc, err := NewService(Ports{Redactor: AllowAllRedactor{}, Deliverer: TMUXDeliverer{}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			const message = "review the next task"
+			result, err := svc.Execute(context.Background(), Request{
+				Session: "codex-clear-test",
+				Panes:   []tmux.Pane{{ID: "%12", Type: tmux.AgentCodex, Command: "codex", Width: 120}},
+				Message: message, ClearInput: tc.clearInput, Submit: true,
+			})
+			commands, readErr := os.ReadFile(log)
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			calls := string(commands)
+			if strings.Count(calls, " Escape\n") != tc.escapes || strings.Count(calls, " C-u\n") != tc.clears || strings.Count(calls, " C-e\n") != tc.clears {
+				t.Fatalf("unexpected editing of composer/modal:\n%s", calls)
+			}
+			if tc.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantError) || !IsGuaranteedNoDeliveryActuation(err) || result.Success || result.Delivered != 0 || result.Failed != 1 {
+					t.Fatalf("modal refusal: result=%+v error=%v", result, err)
+				}
+				if strings.Contains(calls, message) || strings.Contains(calls, " Enter\n") || strings.Contains(calls, " BSpace\n") {
+					t.Fatalf("modal received prompt, Enter, or drain keys:\n%s", calls)
+				}
+				return
+			}
+			if err != nil || !result.Success || result.Delivered != 1 || result.Failed != 0 {
+				t.Fatalf("clear-and-send: result=%+v error=%v", result, err)
+			}
+			if strings.Count(calls, message) != 1 {
+				t.Fatalf("recovered prompt was not transported exactly once:\n%s", calls)
+			}
+		})
+	}
+}
+
+func TestCodexSubmissionVerificationNeverRewindsTranscript(t *testing.T) {
+	const message = "an earlier user prompt"
+	const capture = "› " + message + "\nBrowsing transcript · ↑↓/jk scroll · ←→/hl prompts · ⌃t details · ↵ rewind · esc back\n"
+	_, log := installTrustDialogTMUX(t, capture)
+	confirmed, rescued, err := tmux.VerifyCodexSubmissionContext(context.Background(), "%12", message, 120)
+	if confirmed || rescued || !errors.Is(err, tmux.ErrCodexTranscriptBrowsing) {
+		t.Fatalf("history was confirmed or rescued: confirmed=%v rescued=%v error=%v", confirmed, rescued, err)
+	}
+	// The service must not turn this positive modal diagnosis into the
+	// fail-open result reserved for an inconclusive capture failure.
+	if err := VerifyAgentSubmission(context.Background(), "%12", message, tmux.AgentCodex, 120); !errors.Is(err, tmux.ErrCodexTranscriptBrowsing) {
+		t.Fatalf("submission wrapper hid the rewind hazard: %v", err)
+	}
+	commands, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(commands), "send-keys") {
+		t.Fatalf("submission verification sent a key into history:\n%s", commands)
 	}
 }

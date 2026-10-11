@@ -2936,14 +2936,14 @@ func TestAgentCLIDead(t *testing.T) {
 }
 
 // ntm-5p0b: the pre-send composer clear sequence is per-agent because the
-// same keys mean different things per TUI (double-Escape is history jump-back
-// in Claude Code; the triple-Escape ritual is codex doctrine from AP-16).
+// same keys mean different things per TUI. Escape pairs enter history in
+// Claude Code and current Codex, so Codex uses editing keys (GH#345).
 func TestComposerClearKeys_PerAgentSequences(t *testing.T) {
 	cases := []struct {
 		agent AgentType
 		want  []string
 	}{
-		{AgentCodex, []string{"Escape", "Escape", "Escape", "C-u"}},
+		{AgentCodex, []string{"C-e", "C-u"}},
 		{AgentClaude, []string{"Escape", "C-u"}},
 		{AgentGemini, []string{"C-u"}},
 		{AgentUser, []string{"C-u"}},

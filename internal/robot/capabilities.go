@@ -976,7 +976,7 @@ func buildCommandRegistry() []RobotCommandInfo {
 				{Name: "panes", Flag: "--panes", Type: "string", Required: false, Description: "Filter to a set of N, W.P, or %N pane selectors"},
 				{Name: "exclude", Flag: "--exclude", Type: "string", Required: false, Description: "Exclude N, W.P, or %N pane selectors"},
 				{Name: "delay-ms", Flag: "--delay-ms", Type: "int", Required: false, Description: "Delay between sends (ms)"},
-				{Name: "clear-input", Flag: "--clear-input", Type: "bool", Required: false, Description: "Clear residual composer text (per-agent Escape ritual + C-u, verified) before typing; recommended after interrupts on codex panes"},
+				{Name: "clear-input", Flag: "--clear-input", Type: "bool", Required: false, Description: "Clear residual composer text (agent-specific keys, verified) before typing; recommended after interrupts on codex panes"},
 				{Name: "verify-render", Flag: "--verify-render", Type: "bool", Required: false, Description: "Capture bounded before/after output and require rendered delivery evidence"},
 				{Name: "with-memory", Flag: "--with-memory", Type: "bool", Required: false, Description: "Inject relevant CM (cass-memory) rules above the message before sending; degrades gracefully when cm is unavailable. Injection metadata is reported as memory_injection"},
 				{Name: "track", Flag: "--track", Type: "bool", Required: false, Description: "Combined send+ack: wait for response"},

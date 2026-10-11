@@ -89,7 +89,7 @@ type Request struct {
 	Delay                 time.Duration
 	StopOnFailure         bool
 	DryRun                bool
-	// ClearInput performs the per-agent composer clear (Escape ritual + C-u)
+	// ClearInput performs the per-agent composer clear (agent-specific keys)
 	// and verifies emptiness before typing the prompt (ntm-5p0b / AP-16):
 	// codex TUIs concatenate a fresh send onto leftover buffer text after an
 	// interrupt, corrupting both.
@@ -405,6 +405,13 @@ func (TMUXDeliverer) Deliver(ctx context.Context, delivery Delivery) error {
 				"PANE_INTERACTIVE_GATE: pane %s is showing a workspace trust dialog; no prompt or clearing keys were sent; inspect with --robot-dialogs and explicitly answer with --robot-answer-dialog before retrying", target))
 		}
 	}
+	// --clear-input may safely leave Codex transcript browsing with one
+	// Escape; readiness is checked again after that verified recovery.
+	if canonical == tmux.AgentCodex {
+		if err := ClearComposerForDelivery(ctx, target, delivery); err != nil {
+			return GuaranteeNoDeliveryActuation(err)
+		}
+	}
 	// Fail closed on panes that cannot accept typed input yet (bd-dp9oy):
 	// a Claude/codex TUI still initializing, or showing a trust dialog or
 	// menu instead of its input box, silently swallows pasted prompts while
@@ -414,8 +421,10 @@ func (TMUXDeliverer) Deliver(ctx context.Context, delivery Delivery) error {
 	if ready, reason := tmux.ComposerReadyForDelivery(ctx, target, delivery.Target.AgentType, delivery.Target.Pane.Width); !ready {
 		return GuaranteeNoDeliveryActuation(fmt.Errorf("pane %s not ready for delivery: %s", target, reason))
 	}
-	if err := ClearComposerForDelivery(ctx, target, delivery); err != nil {
-		return GuaranteeNoDeliveryActuation(err)
+	if canonical != tmux.AgentCodex {
+		if err := ClearComposerForDelivery(ctx, target, delivery); err != nil {
+			return GuaranteeNoDeliveryActuation(err)
+		}
 	}
 	switch delivery.Protocol {
 	case ProtocolStageOnly:
@@ -464,6 +473,9 @@ func ClearComposerForDelivery(ctx context.Context, target string, delivery Deliv
 func composerBlockerDetail(result tmux.ComposerClearResult) string {
 	switch result.Blocker {
 	case tmux.ComposerBlockerModal:
+		if result.Residual != "" {
+			return fmt.Sprintf("is showing %s; no prompt or Enter was sent; return with Escape before retrying", result.Residual)
+		}
 		return "is showing a dialog or picker, not an input box, so the composer was not touched (answering it needs a deliberate keystroke)"
 	case tmux.ComposerBlockerQueued:
 		return fmt.Sprintf("still reports queued messages after %d clear rounds; a new prompt would not be the next thing the agent processes", result.Rounds)
@@ -519,6 +531,9 @@ func VerifyAgentSubmission(ctx context.Context, target, message string, agentTyp
 		return nil
 	}
 	if err != nil {
+		if errors.Is(err, tmux.ErrCodexTranscriptBrowsing) {
+			return fmt.Errorf("pane %s: %w", target, err)
+		}
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}

@@ -3871,3 +3871,46 @@ func TestSendCommandRejectsMisusedTemplateFlags(t *testing.T) {
 		})
 	}
 }
+
+func TestShellDispatchRefusesCodexTranscriptBeforePrompt(t *testing.T) {
+	for _, clearInput := range []bool{false, true} {
+		t.Run(fmt.Sprintf("clear-input=%v", clearInput), func(t *testing.T) {
+			projectRoot, logPath := workflowCommandTmuxFixture(t, "stable")
+			const capture = "› an earlier user prompt\nBrowsing transcript · ↑↓/jk scroll · ←→/hl prompts · ⌃t details · ↵ rewind · esc back\n"
+			if err := os.WriteFile(filepath.Join(projectRoot, "pane-output"), []byte(capture), 0600); err != nil {
+				t.Fatal(err)
+			}
+			panes := []tmux.Pane{{ID: "%91", Type: tmux.AgentCodex, Command: "codex", Width: 120}}
+			service, err := newShellDispatchService("proj", panes, activeShellDispatchRedactionConfig())
+			if err != nil {
+				t.Fatal(err)
+			}
+			const message = "never submit this into transcript history"
+			request := shellDispatchRequest("proj", panes, panes, message, true)
+			request.ClearInput = clearInput
+			result, err := service.Execute(t.Context(), request)
+			wantError := "Enter would rewind"
+			wantEscapes := 0
+			if clearInput {
+				wantError = "COMPOSER_NOT_CLEARED"
+				wantEscapes = 1
+			}
+			if err == nil || !strings.Contains(err.Error(), wantError) || result.Success || result.Delivered != 0 || result.Failed != 1 {
+				t.Fatalf("shell send accepted transcript browsing: result=%+v error=%v", result, err)
+			}
+			commands, err := os.ReadFile(logPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			calls := string(commands)
+			if strings.Count(calls, " Escape\n") != wantEscapes {
+				t.Fatalf("unexpected modal dismissal keys:\n%s", calls)
+			}
+			for _, forbidden := range []string{message, " Enter\n", " C-u\n", " C-e\n", " BSpace\n", "load-buffer", "paste-buffer"} {
+				if strings.Contains(calls, forbidden) {
+					t.Fatalf("shell send actuated %q while history owned the keyboard:\n%s", forbidden, calls)
+				}
+			}
+		})
+	}
+}
