@@ -648,6 +648,10 @@ var (
 	// ompComposerBottomRe matches the composer's bottom border, which is also
 	// the draft's last input row.
 	ompComposerBottomRe = regexp.MustCompile(`^\s*(?:╰─|\+-)(.*?)(?:─╯|-\+)\s*$`)
+	// Empty omp composers can show right-aligned shortcut hints in the bottom
+	// border (GH#342). Match the shipped symbol presets and known labels only;
+	// left-aligned text and continuation rows remain real draft input.
+	ompComposerBottomHintRe = regexp.MustCompile(`[ \t]{2,}(?:(?:󰘶[ \t]+󰌒|⇧⇥|Shift\+Tab)[ \t]+to change thinking effort|(?:←[ \t]*←|Left[ \t]+Left)[ \t]+to see [1-9][0-9]* running agents?)[ \t]*$`)
 	// ompComposerRowRe matches a bordered continuation row of the draft.
 	ompComposerRowRe = regexp.MustCompile(`^\s*(?:│|\|)(.*?)(?:│|\|)\s*$`)
 	// ompBusyStatusRe matches the in-flight status segment: one spinner frame
@@ -784,6 +788,7 @@ func ParseOmpComposer(output string) OmpComposer {
 // parseOmpComposerAt validates a candidate bottom border at lines[bottomIdx]
 // by walking up through bordered rows to a status-line top border.
 func parseOmpComposerAt(lines []string, bottomIdx int, bottomText string) (OmpComposer, bool) {
+	bottomText = ompComposerBottomHintRe.ReplaceAllString(bottomText, "")
 	draftRows := []string{strings.TrimSpace(bottomText)}
 	for j := bottomIdx - 1; j >= 0 && bottomIdx-j <= ompComposerMaxRows+1; j-- {
 		line := lines[j]

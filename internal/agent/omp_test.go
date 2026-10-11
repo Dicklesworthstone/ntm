@@ -429,3 +429,34 @@ func TestOmpContextUsage(t *testing.T) {
 		})
 	}
 }
+
+func TestOmpComposerBottomBorderHint(t *testing.T) {
+	const top = "╭── 󰵗   K3   project   main *5 ?1  󰙺 ──2%──────────────󰁨────────1M───╮\n"
+	const hint = "󰘶 󰌒 to change thinking effort"
+	cases := []struct {
+		name  string
+		box   string
+		draft string
+	}{
+		{"empty with reported hint", top + "╰─                                                               " + hint + " ─╯", ""},
+		{"Unicode effort hint", top + "╰─          ⇧⇥ to change thinking effort ─╯", ""},
+		{"ASCII effort hint", "+-- omp project ---2%---1M---+\n+-          Shift+Tab to change thinking effort -+", ""},
+		{"nerd agent hint", top + "╰─          ← ← to see 2 running agents ─╯", ""},
+		{"Unicode agent hint", top + "╰─          ←← to see 1 running agent ─╯", ""},
+		{"ASCII agent hint", top + "╰─          Left Left to see 12 running agents ─╯", ""},
+		{"draft before hint", top + "╰─ preserve this draft           " + hint + " ─╯", "preserve this draft"},
+		{"wrapped draft above hint", top + "│ first line of real input │\n╰─          " + hint + " ─╯", "first line of real input"},
+		{"left-aligned hint is a draft", top + "╰─ " + hint + " ─╯", hint},
+		{"ordinary hint words", top + "╰─ explain how to change thinking effort ─╯", "explain how to change thinking effort"},
+		{"unknown right-aligned text", top + "╰─        unknown footer text ─╯", "unknown footer text"},
+		{"hint in continuation row", top + "│ " + hint + " │\n╰─  ─╯", hint},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ParseOmpComposer(tc.box)
+			if !got.Found || got.Draft != tc.draft {
+				t.Fatalf("ParseOmpComposer = %+v, want found with draft %q", got, tc.draft)
+			}
+		})
+	}
+}

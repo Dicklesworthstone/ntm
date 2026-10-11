@@ -155,3 +155,35 @@ func TestTMUXDelivererCancelledTrustPreflightDoesNotActuate(t *testing.T) {
 		t.Fatal(fmt.Sprintf("cancelled delivery performed I/O: %s, error=%v", data, err))
 	}
 }
+
+func TestTMUXDelivererOmpEmptyComposerHintDoesNotClearOrQuit(t *testing.T) {
+	const capture = "╭── 󰵗   K3   project ──2%──────────────󰁨────────1M───╮\n" +
+		"╰─                         󰘶 󰌒 to change thinking effort ─╯\n"
+	_, log := installTrustDialogTMUX(t, capture)
+	if state := tmux.InspectComposer(capture, tmux.AgentOmp); !state.MarkerVisible || state.HoldsText {
+		t.Fatalf("empty composer with shortcut hint = %+v", state)
+	}
+	svc, err := NewService(Ports{Redactor: AllowAllRedactor{}, Deliverer: TMUXDeliverer{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const message = "review the next task"
+	result, err := svc.Execute(context.Background(), Request{
+		Session: "omp-hint-test",
+		Panes:   []tmux.Pane{{ID: "%12", Type: tmux.AgentOmp, Command: "omp", Width: 120}},
+		Message: message, ClearInput: true, Submit: true,
+	})
+	if err != nil || !result.Success || result.Delivered != 1 || result.Failed != 0 {
+		t.Fatalf("clear-and-send refused an empty omp composer: result=%+v error=%v", result, err)
+	}
+	commands, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(commands), "C-c") {
+		t.Fatalf("empty composer got a quit-capable Ctrl+C:\n%s", commands)
+	}
+	if strings.Count(string(commands), message) != 1 {
+		t.Fatalf("prompt must reach the actual transport exactly once:\n%s", commands)
+	}
+}
