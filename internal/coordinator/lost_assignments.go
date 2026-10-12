@@ -15,8 +15,8 @@ import (
 )
 
 // reconcileLostAssignments recovers delivered work whose bound physical pane
-// has disappeared. A busy, stalled, unhealthy, or unreadable pane is still an
-// owner: only absence from a successful complete topology can start recovery.
+// has disappeared or is explicitly dead in a successful complete topology.
+// A busy, stalled, unhealthy, or unreadable live pane is still an owner.
 // Delivery remains recorded as sent; this is task failure, never evidence that
 // the old prompt may be replayed. Normal admission can claim the reopened task
 // only after the existing exact-lease and exact-claim cleanup barrier finishes.
@@ -38,14 +38,18 @@ func (c *SessionCoordinator) reconcileLostAssignments(ctx context.Context, store
 		}
 		// This snapshot only selects a possible loss. Slow tracker cleanup
 		// may have aged it; authorization always obtains fresh topology again.
-		panes, _, complete := c.livePaneTopology()
+		panes, _, complete := c.assignmentOwnerTopology()
 		if !complete {
 			continue
 		}
-		if _, exists := panes[target]; exists {
+		if dead, exists := panes[target]; exists && !dead {
 			continue
 		}
-		reason := fmt.Sprintf("delivered assignment owner %s lost physical pane %s; exact ownership verified before recovery", current.AgentName, target)
+		ownerLoss := "lost physical pane"
+		if panes[target] {
+			ownerLoss = "has retained dead physical pane"
+		}
+		reason := fmt.Sprintf("delivered assignment owner %s %s %s; exact ownership verified before recovery", current.AgentName, ownerLoss, target)
 		retired, err := c.reconcileTerminalAssignmentAuthorized(ctx, store, current, assignmentstore.StatusFailed, reason, c.verifyLostAssignmentOwner)
 		if err != nil {
 			failures = append(failures, err)
@@ -56,6 +60,23 @@ func (c *SessionCoordinator) reconcileLostAssignments(ctx context.Context, store
 		}
 	}
 	return errors.Join(failures...)
+}
+
+// assignmentOwnerTopology returns every observed physical pane with its
+// explicit dead flag. Missing dead evidence always means a present owner.
+// The snapshot shares the complete-topology validity and freshness boundary.
+func (c *SessionCoordinator) assignmentOwnerTopology() (map[string]bool, time.Time, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if !c.livePaneTopologyValid {
+		return nil, time.Time{}, false
+	}
+	panes := make(map[string]bool, len(c.livePaneIDs))
+	for paneID := range c.livePaneIDs {
+		_, dead := c.deadPaneIDs[paneID]
+		panes[paneID] = dead
+	}
+	return panes, c.livePaneTopologyAt, true
 }
 
 func (c *SessionCoordinator) verifyLostAssignmentOwner(ctx context.Context, current *assignmentstore.Assignment) error {
@@ -102,12 +123,12 @@ func (c *SessionCoordinator) verifyLostAssignmentOwner(ctx context.Context, curr
 	if err := ctx.Err(); err != nil {
 		return errors.Join(observationErr, err)
 	}
-	panes, observedAt, complete := c.livePaneTopology()
+	panes, observedAt, complete := c.assignmentOwnerTopology()
 	if !complete || !status.DispatchObservationIsCurrent(observedAt, time.Now()) {
 		return errors.Join(observationErr, errors.New("lost assignment has no fresh complete pane topology"))
 	}
-	if _, exists := panes[target]; exists {
-		return fmt.Errorf("assignment target %s is present; owner loss is not proven", target)
+	if dead, exists := panes[target]; exists && !dead {
+		return fmt.Errorf("assignment target %s is still live; owner loss is not proven", target)
 	}
 	registry, err := agentmail.LoadSessionAgentRegistry(c.session, c.projectKey)
 	if err != nil {
@@ -118,6 +139,11 @@ func (c *SessionCoordinator) verifyLostAssignmentOwner(ctx context.Context, curr
 	}
 	for paneID, owner := range registry.PaneIDMap {
 		if !strings.EqualFold(strings.TrimSpace(owner), strings.TrimSpace(current.AgentName)) {
+			continue
+		}
+		// Only the recorded, proven-dead target may retain its old binding.
+		// Any other present binding still blocks recovery, even if unrecognized.
+		if paneID == target {
 			continue
 		}
 		if _, alive := panes[paneID]; alive {
@@ -140,7 +166,7 @@ func (c *SessionCoordinator) verifyLostAssignmentOwner(ctx context.Context, curr
 	if len(allPanes[c.session]) == 0 {
 		return errors.New("server-wide topology did not confirm the observed assignment session")
 	}
-	confirmedLocalPanes := make(map[string]struct{}, len(allPanes[c.session]))
+	confirmedLocalPanes := make(map[string]bool, len(allPanes[c.session]))
 	for session, sessionPanes := range allPanes {
 		if strings.TrimSpace(session) == "" {
 			return errors.New("server-wide topology has an unnamed session")
@@ -159,11 +185,15 @@ func (c *SessionCoordinator) verifyLostAssignmentOwner(ctx context.Context, curr
 			if strings.TrimSpace(pane.ID) == "" {
 				return errors.New("server-wide topology has an unidentified pane")
 			}
-			if pane.ID == target {
+			if pane.ID == target && (session != c.session || !pane.Dead) {
 				return fmt.Errorf("assignment target %s still exists in session %s", target, session)
 			}
 			if session == c.session {
-				confirmedLocalPanes[pane.ID] = struct{}{}
+				confirmedLocalPanes[pane.ID] = pane.Dead
+			}
+			if pane.ID == target {
+				// The same retained dead target is not a rebound recipient.
+				continue
 			}
 			if sessionRegistry != nil {
 				owner, registered := sessionRegistry.GetAgent(pane.Title, pane.ID)
@@ -176,9 +206,9 @@ func (c *SessionCoordinator) verifyLostAssignmentOwner(ctx context.Context, curr
 	if len(confirmedLocalPanes) != len(panes) {
 		return errors.New("assignment session topology changed during owner-loss verification")
 	}
-	for paneID := range panes {
-		if _, confirmed := confirmedLocalPanes[paneID]; !confirmed {
-			return errors.New("assignment session topology changed during owner-loss verification")
+	for paneID, dead := range panes {
+		if serverDead, confirmed := confirmedLocalPanes[paneID]; !confirmed || serverDead != dead {
+			return errors.New("assignment session topology or pane liveness changed during owner-loss verification")
 		}
 	}
 	if !status.DispatchObservationIsCurrent(allObservedAt, time.Now()) {

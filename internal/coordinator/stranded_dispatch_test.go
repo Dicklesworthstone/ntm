@@ -21,6 +21,7 @@ func setCoordinatorLivePanes(c *SessionCoordinator, paneIDs ...string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.livePaneIDs = make(map[string]struct{}, len(paneIDs))
+	c.deadPaneIDs = nil
 	for _, paneID := range paneIDs {
 		c.livePaneIDs[paneID] = struct{}{}
 	}

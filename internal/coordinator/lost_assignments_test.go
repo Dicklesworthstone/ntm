@@ -56,6 +56,162 @@ func setLostAssignmentObservation(c *SessionCoordinator, list func(context.Conte
 	})
 }
 
+func setRetainedDeadAssignmentOwner(c *SessionCoordinator) []tmux.PaneActivity {
+	panes := []tmux.PaneActivity{
+		{Pane: tmux.Pane{ID: "%94", Index: 1, Title: c.session + "__cc_1", Type: tmux.AgentClaude, Dead: true}},
+		{Pane: tmux.Pane{ID: "%97", Index: 2, Title: c.session + "__cc_2", Type: tmux.AgentClaude}},
+	}
+	setLostAssignmentObservation(c, func(context.Context, string) ([]tmux.PaneActivity, error) {
+		return panes, nil
+	}, nil)
+	c.allPanesForRecoveryFn = func(context.Context) (map[string][]tmux.Pane, error) {
+		return map[string][]tmux.Pane{c.session: {panes[0].Pane, panes[1].Pane}}, nil
+	}
+	return panes
+}
+
+func TestRunCycleRecoversDeliveredAssignmentFromRetainedDeadOwner(t *testing.T) {
+	for _, capture := range []string{"readable", "unreadable"} {
+		t.Run(capture, func(t *testing.T) {
+			c, store, client, claims := lostAssignmentCoordinator(t)
+			panes := setRetainedDeadAssignmentOwner(c)
+			if capture == "unreadable" {
+				c.monitor.observer = status.NewSessionObserverWithDependencies(status.NewDetector(), status.SessionObserverConfig{}, status.SessionObserverDependencies{
+					ListPanes: func(context.Context, string) ([]tmux.PaneActivity, error) { return panes, nil },
+					CapturePane: func(_ context.Context, paneID string, _ int) (string, error) {
+						if paneID == "%94" {
+							return "", errors.New("retained dead pane capture unavailable")
+						}
+						return idleCapture, nil
+					},
+				})
+			}
+			before := store.Get("ntm-heartbeat")
+			if _, err := c.RunCycle(t.Context()); err != nil {
+				t.Fatalf("recover retained dead owner: %v", err)
+			}
+			if err := store.LoadStrict(); err != nil {
+				t.Fatal(err)
+			}
+			after := store.Get(before.BeadID)
+			if after.Status != assignmentstore.StatusFailed || !strings.Contains(after.FailReason, "retained dead physical pane %94") ||
+				after.DispatchState != assignmentstore.DispatchSent || after.DispatchReceiptID != before.DispatchReceiptID ||
+				after.IdempotencyKey != before.IdempotencyKey || after.ClaimActor != before.ClaimActor ||
+				after.ClearState != assignmentstore.ClearStateNone || len(store.ListActive()) != 0 {
+				t.Fatalf("dead owner recovery lost its durable delivery evidence: %+v", after)
+			}
+			if *claims != 1 || !reflect.DeepEqual(client.releaseIDs, [][]int{{941, 942}}) ||
+				len(client.reservations) != 1 || client.reservations[0].ID != 999 || len(client.renewRequests) != 0 {
+				t.Fatalf("dead owner cleanup changed scope: claims=%d releases=%v remaining=%v", *claims, client.releaseIDs, client.reservations)
+			}
+			if _, tracked := c.GetAgents()["%94"]; tracked {
+				t.Fatal("retained dead pane remained an assignment candidate")
+			}
+			if topology, _, ok := c.livePaneTopology(); !ok {
+				t.Fatal("dead owner recovery invalidated successful physical topology")
+			} else if _, present := topology["%94"]; !present {
+				t.Fatal("retained dead pane disappeared from physical topology")
+			}
+			if _, err := c.RunCycle(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			if *claims != 1 || len(client.releaseIDs) != 1 {
+				t.Fatal("repeated dead owner observation replayed cleanup")
+			}
+		})
+	}
+}
+
+func TestRetainedDeadOwnerRecoveryRequiresCurrentExclusiveOwnership(t *testing.T) {
+	for _, failure := range []string{
+		"local topology unavailable", "revived during proof", "revived during server query",
+		"moved to another session", "recipient rebound locally", "recipient rebound during server query",
+		"recipient rebound in another session", "server topology unavailable", "claim owner changed", "reservation owner changed",
+	} {
+		t.Run(failure, func(t *testing.T) {
+			c, store, client, claims := lostAssignmentCoordinator(t)
+			panes := setRetainedDeadAssignmentOwner(c)
+			current := store.Assignments["ntm-heartbeat"]
+			switch failure {
+			case "local topology unavailable":
+				setLostAssignmentObservation(c, func(context.Context, string) ([]tmux.PaneActivity, error) {
+					return nil, errors.New("tmux unavailable")
+				}, nil)
+			case "revived during proof":
+				calls := 0
+				setLostAssignmentObservation(c, func(context.Context, string) ([]tmux.PaneActivity, error) {
+					calls++
+					snapshot := append([]tmux.PaneActivity(nil), panes...)
+					if calls > 1 {
+						snapshot[0].Pane.Dead = false
+					}
+					return snapshot, nil
+				}, nil)
+			case "revived during server query":
+				c.allPanesForRecoveryFn = func(context.Context) (map[string][]tmux.Pane, error) {
+					revived := panes[0].Pane
+					revived.Dead = false
+					return map[string][]tmux.Pane{c.session: {revived, panes[1].Pane}}, nil
+				}
+			case "moved to another session":
+				c.allPanesForRecoveryFn = func(context.Context) (map[string][]tmux.Pane, error) {
+					return map[string][]tmux.Pane{c.session: {panes[1].Pane}, "other-session": {panes[0].Pane}}, nil
+				}
+			case "recipient rebound locally", "recipient rebound during server query":
+				rebind := func() {
+					registry, err := agentmail.LoadSessionAgentRegistry(c.session, c.projectKey)
+					if err != nil {
+						t.Fatal(err)
+					}
+					// Keep the original binding to exercise the rebound-recipient guard.
+					registry.PaneIDMap["%97"] = current.AgentName
+					if err := agentmail.SaveSessionAgentRegistry(registry); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if failure == "recipient rebound locally" {
+					rebind()
+				} else {
+					c.allPanesForRecoveryFn = func(context.Context) (map[string][]tmux.Pane, error) {
+						rebind()
+						return map[string][]tmux.Pane{c.session: {panes[0].Pane, panes[1].Pane}}, nil
+					}
+				}
+			case "recipient rebound in another session":
+				registry := agentmail.NewSessionAgentRegistry("other-session", c.projectKey)
+				registry.AddAgent("other-user", "%98", current.AgentName)
+				if err := agentmail.SaveSessionAgentRegistry(registry); err != nil {
+					t.Fatal(err)
+				}
+				c.allPanesForRecoveryFn = func(context.Context) (map[string][]tmux.Pane, error) {
+					return map[string][]tmux.Pane{c.session: {panes[0].Pane, panes[1].Pane}, "other-session": {{ID: "%98", Type: tmux.AgentUser}}}, nil
+				}
+			case "server topology unavailable":
+				c.allPanesForRecoveryFn = func(context.Context) (map[string][]tmux.Pane, error) {
+					return nil, errors.New("global list unavailable")
+				}
+			case "claim owner changed":
+				c.workItemDetailsFn = func(context.Context, string) (*bv.BeadAssignmentDetails, error) {
+					return &bv.BeadAssignmentDetails{ID: current.BeadID, Status: "in_progress", Assignee: "DifferentGeneration"}, nil
+				}
+			case "reservation owner changed":
+				current.ReservationAgent = "RedLake"
+			}
+			if err := store.Save(); err != nil {
+				t.Fatal(err)
+			}
+			before := store.Get(current.BeadID)
+			_, _ = c.RunCycle(t.Context())
+			if err := store.LoadStrict(); err != nil {
+				t.Fatal(err)
+			}
+			if after := store.Get(before.BeadID); !reflect.DeepEqual(before, after) || *claims != 0 || len(client.releaseIDs) != 0 || len(client.renewRequests) != 0 {
+				t.Fatalf("unproven dead owner recovery changed ownership: before=%+v after=%+v claims=%d releases=%v", before, after, *claims, client.releaseIDs)
+			}
+		})
+	}
+}
+
 func TestRunCycleRecoversDeliveredAssignmentFromProvenLostOwner(t *testing.T) {
 	c, store, client, claims := lostAssignmentCoordinator(t)
 	before := store.Get("ntm-heartbeat")
@@ -280,7 +436,19 @@ func TestLostAssignmentCleanupRetryPreservesOutboxAndBlocksNewWork(t *testing.T)
 }
 
 func TestLostAssignmentRecoveryAllowsOrdinaryAdmissionAfterCleanup(t *testing.T) {
+	testAssignmentOwnerRecoveryAllowsOrdinaryAdmission(t, false)
+}
+
+func TestRetainedDeadAssignmentRecoveryAllowsOrdinaryAdmissionAfterCleanup(t *testing.T) {
+	testAssignmentOwnerRecoveryAllowsOrdinaryAdmission(t, true)
+}
+
+func testAssignmentOwnerRecoveryAllowsOrdinaryAdmission(t *testing.T, retainedDead bool) {
+	t.Helper()
 	c, store, client, claims := lostAssignmentCoordinator(t)
+	if retainedDead {
+		setRetainedDeadAssignmentOwner(c)
+	}
 	c.config.AutoAssign, c.config.IdleThreshold = true, 0
 	c.mailClient = &agentmail.Client{}
 	registry, err := agentmail.LoadSessionAgentRegistry(c.session, c.projectKey)

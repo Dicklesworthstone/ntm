@@ -70,7 +70,10 @@ type SessionCoordinator struct {
 	// livePaneTopologyValid is false until the first successful observation and
 	// is cleared again whenever a whole-session observation fails, so an
 	// absence is never inferred from a snapshot we could not take.
+	// deadPaneIDs records explicit pane_dead evidence from that same observation.
+	// Retained dead panes remain in physical topology but cannot receive work.
 	livePaneIDs           map[string]struct{}
+	deadPaneIDs           map[string]struct{}
 	livePaneTopologyAt    time.Time
 	livePaneTopologyValid bool
 
@@ -667,6 +670,7 @@ func (c *SessionCoordinator) updateAgentStatesContext(ctx context.Context) error
 	// went unrecognized still exists, and treating it as gone would be a
 	// license to re-dispatch work that may already be sitting in it (ntm#304).
 	livePaneIDs := make(map[string]struct{}, len(observation.Panes))
+	deadPaneIDs := make(map[string]struct{})
 	topologyComplete := true
 	var observationErrors []error
 	for _, pane := range observation.Panes {
@@ -677,9 +681,12 @@ func (c *SessionCoordinator) updateAgentStatesContext(ctx context.Context) error
 			continue
 		}
 		livePaneIDs[paneID] = struct{}{}
+		if pane.Metadata.Dead {
+			deadPaneIDs[paneID] = struct{}{}
+		}
 	}
 	for _, pane := range observation.Panes {
-		if pane.AgentType == string(tmux.AgentUser) || pane.AgentType == string(tmux.AgentUnknown) {
+		if pane.Metadata.Dead || pane.AgentType == string(tmux.AgentUser) || pane.AgentType == string(tmux.AgentUnknown) {
 			continue
 		}
 		state := c.monitor.resultFromPaneObservation(pane)
@@ -781,6 +788,7 @@ func (c *SessionCoordinator) updateAgentStatesContext(ctx context.Context) error
 
 	c.lastUpdate = observation.ObservedAt
 	c.livePaneIDs = livePaneIDs
+	c.deadPaneIDs = deadPaneIDs
 	c.livePaneTopologyAt = observation.ObservedAt
 	c.livePaneTopologyValid = topologyComplete
 	c.mu.Unlock()
@@ -806,6 +814,7 @@ func (c *SessionCoordinator) markAgentObservationsUnavailable(observedAt time.Ti
 	// Retaining the previous snapshot would let a pane that merely became
 	// unobservable be read as a pane that no longer exists.
 	c.livePaneIDs = nil
+	c.deadPaneIDs = nil
 	c.livePaneTopologyAt = time.Time{}
 	c.livePaneTopologyValid = false
 	for _, agent := range c.agents {
