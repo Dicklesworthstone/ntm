@@ -530,15 +530,15 @@ func sendErrorIsNil(err error) bool {
 
 // sendRoutingExclusions lists the panes smart routing must not pick: those a
 // broadcast with the same --tag and agent-type/variant targets would skip.
-func sendRoutingExclusions(panes []tmux.Pane, targets SendTargets, tags []string) []int {
-	var excluded []int
+func sendRoutingExclusions(panes []tmux.Pane, targets SendTargets, tags []string) []string {
+	var excluded []string
 	for _, p := range panes {
 		if len(tags) > 0 && !HasAnyTag(p.Tags, tags) {
-			excluded = append(excluded, p.Index)
+			excluded = append(excluded, p.ID)
 			continue
 		}
 		if len(targets) > 0 && !targets.MatchesPane(p) {
-			excluded = append(excluded, p.Index)
+			excluded = append(excluded, p.ID)
 		}
 	}
 	return excluded
@@ -2052,7 +2052,7 @@ func runSendInternal(opts SendOptions) (err error) {
 			if err != nil {
 				return outputError(fmt.Errorf("smart routing: listing panes: %w", err))
 			}
-			routeOpts.ExcludePanes = sendRoutingExclusions(allPanes, targets, tags)
+			routeOpts.ExcludePaneIDs = sendRoutingExclusions(allPanes, targets, tags)
 		}
 
 		recommendation, err := robot.GetRouteRecommendation(routeOpts)

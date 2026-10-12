@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -2051,6 +2052,173 @@ func TestSendSmartRoutingStaysWithinVariantTagAndTypeFilters(t *testing.T) {
 	}
 	if got := route("--tag=backend").WouldSend[0].PaneID; got != sonnet {
 		t.Fatalf("--tag=backend routed to %s, want the tagged pane %s", got, sonnet)
+	}
+}
+
+// Only the tmux transport is controlled. The Cobra command, automatic
+// filters, routing, selector resolution and dispatch service are real.
+func installSmartRoutingIdentityTmux(t *testing.T) string {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("tmux fixture requires /bin/sh")
+	}
+	isolateIdentityDirs(t)
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	dir := t.TempDir()
+	chdirForTerminalJSONTest(t, dir)
+	oldConfig, oldJSON, oldClient := cfg, jsonOutput, tmux.DefaultClient
+	cfg, jsonOutput, tmux.DefaultClient = newTmuxIntegrationTestConfig(dir), true, tmux.NewClient("")
+	cfg.Checkpoints.Enabled = false
+	cfg.AgentMail.Enabled = false
+	cfg.CASS.Context.Enabled = false
+	cfg.Robot.Semantic.Stamp = false
+	t.Cleanup(func() { cfg, jsonOutput, tmux.DefaultClient = oldConfig, oldJSON, oldClient })
+	t.Setenv("NTM_SMART_ROUTE_TEST_ROOT", dir)
+	const script = `#!/bin/sh
+printf '%s\n' "$*" >> "$NTM_SMART_ROUTE_TEST_ROOT/tmux-calls"
+case "$1" in
+  -V) printf 'tmux 3.4\n' ;;
+  has-session)
+    if [ "$3" != "=smart-identity" ]; then
+      printf "can't find session: %s\n" "$3" >&2
+      exit 1
+    fi
+    ;;
+  list-sessions) printf 'smart-identity_NTM_SEP_2_NTM_SEP_0_NTM_SEP_1700000000\n' ;;
+  list-panes)
+    printf '%s\n' '%40_NTM_SEP_0_NTM_SEP_smart-identity_NTM_SEP_bash_NTM_SEP_120_NTM_SEP_40_NTM_SEP_1_NTM_SEP_1040_NTM_SEP_0_NTM_SEP__NTM_SEP__NTM_SEP__NTM_SEP_0'
+    printf '%s\n' '%41_NTM_SEP_1_NTM_SEP_smart-identity__cc_1_opus_NTM_SEP_claude_NTM_SEP_120_NTM_SEP_40_NTM_SEP_0_NTM_SEP_1041_NTM_SEP_0_NTM_SEP_cc_NTM_SEP__NTM_SEP__NTM_SEP_0'
+    printf '%s\n' '%42_NTM_SEP_2_NTM_SEP_smart-identity__cc_2_opus[frontend]_NTM_SEP_claude_NTM_SEP_120_NTM_SEP_40_NTM_SEP_0_NTM_SEP_1042_NTM_SEP_0_NTM_SEP_cc_NTM_SEP__NTM_SEP__NTM_SEP_0'
+    printf '%s\n' '%51_NTM_SEP_1_NTM_SEP_smart-identity__cc_3_sonnet[backend]_NTM_SEP_claude_NTM_SEP_120_NTM_SEP_40_NTM_SEP_0_NTM_SEP_1051_NTM_SEP_1_NTM_SEP_cc_NTM_SEP__NTM_SEP__NTM_SEP_0'
+    printf '%s\n' '%52_NTM_SEP_2_NTM_SEP_smart-identity__grok_1_NTM_SEP_grok_NTM_SEP_120_NTM_SEP_40_NTM_SEP_0_NTM_SEP_1052_NTM_SEP_1_NTM_SEP_grok_NTM_SEP__NTM_SEP__NTM_SEP_0'
+    ;;
+  capture-pane) printf 'claude >\n' ;;
+  display-message) printf '%s\n' "$NTM_SMART_ROUTE_TEST_ROOT" ;;
+  load-buffer) cat > "$NTM_SMART_ROUTE_TEST_ROOT/delivered-prompt" ;;
+  paste-buffer|send-keys|delete-buffer|show-options|show-environment) ;;
+  *) printf 'unexpected tmux command: %s\n' "$*" >&2; exit 97 ;;
+esac
+`
+	path := filepath.Join(dir, "tmux")
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NTM_TMUX_BINARY", path)
+	return dir
+}
+
+func TestSendSmartRoutingFiltersPhysicalPanesAcrossWindows(t *testing.T) {
+	dir := installSmartRoutingIdentityTmux(t)
+	run := func(flags ...string) (string, error) {
+		t.Helper()
+		cmd := newSendCmd()
+		cmd.SilenceErrors, cmd.SilenceUsage = true, true
+		cmd.SetOut(io.Discard)
+		cmd.SetErr(io.Discard)
+		args := []string{"smart-identity", "route this prompt", "--no-cass-check", "--no-hooks"}
+		cmd.SetArgs(append(args, flags...))
+		return captureStdout(t, func() error { return cmd.ExecuteContext(t.Context()) })
+	}
+	for _, test := range []struct {
+		name  string
+		flags []string
+		want  string
+	}{
+		{"tagged sibling in another window", []string{"--smart", "--tag=backend"}, "%51"},
+		{"variant sibling in another window", []string{"--route=first-available", "--cc=sonnet"}, "%51"},
+		{"type sibling in another window", []string{"--smart", "--grok"}, "%52"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			output, err := run(append(test.flags, "--dry-run")...)
+			var result SendDryRunResult
+			if err != nil {
+				t.Fatalf("send failed: %v; output=%s", err, output)
+			}
+			if err := json.Unmarshal([]byte(output), &result); err != nil {
+				t.Fatalf("decode send: %v; output=%s", err, output)
+			}
+			if !result.Success || result.Total != 1 || len(result.WouldSend) != 1 || result.WouldSend[0].PaneID != test.want || result.RoutedTo == nil || result.RoutedTo.PaneID != test.want {
+				t.Fatalf("filtered route = %+v, want only %s", result, test.want)
+			}
+		})
+	}
+
+	// An explicit selector still overrides smart routing. A bare number in
+	// a multi-window session keeps selecting the window, not a local index.
+	output, err := run("--smart", "--panes=1", "--dry-run")
+	if err != nil {
+		t.Fatalf("numeric window selection: %v; output=%s", err, output)
+	}
+	var window SendDryRunResult
+	if err := json.Unmarshal([]byte(output), &window); err != nil {
+		t.Fatal(err)
+	}
+	if window.Total != 2 || len(window.WouldSend) != 2 || window.WouldSend[0].PaneID != "%51" || window.WouldSend[1].PaneID != "%52" || window.RoutedTo != nil {
+		t.Fatalf("--panes=1 semantics changed: %+v", window)
+	}
+	output, err = run("--smart", "--pane=1", "--dry-run")
+	if err == nil || !strings.Contains(err.Error(), "matched 2 panes") {
+		t.Fatalf("singular numeric window selection = %v; output=%s, want ambiguity", err, output)
+	}
+	output, err = run("--smart", "--pane=0.1", "--dry-run")
+	if err != nil {
+		t.Fatalf("explicit window.pane selection: %v; output=%s", err, output)
+	}
+	var explicit SendDryRunResult
+	if err := json.Unmarshal([]byte(output), &explicit); err != nil {
+		t.Fatal(err)
+	}
+	if explicit.Total != 1 || len(explicit.WouldSend) != 1 || explicit.WouldSend[0].PaneID != "%41" || explicit.RoutedTo != nil {
+		t.Fatalf("explicit selector did not override smart routing: %+v", explicit)
+	}
+	previewCalls, err := os.ReadFile(filepath.Join(dir, "tmux-calls"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, operation := range []string{"load-buffer", "paste-buffer", "send-keys"} {
+		if strings.Contains(string(previewCalls), operation) {
+			t.Fatalf("preview or rejected selector invoked %s: %s", operation, previewCalls)
+		}
+	}
+
+	output, err = run("--smart", "--tag=backend")
+	if err != nil {
+		t.Fatalf("filtered send failed: %v; output=%s", err, output)
+	}
+	var sent SendResult
+	if err := json.Unmarshal([]byte(output), &sent); err != nil {
+		t.Fatal(err)
+	}
+	if !sent.Success || sent.Delivered != 1 || sent.Failed != 0 || sent.RoutedTo == nil || sent.RoutedTo.PaneID != "%51" {
+		t.Fatalf("filtered delivery = %+v, want the eligible physical pane %%51", sent)
+	}
+	calls, err := os.ReadFile(filepath.Join(dir, "tmux-calls"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pasted := false
+	for _, line := range strings.Split(string(calls), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 || (fields[0] != "paste-buffer" && fields[0] != "send-keys") {
+			continue
+		}
+		if fields[0] == "paste-buffer" {
+			pasted = true
+		}
+		target := ""
+		for i := 1; i+1 < len(fields); i++ {
+			if fields[i] == "-t" {
+				target = fields[i+1]
+				break
+			}
+		}
+		if target != "%51" {
+			t.Errorf("automatic filter dispatched to the wrong physical pane: %s", line)
+		}
+	}
+	prompt, err := os.ReadFile(filepath.Join(dir, "delivered-prompt"))
+	if err != nil || !pasted || !strings.Contains(string(prompt), "route this prompt") {
+		t.Fatalf("canonical prompt delivery missing: pasted=%t prompt=%q error=%v; calls=%s", pasted, prompt, err, calls)
 	}
 }
 
