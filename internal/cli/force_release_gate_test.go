@@ -1,266 +1,141 @@
 package cli
 
 import (
-	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/approval"
+	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/policy"
-	"github.com/Dicklesworthstone/ntm/internal/state"
 )
 
-// newGateFixture returns an approval engine over a real temp state.db (no
-// mocks, bd-2y2on) plus the store for direct inspection.
-func newGateFixture(t *testing.T) (*approval.Engine, *state.Store) {
-	t.Helper()
-	store, err := state.Open(filepath.Join(t.TempDir(), "state.db"))
-	if err != nil {
-		t.Fatalf("open state store: %v", err)
+func TestForceReleaseGatePolicyModesNeedNoApprovalStore(t *testing.T) {
+	for _, mode := range []string{"never", "auto"} {
+		t.Run(mode, func(t *testing.T) {
+			pol := &policy.Policy{Automation: policy.AutomationConfig{ForceRelease: mode}}
+			decision, err := evaluateForceReleaseGate(t.Context(), pol, nil, approval.ForceReleaseOperation{}, "", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if decision.Allowed != (mode == "auto") || decision.Created {
+				t.Fatalf("unexpected policy decision: %+v", decision)
+			}
+		})
 	}
-	if err := store.Migrate(); err != nil {
-		t.Fatalf("migrate state store: %v", err)
+}
+
+// Exercise the actual command, saved session identity, real SQLite approval
+// store and Agent Mail HTTP adapter. The shared gate's failure/race matrix is
+// covered in internal/approval; this proves CLI flags reach that gate.
+func TestRunForceReleaseApprovalLifecycle(t *testing.T) {
+	resetFlags()
+	isolateSessionAgentStorage(t)
+	projectsBase := canonicalTempDir(t)
+	projectKey := filepath.Join(projectsBase, "approval-session")
+	if err := os.MkdirAll(projectKey, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const session = "approval-session"
+	saveSessionAgentForTest(t, session, projectKey, "RedStone")
+
+	stub := newMailStub(t, nil)
+	t.Cleanup(stub.Close)
+	stub.reservations = []agentmail.FileReservation{{
+		ID: 17, ProjectID: 1, AgentName: "BlueLake", PathPattern: "internal/serve/*",
+		CreatedTS: agentmail.FlexTime{Time: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)},
+		ExpiresTS: agentmail.FlexTime{Time: time.Now().Add(time.Hour)}, Exclusive: true,
+	}}
+	oldCfg := cfg
+	cfg = &config.Config{ProjectsBase: projectsBase}
+	t.Cleanup(func() { cfg = oldCfg })
+	t.Setenv("AGENT_MAIL_URL", stub.server.URL+"/")
+	t.Setenv("NTM_USER", "alice")
+	t.Setenv("NTM_CONFIG", filepath.Join(t.TempDir(), "config.toml"))
+	// Never invoke a developer's external SLB/tmux binary from this fixture.
+	t.Setenv("PATH", t.TempDir())
+	t.Chdir(canonicalTempDir(t))
+	policyDir := filepath.Join(os.Getenv("HOME"), ".ntm")
+	if err := os.MkdirAll(policyDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(policyDir, "policy.yaml"), []byte("version: 1\nautomation:\n  force_release: approval\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	run := func(predecessor string) error {
+		cmd := newLocksForceReleaseCmd()
+		args := []string{session, "17", "--note", "holder crashed", "--yes"}
+		if predecessor != "" {
+			args = append(args, "--new-approval", predecessor)
+		}
+		cmd.SetArgs(args)
+		cmd.SetContext(t.Context())
+		return cmd.Execute()
+	}
+	if err := run(""); err == nil || !strings.Contains(err.Error(), "requires approval") {
+		t.Fatalf("first request = %v, want pending approval", err)
+	}
+	if len(stub.forceReleaseCalls) != 0 {
+		t.Fatal("unapproved CLI request reached Agent Mail force-release")
+	}
+	engine, store, err := getApprovalEngine()
+	if err != nil {
+		t.Fatal(err)
 	}
 	t.Cleanup(func() { store.Close() })
-	// EnableSLB=false keeps the external slb CLI out of hermetic unit tests;
-	// it only affects notification fan-out, not gating.
-	return approval.New(store, nil, nil, approval.Config{DefaultExpiry: time.Hour, EnableSLB: false}), store
-}
-
-func gatePolicy(forceRelease string) *policy.Policy {
-	return &policy.Policy{Automation: policy.AutomationConfig{ForceRelease: forceRelease}}
-}
-
-func TestForceReleaseOperationKeyStability(t *testing.T) {
-	k1 := forceReleaseOperationKey("projA", "sess-1", 42)
-	k2 := forceReleaseOperationKey("projA", "sess-1", 42)
-	if k1 != k2 {
-		t.Fatalf("operation key not stable: %q vs %q", k1, k2)
+	pending, err := engine.ListPending(t.Context())
+	if err != nil || len(pending) != 1 {
+		t.Fatalf("pending approvals = %+v, %v", pending, err)
 	}
-	if !strings.HasPrefix(k1, "force_release:projA:") {
-		t.Fatalf("unexpected key shape: %q", k1)
+	firstID := pending[0].ID
+	if err := engine.Approve(t.Context(), firstID, "bob"); err != nil {
+		t.Fatal(err)
 	}
-
-	// Any change to the operation scope changes the key.
-	for name, other := range map[string]string{
-		"different project":     forceReleaseOperationKey("projB", "sess-1", 42),
-		"different session":     forceReleaseOperationKey("projA", "sess-2", 42),
-		"different reservation": forceReleaseOperationKey("projA", "sess-1", 43),
-	} {
-		if other == k1 {
-			t.Errorf("%s should produce a different key (got %q for both)", name, k1)
-		}
+	if err := run(""); err != nil {
+		t.Fatalf("approved CLI release: %v", err)
 	}
-}
-
-func TestForceReleaseGateNever(t *testing.T) {
-	engine, store := newGateFixture(t)
-	dec, err := evaluateForceReleaseGate(context.Background(), gatePolicy("never"), engine,
-		forceReleaseOperationKey("proj", "sess", 1), "alice", "reservation #1", "")
-	if err != nil {
-		t.Fatalf("gate error: %v", err)
+	if len(stub.forceReleaseCalls) != 1 || stub.forceReleaseCalls[0].Project != projectKey ||
+		stub.forceReleaseCalls[0].Agent != "RedStone" {
+		t.Fatalf("release did not preserve session project/actor: %+v", stub.forceReleaseCalls)
 	}
-	if dec.Allowed {
-		t.Fatal("never policy must refuse")
+	if err := run(""); err == nil || !strings.Contains(err.Error(), "consumed") {
+		t.Fatalf("spent retry = %v, want explicit consumed outcome", err)
 	}
-	if dec.ApprovalStatus != "policy_never" {
-		t.Errorf("status = %q, want policy_never", dec.ApprovalStatus)
-	}
-	if !strings.Contains(dec.Message, "automation.force_release=never") {
-		t.Errorf("message should name the policy setting: %q", dec.Message)
-	}
-	if !strings.Contains(dec.Message, "policy") {
-		t.Errorf("message should name the policy file: %q", dec.Message)
+	if len(stub.forceReleaseCalls) != 1 {
+		t.Fatal("spent CLI replay repeated external release")
 	}
 
-	// never must not create approval records.
-	pending, err := store.ListPendingApprovals()
-	if err != nil {
-		t.Fatalf("list pending: %v", err)
+	if err := run(firstID); err == nil || !strings.Contains(err.Error(), "requires approval") {
+		t.Fatalf("--new-approval = %v, want a pending successor", err)
 	}
-	if len(pending) != 0 {
-		t.Fatalf("never policy created approval records: %+v", pending)
+	pending, err = engine.ListPending(t.Context())
+	if err != nil || len(pending) != 1 || pending[0].ID == firstID {
+		t.Fatalf("successor approvals = %+v, %v", pending, err)
 	}
-}
-
-func TestForceReleaseGateAuto(t *testing.T) {
-	engine, store := newGateFixture(t)
-	dec, err := evaluateForceReleaseGate(context.Background(), gatePolicy("auto"), engine,
-		forceReleaseOperationKey("proj", "sess", 1), "alice", "reservation #1", "")
-	if err != nil {
-		t.Fatalf("gate error: %v", err)
+	if err := engine.Approve(t.Context(), pending[0].ID, "bob"); err != nil {
+		t.Fatal(err)
 	}
-	if !dec.Allowed {
-		t.Fatal("auto policy must allow")
+	if err := run(firstID); err != nil {
+		t.Fatalf("approved successor release: %v", err)
 	}
-	if dec.ApprovalStatus != "auto" {
-		t.Errorf("status = %q, want auto", dec.ApprovalStatus)
+	if err := run(firstID); err == nil || !strings.Contains(err.Error(), "consumed") {
+		t.Fatalf("successor replay = %v, want consumed", err)
 	}
-	pending, _ := store.ListPendingApprovals()
-	if len(pending) != 0 {
-		t.Fatalf("auto policy created approval records: %+v", pending)
+	if len(stub.forceReleaseCalls) != 2 {
+		t.Fatalf("two authorizations dispatched %d releases", len(stub.forceReleaseCalls))
 	}
-}
-
-// TestForceReleaseGateApprovalLifecycle walks one operation key through the
-// full approval x record-state table:
-//
-//	no record  -> blocked, fresh pending record created
-//	pending    -> blocked, same record (no duplicate)
-//	approved   -> allowed exactly once, record consumed at gate-pass
-//	consumed   -> blocked again with a NEW pending record (one approval =
-//	              one execution)
-func TestForceReleaseGateApprovalLifecycle(t *testing.T) {
-	engine, _ := newGateFixture(t)
-	ctx := context.Background()
-	pol := gatePolicy("approval")
-	key := forceReleaseOperationKey("proj", "sess", 7)
-
-	// Empty policy value defaults to approval too.
-	if got := gatePolicy("").ForceReleasePolicy(); got != "approval" {
-		t.Fatalf("default force-release policy = %q, want approval", got)
+	// A spent authorization remains explicit even when Agent Mail goes
+	// offline; replay must not depend on a fresh availability probe.
+	stub.Close()
+	if err := run(firstID); err == nil || !strings.Contains(err.Error(), "consumed") {
+		t.Fatalf("offline spent replay = %v, want consumed", err)
 	}
-
-	// 1. No record: blocked, record created.
-	dec, err := evaluateForceReleaseGate(ctx, pol, engine, key, "alice", "reservation #7", "holder crashed")
-	if err != nil {
-		t.Fatalf("gate error: %v", err)
-	}
-	if dec.Allowed || !dec.Created || dec.ApprovalID == "" || dec.ApprovalStatus != "pending" {
-		t.Fatalf("expected blocked+created+pending, got %+v", dec)
-	}
-	if !strings.Contains(dec.Message, "ntm approve "+dec.ApprovalID) {
-		t.Errorf("message should tell a second operator how to approve: %q", dec.Message)
-	}
-	firstID := dec.ApprovalID
-
-	rec, err := engine.Check(ctx, firstID)
-	if err != nil {
-		t.Fatalf("check created record: %v", err)
-	}
-	if !rec.RequiresSLB {
-		t.Error("force-release approvals must carry RequiresSLB=true (two-person rule)")
-	}
-	if rec.RequestedBy != "alice" || rec.CorrelationID != key {
-		t.Errorf("record identity wrong: %+v", rec)
-	}
-
-	// 2. Pending record: still blocked, re-run finds ITS OWN record.
-	dec, err = evaluateForceReleaseGate(ctx, pol, engine, key, "alice", "reservation #7", "holder crashed")
-	if err != nil {
-		t.Fatalf("gate error: %v", err)
-	}
-	if dec.Allowed || dec.Created || dec.ApprovalID != firstID || dec.ApprovalStatus != "pending" {
-		t.Fatalf("expected blocked on same pending record %s, got %+v", firstID, dec)
-	}
-
-	// 3. Approved by a second identity: allowed once, record consumed.
-	if err := engine.Approve(ctx, firstID, "bob"); err != nil {
-		t.Fatalf("approve: %v", err)
-	}
-	dec, err = evaluateForceReleaseGate(ctx, pol, engine, key, "alice", "reservation #7", "holder crashed")
-	if err != nil {
-		t.Fatalf("gate error: %v", err)
-	}
-	if !dec.Allowed || dec.ApprovalID != firstID || dec.ApprovalStatus != string(state.ApprovalConsumed) {
-		t.Fatalf("expected allowed+consumed for %s, got %+v", firstID, dec)
-	}
-	rec, err = engine.Check(ctx, firstID)
-	if err != nil {
-		t.Fatalf("check consumed record: %v", err)
-	}
-	if rec.Status != state.ApprovalConsumed {
-		t.Fatalf("record not consumed after gate pass: %s", rec.Status)
-	}
-
-	// 4. Consumed record: one approval authorized exactly one execution —
-	// the next attempt is blocked with a FRESH pending record.
-	dec, err = evaluateForceReleaseGate(ctx, pol, engine, key, "alice", "reservation #7", "holder crashed")
-	if err != nil {
-		t.Fatalf("gate error: %v", err)
-	}
-	if dec.Allowed || !dec.Created || dec.ApprovalStatus != "pending" {
-		t.Fatalf("expected blocked with fresh request after consumption, got %+v", dec)
-	}
-	if dec.ApprovalID == firstID {
-		t.Fatal("consumed approval was reused; expected a new approval record")
-	}
-}
-
-// TestForceReleaseGateApprovedExpired: an approval, like a denial, stands
-// only for its record's validity window. A grant that sat unused past
-// expires_at is inert: the gate must NOT consume it or allow execution — it
-// blocks and files a fresh request (fail closed).
-func TestForceReleaseGateApprovedExpired(t *testing.T) {
-	engine, _ := newGateFixture(t)
-	ctx := context.Background()
-	pol := gatePolicy("approval")
-	key := forceReleaseOperationKey("proj", "sess", 11)
-
-	stale, err := engine.Request(ctx, approval.RequestParams{
-		Action:        "force_release",
-		Resource:      "reservation #11",
-		RequestedBy:   "alice",
-		CorrelationID: key,
-		RequiresSLB:   true,
-		ExpiresIn:     200 * time.Millisecond,
-	})
-	if err != nil {
-		t.Fatalf("seed request: %v", err)
-	}
-	if err := engine.Approve(ctx, stale.ID, "bob"); err != nil {
-		t.Fatalf("approve: %v", err)
-	}
-	time.Sleep(250 * time.Millisecond)
-
-	dec, err := evaluateForceReleaseGate(ctx, pol, engine, key, "alice", "reservation #11", "")
-	if err != nil {
-		t.Fatalf("gate error: %v", err)
-	}
-	if dec.Allowed {
-		t.Fatal("expired approval must not authorize execution")
-	}
-	if !dec.Created || dec.ApprovalID == stale.ID || dec.ApprovalStatus != "pending" {
-		t.Fatalf("expected fresh pending request after stale approval, got %+v", dec)
-	}
-	// The stale grant was not spent by the refused attempt.
-	rec, err := engine.Check(ctx, stale.ID)
-	if err != nil {
-		t.Fatalf("check stale record: %v", err)
-	}
-	if rec.Status == state.ApprovalConsumed {
-		t.Fatalf("stale approval was consumed: %+v", rec)
-	}
-}
-
-func TestForceReleaseGateDenied(t *testing.T) {
-	engine, _ := newGateFixture(t)
-	ctx := context.Background()
-	pol := gatePolicy("approval")
-	key := forceReleaseOperationKey("proj", "sess", 9)
-
-	dec, err := evaluateForceReleaseGate(ctx, pol, engine, key, "alice", "reservation #9", "")
-	if err != nil {
-		t.Fatalf("gate error: %v", err)
-	}
-	if err := engine.Deny(ctx, dec.ApprovalID, "bob", "holder still active"); err != nil {
-		t.Fatalf("deny: %v", err)
-	}
-
-	// Denied within its validity window: stays blocked, reports the denial.
-	dec2, err := evaluateForceReleaseGate(ctx, pol, engine, key, "alice", "reservation #9", "")
-	if err != nil {
-		t.Fatalf("gate error: %v", err)
-	}
-	if dec2.Allowed || dec2.Created || dec2.ApprovalID != dec.ApprovalID {
-		t.Fatalf("expected blocked on denied record %s, got %+v", dec.ApprovalID, dec2)
-	}
-	if dec2.ApprovalStatus != string(state.ApprovalDenied) {
-		t.Errorf("status = %q, want denied", dec2.ApprovalStatus)
-	}
-	if !strings.Contains(dec2.Message, "denied") || !strings.Contains(dec2.Message, "holder still active") {
-		t.Errorf("denial message should carry status and reason: %q", dec2.Message)
+	history, err := engine.History(t.Context())
+	if err != nil || len(history) != 2 {
+		t.Fatalf("replays minted unexpected authorization: %+v, %v", history, err)
 	}
 }

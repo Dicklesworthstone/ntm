@@ -16,6 +16,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
+	"github.com/Dicklesworthstone/ntm/internal/approval"
 	"github.com/Dicklesworthstone/ntm/internal/audit"
 	"github.com/Dicklesworthstone/ntm/internal/coordinator"
 	"github.com/Dicklesworthstone/ntm/internal/policy"
@@ -1025,6 +1026,7 @@ func newLocksForceReleaseCmd() *cobra.Command {
 		note        string
 		noNotify    bool
 		skipConfirm bool
+		newApproval string
 	)
 
 	cmd := &cobra.Command{
@@ -1055,13 +1057,14 @@ Examples:
 				return fmt.Errorf("invalid reservation ID '%s': must be a positive number", reservationIDStr)
 			}
 
-			return runForceRelease(cmd.Context(), session, reservationID, note, !noNotify, skipConfirm)
+			return runForceRelease(cmd.Context(), session, reservationID, note, !noNotify, skipConfirm, newApproval)
 		},
 	}
 
 	cmd.Flags().StringVar(&note, "note", "", "Explanation for the force-release")
 	cmd.Flags().BoolVar(&noNotify, "no-notify", false, "Don't notify the previous holder")
 	cmd.Flags().BoolVarP(&skipConfirm, "yes", "y", false, "Skip confirmation prompt")
+	cmd.Flags().StringVar(&newApproval, "new-approval", "", "Request a new authorization after this consumed, denied, expired, or changed-target approval ID")
 
 	return cmd
 }
@@ -1084,9 +1087,13 @@ type ForceReleaseResult struct {
 // forceReleaseGateError reports a gate infrastructure failure (policy or
 // approval store unavailable) with JSON envelope parity, matching how the
 // rest of runForceRelease emits errors.
-func forceReleaseGateError(session string, reservationID int, err error) error {
+func forceReleaseGateError(session string, reservationID int, err error, decisions ...approval.ForceReleaseDecision) error {
 	if IsJSONOutput() {
 		result := ForceReleaseResult{Success: false, Session: session, ReservationID: reservationID, Error: err.Error()}
+		if len(decisions) > 0 {
+			result.ApprovalID = decisions[0].ApprovalID
+			result.ApprovalStatus = decisions[0].ApprovalStatus
+		}
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		if encErr := enc.Encode(result); encErr != nil {
@@ -1097,65 +1104,94 @@ func forceReleaseGateError(session string, reservationID int, err error) error {
 	return err
 }
 
-func runForceRelease(ctx context.Context, session string, reservationID int, note string, notify, skipConfirm bool) error {
+func runForceRelease(ctx context.Context, session string, reservationID int, note string, notify, skipConfirm bool, newApproval string) error {
 	session, projectKey, err := resolveAgentMailScope(ctx, session)
 	if err != nil {
 		return err
 	}
-
-	// Approval gate (bd-2y2on): the policy's automation.force_release knob
-	// governs this command. It is evaluated BEFORE any Agent Mail plumbing,
-	// and --yes never bypasses it (--yes only skips the cosmetic local
-	// confirmation prompt below). Requester identity is the same
-	// NTM_USER||USER resolution `ntm approve` records (getCurrentApprover).
-	requester := getCurrentApprover()
+	projectKey = agentmail.CanonicalProjectKey(projectKey)
 	pol, err := policy.LoadOrDefault()
 	if err != nil {
 		return forceReleaseGateError(session, reservationID, fmt.Errorf("loading policy for force-release gate: %w", err))
 	}
-	opKey := forceReleaseOperationKey(projectKey, session, reservationID)
-	resource := fmt.Sprintf("reservation #%d (session %s, project %s)", reservationID, session, projectKey)
-	decision, gateErr := func() (forceReleaseGateDecision, error) {
+	requester := getCurrentApprover()
+	agentName := ""
+	client := newAgentMailClient(projectKey)
+	if pol.ForceReleasePolicy() != "never" {
+		sessionAgent, err := loadResolvedSessionAgent(session, projectKey)
+		if err != nil {
+			return forceReleaseGateError(session, reservationID, fmt.Errorf("loading session agent: %w", err))
+		}
+		if sessionAgent == nil || sessionAgent.AgentName == "" {
+			return forceReleaseGateError(session, reservationID, fmt.Errorf("session '%s' has no Agent Mail identity", session))
+		}
+		agentName = sessionAgent.AgentName
+		if pol.ForceReleasePolicy() == "auto" && !client.IsAvailable() {
+			return forceReleaseGateError(session, reservationID, agentMailUnavailableCLIError(client))
+		}
+
+		// Confirm before spending an approval. --yes and --json skip this
+		// local prompt, but never bypass the shared policy/approval gate.
+		if !skipConfirm && !IsJSONOutput() {
+			fmt.Printf("Force release reservation #%d?\n", reservationID)
+			fmt.Printf("  This will notify the previous holder: %v\n", notify)
+			if note != "" {
+				fmt.Printf("  Note: %s\n", note)
+			}
+			fmt.Print("\nContinue? [y/N] ")
+			var response string
+			fmt.Scanln(&response)
+			if response != "y" && response != "Y" {
+				fmt.Println("Cancelled.")
+				return nil
+			}
+		}
+	}
+
+	operation := approval.ForceReleaseOperation{
+		ProjectKey: projectKey, ReservationID: reservationID, RequestedBy: requester,
+		AgentName: agentName, Note: note, NotifyPrevious: notify,
+	}
+	opKey := operation.CorrelationKey()
+	resource := fmt.Sprintf("reservation #%d (session %s, project %s, actor %s)", reservationID, session, projectKey, agentName)
+	gateCtx, gateCancel := context.WithTimeout(ctx, 10*time.Second)
+	decision, gateErr := func() (approval.ForceReleaseDecision, error) {
+		if pol.ForceReleasePolicy() == "never" || pol.ForceReleasePolicy() == "auto" {
+			return evaluateForceReleaseGate(gateCtx, pol, nil, operation, newApproval, client)
+		}
 		engine, store, err := getApprovalEngine()
 		if err != nil {
-			return forceReleaseGateDecision{}, fmt.Errorf("opening approval store: %w", err)
+			return approval.ForceReleaseDecision{}, fmt.Errorf("opening approval store: %w", err)
 		}
 		defer store.Close()
-		return evaluateForceReleaseGate(ctx, pol, engine, opKey, requester, resource, note)
+		return evaluateForceReleaseGate(gateCtx, pol, engine, operation, newApproval, client)
 	}()
+	gateCancel()
+	if decision.OperationKey != "" {
+		opKey = decision.OperationKey
+	}
 	if gateErr != nil {
-		return forceReleaseGateError(session, reservationID, gateErr)
+		if decision.ApprovalID != "" {
+			gateErr = fmt.Errorf("%w (approval %s, status %s)", gateErr, decision.ApprovalID, decision.ApprovalStatus)
+		}
+		return forceReleaseGateError(session, reservationID, gateErr, decision)
 	}
 
 	if decision.Created {
 		_ = audit.LogEvent(session, audit.EventTypeStateChange, audit.ActorUser, "locks.force_release.approval_requested", map[string]interface{}{
-			"approval_id":   decision.ApprovalID,
-			"operation_key": opKey,
-			"resource":      resource,
-			"requested_by":  requester,
+			"approval_id": decision.ApprovalID, "operation_key": opKey,
+			"resource": resource, "requested_by": requester,
 		}, nil)
 	}
-
 	if !decision.Allowed {
-		// Refusals are exactly what a security audit trail must capture:
-		// log every blocked attempt (policy_never, pending, denied), not
-		// just request creation and executions.
 		_ = audit.LogEvent(session, audit.EventTypeStateChange, audit.ActorUser, "locks.force_release.blocked", map[string]interface{}{
-			"operation_key":   opKey,
-			"resource":        resource,
-			"requested_by":    requester,
-			"approval_id":     decision.ApprovalID,
-			"approval_status": decision.ApprovalStatus,
-			"reason":          decision.Message,
+			"operation_key": opKey, "resource": resource, "requested_by": requester,
+			"approval_id": decision.ApprovalID, "approval_status": decision.ApprovalStatus, "reason": decision.Message,
 		}, nil)
 		if IsJSONOutput() {
 			result := ForceReleaseResult{
-				Success:        false,
-				Session:        session,
-				ReservationID:  reservationID,
-				ApprovalID:     decision.ApprovalID,
-				ApprovalStatus: decision.ApprovalStatus,
-				Error:          decision.Message,
+				Success: false, Session: session, ReservationID: reservationID,
+				ApprovalID: decision.ApprovalID, ApprovalStatus: decision.ApprovalStatus, Error: decision.Message,
 			}
 			enc := json.NewEncoder(os.Stdout)
 			enc.SetIndent("", "  ")
@@ -1169,93 +1205,29 @@ func runForceRelease(ctx context.Context, session string, reservationID int, not
 
 	if decision.ApprovalStatus == "consumed" {
 		_ = audit.LogEvent(session, audit.EventTypeStateChange, audit.ActorUser, "locks.force_release.approval_consumed", map[string]interface{}{
-			"approval_id":   decision.ApprovalID,
-			"operation_key": opKey,
-			"resource":      resource,
-			"consumed_by":   requester,
+			"approval_id": decision.ApprovalID, "operation_key": opKey,
+			"resource": resource, "consumed_by": requester,
 		}, nil)
 	}
 	if !IsJSONOutput() && decision.Message != "" {
 		fmt.Println(decision.Message)
 	}
 
-	sessionAgent, err := loadResolvedSessionAgent(session, projectKey)
-	if err != nil {
-		return fmt.Errorf("loading session agent: %w", err)
-	}
-
-	agentName := ""
-	if sessionAgent != nil {
-		agentName = sessionAgent.AgentName
-	} else {
-		if IsJSONOutput() {
-			result := ForceReleaseResult{Success: false, Session: session, ReservationID: reservationID, ApprovalID: decision.ApprovalID, ApprovalStatus: decision.ApprovalStatus, Error: "Session has no Agent Mail identity"}
-			enc := json.NewEncoder(os.Stdout)
-			enc.SetIndent("", "  ")
-			if encErr := enc.Encode(result); encErr != nil {
-				return encErr
-			}
-			return jsonFailureExit()
-		}
-		return fmt.Errorf("session '%s' has no Agent Mail identity", session)
-	}
-
-	client := newAgentMailClient(projectKey)
-	if !client.IsAvailable() {
-		if IsJSONOutput() {
-			result := ForceReleaseResult{Success: false, Session: session, Agent: agentName, ReservationID: reservationID, ApprovalID: decision.ApprovalID, ApprovalStatus: decision.ApprovalStatus, Error: agentMailUnavailableMessage(client)}
-			enc := json.NewEncoder(os.Stdout)
-			enc.SetIndent("", "  ")
-			if encErr := enc.Encode(result); encErr != nil {
-				return encErr
-			}
-			return jsonFailureExit()
-		}
-		return agentMailUnavailableCLIError(client)
-	}
-
-	// Confirmation prompt (unless skipped or JSON mode)
-	if !skipConfirm && !IsJSONOutput() {
-		fmt.Printf("Force release reservation #%d?\n", reservationID)
-		fmt.Printf("  This will notify the previous holder: %v\n", notify)
-		if note != "" {
-			fmt.Printf("  Note: %s\n", note)
-		}
-		fmt.Print("\nContinue? [y/N] ")
-
-		var response string
-		fmt.Scanln(&response)
-		if response != "y" && response != "Y" {
-			fmt.Println("Cancelled.")
-			return nil
-		}
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	releaseCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-
-	opts := agentmail.ForceReleaseOptions{
-		ProjectKey:     projectKey,
-		AgentName:      agentName,
-		ReservationID:  reservationID,
-		Note:           note,
-		NotifyPrevious: notify,
-	}
-
-	releaseResult, err := client.ForceReleaseReservation(ctx, opts)
-
+	releaseResult, err := client.ForceReleaseReservation(releaseCtx, agentmail.ForceReleaseOptions{
+		ProjectKey: projectKey, AgentName: agentName, ReservationID: reservationID,
+		Note: note, NotifyPrevious: notify,
+	})
 	result := ForceReleaseResult{
-		Session:        session,
-		Agent:          agentName,
-		ReservationID:  reservationID,
-		ApprovalID:     decision.ApprovalID,
-		ApprovalStatus: decision.ApprovalStatus,
+		Session: session, Agent: agentName, ReservationID: reservationID,
+		ApprovalID: decision.ApprovalID, ApprovalStatus: decision.ApprovalStatus,
 	}
-
 	if err != nil {
-		result.Success = false
 		result.Error = err.Error()
-	} else if releaseResult != nil {
+	} else if releaseResult == nil {
+		result.Error = "force-release returned no result"
+	} else {
 		result.Success = releaseResult.Success
 		result.PreviousHolder = releaseResult.PreviousHolder
 		result.PathPattern = releaseResult.PathPattern
@@ -1264,22 +1236,19 @@ func runForceRelease(ctx context.Context, session string, reservationID int, not
 			result.ReleasedAt = &t
 		}
 		result.Notified = releaseResult.Notified
-		// Server may return success=false if reservation is not stale enough
 		if !releaseResult.Success {
 			result.Error = "force-release denied: reservation may not be stale or agent may still be active"
 		}
 	}
+	if !result.Success && decision.ApprovalStatus == "consumed" {
+		result.Error += "; approval " + decision.ApprovalID + " remains consumed: inspect the reservation before deliberately retrying with --new-approval " + decision.ApprovalID
+	}
 
 	_ = audit.LogEvent(session, audit.EventTypeStateChange, audit.ActorUser, "locks.force_release.executed", map[string]interface{}{
-		"operation_key":   opKey,
-		"resource":        resource,
-		"requested_by":    requester,
-		"approval_id":     decision.ApprovalID,
-		"approval_status": decision.ApprovalStatus,
-		"success":         result.Success,
-		"previous_holder": result.PreviousHolder,
+		"operation_key": opKey, "resource": resource, "requested_by": requester,
+		"approval_id": decision.ApprovalID, "approval_status": decision.ApprovalStatus,
+		"success": result.Success, "previous_holder": result.PreviousHolder,
 	}, nil)
-
 	if IsJSONOutput() {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
@@ -1291,7 +1260,6 @@ func runForceRelease(ctx context.Context, session string, reservationID int, not
 		}
 		return nil
 	}
-
 	if result.Success {
 		fmt.Printf("Force released reservation #%d\n", reservationID)
 		if result.PathPattern != "" {
@@ -1305,7 +1273,6 @@ func runForceRelease(ctx context.Context, session string, reservationID int, not
 		}
 		return nil
 	}
-
 	if result.Error != "" {
 		return fmt.Errorf("%s", result.Error)
 	}

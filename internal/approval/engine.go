@@ -114,8 +114,28 @@ type RequestParams struct {
 
 // Request creates a new approval request.
 func (e *Engine) Request(ctx context.Context, params RequestParams) (*state.Approval, error) {
+	record, _, err := e.requestWithID(ctx, params, generateApprovalID(), false)
+	return record, err
+}
+
+// requestWithID lets an operation use a deterministic primary key. SQLite's
+// unique insert deduplicates admission requests across independent processes;
+// a retry receives the stored request and never resets its decision.
+func (e *Engine) requestWithID(ctx context.Context, params RequestParams, id string, reuse bool) (*state.Approval, bool, error) {
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, false, err
+	}
+	if reuse {
+		existing, err := e.store.GetApproval(id)
+		if err != nil {
+			return nil, false, err
+		}
+		if existing != nil {
+			return existing, false, nil
+		}
 	}
 
 	// Set expiry
@@ -126,7 +146,7 @@ func (e *Engine) Request(ctx context.Context, params RequestParams) (*state.Appr
 
 	now := time.Now().UTC()
 	approval := &state.Approval{
-		ID:            generateApprovalID(),
+		ID:            id,
 		Action:        params.Action,
 		Resource:      params.Resource,
 		Reason:        params.Reason,
@@ -142,7 +162,7 @@ func (e *Engine) Request(ctx context.Context, params RequestParams) (*state.Appr
 	if params.RequiresSLB && e.config.EnableSLB {
 		slbID, err := e.enqueueSLBRequest(ctx, params)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		if slbID != "" && approval.CorrelationID == "" {
 			approval.CorrelationID = "slb:" + slbID
@@ -154,7 +174,13 @@ func (e *Engine) Request(ctx context.Context, params RequestParams) (*state.Appr
 
 	// Store the approval
 	if err := e.store.CreateApproval(approval); err != nil {
-		return nil, fmt.Errorf("create approval: %w", err)
+		if reuse {
+			existing, readErr := e.store.GetApproval(id)
+			if readErr == nil && existing != nil {
+				return existing, false, nil
+			}
+		}
+		return nil, false, fmt.Errorf("create approval: %w", err)
 	}
 
 	// Emit event
@@ -170,7 +196,7 @@ func (e *Engine) Request(ctx context.Context, params RequestParams) (*state.Appr
 		e.notifyApprovalRequest(approval)
 	}
 
-	return approval, nil
+	return approval, true, nil
 }
 
 func (e *Engine) enqueueSLBRequest(ctx context.Context, params RequestParams) (string, error) {

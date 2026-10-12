@@ -1853,7 +1853,7 @@ func TestRunForceReleaseUsesSessionProjectDir(t *testing.T) {
 		t.Fatalf("write auto policy: %v", err)
 	}
 
-	if err := runForceRelease(t.Context(), session, 42, "stale", true, true); err != nil {
+	if err := runForceRelease(t.Context(), session, 42, "stale", true, true, ""); err != nil {
 		t.Fatalf("runForceRelease: %v", err)
 	}
 	if len(stub.forceReleaseCalls) != 1 {

@@ -1910,9 +1910,9 @@ func TestHandleForceReleaseReservation_DeniedReturnsConflict(t *testing.T) {
 }
 
 // TestHandleForceReleaseReservation_PolicyGate: bd-2y2on — the HTTP surface
-// must honor automation.force_release exactly like the CLI gate. "never" and
-// "approval" (the default) refuse with 403 BEFORE any Agent Mail call; only
-// an explicit "auto" lets the handler proceed.
+// must honor automation.force_release exactly like the CLI gate. "never"
+// refuses outright; "approval" creates a durable review request after
+// inspecting the lease, without calling force-release before approval.
 func TestHandleForceReleaseReservation_PolicyGate(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
@@ -1935,6 +1935,9 @@ func TestHandleForceReleaseReservation_PolicyGate(t *testing.T) {
 			// A mail client whose transport fails the test if the handler
 			// ever consults Agent Mail past a refusing gate.
 			mailClient := newMockAgentMailMCPClient(t, map[string]func(map[string]interface{}) (interface{}, *agentmail.JSONRPCError){
+				"list_file_reservations": func(args map[string]interface{}) (interface{}, *agentmail.JSONRPCError) {
+					return []agentmail.FileReservation{{ID: 17, AgentName: "BlueLake", PathPattern: "internal/serve/*"}}, nil
+				},
 				"force_release_file_reservation": func(args map[string]interface{}) (interface{}, *agentmail.JSONRPCError) {
 					t.Error("gate bypassed: force_release_file_reservation was called")
 					return agentmail.ForceReleaseResult{Success: true}, nil

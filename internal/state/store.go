@@ -726,8 +726,8 @@ func (s *Store) ConsumeApproval(id string) (bool, error) {
 	defer s.mu.Unlock()
 
 	result, err := s.db.Exec(
-		`UPDATE approvals SET status = ? WHERE id = ? AND status = ?`,
-		ApprovalConsumed, id, ApprovalApproved,
+		`UPDATE approvals SET status = ? WHERE id = ? AND status = ? AND expires_at > ?`,
+		ApprovalConsumed, id, ApprovalApproved, time.Now().UTC(),
 	)
 	if err != nil {
 		return false, fmt.Errorf("consume approval: %w", err)
