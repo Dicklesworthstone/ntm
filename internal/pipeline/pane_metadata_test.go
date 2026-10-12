@@ -304,6 +304,10 @@ func (c *countingPaneMetadataClient) PasteKeys(string, string, bool) error {
 	return nil
 }
 
+func (c *countingPaneMetadataClient) PrepareDelivery(ctx context.Context, _ tmux.Pane, _ string) error {
+	return ctx.Err()
+}
+
 func (c *countingPaneMetadataClient) CapturePaneOutput(string, int) (string, error) {
 	return "", nil
 }
@@ -517,7 +521,10 @@ type erroringTmuxClient struct {
 	err error
 }
 
-func (e *erroringTmuxClient) GetPanes(string) ([]tmux.Pane, error)          { return nil, e.err }
+func (e *erroringTmuxClient) GetPanes(string) ([]tmux.Pane, error) { return nil, e.err }
+func (e *erroringTmuxClient) PrepareDelivery(context.Context, tmux.Pane, string) error {
+	return e.err
+}
 func (e *erroringTmuxClient) PasteKeys(string, string, bool) error          { return nil }
 func (e *erroringTmuxClient) CapturePaneOutput(string, int) (string, error) { return "", nil }
 func (e *erroringTmuxClient) VerifySubmission(context.Context, string, string, string, int) error {

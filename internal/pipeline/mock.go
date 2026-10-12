@@ -19,6 +19,10 @@ import (
 // with Executor.SetTmuxClient to avoid touching a live tmux server.
 type TmuxClient interface {
 	GetPanes(session string) ([]tmux.Pane, error)
+	// PrepareDelivery applies the shared live-agent and composer preflight.
+	// It never sends prompt bytes. A marked pre-actuation failure allows the
+	// live executor to retain proof that its own attempt was never sent.
+	PrepareDelivery(ctx context.Context, pane tmux.Pane, agentType string) error
 	PasteKeys(target, content string, enter bool) error
 	CapturePaneOutput(target string, lines int) (string, error)
 	// VerifySubmission confirms that a payload just pasted into target
@@ -47,6 +51,13 @@ func (realTmuxClient) GetPanes(session string) ([]tmux.Pane, error) {
 
 func (realTmuxClient) GetPanesContext(ctx context.Context, session string) ([]tmux.Pane, error) {
 	return tmux.GetPanesContext(ctx, session)
+}
+
+func (realTmuxClient) PrepareDelivery(ctx context.Context, pane tmux.Pane, agentType string) error {
+	_, err := dispatch.PrepareTMUXDelivery(ctx, dispatch.Delivery{Target: dispatch.Target{
+		Pane: pane, Ref: pane.Ref(), AgentType: tmux.AgentType(agentType),
+	}})
+	return err
 }
 
 func (realTmuxClient) PasteKeys(target, content string, enter bool) error {
@@ -139,6 +150,16 @@ func (m *MockTmuxClient) VerifySubmission(ctx context.Context, target, message, 
 		return nil
 	}
 	return verifier(target, message, agentType)
+}
+
+// PrepareDelivery models a ready composer while retaining the shared refusal
+// for an agent that exited to a shell. Tests of visible UI gates can override
+// this method with realTmuxClient.PrepareDelivery and a captured-screen fixture.
+func (m *MockTmuxClient) PrepareDelivery(ctx context.Context, pane tmux.Pane, _ string) error {
+	if err := ctx.Err(); err != nil {
+		return dispatch.GuaranteeNoDeliveryActuation(err)
+	}
+	return dispatch.GuaranteeNoDeliveryActuation(dispatch.RefuseDeadAgentPane(pane))
 }
 
 // NewMockTmuxClient creates a mock with optional global pane fixtures.

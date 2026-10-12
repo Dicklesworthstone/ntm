@@ -237,6 +237,7 @@ func uncertainCommandExecutionError(stepID string, processID int) error {
 
 const (
 	agentDeliveryVersion         = 1
+	agentDeliveryNotSent         = "not_sent"
 	agentDeliverySending         = "sending"
 	agentDeliveryDelivered       = "delivered"
 	agentDeliveryCompleted       = "completed"
@@ -246,8 +247,9 @@ const (
 
 // AgentDeliveryState journals a single runtime leaf's external dispatch. The
 // enclosing ExecutionState binds it to a run and workflow; StepID includes any
-// iteration or parallel namespace. A sending record is deliberately ambiguous:
-// recovery must not assume that absence of a delivered timestamp means no send.
+// iteration or parallel namespace. Only not_sent proves no prompt actuation.
+// A sending record is deliberately ambiguous: recovery must not assume that
+// absence of a delivered timestamp means no send.
 type AgentDeliveryState struct {
 	Version        int       `json:"version"`
 	StepID         string    `json:"step_id"`
@@ -309,6 +311,28 @@ func (e *Executor) saveAgentDelivery(record AgentDeliveryState) error {
 	return e.persistState()
 }
 
+// markAgentDeliveryNotSent is only for the live owner's final preflight
+// refusal, before PasteKeys. Crash recovery and post-paste errors cannot prove
+// non-delivery and must retain their sending receipt. Persist this proof before
+// permitting retry; a storage failure trips the existing checkpoint fence even
+// if the in-memory phase has already changed.
+func (e *Executor) markAgentDeliveryNotSent(record AgentDeliveryState) error {
+	e.stateMu.Lock()
+	if e.state == nil {
+		e.stateMu.Unlock()
+		return fmt.Errorf("cannot record an unsent agent delivery without execution state")
+	}
+	current, ok := e.state.AgentDeliveries[record.StepID]
+	if !ok || current != record || record.Status != agentDeliverySending {
+		e.stateMu.Unlock()
+		return fmt.Errorf("unsent agent delivery for step %q no longer matches its live owner", record.StepID)
+	}
+	record.Status, record.BeforeOutput = agentDeliveryNotSent, ""
+	e.state.AgentDeliveries[record.StepID] = record
+	e.stateMu.Unlock()
+	return e.persistState()
+}
+
 func validateAgentDelivery(key string, record AgentDeliveryState, session string) error {
 	invalid := func(reason string) error {
 		return fmt.Errorf("invalid agent delivery for step %q: %s", key, reason)
@@ -352,6 +376,10 @@ func validateAgentDelivery(key string, record AgentDeliveryState, session string
 		return invalid("start timestamp is missing")
 	}
 	switch record.Status {
+	case agentDeliveryNotSent:
+		if record.BeforeOutput != "" || record.Output != "" || !record.DeliveredAt.IsZero() || !record.CompletedAt.IsZero() {
+			return invalid("not-sent record contains capture, delivery, or completion evidence")
+		}
 	case agentDeliverySending:
 		if !record.DeliveredAt.IsZero() || !record.CompletedAt.IsZero() {
 			return invalid("sending record contains delivery or completion timestamps")

@@ -271,6 +271,9 @@ func (m *parallelDispatchTransport) PasteKeys(target, content string, enter bool
 	m.outputs[target] += content + "\n"
 	return nil
 }
+func (m *parallelDispatchTransport) PrepareDelivery(ctx context.Context, _ tmux.Pane, _ string) error {
+	return ctx.Err()
+}
 func (m *parallelDispatchTransport) CapturePaneOutput(target string, _ int) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

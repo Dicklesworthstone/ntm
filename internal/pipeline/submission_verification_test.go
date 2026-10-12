@@ -16,13 +16,16 @@ package pipeline
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/dispatch"
 	"github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
@@ -44,6 +47,308 @@ func (alwaysIdleDetector) DetectAll(string) ([]status.AgentStatus, error) {
 // errComposerStranded is what the shared verifier reports when the payload is
 // still visibly in the composer after its bounded rescue Enter.
 var errComposerStranded = errors.New("codex submission unconfirmed: prompt still in composer after rescue (pane %1); submit manually or retry")
+
+// Keep the executor's deterministic pane transport, but run the production
+// preflight against real captured-screen fixtures through the shared tmux gate.
+type sharedReadinessTmuxClient struct {
+	*MockTmuxClient
+	preparations  int
+	beforePrepare func(int) error
+	endpoint      string
+}
+
+func (c *sharedReadinessTmuxClient) Endpoint() string {
+	if c.endpoint == "" {
+		return "local"
+	}
+	return c.endpoint
+}
+
+func (c *sharedReadinessTmuxClient) PrepareDelivery(ctx context.Context, pane tmux.Pane, agentType string) error {
+	c.preparations++
+	if c.beforePrepare != nil {
+		if err := c.beforePrepare(c.preparations); err != nil {
+			return dispatch.GuaranteeNoDeliveryActuation(err)
+		}
+	}
+	return (realTmuxClient{}).PrepareDelivery(ctx, pane, agentType)
+}
+
+const readyPipelineComposer = "› \n  100% context left"
+const browsingPipelineComposer = "› previous request\n\nBrowsing transcript · ↑↓/jk scroll · ↵ rewind · esc back"
+
+func sharedReadinessExecutor(t *testing.T, command, capture string) (*Executor, *sharedReadinessTmuxClient, string, string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("captured-screen tmux fixture requires a POSIX shell")
+	}
+	root := t.TempDir()
+	screen, unexpected := filepath.Join(root, "screen"), filepath.Join(root, "unexpected-keys")
+	if err := os.WriteFile(screen, []byte(capture), 0600); err != nil {
+		t.Fatal(err)
+	}
+	binary := filepath.Join(root, "tmux")
+	if err := os.WriteFile(binary, []byte(`#!/bin/sh
+case " $* " in
+  *" capture-pane "*) cat "$NTM_PIPELINE_READY_SCREEN" ;;
+  *) printf '%s\n' "$*" >> "$NTM_PIPELINE_READY_UNEXPECTED"; exit 64 ;;
+esac
+`), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NTM_TMUX_BINARY", binary)
+	t.Setenv("NTM_PIPELINE_READY_SCREEN", screen)
+	t.Setenv("NTM_PIPELINE_READY_UNEXPECTED", unexpected)
+	oldClient := tmux.DefaultClient
+	tmux.DefaultClient = tmux.NewClient("")
+	t.Cleanup(func() { tmux.DefaultClient = oldClient })
+	cfg := DefaultExecutorConfig("preflight-pipeline")
+	cfg.ProjectDir, cfg.RunID = root, "run-preflight"
+	client := &sharedReadinessTmuxClient{MockTmuxClient: NewMockTmuxClient(tmux.Pane{
+		ID: "%1", Index: 1, PID: 3131, Type: tmux.AgentCodex, Width: 100,
+		Title: "preflight-pipeline__cod_1", Command: command,
+	})}
+	executor := NewExecutor(cfg)
+	executor.SetTmuxClient(client)
+	return executor, client, screen, unexpected
+}
+
+func TestAgentDeliveryPreflightRefusalCanResume(t *testing.T) {
+	for _, tc := range []struct {
+		name, command, capture, want string
+		late                         bool
+	}{
+		{"agent exited to shell", "zsh", readyPipelineComposer, "PANE_AGENT_DEAD", false},
+		{"transcript browsing", "codex", browsingPipelineComposer, "browsing transcript", false},
+		{"initializing", "codex", "Loading agent configuration...", "composer not visible", false},
+		{"workspace trust", "codex", "Do you trust this folder?\n❯ No, exit\n  Yes, I trust this folder\nEnter to confirm", "PANE_INTERACTIVE_GATE", false},
+		{"modal after intent checkpoint", "codex", browsingPipelineComposer, "browsing transcript", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, template := range []bool{false, true} {
+				t.Run(map[bool]string{false: "prompt", true: "template"}[template], func(t *testing.T) {
+					initial := tc.capture
+					if tc.late {
+						initial = readyPipelineComposer
+					}
+					executor, client, screen, unexpected := sharedReadinessExecutor(t, tc.command, initial)
+					client.beforePrepare = func(attempt int) error {
+						if tc.late && attempt == 2 {
+							return os.WriteFile(screen, []byte(tc.capture), 0600)
+						}
+						return nil
+					}
+					step := Step{ID: "work", Pane: PaneSpec{Index: 1}, Prompt: "perform the review", Wait: WaitNone}
+					if template {
+						step.Template = filepath.Join(executor.config.ProjectDir, "instructions.md")
+						if err := os.WriteFile(step.Template, []byte(step.Prompt), 0600); err != nil {
+							t.Fatal(err)
+						}
+						step.Prompt = ""
+					}
+					workflow := singleStepWorkflow("preflight-recovery", step)
+					state, err := executor.Run(context.Background(), workflow, nil, nil)
+					if err == nil || state == nil || state.Status != StatusFailed {
+						t.Fatalf("blocked input was accepted: state=%+v error=%v", state, err)
+					}
+					result := state.Steps["work"]
+					if result.Error == nil || result.Error.Type != "not_dispatched" || !strings.Contains(result.Error.Message, tc.want) {
+						t.Fatalf("lost pre-actuation diagnosis: %+v", result)
+					}
+					history, historyErr := client.PasteHistory("%1")
+					if historyErr != nil || len(history) != 0 || len(client.VerificationHistory()) != 0 {
+						t.Fatalf("blocked pane received prompt bytes: pastes=%v error=%v", history, historyErr)
+					}
+					if data, err := os.ReadFile(unexpected); !errors.Is(err, os.ErrNotExist) {
+						t.Fatalf("preflight actuated tmux keys: %q, %v", data, err)
+					}
+					prior, err := LoadState(executor.config.ProjectDir, state.RunID)
+					if err != nil || prior.AgentDeliveries["work"].Status != agentDeliveryNotSent {
+						t.Fatalf("non-delivery evidence was not durable: state=%+v error=%v", prior, err)
+					}
+					if err := os.WriteFile(screen, []byte(readyPipelineComposer), 0600); err != nil {
+						t.Fatal(err)
+					}
+					client.AddPane(executor.config.Session, tmux.Pane{
+						ID: "%1", Index: 1, PID: 3131, Type: tmux.AgentCodex, Width: 100,
+						Title: "preflight-pipeline__cod_1", Command: "codex",
+					})
+					resumed := NewExecutor(executor.config)
+					resumed.SetTmuxClient(client)
+					state, err = resumed.Resume(context.Background(), workflow, prior, nil)
+					history, historyErr = client.PasteHistory("%1")
+					if err != nil || state == nil || state.Status != StatusCompleted || historyErr != nil || len(history) != 1 || history[0].Content != "perform the review" || !history[0].Enter {
+						t.Fatalf("ordinary resume did not deliver once after recovery: state=%+v error=%v pastes=%v/%v", state, err, history, historyErr)
+					}
+					if len(client.VerificationHistory()) != 1 || state.AgentDeliveries["work"].Status != agentDeliveryCompleted {
+						t.Fatalf("recovered delivery lost submission verification or completion: %+v", state.AgentDeliveries)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestAgentDeliveryPreflightPreservesFinalTargetAndCancellationFence(t *testing.T) {
+	for _, tc := range []struct {
+		name, command, endpoint, phase string
+		pid                            int
+		cancel                         bool
+	}{
+		{"process replaced", "codex", "", agentDeliverySending, 4141, false},
+		{"endpoint switched", "codex", "ssh:replacement", agentDeliverySending, 3131, false},
+		{"CLI exited during capture", "zsh", "", agentDeliveryNotSent, 3131, false},
+		{"cancelled during capture", "codex", "", agentDeliveryNotSent, 3131, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			executor, client, _, _ := sharedReadinessExecutor(t, "codex", readyPipelineComposer)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			client.beforePrepare = func(attempt int) error {
+				if attempt == 2 {
+					client.AddPane(executor.config.Session, tmux.Pane{
+						ID: "%1", Index: 1, PID: tc.pid, Type: tmux.AgentCodex, Width: 100,
+						Title: "preflight-pipeline__cod_1", Command: tc.command,
+					})
+					client.endpoint = tc.endpoint
+					if tc.cancel {
+						cancel()
+					}
+				}
+				return nil
+			}
+			workflow := singleStepWorkflow("final-delivery-fence", Step{
+				ID: "work", Pane: PaneSpec{Index: 1}, Prompt: "must retain the original target", Wait: WaitNone,
+			})
+			state, err := executor.Run(ctx, workflow, nil, nil)
+			if err == nil || state == nil || state.AgentDeliveries["work"].Status != tc.phase {
+				t.Fatalf("final boundary lost its delivery evidence: state=%+v error=%v", state, err)
+			}
+			if tc.cancel && (!errors.Is(err, context.Canceled) || state.Status != StatusCancelled) {
+				t.Fatalf("preflight cancellation lost its cancellation outcome: state=%+v error=%v", state, err)
+			}
+			history, historyErr := client.PasteHistory("%1")
+			if historyErr != nil || len(history) != 0 || len(client.VerificationHistory()) != 0 {
+				t.Fatalf("final readiness change reached transport: pastes=%v/%v", history, historyErr)
+			}
+			prior, err := LoadState(executor.config.ProjectDir, state.RunID)
+			if err != nil || prior.AgentDeliveries["work"].Status != tc.phase {
+				t.Fatalf("final boundary phase was not durable: state=%+v error=%v", prior, err)
+			}
+			if tc.phase == agentDeliverySending {
+				resumed := NewExecutor(executor.config)
+				resumed.SetTmuxClient(client)
+				state, err = resumed.Resume(context.Background(), workflow, prior, nil)
+				history, historyErr = client.PasteHistory("%1")
+				if err == nil || state == nil || state.AgentDeliveries["work"].Status != agentDeliverySending || client.preparations != 2 || historyErr != nil || len(history) != 0 {
+					t.Fatalf("ordinary resume redirected an uncertain delivery: state=%+v error=%v pastes=%v/%v preflights=%d", state, err, history, historyErr, client.preparations)
+				}
+			}
+		})
+	}
+}
+
+func TestAgentDeliveryPreflightRetriesOnlyNonDelivery(t *testing.T) {
+	executor, client, screen, _ := sharedReadinessExecutor(t, "codex", browsingPipelineComposer)
+	client.beforePrepare = func(attempt int) error {
+		if attempt == 2 {
+			return os.WriteFile(screen, []byte(readyPipelineComposer), 0600)
+		}
+		return nil
+	}
+	workflow := singleStepWorkflow("retry-unsent-prompt", Step{
+		ID: "work", Pane: PaneSpec{Index: 1}, Prompt: "perform one mutation", Wait: WaitNone,
+		OnError: ErrorActionRetry, RetryCount: 1, RetryDelay: Duration{Duration: time.Millisecond},
+	})
+	state, err := executor.Run(context.Background(), workflow, nil, nil)
+	if err != nil || state == nil || state.Status != StatusCompleted || state.Steps["work"].Attempts != 2 || client.preparations != 3 {
+		t.Fatalf("proved-unsent attempt did not retry after readiness recovered: state=%+v error=%v preflights=%d", state, err, client.preparations)
+	}
+	assertNotResent(t, client.MockTmuxClient)
+	if len(client.VerificationHistory()) != 1 {
+		t.Fatalf("safe retry skipped or repeated submission verification: %+v", client.VerificationHistory())
+	}
+}
+
+func TestAgentDeliveryReadyPreflightKeepsAmbiguousOutcome(t *testing.T) {
+	executor, client, _, _ := sharedReadinessExecutor(t, "codex", readyPipelineComposer)
+	client.SetSubmissionVerifier(func(string, string, string) error { return errComposerStranded })
+	workflow := singleStepWorkflow("ready-but-uncertain", Step{
+		ID: "work", Pane: PaneSpec{Index: 1}, Prompt: "perform one mutation", Wait: WaitNone,
+		OnError: ErrorActionRetry, RetryCount: 3, RetryDelay: Duration{Duration: time.Millisecond},
+	})
+	state, err := executor.Run(context.Background(), workflow, nil, nil)
+	if err == nil || state == nil || state.AgentDeliveries["work"].Status != agentDeliverySending || state.Steps["work"].Attempts != 1 || client.preparations != 2 {
+		t.Fatalf("post-send uncertainty was treated as safe retry: state=%+v error=%v preflights=%d", state, err, client.preparations)
+	}
+	assertNotResent(t, client.MockTmuxClient)
+	prior, err := LoadState(executor.config.ProjectDir, state.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumed := NewExecutor(executor.config)
+	resumed.SetTmuxClient(client)
+	state, err = resumed.Resume(context.Background(), workflow, prior, nil)
+	if err == nil || !strings.Contains(err.Error(), "delivery outcome is unknown") || client.preparations != 2 || state.AgentDeliveries["work"].Status != agentDeliverySending {
+		t.Fatalf("ordinary resume re-entered dispatch for an uncertain prompt: state=%+v error=%v preflights=%d", state, err, client.preparations)
+	}
+	assertNotResent(t, client.MockTmuxClient)
+}
+
+func TestAgentDeliveryPreflightCheckpointFailurePreservesUncertainty(t *testing.T) {
+	executor, client, screen, _ := sharedReadinessExecutor(t, "codex", readyPipelineComposer)
+	var blocked string
+	client.beforePrepare = func(attempt int) error {
+		if attempt == 2 {
+			blocked = blockCheckpointPath(t, executor)
+			return os.WriteFile(screen, []byte(browsingPipelineComposer), 0600)
+		}
+		return nil
+	}
+	workflow := singleStepWorkflow("blocked-preflight-checkpoint", Step{
+		ID: "work", Pane: PaneSpec{Index: 1}, Prompt: "perform one mutation", Wait: WaitNone,
+		OnError: ErrorActionRetry, RetryCount: 3, RetryDelay: Duration{Duration: time.Millisecond},
+	})
+	state, err := executor.Run(context.Background(), workflow, nil, nil)
+	assertCheckpointFailure(t, state, err)
+	history, historyErr := client.PasteHistory("%1")
+	if historyErr != nil || len(history) != 0 || client.preparations != 2 {
+		t.Fatalf("failed refusal checkpoint allowed another dispatch: pastes=%v/%v preflights=%d", history, historyErr, client.preparations)
+	}
+	data, err := os.ReadFile(blocked + ".previous")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var durable ExecutionState
+	if err := json.Unmarshal(data, &durable); err != nil {
+		t.Fatal(err)
+	}
+	if durable.AgentDeliveries["work"].Status != agentDeliverySending {
+		t.Fatalf("failed checkpoint replaced the last durable uncertainty barrier: %+v", durable.AgentDeliveries)
+	}
+}
+
+func TestAgentDeliveryInitialReceiptFailurePreventsPreflight(t *testing.T) {
+	executor, ctx := checkpointTestExecutor(t)
+	if err := executor.persistState(); err != nil {
+		t.Fatal(err)
+	}
+	blockCheckpointPath(t, executor)
+	client := &sharedReadinessTmuxClient{MockTmuxClient: NewMockTmuxClient(tmux.Pane{
+		ID: "%1", Index: 1, PID: 3131, Type: tmux.AgentCodex, Width: 100, Command: "codex",
+	})}
+	executor.SetTmuxClient(client)
+	step := Step{ID: "work", Pane: PaneSpec{Index: 1}, Prompt: "must not reach the pane", Wait: WaitNone}
+	hash, err := agentStepHash(&step)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := executor.executeAgentDelivery(ctx, &step, singleStepWorkflow("blocked-initial-receipt", step), StepKindPrompt, hash, step.Prompt, "%1", string(tmux.AgentCodex))
+	history, historyErr := client.PasteHistory("%1")
+	if result.Error == nil || result.Error.Type != "checkpoint" || !errors.Is(executor.checkpointFailure(), ErrCheckpointFailed) || client.preparations != 0 || historyErr != nil || len(history) != 0 {
+		t.Fatalf("failed initial receipt allowed preflight or delivery: result=%+v preflights=%d pastes=%v/%v", result, client.preparations, history, historyErr)
+	}
+}
 
 // strandedExecutor builds an executor whose panes are codex, whose detector
 // always reads idle, and whose submission verification reports the composer

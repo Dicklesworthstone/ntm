@@ -371,18 +371,42 @@ func (e *guaranteedNoDeliveryActuationError) Error() string { return e.err.Error
 func (e *guaranteedNoDeliveryActuationError) Unwrap() error { return e.err }
 
 func (TMUXDeliverer) Deliver(ctx context.Context, delivery Delivery) error {
-	// Everything down to the protocol switch below runs strictly before the
-	// first keystroke of the message, so every refusal here is provably
-	// pre-actuation and safe to retry. Without that mark, a transient composer
-	// or readiness refusal permanently failed the assignment (ntm#294).
 	if err := contextError(ctx); err != nil {
 		return err
 	}
 	if err := validateTMUXDeliveryProtocol(delivery); err != nil {
 		return GuaranteeNoDeliveryActuation(err)
 	}
+	target, err := PrepareTMUXDelivery(ctx, delivery)
+	if err != nil {
+		return err
+	}
+	switch delivery.Protocol {
+	case ProtocolStageOnly:
+		return tmux.SendKeysForAgentWithDelayContext(ctx, target, delivery.Message, false, 0, delivery.Target.AgentType)
+	case ProtocolSingleEnter:
+		return tmux.SendKeysForAgentWithDelayContext(ctx, target, delivery.Message, true, delivery.EnterDelay, delivery.Target.AgentType)
+	case ProtocolDoubleEnter:
+		if err := tmux.SendKeysForAgentDoubleEnterContext(ctx, target, delivery.Message, delivery.Target.AgentType); err != nil {
+			return err
+		}
+		return VerifyAgentSubmission(ctx, target, delivery.Message, delivery.Target.AgentType, delivery.Target.Pane.Width)
+	default:
+		return fmt.Errorf("unsupported delivery protocol %q", delivery.Protocol)
+	}
+}
+
+// PrepareTMUXDelivery checks the shared live-agent and composer gates before
+// any message bytes are sent. Pipelines call this same preflight around their
+// durable send intent while retaining ownership of paste and verification.
+// Every error guarantees no message actuation, so a still-live owner may
+// durably record non-delivery for its own intent; an interrupted owner cannot.
+func PrepareTMUXDelivery(ctx context.Context, delivery Delivery) (string, error) {
+	if err := contextError(ctx); err != nil {
+		return "", GuaranteeNoDeliveryActuation(err)
+	}
 	if err := RefuseDeadAgentPane(delivery.Target.Pane); err != nil {
-		return GuaranteeNoDeliveryActuation(err)
+		return "", GuaranteeNoDeliveryActuation(err)
 	}
 	target := delivery.Target.Ref.ID
 	if target == "" {
@@ -398,10 +422,10 @@ func (TMUXDeliverer) Deliver(ctx context.Context, delivery Delivery) error {
 	if canonical.IsValid() && canonical != tmux.AgentUser && canonical != tmux.AgentUnknown {
 		capture, captureErr := tmux.CapturePaneVisibleContext(ctx, target)
 		if err := contextError(ctx); err != nil {
-			return GuaranteeNoDeliveryActuation(err)
+			return "", GuaranteeNoDeliveryActuation(err)
 		}
 		if captureErr == nil && agent.TrustDialogVisible(capture) {
-			return GuaranteeNoDeliveryActuation(fmt.Errorf(
+			return "", GuaranteeNoDeliveryActuation(fmt.Errorf(
 				"PANE_INTERACTIVE_GATE: pane %s is showing a workspace trust dialog; no prompt or clearing keys were sent; inspect with --robot-dialogs and explicitly answer with --robot-answer-dialog before retrying", target))
 		}
 	}
@@ -409,7 +433,7 @@ func (TMUXDeliverer) Deliver(ctx context.Context, delivery Delivery) error {
 	// Escape; readiness is checked again after that verified recovery.
 	if canonical == tmux.AgentCodex {
 		if err := ClearComposerForDelivery(ctx, target, delivery); err != nil {
-			return GuaranteeNoDeliveryActuation(err)
+			return "", GuaranteeNoDeliveryActuation(err)
 		}
 	}
 	// Fail closed on panes that cannot accept typed input yet (bd-dp9oy):
@@ -419,26 +443,17 @@ func (TMUXDeliverer) Deliver(ctx context.Context, delivery Delivery) error {
 	// unknown agent types, so it can only refuse when the screen positively
 	// shows neither a composer nor working-state chrome.
 	if ready, reason := tmux.ComposerReadyForDelivery(ctx, target, delivery.Target.AgentType, delivery.Target.Pane.Width); !ready {
-		return GuaranteeNoDeliveryActuation(fmt.Errorf("pane %s not ready for delivery: %s", target, reason))
+		return "", GuaranteeNoDeliveryActuation(fmt.Errorf("pane %s not ready for delivery: %s", target, reason))
 	}
 	if canonical != tmux.AgentCodex {
 		if err := ClearComposerForDelivery(ctx, target, delivery); err != nil {
-			return GuaranteeNoDeliveryActuation(err)
+			return "", GuaranteeNoDeliveryActuation(err)
 		}
 	}
-	switch delivery.Protocol {
-	case ProtocolStageOnly:
-		return tmux.SendKeysForAgentWithDelayContext(ctx, target, delivery.Message, false, 0, delivery.Target.AgentType)
-	case ProtocolSingleEnter:
-		return tmux.SendKeysForAgentWithDelayContext(ctx, target, delivery.Message, true, delivery.EnterDelay, delivery.Target.AgentType)
-	case ProtocolDoubleEnter:
-		if err := tmux.SendKeysForAgentDoubleEnterContext(ctx, target, delivery.Message, delivery.Target.AgentType); err != nil {
-			return err
-		}
-		return VerifyAgentSubmission(ctx, target, delivery.Message, delivery.Target.AgentType, delivery.Target.Pane.Width)
-	default:
-		return fmt.Errorf("unsupported delivery protocol %q", delivery.Protocol)
+	if err := contextError(ctx); err != nil {
+		return "", GuaranteeNoDeliveryActuation(err)
 	}
+	return target, nil
 }
 
 // ClearComposerForDelivery runs the pre-send composer clear when the

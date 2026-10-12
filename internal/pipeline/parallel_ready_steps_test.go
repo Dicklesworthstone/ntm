@@ -314,6 +314,10 @@ func (c *timestampedTmuxClient) GetPanes(session string) ([]tmux.Pane, error) {
 	return c.inner.GetPanes(session)
 }
 
+func (c *timestampedTmuxClient) PrepareDelivery(ctx context.Context, pane tmux.Pane, agentType string) error {
+	return c.inner.PrepareDelivery(ctx, pane, agentType)
+}
+
 func (c *timestampedTmuxClient) PasteKeys(target, content string, enter bool) error {
 	c.mu.Lock()
 	c.calls = append(c.calls, struct {

@@ -22,6 +22,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/dispatch"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
@@ -1115,7 +1116,7 @@ func (e *Executor) executeStepOnce(ctx context.Context, step *Step, workflow *Wo
 		result.Error = stepRuntimeError(step, StepKindPrompt, "recovery", err.Error(), "inspect the saved step definition", "")
 		return result
 	}
-	if _, recorded := e.loadAgentDelivery(step.ID); recorded && !e.config.DryRun {
+	if delivery, recorded := e.loadAgentDelivery(step.ID); recorded && delivery.Status != agentDeliveryNotSent && !e.config.DryRun {
 		return e.executeAgentDelivery(ctx, step, workflow, StepKindPrompt, stepHash, "", "", "")
 	}
 
@@ -1677,7 +1678,7 @@ func (e *Executor) executeTemplate(ctx context.Context, step *Step, workflow *Wo
 		result.Error = stepRuntimeError(step, StepKindTemplate, "recovery", err.Error(), "inspect the saved step definition", "")
 		return result
 	}
-	if _, recorded := e.loadAgentDelivery(step.ID); recorded && !e.config.DryRun {
+	if delivery, recorded := e.loadAgentDelivery(step.ID); recorded && delivery.Status != agentDeliveryNotSent && !e.config.DryRun {
 		return e.executeAgentDelivery(ctx, step, workflow, StepKindTemplate, stepHash, "", "", "")
 	}
 
@@ -1832,7 +1833,11 @@ func (e *Executor) executeAgentDelivery(ctx context.Context, step *Step, workflo
 			return result
 		}
 		result.Status = StatusFailed
-		result.Error = stepRuntimeError(step, kind, typ, err.Error(), "inspect the original pane and saved delivery before an intentional --mode=restart-failed or reset", err.Error())
+		hint := "inspect the original pane and saved delivery before an intentional --mode=restart-failed or reset"
+		if typ == "not_dispatched" {
+			hint = "restore the live agent composer and retry or resume normally; no prompt was sent"
+		}
+		result.Error = stepRuntimeError(step, kind, typ, err.Error(), hint, err.Error())
 		// A failed send or an expired wait leaves its evidence in the pane:
 		// what the agent last printed and whether it reads idle or busy. Keep
 		// it with the error so status and the API can show why after the pane
@@ -1855,14 +1860,22 @@ func (e *Executor) executeAgentDelivery(ctx context.Context, step *Step, workflo
 		if record.Status == agentDeliverySending {
 			return fail("delivery_unknown", errors.New("agent prompt delivery outcome is unknown; ordinary resume and automatic retry will not submit it again"))
 		}
-		if record.Status != agentDeliveryDelivered && record.Status != agentDeliveryCompleted {
+		if record.Status != agentDeliveryNotSent && record.Status != agentDeliveryDelivered && record.Status != agentDeliveryCompleted {
 			return fail("recovery", fmt.Errorf("invalid saved agent delivery status %q", record.Status))
 		}
 		result.Output = record.Output
 		if record.Status == agentDeliveryCompleted {
 			return e.completedAgentDelivery(step, result, record.CompletedAt)
 		}
-		paneID, agentType = record.PaneID, record.AgentType
+		if record.Status == agentDeliveryNotSent {
+			// The previous owner durably proved that it sent no prompt bytes.
+			// The prompt/template adapter has rendered a fresh attempt; keep
+			// its selected target instead of treating unsent work as delivered.
+			recorded = false
+			result.PaneUsed, result.AgentType, result.StartedAt = paneID, agentType, time.Now()
+		} else {
+			paneID, agentType = record.PaneID, record.AgentType
+		}
 	}
 
 	release, err := e.acquirePaneLockCrossProcess(ctx, paneID)
@@ -1890,7 +1903,16 @@ func (e *Executor) executeAgentDelivery(ctx context.Context, step *Step, workflo
 			Session: e.config.Session, Endpoint: endpoint, PaneID: paneID, PanePID: pane.PID,
 			AgentType: agentType, StepHash: stepHash, PromptHash: hex.EncodeToString(sum[:]),
 			PromptEchoHash: hex.EncodeToString(echoSum[:]),
-			Status:         agentDeliverySending, StartedAt: time.Now(),
+			Status:         agentDeliveryNotSent, StartedAt: time.Now(),
+		}
+		// Preserve positive non-delivery evidence before the preflight. An
+		// unfinished step with no receipt is intentionally unsafe to replay,
+		// while this phase can be retried or resumed after a pane recovers.
+		if err := e.saveAgentDelivery(record); err != nil {
+			return fail("checkpoint", err)
+		}
+		if err := e.tmuxClient().PrepareDelivery(ctx, pane, agentType); err != nil {
+			return fail("not_dispatched", err)
 		}
 		record.BeforeOutput, err = e.captureAgentDelivery(ctx, record)
 		if err != nil {
@@ -1898,6 +1920,7 @@ func (e *Executor) executeAgentDelivery(ctx context.Context, step *Step, workflo
 		}
 		// Write the uncertain attempt before transport. A failed save, paste,
 		// or submission verifier never authorizes a second automatic send.
+		record.Status = agentDeliverySending
 		if err := e.saveAgentDelivery(record); err != nil {
 			return fail("checkpoint", err)
 		}
@@ -1916,8 +1939,38 @@ func (e *Executor) executeAgentDelivery(ctx context.Context, step *Step, workflo
 		if e.stopBeforeDispatch(ctx, &result) {
 			return result
 		}
-		if _, err := e.agentDeliveryPane(ctx, record.PaneID, record.PanePID, record.Endpoint); err != nil {
+		pane, err = e.agentDeliveryPane(ctx, record.PaneID, record.PanePID, record.Endpoint)
+		if err != nil {
 			return fail("recovery", err)
+		}
+		// Storage and boundary capture can outlast the original ready frame.
+		// Check the shared gate again at the final paste boundary. Only a
+		// guaranteed pre-actuation refusal may release this exact unsent
+		// intent; every transport or verification failure remains uncertain.
+		if err := e.tmuxClient().PrepareDelivery(ctx, pane, agentType); err != nil {
+			if !dispatch.IsGuaranteedNoDeliveryActuation(err) {
+				return fail("delivery_unknown", fmt.Errorf("delivery preflight did not prove non-actuation: %w", err))
+			}
+			if err := e.markAgentDeliveryNotSent(record); err != nil {
+				return fail("checkpoint", err)
+			}
+			return fail("not_dispatched", err)
+		}
+		// Readiness itself captures the pane. Recheck the original process
+		// and endpoint after those external calls so a respawn or client
+		// switch during the gate cannot redirect a durably addressed send.
+		pane, err = e.agentDeliveryPane(ctx, record.PaneID, record.PanePID, record.Endpoint)
+		if err != nil {
+			return fail("recovery", err)
+		}
+		if err := dispatch.RefuseDeadAgentPane(pane); err != nil {
+			if err := e.markAgentDeliveryNotSent(record); err != nil {
+				return fail("checkpoint", err)
+			}
+			return fail("not_dispatched", err)
+		}
+		if e.stopBeforeDispatch(ctx, &result) {
+			return result
 		}
 		if err := e.tmuxClient().PasteKeys(paneID, prompt, true); err != nil {
 			return fail("send", fmt.Errorf("failed to send prompt; delivery outcome is unknown: %w", err))
