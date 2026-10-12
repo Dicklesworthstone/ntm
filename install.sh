@@ -304,8 +304,79 @@ get_release_by_tag() {
 
 # Extract version from release JSON
 extract_version() {
-    # Simple grep/sed extraction - works without jq
-    grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/' | head -1
+    # GitHub emits one release object with a unique, unescaped top-level
+    # tag_name. Track strings and nesting so compact JSON, nested metadata,
+    # and quoted release prose cannot change which field supplies the tag.
+    # This is a bounded field scanner, not a general JSON decoder: escapes
+    # are retained, and normalize_release_version still validates the result.
+    # Drain the input after finding the tag to avoid SIGPIPE under pipefail.
+    LC_ALL=C awk '
+        found || finished || invalid { next }
+        {
+            for (i = 1; i <= length($0); i++) {
+                ch = substr($0, i, 1)
+                if (quoted) {
+                    if (escaped) {
+                        if (collect) token = token "\\" ch
+                        escaped = 0
+                    } else if (ch == "\\") {
+                        escaped = 1
+                    } else if (ch == "\"") {
+                        quoted = 0
+                        if (depth == 1 && state == "key") {
+                            key = token
+                            state = "colon"
+                        } else if (depth == 1 && state == "value") {
+                            if (key == "tag_name") {
+                                version = token
+                                found = 1
+                                next
+                            }
+                            state = "done"
+                        }
+                    } else if (collect) {
+                        token = token ch
+                    }
+                    continue
+                }
+                if (ch ~ /^[[:space:]]$/) {
+                    continue
+                }
+                if (!started) {
+                    if (ch != "{") {
+                        invalid = 1
+                        next
+                    }
+                    started = 1
+                    depth = 1
+                    state = "key"
+                } else if (ch == "\"") {
+                    quoted = 1
+                    token = ""
+                    collect = depth == 1 && (state == "key" || (state == "value" && key == "tag_name"))
+                } else if (ch == "{" || ch == "[") {
+                    depth++
+                } else if (ch == "}" || ch == "]") {
+                    depth--
+                    if (depth == 0) {
+                        finished = 1
+                        next
+                    }
+                } else if (depth == 1 && ch == ":" && state == "colon") {
+                    state = "value"
+                } else if (depth == 1 && ch == ",") {
+                    state = "key"
+                } else if (depth == 1 && state == "value") {
+                    state = "done"
+                }
+            }
+            # JSON strings cannot contain literal newlines.
+            if (quoted) {
+                invalid = 1
+            }
+        }
+        END { if (found && !invalid) print version }
+    '
 }
 
 # Find the best asset name for a platform from release JSON
@@ -582,7 +653,7 @@ install_ntm() {
                 print_error "Could not fetch release info from GitHub"
                 exit 1
             }
-            version=$(echo "$release_json" | extract_version)
+            version=$(printf '%s\n' "$release_json" | extract_version)
         fi
         if [ -z "$version" ]; then
             print_error "Could not determine latest version"
