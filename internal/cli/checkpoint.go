@@ -109,6 +109,7 @@ func newCheckpointSaveCmd() *cobra.Command {
 	var description string
 	var scrollbackLines int
 	var noGit bool
+	var includeUntracked bool
 
 	cmd := &cobra.Command{
 		Use:   "save <session>",
@@ -119,15 +120,20 @@ The checkpoint includes:
 - All pane configurations (titles, agent types, commands)
 - Pane scrollback buffers (configurable depth)
 - Git repository state (branch, commit, dirty status)
-- Diff patch of uncommitted changes (optional)
+- Binary-capable diff patch of tracked changes (optional)
+- Non-ignored untracked files when --include-untracked is specified
 
 Examples:
   ntm checkpoint save myproject
   ntm checkpoint save myproject -m "Before major refactor"
   ntm checkpoint save myproject --scrollback=500
+  ntm checkpoint save myproject --include-untracked
   ntm checkpoint save myproject --no-git`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if includeUntracked && noGit {
+				return fmt.Errorf("--include-untracked cannot be combined with --no-git")
+			}
 			session, err := resolveCheckpointLiveSessionArg(args[0], cmd.OutOrStdout())
 			if err != nil {
 				return err
@@ -142,6 +148,7 @@ Examples:
 			opts := []checkpoint.CheckpointOption{
 				checkpoint.WithScrollbackLines(scrollbackLines),
 				checkpoint.WithGitCapture(!noGit),
+				checkpoint.WithUntrackedCapture(includeUntracked),
 			}
 			if description != "" {
 				opts = append(opts, checkpoint.WithDescription(description))
@@ -155,18 +162,20 @@ Examples:
 
 			if jsonOutput {
 				return json.NewEncoder(os.Stdout).Encode(map[string]interface{}{
-					"id":                cp.ID,
-					"session":           session,
-					"created_at":        cp.CreatedAt,
-					"description":       cp.Description,
-					"pane_count":        cp.PaneCount,
-					"working_dir":       cp.WorkingDir,
-					"working_dir_error": cp.WorkingDirError,
-					"has_git":           cp.Git.HasState(),
-					"git_unavailable":   checkpoint.DescribeGitUnavailable(cp),
-					"assignments_count": len(cp.Assignments),
-					"assignments":       cp.Assignments,
-					"bv_summary":        cp.BVSummary,
+					"id":                 cp.ID,
+					"session":            session,
+					"created_at":         cp.CreatedAt,
+					"description":        cp.Description,
+					"pane_count":         cp.PaneCount,
+					"working_dir":        cp.WorkingDir,
+					"working_dir_error":  cp.WorkingDirError,
+					"has_git":            cp.Git.HasState(),
+					"git_unavailable":    checkpoint.DescribeGitUnavailable(cp),
+					"untracked_count":    cp.Git.UntrackedCount,
+					"untracked_captured": cp.Git.UntrackedCaptured,
+					"assignments_count":  len(cp.Assignments),
+					"assignments":        cp.Assignments,
+					"bv_summary":         cp.BVSummary,
 				})
 			}
 
@@ -183,6 +192,9 @@ Examples:
 				if cp.Git.IsDirty {
 					fmt.Printf("  Uncommitted: %d staged, %d unstaged\n",
 						cp.Git.StagedCount, cp.Git.UnstagedCount)
+				}
+				if cp.Git.UntrackedCount > 0 {
+					fmt.Printf("  Untracked: %d of %d files captured\n", cp.Git.UntrackedCaptured, cp.Git.UntrackedCount)
 				}
 			} else if reason := checkpoint.DescribeGitUnavailable(cp); reason != "" {
 				fmt.Printf("  Git: %snot captured%s (%s)\n", colorize(t.Warning), "\033[0m", reason)
@@ -206,6 +218,7 @@ Examples:
 	cmd.Flags().StringVarP(&description, "message", "m", "", "checkpoint description")
 	cmd.Flags().IntVar(&scrollbackLines, "scrollback", 1000, "lines of scrollback to capture per pane")
 	cmd.Flags().BoolVar(&noGit, "no-git", false, "skip capturing git state")
+	cmd.Flags().BoolVar(&includeUntracked, "include-untracked", false, "capture non-ignored untracked files in the git patch (may contain sensitive data)")
 
 	return cmd
 }

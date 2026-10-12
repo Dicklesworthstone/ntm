@@ -45,6 +45,9 @@ func (c *Capturer) Create(sessionName, name string, opts ...CheckpointOption) (*
 	for _, opt := range opts {
 		opt(&options)
 	}
+	if options.captureUntracked && !options.captureGit {
+		return nil, fmt.Errorf("including untracked files requires git capture")
+	}
 
 	// Check privacy mode before creating checkpoint
 	if err := privacy.GetDefaultManager().CanPersist(sessionName, privacy.OpCheckpoint); err != nil {
@@ -111,7 +114,7 @@ func (c *Capturer) Create(sessionName, name string, opts ...CheckpointOption) (*
 	// Capture git state if enabled and the working directory resolved. A
 	// failed capture is recorded as such rather than left looking clean.
 	if options.captureGit && workingDir != "" {
-		gitState, err := c.captureGitState(workingDir, sessionName, checkpointID)
+		gitState, err := c.captureGitState(workingDir, sessionName, checkpointID, options.captureUntracked)
 		if err != nil {
 			slog.Warn("failed to capture git state", "error", err)
 			cp.Git = GitState{SkipReason: GitSkipCaptureFailed, SkipDetail: err.Error()}
@@ -143,6 +146,11 @@ func (c *Capturer) Create(sessionName, name string, opts ...CheckpointOption) (*
 	// Save updated checkpoint with all state
 	if err := c.storage.Save(cp); err != nil {
 		return nil, fmt.Errorf("saving final checkpoint: %w", err)
+	}
+	if options.captureUntracked && !cp.Git.Captured {
+		// Preserve the useful session checkpoint, but do not report success
+		// for an explicitly requested code snapshot that could not be made.
+		return cp, fmt.Errorf("checkpoint %s saved without requested git files: %s", cp.ID, DescribeGitUnavailable(cp))
 	}
 
 	return cp, nil
@@ -233,7 +241,7 @@ func gitStateNotCaptured(captureEnabled bool, workingDirErr error) GitState {
 }
 
 // captureGitState captures the git repository state.
-func (c *Capturer) captureGitState(workingDir, sessionName, checkpointID string) (GitState, error) {
+func (c *Capturer) captureGitState(workingDir, sessionName, checkpointID string, includeUntracked bool) (GitState, error) {
 	state := GitState{}
 
 	// Check if it's a git repository
@@ -258,7 +266,7 @@ func (c *Capturer) captureGitState(workingDir, sessionName, checkpointID string)
 	state.Commit = strings.TrimSpace(commit)
 
 	// Get status counts
-	status, err := gitCommand(workingDir, "status", "--porcelain")
+	status, err := gitCommand(workingDir, "status", "--porcelain=v1", "--untracked-files=all")
 	if err != nil {
 		return state, fmt.Errorf("getting git status: %w", err)
 	}
@@ -275,31 +283,33 @@ func (c *Capturer) captureGitState(workingDir, sessionName, checkpointID string)
 		}
 	}
 
-	// Capture uncommitted changes as patch
-	if state.IsDirty {
-		// Warn about untracked files if any
-		if state.UntrackedCount > 0 {
-			slog.Warn("untracked files will not be captured in git patch", "count", state.UntrackedCount)
-		}
+	if state.UntrackedCount > 0 && !includeUntracked {
+		slog.Warn("untracked files will not be captured in git patch; use --include-untracked to preserve them", "count", state.UntrackedCount)
+	}
 
-		// Get diff of tracked changes (both staged and unstaged)
-		patch, err := gitCommand(workingDir, "diff", "HEAD")
-		if err != nil {
-			return state, fmt.Errorf("getting git diff: %w", err)
+	// Pin the base to the recorded commit. Capture even after a clean status
+	// observation: another agent can have written files since that query.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	snapshot, err := captureWorkingTreePatch(ctx, workingDir, state.Commit, gitPatchCaptureOptions{
+		IncludeUntracked: includeUntracked,
+		MaxBytes:         MaxGitOutputBytes,
+	})
+	if err != nil {
+		return state, fmt.Errorf("capturing git patch: %w", err)
+	}
+	if snapshot.Patch != "" {
+		// Write only a complete snapshot. Output-limit, read and selection
+		// failures above must not publish a plausible-looking partial patch.
+		if err := c.storage.SaveGitPatch(sessionName, checkpointID, snapshot.Patch); err != nil {
+			return state, fmt.Errorf("saving git patch: %w", err)
 		}
-		if patch != "" {
-			// A failed write here is the one loss this whole capture exists to
-			// prevent: the uncommitted diff. Swallowing it produced a
-			// checkpoint that looked complete — Captured=true, IsDirty=true,
-			// PatchFile="" — while the work was gone, and neither Verify() nor
-			// the metadata said anything. Propagate it so Create records
-			// GitSkipCaptureFailed with the detail, exactly as it already does
-			// for a failed `git diff` four lines above.
-			if err := c.storage.SaveGitPatch(sessionName, checkpointID, patch); err != nil {
-				return state, fmt.Errorf("saving git patch: %w", err)
-			}
-			state.PatchFile = GitPatchFile
-		}
+		state.PatchFile = GitPatchFile
+		state.IsDirty = true
+	}
+	state.UntrackedCaptured = snapshot.UntrackedCaptured
+	if includeUntracked {
+		state.UntrackedCount = snapshot.UntrackedCaptured
 	}
 
 	return state, nil
@@ -406,6 +416,7 @@ func gitCommand(dir string, args ...string) (string, error) {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "git", allArgs...)
+	cmd.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0")
 	return runGitCommand(cmd, ctx, args...)
 }
 

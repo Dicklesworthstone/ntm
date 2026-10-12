@@ -208,7 +208,7 @@ func TestGitStateNotCaptured(t *testing.T) {
 
 func TestCaptureGitState_NonRepositoryIsMarkedSkipped(t *testing.T) {
 	c := NewCapturerWithStorage(NewStorageWithDir(t.TempDir()))
-	state, err := c.captureGitState(t.TempDir(), "session", "chk-1")
+	state, err := c.captureGitState(t.TempDir(), "session", "chk-1", false)
 	if err != nil {
 		t.Fatalf("captureGitState on plain dir: %v", err)
 	}
@@ -221,7 +221,7 @@ func TestCaptureGitState_RepositoryIsMarkedCaptured(t *testing.T) {
 	repoDir := t.TempDir()
 	initGitRepoWithCommit(t, repoDir)
 	c := NewCapturerWithStorage(NewStorageWithDir(t.TempDir()))
-	state, err := c.captureGitState(repoDir, "session", "chk-1")
+	state, err := c.captureGitState(repoDir, "session", "chk-1", false)
 	if err != nil {
 		t.Fatalf("captureGitState: %v", err)
 	}

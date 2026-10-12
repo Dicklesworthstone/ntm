@@ -28,10 +28,11 @@ import (
 
 // CreateCheckpointRequest is the payload for creating a new checkpoint.
 type CreateCheckpointRequest struct {
-	Name            string `json:"name"`
-	Description     string `json:"description,omitempty"`
-	CaptureGit      *bool  `json:"capture_git,omitempty"`
-	ScrollbackLines *int   `json:"scrollback_lines,omitempty"`
+	Name             string `json:"name"`
+	Description      string `json:"description,omitempty"`
+	CaptureGit       *bool  `json:"capture_git,omitempty"`
+	IncludeUntracked bool   `json:"include_untracked,omitempty"`
+	ScrollbackLines  *int   `json:"scrollback_lines,omitempty"`
 }
 
 // CheckpointResponse represents a checkpoint in API responses.
@@ -50,13 +51,14 @@ type CheckpointResponse struct {
 
 // CheckpointGitResponse represents git state in checkpoint responses.
 type CheckpointGitResponse struct {
-	Branch         string `json:"branch"`
-	Commit         string `json:"commit"`
-	IsDirty        bool   `json:"is_dirty"`
-	StagedCount    int    `json:"staged_count,omitempty"`
-	UnstagedCount  int    `json:"unstaged_count,omitempty"`
-	UntrackedCount int    `json:"untracked_count,omitempty"`
-	HasPatch       bool   `json:"has_patch,omitempty"`
+	Branch            string `json:"branch"`
+	Commit            string `json:"commit"`
+	IsDirty           bool   `json:"is_dirty"`
+	StagedCount       int    `json:"staged_count,omitempty"`
+	UnstagedCount     int    `json:"unstaged_count,omitempty"`
+	UntrackedCount    int    `json:"untracked_count,omitempty"`
+	UntrackedCaptured int    `json:"untracked_captured,omitempty"`
+	HasPatch          bool   `json:"has_patch,omitempty"`
 }
 
 // CheckpointSessionSummary summarizes session state in checkpoint responses.
@@ -274,17 +276,21 @@ func (s *Server) handleCreateCheckpoint(w http.ResponseWriter, r *http.Request) 
 	sessionName := chi.URLParam(r, "sessionName")
 	reqID := requestIDFromContext(r.Context())
 
-	// Check session exists
-	if !tmux.SessionExists(sessionName) {
-		writeErrorResponse(w, http.StatusNotFound, ErrCodeNotFound,
-			fmt.Sprintf("session %q does not exist", sessionName), nil, reqID)
-		return
-	}
-
 	var req CreateCheckpointRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
 		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest,
 			"invalid request body", nil, reqID)
+		return
+	}
+	if req.IncludeUntracked && req.CaptureGit != nil && !*req.CaptureGit {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest,
+			"include_untracked requires capture_git", nil, reqID)
+		return
+	}
+	// Reject incompatible capture options before probing a live session.
+	if !tmux.SessionExists(sessionName) {
+		writeErrorResponse(w, http.StatusNotFound, ErrCodeNotFound,
+			fmt.Sprintf("session %q does not exist", sessionName), nil, reqID)
 		return
 	}
 
@@ -294,7 +300,7 @@ func (s *Server) handleCreateCheckpoint(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// Build options
-	var opts []checkpoint.CheckpointOption
+	opts := []checkpoint.CheckpointOption{checkpoint.WithUntrackedCapture(req.IncludeUntracked)}
 	if req.Description != "" {
 		opts = append(opts, checkpoint.WithDescription(req.Description))
 	}
@@ -310,8 +316,15 @@ func (s *Server) handleCreateCheckpoint(w http.ResponseWriter, r *http.Request) 
 	if err != nil {
 		log.Printf("REST: checkpoint create failed session=%s name=%s error=%v request_id=%s",
 			sessionName, req.Name, err, reqID)
+		var details map[string]interface{}
+		if cp != nil {
+			details = map[string]interface{}{
+				"checkpoint":      checkpointToResponse(cp, true),
+				"git_unavailable": checkpoint.DescribeGitUnavailable(cp),
+			}
+		}
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError,
-			"failed to create checkpoint", nil, reqID)
+			"failed to create checkpoint", details, reqID)
 		return
 	}
 
@@ -850,25 +863,56 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
 		CheckpointName: cp.Name,
 		DryRun:         req.DryRun,
 	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	var plan *checkpoint.GitRollbackPlan
+	if !req.NoGit {
+		root, err := checkpoint.GitWorktreeRoot(ctx, workDir)
+		if err != nil {
+			writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, err.Error(), nil, reqID)
+			return
+		}
+		// Permission for a subdirectory does not authorize recovery in its
+		// parent repository. Check the actual mutation root as well.
+		root, err = s.resolveCheckpointWorkDir(root)
+		if err != nil {
+			writeErrorResponse(w, http.StatusForbidden, ErrCodeForbidden, err.Error(), nil, reqID)
+			return
+		}
+		plan, err = checkpoint.PrepareGitRollback(ctx, storage, cp, root)
+		if err != nil {
+			writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest,
+				fmt.Sprintf("rollback preflight failed; repository unchanged: %v", err), rollbackResponseToMap(resp), reqID)
+			return
+		}
+		workDir = plan.WorkDir
+		resp.Warnings = append(resp.Warnings, plan.Warnings...)
+	}
 
 	if req.DryRun {
 		// Just return what would happen
-		resp.Warnings = append(resp.Warnings,
-			fmt.Sprintf("would rollback to commit %s on branch %s", cp.Git.Commit[:8], cp.Git.Branch))
-		if !req.NoGit && cp.Git.IsDirty && !req.NoStash {
-			resp.Warnings = append(resp.Warnings, "would stash current changes")
+		if plan != nil {
+			resp.Warnings = append(resp.Warnings,
+				fmt.Sprintf("would rollback to commit %s on branch %s", plan.Commit[:8], cp.Git.Branch))
+			if !req.NoStash {
+				resp.Warnings = append(resp.Warnings, "would stash current changes if present, including untracked files")
+			}
+		} else {
+			resp.Warnings = append(resp.Warnings, "git recovery disabled")
 		}
 		writeSuccessResponse(w, http.StatusOK, rollbackResponseToMap(resp), reqID)
 		return
 	}
 
 	// Perform rollback
-	if !req.NoGit {
+	if plan != nil {
 		// Stash current changes if dirty and not skipped
 		if !req.NoStash {
 			stashRef, err := gitStashIfDirty(workDir)
 			if err != nil {
-				resp.Warnings = append(resp.Warnings, fmt.Sprintf("stash failed: %v", err))
+				writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError,
+					fmt.Sprintf("failed to stash current work; rollback stopped: %v", err), rollbackResponseToMap(resp), reqID)
+				return
 			} else if stashRef != "" {
 				resp.StashCreated = true
 				resp.StashRef = stashRef
@@ -876,24 +920,19 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Checkout the checkpoint commit
-		if err := gitCheckout(workDir, cp.Git.Commit); err != nil {
+		if err := gitCheckout(workDir, plan.Commit); err != nil {
 			log.Printf("REST: rollback checkout failed session=%s commit=%s error=%v request_id=%s",
 				sessionName, cp.Git.Commit, err, reqID)
 			writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError,
-				"failed to checkout commit", nil, reqID)
+				"failed to checkout commit; inspect before retrying (any stash was preserved)", rollbackResponseToMap(resp), reqID)
 			return
 		}
 
-		// Apply git patch if available
-		if cp.HasGitPatch() {
-			patch, err := storage.LoadGitPatch(sessionName, cp.ID)
-			if err != nil {
-				resp.Warnings = append(resp.Warnings, fmt.Sprintf("patch load failed: %v", err))
-			} else if patch != "" {
-				if err := gitApplyPatch(workDir, patch); err != nil {
-					resp.Warnings = append(resp.Warnings, fmt.Sprintf("patch apply failed: %v", err))
-				}
-			}
+		if err := checkpoint.ApplyGitRollbackPatch(ctx, plan); err != nil {
+			resp.Warnings = append(resp.Warnings, "HEAD moved but patch restoration did not finish; inspect before retrying. Any stash was preserved.")
+			writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError,
+				fmt.Sprintf("rollback incomplete: %v", err), rollbackResponseToMap(resp), reqID)
+			return
 		}
 
 		resp.GitRestored = true
@@ -939,13 +978,14 @@ func checkpointToResponse(cp *checkpoint.Checkpoint, includeDetails bool) Checkp
 	// Add git info if present
 	if cp.Git.Branch != "" {
 		resp.Git = &CheckpointGitResponse{
-			Branch:         cp.Git.Branch,
-			Commit:         cp.Git.Commit,
-			IsDirty:        cp.Git.IsDirty,
-			StagedCount:    cp.Git.StagedCount,
-			UnstagedCount:  cp.Git.UnstagedCount,
-			UntrackedCount: cp.Git.UntrackedCount,
-			HasPatch:       cp.HasGitPatch(),
+			Branch:            cp.Git.Branch,
+			Commit:            cp.Git.Commit,
+			IsDirty:           cp.Git.IsDirty,
+			StagedCount:       cp.Git.StagedCount,
+			UnstagedCount:     cp.Git.UnstagedCount,
+			UntrackedCount:    cp.Git.UntrackedCount,
+			UntrackedCaptured: cp.Git.UntrackedCaptured,
+			HasPatch:          cp.HasGitPatch(),
 		}
 	}
 
@@ -985,7 +1025,7 @@ func formatAge(d time.Duration) string {
 // gitStashIfDirty stashes changes if the working tree is dirty.
 func gitStashIfDirty(workDir string) (string, error) {
 	// Check if dirty
-	out, err := runGit(workDir, "status", "--porcelain")
+	out, err := runGit(workDir, "status", "--porcelain=v1", "--untracked-files=all")
 	if err != nil {
 		return "", err
 	}
@@ -995,27 +1035,21 @@ func gitStashIfDirty(workDir string) (string, error) {
 
 	// Stash changes
 	stashMsg := fmt.Sprintf("ntm-rollback-%s", time.Now().Format("20060102-150405"))
-	if _, err := runGit(workDir, "stash", "push", "-m", stashMsg); err != nil {
+	if _, err := runGit(workDir, "stash", "push", "--include-untracked", "-m", stashMsg); err != nil {
 		return "", err
 	}
 
-	return stashMsg, nil
+	ref, err := runGit(workDir, "rev-parse", "--verify", "refs/stash")
+	if err != nil {
+		return "", fmt.Errorf("stash command completed but its reference is unavailable; inspect before retrying: %w", err)
+	}
+	return strings.TrimSpace(ref), nil
 }
 
 // gitCheckout checks out a specific commit.
 func gitCheckout(workDir, ref string) error {
-	_, err := runGit(workDir, "checkout", ref)
+	_, err := runGit(workDir, "checkout", "--no-overwrite-ignore", ref)
 	return err
-}
-
-// gitApplyPatch applies patch content to a working tree.
-func gitApplyPatch(workDir, patch string) error {
-	cmd := exec.Command("git", "-C", workDir, "apply", "--3way", "-")
-	cmd.Stdin = strings.NewReader(patch)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("git apply --3way: %w: %s", err, strings.TrimSpace(string(out)))
-	}
-	return nil
 }
 
 // runGit runs a git command and returns the output.

@@ -883,6 +883,7 @@ func rewriteCheckpointForExport(cp *Checkpoint, opts ExportOptions) *Checkpoint 
 	}
 	if !opts.IncludeGitPatch {
 		result.Git.PatchFile = ""
+		result.Git.UntrackedCaptured = 0
 	}
 	return &result
 }

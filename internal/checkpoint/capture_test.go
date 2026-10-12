@@ -757,7 +757,7 @@ func TestCapturer_CaptureGitState(t *testing.T) {
 	c := NewCapturer()
 
 	// Test success case
-	state, err := c.captureGitState(tmpDir, "session", "chk-1")
+	state, err := c.captureGitState(tmpDir, "session", "chk-1", false)
 	if err != nil {
 		t.Errorf("captureGitState failed on valid repo: %v", err)
 	}
@@ -774,7 +774,7 @@ func TestCapturer_CaptureGitState(t *testing.T) {
 		t.Fatalf("Failed to remove .git/HEAD: %v", err)
 	}
 
-	_, err = c.captureGitState(tmpDir, "session", "chk-2")
+	_, err = c.captureGitState(tmpDir, "session", "chk-2", false)
 	if err == nil {
 		t.Error("captureGitState should fail on corrupt repo")
 	}
@@ -813,7 +813,7 @@ func TestCapturer_CaptureGitState_DirtySavesPatch(t *testing.T) {
 		t.Fatalf("Failed to create checkpoint dir: %v", err)
 	}
 
-	state, err := c.captureGitState(tmpDir, "session", checkpointID)
+	state, err := c.captureGitState(tmpDir, "session", checkpointID, false)
 	if err != nil {
 		t.Fatalf("captureGitState failed on dirty repo: %v", err)
 	}
@@ -1007,7 +1007,7 @@ func TestCapturer_CaptureGitState_PatchWriteFailureIsReported(t *testing.T) {
 	}
 	c := &Capturer{storage: &Storage{BaseDir: filepath.Join(blocker, "checkpoints")}}
 
-	state, err := c.captureGitState(tmpDir, "session", "chk-patchfail")
+	state, err := c.captureGitState(tmpDir, "session", "chk-patchfail", false)
 
 	if err == nil {
 		t.Fatalf("captureGitState reported success while the patch could not be written; "+

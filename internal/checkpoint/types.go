@@ -196,6 +196,10 @@ type GitState struct {
 	UnstagedCount int `json:"unstaged_count"`
 	// UntrackedCount is the number of untracked files
 	UntrackedCount int `json:"untracked_count"`
+	// UntrackedCaptured counts untracked files preserved in PatchFile by an
+	// explicit capture request. Zero does not imply there were no untracked
+	// files; compare UntrackedCount. Ignored files are never included.
+	UntrackedCaptured int `json:"untracked_captured,omitempty"`
 }
 
 // Git capture skip reasons recorded in GitState.SkipReason.
@@ -325,6 +329,7 @@ type CheckpointOption func(*checkpointOptions)
 type checkpointOptions struct {
 	description         string
 	captureGit          bool
+	captureUntracked    bool
 	scrollbackLines     int
 	scrollbackCompress  bool
 	scrollbackMaxSizeMB int
@@ -343,6 +348,16 @@ func WithDescription(desc string) CheckpointOption {
 func WithGitCapture(capture bool) CheckpointOption {
 	return func(o *checkpointOptions) {
 		o.captureGit = capture
+	}
+}
+
+// WithUntrackedCapture includes non-ignored untracked files in the Git patch.
+// It is disabled by default and requires Git capture to be enabled. When
+// requested, failure to capture Git data is an error even if a useful partial
+// session checkpoint was saved; Create then returns that checkpoint and error.
+func WithUntrackedCapture(capture bool) CheckpointOption {
+	return func(o *checkpointOptions) {
+		o.captureUntracked = capture
 	}
 }
 

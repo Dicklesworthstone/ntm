@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -28,7 +29,7 @@ func newRollbackCmd() *cobra.Command {
 		Short: "Restore session to a checkpoint state",
 		Long: `Restore a session to a previous checkpoint state.
 
-By default, current git changes are stashed before rollback.
+By default, current tracked and untracked git changes are stashed before rollback.
 The checkpoint's git patch is applied to restore the code state.
 
 The checkpoint-id can be:
@@ -89,6 +90,15 @@ Examples:
 			}
 
 			if dryRun {
+				if !noGit {
+					ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Second)
+					defer cancel()
+					plan, err := checkpoint.PrepareGitRollback(ctx, storage, cp, workDir)
+					if err != nil {
+						return fmt.Errorf("rollback preflight: %w", err)
+					}
+					workDir = plan.WorkDir
+				}
 				return showRollbackPreview(cp, workDir, noStash, noGit)
 			}
 
@@ -216,6 +226,22 @@ func showRollbackPreview(cp *checkpoint.Checkpoint, workDir string, noStash, noG
 func performRollback(cp *checkpoint.Checkpoint, workDir string, noStash, noGit bool) error {
 	t := theme.Current()
 	var stashName string
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	var plan *checkpoint.GitRollbackPlan
+	if !noGit {
+		var err error
+		plan, err = checkpoint.PrepareGitRollback(ctx, checkpoint.NewStorage(), cp, workDir)
+		if err != nil {
+			return fmt.Errorf("rollback preflight (no agents interrupted or files changed): %w", err)
+		}
+		workDir = plan.WorkDir
+		if !jsonOutput {
+			for _, warning := range plan.Warnings {
+				fmt.Printf("  Warning: %s\n", warning)
+			}
+		}
+	}
 
 	// 1. Interrupt agents to stop them from writing to files during rollback
 	if !jsonOutput {
@@ -230,7 +256,7 @@ func performRollback(cp *checkpoint.Checkpoint, workDir string, noStash, noGit b
 		fmt.Printf("%s\u2713%s Agents interrupted\n", colorize(t.Success), "\033[0m")
 	}
 
-	if !noGit && workDir != "" && cp.Git.Commit != "" {
+	if plan != nil {
 		// Stash current changes if needed
 		if !noStash && hasUncommittedChanges(workDir) {
 			stashName = fmt.Sprintf("ntm-rollback-%s", time.Now().Format("20060102-150405"))
@@ -243,32 +269,18 @@ func performRollback(cp *checkpoint.Checkpoint, workDir string, noStash, noGit b
 		}
 
 		// Checkout the commit
-		if err := gitCheckout(workDir, cp.Git.Commit); err != nil {
-			// Try to restore stash if checkout fails
-			if stashName != "" {
-				gitStashPop(workDir)
-			}
-			return fmt.Errorf("checkout commit: %w", err)
+		if err := gitCheckout(workDir, plan.Commit); err != nil {
+			return fmt.Errorf("checkout commit failed; inspect repository before retrying (stash %q was preserved): %w", stashName, err)
 		}
 		if !jsonOutput {
 			fmt.Printf("%s\u2713%s Checked out: %s\n", colorize(t.Success), "\033[0m", cp.Git.Commit[:min(8, len(cp.Git.Commit))])
 		}
 
-		// Apply patch if available
-		if cp.Git.PatchFile != "" && cp.Git.IsDirty {
-			storage := checkpoint.NewStorage()
-			patch, err := storage.LoadGitPatch(cp.SessionName, cp.ID)
-			if err == nil && patch != "" {
-				if err := gitApplyPatch(workDir, patch); err != nil {
-					if !jsonOutput {
-						fmt.Printf("%s! Warning: could not apply patch: %v%s\n", colorize(t.Warning), err, "\033[0m")
-					}
-				} else {
-					if !jsonOutput {
-						fmt.Printf("%s\u2713%s Applied saved patch\n", colorize(t.Success), "\033[0m")
-					}
-				}
-			}
+		if err := checkpoint.ApplyGitRollbackPatch(ctx, plan); err != nil {
+			return fmt.Errorf("rollback incomplete: patch apply failed; inspect repository before retrying (stash %q was preserved): %w", stashName, err)
+		}
+		if plan.Patch != "" && !jsonOutput {
+			fmt.Printf("%s\u2713%s Applied saved patch\n", colorize(t.Success), "\033[0m")
 		}
 	}
 
@@ -283,13 +295,17 @@ func performRollback(cp *checkpoint.Checkpoint, workDir string, noStash, noGit b
 		if cp.Git.Commit != "" {
 			result["git_commit"] = cp.Git.Commit
 		}
+		if plan != nil {
+			result["git_commit"] = plan.Commit
+			result["warnings"] = plan.Warnings
+		}
 		return json.NewEncoder(os.Stdout).Encode(result)
 	}
 
 	fmt.Println()
 	fmt.Printf("%s\u2713 Rollback complete%s\n", colorize(t.Success), "\033[0m")
 	if stashName != "" {
-		fmt.Printf("  To restore stashed changes: git stash pop\n")
+		fmt.Printf("  Saved pre-rollback changes in stash %q; inspect git stash list before restoring them.\n", stashName)
 	}
 
 	return nil
@@ -321,7 +337,7 @@ func getSessionWorkDir(session string) (string, error) {
 
 // hasUncommittedChanges checks if there are uncommitted changes.
 func hasUncommittedChanges(dir string) bool {
-	cmd := exec.Command("git", "-C", dir, "status", "--porcelain")
+	cmd := exec.Command("git", "-C", dir, "status", "--porcelain=v1", "--untracked-files=all")
 	out, err := cmd.Output()
 	if err != nil {
 		return false
@@ -331,25 +347,12 @@ func hasUncommittedChanges(dir string) bool {
 
 // gitStash creates a named stash.
 func gitStash(dir, name string) error {
-	cmd := exec.Command("git", "-C", dir, "stash", "push", "-m", name)
-	return cmd.Run()
-}
-
-// gitStashPop restores the most recent stash.
-func gitStashPop(dir string) error {
-	cmd := exec.Command("git", "-C", dir, "stash", "pop")
+	cmd := exec.Command("git", "-C", dir, "stash", "push", "--include-untracked", "-m", name)
 	return cmd.Run()
 }
 
 // gitCheckout checks out a specific commit.
 func gitCheckout(dir, commit string) error {
-	cmd := exec.Command("git", "-C", dir, "checkout", commit)
-	return cmd.Run()
-}
-
-// gitApplyPatch applies a patch.
-func gitApplyPatch(dir, patch string) error {
-	cmd := exec.Command("git", "-C", dir, "apply", "--3way", "-")
-	cmd.Stdin = strings.NewReader(patch)
+	cmd := exec.Command("git", "-C", dir, "checkout", "--no-overwrite-ignore", commit)
 	return cmd.Run()
 }
