@@ -9,6 +9,29 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
+// checkpointPipelineJob binds the durable job and operation receipts to the
+// exact run before the executor can act. Progress broadcasts are best effort;
+// this recovery identity must survive losing the worker or its final response.
+// Ordinary synchronous callers have no job reporter and retain their behavior.
+func checkpointPipelineJob(ctx context.Context, workflowID string, config pipeline.ExecutorConfig, phase string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := reportJobProgress(ctx, map[string]interface{}{
+		"run_id":              config.RunID,
+		"workflow_id":         workflowID,
+		"session":             config.Session,
+		"project_dir":         config.ProjectDir,
+		"workflow_file":       config.WorkflowFile,
+		"pipeline_checkpoint": phase,
+	}); err != nil {
+		return err
+	}
+	// Cancellation can arrive while the journal is being flushed. Retain the
+	// identity, but do not enter the engine after that cancellation.
+	return ctx.Err()
+}
+
 // jobPipelineExec gives inline workflows the same pollable, cancellable
 // lifetime as file-backed pipeline_run jobs. Execution stays in the existing
 // REST pipeline engine; the job dispatcher owns its context until it finishes.

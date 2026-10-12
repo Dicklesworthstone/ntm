@@ -714,6 +714,7 @@ func (s *Server) executeOwnedPipeline(ctx context.Context, workflow *pipeline.Wo
 		output.RobotResponse = pipeline.NewErrorResponse(errors.New("workflow is required"), ErrCodeInvalidWorkflow, "provide a workflow")
 		return output
 	}
+	output.WorkflowID = workflow.Name
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -733,6 +734,10 @@ func (s *Server) executeOwnedPipeline(ctx context.Context, workflow *pipeline.Wo
 	}
 	workflow = frozen
 	config.WorkflowFile = snapshotPath
+	if err := checkpointPipelineJob(runCtx, workflow.Name, config, "before_run"); err != nil {
+		output.RobotResponse = pipeline.NewErrorResponse(err, ErrCodeInternalError, "workflow was not started; repair job recovery storage before retrying")
+		return output
+	}
 	executor := pipeline.NewExecutor(config)
 	output.RobotResponse = pipeline.NewRobotResponse(true)
 	output.WorkflowID = workflow.Name
@@ -812,6 +817,10 @@ func (s *Server) resumePipelineWithResult(ctx context.Context, runID, session st
 	config.ProjectDir = s.pipelineProjectDir()
 	config.WorkflowFile = state.WorkflowFile
 	config.RunID = runID
+	if err := checkpointPipelineJob(ctx, workflow.Name, config, "before_resume"); err != nil {
+		output.RobotResponse = pipeline.NewErrorResponse(err, ErrCodeInternalError, "workflow was not resumed; repair job recovery storage before retrying")
+		return output
+	}
 
 	executor := pipeline.NewExecutor(config)
 
