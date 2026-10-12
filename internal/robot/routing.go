@@ -78,26 +78,29 @@ func DefaultRoutingConfig() RoutingConfig {
 // defaultRoutingContextLines aligns with --robot-context default (root.go uses 1000 when --lines is unset).
 const defaultRoutingContextLines = 1000
 
-// getContextUsageByPane returns a map of pane index -> context usage percent.
+// getContextUsageByPane returns physical pane ID -> context usage percent.
+// Pane indices are local to a window and cannot identify context evidence.
 // Returns nil if context usage can't be computed.
-func getContextUsageByPane(session string) map[int]float64 {
+func getContextUsageByPane(session string) map[string]float64 {
 	output, err := GetContext(session, defaultRoutingContextLines)
 	if err != nil || output == nil || !output.Success {
 		return nil
 	}
 
-	usage := make(map[int]float64, len(output.Agents))
+	usage := make(map[string]float64, len(output.Agents))
 	for _, agent := range output.Agents {
-		usage[agent.PaneIdx] = agent.UsagePercent
+		if agent.PaneID != "" {
+			usage[agent.PaneID] = agent.UsagePercent
+		}
 	}
 	return usage
 }
 
-func contextUsageForPane(usage map[int]float64, paneIndex int) float64 {
+func contextUsageForPane(usage map[string]float64, paneID string) float64 {
 	if usage == nil {
 		return 0
 	}
-	if value, ok := usage[paneIndex]; ok {
+	if value, ok := usage[paneID]; ok {
 		return value
 	}
 	return 0
@@ -105,7 +108,7 @@ func contextUsageForPane(usage map[int]float64, paneIndex int) float64 {
 
 // scoredAgentForRouting keeps every route surface aligned with the activity
 // classifier's authoritative pane state, including live rate-limit evidence.
-func scoredAgentForRouting(pane tmux.Pane, agentType string, activity *AgentActivity, contextUsage map[int]float64) ScoredAgent {
+func scoredAgentForRouting(pane tmux.Pane, agentType string, activity *AgentActivity, contextUsage map[string]float64) ScoredAgent {
 	return ScoredAgent{
 		PaneID:       pane.ID,
 		AgentType:    agentType,
@@ -113,7 +116,7 @@ func scoredAgentForRouting(pane tmux.Pane, agentType string, activity *AgentActi
 		State:        activity.State,
 		Confidence:   activity.Confidence,
 		Velocity:     activity.Velocity,
-		ContextUsage: contextUsageForPane(contextUsage, pane.Index),
+		ContextUsage: contextUsageForPane(contextUsage, pane.ID),
 		LastActivity: activity.LastOutput,
 		HealthState:  deriveHealthState(activity.State),
 		RateLimited:  activity.RateLimited,
@@ -975,9 +978,11 @@ func (s *AgentScorer) GetAvailableAgents(scored []ScoredAgent) []ScoredAgent {
 	return available
 }
 
-// ExcludePanes excludes specific pane indices from the list.
-func ExcludePanes(agents []ScoredAgent, excludeIndices []int) []ScoredAgent {
-	if len(excludeIndices) == 0 {
+// ExcludePanes applies explicit index exclusions and physical-pane exclusions.
+// Automatic filters use IDs so a sibling window's local index cannot remove
+// an otherwise eligible target.
+func ExcludePanes(agents []ScoredAgent, excludeIndices []int, excludeIDs []string) []ScoredAgent {
+	if len(excludeIndices) == 0 && len(excludeIDs) == 0 {
 		return agents
 	}
 
@@ -985,10 +990,14 @@ func ExcludePanes(agents []ScoredAgent, excludeIndices []int) []ScoredAgent {
 	for _, idx := range excludeIndices {
 		excludeSet[idx] = true
 	}
+	excludeIDSet := make(map[string]bool, len(excludeIDs))
+	for _, id := range excludeIDs {
+		excludeIDSet[id] = true
+	}
 
 	var filtered []ScoredAgent
 	for _, agent := range agents {
-		if !excludeSet[agent.PaneIndex] {
+		if !excludeSet[agent.PaneIndex] && !excludeIDSet[agent.PaneID] {
 			filtered = append(filtered, agent)
 		}
 	}
@@ -1032,10 +1041,11 @@ const (
 
 // RoutingContext provides context for routing decisions.
 type RoutingContext struct {
-	Prompt       string // For affinity matching
-	LastAgent    string // For sticky routing (pane ID of last used agent)
-	ExcludePanes []int  // Pane indices to exclude
-	ExplicitPane int    // For explicit routing (-1 = not set)
+	Prompt         string   // For affinity matching
+	LastAgent      string   // For sticky routing (pane ID of last used agent)
+	ExcludePanes   []int    // Explicit pane indices to exclude
+	ExcludePaneIDs []string // Physical pane IDs excluded by automatic filters
+	ExplicitPane   int      // For explicit routing (-1 = not set)
 	// RotationCursor is the persisted round-robin cursor from session routing
 	// state (bd-ws1-truth-safety-l5ddi.10): the index the PREVIOUS send's
 	// selected pane held in its candidate list. It only counts as routing
@@ -1453,8 +1463,8 @@ func (r *Router) Route(agents []ScoredAgent, strategy StrategyName, ctx RoutingC
 	}
 
 	// Apply exclusion from context
-	if len(ctx.ExcludePanes) > 0 {
-		agents = ExcludePanes(agents, ctx.ExcludePanes)
+	if len(ctx.ExcludePanes) > 0 || len(ctx.ExcludePaneIDs) > 0 {
+		agents = ExcludePanes(agents, ctx.ExcludePanes, ctx.ExcludePaneIDs)
 	}
 
 	// Get the strategy

@@ -75,7 +75,7 @@ func openRoutingStateStoreReadOnly() (*state.Store, error) {
 // diverging into per-spelling rows.
 func routingStateFilterKey(opts RouteOptions) string {
 	agentType := strings.ToLower(strings.TrimSpace(opts.AgentType))
-	if agentType == "" && len(opts.ExcludePanes) == 0 {
+	if agentType == "" && len(opts.ExcludePanes) == 0 && len(opts.ExcludePaneIDs) == 0 {
 		return ""
 	}
 	if agentType != "" {
@@ -87,7 +87,13 @@ func routingStateFilterKey(opts RouteOptions) string {
 	for _, idx := range excludes {
 		parts = append(parts, strconv.Itoa(idx))
 	}
-	return "type=" + agentType + ";exclude=" + strings.Join(parts, ",")
+	key := "type=" + agentType + ";exclude=" + strings.Join(parts, ",")
+	if len(opts.ExcludePaneIDs) > 0 {
+		ids := append([]string(nil), opts.ExcludePaneIDs...)
+		sort.Strings(ids)
+		key += ";exclude_ids=" + strings.Join(ids, ",")
+	}
+	return key
 }
 
 // routingStateTTL bounds how long a routing-state row can sit untouched
@@ -119,10 +125,11 @@ func routeWithSessionState(agents []ScoredAgent, opts RouteOptions, store Routin
 	filterKey := routingStateFilterKey(opts)
 
 	baseCtx := RoutingContext{
-		Prompt:       opts.Prompt,
-		LastAgent:    opts.LastAgent,
-		ExcludePanes: opts.ExcludePanes,
-		ExplicitPane: -1,
+		Prompt:         opts.Prompt,
+		LastAgent:      opts.LastAgent,
+		ExcludePanes:   opts.ExcludePanes,
+		ExcludePaneIDs: opts.ExcludePaneIDs,
+		ExplicitPane:   -1,
 	}
 
 	// Selection is a read-modify-write over the persisted cursor, so the load
@@ -215,14 +222,15 @@ func routeWithSessionState(agents []ScoredAgent, opts RouteOptions, store Routin
 
 // RouteOptions configures the routing recommendation request.
 type RouteOptions struct {
-	Session      string         // Required: session name
-	AgentType    string         // Optional: filter by agent type (claude/cc, codex/cod, gemini/gmi)
-	Strategy     StrategyName   // Optional: routing strategy (default: least-loaded)
-	ExcludePanes []int          // Optional: pane indices to exclude
-	Prompt       string         // Optional: prompt for affinity matching
-	LastAgent    string         // Optional: last used agent pane ID for sticky routing
-	Config       *config.Config // Optional: loaded routing configuration
-	NoPersist    bool           // Optional: preview only — never advance persisted routing state (e.g. send --dry-run)
+	Session        string         // Required: session name
+	AgentType      string         // Optional: filter by agent type (claude/cc, codex/cod, gemini/gmi)
+	Strategy       StrategyName   // Optional: routing strategy (default: least-loaded)
+	ExcludePanes   []int          // Optional: explicit pane indices to exclude
+	ExcludePaneIDs []string       // Optional: physical pane IDs excluded by automatic filters
+	Prompt         string         // Optional: prompt for affinity matching
+	LastAgent      string         // Optional: last used agent pane ID for sticky routing
+	Config         *config.Config // Optional: loaded routing configuration
+	NoPersist      bool           // Optional: preview only — never advance persisted routing state (e.g. send --dry-run)
 }
 
 // RouteOutput is the structured output for --robot-route.
@@ -399,8 +407,8 @@ func GetRoute(opts RouteOptions) (*RouteOutput, int) {
 	}
 
 	// Apply pane exclusions from options
-	if len(opts.ExcludePanes) > 0 {
-		agents = ExcludePanes(agents, opts.ExcludePanes)
+	if len(opts.ExcludePanes) > 0 || len(opts.ExcludePaneIDs) > 0 {
+		agents = ExcludePanes(agents, opts.ExcludePanes, opts.ExcludePaneIDs)
 	}
 
 	// Build candidates and excluded lists
@@ -496,10 +504,10 @@ func generateRouteHints(opts RouteOptions, output RouteOutput) *RouteAgentHints 
 
 	if output.Recommendation != nil {
 		rec := output.Recommendation
-		hints.Summary = fmt.Sprintf("Route to %s (pane %d) with score %.1f - %s",
-			rec.AgentType, rec.PaneIndex, rec.Score, rec.State)
-		hints.SendCommand = fmt.Sprintf("ntm --robot-send=%s --panes=%d --msg='YOUR_MESSAGE'",
-			opts.Session, rec.PaneIndex)
+		hints.Summary = fmt.Sprintf("Route to %s (pane %s) with score %.1f - %s",
+			rec.AgentType, rec.PaneID, rec.Score, rec.State)
+		hints.SendCommand = fmt.Sprintf("ntm --robot-send=%s --panes=%s --msg='YOUR_MESSAGE'",
+			opts.Session, rec.PaneID)
 	} else if len(output.Candidates) == 0 {
 		hints.Summary = "No agents available for routing"
 		if len(output.Excluded) > 0 {
@@ -645,8 +653,8 @@ func GetRouteRecommendation(opts RouteOptions) (*RouteRecommendation, error) {
 	}
 
 	// Apply pane exclusions from options
-	if len(opts.ExcludePanes) > 0 {
-		agents = ExcludePanes(agents, opts.ExcludePanes)
+	if len(opts.ExcludePanes) > 0 || len(opts.ExcludePaneIDs) > 0 {
+		agents = ExcludePanes(agents, opts.ExcludePanes, opts.ExcludePaneIDs)
 	}
 
 	// Route with persisted per-session state, ADVANCING it on selection: this

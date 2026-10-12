@@ -10417,6 +10417,7 @@ type ContextPendingRotationInfo struct {
 // AgentContextInfo contains context window information for a single agent pane
 type AgentContextInfo struct {
 	Pane            string  `json:"pane"`
+	PaneID          string  `json:"pane_id"`
 	PaneIdx         int     `json:"pane_idx"`
 	AgentType       string  `json:"agent_type"`
 	Model           string  `json:"model"`
@@ -10703,6 +10704,7 @@ func GetContext(session string, lines int) (*ContextOutput, error) {
 
 		agentInfo := AgentContextInfo{
 			Pane:            paneKey,
+			PaneID:          pane.ID,
 			PaneIdx:         pane.Index,
 			AgentType:       agentType,
 			Model:           model,

@@ -2,11 +2,16 @@ package robot
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
+	"github.com/Dicklesworthstone/ntm/internal/config"
+	ntmctx "github.com/Dicklesworthstone/ntm/internal/context"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/tests/testutil"
 )
@@ -75,6 +80,149 @@ func TestParseExcludePanes(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// The transport supplies two physical panes with the same window-local
+// index. Context collection, pane parsing, classification and route selection
+// all use their production implementations.
+func installRouteIdentityTmux(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("tmux fixture requires /bin/sh")
+	}
+	hermeticGlobalConfig(t)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	dir := t.TempDir()
+	const script = `#!/bin/sh
+case "$1" in
+  has-session)
+    if [ "$3" != "=route-identity" ]; then
+      printf "can't find session: %s\n" "$3" >&2
+      exit 1
+    fi
+    ;;
+  list-panes)
+    printf '%s\n' '%41_NTM_SEP_1_NTM_SEP_route-identity__cc_1_NTM_SEP_claude_NTM_SEP_120_NTM_SEP_40_NTM_SEP_1_NTM_SEP_1041_NTM_SEP_0_NTM_SEP_cc_NTM_SEP__NTM_SEP__NTM_SEP_0'
+    printf '%s\n' '%51_NTM_SEP_1_NTM_SEP_route-identity__cc_2_NTM_SEP_claude_NTM_SEP_120_NTM_SEP_40_NTM_SEP_0_NTM_SEP_1051_NTM_SEP_1_NTM_SEP_cc_NTM_SEP__NTM_SEP__NTM_SEP_0'
+    ;;
+  capture-pane) printf 'claude >\n' ;;
+  *) printf 'unexpected tmux command: %s\n' "$*" >&2; exit 97 ;;
+esac
+`
+	path := filepath.Join(dir, "tmux")
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NTM_TMUX_BINARY", path)
+	previous := tmux.DefaultClient
+	tmux.DefaultClient = tmux.NewClient("")
+	t.Cleanup(func() { tmux.DefaultClient = previous })
+}
+
+func TestRouteKeepsContextAndExclusionsWithPhysicalPane(t *testing.T) {
+	installRouteIdentityTmux(t)
+	prevProcess, prevCwd, prevPath := transcriptUsageForProcess, transcriptUsageForCwd, paneCurrentPath
+	t.Cleanup(func() {
+		transcriptUsageForProcess, transcriptUsageForCwd, paneCurrentPath = prevProcess, prevCwd, prevPath
+	})
+	paneCurrentPath = func(string) (string, bool) { return "", false }
+	transcriptUsageForCwd = func(string, string) (*ntmctx.TranscriptUsage, bool) { return nil, false }
+	transcriptUsageForProcess = func(_ string, pid int) (*ntmctx.TranscriptUsage, bool) {
+		tokens, ok := map[int]int{1041: 190000, 1051: 10000}[pid]
+		if !ok {
+			return nil, false
+		}
+		return &ntmctx.TranscriptUsage{Tokens: tokens, ContextWindow: 200000, UpdatedAt: time.Now()}, true
+	}
+
+	contextOutput, err := GetContext("route-identity", 1000)
+	if err != nil || !contextOutput.Success || len(contextOutput.Agents) != 2 {
+		t.Fatalf("context = %+v, %v; want two agents", contextOutput, err)
+	}
+	for _, agent := range contextOutput.Agents {
+		wantPane, wantUsage := "0.1", 95.0
+		if agent.PaneID == "%51" {
+			wantPane, wantUsage = "1.1", 5
+		} else if agent.PaneID != "%41" {
+			t.Fatalf("context returned unexpected physical identity: %+v", agent)
+		}
+		if agent.Pane != wantPane || agent.PaneIdx != 1 || agent.UsagePercent != wantUsage || agent.Source != "transcript" {
+			t.Errorf("context agent = %+v, want %s at %.0f%%", agent, wantPane, wantUsage)
+		}
+	}
+
+	scored, err := NewAgentScorer(DefaultRoutingConfig()).ScoreAgents("route-identity", "")
+	if err != nil || len(scored) != 2 {
+		t.Fatalf("scored agents = %+v, %v; want both physical panes", scored, err)
+	}
+	for _, agent := range scored {
+		wantUsage, wantExcluded := 95.0, true
+		if agent.PaneID == "%51" {
+			wantUsage, wantExcluded = 5, false
+		}
+		if agent.ContextUsage != wantUsage || agent.Excluded != wantExcluded {
+			t.Errorf("scored agent = %+v, want context %.0f%% excluded=%t", agent, wantUsage, wantExcluded)
+		}
+	}
+
+	tests := []struct {
+		name       string
+		threshold  float64
+		excludeIDs []string
+		excludeIdx []int
+		want       string
+		candidates int
+	}{
+		{name: "full pane is excluded", threshold: 85, want: "%51", candidates: 1},
+		{name: "threshold boundary is eligible", threshold: 95, want: "%41", candidates: 2},
+		{name: "exclude first window only", threshold: 100, excludeIDs: []string{"%41"}, want: "%51", candidates: 1},
+		{name: "exclude second window only", threshold: 100, excludeIDs: []string{"%51"}, want: "%41", candidates: 1},
+		{name: "numeric exclusion still matches local index", threshold: 100, excludeIdx: []int{1}, candidates: 0},
+		{name: "unknown identity excludes nothing", threshold: 100, excludeIDs: []string{"%99"}, want: "%41", candidates: 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.Default()
+			cfg.Routing.ExcludeContextAbove = tt.threshold
+			opts := RouteOptions{
+				Session: "route-identity", Strategy: StrategySticky, LastAgent: "%41",
+				ExcludePanes: tt.excludeIdx, ExcludePaneIDs: tt.excludeIDs,
+				Config: cfg, NoPersist: true,
+			}
+			output, code := GetRoute(opts)
+			if code != 0 || !output.Success || len(output.Candidates) != tt.candidates {
+				t.Fatalf("route = %+v, code %d; want %d candidates", output, code, tt.candidates)
+			}
+			recommendation, err := GetRouteRecommendation(opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for surface, rec := range map[string]*RouteRecommendation{"robot": output.Recommendation, "send": recommendation} {
+				if tt.want == "" {
+					if rec != nil {
+						t.Errorf("%s recommended excluded pane: %+v", surface, rec)
+					}
+					continue
+				}
+				if rec == nil || rec.PaneID != tt.want {
+					t.Errorf("%s recommendation = %+v, want %s", surface, rec, tt.want)
+				}
+			}
+			if tt.threshold == 85 && (len(output.Excluded) != 1 || output.Excluded[0].PaneID != "%41" || !strings.Contains(output.Excluded[0].Reason, "context")) {
+				t.Errorf("full pane missing from context exclusions: %+v", output.Excluded)
+			}
+			if tt.want != "" {
+				wantCommand := fmt.Sprintf("ntm --robot-send=route-identity --panes=%s --msg='YOUR_MESSAGE'", tt.want)
+				if output.AgentHints == nil || output.AgentHints.SendCommand != wantCommand {
+					t.Errorf("route hint lost physical target: %+v, want %q", output.AgentHints, wantCommand)
+				}
+			}
+		})
+	}
+	if usage := getContextUsageByPane("missing-session"); usage != nil {
+		t.Errorf("unavailable context = %v, want nil", usage)
 	}
 }
 
@@ -207,8 +355,8 @@ func TestRouteExcluded(t *testing.T) {
 
 func TestRouteAgentHints(t *testing.T) {
 	hints := RouteAgentHints{
-		Summary:     "Route to cc (pane 1) with score 85.5 - WAITING",
-		SendCommand: "ntm --robot-send=test --panes=1 --msg='YOUR_MESSAGE'",
+		Summary:     "Route to cc (pane %41) with score 85.5 - WAITING",
+		SendCommand: "ntm --robot-send=test --panes=%41 --msg='YOUR_MESSAGE'",
 		Suggestions: []string{"Primary strategy succeeded"},
 	}
 
@@ -228,7 +376,7 @@ func TestGenerateRouteHints(t *testing.T) {
 		opts := RouteOptions{Session: "test"}
 		output := RouteOutput{
 			Recommendation: &RouteRecommendation{
-				PaneID:    "cc_1",
+				PaneID:    "%41",
 				PaneIndex: 1,
 				AgentType: "cc",
 				Score:     85.5,
@@ -240,8 +388,8 @@ func TestGenerateRouteHints(t *testing.T) {
 		if hints.Summary == "" {
 			t.Error("Summary should not be empty")
 		}
-		if hints.SendCommand == "" {
-			t.Error("SendCommand should not be empty")
+		if hints.SendCommand != "ntm --robot-send=test --panes=%41 --msg='YOUR_MESSAGE'" {
+			t.Errorf("SendCommand = %q, want the exact physical pane ID", hints.SendCommand)
 		}
 	})
 

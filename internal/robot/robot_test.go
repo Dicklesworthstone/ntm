@@ -4478,6 +4478,7 @@ func TestContextOutputJSON(t *testing.T) {
 		Agents: []AgentContextInfo{
 			{
 				Pane:            "0",
+				PaneID:          "%41",
 				PaneIdx:         0,
 				AgentType:       "claude",
 				Model:           "sonnet",
@@ -4515,6 +4516,9 @@ func TestContextOutputJSON(t *testing.T) {
 	}
 	if result.Agents[0].Model != "sonnet" {
 		t.Errorf("Model mismatch: got %q, want %q", result.Agents[0].Model, "sonnet")
+	}
+	if result.Agents[0].PaneID != "%41" || !strings.Contains(string(data), `"pane_id":"%41"`) {
+		t.Errorf("context JSON lost physical pane identity: %s", data)
 	}
 }
 

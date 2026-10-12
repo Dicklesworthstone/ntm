@@ -163,7 +163,7 @@ func TestScoredAgentForRoutingPropagatesRateLimit(t *testing.T) {
 		Velocity:    2.5,
 		RateLimited: true,
 	}
-	agent := scoredAgentForRouting(pane, "codex", activity, map[int]float64{2: 31.5})
+	agent := scoredAgentForRouting(pane, "codex", activity, map[string]float64{"%12": 31.5})
 	if !agent.RateLimited {
 		t.Fatal("RateLimited = false, want the activity classifier's true rate-limit result")
 	}
@@ -292,7 +292,7 @@ func TestExcludePanes(t *testing.T) {
 	}
 
 	// Exclude panes 2 and 3
-	filtered := ExcludePanes(agents, []int{2, 3})
+	filtered := ExcludePanes(agents, []int{2, 3}, nil)
 	if len(filtered) != 2 {
 		t.Errorf("ExcludePanes([2,3]) returned %d agents, want 2", len(filtered))
 	}
@@ -305,7 +305,7 @@ func TestExcludePanes(t *testing.T) {
 	}
 
 	// Empty exclusion returns all
-	filtered = ExcludePanes(agents, []int{})
+	filtered = ExcludePanes(agents, []int{}, nil)
 	if len(filtered) != 4 {
 		t.Errorf("ExcludePanes([]) should return all agents")
 	}
