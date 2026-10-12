@@ -48,6 +48,7 @@ func TestGetWaitContextSurfacesTmuxLookupFailure(t *testing.T) {
 	response, exitCode := GetWaitContext(context.Background(), WaitOptions{
 		Session:   "project",
 		Condition: WaitConditionIdle,
+		Timeout:   time.Second,
 	})
 	if exitCode != 1 {
 		t.Fatalf("GetWaitContext() exit code = %d, want 1", exitCode)

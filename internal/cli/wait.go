@@ -1,70 +1,21 @@
 package cli
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
-	"os"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/Dicklesworthstone/ntm/internal/robot"
+	sessionPkg "github.com/Dicklesworthstone/ntm/internal/session"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
 )
-
-// WaitCondition represents a condition to wait for.
-type WaitCondition string
-
-const (
-	// ConditionIdle waits for agent(s) in WAITING state.
-	ConditionIdle WaitCondition = "idle"
-
-	// ConditionComplete waits for all agents idle AND no recent activity.
-	ConditionComplete WaitCondition = "complete"
-
-	// ConditionGenerating waits for at least one agent actively generating.
-	ConditionGenerating WaitCondition = "generating"
-
-	// ConditionHealthy waits for all agents in healthy state (not ERROR/STALLED).
-	ConditionHealthy WaitCondition = "healthy"
-)
-
-// WaitOptions configures the wait operation.
-type WaitOptions struct {
-	Session      string
-	Condition    WaitCondition
-	Timeout      time.Duration
-	PollInterval time.Duration
-	PaneIndex    int // -1 means all panes
-	AgentType    string
-	WaitForAny   bool // If true, wait for ANY agent; otherwise wait for ALL
-	ExitOnError  bool // If true, exit immediately on ERROR state
-	CountN       int  // With --any, wait for at least N agents (default 1)
-}
-
-// WaitResult is the JSON output for robot mode.
-type WaitResult struct {
-	Success       bool            `json:"success"`
-	Timestamp     string          `json:"timestamp"`
-	Session       string          `json:"session"`
-	Condition     string          `json:"condition"`
-	WaitedSeconds float64         `json:"waited_seconds"`
-	Agents        []WaitAgentInfo `json:"agents,omitempty"`
-	AgentsPending []string        `json:"agents_pending,omitempty"`
-	Error         string          `json:"error,omitempty"`
-	ErrorCode     string          `json:"error_code,omitempty"`
-	Hint          string          `json:"hint,omitempty"`
-}
-
-// WaitAgentInfo describes an agent's state when the wait completed.
-type WaitAgentInfo struct {
-	Pane      string    `json:"pane"`
-	State     string    `json:"state"`
-	MetAt     time.Time `json:"met_at"`
-	AgentType string    `json:"agent_type,omitempty"`
-}
 
 // DefaultWaitTimeout is the default maximum wait time.
 const DefaultWaitTimeout = 5 * time.Minute
@@ -72,338 +23,178 @@ const DefaultWaitTimeout = 5 * time.Minute
 // DefaultWaitPoll is the default polling interval.
 const DefaultWaitPoll = 2 * time.Second
 
-// CompleteIdleThreshold is the time without activity to consider "complete".
-const CompleteIdleThreshold = 5 * time.Second
-
 func newWaitCmd() *cobra.Command {
-	var (
-		condition   string
-		timeout     time.Duration
-		poll        time.Duration
-		paneIndex   int
-		agentType   string
-		waitForAny  bool
-		exitOnError bool
-		countN      int
-	)
+	var opts robot.WaitOptions
+	var paneSelector string
 
 	cmd := &cobra.Command{
 		Use:   "wait [session]",
 		Short: "Wait until agents reach a desired state",
 		Long: `Wait until agents in a session reach a desired state.
 
-Essential for scripting and pipeline automation.
+All matching agents must satisfy the condition unless --any is supplied.
+A pane whose state cannot be observed stays pending.
 
 Wait Conditions:
-  idle       All (or any with --any) agents in WAITING state
-  complete   All agents idle AND no recent activity (5s threshold)
-  generating At least one agent actively generating
-  healthy    All agents in healthy state (not ERROR/STALLED)
+  idle               Agent is waiting for input
+  complete           Agent is idle with no recent activity (5s threshold)
+  generating         Agent is actively generating
+  healthy            Agent is not in ERROR or STALLED state
+  agent_ready        Agent CLI is ready after startup or relaunch
+  stalled            Agent has stalled
+  rate_limited       Agent has reached a rate limit
+  rate_limit_lifted  Agent is no longer rate limited
 
-Composed Conditions (advanced):
-  idle,healthy  Agents must be WAITING AND healthy (comma-separated)
+Conditions can be composed with commas: idle,healthy requires both.
+
+Pane selectors:
+  N    Pane index in a single-window session; window index in a multi-window session
+  W.P  Exact window and pane index
+  %N   Stable tmux pane ID
+  -1   All agent panes (default)
 
 Exit Codes:
   0  Condition met successfully
-  1  Timeout exceeded
-  2  Error (invalid args, session not found)
-  3  Agent error detected (with --exit-on-error)
+  1  Timeout, cancellation, invalid input, or agent error
+
+Use --json and inspect error_code to distinguish TIMEOUT, CANCELED,
+INVALID_FLAG, SESSION_NOT_FOUND, PANE_NOT_FOUND, and AGENT_ERROR.
 
 Examples:
   ntm wait myproject --until=idle
   ntm wait myproject --until=idle --timeout=2m
   ntm wait myproject --until=generating --any
+  ntm wait myproject --until=idle --any --count=2
   ntm wait myproject --until=idle --type=claude
   ntm wait myproject --until=idle --pane=2
-  ntm wait myproject --until=healthy --exit-on-error`,
+  ntm wait myproject --until=agent_ready --pane=1.2
+  ntm wait myproject --until=healthy --pane=%12 --exit-on-error
+  ntm wait myproject --until=idle --json`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			var session string
+			opts.Session = ""
 			if len(args) > 0 {
-				session = args[0]
+				opts.Session = args[0]
 			}
-
-			opts := WaitOptions{
-				Session:      session,
-				Condition:    WaitCondition(condition),
-				Timeout:      timeout,
-				PollInterval: poll,
-				PaneIndex:    paneIndex,
-				AgentType:    agentType,
-				WaitForAny:   waitForAny,
-				ExitOnError:  exitOnError,
-				CountN:       countN,
+			opts.PaneSelectors = nil
+			if selector := strings.TrimSpace(paneSelector); selector != "-1" {
+				opts.PaneSelectors = []string{selector}
 			}
-
-			return runWait(cmd.OutOrStdout(), opts)
+			return runWait(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), opts)
 		},
+		ValidArgsFunction: completeSessionArgs,
 	}
 
-	cmd.Flags().StringVar(&condition, "until", "idle", "Wait condition: idle, complete, generating, healthy")
-	cmd.Flags().DurationVar(&timeout, "timeout", DefaultWaitTimeout, "Maximum wait time")
-	cmd.Flags().DurationVar(&poll, "poll", DefaultWaitPoll, "Polling interval")
-	cmd.Flags().IntVar(&paneIndex, "pane", -1, "Wait for specific pane only (-1 = all)")
-	cmd.Flags().StringVar(&agentType, "type", "", "Wait for specific agent type (claude, codex, gemini)")
-	cmd.Flags().BoolVar(&waitForAny, "any", false, "Wait for ANY agent (vs ALL)")
-	cmd.Flags().BoolVar(&exitOnError, "exit-on-error", false, "Exit immediately if ERROR state detected")
-	cmd.Flags().IntVar(&countN, "count", 1, "With --any, wait for at least N agents matching condition")
+	cmd.Flags().StringVar(&opts.Condition, "until", robot.WaitConditionIdle, "Wait condition, or comma-separated conditions")
+	cmd.Flags().DurationVar(&opts.Timeout, "timeout", DefaultWaitTimeout, "Maximum wait time")
+	cmd.Flags().DurationVar(&opts.PollInterval, "poll", DefaultWaitPoll, "Polling interval (must be positive)")
+	cmd.Flags().StringVar(&paneSelector, "pane", "-1", "Pane selector: N, W.P, or %N (-1 = all)")
+	cmd.Flags().StringVar(&opts.AgentType, "type", "", "Wait for a specific agent type (claude, codex, gemini, agy, etc.)")
+	cmd.Flags().BoolVar(&opts.WaitForAny, "any", false, "Wait for ANY agent (vs ALL)")
+	cmd.Flags().BoolVar(&opts.ExitOnError, "exit-on-error", false, "Exit immediately if ERROR state is detected")
+	cmd.Flags().IntVar(&opts.CountN, "count", 1, "With --any, wait for at least N agents matching the condition")
 
 	return cmd
 }
 
-func runWait(w io.Writer, opts WaitOptions) error {
-	if err := tmux.EnsureInstalled(); err != nil {
-		return err
+// runWait is the human/JSON transport for the canonical wait engine. It does
+// not classify panes or maintain another polling loop: CLI, robot, and HTTP
+// callers must agree about unreadable targets, selectors, and cancellation.
+func runWait(ctx context.Context, w, diagnostics io.Writer, opts robot.WaitOptions) error {
+	fail := func(err error, code, hint string) error {
+		return outputWaitResponse(w, &robot.WaitResponse{
+			RobotResponse: robot.NewErrorResponse(err, code, hint),
+			Session:       opts.Session,
+			Condition:     opts.Condition,
+			Agents:        []robot.WaitAgentInfo{},
+		}, err)
 	}
-
-	t := theme.Current()
-
-	// Resolve session
-	res, err := ResolveSession(opts.Session, w)
-	if err != nil {
-		return err
+	if err := ctx.Err(); err != nil {
+		return fail(err, "CANCELED", "Start a new wait when ready")
 	}
-	if res.Session == "" {
-		return nil
-	}
-	res.ExplainIfInferred(os.Stderr)
-	opts.Session = res.Session
-
-	if !tmux.SessionExists(opts.Session) {
-		return fmt.Errorf("session '%s' not found", opts.Session)
-	}
-
-	// Validate condition
-	if !isValidCondition(opts.Condition) {
-		return fmt.Errorf("invalid condition '%s': must be one of idle, complete, generating, healthy", opts.Condition)
+	if opts.Timeout < 0 || opts.PollInterval <= 0 || opts.CountN <= 0 {
+		return fail(errors.New("timeout must be non-negative; poll and count must be positive"),
+			robot.ErrCodeInvalidFlag, "Check --timeout, --poll, and --count")
 	}
 	if opts.AgentType != "" {
 		rawAgentType := opts.AgentType
-		opts.AgentType = robot.ResolveAgentType(opts.AgentType)
+		opts.AgentType = robot.ResolveAgentType(rawAgentType)
 		if opts.AgentType == "" || opts.AgentType == "unknown" || opts.AgentType == "user" {
-			return fmt.Errorf("invalid agent type '%s'", strings.TrimSpace(rawAgentType))
+			return fail(fmt.Errorf("invalid agent type %q", strings.TrimSpace(rawAgentType)),
+				robot.ErrCodeInvalidFlag, "Use a supported agent type such as claude, codex, gemini, or agy")
 		}
 	}
-
-	// Start waiting
-	fmt.Fprintf(w, "%s⏳%s Waiting for '%s' until %s (timeout: %v)...\n",
-		colorize(t.Info), colorize(t.Text), opts.Session, opts.Condition, opts.Timeout)
-
-	startTime := time.Now()
-	deadline := startTime.Add(opts.Timeout)
-
-	// Create activity monitor
-	monitor := robot.NewActivityMonitor(nil)
-
-	for {
-		// Check timeout
-		if time.Now().After(deadline) {
-			fmt.Fprintf(w, "%s✗%s Timeout after %v\n",
-				colorize(t.Error), colorize(t.Text), opts.Timeout)
-			return &WaitTimeoutError{Duration: opts.Timeout}
+	if opts.Session != "" {
+		if err := tmux.ValidateSessionName(opts.Session); err != nil {
+			return fail(err, robot.ErrCodeInvalidArgs, "Pass a valid tmux session name")
 		}
+	}
+	if err := tmux.EnsureInstalled(); err != nil {
+		return fail(err, robot.ErrCodeDependencyMissing, "Install tmux before waiting for agents")
+	}
 
-		// Get all panes
-		panes, err := tmux.GetPanes(opts.Session)
-		if err != nil {
-			return fmt.Errorf("failed to list panes: %w", err)
+	res, err := ResolveSessionWithOptionsContext(ctx, opts.Session, w, SessionResolveOptions{TreatAsJSON: IsJSONOutput()})
+	if err != nil {
+		if ctx.Err() != nil {
+			return fail(ctx.Err(), "CANCELED", "Start a new wait when ready")
 		}
-
-		// Filter panes based on options
-		filteredPanes := filterPanesForWait(panes, opts)
-
-		if len(filteredPanes) == 0 {
-			fmt.Fprintf(w, "%s!%s No matching panes found\n",
-				colorize(t.Warning), colorize(t.Text))
-			return fmt.Errorf("no panes match the filter criteria")
-		}
-
-		// Update activity state for each pane
-		var activities []*robot.AgentActivity
-		for _, pane := range filteredPanes {
-			classifier := monitor.GetOrCreate(pane.ID)
-			if at := agentTypeForPane(pane); at != "" && at != "unknown" && at != "user" {
-				classifier.SetAgentType(at)
-			}
-			activity, err := classifier.Classify()
-			if err != nil {
-				// Pane may have disappeared, continue
-				continue
-			}
-			activities = append(activities, activity)
-		}
-
-		// Check for error state (if --exit-on-error)
-		if opts.ExitOnError {
-			for _, a := range activities {
-				if a.State == robot.StateError {
-					fmt.Fprintf(w, "%s✗%s Agent error detected in %s\n",
-						colorize(t.Error), colorize(t.Text), a.PaneID)
-					return &WaitErrorStateError{Pane: a.PaneID}
-				}
+		code, hint := classifyRobotExecuteError(err)
+		var resolutionErr *sessionPkg.ResolveExplicitSessionNameError
+		if errors.As(err, &resolutionErr) {
+			code, hint = robot.ErrCodeSessionNotFound, "Use 'ntm list' to see available sessions"
+			if resolutionErr.Kind == sessionPkg.ResolveExplicitSessionNameErrorAmbiguous {
+				code, hint = robot.ErrCodeInvalidArgs, "Pass an exact session name"
 			}
 		}
-
-		// Check if condition is met
-		met, details := checkConditionMet(activities, opts)
-		if met {
-			elapsed := time.Since(startTime)
-			fmt.Fprintf(w, "%s✓%s Condition '%s' met after %v\n",
-				colorize(t.Success), colorize(t.Text), opts.Condition, elapsed.Round(time.Millisecond))
-			for _, d := range details {
-				fmt.Fprintf(w, "    %s: %s\n", d.Pane, d.State)
-			}
-			return nil
-		}
-
-		// Sleep and poll again
-		time.Sleep(opts.PollInterval)
+		return fail(err, code, hint)
 	}
+	if res.Session == "" {
+		return nil // The interactive session chooser was canceled.
+	}
+	res.ExplainIfInferredForOutput(diagnostics, IsJSONOutput())
+	opts.Session = res.Session
+
+	if !IsJSONOutput() {
+		t := theme.Current()
+		fmt.Fprintf(w, "%s⏳%s Waiting for '%s' until %s (timeout: %v)...\n",
+			colorize(t.Info), colorize(t.Text), opts.Session, opts.Condition, opts.Timeout)
+	}
+	response, _ := robot.GetWaitContext(ctx, opts)
+	var cause error
+	if response.ErrorCode == "CANCELED" {
+		cause = ctx.Err()
+	}
+	return outputWaitResponse(w, response, cause)
 }
 
-// isValidCondition checks if the condition string is valid.
-func isValidCondition(c WaitCondition) bool {
-	// Handle composed conditions (comma-separated)
-	parts := strings.Split(string(c), ",")
-	for _, part := range parts {
-		p := WaitCondition(strings.TrimSpace(part))
-		switch p {
-		case ConditionIdle, ConditionComplete, ConditionGenerating, ConditionHealthy:
-			// Valid
-		default:
-			return false
-		}
+func outputWaitResponse(w io.Writer, response *robot.WaitResponse, cause error) error {
+	if cause == nil && !response.Success {
+		cause = errors.New(response.Error)
 	}
-	return len(parts) > 0
-}
-
-// filterPanesForWait filters panes based on wait options.
-func filterPanesForWait(panes []tmux.Pane, opts WaitOptions) []tmux.Pane {
-	var result []tmux.Pane
-
-	for _, pane := range panes {
-		paneType := agentTypeForPane(pane)
-		if paneType == "user" || paneType == "unknown" {
-			continue
+	if IsJSONOutput() {
+		response.OutputFormat = string(robot.FormatJSON)
+		robot.EnsureArraysNeverNull(response)
+		if err := json.NewEncoder(w).Encode(response); err != nil {
+			return robot.ExitResultForCode(1, err, false)
 		}
-
-		// Filter by specific pane index
-		if opts.PaneIndex >= 0 && pane.Index != opts.PaneIndex {
-			continue
-		}
-
-		// Filter by agent type
-		if opts.AgentType != "" {
-			if !strings.EqualFold(paneType, opts.AgentType) {
-				continue
-			}
-		}
-
-		result = append(result, pane)
+		// Execute recognizes the typed result and does not replace this
+		// already-written response with a generic INTERNAL_ERROR envelope.
+		return robot.ExitResultForResponse(response.RobotResponse, cause, true)
 	}
 
-	return result
-}
-
-// checkConditionMet checks if the wait condition is satisfied.
-func checkConditionMet(activities []*robot.AgentActivity, opts WaitOptions) (bool, []WaitAgentInfo) {
-	if len(activities) == 0 {
-		return false, nil
-	}
-
-	// Parse composed conditions
-	conditions := strings.Split(string(opts.Condition), ",")
-
-	var matchingAgents []WaitAgentInfo
-	var pendingAgents []*robot.AgentActivity
-
-	for _, activity := range activities {
-		if meetsAllConditions(activity, conditions) {
-			matchingAgents = append(matchingAgents, WaitAgentInfo{
-				Pane:      activity.PaneID,
-				State:     string(activity.State),
-				MetAt:     time.Now(),
-				AgentType: activity.AgentType,
-			})
-		} else {
-			pendingAgents = append(pendingAgents, activity)
+	t := theme.Current()
+	if response.Success {
+		elapsed := time.Duration(response.WaitedSeconds * float64(time.Second))
+		fmt.Fprintf(w, "%s✓%s Condition '%s' met after %v\n",
+			colorize(t.Success), colorize(t.Text), response.Condition, elapsed.Round(time.Millisecond))
+		for _, agent := range response.Agents {
+			fmt.Fprintf(w, "    %s: %s\n", agent.Pane, agent.State)
+		}
+	} else {
+		fmt.Fprintf(w, "%s✗%s %s\n", colorize(t.Error), colorize(t.Text), response.Error)
+		if len(response.AgentsPending) > 0 {
+			fmt.Fprintf(w, "    Pending: %s\n", strings.Join(response.AgentsPending, ", "))
 		}
 	}
-
-	// Determine if condition is met based on --any vs ALL
-	if opts.WaitForAny {
-		// With --any, need at least CountN agents matching
-		return len(matchingAgents) >= opts.CountN, matchingAgents
-	}
-
-	// Default: ALL agents must match (no pending)
-	return len(pendingAgents) == 0 && len(matchingAgents) > 0, matchingAgents
-}
-
-// meetsAllConditions checks if an activity meets all specified conditions.
-func meetsAllConditions(activity *robot.AgentActivity, conditions []string) bool {
-	for _, cond := range conditions {
-		c := WaitCondition(strings.TrimSpace(cond))
-		if !meetsSingleCondition(activity, c) {
-			return false
-		}
-	}
-	return true
-}
-
-// meetsSingleCondition checks if an activity meets a single condition.
-func meetsSingleCondition(activity *robot.AgentActivity, condition WaitCondition) bool {
-	switch condition {
-	case ConditionIdle:
-		return activity.State == robot.StateWaiting
-
-	case ConditionComplete:
-		// Must be waiting AND no recent output
-		if activity.State != robot.StateWaiting {
-			return false
-		}
-		// Check last output time - must be older than threshold
-		if activity.LastOutput.IsZero() {
-			return true // No output recorded = complete
-		}
-		return time.Since(activity.LastOutput) >= CompleteIdleThreshold
-
-	case ConditionGenerating:
-		return activity.State == robot.StateGenerating
-
-	case ConditionHealthy:
-		// Not ERROR and not STALLED
-		return activity.State != robot.StateError && activity.State != robot.StateStalled
-
-	default:
-		return false
-	}
-}
-
-// WaitTimeoutError indicates the wait timed out.
-type WaitTimeoutError struct {
-	Duration time.Duration
-}
-
-func (e *WaitTimeoutError) Error() string {
-	return fmt.Sprintf("wait timed out after %v", e.Duration)
-}
-
-// ExitCode returns the exit code for this error (1 for timeout).
-func (e *WaitTimeoutError) ExitCode() int {
-	return 1
-}
-
-// WaitErrorStateError indicates an agent entered error state.
-type WaitErrorStateError struct {
-	Pane string
-}
-
-func (e *WaitErrorStateError) Error() string {
-	return fmt.Sprintf("agent in pane '%s' entered ERROR state", e.Pane)
-}
-
-// ExitCode returns the exit code for this error (3 for error state).
-func (e *WaitErrorStateError) ExitCode() int {
-	return 3
+	return robot.ExitResultForResponse(response.RobotResponse, cause, false)
 }
