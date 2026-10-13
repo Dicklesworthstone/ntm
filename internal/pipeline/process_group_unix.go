@@ -4,6 +4,7 @@ package pipeline
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"strconv"
@@ -21,7 +22,31 @@ type commandCleanupResult struct {
 	Err        error
 	Cancelled  bool
 	SignalSent string
-	Settled    bool // The owned command group no longer has executing members.
+	Settled    bool // The owned group is quiet and its captured output reached EOF.
+}
+
+// verifyCommandOutputSettlement runs after the process-group proof and the
+// Cmd.Wait join. An inherited output pipe can outlive the group (setsid), and
+// Wait's ExitError takes precedence over a concurrent ErrWaitDelay. Such a run
+// must keep its launch journal unresolved, not authorize an automatic retry.
+// This does not claim to contain descendants that detach AND close all pipes.
+func verifyCommandOutputSettlement(cmd *exec.Cmd, result *commandCleanupResult) {
+	if !result.Settled {
+		return
+	}
+	if errors.Is(result.Err, exec.ErrWaitDelay) {
+		result.Settled = false
+	}
+	for _, stream := range []struct {
+		name   string
+		writer interface{}
+	}{{"stdout", cmd.Stdout}, {"stderr", cmd.Stderr}} {
+		capture, ok := stream.writer.(*cappedWriter)
+		if ok && !capture.outputCaptureComplete() {
+			result.Settled = false
+			result.Err = errors.Join(result.Err, fmt.Errorf("%s output capture did not reach EOF; inspect detached command work before replay", stream.name))
+		}
+	}
 }
 
 func configureCommandProcessGroup(cmd *exec.Cmd) {

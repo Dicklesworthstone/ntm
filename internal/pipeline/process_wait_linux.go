@@ -21,13 +21,14 @@ const commandGroupPollInterval = 50 * time.Millisecond
 // exit without reaping, so every group signal is sent while identity is pinned.
 // In particular, a shell exiting on SIGTERM does not abandon a descendant
 // that ignores SIGTERM, redirects its output, or outlives the shell naturally.
-func waitCommandWithProcessGroupCleanup(ctx context.Context, cmd *exec.Cmd) commandCleanupResult {
+func waitCommandWithProcessGroupCleanup(ctx context.Context, cmd *exec.Cmd) (result commandCleanupResult) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if cmd == nil || cmd.Process == nil || cmd.ProcessState != nil {
 		return commandCleanupResult{Err: errors.New("command cleanup requires a started, unwaited command")}
 	}
+	defer func() { verifyCommandOutputSettlement(cmd, &result) }()
 	if cmd.SysProcAttr == nil || !cmd.SysProcAttr.Setpgid || cmd.SysProcAttr.Pgid != 0 {
 		// Never infer group ownership from a process number alone.
 		_ = cmd.Process.Kill()
@@ -62,7 +63,12 @@ func waitCommandWithProcessGroupCleanup(ctx context.Context, cmd *exec.Cmd) comm
 				if errors.Is(err, os.ErrProcessDone) {
 					err = nil
 				}
-				return commandCleanupResult{Err: errors.Join(err, cmd.Wait()), Settled: err == nil}
+				// Signal delivery is not proof that every child stopped. Take
+				// a fresh census while the leader still pins the group ID.
+				settle, stop := context.WithTimeout(context.Background(), commandPipeDrainTimeout)
+				quietErr := waitCommandGroupQuiescent(settle, cmd.Process.Pid)
+				stop()
+				return commandCleanupResult{Err: errors.Join(err, quietErr, cmd.Wait()), Settled: err == nil && quietErr == nil}
 			}
 		}
 	case <-ctx.Done():
@@ -75,20 +81,24 @@ func waitCommandWithProcessGroupCleanup(ctx context.Context, cmd *exec.Cmd) comm
 		return commandCleanupResult{Err: errors.Join(observationErr, cmd.Wait())}
 	}
 
-	result := commandCleanupResult{Cancelled: true, SignalSent: "SIGTERM"}
+	result = commandCleanupResult{Cancelled: true, SignalSent: "SIGTERM"}
 	termErr := signalCommandProcessGroup(cmd, syscall.SIGTERM)
 	grace, cancel := context.WithTimeout(context.Background(), commandCancelGracePeriod)
-	quietErr := waitCommandGroupQuiescent(grace, cmd.Process.Pid)
+	_ = waitCommandGroupQuiescent(grace, cmd.Process.Pid)
 	cancel()
-	if quietErr != nil {
-		result.SignalSent = "SIGTERM,SIGKILL"
-		killErr := cancelCommandProcessGroup(cmd)
-		settle, stop := context.WithTimeout(context.Background(), commandPipeDrainTimeout)
-		quietErr = waitCommandGroupQuiescent(settle, cmd.Process.Pid)
-		stop()
-		if killErr != nil && !errors.Is(killErr, os.ErrProcessDone) {
-			result.Err = errors.Join(result.Err, fmt.Errorf("kill command group: %w", killErr))
-		}
+	// Even a successful graceful census is not atomic with fork/exit. Match
+	// the Unix waiter: close that race with a final signal to the still-pinned
+	// group, then observe quiescence again before granting replay permission.
+	result.SignalSent = "SIGTERM,SIGKILL"
+	killErr := cancelCommandProcessGroup(cmd)
+	if errors.Is(killErr, os.ErrProcessDone) {
+		killErr = nil
+	}
+	settle, stop := context.WithTimeout(context.Background(), commandPipeDrainTimeout)
+	quietErr := waitCommandGroupQuiescent(settle, cmd.Process.Pid)
+	stop()
+	if killErr != nil {
+		result.Err = errors.Join(result.Err, fmt.Errorf("kill command group: %w", killErr))
 	}
 	if termErr != nil && !errors.Is(termErr, os.ErrProcessDone) {
 		result.Err = errors.Join(result.Err, fmt.Errorf("terminate command group: %w", termErr))
@@ -104,7 +114,7 @@ func waitCommandWithProcessGroupCleanup(ctx context.Context, cmd *exec.Cmd) comm
 		observationErr = nil
 	}
 	result.Err = errors.Join(result.Err, ctx.Err(), observationErr, cmd.Wait())
-	result.Settled = quietErr == nil && observationErr == nil
+	result.Settled = killErr == nil && quietErr == nil && observationErr == nil
 	return result
 }
 
@@ -149,13 +159,20 @@ func waitCommandGroupQuiescent(ctx context.Context, pgid int) error {
 // remain in procfs (notably under container PID 1), so they are not live work.
 // This checks group membership, not parent PID: orphaned grandchildren have
 // already been reparented by the time the command leader exits.
+// A quiet result requires a complete, valid census containing the unreaped
+// leader in its expected group. Missing evidence must not authorize replay.
 func commandGroupHasLiveMembers(pgid int) (bool, error) {
+	if pgid <= 1 {
+		return false, fmt.Errorf("inspect command process group: invalid group ID %d", pgid)
+	}
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
 		return false, fmt.Errorf("inspect command process group: %w", err)
 	}
+	leaderSeen, alive := false, false
 	for _, entry := range entries {
-		if _, err := strconv.Atoi(entry.Name()); err != nil || !entry.IsDir() {
+		pid, err := strconv.Atoi(entry.Name())
+		if err != nil || !entry.IsDir() {
 			continue
 		}
 		data, err := os.ReadFile("/proc/" + entry.Name() + "/stat")
@@ -165,14 +182,51 @@ func commandGroupHasLiveMembers(pgid int) (bool, error) {
 			}
 			return false, fmt.Errorf("inspect process %s: %w", entry.Name(), err)
 		}
-		group, ok := parseProcStatPGID(data)
-		if !ok || group != pgid {
-			continue
+		group, processState, err := parseCommandGroupStat(data, pid)
+		if err != nil {
+			return false, err
 		}
-		fields := strings.Fields(string(data[strings.LastIndexByte(string(data), ')')+1:]))
-		if fields[0] != "Z" && fields[0] != "X" {
-			return true, nil
+		if pid == pgid {
+			if group != pgid {
+				return false, errors.New("inspect command process group: leader changed process group")
+			}
+			leaderSeen = true
+		}
+		if group == pgid && processState != "Z" && processState != "X" {
+			alive = true
 		}
 	}
-	return false, nil
+	if !leaderSeen {
+		return false, errors.New("inspect command process group: unreaped leader missing from procfs")
+	}
+	return alive, nil
+}
+
+// Validate identity and state as well as group membership. Silently skipping a
+// malformed row could hide a live member; accepting a different PID could turn
+// a restricted or inconsistent procfs view into false settlement evidence.
+func parseCommandGroupStat(data []byte, expectedPID int) (int, string, error) {
+	text := string(data)
+	open, close := strings.IndexByte(text, '('), strings.LastIndexByte(text, ')')
+	invalid := func() (int, string, error) {
+		return 0, "", fmt.Errorf("inspect process %d: malformed process-group evidence", expectedPID)
+	}
+	if open < 1 || close <= open {
+		return invalid()
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(text[:open]))
+	if err != nil || pid != expectedPID || pid <= 0 {
+		return invalid()
+	}
+	group, ok := parseProcStatPGID(data)
+	fields := strings.Fields(text[close+1:])
+	if !ok || group < 0 || len(fields) < 3 || len(fields[0]) != 1 {
+		return invalid()
+	}
+	parent, err := strconv.Atoi(fields[1])
+	if err != nil || parent < 0 {
+		return invalid()
+	}
+	// Unknown single-character states remain live, never proof of quiescence.
+	return group, fields[0], nil
 }

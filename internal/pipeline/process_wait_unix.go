@@ -21,13 +21,14 @@ const commandGroupPollInterval = 50 * time.Millisecond
 // A leader-first Cmd.Wait allows PID/PGID reuse and can abandon background
 // children. Unlike kill(-pgid, 0), ps distinguishes zombies from live work on
 // Darwin and the other Unix platforms without Linux's waitid/procfs protocol.
-func waitCommandWithProcessGroupCleanup(ctx context.Context, cmd *exec.Cmd) commandCleanupResult {
+func waitCommandWithProcessGroupCleanup(ctx context.Context, cmd *exec.Cmd) (result commandCleanupResult) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if cmd == nil || cmd.Process == nil || cmd.ProcessState != nil {
 		return commandCleanupResult{Err: errors.New("command cleanup requires a started, unwaited command")}
 	}
+	defer func() { verifyCommandOutputSettlement(cmd, &result) }()
 	if cmd.WaitDelay == 0 {
 		cmd.WaitDelay = commandPipeDrainTimeout
 	}
@@ -80,7 +81,7 @@ func waitCommandWithProcessGroupCleanup(ctx context.Context, cmd *exec.Cmd) comm
 		return reap(commandCleanupResult{Err: errors.Join(quietErr, killErr)})
 	}
 
-	result := commandCleanupResult{Cancelled: true, SignalSent: "SIGTERM"}
+	result = commandCleanupResult{Cancelled: true, SignalSent: "SIGTERM"}
 	termErr := signalCommandProcessGroup(cmd, syscall.SIGTERM)
 	grace, cancel := context.WithTimeout(context.Background(), commandCancelGracePeriod)
 	_ = waitCommandGroupQuiescent(grace, cmd.Process.Pid)

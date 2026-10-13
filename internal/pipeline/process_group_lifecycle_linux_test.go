@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -207,7 +208,7 @@ while :; do sleep 1; done
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	result := waitCommandWithProcessGroupCleanup(ctx, cmd)
-	if !result.Cancelled || !errors.Is(result.Err, context.Canceled) || result.SignalSent != "SIGTERM" {
+	if !result.Cancelled || !errors.Is(result.Err, context.Canceled) || result.SignalSent != "SIGTERM,SIGKILL" || !result.Settled {
 		t.Fatalf("cooperative cancellation: %+v", result)
 	}
 	if string(awaitGroupTestFile(t, filepath.Join(dir, "handled"))) != "handled" {
@@ -284,5 +285,266 @@ func TestCommandCleanupRejectsUnstartedAndReapedCommands(t *testing.T) {
 	}
 	if result := waitCommandWithProcessGroupCleanup(context.Background(), cmd); result.Err == nil {
 		t.Fatal("already reaped command accepted for numeric group signaling")
+	}
+}
+
+// The shell's exit status does not establish that inherited output descriptors
+// have closed. In particular, Cmd.Wait reports ExitError instead of ErrWaitDelay
+// when BOTH the command exits nonzero and its pipe-drain deadline expires.
+// Exercise the same capped captures used by executeCommand, then allow the
+// escaped child to produce a real side effect only AFTER cleanup returns.
+func TestCommandCleanupRefusesSettlementWithEscapedOutput(t *testing.T) {
+	setsid, err := exec.LookPath("setsid")
+	if err != nil {
+		t.Skip("setsid is required for the escaped-descriptor fixture")
+	}
+	for _, stream := range []string{"merged", "stderr"} {
+		for _, code := range []int{0, 7} {
+			t.Run(fmt.Sprintf("%s/exit_%d", stream, code), func(t *testing.T) {
+				dir := t.TempDir()
+				childScript := `printf '%s' "$$" > escaped.pid
+while [ ! -f release ]; do sleep 0.01; done
+printf late-effect > effect
+`
+				if stream == "stderr" {
+					childScript = "exec 1>/dev/null\n" + childScript
+				}
+				groupTestFile(t, dir, "escaped.sh", childScript)
+				cmd := exec.Command("/bin/sh", "-c", `"$1" /bin/sh escaped.sh &
+while [ ! -s escaped.pid ]; do sleep 0.01; done
+printf done
+exit "$2"
+`, "fixture", setsid, strconv.Itoa(code))
+				cmd.Dir = dir
+				stdout := newCappedWriter(2)
+				cmd.Stdout, cmd.Stderr = stdout, stdout
+				if stream == "stderr" {
+					cmd.Stderr = newCappedWriter(2)
+				}
+				configureCommandProcessGroup(cmd)
+				cmd.WaitDelay = 80 * time.Millisecond
+				if err := cmd.Start(); err != nil {
+					t.Fatal(err)
+				}
+				defer func() {
+					groupTestFile(t, dir, "release", "finish")
+					if cmd.ProcessState == nil {
+						_ = cancelCommandProcessGroup(cmd)
+						_ = cmd.Wait()
+					}
+				}()
+				pid, err := strconv.Atoi(string(awaitGroupTestFile(t, filepath.Join(dir, "escaped.pid"))))
+				if err != nil {
+					t.Fatal(err)
+				}
+				escaped, err := os.FindProcess(pid)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer escaped.Kill()
+				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+				defer cancel()
+				outcome := waitCommandWithProcessGroupCleanup(ctx, cmd)
+
+				groupTestFile(t, dir, "release", "finish")
+				if got := string(awaitGroupTestFile(t, filepath.Join(dir, "effect"))); got != "late-effect" {
+					t.Fatalf("escaped child did not perform the post-cleanup effect: %q", got)
+				}
+				if outcome.Settled {
+					t.Errorf("certified replay-safe settlement while escaped child could still act: %+v", outcome)
+				}
+				if outcome.Err == nil || !strings.Contains(outcome.Err.Error(), "output capture did not reach EOF") {
+					t.Errorf("missing capture-uncertainty error: %+v", outcome)
+				}
+				if outcome.Cancelled || stdout.String() != "do" || stdout.Total() != 4 || !stdout.Truncated() {
+					t.Errorf("changed capture/cancellation contract: %+v output=%q total=%d", outcome, stdout.String(), stdout.Total())
+				}
+				if code != 0 {
+					var exit *exec.ExitError
+					if !errors.As(outcome.Err, &exit) || exit.ExitCode() != code {
+						t.Errorf("lost exit code %d: %v", code, outcome.Err)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestCommandCleanupSettlesCompleteCappedOutput(t *testing.T) {
+	for _, code := range []int{0, 7} {
+		for _, merged := range []bool{false, true} {
+			for _, limit := range []int64{0, 3} {
+				t.Run(fmt.Sprintf("exit_%d/merged_%t/cap_%d", code, merged, limit), func(t *testing.T) {
+					stdout, stderr := newCappedWriter(limit), newCappedWriter(limit)
+					cmd := exec.Command("/bin/sh", "-c", `printf stdout; printf stderr >&2; exit "$1"`, "fixture", strconv.Itoa(code))
+					cmd.Stdout, cmd.Stderr = stdout, stderr
+					if merged {
+						stderr = stdout
+						cmd.Stderr = stderr
+					}
+					configureCommandProcessGroup(cmd)
+					if err := cmd.Start(); err != nil {
+						t.Fatal(err)
+					}
+					ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+					defer cancel()
+					outcome := waitCommandWithProcessGroupCleanup(ctx, cmd)
+					if !outcome.Settled || outcome.Cancelled {
+						t.Fatalf("complete captures must settle, even after truncation or exit failure: %+v", outcome)
+					}
+					if !stdout.outputCaptureComplete() || !stderr.outputCaptureComplete() {
+						t.Fatal("Cmd.Wait did not leave complete EOF evidence")
+					}
+					wantTotal := int64(6)
+					if merged {
+						wantTotal = 12
+					}
+					if stdout.Total() != wantTotal || stderr.Truncated() != (limit > 0) {
+						t.Fatalf("capture counts changed: stdout=%d stderr truncated=%t", stdout.Total(), stderr.Truncated())
+					}
+					if code == 0 && outcome.Err != nil {
+						t.Fatal(outcome.Err)
+					}
+					if code != 0 {
+						var exit *exec.ExitError
+						if !errors.As(outcome.Err, &exit) || exit.ExitCode() != code {
+							t.Fatalf("lost command exit: %v", outcome.Err)
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestCappedCaptureRetainsIncompleteReadEvidence(t *testing.T) {
+	writer := newCappedWriter(3)
+	reader, pipe := io.Pipe()
+	finished := make(chan error, 1)
+	go func() {
+		_, err := writer.ReadFrom(reader)
+		finished <- err
+	}()
+	if _, err := pipe.Write([]byte("partial")); err != nil {
+		t.Fatal(err)
+	}
+	if writer.outputCaptureComplete() {
+		t.Fatal("reaching the cap must not settle a still-open stream")
+	}
+	if err := pipe.CloseWithError(io.ErrUnexpectedEOF); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-finished; !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("lost read failure: %v", err)
+	}
+	if _, err := writer.ReadFrom(strings.NewReader("later")); err != nil {
+		t.Fatal(err)
+	}
+	if writer.outputCaptureComplete() || writer.String() != "par" || writer.Total() != 12 {
+		t.Fatalf("later EOF erased failure or changed accounting: complete=%t output=%q total=%d", writer.outputCaptureComplete(), writer.String(), writer.Total())
+	}
+	if err := reader.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCommandGroupInspectionRejectsMissingLeader(t *testing.T) {
+	cmd := exec.Command("/bin/sh", "-c", "exit 0")
+	configureCommandProcessGroup(cmd)
+	if err := cmd.Run(); err != nil {
+		t.Fatal(err)
+	}
+	if alive, err := commandGroupHasLiveMembers(cmd.Process.Pid); err == nil {
+		t.Fatalf("missing pinned leader was accepted as group evidence: alive=%t", alive)
+	}
+	for _, pgid := range []int{-1, 0} {
+		if _, err := commandGroupHasLiveMembers(pgid); err == nil {
+			t.Errorf("invalid group ID %d accepted as settlement evidence", pgid)
+		}
+	}
+}
+
+func TestCommandGroupInspectionRejectsForeignGroupLeader(t *testing.T) {
+	// This child inherits the test's group; its PID is not a group we own.
+	// Killing the child by its own handle is safe. Never signal its group.
+	cmd := exec.Command("/bin/sleep", "30")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }()
+	if alive, err := commandGroupHasLiveMembers(cmd.Process.Pid); err == nil {
+		t.Fatalf("foreign process-group membership accepted: alive=%t", alive)
+	}
+}
+
+func TestCommandGroupInspectionRetainsZombieLeaderEvidence(t *testing.T) {
+	cmd := startGroupTestCommand(t, t.TempDir(), "exit 0")
+	// Observe without reaping, exactly as the production waiter does.
+	if err := observeCommandExit(cmd.Process.Pid, 0); err != nil {
+		t.Fatal(err)
+	}
+	if alive, err := commandGroupHasLiveMembers(cmd.Process.Pid); err != nil || alive {
+		t.Fatalf("unreaped zombie leader should establish a quiet owned group: alive=%t err=%v", alive, err)
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := commandGroupHasLiveMembers(cmd.Process.Pid); err == nil {
+		t.Fatal("reaped leader must no longer establish group ownership")
+	}
+}
+
+func TestParseCommandGroupStatRequiresCompleteIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		input string
+		group int
+		state string
+		valid bool
+	}{
+		{"running", "42 (worker) R 1 42 0 0 0", 42, "R", true},
+		{"zombie", "42 (worker) Z 1 42 0", 42, "Z", true},
+		{"dead", "42 (worker) X 1 42 0", 42, "X", true},
+		{"comm parentheses and newline", "42 (name )\n(inner)) S 1 42 0", 42, "S", true},
+		{"unknown remains nonterminal", "42 (worker) ? 1 42 0", 42, "?", true},
+		{"foreign group", "42 (worker) R 1 80 0", 80, "R", true},
+		{"empty", "", 0, "", false},
+		{"wrong pid", "43 (worker) Z 1 42 0", 0, "", false},
+		{"missing pid", "(worker) Z 1 42", 0, "", false},
+		{"missing comm", "42 Z 1 42", 0, "", false},
+		{"missing state", "42 (worker) 1 42", 0, "", false},
+		{"truncated group", "42 (worker) Z 1", 0, "", false},
+		{"malformed state", "42 (worker) ZZ 1 42", 0, "", false},
+		{"malformed parent", "42 (worker) Z none 42", 0, "", false},
+		{"negative parent", "42 (worker) Z -1 42", 0, "", false},
+		{"malformed group", "42 (worker) Z 1 none", 0, "", false},
+		{"negative group", "42 (worker) Z 1 -1", 0, "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			group, state, err := parseCommandGroupStat([]byte(tc.input), 42)
+			if (err == nil) != tc.valid || group != tc.group || state != tc.state {
+				t.Fatalf("got group=%d state=%q err=%v, want group=%d state=%q valid=%t", group, state, err, tc.group, tc.state, tc.valid)
+			}
+		})
+	}
+}
+
+func TestCommandCleanupSettlesEmptyCapturedStreams(t *testing.T) {
+	for _, code := range []int{0, 7} {
+		t.Run(strconv.Itoa(code), func(t *testing.T) {
+			cmd := exec.Command("/bin/sh", "-c", "exit "+strconv.Itoa(code))
+			stdout, stderr := newCappedWriter(3), newCappedWriter(3)
+			cmd.Stdout, cmd.Stderr = stdout, stderr
+			configureCommandProcessGroup(cmd)
+			if err := cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			result := waitCommandWithProcessGroupCleanup(ctx, cmd)
+			if !result.Settled || result.Cancelled || !stdout.outputCaptureComplete() || !stderr.outputCaptureComplete() {
+				t.Fatalf("empty captures did not settle: %+v", result)
+			}
+		})
 	}
 }

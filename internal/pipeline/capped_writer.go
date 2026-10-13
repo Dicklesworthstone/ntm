@@ -25,6 +25,12 @@ type cappedWriter struct {
 	cap       int64
 	truncated bool
 	total     int64 // total bytes observed across all Write calls
+	// A command can leave inherited pipes open after its group exits. Keep
+	// capture completion separate from byte truncation and from Cmd.Wait's
+	// exit error, which can hide a simultaneous pipe-drain timeout.
+	readStarted bool
+	activeReads int
+	readFailed  bool
 }
 
 // newCappedWriter returns a writer that drops bytes once cap is reached.
@@ -53,6 +59,35 @@ func (w *cappedWriter) Write(p []byte) (int, error) {
 	}
 	w.buf.Write(p)
 	return len(p), nil
+}
+
+// ReadFrom records actual EOF from the command's output pipe. Continue reading
+// after reaching the byte cap: dropping retained bytes is not EOF evidence.
+// Hide both optional copy interfaces to avoid recursion and a source WriterTo
+// returning without the copy loop having observed the end of the stream.
+func (w *cappedWriter) ReadFrom(r io.Reader) (n int64, err error) {
+	w.mu.Lock()
+	w.readStarted = true
+	w.activeReads++
+	w.mu.Unlock()
+	complete := false
+	defer func() {
+		w.mu.Lock()
+		w.activeReads--
+		w.readFailed = w.readFailed || !complete
+		w.mu.Unlock()
+	}()
+	n, err = io.Copy(struct{ io.Writer }{w}, struct{ io.Reader }{r})
+	complete = err == nil
+	return n, err
+}
+
+// outputCaptureComplete is inspected only after Cmd.Wait has joined its copy
+// goroutines. A later successful copy must not erase an earlier incomplete one.
+func (w *cappedWriter) outputCaptureComplete() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.readStarted && w.activeReads == 0 && !w.readFailed
 }
 
 // Bytes returns a copy of the captured (possibly truncated) payload. The
@@ -99,3 +134,4 @@ func (w *cappedWriter) Truncated() bool {
 
 // ensureCappedWriterIsWriter is a compile-time assertion.
 var _ io.Writer = (*cappedWriter)(nil)
+var _ io.ReaderFrom = (*cappedWriter)(nil)
