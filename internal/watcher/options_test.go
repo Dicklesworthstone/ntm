@@ -1,17 +1,8 @@
 package watcher
 
-import (
-	"testing"
-	"time"
-)
+import "testing"
 
-// ---------------------------------------------------------------------------
-// DefaultFileReservationConfigValues
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// WithConflictCallback
-// ---------------------------------------------------------------------------
+// Filesystem option tests live beside the shared engine in internal/fs/watcher.
 
 func TestWithConflictCallback(t *testing.T) {
 	t.Parallel()
@@ -34,10 +25,6 @@ func TestWithConflictCallback(t *testing.T) {
 		t.Error("expected callback to be invoked")
 	}
 }
-
-// ---------------------------------------------------------------------------
-// WithCaptureLines
-// ---------------------------------------------------------------------------
 
 func TestWithCaptureLines(t *testing.T) {
 	t.Parallel()
@@ -70,50 +57,6 @@ func TestWithCaptureLines(t *testing.T) {
 		})
 	}
 }
-
-// ---------------------------------------------------------------------------
-// WithDebounceDuration
-// ---------------------------------------------------------------------------
-
-func TestWithDebounceDuration(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name       string
-		dur        time.Duration
-		wantNonNil bool
-	}{
-		{"positive_duration", 500 * time.Millisecond, true},
-		{"zero_ignored", 0, false},
-		{"negative_ignored", -1 * time.Second, false},
-		{"one_second", time.Second, true},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			w := &Watcher{}
-			opt := WithDebounceDuration(tc.dur)
-			opt(w)
-
-			if tc.wantNonNil && w.debouncer == nil {
-				t.Error("expected debouncer to be set")
-			}
-			if !tc.wantNonNil && w.debouncer != nil {
-				t.Error("expected debouncer to remain nil")
-			}
-			if tc.wantNonNil && w.debouncer != nil {
-				if w.debouncer.Duration() != tc.dur {
-					t.Errorf("debouncer.Duration() = %v, want %v", w.debouncer.Duration(), tc.dur)
-				}
-			}
-		})
-	}
-}
-
-// ---------------------------------------------------------------------------
-// NewFileReservationWatcherFromConfig
-// ---------------------------------------------------------------------------
 
 func TestNewFileReservationWatcherFromConfig_Disabled(t *testing.T) {
 	t.Parallel()

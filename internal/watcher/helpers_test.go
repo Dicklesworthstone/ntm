@@ -7,43 +7,8 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
-// Test-only helpers replicating removed production accessors/options so tests
-// can exercise live behavior (polling fallback, watch topology, reservations).
-
-// WithErrorHandler sets the error handler.
-func WithErrorHandler(handler ErrorHandler) Option {
-	return func(w *Watcher) {
-		w.errorHandler = handler
-	}
-}
-
-// WithPolling forces polling mode so tests can exercise the live polling
-// fallback deterministically.
-func WithPolling(force bool) Option {
-	return func(w *Watcher) {
-		w.forcePoll = force
-		if force {
-			w.pollMode = true
-		}
-	}
-}
-
-// WatchedPaths returns a slice of all currently watched paths.
-func (w *Watcher) WatchedPaths() []string {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	paths := make([]string, 0, len(w.watchedPaths))
-	for p := range w.watchedPaths {
-		paths = append(paths, p)
-	}
-	return paths
-}
-
-// Duration returns the debounce duration.
-func (d *Debouncer) Duration() time.Duration {
-	return d.duration
-}
+// Filesystem-only test helpers moved with their implementation to
+// internal/fs/watcher. Reservation helpers remain at the orchestration layer.
 
 // OnFileEdit handles detected file edits by reserving files.
 func (w *FileReservationWatcher) OnFileEdit(ctx context.Context, sessionName string, pane tmux.Pane, files []string) {

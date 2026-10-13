@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/Dicklesworthstone/ntm/internal/watcher"
+	"github.com/Dicklesworthstone/ntm/internal/fs/watcher"
 )
 
 // Watch starts watching the selected global config file and any project config
