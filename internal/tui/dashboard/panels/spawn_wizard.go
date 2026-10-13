@@ -348,7 +348,7 @@ func (sw *SpawnWizard) initCountsForm() {
 				Validate(validateAgentCount),
 			huh.NewInput().
 				Title("Antigravity agents (agy)").
-				Description("Number of Google Antigravity agents (model pinned to Gemini 3.8 Flash (High))").
+				Description("Number of Google Antigravity agents (model pinned to Gemini 4 Argon (High))").
 				Placeholder("0").
 				Value(&sw.agyStr).
 				Validate(validateAgentCount),

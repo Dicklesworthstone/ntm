@@ -3719,7 +3719,7 @@ func contextPaneModel(pane tmux.Pane, agentType string) string {
 
 // contextPaneLimit is the context window --robot-context budgets a pane
 // against. A recorded launch model the model registry does not know (agy's
-// pinned "Gemini 3.8 Flash (High)", an `opus[1m]` alias, an OpenCode
+// pinned "Gemini 4 Argon (High)", an `opus[1m]` alias, an OpenCode
 // provider/model) would otherwise fall to the registry's generic default
 // rather than the family limit detectModel's guess resolves to: an agy pane
 // dropped from gemini's 1M window to 128K and read as nearly eight times

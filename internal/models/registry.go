@@ -77,8 +77,10 @@ var ContextLimits = map[string]int{
 	"gemini-1.5-flash":      1000000,
 	"gemini-3-pro-preview":  1000000,
 	"gemini-3-flash":        1000000,
-	"gemini-3.8-flash":      1000000,
-	"gemini-pro":            32000,
+	// Gemini 4 Argon: 1M per Artificial Analysis; Google had not published
+	// the input limit when agy was pinned to it (2026-10-13).
+	"gemini-4-argon": 1000000,
+	"gemini-pro":     32000,
 }
 
 // Aliases maps short names and common variants to canonical model names.
@@ -383,7 +385,7 @@ var agentTypeDefaultModels = map[string]string{
 	"cc":       "claude-opus-4",
 	"cod":      "gpt-5-codex",
 	"gmi":      "gemini-2.0-flash",
-	"agy":      "gemini-3.8-flash", // Antigravity pins Gemini 3.8 Flash
+	"agy":      "gemini-4-argon", // Antigravity pins Gemini 4 Argon (High)
 	"cursor":   "claude-3.5-sonnet",
 	"windsurf": "claude-3.5-sonnet",
 	"aider":    "claude-3.5-sonnet",

@@ -4311,7 +4311,7 @@ func TestGetUsageLevel(t *testing.T) {
 // limit of the title heuristic; known ones use their own.
 func TestContextPaneLimitKeepsFamilyLimitForUnknownLaunchModel(t *testing.T) {
 	agy := tmux.Pane{ID: "%1", Title: "flywheel__agy_1"}
-	if got, want := contextPaneLimit("Gemini 3.8 Flash (High)", agy, "antigravity"), getContextLimit("gemini"); got != want {
+	if got, want := contextPaneLimit("Gemini 4 Argon (High)", agy, "antigravity"), getContextLimit("gemini"); got != want {
 		t.Fatalf("agy pane limit = %d, want gemini family limit %d", got, want)
 	}
 	cc := tmux.Pane{ID: "%2", Title: "flywheel__cc_1"}

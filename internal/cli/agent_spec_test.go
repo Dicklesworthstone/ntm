@@ -525,7 +525,7 @@ func TestAgentSpecsValue_StringDelegatesToSpecs(t *testing.T) {
 func TestAgentSpecsValue_AgyRejectsModelOverride(t *testing.T) {
 	for _, value := range []string{
 		"1:gemini-3.1-pro-high",
-		"1:Gemini 3.8 Flash (High)",
+		"1:Gemini 4 Argon (High)",
 	} {
 		var specs AgentSpecs
 		err := NewAgentSpecsValue(AgentTypeAntigravity, &specs).Set(value)
