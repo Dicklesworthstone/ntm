@@ -104,12 +104,57 @@ func NewDependencyGraph(workflow *Workflow) *DependencyGraph {
 	}
 
 	addSteps(workflow.Steps, "")
+	g.inheritContainerDependencies()
 	for id, remaining := range g.remainingDeps {
 		if remaining == 0 {
 			g.addReady(id)
 		}
 	}
 	return g
+}
+
+// A container, not the outer scheduler, dispatches its inline children. A
+// child's edge to a top-level producer must therefore gate every enclosing
+// container as well; marking a flat child placeholder ready does not protect
+// the actual dispatch. Keep these effective edges only in the graph so frozen
+// workflow definitions and command/delivery hashes remain unchanged.
+func (g *DependencyGraph) inheritContainerDependencies() {
+	ids := make([]string, 0, len(g.container))
+	for id := range g.container {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		for _, dep := range g.edges[id] {
+			if _, exists := g.steps[dep]; !exists || g.container[dep] != "" {
+				// Missing/cross-container references retain their existing
+				// validation errors. Sibling edges stay inside their body.
+				continue
+			}
+			visited := make(map[string]bool)
+			for owner := g.container[id]; owner != "" && !visited[owner]; owner = g.container[owner] {
+				visited[owner] = true
+				found := false
+				for _, existing := range g.edges[owner] {
+					if existing == dep {
+						found = true
+						break
+					}
+				}
+				if found {
+					continue
+				}
+				// edges initially shares the author's slice, which can have
+				// spare capacity. Copy before extending; never mutate it.
+				g.edges[owner] = append(append([]string(nil), g.edges[owner]...), dep)
+				g.inDegree[owner]++
+				g.remainingDeps[owner]++
+				g.reverse[dep] = append(g.reverse[dep], owner)
+				// Deliberately keep an edge back to the owning root. It is a
+				// real execution cycle and the ordinary validator rejects it.
+			}
+		}
+	}
 }
 
 // Validate checks the dependency graph for errors
