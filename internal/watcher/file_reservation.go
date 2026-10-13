@@ -44,6 +44,7 @@ type PaneReservation struct {
 	// A path alone must not suppress acquisition after its lease disappears.
 	leases         map[int]agentmail.FileReservation
 	renewalPending bool
+	nextHeartbeat  time.Time
 }
 
 type pendingReservationEdits struct {
@@ -76,29 +77,31 @@ type reservationWatcherClient interface {
 
 // FileReservationWatcher monitors pane output and automatically reserves files.
 type FileReservationWatcher struct {
-	client             reservationWatcherClient
-	projectDir         string
-	agentName          string // legacy fallback only; real name comes from agentNameResolver
-	sessionFilter      string
-	pollInterval       time.Duration
-	idleTimeout        time.Duration
-	reservationTTL     time.Duration
-	captureLines       int
-	autoReserve        bool
-	extendOnActivity   bool
-	listAllPanes       func(ctx context.Context) (map[string][]tmux.Pane, error)
-	capturePaneOutput  func(ctx context.Context, target string, lines int) (string, error)
-	agentNameResolver  AgentNameResolver // paneID -> registered agent name, or "" to skip
-	paneOutputs        map[string]string // paneID -> last captured output
-	pendingEdits       map[string]*pendingReservationEdits
-	activeReservations map[string]*PaneReservation // paneID -> reservation
-	lifecycleMu        sync.Mutex
-	mu                 sync.Mutex
-	stopCh             chan struct{}
-	cancel             context.CancelFunc // Cancels in-flight polling I/O before Stop joins.
-	wg                 sync.WaitGroup
-	debug              bool
-	conflictCallback   ConflictCallback // Called when conflicts are detected
+	client               reservationWatcherClient
+	projectDir           string
+	agentName            string // legacy fallback only; real name comes from agentNameResolver
+	sessionFilter        string
+	pollInterval         time.Duration
+	idleTimeout          time.Duration
+	reservationTTL       time.Duration
+	captureLines         int
+	autoReserve          bool
+	extendOnActivity     bool
+	listAllPanes         func(ctx context.Context) (map[string][]tmux.Pane, error)
+	capturePaneOutput    func(ctx context.Context, target string, lines int) (string, error)
+	agentNameResolver    AgentNameResolver // paneID -> registered agent name, or "" to skip
+	paneOutputs          map[string]string // paneID -> last captured output
+	paneActivity         map[string]reservationActivityObservation
+	classifyPaneActivity func(tmux.Pane, string, time.Time) reservationActivity
+	pendingEdits         map[string]*pendingReservationEdits
+	activeReservations   map[string]*PaneReservation // paneID -> reservation
+	lifecycleMu          sync.Mutex
+	mu                   sync.Mutex
+	stopCh               chan struct{}
+	cancel               context.CancelFunc // Cancels in-flight polling I/O before Stop joins.
+	wg                   sync.WaitGroup
+	debug                bool
+	conflictCallback     ConflictCallback // Called when conflicts are detected
 }
 
 // FileReservationWatcherOption configures a FileReservationWatcher.
@@ -295,6 +298,7 @@ func (w *FileReservationWatcher) Stop() {
 	w.mu.Lock()
 	clear(w.pendingEdits)
 	clear(w.paneOutputs)
+	clear(w.paneActivity)
 	w.mu.Unlock()
 
 	// A started worker owns exit cleanup, including parent cancellation.
@@ -336,6 +340,7 @@ func (w *FileReservationWatcher) checkPaneOutputs(ctx context.Context) {
 	if ctx.Err() != nil {
 		return
 	}
+	w.invalidateReservationActivity("")
 	listAllPanes := w.listAllPanes
 	if listAllPanes == nil {
 		listAllPanes = tmux.DefaultClient.GetAllPanesContext
@@ -385,6 +390,7 @@ func (w *FileReservationWatcher) checkPaneOutputs(ctx context.Context) {
 			delete(w.paneOutputs, paneID)
 		}
 	}
+	w.reconcileReservationActivityLocked(livePanes, time.Now())
 	w.mu.Unlock()
 }
 
@@ -399,6 +405,7 @@ func (w *FileReservationWatcher) checkPaneForFileEdits(ctx context.Context, sess
 	}
 
 	// Capture recent output
+	w.invalidateReservationActivity(pane.ID)
 	output, err := capturePaneOutput(ctx, pane.ID, w.captureLines)
 	if ctx.Err() != nil {
 		return
@@ -412,13 +419,14 @@ func (w *FileReservationWatcher) checkPaneForFileEdits(ctx context.Context, sess
 
 	now := time.Now()
 	changed := w.recordPaneOutput(pane.ID, output, now)
+	heartbeat := w.observeReservationActivity(pane, output, now)
 	w.mu.Lock()
 	needsRenewal := false
 	if tracked := w.activeReservations[pane.ID]; tracked != nil {
 		needsRenewal = tracked.renewalPending && now.Sub(tracked.LastActivity) <= w.idleTimeout
 	}
 	w.mu.Unlock()
-	if w.extendOnActivity && (changed || needsRenewal) {
+	if w.extendOnActivity && (changed || needsRenewal || heartbeat) {
 		w.renewPaneReservation(ctx, pane.ID)
 	}
 
@@ -630,6 +638,11 @@ func (w *FileReservationWatcher) renewPaneReservation(ctx context.Context, paneI
 	if currentName := w.resolveAgentName(paneID); currentName != "" && currentName != copy.AgentName {
 		return // A replacement identity cannot extend its predecessor's leases.
 	}
+	w.mu.Lock()
+	if current := w.activeReservations[paneID]; current != nil && current.AgentName == copy.AgentName {
+		current.nextHeartbeat = time.Now().Add(w.reservationTTL / 3)
+	}
+	w.mu.Unlock()
 
 	result, err := w.client.RenewReservations(ctx, agentmail.RenewReservationsOptions{
 		ProjectKey:     w.projectDir,
@@ -658,6 +671,7 @@ func (w *FileReservationWatcher) renewPaneReservation(ctx context.Context, paneI
 }
 
 func (w *FileReservationWatcher) recordPaneOutput(paneID string, output string, now time.Time) bool {
+	name := w.resolveAgentName(paneID)
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -666,7 +680,7 @@ func (w *FileReservationWatcher) recordPaneOutput(paneID string, output string, 
 	}
 	w.paneOutputs[paneID] = output
 
-	if reservation, exists := w.activeReservations[paneID]; exists {
+	if reservation, exists := w.activeReservations[paneID]; exists && reservation.AgentName == name {
 		reservation.LastOutput = output
 		reservation.LastActivity = now
 	}
@@ -794,7 +808,8 @@ func (w *FileReservationWatcher) releaseIdleReservations(ctx context.Context) {
 
 	w.mu.Lock()
 	for _, reservation := range w.activeReservations {
-		if now.Sub(reservation.LastActivity) > w.idleTimeout {
+		if now.Sub(reservation.LastActivity) > w.idleTimeout &&
+			(len(reservation.ReservationID) == 0 || w.reservationIdleReleaseAllowedLocked(reservation.PaneID, now)) {
 			idleReservations = append(idleReservations, clonePaneReservation(*reservation))
 		}
 	}
