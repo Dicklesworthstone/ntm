@@ -4756,7 +4756,7 @@ func init() {
 	rootCmd.Flags().StringVar(&robotSpawnCC, "spawn-cc", "", "Claude Code agents to spawn: count[:model[:effort]] (effort also as model@effort). Use with --robot-spawn. Example: --spawn-cc=2 or --spawn-cc=2:opus:high")
 	rootCmd.Flags().StringVar(&robotSpawnCod, "spawn-cod", "", "Codex CLI agents to spawn: count[:model[:effort]] (effort also as model@effort). Use with --robot-spawn. Example: --spawn-cod=1 or --spawn-cod=8:gpt-5.3-codex:high")
 	rootCmd.Flags().StringVar(&robotSpawnGmi, "spawn-gmi", "", "Gemini CLI agents to spawn: count[:model]. Use with --robot-spawn. Example: --spawn-gmi=1")
-	rootCmd.Flags().StringVar(&robotSpawnAgy, "spawn-agy", "", "Antigravity CLI agents to spawn: count (model is pinned to Gemini 3.8 Flash (High)). Use with --robot-spawn. Example: --spawn-agy=1")
+	rootCmd.Flags().StringVar(&robotSpawnAgy, "spawn-agy", "", "Antigravity CLI agents to spawn: count (model is pinned to Gemini 4 Argon (High)). Use with --robot-spawn. Example: --spawn-agy=1")
 	rootCmd.Flags().StringVar(&robotSpawnGrok, "spawn-grok", "", "Grok Build agents to spawn: count[:model[:effort]] (effort also as model@effort). Use with --robot-spawn. Example: --spawn-grok=1")
 	rootCmd.Flags().StringVar(&robotSpawnOmp, "spawn-omp", "", "Oh My Pi (omp) agents to spawn: count[:model[:effort]] (effort maps to omp --thinking; no model = omp's own default). Use with --robot-spawn. Example: --spawn-omp=8 or --spawn-omp=2:opus:high")
 	rootCmd.Flags().StringVar(&robotSpawnOc, "spawn-oc", "", "OpenCode (oc) agents to spawn: count[:model] (model is OpenCode's provider/model; no model = OpenCode's own default). Use with --robot-spawn. Example: --spawn-oc=2 or --spawn-oc=1:opencode/big-pickle")

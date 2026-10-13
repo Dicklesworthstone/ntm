@@ -13,7 +13,7 @@ import (
 // antigravityModel is the model the Antigravity CLI (agy) must be pinned to on
 // every (re)launch. The agy resume path is invalid without an explicit --model,
 // and the migration mandate fixes it to this exact human-readable name.
-const antigravityModel = "Gemini 3.8 Flash (High)"
+const antigravityModel = "Gemini 4 Argon (High)"
 
 // ResumeLaunchOptions provides evidence for NTM-generated launch syntax that
 // contains a file expansion. The caller must verify the recorded prompt file's
