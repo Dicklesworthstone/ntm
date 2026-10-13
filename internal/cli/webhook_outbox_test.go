@@ -131,3 +131,72 @@ func TestWebhookOutboxCommandIsRegistered(t *testing.T) {
 	}
 	t.Fatal("webhook-outbox is not reachable from ntm")
 }
+
+func TestWebhookOutboxArchiveCommandPreservesFailedReceipt(t *testing.T) {
+	oldConfig := cfg
+	cfg = config.Default()
+	t.Cleanup(func() { cfg = oldConfig })
+	project := t.TempDir()
+	t.Setenv("NTM_WEBHOOK_OUTBOX_DIR", filepath.Join(t.TempDir(), "outbox"))
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer server.Close()
+	if err := os.WriteFile(filepath.Join(project, ".ntm.yaml"), []byte("webhooks:\n  - name: archive\n    url: "+server.URL+"\n    events: [agent.error]\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	redactCfg := cfg.Redaction.ToRedactionLibConfig()
+	m, err := webhook.NewProjectWebhookManager(project, &redactCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = m.Stop() })
+	if err := m.Dispatch(webhook.Event{ID: "cli-archive", Type: "agent.error", Message: "retained evidence"}); err != nil {
+		t.Fatal(err)
+	}
+	var entry webhook.OutboxEntry
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		snapshot, err := m.ListOutbox()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(snapshot.Entries) == 1 && snapshot.Entries[0].State == "failed" {
+			entry = snapshot.Entries[0]
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("receiver failure was not retained")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := m.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	command := newWebhookOutboxCmd()
+	var output bytes.Buffer
+	command.SetOut(&output)
+	command.SetArgs([]string{"archive", entry.Record, "--revision", entry.Revision, "--project", project})
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	var result webhook.OutboxArchive
+	if err := json.Unmarshal(output.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Revision != entry.Revision || result.DeliveryID != entry.DeliveryID || result.ArchivedAt.IsZero() {
+		t.Fatalf("archive acknowledgement = %+v", result)
+	}
+	if _, err := os.Stat(result.Path); err != nil {
+		t.Fatalf("archived receipt missing: %v", err)
+	}
+	snapshot, err := m.ListOutbox()
+	if err != nil || len(snapshot.Entries) != 0 || requests.Load() != 1 {
+		t.Fatalf("archive did not reclaim the slot without sending: %+v %v", snapshot, err)
+	}
+}

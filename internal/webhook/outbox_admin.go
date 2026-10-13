@@ -1,11 +1,13 @@
 package webhook
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -26,19 +28,20 @@ type outboxRecovery struct {
 // OutboxEntry intentionally excludes payloads, messages, credentials and raw
 // errors. Revision is an optimistic concurrency token, not an authenticity proof.
 type OutboxEntry struct {
-	Record       string    `json:"record"`
-	Revision     string    `json:"revision,omitempty"`
-	DeliveryID   string    `json:"delivery_id,omitempty"`
-	WebhookID    string    `json:"webhook_id,omitempty"`
-	Session      string    `json:"session,omitempty"`
-	EventType    string    `json:"event_type,omitempty"`
-	State        string    `json:"state"`
-	BlockedBy    string    `json:"blocked_by,omitempty"`
-	Attempt      int       `json:"attempt"`
-	Recoveries   int       `json:"recoveries"`
-	NextRetry    time.Time `json:"next_retry,omitempty"`
-	LastStatus   int       `json:"last_status,omitempty"`
-	RetryAllowed bool      `json:"retry_allowed"`
+	Record         string    `json:"record"`
+	Revision       string    `json:"revision,omitempty"`
+	DeliveryID     string    `json:"delivery_id,omitempty"`
+	WebhookID      string    `json:"webhook_id,omitempty"`
+	Session        string    `json:"session,omitempty"`
+	EventType      string    `json:"event_type,omitempty"`
+	State          string    `json:"state"`
+	BlockedBy      string    `json:"blocked_by,omitempty"`
+	Attempt        int       `json:"attempt"`
+	Recoveries     int       `json:"recoveries"`
+	NextRetry      time.Time `json:"next_retry,omitempty"`
+	LastStatus     int       `json:"last_status,omitempty"`
+	RetryAllowed   bool      `json:"retry_allowed"`
+	ArchiveAllowed bool      `json:"archive_allowed"`
 }
 
 // OutboxSnapshot is a read-only, per-record snapshot, not a transaction over
@@ -137,6 +140,7 @@ func (m *WebhookManager) describeOutbox(key string, record outboxRecord) OutboxE
 		entry.BlockedBy = "incomplete_failure_evidence"
 	}
 	entry.RetryAllowed = record.Failed && entry.BlockedBy == ""
+	entry.ArchiveAllowed = record.Failed
 	return entry
 }
 
@@ -236,4 +240,231 @@ func (m *WebhookManager) RetryOutbox(key, revision string) (OutboxEntry, error) 
 	default:
 	}
 	return m.describeOutbox(key, record), nil
+}
+
+// OutboxArchive confirms that a terminal receipt and its recovery history are
+// retained outside active capacity. Archiving never sends or edits the receipt.
+type OutboxArchive struct {
+	Record     string    `json:"record"`
+	Revision   string    `json:"revision"`
+	DeliveryID string    `json:"delivery_id"`
+	ArchivedAt time.Time `json:"archived_at"`
+	Path       string    `json:"path"`
+}
+
+type outboxArchiveManifest struct {
+	Version    int       `json:"version"`
+	Record     string    `json:"record"`
+	Revision   string    `json:"revision"`
+	ArchivedAt time.Time `json:"archived_at"`
+}
+
+// ArchiveOutbox reclaims active receipt capacity only after the exact inspected
+// terminal record and an archive manifest have durable directory entries. A hard
+// link preserves every source byte and avoids a remove-before-copy crash window.
+// Both the admission lock and the sender's shard lock are held. Retrying after a
+// crash is safe; a conflicting archive or a newly admitted source is never replaced.
+func (m *WebhookManager) ArchiveOutbox(key, revision string) (OutboxArchive, error) {
+	var result OutboxArchive
+	if !validOutboxKey(key) || len(revision) != 64 || strings.ToLower(revision) != revision {
+		return result, errors.New("archive requires a record name and revision from webhook-outbox list")
+	}
+	if _, err := hex.DecodeString(revision); err != nil {
+		return result, errors.New("invalid webhook outbox revision")
+	}
+	o, err := m.administrativeOutbox()
+	if err != nil {
+		return result, err
+	}
+	admission, err := openOutboxLock(filepath.Join(o.dir, "admission.lock"))
+	if err != nil {
+		return result, err
+	}
+	defer admission.Close()
+	lock, err := o.lockKey(key)
+	if err != nil {
+		return result, err
+	}
+	defer lock.Close()
+	record, err := o.read(key)
+	missing := errors.Is(err, os.ErrNotExist)
+	if err != nil && !missing {
+		return result, err
+	}
+	if !missing && (outboxRevision(record) != revision || !record.Failed) {
+		return result, errors.New("only the inspected, unchanged failed webhook receipt can be archived")
+	}
+	archiveRoot, archiveInfo, err := privateArchiveDirectory(o.dir, "archived", !missing)
+	if err != nil {
+		return result, err
+	}
+	dir, dirInfo, err := privateArchiveDirectory(archiveRoot, revision, !missing)
+	if err != nil {
+		return result, err
+	}
+	source := filepath.Join(o.dir, key)
+	target := filepath.Join(dir, key)
+	if !missing {
+		if err := os.Link(source, target); err != nil && !errors.Is(err, os.ErrExist) {
+			return result, fmt.Errorf("preserve webhook receipt before archival: %w", err)
+		}
+		if err := verifyArchivedSource(source, target); err != nil {
+			return result, err
+		}
+	}
+	archive, err := openExistingOutbox(dir, 0)
+	if err != nil {
+		return result, err
+	}
+	preserved, err := archive.read(key)
+	if err != nil || !preserved.Failed || outboxRevision(preserved) != revision {
+		return result, errors.New("archive does not contain the inspected terminal receipt; source retained")
+	}
+	manifest, err := ensureArchiveManifest(dir, key, revision, !missing)
+	if err != nil {
+		return result, err
+	}
+	// Make the retained data and the complete path to it durable BEFORE unlink.
+	file, err := os.Open(target)
+	if err != nil {
+		return result, err
+	}
+	err = file.Sync()
+	closeErr := file.Close()
+	if err != nil || closeErr != nil {
+		return result, errors.Join(err, closeErr)
+	}
+	for _, path := range []string{dir, archiveRoot, o.dir} {
+		if err := syncOutboxDir(path); err != nil {
+			return result, fmt.Errorf("sync webhook archive before removing active receipt: %w", err)
+		}
+	}
+	if err := o.checkRoot(); err != nil {
+		return result, err
+	}
+	for path, original := range map[string]os.FileInfo{archiveRoot: archiveInfo, dir: dirInfo} {
+		current, err := os.Lstat(path)
+		if err != nil || !current.IsDir() || !os.SameFile(original, current) || current.Mode().Perm()&0077 != 0 {
+			return result, errors.New("webhook archive directory identity or privacy changed; source retained")
+		}
+	}
+	if !missing {
+		current, err := o.read(key)
+		if err != nil || !current.Failed || outboxRevision(current) != revision {
+			return result, errors.New("active webhook receipt changed during archival; inspect again")
+		}
+		if err := verifyArchivedSource(source, target); err != nil {
+			return result, err
+		}
+		if err := os.Remove(source); err != nil {
+			return result, fmt.Errorf("archive preserved but active receipt removal failed: %w", err)
+		}
+		if err := syncOutboxDir(o.dir); err != nil {
+			return result, fmt.Errorf("archive preserved but capacity reclamation durability is uncertain: %w", err)
+		}
+	}
+	return OutboxArchive{Record: key, Revision: revision, DeliveryID: preserved.ID,
+		ArchivedAt: manifest.ArchivedAt, Path: target}, nil
+}
+
+func verifyArchivedSource(source, target string) error {
+	active, err := os.Lstat(source)
+	if err != nil {
+		return err
+	}
+	preserved, err := os.Lstat(target)
+	if err != nil {
+		return err
+	}
+	if !active.Mode().IsRegular() || !preserved.Mode().IsRegular() ||
+		active.Mode().Perm()&0077 != 0 || preserved.Mode().Perm()&0077 != 0 || !os.SameFile(active, preserved) {
+		return errors.New("archive conflicts with active receipt identity; source retained")
+	}
+	return nil
+}
+
+func privateArchiveDirectory(parent, name string, create bool) (string, os.FileInfo, error) {
+	dir := filepath.Join(parent, name)
+	if create {
+		if err := os.Mkdir(dir, 0700); err != nil && !errors.Is(err, os.ErrExist) {
+			return "", nil, err
+		}
+	}
+	info, err := os.Lstat(dir)
+	if err != nil {
+		return "", nil, err
+	}
+	if !info.IsDir() || info.Mode().Perm()&0077 != 0 {
+		return "", nil, errors.New("webhook archive must use private real directories, not symlinks")
+	}
+	return dir, info, nil
+}
+
+func readArchiveManifest(path, key, revision string) (outboxArchiveManifest, error) {
+	var manifest outboxArchiveManifest
+	info, err := os.Lstat(path)
+	if err != nil {
+		return manifest, err
+	}
+	if !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 || info.Size() > 4096 {
+		return manifest, errors.New("invalid webhook archive manifest file")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return manifest, err
+	}
+	defer file.Close()
+	opened, err := file.Stat()
+	if err != nil || !os.SameFile(info, opened) {
+		return manifest, errors.New("webhook archive manifest identity changed")
+	}
+	data, err := io.ReadAll(io.LimitReader(file, 4097))
+	if err != nil || len(data) > 4096 {
+		return manifest, errors.New("cannot read bounded webhook archive manifest")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&manifest); err != nil {
+		return manifest, errors.New("invalid webhook archive manifest")
+	}
+	if decoder.Decode(new(interface{})) != io.EOF || manifest.Version != 1 || manifest.Record != key ||
+		manifest.Revision != revision || manifest.ArchivedAt.IsZero() {
+		return manifest, errors.New("webhook archive manifest does not match the inspected receipt")
+	}
+	// An interrupted previous archive may have published the manifest without
+	// syncing its directory yet. Every successful retry re-establishes durability.
+	return manifest, file.Sync()
+}
+
+func ensureArchiveManifest(dir, key, revision string, create bool) (outboxArchiveManifest, error) {
+	path := filepath.Join(dir, "manifest.json")
+	manifest, err := readArchiveManifest(path, key, revision)
+	if err == nil || !errors.Is(err, os.ErrNotExist) || !create {
+		return manifest, err
+	}
+	manifest = outboxArchiveManifest{Version: 1, Record: key, Revision: revision, ArchivedAt: time.Now().UTC()}
+	data, err := json.Marshal(manifest)
+	if err != nil {
+		return manifest, err
+	}
+	file, err := os.CreateTemp(dir, ".manifest-*")
+	if err != nil {
+		return manifest, err
+	}
+	defer func() { _ = file.Close(); _ = os.Remove(file.Name()) }()
+	if _, err := file.Write(data); err != nil {
+		return manifest, err
+	}
+	if err := file.Sync(); err != nil {
+		return manifest, err
+	}
+	if err := file.Close(); err != nil {
+		return manifest, err
+	}
+	// Publish without replacing any existing evidence, including a symlink or
+	// malformed manifest. A failed write leaves the active receipt untouched.
+	if err := os.Link(file.Name(), path); err != nil && !errors.Is(err, os.ErrExist) {
+		return manifest, err
+	}
+	return readArchiveManifest(path, key, revision)
 }

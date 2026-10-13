@@ -343,7 +343,12 @@ func TestOutboxRecoveryProcessHelper(t *testing.T) {
 	if err := m.Register(outboxTestWebhook(os.Getenv("NTM_OUTBOX_ADMIN_URL"))); err != nil {
 		t.Fatal(err)
 	}
-	_, err := m.RetryOutbox(os.Getenv("NTM_OUTBOX_ADMIN_KEY"), os.Getenv("NTM_OUTBOX_ADMIN_REVISION"))
+	var err error
+	if os.Getenv("NTM_OUTBOX_ADMIN_ACTION") == "archive" {
+		_, err = m.ArchiveOutbox(os.Getenv("NTM_OUTBOX_ADMIN_KEY"), os.Getenv("NTM_OUTBOX_ADMIN_REVISION"))
+	} else {
+		_, err = m.RetryOutbox(os.Getenv("NTM_OUTBOX_ADMIN_KEY"), os.Getenv("NTM_OUTBOX_ADMIN_REVISION"))
+	}
 	if err == nil {
 		fmt.Println("RECOVERY_AUTHORIZED")
 	} else {
@@ -430,5 +435,322 @@ func TestTerminalWebhookFailureRetainsCooldownEvidence(t *testing.T) {
 	_, record, _ := readOnlyOutboxRecord(t, dir)
 	if record.NextRetry.Before(before.Add(59 * time.Second)) {
 		t.Fatalf("terminal failure discarded receiver cooldown: next_retry=%v", record.NextRetry)
+	}
+}
+
+func TestOutboxArchiveReclaimsCapacityAndPreservesExactEvidence(t *testing.T) {
+	var received atomic.Int32
+	var healthy atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received.Add(1)
+		if healthy.Load() {
+			w.WriteHeader(204)
+		} else {
+			w.WriteHeader(403)
+		}
+	}))
+	defer server.Close()
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	m := NewManager(ManagerConfig{OutboxDir: dir, OutboxLimit: 1, WorkerCount: 1})
+	if err := m.Register(outboxTestWebhook(server.URL)); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = m.Stop() })
+	if err := m.Dispatch(Event{ID: "failed", Type: "agent.error", Message: "preserve exactly"}); err != nil {
+		t.Fatal(err)
+	}
+	awaitOutbox(t, func() bool { return adminEntry(t, m).State == "failed" })
+	entry := adminEntry(t, m)
+	if !entry.ArchiveAllowed {
+		t.Fatal("failed receipt should be archivable")
+	}
+	path, _, evidence := readOnlyOutboxRecord(t, dir)
+	if err := m.Dispatch(Event{ID: "next", Type: "agent.error"}); err == nil {
+		t.Fatal("terminal receipt should consume the sole capacity slot")
+	}
+	archived, err := m.ArchiveOutbox(entry.Record, entry.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	preserved, err := os.ReadFile(archived.Path)
+	if err != nil || !bytes.Equal(evidence, preserved) {
+		t.Fatalf("archive changed evidence: %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("active slot was not reclaimed: %v", err)
+	}
+	for _, name := range []string{archived.Path, filepath.Join(filepath.Dir(archived.Path), "manifest.json")} {
+		info, err := os.Stat(name)
+		if err != nil || info.Mode().Perm() != 0600 {
+			t.Fatalf("archive file not private: %s %v", name, err)
+		}
+	}
+	repeated, err := m.ArchiveOutbox(entry.Record, entry.Revision)
+	if err != nil || repeated != archived {
+		t.Fatalf("completed archive not idempotent: %+v %v", repeated, err)
+	}
+	healthy.Store(true)
+	if err := m.Dispatch(Event{ID: "next", Type: "agent.error"}); err != nil {
+		t.Fatalf("archive did not restore admission: %v", err)
+	}
+	if err := m.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	if got := received.Load(); got != 2 {
+		t.Fatalf("archival replayed old work or lost new work: requests=%d", got)
+	}
+	if _, err := m.RetryOutbox(entry.Record, entry.Revision); err == nil {
+		t.Fatal("archived record was automatically eligible for delivery")
+	}
+}
+
+func TestOutboxArchiveRefusesUnsafeDestinationsWithoutRemovingSource(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(403) }))
+	defer server.Close()
+	_, dir, wh := failedAdminFixture(t, server.URL)
+	_, fixture, data := readOnlyOutboxRecord(t, dir)
+	for _, name := range []string{"pending", "stale", "malformed", "busy", "archive symlink", "archive file", "public archive", "revision symlink", "conflicting copy", "manifest symlink", "corrupt manifest"} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.Chmod(dir, 0700); err != nil {
+				t.Fatal(err)
+			}
+			key := outboxKey(fixture.ID)
+			source := filepath.Join(dir, key)
+			if err := os.WriteFile(source, data, 0600); err != nil {
+				t.Fatal(err)
+			}
+			m := NewManager(ManagerConfig{OutboxDir: dir})
+			if err := m.Register(wh); err != nil {
+				t.Fatal(err)
+			}
+			entry := adminEntry(t, m)
+			archive := filepath.Join(dir, "archived")
+			revisionDir := filepath.Join(archive, entry.Revision)
+			switch name {
+			case "pending":
+				record := fixture
+				record.Failed = false
+				encoded, _ := json.Marshal(record)
+				if err := os.WriteFile(source, encoded, 0600); err != nil {
+					t.Fatal(err)
+				}
+				entry = adminEntry(t, m)
+			case "stale":
+				entry.Revision = strings.Repeat("0", 64)
+			case "malformed":
+				if err := os.WriteFile(source, []byte("not JSON"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			case "busy":
+				o, err := m.administrativeOutbox()
+				if err != nil {
+					t.Fatal(err)
+				}
+				lock, err := o.lockKey(key)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer lock.Close()
+			case "archive symlink":
+				if err := os.Symlink(t.TempDir(), archive); err != nil {
+					t.Fatal(err)
+				}
+			case "archive file":
+				if err := os.WriteFile(archive, []byte("do not replace"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			case "public archive":
+				if err := os.Mkdir(archive, 0755); err != nil {
+					t.Fatal(err)
+				}
+			case "revision symlink":
+				if err := os.Mkdir(archive, 0700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(t.TempDir(), revisionDir); err != nil {
+					t.Fatal(err)
+				}
+			case "conflicting copy", "manifest symlink", "corrupt manifest":
+				if err := os.MkdirAll(revisionDir, 0700); err != nil {
+					t.Fatal(err)
+				}
+				if name == "conflicting copy" {
+					// Even a byte-identical independent copy is not the retained
+					// source inode; never replace a pre-existing archive entry.
+					if err := os.WriteFile(filepath.Join(revisionDir, key), data, 0600); err != nil {
+						t.Fatal(err)
+					}
+				} else if name == "manifest symlink" {
+					if err := os.Symlink(source, filepath.Join(revisionDir, "manifest.json")); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					if err := os.WriteFile(filepath.Join(revisionDir, "manifest.json"), []byte("partial prior evidence"), 0600); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			before, err := os.ReadFile(source)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := m.ArchiveOutbox(entry.Record, entry.Revision); err == nil {
+				t.Fatal("unsafe archive accepted")
+			}
+			after, err := os.ReadFile(source)
+			if err != nil || !bytes.Equal(before, after) {
+				t.Fatalf("refused archive removed or changed the source: %v", err)
+			}
+		})
+	}
+}
+
+func TestOutboxArchiveRecoversInterruptedPublication(t *testing.T) {
+	for _, withManifest := range []bool{false, true} {
+		t.Run(fmt.Sprint(withManifest), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(403) }))
+			defer server.Close()
+			m, dir, _ := failedAdminFixture(t, server.URL)
+			entry := adminEntry(t, m)
+			source, _, data := readOnlyOutboxRecord(t, dir)
+			revisionDir := filepath.Join(dir, "archived", entry.Revision)
+			if err := os.MkdirAll(revisionDir, 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Link(source, filepath.Join(revisionDir, entry.Record)); err != nil {
+				t.Fatal(err)
+			}
+			var prior outboxArchiveManifest
+			if withManifest {
+				var err error
+				prior, err = ensureArchiveManifest(revisionDir, entry.Record, entry.Revision, true)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			// These are the retained filesystem states on either side of
+			// manifest publication, before the active name has been unlinked.
+			result, err := m.ArchiveOutbox(entry.Record, entry.Revision)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if withManifest && !result.ArchivedAt.Equal(prior.ArchivedAt) {
+				t.Fatal("recovery rewrote an existing archive authorization time")
+			}
+			preserved, err := os.ReadFile(result.Path)
+			if err != nil || !bytes.Equal(data, preserved) {
+				t.Fatalf("interrupted archive lost bytes: %v", err)
+			}
+		})
+	}
+}
+
+func TestOutboxArchiveRetryDoesNotRemoveReadmittedWork(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(403) }))
+	defer server.Close()
+	m, dir, _ := failedAdminFixture(t, server.URL)
+	entry := adminEntry(t, m)
+	_, record, _ := readOnlyOutboxRecord(t, dir)
+	archived, err := m.ArchiveOutbox(entry.Record, entry.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record.Failed, record.Attempt, record.LastAttempt = false, 0, nil
+	record.Event.Timestamp = time.Now().UTC()
+	if err := m.outbox.enqueue(record); err != nil {
+		t.Fatal(err)
+	}
+	_, _, before := readOnlyOutboxRecord(t, dir)
+	if _, err := m.ArchiveOutbox(entry.Record, entry.Revision); err == nil {
+		t.Fatal("old archive command removed readmitted work")
+	}
+	_, _, after := readOnlyOutboxRecord(t, dir)
+	if !bytes.Equal(before, after) {
+		t.Fatal("newly admitted receipt changed")
+	}
+	if _, err := os.Stat(archived.Path); err != nil {
+		t.Fatal("old archive disappeared")
+	}
+}
+
+func TestOutboxArchiveRacesRecoveryAcrossProcesses(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(403) }))
+	defer server.Close()
+	m, dir, _ := failedAdminFixture(t, server.URL)
+	entry := adminEntry(t, m)
+	var wg sync.WaitGroup
+	results := make(chan string, 2)
+	for _, action := range []string{"retry", "archive"} {
+		wg.Add(1)
+		go func(action string) {
+			defer wg.Done()
+			cmd := exec.Command(os.Args[0], "-test.run=^TestOutboxRecoveryProcessHelper$")
+			cmd.Env = append(os.Environ(), "NTM_OUTBOX_ADMIN_HELPER=1", "NTM_OUTBOX_ADMIN_DIR="+dir,
+				"NTM_OUTBOX_ADMIN_URL="+server.URL, "NTM_OUTBOX_ADMIN_KEY="+entry.Record,
+				"NTM_OUTBOX_ADMIN_REVISION="+entry.Revision, "NTM_OUTBOX_ADMIN_ACTION="+action)
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Errorf("%s subprocess failed: %v\n%s", action, err, out)
+			}
+			results <- string(out)
+		}(action)
+	}
+	wg.Wait()
+	close(results)
+	succeeded := 0
+	for result := range results {
+		if strings.Contains(result, "RECOVERY_AUTHORIZED") {
+			succeeded++
+		}
+	}
+	if succeeded != 1 {
+		t.Fatalf("competing archive/recovery operations succeeded %d times, want 1", succeeded)
+	}
+	snapshot, err := m.ListOutbox()
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive := filepath.Join(dir, "archived", entry.Revision, entry.Record)
+	if len(snapshot.Entries) == 0 {
+		if _, err := os.Stat(archive); err != nil {
+			t.Fatalf("neither live nor archived evidence survived: %v", err)
+		}
+	} else if len(snapshot.Entries) != 1 || snapshot.Entries[0].Recoveries != 1 || snapshot.Entries[0].State == "failed" {
+		t.Fatalf("unexpected surviving recovery state: %+v", snapshot)
+	}
+}
+
+func TestOutboxArchivePreservesRecoveryHistory(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(403) }))
+	defer server.Close()
+	m, dir, wh := failedAdminFixture(t, server.URL)
+	entry := adminEntry(t, m)
+	if _, err := m.RetryOutbox(entry.Record, entry.Revision); err != nil {
+		t.Fatal(err)
+	}
+	next := startOutboxManager(t, dir, wh)
+	awaitOutbox(t, func() bool { return adminEntry(t, next).State == "failed" })
+	if err := next.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	entry = adminEntry(t, next)
+	if entry.Recoveries != 1 || entry.Attempt != 2 {
+		t.Fatalf("missing prior recovery: %+v", entry)
+	}
+	_, _, evidence := readOnlyOutboxRecord(t, dir)
+	result, err := next.ArchiveOutbox(entry.Record, entry.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	preserved, err := os.ReadFile(result.Path)
+	if err != nil || !bytes.Equal(evidence, preserved) {
+		t.Fatalf("archive lost recovery audit history: %v", err)
 	}
 }

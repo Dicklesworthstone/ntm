@@ -114,3 +114,32 @@ receiver deduplication remain necessary across crashes.
 
 There is no automatic dead-letter replay or pruning. Never clear pending receipts
 or lock files merely to silence an admission error.
+
+## Reclaim active capacity without discarding evidence
+
+```sh
+ntm webhook-outbox archive RECORD --revision REVISION --project /path/to/project
+```
+
+Use the inspected `record` and `revision`, just as for retry. Archive only accepts
+valid, unchanged failed receipts. It never removes pending or malformed records,
+overrides sender ownership, or sends a request. Retiring a terminal record does
+not require its old endpoint to remain configured and does not authorize replay
+of a privacy-blocked event.
+
+The command preserves the exact receipt bytes (including recovery history) under
+`archived/REVISION/RECORD` in the same private project outbox. It publishes a private
+manifest with the inspection revision and archive time. The receipt, manifest and
+all directory entries are synchronized before the active name is removed. The
+admission and sender locks prevent races with new acceptance, recovery and HTTP
+workers. Repeating an interrupted or completed archive is safe; a changed active
+receipt or conflicting archive is refused rather than overwritten. The filesystem
+must support hard links; failure leaves the original active receipt intact.
+
+Archived receipts no longer consume the active outbox record limit and are never
+scanned for delivery. This frees **admission capacity, not disk bytes**: the evidence
+remains on disk. Archive retention is operator-managed; there is no automatic
+pruning or archived-record replay. Submitting an archived event ID again can create
+a new acceptance, since the outbox is not a permanent deduplication ledger. Preserve
+receiver-side idempotency and do not resubmit old events merely to work around a
+failed or refused administrative command.

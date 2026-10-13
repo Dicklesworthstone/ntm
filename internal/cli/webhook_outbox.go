@@ -87,5 +87,26 @@ does not start a sender. Receivers must deduplicate by X-NTM-Delivery-ID.`,
 	}
 	retry.Flags().StringVar(&revision, "revision", "", "Revision of the inspected receipt; stale revisions are refused")
 	cmd.AddCommand(retry)
+	var archiveRevision string
+	archive := &cobra.Command{
+		Use: "archive RECORD", Short: "Preserve one inspected failed receipt outside active outbox capacity",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if archiveRevision == "" {
+				return errors.New("--revision from webhook-outbox list is required")
+			}
+			m, err := manager(cmd)
+			if err != nil {
+				return err
+			}
+			result, err := m.ArchiveOutbox(args[0], archiveRevision)
+			if err != nil {
+				return err
+			}
+			return write(cmd, result)
+		},
+	}
+	archive.Flags().StringVar(&archiveRevision, "revision", "", "Revision of the inspected failed receipt; pending work cannot be archived")
+	cmd.AddCommand(archive)
 	return cmd
 }
