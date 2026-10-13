@@ -134,6 +134,8 @@ func (m *WebhookManager) describeOutbox(key string, record outboxRecord) OutboxE
 		entry.BlockedBy = "endpoint_unavailable"
 	case record.Fingerprint != m.outboxFingerprint(wh):
 		entry.BlockedBy = "configuration_changed"
+	case !m.matchesWebhook(wh, record.Event):
+		entry.BlockedBy = "event_filtered"
 	case len(record.Recovery) >= maxOutboxRecoveries || record.Attempt >= 1000000:
 		entry.BlockedBy = "recovery_limit"
 	case record.Failed && (record.Attempt < 1 || record.LastAttempt == nil || record.LastAttempt.Attempt != record.Attempt || record.LastAttempt.Timestamp.IsZero()):
@@ -219,7 +221,7 @@ func (m *WebhookManager) RetryOutbox(key, revision string) (OutboxEntry, error) 
 	// privacy callback above runs outside this lock and may inspect the manager.
 	m.webhooksMu.RLock()
 	wh := m.webhooks[record.WebhookID]
-	if wh == nil || !wh.Enabled || record.Fingerprint != m.outboxFingerprint(wh) {
+	if wh == nil || !wh.Enabled || record.Fingerprint != m.outboxFingerprint(wh) || !m.matchesWebhook(wh, record.Event) {
 		m.webhooksMu.RUnlock()
 		return result, errors.New("webhook configuration changed during recovery")
 	}

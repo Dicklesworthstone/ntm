@@ -368,7 +368,7 @@ func (m *WebhookManager) feedOutbox() {
 		m.webhooksMu.RLock()
 		wh := m.webhooks[record.WebhookID]
 		m.webhooksMu.RUnlock()
-		if wh == nil || !wh.Enabled || record.Fingerprint != m.outboxFingerprint(wh) {
+		if wh == nil || !wh.Enabled || record.Fingerprint != m.outboxFingerprint(wh) || !m.matchesWebhook(wh, record.Event) {
 			m.outbox.mu.Lock()
 			first := !m.outbox.reported[key]
 			m.outbox.reported[key] = true
@@ -438,7 +438,7 @@ func (m *WebhookManager) claimOutboxDelivery(d *Delivery) (*outboxClaim, error) 
 	wh := m.webhooks[record.WebhookID]
 	m.webhooksMu.RUnlock()
 	if record.Failed || record.NextRetry.After(time.Now()) || !m.mayPersistWebhook(record.Event) ||
-		wh == nil || !wh.Enabled || record.Fingerprint != m.outboxFingerprint(wh) {
+		wh == nil || !wh.Enabled || record.Fingerprint != m.outboxFingerprint(wh) || !m.matchesWebhook(wh, record.Event) {
 		_ = lock.Close()
 		return nil, nil
 	}

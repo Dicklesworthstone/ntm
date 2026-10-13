@@ -143,3 +143,38 @@ pruning or archived-record replay. Submitting an archived event ID again can cre
 a new acceptance, since the outbox is not a permanent deduplication ledger. Preserve
 receiver-side idempotency and do not resubmit old events merely to work around a
 failed or refused administrative command.
+
+## Restrict destinations by session, provider, and severity
+
+The existing project `filter` settings are enforced before either memory or disk
+admission, and again during durable replay and operator retry authorization:
+
+```yaml
+webhooks:
+  - name: production-codex-errors
+    url: https://example.com/ntm-events
+    events: [agent.error, agent.crashed]
+    filter:
+      session: prod-*
+      agent_type: [codex]
+      severity: [error]
+```
+
+All specified dimensions must match; allowlist entries within a dimension are
+alternatives. Session globs are case-sensitive and use Go `path.Match` semantics
+(`*` does not cross `/`). Provider aliases use NTM's canonical agent types.
+Explicit `agent_type` metadata takes precedence over `details.agent_type`, then a
+recognized provider alias in the legacy `agent` field. Missing or unknown provider
+metadata cannot satisfy a provider restriction; identity names and pane titles
+are not guessed. Severity is classified from the event type exactly as in the
+built-in message formatters (`info`, `success`, `warning`, `error`; `warn` is an
+alias for `warning`). Free-form message text and details cannot relabel severity.
+
+Invalid filter values fail registration without replacing an existing policy.
+Filters are snapshotted, so caller mutation cannot broaden accepted destinations.
+A changed restriction changes the durable configuration fingerprint and retains
+old receipts for inspection instead of sending them. Equivalent aliases and list
+ordering have the same fingerprint, and empty filters leave pre-existing
+unfiltered receipts recoverable. Inspection can report `event_filtered` when a
+retained event does not satisfy an otherwise matching configuration. Archival
+remains available for valid terminal evidence without authorizing another send.

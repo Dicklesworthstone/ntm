@@ -39,12 +39,14 @@ const (
 
 // Event represents a webhook event to be dispatched
 type Event struct {
-	ID        string            `json:"id"`
-	Type      string            `json:"type"`
-	Timestamp time.Time         `json:"timestamp"`
-	Session   string            `json:"session,omitempty"`
-	Pane      string            `json:"pane,omitempty"`
-	Agent     string            `json:"agent,omitempty"`
+	ID        string    `json:"id"`
+	Type      string    `json:"type"`
+	Timestamp time.Time `json:"timestamp"`
+	Session   string    `json:"session,omitempty"`
+	Pane      string    `json:"pane,omitempty"`
+	Agent     string    `json:"agent,omitempty"`
+	// AgentType is explicit provider metadata; Agent may instead be an identity.
+	AgentType string            `json:"agent_type,omitempty"`
 	Message   string            `json:"message"`
 	Details   map[string]string `json:"details,omitempty"`
 	// Transient forbids persistence (for example, events from privacy-mode sessions).
@@ -64,6 +66,8 @@ type WebhookConfig struct {
 	Headers map[string]string `toml:"headers" json:"headers"`
 	Events  []string          `toml:"events" json:"events"` // Event types to receive (empty = all)
 	Enabled bool              `toml:"enabled" json:"enabled"`
+	// Filter restricts subscriptions further. Nil preserves unfiltered receipts' fingerprints.
+	Filter *EventFilter `toml:"filter" json:"filter,omitempty"`
 
 	// Per-webhook timeout (overrides default)
 	Timeout time.Duration `toml:"timeout" json:"timeout,omitempty"`
@@ -306,6 +310,11 @@ func (m *WebhookManager) Register(cfg WebhookConfig) error {
 	// and slices. Queued attempts must keep the same headers and subscriptions.
 	cfg.Headers = maps.Clone(cfg.Headers)
 	cfg.Events = slices.Clone(cfg.Events)
+	filter, err := normalizeEventFilter(cfg.Filter)
+	if err != nil {
+		return err
+	}
+	cfg.Filter = filter
 
 	m.webhooksMu.Lock()
 	defer m.webhooksMu.Unlock()
@@ -349,7 +358,7 @@ func (m *WebhookManager) Dispatch(event Event) error {
 	m.webhooksMu.RLock()
 	webhooks := make([]*WebhookConfig, 0, len(m.webhooks))
 	for _, wh := range m.webhooks {
-		if wh.Enabled && m.matchesEvent(wh, event.Type) {
+		if wh.Enabled && m.matchesWebhook(wh, event) {
 			webhooks = append(webhooks, wh)
 		}
 	}

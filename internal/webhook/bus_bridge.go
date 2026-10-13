@@ -203,6 +203,7 @@ func toWebhookEvent(e events.BusEvent) (Event, bool) {
 		Session:   e.EventSession(),
 		Pane:      pane,
 		Agent:     agent,
+		AgentType: stringFromAny(m["agent_type"]),
 		Message:   message,
 		Details:   details,
 	}, true
@@ -265,6 +266,13 @@ func projectConfigToWebhookConfig(cfg config.WebhookConfig) (WebhookConfig, erro
 		Enabled: true,
 		Format:  strings.TrimSpace(cfg.Formatter),
 		Secret:  strings.TrimSpace(cfg.Secret),
+	}
+	if cfg.Filter.Session != "" || len(cfg.Filter.AgentType) > 0 || len(cfg.Filter.Severity) > 0 {
+		out.Filter = &EventFilter{
+			Session:   cfg.Filter.Session,
+			AgentType: append([]string(nil), cfg.Filter.AgentType...),
+			Severity:  append([]string(nil), cfg.Filter.Severity...),
+		}
 	}
 
 	if strings.TrimSpace(cfg.Timeout) != "" {
