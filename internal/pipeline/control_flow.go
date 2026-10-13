@@ -220,10 +220,30 @@ func (e *Executor) executeBranch(ctx context.Context, step *Step, workflow *Work
 		// keys this branch owns. Nested constructs namespace their own children
 		// under this ID, so a prefix match covers them too.
 		bodyStepIDs = append(bodyStepIDs, bs.ID)
-		// Use the canonical lifecycle, not just its one-shot dispatcher.
-		// This enforces when, retries, in-flight checkpoints and cancellation,
-		// and fires success/failure hooks exactly once at their normal boundary.
-		sr := e.executeStep(ctx, &bs, workflow)
+		e.stateMu.RLock()
+		sr, recorded := e.state.Steps[bs.ID]
+		sr.ParsedData = cloneInterfaceValue(sr.ParsedData)
+		e.stateMu.RUnlock()
+		if recorded && sr.StepID != bs.ID {
+			result.Status = StatusFailed
+			result.FinishedAt = time.Now()
+			result.Error = &StepError{Type: "recovery", Message: fmt.Sprintf("branch child %q has mismatched saved result identity %q; refusing replay", bs.ID, sr.StepID), Timestamp: result.FinishedAt}
+			return result
+		}
+		// Adopt a finished leaf BEFORE reevaluating its when expression or
+		// dispatching mail/reservations. A later child failing does not undo
+		// earlier effects. Restore its outputs below even when no dispatch is
+		// needed. Composite steps still enter their own recovery machinery to
+		// reconstruct iteration/aggregate output variables, not summary text.
+		composite := bs.Branch != "" || bs.Loop != nil || bs.Foreach != nil || bs.ForeachPane != nil || len(bs.Parallel.Steps) > 0
+		finished := sr.Status == StatusCompleted || sr.Status == StatusSkipped
+		if !recorded || !finished || shouldRerunStep(sr) || composite {
+			// Unfinished work keeps the canonical lifecycle and its durable
+			// command/delivery guards, retries, checkpoints, and cancellation.
+			sr = e.executeStep(ctx, &bs, workflow)
+		} else {
+			slog.Info("branch child result adopted", "run_id", e.state.RunID, "step_id", bs.ID, "status", sr.Status)
+		}
 		outputs = append(outputs, sr.Output)
 
 		e.stateMu.Lock()
