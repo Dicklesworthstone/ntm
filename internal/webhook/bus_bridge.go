@@ -10,6 +10,7 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/events"
+	"github.com/Dicklesworthstone/ntm/internal/privacy"
 	"github.com/Dicklesworthstone/ntm/internal/redaction"
 )
 
@@ -30,6 +31,8 @@ const bridgeDrainTimeout = 2 * time.Second
 // starts a WebhookManager, and subscribes it to the provided event bus.
 //
 // If no webhooks are configured for the project, it returns (nil, nil).
+// NTM_WEBHOOK_OUTBOX_DIR opts into durable, project-namespaced delivery on Unix.
+// Privacy-mode sessions keep volatile delivery; existing receipts are gated on replay too.
 func StartBridgeFromProjectConfig(projectDir, session string, bus *events.EventBus, redactionCfg *redaction.Config) (*BusBridge, error) {
 	if strings.TrimSpace(projectDir) == "" {
 		return nil, nil
@@ -46,12 +49,20 @@ func StartBridgeFromProjectConfig(projectDir, session string, bus *events.EventB
 		return nil, nil
 	}
 
+	managerCfg := DefaultManagerConfig()
+	managerCfg.OutboxDir, err = projectWebhookOutboxDir(projectDir)
+	if err != nil {
+		return nil, err
+	}
+	managerCfg.PersistenceAllowed = func(session string) bool {
+		return privacy.GetDefaultManager().CanPersist(session, privacy.OpEventLog) == nil
+	}
 	var mgr *WebhookManager
 	if redactionCfg != nil && redactionCfg.Mode != redaction.ModeOff {
 		cfgCopy := *redactionCfg
-		mgr = NewManagerWithRedaction(DefaultManagerConfig(), cfgCopy)
+		mgr = NewManagerWithRedaction(managerCfg, cfgCopy)
 	} else {
-		mgr = NewManager(DefaultManagerConfig())
+		mgr = NewManager(managerCfg)
 	}
 	mgr.Logger = func(format string, args ...interface{}) {
 		slog.Default().Debug("webhook", "msg", fmt.Sprintf(format, args...))
@@ -81,8 +92,11 @@ func StartBridgeFromProjectConfig(projectDir, session string, bus *events.EventB
 			return
 		}
 
-		// Dispatch is already non-blocking; ignore errors for best-effort delivery.
-		_ = mgr.Dispatch(ev)
+		// Durable acceptance can fail (disk full, malformed receipt, unavailable
+		// storage). Surface that failure instead of claiming the event is safe.
+		if err := mgr.Dispatch(ev); err != nil {
+			slog.Warn("webhook event was not fully accepted", "event_type", ev.Type, "error", err)
+		}
 	})
 
 	return &BusBridge{

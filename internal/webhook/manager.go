@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"net/http"
 	"slices"
@@ -46,6 +47,8 @@ type Event struct {
 	Agent     string            `json:"agent,omitempty"`
 	Message   string            `json:"message"`
 	Details   map[string]string `json:"details,omitempty"`
+	// Transient forbids persistence (for example, events from privacy-mode sessions).
+	Transient bool `json:"-"`
 }
 
 // WebhookConfig holds configuration for a single webhook endpoint
@@ -101,6 +104,8 @@ type Delivery struct {
 	Attempt   int
 	NextRetry time.Time
 	Error     error
+	outboxKey string
+	payload   []byte // Frozen wire bytes for a durable receipt, including an empty payload.
 }
 
 // DeadLetter represents a failed delivery that exhausted retries
@@ -126,6 +131,12 @@ type ManagerConfig struct {
 	WorkerCount     int           `toml:"worker_count" json:"worker_count"`
 	DefaultTimeout  time.Duration `toml:"default_timeout" json:"default_timeout,omitempty"`
 	DeadLetterLimit int           `toml:"dead_letter_limit" json:"dead_letter_limit"`
+	// OutboxDir opts into durable acceptance and restart recovery. It must be private.
+	OutboxDir string `toml:"outbox_dir" json:"outbox_dir,omitempty"`
+	// OutboxLimit bounds pending plus terminal disk records independently of the HTTP queue.
+	OutboxLimit int `toml:"outbox_limit" json:"outbox_limit,omitempty"`
+	// PersistenceAllowed is consulted at admission and replay. Callbacks must be concurrency-safe.
+	PersistenceAllowed func(session string) bool `toml:"-" json:"-"`
 }
 
 // DefaultManagerConfig returns the default manager configuration
@@ -207,6 +218,7 @@ type WebhookManager struct {
 	Logger func(format string, args ...interface{})
 
 	redactionCfg *redaction.Config
+	outbox       *deliveryOutbox
 }
 
 // NewManager creates a new WebhookManager with the given configuration
@@ -222,6 +234,9 @@ func NewManager(cfg ManagerConfig) *WebhookManager {
 	}
 	if cfg.DeadLetterLimit <= 0 {
 		cfg.DeadLetterLimit = DefaultDeadLetterLimit
+	}
+	if cfg.OutboxLimit <= 0 {
+		cfg.OutboxLimit = DefaultQueueSize
 	}
 
 	m := &WebhookManager{
@@ -249,7 +264,7 @@ func NewManager(cfg ManagerConfig) *WebhookManager {
 // (message + details) before serialization/dispatch.
 func NewManagerWithRedaction(cfg ManagerConfig, redactionCfg redaction.Config) *WebhookManager {
 	m := NewManager(cfg)
-	cfgCopy := redactionCfg
+	cfgCopy := redactionCfg.DeepCopy()
 	m.redactionCfg = &cfgCopy
 	return m
 }
@@ -316,7 +331,11 @@ func (m *WebhookManager) Dispatch(event Event) error {
 	}
 
 	if event.ID == "" {
-		event.ID = fmt.Sprintf("evt_%d", time.Now().UnixNano())
+		var err error
+		event.ID, err = newWebhookEventID()
+		if err != nil {
+			return fmt.Errorf("create webhook event identity: %w", err)
+		}
 	}
 	if event.Timestamp.IsZero() {
 		event.Timestamp = time.Now().UTC()
@@ -338,6 +357,9 @@ func (m *WebhookManager) Dispatch(event Event) error {
 
 	if len(webhooks) == 0 {
 		return nil // No webhooks registered for this event type
+	}
+	if m.outbox != nil && m.mayPersistWebhook(event) {
+		return m.dispatchOutbox(event, webhooks)
 	}
 
 	// Queue delivery for each matching webhook
@@ -429,6 +451,14 @@ func (m *WebhookManager) Start() error {
 			return errors.New("webhook manager already started")
 		}
 
+		if m.config.OutboxDir != "" {
+			outbox, err := newDeliveryOutbox(m.config.OutboxDir, m.config.OutboxLimit)
+			if err != nil {
+				m.lifecycleMu.Unlock()
+				return fmt.Errorf("open webhook outbox: %w", err)
+			}
+			m.outbox = outbox
+		}
 		m.ctx, m.cancel = newManagerContext()
 		m.retryStop = make(chan struct{})
 		m.stopping.Store(false)
@@ -443,6 +473,10 @@ func (m *WebhookManager) Start() error {
 		// Start retry processor
 		m.wg.Add(1)
 		go m.retryProcessor()
+		if m.outbox != nil {
+			m.wg.Add(1)
+			go m.outboxFeeder()
+		}
 		m.lifecycleMu.Unlock()
 
 		m.log("webhook manager started with %d workers", m.config.WorkerCount)
@@ -638,9 +672,41 @@ func (m *WebhookManager) retryProcessor() {
 
 // processDelivery attempts to deliver a webhook
 func (m *WebhookManager) processDelivery(d *Delivery) {
+	var claim *outboxClaim
+	attempted := false
+	if d.outboxKey != "" {
+		defer func() {
+			m.releaseOutboxDelivery(*d)
+			// Wake after releasing local ownership, or the feeder can miss
+			// the newly available slot. Do not spin on busy claim misses.
+			if attempted {
+				select {
+				case m.outbox.wake <- struct{}{}:
+				default:
+				}
+			}
+		}()
+		var err error
+		claim, err = m.claimOutboxDelivery(d)
+		if err != nil {
+			slog.Error("webhook outbox claim failed; receipt retained", "record", d.outboxKey, "error", err)
+			return
+		}
+		if claim == nil {
+			return
+		}
+		defer claim.lock.Close()
+	}
 	d.Attempt++
+	if claim != nil {
+		if err := claim.begin(d.Attempt); err != nil {
+			slog.Error("webhook attempt not sent: receipt could not be persisted", "delivery", d.ID, "error", err)
+			return
+		}
+	}
 	start := time.Now()
 
+	attempted = true
 	statusCode, err := m.send(d)
 	duration := time.Since(start)
 
@@ -652,6 +718,10 @@ func (m *WebhookManager) processDelivery(d *Delivery) {
 	}
 	if err != nil {
 		attemptLog.Error = err.Error()
+	}
+	if claim != nil {
+		m.settleOutbox(claim, d, attemptLog, err)
+		return
 	}
 
 	if err == nil {
@@ -702,13 +772,15 @@ func (m *WebhookManager) send(d *Delivery) (int, error) {
 	// Set headers
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "NTM-Webhook/1.0")
-	req.Header.Set("X-NTM-Delivery-ID", d.ID)
-	req.Header.Set("X-NTM-Event-Type", d.Event.Type)
-	req.Header.Set("X-NTM-Attempt", fmt.Sprintf("%d", d.Attempt))
 
 	for k, v := range d.Webhook.Headers {
 		req.Header.Set(k, v)
 	}
+	// Transport identity is authoritative: custom headers must not collapse
+	// distinct durable receipts into one receiver-side deduplication key.
+	req.Header.Set("X-NTM-Delivery-ID", d.ID)
+	req.Header.Set("X-NTM-Event-Type", d.Event.Type)
+	req.Header.Set("X-NTM-Attempt", fmt.Sprintf("%d", d.Attempt))
 
 	// Add HMAC signature if secret is configured
 	if d.Webhook.Secret != "" {
@@ -721,6 +793,9 @@ func (m *WebhookManager) send(d *Delivery) (int, error) {
 
 // buildPayload constructs the webhook payload from the template
 func (m *WebhookManager) buildPayload(d *Delivery) ([]byte, error) {
+	if d.payload != nil {
+		return d.payload, nil
+	}
 	tmplStr := d.Webhook.Template
 	if tmplStr == "" {
 		if d.Webhook.Format != "" {
@@ -843,6 +918,12 @@ func (m *WebhookManager) abandonPendingDeliveries() {
 // finishUndelivered records local loss/backpressure without inventing an HTTP
 // attempt. Preserve the last receiver status when a retry could not be queued.
 func (m *WebhookManager) finishUndelivered(d Delivery, reason string) {
+	if d.outboxKey != "" {
+		// The disk receipt remains pending; queue pressure and shutdown are not
+		// permanent delivery failures in durable mode.
+		m.releaseOutboxDelivery(d)
+		return
+	}
 	statusCode := 0
 	if d.Error != nil {
 		var responseErr *webhookHTTPError
