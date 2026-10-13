@@ -214,6 +214,13 @@ const maxIdleScanLines = 12
 func DetectIdleFromOutput(output string, agentType string) bool {
 	agentType = string(agent.AgentType(agentType).Canonical())
 
+	// Gemini's current composer and quota footer need structural handling.
+	// The shared classifier vetoes idle during live work or real rate limits
+	// and never treats a draft or a prompt above new output as readiness.
+	if agentType == string(agent.AgentTypeGemini) {
+		return agent.DetectGeminiTurn(StripANSI(output)) == agent.GeminiTurnIdle
+	}
+
 	// Claude Code: the shared classifier (internal/agent.ClaudeActivelyWorking)
 	// owns the working verdict and is authoritative. Claude pins its "❯ " input
 	// box to the BOTTOM of the screen at all times, so an idle-prompt match

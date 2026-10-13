@@ -387,7 +387,9 @@ func (p *parserImpl) detectRateLimit(output string, agentType AgentType) bool {
 		return matchAny(recentOutput, ccRateLimitPatterns)
 	case AgentTypeCodex:
 		return matchAny(recentOutput, codRateLimitPatterns)
-	case AgentTypeGemini, AgentTypeAntigravity:
+	case AgentTypeGemini:
+		return len(geminiRateLimitIndicators(output)) > 0
+	case AgentTypeAntigravity:
 		return matchAny(recentOutput, gmiRateLimitPatterns)
 	case AgentTypeCursor:
 		return matchAny(recentOutput, cursorRateLimitPatterns)
@@ -429,7 +431,7 @@ func (p *parserImpl) detectWorking(output string, agentType AgentType) bool {
 	case AgentTypeCodex:
 		return matchAny(recentOutput, codWorkingPatterns)
 	case AgentTypeGemini:
-		return matchAny(recentOutput, gmiWorkingPatterns)
+		return DetectGeminiTurn(output) == GeminiTurnWorking || matchAny(recentOutput, gmiWorkingPatterns)
 	case AgentTypeAntigravity:
 		return AntigravityActivelyWorking(output, 0) || matchAny(recentOutput, gmiWorkingPatterns)
 	case AgentTypeCursor:
@@ -508,8 +510,9 @@ func (p *parserImpl) detectIdle(output string, agentType AgentType) bool {
 	case AgentTypeCodex:
 		return matchAnyRegex(lastLines, codIdlePatterns)
 	case AgentTypeGemini:
-		// Gemini is trickier - check for prompt or lack of working indicators.
-		return matchAnyRegex(lastLines, gmiIdlePatterns)
+		// The composer persists while a response runs; its live cancel hint
+		// or spinner must veto idle, including when drawn above the prompt.
+		return DetectGeminiTurn(output) == GeminiTurnIdle
 	case AgentTypeAntigravity:
 		if AntigravityActivelyWorking(output, 0) {
 			return false
@@ -636,7 +639,9 @@ func (p *parserImpl) collectLimitIndicators(output string, agentType AgentType) 
 		return collectMatches(recentOutput, ccRateLimitPatterns)
 	case AgentTypeCodex:
 		return collectMatches(recentOutput, codRateLimitPatterns)
-	case AgentTypeGemini, AgentTypeAntigravity:
+	case AgentTypeGemini:
+		return geminiRateLimitIndicators(output)
+	case AgentTypeAntigravity:
 		return collectMatches(recentOutput, gmiRateLimitPatterns)
 	case AgentTypeCursor:
 		return collectMatches(recentOutput, cursorRateLimitPatterns)
@@ -676,7 +681,11 @@ func (p *parserImpl) collectWorkIndicators(output string, agentType AgentType) [
 	case AgentTypeCodex:
 		return collectMatches(recentOutput, codWorkingPatterns)
 	case AgentTypeGemini:
-		return collectMatches(recentOutput, gmiWorkingPatterns)
+		matches := collectMatches(recentOutput, gmiWorkingPatterns)
+		if DetectGeminiTurn(output) == GeminiTurnWorking {
+			matches = append(matches, "gemini_live_activity")
+		}
+		return matches
 	case AgentTypeAntigravity:
 		matches := collectMatches(recentOutput, gmiWorkingPatterns)
 		if AntigravityActivelyWorking(output, 0) {

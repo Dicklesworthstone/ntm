@@ -125,6 +125,21 @@ func (d *UnifiedDetector) determineStateAt(output, agentType string, lastActivit
 	threshold := time.Duration(d.config.ActivityThreshold) * time.Second
 	isLowVelocity := observedAt.Sub(lastActivity) >= threshold
 
+	// Gemini's live frame is pane-local evidence, unlike window_activity.
+	// Honor it on the first observation too: a busy sibling must not starve
+	// a ready Gemini pane, and a quiet response must not look idle merely
+	// because its input placeholder remains visible.
+	if agentType == string(agent.AgentTypeGemini) {
+		switch agent.DetectGeminiTurn(StripANSI(output)) {
+		case agent.GeminiTurnWorking:
+			return StateWorking, ErrorNone
+		case agent.GeminiTurnIdle:
+			return StateIdle, ErrorNone
+		case agent.GeminiTurnRateLimited:
+			return StateError, ErrorRateLimit
+		}
+	}
+
 	// Claude Code: the live-tail spinner classifier is authoritative and must
 	// outrank the velocity heuristic. A long "thinking" turn produces no new
 	// scrollback lines (low velocity) yet is unambiguously working; conversely a
