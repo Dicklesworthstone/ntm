@@ -142,6 +142,19 @@ func startDashboardReservationWatcher(session, projectDir string) func() {
 	// (this path used to force the config values over AGENT_MAIL_URL/
 	// AGENT_MAIL_TOKEN), plus hydrated per-project registration tokens.
 	amClient := newAgentMailClient(projectDir)
+	// Bind configuration before the optional service wait. A late startup
+	// uses the same settings and credentials as the dashboard that owns it.
+	cfgValues := watcher.FileReservationConfigValues{
+		Enabled:               cfg.FileReservation.Enabled,
+		AutoReserve:           cfg.FileReservation.AutoReserve,
+		AutoReleaseIdleMin:    cfg.FileReservation.AutoReleaseIdleMin,
+		NotifyOnConflict:      cfg.FileReservation.NotifyOnConflict,
+		ExtendOnActivity:      cfg.FileReservation.ExtendOnActivity,
+		DefaultTTLMin:         cfg.FileReservation.DefaultTTLMin,
+		PollIntervalSec:       cfg.FileReservation.PollIntervalSec,
+		CaptureLinesForDetect: cfg.FileReservation.CaptureLinesForDetect,
+		Debug:                 cfg.FileReservation.Debug,
+	}
 
 	watcherCtx, cancelWatcher := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -149,27 +162,15 @@ func startDashboardReservationWatcher(session, projectDir string) func() {
 	go func() {
 		defer close(done)
 
-		healthCtx, cancelHealth := context.WithTimeout(watcherCtx, 2*time.Second)
-		_, err := amClient.HealthCheck(healthCtx)
-		cancelHealth()
-		if err != nil || watcherCtx.Err() != nil {
-			return
-		}
-
-		cfgValues := watcher.FileReservationConfigValues{
-			Enabled:               cfg.FileReservation.Enabled,
-			AutoReserve:           cfg.FileReservation.AutoReserve,
-			AutoReleaseIdleMin:    cfg.FileReservation.AutoReleaseIdleMin,
-			NotifyOnConflict:      cfg.FileReservation.NotifyOnConflict,
-			ExtendOnActivity:      cfg.FileReservation.ExtendOnActivity,
-			DefaultTTLMin:         cfg.FileReservation.DefaultTTLMin,
-			PollIntervalSec:       cfg.FileReservation.PollIntervalSec,
-			CaptureLinesForDetect: cfg.FileReservation.CaptureLinesForDetect,
-			Debug:                 cfg.FileReservation.Debug,
+		startup := dashboardReservationStartup{
+			probe: func(ctx context.Context) error {
+				_, err := amClient.HealthCheck(ctx)
+				return err
+			},
 		}
 
 		conflictCallback := func(conflict watcher.FileConflict) {
-			if cfg.FileReservation.Debug {
+			if cfgValues.Debug {
 				log.Printf("[FileReservation] Conflict: %s requested by %s, held by %v",
 					conflict.Path, conflict.RequestorAgent, conflict.Holders)
 			}
@@ -185,26 +186,24 @@ func startDashboardReservationWatcher(session, projectDir string) func() {
 		// sending reservation calls under the tmux session name — which is
 		// almost never a registered Agent Mail agent and was the source of
 		// the red `file_reservation_paths` metrics reported in #107.
-		reservationWatcher := watcher.NewFileReservationWatcherFromConfig(
-			cfgValues,
-			amClient,
-			projectDir,
-			"",      // Fallback agent name (empty -> skip unresolved panes)
-			session, // Restrict watcher scans to this dashboard session
-			conflictCallback,
-		)
-		if reservationWatcher == nil {
-			return
-		}
-
-		reservationWatcher.Start(watcherCtx)
-		defer reservationWatcher.Stop()
-
-		if cfg.FileReservation.Debug {
-			log.Printf("[FileReservation] Watcher started for session %s", session)
-		}
-
-		<-watcherCtx.Done()
+		startup.run(watcherCtx, func(ctx context.Context) func() {
+			reservationWatcher := watcher.NewFileReservationWatcherFromConfig(
+				cfgValues,
+				amClient,
+				projectDir,
+				"",      // Fallback agent name (empty -> skip unresolved panes)
+				session, // Restrict watcher scans to this dashboard session
+				conflictCallback,
+			)
+			if reservationWatcher == nil || ctx.Err() != nil {
+				return nil
+			}
+			reservationWatcher.Start(ctx)
+			if cfgValues.Debug {
+				log.Printf("[FileReservation] Watcher started for session %s", session)
+			}
+			return reservationWatcher.Stop
+		})
 	}()
 
 	return func() {
