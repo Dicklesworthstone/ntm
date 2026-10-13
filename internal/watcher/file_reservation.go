@@ -4,6 +4,7 @@ package watcher
 
 import (
 	"context"
+	"errors"
 	"log"
 	"os"
 	"path/filepath"
@@ -48,9 +49,19 @@ type PaneReservation struct {
 // identity and would cause the Agent Mail server to reject reservation calls).
 type AgentNameResolver func(paneID string) string
 
+// reservationWatcherClient keeps the watcher's ownership transitions testable
+// independently of the transport. Production uses the shared Agent Mail client,
+// including its independent grant-ownership verification.
+type reservationWatcherClient interface {
+	ReservePaths(context.Context, agentmail.FileReservationOptions) (*agentmail.ReservationResult, error)
+	ListReservations(context.Context, string, string, bool) ([]agentmail.FileReservation, error)
+	ReleaseReservations(context.Context, string, string, []string, []int) (*agentmail.ReleaseReservationsResult, error)
+	RenewReservations(context.Context, agentmail.RenewReservationsOptions) (*agentmail.RenewReservationsResult, error)
+}
+
 // FileReservationWatcher monitors pane output and automatically reserves files.
 type FileReservationWatcher struct {
-	client             *agentmail.Client
+	client             reservationWatcherClient
 	projectDir         string
 	agentName          string // legacy fallback only; real name comes from agentNameResolver
 	sessionFilter      string
@@ -79,7 +90,12 @@ type FileReservationWatcherOption func(*FileReservationWatcher)
 // WithWatcherClient sets the Agent Mail client.
 func WithWatcherClient(client *agentmail.Client) FileReservationWatcherOption {
 	return func(w *FileReservationWatcher) {
-		w.client = client
+		// Do not store a typed nil in the interface: the nil-client gate must
+		// continue to suppress every network-facing reservation operation.
+		w.client = nil
+		if client != nil {
+			w.client = client
+		}
 	}
 }
 
@@ -393,7 +409,10 @@ func (w *FileReservationWatcher) onFileEdit(
 	}
 
 	result, err := w.client.ReservePaths(ctx, opts)
-	if err != nil && !agentmail.IsReservationConflict(err) {
+	if err != nil && (!agentmail.IsReservationConflict(err) || errors.Is(err, agentmail.ErrReservationUnverified)) {
+		// A response can carry BOTH conflicts and failed ownership readback.
+		// Those handles are inspection evidence, never authority to renew or
+		// release. Only a verified partial grant may enter our owned set.
 		if w.debug {
 			log.Printf("[FileReservationWatcher] Reservation error for pane %s: %v", pane.ID, err)
 		}
@@ -447,7 +466,11 @@ func (w *FileReservationWatcher) renewPaneReservation(ctx context.Context, paneI
 			if err != nil {
 				log.Printf("[FileReservationWatcher] Error renewing reservations for active pane %s: %v", paneID, err)
 			} else {
-				log.Printf("[FileReservationWatcher] Renewed %d of %d reservations for active pane %s", result.Renewed, len(copy.ReservationID), paneID)
+				renewed := 0
+				if result != nil {
+					renewed = result.Renewed
+				}
+				log.Printf("[FileReservationWatcher] Renewed %d of %d reservations for active pane %s", renewed, len(copy.ReservationID), paneID)
 			}
 		}
 	}
@@ -492,7 +515,9 @@ func (w *FileReservationWatcher) releaseIdleReservations(ctx context.Context) {
 			w.removeTrackedReservation(reservation)
 			continue
 		}
-		releaseResult, err := w.client.ReleaseReservations(ctx, w.projectDir, reservation.AgentName, reservation.Files, reservation.ReservationID)
+		// Paths can also name manually acquired or subsequently replaced
+		// leases. Cleanup owns only the exact IDs we verified and recorded.
+		releaseResult, err := w.client.ReleaseReservations(ctx, w.projectDir, reservation.AgentName, nil, reservation.ReservationID)
 		if err != nil {
 			if w.debug {
 				log.Printf("[FileReservationWatcher] Error releasing reservations for pane %s: %v", reservation.PaneID, err)
@@ -545,7 +570,7 @@ func (w *FileReservationWatcher) releaseAllReservations() {
 			continue
 		}
 
-		releaseResult, err := w.client.ReleaseReservations(ctx, w.projectDir, reservation.AgentName, reservation.Files, reservation.ReservationID)
+		releaseResult, err := w.client.ReleaseReservations(ctx, w.projectDir, reservation.AgentName, nil, reservation.ReservationID)
 		if err != nil {
 			if w.debug {
 				log.Printf("[FileReservationWatcher] Error releasing reservations for pane %s: %v", reservation.PaneID, err)
@@ -638,6 +663,16 @@ func (w *FileReservationWatcher) prepareReservationAttempt(
 		}
 		w.activeReservations[paneID] = reservation
 	} else if resolvedName != "" && reservation.AgentName != resolvedName {
+		if len(reservation.ReservationID) > 0 {
+			// Respawning a pane changes its identity, not the owner of its
+			// existing server-side leases. Never relabel those handles and
+			// later renew/release them as the replacement agent.
+			if w.debug {
+				log.Printf("[FileReservationWatcher] Deferring reservation for pane %s: leases still belong to %q, current identity is %q",
+					paneID, reservation.AgentName, resolvedName)
+			}
+			return "", nil
+		}
 		// Identity was (re)registered after a previous reservation was
 		// created under a fallback name; adopt the canonical value going
 		// forward so future calls carry the right agent_name.
