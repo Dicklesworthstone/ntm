@@ -475,3 +475,184 @@ func TestNewWebhookEvent_DefensiveCopiesDetails(t *testing.T) {
 		t.Fatalf("event.Details[severity] = %q, want %q", got, want)
 	}
 }
+
+func waitForBusDelivery(t *testing.T, done <-chan struct{}, label string) {
+	t.Helper()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for %s", label)
+	}
+}
+
+// The CLI and webhook bridge use WaitHandlers before closing consumers. A
+// PublishSync running on another goroutine is just as important to that drain
+// as an asynchronous Publish, even though the publisher itself waits.
+func TestEventBus_WaitHandlersIncludesSynchronousDelivery(t *testing.T) {
+	t.Parallel()
+	bus := NewEventBus(10)
+	entered := make(chan struct{})
+	block := make(chan struct{})
+	release := sync.OnceFunc(func() { close(block) })
+	defer release()
+	var delivered atomic.Int32
+	bus.SubscribeAll(func(BusEvent) {
+		close(entered)
+		<-block
+		delivered.Add(1)
+	})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		bus.PublishSync(NewWebhookEvent(WebhookAgentCompleted, "proj", "%1", "worker", "done", nil))
+	}()
+	waitForBusDelivery(t, entered, "synchronous handler")
+	if bus.WaitHandlers(20 * time.Millisecond) {
+		t.Error("drain reported success before the synchronous consumer completed")
+	}
+	release()
+	waitForBusDelivery(t, done, "synchronous publisher")
+	if !bus.WaitHandlers(time.Second) || delivered.Load() != 1 {
+		t.Fatal("drain did not observe completed synchronous delivery")
+	}
+}
+
+// Fill a real handler slot, then keep the caller-runs fallback blocked after
+// the asynchronous handler has left. The remaining inline consumer must not
+// disappear from the shutdown drain just because it owns no semaphore slot.
+func TestEventBus_WaitHandlersIncludesInlineDelivery(t *testing.T) {
+	t.Parallel()
+	bus := NewEventBus(10)
+	bus.handlerSem = make(chan struct{}, 1)
+	asyncEntered := make(chan struct{})
+	asyncBlock := make(chan struct{})
+	releaseAsync := sync.OnceFunc(func() { close(asyncBlock) })
+	defer releaseAsync()
+	inlineEntered := make(chan struct{})
+	inlineBlock := make(chan struct{})
+	releaseInline := sync.OnceFunc(func() { close(inlineBlock) })
+	defer releaseInline()
+	var delivered atomic.Int32
+	bus.Subscribe("occupy", func(BusEvent) {
+		close(asyncEntered)
+		<-asyncBlock
+	})
+	bus.Subscribe(WebhookSessionEnded, func(BusEvent) {
+		close(inlineEntered)
+		<-inlineBlock
+		delivered.Add(1)
+	})
+	bus.Publish(BaseEvent{Type: "occupy"})
+	waitForBusDelivery(t, asyncEntered, "asynchronous handler")
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		bus.Publish(NewWebhookEvent(WebhookSessionEnded, "proj", "", "", "ended", nil))
+	}()
+	waitForBusDelivery(t, inlineEntered, "inline handler")
+	releaseAsync()
+	deadline := time.Now().Add(2 * time.Second)
+	for len(bus.handlerSem) != 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if len(bus.handlerSem) != 0 {
+		t.Fatal("asynchronous handler did not release its slot")
+	}
+	if bus.WaitHandlers(20 * time.Millisecond) {
+		t.Error("drain reported success while the inline consumer was still blocked")
+	}
+	releaseInline()
+	waitForBusDelivery(t, done, "inline publisher")
+	if !bus.WaitHandlers(time.Second) || delivered.Load() != 1 {
+		t.Fatal("drain did not observe completed inline delivery")
+	}
+}
+
+type busDeliveryTypeEvent struct {
+	BaseEvent
+	typeFunc func() string
+}
+
+func (e busDeliveryTypeEvent) EventType() string { return e.typeFunc() }
+
+func TestEventBus_WaitHandlersIncludesDispatchSetup(t *testing.T) {
+	for _, synchronous := range []bool{false, true} {
+		name := "Publish"
+		if synchronous {
+			name = "PublishSync"
+		}
+		t.Run(name, func(t *testing.T) {
+			bus := NewEventBus(10)
+			entered := make(chan struct{})
+			block := make(chan struct{})
+			release := sync.OnceFunc(func() { close(block) })
+			defer release()
+			var delivered atomic.Int32
+			bus.SubscribeAll(func(BusEvent) { delivered.Add(1) })
+			event := busDeliveryTypeEvent{typeFunc: func() string {
+				close(entered)
+				<-block
+				return WebhookBeadCompleted
+			}}
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				if synchronous {
+					bus.PublishSync(event)
+				} else {
+					bus.Publish(event)
+				}
+			}()
+			waitForBusDelivery(t, entered, "dispatch setup")
+			if bus.WaitHandlers(20 * time.Millisecond) {
+				t.Error("drain missed a publication before its first handler was scheduled")
+			}
+			release()
+			waitForBusDelivery(t, done, "publisher")
+			if !bus.WaitHandlers(time.Second) || delivered.Load() != 1 {
+				t.Fatal("publication was not delivered exactly once after setup resumed")
+			}
+		})
+	}
+}
+
+func TestEventBus_EventTypePanicDoesNotPoisonSubscriptions(t *testing.T) {
+	for _, synchronous := range []bool{false, true} {
+		name := "Publish"
+		if synchronous {
+			name = "PublishSync"
+		}
+		t.Run(name, func(t *testing.T) {
+			bus := NewEventBus(10)
+			event := busDeliveryTypeEvent{typeFunc: func() string { panic("bad event type") }}
+			func() {
+				defer func() {
+					if recover() == nil {
+						t.Error("expected the event's panic to reach the publisher")
+					}
+				}()
+				if synchronous {
+					bus.PublishSync(event)
+				} else {
+					bus.Publish(event)
+				}
+			}()
+			// Detect a leaked read lock without leaving a blocked Subscribe
+			// goroutine behind when this regression runs on the old code.
+			if !bus.mu.TryLock() {
+				t.Fatal("EventType panic left the subscriber registry locked")
+			}
+			bus.mu.Unlock()
+			if !bus.WaitHandlers(0) {
+				t.Fatal("panicking publication leaked drain accounting")
+			}
+			var delivered int
+			unsub := bus.Subscribe("healthy", func(BusEvent) { delivered++ })
+			bus.PublishSync(BaseEvent{Type: "healthy"})
+			unsub()
+			if delivered != 1 {
+				t.Fatalf("subsequent healthy delivery count = %d, want 1", delivered)
+			}
+		})
+	}
+}

@@ -41,7 +41,7 @@ type EventBus struct {
 	historySize int
 	historyMu   sync.RWMutex
 	handlerSem  chan struct{} // semaphore to limit asynchronously spawned handlers
-	inflight    atomic.Int64  // handlers Publish started on goroutines, not yet returned
+	inflight    atomic.Int64  // active publish calls plus their unfinished async handlers
 }
 
 // NewEventBus creates a new event bus with the specified history size
@@ -102,6 +102,16 @@ func (b *EventBus) SubscribeAll(handler EventHandler) UnsubscribeFunc {
 
 // Publish sends an event to all matching subscribers
 func (b *EventBus) Publish(event BusEvent) {
+	// Keep a publication counted until every handler has been dispatched.
+	// This covers setup, caller-runs backpressure, and gaps between launching
+	// asynchronous handlers, when the handler count alone could reach zero.
+	b.inflight.Add(1)
+	defer b.inflight.Add(-1)
+
+	// Event implementations must not run under the subscriber registry lock:
+	// they can reenter the bus or panic without poisoning future subscriptions.
+	eventType := event.EventType()
+
 	// Add to history first
 	b.historyMu.Lock()
 	b.history.Value = event
@@ -110,7 +120,6 @@ func (b *EventBus) Publish(event BusEvent) {
 
 	// Get handlers under read lock
 	b.mu.RLock()
-	eventType := event.EventType()
 	entries := make([]handlerEntry, 0, len(b.subscribers[eventType])+len(b.subscribers["*"]))
 	entries = append(entries, b.subscribers[eventType]...)
 	entries = append(entries, b.subscribers["*"]...)
@@ -141,10 +150,12 @@ func (b *EventBus) Publish(event BusEvent) {
 	}
 }
 
-// WaitHandlers waits until the handlers Publish started on goroutines have
-// returned, or timeout passes, and reports whether they all did. A process
-// about to unsubscribe a consumer (a webhook bridge, a durable attention feed)
-// calls it so events already published still reach that consumer.
+// WaitHandlers waits until active Publish and PublishSync calls and their
+// handlers have returned, or timeout passes. This includes setup and handlers
+// running inline under backpressure, not only asynchronously spawned handlers.
+// Stop producers before a final drain: new publications can begin after an
+// idle bus is observed. Do not call from a handler, which would wait for itself.
+// A process drains before closing a webhook bridge or durable attention feed.
 func (b *EventBus) WaitHandlers(timeout time.Duration) bool {
 	deadline := time.Now().Add(timeout)
 	for b.inflight.Load() > 0 {
@@ -158,6 +169,14 @@ func (b *EventBus) WaitHandlers(timeout time.Duration) bool {
 
 // PublishSync sends an event and waits for all handlers to complete
 func (b *EventBus) PublishSync(event BusEvent) {
+	// The synchronous caller owns all of its handlers until wg.Wait returns,
+	// including inline handlers. Other goroutines must see that pending work.
+	b.inflight.Add(1)
+	defer b.inflight.Add(-1)
+
+	// See Publish: invoking user-defined event methods under mu is unsafe.
+	eventType := event.EventType()
+
 	// Add to history first
 	b.historyMu.Lock()
 	b.history.Value = event
@@ -166,7 +185,6 @@ func (b *EventBus) PublishSync(event BusEvent) {
 
 	// Get handlers under read lock
 	b.mu.RLock()
-	eventType := event.EventType()
 	entries := make([]handlerEntry, 0, len(b.subscribers[eventType])+len(b.subscribers["*"]))
 	entries = append(entries, b.subscribers[eventType]...)
 	entries = append(entries, b.subscribers["*"]...)
