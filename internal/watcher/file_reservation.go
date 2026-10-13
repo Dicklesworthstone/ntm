@@ -40,6 +40,20 @@ type PaneReservation struct {
 	ReservationID []int
 	LastActivity  time.Time
 	LastOutput    string // Hash or truncated output to detect changes
+	// leases retains the verified binding and expiry behind each owned ID.
+	// A path alone must not suppress acquisition after its lease disappears.
+	leases         map[int]agentmail.FileReservation
+	renewalPending bool
+}
+
+type pendingReservationEdits struct {
+	files      []string
+	observedAt time.Time
+	agentName  string // Empty only while the observed pane has no identity yet.
+	// An uncertain mutation must not be blindly replayed, even when its
+	// output frame is unchanged. Only unattempted or verified conflict-only
+	// work is automatically retried.
+	blocked bool
 }
 
 // AgentNameResolver resolves a registered Agent Mail identity for a tmux pane.
@@ -57,6 +71,7 @@ type reservationWatcherClient interface {
 	ListReservations(context.Context, string, string, bool) ([]agentmail.FileReservation, error)
 	ReleaseReservations(context.Context, string, string, []string, []int) (*agentmail.ReleaseReservationsResult, error)
 	RenewReservations(context.Context, agentmail.RenewReservationsOptions) (*agentmail.RenewReservationsResult, error)
+	ReadActiveReservations(context.Context, string) ([]agentmail.FileReservation, error)
 }
 
 // FileReservationWatcher monitors pane output and automatically reserves files.
@@ -73,12 +88,14 @@ type FileReservationWatcher struct {
 	extendOnActivity   bool
 	listAllPanes       func(ctx context.Context) (map[string][]tmux.Pane, error)
 	capturePaneOutput  func(ctx context.Context, target string, lines int) (string, error)
-	agentNameResolver  AgentNameResolver           // paneID -> registered agent name, or "" to skip
-	paneOutputs        map[string]string           // paneID -> last captured output
+	agentNameResolver  AgentNameResolver // paneID -> registered agent name, or "" to skip
+	paneOutputs        map[string]string // paneID -> last captured output
+	pendingEdits       map[string]*pendingReservationEdits
 	activeReservations map[string]*PaneReservation // paneID -> reservation
 	lifecycleMu        sync.Mutex
 	mu                 sync.Mutex
 	stopCh             chan struct{}
+	cancel             context.CancelFunc // Cancels in-flight polling I/O before Stop joins.
 	wg                 sync.WaitGroup
 	debug              bool
 	conflictCallback   ConflictCallback // Called when conflicts are detected
@@ -214,6 +231,7 @@ func NewFileReservationWatcher(opts ...FileReservationWatcherOption) *FileReserv
 		listAllPanes:       tmux.DefaultClient.GetAllPanesContext,
 		capturePaneOutput:  tmux.CapturePaneOutputContext,
 		paneOutputs:        make(map[string]string),
+		pendingEdits:       make(map[string]*pendingReservationEdits),
 		activeReservations: make(map[string]*PaneReservation),
 	}
 
@@ -244,10 +262,12 @@ func (w *FileReservationWatcher) Start(ctx context.Context) {
 
 	stopCh := make(chan struct{})
 	w.stopCh = stopCh
+	runCtx, cancel := context.WithCancel(ctx)
+	w.cancel = cancel
 	w.wg.Add(1) // Must be inside the lock to prevent race with Stop()+wg.Wait()
 	w.mu.Unlock()
 
-	go w.run(ctx, stopCh)
+	go w.run(runCtx, stopCh)
 
 	if w.debug {
 		log.Printf("[FileReservationWatcher] Started with pollInterval=%v idleTimeout=%v", w.pollInterval, w.idleTimeout)
@@ -260,17 +280,28 @@ func (w *FileReservationWatcher) Stop() {
 	defer w.lifecycleMu.Unlock()
 
 	w.mu.Lock()
-	stopCh := w.stopCh
+	stopCh, cancel := w.stopCh, w.cancel
 	w.stopCh = nil
+	w.cancel = nil
 	w.mu.Unlock()
 
 	if stopCh != nil {
 		close(stopCh)
 	}
+	if cancel != nil {
+		cancel()
+	}
 	w.wg.Wait()
+	w.mu.Lock()
+	clear(w.pendingEdits)
+	clear(w.paneOutputs)
+	w.mu.Unlock()
 
-	// Release all reservations on stop
-	w.releaseAllReservations()
+	// A started worker owns exit cleanup, including parent cancellation.
+	// Without a worker, retry any retained handles from earlier failed cleanup.
+	if stopCh == nil {
+		w.releaseAllReservations()
+	}
 
 	if w.debug {
 		log.Printf("[FileReservationWatcher] Stopped")
@@ -280,6 +311,9 @@ func (w *FileReservationWatcher) Stop() {
 // run is the main polling loop.
 func (w *FileReservationWatcher) run(ctx context.Context, stopCh <-chan struct{}) {
 	defer w.wg.Done()
+	// Cleanup uses its own bounded context, not the cancelled polling context.
+	// Join includes cleanup so Stop never returns before owned handles settle.
+	defer w.releaseAllReservations()
 
 	ticker := time.NewTicker(w.pollInterval)
 	defer ticker.Stop()
@@ -299,6 +333,9 @@ func (w *FileReservationWatcher) run(ctx context.Context, stopCh <-chan struct{}
 
 // checkPaneOutputs scans all panes for file edits.
 func (w *FileReservationWatcher) checkPaneOutputs(ctx context.Context) {
+	if ctx.Err() != nil {
+		return
+	}
 	listAllPanes := w.listAllPanes
 	if listAllPanes == nil {
 		listAllPanes = tmux.DefaultClient.GetAllPanesContext
@@ -307,6 +344,9 @@ func (w *FileReservationWatcher) checkPaneOutputs(ctx context.Context) {
 	// ListSessions only returns session metadata; it does not populate Session.Panes.
 	// The watcher needs the pane-native API to actually inspect agent output.
 	panesBySession, err := listAllPanes(ctx)
+	if ctx.Err() != nil {
+		return // Cancelled topology is not evidence that panes disappeared.
+	}
 	if err != nil {
 		if w.debug {
 			log.Printf("[FileReservationWatcher] Error listing panes: %v", err)
@@ -314,23 +354,45 @@ func (w *FileReservationWatcher) checkPaneOutputs(ctx context.Context) {
 		return
 	}
 
+	livePanes := make(map[string]bool)
 	for sessionName, panes := range panesBySession {
 		if w.sessionFilter != "" && sessionName != w.sessionFilter {
 			continue
 		}
 		for _, pane := range panes {
+			if ctx.Err() != nil {
+				return
+			}
 			// Ignore shell/user panes; all agent panes are eligible for edit detection.
 			if pane.Type == tmux.AgentUser {
 				continue
 			}
+			livePanes[pane.ID] = true
 
 			w.checkPaneForFileEdits(ctx, sessionName, pane)
 		}
 	}
+	// Only a successful topology read can retire pending observations. A
+	// failed read above is not evidence that all panes disappeared.
+	w.mu.Lock()
+	for paneID := range w.pendingEdits {
+		if !livePanes[paneID] {
+			delete(w.pendingEdits, paneID)
+		}
+	}
+	for paneID := range w.paneOutputs {
+		if !livePanes[paneID] {
+			delete(w.paneOutputs, paneID)
+		}
+	}
+	w.mu.Unlock()
 }
 
 // checkPaneForFileEdits checks a single pane for file edits and reserves files.
 func (w *FileReservationWatcher) checkPaneForFileEdits(ctx context.Context, sessionName string, pane tmux.Pane) {
+	if ctx.Err() != nil {
+		return
+	}
 	capturePaneOutput := w.capturePaneOutput
 	if capturePaneOutput == nil {
 		capturePaneOutput = tmux.CapturePaneOutputContext
@@ -338,6 +400,9 @@ func (w *FileReservationWatcher) checkPaneForFileEdits(ctx context.Context, sess
 
 	// Capture recent output
 	output, err := capturePaneOutput(ctx, pane.ID, w.captureLines)
+	if ctx.Err() != nil {
+		return
+	}
 	if err != nil {
 		if w.debug {
 			log.Printf("[FileReservationWatcher] Error capturing output from pane %s: %v", pane.ID, err)
@@ -346,19 +411,123 @@ func (w *FileReservationWatcher) checkPaneForFileEdits(ctx context.Context, sess
 	}
 
 	now := time.Now()
-	if !w.recordPaneOutput(pane.ID, output, now) {
-		return
+	changed := w.recordPaneOutput(pane.ID, output, now)
+	w.mu.Lock()
+	needsRenewal := false
+	if tracked := w.activeReservations[pane.ID]; tracked != nil {
+		needsRenewal = tracked.renewalPending && now.Sub(tracked.LastActivity) <= w.idleTimeout
 	}
-	if w.extendOnActivity {
+	w.mu.Unlock()
+	if w.extendOnActivity && (changed || needsRenewal) {
 		w.renewPaneReservation(ctx, pane.ID)
 	}
 
-	// Detect file edits using local extraction (avoiding import cycle with robot package)
-	agentType := mapAgentTypeToPatternAgent(pane.Type)
-	files := extractEditedFiles(output, agentType, w.projectDir)
+	if !w.autoReserve || w.client == nil || w.projectDir == "" || ctx.Err() != nil {
+		return
+	}
+	currentName := w.resolveAgentName(pane.ID)
+	if changed {
+		// Only new pane evidence advances activity. Retrying an acquisition
+		// must not keep an idle pane's leases alive indefinitely.
+		files := extractEditedFiles(output, mapAgentTypeToPatternAgent(pane.Type), w.projectDir)
+		w.mu.Lock()
+		w.queueReservationEditsLocked(pane.ID, files, currentName, now)
+		w.mu.Unlock()
+	}
+	if !w.reconcileExpiredReservations(ctx, pane.ID, now) {
+		return
+	}
 
-	if len(files) > 0 {
-		w.onFileEdit(ctx, sessionName, pane, output, files, now)
+	w.mu.Lock()
+	pending := w.pendingEdits[pane.ID]
+	if pending == nil || pending.blocked {
+		w.mu.Unlock()
+		return
+	}
+	if pending.agentName != "" && currentName != "" && pending.agentName != currentName {
+		// A verified conflict is retryable only for its original observer,
+		// not for an unrelated agent later launched into the same pane.
+		delete(w.pendingEdits, pane.ID)
+		w.mu.Unlock()
+		return
+	}
+	if pending.agentName == "" {
+		pending.agentName = currentName
+	}
+	if now.Sub(pending.observedAt) > w.idleTimeout {
+		delete(w.pendingEdits, pane.ID)
+		w.mu.Unlock()
+		return
+	}
+	files := append([]string(nil), pending.files...)
+	observedAt := pending.observedAt
+	w.mu.Unlock()
+
+	retry := w.onFileEdit(ctx, sessionName, pane, output, files, observedAt)
+	currentName = w.resolveAgentName(pane.ID)
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if pending = w.pendingEdits[pane.ID]; pending != nil {
+		held := make(map[string]bool)
+		if tracked := w.activeReservations[pane.ID]; tracked != nil && tracked.AgentName == currentName {
+			for _, file := range tracked.Files {
+				held[file] = true
+			}
+		}
+		remaining := pending.files[:0]
+		for _, file := range pending.files {
+			if !held[file] {
+				remaining = append(remaining, file)
+			}
+		}
+		pending.files = remaining
+		pending.blocked = !retry
+		if !retry {
+			log.Printf("[FileReservationWatcher] Reservation outcome for pane %s is unresolved; automatic acquisition retry withheld; inspect ntm locks before restarting the watcher", pane.ID)
+		}
+		if len(remaining) == 0 {
+			delete(w.pendingEdits, pane.ID)
+		}
+	}
+}
+
+// queueReservationEditsLocked retains edits even when they scroll out of the
+// next capture before identity registration or a conflict has been resolved.
+// The caller holds w.mu. A retry never supplies a new observation timestamp.
+func (w *FileReservationWatcher) queueReservationEditsLocked(paneID string, files []string, agentName string, observedAt time.Time) {
+	if w.pendingEdits == nil {
+		w.pendingEdits = make(map[string]*pendingReservationEdits)
+	}
+	pending := w.pendingEdits[paneID]
+	if pending != nil && pending.agentName != "" && agentName != "" && pending.agentName != agentName {
+		if pending.blocked {
+			return // A replacement identity does not settle an uncertain mutation.
+		}
+		delete(w.pendingEdits, paneID)
+		pending = nil
+	}
+	if pending == nil {
+		if len(files) == 0 {
+			return
+		}
+		pending = &pendingReservationEdits{observedAt: observedAt, agentName: agentName}
+		w.pendingEdits[paneID] = pending
+	}
+	if pending.agentName == "" {
+		pending.agentName = agentName
+	}
+	if observedAt.After(pending.observedAt) {
+		pending.observedAt = observedAt
+	}
+	seen := make(map[string]bool, len(pending.files)+len(files))
+	for _, file := range pending.files {
+		seen[file] = true
+	}
+	for _, file := range files {
+		if file != "" && !seen[file] {
+			pending.files = append(pending.files, file)
+			seen[file] = true
+		}
 	}
 }
 
@@ -385,9 +554,9 @@ func (w *FileReservationWatcher) onFileEdit(
 	output string,
 	files []string,
 	now time.Time,
-) {
-	if !w.autoReserve || w.client == nil || w.projectDir == "" {
-		return
+) bool {
+	if ctx.Err() != nil || !w.autoReserve || w.client == nil || w.projectDir == "" {
+		return true // No mutation was attempted.
 	}
 
 	agentName, newFiles := w.prepareReservationAttempt(pane.ID, sessionName, output, files, now)
@@ -395,7 +564,7 @@ func (w *FileReservationWatcher) onFileEdit(
 		// Either we have no registered identity for this pane yet (skip to
 		// avoid a noisy 'unknown agent_name' server error) or we already
 		// hold reservations covering every detected file.
-		return
+		return true
 	}
 
 	// Reserve new files
@@ -416,7 +585,10 @@ func (w *FileReservationWatcher) onFileEdit(
 		if w.debug {
 			log.Printf("[FileReservationWatcher] Reservation error for pane %s: %v", pane.ID, err)
 		}
-		return
+		return false
+	}
+	if result == nil {
+		return false // No receipt is not proof that an acquisition failed.
 	}
 
 	w.recordReservationResult(pane.ID, result, now)
@@ -438,11 +610,12 @@ func (w *FileReservationWatcher) onFileEdit(
 			}
 		}
 	}
+	return true
 }
 
 // renewPaneReservation extends the lease for a pane that produced new output.
 func (w *FileReservationWatcher) renewPaneReservation(ctx context.Context, paneID string) {
-	if w.client == nil {
+	if w.client == nil || ctx.Err() != nil {
 		return
 	}
 
@@ -454,6 +627,9 @@ func (w *FileReservationWatcher) renewPaneReservation(ctx context.Context, paneI
 	}
 	copy := clonePaneReservation(*reservation)
 	w.mu.Unlock()
+	if currentName := w.resolveAgentName(paneID); currentName != "" && currentName != copy.AgentName {
+		return // A replacement identity cannot extend its predecessor's leases.
+	}
 
 	result, err := w.client.RenewReservations(ctx, agentmail.RenewReservationsOptions{
 		ProjectKey:     w.projectDir,
@@ -461,6 +637,11 @@ func (w *FileReservationWatcher) renewPaneReservation(ctx context.Context, paneI
 		ExtendSeconds:  int(w.reservationTTL.Seconds()),
 		ReservationIDs: copy.ReservationID,
 	})
+	w.mu.Lock()
+	if current := w.activeReservations[paneID]; current != nil && current.AgentName == copy.AgentName {
+		current.renewalPending = err != nil || result == nil || result.Renewed < len(copy.ReservationID)
+	}
+	w.mu.Unlock()
 	if err != nil || result == nil || result.Renewed < len(copy.ReservationID) {
 		if w.debug {
 			if err != nil {
@@ -493,9 +674,118 @@ func (w *FileReservationWatcher) recordPaneOutput(paneID string, output string, 
 	return true
 }
 
+// reconcileExpiredReservations refreshes only leases whose last verified
+// lifetime ended. Missing/expired rows are no longer coverage; an independent
+// read may instead prove that a renewal succeeded despite a lost reply. Never
+// reacquire merely because a renewal count was short or the read failed.
+func (w *FileReservationWatcher) reconcileExpiredReservations(ctx context.Context, paneID string, now time.Time) bool {
+	w.mu.Lock()
+	tracked := w.activeReservations[paneID]
+	if tracked == nil || len(tracked.leases) == 0 {
+		w.mu.Unlock()
+		return true
+	}
+	snapshot := clonePaneReservation(*tracked)
+	w.mu.Unlock()
+
+	expired := make(map[int]agentmail.FileReservation)
+	for id, lease := range snapshot.leases {
+		if !lease.ExpiresTS.After(now) {
+			expired[id] = lease
+		}
+	}
+	if len(expired) == 0 {
+		return true
+	}
+	rows, err := w.client.ReadActiveReservations(ctx, w.projectDir)
+	if err != nil || ctx.Err() != nil {
+		if w.debug {
+			log.Printf("[FileReservationWatcher] Cannot verify expired leases for pane %s: %v", paneID, err)
+		}
+		return false
+	}
+	byID := make(map[int]agentmail.FileReservation, len(rows))
+	for _, row := range rows {
+		if _, duplicate := byID[row.ID]; duplicate {
+			return false // Incomplete/inconsistent evidence is not absence.
+		}
+		byID[row.ID] = row
+	}
+	checkedAt := time.Now()
+	lost := make(map[int]bool)
+	for id, lease := range expired {
+		row, found := byID[id]
+		if !found {
+			lost[id] = true
+			continue
+		}
+		// Compare against the original VERIFIED binding, not against a new
+		// request or a newly registered pane identity. A mismatched row must
+		// not authorize release, renewal or replacement acquisition.
+		if row.AgentName != lease.AgentName || row.ProjectID != lease.ProjectID ||
+			row.PathPattern != lease.PathPattern || row.Reason != lease.Reason ||
+			row.Exclusive != lease.Exclusive || row.ExpiresTS.IsZero() {
+			return false
+		}
+		lost[id] = row.ReleasedTS != nil || !row.ExpiresTS.After(checkedAt)
+	}
+	currentName := w.resolveAgentName(paneID)
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	current := w.activeReservations[paneID]
+	if current == nil || current.AgentName != snapshot.AgentName {
+		return false
+	}
+	// Do not let a delayed read overwrite a newer grant/renewal observation.
+	for id, lease := range expired {
+		live, ok := current.leases[id]
+		if !ok || !live.ExpiresTS.Equal(lease.ExpiresTS.Time) || live.PathPattern != lease.PathPattern {
+			return false
+		}
+	}
+	lostPaths := make([]string, 0, len(lost))
+	for _, id := range current.ReservationID {
+		if lost[id] {
+			lostPaths = append(lostPaths, current.leases[id].PathPattern)
+			delete(current.leases, id)
+		} else if _, checked := expired[id]; checked {
+			current.leases[id] = byID[id]
+		}
+	}
+	ids := current.ReservationID[:0]
+	for _, id := range current.ReservationID {
+		if !lost[id] {
+			ids = append(ids, id)
+		}
+	}
+	current.ReservationID = ids
+	remainingPaths := make(map[string]bool)
+	for _, lease := range current.leases {
+		remainingPaths[lease.PathPattern] = true
+	}
+	noLongerHeld := make(map[string]bool)
+	for _, path := range lostPaths {
+		if !remainingPaths[path] {
+			noLongerHeld[path] = true
+		}
+	}
+	files := current.Files[:0]
+	for _, path := range current.Files {
+		if !noLongerHeld[path] {
+			files = append(files, path)
+		}
+	}
+	current.Files = files
+	if len(lostPaths) > 0 && currentName == snapshot.AgentName && checkedAt.Sub(current.LastActivity) <= w.idleTimeout {
+		w.queueReservationEditsLocked(paneID, lostPaths, snapshot.AgentName, current.LastActivity)
+	}
+	return true
+}
+
 // releaseIdleReservations releases reservations for panes that have been idle.
 func (w *FileReservationWatcher) releaseIdleReservations(ctx context.Context) {
-	if w.client == nil {
+	if w.client == nil || ctx.Err() != nil {
 		return
 	}
 
@@ -696,7 +986,9 @@ func (w *FileReservationWatcher) prepareReservationAttempt(
 		}
 	}
 
-	reservation.LastActivity = now
+	if now.After(reservation.LastActivity) {
+		reservation.LastActivity = now
+	}
 	if output != "" {
 		reservation.LastOutput = output
 	}
@@ -711,7 +1003,9 @@ func (w *FileReservationWatcher) recordReservationResult(paneID string, result *
 	if !exists {
 		return
 	}
-	reservation.LastActivity = now
+	if now.After(reservation.LastActivity) {
+		reservation.LastActivity = now
+	}
 
 	if result == nil {
 		return
@@ -727,6 +1021,10 @@ func (w *FileReservationWatcher) recordReservationResult(paneID string, result *
 	}
 
 	for _, granted := range result.Granted {
+		if reservation.leases == nil {
+			reservation.leases = make(map[int]agentmail.FileReservation)
+		}
+		reservation.leases[granted.ID] = granted
 		if !existingFiles[granted.PathPattern] {
 			reservation.Files = append(reservation.Files, granted.PathPattern)
 			existingFiles[granted.PathPattern] = true
@@ -799,6 +1097,13 @@ func hasConflictHolders(conflicts []agentmail.ReservationConflict) bool {
 func clonePaneReservation(reservation PaneReservation) PaneReservation {
 	reservation.Files = append([]string(nil), reservation.Files...)
 	reservation.ReservationID = append([]int(nil), reservation.ReservationID...)
+	if reservation.leases != nil {
+		leases := make(map[int]agentmail.FileReservation, len(reservation.leases))
+		for id, lease := range reservation.leases {
+			leases[id] = lease
+		}
+		reservation.leases = leases
+	}
 	return reservation
 }
 
@@ -817,7 +1122,7 @@ func (w *FileReservationWatcher) removeTrackedReservation(snapshot PaneReservati
 	defer w.mu.Unlock()
 
 	current, ok := w.activeReservations[snapshot.PaneID]
-	if !ok {
+	if !ok || current.AgentName != snapshot.AgentName {
 		return
 	}
 
@@ -831,18 +1136,28 @@ func (w *FileReservationWatcher) removeTrackedReservation(snapshot PaneReservati
 	removeIDs := make(map[int]struct{}, len(snapshot.ReservationID))
 	for _, id := range snapshot.ReservationID {
 		removeIDs[id] = struct{}{}
+		delete(current.leases, id)
 	}
 	filteredIDs := make([]int, 0, len(current.ReservationID))
+	removed := false
 	for _, id := range current.ReservationID {
 		if _, remove := removeIDs[id]; !remove {
 			filteredIDs = append(filteredIDs, id)
+		} else {
+			removed = true
 		}
+	}
+	if !removed {
+		return // A newer lease may own the same path under a different ID.
 	}
 	current.ReservationID = filteredIDs
 
 	removeFiles := make(map[string]struct{}, len(snapshot.Files))
 	for _, file := range snapshot.Files {
 		removeFiles[file] = struct{}{}
+	}
+	for _, lease := range current.leases {
+		delete(removeFiles, lease.PathPattern)
 	}
 	filteredFiles := make([]string, 0, len(current.Files))
 	for _, file := range current.Files {
