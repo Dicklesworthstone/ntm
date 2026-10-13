@@ -82,8 +82,35 @@ memory queue remains independently bounded. Internal manager callers can set
 Permanent HTTP failures and exhausted retries are retained with `failed: true`
 and sanitized attempt metadata. They do not replay automatically. Malformed,
 future-version, non-private, or inconsistent records are retained without sending.
-A full outbox rejects further acceptance instead of deleting older work. There
-is not yet an automatic dead-letter replay or pruning command: inspect retained
-receipts, resolve endpoint configuration, and explicitly archive terminal evidence
-with the managers stopped before reclaiming capacity. Never clear pending receipts
+A full outbox rejects further acceptance instead of deleting older work.
+
+Use `ntm webhook-outbox list --project /path/to/project` to inspect retained work.
+The command prints JSON without sending HTTP, creating storage, or exposing request
+bodies, event messages, or endpoint credentials. Invalid records remain visible
+because they consume capacity. A missing outbox is an empty result. `blocked_by`
+explains configuration, privacy, and recovery-evidence restrictions. The snapshot
+is per-record, not transactional across a directory that workers may be updating.
+
+After repairing the receiver, explicitly authorize recovery of one failed receipt:
+
+```sh
+ntm webhook-outbox retry RECORD --revision REVISION --project /path/to/project
+```
+
+Copy `record` and `revision` from the inspected entry. Pending, malformed, changed,
+busy, privacy-blocked, or configuration-mismatched records cannot be retried. The
+revision is checked under the same OS lock used by senders, so concurrent operators
+cannot authorize the same observed failure twice. Inspect again after any conflict;
+do not blindly regenerate revisions in a retry loop.
+
+Authorization is durable but does not itself send HTTP. A live or later project
+manager picks up the receipt after the preserved cooldown. Recovery keeps the same
+delivery ID, frozen body, and cumulative `X-NTM-Attempt`; the configured retry budget
+starts a new cycle. Previous terminal evidence and authorization time are appended
+to the receipt (at most 64 recovery cycles). Terminal `Retry-After` deadlines are
+retained too. Repairing the receiver does not authorize changing the recorded
+destination, signing credentials, or payload. Ordinary at-least-once behavior and
+receiver deduplication remain necessary across crashes.
+
+There is no automatic dead-letter replay or pruning. Never clear pending receipts
 or lock files merely to silence an admission error.

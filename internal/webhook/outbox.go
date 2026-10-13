@@ -38,6 +38,9 @@ type outboxRecord struct {
 	NextRetry   time.Time   `json:"next_retry,omitempty"`
 	Failed      bool        `json:"failed,omitempty"`
 	LastAttempt *AttemptLog `json:"last_attempt,omitempty"`
+	// Recovery is an append-only record of explicit operator retry authorizations.
+	// Attempt remains cumulative; each authorization starts a fresh retry budget.
+	Recovery []outboxRecovery `json:"recovery,omitempty"`
 }
 
 type deliveryOutbox struct {
@@ -61,21 +64,11 @@ func newDeliveryOutbox(dir string, limit int) (*deliveryOutbox, error) {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, err
 	}
-	dir, err := filepath.EvalSymlinks(dir)
+	outbox, err := openExistingOutbox(dir, limit)
 	if err != nil {
 		return nil, err
 	}
-	dir, err = filepath.Abs(dir)
-	if err != nil {
-		return nil, err
-	}
-	info, err := os.Stat(dir)
-	if err != nil {
-		return nil, err
-	}
-	if !info.IsDir() || info.Mode().Perm()&0077 != 0 {
-		return nil, errors.New("webhook outbox must be a private directory (mode 0700)")
-	}
+	dir = outbox.dir
 	// Establish support before Start accepts anything. Locks are a fixed-size
 	// bank, not one permanent sidecar per delivered event.
 	lock, err := openOutboxLock(filepath.Join(dir, "admission.lock"))
@@ -96,7 +89,7 @@ func newDeliveryOutbox(dir string, limit int) (*deliveryOutbox, error) {
 			break
 		}
 	}
-	return &deliveryOutbox{dir: dir, root: info, limit: limit, wake: make(chan struct{}, 1), active: make(map[string]bool), reported: make(map[string]bool)}, nil
+	return outbox, nil
 }
 
 func (o *deliveryOutbox) checkRoot() error {
@@ -187,6 +180,9 @@ func (o *deliveryOutbox) read(key string) (outboxRecord, error) {
 		record.Event.ID == "" || record.ID != record.Event.ID+"_"+record.WebhookID || record.Event.Timestamp.IsZero() || record.Payload == nil ||
 		record.Attempt < 0 || record.Attempt > 1000000 || (record.Failed && record.LastAttempt == nil) {
 		return record, errors.New("invalid or unsupported webhook outbox record")
+	}
+	if err := validateOutboxRecovery(record); err != nil {
+		return record, err
 	}
 	return record, nil
 }
@@ -484,10 +480,17 @@ func (m *WebhookManager) settleOutbox(c *outboxClaim, d *Delivery, last AttemptL
 	d.Error = deliveryErr
 	// Shutdown cancellation is not a permanent receiver failure. Keep work for
 	// a future manager even if this happened at the retry-attempt boundary.
-	retry := m.shouldRetry(d, last.StatusCode, deliveryErr) || (m.ctx.Err() != nil && last.StatusCode == 0)
-	if retry {
-		c.record.NextRetry = m.calculateNextRetry(d)
-	} else {
+	// Recovery never rewinds the wire attempt number or overwrites the previous
+	// failure. Only the configured per-cycle retry budget starts afresh.
+	cycle := *d
+	if n := len(c.record.Recovery); n > 0 {
+		cycle.Attempt -= c.record.Recovery[n-1].AfterAttempt
+	}
+	retry := m.shouldRetry(&cycle, last.StatusCode, deliveryErr) || (m.ctx.Err() != nil && last.StatusCode == 0)
+	// Retain receiver cooldowns even for terminal failures. An explicit retry
+	// must not bypass Retry-After merely because the previous budget ran out.
+	c.record.NextRetry = m.calculateNextRetry(&cycle)
+	if !retry {
 		c.record.Failed = true
 	}
 	if err := c.store.save(c.key, c.record); err != nil {

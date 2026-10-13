@@ -40,13 +40,39 @@ func StartBridgeFromProjectConfig(projectDir, session string, bus *events.EventB
 	if bus == nil {
 		bus = events.DefaultBus
 	}
-
-	projectCfgs, err := config.LoadProjectWebhooks(projectDir)
+	mgr, err := NewProjectWebhookManager(projectDir, redactionCfg)
 	if err != nil {
 		return nil, err
 	}
-	if len(projectCfgs) == 0 {
+	if len(mgr.webhooks) == 0 {
 		return nil, nil
+	}
+	if err := mgr.Start(); err != nil {
+		return nil, err
+	}
+
+	unsub := bus.SubscribeAll(func(e events.BusEvent) {
+		if strings.TrimSpace(session) != "" && e.EventSession() != session {
+			return
+		}
+		ev, ok := toWebhookEvent(e)
+		if !ok {
+			return
+		}
+		if err := mgr.Dispatch(ev); err != nil {
+			slog.Warn("webhook event was not fully accepted", "event_type", ev.Type, "error", err)
+		}
+	})
+	return &BusBridge{session: session, manager: mgr, bus: bus, unsubscribe: unsub}, nil
+}
+
+// NewProjectWebhookManager loads the same endpoint, privacy and redaction
+// configuration for event delivery and operator recovery. It starts no worker
+// and writes no storage, including when no endpoints remain configured.
+func NewProjectWebhookManager(projectDir string, redactionCfg *redaction.Config) (*WebhookManager, error) {
+	projectCfgs, err := config.LoadProjectWebhooks(projectDir)
+	if err != nil {
+		return nil, err
 	}
 
 	managerCfg := DefaultManagerConfig()
@@ -78,33 +104,7 @@ func StartBridgeFromProjectConfig(projectDir, session string, bus *events.EventB
 		}
 	}
 
-	if err := mgr.Start(); err != nil {
-		return nil, err
-	}
-
-	unsub := bus.SubscribeAll(func(e events.BusEvent) {
-		if strings.TrimSpace(session) != "" && e.EventSession() != session {
-			return
-		}
-
-		ev, ok := toWebhookEvent(e)
-		if !ok {
-			return
-		}
-
-		// Durable acceptance can fail (disk full, malformed receipt, unavailable
-		// storage). Surface that failure instead of claiming the event is safe.
-		if err := mgr.Dispatch(ev); err != nil {
-			slog.Warn("webhook event was not fully accepted", "event_type", ev.Type, "error", err)
-		}
-	})
-
-	return &BusBridge{
-		session:     session,
-		manager:     mgr,
-		bus:         bus,
-		unsubscribe: unsub,
-	}, nil
+	return mgr, nil
 }
 
 func toWebhookEvent(e events.BusEvent) (Event, bool) {
