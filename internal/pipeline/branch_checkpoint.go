@@ -23,11 +23,27 @@ const (
 // ParsedData contains only JSON values so snapshotState deep-copies the record.
 // No mutable workflow variables or a second per-run state file carry authority.
 type branchDecision struct {
-	Version        int    `json:"version"`
-	ParentID       string `json:"parent_id"`
-	DefinitionHash string `json:"definition_hash"`
-	SelectorKey    string `json:"selector_key"`
-	BranchKey      string `json:"branch_key"`
+	Version        int                              `json:"version"`
+	ParentID       string                           `json:"parent_id"`
+	DefinitionHash string                           `json:"definition_hash"`
+	SelectorKey    string                           `json:"selector_key"`
+	BranchKey      string                           `json:"branch_key"`
+	Children       map[string]branchChildCheckpoint `json:"children,omitempty"`
+	Scope          map[string]branchScopeValue      `json:"scope,omitempty"`
+}
+
+// A child receipt binds restored aliases to the exact settled StepResult.
+// HooksSettled distinguishes a returned lifecycle from a command result that
+// became durable just before a crash interrupted its success hooks.
+type branchChildCheckpoint struct {
+	ResultHash   string                 `json:"result_hash"`
+	Outputs      map[string]interface{} `json:"outputs,omitempty"`
+	HooksSettled bool                   `json:"hooks_settled"`
+}
+
+type branchScopeValue struct {
+	Exists bool        `json:"exists"`
+	Value  interface{} `json:"value,omitempty"`
 }
 
 func branchDecisionID(parentID string) string { return parentID + branchDecisionSuffix }
@@ -76,6 +92,19 @@ func decodeBranchDecision(id string, result StepResult) (branchDecision, error) 
 	hash, err := hex.DecodeString(decision.DefinitionHash)
 	if err != nil || len(hash) != sha256.Size || decision.DefinitionHash != strings.ToLower(decision.DefinitionHash) {
 		return invalid("missing or invalid definition hash")
+	}
+	for childID, child := range decision.Children {
+		digest, err := hex.DecodeString(child.ResultHash)
+		if childID == id || childID == decision.ParentID ||
+			(!strings.HasPrefix(childID, decision.ParentID+"_") && !strings.HasPrefix(childID, decision.ParentID+".")) ||
+			err != nil || len(digest) != sha256.Size || child.ResultHash != strings.ToLower(child.ResultHash) {
+			return invalid("invalid child completion identity or result hash")
+		}
+	}
+	for key, value := range decision.Scope {
+		if key == "" || (!value.Exists && value.Value != nil) {
+			return invalid("inconsistent saved variable scope")
+		}
 	}
 	return decision, nil
 }
@@ -152,14 +181,68 @@ func (e *Executor) prepareBranchDecision(ctx context.Context, step *Step) (branc
 		return fail(fmt.Errorf("failed to parse branch body: %w", err))
 	}
 	seen := map[string]bool{id: true, step.ID: true}
+	children := make(map[string]*Step, len(steps))
 	for i := range steps {
 		childID := scopedChildStepID(step.ID, steps[i].ID, i+1)
 		if seen[childID] {
 			return fail(fmt.Errorf("branch %q has a duplicate or reserved child identity %q", step.ID, childID))
 		}
+		if e.graph != nil {
+			if _, exists := e.graph.GetStep(childID); exists {
+				return fail(fmt.Errorf("branch child identity %q collides with an independently authored step", childID))
+			}
+		}
 		seen[childID] = true
+		children[childID] = &steps[i]
+	}
+	for childID, receipt := range decision.Children {
+		child := children[childID]
+		if child == nil {
+			return fail(fmt.Errorf("branch %q has completion evidence for unknown child %q", step.ID, childID))
+		}
+		for name := range receipt.Outputs {
+			if child.OutputVar == "" || (name != child.OutputVar && name != child.OutputVar+"_parsed") {
+				return fail(fmt.Errorf("branch child %q contains foreign output alias %q", childID, name))
+			}
+		}
+		e.stateMu.RLock()
+		result, recorded := e.state.Steps[childID]
+		result.ParsedData = cloneInterfaceValue(result.ParsedData)
+		if result.Error != nil {
+			copy := cloneStepErrorValue(*result.Error)
+			result.Error = &copy
+		}
+		e.stateMu.RUnlock()
+		if !recorded {
+			return fail(fmt.Errorf("branch child %q completion checkpoint has lost its saved result; refusing to replay its effects", childID))
+		}
+		if !shouldRerunStep(result) {
+			if result.StepID == "" {
+				result.StepID = childID
+			}
+			digest, err := branchChildHash(result, receipt.Outputs)
+			if err != nil || digest != receipt.ResultHash {
+				return fail(fmt.Errorf("branch child %q result differs from its completion checkpoint; refusing stale recovery", childID))
+			}
+		}
+	}
+	owned := branchBodyOutputVars(steps)
+	for name := range decision.Scope {
+		if _, ok := owned[name]; !ok {
+			return fail(fmt.Errorf("branch %q contains foreign scope alias %q", step.ID, name))
+		}
 	}
 	if !exists {
+		// Resume rebuilds step aliases before reaching the branch. Remember the
+		// original shadowed values so that reconstruction does not turn a local
+		// output into a global one when the resumed body leaves its scope.
+		decision.Scope = make(map[string]branchScopeValue, len(owned))
+		e.varMu.RLock()
+		for name := range owned {
+			value, exists := e.state.Variables[name]
+			decision.Scope[name] = branchScopeValue{Exists: exists, Value: cloneInterfaceValue(value)}
+		}
+		e.varMu.RUnlock()
 		// Use ordinary JSON values, not a typed struct containing live maps.
 		encoded, err := json.Marshal(decision)
 		if err != nil {
@@ -180,6 +263,172 @@ func (e *Executor) prepareBranchDecision(ctx context.Context, step *Step) (branc
 		}
 	}
 	return decision, steps, ctx.Err()
+}
+
+func branchChildHash(result StepResult, outputs map[string]interface{}) (string, error) {
+	data, err := json.Marshal(struct {
+		Result  StepResult             `json:"result"`
+		Outputs map[string]interface{} `json:"outputs,omitempty"`
+	}{result, outputs})
+	if err != nil {
+		return "", fmt.Errorf("hash branch child result: %w", err)
+	}
+	digest := sha256.Sum256(data)
+	return hex.EncodeToString(digest[:]), nil
+}
+
+// adoptBranchChild never treats in-flight, failed, cancelled or explicitly
+// rerunnable work as settled. Those cases still enter the canonical executor
+// and its command/agent journals. A saved completion cannot justify replaying
+// the child's external work merely to rebuild a variable or finish a hook.
+func (e *Executor) adoptBranchChild(ctx context.Context, decision branchDecision, child *Step, workflow *Workflow) (StepResult, bool, error) {
+	if child.Command != "" && child.Wait == WaitNone {
+		// A synchronous Completed result proves only launch for WaitNone.
+		// The canonical command journal owns its still-running process group.
+		return StepResult{}, false, nil
+	}
+	e.stateMu.RLock()
+	prior, exists := e.state.Steps[child.ID]
+	_, inFlight := e.state.InFlightSteps[child.ID]
+	prior.ParsedData = cloneInterfaceValue(prior.ParsedData)
+	if prior.Error != nil {
+		copy := cloneStepErrorValue(*prior.Error)
+		prior.Error = &copy
+	}
+	e.stateMu.RUnlock()
+	if !exists || inFlight || shouldRerunStep(prior) || (prior.Status != StatusCompleted && prior.Status != StatusSkipped) {
+		return StepResult{}, false, nil
+	}
+	if prior.StepID != "" && prior.StepID != child.ID {
+		return StepResult{}, false, fmt.Errorf("branch child %q has a mismatched saved result", child.ID)
+	}
+	prior.StepID = child.ID
+	receipt, captured := decision.Children[child.ID]
+	if captured {
+		digest, err := branchChildHash(prior, receipt.Outputs)
+		if err != nil {
+			return StepResult{}, false, err
+		}
+		if digest != receipt.ResultHash {
+			return StepResult{}, false, fmt.Errorf("branch child %q result differs from its completion checkpoint; refusing to replay or restore stale outputs", child.ID)
+		}
+	}
+	if prior.Status == StatusCompleted {
+		if !captured && child.OutputVar != "" && stepOwnsForeachOutputVar(child) {
+			return StepResult{}, false, fmt.Errorf("completed branch child %q lacks its aggregate output checkpoint; inspect the prior output before an explicit reset", child.ID)
+		}
+		e.varMu.Lock()
+		StoreStepOutput(e.state, child.ID, prior.Output, prior.ParsedData)
+		if child.OutputVar != "" {
+			delete(e.state.Variables, child.OutputVar)
+			delete(e.state.Variables, child.OutputVar+"_parsed")
+			if captured {
+				for name, value := range receipt.Outputs {
+					e.state.Variables[name] = cloneInterfaceValue(value)
+				}
+			} else {
+				e.state.Variables[child.OutputVar] = prior.Output
+				if prior.ParsedData != nil {
+					e.state.Variables[child.OutputVar+"_parsed"] = cloneInterfaceValue(prior.ParsedData)
+				}
+			}
+		}
+		e.varMu.Unlock()
+		if !captured || !receipt.HooksSettled {
+			// A native command journal can reconstruct the result of a child
+			// interrupted during hooks. The existing hook runner adopts its
+			// own completed children; do not run the original command again.
+			e.runOnSuccessSteps(ctx, child, workflow)
+		}
+	}
+	return prior, true, nil
+}
+
+// Publish child completion and its local output shape in the SAME state update.
+// snapshotState takes stateMu then varMu too, so a sibling's checkpoint cannot
+// capture a completed child with an older alias receipt. Only the usual
+// persistState performs disk IO and trips the sticky checkpoint failure fence.
+func (e *Executor) checkpointBranchChild(ctx context.Context, parentID string, child *Step, result StepResult) error {
+	e.stateMu.Lock()
+	e.varMu.Lock()
+	runID := e.state.RunID
+	id := branchDecisionID(parentID)
+	evaluation := e.state.Steps[id]
+	decision, err := decodeBranchDecision(id, evaluation)
+	outputs := make(map[string]interface{})
+	if err == nil {
+		// Prepare all values before publishing any new completion. A marshal
+		// failure must not leave readers with a completed child and no receipt.
+		result.ParsedData = cloneInterfaceValue(result.ParsedData)
+		if result.Error != nil {
+			copy := cloneStepErrorValue(*result.Error)
+			result.Error = &copy
+		}
+		if result.Status == StatusCompleted && child.OutputVar != "" {
+			if stepOwnsForeachOutputVar(child) {
+				for _, name := range []string{child.OutputVar, child.OutputVar + "_parsed"} {
+					if value, exists := e.state.Variables[name]; exists {
+						outputs[name] = cloneInterfaceValue(value)
+					}
+				}
+			} else {
+				outputs[child.OutputVar] = result.Output
+				if result.ParsedData != nil {
+					outputs[child.OutputVar+"_parsed"] = result.ParsedData
+				}
+			}
+		}
+		if decision.Children == nil {
+			decision.Children = make(map[string]branchChildCheckpoint)
+		}
+		// A fire-and-forget command has not settled at its synchronous return.
+		// Its native command journal and later RerunOnResume flag own recovery.
+		if !(child.Command != "" && child.Wait == WaitNone) &&
+			(result.Status == StatusCompleted || (result.Status == StatusSkipped && !shouldRerunStep(result))) {
+			var digest string
+			digest, err = branchChildHash(result, outputs)
+			if err == nil {
+				decision.Children[child.ID] = branchChildCheckpoint{ResultHash: digest, Outputs: outputs, HooksSettled: ctx.Err() == nil}
+			}
+		} else {
+			delete(decision.Children, child.ID)
+		}
+		if err == nil {
+			var encoded []byte
+			encoded, err = json.Marshal(decision)
+			if err == nil {
+				var metadata map[string]interface{}
+				err = json.Unmarshal(encoded, &metadata)
+				if err == nil {
+					evaluation.ParsedData = metadata
+					e.state.Steps[child.ID] = result
+					e.state.Steps[id] = evaluation
+					e.state.UpdatedAt = time.Now()
+					if result.Status == StatusCompleted {
+						StoreStepOutput(e.state, child.ID, result.Output, result.ParsedData)
+						if child.OutputVar != "" {
+							delete(e.state.Variables, child.OutputVar)
+							delete(e.state.Variables, child.OutputVar+"_parsed")
+							for name, value := range outputs {
+								e.state.Variables[name] = value
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	e.varMu.Unlock()
+	e.stateMu.Unlock()
+	if err != nil {
+		// This is a checkpoint boundary after external effects, even when
+		// serialization (rather than disk IO) is what failed. Fence retries
+		// and other workers through the same sticky checkpoint error.
+		e.persistMu.Lock()
+		defer e.persistMu.Unlock()
+		return e.failCheckpointLocked(runID, err)
+	}
+	return e.persistState()
 }
 
 // Old checkpoints cannot identify a branch by child name: different branches

@@ -187,6 +187,16 @@ func (e *Executor) executeBranch(ctx context.Context, step *Step, workflow *Work
 	e.varMu.RLock()
 	varSnapshot := captureAllVariables(e.state.Variables)
 	e.varMu.RUnlock()
+	if varSnapshot == nil && len(decision.Scope) > 0 {
+		varSnapshot = make(map[string]interface{})
+	}
+	for name, saved := range decision.Scope {
+		if saved.Exists {
+			varSnapshot[name] = cloneInterfaceValue(saved.Value)
+		} else {
+			delete(varSnapshot, name)
+		}
+	}
 	defer func() {
 		e.varMu.Lock()
 		runtimePersist := extractRuntimeKeys(e.state.Variables)
@@ -220,56 +230,38 @@ func (e *Executor) executeBranch(ctx context.Context, step *Step, workflow *Work
 		// keys this branch owns. Nested constructs namespace their own children
 		// under this ID, so a prefix match covers them too.
 		bodyStepIDs = append(bodyStepIDs, bs.ID)
+		// Preserve the identity fence for every recorded result, including
+		// unfinished work that will re-enter the canonical lifecycle.
 		e.stateMu.RLock()
-		sr, recorded := e.state.Steps[bs.ID]
-		sr.ParsedData = cloneInterfaceValue(sr.ParsedData)
+		saved, recorded := e.state.Steps[bs.ID]
 		e.stateMu.RUnlock()
-		if recorded && sr.StepID != bs.ID {
+		if recorded && saved.StepID != bs.ID {
 			result.Status = StatusFailed
 			result.FinishedAt = time.Now()
-			result.Error = &StepError{Type: "recovery", Message: fmt.Sprintf("branch child %q has mismatched saved result identity %q; refusing replay", bs.ID, sr.StepID), Timestamp: result.FinishedAt}
+			result.Error = &StepError{Type: "recovery", Message: fmt.Sprintf("branch child %q has mismatched saved result identity %q; refusing replay", bs.ID, saved.StepID), Timestamp: result.FinishedAt}
 			return result
 		}
-		// Adopt a finished leaf BEFORE reevaluating its when expression or
-		// dispatching mail/reservations. A later child failing does not undo
-		// earlier effects. Restore its outputs below even when no dispatch is
-		// needed. Composite steps still enter their own recovery machinery to
-		// reconstruct iteration/aggregate output variables, not summary text.
-		composite := bs.Branch != "" || bs.Loop != nil || bs.Foreach != nil || bs.ForeachPane != nil || len(bs.Parallel.Steps) > 0
-		finished := sr.Status == StatusCompleted || sr.Status == StatusSkipped
-		if !recorded || !finished || shouldRerunStep(sr) || composite {
-			// Unfinished work keeps the canonical lifecycle and its durable
-			// command/delivery guards, retries, checkpoints, and cancellation.
+		sr, adopted, err := e.adoptBranchChild(ctx, decision, &bs, workflow)
+		if err != nil {
+			result.Status = StatusFailed
+			result.Output = strings.Join(outputs, "\n")
+			result.FinishedAt = time.Now()
+			result.Error = &StepError{Type: "branch_recovery", Message: err.Error(), Timestamp: result.FinishedAt}
+			return result
+		}
+		if !adopted {
+			// Unsettled children retain the canonical retry, cancellation and
+			// external-effect receipt rules. Only proven completion is adopted.
 			sr = e.executeStep(ctx, &bs, workflow)
 		} else {
 			slog.Info("branch child result adopted", "run_id", e.state.RunID, "step_id", bs.ID, "status", sr.Status)
 		}
 		outputs = append(outputs, sr.Output)
 
-		e.stateMu.Lock()
-		e.state.Steps[bs.ID] = sr
-		e.state.UpdatedAt = time.Now()
-		e.stateMu.Unlock()
-
-		// Branch-local outputs must be available to the next body step before
-		// it evaluates its condition or substitutes its command. Foreach owns
-		// its aggregate output_var shape; do not replace it with a summary.
-		if sr.Status == StatusCompleted {
-			e.varMu.Lock()
-			StoreStepOutput(e.state, bs.ID, sr.Output, sr.ParsedData)
-			if bs.OutputVar != "" && !stepOwnsForeachOutputVar(&bs) {
-				e.state.Variables[bs.OutputVar] = sr.Output
-				delete(e.state.Variables, bs.OutputVar+"_parsed")
-				if sr.ParsedData != nil {
-					e.state.Variables[bs.OutputVar+"_parsed"] = sr.ParsedData
-				}
-			}
-			e.varMu.Unlock()
-		}
 		// executeStep has retired this child's in-flight marker. Persist the
 		// settled result before another child (or any of its side effects) can
 		// begin. A storage fault is fatal even under on_error: continue.
-		if err := e.persistState(); err != nil {
+		if err := e.checkpointBranchChild(ctx, step.ID, &bs, sr); err != nil {
 			result.Output = strings.Join(outputs, "\n")
 			result.Status = StatusFailed
 			result.FinishedAt = time.Now()
