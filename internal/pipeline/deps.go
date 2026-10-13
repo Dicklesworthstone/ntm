@@ -575,6 +575,9 @@ func (g *DependencyGraph) validatePhaseOwnership(state *ExecutionState) []Depend
 // completed outputs and prevents the legacy agent-delivery guard from knowing
 // that an unfinished prompt could already have reached its pane.
 func resolveScopedRuntimeChildren(parentID, runtimeID string, parent *Step) (*Step, string, bool) {
+	if decision, canonicalID, ok := branchDecisionRuntimeStep(parentID, runtimeID, parent); ok {
+		return decision, canonicalID, true
+	}
 	for i := range parent.OnSuccess {
 		child := &parent.OnSuccess[i]
 		childID := onSuccessChildStepID(parentID, child.ID, i+1)

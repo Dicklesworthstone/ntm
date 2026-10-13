@@ -332,10 +332,18 @@ func LoadState(projectDir, runID string) (*ExecutionState, error) {
 		return nil, fmt.Errorf("pipeline state run id %q does not match requested run id %q", state.RunID, runID)
 	}
 
+	if err := validateBranchDecisions(&state); err != nil {
+		return nil, err
+	}
+
 	return &state, nil
 }
 
 func marshalStateForDisk(state *ExecutionState) ([]byte, error) {
+	if err := validateBranchDecisions(state); err != nil {
+		return nil, err
+	}
+
 	data, err := json.Marshal(state)
 	if err != nil {
 		return nil, err

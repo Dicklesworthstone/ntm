@@ -143,16 +143,16 @@ func (e *Executor) executeBranch(ctx context.Context, step *Step, workflow *Work
 		return result
 	}
 
-	key, err := e.resolveBranch(ctx, step)
+	decision, branchSteps, err := e.prepareBranchDecision(ctx, step)
 	if err != nil {
 		result.Status = StatusFailed
 		result.Error = &StepError{
 			Type:      "branch",
-			Message:   fmt.Sprintf("branch predicate failed: %v", err),
+			Message:   err.Error(),
 			Timestamp: time.Now(),
 		}
 		result.FinishedAt = time.Now()
-		slog.Error("branch predicate failed",
+		slog.Error("branch decision failed",
 			"run_id", e.state.RunID,
 			"step_id", step.ID,
 			"error", err,
@@ -160,41 +160,12 @@ func (e *Executor) executeBranch(ctx context.Context, step *Step, workflow *Work
 		return result
 	}
 
-	branchVal, lookupErr := lookupBranch(step.Branches, key)
-	if lookupErr != nil {
-		result.Status = StatusFailed
-		result.Error = &StepError{
-			Type:      "branch",
-			Message:   lookupErr.Error(),
-			Timestamp: time.Now(),
-		}
-		result.FinishedAt = time.Now()
-		slog.Error("branch lookup failed",
-			"run_id", e.state.RunID,
-			"step_id", step.ID,
-			"branch_key", key,
-			"error", lookupErr,
-		)
-		return result
-	}
-
+	key := decision.SelectorKey
 	slog.Info("branch step resolved",
 		"run_id", e.state.RunID,
 		"step_id", step.ID,
 		"branch_key", key,
 	)
-
-	branchSteps, parseErr := parseBranchSteps(branchVal, step.ID, key)
-	if parseErr != nil {
-		result.Status = StatusFailed
-		result.Error = &StepError{
-			Type:      "branch",
-			Message:   fmt.Sprintf("failed to parse branch body: %v", parseErr),
-			Timestamp: time.Now(),
-		}
-		result.FinishedAt = time.Now()
-		return result
-	}
 
 	// Snapshot variables before the branch body for scoping.
 	//
