@@ -102,3 +102,21 @@ func (m *WebhookManager) matchesWebhook(wh *WebhookConfig, event Event) bool {
 	}
 	return len(filter.Severity) == 0 || slices.Contains(filter.Severity, string(classifySeverity(event.Type)))
 }
+
+// deliveryPolicyAllows admits an attempt against the current registration,
+// never redirects an already accepted payload to replacement credentials or a
+// new destination. A semantically identical re-registration remains usable.
+// The registry lock defines this attempt's admission boundary; it is released
+// before HTTP, so changing policy cannot recall an already admitted request.
+func (m *WebhookManager) deliveryPolicyAllows(d *Delivery) bool {
+	if d.Webhook == nil {
+		return false
+	}
+	m.webhooksMu.RLock()
+	defer m.webhooksMu.RUnlock()
+	current := m.webhooks[d.Webhook.ID]
+	if current == nil || !current.Enabled || !m.matchesWebhook(current, d.Event) {
+		return false
+	}
+	return current == d.Webhook || m.outboxFingerprint(current) == m.outboxFingerprint(d.Webhook)
+}

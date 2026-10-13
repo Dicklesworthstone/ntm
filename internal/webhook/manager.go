@@ -706,6 +706,16 @@ func (m *WebhookManager) processDelivery(d *Delivery) {
 		}
 		defer claim.lock.Close()
 	}
+	// Queue acceptance is not permanent permission to send. Registration may
+	// have changed while this delivery waited for a worker or retry deadline.
+	// Durable claims already reload the receipt; recheck here too, after any
+	// persistence-policy callback and before recording an attempt.
+	if !m.deliveryPolicyAllows(d) {
+		if claim == nil {
+			m.finishUndelivered(*d, "webhook policy revoked or configuration changed before attempt")
+		}
+		return
+	}
 	d.Attempt++
 	if claim != nil {
 		if err := claim.begin(d.Attempt); err != nil {

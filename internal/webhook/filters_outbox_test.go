@@ -5,11 +5,13 @@ package webhook
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -210,6 +212,180 @@ func TestWebhookOutboxRechecksFiltersBeyondFingerprint(t *testing.T) {
 			after, err := os.ReadFile(path)
 			if err != nil || !bytes.Equal(before, after) || requests.Load() != 0 {
 				t.Fatalf("filtered evidence was sent or changed: requests=%d err=%v", requests.Load(), err)
+			}
+		})
+	}
+}
+
+// A blocked first request pins the single worker so Register definitely replaces
+// the policy before the next delivery is claimed. No timing-based negative probe.
+func TestWebhookQueuedPolicyRevocation(t *testing.T) {
+	for _, durable := range []bool{false, true} {
+		for _, change := range []string{"disable", "session", "provider", "severity", "subscription", "destination", "credential", "equivalent"} {
+			t.Run(fmt.Sprintf("durable=%v/%s", durable, change), func(t *testing.T) {
+				started, release := make(chan struct{}), make(chan struct{})
+				var releaseOnce sync.Once
+				unblock := func() { releaseOnce.Do(func() { close(release) }) }
+				var received, redirected atomic.Int32
+				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if received.Add(1) == 1 {
+						close(started)
+						<-release
+					}
+					w.WriteHeader(http.StatusNoContent)
+				}))
+				defer srv.Close()
+				other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					redirected.Add(1)
+					w.WriteHeader(http.StatusNoContent)
+				}))
+				defer other.Close()
+				cfg := ManagerConfig{WorkerCount: 1, QueueSize: 8}
+				if durable {
+					cfg.OutboxDir = filepath.Join(t.TempDir(), "outbox")
+				}
+				m := NewManager(cfg)
+				wh := WebhookConfig{ID: "hook", URL: srv.URL, Enabled: true, Events: []string{"agent.error"},
+					Filter: &EventFilter{Session: "prod-*", AgentType: []string{"codex"}, Severity: []string{"error"}}}
+				if err := m.Register(wh); err != nil {
+					t.Fatal(err)
+				}
+				if err := m.Start(); err != nil {
+					t.Fatal(err)
+				}
+				defer m.Stop()
+				defer unblock()
+				event := Event{ID: "inflight", Session: "prod-api", Agent: "cod", Type: "agent.error"}
+				if err := m.Dispatch(event); err != nil {
+					t.Fatal(err)
+				}
+				select {
+				case <-started:
+				case <-time.After(3 * time.Second):
+					t.Fatal("first request did not reach receiver")
+				}
+				event.ID = "queued"
+				if err := m.Dispatch(event); err != nil {
+					t.Fatal(err)
+				}
+				var before []byte
+				path := filepath.Join(cfg.OutboxDir, outboxKey("queued_hook"))
+				if durable {
+					var err error
+					before, err = os.ReadFile(path)
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				switch change {
+				case "disable":
+					wh.Enabled = false
+				case "session":
+					wh.Filter.Session = "dev-*"
+				case "provider":
+					wh.Filter.AgentType = []string{"cc"}
+				case "severity":
+					wh.Filter.Severity = []string{"success"}
+				case "subscription":
+					wh.Events = []string{"agent.started"}
+				case "destination":
+					wh.URL = other.URL
+				case "credential":
+					wh.Headers = map[string]string{"Authorization": "replacement-credential"}
+				case "equivalent":
+					wh.Filter.AgentType = []string{"OpenAI", "cod", "codex-cli"}
+				}
+				if err := m.Register(wh); err != nil {
+					t.Fatal(err)
+				}
+				unblock()
+				if err := m.Stop(); err != nil {
+					t.Fatal(err)
+				}
+				want := int32(1)
+				if change == "equivalent" {
+					want = 2
+				}
+				if got := received.Load(); got != want || redirected.Load() != 0 {
+					t.Fatalf("old/new endpoint requests = %d/%d, want %d/0", got, redirected.Load(), want)
+				}
+				if change == "equivalent" {
+					return
+				}
+				if durable {
+					after, err := os.ReadFile(path)
+					if err != nil || !bytes.Equal(before, after) {
+						t.Fatalf("revoked durable work was changed or lost: %v", err)
+					}
+				} else {
+					m.deadLettersMu.Lock()
+					defer m.deadLettersMu.Unlock()
+					if len(m.deadLetters) != 1 || m.deadLetters[0].Delivery.ID != "queued_hook" ||
+						m.deadLetters[0].Delivery.Attempt != 0 || m.deadLetters[0].AttemptLog[0].StatusCode != 0 {
+						t.Fatalf("revocation invented HTTP attempt or lost local failure: %+v", m.deadLetters)
+					}
+					if m.pending.Load() != 0 || m.failures.Load() != 1 || m.deliveries.Load() != 1 {
+						t.Fatal("revocation left inconsistent delivery accounting")
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestWebhookVolatileRetryRechecksPolicy(t *testing.T) {
+	for _, disable := range []bool{false, true} {
+		t.Run(fmt.Sprintf("disable=%v", disable), func(t *testing.T) {
+			var received atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if received.Add(1) == 1 {
+					w.Header().Set("Retry-After", "1")
+					w.WriteHeader(http.StatusServiceUnavailable)
+					return
+				}
+				w.WriteHeader(http.StatusNoContent)
+			}))
+			defer srv.Close()
+			m := NewManager(ManagerConfig{WorkerCount: 1})
+			wh := outboxTestWebhook(srv.URL)
+			wh.Filter = &EventFilter{Session: "prod-*"}
+			if err := m.Register(wh); err != nil {
+				t.Fatal(err)
+			}
+			if err := m.Start(); err != nil {
+				t.Fatal(err)
+			}
+			defer m.Stop()
+			if err := m.Dispatch(Event{ID: "retry", Session: "prod-api", Type: "agent.error"}); err != nil {
+				t.Fatal(err)
+			}
+			awaitOutbox(t, func() bool {
+				m.retryQueueMu.Lock()
+				defer m.retryQueueMu.Unlock()
+				return len(m.retryQueue) == 1
+			})
+			if disable {
+				wh.Enabled = false
+			} else {
+				wh.Filter = &EventFilter{Session: "dev-*"}
+			}
+			if err := m.Register(wh); err != nil {
+				t.Fatal(err)
+			}
+			// Wait for actual due-retry processing, not Stop's abandonment path.
+			awaitOutbox(t, func() bool { return m.pending.Load() == 0 })
+			if err := m.Stop(); err != nil {
+				t.Fatal(err)
+			}
+			if received.Load() != 1 {
+				t.Fatalf("revoked retry still reached receiver: %d requests", received.Load())
+			}
+			m.deadLettersMu.Lock()
+			defer m.deadLettersMu.Unlock()
+			if len(m.deadLetters) != 1 || m.deadLetters[0].Delivery.Attempt != 1 ||
+				m.deadLetters[0].AttemptLog[0].StatusCode != http.StatusServiceUnavailable ||
+				!strings.Contains(m.deadLetters[0].LastError, "policy") {
+				t.Fatalf("revocation did not preserve prior receiver evidence: %+v", m.deadLetters)
 			}
 		})
 	}

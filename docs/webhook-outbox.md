@@ -178,3 +178,20 @@ ordering have the same fingerprint, and empty filters leave pre-existing
 unfiltered receipts recoverable. Inspection can report `event_filtered` when a
 retained event does not satisfy an otherwise matching configuration. Archival
 remains available for valid terminal evidence without authorizing another send.
+
+### Policy changes while work is queued
+
+Every worker attempt, including a volatile retry after `Retry-After`, checks the
+manager's current registration before sending. Disabling a registration, narrowing
+its filters/subscriptions, or replacing its destination, credentials, or payload
+configuration prevents older queued work from being sent. Re-registering an
+equivalent normalized configuration does not unnecessarily revoke it. A blocked
+volatile delivery becomes a local dead letter without inventing another HTTP
+attempt; durable work remains unchanged on disk for inspection or restoration.
+
+This boundary applies to configuration loaded into that manager. Editing YAML
+does not hot-reload an already running bridge; restart it to load the changed
+configuration. A request already admitted by a worker can still finish after a
+policy change. Revocation neither recalls that request nor redirects its payload
+to a replacement endpoint, and it does not provide cross-process configuration
+consensus or alter the receiver-side deduplication requirement.
