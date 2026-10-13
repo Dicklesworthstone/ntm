@@ -85,9 +85,15 @@ func NewFileReservationWatcherFromConfig(
 		opts = append(opts, WithCaptureLines(cfg.CaptureLinesForDetect))
 	}
 
-	// Apply conflict callback if notification is enabled
-	if cfg.NotifyOnConflict && conflictCallback != nil {
-		opts = append(opts, WithConflictCallback(conflictCallback))
+	// Notification is a real event even when no optional logging callback is
+	// installed. Publish a detached snapshot before invoking caller code.
+	if cfg.NotifyOnConflict {
+		opts = append(opts, WithConflictCallback(func(conflict FileConflict) {
+			publishFileConflict(projectDir, conflict)
+			if conflictCallback != nil {
+				conflictCallback(conflict)
+			}
+		}))
 	}
 
 	return NewFileReservationWatcher(opts...)

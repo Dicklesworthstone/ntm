@@ -3,14 +3,18 @@
 package dashboard
 
 import (
+	"context"
 	"os"
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/config"
+	"github.com/Dicklesworthstone/ntm/internal/events"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
 	"github.com/Dicklesworthstone/ntm/internal/tui/tuilog"
+	"github.com/Dicklesworthstone/ntm/internal/watcher"
 )
 
 // mouseEnabled returns true if NTM_MOUSE is not explicitly disabled.
@@ -60,11 +64,26 @@ func RunWithOptions(session, projectDir string, opts RunOptions) (*PostQuitActio
 	if opts.PopupMode {
 		model.activatePopupMode(dashboardNow())
 	}
-	programOpts := []tea.ProgramOption{tea.WithAltScreen()}
+	programCtx, cancelProgram := context.WithCancel(context.Background())
+	defer cancelProgram()
+	programOpts := []tea.ProgramOption{tea.WithAltScreen(), tea.WithContext(programCtx)}
 	if mouseEnabled() {
 		programOpts = append(programOpts, tea.WithMouseCellMotion())
 	}
 	p := tea.NewProgram(model, programOpts...)
+	if opts.Config != nil && opts.Config.AgentMail.Enabled &&
+		opts.Config.FileReservation.Enabled && opts.Config.FileReservation.NotifyOnConflict {
+		stopConflicts := subscribeDashboardConflicts(programCtx, events.DefaultBus,
+			session, agentmail.CanonicalProjectKey(projectDir), func(_ context.Context, conflict watcher.FileConflict) {
+				p.Send(FileConflictMsg{Conflict: conflict})
+			})
+		defer func() {
+			// Unblock any pending Send before joining subscription callbacks,
+			// including when program initialization fails before its event loop.
+			cancelProgram()
+			stopConflicts()
+		}()
+	}
 	finalModel, err := p.Run()
 	if err != nil {
 		return nil, err

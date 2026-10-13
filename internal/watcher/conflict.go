@@ -4,7 +4,51 @@ package watcher
 
 import (
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/agentmail"
+	"github.com/Dicklesworthstone/ntm/internal/events"
 )
+
+// FileConflictEventType identifies an observed reservation conflict on the bus.
+const FileConflictEventType = "file_reservation.conflict"
+
+// FileConflictEvent is an observation, not authority to release a lease.
+// Scope includes the project as well as the session: a shared event bus must
+// never deliver another project's reservation handles to a dashboard.
+type FileConflictEvent struct {
+	events.BaseEvent
+	ProjectKey string       `json:"project_key"`
+	Conflict   FileConflict `json:"conflict"`
+}
+
+// Snapshot gives each consumer its own slices and timestamp pointers. Neither
+// the caller's callback nor a UI model may mutate the bus history's payload.
+func (e FileConflictEvent) Snapshot() FileConflict {
+	c := e.Conflict
+	c.Holders = append([]string(nil), c.Holders...)
+	c.HolderReservationIDs = append([]int(nil), c.HolderReservationIDs...)
+	if c.ReservedSince != nil {
+		value := *c.ReservedSince
+		c.ReservedSince = &value
+	}
+	if c.ExpiresAt != nil {
+		value := *c.ExpiresAt
+		c.ExpiresAt = &value
+	}
+	return c
+}
+
+func publishFileConflict(projectKey string, conflict FileConflict) {
+	event := FileConflictEvent{
+		BaseEvent: events.BaseEvent{
+			Type: FileConflictEventType, Timestamp: conflict.DetectedAt, Session: conflict.SessionName,
+		},
+		ProjectKey: agentmail.CanonicalProjectKey(projectKey),
+		Conflict:   conflict,
+	}
+	event.Conflict = event.Snapshot()
+	events.Publish(event)
+}
 
 // FileConflict represents a detected file reservation conflict.
 // This occurs when an agent attempts to edit a file that is reserved by another agent.
