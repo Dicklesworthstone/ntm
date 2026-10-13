@@ -2,6 +2,7 @@ package agent
 
 import (
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -36,6 +37,7 @@ var (
 	// Match the whole header, in order, rather than arbitrary model mentions.
 	geminiFooterHeaderRe = regexp.MustCompile(`^(?:workspace \(/directory\)(?:[ \t]+|$))?(?:sandbox(?:[ \t]+|$))?(?:/model(?:[ \t]+|$))?(?:(?:context|quota)[ \t]*)?$`)
 	geminiLegacyFooterRe = regexp.MustCompile(`^gemini-\S+[ \t]+/model[ \t]*\|[ \t]*[0-9.]+[ \t]+MB[ \t]*$`)
+	geminiContextUsedRe  = regexp.MustCompile(`(?:^|[ \t])([0-9]+(?:\.[0-9]+)?)%[ \t]*(?:used)?[ \t]*$`)
 )
 
 // DetectGeminiTurn classifies ANSI-stripped output. Both the agent parser and
@@ -80,6 +82,37 @@ func DetectGeminiTurn(cleanOutput string) GeminiTurnState {
 		return GeminiTurnUnknown
 	}
 	return GeminiTurnUnknown
+}
+
+// GeminiContextUsage returns the percentage of context USED from an
+// ANSI-stripped live footer. Gemini uses the same percentage rendering for
+// model quota, so the explicit "context" column header is mandatory. Never
+// infer context from memory MB, a quota percentage or a transcript mention.
+func GeminiContextUsage(cleanOutput string) (float64, bool) {
+	lines := strings.Split(strings.TrimSpace(cleanOutput), "\n")
+	if len(lines) > geminiLiveTailLines {
+		lines = lines[len(lines)-geminiLiveTailLines:]
+	}
+	for i := len(lines) - 1; i > 0; i-- {
+		value := strings.TrimSpace(lines[i])
+		if value == "" || geminiRuleRe.MatchString(value) || value == "? for shortcuts" {
+			continue
+		}
+		header := strings.TrimSpace(lines[i-1])
+		if !geminiFooterHeaderRe.MatchString(header) || !strings.HasSuffix(header, "context") {
+			return 0, false
+		}
+		match := geminiContextUsedRe.FindStringSubmatch(value)
+		if match == nil {
+			return 0, false
+		}
+		used, err := strconv.ParseFloat(match[1], 64)
+		if err != nil || used < 0 || used > 100 {
+			return 0, false
+		}
+		return used, true
+	}
+	return 0, false
 }
 
 // geminiRateLimitIndicators deliberately excludes the words "quota",

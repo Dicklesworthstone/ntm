@@ -2,6 +2,7 @@ package status
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -73,5 +74,39 @@ func TestGeminiTurnSharedObservation(t *testing.T) {
 				t.Fatalf("unexpected canonical observation: %+v", current)
 			}
 		})
+	}
+}
+
+func TestGeminiContextMetricsReachStatus(t *testing.T) {
+	for _, used := range []float64{0, 14, 93.25, 100} {
+		output := fmt.Sprintf("> Type your message or @path/to/file\nworkspace (/directory) sandbox /model context\n~/project no sandbox gemini-pro %g%% used", used)
+		parsed, err := agent.NewParser().ParseWithHint(output, agent.AgentTypeGemini)
+		if err != nil {
+			t.Fatal(err)
+		}
+		remaining := 100 - used
+		if parsed.ContextRemaining == nil || *parsed.ContextRemaining != remaining {
+			t.Fatalf("used=%v: remaining=%v, want %v", used, parsed.ContextRemaining, remaining)
+		}
+		wantLow := remaining < agent.DefaultParserConfig().ContextLowThreshold
+		if parsed.IsContextLow != wantLow {
+			t.Fatalf("used=%v: low=%v, want %v", used, parsed.IsContextLow, wantLow)
+		}
+		now := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
+		got := NewDetector().AnalyzeAt("%7", "demo__gmi_1", "gmi", output, now, now)
+		if got.ContextUsage != used || got.State != StateIdle {
+			t.Fatalf("used=%v: canonical status=%+v", used, got)
+		}
+	}
+
+	// Quota cannot supply a ContextRemaining pointer: rotating the agent
+	// does not replenish provider quota and would discard useful context.
+	quota := "> Type your message or @path/to/file\n/model quota\ngemini-pro 99% used"
+	parsed, err := agent.NewParser().ParseWithHint(quota, agent.AgentTypeGemini)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.ContextRemaining != nil || parsed.IsContextLow || parsed.IsRateLimited {
+		t.Fatalf("quota footer was treated as context exhaustion: %+v", parsed)
 	}
 }

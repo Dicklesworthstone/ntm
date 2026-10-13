@@ -205,6 +205,16 @@ func (p *parserImpl) extractMetrics(output string, state *AgentState) {
 		if mb := extractFloat(gmiMemoryPattern, output); mb != nil {
 			state.MemoryMB = mb
 		}
+		// Current Gemini labels context usage explicitly in its footer.
+		// Convert used to remaining for routing and low-context decisions;
+		// provider quota percentages must never trigger context rotation.
+		if state.Type == AgentTypeGemini {
+			if used, ok := GeminiContextUsage(output); ok {
+				remaining := 100 - used
+				state.ContextRemaining = &remaining
+				state.IsContextLow = remaining < p.config.ContextLowThreshold
+			}
+		}
 
 	case AgentTypeClaudeCode:
 		// Claude doesn't give explicit metrics

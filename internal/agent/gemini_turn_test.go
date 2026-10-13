@@ -94,3 +94,43 @@ func TestGeminiRateLimitIndicators(t *testing.T) {
 		})
 	}
 }
+
+func TestGeminiContextUsage(t *testing.T) {
+	const header = "workspace (/directory) sandbox /model context"
+	for _, tc := range []struct {
+		name   string
+		output string
+		used   float64
+		ok     bool
+	}{
+		{"wide footer", header + "\n~/project no sandbox gemini-pro 14% used", 14, true},
+		{"narrow footer", header + "\n.../project no sandbox gemini-pro 14%", 14, true},
+		{"hidden workspace and sandbox", "/model context\ngemini-pro 90% used", 90, true},
+		{"context only", "context\n42.5% used", 42.5, true},
+		{"empty context", "context\n0% used", 0, true},
+		{"full context", "context\n100% used", 100, true},
+		{"unicode path with spaces", header + "\n~/日本語/my project no sandbox gemini-pro 93.25% used", 93.25, true},
+		{"padded footer", header + "\n~/project no sandbox gemini-pro 77% used\n\n", 77, true},
+		{"shortcut below footer", header + "\n~/project no sandbox gemini-pro 77% used\n? for shortcuts", 77, true},
+		{"quota is not context", "workspace (/directory) sandbox /model quota\n~/project no sandbox gemini-pro 85% used", 0, false},
+		{"old context then quota", "context\n98% used\n/model quota\ngemini-pro 15% used", 0, false},
+		{"old context then new prompt", "context\n98% used\n> Type your message or @path/to/file", 0, false},
+		{"transcript percentage", "The operation is 99% complete.", 0, false},
+		{"memory is not context", "gemini-2.0-flash-preview /model | 396.8 MB", 0, false},
+		{"out of range", "context\n101% used", 0, false},
+		{"negative", "context\n-1% used", 0, false},
+		{"nonfinite", "context\nNaN% used", 0, false},
+		{"wrong direction", "context\n75% left", 0, false},
+		{"missing value", "context", 0, false},
+		{"missing unit", "context\n75", 0, false},
+		{"malformed current footer", "context\n98% used\ncontext\nunknown", 0, false},
+		{"new transcript below footer", "context\n98% used\nNew response content", 0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			used, ok := GeminiContextUsage(tc.output)
+			if used != tc.used || ok != tc.ok {
+				t.Fatalf("GeminiContextUsage(%q) = (%v, %v), want (%v, %v)", tc.output, used, ok, tc.used, tc.ok)
+			}
+		})
+	}
+}
