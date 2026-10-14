@@ -28,6 +28,7 @@ package context
 
 import (
 	"bytes"
+	stdcontext "context"
 	"encoding/json"
 	"io"
 	"os"
@@ -43,9 +44,10 @@ import (
 // TranscriptUsage is the last usage record extracted from an agent's own
 // session transcript. Tokens is the effective context occupancy after the
 // last turn (input + cache_read + cache_creation + output for Claude;
-// last_token_usage.total_tokens for Codex).
+// last_token_usage.total_tokens for Codex; native total for Gemini).
 type TranscriptUsage struct {
 	Path                string    // transcript file the record came from
+	ProviderSessionID   string    // native Gemini identity; empty for other formats
 	Model               string    // model reported by the transcript, verbatim
 	Tokens              int       // effective context occupancy (tokens)
 	InputTokens         int       // uncached input tokens of the last turn
@@ -53,7 +55,7 @@ type TranscriptUsage struct {
 	CacheCreationTokens int       // cache creation tokens of the last turn
 	OutputTokens        int       // output tokens of the last turn
 	ContextWindow       int       // model context window if the transcript reports one (Codex), else 0
-	UpdatedAt           time.Time // transcript file mtime
+	UpdatedAt           time.Time // accounting observation time (file mtime for JSONL tail readers)
 }
 
 // transcriptTailWindow bounds how much of a transcript is read. Transcripts
@@ -105,10 +107,11 @@ type transcriptEntry struct {
 	} `json:"payload"`
 }
 
-// ReadLatestTranscriptUsage reads the tail of a JSONL transcript and returns
-// the last usage-bearing record. It reads at most transcriptTailWindow bytes
-// from the end of the file and tolerates a truncated first line in that
-// window. Returns (nil, nil) when the tail contains no usage record.
+// ReadLatestTranscriptUsage returns the current provider-native usage record.
+// Claude/Codex/omp use a bounded JSONL tail. Gemini JSON conversations and
+// JSONL journals require bounded history replay to honor rewinds/replacements;
+// unchanged snapshots are cached without retaining conversation content.
+// Returns (nil, nil) when there is no attributable usage record.
 func ReadLatestTranscriptUsage(path string) (*TranscriptUsage, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -119,6 +122,9 @@ func ReadLatestTranscriptUsage(path string) (*TranscriptUsage, error) {
 	info, err := f.Stat()
 	if err != nil {
 		return nil, err
+	}
+	if usage, handled, err := readGeminiTranscriptUsage(f, info, path); handled || err != nil {
+		return usage, err
 	}
 
 	offset := int64(0)
@@ -501,6 +507,11 @@ func LatestAgentTranscriptUsage(agentType, cwd string, newerThan time.Time) (*Tr
 		path, ok = FindClaudeTranscript(DefaultClaudeProjectsDir(), cwd, newerThan)
 	case "codex", "cod":
 		path, ok = FindCodexTranscript(DefaultCodexSessionsDir(), cwd, newerThan)
+	case "gemini", "gmi":
+		home, _ := os.UserHomeDir()
+		ctx, cancel := stdcontext.WithTimeout(stdcontext.Background(), 2*time.Second)
+		defer cancel()
+		path, ok = agentsession.FindGeminiTranscriptForCwd(ctx, home, cwd, newerThan)
 	case "omp":
 		// The omp store layout is owned by agentsession (shared with
 		// session capture/resume discovery).
@@ -508,7 +519,7 @@ func LatestAgentTranscriptUsage(agentType, cwd string, newerThan time.Time) (*Tr
 		path, _ = agentsession.NewestOmpTranscriptForCwd(agentsession.OmpSessionRoots(home, os.Getenv), cwd, newerThan, nil)
 		ok = path != ""
 	default:
-		// Seam: other agent CLIs (gemini, cursor, ...) do not yet have known
+		// Other agent CLIs (cursor, ...) do not yet have known
 		// transcript locations; fall back to scrollback estimation.
 		return nil, false
 	}
@@ -518,6 +529,9 @@ func LatestAgentTranscriptUsage(agentType, cwd string, newerThan time.Time) (*Tr
 	usage, err := ReadLatestTranscriptUsage(path)
 	if err != nil || usage == nil {
 		return nil, false
+	}
+	if (agentType == "gemini" || agentType == "gmi") && usage.ProviderSessionID == "" {
+		return nil, false // A native Gemini path must contain Gemini accounting.
 	}
 	return usage, true
 }
@@ -530,6 +544,10 @@ func LatestAgentTranscriptUsage(agentType, cwd string, newerThan time.Time) (*Tr
 // NTM swarm layout. It reports false when there is no exact binding.
 func ProcessTranscriptUsage(agentType string, panePID int) (*TranscriptUsage, bool) {
 	info := agentsession.DiscoverProcessSession(agentType, panePID)
+	return readBoundTranscriptUsage(info)
+}
+
+func readBoundTranscriptUsage(info *agentsession.Info) (*TranscriptUsage, bool) {
 	if info == nil || info.SourcePath == "" {
 		return nil, false
 	}
@@ -537,13 +555,20 @@ func ProcessTranscriptUsage(agentType string, panePID int) (*TranscriptUsage, bo
 	if err != nil || usage == nil {
 		return nil, false
 	}
+	if info.Provider == "gemini" || usage.ProviderSessionID != "" {
+		// Reopening a discovered pathname must not silently bind a replaced
+		// file or another provider's transcript to this pane.
+		if info.Provider != "gemini" || usage.ProviderSessionID == "" || usage.ProviderSessionID != info.SessionID {
+			return nil, false
+		}
+	}
 	return usage, true
 }
 
 // PaneTranscriptRef is one agent pane for AttributePaneTranscripts.
 type PaneTranscriptRef struct {
 	PaneID    string
-	AgentType string // transcript agent type: "claude", "codex", "omp"
+	AgentType string // transcript agent type: "claude", "codex", "gemini", "omp"
 	PID       int    // the pane's shell PID; 0 when unknown
 	Cwd       string // the pane's working directory; "" when unknown
 }

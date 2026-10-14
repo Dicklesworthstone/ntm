@@ -263,6 +263,15 @@ func (rc *rotationChecker) checkPane(ctx context.Context, pane tmux.Pane, usage 
 		Source:     rotationUsageSource(usage),
 		Confidence: ntmctx.TranscriptConfidence(usage.UpdatedAt, now),
 	}
+	if pane.Type.Canonical() == agent.AgentTypeGemini &&
+		(usage.UpdatedAt.IsZero() || usage.UpdatedAt.After(now) || decision.Confidence != "high") {
+		// Gemini metadata writes and rewinds do not refresh the accounting
+		// timestamp. An old conversation must not trigger a fresh rotation.
+		decision.Action = "skipped"
+		decision.SkipReason = "stale_transcript"
+		rc.reportSkip(decision)
+		return decision, true
+	}
 
 	if strings.TrimSpace(pane.Title) == "" {
 		decision.Action = "skipped"
@@ -426,7 +435,7 @@ func rotationEvidence(d rotationDecision) string {
 // This gate admits only agent types with an authoritative live working
 // detector; every other type is refused outright rather than typed into while
 // its state is unknown. Context rotation itself reaches this gate for Claude
-// Code, Codex, and Oh My Pi panes (the types that can produce a ground-truth
+// Code, Codex, Gemini, and Oh My Pi panes (the types that can produce a ground-truth
 // usage trigger: transcripts, or omp's own context gauge), and the mail nudge
 // loop shares the gate and can reach it for Grok Build too: its TUI working
 // detector and composer inspection are capture-based and independent of
@@ -441,6 +450,18 @@ func rotationSafetySkipReason(captured string, pane tmux.Pane) string {
 	case agent.AgentTypeCodex:
 		if agent.CodexActivelyWorking(captured, pane.Width) {
 			return "working"
+		}
+	case agent.AgentTypeGemini:
+		// Unlike absence of a spinner, an observed empty live composer is
+		// positive readiness evidence. Unknown or modal frames fail closed.
+		switch agent.DetectGeminiTurn(captured) {
+		case agent.GeminiTurnWorking:
+			return "working"
+		case agent.GeminiTurnRateLimited:
+			return "rate_limited"
+		case agent.GeminiTurnIdle:
+		default:
+			return "unknown_agent_state"
 		}
 	case agent.AgentTypeGrok:
 		if agent.GrokActivelyWorking(captured, pane.Width) {
@@ -501,6 +522,11 @@ func (rc *rotationChecker) resolvePaneTranscripts(panes []tmux.Pane) map[string]
 			agentType = "claude"
 		case agent.AgentTypeCodex:
 			agentType = "codex"
+		case agent.AgentTypeGemini:
+			if tmux.DefaultClient.Remote != "" {
+				continue // Controller-local transcripts cannot describe a remote pane.
+			}
+			agentType = "gemini"
 		case agent.AgentTypeOmp:
 			// omp renders its own context accounting in the composer border.
 			// That reading is attributed to this pane by construction, so it
