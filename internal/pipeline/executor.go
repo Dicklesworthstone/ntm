@@ -218,7 +218,7 @@ func (e *Executor) SetDetector(detector status.Detector) {
 
 func (e *Executor) tmuxClient() TmuxClient {
 	if e.tmux == nil {
-		e.tmux = realTmuxClient{}
+		return realTmuxClient{}
 	}
 	return e.tmux
 }
@@ -2920,7 +2920,7 @@ func (e *Executor) substituteVariablesRetainingSeals(s string) string {
 
 // substituteVariablesCtx is the ctx-aware form of substituteVariables.
 // Errors are silently dropped (the non-strict contract) but ctx-carried
-// round overrides from withRoundOverrides are respected so a branch
+// round overrides from withRoundOverrides are respected so a body step's
 // predicate / loop.items expression / on_failure recovery field nested
 // inside a foreach max_rounds body can resolve ${round}/${loop.round}
 // against the per-iteration overlay (bd-lwb25).
@@ -3529,7 +3529,10 @@ func (e *Executor) applyResumeState() {
 		}
 	}
 	for stepID, result := range e.state.Steps {
-		if shouldRerunStep(result) {
+		// Check before marking the graph or retaining outputs. Deleting
+		// in-flight results later cannot undo either of those decisions.
+		_, inFlight := e.state.InFlightSteps[stepID]
+		if inFlight || shouldRerunStep(result) {
 			rerunStepIDs = append(rerunStepIDs, stepID)
 			continue
 		}
