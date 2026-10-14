@@ -41,3 +41,41 @@ execution evidence, rather than calculating a second schedule in the client.
 Only inline prompt text is accepted. `prompt_file` is not a supported job
 parameter. Existing job operation IDs bind the complete request, including
 prompt and pacing controls; changing them requires a new operation ID.
+
+## Assignment history and project memory
+
+For `assign_work: true`, add `with_cass: true` to retrieve relevant coding
+history, `with_memory: true` to prepend project rules, or both. These flags
+are explicit opt-ins on the Jobs API; omitting them preserves the existing
+unenriched assignment behavior, even when CLI send injection is enabled.
+
+```json
+{
+  "type": "swarm_spawn",
+  "params": {
+    "session": "implementation",
+    "cc_count": 2,
+    "assign_work": true,
+    "with_cass": true,
+    "with_memory": true,
+    "prompt": "Read the plan and prioritize substantive functionality.",
+    "stagger_mode": "smart"
+  }
+}
+```
+
+The server resolves CASS and memory parameters from its selected global
+configuration plus the **launch project's** overlay, not a later dashboard
+project selection. This includes the configured CASS binary, relevance and
+age filters, retrieval limits, token budgets, and query timeouts. Clients
+cannot supply executable paths or a different memory workspace in job params.
+An integration disabled by the operator remains disabled; the shared engine
+records the skipped enrichment. Missing or failing tools degrade enrichment,
+not the assignment itself.
+
+The shared assignment engine enriches fresh work before recording its durable
+intent. Recovery replays that recorded payload instead of querying history or
+memory again. The job adapter does not do a separate lookup or send. These
+flags require `assign_work: true`: they do not enrich a standalone initial
+prompt. Use the assignment's `cass_injection` and `memory_injection` evidence to
+inspect whether enrichment occurred or was skipped.

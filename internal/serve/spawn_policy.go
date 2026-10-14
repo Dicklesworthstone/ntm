@@ -90,5 +90,8 @@ func (s *Server) spawnWithPolicy(
 		return failure(errors.New("spawn policy loader returned no configuration"), robot.ErrCodeInternalError,
 			"Restore the configured spawn policy before retrying")
 	}
+	if opts.PromptContext.Enabled() {
+		opts.PromptContext = spawnPromptContextOptions(opts.PromptContext, effective)
+	}
 	return spawn(ctx, opts, effective)
 }

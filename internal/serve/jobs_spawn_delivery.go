@@ -22,6 +22,10 @@ type jobSpawnDeliveryParams struct {
 	// A nil delay selects the fixed-mode default; an explicit "0s" disables
 	// spacing. Use a string so the API accepts Go durations, not nanoseconds.
 	StaggerDelay *string `json:"stagger_delay,omitempty"`
+	// Context enrichment applies to fresh bead assignments, before their
+	// durable intent is recorded. Plain initial prompts are not enriched.
+	WithCASS   bool `json:"with_cass,omitempty"`
+	WithMemory bool `json:"with_memory,omitempty"`
 }
 
 func (req jobSpawnDeliveryParams) applyDeliveryOptions(opts *robot.SpawnOptions) error {
@@ -49,10 +53,15 @@ func (req jobSpawnDeliveryParams) applyDeliveryOptions(opts *robot.SpawnOptions)
 		return fmt.Errorf("stagger_mode requires a non-blank prompt or assign_work=true; use launch_interval to pace process creation")
 	}
 
+	if (req.WithCASS || req.WithMemory) && !opts.AssignWork {
+		return fmt.Errorf("with_cass and with_memory require assign_work=true")
+	}
+
 	// Do not trim, split or deliver the prompt here. The shared engine must
 	// see the original text for policy checks and atomic assignment prefixing.
 	opts.Prompt = req.Prompt
 	opts.StaggerMode = req.StaggerMode
 	opts.StaggerDelay = delay
+	opts.PromptContext = robot.PromptContextOptions{WithCASS: req.WithCASS, WithMemory: req.WithMemory}
 	return nil
 }
