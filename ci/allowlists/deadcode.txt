@@ -11,12 +11,7 @@
 # permanent entry below. Only permanent (tool blind spot) entries remain.
 # 2026-10-05 (bd-ir0li): the gate now builds with -tags liveness_audit, which
 # drops the G2 claim files, so readers alive only through a RegisterReader
-# claim are reported. The never-constructed CodexThrottle is waived below until
-# its deletion is approved (bd-vsubm).
-internal/ratelimit/tracker.go:CodexThrottle.ClearAffectedPane	bd-vsubm	CodexThrottle is never constructed in production; delete pending operator approval (removes tracker_helpers_test.go)
-internal/ratelimit/tracker.go:CodexThrottle.MayLaunch	bd-vsubm	CodexThrottle is never constructed in production; delete pending operator approval (removes tracker_helpers_test.go)
-internal/ratelimit/tracker.go:CodexThrottle.Reset	bd-vsubm	CodexThrottle is never constructed in production; delete pending operator approval (removes tracker_helpers_test.go)
-internal/resilience/monitor.go:Monitor.SetCodexThrottle	bd-vsubm	only attach point for the never-constructed CodexThrottle; goes with it
+# claim are reported.
 # reflection-only baseline (bd-8gbr3 gate, owned by bd-ld4j2): functions RTA keeps
 # alive only by its reflection rule (exported methods of types that reach an
 # interface value) with no call path from ./cmd/ntm, found by

@@ -124,7 +124,6 @@ type Monitor struct {
 	cfg              *config.Config
 	notifier         *notify.Notifier
 	rateLimitTracker *ratelimit.RateLimitTracker
-	codexThrottle    *ratelimit.CodexThrottle // AIMD throttle for cod launches (bd-3qoly)
 
 	autoRestart bool // Whether to automatically restart crashed agents
 
@@ -166,14 +165,6 @@ func NewMonitor(session, projectDir string, cfg *config.Config, autoRestart bool
 		autoRestart:      autoRestart,
 		agents:           make(map[string]*AgentState),
 	}
-}
-
-// SetCodexThrottle attaches a CodexThrottle to the monitor so that
-// rate-limit events on cod agents are propagated to the throttle.
-func (m *Monitor) SetCodexThrottle(ct *ratelimit.CodexThrottle) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.codexThrottle = ct
 }
 
 // RegisterAgentWithBinding registers an agent together with its persisted,
@@ -518,18 +509,6 @@ func (m *Monitor) handleRateLimit(agentState *AgentState, waitSeconds int) {
 	log.Printf("[resilience] Agent %s (pane %d, type %s) hit rate limit (wait %ds)",
 		agentState.PaneID, agentState.PaneIndex, agentState.AgentType, waitSeconds)
 
-	// Propagate to Codex throttle for cod agents (bd-3qoly)
-	if agent.AgentType(agentState.AgentType).Canonical() == agent.AgentTypeCodex {
-		throttle := m.getCodexThrottle()
-		if throttle != nil {
-			throttle.RecordRateLimit(agentState.PaneID, waitSeconds)
-			status := throttle.Status()
-			log.Printf("[resilience] Codex throttle engaged: phase=%s, allowed=%d/%d, cooldown=%s",
-				status.Phase, status.AllowedConcurrent, status.MaxConcurrent,
-				ratelimit.FormatDelay(status.CooldownRemaining))
-		}
-	}
-
 	events.DefaultEmitter().Emit(events.NewWebhookEvent(
 		events.WebhookAgentRateLimit,
 		m.session,
@@ -575,19 +554,6 @@ func (m *Monitor) handleRateLimit(agentState *AgentState, waitSeconds int) {
 func (m *Monitor) handleRateLimitCleared(agentState *AgentState) {
 	m.recordRateLimitSuccess(agentState.AgentType)
 	log.Printf("[resilience] Agent %s rate limit cleared", agentState.PaneID)
-
-	// Notify Codex throttle of success (bd-3qoly)
-	if agent.AgentType(agentState.AgentType).Canonical() == agent.AgentTypeCodex {
-		if throttle := m.getCodexThrottle(); throttle != nil {
-			throttle.RecordSuccess()
-		}
-	}
-}
-
-func (m *Monitor) getCodexThrottle() *ratelimit.CodexThrottle {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.codexThrottle
 }
 
 func (m *Monitor) getOrCreateRateLimitTracker() *ratelimit.RateLimitTracker {

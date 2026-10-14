@@ -1,7 +1,6 @@
 // Package robot provides machine-readable output for AI agents.
 // health_oauth.go implements the --robot-health-oauth command for per-agent
-// OAuth and rate-limit status detection. It integrates with the ratelimit
-// package's CodexThrottle for AIMD-aware throttle status. (bd-2plo3)
+// OAuth and rate-limit status detection. (bd-2plo3)
 package robot
 
 import (
@@ -55,11 +54,6 @@ type AgentOAuthHealth struct {
 	CooldownRemaining int             `json:"cooldown_remaining"` // seconds
 	LastActivitySec   int             `json:"last_activity_sec"`
 	ErrorCount        int             `json:"error_count"` // errors in last 5 minutes
-	// ThrottlePhase reports the AIMD throttle phase for Codex agents.
-	// Empty for non-Codex agents or when no CodexThrottle is available.
-	ThrottlePhase string `json:"throttle_phase,omitempty"`
-	// ThrottleGuidance provides human-readable remediation for throttled agents.
-	ThrottleGuidance string `json:"throttle_guidance,omitempty"`
 }
 
 // OAuthHealthOutput is the response format for --robot-health-oauth=SESSION.
@@ -107,9 +101,6 @@ type OAuthHealthSummary struct {
 // OAuthHealthOptions configures the health-oauth command.
 type OAuthHealthOptions struct {
 	Session string
-	// CodexThrottle is an optional CodexThrottle to integrate AIMD status.
-	// When nil, only output-based detection is used.
-	CodexThrottle *ratelimit.CodexThrottle
 }
 
 // GetHealthOAuth collects per-agent OAuth and rate limit status for a session.
@@ -119,7 +110,7 @@ func GetHealthOAuth(session string) (*OAuthHealthOutput, error) {
 }
 
 // GetHealthOAuthWithOptions collects per-agent OAuth and rate limit status
-// using the provided options, including optional CodexThrottle integration.
+// using the provided options.
 func GetHealthOAuthWithOptions(opts OAuthHealthOptions) (*OAuthHealthOutput, error) {
 	output := &OAuthHealthOutput{
 		RobotResponse: NewRobotResponse(true),
@@ -159,11 +150,6 @@ func GetHealthOAuthWithOptions(opts OAuthHealthOptions) (*OAuthHealthOutput, err
 		}
 
 		agentHealth := getAgentOAuthHealth(opts.Session, pane, agentType)
-
-		// Integrate CodexThrottle status for Codex agents
-		if opts.CodexThrottle != nil && (agentType == "cod" || agentType == "codex") {
-			enrichWithThrottle(&agentHealth, opts.CodexThrottle)
-		}
 
 		output.Agents = append(output.Agents, agentHealth)
 
@@ -229,35 +215,6 @@ func summarizeOAuthProviderPools(agents []AgentOAuthHealth) map[string]OAuthProv
 		pools[provider] = pool
 	}
 	return pools
-}
-
-// enrichWithThrottle merges CodexThrottle status into the agent health record.
-func enrichWithThrottle(health *AgentOAuthHealth, ct *ratelimit.CodexThrottle) {
-	if ct == nil {
-		return
-	}
-	status := ct.Status()
-	health.ThrottlePhase = string(status.Phase)
-	health.ThrottleGuidance = status.Guidance
-
-	// Escalate rate-limit status based on throttle phase.
-	switch status.Phase {
-	case ratelimit.ThrottlePaused:
-		health.RateLimitStatus = RateLimitLimited
-		remaining := int(status.CooldownRemaining.Seconds())
-		if remaining > health.CooldownRemaining {
-			health.CooldownRemaining = remaining
-		}
-	case ratelimit.ThrottleRecovering:
-		if health.RateLimitStatus == RateLimitOK {
-			health.RateLimitStatus = RateLimitWarning
-		}
-	}
-
-	// Merge rate-limit count from throttle if higher.
-	if status.RateLimitCount > health.RateLimitCount {
-		health.RateLimitCount = status.RateLimitCount
-	}
 }
 
 // getAgentOAuthHealth determines OAuth and rate limit status for a single agent.
@@ -445,9 +402,6 @@ func FormatOAuthHealthDisplay(output *OAuthHealthOutput) string {
 			ag.AgentType, ag.Pane, oauthIcon, rateLabel, lastAgo)
 		if ag.RateLimitStatus == RateLimitWarning || ag.RateLimitStatus == RateLimitLimited {
 			line += fmt.Sprintf(" (%d limits in 5m)", ag.RateLimitCount)
-		}
-		if ag.ThrottlePhase != "" && ag.ThrottlePhase != string(ratelimit.ThrottleNormal) {
-			line += fmt.Sprintf(" [throttle=%s]", ag.ThrottlePhase)
 		}
 		b.WriteString(line)
 		b.WriteByte('\n')

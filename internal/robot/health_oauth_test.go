@@ -4,8 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
-
-	"github.com/Dicklesworthstone/ntm/internal/ratelimit"
 )
 
 func TestAgentTypeToProvider(t *testing.T) {
@@ -318,99 +316,6 @@ func TestCountErrorsInOutput(t *testing.T) {
 	}
 }
 
-// newTestCodexThrottle builds a CodexThrottle for enrichment tests. The
-// exported constructor was removed as dead production code; Reset() puts a
-// zero-value throttle into the normal phase.
-func newTestCodexThrottle() *ratelimit.CodexThrottle {
-	ct := &ratelimit.CodexThrottle{}
-	ct.Reset()
-	return ct
-}
-
-// TestEnrichWithThrottlePaused verifies that a paused CodexThrottle
-// escalates the rate-limit status to limited and populates cooldown.
-func TestEnrichWithThrottlePaused(t *testing.T) {
-	ct := newTestCodexThrottle()
-	ct.RecordRateLimit("pane-1", 30)
-
-	health := AgentOAuthHealth{
-		RateLimitStatus: RateLimitOK,
-		RateLimitCount:  0,
-	}
-
-	enrichWithThrottle(&health, ct)
-
-	if health.RateLimitStatus != RateLimitLimited {
-		t.Errorf("expected RateLimitLimited when throttle paused, got %v", health.RateLimitStatus)
-	}
-	if health.ThrottlePhase != string(ratelimit.ThrottlePaused) {
-		t.Errorf("expected throttle_phase=%q, got %q", ratelimit.ThrottlePaused, health.ThrottlePhase)
-	}
-	if health.CooldownRemaining <= 0 {
-		t.Errorf("expected positive cooldown_remaining when paused, got %d", health.CooldownRemaining)
-	}
-	if health.ThrottleGuidance == "" {
-		t.Error("expected non-empty throttle_guidance when paused")
-	}
-}
-
-// TestEnrichWithThrottleNormal verifies that a normal throttle does not
-// change the rate-limit status or set throttle metadata.
-func TestEnrichWithThrottleNormal(t *testing.T) {
-	ct := newTestCodexThrottle()
-
-	health := AgentOAuthHealth{
-		RateLimitStatus: RateLimitOK,
-		RateLimitCount:  0,
-	}
-
-	enrichWithThrottle(&health, ct)
-
-	if health.RateLimitStatus != RateLimitOK {
-		t.Errorf("expected RateLimitOK for normal throttle, got %v", health.RateLimitStatus)
-	}
-	if health.ThrottlePhase != string(ratelimit.ThrottleNormal) {
-		t.Errorf("expected throttle_phase=%q, got %q", ratelimit.ThrottleNormal, health.ThrottlePhase)
-	}
-}
-
-// TestEnrichWithThrottleNil ensures a nil throttle is a no-op.
-func TestEnrichWithThrottleNil(t *testing.T) {
-	health := AgentOAuthHealth{
-		RateLimitStatus: RateLimitOK,
-		RateLimitCount:  0,
-	}
-	// Should not panic
-	enrichWithThrottle(&health, nil)
-
-	if health.RateLimitStatus != RateLimitOK {
-		t.Errorf("nil throttle should not change status, got %v", health.RateLimitStatus)
-	}
-	if health.ThrottlePhase != "" {
-		t.Errorf("nil throttle should leave throttle_phase empty, got %q", health.ThrottlePhase)
-	}
-}
-
-// TestEnrichWithThrottleRateLimitCountMerge verifies that the higher
-// rate-limit count wins when merging throttle data.
-func TestEnrichWithThrottleRateLimitCountMerge(t *testing.T) {
-	ct := newTestCodexThrottle()
-	ct.RecordRateLimit("pane-1", 10)
-
-	// Agent already has a high local count
-	health := AgentOAuthHealth{
-		RateLimitStatus: RateLimitWarning,
-		RateLimitCount:  10,
-	}
-
-	enrichWithThrottle(&health, ct)
-
-	// The higher count should be kept
-	if health.RateLimitCount < 1 {
-		t.Errorf("expected rate_limit_count >= 1 from merge, got %d", health.RateLimitCount)
-	}
-}
-
 // TestFormatOAuthHealthDisplay verifies the human-readable display format.
 func TestFormatOAuthHealthDisplay(t *testing.T) {
 	output := &OAuthHealthOutput{
@@ -437,7 +342,6 @@ func TestFormatOAuthHealthDisplay(t *testing.T) {
 				RateLimitStatus: RateLimitLimited,
 				RateLimitCount:  5,
 				LastActivitySec: 5,
-				ThrottlePhase:   "paused",
 			},
 		},
 	}
@@ -478,10 +382,6 @@ func TestFormatOAuthHealthDisplay(t *testing.T) {
 	if !oauthContainsSubstr(display, "LIMITED") {
 		t.Error("display missing LIMITED rate label")
 	}
-	// Check throttle annotation
-	if !oauthContainsSubstr(display, "[throttle=paused]") {
-		t.Error("display missing throttle annotation for paused agent")
-	}
 	// Check rate limit count annotation
 	if !oauthContainsSubstr(display, "limits in 5m") {
 		t.Error("display missing rate limit count annotation")
@@ -511,14 +411,12 @@ func TestOAuthHealthOutputJSONStructure(t *testing.T) {
 		Session:       "test-session",
 		Agents: []AgentOAuthHealth{
 			{
-				Pane:             1,
-				AgentType:        "cc",
-				Provider:         "claude",
-				OAuthStatus:      OAuthValid,
-				RateLimitStatus:  RateLimitOK,
-				LastActivitySec:  60,
-				ThrottlePhase:    "",
-				ThrottleGuidance: "",
+				Pane:            1,
+				AgentType:       "cc",
+				Provider:        "claude",
+				OAuthStatus:     OAuthValid,
+				RateLimitStatus: RateLimitOK,
+				LastActivitySec: 60,
 			},
 		},
 		Summary: OAuthHealthSummary{
