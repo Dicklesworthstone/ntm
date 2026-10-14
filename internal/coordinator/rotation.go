@@ -22,6 +22,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -74,9 +75,14 @@ type rotationChecker struct {
 	forecaster *ntmctx.ExhaustionForecaster
 
 	// Seams (default to real implementations).
-	getPanes        func(session string) ([]tmux.Pane, error)
-	paneCwd         func(paneID string) (string, bool)
-	processUsage    func(agentType string, panePID int) (*ntmctx.TranscriptUsage, bool)
+	getPanes func(session string) ([]tmux.Pane, error)
+	allPanes func(context.Context) (map[string][]tmux.Pane, error)
+	paneCwd  func(paneID string) (string, bool)
+	// Fleet probes share one deadline instead of multiplying command timeouts.
+	paneCwdContext func(context.Context, string) (string, bool)
+	processUsage   func(agentType string, panePID int) (*ntmctx.TranscriptUsage, bool)
+	// An injected reader owns workspace attribution in its observation domain.
+	// Production leaves this nil and checks the entire tmux server below.
 	transcriptUsage func(agentType, cwd string) (*ntmctx.TranscriptUsage, bool)
 	capturePane     func(paneID string, lines int) (string, error)
 	contextLimit    func(model string) int
@@ -139,8 +145,10 @@ func newRotationChecker(session, workDir string, coordCfg CoordinatorConfig, ntm
 			return cwd, cwd != ""
 		},
 		processUsage: ntmctx.ProcessTranscriptUsage,
-		transcriptUsage: func(agentType, cwd string) (*ntmctx.TranscriptUsage, bool) {
-			return ntmctx.LatestAgentTranscriptUsage(agentType, cwd, time.Time{})
+		paneCwdContext: func(ctx context.Context, paneID string) (string, bool) {
+			cwd, err := tmux.DefaultClient.RunContext(ctx, "display-message", "-p", "-t", tmux.ExactTarget(paneID), "#{pane_current_path}")
+			cwd = strings.TrimSpace(cwd)
+			return cwd, err == nil && cwd != ""
 		},
 		capturePane:   tmux.CapturePaneOutput,
 		contextLimit:  models.GetContextLimit,
@@ -515,7 +523,11 @@ func rotationSafetySkipReason(captured string, pane tmux.Pane) string {
 func (rc *rotationChecker) resolvePaneTranscripts(panes []tmux.Pane) map[string]*ntmctx.TranscriptUsage {
 	refs := make([]ntmctx.PaneTranscriptRef, 0, len(panes))
 	gauges := make(map[string]*ntmctx.TranscriptUsage)
+	remote := tmux.DefaultClient != nil && tmux.DefaultClient.Remote != ""
 	for _, pane := range panes {
+		if pane.Dead || pane.IsServicePane() {
+			continue
+		}
 		var agentType string
 		switch pane.Type.Canonical() {
 		case agent.AgentTypeClaudeCode:
@@ -523,9 +535,6 @@ func (rc *rotationChecker) resolvePaneTranscripts(panes []tmux.Pane) map[string]
 		case agent.AgentTypeCodex:
 			agentType = "codex"
 		case agent.AgentTypeGemini:
-			if tmux.DefaultClient.Remote != "" {
-				continue // Controller-local transcripts cannot describe a remote pane.
-			}
 			agentType = "gemini"
 		case agent.AgentTypeOmp:
 			// omp renders its own context accounting in the composer border.
@@ -536,7 +545,6 @@ func (rc *rotationChecker) resolvePaneTranscripts(panes []tmux.Pane) map[string]
 				if captured, err := rc.capturePane(pane.ID, rotationCaptureLines); err == nil {
 					if usage, ok := ntmctx.OmpStatusBarUsage(captured, rc.now()); ok {
 						gauges[pane.ID] = usage
-						continue
 					}
 				}
 			}
@@ -546,8 +554,132 @@ func (rc *rotationChecker) resolvePaneTranscripts(panes []tmux.Pane) map[string]
 			// transcript-only confidence gate excludes them.
 			continue
 		}
+		if remote {
+			continue // A captured gauge is remote evidence; local files/PIDs are not.
+		}
 		cwd, _ := rc.paneCwd(pane.ID)
 		refs = append(refs, ntmctx.PaneTranscriptRef{PaneID: pane.ID, AgentType: agentType, PID: pane.PID, Cwd: cwd})
 	}
-	return ntmctx.AttributePaneTranscripts(refs, gauges, rc.processUsage, rc.transcriptUsage)
+	known := ntmctx.AttributePaneTranscripts(refs, gauges, rc.processUsage, nil)
+	if rc.transcriptUsage != nil {
+		return ntmctx.AttributePaneTranscripts(refs, known, nil, rc.transcriptUsage)
+	}
+	return rc.resolveServerScopedTranscripts(refs, known)
+}
+
+// resolveServerScopedTranscripts adds only workspace readings proven unique in
+// a complete, fresh server inventory. A different session shares the same native
+// transcript store; a local-session count cannot prove ownership. Exact process
+// readings and pane-local gauges survive an unavailable inventory, but never
+// remove a peer from the ambiguity count. No other session's transcript is read.
+func (rc *rotationChecker) resolveServerScopedTranscripts(targets []ntmctx.PaneTranscriptRef, known map[string]*ntmctx.TranscriptUsage) map[string]*ntmctx.TranscriptUsage {
+	needed := make(map[string]bool)
+	for _, target := range targets {
+		if known[target.PaneID] == nil {
+			needed[target.AgentType] = true
+		}
+	}
+	if len(needed) == 0 {
+		return known
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	list := rc.allPanes
+	if list == nil {
+		list = tmux.GetAllPanesContext
+	}
+	inventory, err := list(ctx)
+	if err != nil || ctx.Err() != nil {
+		return known
+	}
+	physical := make(map[string]tmux.Pane)
+	for _, panes := range inventory {
+		for _, pane := range panes {
+			previous, exists := physical[pane.ID]
+			if exists &&
+				(previous.PID != pane.PID || previous.Type.Canonical() != pane.Type.Canonical() || previous.Dead != pane.Dead || previous.Service != pane.Service) {
+				return known // Conflicting observations are not a complete inventory.
+			}
+			if pane.ID == "" || (!exists && len(physical) >= 4096) || ctx.Err() != nil {
+				return known
+			}
+			physical[pane.ID] = pane
+		}
+	}
+	ids := make([]string, 0, len(physical))
+	for id := range physical {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	type scopeKey struct{ provider, cwd string }
+	refs := make([]ntmctx.PaneTranscriptRef, 0, len(physical))
+	uncertain := make(map[string]bool)
+	claudeStores := make(map[string]int)
+	eligible := make(map[scopeKey]string) // canonical group -> original target cwd
+	targetByID := make(map[string]ntmctx.PaneTranscriptRef, len(targets))
+	for _, target := range targets {
+		targetByID[target.PaneID] = target
+	}
+	for _, id := range ids {
+		if ctx.Err() != nil {
+			return known
+		}
+		pane := physical[id]
+		if pane.Dead || pane.IsServicePane() {
+			continue
+		}
+		provider := ""
+		switch pane.Type.Canonical() {
+		case agent.AgentTypeClaudeCode:
+			provider = "claude"
+		case agent.AgentTypeCodex:
+			provider = "codex"
+		case agent.AgentTypeGemini:
+			provider = "gemini"
+		case agent.AgentTypeOmp:
+			provider = "omp"
+		}
+		if !needed[provider] {
+			continue
+		}
+		var cwd string
+		var ok bool
+		if rc.paneCwdContext != nil {
+			cwd, ok = rc.paneCwdContext(ctx, id)
+		} else if rc.paneCwd != nil {
+			cwd, ok = rc.paneCwd(id)
+		}
+		canonical, pathErr := filepath.EvalSymlinks(cwd)
+		if !ok || !filepath.IsAbs(cwd) || pathErr != nil {
+			uncertain[provider] = true // Unknown cwd may overlap any target of this type.
+			continue
+		}
+		canonical = filepath.Clean(canonical)
+		refs = append(refs, ntmctx.PaneTranscriptRef{PaneID: id, AgentType: provider, PID: pane.PID, Cwd: canonical})
+		if provider == "claude" {
+			claudeStores[ntmctx.MungeProjectPath(cwd)]++
+		}
+		target, isTarget := targetByID[id]
+		targetCwd, targetErr := filepath.EvalSymlinks(target.Cwd)
+		if isTarget && target.PID == pane.PID && target.AgentType == provider && targetErr == nil && filepath.Clean(targetCwd) == canonical {
+			eligible[scopeKey{provider, canonical}] = target.Cwd
+		}
+	}
+	result := ntmctx.AttributePaneTranscripts(refs, known, nil, func(provider, cwd string) (*ntmctx.TranscriptUsage, bool) {
+		original, ok := eligible[scopeKey{provider, cwd}]
+		if !ok || uncertain[provider] || ctx.Err() != nil ||
+			(provider == "claude" && claudeStores[ntmctx.MungeProjectPath(original)] != 1) {
+			return nil, false
+		}
+		return ntmctx.LatestAgentTranscriptUsage(provider, original, time.Time{})
+	})
+	if ctx.Err() != nil {
+		return known
+	}
+	for id := range result {
+		if _, isTarget := targetByID[id]; !isTarget {
+			delete(result, id)
+		}
+	}
+	return result
 }
