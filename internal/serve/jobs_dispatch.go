@@ -304,6 +304,7 @@ func executePipelineJob(ctx context.Context, opts pipeline.PipelineRunOptions, r
 type jobSwarmSpawnParams struct {
 	Session string `json:"session"`
 	AgentSpawnRequest
+	jobSpawnDeliveryParams
 	WorkingDir          string   `json:"working_dir,omitempty"`
 	DryRun              bool     `json:"dry_run,omitempty"`
 	Safety              bool     `json:"safety,omitempty"`
@@ -426,6 +427,9 @@ func (s *Server) jobSwarmSpawn(ctx context.Context, params map[string]interface{
 		CustomNames:         req.CustomNames,
 		RequireReservation:  req.RequireReservation,
 		ReservationPaths:    req.ReservationPaths,
+	}
+	if err := req.applyDeliveryOptions(&opts); err != nil {
+		return nil, err
 	}
 	spawnCtx := ctx
 	if startupTimeout > 0 {
