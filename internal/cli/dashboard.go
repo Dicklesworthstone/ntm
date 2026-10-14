@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"strings"
 	"time"
@@ -16,7 +15,6 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/integrations/pt"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tui/dashboard"
-	"github.com/Dicklesworthstone/ntm/internal/watcher"
 )
 
 func newDashboardCmd() *cobra.Command {
@@ -130,86 +128,6 @@ func isSessionMissingError(err error) bool {
 	return strings.Contains(msg, "can't find session") ||
 		strings.Contains(msg, "session not found") ||
 		strings.Contains(msg, "has-session")
-}
-
-func startDashboardReservationWatcher(session, projectDir string) func() {
-	if cfg == nil || !cfg.FileReservation.Enabled || !cfg.AgentMail.Enabled {
-		return nil
-	}
-
-	// Use the shared constructor so the watcher gets the same semantics as
-	// every other CLI mail path: environment overrides config for URL/token
-	// (this path used to force the config values over AGENT_MAIL_URL/
-	// AGENT_MAIL_TOKEN), plus hydrated per-project registration tokens.
-	amClient := newAgentMailClient(projectDir)
-	// Bind configuration before the optional service wait. A late startup
-	// uses the same settings and credentials as the dashboard that owns it.
-	cfgValues := watcher.FileReservationConfigValues{
-		Enabled:               cfg.FileReservation.Enabled,
-		AutoReserve:           cfg.FileReservation.AutoReserve,
-		AutoReleaseIdleMin:    cfg.FileReservation.AutoReleaseIdleMin,
-		NotifyOnConflict:      cfg.FileReservation.NotifyOnConflict,
-		ExtendOnActivity:      cfg.FileReservation.ExtendOnActivity,
-		DefaultTTLMin:         cfg.FileReservation.DefaultTTLMin,
-		PollIntervalSec:       cfg.FileReservation.PollIntervalSec,
-		CaptureLinesForDetect: cfg.FileReservation.CaptureLinesForDetect,
-		Debug:                 cfg.FileReservation.Debug,
-	}
-
-	watcherCtx, cancelWatcher := context.WithCancel(context.Background())
-	done := make(chan struct{})
-
-	go func() {
-		defer close(done)
-
-		startup := dashboardReservationStartup{
-			probe: func(ctx context.Context) error {
-				_, err := amClient.HealthCheck(ctx)
-				return err
-			},
-		}
-
-		conflictCallback := func(conflict watcher.FileConflict) {
-			if cfgValues.Debug {
-				log.Printf("[FileReservation] Conflict: %s requested by %s, held by %v",
-					conflict.Path, conflict.RequestorAgent, conflict.Holders)
-			}
-			// File reservation conflicts are surfaced via the event bus and
-			// displayed as toast notifications in the TUI dashboard when the
-			// dashboard subscribes to "file_reservation.conflict" events.
-		}
-
-		// Per-pane Agent Mail identity is resolved lazily from the canonical
-		// identity file written by spawn (see internal/agentmail/pane_identity.go
-		// and issue #107). Passing an empty fallback here means the watcher
-		// skips panes that do not yet have a registered identity instead of
-		// sending reservation calls under the tmux session name — which is
-		// almost never a registered Agent Mail agent and was the source of
-		// the red `file_reservation_paths` metrics reported in #107.
-		startup.run(watcherCtx, func(ctx context.Context) func() {
-			reservationWatcher := watcher.NewFileReservationWatcherFromConfig(
-				cfgValues,
-				amClient,
-				projectDir,
-				"",      // Fallback agent name (empty -> skip unresolved panes)
-				session, // Restrict watcher scans to this dashboard session
-				conflictCallback,
-			)
-			if reservationWatcher == nil || ctx.Err() != nil {
-				return nil
-			}
-			reservationWatcher.Start(ctx)
-			if cfgValues.Debug {
-				log.Printf("[FileReservation] Watcher started for session %s", session)
-			}
-			return reservationWatcher.Stop
-		})
-	}()
-
-	return func() {
-		cancelWatcher()
-		<-done
-	}
 }
 
 // runDashboardJSON outputs dashboard data in JSON format
@@ -447,18 +365,19 @@ func runDashboard(ctx context.Context, w io.Writer, errW io.Writer, session stri
 		}
 	}
 
-	if projectDir != "" {
-		if stopWatcher := startDashboardReservationWatcher(session, projectDir); stopWatcher != nil {
-			defer stopWatcher()
-		}
-	}
-
 	// Load the merged config up front so the first refresh already honors it
 	// (rano polling and interval, Agent Mail, model names, theme). The
 	// dashboard's file watcher only reports changes, so without this the
 	// user's config took effect only after they edited it mid-session (#317).
 	// Any parse warning prints here, before the TUI owns the terminal.
 	cfg := loadDashboardConfig(projectDir, errW)
+	// Reservation startup is a project-scoped side effect. Use the same
+	// merged settings as the UI, never the launch directory's global cfg.
+	// A failed config load leaves the read-only dashboard usable, but must
+	// not authorize reservations using unrelated settings or credentials.
+	if stopWatcher := startDashboardReservationWatcher(ctx, session, projectDir, cfg); stopWatcher != nil {
+		defer stopWatcher()
+	}
 
 	// The process-health panel reads the process-triage monitor, which only
 	// `ntm serve` started; in the dashboard's own process it stayed empty.
