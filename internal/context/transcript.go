@@ -30,6 +30,7 @@ import (
 	"bytes"
 	stdcontext "context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -55,12 +56,17 @@ type TranscriptUsage struct {
 	CacheCreationTokens int       // cache creation tokens of the last turn
 	OutputTokens        int       // output tokens of the last turn
 	ContextWindow       int       // model context window if the transcript reports one (Codex), else 0
-	UpdatedAt           time.Time // accounting observation time (file mtime for JSONL tail readers)
+	UpdatedAt           time.Time // native accounting timestamp, capped by the file snapshot; zero when unknown
 }
 
-// transcriptTailWindow bounds how much of a transcript is read. Transcripts
-// can exceed 100MB; the last usage-bearing line is always near the end.
-const transcriptTailWindow = 256 * 1024
+// Start with a cheap tail, but allow large assistant/tool records between the
+// latest accounting and EOF. Expansion reads only additional bytes and is
+// capped independently of total transcript size. One extra byte establishes
+// whether the first record crosses the scan boundary.
+const (
+	transcriptTailWindow = 256 * 1024
+	transcriptScanLimit  = 8 * 1024 * 1024
+)
 
 // TranscriptFreshness is the maximum age of a transcript for its usage to be
 // considered current (confidence "high").
@@ -69,7 +75,8 @@ const TranscriptFreshness = 10 * time.Minute
 // transcriptEntry is a permissive union of the Claude, Codex, and omp line
 // shapes.
 type transcriptEntry struct {
-	Type string `json:"type"`
+	Type      string `json:"type"`
+	Timestamp string `json:"timestamp"`
 	// Model is top-level on omp "model_change" lines.
 	Model   string `json:"model"`
 	Message struct {
@@ -123,39 +130,71 @@ func ReadLatestTranscriptUsage(path string) (*TranscriptUsage, error) {
 	if err != nil {
 		return nil, err
 	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("transcript must be a regular file")
+	}
 	if usage, handled, err := readGeminiTranscriptUsage(f, info, path); handled || err != nil {
 		return usage, err
 	}
 
-	offset := int64(0)
-	if info.Size() > transcriptTailWindow {
-		offset = info.Size() - transcriptTailWindow
-	}
-	if _, err := f.Seek(offset, io.SeekStart); err != nil {
-		return nil, err
-	}
-	buf, err := io.ReadAll(io.LimitReader(f, transcriptTailWindow))
+	usage, err := readNativeTranscriptTail(f, info.Size())
 	if err != nil {
 		return nil, err
 	}
-
-	// If we started mid-file the first line is almost certainly partial:
-	// drop everything through the first newline.
-	if offset > 0 {
-		if nl := bytes.IndexByte(buf, '\n'); nl >= 0 {
-			buf = buf[nl+1:]
-		} else {
-			return nil, nil // window is a single partial line
-		}
+	after, err := f.Stat()
+	if err != nil {
+		return nil, err
 	}
-
-	usage := parseLastUsage(buf)
+	if after.Size() != info.Size() || !after.ModTime().Equal(info.ModTime()) {
+		return nil, fmt.Errorf("transcript changed during accounting read")
+	}
 	if usage == nil {
 		return nil, nil
 	}
 	usage.Path = path
-	usage.UpdatedAt = info.ModTime()
+	// Progress and tool-output writes do not refresh an earlier token count.
+	// Missing/invalid native timestamps stay unknown rather than borrowing
+	// the mtime of unrelated data. Never claim evidence newer than this file.
+	if usage.UpdatedAt.After(info.ModTime()) {
+		usage.UpdatedAt = info.ModTime()
+	}
 	return usage, nil
+}
+
+// readNativeTranscriptTail searches complete JSONL records within a fixed
+// snapshot. It neither chases appends nor rereads overlapping windows. A model
+// declaration can precede a large tool result, so expand until both the latest
+// usage and its preceding model are found, or the bounded history is exhausted.
+func readNativeTranscriptTail(src io.ReaderAt, size int64) (*TranscriptUsage, error) {
+	if size < 0 {
+		return nil, fmt.Errorf("invalid transcript snapshot size")
+	}
+	var buf []byte
+	for window := int64(transcriptTailWindow); ; window = min(window*2, transcriptScanLimit) {
+		length := min(size, window+1)
+		offset := size - length
+		expanded := make([]byte, int(length))
+		added := len(expanded) - len(buf)
+		copy(expanded[added:], buf)
+		if _, err := io.ReadFull(io.NewSectionReader(src, offset, int64(added)), expanded[:added]); err != nil {
+			return nil, fmt.Errorf("read transcript snapshot: %w", err)
+		}
+		buf = expanded
+		complete := buf
+		if offset > 0 {
+			// buf includes the byte immediately before the nominal window.
+			// If it is a newline, the first complete record is preserved.
+			if newline := bytes.IndexByte(complete, '\n'); newline >= 0 {
+				complete = complete[newline+1:]
+			} else {
+				complete = nil
+			}
+		}
+		usage := parseLastUsage(complete)
+		if (usage != nil && usage.Model != "") || offset == 0 || window == transcriptScanLimit {
+			return usage, nil
+		}
+	}
 }
 
 // parseLastUsage scans JSONL content and returns the last usage-bearing
@@ -183,9 +222,9 @@ func parseLastUsage(buf []byte) *TranscriptUsage {
 			continue // partial/corrupt line
 		}
 
-		if e.Message.Model != "" {
+		if (e.Type == "assistant" || (e.Type == "message" && e.Message.Role == "assistant")) && e.Message.Model != "" {
 			lastModel = ompQualifiedModel(e.Message.Provider, e.Message.Model)
-		} else if e.Payload.Model != "" {
+		} else if e.Type == "turn_context" && e.Payload.Model != "" {
 			lastModel = e.Payload.Model
 		} else if e.Type == "model_change" && e.Model != "" {
 			lastModel = e.Model // omp: already provider-qualified
@@ -251,11 +290,9 @@ func parseLastUsage(buf []byte) *TranscriptUsage {
 		if last.Model == "" {
 			last.Model = lastModel
 		}
+		last.UpdatedAt, _ = time.Parse(time.RFC3339Nano, e.Timestamp)
 	}
 
-	if last != nil && last.Model == "" {
-		last.Model = lastModel
-	}
 	return last
 }
 
