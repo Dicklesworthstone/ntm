@@ -1,7 +1,10 @@
 package persona
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -10,16 +13,21 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
-// PrepareSystemPrompt writes a persona's system prompt to a file and returns the path.
-// If the persona has no system prompt, returns empty string and nil error.
-// The prompt file is written to {projectDir}/.ntm/prompts/{personaName}.md
+const (
+	maxPersonaContextFileBytes = 4 << 20
+	maxPersonaContextBytes     = 8 << 20
+)
+
+// PrepareSystemPrompt materializes a persona's rendered system/context prompt and
+// returns its immutable content-addressed path. A persona with neither a system
+// prompt nor context files returns an empty path.
 func PrepareSystemPrompt(p *Persona, projectDir string) (string, error) {
 	return PrepareSystemPromptWithContext(p, projectDir, nil)
 }
 
 // PrepareSystemPromptWithContext writes a persona's system prompt with template context.
 func PrepareSystemPromptWithContext(p *Persona, projectDir string, ctx *TemplateContext) (string, error) {
-	if p == nil || p.SystemPrompt == "" {
+	if p == nil || (p.SystemPrompt == "" && len(p.ContextFiles) == 0) {
 		return "", nil
 	}
 	if err := validatePromptPersonaName(p.Name); err != nil {
@@ -39,27 +47,78 @@ func PrepareSystemPromptWithContext(p *Persona, projectDir string, ctx *Template
 	// Build the prompt content
 	content := p.SystemPrompt
 
-	// If persona has context_files, prepend them
+	// Context is part of the persona contract: never silently launch a
+	// different prompt when a declared source is invalid or unreadable.
 	if len(p.ContextFiles) > 0 {
 		contextContent, err := PrepareContextFiles(p, projectDir)
 		if err != nil {
-			// Log warning but continue without context files
-			slog.Warn("could not load context files for persona", "persona", p.Name, "error", err)
-		} else if contextContent != "" {
-			content = contextContent + "\n\n---\n\n" + content
+			return "", fmt.Errorf("preparing context files for persona %q: %w", p.Name, err)
+		}
+		if contextContent != "" {
+			if content == "" {
+				content = contextContent
+			} else {
+				content = contextContent + "\n\n---\n\n" + content
+			}
 		}
 	}
 
 	// Expand any template variables in the prompt
 	content = ExpandPromptVarsWithContext(content, p, ctx)
 
-	// Write to file
-	promptFile := filepath.Join(promptsDir, p.Name+".md")
-	if err := os.WriteFile(promptFile, []byte(content), 0644); err != nil {
+	// A launch must keep the exact prompt it was prepared with. Keying only by
+	// persona name lets a later launch overwrite the file while an earlier agent
+	// is still starting. Content addressing makes prepared prompts immutable by
+	// identity while naturally reusing identical renderings.
+	sum := sha256.Sum256([]byte(content))
+	digest := hex.EncodeToString(sum[:16])
+	promptFile := filepath.Join(promptsDir, p.Name+"-"+digest+".md")
+	if err := writePromptSnapshot(promptFile, []byte(content)); err != nil {
 		return "", fmt.Errorf("writing prompt file: %w", err)
 	}
 
 	return promptFile, nil
+}
+
+func writePromptSnapshot(path string, content []byte) error {
+	if existing, err := os.ReadFile(path); err == nil {
+		if string(existing) != string(content) {
+			return fmt.Errorf("existing content-addressed prompt does not match rendered content: %s", path)
+		}
+		return nil
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+
+	dir := filepath.Dir(path)
+	file, err := os.CreateTemp(dir, ".prompt-*.tmp")
+	if err != nil {
+		return err
+	}
+	name := file.Name()
+	defer os.Remove(name)
+	if err := file.Chmod(0644); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if _, err := file.Write(content); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(name, path); err != nil {
+		if existing, readErr := os.ReadFile(path); readErr == nil && string(existing) == string(content) {
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 // PrepareContextFiles reads and concatenates all context_files for a persona.
@@ -70,6 +129,7 @@ func PrepareContextFiles(p *Persona, projectDir string) (string, error) {
 	}
 
 	var files []string
+	seen := make(map[string]struct{})
 
 	// Expand globs and collect file paths
 	for _, pattern := range p.ContextFiles {
@@ -87,6 +147,11 @@ func PrepareContextFiles(p *Persona, projectDir string) (string, error) {
 			if err != nil {
 				return "", err
 			}
+			key := filepath.Clean(resolved)
+			if _, duplicate := seen[key]; duplicate {
+				continue
+			}
+			seen[key] = struct{}{}
 			files = append(files, resolved)
 		}
 	}
@@ -99,12 +164,35 @@ func PrepareContextFiles(p *Persona, projectDir string) (string, error) {
 	var content strings.Builder
 	content.WriteString("# Context Files\n\n")
 
+	var totalBytes int64
 	for _, f := range files {
-		data, err := os.ReadFile(f)
+		file, err := os.Open(f)
 		if err != nil {
-			// Skip unreadable files with warning
-			slog.Warn("could not read context file", "file", f, "error", err)
-			continue
+			return "", fmt.Errorf("opening context file %q: %w", f, err)
+		}
+		info, err := file.Stat()
+		if err != nil {
+			_ = file.Close()
+			return "", fmt.Errorf("stat context file %q: %w", f, err)
+		}
+		if info.Size() > maxPersonaContextFileBytes {
+			_ = file.Close()
+			return "", fmt.Errorf("context file %q exceeds %d-byte limit", f, maxPersonaContextFileBytes)
+		}
+		data, err := io.ReadAll(io.LimitReader(file, maxPersonaContextFileBytes+1))
+		closeErr := file.Close()
+		if err != nil {
+			return "", fmt.Errorf("reading context file %q: %w", f, err)
+		}
+		if closeErr != nil {
+			return "", fmt.Errorf("closing context file %q: %w", f, closeErr)
+		}
+		if int64(len(data)) > maxPersonaContextFileBytes {
+			return "", fmt.Errorf("context file %q exceeds %d-byte limit", f, maxPersonaContextFileBytes)
+		}
+		totalBytes += int64(len(data))
+		if totalBytes > maxPersonaContextBytes {
+			return "", fmt.Errorf("persona context files exceed %d-byte aggregate limit", maxPersonaContextBytes)
 		}
 
 		// Get relative path for display
