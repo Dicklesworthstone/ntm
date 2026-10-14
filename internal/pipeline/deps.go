@@ -37,6 +37,7 @@ type DependencyGraph struct {
 	// scheduled in the main graph. Retain their structure for resume only.
 	postPipelineSteps []Step
 	onCancelSteps     []Step
+	parallelErrors    []DependencyError
 }
 
 // DependencyError represents an error in the dependency graph
@@ -104,6 +105,7 @@ func NewDependencyGraph(workflow *Workflow) *DependencyGraph {
 	}
 
 	addSteps(workflow.Steps, "")
+	g.parallelErrors = g.resolveParallelChildDependencies(workflow)
 	g.inheritContainerDependencies()
 	for id, remaining := range g.remainingDeps {
 		if remaining == 0 {
@@ -159,7 +161,8 @@ func (g *DependencyGraph) inheritContainerDependencies() {
 
 // Validate checks the dependency graph for errors
 func (g *DependencyGraph) Validate() []DependencyError {
-	errors := g.validatePhaseOwnership(nil)
+	errors := append([]DependencyError(nil), g.parallelErrors...)
+	errors = append(errors, g.validatePhaseOwnership(nil)...)
 
 	// Check for missing dependencies and cross-container references.
 	// bd-mb6rd: a step inside a parallel/loop body must not be depended on

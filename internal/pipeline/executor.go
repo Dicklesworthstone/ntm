@@ -463,9 +463,16 @@ func (e *Executor) Resume(ctx context.Context, workflow *Workflow, prior *Execut
 		return e.state, err
 	}
 
+	// Validate and restore retained output bindings before changing attempt
+	// timestamps or persisting. Rejected receipt evidence must not refresh
+	// checkpoint age, advance the graph, or authorize downstream effects.
+	if err := e.applyResumeState(); err != nil {
+		return e.state, fmt.Errorf("restore resume outputs: %w", err)
+	}
+
 	// bd-05l02: now that resume validation has accepted the prior state,
 	// transition it to "running" and backfill StartedAt for runs that
-	// never recorded one. applyResumeState writes step results;
+	// never recorded one. applyResumeState has restored step results;
 	// persistState refreshes LastCheckpointAt as part of normal checkpointing.
 	e.stateMu.Lock()
 	if e.state.StartedAt.IsZero() {
@@ -478,7 +485,6 @@ func (e *Executor) Resume(ctx context.Context, workflow *Workflow, prior *Execut
 	e.state.CurrentStep = ""
 	e.stateMu.Unlock()
 
-	e.applyResumeState()
 	e.resetPostPipelineForMainAttempt(workflow)
 	if err := e.persistState(); err != nil {
 		return e.state, err
@@ -2330,125 +2336,29 @@ func (e *Executor) executeParallel(ctx context.Context, step *Step, workflow *Wo
 		defer cancel()
 	}
 
-	// Create cancellable context for fail_fast mode
-	parallelCtx, cancelParallel := context.WithCancel(ctx)
-	defer cancelParallel()
-
 	e.emitProgress("parallel_start", step.ID,
 		stepProgressMessage("Starting parallel group", step, fmt.Sprintf("%d steps, on_error=%s", len(step.Parallel.Steps), onError)),
 		e.calculateProgress())
-	e.beginParallelState(step.ID, len(step.Parallel.Steps))
-	e.persistState()
-
-	var wg sync.WaitGroup
-	results := make([]StepResult, len(step.Parallel.Steps))
-	var mu sync.Mutex
-	var firstError error
-	var cancelled bool
-	var completionOrder []string
-
-	// Track used panes to coordinate agent selection
-	usedPanes := make(map[string]bool)
-	var panesMu sync.Mutex
-
-	// bd-dmjn3: substep concurrency is sourced from
-	// limits.substep_parallel_max (default DefaultSubstepParallelMax=8)
-	// so workflows with large parallel blocks can opt into a higher fan-out
-	// without patching the constant.
-	substepLimit := e.limits.SubstepParallelMax
-	if substepLimit <= 0 {
-		substepLimit = DefaultSubstepParallelMax
-	}
-	sem := make(chan struct{}, substepLimit)
-
-	for i, pStep := range step.Parallel.Steps {
-		pStep.ID = scopedChildStepID(step.ID, pStep.ID, i+1)
-
-		// bd-qbymk: when resuming a parallel group whose parent never
-		// completed but some children did persist completed StepResults,
-		// applyResumeState retains those entries. Re-dispatching them here
-		// would duplicate side effects (re-run commands, re-prompt agents)
-		// against an already-finished substep. Adopt the persisted result
-		// instead so resume honors the parallel-progress contract.
-		e.stateMu.RLock()
-		existing, hasExisting := e.state.Steps[pStep.ID]
-		e.stateMu.RUnlock()
-		if hasExisting && !shouldRerunStep(existing) && existing.Status == StatusCompleted {
-			// bd-vlqhu: results[i] is per-iteration (each iteration owns a
-			// distinct slice index, so no mutex needed for the write
-			// alone). completionOrder is no longer appended during the run
-			// — it is built deterministically after wg.Wait by sorting on
-			// FinishedAt, so adopted-on-resume entries sort by their
-			// recorded prior-run timestamp instead of interleaving
-			// non-deterministically with goroutine appends from concurrent
-			// children that are still running.
-			results[i] = existing
-			e.markParallelSubstepFinished(step.ID, pStep.ID, existing.Status)
-			continue
+	results, scheduleErr := e.runParallelChildren(ctx, step, workflow, onError)
+	if scheduleErr != nil {
+		// Dependency/recovery validation and checkpoint failures must not
+		// be hidden by the group's on_error: continue policy.
+		result.Status = StatusFailed
+		result.FinishedAt = time.Now()
+		errorType := "parallel_dependency"
+		if errors.Is(scheduleErr, ErrCheckpointFailed) {
+			errorType = "checkpoint"
+		} else if errors.Is(scheduleErr, context.DeadlineExceeded) {
+			errorType = "parallel_timeout"
+		} else if errors.Is(scheduleErr, context.Canceled) {
+			result.Status = StatusCancelled
+			result.SkipKind = SkipKindCancelled
+			result.SkipReason = scheduleErr.Error()
+			errorType = "parallel_cancelled"
 		}
-
-		wg.Add(1)
-		go func(idx int, ps Step) {
-			defer wg.Done()
-
-			// Check if already cancelled (fail_fast mode)
-			select {
-			case <-parallelCtx.Done():
-				mu.Lock()
-				results[idx] = StepResult{
-					StepID:     ps.ID,
-					Status:     StatusCancelled,
-					StartedAt:  time.Now(),
-					FinishedAt: time.Now(),
-					SkipReason: "cancelled due to parallel group failure",
-					SkipKind:   SkipKindCancelled,
-				}
-				e.stateMu.Lock()
-				e.state.Steps[ps.ID] = results[idx]
-				e.state.UpdatedAt = time.Now()
-				e.stateMu.Unlock()
-				mu.Unlock()
-				e.markParallelSubstepFinished(step.ID, ps.ID, StatusCancelled)
-				e.persistState()
-				return
-			case sem <- struct{}{}: // Acquire token
-				// Continue execution
-			}
-			defer func() { <-sem }() // Release token
-
-			// Execute the step with pane coordination
-			e.markParallelSubstepStarted(step.ID, ps.ID)
-			e.persistState()
-			pResult := e.executeParallelStep(parallelCtx, &ps, workflow, usedPanes, &panesMu)
-
-			// bd-vlqhu: completionOrder is no longer appended live — see
-			// the post-wg.Wait reconstruction below. The mutex still
-			// guards firstError / cancelled writes plus the e.state.Steps
-			// mutation paired with persistState.
-			mu.Lock()
-			results[idx] = pResult
-			e.stateMu.Lock()
-			e.state.Steps[ps.ID] = pResult
-			e.state.UpdatedAt = time.Now()
-			e.stateMu.Unlock()
-
-			// Handle fail_fast: cancel remaining steps on first error
-			if pResult.Status == StatusFailed && onError == ErrorActionFailFast {
-				if firstError == nil {
-					firstError = fmt.Errorf("step %s failed", ps.ID)
-					cancelled = true
-					cancelParallel()
-				}
-			}
-			mu.Unlock()
-
-			e.markParallelSubstepFinished(step.ID, ps.ID, pResult.Status)
-			e.persistState()
-		}(i, pStep)
+		result.Error = &StepError{Type: errorType, Message: scheduleErr.Error(), Timestamp: result.FinishedAt}
+		return result
 	}
-
-	wg.Wait()
-	e.completeParallelState(step.ID)
 
 	// bd-vlqhu: build completionOrder deterministically from FinishedAt
 	// timestamps now that all goroutines have settled. Live appending
@@ -2459,7 +2369,7 @@ func (e *Executor) executeParallel(ctx context.Context, step *Step, workflow *Wo
 	// FinishedAt ordering with substep-index tie-breaker gives the same
 	// "last finished" semantics deterministically. Substeps with an empty
 	// StepID (never dispatched, e.g. early fail_fast cancel) are skipped.
-	completionOrder = buildParallelCompletionOrder(results)
+	completionOrder := buildParallelCompletionOrder(results)
 
 	// Aggregate results
 	completed := 0
@@ -2471,6 +2381,10 @@ func (e *Executor) executeParallel(ctx context.Context, step *Step, workflow *Wo
 			completed++
 		case StatusFailed:
 			failed++
+		case StatusSkipped:
+			if r.SkipKind == SkipKindFailedDependency {
+				failed++
+			}
 		case StatusCancelled:
 			cancelledCount++
 		}
@@ -2496,11 +2410,11 @@ func (e *Executor) executeParallel(ctx context.Context, step *Step, workflow *Wo
 	// bd-v4u1i: handle external context.Canceled (e.g. Ctrl-C, parent workflow
 	// cancel) and per-substep StatusCancelled separately from the failure
 	// branch so a cancelled run does not get persisted as StatusCompleted.
-	// Order matters: timeout takes precedence over generic cancel; failure
-	// branch takes precedence over cancel-only because failed children are a
-	// stronger signal than the parent context being torn down after them.
+	// A failed child remains a failure in fail/fail_fast mode. Continue can
+	// tolerate failures, but cannot convert cancellation or an expired group
+	// deadline into completion merely because another child failed first.
 	switch {
-	case failed > 0 || cancelled:
+	case failed > 0 && (onError != ErrorActionContinue || (ctx.Err() == nil && cancelledCount == 0)):
 		aggregatedErr := aggregateParallelErrors(results, len(results))
 		switch onError {
 		case ErrorActionContinue:
@@ -3479,9 +3393,9 @@ func truncatePrompt(s string, n int) string {
 	return s[:prevI] + "..."
 }
 
-func (e *Executor) applyResumeState() {
+func (e *Executor) applyResumeState() error {
 	if e.graph == nil {
-		return
+		return nil
 	}
 
 	var rerunStepIDs []string
@@ -3506,18 +3420,17 @@ func (e *Executor) applyResumeState() {
 	// partial write). Without rebuild, downstream steps that reference
 	// ${steps.<id>.output} or the producer's output_var see undefined
 	// variables and fail or stale-resolve.
-	type retainedStepOutput struct {
-		stepID     string
-		output     string
-		parsedData interface{}
-		outputVar  string
-	}
-	var retained []retainedStepOutput
+	var retained []resumeOutputEvent
 
 	e.stateMu.Lock()
 	if e.state == nil {
 		e.stateMu.Unlock()
-		return
+		return nil
+	}
+	merges, settledChildren, err := prepareCompletedParallelOutputs(e.graph, e.state)
+	if err != nil {
+		e.stateMu.Unlock()
+		return err
 	}
 	runID := e.state.RunID
 	workflowID := e.state.WorkflowID
@@ -3529,10 +3442,10 @@ func (e *Executor) applyResumeState() {
 		}
 	}
 	for stepID, result := range e.state.Steps {
-		// Check before marking the graph or retaining outputs. Deleting
-		// in-flight results later cannot undo either of those decisions.
-		_, inFlight := e.state.InFlightSteps[stepID]
-		if inFlight || shouldRerunStep(result) {
+		// In-flight evidence must win before graph completion and output
+		// retention. Clearing the marker afterward is too late: it leaves
+		// a completed graph node and resurrects an untrusted output alias.
+		if resumeResultInFlight(e.state, stepID, result) || (shouldRerunStep(result) && !settledChildren[stepID]) {
 			rerunStepIDs = append(rerunStepIDs, stepID)
 			continue
 		}
@@ -3557,12 +3470,18 @@ func (e *Executor) applyResumeState() {
 		} else {
 			stepForOutput, _ = e.graph.GetStep(stepID)
 		}
-		entry := retainedStepOutput{
+		if shouldRerunStep(result) {
+			// A completed outer group's handled failures remain inspectable;
+			// they do not become successful scalar output producers.
+			continue
+		}
+		entry := resumeOutputEvent{
 			stepID:     stepID,
 			output:     result.Output,
 			parsedData: result.ParsedData,
+			finishedAt: result.FinishedAt,
 		}
-		if stepForOutput != nil {
+		if stepForOutput != nil && !settledChildren[stepID] {
 			entry.outputVar = stepForOutput.OutputVar
 		}
 		retained = append(retained, entry)
@@ -3584,20 +3503,10 @@ func (e *Executor) applyResumeState() {
 	for _, stepID := range orphanStepIDs {
 		e.clearStepVariables(stepID)
 	}
+	retained = append(retained, merges...)
 	if len(retained) > 0 {
 		e.varMu.Lock()
-		if e.state.Variables == nil {
-			e.state.Variables = make(map[string]interface{})
-		}
-		for _, entry := range retained {
-			StoreStepOutput(e.state, entry.stepID, entry.output, entry.parsedData)
-			if entry.outputVar != "" {
-				e.state.Variables[entry.outputVar] = entry.output
-				if entry.parsedData != nil {
-					e.state.Variables[entry.outputVar+"_parsed"] = entry.parsedData
-				}
-			}
-		}
+		restoreResumeOutputEvents(e.state, retained)
 		e.varMu.Unlock()
 	}
 	for _, drop := range orphanDrops {
@@ -3608,6 +3517,7 @@ func (e *Executor) applyResumeState() {
 			"error", drop.err.Error(),
 		)
 	}
+	return nil
 }
 
 func shouldRerunStep(result StepResult) bool {
@@ -3701,6 +3611,7 @@ func (e *Executor) snapshotState() *ExecutionState {
 			value.CompletedStepIDs = append([]string(nil), value.CompletedStepIDs...)
 			value.FailedStepIDs = append([]string(nil), value.FailedStepIDs...)
 			value.InFlightStepIDs = append([]string(nil), value.InFlightStepIDs...)
+			value.ChildCheckpoints = maps.Clone(value.ChildCheckpoints)
 			snapshot.ParallelState[key] = value
 		}
 	}

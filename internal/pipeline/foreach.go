@@ -146,7 +146,7 @@ func (e *Executor) executeForeach(ctx context.Context, step *Step, workflow *Wor
 	// for aggregate, map[string]string keyed by item identity for collect.
 	// Last mode keeps the per-iteration last-writer behavior (declared
 	// non-deterministic for parallel foreach by validateForeachOutputVarMode).
-	e.storeForeachOutputVars(step, config, plans, iterations)
+	outputBindings := e.storeForeachOutputVars(step, config, plans, iterations)
 	if failed > 0 {
 		result.Error = aggregateForeachErrors(iterations, step.ID, total)
 		if onError != ErrorActionContinue {
@@ -161,6 +161,7 @@ func (e *Executor) executeForeach(ctx context.Context, step *Step, workflow *Wor
 		return result
 	}
 	result.Status = StatusCompleted
+	captureParallelForeachOutputs(ctx, step.ID, outputBindings)
 	e.emitProgress("foreach_complete", step.ID, result.Output, e.calculateProgress())
 	slog.Info("foreach step completed",
 		"run_id", e.state.RunID,
@@ -982,12 +983,12 @@ func (e *Executor) executeForeachNestedStepOnce(ctx context.Context, step *Step,
 // StatusCompleted (skipped, failed, cancelled) contribute no entry — their
 // output is intentionally absent from the aggregate so consumers can
 // distinguish "no result" from "empty result".
-func (e *Executor) storeForeachOutputVars(parent *Step, config *ForeachConfig, plans []foreachIterationPlan, iterations []foreachIterationResult) {
+func (e *Executor) storeForeachOutputVars(parent *Step, config *ForeachConfig, plans []foreachIterationPlan, iterations []foreachIterationResult) map[string]interface{} {
 	if e == nil || e.state == nil || parent == nil || parent.OutputVar == "" {
-		return
+		return nil
 	}
 	if config == nil {
-		return
+		return nil
 	}
 
 	mode := effectiveForeachOutputVarMode(parent, config)
@@ -996,7 +997,9 @@ func (e *Executor) storeForeachOutputVars(parent *Step, config *ForeachConfig, p
 		// wrote last. Sequential foreach lands on the final iteration's
 		// output deterministically; parallel foreach lands on completion-
 		// order last (validation already warns this is non-deterministic).
-		return
+		e.varMu.RLock()
+		defer e.varMu.RUnlock()
+		return snapshotForeachOutputBindings(e.state, parent.OutputVar)
 	}
 
 	type collected struct {
@@ -1032,6 +1035,9 @@ func (e *Executor) storeForeachOutputVars(parent *Step, config *ForeachConfig, p
 	if e.state.Variables == nil {
 		e.state.Variables = make(map[string]interface{})
 	}
+	// An earlier attempt may have parsed output when this attempt has none.
+	// Absence is part of the checkpoint too; never bind stale parsed values.
+	delete(e.state.Variables, parent.OutputVar+"_parsed")
 
 	switch mode {
 	case OutputVarModeCollect:
@@ -1065,6 +1071,7 @@ func (e *Executor) storeForeachOutputVars(parent *Step, config *ForeachConfig, p
 			e.state.Variables[parent.OutputVar+"_parsed"] = parsed
 		}
 	}
+	return snapshotForeachOutputBindings(e.state, parent.OutputVar)
 }
 
 // effectiveForeachOutputVarMode resolves the cascade Step.OutputVarMode →
@@ -1617,7 +1624,7 @@ func cloneForeachConfig(config *ForeachConfig) *ForeachConfig {
 }
 
 func cloneInterfaceMap(in map[string]interface{}) map[string]interface{} {
-	if len(in) == 0 {
+	if in == nil {
 		return nil
 	}
 	out := make(map[string]interface{}, len(in))
@@ -1631,14 +1638,31 @@ func cloneInterfaceValue(value interface{}) interface{} {
 	switch v := value.(type) {
 	case map[string]interface{}:
 		return cloneInterfaceMap(v)
+	case map[string]string:
+		if v == nil {
+			return map[string]string(nil)
+		}
+		out := make(map[string]string, len(v))
+		for key, value := range v {
+			out[key] = value
+		}
+		return out
 	case []interface{}:
+		if v == nil {
+			return []interface{}(nil)
+		}
 		out := make([]interface{}, len(v))
 		for i, item := range v {
 			out[i] = cloneInterfaceValue(item)
 		}
 		return out
 	case []string:
-		return append([]string(nil), v...)
+		if v == nil {
+			return []string(nil)
+		}
+		out := make([]string, len(v))
+		copy(out, v)
+		return out
 	default:
 		return value
 	}

@@ -108,6 +108,11 @@ type ParallelGroupState struct {
 	UpdatedAt          time.Time `json:"updated_at,omitempty"`
 	CompletedAt        time.Time `json:"completed_at,omitempty"`
 	AllSubstepsSettled bool      `json:"all_substeps_settled,omitempty"`
+
+	// Immutable versioned JSON binds each settled child's definition, result
+	// and owned collection aliases. Persisted atomically with Steps; scoped
+	// reset removes this map together with the enclosing parallel group.
+	ChildCheckpoints map[string]string `json:"child_checkpoints,omitempty"`
 }
 
 // ScopeFrame is the serializable view of active loop/branch variable scopes.

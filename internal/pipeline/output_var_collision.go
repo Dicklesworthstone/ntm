@@ -180,7 +180,11 @@ func (e *Executor) storeParallelOutputVars(parent *Step, results []StepResult, c
 	for name, indices := range groups {
 		mode := parallelGroupOutputVarMode(parent.Parallel.Steps, indices)
 		if len(indices) == 1 {
-			storeSingleParallelOutputVar(e.state, name, results[indices[0]])
+			// Foreach owns the declared aggregate shape. Its StepResult.Output
+			// is a status summary, not a replacement for that binding.
+			if !stepOwnsForeachOutputVar(&parent.Parallel.Steps[indices[0]]) {
+				storeSingleParallelOutputVar(e.state, name, results[indices[0]])
+			}
 			continue
 		}
 
