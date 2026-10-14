@@ -2,6 +2,8 @@ package cli
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -345,7 +347,7 @@ func TestGenerateTransitionPrompt(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := generateTransitionPrompt(tt.oldProfile, tt.newProfile, "")
+			result := generateTransitionPrompt(tt.oldProfile, tt.newProfile, tt.newProfile.SystemPrompt, "")
 
 			for _, want := range tt.wantContains {
 				if !containsString(result, want) {
@@ -358,4 +360,57 @@ func TestGenerateTransitionPrompt(t *testing.T) {
 
 func containsString(haystack, needle string) bool {
 	return strings.Contains(haystack, needle)
+}
+
+func TestPrepareProfileSwitchPromptUsesRenderedContext(t *testing.T) {
+	project := t.TempDir()
+	if err := os.WriteFile(filepath.Join(project, "CONTEXT.md"), []byte("project context"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p := &persona.Persona{
+		Name:         "reviewer",
+		AgentType:    "claude",
+		SystemPrompt: "Review {{project_name}}",
+		ContextFiles: []string{"CONTEXT.md"},
+	}
+	path, rendered, err := prepareProfileSwitchPrompt(p, project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if path == "" || !strings.Contains(rendered, "project context") || !strings.Contains(rendered, "Review "+filepath.Base(project)) {
+		t.Fatalf("prepared switch prompt path=%q rendered=%q", path, rendered)
+	}
+	transition := generateTransitionPrompt("architect", p, rendered, path)
+	if !strings.Contains(transition, "project context") || !strings.Contains(transition, "Review "+filepath.Base(project)) || !strings.Contains(transition, path) {
+		t.Fatalf("transition did not carry rendered persona contract: %q", transition)
+	}
+}
+
+func TestPrepareProfileSwitchPromptFailsClosedOnContextError(t *testing.T) {
+	project := t.TempDir()
+	if err := os.Mkdir(filepath.Join(project, "docs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := &persona.Persona{
+		Name:         "reviewer",
+		AgentType:    "claude",
+		SystemPrompt: "must retain context",
+		ContextFiles: []string{"docs"},
+	}
+	if path, rendered, err := prepareProfileSwitchPrompt(p, project); err == nil || path != "" || rendered != "" {
+		t.Fatalf("invalid profile context was accepted: path=%q rendered=%q err=%v", path, rendered, err)
+	}
+}
+
+func TestGenerateTransitionPromptUsesRenderedPromptInsteadOfRawTemplate(t *testing.T) {
+	p := &persona.Persona{
+		Name:         "reviewer",
+		Description:  "review",
+		SystemPrompt: "Review {{project_name}}",
+	}
+	rendered := "# Context Files\n\n## RULES.md\n\nproject rule\n\n---\n\nReview ntm"
+	got := generateTransitionPrompt("", p, rendered, "/tmp/reviewer-hash.md")
+	if !strings.Contains(got, rendered) || strings.Contains(got, "Review {{project_name}}") || !strings.Contains(got, "/tmp/reviewer-hash.md") {
+		t.Fatalf("transition prompt did not use rendered profile: %q", got)
+	}
 }

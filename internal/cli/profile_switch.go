@@ -150,19 +150,21 @@ func runProfileSwitch(ctx context.Context, agentID, newProfileName, sessionName,
 		return outputProfileSwitchDryRun(agentID, targetPane.ID, oldProfile, newProfileName, sessionName)
 	}
 
-	// Prepare system prompt file
-	promptFile, err := persona.PrepareSystemPrompt(newProfile, projectDir)
+	// Materialize the exact rendered profile contract before any dispatch or
+	// pane-identity mutation. A declared system/context prompt is not advisory:
+	// switching metadata while silently dropping it would leave the agent under
+	// a different behavioral contract than the operator selected.
+	promptFile, renderedPrompt, err := prepareProfileSwitchPrompt(newProfile, projectDir)
 	if err != nil {
-		// Non-fatal: log warning but continue
-		if !IsJSONOutput() {
-			fmt.Printf("Warning: could not prepare system prompt file: %v\n", err)
-		}
+		return outputProfileSwitchError(agentID, targetPane.ID, newProfileName, fmt.Errorf("preparing profile prompt: %w", err))
 	}
 
-	// Generate transition prompt
+	// Generate transition prompt. An already-running agent cannot have its
+	// process-level system prompt replaced, so the transition message must carry
+	// the same rendered prompt/context that a fresh launch would receive.
 	transitionText := customPrompt
 	if transitionText == "" && !noPrompt {
-		transitionText = generateTransitionPrompt(oldProfile, newProfile, promptFile)
+		transitionText = generateTransitionPrompt(oldProfile, newProfile, renderedPrompt, promptFile)
 	}
 
 	// Send transition prompt to agent
@@ -318,8 +320,23 @@ func formatProfileSwitchPaneTitle(session, agentType string, agentIndex int, pro
 	return tmux.FormatPaneName(session, agentType, agentIndex, profile) + tmux.FormatTags(tags)
 }
 
+func prepareProfileSwitchPrompt(p *persona.Persona, projectDir string) (string, string, error) {
+	promptFile, err := persona.PrepareSystemPrompt(p, projectDir)
+	if err != nil {
+		return "", "", err
+	}
+	if promptFile == "" {
+		return "", "", nil
+	}
+	data, err := os.ReadFile(promptFile)
+	if err != nil {
+		return "", "", fmt.Errorf("reading prepared prompt %q: %w", promptFile, err)
+	}
+	return promptFile, string(data), nil
+}
+
 // generateTransitionPrompt creates a prompt to inform the agent of the profile change
-func generateTransitionPrompt(oldProfile string, newProfile *persona.Persona, promptFile string) string {
+func generateTransitionPrompt(oldProfile string, newProfile *persona.Persona, renderedPrompt, promptFile string) string {
 	var sb strings.Builder
 
 	sb.WriteString("---\n")
@@ -337,7 +354,17 @@ func generateTransitionPrompt(oldProfile string, newProfile *persona.Persona, pr
 	}
 
 	sb.WriteString("**New Focus:**\n")
-	sb.WriteString(newProfile.SystemPrompt + "\n")
+	if renderedPrompt != "" {
+		sb.WriteString(renderedPrompt)
+		if !strings.HasSuffix(renderedPrompt, "\n") {
+			sb.WriteString("\n")
+		}
+	} else {
+		sb.WriteString(newProfile.SystemPrompt + "\n")
+	}
+	if promptFile != "" {
+		sb.WriteString(fmt.Sprintf("\n**Prepared Prompt Source:** %s\n", promptFile))
+	}
 
 	if len(newProfile.FocusPatterns) > 0 {
 		sb.WriteString("\n**Focus Files:**\n")
