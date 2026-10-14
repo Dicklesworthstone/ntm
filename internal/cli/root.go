@@ -419,6 +419,12 @@ func markCLIInvalidInput(err error) error {
 }
 
 func classifyRobotExecuteError(err error) (string, string) {
+	return classifyRobotExecuteErrorForCommand(err, rootCmd)
+}
+
+// Suggestions must come from the command that rejected a flag. A root-only
+// robot option is not accepted by a subcommand, even if its name matches.
+func classifyRobotExecuteErrorForCommand(err error, cmd *cobra.Command) (string, string) {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return robot.ErrCodeTimeout, "Retry the command after cancellation"
 	}
@@ -447,7 +453,7 @@ func classifyRobotExecuteError(err error) (string, string) {
 		if strings.Contains(message, fragment) {
 			hint := "Use 'ntm --robot-help' or 'ntm --robot-capabilities' to inspect valid flags"
 			if unknown := unknownFlagFromError(err.Error()); unknown != "" {
-				if curated, suggestion := flagErrorGuidance(unknown, rootCmd.Flags()); curated != "" {
+				if curated, suggestion := flagErrorGuidance(unknown, executableFlagSets(cmd)...); curated != "" {
 					hint = curated
 				} else if suggestion != "" {
 					hint = fmt.Sprintf("Did you mean --%s? Otherwise use 'ntm --robot-help' or 'ntm --robot-capabilities' to inspect valid flags", suggestion)
@@ -457,6 +463,18 @@ func classifyRobotExecuteError(err error) (string, string) {
 		}
 	}
 	return robot.ErrCodeInternalError, "Retry the command or inspect ntm diagnostics"
+}
+
+// executableFlagSets mirrors Cobra's accepted local/inherited flags without
+// suggesting root-local robot flags to unrelated subcommands.
+func executableFlagSets(cmd *cobra.Command) []*pflag.FlagSet {
+	if cmd == nil {
+		return nil
+	}
+	if cmd == rootCmd {
+		return []*pflag.FlagSet{rootCmd.Flags(), rootCmd.PersistentFlags()}
+	}
+	return []*pflag.FlagSet{cmd.LocalNonPersistentFlags(), cmd.InheritedFlags(), cmd.PersistentFlags()}
 }
 
 // unknownFlagFromError extracts the offending flag name from a cobra/pflag
@@ -3372,7 +3390,11 @@ func Execute() error {
 			if command == "" {
 				_, command = machineJSONInvocation(rootCmd)
 			}
-			code, hint := classifyRobotExecuteError(err)
+			failingCommand := rootCmd
+			if candidate, _, findErr := rootCmd.Find(os.Args[1:]); findErr == nil && candidate != nil {
+				failingCommand = candidate
+			}
+			code, hint := classifyRobotExecuteErrorForCommand(err, failingCommand)
 			return robot.EncodeErrorJSON(err, code, hint, command)
 		}
 		// If not in JSON mode, print the error to stderr
