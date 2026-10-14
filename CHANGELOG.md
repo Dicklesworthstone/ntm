@@ -11,6 +11,20 @@ NTM is a tmux session management tool for orchestrating multiple AI coding agent
 
 ---
 
+## [v1.37.1] -- 2026-10-14 [GitHub Release]
+
+**Security patch: Go 1.26.9 and `golang.org/x/net` v0.60.0** ([#347](https://github.com/Dicklesworthstone/ntm/issues/347)). The source is v1.37.0's, unchanged. Only the toolchain, the HTTP/2 module, the Docker builder image and the README badge move.
+
+### Security
+
+- **Go 1.26.8 → 1.26.9.** On 1.26.8, `govulncheck` reports that ntm's code reaches 10 Go standard-library vulnerabilities: GO-2026-6603, 6604, 6605, 6607, 6608, 6610, 6611, 6612, 6613 and 6617, several of them in `net/http` and HTTP/2, which ntm's HTTPS download and upgrade paths use. On 1.26.9 with `x/net` v0.60.0 it reports none.
+- **`golang.org/x/net` v0.59.0 → v0.60.0**, the fixed version for the HTTP/2 records.
+- **Docker builder image** `golang:1.26.9-alpine3.24`, pinned by digest.
+
+### Not in this release
+
+The work on `main` since v1.37.0 (pipeline branch checkpoints, webhook outbox persistence, checkpoint binary/untracked capture, reservation watcher, Gemini readiness and context metrics, and more) is not included. It ships in the next minor release once it is qualified.
+
 ## [v1.37.0] -- 2026-10-07 [GitHub Release]
 
 **Spawns can enforce per-agent-type fleet limits that hold across processes, Claude agents launched by ntm now carry the safety policy hook, robot work reads are verified against the tracker, and ntm's integrations with bv, br, cass, cm, caut, caam, ubs, xf, ms, jfp, slb, ru, rano, pt and dcg now read those tools' real output.** Also fixes GitHub issues [#283](https://github.com/Dicklesworthstone/ntm/issues/283), [#335](https://github.com/Dicklesworthstone/ntm/issues/335), [#336](https://github.com/Dicklesworthstone/ntm/issues/336), [#337](https://github.com/Dicklesworthstone/ntm/issues/337) and [#338](https://github.com/Dicklesworthstone/ntm/issues/338), and wires up several features that were configured or documented but never ran, among them `ntm spawn --privacy`, session timelines, `ntm level`, context warnings, compaction recovery and the session coordinator.

@@ -1,6 +1,6 @@
 module github.com/Dicklesworthstone/ntm
 
-go 1.26.8
+go 1.26.9
 
 replace github.com/charmbracelet/bubbletea => ./third_party/bubbletea
 
@@ -87,7 +87,7 @@ require (
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	golang.org/x/exp v0.0.0-20260508232706-74f9aab9d74a // indirect
 	golang.org/x/mod v0.41.0 // indirect
-	golang.org/x/net v0.59.0 // indirect
+	golang.org/x/net v0.60.0 // indirect
 	golang.org/x/sync v0.23.0 // indirect
 	golang.org/x/telemetry v0.0.0-20260924152758-ed294f943157 // indirect
 	golang.org/x/text v0.42.0 // indirect
