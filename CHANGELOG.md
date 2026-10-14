@@ -11,6 +11,12 @@ NTM is a tmux session management tool for orchestrating multiple AI coding agent
 
 ---
 
+## [Unreleased]
+
+### Security
+
+- **Go 1.26.9 and `golang.org/x/net` v0.60.0** ([#347](https://github.com/Dicklesworthstone/ntm/issues/347)). The `go.mod` directive moves from 1.26.8 to 1.26.9, the Docker builder image to `golang:1.26.9-alpine3.24` (pinned by digest), and `x/net` from v0.59.0 to v0.60.0. `govulncheck` reports that ntm's code reaches 10 Go standard-library vulnerabilities on 1.26.8 (GO-2026-6603, 6604, 6605, 6607, 6608, 6610, 6611, 6612, 6613, 6617) and none on 1.26.9 with x/net v0.60.0.
+
 ## [v1.37.0] -- 2026-10-07 [GitHub Release]
 
 **Spawns can enforce per-agent-type fleet limits that hold across processes, Claude agents launched by ntm now carry the safety policy hook, robot work reads are verified against the tracker, and ntm's integrations with bv, br, cass, cm, caut, caam, ubs, xf, ms, jfp, slb, ru, rano, pt and dcg now read those tools' real output.** Also fixes GitHub issues [#283](https://github.com/Dicklesworthstone/ntm/issues/283), [#335](https://github.com/Dicklesworthstone/ntm/issues/335), [#336](https://github.com/Dicklesworthstone/ntm/issues/336), [#337](https://github.com/Dicklesworthstone/ntm/issues/337) and [#338](https://github.com/Dicklesworthstone/ntm/issues/338), and wires up several features that were configured or documented but never ran, among them `ntm spawn --privacy`, session timelines, `ntm level`, context warnings, compaction recovery and the session coordinator.
