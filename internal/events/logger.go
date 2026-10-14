@@ -111,8 +111,20 @@ func NewLogger(opts LoggerOptions) (*Logger, error) {
 }
 
 // Log writes an event to the log file.
+// Privacy policy is enforced here so direct callers and convenience emitters
+// cannot bypass it. Events denied by policy are intentionally not persisted.
 // If redaction is configured via SetRedactionConfig, sensitive data is redacted before storage.
 func (l *Logger) Log(event *Event) error {
+	if event == nil {
+		return fmt.Errorf("cannot log a nil event")
+	}
+	// Use the original session identity before redaction, including an empty
+	// identity so global privacy applies to sessionless events. Session lookup
+	// can invoke external code; do not hold the logger mutex while it runs.
+	if err := privacy.GetDefaultManager().CanPersist(event.Session, privacy.OpEventLog); err != nil {
+		return nil
+	}
+
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if !l.enabled || l.closed || l.file == nil {
@@ -174,13 +186,6 @@ func (l *Logger) Log(event *Event) error {
 
 // LogEvent is a convenience method to create and log an event in one call.
 func (l *Logger) LogEvent(eventType EventType, session string, data interface{}) error {
-	// Check privacy mode before logging
-	if session != "" {
-		if err := privacy.GetDefaultManager().CanPersist(session, privacy.OpEventLog); err != nil {
-			// Silently skip logging in privacy mode (don't propagate error)
-			return nil
-		}
-	}
 	event := NewEvent(eventType, session, ToMap(data))
 	return l.Log(event)
 }
