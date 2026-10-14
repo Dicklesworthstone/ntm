@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -120,7 +121,7 @@ func TestBranchDecisionDefaultRetainsStableAnonymousIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	second, next, err := fresh.prepareBranchDecision(context.Background(), &step)
-	if err != nil || first != second || len(next) != 1 || body[0].ID != next[0].ID {
+	if err != nil || !sameBranchDecision(first, second) || len(next) != 1 || body[0].ID != next[0].ID {
 		t.Fatalf("default changed after reload: %+v %+v %v", second, next, err)
 	}
 	data, err := os.ReadFile(filepath.Join(cfg.ProjectDir, "selections"))
@@ -302,4 +303,21 @@ func TestBranchDecisionDryRunDoesNotEvaluateOrWrite(t *testing.T) {
 			t.Fatalf("dry run created %s: %v", name, err)
 		}
 	}
+}
+
+// sameBranchDecision compares decisions the way a reload sees them: a nil and
+// an empty Children/Scope map are the same decision (the JSON round trip of an
+// omitempty map yields either).
+func sameBranchDecision(a, b branchDecision) bool {
+	if a.Version != b.Version || a.ParentID != b.ParentID || a.DefinitionHash != b.DefinitionHash ||
+		a.SelectorKey != b.SelectorKey || a.BranchKey != b.BranchKey {
+		return false
+	}
+	if (len(a.Children) != 0 || len(b.Children) != 0) && !reflect.DeepEqual(a.Children, b.Children) {
+		return false
+	}
+	if (len(a.Scope) != 0 || len(b.Scope) != 0) && !reflect.DeepEqual(a.Scope, b.Scope) {
+		return false
+	}
+	return true
 }
