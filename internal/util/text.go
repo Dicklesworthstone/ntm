@@ -8,6 +8,8 @@ import (
 
 // ExtractNewOutput isolates the text added to the pane after the before state.
 // It handles cases where the buffer has scrolled (before is not a simple prefix).
+// Comparisons are byte-exact. Repeated near-matches fall back to a linear scan
+// so repetitive terminal output cannot cause quadratic pipeline extraction.
 func ExtractNewOutput(before, after string) string {
 	if before == "" {
 		return after
@@ -43,37 +45,26 @@ func ExtractNewOutput(before, after string) string {
 
 	searchRegion := before[scanStart:]
 
-	// Find all occurrences of chunk in searchRegion
-	// We want the *first* valid match in searchRegion because that gives the *longest* suffix of before.
-	// (Earliest start index = longest suffix)
-
+	// Keep ordinary scrolls and a few coincidental chunk matches allocation-
+	// free. Unlimited full suffix comparisons are quadratic for repeated lines
+	// whose final byte differs. A fixed candidate budget bounds this work by
+	// a constant multiple of the input size before exact linear matching.
+	const maxCandidateChecks = 4
 	remaining := searchRegion
-	offset := 0
-
-	for {
+	for checked := 0; checked < maxCandidateChecks; checked++ {
 		idx := strings.Index(remaining, searchChunk)
-		if idx == -1 {
+		if idx < 0 {
 			break
 		}
-
-		// Absolute index in 'before'
-		absIdx := scanStart + offset + idx
-
-		// Check if this starts a valid suffix match
-		// Suffix of before: before[absIdx:]
-		// Prefix of after: after[:len(suffix)]
-		// We know before[absIdx:] starts with searchChunk.
-		// We need to check if the rest matches.
-
-		suffixLen := len(before) - absIdx
-		if len(after) >= suffixLen && after[:suffixLen] == before[absIdx:] {
+		suffix := remaining[idx:]
+		suffixLen := len(suffix)
+		if after[:suffixLen] == suffix {
 			return after[suffixLen:]
 		}
-
-		// Move past this match
-		step := idx + 1
-		remaining = remaining[step:]
-		offset += step
+		remaining = suffix[1:]
+		if checked == maxCandidateChecks-1 {
+			return after[suffixPrefixOverlap(remaining, after):]
+		}
 	}
 
 	// Fallback: check for overlaps smaller than searchChunk
@@ -94,6 +85,41 @@ func ExtractNewOutput(before, after string) string {
 
 	// No overlap found - return everything
 	return after
+}
+
+// suffixPrefixOverlap finds the longest suffix of before equal to a prefix
+// of after. The prefix-function fallback never rechecks an already-matched
+// run from scratch. Both the scan and auxiliary storage are O(min(len(before),
+// len(after))); no hashes, truncation, or character normalization affect output.
+func suffixPrefixOverlap(before, after string) int {
+	n := min(len(before), len(after))
+	if n == 0 {
+		return 0
+	}
+	pattern := after[:n]
+	failure := make([]int, n)
+	matched := 0
+	for i := 1; i < n; i++ {
+		for matched > 0 && pattern[i] != pattern[matched] {
+			matched = failure[matched-1]
+		}
+		if pattern[i] == pattern[matched] {
+			matched++
+		}
+		failure[i] = matched
+	}
+	matched = 0
+	// A full pattern match can occur only on the last byte: the scanned
+	// suffix has exactly n bytes, the same length as the pattern.
+	for i := len(before) - n; i < len(before); i++ {
+		for matched > 0 && before[i] != pattern[matched] {
+			matched = failure[matched-1]
+		}
+		if before[i] == pattern[matched] {
+			matched++
+		}
+	}
+	return matched
 }
 
 // Truncate shortens a string to maxLen with ellipsis.
