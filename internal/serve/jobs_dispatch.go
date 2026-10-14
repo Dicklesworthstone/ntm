@@ -220,6 +220,11 @@ func decodeJobParams(params map[string]interface{}, into interface{}) error {
 	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
+	// Admission already retained exact JSON numbers for fingerprints. Keep
+	// that representation in untyped workflow variables too: a float64
+	// round-trip here can execute a different resource ID than was admitted.
+	// Declared numeric fields still receive their normal range/type checks.
+	decoder.UseNumber()
 	if err := decoder.Decode(into); err != nil {
 		return fmt.Errorf("decode job params: %w", err)
 	}
