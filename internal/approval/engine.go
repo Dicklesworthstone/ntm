@@ -500,27 +500,6 @@ func (e *Engine) Consume(ctx context.Context, id string, consumerID string) erro
 	return nil
 }
 
-// LatestForCorrelation returns the most recent approval record carrying the
-// given correlation ID (operation key), or nil if none exists. A pending
-// record past its expiry is lazily transitioned to expired first, matching
-// Check/ListPending semantics.
-func (e *Engine) LatestForCorrelation(ctx context.Context, correlationID string) (*state.Approval, error) {
-	records, err := e.store.ListApprovalsByCorrelation(correlationID)
-	if err != nil {
-		return nil, fmt.Errorf("list approvals by correlation: %w", err)
-	}
-	if len(records) == 0 {
-		return nil, nil
-	}
-	latest := records[0]
-	if latest.Status == state.ApprovalPending && time.Now().After(latest.ExpiresAt) {
-		if err := e.expireApproval(&latest, time.Now().UTC()); err != nil {
-			return nil, err
-		}
-	}
-	return &latest, nil
-}
-
 // ListPending returns all pending approval requests.
 func (e *Engine) ListPending(ctx context.Context) ([]state.Approval, error) {
 	approvals, err := e.store.ListPendingApprovals()

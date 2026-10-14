@@ -685,35 +685,6 @@ func (s *Store) GetApproval(id string) (*Approval, error) {
 	return appr, nil
 }
 
-// ListApprovalsByCorrelation returns all approvals whose correlation_id
-// matches, newest first. Gated commands store a stable operation key in
-// correlation_id (bd-2y2on) so a re-run of the same operation finds its own
-// prior request instead of enqueueing duplicates.
-func (s *Store) ListApprovalsByCorrelation(correlationID string) ([]Approval, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	rows, err := s.db.Query(`
-		SELECT id, action, resource, COALESCE(reason, ''), requested_by, COALESCE(correlation_id, ''), requires_slb, created_at, expires_at, status, COALESCE(approved_by, ''), approved_at, COALESCE(denied_reason, '')
-		FROM approvals WHERE correlation_id = ?
-		ORDER BY created_at DESC, id DESC`, correlationID,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("list approvals by correlation: %w", err)
-	}
-	defer rows.Close()
-
-	var approvals []Approval
-	for rows.Next() {
-		var appr Approval
-		if err := rows.Scan(&appr.ID, &appr.Action, &appr.Resource, &appr.Reason, &appr.RequestedBy, &appr.CorrelationID, &appr.RequiresSLB, &appr.CreatedAt, &appr.ExpiresAt, &appr.Status, &appr.ApprovedBy, &appr.ApprovedAt, &appr.DeniedReason); err != nil {
-			return nil, fmt.Errorf("scan approval: %w", err)
-		}
-		approvals = append(approvals, appr)
-	}
-	return approvals, rows.Err()
-}
-
 // ConsumeApproval atomically transitions an approval from approved to
 // consumed, reporting whether this call performed the transition. The status
 // guard runs inside the UPDATE itself (bd-2y2on): two concurrent gate

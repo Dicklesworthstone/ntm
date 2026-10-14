@@ -35,9 +35,8 @@ func New(handler Handler, opts ...Option) (*Watcher, error) {
 	return fswatch.New(handler, opts...)
 }
 
-func WithDebounceDuration(d time.Duration) Option { return fswatch.WithDebounceDuration(d) }
-func WithDebouncer(d *Debouncer) Option           { return fswatch.WithDebouncer(d) }
-func WithEventFilter(filter EventType) Option     { return fswatch.WithEventFilter(filter) }
-func WithRecursive(recursive bool) Option         { return fswatch.WithRecursive(recursive) }
-func WithIgnorePaths(patterns []string) Option    { return fswatch.WithIgnorePaths(patterns) }
-func WithPollInterval(d time.Duration) Option     { return fswatch.WithPollInterval(d) }
+func WithDebouncer(d *Debouncer) Option        { return fswatch.WithDebouncer(d) }
+func WithEventFilter(filter EventType) Option  { return fswatch.WithEventFilter(filter) }
+func WithRecursive(recursive bool) Option      { return fswatch.WithRecursive(recursive) }
+func WithIgnorePaths(patterns []string) Option { return fswatch.WithIgnorePaths(patterns) }
+func WithPollInterval(d time.Duration) Option  { return fswatch.WithPollInterval(d) }

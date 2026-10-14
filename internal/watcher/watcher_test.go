@@ -25,7 +25,7 @@ func TestFilesystemWatcherCompatibility(t *testing.T) {
 			}
 		}
 	}
-	var option fswatch.Option = WithDebounceDuration(10 * time.Millisecond)
+	var option fswatch.Option = fswatch.WithDebounceDuration(10 * time.Millisecond)
 	w, err := New(handler, option, fswatch.WithEventFilter(fswatch.Create|fswatch.Write))
 	if err != nil {
 		t.Fatal(err)
