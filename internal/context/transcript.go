@@ -83,7 +83,7 @@ type transcriptEntry struct {
 		Role     string `json:"role"`
 		Provider string `json:"provider"`
 		Model    string `json:"model"`
-		Usage    struct {
+		Usage    *struct {
 			InputTokens              int `json:"input_tokens"`
 			CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
 			CacheReadInputTokens     int `json:"cache_read_input_tokens"`
@@ -101,8 +101,8 @@ type transcriptEntry struct {
 		Model        string `json:"model"`
 		Cwd          string `json:"cwd"`
 		ThreadSource string `json:"thread_source"`
-		Info         struct {
-			LastTokenUsage struct {
+		Info         *struct {
+			LastTokenUsage *struct {
 				InputTokens           int `json:"input_tokens"`
 				CachedInputTokens     int `json:"cached_input_tokens"`
 				CacheWriteInputTokens int `json:"cache_write_input_tokens"`
@@ -190,36 +190,73 @@ func readNativeTranscriptTail(src io.ReaderAt, size int64) (*TranscriptUsage, er
 				complete = nil
 			}
 		}
-		usage := parseLastUsage(complete)
-		if (usage != nil && usage.Model != "") || offset == 0 || window == transcriptScanLimit {
+		usage, mayLookBack := parseLastUsage(complete)
+		if !mayLookBack || (usage != nil && usage.Model != "") || offset == 0 || window == transcriptScanLimit {
 			return usage, nil
 		}
 	}
 }
 
 // parseLastUsage scans JSONL content and returns the last usage-bearing
-// record, with the last seen model filled in for records that do not carry
-// one themselves (Codex token_count events).
-func parseLastUsage(buf []byte) *TranscriptUsage {
+// record, with its preceding model. The second result permits looking farther
+// back only when no corruption or history-rewrite barrier was encountered.
+// Native compaction/branch records invalidate old accounting; their pre-counts
+// and projected after-counts are not a new provider measurement.
+func parseLastUsage(buf []byte) (*TranscriptUsage, bool) {
 	var last *TranscriptUsage
 	lastModel := ""
+	mayLookBack := true
+	invalidate := func() {
+		last = nil
+		lastModel = ""
+		mayLookBack = false
+	}
 
 	for _, line := range bytes.Split(buf, []byte("\n")) {
 		line = bytes.TrimSpace(line)
 		if len(line) == 0 {
 			continue
 		}
-		// Cheap pre-filter before full JSON decode.
-		hasUsage := bytes.Contains(line, []byte(`"usage"`))
-		hasTokenCount := bytes.Contains(line, []byte(`"token_count"`))
-		hasModel := bytes.Contains(line, []byte(`"model"`))
-		if !hasUsage && !hasTokenCount && !hasModel {
+		// Decode a minimal discriminator first. Valid unknown records may
+		// use message/payload fields with other shapes and must not be
+		// confused with accounting. String mentions of reset markers are
+		// not barriers, while escaped JSON discriminator spellings still are.
+		var header struct {
+			Type    string `json:"type"`
+			Subtype string `json:"subtype"`
+		}
+		if line[0] != '{' || json.Unmarshal(line, &header) != nil {
+			invalidate()
+			continue
+		}
+		if (header.Type == "system" && header.Subtype == "compact_boundary") ||
+			header.Type == "compacted" || header.Type == "compaction" || header.Type == "branch_summary" {
+			invalidate()
+			continue
+		}
+		switch header.Type {
+		case "assistant", "message", "model_change", "turn_context":
+		case "event_msg":
+			var event struct {
+				Payload struct {
+					Type string `json:"type"`
+				} `json:"payload"`
+			}
+			if json.Unmarshal(line, &event) != nil || event.Payload.Type == "thread_rolled_back" {
+				invalidate()
+				continue
+			}
+			if event.Payload.Type != "token_count" {
+				continue
+			}
+		default:
 			continue
 		}
 
 		var e transcriptEntry
 		if err := json.Unmarshal(line, &e); err != nil {
-			continue // partial/corrupt line
+			invalidate()
+			continue
 		}
 
 		if (e.Type == "assistant" || (e.Type == "message" && e.Message.Role == "assistant")) && e.Message.Model != "" {
@@ -231,16 +268,17 @@ func parseLastUsage(buf []byte) *TranscriptUsage {
 		}
 
 		switch {
-		case e.Type == "message" && e.Message.Role == "assistant" && hasUsage:
+		case e.Type == "message" && e.Message.Role == "assistant" && e.Message.Usage != nil:
 			// omp shape: input excludes cache reads/writes; totalTokens is
 			// their sum with output. Aborted turns record all-zero usage and
 			// must not mask the previous real reading.
 			u := e.Message.Usage
-			total := u.TotalTokens
-			if total <= 0 {
-				total = u.Input + u.CacheRead + u.CacheWrite + u.Output
+			total, valid := transcriptTokenTotal(u.TotalTokens, u.Input, u.CacheRead, u.CacheWrite, u.Output)
+			if !valid {
+				invalidate()
+				continue
 			}
-			if total <= 0 {
+			if total == 0 {
 				continue
 			}
 			last = &TranscriptUsage{
@@ -251,11 +289,15 @@ func parseLastUsage(buf []byte) *TranscriptUsage {
 				CacheCreationTokens: u.CacheWrite,
 				OutputTokens:        u.Output,
 			}
-		case e.Type == "assistant" && hasUsage:
+		case e.Type == "assistant" && e.Message.Usage != nil:
 			// Claude Code shape.
 			u := e.Message.Usage
-			total := u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens + u.OutputTokens
-			if total <= 0 {
+			total, valid := transcriptTokenTotal(0, u.InputTokens, u.CacheReadInputTokens, u.CacheCreationInputTokens, u.OutputTokens)
+			if !valid || (e.Message.Role != "" && e.Message.Role != "assistant") {
+				invalidate()
+				continue
+			}
+			if total == 0 {
 				continue
 			}
 			last = &TranscriptUsage{
@@ -266,15 +308,20 @@ func parseLastUsage(buf []byte) *TranscriptUsage {
 				CacheCreationTokens: u.CacheCreationInputTokens,
 				OutputTokens:        u.OutputTokens,
 			}
-		case e.Payload.Type == "token_count":
+		case e.Type == "event_msg" && e.Payload.Type == "token_count":
 			// Codex shape: last_token_usage.input_tokens already includes
 			// cached tokens; total_tokens = input + output.
-			u := e.Payload.Info.LastTokenUsage
-			total := u.TotalTokens
-			if total <= 0 {
-				total = u.InputTokens + u.OutputTokens
+			if e.Payload.Info == nil || e.Payload.Info.LastTokenUsage == nil {
+				continue // Rate-limit-only token_count events carry no usage.
 			}
-			if total <= 0 {
+			u := e.Payload.Info.LastTokenUsage
+			total, valid := transcriptTokenTotal(u.TotalTokens, u.InputTokens, u.OutputTokens)
+			if !valid || u.CachedInputTokens < 0 || u.CachedInputTokens > u.InputTokens ||
+				u.CacheWriteInputTokens < 0 || e.Payload.Info.ModelContextWindow < 0 {
+				invalidate()
+				continue
+			}
+			if total == 0 {
 				continue
 			}
 			last = &TranscriptUsage{
@@ -293,7 +340,32 @@ func parseLastUsage(buf []byte) *TranscriptUsage {
 		last.UpdatedAt, _ = time.Parse(time.RFC3339Nano, e.Timestamp)
 	}
 
-	return last
+	return last, mayLookBack
+}
+
+// transcriptTokenTotal validates native counters before using them for
+// context pressure. Cache counters are passed only when they are additive for
+// that provider. A native total may include extra provider-accounted tokens,
+// but cannot be negative or smaller than the components we already know.
+func transcriptTokenTotal(reported int, components ...int) (int, bool) {
+	if reported < 0 {
+		return 0, false
+	}
+	maxInt := int(^uint(0) >> 1)
+	total := 0
+	for _, component := range components {
+		if component < 0 || component > maxInt-total {
+			return 0, false
+		}
+		total += component
+	}
+	if reported > 0 {
+		if reported < total {
+			return 0, false
+		}
+		return reported, true
+	}
+	return total, true
 }
 
 // ompQualifiedModel joins omp's per-message provider and model into the
@@ -660,7 +732,7 @@ func AttributePaneTranscripts(panes []PaneTranscriptRef, known map[string]*Trans
 // "high" when the transcript was updated within TranscriptFreshness of now,
 // "medium" otherwise (the session may have moved on or ended).
 func TranscriptConfidence(updatedAt, now time.Time) string {
-	if now.Sub(updatedAt) < TranscriptFreshness {
+	if !updatedAt.IsZero() && !updatedAt.After(now) && now.Sub(updatedAt) < TranscriptFreshness {
 		return "high"
 	}
 	return "medium"

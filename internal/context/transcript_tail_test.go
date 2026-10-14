@@ -22,13 +22,24 @@ func TestNativeAccountingBeyondFastTail(t *testing.T) {
 				usage := nativeAccountingFixture(t, provider, at)
 				head := `{"type":"turn_context","payload":{"model":"original-model"}}`
 				if placement == "usage-content" {
-					usage["content"] = large
+					if message, ok := usage["message"].(map[string]interface{}); ok {
+						message["content"] = []map[string]string{{"type": "text", "text": large}}
+					} else {
+						// Codex token events do not carry assistant content;
+						// exercise a large unknown metadata extension instead.
+						usage["trace"] = large
+					}
 				}
 				body, err := json.Marshal(usage)
 				if err != nil {
 					t.Fatal(err)
 				}
-				tool := `{"type":"tool_result","content":"` + large + `"}`
+				tool := `{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"` + large + `"}]}}`
+				if provider == "codex" {
+					tool = `{"type":"response_item","payload":{"type":"function_call_output","output":"` + large + `"}}`
+				} else if provider == "omp" {
+					tool = `{"type":"message","message":{"role":"toolResult","content":[{"type":"text","text":"` + large + `"}]}}`
+				}
 				lines := []string{head, string(body)}
 				if placement == "tool-after" {
 					lines = append(lines, tool)
@@ -245,4 +256,138 @@ func nativeAccountingFile(t *testing.T, data string) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+// Compaction records describe a history rewrite, not another billed turn.
+// Pre-compaction counts (and projected tokensAfter) are not current native
+// occupancy. Only a later provider accounting record restores that evidence.
+func TestNativeAccountingHistoryResetBarriers(t *testing.T) {
+	at := time.Now().UTC().Add(-time.Minute)
+	cases := []struct{ name, provider, reset string }{
+		{"Claude compact boundary", "claude", `{"type":"system","subtype":"compact_boundary","compactMetadata":{"preTokens":120}}`},
+		{"Codex compacted history", "codex", `{"type":"compacted","payload":{"message":"summary","replacement_history":[]}}`},
+		{"Codex rollback", "codex", `{"type":"event_msg","payload":{"type":"thread_rolled_back","num_turns":1}}`},
+		{"OMP compaction", "omp", `{"type":"compaction","firstKeptEntryId":"b","tokensBefore":120,"tokensAfter":10,"summary":"summary"}`},
+		{"OMP branch summary", "omp", `{"type":"branch_summary","fromId":"b","summary":"another branch"}`},
+		{"escaped discriminator", "claude", `{"type":"system","subtype":"compact_\u0062oundary"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			before, _ := json.Marshal(nativeAccountingFixture(t, tc.provider, at))
+			prefix := `{"type":"turn_context","payload":{"model":"previous-window-model"}}` + "\n"
+			data := prefix + string(before) + "\n" + tc.reset + "\n" + `{"type":"progress"}` + "\n"
+			path := nativeAccountingFile(t, data)
+			got, err := ReadLatestTranscriptUsage(path)
+			if err != nil || got != nil {
+				t.Fatalf("pre-reset accounting survived history replacement: %+v, %v", got, err)
+			}
+			after := nativeAccountingFixture(t, tc.provider, at.Add(time.Second))
+			fresh, _ := json.Marshal(after)
+			f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, writeErr := f.Write(append(fresh, '\n'))
+			closeErr := f.Close()
+			if writeErr != nil || closeErr != nil {
+				t.Fatalf("append fresh accounting: %v, %v", writeErr, closeErr)
+			}
+			got, err = ReadLatestTranscriptUsage(path)
+			if err != nil || got == nil || got.Tokens != 120 || !got.UpdatedAt.Equal(at.Add(time.Second)) {
+				t.Fatalf("post-reset accounting did not recover: %+v, %v", got, err)
+			}
+			if tc.provider == "codex" && got.Model != "" {
+				t.Fatalf("pre-reset model survived history replacement: %+v", got)
+			}
+		})
+	}
+}
+
+func TestNativeAccountingMalformedLatestDoesNotReviveEarlier(t *testing.T) {
+	at := time.Now().UTC().Add(-time.Minute)
+	before, _ := json.Marshal(nativeAccountingFixture(t, "claude", at))
+	maxInt := int(^uint(0) >> 1)
+	invalid := []string{
+		`{"type":"system","subtype":"compact_boundary"`,
+		`{"type":"assistant","message":{"usage":{"input_tokens":"unknown"}}}`,
+		`{"type":"assistant","message":{"usage":{"input_tokens":100,"output_tokens":-1}}}`,
+		fmt.Sprintf(`{"type":"assistant","message":{"usage":{"input_tokens":%d,"output_tokens":1}}}`, maxInt),
+		`{"type":"message","message":{"role":"assistant","usage":{"input":100,"output":20,"totalTokens":10}}}`,
+		`{"type":"message","message":{"role":"assistant","usage":{"input":100,"cacheRead":-1,"totalTokens":100}}}`,
+		`{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":10,"cached_input_tokens":20,"total_tokens":30}}}}`,
+		`{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"output_tokens":20,"total_tokens":10}}}}`,
+		`{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"total_tokens":100},"model_context_window":-1}}}`,
+	}
+	for i, line := range invalid {
+		t.Run(fmt.Sprint(i), func(t *testing.T) {
+			data := string(before) + "\n" + line + "\n"
+			got, err := ReadLatestTranscriptUsage(nativeAccountingFile(t, data))
+			if err != nil || got != nil {
+				t.Fatalf("invalid latest evidence retained or invented native usage: %+v, %v", got, err)
+			}
+			// Corruption is a barrier, not a permanent loss of observability.
+			fresh, _ := json.Marshal(nativeAccountingFixture(t, "claude", at.Add(time.Second)))
+			got, err = ReadLatestTranscriptUsage(nativeAccountingFile(t, data+string(fresh)+"\n"))
+			if err != nil || got == nil || !got.UpdatedAt.Equal(at.Add(time.Second)) {
+				t.Fatalf("valid evidence after corruption did not recover: %+v, %v", got, err)
+			}
+		})
+	}
+}
+
+func TestNativeAccountingInformationalRecordsPreserveReading(t *testing.T) {
+	at := time.Now().UTC().Add(-time.Minute)
+	before, _ := json.Marshal(nativeAccountingFixture(t, "claude", at))
+	for _, line := range []string{
+		`{"type":"message","message":{"role":"assistant","usage":{"input":0,"output":0,"totalTokens":0}}}`,
+		`{"type":"event_msg","payload":{"type":"token_count","info":null,"rate_limits":{"primary":{"used_percent":10}}}}`,
+		`{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":null}}}`,
+		`{"type":"tool_result","content":"compacted compact_boundary compaction branch_summary thread_rolled_back"}`,
+		`{"type":"progress","message":"valid unrelated string field","payload":"not a native accounting payload"}`,
+		`{"type":"response_item","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1,"total_tokens":1}}}}`,
+	} {
+		got, err := ReadLatestTranscriptUsage(nativeAccountingFile(t, string(before)+"\n"+line+"\n"))
+		if err != nil || got == nil || got.Tokens != 120 || !got.UpdatedAt.Equal(at) {
+			t.Fatalf("informational record changed accounting: record=%s reading=%+v err=%v", line, got, err)
+		}
+	}
+}
+
+func TestNativeAccountingResetStopsLookback(t *testing.T) {
+	data := strings.Repeat(" ", 4*transcriptTailWindow) + "\n" +
+		`{"type":"compacted","payload":{"replacement_history":[]}}` + "\n"
+	trace := &nativeAccountingReadTrace{ReaderAt: strings.NewReader(data)}
+	got, err := readNativeTranscriptTail(trace, int64(len(data)))
+	if err != nil || got != nil || trace.bytes != transcriptTailWindow+1 {
+		t.Fatalf("lookback crossed a known invalidation barrier: %+v err=%v bytes=%d", got, err, trace.bytes)
+	}
+}
+
+func TestNativeAccountingConfidenceRejectsFutureTime(t *testing.T) {
+	now := time.Now()
+	if got := TranscriptConfidence(now.Add(time.Second), now); got != "medium" {
+		t.Fatalf("future observation confidence = %s", got)
+	}
+}
+
+func TestNativeAccountingPreservesAdditionalNativeTokens(t *testing.T) {
+	at := time.Now().UTC().Add(-time.Minute)
+	for _, provider := range []string{"codex", "omp"} {
+		t.Run(provider, func(t *testing.T) {
+			body := nativeAccountingFixture(t, provider, at)
+			if provider == "codex" {
+				payload := body["payload"].(map[string]interface{})
+				info := payload["info"].(map[string]interface{})
+				info["last_token_usage"].(map[string]interface{})["total_tokens"] = 150
+			} else {
+				message := body["message"].(map[string]interface{})
+				message["usage"].(map[string]interface{})["totalTokens"] = 150
+			}
+			data, _ := json.Marshal(body)
+			got, err := ReadLatestTranscriptUsage(nativeAccountingFile(t, string(data)+"\n"))
+			if err != nil || got == nil || got.Tokens != 150 {
+				t.Fatalf("native total was replaced with an incomplete component sum: %+v, %v", got, err)
+			}
+		})
+	}
 }
