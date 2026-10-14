@@ -11,6 +11,18 @@ NTM is a tmux session management tool for orchestrating multiple AI coding agent
 
 ---
 
+## [v1.37.2] -- 2026-10-14 [GitHub Release]
+
+**Antigravity (agy) agents now run Gemini 4 Argon (High).** Otherwise identical to v1.37.1: same source, Go 1.26.9 and `golang.org/x/net` v0.60.0.
+
+### Changed
+
+- **Antigravity default model is Gemini 4 Argon (High)** (`gemini-4-argon`), replacing Gemini 3.8 Flash (High). The required-model pin, the session-resume command, the model registry (1M-token context), the flag help and both spawn wizards move together, matching ACFS's `agy-locked` launcher. Argon accepts no `--effort` value, so the pin names the model only.
+
+### Not in this release
+
+As with v1.37.1, the work on `main` since v1.37.0 (pipeline branch checkpoints, webhook outbox persistence, checkpoint binary/untracked capture, reservation watcher, Gemini readiness and context metrics, and more) is not included. It ships in the next minor release once it is qualified.
+
 ## [v1.37.1] -- 2026-10-14 [GitHub Release]
 
 **Security patch: Go 1.26.9 and `golang.org/x/net` v0.60.0** ([#347](https://github.com/Dicklesworthstone/ntm/issues/347)). The source is v1.37.0's, unchanged. Only the toolchain, the HTTP/2 module, the Docker builder image and the README badge move.
