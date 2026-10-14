@@ -24,17 +24,20 @@ const jobOperationVersion = 1
 // from executing the work again. Never expire an uncertain execution marker.
 // Request bodies (including inline commands and secrets) are hashed, not saved.
 type jobOperationReceipt struct {
-	Version      int                    `json:"version"`
-	OperationKey string                 `json:"operation_key"`
-	Fingerprint  string                 `json:"fingerprint"`
-	JobID        string                 `json:"job_id"`
-	Type         string                 `json:"type"`
-	Status       JobStatus              `json:"status"`
-	CreatedAt    string                 `json:"created_at"`
-	UpdatedAt    string                 `json:"updated_at"`
-	Result       map[string]interface{} `json:"result,omitempty"`
-	Error        string                 `json:"error,omitempty"`
-	ErrorKind    string                 `json:"error_kind,omitempty"`
+	Version      int    `json:"version"`
+	OperationKey string `json:"operation_key"`
+	Fingerprint  string `json:"fingerprint"`
+	// ExecutionScope binds the admitted, private project selection separately
+	// from the public body. Empty means no project was bound, not any project.
+	ExecutionScope string                 `json:"execution_scope,omitempty"`
+	JobID          string                 `json:"job_id"`
+	Type           string                 `json:"type"`
+	Status         JobStatus              `json:"status"`
+	CreatedAt      string                 `json:"created_at"`
+	UpdatedAt      string                 `json:"updated_at"`
+	Result         map[string]interface{} `json:"result,omitempty"`
+	Error          string                 `json:"error,omitempty"`
+	ErrorKind      string                 `json:"error_kind,omitempty"`
 }
 
 // executeJobOperation consumes only the common operation_id control. Every
@@ -122,6 +125,22 @@ func jobOperationPath(dir, id string) string {
 	return filepath.Join(dir, "operations", hex.EncodeToString(sum[:])+".json")
 }
 
+// jobOperationScope never consults mutable server configuration or the current
+// working directory. Admission already resolved the execution project; resolve
+// nothing again at replay time. Hash it so receipts do not disclose private
+// filesystem paths. A legacy receipt without this evidence cannot authorize a
+// replay in a project-scoped request, but remains intact for inspection.
+func jobOperationScope(req CreateJobRequest) (string, error) {
+	if req.executionProjectDir == "" {
+		return "", nil
+	}
+	if !filepath.IsAbs(req.executionProjectDir) || strings.ContainsRune(req.executionProjectDir, '\x00') {
+		return "", errors.New("job operation requires an absolute admitted execution project")
+	}
+	sum := sha256.Sum256([]byte("ntm-job-project-v1\x00" + req.executionProjectDir))
+	return hex.EncodeToString(sum[:]), nil
+}
+
 // runJobOperation holds a cross-process fence through the final receipt save.
 // It records an uncertain marker BEFORE invoking the engine. A process crash,
 // panic, or failed final save leaves that marker in place and forbids replay
@@ -136,6 +155,10 @@ func runJobOperation(ctx context.Context, dir, id, jobID string, req CreateJobRe
 		return nil, err
 	}
 	fingerprint, err := jobOperationFingerprint(req)
+	if err != nil {
+		return nil, err
+	}
+	scope, err := jobOperationScope(req)
 	if err != nil {
 		return nil, err
 	}
@@ -163,7 +186,7 @@ func runJobOperation(ctx context.Context, dir, id, jobID string, req CreateJobRe
 		// An atomic receipt can be read without owning its writer's fence.
 		// Use it only to identify the active job, never to authorize execution.
 		prior, _ := readJobOperation(path)
-		if prior == nil || prior.Fingerprint != fingerprint {
+		if prior == nil || prior.Fingerprint != fingerprint || prior.ExecutionScope != scope {
 			prior = &jobOperationReceipt{}
 		}
 		return jobOperationResult(prior.Result, id, prior.JobID, "in_progress", false), fmt.Errorf("job operation ownership unavailable; inspect the original job before retrying: %w", err)
@@ -174,8 +197,8 @@ func runJobOperation(ctx context.Context, dir, id, jobID string, req CreateJobRe
 		return nil, fmt.Errorf("read operation receipt; refusing re-execution: %w", err)
 	}
 	if prior != nil {
-		if prior.Fingerprint != fingerprint {
-			return jobOperationResult(nil, id, prior.JobID, "conflict", false), errors.New("operation_id conflicts with a different job type or parameter set")
+		if prior.Fingerprint != fingerprint || prior.ExecutionScope != scope {
+			return jobOperationResult(nil, id, prior.JobID, "conflict", false), errors.New("operation_id conflicts with a different job type, parameter set, or admitted execution project; inspect the original job before retrying")
 		}
 		if prior.Status == JobStatusRunning {
 			// Owning the fence proves there is no live writer. Preserve its
@@ -190,8 +213,9 @@ func runJobOperation(ctx context.Context, dir, id, jobID string, req CreateJobRe
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	receipt := &jobOperationReceipt{
 		Version: jobOperationVersion, Fingerprint: fingerprint, JobID: jobID,
-		OperationKey: strings.TrimSuffix(filepath.Base(path), ".json"),
-		Type:         req.Type, Status: JobStatusRunning, CreatedAt: now, UpdatedAt: now,
+		ExecutionScope: scope,
+		OperationKey:   strings.TrimSuffix(filepath.Base(path), ".json"),
+		Type:           req.Type, Status: JobStatusRunning, CreatedAt: now, UpdatedAt: now,
 	}
 	if err := receipt.save(path); err != nil {
 		return nil, fmt.Errorf("checkpoint operation before execution: %w", err)
@@ -332,6 +356,12 @@ func readJobOperation(path string) (*jobOperationReceipt, error) {
 	if receipt.Version != jobOperationVersion || receipt.JobID == "" || receipt.Type == "" || len(receipt.Fingerprint) != sha256.Size*2 ||
 		receipt.OperationKey != strings.TrimSuffix(filepath.Base(path), ".json") {
 		return nil, errors.New("operation receipt has invalid version or identity")
+	}
+	if receipt.ExecutionScope != "" {
+		decoded, err := hex.DecodeString(receipt.ExecutionScope)
+		if err != nil || len(decoded) != sha256.Size {
+			return nil, errors.New("operation receipt has invalid execution scope")
+		}
 	}
 	switch receipt.Status {
 	case JobStatusRunning, JobStatusCompleted:
