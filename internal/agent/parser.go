@@ -439,7 +439,7 @@ func (p *parserImpl) detectWorking(output string, agentType AgentType) bool {
 	case AgentTypeClaudeCode:
 		return matchAny(recentOutput, ccWorkingPatterns)
 	case AgentTypeCodex:
-		return matchAny(recentOutput, codWorkingPatterns)
+		return CodexActivelyWorking(output, 0) || matchAny(recentOutput, codWorkingPatterns)
 	case AgentTypeGemini:
 		return DetectGeminiTurn(output) == GeminiTurnWorking || matchAny(recentOutput, gmiWorkingPatterns)
 	case AgentTypeAntigravity:
@@ -518,7 +518,10 @@ func (p *parserImpl) detectIdle(output string, agentType AgentType) bool {
 		}
 		return false
 	case AgentTypeCodex:
-		return matchAnyRegex(lastLines, codIdlePatterns)
+		// Codex keeps its chevron visible throughout a turn. Use the same
+		// live-work veto as the canonical detector, including spinners above
+		// the composer and truncated interrupt hints in narrow panes.
+		return !CodexActivelyWorking(output, 0) && matchAnyRegex(lastLines, codIdlePatterns)
 	case AgentTypeGemini:
 		// The composer persists while a response runs; its live cancel hint
 		// or spinner must veto idle, including when drawn above the prompt.
@@ -601,6 +604,13 @@ func (p *parserImpl) detectError(output string, agentType AgentType) bool {
 		}
 		return matchAny(recentOutput, ccErrorPatterns)
 	case AgentTypeCodex:
+		// A live turn can be repairing a tool failure or discussing an
+		// earlier error. Do not recommend intervention in active work merely
+		// because that transcript text is still visible. Rate-limit handling
+		// remains the higher-priority blocking path in detectStateFlags.
+		if CodexActivelyWorking(output, 0) {
+			return false
+		}
 		return matchAny(recentOutput, codErrorPatterns)
 	case AgentTypeGemini, AgentTypeAntigravity:
 		return matchAny(recentOutput, gmiErrorPatterns)
@@ -689,7 +699,11 @@ func (p *parserImpl) collectWorkIndicators(output string, agentType AgentType) [
 	case AgentTypeClaudeCode:
 		return collectMatches(recentOutput, ccWorkingPatterns)
 	case AgentTypeCodex:
-		return collectMatches(recentOutput, codWorkingPatterns)
+		matches := collectMatches(recentOutput, codWorkingPatterns)
+		if CodexActivelyWorking(output, 0) {
+			matches = append(matches, "codex_live_activity")
+		}
+		return matches
 	case AgentTypeGemini:
 		matches := collectMatches(recentOutput, gmiWorkingPatterns)
 		if DetectGeminiTurn(output) == GeminiTurnWorking {

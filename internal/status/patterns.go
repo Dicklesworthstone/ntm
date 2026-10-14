@@ -214,6 +214,17 @@ const maxIdleScanLines = 12
 func DetectIdleFromOutput(output string, agentType string) bool {
 	agentType = string(agent.AgentType(agentType).Canonical())
 
+	// These composers remain visible during work. The unified detector
+	// already trusts their live markers, but health checks and startup wait
+	// loops also call this helper directly. A marker ABOVE the prompt must
+	// veto idle here too; activeWorkBelow alone cannot protect those callers.
+	if agentType == string(agent.AgentTypeCodex) && agent.CodexActivelyWorking(output, 0) {
+		return false
+	}
+	if agentType == string(agent.AgentTypeAntigravity) && agent.AntigravityActivelyWorking(output, 0) {
+		return false
+	}
+
 	// Gemini's current composer and quota footer need structural handling.
 	// The shared classifier vetoes idle during live work or real rate limits
 	// and never treats a draft or a prompt above new output as readiness.
