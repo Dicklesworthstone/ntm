@@ -176,6 +176,8 @@ type SendRoutingResult struct {
 	Strategy  string  `json:"strategy"`
 	Reason    string  `json:"reason"`
 	Score     float64 `json:"score"`
+	// ReservationWarning: files in the message that other agents reserve.
+	ReservationWarning *robot.ReservationWarning `json:"reservation_warning,omitempty"`
 }
 
 // SessionInterruptInput is the kernel input for sessions.interrupt.
@@ -2067,17 +2069,22 @@ func runSendInternal(opts SendOptions) (err error) {
 		paneIndex = recommendation.PaneIndex
 		paneSelector = recommendation.PaneID
 		opts.routingResult = &SendRoutingResult{
-			PaneIndex: recommendation.PaneIndex,
-			PaneID:    recommendation.PaneID,
-			AgentType: recommendation.AgentType,
-			Strategy:  string(strategy),
-			Reason:    recommendation.Reason,
-			Score:     recommendation.Score,
+			PaneIndex:          recommendation.PaneIndex,
+			PaneID:             recommendation.PaneID,
+			AgentType:          recommendation.AgentType,
+			Strategy:           string(strategy),
+			Reason:             recommendation.Reason,
+			Score:              recommendation.Score,
+			ReservationWarning: recommendation.ReservationWarning,
 		}
 
 		if !jsonOutput && !silent {
 			fmt.Printf("Smart routing: selected %s (pane %d) - %s\n",
 				recommendation.AgentType, recommendation.PaneIndex, recommendation.Reason)
+			if w := recommendation.ReservationWarning; w != nil {
+				fmt.Fprintf(os.Stderr, "Smart routing: warning: %s: %s reserved by %s\n",
+					w.Message, strings.Join(w.Paths, ", "), strings.Join(w.Holders, ", "))
+			}
 		}
 	}
 

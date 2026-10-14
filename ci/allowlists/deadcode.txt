@@ -224,13 +224,11 @@ internal/robot/renderer.go:JSONRenderer.ContentType	bd-ld4j2	reachable only thro
 internal/robot/renderer.go:JSONRenderer.Format	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/robot/renderer.go:TOONRenderer.ContentType	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/robot/renderer.go:TOONRenderer.Format	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
-internal/robot/routing.go:AgentScorer.CheckReservationWarning	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/robot/routing.go:AgentScorer.GetAvailableAgents	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/robot/routing.go:AgentScorer.GetBestAgent	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/robot/routing.go:AgentScorer.ScoreAgentsWithContext	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/robot/routing.go:AgentScorer.SetAgentMapping	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/robot/routing.go:ReservationCache.GetAllReservations	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
-internal/robot/routing.go:ReservationCache.GetHoldersForPath	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/robot/routing.go:Router.RouteWithRelaxation	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/robot/types.go:ErrorDetails.WithDuration	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/robot/types.go:ErrorDetails.WithExitMethod	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it

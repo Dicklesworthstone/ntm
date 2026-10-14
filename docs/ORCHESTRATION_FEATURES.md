@@ -528,6 +528,13 @@ session's agent registry (written when ntm registers panes with Agent Mail).
 Choosing this strategy is its own opt-in; `[routing] affinity_enabled`
 separately adds the same signal as a score bonus under every strategy.
 
+Whenever reservations are loaded (either opt-in), a recommendation whose
+pick would edit files another agent reserves carries
+`recommendation.reservation_warning` (`message`, `paths`, `holders`,
+`selected_has_reserved`) plus an `_agent_hints` suggestion, and
+`ntm send --smart` prints the warning on stderr. It is omitted when the
+selected agent is the only holder.
+
 ### API Design
 
 **Get Routing Recommendation:**

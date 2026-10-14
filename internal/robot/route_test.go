@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -672,6 +673,29 @@ func TestGetRoute_AffinityRoutesToReservationHolder(t *testing.T) {
 			t.Errorf("candidate %s affinity_match = %v, want %v", candidate.PaneID, candidate.AffinityMatch, want)
 		}
 	}
+	if w := routed.Recommendation.ReservationWarning; w != nil {
+		t.Errorf("routing to the only holder warned %+v, want no reservation_warning", w)
+	}
+
+	// With the holder excluded the pick edits GreenCastle's reserved file.
+	other, code := GetRoute(RouteOptions{
+		Session:        session,
+		Strategy:       StrategyAffinity,
+		Prompt:         "Fix the scoring bug in internal/robot/routing.go",
+		Config:         cfg,
+		ExcludePaneIDs: []string{holderID},
+	})
+	if code != 0 || other.Recommendation == nil || other.Recommendation.PaneID == holderID {
+		t.Fatalf("route excluding the holder = code %d %+v, want a non-holder recommendation", code, other.Recommendation)
+	}
+	w := other.Recommendation.ReservationWarning
+	if w == nil || w.SelectedHas || !reflect.DeepEqual(w.Holders, []string{"GreenCastle"}) ||
+		!reflect.DeepEqual(w.Paths, []string{"internal/robot/routing.go"}) {
+		t.Fatalf("reservation_warning = %+v, want GreenCastle holding internal/robot/routing.go", w)
+	}
+	if other.AgentHints == nil || !strings.Contains(strings.Join(other.AgentHints.Suggestions, "\n"), "reserved by GreenCastle") {
+		t.Errorf("route hints %+v do not mention the reservation holder", other.AgentHints)
+	}
 
 	unreserved, code := GetRoute(RouteOptions{
 		Session:  session,
@@ -685,5 +709,40 @@ func TestGetRoute_AffinityRoutesToReservationHolder(t *testing.T) {
 	if !unreserved.FallbackUsed || unreserved.Recommendation.PaneID != baseline.Recommendation.PaneID {
 		t.Fatalf("unreserved affinity route = %s (fallback_used %v), want the least-loaded fallback %s",
 			unreserved.Recommendation.PaneID, unreserved.FallbackUsed, baseline.Recommendation.PaneID)
+	}
+}
+
+// TestRouteReservationWarning pins when a routing pick reports reservations:
+// only when another agent holds a file the message names, never for the sole
+// holder, and never without a wired reservation cache.
+func TestRouteReservationWarning(t *testing.T) {
+	cfg := DefaultRoutingConfig()
+	cfg.AgentMail.Enabled = true
+	scorer := NewAgentScorer(cfg)
+	cache := NewReservationCache(nil, "/test", 30*time.Second)
+	cache.pathToAgents = map[string][]string{
+		"internal/robot/*.go": {"GreenCastle"},
+		"docs/*.md":           {"GreenCastle", "BlueLake"},
+	}
+	scorer.SetReservationCache(cache)
+	scorer.MapPaneToAgent("%1", "GreenCastle")
+	scorer.MapPaneToAgent("%2", "RedFox")
+
+	if w := routeReservationWarning(scorer, "Fix internal/robot/routing.go", "%1"); w != nil {
+		t.Errorf("sole holder selected: warning %+v, want nil", w)
+	}
+	w := routeReservationWarning(scorer, "Fix internal/robot/routing.go", "%2")
+	if w == nil || w.SelectedHas || !reflect.DeepEqual(w.Holders, []string{"GreenCastle"}) {
+		t.Errorf("other agent selected: warning %+v, want GreenCastle as the holder", w)
+	}
+	w = routeReservationWarning(scorer, "Update docs/README.md", "%1")
+	if w == nil || !w.SelectedHas || !reflect.DeepEqual(w.Holders, []string{"BlueLake", "GreenCastle"}) {
+		t.Errorf("shared reservation: warning %+v, want sorted holders [BlueLake GreenCastle] incl. the selected agent", w)
+	}
+	if w := routeReservationWarning(scorer, "Explain the router", "%2"); w != nil {
+		t.Errorf("no files named: warning %+v, want nil", w)
+	}
+	if w := routeReservationWarning(NewAgentScorer(cfg), "Fix internal/robot/routing.go", "%2"); w != nil {
+		t.Errorf("no reservation cache: warning %+v, want nil", w)
 	}
 }

@@ -254,6 +254,10 @@ type RouteRecommendation struct {
 	Reason       string  `json:"reason"`
 	ContextUsage float64 `json:"context_usage"`
 	State        string  `json:"state"`
+	// ReservationWarning names files in the routed message that other agents
+	// hold live Agent Mail reservations for; absent when there are none or
+	// reservations are not wired (affinity off).
+	ReservationWarning *ReservationWarning `json:"reservation_warning,omitempty"`
 }
 
 // RouteCandidate represents an agent that was considered for routing.
@@ -452,13 +456,14 @@ func GetRoute(opts RouteOptions) (*RouteOutput, int) {
 
 	if result.Selected != nil {
 		output.Recommendation = &RouteRecommendation{
-			PaneID:       result.Selected.PaneID,
-			PaneIndex:    result.Selected.PaneIndex,
-			AgentType:    result.Selected.AgentType,
-			Score:        result.Selected.Score,
-			Reason:       result.Reason,
-			ContextUsage: result.Selected.ContextUsage,
-			State:        string(result.Selected.State),
+			PaneID:             result.Selected.PaneID,
+			PaneIndex:          result.Selected.PaneIndex,
+			AgentType:          result.Selected.AgentType,
+			Score:              result.Selected.Score,
+			Reason:             result.Reason,
+			ContextUsage:       result.Selected.ContextUsage,
+			State:              string(result.Selected.State),
+			ReservationWarning: routeReservationWarning(scorer, opts.Prompt, result.Selected.PaneID),
 		}
 	}
 
@@ -517,6 +522,13 @@ func generateRouteHints(opts RouteOptions, output RouteOutput) *RouteAgentHints 
 		}
 	} else {
 		hints.Summary = fmt.Sprintf("%d candidates available, but strategy returned no selection", len(output.Candidates))
+	}
+
+	if rec := output.Recommendation; rec != nil && rec.ReservationWarning != nil {
+		hints.Suggestions = append(hints.Suggestions, fmt.Sprintf(
+			"%s: %s reserved by %s - coordinate through Agent Mail before sending, or route to the holder",
+			rec.ReservationWarning.Message, strings.Join(rec.ReservationWarning.Paths, ", "),
+			strings.Join(rec.ReservationWarning.Holders, ", ")))
 	}
 
 	if output.FallbackUsed {
@@ -673,12 +685,27 @@ func GetRouteRecommendation(opts RouteOptions) (*RouteRecommendation, error) {
 	}
 
 	return &RouteRecommendation{
-		PaneID:       result.Selected.PaneID,
-		PaneIndex:    result.Selected.PaneIndex,
-		AgentType:    result.Selected.AgentType,
-		Score:        result.Selected.Score,
-		Reason:       result.Reason,
-		ContextUsage: result.Selected.ContextUsage,
-		State:        string(result.Selected.State),
+		PaneID:             result.Selected.PaneID,
+		PaneIndex:          result.Selected.PaneIndex,
+		AgentType:          result.Selected.AgentType,
+		Score:              result.Selected.Score,
+		Reason:             result.Reason,
+		ContextUsage:       result.Selected.ContextUsage,
+		State:              string(result.Selected.State),
+		ReservationWarning: routeReservationWarning(scorer, opts.Prompt, result.Selected.PaneID),
 	}, nil
+}
+
+// routeReservationWarning reports Agent Mail reservations that other agents
+// hold on files the routed message names, so a caller sees that the pick
+// would edit someone else's reserved files. It is nil when the selected
+// agent is the only holder, and whenever the reservation cache was not wired
+// (wireReservationAffinity: affinity enabled or the affinity strategy).
+func routeReservationWarning(scorer *AgentScorer, prompt, paneID string) *ReservationWarning {
+	w := scorer.CheckReservationWarning(prompt, paneID)
+	if w == nil || (w.SelectedHas && len(w.Holders) == 1) {
+		return nil
+	}
+	sort.Strings(w.Holders) // collected from a map
+	return w
 }
