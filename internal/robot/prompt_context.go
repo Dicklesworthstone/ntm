@@ -168,9 +168,9 @@ func EnrichAssignmentPrompt(ctx context.Context, p AssignmentPrompt, opts Prompt
 		if opts.FilterConfig != nil {
 			filter = *opts.FilterConfig
 		}
-		if filter.CurrentWorkspace == "" {
-			filter.CurrentWorkspace = p.ProjectDir
-		}
+		// Assignment scope is authoritative. A reused caller configuration
+		// must not rank another project's history above this task's own context.
+		filter.CurrentWorkspace = p.ProjectDir
 		opts.FilterConfig = &filter
 	}
 	return injectPromptContext(ctx, p.retrievalQuery(), p.Prompt, FormatForAgent(p.AgentType), opts,

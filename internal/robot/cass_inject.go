@@ -7,11 +7,13 @@ import (
 	"context"
 	"encoding/json"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
 	"unicode"
 
+	"github.com/Dicklesworthstone/ntm/internal/cass"
 	"github.com/Dicklesworthstone/ntm/internal/redaction"
 )
 
@@ -96,6 +98,11 @@ type CASSHit struct {
 	// SourcePath is the path to the session file.
 	SourcePath string `json:"source_path"`
 
+	// Workspace and CreatedAt come from the indexed session, not its archive
+	// filename. Absent metadata retains the older path-based fallback.
+	Workspace string     `json:"workspace,omitempty"`
+	CreatedAt *time.Time `json:"created_at,omitempty"`
+
 	// LineNumber is the line in the session file.
 	LineNumber int `json:"line_number"`
 
@@ -131,19 +138,6 @@ type CASSQueryResult struct {
 
 	// Keywords are the extracted keywords from the original prompt.
 	Keywords []string `json:"keywords,omitempty"`
-}
-
-// cassSearchResponse matches the JSON structure returned by `cass search --json`.
-type cassSearchResponse struct {
-	Query        string `json:"query"`
-	TotalMatches int    `json:"total_matches"`
-	Hits         []struct {
-		SourcePath string  `json:"source_path"`
-		LineNumber int     `json:"line_number"`
-		Agent      string  `json:"agent"`
-		Content    string  `json:"content,omitempty"`
-		Score      float64 `json:"score,omitempty"`
-	} `json:"hits"`
 }
 
 // QueryCASS queries CASS for relevant historical context based on the prompt.
@@ -258,7 +252,9 @@ func QueryCASS(prompt string, config CASSConfig, parent ...context.Context) CASS
 	}
 
 	// Parse the response
-	var resp cassSearchResponse
+	// Reuse the maintained search schema: created_at may be RFC3339 or a
+	// numeric timestamp, and summary results may carry snippet without content.
+	var resp cass.SearchResponse
 	if err := json.Unmarshal(output, &resp); err != nil {
 		result.Error = "failed to parse CASS response: " + err.Error()
 		return result
@@ -267,11 +263,25 @@ func QueryCASS(prompt string, config CASSConfig, parent ...context.Context) CASS
 	// Convert to our format
 	result.TotalMatches = resp.TotalMatches
 	for _, hit := range resp.Hits {
+		lineNumber := 0
+		if hit.LineNumber != nil {
+			lineNumber = *hit.LineNumber
+		}
+		content := hit.Content
+		if strings.TrimSpace(content) == "" {
+			content = hit.Snippet
+		}
+		var createdAt *time.Time
+		if observed := hit.CreatedAtTime(); !observed.IsZero() {
+			createdAt = &observed
+		}
 		result.Hits = append(result.Hits, CASSHit{
 			SourcePath: hit.SourcePath,
-			LineNumber: hit.LineNumber,
+			Workspace:  hit.Workspace,
+			CreatedAt:  createdAt,
+			LineNumber: lineNumber,
 			Agent:      hit.Agent,
-			Content:    hit.Content,
+			Content:    content,
 			Score:      hit.Score,
 		})
 	}
@@ -695,8 +705,12 @@ func FilterResults(hits []CASSHit, config FilterConfig) FilterResult {
 	// Score and filter each hit
 	var scored []ScoredHit
 	for i, hit := range hits {
-		// Extract date from source path to compute age
+		// The indexed timestamp is authoritative even when an archive was
+		// moved or renamed. Only legacy hits without it use the path heuristic.
 		sessionDate := extractSessionDate(hit.SourcePath)
+		if hit.CreatedAt != nil && !hit.CreatedAt.IsZero() {
+			sessionDate = *hit.CreatedAt
+		}
 
 		// Apply age filter if configured
 		if config.MaxAgeDays > 0 && !sessionDate.IsZero() && sessionDate.Before(maxAgeTime) {
@@ -766,7 +780,13 @@ func FilterResults(hits []CASSHit, config FilterConfig) FilterResult {
 
 		// Same-project bonus
 		if config.PreferSameProject && config.CurrentWorkspace != "" {
-			if isSameProject(hit.SourcePath, config.CurrentWorkspace) {
+			sameProject := isSameProject(hit.SourcePath, config.CurrentWorkspace)
+			if hit.Workspace != "" {
+				// Never let a suggestive filename override a different indexed
+				// project. Relative or malformed metadata cannot earn the bonus.
+				sameProject = sameCASSWorkspace(hit.Workspace, config.CurrentWorkspace)
+			}
+			if sameProject {
 				breakdown.ProjectBonus = 0.15 // 15% bonus for same project
 			}
 		}
@@ -850,7 +870,19 @@ func parseIntOrZero(s string) int {
 	return result
 }
 
-// isSameProject checks if a session path is from the same project as the current workspace.
+// sameCASSWorkspace compares complete indexed paths lexically. It does not read
+// foreign session paths from disk, fold case on case-sensitive hosts, or equate
+// unrelated projects just because their basenames match. This is a ranking
+// preference, not an authorization check or a cross-project exclusion filter.
+func sameCASSWorkspace(workspace, current string) bool {
+	if !filepath.IsAbs(workspace) || !filepath.IsAbs(current) ||
+		strings.ContainsAny(workspace, "\x00\r\n") || strings.ContainsAny(current, "\x00\r\n") {
+		return false
+	}
+	return filepath.Clean(workspace) == filepath.Clean(current)
+}
+
+// isSameProject is a legacy filename heuristic for hits without workspace metadata.
 func isSameProject(sessionPath, currentWorkspace string) bool {
 	// Normalize paths for comparison
 	sessionPath = strings.ToLower(sessionPath)
@@ -907,7 +939,8 @@ func sortScoredHits(hits []ScoredHit) {
 	for i := 1; i < len(hits); i++ {
 		key := hits[i]
 		j := i - 1
-		for j >= 0 && hits[j].ComputedScore < key.ComputedScore {
+		for j >= 0 && (hits[j].ComputedScore < key.ComputedScore ||
+			(hits[j].ComputedScore == key.ComputedScore && hits[j].ScoreDetail.ProjectBonus < key.ScoreDetail.ProjectBonus)) {
 			hits[j+1] = hits[j]
 			j--
 		}
@@ -1105,7 +1138,7 @@ func formatMarkdown(hits []ScoredHit) string {
 	for i, hit := range hits {
 		// Extract session info from path
 		sessionName := extractSessionName(hit.SourcePath)
-		age := formatAge(hit.SourcePath)
+		age := formatAge(hit.SourcePath, hit.CreatedAt)
 		relevance := int(hit.ComputedScore * 100)
 
 		b.WriteString("### Session: ")
@@ -1173,7 +1206,7 @@ func formatStructured(hits []ScoredHit) string {
 
 	for i, hit := range hits {
 		sessionName := extractSessionName(hit.SourcePath)
-		age := formatAge(hit.SourcePath)
+		age := formatAge(hit.SourcePath, hit.CreatedAt)
 		relevance := int(hit.ComputedScore * 100)
 
 		b.WriteString(itoa(i + 1))
@@ -1236,9 +1269,13 @@ func extractSessionName(path string) string {
 	return filename
 }
 
-// formatAge returns a human-readable age string based on the session date.
-func formatAge(path string) string {
+// formatAge uses indexed time when available, with a filename fallback for
+// legacy results. Rendering must agree with the age used to filter the hit.
+func formatAge(path string, indexed ...*time.Time) string {
 	sessionDate := extractSessionDate(path)
+	if len(indexed) > 0 && indexed[0] != nil && !indexed[0].IsZero() {
+		sessionDate = *indexed[0]
+	}
 	if sessionDate.IsZero() {
 		return ""
 	}
