@@ -95,7 +95,7 @@ func TestSummaryGitClassifiesFilesFromOneObservation(t *testing.T) {
 	evidenceGit(t, dir, "mv", "old name.txt", "renamed.txt")
 	evidenceWrite(t, dir, "added.txt", "staged addition\n")
 	evidenceGit(t, dir, "add", "added.txt")
-	name := "new dir/ space and Ω.txt "
+	name := "new dir/ space and Ω.txt"
 	if runtime.GOOS != "windows" {
 		name = "new dir/ space\nquote\" and Ω.txt "
 	}

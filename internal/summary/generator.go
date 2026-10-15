@@ -150,12 +150,19 @@ func SummarizeSession(ctx context.Context, opts Options) (*SessionSummary, error
 			data.errors = appendUnique(data.errors, "agent mail project key missing")
 		} else {
 			for _, tid := range opts.ThreadIDs {
+				if err := ctx.Err(); err != nil {
+					return nil, err
+				}
 				includeExamples := false
 				thread, err := opts.AgentMailClient.SummarizeThread(ctx, agentmail.SummarizeThreadOptions{
 					ProjectKey:      opts.ProjectKey,
 					ThreadID:        tid,
 					IncludeExamples: &includeExamples,
 				})
+				// An optional-tool failure may degrade; stopping the owner may not.
+				if err := ctx.Err(); err != nil {
+					return nil, err
+				}
 				if err != nil {
 					data.errors = appendUnique(data.errors, fmt.Sprintf("agent mail summarize %s: %v", tid, err))
 					continue
@@ -165,6 +172,9 @@ func SummarizeSession(ctx context.Context, opts Options) (*SessionSummary, error
 				data.pending = appendUniqueList(data.pending, thread.Summary.ActionItems)
 			}
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 
 	summary := &SessionSummary{
@@ -184,7 +194,15 @@ func SummarizeSession(ctx context.Context, opts Options) (*SessionSummary, error
 	// Optional LLM summarization for brief/detailed formats
 	if opts.Summarizer != nil && opts.Format != FormatHandoff {
 		prompt := buildLLMPrompt(opts.Format, summary)
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		text, err := opts.Summarizer.Summarize(ctx, prompt, opts.MaxTokens)
+		// Cancellation wins over both provider success and fallback. Otherwise
+		// a stopped monitor can publish an apparently completed stale handoff.
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if err != nil {
 			log.Printf("summary: LLM summarization failed, using fallback: %v", err)
 		} else if strings.TrimSpace(text) != "" {
@@ -214,6 +232,9 @@ func SummarizeSession(ctx context.Context, opts Options) (*SessionSummary, error
 	if summary.TokenEstimate > opts.MaxTokens {
 		summary.Text = truncateToTokens(summary.Text, opts.MaxTokens)
 		summary.TokenEstimate = opts.MaxTokens
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 
 	return summary, nil

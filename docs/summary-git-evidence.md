@@ -47,8 +47,14 @@ readable; rendering does not rerun Git or claim a historical observation is fres
 Inspection uses the caller context and a ten-second command budget. Exceeding
 the 16 MiB stdout limit cancels the child; partial/malformed/failed output is not
 accepted as usable Git evidence. Pipe draining is bounded, and subprocess stderr
-is not copied into summaries. Caller cancellation during Git inspection discards
-the summary rather than becoming an optional-tool warning.
+is not copied into summaries. Caller cancellation discards the summary rather
+than becoming an optional-tool warning. The owner context is checked around
+each Agent Mail thread request, before and after the optional LLM provider, and
+before returning the final summary. A stopped owner cannot accept late provider
+success or turn a provider failure into a successful fallback. An independent
+provider timeout still permits fallback while the owner context remains live.
+Providers must cooperate with the passed context; an implementation that ignores
+cancellation is not forcibly terminated or detached into an unjoined goroutine.
 
 This is an observation, not an atomic snapshot against concurrent editors. It
 does not prove that tests passed, commits were pushed, or a task is complete.
