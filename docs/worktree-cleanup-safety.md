@@ -69,6 +69,22 @@ a retained checkout through `Created`; no rollback or deletion is attempted.
 An identity failure after Git creates a checkout likewise reports that partial
 mutation instead of acknowledging a usable checkout.
 
+## Fail before session setup
+
+The spawn path's existing `PreflightForAgent` call now checks the same recovery
+barrier and existing-checkout identity before session setup can proceed. It
+rejects a live NTM repository owner, redirected directories, foreign `.git`
+identity, invalid evidence, and paths still registered by a missing detached
+worktree, even when the expected agent branch is absent.
+
+Preflight resolves relative project scope once and uses the operation's context
+with a bounded inspection deadline. It opens an existing ownership file without
+creating one, probes its lock, and leaves the recovery receipt, checkouts, index,
+and branch tips untouched. Repositories with no ownership file remain unchanged.
+Preflight is not a reservation: a new owner or unresolved merge may appear after
+it returns. `CreateForAgent` still acquires its own fence and repeats validation;
+a prior successful preflight cannot override that later refusal.
+
 ## Limits
 
 This lock coordinates these NTM merge, cleanup, and `CreateForAgent` operations,

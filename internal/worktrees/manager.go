@@ -148,9 +148,10 @@ func (m *WorktreeManager) buildWorktreeInfo(agentName string) (*WorktreeInfo, er
 	}, nil
 }
 
-// PreflightForAgent validates every deterministic failure that can be checked
-// before provisioning a worktree. CreateForAgent rechecks path state and Git
-// enforces branch conditions at the mutation boundary, so races fail closed.
+// PreflightForAgent checks provisioning prerequisites before spawn mutates a
+// session. It neither creates worktree directories nor initializes ownership
+// files. This is a snapshot; CreateForAgent repeats checks while owning the
+// repository fence at the mutation boundary.
 func (m *WorktreeManager) PreflightForAgent(ctx context.Context, agentName string) error {
 	if ctx == nil {
 		return errors.New("worktree preflight requires a context")
@@ -158,6 +159,16 @@ func (m *WorktreeManager) PreflightForAgent(ctx context.Context, agentName strin
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("worktree preflight canceled: %w", err)
 	}
+	if m == nil || strings.TrimSpace(m.projectPath) == "" {
+		return errors.New("worktree preflight requires a project directory")
+	}
+	project, err := filepath.Abs(m.projectPath)
+	if err != nil {
+		return err
+	}
+	m = NewManager(project, m.session)
+	ctx, cancel := context.WithTimeout(ctx, gitTimeout)
+	defer cancel()
 	info, err := m.buildWorktreeInfo(agentName)
 	if err != nil {
 		return err
@@ -172,6 +183,16 @@ func (m *WorktreeManager) PreflightForAgent(ctx context.Context, agentName strin
 			detail = err.Error()
 		}
 		return fmt.Errorf("invalid worktree branch %q: %s: %w", info.BranchName, detail, err)
+	}
+	if err := m.verifyWorktreeDirectories(info); err != nil {
+		return fmt.Errorf("worktree path is not a directory or has been redirected: %w", err)
+	}
+	common, err := mergeCommonDirectory(ctx, m.projectPath)
+	if err != nil {
+		return err
+	}
+	if err := preflightMergeReadiness(ctx, common); err != nil {
+		return err
 	}
 
 	stat, statErr := os.Stat(info.Path)
@@ -203,7 +224,8 @@ func (m *WorktreeManager) PreflightForAgent(ctx context.Context, agentName strin
 				info.Path, currentBranch, info.BranchName,
 			)
 		}
-		return nil
+		_, err := m.inspectWorktreeIdentity(ctx, info, common)
+		return err
 	case !errors.Is(statErr, os.ErrNotExist):
 		return fmt.Errorf("stat worktree path %s: %w", info.Path, statErr)
 	}
@@ -224,8 +246,16 @@ func (m *WorktreeManager) PreflightForAgent(ctx context.Context, agentName strin
 		}
 		return fmt.Errorf("inspect worktree branch %q: %s: %w", info.BranchName, detail, branchErr)
 	}
-
-	return nil
+	// A missing branch is not enough: an old detached worktree may still
+	// register this path. Do not discover that collision after spawn starts.
+	registered, err := m.removalRegistered(ctx, info.Path)
+	if err != nil {
+		return err
+	}
+	if registered {
+		return fmt.Errorf("worktree path %s is missing but remains registered; inspect before provisioning", info.Path)
+	}
+	return ctx.Err()
 }
 
 // CreateForAgent creates or reuses an agent checkout while holding the same

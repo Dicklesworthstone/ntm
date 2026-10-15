@@ -97,7 +97,13 @@ func validateMergeRecovery(record *MergeRecovery) error {
 }
 
 func (f *mergeFence) requireSettledMerge() error {
-	record, err := readMergeRecovery(f.common)
+	return requireSettledMergeRecovery(f.common)
+}
+
+// Share the recovery barrier with read-only preflight. Mutation paths still
+// call it while holding the repository's writer fence.
+func requireSettledMergeRecovery(common string) error {
+	record, err := readMergeRecovery(common)
 	if err != nil {
 		return errors.Join(ErrMergeRecoveryRequired, err)
 	}
@@ -105,6 +111,35 @@ func (f *mergeFence) requireSettledMerge() error {
 		return fmt.Errorf("%w: attempt %s; inspect with ntm worktrees merge-status before merge-recover", ErrMergeRecoveryRequired, record.AttemptID)
 	}
 	return nil
+}
+
+// preflightMergeReadiness probes an existing lock without creating one. No
+// lock file means only that no owner was observed, not permission to mutate;
+// actual provisioning must acquire its own fence and recheck the receipt.
+func preflightMergeReadiness(ctx context.Context, common string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	path := filepath.Join(common, "ntm-merge.lock")
+	file, err := openMergeRecoveryFile(path)
+	if err == nil {
+		defer file.Close()
+		if err := verifyMergeFenceFile(file, path); err != nil {
+			return err
+		}
+		if err := tryMergeFenceLock(file); err != nil {
+			return err
+		}
+		if err := verifyMergeFenceFile(file, path); err != nil {
+			return err
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect worktree ownership before provisioning: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return requireSettledMergeRecovery(common)
 }
 
 func (f *mergeFence) prepareMerge(plan *MergePreview) (*MergeRecovery, error) {

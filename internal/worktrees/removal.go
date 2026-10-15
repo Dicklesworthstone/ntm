@@ -82,30 +82,37 @@ func (m *WorktreeManager) inspectRemoval(ctx context.Context, info *WorktreeInfo
 	if statErr != nil {
 		return false, "", statErr
 	}
+	tip, err := m.inspectWorktreeIdentity(ctx, info, fence.common)
+	return true, tip, err
+}
+
+// inspectWorktreeIdentity is the shared existing-checkout check for preflight,
+// provisioning and removal. A registered path and matching branch name do not
+// prove ownership if its .git file has been redirected to another repository.
+func (m *WorktreeManager) inspectWorktreeIdentity(ctx context.Context, info *WorktreeInfo, expectedCommon string) (string, error) {
 	gitFile, err := os.Lstat(filepath.Join(info.Path, ".git"))
 	if err != nil || !gitFile.Mode().IsRegular() {
-		return false, "", errors.Join(err, errors.New("refusing filesystem cleanup for unregistered worktree: expected a regular .git file"))
+		return "", errors.Join(err, errors.New("refusing filesystem cleanup for unregistered worktree: expected a regular .git file"))
 	}
 	registered, err := m.removalRegistered(ctx, info.Path)
 	if err != nil {
-		return false, "", err
+		return "", err
 	}
 	if !registered {
-		return false, "", errors.New("refusing filesystem cleanup for unregistered worktree")
+		return "", errors.New("refusing filesystem cleanup for unregistered worktree")
 	}
-	common, err = mergeCommonDirectory(ctx, info.Path)
-	if err != nil || common != fence.common {
-		return false, "", errors.Join(err, errors.New("removal checkout belongs to a different repository"))
+	common, err := mergeCommonDirectory(ctx, info.Path)
+	if err != nil || common != expectedCommon {
+		return "", errors.Join(err, errors.New("worktree checkout belongs to a different repository"))
 	}
 	branch, err := worktreeCurrentBranch(ctx, info.Path)
 	if err != nil {
-		return false, "", err
+		return "", err
 	}
 	if branch != info.BranchName {
-		return false, "", fmt.Errorf("refusing removal of worktree on branch %q; expected %q", branch, info.BranchName)
+		return "", fmt.Errorf("worktree is on branch %q; expected %q", branch, info.BranchName)
 	}
-	tip, err := mergeCommitAt(ctx, m.projectPath, "refs/heads/"+info.BranchName)
-	return true, tip, err
+	return mergeCommitAt(ctx, m.projectPath, "refs/heads/"+info.BranchName)
 }
 
 // verifyWorktreeDirectories is shared by provisioning and removal. An alias

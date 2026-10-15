@@ -240,6 +240,9 @@ fi`)
 				}
 			}()
 			provisionAwait(t, barrier)
+			if err := m.PreflightForAgent(context.Background(), "preflight-agent"); !errors.Is(err, ErrMergeBusy) {
+				t.Fatalf("spawn preflight ignored a live provisioning process: %v", err)
+			}
 			if err := m.RemoveWorktree(context.Background(), existing.AgentName); !errors.Is(err, ErrMergeBusy) {
 				t.Fatalf("removal overlapped provisioning: %v", err)
 			}
@@ -444,6 +447,227 @@ func TestProvisioningRejectsMissingScopeAndStoppedContext(t *testing.T) {
 		if err == nil || info == nil || info.Created || info.Error == "" {
 			t.Fatalf("stopped provisioning created state: %+v %v", info, err)
 		}
+	}
+	provisionAbsent(t, filepath.Join(m.projectPath, ".ntm"))
+	provisionAbsent(t, filepath.Join(m.projectPath, ".git", "ntm-merge.lock"))
+}
+
+func TestProvisioningPreflightRecoveryBarrier(t *testing.T) {
+	for _, state := range []string{"prepared", "corrupt", "unsupported", "abandoned", "committed", "recovered"} {
+		t.Run(state, func(t *testing.T) {
+			m := NewManager(provisionRepo(t), "preflight-test")
+			info, err := m.buildWorktreeInfo("agent")
+			if err != nil {
+				t.Fatal(err)
+			}
+			head := provisionGit(t, m.projectPath, "rev-parse", "HEAD")
+			now := time.Now().UTC()
+			record := MergeRecovery{Version: 1, AttemptID: strings.Repeat("b", 32), State: state, StartedAt: now, UpdatedAt: now,
+				Plan: MergePreview{SourcePath: info.Path, TargetPath: m.projectPath, SourceBranch: info.BranchName,
+					TargetBranch: "main", SourceCommit: head, TargetCommit: head, MergeTree: provisionGit(t, m.projectPath, "rev-parse", "HEAD^{tree}")}}
+			if state == "committed" || state == "recovered" {
+				record.Commit = head
+			}
+			if state == "unsupported" {
+				record.Version = 2
+			}
+			raw, err := json.Marshal(record)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if state == "corrupt" {
+				raw = []byte("{incomplete")
+			}
+			journal := filepath.Join(m.projectPath, ".git", "ntm-merge.json")
+			provisionWrite(t, journal, string(raw))
+			err = m.PreflightForAgent(context.Background(), "agent")
+			blocked := state == "prepared" || state == "corrupt" || state == "unsupported"
+			if blocked && !errors.Is(err, ErrMergeRecoveryRequired) {
+				t.Fatalf("preflight bypassed recovery evidence: %v", err)
+			}
+			if !blocked && err != nil {
+				t.Fatalf("settled receipt refused preflight: %v", err)
+			}
+			provisionAbsent(t, filepath.Join(m.projectPath, ".ntm"))
+			provisionAbsent(t, filepath.Join(m.projectPath, ".git", "ntm-merge.lock"))
+			got, err := os.ReadFile(journal)
+			if err != nil || !bytes.Equal(got, raw) {
+				t.Fatalf("preflight rewrote recovery evidence: %q %v", got, err)
+			}
+		})
+	}
+}
+
+func TestProvisioningPreflightExistingIdentity(t *testing.T) {
+	for _, substituted := range []bool{false, true} {
+		t.Run(fmt.Sprintf("foreign_%t", substituted), func(t *testing.T) {
+			m, info := provisionExisting(t, provisionRepo(t))
+			gitFile := filepath.Join(info.Path, ".git")
+			if substituted {
+				_, foreign := provisionExisting(t, provisionRepo(t))
+				raw, err := os.ReadFile(filepath.Join(foreign.Path, ".git"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				provisionWrite(t, gitFile, string(raw))
+			}
+			before, err := os.ReadFile(gitFile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = m.PreflightForAgent(context.Background(), info.AgentName)
+			if substituted && err == nil {
+				t.Fatal("preflight accepted a matching branch name from a foreign repository")
+			}
+			if !substituted && err != nil {
+				t.Fatalf("preflight rejected verified existing checkout: %v", err)
+			}
+			after, readErr := os.ReadFile(gitFile)
+			if readErr != nil || !bytes.Equal(before, after) {
+				t.Fatalf("preflight changed the inspected checkout: %v", readErr)
+			}
+		})
+	}
+}
+
+func TestProvisioningPreflightRejectsRedirectedParent(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink fixture requires local symlink privileges")
+	}
+	m := NewManager(provisionRepo(t), "preflight-test")
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(m.projectPath, ".ntm")); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.PreflightForAgent(context.Background(), "agent"); err == nil {
+		t.Fatal("preflight approved creation through a substituted ancestor")
+	}
+	entries, err := os.ReadDir(outside)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("preflight wrote to a redirected directory: %v %v", entries, err)
+	}
+	provisionAbsent(t, filepath.Join(m.projectPath, ".git", "ntm-merge.lock"))
+}
+
+func TestProvisioningPreflightDetectsDetachedOrphanRegistration(t *testing.T) {
+	m := NewManager(provisionRepo(t), "preflight-test")
+	info, err := m.buildWorktreeInfo("agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(info.Path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	provisionGit(t, m.projectPath, "worktree", "add", "--detach", info.Path)
+	retained := filepath.Join(t.TempDir(), "retained-checkout")
+	if err := os.Rename(info.Path, retained); err != nil {
+		t.Fatal(err)
+	}
+	before := provisionGit(t, m.projectPath, "worktree", "list", "--porcelain", "-z")
+	if err := m.PreflightForAgent(context.Background(), info.AgentName); err == nil {
+		t.Fatal("preflight ignored a registered path because the agent branch was absent")
+	}
+	if after := provisionGit(t, m.projectPath, "worktree", "list", "--porcelain", "-z"); after != before {
+		t.Fatal("preflight pruned or rewrote the detached registration")
+	}
+	if _, err := os.Stat(filepath.Join(retained, ".git")); err != nil {
+		t.Fatalf("preflight lost the retained checkout: %v", err)
+	}
+}
+
+func TestProvisioningPreflightIsReadOnlySnapshot(t *testing.T) {
+	repo := provisionRepo(t)
+	provisionWrite(t, filepath.Join(repo, "tracked"), "unchanged")
+	provisionGit(t, repo, "add", "tracked")
+	provisionGit(t, repo, "-c", "commit.gpgsign=false", "commit", "-m", "tracked fixture")
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rel, err := filepath.Rel(cwd, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := NewManager(rel, "preflight-test")
+	index := filepath.Join(repo, ".git", "index")
+	before, err := os.ReadFile(index)
+	if err != nil {
+		t.Fatal(err)
+	}
+	head := provisionGit(t, repo, "rev-parse", "HEAD")
+	if err := m.PreflightForAgent(context.Background(), "agent"); err != nil {
+		t.Fatal(err)
+	}
+	if m.projectPath != rel {
+		t.Fatal("preflight mutated a reusable manager")
+	}
+	after, err := os.ReadFile(index)
+	if err != nil || !bytes.Equal(before, after) || provisionGit(t, repo, "rev-parse", "HEAD") != head {
+		t.Fatal("preflight changed index bytes or HEAD")
+	}
+	provisionAbsent(t, filepath.Join(repo, ".ntm"))
+	provisionAbsent(t, filepath.Join(repo, ".git", "ntm-merge.lock"))
+	fence, err := acquireMergeFence(context.Background(), repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.PreflightForAgent(context.Background(), "agent"); !errors.Is(err, ErrMergeBusy) {
+		fence.close()
+		t.Fatalf("preflight ignored a newly acquired owner: %v", err)
+	}
+	if _, err := m.CreateForAgent(context.Background(), "agent"); !errors.Is(err, ErrMergeBusy) {
+		fence.close()
+		t.Fatalf("old preflight authorized provisioning under a new owner: %v", err)
+	}
+	fence.close()
+	if err := m.PreflightForAgent(context.Background(), "agent"); err != nil {
+		t.Fatalf("released ownership still blocks preflight: %v", err)
+	}
+	provisionAbsent(t, filepath.Join(repo, ".ntm"))
+	if _, err := m.CreateForAgent(context.Background(), "agent"); err != nil {
+		t.Fatalf("successful preflight retained its probe lock: %v", err)
+	}
+}
+
+func TestProvisioningPreflightRejectsInvalidEvidence(t *testing.T) {
+	for _, mode := range []string{"lock directory", "bad listing"} {
+		t.Run(mode, func(t *testing.T) {
+			m := NewManager(provisionRepo(t), "preflight-test")
+			if mode == "lock directory" {
+				if err := os.Mkdir(filepath.Join(m.projectPath, ".git", "ntm-merge.lock"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				provisionWrapper(t, `if [ "$1 $2" = "worktree list" ]; then printf 'invalid listing'; exit 0; fi`)
+			}
+			if err := m.PreflightForAgent(context.Background(), "agent"); err == nil {
+				t.Fatalf("preflight treated %s as permission to proceed", mode)
+			}
+			provisionAbsent(t, filepath.Join(m.projectPath, ".ntm"))
+		})
+	}
+}
+
+func TestProvisioningPreflightRejectsMissingScopeAndCancellation(t *testing.T) {
+	for _, m := range []*WorktreeManager{nil, NewManager("", "session"), NewManager("   ", "session")} {
+		if err := m.PreflightForAgent(context.Background(), "agent"); err == nil {
+			t.Fatal("preflight defaulted an absent scope to the shell's project")
+		}
+	}
+	m := NewManager(provisionRepo(t), "preflight-test")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := m.PreflightForAgent(ctx, "agent"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("preflight lost owner cancellation: %v", err)
+	}
+	if err := m.PreflightForAgent(nil, "agent"); err == nil {
+		t.Fatal("preflight accepted nil context")
+	}
+	provisionWrapper(t, "exec sleep 30")
+	ctx, cancel = context.WithTimeout(context.Background(), 40*time.Millisecond)
+	defer cancel()
+	if err := m.PreflightForAgent(ctx, "agent"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("preflight did not stop with the blocked Git probe: %v", err)
 	}
 	provisionAbsent(t, filepath.Join(m.projectPath, ".ntm"))
 	provisionAbsent(t, filepath.Join(m.projectPath, ".git", "ntm-merge.lock"))
