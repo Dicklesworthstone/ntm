@@ -521,7 +521,8 @@ func (m *WorktreeManager) AssessRemovalRisk(ctx context.Context, agentName strin
 	return risk, nil
 }
 
-// RemoveWorktree removes a specific agent's worktree.
+// RemoveWorktree removes a specific agent's worktree. A Git refusal is final:
+// never substitute filesystem deletion or delete its branch after a failure.
 func (m *WorktreeManager) RemoveWorktree(ctx context.Context, agentName string) error {
 	if ctx == nil {
 		return errors.New("remove worktree requires a context")
@@ -556,27 +557,37 @@ func (m *WorktreeManager) RemoveWorktree(ctx context.Context, agentName string) 
 				return fmt.Errorf("refusing filesystem cleanup for unregistered worktree %s after git removal failed: %w", agentName, err)
 			}
 
-			// If removal failed, try to prune and remove manually.
-			_ = gitRun(ctx, m.projectPath, "worktree", "prune") // Ignore non-cancellation errors for prune
+		} else if errors.Is(statErr, os.ErrNotExist) {
+			// An absent checkout is not permission to delete an orphaned branch.
+			// Only a fully absent checkout, branch AND registration is a no-op.
+			refErr := gitRun(ctx, m.projectPath, "show-ref", "--verify", "--quiet", "refs/heads/"+branchName)
 			if ctx.Err() != nil {
-				return fmt.Errorf("remove worktree %s canceled before filesystem cleanup: %w", agentName, ctx.Err())
+				return fmt.Errorf("remove worktree %s canceled: %w", agentName, ctx.Err())
 			}
-
-			if rmErr := os.RemoveAll(worktreePath); rmErr != nil {
-				return fmt.Errorf("failed to remove worktree %s: %v: %s", agentName, err, string(output))
-			}
-			// The first prune runs before the manual removal, so it cannot remove
-			// this worktree's registration. Prune again after successful fallback
-			// cleanup to avoid leaving a stale worktree entry behind.
-			if pruneErr := gitRun(ctx, m.projectPath, "worktree", "prune"); pruneErr != nil {
-				if ctx.Err() != nil {
-					return fmt.Errorf("remove worktree %s canceled after filesystem cleanup: %w", agentName, ctx.Err())
+			var exitErr *exec.ExitError
+			if errors.As(refErr, &exitErr) && exitErr.ExitCode() == 1 {
+				listed, listErr := gitOutput(ctx, m.projectPath, "worktree", "list", "--porcelain")
+				if listErr != nil {
+					return fmt.Errorf("verify absent worktree %s: %w", agentName, listErr)
 				}
-				return fmt.Errorf("prune worktree registration after removing %s: %w", agentName, pruneErr)
+				if !worktreeListed(listed, worktreePath) {
+					return nil
+				}
 			}
-		} else if !errors.Is(statErr, os.ErrNotExist) {
+		} else {
 			return fmt.Errorf("inspect worktree path %s after git removal failed: %w", worktreePath, statErr)
 		}
+		return fmt.Errorf("git refused removal of worktree %s: %w: %s; no filesystem fallback or branch deletion was attempted",
+			agentName, err, strings.TrimSpace(string(output)))
+	}
+
+	// A wrapper may report success without removing anything. Do not advance
+	// to the destructive branch step until the checkout is actually absent.
+	if _, statErr := os.Lstat(worktreePath); !errors.Is(statErr, os.ErrNotExist) {
+		if statErr != nil {
+			return fmt.Errorf("verify removed worktree %s: %w", agentName, statErr)
+		}
+		return fmt.Errorf("worktree %s remains after git reported successful removal; branch retained", agentName)
 	}
 
 	// Delete the branch. A missing branch is harmless because removal is
