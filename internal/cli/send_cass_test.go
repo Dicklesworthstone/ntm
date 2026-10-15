@@ -6,6 +6,7 @@ package cli
 // G2 liveness claims are honest), and the degraded path records a skip.
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -182,7 +183,7 @@ func TestSendCASSConfiguredDeadlineRecordsSkippedEnrichment(t *testing.T) {
 			if search.Success || !strings.Contains(search.Error, "timed out after 1s") {
 				t.Fatalf("search did not report its configured deadline: %+v", search)
 			}
-			if result.Success || result.ModifiedPrompt != "" || result.Metadata.ItemsInjected != 0 {
+			if result.Success || result.ModifiedPrompt != prompt || result.InjectedContext != "" || result.Metadata.ItemsInjected != 0 {
 				t.Fatalf("timed-out enrichment returned an injected replacement prompt: %+v", result)
 			}
 			info := sendCASSInjectionInfo(result, search.Query, filtered.Hits)
@@ -198,6 +199,31 @@ func TestSendCommand_CASSFlagsRegistered(t *testing.T) {
 	for _, name := range []string{"with-cass", "no-cass"} {
 		if cmd.Flags().Lookup(name) == nil {
 			t.Errorf("ntm send missing --%s", name)
+		}
+	}
+}
+
+func TestSendCASSInjectionInfo_UsesIndexedAge(t *testing.T) {
+	indexed := time.Now().UTC().Add(-72 * time.Hour)
+	for _, format := range []cass.InjectionFormat{cass.FormatMarkdown, cass.FormatMinimal, cass.FormatStructured} {
+		inject := cass.DefaultInjectConfig()
+		inject.Format = format
+		var hit cass.CASSHit
+		raw, err := json.Marshal(map[string]interface{}{
+			"source_path": "/archive/2099/01/01/renamed.jsonl",
+			"created_at":  indexed, "content": "INDEXED_HISTORY",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(raw, &hit); err != nil {
+			t.Fatal(err)
+		}
+		filtered := cass.FilterResults([]cass.CASSHit{hit}, cass.FilterConfig{MaxAgeDays: 30})
+		result := cass.InjectContext("original task", filtered.Hits, inject)
+		info := sendCASSInjectionInfo(result, "query", filtered.Hits)
+		if !result.Success || len(info.Sources) != 1 || info.Sources[0].AgeDays != 3 || !strings.Contains(result.ModifiedPrompt, "INDEXED_HISTORY") {
+			t.Fatalf("format %s lost indexed receipt evidence: result=%+v info=%+v", format, result, info)
 		}
 	}
 }

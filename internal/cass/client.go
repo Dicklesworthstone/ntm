@@ -33,6 +33,10 @@ type Executor interface {
 // DefaultExecutor runs the actual binary
 type DefaultExecutor struct {
 	BinaryPath string
+	// WaitDelay bounds inherited output pipes after exit/cancellation. Zero
+	// retains the ordinary client's two-second bound. Prompt enrichment uses
+	// its existing shorter drain budget so optional history releases dispatch.
+	WaitDelay time.Duration
 }
 
 func (e *DefaultExecutor) Run(ctx context.Context, args ...string) ([]byte, error) {
@@ -47,7 +51,10 @@ func (e *DefaultExecutor) Run(ctx context.Context, args ...string) ([]byte, erro
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	cmd := exec.CommandContext(runCtx, e.BinaryPath, args...)
-	cmd.WaitDelay = 2 * time.Second
+	cmd.WaitDelay = e.WaitDelay
+	if cmd.WaitDelay <= 0 {
+		cmd.WaitDelay = 2 * time.Second
+	}
 	stdout := newLimitedOutput(maxCASSStdoutBytes, cancel)
 	stderr := newLimitedOutput(maxCASSStderrBytes, cancel)
 	cmd.Stdout, cmd.Stderr = stdout, stderr

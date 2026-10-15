@@ -37,7 +37,8 @@ relabeled as local just because a scoped query returned the same archive line.
 ## Failure and lifecycle behavior
 
 Both searches share one timeout rather than each consuming a sequential full
-budget. Caller cancellation joins both searches and discards their candidates.
+budget. In the context-aware robot/assignment pipeline, caller cancellation joins
+both searches and discards their candidates.
 If only an optional search fails or times out, the other source remains usable.
 A warning identifies the unavailable source or rejected identity evidence without
 logging task text, historical content, or subprocess stderr. If neither source
@@ -45,20 +46,45 @@ succeeds, the original task is preserved with a skipped-enrichment receipt.
 
 The shared CASS executor retains at most 32 MiB of stdout and 64 KiB of stderr.
 Exceeding either capture budget cancels the child and returns a typed output-limit
-error; partial JSON is never treated as successful history. Pipe draining retains
-its existing two-second bound. This is not a process-group supervisor and does
+error; partial JSON is never treated as successful history. Pipe draining defaults
+to two seconds; ordinary send retains its prior one-second drain bound through
+the same executor's `WaitDelay` setting. This is not a process-group supervisor and does
 not promise to terminate arbitrary detached descendants of a custom CASS wrapper.
 
 Fresh assignments still record the final enriched prompt before dispatch.
 Recovery replays that recorded prompt; it does not run these searches again.
 Memory injection continues through the existing context-aware CM pipeline.
 
-## Scope and qualification
+## Ordinary send integration
 
-The separate ordinary `ntm send` enrichment implementation in
-`internal/cass/inject.go` and standalone robot CASS query helpers are not migrated
-by this change. The active shared prompt-context path uses the maintained client;
-this does not claim every legacy helper uses the new candidate policy.
+`ntm send --with-cass` now uses the maintained, output-bounded search client
+instead of a separate subprocess runner and reduced JSON decoder. Snippet-only
+results contribute context; nonblank full content wins when both are present.
+Indexed timestamps drive age filtering, recency scoring, rendered age and the
+`cass_injection.sources` age receipt rather than a renamed archive's date.
+Workspace metadata is retained and overrides filename guesses whenever a caller
+supplies a project preference. Saturated relevance ties preserve the configured
+project bonus; disabling it preserves the original order of equal-score hits.
+
+Retrieval keywords and historical content pass through the existing real
+redaction engine. All three formats retain the historical-data framing and
+existing post-redaction prompt budget. Query failures preserve the original
+task, report a safe failure class and never inject partial captured JSON.
+An uninitialized index remains an optional empty-context state with an explicit
+skip reason; it does not mask another scope's output-limit or decoding error.
+
+The ordinary send call site currently supplies no workspace, so it still searches
+globally. The shared `QueryAndFilterCASS` API supports additional project candidates
+when its caller provides a valid `CurrentWorkspace`; it never guesses one from
+the shell's current directory. Binding ordinary send to its target session's
+authoritative project remains a separate integration step.
+
+Ordinary send's existing context-free injection API also retains its configured
+lookup deadline rather than inheriting the command's cancellation. This change
+does not claim to add owner cancellation to that call site or migrate the
+standalone robot CASS query helpers. Fresh-assignment replay remains unchanged.
+
+## Scope and qualification
 
 Unit tests cover scope filtering, deterministic merge order, exact-ID deduplication,
 unknown identities, argument boundaries, shared budgets, partial failures, and
@@ -66,3 +92,8 @@ cancellation. Subprocess tests exercise the real executor against deterministic
 CASS-shaped fixtures, including a local hit absent from the limited global query.
 Native installed-CASS and full tmux/assignment integration qualification remain
 separate from these component tests.
+
+Ordinary-send adapter tests exercise the real client, subprocess executor,
+decoder and redaction implementation. They cover indexed evidence, snippet/full
+content precedence, scoped and global policy, partial failures, both output caps,
+disabled/full-window skips, all formatting paths, and the inherited-pipe timeout.

@@ -168,7 +168,7 @@ func sendCASSInjectionInfo(result cass.InjectionResult, query string, hits []cas
 	}
 	now := time.Now()
 	for _, hit := range hits {
-		sessionDate := cass.ExtractSessionDate(hit.SourcePath)
+		sessionDate := hit.SessionDate()
 		ageDays := 0
 		if !sessionDate.IsZero() {
 			ageDays = int(now.Sub(sessionDate).Hours() / 24)

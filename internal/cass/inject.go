@@ -3,8 +3,9 @@ package cass
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -81,11 +82,22 @@ func DefaultCASSConfig() CASSConfig {
 
 // CASSHit represents a single search result from CASS.
 type CASSHit struct {
-	SourcePath string  `json:"source_path"`
-	LineNumber int     `json:"line_number"`
-	Agent      string  `json:"agent"`
-	Content    string  `json:"content,omitempty"`
-	Score      float64 `json:"score,omitempty"`
+	SourcePath string     `json:"source_path"`
+	LineNumber int        `json:"line_number"`
+	Agent      string     `json:"agent"`
+	Content    string     `json:"content,omitempty"`
+	Score      float64    `json:"score,omitempty"`
+	Workspace  string     `json:"workspace,omitempty"`
+	CreatedAt  *time.Time `json:"created_at,omitempty"`
+}
+
+// SessionDate uses indexed evidence when present; filenames are a fallback
+// only for legacy hits. Rendering, ranking, and send receipts share this rule.
+func (h CASSHit) SessionDate() time.Time {
+	if h.CreatedAt != nil && !h.CreatedAt.IsZero() {
+		return *h.CreatedAt
+	}
+	return ExtractSessionDate(h.SourcePath)
 }
 
 // CASSQueryResult holds the results of a CASS query.
@@ -99,21 +111,15 @@ type CASSQueryResult struct {
 	Keywords     []string      `json:"keywords,omitempty"`
 }
 
-// cassSearchResponse matches the JSON structure returned by `cass search --json`.
-type cassSearchResponse struct {
-	Query        string `json:"query"`
-	TotalMatches int    `json:"total_matches"`
-	Hits         []struct {
-		SourcePath string  `json:"source_path"`
-		LineNumber int     `json:"line_number"`
-		Agent      string  `json:"agent"`
-		Content    string  `json:"content,omitempty"`
-		Score      float64 `json:"score,omitempty"`
-	} `json:"hits"`
-}
-
 // QueryCASS queries CASS for relevant historical context based on the prompt.
 func QueryCASS(prompt string, config CASSConfig) CASSQueryResult {
+	return queryCASSContext(prompt, config, "")
+}
+
+// Both ordinary send and robot assignments use Client.SearchContext for
+// candidate retrieval. Do not add another subprocess or reduced wire decoder
+// here: that bypasses output bounds and loses indexed workspace/time evidence.
+func queryCASSContext(prompt string, config CASSConfig, workspace string) CASSQueryResult {
 	start := time.Now()
 	result := CASSQueryResult{
 		Success: false,
@@ -126,7 +132,7 @@ func QueryCASS(prompt string, config CASSConfig) CASSQueryResult {
 		return result
 	}
 
-	keywords := ExtractKeywords(prompt)
+	keywords := ExtractKeywords(redactHitContent(prompt))
 	result.Keywords = keywords
 
 	if len(keywords) == 0 {
@@ -148,64 +154,68 @@ func QueryCASS(prompt string, config CASSConfig) CASSQueryResult {
 		return result
 	}
 
-	args := []string{"search", "--json"}
-	if config.MaxResults > 0 {
-		args = append(args, "--limit", strconv.Itoa(config.MaxResults))
-	}
+	opts := ContextSearchOptions{Query: query, Workspace: workspace, Limit: config.MaxResults, Agents: config.AgentFilter}
 	if config.MaxAgeDays > 0 {
-		args = append(args, fmt.Sprintf("--since=%dd", config.MaxAgeDays))
+		opts.Since = fmt.Sprintf("%dd", config.MaxAgeDays)
 	}
-	for _, agent := range config.AgentFilter {
-		args = append(args, "--agent", agent)
-	}
-	args = append(args, "--", query)
 
 	timeout := config.Timeout
 	if timeout <= 0 {
 		timeout = DefaultCASSTimeout
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, binPath, args...)
-	// A descendant can retain stdout/stderr after the search exits or its
-	// deadline kills it. Bound pipe draining so enrichment releases dispatch.
-	cmd.WaitDelay = time.Second
-	output, err := cmd.Output()
+	client := NewClient(WithExecutor(&DefaultExecutor{BinaryPath: binPath, WaitDelay: time.Second}), WithTimeout(timeout))
+	resp, err := client.SearchContext(context.Background(), opts)
 	result.QueryTime = time.Since(start)
 
 	if err != nil {
-		if ctx.Err() == context.DeadlineExceeded {
+		if errors.Is(err, context.DeadlineExceeded) {
 			result.Error = "cass search timed out after " + timeout.String()
 			return result
 		}
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			if exitErr.ExitCode() == 1 || exitErr.ExitCode() == 3 {
-				// Exit 1: No results found
-				// Exit 3: CASS database uninitialized
-				// Both are graceful empty-result states for context injection
-				result.Success = true
-				return result
-			}
+		if resp != nil && errors.Is(resp.GlobalError, ErrNotInitialized) &&
+			(!resp.WorkspaceQueried || errors.Is(resp.WorkspaceError, ErrNotInitialized)) {
+			// Preserve the optional-enrichment empty-index contract, but make
+			// the reason inspectable instead of disguising it as no matches.
+			result.Success = true
+			result.Error = ErrNotInitialized.Error()
+			return result
 		}
-		result.Error = err.Error()
+		// A child may echo task text or credentials to stderr. Report only
+		// stable failure classes in the send envelope and optional warning.
+		result.Error = "cass context search failed or returned an invalid response"
+		var exitErr *exec.ExitError
+		if errors.Is(err, ErrOutputLimit) {
+			result.Error = ErrOutputLimit.Error()
+		} else if errors.As(err, &exitErr) {
+			result.Error = fmt.Sprintf("cass search exited with code %d", exitErr.ExitCode())
+		}
 		return result
 	}
-
-	var resp cassSearchResponse
-	if err := json.Unmarshal(output, &resp); err != nil {
-		result.Error = "failed to parse CASS response: " + err.Error()
-		return result
+	if reason := resp.Degradation(); reason != "" {
+		slog.Warn("CASS context retrieval degraded", "reason", reason)
 	}
 
 	result.TotalMatches = resp.TotalMatches
 	for _, hit := range resp.Hits {
-		result.Hits = append(result.Hits, CASSHit{
+		content := hit.Content
+		if strings.TrimSpace(content) == "" {
+			content = hit.Snippet
+		}
+		converted := CASSHit{
 			SourcePath: hit.SourcePath,
-			LineNumber: hit.LineNumber,
 			Agent:      hit.Agent,
-			Content:    hit.Content,
+			Content:    content,
 			Score:      hit.Score,
-		})
+			Workspace:  hit.Workspace,
+		}
+		if hit.LineNumber != nil {
+			converted.LineNumber = *hit.LineNumber
+		}
+		if hit.CreatedAt != nil && !hit.CreatedAt.IsZero() {
+			created := hit.CreatedAt.Time
+			converted.CreatedAt = &created
+		}
+		result.Hits = append(result.Hits, converted)
 	}
 
 	result.Success = true
@@ -436,7 +446,7 @@ func formatMarkdown(hits []ScoredHit) string {
 	b.WriteString(contextFramingNote + "\n\n")
 	for i, hit := range hits {
 		sessionName := ExtractSessionName(hit.SourcePath)
-		age := formatAge(hit.SourcePath)
+		age := formatAge(hit.SourcePath, hit.CreatedAt)
 		relevance := int(hit.ComputedScore * 100)
 		b.WriteString("### Session: " + sessionName + " (" + strconv.Itoa(relevance) + "% match")
 		if age != "" {
@@ -516,8 +526,12 @@ func ExtractSessionName(path string) string {
 	return filename
 }
 
-func formatAge(path string) string {
-	date := ExtractSessionDate(path)
+func formatAge(path string, indexed ...*time.Time) string {
+	hit := CASSHit{SourcePath: path}
+	if len(indexed) > 0 {
+		hit.CreatedAt = indexed[0]
+	}
+	date := hit.SessionDate().UTC()
 	if date.IsZero() {
 		return ""
 	}
@@ -666,7 +680,10 @@ func bestHitScore(hits []CASSHit) float64 {
 }
 
 func sortScoredHits(hits []ScoredHit) {
-	sort.Slice(hits, func(i, j int) bool {
+	sort.SliceStable(hits, func(i, j int) bool {
+		if hits[i].ComputedScore == hits[j].ComputedScore {
+			return hits[i].ScoreDetail.ProjectBonus > hits[j].ScoreDetail.ProjectBonus
+		}
 		return hits[i].ComputedScore > hits[j].ComputedScore
 	})
 }
@@ -722,7 +739,7 @@ func FilterResults(hits []CASSHit, config FilterConfig) FilterResult {
 	best := bestHitScore(hits)
 	var scored []ScoredHit
 	for i, hit := range hits {
-		sessionDate := ExtractSessionDate(hit.SourcePath)
+		sessionDate := hit.SessionDate()
 		if config.MaxAgeDays > 0 && !sessionDate.IsZero() && sessionDate.Before(maxAgeTime) {
 			result.RemovedByAge++
 			continue
@@ -745,7 +762,11 @@ func FilterResults(hits []CASSHit, config FilterConfig) FilterResult {
 			}
 		}
 		if config.PreferSameProject && config.CurrentWorkspace != "" {
-			if isSameProject(hit.SourcePath, config.CurrentWorkspace) {
+			sameProject := isSameProject(hit.SourcePath, config.CurrentWorkspace)
+			if hit.Workspace != "" {
+				sameProject = sameContextWorkspace(hit.Workspace, config.CurrentWorkspace)
+			}
+			if sameProject {
 				breakdown.ProjectBonus = 0.15
 			}
 		}
@@ -803,7 +824,11 @@ func FilterResults(hits []CASSHit, config FilterConfig) FilterResult {
 }
 
 func QueryAndFilterCASS(prompt string, queryConfig CASSConfig, filterConfig FilterConfig) (CASSQueryResult, FilterResult) {
-	queryResult := QueryCASS(prompt, queryConfig)
+	workspace := ""
+	if queryConfig.PreferSameProject && filterConfig.PreferSameProject && sameContextWorkspace(filterConfig.CurrentWorkspace, filterConfig.CurrentWorkspace) {
+		workspace = filterConfig.CurrentWorkspace
+	}
+	queryResult := queryCASSContext(prompt, queryConfig, workspace)
 	if !queryResult.Success || len(queryResult.Hits) == 0 {
 		return queryResult, FilterResult{OriginalCount: 0}
 	}
@@ -826,19 +851,27 @@ func InjectContextFromQuery(prompt string, queryConfig CASSConfig, filterConfig 
 			},
 		}, CASSQueryResult{Success: true, Hits: []CASSHit{}}, FilterResult{}
 	}
+	// Do not search when the current context cannot accept history.
+	if injectConfig.CurrentContextPct > 0 && injectConfig.CurrentContextPct >= injectConfig.SkipThreshold {
+		return InjectContext(prompt, nil, injectConfig), CASSQueryResult{Success: true, Hits: []CASSHit{}}, FilterResult{}
+	}
 	queryResult, filterResult := QueryAndFilterCASS(prompt, queryConfig, filterConfig)
 	if !queryResult.Success {
 		return InjectionResult{
-			Success: false,
-			Error:   "CASS query failed: " + queryResult.Error,
+			Success:        false,
+			ModifiedPrompt: prompt,
+			Error:          "CASS query failed: " + queryResult.Error,
 			Metadata: InjectionMetadata{
 				Enabled: true,
 			},
 		}, queryResult, filterResult
 	}
 	injectResult := InjectContext(prompt, filterResult.Hits, injectConfig)
+	if len(filterResult.Hits) == 0 && queryResult.Error != "" {
+		injectResult.Metadata.SkippedReason = queryResult.Error
+	}
 	injectResult.Metadata.ItemsFound = filterResult.OriginalCount
-	injectResult.Metadata.ItemsFiltered = filterResult.RemovedByScore + filterResult.RemovedByAge
+	injectResult.Metadata.ItemsFiltered = filterResult.RemovedByScore + filterResult.RemovedByAge + filterResult.RemovedByTopic
 	return injectResult, queryResult, filterResult
 }
 
