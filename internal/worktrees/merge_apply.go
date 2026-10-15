@@ -54,6 +54,9 @@ func applyMergePreview(ctx context.Context, plan *MergePreview) error {
 		return err
 	}
 	defer fence.close()
+	if err := fence.requireSettledMerge(); err != nil {
+		return err
+	}
 	// The preview can race another NTM invocation. All mutation checks below
 	// run while owning the repository-wide fence, including the tip recheck.
 	if err := verifyMergeRepository(ctx, plan.TargetPath, plan.SourcePath); err != nil {
@@ -84,6 +87,10 @@ func applyMergePreview(ctx context.Context, plan *MergePreview) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	receipt, err := fence.prepareMerge(plan)
+	if err != nil {
+		return err // Never start Git without a durable pre-execution record.
+	}
 
 	// Pin the semantics used by merge-tree. Inherited branch.mergeOptions can
 	// otherwise turn this into a squash, ours merge, or successful --no-commit.
@@ -102,28 +109,43 @@ func applyMergePreview(ctx context.Context, plan *MergePreview) error {
 		return fmt.Errorf("%w: %w: %s; inspect git status before retrying; no rollback was attempted",
 			ErrMergeOutcomeUnverified, runErr, strings.TrimSpace(string(output)))
 	}
+	commit, err := verifyAppliedMerge(ctx, plan)
+	if err != nil {
+		return err
+	}
+	receipt.State, receipt.Commit = "committed", commit
+	if err := fence.saveMergeRecovery(receipt); err != nil {
+		return errors.Join(ErrMergeOutcomeUnverified, err)
+	}
+	return nil
+}
 
+func verifyAppliedMerge(ctx context.Context, plan *MergePreview) (string, error) {
 	// Exit zero is not sufficient evidence: hooks or another Git writer can
 	// move HEAD or rewrite the index. Only the exact two-parent, planned tree
 	// on the target branch is acknowledged as success. Never auto-reset it.
 	branch, err := worktreeCurrentBranch(ctx, plan.TargetPath)
 	if err != nil || branch != plan.TargetBranch {
-		return errors.Join(ErrMergeOutcomeUnverified, err, errors.New("target branch changed during merge; inspect the checkout"))
+		return "", errors.Join(ErrMergeOutcomeUnverified, err, errors.New("target branch changed during merge; inspect the checkout"))
 	}
-	out, err := gitOutput(ctx, plan.TargetPath, "show", "-s", "--format=%T%x00%P", "HEAD")
+	out, err := gitOutput(ctx, plan.TargetPath, "show", "-s", "--format=%H%x00%T%x00%P", "HEAD")
 	if err != nil {
-		return errors.Join(ErrMergeOutcomeUnverified, err)
+		return "", errors.Join(ErrMergeOutcomeUnverified, err)
 	}
 	parts := strings.Split(strings.TrimSpace(string(out)), "\x00")
-	if len(parts) != 2 || parts[0] != plan.MergeTree || parts[1] != plan.TargetCommit+" "+plan.SourceCommit {
-		return fmt.Errorf("%w: HEAD does not match the preview's tree and parents; inspect before retrying", ErrMergeOutcomeUnverified)
+	if len(parts) != 3 || !isMergeObjectID(parts[0]) || parts[1] != plan.MergeTree || parts[2] != plan.TargetCommit+" "+plan.SourceCommit {
+		return "", fmt.Errorf("%w: HEAD does not match the preview's tree and parents; inspect before retrying", ErrMergeOutcomeUnverified)
 	}
 	blockers, err := mergeCheckoutBlockers(ctx, plan.TargetPath, plan.TargetBranch, "target")
 	if err != nil || len(blockers) > 0 {
-		return errors.Join(ErrMergeOutcomeUnverified, err,
+		return "", errors.Join(ErrMergeOutcomeUnverified, err,
 			fmt.Errorf("target checkout needs inspection after merge: %s", strings.Join(blockers, ", ")))
 	}
-	return nil
+	head, err := mergeCommitAt(ctx, plan.TargetPath, "HEAD")
+	if err != nil || head != parts[0] {
+		return "", errors.Join(ErrMergeOutcomeUnverified, err, errors.New("target moved while verifying the merge"))
+	}
+	return head, nil
 }
 
 // mergeFence serializes NTM merge applications across processes, sessions and
@@ -150,15 +172,10 @@ func acquireMergeFence(ctx context.Context, target string) (*mergeFence, error) 
 	if strings.TrimSpace(target) == "" {
 		return nil, errors.New("merge ownership requires a target directory")
 	}
-	out, err := gitOutput(ctx, target, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	common, err := mergeCommonDirectory(ctx, target)
 	if err != nil {
-		return nil, fmt.Errorf("resolve merge ownership scope: %w", err)
+		return nil, err
 	}
-	common := strings.TrimSpace(string(out))
-	if !filepath.IsAbs(common) || strings.ContainsAny(common, "\x00\r\n") {
-		return nil, errors.New("merge ownership scope must be an absolute Git directory")
-	}
-	common = canonicalisePath(common)
 	path := filepath.Join(common, "ntm-merge.lock")
 	file, err := openMergeFenceFile(path)
 	if err != nil {
@@ -179,6 +196,24 @@ func acquireMergeFence(ctx context.Context, target string) (*mergeFence, error) 
 		return fail(err)
 	}
 	return fence, nil
+}
+
+func mergeCommonDirectory(ctx context.Context, target string) (string, error) {
+	if ctx == nil || strings.TrimSpace(target) == "" {
+		return "", errors.New("merge recovery requires a context and target directory")
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	out, err := gitOutput(ctx, target, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	if err != nil {
+		return "", fmt.Errorf("resolve merge ownership scope: %w", err)
+	}
+	common := strings.TrimSpace(string(out))
+	if !filepath.IsAbs(common) || strings.ContainsAny(common, "\x00\r\n") {
+		return "", errors.New("merge ownership scope must be an absolute Git directory")
+	}
+	return canonicalisePath(common), nil
 }
 
 func verifyMergeFenceFile(file *os.File, path string) error {

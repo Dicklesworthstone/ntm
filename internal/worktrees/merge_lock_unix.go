@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"syscall"
 )
 
@@ -28,6 +29,22 @@ func openMergeFenceFile(path string) (*os.File, error) {
 		return nil, err
 	}
 	return file, nil
+}
+
+func openMergeRecoveryFile(path string) (*os.File, error) {
+	return os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+}
+
+func installMergeRecovery(temp, path string) error {
+	if err := os.Rename(temp, path); err != nil {
+		return err
+	}
+	dir, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
 }
 
 func tryMergeFenceLock(file *os.File) error {

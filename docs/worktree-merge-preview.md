@@ -53,7 +53,7 @@ errors. The engine passes the assessed source commit ID to Git, not its moving
 branch name. It uses a non-fast-forward, two-parent ort merge, overrides inherited
 branch merge options, disables autostash, and verifies the resulting tree and
 parents against the assessment before acknowledging success. Already-merged
-work is a no-op; a retry without stale explicit expectations creates no new commit.
+work is a no-op unless an earlier execution still requires recovery.
 `--json` emits a structured success receipt instead of prose.
 
 Ignored local files need an explicit guard: a real ort merge can replace them
@@ -64,16 +64,67 @@ ignored untracked paths, including ancestor/descendant collisions and Git's
 again at the mutation boundary. Unrelated ignored files and caches do not block
 integration. Normal untracked files are already covered by the clean-checkout gate.
 
-## Recovery and concurrency limits
+## Ownership and durable recovery
 
-The checks do not lock out arbitrary Git processes or editing agents. Stop them
-before integration. In particular, commit expectations are snapshot guards,
-not an atomic checkout-wide transaction or cross-process writer fence.
+Application takes a nonblocking OS lock at `<git-common-dir>/ntm-merge.lock`
+before repeating its mutation checks. All NTM sessions and linked worktrees in
+that repository share this fence through Git execution, hooks, result checking
+and the final receipt save. A competing NTM application fails explicitly; it
+never waits and then applies an outdated plan. The lock file is a permanent
+rendezvous inode and must not be removed while NTM is running.
 
-Git hooks remain active. A failed hook, command error, cancellation, or unexpected
-post-merge tree/parents produces an inspection-required error, not an automatic
-retry. Git may already have prepared the index, written checkout files, or moved
-HEAD. Inspect `git status`, `HEAD`, and `MERGE_HEAD` before deciding how to recover.
-NTM never automatically resets, aborts, stashes, deletes, or rolls back that state.
-Configured merge drivers and hooks are trusted local executables; their own
-side effects are outside the checkout-preservation guarantees of preflight.
+Before starting Git, NTM durably saves `<git-common-dir>/ntm-merge.json` with a
+unique attempt ID, `prepared` state, the complete assessed source/target/tree,
+and timestamps. A successful verified application atomically replaces it with
+`committed` and the verified commit ID. This file retains the last admitted
+attempt, not an unbounded audit history. The next admission may replace a settled
+receipt. A failed temporary write is retained for inspection but never authorizes
+execution. Corrupt, oversized, unsupported or substituted records fail closed.
+
+`prepared` means **outcome unknown**, not "running" or "nothing happened".
+Cancellation, hook failure, worker death or a failed final save leaves that
+barrier in place. Further applications refuse it, and previews report
+`merge_recovery_required`, even when Git ancestry says the work is already merged.
+
+```sh
+ntm worktrees merge-status --json
+# Inspect Git state and stop all editing agents, Git writers and orphaned hooks.
+ntm worktrees merge-recover <attempt_id> --json
+```
+
+Both commands accept `--session <session>` to resolve the repository. Status
+reads without taking the writer lock and is usable during a live merge. Recovery
+must run from the recorded target checkout, takes the same fence, and is bound
+to the inspected attempt ID. It never reruns a merge. It records `recovered` only
+when the clean target HEAD is the exact two-parent commit with the assessed tree.
+Re-running recovery for the same settled attempt is a no-op.
+
+When the target still identifies its original pre-merge commit and is clean with
+no pending Git operation, completion cannot be proved. After investigating the
+attempt and stopping writers, the operator can explicitly settle it as abandoned:
+
+```sh
+ntm worktrees merge-recover <attempt_id> --abandon --json
+```
+
+Abandonment changes only the receipt; it does not abort, reset, stash, delete or
+repair Git state. A dirty, moved, wrong-branch or otherwise ambiguous target is
+refused. A stale attempt ID cannot acknowledge a newer merge. Hook effects
+outside the checkout are not undone or proven absent by abandonment.
+
+## Concurrency and qualification limits
+
+Independent Git processes and editing agents do not participate in this advisory
+fence. Stop them before integration or recovery. In particular, a surviving Git
+child or hook after its NTM parent dies must be stopped or allowed to finish
+before an explicit recovery decision. Snapshot checks and receipt reconciliation
+are not an atomic transaction against arbitrary external writers.
+
+Git hooks remain active. Execution errors retain Git's recovery state for
+inspection. NTM never automatically resets, aborts, stashes, deletes or rolls back
+that state. Configured merge drivers and hooks are trusted local executables;
+their own side effects are outside checkout-preservation guarantees.
+
+The ownership and recovery regression suite uses real Git repositories and
+independent test processes. Selected-source Linux component tests are distinct
+from full-repository, CLI and native Windows qualification.

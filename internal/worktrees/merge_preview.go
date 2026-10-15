@@ -152,6 +152,15 @@ func (m *WorktreeManager) PreviewMerge(ctx context.Context, agentName string) (*
 	if err := verifyMergeSnapshot(ctx, plan); err != nil {
 		return nil, err
 	}
+	// A prior execution may have finished Git without publishing its final
+	// receipt. Even an already-merged no-op must not silently clear that gap.
+	recovery, err := m.InspectMerge(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("inspect previous merge outcome: %w", err)
+	}
+	if recovery != nil && recovery.State == "prepared" {
+		plan.Blockers = append(plan.Blockers, "merge_recovery_required")
+	}
 	plan.CanMerge = len(plan.Blockers) == 0
 	return plan, nil
 }

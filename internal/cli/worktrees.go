@@ -25,6 +25,8 @@ directory with its own branch.`,
 	cmd.AddCommand(
 		newWorktreesListCmd(),
 		newWorktreesMergeCmd(),
+		newWorktreesMergeStatusCmd(),
+		newWorktreesMergeRecoverCmd(),
 		newWorktreesCleanCmd(),
 		newWorktreesRemoveCmd(),
 	)
@@ -370,4 +372,79 @@ func resolveWorktreeScope(ctx context.Context, session string) (string, string, 
 		return "", "", err
 	}
 	return projectDir, session, nil
+}
+
+func newWorktreesMergeStatusCmd() *cobra.Command {
+	var sessionName string
+	cmd := &cobra.Command{
+		Use: "merge-status", Short: "Inspect the last durable merge attempt in this repository",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			dir, session, err := resolveWorktreeScope(cmd.Context(), sessionName)
+			if err != nil {
+				return err
+			}
+			record, err := worktrees.NewManager(dir, session).InspectMerge(cmd.Context())
+			if err != nil {
+				return err
+			}
+			return printWorktreesMergeRecovery(cmd, record)
+		},
+	}
+	cmd.Flags().StringVar(&sessionName, "session", "", "Resolve the merge repository from this session")
+	return cmd
+}
+
+func newWorktreesMergeRecoverCmd() *cobra.Command {
+	var sessionName string
+	var abandon bool
+	cmd := &cobra.Command{
+		Use: "merge-recover <attempt-id>", Short: "Reconcile an interrupted merge without replaying it",
+		Long: `Stop all Git writers, editing agents and orphaned hooks before recovery.
+Read the attempt ID and pinned source/target/tree with worktrees merge-status.
+
+Recovery acknowledges only an exact two-parent merge with the expected tree
+on the recorded, clean target checkout. It never runs another merge or resets,
+aborts, stashes, commits, deletes or rolls back Git state.
+
+Use --abandon only after inspecting and resolving the interrupted attempt.
+It clears the barrier only when the target is clean, has no pending Git operation
+and still identifies the original pre-merge commit. Abandonment does not prove
+that hooks had no external effects. A changed attempt ID is always refused.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			dir, session, err := resolveWorktreeScope(cmd.Context(), sessionName)
+			if err != nil {
+				return err
+			}
+			record, err := worktrees.NewManager(dir, session).RecoverMerge(cmd.Context(), args[0], abandon)
+			if err != nil {
+				return err
+			}
+			return printWorktreesMergeRecovery(cmd, record)
+		},
+	}
+	cmd.Flags().StringVar(&sessionName, "session", "", "Resolve the merge repository from this session")
+	cmd.Flags().BoolVar(&abandon, "abandon", false, "Explicitly settle the inspected attempt only if its target remains unchanged and clean")
+	return cmd
+}
+
+func printWorktreesMergeRecovery(cmd *cobra.Command, record *worktrees.MergeRecovery) error {
+	if IsJSONOutput() {
+		return output.PrintJSON(map[string]interface{}{"recovery": record})
+	}
+	if record == nil {
+		cmd.Println("No recorded merge attempt in this repository.")
+		return nil
+	}
+	cmd.Printf("Attempt: %s\nState: %s\nSession: %s\nAgent: %s\nTarget checkout: %s\nSource: %s\nTarget before merge: %s\nPlanned tree: %s\n",
+		record.AttemptID, record.State, record.Plan.SessionID, record.Plan.AgentName,
+		record.Plan.TargetPath, record.Plan.SourceCommit, record.Plan.TargetCommit, record.Plan.MergeTree)
+	if record.Commit != "" {
+		cmd.Printf("Verified commit: %s\n", record.Commit)
+	}
+	if record.State == "prepared" {
+		cmd.Println("Outcome unknown. Inspect Git state and stop writers before merge-recover; no work will be replayed.")
+	}
+	return nil
 }

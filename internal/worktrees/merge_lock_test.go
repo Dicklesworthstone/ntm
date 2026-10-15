@@ -89,6 +89,11 @@ func TestMergeFenceChild(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer fence.close()
+	if mode == "prepare" {
+		if _, err := fence.prepareMerge(&plan); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if err := os.WriteFile(path+".ready", []byte("locked"), 0o600); err != nil {
 		t.Fatal(err)
 	}
