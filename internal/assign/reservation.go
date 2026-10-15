@@ -671,44 +671,6 @@ func recordGrantedReservation(result *FileReservationResult, granted agentmail.F
 	}
 }
 
-// ReleaseForBead releases all reservations held by an agent for a bead.
-func (m *FileReservationManager) ReleaseForBead(ctx context.Context, agentName string, reservationIDs []int) error {
-	if m.client == nil || len(reservationIDs) == 0 {
-		return nil
-	}
-
-	releaseResult, err := m.client.ReleaseReservations(ctx, m.projectKey, agentName, nil, reservationIDs)
-	if err != nil {
-		return err
-	}
-	if releaseResult == nil {
-		return fmt.Errorf("release returned no result")
-	}
-	if releaseResult.Released < len(reservationIDs) {
-		return fmt.Errorf("released %d of %d reservations", releaseResult.Released, len(reservationIDs))
-	}
-	return nil
-}
-
-// ReleaseByPaths releases reservations by path patterns.
-func (m *FileReservationManager) ReleaseByPaths(ctx context.Context, agentName string, paths []string) error {
-	if m.client == nil || len(paths) == 0 {
-		return nil
-	}
-
-	releaseResult, err := m.client.ReleaseReservations(ctx, m.projectKey, agentName, paths, nil)
-	if err != nil {
-		return err
-	}
-	if releaseResult == nil {
-		return fmt.Errorf("release returned no result")
-	}
-	if releaseResult.Released == 0 {
-		return fmt.Errorf("released 0 reservations for %d path patterns", len(paths))
-	}
-	return nil
-}
-
 // ReleaseExactForBead releases active leases only after a durable assignment
 // barrier prevents a newer generation for the same bead. Paths are used to
 // recover a unique exact-binding lease whose Agent Mail ID drifted; ambiguous
@@ -893,27 +855,4 @@ func mapKeysSorted(values map[string]struct{}) []string {
 	}
 	sort.Strings(result)
 	return result
-}
-
-// RenewReservations extends the TTL for an agent's reservations.
-func (m *FileReservationManager) RenewReservations(ctx context.Context, agentName string, extendSeconds int) error {
-	if m.client == nil {
-		return nil
-	}
-
-	renewResult, err := m.client.RenewReservations(ctx, agentmail.RenewReservationsOptions{
-		ProjectKey:    m.projectKey,
-		AgentName:     agentName,
-		ExtendSeconds: extendSeconds,
-	})
-	if err != nil {
-		return err
-	}
-	if renewResult == nil {
-		return fmt.Errorf("renew returned no result")
-	}
-	if renewResult.Renewed == 0 {
-		return fmt.Errorf("renewed 0 reservations")
-	}
-	return nil
 }

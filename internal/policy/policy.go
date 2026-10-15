@@ -179,15 +179,6 @@ func DefaultPolicy() *Policy {
 	return p
 }
 
-// ToYAML returns the policy serialized as YAML.
-func (p *Policy) ToYAML() (string, error) {
-	data, err := yaml.Marshal(p)
-	if err != nil {
-		return "", err
-	}
-	return string(data), nil
-}
-
 // compile compiles all regex patterns in the policy.
 // compile compiles every regex pattern in the policy, attempting each
 // rule even when earlier rules fail. Failures are joined via
@@ -282,18 +273,6 @@ func (p *Policy) Check(command string) *Match {
 	return nil
 }
 
-// IsBlocked returns true if the command matches a blocked pattern.
-func (p *Policy) IsBlocked(command string) bool {
-	match := p.Check(command)
-	return match != nil && match.Action == ActionBlock
-}
-
-// NeedsApproval returns true if the command requires approval.
-func (p *Policy) NeedsApproval(command string) bool {
-	match := p.Check(command)
-	return match != nil && match.Action == ActionApprove
-}
-
 // Stats returns counts of rules by type.
 func (p *Policy) Stats() (blocked, approval, allowed int) {
 	return len(p.Blocked), len(p.ApprovalRequired), len(p.Allowed)
@@ -303,18 +282,6 @@ func (p *Policy) Stats() (blocked, approval, allowed int) {
 func (p *Policy) NeedsSLBApproval(action string) bool {
 	match := p.Check(action)
 	return match != nil && match.Action == ActionApprove && match.SLB
-}
-
-// AutomationEnabled checks if a specific automation feature is enabled.
-func (p *Policy) AutomationEnabled(feature string) bool {
-	switch feature {
-	case "auto_push":
-		return p.Automation.AutoPush
-	case "auto_commit":
-		return p.Automation.AutoCommit
-	default:
-		return false
-	}
 }
 
 // ForceReleasePolicy returns the force release policy: "never", "approval", or "auto".

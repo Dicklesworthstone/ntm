@@ -28,9 +28,6 @@ internal/agentmail/tools.go:Client.PrepareThread	bd-ld4j2	reachable only through
 internal/agentmail/tools.go:Client.StartSession	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/agentsession/discover.go:Discoverer.Discover	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/alerts/types.go:Alert.IsResolved	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
-internal/assign/reservation.go:FileReservationManager.ReleaseByPaths	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
-internal/assign/reservation.go:FileReservationManager.ReleaseForBead	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
-internal/assign/reservation.go:FileReservationManager.RenewReservations	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/assignment/store.go:AssignmentStore.Assign	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/assignment/store.go:AssignmentStore.Clear	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/assignment/store.go:AssignmentStore.MarkCompleted	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
@@ -180,10 +177,6 @@ internal/pipeline/executor.go:Executor.SetNotifier	bd-ld4j2	reachable only throu
 internal/pipeline/executor.go:Executor.SetTmuxClient	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/pipeline/schema.go:ParallelSpec.Len	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/pipeline/state_resume.go:Executor.ResumeWithOptions	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
-internal/policy/policy.go:Policy.AutomationEnabled	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
-internal/policy/policy.go:Policy.IsBlocked	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
-internal/policy/policy.go:Policy.NeedsApproval	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
-internal/policy/policy.go:Policy.ToYAML	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/quota/quota.go:QuotaInfo.Health	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/quota/quota.go:QuotaInfo.IsHealthy	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/quota/quota.go:QuotaInfo.IsStale	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it

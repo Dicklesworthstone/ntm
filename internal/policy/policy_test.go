@@ -57,8 +57,8 @@ func TestCheck_Blocked(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := p.IsBlocked(tc.command); got != tc.blocked {
-				t.Errorf("IsBlocked(%q) = %v, want %v", tc.command, got, tc.blocked)
+			if got := checkAction(p, tc.command) == ActionBlock; got != tc.blocked {
+				t.Errorf("Check(%q) blocks = %v, want %v", tc.command, got, tc.blocked)
 			}
 		})
 	}
@@ -83,8 +83,8 @@ func TestCheck_ApprovalRequired(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := p.NeedsApproval(tc.command); got != tc.approval {
-				t.Errorf("NeedsApproval(%q) = %v, want %v", tc.command, got, tc.approval)
+			if got := checkAction(p, tc.command) == ActionApprove; got != tc.approval {
+				t.Errorf("Check(%q) needs approval = %v, want %v", tc.command, got, tc.approval)
 			}
 		})
 	}
@@ -154,20 +154,6 @@ func TestAutomationConfig(t *testing.T) {
 	}
 	if p.Automation.ForceRelease != "approval" {
 		t.Errorf("expected ForceRelease to be 'approval', got %q", p.Automation.ForceRelease)
-	}
-}
-
-func TestAutomationEnabled(t *testing.T) {
-	p := DefaultPolicy()
-
-	if !p.AutomationEnabled("auto_commit") {
-		t.Error("expected auto_commit to be enabled")
-	}
-	if p.AutomationEnabled("auto_push") {
-		t.Error("expected auto_push to be disabled")
-	}
-	if p.AutomationEnabled("unknown_feature") {
-		t.Error("expected unknown feature to be disabled")
 	}
 }
 
@@ -846,4 +832,12 @@ func chdir(t *testing.T, dir string) {
 		t.Fatalf("chdir: %v", err)
 	}
 	t.Cleanup(func() { _ = os.Chdir(prev) })
+}
+
+// checkAction is what Check decides for command ("" when no rule matches).
+func checkAction(p *Policy, command string) Action {
+	if m := p.Check(command); m != nil {
+		return m.Action
+	}
+	return ""
 }

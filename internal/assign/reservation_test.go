@@ -386,69 +386,6 @@ func TestCollectGrantedReservationsValidatesDispatchAuthority(t *testing.T) {
 	}
 }
 
-func TestReleaseForBeadNoClient(t *testing.T) {
-	m := NewFileReservationManager(nil, "/test/project")
-
-	// Should succeed silently with no client
-	err := m.ReleaseForBead(nil, "TestAgent", []int{1, 2, 3})
-	if err != nil {
-		t.Errorf("unexpected error: %v", err)
-	}
-}
-
-func TestReleaseForBeadNoIDs(t *testing.T) {
-	m := NewFileReservationManager(nil, "/test/project")
-
-	// Should succeed silently with no IDs
-	err := m.ReleaseForBead(nil, "TestAgent", nil)
-	if err != nil {
-		t.Errorf("unexpected error: %v", err)
-	}
-}
-
-func TestReleaseByPathsNoClient(t *testing.T) {
-	m := NewFileReservationManager(nil, "/test/project")
-
-	err := m.ReleaseByPaths(nil, "TestAgent", []string{"src/api/handler.go"})
-	if err != nil {
-		t.Errorf("unexpected error: %v", err)
-	}
-}
-
-func TestReleaseForBeadIncompleteRelease(t *testing.T) {
-	server := newAssignMCPServer(t, map[string]assignToolHandler{
-		"release_file_reservations": func(args map[string]interface{}) (interface{}, *agentmail.JSONRPCError) {
-			return agentmail.ReleaseReservationsResult{Released: 0}, nil
-		},
-	})
-	defer server.Close()
-
-	client := agentmail.NewClient(agentmail.WithBaseURL(server.URL + "/"))
-	m := NewFileReservationManager(client, "/test/project")
-
-	err := m.ReleaseForBead(nil, "TestAgent", []int{1, 2, 3})
-	if err == nil {
-		t.Fatal("expected incomplete release to return an error")
-	}
-}
-
-func TestReleaseByPathsZeroRelease(t *testing.T) {
-	server := newAssignMCPServer(t, map[string]assignToolHandler{
-		"release_file_reservations": func(args map[string]interface{}) (interface{}, *agentmail.JSONRPCError) {
-			return agentmail.ReleaseReservationsResult{Released: 0}, nil
-		},
-	})
-	defer server.Close()
-
-	client := agentmail.NewClient(agentmail.WithBaseURL(server.URL + "/"))
-	m := NewFileReservationManager(client, "/test/project")
-
-	err := m.ReleaseByPaths(nil, "TestAgent", []string{"src/api/handler.go"})
-	if err == nil {
-		t.Fatal("expected zero-count path release to return an error")
-	}
-}
-
 func newReservationReconcileManager(t *testing.T, reservations []agentmail.FileReservation) *FileReservationManager {
 	t.Helper()
 	server := newAssignMCPServer(t, map[string]assignToolHandler{
@@ -764,32 +701,6 @@ func TestReconcileForBeadRequiresOriginalRequestedPaths(t *testing.T) {
 	result, err := manager.ReconcileForBead(t.Context(), "bd-1", "AgentOne", []string{"", "  "})
 	if err == nil || result == nil || result.Error == "" {
 		t.Fatalf("ReconcileForBead() empty paths result=%+v error=%v", result, err)
-	}
-}
-
-func TestRenewReservationsNoClient(t *testing.T) {
-	m := NewFileReservationManager(nil, "/test/project")
-
-	err := m.RenewReservations(nil, "TestAgent", 3600)
-	if err != nil {
-		t.Errorf("unexpected error: %v", err)
-	}
-}
-
-func TestRenewReservationsZeroRenewed(t *testing.T) {
-	server := newAssignMCPServer(t, map[string]assignToolHandler{
-		"renew_file_reservations": func(args map[string]interface{}) (interface{}, *agentmail.JSONRPCError) {
-			return agentmail.RenewReservationsResult{Renewed: 0}, nil
-		},
-	})
-	defer server.Close()
-
-	client := agentmail.NewClient(agentmail.WithBaseURL(server.URL + "/"))
-	m := NewFileReservationManager(client, "/test/project")
-
-	err := m.RenewReservations(nil, "TestAgent", 3600)
-	if err == nil {
-		t.Fatal("expected zero-count renew to return an error")
 	}
 }
 
