@@ -733,7 +733,7 @@ func TestCleanup_DoesNotRemoveOtherSessionWorktrees(t *testing.T) {
 		t.Fatalf("beta ListWorktrees after alpha cleanup: %v", err)
 	}
 	if len(betaWorktrees) != 1 {
-		t.Fatalf("expected beta worktree to survive alpha cleanup, got %d entries", len(betaWorktrees))
+		t.Fatalf("expected beta worktree to survive alpha cleanup, got %d", len(betaWorktrees))
 	}
 }
 
@@ -945,27 +945,22 @@ func TestRemoveWorktree_NonExistent(t *testing.T) {
 }
 
 func TestRemoveWorktreeReportsFailedBranchDeletion(t *testing.T) {
-	fakeBin := t.TempDir()
-	script := `#!/bin/sh
-case "$1 $2" in
-  "worktree remove") exit 0 ;;
-  "branch -D") echo "branch deletion refused" >&2; exit 1 ;;
-  "show-ref --verify") exit 0 ;;
-  *) echo "unexpected git invocation: $*" >&2; exit 99 ;;
-esac
-`
-	if err := os.WriteFile(filepath.Join(fakeBin, "git"), []byte(script), 0o700); err != nil {
-		t.Fatalf("write fake git: %v", err)
-	}
-	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
-
-	err := NewManager(t.TempDir(), "test-sess").RemoveWorktree(t.Context(), "agent-1")
+	manager, info := removalFixture(t)
+	removalWrapper(t, `if [ "$1 $2" = "branch -D" ]; then
+  echo "branch deletion refused" >&2
+  exit 1
+fi`)
+	err := manager.RemoveWorktree(context.Background(), info.AgentName)
 	if err == nil {
 		t.Fatal("RemoveWorktree() succeeded after branch deletion failed")
 	}
-	if !strings.Contains(err.Error(), "delete worktree branch ntm/test-sess/agent-1") {
+	if !strings.Contains(err.Error(), "delete worktree branch "+info.BranchName) {
 		t.Fatalf("RemoveWorktree() error = %v, want branch deletion failure", err)
 	}
+	if _, err := os.Lstat(info.Path); !os.IsNotExist(err) {
+		t.Fatalf("test did not reach branch cleanup after real checkout removal: %v", err)
+	}
+	removalGit(t, manager.projectPath, "show-ref", "--verify", "refs/heads/"+info.BranchName)
 }
 
 func TestRemoveWorktree_RejectsUnsafeAgentNameWithoutDeletingSiblingPath(t *testing.T) {
@@ -990,7 +985,7 @@ func TestRemoveWorktree_RejectsUnsafeAgentNameWithoutDeletingSiblingPath(t *test
 func TestRemoveWorktreeRefusesFallbackForUnregisteredDirectory(t *testing.T) {
 	t.Parallel()
 
-	projectDir := t.TempDir() // Intentionally not a Git repository.
+	projectDir := setupWorktreeGitRepo(t) // Directory below is not a registered worktree.
 	manager := NewManager(projectDir, "test-session")
 	worktreePath := manager.worktreePath("agent-1")
 	if err := os.MkdirAll(worktreePath, 0o755); err != nil {
@@ -1001,7 +996,7 @@ func TestRemoveWorktreeRefusesFallbackForUnregisteredDirectory(t *testing.T) {
 		t.Fatalf("write marker: %v", err)
 	}
 
-	err := manager.RemoveWorktree(t.Context(), "agent-1")
+	err := manager.RemoveWorktree(context.Background(), "agent-1")
 	if err == nil || !strings.Contains(err.Error(), "refusing filesystem cleanup for unregistered worktree") {
 		t.Fatalf("RemoveWorktree() error = %v, want unregistered-worktree rejection", err)
 	}

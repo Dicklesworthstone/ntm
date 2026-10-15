@@ -454,8 +454,8 @@ func (m *WorktreeManager) MergeBack(ctx context.Context, agentName string, expec
 // RemovalRisk summarizes the work that removing a worktree would destroy.
 //
 // RemoveWorktree runs `git worktree remove --force` followed by `git branch -D`,
-// so git refuses nothing on the operator's behalf: the force flag overrides the
-// dirty-tree check, and -D overrides the merged check. Callers that can prompt
+// so the force flag overrides the dirty-tree check, and -D overrides the merged
+// check. Git's other refusals remain binding. Callers that can prompt
 // should assess first and say what is about to be lost.
 type RemovalRisk struct {
 	// UncommittedFiles counts modified, staged, and untracked paths in the
@@ -521,13 +521,19 @@ func (m *WorktreeManager) AssessRemovalRisk(ctx context.Context, agentName strin
 	return risk, nil
 }
 
-// RemoveWorktree removes a specific agent's worktree. A Git refusal is final:
-// never substitute filesystem deletion or delete its branch after a failure.
-func (m *WorktreeManager) RemoveWorktree(ctx context.Context, agentName string) error {
+// removeWorktree runs under the repository fence held by RemoveWorktree or
+// Cleanup. A Git refusal never authorizes filesystem fallback or branch cleanup.
+func (m *WorktreeManager) removeWorktree(ctx context.Context, agentName string, fence *mergeFence) error {
 	if ctx == nil {
 		return errors.New("remove worktree requires a context")
 	}
 	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if fence == nil {
+		return errors.New("worktree removal requires repository ownership")
+	}
+	if err := fence.requireSettledMerge(); err != nil {
 		return err
 	}
 	info, err := m.buildWorktreeInfo(agentName)
@@ -536,46 +542,16 @@ func (m *WorktreeManager) RemoveWorktree(ctx context.Context, agentName string) 
 	}
 	worktreePath := info.Path
 	branchName := info.BranchName
+	present, tip, err := m.inspectRemoval(ctx, info, fence)
+	if err != nil || !present {
+		return err
+	}
 
 	// Remove the worktree
 	output, err := gitCombinedOutput(ctx, m.projectPath, "worktree", "remove", worktreePath, "--force")
 	if err != nil {
 		if ctx.Err() != nil {
 			return fmt.Errorf("remove worktree %s canceled: %w", agentName, ctx.Err())
-		}
-		if _, statErr := os.Lstat(worktreePath); statErr == nil {
-			// Do not treat every failed git invocation as proof that this path is a
-			// stale worktree. For example, an invalid repository or a missing git
-			// binary also lands here. Removing an unregistered directory in those
-			// cases would recursively delete data that merely happened to use the
-			// expected agent path.
-			valid, validErr := m.isValidWorktree(ctx, worktreePath)
-			if validErr != nil {
-				return fmt.Errorf("inspect worktree %s after git removal failed: %w", agentName, validErr)
-			}
-			if !valid {
-				return fmt.Errorf("refusing filesystem cleanup for unregistered worktree %s after git removal failed: %w", agentName, err)
-			}
-
-		} else if errors.Is(statErr, os.ErrNotExist) {
-			// An absent checkout is not permission to delete an orphaned branch.
-			// Only a fully absent checkout, branch AND registration is a no-op.
-			refErr := gitRun(ctx, m.projectPath, "show-ref", "--verify", "--quiet", "refs/heads/"+branchName)
-			if ctx.Err() != nil {
-				return fmt.Errorf("remove worktree %s canceled: %w", agentName, ctx.Err())
-			}
-			var exitErr *exec.ExitError
-			if errors.As(refErr, &exitErr) && exitErr.ExitCode() == 1 {
-				listed, listErr := gitOutput(ctx, m.projectPath, "worktree", "list", "--porcelain")
-				if listErr != nil {
-					return fmt.Errorf("verify absent worktree %s: %w", agentName, listErr)
-				}
-				if !worktreeListed(listed, worktreePath) {
-					return nil
-				}
-			}
-		} else {
-			return fmt.Errorf("inspect worktree path %s after git removal failed: %w", worktreePath, statErr)
 		}
 		return fmt.Errorf("git refused removal of worktree %s: %w: %s; no filesystem fallback or branch deletion was attempted",
 			agentName, err, strings.TrimSpace(string(output)))
@@ -588,6 +564,20 @@ func (m *WorktreeManager) RemoveWorktree(ctx context.Context, agentName string) 
 			return fmt.Errorf("verify removed worktree %s: %w", agentName, statErr)
 		}
 		return fmt.Errorf("worktree %s remains after git reported successful removal; branch retained", agentName)
+	}
+
+	// Preserve work committed while Git was removing the checkout. Independent
+	// Git writers do not honor NTM's fence, so operators must still stop them.
+	current, err := mergeCommitAt(ctx, m.projectPath, "refs/heads/"+branchName)
+	if err != nil || current != tip {
+		return errors.Join(err, fmt.Errorf("worktree branch %s changed during removal; branch retained for inspection", branchName))
+	}
+	if err := fence.requireSettledMerge(); err != nil {
+		return err
+	}
+	registered, err := m.removalRegistered(ctx, worktreePath)
+	if err != nil || registered {
+		return errors.Join(err, fmt.Errorf("worktree %s registration remains after removal; branch retained", agentName))
 	}
 
 	// Delete the branch. A missing branch is harmless because removal is
@@ -610,12 +600,24 @@ func (m *WorktreeManager) RemoveWorktree(ctx context.Context, agentName string) 
 			return fmt.Errorf("verify worktree branch %s after failed deletion: %w", branchName, refErr)
 		}
 	}
+	refErr := gitRun(ctx, m.projectPath, "show-ref", "--verify", "--quiet", "refs/heads/"+branchName)
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(refErr, &exitErr) || exitErr.ExitCode() != 1 {
+		return errors.Join(refErr, fmt.Errorf("worktree branch %s deletion is unverified; inspect before retrying", branchName))
+	}
 
 	return nil
 }
 
 // Cleanup removes all worktrees for the current session.
 func (m *WorktreeManager) Cleanup(ctx context.Context) error {
+	m, err := m.removalScope()
+	if err != nil {
+		return err
+	}
 	worktrees, err := m.ListWorktrees(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to list worktrees for cleanup: %w", err)
@@ -625,16 +627,29 @@ func (m *WorktreeManager) Cleanup(ctx context.Context) error {
 		return err
 	}
 
-	var errors []string
+	// One fence spans the complete batch, including directory cleanup. Do not
+	// drop ownership between agents or reacquire it inside removeWorktree.
+	var fence *mergeFence
+	if len(worktrees) > 0 {
+		fence, err = acquireMergeFence(ctx, m.projectPath)
+		if err != nil {
+			return fmt.Errorf("cleanup errors: %w", err)
+		}
+		defer fence.close()
+		if err := fence.requireSettledMerge(); err != nil {
+			return fmt.Errorf("cleanup errors: %w", err)
+		}
+	}
+	var failures []error
 	for _, wt := range worktrees {
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("cleanup canceled before removing worktree %s: %w", wt.AgentName, err)
 		}
-		if err := m.RemoveWorktree(ctx, wt.AgentName); err != nil {
+		if err := m.removeWorktree(ctx, wt.AgentName, fence); err != nil {
 			if ctx.Err() != nil {
 				return fmt.Errorf("cleanup canceled while removing worktree %s: %w", wt.AgentName, ctx.Err())
 			}
-			errors = append(errors, fmt.Sprintf("failed to remove worktree %s: %v", wt.AgentName, err))
+			failures = append(failures, fmt.Errorf("failed to remove worktree %s: %w", wt.AgentName, err))
 		}
 	}
 	if err := ctx.Err(); err != nil {
@@ -651,8 +666,8 @@ func (m *WorktreeManager) Cleanup(ctx context.Context) error {
 		_ = os.Remove(worktreesDir) // Ignore error for optional cleanup
 	}
 
-	if len(errors) > 0 {
-		return fmt.Errorf("cleanup errors: %s", strings.Join(errors, "; "))
+	if len(failures) > 0 {
+		return fmt.Errorf("cleanup errors: %w", errors.Join(failures...))
 	}
 
 	return nil
