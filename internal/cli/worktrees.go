@@ -83,6 +83,8 @@ func newWorktreesListCmd() *cobra.Command {
 
 func newWorktreesMergeCmd() *cobra.Command {
 	var force bool
+	var dryRun bool
+	var sessionName string
 
 	cmd := &cobra.Command{
 		Use:   "merge <agent-name>",
@@ -90,16 +92,39 @@ func newWorktreesMergeCmd() *cobra.Command {
 		Long: `Merge changes from an agent's worktree branch back to the main branch.
 
 This will switch to the main branch and merge the agent's branch using
-a non-fast-forward merge to preserve the merge history.`,
+a non-fast-forward merge to preserve the merge history.
+
+Use --dry-run to evaluate the real three-way merge without changing either
+checkout or index. The preview reports source/target commit IDs, conflicting
+paths, and blockers. In JSON mode inspect can_merge; a successful preview is
+an assessment, not confirmation that work was merged. Git 2.38+ is required.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			agentName := args[0]
-			dir, session, err := resolveWorktreeScope(cmd.Context(), "")
+			dir, session, err := resolveWorktreeScope(cmd.Context(), sessionName)
 			if err != nil {
 				return err
 			}
 
 			manager := worktrees.NewManager(dir, session)
+			if dryRun {
+				plan, err := manager.PreviewMerge(cmd.Context(), agentName)
+				if err != nil {
+					return fmt.Errorf("failed to preview merge: %w", err)
+				}
+				if IsJSONOutput() {
+					return output.PrintJSON(plan)
+				}
+				cmd.Printf("Merge preview: %s -> %s\nSource: %s\nTarget: %s\nCan merge: %t\nAlready merged: %t\n",
+					plan.SourceBranch, plan.TargetBranch, plan.SourceCommit, plan.TargetCommit, plan.CanMerge, plan.AlreadyMerged)
+				for _, blocker := range plan.Blockers {
+					cmd.Printf("  Blocker: %s\n", blocker)
+				}
+				for _, path := range plan.Conflicts {
+					cmd.Printf("  Conflict: %q\n", path)
+				}
+				return nil
+			}
 
 			// Check if worktree exists
 			info, err := manager.GetWorktreeForAgent(cmd.Context(), agentName)
@@ -126,6 +151,8 @@ a non-fast-forward merge to preserve the merge history.`,
 	}
 
 	cmd.Flags().BoolVar(&force, "force", false, "Force merge even if worktree has errors")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview the merge without changing checkout files, indexes, or branch refs")
+	cmd.Flags().StringVar(&sessionName, "session", "", "Session owning the agent worktree (defaults to current session)")
 	return cmd
 }
 
