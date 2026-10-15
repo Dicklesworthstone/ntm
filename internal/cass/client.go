@@ -1,7 +1,6 @@
 package cass
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -37,16 +36,31 @@ type DefaultExecutor struct {
 }
 
 func (e *DefaultExecutor) Run(ctx context.Context, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, e.BinaryPath, args...)
+	if ctx == nil {
+		return nil, errors.New("cass execution requires a context")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	// Cancel on output overflow as well as caller cancellation. Merely stopping
+	// a pipe reader can leave a subprocess blocked forever writing to that pipe.
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	cmd := exec.CommandContext(runCtx, e.BinaryPath, args...)
 	cmd.WaitDelay = 2 * time.Second
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		// Translate cass's documented "no database yet" exit code
-		// into a typed sentinel so callers can decide whether to
-		// continue (e.g. dedup-check skips) or surface the error.
+	stdout := newLimitedOutput(maxCASSStdoutBytes, cancel)
+	stderr := newLimitedOutput(maxCASSStderrBytes, cancel)
+	cmd.Stdout, cmd.Stderr = stdout, stderr
+	err := cmd.Run()
+	// The operation's lifetime wins over an exit code or a successful JSON
+	// response that raced its cancellation. Never classify that as an empty index.
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	if stdout.exceeded || stderr.exceeded {
+		return nil, ErrOutputLimit
+	}
+	if err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) && exitErr.ExitCode() == cassExitNotInitialized {
 			return nil, ErrNotInitialized
