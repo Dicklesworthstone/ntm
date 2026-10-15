@@ -25,7 +25,8 @@ Cleanup acquires the existing repository-wide merge lock, shared across NTM
 sessions and linked worktrees. It retains ownership through checkout removal,
 branch cleanup, and verification. Nonempty session cleanup holds one lock over
 the whole batch; it does not release ownership between agents. A competing NTM
-merge, recovery, or cleanup receives the existing busy error rather than racing.
+merge, recovery, provisioning, or cleanup receives the existing busy error
+rather than racing.
 
 A prepared or unreadable merge receipt blocks removal before any member of a
 nonempty batch is removed. The receipt is not modified by cleanup. Inspect
@@ -47,10 +48,34 @@ cleanup. Changed tips are retained for inspection. Both checkout absence and
 branch absence must be observed before success. Batch errors retain their
 underlying busy, recovery-required, and cancellation classifications.
 
+## Provisioning participates in ownership
+
+`CreateForAgent`, used by `ntm spawn --worktrees`, now acquires the same
+repository fence before creating directories, invoking Git, or returning an
+existing checkout for reuse. It retains that ownership through final checkout
+validation. A busy repository fails explicitly; a prepared, corrupt, or
+unsupported merge-recovery record also refuses provisioning. No automatic
+retry or recovery is performed, and the recovery record is not changed.
+
+Creation and removal share the directory-substitution check. A symlink below
+the project root cannot redirect provisioning into another directory, while
+an ordinary alias to the project itself remains supported. Reused and newly
+created checkouts must pass the same registration, branch, and common-repository
+identity checks as removal. Matching branch names alone are not sufficient.
+
+Relative project paths are resolved once before Git executes, without changing
+the caller's reusable manager. A failed or canceled Git invocation still reports
+a retained checkout through `Created`; no rollback or deletion is attempted.
+An identity failure after Git creates a checkout likewise reports that partial
+mutation instead of acknowledging a usable checkout.
+
 ## Limits
 
-This lock coordinates these NTM merge and cleanup paths, not arbitrary Git
-commands, editing agents, or every provisioning path. Tip comparisons are
+This lock coordinates these NTM merge, cleanup, and `CreateForAgent` operations,
+not arbitrary Git commands, editing agents, or the separate `internal/git`
+provisioning implementation. It is released when provisioning returns: it is
+not an agent-lifetime lease or a transaction covering the complete spawn/launch
+workflow. Empty-directory housekeeping is unchanged. Tip comparisons are
 snapshot checks, not an atomic compare-and-delete transaction against external
 Git writers. A batch may partially complete when an individual worktree refuses
 removal; failures are reported and the refused checkout is retained. NTM does

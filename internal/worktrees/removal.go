@@ -59,19 +59,8 @@ func (m *WorktreeManager) inspectRemoval(ctx context.Context, info *WorktreeInfo
 	if err != nil || common != fence.common {
 		return false, "", errors.Join(err, errors.New("worktree removal repository changed after acquiring ownership"))
 	}
-	// Permit a symlink to the project itself (e.g. macOS /var), but not a
-	// substituted .ntm, worktrees, session, agent directory, or .git file.
-	for _, path := range []string{filepath.Join(m.projectPath, ".ntm"), m.worktreesRoot(), filepath.Dir(info.Path), info.Path} {
-		entry, err := os.Lstat(path)
-		if errors.Is(err, os.ErrNotExist) {
-			break
-		}
-		if err != nil {
-			return false, "", err
-		}
-		if !entry.IsDir() || entry.Mode()&os.ModeSymlink != 0 {
-			return false, "", fmt.Errorf("refusing removal through non-directory or symlink %s", path)
-		}
+	if err := m.verifyWorktreeDirectories(info); err != nil {
+		return false, "", err
 	}
 	_, statErr := os.Lstat(info.Path)
 	if errors.Is(statErr, os.ErrNotExist) {
@@ -117,6 +106,25 @@ func (m *WorktreeManager) inspectRemoval(ctx context.Context, info *WorktreeInfo
 	}
 	tip, err := mergeCommitAt(ctx, m.projectPath, "refs/heads/"+info.BranchName)
 	return true, tip, err
+}
+
+// verifyWorktreeDirectories is shared by provisioning and removal. An alias
+// to the project itself (e.g. macOS /var) is allowed; substitutions below that
+// boundary must not redirect either a checkout creation or a deletion.
+func (m *WorktreeManager) verifyWorktreeDirectories(info *WorktreeInfo) error {
+	for _, path := range []string{filepath.Join(m.projectPath, ".ntm"), m.worktreesRoot(), filepath.Dir(info.Path), info.Path} {
+		entry, err := os.Lstat(path)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if !entry.IsDir() || entry.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing worktree operation through non-directory or symlink %s", path)
+		}
+	}
+	return nil
 }
 
 // Use Git's NUL-delimited format: quoted or newline-bearing paths must not

@@ -228,8 +228,17 @@ func (m *WorktreeManager) PreflightForAgent(ctx context.Context, agentName strin
 	return nil
 }
 
-// CreateForAgent creates a new worktree for the specified agent
+// CreateForAgent creates or reuses an agent checkout while holding the same
+// repository ownership fence as merge, recovery, and destructive cleanup.
 func (m *WorktreeManager) CreateForAgent(ctx context.Context, agentName string) (*WorktreeInfo, error) {
+	if m == nil || strings.TrimSpace(m.projectPath) == "" {
+		err := errors.New("worktree creation requires a project directory")
+		info := &WorktreeInfo{AgentName: strings.TrimSpace(agentName), Error: err.Error()}
+		if m != nil {
+			info.SessionID = strings.TrimSpace(m.session)
+		}
+		return info, err
+	}
 	if ctx == nil {
 		err := errors.New("worktree creation requires a context")
 		return &WorktreeInfo{AgentName: strings.TrimSpace(agentName), SessionID: strings.TrimSpace(m.session), Error: err.Error()}, err
@@ -238,6 +247,14 @@ func (m *WorktreeManager) CreateForAgent(ctx context.Context, agentName string) 
 		wrapped := fmt.Errorf("worktree creation canceled: %w", err)
 		return &WorktreeInfo{AgentName: strings.TrimSpace(agentName), SessionID: strings.TrimSpace(m.session), Error: wrapped.Error()}, wrapped
 	}
+	// Resolve once without mutating the reusable manager. Passing a relative
+	// worktree path to Git running inside that same relative project otherwise
+	// resolves the project twice and can create the checkout in the wrong place.
+	project, err := filepath.Abs(m.projectPath)
+	if err != nil {
+		return &WorktreeInfo{AgentName: strings.TrimSpace(agentName), SessionID: strings.TrimSpace(m.session), Error: err.Error()}, err
+	}
+	m = NewManager(project, m.session)
 	info, err := m.buildWorktreeInfo(agentName)
 	if err != nil {
 		return &WorktreeInfo{
@@ -247,6 +264,29 @@ func (m *WorktreeManager) CreateForAgent(ctx context.Context, agentName string) 
 		}, err
 	}
 	worktreePath := info.Path
+	fence, err := acquireMergeFence(ctx, m.projectPath)
+	if err != nil {
+		info.Error = fmt.Sprintf("acquire worktree creation ownership: %v", err)
+		return info, fmt.Errorf("acquire worktree creation ownership: %w", err)
+	}
+	defer fence.close()
+	// Neither creation nor reuse may launch an agent into checkout evidence
+	// retained for an unresolved merge. Check before even creating directories.
+	if err := fence.requireSettledMerge(); err != nil {
+		info.Error = err.Error()
+		return info, err
+	}
+	if err := m.verifyWorktreeDirectories(info); err != nil {
+		info.Error = err.Error()
+		return info, err
+	}
+	verifyOwnership := func() error {
+		present, _, err := m.inspectRemoval(ctx, info, fence)
+		if err != nil || !present {
+			return errors.Join(err, errors.New("provisioned worktree ownership could not be verified"))
+		}
+		return nil
+	}
 
 	// Ensure the session-specific worktree directory exists.
 	worktreeDir := filepath.Dir(worktreePath)
@@ -299,6 +339,10 @@ func (m *WorktreeManager) CreateForAgent(ctx context.Context, agentName string) 
 			)
 			return info, errors.New(info.Error)
 		}
+		if err := verifyOwnership(); err != nil {
+			info.Error = err.Error()
+			return info, err
+		}
 		info.Created = false
 		return info, nil
 	} else if !os.IsNotExist(err) {
@@ -343,6 +387,10 @@ func (m *WorktreeManager) CreateForAgent(ctx context.Context, agentName string) 
 	if currentBranch != info.BranchName {
 		info.Error = fmt.Sprintf("created worktree path %s is on branch %q; expected %q", worktreePath, currentBranch, info.BranchName)
 		return info, errors.New(info.Error)
+	}
+	if err := verifyOwnership(); err != nil {
+		info.Error = err.Error()
+		return info, err // Created remains true: retain and report partial mutation.
 	}
 	return info, nil
 }
