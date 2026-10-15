@@ -4,14 +4,18 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
 var (
 	ErrMergeUnsafe            = errors.New("worktree merge refused")
 	ErrMergeOutcomeUnverified = errors.New("worktree merge outcome requires inspection")
+	ErrMergeBusy              = errors.New("another NTM merge owns this repository")
 )
 
 // MergeOptions binds an apply to a previously inspected pair of full commit
@@ -42,6 +46,16 @@ func mergeOptions(expectations []MergeOptions) (MergeOptions, error) {
 // validation. Recheck ownership and checkout state at the mutation boundary;
 // pass the frozen source commit, never the moving agent branch, to Git.
 func applyMergePreview(ctx context.Context, plan *MergePreview) error {
+	if plan == nil {
+		return errors.New("merge application requires a preview")
+	}
+	fence, err := acquireMergeFence(ctx, plan.TargetPath)
+	if err != nil {
+		return err
+	}
+	defer fence.close()
+	// The preview can race another NTM invocation. All mutation checks below
+	// run while owning the repository-wide fence, including the tip recheck.
 	if err := verifyMergeRepository(ctx, plan.TargetPath, plan.SourcePath); err != nil {
 		return err
 	}
@@ -108,6 +122,76 @@ func applyMergePreview(ctx context.Context, plan *MergePreview) error {
 	if err != nil || len(blockers) > 0 {
 		return errors.Join(ErrMergeOutcomeUnverified, err,
 			fmt.Errorf("target checkout needs inspection after merge: %s", strings.Join(blockers, ", ")))
+	}
+	return nil
+}
+
+// mergeFence serializes NTM merge applications across processes, sessions and
+// linked worktrees of one repository. Its inode is permanent: unlinking a lock
+// file would allow different callers to own different inodes at the same path.
+// Independent Git writers do not participate in this advisory protocol.
+type mergeFence struct {
+	file   *os.File
+	common string
+	once   sync.Once
+}
+
+func (f *mergeFence) close() {
+	f.once.Do(func() { _ = f.file.Close() })
+}
+
+func acquireMergeFence(ctx context.Context, target string) (*mergeFence, error) {
+	if ctx == nil {
+		return nil, errors.New("merge ownership requires a context")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(target) == "" {
+		return nil, errors.New("merge ownership requires a target directory")
+	}
+	out, err := gitOutput(ctx, target, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	if err != nil {
+		return nil, fmt.Errorf("resolve merge ownership scope: %w", err)
+	}
+	common := strings.TrimSpace(string(out))
+	if !filepath.IsAbs(common) || strings.ContainsAny(common, "\x00\r\n") {
+		return nil, errors.New("merge ownership scope must be an absolute Git directory")
+	}
+	common = canonicalisePath(common)
+	path := filepath.Join(common, "ntm-merge.lock")
+	file, err := openMergeFenceFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("open merge ownership file: %w", err)
+	}
+	fence := &mergeFence{file: file, common: common}
+	fail := func(err error) (*mergeFence, error) { fence.close(); return nil, err }
+	if err := verifyMergeFenceFile(file, path); err != nil {
+		return fail(err)
+	}
+	if err := tryMergeFenceLock(file); err != nil {
+		return fail(err)
+	}
+	if err := ctx.Err(); err != nil {
+		return fail(err)
+	}
+	if err := verifyMergeFenceFile(file, path); err != nil {
+		return fail(err)
+	}
+	return fence, nil
+}
+
+func verifyMergeFenceFile(file *os.File, path string) error {
+	opened, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	named, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if !opened.Mode().IsRegular() || !named.Mode().IsRegular() || !os.SameFile(opened, named) {
+		return errors.New("merge ownership file is not the same regular file; refusing application")
 	}
 	return nil
 }
