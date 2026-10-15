@@ -50,6 +50,9 @@ func injectPromptContext(
 	opts PromptContextOptions,
 	scopeMemory func(CMInjectConfig) (CMInjectConfig, *CMInjectionInfo),
 ) (string, *CASSInjectionInfo, *CMInjectionInfo) {
+	if ctx == nil || ctx.Err() != nil {
+		return stoppedPromptContext(ctx, message, opts)
+	}
 	payload := message
 
 	var cassInfo *CASSInjectionInfo
@@ -69,11 +72,14 @@ func injectPromptContext(
 		if format != "" {
 			injectConfig.Format = format
 		}
-		injectResult, queryResult, filterResult := InjectContextFromQuery(message, query, queryConfig, filterConfig, injectConfig)
+		injectResult, queryResult, filterResult := InjectContextFromQuery(message, query, queryConfig, filterConfig, injectConfig, ctx)
 		cassInfo = NewCASSInjectionInfo(injectResult, queryResult.Query, filterResult.Hits)
 		if injectResult.Success && injectResult.ModifiedPrompt != "" {
 			payload = injectResult.ModifiedPrompt
 		}
+	}
+	if ctx.Err() != nil {
+		return stoppedPromptContext(ctx, message, opts)
 	}
 
 	var memoryInfo *CMInjectionInfo
@@ -83,11 +89,37 @@ func injectPromptContext(
 			memoryConfig = *opts.MemoryInject
 		}
 		memoryConfig, memoryInfo = scopeMemory(memoryConfig)
+		if ctx.Err() != nil {
+			return stoppedPromptContext(ctx, message, opts)
+		}
 		if memoryInfo == nil {
 			payload, memoryInfo = InjectCMRules(ctx, query, payload, memoryConfig)
 		}
 	}
+	if ctx.Err() != nil {
+		return stoppedPromptContext(ctx, message, opts)
+	}
 	return payload, cassInfo, memoryInfo
+}
+
+// stoppedPromptContext discards partial enrichment rather than reporting rules
+// or history as injected into an operation that stopped during retrieval. The
+// dispatch/assignment owner still decides the operation's terminal outcome from
+// its context; these receipts describe only why enrichment did not run to completion.
+func stoppedPromptContext(ctx context.Context, message string, opts PromptContextOptions) (string, *CASSInjectionInfo, *CMInjectionInfo) {
+	reason := "prompt context requires a non-nil operation context"
+	if ctx != nil && ctx.Err() != nil {
+		reason = "prompt context stopped: " + ctx.Err().Error()
+	}
+	var cassInfo *CASSInjectionInfo
+	if opts.WithCASS {
+		cassInfo = &CASSInjectionInfo{Enabled: true, SkippedReason: reason}
+	}
+	var memoryInfo *CMInjectionInfo
+	if opts.WithMemory {
+		memoryInfo = &CMInjectionInfo{Enabled: true, SkippedReason: reason}
+	}
+	return message, cassInfo, memoryInfo
 }
 
 // AssignmentPrompt is one freshly rendered assignment prompt and the bead and

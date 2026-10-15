@@ -148,12 +148,27 @@ type cassSearchResponse struct {
 
 // QueryCASS queries CASS for relevant historical context based on the prompt.
 // It extracts keywords from the prompt and searches for relevant past sessions.
-func QueryCASS(prompt string, config CASSConfig) CASSQueryResult {
+// A supplied parent bounds the entire lookup by the calling operation's lifetime;
+// standalone queries without a parent retain the configured timeout. At most one
+// non-nil parent is accepted. Contexts are never stored in reusable configuration.
+func QueryCASS(prompt string, config CASSConfig, parent ...context.Context) CASSQueryResult {
 	start := time.Now()
 	result := CASSQueryResult{
 		Success: false,
 		Query:   "",
 		Hits:    []CASSHit{},
+	}
+	ctx := context.Background()
+	if len(parent) > 1 || (len(parent) == 1 && parent[0] == nil) {
+		result.Error = "cass query requires at most one non-nil parent context"
+		return result
+	}
+	if len(parent) == 1 {
+		ctx = parent[0]
+	}
+	if err := ctx.Err(); err != nil {
+		result.Error = "cass search stopped: " + err.Error()
+		return result
 	}
 
 	if !config.Enabled {
@@ -214,12 +229,18 @@ func QueryCASS(prompt string, config CASSConfig) CASSQueryResult {
 	if timeout <= 0 {
 		timeout = DefaultCASSTimeout
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, binPath, args...)
 	cmd.WaitDelay = time.Second
 	output, err := cmd.Output()
 	result.QueryTime = time.Since(start)
+	// Cancellation wins even when the process raced it with successful JSON
+	// or an empty-result exit. Never turn a cancelled lookup into usable data.
+	if len(parent) == 1 && parent[0].Err() != nil {
+		result.Error = "cass search stopped: " + parent[0].Err().Error()
+		return result
+	}
 
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
@@ -645,7 +666,7 @@ type FilterResult struct {
 	RemovedByAge int `json:"removed_by_age"`
 	// RemovedByTopic is how many were removed for excluded topics.
 	RemovedByTopic int `json:"removed_by_topic"`
-	// PromptTopics are the topics detected in the prompt.
+	// PromptTopics are the topics detected from the prompt.
 	PromptTopics []Topic `json:"prompt_topics,omitempty"`
 }
 
@@ -896,8 +917,8 @@ func sortScoredHits(hits []ScoredHit) {
 
 // QueryAndFilterCASS combines QueryCASS and FilterResults in one call.
 // This is a convenience function for the common use case.
-func QueryAndFilterCASS(prompt string, queryConfig CASSConfig, filterConfig FilterConfig) (CASSQueryResult, FilterResult) {
-	queryResult := QueryCASS(prompt, queryConfig)
+func QueryAndFilterCASS(prompt string, queryConfig CASSConfig, filterConfig FilterConfig, parent ...context.Context) (CASSQueryResult, FilterResult) {
+	queryResult := QueryCASS(prompt, queryConfig, parent...)
 
 	if !queryResult.Success || len(queryResult.Hits) == 0 {
 		return queryResult, FilterResult{OriginalCount: 0}
@@ -1347,7 +1368,7 @@ func countInjectedItems(context string, format InjectionFormat) int {
 // labels, and description and enriches the rendered assignment prompt, whose
 // template boilerplate would otherwise crowd the bead's own terms out of the
 // keyword budget.
-func InjectContextFromQuery(prompt, query string, queryConfig CASSConfig, filterConfig FilterConfig, injectConfig InjectConfig) (InjectionResult, CASSQueryResult, FilterResult) {
+func InjectContextFromQuery(prompt, query string, queryConfig CASSConfig, filterConfig FilterConfig, injectConfig InjectConfig, parent ...context.Context) (InjectionResult, CASSQueryResult, FilterResult) {
 	// [cass] enabled=false with an explicit --with-cass degrades to a
 	// recorded skip. Record the honest reason — the query never ran — rather
 	// than the zero-hits path's "no relevant context found".
@@ -1364,7 +1385,7 @@ func InjectContextFromQuery(prompt, query string, queryConfig CASSConfig, filter
 	}
 
 	// Query and filter
-	queryResult, filterResult := QueryAndFilterCASS(query, queryConfig, filterConfig)
+	queryResult, filterResult := QueryAndFilterCASS(query, queryConfig, filterConfig, parent...)
 
 	if !queryResult.Success {
 		return InjectionResult{
