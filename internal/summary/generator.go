@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -30,11 +32,12 @@ const (
 
 // FileAction constants for file changes.
 const (
-	FileActionCreated  = "created"
-	FileActionModified = "modified"
-	FileActionDeleted  = "deleted"
-	FileActionRead     = "read"
-	FileActionUnknown  = "unknown"
+	FileActionCreated    = "created"
+	FileActionModified   = "modified"
+	FileActionDeleted    = "deleted"
+	FileActionRead       = "read"
+	FileActionUnknown    = "unknown"
+	FileActionConflicted = "conflicted"
 )
 
 // AgentOutput contains per-agent output for summarization.
@@ -66,6 +69,25 @@ type SessionSummary struct {
 	TokenEstimate   int                       `json:"token_estimate"`
 	Text            string                    `json:"text"`
 	Handoff         *handoff.Handoff          `json:"handoff,omitempty"`
+	// Git is an observation of the checkout, not attribution of edits to an agent.
+	// Nil means inspection was not requested; unavailable is never a clean tree.
+	Git *GitState `json:"git,omitempty"`
+}
+
+// GitState preserves both sides of Git's status instead of inferring them from
+// three independently sampled diffs. Paths in Entries are repository-relative.
+type GitState struct {
+	Status     string          `json:"status"` // clean, dirty, conflicted, unavailable
+	Directory  string          `json:"directory"`
+	ObservedAt time.Time       `json:"observed_at"`
+	Entries    []GitFileStatus `json:"entries"`
+	Error      string          `json:"error,omitempty"`
+}
+
+type GitFileStatus struct {
+	Path         string `json:"path"`
+	OriginalPath string `json:"original_path,omitempty"`
+	Status       string `json:"status"` // exact porcelain XY, including spaces
 }
 
 // Summarizer is an optional LLM-backed summarization hook.
@@ -107,10 +129,15 @@ func SummarizeSession(ctx context.Context, opts Options) (*SessionSummary, error
 
 	data := aggregateOutputs(opts.Outputs)
 
-	// Enrich with git state if requested
-	if opts.IncludeGitDiff && opts.ProjectDir != "" {
-		gitFiles := getGitFileChanges(ctx, opts.ProjectDir)
-		data.files = mergeFileChanges(data.files, gitFiles)
+	// Optional Git failure degrades visibly; operation cancellation is fatal.
+	var gitState *GitState
+	if opts.IncludeGitDiff {
+		var err error
+		gitState, err = getGitState(ctx, opts.ProjectDir)
+		if err != nil {
+			return nil, err
+		}
+		data.files = mergeFileChanges(data.files, gitFileChanges(gitState))
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -151,6 +178,7 @@ func SummarizeSession(ctx context.Context, opts Options) (*SessionSummary, error
 		Errors:          data.errors,
 		Decisions:       data.decisions,
 		ThreadSummaries: threadSummaries,
+		Git:             gitState,
 	}
 
 	// Optional LLM summarization for brief/detailed formats
@@ -161,6 +189,10 @@ func SummarizeSession(ctx context.Context, opts Options) (*SessionSummary, error
 			log.Printf("summary: LLM summarization failed, using fallback: %v", err)
 		} else if strings.TrimSpace(text) != "" {
 			summary.Text = strings.TrimSpace(text)
+			// Generated prose must not erase recorded dirty/unknown/conflict state.
+			if summary.Git != nil && summary.Git.Status != "clean" {
+				summary.Text = gitStateNotice(summary.Git) + "\n\n" + summary.Text
+			}
 		}
 	}
 
@@ -784,6 +816,9 @@ func formatBrief(summary *SessionSummary) string {
 		name = "(unknown)"
 	}
 	fmt.Fprintf(&sb, "Session %s summary\n", name)
+	if summary.Git != nil {
+		fmt.Fprintln(&sb, gitStateNotice(summary.Git))
+	}
 
 	writeInlineList(&sb, "Accomplishments", summary.Accomplishments, 3)
 	writeInlineList(&sb, "Changes", summary.Changes, 3)
@@ -805,6 +840,17 @@ func formatDetailed(summary *SessionSummary) string {
 		name = "(unknown)"
 	}
 	fmt.Fprintf(&sb, "## Session Summary: %s\n\n", name)
+	if summary.Git != nil {
+		fmt.Fprintln(&sb, gitStateNotice(summary.Git))
+		for _, entry := range summary.Git.Entries {
+			fmt.Fprintf(&sb, "- %s %q", entry.Status, entry.Path)
+			if entry.OriginalPath != "" {
+				fmt.Fprintf(&sb, " (from %q)", entry.OriginalPath)
+			}
+			sb.WriteByte('\n')
+		}
+		sb.WriteByte('\n')
+	}
 
 	writeSectionList(&sb, "Accomplishments", summary.Accomplishments)
 	writeSectionList(&sb, "Changes", summary.Changes)
@@ -891,6 +937,23 @@ func buildHandoffSummary(summary *SessionSummary) *handoff.Handoff {
 	for _, e := range summary.Errors {
 		h.Blockers = appendUnique(h.Blockers, e)
 	}
+	if summary.Git != nil {
+		h.AddFinding("git_observation", gitStateNotice(summary.Git))
+		if summary.Git.Status == "conflicted" {
+			h.Blockers = appendUnique(h.Blockers, "Git has unresolved conflicts; inspect git status before continuing")
+			for _, entry := range summary.Git.Entries {
+				if gitStatusConflicted(entry.Status) {
+					h.Blockers = appendUnique(h.Blockers, fmt.Sprintf("Git conflict %s in %q", entry.Status, entry.Path))
+				}
+			}
+			h.Now = "Resolve the recorded Git conflicts before continuing"
+		} else if summary.Git.Status != "clean" {
+			h.Next = appendUnique(h.Next, "Inspect git status and preserve outstanding work before continuing")
+			if len(summary.Pending) == 0 {
+				h.Now = "Inspect the recorded Git state before continuing"
+			}
+		}
+	}
 
 	for _, fc := range summary.Files {
 		switch fc.Action {
@@ -898,15 +961,17 @@ func buildHandoffSummary(summary *SessionSummary) *handoff.Handoff {
 			h.MarkCreated(fc.Path)
 		case FileActionDeleted:
 			h.MarkDeleted(fc.Path)
-		case FileActionRead:
-			// Skip read-only for handoff
+		case FileActionRead, FileActionConflicted:
+			// A conflict is not an ordinary successful modification.
 		default:
 			h.MarkModified(fc.Path)
 		}
 	}
 
-	if len(summary.Errors) > 0 {
+	if len(summary.Errors) > 0 || (summary.Git != nil && summary.Git.Status == "conflicted") {
 		h.WithStatus(handoff.StatusBlocked, handoff.OutcomePartialMinus)
+	} else if len(summary.Pending) > 0 || (summary.Git != nil && summary.Git.Status != "clean") {
+		h.WithStatus(handoff.StatusPartial, handoff.OutcomePartialPlus)
 	} else if len(summary.Accomplishments) > 0 {
 		h.WithStatus(handoff.StatusComplete, handoff.OutcomeSucceeded)
 	} else {
@@ -923,6 +988,10 @@ func buildLLMPrompt(format SummaryFormat, summary *SessionSummary) string {
 	sb.WriteString("Generate a concise session summary in format: ")
 	sb.WriteString(string(format))
 	sb.WriteString(". Use the provided data; do not invent details.\n\n")
+	if summary.Git != nil {
+		sb.WriteString(gitStateNotice(summary.Git) + "\n")
+		sb.WriteString("Git is a checkout observation, not proof of task completion or attribution to this session.\n\n")
+	}
 
 	appendPromptList(&sb, "Accomplishments", summary.Accomplishments)
 	appendPromptList(&sb, "Changes", summary.Changes)
@@ -1064,72 +1133,159 @@ func yamlMarshal(h *handoff.Handoff) ([]byte, error) {
 	return yaml.Marshal(h)
 }
 
-// getGitFileChanges retrieves file changes from git working directory.
-// Returns modified, untracked, and deleted files.
-func getGitFileChanges(ctx context.Context, projectDir string) []FileChange {
-	var changes []FileChange
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+const maxGitStatusBytes = 16 << 20
+
+// getGitState makes one read-only status observation, including unborn HEADs.
+// Failure of this optional source is explicit data, not proof of a clean tree.
+// Cancellation of the caller is an operation error and discards partial data.
+func getGitState(ctx context.Context, projectDir string) (*GitState, error) {
+	if ctx == nil {
+		return nil, errors.New("Git inspection requires a context")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	state := &GitState{Status: "unavailable", ObservedAt: time.Now().UTC(), Entries: []GitFileStatus{}}
+	if strings.TrimSpace(projectDir) == "" {
+		state.Error = "Git inspection requires a project directory"
+		return state, nil
+	}
+	dir, err := filepath.Abs(projectDir)
+	if err != nil {
+		state.Error = "Git project directory could not be resolved"
+		return state, nil
+	}
+	state.Directory = dir
+	commandCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-
-	// Get modified files from git diff
-	cmd := exec.CommandContext(ctx, "git", "diff", "--name-only", "HEAD")
-	cmd.Dir = projectDir
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	if err := cmd.Run(); err == nil {
-		for _, path := range parseLines(out.String()) {
-			if path != "" {
-				changes = append(changes, FileChange{
-					Path:   path,
-					Action: FileActionModified,
-				})
+	out := &gitStatusCapture{cancel: cancel}
+	cmd := exec.CommandContext(commandCtx, "git", "--no-optional-locks", "status",
+		"--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=none", "--renames", "--")
+	cmd.Dir, cmd.Stdout, cmd.Stderr, cmd.WaitDelay = dir, out, io.Discard, time.Second
+	runErr := cmd.Run()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	switch {
+	case out.overflow:
+		state.Error = "Git status exceeded the 16 MiB capture limit"
+	case commandCtx.Err() != nil:
+		state.Error = "Git status inspection timed out"
+	case runErr != nil:
+		// No subprocess stderr (which can contain credentials) in a handoff.
+		state.Error = "Git status inspection failed"
+		var exitErr *exec.ExitError
+		if errors.As(runErr, &exitErr) {
+			state.Error = fmt.Sprintf("Git status inspection failed (exit %d)", exitErr.ExitCode())
+		}
+	default:
+		entries, err := parseGitStatus(ctx, out.buffer.Bytes())
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			state.Error = "Git status output was malformed; inspection is incomplete"
+			break
+		}
+		state.Entries, state.Status = entries, "clean"
+		if len(entries) > 0 {
+			state.Status = "dirty"
+		}
+		for _, entry := range entries {
+			if gitStatusConflicted(entry.Status) {
+				state.Status = "conflicted"
+				break
 			}
 		}
 	}
-
-	// Get untracked files
-	cmd = exec.CommandContext(ctx, "git", "ls-files", "--others", "--exclude-standard")
-	cmd.Dir = projectDir
-	out.Reset()
-	cmd.Stdout = &out
-	if err := cmd.Run(); err == nil {
-		for _, path := range parseLines(out.String()) {
-			if path != "" {
-				changes = append(changes, FileChange{
-					Path:   path,
-					Action: FileActionCreated,
-				})
-			}
-		}
-	}
-
-	// Get deleted files from git status
-	cmd = exec.CommandContext(ctx, "git", "diff", "--name-only", "--diff-filter=D", "HEAD")
-	cmd.Dir = projectDir
-	out.Reset()
-	cmd.Stdout = &out
-	if err := cmd.Run(); err == nil {
-		for _, path := range parseLines(out.String()) {
-			if path != "" {
-				changes = append(changes, FileChange{
-					Path:   path,
-					Action: FileActionDeleted,
-				})
-			}
-		}
-	}
-
-	return changes
+	return state, nil
 }
 
-// parseLines splits output by newlines and filters empty lines.
-func parseLines(s string) []string {
-	var lines []string
-	for _, line := range strings.Split(s, "\n") {
-		line = strings.TrimSpace(line)
-		if line != "" {
-			lines = append(lines, line)
-		}
+// Keep the buffer private so io.Copy cannot bypass Write via ReadFrom.
+type gitStatusCapture struct {
+	buffer   bytes.Buffer
+	overflow bool
+	cancel   context.CancelFunc
+}
+
+func (b *gitStatusCapture) Write(p []byte) (int, error) {
+	if len(p) > maxGitStatusBytes-b.buffer.Len() {
+		b.overflow = true
+		b.cancel()
+		return 0, errors.New("Git status capture limit exceeded")
 	}
-	return lines
+	return b.buffer.Write(p)
+}
+
+// Porcelain v1 -z reverses rename fields: destination first, then original.
+// Do not trim or unquote paths: tabs, newlines, quotes and spaces are literal.
+func parseGitStatus(ctx context.Context, raw []byte) ([]GitFileStatus, error) {
+	entries := []GitFileStatus{}
+	for len(raw) > 0 {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		end := bytes.IndexByte(raw, 0)
+		if end < 4 || raw[2] != ' ' {
+			return nil, errors.New("malformed Git status entry")
+		}
+		entry := GitFileStatus{Status: string(raw[:2]), Path: string(raw[3:end])}
+		raw = raw[end+1:]
+		if entry.Status != "??" && !gitStatusConflicted(entry.Status) {
+			if entry.Status == "  " || !strings.ContainsRune(" MTADRC", rune(entry.Status[0])) ||
+				!strings.ContainsRune(" MTADRC", rune(entry.Status[1])) {
+				return nil, errors.New("unknown Git status code")
+			}
+		}
+		if strings.ContainsAny(entry.Status, "RC") {
+			end = bytes.IndexByte(raw, 0)
+			if end <= 0 {
+				return nil, errors.New("missing Git rename origin")
+			}
+			entry.OriginalPath, raw = string(raw[:end]), raw[end+1:]
+		}
+		entries = append(entries, entry)
+	}
+	return entries, nil
+}
+
+func gitStatusConflicted(status string) bool {
+	switch status {
+	case "DD", "AU", "UD", "UA", "DU", "AA", "UU":
+		return true
+	default:
+		return false
+	}
+}
+
+func gitStateNotice(state *GitState) string {
+	notice := fmt.Sprintf("Git observation: %s (%d status entries; checkout state, not session attribution)", state.Status, len(state.Entries))
+	if state.Error != "" {
+		notice += ": " + state.Error
+	}
+	return notice
+}
+
+func gitFileChanges(state *GitState) []FileChange {
+	var changes []FileChange
+	for _, entry := range state.Entries {
+		action := FileActionModified
+		switch {
+		case gitStatusConflicted(entry.Status):
+			action = FileActionConflicted
+		case strings.Contains(entry.Status, "D"):
+			action = FileActionDeleted
+		case entry.Status == "??" || strings.ContainsAny(entry.Status, "ARC"):
+			action = FileActionCreated
+		}
+		context := "Git checkout observation: " + entry.Status
+		if entry.OriginalPath != "" {
+			context += fmt.Sprintf(" from %q", entry.OriginalPath)
+			if strings.Contains(entry.Status, "R") {
+				changes = append(changes, FileChange{Path: entry.OriginalPath, Action: FileActionDeleted, Context: context})
+			}
+		}
+		changes = append(changes, FileChange{Path: entry.Path, Action: action, Context: context})
+	}
+	return changes
 }
