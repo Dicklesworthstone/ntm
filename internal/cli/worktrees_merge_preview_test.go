@@ -101,6 +101,42 @@ func TestWorktreesMergeDryRunCommandPreservesPrimary(t *testing.T) {
 			if !strings.Contains(rendered.String(), want) || run(root, "rev-parse", "HEAD") != head || run(root, "status", "--porcelain") != "" {
 				t.Fatalf("preview lied or changed the target: %s", rendered.String())
 			}
+			sourceHead := run(source, "rev-parse", "HEAD")
+			apply := newWorktreesMergeCmd()
+			apply.SetArgs([]string{"agent", "--expected-source", sourceHead, "--expected-target", head})
+			apply.SetOut(&rendered)
+			apply.SetErr(&rendered)
+			applyErr := apply.ExecuteContext(context.Background())
+			if conflict {
+				if applyErr == nil || run(root, "rev-parse", "HEAD") != head || run(root, "status", "--porcelain") != "" {
+					t.Fatalf("conflicting command altered the primary checkout: %v", applyErr)
+				}
+				if _, err := os.Stat(filepath.Join(root, ".git", "MERGE_HEAD")); !os.IsNotExist(err) {
+					t.Fatalf("conflict refusal left a pending merge: %v", err)
+				}
+			} else if applyErr != nil || run(root, "show", "-s", "--format=%P", "HEAD") != head+" "+sourceHead {
+				t.Fatalf("command did not apply the pinned two-parent merge: %v", applyErr)
+			}
 		})
+	}
+}
+
+func TestWorktreesMergeRejectsIgnoredOrIneffectiveControls(t *testing.T) {
+	sha := strings.Repeat("a", 40)
+	for _, args := range [][]string{
+		{"agent", "--force"},
+		{"agent", "--expected-source", sha},
+		{"agent", "--expected-target", sha},
+		{"agent", "--expected-source=", "--expected-target="},
+		{"agent", "--dry-run", "--expected-source", sha, "--expected-target", sha},
+	} {
+		cmd := newWorktreesMergeCmd()
+		cmd.SetArgs(args)
+		var output bytes.Buffer
+		cmd.SetOut(&output)
+		cmd.SetErr(&output)
+		if err := cmd.ExecuteContext(context.Background()); err == nil {
+			t.Fatalf("unsafe or ineffective controls accepted: %v", args)
+		}
 	}
 }

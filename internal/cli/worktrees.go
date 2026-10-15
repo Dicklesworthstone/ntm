@@ -82,24 +82,40 @@ func newWorktreesListCmd() *cobra.Command {
 }
 
 func newWorktreesMergeCmd() *cobra.Command {
-	var force bool
 	var dryRun bool
 	var sessionName string
+	var expectedSource, expectedTarget string
 
 	cmd := &cobra.Command{
 		Use:   "merge <agent-name>",
-		Short: "Merge an agent's worktree back to main branch",
-		Long: `Merge changes from an agent's worktree branch back to the main branch.
+		Short: "Safely integrate committed agent work into the default branch",
+		Long: `Merge committed agent work into the repository's resolved default branch.
 
-This will switch to the main branch and merge the agent's branch using
-a non-fast-forward merge to preserve the merge history.
+Both checkouts must be clean and the target must already have the default
+branch checked out. Conflicts, pending Git operations, and ignored-file
+overwrite risks are refused before mutation. No branch switching, stashing,
+automatic conflict resolution, or force override is performed.
 
 Use --dry-run to evaluate the real three-way merge without changing either
 checkout or index. The preview reports source/target commit IDs, conflicting
 paths, and blockers. In JSON mode inspect can_merge; a successful preview is
-an assessment, not confirmation that work was merged. Git 2.38+ is required.`,
+an assessment, not confirmation that work was merged. Git 2.38+ is required.
+
+For an apply bound to reviewed commits, supply --expected-source and
+--expected-target using the complete IDs from the preview. Both are required.
+Without them, apply assesses the current tips. Successful integration creates
+a two-parent merge; already-merged work is a no-op. If Git or a hook fails after
+mutation starts, inspect git status before retrying; NTM never resets the work.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if cmd.Flags().Changed("expected-source") || cmd.Flags().Changed("expected-target") {
+				if dryRun {
+					return fmt.Errorf("expected commit IDs apply to a merge, not --dry-run")
+				}
+				if expectedSource == "" || expectedTarget == "" {
+					return fmt.Errorf("--expected-source and --expected-target must both contain complete preview commit IDs")
+				}
+			}
 			agentName := args[0]
 			dir, session, err := resolveWorktreeScope(cmd.Context(), sessionName)
 			if err != nil {
@@ -123,6 +139,9 @@ an assessment, not confirmation that work was merged. Git 2.38+ is required.`,
 				for _, path := range plan.Conflicts {
 					cmd.Printf("  Conflict: %q\n", path)
 				}
+				for _, path := range plan.OverwriteRisks {
+					cmd.Printf("  Ignored file at risk: %q\n", path)
+				}
 				return nil
 			}
 
@@ -136,23 +155,31 @@ an assessment, not confirmation that work was merged. Git 2.38+ is required.`,
 				return fmt.Errorf("no worktree found for agent: %s", agentName)
 			}
 
-			if info.Error != "" && !force {
-				return fmt.Errorf("worktree has errors: %s (use --force to proceed)", info.Error)
+			if info.Error != "" {
+				return fmt.Errorf("worktree has errors: %s", info.Error)
 			}
 
 			// Perform the merge
-			if err := manager.MergeBack(cmd.Context(), agentName); err != nil {
+			if err := manager.MergeBack(cmd.Context(), agentName, worktrees.MergeOptions{
+				ExpectedSource: expectedSource, ExpectedTarget: expectedTarget,
+			}); err != nil {
 				return fmt.Errorf("failed to merge worktree: %w", err)
 			}
 
-			fmt.Printf("Successfully merged agent %s's work from branch %s\n", agentName, info.BranchName)
+			if IsJSONOutput() {
+				return output.PrintJSON(map[string]interface{}{
+					"success": true, "session": session, "agent_name": info.AgentName, "source_branch": info.BranchName,
+				})
+			}
+			cmd.Printf("Agent %s's committed work from branch %s is integrated\n", info.AgentName, info.BranchName)
 			return nil
 		},
 	}
 
-	cmd.Flags().BoolVar(&force, "force", false, "Force merge even if worktree has errors")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview the merge without changing checkout files, indexes, or branch refs")
 	cmd.Flags().StringVar(&sessionName, "session", "", "Session owning the agent worktree (defaults to current session)")
+	cmd.Flags().StringVar(&expectedSource, "expected-source", "", "Require the complete source commit ID from a reviewed merge preview")
+	cmd.Flags().StringVar(&expectedTarget, "expected-target", "", "Require the complete target commit ID from the same merge preview")
 	return cmd
 }
 

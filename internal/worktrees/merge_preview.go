@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -24,21 +25,22 @@ var ErrMergeSnapshotChanged = errors.New("worktree merge snapshot changed")
 // never checks out a branch, changes an index, advances a ref, or starts a merge.
 // CanMerge is a point-in-time assessment, not a lock on other Git writers.
 type MergePreview struct {
-	AgentName     string   `json:"agent_name"`
-	SessionID     string   `json:"session_id"`
-	SourcePath    string   `json:"source_path"`
-	TargetPath    string   `json:"target_path"`
-	SourceBranch  string   `json:"source_branch"`
-	TargetBranch  string   `json:"target_branch"`
-	SourceCommit  string   `json:"source_commit"`
-	TargetCommit  string   `json:"target_commit"`
-	MergeTree     string   `json:"merge_tree"`
-	SourceCommits int      `json:"source_commits"`
-	AlreadyMerged bool     `json:"already_merged"`
-	HasConflicts  bool     `json:"has_conflicts"`
-	Conflicts     []string `json:"conflicts"`
-	Blockers      []string `json:"blockers"`
-	CanMerge      bool     `json:"can_merge"`
+	AgentName      string   `json:"agent_name"`
+	SessionID      string   `json:"session_id"`
+	SourcePath     string   `json:"source_path"`
+	TargetPath     string   `json:"target_path"`
+	SourceBranch   string   `json:"source_branch"`
+	TargetBranch   string   `json:"target_branch"`
+	SourceCommit   string   `json:"source_commit"`
+	TargetCommit   string   `json:"target_commit"`
+	MergeTree      string   `json:"merge_tree"`
+	SourceCommits  int      `json:"source_commits"`
+	AlreadyMerged  bool     `json:"already_merged"`
+	HasConflicts   bool     `json:"has_conflicts"`
+	Conflicts      []string `json:"conflicts"`
+	OverwriteRisks []string `json:"overwrite_risks"`
+	Blockers       []string `json:"blockers"`
+	CanMerge       bool     `json:"can_merge"`
 }
 
 // PreviewMerge evaluates Git's real three-way merge without touching either
@@ -84,7 +86,7 @@ func (m *WorktreeManager) PreviewMerge(ctx context.Context, agentName string) (*
 		AgentName: info.AgentName, SessionID: info.SessionID,
 		SourcePath: info.Path, TargetPath: m.projectPath,
 		SourceBranch: info.BranchName, TargetBranch: target,
-		Conflicts: []string{}, Blockers: []string{},
+		Conflicts: []string{}, Blockers: []string{}, OverwriteRisks: []string{},
 	}
 	plan.SourceCommit, err = mergeCommitAt(ctx, m.projectPath, "refs/heads/"+info.BranchName)
 	if err != nil {
@@ -139,6 +141,13 @@ func (m *WorktreeManager) PreviewMerge(ctx context.Context, agentName string) (*
 			return nil, err
 		}
 		plan.Blockers = append(plan.Blockers, blockers...)
+	}
+	plan.OverwriteRisks, err = mergeIgnoredOverwriteRisks(ctx, plan)
+	if err != nil {
+		return nil, err
+	}
+	if len(plan.OverwriteRisks) > 0 {
+		plan.Blockers = append(plan.Blockers, "target_ignored_path_collision")
 	}
 	if err := verifyMergeSnapshot(ctx, plan); err != nil {
 		return nil, err
@@ -218,6 +227,107 @@ func mergeCheckoutBlockers(ctx context.Context, dir, expectedBranch, role string
 		}
 	}
 	return blockers, nil
+}
+
+// Git's ort merge can replace ignored files even with --no-overwrite-ignore.
+// Compare paths the planned tree will write with ignored, untracked files
+// before mutation. Include ancestor/descendant collisions for file/directory
+// transitions, without blocking unrelated ignored caches or worktree storage.
+func mergeIgnoredOverwriteRisks(ctx context.Context, plan *MergePreview) ([]string, error) {
+	raw, err := gitOutput(ctx, plan.TargetPath, "diff-tree", "-r", "--no-commit-id", "--name-only", "--no-renames", "--diff-filter=ACMT", "-z", plan.TargetCommit, plan.MergeTree)
+	if err != nil {
+		return nil, fmt.Errorf("inspect merge write paths: %w", err)
+	}
+	writes, err := mergeNULPaths(raw)
+	if err != nil {
+		return nil, err
+	}
+	if len(writes) == 0 {
+		return []string{}, nil
+	}
+	raw, err = gitOutput(ctx, plan.TargetPath, "ls-files", "--others", "--ignored", "--exclude-standard", "-z")
+	if err != nil {
+		return nil, fmt.Errorf("inspect ignored target files: %w", err)
+	}
+	ignored, err := mergeNULPaths(raw)
+	if err != nil {
+		return nil, err
+	}
+	if len(ignored) == 0 {
+		return []string{}, nil
+	}
+	ignoreCase := false
+	raw, err = gitOutput(ctx, plan.TargetPath, "config", "--type=bool", "--get", "core.ignorecase")
+	if err == nil {
+		ignoreCase = strings.TrimSpace(string(raw)) == "true"
+	} else {
+		var exitErr *exec.ExitError
+		if ctx.Err() != nil || !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+			return nil, fmt.Errorf("inspect Git path case policy: %w", err)
+		}
+	}
+	keyFor := func(path string) string {
+		path = strings.TrimSuffix(path, "/") // opaque nested repository entries
+		if ignoreCase {
+			path = strings.ToLower(path)
+		}
+		return path
+	}
+	byKey := make(map[string][]string, len(ignored))
+	for _, path := range ignored {
+		key := keyFor(path)
+		byKey[key] = append(byKey[key], path)
+	}
+	keys := make([]string, 0, len(byKey))
+	for key := range byKey {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	risks := make(map[string]bool)
+	for _, path := range writes {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		key := keyFor(path)
+		for parent := key; parent != ""; {
+			for _, original := range byKey[parent] {
+				risks[original] = true
+			}
+			cut := strings.LastIndexByte(parent, '/')
+			if cut < 0 {
+				break
+			}
+			parent = parent[:cut]
+		}
+		prefix := key + "/"
+		for i := sort.SearchStrings(keys, prefix); i < len(keys) && strings.HasPrefix(keys[i], prefix); i++ {
+			for _, original := range byKey[keys[i]] {
+				risks[original] = true
+			}
+		}
+	}
+	result := make([]string, 0, len(risks))
+	for path := range risks {
+		result = append(result, path)
+	}
+	sort.Strings(result)
+	return result, nil
+}
+
+func mergeNULPaths(raw []byte) ([]string, error) {
+	if len(raw) == 0 {
+		return []string{}, nil
+	}
+	parts := strings.Split(string(raw), "\x00")
+	if parts[len(parts)-1] != "" {
+		return nil, errors.New("Git path inspection returned an unterminated path")
+	}
+	for _, path := range parts[:len(parts)-1] {
+		if path == "" {
+			return nil, errors.New("Git path inspection returned an empty path")
+		}
+	}
+	return parts[:len(parts)-1], nil
 }
 
 func verifyMergeSnapshot(ctx context.Context, plan *MergePreview) error {

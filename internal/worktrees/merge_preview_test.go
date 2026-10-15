@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -117,6 +118,9 @@ func TestMergePreviewReportsRealTextAndBinaryConflicts(t *testing.T) {
 		{"quoted filename", "tab\tand\nnewline.txt", "primary\n", "agent\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			if runtime.GOOS == "windows" && tc.name == "quoted filename" {
+				t.Skip("Windows filenames cannot contain tabs or newlines")
+			}
 			manager, root, source := newMergePreviewFixture(t)
 			mergePreviewCommit(t, source, tc.path, tc.theirs)
 			mergePreviewCommit(t, root, tc.path, tc.ours)
@@ -253,5 +257,21 @@ func TestMergePreviewParserRejectsUntrustedOutput(t *testing.T) {
 		if err != nil || tree != oid || paths == nil || len(paths) != 0 {
 			t.Fatalf("valid empty path list rejected: %q %v %v", tree, paths, err)
 		}
+	}
+}
+
+func TestMergeBackRefusesConflictsBeforeCheckout(t *testing.T) {
+	manager, root, source := newMergePreviewFixture(t)
+	mergePreviewCommit(t, source, "shared.txt", "agent version\n")
+	mergePreviewCommit(t, root, "shared.txt", "operator version\n")
+	beforeTarget, beforeSource := snapshotMergeCheckout(t, root), snapshotMergeCheckout(t, source)
+	if err := manager.MergeBack(context.Background(), "agent"); err == nil {
+		t.Fatal("conflicting agent work was acknowledged as merged")
+	}
+	if !reflect.DeepEqual(snapshotMergeCheckout(t, root), beforeTarget) || !reflect.DeepEqual(snapshotMergeCheckout(t, source), beforeSource) {
+		t.Fatal("conflicting merge changed a checkout or index before refusal")
+	}
+	if _, err := os.Stat(filepath.Join(root, ".git", "MERGE_HEAD")); !os.IsNotExist(err) {
+		t.Fatalf("preflight failure left a merge in progress: %v", err)
 	}
 }

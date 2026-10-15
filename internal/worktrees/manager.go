@@ -419,45 +419,36 @@ func (m *WorktreeManager) ListWorktrees(ctx context.Context) ([]*WorktreeInfo, e
 	return worktrees, nil
 }
 
-// MergeBack merges an agent's worktree changes back to the main branch.
-func (m *WorktreeManager) MergeBack(ctx context.Context, agentName string) error {
+// MergeBack integrates a verified, conflict-free snapshot of committed agent
+// work. It never switches the primary checkout or stashes an operator's edits.
+// Optional expectations bind an earlier preview; both commit IDs are required.
+func (m *WorktreeManager) MergeBack(ctx context.Context, agentName string, expectations ...MergeOptions) error {
 	if ctx == nil {
 		return errors.New("merge worktree requires a context")
 	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	info, err := m.buildWorktreeInfo(agentName)
+	opts, err := mergeOptions(expectations)
 	if err != nil {
 		return err
 	}
-	branchName := info.BranchName
-
-	// Switch to the repository's actual default branch in the primary
-	// worktree — never a hardcoded 'main'.
-	defaultBranch, err := git.DefaultBranch(ctx, m.projectPath)
+	ctx, cancel := context.WithTimeout(ctx, gitTimeout)
+	defer cancel()
+	plan, err := m.PreviewMerge(ctx, agentName)
 	if err != nil {
-		return fmt.Errorf("failed to determine default branch: %w", err)
+		return fmt.Errorf("merge preflight: %w", err)
 	}
-	if err := gitRun(ctx, m.projectPath, "checkout", defaultBranch); err != nil {
-		return fmt.Errorf("failed to checkout default branch %s: %w", defaultBranch, err)
+	if opts.ExpectedSource != "" && (opts.ExpectedSource != plan.SourceCommit || opts.ExpectedTarget != plan.TargetCommit) {
+		return fmt.Errorf("%w: source or target differs from the supplied preview", ErrMergeSnapshotChanged)
 	}
-
-	// Merge the agent's branch
-	output, err := gitCombinedOutput(
-		ctx,
-		m.projectPath,
-		"merge",
-		branchName,
-		"--no-ff",
-		"-m",
-		fmt.Sprintf("Merge agent %s work from session %s", agentName, m.session),
-	)
-	if err != nil {
-		return fmt.Errorf("failed to merge branch %s: %w: %s", branchName, err, string(output))
+	if !plan.CanMerge {
+		return fmt.Errorf("%w: %s; inspect worktrees merge --dry-run", ErrMergeUnsafe, strings.Join(plan.Blockers, ", "))
 	}
-
-	return nil
+	if plan.AlreadyMerged {
+		return nil
+	}
+	return applyMergePreview(ctx, plan)
 }
 
 // RemovalRisk summarizes the work that removing a worktree would destroy.
