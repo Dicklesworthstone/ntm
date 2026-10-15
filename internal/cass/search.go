@@ -3,11 +3,24 @@ package cass
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 )
 
 // Search performs a search query against CASS
 func (c *Client) Search(ctx context.Context, opts SearchOptions) (*SearchResponse, error) {
+	return c.search(ctx, opts, nil)
+}
+
+// search is shared by ordinary search and the two context-retrieval scopes.
+// Keep argument construction, cancellation and the response decoder identical.
+func (c *Client) search(ctx context.Context, opts SearchOptions, agents []string) (*SearchResponse, error) {
+	if ctx == nil {
+		return nil, errors.New("cass search requires a context")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if !c.IsInstalled() {
 		return nil, ErrNotInstalled
 	}
@@ -26,6 +39,9 @@ func (c *Client) Search(ctx context.Context, opts SearchOptions) (*SearchRespons
 	}
 	if opts.Agent != "" {
 		args = append(args, fmt.Sprintf("--agent=%s", opts.Agent))
+	}
+	for _, agent := range agents {
+		args = append(args, "--agent="+agent)
 	}
 	if opts.Workspace != "" {
 		args = append(args, fmt.Sprintf("--workspace=%s", opts.Workspace))
@@ -59,6 +75,9 @@ func (c *Client) Search(ctx context.Context, opts SearchOptions) (*SearchRespons
 	args = append(args, "--", opts.Query)
 
 	output, err := c.executor.Run(ctx, args...)
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
 	if err != nil {
 		return nil, err
 	}

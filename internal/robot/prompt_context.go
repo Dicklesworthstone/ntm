@@ -72,7 +72,7 @@ func injectPromptContext(
 		if format != "" {
 			injectConfig.Format = format
 		}
-		injectResult, queryResult, filterResult := InjectContextFromQuery(message, query, queryConfig, filterConfig, injectConfig, ctx)
+		injectResult, queryResult, filterResult := injectCASSContextCandidates(ctx, message, query, queryConfig, filterConfig, injectConfig)
 		cassInfo = NewCASSInjectionInfo(injectResult, queryResult.Query, filterResult.Hits)
 		if injectResult.Success && injectResult.ModifiedPrompt != "" {
 			payload = injectResult.ModifiedPrompt
