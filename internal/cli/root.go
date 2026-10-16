@@ -579,6 +579,13 @@ func nearestFlagName(unknown string, flagSets ...*pflag.FlagSet) string {
 			continue
 		}
 		fs.VisitAll(func(f *pflag.Flag) {
+			// Never suggest the flag that was just rejected: when it is
+			// registered elsewhere (a root-only robot flag reaching a
+			// subcommand) a distance-0 "Did you mean --x?" sends the caller
+			// into a retry loop (#351).
+			if f.Name == unknown {
+				return
+			}
 			d := levenshteinDistance(unknown, f.Name)
 			if d > bestDist {
 				return
