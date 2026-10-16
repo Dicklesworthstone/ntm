@@ -68,6 +68,10 @@ func signalCommandProcessGroup(cmd *exec.Cmd, sig syscall.Signal) error {
 	if cmd == nil || cmd.Process == nil {
 		return nil
 	}
+	if cmd.Process.Pid <= 1 || cmd.ProcessState != nil || cmd.SysProcAttr == nil ||
+		!cmd.SysProcAttr.Setpgid || cmd.SysProcAttr.Pgid != 0 {
+		return errors.New("signal command process group: an owned, unreaped group leader is required")
+	}
 	err := syscall.Kill(-cmd.Process.Pid, sig)
 	if err == nil {
 		return nil
@@ -75,54 +79,23 @@ func signalCommandProcessGroup(cmd *exec.Cmd, sig syscall.Signal) error {
 	if errors.Is(err, syscall.ESRCH) {
 		return os.ErrProcessDone
 	}
-	// bd-ob92m: when the group-targeted kill fails for any reason other
-	// than ESRCH (the group is already empty), the single-process
-	// fallback would have left every descendant reparented to init and
-	// running. For SIGKILL we must scrub descendants explicitly: walk
-	// /proc looking for processes whose pgid matches the leader's pgid
-	// and SIGKILL each one. Best-effort; ignored on systems without
-	// /proc.
+	// A failed group signal is not repaired by killing only its leader.
+	// Keep the original failure so the caller cannot publish settlement on
+	// the strength of a partial fallback. Linux can additionally stop group
+	// members through identity-stable handles, never stale numeric PIDs.
+	groupErr := fmt.Errorf("signal command process group: %w", err)
 	if sig == syscall.SIGKILL {
 		killErr := cmd.Process.Kill()
-		killProcessGroupDescendants(cmd.Process.Pid)
-		return killErr
-	}
-	return cmd.Process.Signal(sig)
-}
-
-// killProcessGroupDescendants is a best-effort sweep of /proc that sends
-// SIGKILL to any process whose pgid matches the supplied leader pid.
-// Used as a fallback when the kernel-side `kill(-pgid, SIGKILL)` fails
-// for non-ESRCH reasons (EPERM, sandbox surprises, etc.) so the
-// "process-group cleanup on cancel" contract is honored even on
-// degraded paths (bd-ob92m). Returns silently on systems where /proc
-// is not available.
-func killProcessGroupDescendants(leaderPID int) {
-	if leaderPID <= 0 {
-		return
-	}
-	entries, err := os.ReadDir("/proc")
-	if err != nil {
-		return
-	}
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
+		if errors.Is(killErr, os.ErrProcessDone) {
+			killErr = nil
 		}
-		pid, err := strconv.Atoi(entry.Name())
-		if err != nil || pid == leaderPID || pid <= 1 {
-			continue
-		}
-		stat, err := os.ReadFile("/proc/" + entry.Name() + "/stat")
-		if err != nil {
-			continue
-		}
-		pgid, ok := parseProcStatPGID(stat)
-		if !ok || pgid != leaderPID {
-			continue
-		}
-		_ = syscall.Kill(pid, syscall.SIGKILL)
+		return errors.Join(groupErr, killErr, killProcessGroupDescendants(cmd.Process.Pid))
 	}
+	fallbackErr := cmd.Process.Signal(sig)
+	if errors.Is(fallbackErr, os.ErrProcessDone) {
+		fallbackErr = nil
+	}
+	return errors.Join(groupErr, fallbackErr)
 }
 
 // parseProcStatPGID extracts the process group id (field 5) from
