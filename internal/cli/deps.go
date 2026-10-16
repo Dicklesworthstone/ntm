@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -42,7 +44,8 @@ Optional agents:
   - opencode (OpenCode)
   - omp (Oh My Pi, the pi-agent fork)
 
-Also checks for recommended tools like fzf.
+Also checks for recommended tools like fzf, the Agent Mail service, and the
+optional flywheel tools (br, bv, dcg, pt, cass, cm, caam, caut, ubs).
 
 Examples:
   ntm deps           # Quick check
@@ -414,6 +417,7 @@ func buildDepsResponse() (output.DepsResponse, error) {
 			Installed: installed,
 			Version:   version,
 			Path:      path,
+			Category:  dep.Category,
 		})
 	}
 
@@ -425,7 +429,14 @@ func buildDepsResponse() (output.DepsResponse, error) {
 		Required:  false,
 		Installed: agentMailAvailable,
 		Path:      agentmail.DefaultBaseURL,
+		Category:  "Services",
 	})
+
+	// Optional flywheel tools, so `ntm deps --json` reports the same tools
+	// as the text output and the README's Requirements list (#352).
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	depResults = append(depResults, flywheelDependencyChecks(ctx)...)
 
 	return output.DepsResponse{
 		TimestampedResponse: output.NewTimestamped(),
@@ -458,34 +469,14 @@ func checkFlywheelTools(t theme.Theme, verbose bool) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	allInfo := tools.GetAllInfo(ctx)
+	infoMap := probeFlywheelToolInfo(ctx)
 	installedCount := 0
 
-	// Key flywheel tools to display (in priority order)
-	keyTools := []tools.ToolName{
-		tools.ToolBV,   // Required for triage
-		tools.ToolBD,   // Beads issue tracker
-		tools.ToolCAAM, // Multi-account management
-		tools.ToolCaut, // Quota monitoring
-		tools.ToolDCG,  // Destructive command guard
-		tools.ToolUBS,  // Bug scanner
-		tools.ToolCASS, // Cross-agent search
-		tools.ToolCM,   // CASS memory
-	}
-
-	// Build a map for quick lookup
-	infoMap := make(map[tools.ToolName]*tools.ToolInfo)
-	for _, info := range allInfo {
-		if info != nil {
-			infoMap[info.Name] = info
-		}
-	}
-
-	for _, toolName := range keyTools {
+	for _, toolName := range flywheelDepTools {
 		info, exists := infoMap[toolName]
 		if !exists {
 			// Tool not in registry, show as unavailable
-			fmt.Printf("  %s○%s %-15s", colorize(t.Overlay), "\033[0m", string(toolName))
+			fmt.Printf("  %s○%s %-15s", colorize(t.Overlay), "\033[0m", flywheelToolLabel(toolName, ""))
 			if verbose {
 				fmt.Printf(" %snot in registry%s", "\033[2m", "\033[0m")
 			}
@@ -509,7 +500,7 @@ func checkFlywheelTools(t theme.Theme, verbose bool) int {
 		}
 
 		// Format tool name with required indicator
-		displayName := string(info.Name)
+		displayName := flywheelToolLabel(info.Name, info.Path)
 		if toolName == tools.ToolBV {
 			displayName += " *" // Mark BV as required
 		}
@@ -536,6 +527,96 @@ func checkFlywheelTools(t theme.Theme, verbose bool) int {
 	}
 
 	return installedCount
+}
+
+// flywheelDepTools are the optional flywheel tools `ntm deps` reports, in
+// display order. They cover the README "Requirements" list (br, bv, dcg, pt,
+// cass) plus the other integrations ntm drives. ToolBD resolves `br` first and
+// falls back to the legacy `bd` binary.
+var flywheelDepTools = []tools.ToolName{
+	tools.ToolBV,   // Required for triage
+	tools.ToolBD,   // Beads issue tracker (br, legacy bd)
+	tools.ToolCAAM, // Multi-account management
+	tools.ToolCaut, // Quota monitoring
+	tools.ToolDCG,  // Destructive command guard
+	tools.ToolUBS,  // Bug scanner
+	tools.ToolCASS, // Cross-agent search
+	tools.ToolCM,   // CASS memory
+	tools.ToolPT,   // Process triage
+}
+
+// flywheelToolLabel names a flywheel tool the way users invoke it. The beads
+// adapter is registered as "bd" but prefers the `br` binary, so it is shown
+// as "br" unless only the legacy `bd` binary was found.
+func flywheelToolLabel(name tools.ToolName, path string) string {
+	if name == tools.ToolBD {
+		if path != "" && filepath.Base(path) == "bd" {
+			return "bd"
+		}
+		return "br"
+	}
+	return string(name)
+}
+
+// probeFlywheelToolInfo probes only flywheelDepTools (concurrently) instead of
+// every registered adapter.
+func probeFlywheelToolInfo(ctx context.Context) map[tools.ToolName]*tools.ToolInfo {
+	infoMap := make(map[tools.ToolName]*tools.ToolInfo, len(flywheelDepTools))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for _, name := range flywheelDepTools {
+		adapter, ok := tools.Get(name)
+		if !ok {
+			continue
+		}
+		wg.Add(1)
+		go func(name tools.ToolName, adapter tools.Adapter) {
+			defer wg.Done()
+			info, _ := adapter.Info(ctx)
+			if info == nil {
+				return
+			}
+			mu.Lock()
+			infoMap[name] = info
+			mu.Unlock()
+		}(name, adapter)
+	}
+	wg.Wait()
+	return infoMap
+}
+
+// flywheelDependencyChecks reports flywheelDepTools as optional dependency
+// rows for `ntm deps --json`. It only detects the binary and reads its
+// version; health probes stay in the text output.
+func flywheelDependencyChecks(ctx context.Context) []output.DependencyCheck {
+	rows := make([]output.DependencyCheck, len(flywheelDepTools))
+	var wg sync.WaitGroup
+	for i, name := range flywheelDepTools {
+		rows[i] = output.DependencyCheck{
+			Name:     flywheelToolLabel(name, ""),
+			Category: "Flywheel Tools",
+		}
+		adapter, ok := tools.Get(name)
+		if !ok {
+			continue
+		}
+		wg.Add(1)
+		go func(row *output.DependencyCheck, name tools.ToolName, adapter tools.Adapter) {
+			defer wg.Done()
+			path, installed := adapter.Detect()
+			if !installed {
+				return
+			}
+			row.Installed = true
+			row.Path = path
+			row.Name = flywheelToolLabel(name, path)
+			if v, err := adapter.Version(ctx); err == nil {
+				row.Version = sanitizeDependencyVersion(v.String())
+			}
+		}(&rows[i], name, adapter)
+	}
+	wg.Wait()
+	return rows
 }
 
 // checkDepWithPath checks if a dependency is installed and returns its status, version, and path

@@ -313,6 +313,9 @@ type DependencyCheck struct {
 	Installed bool   `json:"installed"`
 	Version   string `json:"version,omitempty"`
 	Path      string `json:"path,omitempty"`
+	// Category groups the row the way `ntm deps` text output does:
+	// "Required", "AI Agents", "Recommended", "Services" or "Flywheel Tools".
+	Category string `json:"category,omitempty"`
 }
 
 // VersionResponse is the output format for version command
