@@ -286,8 +286,14 @@ func (e *Engine) Check(ctx context.Context, id string) (*state.Approval, error) 
 // reports whether the approval was decided. slb resolves the request in the
 // working directory's project, as when the request was filed.
 func (e *Engine) syncSLBDecision(ctx context.Context, approval *state.Approval) bool {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if ctx.Err() != nil || approval == nil || !approval.RequiresSLB || approval.Status != state.ApprovalPending {
+		return false
+	}
 	requestID, ok := strings.CutPrefix(approval.CorrelationID, "slb:")
-	if !ok || requestID == "" || !e.config.EnableSLB {
+	if !ok || strings.TrimSpace(requestID) == "" || !e.config.EnableSLB {
 		return false
 	}
 	adapter := tools.NewSLBAdapter()
@@ -300,31 +306,63 @@ func (e *Engine) syncSLBDecision(ctx context.Context, approval *state.Approval) 
 		return false
 	}
 
-	var decide func(review tools.SLBReview) error
-	switch status.Status {
-	case "approved":
-		decide = func(review tools.SLBReview) error {
-			return e.Approve(ctx, approval.ID, "slb:"+review.Reviewer)
-		}
-	case "rejected":
-		decide = func(review tools.SLBReview) error {
-			return e.Deny(ctx, approval.ID, "slb:"+review.Reviewer, review.Comments)
-		}
-	default:
+	if ctx.Err() != nil {
 		return false
 	}
-	// The deciding review is the latest one whose decision matches.
-	var deciding tools.SLBReview
-	for _, review := range status.Reviews {
-		if (status.Status == "approved") == (review.Decision == "approve") {
-			deciding = review
-		}
+	deciding, valid := slbDecisionReview(requestID, approval.RequestedBy, status)
+	if !valid {
+		slog.Warn("slb decision lacks bound reviewer evidence; approval stays pending", "approval", approval.ID, "slb_request", requestID)
+		return false
 	}
-	if err := decide(deciding); err != nil {
+	if status.Status == "approved" {
+		err = e.Approve(ctx, approval.ID, "slb:"+deciding.Reviewer)
+	} else {
+		err = e.Deny(ctx, approval.ID, "slb:"+deciding.Reviewer, deciding.Comments)
+	}
+	if err != nil {
 		slog.Warn("could not apply slb decision to approval", "approval", approval.ID, "slb_request", requestID, "slb_status", status.Status, "error", err)
 		return false
 	}
 	return true
+}
+
+// slbDecisionReview requires evidence for this exact external request. A
+// terminal status alone is not an approval, and an unknown review decision is
+// not a rejection. Preserve the adapter's review order, but never synthesize
+// an anonymous reviewer when the matching review is absent or malformed.
+func slbDecisionReview(requestID, requester string, status *tools.SLBRequestStatus) (tools.SLBReview, bool) {
+	if status == nil || requestID == "" || status.RequestID != requestID {
+		return tools.SLBReview{}, false
+	}
+	var decision string
+	switch status.Status {
+	case "approved":
+		decision = "approve"
+	case "rejected":
+		decision = "reject"
+	default:
+		return tools.SLBReview{}, false
+	}
+	var review tools.SLBReview
+	found := false
+	for _, candidate := range status.Reviews {
+		if candidate.Decision == decision {
+			review, found = candidate, true
+		}
+	}
+	if !found || strings.TrimSpace(review.Reviewer) == "" || strings.TrimSpace(review.Reviewer) != review.Reviewer {
+		return tools.SLBReview{}, false
+	}
+	// "slb:" is an audit-source prefix, not another human. A requester
+	// named alice cannot approve her own request by coming back as slb:alice.
+	if decision == "approve" {
+		requester = strings.TrimSpace(requester)
+		if requester == "" || review.Reviewer == requester || "slb:"+review.Reviewer == requester ||
+			strings.TrimPrefix(review.Reviewer, "slb:") == strings.TrimPrefix(requester, "slb:") {
+			return tools.SLBReview{}, false
+		}
+	}
+	return review, true
 }
 
 // Approve grants an approval request.
