@@ -11,6 +11,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -110,6 +112,7 @@ type RequestParams struct {
 	CorrelationID string        // Optional correlation ID for tracing
 	RequiresSLB   bool          // Whether two-person rule applies
 	ExpiresIn     time.Duration // Override default expiry (0 = use default)
+	ProjectDir    string        // SLB project directory (empty = current working directory)
 }
 
 // Request creates a new approval request.
@@ -158,21 +161,10 @@ func (e *Engine) requestWithID(ctx context.Context, params RequestParams, id str
 		Status:        state.ApprovalPending,
 	}
 
-	// If SLB is required and available, enqueue an SLB request first.
-	if params.RequiresSLB && e.config.EnableSLB {
-		slbID, err := e.enqueueSLBRequest(ctx, params)
-		if err != nil {
-			return nil, false, err
-		}
-		if slbID != "" && approval.CorrelationID == "" {
-			approval.CorrelationID = "slb:" + slbID
-		}
-	}
-
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	// Store the approval
+	// Persist admission before contacting SLB. Only the winner of this
+	// unique insert may enqueue; another process replaying the same request
+	// must not create a second external authorization. An interrupted mirror
+	// remains a native approval, never an invitation to resubmit blindly.
 	if err := e.store.CreateApproval(approval); err != nil {
 		if reuse {
 			existing, readErr := e.store.GetApproval(id)
@@ -181,6 +173,21 @@ func (e *Engine) requestWithID(ctx context.Context, params RequestParams, id str
 			}
 		}
 		return nil, false, fmt.Errorf("create approval: %w", err)
+	}
+	if params.RequiresSLB && e.config.EnableSLB {
+		link, err := e.enqueueSLBRequest(ctx, params)
+		if err != nil {
+			return approval, true, err
+		}
+		if link != nil {
+			link.ApprovalID = approval.ID
+			if err := e.store.CreateApprovalSLBLink(ctx, *link); err != nil {
+				return approval, true, fmt.Errorf("approval %s was saved but its SLB request %s could not be linked; inspect before retrying: %w", approval.ID, link.RequestID, err)
+			}
+			if approval.CorrelationID == "" {
+				approval.CorrelationID = "slb:" + link.RequestID
+			}
+		}
 	}
 
 	// Emit event
@@ -199,28 +206,51 @@ func (e *Engine) requestWithID(ctx context.Context, params RequestParams, id str
 	return approval, true, nil
 }
 
-func (e *Engine) enqueueSLBRequest(ctx context.Context, params RequestParams) (string, error) {
+func (e *Engine) enqueueSLBRequest(ctx context.Context, params RequestParams) (*state.ApprovalSLBLink, error) {
 	adapter := tools.NewSLBAdapter()
 	if _, installed := adapter.Detect(); !installed {
-		return "", nil
+		return nil, nil
 	}
 
 	// slb files requests under an agent session; without one in the
 	// environment there is nothing to mirror into.
 	session := tools.SLBSessionFromEnv()
 	if session.ID == "" {
-		return "", nil
+		return nil, nil
 	}
+	projectDir := params.ProjectDir
+	if projectDir == "" {
+		var err error
+		projectDir, err = os.Getwd()
+		if err != nil {
+			return nil, fmt.Errorf("resolve SLB working directory: %w", err)
+		}
+	}
+	projectDir, err := filepath.Abs(projectDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve SLB project: %w", err)
+	}
+	projectDir, err = filepath.EvalSymlinks(projectDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve SLB project identity: %w", err)
+	}
+	adapter.ProjectDir = projectDir
 
 	command := buildSLBCommand(params.Action, params.Resource)
 	raw, err := adapter.Request(ctx, session, command, params.Reason)
 	if err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		// Graceful fallback to internal approvals if SLB is unavailable or errors.
 		slog.Warn("SLB adapter request failed, falling back to internal approval", "error", err, "command", command)
-		return "", nil
+		return nil, nil
 	}
-
-	return parseSLBRequestID(raw), nil
+	requestID := parseSLBRequestID(raw)
+	if strings.TrimSpace(requestID) == "" || strings.TrimSpace(requestID) != requestID {
+		return nil, errors.New("SLB returned no exact request ID; native approval retained without automatic resubmission")
+	}
+	return &state.ApprovalSLBLink{RequestID: requestID, ProjectDir: projectDir}, nil
 }
 
 func buildSLBCommand(action, resource string) string {
@@ -280,11 +310,9 @@ func (e *Engine) Check(ctx context.Context, id string) (*state.Approval, error) 
 	return approval, nil
 }
 
-// syncSLBDecision applies the decision recorded in slb to a pending approval
-// correlated as "slb:<request_id>", through Approve/Deny so their checks
-// (approver list, two-person rule, concurrent decisions) still hold. It
-// reports whether the approval was decided. slb resolves the request in the
-// working directory's project, as when the request was filed.
+// syncSLBDecision follows the persisted external link, not the operation's
+// correlation key or the checking process's cwd. Native Approve/Deny retain
+// authority over the allowed reviewer and the guarded final transition.
 func (e *Engine) syncSLBDecision(ctx context.Context, approval *state.Approval) bool {
 	if ctx == nil {
 		ctx = context.Background()
@@ -292,11 +320,24 @@ func (e *Engine) syncSLBDecision(ctx context.Context, approval *state.Approval) 
 	if ctx.Err() != nil || approval == nil || !approval.RequiresSLB || approval.Status != state.ApprovalPending {
 		return false
 	}
-	requestID, ok := strings.CutPrefix(approval.CorrelationID, "slb:")
-	if !ok || strings.TrimSpace(requestID) == "" || !e.config.EnableSLB {
+	if !e.config.EnableSLB {
+		return false
+	}
+	link, err := e.store.GetApprovalSLBLink(ctx, approval.ID)
+	if err != nil || link == nil {
+		if err != nil {
+			slog.Warn("SLB linkage unavailable; approval stays pending", "approval", approval.ID, "error", err)
+		}
+		return false
+	}
+	requestID := link.RequestID
+	resolved, err := filepath.EvalSymlinks(link.ProjectDir)
+	if err != nil || resolved != link.ProjectDir {
+		slog.Warn("SLB project identity changed; approval stays pending", "approval", approval.ID, "slb_request", requestID)
 		return false
 	}
 	adapter := tools.NewSLBAdapter()
+	adapter.ProjectDir = link.ProjectDir
 	if _, installed := adapter.Detect(); !installed {
 		return false
 	}
@@ -307,6 +348,9 @@ func (e *Engine) syncSLBDecision(ctx context.Context, approval *state.Approval) 
 	}
 
 	if ctx.Err() != nil {
+		return false
+	}
+	if status != nil && status.Status != "approved" && status.Status != "rejected" {
 		return false
 	}
 	deciding, valid := slbDecisionReview(requestID, approval.RequestedBy, status)

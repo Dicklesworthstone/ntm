@@ -15,6 +15,9 @@ import (
 // SLBAdapter provides integration with the Simultaneous Launch Button (slb) tool
 type SLBAdapter struct {
 	*BaseAdapter
+	// ProjectDir pins request/status operations to their original project.
+	// Empty retains the invoking process's working directory.
+	ProjectDir string
 }
 
 // NewSLBAdapter creates a new SLB adapter
@@ -253,6 +256,7 @@ func (a *SLBAdapter) runCommand(ctx context.Context, args ...string) (json.RawMe
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, a.BinaryName(), args...)
+	cmd.Dir = a.ProjectDir
 	cmd.WaitDelay = time.Second
 	stdout := NewLimitedBuffer(10 * 1024 * 1024)
 	var stderr bytes.Buffer

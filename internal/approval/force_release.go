@@ -163,6 +163,7 @@ func (e *Engine) EvaluateForceRelease(ctx context.Context, mode string, op Force
 		record, decision.Created, err = e.requestWithID(ctx, RequestParams{
 			Action: "force_release", Resource: string(resource), Reason: reason,
 			RequestedBy: op.RequestedBy, CorrelationID: decision.OperationKey, RequiresSLB: true,
+			ProjectDir: op.ProjectKey,
 		}, id, true)
 		if err != nil {
 			return decision, fmt.Errorf("create force-release approval: %w", err)
