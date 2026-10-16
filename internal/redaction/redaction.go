@@ -108,6 +108,9 @@ func scan(input string, allowlist []*regexp.Regexp, disabled []Category, extra [
 		// Find all matches for this pattern.
 		locs := p.regex.FindAllStringIndex(input, -1)
 		for _, loc := range locs {
+			if p.reject != nil && p.reject(input, loc[0], loc[1]) {
+				continue
+			}
 			matchStr := input[loc[0]:loc[1]]
 
 			allMatches = append(allMatches, match{

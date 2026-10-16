@@ -34,6 +34,17 @@ type pattern struct {
 	regex            *regexp.Regexp
 	priority         int // higher priority patterns take precedence
 	requiredLiterals []literalRequirement
+	// reject, when set, drops a regex match that is known not to be a
+	// credential (for example the shell's PWD= working-directory variable).
+	// Only built-in patterns carry one; user ExtraPatterns never do.
+	reject func(input string, start, end int) bool
+}
+
+// builtinMatchRejecters maps a built-in category to a post-match filter
+// that removes known non-credential shapes the regex cannot exclude on
+// its own (Go's RE2 has no look-behind).
+var builtinMatchRejecters = map[Category]func(input string, start, end int) bool{
+	CategoryPassword: rejectNonCredentialPassword,
 }
 
 // defaultPatterns contains all built-in detection patterns.
@@ -95,6 +106,7 @@ func compilePatterns() {
 				regex:            re,
 				priority:         def.priority,
 				requiredLiterals: normalizeLiteralRequirements(def.requiredLiterals),
+				reject:           builtinMatchRejecters[def.category],
 			})
 		}
 		// Sort by priority (descending) for deterministic matching.
@@ -263,4 +275,90 @@ func (p pattern) passesLiteralPrefilter(input string, lowerInput *string, lowerR
 		}
 	}
 	return true
+}
+
+// rejectNonCredentialPassword reports whether a PASSWORD-pattern match at
+// input[start:end] is a known non-credential:
+//
+//   - the shell's PWD / OLDPWD working-directory variables (or a lowercase
+//     pwd key) whose value is a filesystem path or a shell expansion, such
+//     as `PWD=/home/user/project` from `env` output. Keys that merely end
+//     in PWD (MYSQL_PWD, DB_PWD) and non-path values (ODBC `Pwd=secret;`)
+//     are still reported.
+//   - a value that is only a redaction placeholder: `<set>`, `<redacted>`
+//     (also JSON-escaped as \u003c...\u003e), or a run of `*`.
+func rejectNonCredentialPassword(input string, start, end int) bool {
+	if start < 0 || end > len(input) || start >= end {
+		return false
+	}
+	m := input[start:end]
+	sep := strings.IndexAny(m, "=:")
+	if sep < 0 {
+		return false
+	}
+	key := strings.TrimSpace(m[:sep])
+	value := strings.Trim(strings.TrimSpace(m[sep+1:]), `"'`)
+
+	if isPasswordPlaceholderValue(value) {
+		return true
+	}
+
+	// Extend the key left over identifier characters so OLDPWD and
+	// MYSQL_PWD are seen whole (the regex match starts at "PWD").
+	identStart := start
+	for identStart > 0 && isIdentByte(input[identStart-1]) {
+		identStart--
+	}
+	ident := strings.ToLower(input[identStart:start] + key)
+	if ident != "pwd" && ident != "oldpwd" {
+		return false
+	}
+	return looksLikePathOrExpansion(value)
+}
+
+func isIdentByte(b byte) bool {
+	return b == '_' || (b >= '0' && b <= '9') || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
+}
+
+func looksLikePathOrExpansion(v string) bool {
+	if v == "" {
+		return false
+	}
+	switch v[0] {
+	case '/', '~', '$':
+		return true
+	case '.':
+		return strings.HasPrefix(v, "./") || strings.HasPrefix(v, "../")
+	}
+	// Windows drive path: C:\ or C:/
+	if len(v) >= 3 && v[1] == ':' && (v[2] == '\\' || v[2] == '/') {
+		c := v[0] | 0x20
+		return c >= 'a' && c <= 'z'
+	}
+	return false
+}
+
+func isPasswordPlaceholderValue(v string) bool {
+	v = strings.TrimRight(v, ",;")
+	if v == "" {
+		return false
+	}
+	if strings.Trim(v, "*") == "" {
+		return true
+	}
+	lower := strings.ToLower(v)
+	for _, open := range []string{"<", "\\u003c"} {
+		closeTok := ">"
+		if open != "<" {
+			closeTok = "\\u003e"
+		}
+		if strings.HasPrefix(lower, open) && strings.HasSuffix(lower, closeTok) {
+			inner := lower[len(open) : len(lower)-len(closeTok)]
+			switch inner {
+			case "set", "redacted", "hidden", "password", "secret":
+				return true
+			}
+		}
+	}
+	return false
 }
