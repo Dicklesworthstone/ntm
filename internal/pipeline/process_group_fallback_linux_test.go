@@ -19,7 +19,7 @@ import (
 // Use real children and kernel failure injection. The seccomp filters apply
 // only inside a subprocess, never to the test runner or a developer's shell.
 func TestCommandGroupFallbackKernelFailures(t *testing.T) {
-	for _, mode := range []string{"group-denied", "settlement-denied", "open-denied", "send-denied", "unowned", "reaped"} {
+	for _, mode := range []string{"group-denied", "settlement-denied", "open-denied", "send-denied", "unowned", "reaped", "wait-cancel", "wait-deadline", "wait-observe", "wait-ownership"} {
 		t.Run(mode, func(t *testing.T) {
 			exe, err := os.Executable()
 			if err != nil {
@@ -27,7 +27,7 @@ func TestCommandGroupFallbackKernelFailures(t *testing.T) {
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
-			cmd := exec.CommandContext(ctx, exe, "-test.run=^TestCommandGroupFallbackHelper$")
+			cmd := exec.CommandContext(ctx, exe, "-test.run=^TestCommandGroupFallbackHelper$", "-test.v")
 			cmd.Env = append(os.Environ(), "NTM_GROUP_FALLBACK_HELPER="+mode)
 			configureCommandProcessGroup(cmd)
 			output, err := cmd.CombinedOutput()
@@ -36,6 +36,9 @@ func TestCommandGroupFallbackKernelFailures(t *testing.T) {
 			}
 			if strings.Contains(string(output), "SECCOMP_UNAVAILABLE") {
 				t.Skipf("kernel fault injection unavailable: %s", output)
+			}
+			if strings.HasPrefix(mode, "wait-") {
+				t.Logf("%s", output)
 			}
 		})
 	}
@@ -49,6 +52,10 @@ func TestCommandGroupFallbackHelper(t *testing.T) {
 	// A filter attached by prctl applies to this thread. Keep all subsequent
 	// signal operations on it. The process exits without unlocking the thread.
 	runtime.LockOSThread()
+	if strings.HasPrefix(mode, "wait-") {
+		fallbackTestBoundedWait(t, mode)
+		return
+	}
 	if mode == "unowned" {
 		// The outer test gives this helper its own group. Without the ownership
 		// guard this call SIGKILLs the helper, safely demonstrating the defect.
@@ -206,6 +213,24 @@ func fallbackTestInstallFilter(mode string) error {
 			{Code: unix.BPF_RET | unix.BPF_K, K: unix.SECCOMP_RET_ALLOW},
 		}
 	}
+	if strings.HasPrefix(mode, "wait-") {
+		// The command remains alive even after every shutdown signal fails.
+		// Deny both os.Process's pidfd route and the numeric group route on
+		// the cleanup owner's locked thread. The final reaper runs elsewhere
+		// and never sends a signal. wait-observe also denies the initial probe.
+		numbers := []uint32{unix.SYS_KILL, unix.SYS_PIDFD_SEND_SIGNAL}
+		if mode == "wait-observe" {
+			numbers = append(numbers, unix.SYS_WAITID)
+		}
+		filter = []unix.SockFilter{{Code: unix.BPF_LD | unix.BPF_W | unix.BPF_ABS, K: 0}}
+		for _, nr := range numbers {
+			filter = append(filter,
+				unix.SockFilter{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, K: nr, Jf: 1},
+				unix.SockFilter{Code: unix.BPF_RET | unix.BPF_K, K: unix.SECCOMP_RET_ERRNO | uint32(syscall.EPERM)},
+			)
+		}
+		filter = append(filter, unix.SockFilter{Code: unix.BPF_RET | unix.BPF_K, K: unix.SECCOMP_RET_ALLOW})
+	}
 	if err := unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0); err != nil {
 		return err
 	}
@@ -213,6 +238,99 @@ func fallbackTestInstallFilter(mode string) error {
 	err := unix.Prctl(unix.PR_SET_SECCOMP, unix.SECCOMP_MODE_FILTER, uintptr(unsafe.Pointer(&program)), 0, 0)
 	runtime.KeepAlive(filter)
 	return err
+}
+
+// Exercise the production waiter, not a substituted Wait or signal function.
+// The 12-second child lifetime is an independent safety net for a regressed
+// waiter: even the negative control cannot leave an indefinitely live child.
+func fallbackTestBoundedWait(t *testing.T, mode string) {
+	t.Helper()
+	cmd := exec.Command("/bin/sh", "-c", "printf ready; exec sleep 12")
+	configureCommandProcessGroup(cmd)
+	cmd.WaitDelay = 0 // The waiter must also bound callers without pipe setup.
+	capture := newCappedWriter(64)
+	cmd.Stdout, cmd.Stderr = capture, capture
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	process := cmd.Process
+	waitStarted := false
+	defer func() {
+		// Leave the seccomp-restricted thread to clean up this exact process
+		// handle. Never call Wait twice or read cmd.ProcessState concurrently
+		// with a late reaper. Observe reaping and capture completion instead.
+		stopped := make(chan struct{})
+		go func() {
+			_ = process.Kill()
+			if !waitStarted {
+				_ = cmd.Wait()
+			}
+			close(stopped)
+		}()
+		<-stopped
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) {
+			_, err := os.Stat(fmt.Sprintf("/proc/%d", process.Pid))
+			if errors.Is(err, os.ErrNotExist) && capture.outputCaptureComplete() {
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		t.Error("final reaper did not release the child and finish its output capture")
+	}()
+	deadline := time.Now().Add(3 * time.Second)
+	for capture.String() != "ready" {
+		if time.Now().After(deadline) {
+			t.Fatal("command did not publish its initial output")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if mode == "wait-ownership" {
+		// The OS group is isolated, but the supplied command lacks proof.
+		cmd.SysProcAttr = nil
+	}
+	if err := fallbackTestInstallFilter(mode); err != nil {
+		fmt.Printf("SECCOMP_UNAVAILABLE: %v\n", err)
+		return
+	}
+	ctx := context.Background()
+	if mode == "wait-cancel" {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithCancel(ctx)
+		cancel()
+	} else if mode == "wait-deadline" {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 20*time.Millisecond)
+		defer cancel()
+	}
+	start := time.Now()
+	waitStarted = true
+	result := waitCommandWithProcessGroupCleanup(ctx, cmd)
+	elapsed := time.Since(start)
+	// Five seconds of grace, one second of settlement, two of final wait,
+	// plus scheduling tolerance. The old code waits for the 12-second child.
+	if elapsed > commandCancelGracePeriod+5*commandPipeDrainTimeout {
+		t.Fatalf("cleanup exceeded its budget: elapsed=%v result=%+v", elapsed, result)
+	}
+	if result.Settled || !errors.Is(result.Err, syscall.EPERM) ||
+		!strings.Contains(result.Err.Error(), "did not finish waiting after cleanup") {
+		t.Fatalf("failed shutdown did not retain an unresolved outcome: %+v", result)
+	}
+	if result.Cancelled != (ctx.Err() != nil) || (ctx.Err() != nil && !errors.Is(result.Err, ctx.Err())) {
+		t.Fatalf("lost cancellation or deadline cause: %+v context=%v", result, ctx.Err())
+	}
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", process.Pid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, state, err := parseCommandGroupStat(data, process.Pid)
+	if err != nil || state == "Z" || state == "X" {
+		t.Fatalf("fixture did not keep the denied-signal child alive: state=%q err=%v", state, err)
+	}
+	if capture.String() != "ready" || capture.outputCaptureComplete() {
+		t.Fatal("unresolved return lost partial output or claimed its still-open pipe had reached EOF")
+	}
+	t.Logf("%s returned unresolved in %v with child still alive and partial output retained", mode, elapsed)
 }
 
 func TestCommandGroupFallbackSweepsOnlyItsGroup(t *testing.T) {

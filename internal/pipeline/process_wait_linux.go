@@ -10,10 +10,13 @@ import (
 	"strings"
 	"syscall"
 	"time"
-	"unsafe"
+
+	"golang.org/x/sys/unix"
 )
 
 const commandGroupPollInterval = 50 * time.Millisecond
+
+var errCommandLeaderRunning = errors.New("command leader is still running")
 
 // waitCommandWithProcessGroupCleanup owns the WHOLE isolated command group.
 // Do not call Cmd.Wait concurrently: it would reap the leader, allowing its
@@ -29,56 +32,76 @@ func waitCommandWithProcessGroupCleanup(ctx context.Context, cmd *exec.Cmd) (res
 		return commandCleanupResult{Err: errors.New("command cleanup requires a started, unwaited command")}
 	}
 	defer func() { verifyCommandOutputSettlement(cmd, &result) }()
+	if cmd.WaitDelay == 0 {
+		cmd.WaitDelay = commandPipeDrainTimeout
+	}
+	// All group signals must finish before this handoff. Wait owns cmd from
+	// here on, even if it cannot finish within the cleanup budget. In that
+	// case retain one final reaper (with no delayed group signals), rather
+	// than hanging the pipeline or falsely settling its launch journal.
+	// Callers may keep reading synchronized captures, but must not reuse cmd.
+	reap := func(result commandCleanupResult) commandCleanupResult {
+		done := make(chan error, 1)
+		go func() { done <- cmd.Wait() }()
+		timer := time.NewTimer(commandPipeDrainTimeout + cmd.WaitDelay)
+		defer timer.Stop()
+		select {
+		case err := <-done:
+			result.Err = errors.Join(result.Err, err)
+			if cmd.ProcessState == nil {
+				result.Settled = false
+			}
+		case <-timer.C:
+			result.Err = errors.Join(result.Err, errors.New("command leader did not finish waiting after cleanup; execution remains unresolved"))
+			result.Settled = false
+		}
+		return result
+	}
 	if cmd.SysProcAttr == nil || !cmd.SysProcAttr.Setpgid || cmd.SysProcAttr.Pgid != 0 {
 		// Never infer group ownership from a process number alone.
-		_ = cmd.Process.Kill()
-		return commandCleanupResult{Err: errors.Join(errors.New("command cleanup requires its own process group"), cmd.Wait())}
+		killErr := cmd.Process.Kill()
+		return reap(commandCleanupResult{Err: errors.Join(errors.New("command cleanup requires its own process group"), killErr)})
 	}
 	// Detect unsupported waitid or an externally reaped child before sending
-	// any numeric group signal. A successful WNOHANG probe does not reap.
-	if err := observeCommandExit(cmd.Process.Pid, syscall.WNOHANG); err != nil {
-		_ = cmd.Process.Kill()
-		return commandCleanupResult{Err: errors.Join(err, cmd.Wait())}
+	// any numeric group signal. A live or exited child remains unreaped.
+	if err := observeCommandExit(cmd.Process.Pid, syscall.WNOHANG); err != nil && !errors.Is(err, errCommandLeaderRunning) {
+		killErr := cmd.Process.Kill()
+		return reap(commandCleanupResult{Err: errors.Join(err, killErr)})
 	}
-	exited := make(chan error, 1)
-	go func() { exited <- observeCommandExit(cmd.Process.Pid, 0) }()
-	var observationErr error
-	leaderExited := false
-	select {
-	case observationErr = <-exited:
-		leaderExited = true
-		if observationErr != nil {
-			_ = cmd.Process.Kill()
-			return commandCleanupResult{Err: errors.Join(observationErr, cmd.Wait())}
-		}
-		if ctx.Err() == nil {
-			// The shell may have forked work and exited before that work
-			// finishes. Preserve its output and keep cancellation effective
-			// until all ordinary group members stop executing.
-			observationErr = waitCommandGroupQuiescent(ctx, cmd.Process.Pid)
-			if observationErr == nil {
-				// Close the enumeration/fork race while the group ID is still
-				// pinned. Normal background writers have already finished.
-				err := cancelCommandProcessGroup(cmd)
-				if errors.Is(err, os.ErrProcessDone) {
-					err = nil
-				}
-				// Signal delivery is not proof that every child stopped. Take
-				// a fresh census while the leader still pins the group ID.
-				settle, stop := context.WithTimeout(context.Background(), commandPipeDrainTimeout)
-				quietErr := waitCommandGroupQuiescent(settle, cmd.Process.Pid)
-				stop()
-				return commandCleanupResult{Err: errors.Join(err, quietErr, cmd.Wait()), Settled: err == nil && quietErr == nil}
+	// A blocking waitid goroutine cannot be canceled if SIGKILL is denied
+	// or the leader is stuck in uninterruptible I/O. Poll without reaping so
+	// cancellation never has to join an unbounded exit observer.
+	observationErr := waitCommandLeaderExit(ctx, cmd.Process.Pid)
+	if observationErr != nil && !errors.Is(observationErr, context.Canceled) && !errors.Is(observationErr, context.DeadlineExceeded) {
+		// Lost waitability is not authority for a numeric group signal.
+		killErr := cmd.Process.Kill()
+		return reap(commandCleanupResult{Err: errors.Join(observationErr, ctx.Err(), killErr), Cancelled: ctx.Err() != nil})
+	}
+	if ctx.Err() == nil {
+		// The shell may have forked work and exited before that work
+		// finishes. Preserve its output and keep cancellation effective
+		// until all ordinary group members stop executing.
+		observationErr = waitCommandGroupQuiescent(ctx, cmd.Process.Pid)
+		if observationErr == nil {
+			// Close the enumeration/fork race while the group ID is still
+			// pinned. Normal background writers have already finished.
+			err := cancelCommandProcessGroup(cmd)
+			if errors.Is(err, os.ErrProcessDone) {
+				err = nil
 			}
+			// Signal delivery is not proof that every child stopped. Take
+			// a fresh census while the leader still pins the group ID.
+			settle, stop := context.WithTimeout(context.Background(), commandPipeDrainTimeout)
+			quietErr := waitCommandGroupQuiescent(settle, cmd.Process.Pid)
+			stop()
+			return reap(commandCleanupResult{Err: errors.Join(err, quietErr), Settled: err == nil && quietErr == nil})
 		}
-	case <-ctx.Done():
-		// The observation goroutine is joined below, before Cmd.Wait.
 	}
 	if observationErr != nil && ctx.Err() == nil {
 		// The leader is pinned, but failed procfs inspection cannot prove
 		// quiescence. Terminate the owned group and surface that failure.
-		_ = cancelCommandProcessGroup(cmd)
-		return commandCleanupResult{Err: errors.Join(observationErr, cmd.Wait())}
+		killErr := cancelCommandProcessGroup(cmd)
+		return reap(commandCleanupResult{Err: errors.Join(observationErr, killErr)})
 	}
 
 	result = commandCleanupResult{Cancelled: true, SignalSent: "SIGTERM"}
@@ -106,33 +129,46 @@ func waitCommandWithProcessGroupCleanup(ctx context.Context, cmd *exec.Cmd) (res
 	if quietErr != nil {
 		result.Err = errors.Join(result.Err, fmt.Errorf("command group did not settle: %w", quietErr))
 	}
-	// Join the observation goroutine before reaping. No waiter or deferred
-	// numeric-PGID signal is allowed to survive this command's lifetime.
-	if !leaderExited {
-		observationErr = <-exited
-	} else {
-		observationErr = nil
-	}
-	result.Err = errors.Join(result.Err, ctx.Err(), observationErr, cmd.Wait())
-	result.Settled = killErr == nil && quietErr == nil && observationErr == nil
-	return result
+	result.Err = errors.Join(result.Err, ctx.Err())
+	result.Settled = killErr == nil && quietErr == nil
+	return reap(result)
 }
 
-// observeCommandExit uses the same 128-byte Linux siginfo buffer and
-// WEXITED|WNOWAIT protocol as Go's os.Process implementation. The raw syscall
-// is confined to this Linux file; no pointers survive the synchronous call.
+// observeCommandExit distinguishes a live child from an observed exit while
+// preserving waitability. Use x/sys's architecture-specific siginfo layout;
+// a successful WNOHANG syscall alone does not prove that the child exited.
 func observeCommandExit(pid int, extraFlags int) error {
-	var info [16]uint64
+	var info unix.Siginfo
 	for {
-		_, _, errno := syscall.Syscall6(syscall.SYS_WAITID, 1 /* P_PID */, uintptr(pid),
-			uintptr(unsafe.Pointer(&info[0])), syscall.WEXITED|syscall.WNOWAIT|uintptr(extraFlags), 0, 0)
-		if errno == syscall.EINTR {
+		err := unix.Waitid(unix.P_PID, pid, &info, unix.WEXITED|unix.WNOWAIT|extraFlags, nil)
+		if errors.Is(err, syscall.EINTR) {
 			continue
 		}
-		if errno != 0 {
-			return os.NewSyscallError("waitid", errno)
+		if err != nil {
+			return os.NewSyscallError("waitid", err)
+		}
+		if info.Signo == 0 {
+			return errCommandLeaderRunning
 		}
 		return nil
+	}
+}
+
+func waitCommandLeaderExit(ctx context.Context, pid int) error {
+	ticker := time.NewTicker(commandGroupPollInterval)
+	defer ticker.Stop()
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := observeCommandExit(pid, syscall.WNOHANG); !errors.Is(err, errCommandLeaderRunning) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
 	}
 }
 
