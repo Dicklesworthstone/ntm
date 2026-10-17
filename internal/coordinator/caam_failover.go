@@ -33,6 +33,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/agentsession"
 	"github.com/Dicklesworthstone/ntm/internal/config"
+	"github.com/Dicklesworthstone/ntm/internal/policy"
 	"github.com/Dicklesworthstone/ntm/internal/ratelimit"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/state"
@@ -286,10 +287,9 @@ func newFailoverChecker(session, workDir string, caamCfg config.CAAMConfig) *fai
 			out, err := tmux.DefaultClient.RunContext(ctx, "display-message", "-p", "-t", tmux.ExactTarget(paneID), "#{pane_current_path}")
 			return strings.TrimSuffix(out, "\n"), err
 		},
-		readSpec:       tmux.ReadPaneLaunchSpecContext,
-		observeBinding: agentsession.ObserveGlobalCredentialBinding,
-		restartPane:    robot.GetRestartPaneContext,
-		lockProvider:   acquireFailoverProviderLock,
+		readSpec:     tmux.ReadPaneLaunchSpecContext,
+		restartPane:  robot.GetRestartPaneContext,
+		lockProvider: acquireFailoverProviderLock,
 		publish: func(record robot.ActuationRecord) {
 			robot.GetAttentionFeed().PublishActuation(record)
 		},
@@ -298,6 +298,11 @@ func newFailoverChecker(session, workDir string, caamCfg config.CAAMConfig) *fai
 		lastPublished: make(map[string]declineMark),
 	}
 	fc.lastSwitchAt = fc.storedLastSwitch
+	fc.observeBinding = func(ctx context.Context, agentType, workDir string, panePID int) (agentsession.GlobalCredentialBinding, error) {
+		return agentsession.ObserveGlobalCredentialBinding(ctx, agentType, workDir, panePID, agentsession.ResumeLaunchOptions{
+			TrustedClaudeSettings: policy.ClaudeAgentLaunchSettings(fc.config).Settings,
+		})
+	}
 	fc.claimSwitch = fc.storeLastSwitch
 	fc.guardSwitch = fc.guardPaneSwitch
 	fc.recoverPane = fc.recoverLimitedPane
@@ -584,7 +589,7 @@ func (fc *failoverChecker) observeRecoveryPane(ctx context.Context, expected tmu
 	if spec.CAAMProfile != "" || spec.ClaudeIsolateCredentials || spec.ClaudeTokenFile != "" || len(spec.OmittedEnv) != 0 {
 		return empty, "", errors.New("pane does not use replayable global credentials")
 	}
-	if err := agentsession.ValidateGlobalCredentialLaunchCommand(string(expected.Type), spec.Command, agentsession.ResumeLaunchOptions{SystemPromptFile: spec.SystemPromptFile}); err != nil {
+	if err := agentsession.ValidateGlobalCredentialLaunchCommand(string(expected.Type), spec.Command, agentsession.ResumeLaunchOptions{SystemPromptFile: spec.SystemPromptFile, TrustedClaudeSettings: policy.ClaudeAgentLaunchSettings(fc.config).Settings}); err != nil {
 		return empty, "", err
 	}
 	if saved != nil && !reflect.DeepEqual(*saved, *spec) {

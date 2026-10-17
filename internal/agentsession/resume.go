@@ -20,6 +20,9 @@ const antigravityModel = "Gemini 4 Argon (High)"
 // hash through launch-spec preflight before executing the resulting command.
 type ResumeLaunchOptions struct {
 	SystemPromptFile string
+	// TrustedClaudeSettings must be independently generated from the effective
+	// NTM policy, never copied from a saved command or live process arguments.
+	TrustedClaudeSettings string
 }
 
 // ResumeLaunchCommand resumes a session using its recorded launch command,

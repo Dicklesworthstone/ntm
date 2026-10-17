@@ -14,6 +14,7 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/agentsession"
 	"github.com/Dicklesworthstone/ntm/internal/config"
+	"github.com/Dicklesworthstone/ntm/internal/policy"
 	"github.com/Dicklesworthstone/ntm/internal/ratelimit"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/state"
@@ -255,6 +256,48 @@ func newAccountRecoveryFixture(t *testing.T, count int) *accountRecoveryFixture 
 	}
 	fc.recoverPane = fc.recoverLimitedPane
 	return f
+}
+
+func TestAccountFailoverMonitorPreservesTrustedSafetySettings(t *testing.T) {
+	for _, custom := range []bool{false, true} {
+		t.Run(fmt.Sprintf("custom=%v", custom), func(t *testing.T) {
+			f := newAccountRecoveryFixture(t, 1)
+			cfg := f.monitor.checker.config
+			cfg.Safety.ClaudePolicyHook = true
+			cfg.Integrations.DCG.Enabled = false
+			cfg.Integrations.RCH.Enabled = true
+			cfg.Integrations.RCH.BinaryPath = filepath.Join(t.TempDir(), "rch")
+			if err := os.WriteFile(cfg.Integrations.RCH.BinaryPath, []byte("#!/bin/sh\nexit 0\n"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			settings := policy.ClaudeAgentLaunchSettings(cfg).Settings
+			if settings == "" || !strings.Contains(settings, "rch") {
+				t.Fatalf("missing integrations: %s", settings)
+			}
+			if custom {
+				settings = `{"apiKeyHelper":"external"}`
+			}
+			for id, spec := range f.specs {
+				spec.Command += " --settings " + tmux.ShellQuote(settings)
+				f.specs[id] = spec
+			}
+			decisions := f.monitor.RunOnce(t.Context())
+			if custom {
+				if f.activated != 0 || f.respawned != 0 {
+					t.Fatalf("custom credentials rotated: %+v", decisions)
+				}
+				return
+			}
+			if len(decisions) != 1 || !decisions[0].ConversationRecovered || f.activated != 1 || f.respawned != 1 {
+				t.Fatalf("trusted recovery failed: %+v", decisions)
+			}
+			for _, spec := range f.specs {
+				if !strings.Contains(spec.Command, tmux.ShellQuote(settings)) || strings.Count(spec.Command, "--resume") != 1 {
+					t.Fatalf("recovery dropped hooks: %s", spec.Command)
+				}
+			}
+		})
+	}
 }
 
 func TestAccountFailoverMonitorRecoversSiblingsWithoutRepeatedGlobalActivation(t *testing.T) {

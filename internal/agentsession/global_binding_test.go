@@ -16,10 +16,63 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/config"
+	"github.com/Dicklesworthstone/ntm/internal/policy"
 )
 
 const globalBindingTestID = "019543cf-eec4-79ff-a77a-90d271789499"
 const globalBindingOtherID = "019543cf-eec4-79ff-a77a-90d271789488"
+
+func TestGlobalCredentialBindingTrustedHooks(t *testing.T) {
+	cfg := config.Default()
+	cfg.Safety.ClaudePolicyHook = true
+	cfg.Integrations.DCG.Enabled = false
+	cfg.Integrations.RCH.Enabled = false
+	t.Setenv("HOME", t.TempDir())
+	trusted := policy.ClaudeAgentLaunchSettings(cfg).Settings
+	if trusted == "" {
+		t.Fatal("policy hook was not generated")
+	}
+	for _, tc := range []struct {
+		name      string
+		argv      []string
+		wantError bool
+	}{
+		{"global login", []string{"claude", "--model", "opus"}, false},
+		{"policy hook", []string{"claude", "--settings", trusted}, false},
+		{"inline policy hook", []string{"claude", "--settings=" + trusted}, false},
+		{"custom file", []string{"claude", "--settings", "/tmp/settings.json"}, true},
+		{"custom inline", []string{"claude", "--settings", `{"hooks":{}}`}, true},
+		{"credential setting", []string{"claude", "--settings", `{"apiKeyHelper":"secret"}`}, true},
+		{"duplicate", []string{"claude", "--settings", trusted, "--settings", trusted}, true},
+		{"missing value", []string{"claude", "--settings"}, true},
+		{"sources", []string{"claude", "--settings", trusted, "--setting-sources", "user"}, true},
+		{"sources alias", []string{"claude", "--settings-sources=user"}, true},
+		{"credential argument", []string{"claude", "--settings", trusted, "--auth-token=secret"}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateGlobalBindingArguments("claude", tc.argv, trusted)
+			if (err != nil) != tc.wantError {
+				t.Fatalf("error=%v, wantError=%v", err, tc.wantError)
+			}
+			f := newGlobalBindingFixture(t, "claude")
+			p := f.processes[101]
+			p.argv = tc.argv
+			f.processes[101] = p
+			f.deps.trustedClaudeSettings = trusted
+			_, err = f.observe(t)
+			if (err != nil) != tc.wantError {
+				t.Fatalf("live proof error=%v, wantError=%v", err, tc.wantError)
+			}
+		})
+	}
+	command := "claude --settings " + shellQuote(trusted)
+	if err := ValidateGlobalCredentialLaunchCommand("cc", command, ResumeLaunchOptions{TrustedClaudeSettings: trusted}); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateGlobalCredentialLaunchCommand("cc", command, ResumeLaunchOptions{}); err == nil {
+		t.Fatal("settings trusted without independent policy evidence")
+	}
+}
 
 type globalBindingFixture struct {
 	home, workDir, provider, transcript string

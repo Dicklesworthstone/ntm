@@ -131,7 +131,7 @@ func prepareSwarmAccountRotation(ctx context.Context, plan *swarm.SwarmPlan, opt
 				}
 				if err != nil {
 					reason = fmt.Sprintf("configured launch command cannot be rendered: %v", err)
-				} else if err := agentsession.ValidateGlobalCredentialLaunchCommand(pane.AgentType, command, agentsession.ResumeLaunchOptions{}); err != nil {
+				} else if err := agentsession.ValidateGlobalCredentialLaunchCommand(pane.AgentType, command, agentsession.ResumeLaunchOptions{TrustedClaudeSettings: vars.ClaudeSettings}); err != nil {
 					reason = fmt.Sprintf("configured launch cannot use global account recovery: %v", err)
 				} else {
 					r.specs[key] = tmux.AgentLaunchSpec{Version: tmux.AgentLaunchSpecVersion, AgentType: tmux.AgentType(pane.AgentType), Command: command, Model: model}
