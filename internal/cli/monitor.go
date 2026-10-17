@@ -364,7 +364,12 @@ var newAccountRotationRunner = func(session string, options coordinator.AccountF
 var rotationSessionIdentityPattern = regexp.MustCompile(`^[1-9][0-9]*:\$[0-9]+:[1-9][0-9]*$`)
 
 func accountRotationSessionIdentity(ctx context.Context, session string) (string, error) {
-	identity, err := tmux.DefaultClient.RunContext(ctx, "display-message", "-p", "-t", tmux.TargetSession(session), "#{pid}:#{session_id}:#{session_created}")
+	if err := tmux.ValidateSessionName(session); err != nil {
+		return "", fmt.Errorf("account rotation requires an unambiguous session name: %w", err)
+	}
+	// display-message needs a pane-qualified exact target. A bare =session
+	// can succeed with empty output even though that session exists.
+	identity, err := tmux.DefaultClient.RunContext(ctx, "display-message", "-p", "-t", tmux.SessionPaneTarget(session), "#{pid}:#{session_id}:#{session_created}")
 	if err != nil {
 		return "", err
 	}

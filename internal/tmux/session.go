@@ -1362,6 +1362,12 @@ func validatePaneLaunchBaselineLiveContext(ctx context.Context, session, paneID 
 // moments ago is not refused for its shell's startup children) and then
 // applies ValidatePaneLaunchBaseline to what tmux reports.
 func ValidatePaneLaunchBaselineSettledContext(ctx context.Context, session string, pane Pane) error {
+	return DefaultClient.ValidatePaneLaunchBaselineSettledContext(ctx, session, pane)
+}
+
+// ValidatePaneLaunchBaselineSettledContext uses this client's tmux server for
+// every observation, including remote swarm launches.
+func (c *Client) ValidatePaneLaunchBaselineSettledContext(ctx context.Context, session string, pane Pane) error {
 	command := strings.TrimSpace(pane.Command)
 	if command == "" || pane.IdleShell() {
 		return nil
@@ -1370,7 +1376,7 @@ func ValidatePaneLaunchBaselineSettledContext(ctx context.Context, session strin
 	if paneID == "" {
 		return ValidatePaneLaunchBaseline(pane)
 	}
-	err := validatePaneLaunchBaselineLiveContext(ctx, session, paneID, GetPanesContext)
+	err := validatePaneLaunchBaselineLiveContext(ctx, session, paneID, c.GetPanesContext)
 	if err == nil || errors.Is(err, ErrPaneOccupied) {
 		return err
 	}

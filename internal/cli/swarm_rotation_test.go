@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/Dicklesworthstone/ntm/internal/config"
+	"github.com/Dicklesworthstone/ntm/internal/policy"
 	"github.com/Dicklesworthstone/ntm/internal/resilience"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
@@ -94,6 +95,65 @@ func TestSwarmAccountRotationJSONRequiresConfirmedResidentReceipts(t *testing.T)
 	calls, _ := os.ReadFile(filepath.Join(dir, "calls"))
 	if !strings.Contains(string(calls), "&& claude --model 'saved-opus' --effort high") || !strings.Contains(string(calls), "&& codex -m 'saved-codex'") {
 		t.Fatalf("configured agent commands were not launched: %s", calls)
+	}
+}
+
+func TestSwarmAccountRotationWaitsForNewPaneStartup(t *testing.T) {
+	project, _, requests := swarmRotationCommandFixture(t)
+	t.Setenv("NTM_SWARM_STARTING", "1")
+	out, err := executeSwarmCommandJSON(t, context.Background(), "--projects", project, "--auto-rotate-accounts", "--force-global-auth-clobber")
+	if err != nil || !out.Success || len(*requests) != 2 {
+		t.Fatalf("startup did not settle: %+v %v", out, err)
+	}
+}
+
+func TestSwarmAccountRotationPreservesSafetyIntegrations(t *testing.T) {
+	for _, integration := range []string{"policy", "rch", "both", "custom"} {
+		t.Run(integration, func(t *testing.T) {
+			project, dir, requests := swarmRotationCommandFixture(t)
+			cfg.Swarm.Tier3Allocation = config.AllocationSpec{CC: 1}
+			cfg.Safety.ClaudePolicyHook = integration != "rch"
+			cfg.Integrations.RCH = config.Default().Integrations.RCH
+			cfg.Integrations.RCH.Enabled = integration != "policy"
+			cfg.Integrations.RCH.BinaryPath = filepath.Join(dir, "rch")
+			if err := os.WriteFile(cfg.Integrations.RCH.BinaryPath, []byte("#!/bin/sh\nexit 0\n"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if integration == "custom" {
+				cfg.Agents.Claude = `claude --settings '{"hooks":{}}'`
+			}
+			expected := policy.ClaudeAgentLaunchSettings(cfg).Settings
+			if expected == "" {
+				t.Fatal("no hooks generated")
+			}
+			out, err := executeSwarmCommandJSON(t, context.Background(), "--projects", project, "--auto-rotate-accounts")
+			if integration == "custom" {
+				if err == nil || len(*requests) != 0 {
+					t.Fatalf("custom settings launched: %+v %v", out, err)
+				}
+				return
+			}
+			if err != nil || !out.Success || out.AccountRotation.EligiblePanes != 1 || len(*requests) != 1 {
+				t.Fatalf("hooks launch: %+v %v", out, err)
+			}
+			encoded, err := os.ReadFile(filepath.Join(dir, (*requests)[0].Agents[0].PaneID+"-launch"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, err := base64.StdEncoding.DecodeString(string(encoded))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var saved struct {
+				Spec tmux.AgentLaunchSpec `json:"spec"`
+			}
+			if err := json.Unmarshal(data, &saved); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(saved.Spec.Command, "--settings") || !strings.Contains(saved.Spec.Command, "PreToolUse") {
+				t.Fatalf("hooks missing from saved replay: %s", saved.Spec.Command)
+			}
+		})
 	}
 }
 

@@ -277,7 +277,7 @@ func (pl *PaneLauncher) LaunchAgentInPane(ctx context.Context, sessionName strin
 		if pane.Dead || pane.IsServicePane() || pane.Type.Canonical() != tmux.AgentType(paneSpec.AgentType).Canonical() {
 			return fail(fmt.Errorf("pane %s no longer has the planned agent identity", pane.ID))
 		}
-		if err := tmux.ValidatePaneLaunchBaseline(pane); err != nil {
+		if err := client.ValidatePaneLaunchBaselineSettledContext(ctx, sessionName, pane); err != nil {
 			return fail(err)
 		}
 		paneTarget = pane.ID
@@ -356,7 +356,7 @@ func (pl *PaneLauncher) LaunchAgentInPane(ctx context.Context, sessionName strin
 		if pane.Dead || pane.IsServicePane() || pane.Title != title || pane.Type.Canonical() != spec.AgentType.Canonical() {
 			return fail(fmt.Errorf("pane %s changed identity before launch", paneTarget))
 		}
-		if err := tmux.ValidatePaneLaunchBaseline(pane); err != nil {
+		if err := client.ValidatePaneLaunchBaselineSettledContext(ctx, sessionName, pane); err != nil {
 			return fail(err)
 		}
 	}

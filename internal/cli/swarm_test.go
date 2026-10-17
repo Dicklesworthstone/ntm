@@ -48,6 +48,7 @@ func swarmCommandFixture(t *testing.T) (string, string) {
 	t.Setenv("NTM_SWARM_BLOCK", "")
 	t.Setenv("NTM_SWARM_NOT_READY", "")
 	t.Setenv("NTM_SWARM_EXISTING", "")
+	t.Setenv("NTM_SWARM_STARTING", "")
 	t.Setenv("SHALLOW_PROFILE", "")
 	const script = `#!/bin/sh
 printf '%s\n' "$*" >> "$NTM_SWARM_FIXTURE/calls"
@@ -97,6 +98,13 @@ case "$action" in
     title=
     if [ -f "$NTM_SWARM_FIXTURE/$pane-title" ]; then title=$(cat "$NTM_SWARM_FIXTURE/$pane-title"); fi
     command=bash
+    if [ -n "$NTM_SWARM_STARTING" ]; then
+      count=0
+      if [ -f "$NTM_SWARM_FIXTURE/$pane-observations" ]; then count=$(cat "$NTM_SWARM_FIXTURE/$pane-observations"); fi
+      count=$((count + 1))
+      printf '%s' "$count" > "$NTM_SWARM_FIXTURE/$pane-observations"
+      if [ "$count" -lt 3 ]; then command=sleep; fi
+    fi
     if [ -f "$NTM_SWARM_FIXTURE/$pane-command" ]; then command=$(cat "$NTM_SWARM_FIXTURE/$pane-command"); fi
     printf '%s_NTM_SEP_7_NTM_SEP_%s_NTM_SEP_%s_NTM_SEP_80_NTM_SEP_24_NTM_SEP_1_NTM_SEP_0_NTM_SEP_4_NTM_SEP__NTM_SEP__NTM_SEP__NTM_SEP_0\n' "$pane" "$title" "$command"
     ;;
@@ -117,6 +125,8 @@ case "$action" in
   display-message)
     if [ "$value" = '#{session_name}' ]; then echo "$session"
     elif [ "$value" = '#{pid}:#{session_id}:#{session_created}' ]; then
+      # Real tmux 3.4/3.6 returns empty output for bare =session targets.
+      case "$target" in *:) ;; *) exit 0 ;; esac
       if [ -f "$NTM_SWARM_FIXTURE/identity" ]; then cat "$NTM_SWARM_FIXTURE/identity"; else echo '700:$1:1770000000'; fi
     else echo 0; fi
     ;;
