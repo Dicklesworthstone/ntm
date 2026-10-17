@@ -324,9 +324,8 @@ func TestSetAndClearRegistrationToken(t *testing.T) {
 	}
 }
 
-// TestSendOverseerMessage_MCPPath verifies the new MCP-based overseer
-// route (ntm#146): ensure_project + register_agent(HumanOverseer) +
-// send_message with importance=high and the preamble.
+// The MCP-only legacy route uses an existing authorized identity. It must
+// never attempt ordinary registration of the reserved HumanOverseer name.
 func TestSendOverseerMessage_MCPPath(t *testing.T) {
 	t.Parallel()
 
@@ -336,7 +335,7 @@ func TestSendOverseerMessage_MCPPath(t *testing.T) {
 	var sentSubject atomic.Value    // string
 	var sentBody atomic.Value       // string
 
-	server := httptest.NewServer(mockMCPHandler(t, map[string]func(args map[string]interface{}) (interface{}, *JSONRPCError){
+	mcp := mockMCPHandler(t, map[string]func(args map[string]interface{}) (interface{}, *JSONRPCError){
 		"ensure_project": func(args map[string]interface{}) (interface{}, *JSONRPCError) {
 			sawEnsureProject.Store(true)
 			calls.Add(1)
@@ -372,8 +371,7 @@ func TestSendOverseerMessage_MCPPath(t *testing.T) {
 			// `sender_token` arg (send_message's identity-scoped param;
 			// fetch_inbox / acknowledge_message etc. use
 			// `registration_token` keyed off `agent_name`). The
-			// rememberRegistrationToken call after register_agent
-			// should have cached it, and attachSenderToken should
+			// existing identity token is cached, and attachSenderToken should
 			// add it here because sender_name matches the cache key.
 			if tok, _ := args["sender_token"].(string); tok != "tok-overseer" {
 				return nil, &JSONRPCError{
@@ -388,10 +386,18 @@ func TestSendOverseerMessage_MCPPath(t *testing.T) {
 				Count: 1,
 			}, nil
 		},
+	})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/overseer/send") {
+			http.NotFound(w, r)
+			return
+		}
+		mcp.ServeHTTP(w, r)
 	}))
 	defer server.Close()
 
 	c := NewClient(WithBaseURL(server.URL + "/"))
+	c.SetRegistrationToken("/abs/project", HumanOverseerAgentName, "tok-overseer")
 	result, err := c.SendOverseerMessage(context.Background(), OverseerMessageOptions{
 		ProjectKey: "/abs/project",
 		Recipients: []string{"StormyOwl", "SilverOtter"},
@@ -404,8 +410,8 @@ func TestSendOverseerMessage_MCPPath(t *testing.T) {
 	if !sawEnsureProject.Load() {
 		t.Error("ensure_project must be called as part of overseer flow")
 	}
-	if !sawRegisterOverseer.Load() {
-		t.Error("register_agent(HumanOverseer) must be called")
+	if sawRegisterOverseer.Load() {
+		t.Error("reserved overseer identity must never be registered as an ordinary agent")
 	}
 	if got, _ := sentImportance.Load().(string); got != "high" {
 		t.Errorf("send_message importance = %q, want high", got)

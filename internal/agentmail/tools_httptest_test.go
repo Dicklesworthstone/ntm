@@ -3,6 +3,7 @@ package agentmail
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -898,6 +899,155 @@ func TestSendOverseerMessage(t *testing.T) {
 	}
 }
 
+func TestOverseerInterventionContract(t *testing.T) {
+	for _, legacy := range []bool{false, true} {
+		for _, recipients := range [][]string{{"BlueLake"}, {"BlueLake", "RedStone"}} {
+			t.Run(fmt.Sprintf("legacy=%v/recipients=%d", legacy, len(recipients)), func(t *testing.T) {
+				var calls int
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					calls++
+					if r.URL.Path != "/mail/project/overseer/send" || r.Header.Get("Authorization") != "Bearer operator-token" {
+						t.Errorf("unexpected request: %s, authorization=%q", r.URL.Path, r.Header.Get("Authorization"))
+						http.Error(w, "unauthorized", http.StatusUnauthorized)
+						return
+					}
+					var body map[string]interface{}
+					if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+						t.Error(err)
+					}
+					// Old HTTP servers ignore new audit fields; current servers
+					// enforce these before creating the system identity.
+					if !legacy && (body["intent"] != "human_overseer_send" || body["reason"] != DefaultOverseerReason ||
+						body["confirm_multiple"] != (len(recipients) > 1)) {
+						http.Error(w, `{"error":"invalid intervention audit fields"}`, http.StatusBadRequest)
+						return
+					}
+					if _, ok := body["broadcast"]; ok {
+						t.Error("must use explicit recipients, never broadcast")
+					}
+					if body["body_md"] != "operator instructions" || body["thread_id"] != "incident-355" {
+						t.Errorf("message semantics changed: %v", body)
+					}
+					_ = json.NewEncoder(w).Encode(OverseerSendResult{Success: true, MessageID: 355, Recipients: recipients})
+				}))
+				defer server.Close()
+				c := NewClient(WithBaseURL(server.URL+"/mcp/"), WithToken("operator-token"))
+				result, err := c.SendOverseerMessage(t.Context(), OverseerMessageOptions{
+					ProjectKey: "/project", ProjectSlug: "project", Recipients: recipients,
+					Subject: "intervention", BodyMD: "operator instructions", ThreadID: "incident-355",
+				})
+				if err != nil || result.MessageID != 355 || calls != 1 {
+					t.Fatalf("result=%+v, err=%v, calls=%d", result, err, calls)
+				}
+			})
+		}
+	}
+}
+
+func TestOverseerRejectionNeverFallsBack(t *testing.T) {
+	for _, status := range []int{400, 401, 403, 404, 405, 500} {
+		for _, key := range []string{"error", "detail"} {
+			t.Run(fmt.Sprintf("%d/%s", status, key), func(t *testing.T) {
+				var calls int
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					calls++
+					w.WriteHeader(status)
+					_ = json.NewEncoder(w).Encode(map[string]string{key: "operator permission denied"})
+				}))
+				defer server.Close()
+				c := NewClient(WithBaseURL(server.URL + "/mcp/"))
+				_, err := c.SendOverseerMessage(t.Context(), OverseerMessageOptions{
+					ProjectKey: "/project", ProjectSlug: "project", Recipients: []string{"BlueLake"},
+					Subject: "intervention", BodyMD: "instructions",
+				})
+				if err == nil || !strings.Contains(err.Error(), "operator permission denied") || calls != 1 {
+					t.Fatalf("err=%v, calls=%d", err, calls)
+				}
+				if (status == 401 || status == 403) && !IsUnauthorized(err) {
+					t.Errorf("authentication classification lost: %v", err)
+				}
+			})
+		}
+	}
+}
+
+func TestOverseerAmbiguousReceiptNeverRetries(t *testing.T) {
+	for _, body := range []string{"not json", "null", "{}", `{"success":false,"message_id":1}`} {
+		t.Run(body, func(t *testing.T) {
+			var calls int
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				_, _ = w.Write([]byte(body))
+			}))
+			defer server.Close()
+			c := NewClient(WithBaseURL(server.URL + "/mcp/"))
+			_, err := c.SendOverseerMessage(t.Context(), OverseerMessageOptions{
+				ProjectKey: "/project", ProjectSlug: "project", Recipients: []string{"BlueLake"},
+				Subject: "intervention", BodyMD: "instructions",
+			})
+			if err == nil || calls != 1 {
+				t.Fatalf("ambiguous receipt must not succeed or retry: err=%v, calls=%d", err, calls)
+			}
+		})
+	}
+}
+
+func TestOverseerStructuredRejectionNeverDowngrades(t *testing.T) {
+	for _, body := range []string{
+		`{"error":{"type":"FORBIDDEN","message":"human intervention disabled"}}`,
+		`{"detail":[{"msg":"operator is not authorized"}]}`,
+		`{"error":""}`,
+	} {
+		t.Run(body, func(t *testing.T) {
+			var calls int
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = w.Write([]byte(body))
+			}))
+			defer server.Close()
+			c := NewClient(WithBaseURL(server.URL + "/mcp/"))
+			_, err := c.SendOverseerMessage(t.Context(), OverseerMessageOptions{
+				ProjectKey: "/project", ProjectSlug: "project", Recipients: []string{"BlueLake"},
+				Subject: "intervention", BodyMD: "instructions",
+			})
+			if err == nil || IsNotImplemented(err) || calls != 1 {
+				t.Fatalf("structured rejection downgraded: err=%v, calls=%d", err, calls)
+			}
+		})
+	}
+}
+
+func TestOverseerInvalidInputDoesNotSend(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		change func(*OverseerMessageOptions)
+	}{
+		{"no recipients", func(o *OverseerMessageOptions) { o.Recipients = nil }},
+		{"blank recipient", func(o *OverseerMessageOptions) { o.Recipients = []string{" "} }},
+		{"too many recipients", func(o *OverseerMessageOptions) { o.Recipients = make([]string, 101) }},
+		{"blank subject", func(o *OverseerMessageOptions) { o.Subject = " " }},
+		{"long subject", func(o *OverseerMessageOptions) { o.Subject = strings.Repeat("界", 201) }},
+		{"blank body", func(o *OverseerMessageOptions) { o.BodyMD = " " }},
+		{"long body", func(o *OverseerMessageOptions) { o.BodyMD = strings.Repeat("界", 49_601) }},
+		{"blank reason", func(o *OverseerMessageOptions) { o.Reason = " " }},
+		{"long reason", func(o *OverseerMessageOptions) { o.Reason = strings.Repeat("界", 501) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				t.Error("invalid input reached server")
+			}))
+			defer server.Close()
+			c := NewClient(WithBaseURL(server.URL + "/mcp/"))
+			opts := OverseerMessageOptions{ProjectSlug: "project", Recipients: []string{"BlueLake"}, Subject: "subject", BodyMD: "body"}
+			tc.change(&opts)
+			if _, err := c.SendOverseerMessage(t.Context(), opts); !IsInvalidRequest(err) {
+				t.Fatalf("expected invalid request, got %v", err)
+			}
+		})
+	}
+}
+
 func TestSendOverseerMessage_Unauthorized(t *testing.T) {
 	t.Parallel()
 
@@ -933,7 +1083,7 @@ func TestSendOverseerMessage_BadRequest(t *testing.T) {
 	c := NewClient(WithBaseURL(server.URL + "/mcp/"))
 	_, err := c.SendOverseerMessage(context.Background(), OverseerMessageOptions{
 		ProjectSlug: "ntm",
-		Recipients:  []string{},
+		Recipients:  []string{"UnknownAgent"},
 		Subject:     "test",
 		BodyMD:      "test",
 	})

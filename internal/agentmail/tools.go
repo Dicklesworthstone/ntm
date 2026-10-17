@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Dicklesworthstone/ntm/internal/reservationpath"
 )
@@ -830,65 +831,54 @@ func (c *Client) ContactHandshake(ctx context.Context, opts ContactHandshakeOpti
 	return &handshakeResult, nil
 }
 
-// SendOverseerMessage sends a Human Overseer message. On mcp-agent-mail
-// >=2.13 (the current server line) this uses the MCP `send_message`
-// tool with a registered `HumanOverseer` agent — the legacy
-// `/mail/{slug}/overseer/send` HTTP endpoint is no longer exposed by
-// many deployments and was returning 404 (#146).
-//
-// The MCP path:
-//
-//  1. Ensures the project exists.
-//  2. Registers a `HumanOverseer` agent (idempotent — re-registering
-//     just refreshes its activity timestamp on the server).
-//  3. Sends via `send_message` with `importance=high`, the configured
-//     thread id, and a `HumanOverseerPreamble` prepended to the body.
-//
-// As a back-compat fallback (older servers that still expose the HTTP
-// endpoint and don't accept `HumanOverseer` as an agent name), if MCP
-// send_message reports the special "human-overseer-not-supported"
-// error path we retry against the HTTP endpoint. Most callers will
-// never hit that branch.
+// SendOverseerMessage uses the server's audited human intervention route.
+// Only a missing route permits a legacy MCP send, using an already provisioned
+// identity. Never register the reserved name, downgrade a rejected intervention,
+// or retry an ambiguous send (which could duplicate delivery).
 func (c *Client) SendOverseerMessage(ctx context.Context, opts OverseerMessageOptions) (*OverseerSendResult, error) {
-	// Prefer the MCP path. Need ProjectKey for the MCP tools (the
-	// server-side project_key is an absolute path, not the URL slug).
-	// Legacy callers that only have a ProjectSlug fall through to
-	// the HTTP route and the server validates recipients/subject
-	// shape there.
-	projectKey := opts.ProjectKey
-	if projectKey == "" {
-		return c.sendOverseerMessageHTTP(ctx, opts)
+	if opts.Reason == "" {
+		opts.Reason = DefaultOverseerReason
+	}
+	opts.Reason = strings.TrimSpace(opts.Reason)
+	if len(opts.Recipients) == 0 || len(opts.Recipients) > 100 {
+		return nil, NewAPIError("overseer_send", 0, fmt.Errorf("%w: choose 1 to 100 explicit recipients", ErrInvalidRequest))
+	}
+	for _, recipient := range opts.Recipients {
+		if strings.TrimSpace(recipient) == "" {
+			return nil, NewAPIError("overseer_send", 0, fmt.Errorf("%w: recipient cannot be empty", ErrInvalidRequest))
+		}
+	}
+	for _, field := range []struct {
+		name  string
+		value string
+		limit int
+	}{
+		{"subject", opts.Subject, 200},
+		{"message body", opts.BodyMD, 49_600},
+		{"intervention reason", opts.Reason, 500},
+	} {
+		if strings.TrimSpace(field.value) == "" || !utf8.ValidString(field.value) || utf8.RuneCountInString(field.value) > field.limit {
+			return nil, NewAPIError("overseer_send", 0, fmt.Errorf("%w: %s must contain 1 to %d characters", ErrInvalidRequest, field.name, field.limit))
+		}
+	}
+	if opts.ProjectSlug == "" && opts.ProjectKey != "" {
+		project, err := c.EnsureProject(ctx, opts.ProjectKey)
+		if err != nil {
+			return nil, err
+		}
+		opts.ProjectSlug = project.Slug
+		if opts.ProjectSlug == "" {
+			opts.ProjectSlug = ProjectSlugFromPath(opts.ProjectKey)
+		}
+	}
+	result, err := c.sendOverseerMessageHTTP(ctx, opts)
+	if err == nil || !errors.Is(err, ErrNotImplemented) || opts.ProjectKey == "" {
+		return result, err
 	}
 
-	// 1. Ensure project — idempotent, cheap, and gets us a stable
-	//    handle the server understands even if this is the very first
-	//    overseer call against this project.
-	if _, err := c.EnsureProject(ctx, projectKey); err != nil {
-		// EnsureProject failure isn't fatal for the overseer flow on
-		// older servers that auto-create on first message, so we
-		// don't return here — but record it for diagnostics if MCP
-		// itself also fails below.
-		_ = err
-	}
-
-	// 2. Register / re-claim the HumanOverseer agent. This is
-	//    idempotent on the server and gives us a registration_token
-	//    (cached automatically via rememberRegistrationToken).
-	if _, err := c.RegisterAgent(ctx, RegisterAgentOptions{
-		ProjectKey:      projectKey,
-		Name:            HumanOverseerAgentName,
-		Program:         "ntm",
-		Model:           "human",
-		TaskDescription: "Out-of-band instructions from the human operator",
-	}); err != nil {
-		// Fall back to the legacy HTTP endpoint when MCP registration
-		// fails outright (e.g. older server without identity support).
-		return c.sendOverseerMessageHTTP(ctx, opts)
-	}
-
-	body := HumanOverseerPreamble + opts.BodyMD
+	body := HumanOverseerPreamble + "Human intervention reason: " + opts.Reason + "\n\n" + opts.BodyMD
 	send, err := c.SendMessage(ctx, SendMessageOptions{
-		ProjectKey: projectKey,
+		ProjectKey: opts.ProjectKey,
 		SenderName: HumanOverseerAgentName,
 		To:         opts.Recipients,
 		Subject:    opts.Subject,
@@ -897,19 +887,12 @@ func (c *Client) SendOverseerMessage(ctx context.Context, opts OverseerMessageOp
 		ThreadID:   opts.ThreadID,
 	})
 	if err != nil {
-		// MCP route refused (e.g. server doesn't allow a Human-Overseer
-		// agent and there's no contact yet). Try the HTTP endpoint as
-		// a last resort — operators running newer servers won't take
-		// this branch.
-		if httpResult, httpErr := c.sendOverseerMessageHTTP(ctx, opts); httpErr == nil {
-			return httpResult, nil
-		}
-		return nil, err
+		return nil, fmt.Errorf("legacy overseer send requires an existing authorized HumanOverseer identity; use a server with the overseer intervention route: %w", err)
 	}
 
 	// Map send_message's SendResult (per-recipient deliveries) onto
 	// OverseerSendResult so the CLI's output shape is unchanged.
-	result := &OverseerSendResult{
+	result = &OverseerSendResult{
 		Success:    true,
 		Recipients: opts.Recipients,
 	}
@@ -927,10 +910,8 @@ func (c *Client) SendOverseerMessage(ctx context.Context, opts OverseerMessageOp
 	return result, nil
 }
 
-// sendOverseerMessageHTTP is the legacy HTTP REST path. Kept for
-// back-compat against older servers that still expose
-// `/mail/{slug}/overseer/send`. Newer deployments (the v2.13.x line
-// the #146 reporter is on) typically 404 here.
+// sendOverseerMessageHTTP leaves identity provisioning, policy bypass, preamble,
+// importance, and audit recording to the server's designated intervention route.
 func (c *Client) sendOverseerMessageHTTP(ctx context.Context, opts OverseerMessageOptions) (*OverseerSendResult, error) {
 	if opts.ProjectSlug == "" {
 		return nil, NewAPIError("overseer_send", 0, fmt.Errorf("project_slug required for HTTP fallback path"))
@@ -938,9 +919,12 @@ func (c *Client) sendOverseerMessageHTTP(ctx context.Context, opts OverseerMessa
 
 	// Build request body
 	reqBody := map[string]interface{}{
-		"recipients": opts.Recipients,
-		"subject":    opts.Subject,
-		"body_md":    opts.BodyMD,
+		"intent":           "human_overseer_send",
+		"reason":           opts.Reason,
+		"confirm_multiple": len(opts.Recipients) > 1,
+		"recipients":       opts.Recipients,
+		"subject":          opts.Subject,
+		"body_md":          opts.BodyMD,
 	}
 	if opts.ThreadID != "" {
 		reqBody["thread_id"] = opts.ThreadID
@@ -981,28 +965,59 @@ func (c *Client) sendOverseerMessageHTTP(ctx context.Context, opts OverseerMessa
 		return nil, NewAPIError("overseer_send", 0, err)
 	}
 
-	// Check HTTP status
-	if resp.StatusCode == http.StatusUnauthorized {
-		return nil, NewAPIError("overseer_send", resp.StatusCode, ErrUnauthorized)
-	}
-	if resp.StatusCode == http.StatusBadRequest {
-		// Try to extract error message from response
-		var errResp struct {
-			Detail string `json:"detail"`
-		}
-		if json.Unmarshal(respBody, &errResp) == nil && errResp.Detail != "" {
-			return nil, NewAPIError("overseer_send", resp.StatusCode, fmt.Errorf("%s", errResp.Detail))
-		}
-		return nil, NewAPIError("overseer_send", resp.StatusCode, fmt.Errorf("bad request"))
-	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, NewAPIError("overseer_send", resp.StatusCode, fmt.Errorf("unexpected status: %s", resp.Status))
+		var errResp struct {
+			Detail json.RawMessage `json:"detail"`
+			Error  json.RawMessage `json:"error"`
+		}
+		_ = json.Unmarshal(respBody, &errResp)
+		raw := errResp.Error
+		if len(raw) == 0 {
+			raw = errResp.Detail
+		}
+		var message string
+		if len(raw) > 0 && json.Unmarshal(raw, &message) != nil {
+			var structured struct {
+				Message string `json:"message"`
+			}
+			if json.Unmarshal(raw, &structured) == nil && structured.Message != "" {
+				message = structured.Message
+			} else {
+				message = string(raw)
+			}
+		}
+		cause := error(nil)
+		switch resp.StatusCode {
+		case http.StatusUnauthorized, http.StatusForbidden:
+			cause = ErrUnauthorized
+		case http.StatusBadRequest:
+			cause = ErrInvalidRequest
+		case http.StatusNotFound, http.StatusMethodNotAllowed:
+			// A structured rejection may mean an unknown project or a policy
+			// denial, rather than an absent route. Do not downgrade it.
+			if len(errResp.Error) == 0 && len(errResp.Detail) == 0 {
+				cause = ErrNotImplemented
+			}
+		}
+		if message == "" {
+			message = strings.ToLower(http.StatusText(resp.StatusCode))
+		}
+		if cause != nil {
+			return nil, NewAPIError("overseer_send", resp.StatusCode, fmt.Errorf("%w: %s", cause, message))
+		}
+		return nil, NewAPIError("overseer_send", resp.StatusCode, errors.New(message))
 	}
 
 	// Parse response
 	var result OverseerSendResult
 	if err := json.Unmarshal(respBody, &result); err != nil {
 		return nil, NewAPIError("overseer_send", 0, err)
+	}
+	if !result.Success || result.MessageID <= 0 {
+		return nil, NewAPIError("overseer_send", 0, fmt.Errorf("server did not confirm overseer delivery"))
+	}
+	if len(result.Recipients) == 0 {
+		result.Recipients = opts.Recipients // Older HTTP receipts omit this field.
 	}
 
 	return &result, nil
