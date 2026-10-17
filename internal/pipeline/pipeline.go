@@ -29,12 +29,20 @@ type Pipeline struct {
 
 // Execute runs the pipeline stages sequentially
 func Execute(ctx context.Context, p Pipeline) error {
+	if ctx == nil {
+		return fmt.Errorf("pipeline execution requires a context")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	var previousOutput string
-	var lastPaneID string
-
-	detector := status.NewDetector()
+	var previousDelivery AgentDeliveryState
+	executor := NewExecutor(DefaultExecutorConfig(p.Session))
 
 	for i, stage := range p.Stages {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		log.Printf("Stage %d/%d [%s]: %s", i+1, len(p.Stages), stage.AgentType, util.Truncate(stage.Prompt, 50))
 
 		// 1. Find a suitable pane
@@ -43,66 +51,131 @@ func Execute(ctx context.Context, p Pipeline) error {
 			return fmt.Errorf("stage %d failed: %w", i+1, err)
 		}
 
-		// Capture state BEFORE sending prompt to isolate the new response later
-		beforeOutput, err := tmux.CapturePaneOutput(paneID, 2000)
+		// Use the same ownership, readiness and lifetime evidence as file
+		// workflows. The shorthand is not permission to paste into a draft or
+		// to overlap another pipeline's capture/response window.
+		stageCtx, cancel := context.WithTimeout(ctx, 30*time.Minute)
+		delivery, err := executor.executeAdHocStage(stageCtx, stage, paneID, previousOutput, previousDelivery)
+		cancel()
 		if err != nil {
-			// Non-fatal, just means we might capture too much context
-			beforeOutput = ""
+			return fmt.Errorf("stage %d failed: %w", i+1, err)
 		}
-
-		// 2. Prepare prompt
-		prompt := stage.Prompt
-		if previousOutput != "" {
-			if paneID == lastPaneID {
-				// Same agent, context is already in the pane history.
-				// Add a reference to the previous output instead of duplicating it.
-				prompt = fmt.Sprintf("%s\n\n(See previous output above)", prompt)
-			} else {
-				// Different agent, inject the output from the previous stage
-				prompt = fmt.Sprintf("%s\n\nResult from previous stage:\n%s", prompt, previousOutput)
-			}
-		}
-
-		// 3. Send prompt
-		if err := tmux.PasteKeys(paneID, prompt, true); err != nil {
-			return fmt.Errorf("stage %d sending prompt: %w", i+1, err)
-		}
-
-		// 3b. Establish that the prompt actually left the composer before
-		// treating pane idleness as completion (ntm#320). Without this an
-		// agent TUI that swallowed the paste's Enter leaves the instruction
-		// unsubmitted, the pane reads idle, and the stage advances having
-		// executed nothing.
-		if err := dispatch.VerifyAgentSubmission(ctx, paneID, prompt,
-			tmux.AgentType(normalizeAgentType(stage.AgentType)), 0); err != nil {
-			return fmt.Errorf("stage %d prompt was not submitted: %w", i+1, err)
-		}
-
-		// 4. Wait for working state (debounce)
-		time.Sleep(2 * time.Second)
-
-		// 5. Wait for idle state
-		log.Printf("  Waiting for agent...")
-		if err := waitForIdle(ctx, detector, paneID); err != nil {
-			return fmt.Errorf("stage %d waiting for completion: %w", i+1, err)
-		}
-		log.Printf("  Done.")
-
-		// 6. Capture output
-		// We capture a larger buffer to ensure we get the full response.
-		// 2000 lines should cover most responses without being excessive.
-		afterOutput, err := tmux.CapturePaneOutput(paneID, 2000)
-		if err != nil {
-			return fmt.Errorf("stage %d capturing output: %w", i+1, err)
-		}
-
-		// Extract only the new content
-		output := util.ExtractNewOutput(beforeOutput, afterOutput)
-		previousOutput = output
-		lastPaneID = paneID
+		previousOutput, previousDelivery = delivery.Output, delivery
 	}
 
 	return nil
+}
+
+// executeAdHocStage is intentionally not a retrying or resumable workflow.
+// Once transport is attempted, an error stops the chain and leaves the pane
+// for inspection. A later invocation is a new operator-requested execution.
+func (e *Executor) executeAdHocStage(ctx context.Context, stage Stage, paneID, previousOutput string, previous AgentDeliveryState) (AgentDeliveryState, error) {
+	agentType := normalizeAgentType(stage.AgentType)
+	record := AgentDeliveryState{Session: e.config.Session, PaneID: paneID, Endpoint: e.agentDeliveryEndpoint(), AgentType: agentType}
+	pane, err := e.agentDeliveryPane(ctx, paneID, 0, record.Endpoint)
+	if err != nil {
+		return record, err
+	}
+	record.PanePID = pane.PID
+	release, err := e.acquirePaneLockCrossProcess(ctx, paneID)
+	if err != nil {
+		return record, err
+	}
+	defer release()
+
+	// Waiting for the lock may outlive the selected process. Do not redirect
+	// a queued stage to its replacement, even when the physical pane ID stays.
+	pane, err = e.agentDeliveryPane(ctx, paneID, record.PanePID, record.Endpoint)
+	if err != nil {
+		return record, err
+	}
+	if normalizeAgentType(string(pane.Type)) != agentType || pane.IsServicePane() {
+		return record, fmt.Errorf("selected pane %s no longer matches stage agent %s", paneID, stage.AgentType)
+	}
+	if err := e.tmuxClient().PrepareDelivery(ctx, pane, agentType); err != nil {
+		return record, fmt.Errorf("stage not dispatched: %w", err)
+	}
+	before, err := e.captureAgentDelivery(ctx, record)
+	if err != nil {
+		return record, fmt.Errorf("capture before dispatch: %w", err)
+	}
+	prompt := stage.Prompt
+	if previousOutput != "" {
+		if previous.PaneID == paneID && previous.PanePID == record.PanePID && previous.Endpoint == record.Endpoint {
+			prompt += "\n\n(See previous output above)"
+		} else {
+			prompt += "\n\nResult from previous stage:\n" + previousOutput
+		}
+	}
+	// Capture can block or race an interactive UI transition. Refresh the
+	// shared composer gate and process identity immediately before transport.
+	if err := e.tmuxClient().PrepareDelivery(ctx, pane, agentType); err != nil {
+		return record, fmt.Errorf("stage not dispatched: %w", err)
+	}
+	pane, err = e.agentDeliveryPane(ctx, paneID, record.PanePID, record.Endpoint)
+	if err != nil {
+		return record, err
+	}
+	if err := dispatch.RefuseDeadAgentPane(pane); err != nil {
+		return record, err
+	}
+	if normalizeAgentType(string(pane.Type)) != agentType || pane.IsServicePane() {
+		return record, fmt.Errorf("selected pane %s changed agent identity before dispatch", paneID)
+	}
+	if err := ctx.Err(); err != nil {
+		return record, err
+	}
+	if client, ok := e.tmuxClient().(interface {
+		PasteKeysContext(context.Context, string, string, bool) error
+	}); ok {
+		err = client.PasteKeysContext(ctx, paneID, prompt, true)
+	} else {
+		err = e.tmuxClient().PasteKeys(paneID, prompt, true)
+	}
+	if err != nil {
+		return record, fmt.Errorf("sending stage prompt; inspect pane before retrying: %w", err)
+	}
+	if err := e.tmuxClient().VerifySubmission(ctx, paneID, prompt, agentType, pane.Width); err != nil {
+		return record, fmt.Errorf("stage submission not confirmed; inspect pane before retrying: %w", err)
+	}
+	collect := func() (bool, error) {
+		current, err := e.captureAgentDelivery(ctx, record)
+		if err != nil {
+			return false, err
+		}
+		delta, err := agentDeliveryNewOutput(before, current)
+		if err != nil {
+			return false, err
+		}
+		if len(record.Output)+len(delta) > agentDeliveryMaxOutputBytes {
+			return false, fmt.Errorf("stage response exceeds the %d-byte evidence limit", agentDeliveryMaxOutputBytes)
+		}
+		before, record.Output = current, record.Output+delta
+		response := normalizeAgentEcho(record.Output)
+		return response != "" && response != normalizeAgentEcho(prompt), nil
+	}
+	timer := time.NewTimer(2 * time.Second)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return record, ctx.Err()
+	case <-timer.C:
+	}
+	if err := waitForIdle(ctx, e.detector, paneID, collect); err != nil {
+		return record, fmt.Errorf("waiting for stage completion: %w", err)
+	}
+	// The last detector call may have outlived cancellation or pane respawn.
+	// Require one more validated capture before exposing output downstream.
+	if _, err := collect(); err != nil {
+		return record, err
+	}
+	return record, ctx.Err()
+}
+
+// Shorthand stages must pass their deadline through the actual paste, not only
+// the surrounding preflight. Older injected TmuxClients still use PasteKeys.
+func (realTmuxClient) PasteKeysContext(ctx context.Context, target, content string, enter bool) error {
+	return tmux.DefaultClient.PasteKeysContext(ctx, target, content, enter)
 }
 
 func findPaneForStage(session, agentType, model string) (string, error) {
@@ -117,6 +190,9 @@ func findPaneForStage(session, agentType, model string) (string, error) {
 	// long-form detections ("claude") match short-form targets ("cc") and
 	// vice versa (ntm#212).
 	for _, p := range panes {
+		if p.Dead || p.IsServicePane() || dispatch.RefuseDeadAgentPane(p) != nil {
+			continue
+		}
 		if normalizeAgentType(string(p.Type)) == targetType {
 			// Check model if specified
 			if model != "" && p.Variant != model {
@@ -130,6 +206,9 @@ func findPaneForStage(session, agentType, model string) (string, error) {
 	// Only if model was specified but not found
 	if model != "" {
 		for _, p := range panes {
+			if p.Dead || p.IsServicePane() || dispatch.RefuseDeadAgentPane(p) != nil {
+				continue
+			}
 			if normalizeAgentType(string(p.Type)) == targetType {
 				return p.ID, nil
 			}
@@ -164,7 +243,7 @@ func normalizeAgentType(t string) string {
 	}
 }
 
-func waitForIdle(ctx context.Context, detector status.Detector, paneID string) error {
+func waitForIdle(ctx context.Context, detector status.Detector, paneID string, evidence ...func() (bool, error)) error {
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
@@ -181,12 +260,26 @@ func waitForIdle(ctx context.Context, detector status.Detector, paneID string) e
 		case <-timeout:
 			return fmt.Errorf("timeout waiting for agent")
 		case <-ticker.C:
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			fresh := true
+			for _, observe := range evidence {
+				ready, err := observe()
+				if err != nil {
+					return err
+				}
+				fresh = fresh && ready
+			}
 			s, err := detector.Detect(paneID)
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			if err != nil {
 				idleStreak = 0
 				continue
 			}
-			if s.State == status.StateIdle {
+			if s.State == status.StateIdle && fresh {
 				idleStreak++
 				if idleStreak >= idleStablePolls {
 					return nil
