@@ -505,6 +505,46 @@ func TestValidateGlobalCredentialLaunchCommand(t *testing.T) {
 	}
 }
 
+func TestGlobalCredentialBindingClaudeAccountLoginPolicy(t *testing.T) {
+	for _, tc := range []struct {
+		name, settings string
+		wantError      bool
+	}{
+		{"normal account login", `{"forceLoginMethod":"claudeai"}`, false},
+		{"console", `{"forceLoginMethod":"console"}`, true},
+		{"gateway", `{"forceLoginMethod":"gateway"}`, true},
+		{"unknown", `{"forceLoginMethod":"custom"}`, true},
+		{"malformed", `{"forceLoginMethod":["claudeai"]}`, true},
+		{"null", `{"forceLoginMethod":null}`, true},
+		{"account login with organization pin", `{"forceLoginMethod":"claudeai","forceLoginOrgUUID":"restricted-org"}`, true},
+		{"gateway URL alone", `{"forceLoginGatewayUrl":"https://gateway.invalid"}`, true},
+		{"account login with gateway URL", `{"forceLoginMethod":"claudeai","forceLoginGatewayUrl":"https://gateway.invalid"}`, true},
+		{"account login with credential helper", `{"forceLoginMethod":"claudeai","apiKeyHelper":"external"}`, true},
+		{"account login with API credentials", `{"forceLoginMethod":"claudeai","env":{"ANTHROPIC_API_KEY":"external"}}`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, source := range []string{"user", "project", "managed"} {
+				t.Run(source, func(t *testing.T) {
+					f := newGlobalBindingFixture(t, "claude")
+					path := filepath.Join(f.home, ".claude", "settings.json")
+					if source == "project" {
+						path = filepath.Join(f.workDir, ".claude", "settings.json")
+					}
+					if source == "managed" {
+						path = filepath.Join(t.TempDir(), "managed-settings.json")
+						f.deps.systemPaths = func(string) ([]string, error) { return []string{path}, nil }
+					}
+					writeGlobalBindingTestFile(t, path, tc.settings)
+					_, err := f.observe(t)
+					if (err != nil) != tc.wantError {
+						t.Fatalf("error=%v wantError=%v", err, tc.wantError)
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestGlobalCredentialBindingConfigSources(t *testing.T) {
 	cases := []struct {
 		name, provider, source, data string

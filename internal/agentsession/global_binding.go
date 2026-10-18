@@ -744,6 +744,15 @@ func globalBindingConfigSafe(provider string, value interface{}) bool {
 			case "home", "codexhome", "claudeconfigdir":
 				return false
 			}
+			if provider == "claude" && normalized == "forceloginmethod" {
+				// Restricting sign-in to Claude's normal account login does not
+				// redirect credentials. Console, gateway and unknown methods do.
+				// Keep organization/account pins independently fail-closed below.
+				if !isString || text != "claudeai" {
+					return false
+				}
+				continue
+			}
 			if provider == "codex" {
 				switch normalized {
 				case "modelprovider":
@@ -766,7 +775,7 @@ func globalBindingConfigSafe(provider string, value interface{}) bool {
 				return false
 			}
 			switch normalized {
-			case "apikeyhelper", "apikey", "primaryapikey", "authtoken", "oauthtoken", "baseurl", "apibaseurl", "authfile", "credentialfile", "forceloginmethod", "forceloginorguuid", "policyhelper", "cloudgateway":
+			case "apikeyhelper", "apikey", "primaryapikey", "authtoken", "oauthtoken", "baseurl", "apibaseurl", "authfile", "credentialfile", "forceloginmethod", "forceloginorguuid", "forcelogingatewayurl", "policyhelper", "cloudgateway":
 				return false
 			}
 			if !globalBindingConfigSafe(provider, item) {
