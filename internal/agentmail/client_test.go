@@ -1174,8 +1174,15 @@ func TestHttpBaseURL(t *testing.T) {
 	}{
 		{"MCP URL with trailing slash", "http://127.0.0.1:8765/mcp/", "http://127.0.0.1:8765"},
 		{"MCP URL without trailing slash", "http://127.0.0.1:8765/mcp", "http://127.0.0.1:8765"},
-		{"non-MCP URL with trailing slash", "http://example.com/api/", "http://example.com/api"},
-		{"non-MCP URL without trailing slash", "http://example.com/api", "http://example.com/api"},
+		{"stateless API with trailing slash", "http://example.com/api/", "http://example.com"},
+		{"stateless API without trailing slash", "http://example.com/api", "http://example.com"},
+		{"proxied MCP", "http://example.com/agent-mail/mcp/", "http://example.com/agent-mail"},
+		{"proxied stateless API", "http://example.com/agent-mail/api/", "http://example.com/agent-mail"},
+		{"escaped proxy prefix", "http://example.com/proxy%2Fprefix/api/", "http://example.com/proxy%2Fprefix"},
+		{"unrelated endpoint", "http://example.com/myapi/", "http://example.com/myapi"},
+		{"MCP in middle of path", "http://example.com/mcp/nested/", "http://example.com/mcp/nested"},
+		{"MCP named host", "http://mcp/", "http://mcp"},
+		{"API named host", "http://api/", "http://api"},
 		{"root URL with trailing slash", "http://localhost:8000/", "http://localhost:8000"},
 	}
 
@@ -1186,6 +1193,45 @@ func TestHttpBaseURL(t *testing.T) {
 			got := c.httpBaseURL()
 			if got != tc.want {
 				t.Errorf("httpBaseURL() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestOverseerHTTPPreservesProxyPrefix(t *testing.T) {
+	t.Parallel()
+
+	for _, endpoint := range []string{"/prefix/mcp", "/prefix/mcp/", "/prefix/api", "/prefix/api/"} {
+		t.Run(endpoint, func(t *testing.T) {
+			t.Parallel()
+			var requests atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests.Add(1)
+				if r.Method != http.MethodPost || r.URL.Path != "/prefix/mail/project/overseer/send" {
+					t.Errorf("request = %s %s, want POST /prefix/mail/project/overseer/send", r.Method, r.URL.Path)
+					http.NotFound(w, r)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"success":true,"message_id":57,"recipients":["BlueLake"],"sent_at":"2026-10-17T15:00:00Z"}`)
+			}))
+			defer server.Close()
+
+			client := NewClient(WithBaseURL(server.URL + endpoint))
+			result, err := client.SendOverseerMessage(t.Context(), OverseerMessageOptions{
+				ProjectSlug: "project",
+				Recipients:  []string{"BlueLake"},
+				Subject:     "Checkpoint",
+				BodyMD:      "Please save your work.",
+			})
+			if err != nil {
+				t.Fatalf("SendOverseerMessage through %s: %v", endpoint, err)
+			}
+			if result.MessageID != 57 || !result.Success {
+				t.Fatalf("unexpected send receipt: %+v", result)
+			}
+			if got := requests.Load(); got != 1 {
+				t.Fatalf("request count = %d, want one send", got)
 			}
 		})
 	}
@@ -1588,6 +1634,75 @@ func TestCallToolNonSessionHTTPErrorQuotesServerDetail(t *testing.T) {
 	}
 	if initializes.Load() != 0 {
 		t.Fatalf("non-session 400 triggered %d initialize handshakes", initializes.Load())
+	}
+}
+
+func TestHTTPErrorDetailResponseFormats(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{"Rust REST error", `{"error":"Intervention reason is required"}`, "Intervention reason is required"},
+		{"legacy REST detail", `{"detail":"At least one valid recipient is required"}`, "At least one valid recipient is required"},
+		{"JSON-RPC error", `{"jsonrpc":"2.0","error":{"code":-32600,"message":"Missing session ID"}}`, "Missing session ID"},
+		{"REST error object", `{"error":{"message":"Intervention denied","code":"forbidden"}}`, "Intervention denied"},
+		{"complementary detail", `{"error":"Unauthorized","detail":"Supply a valid bearer token"}`, "Unauthorized: Supply a valid bearer token"},
+		{"object with detail", `{"error":{"message":"Invalid request"},"detail":"Unknown recipient BlueLkae"}`, "Invalid request: Unknown recipient BlueLkae"},
+		{"duplicate explanation", `{"error":"  Invalid\nrecipient  ","detail":"Invalid recipient"}`, "Invalid recipient"},
+		{"empty primary explanation", `{"error":" \t ","detail":"Supply a reason"}`, "Supply a reason"},
+		{"null error with detail", `{"error":null,"detail":"Supply a reason"}`, "Supply a reason"},
+		{"unrecognized detail retains error", `{"error":{"message":"Invalid request"},"detail":{"field":"reason"}}`, "Invalid request"},
+		{"plain response", " upstream\n\tservice unavailable ", "upstream service unavailable"},
+		{"unrecognized JSON", `{"unexpected":"upstream refused request"}`, `{"unexpected":"upstream refused request"}`},
+		{"malformed JSON", `{"error":`, `{"error":`},
+		{"empty body", "", ""},
+		{"bounded Unicode", `{"error":"` + strings.Repeat("界", maxErrorDetailLen+1) + `"}`, strings.Repeat("界", maxErrorDetailLen) + "…"},
+		{"bounded plain response", strings.Repeat("a", maxErrorDetailLen+1), strings.Repeat("a", maxErrorDetailLen) + "…"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := httpErrorDetail([]byte(tc.body)); got != tc.want {
+				t.Fatalf("httpErrorDetail() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCallToolRESTHTTPErrorIncludesActionableDetail(t *testing.T) {
+	t.Parallel()
+
+	for _, body := range []string{
+		`{"error":"Invalid project","detail":"Provide an absolute project path"}`,
+		`{"error":{"message":"Invalid project"},"detail":"Provide an absolute project path"}`,
+	} {
+		t.Run(body, func(t *testing.T) {
+			t.Parallel()
+			var requests atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests.Add(1)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = io.WriteString(w, body)
+			}))
+			defer server.Close()
+
+			client := NewClient(WithBaseURL(server.URL + "/mcp/"))
+			_, err := client.EnsureProject(t.Context(), "relative-project")
+			var apiErr *APIError
+			if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusBadRequest {
+				t.Fatalf("error = %v, want HTTP 400 APIError", err)
+			}
+			if !strings.Contains(err.Error(), "Invalid project: Provide an absolute project path") {
+				t.Fatalf("error omits actionable server detail: %v", err)
+			}
+			if got := requests.Load(); got != 1 {
+				t.Fatalf("request count = %d, want one rejected request", got)
+			}
+		})
 	}
 }
 

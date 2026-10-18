@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"sort"
@@ -836,48 +837,81 @@ func (c *Client) ContactHandshake(ctx context.Context, opts ContactHandshakeOpti
 // identity. Never register the reserved name, downgrade a rejected intervention,
 // or retry an ambiguous send (which could duplicate delivery).
 func (c *Client) SendOverseerMessage(ctx context.Context, opts OverseerMessageOptions) (*OverseerSendResult, error) {
+	invalid := func(message string) (*OverseerSendResult, error) {
+		return nil, NewAPIError("overseer_send", 0, fmt.Errorf("%w: %s", ErrInvalidRequest, message))
+	}
+	opts.ProjectSlug = strings.TrimSpace(opts.ProjectSlug)
+	if opts.ProjectSlug == "" && strings.TrimSpace(opts.ProjectKey) == "" {
+		return invalid("project_slug or project_key is required")
+	}
 	if opts.Reason == "" {
 		opts.Reason = DefaultOverseerReason
 	}
 	opts.Reason = strings.TrimSpace(opts.Reason)
-	if len(opts.Recipients) == 0 || len(opts.Recipients) > 100 {
-		return nil, NewAPIError("overseer_send", 0, fmt.Errorf("%w: choose 1 to 100 explicit recipients", ErrInvalidRequest))
+	if !utf8.ValidString(opts.Reason) || opts.Reason == "" || utf8.RuneCountInString(opts.Reason) > MaxOverseerReasonLength {
+		return invalid("intervention reason must contain 1 to 500 valid Unicode characters")
 	}
+	if subject := strings.TrimSpace(opts.Subject); !utf8.ValidString(subject) || subject == "" || utf8.RuneCountInString(subject) > 200 {
+		return invalid("subject must contain 1 to 200 valid Unicode characters")
+	}
+	if body := strings.TrimSpace(opts.BodyMD); !utf8.ValidString(body) || body == "" || utf8.RuneCountInString(body) > 50000 {
+		return invalid("message body must contain 1 to 50,000 valid Unicode characters")
+	}
+	if !utf8.ValidString(opts.ThreadID) {
+		return invalid("thread_id must contain valid Unicode characters")
+	}
+	opts.ThreadID = strings.TrimSpace(opts.ThreadID)
+
+	// Normalize a copy, so repeated names neither duplicate a legacy delivery nor
+	// require multiple-recipient confirmation for a single effective recipient.
+	recipients := make([]string, 0, len(opts.Recipients))
+	seen := make(map[string]bool, len(opts.Recipients))
 	for _, recipient := range opts.Recipients {
-		if strings.TrimSpace(recipient) == "" {
-			return nil, NewAPIError("overseer_send", 0, fmt.Errorf("%w: recipient cannot be empty", ErrInvalidRequest))
+		name := strings.TrimSpace(recipient)
+		if name == "" || !utf8.ValidString(name) {
+			return invalid("recipient names must be nonempty valid Unicode strings")
+		}
+		key := strings.ToLower(name)
+		if !seen[key] {
+			recipients = append(recipients, name)
+			seen[key] = true
 		}
 	}
-	for _, field := range []struct {
-		name  string
-		value string
-		limit int
-	}{
-		{"subject", opts.Subject, 200},
-		{"message body", opts.BodyMD, 49_600},
-		{"intervention reason", opts.Reason, 500},
-	} {
-		if strings.TrimSpace(field.value) == "" || !utf8.ValidString(field.value) || utf8.RuneCountInString(field.value) > field.limit {
-			return nil, NewAPIError("overseer_send", 0, fmt.Errorf("%w: %s must contain 1 to %d characters", ErrInvalidRequest, field.name, field.limit))
-		}
+	if len(recipients) == 0 || len(recipients) > 100 {
+		return invalid("between 1 and 100 recipients must be specified")
 	}
-	if opts.ProjectSlug == "" && opts.ProjectKey != "" {
+	opts.Recipients = recipients
+
+	// Resolve the server's slug instead of guessing a potentially different
+	// project's identity from its filesystem path.
+	if opts.ProjectSlug == "" {
 		project, err := c.EnsureProject(ctx, opts.ProjectKey)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("resolving overseer project: %w", err)
+		}
+		if project.Slug == "" {
+			return invalid("server returned no project slug for overseer delivery")
 		}
 		opts.ProjectSlug = project.Slug
-		if opts.ProjectSlug == "" {
-			opts.ProjectSlug = ProjectSlugFromPath(opts.ProjectKey)
-		}
 	}
 	result, err := c.sendOverseerMessageHTTP(ctx, opts)
 	if err == nil || !errors.Is(err, ErrNotImplemented) || opts.ProjectKey == "" {
 		return result, err
 	}
+	legacyToken := c.RegistrationToken(opts.ProjectKey, HumanOverseerAgentName)
+	if strings.TrimSpace(legacyToken) == "" {
+		return nil, fmt.Errorf("overseer intervention route unavailable and no existing authorized HumanOverseer identity is configured: %w", err)
+	}
 
+	// Only an absent route and an already authorized legacy identity permit this
+	// compatibility path. The server must still validate its existing sender token.
+	// A scoped client also prevents redirected MCP sends from replaying this
+	// mutation, without changing another caller's transport or MCP session.
+	legacyClient := NewClient(WithBaseURL(c.baseURL), WithToken(c.bearerToken))
+	legacyClient.httpClient = c.overseerHTTPClient()
+	legacyClient.SetRegistrationToken(opts.ProjectKey, HumanOverseerAgentName, legacyToken)
 	body := HumanOverseerPreamble + "Human intervention reason: " + opts.Reason + "\n\n" + opts.BodyMD
-	send, err := c.SendMessage(ctx, SendMessageOptions{
+	send, err := legacyClient.SendMessage(ctx, SendMessageOptions{
 		ProjectKey: opts.ProjectKey,
 		SenderName: HumanOverseerAgentName,
 		To:         opts.Recipients,
@@ -890,33 +924,42 @@ func (c *Client) SendOverseerMessage(ctx context.Context, opts OverseerMessageOp
 		return nil, fmt.Errorf("legacy overseer send requires an existing authorized HumanOverseer identity; use a server with the overseer intervention route: %w", err)
 	}
 
-	// Map send_message's SendResult (per-recipient deliveries) onto
-	// OverseerSendResult so the CLI's output shape is unchanged.
+	// Preserve actual delivery evidence. An empty, partial, or inconsistent MCP
+	// receipt must not become a success for the originally requested recipients.
 	result = &OverseerSendResult{
-		Success:    true,
-		Recipients: opts.Recipients,
+		Success: len(send.Deliveries) > 0,
 	}
 	for _, d := range send.Deliveries {
-		if d.Payload == nil {
+		if d.Payload == nil || d.Payload.ID <= 0 {
+			result.Success = false
 			continue
 		}
 		if result.MessageID == 0 {
 			result.MessageID = d.Payload.ID
+		} else if result.MessageID != d.Payload.ID {
+			result.Success = false
 		}
 		if !d.Payload.CreatedTS.IsZero() && result.SentAt.IsZero() {
 			result.SentAt = d.Payload.CreatedTS
 		}
+		result.Recipients = append(result.Recipients, d.Payload.To...)
 	}
-	return result, nil
+	return result, validateOverseerReceipt(result, opts.Recipients, 0)
+}
+
+// overseerHTTPClient retains the configured transport and timeout but forbids
+// redirected sends. Copying the HTTP client avoids changing concurrent callers.
+func (c *Client) overseerHTTPClient() *http.Client {
+	client := *c.httpClient
+	client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	return &client
 }
 
 // sendOverseerMessageHTTP leaves identity provisioning, policy bypass, preamble,
 // importance, and audit recording to the server's designated intervention route.
 func (c *Client) sendOverseerMessageHTTP(ctx context.Context, opts OverseerMessageOptions) (*OverseerSendResult, error) {
-	if opts.ProjectSlug == "" {
-		return nil, NewAPIError("overseer_send", 0, fmt.Errorf("project_slug required for HTTP fallback path"))
-	}
-
 	// Build request body
 	reqBody := map[string]interface{}{
 		"intent":           "human_overseer_send",
@@ -940,67 +983,73 @@ func (c *Client) sendOverseerMessageHTTP(ctx context.Context, opts OverseerMessa
 	// Encode path segments to ensure valid URL
 	url := fmt.Sprintf("%s/mail/%s/overseer/send", httpBaseURL, url.PathEscape(opts.ProjectSlug))
 
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return nil, NewAPIError("overseer_send", 0, err)
 	}
 
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
 	if c.bearerToken != "" {
 		req.Header.Set("Authorization", "Bearer "+c.bearerToken)
 	}
 
-	resp, err := c.httpClient.Do(req)
+	// A redirected POST must not become a GET or replay the intervention at a
+	// different authorization surface.
+	resp, err := c.overseerHTTPClient().Do(req)
 	if err != nil {
-		if ctx.Err() != nil {
-			return nil, NewAPIError("overseer_send", 0, ErrTimeout)
+		if errors.Is(ctx.Err(), context.Canceled) {
+			return nil, NewAPIError("overseer_send", 0, ctx.Err())
 		}
-		return nil, NewAPIError("overseer_send", 0, ErrServerUnavailable)
+		var netErr net.Error
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) || (errors.As(err, &netErr) && netErr.Timeout()) {
+			return nil, NewAPIError("overseer_send", 0, fmt.Errorf("%w: %w", ErrTimeout, err))
+		}
+		return nil, NewAPIError("overseer_send", 0, fmt.Errorf("%w: %w", ErrServerUnavailable, err))
 	}
 	defer resp.Body.Close()
 
-	// Read response body (limit to 10MB to prevent DoS/OOM)
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
+	// Read one extra byte so an oversized response is explicitly ambiguous,
+	// never mistaken for an absent route after silently truncating its error.
+	const maxResponseBody = 10 << 20
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBody+1))
 	if err != nil {
-		return nil, NewAPIError("overseer_send", 0, err)
+		if errors.Is(ctx.Err(), context.Canceled) {
+			return nil, NewAPIError("overseer_send", 0, ctx.Err())
+		}
+		var netErr net.Error
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) || (errors.As(err, &netErr) && netErr.Timeout()) {
+			return nil, NewAPIError("overseer_send", 0, fmt.Errorf("%w: %w", ErrTimeout, err))
+		}
+		return nil, responseBodyReadError(ctx, "overseer_send", err)
+	}
+	if len(respBody) > maxResponseBody {
+		return nil, NewAPIError("overseer_send", resp.StatusCode, errors.New("overseer response exceeds 10 MiB (send was not retried; inspect the inbox before resending)"))
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		var errResp struct {
-			Detail json.RawMessage `json:"detail"`
-			Error  json.RawMessage `json:"error"`
-		}
-		_ = json.Unmarshal(respBody, &errResp)
-		raw := errResp.Error
-		if len(raw) == 0 {
-			raw = errResp.Detail
-		}
-		var message string
-		if len(raw) > 0 && json.Unmarshal(raw, &message) != nil {
-			var structured struct {
-				Message string `json:"message"`
-			}
-			if json.Unmarshal(raw, &structured) == nil && structured.Message != "" {
-				message = structured.Message
-			} else {
-				message = string(raw)
-			}
+		message := strings.ToLower(resp.Status)
+		if detail := httpErrorDetail(respBody); detail != "" {
+			message += ": " + detail
 		}
 		cause := error(nil)
 		switch resp.StatusCode {
 		case http.StatusUnauthorized, http.StatusForbidden:
 			cause = ErrUnauthorized
-		case http.StatusBadRequest:
+		case http.StatusBadRequest, http.StatusUnprocessableEntity:
 			cause = ErrInvalidRequest
 		case http.StatusNotFound, http.StatusMethodNotAllowed:
 			// A structured rejection may mean an unknown project or a policy
-			// denial, rather than an absent route. Do not downgrade it.
-			if len(errResp.Error) == 0 && len(errResp.Detail) == 0 {
+			// denial, rather than an absent route. Malformed or truncated JSON
+			// is ambiguous too, regardless of the advertised content type.
+			trimmed := bytes.TrimSpace(respBody)
+			looksJSON := len(trimmed) > 0 && strings.ContainsRune("{[\"", rune(trimmed[0]))
+			isJSON := strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "json")
+			if !json.Valid(respBody) && !looksJSON && !isJSON {
 				cause = ErrNotImplemented
+			} else if resp.StatusCode == http.StatusNotFound {
+				cause = ErrNotFound
 			}
-		}
-		if message == "" {
-			message = strings.ToLower(http.StatusText(resp.StatusCode))
 		}
 		if cause != nil {
 			return nil, NewAPIError("overseer_send", resp.StatusCode, fmt.Errorf("%w: %s", cause, message))
@@ -1011,16 +1060,37 @@ func (c *Client) sendOverseerMessageHTTP(ctx context.Context, opts OverseerMessa
 	// Parse response
 	var result OverseerSendResult
 	if err := json.Unmarshal(respBody, &result); err != nil {
-		return nil, NewAPIError("overseer_send", 0, err)
+		return nil, NewAPIError("overseer_send", resp.StatusCode, fmt.Errorf("invalid delivery receipt (send was not retried): %w", err))
 	}
 	if !result.Success || result.MessageID <= 0 {
-		return nil, NewAPIError("overseer_send", 0, fmt.Errorf("server did not confirm overseer delivery"))
+		message := "server did not confirm overseer delivery (send was not retried)"
+		if detail := httpErrorDetail(respBody); detail != "" {
+			message += ": " + detail
+		}
+		return &result, NewAPIError("overseer_send", resp.StatusCode, errors.New(message))
 	}
-	if len(result.Recipients) == 0 {
-		result.Recipients = opts.Recipients // Older HTTP receipts omit this field.
-	}
+	return &result, validateOverseerReceipt(&result, opts.Recipients, resp.StatusCode)
+}
 
-	return &result, nil
+func validateOverseerReceipt(result *OverseerSendResult, recipients []string, statusCode int) error {
+	if !result.Success || result.MessageID <= 0 {
+		return NewAPIError("overseer_send", statusCode, fmt.Errorf("server did not confirm overseer delivery (send was not retried; inspect the inbox before resending)"))
+	}
+	// Python servers can return success after silently dropping unknown names.
+	// Keep the actual receipt and report incomplete/unexpected delivery instead
+	// of claiming every selected recipient was reached or retrying the message.
+	delivered := make(map[string]bool, len(result.Recipients))
+	for _, name := range result.Recipients {
+		delivered[strings.ToLower(strings.TrimSpace(name))] = true
+	}
+	complete := len(delivered) == len(recipients) && len(delivered) == len(result.Recipients)
+	for _, name := range recipients {
+		complete = complete && delivered[strings.ToLower(name)]
+	}
+	if !complete {
+		return NewAPIError("overseer_send", statusCode, fmt.Errorf("message %d delivery mismatch: requested %v; server reported %v (send was not retried; inspect the inbox before resending)", result.MessageID, recipients, result.Recipients))
+	}
+	return nil
 }
 
 // ListProjectAgents lists all agents registered in a project.

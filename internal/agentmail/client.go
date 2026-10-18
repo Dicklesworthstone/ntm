@@ -938,16 +938,38 @@ func decodeJSONRPCResponse(operation string, resp *http.Response, respBody []byt
 }
 
 // httpErrorDetail extracts the server's own explanation from a non-200 body:
-// the JSON-RPC error message when the body is a JSON-RPC envelope, otherwise
-// the trimmed text. A bare "unexpected status: 400 Bad Request" gave an
-// operator nothing to act on (GH #333).
+// JSON-RPC and REST error messages, the legacy REST detail, or plain text.
+// When error and detail explain different parts of a failure, retain both.
+// A bare "unexpected status: 400 Bad Request" gave an operator nothing to
+// act on (GH #333, #355).
 func httpErrorDetail(respBody []byte) string {
-	var envelope JSONRPCResponse
-	detail := ""
-	if err := json.Unmarshal(respBody, &envelope); err == nil && envelope.Error != nil {
-		detail = envelope.Error.Message
-	} else {
-		detail = string(respBody)
+	var envelope struct {
+		Error  json.RawMessage `json:"error"`
+		Detail json.RawMessage `json:"detail"`
+	}
+	detail := string(respBody)
+	if err := json.Unmarshal(respBody, &envelope); err == nil {
+		var message string
+		if err := json.Unmarshal(envelope.Error, &message); err != nil {
+			var object struct {
+				Message string `json:"message"`
+			}
+			if err := json.Unmarshal(envelope.Error, &object); err == nil {
+				message = object.Message
+			}
+		}
+		message = strings.Join(strings.Fields(message), " ")
+		var serverDetail string
+		_ = json.Unmarshal(envelope.Detail, &serverDetail)
+		serverDetail = strings.Join(strings.Fields(serverDetail), " ")
+		switch {
+		case message != "" && serverDetail != "" && message != serverDetail:
+			detail = message + ": " + serverDetail
+		case message != "":
+			detail = message
+		case serverDetail != "":
+			detail = serverDetail
+		}
 	}
 	detail = strings.Join(strings.Fields(detail), " ")
 	if runes := []rune(detail); len(runes) > maxErrorDetailLen {
@@ -1081,19 +1103,25 @@ func (c *Client) ReadResource(ctx context.Context, uri string) (json.RawMessage,
 }
 
 // httpBaseURL returns the HTTP REST API base URL derived from the MCP base URL.
-// The MCP endpoint is typically at /mcp/ while the HTTP endpoints are at the root.
+// MCP uses /mcp/ or the stateless /api/ endpoint, alongside the HTTP endpoints.
+// Retain any reverse-proxy prefix when removing the final endpoint segment.
 // Example: "http://127.0.0.1:8765/mcp/" -> "http://127.0.0.1:8765"
 func (c *Client) httpBaseURL() string {
-	base := c.baseURL
-	// Remove trailing /mcp/ or /mcp if present
-	if strings.HasSuffix(base, "/mcp/") {
-		return strings.TrimSuffix(base, "/mcp/")
+	base, err := url.Parse(c.baseURL)
+	if err != nil {
+		// Preserve malformed input so request construction reports the URL error.
+		return strings.TrimSuffix(c.baseURL, "/")
 	}
-	if strings.HasSuffix(base, "/mcp") {
-		return strings.TrimSuffix(base, "/mcp")
+	base.Path = strings.TrimSuffix(base.Path, "/")
+	base.RawPath = strings.TrimSuffix(base.RawPath, "/")
+	for _, endpoint := range []string{"/mcp", "/api"} {
+		if strings.HasSuffix(base.EscapedPath(), endpoint) {
+			base.Path = strings.TrimSuffix(base.Path, endpoint)
+			base.RawPath = strings.TrimSuffix(base.RawPath, endpoint)
+			break
+		}
 	}
-	// Remove trailing slash
-	return strings.TrimSuffix(base, "/")
+	return base.String()
 }
 
 // ProjectSlugFromPath derives a project slug from an absolute path.

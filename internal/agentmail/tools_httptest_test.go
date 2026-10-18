@@ -1023,15 +1023,26 @@ func TestOverseerInvalidInputDoesNotSend(t *testing.T) {
 		name   string
 		change func(*OverseerMessageOptions)
 	}{
+		{"missing project", func(o *OverseerMessageOptions) { o.ProjectSlug = "" }},
 		{"no recipients", func(o *OverseerMessageOptions) { o.Recipients = nil }},
 		{"blank recipient", func(o *OverseerMessageOptions) { o.Recipients = []string{" "} }},
-		{"too many recipients", func(o *OverseerMessageOptions) { o.Recipients = make([]string, 101) }},
+		{"invalid recipient Unicode", func(o *OverseerMessageOptions) { o.Recipients = []string{"\xff"} }},
+		{"too many recipients", func(o *OverseerMessageOptions) {
+			o.Recipients = nil
+			for i := range 101 {
+				o.Recipients = append(o.Recipients, fmt.Sprintf("Agent%d", i))
+			}
+		}},
 		{"blank subject", func(o *OverseerMessageOptions) { o.Subject = " " }},
 		{"long subject", func(o *OverseerMessageOptions) { o.Subject = strings.Repeat("界", 201) }},
+		{"invalid subject Unicode", func(o *OverseerMessageOptions) { o.Subject = "\xff" }},
 		{"blank body", func(o *OverseerMessageOptions) { o.BodyMD = " " }},
-		{"long body", func(o *OverseerMessageOptions) { o.BodyMD = strings.Repeat("界", 49_601) }},
+		{"long body", func(o *OverseerMessageOptions) { o.BodyMD = strings.Repeat("界", 50_001) }},
+		{"invalid body Unicode", func(o *OverseerMessageOptions) { o.BodyMD = "\xff" }},
 		{"blank reason", func(o *OverseerMessageOptions) { o.Reason = " " }},
 		{"long reason", func(o *OverseerMessageOptions) { o.Reason = strings.Repeat("界", 501) }},
+		{"invalid reason Unicode", func(o *OverseerMessageOptions) { o.Reason = "\xff" }},
+		{"invalid thread Unicode", func(o *OverseerMessageOptions) { o.ThreadID = "\xff" }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

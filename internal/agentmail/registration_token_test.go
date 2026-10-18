@@ -3,8 +3,11 @@ package agentmail
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -329,7 +332,7 @@ func TestSetAndClearRegistrationToken(t *testing.T) {
 func TestSendOverseerMessage_MCPPath(t *testing.T) {
 	t.Parallel()
 
-	var calls atomic.Int32
+	var calls, interventionCalls atomic.Int32
 	var sawEnsureProject, sawRegisterOverseer atomic.Bool
 	var sentImportance atomic.Value // string
 	var sentSubject atomic.Value    // string
@@ -356,6 +359,9 @@ func TestSendOverseerMessage_MCPPath(t *testing.T) {
 		},
 		"send_message": func(args map[string]interface{}) (interface{}, *JSONRPCError) {
 			calls.Add(1)
+			if args["sender_name"] != HumanOverseerAgentName || args["thread_id"] != "incident-355" || args["ack_required"] == true {
+				t.Errorf("legacy overseer semantics changed: %v", args)
+			}
 			if v, ok := args["importance"]; ok {
 				if s, _ := v.(string); s != "" {
 					sentImportance.Store(s)
@@ -381,7 +387,7 @@ func TestSendOverseerMessage_MCPPath(t *testing.T) {
 			}
 			return SendResult{
 				Deliveries: []MessageDelivery{
-					{Project: "abs-project", Payload: &Message{ID: 1234, Subject: args["subject"].(string)}},
+					{Project: "abs-project", Payload: &Message{ID: 1234, Subject: args["subject"].(string), To: []string{"StormyOwl", "SilverOtter"}}},
 				},
 				Count: 1,
 			}, nil
@@ -389,6 +395,7 @@ func TestSendOverseerMessage_MCPPath(t *testing.T) {
 	})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/overseer/send") {
+			interventionCalls.Add(1)
 			http.NotFound(w, r)
 			return
 		}
@@ -403,6 +410,8 @@ func TestSendOverseerMessage_MCPPath(t *testing.T) {
 		Recipients: []string{"StormyOwl", "SilverOtter"},
 		Subject:    "Please pause the deploy",
 		BodyMD:     "Auth issue under investigation.",
+		ThreadID:   "incident-355",
+		Reason:     "Investigate authorization failure",
 	})
 	if err != nil {
 		t.Fatalf("MCP overseer path failed: %v", err)
@@ -419,8 +428,14 @@ func TestSendOverseerMessage_MCPPath(t *testing.T) {
 	if got, _ := sentSubject.Load().(string); got != "Please pause the deploy" {
 		t.Errorf("subject = %q, want 'Please pause the deploy'", got)
 	}
-	if got, _ := sentBody.Load().(string); !strings.Contains(got, HumanOverseerPreamble) {
-		t.Errorf("body must contain the overseer preamble; got %q", got)
+	if got, _ := sentBody.Load().(string); strings.Count(got, HumanOverseerPreamble) != 1 || !strings.Contains(got, "Investigate authorization failure") || !strings.HasSuffix(got, "Auth issue under investigation.") {
+		t.Errorf("body must preserve one overseer preamble, reason, and instructions; got %q", got)
+	}
+	if calls.Load() != 2 || interventionCalls.Load() != 1 {
+		t.Errorf("expected project lookup, one unsupported intervention, and one authorized send; got MCP=%d HTTP=%d", calls.Load(), interventionCalls.Load())
+	}
+	if !slices.Equal(result.Recipients, []string{"StormyOwl", "SilverOtter"}) {
+		t.Errorf("lost actual legacy delivery recipients: %v", result.Recipients)
 	}
 	if result.MessageID != 1234 {
 		t.Errorf("result.MessageID = %d, want 1234", result.MessageID)
@@ -430,10 +445,7 @@ func TestSendOverseerMessage_MCPPath(t *testing.T) {
 	}
 }
 
-// TestSendOverseerMessage_FallsBackToHTTPWithoutProjectKey verifies
-// the legacy code path still works when callers haven't been updated
-// to pass ProjectKey. This is what keeps the old TestSendOverseerMessage_*
-// fixtures passing.
+// Existing slug-only callers use the designated intervention route directly.
 func TestSendOverseerMessage_FallsBackToHTTPWithoutProjectKey(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -441,15 +453,15 @@ func TestSendOverseerMessage_FallsBackToHTTPWithoutProjectKey(t *testing.T) {
 			t.Errorf("expected HTTP overseer path, got %s", r.URL.Path)
 		}
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message_id": 7})
+		json.NewEncoder(w).Encode(OverseerSendResult{Success: true, MessageID: 7, Recipients: []string{"BlueLake"}})
 	}))
 	defer server.Close()
 
 	c := NewClient(WithBaseURL(server.URL + "/mcp/"))
 	result, err := c.SendOverseerMessage(context.Background(), OverseerMessageOptions{
-		// No ProjectKey — must drop to HTTP fallback.
+		// No project lookup or ordinary identity operations are needed.
 		ProjectSlug: "some-slug",
-		Recipients:  []string{"x"},
+		Recipients:  []string{"BlueLake"},
 		Subject:     "fallback",
 		BodyMD:      "test",
 	})
@@ -458,5 +470,175 @@ func TestSendOverseerMessage_FallsBackToHTTPWithoutProjectKey(t *testing.T) {
 	}
 	if result.MessageID != 7 {
 		t.Errorf("MessageID = %d, want 7", result.MessageID)
+	}
+}
+
+func TestSendOverseerMessage_ProjectKeyResolvesServerSlug(t *testing.T) {
+	t.Parallel()
+	var ensureCalls, sendCalls atomic.Int32
+	mcp := mockMCPHandler(t, map[string]func(args map[string]interface{}) (interface{}, *JSONRPCError){
+		"ensure_project": func(args map[string]interface{}) (interface{}, *JSONRPCError) {
+			ensureCalls.Add(1)
+			if args["human_key"] != "/abs/project" {
+				t.Errorf("project key = %v", args["human_key"])
+			}
+			return Project{ID: 1, Slug: "server-project-slug"}, nil
+		},
+	})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/mcp/" {
+			mcp.ServeHTTP(w, r)
+			return
+		}
+		sendCalls.Add(1)
+		if r.URL.Path != "/mail/server-project-slug/overseer/send" {
+			t.Errorf("incorrect overseer route: %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		var body map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if body["body_md"] != "Auth issue under investigation." || body["subject"] != "Please pause the deploy" {
+			t.Errorf("message changed before reaching intervention route: %v", body)
+		}
+		if body["intent"] != "human_overseer_send" || body["reason"] != DefaultOverseerReason || body["confirm_multiple"] != true {
+			t.Errorf("missing intervention authorization fields: %v", body)
+		}
+		_ = json.NewEncoder(w).Encode(OverseerSendResult{
+			Success: true, MessageID: 1234, Recipients: []string{"StormyOwl", "SilverOtter"},
+		})
+	}))
+	defer server.Close()
+
+	c := NewClient(WithBaseURL(server.URL + "/mcp/"))
+	result, err := c.SendOverseerMessage(t.Context(), OverseerMessageOptions{
+		ProjectKey: "/abs/project", Recipients: []string{"StormyOwl", "SilverOtter"},
+		Subject: "Please pause the deploy", BodyMD: "Auth issue under investigation.",
+	})
+	if err != nil {
+		t.Fatalf("overseer send failed: %v", err)
+	}
+	if ensureCalls.Load() != 1 || sendCalls.Load() != 1 {
+		t.Errorf("wanted one project lookup and one intervention, got %d, %d", ensureCalls.Load(), sendCalls.Load())
+	}
+	if token := c.RegistrationToken("/abs/project", HumanOverseerAgentName); token != "" {
+		t.Error("reserved overseer identity must not acquire an ordinary registration token")
+	}
+	if !result.Success || result.MessageID != 1234 {
+		t.Errorf("unexpected delivery receipt: %+v", result)
+	}
+}
+
+func TestSendOverseerMessage_MCPFallbackRequiresCachedIdentity(t *testing.T) {
+	t.Parallel()
+	for _, status := range []int{http.StatusNotFound, http.StatusMethodNotAllowed} {
+		for _, credential := range []string{"missing", "blank", "other project", "ordinary agent"} {
+			t.Run(fmt.Sprintf("%d/%s", status, credential), func(t *testing.T) {
+				t.Parallel()
+				var calls atomic.Int32
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					calls.Add(1)
+					if r.URL.Path != "/mail/project/overseer/send" {
+						t.Errorf("missing authorized identity must not reach MCP: %s", r.URL.Path)
+					}
+					http.Error(w, http.StatusText(status), status)
+				}))
+				defer server.Close()
+				c := NewClient(WithBaseURL(server.URL + "/mcp/"))
+				switch credential {
+				case "blank":
+					c.SetRegistrationToken("/project", HumanOverseerAgentName, " ")
+				case "other project":
+					c.SetRegistrationToken("/other", HumanOverseerAgentName, "other-project-token")
+				case "ordinary agent":
+					c.SetRegistrationToken("/project", "BlueLake", "ordinary-agent-token")
+				}
+				result, err := c.SendOverseerMessage(t.Context(), OverseerMessageOptions{
+					ProjectKey: "/project", ProjectSlug: "project", Recipients: []string{"BlueLake"},
+					Subject: "Task", BodyMD: "Do this",
+				})
+				if result != nil || !errors.Is(err, ErrNotImplemented) || !strings.Contains(err.Error(), "existing authorized HumanOverseer") || calls.Load() != 1 {
+					t.Fatalf("unauthorized legacy fallback: result=%+v err=%v requests=%d", result, err, calls.Load())
+				}
+			})
+		}
+	}
+}
+
+func TestSendOverseerMessage_MCPFallbackNeverRetriesRejectionOrAmbiguousReceipt(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		result     SendResult
+		rpcError   *JSONRPCError
+		httpStatus int
+		httpBody   string
+		want       string
+	}{
+		{name: "stale token", rpcError: &JSONRPCError{Code: -32602, Message: "sender_token revoked for HumanOverseer"}, want: "sender_token revoked"},
+		{name: "server failure", httpStatus: 500, httpBody: `{"error":"legacy message store unavailable"}`, want: "legacy message store unavailable"},
+		{name: "malformed response", httpStatus: 200, httpBody: "{", want: "unexpected end of JSON input"},
+		{name: "empty deliveries", want: "not retried"},
+		{name: "nil payload", result: SendResult{Deliveries: []MessageDelivery{{Project: "project"}}}, want: "not retried"},
+		{name: "missing message ID", result: SendResult{Deliveries: []MessageDelivery{{Payload: &Message{To: []string{"BlueLake", "GreenCastle"}}}}}, want: "not retried"},
+		{name: "negative message ID", result: SendResult{Deliveries: []MessageDelivery{{Payload: &Message{ID: -1, To: []string{"BlueLake", "GreenCastle"}}}}}, want: "not retried"},
+		{name: "missing recipients", result: SendResult{Deliveries: []MessageDelivery{{Payload: &Message{ID: 77}}}}, want: "message 77 delivery mismatch"},
+		{name: "partial", result: SendResult{Deliveries: []MessageDelivery{{Payload: &Message{ID: 77, To: []string{"BlueLake"}}}}}, want: "message 77 delivery mismatch"},
+		{name: "wrong recipients", result: SendResult{Deliveries: []MessageDelivery{{Payload: &Message{ID: 77, To: []string{"BlueLake", "RedStone"}}}}}, want: "message 77 delivery mismatch"},
+		{name: "mixed message IDs", result: SendResult{Deliveries: []MessageDelivery{{Payload: &Message{ID: 77, To: []string{"BlueLake"}}}, {Payload: &Message{ID: 78, To: []string{"GreenCastle"}}}}}, want: "not retried"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var interventionCalls, mcpCalls atomic.Int32
+			mcp := mockMCPHandler(t, map[string]func(args map[string]interface{}) (interface{}, *JSONRPCError){
+				"send_message": func(args map[string]interface{}) (interface{}, *JSONRPCError) {
+					if args["sender_token"] != "existing-token" {
+						t.Errorf("legacy send lost the existing credential: %v", args["sender_token"])
+					}
+					return tc.result, tc.rpcError
+				},
+				"register_agent": func(args map[string]interface{}) (interface{}, *JSONRPCError) {
+					t.Error("a rejected or ambiguous legacy send must not register HumanOverseer")
+					return nil, &JSONRPCError{Code: -32602, Message: "reserved name"}
+				},
+			})
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/mail/project/overseer/send" {
+					interventionCalls.Add(1)
+					http.NotFound(w, r)
+					return
+				}
+				mcpCalls.Add(1)
+				if r.URL.Path != "/mcp/" {
+					t.Errorf("unexpected request path: %s", r.URL.Path)
+				}
+				if tc.httpStatus != 0 {
+					w.WriteHeader(tc.httpStatus)
+					_, _ = w.Write([]byte(tc.httpBody))
+					return
+				}
+				mcp.ServeHTTP(w, r)
+			}))
+			defer server.Close()
+			c := NewClient(WithBaseURL(server.URL + "/mcp/"))
+			c.SetRegistrationToken("/project", HumanOverseerAgentName, "existing-token")
+			result, err := c.SendOverseerMessage(t.Context(), OverseerMessageOptions{
+				ProjectKey: "/project", ProjectSlug: "project", Recipients: []string{"BlueLake", "GreenCastle"},
+				Subject: "Task", BodyMD: "Do this",
+			})
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("expected %q, got result=%+v err=%v", tc.want, result, err)
+			}
+			if tc.name == "partial" && (result == nil || result.MessageID != 77 || !slices.Equal(result.Recipients, []string{"BlueLake"})) {
+				t.Errorf("lost actual partial legacy delivery: %+v", result)
+			}
+			if interventionCalls.Load() != 1 || mcpCalls.Load() != 1 {
+				t.Errorf("legacy mutation retried: HTTP=%d MCP=%d", interventionCalls.Load(), mcpCalls.Load())
+			}
+		})
 	}
 }
