@@ -74,7 +74,9 @@ This uses the Agent Mail Human Overseer functionality, which:
   - Marks all messages as high importance
 
 Recipients must be Agent Mail agent names (e.g., "GreenCastle", "BlueLake").
-Use --all to send to all registered agents in the project.
+Use --all to send to all registered agents in the project, excluding HumanOverseer.
+Specifying multiple --to flags or --all confirms delivery to those recipients.
+Use --reason to record why you are intervening in the server's audit log.
 
 If no message body is provided, opens $EDITOR for composition.
 
@@ -87,9 +89,8 @@ truncate the raw token into the subject line. See ntm#126.
 
 Examples:
   ntm mail send myproject --to GreenCastle "Please review the API changes"
-  ntm mail send myproject --all "Stop current work and checkpoint"
+  ntm mail send myproject --all --reason "Checkpoint before maintenance" "Stop current work and checkpoint"
   ntm mail send myproject --to BlueLake --to RedStone --thread FEAT-123 "Status update"
-  ntm mail send myproject --all --reason "Investigating an incident" "Pause and checkpoint"
   ntm mail send myproject --all --file ./instructions.md`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -100,19 +101,59 @@ Examples:
 			// in this closure, so reset them after each execution or
 			// omitted flags can leak into the next Execute() call.
 			currentPrepared := preparedRedaction
-			defer func() {
-				reason = agentmail.DefaultOverseerReason
-				cmd.Flags().Lookup("reason").Changed = false
-			}()
-			defer resetMailSendLocalFlags(cmd, &to, &subject, &threadID, &all, &fromFile, &preparedRedaction)
-			if strings.TrimSpace(reason) == "" || !utf8.ValidString(reason) || utf8.RuneCountInString(strings.TrimSpace(reason)) > 500 {
-				return fmt.Errorf("--reason must contain 1 to 500 characters")
-			}
+			defer resetMailSendLocalFlags(cmd, &to, &subject, &threadID, &reason, &all, &fromFile, &preparedRedaction)
+
+			// Reject invalid selections and audit fields before opening the
+			// editor, consuming a one-use prepared body, or contacting the server.
 			if all && len(to) > 0 {
-				return fmt.Errorf("use either --all or --to, not both")
+				return fmt.Errorf("--all and --to are mutually exclusive")
 			}
 			if !all && len(to) == 0 {
 				return fmt.Errorf("no recipients specified (use --to <agent-name> or --all)")
+			}
+			for i, recipient := range to {
+				to[i] = strings.TrimSpace(recipient)
+				if to[i] == "" {
+					return fmt.Errorf("--to recipient cannot be empty")
+				}
+				if !utf8.ValidString(to[i]) {
+					return fmt.Errorf("--to recipient must be valid UTF-8")
+				}
+			}
+			if !utf8.ValidString(threadID) {
+				return fmt.Errorf("--thread must be valid UTF-8")
+			}
+			reason = strings.TrimSpace(reason)
+			if reason == "" {
+				return fmt.Errorf("--reason cannot be empty")
+			}
+			if !utf8.ValidString(reason) {
+				return fmt.Errorf("--reason must be valid UTF-8")
+			}
+			if utf8.RuneCountInString(reason) > agentmail.MaxOverseerReasonLength {
+				return fmt.Errorf("--reason cannot exceed %d characters", agentmail.MaxOverseerReasonLength)
+			}
+			if cmd.Flags().Changed("subject") && strings.TrimSpace(subject) == "" {
+				return fmt.Errorf("message subject cannot be empty")
+			}
+			if !utf8.ValidString(subject) {
+				return fmt.Errorf("message subject must be valid UTF-8")
+			}
+			if subject != "" {
+				// Validate the value that will be sent, since redaction can
+				// change its length. Preserve the original for the send's
+				// redaction summary and never consume a handle on a flag error.
+				redactCfg := redaction.DefaultConfig()
+				if cfg != nil {
+					redactCfg = cfg.Redaction.ToRedactionLibConfig()
+				}
+				checkedSubject, _, err := applyOutputRedaction(subject, redactCfg)
+				if err != nil {
+					return err
+				}
+				if utf8.RuneCountInString(strings.TrimSpace(checkedSubject)) > 200 {
+					return fmt.Errorf("message subject cannot exceed 200 characters")
+				}
 			}
 
 			// --prepared-redaction is mutually exclusive with positional
@@ -143,7 +184,10 @@ Examples:
 				if strings.TrimSpace(raw) == "" {
 					return fmt.Errorf("prepared redaction handle %q produced empty body", currentPrepared)
 				}
-				return runMailSendOverseer(cmd, session, to, subject, raw, threadID, all)
+				return runMailSendOverseer(cmd, session, to, subject, raw, threadID, reason, all)
+			}
+			if fromFile != "" && len(args) > 1 {
+				return fmt.Errorf("--file and positional body are mutually exclusive")
 			}
 
 			// Get message body
@@ -173,14 +217,14 @@ Examples:
 				return fmt.Errorf("message body cannot be empty")
 			}
 
-			return runMailSendOverseer(cmd, session, to, subject, body, threadID, all)
+			return runMailSendOverseer(cmd, session, to, subject, body, threadID, reason, all)
 		},
 	}
 
 	cmd.Flags().StringArrayVar(&to, "to", nil, "recipient agent name (e.g., GreenCastle)")
 	cmd.Flags().StringVarP(&subject, "subject", "s", "", "message subject (auto-derived if not provided)")
 	cmd.Flags().StringVar(&threadID, "thread", "", "thread ID for conversation continuity")
-	cmd.Flags().StringVar(&reason, "reason", agentmail.DefaultOverseerReason, "intervention reason recorded in the server audit log (1 to 500 characters)")
+	cmd.Flags().StringVar(&reason, "reason", agentmail.DefaultOverseerReason, "audit reason for this human intervention (1-500 characters)")
 	cmd.Flags().BoolVar(&all, "all", false, "send to all registered agents in project")
 	cmd.Flags().StringVarP(&fromFile, "file", "f", "", "read message body from file")
 	cmd.Flags().StringVar(&preparedRedaction, "prepared-redaction", "", "Consume a token-handle from `ntm redact prepare-mail` and use its stashed body as the message (raw token never enters this command's args/env/logs; see ntm#126)")
@@ -188,14 +232,15 @@ Examples:
 	return cmd
 }
 
-func resetMailSendLocalFlags(cmd *cobra.Command, to *[]string, subject, threadID *string, all *bool, fromFile, preparedRedaction *string) {
+func resetMailSendLocalFlags(cmd *cobra.Command, to *[]string, subject, threadID, reason *string, all *bool, fromFile, preparedRedaction *string) {
 	*to = nil
 	*subject = ""
 	*threadID = ""
+	*reason = agentmail.DefaultOverseerReason
 	*all = false
 	*fromFile = ""
 	*preparedRedaction = ""
-	for _, name := range []string{"to", "subject", "thread", "all", "file", "prepared-redaction"} {
+	for _, name := range []string{"to", "subject", "thread", "reason", "all", "file", "prepared-redaction"} {
 		if flag := cmd.Flags().Lookup(name); flag != nil {
 			flag.Changed = false
 		}
@@ -924,7 +969,7 @@ func mailMessageMatchesAction(msg agentmail.InboxMessage, action mailAction) boo
 }
 
 // runMailSendOverseer sends a Human Overseer message via the Agent Mail HTTP API.
-func runMailSendOverseer(cmd *cobra.Command, session string, to []string, subject, body, threadID string, all bool) error {
+func runMailSendOverseer(cmd *cobra.Command, session string, to []string, subject, body, threadID, reason string, all bool) error {
 	parent, err := requireMailCommandContext(cmd, "mail overseer send")
 	if err != nil {
 		return err
@@ -963,6 +1008,9 @@ func runMailSendOverseer(cmd *cobra.Command, session string, to []string, subjec
 	if err != nil {
 		return fmt.Errorf("ensuring project: %w", err)
 	}
+	if strings.TrimSpace(project.Slug) == "" {
+		return fmt.Errorf("server returned no project slug for overseer delivery")
+	}
 
 	// Resolve recipients
 	var recipients []string
@@ -974,8 +1022,9 @@ func runMailSendOverseer(cmd *cobra.Command, session string, to []string, subjec
 		}
 		for _, agent := range agents {
 			// Skip the HumanOverseer itself
-			if agent.Name != "HumanOverseer" {
-				recipients = append(recipients, agent.Name)
+			name := strings.TrimSpace(agent.Name)
+			if !strings.EqualFold(name, "HumanOverseer") {
+				recipients = append(recipients, name)
 			}
 		}
 		if len(recipients) == 0 {
@@ -1006,10 +1055,6 @@ func runMailSendOverseer(cmd *cobra.Command, session string, to []string, subjec
 	redactedSubject, subjectSummary, err := applyOutputRedaction(subject, redactCfg)
 	if err != nil {
 		return err
-	}
-	reason := agentmail.DefaultOverseerReason
-	if flag := cmd.Flags().Lookup("reason"); flag != nil {
-		reason = flag.Value.String()
 	}
 	redactedReason, reasonSummary, err := applyOutputRedaction(reason, redactCfg)
 	if err != nil {
@@ -1055,17 +1100,11 @@ func runMailSendOverseer(cmd *cobra.Command, session string, to []string, subjec
 	subject = redactedSubject
 	body = redactedBody
 
-	// Derive project slug for the HTTP endpoint
-	projectSlug := agentmail.ProjectSlugFromPath(projectKey)
-	if project.Slug != "" {
-		projectSlug = project.Slug // Use server-provided slug if available
-	}
-
-	// Explicit --to selections and --all's resolved list authorize multiple
-	// recipients; the client confirms that list rather than requesting broadcast.
+	// The designated intervention route owns the reserved HumanOverseer
+	// identity, authorization, audit trail, and priority/preamble semantics.
 	result, err := client.SendOverseerMessage(ctx, agentmail.OverseerMessageOptions{
 		ProjectKey:  projectKey,
-		ProjectSlug: projectSlug,
+		ProjectSlug: project.Slug,
 		Recipients:  recipients,
 		Subject:     subject,
 		BodyMD:      body,
@@ -1166,7 +1205,10 @@ func looksLikeAgentName(s string) bool {
 
 // truncateSubject creates a subject from message body.
 func truncateSubject(body string, maxLen int) string {
-	lines := strings.SplitN(body, "\n", 2)
+	if maxLen <= 0 {
+		return ""
+	}
+	lines := strings.SplitN(strings.TrimSpace(body), "\n", 2)
 	subject := strings.TrimSpace(lines[0])
 
 	// Remove markdown heading prefix
@@ -1174,8 +1216,12 @@ func truncateSubject(body string, maxLen int) string {
 	subject = strings.TrimPrefix(subject, "## ")
 	subject = strings.TrimPrefix(subject, "### ")
 
-	if len(subject) > maxLen {
-		return subject[:maxLen-3] + "..."
+	runes := []rune(subject)
+	if len(runes) > maxLen {
+		if maxLen <= 3 {
+			return string(runes[:maxLen])
+		}
+		return string(runes[:maxLen-3]) + "..."
 	}
 	return subject
 }
