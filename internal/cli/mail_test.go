@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -38,6 +39,9 @@ type mailStub struct {
 	ensureCalled       int
 	ensureProjectKeys  []string
 	overseerCalls      []overseerCall
+	overseerStatus     int
+	legacyOverseer     bool
+	delivered          map[string][]agentmail.InboxMessage
 	releaseCalls       []releaseCall
 	renewCalls         []renewCall
 	forceReleaseCalls  []forceReleaseCall
@@ -95,10 +99,14 @@ type forceReleaseCall struct {
 }
 
 type overseerCall struct {
-	Recipients []string `json:"recipients"`
-	Subject    string   `json:"subject"`
-	BodyMD     string   `json:"body_md"`
-	ThreadID   string   `json:"thread_id,omitempty"`
+	Intent          string   `json:"intent"`
+	Reason          string   `json:"reason"`
+	ConfirmMultiple bool     `json:"confirm_multiple"`
+	Broadcast       bool     `json:"broadcast"`
+	Recipients      []string `json:"recipients"`
+	Subject         string   `json:"subject"`
+	BodyMD          string   `json:"body_md"`
+	ThreadID        string   `json:"thread_id,omitempty"`
 }
 
 type mailAvailabilityDiagnosticStub struct {
@@ -177,6 +185,27 @@ func newMailStub(t *testing.T, inbox []agentmail.InboxMessage) *mailStub {
 				return
 			}
 			stub.overseerCalls = append(stub.overseerCalls, call)
+			if stub.overseerStatus != 0 {
+				w.WriteHeader(stub.overseerStatus)
+				_ = json.NewEncoder(w).Encode(map[string]string{"error": "operator intervention denied"})
+				return
+			}
+			if !stub.legacyOverseer && (call.Intent != "human_overseer_send" || strings.TrimSpace(call.Reason) == "" ||
+				(len(call.Recipients) > 1 && !call.ConfirmMultiple) || call.Broadcast) {
+				w.WriteHeader(http.StatusBadRequest)
+				_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid intervention audit fields"})
+				return
+			}
+			if stub.delivered == nil {
+				stub.delivered = make(map[string][]agentmail.InboxMessage)
+			}
+			for _, recipient := range call.Recipients {
+				thread := call.ThreadID
+				stub.delivered[recipient] = append(stub.delivered[recipient], agentmail.InboxMessage{
+					ID: 123, From: agentmail.HumanOverseerAgentName, Subject: call.Subject,
+					BodyMD: agentmail.HumanOverseerPreamble + call.BodyMD, Importance: "high", ThreadID: &thread,
+				})
+			}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"success":    true,
@@ -318,7 +347,7 @@ func newMailStub(t *testing.T, inbox []agentmail.InboxMessage) *mailStub {
 				Limit:   toInt(args["limit"]),
 			}
 			stub.fetchCalls = append(stub.fetchCalls, call)
-			messages := stub.inbox
+			messages := append(append([]agentmail.InboxMessage(nil), stub.inbox...), stub.delivered[call.Agent]...)
 			if call.Urgent {
 				filtered := make([]agentmail.InboxMessage, 0, len(messages))
 				for _, m := range messages {
@@ -757,6 +786,155 @@ func TestMailSendOverseer_RedactModeScrubsBodyAndSubject(t *testing.T) {
 	}
 	if strings.Contains(call.Subject, "hunter2hunter2") {
 		t.Fatalf("expected subject to be redacted, got %q", call.Subject)
+	}
+}
+
+// Mail transport tests use an offline session probe so they need neither a
+// running tmux server nor permission to create Unix sockets.
+func isolateOverseerSessionProbe(t *testing.T) {
+	t.Helper()
+	if _, err := os.Stat("/bin/sh"); err != nil {
+		t.Skip("session probe fixture requires /bin/sh")
+	}
+	path := filepath.Join(t.TempDir(), "tmux")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\ncase \"$1\" in\n-V) echo 'tmux 3.4';;\nlist-sessions|list-panes|has-session) exit 0;;\n*) exit 1;;\nesac\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NTM_TMUX_BINARY", path)
+	oldClient := tmux.DefaultClient
+	tmux.DefaultClient = tmux.NewClient("")
+	t.Cleanup(func() { tmux.DefaultClient = oldClient })
+}
+
+func TestMailOverseerSendReadback(t *testing.T) {
+	for _, legacy := range []bool{false, true} {
+		for _, mode := range []string{"single", "multiple", "all"} {
+			t.Run(fmt.Sprintf("legacy=%v/%s", legacy, mode), func(t *testing.T) {
+				isolateOverseerSessionProbe(t)
+				isolateSessionAgentStorage(t)
+				stub := newMailStub(t, nil)
+				defer stub.Close()
+				stub.legacyOverseer = legacy
+				stub.listAgents = []agentmail.Agent{{Name: "BlueLake"}, {Name: "RedStone"}, {Name: agentmail.HumanOverseerAgentName}}
+				t.Setenv("AGENT_MAIL_URL", stub.server.URL+"/mcp/")
+				args := []string{"mail", "send", "mysession", "--subject", "Pause deployment", "--thread", "incident-355",
+					"--reason", "Investigating production failure", "--json"}
+				wantCount := 1
+				if mode == "all" {
+					args = append(args, "--all")
+					wantCount = 2
+				} else {
+					args = append(args, "--to", "BlueLake")
+					if mode == "multiple" {
+						args = append(args, "--to", "RedStone")
+						wantCount = 2
+					}
+				}
+				out, err := execCommand(t, append(args, "Checkpoint current work")...)
+				if err != nil {
+					t.Fatalf("send: %v; %s", err, out)
+				}
+				var receipt agentmail.OverseerSendResult
+				if err := json.Unmarshal([]byte(out), &receipt); err != nil || !receipt.Success || receipt.MessageID != 123 || len(receipt.Recipients) != wantCount {
+					t.Fatalf("receipt: %s (%v)", out, err)
+				}
+				if len(stub.overseerCalls) != 1 {
+					t.Fatalf("expected exactly one send, got %d", len(stub.overseerCalls))
+				}
+				call := stub.overseerCalls[0]
+				if call.Reason != "Investigating production failure" || call.ThreadID != "incident-355" ||
+					call.ConfirmMultiple != (wantCount > 1) || call.Broadcast {
+					t.Fatalf("audit fields: %+v", call)
+				}
+				for _, recipient := range receipt.Recipients {
+					if recipient == agentmail.HumanOverseerAgentName {
+						t.Fatal("--all included overseer")
+					}
+					out, err := execCommand(t, "mail", "inbox", "mysession", "--agent", recipient, "--json")
+					if err != nil || !strings.Contains(out, "HumanOverseer") || !strings.Contains(out, "Pause deployment") || !strings.Contains(out, "high") {
+						t.Fatalf("CLI inbox %s: %v; %s", recipient, err, out)
+					}
+					client := agentmail.NewClient(agentmail.WithBaseURL(stub.server.URL + "/mcp/"))
+					msgs, err := client.FetchInbox(t.Context(), agentmail.FetchInboxOptions{
+						ProjectKey: stub.ensureProjectKeys[0], AgentName: recipient, IncludeBodies: true,
+					})
+					if err != nil || len(msgs) != 1 || !strings.Contains(msgs[0].BodyMD, "Checkpoint current work") ||
+						msgs[0].ThreadID == nil || *msgs[0].ThreadID != "incident-355" {
+						t.Fatalf("full inbox %s: %+v, %v", recipient, msgs, err)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestMailOverseerFailures(t *testing.T) {
+	for _, status := range []int{400, 401, 403} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			isolateOverseerSessionProbe(t)
+			stub := newMailStub(t, nil)
+			defer stub.Close()
+			stub.overseerStatus = status
+			t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+			t.Setenv("AGENT_MAIL_URL", stub.server.URL+"/mcp/")
+			_, err := execCommand(t, "mail", "send", "mysession", "--to", "BlueLake", "instructions")
+			if err == nil || !strings.Contains(err.Error(), "operator intervention denied") || len(stub.overseerCalls) != 1 || len(stub.delivered) != 0 {
+				t.Fatalf("err=%v, sends=%d, delivered=%v", err, len(stub.overseerCalls), stub.delivered)
+			}
+		})
+	}
+	for _, flags := range [][]string{
+		{}, {"--all", "--to", "BlueLake"}, {"--to", " "},
+		{"--to", "BlueLake", "--reason", " "}, {"--to", "BlueLake", "--reason", strings.Repeat("界", 501)},
+		{"--to", "BlueLake", "--subject", strings.Repeat("界", 201)},
+	} {
+		t.Run(strings.Join(flags, "/"), func(t *testing.T) {
+			isolateOverseerSessionProbe(t)
+			stub := newMailStub(t, nil)
+			defer stub.Close()
+			t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+			t.Setenv("AGENT_MAIL_URL", stub.server.URL+"/mcp/")
+			args := append([]string{"mail", "send", "mysession"}, flags...)
+			if _, err := execCommand(t, append(args, "instructions")...); err == nil || len(stub.overseerCalls) != 0 {
+				t.Fatalf("invalid input sent: err=%v, calls=%d", err, len(stub.overseerCalls))
+			}
+		})
+	}
+}
+
+func TestMailOverseerReasonRedactionAndReset(t *testing.T) {
+	isolateOverseerSessionProbe(t)
+	stub := newMailStub(t, nil)
+	defer stub.Close()
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("AGENT_MAIL_URL", stub.server.URL+"/mcp/")
+	if _, err := execCommand(t, "--redact=redact", "mail", "send", "mysession", "--to", "BlueLake", "--reason", "investigate password=hunter2hunter2", "instructions"); err != nil {
+		t.Fatal(err)
+	}
+	if len(stub.overseerCalls) != 1 || strings.Contains(stub.overseerCalls[0].Reason, "hunter2hunter2") {
+		t.Fatalf("secret in audit: %+v", stub.overseerCalls)
+	}
+	if _, err := execCommand(t, "mail", "send", "mysession", "--to", "BlueLake", "second"); err != nil {
+		t.Fatal(err)
+	}
+	if len(stub.overseerCalls) != 2 || stub.overseerCalls[1].Reason != agentmail.DefaultOverseerReason {
+		t.Fatalf("reason leaked between executions: %+v", stub.overseerCalls)
+	}
+	if _, err := execCommand(t, "--redact=block", "mail", "send", "mysession", "--to", "BlueLake", "--reason", "investigate password=hunter2hunter2", "instructions"); err == nil || len(stub.overseerCalls) != 2 {
+		t.Fatalf("blocked reason sent: err=%v, calls=%d", err, len(stub.overseerCalls))
+	}
+}
+
+func TestMailOverseerAllWithoutAgents(t *testing.T) {
+	isolateOverseerSessionProbe(t)
+	stub := newMailStub(t, nil)
+	defer stub.Close()
+	stub.listAgents = []agentmail.Agent{{Name: agentmail.HumanOverseerAgentName}}
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("AGENT_MAIL_URL", stub.server.URL+"/mcp/")
+	_, err := execCommand(t, "mail", "send", "mysession", "--all", "instructions")
+	if err == nil || !strings.Contains(err.Error(), "no agents registered") || len(stub.overseerCalls) != 0 {
+		t.Fatalf("empty --all selection: err=%v, calls=%d", err, len(stub.overseerCalls))
 	}
 }
 
