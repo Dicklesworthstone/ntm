@@ -324,6 +324,38 @@ func TestAccountRotationMonitorRejectsChangedScopeBeforeAcknowledgment(t *testin
 	}
 }
 
+func TestAccountRotationMonitorPassesLiveScopeGuardToRecovery(t *testing.T) {
+	manifest, dir := accountRotationMonitorFixture(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	checked := false
+	newAccountRotationRunner = func(_ string, options coordinator.AccountFailoverOptions) (accountRotationRunner, error) {
+		if options.ValidateScope == nil {
+			t.Fatal("resident recovery has no scope guard")
+		}
+		return recordingAccountRotationRunner{run: func(ctx context.Context) []coordinator.AccountFailoverDecision {
+			if err := options.ValidateScope(ctx); err != nil {
+				t.Errorf("original session refused: %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "identity"), []byte("701:$1:1770000000"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := options.ValidateScope(ctx); err == nil {
+				t.Error("scope guard reused the pre-poll identity after server replacement")
+			}
+			checked = true
+			cancel()
+			return nil
+		}}, nil
+	}
+	if err := runAccountRotationMonitor(ctx, manifest, func(context.Context, io.ReadCloser) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if !checked {
+		t.Fatal("recovery runner was not exercised")
+	}
+}
+
 func TestAccountRotationMonitorStopsBeforeCheckingReplacementSession(t *testing.T) {
 	manifest, dir := accountRotationMonitorFixture(t)
 	ran, closed := false, false

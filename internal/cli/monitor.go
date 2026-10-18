@@ -422,7 +422,12 @@ func runAccountRotationMonitor(ctx context.Context, manifest *resilience.SpawnMa
 	if err := swarmPreflightAccountRotation(ctx, effective.Integrations.CAAM); err != nil {
 		return err
 	}
-	runner, err := newAccountRotationRunner(manifest.Session, coordinator.AccountFailoverOptions{Config: effective, Targets: targets, ForceGlobalAuthClobber: options.ForceGlobalAuthClobber})
+	runner, err := newAccountRotationRunner(manifest.Session, coordinator.AccountFailoverOptions{
+		Config: effective, Targets: targets, ForceGlobalAuthClobber: options.ForceGlobalAuthClobber,
+		ValidateScope: func(checkCtx context.Context) error {
+			return validateAccountRotationScope(checkCtx, manifest, targets)
+		},
+	})
 	if err != nil {
 		return err
 	}
