@@ -520,6 +520,10 @@ func ExtractSessionName(path string) string {
 	}
 	filename = strings.TrimSuffix(filename, ".jsonl")
 	filename = strings.TrimSuffix(filename, ".json")
+	// Source labels are emitted in prompts and send receipts too. Redact
+	// before truncating so a shortened credential cannot evade detection.
+	// Keep the original path on the hit for identity and project ranking.
+	filename = redactHitContent(filename)
 	if len(filename) > 40 {
 		filename = filename[:37] + "..."
 	}
