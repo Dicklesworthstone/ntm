@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/agent"
-	"github.com/Dicklesworthstone/ntm/internal/process"
 	"github.com/Dicklesworthstone/ntm/internal/ratelimit"
 	"github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
@@ -89,6 +88,7 @@ type AgentHealth struct {
 	WaitSeconds           int                         `json:"wait_seconds"`             // Suggested wait time (if rate limited)
 	Progress              *Progress                   `json:"progress"`                 // Detected work progress
 	ShellPID              int                         `json:"shell_pid"`                // Shell PID from tmux pane
+	PaneDead              bool                        `json:"pane_dead,omitempty"`      // pane_dead: the pane's process exited (remain-on-exit); ShellPID is stale and may name an unrelated process
 	UptimeSeconds         int                         `json:"uptime_seconds,omitempty"` // Age of the pane's shell incarnation (set by ntm health; absent when unreadable)
 	ObservedState         status.AgentState           `json:"observed_state"`
 	LastKnownState        status.AgentState           `json:"last_known_state,omitempty"`
@@ -257,6 +257,7 @@ func newAgentHealth(pa tmux.PaneActivity) AgentHealth {
 		Activity:      ActivityUnknown,
 		Issues:        []Issue{},
 		ShellPID:      pa.Pane.PID,
+		PaneDead:      pa.Pane.Dead,
 	}
 
 	// Set last activity
@@ -306,8 +307,15 @@ func analyzeAgentHealth(agent AgentHealth, pa tmux.PaneActivity, output string) 
 	// Determine activity level
 	agent.Activity = detectActivity(output, pa.LastActivity, string(pa.Pane.Type))
 
-	// Determine process status using PID-based check (preferred) with text fallback
-	agent.ProcessStatus = detectProcessStatusForAgent(output, pa.Pane.Command, pa.Pane.PID, string(pa.Pane.Type))
+	// Determine process status using PID-based check (preferred) with text
+	// fallback. A dead agent pane (held open by remain-on-exit) has exited
+	// whatever its stale #{pane_pid} names now: that PID may already belong to
+	// an unrelated process.
+	if pa.Pane.Dead && paneRunsAgent(string(pa.Pane.Type)) {
+		agent.ProcessStatus = ProcessExited
+	} else {
+		agent.ProcessStatus = detectProcessStatusForAgent(output, pa.Pane.Command, pa.Pane.PID, string(pa.Pane.Type))
+	}
 
 	// Detect work progress
 	agent.Progress = detectProgress(output, agent.Activity, agent.Issues)
@@ -751,11 +759,16 @@ func detectProcessStatusForAgent(output string, command string, shellPID int, ag
 	// pane as a crashed process and turned the whole session's health red.
 	// calculateStatus checks ProcessExited before activity, so there was no later
 	// chance to recover.
+	//
+	// The pane's root process is either the shell the agent was typed into
+	// (a living agent is a living child) or, for a pane created with the agent
+	// as its own command, the agent itself; tmux.PaneAgentAlive covers both
+	// (ntm#359).
 	if shellPID > 0 && paneRunsAgent(agentType) {
-		if process.HasChildAlive(shellPID) {
+		if tmux.PaneAgentAlive(shellPID) {
 			return ProcessRunning
 		}
-		// Shell has no living child -- the agent process has exited.
+		// No living agent: the shell has no child, or the root process is gone.
 		return ProcessExited
 	}
 

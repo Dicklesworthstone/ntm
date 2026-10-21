@@ -1375,3 +1375,93 @@ func TestWorkflowAgentFaultsDetectsRealPaneCrash(t *testing.T) {
 	}
 	waitFault(workflowAgentFault{Kind: workflow.ErrorAgentCrash, Reason: "pane no longer exists", Confirmed: true})
 }
+
+// TestHealthTreatsAgentRootPaneAsRunning is the real-tmux ntm#359 regression
+// guard. A pane can run its agent as the pane's own process instead of under
+// an interactive shell (a boot script's `tmux new-session 'claude --resume'`,
+// respawn-pane with a command). Then #{pane_pid} is the agent itself, with no
+// children between tool calls, and the health check behind `ntm health`, the
+// resilience monitor and workflow fault detection used to report it as an
+// exited agent while it was working.
+func TestHealthTreatsAgentRootPaneAsRunning(t *testing.T) {
+	testutil.RequireTmuxThrottled(t)
+	if tmux.DefaultClient.Remote != "" {
+		t.Skip("process liveness needs a local tmux server")
+	}
+	tmpDir := t.TempDir()
+	oldCfg := cfg
+	defer func() { cfg = oldCfg }()
+	cfg = newTmuxIntegrationTestConfig(tmpDir)
+	cfg.Agents.Claude = "sleep 300"
+	sessionName := fmt.Sprintf("ntm-health-root-%d", time.Now().UnixNano())
+	if err := os.MkdirAll(filepath.Join(tmpDir, sessionName), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := spawnSessionLogicContext(t.Context(), SpawnOptions{
+		Session: sessionName, Agents: []FlatAgent{{Type: AgentTypeClaude, Index: 1}}, CCCount: 1, UserPane: true,
+	}); err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	defer func() { _ = tmux.KillSession(sessionName) }()
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+
+	findAgentPane := func() tmux.Pane {
+		t.Helper()
+		panes, err := tmux.GetPanesContext(ctx, sessionName)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, pane := range panes {
+			if pane.Type == tmux.AgentClaude {
+				return pane
+			}
+		}
+		t.Fatalf("no claude pane in %+v", panes)
+		return tmux.Pane{}
+	}
+	shellPane := findAgentPane()
+
+	// Replace the pane's shell with the agent itself. respawn-pane keeps the
+	// pane's options, so the pane stays typed as claude.
+	if _, err := tmux.DefaultClient.RunContext(ctx, "respawn-pane", "-k", "-t", tmux.ExactTarget(shellPane.ID), "exec sleep 300"); err != nil {
+		t.Fatal(err)
+	}
+	var agentPane tmux.Pane
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(100 * time.Millisecond) {
+		agentPane = findAgentPane()
+		if agentPane.PID > 0 && agentPane.PID != shellPane.PID && filepath.Base(strings.TrimSpace(agentPane.Command)) == "sleep" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("pane never became its own agent process: before=%+v after=%+v", shellPane, agentPane)
+		}
+	}
+	if process.HasChildAlive(agentPane.PID) {
+		t.Fatalf("pane root %d has a child; the fixture must model an agent with no tool call running", agentPane.PID)
+	}
+
+	report, err := health.CheckSession(ctx, sessionName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var row *health.AgentHealth
+	for i := range report.Agents {
+		if report.Agents[i].PaneID == agentPane.ID {
+			row = &report.Agents[i]
+		}
+	}
+	if row == nil {
+		t.Fatalf("pane %s missing from health report %+v", agentPane.ID, report.Agents)
+	}
+	if row.ProcessStatus != health.ProcessRunning || row.Status == health.StatusError {
+		t.Fatalf("agent-root pane health = process %q status %q issues %+v, want a running agent", row.ProcessStatus, row.Status, row.Issues)
+	}
+	faults, err := workflowAgentFaults(ctx, sessionName, map[string]int{agentPane.ID: agentPane.PID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fault, ok := faults[agentPane.ID]; ok {
+		t.Fatalf("working agent-root pane classified as faulted: %+v", fault)
+	}
+}

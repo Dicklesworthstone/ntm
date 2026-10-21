@@ -974,6 +974,85 @@ func TestAttentionFeed_SubscribeEventBus(t *testing.T) {
 	}
 }
 
+// TestAttentionFeed_RepeatedAgentErrorKeepsOneItem is the ntm#359 regression
+// guard: repeats of the same agent.error for one pane used to get a fresh
+// cursor-only attention_item_key and attention_state "new" each time, even
+// with an identical fingerprint, so digest consumers that dedupe by item key
+// re-alerted on every repeat and an acknowledgement never stuck.
+func TestAttentionFeed_RepeatedAgentErrorKeepsOneItem(t *testing.T) {
+	store := newTestAttentionStore(t)
+	feed := NewAttentionFeed(AttentionFeedConfig{
+		JournalSize:       100,
+		RetentionPeriod:   time.Hour,
+		HeartbeatInterval: 0,
+	}, WithAttentionStore(store))
+	t.Cleanup(feed.Stop)
+	bus := ntmevents.NewEventBus(10)
+	unsubscribe := feed.SubscribeEventBus(bus)
+	defer unsubscribe()
+
+	crash := func(pane string) ntmevents.WebhookEvent {
+		return ntmevents.NewWebhookEvent(ntmevents.WebhookAgentCrashed, "god", pane, "cc",
+			"Agent cc crashed: Agent unhealthy", map[string]string{"pane_index": "1", "reason": "Agent unhealthy"})
+	}
+	bus.PublishSync(crash("%1"))
+	bus.PublishSync(crash("%1"))
+	bus.PublishSync(crash("%2"))
+
+	replayed, _, err := feed.Replay(0, 10)
+	if err != nil {
+		t.Fatalf("Replay() error: %v", err)
+	}
+	if len(replayed) != 3 {
+		t.Fatalf("replayed %d events, want every occurrence recorded (3)", len(replayed))
+	}
+	const wantKey = "dedup:agent|error|god|%1|cc"
+	first, second, other := replayed[0], replayed[1], replayed[2]
+	if first.Cursor == second.Cursor {
+		t.Fatalf("repeats share cursor %d; each occurrence must keep its own record", first.Cursor)
+	}
+	for _, event := range []AttentionEvent{first, second} {
+		if got := attentionStringDetail(event.Details, attentionDetailItemKey); got != wantKey {
+			t.Fatalf("cursor %d attention_item_key = %q, want %q", event.Cursor, got, wantKey)
+		}
+	}
+	if got := attentionStringDetail(other.Details, attentionDetailItemKey); got == wantKey || !strings.HasPrefix(got, "dedup:agent|error|god|%2|") {
+		t.Fatalf("other pane attention_item_key = %q, want its own item", got)
+	}
+
+	// An operator acknowledges the item; the next identical repeat keeps that
+	// state instead of arriving as a new item.
+	if err := store.UpsertAttentionItemState(&state.AttentionItemState{
+		ItemKey:     wantKey,
+		DedupKey:    strings.TrimPrefix(wantKey, "dedup:"),
+		State:       state.AttentionStateAcknowledged,
+		Fingerprint: attentionStringDetail(second.Details, attentionDetailFingerprint),
+	}); err != nil {
+		t.Fatalf("UpsertAttentionItemState() error: %v", err)
+	}
+	bus.PublishSync(crash("%1"))
+	replayed, _, err = feed.Replay(other.Cursor, 10)
+	if err != nil {
+		t.Fatalf("Replay() after acknowledgement error: %v", err)
+	}
+	if len(replayed) != 1 {
+		t.Fatalf("replayed %d events after acknowledgement, want 1", len(replayed))
+	}
+	repeat := replayed[0]
+	if got := attentionStringDetail(repeat.Details, attentionDetailItemKey); got != wantKey {
+		t.Fatalf("repeat attention_item_key = %q, want %q", got, wantKey)
+	}
+	if got := attentionStringDetail(repeat.Details, attentionDetailState); got != string(state.AttentionStateAcknowledged) {
+		t.Fatalf("repeat attention_state = %q, want %q", got, state.AttentionStateAcknowledged)
+	}
+
+	// Without a pane there is nothing to scope the item to: keep the
+	// per-occurrence identity rather than merging a session's agents.
+	if key := agentErrorDedupKey("god", "", "cc"); key != "" {
+		t.Fatalf("agentErrorDedupKey without pane = %q, want empty", key)
+	}
+}
+
 // =============================================================================
 // Store-backed Persistence Tests (bd-j9jo3.4.1)
 // =============================================================================

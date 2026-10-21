@@ -28,7 +28,6 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	dispatchsvc "github.com/Dicklesworthstone/ntm/internal/dispatch"
 	"github.com/Dicklesworthstone/ntm/internal/health"
-	"github.com/Dicklesworthstone/ntm/internal/process"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
@@ -1924,7 +1923,7 @@ func workflowAgentFaults(ctx context.Context, session string, expected map[strin
 		if _, known := faults[row.PaneID]; known {
 			continue
 		}
-		if fault, faulted := classifyWorkflowAgentHealth(row, local, process.HasChildAlive); faulted {
+		if fault, faulted := classifyWorkflowAgentHealth(row, local, tmux.PaneAgentAlive); faulted {
 			faults[row.PaneID] = fault
 		}
 	}
@@ -1938,8 +1937,8 @@ func workflowAgentFaults(ctx context.Context, session string, expected map[strin
 // failure, a blocking interactive gate, or the status detector's error state.
 // Those are text classifications, so they require a fresh observation and
 // are debounced by the caller.
-func classifyWorkflowAgentHealth(row health.AgentHealth, local bool, hasChildAlive func(int) bool) (workflowAgentFault, bool) {
-	if local && row.ShellPID > 0 && !hasChildAlive(row.ShellPID) {
+func classifyWorkflowAgentHealth(row health.AgentHealth, local bool, agentAlive func(int) bool) (workflowAgentFault, bool) {
+	if local && row.ShellPID > 0 && !agentAlive(row.ShellPID) {
 		return workflowAgentFault{Kind: workflow.ErrorAgentCrash, Reason: "agent process exited; the pane is back at its shell", Confirmed: true}, true
 	}
 	if row.ObservationFreshness != status.FreshnessFresh {

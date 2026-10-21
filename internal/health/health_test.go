@@ -2,6 +2,7 @@ package health
 
 import (
 	"errors"
+	"os/exec"
 	"sort"
 	"strings"
 	"testing"
@@ -755,5 +756,38 @@ func TestDetectProcessStatusForAgentIgnoresPIDForNonAgentPanes(t *testing.T) {
 	// An agent pane with no live child is still an exited process.
 	if got := detectProcessStatusForAgent("", "zsh", childlessPID, "claude"); got != ProcessExited {
 		t.Fatalf("claude pane with no live child = %q, want %q", got, ProcessExited)
+	}
+}
+
+// TestDetectProcessStatusForAgentRootProcessIsTheAgent is the ntm#359
+// regression guard. A pane created with the agent as its own command (for
+// example a boot script running `tmux new-session 'claude --resume'`) has the
+// agent as #{pane_pid}; between tool calls it has no children. That used to
+// read as ProcessExited, so the resilience monitor emitted "Agent cc crashed:
+// Agent unhealthy" again and again for a pane that was working normally.
+func TestDetectProcessStatusForAgentRootProcessIsTheAgent(t *testing.T) {
+	agent := exec.CommandContext(t.Context(), "sleep", "30")
+	if err := agent.Start(); err != nil {
+		t.Fatalf("start stand-in agent: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = agent.Process.Kill()
+		_ = agent.Wait()
+	})
+
+	if got := detectProcessStatusForAgent("", "claude", agent.Process.Pid, "cc"); got != ProcessRunning {
+		t.Fatalf("pane whose root process is a live agent = %q, want %q", got, ProcessRunning)
+	}
+
+	// A dead pane held open by remain-on-exit keeps reporting its old
+	// #{pane_pid}; once that PID names some other live process, the pane must
+	// still read as exited.
+	pa := tmux.PaneActivity{Pane: tmux.Pane{ID: "%9", Index: 9, Type: tmux.AgentClaude, PID: agent.Process.Pid, Dead: true}}
+	if got := analyzeAgentHealth(newAgentHealth(pa), pa, "").ProcessStatus; got != ProcessExited {
+		t.Fatalf("dead agent pane whose stale PID is live = %q, want %q", got, ProcessExited)
+	}
+	pa.Pane.Dead = false
+	if got := analyzeAgentHealth(newAgentHealth(pa), pa, "").ProcessStatus; got != ProcessRunning {
+		t.Fatalf("live agent pane = %q, want %q", got, ProcessRunning)
 	}
 }

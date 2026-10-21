@@ -137,6 +137,90 @@ func TestPaneCommandIsShell(t *testing.T) {
 	}
 }
 
+// TestPaneAgentAlive covers the ntm#359 liveness rule against real processes:
+// a pane whose root process is the agent itself is alive without children,
+// while a shell root still needs a living child.
+func TestPaneAgentAlive(t *testing.T) {
+	startProcess := func(t *testing.T, name string, args ...string) *exec.Cmd {
+		t.Helper()
+		cmd := exec.CommandContext(t.Context(), name, args...)
+		stdin, err := cmd.StdinPipe()
+		if err != nil {
+			t.Fatalf("stdin pipe for %s: %v", name, err)
+		}
+		if err := cmd.Start(); err != nil {
+			t.Fatalf("start %s: %v", name, err)
+		}
+		t.Cleanup(func() {
+			_ = stdin.Close()
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		})
+		return cmd
+	}
+
+	t.Run("agent as the pane's own process, no children", func(t *testing.T) {
+		agent := startProcess(t, "sleep", "30")
+		if !PaneAgentAlive(agent.Process.Pid) {
+			t.Fatalf("PaneAgentAlive(%d) = false for a live non-shell root process; between tool calls an agent has no children", agent.Process.Pid)
+		}
+	})
+
+	t.Run("shell root without a child is not a running agent", func(t *testing.T) {
+		// `read` is a builtin, so the shell waits on its stdin with no child.
+		shell := startProcess(t, "sh", "-c", "read line")
+		if PaneAgentAlive(shell.Process.Pid) {
+			t.Fatalf("PaneAgentAlive(%d) = true for a childless shell; an agent that exited back to its shell must read as dead", shell.Process.Pid)
+		}
+	})
+
+	t.Run("shell root with a living child", func(t *testing.T) {
+		// The trailing `:` keeps the shell from exec'ing sleep in its place.
+		shell := startProcess(t, "sh", "-c", "sleep 30; :")
+		deadline := time.Now().Add(5 * time.Second)
+		for !PaneAgentAlive(shell.Process.Pid) {
+			if time.Now().After(deadline) {
+				t.Fatalf("PaneAgentAlive(%d) stayed false for a shell running a child", shell.Process.Pid)
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	})
+
+	t.Run("exited root process", func(t *testing.T) {
+		cmd := exec.CommandContext(t.Context(), "sleep", "0")
+		if err := cmd.Run(); err != nil {
+			t.Fatalf("run sleep 0: %v", err)
+		}
+		if PaneAgentAlive(cmd.Process.Pid) {
+			t.Fatalf("PaneAgentAlive(%d) = true for a reaped process", cmd.Process.Pid)
+		}
+		if PaneAgentAlive(0) || PaneAgentAlive(-1) {
+			t.Fatal("PaneAgentAlive accepted a non-positive PID")
+		}
+	})
+}
+
+func TestRootProcessIsNonShell(t *testing.T) {
+	cases := []struct {
+		argv []string
+		want bool
+	}{
+		{argv: nil, want: false},
+		{argv: []string{""}, want: false},
+		{argv: []string{"-zsh"}, want: false},
+		{argv: []string{"/bin/bash", "-l"}, want: false},
+		{argv: []string{"fish"}, want: false},
+		{argv: []string{"claude", "--resume"}, want: true},
+		{argv: []string{"/usr/local/bin/node", "/opt/claude/cli.js"}, want: true},
+		{argv: []string{"muse-bin-1.4.10-R6427.1"}, want: true},
+	}
+	for _, tc := range cases {
+		if got := rootProcessIsNonShell(tc.argv); got != tc.want {
+			t.Errorf("rootProcessIsNonShell(%q) = %v, want %v", tc.argv, got, tc.want)
+		}
+	}
+}
+
 func TestValidatePaneLaunchBaseline(t *testing.T) {
 	tests := []struct {
 		name    string

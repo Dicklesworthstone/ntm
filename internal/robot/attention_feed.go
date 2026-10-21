@@ -2063,6 +2063,22 @@ func ptStateChangeDedupKey(session, pane string, previous, current pt.Classifica
 	return fmt.Sprintf("pt|state|%s|%s|%s|%s", strings.TrimSpace(session), strings.TrimSpace(pane), strings.TrimSpace(string(previous)), strings.TrimSpace(string(current)))
 }
 
+// agentErrorDedupKey binds repeated agent.error / agent crash events for the
+// same agent pane to one attention item (ntm#359). Every occurrence is still
+// recorded with its own cursor; the shared key only gives the repeats one
+// attention_item_key, so operator state (acknowledged, snoozed, dismissed)
+// carries over and a digest consumer sees one item instead of a new one per
+// repeat. A materially different error still changes the fingerprint and
+// resurfaces the item. Events that do not name both a session and a pane keep
+// their per-cursor identity rather than being merged across panes.
+func agentErrorDedupKey(session, pane, agentType string) string {
+	session, pane = strings.TrimSpace(session), strings.TrimSpace(pane)
+	if session == "" || pane == "" {
+		return ""
+	}
+	return fmt.Sprintf("agent|error|%s|%s|%s", session, pane, strings.TrimSpace(agentType))
+}
+
 func ptAlertDedupKey(session, pane string, alertType pt.AlertType) string {
 	return fmt.Sprintf("pt|alert|%s|%s|%s", strings.TrimSpace(session), strings.TrimSpace(pane), strings.TrimSpace(string(alertType)))
 }
@@ -2634,7 +2650,9 @@ func attentionFromWebhookEvent(event ntmevents.WebhookEvent) AttentionEvent {
 	case ntmevents.WebhookAgentStopped:
 		return attentionFromBusStruct(base, "event_bus.webhook", details, EventCategoryAgent, EventTypeAgentStopped, ActionabilityInteresting, SeverityInfo, attentionAgentSummary("agent stopped", event.Agent, details), nil)
 	case ntmevents.WebhookAgentError, ntmevents.WebhookAgentCrashed:
-		return attentionFromBusStruct(base, "event_bus.webhook", details, EventCategoryAgent, EventTypeAgentError, ActionabilityActionRequired, SeverityError, attentionAgentSummary("agent error", event.Agent, details), attentionTailOrStatusActions(event.Session, paneRef, "Inspect the failing agent output"))
+		normalized := attentionFromBusStruct(base, "event_bus.webhook", details, EventCategoryAgent, EventTypeAgentError, ActionabilityActionRequired, SeverityError, attentionAgentSummary("agent error", event.Agent, details), attentionTailOrStatusActions(event.Session, paneRef, "Inspect the failing agent output"))
+		normalized.DedupKey = agentErrorDedupKey(event.Session, paneRef, event.Agent)
+		return normalized
 	case ntmevents.WebhookAgentRestarted:
 		return attentionFromBusStruct(base, "event_bus.webhook", details, EventCategoryAgent, EventTypeAgentRecovered, ActionabilityInteresting, SeverityInfo, attentionAgentSummary("agent restarted", event.Agent, details), nil)
 	case ntmevents.WebhookAgentIdle:

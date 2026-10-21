@@ -17,7 +17,6 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/events"
 	"github.com/Dicklesworthstone/ntm/internal/health"
 	"github.com/Dicklesworthstone/ntm/internal/notify"
-	"github.com/Dicklesworthstone/ntm/internal/process"
 	"github.com/Dicklesworthstone/ntm/internal/ratelimit"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
@@ -35,8 +34,15 @@ var (
 	sleepFn                  = time.Sleep
 	checkSessionFn           = health.CheckSession
 	displayMessageFn         = tmux.DisplayMessage
-	isChildAliveFn           = process.IsChildAlive
-	findPaneFn               = findPaneInSession
+	// isChildAliveFn answers "is the agent in this pane still running" from
+	// the pane's root PID: a living child of the shell, or a root process
+	// that is itself the agent (ntm#359).
+	isChildAliveFn = tmux.PaneAgentAlive
+	// paneIdleShellFn gates restart keystrokes: the launch line is only typed
+	// into a pane whose foreground is an idle interactive shell, never into a
+	// live agent's composer or another running program (ntm#359).
+	paneIdleShellFn = func(pane tmux.Pane) bool { return pane.IdleShell() }
+	findPaneFn      = findPaneInSession
 	// recordLifecycleEventFn appends agent_crash / agent_restart records to
 	// the analytics event log (30-day retention). It is the durable record
 	// of what this monitor saw: the webhook and attention-feed copies of the
@@ -421,7 +427,13 @@ func (m *Monitor) checkHealth(ctx context.Context) {
 			if shellPID <= 0 {
 				shellPID = agentState.ShellPID
 			}
-			if shellPID > 0 {
+			switch {
+			case agentHealth.PaneDead:
+				// tmux says the pane's process exited. Its remembered PID
+				// may have been reused by an unrelated process, which the
+				// liveness probe would mistake for a running agent.
+				pidKnown = true
+			case shellPID > 0:
 				pidAlive = isAliveFn(shellPID)
 				pidKnown = true
 			}
@@ -430,7 +442,7 @@ func (m *Monitor) checkHealth(ctx context.Context) {
 			// skip crash handling regardless of what text patterns say.
 			if pidKnown && pidAlive {
 				agentState.ConsecutiveFailures = 0
-				log.Printf("[resilience] Agent %s: health check says unhealthy but PID %d has living children — skipping crash handling (false positive avoided)",
+				log.Printf("[resilience] Agent %s: health check says unhealthy but the agent process under pane PID %d is alive — skipping crash handling (false positive avoided)",
 					agentState.PaneID, shellPID)
 				continue
 			}
@@ -817,6 +829,7 @@ func (m *Monitor) restartAgent(ctx context.Context, agent *AgentState) {
 	workingDirFunc := paneWorkingDirFn
 	sendFunc := sendKeysFn
 	isChildAliveFunc := isChildAliveFn
+	paneIdleShellFunc := paneIdleShellFn
 	findPaneFunc := findPaneFn
 	hooksMu.RUnlock()
 
@@ -993,6 +1006,15 @@ func (m *Monitor) restartAgent(ctx context.Context, agent *AgentState) {
 	if latestPID > 0 && isChildAliveFunc(latestPID) {
 		log.Printf("[resilience] Agent %s recovered during launch preflight, aborting restart", agent.PaneID)
 		markRecovered()
+		return
+	}
+	// The launch line is typed as keystrokes, so it may only go to an idle
+	// interactive shell. Anything else in the foreground (the agent itself,
+	// a modal prompt, another program) would receive it as input. Liveness
+	// above is a process-tree heuristic; this check is about the actual
+	// keystroke destination (ntm#359).
+	if !paneIdleShellFunc(*latestPane) {
+		log.Printf("[resilience] Refusing to restart agent %s: pane foreground %q is not an idle shell; not typing the launch command into it", agent.PaneID, latestPane.Command)
 		return
 	}
 	if ctx.Err() != nil {

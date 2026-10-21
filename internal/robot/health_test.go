@@ -1,6 +1,7 @@
 package robot
 
 import (
+	"os/exec"
 	"testing"
 	"time"
 
@@ -914,5 +915,29 @@ func TestHealthErrorPatternsRejectProseAndBareNumbers(t *testing.T) {
 		if kinds := classify(output); !kinds[want] {
 			t.Errorf("real failure %q classified as %v, want %s", output, kinds, want)
 		}
+	}
+}
+
+// TestCheckProcessPaneLiveness covers the PID verdicts behind
+// --robot-health and --robot-diagnose (ntm#359): a pane whose own process is
+// the agent is running without children, and a dead pane is exited even when
+// its remembered #{pane_pid} now names an unrelated live process.
+func TestCheckProcessPaneLiveness(t *testing.T) {
+	live := exec.CommandContext(t.Context(), "sleep", "30")
+	if err := live.Start(); err != nil {
+		t.Fatalf("start stand-in process: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = live.Process.Kill()
+		_ = live.Wait()
+	})
+	pid := live.Process.Pid
+
+	if got := checkProcess(tmux.Pane{ID: "%1", PID: pid}); !got.Running || got.Crashed {
+		t.Fatalf("agent-root pane = %+v, want running", got)
+	}
+	got := checkProcess(tmux.Pane{ID: "%1", PID: pid, Dead: true})
+	if got.Running || !got.Crashed || got.Reason != "pane process exited (pane is dead)" {
+		t.Fatalf("dead pane whose stale PID is live = %+v, want crashed", got)
 	}
 }

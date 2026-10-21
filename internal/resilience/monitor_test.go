@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os/exec"
 	"strings"
 	"sync"
 	"testing"
@@ -38,6 +39,7 @@ func saveHooks() func() {
 	origCheckSession := checkSessionFn
 	origDisplayMessage := displayMessageFn
 	origIsChildAlive := isChildAliveFn
+	origPaneIdleShell := paneIdleShellFn
 	origFindPane := findPaneFn
 	origRecordLifecycle := recordLifecycleEventFn
 	// Default for tests: the pane exists. Tests exercising the stale-binding
@@ -45,6 +47,10 @@ func saveHooks() func() {
 	findPaneFn = func(_ context.Context, _, paneID string) (*tmux.Pane, error) {
 		return &tmux.Pane{ID: paneID, Index: 1}, nil
 	}
+	// Default for tests: the crashed agent left its pane at an idle shell,
+	// which is what the restart fixtures model. Tests for the keystroke
+	// destination guard override this explicitly.
+	paneIdleShellFn = func(tmux.Pane) bool { return true }
 	// Crash/restart fixtures must never append to the developer's real
 	// analytics event log; tests asserting the record install a recorder.
 	recordLifecycleEventFn = func(events.EventType, string, interface{}) {}
@@ -65,6 +71,7 @@ func saveHooks() func() {
 		checkSessionFn = origCheckSession
 		displayMessageFn = origDisplayMessage
 		isChildAliveFn = origIsChildAlive
+		paneIdleShellFn = origPaneIdleShell
 		findPaneFn = origFindPane
 		recordLifecycleEventFn = origRecordLifecycle
 		hooksMu.Unlock()
@@ -219,6 +226,175 @@ func TestRestartAgentUsesBuiltPaneCommandAndSendKeys(t *testing.T) {
 	}
 	if capturedCmd != "cd \"/tmp/project with space\" && claude --model 'safe-model'" {
 		t.Fatalf("unexpected command sent: %s", capturedCmd)
+	}
+}
+
+// TestRestartAgentRefusesWhenPaneIsNotAnIdleShell is the ntm#359 keystroke
+// guard: the restart types its launch line into the pane, so it must refuse
+// when the pane's foreground is anything but an idle shell (here, an agent
+// that is still running as the pane's own process) instead of injecting the
+// command into that program's input. No attempt is consumed.
+func TestRestartAgentRefusesWhenPaneIsNotAnIdleShell(t *testing.T) {
+	restore := saveHooks()
+	defer restore()
+
+	var mu sync.Mutex
+	sendCalls := 0
+	var guarded []tmux.Pane
+	setHooksLocked(func() {
+		findPaneFn = func(_ context.Context, _, paneID string) (*tmux.Pane, error) {
+			return &tmux.Pane{ID: paneID, Index: 1, Command: "claude"}, nil
+		}
+		paneIdleShellFn = func(pane tmux.Pane) bool {
+			mu.Lock()
+			defer mu.Unlock()
+			guarded = append(guarded, pane)
+			return false
+		}
+		sendKeysFn = func(context.Context, string, string, bool) error {
+			mu.Lock()
+			defer mu.Unlock()
+			sendCalls++
+			return nil
+		}
+		buildPaneCmdFn = func(dir, command string) (string, error) { return "cd " + dir + " && " + command, nil }
+	})
+
+	cfg := config.Default()
+	cfg.Resilience.AutoRestart = true
+	cfg.Resilience.RestartDelaySeconds = 0
+	m := NewMonitor("sess", "/tmp/project", cfg, true)
+	m.agents["%7"] = &AgentState{PaneID: "%7", PaneIndex: 1, AgentType: "cc", Command: "claude", Healthy: false}
+
+	m.restartAgent(context.Background(), m.agents["%7"])
+
+	mu.Lock()
+	defer mu.Unlock()
+	if sendCalls != 0 {
+		t.Fatalf("sendKeys calls = %d, want 0: the launch line must never be typed into a non-shell foreground", sendCalls)
+	}
+	if len(guarded) == 0 || guarded[len(guarded)-1].Command != "claude" {
+		t.Fatalf("idle-shell guard saw %+v, want the freshly observed destination pane", guarded)
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if state := m.agents["%7"]; state.RestartCount != 0 || state.Healthy {
+		t.Fatalf("refused restart changed state: restarts=%d healthy=%v, want 0/false", state.RestartCount, state.Healthy)
+	}
+}
+
+// TestCheckHealthAgentRootPaneIsNotACrash is the ntm#359 regression guard at
+// the monitor, using the production liveness rule against a real process. The
+// pane was created with the agent as its own command, so #{pane_pid} is the
+// agent and it has no children between tool calls. The health rows below are
+// what that pane produced before the fix (ProcessExited, no issues), which the
+// monitor turned into an undebounced "Agent cc crashed: Agent unhealthy" on
+// every tick. The live root process must now veto that verdict.
+func TestCheckHealthAgentRootPaneIsNotACrash(t *testing.T) {
+	restore := saveHooks()
+	defer restore()
+
+	agent := exec.CommandContext(t.Context(), "sleep", "30")
+	if err := agent.Start(); err != nil {
+		t.Fatalf("start stand-in agent: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = agent.Process.Kill()
+		_ = agent.Wait()
+	})
+	agentPID := agent.Process.Pid
+
+	var mu sync.Mutex
+	var recorded []events.EventType
+	setHooksLocked(func() {
+		checkSessionFn = func(_ context.Context, session string) (*health.SessionHealth, error) {
+			return &health.SessionHealth{
+				Session: session,
+				Agents: []health.AgentHealth{{
+					PaneID:        "%1",
+					ShellPID:      agentPID,
+					Status:        health.StatusError,
+					ProcessStatus: health.ProcessExited,
+				}},
+			}, nil
+		}
+		recordLifecycleEventFn = func(eventType events.EventType, _ string, _ interface{}) {
+			mu.Lock()
+			defer mu.Unlock()
+			recorded = append(recorded, eventType)
+		}
+		// isChildAliveFn is deliberately left at its production default.
+	})
+
+	cfg := config.Default()
+	m := NewMonitor("god", "/tmp/project", cfg, false)
+	m.RegisterAgent("%1", 1, 0, "cc", "", "claude")
+	for i := 0; i < 3; i++ {
+		m.checkHealth(t.Context())
+	}
+	m.wg.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(recorded) != 0 {
+		t.Fatalf("lifecycle records = %v, want none: a live agent that is its pane's own process is not a crash", recorded)
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if state := m.agents["%1"]; !state.Healthy || !state.LastCrash.IsZero() {
+		t.Fatalf("agent state = healthy:%v lastCrash:%v, want healthy with no crash", state.Healthy, state.LastCrash)
+	}
+}
+
+// TestCheckHealthDeadPaneIgnoresReusedPID: once a pane is dead (its own
+// process exited and remain-on-exit kept it), tmux keeps reporting the old
+// #{pane_pid}. If that number now belongs to an unrelated live process, the
+// liveness probe must not resurrect the agent: tmux's pane_dead is
+// authoritative and the crash is reported.
+func TestCheckHealthDeadPaneIgnoresReusedPID(t *testing.T) {
+	restore := saveHooks()
+	defer restore()
+
+	unrelated := exec.CommandContext(t.Context(), "sleep", "30")
+	if err := unrelated.Start(); err != nil {
+		t.Fatalf("start unrelated process: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = unrelated.Process.Kill()
+		_ = unrelated.Wait()
+	})
+
+	var mu sync.Mutex
+	var recorded []events.EventType
+	setHooksLocked(func() {
+		checkSessionFn = func(_ context.Context, session string) (*health.SessionHealth, error) {
+			return &health.SessionHealth{
+				Session: session,
+				Agents: []health.AgentHealth{{
+					PaneID:        "%1",
+					ShellPID:      unrelated.Process.Pid,
+					PaneDead:      true,
+					Status:        health.StatusError,
+					ProcessStatus: health.ProcessExited,
+				}},
+			}, nil
+		}
+		recordLifecycleEventFn = func(eventType events.EventType, _ string, _ interface{}) {
+			mu.Lock()
+			defer mu.Unlock()
+			recorded = append(recorded, eventType)
+		}
+	})
+
+	m := NewMonitor("god", "/tmp/project", config.Default(), false)
+	m.RegisterAgent("%1", 1, 0, "cc", "", "claude")
+	m.checkHealth(t.Context())
+	m.wg.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(recorded) != 1 || recorded[0] != events.EventAgentCrash {
+		t.Fatalf("lifecycle records = %v, want one agent_crash for the dead pane", recorded)
 	}
 }
 

@@ -739,6 +739,44 @@ func paneProcessStarted(pane Pane) bool {
 	return pane.ForegroundJobRunning()
 }
 
+// PaneAgentAlive reports whether the agent in a pane is still running, given
+// the pane's root process (#{pane_pid}). ntm launches agents by typing into
+// the pane's interactive shell, so normally a living child of that shell is
+// the agent. A pane can also be created with the agent as its own command
+// (`tmux new-session 'claude --resume'`, a boot script, respawn-pane with a
+// command); then #{pane_pid} is the agent itself, and it legitimately has no
+// children between tool calls. Treating "no living child" as a dead agent
+// there reported a working pane as crashed over and over (ntm#359).
+//
+// A root process that is a shell keeps the child requirement, so an agent
+// that exited back to its shell is still reported dead. A root process whose
+// argv cannot be read is not assumed to be an agent.
+func PaneAgentAlive(panePID int) bool {
+	if panePID <= 0 {
+		return false
+	}
+	if process.HasChildAlive(panePID) {
+		return true
+	}
+	if !process.IsAlive(panePID) {
+		return false
+	}
+	return rootProcessIsNonShell(process.GetCmdline(panePID))
+}
+
+// rootProcessIsNonShell reports whether argv belongs to something other than
+// a shell. A login shell's argv[0] carries a leading "-" ("-zsh").
+func rootProcessIsNonShell(argv []string) bool {
+	if len(argv) == 0 {
+		return false
+	}
+	name := strings.TrimPrefix(filepath.Base(strings.TrimSpace(argv[0])), "-")
+	if name == "" || name == "." {
+		return false
+	}
+	return !PaneCommandIsShell(name)
+}
+
 // shellArgvLooksInteractive reports whether a shell's argv is that of an
 // interactive shell (a bare name, possibly a login "-zsh", with flags only)
 // rather than a shell executing a script path or a -c command string.
