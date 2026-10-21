@@ -250,6 +250,77 @@ func TestAddPersistsAgentTypeAcrossWrapperTitleRewrite(t *testing.T) {
 	t.Fatalf("added pane %s lost its durable Codex type after title rewrite: %+v", codexPaneID, panes)
 }
 
+// TestAddWaitsForAgentToReplaceShell is the ntm#358 regression guard. `ntm
+// add` waited for a stable agent process only for Grok and omp, so for every
+// other agent type it returned (and reconciled Agent Mail badges, which then
+// recorded "(exited)") while the pane's foreground was still the interactive
+// shell. The fake Codex agent here keeps the shell in the foreground for a few
+// seconds (the shell builtin `read -t` times out on an idle terminal) before
+// /bin/cat takes over, so without the wait executeAdd returns long before the
+// agent process exists.
+func TestAddWaitsForAgentToReplaceShell(t *testing.T) {
+	testutil.RequireTmuxThrottled(t)
+
+	workDir := t.TempDir()
+	sessionName := fmt.Sprintf("ntm-test-add-wait-%d", time.Now().UnixNano())
+	if err := tmux.CreateSession(sessionName, workDir); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	t.Cleanup(func() { _ = tmux.KillSession(sessionName) })
+
+	oldCfg, oldJSONOutput := cfg, jsonOutput
+	t.Cleanup(func() {
+		cfg = oldCfg
+		jsonOutput = oldJSONOutput
+	})
+	cfg = newTmuxIntegrationTestConfig(workDir)
+	cfg.Agents.Codex = `{{if .Model}}: {{shellQuote .Model}} >/dev/null && {{end}}read -t 3 ntm_add_delay || /bin/cat`
+	cfg.Checkpoints.Enabled = false
+	cfg.CASS.Context.Enabled = false
+	jsonOutput = false
+
+	before, err := tmux.GetPanes(sessionName)
+	if err != nil {
+		t.Fatalf("GetPanes before add: %v", err)
+	}
+	existing := make(map[string]bool, len(before))
+	for _, pane := range before {
+		existing[pane.ID] = true
+	}
+
+	if err := executeAdd(t.Context(), AddOptions{
+		Session:       sessionName,
+		Agents:        AgentSpecs{{Type: AgentTypeCodex, Count: 1}},
+		NoCassContext: true,
+	}, false); err != nil {
+		t.Fatalf("executeAdd: %v", err)
+	}
+
+	// Observe immediately: whatever add left behind is what its badge
+	// reconciliation and any follow-up send saw.
+	panes, err := tmux.GetPanes(sessionName)
+	if err != nil {
+		t.Fatalf("GetPanes after add: %v", err)
+	}
+	var added *tmux.Pane
+	for i := range panes {
+		if !existing[panes[i].ID] {
+			added = &panes[i]
+			break
+		}
+	}
+	if added == nil {
+		t.Fatalf("added pane not found: before=%+v after=%+v", before, panes)
+	}
+	command := strings.TrimSpace(added.Command)
+	if command == "" || tmux.PaneCommandIsShell(command) {
+		t.Fatalf("executeAdd returned while pane %s still ran %q; it must wait until the agent process replaced the shell", added.ID, command)
+	}
+	if got := filepath.Base(command); got != "cat" {
+		t.Fatalf("added pane %s foreground = %q, want the fake agent (cat)", added.ID, got)
+	}
+}
+
 // TestAddThreadsReasoningEffort is the ntm#195 regression guard. The `add`
 // command parses the `:effort` segment of `--cc=N:model:effort` into the
 // AgentSpec/FlatAgent, but runAdd previously omitted ReasoningEffort from the

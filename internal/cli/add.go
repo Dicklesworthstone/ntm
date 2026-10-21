@@ -967,13 +967,18 @@ func executeAdd(ctx context.Context, opts AddOptions, emitResult bool) error {
 			}
 			return outputError(launchErr)
 		}
-		if agent.Type == AgentTypeGrok || agent.Type == AgentTypeOmp {
-			if _, err := tmux.WaitForPaneProcessStartContext(ctx, session, paneID); err != nil {
-				return outputError(fmt.Errorf(
-					"launching %s agent in pane %s did not start a stable process: %w",
-					agent.Type, paneID, err,
-				))
-			}
+		// Wait until the agent CLI actually replaced the shell in the pane, for
+		// every agent type, exactly as spawn does. Everything after this reads
+		// the pane's foreground process: the Agent Mail badge reconciliation in
+		// registerSpawnedAgents (which recorded a still-starting agent as
+		// "exited", ntm#358), prompt/context delivery, and any `ntm send` issued
+		// as soon as add returns (PANE_AGENT_DEAD). The stability requirement
+		// also turns a CLI that exits at once into a failed add.
+		if _, err := tmux.WaitForPaneProcessStartContext(ctx, session, paneID); err != nil {
+			return outputError(fmt.Errorf(
+				"launching %s agent in pane %s did not start a stable process: %w",
+				agent.Type, paneID, err,
+			))
 		}
 		if err := resilience.UpsertAgentConfig(session, dir, resilience.AgentConfig{
 			PaneID:        paneID,
