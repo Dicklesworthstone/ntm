@@ -34,6 +34,282 @@ func TestNewStore(t *testing.T) {
 	}
 }
 
+func seedPaneContinuation(t *testing.T) (*AssignmentStore, *Assignment) {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	store := NewStore("continuation")
+	now := time.Now().UTC()
+	expires := now.Add(time.Hour)
+	original := &Assignment{
+		BeadID: "bd-continue", BeadTitle: "Continue existing work", Pane: 1, AgentType: "codex", AgentName: "BlueLake",
+		Status: StatusWorking, AssignedAt: now.Add(-time.Minute), StartedAt: &now,
+		IdempotencyKey: "original-generation", ClaimActor: "BlueLake-original", ClaimState: ClaimClaimed,
+		ClaimStatus: "in_progress", ClaimedAt: &now, ClaimAttempts: 1,
+		ReservationRequired: true, ReservationState: ReservationReserved, ReservationCompleted: true,
+		ReservationAgent: "BlueLake", ReservationTarget: "%7", ReservationRequested: []string{"a.go", "b.go"},
+		ReservedPaths: []string{"a.go", "b.go"}, ReservationIDs: []int{41, 42}, ReservationExpiresAt: &expires,
+		DispatchState: DispatchSent, DispatchTarget: "%7", OccupancyKey: "%7", DispatchReceiptID: "receipt-original",
+		DispatchedAt: &now, DispatchAttempts: 1, DispatchDuration: time.Millisecond,
+		PromptSent: "original task", PromptSHA256: PromptSHA256("original task"), IntentSHA256: "original-intent",
+	}
+	store.Assignments[original.BeadID] = cloneAssignment(original)
+	if err := store.Save(); err != nil {
+		t.Fatal(err)
+	}
+	return store, original
+}
+
+func TestPaneContinuationPreservesDeliveredOwnershipAcrossReload(t *testing.T) {
+	store, original := seedPaneContinuation(t)
+	stale, err := LoadStoreStrict(store.SessionName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, applied, err := store.BeginPaneContinuation(t.Context(), original, "rotation-1")
+	if err != nil || !applied || !current.HasPendingPaneContinuation() {
+		t.Fatalf("begin = %+v, %v, %v", current, applied, err)
+	}
+	current, applied, err = store.BindPaneContinuation(t.Context(), current, "rotation-1", ReassignmentTarget{
+		Pane: 4, AgentType: original.AgentType, AgentName: original.AgentName, DispatchTarget: "%19", OccupancyKey: "%19",
+	})
+	if err != nil || !applied {
+		t.Fatalf("bind = %v, %v", applied, err)
+	}
+	store, err = LoadStoreStrict(store.SessionName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current = store.Get(original.BeadID)
+	for _, target := range []string{"%7", "%19"} {
+		occupied, err := activeAssignmentForTarget(store.List(), "another-bead", target)
+		if err != nil || occupied == nil || occupied.BeadID != original.BeadID {
+			t.Fatalf("pending target %s = %+v, %v", target, occupied, err)
+		}
+	}
+	if err := stale.MarkFailed(original.BeadID, "old process disappeared"); !errors.Is(err, ErrPaneContinuationPending) {
+		t.Fatalf("stale lifecycle crossed pending barrier: %v", err)
+	}
+	committed, applied, err := store.CommitPaneContinuation(t.Context(), current, "rotation-1")
+	if err != nil || !applied || committed.HasPendingPaneContinuation() {
+		t.Fatalf("commit = %+v, %v, %v", committed, applied, err)
+	}
+	expected := cloneAssignment(original)
+	expected.Pane = 4
+	expected.DispatchTarget, expected.OccupancyKey, expected.ReservationTarget = "%19", "%19", "%19"
+	expected.PaneContinuation = committed.PaneContinuation
+	if !reflect.DeepEqual(expected, committed) {
+		t.Fatalf("continuation changed claim, lease, delivery, or generation:\nwant %+v\ngot  %+v", expected, committed)
+	}
+	if committed.PaneContinuation.CompletedAt == nil {
+		t.Fatal("commit did not retain its durable completion receipt")
+	}
+	if occupied, err := activeAssignmentForTarget(store.List(), "another-bead", "%7"); err != nil || occupied != nil {
+		t.Fatalf("committed predecessor occupancy = %+v, %v", occupied, err)
+	}
+	if _, applied, err := store.CommitPaneContinuation(t.Context(), current, "rotation-1"); err != nil || !applied {
+		t.Fatalf("same-token commit recovery = %v, %v", applied, err)
+	}
+	if applied, err := store.MarkFailedIfCurrent(t.Context(), original, "stale predecessor loss"); err != nil || applied {
+		t.Fatalf("stale loss failed replacement: %v, %v", applied, err)
+	}
+	if _, applied, err := store.BeginTerminalReconciliationIfCurrent(t.Context(), original, StatusFailed, "stale predecessor loss"); err != nil || applied {
+		t.Fatalf("stale cleanup targeted replacement: %v, %v", applied, err)
+	}
+	if err := stale.MarkCompleted(original.BeadID); err == nil {
+		t.Fatal("stale legacy lifecycle writer modified transferred ownership")
+	}
+	var renewed bool
+	if applied, err := store.RefreshReservationIfCurrent(t.Context(), committed, func(_ context.Context, a *Assignment) (time.Time, error) {
+		renewed = true
+		if a.ReservationTarget != "%19" || !reflect.DeepEqual(a.ReservationIDs, []int{41, 42}) || a.ReservationAgent != "BlueLake" {
+			t.Fatalf("renewal lost continuation ownership: %+v", a)
+		}
+		return time.Now().UTC().Add(2 * time.Hour), nil
+	}); err != nil || !applied || !renewed {
+		t.Fatalf("replacement lease maintenance = %v, %v, %v", applied, renewed, err)
+	}
+}
+
+func TestPaneContinuationRenewsPendingOwnerWithoutMovingBarrier(t *testing.T) {
+	store, original := seedPaneContinuation(t)
+	current, _, err := store.BeginPaneContinuation(t.Context(), original, "rotation-renewal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, _, err = store.BindPaneContinuation(t.Context(), current, "rotation-renewal", ReassignmentTarget{Pane: 2, DispatchTarget: "%19", OccupancyKey: "%19"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	expires := time.Now().UTC().Add(2 * time.Hour)
+	called := false
+	applied, err := store.RefreshReservationIfCurrent(t.Context(), current, func(_ context.Context, observed *Assignment) (time.Time, error) {
+		called = true
+		if !reflect.DeepEqual(observed, current) {
+			t.Fatalf("renewal did not receive the exact pending owner: %+v", observed)
+		}
+		// A callback receives a detached snapshot, never mutable ownership.
+		observed.PaneContinuation.TargetPane = "%99"
+		observed.ReservationIDs[0] = 999
+		return expires, nil
+	})
+	if err != nil || !applied || !called {
+		t.Fatalf("pending renewal = %v, %v, %v", applied, called, err)
+	}
+	if err := store.LoadStrict(); err != nil {
+		t.Fatal(err)
+	}
+	renewed := store.Get(original.BeadID)
+	if renewed.ReservationRenewalCheckedAt == nil || renewed.ReservationRenewalCheckedAt.IsZero() {
+		t.Fatal("pending renewal did not record its verification time")
+	}
+	expected := cloneAssignment(current)
+	expected.ReservationExpiresAt = &expires
+	expected.ReservationRenewalCheckedAt = renewed.ReservationRenewalCheckedAt
+	if !reflect.DeepEqual(renewed, expected) {
+		t.Fatalf("renewal changed pending ownership or barrier:\nwant %+v\ngot  %+v", expected, renewed)
+	}
+	// A handoff holding its earlier snapshot must preserve the renewed lease.
+	committed, applied, err := store.CommitPaneContinuation(t.Context(), current, "rotation-renewal")
+	if err != nil || !applied || committed.ReservationExpiresAt == nil || !committed.ReservationExpiresAt.Equal(expires) ||
+		committed.ReservationTarget != "%19" || !reflect.DeepEqual(committed.ReservationIDs, original.ReservationIDs) {
+		t.Fatalf("commit lost pending lease maintenance: %+v, %v, %v", committed, applied, err)
+	}
+}
+
+func TestPaneContinuationBlocksDispatchClearAndTerminalEffects(t *testing.T) {
+	store, original := seedPaneContinuation(t)
+	current, _, err := store.BeginPaneContinuation(t.Context(), original, "rotation-barrier")
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, _, err = store.BindPaneContinuation(t.Context(), current, "rotation-barrier", ReassignmentTarget{Pane: 2, DispatchTarget: "%19", OccupancyKey: "%19"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, force := range []bool{false, true} {
+		var clearErr error
+		if force {
+			_, clearErr = store.BeginClearForce(t.Context(), original.BeadID, time.Now())
+		} else {
+			_, clearErr = store.BeginClear(t.Context(), original.BeadID, time.Now())
+		}
+		if !errors.Is(clearErr, ErrPaneContinuationPending) {
+			t.Fatalf("clear(force=%v) crossed continuation: %v", force, clearErr)
+		}
+	}
+	if _, _, err := store.BeginTerminalReconciliationIfCurrent(t.Context(), current, StatusFailed, "lost pane"); !errors.Is(err, ErrPaneContinuationPending) {
+		t.Fatalf("terminal cleanup crossed continuation: %v", err)
+	}
+	if _, err := store.Reassign(original.BeadID, ReassignmentTarget{Pane: 3, DispatchTarget: "%30", OccupancyKey: "%30"}); !errors.Is(err, ErrPaneContinuationPending) {
+		t.Fatalf("reassignment crossed continuation: %v", err)
+	}
+	if err := store.Remove(original.BeadID); !errors.Is(err, ErrPaneContinuationPending) {
+		t.Fatalf("remove crossed continuation: %v", err)
+	}
+	if err := store.Clear(); !errors.Is(err, ErrPaneContinuationPending) {
+		t.Fatalf("whole-store clear crossed continuation: %v", err)
+	}
+	claim := &atomicClaimLedger{}
+	reserve := &atomicReservationRecorder{}
+	dispatch := &atomicDispatchRecorder{}
+	coordinator := withOpenWorkStatus(NewAtomicCoordinator(store, claim, reserve, dispatch))
+	for _, target := range []string{"%7", "%19"} {
+		req := atomicTestRequest("new-generation", target)
+		req.BeadID = "another-bead"
+		if _, err := coordinator.Execute(t.Context(), req); !errors.Is(err, ErrTargetOccupied) {
+			t.Fatalf("new work admitted to pending target %s: %v", target, err)
+		}
+	}
+	req := atomicTestRequest(original.IdempotencyKey, "%7")
+	req.BeadID = original.BeadID
+	if _, err := coordinator.Execute(t.Context(), req); !errors.Is(err, ErrPaneContinuationPending) {
+		t.Fatalf("same-generation retry crossed continuation: %v", err)
+	}
+	if claim.calls != 0 || reserve.calls.Load() != 0 || dispatch.calls.Load() != 0 {
+		t.Fatal("pending continuation caused external claim, reservation, or dispatch")
+	}
+	if _, applied, err := store.AbortPaneContinuation(t.Context(), current, "wrong-token"); err == nil || applied {
+		t.Fatalf("wrong token aborted continuation: %v, %v", applied, err)
+	}
+	if _, applied, err := store.AbortPaneContinuation(t.Context(), current, "rotation-barrier"); err != nil || !applied {
+		t.Fatalf("explicit known-unsent abort = %v, %v", applied, err)
+	}
+	if got := store.Get(original.BeadID); !reflect.DeepEqual(got, original) {
+		t.Fatalf("abort changed original ownership: %+v", got)
+	}
+}
+
+func TestPaneContinuationRefusesAmbiguousOrChangedOwnership(t *testing.T) {
+	for _, kind := range []string{"legacy target", "missing generation", "sending", "clearing", "unknown reservation", "changed recipient", "superseded generation", "canceled"} {
+		t.Run(kind, func(t *testing.T) {
+			store, original := seedPaneContinuation(t)
+			current := cloneAssignment(original)
+			ctx := t.Context()
+			switch kind {
+			case "legacy target":
+				current.OccupancyKey, current.DispatchTarget = "", "session:0.1"
+			case "missing generation":
+				current.IdempotencyKey = ""
+			case "sending":
+				current.DispatchState = DispatchSending
+			case "clearing":
+				current.ClearState = ClearStateReservationReleasing
+			case "unknown reservation":
+				current.ReservationState = ReservationUnknown
+			case "changed recipient":
+				current.AgentName = "AnotherAgent"
+			case "superseded generation":
+				current.IdempotencyKey = "new-generation"
+			case "canceled":
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithCancel(ctx)
+				cancel()
+			}
+			store.Assignments[original.BeadID] = current
+			if err := store.Save(); err != nil {
+				t.Fatal(err)
+			}
+			if _, applied, _ := store.BeginPaneContinuation(ctx, original, "rotation-rejected"); applied {
+				t.Fatal("unsafe or stale continuation was admitted")
+			}
+			if err := store.LoadStrict(); err != nil {
+				t.Fatal(err)
+			}
+			if store.Get(original.BeadID).HasPendingPaneContinuation() {
+				t.Fatal("rejected begin changed durable ownership")
+			}
+		})
+	}
+}
+
+func TestPaneContinuationAllowsUnregisteredTasksWithoutLeases(t *testing.T) {
+	for _, name := range []string{"", "local-pane-label"} {
+		t.Run(name, func(t *testing.T) {
+			store, original := seedPaneContinuation(t)
+			original.AgentName = name
+			original.ReservationRequired, original.ReservationCompleted = false, false
+			original.ReservationState, original.ReservationAgent, original.ReservationTarget = "", "", ""
+			original.ReservationRequested, original.ReservedPaths, original.ReservationIDs, original.ReservationExpiresAt = nil, nil, nil, nil
+			store.Assignments[original.BeadID] = cloneAssignment(original)
+			if err := store.Save(); err != nil {
+				t.Fatal(err)
+			}
+			current, applied, err := store.BeginPaneContinuation(t.Context(), original, "local-continuation")
+			if err != nil || !applied {
+				t.Fatalf("unregistered continuation = %v, %v", applied, err)
+			}
+			current, applied, err = store.BindPaneContinuation(t.Context(), current, "local-continuation", ReassignmentTarget{Pane: 2, DispatchTarget: "%20", OccupancyKey: "%20"})
+			if err != nil || !applied {
+				t.Fatalf("unregistered bind = %v, %v", applied, err)
+			}
+			current, applied, err = store.CommitPaneContinuation(t.Context(), current, "local-continuation")
+			if err != nil || !applied || current.AgentName != name || current.ClaimActor != original.ClaimActor || current.ReservationTarget != "" {
+				t.Fatalf("unregistered commit = %+v, %v, %v", current, applied, err)
+			}
+		})
+	}
+}
+
 func TestRefreshReservationIfCurrentSerializesExternalRenewal(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	const session, beadID = "reservation-renewal", "bd-renew"

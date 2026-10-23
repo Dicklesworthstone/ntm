@@ -17,6 +17,7 @@ import (
 	assignmentstore "github.com/Dicklesworthstone/ntm/internal/assignment"
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/config"
+	ctxmon "github.com/Dicklesworthstone/ntm/internal/context"
 	"github.com/Dicklesworthstone/ntm/internal/persona"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/status"
@@ -165,6 +166,142 @@ func newAssignmentHeartbeatTestCoordinator(t *testing.T) (*SessionCoordinator, *
 	return c, store, client
 }
 
+func TestRunCycleRenewsPendingContinuationReservations(t *testing.T) {
+	for _, mode := range []string{"source before boot", "accepted partial commit", "unreadable source", "source PID changed", "replacement PID changed", "replacement token changed", "foreign target", "foreign project", "foreign generation", "unaccepted handoff", "duplicate recipient", "replacement unavailable", "shell after exit", "missing journal"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "config"))
+			c, store, client := newAssignmentHeartbeatTestCoordinator(t)
+			oldPending := ctxmon.DefaultPendingRotationStore
+			ctxmon.DefaultPendingRotationStore = ctxmon.NewPendingRotationStoreWithPath(filepath.Join(t.TempDir(), "pending.jsonl"))
+			t.Cleanup(func() { ctxmon.DefaultPendingRotationStore = oldPending })
+			const token = "lease-continuation"
+			source := tmux.Pane{ID: "%94", Index: 2, Title: "custom predecessor title", Type: tmux.AgentClaude, PID: 940000000, Command: "node", RotationToken: token}
+			replacement := tmux.Pane{ID: "%95", Index: 1, Title: "replacement title", Type: tmux.AgentClaude, PID: 950000000, Command: "node", RotationToken: token}
+			current := store.Get("ntm-heartbeat")
+			current.ClaimState = assignmentstore.ClaimClaimed
+			current.DispatchReceiptID = "original-dispatch-receipt"
+			store.Assignments[current.BeadID] = current
+			if err := store.Save(); err != nil {
+				t.Fatal(err)
+			}
+			current, applied, err := store.BeginPaneContinuation(t.Context(), current, token)
+			if err != nil || !applied {
+				t.Fatalf("begin continuation: %v, %v", applied, err)
+			}
+			current, applied, err = store.BindPaneContinuation(t.Context(), current, token, assignmentstore.ReassignmentTarget{Pane: replacement.Index, DispatchTarget: replacement.ID, OccupancyKey: replacement.ID})
+			if err != nil || !applied {
+				t.Fatalf("bind continuation: %v, %v", applied, err)
+			}
+			registry, err := agentmail.LoadSessionAgentRegistry(c.session, c.projectKey)
+			if err != nil || registry == nil {
+				t.Fatalf("load source registry: %+v, %v", registry, err)
+			}
+			registry.SetPanePID(source.ID, source.PID)
+			if err := agentmail.SaveSessionAgentRegistry(registry); err != nil {
+				t.Fatal(err)
+			}
+			if mode != "source before boot" {
+				registry, applied, err = agentmail.RebindSessionAgentPaneContext(t.Context(), c.session, c.projectKey,
+					agentmail.PaneIdentityBinding{PaneID: source.ID, PaneTitle: source.Title, PanePID: source.PID, AgentName: current.AgentName},
+					agentmail.PaneIdentityBinding{PaneID: replacement.ID, PaneTitle: replacement.Title, PanePID: replacement.PID, AgentName: current.AgentName})
+				if err != nil || !applied {
+					t.Fatalf("commit registry before later stores: %v, %v", applied, err)
+				}
+			}
+			receipt := &ctxmon.RotationContinuation{
+				Token: token, Phase: "handoff_accepted", Source: source, Replacement: replacement,
+				RegistryProject: c.projectKey, AgentName: current.AgentName, BeadID: current.BeadID, AssignmentKey: current.IdempotencyKey,
+			}
+			switch mode {
+			case "source before boot":
+				receipt.Phase = "replacement_prepared"
+				replacement.Command = "bash"
+			case "source PID changed":
+				source.PID++
+			case "replacement PID changed":
+				replacement.PID++
+			case "replacement token changed":
+				replacement.RotationToken = "another-rotation"
+			case "foreign target":
+				registry.AddAgent("foreign target", "%96", current.AgentName)
+				registry.SetPanePID("%96", 9600)
+			case "foreign project":
+				receipt.RegistryProject = t.TempDir()
+			case "foreign generation":
+				receipt.AssignmentKey = "another-generation"
+			case "unaccepted handoff":
+				receipt.Phase = "handoff_started"
+			case "duplicate recipient":
+				registry.PaneIDMap["%96"] = "bluelake"
+				registry.SetPanePID("%96", 9600)
+			case "shell after exit":
+				replacement.Command = "bash"
+			}
+			if mode == "foreign target" || mode == "duplicate recipient" {
+				if err := agentmail.SaveSessionAgentRegistry(registry); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if mode != "missing journal" {
+				if err := ctxmon.AddPendingRotation(&ctxmon.PendingRotation{
+					AgentID: "heartbeat-source", SessionName: c.session, PaneID: receipt.Source.ID, PanePID: receipt.Source.PID, PaneType: "cc",
+					CreatedAt: time.Now(), TimeoutAt: time.Now().Add(time.Hour), SelectedAction: ctxmon.ConfirmRotate,
+					ExecutionState: ctxmon.RotationStateFailed, ExecutionID: token, Continuation: receipt,
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			c.monitor.observer = status.NewSessionObserverWithDependencies(status.NewDetector(), status.SessionObserverConfig{}, status.SessionObserverDependencies{
+				ListPanes: func(context.Context, string) ([]tmux.PaneActivity, error) {
+					return []tmux.PaneActivity{{Pane: source, LastActivity: time.Now()}, {Pane: replacement, LastActivity: time.Now()}}, nil
+				},
+				CapturePane: func(_ context.Context, paneID string, _ int) (string, error) {
+					if mode == "unreadable source" && paneID == source.ID || mode == "replacement unavailable" && paneID == replacement.ID {
+						return "", errors.New("pane output unavailable")
+					}
+					if mode == "source before boot" && paneID == replacement.ID {
+						return "$ ", nil
+					}
+					return idleCapture, nil
+				},
+			})
+			unrelatedExpiry := client.reservations[2].ExpiresTS.Time
+			_, runErr := c.RunCycle(t.Context())
+			wantRenewal := mode == "source before boot" || mode == "accepted partial commit" || mode == "unreadable source"
+			if wantRenewal {
+				if len(client.renewRequests) != 1 || mode != "unreadable source" && runErr != nil {
+					t.Fatalf("pending owner was not renewed: requests=%+v err=%v", client.renewRequests, runErr)
+				}
+				request := client.renewRequests[0]
+				if !reflect.DeepEqual(request.ReservationIDs, current.ReservationIDs) || request.AgentName != current.AgentName || len(request.Paths) != 0 || request.ProjectKey != c.projectKey {
+					t.Fatalf("pending renewal widened ownership: %+v", request)
+				}
+			} else if len(client.renewRequests) != 0 || runErr == nil {
+				t.Fatalf("unverified continuation renewed: requests=%+v err=%v", client.renewRequests, runErr)
+			}
+			if err := store.LoadStrict(); err != nil {
+				t.Fatal(err)
+			}
+			after := store.Get(current.BeadID)
+			if after == nil || !after.HasPendingPaneContinuation() || after.ReservationRenewalCheckedAt == nil ||
+				!client.reservations[2].ExpiresTS.Equal(unrelatedExpiry) {
+				t.Fatalf("renewal lost the pending barrier or touched unrelated leases: %+v", after)
+			}
+			if wantRenewal {
+				if after.ReservationRenewalError != "" || !after.ReservationExpiresAt.Equal(current.ReservationExpiresAt.Add(time.Hour)) {
+					t.Fatalf("pending renewal was not persisted: %+v", after)
+				}
+			} else if after.ReservationRenewalError == "" || !after.ReservationExpiresAt.Equal(*current.ReservationExpiresAt) {
+				t.Fatalf("rejected renewal lost protection diagnostics: %+v", after)
+			}
+			after.ReservationExpiresAt, after.ReservationRenewalCheckedAt, after.ReservationRenewalError = current.ReservationExpiresAt, current.ReservationRenewalCheckedAt, current.ReservationRenewalError
+			if !reflect.DeepEqual(after, current) {
+				t.Fatalf("renewal moved the pending assignment or changed original ownership:\nwant %+v\ngot  %+v", current, after)
+			}
+		})
+	}
+}
+
 func TestRunCycleRenewsAssignmentReservationsWithAutoAssignOff(t *testing.T) {
 	c, store, client := newAssignmentHeartbeatTestCoordinator(t)
 	before := store.Get("ntm-heartbeat")
@@ -227,7 +364,10 @@ func TestRunCycleMaintainsProvenAssignmentsDespiteObservationFailures(t *testing
 			}
 			beforeUnknown := store.Get(unknownBead)
 			beforeHealthy := store.Get("ntm-heartbeat")
-			registry := agentmail.NewSessionAgentRegistry(c.session, c.projectKey)
+			registry, err := agentmail.LoadSessionAgentRegistry(c.session, c.projectKey)
+			if err != nil || registry == nil {
+				t.Fatalf("load registry before adding sibling owner: %+v, %v", registry, err)
+			}
 			registry.AddAgent(c.session+"__cc_1", "%94", "BlueLake")
 			registry.AddAgent(c.session+"__cc_2", "%95", "RedLake")
 			if err := agentmail.SaveSessionAgentRegistry(registry); err != nil {
@@ -894,7 +1034,10 @@ func TestRunCycleRejectsChangedAssignmentReservationBindings(t *testing.T) {
 					return &bv.BeadAssignmentDetails{ID: "ntm-heartbeat", Status: "in_progress", Assignee: "NewOwner"}, nil
 				}
 			case "pane":
-				registry := agentmail.NewSessionAgentRegistry(c.session, c.projectKey)
+				registry, err := agentmail.LoadSessionAgentRegistry(c.session, c.projectKey)
+				if err != nil || registry == nil {
+					t.Fatalf("load registry before changing owner: %+v, %v", registry, err)
+				}
 				registry.AddAgent(c.session+"__cc_1", "%94", "ReplacementAgent")
 				if err := agentmail.SaveSessionAgentRegistry(registry); err != nil {
 					t.Fatal(err)

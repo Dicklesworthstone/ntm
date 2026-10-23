@@ -87,6 +87,11 @@ type Pane struct {
 	Service string
 	// ServiceManager names whoever tagged the pane ("acfs" or "ntm").
 	ServiceManager string
+
+	// RotationToken quarantines a physical pane while its work is being handed
+	// off. It is independent of agent type and service tags: adoption and title
+	// changes must never make an unresolved continuation dispatchable.
+	RotationToken string
 }
 
 // Pane options that mark a pane as a long-lived, non-agent service pane.
@@ -96,9 +101,106 @@ type Pane struct {
 // overwritten by the program running in the pane, so it stays a durable
 // identity for the life of the pane (ntm#305).
 const (
-	PaneOptionACFSService = "@acfs_service"
-	PaneOptionNTMService  = "@ntm_service"
+	PaneOptionACFSService   = "@acfs_service"
+	PaneOptionNTMService    = "@ntm_service"
+	PaneOptionRotationToken = "@ntm_rotation_token"
 )
+
+func validRotationToken(token string) bool {
+	if len(token) == 0 || len(token) > 128 || strings.Contains(token, FieldSeparator) {
+		return false
+	}
+	for _, r := range token {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-') {
+			return false
+		}
+	}
+	return true
+}
+
+// Brackets protect an absent token from being confused with whitespace that
+// RunContext trims from the edges of tmux output. Malformed metadata fails
+// closed instead of silently lifting the quarantine.
+func decodePaneRotationToken(raw string) (string, error) {
+	if len(raw) < 2 || raw[0] != '[' || raw[len(raw)-1] != ']' {
+		return "", errors.New("invalid pane rotation metadata")
+	}
+	token := raw[1 : len(raw)-1]
+	if token != "" && !validRotationToken(token) {
+		return "", errors.New("invalid pane rotation token")
+	}
+	return token, nil
+}
+
+// ReadPaneRotationTokenContext observes the exact pane immediately before a
+// lifecycle action. A read failure is not evidence that the pane is unfenced.
+func (c *Client) ReadPaneRotationTokenContext(ctx context.Context, paneID string) (string, error) {
+	if err := validatePhysicalPaneTarget(ctx, paneID); err != nil {
+		return "", err
+	}
+	out, err := c.RunContext(ctx, "display-message", "-p", "-t", ExactTarget(paneID), "[#{"+PaneOptionRotationToken+"}]")
+	if err != nil {
+		return "", err
+	}
+	return decodePaneRotationToken(out)
+}
+
+func ReadPaneRotationTokenContext(ctx context.Context, paneID string) (string, error) {
+	return DefaultClient.ReadPaneRotationTokenContext(ctx, paneID)
+}
+
+// SetPaneRotationTokenContext claims a pane for one rotation. The conditional
+// runs inside tmux; another rotation's token must never be overwritten.
+func (c *Client) SetPaneRotationTokenContext(ctx context.Context, paneID, token string) error {
+	return c.changePaneRotationTokenContext(ctx, paneID, token, false)
+}
+
+func SetPaneRotationTokenContext(ctx context.Context, paneID, token string) error {
+	return DefaultClient.SetPaneRotationTokenContext(ctx, paneID, token)
+}
+
+// ClearPaneRotationTokenContext releases only the caller's quarantine. An
+// already absent token is an idempotent success; a foreign token is a refusal.
+func (c *Client) ClearPaneRotationTokenContext(ctx context.Context, paneID, token string) error {
+	return c.changePaneRotationTokenContext(ctx, paneID, token, true)
+}
+
+func ClearPaneRotationTokenContext(ctx context.Context, paneID, token string) error {
+	return DefaultClient.ClearPaneRotationTokenContext(ctx, paneID, token)
+}
+
+func (c *Client) changePaneRotationTokenContext(ctx context.Context, paneID, token string, clear bool) error {
+	if err := validatePhysicalPaneTarget(ctx, paneID); err != nil {
+		return err
+	}
+	if !validRotationToken(token) {
+		return errors.New("rotation requires a nonempty bounded execution token")
+	}
+	// Both interpolated values have restrictive alphabets. The command is
+	// interpreted by tmux, never by a shell.
+	condition := "#{||:#{==:#{" + PaneOptionRotationToken + "},},#{==:#{" + PaneOptionRotationToken + "}," + token + "}}"
+	command := "set-option -p -t " + paneID + " " + PaneOptionRotationToken + " " + token
+	want := token
+	if clear {
+		command = "set-option -p -u -t " + paneID + " " + PaneOptionRotationToken
+		want = ""
+	}
+	out, err := c.RunContext(ctx, "if-shell", "-F", "-t", paneID, condition, command, "display-message -p rotation_owner_conflict")
+	if err != nil {
+		return err
+	}
+	if out != "" {
+		return fmt.Errorf("pane %s is quarantined by another rotation", paneID)
+	}
+	actual, err := c.ReadPaneRotationTokenContext(ctx, paneID)
+	if err != nil {
+		return fmt.Errorf("verify rotation quarantine for pane %s: %w", paneID, err)
+	}
+	if actual != want {
+		return fmt.Errorf("pane %s rotation quarantine changed before verification", paneID)
+	}
+	return nil
+}
 
 // maxServiceTagLen bounds a pane-option value that ntm echoes into robot
 // output. Service names are short; anything longer is a mistagged pane.
@@ -1221,7 +1323,7 @@ func (c *Client) GetPanes(session string) ([]Pane, error) {
 // GetPanesContext returns all panes in a session with cancellation support.
 func (c *Client) GetPanesContext(ctx context.Context, session string) ([]Pane, error) {
 	sep := FieldSeparator
-	format := fmt.Sprintf("#{pane_id}%[1]s#{pane_index}%[1]s#{pane_title}%[1]s#{pane_current_command}%[1]s#{pane_width}%[1]s#{pane_height}%[1]s#{pane_active}%[1]s#{pane_pid}%[1]s#{window_index}%[1]s#{@ntm_agent_type}%[1]s#{"+PaneOptionACFSService+"}%[1]s#{"+PaneOptionNTMService+"}%[1]s#{pane_dead}", sep)
+	format := fmt.Sprintf("#{pane_id}%[1]s#{pane_index}%[1]s#{pane_title}%[1]s#{pane_current_command}%[1]s#{pane_width}%[1]s#{pane_height}%[1]s#{pane_active}%[1]s#{pane_pid}%[1]s#{window_index}%[1]s#{@ntm_agent_type}%[1]s#{"+PaneOptionACFSService+"}%[1]s#{"+PaneOptionNTMService+"}%[1]s#{pane_dead}%[1]s[#{"+PaneOptionRotationToken+"}]", sep)
 	output, err := c.RunContext(ctx, "list-panes", "-s", "-t", TargetSession(session), "-F", format)
 	if err != nil {
 		return nil, err
@@ -1575,7 +1677,7 @@ func waitForPaneProcessStartContext(
 func (c *Client) GetAllPanesContext(ctx context.Context) (map[string][]Pane, error) {
 	sep := FieldSeparator
 	// Add session_name at the beginning
-	format := fmt.Sprintf("#{session_name}%[1]s#{pane_id}%[1]s#{pane_index}%[1]s#{pane_title}%[1]s#{pane_current_command}%[1]s#{pane_width}%[1]s#{pane_height}%[1]s#{pane_active}%[1]s#{pane_pid}%[1]s#{window_index}%[1]s#{@ntm_agent_type}%[1]s#{"+PaneOptionACFSService+"}%[1]s#{"+PaneOptionNTMService+"}%[1]s#{pane_dead}", sep)
+	format := fmt.Sprintf("#{session_name}%[1]s#{pane_id}%[1]s#{pane_index}%[1]s#{pane_title}%[1]s#{pane_current_command}%[1]s#{pane_width}%[1]s#{pane_height}%[1]s#{pane_active}%[1]s#{pane_pid}%[1]s#{window_index}%[1]s#{@ntm_agent_type}%[1]s#{"+PaneOptionACFSService+"}%[1]s#{"+PaneOptionNTMService+"}%[1]s#{pane_dead}%[1]s[#{"+PaneOptionRotationToken+"}]", sep)
 	output, err := c.RunContext(ctx, "list-panes", "-a", "-F", format)
 	if err != nil {
 		// No server/no sessions is not an error; treat as empty result.
@@ -1598,10 +1700,10 @@ func (c *Client) GetAllPanesContext(ctx context.Context) (map[string][]Pane, err
 
 		parts := strings.Split(line, sep)
 		// 11 fields is the pre-#305 layout (no service tags), 13 the pre-#311
-		// layout (no pane_dead); 14 is current. All are accepted so a format
+		// layout (no pane_dead); 15 includes rotation quarantine. All are accepted so a format
 		// change never turns into a hard parse failure across an upgrade.
-		if len(parts) < 11 || len(parts) > 14 {
-			return nil, fmt.Errorf("parse pane %d: expected 11 to 14 fields, got %d", lineNumber+1, len(parts))
+		if len(parts) < 11 || len(parts) > 15 {
+			return nil, fmt.Errorf("parse pane %d: expected 11 to 15 fields, got %d", lineNumber+1, len(parts))
 		}
 
 		sessionName := parts[0]
@@ -3880,7 +3982,7 @@ type PaneActivity struct {
 // GetPanesWithActivityContext returns all panes in a session with their activity times with cancellation support.
 func (c *Client) GetPanesWithActivityContext(ctx context.Context, session string) ([]PaneActivity, error) {
 	sep := FieldSeparator
-	format := fmt.Sprintf("#{pane_id}%[1]s#{pane_index}%[1]s#{pane_title}%[1]s#{pane_current_command}%[1]s#{pane_width}%[1]s#{pane_height}%[1]s#{pane_active}%[1]s#{window_activity}%[1]s#{pane_pid}%[1]s#{window_index}%[1]s#{@ntm_agent_type}%[1]s#{"+PaneOptionACFSService+"}%[1]s#{"+PaneOptionNTMService+"}%[1]s#{pane_dead}", sep)
+	format := fmt.Sprintf("#{pane_id}%[1]s#{pane_index}%[1]s#{pane_title}%[1]s#{pane_current_command}%[1]s#{pane_width}%[1]s#{pane_height}%[1]s#{pane_active}%[1]s#{window_activity}%[1]s#{pane_pid}%[1]s#{window_index}%[1]s#{@ntm_agent_type}%[1]s#{"+PaneOptionACFSService+"}%[1]s#{"+PaneOptionNTMService+"}%[1]s#{pane_dead}%[1]s[#{"+PaneOptionRotationToken+"}]", sep)
 	output, err := c.RunContext(ctx, "list-panes", "-s", "-t", TargetSession(session), "-F", format)
 	if err != nil {
 		return nil, err
@@ -3894,9 +3996,9 @@ func (c *Client) GetPanesWithActivityContext(ctx context.Context, session string
 
 		parts := strings.Split(line, sep)
 		// 11 fields is the pre-#305 layout (no service tags), 13 the pre-#311
-		// layout (no pane_dead); 14 is current.
-		if len(parts) < 11 || len(parts) > 14 {
-			return nil, fmt.Errorf("parse pane activity %d from session %q: expected 11 to 14 fields, got %d", lineNumber+1, session, len(parts))
+		// layout (no pane_dead); 15 includes rotation quarantine.
+		if len(parts) < 11 || len(parts) > 15 {
+			return nil, fmt.Errorf("parse pane activity %d from session %q: expected 11 to 15 fields, got %d", lineNumber+1, session, len(parts))
 		}
 
 		// Format: id(0), index(1), title(2), command(3), width(4), height(5), active(6), last_activity(7), pid(8), window_index(9), @ntm_agent_type(10), @acfs_service(11), @ntm_service(12), pane_dead(13)
@@ -3928,9 +4030,9 @@ func (c *Client) GetPanesWithActivityContext(ctx context.Context, session string
 func parsePaneLine(line, sep string) (*Pane, error) {
 	parts := strings.Split(line, sep)
 	// 10 fields is the pre-#305 layout (no service tags), 12 the pre-#311
-	// layout (no pane_dead); 13 is current.
-	if len(parts) < 10 || len(parts) > 13 {
-		return nil, fmt.Errorf("expected 10 to 13 fields, got %d", len(parts))
+	// layout (no pane_dead); 14 includes rotation quarantine.
+	if len(parts) < 10 || len(parts) > 14 {
+		return nil, fmt.Errorf("expected 10 to 14 fields, got %d", len(parts))
 	}
 	// For standard GetPanes: id, index, title, command, width, height, active, pid, window_index, @ntm_agent_type, @acfs_service, @ntm_service, pane_dead
 	return parsePaneFromParts(parts[:7], parts[7:])
@@ -3941,10 +4043,10 @@ func parsePaneLine(line, sep string) (*Pane, error) {
 // parts2: pid, window_index, and optionally the pane's @ntm_agent_type,
 // @acfs_service and @ntm_service user options (each empty when unset, and the
 // trailing ones absent entirely on a pre-#305 format string) followed by
-// #{pane_dead} (absent on a pre-#311 format string).
+// #{pane_dead} and the bracketed rotation token (both absent in older formats).
 func parsePaneFromParts(parts1, parts2 []string) (*Pane, error) {
-	if len(parts1) != 7 || len(parts2) < 2 || len(parts2) > 6 {
-		return nil, fmt.Errorf("expected 7 primary fields and 2 to 6 secondary fields, got %d and %d", len(parts1), len(parts2))
+	if len(parts1) != 7 || len(parts2) < 2 || len(parts2) > 7 {
+		return nil, fmt.Errorf("expected 7 primary fields and 2 to 7 secondary fields, got %d and %d", len(parts1), len(parts2))
 	}
 	optionalPart := func(i int) string {
 		if i < len(parts2) {
@@ -3956,6 +4058,14 @@ func parsePaneFromParts(parts1, parts2 []string) (*Pane, error) {
 	acfsService := ParsePaneServiceOption(optionalPart(3))
 	ntmService := ParsePaneServiceOption(optionalPart(4))
 	dead := strings.TrimSpace(optionalPart(5)) == "1"
+	rotationToken := ""
+	if len(parts2) > 6 {
+		var err error
+		rotationToken, err = decodePaneRotationToken(parts2[6])
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	index, err := strconv.Atoi(parts1[1])
 	if err != nil {
@@ -3980,16 +4090,17 @@ func parsePaneFromParts(parts1, parts2 []string) (*Pane, error) {
 	}
 
 	pane := &Pane{
-		ID:          parts1[0],
-		Index:       index,
-		WindowIndex: windowIndex,
-		Title:       parts1[2],
-		Command:     parts1[3],
-		Width:       width,
-		Height:      height,
-		Active:      active,
-		PID:         pid,
-		Dead:        dead,
+		ID:            parts1[0],
+		Index:         index,
+		WindowIndex:   windowIndex,
+		Title:         parts1[2],
+		Command:       parts1[3],
+		Width:         width,
+		Height:        height,
+		Active:        active,
+		PID:           pid,
+		Dead:          dead,
+		RotationToken: rotationToken,
 	}
 
 	// A service tag marks the pane as a non-agent service (ntm#305). ACFS's

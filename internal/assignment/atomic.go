@@ -730,6 +730,10 @@ func (c *AtomicCoordinator) Execute(ctx context.Context, req AtomicRequest) (Ato
 	}
 
 	prior := c.store.Get(req.BeadID)
+	if prior.HasPendingPaneContinuation() {
+		result.Assignment = prior
+		return result, fmt.Errorf("%w: %s", ErrPaneContinuationPending, req.BeadID)
+	}
 	if prior != nil && isTerminalAssignmentStatus(prior.Status) &&
 		prior.IdempotencyKey != req.IdempotencyKey && strings.TrimSpace(prior.PendingCompletionEventID) != "" {
 		result.Assignment = prior
@@ -1548,6 +1552,9 @@ func assignmentOccupiesTarget(candidate *Assignment, occupancyKey string) (bool,
 	if candidate == nil {
 		return false, nil
 	}
+	if candidate.HasPendingPaneContinuation() && strings.TrimSpace(occupancyKey) == candidate.PaneContinuation.TargetPane {
+		return true, nil
+	}
 	canonicalKey, err := CanonicalPaneIdentity(candidate)
 	if err != nil {
 		return false, err
@@ -1875,6 +1882,9 @@ func (s *AssignmentStore) RecordAtomicIntent(req AtomicRequest, actor string, cr
 	defer s.mutex.Unlock()
 
 	existing := s.Assignments[req.BeadID]
+	if existing.HasPendingPaneContinuation() {
+		return nil, fmt.Errorf("%w: %s", ErrPaneContinuationPending, req.BeadID)
+	}
 	if existing != nil && isTerminalAssignmentStatus(existing.Status) &&
 		existing.IdempotencyKey != req.IdempotencyKey && strings.TrimSpace(existing.PendingCompletionEventID) != "" {
 		return nil, fmt.Errorf("%w: acknowledge event %s for %s before starting a new generation", ErrCompletionEventPending, existing.PendingCompletionEventID, req.BeadID)
@@ -2198,6 +2208,9 @@ func (s *AssignmentStore) atomicAssignmentLocked(beadID, idempotencyKey string) 
 	}
 	if a.IdempotencyKey != idempotencyKey {
 		return nil, fmt.Errorf("%w: idempotency key does not own %s", ErrClaimConflict, beadID)
+	}
+	if a.HasPendingPaneContinuation() {
+		return nil, fmt.Errorf("%w: %s", ErrPaneContinuationPending, beadID)
 	}
 	return a, nil
 }

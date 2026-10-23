@@ -2,8 +2,10 @@ package context
 
 import (
 	stdcontext "context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -195,13 +197,48 @@ system_prompt = "Review changes against the project's correctness requirements."
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"-m 'private-model'", "model_reasoning_effort='high'", "CODEX_SYSTEM_PROMPT=", "rotation-reviewer.md"} {
+	for _, want := range []string{"-m 'private-model'", "model_reasoning_effort='high'", "CODEX_SYSTEM_PROMPT="} {
 		if !strings.Contains(string(commands), want) {
 			t.Errorf("persona launch missing %q:\n%s", want, commands)
 		}
 	}
 	if strings.Contains(string(commands), "-m 'rotation-reviewer'") {
 		t.Errorf("persona name was launched as a model: %s", commands)
+	}
+	var launch *tmux.AgentLaunchSpec
+	for _, line := range strings.Split(string(commands), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 || fields[0] != "set-option" || !strings.Contains(line, tmux.PaneLaunchSpecOption+" ") {
+			continue
+		}
+		encoded, err := base64.StdEncoding.DecodeString(fields[len(fields)-1])
+		if err != nil {
+			t.Fatal(err)
+		}
+		var saved struct {
+			PaneID string               `json:"pane_id"`
+			Spec   tmux.AgentLaunchSpec `json:"spec"`
+		}
+		if err := json.Unmarshal(encoded, &saved); err != nil {
+			t.Fatal(err)
+		}
+		if saved.PaneID != "%99" {
+			t.Fatalf("persona launch was bound to another physical pane: %+v", saved)
+		}
+		launch = &saved.Spec
+	}
+	if launch == nil || launch.Persona != "rotation-reviewer" || !filepath.IsAbs(launch.SystemPromptFile) {
+		t.Fatalf("persona launch lost its durable prompt binding: %+v", launch)
+	}
+	prompt, err := os.ReadFile(launch.SystemPromptFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(prompt)) != "Review changes against the project's correctness requirements." || launch.SystemPromptSHA256 != fmt.Sprintf("%x", sha256.Sum256(prompt)) {
+		t.Fatalf("persona launch did not preserve exact prepared prompt content and digest: %+v, %q", launch, prompt)
+	}
+	if !strings.Contains(launch.Command, "cat "+tmux.ShellQuote(launch.SystemPromptFile)) || !strings.Contains(string(commands), launch.Command) {
+		t.Fatalf("actual launch did not use the durably recorded persona prompt: %+v\n%s", launch, commands)
 	}
 }
 
@@ -230,7 +267,7 @@ func TestDefaultPaneSpawner_ReplaysDurableLaunchInsteadOfTitleOrCurrentConfig(t 
 	cfg.Agents.Claude = "invalid current template {{.Missing"
 	spawner := NewDefaultPaneSpawner(cfg)
 	original := tmux.Pane{ID: "%1", PID: 123, Title: "test__cc_1_architect", Type: tmux.AgentClaude, Command: "node", Variant: "architect"}
-	pane, err := spawner.SpawnReplacementContext(stdcontext.Background(), "test", original, 1, workDir)
+	pane, err := spawner.SpawnReplacementContext(stdcontext.Background(), "test", original, 1, workDir, nil)
 	if err != nil || pane.ID != "%99" || pane.PID != 321 {
 		t.Fatalf("replacement = %+v, %v", pane, err)
 	}
@@ -240,6 +277,9 @@ func TestDefaultPaneSpawner_ReplaysDurableLaunchInsteadOfTitleOrCurrentConfig(t 
 	}
 	if !strings.Contains(string(commands), spec.Command) || strings.Contains(string(commands), "invalid current template") {
 		t.Fatalf("launch did not preserve exact creation command:\n%s", commands)
+	}
+	if !strings.Contains(string(commands), "split-window -b -t %1 ") || !strings.Contains(string(commands), "select-layout -t %99 tiled") {
+		t.Fatalf("replacement did not preserve its predecessor's physical window and pane slot:\n%s", commands)
 	}
 	if !strings.Contains(string(commands), "-c "+worktree) || !strings.Contains(string(commands), "cd "+tmux.ShellQuote(worktree)) {
 		t.Fatalf("replacement lost its predecessor's worktree in favor of caller directory %s:\n%s", workDir, commands)
@@ -320,7 +360,7 @@ func TestDefaultPaneSpawner_RejectsUnreadableOrIncompleteLaunchBeforeReplacement
 			}
 			spawner := NewDefaultPaneSpawner(config.Default())
 			original := tmux.Pane{ID: "%1", PID: 123, Type: tmux.AgentClaude, Command: "node"}
-			pane, err := spawner.SpawnReplacementContext(stdcontext.Background(), "test", original, 1, workDir)
+			pane, err := spawner.SpawnReplacementContext(stdcontext.Background(), "test", original, 1, workDir, nil)
 			if err == nil || pane.ID != "" || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("replacement = %+v, %v; want %q", pane, err, tc.want)
 			}
@@ -359,7 +399,7 @@ func TestDefaultPaneSpawner_ObservesReadinessAndHandoffSubmission(t *testing.T) 
 			}
 			spawner := NewDefaultPaneSpawner(config.Default())
 			expected := tmux.Pane{ID: "%99", PID: 321, Type: tmux.AgentClaude, Command: "node"}
-			err := spawner.DeliverHandoffContext(stdcontext.Background(), "test", expected, "Handoff context: continue the durable scheduler task.")
+			err := spawner.DeliverHandoffContext(stdcontext.Background(), "test", expected, "Handoff context: continue the durable scheduler task.", nil)
 			if tc.wantErr == "" && err != nil || tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)) {
 				t.Fatalf("handoff error = %v, want %q", err, tc.wantErr)
 			}
@@ -589,14 +629,30 @@ func setupRotationTmux(t *testing.T) (workDir, logPath string) {
 	stub := filepath.Join(workDir, "tmux")
 	const script = `#!/bin/sh
 printf '%s\n' "$*" >> "$ROTATION_TMUX_LOG"
+target=
+previous=
+for value do
+  if [ "$previous" = -t ]; then target="$value"; fi
+  previous="$value"
+done
+token_file="$ROTATION_TMUX_LOG.token.${target#%}"
 case "$1" in
   list-windows) printf '0\n' ;;
   split-window) printf '%%99\n' ;;
   display-message)
     case "$*" in
+      *'#{@ntm_rotation_token}'*) printf '['; if [ -f "$token_file" ]; then cat "$token_file"; fi; printf ']\n' ;;
       *'#{pane_current_path}'*) printf '%s\n' "$ROTATION_PREDECESSOR_CWD" ;;
       *) printf '0\n' ;;
     esac
+    ;;
+  if-shell)
+    for value do
+      case "$value" in
+        'set-option -p -u '*) : > "$token_file" ;;
+        'set-option -p -t '*) printf '%s' "${value##* }" > "$token_file" ;;
+      esac
+    done
     ;;
   select-pane)
     for value do last="$value"; done
@@ -614,7 +670,9 @@ case "$1" in
     prefix=
     case " $* " in *' -a '*) prefix=test_NTM_SEP_ ;; esac
     if [ "$ROTATION_ORIGINAL_PRESENT" = 1 ]; then
-      printf '%s%%1_NTM_SEP_1_NTM_SEP_test__cc_1_architect_NTM_SEP_node_NTM_SEP_120_NTM_SEP_40_NTM_SEP_0_NTM_SEP_123_NTM_SEP_0_NTM_SEP_cc_NTM_SEP__NTM_SEP__NTM_SEP_0\n' "$prefix"
+      token=
+      if [ -f "$ROTATION_TMUX_LOG.token.1" ]; then token=$(cat "$ROTATION_TMUX_LOG.token.1"); fi
+      printf '%s%%1_NTM_SEP_1_NTM_SEP_test__cc_1_architect_NTM_SEP_node_NTM_SEP_120_NTM_SEP_40_NTM_SEP_0_NTM_SEP_123_NTM_SEP_0_NTM_SEP_cc_NTM_SEP__NTM_SEP__NTM_SEP_0_NTM_SEP_[%s]\n' "$prefix" "$token"
     fi
     if [ -n "$prefix" ] && [ "$ROTATION_GLOBAL_CONFLICT" = 1 ]; then
       printf 'other_NTM_SEP_%%2_NTM_SEP_1_NTM_SEP_other__cc_1_NTM_SEP_node_NTM_SEP_120_NTM_SEP_40_NTM_SEP_0_NTM_SEP_456_NTM_SEP_0_NTM_SEP_cc_NTM_SEP__NTM_SEP__NTM_SEP_0\n'
@@ -625,7 +683,9 @@ case "$1" in
       command=bash
       if [ -f "$ROTATION_TMUX_LOG.launched" ]; then command=node; fi
       if [ "$ROTATION_AFTER_SHELL" = 1 ] && [ -f "$ROTATION_TMUX_LOG.handoff" ]; then command=bash; fi
-      printf '%s%%99_NTM_SEP_0_NTM_SEP_%s_NTM_SEP_%s_NTM_SEP_120_NTM_SEP_40_NTM_SEP_0_NTM_SEP_321_NTM_SEP_0_NTM_SEP_%s_NTM_SEP__NTM_SEP__NTM_SEP_0\n' "$prefix" "$title" "$command" "$agent_type"
+      token=
+      if [ -f "$ROTATION_TMUX_LOG.token.99" ]; then token=$(cat "$ROTATION_TMUX_LOG.token.99"); fi
+      printf '%s%%99_NTM_SEP_0_NTM_SEP_%s_NTM_SEP_%s_NTM_SEP_120_NTM_SEP_40_NTM_SEP_0_NTM_SEP_321_NTM_SEP_0_NTM_SEP_%s_NTM_SEP__NTM_SEP__NTM_SEP_0_NTM_SEP_[%s]\n' "$prefix" "$title" "$command" "$agent_type" "$token"
     fi
     ;;
   capture-pane)
@@ -668,6 +728,8 @@ esac
 	t.Setenv("NTM_TMUX_BINARY", stub)
 	t.Setenv("ROTATION_TMUX_LOG", logPath)
 	t.Setenv("ROTATION_PREDECESSOR_CWD", workDir)
+	t.Setenv("HOME", workDir)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(workDir, "config"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(workDir, "data"))
 	return workDir, logPath
 }

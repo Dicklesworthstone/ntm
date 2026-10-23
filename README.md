@@ -397,6 +397,14 @@ delivers it to a ready replacement before retiring the old pane. Confirmation
 ownership and results survive process interruption: repeating a completed choice
 returns its saved result, while a failed or interrupted choice remains visible in
 `pending`. Inspect the affected panes before using the same action with `--retry`.
+Rotation transfers the existing task, Agent Mail identity, file reservations, and
+restart configuration to the replacement. Both panes are fenced against new task
+dispatch and automatic restarts while ownership is being transferred; existing
+reservation leases continue to renew. If an accepted handoff is interrupted during
+ownership transfer, `--retry` finishes that transfer without launching another
+agent or resending the handoff. When handoff delivery is uncertain, the pending
+record and pane fences remain in place for inspection, and retry or ignore cannot
+silently discard that unresolved state.
 Native compaction preserves the conversation and requires fresh provider context
 accounting to prove a reduction; it does not automatically clear history. Claude
 compaction reads the transcript the pane's own Claude process names in its

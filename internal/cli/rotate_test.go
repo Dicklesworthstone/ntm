@@ -7,14 +7,18 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/agentmail"
+	"github.com/Dicklesworthstone/ntm/internal/assignment"
 	"github.com/Dicklesworthstone/ntm/internal/auth"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	ctxmon "github.com/Dicklesworthstone/ntm/internal/context"
 	"github.com/Dicklesworthstone/ntm/internal/quota"
+	"github.com/Dicklesworthstone/ntm/internal/resilience"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
@@ -22,7 +26,7 @@ import (
 // tmux transport. The default coordinator policy requires manual confirmation;
 // successful JSON must correspond to a submitted operation, not dequeuing it.
 func TestContextConfirmCommandExecutesPersistedChoice(t *testing.T) {
-	for _, mode := range []string{"rotate", "compact", "launch-failure", "changed-pid", "busy", "canceled", "cross-session"} {
+	for _, mode := range []string{"rotate", "rotate-assigned", "rotate-unregistered", "manifest-race", "handoff-unknown", "compact", "launch-failure", "changed-pid", "busy", "canceled", "cross-session"} {
 		t.Run(mode, func(t *testing.T) {
 			root := t.TempDir()
 			workDir := filepath.Join(root, "project")
@@ -31,6 +35,7 @@ func TestContextConfirmCommandExecutesPersistedChoice(t *testing.T) {
 			}
 			t.Setenv("HOME", root)
 			t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
+			t.Setenv("XDG_DATA_HOME", filepath.Join(root, "data"))
 			t.Setenv("NTM_CONFIRM_ROOT", root)
 			t.Setenv("NTM_CONFIRM_WORKDIR", workDir)
 			t.Setenv("NTM_CONFIRM_MODE", mode)
@@ -43,14 +48,18 @@ func TestContextConfirmCommandExecutesPersistedChoice(t *testing.T) {
 			if err := os.MkdirAll(filepath.Dir(transcript), 0700); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(transcript, []byte("{\"type\":\"assistant\",\"message\":{\"model\":\"claude-opus-4\",\"usage\":{\"input_tokens\":150000}}}\n"), 0600); err != nil {
+			// Provider accounting timestamps establish freshness; file mtimes
+			// alone must not make old token usage authorize compaction.
+			past := time.Now().Add(-time.Second)
+			baseline := `{"timestamp":"` + past.UTC().Format(time.RFC3339Nano) + `","type":"assistant","message":{"model":"claude-opus-4","usage":{"input_tokens":150000}}}`
+			if err := os.WriteFile(transcript, []byte(baseline+"\n"), 0600); err != nil {
 				t.Fatal(err)
 			}
-			past := time.Now().Add(-time.Second)
 			if err := os.Chtimes(transcript, past, past); err != nil {
 				t.Fatal(err)
 			}
 			t.Setenv("NTM_CONFIRM_TRANSCRIPT", transcript)
+			t.Setenv("NTM_CONFIRM_COMPACTED_LINE", `{"timestamp":"`+time.Now().UTC().Format(time.RFC3339Nano)+`","type":"assistant","message":{"model":"claude-opus-4","usage":{"input_tokens":30000}}}`)
 			oldCfg, oldJSON, oldClient := cfg, jsonOutput, tmux.DefaultClient
 			oldStore, oldHistory := ctxmon.DefaultPendingRotationStore, ctxmon.DefaultRotationHistoryStore
 			cfg, jsonOutput, tmux.DefaultClient = config.Default(), true, tmux.NewClient("")
@@ -70,11 +79,111 @@ func TestContextConfirmCommandExecutesPersistedChoice(t *testing.T) {
 			if err := ctxmon.AddPendingRotation(pending); err != nil {
 				t.Fatal(err)
 			}
+			tracked := mode == "rotate-assigned" || mode == "rotate-unregistered" || mode == "manifest-race" || mode == "handoff-unknown"
+			registered := tracked && mode != "rotate-unregistered"
+			var originalAssignment *assignment.Assignment
+			var originalManifest *resilience.SpawnManifest
+			if tracked {
+				now := time.Now().UTC()
+				originalAssignment = &assignment.Assignment{
+					BeadID: "bd-rotation", BeadTitle: "Continue durable scheduling", Pane: 1, AgentType: "claude", AgentName: "local-pane-1",
+					Status: assignment.StatusWorking, AssignedAt: now, StartedAt: &now,
+					IdempotencyKey: "original-generation", ClaimActor: "original-claim-actor", ClaimState: assignment.ClaimClaimed,
+					ClaimStatus: "in_progress", ClaimedAt: &now, DispatchState: assignment.DispatchSent,
+					DispatchTarget: "%1", OccupancyKey: "%1", DispatchReceiptID: "original-delivery-receipt", DispatchedAt: &now,
+					PromptSent: "Continue durable scheduling", PromptSHA256: strings.Repeat("a", 64), IntentSHA256: strings.Repeat("b", 64),
+				}
+				if registered {
+					expires := now.Add(time.Hour)
+					originalAssignment.AgentName = "BlueLake"
+					originalAssignment.ReservationRequired = true
+					originalAssignment.ReservationState = assignment.ReservationReserved
+					originalAssignment.ReservationCompleted = true
+					originalAssignment.ReservationAgent, originalAssignment.ReservationTarget = "BlueLake", "%1"
+					originalAssignment.ReservationRequested = []string{"internal/scheduler.go"}
+					originalAssignment.ReservedPaths = []string{"internal/scheduler.go"}
+					originalAssignment.ReservationIDs, originalAssignment.ReservationExpiresAt = []int{41}, &expires
+					registry := agentmail.NewSessionAgentRegistry("demo", workDir)
+					registry.AddAgent(pending.AgentID, "%1", "BlueLake")
+					registry.SetPanePID("%1", 123)
+					registry.SetRegistrationToken("BlueLake", "original-registration-token")
+					if err := agentmail.SaveSessionAgentRegistry(registry); err != nil {
+						t.Fatal(err)
+					}
+					t.Setenv("NTM_CONFIRM_IDENTITY", agentmail.CanonicalIdentityPath(workDir, "%99"))
+				}
+				store := assignment.NewStore("demo")
+				store.Assignments[originalAssignment.BeadID] = originalAssignment
+				if err := store.Save(); err != nil {
+					t.Fatal(err)
+				}
+				t.Setenv("NTM_CONFIRM_ASSIGNMENTS", filepath.Join(assignment.StorageDir(), "demo", "assignments.json"))
+				originalManifest = &resilience.SpawnManifest{Session: "demo", ProjectDir: workDir, AutoRestart: true, ConfigPath: "/operator-config.toml",
+					Agents: []resilience.AgentConfig{{PaneID: "%1", PaneIndex: 1, ProjectDir: workDir, Type: "claude", Model: "claude-opus-4", Command: "claude --original-model"}}}
+				if err := resilience.SaveManifest(originalManifest); err != nil {
+					t.Fatal(err)
+				}
+				if mode == "manifest-race" {
+					changed := *originalManifest
+					changed.Agents = append([]resilience.AgentConfig(nil), originalManifest.Agents...)
+					changed.Agents[0].Command = "concurrently changed launch command"
+					encoded, err := json.Marshal(changed)
+					if err != nil {
+						t.Fatal(err)
+					}
+					path := filepath.Join(root, "changed-manifest.json")
+					if err := os.WriteFile(path, encoded, 0600); err != nil {
+						t.Fatal(err)
+					}
+					t.Setenv("NTM_CONFIRM_CHANGED_MANIFEST", path)
+					t.Setenv("NTM_CONFIRM_MANIFEST", filepath.Join(resilience.ManifestDir(), "demo.json"))
+				}
+			}
+			assertCommittedOwnership := func() {
+				t.Helper()
+				store, err := assignment.LoadStoreStrict("demo")
+				if err != nil {
+					t.Fatal(err)
+				}
+				current := store.Get(originalAssignment.BeadID)
+				if current == nil || current.DispatchTarget != "%99" || current.OccupancyKey != "%99" || current.Pane != 1 || current.PaneContinuation == nil || current.PaneContinuation.CompletedAt == nil {
+					t.Fatalf("physical assignment ownership did not continue: %+v", current)
+				}
+				if registered && current.ReservationTarget != "%99" {
+					t.Fatalf("lease ownership remained on predecessor: %+v", current)
+				}
+				current.Pane, current.DispatchTarget, current.OccupancyKey, current.ReservationTarget = originalAssignment.Pane, originalAssignment.DispatchTarget, originalAssignment.OccupancyKey, originalAssignment.ReservationTarget
+				current.PaneContinuation = nil
+				if !reflect.DeepEqual(current, originalAssignment) {
+					t.Fatalf("rotation changed task generation, claim, lease, or delivery evidence:\n got %+v\nwant %+v", current, originalAssignment)
+				}
+				manifest, err := resilience.LoadManifest("demo")
+				if err != nil || len(manifest.Agents) != 1 || manifest.Agents[0].PaneID != "%99" || manifest.Agents[0].PaneIndex != 1 || !manifest.AutoRestart || manifest.ConfigPath != originalManifest.ConfigPath || manifest.Agents[0].Command != originalManifest.Agents[0].Command {
+					t.Fatalf("restart ownership or operator policy changed: %+v, %v", manifest, err)
+				}
+				if registered {
+					registry, err := agentmail.LoadSessionAgentRegistry("demo", workDir)
+					if err != nil || registry == nil || registry.PaneIDMap["%99"] != "BlueLake" || registry.PaneIDMap["%1"] != "" || registry.PanePID("%99") != 321 || registry.RegistrationToken("BlueLake") != "original-registration-token" {
+						t.Fatalf("Agent Mail identity did not follow the process: %+v, %v", registry, err)
+					}
+				}
+				for _, suffix := range []string{"1", "99"} {
+					if suffix == "1" {
+						if _, err := os.Stat(filepath.Join(root, "retired")); err != nil {
+							t.Fatal("committed rotation did not retire its predecessor")
+						}
+						continue
+					}
+					if data, err := os.ReadFile(filepath.Join(root, "token."+suffix)); err != nil || len(data) != 0 {
+						t.Fatalf("replacement remained quarantined after durable commit: %q, %v", data, err)
+					}
+				}
+			}
 			action := "rotate"
 			if mode == "compact" || mode == "cross-session" {
 				action = "compact"
 			}
-			run := func(ctx context.Context) (ConfirmRotationResult, error) {
+			run := func(ctx context.Context, extra ...string) (ConfirmRotationResult, error) {
 				command := newRotateContextConfirmCmd()
 				// Match the production root policy when exercising the command
 				// directly: failures retain one parseable JSON outcome.
@@ -82,7 +191,7 @@ func TestContextConfirmCommandExecutesPersistedChoice(t *testing.T) {
 				var out bytes.Buffer
 				command.SetOut(&out)
 				command.SetErr(new(bytes.Buffer))
-				command.SetArgs([]string{pending.AgentID, "--action=" + action})
+				command.SetArgs(append([]string{pending.AgentID, "--action=" + action}, extra...))
 				err := command.ExecuteContext(ctx)
 				var result ConfirmRotationResult
 				if decodeErr := json.Unmarshal(bytes.TrimSpace(out.Bytes()), &result); decodeErr != nil {
@@ -98,7 +207,10 @@ func TestContextConfirmCommandExecutesPersistedChoice(t *testing.T) {
 			result, err := run(ctx)
 			commands, _ := os.ReadFile(filepath.Join(root, "commands"))
 			log := string(commands)
-			wantSuccess := mode == "rotate" || mode == "compact"
+			if tracked && !strings.Contains(log, "OWNERSHIP_BEFORE_LAUNCH") {
+				t.Fatalf("replacement boot did not observe its durable assignment barrier and original identity:\n%s", log)
+			}
+			wantSuccess := strings.HasPrefix(mode, "rotate") || mode == "compact"
 			if wantSuccess != result.Success || wantSuccess && err != nil || !wantSuccess && err == nil {
 				t.Fatalf("confirmation success=%v, err=%v, result=%+v\n%s", wantSuccess, err, result, log)
 			}
@@ -110,7 +222,7 @@ func TestContextConfirmCommandExecutesPersistedChoice(t *testing.T) {
 				if stored != nil || result.Rotation == nil {
 					t.Fatalf("successful operation did not persist acknowledgment: %+v / %+v", result, stored)
 				}
-				if mode == "rotate" {
+				if strings.HasPrefix(mode, "rotate") {
 					if strings.Contains(log, "/compact") {
 						t.Fatalf("explicit rotation was replaced by automatic compaction:\n%s", log)
 					}
@@ -121,6 +233,9 @@ func TestContextConfirmCommandExecutesPersistedChoice(t *testing.T) {
 					deliveredAt, retiredAt := strings.Index(log, "HANDOFF_DELIVERED"), strings.Index(log, "kill-pane -t %1")
 					if deliveredAt < 0 || retiredAt < 0 || deliveredAt > retiredAt {
 						t.Fatalf("source retired before handoff submission:\n%s", log)
+					}
+					if tracked {
+						assertCommittedOwnership()
 					}
 				} else if !strings.Contains(log, "/compact") || strings.Contains(log, "/clear") || strings.Contains(log, "split-window") || strings.Contains(log, "kill-pane") {
 					t.Fatalf("compact failed to preserve native context:\n%s", log)
@@ -141,8 +256,55 @@ func TestContextConfirmCommandExecutesPersistedChoice(t *testing.T) {
 				if mode == "canceled" && (stored.SelectedAction != "" || len(commands) != 0) {
 					t.Fatalf("pre-canceled command changed state: %+v\n%s", stored, commands)
 				}
-				if mode != "launch-failure" && (strings.Contains(log, "send-keys") || strings.Contains(log, "paste-buffer") || strings.Contains(log, "kill-pane")) {
+				if mode != "launch-failure" && mode != "manifest-race" && mode != "handoff-unknown" && (strings.Contains(log, "send-keys") || strings.Contains(log, "paste-buffer") || strings.Contains(log, "kill-pane")) {
 					t.Fatalf("unsafe or canceled confirmation delivered input:\n%s", log)
+				}
+				if mode == "manifest-race" || mode == "handoff-unknown" {
+					if strings.Contains(log, "kill-pane") || stored.Continuation == nil || stored.Continuation.Replacement.ID != "%99" {
+						t.Fatalf("partial continuation lost its recovery source: %+v\n%s", stored, log)
+					}
+					store, loadErr := assignment.LoadStoreStrict("demo")
+					if loadErr != nil {
+						t.Fatal(loadErr)
+					}
+					current := store.Get(originalAssignment.BeadID)
+					if current == nil || current.DispatchTarget != "%1" || !current.HasPendingPaneContinuation() || current.PaneContinuation.TargetPane != "%99" || current.IdempotencyKey != originalAssignment.IdempotencyKey {
+						t.Fatalf("partial handoff released or replaced assignment ownership: %+v", current)
+					}
+					for _, suffix := range []string{"1", "99"} {
+						if data, readErr := os.ReadFile(filepath.Join(root, "token."+suffix)); readErr != nil || strings.TrimSpace(string(data)) != stored.ExecutionID {
+							t.Fatalf("partial handoff lost pane %s quarantine: %q, %v", suffix, data, readErr)
+						}
+					}
+					if mode == "manifest-race" {
+						if stored.Continuation.Phase != "handoff_accepted" {
+							t.Fatalf("accepted handoff was not recoverable: %+v", stored.Continuation)
+						}
+						if err := resilience.SaveManifest(originalManifest); err != nil {
+							t.Fatal(err)
+						}
+						recovered, recoverErr := run(t.Context(), "--retry")
+						if recoverErr != nil || !recovered.Success {
+							t.Fatalf("verified handoff did not resume ownership finalization: %+v, %v", recovered, recoverErr)
+						}
+						assertCommittedOwnership()
+						after, _ := os.ReadFile(filepath.Join(root, "commands"))
+						if strings.Count(string(after), "HANDOFF_DELIVERED") != 1 || strings.Count(string(after), "split-window ") != 1 {
+							t.Fatalf("ownership recovery replayed launch or task delivery:\n%s", after)
+						}
+					} else {
+						before := len(commands)
+						for _, extra := range [][]string{{"--retry"}, {"--action=ignore", "--retry"}} {
+							repeated, repeatErr := run(t.Context(), extra...)
+							if repeatErr == nil || repeated.Success {
+								t.Fatalf("unknown handoff allowed replay or unsafe ignore: %+v, %v", repeated, repeatErr)
+							}
+						}
+						after, _ := os.ReadFile(filepath.Join(root, "commands"))
+						if len(after) != before {
+							t.Fatalf("unknown handoff retry performed more tmux operations:\n%s", after)
+						}
+					}
 				}
 			}
 		})
@@ -161,19 +323,38 @@ ready() { printf 'Welcome to Claude Code\n────────────�
 case "$1" in
   list-windows) printf '0\n' ;;
   has-session) exit 0 ;;
-  display-message) printf '%s\n' "$NTM_CONFIRM_WORKDIR" ;;
+  display-message)
+    case "$*" in
+      *'#{@ntm_rotation_token}'*) printf '['; if [ -f "$NTM_CONFIRM_ROOT/token.${target#%}" ]; then cat "$NTM_CONFIRM_ROOT/token.${target#%}"; fi; printf ']\n' ;;
+      *) printf '%s\n' "$NTM_CONFIRM_WORKDIR" ;;
+    esac
+    ;;
+  if-shell)
+    for value do
+      case "$value" in
+        'set-option -p -u '*) : > "$NTM_CONFIRM_ROOT/token.${target#%}" ;;
+        'set-option -p -t '*) printf '%s' "${value##* }" > "$NTM_CONFIRM_ROOT/token.${target#%}" ;;
+      esac
+    done
+    ;;
   list-panes)
     prefix=
     case "$*" in *' -a '*) prefix=demo_NTM_SEP_ ;; esac
     if [ ! -f "$NTM_CONFIRM_ROOT/retired" ]; then
       pid=123
       if [ "$NTM_CONFIRM_MODE" = changed-pid ]; then pid=456; fi
-      printf '%s%%1_NTM_SEP_1_NTM_SEP_demo__cc_1_NTM_SEP_node_NTM_SEP_120_NTM_SEP_40_NTM_SEP_0_NTM_SEP_%s_NTM_SEP_0_NTM_SEP_cc_NTM_SEP__NTM_SEP__NTM_SEP_0\n' "$prefix" "$pid"
+      index=1
+      if [ -f "$NTM_CONFIRM_ROOT/created" ]; then index=2; fi
+      token=
+      if [ -f "$NTM_CONFIRM_ROOT/token.1" ]; then token=$(cat "$NTM_CONFIRM_ROOT/token.1"); fi
+      printf '%s%%1_NTM_SEP_%s_NTM_SEP_demo__cc_1_NTM_SEP_node_NTM_SEP_120_NTM_SEP_40_NTM_SEP_0_NTM_SEP_%s_NTM_SEP_0_NTM_SEP_cc_NTM_SEP__NTM_SEP__NTM_SEP_0_NTM_SEP_[%s]\n' "$prefix" "$index" "$pid" "$token"
     fi
     if [ -f "$NTM_CONFIRM_ROOT/created" ]; then
       command=bash
       if [ -f "$NTM_CONFIRM_ROOT/launched" ]; then command=node; fi
-      printf '%s%%99_NTM_SEP_2_NTM_SEP_demo__cc_1_NTM_SEP_%s_NTM_SEP_120_NTM_SEP_40_NTM_SEP_0_NTM_SEP_321_NTM_SEP_0_NTM_SEP_cc_NTM_SEP__NTM_SEP__NTM_SEP_0\n' "$prefix" "$command"
+      token=
+      if [ -f "$NTM_CONFIRM_ROOT/token.99" ]; then token=$(cat "$NTM_CONFIRM_ROOT/token.99"); fi
+      printf '%s%%99_NTM_SEP_1_NTM_SEP_demo__cc_1_NTM_SEP_%s_NTM_SEP_120_NTM_SEP_40_NTM_SEP_0_NTM_SEP_321_NTM_SEP_0_NTM_SEP_cc_NTM_SEP__NTM_SEP__NTM_SEP_0_NTM_SEP_[%s]\n' "$prefix" "$command" "$token"
     fi
     if [ -n "$prefix" ] && [ "$NTM_CONFIRM_MODE" = cross-session ]; then
       printf 'other_NTM_SEP_%%2_NTM_SEP_1_NTM_SEP_other__cc_1_NTM_SEP_node_NTM_SEP_120_NTM_SEP_40_NTM_SEP_0_NTM_SEP_456_NTM_SEP_0_NTM_SEP_cc_NTM_SEP__NTM_SEP__NTM_SEP_0\n'
@@ -200,6 +381,8 @@ case "$1" in
     else
       cat "$NTM_CONFIRM_ROOT/buffer" > "$NTM_CONFIRM_ROOT/delivered"
       printf 'HANDOFF_DELIVERED\n' >> "$NTM_CONFIRM_ROOT/commands"
+      if [ "$NTM_CONFIRM_MODE" = manifest-race ]; then cp "$NTM_CONFIRM_CHANGED_MANIFEST" "$NTM_CONFIRM_MANIFEST"; fi
+      if [ "$NTM_CONFIRM_MODE" = handoff-unknown ]; then exit 1; fi
     fi
     ;;
   show-options) printf 'invalid option: @ntm_agent_launch\n' >&2; exit 1 ;;
@@ -210,9 +393,19 @@ case "$1" in
     ;;
   send-keys)
     case "$*" in
-      *'/compact'*) printf '{"type":"assistant","message":{"model":"claude-opus-4","usage":{"input_tokens":30000}}}\n' > "$NTM_CONFIRM_TRANSCRIPT" ;;
+      *'/compact'*) printf '%s\n' "$NTM_CONFIRM_COMPACTED_LINE" > "$NTM_CONFIRM_TRANSCRIPT" ;;
     esac
-    if [ "$target" = '%99' ]; then printf '1' > "$NTM_CONFIRM_ROOT/launched"; fi
+    if [ "$target" = '%99' ]; then
+      if [ ! -f "$NTM_CONFIRM_ROOT/launched" ] && [ -n "$NTM_CONFIRM_ASSIGNMENTS" ]; then
+        [ -s "$NTM_CONFIRM_ROOT/token.1" ] && [ -s "$NTM_CONFIRM_ROOT/token.99" ] || exit 1
+        grep -q '"target_pane": "%99"' "$NTM_CONFIRM_ASSIGNMENTS" || exit 1
+        if [ -n "$NTM_CONFIRM_IDENTITY" ]; then
+          [ -f "$NTM_CONFIRM_IDENTITY" ] && [ "$(cat "$NTM_CONFIRM_IDENTITY")" = BlueLake ] || exit 1
+        fi
+        printf 'OWNERSHIP_BEFORE_LAUNCH\n' >> "$NTM_CONFIRM_ROOT/commands"
+      fi
+      printf '1' > "$NTM_CONFIRM_ROOT/launched"
+    fi
     ;;
   kill-pane) if [ "$target" = '%1' ]; then printf '1' > "$NTM_CONFIRM_ROOT/retired"; fi ;;
 esac

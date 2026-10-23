@@ -2,8 +2,103 @@ package tmux
 
 import (
 	"strings"
+	"sync"
 	"testing"
 )
+
+func TestRealPaneRotationQuarantineOwnershipAndTopology(t *testing.T) {
+	skipIfNoTmux(t)
+	session := createTestSession(t)
+	panes, err := GetPanes(session)
+	if err != nil || len(panes) != 1 {
+		t.Fatalf("initial panes=%+v err=%v", panes, err)
+	}
+	id := panes[0].ID
+	if err := SetPaneRotationTokenContext(t.Context(), id, "rotation-owner"); err != nil {
+		t.Fatal(err)
+	}
+	if err := SetPaneRotationTokenContext(t.Context(), id, "rotation-owner"); err != nil {
+		t.Fatalf("idempotent claim: %v", err)
+	}
+	if err := SetPaneRotationTokenContext(t.Context(), id, "foreign-owner"); err == nil {
+		t.Fatal("a competing rotation overwrote the quarantine")
+	}
+	if err := ClearPaneRotationTokenContext(t.Context(), id, "foreign-owner"); err == nil {
+		t.Fatal("a competing rotation cleared the quarantine")
+	}
+	if err := SetPaneAgentIdentityContext(t.Context(), id, "custom title", AgentCodex); err != nil {
+		t.Fatal(err)
+	}
+	check := func(panes []Pane) {
+		t.Helper()
+		if len(panes) != 1 || panes[0].ID != id || panes[0].RotationToken != "rotation-owner" || panes[0].Type != AgentCodex {
+			t.Fatalf("topology lost the independent quarantine: %+v", panes)
+		}
+	}
+	panes, err = GetPanesContext(t.Context(), session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check(panes)
+	all, err := GetAllPanesContext(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	check(all[session])
+	activity, err := GetPanesWithActivityContext(t.Context(), session)
+	if err != nil || len(activity) != 1 {
+		t.Fatalf("activity=%+v err=%v", activity, err)
+	}
+	check([]Pane{activity[0].Pane})
+	if err := ClearPaneRotationTokenContext(t.Context(), id, "rotation-owner"); err != nil {
+		t.Fatal(err)
+	}
+	if err := ClearPaneRotationTokenContext(t.Context(), id, "rotation-owner"); err != nil {
+		t.Fatalf("idempotent release: %v", err)
+	}
+	if got, err := ReadPaneRotationTokenContext(t.Context(), id); err != nil || got != "" {
+		t.Fatalf("released token=%q err=%v", got, err)
+	}
+	// Two independent clients race for one pane. The tmux-side conditional
+	// must admit exactly one execution token, not whichever last wrote it.
+	var wg sync.WaitGroup
+	results := make(chan string, 2)
+	start := make(chan struct{})
+	for _, token := range []string{"candidate-a", "candidate-b"} {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			if err := NewClient("").SetPaneRotationTokenContext(t.Context(), id, token); err == nil {
+				results <- token
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+	var winners []string
+	for winner := range results {
+		winners = append(winners, winner)
+	}
+	got, err := ReadPaneRotationTokenContext(t.Context(), id)
+	if err != nil || len(winners) != 1 || got != winners[0] {
+		t.Fatalf("competing claims: winners=%v actual=%q err=%v", winners, got, err)
+	}
+	if err := ClearPaneRotationTokenContext(t.Context(), id, winners[0]); err != nil {
+		t.Fatal(err)
+	}
+	// A whitespace-only hand edit cannot be mistaken for an absent fence.
+	if err := DefaultClient.RunSilentContext(t.Context(), "set-option", "-p", "-t", id, PaneOptionRotationToken, " "); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadPaneRotationTokenContext(t.Context(), id); err == nil {
+		t.Fatal("malformed nonempty quarantine was read as absent")
+	}
+	if _, err := GetPanesContext(t.Context(), session); err == nil {
+		t.Fatal("topology accepted malformed nonempty quarantine")
+	}
+}
 
 // The @ntm_agent_type pane option recorded by adopt must outrank the pane
 // title: OpenCode rewrites its own title continuously, so a title-only

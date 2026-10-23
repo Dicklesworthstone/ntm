@@ -3,9 +3,11 @@ package agentmail
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -119,6 +121,217 @@ func containsHelper(s, substr string) bool {
 }
 
 // Tests for SessionAgentRegistry
+
+func seedRegistryContinuation(t *testing.T) (*SessionAgentRegistry, PaneIdentityBinding, PaneIdentityBinding) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	registry := NewSessionAgentRegistry("continuation", filepath.Join(home, "project"))
+	registry.AddAgent("work__cod_1", "%7", "BlueLake")
+	registry.SetPanePID("%7", 700)
+	registry.SetRegistrationToken("BlueLake", "original-token")
+	registry.AddAgent("other__cc_1", "%8", "RedOak")
+	registry.SetPanePID("%8", 800)
+	registry.SetRegistrationToken("RedOak", "unrelated-token")
+	if err := SaveSessionAgentRegistry(registry); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadSessionAgentRegistry(registry.SessionName, registry.ProjectKey)
+	if err != nil || loaded == nil {
+		t.Fatalf("load seeded registry: %+v, %v", loaded, err)
+	}
+	// The agent may have changed its title since registration. Its exact
+	// physical pane and PID remain the authority for transferring identity.
+	source := PaneIdentityBinding{PaneID: "%7", PaneTitle: "custom working title", PanePID: 700, AgentName: "BlueLake"}
+	replacement := PaneIdentityBinding{PaneID: "%19", PaneTitle: source.PaneTitle, PanePID: 1900, AgentName: source.AgentName}
+	return loaded, source, replacement
+}
+
+func TestRegistryContinuationPreservesRecipientAndFreshCredential(t *testing.T) {
+	registry, source, replacement := seedRegistryContinuation(t)
+	oldReceipt := []byte("{\"name\":\"BlueLake\",\"generation\":17,\"pane_id\":\"%7\"}\n")
+	oldPath := CanonicalIdentityPath(registry.ProjectKey, source.PaneID)
+	if err := os.MkdirAll(filepath.Dir(oldPath), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(oldPath, oldReceipt, 0600); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(filepath.Dir(registry.ProjectKey), "worktree")
+	for _, project := range []string{registry.ProjectKey, alias} {
+		legacyPath := "/tmp/agent-mail-name." + projectSha1Short(project) + "." + sanitizePaneID(replacement.PaneID)
+		t.Cleanup(func() { _ = os.Remove(legacyPath) })
+	}
+	if err := PreparePaneContinuationIdentity(t.Context(), registry.SessionName, registry.ProjectKey, source, replacement, alias); err != nil {
+		t.Fatal(err)
+	}
+	for _, project := range []string{registry.ProjectKey, alias} {
+		data, err := os.ReadFile(CanonicalIdentityPath(project, replacement.PaneID))
+		if err != nil || string(data) != "BlueLake\n" {
+			t.Fatalf("prelaunch identity for %s = %q, %v", project, data, err)
+		}
+		if _, _, ok := ReadPaneIdentityReceipt(project, replacement.PaneID); ok {
+			t.Fatal("replacement inherited the predecessor's pane-generation receipt")
+		}
+	}
+	data, err := os.ReadFile(oldPath)
+	if err != nil || string(data) != string(oldReceipt) {
+		t.Fatalf("predecessor identity changed: %q, %v", data, err)
+	}
+	fresh, err := LoadSessionAgentRegistry(registry.SessionName, registry.ProjectKey)
+	if err != nil || !reflect.DeepEqual(fresh, registry) {
+		t.Fatalf("prelaunch publication moved registry ownership: %+v, %v", fresh, err)
+	}
+	// Token rotation between preparation and handoff must survive cutover.
+	fresh.SetRegistrationToken(source.AgentName, "freshly-rotated-token")
+	if err := SaveSessionAgentRegistry(fresh); err != nil {
+		t.Fatal(err)
+	}
+	rebound, applied, err := RebindSessionAgentPaneContext(t.Context(), registry.SessionName, registry.ProjectKey, source, replacement)
+	if err != nil || !applied || rebound == nil {
+		t.Fatalf("rebind = %+v, %v, %v", rebound, applied, err)
+	}
+	if !reflect.DeepEqual(rebound.PaneIDMap, map[string]string{"%19": "BlueLake", "%8": "RedOak"}) ||
+		!reflect.DeepEqual(rebound.PanePIDs, map[string]int{"%19": 1900, "%8": 800}) ||
+		!reflect.DeepEqual(rebound.Agents, map[string]string{replacement.PaneTitle: "BlueLake", "other__cc_1": "RedOak"}) ||
+		!reflect.DeepEqual(rebound.RegistrationTokens, fresh.RegistrationTokens) ||
+		!rebound.RegisteredAt.Equal(registry.RegisteredAt) || rebound.Revision != fresh.Revision+1 {
+		t.Fatalf("rebind lost identity, latest credential, or unrelated entries: %+v", rebound)
+	}
+	again, applied, err := RebindSessionAgentPaneContext(t.Context(), registry.SessionName, registry.ProjectKey, source, replacement)
+	if err != nil || !applied || !reflect.DeepEqual(again, rebound) {
+		t.Fatalf("idempotent readback changed registry: %+v, %v, %v", again, applied, err)
+	}
+	registry.SetRegistrationToken(source.AgentName, "stale-writer-token")
+	if err := SaveSessionAgentRegistry(registry); err == nil {
+		t.Fatal("stale registry snapshot overwrote completed ownership transfer")
+	}
+	latest, err := LoadSessionAgentRegistry(registry.SessionName, registry.ProjectKey)
+	if err != nil || !reflect.DeepEqual(latest, rebound) {
+		t.Fatalf("stale save changed durable ownership: %+v, %v", latest, err)
+	}
+}
+
+func TestRegistryContinuationRefusesUnverifiedBinding(t *testing.T) {
+	for _, kind := range []string{"source PID", "unknown PID", "recipient", "occupied replacement", "canceled"} {
+		t.Run(kind, func(t *testing.T) {
+			registry, source, replacement := seedRegistryContinuation(t)
+			ctx := t.Context()
+			switch kind {
+			case "source PID":
+				source.PanePID++
+			case "unknown PID":
+				registry.SetPanePID(source.PaneID, 0)
+			case "recipient":
+				source.AgentName, replacement.AgentName = "RedOak", "RedOak"
+			case "occupied replacement":
+				registry.AddAgent("occupied", replacement.PaneID, "GreenHill")
+				registry.SetPanePID(replacement.PaneID, replacement.PanePID)
+			case "canceled":
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithCancel(ctx)
+				cancel()
+			}
+			if err := SaveSessionAgentRegistry(registry); err != nil {
+				t.Fatal(err)
+			}
+			err := PreparePaneContinuationIdentity(ctx, registry.SessionName, registry.ProjectKey, source, replacement)
+			if err == nil || kind == "canceled" && !errors.Is(err, context.Canceled) {
+				t.Fatalf("unsafe prelaunch publication = %v", err)
+			}
+			if _, err := os.Stat(CanonicalIdentityPath(registry.ProjectKey, replacement.PaneID)); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("rejected preparation published replacement identity: %v", err)
+			}
+			_, applied, err := RebindSessionAgentPaneContext(ctx, registry.SessionName, registry.ProjectKey, source, replacement)
+			if err == nil || applied || kind == "canceled" && !errors.Is(err, context.Canceled) {
+				t.Fatalf("unsafe registry cutover = %v, %v", applied, err)
+			}
+			latest, err := LoadSessionAgentRegistry(registry.SessionName, registry.ProjectKey)
+			if err != nil || !reflect.DeepEqual(latest, registry) {
+				t.Fatalf("rejected continuation changed registry: %+v, %v", latest, err)
+			}
+		})
+	}
+}
+
+func TestRegistryContinuationRejectsAmbiguousCompletedReadback(t *testing.T) {
+	for _, completed := range []bool{false, true} {
+		for _, kind := range []string{"physical alias", "title alias", "title collision"} {
+			name := kind
+			if completed {
+				name += " after commit"
+			}
+			t.Run(name, func(t *testing.T) {
+				registry, source, replacement := seedRegistryContinuation(t)
+				if completed {
+					var applied bool
+					var err error
+					registry, applied, err = RebindSessionAgentPaneContext(t.Context(), registry.SessionName, registry.ProjectKey, source, replacement)
+					if err != nil || !applied {
+						t.Fatalf("initial cutover = %v, %v", applied, err)
+					}
+				}
+				switch kind {
+				case "physical alias":
+					registry.PaneIDMap["%30"] = "bluelake"
+					registry.SetPanePID("%30", 3000)
+				case "title alias":
+					registry.Agents["stale alias"] = "bluelake"
+				case "title collision":
+					registry.Agents[replacement.PaneTitle] = "RedOak"
+				}
+				if err := SaveSessionAgentRegistry(registry); err != nil {
+					t.Fatal(err)
+				}
+				_, applied, err := RebindSessionAgentPaneContext(t.Context(), registry.SessionName, registry.ProjectKey, source, replacement)
+				if err == nil || applied {
+					t.Fatalf("ambiguous ownership was acknowledged: %v, %v", applied, err)
+				}
+				latest, err := LoadSessionAgentRegistry(registry.SessionName, registry.ProjectKey)
+				if err != nil || !reflect.DeepEqual(latest, registry) {
+					t.Fatalf("rejected readback changed registry: %+v, %v", latest, err)
+				}
+			})
+		}
+	}
+}
+
+func TestSessionAgentRegistryConcurrentSnapshotSavesUseOneFence(t *testing.T) {
+	registry, _, _ := seedRegistryContinuation(t)
+	left, err := LoadSessionAgentRegistry(registry.SessionName, registry.ProjectKey)
+	if err != nil || left == nil {
+		t.Fatalf("load left snapshot: %+v, %v", left, err)
+	}
+	right, err := LoadSessionAgentRegistry(registry.SessionName, registry.ProjectKey)
+	if err != nil || right == nil {
+		t.Fatalf("load right snapshot: %+v, %v", right, err)
+	}
+	left.AddAgent("left", "%30", "WhiteRiver")
+	right.AddAgent("right", "%31", "BlackTree")
+	start := make(chan struct{})
+	results := make(chan error, 2)
+	for _, snapshot := range []*SessionAgentRegistry{left, right} {
+		go func(snapshot *SessionAgentRegistry) {
+			<-start
+			results <- SaveSessionAgentRegistry(snapshot)
+		}(snapshot)
+	}
+	close(start)
+	succeeded := 0
+	for range 2 {
+		if err := <-results; err == nil {
+			succeeded++
+		} else if !strings.Contains(err.Error(), "registry changed") {
+			t.Fatalf("unexpected snapshot save failure: %v", err)
+		}
+	}
+	latest, err := LoadSessionAgentRegistry(registry.SessionName, registry.ProjectKey)
+	if err != nil || succeeded != 1 || latest == nil || latest.Revision != registry.Revision+1 || len(latest.PaneIDMap) != 3 ||
+		latest.PaneIDMap["%7"] != "BlueLake" || latest.PaneIDMap["%8"] != "RedOak" || !reflect.DeepEqual(latest.RegistrationTokens, registry.RegistrationTokens) {
+		t.Fatalf("concurrent save lost or merged stale state: successes=%d registry=%+v err=%v", succeeded, latest, err)
+	}
+}
 
 func TestNewSessionAgentRegistry(t *testing.T) {
 	sessionName := "test-session"

@@ -1157,6 +1157,7 @@ func TestPaneObservationSafeToDispatchFailsClosed(t *testing.T) {
 		refusal DispatchRefusal
 	}{
 		{name: "stale", mutate: func(p *PaneObservation) { p.Current.Freshness = FreshnessStale }, refusal: DispatchRefusalStale},
+		{name: "rotation quarantine", mutate: func(p *PaneObservation) { p.Metadata.RotationToken = "handoff-owner" }, refusal: DispatchRefusalRotation},
 		{name: "unavailable", mutate: func(p *PaneObservation) { p.Current.Freshness = FreshnessUnavailable }, refusal: DispatchRefusalStale},
 		{name: "low confidence", mutate: func(p *PaneObservation) { p.Current.Confidence = minimumDispatchConfidence - 0.01 }, refusal: DispatchRefusalLowConfidence},
 		{name: "invalid high confidence", mutate: func(p *PaneObservation) { p.Current.Confidence = 1.01 }, refusal: DispatchRefusalLowConfidence},

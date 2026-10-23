@@ -149,6 +149,37 @@ func TestPendingConfirmationExcludesAnotherProcess(t *testing.T) {
 	}
 }
 
+func TestPendingRotationStore_GetForSessionContextHonorsCancellation(t *testing.T) {
+	store := NewPendingRotationStoreWithPath(filepath.Join(t.TempDir(), "pending.jsonl"))
+	if err := store.Add(makePending("demo__cc_1", "demo", "%3", time.Now().Add(time.Hour))); err != nil {
+		t.Fatal(err)
+	}
+	unlock, err := store.lock(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+	// Model a writer waiting for another process while holding pendingMu.
+	// The reader must honor its deadline without first acquiring that mutex.
+	pendingMu.Lock()
+	defer pendingMu.Unlock()
+	ctx, cancel := context.WithTimeout(t.Context(), 25*time.Millisecond)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := store.GetForSessionContext(ctx, "demo")
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("blocked snapshot read = %v, want deadline exceeded", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("snapshot read ignored cancellation behind the writer mutex")
+	}
+}
+
 func makePending(agentID, session, pane string, timeout time.Time) *PendingRotation {
 	return &PendingRotation{
 		AgentID:        agentID,

@@ -33,6 +33,7 @@ const (
 	ErrPromptDeliveryUnsupported ErrorCode = "prompt_delivery_unsupported"
 	ErrProtocol                  ErrorCode = "protocol_failed"
 	ErrLifecycle                 ErrorCode = "lifecycle_failed"
+	ErrRotationPending           ErrorCode = "rotation_pending"
 	ErrPacing                    ErrorCode = "pacing_failed"
 	ErrDelivery                  ErrorCode = "delivery_failed"
 	ErrAlreadyDispatched         ErrorCode = "already_dispatched"
@@ -408,9 +409,22 @@ func PrepareTMUXDelivery(ctx context.Context, delivery Delivery) (string, error)
 	if err := RefuseDeadAgentPane(delivery.Target.Pane); err != nil {
 		return "", GuaranteeNoDeliveryActuation(err)
 	}
+	if delivery.Target.Pane.RotationToken != "" {
+		return "", GuaranteeNoDeliveryActuation(rotationPendingError(delivery.Target))
+	}
 	target := delivery.Target.Ref.ID
 	if target == "" {
 		target = fmt.Sprintf("%s:%s", delivery.Session, delivery.Target.Ref.Physical())
+	}
+	// A prepared plan may predate the rotation's quarantine. Re-read the
+	// physical pane before composer clearing or any message bytes, and never
+	// treat a failed metadata read as proof that delivery is safe.
+	rotationToken, err := tmux.ReadPaneRotationTokenContext(ctx, target)
+	if err != nil {
+		return "", GuaranteeNoDeliveryActuation(fmt.Errorf("verify pane rotation quarantine: %w", err))
+	}
+	if rotationToken != "" {
+		return "", GuaranteeNoDeliveryActuation(rotationPendingError(delivery.Target))
 	}
 	// An unnumbered trust menu can reuse the composer's cursor (GH#325),
 	// while Antigravity has no composer detector at all. Check the actual
@@ -1027,6 +1041,9 @@ func PlanTargets(req Request) ([]Target, error) {
 		if !req.IncludeUser && !explicitPolicy && pane.Type.Canonical() == tmux.AgentUser {
 			continue
 		}
+		if pane.RotationToken != "" {
+			return nil, rotationPendingError(targetFromPane(pane, multiWindow))
+		}
 		if _, duplicate := seen[stableKey]; duplicate {
 			continue
 		}
@@ -1037,6 +1054,12 @@ func PlanTargets(req Request) ([]Target, error) {
 		return nil, &Error{Code: ErrNoTargets, Err: errors.New("no panes matched the target policy")}
 	}
 	return targets, nil
+}
+
+func rotationPendingError(target Target) error {
+	copy := cloneTarget(target)
+	return &Error{Code: ErrRotationPending, Target: &copy, Err: fmt.Errorf(
+		"pane %s has an unresolved context rotation; resolve the pending rotation before sending new work", target.Ref.ID)}
 }
 
 // ValidatePromptDeliveryTargets rejects agents whose prompt-delivery protocol
@@ -1079,7 +1102,8 @@ func canonicalizePanes(input []tmux.Pane) ([]tmux.Pane, error) {
 func samePaneSnapshot(a, b tmux.Pane) bool {
 	if a.ID != b.ID || a.Index != b.Index || a.WindowIndex != b.WindowIndex || a.NTMIndex != b.NTMIndex ||
 		a.Title != b.Title || a.Type != b.Type || a.Variant != b.Variant || a.Command != b.Command ||
-		a.Width != b.Width || a.Height != b.Height || a.Active != b.Active || a.PID != b.PID || len(a.Tags) != len(b.Tags) {
+		a.Width != b.Width || a.Height != b.Height || a.Active != b.Active || a.PID != b.PID ||
+		a.RotationToken != b.RotationToken || len(a.Tags) != len(b.Tags) {
 		return false
 	}
 	for i := range a.Tags {

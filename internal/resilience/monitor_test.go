@@ -167,6 +167,41 @@ func TestRestartAgentMembershipCheckErrorSkipsButKeepsBinding(t *testing.T) {
 	}
 }
 
+func TestRestartAgentRefusesRotationQuarantineBeforeActuation(t *testing.T) {
+	for _, fenceOnRead := range []int{1, 2} {
+		t.Run(fmt.Sprintf("fence-on-read-%d", fenceOnRead), func(t *testing.T) {
+			restore := saveHooks()
+			defer restore()
+			reads, sends := 0, 0
+			setHooksLocked(func() {
+				findPaneFn = func(context.Context, string, string) (*tmux.Pane, error) {
+					reads++
+					pane := &tmux.Pane{ID: "%405", Index: 5, Type: tmux.AgentCodex}
+					if reads >= fenceOnRead {
+						pane.RotationToken = "active-handoff"
+					}
+					return pane, nil
+				}
+				prepareLaunchCommandFn = func(context.Context, string, string, *LaunchBinding, string) (string, LaunchAffinity, error) {
+					return "codex", LaunchAffinityUnknown, nil
+				}
+				buildPaneCmdFn = func(string, string) (string, error) { return "codex", nil }
+				sendKeysFn = func(context.Context, string, string, bool) error { sends++; return nil }
+			})
+			cfg := config.Default()
+			cfg.Resilience.RestartDelaySeconds = 0
+			m := NewMonitor("rotation-test", "/tmp/project", cfg, true)
+			m.RegisterAgent("%405", 5, 0, "cod", "gpt-5", "codex")
+			tracked := m.agents["%405"]
+			tracked.Healthy = false
+			m.restartAgent(t.Context(), tracked)
+			if sends != 0 || reads != fenceOnRead || tracked.RestartCount != 0 || m.agents["%405"] != tracked {
+				t.Fatalf("quarantined restart changed ownership or sent keys: reads=%d sends=%d agent=%+v", reads, sends, tracked)
+			}
+		})
+	}
+}
+
 // setHooksLocked executes the provided function under hooksMu write lock.
 // Use this to safely set hook functions in tests.
 func setHooksLocked(fn func()) {

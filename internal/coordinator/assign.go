@@ -16,10 +16,12 @@ import (
 	assignmentstore "github.com/Dicklesworthstone/ntm/internal/assignment"
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/config"
+	ctxmon "github.com/Dicklesworthstone/ntm/internal/context"
 	"github.com/Dicklesworthstone/ntm/internal/persona"
 	"github.com/Dicklesworthstone/ntm/internal/redaction"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/status"
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 // ScoreConfig controls how work assignments are scored.
@@ -364,6 +366,9 @@ func (c *SessionCoordinator) checkAssignmentReservationOwner(ctx context.Context
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if current.HasPendingPaneContinuation() {
+		return c.checkContinuationReservationOwner(ctx, current, lease, target)
+	}
 	readObserved := func() *AgentState {
 		c.mu.RLock()
 		defer c.mu.RUnlock()
@@ -403,6 +408,104 @@ func (c *SessionCoordinator) checkAssignmentReservationOwner(ctx context.Context
 	registeredName, registered := registry.GetAgent("", target)
 	if !registered || lease.AgentName == "" || registeredName != lease.AgentName || registeredName != current.AgentName || lease.Target != target {
 		return fmt.Errorf("pane %s no longer has the assignment's registered reservation owner", target)
+	}
+	return nil
+}
+
+// A verified handoff moves the registry before the restart manifest and
+// assignment snapshots. Keep its original leases alive across a failed later
+// write without accepting the predecessor's title or a cached recipient name.
+func (c *SessionCoordinator) checkContinuationReservationOwner(ctx context.Context, current *assignmentstore.Assignment, lease assignmentstore.LeaseReceipt, target string) error {
+	continuation := current.PaneContinuation
+	if c.monitor == nil || continuation.Token == "" || continuation.SourcePane != target || lease.Target != target ||
+		lease.AgentName == "" || lease.AgentName != current.AgentName || lease.AgentName != current.ReservationAgent {
+		return errors.New("pending reservation renewal requires the original continuation and exact lease owner")
+	}
+	entries, err := ctxmon.GetPendingRotationsForSessionContext(ctx, c.session)
+	if err != nil {
+		return fmt.Errorf("read rotation ownership before renewal: %w", err)
+	}
+	var pending *ctxmon.PendingRotation
+	for _, entry := range entries {
+		if entry.Continuation == nil || entry.ExecutionID != continuation.Token && entry.Continuation.Token != continuation.Token {
+			continue
+		}
+		if pending != nil {
+			return errors.New("pending reservation renewal has ambiguous rotation receipts")
+		}
+		pending = entry
+	}
+	if pending == nil {
+		return errors.New("pending reservation renewal has no durable rotation receipt")
+	}
+	receipt := pending.Continuation
+	if pending.ExecutionID != continuation.Token || receipt.Token != continuation.Token || pending.SelectedAction != ctxmon.ConfirmRotate ||
+		pending.Remote != "" || tmux.DefaultClient.Remote != "" || pending.SessionName != c.session ||
+		receipt.BeadID != current.BeadID || receipt.AssignmentKey != current.IdempotencyKey || receipt.AgentName != lease.AgentName ||
+		pending.PaneID != target || receipt.Source.ID != target || pending.PanePID != receipt.Source.PID ||
+		!filepath.IsAbs(receipt.RegistryProject) || !agentmail.ProjectKeysEquivalent(receipt.RegistryProject, c.projectKey) {
+		return errors.New("pending reservation renewal does not match the durable rotation owner and project")
+	}
+	registry, err := agentmail.LoadSessionAgentRegistry(c.session, receipt.RegistryProject)
+	if err != nil || registry == nil {
+		return errors.Join(err, errors.New("pending reservation renewal has no verified agent registry"))
+	}
+	registeredTarget := ""
+	bindings := 0
+	for paneID, name := range registry.PaneIDMap {
+		if strings.EqualFold(strings.TrimSpace(name), lease.AgentName) {
+			bindings++
+			registeredTarget = paneID
+		}
+	}
+	if bindings != 1 || registry.PaneIDMap[registeredTarget] != lease.AgentName {
+		return errors.New("pending reservation renewal has no unique exact recipient binding")
+	}
+	if registeredTarget != target && (continuation.TargetPane == "" || registeredTarget != continuation.TargetPane ||
+		receipt.Replacement.ID != continuation.TargetPane || receipt.Phase != "handoff_accepted") {
+		return errors.New("reservation recipient moved outside the accepted continuation")
+	}
+	observation, err := c.monitor.ObserveSession(ctx)
+	if err != nil {
+		return fmt.Errorf("observe pending reservation owner: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	now := time.Now()
+	if observation.Session != c.session || !status.DispatchObservationIsCurrent(observation.ObservedAt, now) {
+		return errors.New("pending reservation renewal has no fresh session observation")
+	}
+	kind := agent.AgentType(current.AgentType).Canonical()
+	verifyPane := func(expected tmux.Pane) (status.PaneObservation, error) {
+		observed, ok := observation.PaneByID(expected.ID)
+		if !ok || expected.PID <= 0 || observed.Metadata.ID != expected.ID || observed.Metadata.PID != expected.PID ||
+			expected.RotationToken != continuation.Token || observed.Metadata.RotationToken != continuation.Token ||
+			expected.Type.Canonical() != kind || observed.Metadata.Type.Canonical() != kind || observed.Metadata.IsServicePane() {
+			return status.PaneObservation{}, fmt.Errorf("pane %s no longer has its exact rotation process and fence", expected.ID)
+		}
+		return observed, nil
+	}
+	source, err := verifyPane(receipt.Source)
+	if err != nil {
+		return err
+	}
+	owner := source
+	if registeredTarget != target {
+		owner, err = verifyPane(receipt.Replacement)
+		if err != nil {
+			return err
+		}
+	}
+	// Quarantine blocks new dispatch, not lease maintenance. A retired or
+	// unreadable source is acceptable after accepted handoff only while its
+	// exact fenced metadata remains and the registered replacement is healthy.
+	command := strings.TrimSpace(owner.Metadata.Command)
+	if owner.Metadata.Dead || registry.PanePID(registeredTarget) != owner.Metadata.PID ||
+		command == "" || tmux.PaneCommandIsStarting(command) || tmux.PaneCommandIsShell(command) && !owner.Metadata.ForegroundJobRunning() ||
+		owner.Current.Freshness != status.FreshnessFresh || owner.Current.Error != "" ||
+		!owner.Current.Status.IsHealthy() || !status.DispatchObservationIsCurrent(owner.Current.ObservedAt, now) {
+		return fmt.Errorf("pane %s has no fresh healthy registered continuation owner", registeredTarget)
 	}
 	return nil
 }

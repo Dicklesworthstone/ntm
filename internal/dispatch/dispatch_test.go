@@ -72,6 +72,35 @@ func TestPlanTargetsDeterministicTopologyAndDefaultUserExclusion(t *testing.T) {
 	}
 }
 
+func TestPlanTargetsRotationQuarantineHonorsSelection(t *testing.T) {
+	t.Parallel()
+	panes := []tmux.Pane{
+		testPane("%1", 0, 0, tmux.AgentClaude, ""),
+		testPane("%2", 0, 1, tmux.AgentCodex, ""),
+	}
+	panes[0].RotationToken = "handoff-in-progress"
+	for _, selectors := range [][]string{nil, {"%1"}} {
+		_, err := PlanTargets(Request{Panes: panes, Selectors: selectors})
+		failure := requireCode(t, err, ErrRotationPending)
+		if failure.Target == nil || failure.Target.Ref.ID != "%1" {
+			t.Fatalf("refusal must identify the quarantined physical pane: %+v", failure)
+		}
+	}
+	for _, request := range []Request{
+		{Panes: panes, Selectors: []string{"%2"}},
+		{Panes: panes, ExcludeSelectors: []string{"%1"}},
+	} {
+		targets, err := PlanTargets(request)
+		if err != nil || len(targets) != 1 || targets[0].Ref.ID != "%2" {
+			t.Fatalf("an independently selected pane must remain usable: targets=%+v err=%v", targets, err)
+		}
+	}
+	duplicate := panes[0]
+	duplicate.RotationToken = ""
+	_, err := PlanTargets(Request{Panes: []tmux.Pane{panes[0], duplicate}})
+	requireCode(t, err, ErrInvalidRequest)
+}
+
 func TestPlanTargetsIncludeUserAndExplicitUserSelection(t *testing.T) {
 	t.Parallel()
 	t.Run("broad include", func(t *testing.T) {

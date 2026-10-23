@@ -6,12 +6,12 @@ import (
 	"time"
 )
 
-// ntm#311: #{pane_dead} is the last positional field of every list-panes
+// ntm#311: #{pane_dead} has a fixed positional field in every list-panes
 // format ntm parses. These tests pin its position so a dead pane is
 // recognised and no earlier field (PID, window, agent type, service tag)
 // shifts when it is present or absent.
 
-// fullPaneLine builds the current 13-field GetPanes format line.
+// fullPaneLine builds the 13-field format before rotation quarantine metadata.
 func fullPaneLine(id, index, title, command, pid, window, recordedType, acfsService, ntmService, dead string) string {
 	return strings.Join([]string{
 		id, index, title, command, "80", "24", "1", pid, window,
@@ -90,8 +90,8 @@ func TestParsePaneLine_OlderFormatsParseAsLive(t *testing.T) {
 		t.Fatalf("10-field line misparsed: %+v", ten)
 	}
 
-	if _, err := parsePaneLine(fullPaneLine("%1", "0", "t", "sh", "1", "0", "", "", "", "0")+FieldSeparator+"extra", FieldSeparator); err == nil {
-		t.Fatal("14-field GetPanes line accepted; the field-count guard no longer bounds the format")
+	if _, err := parsePaneLine(fullPaneLine("%1", "0", "t", "sh", "1", "0", "", "", "", "0")+FieldSeparator+"[]"+FieldSeparator+"extra", FieldSeparator); err == nil {
+		t.Fatal("15-field GetPanes line accepted; the field-count guard no longer bounds the format")
 	}
 }
 
@@ -112,9 +112,30 @@ func TestParsePaneFromParts_PaneDeadInSecondaryFields(t *testing.T) {
 	}
 	if _, err := parsePaneFromParts(
 		[]string{"%3", "0", "t", "sh", "80", "24", "0"},
-		[]string{"555", "2", "", "", "", "1", "extra"},
+		[]string{"555", "2", "", "", "", "1", "[]", "extra"},
 	); err == nil {
-		t.Fatal("7 secondary fields accepted; the bound no longer matches the producers")
+		t.Fatal("8 secondary fields accepted; the bound no longer matches the producers")
+	}
+}
+
+func TestParsePaneRotationQuarantineSurvivesAgentAdoption(t *testing.T) {
+	t.Parallel()
+	line := fullPaneLine("%3", "2", "custom agent title", "wrapper", "42", "4", "codex", "cm", "", "1")
+	pane, err := parsePaneLine(line+FieldSeparator+"[rotation_123]", FieldSeparator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pane.RotationToken != "rotation_123" || pane.Type != AgentCodex || !pane.Dead || pane.IsServicePane() || pane.PID != 42 || pane.WindowIndex != 4 {
+		t.Fatalf("adoption must preserve independent quarantine and physical metadata: %+v", pane)
+	}
+	for _, raw := range []string{"", " ", "[ ]", "[bad token]", "[bad\nvalue]", "[foreign;command]", "[" + strings.Repeat("a", 129) + "]"} {
+		if _, err := parsePaneLine(line+FieldSeparator+raw, FieldSeparator); err == nil {
+			t.Fatalf("malformed token %q silently lifted the quarantine", raw)
+		}
+	}
+	plain, err := parsePaneLine(line+FieldSeparator+"[]", FieldSeparator)
+	if err != nil || plain.RotationToken != "" {
+		t.Fatalf("absent quarantine: pane=%+v err=%v", plain, err)
 	}
 }
 

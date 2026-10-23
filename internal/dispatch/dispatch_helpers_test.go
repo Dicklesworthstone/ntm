@@ -41,6 +41,11 @@ func installTrustDialogTMUX(t *testing.T, capture string) (screen, log string) {
 	if err := os.WriteFile(binary, []byte(`#!/bin/sh
 printf '%s\n' "$*" >> "$NTM_TEST_TRUST_LOG"
 case " $* " in
+  *" display-message "*)
+    case "$*" in
+      *"@ntm_rotation_token"*) printf '[%s]\n' "${NTM_TEST_ROTATION_TOKEN:-}" ;;
+    esac
+    ;;
   *" capture-pane "*) cat "$NTM_TEST_TRUST_SCREEN" ;;
   *" send-keys "*)
     case "$*" in
@@ -65,6 +70,7 @@ esac
 	t.Setenv("NTM_TEST_TRUST_SCREEN", screen)
 	t.Setenv("NTM_TEST_COMPOSER_AFTER_ESCAPE", "")
 	t.Setenv("NTM_TEST_COMPOSER_AFTER_CLEAR", "")
+	t.Setenv("NTM_TEST_ROTATION_TOKEN", "")
 	original := tmux.DefaultClient
 	tmux.DefaultClient = tmux.NewClient("")
 	t.Cleanup(func() { tmux.DefaultClient = original })
@@ -110,10 +116,42 @@ func TestTMUXDelivererTrustMenuRefusalIsPreActuationAndRetrySafe(t *testing.T) {
 				t.Fatal(readErr)
 			}
 			lines := strings.Split(strings.TrimSpace(string(commands)), "\n")
-			if len(lines) != 1 || !strings.Contains(lines[0], "capture-pane") {
-				t.Fatalf("only the preflight capture is permitted, got commands:\n%s", commands)
+			if len(lines) != 2 || !strings.Contains(lines[0], "@ntm_rotation_token") || !strings.Contains(lines[1], "capture-pane") {
+				t.Fatalf("only quarantine inspection and preflight capture are permitted, got commands:\n%s", commands)
 			}
 		})
+	}
+}
+
+func TestTMUXDelivererRejectsRotationAfterPlanningWithoutActuation(t *testing.T) {
+	_, log := installTrustDialogTMUX(t, "❯ ")
+	svc, err := NewService(Ports{Redactor: AllowAllRedactor{}, Deliverer: TMUXDeliverer{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := svc.Prepare(t.Context(), Request{
+		Session: "rotation-test", Message: "new assignment must wait", ClearInput: true,
+		Panes: []tmux.Pane{{ID: "%12", Index: 1, Type: tmux.AgentClaude, Command: "claude"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The rotation begins after the caller captured and prepared its pane.
+	t.Setenv("NTM_TEST_ROTATION_TOKEN", "continuation-1")
+	result, err := svc.Dispatch(t.Context(), prepared)
+	if err == nil || !strings.Contains(err.Error(), string(ErrRotationPending)) || !IsGuaranteedNoDeliveryActuation(err) {
+		t.Fatalf("expected retry-safe rotation refusal, got result=%+v err=%v", result, err)
+	}
+	if result.Delivered != 0 || result.Success {
+		t.Fatalf("quarantined pane reported delivery: %+v", result)
+	}
+	commands, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(commands)), "\n")
+	if len(lines) != 1 || !strings.Contains(lines[0], "@ntm_rotation_token") {
+		t.Fatalf("quarantine must refuse before capture, clear, paste, or Enter:\n%s", commands)
 	}
 }
 
@@ -209,8 +247,8 @@ func TestTMUXDelivererCodexComposerClearAndModalRefusal(t *testing.T) {
 	const modal = "› an earlier user prompt\nBrowsing transcript · ↑↓/jk scroll · ←→/hl prompts · ⌃t details · ↵ rewind · esc back\n"
 	cases := []struct {
 		name, capture, afterEscape, afterClear, wantError string
-		clearInput                                      bool
-		escapes, clears                                 int
+		clearInput                                        bool
+		escapes, clears                                   int
 	}{
 		{name: "empty composer receives no clearing keys", capture: idle, clearInput: true},
 		{name: "ultra empty composer receives no clearing keys", capture: "» Ask Codex to do anything\n47% context left\n", clearInput: true},

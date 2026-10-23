@@ -24,11 +24,18 @@ import (
 // lifecycle state than the caller selected before acquiring the bead lock.
 var ErrAssignmentStatusMismatch = errors.New("assignment status changed")
 
+// ErrPaneContinuationPending means a delivered assignment is crossing a
+// physical-pane handoff. Neither pane may be assigned or released until the
+// handoff's exact continuation token is committed or explicitly aborted.
+var ErrPaneContinuationPending = errors.New("assignment pane continuation is pending")
+
 const (
 	// assignmentsDirName is the directory name for assignment storage
-	assignmentsDirName     = "assignments"
-	fileExtension          = ".json"
-	assignmentStoreVersion = 9
+	assignmentsDirName = "assignments"
+	fileExtension      = ".json"
+	// Version 10 makes older executables reject the continuation barrier rather
+	// than silently ignore it and release a still-owned assignment.
+	assignmentStoreVersion = 10
 
 	// assignmentStoreGenerationVersion is the first schema version whose
 	// snapshots carry a monotonic persistence generation. The generation makes
@@ -148,6 +155,25 @@ type Assignment struct {
 	// unknown.
 	StrandedDispatchReason     string     `json:"stranded_dispatch_reason,omitempty"`
 	StrandedDispatchResolvedAt *time.Time `json:"stranded_dispatch_resolved_at,omitempty"`
+
+	PaneContinuation *PaneContinuation `json:"pane_continuation,omitempty"`
+}
+
+// PaneContinuation retains one rotation's ownership boundary without creating
+// another assignment generation or replaying its original dispatch. An absent
+// CompletedAt is a durable barrier, including after the owning process exits.
+type PaneContinuation struct {
+	Token       string     `json:"token"`
+	SourcePane  string     `json:"source_pane"`
+	TargetPane  string     `json:"target_pane,omitempty"`
+	TargetIndex int        `json:"target_index,omitempty"`
+	StartedAt   time.Time  `json:"started_at"`
+	CompletedAt *time.Time `json:"completed_at,omitempty"`
+}
+
+// HasPendingPaneContinuation reports an unresolved physical ownership handoff.
+func (a *Assignment) HasPendingPaneContinuation() bool {
+	return a != nil && a.PaneContinuation != nil && a.PaneContinuation.CompletedAt == nil
 }
 
 // AssignmentUpdate describes mutable assignment metadata that can be updated
@@ -210,6 +236,11 @@ func cloneAssignment(a *Assignment) *Assignment {
 	cloned.ReservationInputPaths = append([]string(nil), a.ReservationInputPaths...)
 	cloned.ReservedPaths = append([]string(nil), a.ReservedPaths...)
 	cloned.ReservationIDs = append([]int(nil), a.ReservationIDs...)
+	if a.PaneContinuation != nil {
+		continuation := *a.PaneContinuation
+		continuation.CompletedAt = cloneTimePtr(a.PaneContinuation.CompletedAt)
+		cloned.PaneContinuation = &continuation
+	}
 	normalizeFailureReason(&cloned)
 	return &cloned
 }
@@ -230,6 +261,7 @@ type AssignmentStore struct {
 	afterBackupPublished func(*AssignmentStore) error
 	completionLeaseClock func() time.Time
 	completionLeaseLock  func(context.Context, string, string) (func(), error)
+	continuationWrites   map[string]string // exact tokens authorized by the continuation APIs
 }
 
 // completionLeaseNow samples the authoritative lease clock only after the
@@ -477,6 +509,20 @@ func (s *AssignmentStore) saveLocked() error {
 	}
 	latest := latestSnapshot.Assignments
 	latestClearedGenerations := latestSnapshot.ClearedGenerations
+	// Even a stale legacy lifecycle writer must not erase or advance a
+	// continuation that another process has published since its last load.
+	for beadID, durable := range latest {
+		local, exists := s.Assignments[beadID]
+		changed := !exists || !reflect.DeepEqual(local, s.baseline[beadID])
+		if durable.HasPendingPaneContinuation() && changed && s.continuationWrites[beadID] != durable.PaneContinuation.Token {
+			s.applySnapshotLocked(latestSnapshot)
+			return &PersistenceError{Operation: "save", Path: s.path, Cause: fmt.Errorf("%w: %s", ErrPaneContinuationPending, beadID)}
+		}
+		if changed && s.baseline[beadID] != nil && !sameAssignmentPhysicalOwner(s.baseline[beadID], durable) {
+			s.applySnapshotLocked(latestSnapshot)
+			return &PersistenceError{Operation: "save", Path: s.path, Cause: &ConcurrentMutationError{BeadID: beadID, Operation: "update transferred ownership"}}
+		}
+	}
 	merged, mergeErr := mergeAssignmentDeltas(latest, s.baseline, s.Assignments, s.replace)
 	if mergeErr != nil {
 		s.Assignments = cloneAssignmentMap(latest)
@@ -780,6 +826,9 @@ func decodeAssignmentSnapshot(data []byte, expectedSession string) (*AssignmentS
 	for beadID, assignment := range loaded.Assignments {
 		if err := validateCompletionOutboxAssignment(assignment); err != nil {
 			return nil, fmt.Errorf("assignment %q completion outbox: %w", beadID, err)
+		}
+		if err := validatePaneContinuation(assignment); err != nil {
+			return nil, fmt.Errorf("assignment %q pane continuation: %w", beadID, err)
 		}
 		normalizeFailureReason(assignment)
 	}
@@ -1261,8 +1310,11 @@ func (s *AssignmentStore) beginTerminalReconciliationIfCurrent(ctx context.Conte
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 	current := s.Assignments[observed.BeadID]
-	if !SameAssignmentGeneration(observed, current) {
+	if !sameAssignmentOwner(observed, current) {
 		return nil, false, nil
+	}
+	if current.HasPendingPaneContinuation() {
+		return nil, false, fmt.Errorf("%w: cannot retire %s", ErrPaneContinuationPending, current.BeadID)
 	}
 	if current.DispatchState == DispatchSending {
 		return nil, false, fmt.Errorf("%w: cannot retire %s while dispatch outcome is unknown", ErrDispatchOutcomeUnknown, observed.BeadID)
@@ -1370,6 +1422,9 @@ func (s *AssignmentStore) beginClearWithOperationLock(beadID string, startedAt t
 	assignment := s.Assignments[beadID]
 	if assignment == nil {
 		return nil, fmt.Errorf("[ASSIGN] Assignment not found: %s", beadID)
+	}
+	if assignment.HasPendingPaneContinuation() {
+		return nil, fmt.Errorf("%w: cannot clear %s", ErrPaneContinuationPending, beadID)
 	}
 	if len(expected) > 0 && !assignmentStatusAllowed(assignment.Status, expected) {
 		return nil, fmt.Errorf("%w: %s is %s, expected %s", ErrAssignmentStatusMismatch, beadID, assignment.Status, formatAssignmentStatuses(expected))
@@ -2007,6 +2062,10 @@ func (s *AssignmentStore) UpdateStatus(beadID string, newStatus AssignmentStatus
 		s.mutex.Unlock()
 		return fmt.Errorf("[ASSIGN] Assignment not found: %s", beadID)
 	}
+	if assignment.HasPendingPaneContinuation() {
+		s.mutex.Unlock()
+		return fmt.Errorf("%w: cannot advance %s", ErrPaneContinuationPending, beadID)
+	}
 
 	prevStatus := assignment.Status
 
@@ -2086,6 +2145,10 @@ func (s *AssignmentStore) MarkFailed(beadID, reason string) error {
 		s.mutex.Unlock()
 		return fmt.Errorf("[ASSIGN] Assignment not found: %s", beadID)
 	}
+	if assignment.HasPendingPaneContinuation() {
+		s.mutex.Unlock()
+		return fmt.Errorf("%w: cannot fail %s", ErrPaneContinuationPending, beadID)
+	}
 
 	prevStatus := assignment.Status
 
@@ -2163,7 +2226,7 @@ func (s *AssignmentStore) transitionIfCurrent(ctx context.Context, observed *Ass
 
 	s.mutex.Lock()
 	current := s.Assignments[observed.BeadID]
-	if !SameAssignmentGeneration(observed, current) || current.ClearState != ClearStateNone || !isValidTransition(current.Status, newStatus) {
+	if !sameAssignmentOwner(observed, current) || current.HasPendingPaneContinuation() || current.ClearState != ClearStateNone || !isValidTransition(current.Status, newStatus) {
 		s.mutex.Unlock()
 		return false, nil
 	}
@@ -2249,7 +2312,7 @@ func (s *AssignmentStore) RefreshReservationIfCurrent(ctx context.Context, obser
 	}
 	current := s.Get(observed.BeadID)
 	eligible := func(a *Assignment) bool {
-		return SameAssignmentGeneration(observed, a) && a.ClearState == ClearStateNone &&
+		return sameAssignmentOwner(observed, a) && a.ClearState == ClearStateNone &&
 			(a.Status == StatusAssigned || a.Status == StatusWorking) && a.DispatchState == DispatchSent &&
 			a.ReservationState == ReservationReserved && a.ReservationCompleted
 	}
@@ -2288,6 +2351,16 @@ func (s *AssignmentStore) RefreshReservationIfCurrent(ctx context.Context, obser
 		s.replace = make(map[string]struct{})
 	}
 	s.replace[observed.BeadID] = struct{}{}
+	if latest.HasPendingPaneContinuation() {
+		// Renewal keeps the original owner's exact leases alive during a long
+		// or uncertain handoff. Cleanup and bead locks exclude commit while the
+		// callback runs; this exception can change only the fields above.
+		if s.continuationWrites == nil {
+			s.continuationWrites = make(map[string]string)
+		}
+		s.continuationWrites[observed.BeadID] = latest.PaneContinuation.Token
+		defer delete(s.continuationWrites, observed.BeadID)
+	}
 	if err := s.saveLocked(); err != nil {
 		var concurrentMutation *ConcurrentMutationError
 		if !errors.As(err, &concurrentMutation) {
@@ -2313,6 +2386,238 @@ func SameAssignmentGeneration(observed, current *Assignment) bool {
 	return !observed.AssignedAt.IsZero() && observed.AssignedAt.Equal(current.AssignedAt)
 }
 
+// A continuation intentionally retains the generation. Evidence collected for
+// its predecessor must nevertheless never retire or release the new owner.
+func sameAssignmentOwner(observed, current *Assignment) bool {
+	return SameAssignmentGeneration(observed, current) && sameAssignmentPhysicalOwner(observed, current)
+}
+
+func sameAssignmentPhysicalOwner(observed, current *Assignment) bool {
+	return observed != nil && current != nil && observed.AgentName == current.AgentName &&
+		observed.OccupancyKey == current.OccupancyKey && observed.DispatchTarget == current.DispatchTarget
+}
+
+func validatePaneContinuation(a *Assignment) error {
+	if a == nil || a.PaneContinuation == nil {
+		return nil
+	}
+	p := a.PaneContinuation
+	if strings.TrimSpace(p.Token) == "" || !isPhysicalPaneOccupancyKey(p.SourcePane) || p.StartedAt.IsZero() {
+		return errors.New("continuation requires a token, source physical pane, and start time")
+	}
+	if p.TargetPane != "" && (!isPhysicalPaneOccupancyKey(p.TargetPane) || p.TargetPane == p.SourcePane || p.TargetIndex < 0) {
+		return errors.New("continuation replacement must be another physical pane with a nonnegative index")
+	}
+	if p.CompletedAt != nil {
+		if p.TargetPane == "" || p.CompletedAt.IsZero() || p.CompletedAt.Before(p.StartedAt) {
+			return errors.New("completed continuation requires a replacement and valid completion time")
+		}
+		return nil
+	}
+	if a.ClearState != ClearStateNone || (a.Status != StatusAssigned && a.Status != StatusWorking) ||
+		a.DispatchState != DispatchSent || a.DispatchReceiptID == "" || a.IdempotencyKey == "" || a.ClaimActor == "" ||
+		a.OccupancyKey != p.SourcePane || a.DispatchTarget != p.SourcePane || a.PendingCompletionEventID != "" {
+		return errors.New("pending continuation must retain an active delivered generation and its source ownership")
+	}
+	return nil
+}
+
+// BeginPaneContinuation fences a delivered generation before replacement
+// creation. token is the caller's durable rotation execution identity. The
+// returned applied flag also acknowledges an identical already-durable phase.
+func (s *AssignmentStore) BeginPaneContinuation(ctx context.Context, observed *Assignment, token string) (*Assignment, bool, error) {
+	return s.mutatePaneContinuation(ctx, observed, token, "begin", ReassignmentTarget{})
+}
+
+// BindPaneContinuation reserves a newly created physical pane before its agent
+// boots. It preserves the original recipient, claim, leases, and delivery.
+func (s *AssignmentStore) BindPaneContinuation(ctx context.Context, observed *Assignment, token string, target ReassignmentTarget) (*Assignment, bool, error) {
+	return s.mutatePaneContinuation(ctx, observed, token, "bind", target)
+}
+
+// CommitPaneContinuation changes physical ownership only after the caller has
+// verified handoff delivery and durably transferred the other ownership stores.
+// Its completed token remains available for crash-recovery readback.
+func (s *AssignmentStore) CommitPaneContinuation(ctx context.Context, observed *Assignment, token string) (*Assignment, bool, error) {
+	return s.mutatePaneContinuation(ctx, observed, token, "commit", ReassignmentTarget{})
+}
+
+// AbortPaneContinuation removes a pending barrier only when the caller has
+// independently proven no handoff may have been submitted and the replacement
+// is safely removed. Cancellation, timeouts, and process death are not proof.
+func (s *AssignmentStore) AbortPaneContinuation(ctx context.Context, observed *Assignment, token string) (*Assignment, bool, error) {
+	return s.mutatePaneContinuation(ctx, observed, token, "abort", ReassignmentTarget{})
+}
+
+func (s *AssignmentStore) mutatePaneContinuation(ctx context.Context, observed *Assignment, token, phase string, target ReassignmentTarget) (*Assignment, bool, error) {
+	if s == nil || ctx == nil || observed == nil || strings.TrimSpace(observed.BeadID) == "" || strings.TrimSpace(token) == "" {
+		return nil, false, errors.New("pane continuation requires a store, context, observed assignment, and token")
+	}
+	source, err := CanonicalPaneIdentity(observed)
+	if err != nil {
+		return nil, false, err
+	}
+	if phase == "bind" && (!isPhysicalPaneOccupancyKey(target.DispatchTarget) || target.OccupancyKey != target.DispatchTarget || target.Pane < 0 || target.DispatchTarget == source) {
+		return nil, false, errors.New("continuation replacement requires another canonical physical pane and its index")
+	}
+	if (phase == "commit" || phase == "abort") && (observed.PaneContinuation == nil || observed.PaneContinuation.Token != token) {
+		return nil, false, errors.New("continuation completion requires its observed token and replacement snapshot")
+	}
+	cleanupUnlock, err := s.AcquireExternalCleanupLock(ctx, observed.BeadID)
+	if err != nil {
+		return nil, false, err
+	}
+	defer cleanupUnlock()
+	beadUnlock, err := acquireAtomicBeadOperationLock(ctx, s.path, observed.BeadID)
+	if err != nil {
+		return nil, false, err
+	}
+	defer beadUnlock()
+	keys := []string{source}
+	if observed.PaneContinuation != nil && observed.PaneContinuation.TargetPane != "" {
+		keys = append(keys, observed.PaneContinuation.TargetPane)
+	}
+	if phase == "bind" {
+		keys = append(keys, target.DispatchTarget)
+	}
+	sort.Strings(keys)
+	for i, key := range keys {
+		if i > 0 && key == keys[i-1] {
+			continue
+		}
+		unlock, err := acquireAtomicTargetOperationLock(ctx, s.path, key)
+		if err != nil {
+			return nil, false, err
+		}
+		defer unlock()
+	}
+	if err := s.LoadStrict(); err != nil {
+		return nil, false, err
+	}
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	if err := ctx.Err(); err != nil {
+		return nil, false, err
+	}
+	current := s.Assignments[observed.BeadID]
+	if !SameAssignmentGeneration(observed, current) {
+		return nil, false, nil
+	}
+	if current.AgentName != observed.AgentName || current.AgentType != observed.AgentType ||
+		current.ClaimActor != observed.ClaimActor || current.DispatchReceiptID != observed.DispatchReceiptID ||
+		current.ReservationAgent != observed.ReservationAgent ||
+		!reflect.DeepEqual(current.ReservationIDs, observed.ReservationIDs) || !reflect.DeepEqual(current.ReservedPaths, observed.ReservedPaths) {
+		return nil, false, nil
+	}
+	if current.PaneContinuation != nil && current.PaneContinuation.Token == token && current.PaneContinuation.CompletedAt != nil {
+		if phase == "commit" && current.OccupancyKey == current.PaneContinuation.TargetPane && current.DispatchTarget == current.PaneContinuation.TargetPane &&
+			(current.ReservationTarget == "" || current.ReservationTarget == current.PaneContinuation.TargetPane) {
+			return cloneAssignment(current), true, nil
+		}
+		return nil, false, fmt.Errorf("continuation %s is already committed", token)
+	}
+	currentSource, err := CanonicalPaneIdentity(current)
+	if err != nil {
+		return nil, false, err
+	}
+	if source != currentSource || current.ReservationTarget != observed.ReservationTarget {
+		return nil, false, nil
+	}
+	if current.ClearState != ClearStateNone || current.PendingCompletionEventID != "" ||
+		(current.Status != StatusAssigned && current.Status != StatusWorking) || current.DispatchState != DispatchSent ||
+		current.DispatchTarget != source || current.OccupancyKey != source || strings.TrimSpace(current.IdempotencyKey) == "" ||
+		strings.TrimSpace(current.ClaimActor) == "" || strings.TrimSpace(current.DispatchReceiptID) == "" ||
+		effectiveClaimState(current) != ClaimClaimed || current.ReservationState == ReservationReserving || current.ReservationState == ReservationUnknown {
+		return nil, false, errors.New("pane continuation requires an unambiguous active delivered assignment with no cleanup or unresolved claim/reservation")
+	}
+	if current.ReservationRequired || assignmentHasReservationHandles(current) {
+		if strings.TrimSpace(current.AgentName) == "" || current.ReservationState != ReservationReserved || !current.ReservationCompleted || current.ReservationAgent != current.AgentName ||
+			current.ReservationTarget != source || len(current.ReservationIDs) == 0 || len(current.ReservedPaths) == 0 {
+			return nil, false, errors.New("pane continuation requires exact completed reservation ownership")
+		}
+	}
+	if current.HasPendingPaneContinuation() && current.PaneContinuation.Token != token {
+		return nil, false, fmt.Errorf("%w: %s belongs to another rotation", ErrPaneContinuationPending, current.BeadID)
+	}
+	if (phase == "commit" || phase == "abort") && current.PaneContinuation != nil &&
+		current.PaneContinuation.TargetPane != observed.PaneContinuation.TargetPane {
+		return nil, false, errors.New("continuation replacement changed since observation")
+	}
+	previous := cloneAssignment(current)
+	switch phase {
+	case "begin":
+		if current.HasPendingPaneContinuation() {
+			return cloneAssignment(current), true, nil
+		}
+		current.PaneContinuation = &PaneContinuation{Token: token, SourcePane: source, StartedAt: time.Now().UTC()}
+	case "bind":
+		if !current.HasPendingPaneContinuation() || current.PaneContinuation.Token != token {
+			return nil, false, errors.New("continuation must begin before binding its replacement")
+		}
+		if (target.AgentName != "" && target.AgentName != current.AgentName) || (target.AgentType != "" && target.AgentType != current.AgentType) {
+			return nil, false, errors.New("pane continuation cannot change recipient or agent type")
+		}
+		if current.PaneContinuation.TargetPane != "" {
+			if current.PaneContinuation.TargetPane == target.DispatchTarget && current.PaneContinuation.TargetIndex == target.Pane {
+				return cloneAssignment(current), true, nil
+			}
+			return nil, false, errors.New("continuation already has a different replacement")
+		}
+		others := make([]*Assignment, 0, len(s.Assignments))
+		for _, a := range s.Assignments {
+			others = append(others, a)
+		}
+		occupied, err := activeAssignmentForTarget(others, current.BeadID, target.OccupancyKey)
+		if err != nil {
+			return nil, false, err
+		}
+		if occupied != nil {
+			return nil, false, targetOccupiedError(target.DispatchTarget, occupied, time.Now())
+		}
+		current.PaneContinuation.TargetPane = target.DispatchTarget
+		current.PaneContinuation.TargetIndex = target.Pane
+	case "commit", "abort":
+		if !current.HasPendingPaneContinuation() || current.PaneContinuation.Token != token {
+			return nil, false, errors.New("matching pending continuation is required")
+		}
+		if phase == "abort" {
+			current.PaneContinuation = nil
+			break
+		}
+		if current.PaneContinuation.TargetPane == "" {
+			return nil, false, errors.New("continuation replacement is not bound")
+		}
+		current.Pane = current.PaneContinuation.TargetIndex
+		current.DispatchTarget = current.PaneContinuation.TargetPane
+		current.OccupancyKey = current.PaneContinuation.TargetPane
+		if current.ReservationTarget != "" {
+			current.ReservationTarget = current.PaneContinuation.TargetPane
+		}
+		now := time.Now().UTC()
+		current.PaneContinuation.CompletedAt = &now
+	default:
+		return nil, false, errors.New("unknown pane continuation phase")
+	}
+	if s.replace == nil {
+		s.replace = make(map[string]struct{})
+	}
+	if s.continuationWrites == nil {
+		s.continuationWrites = make(map[string]string)
+	}
+	s.replace[current.BeadID] = struct{}{}
+	s.continuationWrites[current.BeadID] = token
+	defer delete(s.continuationWrites, current.BeadID)
+	if err := s.saveLocked(); err != nil {
+		var conflict *ConcurrentMutationError
+		if !errors.As(err, &conflict) {
+			s.Assignments[current.BeadID] = previous
+			delete(s.replace, current.BeadID)
+		}
+		return nil, false, err
+	}
+	return cloneAssignment(s.Assignments[current.BeadID]), true, nil
+}
+
 func terminalCompletionEventID(current *Assignment, terminalStatus AssignmentStatus) string {
 	if current == nil {
 		return ""
@@ -2332,6 +2637,9 @@ func (s *AssignmentStore) Reassign(beadID string, target ReassignmentTarget) (*A
 	oldAssignment, ok := s.Assignments[beadID]
 	if !ok {
 		return nil, fmt.Errorf("[ASSIGN] Assignment not found: %s", beadID)
+	}
+	if oldAssignment.HasPendingPaneContinuation() {
+		return nil, fmt.Errorf("%w: cannot reassign %s", ErrPaneContinuationPending, beadID)
 	}
 
 	if !isValidTransition(oldAssignment.Status, StatusReassigned) {

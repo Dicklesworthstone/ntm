@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/resilience"
 	"github.com/Dicklesworthstone/ntm/internal/util"
 )
 
@@ -32,24 +33,31 @@ var (
 
 // StoredPendingRotation is the serialized form of PendingRotation for persistence.
 type StoredPendingRotation struct {
-	AgentID        string          `json:"agent_id"`
-	SessionName    string          `json:"session_name"`
-	PaneID         string          `json:"pane_id"`
-	ContextPercent float64         `json:"context_percent"`
-	CreatedAt      time.Time       `json:"created_at"`
-	TimeoutAt      time.Time       `json:"timeout_at"`
-	WorkDir        string          `json:"work_dir"`
-	PanePID        int             `json:"pane_pid,omitempty"`
-	PaneType       string          `json:"pane_type,omitempty"`
-	Remote         string          `json:"remote,omitempty"`
-	SelectedAction ConfirmAction   `json:"selected_action,omitempty"`
-	ExecutionState RotationState   `json:"execution_state,omitempty"`
-	ExecutionID    string          `json:"execution_id,omitempty"`
-	Result         *RotationResult `json:"result,omitempty"`
+	AgentID              string                  `json:"agent_id"`
+	SessionName          string                  `json:"session_name"`
+	PaneID               string                  `json:"pane_id"`
+	ContextPercent       float64                 `json:"context_percent"`
+	CreatedAt            time.Time               `json:"created_at"`
+	TimeoutAt            time.Time               `json:"timeout_at"`
+	WorkDir              string                  `json:"work_dir"`
+	PanePID              int                     `json:"pane_pid,omitempty"`
+	PaneType             string                  `json:"pane_type,omitempty"`
+	Remote               string                  `json:"remote,omitempty"`
+	SelectedAction       ConfirmAction           `json:"selected_action,omitempty"`
+	ExecutionState       RotationState           `json:"execution_state,omitempty"`
+	ExecutionID          string                  `json:"execution_id,omitempty"`
+	Result               *RotationResult         `json:"result,omitempty"`
+	Continuation         *RotationContinuation   `json:"continuation,omitempty"`
+	ContinuationManifest *resilience.AgentConfig `json:"continuation_manifest,omitempty"`
 }
 
 // ToPendingRotation converts a StoredPendingRotation to PendingRotation.
 func (s *StoredPendingRotation) ToPendingRotation() *PendingRotation {
+	continuation := cloneRotationContinuation(s.Continuation)
+	if continuation != nil && s.ContinuationManifest != nil {
+		manifest := *s.ContinuationManifest
+		continuation.Manifest = &manifest
+	}
 	return &PendingRotation{
 		AgentID:        s.AgentID,
 		SessionName:    s.SessionName,
@@ -65,12 +73,13 @@ func (s *StoredPendingRotation) ToPendingRotation() *PendingRotation {
 		ExecutionState: s.ExecutionState,
 		ExecutionID:    s.ExecutionID,
 		Result:         s.Result,
+		Continuation:   continuation,
 	}
 }
 
 // FromPendingRotation creates a StoredPendingRotation from PendingRotation.
 func FromPendingRotation(p *PendingRotation) *StoredPendingRotation {
-	return &StoredPendingRotation{
+	stored := &StoredPendingRotation{
 		AgentID:        p.AgentID,
 		SessionName:    p.SessionName,
 		PaneID:         p.PaneID,
@@ -85,7 +94,13 @@ func FromPendingRotation(p *PendingRotation) *StoredPendingRotation {
 		ExecutionState: p.ExecutionState,
 		ExecutionID:    p.ExecutionID,
 		Result:         p.Result,
+		Continuation:   cloneRotationContinuation(p.Continuation),
 	}
+	if p.Continuation != nil && p.Continuation.Manifest != nil {
+		manifest := *p.Continuation.Manifest
+		stored.ContinuationManifest = &manifest
+	}
+	return stored
 }
 
 // PendingRotationStore provides persistent storage for pending rotations.
@@ -231,10 +246,23 @@ func (s *PendingRotationStore) GetAll() ([]*PendingRotation, error) {
 
 // GetForSession retrieves pending rotations for a specific session.
 func (s *PendingRotationStore) GetForSession(session string) ([]*PendingRotation, error) {
-	pendingMu.Lock()
-	defer pendingMu.Unlock()
+	return s.GetForSessionContext(context.Background(), session)
+}
 
-	entries, err := s.readAllLocked()
+// GetForSessionContext reads a serialized snapshot without waiting on the
+// process-wide mutex. A writer may hold that mutex while waiting for another
+// process, so readers use the cancellable file fence directly.
+func (s *PendingRotationStore) GetForSessionContext(ctx context.Context, session string) ([]*PendingRotation, error) {
+	if ctx == nil {
+		return nil, errors.New("pending rotation context is required")
+	}
+	unlock, err := s.lock(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+
+	entries, err := s.readAllContext(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -242,12 +270,15 @@ func (s *PendingRotationStore) GetForSession(session string) ([]*PendingRotation
 	var result []*PendingRotation
 	now := time.Now()
 	for _, e := range entries {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if pendingSessionNameEqual(e.SessionName, session) && storedPendingVisible(e, now) {
 			result = append(result, e.ToPendingRotation())
 		}
 	}
 
-	return result, nil
+	return result, ctx.Err()
 }
 
 func storedPendingRetained(entry StoredPendingRotation, now time.Time) bool {
@@ -318,6 +349,23 @@ func (s *PendingRotationStore) BeginConfirmation(ctx context.Context, agentID st
 			claimed = true
 			return entry.ToPendingRotation(), release, nil
 		}
+		if entry.Continuation != nil {
+			if action != ConfirmRotate {
+				return nil, nil, fmt.Errorf("rotation for %s has an unresolved ownership continuation; it cannot be ignored or replaced", agentID)
+			}
+			if !retry {
+				return nil, nil, fmt.Errorf("rotation for %s has an unresolved %s continuation; inspect pending state before retrying", agentID, entry.Continuation.Phase)
+			}
+			switch entry.Continuation.Phase {
+			case rotationHandoffAccepted, rotationOwnershipCommitted, rotationRetired:
+				// Continue the same execution, never overwrite its token or
+				// redispatch the handoff whose receipt has already been saved.
+				claimed = true
+				return entry.ToPendingRotation(), release, nil
+			default:
+				return nil, nil, fmt.Errorf("rotation for %s has an unresolved %s continuation; panes and assignment ownership remain fenced, and handoff will not be repeated", agentID, entry.Continuation.Phase)
+			}
+		}
 		if entry.ExecutionState != "" && !retry {
 			return nil, nil, fmt.Errorf("confirmation for %s is %s; inspect pending state and use --retry to explicitly retry the same action", agentID, entry.ExecutionState)
 		}
@@ -335,6 +383,50 @@ func (s *PendingRotationStore) BeginConfirmation(ctx context.Context, agentID st
 		return entry.ToPendingRotation(), release, nil
 	}
 	return nil, nil, fmt.Errorf("no pending rotation found for agent %s", agentID)
+}
+
+// SaveContinuation journals a phase before crossing the next external
+// boundary. The confirmation claim's token is a compare-and-swap guard; a
+// stale executor cannot overwrite another attempt's recovery record.
+func (s *PendingRotationStore) SaveContinuation(ctx context.Context, pending *PendingRotation, continuation *RotationContinuation) error {
+	if ctx == nil || pending == nil || pending.ExecutionID == "" {
+		return errors.New("confirmation ownership is required to save continuation")
+	}
+	if continuation != nil && continuation.Token != pending.ExecutionID {
+		return errors.New("continuation token does not match confirmation ownership")
+	}
+	pendingMu.Lock()
+	defer pendingMu.Unlock()
+	unlock, err := s.lock(ctx)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	entries, err := s.readAllLocked()
+	if err != nil {
+		return err
+	}
+	for index := range entries {
+		entry := &entries[index]
+		if entry.AgentID != pending.AgentID {
+			continue
+		}
+		if entry.ExecutionID != pending.ExecutionID || entry.SelectedAction != pending.SelectedAction {
+			return errors.New("confirmation ownership changed before saving continuation")
+		}
+		entry.Continuation = cloneRotationContinuation(continuation)
+		entry.ContinuationManifest = nil
+		if continuation != nil && continuation.Manifest != nil {
+			manifest := *continuation.Manifest
+			entry.ContinuationManifest = &manifest
+		}
+		if err := s.writeAllLocked(entries); err != nil {
+			return err
+		}
+		pending.Continuation = cloneRotationContinuation(continuation)
+		return nil
+	}
+	return errors.New("confirmation request disappeared before saving continuation")
 }
 
 // FinishConfirmation records the actual outcome, even when the execution
@@ -410,6 +502,13 @@ func (s *PendingRotationStore) Clear() error {
 
 // readAllLocked reads all entries (caller must hold lock).
 func (s *PendingRotationStore) readAllLocked() ([]StoredPendingRotation, error) {
+	return s.readAllContext(context.Background())
+}
+
+func (s *PendingRotationStore) readAllContext(ctx context.Context) ([]StoredPendingRotation, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	f, err := os.Open(s.storagePath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -425,6 +524,9 @@ func (s *PendingRotationStore) readAllLocked() ([]StoredPendingRotation, error) 
 
 	line := 0
 	for scanner.Scan() {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		line++
 		if len(bytes.TrimSpace(scanner.Bytes())) == 0 {
 			continue
@@ -440,7 +542,7 @@ func (s *PendingRotationStore) readAllLocked() ([]StoredPendingRotation, error) 
 		return entries, err
 	}
 
-	return entries, nil
+	return entries, ctx.Err()
 }
 
 func pendingAgentIDEqual(left, right string) bool {
@@ -537,4 +639,10 @@ func GetAllPendingRotations() ([]*PendingRotation, error) {
 // GetPendingRotationsForSession retrieves pending rotations for a session.
 func GetPendingRotationsForSession(session string) ([]*PendingRotation, error) {
 	return DefaultPendingRotationStore.GetForSession(session)
+}
+
+// GetPendingRotationsForSessionContext retrieves a session's pending rotations
+// while honoring cancellation during lock acquisition and snapshot reads.
+func GetPendingRotationsForSessionContext(ctx context.Context, session string) ([]*PendingRotation, error) {
+	return DefaultPendingRotationStore.GetForSessionContext(ctx, session)
 }

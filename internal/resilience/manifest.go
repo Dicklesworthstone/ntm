@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"time"
 
@@ -269,4 +270,80 @@ func UpsertAgentConfig(session, projectDir string, agent AgentConfig) error {
 		// locked transaction on the exact path selected before reading.
 		return util.AtomicWriteFile(path, data, 0600)
 	})
+}
+
+// RebindAgentPaneContext moves an observed restart record to its replacement
+// physical pane without changing its launch settings or session policy. A
+// rotation must not leave the resident monitor watching its retired pane, or
+// replace launch metadata concurrently changed by another process.
+//
+// The caller owns the rotation's durable continuation barrier and must verify
+// the two live process identities before calling. A false result means the
+// observed record is no longer current; it does not authorize retiring either
+// process. Retrying an already-persisted, exactly matching replacement succeeds.
+func RebindAgentPaneContext(ctx context.Context, session string, expected AgentConfig, newPaneID string, newPaneIndex int) (bool, error) {
+	validPaneID := func(id string) bool {
+		if len(id) < 2 || id[0] != '%' {
+			return false
+		}
+		for _, ch := range id[1:] {
+			if ch < '0' || ch > '9' {
+				return false
+			}
+		}
+		return true
+	}
+	if !validPaneID(expected.PaneID) || !validPaneID(newPaneID) || expected.PaneID == newPaneID || newPaneIndex < 0 {
+		return false, errors.New("manifest continuation requires distinct physical pane IDs and a non-negative pane index")
+	}
+	expected.LaunchBinding = CloneLaunchBinding(expected.LaunchBinding)
+	replacement := expected
+	replacement.PaneID = newPaneID
+	replacement.PaneIndex = newPaneIndex
+	applied := false
+	err := mutateManifest(ctx, session, func(path string) error {
+		manifest, err := loadManifestFile(path, session)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		oldIndex, newIndex := -1, -1
+		for i := range manifest.Agents {
+			switch manifest.Agents[i].PaneID {
+			case expected.PaneID:
+				if oldIndex >= 0 {
+					return fmt.Errorf("manifest contains duplicate restart records for pane %s", expected.PaneID)
+				}
+				oldIndex = i
+			case newPaneID:
+				if newIndex >= 0 {
+					return fmt.Errorf("manifest contains duplicate restart records for pane %s", newPaneID)
+				}
+				newIndex = i
+			}
+		}
+		if oldIndex < 0 {
+			applied = newIndex >= 0 && reflect.DeepEqual(manifest.Agents[newIndex], replacement)
+			return nil
+		}
+		if !reflect.DeepEqual(manifest.Agents[oldIndex], expected) {
+			return nil
+		}
+		if newIndex >= 0 {
+			return fmt.Errorf("replacement pane %s already has restart metadata", newPaneID)
+		}
+		manifest.Agents[oldIndex] = replacement
+		data, err := json.MarshalIndent(manifest, "", "  ")
+		if err != nil {
+			return fmt.Errorf("marshaling manifest continuation: %w", err)
+		}
+		if err := util.AtomicWriteFile(path, data, 0600); err != nil {
+			return err
+		}
+		applied = true
+		return nil
+	})
+	return applied, err
 }

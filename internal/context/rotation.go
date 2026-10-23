@@ -17,7 +17,9 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/agent"
+	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/alerts"
+	"github.com/Dicklesworthstone/ntm/internal/assignment"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/persona"
 	"github.com/Dicklesworthstone/ntm/internal/policy"
@@ -95,20 +97,64 @@ const (
 
 // PendingRotation represents a rotation awaiting user confirmation.
 type PendingRotation struct {
-	AgentID        string          `json:"agent_id"`
-	SessionName    string          `json:"session_name"`
-	PaneID         string          `json:"pane_id"`
-	ContextPercent float64         `json:"context_percent"`
-	CreatedAt      time.Time       `json:"created_at"`
-	TimeoutAt      time.Time       `json:"timeout_at"` // the request lapses here; nothing runs on its own
-	WorkDir        string          `json:"-"`          // Not serialized
-	PanePID        int             `json:"pane_pid,omitempty"`
-	PaneType       string          `json:"pane_type,omitempty"`
-	Remote         string          `json:"remote,omitempty"`
-	SelectedAction ConfirmAction   `json:"selected_action,omitempty"`
-	ExecutionState RotationState   `json:"execution_state,omitempty"`
-	ExecutionID    string          `json:"execution_id,omitempty"`
-	Result         *RotationResult `json:"result,omitempty"`
+	AgentID        string                `json:"agent_id"`
+	SessionName    string                `json:"session_name"`
+	PaneID         string                `json:"pane_id"`
+	ContextPercent float64               `json:"context_percent"`
+	CreatedAt      time.Time             `json:"created_at"`
+	TimeoutAt      time.Time             `json:"timeout_at"` // the request lapses here; nothing runs on its own
+	WorkDir        string                `json:"-"`          // Not serialized
+	PanePID        int                   `json:"pane_pid,omitempty"`
+	PaneType       string                `json:"pane_type,omitempty"`
+	Remote         string                `json:"remote,omitempty"`
+	SelectedAction ConfirmAction         `json:"selected_action,omitempty"`
+	ExecutionState RotationState         `json:"execution_state,omitempty"`
+	ExecutionID    string                `json:"execution_id,omitempty"`
+	Result         *RotationResult       `json:"result,omitempty"`
+	Continuation   *RotationContinuation `json:"continuation,omitempty"`
+}
+
+// RotationContinuation records the physical ownership boundary separately
+// from prompt delivery. Once handoff may have reached the replacement, retries
+// must inspect this receipt instead of starting another agent or sending again.
+type RotationContinuation struct {
+	Token           string         `json:"token"`
+	Phase           string         `json:"phase"`
+	Source          tmux.Pane      `json:"source"`
+	Replacement     tmux.Pane      `json:"replacement"`
+	ProjectDir      string         `json:"project_dir"`
+	RegistryProject string         `json:"registry_project,omitempty"`
+	SessionIdentity string         `json:"session_identity,omitempty"`
+	AgentName       string         `json:"agent_name,omitempty"`
+	BeadID          string         `json:"bead_id,omitempty"`
+	AssignmentKey   string         `json:"assignment_key,omitempty"`
+	Model           string         `json:"model,omitempty"`
+	Method          RotationMethod `json:"method"`
+	SummaryTokens   int            `json:"summary_tokens,omitempty"`
+	// The saved launch row is private recovery material, not public pending
+	// output. StoredPendingRotation persists it alongside this receipt.
+	Manifest *resilience.AgentConfig `json:"-"`
+}
+
+const (
+	rotationSourceFenced        = "source_fenced"
+	rotationReplacementPrepared = "replacement_prepared"
+	rotationHandoffStarted      = "handoff_started"
+	rotationHandoffAccepted     = "handoff_accepted"
+	rotationOwnershipCommitted  = "ownership_committed"
+	rotationRetired             = "retirement_attempted"
+)
+
+func cloneRotationContinuation(continuation *RotationContinuation) *RotationContinuation {
+	if continuation == nil {
+		return nil
+	}
+	cloned := *continuation
+	if continuation.Manifest != nil {
+		manifest := *continuation.Manifest
+		cloned.Manifest = &manifest
+	}
+	return &cloned
 }
 
 // RemainingSeconds returns the seconds remaining before timeout.
@@ -134,6 +180,7 @@ func clonePendingRotation(p *PendingRotation) *PendingRotation {
 		result := *p.Result
 		cloned.Result = &result
 	}
+	cloned.Continuation = cloneRotationContinuation(p.Continuation)
 	return &cloned
 }
 
@@ -156,9 +203,25 @@ type PaneSpawner interface {
 // Custom spawners that implement only PaneSpawner retain responsibility for
 // their own startup and delivery protocol.
 type rotationPaneLifecycle interface {
-	SpawnReplacementContext(stdcontext.Context, string, tmux.Pane, int, string) (tmux.Pane, error)
-	DeliverHandoffContext(stdcontext.Context, string, tmux.Pane, string) error
+	SpawnReplacementContext(stdcontext.Context, string, tmux.Pane, int, string, func(stdcontext.Context, tmux.Pane) error) (tmux.Pane, error)
+	DeliverHandoffContext(stdcontext.Context, string, tmux.Pane, string, func(stdcontext.Context) error) error
 	KillRotationPaneContext(stdcontext.Context, string, tmux.Pane) error
+}
+
+// A failed transport after submission starts is not proof that the agent did
+// not receive its task. Only a readiness/preflight failure permits deleting an
+// otherwise verified replacement and restoring the predecessor's ownership.
+type rotationHandoffError struct {
+	err       error
+	submitted bool
+}
+
+func (e *rotationHandoffError) Error() string { return e.err.Error() }
+func (e *rotationHandoffError) Unwrap() error { return e.err }
+
+func handoffNotSubmitted(err error) bool {
+	var delivery *rotationHandoffError
+	return errors.As(err, &delivery) && !delivery.submitted
 }
 
 type rotationContextTransport interface {
@@ -199,7 +262,7 @@ func (s *DefaultPaneSpawner) SpawnAgent(session, agentType string, index int, va
 	}
 	ctx, cancel := stdcontext.WithTimeout(stdcontext.Background(), rotationReadyTimeout)
 	defer cancel()
-	pane, err := s.spawnAgentWithSpec(ctx, session, index, variant, workDir, spec)
+	pane, err := s.spawnAgentWithSpec(ctx, session, index, variant, workDir, spec, nil, nil)
 	return pane.ID, err
 }
 
@@ -207,7 +270,7 @@ func (s *DefaultPaneSpawner) SpawnAgent(session, agentType string, index int, va
 // Corrupt or incomplete metadata must never fall back to title inference: that
 // would silently turn an exact launch into a different model, persona, or
 // account. Only panes created before launch metadata existed use that fallback.
-func (s *DefaultPaneSpawner) SpawnReplacementContext(ctx stdcontext.Context, session string, predecessor tmux.Pane, index int, workDir string) (tmux.Pane, error) {
+func (s *DefaultPaneSpawner) SpawnReplacementContext(ctx stdcontext.Context, session string, predecessor tmux.Pane, index int, workDir string, prepare func(stdcontext.Context, tmux.Pane) error) (tmux.Pane, error) {
 	if ctx == nil {
 		return tmux.Pane{}, errors.New("replacement launch context is required")
 	}
@@ -246,10 +309,10 @@ func (s *DefaultPaneSpawner) SpawnReplacementContext(ctx stdcontext.Context, ses
 	if err := spec.ValidateReplay(predecessor.Type); err != nil {
 		return tmux.Pane{}, fmt.Errorf("cannot replay original launch settings: %w", err)
 	}
-	return s.spawnAgentWithSpec(launchCtx, session, index, predecessor.Variant, workDir, *spec)
+	return s.spawnAgentWithSpec(launchCtx, session, index, predecessor.Variant, workDir, *spec, &predecessor, prepare)
 }
 
-func (s *DefaultPaneSpawner) spawnAgentWithSpec(ctx stdcontext.Context, session string, index int, variant, workDir string, spec tmux.AgentLaunchSpec) (tmux.Pane, error) {
+func (s *DefaultPaneSpawner) spawnAgentWithSpec(ctx stdcontext.Context, session string, index int, variant, workDir string, spec tmux.AgentLaunchSpec, predecessor *tmux.Pane, prepare func(stdcontext.Context, tmux.Pane) error) (tmux.Pane, error) {
 	isolationSession := session
 	if spec.ClaudeIsolateCredentials {
 		// The old and new panes overlap. Reusing their logical title/index for
@@ -265,10 +328,20 @@ func (s *DefaultPaneSpawner) spawnAgentWithSpec(ctx stdcontext.Context, session 
 		return tmux.Pane{}, fmt.Errorf("building command: %w", err)
 	}
 
-	// Create a new pane
-	paneID, err := tmux.SplitWindowContext(ctx, session, workDir)
+	// A replacement belongs beside its predecessor, including when the agent
+	// lives outside the session's first window. A physical pane target cannot
+	// silently resolve to an unrelated window after renumbering.
+	var paneID string
+	if predecessor != nil {
+		// Insert before the source so retiring it cannot renumber the new
+		// pane after its assignment and restart index have been committed.
+		paneID, err = tmux.DefaultClient.RunContext(ctx, "split-window", "-b", "-t", tmux.ExactTarget(predecessor.ID), "-c", workDir, "-P", "-F", "#{pane_id}")
+	} else {
+		paneID, err = tmux.SplitWindowContext(ctx, session, workDir)
+	}
+	paneID = strings.TrimSpace(paneID)
 	if err != nil {
-		return tmux.Pane{}, fmt.Errorf("creating pane: %w", err)
+		return tmux.Pane{ID: paneID}, fmt.Errorf("creating pane: %w", err)
 	}
 	pane := tmux.Pane{ID: paneID, Type: spec.AgentType}
 	// Preserve uncertain panes for inspection. In particular, a failed identity
@@ -277,9 +350,22 @@ func (s *DefaultPaneSpawner) spawnAgentWithSpec(ctx stdcontext.Context, session 
 		return pane, fmt.Errorf("%s for replacement %s (pane preserved): %w", stage, paneID, err)
 	}
 
+	// Quarantine precedes provider/title publication and process launch. A
+	// crash at any later stage leaves an ineligible pane, including rotations
+	// of agents that did not have a bead assignment.
+	if predecessor != nil && predecessor.RotationToken != "" {
+		pane.RotationToken = predecessor.RotationToken
+		if err := tmux.SetPaneRotationTokenContext(ctx, paneID, pane.RotationToken); err != nil {
+			return fail("fencing replacement pane", err)
+		}
+	}
+
 	// Persist the replacement provider separately from its mutable title.
 	shortType := agentTypeShort(string(spec.AgentType))
 	title := tmux.FormatPaneName(session, shortType, index, variant)
+	if predecessor != nil && predecessor.Title != "" {
+		title = predecessor.Title
+	}
 	if err := tmux.SetPaneAgentIdentityContext(ctx, paneID, title, spec.AgentType); err != nil {
 		return fail("setting pane identity", err)
 	}
@@ -298,14 +384,31 @@ func (s *DefaultPaneSpawner) spawnAgentWithSpec(ctx stdcontext.Context, session 
 	if pane.PID <= 0 || pane.Dead || pane.IsServicePane() || pane.Type.Canonical() != spec.AgentType.Canonical() || !pane.IdleShell() {
 		return fail("checking new pane", errors.New("expected a live, unoccupied agent-tagged shell with a known process identity"))
 	}
+	if predecessor != nil && pane.RotationToken != predecessor.RotationToken {
+		return fail("checking replacement fence", errors.New("replacement ownership token changed"))
+	}
+	if prepare != nil {
+		if err := prepare(ctx, pane); err != nil {
+			return fail("preparing durable replacement ownership", err)
+		}
+	}
+	// Ownership preparation can wait on durable stores. Do not launch into
+	// a different process or a now-occupied shell after that boundary.
+	ready, err := currentRotationPane(ctx, session, pane, tmux.GetPanesContext)
+	if err != nil {
+		return fail("rechecking replacement before launch", err)
+	}
+	if !ready.IdleShell() {
+		return fail("rechecking replacement before launch", errors.New("replacement is no longer an idle shell"))
+	}
 
 	// Launch the agent
 	if err := tmux.SendKeysContext(ctx, paneID, cmd, true); err != nil {
 		return fail("launching agent", err)
 	}
 
-	// Apply tiled layout (best-effort)
-	if err := tmux.ApplyTiledLayoutContext(ctx, session); err != nil {
+	// Balance only the replacement's own window.
+	if err := tmux.DefaultClient.RunSilentContext(ctx, "select-layout", "-t", tmux.ExactTarget(paneID), "tiled"); err != nil {
 		slog.Warn("failed to apply tiled layout after spawn", "session", session, "error", err)
 	}
 
@@ -475,7 +578,7 @@ func currentRotationPane(ctx stdcontext.Context, session string, expected tmux.P
 	if err != nil {
 		return tmux.Pane{}, err
 	}
-	if pane.PID != expected.PID || pane.Type.Canonical() != expected.Type.Canonical() || pane.IsServicePane() {
+	if pane.PID != expected.PID || pane.Type.Canonical() != expected.Type.Canonical() || pane.IsServicePane() || pane.RotationToken != expected.RotationToken {
 		return tmux.Pane{}, fmt.Errorf("pane %s process or agent identity changed", expected.ID)
 	}
 	if pane.Dead {
@@ -702,13 +805,35 @@ func waitForRotationDelay(ctx stdcontext.Context, duration time.Duration) error 
 // DeliverHandoffContext observes readiness before typing and uses the provider's
 // existing submission check to catch input stranded in the composer. These are
 // process/input observations, not an application-level acknowledgment of context.
-func (s *DefaultPaneSpawner) DeliverHandoffContext(ctx stdcontext.Context, session string, replacement tmux.Pane, prompt string) error {
+func (s *DefaultPaneSpawner) DeliverHandoffContext(ctx stdcontext.Context, session string, replacement tmux.Pane, prompt string, beforeSubmit func(stdcontext.Context) error) (err error) {
+	submitted := false
+	defer func() {
+		if err != nil {
+			err = &rotationHandoffError{err: err, submitted: submitted}
+		}
+	}()
 	ready, err := waitForRotationReady(ctx, session, replacement, rotationReadyTimeout, rotationReadyPoll, tmux.GetPanesContext, tmux.CapturePaneVisibleContext)
 	if err != nil {
 		return err
 	}
 	deliveryCtx, cancel := stdcontext.WithTimeout(ctx, rotationReadyTimeout)
 	defer cancel()
+	if beforeSubmit != nil {
+		if err := beforeSubmit(deliveryCtx); err != nil {
+			return err
+		}
+	}
+	// Persisting the send boundary can wait for filesystem ownership. Recheck
+	// the exact process and quarantine after that wait, immediately before the
+	// irreversible input operation.
+	latestBeforeSend, err := currentRotationPane(deliveryCtx, session, replacement, tmux.GetPanesContext)
+	if err != nil {
+		return err
+	}
+	if !rotationProcessRunning(latestBeforeSend) {
+		return errors.New("replacement agent exited before handoff submission")
+	}
+	submitted = true
 	if err := tmux.DefaultClient.SendBufferContext(deliveryCtx, ready.ID, prompt, true); err != nil {
 		return err
 	}
@@ -991,6 +1116,393 @@ type Rotator struct {
 	// The public confirmation service owns the durable claim and its outcome.
 	durableConfirmation bool
 	expectedSource      *tmux.Pane
+	confirmation        *PendingRotation
+}
+
+// rotationOwnership is one execution's durable continuation. The assignment
+// ledger fences work ownership, while tmux tokens protect unassigned panes and
+// the gap after the ledger moves to the replacement. Neither fence expires
+// merely because the process or its request context exits.
+type rotationOwnership struct {
+	pending *PendingRotation
+	receipt *RotationContinuation
+	store   *assignment.AssignmentStore
+	current *assignment.Assignment
+}
+
+func (r *Rotator) beginRotationOwnership(ctx stdcontext.Context, session string, source tmux.Pane, workDir, model string, method RotationMethod) (*rotationOwnership, error) {
+	if r.confirmation == nil || r.confirmation.ExecutionID == "" {
+		return nil, errors.New("context rotation requires a durable confirmation before transferring ownership")
+	}
+	store, err := assignment.LoadStoreStrict(session)
+	if err != nil {
+		return nil, fmt.Errorf("load assignment ownership: %w", err)
+	}
+	release, err := store.AcquireTargetLock(ctx, source.ID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if release != nil {
+			release()
+		}
+	}()
+	if _, err := currentRotationPane(ctx, session, source, tmux.GetPanesContext); err != nil {
+		return nil, err
+	}
+	observedDir, err := tmux.DefaultClient.RunContext(ctx, "display-message", "-p", "-t", tmux.ExactTarget(source.ID), "#{pane_current_path}")
+	if err != nil {
+		return nil, fmt.Errorf("read source working directory: %w", err)
+	}
+	observedDir = strings.TrimSpace(observedDir)
+	if !filepath.IsAbs(observedDir) {
+		return nil, errors.New("source working directory is unavailable or not absolute")
+	}
+	if err := store.LoadStrict(); err != nil {
+		return nil, err
+	}
+	var owned *assignment.Assignment
+	for _, candidate := range store.ListActive() {
+		paneID, err := assignment.CanonicalPaneIdentity(candidate)
+		if err != nil {
+			return nil, fmt.Errorf("cannot verify active assignment %s physical owner: %w", candidate.BeadID, err)
+		}
+		if paneID != source.ID {
+			continue
+		}
+		if owned != nil {
+			return nil, errors.New("source pane has multiple active assignments")
+		}
+		owned = candidate
+	}
+	registry, err := agentmail.LoadBestSessionAgentRegistry(session, workDir, observedDir)
+	if err != nil {
+		return nil, fmt.Errorf("load Agent Mail ownership: %w", err)
+	}
+	manifest, err := resilience.LoadManifest(session)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("load restart ownership: %w", err)
+	}
+	if tmux.DefaultClient.Remote != "" && (owned != nil || registry != nil || manifest != nil) {
+		return nil, errors.New("remote pane ownership cannot be transferred through local session-named assignment, Agent Mail, or restart records")
+	}
+	receipt := &RotationContinuation{
+		Token: r.confirmation.ExecutionID, Phase: rotationSourceFenced,
+		Source: source, ProjectDir: observedDir, Model: model, Method: method,
+	}
+	receipt.Source.RotationToken = receipt.Token
+	if owned != nil {
+		receipt.BeadID, receipt.AssignmentKey = owned.BeadID, owned.IdempotencyKey
+	}
+	if registry != nil {
+		if name, ok := registry.GetAgentByID(source.ID); ok && name != "" {
+			if registry.PanePID(source.ID) != source.PID {
+				return nil, errors.New("Agent Mail source process binding is missing or stale")
+			}
+			if !filepath.IsAbs(registry.ProjectKey) {
+				return nil, errors.New("Agent Mail source project identity is unavailable")
+			}
+			receipt.RegistryProject, receipt.AgentName = registry.ProjectKey, name
+		}
+	}
+	if owned != nil {
+		leased := owned.ReservationRequired || len(owned.ReservationIDs) > 0 || len(owned.ReservedPaths) > 0 || owned.ReservationAgent != "" || owned.ReservationTarget != ""
+		if leased && receipt.AgentName == "" || receipt.AgentName != "" && owned.AgentName != receipt.AgentName {
+			return nil, errors.New("assignment and Agent Mail source identity disagree")
+		}
+	}
+	if manifest != nil {
+		if manifest.SessionIdentity != "" {
+			identity, err := tmux.DefaultClient.RunContext(ctx, "display-message", "-p", "-t", tmux.SessionPaneTarget(session), "#{pid}:#{session_id}:#{session_created}")
+			if err != nil || strings.TrimSpace(identity) != manifest.SessionIdentity {
+				return nil, errors.New("restart manifest belongs to a different or unobservable tmux session generation")
+			}
+			receipt.SessionIdentity = manifest.SessionIdentity
+		}
+		for _, candidate := range manifest.Agents {
+			if candidate.PaneID != source.ID {
+				continue
+			}
+			if receipt.Manifest != nil {
+				return nil, errors.New("restart manifest has duplicate source pane records")
+			}
+			candidate.LaunchBinding = resilience.CloneLaunchBinding(candidate.LaunchBinding)
+			receipt.Manifest = &candidate
+		}
+	}
+	ownership := &rotationOwnership{pending: r.confirmation, receipt: receipt, store: store, current: owned}
+	// Persist intent before changing the pane. A crash even before Begin's
+	// assignment write cannot leave an anonymous quarantine behind.
+	if err := ownership.save(ctx, rotationSourceFenced); err != nil {
+		return ownership, err
+	}
+	if err := tmux.SetPaneRotationTokenContext(ctx, source.ID, receipt.Token); err != nil {
+		return ownership, fmt.Errorf("fence source pane: %w", err)
+	}
+	if _, err := currentRotationPane(ctx, session, receipt.Source, tmux.GetPanesContext); err != nil {
+		return ownership, err
+	}
+	// The target fence drained any prior dispatch before our snapshot; later
+	// dispatches observe the quarantine at their final actuation boundary.
+	// Begin takes the canonical cleanup/bead/target locks itself.
+	release()
+	release = nil
+	if owned != nil {
+		current, applied, err := store.BeginPaneContinuation(ctx, owned, receipt.Token)
+		if err != nil {
+			return ownership, err
+		}
+		if !applied {
+			return ownership, errors.New("assignment owner changed before rotation could begin")
+		}
+		ownership.current = current
+	}
+	return ownership, nil
+}
+
+func (o *rotationOwnership) save(ctx stdcontext.Context, phase string) error {
+	copy := cloneRotationContinuation(o.receipt)
+	copy.Phase = phase
+	if err := DefaultPendingRotationStore.SaveContinuation(ctx, o.pending, copy); err != nil {
+		return fmt.Errorf("persist rotation %s boundary: %w", phase, err)
+	}
+	o.receipt = copy
+	return nil
+}
+
+func rotationMailBinding(pane tmux.Pane, name string) agentmail.PaneIdentityBinding {
+	return agentmail.PaneIdentityBinding{PaneID: pane.ID, PaneTitle: pane.Title, PanePID: pane.PID, AgentName: name}
+}
+
+func (o *rotationOwnership) prepareReplacement(ctx stdcontext.Context, replacement tmux.Pane) error {
+	if replacement.ID == o.receipt.Source.ID || replacement.PID <= 0 || replacement.RotationToken != o.receipt.Token || replacement.WindowIndex != o.receipt.Source.WindowIndex {
+		return errors.New("replacement physical identity, ownership fence, or window does not match the continuation")
+	}
+	o.receipt.Replacement = replacement
+	if err := o.save(ctx, rotationReplacementPrepared); err != nil {
+		return err
+	}
+	if o.current != nil {
+		current, applied, err := o.store.BindPaneContinuation(ctx, o.current, o.receipt.Token, assignment.ReassignmentTarget{
+			Pane: replacement.Index, AgentType: o.current.AgentType, AgentName: o.current.AgentName,
+			DispatchTarget: replacement.ID, OccupancyKey: replacement.ID,
+		})
+		if err != nil {
+			return err
+		}
+		if !applied {
+			return errors.New("assignment owner changed before replacement binding")
+		}
+		o.current = current
+	}
+	if o.receipt.AgentName != "" {
+		if err := agentmail.PreparePaneContinuationIdentity(ctx, o.pending.SessionName, o.receipt.RegistryProject,
+			rotationMailBinding(o.receipt.Source, o.receipt.AgentName), rotationMailBinding(replacement, o.receipt.AgentName),
+			o.receipt.ProjectDir, o.pending.WorkDir); err != nil {
+			return fmt.Errorf("provision replacement Agent Mail identity before launch: %w", err)
+		}
+	}
+	return nil
+}
+
+// abort is valid only before any handoff submission attempt. Cleanup uses a
+// bounded independent context so canceling startup can restore the old agent;
+// an unverified replacement is retained together with every ownership fence.
+func (o *rotationOwnership) abort(ctx stdcontext.Context, lifecycle rotationPaneLifecycle, replacement tmux.Pane) error {
+	if o == nil {
+		return nil
+	}
+	switch o.receipt.Phase {
+	case rotationHandoffStarted, rotationHandoffAccepted, rotationOwnershipCommitted, rotationRetired:
+		return errors.New("handoff may have been delivered; both panes and their ownership fences are preserved")
+	}
+	cleanupCtx, cancel := stdcontext.WithTimeout(stdcontext.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if replacement.ID != "" {
+		if replacement.PID <= 0 {
+			return errors.New("replacement process identity is unknown; ownership fences are preserved")
+		}
+		if err := lifecycle.KillRotationPaneContext(cleanupCtx, o.pending.SessionName, replacement); err != nil {
+			return fmt.Errorf("remove unsubmitted replacement: %w", err)
+		}
+	}
+	if o.current != nil {
+		if err := o.store.LoadStrict(); err != nil {
+			return err
+		}
+		current := o.store.Get(o.current.BeadID)
+		if current == nil || current.IdempotencyKey != o.receipt.AssignmentKey {
+			return errors.New("assignment generation changed before abort")
+		}
+		if current.HasPendingPaneContinuation() {
+			_, applied, err := o.store.AbortPaneContinuation(cleanupCtx, current, o.receipt.Token)
+			if err != nil {
+				return err
+			}
+			if !applied {
+				return errors.New("assignment owner changed before abort")
+			}
+		}
+	}
+	panes, err := tmux.GetPanesContext(cleanupCtx, o.pending.SessionName)
+	if err != nil {
+		return err
+	}
+	source, err := findLiveAgentPane(panes, "", o.receipt.Source.ID)
+	if err != nil || source.PID != o.receipt.Source.PID || source.Type.Canonical() != o.receipt.Source.Type.Canonical() || source.Dead {
+		return errors.New("source process changed before releasing its rotation fence")
+	}
+	if source.RotationToken != "" {
+		if source.RotationToken != o.receipt.Token {
+			return errors.New("source belongs to another rotation")
+		}
+		if err := tmux.ClearPaneRotationTokenContext(cleanupCtx, source.ID, o.receipt.Token); err != nil {
+			return err
+		}
+	}
+	return DefaultPendingRotationStore.SaveContinuation(cleanupCtx, o.pending, nil)
+}
+
+// finish repeats only idempotent ownership writes, never prompt delivery. Its
+// journal survives a process exit between the Agent Mail, restart manifest,
+// and assignment snapshots, so --retry can complete that same continuation.
+func (o *rotationOwnership) finish(ctx stdcontext.Context, lifecycle rotationPaneLifecycle) (string, error) {
+	if o.receipt.Phase != rotationHandoffAccepted && o.receipt.Phase != rotationOwnershipCommitted && o.receipt.Phase != rotationRetired {
+		return "", errors.New("handoff acceptance is not durably recorded; refusing ownership finalization")
+	}
+	if o.pending.Remote != tmux.DefaultClient.Remote {
+		return "", errors.New("rotation belongs to a different tmux server")
+	}
+	panes, err := tmux.GetPanesContext(ctx, o.pending.SessionName)
+	if err != nil {
+		return "", err
+	}
+	replacement, err := findLiveAgentPane(panes, "", o.receipt.Replacement.ID)
+	if err != nil {
+		return "", err
+	}
+	expectedReplacement := o.receipt.Replacement
+	if o.receipt.Phase != rotationHandoffAccepted && replacement.RotationToken == "" {
+		// A previous finalization may have unfenced this same process before
+		// persisting its final confirmation result.
+		expectedReplacement.RotationToken = ""
+	}
+	if _, err := currentRotationPane(ctx, o.pending.SessionName, expectedReplacement, tmux.GetPanesContext); err != nil {
+		return "", fmt.Errorf("replacement ownership cannot be verified: %w", err)
+	}
+	if !rotationProcessRunning(replacement) {
+		return "", errors.New("replacement is no longer a running agent")
+	}
+	if o.receipt.Phase == rotationHandoffAccepted {
+		if _, err := currentRotationPane(ctx, o.pending.SessionName, o.receipt.Source, tmux.GetPanesContext); err != nil {
+			return "", fmt.Errorf("source ownership changed before continuation committed: %w", err)
+		}
+	}
+	if o.receipt.SessionIdentity != "" {
+		identity, err := tmux.DefaultClient.RunContext(ctx, "display-message", "-p", "-t", tmux.SessionPaneTarget(o.pending.SessionName), "#{pid}:#{session_id}:#{session_created}")
+		if err != nil || strings.TrimSpace(identity) != o.receipt.SessionIdentity {
+			return "", errors.New("tmux session generation changed before ownership finalization")
+		}
+	}
+	if o.receipt.AgentName != "" {
+		_, applied, err := agentmail.RebindSessionAgentPaneContext(ctx, o.pending.SessionName, o.receipt.RegistryProject,
+			rotationMailBinding(o.receipt.Source, o.receipt.AgentName), rotationMailBinding(o.receipt.Replacement, o.receipt.AgentName))
+		if err != nil {
+			return "", fmt.Errorf("transfer Agent Mail ownership: %w", err)
+		}
+		if !applied {
+			return "", errors.New("Agent Mail ownership changed before continuation committed")
+		}
+	}
+	if o.receipt.Manifest != nil {
+		applied, err := resilience.RebindAgentPaneContext(ctx, o.pending.SessionName, *o.receipt.Manifest, o.receipt.Replacement.ID, o.receipt.Replacement.Index)
+		if err != nil {
+			return "", fmt.Errorf("transfer restart ownership: %w", err)
+		}
+		if !applied {
+			return "", errors.New("restart manifest changed before continuation committed")
+		}
+	}
+	if o.receipt.BeadID != "" {
+		if err := o.store.LoadStrict(); err != nil {
+			return "", err
+		}
+		current := o.store.Get(o.receipt.BeadID)
+		if current == nil || current.IdempotencyKey != o.receipt.AssignmentKey || current.PaneContinuation == nil || current.PaneContinuation.Token != o.receipt.Token {
+			return "", errors.New("assignment continuation ownership changed")
+		}
+		current, applied, err := o.store.CommitPaneContinuation(ctx, current, o.receipt.Token)
+		if err != nil {
+			return "", fmt.Errorf("transfer assignment ownership: %w", err)
+		}
+		if !applied {
+			return "", errors.New("assignment changed before continuation committed")
+		}
+		o.current = current
+	}
+	if o.receipt.Phase == rotationHandoffAccepted {
+		if err := o.save(ctx, rotationOwnershipCommitted); err != nil {
+			return "", err
+		}
+	}
+	// Source quarantine remains until the physical pane is gone. Even a
+	// failed kill cannot let a coordinator assign fresh work to the old agent
+	// after its ledger occupancy has moved to the replacement.
+	warning := ""
+	panes, err = tmux.GetPanesContext(ctx, o.pending.SessionName)
+	if err != nil {
+		return "", err
+	}
+	if _, err := findLiveAgentPane(panes, "", o.receipt.Source.ID); err == nil {
+		if err := lifecycle.KillRotationPaneContext(ctx, o.pending.SessionName, o.receipt.Source); err != nil {
+			warning = fmt.Sprintf("warning: original pane remains fenced because retirement failed: %v", err)
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return warning, err
+	}
+	if err := o.save(ctx, rotationRetired); err != nil {
+		return warning, err
+	}
+	if replacement.RotationToken != "" {
+		if err := tmux.ClearPaneRotationTokenContext(ctx, replacement.ID, o.receipt.Token); err != nil {
+			return warning, fmt.Errorf("release replacement rotation fence: %w", err)
+		}
+	}
+	expectedReplacement.RotationToken = ""
+	if _, err := currentRotationPane(ctx, o.pending.SessionName, expectedReplacement, tmux.GetPanesContext); err != nil {
+		return warning, fmt.Errorf("verify replacement after releasing its fence: %w", err)
+	}
+	return warning, nil
+}
+
+func resumeRotationOwnership(ctx stdcontext.Context, pending *PendingRotation, cfg *config.Config, owner *Rotator) RotationResult {
+	receipt := cloneRotationContinuation(pending.Continuation)
+	result := RotationResult{OldAgentID: pending.AgentID, OldPaneID: receipt.Source.ID, NewAgentID: receipt.Replacement.Title,
+		NewPaneID: receipt.Replacement.ID, Method: receipt.Method, SummaryTokens: receipt.SummaryTokens, State: RotationStateFailed, Timestamp: time.Now()}
+	store, err := assignment.LoadStoreStrict(pending.SessionName)
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+	ownership := &rotationOwnership{pending: pending, receipt: receipt, store: store}
+	if cfg == nil {
+		cfg = config.Default()
+	}
+	warning, err := ownership.finish(ctx, NewDefaultPaneSpawner(cfg))
+	if err != nil {
+		result.Error = fmt.Sprintf("ownership continuation remains fenced: %v", err)
+		return result
+	}
+	if owner != nil && owner.monitor != nil {
+		if result.NewAgentID != result.OldAgentID {
+			owner.monitor.UnregisterAgent(result.OldAgentID)
+		}
+		owner.monitor.RegisterAgent(result.NewAgentID, result.NewPaneID, receipt.Model)
+		owner.monitor.ResetAgent(result.NewAgentID)
+	}
+	result.Success, result.State, result.Error = true, RotationStateCompleted, warning
+	return result
 }
 
 // RotatorConfig holds configuration for creating a Rotator.
@@ -1213,6 +1725,37 @@ func (r *Rotator) rotateAgentContext(ctx stdcontext.Context, session, agentID, w
 		result.Method = RotationCompactionFailed
 	}
 
+	lifecycle, hasLifecycle := r.spawner.(rotationPaneLifecycle)
+	var replacement tmux.Pane
+	var ownership *rotationOwnership
+	if _, production := r.spawner.(*DefaultPaneSpawner); production {
+		ownership, err = r.beginRotationOwnership(ctx, session, *oldPane, workDir, state.Model, result.Method)
+		if ownership != nil {
+			defer func() {
+				if result.Success {
+					return
+				}
+				switch ownership.receipt.Phase {
+				case rotationHandoffStarted, rotationHandoffAccepted, rotationOwnershipCommitted, rotationRetired:
+					result.Error += "; durable continuation state and remaining pane fences are preserved"
+				default:
+					if cleanupErr := ownership.abort(ctx, lifecycle, replacement); cleanupErr != nil {
+						result.Error += fmt.Sprintf("; ownership recovery remains fenced: %v", cleanupErr)
+					}
+				}
+			}()
+		}
+		if err != nil {
+			result.State = RotationStateFailed
+			result.Error = fmt.Sprintf("cannot begin ownership continuation; original agent preserved: %v", err)
+			result.Duration = time.Since(startTime)
+			return result
+		}
+		// No new work can be admitted between this summary and the handoff.
+		// Keep every later observation pinned to the claimed source process.
+		oldPane = &ownership.receipt.Source
+	}
+
 	alerts.EmitRotationStarted(alerts.RotationAlertData{
 		AgentID:      agentID,
 		Session:      session,
@@ -1277,15 +1820,25 @@ func (r *Rotator) rotateAgentContext(ctx stdcontext.Context, session, agentID, w
 	if handoffSummary != nil {
 		result.SummaryTokens = handoffSummary.TokenEstimate
 	}
+	if ownership != nil {
+		if handoffSummary == nil {
+			result.State = RotationStateFailed
+			result.Error = "a complete handoff summary is required before transferring ownership"
+			return result
+		}
+		ownership.receipt.SummaryTokens = result.SummaryTokens
+	}
 
 	// Spawn replacement agent with same type
 	agentType := agentTypeLong(string(oldPane.Type))
 	newIndex := extractAgentIndex(agentID)
-	lifecycle, hasLifecycle := r.spawner.(rotationPaneLifecycle)
-	var replacement tmux.Pane
+	var prepareReplacement func(stdcontext.Context, tmux.Pane) error
+	if ownership != nil {
+		prepareReplacement = ownership.prepareReplacement
+	}
 	if err = ctx.Err(); err == nil {
 		if hasLifecycle {
-			replacement, err = lifecycle.SpawnReplacementContext(ctx, session, *oldPane, newIndex, workDir)
+			replacement, err = lifecycle.SpawnReplacementContext(ctx, session, *oldPane, newIndex, workDir, prepareReplacement)
 		} else {
 			replacement.ID, err = r.spawner.SpawnAgent(session, agentType, newIndex, oldPane.Variant, workDir)
 		}
@@ -1296,6 +1849,14 @@ func (r *Rotator) rotateAgentContext(ctx stdcontext.Context, session, agentID, w
 		result.Success = false
 		result.State = RotationStateFailed
 		result.Error = fmt.Sprintf("failed to spawn replacement: %v", err)
+		if ownership != nil && replacement.ID != "" && ownership.receipt.Replacement.ID == "" {
+			ownership.receipt.Replacement = replacement
+			persistCtx, cancel := stdcontext.WithTimeout(stdcontext.WithoutCancel(ctx), 5*time.Second)
+			if persistErr := ownership.save(persistCtx, rotationReplacementPrepared); persistErr != nil {
+				result.Error += fmt.Sprintf("; cannot record partial replacement: %v", persistErr)
+			}
+			cancel()
+		}
 		result.Duration = time.Since(startTime)
 		contextBefore := float64(0)
 		if state.Estimate != nil {
@@ -1305,35 +1866,64 @@ func (r *Rotator) rotateAgentContext(ctx stdcontext.Context, session, agentID, w
 		return result
 	}
 	result.NewAgentID = tmux.FormatPaneName(session, agentTypeShort(agentType), newIndex, oldPane.Variant)
+	if replacement.Title != "" {
+		result.NewAgentID = replacement.Title
+	}
 
 	// Deliver the handoff before retiring the original agent or replacing its
 	// monitor state. A live replacement without the task context is not a
 	// successful rotation: the original pane remains the recovery source.
 	if handoffSummary != nil {
 		handoffContext := handoffSummary.FormatForNewAgent()
+		var beforeSubmit func(stdcontext.Context) error
+		if ownership != nil {
+			beforeSubmit = func(ctx stdcontext.Context) error { return ownership.save(ctx, rotationHandoffStarted) }
+		}
 		if hasLifecycle {
-			err = lifecycle.DeliverHandoffContext(ctx, session, replacement, handoffContext)
+			err = lifecycle.DeliverHandoffContext(ctx, session, replacement, handoffContext, beforeSubmit)
 		} else {
 			err = sendRotationPromptContext(ctx, r.spawner, newPaneID, handoffContext)
 		}
 		if err != nil {
 			result.State = RotationStateFailed
 			result.Error = fmt.Sprintf("failed to send handoff context; original agent preserved: %v", err)
-			var cleanupErr error
-			if hasLifecycle {
-				cleanupCtx, cancel := stdcontext.WithTimeout(stdcontext.WithoutCancel(ctx), 5*time.Second)
-				cleanupErr = lifecycle.KillRotationPaneContext(cleanupCtx, session, replacement)
+			if ownership != nil && handoffNotSubmitted(err) && ownership.receipt.Phase == rotationHandoffStarted {
+				// The lifecycle positively observed a failure before invoking
+				// transport, even though its durable intent was already saved.
+				persistCtx, cancel := stdcontext.WithTimeout(stdcontext.WithoutCancel(ctx), 5*time.Second)
+				if persistErr := ownership.save(persistCtx, rotationReplacementPrepared); persistErr != nil {
+					result.Error += fmt.Sprintf("; cannot persist unsubmitted handoff: %v", persistErr)
+				}
 				cancel()
-			} else {
-				cleanupErr = r.spawner.KillPane(newPaneID)
 			}
-			if cleanupErr != nil {
-				result.Error += fmt.Sprintf("; failed to remove replacement pane %s: %v", newPaneID, cleanupErr)
+			if ownership == nil && hasLifecycle && handoffNotSubmitted(err) {
+				cleanupCtx, cancel := stdcontext.WithTimeout(stdcontext.WithoutCancel(ctx), 5*time.Second)
+				cleanupErr := lifecycle.KillRotationPaneContext(cleanupCtx, session, replacement)
+				cancel()
+				if cleanupErr != nil {
+					result.Error += fmt.Sprintf("; failed to remove replacement pane %s: %v", newPaneID, cleanupErr)
+				}
+			} else if ownership == nil {
+				result.Error += "; handoff outcome is uncertain, replacement pane preserved"
 			}
 			result.Duration = time.Since(startTime)
 			recordRotationToHistory(result, session, agentType, contextUsage)
 			return result
 		}
+	}
+	if ownership != nil {
+		if err := ownership.save(ctx, rotationHandoffAccepted); err != nil {
+			result.State = RotationStateFailed
+			result.Error = err.Error()
+			return result
+		}
+		warning, err := ownership.finish(ctx, lifecycle)
+		if err != nil {
+			result.State = RotationStateFailed
+			result.Error = fmt.Sprintf("handoff accepted but ownership continuation remains incomplete: %v", err)
+			return result
+		}
+		result.Error = warning
 	}
 
 	// The replacement begins with an empty context window. Only now commit the
@@ -1347,12 +1937,14 @@ func (r *Rotator) rotateAgentContext(ctx stdcontext.Context, session, agentID, w
 	r.monitor.ResetAgent(result.NewAgentID)
 
 	// Kill the old pane
-	if hasLifecycle {
-		err = lifecycle.KillRotationPaneContext(ctx, session, *oldPane)
-	} else {
-		err = r.spawner.KillPane(oldPane.ID)
+	if ownership == nil {
+		if hasLifecycle {
+			err = lifecycle.KillRotationPaneContext(ctx, session, *oldPane)
+		} else {
+			err = r.spawner.KillPane(oldPane.ID)
+		}
 	}
-	if err != nil {
+	if ownership == nil && err != nil {
 		// Non-fatal: new agent is running
 		if result.Error != "" {
 			result.Error += "; "
@@ -1907,6 +2499,9 @@ func confirmStoredRotation(ctx stdcontext.Context, agentID string, action Confir
 		result.Error = fmt.Sprintf("invalid pending session: %v", err)
 		return result
 	}
+	if pending.Continuation != nil {
+		return resumeRotationOwnership(ctx, pending, cfg, owner)
+	}
 	expected := tmux.Pane{ID: pending.PaneID, PID: pending.PanePID, Type: tmux.AgentType(pending.PaneType)}
 	if err := validateAutomatedRotation(expected.Type); err != nil {
 		result.Error = err.Error()
@@ -1962,6 +2557,7 @@ func confirmStoredRotation(ctx stdcontext.Context, agentID string, action Confir
 	runtime := NewRotator(rotCfg)
 	runtime.durableConfirmation = true
 	runtime.expectedSource = &expected
+	runtime.confirmation = pending
 	runtime.pending[agentID] = clonePendingRotation(pending)
 	return runtime.ConfirmRotationContext(ctx, agentID, action, minutes)
 }

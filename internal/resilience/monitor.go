@@ -898,6 +898,10 @@ func (m *Monitor) restartAgent(ctx context.Context, agent *AgentState) {
 			log.Printf("[resilience] Refusing to restart agent %s: destination is a service or dead pane", agent.PaneID)
 			return nil
 		}
+		if pane.RotationToken != "" {
+			log.Printf("[resilience] Refusing to restart agent %s: context rotation still owns the pane", agent.PaneID)
+			return nil
+		}
 		return pane
 	}
 	livePane := lookupPane()

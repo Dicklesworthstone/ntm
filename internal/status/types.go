@@ -195,6 +195,8 @@ type DispatchRefusal string
 const (
 	// DispatchRefusalNone: the observation passes every SafeToDispatch clause.
 	DispatchRefusalNone DispatchRefusal = ""
+	// DispatchRefusalRotation: a durable handoff still owns this pane.
+	DispatchRefusalRotation DispatchRefusal = "rotation_pending"
 	// DispatchRefusalStale: the current capture is not fresh.
 	DispatchRefusalStale DispatchRefusal = "observation_stale"
 	// DispatchRefusalError: the current capture recorded an error.
@@ -212,6 +214,8 @@ const (
 // defined in terms of this method so the two cannot disagree.
 func (p PaneObservation) DispatchRefusal() DispatchRefusal {
 	switch {
+	case p.Metadata.RotationToken != "":
+		return DispatchRefusalRotation
 	case p.Current.Freshness != FreshnessFresh:
 		return DispatchRefusalStale
 	case p.Current.Error != "":
@@ -226,8 +230,8 @@ func (p PaneObservation) DispatchRefusal() DispatchRefusal {
 }
 
 // SafeToDispatch fails closed. Only a fresh, confident idle classification can
-// receive new work; stale, unknown, working, error, and failed observations are
-// all rejected. DispatchRefusal names the clause that rejected an observation.
+// receive new work; quarantined, stale, unknown, working, error, and failed
+// observations are all rejected. DispatchRefusal names the failed clause.
 func (p PaneObservation) SafeToDispatch() bool {
 	return p.DispatchRefusal() == DispatchRefusalNone
 }

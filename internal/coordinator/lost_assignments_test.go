@@ -285,7 +285,10 @@ func TestLostAssignmentRecoveryRequiresCompleteOwnershipProof(t *testing.T) {
 					return []tmux.PaneActivity{{Pane: tmux.Pane{ID: id, Type: tmux.AgentClaude}}}, nil
 				}, nil)
 			case "recipient rebound", "registry owner changed":
-				registry := agentmail.NewSessionAgentRegistry(c.session, c.projectKey)
+				registry, err := agentmail.LoadSessionAgentRegistry(c.session, c.projectKey)
+				if err != nil || registry == nil {
+					t.Fatalf("load registry before changing owner: %+v, %v", registry, err)
+				}
 				registry.PaneIDMap["%94"] = current.AgentName
 				if failure == "recipient rebound" {
 					// Even an unrecognized live pane is evidence that this name

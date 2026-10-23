@@ -314,14 +314,24 @@ type observedRotationSpawner struct {
 	delivered   bool
 }
 
-func (s *observedRotationSpawner) SpawnReplacementContext(stdcontext.Context, string, tmux.Pane, int, string) (tmux.Pane, error) {
+func (s *observedRotationSpawner) SpawnReplacementContext(ctx stdcontext.Context, _ string, _ tmux.Pane, _ int, _ string, prepare func(stdcontext.Context, tmux.Pane) error) (tmux.Pane, error) {
 	s.spawnedPanes = append(s.spawnedPanes, s.replacement.ID)
+	if prepare != nil {
+		if err := prepare(ctx, s.replacement); err != nil {
+			return s.replacement, err
+		}
+	}
 	return s.replacement, nil
 }
 
-func (s *observedRotationSpawner) DeliverHandoffContext(ctx stdcontext.Context, _ string, pane tmux.Pane, prompt string) error {
+func (s *observedRotationSpawner) DeliverHandoffContext(ctx stdcontext.Context, _ string, pane tmux.Pane, prompt string, beforeSubmit func(stdcontext.Context) error) error {
 	if pane.ID != s.replacement.ID || pane.PID != s.replacement.PID || !strings.Contains(prompt, "handoff") && !strings.Contains(strings.ToLower(prompt), "context") {
 		return errors.New("incorrect replacement or missing handoff")
+	}
+	if beforeSubmit != nil {
+		if err := beforeSubmit(ctx); err != nil {
+			return &rotationHandoffError{err: err}
+		}
 	}
 	s.delivered = true
 	return s.deliveryErr
@@ -347,7 +357,7 @@ func TestConfirmRotationReadinessFailurePreservesOriginalMonitor(t *testing.T) {
 	spawner := &observedRotationSpawner{
 		MockPaneSpawner: NewMockPaneSpawner(),
 		replacement:     tmux.Pane{ID: "%99", PID: 321, Type: tmux.AgentClaude, Command: "node"},
-		deliveryErr:     fmt.Errorf("replacement never drew a composer: %w", stdcontext.DeadlineExceeded),
+		deliveryErr:     &rotationHandoffError{err: fmt.Errorf("replacement never drew a composer: %w", stdcontext.DeadlineExceeded)},
 		cleanupErr:      errors.New("replacement process identity changed"),
 	}
 	spawner.panes = []tmux.Pane{{ID: "%1", PID: 123, Title: agentID, Type: tmux.AgentClaude, Command: "node"}}
@@ -626,9 +636,9 @@ func TestRotateAgent_LongSessionResetsReplacementMonitorState(t *testing.T) {
 
 func TestManualRotate_HandoffFailurePreservesOriginalAgent(t *testing.T) {
 	for _, cleanupFails := range []bool{false, true} {
-		name := "replacement_removed"
+		name := "cleanup_would_succeed"
 		if cleanupFails {
-			name = "replacement_cleanup_failed"
+			name = "cleanup_would_fail"
 		}
 		t.Run(name, func(t *testing.T) {
 			monitor := NewContextMonitor(DefaultMonitorConfig())
@@ -655,11 +665,11 @@ func TestManualRotate_HandoffFailurePreservesOriginalAgent(t *testing.T) {
 			if !strings.Contains(result.Error, "handoff paste failed") || !strings.Contains(result.Error, "original agent preserved") {
 				t.Errorf("error = %q, want handoff failure and recovery information", result.Error)
 			}
-			if len(spawner.killAttempts) != 1 || spawner.killAttempts[0] != "%new-pane" {
-				t.Errorf("kill attempts = %v, only the replacement may be removed", spawner.killAttempts)
+			if len(spawner.killAttempts) != 0 {
+				t.Errorf("kill attempts = %v; an outcome-unknown handoff must preserve both panes", spawner.killAttempts)
 			}
-			if cleanupFails && !strings.Contains(result.Error, "replacement still running") {
-				t.Errorf("error = %q, want replacement cleanup failure", result.Error)
+			if !strings.Contains(result.Error, "outcome is uncertain") {
+				t.Errorf("error = %q, want uncertain handoff recovery information", result.Error)
 			}
 			if current := monitor.GetState(agentID); current == nil || *current != original {
 				t.Errorf("original monitor state changed after failed handoff: %+v, want %+v", current, original)

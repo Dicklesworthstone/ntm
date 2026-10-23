@@ -33,6 +33,16 @@ func acquireAtomicTargetOperationLock(ctx context.Context, storePath, target str
 	return acquireAtomicOperationLock(ctx, storePath, "target", strings.TrimSpace(target))
 }
 
+// AcquireTargetLock fences admission to one physical pane while a caller
+// quarantines it and reloads the ledger. Release it before taking a bead lock;
+// assignment dispatch acquires bead ownership before target ownership.
+func (s *AssignmentStore) AcquireTargetLock(ctx context.Context, target string) (func(), error) {
+	if s == nil || ctx == nil || !isPhysicalPaneOccupancyKey(target) {
+		return nil, errors.New("target lock requires a store, context, and physical pane ID")
+	}
+	return acquireAtomicTargetOperationLock(ctx, s.path, target)
+}
+
 // AcquireExternalCleanupLock serializes the non-idempotent external release
 // boundary for one bead across processes. Callers must reload and recheck the
 // durable assignment after acquiring the lock and before any external effect.

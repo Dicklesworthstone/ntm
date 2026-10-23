@@ -147,19 +147,19 @@ type paneLaunchRecord struct {
 	Spec   AgentLaunchSpec `json:"spec"`
 }
 
-func validateLaunchSpecTarget(ctx context.Context, paneID string) error {
+func validatePhysicalPaneTarget(ctx context.Context, paneID string) error {
 	if ctx == nil {
-		return errors.New("agent launch specification requires a context")
+		return errors.New("pane metadata requires a context")
 	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if len(paneID) < 2 || len(paneID) > 21 || paneID[0] != '%' {
-		return errors.New("agent launch specification requires a physical pane ID")
+		return errors.New("pane metadata requires a physical pane ID")
 	}
 	for _, r := range paneID[1:] {
 		if r < '0' || r > '9' {
-			return errors.New("agent launch specification requires a physical pane ID")
+			return errors.New("pane metadata requires a physical pane ID")
 		}
 	}
 	return nil
@@ -169,7 +169,7 @@ func validateLaunchSpecTarget(ctx context.Context, paneID string) error {
 // binds the record to its physical pane, preventing inherited or copied options
 // from being mistaken for the launch metadata of another pane.
 func (c *Client) SetPaneLaunchSpecContext(ctx context.Context, paneID string, spec AgentLaunchSpec) error {
-	if err := validateLaunchSpecTarget(ctx, paneID); err != nil {
+	if err := validatePhysicalPaneTarget(ctx, paneID); err != nil {
 		return err
 	}
 	if err := spec.Validate(spec.AgentType); err != nil {
@@ -196,7 +196,7 @@ func (c *Client) SetPaneLaunchSpecContext(ctx context.Context, paneID string, sp
 // Failed reads, malformed records and a mismatched pane binding are errors.
 // Metadata is fetched separately so routine topology observations stay small.
 func (c *Client) ReadPaneLaunchSpecContext(ctx context.Context, paneID string) (*AgentLaunchSpec, error) {
-	if err := validateLaunchSpecTarget(ctx, paneID); err != nil {
+	if err := validatePhysicalPaneTarget(ctx, paneID); err != nil {
 		return nil, err
 	}
 	// Without -A show-options reads only the pane-local value. Do not use -q:

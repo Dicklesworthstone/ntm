@@ -35,6 +35,17 @@ func TestManifestMutationProcess(t *testing.T) {
 		t.Fatal(err)
 	}
 	index, _ := strconv.Atoi(os.Getenv("NTM_MANIFEST_MUTATION_INDEX"))
+	if mode == "rebind" {
+		var expected AgentConfig
+		if err := json.Unmarshal([]byte(os.Getenv("NTM_MANIFEST_REBIND_EXPECTED")), &expected); err != nil {
+			t.Fatal(err)
+		}
+		applied, err := RebindAgentPaneContext(context.Background(), "fleet", expected, "%31", 7)
+		if err != nil || !applied {
+			t.Fatalf("manifest continuation = %v, %v", applied, err)
+		}
+		return
+	}
 	if mode == "hold" {
 		err := mutateManifest(context.Background(), "fleet", func(string) error {
 			fmt.Println("locked")
@@ -368,6 +379,161 @@ func TestManifestUpsertReplacesOnlyRequestedAgent(t *testing.T) {
 	created, err := LoadManifest("new-session")
 	if err != nil || created.AutoRestart || created.AccountRotation != nil || created.ProjectDir != "/new" {
 		t.Fatalf("new metadata silently enabled automation: %+v %v", created, err)
+	}
+}
+
+func TestManifestContinuationPreservesLaunchAndPolicy(t *testing.T) {
+	initial := saveMutationFixture(t)
+	expected := initial.Agents[0]
+	expected.PaneIndex = 3
+	expected.ProjectDir = "/per-agent-worktree"
+	expected.LaunchBinding = &LaunchBinding{Provider: "cod", Launcher: "caam", Identifier: "original-account"}
+	initial.Agents = []AgentConfig{expected, {PaneID: "%2", PaneIndex: 1, Type: "gmi", Command: "gemini"}}
+	if err := SaveManifest(initial); err != nil {
+		t.Fatal(err)
+	}
+	applied, err := RebindAgentPaneContext(context.Background(), "fleet", expected, "%31", 7)
+	if err != nil || !applied {
+		t.Fatalf("continuation = %v, %v", applied, err)
+	}
+	got, err := LoadManifest("fleet")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := *initial
+	want.Agents = append([]AgentConfig(nil), initial.Agents...)
+	want.Agents[0].PaneID = "%31"
+	want.Agents[0].PaneIndex = 7
+	if !reflect.DeepEqual(got, &want) {
+		t.Fatalf("continuation changed launch metadata, neighbors, or policy:\ngot %+v\nwant %+v", got, &want)
+	}
+	if expected.PaneID != "%1" || expected.LaunchBinding.Identifier != "original-account" {
+		t.Fatalf("continuation mutated the caller's observation: %+v", expected)
+	}
+	before, err := os.ReadFile(filepath.Join(ManifestDir(), "fleet.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A crash can occur after the atomic write but before its journal receipt.
+	// Repeating that exact update must not strand an already-moved record.
+	applied, err = RebindAgentPaneContext(context.Background(), "fleet", expected, "%31", 7)
+	if err != nil || !applied {
+		t.Fatalf("replayed continuation = %v, %v", applied, err)
+	}
+	after, err := os.ReadFile(filepath.Join(ManifestDir(), "fleet.json"))
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatalf("replayed continuation rewrote the manifest: %v", err)
+	}
+}
+
+func TestManifestContinuationRefusesChangedOrAmbiguousOwnership(t *testing.T) {
+	for _, scenario := range []string{"changed-command", "changed-binding", "missing-source", "occupied-destination", "duplicate-source", "duplicate-destination"} {
+		t.Run(scenario, func(t *testing.T) {
+			initial := saveMutationFixture(t)
+			expected := initial.Agents[0]
+			expected.LaunchBinding = &LaunchBinding{Provider: "cod", Launcher: "caam", Identifier: "original"}
+			initial.Agents[0] = expected
+			switch scenario {
+			case "changed-command":
+				initial.Agents[0].Command = "codex --model changed"
+			case "changed-binding":
+				initial.Agents[0].LaunchBinding = &LaunchBinding{Provider: "cod", Launcher: "caam", Identifier: "different"}
+			case "missing-source":
+				initial.Agents = nil
+			case "occupied-destination":
+				initial.Agents = append(initial.Agents, AgentConfig{PaneID: "%31", Type: "cc", Command: "claude"})
+			case "duplicate-source":
+				initial.Agents = append(initial.Agents, expected)
+			case "duplicate-destination":
+				initial.Agents = []AgentConfig{{PaneID: "%31"}, {PaneID: "%31"}}
+			}
+			if err := SaveManifest(initial); err != nil {
+				t.Fatal(err)
+			}
+			before, err := os.ReadFile(filepath.Join(ManifestDir(), "fleet.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			applied, err := RebindAgentPaneContext(context.Background(), "fleet", expected, "%31", 7)
+			if applied {
+				t.Fatalf("%s authorized ownership transfer", scenario)
+			}
+			if (strings.HasPrefix(scenario, "duplicate-") || scenario == "occupied-destination") && err == nil {
+				t.Fatalf("%s did not report an ownership conflict", scenario)
+			}
+			after, readErr := os.ReadFile(filepath.Join(ManifestDir(), "fleet.json"))
+			if readErr != nil || !bytes.Equal(before, after) {
+				t.Fatalf("refused continuation changed original evidence: %v", readErr)
+			}
+		})
+	}
+}
+
+func TestManifestContinuationWaitsForWriterAndKeepsIndependentUpdates(t *testing.T) {
+	initial := saveMutationFixture(t)
+	encoded, err := json.Marshal(initial.Agents[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NTM_MANIFEST_REBIND_EXPECTED", string(encoded))
+	lock, err := tryMonitorLock(filepath.Join(ManifestDir(), "fleet.mutation.lock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close()
+	child := startManifestChild(t, "rebind", 0)
+	releaseManifestChild(t, child)
+	select {
+	case err := <-child.done:
+		t.Fatalf("continuation bypassed the preceding writer's fence: %v", err)
+	case <-time.After(150 * time.Millisecond):
+	}
+	initial.Agents = append(initial.Agents, AgentConfig{PaneID: "%2", Type: "gmi", Command: "gemini", Model: "neighbor"})
+	data, err := json.Marshal(initial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := util.AtomicWriteFile(filepath.Join(ManifestDir(), "fleet.json"), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := lock.Close(); err != nil {
+		t.Fatal(err)
+	}
+	waitManifestChild(t, child)
+	got, err := LoadManifest("fleet")
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial.Agents[0].PaneID = "%31"
+	initial.Agents[0].PaneIndex = 7
+	if !reflect.DeepEqual(got, initial) {
+		t.Fatalf("continuation lost an independent committed update: %+v", got)
+	}
+}
+
+func TestManifestContinuationCancellationAndMissingManifest(t *testing.T) {
+	initial := saveMutationFixture(t)
+	lock, err := tryMonitorLock(filepath.Join(ManifestDir(), "fleet.mutation.lock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	applied, err := RebindAgentPaneContext(ctx, "fleet", initial.Agents[0], "%31", 7)
+	if applied || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("cancelled continuation = %v, %v", applied, err)
+	}
+	got, err := LoadManifest("fleet")
+	if err != nil || !reflect.DeepEqual(got, initial) {
+		t.Fatalf("cancelled continuation changed manifest: %+v %v", got, err)
+	}
+	applied, err = RebindAgentPaneContext(context.Background(), "untracked", initial.Agents[0], "%31", 7)
+	if applied || err != nil {
+		t.Fatalf("absent manifest continuation = %v, %v", applied, err)
+	}
+	if _, err := os.Stat(filepath.Join(ManifestDir(), "untracked.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("continuation invented a manifest for an untracked session: %v", err)
 	}
 }
 
