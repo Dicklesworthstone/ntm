@@ -6515,6 +6515,17 @@ func publishSendActuationVerification(trace actuationTrace, opts SendAndAckOptio
 		reasonCode = "actuation_verification_timeout"
 		actionability = ActionabilityActionRequired
 		severity = SeverityWarning
+	case len(ackOutput.Failed) > 0 || !ackOutput.Success:
+		verification = "failed"
+		summary = "send verification failed"
+		if len(ackOutput.Failed) > 0 {
+			summary = fmt.Sprintf("send verification failed for %d target(s)", len(ackOutput.Failed))
+		} else if len(ackOutput.Pending) > 0 {
+			summary = fmt.Sprintf("send verification stopped with %d target(s) still pending", len(ackOutput.Pending))
+		}
+		reasonCode = "actuation_verification_failed"
+		actionability = ActionabilityActionRequired
+		severity = SeverityWarning
 	case len(ackOutput.Pending) > 0:
 		verification = "pending"
 		summary = fmt.Sprintf("send verification still pending for %d target(s)", len(ackOutput.Pending))
@@ -6540,6 +6551,7 @@ func publishSendActuationVerification(trace actuationTrace, opts SendAndAckOptio
 		Targets:        targets,
 		Confirmations:  ackConfirmationsToDetails(ackOutput.Confirmations),
 		Pending:        ackOutput.Pending,
+		Failed:         ackFailuresToDetails(ackOutput.Failed),
 		Verification:   verification,
 		ErrorCode:      ackOutput.ErrorCode,
 		Error:          ackOutput.Error,
@@ -6550,6 +6562,14 @@ func publishSendActuationVerification(trace actuationTrace, opts SendAndAckOptio
 		Severity:       severity,
 		MessagePreview: sendOutput.MessagePreview,
 	})
+}
+
+func ackFailuresToDetails(failures []AckFailure) []map[string]any {
+	details := make([]map[string]any, 0, len(failures))
+	for _, failure := range failures {
+		details = append(details, map[string]any{"pane": failure.Pane, "error": failure.Reason})
+	}
+	return details
 }
 
 func finalizeTerminalSendAndAckActuation(trace actuationTrace, opts SendAndAckOptions, output *SendAndAckOutput) *SendAndAckOutput {

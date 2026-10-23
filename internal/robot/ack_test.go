@@ -3,8 +3,12 @@
 package robot
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -131,6 +135,12 @@ func TestGetNewContent(t *testing.T) {
 			current:  "c\nd\ne\nf",
 			expected: "e\nf",
 		},
+		{
+			name:     "rolling window with longer new lines",
+			initial:  "a\nb\nunderstood\nd",
+			current:  "understood\nd\nlonger fresh content\nanother new line",
+			expected: "longer fresh content\nanother new line",
+		},
 	}
 
 	for _, tt := range tests {
@@ -143,34 +153,69 @@ func TestGetNewContent(t *testing.T) {
 	}
 }
 
-func TestTruncateForMatch(t *testing.T) {
+func TestAcknowledgmentIgnoresPromptEcho(t *testing.T) {
 	tests := []struct {
 		name     string
 		message  string
-		expected string
+		rendered string
 	}{
 		{
-			name:     "short message",
+			name:     "echo containing acknowledgment phrase",
+			message:  "say yes",
+			rendered: "say yes",
+		},
+		{
+			name:     "entire long message is input",
+			message:  "this is a very long message whose characters after the first fifty are still only user input",
+			rendered: "this is a very long message whose characters after the first fifty are still only user input",
+		},
+		{
+			name:     "multiline echo",
+			message:  "first line\nsecond line\nyes start here",
+			rendered: "first line\nsecond line\nyes start here",
+		},
+		{
+			name:     "soft wrapped echo",
+			message:  "Read this source and analyze the implementation carefully before starting",
+			rendered: "Read this source and analyze\nthe implementation carefully\nbefore starting",
+		},
+		{
+			name:     "echo with idle prompt",
 			message:  "fix the bug",
-			expected: "fix the bug",
+			rendered: "❯ fix the bug\n❯",
 		},
 		{
-			name:     "long message truncated",
-			message:  "this is a very long message that should be truncated at 50 characters for matching purposes",
-			expected: "this is a very long message that should be truncat", // 50 chars
+			name:     "partially visible echo",
+			message:  "Read the source files before starting\nI will provide more details later",
+			rendered: "before starting\nI will provide more details later",
 		},
 		{
-			name:     "multiline takes first line",
+			name:     "Unicode wrapped echo",
+			message:  "こんにちは 🌍\nI will describe the change",
+			rendered: "こんにちは\n 🌍\nI will describe\nthe change",
+		},
+		{
+			name:     "bordered multiline echo",
 			message:  "first line\nsecond line",
-			expected: "first line",
+			rendered: "╭──────────────╮\n│ first line   │\n│ second line  │\n╰──────────────╯",
+		},
+		{
+			name:     "submitted echo and live composer footer",
+			message:  "say yes",
+			rendered: "> say yes\n❯\n47% context left · ? for shortcuts",
+		},
+		{
+			name:     "repeated complete echo",
+			message:  "say yes",
+			rendered: "say yes\n> say yes\n❯",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := truncateForMatch(tt.message)
-			if result != tt.expected {
-				t.Errorf("truncateForMatch() = %q, want %q", result, tt.expected)
+			kind, detected := detectAcknowledgmentForAgent("ready\n", "ready\n"+tt.rendered, tt.message, "claude")
+			if detected || kind != AckNone {
+				t.Fatalf("prompt echo acknowledged as %s without a response", kind)
 			}
 		})
 	}
@@ -327,18 +372,21 @@ func TestGetContentAfterEcho(t *testing.T) {
 		content  string
 		message  string
 		expected string
+		matched  bool
 	}{
 		{
 			name:     "with content after echo",
 			content:  "fix the bug\nOkay, I'll fix it",
 			message:  "fix the bug",
 			expected: "Okay, I'll fix it",
+			matched:  true,
 		},
 		{
 			name:     "no content after echo",
 			content:  "fix the bug",
 			message:  "fix the bug",
 			expected: "",
+			matched:  true,
 		},
 		{
 			name:     "message not found",
@@ -346,13 +394,33 @@ func TestGetContentAfterEcho(t *testing.T) {
 			message:  "fix the bug",
 			expected: "",
 		},
+		{
+			name:     "response quotes request at end",
+			content:  "fix the bug\nUnderstood, I will fix the bug",
+			message:  "fix the bug",
+			expected: "Understood, I will fix the bug",
+			matched:  true,
+		},
+		{
+			name:     "request mentioned inside response is not echo",
+			content:  "Understood, I will fix the bug",
+			message:  "fix the bug",
+			expected: "",
+		},
+		{
+			name:     "bordered wrapped input",
+			content:  "│ first line │\n│ second line │\nUnderstood",
+			message:  "first line\nsecond line",
+			expected: "Understood",
+			matched:  true,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := getContentAfterEcho(tt.content, tt.message)
-			if result != tt.expected {
-				t.Errorf("getContentAfterEcho() = %q, want %q", result, tt.expected)
+			result, matched := getContentAfterEcho(tt.content, tt.message)
+			if result != tt.expected || matched != tt.matched {
+				t.Errorf("getContentAfterEcho() = (%q, %v), want (%q, %v)", result, matched, tt.expected, tt.matched)
 			}
 		})
 	}
@@ -692,43 +760,83 @@ func TestGetNewContent_EdgeCases(t *testing.T) {
 	}
 }
 
-// TestTruncateForMatch_UTF8 tests UTF-8 boundary handling
-func TestTruncateForMatch_UTF8(t *testing.T) {
+func TestAcknowledgmentResponseAfterCompleteEcho(t *testing.T) {
 	tests := []struct {
 		name    string
 		message string
-		wantMax int // Result should be at most this length
 	}{
 		{
 			name:    "ASCII within limit",
 			message: "short message",
-			wantMax: 13,
 		},
 		{
 			name:    "ASCII at limit",
 			message: "exactly fifty characters long for testing purposes!",
-			wantMax: 50,
 		},
 		{
 			name:    "UTF-8 with emojis",
 			message: "Hello 🌍 world! This is a test with unicode chars 🎉🎊",
-			wantMax: 50, // Should truncate at rune boundary
 		},
 		{
 			name:    "Japanese characters",
 			message: "こんにちは世界これはテストです",
-			wantMax: 50,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := truncateForMatch(tt.message)
-			if len(result) > tt.wantMax {
-				t.Errorf("truncateForMatch() len = %d, want <= %d", len(result), tt.wantMax)
+			kind, detected := detectAcknowledgmentForAgent("ready\n", "ready\n"+tt.message+"\nI will inspect the implementation now.", tt.message, "claude")
+			if !detected || kind != AckEchoDetected {
+				t.Fatalf("response after echo = (%s, %v), want (%s, true)", kind, detected, AckEchoDetected)
 			}
-			t.Logf("ACK_TEST: UTF8 truncation | Input=%d bytes | Output=%d bytes",
-				len(tt.message), len(result))
+		})
+	}
+}
+
+func TestAcknowledgmentPreservesResponseAfterEcho(t *testing.T) {
+	tests := []struct {
+		name     string
+		initial  string
+		message  string
+		rendered string
+	}{
+		{
+			name:     "response repeats earlier acknowledgment",
+			initial:  "ready\nUnderstood\n❯",
+			message:  "fix the bug",
+			rendered: "fix the bug\nUnderstood",
+		},
+		{
+			name:     "response is a word from the prompt",
+			message:  "say yes",
+			rendered: "say yes\nyes",
+		},
+		{
+			name:     "response quotes request at end",
+			message:  "fix the bug",
+			rendered: "fix the bug\nUnderstood, I will fix the bug",
+		},
+		{
+			name:     "response follows bordered multiline input",
+			message:  "first line\nsecond line",
+			rendered: "│ first line │\n│ second line │\nUnderstood",
+		},
+		{
+			name:     "response before composer footer",
+			message:  "fix the bug",
+			rendered: "> fix the bug\nUnderstood\n❯\n? for shortcuts",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			initial := tt.initial
+			if initial == "" {
+				initial = "ready"
+			}
+			kind, detected := detectAcknowledgmentForAgent(initial, initial+"\n"+tt.rendered, tt.message, "claude")
+			if !detected || kind != AckEchoDetected {
+				t.Fatalf("response after echo = (%s, %v), want (%s, true)", kind, detected, AckEchoDetected)
+			}
 		})
 	}
 }
@@ -801,4 +909,192 @@ func TestRemoveAckPanesDropsBaselineFailures(t *testing.T) {
 	if same := removeAckPanes(pending, nil); len(same) != 3 {
 		t.Fatalf("removeAckPanes with no drops = %v, want the input unchanged", same)
 	}
+}
+
+func TestAcknowledgmentIgnoresRepaintedHistory(t *testing.T) {
+	initial := "ready\nUnderstood, I will work on that.\n>"
+	kind, detected := detectAcknowledgmentForAgent(initial, initial+"\n"+initial, "", "claude")
+	if detected || kind != AckNone {
+		t.Fatalf("unchanged transcript repaint acknowledged as %s", kind)
+	}
+}
+
+func TestSendAndAckRequiresResponseRealTmux(t *testing.T) {
+	testutil.RequireTmuxThrottled(t)
+	for _, response := range []bool{false, true} {
+		t.Run(fmt.Sprintf("response_%v", response), func(t *testing.T) {
+			command := "stty echo; printf 'ready\\n'; exec sleep 30"
+			if response {
+				command = "stty echo; printf 'ready\\n'; IFS= read -r message; printf '\\nI will inspect the source now.\\n'; exec sleep 30"
+			}
+			session, pane := createAckTestSession(t, command)
+			message := "say yes only after reading the source, and inspect every step of this long request"
+			enter := true
+			output, err := GetSendAndAck(SendAndAckOptions{
+				SendOptions:  SendOptions{Session: session, Pane: pane.ID, Message: message, Enter: &enter},
+				AckTimeoutMs: 500, AckPollMs: 20,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !output.Send.Success || len(output.Send.Successful) != 1 {
+				t.Fatalf("message was not delivered: %+v", output.Send)
+			}
+			if response {
+				if !output.Success || len(output.Ack.Confirmations) != 1 || len(output.Ack.Pending) != 0 {
+					t.Fatalf("real response was not acknowledged: %+v", output)
+				}
+			} else if output.Success || !output.Ack.TimedOut || len(output.Ack.Confirmations) != 0 || len(output.Ack.Pending) != 1 {
+				t.Fatalf("terminal echoed input without a response: %+v", output)
+			}
+		})
+	}
+}
+
+func TestAckDeadlineAndCancellationRealTmux(t *testing.T) {
+	testutil.RequireTmuxThrottled(t)
+	session, pane := createAckTestSession(t, "printf 'ready\\n'; exec sleep 30")
+	t.Run("poll interval cannot extend deadline", func(t *testing.T) {
+		started := time.Now()
+		output, err := GetAck(AckOptions{Session: session, Panes: []string{pane.ID}, TimeoutMs: 150, PollMs: 5000})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if output.Success || !output.TimedOut || len(output.Pending) != 1 || len(output.Confirmations) != 0 {
+			t.Fatalf("silent pane ack = %+v", output)
+		}
+		if elapsed := time.Since(started); elapsed > 2*time.Second {
+			t.Fatalf("150ms deadline took %s with a 5s polling interval", elapsed)
+		}
+	})
+	t.Run("caller cancellation", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		timer := time.AfterFunc(150*time.Millisecond, cancel)
+		defer timer.Stop()
+		defer cancel()
+		started := time.Now()
+		output, err := GetAck(AckOptions{Context: ctx, Session: session, Panes: []string{pane.ID}, TimeoutMs: 10000, PollMs: 5000})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if output.Success || output.TimedOut || output.ErrorCode != ErrCodeTimeout || len(output.Pending) != 1 {
+			t.Fatalf("canceled ack = %+v", output)
+		}
+		if elapsed := time.Since(started); elapsed > 2*time.Second {
+			t.Fatalf("caller cancellation took %s", elapsed)
+		}
+	})
+}
+
+func TestSendAndAckPreflightCancellationRealTmux(t *testing.T) {
+	testutil.RequireTmuxThrottled(t)
+	session, pane := createAckTestSession(t, "printf 'ready\\n'; exec sleep 30")
+	realTmux, err := exec.LookPath(tmux.BinaryPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, phase := range []string{"has-session", "list-panes"} {
+		t.Run(phase, func(t *testing.T) {
+			root := t.TempDir()
+			started, dispatched := filepath.Join(root, "started"), filepath.Join(root, "dispatched")
+			wrapper := filepath.Join(root, "tmux")
+			script := "#!/bin/sh\nif [ \"$1\" = " + tmux.ShellQuote(phase) + " ]; then\n  : > " + tmux.ShellQuote(started) + "\n  exec sleep 30\nfi\n" +
+				"case \"$1\" in load-buffer|paste-buffer|send-keys) : > " + tmux.ShellQuote(dispatched) + ";; esac\n" +
+				"exec " + tmux.ShellQuote(realTmux) + " \"$@\"\n"
+			if err := os.WriteFile(wrapper, []byte(script), 0700); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("NTM_TMUX_BINARY", wrapper)
+			ctx, cancel := context.WithTimeout(t.Context(), 250*time.Millisecond)
+			defer cancel()
+			start := time.Now()
+			output, err := GetSendAndAck(SendAndAckOptions{
+				SendOptions: SendOptions{Context: ctx, Session: session, Pane: pane.ID, Message: "do not dispatch after cancellation"},
+			})
+			if !errors.Is(err, context.DeadlineExceeded) || output != nil {
+				t.Fatalf("canceled preflight = (%+v, %v), want caller deadline", output, err)
+			}
+			if elapsed := time.Since(start); elapsed > 2*time.Second {
+				t.Fatalf("preflight ignored caller deadline for %s", elapsed)
+			}
+			if _, err := os.Stat(started); err != nil {
+				t.Fatalf("test did not reach blocked %s command: %v", phase, err)
+			}
+			if _, err := os.Stat(dispatched); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("canceled preflight attempted delivery: %v", err)
+			}
+		})
+	}
+}
+
+func TestAckBaselineFailureRealTmux(t *testing.T) {
+	testutil.RequireTmuxThrottled(t)
+	session, pane := createAckTestSession(t, "printf 'ready\\n'; exec sleep 30")
+	realTmux, err := exec.LookPath(tmux.BinaryPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Preserve real topology/selection and fail only the capture operation.
+	wrapper := filepath.Join(t.TempDir(), "tmux-capture-failure")
+	script := "#!/bin/sh\nif [ \"$1\" = capture-pane ]; then\n  echo 'capture unavailable' >&2\n  exit 1\nfi\nexec " + tmux.ShellQuote(realTmux) + " \"$@\"\n"
+	if err := os.WriteFile(wrapper, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NTM_TMUX_BINARY", wrapper)
+	output, err := GetAck(AckOptions{Session: session, Panes: []string{pane.ID}, TimeoutMs: 500, PollMs: 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if output.Success || output.TimedOut || len(output.Failed) != 1 || len(output.Pending) != 0 || len(output.Confirmations) != 0 || ExitCodeForResponse(output.RobotResponse) != 1 {
+		t.Fatalf("failed baseline was reported as successful verification: %+v", output)
+	}
+}
+
+func TestSendAckBaselineFailureIsNotConfirmedAttention(t *testing.T) {
+	feed := newTestAttentionFeed(t)
+	oldFeed := GetAttentionFeed()
+	SetAttentionFeed(feed)
+	t.Cleanup(func() { SetAttentionFeed(oldFeed) })
+	output := AckOutput{
+		RobotResponse: NewRobotResponse(true), Session: "ack-test", SentAt: time.Now(),
+		Pending: []string{"1"}, Confirmations: []AckConfirmation{}, Failed: []AckFailure{},
+	}
+	// No baseline is available for the successfully delivered target. The
+	// shared polling path must fail before attempting any terminal capture.
+	pollAcknowledgments(context.Background(), &output, map[string]tmux.Pane{"1": {ID: "%1"}}, nil, "fix source", time.Millisecond)
+	if output.Success || len(output.Failed) != 1 {
+		t.Fatalf("unverifiable delivery = %+v", output)
+	}
+	publishSendActuationVerification(actuationTrace{}, SendAndAckOptions{SendOptions: SendOptions{Session: "ack-test"}}, SendOutput{Successful: []string{"1"}}, output)
+	events, _, err := feed.Replay(0, 10)
+	if err != nil || len(events) != 1 {
+		t.Fatalf("verification events = %+v, err=%v", events, err)
+	}
+	// Replay restores Details from JSON, including floating-point numbers.
+	if events[0].Details["verification_state"] != "failed" || events[0].Details["failed_count"] != float64(1) || events[0].ReasonCode != "actuation_verification_failed" {
+		t.Fatalf("capture failure published as confirmed: %+v", events[0])
+	}
+}
+
+func createAckTestSession(t *testing.T, command string) (string, tmux.Pane) {
+	t.Helper()
+	session := fmt.Sprintf("ntm-ack-proof-%d", time.Now().UnixNano())
+	if _, err := tmux.DefaultClient.Run("new-session", "-d", "-s", session, "-x", "160", "-y", "24", command); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = tmux.KillSession(session) })
+	panes, err := tmux.GetPanes(session)
+	if err != nil || len(panes) != 1 {
+		t.Fatalf("session panes = %+v, err=%v", panes, err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		output, err := tmux.CapturePaneOutput(panes[0].ID, ackCaptureLines)
+		if err == nil && strings.Contains(output, "ready") {
+			return session, panes[0]
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("test pane did not become ready")
+	return "", tmux.Pane{}
 }

@@ -246,7 +246,7 @@ as complete.
 |---|---|---|
 | `--robot-send` | `targets`, `successful`, and `failed` | A successful target received the tmux delivery attempt. This is dispatch evidence only; it does not prove the agent processed the prompt. |
 | `--robot-send` with `--verify-render` | One `render_evidence` entry per target; require `delivered_and_rendered: true` for every target | NTM captures bounded pane output before and after dispatch; a delivered pane whose screen still matches the baseline is re-captured for up to ~2s, because TUIs such as Claude Code redraw their composer shortly after a paste lands (this matters most for `--enter=false`). `delivered_and_rendered` requires dispatch success, both captures, and a changed rendered output. Missing, unchanged, or unavailable evidence makes the overall response `success: false`; it proves rendered delivery, not prompt comprehension. |
-| `--robot-send` with `--track` | `send` plus `ack.confirmations`, `ack.pending`, `ack.failed`, and `ack.timed_out` | The strongest prompt-consumption evidence. A confirmation reports its `ack_type`, time, and latency. Pending or timed-out panes require follow-up; do not retry blindly. |
+| `--robot-send` with `--track` | `send` plus `ack.confirmations`, `ack.pending`, `ack.failed`, and `ack.timed_out` | A confirmation reports new response evidence, its `ack_type`, time, and latency. Echoing the input alone is insufficient, including multiline or wrapped prompts. Failed baseline captures make verification and the overall operation fail even when dispatch succeeded. Failed, pending, or timed-out panes require follow-up; do not retry blindly. |
 | `--robot-tail=SESSION --fresh` | Per-pane `capture_collected_at`, `capture_provenance`, and optional `capture_error` | A direct post-action observation. `capture_provenance: "live"` is fresh capture evidence; `"unavailable"` means the pane was not observed and is not evidence of no effect. |
 | `--robot-spawn` with `--spawn-wait` | The command waits up to `--spawn-timeout` for ready observations | Readiness-gated spawn evidence. A timeout is an error rather than a claim that all agents booted; inspect the resulting session with a fresh tail. |
 | `--robot-spawn` with `--spawn-prompt` | Per-agent `prompt_deliveries[]` (`prompt_sent`, `delivered_at`, `error`) and the `stagger.schedule[]` it was paced on | Dispatch evidence after the implied readiness wait, through the same idle-gated dispatch port as robot send. Any `prompt_sent: false` fails the envelope with `PROMPT_SEND_FAILED`; like `--robot-send` without `--track`, it does not prove the agent processed the prompt. |
@@ -254,8 +254,8 @@ as complete.
 
 The durable attention feed mirrors actuation progress as `request`, `outcome`,
 and `verification` events. For tracked sends, the verification event records
-the target set, confirmations, pending targets, timeout state, and one of
-`confirmed`, `partial_timeout`, `timed_out`, or `pending`. It is suitable for
+the target set, confirmations, failed and pending targets, timeout state, and one of
+`confirmed`, `failed`, `partial_timeout`, `timed_out`, or `pending`. It is suitable for
 asynchronous monitoring; command responses remain the primary evidence for the
 specific invocation.
 

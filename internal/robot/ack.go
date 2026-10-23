@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/Dicklesworthstone/ntm/internal/cm"
 	"github.com/Dicklesworthstone/ntm/internal/status"
@@ -65,7 +67,7 @@ type AckType string
 
 const (
 	AckPromptReturned AckType = "prompt_returned" // Agent showed ready prompt after processing
-	AckEchoDetected   AckType = "echo_detected"   // Agent echoed the input
+	AckEchoDetected   AckType = "echo_detected"   // New response followed the complete input echo
 	AckExplicitAck    AckType = "explicit_ack"    // Agent responded with understood/acknowledged
 	AckOutputStarted  AckType = "output_started"  // Agent began producing output
 	AckNone           AckType = "none"            // No acknowledgment detected
@@ -77,12 +79,13 @@ const ackCaptureLines = 200
 
 // AckOptions configures the PrintAck operation
 type AckOptions struct {
-	Session    string   // Target session name
-	Message    string   // The message that was sent (for echo detection)
-	Panes      []string // Specific pane indices to monitor
-	AgentTypes []string // Only watch panes of these agent types (aliases accepted; empty = any type)
-	TimeoutMs  int      // How long to wait for acknowledgments (default 30000)
-	PollMs     int      // How often to poll for changes (default 500)
+	Context    context.Context `json:"-"` // Caller cancellation; nil uses context.Background
+	Session    string          // Target session name
+	Message    string          // The message that was sent (for echo detection)
+	Panes      []string        // Specific pane indices to monitor
+	AgentTypes []string        // Only watch panes of these agent types (aliases accepted; empty = any type)
+	TimeoutMs  int             // How long to wait for acknowledgments (default 30000)
+	PollMs     int             // How often to poll for changes (default 500)
 }
 
 // GetAck monitors panes for acknowledgment after a send operation and returns the result.
@@ -94,6 +97,12 @@ func GetAck(opts AckOptions) (*AckOutput, error) {
 	if opts.PollMs <= 0 {
 		opts.PollMs = 500 // Default 500ms poll interval
 	}
+	ctx := opts.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(ctx, time.Duration(opts.TimeoutMs)*time.Millisecond)
+	defer cancel()
 
 	sentAt := time.Now().UTC()
 	output := &AckOutput{
@@ -107,7 +116,14 @@ func GetAck(opts AckOptions) (*AckOutput, error) {
 		TimedOut:      false,
 	}
 
-	if !tmux.SessionExists(opts.Session) {
+	exists, err := tmux.SessionExistsContext(ctx, opts.Session)
+	if err != nil {
+		output.Failed = append(output.Failed, AckFailure{Pane: "session", Reason: err.Error()})
+		output.RobotResponse = NewErrorResponse(err, ErrCodeInternalError, "Check tmux session state")
+		finishAckOutput(ctx, output)
+		return output, nil
+	}
+	if !exists {
 		output.Failed = append(output.Failed, AckFailure{
 			Pane:   "session",
 			Reason: fmt.Sprintf("session '%s' not found", opts.Session),
@@ -121,7 +137,7 @@ func GetAck(opts AckOptions) (*AckOutput, error) {
 		return output, nil
 	}
 
-	panes, err := tmux.GetPanes(opts.Session)
+	panes, err := tmux.GetPanesContext(ctx, opts.Session)
 	if err != nil {
 		output.Failed = append(output.Failed, AckFailure{
 			Pane:   "panes",
@@ -132,7 +148,7 @@ func GetAck(opts AckOptions) (*AckOutput, error) {
 			ErrCodeInternalError,
 			"Check tmux session state",
 		)
-		output.CompletedAt = time.Now().UTC()
+		finishAckOutput(ctx, output)
 		return output, nil
 	}
 
@@ -173,7 +189,7 @@ func GetAck(opts AckOptions) (*AckOutput, error) {
 	for _, pane := range targetPanes {
 		paneKey := tmux.PaneTargetKey(pane, multiWindow)
 		captured, err := func() (string, error) {
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 			defer cancel()
 			return tmux.CapturePaneOutputContext(ctx, pane.ID, ackCaptureLines)
 		}()
@@ -191,78 +207,71 @@ func GetAck(opts AckOptions) (*AckOutput, error) {
 		output.Pending = removeAckPanes(output.Pending, baselineFailures)
 	}
 
-	// Wait a short initial delay to let agents start processing
-	time.Sleep(100 * time.Millisecond)
+	pollAcknowledgments(ctx, output, targetByKey, initialStates, opts.Message, time.Duration(opts.PollMs)*time.Millisecond)
+	return output, nil
+}
 
-	// Poll for acknowledgments until timeout
-	deadline := time.Now().Add(time.Duration(opts.TimeoutMs) * time.Millisecond)
-	pollInterval := time.Duration(opts.PollMs) * time.Millisecond
-
-	for time.Now().Before(deadline) && len(output.Pending) > 0 {
-		// Check each pending pane
-		stillPending := []string{}
-
-		for _, paneKey := range output.Pending {
-			targetPane, ok := targetByKey[paneKey]
-			if !ok {
-				stillPending = append(stillPending, paneKey)
-				continue
+// Both ack surfaces share one deadline. A slow capture or a poll interval
+// longer than the requested timeout must not extend the acknowledgment wait.
+// Baseline failures are terminal verification failures, not confirmations.
+func pollAcknowledgments(ctx context.Context, output *AckOutput, targets map[string]tmux.Pane, initialStates map[string]string, message string, pollInterval time.Duration) {
+	for ctx.Err() == nil && len(output.Pending) > 0 {
+		stillPending := make([]string, 0, len(output.Pending))
+		for i, paneKey := range output.Pending {
+			if ctx.Err() != nil {
+				stillPending = append(stillPending, output.Pending[i:]...)
+				break
 			}
-
-			// Capture current output
-			captured, err := func() (string, error) {
-				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-				defer cancel()
-				return tmux.CapturePaneOutputContext(ctx, targetPane.ID, ackCaptureLines)
-			}()
-			if err != nil {
-				stillPending = append(stillPending, paneKey)
-				continue
-			}
-
-			currentOutput := status.StripANSI(captured)
 			initialOutput, hasBaseline := initialStates[paneKey]
 			if !hasBaseline {
-				// No baseline means no diff is possible; never claim an ack.
+				output.Failed = append(output.Failed, AckFailure{
+					Pane: paneKey, Reason: "baseline capture failed, acknowledgment cannot be detected",
+				})
 				continue
 			}
-
-			// Check for acknowledgment
-			ackType, detected := detectAcknowledgmentForAgent(initialOutput, currentOutput, opts.Message, ackPaneAgentType(targetPane))
-
-			if detected {
-				latency := time.Since(sentAt)
-				output.Confirmations = append(output.Confirmations, AckConfirmation{
-					Pane:      paneKey,
-					AckType:   string(ackType),
-					AckAt:     time.Now().UTC().Format(time.RFC3339),
-					LatencyMs: int(latency.Milliseconds()),
-				})
-			} else {
-				stillPending = append(stillPending, paneKey)
+			pane, ok := targets[paneKey]
+			if !ok {
+				output.Failed = append(output.Failed, AckFailure{Pane: paneKey, Reason: "acknowledgment target is unavailable"})
+				continue
 			}
+			captureCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+			captured, err := tmux.CapturePaneOutputContext(captureCtx, pane.ID, ackCaptureLines)
+			cancel()
+			if err != nil || ctx.Err() != nil {
+				stillPending = append(stillPending, paneKey)
+				continue
+			}
+			ackType, detected := detectAcknowledgmentForAgent(initialOutput, status.StripANSI(captured), message, ackPaneAgentType(pane))
+			if !detected {
+				stillPending = append(stillPending, paneKey)
+				continue
+			}
+			now := time.Now().UTC()
+			output.Confirmations = append(output.Confirmations, AckConfirmation{
+				Pane: paneKey, AckType: string(ackType), AckAt: now.Format(time.RFC3339),
+				LatencyMs: int(now.Sub(output.SentAt).Milliseconds()),
+			})
 		}
-
 		output.Pending = stillPending
-
-		// If still have pending, wait before next poll
 		if len(output.Pending) > 0 {
-			time.Sleep(pollInterval)
+			waitAckPoll(ctx, pollInterval)
 		}
 	}
+	finishAckOutput(ctx, output)
+}
 
-	// Mark as timed out if we still have pending
-	if len(output.Pending) > 0 {
-		output.TimedOut = true
+func finishAckOutput(ctx context.Context, output *AckOutput) {
+	switch {
+	case ctx.Err() != nil:
+		output.TimedOut = errors.Is(ctx.Err(), context.DeadlineExceeded)
+		output.RobotResponse = NewErrorResponse(ctx.Err(), ErrCodeTimeout, "Acknowledgment tracking stopped; inspect pending and failed panes before retrying the send")
+	case len(output.Failed) > 0 && output.Success:
 		output.RobotResponse = NewErrorResponse(
-			fmt.Errorf("ack timeout"),
-			ErrCodeTimeout,
-			"Increase --timeout (or deprecated --ack-timeout) or check agent health",
+			fmt.Errorf("acknowledgment could not be verified for %d pane(s)", len(output.Failed)),
+			ErrCodeInternalError, "Inspect failed panes; the message may already have been delivered",
 		)
 	}
-
 	output.CompletedAt = time.Now().UTC()
-	return output, nil
 }
 
 // PrintAck monitors panes for acknowledgment after a send operation.
@@ -325,13 +334,53 @@ func detectAcknowledgmentForAgent(initialOutput, currentOutput, message, agentTy
 	// Normalize the agent type for prompt detection.
 	agentType = translateAgentTypeForStatus(agentType)
 
-	// Check for echo of the sent message (basic confirmation)
-	if message != "" && strings.Contains(newContent, truncateForMatch(message)) {
-		// Echo detected - but we need to see output AFTER the echo
-		afterEcho := getContentAfterEcho(newContent, message)
-		if afterEcho != "" {
-			return AckEchoDetected, true
+	// A terminal echoes input before the agent reads it. Require new response
+	// content after the entire message, including multiline and wrapped input.
+	// Stripping only a prefix made the rest of the user's own prompt an ack.
+	echoed := false
+	for {
+		afterEcho, found := getContentAfterEcho(newContent, message)
+		if !found {
+			break
 		}
+		echoed = true
+		newContent = afterEcho
+	}
+	if echoed {
+		// A submitted input is followed by the live composer and its footer
+		// even when the agent has not responded. Neither is response evidence.
+		newContent = status.AgentTranscript(newContent, agentType)
+	}
+	messageText, _ := compactAckEcho(status.StripANSI(message))
+	baselineLines := make(map[string]bool)
+	for _, line := range splitLines(initialOutput) {
+		baselineLines[strings.TrimSpace(line)] = true
+	}
+	responseLines := make([]string, 0)
+	for _, line := range splitLines(newContent) {
+		line = strings.TrimSpace(line)
+		if line == "" || status.IsPromptLine(line, agentType) || trimAckInputRow(line) == "" {
+			continue
+		}
+		if !echoed {
+			if baselineLines[line] {
+				continue
+			}
+			// The capture may start partway through a long or still-rendering
+			// prompt. Its visible rows are not evidence of a response either.
+			row, _ := compactAckEcho(trimAckInputRow(line))
+			if row != "" && strings.Contains(messageText, row) {
+				continue
+			}
+		}
+		responseLines = append(responseLines, line)
+	}
+	newContent = strings.Join(responseLines, "\n")
+	if newContent == "" {
+		return AckNone, false
+	}
+	if echoed {
+		return AckEchoDetected, true
 	}
 
 	// Check for explicit acknowledgment phrases
@@ -350,21 +399,12 @@ func detectAcknowledgmentForAgent(initialOutput, currentOutput, message, agentTy
 
 	// Check for output started (agent is producing response)
 	// This is detected by new lines that aren't just the prompt
-	lines := splitLines(newContent)
-	nonEmptyLines := 0
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		// Use agentType for prompt detection to avoid matching generic content
-		if trimmed != "" && !status.IsPromptLine(trimmed, agentType) {
-			nonEmptyLines++
-		}
-	}
-	if nonEmptyLines >= 2 {
+	if len(responseLines) >= 2 {
 		return AckOutputStarted, true
 	}
 
 	// Check for prompt returned (agent finished and showing ready prompt)
-	lastLines := getLastNonEmptyLines(currentOutput, 3)
+	lastLines := getLastNonEmptyLines(currentOutput, 1)
 	for _, line := range lastLines {
 		if status.IsPromptLine(line, agentType) {
 			// If we see idle prompt after new content, agent processed and returned
@@ -388,42 +428,34 @@ func getNewContent(initial, current string) string {
 		return current[len(initial):]
 	}
 
-	// When capture windows are fixed-size (e.g., last 20 lines), the window can shift even if
-	// only a few lines were appended. That produces different strings with the same line count,
-	// and the old length/line-count diff would incorrectly return empty.
+	// A fixed-height capture can grow in bytes while its lines scroll. Always
+	// remove the overlapping history before interpreting any new response.
+	initialLines := splitLines(initial)
+	currentLines := splitLines(current)
+	maxK := len(initialLines)
+	if len(currentLines) < maxK {
+		maxK = len(currentLines)
+	}
+	for k := maxK; k > 0; k-- {
+		ok := true
+		initStart := len(initialLines) - k
+		for i := 0; i < k; i++ {
+			if initialLines[initStart+i] != currentLines[i] {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			if k >= len(currentLines) {
+				return ""
+			}
+			return strings.Join(currentLines[k:], "\n")
+		}
+	}
 	if len(current) <= len(initial) {
-		// Content might have been replaced, compare end
-		initialLines := splitLines(initial)
-		currentLines := splitLines(current)
-
 		if len(currentLines) > len(initialLines) {
-			// Return new lines
-			newLines := currentLines[len(initialLines):]
-			return strings.Join(newLines, "\n")
+			return strings.Join(currentLines[len(initialLines):], "\n")
 		}
-
-		// Rolling window shift: find the longest suffix of initial that matches a prefix of current.
-		maxK := len(initialLines)
-		if len(currentLines) < maxK {
-			maxK = len(currentLines)
-		}
-		for k := maxK; k > 0; k-- {
-			ok := true
-			initStart := len(initialLines) - k
-			for i := 0; i < k; i++ {
-				if initialLines[initStart+i] != currentLines[i] {
-					ok = false
-					break
-				}
-			}
-			if ok {
-				if k >= len(currentLines) {
-					return ""
-				}
-				return strings.Join(currentLines[k:], "\n")
-			}
-		}
-
 		return ""
 	}
 
@@ -437,37 +469,71 @@ func getNewContent(initial, current string) string {
 	return current[len(initial):]
 }
 
-// truncateForMatch truncates message to first line or first 50 bytes for matching,
-// respecting UTF-8 boundaries.
-func truncateForMatch(message string) string {
-	lines := strings.SplitN(message, "\n", 2)
-	msg := lines[0]
-	if len(msg) > 50 {
-		// Find the last rune boundary at or before 50 bytes
-		lastValid := 0
-		for i := range msg {
-			if i > 50 {
-				break
+// compactAckEcho ignores whitespace introduced by terminal wrapping while
+// retaining the original byte boundary after every compacted byte.
+func compactAckEcho(text string) (string, []int) {
+	var compact strings.Builder
+	ends := make([]int, 0, len(text))
+	for offset := 0; offset < len(text); {
+		r, size := utf8.DecodeRuneInString(text[offset:])
+		if !unicode.IsSpace(r) {
+			compact.WriteString(text[offset : offset+size])
+			for i := 0; i < size; i++ {
+				ends = append(ends, offset+size)
 			}
-			lastValid = i
 		}
-		msg = msg[:lastValid]
+		offset += size
 	}
-	return msg
+	return compact.String(), ends
 }
 
-// getContentAfterEcho returns content after the echo of the message
-func getContentAfterEcho(content, message string) string {
-	msgPart := truncateForMatch(message)
-	idx := strings.Index(content, msgPart)
-	if idx == -1 {
+// trimAckInputRow removes the framing a terminal may add around an input row.
+// It is used only for matching known input, not for identifying response text.
+func trimAckInputRow(row string) string {
+	row = strings.TrimSpace(row)
+	if strings.Trim(row, "─━╌┄┈╰╯└┘╭╮┌┐┏┓┗┛│┃| ") == "" {
 		return ""
 	}
-	afterIdx := idx + len(msgPart)
-	if afterIdx >= len(content) {
-		return ""
+	row = strings.TrimSpace(strings.Trim(row, "│┃|"))
+	return strings.TrimSpace(strings.TrimLeft(row, ">❯›»$ "))
+}
+
+// getContentAfterEcho matches a complete input at the beginning of new content,
+// allowing terminal wrapping and composer framing. A mention of the request
+// inside a response is not an input echo. The bool distinguishes an echo with
+// no response from no echo at all.
+func getContentAfterEcho(content, message string) (string, bool) {
+	msg, _ := compactAckEcho(status.StripANSI(message))
+	if msg == "" {
+		return "", false
 	}
-	return strings.TrimSpace(content[afterIdx:])
+	// Try exact rows first so literal prompt/border glyphs in the user's
+	// message are preserved, then allow the TUI's surrounding decorations.
+	rows := strings.Split(status.StripANSI(content), "\n")
+	for _, framed := range []bool{false, true} {
+		matched := 0
+		for i, row := range rows {
+			row = strings.TrimSpace(row)
+			if framed {
+				row = trimAckInputRow(row)
+			}
+			compact, ends := compactAckEcho(row)
+			if compact == "" {
+				continue
+			}
+			remaining := msg[matched:]
+			if strings.HasPrefix(compact, remaining) {
+				after := []string{row[ends[len(remaining)-1]:]}
+				after = append(after, rows[i+1:]...)
+				return strings.TrimSpace(strings.Join(after, "\n")), true
+			}
+			if !strings.HasPrefix(remaining, compact) {
+				break
+			}
+			matched += len(compact)
+		}
+	}
+	return "", false
 }
 
 // getLastNonEmptyLines returns the last N non-empty lines
@@ -505,6 +571,12 @@ func GetSendAndAck(opts SendAndAckOptions) (*SendAndAckOutput, error) {
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+	if opts.AckTimeoutMs <= 0 {
+		opts.AckTimeoutMs = 30000
+	}
+	if opts.AckPollMs <= 0 {
+		opts.AckPollMs = 500
 	}
 	// First, send the message
 	sentAt := time.Now().UTC()
@@ -545,19 +617,21 @@ func GetSendAndAck(opts SendAndAckOptions) (*SendAndAckOutput, error) {
 	}
 	opts.Message = messageToSend
 
-	if !tmux.SessionExists(opts.Session) {
+	exists, sessionErr := tmux.SessionExistsContext(ctx, opts.Session)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if sessionErr != nil || !exists {
+		errorCode, hint := ErrCodeInternalError, "Check tmux session state"
+		if sessionErr == nil {
+			sessionErr = fmt.Errorf("session '%s' not found", opts.Session)
+			errorCode, hint = ErrCodeSessionNotFound, "Use --robot-status to list available sessions"
+		}
+		errResp := NewErrorResponse(sessionErr, errorCode, hint)
 		return finalizeTerminalSendAndAckActuation(trace, opts, &SendAndAckOutput{
-			RobotResponse: NewErrorResponse(
-				fmt.Errorf("session '%s' not found", opts.Session),
-				ErrCodeSessionNotFound,
-				"Use --robot-status to list available sessions",
-			),
+			RobotResponse: errResp,
 			Send: SendOutput{
-				RobotResponse: NewErrorResponse(
-					fmt.Errorf("session '%s' not found", opts.Session),
-					ErrCodeSessionNotFound,
-					"Use --robot-status to list available sessions",
-				),
+				RobotResponse:  errResp,
 				Session:        opts.Session,
 				SentAt:         sentAt,
 				Blocked:        false,
@@ -565,15 +639,11 @@ func GetSendAndAck(opts SendAndAckOptions) (*SendAndAckOutput, error) {
 				Warnings:       redactionWarnings,
 				Targets:        []string{},
 				Successful:     []string{},
-				Failed:         []SendError{{Pane: "session", Error: fmt.Sprintf("session '%s' not found", opts.Session)}},
+				Failed:         []SendError{{Pane: "session", Error: sessionErr.Error()}},
 				MessagePreview: preview,
 			},
 			Ack: AckOutput{
-				RobotResponse: NewErrorResponse(
-					fmt.Errorf("session '%s' not found", opts.Session),
-					ErrCodeSessionNotFound,
-					"Use --robot-status to list available sessions",
-				),
+				RobotResponse: errResp,
 				Session:       opts.Session,
 				SentAt:        sentAt,
 				CompletedAt:   time.Now().UTC(),
@@ -584,7 +654,10 @@ func GetSendAndAck(opts SendAndAckOptions) (*SendAndAckOutput, error) {
 		}), nil
 	}
 
-	panes, err := tmux.GetPanes(opts.Session)
+	panes, err := tmux.GetPanesContext(ctx, opts.Session)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if err != nil {
 		return finalizeTerminalSendAndAckActuation(trace, opts, &SendAndAckOutput{
 			RobotResponse: NewErrorResponse(
@@ -794,107 +867,26 @@ func GetSendAndAck(opts SendAndAckOptions) (*SendAndAckOutput, error) {
 		Session:       opts.Session,
 		SentAt:        sentAt,
 		Confirmations: []AckConfirmation{},
-		Pending:       sendOutput.Successful,
+		Pending:       append([]string{}, sendOutput.Successful...),
 		Failed:        []AckFailure{},
 		TimeoutMs:     opts.AckTimeoutMs,
 		TimedOut:      false,
 	}
 
-	if opts.AckTimeoutMs <= 0 {
-		opts.AckTimeoutMs = 30000
+	targetByKey := make(map[string]tmux.Pane, len(targetPanes))
+	for i, pane := range targetPanes {
+		targetByKey[targetKeys[i]] = pane
 	}
-	if opts.AckPollMs <= 0 {
-		opts.AckPollMs = 500
-	}
-
-	// Wait for initial processing without retaining a canceled command.
-	waitAckPoll(ctx, 100*time.Millisecond)
-
-	// Poll for acknowledgments
-	deadline := time.Now().Add(time.Duration(opts.AckTimeoutMs) * time.Millisecond)
-	pollInterval := time.Duration(opts.AckPollMs) * time.Millisecond
-
-	for ctx.Err() == nil && time.Now().Before(deadline) && len(ackOutput.Pending) > 0 {
-		stillPending := []string{}
-
-		for _, paneKey := range ackOutput.Pending {
-			var targetPane *tmux.Pane
-			for i := range targetPanes {
-				if targetKeys[i] == paneKey {
-					targetPane = &targetPanes[i]
-					break
-				}
-			}
-
-			if targetPane == nil {
-				stillPending = append(stillPending, paneKey)
-				continue
-			}
-
-			captured, err := func() (string, error) {
-				ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
-				defer cancel()
-				return tmux.CapturePaneOutputContext(ctx, targetPane.ID, ackCaptureLines)
-			}()
-			if err != nil {
-				stillPending = append(stillPending, paneKey)
-				continue
-			}
-
-			currentOutput := status.StripANSI(captured)
-			initialOutput, hasBaseline := initialStates[paneKey]
-			if !hasBaseline {
-				// Baseline capture failed before the send, so no diff is possible
-				// and an acknowledgment cannot be honestly confirmed.
-				ackOutput.Failed = append(ackOutput.Failed, AckFailure{
-					Pane:   paneKey,
-					Reason: "baseline capture failed before send, acknowledgment cannot be detected",
-				})
-				continue
-			}
-
-			ackType, detected := detectAcknowledgmentForAgent(initialOutput, currentOutput, opts.Message, ackPaneAgentType(*targetPane))
-
-			if detected {
-				latency := time.Since(sentAt)
-				ackOutput.Confirmations = append(ackOutput.Confirmations, AckConfirmation{
-					Pane:      paneKey,
-					AckType:   string(ackType),
-					AckAt:     time.Now().UTC().Format(time.RFC3339),
-					LatencyMs: int(latency.Milliseconds()),
-				})
-			} else {
-				stillPending = append(stillPending, paneKey)
-			}
-		}
-
-		ackOutput.Pending = stillPending
-
-		if len(ackOutput.Pending) > 0 {
-			waitAckPoll(ctx, pollInterval)
-		}
-	}
-
-	if len(ackOutput.Pending) > 0 {
-		ackOutput.TimedOut = true
-		ackOutput.RobotResponse = NewErrorResponse(
-			fmt.Errorf("ack timeout"),
-			ErrCodeTimeout,
-			"Increase --timeout (or deprecated --ack-timeout) or check agent health",
-		)
-	}
-
-	ackOutput.CompletedAt = time.Now().UTC()
-	if err := ctx.Err(); err != nil {
-		ackOutput.RobotResponse = NewErrorResponse(err, ErrCodeTimeout, "Send completed; acknowledgment tracking was canceled")
-	}
+	ackCtx, ackCancel := context.WithTimeout(ctx, time.Duration(opts.AckTimeoutMs)*time.Millisecond)
+	pollAcknowledgments(ackCtx, &ackOutput, targetByKey, initialStates, opts.Message, time.Duration(opts.AckPollMs)*time.Millisecond)
+	ackCancel()
 	publishSendActuationVerification(trace, opts, sendOutput, ackOutput)
 
 	// Automatic outcome feedback (bd-3j6hm): only clear evidence is reported.
 	// A confirmed acknowledgment with no panes left pending is a success for
 	// the injected rules; an ack timeout is ambiguous and reports nothing.
 	// reportCMOutcome is bounded and never fails the send.
-	if ctx.Err() == nil && shouldReportCMSendOutcome(opts.WithMemory, memoryInfo, len(ackOutput.Confirmations), ackOutput.TimedOut) {
+	if ctx.Err() == nil && sendOutput.Success && ackOutput.Success && shouldReportCMSendOutcome(opts.WithMemory, memoryInfo, len(ackOutput.Confirmations), ackOutput.TimedOut) {
 		reportCMOutcome(memCfg, cm.OutcomeSuccess, memoryInfo.RulesInjected)
 	}
 

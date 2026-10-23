@@ -14,13 +14,11 @@ package e2e
 //
 // Empirical contracts these tests pin down (verified live before writing):
 //
-//   - A tracked send to a pane that submits and echoes the message is
-//     acknowledged via "echo_detected" on the first poll: the transcript echo
-//     IS an acknowledgment to the detector. A live agent pane therefore
-//     cannot produce the --track timeout path; holding a successful tracked
-//     send in "pending" requires a pane that accepts keys but renders
-//     nothing (a shell with `stty -echo`), which is what the timeout
-//     scenario uses.
+//   - A tracked send requires new response evidence after the complete input
+//     echo. The confirmation scenario explicitly arms a fixture response;
+//     the timeout scenario uses a silent shell to isolate timeout behavior.
+//     Echo-only input is covered against a real echo-enabled terminal in
+//     robot.TestSendAndAckRequiresResponseRealTmux.
 //   - Ack timeout is a structured failure: top-level success=false with
 //     error_code=TIMEOUT and process exit 1, while the embedded send section
 //     still reports its own success and the pending list names the
@@ -282,10 +280,8 @@ func splitFakeagentPane(t *testing.T, base *fakeagentPane, persona string, ordin
 }
 
 // splitMutedShellPane splits off a pane running a shell with terminal echo
-// disabled: it accepts delivered keys but never renders new output. This is
-// the only honest way to hold a SUCCESSFUL tracked send in the pending state,
-// because a fixture pane's own submit echo already counts as an
-// acknowledgment to the detector (see the file header).
+// disabled: it accepts delivered keys but never renders new output. This
+// isolates timeout behavior from the fixture's independently changing UI.
 func splitMutedShellPane(t *testing.T, session string) (paneID string, paneIndex int) {
 	t.Helper()
 	before, err := tmux.GetPanes(session)

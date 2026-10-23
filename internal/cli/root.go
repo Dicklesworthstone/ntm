@@ -2370,6 +2370,7 @@ Shell Integration:
 				ackAgentTypes = strings.Split(robotSendType, ",")
 			}
 			opts := robot.AckOptions{
+				Context:    cmd.Context(),
 				Session:    session,
 				Message:    robotSendMsg, // Reuse --msg flag for echo detection
 				Panes:      paneSelectors,
@@ -5123,7 +5124,7 @@ func init() {
 	rootCmd.Flags().StringVar(&robotContextInjectFiles, "inject-files", "", "Comma-separated files to inject. Optional with --robot-context-inject. Example: --inject-files=AGENTS.md,README.md")
 	rootCmd.Flags().IntVar(&robotContextInjectMax, "inject-max-bytes", 0, "Max content size in bytes (0=unlimited). Optional with --robot-context-inject")
 	rootCmd.Flags().BoolVar(&robotContextInjectAll, "inject-all", false, "Include user pane. Optional with --robot-context-inject")
-	rootCmd.Flags().IntVar(&robotContextInjectPane, "inject-pane", -1, "Specific pane index to inject. Optional with --robot-context-inject")
+	rootCmd.Flags().IntVar(&robotContextInjectPane, "inject-pane", -1, "Specific pane index to inject; rejected if the index exists in multiple windows. Optional with --robot-context-inject")
 	rootCmd.Flags().BoolVar(&robotContextInjectDry, "inject-dry-run", false, "Preview without sending. Optional with --robot-context-inject")
 
 	// Robot-mail-check flags for Agent Mail inbox integration (bd-adgv)
