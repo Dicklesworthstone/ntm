@@ -73,16 +73,22 @@ task, report a safe failure class and never inject partial captured JSON.
 An uninitialized index remains an optional empty-context state with an explicit
 skip reason; it does not mask another scope's output-limit or decoding error.
 
-The ordinary send call site currently supplies no workspace, so it still searches
-globally. The shared `QueryAndFilterCASS` API supports additional project candidates
-when its caller provides a valid `CurrentWorkspace`; it never guesses one from
-the shell's current directory. Binding ordinary send to its target session's
-authoritative project remains a separate integration step.
+Ordinary send now resolves the target session's authoritative project before
+requesting project candidates. This applies to inferred sessions as well as
+explicit names; the caller's current directory never supplies project preference.
+The existing strict resolver groups panes by their physical repository, so linked
+worktrees retain their shared project identity. When the session project cannot
+be established locally, including remote tmux sessions, send retains global
+history and reports a warning instead of guessing a workspace. Disabling project
+preference avoids this extra resolution and the scoped search.
 
-Ordinary send's existing context-free injection API also retains its configured
-lookup deadline rather than inheriting the command's cancellation. This change
-does not claim to add owner cancellation to that call site or migrate the
-standalone robot CASS query helpers. Fresh-assignment replay remains unchanged.
+The command context now owns both searches. Canceling send or reaching its parent
+deadline cancels and joins retrieval, discards partial candidates, and returns a
+failed send without beginning prompt delivery. The optional CASS lookup still has
+its own configured timeout: when only that timeout expires, send preserves its
+existing graceful-degradation behavior and may deliver the original task. These
+changes do not migrate the standalone robot CASS query helpers. Fresh-assignment
+replay remains unchanged.
 
 ## Scope and qualification
 
@@ -97,3 +103,7 @@ Ordinary-send adapter tests exercise the real client, subprocess executor,
 decoder and redaction implementation. They cover indexed evidence, snippet/full
 content precedence, scoped and global policy, partial failures, both output caps,
 disabled/full-window skips, all formatting paths, and the inherited-pipe timeout.
+Command-level tests run the ordinary send handler and real CASS executor with a
+recording tmux transport. They verify target-project selection from another
+same-named workspace, disabled preference, unknown-project fallback, and caller
+cancellation/deadline during both in-flight searches with no prompt delivery.

@@ -2323,6 +2323,29 @@ func runSendInternal(opts SendOptions) (err error) {
 	// missing or wedged records a skip and the send proceeds unmodified.
 	var cassInjectionInfo *robot.CASSInjectionInfo
 	if cassEnabled, cassQuery, cassFilter, cassInject := sendCASSInjectionConfigs(opts.WithCASS, opts.NoCASS, cfg); cassEnabled {
+		if cassQuery.Enabled && cassQuery.PreferSameProject && cassFilter.PreferSameProject && len(selectedPanes) > 0 {
+			// Even an inferred session has its own project identity. Never use
+			// the caller's cwd or a remote path that happens to exist locally
+			// to boost unrelated history. An unavailable project only disables
+			// this optional preference; global candidates remain eligible.
+			var projectDir string
+			var projectErr error
+			if tmux.DefaultClient.Remote == "" {
+				projectDir, projectErr = resolveExplicitProjectDirForSessionContext(ctx, session)
+			}
+			if err := ctx.Err(); err != nil {
+				return outputError(fmt.Errorf("send canceled during CASS project resolution: %w", err))
+			}
+			if projectErr == nil && projectDir != "" {
+				cassFilter.CurrentWorkspace = projectDir
+			} else {
+				warning := "CASS project preference unavailable: target session project could not be resolved locally; using global history"
+				redactionWarnings = append(redactionWarnings, warning)
+				if !jsonOutput && !silent {
+					fmt.Fprintln(os.Stderr, warning)
+				}
+			}
+		}
 		// One prompt goes to every selected pane, so a mixed --cc/--cod send
 		// must not format for whichever pane happens to be first: use the
 		// agent-specific format only when all targets run the same agent
@@ -2342,8 +2365,11 @@ func runSendInternal(opts SendOptions) (err error) {
 				cassInject.Format = cass.FormatMarkdown
 			}
 		}
-		injectRes, queryRes, filterRes := cass.InjectContextFromQuery(prompt, cassQuery, cassFilter, cassInject)
+		injectRes, queryRes, filterRes := cass.InjectContextFromQuery(ctx, prompt, cassQuery, cassFilter, cassInject)
 		cassInjectionInfo = sendCASSInjectionInfo(injectRes, queryRes.Query, filterRes.Hits)
+		if err := ctx.Err(); err != nil {
+			return outputError(fmt.Errorf("send canceled during CASS context injection: %w", err))
+		}
 		if injectRes.Success && injectRes.ModifiedPrompt != "" {
 			prompt = injectRes.ModifiedPrompt
 			opts.Prompt = prompt

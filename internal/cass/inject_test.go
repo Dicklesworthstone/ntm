@@ -884,6 +884,7 @@ func TestInjectContextFromQueryDisabledRecordsHonestSkip(t *testing.T) {
 	queryConfig := DefaultCASSConfig()
 	queryConfig.Enabled = false
 	injectResult, queryResult, _ := InjectContextFromQuery(
+		t.Context(),
 		"test prompt", queryConfig, FilterConfig{}, DefaultInjectConfig())
 	if !injectResult.Success || !queryResult.Success {
 		t.Fatalf("disabled cass must degrade to a successful skip, got inject=%+v query=%+v", injectResult, queryResult)

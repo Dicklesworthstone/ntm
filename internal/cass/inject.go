@@ -112,19 +112,27 @@ type CASSQueryResult struct {
 }
 
 // QueryCASS queries CASS for relevant historical context based on the prompt.
-func QueryCASS(prompt string, config CASSConfig) CASSQueryResult {
-	return queryCASSContext(prompt, config, "")
+func QueryCASS(ctx context.Context, prompt string, config CASSConfig) CASSQueryResult {
+	return queryCASSContext(ctx, prompt, config, "")
 }
 
 // Both ordinary send and robot assignments use Client.SearchContext for
 // candidate retrieval. Do not add another subprocess or reduced wire decoder
 // here: that bypasses output bounds and loses indexed workspace/time evidence.
-func queryCASSContext(prompt string, config CASSConfig, workspace string) CASSQueryResult {
+func queryCASSContext(ctx context.Context, prompt string, config CASSConfig, workspace string) CASSQueryResult {
 	start := time.Now()
 	result := CASSQueryResult{
 		Success: false,
 		Query:   "",
 		Hits:    []CASSHit{},
+	}
+	if ctx == nil {
+		result.Error = "cass context retrieval requires an operation context"
+		return result
+	}
+	if err := ctx.Err(); err != nil {
+		result.Error = "cass context search stopped: " + err.Error()
+		return result
 	}
 
 	if !config.Enabled {
@@ -164,10 +172,14 @@ func queryCASSContext(prompt string, config CASSConfig, workspace string) CASSQu
 		timeout = DefaultCASSTimeout
 	}
 	client := NewClient(WithExecutor(&DefaultExecutor{BinaryPath: binPath, WaitDelay: time.Second}), WithTimeout(timeout))
-	resp, err := client.SearchContext(context.Background(), opts)
+	resp, err := client.SearchContext(ctx, opts)
 	result.QueryTime = time.Since(start)
 
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			result.Error = "cass context search stopped: " + ctxErr.Error()
+			return result
+		}
 		if errors.Is(err, context.DeadlineExceeded) {
 			result.Error = "cass search timed out after " + timeout.String()
 			return result
@@ -827,12 +839,12 @@ func FilterResults(hits []CASSHit, config FilterConfig) FilterResult {
 	return result
 }
 
-func QueryAndFilterCASS(prompt string, queryConfig CASSConfig, filterConfig FilterConfig) (CASSQueryResult, FilterResult) {
+func QueryAndFilterCASS(ctx context.Context, prompt string, queryConfig CASSConfig, filterConfig FilterConfig) (CASSQueryResult, FilterResult) {
 	workspace := ""
 	if queryConfig.PreferSameProject && filterConfig.PreferSameProject && sameContextWorkspace(filterConfig.CurrentWorkspace, filterConfig.CurrentWorkspace) {
 		workspace = filterConfig.CurrentWorkspace
 	}
-	queryResult := queryCASSContext(prompt, queryConfig, workspace)
+	queryResult := queryCASSContext(ctx, prompt, queryConfig, workspace)
 	if !queryResult.Success || len(queryResult.Hits) == 0 {
 		return queryResult, FilterResult{OriginalCount: 0}
 	}
@@ -840,7 +852,7 @@ func QueryAndFilterCASS(prompt string, queryConfig CASSConfig, filterConfig Filt
 	return queryResult, filterResult
 }
 
-func InjectContextFromQuery(prompt string, queryConfig CASSConfig, filterConfig FilterConfig, injectConfig InjectConfig) (InjectionResult, CASSQueryResult, FilterResult) {
+func InjectContextFromQuery(ctx context.Context, prompt string, queryConfig CASSConfig, filterConfig FilterConfig, injectConfig InjectConfig) (InjectionResult, CASSQueryResult, FilterResult) {
 	// [cass] enabled=false with an explicit --with-cass degrades to a
 	// recorded skip. Record the honest reason — the query never ran — rather
 	// than the zero-hits path's "no relevant context found".
@@ -859,7 +871,7 @@ func InjectContextFromQuery(prompt string, queryConfig CASSConfig, filterConfig 
 	if injectConfig.CurrentContextPct > 0 && injectConfig.CurrentContextPct >= injectConfig.SkipThreshold {
 		return InjectContext(prompt, nil, injectConfig), CASSQueryResult{Success: true, Hits: []CASSHit{}}, FilterResult{}
 	}
-	queryResult, filterResult := QueryAndFilterCASS(prompt, queryConfig, filterConfig)
+	queryResult, filterResult := QueryAndFilterCASS(ctx, prompt, queryConfig, filterConfig)
 	if !queryResult.Success {
 		return InjectionResult{
 			Success:        false,
@@ -876,6 +888,15 @@ func InjectContextFromQuery(prompt string, queryConfig CASSConfig, filterConfig 
 	}
 	injectResult.Metadata.ItemsFound = filterResult.OriginalCount
 	injectResult.Metadata.ItemsFiltered = filterResult.RemovedByScore + filterResult.RemovedByAge + filterResult.RemovedByTopic
+	if err := ctx.Err(); err != nil {
+		queryResult.Success, queryResult.Hits = false, []CASSHit{}
+		queryResult.Error = "cass context search stopped: " + err.Error()
+		return InjectionResult{
+			ModifiedPrompt: prompt,
+			Error:          queryResult.Error,
+			Metadata:       InjectionMetadata{Enabled: true, FormatUsed: injectConfig.Format, SkippedReason: queryResult.Error},
+		}, queryResult, FilterResult{}
+	}
 	return injectResult, queryResult, filterResult
 }
 

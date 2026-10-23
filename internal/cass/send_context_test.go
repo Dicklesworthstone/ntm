@@ -1,6 +1,7 @@
 package cass
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -118,7 +119,7 @@ func TestSendContextRetrievesProjectHistoryBeyondGlobalLimit(t *testing.T) {
 	cfg, _ := sendContextProcess(t, sendContextFixture{Global: global, Workspace: local})
 	cfg.MaxResults = 1
 	prompt := "implement authentication middleware"
-	result, search, filtered := InjectContextFromQuery(prompt, cfg, sendContextFilter(workspace), DefaultInjectConfig())
+	result, search, filtered := InjectContextFromQuery(t.Context(), prompt, cfg, sendContextFilter(workspace), DefaultInjectConfig())
 	if !result.Success || !search.Success || len(search.Hits) != 2 || len(filtered.Hits) != 1 {
 		t.Fatalf("candidate retrieval: injection=%+v search=%+v filtered=%+v", result, search, filtered)
 	}
@@ -136,7 +137,7 @@ func TestSendContextDecodesIndexedEvidence(t *testing.T) {
 		t.Run(fmt.Sprint(timestamp), func(t *testing.T) {
 			workspace := t.TempDir()
 			cfg, _ := sendContextProcess(t, sendContextFixture{Global: sendContextBody(workspace, "SNIPPET_HISTORY", timestamp)})
-			search := QueryCASS("authentication middleware", cfg)
+			search := QueryCASS(t.Context(), "authentication middleware", cfg)
 			if !search.Success || len(search.Hits) != 1 || search.Hits[0].Content != "SNIPPET_HISTORY" {
 				t.Fatalf("snippet or response lost: %+v", search)
 			}
@@ -174,7 +175,7 @@ func TestSendContextScopePolicyAndArguments(t *testing.T) {
 			case "invalid-workspace":
 				filter.CurrentWorkspace += "\n"
 			}
-			result, _ := QueryAndFilterCASS("authentication --limit=99", cfg, filter)
+			result, _ := QueryAndFilterCASS(t.Context(), "authentication --limit=99", cfg, filter)
 			if !result.Success {
 				t.Fatal(result.Error)
 			}
@@ -223,12 +224,84 @@ func TestSendContextRetainsHealthyScopeOnPartialFailure(t *testing.T) {
 				}
 				cfg, _ := sendContextProcess(t, spec)
 				cfg.Timeout = 200 * time.Millisecond
-				result, _, _ := InjectContextFromQuery("authentication task", cfg, sendContextFilter(workspace), DefaultInjectConfig())
+				result, _, _ := InjectContextFromQuery(t.Context(), "authentication task", cfg, sendContextFilter(workspace), DefaultInjectConfig())
 				if !result.Success || !strings.Contains(result.InjectedContext, want) {
 					t.Fatalf("lost healthy %s scope after %s: %+v", scope, action, result)
 				}
 			})
 		}
+	}
+}
+
+func TestSendContextOperationCancellationDiscardsBothScopes(t *testing.T) {
+	for _, mode := range []string{"cancel", "deadline", "pre-canceled", "nil-context"} {
+		t.Run(mode, func(t *testing.T) {
+			workspace := t.TempDir()
+			cfg, logs := sendContextProcess(t, sendContextFixture{
+				Global:          sendContextBody("", "PARTIAL_HISTORY_MUST_NOT_BE_INJECTED", nil),
+				WorkspaceAction: "timeout",
+			})
+			cfg.Timeout = 5 * time.Second
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			wantError := "context canceled"
+			var watcherDone chan struct{}
+			switch mode {
+			case "cancel":
+				watcherDone = make(chan struct{})
+				go func() {
+					defer close(watcherDone)
+					ticker := time.NewTicker(10 * time.Millisecond)
+					defer ticker.Stop()
+					for {
+						select {
+						case <-ctx.Done():
+							return
+						case <-ticker.C:
+							_, globalErr := os.Stat(filepath.Join(logs, "global.json"))
+							_, localErr := os.Stat(filepath.Join(logs, "workspace.json"))
+							if globalErr == nil && localErr == nil {
+								cancel()
+								return
+							}
+						}
+					}
+				}()
+			case "deadline":
+				var deadlineCancel context.CancelFunc
+				ctx, deadlineCancel = context.WithTimeout(ctx, 750*time.Millisecond)
+				defer deadlineCancel()
+				wantError = "context deadline exceeded"
+			case "pre-canceled":
+				cancel()
+			case "nil-context":
+				ctx = nil
+				wantError = "requires an operation context"
+			}
+			start := time.Now()
+			const prompt = "Implement authentication middleware"
+			result, search, filtered := InjectContextFromQuery(ctx, prompt, cfg, sendContextFilter(workspace), DefaultInjectConfig())
+			cancel()
+			if watcherDone != nil {
+				<-watcherDone
+			}
+			if elapsed := time.Since(start); elapsed >= 3*time.Second {
+				t.Fatalf("caller cancellation waited for the 5s optional lookup budget: %v", elapsed)
+			}
+			if result.Success || search.Success || len(search.Hits) != 0 || len(filtered.Hits) != 0 || result.ModifiedPrompt != prompt || result.InjectedContext != "" || result.Metadata.ItemsInjected != 0 || !strings.Contains(search.Error, wantError) {
+				t.Fatalf("stopped operation retained history or lost cancellation: injection=%+v search=%+v filtered=%+v", result, search, filtered)
+			}
+			entries, err := os.ReadDir(logs)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if (mode == "pre-canceled" || mode == "nil-context") && len(entries) != 0 {
+				t.Fatalf("stopped operation started CASS: %v", entries)
+			}
+			if (mode == "cancel" || mode == "deadline") && len(entries) != 2 {
+				t.Fatalf("fixture did not exercise both in-flight scopes: %v", entries)
+			}
+		})
 	}
 }
 
@@ -249,7 +322,7 @@ func TestSendContextFailuresNeverInjectPartialOutput(t *testing.T) {
 				filter.PreferSameProject = false
 			}
 			prompt := "authentication task"
-			result, search, _ := InjectContextFromQuery(prompt, cfg, filter, DefaultInjectConfig())
+			result, search, _ := InjectContextFromQuery(t.Context(), prompt, cfg, filter, DefaultInjectConfig())
 			if result.Success || search.Success || result.ModifiedPrompt != prompt || result.InjectedContext != "" || len(search.Hits) != 0 {
 				t.Fatalf("failed search changed task or published history: %+v %+v", result, search)
 			}
@@ -284,7 +357,7 @@ func TestSendContextSkipsQueriesThatCannotBeInjected(t *testing.T) {
 			if mode == "no-keywords" {
 				prompt = "the and a"
 			}
-			result, search, _ := InjectContextFromQuery(prompt, cfg, FilterConfig{}, inject)
+			result, search, _ := InjectContextFromQuery(t.Context(), prompt, cfg, FilterConfig{}, inject)
 			if !result.Success || !search.Success || result.ModifiedPrompt != prompt || result.Metadata.ItemsInjected != 0 || result.Metadata.SkippedReason == "" {
 				t.Fatalf("skip lost task or reason: %+v %+v", result, search)
 			}
@@ -306,7 +379,7 @@ func TestSendContextRedactsQueryAndHistoricalSnippets(t *testing.T) {
 	for _, format := range []InjectionFormat{FormatMarkdown, FormatMinimal, FormatStructured} {
 		inject := DefaultInjectConfig()
 		inject.Format = format
-		result, query, _ := InjectContextFromQuery(prompt, cfg, FilterConfig{}, inject)
+		result, query, _ := InjectContextFromQuery(t.Context(), prompt, cfg, FilterConfig{}, inject)
 		if !result.Success || !strings.HasSuffix(result.ModifiedPrompt, prompt) || !strings.Contains(result.InjectedContext, "REDACTED") || !strings.Contains(result.InjectedContext, "historical data") || strings.Contains(result.InjectedContext, secret) || strings.Contains(query.Query, secret) {
 			t.Fatalf("redaction/framing/query contract: %+v %+v", result, query)
 		}
@@ -352,7 +425,7 @@ func TestSendContextRetainsExistingPipeDrainDeadline(t *testing.T) {
 		cfg := DefaultCASSConfig()
 		cfg.BinaryPath, cfg.Timeout = binary, time.Second
 		start := time.Now()
-		result, search, _ := InjectContextFromQuery("authentication task", cfg, FilterConfig{}, DefaultInjectConfig())
+		result, search, _ := InjectContextFromQuery(t.Context(), "authentication task", cfg, FilterConfig{}, DefaultInjectConfig())
 		if elapsed := time.Since(start); elapsed >= 3*time.Second {
 			t.Fatalf("one-second lookup exceeded the existing send drain bound: %v", elapsed)
 		}
@@ -395,7 +468,7 @@ func TestSendContextContentAndIdentityContracts(t *testing.T) {
 			cfg, _ := sendContextProcess(t, spec)
 			inject := DefaultInjectConfig()
 			inject.DryRun = mode == "dry-run"
-			result, search, _ := InjectContextFromQuery("original task", cfg, filter, inject)
+			result, search, _ := InjectContextFromQuery(t.Context(), "original task", cfg, filter, inject)
 			switch mode {
 			case "invalid-time":
 				if result.Success || search.Success || result.ModifiedPrompt != "original task" || result.InjectedContext != "" {
