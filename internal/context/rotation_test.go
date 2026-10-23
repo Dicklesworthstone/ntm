@@ -4,7 +4,9 @@ import (
 	stdcontext "context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -12,11 +14,193 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/alerts"
+	"github.com/Dicklesworthstone/ntm/internal/assignment"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 const rotationReadyClaudeScreen = "Welcome to Claude Code\n────────────────────────\n❯ \n────────────────────────\n  ⏵⏵ bypass permissions on (shift+tab to cycle)\n"
+
+func TestResolveRotationAbortResumesCrashBoundaries(t *testing.T) {
+	for _, boundary := range []string{
+		"replacement-already-absent", "barrier-already-aborted", "same-generation-terminal",
+		"source-already-released-new-owner", "source-intent-never-fenced", "source-intent-terminal",
+		"source-fenced-before-barrier", "source-only-abort-retry", "terminal-journal-only",
+	} {
+		t.Run(boundary, func(t *testing.T) {
+			project, commands := setupRotationTmux(t)
+			t.Setenv("ROTATION_ORIGINAL_PRESENT", "1")
+			pending := makeRecoveryPending(project)
+			receipt := pending.Continuation
+			receipt.Phase = rotationAbortStarted
+			receipt.Resolution = &RotationResolution{Action: RotationResolutionAbort, Reason: "abandon uncertain replacement", RecordedAt: time.Now().UTC()}
+			ledger := assignment.NewStore(pending.SessionName)
+			original := &assignment.Assignment{
+				BeadID: "bd-recovery", Pane: 1, AgentType: "claude", Status: assignment.StatusWorking, AssignedAt: time.Now().UTC(),
+				IdempotencyKey: "original-generation", ClaimActor: "original-claim", ClaimState: assignment.ClaimClaimed,
+				DispatchState: assignment.DispatchSent, DispatchReceiptID: "original-delivery", DispatchTarget: "%1", OccupancyKey: "%1",
+			}
+			ledger.Assignments[original.BeadID] = original
+			if err := ledger.Save(); err != nil {
+				t.Fatal(err)
+			}
+			receipt.BeadID, receipt.AssignmentKey = original.BeadID, original.IdempotencyKey
+			sourceOnly := strings.HasPrefix(boundary, "source-intent") || boundary == "source-fenced-before-barrier" || boundary == "source-only-abort-retry"
+			if sourceOnly {
+				receipt.Replacement = tmux.Pane{}
+				if boundary != "source-only-abort-retry" {
+					receipt.Phase, receipt.Resolution = rotationSourceFenced, nil
+				}
+			} else {
+				current, applied, err := ledger.BeginPaneContinuation(t.Context(), original, receipt.Token)
+				if err != nil || !applied {
+					t.Fatalf("seed continuation: applied=%v, %v", applied, err)
+				}
+				current, applied, err = ledger.BindPaneContinuation(t.Context(), current, receipt.Token, assignment.ReassignmentTarget{
+					Pane: receipt.Replacement.Index, AgentType: "claude", DispatchTarget: receipt.Replacement.ID, OccupancyKey: receipt.Replacement.ID,
+				})
+				if err != nil || !applied {
+					t.Fatalf("seed replacement binding: applied=%v, %v", applied, err)
+				}
+				if boundary != "replacement-already-absent" {
+					if _, applied, err := ledger.AbortPaneContinuation(t.Context(), current, receipt.Token); err != nil || !applied {
+						t.Fatalf("seed already-aborted barrier: applied=%v, %v", applied, err)
+					}
+				}
+			}
+			if boundary == "same-generation-terminal" || boundary == "source-intent-terminal" || boundary == "source-already-released-new-owner" {
+				if err := ledger.UpdateStatus(original.BeadID, assignment.StatusCompleted); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if boundary == "source-already-released-new-owner" {
+				receipt.Phase = rotationAbortCommitted
+				newOwner := *original
+				newOwner.BeadID, newOwner.IdempotencyKey, newOwner.DispatchReceiptID = "bd-new-task", "new-generation", "new-delivery"
+				newOwner.Status = assignment.StatusWorking
+				ledger.Assignments[newOwner.BeadID] = &newOwner
+				if err := ledger.Save(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if boundary == "terminal-journal-only" {
+				receipt.Phase = rotationAborted
+				t.Setenv("ROTATION_ORIGINAL_PRESENT", "0")
+			}
+			unfenced := boundary == "source-already-released-new-owner" || strings.HasPrefix(boundary, "source-intent") || boundary == "source-only-abort-retry" || boundary == "terminal-journal-only"
+			if !unfenced {
+				if err := os.WriteFile(commands+".token.1", []byte(receipt.Token), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := DefaultPendingRotationStore.Add(pending); err != nil {
+				t.Fatal(err)
+			}
+			before := ledger.List()
+			for _, row := range before {
+				row.PaneContinuation = nil
+			}
+			result := ResolvePendingRotationContext(t.Context(), pending.AgentID, pending.ExecutionID, RotationResolutionAbort, "abandon uncertain replacement", config.Default())
+			if !result.Success || result.State != RotationStateAborted || result.NewPaneID != "" || result.ResolutionAction != RotationResolutionAbort {
+				t.Fatalf("crash recovery did not settle abandonment: %+v", result)
+			}
+			if err := ledger.LoadStrict(); err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range before {
+				if got := ledger.Get(want.BeadID); !reflect.DeepEqual(got, want) {
+					t.Fatalf("recovery changed original or subsequent work:\n got %+v\nwant %+v", got, want)
+				}
+			}
+			log, _ := os.ReadFile(commands)
+			for _, forbidden := range []string{"kill-pane", "split-window", "send-keys", "load-buffer", "paste-buffer"} {
+				if strings.Contains(string(log), forbidden) {
+					t.Fatalf("recovery repeated a completed process or delivery effect %q:\n%s", forbidden, log)
+				}
+			}
+			if unfenced && strings.Contains(string(log), "if-shell") {
+				t.Fatalf("journal settlement changed an already released source:\n%s", log)
+			}
+			if token, err := os.ReadFile(commands + ".token.1"); err != nil && !os.IsNotExist(err) || len(token) != 0 {
+				t.Fatalf("original source remained fenced: %q, %v", token, err)
+			}
+			replayed := ResolvePendingRotationContext(t.Context(), pending.AgentID, pending.ExecutionID, RotationResolutionAbort, "abandon uncertain replacement", config.Default())
+			// JSON receipts preserve wall time, not the process-local
+			// monotonic clock reading carried by the original response.
+			result.Timestamp, replayed.Timestamp = result.Timestamp.UTC(), replayed.Timestamp.UTC()
+			if !reflect.DeepEqual(replayed, result) {
+				t.Fatalf("recovery did not replay its saved outcome:\n got %+v\nwant %+v", replayed, result)
+			}
+			after, _ := os.ReadFile(commands)
+			if string(after) != string(log) {
+				t.Fatal("completed replay inspected or changed later work")
+			}
+		})
+	}
+}
+
+func TestResolveRotationAbortRejectsForeignOwnersAndUnrecordedReplacement(t *testing.T) {
+	for _, conflict := range []string{"foreign-active-source", "foreign-terminal-sending-source", "foreign-active-replacement", "unrecorded-same-token-replacement", "changed-source-process", "replacement-moved-to-another-session"} {
+		t.Run(conflict, func(t *testing.T) {
+			project, commands := setupRotationTmux(t)
+			t.Setenv("ROTATION_ORIGINAL_PRESENT", "1")
+			pending := makeRecoveryPending(project)
+			pending.Continuation.Phase = rotationSourceFenced
+			if err := os.WriteFile(commands+".token.1", []byte(pending.ExecutionID), 0600); err != nil {
+				t.Fatal(err)
+			}
+			switch conflict {
+			case "replacement-moved-to-another-session":
+				t.Setenv("ROTATION_GLOBAL_CONFLICT", "1")
+				pending.Continuation.Phase = rotationHandoffStarted
+				pending.Continuation.Replacement.ID, pending.Continuation.Replacement.PID = "%2", 456
+			case "unrecorded-same-token-replacement":
+				pending.Continuation.Replacement = tmux.Pane{}
+				for suffix, contents := range map[string]string{".type": "cc", ".title": "test__cc_2", ".token.99": pending.ExecutionID} {
+					if err := os.WriteFile(commands+suffix, []byte(contents), 0600); err != nil {
+						t.Fatal(err)
+					}
+				}
+			case "changed-source-process":
+				pending.PanePID, pending.Continuation.Source.PID = 456, 456
+			default:
+				pane := "%1"
+				if conflict == "foreign-active-replacement" {
+					pane = "%99"
+				}
+				status, dispatch := assignment.StatusWorking, assignment.DispatchSent
+				if conflict == "foreign-terminal-sending-source" {
+					status, dispatch = assignment.StatusCompleted, assignment.DispatchSending
+				}
+				ledger := assignment.NewStore(pending.SessionName)
+				ledger.Assignments["bd-foreign"] = &assignment.Assignment{
+					BeadID: "bd-foreign", Pane: 1, AgentType: "claude", Status: status, AssignedAt: time.Now().UTC(),
+					IdempotencyKey: "foreign-generation", ClaimActor: "foreign-claim", ClaimState: assignment.ClaimClaimed,
+					DispatchState: dispatch, DispatchReceiptID: "foreign-delivery", DispatchTarget: pane, OccupancyKey: pane,
+				}
+				if err := ledger.Save(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := DefaultPendingRotationStore.Add(pending); err != nil {
+				t.Fatal(err)
+			}
+			result := ResolvePendingRotationContext(t.Context(), pending.AgentID, pending.ExecutionID, RotationResolutionAbort, "operator stop", config.Default())
+			if result.Success {
+				t.Fatalf("recovery accepted changed or incomplete ownership: %+v", result)
+			}
+			log, _ := os.ReadFile(commands)
+			for _, forbidden := range []string{"kill-pane", "if-shell", "split-window", "send-keys", "load-buffer", "paste-buffer"} {
+				if strings.Contains(string(log), forbidden) {
+					t.Fatalf("rejected recovery changed process ownership via %q:\n%s", forbidden, log)
+				}
+			}
+			if token, err := os.ReadFile(commands + ".token.1"); err != nil || string(token) != pending.ExecutionID {
+				t.Fatalf("rejected recovery released original source: %q, %v", token, err)
+			}
+		})
+	}
+}
 
 func TestNativeCompactionRequiresFreshAccountingAndCompletedInputState(t *testing.T) {
 	for _, mode := range []string{"reduced", "busy_then_reduced", "stale", "same_usage", "different_transcript", "identity_changed", "canceled", "missing_baseline"} {

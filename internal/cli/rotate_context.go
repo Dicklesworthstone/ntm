@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -29,7 +30,8 @@ Examples:
   ntm rotate context history --failed     # Only failed rotations
   ntm rotate context stats                # Rotation statistics
   ntm rotate context pending              # View pending rotation confirmations
-  ntm rotate context confirm <agent>      # Confirm a pending rotation`,
+  ntm rotate context confirm <agent>      # Confirm a pending rotation
+  ntm rotate context recover <agent>      # Resolve an interrupted rotation`,
 	}
 
 	cmd.AddCommand(newRotateContextHistoryCmd())
@@ -37,6 +39,7 @@ Examples:
 	cmd.AddCommand(newRotateContextClearCmd())
 	cmd.AddCommand(newRotateContextPendingCmd())
 	cmd.AddCommand(newRotateContextConfirmCmd())
+	cmd.AddCommand(newRotateContextRecoverCmd())
 
 	return cmd
 }
@@ -345,14 +348,23 @@ type PendingRotationsResult struct {
 
 // PendingRotationInfo contains info about a pending rotation for display
 type PendingRotationInfo struct {
-	AgentID        string  `json:"agent_id"`
-	SessionName    string  `json:"session_name"`
-	ContextPercent float64 `json:"context_percent"`
-	TimeoutSeconds int     `json:"timeout_seconds"`
-	CreatedAt      string  `json:"created_at"`
-	SelectedAction string  `json:"selected_action,omitempty"`
-	ExecutionState string  `json:"execution_state,omitempty"`
-	LastError      string  `json:"last_error,omitempty"`
+	AgentID            string                            `json:"agent_id"`
+	SessionName        string                            `json:"session_name"`
+	ContextPercent     float64                           `json:"context_percent"`
+	TimeoutSeconds     int                               `json:"timeout_seconds"`
+	CreatedAt          string                            `json:"created_at"`
+	SelectedAction     string                            `json:"selected_action,omitempty"`
+	ExecutionState     string                            `json:"execution_state,omitempty"`
+	LastError          string                            `json:"last_error,omitempty"`
+	ExecutionID        string                            `json:"execution_id,omitempty"`
+	ContinuationPhase  string                            `json:"continuation_phase,omitempty"`
+	SourcePaneID       string                            `json:"source_pane_id,omitempty"`
+	SourcePanePID      int                               `json:"source_pane_pid,omitempty"`
+	ReplacementPaneID  string                            `json:"replacement_pane_id,omitempty"`
+	ReplacementPanePID int                               `json:"replacement_pane_pid,omitempty"`
+	RetryAllowed       bool                              `json:"retry_allowed"`
+	RecoveryActions    []ctxmon.RotationResolutionAction `json:"recovery_actions,omitempty"`
+	Resolution         *ctxmon.RotationResolution        `json:"resolution,omitempty"`
 }
 
 func (r *PendingRotationsResult) Text(w io.Writer) error {
@@ -382,10 +394,29 @@ func (r *PendingRotationsResult) Text(w io.Writer) error {
 		fmt.Fprintf(w, "  Created: %s\n", p.CreatedAt)
 		if p.ExecutionState != "" {
 			fmt.Fprintf(w, "  Confirmation: %s (%s)\n", p.SelectedAction, p.ExecutionState)
+			fmt.Fprintf(w, "  Execution: %s\n", p.ExecutionID)
+			if p.ContinuationPhase != "" {
+				fmt.Fprintf(w, "  Continuation: %s\n", p.ContinuationPhase)
+				fmt.Fprintf(w, "  Original pane: %s (PID %d)\n", p.SourcePaneID, p.SourcePanePID)
+				if p.ReplacementPaneID != "" {
+					fmt.Fprintf(w, "  Replacement pane: %s (PID %d)\n", p.ReplacementPaneID, p.ReplacementPanePID)
+				}
+			}
+			if p.Resolution != nil {
+				fmt.Fprintf(w, "  Operator decision: %s (%q)\n", p.Resolution.Action, p.Resolution.Reason)
+			}
 			if p.LastError != "" {
 				fmt.Fprintf(w, "  Last error: %s\n", p.LastError)
 			}
-			fmt.Fprintf(w, "  Inspect the pane before explicitly retrying with --action=%s --retry.\n", p.SelectedAction)
+			if len(p.RecoveryActions) > 0 {
+				actions := make([]string, len(p.RecoveryActions))
+				for i, action := range p.RecoveryActions {
+					actions[i] = string(action)
+				}
+				fmt.Fprintf(w, "  Inspect both panes, then use recover %s --execution-id=%s --action=<%s> --reason=<operator-note>.\n", p.AgentID, p.ExecutionID, strings.Join(actions, "|"))
+			} else if p.RetryAllowed {
+				fmt.Fprintf(w, "  Inspect the pane before explicitly retrying with --action=%s --retry.\n", p.SelectedAction)
+			}
 		}
 	}
 
@@ -418,22 +449,32 @@ func runContextRotationPending(ctx context.Context, sessionFilter string) error 
 		return err
 	}
 
-	var infos []PendingRotationInfo
+	infos := make([]PendingRotationInfo, 0, len(pending))
 	for _, p := range pending {
 		lastError := ""
 		if p.Result != nil {
 			lastError = p.Result.Error
 		}
-		infos = append(infos, PendingRotationInfo{
-			AgentID:        p.AgentID,
-			SessionName:    p.SessionName,
-			ContextPercent: p.ContextPercent,
-			TimeoutSeconds: p.RemainingSeconds(),
-			CreatedAt:      p.CreatedAt.Local().Format("15:04:05"),
-			SelectedAction: string(p.SelectedAction),
-			ExecutionState: string(p.ExecutionState),
-			LastError:      lastError,
-		})
+		info := PendingRotationInfo{
+			AgentID:         p.AgentID,
+			SessionName:     p.SessionName,
+			ContextPercent:  p.ContextPercent,
+			TimeoutSeconds:  p.RemainingSeconds(),
+			CreatedAt:       p.CreatedAt.Local().Format("15:04:05"),
+			SelectedAction:  string(p.SelectedAction),
+			ExecutionState:  string(p.ExecutionState),
+			LastError:       lastError,
+			ExecutionID:     p.ExecutionID,
+			RetryAllowed:    contextRotationRetryAllowed(p),
+			RecoveryActions: ctxmon.RotationRecoveryActions(p),
+		}
+		if p.Continuation != nil {
+			info.ContinuationPhase = p.Continuation.Phase
+			info.SourcePaneID, info.SourcePanePID = p.Continuation.Source.ID, p.Continuation.Source.PID
+			info.ReplacementPaneID, info.ReplacementPanePID = p.Continuation.Replacement.ID, p.Continuation.Replacement.PID
+			info.Resolution = p.Continuation.Resolution
+		}
+		infos = append(infos, info)
 	}
 
 	result := &PendingRotationsResult{
@@ -443,6 +484,21 @@ func runContextRotationPending(ctx context.Context, sessionFilter string) error 
 
 	formatter := output.New(output.WithJSON(jsonOutput))
 	return formatter.Output(result)
+}
+
+func contextRotationRetryAllowed(pending *ctxmon.PendingRotation) bool {
+	if pending == nil || pending.ExecutionState != ctxmon.RotationStateFailed && pending.ExecutionState != ctxmon.RotationStateInProgress {
+		return false
+	}
+	if pending.Continuation == nil {
+		return true
+	}
+	switch pending.Continuation.Phase {
+	case "handoff_accepted", "ownership_committed", "retirement_attempted":
+		return true
+	default:
+		return false
+	}
 }
 
 func newRotateContextConfirmCmd() *cobra.Command {
@@ -481,12 +537,15 @@ Examples:
 
 // ConfirmRotationResult contains the confirmation result
 type ConfirmRotationResult struct {
-	AgentID       string                 `json:"agent_id"`
-	Action        string                 `json:"action"`
-	Success       bool                   `json:"success"`
-	Message       string                 `json:"message"`
-	Rotation      *ctxmon.RotationResult `json:"rotation,omitempty"`
-	RetryRequired bool                   `json:"retry_required,omitempty"`
+	AgentID           string                            `json:"agent_id"`
+	Action            string                            `json:"action"`
+	Success           bool                              `json:"success"`
+	Message           string                            `json:"message"`
+	Rotation          *ctxmon.RotationResult            `json:"rotation,omitempty"`
+	RetryRequired     bool                              `json:"retry_required,omitempty"`
+	ExecutionID       string                            `json:"execution_id,omitempty"`
+	ContinuationPhase string                            `json:"continuation_phase,omitempty"`
+	RecoveryActions   []ctxmon.RotationResolutionAction `json:"recovery_actions,omitempty"`
 }
 
 func (r *ConfirmRotationResult) Text(w io.Writer) error {
@@ -529,7 +588,9 @@ func runContextRotationConfirm(cmd *cobra.Command, agentID, action string, postp
 	if rotation.Success {
 		switch confirmAction {
 		case ctxmon.ConfirmRotate:
-			if rotation.State == ctxmon.RotationStateAborted && rotation.NewPaneID == "" {
+			if rotation.ResolutionAction == ctxmon.RotationResolutionAbort {
+				message = fmt.Sprintf("Rotation aborted for %s; ownership remains with %s", agentID, rotation.OldPaneID)
+			} else if rotation.State == ctxmon.RotationStateAborted && rotation.NewPaneID == "" {
 				// A coordinator may have already satisfied this request through
 				// its automatic compaction policy. Report that stored receipt.
 				message = fmt.Sprintf("Context compaction completed for %s; replacement was not needed", agentID)
@@ -552,7 +613,12 @@ func runContextRotationConfirm(cmd *cobra.Command, agentID, action string, postp
 		Rotation: &rotation,
 	}
 	if pending, err := ctxmon.GetPendingRotationByID(agentID); err == nil && pending != nil {
-		result.RetryRequired = pending.ExecutionState == ctxmon.RotationStateFailed || pending.ExecutionState == ctxmon.RotationStateInProgress
+		result.RetryRequired = contextRotationRetryAllowed(pending)
+		result.ExecutionID = pending.ExecutionID
+		result.RecoveryActions = ctxmon.RotationRecoveryActions(pending)
+		if pending.Continuation != nil {
+			result.ContinuationPhase = pending.Continuation.Phase
+		}
 	}
 	if IsJSONOutput() {
 		if err := json.NewEncoder(cmd.OutOrStdout()).Encode(result); err != nil {
@@ -560,6 +626,80 @@ func runContextRotationConfirm(cmd *cobra.Command, agentID, action string, postp
 		}
 	} else if err := result.Text(cmd.OutOrStdout()); err != nil {
 		return err
+	}
+	if !result.Success {
+		return jsonFailureExit()
+	}
+	return nil
+}
+
+func newRotateContextRecoverCmd() *cobra.Command {
+	var action, executionID, reason string
+	cmd := &cobra.Command{
+		Use:   "recover <agent-id>",
+		Short: "Resolve an interrupted context rotation after inspecting its panes",
+		Long: `Resolve the exact interrupted execution shown by 'rotate context pending'.
+
+Inspect the original and replacement panes before choosing an action:
+  accept - Attest that the replacement received the handoff, then finish ownership
+           transfer without launching another agent or resending the handoff.
+  abort  - Stop the recorded replacement and retain ownership with the original
+           agent. Work already performed by the replacement is not undone.
+
+The execution ID prevents resolving a newer rotation by mistake. The action and
+operator reason are saved before recovery effects. Repeating the same decision
+resumes interrupted recovery or returns its saved result. Conflicting decisions
+are refused, and abort cannot reverse an accepted ownership transfer.
+
+Examples:
+  ntm rotate context recover payments__cc_1 --execution-id=<id> --action=accept --reason="Replacement is working on the handoff"
+  ntm rotate context recover payments__cc_1 --execution-id=<id> --action=abort --reason="Stop replacement and continue in the original pane"`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runContextRotationRecover(cmd, args[0], executionID, action, reason)
+		},
+	}
+	cmd.Flags().StringVar(&action, "action", "", "Operator decision: accept or abort")
+	cmd.Flags().StringVar(&executionID, "execution-id", "", "Exact execution ID from rotate context pending")
+	cmd.Flags().StringVar(&reason, "reason", "", "Reason for the operator decision, retained in the recovery record")
+	_ = cmd.MarkFlagRequired("action")
+	_ = cmd.MarkFlagRequired("execution-id")
+	_ = cmd.MarkFlagRequired("reason")
+	return cmd
+}
+
+type RecoverRotationResult struct {
+	AgentID     string                 `json:"agent_id"`
+	ExecutionID string                 `json:"execution_id"`
+	Action      string                 `json:"action"`
+	Success     bool                   `json:"success"`
+	Message     string                 `json:"message"`
+	Rotation    *ctxmon.RotationResult `json:"rotation,omitempty"`
+}
+
+func runContextRotationRecover(cmd *cobra.Command, agentID, executionID, action, reason string) error {
+	rotation := ctxmon.ResolvePendingRotationContext(cmd.Context(), agentID, executionID, ctxmon.RotationResolutionAction(action), reason, cfg)
+	message := rotation.Error
+	if rotation.Success {
+		if action == string(ctxmon.RotationResolutionAbort) {
+			message = fmt.Sprintf("Rotation aborted for %s; ownership remains with %s", agentID, rotation.OldPaneID)
+		} else {
+			message = fmt.Sprintf("Rotation recovered for %s (%s → %s)", agentID, rotation.OldPaneID, rotation.NewPaneID)
+		}
+		if rotation.Error != "" {
+			message += "; " + rotation.Error
+		}
+	}
+	result := RecoverRotationResult{AgentID: agentID, ExecutionID: executionID, Action: action, Success: rotation.Success, Message: message, Rotation: &rotation}
+	if IsJSONOutput() {
+		if err := json.NewEncoder(cmd.OutOrStdout()).Encode(result); err != nil {
+			return err
+		}
+	} else {
+		display := ConfirmRotationResult{Success: result.Success, Message: result.Message}
+		if err := display.Text(cmd.OutOrStdout()); err != nil {
+			return err
+		}
 	}
 	if !result.Success {
 		return jsonFailureExit()

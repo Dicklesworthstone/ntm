@@ -26,8 +26,9 @@ import (
 // tmux transport. The default coordinator policy requires manual confirmation;
 // successful JSON must correspond to a submitted operation, not dequeuing it.
 func TestContextConfirmCommandExecutesPersistedChoice(t *testing.T) {
-	for _, mode := range []string{"rotate", "rotate-assigned", "rotate-unregistered", "manifest-race", "handoff-unknown", "compact", "launch-failure", "changed-pid", "busy", "canceled", "cross-session"} {
+	for _, mode := range []string{"rotate", "rotate-assigned", "rotate-unregistered", "manifest-race", "handoff-unknown", "recover-accept", "recover-abort", "recover-abort-kill-retry", "recover-abort-absence-retry", "recover-accept-manifest-race", "recover-changed-pid", "compact", "launch-failure", "changed-pid", "busy", "canceled", "cross-session"} {
 		t.Run(mode, func(t *testing.T) {
+			recovery := strings.HasPrefix(mode, "recover-")
 			root := t.TempDir()
 			workDir := filepath.Join(root, "project")
 			if err := os.MkdirAll(workDir, 0700); err != nil {
@@ -39,6 +40,11 @@ func TestContextConfirmCommandExecutesPersistedChoice(t *testing.T) {
 			t.Setenv("NTM_CONFIRM_ROOT", root)
 			t.Setenv("NTM_CONFIRM_WORKDIR", workDir)
 			t.Setenv("NTM_CONFIRM_MODE", mode)
+			if recovery {
+				// Submission happened, but the transport lost its acknowledgement.
+				// Recovery must use the original execution without resending work.
+				t.Setenv("NTM_CONFIRM_MODE", "handoff-unknown")
+			}
 			stub := filepath.Join(root, "tmux")
 			if err := os.WriteFile(stub, []byte(contextConfirmTmuxFixture), 0700); err != nil {
 				t.Fatal(err)
@@ -79,7 +85,7 @@ func TestContextConfirmCommandExecutesPersistedChoice(t *testing.T) {
 			if err := ctxmon.AddPendingRotation(pending); err != nil {
 				t.Fatal(err)
 			}
-			tracked := mode == "rotate-assigned" || mode == "rotate-unregistered" || mode == "manifest-race" || mode == "handoff-unknown"
+			tracked := mode == "rotate-assigned" || mode == "rotate-unregistered" || mode == "manifest-race" || mode == "handoff-unknown" || recovery
 			registered := tracked && mode != "rotate-unregistered"
 			var originalAssignment *assignment.Assignment
 			var originalManifest *resilience.SpawnManifest
@@ -256,10 +262,10 @@ func TestContextConfirmCommandExecutesPersistedChoice(t *testing.T) {
 				if mode == "canceled" && (stored.SelectedAction != "" || len(commands) != 0) {
 					t.Fatalf("pre-canceled command changed state: %+v\n%s", stored, commands)
 				}
-				if mode != "launch-failure" && mode != "manifest-race" && mode != "handoff-unknown" && (strings.Contains(log, "send-keys") || strings.Contains(log, "paste-buffer") || strings.Contains(log, "kill-pane")) {
+				if mode != "launch-failure" && mode != "manifest-race" && mode != "handoff-unknown" && !recovery && (strings.Contains(log, "send-keys") || strings.Contains(log, "paste-buffer") || strings.Contains(log, "kill-pane")) {
 					t.Fatalf("unsafe or canceled confirmation delivered input:\n%s", log)
 				}
-				if mode == "manifest-race" || mode == "handoff-unknown" {
+				if mode == "manifest-race" || mode == "handoff-unknown" || recovery {
 					if strings.Contains(log, "kill-pane") || stored.Continuation == nil || stored.Continuation.Replacement.ID != "%99" {
 						t.Fatalf("partial continuation lost its recovery source: %+v\n%s", stored, log)
 					}
@@ -304,11 +310,215 @@ func TestContextConfirmCommandExecutesPersistedChoice(t *testing.T) {
 						if len(after) != before {
 							t.Fatalf("unknown handoff retry performed more tmux operations:\n%s", after)
 						}
+						if recovery {
+							accepted := exerciseContextRotationRecovery(t, mode, root, stored, originalAssignment, originalManifest)
+							if accepted {
+								assertCommittedOwnership()
+							} else {
+								before, _ := os.ReadFile(filepath.Join(root, "commands"))
+								replayed, replayErr := run(t.Context())
+								after, _ := os.ReadFile(filepath.Join(root, "commands"))
+								if replayErr != nil || !replayed.Success || !strings.Contains(replayed.Message, "aborted") || strings.Contains(replayed.Message, "compaction") || !bytes.Equal(before, after) {
+									t.Fatalf("confirmation misreported or repeated operator abort: %+v, %v\n%s", replayed, replayErr, after)
+								}
+							}
+						}
 					}
 				}
 			}
 		})
 	}
+}
+
+// Drive recovery through the registered public subcommand, after a real
+// confirmation has reached an uncertain transport boundary.
+func exerciseContextRotationRecovery(t *testing.T, mode, root string, pending *ctxmon.PendingRotation, original *assignment.Assignment, manifest *resilience.SpawnManifest) bool {
+	t.Helper()
+	const reason = "Inspected both panes and chose the recorded recovery action"
+	executionID := pending.ExecutionID
+	if executionID == "" || pending.Continuation == nil || pending.Continuation.Phase != "handoff_started" {
+		t.Fatalf("fixture did not produce an uncertain durable execution: %+v", pending)
+	}
+	run := func(ctx context.Context, token, action, explanation string) (RecoverRotationResult, error) {
+		t.Helper()
+		command := newRotateContextCmd()
+		command.SilenceUsage, command.SilenceErrors = true, true
+		var out bytes.Buffer
+		command.SetOut(&out)
+		command.SetErr(new(bytes.Buffer))
+		command.SetArgs([]string{"recover", pending.AgentID, "--execution-id=" + token, "--action=" + action, "--reason=" + explanation})
+		err := command.ExecuteContext(ctx)
+		var result RecoverRotationResult
+		if decodeErr := json.Unmarshal(bytes.TrimSpace(out.Bytes()), &result); decodeErr != nil {
+			t.Fatalf("recovery did not emit one structured outcome: %v, command error=%v, output=%q", decodeErr, err, out.String())
+		}
+		return result, err
+	}
+	assertFenced := func() {
+		t.Helper()
+		store, err := assignment.LoadStoreStrict("demo")
+		if err != nil {
+			t.Fatal(err)
+		}
+		current := store.Get(original.BeadID)
+		if current == nil || current.DispatchTarget != "%1" || !current.HasPendingPaneContinuation() || current.IdempotencyKey != original.IdempotencyKey {
+			t.Fatalf("failed recovery released the original assignment: %+v", current)
+		}
+		for _, suffix := range []string{"1", "99"} {
+			data, err := os.ReadFile(filepath.Join(root, "token."+suffix))
+			if err != nil || strings.TrimSpace(string(data)) != executionID {
+				t.Fatalf("failed recovery lost pane %s quarantine: %q, %v", suffix, data, err)
+			}
+		}
+		if _, err := os.Stat(filepath.Join(root, "retired")); !os.IsNotExist(err) {
+			t.Fatalf("failed recovery retired the original: %v", err)
+		}
+	}
+
+	if mode == "recover-accept" {
+		text, err := captureStdout(t, func() error {
+			command := newRotateContextCmd()
+			command.SetArgs([]string{"pending"})
+			return command.ExecuteContext(t.Context())
+		})
+		var visible PendingRotationsResult
+		if err != nil || json.Unmarshal([]byte(text), &visible) != nil || len(visible.Pending) != 1 {
+			t.Fatalf("pending command did not expose recoverable execution: %v, %s", err, text)
+		}
+		info := visible.Pending[0]
+		if info.ExecutionID != executionID || info.ContinuationPhase != "handoff_started" || info.SourcePaneID != "%1" || info.SourcePanePID != 123 || info.ReplacementPaneID != "%99" || info.ReplacementPanePID != 321 || info.RetryAllowed || !reflect.DeepEqual(info.RecoveryActions, []ctxmon.RotationResolutionAction{ctxmon.RotationResolutionAccept, ctxmon.RotationResolutionAbort}) {
+			t.Fatalf("pending command gave incomplete or unsafe recovery guidance: %+v", info)
+		}
+		if strings.Contains(text, "original-registration-token") || strings.Contains(text, "claude --original-model") || strings.Contains(text, "/operator-config.toml") {
+			t.Fatalf("pending output disclosed private launch or registry state: %s", text)
+		}
+		before, _ := os.ReadFile(filepath.Join(root, "commands"))
+		journalBefore, err := os.ReadFile(filepath.Join(root, "pending.jsonl"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, invalid := range []struct{ token, action, explanation string }{
+			{"stale-execution", "accept", reason},
+			{executionID, "accept", "  "},
+			{executionID, "rotate", reason},
+		} {
+			result, err := run(t.Context(), invalid.token, invalid.action, invalid.explanation)
+			if err == nil || result.Success {
+				t.Fatalf("invalid recovery request succeeded: %+v, %v", result, err)
+			}
+		}
+		canceled, cancel := context.WithCancel(t.Context())
+		cancel()
+		result, err := run(canceled, executionID, "accept", reason)
+		if err == nil || result.Success {
+			t.Fatalf("pre-canceled recovery succeeded: %+v, %v", result, err)
+		}
+		after, _ := os.ReadFile(filepath.Join(root, "commands"))
+		journalAfter, _ := os.ReadFile(filepath.Join(root, "pending.jsonl"))
+		if !bytes.Equal(before, after) || !bytes.Equal(journalBefore, journalAfter) {
+			t.Fatalf("invalid or canceled recovery changed execution state:\n%s", after)
+		}
+	}
+
+	accepted := !strings.HasPrefix(mode, "recover-abort")
+	action := "abort"
+	opposite := "accept"
+	if accepted {
+		action, opposite = opposite, action
+	}
+	switch mode {
+	case "recover-abort-kill-retry":
+		t.Setenv("NTM_CONFIRM_KILL_FAILURE", "1")
+	case "recover-abort-absence-retry":
+		t.Setenv("NTM_CONFIRM_KEEP_REPLACEMENT", "1")
+	case "recover-changed-pid":
+		t.Setenv("NTM_CONFIRM_REPLACEMENT_PID", "654")
+	case "recover-accept-manifest-race":
+		changed := *manifest
+		changed.Agents = append([]resilience.AgentConfig(nil), manifest.Agents...)
+		changed.Agents[0].Command = "concurrently changed launch command"
+		if err := resilience.SaveManifest(&changed); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if mode != "recover-accept" && mode != "recover-abort" {
+		result, err := run(t.Context(), executionID, action, reason)
+		if err == nil || result.Success {
+			t.Fatalf("recovery ignored a changed process or incomplete side effect: %+v, %v", result, err)
+		}
+		assertFenced()
+		if mode == "recover-changed-pid" {
+			commands, _ := os.ReadFile(filepath.Join(root, "commands"))
+			if strings.Contains(string(commands), "kill-pane") {
+				t.Fatalf("recovery killed a changed process:\n%s", commands)
+			}
+		}
+		t.Setenv("NTM_CONFIRM_KILL_FAILURE", "")
+		t.Setenv("NTM_CONFIRM_KEEP_REPLACEMENT", "")
+		t.Setenv("NTM_CONFIRM_REPLACEMENT_PID", "")
+		if mode == "recover-accept-manifest-race" {
+			if err := resilience.SaveManifest(manifest); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	result, err := run(t.Context(), executionID, action, reason)
+	if err != nil || !result.Success || result.Rotation == nil || result.ExecutionID != executionID || string(result.Rotation.ResolutionAction) != action {
+		t.Fatalf("explicit recovery did not complete: %+v, %v", result, err)
+	}
+	journal, err := os.ReadFile(filepath.Join(root, "pending.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var durable ctxmon.StoredPendingRotation
+	if err := json.Unmarshal(bytes.TrimSpace(journal), &durable); err != nil || durable.Continuation == nil || durable.Continuation.Resolution == nil || durable.Continuation.Resolution.Reason != reason || durable.Continuation.Resolution.RecordedAt.IsZero() || string(durable.Continuation.Resolution.Action) != action || durable.ExecutionID != executionID || durable.ExecutionState != ctxmon.RotationStateCompleted {
+		t.Fatalf("operator decision or execution was not durable: %+v, %v", durable, err)
+	}
+	if !accepted {
+		if result.Rotation.State != ctxmon.RotationStateAborted || result.Rotation.NewPaneID != "" || result.Rotation.OldPaneID != "%1" {
+			t.Fatalf("abort receipt claimed a completed replacement: %+v", result.Rotation)
+		}
+		store, err := assignment.LoadStoreStrict("demo")
+		if err != nil || !reflect.DeepEqual(store.Get(original.BeadID), original) {
+			t.Fatalf("abort changed the original task, claim, or lease: %+v, %v", store, err)
+		}
+		currentManifest, err := resilience.LoadManifest("demo")
+		if err != nil || !reflect.DeepEqual(currentManifest, manifest) {
+			t.Fatalf("abort changed restart ownership: %+v, %v", currentManifest, err)
+		}
+		registry, err := agentmail.LoadSessionAgentRegistry("demo", pending.WorkDir)
+		if err != nil || registry == nil || registry.PaneIDMap["%1"] != "BlueLake" || registry.PanePID("%1") != 123 || registry.PaneIDMap["%99"] != "" || registry.RegistrationToken("BlueLake") != "original-registration-token" {
+			t.Fatalf("abort changed the original registered identity: %+v, %v", registry, err)
+		}
+		if _, err := os.Stat(filepath.Join(root, "replacement-retired")); err != nil {
+			t.Fatalf("abort completed without stopping the replacement: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(root, "retired")); !os.IsNotExist(err) {
+			t.Fatalf("abort retired the original: %v", err)
+		}
+		if token, err := os.ReadFile(filepath.Join(root, "token.1")); err != nil || len(token) != 0 {
+			t.Fatalf("abort did not release the original after replacement removal: %q, %v", token, err)
+		}
+	}
+	before, _ := os.ReadFile(filepath.Join(root, "commands"))
+	if strings.Count(string(before), "HANDOFF_DELIVERED") != 1 || strings.Count(string(before), "split-window ") != 1 {
+		t.Fatalf("recovery relaunched an agent or resent its handoff:\n%s", before)
+	}
+	replayed, replayErr := run(t.Context(), executionID, action, reason)
+	if replayErr != nil || !reflect.DeepEqual(replayed.Rotation, result.Rotation) {
+		t.Fatalf("same recovery decision did not replay its saved result: %+v, %v", replayed, replayErr)
+	}
+	for _, invalid := range []struct{ action, explanation string }{{opposite, reason}, {action, "rewrite the original decision"}} {
+		conflict, err := run(t.Context(), executionID, invalid.action, invalid.explanation)
+		if err == nil || conflict.Success {
+			t.Fatalf("completed operator decision was mutable: %+v, %v", conflict, err)
+		}
+	}
+	after, _ := os.ReadFile(filepath.Join(root, "commands"))
+	if !bytes.Equal(before, after) {
+		t.Fatalf("replaying or contradicting a completed decision performed more effects:\n%s", after)
+	}
+	return accepted
 }
 
 const contextConfirmTmuxFixture = `#!/bin/sh
@@ -344,17 +554,17 @@ case "$1" in
       pid=123
       if [ "$NTM_CONFIRM_MODE" = changed-pid ]; then pid=456; fi
       index=1
-      if [ -f "$NTM_CONFIRM_ROOT/created" ]; then index=2; fi
+      if [ -f "$NTM_CONFIRM_ROOT/created" ] && [ ! -f "$NTM_CONFIRM_ROOT/replacement-retired" ]; then index=2; fi
       token=
       if [ -f "$NTM_CONFIRM_ROOT/token.1" ]; then token=$(cat "$NTM_CONFIRM_ROOT/token.1"); fi
       printf '%s%%1_NTM_SEP_%s_NTM_SEP_demo__cc_1_NTM_SEP_node_NTM_SEP_120_NTM_SEP_40_NTM_SEP_0_NTM_SEP_%s_NTM_SEP_0_NTM_SEP_cc_NTM_SEP__NTM_SEP__NTM_SEP_0_NTM_SEP_[%s]\n' "$prefix" "$index" "$pid" "$token"
     fi
-    if [ -f "$NTM_CONFIRM_ROOT/created" ]; then
+    if [ -f "$NTM_CONFIRM_ROOT/created" ] && [ ! -f "$NTM_CONFIRM_ROOT/replacement-retired" ]; then
       command=bash
       if [ -f "$NTM_CONFIRM_ROOT/launched" ]; then command=node; fi
       token=
       if [ -f "$NTM_CONFIRM_ROOT/token.99" ]; then token=$(cat "$NTM_CONFIRM_ROOT/token.99"); fi
-      printf '%s%%99_NTM_SEP_1_NTM_SEP_demo__cc_1_NTM_SEP_%s_NTM_SEP_120_NTM_SEP_40_NTM_SEP_0_NTM_SEP_321_NTM_SEP_0_NTM_SEP_cc_NTM_SEP__NTM_SEP__NTM_SEP_0_NTM_SEP_[%s]\n' "$prefix" "$command" "$token"
+      printf '%s%%99_NTM_SEP_1_NTM_SEP_demo__cc_1_NTM_SEP_%s_NTM_SEP_120_NTM_SEP_40_NTM_SEP_0_NTM_SEP_%s_NTM_SEP_0_NTM_SEP_cc_NTM_SEP__NTM_SEP__NTM_SEP_0_NTM_SEP_[%s]\n' "$prefix" "$command" "${NTM_CONFIRM_REPLACEMENT_PID:-321}" "$token"
     fi
     if [ -n "$prefix" ] && [ "$NTM_CONFIRM_MODE" = cross-session ]; then
       printf 'other_NTM_SEP_%%2_NTM_SEP_1_NTM_SEP_other__cc_1_NTM_SEP_node_NTM_SEP_120_NTM_SEP_40_NTM_SEP_0_NTM_SEP_456_NTM_SEP_0_NTM_SEP_cc_NTM_SEP__NTM_SEP__NTM_SEP_0\n'
@@ -407,7 +617,13 @@ case "$1" in
       printf '1' > "$NTM_CONFIRM_ROOT/launched"
     fi
     ;;
-  kill-pane) if [ "$target" = '%1' ]; then printf '1' > "$NTM_CONFIRM_ROOT/retired"; fi ;;
+  kill-pane)
+    if [ "$target" = '%1' ]; then printf '1' > "$NTM_CONFIRM_ROOT/retired"; fi
+    if [ "$target" = '%99' ]; then
+      if [ "$NTM_CONFIRM_KILL_FAILURE" = 1 ]; then exit 1; fi
+      if [ "$NTM_CONFIRM_KEEP_REPLACEMENT" != 1 ]; then printf '1' > "$NTM_CONFIRM_ROOT/replacement-retired"; fi
+    fi
+    ;;
 esac
 `
 

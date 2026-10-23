@@ -11,6 +11,8 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -53,17 +55,18 @@ const (
 
 // RotationResult contains the outcome of a rotation attempt.
 type RotationResult struct {
-	Success       bool           `json:"success"`
-	OldAgentID    string         `json:"old_agent_id"`
-	NewAgentID    string         `json:"new_agent_id,omitempty"`
-	OldPaneID     string         `json:"old_pane_id"`
-	NewPaneID     string         `json:"new_pane_id,omitempty"`
-	Method        RotationMethod `json:"method"`
-	State         RotationState  `json:"state"`
-	SummaryTokens int            `json:"summary_tokens,omitempty"`
-	Duration      time.Duration  `json:"duration"`
-	Error         string         `json:"error,omitempty"`
-	Timestamp     time.Time      `json:"timestamp"`
+	Success          bool                     `json:"success"`
+	OldAgentID       string                   `json:"old_agent_id"`
+	NewAgentID       string                   `json:"new_agent_id,omitempty"`
+	OldPaneID        string                   `json:"old_pane_id"`
+	NewPaneID        string                   `json:"new_pane_id,omitempty"`
+	Method           RotationMethod           `json:"method"`
+	State            RotationState            `json:"state"`
+	SummaryTokens    int                      `json:"summary_tokens,omitempty"`
+	Duration         time.Duration            `json:"duration"`
+	Error            string                   `json:"error,omitempty"`
+	Timestamp        time.Time                `json:"timestamp"`
+	ResolutionAction RotationResolutionAction `json:"resolution_action,omitempty"`
 }
 
 // RotationEvent represents a rotation for audit/history purposes.
@@ -95,6 +98,23 @@ const (
 	ConfirmPostpone ConfirmAction = "postpone"
 )
 
+// RotationResolutionAction is an operator's explicit decision about an
+// interrupted handoff. It never authorizes sending the handoff again.
+type RotationResolutionAction string
+
+const (
+	RotationResolutionAccept RotationResolutionAction = "accept"
+	RotationResolutionAbort  RotationResolutionAction = "abort"
+)
+
+// RotationResolution retains why an operator accepted a handoff or abandoned
+// the replacement. The decision remains immutable through crash recovery.
+type RotationResolution struct {
+	Action     RotationResolutionAction `json:"action"`
+	Reason     string                   `json:"reason"`
+	RecordedAt time.Time                `json:"recorded_at"`
+}
+
 // PendingRotation represents a rotation awaiting user confirmation.
 type PendingRotation struct {
 	AgentID        string                `json:"agent_id"`
@@ -118,19 +138,20 @@ type PendingRotation struct {
 // from prompt delivery. Once handoff may have reached the replacement, retries
 // must inspect this receipt instead of starting another agent or sending again.
 type RotationContinuation struct {
-	Token           string         `json:"token"`
-	Phase           string         `json:"phase"`
-	Source          tmux.Pane      `json:"source"`
-	Replacement     tmux.Pane      `json:"replacement"`
-	ProjectDir      string         `json:"project_dir"`
-	RegistryProject string         `json:"registry_project,omitempty"`
-	SessionIdentity string         `json:"session_identity,omitempty"`
-	AgentName       string         `json:"agent_name,omitempty"`
-	BeadID          string         `json:"bead_id,omitempty"`
-	AssignmentKey   string         `json:"assignment_key,omitempty"`
-	Model           string         `json:"model,omitempty"`
-	Method          RotationMethod `json:"method"`
-	SummaryTokens   int            `json:"summary_tokens,omitempty"`
+	Token           string              `json:"token"`
+	Phase           string              `json:"phase"`
+	Source          tmux.Pane           `json:"source"`
+	Replacement     tmux.Pane           `json:"replacement"`
+	ProjectDir      string              `json:"project_dir"`
+	RegistryProject string              `json:"registry_project,omitempty"`
+	SessionIdentity string              `json:"session_identity,omitempty"`
+	AgentName       string              `json:"agent_name,omitempty"`
+	BeadID          string              `json:"bead_id,omitempty"`
+	AssignmentKey   string              `json:"assignment_key,omitempty"`
+	Model           string              `json:"model,omitempty"`
+	Method          RotationMethod      `json:"method"`
+	SummaryTokens   int                 `json:"summary_tokens,omitempty"`
+	Resolution      *RotationResolution `json:"resolution,omitempty"`
 	// The saved launch row is private recovery material, not public pending
 	// output. StoredPendingRotation persists it alongside this receipt.
 	Manifest *resilience.AgentConfig `json:"-"`
@@ -143,6 +164,9 @@ const (
 	rotationHandoffAccepted     = "handoff_accepted"
 	rotationOwnershipCommitted  = "ownership_committed"
 	rotationRetired             = "retirement_attempted"
+	rotationAbortStarted        = "abort_started"
+	rotationAbortCommitted      = "abort_committed"
+	rotationAborted             = "aborted"
 )
 
 func cloneRotationContinuation(continuation *RotationContinuation) *RotationContinuation {
@@ -152,9 +176,121 @@ func cloneRotationContinuation(continuation *RotationContinuation) *RotationCont
 	cloned := *continuation
 	if continuation.Manifest != nil {
 		manifest := *continuation.Manifest
+		manifest.LaunchBinding = resilience.CloneLaunchBinding(manifest.LaunchBinding)
 		cloned.Manifest = &manifest
 	}
+	if continuation.Resolution != nil {
+		resolution := *continuation.Resolution
+		cloned.Resolution = &resolution
+	}
 	return &cloned
+}
+
+// RotationRecoveryActions reports decisions permitted by the durable journal.
+// The recovery service still verifies current processes and ownership before
+// applying any decision; this projection is not permission to mutate a pane.
+func RotationRecoveryActions(pending *PendingRotation) []RotationResolutionAction {
+	actions := make([]RotationResolutionAction, 0, 2)
+	if validateRotationRecoveryRecord(pending) != nil || pending.ExecutionState == RotationStateCompleted {
+		return actions
+	}
+	for _, action := range []RotationResolutionAction{RotationResolutionAccept, RotationResolutionAbort} {
+		if rotationResolutionAllowed(pending.Continuation, action) {
+			actions = append(actions, action)
+		}
+	}
+	return actions
+}
+
+func rotationResolutionAllowed(receipt *RotationContinuation, action RotationResolutionAction) bool {
+	if receipt == nil || receipt.Resolution != nil && receipt.Resolution.Action != action {
+		return false
+	}
+	switch action {
+	case RotationResolutionAccept:
+		switch receipt.Phase {
+		case rotationHandoffStarted:
+			return true
+		case rotationHandoffAccepted, rotationOwnershipCommitted, rotationRetired:
+			return receipt.Resolution != nil
+		}
+	case RotationResolutionAbort:
+		switch receipt.Phase {
+		case rotationSourceFenced, rotationReplacementPrepared, rotationHandoffStarted:
+			return true
+		case rotationAbortStarted, rotationAbortCommitted, rotationAborted:
+			return receipt.Resolution != nil
+		}
+	}
+	return false
+}
+
+func validateRotationRecoveryRecord(pending *PendingRotation) error {
+	if pending == nil || pending.SelectedAction != ConfirmRotate || pending.ExecutionID == "" || pending.Continuation == nil {
+		return errors.New("an existing durable rotation continuation is required")
+	}
+	receipt := pending.Continuation
+	if receipt.Token != pending.ExecutionID || receipt.Source.ID != pending.PaneID || receipt.Source.PID != pending.PanePID ||
+		receipt.Source.PID <= 0 || receipt.Source.Type.Canonical() != tmux.AgentType(pending.PaneType).Canonical() || receipt.Source.RotationToken != receipt.Token {
+		return errors.New("rotation continuation does not match the original process and execution identity")
+	}
+	if id, ok := agentmail.BareTmuxPaneID(receipt.Source.ID); !ok || id != receipt.Source.ID {
+		return errors.New("rotation continuation has an invalid physical source pane")
+	}
+	if err := tmux.ValidateSessionName(pending.SessionName); err != nil {
+		return fmt.Errorf("invalid continuation session: %w", err)
+	}
+	if err := validateAutomatedRotation(receipt.Source.Type); err != nil {
+		return err
+	}
+	if !filepath.IsAbs(receipt.ProjectDir) || (receipt.BeadID == "") != (receipt.AssignmentKey == "") ||
+		(receipt.AgentName == "") != (receipt.RegistryProject == "") || receipt.RegistryProject != "" && !filepath.IsAbs(receipt.RegistryProject) {
+		return errors.New("rotation continuation has incomplete project or assignment ownership")
+	}
+	if receipt.Replacement.ID != "" {
+		id, ok := agentmail.BareTmuxPaneID(receipt.Replacement.ID)
+		if !ok || id != receipt.Replacement.ID || id == receipt.Source.ID || receipt.Replacement.PID <= 0 ||
+			receipt.Replacement.RotationToken != receipt.Token || receipt.Replacement.Type.Canonical() != receipt.Source.Type.Canonical() ||
+			receipt.Replacement.WindowIndex != receipt.Source.WindowIndex || receipt.Replacement.Index < 0 {
+			return errors.New("rotation continuation has an invalid physical replacement identity")
+		}
+	} else {
+		switch receipt.Phase {
+		case rotationSourceFenced, rotationAbortStarted, rotationAbortCommitted, rotationAborted:
+		default:
+			return errors.New("rotation continuation is missing its replacement process identity")
+		}
+	}
+	if receipt.Manifest != nil && receipt.Manifest.PaneID != receipt.Source.ID {
+		return errors.New("rotation restart record belongs to another source pane")
+	}
+	if receipt.Resolution != nil {
+		resolution := receipt.Resolution
+		if resolution.Action != RotationResolutionAccept && resolution.Action != RotationResolutionAbort ||
+			strings.TrimSpace(resolution.Reason) == "" || resolution.RecordedAt.IsZero() || !rotationResolutionAllowed(receipt, resolution.Action) {
+			return errors.New("rotation continuation contains an invalid recovery decision")
+		}
+	}
+	switch pending.ExecutionState {
+	case RotationStateInProgress, RotationStateFailed:
+	case RotationStateCompleted:
+		if pending.Result == nil || !pending.Result.Success {
+			return errors.New("completed rotation recovery has no successful outcome receipt")
+		}
+		if receipt.Resolution != nil {
+			result := pending.Result
+			if result.OldAgentID != pending.AgentID || result.OldPaneID != receipt.Source.ID || result.ResolutionAction != receipt.Resolution.Action {
+				return errors.New("completed rotation recovery outcome has a different execution identity")
+			}
+			if receipt.Resolution.Action == RotationResolutionAbort && (receipt.Phase != rotationAborted || result.State != RotationStateAborted || result.NewPaneID != "") ||
+				receipt.Resolution.Action == RotationResolutionAccept && (receipt.Phase != rotationRetired || result.State != RotationStateCompleted || result.NewPaneID != receipt.Replacement.ID) {
+				return errors.New("completed rotation recovery outcome disagrees with its durable decision")
+			}
+		}
+	default:
+		return errors.New("rotation continuation has no durable execution state")
+	}
+	return nil
 }
 
 // RemainingSeconds returns the seconds remaining before timeout.
@@ -1363,6 +1499,354 @@ func (o *rotationOwnership) abort(ctx stdcontext.Context, lifecycle rotationPane
 	return DefaultPendingRotationStore.SaveContinuation(cleanupCtx, o.pending, nil)
 }
 
+// recoveryPanes observes the whole server, including dead and moved panes.
+// An absent replacement is positive evidence only after a successful global
+// topology read; unknown panes with the token indicate a lost split receipt.
+func (o *rotationOwnership) recoveryPanes(ctx stdcontext.Context, accepting bool) (tmux.Pane, *tmux.Pane, error) {
+	bySession, err := tmux.GetAllPanesContext(ctx)
+	if err != nil {
+		return tmux.Pane{}, nil, fmt.Errorf("observe rotation processes: %w", err)
+	}
+	receipt := o.receipt
+	for session, panes := range bySession {
+		if session == o.pending.SessionName {
+			continue
+		}
+		for _, pane := range panes {
+			if pane.ID == receipt.Source.ID || receipt.Replacement.ID != "" && pane.ID == receipt.Replacement.ID || pane.RotationToken == receipt.Token {
+				return tmux.Pane{}, nil, errors.New("a rotation process or its execution token moved to another session; ownership fences are preserved")
+			}
+		}
+	}
+	panes := bySession[o.pending.SessionName]
+	seen := make(map[string]bool, len(panes))
+	var source, replacement *tmux.Pane
+	for _, pane := range panes {
+		if seen[pane.ID] {
+			return tmux.Pane{}, nil, errors.New("rotation topology contains duplicate physical pane identities")
+		}
+		seen[pane.ID] = true
+		if pane.RotationToken == receipt.Token && pane.ID != receipt.Source.ID && pane.ID != receipt.Replacement.ID {
+			return tmux.Pane{}, nil, errors.New("an unrecorded pane carries this rotation token; ownership fences are preserved")
+		}
+		if pane.ID == receipt.Source.ID {
+			copy := pane
+			source = &copy
+		}
+		if receipt.Replacement.ID != "" && pane.ID == receipt.Replacement.ID {
+			copy := pane
+			replacement = &copy
+		}
+	}
+	if source == nil || source.PID != receipt.Source.PID || source.Type.Canonical() != receipt.Source.Type.Canonical() ||
+		source.WindowIndex != receipt.Source.WindowIndex || source.Dead || source.IsServicePane() {
+		return tmux.Pane{}, nil, errors.New("original source process identity changed or is unavailable")
+	}
+	allowUnfencedSource := !accepting && (receipt.Phase == rotationSourceFenced || receipt.Phase == rotationAbortCommitted ||
+		receipt.Phase == rotationAborted || receipt.Phase == rotationAbortStarted && receipt.Replacement.ID == "")
+	if source.RotationToken != receipt.Token && !(allowUnfencedSource && source.RotationToken == "") {
+		return tmux.Pane{}, nil, errors.New("original source rotation fence changed or disappeared")
+	}
+	if replacement == nil {
+		if accepting {
+			return tmux.Pane{}, nil, errors.New("replacement process is absent; handoff cannot be accepted")
+		}
+		return *source, nil, nil
+	}
+	if replacement.PID != receipt.Replacement.PID || replacement.Type.Canonical() != receipt.Replacement.Type.Canonical() ||
+		replacement.WindowIndex != receipt.Replacement.WindowIndex || replacement.IsServicePane() || replacement.RotationToken != receipt.Token {
+		return tmux.Pane{}, nil, errors.New("replacement process identity or rotation fence changed")
+	}
+	if accepting && (replacement.Dead || !rotationProcessRunning(*replacement)) {
+		return tmux.Pane{}, nil, errors.New("replacement is no longer a running agent; handoff cannot be accepted")
+	}
+	return *source, replacement, nil
+}
+
+// lockRecoveryTargets closes the ordinary dispatch boundary around process
+// retirement and source release. Assignment continuation mutations acquire
+// these same locks themselves and must run after this release function.
+func (o *rotationOwnership) lockRecoveryTargets(ctx stdcontext.Context) (func(), error) {
+	keys := []string{o.receipt.Source.ID}
+	if o.receipt.Replacement.ID != "" {
+		keys = append(keys, o.receipt.Replacement.ID)
+	}
+	sort.Strings(keys)
+	var releases []func()
+	release := func() {
+		for i := len(releases) - 1; i >= 0; i-- {
+			releases[i]()
+		}
+	}
+	for _, key := range keys {
+		unlock, err := o.store.AcquireTargetLock(ctx, key)
+		if err != nil {
+			release()
+			return nil, err
+		}
+		releases = append(releases, unlock)
+	}
+	return release, nil
+}
+
+// verifyOriginalOwners requires every durable owner to still describe the
+// original generation. It is shared by initial acceptance and abandonment;
+// accepted continuations later use finish's idempotent ownership CAS writes.
+func (o *rotationOwnership) verifyOriginalOwners(ctx stdcontext.Context, accepting bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if o.pending.Remote != tmux.DefaultClient.Remote {
+		return errors.New("rotation belongs to a different tmux server")
+	}
+	receipt := o.receipt
+	if err := o.store.LoadStrict(); err != nil {
+		return fmt.Errorf("load original assignment ownership: %w", err)
+	}
+	isEndpoint := func(paneID string) bool {
+		return paneID == receipt.Source.ID || receipt.Replacement.ID != "" && paneID == receipt.Replacement.ID
+	}
+	for _, candidate := range o.store.List() {
+		active := candidate.DispatchState == assignment.DispatchSending || candidate.ClearState != assignment.ClearStateNone || candidate.HasPendingPaneContinuation()
+		switch candidate.Status {
+		case assignment.StatusClaiming, assignment.StatusClaimed, assignment.StatusAssigned, assignment.StatusWorking:
+			active = true
+		}
+		if !active {
+			continue
+		}
+		paneID, err := assignment.CanonicalPaneIdentity(candidate)
+		if err != nil {
+			return fmt.Errorf("cannot verify active assignment %s: %w", candidate.BeadID, err)
+		}
+		touches := isEndpoint(paneID) || isEndpoint(candidate.DispatchTarget)
+		if continuation := candidate.PaneContinuation; continuation != nil {
+			touches = touches || isEndpoint(continuation.SourcePane) || isEndpoint(continuation.TargetPane)
+		}
+		if touches && (receipt.BeadID == "" || candidate.BeadID != receipt.BeadID || candidate.IdempotencyKey != receipt.AssignmentKey) {
+			return errors.New("a different active assignment occupies a rotation pane")
+		}
+	}
+	o.current = nil
+	if receipt.BeadID != "" {
+		current := o.store.Get(receipt.BeadID)
+		if current == nil || current.IdempotencyKey != receipt.AssignmentKey || current.OccupancyKey != receipt.Source.ID ||
+			current.DispatchTarget != receipt.Source.ID || tmux.AgentType(current.AgentType).Canonical() != receipt.Source.Type.Canonical() ||
+			receipt.AgentName != "" && current.AgentName != receipt.AgentName {
+			return errors.New("original assignment generation or physical owner changed")
+		}
+		continuation := current.PaneContinuation
+		allowCleared := !accepting && (receipt.Phase == rotationSourceFenced || receipt.Phase == rotationAbortStarted || receipt.Phase == rotationAbortCommitted || receipt.Phase == rotationAborted)
+		if continuation == nil {
+			if !allowCleared {
+				return errors.New("original assignment continuation barrier disappeared")
+			}
+		} else if continuation.Token != receipt.Token || continuation.SourcePane != receipt.Source.ID || continuation.CompletedAt != nil ||
+			continuation.TargetPane != receipt.Replacement.ID && !(continuation.TargetPane == "" && !accepting) ||
+			continuation.TargetPane != "" && continuation.TargetIndex != receipt.Replacement.Index {
+			return errors.New("original assignment continuation belongs to another handoff")
+		}
+		// Once abandonment has removed its barrier, terminal completion of
+		// this same source generation may legitimately finish before recovery
+		// resumes. It must not prevent releasing that source's stale token.
+		terminalAfterAbort := allowCleared && (receipt.Phase != rotationSourceFenced || receipt.Replacement.ID == "") && continuation == nil &&
+			(current.Status == assignment.StatusCompleted || current.Status == assignment.StatusFailed)
+		if current.DispatchState == assignment.DispatchSending {
+			return errors.New("original assignment has an unresolved dispatch attempt")
+		}
+		if !terminalAfterAbort {
+			if current.ClearState != assignment.ClearStateNone || current.PendingCompletionEventID != "" ||
+				(current.Status != assignment.StatusAssigned && current.Status != assignment.StatusWorking) ||
+				current.DispatchState != assignment.DispatchSent || current.DispatchReceiptID == "" || current.ClaimActor == "" ||
+				current.ClaimState != "" && current.ClaimState != assignment.ClaimClaimed ||
+				current.ReservationState == assignment.ReservationReserving || current.ReservationState == assignment.ReservationUnknown {
+				return errors.New("original assignment has unresolved delivery, claim, or cleanup ownership")
+			}
+			leased := current.ReservationRequired || len(current.ReservationIDs) > 0 || len(current.ReservedPaths) > 0 || current.ReservationAgent != "" || current.ReservationTarget != ""
+			if leased && (receipt.AgentName == "" || current.ReservationState != assignment.ReservationReserved || !current.ReservationCompleted ||
+				current.ReservationAgent != receipt.AgentName || current.ReservationTarget != receipt.Source.ID || len(current.ReservationIDs) == 0 || len(current.ReservedPaths) == 0) {
+				return errors.New("original assignment reservation ownership is incomplete or changed")
+			}
+		}
+		o.current = current
+	}
+	registry, err := agentmail.LoadBestSessionAgentRegistry(o.pending.SessionName, receipt.RegistryProject, receipt.ProjectDir, o.pending.WorkDir)
+	if err != nil {
+		return fmt.Errorf("load original Agent Mail ownership: %w", err)
+	}
+	if receipt.AgentName != "" {
+		if registry == nil || registry.SessionName != o.pending.SessionName || !agentmail.ProjectKeysEquivalent(registry.ProjectKey, receipt.RegistryProject) ||
+			registry.PaneIDMap[receipt.Source.ID] != receipt.AgentName || registry.PanePID(receipt.Source.ID) != receipt.Source.PID {
+			return errors.New("original Agent Mail process or project ownership changed")
+		}
+		for paneID, name := range registry.PaneIDMap {
+			if strings.EqualFold(strings.TrimSpace(name), strings.TrimSpace(receipt.AgentName)) && paneID != receipt.Source.ID {
+				return errors.New("original Agent Mail recipient has another physical owner")
+			}
+		}
+		for title, name := range registry.Agents {
+			if strings.EqualFold(strings.TrimSpace(name), strings.TrimSpace(receipt.AgentName)) && title != receipt.Source.Title {
+				return errors.New("original Agent Mail recipient has another title binding")
+			}
+		}
+		if name := registry.Agents[receipt.Source.Title]; name != "" && name != receipt.AgentName {
+			return errors.New("original source title belongs to another Agent Mail recipient")
+		}
+	} else if registry != nil && (registry.PaneIDMap[receipt.Source.ID] != "" || registry.Agents[receipt.Source.Title] != "") {
+		return errors.New("previously unregistered source now has another Agent Mail owner")
+	}
+	if registry != nil && receipt.Replacement.ID != "" && (registry.PaneIDMap[receipt.Replacement.ID] != "" ||
+		registry.PanePID(receipt.Replacement.ID) != 0 || receipt.Replacement.Title != receipt.Source.Title && registry.Agents[receipt.Replacement.Title] != "") {
+		return errors.New("replacement has acquired an Agent Mail registry binding")
+	}
+	manifest, err := resilience.LoadManifest(o.pending.SessionName)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("load original restart ownership: %w", err)
+	}
+	if receipt.SessionIdentity != "" {
+		if manifest == nil || manifest.SessionIdentity != receipt.SessionIdentity {
+			return errors.New("restart manifest session generation changed")
+		}
+		identity, err := tmux.DefaultClient.RunContext(ctx, "display-message", "-p", "-t", tmux.SessionPaneTarget(o.pending.SessionName), "#{pid}:#{session_id}:#{session_created}")
+		if err != nil || strings.TrimSpace(identity) != receipt.SessionIdentity {
+			return errors.New("tmux session generation changed or cannot be observed")
+		}
+	}
+	foundSource := false
+	if manifest != nil {
+		for _, row := range manifest.Agents {
+			if receipt.Replacement.ID != "" && row.PaneID == receipt.Replacement.ID {
+				return errors.New("replacement has acquired restart manifest ownership")
+			}
+			if row.PaneID == receipt.Source.ID {
+				if foundSource || receipt.Manifest == nil || !reflect.DeepEqual(row, *receipt.Manifest) {
+					return errors.New("original restart manifest row changed or is duplicated")
+				}
+				foundSource = true
+			}
+		}
+	}
+	if receipt.Manifest != nil && !foundSource {
+		return errors.New("original restart manifest row disappeared")
+	}
+	if o.pending.Remote != "" && (receipt.BeadID != "" || registry != nil || manifest != nil) {
+		return errors.New("remote rotation ownership cannot be verified through local session records")
+	}
+	return ctx.Err()
+}
+
+// abandon removes only the exact quarantined replacement. The operator's
+// decision is already durable: stopping it does not claim the uncertain
+// handoff was never delivered, and never releases the original work's leases.
+func (o *rotationOwnership) abandon(ctx stdcontext.Context) error {
+	if o.receipt.Phase == rotationAborted {
+		// The final journal boundary proves source release already completed.
+		// Replaying it must not inspect or mutate the source's subsequent work.
+		return nil
+	}
+	unlock, err := o.lockRecoveryTargets(ctx)
+	if err != nil {
+		return err
+	}
+	settled := false
+	err = func() error {
+		defer unlock()
+		source, replacement, err := o.recoveryPanes(ctx, false)
+		if err != nil {
+			return err
+		}
+		if o.receipt.Phase == rotationAbortCommitted && source.RotationToken == "" && replacement == nil {
+			// The barrier was durably removed and source release already
+			// happened. A later assignment may now own this same process;
+			// finish only our journal, without inspecting or touching it.
+			if err := o.save(ctx, rotationAborted); err != nil {
+				return err
+			}
+			settled = true
+			return nil
+		}
+		if err := o.verifyOriginalOwners(ctx, false); err != nil {
+			return err
+		}
+		if o.receipt.Phase != rotationAbortStarted && o.receipt.Phase != rotationAbortCommitted {
+			if err := o.save(ctx, rotationAbortStarted); err != nil {
+				return err
+			}
+		}
+		_, replacement, err = o.recoveryPanes(ctx, false)
+		if err != nil {
+			return err
+		}
+		if replacement != nil {
+			if o.receipt.Phase == rotationAbortCommitted {
+				return errors.New("replacement reappeared after abandonment committed")
+			}
+			// Dead remain-on-exit panes are safe to remove too, but a reused
+			// ID, changed PID, or foreign token was rejected by recoveryPanes.
+			if err := tmux.KillPaneContext(ctx, replacement.ID); err != nil {
+				return fmt.Errorf("stop abandoned replacement: %w", err)
+			}
+		}
+		_, remaining, err := o.recoveryPanes(ctx, false)
+		if err != nil {
+			return err
+		}
+		if remaining != nil {
+			return errors.New("replacement removal could not be verified; original ownership remains fenced")
+		}
+		return o.verifyOriginalOwners(ctx, false)
+	}()
+	if err != nil || settled {
+		return err
+	}
+	if o.current != nil && o.current.HasPendingPaneContinuation() {
+		current, applied, err := o.store.AbortPaneContinuation(ctx, o.current, o.receipt.Token)
+		if err != nil {
+			return fmt.Errorf("release abandoned assignment continuation: %w", err)
+		}
+		if !applied {
+			return errors.New("original assignment changed before abandonment committed")
+		}
+		o.current = current
+	}
+	if o.receipt.Phase != rotationAbortCommitted {
+		if err := o.save(ctx, rotationAbortCommitted); err != nil {
+			return err
+		}
+	}
+	unlock, err = o.lockRecoveryTargets(ctx)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	source, replacement, err := o.recoveryPanes(ctx, false)
+	if err != nil {
+		return err
+	}
+	if replacement != nil {
+		return errors.New("replacement reappeared before original source release")
+	}
+	if err := o.verifyOriginalOwners(ctx, false); err != nil {
+		return err
+	}
+	if o.current != nil && o.current.PaneContinuation != nil {
+		return errors.New("assignment continuation barrier remains after abandonment")
+	}
+	if source.RotationToken != "" {
+		if err := tmux.ClearPaneRotationTokenContext(ctx, source.ID, o.receipt.Token); err != nil {
+			return fmt.Errorf("release original source rotation fence: %w", err)
+		}
+	}
+	source, replacement, err = o.recoveryPanes(ctx, false)
+	if err != nil {
+		return err
+	}
+	if source.RotationToken != "" || replacement != nil {
+		return errors.New("original source release could not be verified")
+	}
+	return o.save(ctx, rotationAborted)
+}
+
 // finish repeats only idempotent ownership writes, never prompt delivery. Its
 // journal survives a process exit between the Agent Mail, restart manifest,
 // and assignment snapshots, so --retry can complete that same continuation.
@@ -1480,6 +1964,9 @@ func resumeRotationOwnership(ctx stdcontext.Context, pending *PendingRotation, c
 	receipt := cloneRotationContinuation(pending.Continuation)
 	result := RotationResult{OldAgentID: pending.AgentID, OldPaneID: receipt.Source.ID, NewAgentID: receipt.Replacement.Title,
 		NewPaneID: receipt.Replacement.ID, Method: receipt.Method, SummaryTokens: receipt.SummaryTokens, State: RotationStateFailed, Timestamp: time.Now()}
+	if receipt.Resolution != nil {
+		result.ResolutionAction = receipt.Resolution.Action
+	}
 	store, err := assignment.LoadStoreStrict(pending.SessionName)
 	if err != nil {
 		result.Error = err.Error()
@@ -2424,6 +2911,85 @@ func (r *Rotator) ConfirmRotation(agentID string, action ConfirmAction, postpone
 // stores the actual result, so a reported success can be replayed safely.
 func ConfirmPendingRotationContext(ctx stdcontext.Context, agentID string, action ConfirmAction, minutes int, retry bool, cfg *config.Config) RotationResult {
 	return confirmStoredRotation(ctx, agentID, action, minutes, retry, cfg, nil)
+}
+
+// ResolvePendingRotationContext records an operator's decision for one exact
+// interrupted execution. Acceptance finalizes its existing handoff; abort
+// explicitly abandons its replacement. Neither path starts or sends work.
+func ResolvePendingRotationContext(ctx stdcontext.Context, agentID, executionID string, action RotationResolutionAction, reason string, cfg *config.Config) (result RotationResult) {
+	started := time.Now()
+	result = RotationResult{OldAgentID: agentID, State: RotationStateFailed, ResolutionAction: action, Timestamp: started}
+	pending, release, err := DefaultPendingRotationStore.BeginResolution(ctx, agentID, executionID, action, reason)
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+	defer release()
+	if pending.ExecutionState == RotationStateCompleted && pending.Result != nil {
+		return *pending.Result
+	}
+	receipt := cloneRotationContinuation(pending.Continuation)
+	result.OldPaneID, result.Method, result.SummaryTokens = receipt.Source.ID, receipt.Method, receipt.SummaryTokens
+	defer func() {
+		result.Duration = time.Since(started)
+		if err := DefaultPendingRotationStore.FinishConfirmation(ctx, pending, result); err != nil {
+			result.Success, result.State = false, RotationStateFailed
+			result.Error += fmt.Sprintf("; recovery outcome could not be persisted: %v", err)
+		}
+	}()
+	if err := ctx.Err(); err != nil {
+		result.Error = err.Error()
+		return result
+	}
+	if pending.Remote != tmux.DefaultClient.Remote {
+		result.Error = "rotation belongs to a different tmux host; use the same --ssh target that enqueued it"
+		return result
+	}
+	// Completed abandonment is replayable even if the original process has
+	// since received new work. The remaining write is its outcome receipt.
+	if action == RotationResolutionAbort && receipt.Phase == rotationAborted {
+		result.Success, result.State = true, RotationStateAborted
+		return result
+	}
+	store, err := assignment.LoadStoreStrict(pending.SessionName)
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+	ownership := &rotationOwnership{pending: pending, receipt: receipt, store: store}
+	if action == RotationResolutionAbort {
+		if err := ownership.abandon(ctx); err != nil {
+			result.Error = fmt.Sprintf("rotation abandonment remains unresolved: %v", err)
+			return result
+		}
+		// The receipt retains the removed replacement's identity for audit.
+		// The result has no new owner, so a future rotation of this source
+		// can be enqueued after this completed request.
+		result.Success, result.State = true, RotationStateAborted
+		return result
+	}
+	if receipt.Phase == rotationHandoffStarted {
+		unlock, err := ownership.lockRecoveryTargets(ctx)
+		if err != nil {
+			result.Error = err.Error()
+			return result
+		}
+		err = func() error {
+			defer unlock()
+			if _, _, err := ownership.recoveryPanes(ctx, true); err != nil {
+				return err
+			}
+			if err := ownership.verifyOriginalOwners(ctx, true); err != nil {
+				return err
+			}
+			return ownership.save(ctx, rotationHandoffAccepted)
+		}()
+		if err != nil {
+			result.Error = fmt.Sprintf("handoff acceptance remains unresolved: %v", err)
+			return result
+		}
+	}
+	return resumeRotationOwnership(ctx, pending, cfg, nil)
 }
 
 func confirmStoredRotation(ctx stdcontext.Context, agentID string, action ConfirmAction, minutes int, retry bool, cfg *config.Config, owner *Rotator) (result RotationResult) {

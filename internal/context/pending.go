@@ -385,6 +385,82 @@ func (s *PendingRotationStore) BeginConfirmation(ctx context.Context, agentID st
 	return nil, nil, fmt.Errorf("no pending rotation found for agent %s", agentID)
 }
 
+// BeginResolution owns the same execution fence as confirmation. Recovering
+// an interrupted owner requires its exact token, so an operator inspecting an
+// older request cannot resolve a newer rotation of the same agent.
+func (s *PendingRotationStore) BeginResolution(ctx context.Context, agentID, executionID string, action RotationResolutionAction, reason string) (*PendingRotation, func(), error) {
+	if ctx == nil {
+		return nil, nil, errors.New("rotation recovery context is required")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
+	reason = strings.TrimSpace(reason)
+	if strings.TrimSpace(agentID) == "" || strings.TrimSpace(executionID) == "" || reason == "" {
+		return nil, nil, errors.New("rotation recovery requires an agent, exact execution ID, and operator reason")
+	}
+	if action != RotationResolutionAccept && action != RotationResolutionAbort {
+		return nil, nil, fmt.Errorf("unknown rotation resolution: %s", action)
+	}
+	digest := sha256.Sum256([]byte(agentID))
+	release, err := acquirePendingFileLock(ctx, fmt.Sprintf("%s.confirm-%x.lock", s.storagePath, digest[:16]))
+	if err != nil {
+		return nil, nil, err
+	}
+	claimed := false
+	defer func() {
+		if !claimed {
+			release()
+		}
+	}()
+	// The file fence also serializes goroutines. Avoid pendingMu here: a
+	// writer may hold it while waiting for a file lock owned by another
+	// process, and an operator's canceled request must remain cancellable.
+	unlock, err := s.lock(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer unlock()
+	entries, err := s.readAllContext(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	for index := range entries {
+		entry := &entries[index]
+		if !pendingAgentIDEqual(entry.AgentID, agentID) {
+			continue
+		}
+		if entry.ExecutionID != executionID {
+			return nil, nil, errors.New("rotation execution changed; inspect the current pending request before resolving it")
+		}
+		pending := entry.ToPendingRotation()
+		if err := validateRotationRecoveryRecord(pending); err != nil {
+			return nil, nil, err
+		}
+		if !rotationResolutionAllowed(pending.Continuation, action) {
+			return nil, nil, fmt.Errorf("cannot resolve rotation phase %s with %s; the recorded handoff or recovery decision cannot be reversed", pending.Continuation.Phase, action)
+		}
+		if resolution := pending.Continuation.Resolution; resolution != nil {
+			if resolution.Reason != reason {
+				return nil, nil, errors.New("rotation recovery already has a different recorded reason; retry the original decision and reason")
+			}
+			claimed = true
+			return pending, release, nil
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
+		}
+		pending.Continuation.Resolution = &RotationResolution{Action: action, Reason: reason, RecordedAt: time.Now().UTC()}
+		entry.Continuation = cloneRotationContinuation(pending.Continuation)
+		if err := s.writeAllLocked(entries); err != nil {
+			return nil, nil, fmt.Errorf("persist operator rotation decision: %w", err)
+		}
+		claimed = true
+		return pending, release, nil
+	}
+	return nil, nil, fmt.Errorf("no pending rotation found for agent %s", agentID)
+}
+
 // SaveContinuation journals a phase before crossing the next external
 // boundary. The confirmation claim's token is a compare-and-swap guard; a
 // stale executor cannot overwrite another attempt's recovery record.
@@ -395,14 +471,12 @@ func (s *PendingRotationStore) SaveContinuation(ctx context.Context, pending *Pe
 	if continuation != nil && continuation.Token != pending.ExecutionID {
 		return errors.New("continuation token does not match confirmation ownership")
 	}
-	pendingMu.Lock()
-	defer pendingMu.Unlock()
 	unlock, err := s.lock(ctx)
 	if err != nil {
 		return err
 	}
 	defer unlock()
-	entries, err := s.readAllLocked()
+	entries, err := s.readAllContext(ctx)
 	if err != nil {
 		return err
 	}
@@ -413,6 +487,14 @@ func (s *PendingRotationStore) SaveContinuation(ctx context.Context, pending *Pe
 		}
 		if entry.ExecutionID != pending.ExecutionID || entry.SelectedAction != pending.SelectedAction {
 			return errors.New("confirmation ownership changed before saving continuation")
+		}
+		if entry.Continuation != nil && entry.Continuation.Resolution != nil {
+			decision := entry.Continuation.Resolution
+			if continuation == nil || continuation.Resolution == nil || continuation.Resolution.Action != decision.Action ||
+				continuation.Resolution.Reason != decision.Reason || !continuation.Resolution.RecordedAt.Equal(decision.RecordedAt) ||
+				!rotationResolutionAllowed(continuation, decision.Action) {
+				return errors.New("the recorded operator recovery decision cannot be changed or removed")
+			}
 		}
 		entry.Continuation = cloneRotationContinuation(continuation)
 		entry.ContinuationManifest = nil
@@ -438,14 +520,12 @@ func (s *PendingRotationStore) FinishConfirmation(ctx context.Context, pending *
 	}
 	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
-	pendingMu.Lock()
-	defer pendingMu.Unlock()
 	unlock, err := s.lock(persistCtx)
 	if err != nil {
 		return err
 	}
 	defer unlock()
-	entries, err := s.readAllLocked()
+	entries, err := s.readAllContext(persistCtx)
 	if err != nil {
 		return err
 	}
@@ -519,6 +599,8 @@ func (s *PendingRotationStore) readAllContext(ctx context.Context) ([]StoredPend
 	defer f.Close()
 
 	var entries []StoredPendingRotation
+	agents := make(map[string]bool)
+	executions := make(map[string]string)
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 
@@ -534,6 +616,16 @@ func (s *PendingRotationStore) readAllContext(ctx context.Context) ([]StoredPend
 		var entry StoredPendingRotation
 		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
 			return nil, fmt.Errorf("pending rotation store is invalid at line %d: %w", line, err)
+		}
+		if strings.TrimSpace(entry.AgentID) == "" || agents[entry.AgentID] {
+			return nil, fmt.Errorf("pending rotation store has an empty or duplicate agent ID at line %d", line)
+		}
+		agents[entry.AgentID] = true
+		if entry.ExecutionID != "" {
+			if owner, exists := executions[entry.ExecutionID]; exists {
+				return nil, fmt.Errorf("pending rotation store reuses execution identity for %s and %s", owner, entry.AgentID)
+			}
+			executions[entry.ExecutionID] = entry.AgentID
 		}
 		entries = append(entries, entry)
 	}

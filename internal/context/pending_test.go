@@ -3,6 +3,7 @@ package context
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"math"
 	"os"
@@ -11,7 +12,187 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
+
+func makeRecoveryPending(projectDir string) *PendingRotation {
+	const token = "recovery-execution"
+	source := tmux.Pane{ID: "%1", Index: 1, Title: "test__cc_1_architect", PID: 123, Type: tmux.AgentClaude, Command: "node", RotationToken: token}
+	replacement := tmux.Pane{ID: "%99", Index: 0, Title: "test__cc_2", PID: 321, Type: tmux.AgentClaude, Command: "node", RotationToken: token}
+	return &PendingRotation{
+		AgentID: source.Title, SessionName: "test", PaneID: source.ID, PanePID: source.PID, PaneType: string(source.Type),
+		CreatedAt: time.Now(), TimeoutAt: time.Now().Add(time.Hour), WorkDir: projectDir,
+		SelectedAction: ConfirmRotate, ExecutionID: token, ExecutionState: RotationStateFailed,
+		Continuation: &RotationContinuation{Token: token, Phase: rotationHandoffStarted, Source: source, Replacement: replacement, ProjectDir: projectDir, Method: RotationManual},
+	}
+}
+
+func TestPendingResolutionKeepsExecutionAndImmutableDecision(t *testing.T) {
+	root := t.TempDir()
+	store := NewPendingRotationStoreWithPath(filepath.Join(root, "pending.jsonl"))
+	pending := makeRecoveryPending(root)
+	if err := store.Add(pending); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadFile(store.storagePath)
+	for _, request := range []struct {
+		token  string
+		action RotationResolutionAction
+		reason string
+	}{{"stale", RotationResolutionAbort, "stop duplicate"}, {pending.ExecutionID, RotationResolutionAbort, "  "}, {pending.ExecutionID, "rotate", "invalid decision"}} {
+		if _, release, err := store.BeginResolution(t.Context(), pending.AgentID, request.token, request.action, request.reason); err == nil {
+			release()
+			t.Fatalf("invalid recovery was accepted: %+v", request)
+		}
+	}
+	after, _ := os.ReadFile(store.storagePath)
+	if !bytes.Equal(before, after) {
+		t.Fatal("invalid decisions changed the journal")
+	}
+	claimed, release, err := store.BeginResolution(t.Context(), pending.AgentID, pending.ExecutionID, RotationResolutionAbort, "  replacement is abandoned  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claimed.ExecutionID != pending.ExecutionID || claimed.ExecutionState != pending.ExecutionState || claimed.Continuation.Resolution.Reason != "replacement is abandoned" {
+		t.Fatalf("recovery changed execution identity or lost the decision: %+v", claimed)
+	}
+	decision := *claimed.Continuation.Resolution
+	if decision.RecordedAt.IsZero() {
+		t.Fatal("operator decision has no recorded time")
+	}
+	if err := store.SaveContinuation(t.Context(), claimed, nil); err == nil {
+		t.Fatal("old executor erased the operator's decision")
+	}
+	changed := cloneRotationContinuation(claimed.Continuation)
+	changed.Resolution.Reason = "rewritten"
+	if err := store.SaveContinuation(t.Context(), claimed, changed); err == nil {
+		t.Fatal("old executor rewrote the operator's decision")
+	}
+	claimed.Continuation.Phase = rotationAborted
+	if err := store.SaveContinuation(t.Context(), claimed, claimed.Continuation); err != nil {
+		t.Fatal(err)
+	}
+	outcome := RotationResult{Success: true, OldAgentID: pending.AgentID, OldPaneID: pending.PaneID, State: RotationStateAborted, ResolutionAction: RotationResolutionAbort}
+	if err := store.FinishConfirmation(t.Context(), claimed, outcome); err != nil {
+		t.Fatal(err)
+	}
+	release()
+	for _, request := range []struct {
+		action RotationResolutionAction
+		reason string
+	}{{RotationResolutionAccept, decision.Reason}, {RotationResolutionAbort, "changed reason"}} {
+		if _, release, err := store.BeginResolution(t.Context(), pending.AgentID, pending.ExecutionID, request.action, request.reason); err == nil {
+			release()
+			t.Fatal("completed decision could be reversed or rewritten")
+		}
+	}
+	replayed, release, err := store.BeginResolution(t.Context(), pending.AgentID, pending.ExecutionID, RotationResolutionAbort, decision.Reason)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replayed.Result == nil || *replayed.Result != outcome || !replayed.Continuation.Resolution.RecordedAt.Equal(decision.RecordedAt) {
+		t.Fatalf("completed decision was not replayed: %+v", replayed)
+	}
+	release()
+	fresh := makePending(pending.AgentID, pending.SessionName, pending.PaneID, time.Now().Add(time.Hour))
+	fresh.PanePID, fresh.PaneType = pending.PanePID, pending.PaneType
+	if err := store.Add(fresh); err != nil {
+		t.Fatalf("completed abandonment prevented a new rotation of its surviving source: %v", err)
+	}
+}
+
+func TestPendingResolutionUsesConfirmationFenceAndCancellableStoreLock(t *testing.T) {
+	for _, blockedBy := range []string{"confirmation", "store-and-writer-mutex"} {
+		t.Run(blockedBy, func(t *testing.T) {
+			root := t.TempDir()
+			store := NewPendingRotationStoreWithPath(filepath.Join(root, "pending.jsonl"))
+			pending := makeRecoveryPending(root)
+			if blockedBy == "confirmation" {
+				pending.SelectedAction, pending.ExecutionState, pending.ExecutionID, pending.Continuation = "", "", "", nil
+			}
+			if err := store.Add(pending); err != nil {
+				t.Fatal(err)
+			}
+			var unlock func()
+			var err error
+			if blockedBy == "confirmation" {
+				pending, unlock, err = store.BeginConfirmation(t.Context(), pending.AgentID, ConfirmRotate, false)
+			} else {
+				unlock, err = store.lock(t.Context())
+				pendingMu.Lock()
+				defer pendingMu.Unlock()
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer unlock()
+			ctx, cancel := context.WithTimeout(t.Context(), 25*time.Millisecond)
+			defer cancel()
+			done := make(chan error, 1)
+			go func() {
+				_, release, err := store.BeginResolution(ctx, pending.AgentID, pending.ExecutionID, RotationResolutionAbort, "interrupted owner")
+				if release != nil {
+					release()
+				}
+				done <- err
+			}()
+			select {
+			case err := <-done:
+				if !errors.Is(err, context.DeadlineExceeded) {
+					t.Fatalf("recovery bypassed %s: %v", blockedBy, err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("recovery ignored cancellation while waiting for ownership")
+			}
+		})
+	}
+}
+
+func TestPendingResolutionRejectsAmbiguousOrCorruptJournal(t *testing.T) {
+	for _, corruption := range []string{"duplicate-agent", "duplicate-execution", "mismatched-source", "mismatched-token", "missing-replacement", "malformed"} {
+		t.Run(corruption, func(t *testing.T) {
+			root := t.TempDir()
+			store := NewPendingRotationStoreWithPath(filepath.Join(root, "pending.jsonl"))
+			pending := makeRecoveryPending(root)
+			entry := FromPendingRotation(pending)
+			switch corruption {
+			case "mismatched-source":
+				entry.Continuation.Source.PID++
+			case "mismatched-token":
+				entry.Continuation.Token = "different"
+			case "missing-replacement":
+				entry.Continuation.Replacement = tmux.Pane{}
+			}
+			encoded, err := json.Marshal(entry)
+			if err != nil {
+				t.Fatal(err)
+			}
+			data := append(encoded, '\n')
+			if strings.HasPrefix(corruption, "duplicate") {
+				if corruption == "duplicate-execution" {
+					entry.AgentID = "other-agent"
+				}
+				duplicate, _ := json.Marshal(entry)
+				data = append(data, append(duplicate, '\n')...)
+			}
+			if corruption == "malformed" {
+				data = append(data, []byte("{bad\n")...)
+			}
+			if err := os.WriteFile(store.storagePath, data, 0600); err != nil {
+				t.Fatal(err)
+			}
+			if _, release, err := store.BeginResolution(t.Context(), pending.AgentID, pending.ExecutionID, RotationResolutionAbort, "operator stop"); err == nil {
+				release()
+				t.Fatal("recovery accepted ambiguous durable evidence")
+			}
+			after, _ := os.ReadFile(store.storagePath)
+			if !bytes.Equal(data, after) {
+				t.Fatal("recovery rewrote corrupt evidence")
+			}
+		})
+	}
+}
 
 func TestPendingConfirmationRetainsChoiceAndReplaysReceipt(t *testing.T) {
 	store := NewPendingRotationStoreWithPath(filepath.Join(t.TempDir(), "pending.jsonl"))

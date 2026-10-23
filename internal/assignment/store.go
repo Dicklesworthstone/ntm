@@ -2442,9 +2442,11 @@ func (s *AssignmentStore) CommitPaneContinuation(ctx context.Context, observed *
 	return s.mutatePaneContinuation(ctx, observed, token, "commit", ReassignmentTarget{})
 }
 
-// AbortPaneContinuation removes a pending barrier only when the caller has
-// independently proven no handoff may have been submitted and the replacement
-// is safely removed. Cancellation, timeouts, and process death are not proof.
+// AbortPaneContinuation removes a pending barrier only after the caller has
+// verified the replacement is safely removed and either proven no handoff may
+// have been submitted or durably recorded an operator's explicit abandonment
+// of an uncertain handoff. Cancellation, timeouts, and process death alone
+// authorize neither interpretation.
 func (s *AssignmentStore) AbortPaneContinuation(ctx context.Context, observed *Assignment, token string) (*Assignment, bool, error) {
 	return s.mutatePaneContinuation(ctx, observed, token, "abort", ReassignmentTarget{})
 }

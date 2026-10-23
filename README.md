@@ -396,7 +396,9 @@ result. Rotation verifies the original process, requests a fresh handoff, and
 delivers it to a ready replacement before retiring the old pane. Confirmation
 ownership and results survive process interruption: repeating a completed choice
 returns its saved result, while a failed or interrupted choice remains visible in
-`pending`. Inspect the affected panes before using the same action with `--retry`.
+`pending`. The pending output identifies the execution, both physical panes, the
+handoff phase, and the available recovery actions. Inspect the affected panes
+before using the indicated retry or recovery action.
 Rotation transfers the existing task, Agent Mail identity, file reservations, and
 restart configuration to the replacement. Both panes are fenced against new task
 dispatch and automatic restarts while ownership is being transferred; existing
@@ -405,6 +407,29 @@ ownership transfer, `--retry` finishes that transfer without launching another
 agent or resending the handoff. When handoff delivery is uncertain, the pending
 record and pane fences remain in place for inspection, and retry or ignore cannot
 silently discard that unresolved state.
+
+Resolve an interrupted rotation with an explicit operator decision:
+
+```bash
+ntm rotate context pending --json
+ntm rotate context recover payments__cc_1 --execution-id=EXECUTION_ID \
+  --action=accept --reason="Replacement is working on the handed-off task"
+# Alternatively, stop the replacement and keep the original agent:
+ntm rotate context recover payments__cc_1 --execution-id=EXECUTION_ID \
+  --action=abort --reason="Continue the task in the original pane"
+```
+
+`accept` records the operator's observation of an uncertain handoff and finishes
+the existing ownership transfer without spawning or sending again. `abort`
+verifies the original ownership, stops only the recorded replacement, and verifies
+its absence before releasing the original task's rotation barrier. Work already
+performed by the replacement is preserved. An accepted ownership transfer cannot
+be aborted. Both actions require the exact execution ID and a nonempty reason;
+the decision is recorded durably, conflicting decisions are rejected, and the
+same command can resume recovery after another interruption. Changed process
+identities, foreign ownership, and unaccounted-for panes keep the recovery fenced
+for further inspection.
+
 Native compaction preserves the conversation and requires fresh provider context
 accounting to prove a reduction; it does not automatically clear history. Claude
 compaction reads the transcript the pane's own Claude process names in its
