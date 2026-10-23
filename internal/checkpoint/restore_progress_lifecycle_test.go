@@ -24,6 +24,8 @@ func TestRestoreProgressLifecycleStopsAtFailedCheckpoint(t *testing.T) {
 		{"pane_identified", "observed", "split-window", 1, false},
 		{"create_pane", "before", "split-window", 1, false},
 		{"create_pane", "after", "respawn-pane", 2, false},
+		{"balance_layout", "before", "select-layout", 2, false},
+		{"balance_layout", "after", "respawn-pane", 2, false},
 		{"launch_agent", "before", "respawn-pane", 2, false},
 		{"launch_agent", "after", "load-buffer", 2, false},
 	} {
@@ -52,7 +54,7 @@ func TestRestoreProgressLifecycleStopsAtFailedCheckpoint(t *testing.T) {
 			if strings.Count(string(calls), "respawn-pane") > 1 || (!tc.force && strings.Contains(string(calls), "kill-session")) {
 				t.Fatalf("failure relaunched or destroyed partial work: %s", calls)
 			}
-			if tc.stage == "create_pane" && tc.phase == "after" && (failedEvent.PaneID != "%1" || failedEvent.Outcome != "succeeded") {
+			if (tc.stage == "create_pane" || tc.stage == "balance_layout") && tc.phase == "after" && (failedEvent.PaneID != "%1" || failedEvent.Outcome != "succeeded") {
 				t.Fatalf("after-write failure lost completed pane: %+v", failedEvent)
 			}
 		})

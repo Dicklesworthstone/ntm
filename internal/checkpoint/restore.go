@@ -502,11 +502,12 @@ func (r *Restorer) restoreLayout(cp *Checkpoint, workDir string) (int, error) {
 		}
 		paneState := paneStates[i]
 		windowTarget := fmt.Sprintf("%s:%d", cp.SessionName, paneState.WindowIndex)
+		splitWindow := paneState.WindowIndex == lastWindowIndex
 
 		paneID, err := runRestoreMutation(ctx, restorePaneProgress("create_pane", "", paneState), func() (string, error) {
 			var paneID string
 			var err error
-			if paneState.WindowIndex != lastWindowIndex {
+			if !splitWindow {
 				paneID, err = tmux.DefaultClient.RunContext(ctx,
 					"new-window", "-P", "-F", "#{pane_id}",
 					"-t", tmux.ExactTarget(windowTarget), "-c", workDir,
@@ -536,6 +537,17 @@ func (r *Restorer) restoreLayout(cp *Checkpoint, workDir string) (int, error) {
 
 		if err := setRestoredPaneIdentity(ctx, paneID, paneState.Title, paneState.AgentType); err != nil {
 			return panesCreated, fmt.Errorf("setting pane %d identity (pane was created): %w", i, err)
+		}
+		if splitWindow {
+			// Balance only the window being constructed so successive splits
+			// do not keep halving an already tiny active pane. Keep the physical
+			// pane binding/count above even if balancing or its journal fails.
+			// Captured per-window geometry is applied after all panes exist.
+			if _, err := runRestoreMutation(ctx, restorePaneProgress("balance_layout", paneID, paneState), func() (string, error) {
+				return paneID, tmux.DefaultClient.RunSilentContext(ctx, "select-layout", "-t", tmux.ExactTarget(windowTarget), "tiled")
+			}); err != nil {
+				return panesCreated, fmt.Errorf("balancing window after creating pane %d: %w", i, err)
+			}
 		}
 
 		if err := waitForRestore(ctx, 50*time.Millisecond); err != nil {

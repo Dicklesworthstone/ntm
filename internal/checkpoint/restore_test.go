@@ -1,6 +1,7 @@
 package checkpoint
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -1207,8 +1208,14 @@ func TestRestorer_RestoreFromCheckpoint_PreservesPerWindowLayouts(t *testing.T) 
 		t.Fatalf("GetFirstWindow(template) failed: %v", err)
 	}
 	firstTarget := fmt.Sprintf("%s:%d", templateSession, firstWindow)
-	if _, err := tmux.DefaultClient.Run("split-window", "-t", firstTarget, "-c", workDir, "-P", "-F", "#{pane_id}"); err != nil {
-		t.Fatalf("split-window first template window failed: %v", err)
+	const panesPerWindow = 8
+	for pane := 1; pane < panesPerWindow; pane++ {
+		if _, err := tmux.DefaultClient.Run("split-window", "-t", firstTarget, "-c", workDir, "-P", "-F", "#{pane_id}"); err != nil {
+			t.Fatalf("split-window first template window failed: %v", err)
+		}
+		if err := tmux.DefaultClient.RunSilent("select-layout", "-t", firstTarget, "tiled"); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := tmux.DefaultClient.RunSilent("select-layout", "-t", firstTarget, "even-horizontal"); err != nil {
 		t.Fatalf("select-layout first template window failed: %v", err)
@@ -1219,8 +1226,13 @@ func TestRestorer_RestoreFromCheckpoint_PreservesPerWindowLayouts(t *testing.T) 
 		t.Fatalf("new-window template failed: %v", err)
 	}
 	secondTarget := fmt.Sprintf("%s:%s", templateSession, strings.TrimSpace(secondWindowIndex))
-	if _, err := tmux.DefaultClient.Run("split-window", "-t", secondTarget, "-c", workDir, "-P", "-F", "#{pane_id}"); err != nil {
-		t.Fatalf("split-window second template window failed: %v", err)
+	for pane := 1; pane < panesPerWindow; pane++ {
+		if _, err := tmux.DefaultClient.Run("split-window", "-t", secondTarget, "-c", workDir, "-P", "-F", "#{pane_id}"); err != nil {
+			t.Fatalf("split-window second template window failed: %v", err)
+		}
+		if err := tmux.DefaultClient.RunSilent("select-layout", "-t", secondTarget, "tiled"); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := tmux.DefaultClient.RunSilent("select-layout", "-t", secondTarget, "main-vertical"); err != nil {
 		t.Fatalf("select-layout second template window failed: %v", err)
@@ -1234,6 +1246,12 @@ func TestRestorer_RestoreFromCheckpoint_PreservesPerWindowLayouts(t *testing.T) 
 	if len(sessionState.WindowLayouts) != 2 {
 		t.Fatalf("len(sessionState.WindowLayouts) = %d, want 2", len(sessionState.WindowLayouts))
 	}
+	if len(sessionState.Panes) != 2*panesPerWindow {
+		t.Fatalf("captured panes = %d, want %d", len(sessionState.Panes), 2*panesPerWindow)
+	}
+	for i := range sessionState.Panes {
+		sessionState.Panes[i].Title = fmt.Sprintf("%s__user_%d", restoreSession, i+1)
+	}
 
 	r := NewRestorerWithStorage(NewStorageWithDir(t.TempDir()))
 	cp := &Checkpoint{
@@ -1243,7 +1261,14 @@ func TestRestorer_RestoreFromCheckpoint_PreservesPerWindowLayouts(t *testing.T) 
 		Session:     sessionState,
 	}
 
-	result, err := r.RestoreFromCheckpointContext(t.Context(), cp, RestoreOptions{})
+	var restoredPaneIDs []string
+	ctx := WithRestoreProgress(t.Context(), func(_ context.Context, event RestoreProgress) error {
+		if event.Outcome == "succeeded" && (event.Stage == "pane_identified" || event.Stage == "create_pane") {
+			restoredPaneIDs = append(restoredPaneIDs, event.PaneID)
+		}
+		return nil
+	})
+	result, err := r.RestoreFromCheckpointContext(ctx, cp, RestoreOptions{})
 	if err != nil {
 		t.Fatalf("RestoreFromCheckpointContext failed: %v", err)
 	}
@@ -1257,6 +1282,20 @@ func TestRestorer_RestoreFromCheckpoint_PreservesPerWindowLayouts(t *testing.T) 
 	}
 	if !windowLayoutsEqual(normalizeWindowLayouts(restoredLayouts), normalizeWindowLayouts(sessionState.WindowLayouts)) {
 		t.Fatalf("restored layouts = %#v, want %#v", restoredLayouts, sessionState.WindowLayouts)
+	}
+	panes, err := tmux.GetPanesContext(t.Context(), restoreSession)
+	if err != nil {
+		t.Fatal(err)
+	}
+	savedPanes := sortedCheckpointPanes(sessionState.Panes)
+	if len(panes) != len(savedPanes) || len(restoredPaneIDs) != len(savedPanes) {
+		t.Fatalf("physical recovery bindings incomplete: panes=%d targets=%d saved=%d", len(panes), len(restoredPaneIDs), len(savedPanes))
+	}
+	for i, pane := range sortedTmuxPanes(panes) {
+		saved := savedPanes[i]
+		if pane.ID != restoredPaneIDs[i] || pane.ID == saved.ID || pane.Title != saved.Title || pane.WindowIndex != saved.WindowIndex || pane.Index != saved.Index {
+			t.Errorf("pane %d lost its physical recovery binding: got=%+v saved=%+v target=%s", i, pane, saved, restoredPaneIDs[i])
+		}
 	}
 }
 

@@ -189,7 +189,7 @@ func TestRestoreLifecyclePreflightDoesNotReplaceSession(t *testing.T) {
 }
 
 func TestRestoreLifecycleCancelsInFlightOperations(t *testing.T) {
-	for _, operation := range []string{"new-session", "split-window", "respawn-pane", "list-panes"} {
+	for _, operation := range []string{"new-session", "split-window", "select-layout", "respawn-pane", "list-panes"} {
 		t.Run(operation, func(t *testing.T) {
 			log, ready := restoreLifecycleFixture(t)
 			t.Setenv("NTM_RESTORE_TEST_BLOCK", operation)
@@ -229,6 +229,9 @@ func TestRestoreLifecycleCancelsInFlightOperations(t *testing.T) {
 				if out.result.ContextInjected || out.result.Stage == "completed" {
 					t.Fatalf("cancelled restore claimed completion: %+v", out.result)
 				}
+				if operation == "select-layout" && out.result.PanesRestored != 2 {
+					t.Fatalf("layout cancellation lost already created panes: %+v", out.result)
+				}
 			case <-time.After(4 * time.Second):
 				t.Fatal("cancellation did not stop the in-flight tmux command")
 			}
@@ -254,6 +257,7 @@ func TestRestoreLifecycleReportsPartialFailure(t *testing.T) {
 		titleIndex       int
 	}{
 		{"split-window", "restoring_layout", 1, -1},
+		{"select-layout", "restoring_layout", 2, -1},
 		{"respawn-pane", "starting_agents", 2, -1},
 		{"select-pane", "creating_session", 1, 0},
 		{"select-pane", "restoring_layout", 2, 1},

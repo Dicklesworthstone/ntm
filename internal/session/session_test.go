@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -1308,6 +1309,87 @@ func TestRestorePersistsAgentTypeAcrossWrapperTitleRewrite(t *testing.T) {
 	}
 	if len(panes) != 1 || panes[0].Type != tmux.AgentCodex {
 		t.Fatalf("restored pane type after title rewrite = %+v, want codex", panes)
+	}
+}
+
+func TestRestoreLargeMultiWindowSessionPreservesGeometryAndIdentity(t *testing.T) {
+	testutil.RequireTmuxThrottled(t)
+
+	workDir := t.TempDir()
+	source := "ntm-restore-large-src-" + time.Now().Format("150405000000")
+	destination := "ntm-restore-large-dst-" + time.Now().Format("150405000000")
+	t.Cleanup(func() {
+		_ = tmux.KillSession(source)
+		_ = tmux.KillSession(destination)
+	})
+	if err := tmux.CreateSessionContext(t.Context(), source, workDir); err != nil {
+		t.Fatal(err)
+	}
+	firstWindow, err := tmux.GetFirstWindowContext(t.Context(), source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const panesPerWindow = 8
+	for window, layout := range []string{"even-horizontal", "main-vertical"} {
+		target := tmux.ExactTarget(fmt.Sprintf("%s:%d", source, firstWindow+window))
+		if window > 0 {
+			if err := tmux.DefaultClient.RunSilentContext(t.Context(), "new-window", "-t", target, "-c", workDir); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for pane := 1; pane < panesPerWindow; pane++ {
+			if err := tmux.DefaultClient.RunSilentContext(t.Context(), "split-window", "-t", target, "-c", workDir); err != nil {
+				t.Fatal(err)
+			}
+			if err := tmux.DefaultClient.RunSilentContext(t.Context(), "select-layout", "-t", target, "tiled"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := tmux.DefaultClient.RunSilentContext(t.Context(), "select-layout", "-t", target, layout); err != nil {
+			t.Fatal(err)
+		}
+		if err := tmux.DefaultClient.RunSilentContext(t.Context(), "rename-window", "-t", target, fmt.Sprintf("saved-%d", window)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tmux.DefaultClient.RunSilentContext(t.Context(), "select-window", "-t", tmux.ExactTarget(fmt.Sprintf("%s:%d", source, firstWindow))); err != nil {
+		t.Fatal(err)
+	}
+	state, err := Capture(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Panes) != 2*panesPerWindow || len(state.Windows) != 2 {
+		t.Fatalf("incomplete source capture: %+v", state)
+	}
+	for i := range state.Panes {
+		state.Panes[i].Title = fmt.Sprintf("%s__cod_%d", destination, i+1)
+		state.Panes[i].AgentType = "cod"
+	}
+	if err := RestoreContext(t.Context(), state, RestoreOptions{Name: destination, SkipGitCheck: true}); err != nil {
+		t.Fatalf("RestoreContext: %v", err)
+	}
+	panes, err := tmux.GetPanesContext(t.Context(), destination)
+	if err != nil || len(panes) != len(state.Panes) {
+		t.Fatalf("restored topology: panes=%d want=%d err=%v", len(panes), len(state.Panes), err)
+	}
+	for i, pane := range panes {
+		saved := state.Panes[i]
+		if pane.ID == saved.PaneID || pane.Title != saved.Title || pane.Type != tmux.AgentCodex {
+			t.Errorf("pane %d lost its saved identity: got=%+v saved=%+v", i, pane, saved)
+		}
+		if pane.WindowIndex != saved.WindowIndex || pane.Index != saved.Index || pane.Width != saved.Width || pane.Height != saved.Height || pane.Active != saved.Active {
+			t.Errorf("pane %d lost its saved position or geometry: got=%+v saved=%+v", i, pane, saved)
+		}
+	}
+	windows := captureWindows(destination)
+	if len(windows) != len(state.Windows) {
+		t.Fatalf("restored windows=%+v, want %+v", windows, state.Windows)
+	}
+	for i, window := range windows {
+		if window.Name != state.Windows[i].Name || window.Active != state.Windows[i].Active {
+			t.Errorf("window %d lost its name or active state: got=%+v saved=%+v", i, window, state.Windows[i])
+		}
 	}
 }
 

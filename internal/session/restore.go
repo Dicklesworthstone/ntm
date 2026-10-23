@@ -152,6 +152,7 @@ func restoreSession(ctx context.Context, state *SessionState, opts RestoreOption
 		sessionCreated = true
 	} else {
 		lastWindowIndex := -1
+		createdWindowIndex := 0
 		for i, p := range panes {
 			paneDir, err := restorePaneDirectory(p, workDir)
 			if err != nil {
@@ -163,21 +164,34 @@ func restoreSession(ctx context.Context, state *SessionState, opts RestoreOption
 					return fmt.Errorf("creating session: %w", err)
 				}
 				sessionCreated = true
+				createdWindowIndex, err = tmux.GetFirstWindowContext(ctx, name)
+				if err != nil {
+					return fmt.Errorf("getting initial restored window: %w", err)
+				}
 				lastWindowIndex = p.WindowIndex
 				continue
 			}
 
 			if p.WindowIndex != lastWindowIndex {
-				// New window
-				if err := tmux.DefaultClient.RunSilentContext(ctx, "new-window", "-t", tmux.TargetSession(name), "-c", paneDir); err != nil {
+				// Saved window indices may be sparse. Create consecutive windows
+				// from this server's base index, matching restoreWindowFidelity's
+				// saved-to-created mapping without depending on the active window.
+				createdWindowIndex++
+				windowTarget := tmux.ExactTarget(fmt.Sprintf("%s:%d", name, createdWindowIndex))
+				if err := tmux.DefaultClient.RunSilentContext(ctx, "new-window", "-t", windowTarget, "-c", paneDir); err != nil {
 					return fmt.Errorf("creating window for pane %d: %w", i+1, err)
 				}
 				lastWindowIndex = p.WindowIndex
 			} else {
-				// Split window
-				// We target the session, which defaults to the active window (the one we just created or split)
-				if _, err := tmux.DefaultClient.RunContext(ctx, "split-window", "-t", tmux.TargetSession(name), "-c", paneDir); err != nil {
+				windowTarget := tmux.ExactTarget(fmt.Sprintf("%s:%d", name, createdWindowIndex))
+				if _, err := tmux.DefaultClient.RunContext(ctx, "split-window", "-t", windowTarget, "-c", paneDir); err != nil {
 					return fmt.Errorf("creating pane %d: %w", i+1, err)
+				}
+				// Repeatedly halving the active pane exhausts its height after
+				// only a few splits. Make room across this window while building;
+				// the saved exact geometry is restored once every pane exists.
+				if err := tmux.DefaultClient.RunSilentContext(ctx, "select-layout", "-t", windowTarget, "tiled"); err != nil {
+					return fmt.Errorf("balancing window after creating pane %d: %w", i+1, err)
 				}
 			}
 		}
