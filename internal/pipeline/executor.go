@@ -116,6 +116,9 @@ type Executor struct {
 	// return cancels those commands and joins their workers so callers never
 	// observe state while cancellation persistence is still writing to disk.
 	backgroundCommandWG sync.WaitGroup
+	// Unsettled cleanup cannot authorize success merely because a WaitNone
+	// launch returned synchronously. Protected by stateMu and reset per attempt.
+	backgroundCommandErrors map[string]error
 
 	// persistMu serializes snapshot-and-save transactions. Multiple workers may
 	// checkpoint concurrently; without this lock an older snapshot whose fsync
@@ -256,6 +259,7 @@ func (e *Executor) Run(ctx context.Context, workflow *Workflow, vars map[string]
 	}
 
 	e.stateMu.Lock()
+	e.backgroundCommandErrors = nil
 	e.state = &ExecutionState{
 		RunID:         runID,
 		WorkflowID:    workflow.Name,
@@ -379,6 +383,7 @@ func (e *Executor) Resume(ctx context.Context, workflow *Workflow, prior *Execut
 	}()
 
 	e.stateMu.Lock()
+	e.backgroundCommandErrors = nil
 	e.state = prior
 	if e.state.Steps == nil {
 		e.state.Steps = make(map[string]StepResult)
@@ -1465,6 +1470,17 @@ func (e *Executor) executeCommand(ctx context.Context, step *Step, workflow *Wor
 		go func() {
 			defer e.backgroundCommandWG.Done()
 			cleanup := waitCommandWithProcessGroupCleanup(ctx, cmd)
+			if !cleanup.Settled {
+				// Keep the launch receipt unresolved, but also carry the
+				// cleanup failure into the workflow's terminal outcome. A
+				// detached child can still act after this worker returns.
+				e.stateMu.Lock()
+				if e.backgroundCommandErrors == nil {
+					e.backgroundCommandErrors = make(map[string]error)
+				}
+				e.backgroundCommandErrors[stepID] = errors.Join(cleanup.Err, uncertainCommandExecutionError(stepID, backgroundRecord.ProcessID))
+				e.stateMu.Unlock()
+			}
 			if cleanup.Settled && journalCommand {
 				finished := time.Now()
 				backgroundRecord.Status, backgroundRecord.SettledAt = commandExecutionSettled, finished

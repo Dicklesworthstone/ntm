@@ -370,6 +370,183 @@ exit "$2"
 	}
 }
 
+// WaitNone only confirms the launch synchronously. Its final cleanup must
+// still prevent a false workflow success when an escaped child holds a pipe
+// open and can perform work after the executor returns.
+func TestWaitNoneUnsettledCleanupReachesWorkflowOutcome(t *testing.T) {
+	setsid, err := exec.LookPath("setsid")
+	if err != nil {
+		t.Skip("setsid is required for the escaped-descriptor fixture")
+	}
+	quotedSetsid := "'" + strings.ReplaceAll(setsid, "'", "'\\''") + "'"
+	for _, mode := range []string{"run", "resume", "primary_failure", "cancelled"} {
+		t.Run(mode, func(t *testing.T) {
+			dir := t.TempDir()
+			cfg := DefaultExecutorConfig("wait-none-unsettled")
+			cfg.ProjectDir, cfg.RunID = dir, "wait-none-unsettled-"+mode
+			e := NewExecutor(cfg)
+			groupTestFile(t, dir, "escaped.sh", `printf '%s' "$$" > "$1.pid"
+while [ ! -f release ]; do sleep 0.01; done
+printf late-effect > "$1.effect"
+`)
+			workflow := &Workflow{
+				SchemaVersion: SchemaVersion, Name: "wait-none-unsettled", Settings: DefaultWorkflowSettings(),
+			}
+			// Two workers exercise aggregation without allowing completion
+			// order to replace an earlier sidecar failure.
+			for _, id := range []string{"zeta", "alpha"} {
+				workflow.Steps = append(workflow.Steps, Step{
+					ID: id, Wait: WaitNone,
+					Command: fmt.Sprintf(`printf 'once\n' >> %s.launches
+if [ -f repair ]; then exit 0; fi
+%s /bin/sh escaped.sh %s &
+while [ ! -s %s.pid ]; do sleep 0.01; done
+printf started
+`, id, quotedSetsid, id, id),
+				})
+			}
+			finish := `while [ ! -s alpha.pid ] || [ ! -s zeta.pid ]; do sleep 0.01; done
+printf ready > pipeline.ready
+`
+			if mode == "cancelled" {
+				finish += "sleep 30"
+			} else if mode == "primary_failure" {
+				finish += "exit 7"
+			} else {
+				finish += "printf finished"
+			}
+			workflow.Steps = append(workflow.Steps, Step{ID: "finish", Command: finish, DependsOn: []string{"alpha", "zeta"}})
+
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			events := make(chan ProgressEvent, 100)
+			type outcome struct {
+				state *ExecutionState
+				err   error
+			}
+			done := make(chan outcome, 1)
+			var escaped []*os.Process
+			t.Cleanup(func() {
+				cancel()
+				_ = os.WriteFile(filepath.Join(dir, "release"), []byte("finish"), 0600)
+				for _, child := range escaped {
+					_ = child.Kill()
+					_ = child.Release()
+				}
+				select {
+				case <-done:
+				case <-time.After(8 * time.Second):
+					t.Error("workflow did not join background cleanup")
+				}
+			})
+			go func() {
+				var state *ExecutionState
+				var runErr error
+				if mode == "resume" {
+					prior := &ExecutionState{
+						RunID: cfg.RunID, WorkflowID: workflow.Name, Session: cfg.Session,
+						Status: StatusFailed, StartedAt: time.Now().Add(-time.Minute), UpdatedAt: time.Now().Add(-time.Minute),
+					}
+					state, runErr = e.Resume(ctx, workflow, prior, events)
+				} else {
+					state, runErr = e.Run(ctx, workflow, nil, events)
+				}
+				done <- outcome{state, runErr}
+				close(done)
+			}()
+			awaitGroupTestFile(t, filepath.Join(dir, "pipeline.ready"))
+			for _, id := range []string{"alpha", "zeta"} {
+				pid, parseErr := strconv.Atoi(string(awaitGroupTestFile(t, filepath.Join(dir, id+".pid"))))
+				if parseErr != nil {
+					t.Fatal(parseErr)
+				}
+				child, findErr := os.FindProcess(pid)
+				if findErr != nil {
+					t.Fatal(findErr)
+				}
+				escaped = append(escaped, child)
+			}
+			if mode == "cancelled" {
+				cancel()
+			}
+			var result outcome
+			select {
+			case result = <-done:
+			case <-time.After(10 * time.Second):
+				t.Fatal("unsettled background cleanup did not return within its bound")
+			}
+			wantStatus := StatusFailed
+			if mode == "cancelled" {
+				wantStatus = StatusCancelled
+				if !errors.Is(result.err, context.Canceled) {
+					t.Fatalf("cleanup failure masked caller cancellation: %v", result.err)
+				}
+			}
+			if result.state == nil || result.state.Status != wantStatus || result.err == nil {
+				t.Fatalf("unsettled background command reported the wrong outcome: %+v %v", result.state, result.err)
+			}
+			message := result.err.Error()
+			alpha, zeta := strings.Index(message, `background command "alpha"`), strings.Index(message, `background command "zeta"`)
+			if alpha < 0 || zeta < alpha || !strings.Contains(message, "output capture did not reach EOF") || !strings.Contains(message, "unresolved launch") {
+				t.Fatalf("background cleanup causes were lost or reordered: %v", result.err)
+			}
+			if mode == "primary_failure" && !strings.Contains(message, "exit_code=7") {
+				t.Fatalf("cleanup failure masked the main step failure: %v", result.err)
+			}
+			assertNoCompletionEvent(t, events)
+			saved, loadErr := LoadState(dir, cfg.RunID)
+			if loadErr != nil || saved.Status != wantStatus {
+				t.Fatalf("terminal outcome was not persisted: %+v %v", saved, loadErr)
+			}
+			for _, id := range []string{"alpha", "zeta"} {
+				receipt, ok := saved.CommandExecutions[id]
+				if !ok || receipt.Status != commandExecutionRunning || !receipt.Background || !receipt.SettledAt.IsZero() {
+					t.Fatalf("unsettled %s receipt was replaced with replay permission: %+v", id, receipt)
+				}
+			}
+			persistedCause := false
+			for _, diagnostic := range saved.Errors {
+				if diagnostic.Fatal && strings.Contains(diagnostic.Message, "background command") && strings.Contains(diagnostic.Message, "unresolved launch") {
+					persistedCause = true
+				}
+			}
+			if !persistedCause {
+				t.Fatalf("public status lost the background cleanup cause: %+v", saved.Errors)
+			}
+			if _, resumeErr := NewExecutor(cfg).Resume(context.Background(), workflow, saved, nil); resumeErr == nil || !strings.Contains(resumeErr.Error(), "unresolved launch") {
+				t.Fatalf("ordinary resume replayed uncertain background work: %v", resumeErr)
+			}
+			for _, id := range []string{"alpha", "zeta"} {
+				if got := string(awaitGroupTestFile(t, filepath.Join(dir, id+".launches"))); got != "once\n" {
+					t.Fatalf("rejected resume repeated %s: %q", id, got)
+				}
+			}
+			// The original children really can act after the failed workflow
+			// returns; no error or receipt may claim that they were stopped.
+			groupTestFile(t, dir, "release", "finish")
+			for _, id := range []string{"alpha", "zeta"} {
+				if got := string(awaitGroupTestFile(t, filepath.Join(dir, id+".effect"))); got != "late-effect" {
+					t.Fatalf("escaped %s child did not perform its post-return effect: %q", id, got)
+				}
+			}
+			if mode == "run" {
+				e.config.RunID += "-reused"
+				clean := &Workflow{SchemaVersion: SchemaVersion, Name: "clean", Steps: []Step{{ID: "work", Command: "printf recovered"}}}
+				next, nextErr := e.Run(context.Background(), clean, nil, nil)
+				if nextErr != nil || next.Status != StatusCompleted {
+					t.Fatalf("new Run inherited the prior background failure: %+v %v", next, nextErr)
+				}
+			} else if mode == "resume" {
+				groupTestFile(t, dir, "repair", "do not start another escaped child")
+				e.config.ResumeOptions = ResumeOptions{Mode: ResumeModeRestartFailed}
+				next, nextErr := e.Resume(context.Background(), workflow, saved, nil)
+				if nextErr != nil || next.Status != StatusCompleted {
+					t.Fatalf("explicit repaired Resume inherited the prior background failure: %+v %v", next, nextErr)
+				}
+			}
+		})
+	}
+}
+
 func TestCommandCleanupSettlesCompleteCappedOutput(t *testing.T) {
 	for _, code := range []int{0, 7} {
 		for _, merged := range []bool{false, true} {

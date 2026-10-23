@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -48,6 +49,24 @@ func joinCheckpointError(err, checkpointErr error) error {
 		return err
 	}
 	return errors.Join(err, checkpointErr)
+}
+
+// backgroundCommandFailure is read after all cleanup workers have joined.
+// Stable ordering keeps concurrent sidecar failures useful in saved outcomes;
+// wrapping preserves cancellation and pipe-drain errors for callers.
+func (e *Executor) backgroundCommandFailure() error {
+	e.stateMu.RLock()
+	defer e.stateMu.RUnlock()
+	ids := make([]string, 0, len(e.backgroundCommandErrors))
+	for id := range e.backgroundCommandErrors {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	var failures []error
+	for _, id := range ids {
+		failures = append(failures, fmt.Errorf("background command %q did not settle: %w", id, e.backgroundCommandErrors[id]))
+	}
+	return errors.Join(failures...)
 }
 
 // persistState serializes snapshot/save/publication as one transaction. The
@@ -180,6 +199,8 @@ func (e *Executor) finishExecution(ctx context.Context, workflow *Workflow, err 
 	}
 	e.Cancel()
 	e.backgroundCommandWG.Wait()
+	backgroundErr := e.backgroundCommandFailure()
+	err = errors.Join(err, backgroundErr)
 	checkpointErr := e.checkpointFailure()
 	err = joinCheckpointError(err, checkpointErr)
 
@@ -195,6 +216,15 @@ func (e *Executor) finishExecution(ctx context.Context, workflow *Workflow, err 
 	e.state.FinishedAt = time.Now()
 	e.state.UpdatedAt = e.state.FinishedAt
 	e.state.CurrentStep = ""
+	// Cancellation and checkpoint failures already have their own terminal
+	// classification, but must not hide a sidecar whose cleanup is uncertain.
+	// Otherwise the combined execution error below persists this diagnostic.
+	if backgroundErr != nil && (cancelled || checkpointErr != nil) {
+		e.state.Errors = append(e.state.Errors, ExecutionError{
+			Type: "command_cleanup", Message: backgroundErr.Error(),
+			Timestamp: e.state.FinishedAt, Fatal: true,
+		})
+	}
 	// The returned error disappears with a foreground launcher or detached
 	// worker. Persist its terminal cause for later status/list queries, which
 	// read Errors rather than reconstructing it from individual step results.
