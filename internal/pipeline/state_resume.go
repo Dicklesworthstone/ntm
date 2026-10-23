@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log/slog"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -248,7 +250,12 @@ const (
 	agentDeliveryCompleted       = "completed"
 	agentDeliveryMaxCaptureBytes = 1 << 20
 	agentDeliveryMaxOutputBytes  = 1 << 20
+	agentDeliveryMaxReasonBytes  = 4096
 )
+
+// AgentDeliveryResolutionAccept records an operator's attestation that an
+// uncertain prompt was delivered. It never authorizes sending it again.
+const AgentDeliveryResolutionAccept = "accept"
 
 // AgentDeliveryState journals a single runtime leaf's external dispatch. The
 // enclosing ExecutionState binds it to a run and workflow; StepID includes any
@@ -273,6 +280,50 @@ type AgentDeliveryState struct {
 	StartedAt      time.Time `json:"started_at"`
 	DeliveredAt    time.Time `json:"delivered_at,omitempty"`
 	CompletedAt    time.Time `json:"completed_at,omitempty"`
+	// Resolution fields remain values so snapshots cannot share mutable audit
+	// data. The boundary hash keeps the accepted receipt identity stable after
+	// ordinary resume advances or clears BeforeOutput.
+	ResolutionAction       string    `json:"resolution_action,omitempty"`
+	ResolutionToken        string    `json:"resolution_token,omitempty"`
+	ResolutionReason       string    `json:"resolution_reason,omitempty"`
+	ResolutionBoundaryHash string    `json:"resolution_boundary_hash,omitempty"`
+	ResolvedAt             time.Time `json:"resolved_at,omitempty"`
+}
+
+// AgentDeliveryRecoveryEntry exposes receipt identity without prompt text or
+// captured agent output. CanAccept describes the journal phase; acceptance also
+// verifies the saved workflow and the original live pane's process lifetime.
+type AgentDeliveryRecoveryEntry struct {
+	StepID           string    `json:"step_id"`
+	Kind             string    `json:"kind"`
+	Status           string    `json:"status"`
+	ReceiptToken     string    `json:"receipt_token"`
+	Endpoint         string    `json:"endpoint"`
+	PaneID           string    `json:"pane_id"`
+	PanePID          int       `json:"pane_pid"`
+	AgentType        string    `json:"agent_type"`
+	StartedAt        time.Time `json:"started_at"`
+	CanAccept        bool      `json:"can_accept"`
+	ResolutionAction string    `json:"resolution_action,omitempty"`
+	ResolutionReason string    `json:"resolution_reason,omitempty"`
+	ResolvedAt       time.Time `json:"resolved_at,omitempty"`
+}
+
+// AgentDeliveryRecoveryInspection includes unfinished deliveries and retained
+// operator decisions, including decisions whose original delivery completed.
+type AgentDeliveryRecoveryInspection struct {
+	RunID      string                       `json:"run_id"`
+	WorkflowID string                       `json:"workflow_id"`
+	Session    string                       `json:"session"`
+	Deliveries []AgentDeliveryRecoveryEntry `json:"deliveries"`
+}
+
+type AgentDeliveryRecoveryResult struct {
+	RunID      string                     `json:"run_id"`
+	WorkflowID string                     `json:"workflow_id"`
+	Session    string                     `json:"session"`
+	Delivery   AgentDeliveryRecoveryEntry `json:"delivery"`
+	Replayed   bool                       `json:"replayed"`
 }
 
 func agentStepHash(step *Step) (string, error) {
@@ -307,6 +358,12 @@ func (e *Executor) saveAgentDelivery(record AgentDeliveryState) error {
 	if err := validateAgentDelivery(record.StepID, record, e.state.Session); err != nil {
 		e.stateMu.Unlock()
 		return err
+	}
+	if record.ResolutionAction != "" {
+		if _, err := agentDeliveryRecoveryEntry(e.state, record); err != nil {
+			e.stateMu.Unlock()
+			return err
+		}
 	}
 	if e.state.AgentDeliveries == nil {
 		e.state.AgentDeliveries = make(map[string]AgentDeliveryState)
@@ -380,6 +437,25 @@ func validateAgentDelivery(key string, record AgentDeliveryState, session string
 	if record.StartedAt.IsZero() {
 		return invalid("start timestamp is missing")
 	}
+	if record.ResolutionAction == "" {
+		if record.ResolutionToken != "" || record.ResolutionReason != "" || record.ResolutionBoundaryHash != "" || !record.ResolvedAt.IsZero() {
+			return invalid("incomplete operator resolution")
+		}
+	} else {
+		if record.ResolutionAction != AgentDeliveryResolutionAccept ||
+			(record.Status != agentDeliveryDelivered && record.Status != agentDeliveryCompleted) ||
+			record.ResolutionReason == "" || record.ResolutionReason != strings.TrimSpace(record.ResolutionReason) ||
+			len(record.ResolutionReason) > agentDeliveryMaxReasonBytes || record.ResolvedAt.IsZero() ||
+			record.ResolvedAt.Before(record.StartedAt) || !record.ResolvedAt.Equal(record.DeliveredAt) {
+			return invalid("inconsistent operator acceptance")
+		}
+		for _, value := range []string{record.ResolutionToken, record.ResolutionBoundaryHash} {
+			digest, err := hex.DecodeString(value)
+			if err != nil || len(digest) != sha256.Size || value != strings.ToLower(value) {
+				return invalid("invalid operator resolution fingerprint")
+			}
+		}
+	}
 	switch record.Status {
 	case agentDeliveryNotSent:
 		if record.BeforeOutput != "" || record.Output != "" || !record.DeliveredAt.IsZero() || !record.CompletedAt.IsZero() {
@@ -404,6 +480,335 @@ func validateAgentDelivery(key string, record AgentDeliveryState, session string
 		return invalid(fmt.Sprintf("unknown delivery status %q; refusing to discard dispatch evidence", record.Status))
 	}
 	return nil
+}
+
+// agentDeliveryReceiptToken binds the inspected attempt, including its original
+// capture boundary. A decision retains that boundary's hash while subsequent
+// observation can advance the transcript without changing the decision token.
+func agentDeliveryReceiptToken(state *ExecutionState, record AgentDeliveryState) (string, error) {
+	boundary := record.ResolutionBoundaryHash
+	if record.ResolutionAction == "" {
+		digest := sha256.Sum256([]byte(record.BeforeOutput))
+		boundary = hex.EncodeToString(digest[:])
+	}
+	identity := record
+	identity.Status = agentDeliverySending
+	identity.BeforeOutput, identity.Output = "", ""
+	identity.DeliveredAt, identity.CompletedAt, identity.ResolvedAt = time.Time{}, time.Time{}, time.Time{}
+	identity.ResolutionAction, identity.ResolutionToken, identity.ResolutionReason, identity.ResolutionBoundaryHash = "", "", "", ""
+	identity.StartedAt = identity.StartedAt.UTC()
+	encoded, err := json.Marshal(struct {
+		Version          int
+		RunID            string
+		WorkflowID       string
+		WorkflowSnapshot string
+		Receipt          AgentDeliveryState
+		BoundaryHash     string
+	}{1, state.RunID, state.WorkflowID, filepath.Base(state.WorkflowFile), identity, boundary})
+	if err != nil {
+		return "", fmt.Errorf("fingerprint agent delivery: %w", err)
+	}
+	digest := sha256.Sum256(encoded)
+	return hex.EncodeToString(digest[:]), nil
+}
+
+func agentDeliveryRecoveryEntry(state *ExecutionState, record AgentDeliveryState) (AgentDeliveryRecoveryEntry, error) {
+	if err := validateAgentDelivery(record.StepID, record, state.Session); err != nil {
+		return AgentDeliveryRecoveryEntry{}, err
+	}
+	token, err := agentDeliveryReceiptToken(state, record)
+	if err != nil {
+		return AgentDeliveryRecoveryEntry{}, err
+	}
+	if record.ResolutionAction != "" && record.ResolutionToken != token {
+		return AgentDeliveryRecoveryEntry{}, fmt.Errorf("operator resolution for step %q no longer matches its original receipt identity", record.StepID)
+	}
+	return AgentDeliveryRecoveryEntry{
+		StepID: record.StepID, Kind: record.Kind, Status: record.Status, ReceiptToken: token,
+		Endpoint: record.Endpoint, PaneID: record.PaneID, PanePID: record.PanePID,
+		AgentType: record.AgentType, StartedAt: record.StartedAt,
+		CanAccept:        record.Status == agentDeliverySending && record.ResolutionAction == "",
+		ResolutionAction: record.ResolutionAction, ResolutionReason: record.ResolutionReason, ResolvedAt: record.ResolvedAt,
+	}, nil
+}
+
+// InspectAgentDeliveryRecovery reads one atomic checkpoint and exposes safe
+// receipt identities. It creates no locks or state and does not contact tmux.
+// Acceptance must re-read the receipt under run ownership; an inspection token
+// never permits replacing a newer attempt with an older decision.
+func InspectAgentDeliveryRecovery(ctx context.Context, projectDir, runID string) (*AgentDeliveryRecoveryInspection, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(projectDir) == "" {
+		return nil, fmt.Errorf("project directory is required for pipeline recovery")
+	}
+	state, err := LoadState(normalizeLockRoot(projectDir), runID)
+	if err != nil {
+		return nil, err
+	}
+	result := &AgentDeliveryRecoveryInspection{
+		RunID: state.RunID, WorkflowID: state.WorkflowID, Session: state.Session,
+		Deliveries: make([]AgentDeliveryRecoveryEntry, 0),
+	}
+	ids := make([]string, 0, len(state.AgentDeliveries))
+	for id := range state.AgentDeliveries {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		record := state.AgentDeliveries[id]
+		if err := validateAgentDelivery(id, record, state.Session); err != nil {
+			return nil, err
+		}
+		entry, err := agentDeliveryRecoveryEntry(state, record)
+		if err != nil {
+			return nil, err
+		}
+		if record.Status != agentDeliveryCompleted || record.ResolutionAction != "" {
+			result.Deliveries = append(result.Deliveries, entry)
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// AcceptAgentDeliveryContext records an explicit operator attestation for one
+// uncertain delivery. It never sends, marks a step completed, or runs dependent
+// work. Normal resume observes the original agent using its saved boundary.
+// Frozen workflow integrity and structural ownership are checked here. Scoped
+// foreach and selected branch definitions retain the executor's canonical
+// materialized StepHash check on resume, before any observation result or
+// dependent work.
+func AcceptAgentDeliveryContext(ctx context.Context, projectDir, runID, stepID, receiptToken, reason string) (*AgentDeliveryRecoveryResult, error) {
+	cfg := DefaultExecutorConfig("")
+	cfg.ProjectDir, cfg.RunID = projectDir, runID
+	return NewExecutor(cfg).acceptAgentDeliveryContext(ctx, stepID, receiptToken, reason)
+}
+
+func (e *Executor) acceptAgentDeliveryContext(ctx context.Context, stepID, receiptToken, reason string) (*AgentDeliveryRecoveryResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	reason = strings.TrimSpace(reason)
+	if strings.TrimSpace(e.config.ProjectDir) == "" || strings.TrimSpace(stepID) == "" || stepID != strings.TrimSpace(stepID) {
+		return nil, fmt.Errorf("pipeline recovery requires a project directory and exact step ID")
+	}
+	if reason == "" || len(reason) > agentDeliveryMaxReasonBytes {
+		return nil, fmt.Errorf("pipeline recovery reason must contain 1 to %d bytes", agentDeliveryMaxReasonBytes)
+	}
+	digest, err := hex.DecodeString(receiptToken)
+	if err != nil || len(digest) != sha256.Size || receiptToken != strings.ToLower(receiptToken) {
+		return nil, fmt.Errorf("pipeline recovery requires the exact inspected receipt token")
+	}
+	if e.config.DryRun {
+		return nil, fmt.Errorf("acceptance cannot be a dry run; inspect pipeline recovery instead")
+	}
+	e.config.ProjectDir = normalizeLockRoot(e.config.ProjectDir)
+	control, err := AcquireRunControl(ctx, e.config.ProjectDir, e.config.RunID)
+	if err != nil {
+		return nil, err
+	}
+	defer control.Close()
+	ctx = control.Context()
+	state, err := LoadState(e.config.ProjectDir, e.config.RunID)
+	if err != nil {
+		return nil, err
+	}
+	for id, saved := range state.AgentDeliveries {
+		if err := validateAgentDelivery(id, saved, state.Session); err != nil {
+			return nil, err
+		}
+		if _, err := agentDeliveryRecoveryEntry(state, saved); err != nil {
+			return nil, err
+		}
+	}
+	record, exists := state.AgentDeliveries[stepID]
+	if !exists {
+		return nil, fmt.Errorf("step %q has no saved agent delivery", stepID)
+	}
+	entry, err := agentDeliveryRecoveryEntry(state, record)
+	if err != nil {
+		return nil, err
+	}
+	if entry.ReceiptToken != receiptToken {
+		return nil, fmt.Errorf("receipt token for step %q is stale or belongs to a different delivery", stepID)
+	}
+	result := &AgentDeliveryRecoveryResult{RunID: state.RunID, WorkflowID: state.WorkflowID, Session: state.Session, Delivery: entry}
+	if record.ResolutionAction != "" {
+		if record.ResolutionAction != AgentDeliveryResolutionAccept || record.ResolutionReason != reason {
+			return nil, fmt.Errorf("step %q already has an immutable operator decision with a different action or reason", stepID)
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		result.Replayed = true
+		return result, nil
+	}
+	if record.Status != agentDeliverySending {
+		return nil, fmt.Errorf("step %q is %s; only an uncertain sending receipt can be accepted", stepID, record.Status)
+	}
+	switch state.Status {
+	case StatusPending, StatusRunning, StatusFailed, StatusCancelled:
+	default:
+		return nil, fmt.Errorf("pipeline %q has status %q and cannot accept an unfinished delivery", state.RunID, state.Status)
+	}
+	if prior := state.Steps[stepID]; prior.Status == StatusCompleted || prior.Status == StatusSkipped {
+		return nil, fmt.Errorf("step %q already has a terminal outcome; refusing to replace it with an operator acceptance", stepID)
+	}
+	if err := validateAgentRecoveryWorkflow(e.config.ProjectDir, state, record); err != nil {
+		return nil, err
+	}
+	e.config.Session = state.Session
+	release, err := e.acquirePaneLockCrossProcess(ctx, record.PaneID)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	pane, err := e.agentDeliveryPane(ctx, record.PaneID, record.PanePID, record.Endpoint)
+	if err != nil {
+		return nil, err
+	}
+	if pane.IsServicePane() || normalizeAgentType(string(pane.Type)) != normalizeAgentType(record.AgentType) {
+		return nil, fmt.Errorf("original agent pane %s changed agent identity", record.PaneID)
+	}
+	current, err := e.captureAgentDelivery(ctx, record)
+	if err != nil {
+		return nil, fmt.Errorf("inspect original agent delivery: %w", err)
+	}
+	if _, err := agentDeliveryNewOutput(record.BeforeOutput, current); err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC()
+	if now.Before(record.StartedAt) {
+		return nil, fmt.Errorf("agent delivery start time is in the future; refusing an inconsistent acceptance")
+	}
+	boundary := sha256.Sum256([]byte(record.BeforeOutput))
+	record.Status, record.DeliveredAt = agentDeliveryDelivered, now
+	record.ResolutionAction, record.ResolutionToken, record.ResolutionReason = AgentDeliveryResolutionAccept, receiptToken, reason
+	record.ResolutionBoundaryHash, record.ResolvedAt = hex.EncodeToString(boundary[:]), now
+	entry, err = agentDeliveryRecoveryEntry(state, record)
+	if err != nil {
+		return nil, err
+	}
+	state.AgentDeliveries[stepID] = record
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := SaveState(e.config.ProjectDir, state); err != nil {
+		return nil, fmt.Errorf("persist operator delivery acceptance: %w", err)
+	}
+	result.Delivery = entry
+	slog.Info("pipeline agent delivery accepted by operator", "run_id", state.RunID, "step_id", stepID, "session", state.Session, "pane", record.PaneID, "agent_type", record.AgentType)
+	return result, nil
+}
+
+// recoveryWorkflowStep uses the scheduler's runtime namespace resolver, counting
+// root owners so a literal authored ID cannot silently steal a scoped receipt.
+func recoveryWorkflowStep(workflow *Workflow, stepID string) (*Step, error) {
+	var found *Step
+	for _, phase := range []struct {
+		steps  []Step
+		prefix string
+	}{{workflow.Steps, "steps"}, {workflow.PostPipelineSteps, "post_pipeline"}, {workflow.Settings.OnCancel, "on_cancel"}} {
+		for i := range phase.steps {
+			if candidate, owns := resolveHookRuntimeStep(&phase.steps[i], phase.prefix, i+1, stepID); owns {
+				if found != nil {
+					return nil, fmt.Errorf("step %q has ambiguous ownership in the saved workflow", stepID)
+				}
+				found = candidate
+			}
+		}
+	}
+	if found == nil {
+		return nil, fmt.Errorf("step %q has no structural owner in the saved workflow", stepID)
+	}
+	return found, nil
+}
+
+func validateAgentRecoveryWorkflow(projectDir string, state *ExecutionState, record AgentDeliveryState) error {
+	path := strings.TrimSpace(state.WorkflowFile)
+	if path == "" || state.WorkflowID == "" {
+		return fmt.Errorf("pipeline recovery requires its saved workflow identity and definition")
+	}
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(projectDir, path)
+	}
+	if filepath.Base(filepath.Dir(path)) != workflowSnapshotDir {
+		return fmt.Errorf("pipeline recovery requires a verified frozen workflow snapshot")
+	}
+	workflow, validation, err := LoadResumeWorkflow(path)
+	if err != nil {
+		return fmt.Errorf("verify saved recovery workflow: %w", err)
+	}
+	if !validation.Valid || workflow.Name != state.WorkflowID {
+		return fmt.Errorf("saved recovery workflow is invalid or no longer matches pipeline %q", state.RunID)
+	}
+	step, err := recoveryWorkflowStep(workflow, record.StepID)
+	if err != nil {
+		return err
+	}
+	deferred := false
+	// Branch alternatives can share an authored child ID. The generic namespace
+	// resolver can then return a different alternative; only normal resume uses
+	// the durable selected branch and original variable scope to materialize it.
+	for id, result := range state.Steps {
+		if !isBranchDecisionID(id) {
+			continue
+		}
+		decision, err := decodeBranchDecision(id, result)
+		if err != nil {
+			return err
+		}
+		parent, err := recoveryWorkflowStep(workflow, decision.ParentID)
+		if err != nil {
+			continue
+		}
+		branch, exists := parent.Branches[decision.BranchKey]
+		if !exists {
+			continue
+		}
+		children, err := parseBranchSteps(branch, decision.ParentID, decision.BranchKey)
+		if err != nil {
+			return err
+		}
+		if _, _, owns := resolveScopedRuntimeStepFromSteps(decision.ParentID, record.StepID, children); owns {
+			deferred = true
+		}
+	}
+	for parentID := range state.ForeachState {
+		parent, err := recoveryWorkflowStep(workflow, parentID)
+		if err != nil || (parent.Foreach == nil && parent.ForeachPane == nil) {
+			continue
+		}
+		if _, _, owns := resolveScopedRuntimeChildren(parentID, record.StepID, parent); owns && iterationIndexFromID(record.StepID, parentID+"_iter") >= 0 {
+			deferred = true
+		}
+	}
+	if stepKind(step) != record.Kind && !deferred {
+		return fmt.Errorf("step %q kind differs from its saved delivery", record.StepID)
+	}
+	definition := cloneStep(*step)
+	definition.ID = record.StepID
+	hash, err := agentStepHash(&definition)
+	if err != nil {
+		return err
+	}
+	if hash == record.StepHash || deferred {
+		return nil
+	}
+	return fmt.Errorf("step %q definition differs from its saved delivery", record.StepID)
 }
 
 func defaultResumeOptions() ResumeOptions {
@@ -493,6 +898,12 @@ func (e *Executor) applyResumeOptions(workflow *Workflow, opts ResumeOptions) er
 		if err := validateAgentDelivery(stepID, record, priorSession); err != nil {
 			e.stateMu.RUnlock()
 			return err
+		}
+		if record.ResolutionAction != "" {
+			if _, err := agentDeliveryRecoveryEntry(state, record); err != nil {
+				e.stateMu.RUnlock()
+				return err
+			}
 		}
 		if targetSession != "" && priorSession != targetSession && !resumeResetsAgentDelivery(state, opts, stepID) {
 			e.stateMu.RUnlock()

@@ -1,8 +1,10 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -148,6 +150,14 @@ func TestPipelineResumeRejectsDamagedManagedWorkflow(t *testing.T) {
 // disk, so resume has to recover an actual interrupted dispatch.
 func interruptedPipelineAgentDelivery(t *testing.T, root, kind string) *pipeline.ExecutionState {
 	t.Helper()
+	return pipelineAgentDeliveryCheckpoint(t, root, kind, false)
+}
+
+// An uncertain checkpoint comes from a real transport followed by a failed
+// submission verifier, not a synthetic status edit. Both cases must preserve
+// enough evidence to continue without submitting the original work again.
+func pipelineAgentDeliveryCheckpoint(t *testing.T, root, kind string, uncertain bool) *pipeline.ExecutionState {
+	t.Helper()
 	step := pipeline.Step{ID: "agent", Pane: pipeline.PaneSpec{Index: 1}, Prompt: "Work on this request", Wait: pipeline.WaitTime, Timeout: pipeline.Duration{Duration: time.Second}}
 	if kind == "template" {
 		path := filepath.Join(root, "review.md")
@@ -168,6 +178,11 @@ func interruptedPipelineAgentDelivery(t *testing.T, root, kind string) *pipeline
 	t.Cleanup(mock.Reset)
 	if err := mock.SetPaneOutput("%17", "OLD-ANSWER\n"); err != nil {
 		t.Fatal(err)
+	}
+	if uncertain {
+		mock.SetSubmissionVerifier(func(_, _, _ string) error {
+			return errors.New("submission acknowledgment was lost")
+		})
 	}
 	cfg := pipeline.DefaultExecutorConfig("delivery-session")
 	cfg.ProjectDir, cfg.WorkflowFile, cfg.RunID = root, path, pipeline.GenerateRunID()
@@ -198,7 +213,11 @@ func interruptedPipelineAgentDelivery(t *testing.T, root, kind string) *pipeline
 	state, runErr := executor.Run(ctx, frozen, nil, nil)
 	cancel()
 	<-watchDone
-	if !delivered || runErr == nil || state == nil || state.Status != pipeline.StatusCancelled {
+	wantStatus, wantDelivery := pipeline.StatusCancelled, "delivered"
+	if uncertain {
+		wantStatus, wantDelivery = pipeline.StatusFailed, "sending"
+	}
+	if (!uncertain && !delivered) || runErr == nil || state == nil || state.Status != wantStatus {
 		t.Fatalf("initial dispatch did not stop after confirmed delivery: delivered=%t state=%+v err=%v", delivered, state, runErr)
 	}
 	history, err := mock.PasteHistory("%17")
@@ -206,10 +225,176 @@ func interruptedPipelineAgentDelivery(t *testing.T, root, kind string) *pipeline
 		t.Fatalf("initial dispatch was not sent and verified exactly once: pastes=%+v verifications=%+v err=%v", history, mock.VerificationHistory(), err)
 	}
 	persisted, err := pipeline.LoadState(root, cfg.RunID)
-	if err != nil || persisted.AgentDeliveries["agent"].Status != "delivered" {
+	if err != nil || persisted.AgentDeliveries["agent"].Status != wantDelivery {
 		t.Fatalf("initial delivery was not durably resumable: %+v %v", persisted, err)
 	}
 	return persisted
+}
+
+func executePipelineRecoveryCommand(t *testing.T, args ...string) (string, error) {
+	t.Helper()
+	cmd := newPipelineCmd()
+	// Match the real root command: a JSON failure is the complete response.
+	cmd.SilenceUsage = true
+	cmd.SilenceErrors = true
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs(append([]string{"recover"}, args...))
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	err := cmd.ExecuteContext(ctx)
+	return output.String(), err
+}
+
+func TestPipelineRecoverAcceptsUncertainDeliveryThenResumesWithoutResending(t *testing.T) {
+	for _, kind := range []string{"prompt", "template"} {
+		t.Run(kind, func(t *testing.T) {
+			root := inPipelineControlProject(t)
+			prior := pipelineAgentDeliveryCheckpoint(t, root, kind, true)
+			receipt := prior.AgentDeliveries["agent"]
+			logPath := pipelineRecoveryTmux(t, root, "2718", receipt.BeforeOutput+"\nFRESH-ANSWER\n")
+			oldJSON := jsonOutput
+			jsonOutput = true
+			t.Cleanup(func() { jsonOutput = oldJSON })
+			path := filepath.Join(root, ".ntm", "pipelines", prior.RunID+".json")
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, err := executePipelineRecoveryCommand(t, prior.RunID)
+			if err != nil {
+				t.Fatalf("inspect: %v %s", err, raw)
+			}
+			var inspection struct {
+				Success    bool                                  `json:"success"`
+				Deliveries []pipeline.AgentDeliveryRecoveryEntry `json:"deliveries"`
+			}
+			if err := json.Unmarshal([]byte(raw), &inspection); err != nil || !inspection.Success || len(inspection.Deliveries) != 1 {
+				t.Fatalf("invalid inspection: %s %v", raw, err)
+			}
+			entry := inspection.Deliveries[0]
+			if entry.StepID != "agent" || entry.Status != "sending" || entry.PaneID != "%17" || entry.PanePID != 2718 || entry.ReceiptToken == "" {
+				t.Fatalf("inspection lost exact delivery identity: %+v", entry)
+			}
+			if strings.Contains(raw, "OLD-ANSWER") || strings.Contains(raw, "FRESH-ANSWER") || strings.Contains(raw, "Work on this") {
+				t.Fatalf("inspection exposed prompt/transcript: %s", raw)
+			}
+			if after, err := os.ReadFile(path); err != nil || !bytes.Equal(before, after) {
+				t.Fatal("inspection changed execution state")
+			}
+			args := []string{prior.RunID, "--step-id", "agent", "--receipt", entry.ReceiptToken, "--accept-delivery", "--reason", "Observed the original agent answer the submitted request"}
+			raw, err = executePipelineRecoveryCommand(t, args...)
+			if err != nil {
+				t.Fatalf("accept: %v %s", err, raw)
+			}
+			var accepted struct {
+				Success  bool                                `json:"success"`
+				Replayed bool                                `json:"replayed"`
+				Delivery pipeline.AgentDeliveryRecoveryEntry `json:"delivery"`
+			}
+			if err := json.Unmarshal([]byte(raw), &accepted); err != nil || !accepted.Success || accepted.Replayed || accepted.Delivery.Status != "delivered" {
+				t.Fatalf("invalid acceptance: %s %v", raw, err)
+			}
+			if accepted.Delivery.ResolutionReason != args[len(args)-1] || accepted.Delivery.ResolutionAction != "accept" || accepted.Delivery.ResolvedAt.IsZero() {
+				t.Fatalf("acceptance lacks operator evidence: %+v", accepted)
+			}
+			afterAcceptance, err := pipeline.LoadState(root, prior.RunID)
+			if err != nil || afterAcceptance.Status != prior.Status || afterAcceptance.Steps["consume"].Status == pipeline.StatusCompleted {
+				t.Fatalf("acceptance ran the pipeline: %+v %v", afterAcceptance, err)
+			}
+			if got := afterAcceptance.AgentDeliveries["agent"]; got.BeforeOutput != receipt.BeforeOutput || got.Output != receipt.Output || got.StartedAt != receipt.StartedAt {
+				t.Fatalf("acceptance changed original response evidence: %+v", got)
+			}
+			raw, err = executePipelineRecoveryCommand(t, args...)
+			if err != nil || json.Unmarshal([]byte(raw), &accepted) != nil || !accepted.Replayed {
+				t.Fatalf("same decision did not replay: %v %s", err, raw)
+			}
+			cmd := newPipelineResumeCmd()
+			cmd.SetArgs([]string{prior.RunID})
+			cmd.SetOut(io.Discard)
+			cmd.SetErr(io.Discard)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			raw, err = captureStdout(t, func() error { return cmd.ExecuteContext(ctx) })
+			if err != nil {
+				t.Fatalf("resume accepted delivery: %v %s", err, raw)
+			}
+			final, err := pipeline.LoadState(root, prior.RunID)
+			if err != nil || final.Status != pipeline.StatusCompleted {
+				t.Fatalf("resume did not complete: %+v %v", final, err)
+			}
+			for _, step := range []string{"agent", "consume"} {
+				if got := strings.TrimSpace(final.Steps[step].Output); got != "FRESH-ANSWER" {
+					t.Fatalf("step %s lost original response or reused stale output: %q", step, got)
+				}
+			}
+			raw, err = executePipelineRecoveryCommand(t, args...)
+			if err != nil || json.Unmarshal([]byte(raw), &accepted) != nil || !accepted.Replayed || accepted.Delivery.Status != "completed" {
+				t.Fatalf("completed decision did not replay: %v %s", err, raw)
+			}
+			calls, err := os.ReadFile(logPath)
+			if err != nil || !strings.Contains(string(calls), "capture-pane") {
+				t.Fatalf("original pane was not observed: %s %v", calls, err)
+			}
+			for _, transport := range []string{"load-buffer", "paste-buffer", "send-keys"} {
+				if strings.Contains(string(calls), transport) {
+					t.Fatalf("recovery repeated %s: %s", transport, calls)
+				}
+			}
+		})
+	}
+}
+
+func TestPipelineRecoverRefusesIncompleteDecisionFlags(t *testing.T) {
+	oldJSON := jsonOutput
+	jsonOutput = true
+	t.Cleanup(func() { jsonOutput = oldJSON })
+	for _, flags := range [][]string{
+		{"--step-id", "agent"},
+		{"--receipt", "stale"},
+		{"--reason", "observed"},
+		{"--accept-delivery"},
+		{"--accept-delivery", "--step-id", "agent", "--receipt", "token", "--reason", "   "},
+		{"--accept-delivery=false", "--step-id", "agent", "--receipt", "token", "--reason", "observed"},
+	} {
+		raw, err := executePipelineRecoveryCommand(t, append([]string{"run-invalid"}, flags...)...)
+		var out struct {
+			Success bool   `json:"success"`
+			Code    string `json:"error_code"`
+		}
+		if err == nil || !errors.Is(err, errJSONFailure) || json.Unmarshal([]byte(raw), &out) != nil || out.Success || out.Code != "RECOVERY_REFUSED" {
+			t.Fatalf("incomplete decision %v did not fail visibly: %s %v", flags, raw, err)
+		}
+	}
+}
+
+func TestPipelineRecoverRejectsLiveOwnerBeforeReadingState(t *testing.T) {
+	root := inPipelineControlProject(t)
+	oldJSON := jsonOutput
+	jsonOutput = true
+	t.Cleanup(func() { jsonOutput = oldJSON })
+	owner, err := pipeline.AcquireRunControl(context.Background(), root, "run-held-recovery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer owner.Close()
+	path := filepath.Join(root, ".ntm", "pipelines", "run-held-recovery.json")
+	const untouched = "invalid checkpoint must not even be read"
+	if err := os.WriteFile(path, []byte(untouched), 0600); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := executePipelineRecoveryCommand(t, "run-held-recovery", "--accept-delivery", "--step-id", "agent", "--receipt", strings.Repeat("a", 64), "--reason", "Observed original delivery")
+	var out struct {
+		Success bool   `json:"success"`
+		Code    string `json:"error_code"`
+	}
+	if !errors.Is(err, pipeline.ErrRunAlreadyOwned) || json.Unmarshal([]byte(raw), &out) != nil || out.Success || out.Code != "PIPELINE_RUNNING" {
+		t.Fatalf("live owner was not refused: %s %v", raw, err)
+	}
+	if after, err := os.ReadFile(path); err != nil || string(after) != untouched {
+		t.Fatal("refused recovery changed checkpoint")
+	}
 }
 
 func pipelineRecoveryTmux(t *testing.T, root, panePID, transcript string) string {

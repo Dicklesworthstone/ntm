@@ -33,6 +33,7 @@ Subcommands:
   run      Run a workflow from a YAML/TOML file
   lint     Parse, normalize, and validate a workflow file
   resume   Resume a workflow from saved state
+  recover  Inspect and accept an uncertain agent delivery
   status   Check the status of a running pipeline
   list     List all tracked pipelines
   cancel   Cancel a running pipeline
@@ -74,6 +75,7 @@ Examples:
 		newPipelineListCmd(),
 		newPipelineCancelCmd(),
 		newPipelineResumeCmd(),
+		newPipelineRecoverCmd(),
 		newPipelineCleanupCmd(),
 		newPipelineExecCmd(), // Backward-compatible stage-based execution
 	)
@@ -634,7 +636,9 @@ Pipeline state is persisted to .ntm/pipelines/<run-id>.json after each step.
 Confirmed prompt/template deliveries resume observation of the original physical
 pane and process, without sending again. Saved completed responses are reused.
 Unknown delivery outcomes, replaced panes, and lost output boundaries require
-operator inspection. Commands with durable settled outcomes retain ordinary
+operator inspection. If the original agent received an uncertain delivery,
+use 'ntm pipeline recover' to record that observation before resuming.
+Commands with durable settled outcomes retain ordinary
 retry behavior. A command interrupted by a worker crash is never automatically
 repeated: its process group may still be running or have performed side effects.
 
@@ -932,6 +936,122 @@ Examples:
 	cmd.Flags().StringVar(&stepID, "step-id", "", "Step ID used with --mode=force-iter")
 	cmd.Flags().IntVar(&iteration, "iteration", 0, "Iteration index used with --mode=force-iter")
 
+	return cmd
+}
+
+// newPipelineRecoverCmd reconciles an uncertain prompt delivery without running
+// the workflow. The canonical resume path remains responsible for observing the
+// saved response, parsing outputs, and executing dependent steps.
+func newPipelineRecoverCmd() *cobra.Command {
+	var stepID, receipt, reason string
+	var acceptDelivery bool
+	cmd := &cobra.Command{
+		Use:   "recover <run-id>",
+		Short: "Inspect or accept an uncertain pipeline agent delivery",
+		Long: `Inspect durable agent-delivery receipts after a pipeline interruption.
+
+With no flags, shows delivery identities and receipt tokens without changing the
+run. After verifying that the original agent received its prompt, use
+--accept-delivery with the exact --step-id, --receipt, and a --reason describing
+your observation. Acceptance records that decision; it does not send a prompt,
+declare the task complete, or execute downstream steps. Resume the run normally
+to observe the original response and continue the workflow.
+
+Acceptance requires the original tmux host, physical pane and process, intact
+response evidence, and the frozen workflow. Resume retains its exact step
+definition checks. A live pipeline owner or
+stale receipt prevents recovery. Repeating the same receipt and reason returns
+the existing decision. For an intentional resend, inspect the agent first and
+use 'pipeline resume --mode=restart-failed', which may repeat side effects.
+
+Run from the project containing the saved pipeline state.
+
+Examples:
+  ntm pipeline recover run-20241230-123456-abcd
+  ntm pipeline recover run-20241230-123456-abcd --step-id review \
+    --receipt <token-from-inspection> --accept-delivery \
+    --reason "The original agent is working on the submitted review"
+  ntm pipeline resume run-20241230-123456-abcd --mode=continue`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			runID := args[0]
+			fail := func(err error) error {
+				if !jsonOutput {
+					return err
+				}
+				code := "RECOVERY_REFUSED"
+				if errors.Is(err, pipeline.ErrRunAlreadyOwned) {
+					code = "PIPELINE_RUNNING"
+				}
+				return emitJSONFailureEnvelopeToWithCause(cmd.OutOrStdout(), map[string]interface{}{
+					"success": false, "run_id": runID, "error": err.Error(), "error_code": code,
+				}, err)
+			}
+			if !acceptDelivery && (cmd.Flags().Changed("step-id") || cmd.Flags().Changed("receipt") || cmd.Flags().Changed("reason")) {
+				return fail(errors.New("--step-id, --receipt, and --reason require --accept-delivery"))
+			}
+			if acceptDelivery && (strings.TrimSpace(stepID) == "" || strings.TrimSpace(receipt) == "" || strings.TrimSpace(reason) == "") {
+				return fail(errors.New("--accept-delivery requires --step-id, --receipt, and a non-empty --reason"))
+			}
+			projectDir, err := resolvePipelineProjectDirForSession(cmd.Context(), "")
+			if err != nil {
+				return fail(err)
+			}
+			if acceptDelivery {
+				result, err := pipeline.AcceptAgentDeliveryContext(cmd.Context(), projectDir, runID, stepID, receipt, reason)
+				if err != nil {
+					return fail(err)
+				}
+				if jsonOutput {
+					return json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]interface{}{
+						"success": true, "run_id": result.RunID, "workflow": result.WorkflowID,
+						"session": result.Session, "delivery": result.Delivery, "replayed": result.Replayed,
+						"resume_command": []string{"ntm", "pipeline", "resume", result.RunID, "--mode=continue"},
+					})
+				}
+				verb := "Accepted"
+				if result.Replayed {
+					verb = "Previously accepted"
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "%s delivery for step %s in run %s.\n", verb,
+					pipeline.SanitizeDescriptionForTerminal(result.Delivery.StepID), pipeline.SanitizeDescriptionForTerminal(result.RunID))
+				fmt.Fprintln(cmd.OutOrStdout(), "Resume this run with 'ntm pipeline resume' to observe the original response and continue.")
+				return nil
+			}
+			inspection, err := pipeline.InspectAgentDeliveryRecovery(cmd.Context(), projectDir, runID)
+			if err != nil {
+				return fail(err)
+			}
+			if jsonOutput {
+				return json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]interface{}{
+					"success": true, "run_id": inspection.RunID, "workflow": inspection.WorkflowID,
+					"session": inspection.Session, "deliveries": inspection.Deliveries,
+				})
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Pipeline %s (%s)\n", pipeline.SanitizeDescriptionForTerminal(inspection.RunID), pipeline.SanitizeDescriptionForTerminal(inspection.Session))
+			if len(inspection.Deliveries) == 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "No agent-delivery receipts are available for recovery.")
+				return nil
+			}
+			for _, delivery := range inspection.Deliveries {
+				fmt.Fprintf(cmd.OutOrStdout(), "\nStep: %s  Status: %s\n  Target: %s / %s (PID %d)\n  Receipt: %s\n",
+					pipeline.SanitizeDescriptionForTerminal(delivery.StepID), pipeline.SanitizeDescriptionForTerminal(delivery.Status),
+					pipeline.SanitizeDescriptionForTerminal(delivery.Endpoint), pipeline.SanitizeDescriptionForTerminal(delivery.PaneID),
+					delivery.PanePID, delivery.ReceiptToken)
+				if delivery.ResolutionAction != "" {
+					fmt.Fprintf(cmd.OutOrStdout(), "  Decision: %s at %s\n  Reason: %s\n",
+						pipeline.SanitizeDescriptionForTerminal(delivery.ResolutionAction), delivery.ResolvedAt.Format(time.RFC3339),
+						pipeline.SanitizeDescriptionForTerminal(delivery.ResolutionReason))
+				}
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), "\nFor an uncertain 'sending' receipt, verify that the original agent received it, then repeat with --step-id, --receipt, --accept-delivery, and --reason. Confirmed deliveries can resume normally.")
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&stepID, "step-id", "", "Exact runtime step ID from recovery inspection")
+	cmd.Flags().StringVar(&receipt, "receipt", "", "Exact delivery receipt token from recovery inspection")
+	cmd.Flags().BoolVar(&acceptDelivery, "accept-delivery", false, "Record that the original agent received the uncertain delivery")
+	cmd.Flags().StringVar(&reason, "reason", "", "Observation confirming receipt by the original agent")
 	return cmd
 }
 

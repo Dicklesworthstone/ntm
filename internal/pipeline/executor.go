@@ -1856,6 +1856,9 @@ func (e *Executor) executeAgentDelivery(ctx context.Context, step *Step, workflo
 		}
 		result.Status = StatusFailed
 		hint := "inspect the original pane and saved delivery before an intentional --mode=restart-failed or reset"
+		if receipt, ok := e.loadAgentDelivery(step.ID); ok && receipt.Status == agentDeliverySending {
+			hint = fmt.Sprintf("inspect the original pane and ntm pipeline recover %s; explicitly accept the exact receipt if delivery is confirmed, then resume without sending again", e.config.RunID)
+		}
 		if typ == "not_dispatched" {
 			hint = "restore the live agent composer and retry or resume normally; no prompt was sent"
 		}

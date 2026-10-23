@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -9,7 +10,235 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
+
+// Produce an actual uncertain delivery through the executor. The verifier
+// fails after the one paste, so recovery cannot confuse a synthetic journal
+// row with work that never crossed the transport boundary.
+func uncertainRecoveryFixture(t *testing.T, shape string) (ExecutorConfig, *Workflow, *ExecutionState, *MockTmuxClient, string, string) {
+	t.Helper()
+	cfg := DefaultExecutorConfig("operator-recovery")
+	cfg.ProjectDir, cfg.RunID = t.TempDir(), GenerateRunID()
+	cfg.DefaultTimeout, cfg.GlobalTimeout = time.Second, 5*time.Second
+	leaf := Step{ID: "agent", Pane: PaneSpec{Index: 1}, Prompt: "SECRET-TASK ${vars.subject}", Wait: WaitTime, Timeout: Duration{Duration: time.Millisecond}}
+	root := leaf
+	switch shape {
+	case "foreach":
+		root = Step{ID: "outer", Foreach: &ForeachConfig{Items: `["outer"]`, Steps: []Step{
+			{ID: "inner", Foreach: &ForeachConfig{Items: `["inner"]`, Steps: []Step{leaf}}},
+		}}}
+	case "branch":
+		other := leaf
+		other.Prompt = "UNSELECTED-TASK"
+		root = Step{ID: "route", Branch: "z", Branches: map[string]interface{}{"a": []Step{other}, "z": []Step{leaf}}}
+	}
+	workflow := &Workflow{SchemaVersion: SchemaVersion, Name: "operator-recovery", Settings: DefaultWorkflowSettings(), Steps: []Step{
+		root, {ID: "after", Command: "printf resumed", DependsOn: []string{root.ID}},
+	}}
+	frozen, path, err := SnapshotWorkflow(context.Background(), cfg.ProjectDir, workflow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.WorkflowFile = path
+	client := NewMockTmuxClient(tmux.Pane{ID: "%17", PID: 2718, Index: 1, NTMIndex: 1, Type: tmux.AgentClaude, Command: "claude", Width: 120})
+	t.Cleanup(client.Reset)
+	if err := client.SetPaneOutput("%17", "OLD-BOUNDARY\n"); err != nil {
+		t.Fatal(err)
+	}
+	client.SetSubmissionVerifier(func(string, string, string) error { return errors.New("submission observation was interrupted") })
+	executor := NewExecutor(cfg)
+	executor.SetTmuxClient(client)
+	state, runErr := executor.Run(context.Background(), frozen, map[string]interface{}{"subject": "original"}, nil)
+	if runErr == nil || state == nil || state.Status != StatusFailed {
+		t.Fatalf("fixture did not stop at an uncertain delivery: %+v %v", state, runErr)
+	}
+	state, err = LoadState(cfg.ProjectDir, cfg.RunID)
+	if err != nil || len(state.AgentDeliveries) != 1 {
+		t.Fatalf("fixture did not persist exactly one delivery: %+v %v", state, err)
+	}
+	var stepID string
+	for id, record := range state.AgentDeliveries {
+		stepID = id
+		if record.Status != agentDeliverySending {
+			t.Fatalf("fixture receipt is not uncertain: %+v", record)
+		}
+		if err := client.SetPaneOutput("%17", record.BeforeOutput+"\nFRESH-RESPONSE\n"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before, err := os.ReadFile(pipelineStatePath(cfg.ProjectDir, cfg.RunID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	inspection, err := InspectAgentDeliveryRecovery(context.Background(), cfg.ProjectDir, cfg.RunID)
+	if err != nil || len(inspection.Deliveries) != 1 || !inspection.Deliveries[0].CanAccept {
+		t.Fatalf("uncertain delivery cannot be inspected: %+v %v", inspection, err)
+	}
+	encoded, err := json.Marshal(inspection)
+	if err != nil || strings.Contains(string(encoded), "SECRET-TASK") || strings.Contains(string(encoded), "OLD-BOUNDARY") || strings.Contains(string(encoded), "FRESH-RESPONSE") {
+		t.Fatalf("inspection exposed prompt or transcript: %s %v", encoded, err)
+	}
+	after, err := os.ReadFile(pipelineStatePath(cfg.ProjectDir, cfg.RunID))
+	if err != nil || string(after) != string(before) {
+		t.Fatalf("inspection changed the checkpoint: %v", err)
+	}
+	return cfg, frozen, state, client, stepID, inspection.Deliveries[0].ReceiptToken
+}
+
+func TestAgentDeliveryRecoveryScopedContinuation(t *testing.T) {
+	for _, tc := range []struct {
+		name, shape string
+		drift       bool
+	}{{"nested foreach", "foreach", false}, {"selected branch with reused child ID", "branch", false}, {"changed materialized foreach definition", "foreach", true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, workflow, prior, client, stepID, token := uncertainRecoveryFixture(t, tc.shape)
+			original := prior.AgentDeliveries[stepID]
+			resolver := NewExecutor(cfg)
+			resolver.SetTmuxClient(client)
+			accepted, err := resolver.acceptAgentDeliveryContext(context.Background(), stepID, token, "Observed the original agent working on the submitted task")
+			if err != nil || accepted.Replayed || accepted.Delivery.Status != agentDeliveryDelivered || accepted.Delivery.ReceiptToken != token {
+				t.Fatalf("accept scoped delivery: %+v %v", accepted, err)
+			}
+			acceptedState, err := LoadState(cfg.ProjectDir, cfg.RunID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			receipt := acceptedState.AgentDeliveries[stepID]
+			if receipt.BeforeOutput != original.BeforeOutput || receipt.Output != original.Output || !receipt.StartedAt.Equal(original.StartedAt) || acceptedState.Steps["after"].Status == StatusCompleted {
+				t.Fatalf("acceptance changed observation evidence or executed downstream work: %+v", acceptedState)
+			}
+			pastes, err := client.PasteHistory("%17")
+			if err != nil || len(pastes) != 1 || len(client.VerificationHistory()) != 1 {
+				t.Fatalf("acceptance actuated transport: %+v %v", pastes, err)
+			}
+			if tc.drift {
+				acceptedState.Variables["subject"] = "changed-after-inspection"
+			}
+			resumed := NewExecutor(cfg)
+			resumed.SetTmuxClient(client)
+			final, resumeErr := resumed.Resume(context.Background(), workflow, acceptedState, nil)
+			pastes, err = client.PasteHistory("%17")
+			if err != nil || len(pastes) != 1 {
+				t.Fatalf("resume resent an accepted delivery: %+v %v", pastes, err)
+			}
+			if tc.drift {
+				if resumeErr == nil || final.Steps["after"].Status == StatusCompleted || final.AgentDeliveries[stepID] != receipt {
+					t.Fatalf("changed materialized definition escaped canonical resume gate: %+v %v", final, resumeErr)
+				}
+			} else {
+				if resumeErr != nil || final.Status != StatusCompleted || final.Steps["after"].Output != "resumed" || strings.TrimSpace(final.Steps[stepID].Output) != "FRESH-RESPONSE" {
+					t.Fatalf("accepted scoped work did not continue with original response: %+v %v", final, resumeErr)
+				}
+				completed := final.AgentDeliveries[stepID]
+				if completed.Status != agentDeliveryCompleted || completed.ResolutionToken != token || completed.ResolutionReason != receipt.ResolutionReason || !completed.ResolvedAt.Equal(receipt.ResolvedAt) {
+					t.Fatalf("completion lost immutable acceptance: %+v", completed)
+				}
+				// Settled replay must not depend on a still-live historical pane.
+				client.AddPane("", tmux.Pane{ID: "%17", PID: 9999, Index: 1, Type: tmux.AgentClaude})
+				replay, err := resolver.acceptAgentDeliveryContext(context.Background(), stepID, token, receipt.ResolutionReason)
+				if err != nil || !replay.Replayed || replay.Delivery.Status != agentDeliveryCompleted {
+					t.Fatalf("completed acceptance is not idempotent: %+v %v", replay, err)
+				}
+			}
+			// AddPane resets its fixture's history, so assert the no-repeat
+			// invariant against the verifier too; resume never verifies a send.
+			if len(client.VerificationHistory()) != 1 {
+				t.Fatalf("recovery repeated submission: %+v", client.VerificationHistory())
+			}
+		})
+	}
+}
+
+func TestAgentDeliveryRecoveryRejectsChangedAcceptedIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*AgentDeliveryState)
+	}{
+		{"pane process", func(r *AgentDeliveryState) { r.PanePID++ }},
+		{"step definition", func(r *AgentDeliveryState) { r.StepHash = strings.Repeat("a", 64) }},
+		{"submitted prompt", func(r *AgentDeliveryState) { r.PromptHash = strings.Repeat("b", 64) }},
+		{"original boundary", func(r *AgentDeliveryState) { r.ResolutionBoundaryHash = strings.Repeat("c", 64) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, workflow, _, client, stepID, token := uncertainRecoveryFixture(t, "plain")
+			resolver := NewExecutor(cfg)
+			resolver.SetTmuxClient(client)
+			if _, err := resolver.acceptAgentDeliveryContext(context.Background(), stepID, token, "Confirmed delivery in original pane"); err != nil {
+				t.Fatal(err)
+			}
+			prior, err := LoadState(cfg.ProjectDir, cfg.RunID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			record := prior.AgentDeliveries[stepID]
+			tc.mutate(&record)
+			prior.AgentDeliveries[stepID] = record
+			if err := SaveState(cfg.ProjectDir, prior); err != nil {
+				t.Fatal(err)
+			}
+			before, err := os.ReadFile(pipelineStatePath(cfg.ProjectDir, cfg.RunID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			resume := NewExecutor(cfg)
+			resume.SetTmuxClient(client)
+			if _, err := resume.Resume(context.Background(), workflow, prior, nil); err == nil || !strings.Contains(err.Error(), "original receipt identity") {
+				t.Fatalf("accepted identity change was not refused before resume: %v", err)
+			}
+			after, err := os.ReadFile(pipelineStatePath(cfg.ProjectDir, cfg.RunID))
+			if err != nil || string(after) != string(before) || len(client.VerificationHistory()) != 1 {
+				t.Fatalf("refused recovery changed evidence or repeated delivery: %v", err)
+			}
+		})
+	}
+}
+
+type recoveryCaptureClient struct {
+	*MockTmuxClient
+	onCapture func()
+}
+
+func (c *recoveryCaptureClient) CapturePaneOutput(target string, lines int) (string, error) {
+	if c.onCapture != nil {
+		c.onCapture()
+	}
+	return c.MockTmuxClient.CapturePaneOutput(target, lines)
+}
+
+func TestAgentDeliveryRecoveryInterruptedAcceptancePreservesReceipt(t *testing.T) {
+	for _, mode := range []string{"cancelled during observation", "persistence refused"} {
+		t.Run(mode, func(t *testing.T) {
+			cfg, _, _, client, stepID, token := uncertainRecoveryFixture(t, "plain")
+			before, err := os.ReadFile(pipelineStatePath(cfg.ProjectDir, cfg.RunID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			resolver := NewExecutor(cfg)
+			capture := &recoveryCaptureClient{MockTmuxClient: client}
+			if mode == "cancelled during observation" {
+				capture.onCapture = cancel
+			} else {
+				blocked := filepath.Join(cfg.ProjectDir, "unwritable-state-root")
+				if err := os.WriteFile(blocked, []byte("not a directory"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				capture.onCapture = func() { resolver.config.ProjectDir = blocked }
+			}
+			resolver.SetTmuxClient(capture)
+			if result, err := resolver.acceptAgentDeliveryContext(ctx, stepID, token, "Confirmed original delivery"); err == nil || result != nil {
+				t.Fatalf("interrupted decision was reported accepted: %+v %v", result, err)
+			}
+			after, err := os.ReadFile(pipelineStatePath(cfg.ProjectDir, cfg.RunID))
+			if err != nil || string(after) != string(before) || len(client.VerificationHistory()) != 1 {
+				t.Fatalf("failed acceptance changed receipt or submitted work: %v", err)
+			}
+		})
+	}
+}
 
 func testAgentDelivery(stepID, status string) AgentDeliveryState {
 	started := time.Date(2026, time.September, 23, 12, 0, 0, 0, time.UTC)

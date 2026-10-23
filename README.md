@@ -726,12 +726,41 @@ Recognized composer and footer redraws are excluded from response evidence; an
 idle pane showing only the submitted prompt is not counted as completed work.
 
 Unknown submission outcomes, replaced pane processes or hosts, and missing output
-boundaries stop recovery with the receipt preserved. Inspect the original pane
-before using `--mode=restart-failed` to deliberately resend failed or interrupted
-agent work; that mode still preserves completed delivery receipts. Use
+boundaries stop recovery with the receipt preserved. If you verify that the
+original agent received an uncertain submission, record that observation and
+continue without resending:
+
+```bash
+# Inspect saved identities and obtain the exact receipt token.
+ntm pipeline recover run-20241230-123456-abcd --json
+
+# Accept only the inspected delivery, after checking the original agent.
+ntm pipeline recover run-20241230-123456-abcd --step-id review \
+  --receipt <token-from-inspection> --accept-delivery \
+  --reason "The original agent is working on the submitted review"
+
+# Collect the original response and continue dependent steps.
+ntm pipeline resume run-20241230-123456-abcd --mode=continue
+```
+
+Recovery runs from the project containing the saved pipeline state. Inspection
+shows receipt identities without prompt or transcript contents. Acceptance
+requires the original tmux endpoint, physical pane and process, an intact output
+boundary, and the frozen workflow. It records the reason and time without sending
+input, completing the task, or starting dependent steps. Resume keeps its existing
+step-definition checks. A live run owner, stale receipt, or conflicting decision
+is refused; repeating the same receipt and reason returns the saved decision,
+including after the run completes.
+
+If you instead intend to repeat failed or interrupted agent work, inspect the
+original pane before using `--mode=restart-failed`; that mode still preserves
+completed delivery receipts. Use
 `--keep-state=false` or `--mode=force-iter --step-id=<id> --iteration=<n>` for an
-intentional reset or iteration replay. Incomplete command steps retain their
-existing rerun behavior and should be idempotent.
+intentional reset or iteration replay. Commands with a durable settled outcome
+retain ordinary retry behavior. A command interrupted by a worker crash is not
+automatically repeated: inspect its side effects and stop any surviving command
+processes before explicitly restarting it. These restart choices can repeat
+side effects.
 
 ### 7. Durable State, Audit, and Recovery
 

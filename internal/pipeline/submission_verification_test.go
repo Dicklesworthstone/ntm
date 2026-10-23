@@ -90,6 +90,7 @@ func sharedReadinessExecutor(t *testing.T, command, capture string) (*Executor, 
 	binary := filepath.Join(root, "tmux")
 	if err := os.WriteFile(binary, []byte(`#!/bin/sh
 case " $* " in
+  " display-message -p -t %1 [#{@ntm_rotation_token}] ") printf '[]\n' ;;
   *" capture-pane "*) cat "$NTM_PIPELINE_READY_SCREEN" ;;
   *) printf '%s\n' "$*" >> "$NTM_PIPELINE_READY_UNEXPECTED"; exit 64 ;;
 esac
