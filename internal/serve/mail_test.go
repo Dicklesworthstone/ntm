@@ -6,7 +6,11 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -17,6 +21,282 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/robot/adapters"
 	"github.com/Dicklesworthstone/ntm/internal/state"
 )
+
+func TestMailRequestProjectIsolation(t *testing.T) {
+	projectA, err := ResolveProjectDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	projectB, err := ResolveProjectDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := New(Config{ProjectDir: projectA})
+	defer srv.Stop()
+	var mu sync.Mutex
+	sends := map[string]int{}
+	srv.mailClient = newMockAgentMailMCPClient(t, map[string]func(map[string]interface{}) (interface{}, *agentmail.JSONRPCError){
+		"send_message": func(args map[string]interface{}) (interface{}, *agentmail.JSONRPCError) {
+			project, _ := args["project_key"].(string)
+			mu.Lock()
+			sends[project]++
+			mu.Unlock()
+			return agentmail.SendResult{Count: 1, Deliveries: []agentmail.MessageDelivery{{Project: project, Payload: &agentmail.Message{ID: 7}}}}, nil
+		},
+		"fetch_inbox": func(args map[string]interface{}) (interface{}, *agentmail.JSONRPCError) {
+			project, _ := args["project_key"].(string)
+			return []agentmail.InboxMessage{{ID: 7, From: "BlueLake", Subject: project}}, nil
+		},
+	})
+	// A cached transport's original default must not replace an explicit key.
+	srv.mailClient.SetProjectKey("/different-cached-project")
+
+	var wg sync.WaitGroup
+	for _, project := range []string{projectA, projectB} {
+		for i := 0; i < 3; i++ {
+			wg.Go(func() {
+				path := "/api/v1/mail/messages/?project=" + url.QueryEscape(project)
+				req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"sender_name":"BlueLake","to":["RedStone"],"subject":"task","body_md":"work"}`))
+				req.Header.Set("Idempotency-Key", "shared-retry-key")
+				rec := httptest.NewRecorder()
+				srv.Router().ServeHTTP(rec, req)
+				var sent struct {
+					Deliveries []agentmail.MessageDelivery `json:"deliveries"`
+				}
+				if err := json.Unmarshal(rec.Body.Bytes(), &sent); err != nil || rec.Code != http.StatusCreated || len(sent.Deliveries) != 1 || sent.Deliveries[0].Project != project {
+					t.Errorf("send for %q returned %d %s: %v", project, rec.Code, rec.Body, err)
+				}
+
+				rec = httptest.NewRecorder()
+				path = "/api/v1/mail/inbox?agent_name=BlueLake&project=" + url.QueryEscape(project)
+				srv.Router().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+				var inbox struct {
+					Messages []agentmail.InboxMessage `json:"messages"`
+				}
+				if err := json.Unmarshal(rec.Body.Bytes(), &inbox); err != nil || rec.Code != http.StatusOK || len(inbox.Messages) != 1 || inbox.Messages[0].Subject != project {
+					t.Errorf("inbox for %q returned %d %s: %v", project, rec.Code, rec.Body, err)
+				}
+			})
+		}
+	}
+	wg.Wait()
+	if len(sends) != 2 || sends[projectA] != 1 || sends[projectB] != 1 {
+		t.Fatalf("cross-project retries executed unexpected sends: %v", sends)
+	}
+	if got := srv.projectDirSnapshot(); got != projectA {
+		t.Fatalf("request overrides changed the server project to %q", got)
+	}
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/mail/inbox?agent_name=BlueLake", nil))
+	var inbox struct {
+		Messages []agentmail.InboxMessage `json:"messages"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &inbox); err != nil || rec.Code != http.StatusOK || len(inbox.Messages) != 1 || inbox.Messages[0].Subject != projectA {
+		t.Fatalf("unqualified inbox lost the default project: %d %s, %v", rec.Code, rec.Body, err)
+	}
+}
+
+func TestMailRequestProjectIdempotencySurvivesDefaultChanges(t *testing.T) {
+	projectA, err := ResolveProjectDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	projectB, err := ResolveProjectDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := New(Config{ProjectDir: projectA})
+	defer srv.Stop()
+	var calls atomic.Int32
+	client := newMockAgentMailMCPClient(t, map[string]func(map[string]interface{}) (interface{}, *agentmail.JSONRPCError){
+		"send_message": func(args map[string]interface{}) (interface{}, *agentmail.JSONRPCError) {
+			calls.Add(1)
+			return agentmail.SendResult{Count: 1, Deliveries: []agentmail.MessageDelivery{{Project: args["project_key"].(string)}}}, nil
+		},
+	})
+	srv.mailClient = client
+	post := func(path, wantProject string, wantReplay bool) {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"sender_name":"BlueLake","to":["RedStone"],"subject":"task","body_md":"work"}`))
+		req.Header.Set("Idempotency-Key", "same-key")
+		rec := httptest.NewRecorder()
+		srv.Router().ServeHTTP(rec, req)
+		var result agentmail.SendResult
+		if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil || rec.Code != http.StatusCreated || len(result.Deliveries) != 1 || result.Deliveries[0].Project != wantProject {
+			t.Fatalf("send selected wrong project: %d %s, %v", rec.Code, rec.Body, err)
+		}
+		if replay := rec.Header().Get("X-Idempotent-Replay") == "true"; replay != wantReplay {
+			t.Fatalf("send replay=%v, want %v", replay, wantReplay)
+		}
+	}
+	patch := func(project string) {
+		t.Helper()
+		body, err := json.Marshal(map[string]string{"project_dir": project})
+		if err != nil {
+			t.Fatal(err)
+		}
+		rec := httptest.NewRecorder()
+		srv.Router().ServeHTTP(rec, httptest.NewRequest(http.MethodPatch, "/api/v1/config", bytes.NewReader(body)))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("config patch failed: %d %s", rec.Code, rec.Body)
+		}
+		// Keep the same upstream fixture after the real PATCH invalidates its
+		// cached client. The request resolver and replay middleware stay real.
+		srv.mailClient = client
+	}
+	defaultPath := "/api/v1/mail/messages/"
+	explicitPath := defaultPath + "?project=" + url.QueryEscape(projectB)
+	post(defaultPath, projectA, false)
+	post(explicitPath, projectB, false)
+	patch(projectB)
+	post(defaultPath, projectB, false)
+	post(defaultPath, projectB, true)
+	post(explicitPath, projectB, true)
+	patch(projectA)
+	post(defaultPath, projectA, true)
+	post(explicitPath, projectB, true)
+	if got := calls.Load(); got != 3 {
+		t.Fatalf("sent %d upstream messages; want exactly three distinct scoped requests", got)
+	}
+}
+
+func TestMailRequestProjectFrozenDuringConfigPatch(t *testing.T) {
+	projectA, err := ResolveProjectDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	projectB, err := ResolveProjectDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := New(Config{ProjectDir: projectA})
+	defer srv.Stop()
+	entered := make(chan string, 1)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	defer unblock()
+	srv.mailClient = newMockAgentMailMCPClient(t, map[string]func(map[string]interface{}) (interface{}, *agentmail.JSONRPCError){
+		"acknowledge_message": func(args map[string]interface{}) (interface{}, *agentmail.JSONRPCError) {
+			entered <- args["project_key"].(string)
+			<-release
+			return agentmail.MessageAckResult{MessageID: 7, Acknowledged: true}, nil
+		},
+	})
+	completed := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		rec := httptest.NewRecorder()
+		srv.Router().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/v1/mail/messages/7/ack?agent_name=BlueLake", nil))
+		completed <- rec
+	}()
+	select {
+	case project := <-entered:
+		if project != projectA {
+			t.Fatalf("acknowledgement reached the wrong project: %q", project)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("acknowledgement did not reach Agent Mail")
+	}
+	body, err := json.Marshal(map[string]string{"project_dir": projectB})
+	if err != nil {
+		t.Fatal(err)
+	}
+	patch := httptest.NewRecorder()
+	srv.Router().ServeHTTP(patch, httptest.NewRequest(http.MethodPatch, "/api/v1/config", bytes.NewReader(body)))
+	if patch.Code != http.StatusOK {
+		t.Fatalf("concurrent config patch failed: %d %s", patch.Code, patch.Body)
+	}
+	unblock()
+	select {
+	case rec := <-completed:
+		if rec.Code != http.StatusOK {
+			t.Fatalf("acknowledgement failed after config patch: %d %s", rec.Code, rec.Body)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("acknowledgement did not complete")
+	}
+	select {
+	case event := <-srv.wsHub.broadcast:
+		payload, ok := event.Data.(map[string]interface{})
+		if !ok || event.EventType != "mail.acknowledged" || payload["project_key"] != projectA {
+			t.Fatalf("acknowledgement event lost its original project: %+v", event)
+		}
+	default:
+		t.Fatal("acknowledgement did not publish its project-scoped event")
+	}
+	if got := srv.projectDirSnapshot(); got != projectB {
+		t.Fatalf("completed mail request overwrote the concurrent configuration: %q", got)
+	}
+}
+
+func TestMailRequestProjectPermissionBeforeValidation(t *testing.T) {
+	srv := New(Config{})
+	defer srv.Stop()
+	router := chi.NewRouter()
+	router.Use(srv.mailProjectScopeMiddleware)
+	router.Use(srv.idempotencyMiddleware)
+	router.Route("/api/v1", srv.registerMailRoutes)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/mail/messages/?project=relative", strings.NewReader(`{}`))
+	req = req.WithContext(withRoleContext(req.Context(), &RoleContext{Role: RoleViewer, UserID: "reader"}))
+	req.Header.Set("Idempotency-Key", "invalid-scope")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("project validation bypassed route permission: %d %s", rec.Code, rec.Body)
+	}
+}
+
+func TestMailRequestProjectValidation(t *testing.T) {
+	project := t.TempDir()
+	srv := New(Config{ProjectDir: project})
+	defer srv.Stop()
+	var calls atomic.Int32
+	srv.mailClient = newMockAgentMailMCPClient(t, map[string]func(map[string]interface{}) (interface{}, *agentmail.JSONRPCError){
+		"ensure_project": func(args map[string]interface{}) (interface{}, *agentmail.JSONRPCError) {
+			calls.Add(1)
+			return agentmail.Project{ID: 1, HumanKey: args["human_key"].(string)}, nil
+		},
+	})
+	file := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(file, []byte("not a project directory"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for name, query := range map[string]string{
+		"empty":     "project=",
+		"relative":  "project=relative/project",
+		"missing":   "project=" + url.QueryEscape(filepath.Join(project, "missing")),
+		"file":      "project=" + url.QueryEscape(file),
+		"duplicate": "project=" + url.QueryEscape(project) + "&project=" + url.QueryEscape(project),
+		"malformed": "project=%zz",
+	} {
+		t.Run(name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			srv.Router().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/mail/projects?"+query, nil))
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("invalid project returned %d %s", rec.Code, rec.Body)
+			}
+		})
+	}
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("invalid selectors reached Agent Mail %d times", got)
+	}
+	alias := filepath.Join(t.TempDir(), "project-link")
+	if err := os.Symlink(project, alias); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/mail/projects?project="+url.QueryEscape(alias), nil))
+	var response struct {
+		Projects []agentmail.Project `json:"projects"`
+	}
+	want, err := ResolveProjectDir(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil || rec.Code != http.StatusOK || len(response.Projects) != 1 || response.Projects[0].HumanKey != want {
+		t.Fatalf("symlink selector did not canonicalize: %d %s, %v", rec.Code, rec.Body, err)
+	}
+}
 
 // bd-kar03: redaction must not depend on which read path a caller uses.
 // sanitizeInboxMessage/sanitizeMessage routed subject+body through

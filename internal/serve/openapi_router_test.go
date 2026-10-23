@@ -10,6 +10,33 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
+func TestRouterSpecMailProjectSelector(t *testing.T) {
+	spec, err := GenerateOpenAPISpecFromRouter("test", "http://localhost:7337")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for path, item := range spec.Paths {
+		for _, op := range []*Operation{item.Get, item.Post, item.Put, item.Patch, item.Delete} {
+			if op == nil {
+				continue
+			}
+			found := false
+			for _, param := range op.Parameters {
+				if param.Name == "project" && param.In == "query" {
+					found = true
+					if param.Required || param.Schema == nil || param.Schema.Type != "string" {
+						t.Errorf("%s has an invalid project selector: %+v", path, param)
+					}
+				}
+			}
+			want := strings.HasPrefix(path, "/api/v1/mail/") && path != "/api/v1/mail/health"
+			if found != want {
+				t.Errorf("%s project selector present=%v; want %v", path, found, want)
+			}
+		}
+	}
+}
+
 // TestRouterSpecDeterminism verifies two independent generations are
 // byte-identical — the property the openapi-drift CI job depends on.
 func TestRouterSpecDeterminism(t *testing.T) {

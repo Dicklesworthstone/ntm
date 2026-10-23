@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -383,6 +385,60 @@ func writeAgentMailSendActionError(w http.ResponseWriter, reqID string, err erro
 	}
 }
 
+type mailProjectScopeKey struct{}
+
+type mailProjectScope struct {
+	project string
+	err     error
+}
+
+func isMailProjectRoute(path string) bool {
+	return strings.HasPrefix(path, "/api/v1/mail/") && strings.TrimSuffix(path, "/") != "/api/v1/mail/health"
+}
+
+// mailProjectScopeMiddleware freezes the effective project before idempotency
+// lookup. A concurrent configuration PATCH must not redirect an in-flight mail
+// operation, or replay a previous project's successful mutation. Resolution
+// errors are handled after the route's permission check, not here.
+func (s *Server) mailProjectScopeMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !isMailProjectRoute(r.URL.Path) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		scope := mailProjectScope{project: s.projectDirSnapshot()}
+		query, err := url.ParseQuery(r.URL.RawQuery)
+		if err != nil {
+			scope.err = fmt.Errorf("invalid mail query: %w", err)
+		} else if projects, present := query["project"]; present {
+			if len(projects) != 1 || !filepath.IsAbs(projects[0]) {
+				scope.err = errors.New("project must be a single absolute directory path")
+			} else {
+				scope.project, scope.err = ResolveProjectDir(projects[0])
+			}
+		}
+		ctx := context.WithValue(r.Context(), mailProjectScopeKey{}, scope)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+func validateMailProjectScope(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if scope, ok := r.Context().Value(mailProjectScopeKey{}).(mailProjectScope); ok && scope.err != nil {
+			writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, scope.err.Error(), nil, requestIDFromContext(r.Context()))
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) mailProjectKey(r *http.Request) string {
+	if scope, ok := r.Context().Value(mailProjectScopeKey{}).(mailProjectScope); ok {
+		return scope.project
+	}
+	return s.projectDirSnapshot()
+}
+
 // registerMailRoutes registers mail and reservation REST endpoints
 func (s *Server) registerMailRoutes(r chi.Router) {
 	r.Route("/mail", func(r chi.Router) {
@@ -390,41 +446,41 @@ func (s *Server) registerMailRoutes(r chi.Router) {
 		r.With(s.RequirePermission(PermReadHealth)).Get("/health", s.handleMailHealth)
 
 		// Projects
-		r.With(s.RequirePermission(PermReadMail)).Get("/projects", s.handleListMailProjects)
+		r.With(s.RequirePermission(PermReadMail), validateMailProjectScope).Get("/projects", s.handleListMailProjects)
 
 		// Agents
 		r.Route("/agents", func(r chi.Router) {
-			r.With(s.RequirePermission(PermReadMail)).Get("/", s.handleListMailAgents)
-			r.With(s.RequirePermission(PermWriteMail)).Post("/", s.handleCreateMailAgent)
-			r.With(s.RequirePermission(PermReadMail)).Get("/{name}", s.handleGetMailAgent)
+			r.With(s.RequirePermission(PermReadMail), validateMailProjectScope).Get("/", s.handleListMailAgents)
+			r.With(s.RequirePermission(PermWriteMail), validateMailProjectScope).Post("/", s.handleCreateMailAgent)
+			r.With(s.RequirePermission(PermReadMail), validateMailProjectScope).Get("/{name}", s.handleGetMailAgent)
 		})
 
 		// Inbox
-		r.With(s.RequirePermission(PermReadMail)).Get("/inbox", s.handleMailInbox)
+		r.With(s.RequirePermission(PermReadMail), validateMailProjectScope).Get("/inbox", s.handleMailInbox)
 
 		// Messages
 		r.Route("/messages", func(r chi.Router) {
-			r.With(s.RequirePermission(PermWriteMail)).Post("/", s.handleSendMessage)
+			r.With(s.RequirePermission(PermWriteMail), validateMailProjectScope).Post("/", s.handleSendMessage)
 			r.Route("/{id}", func(r chi.Router) {
-				r.With(s.RequirePermission(PermReadMail)).Get("/", s.handleGetMessage)
-				r.With(s.RequirePermission(PermWriteMail)).Post("/reply", s.handleReplyMessage)
-				r.With(s.RequirePermission(PermWriteMail)).Post("/read", s.handleMarkMessageRead)
-				r.With(s.RequirePermission(PermWriteMail)).Post("/ack", s.handleAckMessage)
+				r.With(s.RequirePermission(PermReadMail), validateMailProjectScope).Get("/", s.handleGetMessage)
+				r.With(s.RequirePermission(PermWriteMail), validateMailProjectScope).Post("/reply", s.handleReplyMessage)
+				r.With(s.RequirePermission(PermWriteMail), validateMailProjectScope).Post("/read", s.handleMarkMessageRead)
+				r.With(s.RequirePermission(PermWriteMail), validateMailProjectScope).Post("/ack", s.handleAckMessage)
 			})
 		})
 
 		// Search
-		r.With(s.RequirePermission(PermReadMail)).Get("/search", s.handleSearchMessages)
+		r.With(s.RequirePermission(PermReadMail), validateMailProjectScope).Get("/search", s.handleSearchMessages)
 
 		// Threads
-		r.With(s.RequirePermission(PermReadMail)).Get("/threads/{id}/summary", s.handleThreadSummary)
+		r.With(s.RequirePermission(PermReadMail), validateMailProjectScope).Get("/threads/{id}/summary", s.handleThreadSummary)
 
 		// Contacts
 		r.Route("/contacts", func(r chi.Router) {
-			r.With(s.RequirePermission(PermReadMail)).Get("/", s.handleListContacts)
-			r.With(s.RequirePermission(PermWriteMail)).Post("/request", s.handleRequestContact)
-			r.With(s.RequirePermission(PermWriteMail)).Post("/respond", s.handleRespondContact)
-			r.With(s.RequirePermission(PermWriteMail)).Put("/policy", s.handleSetContactPolicy)
+			r.With(s.RequirePermission(PermReadMail), validateMailProjectScope).Get("/", s.handleListContacts)
+			r.With(s.RequirePermission(PermWriteMail), validateMailProjectScope).Post("/request", s.handleRequestContact)
+			r.With(s.RequirePermission(PermWriteMail), validateMailProjectScope).Post("/respond", s.handleRespondContact)
+			r.With(s.RequirePermission(PermWriteMail), validateMailProjectScope).Put("/policy", s.handleSetContactPolicy)
 		})
 	})
 
@@ -577,7 +633,7 @@ func (s *Server) handleListMailProjects(w http.ResponseWriter, r *http.Request) 
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	project, err := client.EnsureProject(ctx, s.projectDirSnapshot())
+	project, err := client.EnsureProject(ctx, s.mailProjectKey(r))
 	if err != nil {
 		writeAgentMailHandlerError(w, reqID, err, ErrCodeNotFound, agentmail.IsNotFound, "project inspection is not supported by the configured Agent Mail server", "")
 		return
@@ -607,7 +663,7 @@ func (s *Server) handleListMailAgents(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	agents, err := client.ListAgents(ctx, s.projectDirSnapshot())
+	agents, err := client.ListAgents(ctx, s.mailProjectKey(r))
 	if err != nil {
 		writeAgentMailHandlerError(w, reqID, err, ErrCodeNotFound, agentmail.IsNotFound, "agent listing is not supported by the configured Agent Mail server", "")
 		return
@@ -649,7 +705,7 @@ func (s *Server) handleCreateMailAgent(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	agent, err := client.RegisterAgent(ctx, agentmail.RegisterAgentOptions{
-		ProjectKey:      s.projectDirSnapshot(),
+		ProjectKey:      s.mailProjectKey(r),
 		Program:         req.Program,
 		Model:           req.Model,
 		Name:            req.Name,
@@ -690,7 +746,7 @@ func (s *Server) handleGetMailAgent(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	agent, err := client.Whois(ctx, s.projectDirSnapshot(), agentName, true)
+	agent, err := client.Whois(ctx, s.mailProjectKey(r), agentName, true)
 	if err != nil {
 		writeAgentMailAgentActionError(w, reqID, err, "agent lookup is not supported by the configured Agent Mail server")
 		return
@@ -727,7 +783,7 @@ func (s *Server) handleMailInbox(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	opts := agentmail.FetchInboxOptions{
-		ProjectKey: s.projectDirSnapshot(),
+		ProjectKey: s.mailProjectKey(r),
 		AgentName:  agentName,
 	}
 
@@ -809,7 +865,7 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	result, err := client.SendMessage(ctx, agentmail.SendMessageOptions{
-		ProjectKey:  s.projectDirSnapshot(),
+		ProjectKey:  s.mailProjectKey(r),
 		SenderName:  req.SenderName,
 		To:          req.To,
 		Subject:     req.Subject,
@@ -857,7 +913,7 @@ func (s *Server) handleGetMessage(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	message, err := client.GetMessage(ctx, s.projectDirSnapshot(), messageID)
+	message, err := client.GetMessage(ctx, s.mailProjectKey(r), messageID)
 	if err != nil {
 		writeAgentMailHandlerError(w, reqID, err, ErrCodeMessageNotFound, func(err error) bool {
 			return errors.Is(err, agentmail.ErrMessageNotFound) || agentmail.IsNotFound(err)
@@ -908,7 +964,7 @@ func (s *Server) handleReplyMessage(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	message, err := client.ReplyMessage(ctx, agentmail.ReplyMessageOptions{
-		ProjectKey:    s.projectDirSnapshot(),
+		ProjectKey:    s.mailProjectKey(r),
 		MessageID:     messageID,
 		SenderName:    req.SenderName,
 		BodyMD:        req.BodyMD,
@@ -962,7 +1018,7 @@ func (s *Server) handleMarkMessageRead(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	readResult, err := client.MarkMessageRead(ctx, s.projectDirSnapshot(), agentName, messageID)
+	readResult, err := client.MarkMessageRead(ctx, s.mailProjectKey(r), agentName, messageID)
 	if err != nil {
 		writeAgentMailMessageActionError(w, reqID, err, "marking messages as read is not supported by the configured Agent Mail server")
 		return
@@ -974,8 +1030,9 @@ func (s *Server) handleMarkMessageRead(w http.ResponseWriter, r *http.Request) {
 	}
 	if readResult.Read {
 		eventPayload := map[string]interface{}{
-			"agent_name": agentName,
-			"message_id": messageID,
+			"project_key": s.mailProjectKey(r),
+			"agent_name":  agentName,
+			"message_id":  messageID,
 		}
 		if readResult.ReadAt != nil {
 			eventPayload["read_at"] = readResult.ReadAt
@@ -1022,7 +1079,7 @@ func (s *Server) handleAckMessage(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	ackResult, err := client.AcknowledgeMessage(ctx, s.projectDirSnapshot(), agentName, messageID)
+	ackResult, err := client.AcknowledgeMessage(ctx, s.mailProjectKey(r), agentName, messageID)
 	if err != nil {
 		writeAgentMailMessageActionError(w, reqID, err, "message acknowledgements are not supported by the configured Agent Mail server")
 		return
@@ -1034,8 +1091,9 @@ func (s *Server) handleAckMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	if ackResult.Acknowledged {
 		eventPayload := map[string]interface{}{
-			"agent_name": agentName,
-			"message_id": messageID,
+			"project_key": s.mailProjectKey(r),
+			"agent_name":  agentName,
+			"message_id":  messageID,
 		}
 		if ackResult.AcknowledgedAt != nil {
 			eventPayload["acknowledged_at"] = ackResult.AcknowledgedAt
@@ -1090,7 +1148,7 @@ func (s *Server) handleSearchMessages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	results, err := client.SearchMessages(ctx, agentmail.SearchOptions{
-		ProjectKey: s.projectDirSnapshot(),
+		ProjectKey: s.mailProjectKey(r),
 		Query:      query,
 		Limit:      limit,
 	})
@@ -1152,7 +1210,7 @@ func (s *Server) handleThreadSummary(w http.ResponseWriter, r *http.Request) {
 	}
 
 	result, err := client.SummarizeThread(ctx, agentmail.SummarizeThreadOptions{
-		ProjectKey:      s.projectDirSnapshot(),
+		ProjectKey:      s.mailProjectKey(r),
 		ThreadID:        threadID,
 		IncludeExamples: includeExamples,
 		LLMMode:         llmMode,
@@ -1204,7 +1262,7 @@ func (s *Server) handleListContacts(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	contacts, err := client.ListContacts(ctx, s.projectDirSnapshot(), agentName)
+	contacts, err := client.ListContacts(ctx, s.mailProjectKey(r), agentName)
 	if err != nil {
 		writeAgentMailAgentActionError(w, reqID, err, "listing contacts is not supported by the configured Agent Mail server")
 		return
@@ -1246,7 +1304,7 @@ func (s *Server) handleRequestContact(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	result, err := client.RequestContact(ctx, agentmail.RequestContactOptions{
-		ProjectKey: s.projectDirSnapshot(),
+		ProjectKey: s.mailProjectKey(r),
 		FromAgent:  req.FromAgent,
 		ToAgent:    req.ToAgent,
 		ToProject:  req.ToProject,
@@ -1303,7 +1361,7 @@ func (s *Server) handleRespondContact(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	result, err := client.RespondContact(ctx, agentmail.RespondContactOptions{
-		ProjectKey: s.projectDirSnapshot(),
+		ProjectKey: s.mailProjectKey(r),
 		ToAgent:    req.ToAgent,
 		FromAgent:  req.FromAgent,
 		Accept:     req.Accept,
@@ -1371,7 +1429,7 @@ func (s *Server) handleSetContactPolicy(w http.ResponseWriter, r *http.Request) 
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	result, err := client.SetContactPolicy(ctx, s.projectDirSnapshot(), req.AgentName, req.Policy)
+	result, err := client.SetContactPolicy(ctx, s.mailProjectKey(r), req.AgentName, req.Policy)
 	if err != nil {
 		writeAgentMailAgentActionError(w, reqID, err, "setting contact policy is not supported by the configured Agent Mail server")
 		return

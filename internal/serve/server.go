@@ -1337,6 +1337,9 @@ func (s *Server) buildRouter() chi.Router {
 	// was supplied (see that field): the middleware is always mounted, but it
 	// passes through untouched when no redaction config reached New.
 	r.Use(s.redactionMiddleware)
+	// Freeze mail's request-local project before replay lookup. Validation
+	// errors are returned only after the mail route's permission check.
+	r.Use(s.mailProjectScopeMiddleware)
 	// Idempotency-Key replay for EVERY mutating route — the single mount point
 	// (D4, bd-ws3-contract-breadth-psvyu.4). Deleting this one line disables the
 	// feature (rollback lever). The middleware is inert for requests without an
@@ -1989,6 +1992,10 @@ func scopedIdempotencyKey(r *http.Request) string {
 	// Idempotency-Key on the same method+path — including a caller who lacked the
 	// permission the original request needed.
 	principal := idempotencyPrincipal(r)
+	scope, mailScoped := r.Context().Value(mailProjectScopeKey{}).(mailProjectScope)
+	if mailScoped && scope.err != nil {
+		return "" // Invalid scope must reach permission/validation, never replay.
+	}
 
 	var b strings.Builder
 	b.Grow(len(r.Method) + len(path) + len(r.URL.RawQuery) + len(rawKey) + len(principal) + 4)
@@ -2002,6 +2009,10 @@ func scopedIdempotencyKey(r *http.Request) string {
 	b.WriteByte('\x00')
 	b.WriteString(principal)
 	b.WriteByte('\x00')
+	if mailScoped {
+		b.WriteString(scope.project)
+		b.WriteByte('\x00')
+	}
 	b.WriteString(rawKey)
 	return b.String()
 }

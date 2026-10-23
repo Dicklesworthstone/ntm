@@ -3983,6 +3983,16 @@
         "summary": "List mail agents",
         "description": "Served route `GET /api/v1/mail/agents/`. Handler: `handleListMailAgents`. Response payload is not registered in the robot schema registry; the generic success envelope documents only the envelope fields.",
         "operationId": "get_api_v1_mail_agents_index",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "query",
+            "description": "Existing absolute project directory on the server host. Overrides the configured project for this mail request only; omitted uses the server default. Idempotency is scoped to the effective project.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful operation",
@@ -4033,6 +4043,16 @@
         "summary": "Create mail agent",
         "description": "Served route `POST /api/v1/mail/agents/`. Handler: `handleCreateMailAgent`. Response payload is not registered in the robot schema registry; the generic success envelope documents only the envelope fields.",
         "operationId": "post_api_v1_mail_agents_index",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "query",
+            "description": "Existing absolute project directory on the server host. Overrides the configured project for this mail request only; omitted uses the server default. Idempotency is scoped to the effective project.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -4104,6 +4124,14 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "project",
+            "in": "query",
+            "description": "Existing absolute project directory on the server host. Overrides the configured project for this mail request only; omitted uses the server default. Idempotency is scoped to the effective project.",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -4168,6 +4196,16 @@
         "summary": "List contacts",
         "description": "Served route `GET /api/v1/mail/contacts/`. Handler: `handleListContacts`. Response payload is not registered in the robot schema registry; the generic success envelope documents only the envelope fields.",
         "operationId": "get_api_v1_mail_contacts_index",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "query",
+            "description": "Existing absolute project directory on the server host. Overrides the configured project for this mail request only; omitted uses the server default. Idempotency is scoped to the effective project.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful operation",
@@ -4220,6 +4258,16 @@
         "summary": "Set contact policy",
         "description": "Served route `PUT /api/v1/mail/contacts/policy`. Handler: `handleSetContactPolicy`. Response payload is not registered in the robot schema registry; the generic success envelope documents only the envelope fields.",
         "operationId": "put_api_v1_mail_contacts_policy",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "query",
+            "description": "Existing absolute project directory on the server host. Overrides the configured project for this mail request only; omitted uses the server default. Idempotency is scoped to the effective project.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -4282,6 +4330,16 @@
         "summary": "Request contact",
         "description": "Served route `POST /api/v1/mail/contacts/request`. Handler: `handleRequestContact`. Response payload is not registered in the robot schema registry; the generic success envelope documents only the envelope fields.",
         "operationId": "post_api_v1_mail_contacts_request",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "query",
+            "description": "Existing absolute project directory on the server host. Overrides the configured project for this mail request only; omitted uses the server default. Idempotency is scoped to the effective project.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -4344,6 +4402,16 @@
         "summary": "Respond contact",
         "description": "Served route `POST /api/v1/mail/contacts/respond`. Handler: `handleRespondContact`. Response payload is not registered in the robot schema registry; the generic success envelope documents only the envelope fields.",
         "operationId": "post_api_v1_mail_contacts_respond",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "query",
+            "description": "Existing absolute project directory on the server host. Overrides the configured project for this mail request only; omitted uses the server default. Idempotency is scoped to the effective project.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -4458,6 +4526,16 @@
         "summary": "Mail inbox",
         "description": "Served route `GET /api/v1/mail/inbox`. Handler: `handleMailInbox`. Response payload is not registered in the robot schema registry; the generic success envelope documents only the envelope fields.",
         "operationId": "get_api_v1_mail_inbox",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "query",
+            "description": "Existing absolute project directory on the server host. Overrides the configured project for this mail request only; omitted uses the server default. Idempotency is scoped to the effective project.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful operation",
@@ -4510,6 +4588,16 @@
         "summary": "Send message",
         "description": "Served route `POST /api/v1/mail/messages/`. Handler: `handleSendMessage`. Response payload is not registered in the robot schema registry; the generic success envelope documents only the envelope fields.",
         "operationId": "post_api_v1_mail_messages_index",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "query",
+            "description": "Existing absolute project directory on the server host. Overrides the configured project for this mail request only; omitted uses the server default. Idempotency is scoped to the effective project.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -4578,6 +4666,14 @@
             "in": "path",
             "description": "The id identifier",
             "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "project",
+            "in": "query",
+            "description": "Existing absolute project directory on the server host. Overrides the configured project for this mail request only; omitted uses the server default. Idempotency is scoped to the effective project.",
             "schema": {
               "type": "string"
             }
@@ -4651,6 +4747,14 @@
             "in": "path",
             "description": "The id identifier",
             "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "project",
+            "in": "query",
+            "description": "Existing absolute project directory on the server host. Overrides the configured project for this mail request only; omitted uses the server default. Idempotency is scoped to the effective project.",
             "schema": {
               "type": "string"
             }
@@ -4737,6 +4841,14 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "project",
+            "in": "query",
+            "description": "Existing absolute project directory on the server host. Overrides the configured project for this mail request only; omitted uses the server default. Idempotency is scoped to the effective project.",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -4820,6 +4932,14 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "project",
+            "in": "query",
+            "description": "Existing absolute project directory on the server host. Overrides the configured project for this mail request only; omitted uses the server default. Idempotency is scoped to the effective project.",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -4894,6 +5014,16 @@
         "summary": "List mail projects",
         "description": "Served route `GET /api/v1/mail/projects`. Handler: `handleListMailProjects`. Response payload is not registered in the robot schema registry; the generic success envelope documents only the envelope fields.",
         "operationId": "get_api_v1_mail_projects",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "query",
+            "description": "Existing absolute project directory on the server host. Overrides the configured project for this mail request only; omitted uses the server default. Idempotency is scoped to the effective project.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful operation",
@@ -4946,6 +5076,16 @@
         "summary": "Search messages",
         "description": "Served route `GET /api/v1/mail/search`. Handler: `handleSearchMessages`. Response payload is not registered in the robot schema registry; the generic success envelope documents only the envelope fields.",
         "operationId": "get_api_v1_mail_search",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "query",
+            "description": "Existing absolute project directory on the server host. Overrides the configured project for this mail request only; omitted uses the server default. Idempotency is scoped to the effective project.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful operation",
@@ -5004,6 +5144,14 @@
             "in": "path",
             "description": "The id identifier",
             "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "project",
+            "in": "query",
+            "description": "Existing absolute project directory on the server host. Overrides the configured project for this mail request only; omitted uses the server default. Idempotency is scoped to the effective project.",
             "schema": {
               "type": "string"
             }
@@ -14402,6 +14550,11 @@
             "description": "RFC3339 timestamp"
           },
           "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "RFC3339 timestamp"
+          },
+          "dispatch_started_at": {
             "type": "string",
             "format": "date-time",
             "description": "RFC3339 timestamp"

@@ -353,6 +353,14 @@ func buildRouterOperation(rt RouterRoute, components *OpenAPIComponents) *Operat
 			"500": errorResponse("Internal server error"),
 		},
 	}
+	if isMailProjectRoute(rt.Pattern) {
+		op.Parameters = append(op.Parameters, Parameter{
+			Name:        "project",
+			In:          "query",
+			Description: "Existing absolute project directory on the server host. Overrides the configured project for this mail request only; omitted uses the server default. Idempotency is scoped to the effective project.",
+			Schema:      &Schema{Type: "string"},
+		})
+	}
 
 	// Document the codes the handler actually writes (WS4 contract
 	// fidelity): routes addressing one resource by path parameter can miss
