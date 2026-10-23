@@ -22,6 +22,7 @@ type WSEventStore struct {
 	retentionSecs int64 // How long to keep events in SQLite
 	seq           int64
 	seqMu         sync.Mutex
+	storeMu       sync.Mutex // serializes durable append and ring publication
 	cleanupTicker *time.Ticker
 	done          chan struct{}
 	stopOnce      sync.Once
@@ -92,13 +93,14 @@ func NewWSEventStore(db *sql.DB, cfg WSEventStoreConfig) *WSEventStore {
 		done:          make(chan struct{}),
 	}
 
-	// Load highest seq from database if available
+	// AUTOINCREMENT retains the high-water mark even after retention removes
+	// every event. MAX(seq) alone would rewind cursors on an idle restart.
 	if db != nil {
-		var maxSeq sql.NullInt64
-		err := db.QueryRow("SELECT MAX(seq) FROM ws_events").Scan(&maxSeq)
-		if err == nil && maxSeq.Valid {
-			store.seq = maxSeq.Int64
+		err := db.QueryRow("SELECT COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'ws_events'), 0)").Scan(&store.seq)
+		if err == nil {
 			log.Printf("ws_events: initialized seq from db seq=%d", store.seq)
+		} else {
+			log.Printf("ws_events: read sequence high-water mark: %v", err)
 		}
 	}
 
@@ -190,42 +192,60 @@ func (s *WSEventStore) Store(topic, eventType string, data interface{}) (*WSStor
 	if err != nil {
 		return nil, fmt.Errorf("marshal event data: %w", err)
 	}
+	s.storeMu.Lock()
+	defer s.storeMu.Unlock()
 
 	event := &WSStoredEvent{
-		Seq:       s.nextSeq(),
 		Topic:     topic,
 		EventType: eventType,
 		Data:      string(jsonData),
 		CreatedAt: time.Now(),
 	}
 
-	// Store in ring buffer
+	// Let SQLite allocate durable cursors. Explicit locally allocated seqs can
+	// collide with another store, and reuse pruned IDs after a restart. Publish
+	// only after persistence succeeds; a memory-only success here would claim a
+	// resumable cursor for an event that disappears on restart.
+	if s.db != nil {
+		result, err := s.db.Exec(
+			"INSERT INTO ws_events (topic, event_type, data, created_at) VALUES (?, ?, ?, ?)",
+			event.Topic, event.EventType, event.Data, event.CreatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("persist event: %w", err)
+		}
+		event.Seq, err = result.LastInsertId()
+		if err != nil {
+			return nil, fmt.Errorf("read persisted event sequence: %w", err)
+		}
+		s.seqMu.Lock()
+		if event.Seq > s.seq {
+			s.seq = event.Seq
+		}
+		s.seqMu.Unlock()
+	} else {
+		event.Seq = s.nextSeq()
+	}
+
+	// Keep append order identical to cursor order for memory-only replay too.
 	s.bufferMu.Lock()
 	s.buffer.Value = event
 	s.buffer = s.buffer.Next()
 	s.bufferMu.Unlock()
 
-	// Persist to database
-	if s.db != nil {
-		_, err = s.db.Exec(
-			"INSERT INTO ws_events (seq, topic, event_type, data, created_at) VALUES (?, ?, ?, ?, ?)",
-			event.Seq, event.Topic, event.EventType, event.Data, event.CreatedAt,
-		)
-		if err != nil {
-			log.Printf("ws_events: persist error seq=%d: %v", event.Seq, err)
-			// Continue even if persist fails - event is in memory
-		}
-	}
-
 	return event, nil
 }
 
 // GetSince retrieves events after the given sequence number.
-// First tries the ring buffer, falls back to database if needed.
+// The database is authoritative when configured: a ring can outlive retention
+// or miss events written by another store sharing the same runtime database.
 // Returns events and a boolean indicating if a cursor reset is needed.
 func (s *WSEventStore) GetSince(since int64, topic string, limit int) ([]WSStoredEvent, bool, error) {
 	if limit <= 0 {
 		limit = 1000
+	}
+	if s.db != nil {
+		return s.getFromDB(since, topic, limit)
 	}
 
 	// Try ring buffer first
@@ -234,13 +254,7 @@ func (s *WSEventStore) GetSince(since int64, topic string, limit int) ([]WSStore
 		return events, false, nil
 	}
 
-	// Fall back to database
-	if s.db == nil {
-		// No database - cursor is too old, return reset signal
-		return nil, true, nil
-	}
-
-	return s.getFromDB(since, topic, limit)
+	return nil, true, nil
 }
 
 // getFromBuffer retrieves events from the ring buffer.
@@ -298,29 +312,40 @@ func (s *WSEventStore) getFromBuffer(since int64, topic string, limit int) ([]WS
 // getFromDB retrieves events from the database.
 // Returns events and whether a reset is needed (cursor too old for DB too).
 func (s *WSEventStore) getFromDB(since int64, topic string, limit int) ([]WSStoredEvent, bool, error) {
-	// Check if since cursor is too old before querying
-	if since > 0 {
-		var minSeq sql.NullInt64
-		if err := s.db.QueryRow("SELECT MIN(seq) FROM ws_events").Scan(&minSeq); err != nil && err != sql.ErrNoRows {
-			return nil, false, fmt.Errorf("query min seq: %w", err)
-		}
-		if minSeq.Valid && since < minSeq.Int64-1 {
-			// Cursor is too old even for database
-			return nil, true, nil
-		}
+	// Keep retention validation and selection on one snapshot. Otherwise a
+	// concurrent cleanup can erase the requested history between the two reads
+	// and turn an expired cursor into a successful empty replay.
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, false, fmt.Errorf("begin replay: %w", err)
+	}
+	defer tx.Rollback()
+	var minSeq sql.NullInt64
+	var highWater int64
+	if err := tx.QueryRow(`SELECT MIN(seq),
+		COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'ws_events'), 0)
+		FROM ws_events`).Scan(&minSeq, &highWater); err != nil {
+		return nil, false, fmt.Errorf("query replay window: %w", err)
+	}
+	s.seqMu.Lock()
+	if highWater > s.seq {
+		s.seq = highWater
+	}
+	s.seqMu.Unlock()
+	if since > 0 && (since > highWater || (minSeq.Valid && since < minSeq.Int64-1) || (!minSeq.Valid && since < highWater)) {
+		return nil, true, nil
 	}
 
 	var rows *sql.Rows
-	var err error
 
 	if topic == "" {
-		rows, err = s.db.Query(
+		rows, err = tx.Query(
 			"SELECT seq, topic, event_type, data, created_at FROM ws_events WHERE seq > ? ORDER BY seq LIMIT ?",
 			since, limit,
 		)
 	} else {
 		// For topic filtering, we need to handle wildcards in Go
-		rows, err = s.db.Query(
+		rows, err = tx.Query(
 			"SELECT seq, topic, event_type, data, created_at FROM ws_events WHERE seq > ? ORDER BY seq LIMIT ?",
 			since, limit*10, // Fetch more to account for filtering
 		)
@@ -538,6 +563,12 @@ func (h *WSHub) handleReplay(req *wsReplayRequest) {
 		return
 	}
 	res.cursor = store.CurrentSeq()
+	if _, pending := h.pendingResets[req.client]; pending {
+		h.flushClientReset(req.client)
+		res.reset = true
+		req.resp <- res
+		return
+	}
 
 	// GetSince accepts a single topic pattern; for multi-topic subscribes we
 	// fetch unfiltered and match in Go (bounded by wsReplayLimit).
@@ -546,8 +577,11 @@ func (h *WSHub) handleReplay(req *wsReplayRequest) {
 		topicFilter = req.topics[0]
 	}
 	events, needsReset, err := store.GetSince(req.since, topicFilter, wsReplayLimit)
+	res.cursor = store.CurrentSeq()
 	if err != nil {
 		log.Printf("ws_events: replay query failed client=%s since=%d: %v", req.client.id, req.since, err)
+		res.reset = true
+		h.trySendReset(req.client, topicFilter, "replay_failed", res.cursor, 0)
 		req.resp <- res
 		return
 	}
@@ -593,13 +627,34 @@ func (h *WSHub) handleReplay(req *wsReplayRequest) {
 	req.resp <- res
 }
 
-// trySendReset queues a stream.reset frame; best-effort.
+// trySendReset queues a stream.reset frame. If the transport is full, retain a
+// barrier: no later event may be delivered before the client learns about the
+// gap. In particular, a failed durable append has no sequence to expose it.
 func (h *WSHub) trySendReset(client *WSClient, topic, reason string, currentSeq, oldestAvail int64) {
 	data, err := json.Marshal(NewStreamReset(topic, reason, currentSeq, oldestAvail))
 	if err != nil {
 		return
 	}
-	client.trySend(data, nil)
+	if client.trySend(data, nil) {
+		delete(h.pendingResets, client)
+	} else {
+		if h.pendingResets == nil {
+			h.pendingResets = make(map[*WSClient][]byte)
+		}
+		h.pendingResets[client] = data
+	}
+}
+
+func (h *WSHub) flushClientReset(client *WSClient) bool {
+	data, pending := h.pendingResets[client]
+	if !pending {
+		return true
+	}
+	if !client.trySend(data, nil) {
+		return false
+	}
+	delete(h.pendingResets, client)
+	return true
 }
 
 // matchAnyTopic reports whether topic matches any of the subscription patterns.

@@ -299,6 +299,88 @@ func TestWSReplayIntegration_NoStateStore_StreamReset(t *testing.T) {
 	}
 }
 
+func TestWSReplayIntegration_PersistenceFailureResetsInsteadOfRewinding(t *testing.T) {
+	stateStore := newMigratedStateStore(t)
+	srv := New(Config{StateStore: stateStore})
+	defer srv.Stop()
+	httpSrv := httptest.NewServer(srv.Router())
+	defer httpSrv.Close()
+	conn := dialWS(t, httpSrv)
+	defer conn.Close()
+	reader := newWSFrameReader(t, conn, "write-failure")
+	const topic = "panes:durable:0"
+	subscribeWS(t, conn, []string{topic}, -1)
+	if frame := reader.next(2 * time.Second); frame["type"] != "ack" {
+		t.Fatalf("subscribe: %v", frame)
+	}
+	var last int64
+	for i := 0; i < 3; i++ {
+		srv.wsHub.Publish(topic, "pane.output", i)
+		last = frameSeq(t, reader.next(2*time.Second))
+	}
+	if _, err := stateStore.DB().Exec(`CREATE TRIGGER reject_ws_event BEFORE INSERT ON ws_events
+		WHEN NEW.data = '"cannot persist"'
+		BEGIN SELECT RAISE(FAIL, 'disk unavailable'); END`); err != nil {
+		t.Fatal(err)
+	}
+	srv.wsHub.Publish(topic, "pane.output", "cannot persist")
+	frame := reader.next(2 * time.Second)
+	if frame["type"] != "stream.reset" || frame["reason"] != "persistence_failed" {
+		t.Fatalf("failed durable write must explicitly reset the stream: %v", frame)
+	}
+	if frame["current_seq"] != float64(last) {
+		t.Fatalf("reset changed durable cursor: %v, want %d", frame, last)
+	}
+	// A later successful event remains resumable in the original cursor domain.
+	srv.wsHub.Publish(topic, "pane.output", "recovered")
+	frame = reader.next(2 * time.Second)
+	if frame["type"] != "event" || frameSeq(t, frame) <= last {
+		t.Fatalf("cursor did not recover monotonically: %v", frame)
+	}
+}
+
+func TestWSHub_PersistenceResetSurvivesBackpressure(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+	store := NewWSEventStore(db, DefaultWSEventStoreConfig())
+	defer store.Stop()
+	hub := NewWSHub()
+	hub.SetEventStore(store)
+	defer hub.Stop()
+	const topic = "panes:slow:0"
+	client := &WSClient{id: "slow-reset", hub: hub, send: make(chan []byte, 2), topics: map[string]struct{}{topic: {}}}
+	hub.clients[client] = struct{}{}
+	// Drive the real hub publication path with a deterministically full queue.
+	for i := 0; i < 2; i++ {
+		hub.broadcastEvent(&WSEvent{Type: WSMsgEvent, Topic: topic, EventType: "pane.output", Data: i})
+	}
+	if _, err := db.Exec(`CREATE TRIGGER reject_ws_event BEFORE INSERT ON ws_events
+		WHEN NEW.data = '"cannot persist"'
+		BEGIN SELECT RAISE(FAIL, 'disk unavailable'); END`); err != nil {
+		t.Fatal(err)
+	}
+	hub.broadcastEvent(&WSEvent{Type: WSMsgEvent, Topic: topic, EventType: "pane.output", Data: "cannot persist"})
+	if len(hub.pendingResets) != 1 {
+		t.Fatal("full queue lost the mandatory reset")
+	}
+	<-client.send
+	<-client.send
+	hub.broadcastEvent(&WSEvent{Type: WSMsgEvent, Topic: topic, EventType: "pane.output", Data: "recovered"})
+	var reset, event map[string]interface{}
+	if err := json.Unmarshal(<-client.send, &reset); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(<-client.send, &event); err != nil {
+		t.Fatal(err)
+	}
+	if reset["type"] != "stream.reset" || reset["reason"] != "persistence_failed" {
+		t.Fatalf("later event bypassed reset barrier: %v", reset)
+	}
+	if event["type"] != "event" || event["seq"] != float64(3) {
+		t.Fatalf("live continuation after reset: %v", event)
+	}
+}
+
 // TestWSHub_SlowClientDropsRecordedAndReported proves that events dropped to
 // a slow client are coalesced into ws_dropped_events (reason slow_client) and
 // that the client receives a pane.output.dropped frame describing the gap

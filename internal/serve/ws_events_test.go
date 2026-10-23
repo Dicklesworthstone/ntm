@@ -84,6 +84,104 @@ func TestWSEventStore_StoreAndRetrieve(t *testing.T) {
 	}
 }
 
+func TestWSEventStore_RestartAfterEntireHistoryExpires(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+	cfg := WSEventStoreConfig{BufferSize: 8, RetentionSeconds: 60, CleanupInterval: time.Hour}
+	store := NewWSEventStore(db, cfg)
+	for i := 0; i < 4; i++ {
+		if _, err := store.Store("sessions:proj", "session.updated", i); err != nil {
+			t.Fatal(err)
+		}
+	}
+	last := store.CurrentSeq()
+	if _, err := db.Exec("UPDATE ws_events SET created_at = ?", time.Now().Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.cleanup(); err != nil {
+		t.Fatal(err)
+	}
+	// The in-memory ring must not resurrect expired history.
+	if events, reset, err := store.GetSince(last-1, "", 10); err != nil || !reset || len(events) != 0 {
+		t.Fatalf("expired history: events=%v reset=%v err=%v", events, reset, err)
+	}
+	store.Stop()
+
+	restarted := NewWSEventStore(db, cfg)
+	defer restarted.Stop()
+	if got := restarted.CurrentSeq(); got != last {
+		t.Fatalf("restart rewound high-water mark to %d, want %d", got, last)
+	}
+	if events, reset, err := restarted.GetSince(last, "", 10); err != nil || reset || len(events) != 0 {
+		t.Fatalf("caught-up cursor on empty history: events=%v reset=%v err=%v", events, reset, err)
+	}
+	next, err := restarted.Store("sessions:proj", "session.updated", "after restart")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next.Seq <= last {
+		t.Fatalf("reused cursor %d after %d", next.Seq, last)
+	}
+	events, reset, err := restarted.GetSince(last, "sessions:proj", 10)
+	if err != nil || reset || len(events) != 1 || events[0].Seq != next.Seq {
+		t.Fatalf("client cannot resume after idle restart: events=%v reset=%v err=%v", events, reset, err)
+	}
+}
+
+func TestWSEventStore_SharedDatabaseAllocatesAndReplaysAllCursors(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+	first := NewWSEventStore(db, DefaultWSEventStoreConfig())
+	defer first.Stop()
+	second := NewWSEventStore(db, DefaultWSEventStoreConfig())
+	defer second.Stop()
+	for i, store := range []*WSEventStore{first, second, first} {
+		event, err := store.Store("sessions:proj", "session.updated", i)
+		if err != nil || event.Seq != int64(i+1) {
+			t.Fatalf("append %d: event=%+v err=%v", i, event, err)
+		}
+	}
+	for _, store := range []*WSEventStore{first, second} {
+		events, reset, err := store.GetSince(0, "", 10)
+		if err != nil || reset || len(events) != 3 {
+			t.Fatalf("shared replay: events=%v reset=%v err=%v", events, reset, err)
+		}
+		for i, event := range events {
+			if event.Seq != int64(i+1) {
+				t.Fatalf("event %d has cursor %d", i, event.Seq)
+			}
+		}
+	}
+}
+
+func TestWSEventStore_FailedPersistenceDoesNotPublishCursor(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+	store := NewWSEventStore(db, DefaultWSEventStoreConfig())
+	defer store.Stop()
+	first, err := store.Store("sessions:proj", "session.updated", "before failure")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// An actual SQLite write failure, with reads still available.
+	if _, err := db.Exec(`CREATE TRIGGER reject_ws_event BEFORE INSERT ON ws_events
+		BEGIN SELECT RAISE(FAIL, 'disk unavailable'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if event, err := store.Store("sessions:proj", "session.updated", "lost"); err == nil || event != nil {
+		t.Fatalf("failed write reported success: event=%v err=%v", event, err)
+	}
+	if got := store.CurrentSeq(); got != first.Seq {
+		t.Fatalf("failed write published cursor %d, want %d", got, first.Seq)
+	}
+	if _, used, _, _ := store.BufferStats(); used != 1 {
+		t.Fatalf("failed write published an in-memory event: used=%d", used)
+	}
+	if events, reset, err := store.GetSince(first.Seq, "", 10); err != nil || reset || len(events) != 0 {
+		t.Fatalf("failed event is replayable: events=%v reset=%v err=%v", events, reset, err)
+	}
+}
+
 func TestWSEventStore_TopicFilter(t *testing.T) {
 	db, cleanup := setupTestDB(t)
 	defer cleanup()

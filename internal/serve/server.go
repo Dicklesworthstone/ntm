@@ -806,18 +806,22 @@ type WSHub struct {
 	// pendingDrops coalesces per-client dropped-event ranges. Owned
 	// exclusively by the Run goroutine; no locking.
 	pendingDrops map[*WSClient]map[string]*wsDropRange
+	// pendingResets blocks later events until a backpressured client receives
+	// the explicit resync signal. Owned by the Run goroutine.
+	pendingResets map[*WSClient][]byte
 }
 
 // NewWSHub creates a new WebSocket hub.
 func NewWSHub() *WSHub {
 	return &WSHub{
-		clients:      make(map[*WSClient]struct{}),
-		register:     make(chan *WSClient),
-		unregister:   make(chan *WSClient),
-		broadcast:    make(chan *WSEvent, 256),
-		done:         make(chan struct{}),
-		replayCh:     make(chan *wsReplayRequest),
-		pendingDrops: make(map[*WSClient]map[string]*wsDropRange),
+		clients:       make(map[*WSClient]struct{}),
+		register:      make(chan *WSClient),
+		unregister:    make(chan *WSClient),
+		broadcast:     make(chan *WSEvent, 256),
+		done:          make(chan struct{}),
+		replayCh:      make(chan *wsReplayRequest),
+		pendingDrops:  make(map[*WSClient]map[string]*wsDropRange),
+		pendingResets: make(map[*WSClient][]byte),
 	}
 }
 
@@ -838,6 +842,7 @@ func (h *WSHub) Run() {
 			log.Printf("ws client connected id=%s total=%d", client.id, total)
 		case client := <-h.unregister:
 			h.flushClientDrops(client, false)
+			delete(h.pendingResets, client)
 			h.clientsMu.Lock()
 			if _, ok := h.clients[client]; ok {
 				delete(h.clients, client)
@@ -897,8 +902,18 @@ func (h *WSHub) broadcastEvent(event *WSEvent) {
 		if stored, err := store.Store(event.Topic, event.EventType, event.Data); err == nil {
 			event.Seq = stored.Seq
 		} else {
-			event.Seq = h.nextSeq()
-			log.Printf("ws_events: store failed, using ephemeral seq topic=%s: %v", event.Topic, err)
+			// A separate ephemeral counter would rewind or collide with the
+			// durable cursor and conceal a gap from reconnecting clients. Make
+			// the loss explicit so consumers can refresh their state instead.
+			log.Printf("ws_events: store failed, resetting stream topic=%s: %v", event.Topic, err)
+			h.clientsMu.RLock()
+			for client := range h.clients {
+				if client.isSubscribed(event.Topic) {
+					h.trySendReset(client, event.Topic, "persistence_failed", store.CurrentSeq(), 0)
+				}
+			}
+			h.clientsMu.RUnlock()
+			return
 		}
 	} else {
 		event.Seq = h.nextSeq()
@@ -914,6 +929,12 @@ func (h *WSHub) broadcastEvent(event *WSEvent) {
 	defer h.clientsMu.RUnlock()
 
 	for client := range h.clients {
+		if !h.flushClientReset(client) {
+			if client.isSubscribed(event.Topic) {
+				h.noteClientDrop(client, event.Topic, event.Seq)
+			}
+			continue
+		}
 		if client.isSubscribed(event.Topic) {
 			select {
 			case client.send <- data:

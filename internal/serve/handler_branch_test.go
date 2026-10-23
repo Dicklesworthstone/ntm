@@ -11452,8 +11452,8 @@ func TestHandleExportCheckpoint_PostTarGzFormat(t *testing.T) {
 // Batch 31 — WSEventStore, AuditStore, OpenAPI, Pipeline, RBAC branches
 // =============================================================================
 
-// TestWSEventStore_StorePersistError exercises the log.Printf error path
-// in Store when the DB insert fails (line 204-206 of ws_events.go).
+// TestWSEventStore_StorePersistError verifies that a failed durable append
+// does not publish a memory-only event as though it were replayable.
 func TestWSEventStore_StorePersistError(t *testing.T) {
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
@@ -11468,16 +11468,15 @@ func TestWSEventStore_StorePersistError(t *testing.T) {
 	// Close the DB to trigger persist error on next Store
 	db.Close()
 
-	// Store should succeed (goes to ring buffer) but persist fails silently
 	ev, err := store.Store("test.topic", "test.event", map[string]string{"key": "value"})
-	if err != nil {
-		t.Fatalf("Store should not return error (persist error is logged): %v", err)
+	if err == nil {
+		t.Fatal("expected persistence error")
 	}
-	if ev == nil {
-		t.Fatal("expected non-nil event")
+	if ev != nil {
+		t.Fatalf("failed append returned an event: %+v", ev)
 	}
-	if ev.Topic != "test.topic" {
-		t.Errorf("topic = %q, want test.topic", ev.Topic)
+	if _, used, _, _ := store.BufferStats(); used != 0 {
+		t.Fatalf("failed append published %d buffered events", used)
 	}
 }
 
@@ -13583,7 +13582,7 @@ func TestWSEventStore_CleanupDBExecError(t *testing.T) {
 	}
 }
 
-// --- WSEventStore.Store — DB persist error, log & continue (92.3% → ~100%) ---
+// A failed durable append must not be published as a resumable event.
 
 func TestWSEventStore_StoreDBPersistError(t *testing.T) {
 	db, cleanup := setupTestDB(t)
@@ -13597,18 +13596,21 @@ func TestWSEventStore_StoreDBPersistError(t *testing.T) {
 	store := NewWSEventStore(db, cfg)
 	defer store.Stop()
 
-	// Close the DB to trigger persist error (Store logs and continues)
+	// Close the DB to trigger a persistence error.
 	db.Close()
 
 	ev, err := store.Store("test.topic", "test.event", map[string]interface{}{"key": "val"})
-	if err != nil {
-		t.Fatalf("Store should not return error (logs instead), got: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "persist event") {
+		t.Fatalf("expected persistence error, got: %v", err)
 	}
-	if ev == nil {
-		t.Fatal("expected non-nil event even with DB error")
+	if ev != nil {
+		t.Fatalf("failed append returned an event: %+v", ev)
 	}
-	if ev.Topic != "test.topic" {
-		t.Errorf("expected topic=test.topic, got %q", ev.Topic)
+	if store.CurrentSeq() != 0 {
+		t.Fatalf("failed append advanced cursor to %d", store.CurrentSeq())
+	}
+	if _, used, _, _ := store.BufferStats(); used != 0 {
+		t.Fatalf("failed append published %d buffered events", used)
 	}
 }
 
@@ -13639,8 +13641,8 @@ func TestWSEventStore_GetSinceDBQueryError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error from GetSince with closed DB")
 	}
-	if !strings.Contains(err.Error(), "query events") {
-		t.Errorf("expected 'query events' in error, got: %v", err)
+	if !strings.Contains(err.Error(), "begin replay") {
+		t.Errorf("expected 'begin replay' in error, got: %v", err)
 	}
 }
 
