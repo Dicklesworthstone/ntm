@@ -127,6 +127,42 @@ func TestServeCmdRejectsUnexpectedArguments(t *testing.T) {
 	}
 }
 
+func TestServeAndWebRejectInvalidProjectBeforeOpeningState(t *testing.T) {
+	for _, command := range []string{"serve", "web"} {
+		for _, kind := range []string{"missing", "file"} {
+			t.Run(command+"/"+kind, func(t *testing.T) {
+				project := filepath.Join(t.TempDir(), kind)
+				if kind == "file" {
+					if err := os.WriteFile(project, []byte("not a directory"), 0600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				homeDir := t.TempDir()
+				t.Setenv("HOME", homeDir)
+				t.Setenv("XDG_CONFIG_HOME", filepath.Join(homeDir, "config"))
+				t.Setenv("XDG_DATA_HOME", filepath.Join(homeDir, "data"))
+				t.Setenv("XDG_STATE_HOME", filepath.Join(homeDir, "state"))
+				cmd := newServeCmd()
+				if command == "web" {
+					cmd = newWebCmd()
+				}
+				cmd.SilenceUsage, cmd.SilenceErrors = true, true
+				cmd.SetArgs([]string{"--project-dir", project})
+				if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "invalid --project-dir") {
+					t.Fatalf("%s accepted invalid project %q: %v", command, project, err)
+				}
+				entries, err := os.ReadDir(homeDir)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(entries) != 0 {
+					t.Fatalf("invalid launch created state before validating its project: %v", entries)
+				}
+			})
+		}
+	}
+}
+
 // fakePTScript speaks upstream pt's passive-watch contract
 // (github.com/Dicklesworthstone/process_triage@8ac066c38b2e14223b6c9cf11a6b12a81c6c0e1c,
 // pt wrapper + crates/pt-core/src/main.rs): `pt --version` prints the wrapper

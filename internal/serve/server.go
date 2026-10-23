@@ -217,9 +217,13 @@ type Config struct {
 	// PublicBaseURL advertises the externally reachable base URL for clients.
 	// Optional: leave empty to derive from host/port in documentation or clients.
 	PublicBaseURL string
-	EventBus      *events.EventBus
-	StateStore    *state.Store
-	Auth          AuthConfig
+	// ProjectDir is the server-wide project used by mail, beads, and project-scoped
+	// jobs. Nonempty paths must name an existing directory. Empty leaves the
+	// server unscoped until a project is selected through the configuration API.
+	ProjectDir string
+	EventBus   *events.EventBus
+	StateStore *state.Store
+	Auth       AuthConfig
 	// AllowedOrigins controls CORS origin allowlist. Empty means default localhost only.
 	AllowedOrigins []string
 	// Version is the build version string (set via ldflags). Used by /api/v1/version.
@@ -1151,10 +1155,38 @@ func applyDefaults(cfg *Config) {
 	}
 }
 
+// ResolveProjectDir validates a server project and returns its absolute,
+// symlink-resolved path so every project-scoped route uses the same identity.
+// An empty path preserves the unscoped server default.
+func ResolveProjectDir(projectDir string) (string, error) {
+	if projectDir == "" {
+		return "", nil
+	}
+	abs, err := filepath.Abs(projectDir)
+	if err != nil {
+		return "", fmt.Errorf("resolve project directory %q: %w", projectDir, err)
+	}
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return "", fmt.Errorf("resolve project directory %q: %w", projectDir, err)
+	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return "", fmt.Errorf("inspect project directory %q: %w", projectDir, err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("project directory %q is not a directory", projectDir)
+	}
+	return resolved, nil
+}
+
 // ValidateConfig checks server configuration for security and completeness.
 func ValidateConfig(cfg Config) error {
 	applyDefaults(&cfg)
 	if err := validateJobLimits(cfg.JobConcurrency, cfg.JobQueueCapacity); err != nil {
+		return err
+	}
+	if _, err := ResolveProjectDir(cfg.ProjectDir); err != nil {
 		return err
 	}
 
@@ -1196,10 +1228,17 @@ func ValidateConfig(cfg Config) error {
 // New creates a new HTTP server.
 func New(cfg Config) *Server {
 	applyDefaults(&cfg)
+	// New cannot return configuration errors; retain invalid paths so Start's
+	// validation rejects them. Valid paths are canonical even before Start,
+	// including for callers that embed Router directly.
+	if projectDir, err := ResolveProjectDir(cfg.ProjectDir); err == nil {
+		cfg.ProjectDir = projectDir
+	}
 	s := &Server{
 		host:               cfg.Host,
 		port:               cfg.Port,
 		publicBaseURL:      cfg.PublicBaseURL,
+		projectDir:         cfg.ProjectDir,
 		version:            cfg.Version,
 		eventBus:           cfg.EventBus,
 		stateStore:         cfg.StateStore,
@@ -1626,6 +1665,7 @@ func (s *Server) validate() error {
 	cfg := Config{
 		Host:           s.host,
 		Port:           s.port,
+		ProjectDir:     s.projectDirSnapshot(),
 		EventBus:       s.eventBus,
 		StateStore:     s.stateStore,
 		Auth:           s.auth,
@@ -1640,10 +1680,17 @@ func (s *Server) validate() error {
 	if err := ValidateConfig(cfg); err != nil {
 		return err
 	}
+	projectDir, err := ResolveProjectDir(cfg.ProjectDir)
+	if err != nil {
+		return err
+	}
 	s.host = cfg.Host
 	s.port = cfg.Port
 	s.auth = cfg.Auth
 	s.corsAllowedOrigins = cfg.AllowedOrigins
+	s.mu.Lock()
+	s.projectDir = projectDir
+	s.mu.Unlock()
 	return nil
 }
 
@@ -3000,6 +3047,14 @@ func (s *Server) handlePatchConfigV1(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body: "+err.Error(), nil, reqID)
 		return
+	}
+	if req.ProjectDir != "" {
+		projectDir, err := ResolveProjectDir(req.ProjectDir)
+		if err != nil {
+			writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, err.Error(), nil, reqID)
+			return
+		}
+		req.ProjectDir = projectDir
 	}
 
 	// Apply updates and snapshot the result under the lock so the log

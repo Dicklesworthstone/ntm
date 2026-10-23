@@ -47,6 +47,7 @@ API Endpoints:
 Examples:
   ntm serve                              # Start on default port
   ntm serve --port 8080                  # Start on custom port
+  ntm serve --project-dir ./myproject    # Scope mail, beads, and jobs to a project
   ntm serve --host 0.0.0.0 --auth-mode api_key --api-key $KEY
   ntm serve --auth-mode oidc --oidc-issuer https://issuer --oidc-jwks-url https://issuer/.well-known/jwks.json`,
 		Args: cobra.NoArgs,
@@ -57,6 +58,7 @@ Examples:
 
 	cmd.Flags().StringVar(&opts.Host, "host", opts.Host, "HTTP bind host (default 127.0.0.1)")
 	cmd.Flags().IntVar(&opts.Port, "port", opts.Port, "HTTP server port")
+	cmd.Flags().StringVar(&opts.ProjectDir, "project-dir", "", "Server-wide project directory for mail, beads, and jobs (optional)")
 	cmd.Flags().IntVar(&opts.JobConcurrency, "job-concurrency", serve.DefaultJobConcurrency, "Maximum concurrent async jobs")
 	cmd.Flags().IntVar(&opts.JobQueueCapacity, "job-queue-capacity", serve.DefaultJobQueueCapacity, "Maximum waiting async jobs")
 	cmd.Flags().StringVar(&opts.AuthMode, "auth-mode", opts.AuthMode, "Auth mode: local|api_key|oidc|mtls")
@@ -92,7 +94,8 @@ with the binary.
 
 Examples:
   ntm web                    # Dashboard + API on http://127.0.0.1:7337
-  ntm web --port 8080        # Custom port`,
+  ntm web --port 8080        # Custom port
+  ntm web --project-dir .    # Scope the dashboard and API to this project`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runServe(opts)
@@ -101,6 +104,7 @@ Examples:
 
 	cmd.Flags().StringVar(&opts.Host, "host", opts.Host, "HTTP bind host (default 127.0.0.1)")
 	cmd.Flags().IntVar(&opts.Port, "port", opts.Port, "HTTP server port")
+	cmd.Flags().StringVar(&opts.ProjectDir, "project-dir", "", "Server-wide project directory for mail, beads, and jobs (optional)")
 	cmd.Flags().IntVar(&opts.JobConcurrency, "job-concurrency", serve.DefaultJobConcurrency, "Maximum concurrent async jobs")
 	cmd.Flags().IntVar(&opts.JobQueueCapacity, "job-queue-capacity", serve.DefaultJobQueueCapacity, "Maximum waiting async jobs")
 	cmd.Flags().StringVar(&opts.AuthMode, "auth-mode", opts.AuthMode, "Auth mode: local|api_key|oidc|mtls")
@@ -117,6 +121,7 @@ type serveOptions struct {
 	Host             string
 	Port             int
 	PublicBaseURL    string
+	ProjectDir       string
 	AuthMode         string
 	APIKey           string
 	OIDCIssuer       string
@@ -203,6 +208,12 @@ func startServeProcessTriage(cfg *config.Config, feed *robot.AttentionFeed) func
 }
 
 func runServe(opts serveOptions) error {
+	// Reject an unusable project before opening state or starting background
+	// monitors, and pass one canonical identity to every project-scoped route.
+	projectDir, err := serve.ResolveProjectDir(opts.ProjectDir)
+	if err != nil {
+		return fmt.Errorf("invalid --project-dir: %w", err)
+	}
 	// Open state store
 	stateStore, err := state.Open("")
 	if err != nil {
@@ -278,6 +289,7 @@ func runServe(opts serveOptions) error {
 		Host:           opts.Host,
 		Port:           opts.Port,
 		PublicBaseURL:  opts.PublicBaseURL,
+		ProjectDir:     projectDir,
 		Version:        Version,
 		EventBus:       events.DefaultBus,
 		StateStore:     stateStore,
@@ -370,6 +382,7 @@ func runServe(opts serveOptions) error {
 		"auth_mode", opts.AuthMode,
 		"tls_enabled", mode == serve.AuthModeMTLS,
 		"public_base_url", opts.PublicBaseURL,
+		"project_dir", projectDir,
 		"allowed_origins", len(opts.CORSAllowOrigins),
 	)
 	fmt.Printf("Starting NTM server on %s://%s:%d\n", scheme, opts.Host, opts.Port)

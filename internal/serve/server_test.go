@@ -356,6 +356,132 @@ func TestNewWithCustomPort(t *testing.T) {
 	}
 }
 
+func TestResolveProjectDir(t *testing.T) {
+	project := t.TempDir()
+	want, err := filepath.EvalSymlinks(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	relative, err := filepath.Rel(cwd, project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{project, relative} {
+		got, err := ResolveProjectDir(path)
+		if err != nil || got != want || !filepath.IsAbs(got) {
+			t.Errorf("ResolveProjectDir(%q) = %q, %v; want %q", path, got, err, want)
+		}
+	}
+	if got, err := ResolveProjectDir(""); err != nil || got != "" {
+		t.Fatalf("empty project must remain unscoped: %q, %v", got, err)
+	}
+	t.Run("symlink", func(t *testing.T) {
+		alias := filepath.Join(t.TempDir(), "project-link")
+		if err := os.Symlink(project, alias); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		if got, err := ResolveProjectDir(alias); err != nil || got != want {
+			t.Fatalf("symlink project = %q, %v; want %q", got, err, want)
+		}
+	})
+}
+
+func TestServerProjectDirRejectsInvalidStartupPaths(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(file, []byte("not a directory"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for name, path := range map[string]string{"missing": filepath.Join(t.TempDir(), "missing"), "file": file} {
+		t.Run(name, func(t *testing.T) {
+			cfg := Config{ProjectDir: path}
+			if err := ValidateConfig(cfg); err == nil || !strings.Contains(err.Error(), "project directory") {
+				t.Fatalf("ValidateConfig admitted invalid project %q: %v", path, err)
+			}
+			srv := New(cfg)
+			defer srv.Stop()
+			if err := srv.Start(t.Context()); err == nil || !strings.Contains(err.Error(), "project directory") {
+				t.Fatalf("Start admitted invalid project %q: %v", path, err)
+			}
+		})
+	}
+}
+
+// GH #360: the first mail request must use the configured project without a
+// preceding global PATCH. Keep the real router, mail-client creation, and MCP
+// request; only the external Agent Mail service is a local fixture.
+func TestServerProjectDirScopesMailAtStartup(t *testing.T) {
+	project := t.TempDir()
+	want, err := filepath.EvalSymlinks(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	relative, err := filepath.Rel(cwd, project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mcp := newMockAgentMailMCPHandler(t, map[string]func(map[string]interface{}) (interface{}, *agentmail.JSONRPCError){
+		"ensure_project": func(args map[string]interface{}) (interface{}, *agentmail.JSONRPCError) {
+			key, _ := args["human_key"].(string)
+			return agentmail.Project{ID: 1, Slug: "startup-project", HumanKey: key}, nil
+		},
+	})
+	mail := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			w.WriteHeader(http.StatusOK) // Agent Mail liveness probe.
+			return
+		}
+		mcp.ServeHTTP(w, r)
+	}))
+	defer mail.Close()
+	t.Setenv("AGENT_MAIL_URL", mail.URL+"/mcp/")
+	t.Setenv("AGENT_MAIL_TOKEN", "")
+	srv := New(Config{ProjectDir: relative})
+	defer srv.Stop()
+
+	configResponse := httptest.NewRecorder()
+	srv.Router().ServeHTTP(configResponse, httptest.NewRequest(http.MethodGet, "/api/v1/config", nil))
+	var configBody struct {
+		ProjectDir string `json:"project_dir"`
+	}
+	if err := json.Unmarshal(configResponse.Body.Bytes(), &configBody); err != nil {
+		t.Fatal(err)
+	}
+	if configResponse.Code != http.StatusOK || configBody.ProjectDir != want {
+		t.Fatalf("startup configuration = %d %s; want project %q", configResponse.Code, configResponse.Body, want)
+	}
+
+	mailResponse := httptest.NewRecorder()
+	srv.Router().ServeHTTP(mailResponse, httptest.NewRequest(http.MethodGet, "/api/v1/mail/projects", nil))
+	var mailBody struct {
+		Success  bool                `json:"success"`
+		Projects []agentmail.Project `json:"projects"`
+	}
+	if err := json.Unmarshal(mailResponse.Body.Bytes(), &mailBody); err != nil {
+		t.Fatal(err)
+	}
+	if mailResponse.Code != http.StatusOK || !mailBody.Success || len(mailBody.Projects) != 1 || mailBody.Projects[0].HumanKey != want {
+		t.Fatalf("first mail request lost startup scope: %d %s; want project %q", mailResponse.Code, mailResponse.Body, want)
+	}
+	client, err := srv.getMailClient()
+	if err != nil || client == nil || client.ProjectKey() != want {
+		t.Fatalf("mail client did not inherit configured scope: client=%v, error=%v", client, err)
+	}
+
+	unscoped := New(Config{})
+	defer unscoped.Stop()
+	if unscoped.projectDirSnapshot() != "" {
+		t.Fatalf("default server unexpectedly selected a project: %q", unscoped.projectDirSnapshot())
+	}
+}
+
 func TestValidateConfigDefaults(t *testing.T) {
 	if err := ValidateConfig(Config{}); err != nil {
 		t.Fatalf("ValidateConfig default should succeed, got %v", err)
