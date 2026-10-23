@@ -234,7 +234,7 @@ func TestRunContextInjectionBuildsPerCanonicalAgentBeforeSending(t *testing.T) {
 		sent = append(sent, pane.ID)
 		return nil
 	}
-	result, err := runContextInjection(context.Background(), contextInjectOptions{Session: "demo", Pane: -1, Build: true, FilesArg: "*.go", Task: "implement task", BeadID: "bd-work"}, deps)
+	result, err := runContextInjection(context.Background(), contextInjectOptions{Session: "demo", Build: true, FilesArg: "*.go", Task: "implement task", BeadID: "bd-work"}, deps)
 	if err != nil || !result.Success || !reflect.DeepEqual(sent, []string{"%0", "%1", "%2"}) || !reflect.DeepEqual(result.PanesInjected, []int{0, 1, 2}) {
 		t.Fatalf("pack delivery failed: %+v, sent=%v, err=%v", result, sent, err)
 	}
@@ -271,7 +271,7 @@ func TestRunContextInjectionPreparationFailureSendsNothing(t *testing.T) {
 				}
 				return pack, nil
 			}
-			result, err := runContextInjection(ctx, contextInjectOptions{Session: "demo", Pane: -1, Build: true, FilesArg: "main.go", MaxBytes: 100}, deps)
+			result, err := runContextInjection(ctx, contextInjectOptions{Session: "demo", Build: true, FilesArg: "main.go", MaxBytes: 100}, deps)
 			if err == nil || result.Success || len(result.PanesInjected) != 0 {
 				t.Fatalf("preparation failure was admitted: %+v, %v", result, err)
 			}
@@ -322,7 +322,7 @@ func TestRunContextInjectionStoredPackValidation(t *testing.T) {
 				}
 				return pack, nil
 			}
-			result, err := runContextInjection(context.Background(), contextInjectOptions{Session: "demo", Pane: 0, PackID: "pack-stored", DryRun: scenario == "dry_run"}, deps)
+			result, err := runContextInjection(context.Background(), contextInjectOptions{Session: "demo", Pane: "0", PackID: "pack-stored", DryRun: scenario == "dry_run"}, deps)
 			if scenario == "deliver" {
 				if err != nil || !result.Success || calls != 1 || len(result.PanesInjected) != 1 {
 					t.Fatalf("stored delivery: %+v %v calls=%d", result, err, calls)
@@ -341,15 +341,17 @@ func TestRunContextInjectionStoredPackValidation(t *testing.T) {
 func TestRunContextInjectionRejectsInvalidOptionsBeforeIO(t *testing.T) {
 	t.Parallel()
 	cases := []contextInjectOptions{
-		{Session: "demo", Pane: -1, Build: true, PackID: "pack-x"},
-		{Session: "demo", Pane: -1, PackID: "pack-x", FilesArg: "main.go"},
-		{Session: "demo", Pane: -1, PackSet: true},
-		{Session: "demo", Pane: -1, FilesSet: true},
-		{Session: "demo", Pane: -1, FilesArg: "one.go,,two.go"},
-		{Session: "demo", Pane: -1, Task: "orphaned task"},
-		{Session: "demo", Pane: -1, MaxBytes: -1},
-		{Session: "demo", Pane: -2},
-		{Session: "demo", Pane: 0, All: true},
+		{Session: "demo", Build: true, PackID: "pack-x"},
+		{Session: "demo", PackID: "pack-x", FilesArg: "main.go"},
+		{Session: "demo", PackSet: true},
+		{Session: "demo", FilesSet: true},
+		{Session: "demo", FilesArg: "one.go,,two.go"},
+		{Session: "demo", Task: "orphaned task"},
+		{Session: "demo", MaxBytes: -1},
+		{Session: "demo", Pane: "-2"},
+		{Session: "demo", Pane: "1.x"},
+		{Session: "demo", PaneSet: true},
+		{Session: "demo", Pane: "0", All: true},
 	}
 	for _, opts := range cases {
 		deps := contextInjectDeps{resolve: func(context.Context, string) (string, error) {
@@ -366,20 +368,20 @@ func TestRunContextInjectionRejectsInvalidOptionsBeforeIO(t *testing.T) {
 func TestContextPackSelectionRefusesShellAndAmbiguousTargets(t *testing.T) {
 	t.Parallel()
 	panes := []tmux.Pane{{ID: "%0", Index: 0, Type: tmux.AgentClaude}, {ID: "%1", Index: 1, Type: "user"}, {ID: "%2", Index: 2, Type: "unknown"}}
-	selected, err := selectContextPackPanes(panes, -1, false, "demo")
+	selected, err := selectContextPackPanes(panes, "", false, "demo")
 	if err != nil || len(selected) != 1 || selected[0].ID != "%0" {
 		t.Fatalf("agent-at-zero not selected: %+v %v", selected, err)
 	}
-	for _, index := range []int{1, 2} {
-		if _, err := selectContextPackPanes(panes, index, false, "demo"); err == nil {
-			t.Fatalf("non-agent %d accepted", index)
+	for _, selector := range []string{"1", "2"} {
+		if _, err := selectContextPackPanes(panes, selector, false, "demo"); err == nil {
+			t.Fatalf("non-agent %s accepted", selector)
 		}
 	}
-	if _, err := selectContextPackPanes(panes, -1, true, "demo"); err == nil {
+	if _, err := selectContextPackPanes(panes, "", true, "demo"); err == nil {
 		t.Fatal("--all admitted a shell")
 	}
 	panes = append(panes, tmux.Pane{ID: "%3", Index: 0, Type: tmux.AgentCodex})
-	if _, err := selectContextPackPanes(panes, 0, false, "demo"); err == nil {
+	if _, err := selectContextPackPanes(panes, "0", false, "demo"); err == nil {
 		t.Fatal("ambiguous pane index silently selected first match")
 	}
 }

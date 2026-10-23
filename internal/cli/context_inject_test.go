@@ -222,7 +222,11 @@ func TestFormatContextInjectContent_NegativeMaxBytes(t *testing.T) {
 }
 
 func TestSelectContextInjectTargetPanes(t *testing.T) {
-	panes := []tmux.Pane{{Index: 0}, {Index: 1}, {Index: 2}}
+	panes := []tmux.Pane{
+		{ID: "%0", Index: 0, Type: tmux.AgentUser},
+		{ID: "%1", Index: 1, Type: tmux.AgentClaude},
+		{ID: "%2", Index: 2, Type: tmux.AgentCodex},
+	}
 
 	t.Run("default_excludes_user_pane", func(t *testing.T) {
 		targets, err := selectContextInjectTargetPanes(panes, -1, false, "demo")
@@ -259,8 +263,51 @@ func TestSelectContextInjectTargetPanes(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected missing pane error, got nil")
 		}
-		if !strings.Contains(err.Error(), "pane 99 not found in session demo") {
+		if !strings.Contains(err.Error(), "session demo") || !strings.Contains(err.Error(), "not found") {
 			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("default_uses_agent_identity_including_zero", func(t *testing.T) {
+		targets, err := selectContextInjectTargetPanes([]tmux.Pane{
+			{ID: "%0", Index: 0, Type: "claude-code"},
+			{ID: "%1", Index: 1, Type: tmux.AgentUser},
+			{ID: "%2", Index: 2, Type: "unknown"},
+		}, -1, false, "demo")
+		if err != nil || len(targets) != 1 || targets[0].ID != "%0" {
+			t.Fatalf("agent-at-zero default selected wrong targets: %+v, %v", targets, err)
+		}
+	})
+
+	t.Run("default_without_agents_reports_actionable_error", func(t *testing.T) {
+		targets, err := selectContextInjectTargetPanes([]tmux.Pane{
+			{ID: "%1", Index: 1, Type: tmux.AgentUser},
+			{ID: "%2", Index: 2, Type: "unknown"},
+		}, -1, false, "demo")
+		if err == nil || len(targets) != 0 || !strings.Contains(err.Error(), "no known agents") || !strings.Contains(err.Error(), "select a pane explicitly") {
+			t.Fatalf("no-agent default did not explain how to select targets: %+v, %v", targets, err)
+		}
+	})
+
+	t.Run("robot_integer_refuses_duplicate_index_across_windows", func(t *testing.T) {
+		panes := []tmux.Pane{
+			{ID: "%1", WindowIndex: 0, Index: 1, Type: tmux.AgentClaude},
+			{ID: "%2", WindowIndex: 1, Index: 0, Type: tmux.AgentClaude},
+			{ID: "%3", WindowIndex: 1, Index: 1, Type: tmux.AgentCodex},
+		}
+		if targets, err := selectContextInjectTargetPanes(panes, 1, false, "demo"); err == nil || len(targets) != 0 {
+			t.Fatalf("ambiguous robot target selected the first pane: %+v, %v", targets, err)
+		}
+	})
+
+	t.Run("robot_integer_preserves_pane_index_in_multi_window_session", func(t *testing.T) {
+		panes := []tmux.Pane{
+			{ID: "%1", WindowIndex: 0, Index: 1, Type: tmux.AgentClaude},
+			{ID: "%2", WindowIndex: 1, Index: 0, Type: tmux.AgentCodex},
+		}
+		targets, err := selectContextInjectTargetPanes(panes, 1, false, "demo")
+		if err != nil || len(targets) != 1 || targets[0].ID != "%1" {
+			t.Fatalf("robot pane index was reinterpreted as a window: %+v, %v", targets, err)
 		}
 	})
 }

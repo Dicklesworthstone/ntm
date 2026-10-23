@@ -145,9 +145,9 @@ func contextInjectionResult(session string, files []string, size int, truncated,
 }
 
 type contextInjectOptions struct {
-	Session, FilesArg, PackID, Task, BeadID string
-	FilesSet, PackSet, Build, All, DryRun   bool
-	Pane, MaxBytes                          int
+	Session, FilesArg, PackID, Task, BeadID, Pane  string
+	FilesSet, PackSet, PaneSet, Build, All, DryRun bool
+	MaxBytes                                       int
 }
 
 type contextInjectDeps struct {
@@ -180,8 +180,10 @@ func runContextInjection(ctx context.Context, opts contextInjectOptions, deps co
 		}
 	}()
 	opts.PackID = strings.TrimSpace(opts.PackID)
+	opts.Pane = strings.TrimSpace(opts.Pane)
 	hasPack := opts.PackSet || opts.PackID != ""
 	hasFiles := opts.FilesSet || opts.FilesArg != ""
+	hasPane := opts.PaneSet || opts.Pane != ""
 	if hasPack {
 		result.Mode = "pack"
 	} else if opts.Build {
@@ -196,10 +198,12 @@ func runContextInjection(ctx context.Context, opts contextInjectOptions, deps co
 	if opts.MaxBytes < 0 {
 		return result, fmt.Errorf("maxBytes must be >= 0, got %d", opts.MaxBytes)
 	}
-	if opts.Pane < -1 {
-		return result, fmt.Errorf("pane index must be >= 0")
+	if hasPane {
+		if _, err := tmux.ParsePaneSelector(opts.Pane); err != nil {
+			return result, err
+		}
 	}
-	if opts.All && opts.Pane >= 0 {
+	if opts.All && hasPane {
 		return result, fmt.Errorf("--all and --pane are mutually exclusive")
 	}
 	if hasPack && opts.PackID == "" {
@@ -281,7 +285,7 @@ func runContextInjection(ctx context.Context, opts contextInjectOptions, deps co
 	if opts.Build || hasPack {
 		panes, err = selectContextPackPanes(panes, opts.Pane, opts.All, session)
 	} else {
-		panes, err = selectContextInjectTargetPanes(panes, opts.Pane, opts.All, session)
+		panes, err = selectContextInjectionPanes(panes, opts.Pane, opts.All, session)
 	}
 	if err != nil {
 		return result, err
@@ -394,20 +398,10 @@ func runContextInjection(ctx context.Context, opts contextInjectOptions, deps co
 
 // Pack delivery must never infer "agent" from a nonzero pane index. Sessions
 // created with --no-user legitimately have an agent at index zero.
-func selectContextPackPanes(panes []tmux.Pane, index int, all bool, session string) ([]tmux.Pane, error) {
-	selected := make([]tmux.Pane, 0, len(panes))
-	for _, pane := range panes {
-		typ := agent.AgentType(pane.Type).Canonical()
-		if index >= 0 {
-			if pane.Index == index {
-				selected = append(selected, pane)
-			}
-		} else if all || (typ.IsValid() && typ != agent.AgentTypeUser) {
-			selected = append(selected, pane)
-		}
-	}
-	if index >= 0 && len(selected) != 1 {
-		return nil, fmt.Errorf("pane index %d in session %s matched %d targets; use an unambiguous session", index, session, len(selected))
+func selectContextPackPanes(panes []tmux.Pane, selector string, all bool, session string) ([]tmux.Pane, error) {
+	selected, err := selectContextInjectionPanes(panes, selector, all, session)
+	if err != nil {
+		return nil, err
 	}
 	for _, pane := range selected {
 		typ := agent.AgentType(pane.Type).Canonical()

@@ -11,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/Dicklesworthstone/ntm/internal/agent"
 	ntmctx "github.com/Dicklesworthstone/ntm/internal/context"
 	"github.com/Dicklesworthstone/ntm/internal/output"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
@@ -306,12 +307,37 @@ func resolveContextInjectPath(projectDir, rawPath string) (string, string, error
 
 func selectContextInjectTargetPanes(panes []tmux.Pane, paneIdx int, targetAll bool, session string) ([]tmux.Pane, error) {
 	if paneIdx >= 0 {
-		for _, p := range panes {
-			if p.Index == paneIdx {
-				return []tmux.Pane{p}, nil
+		// The robot flag historically addresses a pane index, even when
+		// several windows share it. Translate every match to an exact
+		// address and let the canonical resolver enforce singularity.
+		selectors := make([]string, 0, 1)
+		for _, pane := range panes {
+			if pane.Index == paneIdx {
+				selectors = append(selectors, tmux.PaneTargetKey(pane, true))
 			}
 		}
-		return nil, fmt.Errorf("pane %d not found in session %s", paneIdx, session)
+		if len(selectors) == 0 {
+			return nil, fmt.Errorf("pane %d not found in session %s", paneIdx, session)
+		}
+		selected, err := tmux.ResolvePaneSelectors(panes, selectors, true)
+		if err != nil {
+			return nil, fmt.Errorf("pane index %d in session %s: %w", paneIdx, session, err)
+		}
+		return selected, nil
+	}
+	return selectContextInjectionPanes(panes, "", targetAll, session)
+}
+
+// Shell injection shares send's topology-aware selector grammar: a numeric
+// selector means a pane in one window or a window in a multi-window session.
+// A singular injection refuses a window containing more than one pane.
+func selectContextInjectionPanes(panes []tmux.Pane, selector string, targetAll bool, session string) ([]tmux.Pane, error) {
+	if selector != "" {
+		selected, err := tmux.ResolvePaneSelectors(panes, []string{selector}, true)
+		if err != nil {
+			return nil, fmt.Errorf("context injection in session %s: %w", session, err)
+		}
+		return selected, nil
 	}
 	if targetAll {
 		return panes, nil
@@ -319,9 +345,13 @@ func selectContextInjectTargetPanes(panes []tmux.Pane, paneIdx int, targetAll bo
 
 	targets := make([]tmux.Pane, 0, len(panes))
 	for _, p := range panes {
-		if p.Index > 0 {
+		typ := agent.AgentType(p.Type).Canonical()
+		if typ.IsValid() && typ != agent.AgentTypeUser {
 			targets = append(targets, p)
 		}
+	}
+	if len(targets) == 0 {
+		return nil, fmt.Errorf("no target panes for context injection in session %s: no known agents; select a pane explicitly or include all panes", session)
 	}
 	return targets, nil
 }
@@ -422,7 +452,7 @@ func newContextInjectCmd() *cobra.Command {
 // newContextInjectCmdWithDeps keeps the real Cobra surface testable without
 // a live tmux server or context providers. Production uses the same handler.
 func newContextInjectCmdWithDeps(deps *contextInjectDeps) *cobra.Command {
-	opts := contextInjectOptions{Pane: -1}
+	opts := contextInjectOptions{}
 
 	cmd := &cobra.Command{
 		Use:   "inject <session>",
@@ -433,6 +463,11 @@ project directory and send their contents to agent panes.
 Default files (skipped if missing): AGENTS.md, README.md, .claude/project_context.md
 
 Use --files to override the file list.
+By default, target every known agent, including agents at pane index zero.
+Use --pane W.P or --pane %N for an exact target. A bare N selects pane N
+in a single-window session or window N in a multi-window session; the selected
+window must contain exactly one pane. Use --all to include shell panes in
+file mode; context packs require agent targets.
 Use --build to assemble native source, BV triage, CM rules, and CASS history
 once per target agent type, with that agent's format and token budget.
 These on-demand packs are transient; use context build to store an artifact.
@@ -446,6 +481,7 @@ before retrying, rather than replaying the entire batch.`,
 			opts.Session = strings.TrimSpace(args[0])
 			opts.FilesSet = cmd.Flags().Changed("files")
 			opts.PackSet = cmd.Flags().Changed("pack")
+			opts.PaneSet = cmd.Flags().Changed("pane")
 			active := deps
 			if active == nil {
 				defaults := defaultContextInjectDeps(cmd.OutOrStdout())
@@ -483,7 +519,7 @@ before retrying, rather than replaying the entire batch.`,
 	cmd.Flags().StringVar(&opts.FilesArg, "files", "", "Comma-separated project files (--build also accepts globs)")
 	cmd.Flags().IntVar(&opts.MaxBytes, "max-bytes", 0, "Per-message byte limit (pack modes reject rather than truncate)")
 	cmd.Flags().BoolVar(&opts.All, "all", false, "Select all panes (pack modes require every target to be an agent)")
-	cmd.Flags().IntVar(&opts.Pane, "pane", -1, "Inject to a specific pane index")
+	cmd.Flags().StringVar(&opts.Pane, "pane", "", "Inject to one target: N (pane/window), W.P, or %N (pane ID)")
 	cmd.Flags().BoolVar(&opts.DryRun, "dry-run", false, "Prepare and validate without sending")
 	cmd.Flags().BoolVar(&opts.Build, "build", false, "Build a fresh context pack for each target agent type")
 	cmd.Flags().StringVar(&opts.PackID, "pack", "", "Inject a stored context pack into matching agent types")
