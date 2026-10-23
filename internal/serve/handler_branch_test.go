@@ -18,6 +18,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -30,6 +31,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/sqliteutil"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 
+	"github.com/Dicklesworthstone/ntm/internal/assignment"
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/cass"
 	"github.com/Dicklesworthstone/ntm/internal/checkpoint"
@@ -926,52 +928,398 @@ func TestHandlePaneInputV1_EmptyText(t *testing.T) {
 	}
 }
 
-// GH#251 phase 2: grok panes are now valid automated prompt-delivery targets,
-// so pane input flows through send-keys exactly like claude/codex panes.
-func TestHandlePaneInputV1_GrokDeliversViaSendKeys(t *testing.T) {
-	srv, _ := setupTestServer(t)
-	resolveCalls := 0
-	sendCalls := 0
-	srv.resolvePane = func(_ context.Context, session string, paneIdx int) (tmux.Pane, error) {
-		resolveCalls++
-		if session != "grok-session" || paneIdx != 2 {
-			t.Fatalf("resolve pane called with session=%q pane=%d", session, paneIdx)
-		}
-		return tmux.Pane{ID: "%7", Index: paneIdx, Type: tmux.AgentType(" XAI_GROK_BUILD ")}, nil
-	}
-	srv.sendPaneKeys = func(target, text string, enter bool) error {
-		sendCalls++
-		if target != "%7" || text != "review this" || !enter {
-			t.Fatalf("send-keys called with target=%q text=%q enter=%v", target, text, enter)
-		}
-		return nil
-	}
+type paneInputTMUXFixture struct {
+	project, panes, nextPanes, screen, log, payload string
+}
 
+// The executable replaces only the external tmux boundary. Requests still go
+// through the real router, ownership locks, policy resolver, dispatch service,
+// agent preflight, and transport instead of a success-only send stub.
+func installPaneInputTMUX(t *testing.T, panes ...tmux.Pane) paneInputTMUXFixture {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("fake tmux executable requires a POSIX shell")
+	}
+	dir := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, ".local", "state"))
+	f := paneInputTMUXFixture{
+		project: t.TempDir(), panes: filepath.Join(dir, "panes"), nextPanes: filepath.Join(dir, "next-panes"),
+		screen: filepath.Join(dir, "screen"), log: filepath.Join(dir, "commands"), payload: filepath.Join(dir, "payload"),
+	}
+	for path, contents := range map[string]string{f.screen: "❯ \n", f.log: "", f.nextPanes: ""} {
+		if err := os.WriteFile(path, []byte(contents), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.writePanes(t, f.panes, panes...)
+	binary := filepath.Join(dir, "tmux")
+	if err := os.WriteFile(binary, []byte(`#!/bin/sh
+printf '%s\n' "$*" >> "$NTM_TEST_INPUT_LOG"
+case "$1" in
+  list-panes)
+    if [ "${NTM_TEST_INPUT_HANG:-}" = list ]; then exec sleep 30; fi
+    if [ -f "$NTM_TEST_INPUT_LISTED" ] && [ -s "$NTM_TEST_INPUT_NEXT_PANES" ]; then
+      cat "$NTM_TEST_INPUT_NEXT_PANES"
+    else
+      cat "$NTM_TEST_INPUT_PANES"
+    fi
+    : > "$NTM_TEST_INPUT_LISTED"
+    ;;
+  display-message)
+    case "$*" in
+      *"@ntm_rotation_token"*) printf '[%s]\n' "${NTM_TEST_INPUT_ROTATION:-}" ;;
+      *"pane_current_path"*) printf '%s\n' "$NTM_TEST_INPUT_PROJECT" ;;
+    esac
+    ;;
+  capture-pane) cat "$NTM_TEST_INPUT_SCREEN" ;;
+  load-buffer) cat > "$NTM_TEST_INPUT_PAYLOAD" ;;
+  send-keys)
+    if [ "${NTM_TEST_INPUT_FAIL:-}" = send ]; then echo 'transport failed' >&2; exit 1; fi
+    case "$*" in
+      *" -l -- "*) shift 5; printf '%s' "$1" >> "$NTM_TEST_INPUT_PAYLOAD" ;;
+    esac
+    ;;
+esac
+`), 0700); err != nil {
+		t.Fatal(err)
+	}
+	for key, value := range map[string]string{
+		"NTM_TMUX_BINARY": binary, "NTM_TEST_INPUT_PROJECT": f.project,
+		"NTM_TEST_INPUT_PANES": f.panes, "NTM_TEST_INPUT_NEXT_PANES": f.nextPanes,
+		"NTM_TEST_INPUT_LISTED": filepath.Join(dir, "listed"), "NTM_TEST_INPUT_SCREEN": f.screen,
+		"NTM_TEST_INPUT_LOG": f.log, "NTM_TEST_INPUT_PAYLOAD": f.payload,
+		"NTM_TEST_INPUT_ROTATION": "", "NTM_TEST_INPUT_HANG": "", "NTM_TEST_INPUT_FAIL": "",
+	} {
+		t.Setenv(key, value)
+	}
+	original := tmux.DefaultClient
+	tmux.DefaultClient = tmux.NewClient("")
+	t.Cleanup(func() { tmux.DefaultClient = original })
+	return f
+}
+
+func (f paneInputTMUXFixture) writePanes(t *testing.T, path string, panes ...tmux.Pane) {
+	t.Helper()
+	lines := make([]string, 0, len(panes))
+	for _, pane := range panes {
+		dead := "0"
+		if pane.Dead {
+			dead = "1"
+		}
+		lines = append(lines, strings.Join([]string{
+			pane.ID, strconv.Itoa(pane.Index), pane.Title, pane.Command, "120", "30", "1",
+			strconv.Itoa(pane.PID), strconv.Itoa(pane.WindowIndex), string(pane.Type), "", pane.Service,
+			dead, "[" + pane.RotationToken + "]",
+		}, tmux.FieldSeparator))
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func paneInputRequest(t *testing.T, srv *Server, ctx context.Context, text string, enter bool) *httptest.ResponseRecorder {
+	t.Helper()
+	body, err := json.Marshal(PaneInputRequest{Text: text, Enter: enter})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/input-session/panes/2/input", bytes.NewReader(body)).WithContext(ctx)
+	req.Header.Set("Content-Type", "application/json")
+	req.RemoteAddr = "127.0.0.1:12345"
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/grok-session/panes/2/input", strings.NewReader(`{"text":"review this","enter":true}`))
-	rctx := chi.NewRouteContext()
-	rctx.URLParams.Add("sessionId", "grok-session")
-	rctx.URLParams.Add("paneIdx", "2")
-	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	srv.router.ServeHTTP(rec, req)
+	return rec
+}
 
-	srv.handlePaneInputV1(rec, req)
+func (f paneInputTMUXFixture) commands(t *testing.T) string {
+	t.Helper()
+	data, err := os.ReadFile(f.log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+func (f paneInputTMUXFixture) assertNoInput(t *testing.T) {
+	t.Helper()
+	commands := f.commands(t)
+	for _, command := range []string{"send-keys ", "load-buffer ", "paste-buffer "} {
+		if strings.Contains(commands, command) {
+			t.Fatalf("refused input actuated tmux:\n%s", commands)
+		}
 	}
-	var response struct {
-		Success bool   `json:"success"`
-		Sent    bool   `json:"sent"`
-		Pane    string `json:"pane"`
+	if data, err := os.ReadFile(f.payload); !os.IsNotExist(err) {
+		t.Fatalf("refused input created a payload: %q %v", data, err)
 	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
-		t.Fatalf("unmarshal response: %v", err)
+}
+
+func TestHandlePaneInputV1CanonicalDelivery(t *testing.T) {
+	for _, tc := range []struct {
+		name, text, command string
+		kind                tmux.AgentType
+		enter, buffer       bool
+		enters              int
+	}{
+		{"stage multiline bytes", "  first line\nλ\t$HOME ;", "claude", tmux.AgentClaude, false, true, 0},
+		{"stage whitespace", " \t  ", "bash", tmux.AgentUser, false, false, 0},
+		{"submit user shell", "printf ready", "bash", tmux.AgentUser, true, false, 1},
+		{"submit claude", "review this", "claude", tmux.AgentClaude, true, false, 2},
+		{"submit grok alias", "review this", "grok", tmux.AgentType(" XAI_GROK_BUILD "), true, false, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := installPaneInputTMUX(t, tmux.Pane{ID: "%7", Index: 2, PID: 7007, Type: tc.kind, Command: tc.command})
+			srv, _ := setupTestServer(t)
+			rec := paneInputRequest(t, srv, context.Background(), tc.text, tc.enter)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+			}
+			var response struct {
+				Success bool   `json:"success"`
+				Sent    bool   `json:"sent"`
+				Pane    string `json:"pane"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil || !response.Success || !response.Sent || response.Pane != "%7" {
+				t.Fatalf("response contract = %+v, error = %v", response, err)
+			}
+			payload, err := os.ReadFile(f.payload)
+			if err != nil || string(payload) != tc.text {
+				t.Fatalf("transport changed literal input: got %q, want %q, error %v", payload, tc.text, err)
+			}
+			commands := f.commands(t)
+			if got := strings.Count(commands, "send-keys -t %7 Enter\n"); got != tc.enters {
+				t.Fatalf("Enter count = %d, want %d:\n%s", got, tc.enters, commands)
+			}
+			if strings.Contains(commands, "load-buffer ") != tc.buffer || strings.Contains(commands, "paste-buffer ") != tc.buffer {
+				t.Fatalf("wrong agent transport, want buffer=%v:\n%s", tc.buffer, commands)
+			}
+			for _, key := range []string{" C-u\n", " C-c\n", " Escape\n", " BSpace\n"} {
+				if strings.Contains(commands, key) {
+					t.Fatalf("input unexpectedly cleared or edited the composer:\n%s", commands)
+				}
+			}
+			if !strings.Contains(commands, "@ntm_rotation_token") || strings.Count(commands, "list-panes ") < 2 {
+				t.Fatalf("input bypassed live quarantine or ownership recheck:\n%s", commands)
+			}
+		})
 	}
-	if !response.Success || !response.Sent || response.Pane != "%7" {
-		t.Fatalf("response = %+v, want successful send to %%7", response)
+}
+
+func TestHandlePaneInputV1RefusesUnsafeTarget(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		change func(*testing.T, paneInputTMUXFixture, *tmux.Pane)
+	}{
+		{"dead pane", func(_ *testing.T, _ paneInputTMUXFixture, p *tmux.Pane) { p.Dead = true }},
+		{"agent returned to shell", func(_ *testing.T, _ paneInputTMUXFixture, p *tmux.Pane) { p.Command = "bash" }},
+		{"service pane", func(_ *testing.T, _ paneInputTMUXFixture, p *tmux.Pane) {
+			// An explicit agent adoption overrides service tags. Leave the
+			// recorded type unset so this is a service, even with an agent command.
+			p.Service, p.Type = "cm", ""
+		}},
+		{"workspace trust dialog", func(t *testing.T, f paneInputTMUXFixture, _ *tmux.Pane) {
+			if err := os.WriteFile(f.screen, []byte("Do you trust this folder?\n❯ No, exit\n  Yes, I trust this folder\nEnter to confirm"), 0600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"initializing composer", func(t *testing.T, f paneInputTMUXFixture, _ *tmux.Pane) {
+			if err := os.WriteFile(f.screen, []byte("initializing the agent\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"rotation after topology snapshot", func(t *testing.T, _ paneInputTMUXFixture, _ *tmux.Pane) {
+			t.Setenv("NTM_TEST_INPUT_ROTATION", "rotation-in-progress")
+		}},
+		{"changed process", func(t *testing.T, f paneInputTMUXFixture, p *tmux.Pane) {
+			changed := *p
+			changed.PID++
+			f.writePanes(t, f.nextPanes, changed)
+		}},
+		{"reused numeric index", func(t *testing.T, f paneInputTMUXFixture, p *tmux.Pane) {
+			changed := *p
+			changed.ID = "%8"
+			f.writePanes(t, f.nextPanes, changed)
+		}},
+		{"changed agent type", func(t *testing.T, f paneInputTMUXFixture, p *tmux.Pane) {
+			changed := *p
+			changed.Type = tmux.AgentCodex
+			f.writePanes(t, f.nextPanes, changed)
+		}},
+		{"ambiguous index across windows", func(t *testing.T, f paneInputTMUXFixture, p *tmux.Pane) {
+			other := *p
+			other.ID, other.WindowIndex = "%8", 1
+			f.writePanes(t, f.nextPanes, *p, other)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pane := tmux.Pane{ID: "%7", Index: 2, PID: 7007, Type: tmux.AgentClaude, Command: "claude"}
+			f := installPaneInputTMUX(t, pane)
+			tc.change(t, f, &pane)
+			f.writePanes(t, f.panes, pane)
+			srv, _ := setupTestServer(t)
+			rec := paneInputRequest(t, srv, context.Background(), "review this", true)
+			if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), ErrCodeConflict) {
+				t.Fatalf("unsafe target status = %d, body = %s", rec.Code, rec.Body.String())
+			}
+			f.assertNoInput(t)
+		})
 	}
-	if resolveCalls != 1 || sendCalls != 1 {
-		t.Fatalf("resolve calls = %d, send calls = %d; want 1 and 1", resolveCalls, sendCalls)
+}
+
+func TestHandlePaneInputV1UsesTargetProjectPolicy(t *testing.T) {
+	for _, malformed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("malformed=%v", malformed), func(t *testing.T) {
+			f := installPaneInputTMUX(t, tmux.Pane{ID: "%7", Index: 2, PID: 7007, Type: tmux.AgentClaude, Command: "claude"})
+			policyDir := filepath.Join(f.project, ".ntm")
+			if err := os.MkdirAll(policyDir, 0700); err != nil {
+				t.Fatal(err)
+			}
+			contents := "version: 1\nblocked:\n  - pattern: \"review this\"\n    reason: \"target project restriction\"\n"
+			status, code := http.StatusForbidden, ErrCodeForbidden
+			if malformed {
+				contents = "blocked: [invalid YAML"
+				status, code = http.StatusServiceUnavailable, ErrCodeServiceUnavail
+			}
+			if err := os.WriteFile(filepath.Join(policyDir, "policy.yaml"), []byte(contents), 0600); err != nil {
+				t.Fatal(err)
+			}
+			// Agents commonly work in a package below their project root.
+			if err := os.WriteFile(filepath.Join(policyDir, "config.toml"), []byte("# project root\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(filepath.Join(f.project, "components", "worker"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("NTM_TEST_INPUT_PROJECT", filepath.Join(f.project, "components", "worker"))
+			srv, _ := setupTestServer(t)
+			if srv.projectDir == f.project {
+				t.Fatal("fixture must use a server project different from the target pane")
+			}
+			rec := paneInputRequest(t, srv, context.Background(), "review this", true)
+			if rec.Code != status || !strings.Contains(rec.Body.String(), code) {
+				t.Fatalf("target project policy was bypassed: status=%d body=%s", rec.Code, rec.Body.String())
+			}
+			f.assertNoInput(t)
+		})
+	}
+}
+
+func TestHandlePaneInputV1DeliveryFailureDoesNotReportSent(t *testing.T) {
+	for _, cancelAfterPaste := range []bool{false, true} {
+		t.Run(fmt.Sprintf("cancelAfterPaste=%v", cancelAfterPaste), func(t *testing.T) {
+			f := installPaneInputTMUX(t, tmux.Pane{ID: "%7", Index: 2, PID: 7007, Type: tmux.AgentClaude, Command: "claude"})
+			srv, _ := setupTestServer(t)
+			status, code := http.StatusInternalServerError, ErrCodeInternalError
+			if cancelAfterPaste {
+				// Canonical agent submission waits one second after typing. The
+				// request must cancel that delay without sending a late Enter.
+				srv.paneInputTimeout = 500 * time.Millisecond
+				status, code = http.StatusGatewayTimeout, ErrCodeTimeout
+			} else {
+				t.Setenv("NTM_TEST_INPUT_FAIL", "send")
+			}
+			rec := paneInputRequest(t, srv, context.Background(), "review this", true)
+			var response struct {
+				Success   bool   `json:"success"`
+				Sent      bool   `json:"sent"`
+				ErrorCode string `json:"error_code"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil || rec.Code != status || response.Success || response.Sent || response.ErrorCode != code {
+				t.Fatalf("failed transport reported sent: status=%d response=%+v error=%v", rec.Code, response, err)
+			}
+			commands := f.commands(t)
+			if strings.Count(commands, " -l -- review this\n") != 1 || strings.Contains(commands, " Enter\n") {
+				t.Fatalf("failed transport retried or submitted after cancellation:\n%s", commands)
+			}
+			if cancelAfterPaste {
+				data, err := os.ReadFile(f.payload)
+				if err != nil || string(data) != "review this" {
+					t.Fatalf("fixture did not exercise cancellation after typing: %q %v", data, err)
+				}
+			}
+		})
+	}
+}
+
+func TestHandlePaneInputV1CancellationAndOwnership(t *testing.T) {
+	for _, mode := range []string{"cancelled request", "hung topology", "hung git project lookup", "assignment owner", "pipeline owner", "remote endpoint", "relative project path", "missing project path"} {
+		t.Run(mode, func(t *testing.T) {
+			f := installPaneInputTMUX(t, tmux.Pane{ID: "%7", Index: 2, PID: 7007, Type: tmux.AgentClaude, Command: "claude"})
+			srv, _ := setupTestServer(t)
+			srv.paneInputTimeout = 60 * time.Millisecond
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			status, code := http.StatusGatewayTimeout, ErrCodeTimeout
+			var release func()
+			defer func() {
+				if release != nil {
+					release()
+				}
+			}()
+			switch mode {
+			case "cancelled request":
+				cancel()
+			case "hung topology":
+				t.Setenv("NTM_TEST_INPUT_HANG", "list")
+			case "hung git project lookup":
+				srv.paneInputTimeout = 250 * time.Millisecond
+				gitDir := t.TempDir()
+				if err := os.WriteFile(filepath.Join(gitDir, "git"), []byte("#!/bin/sh\nprintf started > \"$NTM_TEST_INPUT_GIT_STARTED\"\nexec sleep 30\n"), 0700); err != nil {
+					t.Fatal(err)
+				}
+				t.Setenv("NTM_TEST_INPUT_GIT_STARTED", filepath.Join(f.project, "git-started"))
+				t.Setenv("PATH", gitDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+			case "assignment owner":
+				store, err := assignment.LoadStoreStrictReadOnly("input-session")
+				if err != nil {
+					t.Fatal(err)
+				}
+				release, err = store.AcquireTargetLock(context.Background(), "%7")
+				if err != nil {
+					t.Fatal(err)
+				}
+			case "pipeline owner":
+				var err error
+				release, err = pipeline.AcquireSharedPaneLock(context.Background(), "%7", "")
+				if err != nil {
+					t.Fatal(err)
+				}
+			case "remote endpoint":
+				tmux.DefaultClient.Remote = "remote-host"
+				status, code = http.StatusServiceUnavailable, ErrCodeServiceUnavail
+			case "relative project path":
+				t.Setenv("NTM_TEST_INPUT_PROJECT", "relative-project")
+				status, code = http.StatusServiceUnavailable, ErrCodeServiceUnavail
+			case "missing project path":
+				t.Setenv("NTM_TEST_INPUT_PROJECT", filepath.Join(f.project, "missing"))
+				status, code = http.StatusServiceUnavailable, ErrCodeServiceUnavail
+			}
+			started := time.Now()
+			rec := paneInputRequest(t, srv, ctx, "review this", true)
+			if rec.Code != status || !strings.Contains(rec.Body.String(), code) {
+				t.Fatalf("ownership/cancellation status=%d body=%s", rec.Code, rec.Body.String())
+			}
+			if elapsed := time.Since(started); elapsed > time.Second {
+				t.Fatalf("request ignored its bounded cancellation: %s", elapsed)
+			}
+			f.assertNoInput(t)
+			if mode == "hung git project lookup" {
+				if _, err := os.Stat(filepath.Join(f.project, "git-started")); err != nil {
+					t.Fatalf("fixture did not reach git project discovery: %v", err)
+				}
+			}
+			if release != nil {
+				release()
+				release = nil
+				srv.paneInputTimeout = 0
+				retry := paneInputRequest(t, srv, context.Background(), "stage after owner released", false)
+				if retry.Code != http.StatusOK {
+					t.Fatalf("failed request leaked delivery ownership: %d %s", retry.Code, retry.Body.String())
+				}
+			}
+		})
 	}
 }
 

@@ -44,14 +44,18 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	approvalpkg "github.com/Dicklesworthstone/ntm/internal/approval"
+	"github.com/Dicklesworthstone/ntm/internal/assignment"
+	"github.com/Dicklesworthstone/ntm/internal/dispatch"
 	"github.com/Dicklesworthstone/ntm/internal/events"
 	"github.com/Dicklesworthstone/ntm/internal/kernel"
+	"github.com/Dicklesworthstone/ntm/internal/pipeline"
 	"github.com/Dicklesworthstone/ntm/internal/policy"
 	"github.com/Dicklesworthstone/ntm/internal/redaction"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/robot/adapters"
 	"github.com/Dicklesworthstone/ntm/internal/state"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
+	"github.com/Dicklesworthstone/ntm/internal/util"
 )
 
 // Server provides HTTP API and event streaming for NTM.
@@ -108,7 +112,9 @@ type Server struct {
 	interruptAgents func(robot.InterruptOptions) (*robot.InterruptOutput, error)
 	waitAgents      func(context.Context, robot.WaitOptions) (*robot.WaitResponse, int)
 	resolvePane     func(context.Context, string, int) (tmux.Pane, error)
-	sendPaneKeys    func(string, string, bool) error
+	// paneInputTimeout bounds lookup, ownership waits, and canonical delivery.
+	// Zero means defaultPaneInputTimeout; tests may shorten it.
+	paneInputTimeout time.Duration
 	// listLiveSessions lists the tmux sessions that are running right now.
 	// Nil in production (tmux.ListSessionsContext); tests inject fixtures.
 	listLiveSessions func(context.Context) ([]tmux.Session, error)
@@ -3939,6 +3945,8 @@ type PaneInputRequest struct {
 	Enter bool   `json:"enter,omitempty"`
 }
 
+const defaultPaneInputTimeout = 30 * time.Second
+
 // handlePaneInputV1 handles POST /api/v1/sessions/{sessionId}/panes/{paneIdx}/input.
 func (s *Server) handlePaneInputV1(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
@@ -3965,26 +3973,85 @@ func (s *Server) handlePaneInputV1(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Policy check: reject text that matches a blocked safety pattern.
-	// Graceful degradation: if policy cannot be loaded, allow through but log.
-	if p, policyErr := policy.LoadOrDefault(); policyErr != nil {
-		slog.Warn("pane input policy check skipped: failed to load policy",
-			"error", policyErr, "request_id", reqID)
-	} else if match := p.Check(req.Text); match != nil && match.Action == policy.ActionBlock {
-		slog.Warn("pane input blocked by policy",
-			"session", sessionID, "pane", paneIdx,
-			"pattern", match.Pattern, "request_id", reqID)
-		writeErrorResponse(w, http.StatusForbidden, ErrCodeForbidden,
-			fmt.Sprintf("blocked by safety policy: %s", match.Reason), nil, reqID)
+	budget := s.paneInputTimeout
+	if budget <= 0 {
+		budget = defaultPaneInputTimeout
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), budget)
+	defer cancel()
+	fail := func(status int, code string, err error) {
+		if ctx.Err() != nil {
+			status, code, err = http.StatusGatewayTimeout, ErrCodeTimeout, ctx.Err()
+		}
+		writeErrorResponse(w, status, code, err.Error(), nil, reqID)
+	}
+	if err := ctx.Err(); err != nil {
+		fail(http.StatusGatewayTimeout, ErrCodeTimeout, err)
 		return
 	}
-
-	// Build pane target. Resolve via the pane's tmux ID (the `%N` form) so
-	// the target is base-index-independent — `<session>:<paneIdx>` looks
-	// like a pane index but tmux interprets it as a window index, which
-	// breaks on hosts with `base-index = 1` (see #141).
-	pane, ok := s.resolvePaneForRequest(w, r, sessionID, paneIdx, reqID)
+	// The server cannot interpret a remote pane's path as a local policy root.
+	if tmux.DefaultClient.Remote != "" {
+		fail(http.StatusServiceUnavailable, ErrCodeServiceUnavail, errors.New("cannot verify project safety policy for a remote tmux pane"))
+		return
+	}
+	resolve := resolvePaneByIndex
+	if s.resolvePane != nil {
+		resolve = s.resolvePane
+	}
+	lookup := func() (tmux.Pane, bool) {
+		pane, err := resolve(ctx, sessionID, paneIdx)
+		if err != nil {
+			status, code := http.StatusNotFound, ErrCodeNotFound
+			var selectorErr *tmux.PaneSelectorError
+			if errors.As(err, &selectorErr) && selectorErr.Kind == tmux.PaneSelectorAmbiguous {
+				status, code = http.StatusConflict, ErrCodeConflict
+			}
+			fail(status, code, err)
+			return tmux.Pane{}, false
+		}
+		selector, err := tmux.ParsePaneSelector(pane.ID)
+		if err != nil || selector.Kind != tmux.PaneSelectorID || pane.PID <= 0 || pane.Dead || pane.IsServicePane() {
+			fail(http.StatusConflict, ErrCodeConflict, errors.New("pane is not a live input target with a stable physical identity"))
+			return tmux.Pane{}, false
+		}
+		return pane, true
+	}
+	pane, ok := lookup()
 	if !ok {
+		return
+	}
+	// Join assignment/rotation admission and pipeline ownership before checking
+	// the physical pane again. Numeric indices can be reused while we wait.
+	store, err := assignment.LoadStoreStrictReadOnly(sessionID)
+	if err != nil {
+		fail(http.StatusServiceUnavailable, ErrCodeServiceUnavail, fmt.Errorf("load pane admission state: %w", err))
+		return
+	}
+	releaseTarget, err := store.AcquireTargetLock(ctx, pane.ID)
+	if err != nil {
+		fail(http.StatusServiceUnavailable, ErrCodeServiceUnavail, fmt.Errorf("acquire pane admission: %w", err))
+		return
+	}
+	defer releaseTarget()
+	releasePane, err := pipeline.AcquireSharedPaneLock(ctx, pane.ID, "")
+	if err != nil {
+		fail(http.StatusServiceUnavailable, ErrCodeServiceUnavail, fmt.Errorf("acquire pane delivery ownership: %w", err))
+		return
+	}
+	defer releasePane()
+	refresh := func() bool {
+		current, ok := lookup()
+		if !ok {
+			return false
+		}
+		if current.ID != pane.ID || current.PID != pane.PID || current.Type.Canonical() != pane.Type.Canonical() {
+			fail(http.StatusConflict, ErrCodeConflict, errors.New("pane identity changed while acquiring delivery ownership; refresh the session before sending"))
+			return false
+		}
+		pane = current
+		return true
+	}
+	if !refresh() {
 		return
 	}
 	if err := pane.Type.ValidateAutomatedPromptDelivery(); err != nil {
@@ -3994,14 +4061,65 @@ func (s *Server) handlePaneInputV1(w http.ResponseWriter, r *http.Request) {
 		}, reqID)
 		return
 	}
-	paneTarget := pane.ID
-
-	sendKeys := tmux.SendKeys
-	if s.sendPaneKeys != nil {
-		sendKeys = s.sendPaneKeys
+	// Resolve policy from the target's actual project, never the server's cwd.
+	path, err := tmux.DefaultClient.RunContext(ctx, "display-message", "-p", "-t", tmux.ExactTarget(pane.ID), "#{pane_current_path}")
+	if err != nil {
+		fail(http.StatusServiceUnavailable, ErrCodeServiceUnavail, fmt.Errorf("resolve pane project: %w", err))
+		return
 	}
-	if err := sendKeys(paneTarget, req.Text, req.Enter); err != nil {
-		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
+	path = strings.TrimSpace(path)
+	if !filepath.IsAbs(path) {
+		fail(http.StatusServiceUnavailable, ErrCodeServiceUnavail, errors.New("pane did not report an absolute local project path"))
+		return
+	}
+	info, err := os.Stat(path)
+	if err != nil || !info.IsDir() {
+		fail(http.StatusServiceUnavailable, ErrCodeServiceUnavail, errors.New("pane project path is not an accessible local directory"))
+		return
+	}
+	projectDir, err := util.ResolveProjectDirContext(ctx, path)
+	if err != nil {
+		fail(http.StatusServiceUnavailable, ErrCodeServiceUnavail, fmt.Errorf("resolve pane project root: %w", err))
+		return
+	}
+	p, err := policy.LoadForProject(projectDir)
+	if err != nil {
+		fail(http.StatusServiceUnavailable, ErrCodeServiceUnavail, fmt.Errorf("load pane project safety policy: %w", err))
+		return
+	}
+	if match := p.Check(req.Text); match != nil && match.Action == policy.ActionBlock {
+		slog.Warn("pane input blocked by policy",
+			"session", sessionID, "pane", paneIdx,
+			"pattern", match.Pattern, "request_id", reqID)
+		fail(http.StatusForbidden, ErrCodeForbidden, fmt.Errorf("blocked by safety policy: %s", match.Reason))
+		return
+	}
+	if !refresh() {
+		return
+	}
+	// The REST redaction middleware already processed this text. Keep its bytes
+	// intact, including whitespace and stage-only input, while sharing the live
+	// quarantine, trust/composer, agent transport, and submission checks.
+	service, err := dispatch.NewService(dispatch.Ports{
+		Redactor: dispatch.AllowAllRedactor{}, Deliverer: dispatch.TMUXDeliverer{},
+	})
+	if err != nil {
+		fail(http.StatusInternalServerError, ErrCodeInternalError, err)
+		return
+	}
+	_, err = service.Execute(ctx, dispatch.Request{
+		Session: sessionID, Panes: []tmux.Pane{pane}, Selectors: []string{pane.ID},
+		RequireSingleSelector: true, IncludeUser: true, AllowEmptyMessage: true,
+		Message: req.Text, Submit: req.Enter, StopOnFailure: true,
+	})
+	if err != nil {
+		status, code := http.StatusInternalServerError, ErrCodeInternalError
+		var dispatchErr *dispatch.Error
+		if dispatch.IsGuaranteedNoDeliveryActuation(err) ||
+			(errors.As(err, &dispatchErr) && dispatchErr.Code == dispatch.ErrRotationPending) {
+			status, code = http.StatusConflict, ErrCodeConflict
+		}
+		fail(status, code, err)
 		return
 	}
 
@@ -4011,7 +4129,7 @@ func (s *Server) handlePaneInputV1(w http.ResponseWriter, r *http.Request) {
 
 	writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
 		"sent": true,
-		"pane": paneTarget,
+		"pane": pane.ID,
 	}, reqID)
 }
 
@@ -7092,9 +7210,22 @@ func resolvePaneByIndex(ctx context.Context, session string, paneIdx int) (tmux.
 	if err != nil {
 		return tmux.Pane{}, fmt.Errorf("list panes: %w", err)
 	}
+	var matches []tmux.Pane
 	for _, p := range panes {
 		if p.Index == paneIdx {
-			return p, nil
+			matches = append(matches, p)
+		}
+	}
+	if len(matches) == 1 {
+		return matches[0], nil
+	}
+	if len(matches) > 1 {
+		ids := make([]string, len(matches))
+		for i, pane := range matches {
+			ids[i] = pane.ID
+		}
+		return tmux.Pane{}, &tmux.PaneSelectorError{
+			Kind: tmux.PaneSelectorAmbiguous, Selector: strconv.Itoa(paneIdx), Matches: len(matches), Available: ids,
 		}
 	}
 	return tmux.Pane{}, fmt.Errorf("no pane with index %d in session %q", paneIdx, session)

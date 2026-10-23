@@ -822,6 +822,137 @@ func TestResolveEffectivePathReportsUnavailableHome(t *testing.T) {
 	}
 }
 
+func TestLoadForProjectSelectsTargetWithoutChangingWorkingDirectory(t *testing.T) {
+	home, server, project := t.TempDir(), t.TempDir(), t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	chdir(t, server)
+	writeProjectPolicyForTest(t, server, "version: 1\nblocked:\n  - pattern: server_only\n")
+	writeProjectPolicyForTest(t, project, "version: 1\nblocked:\n  - pattern: target_only\n")
+	before, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := LoadForProject(project)
+	if err != nil {
+		t.Fatalf("LoadForProject: %v", err)
+	}
+	if checkAction(loaded, "target_only") != ActionBlock || checkAction(loaded, "server_only") != "" {
+		t.Fatalf("explicit project used the wrong policy: %+v", loaded.Blocked)
+	}
+	if current, err := os.Getwd(); err != nil || current != before {
+		t.Fatalf("working directory changed: %q, %v; want %q", current, err, before)
+	}
+
+	defaults, err := LoadForProject(t.TempDir())
+	if err != nil {
+		t.Fatalf("LoadForProject without configured policy: %v", err)
+	}
+	if checkAction(defaults, "git reset --hard") != ActionBlock || checkAction(defaults, "server_only") != "" {
+		t.Fatalf("missing project policy did not use built-in policy: %+v", defaults.Blocked)
+	}
+
+	// Existing callers still select the current directory, while explicit
+	// project callers cannot accidentally enforce a server-local policy.
+	current, err := LoadOrDefault()
+	if err != nil || checkAction(current, "server_only") != ActionBlock {
+		t.Fatalf("LoadOrDefault no longer selects the current directory: %v", err)
+	}
+	writeProjectPolicyForTest(t, home, "version: 1\nblocked:\n  - pattern: home_only\n")
+	writeProjectPolicyForTest(t, project, "blocked: [\n")
+	loaded, err = LoadForProject(project)
+	if err != nil {
+		t.Fatalf("home policy must retain precedence over project policy: %v", err)
+	}
+	if checkAction(loaded, "home_only") != ActionBlock || checkAction(loaded, "target_only") != "" {
+		t.Fatalf("home policy did not take precedence: %+v", loaded.Blocked)
+	}
+	if current, err := os.Getwd(); err != nil || current != before {
+		t.Fatalf("working directory changed after policy selection: %q, %v", current, err)
+	}
+}
+
+func TestLoadForProjectRejectsInvalidProjectIdentity(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	writeProjectPolicyForTest(t, home, "version: 1\n")
+	root := t.TempDir()
+	file := filepath.Join(root, "regular-file")
+	if err := os.WriteFile(file, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for name, project := range map[string]string{
+		"empty": "", "whitespace": " ", "relative": ".",
+		"missing": filepath.Join(root, "missing"), "file": file,
+	} {
+		t.Run(name, func(t *testing.T) {
+			loaded, err := LoadForProject(project)
+			if err == nil || loaded != nil {
+				t.Fatalf("invalid project %q bypassed validation via home policy: policy=%+v, err=%v", project, loaded, err)
+			}
+		})
+	}
+}
+
+func TestLoadForProjectPropagatesSelectedPolicyErrors(t *testing.T) {
+	for _, source := range []string{"home", "project"} {
+		for _, failure := range []string{"malformed", "unreadable"} {
+			t.Run(source+"/"+failure, func(t *testing.T) {
+				home, server, project := t.TempDir(), t.TempDir(), t.TempDir()
+				t.Setenv("HOME", home)
+				t.Setenv("USERPROFILE", home)
+				chdir(t, server)
+				writeProjectPolicyForTest(t, server, "version: 1\n")
+				selected := project
+				if source == "home" {
+					selected = home
+					writeProjectPolicyForTest(t, project, "version: 1\n")
+				}
+				if failure == "malformed" {
+					writeProjectPolicyForTest(t, selected, "blocked: [\n")
+				} else {
+					// A directory is unreadable as a policy even when tests run
+					// as root, unlike chmod-based permission fixtures.
+					if err := os.MkdirAll(filepath.Join(selected, DefaultPolicyPath), 0o700); err != nil {
+						t.Fatal(err)
+					}
+				}
+				loaded, err := LoadForProject(project)
+				if err == nil || loaded != nil {
+					t.Fatalf("broken selected policy fell back: policy=%+v, err=%v", loaded, err)
+				}
+			})
+		}
+	}
+}
+
+func TestLoadForProjectRejectsAmbiguousHomeDirectory(t *testing.T) {
+	project := t.TempDir()
+	writeProjectPolicyForTest(t, project, "version: 1\n")
+	for _, home := range []string{"", "relative-home"} {
+		t.Run(home, func(t *testing.T) {
+			t.Setenv("HOME", home)
+			t.Setenv("USERPROFILE", home)
+			if loaded, err := LoadForProject(project); err == nil || loaded != nil {
+				t.Fatalf("ambiguous home %q accepted: policy=%+v, err=%v", home, loaded, err)
+			}
+		})
+	}
+}
+
+func writeProjectPolicyForTest(t *testing.T, root, contents string) {
+	t.Helper()
+	path := filepath.Join(root, DefaultPolicyPath)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func chdir(t *testing.T, dir string) {
 	t.Helper()
 	prev, err := os.Getwd()

@@ -36,12 +36,12 @@ func sharedPaneLockPath(paneID string) (string, error) {
 	return filepath.Join(root, "ntm", "pane-locks", hex.EncodeToString(sum[:])+".lock"), nil
 }
 
-// acquireSharedPaneLock takes the user-wide pane lock followed by the optional
+// AcquireSharedPaneLock takes the user-wide pane lock followed by the optional
 // legacy project lock. Keeping the latter protects against older NTM processes
 // running in the same project during an upgrade. Every caller acquires locks in
 // this order and releases them in reverse order. A single caller-supplied
 // context bounds the entire acquisition, not each lock separately.
-func acquireSharedPaneLock(ctx context.Context, paneID, legacyPath string) (func(), error) {
+func AcquireSharedPaneLock(ctx context.Context, paneID, legacyPath string) (func(), error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}

@@ -107,9 +107,16 @@ func Load(path string) (*Policy, error) {
 // When no policy file exists, the returned path is where a new one should be
 // created and exists is false.
 func ResolveEffectivePath() (path string, exists bool, err error) {
+	return resolveEffectivePath(DefaultPolicyPath)
+}
+
+func resolveEffectivePath(projectPolicyPath string) (path string, exists bool, err error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", false, fmt.Errorf("resolve policy home directory: %w", err)
+	}
+	if !filepath.IsAbs(home) {
+		return "", false, fmt.Errorf("resolve policy home directory: home directory must be absolute")
 	}
 	homePath := filepath.Join(home, DefaultPolicyPath)
 	if _, err := os.Stat(homePath); err == nil {
@@ -117,17 +124,40 @@ func ResolveEffectivePath() (path string, exists bool, err error) {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return "", false, fmt.Errorf("inspect home policy: %w", err)
 	}
-	if _, err := os.Stat(DefaultPolicyPath); err == nil {
-		return DefaultPolicyPath, true, nil
+	if _, err := os.Stat(projectPolicyPath); err == nil {
+		return projectPolicyPath, true, nil
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return "", false, fmt.Errorf("inspect project policy: %w", err)
 	}
 	return homePath, false, nil
 }
 
-// LoadOrDefault loads the policy from the default path, or returns an empty policy if not found.
+// LoadOrDefault loads the effective policy for the current working directory,
+// or returns the built-in policy when no configured policy exists.
 func LoadOrDefault() (*Policy, error) {
-	path, exists, err := ResolveEffectivePath()
+	return loadOrDefaultAt(DefaultPolicyPath)
+}
+
+// LoadForProject loads the policy for an explicitly identified local project.
+// Home policy retains precedence over project policy. The project must be an
+// absolute existing directory; neither an invalid target nor a missing policy
+// may redirect enforcement to the calling process's working directory.
+func LoadForProject(projectDir string) (*Policy, error) {
+	if !filepath.IsAbs(projectDir) {
+		return nil, fmt.Errorf("policy project directory must be absolute")
+	}
+	info, err := os.Stat(projectDir)
+	if err != nil {
+		return nil, fmt.Errorf("inspect policy project directory %q: %w", projectDir, err)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("policy project path %q is not a directory", projectDir)
+	}
+	return loadOrDefaultAt(filepath.Join(projectDir, DefaultPolicyPath))
+}
+
+func loadOrDefaultAt(projectPolicyPath string) (*Policy, error) {
+	path, exists, err := resolveEffectivePath(projectPolicyPath)
 	if err != nil {
 		return nil, err
 	}

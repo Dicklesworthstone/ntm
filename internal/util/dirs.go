@@ -77,6 +77,13 @@ const (
 // Results (including failures) are cached for a short TTL per start
 // directory; repo moves/deletions are picked up after the TTL lapses.
 func FindGitRoot(startDir string) (string, error) {
+	return findGitRootContext(context.Background(), startDir)
+}
+
+func findGitRootContext(ctx context.Context, startDir string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	now := time.Now()
 
 	gitRootCache.Lock()
@@ -86,7 +93,12 @@ func FindGitRoot(startDir string) (string, error) {
 	}
 	gitRootCache.Unlock()
 
-	root, err := findGitRootUncached(startDir)
+	root, err := findGitRootUncached(ctx, startDir)
+	// An interrupted lookup says nothing about the directory. In particular,
+	// caching cancellation would make the next request miss its project policy.
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 
 	gitRootCache.Lock()
 	if len(gitRootCache.entries) >= gitRootCacheMaxEntries {
@@ -102,8 +114,8 @@ func FindGitRoot(startDir string) (string, error) {
 	return root, err
 }
 
-func findGitRootUncached(startDir string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+func findGitRootUncached(ctx context.Context, startDir string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--show-toplevel")
 	cmd.Dir = startDir
@@ -177,10 +189,24 @@ func FindBeadsRoot(startDir string) (string, error) {
 // ResolveProjectDir prefers an explicit project config root, then a beads root,
 // then a git root, and finally falls back to the starting directory itself.
 func ResolveProjectDir(startDir string) string {
+	projectDir, _ := ResolveProjectDirContext(context.Background(), startDir)
+	return projectDir
+}
+
+// ResolveProjectDirContext uses the same project-root precedence and Git cache
+// as ResolveProjectDir, with caller cancellation covering Git discovery. An
+// interrupted request returns an error instead of choosing a fallback root.
+func ResolveProjectDirContext(ctx context.Context, startDir string) (string, error) {
+	if ctx == nil {
+		return "", fmt.Errorf("project resolution context is required")
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	if strings.TrimSpace(startDir) == "" {
 		cwd, err := os.Getwd()
 		if err != nil {
-			return ""
+			return "", err
 		}
 		startDir = cwd
 	}
@@ -190,16 +216,28 @@ func ResolveProjectDir(startDir string) string {
 		startDir = absDir
 	}
 
-	if projectDir, err := FindProjectConfigRoot(startDir); err == nil && projectDir != "" {
-		return projectDir
+	projectDir, projectErr := FindProjectConfigRoot(startDir)
+	if err := ctx.Err(); err != nil {
+		return "", err
 	}
-	if beadsRoot, err := FindBeadsRoot(startDir); err == nil && beadsRoot != "" {
-		return beadsRoot
+	if projectErr == nil && projectDir != "" {
+		return projectDir, nil
 	}
-	if gitRoot, err := FindGitRoot(startDir); err == nil && gitRoot != "" {
-		return gitRoot
+	beadsRoot, beadsErr := FindBeadsRoot(startDir)
+	if err := ctx.Err(); err != nil {
+		return "", err
 	}
-	return filepath.Clean(startDir)
+	if beadsErr == nil && beadsRoot != "" {
+		return beadsRoot, nil
+	}
+	gitRoot, gitErr := findGitRootContext(ctx, startDir)
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if gitErr == nil && gitRoot != "" {
+		return gitRoot, nil
+	}
+	return filepath.Clean(startDir), nil
 }
 
 func normalizeProjectCandidate(path string) string {

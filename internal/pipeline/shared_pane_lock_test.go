@@ -27,7 +27,7 @@ func acquireSharedForTest(t *testing.T, pane, legacy string) func() {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	release, err := acquireSharedPaneLock(ctx, pane, legacy)
+	release, err := AcquireSharedPaneLock(ctx, pane, legacy)
 	if err != nil {
 		t.Fatalf("acquire %s: %v", pane, err)
 	}
@@ -43,7 +43,7 @@ func TestSharedPaneLockExcludesDifferentProjects(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Millisecond)
 	defer cancel()
-	if unexpected, err := acquireSharedPaneLock(ctx, "%shared", second); !errors.Is(err, context.DeadlineExceeded) {
+	if unexpected, err := AcquireSharedPaneLock(ctx, "%shared", second); !errors.Is(err, context.DeadlineExceeded) {
 		if unexpected != nil {
 			unexpected()
 		}
@@ -70,7 +70,7 @@ func TestSharedPaneLockHonorsLegacyOwnerAndReleasesOnFailure(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Millisecond)
 	defer cancel()
-	if release, err := acquireSharedPaneLock(ctx, "%legacy", legacyPath); !errors.Is(err, context.DeadlineExceeded) {
+	if release, err := AcquireSharedPaneLock(ctx, "%legacy", legacyPath); !errors.Is(err, context.DeadlineExceeded) {
 		if release != nil {
 			release()
 		}
@@ -83,7 +83,7 @@ func TestSharedPaneLockHonorsLegacyOwnerAndReleasesOnFailure(t *testing.T) {
 func TestSharedPaneLockLegacyOpenFailureReleasesSharedGate(t *testing.T) {
 	sharedLockTestRoot(t)
 	bad := filepath.Join(t.TempDir(), "missing", "pane.lock")
-	if release, err := acquireSharedPaneLock(context.Background(), "%retry", bad); err == nil {
+	if release, err := AcquireSharedPaneLock(context.Background(), "%retry", bad); err == nil {
 		release()
 		t.Fatal("expected missing project directory to fail")
 	}
@@ -94,7 +94,7 @@ func TestSharedPaneLockCancelledBeforeAcquireDoesNotWrite(t *testing.T) {
 	root := sharedLockTestRoot(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if release, err := acquireSharedPaneLock(ctx, "%cancelled", ""); !errors.Is(err, context.Canceled) {
+	if release, err := AcquireSharedPaneLock(ctx, "%cancelled", ""); !errors.Is(err, context.Canceled) {
 		if release != nil {
 			release()
 		}
@@ -110,7 +110,7 @@ func TestSharedPaneLockFailsClosedWithoutWritableStateDirectory(t *testing.T) {
 	if err := os.WriteFile(root, []byte("not a directory"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if release, err := acquireSharedPaneLock(context.Background(), "%blocked", ""); err == nil {
+	if release, err := AcquireSharedPaneLock(context.Background(), "%blocked", ""); err == nil {
 		release()
 		t.Fatal("dispatch would proceed without the shared lock")
 	}
@@ -167,7 +167,7 @@ func TestSharedPaneLockProcessHelper(t *testing.T) {
 	if os.Getenv("NTM_SHARED_PANE_LOCK_TEST_HELPER") != "1" {
 		return
 	}
-	release, err := acquireSharedPaneLock(context.Background(), "%child", os.Getenv("NTM_SHARED_PANE_LOCK_TEST_LEGACY"))
+	release, err := AcquireSharedPaneLock(context.Background(), "%child", os.Getenv("NTM_SHARED_PANE_LOCK_TEST_LEGACY"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -210,7 +210,7 @@ func TestSharedPaneLockSurvivesOwnerProcessDeath(t *testing.T) {
 	waitCtx, waitCancel := context.WithTimeout(context.Background(), 60*time.Millisecond)
 	defer waitCancel()
 	otherProject := filepath.Join(t.TempDir(), "waiter.lock")
-	if release, err := acquireSharedPaneLock(waitCtx, "%child", otherProject); !errors.Is(err, context.DeadlineExceeded) {
+	if release, err := AcquireSharedPaneLock(waitCtx, "%child", otherProject); !errors.Is(err, context.DeadlineExceeded) {
 		if release != nil {
 			release()
 		}
