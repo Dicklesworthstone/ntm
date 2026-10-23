@@ -144,7 +144,9 @@ func newRotationChecker(session, workDir string, coordCfg CoordinatorConfig, ntm
 			cwd = strings.TrimSpace(cwd)
 			return cwd, cwd != ""
 		},
-		processUsage: ntmctx.ProcessTranscriptUsage,
+		processUsage: func(agentType string, panePID int) (*ntmctx.TranscriptUsage, bool) {
+			return ntmctx.ProcessTranscriptUsage(context.Background(), agentType, panePID)
+		},
 		paneCwdContext: func(ctx context.Context, paneID string) (string, bool) {
 			cwd, err := tmux.DefaultClient.RunContext(ctx, "display-message", "-p", "-t", tmux.ExactTarget(paneID), "#{pane_current_path}")
 			cwd = strings.TrimSpace(cwd)

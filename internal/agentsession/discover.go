@@ -148,7 +148,7 @@ type Discoverer struct {
 	homeDir            func() (string, error)
 	lookPath           func(string) (string, error)
 	runCommand         func(context.Context, string, ...string) ([]byte, error)
-	findProcessSession func(string, string, string, int) *Info
+	findProcessSession func(context.Context, string, string, string, int) *Info
 	findProcessStart   func(int, string) int64
 	fallbackCache      map[string]*Info
 	casrItemsCache     map[string][]casrListItem
@@ -214,7 +214,7 @@ func (d *Discoverer) DiscoverContext(ctx context.Context, agentType, workDir str
 		if finder == nil {
 			finder = discoverProcessSession
 		}
-		if info := finder(agentType, provider, home, panePID); info != nil {
+		if info := finder(ctx, agentType, provider, home, panePID); info != nil {
 			if ctx.Err() != nil {
 				return nil
 			}
@@ -224,6 +224,9 @@ func (d *Discoverer) DiscoverContext(ctx context.Context, agentType, workDir str
 			d.claim(info)
 			return info
 		}
+	}
+	if ctx.Err() != nil {
+		return nil
 	}
 	if panePID > 0 {
 		startFinder := d.findProcessStart
@@ -692,21 +695,24 @@ func linuxProcessStartTicks(pid int) (string, bool) {
 // agent process itself. Unlike Discoverer.DiscoverContext it never falls back
 // to the newest session in the working directory, so a nil result means "no
 // exact binding", never another pane's session.
-func DiscoverProcessSession(agentType string, panePID int) *Info {
+func DiscoverProcessSession(ctx context.Context, agentType string, panePID int) *Info {
 	provider := ResumeProvider(agentType)
-	if provider == "" || panePID <= 0 {
+	if ctx == nil || ctx.Err() != nil || provider == "" || panePID <= 0 {
 		return nil
 	}
 	home, _ := os.UserHomeDir()
-	info := discoverProcessSession(agentType, provider, home, panePID)
+	info := discoverProcessSession(ctx, agentType, provider, home, panePID)
+	if ctx.Err() != nil {
+		return nil
+	}
 	if info != nil && info.Source == "" {
 		info.Source = DiscoverySourceProcessTree
 	}
 	return info
 }
 
-func discoverProcessSession(agentType, provider, home string, panePID int) *Info {
-	if (runtime.GOOS != "linux" && runtime.GOOS != "darwin") || panePID <= 0 {
+func discoverProcessSession(ctx context.Context, agentType, provider, home string, panePID int) *Info {
+	if ctx == nil || ctx.Err() != nil || (runtime.GOOS != "linux" && runtime.GOOS != "darwin") || panePID <= 0 {
 		return nil
 	}
 
@@ -717,9 +723,12 @@ func discoverProcessSession(agentType, provider, home string, panePID int) *Info
 	queue := []processNode{{pid: panePID}}
 	seen := map[int]bool{panePID: true}
 	for len(queue) > 0 {
+		if ctx.Err() != nil {
+			return nil
+		}
 		node := queue[0]
 		queue = queue[1:]
-		argv := processutil.GetCmdline(node.pid)
+		argv := processutil.GetCmdlineContext(ctx, node.pid)
 		// Claude Code's own session record names the session the process is
 		// writing now, which outlives a --resume argument after /clear.
 		if provider == "claude" && argvMatchesProvider(provider, argv) {
@@ -728,14 +737,14 @@ func discoverProcessSession(agentType, provider, home string, panePID int) *Info
 			}
 		}
 		if info := processNodeSession(agentType, provider, argv, func() []string {
-			return openSessionFiles(node.pid, provider)
+			return openSessionFiles(ctx, node.pid, provider)
 		}); info != nil {
 			return info
 		}
 		if node.depth >= processTreeMaxDepth {
 			continue
 		}
-		for _, child := range processutil.GetChildPIDs(node.pid, processTreeFanout) {
+		for _, child := range processutil.GetChildPIDsContext(ctx, node.pid, processTreeFanout) {
 			if child <= 0 || seen[child] || len(seen) >= processTreeMaxNodes {
 				continue
 			}
@@ -821,12 +830,15 @@ func resumedSessionID(provider string, argv []string) string {
 	return ""
 }
 
-func openSessionFiles(pid int, provider string) []string {
-	openFiles := processOpenFiles(pid)
+func openSessionFiles(ctx context.Context, pid int, provider string) []string {
+	openFiles := processOpenFiles(ctx, pid)
 	sort.Slice(openFiles, func(i, j int) bool { return openFiles[i].fd < openFiles[j].fd })
 
 	paths := make([]string, 0, 1)
 	for _, openFile := range openFiles {
+		if ctx.Err() != nil {
+			return nil
+		}
 		if !filepath.IsAbs(openFile.path) {
 			continue
 		}
@@ -842,11 +854,16 @@ type processOpenFile struct {
 	path string
 }
 
-func processOpenFiles(pid int) []processOpenFile {
+func processOpenFiles(ctx context.Context, pid int) []processOpenFile {
+	if ctx == nil || ctx.Err() != nil {
+		return nil
+	}
 	if runtime.GOOS == "darwin" {
-		ctx, cancel := context.WithTimeout(context.Background(), processFilesTimeout)
+		ctx, cancel := context.WithTimeout(ctx, processFilesTimeout)
 		defer cancel()
-		output, err := exec.CommandContext(ctx, "lsof", "-a", "-p", strconv.Itoa(pid), "-Ffn").Output()
+		cmd := exec.CommandContext(ctx, "lsof", "-a", "-p", strconv.Itoa(pid), "-Ffn")
+		cmd.WaitDelay = 100 * time.Millisecond
+		output, err := cmd.Output()
 		if err != nil {
 			return nil
 		}
@@ -861,6 +878,9 @@ func processOpenFiles(pid int) []processOpenFile {
 	}
 	files := make([]processOpenFile, 0, len(entries))
 	for _, entry := range entries {
+		if ctx.Err() != nil {
+			return nil
+		}
 		target, err := os.Readlink(filepath.Join("/proc", strconv.Itoa(pid), "fd", entry.Name()))
 		if err != nil {
 			continue

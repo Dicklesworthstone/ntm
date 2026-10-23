@@ -90,6 +90,40 @@ existing graceful-degradation behavior and may deliver the original task. These
 changes do not migrate the standalone robot CASS query helpers. Fresh-assignment
 replay remains unchanged.
 
+## Selected-pane capacity
+
+Ordinary `ntm send --with-cass` and robot sends now populate the injection
+engine's current-context reading from the targets selected for that send.
+`[cass.context] skip_if_context_above` therefore applies to observed target
+usage, including sends enabled through `[cass.context] enabled`. A shared
+broadcast uses the highest known percentage among its selected physical pane
+IDs, after exclusions and routing. Repeated pane indices in different windows
+do not share measurements, and unselected panes cannot suppress enrichment.
+An explicitly supplied higher `CurrentContextPct` remains authoritative.
+
+Gemini's native context footer and OMP's current composer gauge provide live
+readings; quota percentages and old composers do not. Claude and Codex use
+fresh accounting from a transcript bound to the pane's own agent process.
+Transcript readings must be less than ten minutes old, have a nonfuture
+timestamp, and carry either a native context-window size or a model recognized
+by NTM's context-window registry. There is no guessed default window or
+same-directory/newest-session fallback. Remote tmux panes may provide native
+visible gauges but never borrow local process or transcript evidence.
+
+A target at or above the configured threshold skips the CASS search and reports
+the observed percentage in `cass_injection.skipped_reason`; the original task
+is still delivered. Unknown capacity permits enrichment. All selected-pane
+probes share a two-second context budget, with tmux's existing bounded pipe
+draining on cleanup. Expiring only that optional budget preserves known readings
+and allows send to continue. Canceling the caller or reaching its deadline stops
+measurement and prevents both CASS retrieval and prompt delivery.
+
+This is enforcement of the existing threshold, not an exact estimate of the
+completed prompt's token count. Percentages retain the engine's whole-percent
+contract by truncating fractional readings. Other providers and processes whose
+transcripts cannot be bound exactly retain unknown capacity. Assignment and
+recovery paths keep their existing recorded-prompt behavior.
+
 ## Scope and qualification
 
 Unit tests cover scope filtering, deterministic merge order, exact-ID deduplication,
@@ -107,3 +141,8 @@ Command-level tests run the ordinary send handler and real CASS executor with a
 recording tmux transport. They verify target-project selection from another
 same-named workspace, disabled preference, unknown-project fallback, and caller
 cancellation/deadline during both in-flight searches with no prompt delivery.
+Capacity tests exercise both public send paths, excluded and unselected hot
+panes, mixed-capacity broadcasts, and cancellation during real tmux transport
+capture. Real process fixtures distinguish two Codex transcripts in the same
+directory; portable process-query fixtures verify cancellation even when a
+subprocess inherits the command's output pipes.

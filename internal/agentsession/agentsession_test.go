@@ -22,7 +22,7 @@ func nativeDiscoverer(home string) *Discoverer {
 	discoverer := NewDiscoverer()
 	discoverer.homeDir = func() (string, error) { return home, nil }
 	discoverer.lookPath = func(string) (string, error) { return "", os.ErrNotExist }
-	discoverer.findProcessSession = func(string, string, string, int) *Info { return nil }
+	discoverer.findProcessSession = func(context.Context, string, string, string, int) *Info { return nil }
 	discoverer.findProcessStart = func(int, string) int64 { return 0 }
 	return discoverer
 }
@@ -423,7 +423,7 @@ func TestObserveBindingRecordsProvenanceFreshnessAndKeepsSourcePathPrivate(t *te
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			discoverer := NewDiscoverer()
-			discoverer.findProcessSession = func(string, string, string, int) *Info {
+			discoverer.findProcessSession = func(context.Context, string, string, string, int) *Info {
 				copy := *test.info
 				return &copy
 			}
@@ -451,7 +451,7 @@ func TestObserveBindingDeadlineIsUnavailableAndRetryable(t *testing.T) {
 	discoverer := NewDiscoverer()
 	discoverer.homeDir = func() (string, error) { return t.TempDir(), nil }
 	discoverer.lookPath = func(string) (string, error) { return "/fake/casr", nil }
-	discoverer.findProcessSession = func(string, string, string, int) *Info { return nil }
+	discoverer.findProcessSession = func(context.Context, string, string, string, int) *Info { return nil }
 	discoverer.findProcessStart = func(int, string) int64 { return 0 }
 	runs := 0
 	deadlineCtx := newManualDeadlineContext()
@@ -492,7 +492,7 @@ func TestDiscoverContextCancelledBeforeNativeScanIsRetryable(t *testing.T) {
 	}
 
 	discoverer := NewDiscoverer()
-	discoverer.findProcessSession = func(string, string, string, int) *Info { return nil }
+	discoverer.findProcessSession = func(context.Context, string, string, string, int) *Info { return nil }
 	ctx, cancel := context.WithCancel(context.Background())
 	homeCalls := 0
 	discoverer.homeDir = func() (string, error) {
@@ -619,6 +619,26 @@ func TestDiscoverNonResumableAgent(t *testing.T) {
 	}
 }
 
+func TestDiscoverContextStopsAfterCanceledProcessSearch(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	discoverer := NewDiscoverer()
+	discoverer.findProcessSession = func(got context.Context, _, _, _ string, _ int) *Info {
+		if got != ctx {
+			t.Fatal("process search lost the operation context")
+		}
+		cancel()
+		return nil
+	}
+	discoverer.findProcessStart = func(int, string) int64 {
+		t.Fatal("canceled process search continued into fallback discovery")
+		return 0
+	}
+	if info := discoverer.DiscoverContext(ctx, "cod", "/same/project", 123); info != nil {
+		t.Fatalf("canceled discovery returned %+v", info)
+	}
+}
+
 func TestDiscoverCodex(t *testing.T) {
 	home := t.TempDir()
 	workDir := "/data/projects/codexdemo"
@@ -698,7 +718,7 @@ func TestDiscoverGemini(t *testing.T) {
 func TestDiscoverPrefersPaneProcessSession(t *testing.T) {
 	discoverer := NewDiscoverer()
 	discoverer.homeDir = func() (string, error) { return t.TempDir(), nil }
-	discoverer.findProcessSession = func(agentType, provider, _ string, panePID int) *Info {
+	discoverer.findProcessSession = func(_ context.Context, agentType, provider, _ string, panePID int) *Info {
 		if agentType != "cod" || provider != "codex" || (panePID != 4242 && panePID != 5252) {
 			t.Fatalf("unexpected process lookup: agent=%q provider=%q pid=%d", agentType, provider, panePID)
 		}
@@ -722,7 +742,7 @@ func TestDiscoverPrefersPaneProcessSession(t *testing.T) {
 func TestDiscoverProcessSessionDoesNotRequireHomeOrWorkDir(t *testing.T) {
 	discoverer := NewDiscoverer()
 	discoverer.homeDir = func() (string, error) { return "", os.ErrNotExist }
-	discoverer.findProcessSession = func(agentType, provider, home string, panePID int) *Info {
+	discoverer.findProcessSession = func(_ context.Context, agentType, provider, home string, panePID int) *Info {
 		if agentType != "cod" || provider != "codex" || home != "" || panePID != 4242 {
 			t.Fatalf("unexpected process lookup: agent=%q provider=%q home=%q pid=%d", agentType, provider, home, panePID)
 		}
@@ -820,7 +840,7 @@ func TestDiscoverCASRStructuredResultAndCache(t *testing.T) {
 
 	discoverer := NewDiscoverer()
 	discoverer.homeDir = func() (string, error) { return t.TempDir(), nil }
-	discoverer.findProcessSession = func(string, string, string, int) *Info { return nil }
+	discoverer.findProcessSession = func(context.Context, string, string, string, int) *Info { return nil }
 	discoverer.lookPath = func(name string) (string, error) {
 		if name != "casr" {
 			t.Fatalf("lookPath(%q), want casr", name)
@@ -933,7 +953,7 @@ func TestDiscoverCASRCorrelatesSameWorkspacePanesByProcessStart(t *testing.T) {
 
 	discoverer := NewDiscoverer()
 	discoverer.homeDir = func() (string, error) { return t.TempDir(), nil }
-	discoverer.findProcessSession = func(string, string, string, int) *Info { return nil }
+	discoverer.findProcessSession = func(context.Context, string, string, string, int) *Info { return nil }
 	discoverer.findProcessStart = func(pid int, _ string) int64 {
 		switch pid {
 		case 101:
@@ -1513,7 +1533,7 @@ func TestClaudeProcessSessionBindsThroughTheSessionRecord(t *testing.T) {
 	}
 	writeClaudeSessionRecord(t, home, pid, mine, cwd, start)
 
-	info := discoverProcessSession("cc", "claude", home, pid)
+	info := discoverProcessSession(t.Context(), "cc", "claude", home, pid)
 	if info == nil || info.SessionID != mine || info.SourcePath != filepath.Join(projDir, mine+".jsonl") || info.Source != DiscoverySourceProcessTree {
 		t.Fatalf("binding = %+v, want this process's own session %s", info, mine)
 	}

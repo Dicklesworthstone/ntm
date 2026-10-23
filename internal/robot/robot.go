@@ -7240,6 +7240,22 @@ func GetSend(opts SendOptions) (*SendOutput, error) {
 	// message, and CM memory is scoped to the verified project of the live
 	// targets. Degradation is graceful: cass or cm being unavailable records a
 	// skip reason and the send proceeds unmodified.
+	if opts.WithCASS && (opts.CASSConfig == nil || opts.CASSConfig.Enabled) {
+		inject := DefaultInjectConfig()
+		if opts.InjectConfig != nil {
+			inject = *opts.InjectConfig
+		}
+		if inject.CurrentContextPct == 0 || inject.CurrentContextPct < inject.SkipThreshold {
+			used, known, err := ntmctx.MaxPaneContextUsage(ctx, tmux.DefaultClient, targetPanes, inject.SkipThreshold)
+			if err != nil {
+				return nil, fmt.Errorf("send canceled during CASS capacity measurement: %w", err)
+			}
+			if known {
+				inject.CurrentContextPct = max(inject.CurrentContextPct, used)
+			}
+		}
+		opts.InjectConfig = &inject
+	}
 	messageToSend, cassInjection, memoryInjection := injectPromptContext(
 		ctx, opts.Message, opts.Message, sendInjectionFormat(targetPanes),
 		PromptContextOptions{
@@ -10548,7 +10564,9 @@ var transcriptUsageForCwd = func(agentType, cwd string) (*ntmctx.TranscriptUsage
 
 // transcriptUsageForProcess reads the transcript of the session the agent
 // process under a pane is writing. Overridable for tests.
-var transcriptUsageForProcess = ntmctx.ProcessTranscriptUsage
+var transcriptUsageForProcess = func(agentType string, panePID int) (*ntmctx.TranscriptUsage, bool) {
+	return ntmctx.ProcessTranscriptUsage(context.Background(), agentType, panePID)
+}
 
 // ResolvePaneTranscripts correlates panes with their agent CLI's own session
 // transcripts, returning usage keyed by pane ID.

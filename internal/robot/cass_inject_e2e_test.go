@@ -8,6 +8,7 @@ package robot
 // via the same throttled harness as the CM (--with-memory) precedent.
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -19,6 +20,147 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/tests/testutil"
 )
+
+func cassCapacitySendFixture(t *testing.T, waitForProbe bool) (root string, opts SendOptions) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("recording tmux transport requires a POSIX shell")
+	}
+	root = t.TempDir()
+	t.Setenv("NTM_CASS_CAPACITY_ROOT", root)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(root, "data"))
+	t.Setenv("NTM_CONFIG", filepath.Join(root, "config.toml"))
+	t.Setenv("NTM_CASS_CAPACITY_WAIT", "")
+	if waitForProbe {
+		t.Setenv("NTM_CASS_CAPACITY_WAIT", "1")
+	}
+	const transport = `#!/bin/sh
+printf '%s\n' "$*" >> "$NTM_CASS_CAPACITY_ROOT/tmux-calls"
+case "$1" in
+  -V) echo 'tmux 3.4' ;;
+  list-panes)
+    echo '%71_NTM_SEP_1_NTM_SEP_capacity__gmi_1_NTM_SEP_gemini_NTM_SEP_120_NTM_SEP_40_NTM_SEP_1_NTM_SEP_0_NTM_SEP_0_NTM_SEP_gmi_NTM_SEP__NTM_SEP__NTM_SEP_0'
+    echo '%72_NTM_SEP_1_NTM_SEP_capacity__gmi_2_NTM_SEP_gemini_NTM_SEP_120_NTM_SEP_40_NTM_SEP_0_NTM_SEP_0_NTM_SEP_1_NTM_SEP_gmi_NTM_SEP__NTM_SEP__NTM_SEP_0'
+    ;;
+  capture-pane)
+    : > "$NTM_CASS_CAPACITY_ROOT/probe-started"
+    if [ "$NTM_CASS_CAPACITY_WAIT" = 1 ]; then exec sleep 30; fi
+    case "$*" in *'%72'*) used=90 ;; *) used=20 ;; esac
+    printf '> Type your message or @path/to/file\n/model context\ngemini-pro %s%% used\n' "$used"
+    ;;
+  display-message) printf '%s\n' "$NTM_CASS_CAPACITY_ROOT" ;;
+  load-buffer) cat >> "$NTM_CASS_CAPACITY_ROOT/payload" ;;
+  send-keys) printf '%s\n' "$@" >> "$NTM_CASS_CAPACITY_ROOT/payload" ;;
+esac
+`
+	const cass = "#!/bin/sh\n: > \"$NTM_CASS_CAPACITY_ROOT/cass-started\"\ncat <<'NTM_CASS_EOF'\n" + cassFixtureJSON + "\nNTM_CASS_EOF\n"
+	for name, content := range map[string]string{"tmux": transport, "cass": cass} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(content), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("NTM_TMUX_BINARY", filepath.Join(root, "tmux"))
+	old := tmux.DefaultClient
+	tmux.DefaultClient = tmux.NewClient("")
+	t.Cleanup(func() { tmux.DefaultClient = old })
+	query, filter, inject := stubCassConfigs(filepath.Join(root, "cass"))
+	opts = SendOptions{Context: t.Context(), Session: "capacity", Pane: "%71", Message: "Investigate database transaction contention",
+		WithCASS: true, CASSConfig: &query, FilterConfig: &filter, InjectConfig: &inject}
+	return root, opts
+}
+
+func TestGetSendCASSSelectedPaneCapacity(t *testing.T) {
+	for _, mode := range []string{"cool-selected", "hot-selected", "shared-broadcast", "excluded-hot", "explicit-stricter-usage"} {
+		t.Run(mode, func(t *testing.T) {
+			root, opts := cassCapacitySendFixture(t, false)
+			wantDelivered, skipped := 1, ""
+			switch mode {
+			case "hot-selected":
+				opts.Pane, skipped = "%72", "context at 90%"
+			case "shared-broadcast":
+				opts.Pane, opts.All, wantDelivered, skipped = "", true, 2, "context at 90%"
+			case "excluded-hot":
+				opts.Pane, opts.All, opts.Exclude = "", true, []string{"%72"}
+			case "explicit-stricter-usage":
+				opts.InjectConfig.CurrentContextPct, skipped = 95, "context at 95%"
+			}
+			original := *opts.InjectConfig
+			out, err := GetSend(opts)
+			if err != nil || out == nil || !out.Success || len(out.Successful) != wantDelivered || out.CASSInjection == nil {
+				t.Fatalf("capacity-aware robot send failed: output=%+v error=%v", out, err)
+			}
+			if *opts.InjectConfig != original {
+				t.Fatalf("send changed the caller's injection configuration: %+v", opts.InjectConfig)
+			}
+			payload, err := os.ReadFile(filepath.Join(root, "payload"))
+			if err != nil || !strings.Contains(string(payload), opts.Message) {
+				t.Fatalf("original task was not delivered: %s (%v)", payload, err)
+			}
+			_, queryErr := os.Stat(filepath.Join(root, "cass-started"))
+			if skipped != "" {
+				if !os.IsNotExist(queryErr) || out.CASSInjection.ItemsInjected != 0 || !strings.Contains(out.CASSInjection.SkippedReason, skipped) || strings.Contains(string(payload), cassFixtureMarker) {
+					t.Fatalf("hot target launched enrichment: %+v, query error=%v payload=%s", out.CASSInjection, queryErr, payload)
+				}
+			} else {
+				if queryErr != nil || out.CASSInjection.ItemsInjected == 0 || !strings.Contains(string(payload), cassFixtureMarker) {
+					t.Fatalf("unselected/excluded hot target suppressed enrichment: %+v, query error=%v payload=%s", out.CASSInjection, queryErr, payload)
+				}
+				log, err := os.ReadFile(filepath.Join(root, "tmux-calls"))
+				if err != nil || strings.Contains(string(log), "capture-pane -t %72") {
+					t.Fatalf("inspected excluded pane: %s (%v)", log, err)
+				}
+			}
+		})
+	}
+}
+
+func TestGetSendCASSCapacityCancellationPreventsSearchAndDelivery(t *testing.T) {
+	root, opts := cassCapacitySendFixture(t, true)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	opts.Context = ctx
+	watcherDone := make(chan struct{})
+	go func() {
+		defer close(watcherDone)
+		ticker := time.NewTicker(5 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if _, err := os.Stat(filepath.Join(root, "probe-started")); err == nil {
+					cancel()
+					return
+				}
+			}
+		}
+	}()
+	started := time.Now()
+	out, err := GetSend(opts)
+	cancel()
+	<-watcherDone
+	if time.Since(started) > 3*time.Second || err == nil || !strings.Contains(err.Error(), "during CASS capacity measurement") || out != nil {
+		t.Fatalf("capacity cancellation did not terminate send: output=%+v error=%v", out, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "probe-started")); err != nil {
+		t.Fatalf("capacity probe never started: %v", err)
+	}
+	for _, name := range []string{"cass-started", "payload"} {
+		if _, err := os.Stat(filepath.Join(root, name)); !os.IsNotExist(err) {
+			t.Fatalf("canceled probe reached %s: %v", name, err)
+		}
+	}
+	log, err := os.ReadFile(filepath.Join(root, "tmux-calls"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, operation := range []string{"load-buffer", "paste-buffer", "send-keys"} {
+		if strings.Contains(string(log), operation) {
+			t.Fatalf("canceled send reached delivery: %s", log)
+		}
+	}
+}
 
 const cassFixtureMarker = "NTM_CASS_FIX_MARKER"
 

@@ -1455,7 +1455,7 @@ func (r *Rotator) compactLivePane(ctx stdcontext.Context, session, agentID, pane
 		}
 		// An agent process that names its own session transcript binds this
 		// pane exactly, however many other panes share its project directory.
-		if reading, ok := paneProcessTranscriptUsage(agentTypeLong(string(pane.Type)), pane.PID); ok && reading != nil {
+		if reading, ok := paneProcessTranscriptUsage(ctx, agentTypeLong(string(pane.Type)), pane.PID); ok && reading != nil {
 			if time.Since(reading.UpdatedAt) > TranscriptFreshness {
 				return nil, errors.New("fresh provider context accounting is unavailable; use rotate")
 			}

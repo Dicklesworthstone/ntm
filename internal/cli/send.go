@@ -28,6 +28,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/checkpoint"
 	"github.com/Dicklesworthstone/ntm/internal/codex"
 	"github.com/Dicklesworthstone/ntm/internal/config"
+	ntmctx "github.com/Dicklesworthstone/ntm/internal/context"
 	"github.com/Dicklesworthstone/ntm/internal/coordinator"
 	dispatchsvc "github.com/Dicklesworthstone/ntm/internal/dispatch"
 	"github.com/Dicklesworthstone/ntm/internal/events"
@@ -2323,7 +2324,16 @@ func runSendInternal(opts SendOptions) (err error) {
 	// missing or wedged records a skip and the send proceeds unmodified.
 	var cassInjectionInfo *robot.CASSInjectionInfo
 	if cassEnabled, cassQuery, cassFilter, cassInject := sendCASSInjectionConfigs(opts.WithCASS, opts.NoCASS, cfg); cassEnabled {
-		if cassQuery.Enabled && cassQuery.PreferSameProject && cassFilter.PreferSameProject && len(selectedPanes) > 0 {
+		if cassQuery.Enabled && (cassInject.CurrentContextPct == 0 || cassInject.CurrentContextPct < cassInject.SkipThreshold) {
+			used, known, err := ntmctx.MaxPaneContextUsage(ctx, tmux.DefaultClient, selectedPanes, cassInject.SkipThreshold)
+			if err != nil {
+				return outputError(fmt.Errorf("send canceled during CASS capacity measurement: %w", err))
+			}
+			if known {
+				cassInject.CurrentContextPct = max(cassInject.CurrentContextPct, used)
+			}
+		}
+		if cassQuery.Enabled && (cassInject.CurrentContextPct == 0 || cassInject.CurrentContextPct < cassInject.SkipThreshold) && cassQuery.PreferSameProject && cassFilter.PreferSameProject && len(selectedPanes) > 0 {
 			// Even an inferred session has its own project identity. Never use
 			// the caller's cwd or a remote path that happens to exist locally
 			// to boost unrelated history. An unavailable project only disables

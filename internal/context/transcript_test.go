@@ -1,12 +1,191 @@
 package context
 
 import (
+	stdcontext "context"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
+
+func TestMaxPaneContextUsageNativeEvidence(t *testing.T) {
+	const ompGauge = "╭── 󰵗   Union Alpha   omp-probe   69.9%/262K 󰁨 ──────────────────󰁨──────╮\n╰─                                  ─╯"
+	for _, tc := range []struct {
+		name    string
+		typ     tmux.AgentType
+		visible string
+		want    int
+		known   bool
+	}{
+		{"gemini context", tmux.AgentGemini, "> Type your message or @path/to/file\n/model context\ngemini-pro 81% used", 81, true},
+		{"measured zero", tmux.AgentGemini, "/model context\ngemini-pro 0% used", 0, true},
+		{"gemini quota is not context", tmux.AgentGemini, "/model quota\ngemini-pro 99% used", 0, false},
+		{"gemini stale footer", tmux.AgentGemini, "/model context\ngemini-pro 99% used\n> Type your message or @path/to/file", 0, false},
+		{"omp live gauge", tmux.AgentOmp, ompGauge, 69, true},
+		{"omp old composer", tmux.AgentOmp, ompGauge + "\nThe old frame above is an example.", 0, false},
+		{"codex quoted percentage", tmux.AgentCodex, "Earlier output said 1% context left\n›", 0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			used, known := maxPaneContextUsage(t.Context(), []tmux.Pane{{ID: "%9", Type: tc.typ}}, 60, true,
+				func(stdcontext.Context, string) (string, error) { return tc.visible, nil },
+				func(stdcontext.Context, string, int) (*TranscriptUsage, bool) {
+					t.Fatal("a pane without a PID must not use local transcript discovery")
+					return nil, false
+				}, time.Now)
+			if used != tc.want || known != tc.known {
+				t.Fatalf("native reading = (%d, %t), want (%d, %t)", used, known, tc.want, tc.known)
+			}
+		})
+	}
+}
+
+func TestFreshTranscriptUsagePercentRequiresMeasuredWindowAndFreshness(t *testing.T) {
+	now := time.Now()
+	for _, tc := range []struct {
+		name  string
+		usage TranscriptUsage
+		want  float64
+		known bool
+	}{
+		{"native window", TranscriptUsage{Tokens: 700, ContextWindow: 1000, UpdatedAt: now}, 70, true},
+		{"known native model", TranscriptUsage{Tokens: 140000, Model: "claude-opus-4", UpdatedAt: now}, 70, true},
+		{"zero is measured", TranscriptUsage{ContextWindow: 1000, UpdatedAt: now}, 0, true},
+		{"window exceeded", TranscriptUsage{Tokens: 1400, ContextWindow: 1000, UpdatedAt: now}, 100, true},
+		{"stale", TranscriptUsage{Tokens: 900, ContextWindow: 1000, UpdatedAt: now.Add(-TranscriptFreshness)}, 0, false},
+		{"future", TranscriptUsage{Tokens: 900, ContextWindow: 1000, UpdatedAt: now.Add(time.Second)}, 0, false},
+		{"no timestamp", TranscriptUsage{Tokens: 900, ContextWindow: 1000}, 0, false},
+		{"unknown model", TranscriptUsage{Tokens: 90000, Model: "unknown-provider-model", UpdatedAt: now}, 0, false},
+		{"no denominator", TranscriptUsage{Tokens: 90000, UpdatedAt: now}, 0, false},
+		{"negative usage", TranscriptUsage{Tokens: -1, ContextWindow: 1000, UpdatedAt: now}, 0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, known := freshTranscriptUsagePercent(&tc.usage, now)
+			if got != tc.want || known != tc.known {
+				t.Fatalf("transcript reading = (%v, %t), want (%v, %t)", got, known, tc.want, tc.known)
+			}
+		})
+	}
+}
+
+func TestMaxPaneContextUsageSelectedPhysicalPanesAndEarlyStop(t *testing.T) {
+	panes := []tmux.Pane{
+		{ID: "1", Type: tmux.AgentGemini}, // window-local index is not identity
+		{ID: "%bad", Type: tmux.AgentGemini},
+		{ID: "%1", Type: tmux.AgentGemini, Dead: true},
+		{ID: "%2", Type: tmux.AgentGemini, Service: "cass"},
+		{ID: "%3", Type: tmux.AgentUser},
+		{ID: "%11", Index: 1, WindowIndex: 0, Type: tmux.AgentGemini, PID: 100},
+		{ID: "%11", Index: 1, WindowIndex: 0, Type: tmux.AgentGemini, PID: 100},
+		{ID: "%12", Index: 1, WindowIndex: 1, Type: tmux.AgentCodex, PID: 200},
+		{ID: "%13", Index: 2, WindowIndex: 1, Type: tmux.AgentGemini, PID: 300},
+	}
+	var captures []string
+	var transcripts []int
+	used, known := maxPaneContextUsage(t.Context(), panes, 60, true,
+		func(_ stdcontext.Context, id string) (string, error) {
+			captures = append(captures, id)
+			return "/model context\ngemini-pro 20% used", nil
+		},
+		func(_ stdcontext.Context, typ string, pid int) (*TranscriptUsage, bool) {
+			transcripts = append(transcripts, pid)
+			if typ != string(tmux.AgentCodex) || pid != 200 {
+				t.Fatalf("measurement reached wrong process: %s/%d", typ, pid)
+			}
+			return &TranscriptUsage{Tokens: 730, ContextWindow: 1000, UpdatedAt: time.Now()}, true
+		}, time.Now)
+	if used != 73 || !known || fmt.Sprint(captures) != "[%11]" || fmt.Sprint(transcripts) != "[200]" {
+		t.Fatalf("selected max = (%d, %t), captures=%v transcripts=%v", used, known, captures, transcripts)
+	}
+}
+
+func TestMaxPaneContextUsageRemoteNeverUsesLocalProcess(t *testing.T) {
+	for _, typ := range []tmux.AgentType{tmux.AgentClaude, tmux.AgentCodex, tmux.AgentGemini, tmux.AgentOmp} {
+		used, known := maxPaneContextUsage(t.Context(), []tmux.Pane{{ID: "%7", Type: typ, PID: os.Getpid()}}, 60, false,
+			func(stdcontext.Context, string) (string, error) { return "unknown visible frame", nil },
+			func(stdcontext.Context, string, int) (*TranscriptUsage, bool) {
+				t.Fatal("remote pane PID was looked up on the local machine")
+				return nil, false
+			}, time.Now)
+		if used != 0 || known {
+			t.Fatalf("remote %s without native evidence = (%d, %t)", typ, used, known)
+		}
+	}
+}
+
+func TestMaxPaneContextUsageExactProcessTranscripts(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("exact process fixture exercises Linux /proc file-descriptor binding")
+	}
+	root := t.TempDir()
+	t.Setenv("HOME", root)
+	cwd := filepath.Join(root, "project")
+	sessions := filepath.Join(root, ".codex", "sessions")
+	for _, dir := range []string{cwd, sessions} {
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	start := func(id string, tokens int, at time.Time) (int, string) {
+		t.Helper()
+		path := writeTranscript(t, sessions, "rollout-"+id+".jsonl",
+			fmt.Sprintf(`{"type":"session_meta","payload":{"id":%q,"cwd":%q}}`, id, cwd),
+			fmt.Sprintf(`{"timestamp":%q,"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":%d,"total_tokens":%d},"model_context_window":1000}}}`, at.UTC().Format(time.RFC3339Nano), tokens, tokens))
+		f, err := os.Open(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer f.Close()
+		cmd := exec.Command("sleep", "60")
+		cmd.Args[0], cmd.Dir, cmd.ExtraFiles = "codex", cwd, []*os.File{f}
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+		return cmd.Process.Pid, path
+	}
+	now := time.Now()
+	coolPID, coolPath := start("11111111-1111-4111-8111-111111111111", 200, now.Add(-time.Minute))
+	hotPID, hotPath := start("22222222-2222-4222-8222-222222222222", 900, now)
+	cool := tmux.Pane{ID: "%8", Index: 1, WindowIndex: 0, Type: tmux.AgentCodex, PID: coolPID}
+	hot := tmux.Pane{ID: "%9", Index: 1, WindowIndex: 1, Type: tmux.AgentCodex, PID: hotPID}
+	for _, tc := range []struct {
+		name  string
+		panes []tmux.Pane
+		want  int
+	}{
+		{"cool selected, newer hot unselected", []tmux.Pane{cool}, 20},
+		{"hot selected", []tmux.Pane{hot}, 90},
+		{"shared broadcast", []tmux.Pane{cool, hot}, 90},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			used, known, err := MaxPaneContextUsage(t.Context(), tmux.NewClient(""), tc.panes, 60)
+			if err != nil || !known || used != tc.want {
+				t.Fatalf("usage=(%d,%t,%v), want %d", used, known, err, tc.want)
+			}
+		})
+	}
+	for pid, path := range map[int]string{coolPID: coolPath, hotPID: hotPath} {
+		usage, ok := ProcessTranscriptUsage(t.Context(), "codex", pid)
+		if !ok || usage.Path != path {
+			t.Fatalf("PID %d read another pane's transcript: %+v, found=%t, want %s", pid, usage, ok, path)
+		}
+	}
+	used, known, err := MaxPaneContextUsage(t.Context(), tmux.NewClient("remote-host"), []tmux.Pane{hot}, 60)
+	if err != nil || known || used != 0 {
+		t.Fatalf("remote PID reused local evidence: (%d,%t,%v)", used, known, err)
+	}
+	ctx, cancel := stdcontext.WithCancel(t.Context())
+	cancel()
+	if usage, ok := ProcessTranscriptUsage(ctx, "codex", hotPID); ok || usage != nil {
+		t.Fatalf("canceled discovery returned %+v", usage)
+	}
+}
 
 // claudeLine builds a realistic Claude Code assistant transcript entry.
 func claudeLine(model string, input, cacheCreate, cacheRead, output int) string {

@@ -296,6 +296,166 @@ func runCASSFixtureSend(t *testing.T, ctx context.Context, extra ...string) (Sen
 	return result, runErr
 }
 
+// Two real transport identities deliberately share the same window-local
+// index. Only the selected physical pane's live gauge can affect enrichment.
+func sendCASSCapacityFixture(t *testing.T, mode string) (projectRoot, tmuxLog, cassDir string) {
+	t.Helper()
+	projectRoot, tmuxLog, cassDir = sendCASSCommandFixture(t, "")
+	t.Setenv("NTM_SEND_CASS_BASE_TMUX", os.Getenv("NTM_TMUX_BINARY"))
+	t.Setenv("NTM_SEND_CASS_CAPACITY_MODE", mode)
+	const script = `#!/bin/sh
+case "$1" in
+  list-panes)
+    printf '%s\n' "$*" >> "$NTM_WORKFLOW_TEST_ROOT/tmux-calls"
+    echo '%91_NTM_SEP_1_NTM_SEP_evidence-run__gmi_1_NTM_SEP_gemini_NTM_SEP_120_NTM_SEP_40_NTM_SEP_1_NTM_SEP_0_NTM_SEP_0_NTM_SEP_gmi_NTM_SEP__NTM_SEP__NTM_SEP_0'
+    echo '%92_NTM_SEP_1_NTM_SEP_evidence-run__gmi_2_NTM_SEP_gemini_NTM_SEP_120_NTM_SEP_40_NTM_SEP_0_NTM_SEP_0_NTM_SEP_1_NTM_SEP_gmi_NTM_SEP__NTM_SEP__NTM_SEP_0'
+    ;;
+  capture-pane)
+    printf '%s\n' "$*" >> "$NTM_WORKFLOW_TEST_ROOT/tmux-calls"
+    if [ "$NTM_SEND_CASS_CAPACITY_MODE" = wait ] && [ ! -f "$NTM_WORKFLOW_TEST_ROOT/capacity-started" ]; then
+      : > "$NTM_WORKFLOW_TEST_ROOT/capacity-started"
+      exec sleep 30
+    fi
+    case "$*" in *'%92'*) cat "$NTM_WORKFLOW_TEST_ROOT/hot-frame" ;; *) cat "$NTM_WORKFLOW_TEST_ROOT/cool-frame" ;; esac
+    ;;
+  *) exec "$NTM_SEND_CASS_BASE_TMUX" "$@" ;;
+esac
+`
+	for name, content := range map[string]string{
+		"capacity-tmux": script,
+		"cool-frame":    "> Type your message or @path/to/file\n/model context\ngemini-pro 20% used\n",
+		"hot-frame":     "> Type your message or @path/to/file\n/model context\ngemini-pro 90% used\n",
+	} {
+		if err := os.WriteFile(filepath.Join(projectRoot, name), []byte(content), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("NTM_TMUX_BINARY", filepath.Join(projectRoot, "capacity-tmux"))
+	return projectRoot, tmuxLog, cassDir
+}
+
+func TestSendCASSCommandRespectsSelectedPaneCapacity(t *testing.T) {
+	for _, mode := range []string{"cool-selected", "hot-selected", "shared-broadcast", "quota-unknown"} {
+		t.Run(mode, func(t *testing.T) {
+			projectRoot, tmuxLog, cassDir := sendCASSCapacityFixture(t, "")
+			var args []string
+			wantDelivered, skip := 1, false
+			switch mode {
+			case "hot-selected":
+				args, skip = []string{"--pane", "%92"}, true
+			case "shared-broadcast":
+				args, wantDelivered, skip = []string{"--pane", "", "--all"}, 2, true
+			case "quota-unknown":
+				frame := "> Type your message or @path/to/file\n/model quota\ngemini-pro 99% used\n"
+				if err := os.WriteFile(filepath.Join(projectRoot, "cool-frame"), []byte(frame), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			result, err := runCASSFixtureSend(t, t.Context(), args...)
+			if err != nil || !result.Success || result.Delivered != wantDelivered || result.CASSInjection == nil {
+				t.Fatalf("capacity-aware send failed: result=%+v error=%v", result, err)
+			}
+			log, err := os.ReadFile(tmuxLog)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if skip {
+				if result.CASSInjection.ItemsInjected != 0 || !strings.Contains(result.CASSInjection.SkippedReason, "context at 90%") {
+					t.Fatalf("hot target did not suppress history: %+v", result.CASSInjection)
+				}
+				for _, scope := range []string{"global", "workspace"} {
+					if _, err := os.Stat(filepath.Join(cassDir, scope+"-args")); !os.IsNotExist(err) {
+						t.Fatalf("hot target launched %s search: %v", scope, err)
+					}
+				}
+				if strings.Count(string(log), "Investigate database transaction contention") != wantDelivered {
+					t.Fatalf("capacity skip did not preserve delivery to all selected panes: %s", log)
+				}
+			} else {
+				if result.CASSInjection.ItemsInjected != 1 || result.CASSInjection.SkippedReason != "" {
+					t.Fatalf("unselected hot pane or unknown gauge suppressed enrichment: %+v", result.CASSInjection)
+				}
+				payload, err := os.ReadFile(filepath.Join(projectRoot, "delivered-prompt"))
+				if err != nil || !strings.Contains(string(payload), "TARGET_PROJECT_HISTORY") {
+					t.Fatalf("missing enriched delivery: %s (%v)", payload, err)
+				}
+				if strings.Contains(string(log), "capture-pane -t %92") {
+					t.Fatalf("inspected unselected hot pane: %s", log)
+				}
+			}
+		})
+	}
+}
+
+func TestSendCASSCommandCapacityMeasurementLifecycle(t *testing.T) {
+	for _, mode := range []string{"cancel", "deadline", "optional-probe-timeout"} {
+		t.Run(mode, func(t *testing.T) {
+			projectRoot, tmuxLog, cassDir := sendCASSCapacityFixture(t, "wait")
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			var watcherDone chan struct{}
+			if mode == "deadline" {
+				var stop context.CancelFunc
+				ctx, stop = context.WithTimeout(ctx, time.Second)
+				defer stop()
+			} else if mode == "cancel" {
+				watcherDone = make(chan struct{})
+				go func() {
+					defer close(watcherDone)
+					ticker := time.NewTicker(5 * time.Millisecond)
+					defer ticker.Stop()
+					for {
+						select {
+						case <-ctx.Done():
+							return
+						case <-ticker.C:
+							if _, err := os.Stat(filepath.Join(projectRoot, "capacity-started")); err == nil {
+								cancel()
+								return
+							}
+						}
+					}
+				}()
+			}
+			started := time.Now()
+			result, runErr := runCASSFixtureSend(t, ctx)
+			cancel()
+			if watcherDone != nil {
+				<-watcherDone
+			}
+			if elapsed := time.Since(started); elapsed > 5*time.Second {
+				t.Fatalf("capacity probe held send for %v", elapsed)
+			}
+			if _, err := os.Stat(filepath.Join(projectRoot, "capacity-started")); err != nil {
+				t.Fatalf("capacity probe never started: %v", err)
+			}
+			if mode == "optional-probe-timeout" {
+				if runErr != nil || !result.Success || result.Delivered != 1 || result.CASSInjection == nil || result.CASSInjection.ItemsInjected != 1 {
+					t.Fatalf("optional measurement deadline became a delivery gate: result=%+v error=%v", result, runErr)
+				}
+				return
+			}
+			if runErr == nil || result.Success || result.Delivered != 0 || result.ErrorCode != robot.ErrCodeTimeout || !strings.Contains(result.Error, "during CASS capacity measurement") {
+				t.Fatalf("capacity probe lost caller cancellation: result=%+v error=%v", result, runErr)
+			}
+			for _, scope := range []string{"global", "workspace"} {
+				if _, err := os.Stat(filepath.Join(cassDir, scope+"-args")); !os.IsNotExist(err) {
+					t.Fatalf("canceled probe launched CASS: %v", err)
+				}
+			}
+			log, err := os.ReadFile(tmuxLog)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, operation := range []string{"load-buffer", "paste-buffer", "send-keys"} {
+				if strings.Contains(string(log), operation) {
+					t.Fatalf("canceled measurement reached delivery: %s", log)
+				}
+			}
+		})
+	}
+}
+
 func TestSendCASSCommandUsesTargetProjectFromDifferentWorkspace(t *testing.T) {
 	for _, mode := range []string{"target-project", "preference-disabled", "unavailable-project"} {
 		t.Run(mode, func(t *testing.T) {

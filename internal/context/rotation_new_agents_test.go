@@ -461,20 +461,24 @@ func TestNativeCompactionBindsThroughTheAgentProcess(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(transcript), 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(transcript, []byte(`{"type":"assistant","message":{"model":"claude-opus-4","usage":{"input_tokens":150000}}}`+"\n"), 0600); err != nil {
+	// Native accounting timestamps, rather than file mtimes, establish freshness.
+	written := time.Now().Add(-5 * time.Second)
+	if err := os.WriteFile(transcript, []byte(`{"timestamp":"`+written.UTC().Format(time.RFC3339Nano)+`","type":"assistant","message":{"model":"claude-opus-4","usage":{"input_tokens":150000}}}`+"\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	// The baseline must predate the compaction's own write.
-	written := time.Now().Add(-5 * time.Second)
 	if err := os.Chtimes(transcript, written, written); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("ROTATION_COMPACTED_TRANSCRIPT", transcript)
-	t.Setenv("ROTATION_COMPACTED_LINE", `{"type":"assistant","message":{"model":"claude-opus-4","usage":{"input_tokens":30000}}}`)
+	t.Setenv("ROTATION_COMPACTED_LINE", `{"timestamp":"`+time.Now().UTC().Format(time.RFC3339Nano)+`","type":"assistant","message":{"model":"claude-opus-4","usage":{"input_tokens":30000}}}`)
 
 	original := paneProcessTranscriptUsage
 	t.Cleanup(func() { paneProcessTranscriptUsage = original })
-	paneProcessTranscriptUsage = func(agentType string, panePID int) (*TranscriptUsage, bool) {
+	paneProcessTranscriptUsage = func(ctx stdcontext.Context, agentType string, panePID int) (*TranscriptUsage, bool) {
+		if _, ok := ctx.Deadline(); !ok {
+			t.Fatal("process transcript discovery lost the compaction deadline")
+		}
 		if agentType != "claude" || panePID != 123 {
 			return nil, false
 		}

@@ -1,12 +1,77 @@
 package process
 
 import (
+	"context"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"testing"
 	"time"
 )
+
+func TestContextProcessQueriesCancelPortableCommands(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("portable command fixtures require a POSIX shell")
+	}
+	for _, name := range []string{"ps", "pgrep"} {
+		if name == "pgrep" && runtime.GOOS == "darwin" {
+			continue // macOS has a native process snapshot instead of pgrep
+		}
+		for _, body := range []string{"exec sleep 30", "sleep 4 &\nwait"} {
+			t.Run(name+"/"+body, func(t *testing.T) {
+				dir := t.TempDir()
+				marker := filepath.Join(dir, "started")
+				t.Setenv("NTM_PROCESS_CONTEXT_STARTED", marker)
+				script := "#!/bin/sh\n: > \"$NTM_PROCESS_CONTEXT_STARTED\"\n" + body + "\n"
+				if err := os.WriteFile(filepath.Join(dir, name), []byte(script), 0700); err != nil {
+					t.Fatal(err)
+				}
+				t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+				ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+				defer cancel()
+				done := make(chan int, 1)
+				go func() {
+					if name == "ps" {
+						done <- len(GetCmdlineContext(ctx, 999999999))
+					} else {
+						done <- len(GetChildPIDsContext(ctx, 999999999, 8))
+					}
+				}()
+				for {
+					if _, err := os.Stat(marker); err == nil {
+						break
+					}
+					select {
+					case <-ctx.Done():
+						t.Fatal("process query did not reach the portable command")
+					case <-time.After(5 * time.Millisecond):
+					}
+				}
+				cancel()
+				select {
+				case count := <-done:
+					if count != 0 {
+						t.Fatalf("canceled query returned %d results", count)
+					}
+				case <-time.After(time.Second):
+					t.Fatal("process query ignored cancellation or waited on inherited output pipes")
+				}
+			})
+		}
+	}
+}
+
+func TestContextProcessQueriesRejectCanceledCaller(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if got := GetCmdlineContext(ctx, os.Getpid()); got != nil {
+		t.Fatalf("canceled cmdline query = %v", got)
+	}
+	if got := GetChildPIDsContext(ctx, os.Getpid(), 8); got != nil {
+		t.Fatalf("canceled children query = %v", got)
+	}
+}
 
 func TestLivenessHelperProcess(t *testing.T) {
 	if os.Getenv("NTM_PROCESS_HELPER") != "exit-immediately" {

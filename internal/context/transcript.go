@@ -35,11 +35,14 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/agentsession"
+	"github.com/Dicklesworthstone/ntm/internal/models"
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 // TranscriptUsage is the last usage record extracted from an agent's own
@@ -651,9 +654,124 @@ func LatestAgentTranscriptUsage(agentType, cwd string, newerThan time.Time) (*Tr
 // so it holds where (agent type, cwd) correlation cannot attribute a
 // transcript: several panes of one agent type sharing a directory, the normal
 // NTM swarm layout. It reports false when there is no exact binding.
-func ProcessTranscriptUsage(agentType string, panePID int) (*TranscriptUsage, bool) {
-	info := agentsession.DiscoverProcessSession(agentType, panePID)
-	return readBoundTranscriptUsage(info)
+func ProcessTranscriptUsage(ctx stdcontext.Context, agentType string, panePID int) (*TranscriptUsage, bool) {
+	if ctx == nil || ctx.Err() != nil {
+		return nil, false
+	}
+	info := agentsession.DiscoverProcessSession(ctx, agentType, panePID)
+	if ctx.Err() != nil {
+		return nil, false
+	}
+	usage, ok := readBoundTranscriptUsage(info)
+	if ctx.Err() != nil {
+		return nil, false
+	}
+	return usage, ok
+}
+
+// MaxPaneContextUsage measures only the selected physical panes for optional
+// prompt enrichment. A shared broadcast must respect its fullest known target.
+// Unknown usage is distinct from a measured zero and never invents capacity
+// from scrollback, cwd correlation, or a provider's quota percentage.
+//
+// All probes share a two-second budget. Exhausting this optional budget keeps
+// any readings already obtained; canceling the caller discards them and fails
+// the operation. stopAt allows returning as soon as the caller's skip threshold
+// is reached. Percentages are truncated to the injection engines' whole-percent
+// contract, so a reading just below the threshold is never rounded up.
+func MaxPaneContextUsage(ctx stdcontext.Context, client *tmux.Client, panes []tmux.Pane, stopAt int) (percent int, known bool, err error) {
+	if ctx == nil {
+		return 0, false, fmt.Errorf("pane context measurement requires an operation context")
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, false, err
+	}
+	if client == nil {
+		client = tmux.DefaultClient
+	}
+	probeCtx, cancel := stdcontext.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	percent, known = maxPaneContextUsage(probeCtx, panes, stopAt, client.Remote == "",
+		client.CapturePaneVisibleContext, ProcessTranscriptUsage, time.Now)
+	if err := ctx.Err(); err != nil {
+		return 0, false, err
+	}
+	return percent, known, nil
+}
+
+func maxPaneContextUsage(ctx stdcontext.Context, panes []tmux.Pane, stopAt int, local bool,
+	capture func(stdcontext.Context, string) (string, error),
+	transcript func(stdcontext.Context, string, int) (*TranscriptUsage, bool),
+	now func() time.Time,
+) (percent int, known bool) {
+	seen := make(map[string]bool, len(panes))
+	for _, pane := range panes {
+		if ctx.Err() != nil {
+			break
+		}
+		if pane.Dead || pane.IsServicePane() || !strings.HasPrefix(pane.ID, "%") || seen[pane.ID] {
+			continue
+		}
+		if _, err := strconv.ParseUint(strings.TrimPrefix(pane.ID, "%"), 10, 64); err != nil {
+			continue // a window-local index cannot identify measurement evidence
+		}
+		seen[pane.ID] = true
+		agentType := agent.AgentType(pane.Type).Canonical()
+		switch agentType {
+		case agent.AgentTypeClaudeCode, agent.AgentTypeCodex, agent.AgentTypeGemini, agent.AgentTypeOmp:
+		default:
+			continue
+		}
+		var used float64
+		var measured bool
+		// Only these existing parsers establish a native context gauge from
+		// its live composer/footer structure. Codex's generic percentage regex
+		// can match quoted history, so Codex uses exact transcript binding.
+		if agentType == agent.AgentTypeGemini || agentType == agent.AgentTypeOmp {
+			if visible, err := capture(ctx, pane.ID); err == nil && ctx.Err() == nil {
+				if agentType == agent.AgentTypeOmp {
+					composer := agent.ParseOmpComposer(visible)
+					if composer.Found && composer.RowsBelow == 0 {
+						used, _, measured = agent.OmpContextUsage(visible)
+					}
+				} else if parsed, err := agent.NewParser().ParseWithHint(visible, agentType); err == nil && parsed.ContextRemaining != nil {
+					used, measured = 100-*parsed.ContextRemaining, true
+				}
+			}
+		}
+		if !measured && local && pane.PID > 0 && ctx.Err() == nil {
+			if usage, ok := transcript(ctx, string(agentType), pane.PID); ok {
+				used, measured = freshTranscriptUsagePercent(usage, now())
+			}
+		}
+		if ctx.Err() != nil {
+			break
+		}
+		if measured {
+			percent, known = max(percent, int(used)), true
+			if stopAt > 0 && percent >= stopAt {
+				return percent, known
+			}
+		}
+	}
+	return percent, known
+}
+
+func freshTranscriptUsagePercent(usage *TranscriptUsage, now time.Time) (float64, bool) {
+	if usage == nil || usage.Tokens < 0 || TranscriptConfidence(usage.UpdatedAt, now) != "high" {
+		return 0, false
+	}
+	limit := usage.ContextWindow
+	if limit <= 0 {
+		if !models.KnownModel(usage.Model) {
+			return 0, false
+		}
+		limit = models.GetContextLimit(usage.Model)
+	}
+	if limit <= 0 {
+		return 0, false
+	}
+	return min(float64(usage.Tokens)*100/float64(limit), 100), true
 }
 
 func readBoundTranscriptUsage(info *agentsession.Info) (*TranscriptUsage, bool) {
