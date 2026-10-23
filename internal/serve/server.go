@@ -5364,37 +5364,34 @@ func (c *WSClient) handleSubscribe(msg WSMessage) {
 		}
 	}
 
+	response := map[string]interface{}{"subscribed": topics}
+	if attentionResult != nil {
+		response["attention"] = attentionResult
+	}
+
 	// Regular topics are only committed after any durable attention request has
 	// been accepted, keeping a single subscribe message all-or-nothing.
-	var replayInfo map[string]interface{}
 	if len(regularTopics) > 0 {
 		if since >= 0 {
-			// Replay-then-live is serialized through the hub loop; the replay
-			// frames are queued to this client's send channel before the ack
-			// below, so the ack marks the end of replay.
-			res := c.hub.SubscribeWithReplay(c, regularTopics, since)
-			replayInfo = map[string]interface{}{
-				"since":    since,
-				"replayed": res.replayed,
-				"reset":    res.reset,
-				"cursor":   res.cursor,
-			}
+			// Queue the completion ack on the hub loop too: live delivery
+			// must not overtake it or consume the slot reserved for it.
+			c.hub.SubscribeWithReplay(c, regularTopics, since, func(res wsReplayResult) bool {
+				response["total"] = len(c.Topics())
+				response["replay"] = map[string]interface{}{
+					"since":    since,
+					"replayed": res.replayed,
+					"reset":    res.reset,
+					"cursor":   res.cursor,
+				}
+				return c.sendAck(msg.RequestID, response)
+			})
+			return
 		} else {
 			c.Subscribe(regularTopics)
 		}
 	}
 
-	// Build response
-	response := map[string]interface{}{
-		"subscribed": topics,
-		"total":      len(c.Topics()),
-	}
-	if attentionResult != nil {
-		response["attention"] = attentionResult
-	}
-	if replayInfo != nil {
-		response["replay"] = replayInfo
-	}
+	response["total"] = len(c.Topics())
 	c.sendAck(msg.RequestID, response)
 }
 
@@ -5920,7 +5917,7 @@ func (c *WSClient) sendError(requestID, code, message string) {
 }
 
 // sendAck sends a WebSocket acknowledgment frame.
-func (c *WSClient) sendAck(requestID string, data map[string]interface{}) {
+func (c *WSClient) sendAck(requestID string, data map[string]interface{}) bool {
 	ack := WSMessage{
 		Type:      WSMsgAck,
 		Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
@@ -5929,9 +5926,9 @@ func (c *WSClient) sendAck(requestID string, data map[string]interface{}) {
 	}
 	msg, err := json.Marshal(ack)
 	if err != nil {
-		return
+		return false
 	}
-	c.trySend(msg, func() {
+	return c.trySend(msg, func() {
 		log.Printf("ws client buffer full, dropping ack id=%s", c.id)
 	})
 }

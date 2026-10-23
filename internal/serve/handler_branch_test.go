@@ -11708,7 +11708,7 @@ func TestWSEventStore_GetSinceDB_TopicFilterWithLimit(t *testing.T) {
 	}
 
 	// Query from DB with topic filter and limit=2
-	events, reset, err := store.getFromDB(0, "topicA", 2)
+	events, reset, err := store.getFromDB(0, []string{"topicA"}, 2)
 	if err != nil {
 		t.Fatalf("getFromDB: %v", err)
 	}
@@ -11747,7 +11747,7 @@ func TestWSEventStore_GetSinceDB_CursorTooOldBranch(t *testing.T) {
 	// Query with since=1, topic="nonexistent" — SQL fetches events 100-104 (seq > 1),
 	// but Go topic filter removes all → len(events)=0.
 	// since=1 > 0, minSeq=100, 1 < 100-1=99 → reset=true
-	events, reset, err := store.getFromDB(1, "nonexistent", 10)
+	events, reset, err := store.getFromDB(1, []string{"nonexistent"}, 10)
 	if err != nil {
 		t.Fatalf("getFromDB: %v", err)
 	}

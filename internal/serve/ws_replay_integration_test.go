@@ -254,6 +254,434 @@ func TestWSReplayIntegration_ReconnectWithCursor(t *testing.T) {
 	t.Logf("WS_PHASE4 gap replayed exactly once; live resumed at seq=%d", seq)
 }
 
+func TestWSReplayIntegration_ReconnectReplaysSparseMultipleTopics(t *testing.T) {
+	stateStore := newMigratedStateStore(t)
+	srv := New(Config{StateStore: stateStore})
+	defer srv.Stop()
+	httpSrv := httptest.NewServer(srv.Router())
+	defer httpSrv.Close()
+
+	const sessionTopic = "sessions:sparse-replay"
+	const paneTopic = "panes:sparse-replay:0"
+	topics := []string{sessionTopic, "panes:sparse-replay:*", paneTopic}
+	conn1 := dialWS(t, httpSrv)
+	defer conn1.Close()
+	reader1 := newWSFrameReader(t, conn1, "sparse-before-disconnect")
+	subscribeWS(t, conn1, topics, -1)
+	if frame := reader1.next(2 * time.Second); frame["type"] != "ack" {
+		t.Fatalf("initial subscribe: %v", frame)
+	}
+	srv.wsHub.Publish(sessionTopic, "session.updated", "before disconnect")
+	initial := reader1.next(2 * time.Second)
+	if initial["type"] != "event" {
+		t.Fatalf("initial live event: %v", initial)
+	}
+	cursor := frameSeq(t, initial)
+	conn1.Close()
+
+	// Add durable history while disconnected. Go through Store directly so
+	// the publisher's bounded live queue cannot drop our unrelated fixtures.
+	// The old multi-topic replay consumed its entire limit before reaching
+	// any matching topic and falsely acknowledged an empty successful replay.
+	store := srv.wsHub.eventStore()
+	if store == nil {
+		t.Fatal("server did not attach the durable event store")
+	}
+	for i := 0; i < wsReplayLimit+5; i++ {
+		if _, err := store.Store("panes:unrelated:0", "pane.output", i); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var expected []*WSStoredEvent
+	for _, topic := range []string{sessionTopic, paneTopic, "panes:sparse-replay:1"} {
+		event, err := store.Store(topic, "test.updated", map[string]interface{}{"topic": topic})
+		if err != nil {
+			t.Fatal(err)
+		}
+		expected = append(expected, event)
+	}
+
+	conn2 := dialWS(t, httpSrv)
+	defer conn2.Close()
+	reader2 := newWSFrameReader(t, conn2, "sparse-reconnected")
+	subscribeWS(t, conn2, topics, cursor)
+	for _, want := range expected {
+		frame := reader2.next(2 * time.Second)
+		if frame["type"] != "event" || frame["replay"] != true || frame["topic"] != want.Topic {
+			t.Fatalf("missing matching replay event cursor=%d topic=%s: %v", want.Seq, want.Topic, frame)
+		}
+		if got := frameSeq(t, frame); got != want.Seq {
+			t.Fatalf("replay cursor=%d, want %d", got, want.Seq)
+		}
+	}
+	// The exact pane topic overlaps the wildcard; it must appear only once.
+	ack := reader2.next(2 * time.Second)
+	if ack["type"] != "ack" {
+		t.Fatalf("expected acknowledgement after the complete filtered replay, got %v", ack)
+	}
+	data, ok := ack["data"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("ack has no data: %v", ack)
+	}
+	replay, ok := data["replay"].(map[string]interface{})
+	if !ok || replay["reset"] != false || replay["replayed"] != float64(len(expected)) {
+		t.Fatalf("incorrect filtered replay acknowledgement: %v", ack)
+	}
+	lastSeq := expected[len(expected)-1].Seq
+	if replay["cursor"] != float64(lastSeq) {
+		t.Fatalf("replay acknowledgement cursor=%v, want %d", replay["cursor"], lastSeq)
+	}
+
+	srv.wsHub.Publish(paneTopic, "pane.output", "live after filtered replay")
+	live := reader2.next(2 * time.Second)
+	if live["type"] != "event" || live["replay"] != nil || frameSeq(t, live) != lastSeq+1 {
+		t.Fatalf("live delivery did not continue after filtered replay: %v", live)
+	}
+}
+
+func TestWSHub_ReplayIsCompleteOrReset(t *testing.T) {
+	tests := []struct {
+		name       string
+		events     int
+		capacity   int
+		occupied   int
+		wantReason string
+	}{
+		{name: "exact fit including ack", events: 3, capacity: 4},
+		{name: "reserve ack slot", events: 3, capacity: 3, wantReason: "replay_overflow"},
+		{name: "existing queued frames reduce space", events: 3, capacity: 5, occupied: 2, wantReason: "replay_overflow"},
+		{name: "exact fit with queued frame", events: 3, capacity: 5, occupied: 1},
+		{name: "at replay limit", events: wsReplayLimit, capacity: wsReplayLimit + 1},
+		{name: "over replay limit despite sufficient queue", events: wsReplayLimit + 1, capacity: wsReplayLimit + 3, wantReason: "replay_limit_exceeded"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := NewWSEventStore(nil, WSEventStoreConfig{BufferSize: wsReplayLimit + 2})
+			defer store.Stop()
+			const topic = "panes:bounded-replay:0"
+			for i := 0; i < tt.events; i++ {
+				if _, err := store.Store(topic, "pane.output", i); err != nil {
+					t.Fatal(err)
+				}
+			}
+			hub := NewWSHub()
+			hub.SetEventStore(store)
+			go hub.Run()
+			defer hub.Stop()
+			// No writePump drains this queue, making admission and the slot
+			// reserved for the real subscribe acknowledgement deterministic.
+			client := &WSClient{id: "bounded-replay", hub: hub, send: make(chan []byte, tt.capacity), topics: make(map[string]struct{})}
+			for i := 0; i < tt.occupied; i++ {
+				client.send <- []byte(`{"type":"pong"}`)
+			}
+			client.handleSubscribe(WSMessage{
+				RequestID: "bounded-replay-request",
+				Data: map[string]interface{}{
+					"topics": []interface{}{topic},
+					"since":  float64(0),
+				},
+			})
+
+			wantReplayed := tt.events
+			wantQueued := tt.occupied + tt.events + 1
+			if tt.wantReason != "" {
+				wantReplayed = 0
+				wantQueued = tt.occupied + 2 // reset followed by the ack
+			}
+			if len(client.send) != wantQueued {
+				t.Fatalf("queued %d frames, want %d (complete replay or explicit reset, then ack)", len(client.send), wantQueued)
+			}
+			for i := 0; i < tt.occupied; i++ {
+				if frame := queuedWSReplayFrame(t, client); frame["type"] != "pong" {
+					t.Fatalf("preexisting queued frame was changed: %v", frame)
+				}
+			}
+			if tt.wantReason != "" {
+				frame := queuedWSReplayFrame(t, client)
+				if frame["type"] != "stream.reset" || frame["reason"] != tt.wantReason {
+					t.Fatalf("partial history must reset before delivering any replay: %v", frame)
+				}
+				if frame["current_seq"] != float64(tt.events) {
+					t.Fatalf("reset cursor=%v, want %d", frame["current_seq"], tt.events)
+				}
+			} else {
+				for i := 0; i < tt.events; i++ {
+					frame := queuedWSReplayFrame(t, client)
+					if frame["type"] != "event" || frame["replay"] != true || frameSeq(t, frame) != int64(i+1) {
+						t.Fatalf("replay %d missing, out of order, or unmarked: %v", i, frame)
+					}
+				}
+			}
+			ack := queuedWSReplayFrame(t, client)
+			if ack["type"] != "ack" || ack["request_id"] != "bounded-replay-request" {
+				t.Fatalf("replay did not reserve space for its acknowledgement: %v", ack)
+			}
+			data, ok := ack["data"].(map[string]interface{})
+			if !ok {
+				t.Fatalf("ack has no data: %v", ack)
+			}
+			replay, ok := data["replay"].(map[string]interface{})
+			if !ok || replay["reset"] != (tt.wantReason != "") || replay["replayed"] != float64(wantReplayed) {
+				t.Fatalf("partial replay must never be acknowledged as success: %v", ack)
+			}
+			if replay["cursor"] != float64(tt.events) {
+				t.Fatalf("ack cursor=%v, want %d", replay["cursor"], tt.events)
+			}
+			if len(client.send) != 0 {
+				t.Fatalf("unexpected %d frames after replay acknowledgement", len(client.send))
+			}
+		})
+	}
+}
+
+func TestWSHub_ReplayCompletionPrecedesQueuedLiveEvent(t *testing.T) {
+	store := NewWSEventStore(nil, WSEventStoreConfig{BufferSize: 8})
+	defer store.Stop()
+	const topic = "panes:replay-ack:0"
+	for i := 0; i < 2; i++ {
+		if _, err := store.Store(topic, "pane.output", i); err != nil {
+			t.Fatal(err)
+		}
+	}
+	hub := NewWSHub()
+	hub.SetEventStore(store)
+	go hub.Run()
+	defer hub.Stop()
+	client := &WSClient{id: "replay-ack", hub: hub, send: make(chan []byte, 4), topics: make(map[string]struct{})}
+	if !hub.RegisterClient(client) {
+		t.Fatal("register replay client")
+	}
+	entered := make(chan struct{})
+	allowAck := make(chan struct{})
+	finished := make(chan wsReplayResult, 1)
+	go func() {
+		finished <- hub.SubscribeWithReplay(client, []string{topic}, 0, func(result wsReplayResult) bool {
+			close(entered)
+			select {
+			case <-allowAck:
+			case <-hub.done:
+				return false
+			}
+			return client.sendAck("serialized-replay", map[string]interface{}{
+				"replay": map[string]interface{}{"replayed": result.replayed, "reset": result.reset, "cursor": result.cursor},
+			})
+		})
+	}()
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("replay did not invoke its completion callback")
+	}
+	// The next broadcast is ready while completion is deliberately blocked.
+	// The hub must keep it behind the subscribe acknowledgement.
+	hub.Publish(topic, "pane.output", "live queued before ack")
+	if got := store.CurrentSeq(); got != 2 {
+		t.Fatalf("hub processed a live event before replay completion: cursor=%d", got)
+	}
+	if len(client.send) != 2 {
+		t.Fatalf("expected only the two replay frames before completion, got %d", len(client.send))
+	}
+	select {
+	case result := <-finished:
+		t.Fatalf("replay returned before its acknowledgement was queued: %+v", result)
+	default:
+	}
+	close(allowAck)
+	select {
+	case result := <-finished:
+		if result.reset || result.replayed != 2 || result.cursor != 2 {
+			t.Fatalf("unexpected completed replay: %+v", result)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("replay did not return after its acknowledgement was queued")
+	}
+	for i := 0; i < 4; i++ {
+		var raw []byte
+		select {
+		case raw = <-client.send:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out waiting for ordered frame %d", i)
+		}
+		var frame map[string]interface{}
+		if err := json.Unmarshal(raw, &frame); err != nil {
+			t.Fatal(err)
+		}
+		switch {
+		case i < 2:
+			if frame["type"] != "event" || frame["replay"] != true || frameSeq(t, frame) != int64(i+1) {
+				t.Fatalf("replay frame %d: %v", i, frame)
+			}
+		case i == 2:
+			if frame["type"] != "ack" || frame["request_id"] != "serialized-replay" {
+				t.Fatalf("queued live broadcast passed the replay acknowledgement: %v", frame)
+			}
+		default:
+			if frame["type"] != "event" || frame["replay"] != nil || frameSeq(t, frame) != 3 {
+				t.Fatalf("live delivery did not follow the replay acknowledgement: %v", frame)
+			}
+		}
+	}
+}
+
+func TestWSHub_ReplayFailedCompletionRetainsResetBarrier(t *testing.T) {
+	store := NewWSEventStore(nil, WSEventStoreConfig{BufferSize: 8})
+	defer store.Stop()
+	const topic = "panes:failed-replay-ack:0"
+	for i := 0; i < 2; i++ {
+		if _, err := store.Store(topic, "pane.output", i); err != nil {
+			t.Fatal(err)
+		}
+	}
+	hub := NewWSHub()
+	hub.SetEventStore(store)
+	defer hub.Stop()
+	client := &WSClient{id: "failed-replay-ack", hub: hub, send: make(chan []byte, 3), topics: make(map[string]struct{})}
+	hub.clients[client] = struct{}{}
+	completed := false
+	req := &wsReplayRequest{
+		client: client, topics: []string{topic}, since: 0, resp: make(chan wsReplayResult, 1),
+		complete: func(result wsReplayResult) bool {
+			completed = true
+			if result.reset || result.replayed != 2 {
+				t.Fatalf("replay failed before the completion callback: %+v", result)
+			}
+			// A concurrent control frame consumed the reserved ack slot.
+			if !client.trySend([]byte(`{"type":"pong"}`), nil) {
+				t.Fatal("replay did not reserve an acknowledgement slot")
+			}
+			return client.sendAck("failed-replay", map[string]interface{}{"replayed": result.replayed})
+		},
+	}
+	hub.handleReplay(req)
+	result := <-req.resp
+	if !completed || !result.reset || result.replayed != 2 || result.cursor != 2 {
+		t.Fatalf("failed acknowledgement was reported as successful completion: called=%v result=%+v", completed, result)
+	}
+	if _, pending := hub.pendingResets[client]; !pending {
+		t.Fatal("failed completion lost the replay reset barrier")
+	}
+	for i := 0; i < 2; i++ {
+		frame := queuedWSReplayFrame(t, client)
+		if frame["type"] != "event" || frame["replay"] != true || frameSeq(t, frame) != int64(i+1) {
+			t.Fatalf("replay prefix %d changed after ack failure: %v", i, frame)
+		}
+	}
+	if frame := queuedWSReplayFrame(t, client); frame["type"] != "pong" {
+		t.Fatalf("expected the control frame that filled the ack slot: %v", frame)
+	}
+	hub.broadcastEvent(&WSEvent{Type: WSMsgEvent, Topic: topic, EventType: "pane.output", Data: "live after failed ack"})
+	reset := queuedWSReplayFrame(t, client)
+	if reset["type"] != "stream.reset" || reset["reason"] != "replay_overflow" {
+		t.Fatalf("live delivery bypassed a failed replay acknowledgement: %v", reset)
+	}
+	live := queuedWSReplayFrame(t, client)
+	if live["type"] != "event" || live["replay"] != nil || frameSeq(t, live) != 3 {
+		t.Fatalf("live delivery did not follow the completion reset: %v", live)
+	}
+}
+
+func TestWSHub_ReplayOverflowResetSurvivesBackpressure(t *testing.T) {
+	store := NewWSEventStore(nil, WSEventStoreConfig{BufferSize: 8})
+	defer store.Stop()
+	const topic = "panes:replay-reset:0"
+	for i := 0; i < 3; i++ {
+		if _, err := store.Store(topic, "pane.output", i); err != nil {
+			t.Fatal(err)
+		}
+	}
+	hub := NewWSHub()
+	hub.SetEventStore(store)
+	defer hub.Stop()
+	client := &WSClient{id: "full-replay", hub: hub, send: make(chan []byte, 2), topics: make(map[string]struct{})}
+	hub.clients[client] = struct{}{}
+	client.send <- []byte(`{"type":"pong"}`)
+	client.send <- []byte(`{"type":"pong"}`)
+	req := &wsReplayRequest{client: client, topics: []string{topic}, since: 0, resp: make(chan wsReplayResult, 1)}
+	hub.handleReplay(req)
+	result := <-req.resp
+	if !result.reset || result.replayed != 0 || result.cursor != 3 {
+		t.Fatalf("full queue falsely accepted a partial replay: %+v", result)
+	}
+	if _, pending := hub.pendingResets[client]; !pending {
+		t.Fatal("full queue lost the required replay reset")
+	}
+	for i := 0; i < 2; i++ {
+		if frame := queuedWSReplayFrame(t, client); frame["type"] != "pong" {
+			t.Fatalf("overflow emitted a partial replay: %v", frame)
+		}
+	}
+	hub.broadcastEvent(&WSEvent{Type: WSMsgEvent, Topic: topic, EventType: "pane.output", Data: "live after overflow"})
+	reset := queuedWSReplayFrame(t, client)
+	if reset["type"] != "stream.reset" || reset["reason"] != "replay_overflow" {
+		t.Fatalf("live delivery bypassed the replay reset barrier: %v", reset)
+	}
+	live := queuedWSReplayFrame(t, client)
+	if live["type"] != "event" || live["replay"] != nil || frameSeq(t, live) != 4 {
+		t.Fatalf("live delivery did not resume after the reset: %v", live)
+	}
+}
+
+func TestWSHub_ReplayInvalidPayloadResetsBeforeDelivery(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+	store := NewWSEventStore(db, WSEventStoreConfig{BufferSize: 8})
+	defer store.Stop()
+	const topic = "panes:invalid-replay:0"
+	for i := 0; i < 3; i++ {
+		if _, err := store.Store(topic, "pane.output", i); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Corrupt a later durable payload, so streaming frames while marshaling
+	// would leak a valid prefix before discovering the replay cannot complete.
+	if _, err := db.Exec("UPDATE ws_events SET data = ? WHERE seq = ?", "{", 2); err != nil {
+		t.Fatal(err)
+	}
+	hub := NewWSHub()
+	hub.SetEventStore(store)
+	go hub.Run()
+	defer hub.Stop()
+	client := &WSClient{id: "invalid-replay", hub: hub, send: make(chan []byte, 4), topics: make(map[string]struct{})}
+	client.handleSubscribe(WSMessage{
+		RequestID: "invalid-replay-request",
+		Data:      map[string]interface{}{"topics": []interface{}{topic}, "since": float64(0)},
+	})
+	if len(client.send) != 2 {
+		t.Fatalf("invalid history queued %d frames, want only reset and ack", len(client.send))
+	}
+	reset := queuedWSReplayFrame(t, client)
+	if reset["type"] != "stream.reset" || reset["reason"] != "replay_failed" {
+		t.Fatalf("invalid history delivered a partial replay: %v", reset)
+	}
+	ack := queuedWSReplayFrame(t, client)
+	if ack["type"] != "ack" {
+		t.Fatalf("expected ack after replay failure, got %v", ack)
+	}
+	data, ok := ack["data"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("ack has no data: %v", ack)
+	}
+	replay, ok := data["replay"].(map[string]interface{})
+	if !ok || replay["reset"] != true || replay["replayed"] != float64(0) {
+		t.Fatalf("invalid history was acknowledged as successful replay: %v", ack)
+	}
+}
+
+func queuedWSReplayFrame(t *testing.T, client *WSClient) map[string]interface{} {
+	t.Helper()
+	select {
+	case raw := <-client.send:
+		var frame map[string]interface{}
+		if err := json.Unmarshal(raw, &frame); err != nil {
+			t.Fatalf("decode queued frame %q: %v", raw, err)
+		}
+		return frame
+	default:
+		t.Fatal("expected a queued WebSocket frame")
+		return nil
+	}
+}
+
 // TestWSReplayIntegration_NoStateStore_StreamReset proves graceful
 // degradation: without a state store the socket still works, and a cursor
 // resume request yields a stream.reset (replay unavailable) plus an ack

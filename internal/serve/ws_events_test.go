@@ -219,6 +219,142 @@ func TestWSEventStore_TopicFilter(t *testing.T) {
 	t.Logf("WS_EVENTS_TEST: topic filtering passed")
 }
 
+func TestWSEventStore_FilteredReplayFindsSparseTopics(t *testing.T) {
+	for _, backend := range []string{"memory", "sqlite"} {
+		t.Run(backend, func(t *testing.T) {
+			var db *sql.DB
+			if backend == "sqlite" {
+				var cleanup func()
+				db, cleanup = setupTestDB(t)
+				defer cleanup()
+			}
+			store := NewWSEventStore(db, WSEventStoreConfig{BufferSize: 128, CleanupInterval: time.Hour})
+			defer store.Stop()
+
+			// Matching events start after more than limit*10 unrelated events.
+			// Filtering an oversampled global prefix silently loses this history.
+			for i := 0; i < 45; i++ {
+				if _, err := store.Store("panes:unrelated:0", "pane.output", i); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, topic := range []string{
+				"sessions:target", // 46
+				"panes:target:0",  // 47
+				"sessions:other",  // 48
+				"panes:target:1",  // 49
+				"sessions:target", // 50
+				"panes:other:0",   // 51
+				"panes:target:2",  // 52
+			} {
+				if _, err := store.Store(topic, "test.event", nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			// Keep the public single-topic API covered as well as the hub's
+			// multi-topic query, including overlapping patterns and pagination.
+			tests := []struct {
+				name   string
+				topics []string
+				since  int64
+				limit  int
+				want   []int64
+			}{
+				{name: "single exact", topics: []string{"sessions:target"}, limit: 2, want: []int64{46, 50}},
+				{name: "single wildcard", topics: []string{"panes:target:*"}, limit: 2, want: []int64{47, 49}},
+				{name: "multiple topics before limit", topics: []string{"sessions:target", "panes:target:*"}, limit: 3, want: []int64{46, 47, 49}},
+				{name: "overlapping patterns once", topics: []string{"panes:target:0", "panes:target:*", "sessions:target"}, limit: 3, want: []int64{46, 47, 49}},
+				{name: "resume filtered page", topics: []string{"sessions:target", "panes:target:*"}, since: 49, limit: 3, want: []int64{50, 52}},
+			}
+			for _, tt := range tests {
+				t.Run(tt.name, func(t *testing.T) {
+					var events []WSStoredEvent
+					var reset bool
+					var err error
+					if len(tt.topics) == 1 {
+						events, reset, err = store.GetSince(tt.since, tt.topics[0], tt.limit)
+					} else {
+						events, reset, err = store.getSinceTopics(tt.since, tt.topics, tt.limit)
+					}
+					if err != nil || reset {
+						t.Fatalf("filtered replay: reset=%v err=%v", reset, err)
+					}
+					if len(events) != len(tt.want) {
+						t.Fatalf("filtered replay returned %d events, want cursors %v: %+v", len(events), tt.want, events)
+					}
+					for i, want := range tt.want {
+						if events[i].Seq != want {
+							t.Errorf("event %d cursor=%d, want %d", i, events[i].Seq, want)
+						}
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestWSEventStore_TopicMatchingPreservesLiteralCharacters(t *testing.T) {
+	for _, backend := range []string{"memory", "sqlite"} {
+		t.Run(backend, func(t *testing.T) {
+			var db *sql.DB
+			if backend == "sqlite" {
+				var cleanup func()
+				db, cleanup = setupTestDB(t)
+				defer cleanup()
+			}
+			store := NewWSEventStore(db, WSEventStoreConfig{BufferSize: 32, CleanupInterval: time.Hour})
+			defer store.Stop()
+			for _, topic := range []string{
+				"panes:Build_%[x]?:0",        // 1
+				"panes:build_%[x]?:0",        // 2: different case
+				"panes:Build_Ax?:0",          // 3: SQL wildcard lookalike
+				"panes:Build_%[x]?:1",        // 4
+				"panes:Build_%[x]?:nested:0", // 5
+				"panes:Build_%[x]?sibling:0", // 6: different prefix boundary
+				"sessions:O'Reilly_%[team]",  // 7: literal SQL quote
+				"panes:雪_%[x]?:0",            // 8: multibyte prefix
+				"panes:雪_Ax:0",               // 9: SQL wildcard lookalike
+				"panes:Build_*",              // 10: only ':*' is a prefix pattern
+			} {
+				if _, err := store.Store(topic, "test.event", nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			tests := []struct {
+				name   string
+				topics []string
+				want   []int64
+			}{
+				{name: "exact case and punctuation", topics: []string{"panes:Build_%[x]?:0"}, want: []int64{1}},
+				{name: "literal prefix wildcard", topics: []string{"panes:Build_%[x]?:*"}, want: []int64{1, 4, 5}},
+				{name: "quoted exact topic", topics: []string{"sessions:O'Reilly_%[team]"}, want: []int64{7}},
+				{name: "unicode prefix", topics: []string{"panes:雪_%[x]?:*"}, want: []int64{8}},
+				{name: "literal embedded star", topics: []string{"panes:Build_*"}, want: []int64{10}},
+				{name: "literal union", topics: []string{"panes:Build_%[x]?:*", "sessions:O'Reilly_%[team]"}, want: []int64{1, 4, 5, 7}},
+				{name: "global wildcard with other filters", topics: []string{"absent", "*", "sessions:target"}, want: []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}},
+				{name: "unfiltered", want: []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}},
+			}
+			for _, tt := range tests {
+				t.Run(tt.name, func(t *testing.T) {
+					events, reset, err := store.getSinceTopics(0, tt.topics, 100)
+					if err != nil || reset {
+						t.Fatalf("literal topic replay: reset=%v err=%v", reset, err)
+					}
+					if len(events) != len(tt.want) {
+						t.Fatalf("literal matching returned %d events, want cursors %v: %+v", len(events), tt.want, events)
+					}
+					for i, want := range tt.want {
+						if events[i].Seq != want {
+							t.Errorf("event %d cursor=%d, want %d", i, events[i].Seq, want)
+						}
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestWSEventStore_RingBufferOverflow(t *testing.T) {
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
