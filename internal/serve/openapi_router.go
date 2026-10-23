@@ -353,11 +353,11 @@ func buildRouterOperation(rt RouterRoute, components *OpenAPIComponents) *Operat
 			"500": errorResponse("Internal server error"),
 		},
 	}
-	if isMailProjectRoute(rt.Pattern) {
+	if isAgentMailProjectRoute(rt.Pattern) {
 		op.Parameters = append(op.Parameters, Parameter{
 			Name:        "project",
 			In:          "query",
-			Description: "Existing absolute project directory on the server host. Overrides the configured project for this mail request only; omitted uses the server default. Idempotency is scoped to the effective project.",
+			Description: "Existing absolute project directory on the server host. Overrides the configured project for this mail or reservation request only; omitted uses the server default. The effective project is fixed before execution and idempotency replay, and scopes reservation approvals and events.",
 			Schema:      &Schema{Type: "string"},
 		})
 	}

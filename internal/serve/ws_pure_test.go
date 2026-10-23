@@ -295,7 +295,7 @@ func TestPublishMailEvent_NilHub(t *testing.T) {
 func TestPublishReservationEvent_NilHub(t *testing.T) {
 	s := &Server{wsHub: nil}
 	// Should not panic
-	s.publishReservationEvent("agent1", "reserved", map[string]interface{}{"path": "*.go"})
+	s.publishReservationEvent("/project", "agent1", "reserved", map[string]interface{}{"path": "*.go"})
 }
 
 // =============================================================================
@@ -331,8 +331,8 @@ func TestPublishReservationEvent_WithHub(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 
 	s := &Server{wsHub: hub}
-	s.publishReservationEvent("agent1", "reserved", map[string]interface{}{"path": "*.go"})
-	s.publishReservationEvent("", "broadcast", nil)
+	s.publishReservationEvent("/project", "agent1", "reserved", map[string]interface{}{"path": "*.go"})
+	s.publishReservationEvent("/project", "", "broadcast", nil)
 }
 
 func TestPublishPipelineEvent_WithHub(t *testing.T) {

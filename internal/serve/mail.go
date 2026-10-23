@@ -392,24 +392,26 @@ type mailProjectScope struct {
 	err     error
 }
 
-func isMailProjectRoute(path string) bool {
-	return strings.HasPrefix(path, "/api/v1/mail/") && strings.TrimSuffix(path, "/") != "/api/v1/mail/health"
+func isAgentMailProjectRoute(path string) bool {
+	return path == "/api/v1/reservations" || strings.HasPrefix(path, "/api/v1/reservations/") ||
+		(strings.HasPrefix(path, "/api/v1/mail/") && strings.TrimSuffix(path, "/") != "/api/v1/mail/health")
 }
 
 // mailProjectScopeMiddleware freezes the effective project before idempotency
-// lookup. A concurrent configuration PATCH must not redirect an in-flight mail
-// operation, or replay a previous project's successful mutation. Resolution
-// errors are handled after the route's permission check, not here.
+// lookup for both mail and file reservations. A concurrent configuration PATCH
+// must not redirect an in-flight operation or replay a previous project's
+// successful mutation. Resolution errors are handled after the route's
+// permission check, not here.
 func (s *Server) mailProjectScopeMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !isMailProjectRoute(r.URL.Path) {
+		if !isAgentMailProjectRoute(r.URL.Path) {
 			next.ServeHTTP(w, r)
 			return
 		}
 		scope := mailProjectScope{project: s.projectDirSnapshot()}
 		query, err := url.ParseQuery(r.URL.RawQuery)
 		if err != nil {
-			scope.err = fmt.Errorf("invalid mail query: %w", err)
+			scope.err = fmt.Errorf("invalid project query: %w", err)
 		} else if projects, present := query["project"]; present {
 			if len(projects) != 1 || !filepath.IsAbs(projects[0]) {
 				scope.err = errors.New("project must be a single absolute directory path")
@@ -485,16 +487,16 @@ func (s *Server) registerMailRoutes(r chi.Router) {
 	})
 
 	r.Route("/reservations", func(r chi.Router) {
-		r.With(s.RequirePermission(PermReadReservations)).Get("/", s.handleListReservations)
-		r.With(s.RequirePermission(PermWriteReservations)).Post("/", s.handleReservePaths)
-		r.With(s.RequirePermission(PermWriteReservations)).Delete("/", s.handleReleaseReservations)
-		r.With(s.RequirePermission(PermReadReservations)).Get("/conflicts", s.handleReservationConflicts)
+		r.With(s.RequirePermission(PermReadReservations), validateMailProjectScope).Get("/", s.handleListReservations)
+		r.With(s.RequirePermission(PermWriteReservations), validateMailProjectScope).Post("/", s.handleReservePaths)
+		r.With(s.RequirePermission(PermWriteReservations), validateMailProjectScope).Delete("/", s.handleReleaseReservations)
+		r.With(s.RequirePermission(PermReadReservations), validateMailProjectScope).Get("/conflicts", s.handleReservationConflicts)
 
 		r.Route("/{id}", func(r chi.Router) {
-			r.With(s.RequirePermission(PermReadReservations)).Get("/", s.handleGetReservation)
-			r.With(s.RequirePermission(PermWriteReservations)).Post("/release", s.handleReleaseReservationByID)
-			r.With(s.RequirePermission(PermWriteReservations)).Post("/renew", s.handleRenewReservation)
-			r.With(s.RequirePermission(PermForceRelease)).Post("/force-release", s.handleForceReleaseReservation)
+			r.With(s.RequirePermission(PermReadReservations), validateMailProjectScope).Get("/", s.handleGetReservation)
+			r.With(s.RequirePermission(PermWriteReservations), validateMailProjectScope).Post("/release", s.handleReleaseReservationByID)
+			r.With(s.RequirePermission(PermWriteReservations), validateMailProjectScope).Post("/renew", s.handleRenewReservation)
+			r.With(s.RequirePermission(PermForceRelease), validateMailProjectScope).Post("/force-release", s.handleForceReleaseReservation)
 		})
 	})
 }
@@ -566,10 +568,14 @@ func (s *Server) publishMailEvent(agentName, eventType string, payload map[strin
 	s.wsHub.Publish(topic, eventType, payload)
 }
 
-func (s *Server) publishReservationEvent(agentName, eventType string, payload map[string]interface{}) {
+func (s *Server) publishReservationEvent(projectKey, agentName, eventType string, payload map[string]interface{}) {
 	if s.wsHub == nil {
 		return
 	}
+	if payload == nil {
+		payload = make(map[string]interface{})
+	}
+	payload["project_key"] = projectKey
 	topic := "reservations:*"
 	if agentName != "" {
 		topic = "reservations:" + agentName
@@ -1456,6 +1462,7 @@ func (s *Server) handleSetContactPolicy(w http.ResponseWriter, r *http.Request) 
 // handleListReservations handles GET /api/v1/reservations
 func (s *Server) handleListReservations(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
+	projectKey := s.mailProjectKey(r)
 
 	agentName := r.URL.Query().Get("agent_name")
 	slog.Info("list reservations", "request_id", reqID, "agent", agentName)
@@ -1475,7 +1482,7 @@ func (s *Server) handleListReservations(w http.ResponseWriter, r *http.Request) 
 
 	// If no agent specified, list all reservations
 	allAgents := agentName == ""
-	reservations, err := client.ListReservations(ctx, s.projectDirSnapshot(), agentName, allAgents)
+	reservations, err := client.ListReservations(ctx, projectKey, agentName, allAgents)
 	if err != nil {
 		writeAgentMailReservationError(w, reqID, err, "listing reservations is not supported by the configured Agent Mail server")
 		return
@@ -1490,6 +1497,7 @@ func (s *Server) handleListReservations(w http.ResponseWriter, r *http.Request) 
 // handleReservePaths handles POST /api/v1/reservations
 func (s *Server) handleReservePaths(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
+	projectKey := s.mailProjectKey(r)
 	slog.Info("reserve paths", "request_id", reqID)
 
 	var req ReservePathsRequest
@@ -1522,7 +1530,7 @@ func (s *Server) handleReservePaths(w http.ResponseWriter, r *http.Request) {
 	}
 
 	result, err := client.ReservePaths(ctx, agentmail.FileReservationOptions{
-		ProjectKey: s.projectDirSnapshot(),
+		ProjectKey: projectKey,
 		AgentName:  req.AgentName,
 		Paths:      req.Paths,
 		TTLSeconds: ttl,
@@ -1538,7 +1546,7 @@ func (s *Server) handleReservePaths(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(result.Granted) > 0 {
-		s.publishReservationEvent(req.AgentName, "reservation.granted", map[string]interface{}{
+		s.publishReservationEvent(projectKey, req.AgentName, "reservation.granted", map[string]interface{}{
 			"agent_name":    req.AgentName,
 			"exclusive":     req.Exclusive,
 			"ttl_seconds":   ttl,
@@ -1548,7 +1556,7 @@ func (s *Server) handleReservePaths(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	if len(result.Conflicts) > 0 {
-		s.publishReservationEvent(req.AgentName, "reservation.conflict", map[string]interface{}{
+		s.publishReservationEvent(projectKey, req.AgentName, "reservation.conflict", map[string]interface{}{
 			"agent_name":     req.AgentName,
 			"paths":          req.Paths,
 			"conflicts":      result.Conflicts,
@@ -1574,6 +1582,7 @@ func (s *Server) handleReservePaths(w http.ResponseWriter, r *http.Request) {
 // handleReleaseReservations handles DELETE /api/v1/reservations
 func (s *Server) handleReleaseReservations(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
+	projectKey := s.mailProjectKey(r)
 	slog.Info("release reservations", "request_id", reqID)
 
 	var req ReleaseReservationsRequest
@@ -1600,7 +1609,7 @@ func (s *Server) handleReleaseReservations(w http.ResponseWriter, r *http.Reques
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	releaseResult, err := client.ReleaseReservations(ctx, s.projectDirSnapshot(), req.AgentName, req.Paths, req.IDs)
+	releaseResult, err := client.ReleaseReservations(ctx, projectKey, req.AgentName, req.Paths, req.IDs)
 	if err != nil {
 		writeAgentMailReservationError(w, reqID, err, "releasing reservations is not supported by the configured Agent Mail server")
 		return
@@ -1619,7 +1628,7 @@ func (s *Server) handleReleaseReservations(w http.ResponseWriter, r *http.Reques
 		if releaseResult.ReleasedAt != nil {
 			eventPayload["released_at"] = releaseResult.ReleasedAt
 		}
-		s.publishReservationEvent(req.AgentName, "reservation.released", eventPayload)
+		s.publishReservationEvent(projectKey, req.AgentName, "reservation.released", eventPayload)
 	}
 
 	response := map[string]interface{}{
@@ -1635,6 +1644,7 @@ func (s *Server) handleReleaseReservations(w http.ResponseWriter, r *http.Reques
 // handleReservationConflicts handles GET /api/v1/reservations/conflicts
 func (s *Server) handleReservationConflicts(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
+	projectKey := s.mailProjectKey(r)
 
 	paths := r.URL.Query()["paths"]
 	if len(paths) == 0 {
@@ -1657,14 +1667,14 @@ func (s *Server) handleReservationConflicts(w http.ResponseWriter, r *http.Reque
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	conflicts, err := client.CheckConflicts(ctx, s.projectDirSnapshot(), paths)
+	conflicts, err := client.CheckConflicts(ctx, projectKey, paths)
 	if err != nil {
 		writeAgentMailReservationError(w, reqID, err, "reservation conflict inspection is not supported by the configured Agent Mail server")
 		return
 	}
 
 	if len(conflicts) > 0 {
-		s.publishReservationEvent("", "reservation.conflict", map[string]interface{}{
+		s.publishReservationEvent(projectKey, "", "reservation.conflict", map[string]interface{}{
 			"paths":          paths,
 			"conflicts":      conflicts,
 			"conflict_count": len(conflicts),
@@ -1680,6 +1690,7 @@ func (s *Server) handleReservationConflicts(w http.ResponseWriter, r *http.Reque
 // handleGetReservation handles GET /api/v1/reservations/{id}
 func (s *Server) handleGetReservation(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
+	projectKey := s.mailProjectKey(r)
 	idStr := chi.URLParam(r, "id")
 
 	slog.Info("get reservation", "request_id", reqID, "reservation_id", idStr)
@@ -1703,7 +1714,7 @@ func (s *Server) handleGetReservation(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	reservation, err := client.GetReservation(ctx, s.projectDirSnapshot(), reservationID)
+	reservation, err := client.GetReservation(ctx, projectKey, reservationID)
 	if err != nil {
 		writeAgentMailReservationError(w, reqID, err, "reservation lookup is not supported by the configured Agent Mail server")
 		return
@@ -1717,6 +1728,7 @@ func (s *Server) handleGetReservation(w http.ResponseWriter, r *http.Request) {
 // handleReleaseReservationByID handles POST /api/v1/reservations/{id}/release
 func (s *Server) handleReleaseReservationByID(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
+	projectKey := s.mailProjectKey(r)
 	idStr := chi.URLParam(r, "id")
 
 	reservationID, err := strconv.Atoi(idStr)
@@ -1746,7 +1758,7 @@ func (s *Server) handleReleaseReservationByID(w http.ResponseWriter, r *http.Req
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	releaseResult, err := client.ReleaseReservations(ctx, s.projectDirSnapshot(), agentName, nil, []int{reservationID})
+	releaseResult, err := client.ReleaseReservations(ctx, projectKey, agentName, nil, []int{reservationID})
 	if err != nil {
 		writeAgentMailReservationError(w, reqID, err, "releasing reservations is not supported by the configured Agent Mail server")
 		return
@@ -1763,7 +1775,7 @@ func (s *Server) handleReleaseReservationByID(w http.ResponseWriter, r *http.Req
 	if releaseResult.ReleasedAt != nil {
 		eventPayload["released_at"] = releaseResult.ReleasedAt
 	}
-	s.publishReservationEvent(agentName, "reservation.released", eventPayload)
+	s.publishReservationEvent(projectKey, agentName, "reservation.released", eventPayload)
 
 	response := map[string]interface{}{
 		"reservation_id": reservationID,
@@ -1779,6 +1791,7 @@ func (s *Server) handleReleaseReservationByID(w http.ResponseWriter, r *http.Req
 // handleRenewReservation handles POST /api/v1/reservations/{id}/renew
 func (s *Server) handleRenewReservation(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
+	projectKey := s.mailProjectKey(r)
 	idStr := chi.URLParam(r, "id")
 
 	reservationID, err := strconv.Atoi(idStr)
@@ -1819,7 +1832,7 @@ func (s *Server) handleRenewReservation(w http.ResponseWriter, r *http.Request) 
 	}
 
 	result, err := client.RenewReservationsWithOptions(ctx, agentmail.RenewReservationsOptions{
-		ProjectKey:     s.projectDirSnapshot(),
+		ProjectKey:     projectKey,
 		AgentName:      req.AgentName,
 		ExtendSeconds:  extendSeconds,
 		ReservationIDs: []int{reservationID},
@@ -1836,7 +1849,7 @@ func (s *Server) handleRenewReservation(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	s.publishReservationEvent(req.AgentName, "reservation.renewed", map[string]interface{}{
+	s.publishReservationEvent(projectKey, req.AgentName, "reservation.renewed", map[string]interface{}{
 		"agent_name":     req.AgentName,
 		"reservation_id": reservationID,
 		"extend_seconds": extendSeconds,
@@ -1877,7 +1890,7 @@ func (s *Server) handleForceReleaseReservation(w http.ResponseWriter, r *http.Re
 	// changed server selection nor an agent_name body field can redirect an
 	// approval to a different project, requester, or Agent Mail actor.
 	operation := approvalpkg.ForceReleaseOperation{
-		ProjectKey:    agentmail.CanonicalProjectKey(s.projectDirSnapshot()),
+		ProjectKey:    agentmail.CanonicalProjectKey(s.mailProjectKey(r)),
 		ReservationID: reservationID, RequestedBy: approvalIdentity(r),
 		AgentName: req.AgentName, Note: req.Note, NotifyPrevious: req.NotifyPrevious,
 	}
@@ -1936,6 +1949,7 @@ func (s *Server) handleForceReleaseReservation(w http.ResponseWriter, r *http.Re
 		if record, err := engine.Check(ctx, decision.ApprovalID); err == nil {
 			snapshot := approvalFromState(record)
 			s.publishApprovalEvent("approval.requested", map[string]interface{}{
+				"project_key": operation.ProjectKey,
 				"approval_id": snapshot.ID, "action": snapshot.Action, "resource": snapshot.Resource,
 				"requestor": snapshot.Requestor, "reason": snapshot.Reason,
 				"slb_required": snapshot.SLBRequired, "status": snapshot.Status,
@@ -2029,6 +2043,6 @@ func (s *Server) handleForceReleaseReservation(w http.ResponseWriter, r *http.Re
 	if result.ReleasedAt != nil {
 		eventPayload["released_at"] = result.ReleasedAt
 	}
-	s.publishReservationEvent(req.AgentName, "reservation.released", eventPayload)
+	s.publishReservationEvent(operation.ProjectKey, req.AgentName, "reservation.released", eventPayload)
 	writeSuccessResponse(w, http.StatusOK, response, reqID)
 }

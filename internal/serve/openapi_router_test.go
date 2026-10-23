@@ -10,7 +10,7 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
-func TestRouterSpecMailProjectSelector(t *testing.T) {
+func TestRouterSpecAgentMailProjectSelector(t *testing.T) {
 	spec, err := GenerateOpenAPISpecFromRouter("test", "http://localhost:7337")
 	if err != nil {
 		t.Fatal(err)
@@ -27,9 +27,15 @@ func TestRouterSpecMailProjectSelector(t *testing.T) {
 					if param.Required || param.Schema == nil || param.Schema.Type != "string" {
 						t.Errorf("%s has an invalid project selector: %+v", path, param)
 					}
+					for _, guarantee := range []string{"absolute", "server default", "idempotency", "approvals", "events"} {
+						if !strings.Contains(param.Description, guarantee) {
+							t.Errorf("%s project selector omits %s: %s", path, guarantee, param.Description)
+						}
+					}
 				}
 			}
-			want := strings.HasPrefix(path, "/api/v1/mail/") && path != "/api/v1/mail/health"
+			want := (strings.HasPrefix(path, "/api/v1/mail/") && path != "/api/v1/mail/health") ||
+				path == "/api/v1/reservations" || strings.HasPrefix(path, "/api/v1/reservations/")
 			if found != want {
 				t.Errorf("%s project selector present=%v; want %v", path, found, want)
 			}

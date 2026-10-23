@@ -3392,7 +3392,7 @@ func TestPublishMailEvent_NilHubBranch(t *testing.T) {
 
 func TestPublishReservationEvent_NilHubBranch(t *testing.T) {
 	srv := &Server{} // no wsHub
-	srv.publishReservationEvent("agent1", "reservation.granted", map[string]interface{}{})
+	srv.publishReservationEvent("/project", "agent1", "reservation.granted", map[string]interface{}{})
 }
 
 func TestPublishMailEvent_EmptyAgentName(t *testing.T) {
@@ -3402,7 +3402,7 @@ func TestPublishMailEvent_EmptyAgentName(t *testing.T) {
 
 func TestPublishReservationEvent_EmptyAgentName(t *testing.T) {
 	srv := &Server{} // no wsHub
-	srv.publishReservationEvent("", "reservation.granted", map[string]interface{}{})
+	srv.publishReservationEvent("/project", "", "reservation.granted", map[string]interface{}{})
 }
 
 // --- checkMemoryDaemon with invalid PID file JSON ---

@@ -22,6 +22,530 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/state"
 )
 
+// Keep the real Agent Mail resource readback as well as its mutation protocol:
+// matching numeric lease IDs and agent names in two projects must stay separate.
+func newReservationProjectClient(t *testing.T, projects map[string]int, observe func(string, string)) *agentmail.Client {
+	t.Helper()
+	created := time.Now().Add(-time.Hour)
+	expires := time.Now().Add(time.Hour)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req agentmail.JSONRPCRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode reservation MCP request: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		params, _ := req.Params.(map[string]interface{})
+		tool, _ := params["name"].(string)
+		args, _ := params["arguments"].(map[string]interface{})
+		project, _ := args["project_key"].(string)
+		uri, _ := params["uri"].(string)
+		if req.Method == "resources/read" {
+			parsed, err := url.Parse(uri)
+			if err != nil {
+				t.Errorf("parse reservation resource URI: %v", err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			tool = "resource:" + parsed.Host
+			project = strings.TrimPrefix(parsed.Path, "/")
+		}
+		response := agentmail.JSONRPCResponse{JSONRPC: "2.0", ID: req.ID}
+		projectID, known := projects[project]
+		if !known {
+			response.Error = &agentmail.JSONRPCError{Code: -32602, Message: "unknown project: " + project}
+		} else {
+			if observe != nil {
+				observe(tool, project)
+			}
+			lease := agentmail.FileReservation{
+				ID: 17, ProjectID: projectID, AgentName: "BlueLake", PathPattern: "internal/serve/*",
+				Exclusive: true, CreatedTS: agentmail.FlexTime{Time: created}, ExpiresTS: agentmail.FlexTime{Time: expires},
+			}
+			var result interface{}
+			switch tool {
+			case "resource:project":
+				result = agentmail.Project{ID: projectID, HumanKey: project}
+			case "resource:file_reservations":
+				other := lease
+				other.ID, other.AgentName = 18, "RedStone"
+				result = []agentmail.FileReservation{lease, other}
+			case "file_reservation_paths":
+				result = agentmail.ReservationResult{Granted: []agentmail.FileReservation{lease}}
+			case "release_file_reservations":
+				result = agentmail.ReleaseReservationsResult{Released: 1}
+			case "renew_file_reservations":
+				result = agentmail.RenewReservationsResult{Renewed: 1, Reservations: []agentmail.RenewedReservation{{ID: 17, PathPattern: lease.PathPattern}}}
+			case "force_release_file_reservation":
+				result = agentmail.ForceReleaseResult{Success: true, PreviousHolder: lease.AgentName, PathPattern: lease.PathPattern}
+			default:
+				response.Error = &agentmail.JSONRPCError{Code: -32601, Message: "unexpected reservation tool: " + tool}
+			}
+			encoded, err := json.Marshal(result)
+			if err != nil {
+				t.Errorf("encode reservation fixture: %v", err)
+				return
+			}
+			if req.Method == "resources/read" {
+				encoded, err = json.Marshal(map[string]interface{}{"contents": []map[string]string{{"uri": uri, "mimeType": "application/json", "text": string(encoded)}}})
+				if err != nil {
+					t.Errorf("encode reservation resource: %v", err)
+					return
+				}
+			}
+			response.Result = encoded
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(response); err != nil {
+			t.Errorf("encode reservation MCP response: %v", err)
+		}
+	}))
+	t.Cleanup(ts.Close)
+	return agentmail.NewClient(agentmail.WithBaseURL(ts.URL+"/"), agentmail.WithProjectKey("/unrelated-cached-project"))
+}
+
+func patchReservationProject(t *testing.T, srv *Server, project string, client *agentmail.Client) {
+	t.Helper()
+	body, err := json.Marshal(map[string]string{"project_dir": project})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, httptest.NewRequest(http.MethodPatch, "/api/v1/config", bytes.NewReader(body)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("change server project: %d %s", rec.Code, rec.Body)
+	}
+	// PATCH invalidates the cached transport. Restore only the external fixture;
+	// project resolution, permission checks, replay, and handlers stay real.
+	srv.mu.Lock()
+	srv.mailClient = client
+	srv.mu.Unlock()
+}
+
+func requireReservationProjectEvent(t *testing.T, srv *Server, eventType, project string) {
+	t.Helper()
+	for {
+		select {
+		case event := <-srv.wsHub.broadcast:
+			if event.EventType != eventType {
+				continue
+			}
+			payload, ok := event.Data.(map[string]interface{})
+			if !ok || payload["project_key"] != project {
+				t.Fatalf("%s event lost project %q: %+v", eventType, project, event)
+			}
+			return
+		default:
+			t.Fatalf("missing %s event for project %q", eventType, project)
+		}
+	}
+}
+
+func TestReservationRequestProjectRoutes(t *testing.T) {
+	setForceReleasePolicy(t, "auto")
+	projectA, err := ResolveProjectDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	projectB, err := ResolveProjectDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, method, path, body, event string
+		status                          int
+	}{
+		{"create", http.MethodPost, "/api/v1/reservations/", `{"agent_name":"BlueLake","paths":["internal/serve/*"],"exclusive":true}`, "reservation.granted", http.StatusCreated},
+		{"list", http.MethodGet, "/api/v1/reservations", "", "", http.StatusOK},
+		{"get", http.MethodGet, "/api/v1/reservations/17", "", "", http.StatusOK},
+		{"conflicts", http.MethodGet, "/api/v1/reservations/conflicts?paths=internal/serve/*", "", "reservation.conflict", http.StatusOK},
+		{"release", http.MethodDelete, "/api/v1/reservations", `{"agent_name":"BlueLake","ids":[17]}`, "reservation.released", http.StatusOK},
+		{"release_by_id", http.MethodPost, "/api/v1/reservations/17/release?agent_name=BlueLake", "", "reservation.released", http.StatusOK},
+		{"renew", http.MethodPost, "/api/v1/reservations/17/renew", `{"agent_name":"BlueLake"}`, "reservation.renewed", http.StatusOK},
+		{"force_release", http.MethodPost, "/api/v1/reservations/17/force-release", `{"agent_name":"RedStone"}`, "reservation.released", http.StatusOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := New(Config{ProjectDir: projectA})
+			defer srv.Stop()
+			var calls atomic.Int32
+			srv.mailClient = newReservationProjectClient(t, map[string]int{projectA: 1, projectB: 2}, func(tool, project string) {
+				calls.Add(1)
+				if project != projectB {
+					t.Errorf("%s reached project %q instead of selected project %q", tool, project, projectB)
+				}
+			})
+			separator := "?"
+			if strings.Contains(tc.path, "?") {
+				separator = "&"
+			}
+			rec := httptest.NewRecorder()
+			path := tc.path + separator + "project=" + url.QueryEscape(projectB)
+			srv.Router().ServeHTTP(rec, httptest.NewRequest(tc.method, path, strings.NewReader(tc.body)))
+			if rec.Code != tc.status || calls.Load() == 0 {
+				t.Fatalf("selected project request: %d %s; upstream calls=%d", rec.Code, rec.Body, calls.Load())
+			}
+			if tc.event != "" {
+				requireReservationProjectEvent(t, srv, tc.event, projectB)
+			}
+			if srv.projectDirSnapshot() != projectA {
+				t.Fatal("reservation selector changed the default project")
+			}
+		})
+	}
+}
+
+func TestReservationRequestProjectConcurrentReplay(t *testing.T) {
+	projectA, err := ResolveProjectDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	projectB, err := ResolveProjectDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := New(Config{ProjectDir: projectA})
+	defer srv.Stop()
+	var mu sync.Mutex
+	creates := map[string]int{}
+	projects := map[string]int{projectA: 1, projectB: 2}
+	srv.mailClient = newReservationProjectClient(t, projects, func(tool, project string) {
+		if tool == "file_reservation_paths" {
+			mu.Lock()
+			creates[project]++
+			mu.Unlock()
+		}
+	})
+	var wg sync.WaitGroup
+	for project, projectID := range projects {
+		for i := 0; i < 3; i++ {
+			wg.Go(func() {
+				req := httptest.NewRequest(http.MethodPost, "/api/v1/reservations?project="+url.QueryEscape(project), strings.NewReader(`{"agent_name":"BlueLake","paths":["internal/serve/*"],"exclusive":true}`))
+				req.Header.Set("Idempotency-Key", "same-lease-key")
+				rec := httptest.NewRecorder()
+				srv.Router().ServeHTTP(rec, req)
+				var response struct {
+					Granted []agentmail.FileReservation `json:"granted"`
+				}
+				if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil || rec.Code != http.StatusCreated || len(response.Granted) != 1 || response.Granted[0].ProjectID != projectID {
+					t.Errorf("reservation crossed projects: %d %s; decode=%v", rec.Code, rec.Body, err)
+				}
+			})
+		}
+	}
+	wg.Wait()
+	if len(creates) != 2 || creates[projectA] != 1 || creates[projectB] != 1 {
+		t.Fatalf("concurrent retries repeated or redirected creation: %v", creates)
+	}
+}
+
+func TestReservationRequestProjectReplayAfterDefaultChange(t *testing.T) {
+	projectA, err := ResolveProjectDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	projectB, err := ResolveProjectDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := New(Config{ProjectDir: projectA})
+	defer srv.Stop()
+	var mu sync.Mutex
+	renews := map[string]int{}
+	client := newReservationProjectClient(t, map[string]int{projectA: 1, projectB: 2}, func(tool, project string) {
+		if tool == "renew_file_reservations" {
+			mu.Lock()
+			renews[project]++
+			mu.Unlock()
+		}
+	})
+	srv.mailClient = client
+	post := func(wantReplay bool) {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/reservations/17/renew", strings.NewReader(`{"agent_name":"BlueLake"}`))
+		req.Header.Set("Idempotency-Key", "same-renew-key")
+		rec := httptest.NewRecorder()
+		srv.Router().ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK || (rec.Header().Get("X-Idempotent-Replay") == "true") != wantReplay {
+			t.Fatalf("renew replay=%q, want %v: %d %s", rec.Header().Get("X-Idempotent-Replay"), wantReplay, rec.Code, rec.Body)
+		}
+	}
+	post(false)
+	patchReservationProject(t, srv, projectB, client)
+	post(false)
+	post(true)
+	patchReservationProject(t, srv, projectA, client)
+	post(true)
+	if len(renews) != 2 || renews[projectA] != 1 || renews[projectB] != 1 {
+		t.Fatalf("default changes mixed reservation replays: %v", renews)
+	}
+}
+
+func TestReservationRequestProjectFrozenDuringConfigPatch(t *testing.T) {
+	projectA, err := ResolveProjectDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	projectB, err := ResolveProjectDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := New(Config{ProjectDir: projectA})
+	defer srv.Stop()
+	entered, release := make(chan struct{}, 1), make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	defer unblock()
+	client := newReservationProjectClient(t, map[string]int{projectA: 1, projectB: 2}, func(tool, project string) {
+		if project != projectA {
+			t.Errorf("in-flight %s changed project to %q", tool, project)
+		}
+		if tool == "file_reservation_paths" {
+			entered <- struct{}{}
+			<-release
+		}
+	})
+	srv.mailClient = client
+	completed := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		rec := httptest.NewRecorder()
+		srv.Router().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/v1/reservations", strings.NewReader(`{"agent_name":"BlueLake","paths":["internal/serve/*"],"exclusive":true}`)))
+		completed <- rec
+	}()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("reservation creation did not reach Agent Mail")
+	}
+	patchReservationProject(t, srv, projectB, client)
+	unblock()
+	select {
+	case rec := <-completed:
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("creation failed after default changed: %d %s", rec.Code, rec.Body)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("reservation creation did not finish")
+	}
+	requireReservationProjectEvent(t, srv, "reservation.granted", projectA)
+	if srv.projectDirSnapshot() != projectB {
+		t.Fatal("completed reservation creation overwrote the new default")
+	}
+}
+
+func TestReservationRequestProjectValidationAndPermissions(t *testing.T) {
+	project, err := ResolveProjectDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(file, []byte("fixture"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	routes := []struct{ method, path string }{
+		{http.MethodPost, "/api/v1/reservations"},
+		{http.MethodGet, "/api/v1/reservations/"},
+		{http.MethodDelete, "/api/v1/reservations"},
+		{http.MethodGet, "/api/v1/reservations/conflicts?paths=internal/serve/*"},
+		{http.MethodGet, "/api/v1/reservations/17"},
+		{http.MethodPost, "/api/v1/reservations/17/release?agent_name=BlueLake"},
+		{http.MethodPost, "/api/v1/reservations/17/renew"},
+		{http.MethodPost, "/api/v1/reservations/17/force-release"},
+	}
+	srv := New(Config{ProjectDir: project})
+	defer srv.Stop()
+	var calls atomic.Int32
+	client := newReservationProjectClient(t, map[string]int{project: 1}, func(_, _ string) { calls.Add(1) })
+	srv.mailClient = client
+	for name, query := range map[string]string{
+		"empty":     "project=",
+		"relative":  "project=relative/project",
+		"missing":   "project=" + url.QueryEscape(filepath.Join(project, "missing")),
+		"file":      "project=" + url.QueryEscape(file),
+		"duplicate": "project=" + url.QueryEscape(project) + "&project=" + url.QueryEscape(project),
+		"malformed": "project=%zz",
+	} {
+		t.Run(name, func(t *testing.T) {
+			for _, route := range routes {
+				separator := "?"
+				if strings.Contains(route.path, "?") {
+					separator = "&"
+				}
+				req := httptest.NewRequest(route.method, route.path+separator+query, strings.NewReader(`{"agent_name":"BlueLake","paths":["internal/serve/*"],"ids":[17],"exclusive":true}`))
+				req.Header.Set("Idempotency-Key", "invalid-project-key")
+				rec := httptest.NewRecorder()
+				srv.Router().ServeHTTP(rec, req)
+				if rec.Code != http.StatusBadRequest || rec.Header().Get("X-Idempotent-Replay") != "" {
+					t.Errorf("%s %s invalid selector: %d %s", route.method, route.path, rec.Code, rec.Body)
+				}
+			}
+		})
+	}
+	// Exercise authentication and the public router, not only a handler with a
+	// synthetic role context. Viewers may read but cannot mutate reservations.
+	viewer := New(Config{ProjectDir: project, Auth: AuthConfig{Mode: AuthModeAPIKey, APIKey: "reservation-test-key", Role: RoleViewer}})
+	defer viewer.Stop()
+	viewer.mailClient = client
+	for _, route := range routes {
+		separator := "?"
+		if strings.Contains(route.path, "?") {
+			separator = "&"
+		}
+		req := httptest.NewRequest(route.method, route.path+separator+"project=relative", strings.NewReader(`{}`))
+		req.Header.Set("Authorization", "Bearer reservation-test-key")
+		req.Header.Set("Idempotency-Key", "invalid-project-key")
+		rec := httptest.NewRecorder()
+		viewer.Router().ServeHTTP(rec, req)
+		want := http.StatusForbidden
+		if route.method == http.MethodGet {
+			want = http.StatusBadRequest
+		}
+		if rec.Code != want {
+			t.Errorf("%s %s permission/validation order: %d %s; want %d", route.method, route.path, rec.Code, rec.Body, want)
+		}
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("invalid or unauthorized selectors reached Agent Mail %d times", calls.Load())
+	}
+}
+
+func TestReservationForceReleaseProjectApprovalIsolation(t *testing.T) {
+	setForceReleasePolicy(t, "approval")
+	t.Setenv("NTM_USER", "alice")
+	srv, store := setupTestServer(t)
+	projectA, err := ResolveProjectDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	projectB, err := ResolveProjectDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	entered, release := make(chan struct{}, 1), make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	defer unblock()
+	var blockInspection atomic.Bool
+	blockInspection.Store(true)
+	var releasedA, releasedB atomic.Int32
+	client := newReservationProjectClient(t, map[string]int{projectA: 1, projectB: 2}, func(tool, project string) {
+		if tool == "resource:file_reservations" && project == projectA && blockInspection.CompareAndSwap(true, false) {
+			entered <- struct{}{}
+			<-release
+		}
+		if tool == "force_release_file_reservation" {
+			if project == projectA {
+				releasedA.Add(1)
+			} else {
+				releasedB.Add(1)
+			}
+		}
+	})
+	patchReservationProject(t, srv, projectA, client)
+	const path = "/api/v1/reservations/17/force-release"
+	const body = `{"agent_name":"RedStone","note":"holder crashed"}`
+	post := func(target, payload string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, target, strings.NewReader(payload))
+		req.Header.Set("Idempotency-Key", "same-force-release-key")
+		rec := httptest.NewRecorder()
+		srv.Router().ServeHTTP(rec, req)
+		return rec
+	}
+	approvalID := func(rec *httptest.ResponseRecorder) string {
+		t.Helper()
+		var decoded map[string]interface{}
+		if err := json.Unmarshal(rec.Body.Bytes(), &decoded); err != nil {
+			t.Fatalf("decode approval response: %v: %s", err, rec.Body)
+		}
+		return forceReleaseResponseApprovalID(t, decoded)
+	}
+	completed := make(chan *httptest.ResponseRecorder, 1)
+	go func() { completed <- post(path, body) }()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("force-release did not inspect the original project's lease")
+	}
+	patchReservationProject(t, srv, projectB, client)
+	unblock()
+	var rec *httptest.ResponseRecorder
+	select {
+	case rec = <-completed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("force-release inspection did not finish")
+	}
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("initial approval request: %d %s", rec.Code, rec.Body)
+	}
+	idA := approvalID(rec)
+	recordA, err := store.GetApproval(idA)
+	if err != nil || recordA == nil {
+		t.Fatalf("read original approval: %+v, %v", recordA, err)
+	}
+	var resource struct {
+		Operation struct {
+			ProjectKey string `json:"project_key"`
+		} `json:"operation"`
+	}
+	if err := json.Unmarshal([]byte(recordA.Resource), &resource); err != nil || resource.Operation.ProjectKey != projectA {
+		t.Fatalf("in-flight approval changed project: %s, %v", recordA.Resource, err)
+	}
+	requireReservationProjectEvent(t, srv, "approval.requested", projectA)
+	approve := func(id string) {
+		t.Helper()
+		t.Setenv("NTM_USER", "bob")
+		rec := post("/api/v1/approvals/"+id+"/approve", "")
+		t.Setenv("NTM_USER", "alice")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("independent operator approval: %d %s", rec.Code, rec.Body)
+		}
+	}
+	approve(idA)
+	// An approved lease in A cannot authorize the same numeric ID in the new
+	// default B. B must create its own review and cannot use A as a predecessor.
+	rec = post(path, body)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("new default reused old approval: %d %s", rec.Code, rec.Body)
+	}
+	idB := approvalID(rec)
+	if idB == idA {
+		t.Fatal("different projects shared a force-release approval")
+	}
+	requireReservationProjectEvent(t, srv, "approval.requested", projectB)
+	rec = post(path, `{"agent_name":"RedStone","note":"holder crashed","new_approval":"`+idA+`"}`)
+	if rec.Code != http.StatusForbidden || releasedA.Load() != 0 || releasedB.Load() != 0 {
+		t.Fatalf("foreign project approval authorized a mutation: %d %s", rec.Code, rec.Body)
+	}
+	recordA, err = store.GetApproval(idA)
+	if err != nil || recordA == nil || recordA.Status != state.ApprovalApproved {
+		t.Fatalf("foreign attempt consumed the original grant: %+v, %v", recordA, err)
+	}
+	for _, attempt := range []struct {
+		path, project string
+	}{
+		{path + "?project=" + url.QueryEscape(projectA), projectA},
+		{path, projectB},
+	} {
+		if attempt.project == projectB {
+			approve(idB)
+		}
+		rec = post(attempt.path, body)
+		if rec.Code != http.StatusOK || rec.Header().Get("X-Idempotent-Replay") == "true" {
+			t.Fatalf("approved scoped release: %d %s", rec.Code, rec.Body)
+		}
+		requireReservationProjectEvent(t, srv, "reservation.released", attempt.project)
+		rec = post(attempt.path, body)
+		if rec.Code != http.StatusOK || rec.Header().Get("X-Idempotent-Replay") != "true" {
+			t.Fatalf("scoped release did not replay: %d %s", rec.Code, rec.Body)
+		}
+	}
+	if releasedA.Load() != 1 || releasedB.Load() != 1 {
+		t.Fatalf("approved retries repeated or redirected releases: A=%d B=%d", releasedA.Load(), releasedB.Load())
+	}
+	if srv.projectDirSnapshot() != projectB {
+		t.Fatal("explicit force-release changed the server default")
+	}
+}
+
 func TestMailRequestProjectIsolation(t *testing.T) {
 	projectA, err := ResolveProjectDir(t.TempDir())
 	if err != nil {

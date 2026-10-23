@@ -877,24 +877,35 @@ ntm serve
 ```
 
 Set the default project with `ntm serve --project-dir /absolute/project/path`.
-Agent Mail operations under `/api/v1/mail/` also accept a `project` query
-parameter, so agents in multiple projects can share one server:
+Agent Mail operations under `/api/v1/mail/` and file reservation operations under
+`/api/v1/reservations` also accept a `project` query parameter, so agents in
+multiple projects can share one server:
 
 ```bash
 curl --get http://localhost:7337/api/v1/mail/inbox \
+  --data-urlencode 'project=/absolute/other/project' \
+  --data-urlencode 'agent_name=BlueLake'
+
+curl --get http://localhost:7337/api/v1/reservations \
   --data-urlencode 'project=/absolute/other/project' \
   --data-urlencode 'agent_name=BlueLake'
 ```
 
 The override must name an existing absolute directory on the server host.
 It applies to that request's mail agents, messages, inbox, search, threads, and
-contacts. Omit it to use the server's configured project. Each request keeps
-its chosen project throughout execution, including retries with an
-`Idempotency-Key`; selecting a project does not change the server configuration.
-Mail read and acknowledgement events include `project_key` so subscribers can
-distinguish identically named agents in different projects. The mail health
-endpoint checks the shared service and takes no project selector. File
-reservations and other API groups continue to use the configured server project.
+contacts, and to reservation creation, listing, lookup, conflict inspection,
+release, renewal, and force-release. Omit it to use the server's configured
+project. Each request keeps its chosen project throughout execution, including
+retries with an `Idempotency-Key`; selecting a project does not change the server
+configuration. Changing the default project separates subsequent retries from
+the previous project's cached results. Force-release approvals remain bound to
+the project and reservation the operator reviewed.
+
+Mail read and acknowledgement events, reservation events, and reservation
+approval-request events include `project_key` so subscribers can distinguish
+identically named agents and reservation IDs in different projects. The mail
+health endpoint checks the shared service and takes no project selector. Other
+API groups continue to use the configured server project.
 
 Important surfaces:
 

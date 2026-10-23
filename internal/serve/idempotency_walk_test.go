@@ -140,7 +140,7 @@ func TestIdempotencyRouterCoverage(t *testing.T) {
 			Role:   srv.extractRoleFromClaims(map[string]interface{}{}),
 			UserID: extractUserIDFromClaims(map[string]interface{}{}),
 		}))
-		// Mail requests also freeze their project before replay lookup. Seed
+		// Mail and reservation requests freeze their project before replay. Seed
 		// through that production middleware so the probe has the same scope
 		// as the real request below, including an unconfigured default.
 		var scoped string

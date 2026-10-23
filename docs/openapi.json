@@ -3987,7 +3987,7 @@
           {
             "name": "project",
             "in": "query",
-            "description": "Existing absolute project directory on the server host. Overrides the configured project for this mail request only; omitted uses the server default. Idempotency is scoped to the effective project.",
+            "description": "Existing absolute project directory on the server host. Overrides the configured project for this mail or reservation request only; omitted uses the server default. The effective project is fixed before execution and idempotency replay, and scopes reservation approvals and events.",
             "schema": {
               "type": "string"
             }
@@ -4047,7 +4047,7 @@
           {
             "name": "project",
             "in": "query",
-            "description": "Existing absolute project directory on the server host. Overrides the configured project for this mail request only; omitted uses the server default. Idempotency is scoped to the effective project.",
+            "description": "Existing absolute project directory on the server host. Overrides the configured project for this mail or reservation request only; omitted uses the server default. The effective project is fixed before execution and idempotency replay, and scopes reservation approvals and events.",
             "schema": {
               "type": "string"
             }
@@ -4128,7 +4128,7 @@
           {
             "name": "project",
             "in": "query",
-            "description": "Existing absolute project directory on the server host. Overrides the configured project for this mail request only; omitted uses the server default. Idempotency is scoped to the effective project.",
+            "description": "Existing absolute project directory on the server host. Overrides the configured project for this mail or reservation request only; omitted uses the server default. The effective project is fixed before execution and idempotency replay, and scopes reservation approvals and events.",
             "schema": {
               "type": "string"
             }
@@ -4200,7 +4200,7 @@
           {
             "name": "project",
             "in": "query",
-            "description": "Existing absolute project directory on the server host. Overrides the configured project for this mail request only; omitted uses the server default. Idempotency is scoped to the effective project.",
+            "description": "Existing absolute project directory on the server host. Overrides the configured project for this mail or reservation request only; omitted uses the server default. The effective project is fixed before execution and idempotency replay, and scopes reservation approvals and events.",
             "schema": {
               "type": "string"
             }
@@ -4262,7 +4262,7 @@
           {
             "name": "project",
             "in": "query",
-            "description": "Existing absolute project directory on the server host. Overrides the configured project for this mail request only; omitted uses the server default. Idempotency is scoped to the effective project.",
+            "description": "Existing absolute project directory on the server host. Overrides the configured project for this mail or reservation request only; omitted uses the server default. The effective project is fixed before execution and idempotency replay, and scopes reservation approvals and events.",
             "schema": {
               "type": "string"
             }
@@ -4334,7 +4334,7 @@
           {
             "name": "project",
             "in": "query",
-            "description": "Existing absolute project directory on the server host. Overrides the configured project for this mail request only; omitted uses the server default. Idempotency is scoped to the effective project.",
+            "description": "Existing absolute project directory on the server host. Overrides the configured project for this mail or reservation request only; omitted uses the server default. The effective project is fixed before execution and idempotency replay, and scopes reservation approvals and events.",
             "schema": {
               "type": "string"
             }
@@ -4406,7 +4406,7 @@
           {
             "name": "project",
             "in": "query",
-            "description": "Existing absolute project directory on the server host. Overrides the configured project for this mail request only; omitted uses the server default. Idempotency is scoped to the effective project.",
+            "description": "Existing absolute project directory on the server host. Overrides the configured project for this mail or reservation request only; omitted uses the server default. The effective project is fixed before execution and idempotency replay, and scopes reservation approvals and events.",
             "schema": {
               "type": "string"
             }
@@ -4530,7 +4530,7 @@
           {
             "name": "project",
             "in": "query",
-            "description": "Existing absolute project directory on the server host. Overrides the configured project for this mail request only; omitted uses the server default. Idempotency is scoped to the effective project.",
+            "description": "Existing absolute project directory on the server host. Overrides the configured project for this mail or reservation request only; omitted uses the server default. The effective project is fixed before execution and idempotency replay, and scopes reservation approvals and events.",
             "schema": {
               "type": "string"
             }
@@ -4592,7 +4592,7 @@
           {
             "name": "project",
             "in": "query",
-            "description": "Existing absolute project directory on the server host. Overrides the configured project for this mail request only; omitted uses the server default. Idempotency is scoped to the effective project.",
+            "description": "Existing absolute project directory on the server host. Overrides the configured project for this mail or reservation request only; omitted uses the server default. The effective project is fixed before execution and idempotency replay, and scopes reservation approvals and events.",
             "schema": {
               "type": "string"
             }
@@ -4673,7 +4673,7 @@
           {
             "name": "project",
             "in": "query",
-            "description": "Existing absolute project directory on the server host. Overrides the configured project for this mail request only; omitted uses the server default. Idempotency is scoped to the effective project.",
+            "description": "Existing absolute project directory on the server host. Overrides the configured project for this mail or reservation request only; omitted uses the server default. The effective project is fixed before execution and idempotency replay, and scopes reservation approvals and events.",
             "schema": {
               "type": "string"
             }
@@ -4754,7 +4754,7 @@
           {
             "name": "project",
             "in": "query",
-            "description": "Existing absolute project directory on the server host. Overrides the configured project for this mail request only; omitted uses the server default. Idempotency is scoped to the effective project.",
+            "description": "Existing absolute project directory on the server host. Overrides the configured project for this mail or reservation request only; omitted uses the server default. The effective project is fixed before execution and idempotency replay, and scopes reservation approvals and events.",
             "schema": {
               "type": "string"
             }
@@ -4845,7 +4845,7 @@
           {
             "name": "project",
             "in": "query",
-            "description": "Existing absolute project directory on the server host. Overrides the configured project for this mail request only; omitted uses the server default. Idempotency is scoped to the effective project.",
+            "description": "Existing absolute project directory on the server host. Overrides the configured project for this mail or reservation request only; omitted uses the server default. The effective project is fixed before execution and idempotency replay, and scopes reservation approvals and events.",
             "schema": {
               "type": "string"
             }
@@ -4936,7 +4936,7 @@
           {
             "name": "project",
             "in": "query",
-            "description": "Existing absolute project directory on the server host. Overrides the configured project for this mail request only; omitted uses the server default. Idempotency is scoped to the effective project.",
+            "description": "Existing absolute project directory on the server host. Overrides the configured project for this mail or reservation request only; omitted uses the server default. The effective project is fixed before execution and idempotency replay, and scopes reservation approvals and events.",
             "schema": {
               "type": "string"
             }
@@ -5018,7 +5018,7 @@
           {
             "name": "project",
             "in": "query",
-            "description": "Existing absolute project directory on the server host. Overrides the configured project for this mail request only; omitted uses the server default. Idempotency is scoped to the effective project.",
+            "description": "Existing absolute project directory on the server host. Overrides the configured project for this mail or reservation request only; omitted uses the server default. The effective project is fixed before execution and idempotency replay, and scopes reservation approvals and events.",
             "schema": {
               "type": "string"
             }
@@ -5080,7 +5080,7 @@
           {
             "name": "project",
             "in": "query",
-            "description": "Existing absolute project directory on the server host. Overrides the configured project for this mail request only; omitted uses the server default. Idempotency is scoped to the effective project.",
+            "description": "Existing absolute project directory on the server host. Overrides the configured project for this mail or reservation request only; omitted uses the server default. The effective project is fixed before execution and idempotency replay, and scopes reservation approvals and events.",
             "schema": {
               "type": "string"
             }
@@ -5151,7 +5151,7 @@
           {
             "name": "project",
             "in": "query",
-            "description": "Existing absolute project directory on the server host. Overrides the configured project for this mail request only; omitted uses the server default. Idempotency is scoped to the effective project.",
+            "description": "Existing absolute project directory on the server host. Overrides the configured project for this mail or reservation request only; omitted uses the server default. The effective project is fixed before execution and idempotency replay, and scopes reservation approvals and events.",
             "schema": {
               "type": "string"
             }
@@ -6745,6 +6745,16 @@
         "summary": "List reservations",
         "description": "Served route `GET /api/v1/reservations/`. Handler: `handleListReservations`. Response payload is not registered in the robot schema registry; the generic success envelope documents only the envelope fields.",
         "operationId": "get_api_v1_reservations_index",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "query",
+            "description": "Existing absolute project directory on the server host. Overrides the configured project for this mail or reservation request only; omitted uses the server default. The effective project is fixed before execution and idempotency replay, and scopes reservation approvals and events.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful operation",
@@ -6795,6 +6805,16 @@
         "summary": "Reserve paths",
         "description": "Served route `POST /api/v1/reservations/`. Handler: `handleReservePaths`. Response payload is not registered in the robot schema registry; the generic success envelope documents only the envelope fields.",
         "operationId": "post_api_v1_reservations_index",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "query",
+            "description": "Existing absolute project directory on the server host. Overrides the configured project for this mail or reservation request only; omitted uses the server default. The effective project is fixed before execution and idempotency replay, and scopes reservation approvals and events.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -6855,6 +6875,16 @@
         "summary": "Release reservations",
         "description": "Served route `DELETE /api/v1/reservations/`. Handler: `handleReleaseReservations`. Response payload is not registered in the robot schema registry; the generic success envelope documents only the envelope fields.",
         "operationId": "delete_api_v1_reservations_index",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "query",
+            "description": "Existing absolute project directory on the server host. Overrides the configured project for this mail or reservation request only; omitted uses the server default. The effective project is fixed before execution and idempotency replay, and scopes reservation approvals and events.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful operation",
@@ -6907,6 +6937,16 @@
         "summary": "Reservation conflicts",
         "description": "Served route `GET /api/v1/reservations/conflicts`. Handler: `handleReservationConflicts`. Response payload is not registered in the robot schema registry; the generic success envelope documents only the envelope fields.",
         "operationId": "get_api_v1_reservations_conflicts",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "query",
+            "description": "Existing absolute project directory on the server host. Overrides the configured project for this mail or reservation request only; omitted uses the server default. The effective project is fixed before execution and idempotency replay, and scopes reservation approvals and events.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful operation",
@@ -6965,6 +7005,14 @@
             "in": "path",
             "description": "The id identifier",
             "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "project",
+            "in": "query",
+            "description": "Existing absolute project directory on the server host. Overrides the configured project for this mail or reservation request only; omitted uses the server default. The effective project is fixed before execution and idempotency replay, and scopes reservation approvals and events.",
             "schema": {
               "type": "string"
             }
@@ -7038,6 +7086,14 @@
             "in": "path",
             "description": "The id identifier",
             "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "project",
+            "in": "query",
+            "description": "Existing absolute project directory on the server host. Overrides the configured project for this mail or reservation request only; omitted uses the server default. The effective project is fixed before execution and idempotency replay, and scopes reservation approvals and events.",
             "schema": {
               "type": "string"
             }
@@ -7124,6 +7180,14 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "project",
+            "in": "query",
+            "description": "Existing absolute project directory on the server host. Overrides the configured project for this mail or reservation request only; omitted uses the server default. The effective project is fixed before execution and idempotency replay, and scopes reservation approvals and events.",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -7204,6 +7268,14 @@
             "in": "path",
             "description": "The id identifier",
             "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "project",
+            "in": "query",
+            "description": "Existing absolute project directory on the server host. Overrides the configured project for this mail or reservation request only; omitted uses the server default. The effective project is fixed before execution and idempotency replay, and scopes reservation approvals and events.",
             "schema": {
               "type": "string"
             }
