@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -61,6 +62,307 @@ func waitForTestFile(t *testing.T, path, description string) {
 			t.Fatalf("timed out waiting for %s", description)
 		}
 	}
+}
+
+const beadsRebuildPreservationConflict = `{"error":{"code":"SYNC_CONFLICT","message":"Sync conflict: Automatic database recovery refused because unflushed-state preservation could not be established: the tombstone issue IDs could not be read before the rebuild"}}`
+
+type beadsRecoveryTestCommand struct {
+	stdout   string
+	stderr   string
+	exitCode int
+}
+
+type beadsRecoveryTestWorkspace struct {
+	dir           string
+	calls         string
+	doctorStarted string
+	jsonl         string
+	jsonlContents string
+}
+
+// Run the actual subprocess wrapper so exit status, separate output streams,
+// workspace locking and the no-database cache all participate in recovery.
+func setupBeadsRecoveryCommands(t *testing.T, rebuild, doctor beadsRecoveryTestCommand) beadsRecoveryTestWorkspace {
+	t.Helper()
+	dir := t.TempDir()
+	for _, name := range []string{".git", ".beads"} {
+		if err := os.Mkdir(filepath.Join(dir, name), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", name, err)
+		}
+	}
+	workspace := beadsRecoveryTestWorkspace{
+		dir:           dir,
+		calls:         filepath.Join(dir, "br-calls"),
+		doctorStarted: filepath.Join(dir, "doctor-started"),
+		jsonl:         filepath.Join(dir, ".beads", "issues.jsonl"),
+		jsonlContents: "{\"id\":\"ntm-preserved\",\"status\":\"tombstone\"}\n",
+	}
+	if err := os.WriteFile(workspace.jsonl, []byte(workspace.jsonlContents), 0o600); err != nil {
+		t.Fatalf("write authoritative JSONL: %v", err)
+	}
+	normalizedDir, err := normalizeTriageDir(dir)
+	if err != nil {
+		t.Fatalf("normalize recovery workspace: %v", err)
+	}
+	workspace.dir = normalizedDir
+	setNoDBState(normalizedDir, true)
+	t.Cleanup(func() { setNoDBState(normalizedDir, false) })
+	for key, value := range map[string]string{
+		"NTM_TEST_BR_CALLS":       workspace.calls,
+		"NTM_TEST_DOCTOR_STARTED": workspace.doctorStarted,
+		"NTM_TEST_REBUILD_STDOUT": rebuild.stdout,
+		"NTM_TEST_REBUILD_STDERR": rebuild.stderr,
+		"NTM_TEST_REBUILD_EXIT":   fmt.Sprint(rebuild.exitCode),
+		"NTM_TEST_DOCTOR_STDOUT":  doctor.stdout,
+		"NTM_TEST_DOCTOR_STDERR":  doctor.stderr,
+		"NTM_TEST_DOCTOR_EXIT":    fmt.Sprint(doctor.exitCode),
+		"NTM_TEST_DOCTOR_BLOCK":   "",
+	} {
+		t.Setenv(key, value)
+	}
+	binDir := t.TempDir()
+	script := `#!/bin/sh
+printf '%s\t%s\n' "$PWD" "$*" >> "$NTM_TEST_BR_CALLS"
+case "$*" in
+  '--lock-timeout 5000 sync --import-only --rebuild --json')
+    printf '%s' "$NTM_TEST_REBUILD_STDOUT"
+    printf '%s' "$NTM_TEST_REBUILD_STDERR" >&2
+    exit "$NTM_TEST_REBUILD_EXIT"
+    ;;
+  '--lock-timeout 5000 doctor --repair --json')
+    printf '%s' "$NTM_TEST_DOCTOR_STDOUT"
+    printf '%s' "$NTM_TEST_DOCTOR_STDERR" >&2
+    printf 'started\n' > "$NTM_TEST_DOCTOR_STARTED"
+    if [ "$NTM_TEST_DOCTOR_BLOCK" = true ]; then
+      exec sleep 30
+    fi
+    exit "$NTM_TEST_DOCTOR_EXIT"
+    ;;
+  *)
+    printf 'unexpected recovery command: %s\n' "$*" >&2
+    exit 99
+    ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(binDir, "br"), []byte(script), 0o700); err != nil {
+		t.Fatalf("write fake br: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return workspace
+}
+
+func (w beadsRecoveryTestWorkspace) assertCommands(t *testing.T, commands ...string) {
+	t.Helper()
+	contents, err := os.ReadFile(w.calls)
+	if err != nil && !(os.IsNotExist(err) && len(commands) == 0) {
+		t.Fatalf("read recovery commands: %v", err)
+	}
+	want := ""
+	for _, command := range commands {
+		want += w.dir + "\t--lock-timeout 5000 " + command + "\n"
+	}
+	if string(contents) != want {
+		t.Fatalf("recovery commands=%q, want %q", contents, want)
+	}
+	jsonl, err := os.ReadFile(w.jsonl)
+	if err != nil || string(jsonl) != w.jsonlContents {
+		t.Fatalf("authoritative JSONL changed: contents=%q error=%v", jsonl, err)
+	}
+}
+
+func TestBeadsCorruptionRecoveryRequiresPreservationConflict(t *testing.T) {
+	tests := []struct {
+		name    string
+		rebuild beadsRecoveryTestCommand
+		wantErr bool
+	}{
+		{name: "successful rebuild", rebuild: beadsRecoveryTestCommand{stdout: `{"imported":1}`}},
+		{name: "unrelated sync conflict", rebuild: beadsRecoveryTestCommand{stderr: `{"error":{"code":"SYNC_CONFLICT","message":"JSONL was modified concurrently"}}`, exitCode: 6}, wantErr: true},
+		{name: "preservation wording with wrong code", rebuild: beadsRecoveryTestCommand{stderr: strings.ReplaceAll(beadsRebuildPreservationConflict, "SYNC_CONFLICT", "CONFIG_ERROR"), exitCode: 6}, wantErr: true},
+		{name: "unstructured preservation error", rebuild: beadsRecoveryTestCommand{stderr: "SYNC_CONFLICT: Automatic database recovery refused because unflushed-state preservation could not be established: tombstones unreadable", exitCode: 6}, wantErr: true},
+		{name: "ordinary command failure", rebuild: beadsRecoveryTestCommand{stderr: "permission denied", exitCode: 1}, wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			workspace := setupBeadsRecoveryCommands(t, test.rebuild, beadsRecoveryTestCommand{})
+			attempts := 0
+			result, err := withBeadsCorruptionRecovery(t.Context(), workspace.dir, func() (string, error) {
+				attempts++
+				if attempts == 1 {
+					return "", errors.New("database disk image is malformed (11)")
+				}
+				return "claimed", nil
+			})
+			if test.wantErr {
+				if err == nil || attempts != 1 || result != "" {
+					t.Fatalf("result=%q error=%v attempts=%d, want failed recovery without retry", result, err, attempts)
+				}
+			} else if err != nil || attempts != 2 || result != "claimed" {
+				t.Fatalf("result=%q error=%v attempts=%d, want one successful retry", result, err, attempts)
+			}
+			workspace.assertCommands(t, "sync --import-only --rebuild --json")
+		})
+	}
+}
+
+func TestBeadsCorruptionRecoveryValidatesDoctorRepair(t *testing.T) {
+	const partial = `{"ok":false,"code":"fix_partial","exit_code":2,"repaired":true,"database_verified":true,"preservation_verified":false,"verified":false}`
+	tests := []struct {
+		name        string
+		doctor      beadsRecoveryTestCommand
+		wantSuccess bool
+	}{
+		{name: "verified local repair", doctor: beadsRecoveryTestCommand{stdout: `{"verified":true,"repaired":true,"post_repair":{"ok":true}}`}, wantSuccess: true},
+		{name: "healthy report", doctor: beadsRecoveryTestCommand{stdout: `{"code":"healthy","exit_code":0,"verified":true}`}, wantSuccess: true},
+		{name: "verified partial repair", doctor: beadsRecoveryTestCommand{stdout: partial, exitCode: 2}, wantSuccess: true},
+		{name: "partial with stderr warnings", doctor: beadsRecoveryTestCommand{stdout: partial, stderr: "warning: original database is locked during best-effort inspection\n", exitCode: 2}, wantSuccess: true},
+		{name: "partial unverified", doctor: beadsRecoveryTestCommand{stdout: `{"code":"fix_partial","exit_code":2,"repaired":true,"database_verified":false}`, exitCode: 2}},
+		{name: "partial missing verification", doctor: beadsRecoveryTestCommand{stdout: `{"code":"fix_partial","exit_code":2,"repaired":true}`, exitCode: 2}},
+		{name: "partial missing repair", doctor: beadsRecoveryTestCommand{stdout: `{"code":"fix_partial","exit_code":2,"database_verified":true}`, exitCode: 2}},
+		{name: "partial not repaired", doctor: beadsRecoveryTestCommand{stdout: `{"code":"fix_partial","exit_code":2,"repaired":false,"database_verified":true}`, exitCode: 2}},
+		{name: "partial missing code", doctor: beadsRecoveryTestCommand{stdout: `{"exit_code":2,"repaired":true,"database_verified":true}`, exitCode: 2}},
+		{name: "partial mismatched report exit", doctor: beadsRecoveryTestCommand{stdout: `{"code":"fix_partial","exit_code":0,"repaired":true,"database_verified":true}`, exitCode: 2}},
+		{name: "partial unexpected process exit", doctor: beadsRecoveryTestCommand{stdout: partial, exitCode: 1}},
+		{name: "partial zero process exit", doctor: beadsRecoveryTestCommand{stdout: partial}},
+		{name: "healthy nonzero process exit", doctor: beadsRecoveryTestCommand{stdout: `{"code":"healthy","exit_code":0,"verified":true}`, exitCode: 2}},
+		{name: "healthy missing verification", doctor: beadsRecoveryTestCommand{stdout: `{"code":"healthy","exit_code":0}`}},
+		{name: "healthy false verification", doctor: beadsRecoveryTestCommand{stdout: `{"code":"healthy","exit_code":0,"verified":false}`}},
+		{name: "failed repair code", doctor: beadsRecoveryTestCommand{stdout: `{"code":"fix_failed","exit_code":0,"verified":true}`}},
+		{name: "contradictory database verification", doctor: beadsRecoveryTestCommand{stdout: `{"code":"healthy","exit_code":0,"verified":true,"database_verified":false}`}},
+		{name: "invalid verification type", doctor: beadsRecoveryTestCommand{stdout: `{"verified":"true"}`}},
+		{name: "null verification", doctor: beadsRecoveryTestCommand{stdout: `{"verified":null}`}},
+		{name: "empty report", doctor: beadsRecoveryTestCommand{}},
+		{name: "malformed JSON", doctor: beadsRecoveryTestCommand{stdout: `{"verified":true`}},
+		{name: "concatenated reports", doctor: beadsRecoveryTestCommand{stdout: `{"verified":true}{"verified":false}`}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			// br versions can put the rebuild error on stdout while logging
+			// separately to stderr; neither stream may hide the other.
+			workspace := setupBeadsRecoveryCommands(t, beadsRecoveryTestCommand{
+				stdout: beadsRebuildPreservationConflict, stderr: "warning: index needs repair\n", exitCode: 6,
+			}, test.doctor)
+			attempts := 0
+			result, err := withBeadsCorruptionRecovery(t.Context(), workspace.dir, func() (string, error) {
+				attempts++
+				if attempts == 1 {
+					return "", errors.New("database disk image is malformed (11)")
+				}
+				return "claimed", nil
+			})
+			if test.wantSuccess {
+				if err != nil || attempts != 2 || result != "claimed" {
+					t.Fatalf("result=%q error=%v attempts=%d, want one successful guarded retry", result, err, attempts)
+				}
+			} else if err == nil || attempts != 1 || result != "" {
+				t.Fatalf("result=%q error=%v attempts=%d, want unverified repair refused before retry", result, err, attempts)
+			}
+			workspace.assertCommands(t, "sync --import-only --rebuild --json", "doctor --repair --json")
+		})
+	}
+}
+
+func TestBeadsCorruptionRecoveryDoesNotRepeatRepair(t *testing.T) {
+	workspace := setupBeadsRecoveryCommands(t,
+		beadsRecoveryTestCommand{stderr: beadsRebuildPreservationConflict, exitCode: 6},
+		beadsRecoveryTestCommand{stdout: `{"code":"fix_partial","exit_code":2,"repaired":true,"database_verified":true}`, exitCode: 2},
+	)
+	retryErr := errors.New("database disk image is malformed on retry")
+	attempts := 0
+	result, err := withBeadsCorruptionRecovery(t.Context(), workspace.dir, func() (string, error) {
+		attempts++
+		if attempts == 1 {
+			return "", errors.New("file is not a database")
+		}
+		return "retry result", retryErr
+	})
+	if err != retryErr || attempts != 2 || result != "retry result" {
+		t.Fatalf("result=%q error=%v attempts=%d, want unchanged second failure", result, err, attempts)
+	}
+	workspace.assertCommands(t, "sync --import-only --rebuild --json", "doctor --repair --json")
+}
+
+func TestBeadsCorruptionRecoveryLeavesUnrelatedErrorsUntouched(t *testing.T) {
+	for name, originalErr := range map[string]error{
+		"ordinary failure":    errors.New("permission denied"),
+		"eligibility refusal": fmt.Errorf("database corruption: %w", ErrBeadAssignmentIneligible),
+		"ownership refusal":   fmt.Errorf("database disk image is malformed: %w", ErrBeadAlreadyClaimed),
+		"terminal refusal":    fmt.Errorf("file is not a database: %w", ErrBeadTerminal),
+	} {
+		t.Run(name, func(t *testing.T) {
+			workspace := setupBeadsRecoveryCommands(t, beadsRecoveryTestCommand{}, beadsRecoveryTestCommand{})
+			attempts := 0
+			result, err := withBeadsCorruptionRecovery(t.Context(), workspace.dir, func() (string, error) {
+				attempts++
+				return "original result", originalErr
+			})
+			if err != originalErr || attempts != 1 || result != "original result" {
+				t.Fatalf("result=%q error=%v attempts=%d, want unchanged original failure", result, err, attempts)
+			}
+			workspace.assertCommands(t)
+		})
+	}
+}
+
+func TestBeadsCorruptionRecoveryCancelsDuringDoctor(t *testing.T) {
+	workspace := setupBeadsRecoveryCommands(t,
+		beadsRecoveryTestCommand{stderr: beadsRebuildPreservationConflict, exitCode: 6},
+		beadsRecoveryTestCommand{stdout: `{"code":"fix_partial","exit_code":2,"repaired":true,"database_verified":true}`, exitCode: 2},
+	)
+	t.Setenv("NTM_TEST_DOCTOR_BLOCK", "true")
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	attempts := 0
+	result := make(chan error, 1)
+	go func() {
+		_, err := withBeadsCorruptionRecovery(ctx, workspace.dir, func() (bool, error) {
+			attempts++
+			return false, errors.New("database disk image is malformed (11)")
+		})
+		result <- err
+	}()
+	waitForTestFile(t, workspace.doctorStarted, "doctor repair to start")
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) || attempts != 1 {
+			t.Fatalf("error=%v attempts=%d, want cancellation without a guarded retry", err, attempts)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("doctor recovery ignored cancellation")
+	}
+	workspace.assertCommands(t, "sync --import-only --rebuild --json", "doctor --repair --json")
+}
+
+func TestBeadsCorruptionRecoveryCancelsAtWorkspaceGate(t *testing.T) {
+	workspace := setupBeadsRecoveryCommands(t, beadsRecoveryTestCommand{}, beadsRecoveryTestCommand{})
+	gate := workspaceBDMutex(workspace.dir)
+	gate.Lock()
+	defer gate.Unlock()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	doneObserved := make(chan struct{}, 1)
+	result := make(chan error, 1)
+	go func() {
+		result <- recoverCorruptBeadsDatabase(doneObservedContext{Context: ctx, doneObserved: doneObserved}, workspace.dir)
+	}()
+	select {
+	case <-doneObserved:
+	case err := <-result:
+		t.Fatalf("recovery returned before waiting for the workspace gate: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("recovery did not wait for the workspace gate")
+	}
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("recovery error=%v, want context canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("recovery ignored cancellation at the workspace gate")
+	}
+	workspace.assertCommands(t)
 }
 
 func TestBeadsMutatorsRejectInactiveContextWithoutInvokingSubprocesses(t *testing.T) {
