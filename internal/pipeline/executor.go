@@ -40,6 +40,12 @@ var dispatchLogSeq uint64
 // (bd-zfdjd.7)
 var commandHeartbeatInterval = 30 * time.Second
 
+// commandStartedTestHookKey carries an optional func(pid int) in the step
+// context. executeCommand calls it after cmd.Start and before the launch
+// journal records the running process, so tests can deterministically fail
+// that post-start save. Production contexts never carry it.
+type commandStartedTestHookKey struct{}
+
 // ExecutorConfig configures the executor behavior
 type ExecutorConfig struct {
 	Session          string        // Required: tmux session name
@@ -1471,11 +1477,20 @@ func (e *Executor) executeCommand(ctx context.Context, step *Step, workflow *Wor
 	}
 	commandSettled = false
 	record.Status, record.ProcessID = commandExecutionRunning, cmd.Process.Pid
+	if hook, _ := ctx.Value(commandStartedTestHookKey{}).(func(int)); hook != nil {
+		hook(cmd.Process.Pid)
+	}
 	if journalCommand {
 		if err := e.saveCommandExecution(record); err != nil {
+			// The sticky checkpoint failure has already cancelled the run,
+			// so stop the owned group. The command may nevertheless have
+			// finished (or written partial output) before storage failed:
+			// keep its capture as in-memory evidence, as the settled path
+			// does when its final save fails.
 			cmdCancel()
 			cleanup := waitCommandWithProcessGroupCleanup(cmdCtx, cmd)
 			commandSettled = cleanup.Settled
+			result.Output = e.capturedCommandOutput(step, stdoutBuf, stderrBuf)
 			result.Status, result.FinishedAt = StatusFailed, time.Now()
 			result.Error = stepRuntimeError(step, StepKindCommand, "checkpoint", err.Error(), "inspect the command group and restore durable storage before retrying", "")
 			return result
@@ -1588,7 +1603,6 @@ func (e *Executor) executeCommand(ctx context.Context, step *Step, workflow *Wor
 		waitErr = errors.Join(waitErr, uncertainCommandExecutionError(step.ID, record.ProcessID))
 	}
 
-	output := strings.TrimSpace(stdoutBuf.String())
 	if cleanup.Cancelled {
 		slog.Warn(EventCommandCancelled,
 			"run_id", e.state.RunID,
@@ -1600,24 +1614,7 @@ func (e *Executor) executeCommand(ctx context.Context, step *Step, workflow *Wor
 			FieldSignalSent, cleanup.SignalSent,
 		)
 	}
-	if stdoutBuf.Truncated() {
-		slog.Warn("command stdout truncated",
-			"run_id", e.state.RunID,
-			"step_id", step.ID,
-			"bytes_total", stdoutBuf.Total(),
-			"limit", e.limits.MaxCommandStdoutBytes,
-		)
-		output += fmt.Sprintf("\n[TRUNCATED at %d bytes]", e.limits.MaxCommandStdoutBytes)
-	}
-	if stderrBuf != nil && stderrBuf.Truncated() {
-		slog.Warn("command stderr truncated",
-			"run_id", e.state.RunID,
-			"step_id", step.ID,
-			"bytes_total", stderrBuf.Total(),
-			"limit", e.limits.MaxCommandStderrBytes,
-		)
-	}
-	result.Output = output
+	result.Output = e.capturedCommandOutput(step, stdoutBuf, stderrBuf)
 
 	if waitErr != nil {
 		if ctx.Err() != nil {
@@ -1681,6 +1678,32 @@ func (e *Executor) executeCommand(ctx context.Context, step *Step, workflow *Wor
 		"step_id", step.ID,
 	)
 	return result
+}
+
+// capturedCommandOutput returns a started command's trimmed stdout capture
+// (stderr too when merged), marking and logging capture truncation. Callers
+// read it after the command's wait and group cleanup have returned, so it
+// holds everything the command wrote before it was stopped.
+func (e *Executor) capturedCommandOutput(step *Step, stdoutBuf, stderrBuf *cappedWriter) string {
+	output := strings.TrimSpace(stdoutBuf.String())
+	if stdoutBuf.Truncated() {
+		slog.Warn("command stdout truncated",
+			"run_id", e.state.RunID,
+			"step_id", step.ID,
+			"bytes_total", stdoutBuf.Total(),
+			"limit", e.limits.MaxCommandStdoutBytes,
+		)
+		output += fmt.Sprintf("\n[TRUNCATED at %d bytes]", e.limits.MaxCommandStdoutBytes)
+	}
+	if stderrBuf != nil && stderrBuf.Truncated() {
+		slog.Warn("command stderr truncated",
+			"run_id", e.state.RunID,
+			"step_id", step.ID,
+			"bytes_total", stderrBuf.Total(),
+			"limit", e.limits.MaxCommandStderrBytes,
+		)
+	}
+	return output
 }
 
 func commandExitStepError(step *Step, exitCode int) *StepError {

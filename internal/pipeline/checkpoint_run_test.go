@@ -4,10 +4,12 @@ package pipeline
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -121,6 +123,76 @@ func TestCheckpointFailureCancelsAndJoinsRunningSibling(t *testing.T) {
 	if _, exists := state.Steps["sibling"]; !exists {
 		t.Fatal("returned without joining and recording the cancelled sibling")
 	}
+}
+
+// TestCommandLaunchJournalFailureRetainsCapturedOutput covers #363: when the
+// post-start launch journal cannot be saved, the step must still stop the run
+// through the sticky checkpoint failure, but it keeps what the started command
+// really wrote instead of returning an empty failure. Replay safety is
+// unchanged: the last durable journal entry still marks the launch uncertain.
+func TestCommandLaunchJournalFailureRetainsCapturedOutput(t *testing.T) {
+	cfg := checkpointRunConfig(t)
+	e := NewExecutor(cfg)
+	statePath := pipelineStatePath(cfg.ProjectDir, cfg.RunID)
+	savedPath := statePath + ".saved"
+	marker := filepath.Join(cfg.ProjectDir, "finished")
+	var hookCalls atomic.Int32
+	// Runs after cmd.Start and before the running-journal save. Wait until the
+	// command has finished its work, then make every later save fail.
+	ctx := context.WithValue(context.Background(), commandStartedTestHookKey{}, func(int) {
+		hookCalls.Add(1)
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			if _, err := os.Stat(marker); err == nil {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Error("command did not finish its work before the storage fault")
+				break
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		if err := os.Rename(statePath, savedPath); err != nil {
+			t.Errorf("move launch checkpoint away: %v", err)
+		}
+		if err := os.Mkdir(statePath, 0o700); err != nil {
+			t.Errorf("block checkpoint path: %v", err)
+		}
+	})
+	workflow := &Workflow{SchemaVersion: SchemaVersion, Name: "checkpoint-run", Settings: WorkflowSettings{
+		OnError: ErrorActionContinue,
+	}, Steps: []Step{
+		{ID: "work", Command: "printf retained; printf done > finished"},
+		{ID: "forbidden", DependsOn: []string{"work"}, Command: "printf unsafe > downstream"},
+	}}
+	events := make(chan ProgressEvent, 100)
+	state, err := e.Run(ctx, workflow, nil, events)
+	if calls := hookCalls.Load(); calls != 1 {
+		t.Fatalf("launch hook ran %d times, want 1", calls)
+	}
+	assertCheckpointFailure(t, state, err)
+	got := state.Steps["work"]
+	if got.Output != "retained" {
+		t.Fatalf("started command lost its captured output when the launch journal failed: %+v", got)
+	}
+	if got.Status != StatusFailed || got.Error == nil || got.Error.Type != "checkpoint" {
+		t.Fatalf("launch journal failure was not reported on the step: %+v (error %+v)", got, got.Error)
+	}
+	if _, err := os.Stat(filepath.Join(cfg.ProjectDir, "downstream")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("storage failure dispatched a dependent: %v", err)
+	}
+	data, err := os.ReadFile(savedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var durable ExecutionState
+	if err := json.Unmarshal(data, &durable); err != nil {
+		t.Fatal(err)
+	}
+	if launch := durable.CommandExecutions["work"]; launch.Status != commandExecutionStarting {
+		t.Fatalf("last durable journal entry = %+v, want an unresolved starting launch", launch)
+	}
+	assertNoCompletionEvent(t, events)
 }
 
 func TestCheckpointExecutorCanStartNewAttemptAfterStorageRepair(t *testing.T) {
