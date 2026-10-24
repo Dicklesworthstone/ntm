@@ -4,12 +4,15 @@ package serve
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -31,7 +34,46 @@ const (
 	ErrCodeMissingSession   = "MISSING_SESSION"
 	ErrCodeTemplateNotFound = "TEMPLATE_NOT_FOUND"
 	ErrCodeNoResumableState = "NO_RESUMABLE_STATE"
+	ErrCodeRecoveryRefused  = "RECOVERY_REFUSED"
 )
+
+const pipelineRecoveryMaxBodyBytes = 32 << 10
+
+type pipelineRecoveryProjectScopeKey struct{}
+
+type pipelineRecoveryProjectScope struct {
+	projectDir string
+	err        error
+}
+
+// Freeze recovery's namespace before HTTP replay lookup. Both the idempotency
+// key and the canonical recovery engine must use this exact project, even when
+// configuration changes while a request is waiting. Validation remains behind
+// the route's permission check and never loads pipeline state here.
+func (s *Server) pipelineRecoveryProjectScopeMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if (r.Method != http.MethodGet && r.Method != http.MethodPost) ||
+			!strings.HasPrefix(r.URL.Path, "/api/v1/pipelines/") || !strings.HasSuffix(r.URL.Path, "/recover") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		scope := pipelineRecoveryProjectScope{projectDir: s.projectDirSnapshot()}
+		if scope.projectDir == "" || !filepath.IsAbs(scope.projectDir) {
+			scope.err = errors.New("pipeline recovery requires a configured absolute project directory")
+		} else {
+			scope.projectDir, scope.err = filepath.EvalSymlinks(scope.projectDir)
+			if scope.err == nil {
+				var info os.FileInfo
+				info, scope.err = os.Stat(scope.projectDir)
+				if scope.err == nil && !info.IsDir() {
+					scope.err = errors.New("pipeline recovery project is not a directory")
+				}
+			}
+		}
+		ctx := context.WithValue(r.Context(), pipelineRecoveryProjectScopeKey{}, scope)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
 
 // resolveWorkflowPath confines a caller-supplied workflow path to the server's
 // project directory.
@@ -118,6 +160,15 @@ type PipelineResumeRequest struct {
 	Variables map[string]interface{} `json:"variables,omitempty"`
 }
 
+// PipelineRecoverRequest records one explicit acceptance of an uncertain
+// delivery. It cannot change the run's project, session, or workflow.
+type PipelineRecoverRequest struct {
+	StepID         string `json:"step_id"`
+	Receipt        string `json:"receipt"`
+	AcceptDelivery bool   `json:"accept_delivery"`
+	Reason         string `json:"reason"`
+}
+
 // PipelineExecRequest is the request body for POST /api/v1/pipelines/exec (inline workflow)
 type PipelineExecRequest struct {
 	Workflow   pipeline.Workflow      `json:"workflow"`
@@ -153,6 +204,8 @@ func (s *Server) registerPipelineRoutes(r chi.Router) {
 			r.With(s.RequirePermission(PermWritePipelines)).Delete("/", s.handleCancelPipeline)
 			r.With(s.RequirePermission(PermWritePipelines)).Post("/cancel", s.handleCancelPipeline)
 			r.With(s.RequirePermission(PermWritePipelines)).Post("/resume", s.handleResumePipeline)
+			r.With(s.RequirePermission(PermReadPipelines)).Get("/recover", s.handleRecoverPipeline)
+			r.With(s.RequirePermission(PermWritePipelines)).Post("/recover", s.handleRecoverPipeline)
 		})
 	})
 }
@@ -478,6 +531,98 @@ func (s *Server) handleResumePipeline(w http.ResponseWriter, r *http.Request) {
 		"status":      result.Status,
 		"progress":    result.Progress,
 		"resumed":     true,
+	}, reqID)
+}
+
+// handleRecoverPipeline exposes the same durable receipt inspection and
+// acceptance as the CLI. Acceptance only records an operator decision; the
+// ordinary resume endpoint separately observes the original agent and continues.
+func (s *Server) handleRecoverPipeline(w http.ResponseWriter, r *http.Request) {
+	reqID := requestIDFromContext(r.Context())
+	runID, err := url.PathUnescape(chi.URLParam(r, "id"))
+	if err != nil || runID == "" || runID == "." || runID == ".." || strings.ContainsAny(runID, "/\\\x00") {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid pipeline ID", nil, reqID)
+		return
+	}
+	if r.URL.RawQuery != "" {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "pipeline recovery does not accept query parameters", nil, reqID)
+		return
+	}
+	SetAuditResource(r, "pipeline", runID)
+	scope, ok := r.Context().Value(pipelineRecoveryProjectScopeKey{}).(pipelineRecoveryProjectScope)
+	if !ok || scope.err != nil || scope.projectDir == "" {
+		writeErrorResponse(w, http.StatusServiceUnavailable, ErrCodeServiceUnavail,
+			"pipeline recovery requires an accessible configured absolute project directory", nil, reqID)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	fail := func(err error) {
+		status, code, message := http.StatusConflict, ErrCodeRecoveryRefused, "pipeline delivery recovery refused; inspect the receipt and original agent before retrying"
+		var pathErr *os.PathError
+		var linkErr *os.LinkError
+		switch {
+		case ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded):
+			status, code, message = http.StatusGatewayTimeout, ErrCodeTimeout, "pipeline recovery canceled or timed out"
+		case errors.Is(err, pipeline.ErrRunAlreadyOwned):
+			status, code, message = http.StatusConflict, ErrCodePipelineRunning, "pipeline has a live execution owner"
+		case errors.Is(err, os.ErrNotExist) && errors.As(err, &pathErr) &&
+			filepath.Clean(pathErr.Path) == filepath.Join(scope.projectDir, ".ntm", "pipelines", runID+".json"):
+			status, code, message = http.StatusNotFound, ErrCodePipelineNotFound, "pipeline state not found"
+		case errors.As(err, &pathErr) || errors.As(err, &linkErr):
+			status, code, message = http.StatusServiceUnavailable, ErrCodeServiceUnavail, "pipeline recovery storage operation failed; inspect recovery before retrying"
+		}
+		// Engine errors can contain stored workflow paths or parser fragments.
+		// Keep those in server diagnostics, not the identity-only recovery API.
+		slog.Warn("pipeline recovery refused", "request_id", reqID, "run_id", runID, "error", err)
+		writeErrorResponse(w, status, code, message, map[string]interface{}{"run_id": runID}, reqID)
+	}
+	if r.Method == http.MethodGet {
+		inspection, err := pipeline.InspectAgentDeliveryRecovery(ctx, scope.projectDir, runID)
+		if err != nil {
+			fail(err)
+			return
+		}
+		writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
+			"run_id": inspection.RunID, "workflow_id": inspection.WorkflowID,
+			"session": inspection.Session, "deliveries": inspection.Deliveries,
+		}, reqID)
+		return
+	}
+
+	if !isJSONContent(r.Header.Get("Content-Type")) {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "pipeline recovery requires Content-Type application/json", nil, reqID)
+		return
+	}
+	var req PipelineRecoverRequest
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, pipelineRecoveryMaxBodyBytes))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid pipeline recovery request body", nil, reqID)
+		return
+	}
+	if err := decoder.Decode(new(interface{})); err != io.EOF {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "pipeline recovery requires exactly one JSON object", nil, reqID)
+		return
+	}
+	req.Reason = strings.TrimSpace(req.Reason)
+	digest, receiptErr := hex.DecodeString(req.Receipt)
+	if !req.AcceptDelivery || req.StepID == "" || req.StepID != strings.TrimSpace(req.StepID) ||
+		req.Reason == "" || len(req.Reason) > 4096 || receiptErr != nil || len(digest) != sha256.Size || req.Receipt != strings.ToLower(req.Receipt) {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest,
+			"step_id, exact lowercase receipt, accept_delivery:true, and a reason of 1 to 4096 bytes are required", nil, reqID)
+		return
+	}
+	SetAuditAction(r, AuditActionApprove)
+	result, err := pipeline.AcceptAgentDeliveryContext(ctx, scope.projectDir, runID, req.StepID, req.Receipt, req.Reason)
+	if err != nil {
+		fail(err)
+		return
+	}
+	SetAuditSession(r, result.Session, result.Delivery.PaneID, "")
+	writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
+		"run_id": result.RunID, "workflow_id": result.WorkflowID, "session": result.Session,
+		"delivery": result.Delivery, "replayed": result.Replayed,
 	}, reqID)
 }
 

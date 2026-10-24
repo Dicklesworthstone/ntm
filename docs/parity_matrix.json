@@ -1,6 +1,6 @@
 {
   "source": "chi-router-walk",
-  "count": 178,
+  "count": 180,
   "endpoints": [
     {
       "method": "GET",
@@ -501,6 +501,16 @@
       "method": "POST",
       "path": "/api/v1/pipelines/{id}/cancel",
       "handler": "handleCancelPipeline"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/pipelines/{id}/recover",
+      "handler": "handleRecoverPipeline"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/pipelines/{id}/recover",
+      "handler": "handleRecoverPipeline"
     },
     {
       "method": "POST",

@@ -380,6 +380,12 @@ func buildRouterOperation(rt RouterRoute, components *OpenAPIComponents) *Operat
 	case "handleCancelJob":
 		op.Responses["409"] = errorResponse("Job is not cancellable in its current state")
 		op.Responses["503"] = errorResponse("Cancellation signalled but its receipt could not be checkpointed")
+	case "handleRecoverPipeline":
+		op.Description += " Uses the server's configured project, fixed for execution and HTTP idempotency replay; project and session overrides are not accepted. GET inspects receipt identities without prompt or transcript contents. POST records explicit acceptance only; use the ordinary resume endpoint or a pipeline_resume job to continue."
+		op.Responses["403"] = errorResponse("Missing pipelines:read for inspection or pipelines:write for acceptance")
+		op.Responses["409"] = errorResponse("Run is owned, receipt is stale, or the recovery decision conflicts with saved state")
+		op.Responses["503"] = errorResponse("Configured project is unavailable or recovery storage failed; inspect recovery before retrying")
+		op.Responses["504"] = errorResponse("Recovery canceled or timed out")
 	}
 
 	if rt.Method == "POST" || rt.Method == "PUT" || rt.Method == "PATCH" {
@@ -390,6 +396,21 @@ func buildRouterOperation(rt RouterRoute, components *OpenAPIComponents) *Operat
 				},
 			},
 		}
+	}
+	if rt.Handler == "handleRecoverPipeline" && rt.Method == http.MethodPost {
+		op.RequestBody.Required = true
+		op.RequestBody.Description = "One JSON object of at most 32 KiB. Unknown fields are rejected. The exact receipt_token returned by inspection and an explicit operator observation are required; acceptance never resends the prompt."
+		op.RequestBody.Content["application/json"] = MediaType{Schema: &Schema{
+			Type: "object",
+			Properties: map[string]*Schema{
+				"step_id":         {Type: "string", Description: "Exact step_id returned by inspection."},
+				"receipt":         {Type: "string", Description: "Exact 64-character lowercase hexadecimal receipt_token returned by inspection."},
+				"accept_delivery": {Type: "boolean", Description: "Must be true to record acceptance."},
+				"reason":          {Type: "string", Description: "Operator observation; after trimming whitespace, 1 to 4096 UTF-8 bytes. Configured request redaction applies before persistence."},
+			},
+			Required:             []string{"step_id", "receipt", "accept_delivery", "reason"},
+			AdditionalProperties: false,
+		}}
 	}
 	return op
 }

@@ -98,6 +98,7 @@ func concretePathForPattern(pattern string) string {
 func TestIdempotencyRouterCoverage(t *testing.T) {
 	srv := NewHermeticServer("test")
 	defer srv.Stop()
+	srv.projectDir = t.TempDir()
 
 	routes, err := WalkServedRoutes(srv.Router())
 	if err != nil {
@@ -140,13 +141,13 @@ func TestIdempotencyRouterCoverage(t *testing.T) {
 			Role:   srv.extractRoleFromClaims(map[string]interface{}{}),
 			UserID: extractUserIDFromClaims(map[string]interface{}{}),
 		}))
-		// Mail and reservation requests freeze their project before replay. Seed
-		// through that production middleware so the probe has the same scope
-		// as the real request below, including an unconfigured default.
+		// Project-scoped requests freeze their project before replay. Seed
+		// through both production middlewares so the probe has the same scope
+		// as the real request below.
 		var scoped string
-		srv.mailProjectScopeMiddleware(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		srv.mailProjectScopeMiddleware(srv.pipelineRecoveryProjectScopeMiddleware(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 			scoped = scopedIdempotencyKey(r)
-		})).ServeHTTP(httptest.NewRecorder(), probe)
+		}))).ServeHTTP(httptest.NewRecorder(), probe)
 		if scoped == "" {
 			t.Fatalf("scoped key empty for %s %s", rt.Method, rt.Pattern)
 		}

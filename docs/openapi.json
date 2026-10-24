@@ -6306,6 +6306,266 @@
         }
       }
     },
+    "/api/v1/pipelines/{id}/recover": {
+      "get": {
+        "tags": [
+          "pipelines"
+        ],
+        "summary": "Recover pipeline",
+        "description": "Served route `GET /api/v1/pipelines/{id}/recover`. Handler: `handleRecoverPipeline`. Response payload is not registered in the robot schema registry; the generic success envelope documents only the envelope fields. Uses the server's configured project, fixed for execution and HTTP idempotency replay; project and session overrides are not accepted. GET inspects receipt identities without prompt or transcript contents. POST records explicit acceptance only; use the ordinary resume endpoint or a pipeline_resume job to continue.",
+        "operationId": "get_api_v1_pipelines_id_recover",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessEnvelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing pipelines:read for inspection or pipelines:write for acceptance",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Run is owned, receipt is stale, or the recovery decision conflicts with saved state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Configured project is unavailable or recovery storage failed; inspect recovery before retrying",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Recovery canceled or timed out",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "pipelines"
+        ],
+        "summary": "Recover pipeline",
+        "description": "Served route `POST /api/v1/pipelines/{id}/recover`. Handler: `handleRecoverPipeline`. Response payload is not registered in the robot schema registry; the generic success envelope documents only the envelope fields. Uses the server's configured project, fixed for execution and HTTP idempotency replay; project and session overrides are not accepted. GET inspects receipt identities without prompt or transcript contents. POST records explicit acceptance only; use the ordinary resume endpoint or a pipeline_resume job to continue.",
+        "operationId": "post_api_v1_pipelines_id_recover",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "One JSON object of at most 32 KiB. Unknown fields are rejected. The exact receipt_token returned by inspection and an explicit operator observation are required; acceptance never resends the prompt.",
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "accept_delivery": {
+                    "type": "boolean",
+                    "description": "Must be true to record acceptance."
+                  },
+                  "reason": {
+                    "type": "string",
+                    "description": "Operator observation; after trimming whitespace, 1 to 4096 UTF-8 bytes. Configured request redaction applies before persistence."
+                  },
+                  "receipt": {
+                    "type": "string",
+                    "description": "Exact 64-character lowercase hexadecimal receipt_token returned by inspection."
+                  },
+                  "step_id": {
+                    "type": "string",
+                    "description": "Exact step_id returned by inspection."
+                  }
+                },
+                "required": [
+                  "step_id",
+                  "receipt",
+                  "accept_delivery",
+                  "reason"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessEnvelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing pipelines:read for inspection or pipelines:write for acceptance",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Run is owned, receipt is stale, or the recovery decision conflicts with saved state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Configured project is unavailable or recovery storage failed; inspect recovery before retrying",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Recovery canceled or timed out",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/pipelines/{id}/resume": {
       "post": {
         "tags": [

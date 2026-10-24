@@ -1346,6 +1346,9 @@ func (s *Server) buildRouter() chi.Router {
 	// Freeze mail and reservation requests' projects before replay lookup.
 	// Validation errors follow each route's permission check.
 	r.Use(s.mailProjectScopeMiddleware)
+	// Recovery decisions must retain their configured project even on an HTTP
+	// replay. Capture that namespace before looking up an idempotency key.
+	r.Use(s.pipelineRecoveryProjectScopeMiddleware)
 	// Idempotency-Key replay for EVERY mutating route — the single mount point
 	// (D4, bd-ws3-contract-breadth-psvyu.4). Deleting this one line disables the
 	// feature (rollback lever). The middleware is inert for requests without an
@@ -1999,7 +2002,11 @@ func scopedIdempotencyKey(r *http.Request) string {
 	// permission the original request needed.
 	principal := idempotencyPrincipal(r)
 	scope, projectScoped := r.Context().Value(mailProjectScopeKey{}).(mailProjectScope)
-	if projectScoped && scope.err != nil {
+	project, scopeErr := scope.project, scope.err
+	if recoveryScope, ok := r.Context().Value(pipelineRecoveryProjectScopeKey{}).(pipelineRecoveryProjectScope); ok {
+		project, scopeErr, projectScoped = recoveryScope.projectDir, recoveryScope.err, true
+	}
+	if projectScoped && scopeErr != nil {
 		return "" // Invalid scope must reach permission/validation, never replay.
 	}
 
@@ -2016,7 +2023,7 @@ func scopedIdempotencyKey(r *http.Request) string {
 	b.WriteString(principal)
 	b.WriteByte('\x00')
 	if projectScoped {
-		b.WriteString(scope.project)
+		b.WriteString(project)
 		b.WriteByte('\x00')
 	}
 	b.WriteString(rawKey)

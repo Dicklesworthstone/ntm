@@ -752,6 +752,30 @@ step-definition checks. A live run owner, stale receipt, or conflicting decision
 is refused; repeating the same receipt and reason returns the saved decision,
 including after the run completes.
 
+REST clients can perform the same recovery through the server's configured
+project. `GET /api/v1/pipelines/{id}/recover` requires `pipelines:read` and returns
+the inspectable delivery identities and their `receipt_token` values. To record
+an observation, send `POST /api/v1/pipelines/{id}/recover` with
+`pipelines:write` permission, `Content-Type: application/json`, and this JSON body:
+
+```json
+{
+  "step_id": "review",
+  "receipt": "<receipt_token from GET>",
+  "accept_delivery": true,
+  "reason": "The original agent is working on the submitted review"
+}
+```
+
+Acceptance records the same durable decision as the CLI. Continue with
+`POST /api/v1/pipelines/{id}/resume`, or submit a `pipeline_resume` job for
+pollable execution. Inspection and acceptance expose receipt metadata without
+prompt or transcript contents. Recovery requests cannot select another project
+or replace the saved session. The server freezes the configured project for the
+request and its HTTP idempotency key; changing server configuration cannot replay
+an acceptance from a different project. Stale receipts, conflicting observations,
+and a live run owner produce a conflict response without changing the checkpoint.
+
 If you instead intend to repeat failed or interrupted agent work, inspect the
 original pane before using `--mode=restart-failed`; that mode still preserves
 completed delivery receipts. Use
