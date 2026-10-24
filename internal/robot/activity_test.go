@@ -2882,3 +2882,73 @@ func TestStateClassifierLimitsTransientMarkersToVisiblePane(t *testing.T) {
 		t.Fatalf("on-screen spinner classified %s, want %s", activity.State, StateThinking)
 	}
 }
+
+// TestRegisteredPluginActivityAndLiveBusy covers ntm#362: a registered plugin
+// pane classifies from its declared readiness patterns in the robot activity
+// classifier, the shared live-busy guard and the health gate predicate,
+// instead of falling through to UNKNOWN or the velocity heuristics.
+func TestRegisteredPluginActivityAndLiveBusy(t *testing.T) {
+	name := registerReadinessPlugin(t)
+
+	idleOutput := "pluginready 1.0\nready for the next task\n------\n------"
+	idle, err := NewStateClassifier("plugin-idle", &ClassifierConfig{AgentType: name}).ClassifyWithOutput(idleOutput)
+	if err != nil {
+		t.Fatalf("classify idle plugin frame: %v", err)
+	}
+	if idle.State != StateWaiting {
+		t.Fatalf("idle plugin state = %s, want %s; patterns=%v", idle.State, StateWaiting, idle.DetectedPatterns)
+	}
+
+	// An old declared error high in scrollback must not pin a pane whose live
+	// tail shows the plugin's declared working chrome: that chrome is
+	// authoritative current-turn evidence, like the built-in providers'.
+	var working strings.Builder
+	working.WriteString("BOOM\n")
+	for i := 0; i < 30; i++ {
+		working.WriteString("historical output outside the live window\n")
+	}
+	working.WriteString("editing files\n[stop] to interrupt\n")
+	busy, err := NewStateClassifier("plugin-working", &ClassifierConfig{AgentType: name}).ClassifyWithOutput(working.String())
+	if err != nil {
+		t.Fatalf("classify working plugin frame: %v", err)
+	}
+	if busy.State != StateThinking {
+		t.Fatalf("working plugin state = %s, want %s; patterns=%v", busy.State, StateThinking, busy.DetectedPatterns)
+	}
+
+	errOutput := "running task\nBOOM\n------\n------"
+	failed, err := NewStateClassifier("plugin-error", &ClassifierConfig{AgentType: name}).ClassifyWithOutput(errOutput)
+	if err != nil {
+		t.Fatalf("classify errored plugin frame: %v", err)
+	}
+	if failed.State != StateError {
+		t.Fatalf("errored plugin state = %s, want %s; patterns=%v", failed.State, StateError, failed.DetectedPatterns)
+	}
+
+	if !isAIAgentLiveBusy(working.String(), name, 0) {
+		t.Fatal("declared working chrome in the live tail must read live-busy")
+	}
+	if isAIAgentLiveBusy(idleOutput, name, 0) {
+		t.Fatal("idle plugin pane must not read live-busy")
+	}
+	if isAIAgentLiveBusy("[stop] to interrupt\n", "pluginready-unregistered", 0) {
+		t.Fatal("an unregistered type is not an agent pane")
+	}
+
+	for _, tc := range []struct {
+		agentType string
+		want      bool
+	}{
+		{name, true},
+		{"PluginReady", true},
+		{"codex", true},
+		{"user", false},
+		{"unknown", false},
+		{"", false},
+		{"pluginready-unregistered", false},
+	} {
+		if got := isAIAgentPaneType(tc.agentType); got != tc.want {
+			t.Errorf("isAIAgentPaneType(%q) = %v, want %v", tc.agentType, got, tc.want)
+		}
+	}
+}

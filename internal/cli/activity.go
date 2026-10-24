@@ -396,6 +396,12 @@ func detectAgentTypeFromPane(pane tmux.Pane) string {
 	case tmux.AgentUser:
 		return "user"
 	default:
+		// A registered agent plugin is its own agent type (ntm#260), so its
+		// panes stay in activity, summary, error and spawn boot/init-prompt
+		// observations; anything else tmux could not classify is "unknown".
+		if agent.IsPluginType(agent.AgentType(pane.Type)) {
+			return strings.ToLower(strings.TrimSpace(string(pane.Type)))
+		}
 		return "unknown"
 	}
 }

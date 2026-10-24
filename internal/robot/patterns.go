@@ -7,6 +7,7 @@ import (
 	"sort"
 	"sync"
 
+	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/errsig"
 )
 
@@ -307,7 +308,7 @@ func (lib *PatternLibrary) Match(content string, agentType string) []PatternMatc
 		}
 	}
 
-	return matches
+	return appendPluginPatternMatches(matches, content, agentType, "")
 }
 
 // MatchFirst returns the first (highest priority) matching pattern.
@@ -355,6 +356,48 @@ func (lib *PatternLibrary) MatchByCategory(content string, agentType string, cat
 		}
 	}
 
+	return appendPluginPatternMatches(matches, content, agentType, category)
+}
+
+// Names and priorities of the matches a registered agent plugin's declared
+// readiness patterns contribute. The priorities mirror the built-in omp
+// patterns: an error outranks in-flight evidence, which outranks idle chrome.
+const (
+	pluginErrorPattern   = "plugin_error"
+	pluginWorkingPattern = "plugin_working"
+	pluginIdlePattern    = "plugin_idle"
+
+	pluginErrorPriority   = 180
+	pluginWorkingPriority = 115
+	pluginIdlePriority    = 92
+)
+
+// appendPluginPatternMatches adds the readiness patterns a registered agent
+// plugin declared (ntm#260) to library matches, so the robot classifier,
+// live-busy and health surfaces read plugin panes the way the agent parser and
+// status detector already do: Working patterns are THINKING (authoritative live
+// work), Error patterns ERROR, and Idle patterns WAITING. Every pattern is
+// matched per line of content; callers keep their own window and freshness
+// rules. A non-empty category restricts the additions. The result stays in
+// descending priority order for MatchFirst.
+func appendPluginPatternMatches(matches []PatternMatch, content, agentType string, category PatternCategory) []PatternMatch {
+	found, ok := agent.MatchPluginReadiness(content, agent.AgentType(agentType))
+	if !ok {
+		return matches
+	}
+	added := false
+	add := func(matched bool, m PatternMatch) {
+		if matched && (category == "" || m.Category == category) {
+			matches = append(matches, m)
+			added = true
+		}
+	}
+	add(found.Error, PatternMatch{Pattern: pluginErrorPattern, State: StateError, Category: CategoryError, Priority: pluginErrorPriority})
+	add(found.Working, PatternMatch{Pattern: pluginWorkingPattern, State: StateThinking, Category: CategoryThinking, Priority: pluginWorkingPriority})
+	add(found.Idle, PatternMatch{Pattern: pluginIdlePattern, State: StateWaiting, Category: CategoryIdle, Priority: pluginIdlePriority})
+	if added {
+		sort.SliceStable(matches, func(i, j int) bool { return matches[i].Priority > matches[j].Priority })
+	}
 	return matches
 }
 

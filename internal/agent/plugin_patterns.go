@@ -119,6 +119,31 @@ func matchAnyLine(text string, patterns []*regexp.Regexp) bool {
 	return false
 }
 
+// PluginReadinessMatch reports which kinds of a plugin's declared readiness
+// patterns matched a text.
+type PluginReadinessMatch struct {
+	Working bool
+	Idle    bool
+	Error   bool
+}
+
+// MatchPluginReadiness matches every declared pattern of the registered plugin
+// type t against each line of text. Unlike the helpers below it applies no
+// window of its own: the caller has already bounded text (a full capture or a
+// live tail) and keeps its own freshness rules. ok is false for unregistered
+// types and for plugins that declared no patterns.
+func MatchPluginReadiness(text string, t AgentType) (match PluginReadinessMatch, ok bool) {
+	pp, registered := LookupPluginPatterns(t)
+	if !registered || !pp.Declared() {
+		return PluginReadinessMatch{}, false
+	}
+	return PluginReadinessMatch{
+		Working: matchAnyLine(text, pp.Working),
+		Idle:    matchAnyLine(text, pp.Idle),
+		Error:   matchAnyLine(text, pp.Error),
+	}, true
+}
+
 // PluginActivelyWorking reports whether any line of a registered plugin
 // pane's trailing live window matches one of its declared Working patterns.
 // False for unregistered types and for plugins that declared no Working

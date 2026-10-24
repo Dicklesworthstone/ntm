@@ -1,7 +1,10 @@
 package robot
 
 import (
+	"sort"
 	"testing"
+
+	"github.com/Dicklesworthstone/ntm/internal/agent"
 )
 
 func TestNewPatternLibrary(t *testing.T) {
@@ -1093,5 +1096,89 @@ func TestAgyTrustPromptClassifiesAsError(t *testing.T) {
 		if m.Pattern == "agy_trust_prompt" || m.Pattern == "agy_trust_option" {
 			t.Errorf("trust pattern matched normal agy output: %+v", m)
 		}
+	}
+}
+
+// registerReadinessPlugin registers the agent plugin the plugin-readiness
+// tests classify (ntm#362). The plugin registry is process-global, so the name
+// is unique to these tests; re-registering replaces the patterns with the same
+// ones. The working marker deliberately avoids braille glyphs so the wildcard
+// braille_spinner pattern cannot satisfy the assertions on its own.
+func registerReadinessPlugin(t *testing.T) string {
+	t.Helper()
+	const name = "pluginready"
+	if err := agent.RegisterPlugin(name,
+		[]string{`^\s*-{4,}\s*$`},
+		[]string{`\[stop\] to interrupt`},
+		[]string{`^BOOM$`},
+	); err != nil {
+		t.Fatalf("register plugin: %v", err)
+	}
+	return name
+}
+
+func pluginPatternNames(matches []PatternMatch) []string {
+	var names []string
+	for _, m := range matches {
+		switch m.Pattern {
+		case pluginErrorPattern, pluginWorkingPattern, pluginIdlePattern:
+			names = append(names, m.Pattern)
+		}
+	}
+	return names
+}
+
+// TestPatternLibrary_RegisteredPluginReadiness covers ntm#362: the pattern
+// library translates a registered plugin's declared readiness regexps into
+// matches (working -> THINKING, error -> ERROR, idle -> WAITING), per line,
+// in priority order, and only for that plugin's panes.
+func TestPatternLibrary_RegisteredPluginReadiness(t *testing.T) {
+	name := registerReadinessPlugin(t)
+	lib := NewPatternLibrary()
+	content := "BOOM\n[stop] to interrupt\n------"
+
+	if got := pluginPatternNames(lib.Match(content, "pluginready-unregistered")); len(got) != 0 {
+		t.Fatalf("unregistered type got plugin matches %v", got)
+	}
+	if got := pluginPatternNames(lib.Match(content, "codex")); len(got) != 0 {
+		t.Fatalf("built-in codex pane got plugin matches %v", got)
+	}
+
+	matches := lib.Match(content, "PluginReady")
+	want := map[string]PatternMatch{
+		pluginErrorPattern:   {Pattern: pluginErrorPattern, State: StateError, Category: CategoryError, Priority: pluginErrorPriority},
+		pluginWorkingPattern: {Pattern: pluginWorkingPattern, State: StateThinking, Category: CategoryThinking, Priority: pluginWorkingPriority},
+		pluginIdlePattern:    {Pattern: pluginIdlePattern, State: StateWaiting, Category: CategoryIdle, Priority: pluginIdlePriority},
+	}
+	for _, m := range matches {
+		if w, ok := want[m.Pattern]; ok {
+			if m != w {
+				t.Errorf("match %q = %+v, want %+v", m.Pattern, m, w)
+			}
+			delete(want, m.Pattern)
+		}
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing plugin matches %v in %+v", want, matches)
+	}
+	if !sort.SliceIsSorted(matches, func(i, j int) bool { return matches[i].Priority > matches[j].Priority }) {
+		t.Fatalf("matches not in descending priority order: %+v", matches)
+	}
+	if first := lib.MatchFirst(content, name); first == nil || first.Pattern != pluginErrorPattern {
+		t.Fatalf("MatchFirst = %+v, want %s", first, pluginErrorPattern)
+	}
+
+	if got := pluginPatternNames(lib.MatchByCategory(content, name, CategoryThinking)); len(got) != 1 || got[0] != pluginWorkingPattern {
+		t.Fatalf("MatchByCategory(thinking) plugin matches = %v, want [%s]", got, pluginWorkingPattern)
+	}
+	if !lib.HasIdlePrompt("output\n  ------  ", name) {
+		t.Fatal("declared idle pattern must surface as an idle prompt")
+	}
+
+	// Declared patterns are matched per screen line: ^ and $ anchor a line,
+	// not the whole capture, and a line that merely contains the marker text
+	// does not satisfy an anchored pattern.
+	if got := pluginPatternNames(lib.Match("BOOM was the old build tag", name)); len(got) != 0 {
+		t.Fatalf("anchored error pattern matched a longer line: %v", got)
 	}
 }

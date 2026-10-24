@@ -689,8 +689,7 @@ func checkErrors(paneID string, agentType string, paneWidth int) *ErrorCheckResu
 	// a gate phrase must not read as blocked.
 	var gate string
 	var gateFound bool
-	canonicalType := agent.AgentType(agentType).Canonical()
-	if canonicalType.IsValid() && canonicalType != agent.AgentTypeUser && canonicalType != agent.AgentTypeUnknown {
+	if isAIAgentPaneType(agentType) {
 		gate, gateFound = agent.DetectInteractiveGate(output, paneWidth)
 		if gateFound {
 			result.Patterns = append(result.Patterns, "interactive_gate")

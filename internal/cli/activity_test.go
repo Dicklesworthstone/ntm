@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/agent"
+	statuspkg "github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
 	"github.com/Dicklesworthstone/ntm/tests/testutil"
@@ -491,5 +493,34 @@ func TestActivityStateScopeSeparatesPaneLifetimes(t *testing.T) {
 		if base == other {
 			t.Fatalf("activity state scope aliases distinct pane lifetimes: %q == %q", base, other)
 		}
+	}
+}
+
+// TestDetectAgentTypeFromPane_RegisteredPlugin covers ntm#362: a registered
+// agent plugin pane keeps its own type, so activity, summary, errors and the
+// spawn boot/init-prompt observation count it as an agent pane.
+func TestDetectAgentTypeFromPane_RegisteredPlugin(t *testing.T) {
+	const name = "clireadyplugin"
+	pane := tmux.Pane{ID: "%71", Index: 1, Type: tmux.AgentType("CliReadyPlugin"), Title: "demo__clireadyplugin_1", Command: "clireadyplugin"}
+	if got := detectAgentTypeFromPane(tmux.Pane{Type: tmux.AgentType("clireadyplugin-unregistered")}); got != "unknown" {
+		t.Fatalf("unregistered plugin type = %q, want unknown", got)
+	}
+	if err := agent.RegisterPlugin(name, []string{`^\s*-{4,}\s*$`}, nil, nil); err != nil {
+		t.Fatalf("register plugin: %v", err)
+	}
+	if got := detectAgentTypeFromPane(pane); got != name {
+		t.Fatalf("detectAgentTypeFromPane(%q) = %q, want %q", pane.Type, got, name)
+	}
+	if got := agentTypeForPane(pane); got != name {
+		t.Fatalf("agentTypeForPane(%q) = %q, want %q", pane.Type, got, name)
+	}
+
+	now := time.Now().UTC()
+	idle := testSpawnPaneObservation(now, pane, statuspkg.StateIdle)
+	idle.RawOutput = "clireadyplugin 1.0\n------"
+	observation := testSpawnSessionObservation(now, idle)
+	ready, agents := readyAgentPanesFromObservation(observation)
+	if agents != 1 || len(ready) != 1 || ready[0].ID != pane.ID {
+		t.Fatalf("ready=%v agents=%d, want the idle plugin pane counted and ready", ready, agents)
 	}
 }

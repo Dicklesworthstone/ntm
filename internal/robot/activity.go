@@ -1095,11 +1095,21 @@ func IsLiveBusy(scrollback string, agentType string, paneWidth int) bool {
 // not apply it to user or unknown panes where ordinary shell output can match.
 // paneWidth is the real tmux pane width (bd-eeifh); pass 0 when unknown.
 func isAIAgentLiveBusy(scrollback, agentType string, paneWidth int) bool {
-	canonicalType := agent.AgentType(agentType).Canonical()
-	if !canonicalType.IsValid() || canonicalType == agent.AgentTypeUser || canonicalType == agent.AgentTypeUnknown {
+	if !isAIAgentPaneType(agentType) {
 		return false
 	}
-	return IsLiveBusy(scrollback, string(canonicalType), paneWidth)
+	return IsLiveBusy(scrollback, string(agent.AgentType(agentType).Canonical()), paneWidth)
+}
+
+// isAIAgentPaneType reports whether agentType names an AI agent pane: a
+// built-in agent type or a registered agent plugin (ntm#260). User, unknown
+// and unrecognized types are not agent panes.
+func isAIAgentPaneType(agentType string) bool {
+	canonicalType := agent.AgentType(agentType).Canonical()
+	if canonicalType == agent.AgentTypeUser || canonicalType == agent.AgentTypeUnknown {
+		return false
+	}
+	return canonicalType.IsValid() || agent.IsPluginType(canonicalType)
 }
 
 // lastNLines returns the last n non-empty-slice lines of s, preserving
@@ -1262,7 +1272,10 @@ func isAuthoritativeLiveWorkPattern(name string) bool {
 		"omp_status_timer",
 		"omp_esc_hint",
 		"omp_steering",
-		"omp_subagents":
+		"omp_subagents",
+		// A plugin's declared Working patterns are, by contract, chrome its
+		// TUI renders only while a turn is in flight (ntm#260).
+		pluginWorkingPattern:
 		return true
 	default:
 		return false

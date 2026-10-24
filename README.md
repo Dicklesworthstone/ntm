@@ -1191,8 +1191,9 @@ selected config file: `~/.config/ntm/agents/*.toml` by default,
 `<dir-of-config>/agents/` with an explicit `--config`. Each TOML declares a
 name/alias (which become `--<name>`/`--<alias>` spawn and `send` selectors), a
 command template, and optional `[agent.readiness]` regexes that drive
-idle/working/error classification for `status`, `--robot-tail`, and
-`--verify-boot` exactly like the built-in agents. NTM never modifies files in
+idle/working/error classification for `status`, `activity`, `--robot-tail`,
+`--robot-activity`, `--robot-is-working`, `--robot-health`, and `--verify-boot`
+exactly like the built-in agents. NTM never modifies files in
 `agents/` — an existing preset you have customised is yours.
 
 Oh My Pi is now a built-in agent type (see [Oh My Pi](#oh-my-pi-omp)), so the
