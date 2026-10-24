@@ -30,6 +30,27 @@ const ClaudeOAuthTokenEnvVar = "CLAUDE_CODE_OAUTH_TOKEN"
 // from an isolated config dir.
 const claudeCredentialsFile = ".credentials.json"
 
+// isClaudeCredentialEntry reports whether a config-dir entry name is, or may
+// be, a copy of the rotating credential (claudeCredentialsFile), and so must
+// never appear in an isolated config dir (GH#366).
+//
+// Excluding only the exact file name let every variant through: a hand-made
+// backup (.credentials.json.bak-20261003), an editor or atomic-write leftover
+// (.credentials.json.tmp.4242, ..credentials.json.swp, .credentials.json~,
+// #.credentials.json#), or a future rename all carry the same refresh token.
+// The rule is a deny by substring, not a list of known suffixes, so a name
+// nobody anticipated is still caught: any entry whose name contains
+// "credential", in any case. It is deliberately broad. A config entry hidden
+// from panes costs little; a credential copy inside the pane's config dir
+// hands a live refresh token to anything that reads that dir.
+//
+// Panes run as the operator's user and could still open ~/.claude directly;
+// the guarantee is that the pane's CLAUDE_CONFIG_DIR itself holds no
+// credential copy.
+func isClaudeCredentialEntry(name string) bool {
+	return strings.Contains(strings.ToLower(name), "credential")
+}
+
 // ClaudeCredentialStoreEnvVar lets an operator declare which store Claude Code
 // uses on this machine: "file" (the credential lives in the config dir, so
 // per-pane isolation applies) or "keychain" (it does not).
@@ -55,8 +76,9 @@ const ClaudeCredentialStoreEnvVar = "NTM_CLAUDE_CREDENTIAL_STORE"
 //
 // ntm cannot fix Claude Code's rotation, only shield it. Each pane gets a
 // config dir that symlinks every entry of the real ~/.claude EXCEPT the
-// rotating credential, so settings/MCP/skills survive while the credential is
-// structurally unreachable. Combined with a non-rotating setup token in
+// rotating credential and every copy of it (see isClaudeCredentialEntry), so
+// settings/MCP/skills survive while the credential is structurally
+// unreachable. Combined with a non-rotating setup token in
 // CLAUDE_CODE_OAUTH_TOKEN, the panes become stateless readers of one static
 // token with no refresh cycle to race.
 type ClaudeConfigProvisioner struct {
@@ -106,9 +128,11 @@ func (p *ClaudeConfigProvisioner) ConfigPath(session, pane string) string {
 }
 
 // ProvisionPaneConfig creates the pane's isolated config dir, linking every
-// entry of the source config dir except the rotating credential. It is
-// idempotent: re-provisioning refreshes links for entries added since, and
-// removes a credential file that appeared inside the isolated dir.
+// entry of the source config dir except the rotating credential and its
+// copies (isClaudeCredentialEntry). It is idempotent: re-provisioning
+// refreshes links for entries added since, and removes credential files or
+// links that appeared inside the isolated dir, including links to credential
+// backups made by ntm versions that excluded only the exact file name.
 func (p *ClaudeConfigProvisioner) ProvisionPaneConfig(session, pane string) (string, error) {
 	if strings.TrimSpace(p.BaseDir) == "" {
 		return "", fmt.Errorf("ClaudeConfigProvisioner: BaseDir is required")
@@ -125,7 +149,7 @@ func (p *ClaudeConfigProvisioner) ProvisionPaneConfig(session, pane string) (str
 	// A credential inside the isolated dir would defeat the whole point: it
 	// makes Claude Code prefer the file over the static token and rejoins the
 	// rotation race.
-	if err := removeIsolatedCredential(target); err != nil {
+	if err := removeIsolatedCredentials(target); err != nil {
 		return "", err
 	}
 
@@ -142,7 +166,7 @@ func (p *ClaudeConfigProvisioner) ProvisionPaneConfig(session, pane string) (str
 	linked := make(map[string]struct{}, len(entries))
 	for _, entry := range entries {
 		name := entry.Name()
-		if name == claudeCredentialsFile {
+		if isClaudeCredentialEntry(name) {
 			continue
 		}
 		linked[name] = struct{}{}
@@ -228,20 +252,53 @@ func pruneDanglingLinks(target, source string, linked map[string]struct{}) error
 	return nil
 }
 
-// removeIsolatedCredential deletes a .credentials.json inside the isolated
-// config dir, whether it is a real file or a symlink to the shared one.
-func removeIsolatedCredential(target string) error {
-	credential := filepath.Join(target, claudeCredentialsFile)
-	if _, err := os.Lstat(credential); err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return fmt.Errorf("inspect %s: %w", credential, err)
+// removeIsolatedCredentials deletes every credential entry
+// (isClaudeCredentialEntry) inside the isolated config dir, whether it is a
+// real file the pane wrote or a symlink to the operator's copy. A
+// credential-named directory is refused rather than deleted recursively: this
+// provisioner never creates one, and isolation cannot be claimed while it is
+// there.
+func removeIsolatedCredentials(target string) error {
+	names, err := credentialEntriesIn(target)
+	if err != nil {
+		return err
 	}
-	if err := os.Remove(credential); err != nil {
-		return fmt.Errorf("remove reachable credential %s: %w", credential, err)
+	for _, name := range names {
+		credential := filepath.Join(target, name)
+		info, err := os.Lstat(credential)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return fmt.Errorf("inspect %s: %w", credential, err)
+		}
+		if !info.Mode().IsRegular() && info.Mode()&os.ModeSymlink == 0 {
+			return fmt.Errorf("isolated claude config dir holds credential entry %s that is not a file or symlink; remove it by hand", credential)
+		}
+		if err := os.Remove(credential); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove reachable credential %s: %w", credential, err)
+		}
 	}
 	return nil
+}
+
+// credentialEntriesIn lists the credential entries (isClaudeCredentialEntry)
+// directly inside dir, in directory order. A missing dir has none.
+func credentialEntriesIn(dir string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read isolated config dir %s: %w", dir, err)
+	}
+	var names []string
+	for _, entry := range entries {
+		if isClaudeCredentialEntry(entry.Name()) {
+			names = append(names, entry.Name())
+		}
+	}
+	return names, nil
 }
 
 // ProvisionClaudeIsolation builds a pane-private CLAUDE_CONFIG_DIR and returns
@@ -278,7 +335,8 @@ func ProvisionClaudeIsolation(cfg *config.Config, projectDir, session string, pa
 		return ClaudeLaunchEnv{}, err
 	}
 	if !isolated {
-		return ClaudeLaunchEnv{}, fmt.Errorf("config dir %s still exposes a rotating credential", configDir)
+		exposed, _ := credentialEntriesIn(configDir)
+		return ClaudeLaunchEnv{}, fmt.Errorf("config dir %s still exposes a rotating credential (%s)", configDir, strings.Join(exposed, ", "))
 	}
 
 	tokenFile, err := ResolveClaudeSetupTokenFile(cfg.Agents.ClaudeTokenFile)
@@ -446,12 +504,11 @@ func (p *ClaudeConfigProvisioner) CredentialIsolated(session, pane string) (bool
 		}
 		return false, fmt.Errorf("inspect %s: %w", target, err)
 	}
-	credential := filepath.Join(target, claudeCredentialsFile)
-	if _, err := os.Lstat(credential); err != nil {
-		if os.IsNotExist(err) {
-			return true, nil
-		}
-		return false, fmt.Errorf("inspect %s: %w", credential, err)
+	// Any credential entry counts, not only the exact file name: a linked
+	// backup is as reachable as the original (GH#366).
+	exposed, err := credentialEntriesIn(target)
+	if err != nil {
+		return false, err
 	}
-	return false, nil
+	return len(exposed) == 0, nil
 }

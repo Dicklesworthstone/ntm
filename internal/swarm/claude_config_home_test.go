@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Dicklesworthstone/ntm/internal/config"
 )
 
 // requireIsolableCredentialStore skips assertions about the file-based
@@ -101,5 +103,225 @@ func TestEnvForPane_QuotesAdversarialTokenPaths(t *testing.T) {
 	}
 	if !strings.HasPrefix(got, ClaudeOAuthTokenEnvVar+`="$(cat '`) {
 		t.Fatalf("assignment lost its quoting: %q", got)
+	}
+}
+
+// useFileCredentialStore makes the isolation checks run on every platform.
+// On macOS the store probe would otherwise consult the real login Keychain;
+// declaring the file store is what an operator who authenticates panes with a
+// setup token does. Elsewhere the variable is ignored.
+func useFileCredentialStore(t *testing.T) {
+	t.Helper()
+	t.Setenv(ClaudeCredentialStoreEnvVar, "file")
+}
+
+// claudeHomeWithCredentialCopies builds a temp HOME whose ~/.claude holds
+// ordinary config next to the rotating credential and the kinds of copies
+// that accumulate beside it (GH#366).
+func claudeHomeWithCredentialCopies(t *testing.T) (home, source string, credentials []string) {
+	t.Helper()
+	home = t.TempDir()
+	t.Setenv("HOME", home)
+	source = filepath.Join(home, ".claude")
+	if err := os.MkdirAll(filepath.Join(source, "skills"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(source, "settings.json"), `{"theme":"dark"}`)
+	writeFile(t, filepath.Join(source, "CLAUDE.md"), "# rules")
+	credentials = []string{
+		".credentials.json",
+		".credentials.json.bak-20261003",
+		".credentials.json.tmp.4242",
+		"..credentials.json.swp",
+		".credentials.json~",
+		"#.credentials.json#",
+		".Credentials.JSON.old",
+	}
+	for _, name := range credentials {
+		writeFile(t, filepath.Join(source, name), `{"claudeAiOauth":{"refreshToken":"rt-secret"}}`)
+	}
+	return home, source, credentials
+}
+
+func TestIsClaudeCredentialEntry(t *testing.T) {
+	for _, name := range []string{
+		".credentials.json",
+		".credentials.json.bak-20261003",
+		".credentials.json.tmp.4242",
+		"..credentials.json.swp",
+		".#.credentials.json",
+		"#.credentials.json#",
+		".credentials.json~",
+		"credentials.json",
+		".Credentials.JSON.BAK",
+		".credentials",
+		"old-credentials-backup.json",
+	} {
+		if !isClaudeCredentialEntry(name) {
+			t.Errorf("isClaudeCredentialEntry(%q) = false, want true", name)
+		}
+	}
+	for _, name := range []string{
+		"settings.json",
+		"settings.local.json",
+		"CLAUDE.md",
+		"projects",
+		"skills",
+		"plugins",
+		"history.jsonl",
+		"statsig",
+		".claude.json",
+	} {
+		if isClaudeCredentialEntry(name) {
+			t.Errorf("isClaudeCredentialEntry(%q) = true, want false", name)
+		}
+	}
+}
+
+func TestProvisionPaneConfig_LinksNoCredentialCopies(t *testing.T) {
+	useFileCredentialStore(t)
+	_, source, credentials := claudeHomeWithCredentialCopies(t)
+
+	p := NewClaudeConfigProvisioner(t.TempDir())
+	target, err := p.ProvisionPaneConfig("proj", "1")
+	if err != nil {
+		t.Fatalf("ProvisionPaneConfig: %v", err)
+	}
+
+	for _, name := range credentials {
+		if _, err := os.Lstat(filepath.Join(target, name)); !os.IsNotExist(err) {
+			t.Errorf("credential copy %q is reachable from the pane config dir (lstat err=%v)", name, err)
+		}
+	}
+	for _, name := range []string{"settings.json", "CLAUDE.md", "skills"} {
+		dest, err := os.Readlink(filepath.Join(target, name))
+		if err != nil {
+			t.Errorf("config entry %q was not linked: %v", name, err)
+			continue
+		}
+		if want := filepath.Join(source, name); dest != want {
+			t.Errorf("link %q -> %q, want %q", name, dest, want)
+		}
+	}
+
+	isolated, err := p.CredentialIsolated("proj", "1")
+	if err != nil {
+		t.Fatalf("CredentialIsolated: %v", err)
+	}
+	if !isolated {
+		t.Fatal("CredentialIsolated = false for a dir provisioned without credential copies")
+	}
+}
+
+// Pane dirs provisioned by an ntm that excluded only the exact name already
+// hold a link to the backup; re-provisioning must take it away, along with any
+// credential file the pane wrote itself, while leaving the pane's other files
+// alone.
+func TestProvisionPaneConfig_RemovesCredentialCopiesFromAnExistingPaneDir(t *testing.T) {
+	useFileCredentialStore(t)
+	_, source, _ := claudeHomeWithCredentialCopies(t)
+
+	p := NewClaudeConfigProvisioner(t.TempDir())
+	target := p.ConfigPath("proj", "1")
+	if err := os.MkdirAll(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	staleLink := filepath.Join(target, ".credentials.json.bak-20261003")
+	if err := os.Symlink(filepath.Join(source, ".credentials.json.bak-20261003"), staleLink); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(target, ".credentials.json.tmp.99"), `{"claudeAiOauth":{}}`)
+	writeFile(t, filepath.Join(target, "pane-notes.txt"), "keep me")
+
+	if _, err := p.ProvisionPaneConfig("proj", "1"); err != nil {
+		t.Fatalf("ProvisionPaneConfig: %v", err)
+	}
+
+	for _, name := range []string{".credentials.json.bak-20261003", ".credentials.json.tmp.99"} {
+		if _, err := os.Lstat(filepath.Join(target, name)); !os.IsNotExist(err) {
+			t.Errorf("%q survived re-provisioning (lstat err=%v)", name, err)
+		}
+	}
+	if data, err := os.ReadFile(filepath.Join(target, "pane-notes.txt")); err != nil || string(data) != "keep me" {
+		t.Errorf("a pane-created non-credential file was disturbed: data=%q err=%v", data, err)
+	}
+}
+
+func TestCredentialIsolated_DetectsACredentialCopy(t *testing.T) {
+	useFileCredentialStore(t)
+	_, source, _ := claudeHomeWithCredentialCopies(t)
+
+	p := NewClaudeConfigProvisioner(t.TempDir())
+	target, err := p.ProvisionPaneConfig("proj", "1")
+	if err != nil {
+		t.Fatalf("ProvisionPaneConfig: %v", err)
+	}
+	// The check used to look only for the exact name, so a linked backup
+	// passed as "no credential file is reachable".
+	if err := os.Symlink(filepath.Join(source, ".credentials.json.bak-20261003"),
+		filepath.Join(target, ".credentials.json.bak-20261003")); err != nil {
+		t.Fatal(err)
+	}
+
+	isolated, err := p.CredentialIsolated("proj", "1")
+	if err != nil {
+		t.Fatalf("CredentialIsolated: %v", err)
+	}
+	if isolated {
+		t.Fatal("CredentialIsolated = true while a credential backup is linked into the pane config dir")
+	}
+}
+
+func TestProvisionPaneConfig_RefusesACredentialNamedDirectory(t *testing.T) {
+	useFileCredentialStore(t)
+	claudeHomeWithCredentialCopies(t)
+
+	p := NewClaudeConfigProvisioner(t.TempDir())
+	target := p.ConfigPath("proj", "1")
+	credentialDir := filepath.Join(target, ".credentials.d")
+	if err := os.MkdirAll(credentialDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(credentialDir, "token.json"), "{}")
+
+	_, err := p.ProvisionPaneConfig("proj", "1")
+	if err == nil || !strings.Contains(err.Error(), ".credentials.d") {
+		t.Fatalf("ProvisionPaneConfig error = %v, want a refusal naming .credentials.d", err)
+	}
+	if _, err := os.Stat(filepath.Join(credentialDir, "token.json")); err != nil {
+		t.Fatalf("the credential directory was modified instead of refused: %v", err)
+	}
+}
+
+// End to end through the entry point every launch path uses, with the
+// operator's config in a temp HOME.
+func TestProvisionClaudeIsolation_KeepsCredentialCopiesOutOfThePane(t *testing.T) {
+	useFileCredentialStore(t)
+	home, _, credentials := claudeHomeWithCredentialCopies(t)
+	tokenFile := filepath.Join(home, "claude-setup.token")
+	writeFile(t, tokenFile, "sk-ant-oat-test")
+
+	cfg := config.Default()
+	cfg.Agents.ClaudeIsolateCredentials = true
+	cfg.Agents.ClaudeTokenFile = tokenFile
+
+	env, err := ProvisionClaudeIsolation(cfg, t.TempDir(), "proj", 2)
+	if err != nil {
+		t.Fatalf("ProvisionClaudeIsolation: %v", err)
+	}
+	configDir := env.Vars[ClaudeConfigDirEnvVar]
+	if configDir == "" {
+		t.Fatal("launch env has no CLAUDE_CONFIG_DIR")
+	}
+	for _, name := range credentials {
+		if _, err := os.Lstat(filepath.Join(configDir, name)); !os.IsNotExist(err) {
+			t.Errorf("credential copy %q is reachable from the pane config dir (lstat err=%v)", name, err)
+		}
+	}
+	if _, err := os.Readlink(filepath.Join(configDir, "settings.json")); err != nil {
+		t.Errorf("settings.json was not linked into the pane config dir: %v", err)
+	}
+	if len(env.SecretAssignments) != 1 {
+		t.Errorf("secret assignments = %v, want the setup-token assignment", env.SecretAssignments)
 	}
 }
