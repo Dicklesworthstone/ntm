@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -437,6 +438,50 @@ func TestParseProcStatPGID(t *testing.T) {
 				t.Errorf("pgid = %d, want %d", got, tc.want)
 			}
 		})
+	}
+}
+
+// A group whose only member is its exited, still-unreaped leader has nothing
+// left to signal. Darwin's killpg skips zombies and answers EPERM rather than
+// ESRCH for such a group, which used to fail the final signal of every quiet
+// command, so no command step on macOS could settle or complete.
+func TestSignalCommandProcessGroupZombieOnlyGroupIsDone(t *testing.T) {
+	cmd := exec.Command("/bin/sh", "-c", "exit 0")
+	configureCommandProcessGroup(cmd)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cmd.Wait() })
+	quiet, stop := context.WithTimeout(context.Background(), 5*time.Second)
+	defer stop()
+	if err := waitCommandGroupQuiescent(quiet, cmd.Process.Pid); err != nil {
+		t.Fatalf("leader did not exit: %v", err)
+	}
+	for _, sig := range []syscall.Signal{syscall.SIGTERM, syscall.SIGKILL} {
+		if err := signalCommandProcessGroup(cmd, sig); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			t.Fatalf("signal %v to a group of only its unreaped leader failed: %v", sig, err)
+		}
+	}
+	cleanup := waitCommandWithProcessGroupCleanup(context.Background(), cmd)
+	if !cleanup.Settled || cleanup.Err != nil {
+		t.Fatalf("quiet exited command did not settle: %+v", cleanup)
+	}
+}
+
+// EPERM from a group signal can also mean a live member this process may not
+// signal, so it is discounted only when the census finds no live member.
+func TestGroupSignalFoundOnlyZombiesRejectsLiveGroup(t *testing.T) {
+	cmd := exec.Command("/bin/sh", "-c", "sleep 30")
+	configureCommandProcessGroup(cmd)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = cancelCommandProcessGroup(cmd)
+		_ = cmd.Wait()
+	})
+	if groupSignalFoundOnlyZombies(cmd.Process.Pid) {
+		t.Fatal("a group with a live member was treated as having nothing left to signal")
 	}
 }
 

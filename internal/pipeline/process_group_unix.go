@@ -79,6 +79,9 @@ func signalCommandProcessGroup(cmd *exec.Cmd, sig syscall.Signal) error {
 	if errors.Is(err, syscall.ESRCH) {
 		return os.ErrProcessDone
 	}
+	if errors.Is(err, syscall.EPERM) && groupSignalFoundOnlyZombies(cmd.Process.Pid) {
+		return os.ErrProcessDone
+	}
 	// A failed group signal is not repaired by killing only its leader.
 	// Keep the original failure so the caller cannot publish settlement on
 	// the strength of a partial fallback. Linux can additionally stop group

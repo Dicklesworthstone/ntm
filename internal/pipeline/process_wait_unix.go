@@ -130,6 +130,20 @@ func waitCommandGroupQuiescent(ctx context.Context, pgid int) error {
 	}
 }
 
+// groupSignalFoundOnlyZombies reports whether an EPERM from kill(-pgid) only
+// means that the pinned group had no member left to signal. Darwin's killpg
+// skips zombies and, with the POSIX semantics syscall.Kill uses, answers
+// EPERM rather than ESRCH while the unreaped leader still pins the group;
+// read as a failure, that fails the final signal of every quiet group. EPERM
+// also covers a live member this process may not signal, so it is discounted
+// only when a complete census still shows the pinned leader and no live
+// member; a failed census keeps the error. Callers still take their own
+// census before settling.
+func groupSignalFoundOnlyZombies(pgid int) bool {
+	alive, err := commandGroupHasLiveMembers(context.Background(), pgid)
+	return err == nil && !alive
+}
+
 // The leader must appear in every complete snapshot until we call Cmd.Wait.
 // Missing or malformed output fails closed, including restricted ps output;
 // a permission error from kill(0) is never accepted as proof of settlement.

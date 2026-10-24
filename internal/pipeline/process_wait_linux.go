@@ -191,6 +191,13 @@ func waitCommandGroupQuiescent(ctx context.Context, pgid int) error {
 	}
 }
 
+// groupSignalFoundOnlyZombies is always false on Linux: kill(-pgid) signals
+// zombie members successfully, so EPERM there always names a live member this
+// process may not signal.
+func groupSignalFoundOnlyZombies(int) bool {
+	return false
+}
+
 // Zombies cannot execute or keep output pipes open. Their unreaped IDs may
 // remain in procfs (notably under container PID 1), so they are not live work.
 // This checks group membership, not parent PID: orphaned grandchildren have
