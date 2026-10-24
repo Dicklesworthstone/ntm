@@ -1,8 +1,10 @@
 package serve
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -73,5 +75,62 @@ func TestJobOperationHTTPProjectScopeAcrossRestart(t *testing.T) {
 				t.Fatal("cross-project retry performed work")
 			}
 		})
+	}
+}
+
+func TestJobHTTPProjectScopeTransportReplayCannotHideOperationConflict(t *testing.T) {
+	srv, _ := newJournalHTTPServer(t, filepath.Join(t.TempDir(), "state.db"))
+	projectA, projectB := t.TempDir(), t.TempDir()
+	jobScopeHTTPPatchProject(t, srv, projectA)
+	var calls atomic.Int32
+	srv.spawnAgents = func(_ context.Context, opts robot.SpawnOptions) (*robot.SpawnOutput, error) {
+		calls.Add(1)
+		if err := os.WriteFile(filepath.Join(opts.WorkingDir, "effect"), []byte("once"), 0600); err != nil {
+			return nil, err
+		}
+		out := &robot.SpawnOutput{Session: opts.Session, WorkingDir: opts.WorkingDir}
+		out.Success = true
+		return out, nil
+	}
+	const body = `{"type":"swarm_spawn","params":{"operation_id":"scope-over-cache","session":"scoped-operation","cc_count":1}}`
+	const key = "same-durable-transport-key"
+	first := jobScopeHTTPReceipt(t, jobScopeHTTPPost(srv, body, key))
+	original := pollJobTerminal(t, srv, first.ID)
+	if original.Job.Status != string(JobStatusCompleted) || calls.Load() != 1 {
+		t.Fatalf("original durable operation failed: %+v calls=%d", original.Job, calls.Load())
+	}
+	dir, err := srv.jobJournalDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	receiptPath := jobOperationPath(dir, "scope-over-cache")
+	before, err := os.ReadFile(receiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobScopeHTTPPatchProject(t, srv, projectB)
+	rec := jobScopeHTTPPost(srv, body, key)
+	second := jobScopeHTTPReceipt(t, rec)
+	if second.ID == first.ID || second.ProjectDir != projectB || rec.Header().Get("X-Idempotent-Replay") != "" {
+		t.Fatalf("transport replay hid the new admitted project: %+v %v", second, rec.Header())
+	}
+	conflict := pollJobTerminal(t, srv, second.ID)
+	if conflict.Job.Status != string(JobStatusFailed) || !strings.Contains(conflict.Job.Error, "execution project") || operationMetadata(t, conflict.Job.Result)["status"] != "conflict" || calls.Load() != 1 {
+		t.Fatalf("cross-project durable retry bypassed its conflict: %+v calls=%d", conflict.Job, calls.Load())
+	}
+	if conflict.Job.Result["working_dir"] != nil || conflict.Job.Result["session"] != nil {
+		t.Fatalf("conflicting job exposed the original operation's result: %+v", conflict.Job.Result)
+	}
+	if _, err := os.Stat(filepath.Join(projectB, "effect")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("cross-project durable retry performed work: %v", err)
+	}
+	jobScopeHTTPPatchProject(t, srv, projectA)
+	rec = jobScopeHTTPPost(srv, body, key)
+	replay := jobScopeHTTPReceipt(t, rec)
+	if rec.Code != http.StatusAccepted || replay.ID != first.ID || rec.Header().Get("X-Idempotent-Replay") != "true" || calls.Load() != 1 || len(srv.jobStore.List()) != 2 {
+		t.Fatalf("original project lost its safe HTTP replay: %+v %v calls=%d", replay, rec.Header(), calls.Load())
+	}
+	if after, err := os.ReadFile(receiptPath); err != nil || !bytes.Equal(before, after) {
+		t.Fatal("HTTP scope conflict rewrote durable operation evidence")
 	}
 }

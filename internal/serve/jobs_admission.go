@@ -3,11 +3,16 @@ package serve
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/checkpoint"
@@ -19,6 +24,113 @@ var (
 	errJobNotFound       = errors.New("job not found")
 	errJobNotCancellable = errors.New("job cannot be cancelled")
 )
+
+const jobHTTPMaxBodyBytes = 10 << 20
+
+type jobProjectSelectionKey struct{}
+
+// Capture inputs to project resolution before reading a request. An absolute
+// swarm destination and global checkpoint work do not depend on cwd, so defer
+// any cwd error until a relative destination actually needs it.
+type jobProjectSelection struct {
+	projectDir string
+	cwd        string
+	cwdErr     error
+}
+
+func (s *Server) captureJobProjectSelection() jobProjectSelection {
+	selection := jobProjectSelection{projectDir: s.projectDirSnapshot()}
+	selection.cwd, selection.cwdErr = os.Getwd()
+	return selection
+}
+
+func (selection jobProjectSelection) absolute(path string) (string, error) {
+	if filepath.IsAbs(path) {
+		return filepath.Clean(path), nil
+	}
+	if selection.cwdErr != nil {
+		return "", selection.cwdErr
+	}
+	return filepath.Join(selection.cwd, path), nil
+}
+
+func isCreateJobRequest(r *http.Request) bool {
+	return r.Method == http.MethodPost && (r.URL.Path == "/api/v1/jobs" || r.URL.Path == "/api/v1/jobs/")
+}
+
+func (s *Server) jobProjectSelectionMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isCreateJobRequest(r) {
+			ctx := context.WithValue(r.Context(), jobProjectSelectionKey{}, s.captureJobProjectSelection())
+			r = r.WithContext(ctx)
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+type jobHTTPReplayScopeKey struct{}
+
+type jobHTTPReplayScope struct {
+	request     CreateJobRequest
+	requestErr  error
+	err         error
+	project     string
+	fingerprint string
+}
+
+// Decode the post-redaction body with admission's canonical decoder and bind
+// its project using the same resolver. No job is admitted here. Invalid input
+// disables cache replay and remains subject to the route's permission check.
+// The handler consumes this exact decoded request, including read failures;
+// partial valid JSON must never hide a transport error or exceed the size cap.
+func (s *Server) jobHTTPReplayScopeMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !isCreateJobRequest(r) || strings.TrimSpace(r.Header.Get("Idempotency-Key")) == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		var scope jobHTTPReplayScope
+		var data []byte
+		scope.requestErr = r.Context().Err()
+		if scope.requestErr == nil && r.Body != nil {
+			data, scope.requestErr = io.ReadAll(io.LimitReader(r.Body, jobHTTPMaxBodyBytes+1))
+		}
+		if r.Body != nil {
+			_ = r.Body.Close()
+		}
+		r.Body = io.NopCloser(bytes.NewReader(data))
+		if scope.requestErr == nil && len(data) > jobHTTPMaxBodyBytes {
+			scope.requestErr = &http.MaxBytesError{Limit: jobHTTPMaxBodyBytes}
+		}
+		if scope.requestErr == nil {
+			scope.requestErr = r.Context().Err()
+		}
+		if scope.requestErr == nil {
+			digest := sha256.Sum256(data)
+			scope.fingerprint = hex.EncodeToString(digest[:])
+			scope.request, scope.requestErr = decodeCreateJobRequest(bytes.NewReader(data))
+		}
+		scope.err = scope.requestErr
+		if scope.err == nil && !isImplementedJobType(scope.request.Type) {
+			scope.err = errors.New("job type is not implemented")
+		}
+		if scope.err == nil {
+			selection, captured := r.Context().Value(jobProjectSelectionKey{}).(jobProjectSelection)
+			if !captured {
+				scope.err = errors.New("job project selection was not captured before reading the request")
+				scope.requestErr = scope.err
+			} else {
+				var bound CreateJobRequest
+				bound, scope.err = bindJobExecutionProject(scope.request, selection)
+				if scope.err == nil {
+					scope.project, scope.err = jobOperationScope(bound)
+				}
+			}
+		}
+		ctx := context.WithValue(r.Context(), jobHTTPReplayScopeKey{}, scope)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
 
 // decodeCreateJobRequest rejects unknown envelope fields and extra JSON values.
 // UseNumber prevents rounding integer workflow variables in the untyped params
@@ -43,6 +155,10 @@ func decodeCreateJobRequest(body io.Reader) (CreateJobRequest, error) {
 // identity: the existing dispatcher remains responsible for normalization and
 // per-operation validation. No executable request is saved in the job journal.
 func (s *Server) prepareJobRequest(req CreateJobRequest) (CreateJobRequest, error) {
+	return prepareJobRequestAtSelection(req, s.captureJobProjectSelection())
+}
+
+func prepareJobRequestAtSelection(req CreateJobRequest, selection jobProjectSelection) (CreateJobRequest, error) {
 	raw, err := json.Marshal(req)
 	if err != nil {
 		return req, fmt.Errorf("%w: %v", errInvalidJobRequest, err)
@@ -51,25 +167,36 @@ func (s *Server) prepareJobRequest(req CreateJobRequest) (CreateJobRequest, erro
 	if err != nil {
 		return req, fmt.Errorf("%w: %v", errInvalidJobRequest, err)
 	}
+	return bindJobExecutionProject(frozen, selection)
+}
+
+// Only private execution identity is changed. HTTP replay classification and
+// actual admission use this same function against the same captured selection.
+func bindJobExecutionProject(frozen CreateJobRequest, selection jobProjectSelection) (CreateJobRequest, error) {
+	var err error
 	// Queued project-scoped work must not follow PATCH /config to another
 	// project. Freeze the absolute selection, not mutable workflow contents.
 	// Keep this private so it cannot alter the operation-ID fingerprint.
 	switch frozen.Type {
 	case jobTypeBeadClose:
 		if _, err := decodeBeadCloseJob(frozen.Params); err != nil {
-			return req, fmt.Errorf("%w: %v", errInvalidJobRequest, err)
+			return frozen, fmt.Errorf("%w: %v", errInvalidJobRequest, err)
 		}
 		if frozen.Session != "" {
-			return req, fmt.Errorf("%w: bead close does not accept a session", errInvalidJobRequest)
+			return frozen, fmt.Errorf("%w: bead close does not accept a session", errInvalidJobRequest)
 		}
-		frozen.executionProjectDir, err = filepath.Abs(s.projectDirSnapshot())
+		frozen.executionProjectDir, err = selection.absolute(selection.projectDir)
 		if err != nil {
-			return req, fmt.Errorf("%w: resolve bead project: %v", errInvalidJobRequest, err)
+			return frozen, fmt.Errorf("%w: resolve bead project: %v", errInvalidJobRequest, err)
 		}
 	case JobTypePipelineRun, JobTypePipelineExec, JobTypePipelineResume:
-		frozen.executionProjectDir, err = filepath.Abs(s.pipelineProjectDir())
+		projectDir := selection.projectDir
+		if strings.TrimSpace(projectDir) == "" {
+			projectDir = selection.cwd
+		}
+		frozen.executionProjectDir, err = selection.absolute(projectDir)
 		if err != nil {
-			return req, fmt.Errorf("%w: resolve job project: %v", errInvalidJobRequest, err)
+			return frozen, fmt.Errorf("%w: resolve job project: %v", errInvalidJobRequest, err)
 		}
 	case JobTypeSwarmSpawn:
 		// The HTTP server's selected project is the default for accepted
@@ -80,15 +207,15 @@ func (s *Server) prepareJobRequest(req CreateJobRequest) (CreateJobRequest, erro
 			var ok bool
 			workingDir, ok = value.(string)
 			if !ok {
-				return req, fmt.Errorf("%w: working_dir must be a string", errInvalidJobRequest)
+				return frozen, fmt.Errorf("%w: working_dir must be a string", errInvalidJobRequest)
 			}
 		}
 		if !filepath.IsAbs(workingDir) {
-			workingDir = filepath.Join(s.projectDirSnapshot(), workingDir)
+			workingDir = filepath.Join(selection.projectDir, workingDir)
 		}
-		frozen.executionProjectDir, err = filepath.Abs(workingDir)
+		frozen.executionProjectDir, err = selection.absolute(workingDir)
 		if err != nil {
-			return req, fmt.Errorf("%w: resolve swarm project: %v", errInvalidJobRequest, err)
+			return frozen, fmt.Errorf("%w: resolve swarm project: %v", errInvalidJobRequest, err)
 		}
 	}
 	return frozen, nil
@@ -123,7 +250,13 @@ func (s *Server) jobExecutionServer(req CreateJobRequest) *Server {
 func (s *Server) submitJob(ctx context.Context, req CreateJobRequest) (*Job, error) {
 	var receipt *Job
 	err := s.jobExecutor.submit(ctx, func(owner context.Context) (*scheduledJob, error) {
-		frozen, err := s.prepareJobRequest(req)
+		var frozen CreateJobRequest
+		var err error
+		if selection, captured := ctx.Value(jobProjectSelectionKey{}).(jobProjectSelection); captured {
+			frozen, err = prepareJobRequestAtSelection(req, selection)
+		} else {
+			frozen, err = s.prepareJobRequest(req)
+		}
 		if err != nil {
 			return nil, err
 		}

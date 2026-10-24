@@ -1,12 +1,15 @@
 package serve
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -15,6 +18,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/pipeline"
+	"github.com/Dicklesworthstone/ntm/internal/redaction"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 )
 
@@ -672,5 +677,263 @@ func TestJobAdmissionSwarmRejectsMalformedDirectoryWithoutAdmission(t *testing.T
 	}
 	if len(srv.jobStore.List()) != 0 || srv.jobExecutor.snapshot().Owned != 0 {
 		t.Fatal("invalid project selection consumed a job or capacity")
+	}
+}
+
+func jobScopeHTTPPost(srv *Server, body, key string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/jobs", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", key)
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, req)
+	return rec
+}
+
+func jobScopeHTTPReceipt(t *testing.T, rec *httptest.ResponseRecorder) *Job {
+	t.Helper()
+	var response struct {
+		Job *Job `json:"job"`
+	}
+	if rec.Code != http.StatusAccepted || json.Unmarshal(rec.Body.Bytes(), &response) != nil || response.Job == nil || response.Job.ID == "" {
+		t.Fatalf("scoped job was not accepted: %d %s", rec.Code, rec.Body)
+	}
+	if rec.Header().Get("Location") != "/api/v1/jobs/"+response.Job.ID {
+		t.Fatalf("scoped job lost its polling location: %v", rec.Header())
+	}
+	return response.Job
+}
+
+func jobScopeHTTPPatchProject(t *testing.T, srv *Server, project string) {
+	t.Helper()
+	body, err := json.Marshal(map[string]string{"project_dir": project})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := admissionRequest(srv, http.MethodPatch, "/api/v1/config", string(body))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("project patch failed: %d %s", rec.Code, rec.Body)
+	}
+}
+
+type jobScopeHTTPBodyBarrier struct {
+	*strings.Reader
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (b *jobScopeHTTPBodyBarrier) Read(p []byte) (int, error) {
+	b.once.Do(func() {
+		close(b.entered)
+		<-b.release
+	})
+	return b.Reader.Read(p)
+}
+
+func TestJobHTTPProjectScopePipelineAdmissionAndReplay(t *testing.T) {
+	srv, _ := newJournalHTTPServer(t, filepath.Join(t.TempDir(), "state.db"))
+	projectA, projectB := t.TempDir(), t.TempDir()
+	jobScopeHTTPPatchProject(t, srv, projectA)
+	srv.redactionCfg = &RedactionConfig{Enabled: true, Config: redaction.Config{Mode: redaction.ModeRedact}}
+	body, err := json.Marshal(CreateJobRequest{Type: JobTypePipelineExec, Params: map[string]interface{}{
+		"session": "scope-job", "workflow": pipeline.Workflow{SchemaVersion: pipeline.SchemaVersion, Name: "scope-job", Steps: []pipeline.Step{{
+			ID: "effect", Command: "printf 'once\\n' >> effects; pwd",
+		}}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const key = "same-job-transport-key"
+	barrier := &jobScopeHTTPBodyBarrier{Reader: strings.NewReader(string(body)), entered: make(chan struct{}), release: make(chan struct{})}
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(barrier.release) }) }
+	defer unblock()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/jobs", io.NopCloser(barrier))
+	req.ContentLength = int64(len(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", key)
+	ctx, cancel := context.WithTimeout(req.Context(), 15*time.Second)
+	defer cancel()
+	rec := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		srv.Router().ServeHTTP(rec, req.WithContext(ctx))
+	}()
+	select {
+	case <-barrier.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("job request never reached its body read")
+	}
+	jobScopeHTTPPatchProject(t, srv, projectB)
+	unblock()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("job admission did not finish after the project switch")
+	}
+	first := jobScopeHTTPReceipt(t, rec)
+	if first.ProjectDir != projectA || rec.Header().Get("X-Idempotent-Replay") != "" {
+		t.Fatalf("body admission redirected the job receipt: %+v %v", first, rec.Header())
+	}
+	original := pollJobTerminal(t, srv, first.ID)
+	if original.Job.Status != string(JobStatusCompleted) {
+		t.Fatalf("original inline workflow failed: %+v", original.Job)
+	}
+	runID, _ := original.Job.Result["run_id"].(string)
+	state, err := pipeline.LoadState(projectA, runID)
+	if err != nil || state.Status != pipeline.StatusCompleted || state.Steps["effect"].Output != projectA {
+		t.Fatalf("admitted project and real execution diverged: %+v %v", state, err)
+	}
+	statePath := filepath.Join(projectA, ".ntm", "pipelines", runID+".json")
+	before, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(projectB, "effects")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("A's admitted job executed in B: %v", err)
+	}
+	rec = jobScopeHTTPPost(srv, string(body), key)
+	second := jobScopeHTTPReceipt(t, rec)
+	if second.ID == first.ID || second.ProjectDir != projectB || rec.Header().Get("X-Idempotent-Replay") != "" {
+		t.Fatalf("B replayed A's job receipt: %+v %v", second, rec.Header())
+	}
+	other := pollJobTerminal(t, srv, second.ID)
+	otherRun, _ := other.Job.Result["run_id"].(string)
+	state, err = pipeline.LoadState(projectB, otherRun)
+	if other.Job.Status != string(JobStatusCompleted) || err != nil || state.Steps["effect"].Output != projectB {
+		t.Fatalf("B did not execute its own admitted job: %+v %+v %v", other.Job, state, err)
+	}
+	jobScopeHTTPPatchProject(t, srv, projectA)
+	rec = jobScopeHTTPPost(srv, string(body), key)
+	replay := jobScopeHTTPReceipt(t, rec)
+	if replay.ID != first.ID || rec.Header().Get("X-Idempotent-Replay") != "true" || len(srv.jobStore.List()) != 2 {
+		t.Fatalf("returning to A admitted duplicate work: %+v %v", replay, rec.Header())
+	}
+	if after, err := os.ReadFile(statePath); err != nil || !bytes.Equal(before, after) {
+		t.Fatal("HTTP receipt replay rewrote the original execution")
+	}
+	for _, project := range []string{projectA, projectB} {
+		if data, err := os.ReadFile(filepath.Join(project, "effects")); err != nil || string(data) != "once\n" {
+			t.Fatalf("project-scoped job replay repeated effects: %q %v", data, err)
+		}
+	}
+}
+
+func TestJobHTTPProjectScopeSwarmExplicitAndRelativeTargets(t *testing.T) {
+	for _, absolute := range []bool{false, true} {
+		t.Run(fmt.Sprintf("absolute=%v", absolute), func(t *testing.T) {
+			srv := NewHermeticServer("job-scope")
+			defer srv.Stop()
+			projectA, projectB := t.TempDir(), t.TempDir()
+			jobScopeHTTPPatchProject(t, srv, projectA)
+			directory := "child"
+			if absolute {
+				directory = t.TempDir()
+			}
+			var calls atomic.Int32
+			srv.spawnAgents = func(_ context.Context, opts robot.SpawnOptions) (*robot.SpawnOutput, error) {
+				calls.Add(1)
+				out := &robot.SpawnOutput{Session: opts.Session, WorkingDir: opts.WorkingDir}
+				out.Success = true
+				return out, nil
+			}
+			body, err := json.Marshal(CreateJobRequest{Type: JobTypeSwarmSpawn, Params: map[string]interface{}{
+				"session": "scoped-swarm", "cc_count": 1, "working_dir": directory,
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			const key = "same-swarm-transport-key"
+			first := jobScopeHTTPReceipt(t, jobScopeHTTPPost(srv, string(body), key))
+			want := filepath.Join(projectA, directory)
+			if absolute {
+				want = directory
+			}
+			original := pollJobTerminal(t, srv, first.ID)
+			if first.ProjectDir != want || original.Job.Status != string(JobStatusCompleted) || original.Job.Result["working_dir"] != want || calls.Load() != 1 {
+				t.Fatalf("swarm lost its admitted destination: %+v %+v calls=%d", first, original.Job, calls.Load())
+			}
+			jobScopeHTTPPatchProject(t, srv, projectB)
+			rec := jobScopeHTTPPost(srv, string(body), key)
+			second := jobScopeHTTPReceipt(t, rec)
+			if absolute {
+				if second.ID != first.ID || rec.Header().Get("X-Idempotent-Replay") != "true" || calls.Load() != 1 || len(srv.jobStore.List()) != 1 {
+					t.Fatalf("default-project change repeated explicit-target swarm: %+v %v calls=%d", second, rec.Header(), calls.Load())
+				}
+			} else {
+				want = filepath.Join(projectB, directory)
+				other := pollJobTerminal(t, srv, second.ID)
+				if second.ID == first.ID || rec.Header().Get("X-Idempotent-Replay") != "" || second.ProjectDir != want || other.Job.Result["working_dir"] != want || other.Job.Status != string(JobStatusCompleted) || calls.Load() != 2 {
+					t.Fatalf("relative swarm replay escaped B's destination: %+v %+v calls=%d", second, other.Job, calls.Load())
+				}
+			}
+			jobScopeHTTPPatchProject(t, srv, projectA)
+			rec = jobScopeHTTPPost(srv, string(body), key)
+			if replay := jobScopeHTTPReceipt(t, rec); replay.ID != first.ID || rec.Header().Get("X-Idempotent-Replay") != "true" {
+				t.Fatalf("original swarm lost its replay: %+v %v", replay, rec.Header())
+			}
+		})
+	}
+}
+
+func TestJobHTTPProjectScopeKeepsCheckpointReplayGlobal(t *testing.T) {
+	logPath := installFakeTmux(t)
+	params := saveJobRestoreFixture(t, 1)
+	srv := NewHermeticServer("job-scope")
+	defer srv.Stop()
+	projectA, projectB := t.TempDir(), t.TempDir()
+	jobScopeHTTPPatchProject(t, srv, projectA)
+	body, err := json.Marshal(CreateJobRequest{Type: JobTypeCheckpointRestore, Params: params})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const key = "same-restore-transport-key"
+	first := jobScopeHTTPReceipt(t, jobScopeHTTPPost(srv, string(body), key))
+	original := pollJobTerminal(t, srv, first.ID)
+	if original.Job.Status != string(JobStatusCompleted) || original.Job.Result["panes_restored"] != float64(1) || first.ProjectDir != "" {
+		t.Fatalf("global checkpoint job did not restore its own saved target: %+v %+v", first, original.Job)
+	}
+	before, err := os.ReadFile(logPath)
+	if err != nil || strings.Count(string(before), "new-session") != 1 {
+		t.Fatalf("checkpoint fixture did not restore exactly one session: %s %v", before, err)
+	}
+	jobScopeHTTPPatchProject(t, srv, projectB)
+	rec := jobScopeHTTPPost(srv, string(body), key)
+	replay := jobScopeHTTPReceipt(t, rec)
+	if replay.ID != first.ID || rec.Header().Get("X-Idempotent-Replay") != "true" || len(srv.jobStore.List()) != 1 {
+		t.Fatalf("default-project change admitted another global restore: %+v %v", replay, rec.Header())
+	}
+	if after, err := os.ReadFile(logPath); err != nil || !bytes.Equal(before, after) {
+		t.Fatalf("global restore replay touched the target session again: %s %v", after, err)
+	}
+}
+
+func TestJobHTTPProjectScopeHashesBodyBeyondFormerPrefixLimit(t *testing.T) {
+	srv := NewHermeticServer("job-scope")
+	defer srv.Stop()
+	jobScopeHTTPPatchProject(t, srv, t.TempDir())
+	var calls atomic.Int32
+	srv.spawnAgents = func(_ context.Context, opts robot.SpawnOptions) (*robot.SpawnOutput, error) {
+		calls.Add(1)
+		out := &robot.SpawnOutput{Session: opts.Session}
+		out.Success = true
+		return out, nil
+	}
+	// Valid JSON whitespace exceeds the old 8 MiB prefix hash without putting
+	// a large value into commands, environment variables, or durable receipts.
+	prefix := strings.Repeat(" ", (8<<20)+1)
+	const key = "same-prefix-different-job"
+	first := jobScopeHTTPReceipt(t, jobScopeHTTPPost(srv, prefix+`{"type":"swarm_spawn","params":{"session":"original","cc_count":1}}`, key))
+	original := pollJobTerminal(t, srv, first.ID)
+	if original.Job.Status != string(JobStatusCompleted) || original.Job.Result["session"] != "original" || calls.Load() != 1 {
+		t.Fatalf("large valid request did not execute once: %+v calls=%d", original.Job, calls.Load())
+	}
+	rec := jobScopeHTTPPost(srv, prefix+`{"type":"swarm_spawn","params":{"session":"changed","cc_count":1}}`, key)
+	var refused struct {
+		ErrorCode string `json:"error_code"`
+	}
+	if rec.Code != http.StatusUnprocessableEntity || json.Unmarshal(rec.Body.Bytes(), &refused) != nil || refused.ErrorCode != ErrCodeIdempotentReplay || rec.Header().Get("X-Idempotent-Replay") != "" || calls.Load() != 1 || len(srv.jobStore.List()) != 1 {
+		t.Fatalf("late-body change reused an unrelated job: %d %s calls=%d", rec.Code, rec.Body, calls.Load())
 	}
 }

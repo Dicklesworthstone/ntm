@@ -94,6 +94,33 @@ Use `params.operation_id` for durable execution identity; an HTTP header alone
 does not opt into this guarantee. Omitting `operation_id` preserves ordinary job
 execution behavior. These controls do not change direct non-job REST operations.
 
+## HTTP retries and project selection
+
+`POST /api/v1/jobs` binds its project selection before reading the request body,
+including request redaction. Its `Idempotency-Key` cache uses the same resolved
+destination as admission and execution. Changing the server's `project_dir`
+cannot redirect an already admitted request or return another project's cached
+job acceptance.
+
+| Job | HTTP replay scope |
+|-----|-------------------|
+| `pipeline_run`, `pipeline_exec`, `pipeline_resume` | The admitted execution project |
+| `swarm_spawn` with an omitted, empty, or relative `working_dir` | The destination resolved against the admitted project |
+| `swarm_spawn` with an absolute `working_dir` | That explicit destination, independent of the server default |
+| `checkpoint_restore` | The existing global request identity, independent of the server default |
+
+An identical request and HTTP key in a different execution project can create a
+new job. Returning to the original project replays its cached job ID while that
+cache entry remains available. Changing only the server default does not repeat
+an explicitly targeted swarm or a checkpoint restore. Within the same scope,
+changing any part of the accepted request body is refused, including content
+beyond 8 MiB within the permitted request limit.
+
+The durable `params.operation_id` remains authoritative across transport attempts
+and server restarts. If it is supplied, switching execution projects reaches its
+normal conflict check; the HTTP cache cannot hide that conflict behind an earlier
+successful acceptance. Poll the newly returned job to inspect that outcome.
+
 ## Session targeting
 
 Jobs accept `session` either in the top-level request envelope or in `params`.

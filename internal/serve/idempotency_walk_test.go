@@ -129,31 +129,37 @@ func TestIdempotencyRouterCoverage(t *testing.T) {
 		path := concretePathForPattern(rt.Pattern)
 		key := fmt.Sprintf("walk-replay-%d", i)
 		canned := []byte(fmt.Sprintf(`{"replay_probe":%d}`, i))
+		body := ""
+		if rt.Method == http.MethodPost && (path == "/api/v1/jobs" || path == "/api/v1/jobs/") {
+			// Jobs derive scope from a valid canonical envelope. This global
+			// kind keeps the probe independent of project execution fixtures.
+			body = `{"type":"checkpoint_restore","params":{}}`
+		}
 
 		// Compute the scoped key exactly as the middleware will see it: the
 		// hermetic server runs auth-mode local, so rbacMiddleware attaches the
 		// role/user derived from empty claims (RoleAdmin + the anonymous user
 		// fallback). Derive both through the production helpers rather than
 		// hardcoding so key-scoping changes keep this test honest.
-		probe := httptest.NewRequest(rt.Method, path, nil)
+		probe := httptest.NewRequest(rt.Method, path, strings.NewReader(body))
 		probe.Header.Set("Idempotency-Key", key)
 		probe = probe.WithContext(withRoleContext(probe.Context(), &RoleContext{
 			Role:   srv.extractRoleFromClaims(map[string]interface{}{}),
 			UserID: extractUserIDFromClaims(map[string]interface{}{}),
 		}))
 		// Project-scoped requests freeze their project before replay. Seed
-		// through both production middlewares so the probe has the same scope
+		// through the production middlewares so the probe has the same scope
 		// as the real request below.
 		var scoped string
-		srv.mailProjectScopeMiddleware(srv.pipelineProjectScopeMiddleware(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		srv.pipelineProjectScopeMiddleware(srv.jobProjectSelectionMiddleware(srv.mailProjectScopeMiddleware(srv.jobHTTPReplayScopeMiddleware(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 			scoped = scopedIdempotencyKey(r)
-		}))).ServeHTTP(httptest.NewRecorder(), probe)
+		}))))).ServeHTTP(httptest.NewRecorder(), probe)
 		if scoped == "" {
 			t.Fatalf("scoped key empty for %s %s", rt.Method, rt.Pattern)
 		}
 		srv.idempotencyStore.SetWithFingerprint(scoped, "", canned, http.StatusOK, http.Header{"Content-Type": {"application/json"}})
 
-		req := httptest.NewRequest(rt.Method, path, nil)
+		req := httptest.NewRequest(rt.Method, path, strings.NewReader(body))
 		req.Header.Set("Idempotency-Key", key)
 		rec := httptest.NewRecorder()
 		srv.Router().ServeHTTP(rec, req)

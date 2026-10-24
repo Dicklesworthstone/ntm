@@ -1346,6 +1346,9 @@ func (s *Server) buildRouter() chi.Router {
 	// both wait for input while configuration changes in another request.
 	// Validation still follows each pipeline route's permission check.
 	r.Use(s.pipelineProjectScopeMiddleware)
+	// Jobs select their effective destination from the eventual JSON body.
+	// Pin configuration and cwd before redaction can wait on that body.
+	r.Use(s.jobProjectSelectionMiddleware)
 	// Redact sensitive content in requests/responses. Inert unless Config.Redaction
 	// was supplied (see that field): the middleware is always mounted, but it
 	// passes through untouched when no redaction config reached New.
@@ -1353,6 +1356,9 @@ func (s *Server) buildRouter() chi.Router {
 	// Freeze mail and reservation requests' projects before replay lookup.
 	// Validation errors follow each route's permission check.
 	r.Use(s.mailProjectScopeMiddleware)
+	// Classify the canonical post-redaction job request before cache lookup.
+	// Admission later uses the same captured selection and project resolver.
+	r.Use(s.jobHTTPReplayScopeMiddleware)
 	// Idempotency-Key replay for EVERY mutating route — the single mount point
 	// (D4, bd-ws3-contract-breadth-psvyu.4). Deleting this one line disables the
 	// feature (rollback lever). The middleware is inert for requests without an
@@ -1915,6 +1921,11 @@ func (s *Server) idempotencyMiddleware(next http.Handler) http.Handler {
 // Returns a non-empty hash even for empty bodies so mismatch detection always
 // has something to compare.
 func idempotencyRequestFingerprint(r *http.Request) string {
+	if scope, ok := r.Context().Value(jobHTTPReplayScopeKey{}).(jobHTTPReplayScope); ok {
+		// Job bodies were read completely within the HTTP limit. A changed
+		// command after the generic 8 MiB prefix must still conflict.
+		return scope.fingerprint
+	}
 	h := sha256.New()
 	if r.Body != nil && r.Body != http.NoBody {
 		data, err := io.ReadAll(io.LimitReader(r.Body, idempotencyFingerprintLimit))
@@ -2015,6 +2026,13 @@ func scopedIdempotencyKey(r *http.Request) string {
 			projectMode = "cwd-fallback"
 		}
 	}
+	if jobScope, ok := r.Context().Value(jobHTTPReplayScopeKey{}).(jobHTTPReplayScope); ok {
+		if jobScope.err != nil {
+			return "" // Preserve permission and canonical request errors.
+		}
+		project, projectScoped = jobScope.project, jobScope.project != ""
+		projectMode = "job-execution"
+	}
 	if projectScoped && scopeErr != nil {
 		return "" // Invalid scope must reach permission/validation, never replay.
 	}
@@ -2062,8 +2080,11 @@ func cloneReplayHeaders(src http.Header) http.Header {
 	if len(src) == 0 {
 		return nil
 	}
-	clone := make(http.Header, 2)
-	for _, key := range []string{"Content-Type", requestIDHeader} {
+	clone := make(http.Header, 3)
+	// Location is part of an accepted job's polling contract. Preserve that
+	// stable resource identity without replaying cookies, transport headers,
+	// security policy, or other request-specific response metadata.
+	for _, key := range []string{"Content-Type", "Location", requestIDHeader} {
 		values := src.Values(key)
 		if len(values) == 0 {
 			continue
@@ -5087,7 +5108,13 @@ type CreateJobRequest struct {
 func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
 
-	req, err := decodeCreateJobRequest(r.Body)
+	var req CreateJobRequest
+	var err error
+	if scope, captured := r.Context().Value(jobHTTPReplayScopeKey{}).(jobHTTPReplayScope); captured {
+		req, err = scope.request, scope.requestErr
+	} else {
+		req, err = decodeCreateJobRequest(r.Body)
+	}
 	if err != nil {
 		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body: "+err.Error(), nil, reqID)
 		return
