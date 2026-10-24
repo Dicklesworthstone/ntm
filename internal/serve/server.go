@@ -136,6 +136,9 @@ type Server struct {
 	// probe budget again. Guarded by mu.
 	mailUnavailableUntil time.Time
 	projectDir           string
+	// pipelineScope is set only on an immutable per-operation execution view.
+	// It pins cwd fallback separately from configured file-workflow access.
+	pipelineScope *pipelineProjectScope
 	// auditStore persists REST/WS audit records. Nil when the store could not be
 	// opened, in which case the audit middleware is not installed.
 	auditStore *AuditStore
@@ -1339,6 +1342,10 @@ func (s *Server) buildRouter() chi.Router {
 	if s.auditStore != nil {
 		r.Use(s.AuditMiddleware(s.auditStore))
 	}
+	// Capture before any middleware reads the body: redaction and replay may
+	// both wait for input while configuration changes in another request.
+	// Validation still follows each pipeline route's permission check.
+	r.Use(s.pipelineProjectScopeMiddleware)
 	// Redact sensitive content in requests/responses. Inert unless Config.Redaction
 	// was supplied (see that field): the middleware is always mounted, but it
 	// passes through untouched when no redaction config reached New.
@@ -1346,9 +1353,6 @@ func (s *Server) buildRouter() chi.Router {
 	// Freeze mail and reservation requests' projects before replay lookup.
 	// Validation errors follow each route's permission check.
 	r.Use(s.mailProjectScopeMiddleware)
-	// Recovery decisions must retain their configured project even on an HTTP
-	// replay. Capture that namespace before looking up an idempotency key.
-	r.Use(s.pipelineRecoveryProjectScopeMiddleware)
 	// Idempotency-Key replay for EVERY mutating route — the single mount point
 	// (D4, bd-ws3-contract-breadth-psvyu.4). Deleting this one line disables the
 	// feature (rollback lever). The middleware is inert for requests without an
@@ -2003,8 +2007,13 @@ func scopedIdempotencyKey(r *http.Request) string {
 	principal := idempotencyPrincipal(r)
 	scope, projectScoped := r.Context().Value(mailProjectScopeKey{}).(mailProjectScope)
 	project, scopeErr := scope.project, scope.err
-	if recoveryScope, ok := r.Context().Value(pipelineRecoveryProjectScopeKey{}).(pipelineRecoveryProjectScope); ok {
-		project, scopeErr, projectScoped = recoveryScope.projectDir, recoveryScope.err, true
+	projectMode := ""
+	if pipelineScope, ok := r.Context().Value(pipelineProjectScopeKey{}).(pipelineProjectScope); ok {
+		project, scopeErr, projectScoped = pipelineScope.projectDir, pipelineScope.err, true
+		projectMode = "configured"
+		if strings.TrimSpace(pipelineScope.configuredDir) == "" {
+			projectMode = "cwd-fallback"
+		}
 	}
 	if projectScoped && scopeErr != nil {
 		return "" // Invalid scope must reach permission/validation, never replay.
@@ -2025,6 +2034,12 @@ func scopedIdempotencyKey(r *http.Request) string {
 	if projectScoped {
 		b.WriteString(project)
 		b.WriteByte('\x00')
+		// A cleared configuration must not replay file-workflow access from a
+		// previously configured cwd, even when the effective roots coincide.
+		if projectMode != "" {
+			b.WriteString(projectMode)
+			b.WriteByte('\x00')
+		}
 	}
 	b.WriteString(rawKey)
 	return b.String()

@@ -12336,7 +12336,7 @@ func TestDiscoverPipelineTemplates(t *testing.T) {
 	os.Chdir(tmpDir)
 	defer os.Chdir(origDir)
 
-	templates := discoverPipelineTemplates()
+	templates := discoverPipelineTemplates(tmpDir)
 
 	// Should find 3 templates (yaml, yml, toml) but not .md or dirs
 	foundNames := map[string]bool{}

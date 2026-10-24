@@ -39,40 +39,87 @@ const (
 
 const pipelineRecoveryMaxBodyBytes = 32 << 10
 
-type pipelineRecoveryProjectScopeKey struct{}
+type pipelineProjectScopeKey struct{}
 
-type pipelineRecoveryProjectScope struct {
-	projectDir string
-	err        error
+type pipelineProjectScope struct {
+	configuredDir string
+	projectDir    string
+	err           error
 }
 
-// Freeze recovery's namespace before HTTP replay lookup. Both the idempotency
-// key and the canonical recovery engine must use this exact project, even when
-// configuration changes while a request is waiting. Validation remains behind
-// the route's permission check and never loads pipeline state here.
-func (s *Server) pipelineRecoveryProjectScopeMiddleware(next http.Handler) http.Handler {
+// Freeze the project before HTTP replay lookup or request-body reads. Workflow
+// lookup, run ownership, execution, cancellation and cached responses must all
+// refer to this same namespace even if PATCH /config changes it meanwhile.
+// Validation remains behind each route's permission check; capture reads no
+// workflow or execution state.
+func (s *Server) pipelineProjectScopeMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if (r.Method != http.MethodGet && r.Method != http.MethodPost) ||
-			!strings.HasPrefix(r.URL.Path, "/api/v1/pipelines/") || !strings.HasSuffix(r.URL.Path, "/recover") {
+		if r.URL.Path != "/api/v1/pipelines" && !strings.HasPrefix(r.URL.Path, "/api/v1/pipelines/") {
 			next.ServeHTTP(w, r)
 			return
 		}
-		scope := pipelineRecoveryProjectScope{projectDir: s.projectDirSnapshot()}
-		if scope.projectDir == "" || !filepath.IsAbs(scope.projectDir) {
+		scope := s.capturePipelineProjectScope()
+		// Recovery has always required an explicitly configured absolute root.
+		// Other state/inline operations retain their existing cwd fallback.
+		if strings.HasSuffix(r.URL.Path, "/recover") &&
+			(scope.configuredDir == "" || !filepath.IsAbs(scope.configuredDir)) {
 			scope.err = errors.New("pipeline recovery requires a configured absolute project directory")
-		} else {
-			scope.projectDir, scope.err = filepath.EvalSymlinks(scope.projectDir)
-			if scope.err == nil {
-				var info os.FileInfo
-				info, scope.err = os.Stat(scope.projectDir)
-				if scope.err == nil && !info.IsDir() {
-					scope.err = errors.New("pipeline recovery project is not a directory")
-				}
-			}
 		}
-		ctx := context.WithValue(r.Context(), pipelineRecoveryProjectScopeKey{}, scope)
+		ctx := context.WithValue(r.Context(), pipelineProjectScopeKey{}, scope)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+func (s *Server) capturePipelineProjectScope() pipelineProjectScope {
+	if s.pipelineScope != nil {
+		return *s.pipelineScope
+	}
+	scope := pipelineProjectScope{configuredDir: s.projectDirSnapshot()}
+	root := strings.TrimSpace(scope.configuredDir)
+	if root == "" {
+		root, scope.err = os.Getwd()
+		if scope.err != nil {
+			return scope
+		}
+	}
+	scope.projectDir, scope.err = ResolveProjectDir(root)
+	return scope
+}
+
+// The execution view owns no shared mutexes or authentication state. Keep the
+// configured directory separate from the effective root: an unconfigured
+// server may inspect state or execute inline work in cwd, but must not gain
+// file-workflow access merely because that fallback has been pinned.
+func (s *Server) pipelineExecutionServer(ctx context.Context) (*Server, error) {
+	if s.pipelineScope != nil {
+		return s, s.pipelineScope.err
+	}
+	var scope pipelineProjectScope
+	var captured bool
+	if ctx != nil {
+		scope, captured = ctx.Value(pipelineProjectScopeKey{}).(pipelineProjectScope)
+	}
+	if !captured {
+		scope = s.capturePipelineProjectScope()
+	}
+	if scope.err != nil {
+		return nil, scope.err
+	}
+	configuredDir := ""
+	if strings.TrimSpace(scope.configuredDir) != "" {
+		configuredDir = scope.projectDir
+	}
+	return &Server{projectDir: configuredDir, pipelineScope: &scope, wsHub: s.wsHub}, nil
+}
+
+func (s *Server) pipelineRequestServer(w http.ResponseWriter, r *http.Request) *Server {
+	view, err := s.pipelineExecutionServer(r.Context())
+	if err != nil {
+		writeErrorResponse(w, http.StatusServiceUnavailable, ErrCodeServiceUnavail,
+			"pipeline project directory is unavailable", nil, requestIDFromContext(r.Context()))
+		return nil
+	}
+	return view
 }
 
 // resolveWorkflowPath confines a caller-supplied workflow path to the server's
@@ -219,6 +266,10 @@ func detachedRunContext() (context.Context, context.CancelFunc) {
 
 // handleListPipelines handles GET /api/v1/pipelines
 func (s *Server) handleListPipelines(w http.ResponseWriter, r *http.Request) {
+	s = s.pipelineRequestServer(w, r)
+	if s == nil {
+		return
+	}
 	reqID := requestIDFromContext(r.Context())
 
 	slog.Info("pipelines list", "request_id", reqID)
@@ -265,6 +316,10 @@ func (s *Server) handleListPipelines(w http.ResponseWriter, r *http.Request) {
 
 // handleRunPipeline handles POST /api/v1/pipelines/run
 func (s *Server) handleRunPipeline(w http.ResponseWriter, r *http.Request) {
+	s = s.pipelineRequestServer(w, r)
+	if s == nil {
+		return
+	}
 	reqID := requestIDFromContext(r.Context())
 
 	var req PipelineRunRequest
@@ -326,6 +381,10 @@ func (s *Server) handleRunPipeline(w http.ResponseWriter, r *http.Request) {
 
 // handleExecPipeline handles POST /api/v1/pipelines/exec
 func (s *Server) handleExecPipeline(w http.ResponseWriter, r *http.Request) {
+	s = s.pipelineRequestServer(w, r)
+	if s == nil {
+		return
+	}
 	reqID := requestIDFromContext(r.Context())
 
 	var req PipelineExecRequest
@@ -382,6 +441,10 @@ func (s *Server) handleExecPipeline(w http.ResponseWriter, r *http.Request) {
 
 // handleGetPipeline handles GET /api/v1/pipelines/{id}
 func (s *Server) handleGetPipeline(w http.ResponseWriter, r *http.Request) {
+	s = s.pipelineRequestServer(w, r)
+	if s == nil {
+		return
+	}
 	reqID := requestIDFromContext(r.Context())
 	runID := chi.URLParam(r, "id")
 
@@ -423,6 +486,10 @@ func (s *Server) handleGetPipeline(w http.ResponseWriter, r *http.Request) {
 
 // handleCancelPipeline handles DELETE /api/v1/pipelines/{id} and POST /api/v1/pipelines/{id}/cancel
 func (s *Server) handleCancelPipeline(w http.ResponseWriter, r *http.Request) {
+	s = s.pipelineRequestServer(w, r)
+	if s == nil {
+		return
+	}
 	reqID := requestIDFromContext(r.Context())
 	runID := chi.URLParam(r, "id")
 
@@ -472,6 +539,10 @@ func (s *Server) handleCancelPipeline(w http.ResponseWriter, r *http.Request) {
 
 // handleResumePipeline handles POST /api/v1/pipelines/{id}/resume
 func (s *Server) handleResumePipeline(w http.ResponseWriter, r *http.Request) {
+	s = s.pipelineRequestServer(w, r)
+	if s == nil {
+		return
+	}
 	reqID := requestIDFromContext(r.Context())
 	runID := chi.URLParam(r, "id")
 
@@ -549,8 +620,8 @@ func (s *Server) handleRecoverPipeline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	SetAuditResource(r, "pipeline", runID)
-	scope, ok := r.Context().Value(pipelineRecoveryProjectScopeKey{}).(pipelineRecoveryProjectScope)
-	if !ok || scope.err != nil || scope.projectDir == "" {
+	scope, ok := r.Context().Value(pipelineProjectScopeKey{}).(pipelineProjectScope)
+	if !ok || scope.err != nil || scope.projectDir == "" || scope.configuredDir == "" || !filepath.IsAbs(scope.configuredDir) {
 		writeErrorResponse(w, http.StatusServiceUnavailable, ErrCodeServiceUnavail,
 			"pipeline recovery requires an accessible configured absolute project directory", nil, reqID)
 		return
@@ -628,6 +699,10 @@ func (s *Server) handleRecoverPipeline(w http.ResponseWriter, r *http.Request) {
 
 // handleValidatePipeline handles POST /api/v1/pipelines/validate
 func (s *Server) handleValidatePipeline(w http.ResponseWriter, r *http.Request) {
+	s = s.pipelineRequestServer(w, r)
+	if s == nil {
+		return
+	}
 	reqID := requestIDFromContext(r.Context())
 
 	var req PipelineValidateRequest
@@ -708,11 +783,15 @@ func (s *Server) handleValidatePipeline(w http.ResponseWriter, r *http.Request) 
 
 // handleListPipelineTemplates handles GET /api/v1/pipelines/templates
 func (s *Server) handleListPipelineTemplates(w http.ResponseWriter, r *http.Request) {
+	s = s.pipelineRequestServer(w, r)
+	if s == nil {
+		return
+	}
 	reqID := requestIDFromContext(r.Context())
 
 	slog.Info("pipeline templates list", "request_id", reqID)
 
-	templates := discoverPipelineTemplates()
+	templates := discoverPipelineTemplates(s.pipelineProjectDir())
 
 	writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
 		"templates": templates,
@@ -722,6 +801,10 @@ func (s *Server) handleListPipelineTemplates(w http.ResponseWriter, r *http.Requ
 
 // handleCleanupPipelines handles POST /api/v1/pipelines/cleanup
 func (s *Server) handleCleanupPipelines(w http.ResponseWriter, r *http.Request) {
+	s = s.pipelineRequestServer(w, r)
+	if s == nil {
+		return
+	}
 	reqID := requestIDFromContext(r.Context())
 
 	var req PipelineCleanupRequest
@@ -785,6 +868,19 @@ func pipelineEventTypeFromProgressType(progressType string) (string, bool) {
 // runPipelineWithResult runs a pipeline and returns the result struct
 func (s *Server) runPipelineWithResult(ctx context.Context, opts pipeline.PipelineRunOptions) pipeline.PipelineRunOutput {
 	output := pipeline.PipelineRunOutput{}
+	view, err := s.pipelineExecutionServer(ctx)
+	if err != nil {
+		output.RobotResponse = pipeline.NewErrorResponse(err, ErrCodeServiceUnavail, "restore the pipeline project directory before retrying")
+		return output
+	}
+	s = view
+	if requested := strings.TrimSpace(opts.ProjectDir); requested != "" {
+		root, err := ResolveProjectDir(requested)
+		if err != nil || root != s.pipelineProjectDir() {
+			output.RobotResponse = pipeline.NewErrorResponse(errors.New("pipeline project_dir conflicts with the admitted server project"), ErrCodeBadRequest, "use the server's admitted project directory")
+			return output
+		}
+	}
 
 	// Confine the workflow path to the project directory for the same reason
 	// /validate does: the path reaches os.ReadFile before any extension check.
@@ -816,10 +912,7 @@ func (s *Server) runPipelineWithResult(ctx context.Context, opts pipeline.Pipeli
 
 	config := pipeline.DefaultExecutorConfig(opts.Session)
 	config.DryRun = opts.DryRun
-	config.ProjectDir = opts.ProjectDir
-	if strings.TrimSpace(config.ProjectDir) == "" {
-		config.ProjectDir = s.pipelineProjectDir()
-	}
+	config.ProjectDir = s.pipelineProjectDir()
 	config.WorkflowFile = workflowPath
 	config.RunID = pipeline.GenerateRunID()
 
@@ -841,6 +934,11 @@ func (s *Server) runPipelineWithResult(ctx context.Context, opts pipeline.Pipeli
 
 // execPipelineInline executes an inline workflow definition.
 func (s *Server) execPipelineInline(ctx context.Context, workflow *pipeline.Workflow, session string, variables map[string]interface{}, background bool) pipeline.PipelineRunOutput {
+	view, err := s.pipelineExecutionServer(ctx)
+	if err != nil {
+		return pipeline.PipelineRunOutput{RobotResponse: pipeline.NewErrorResponse(err, ErrCodeServiceUnavail, "restore the pipeline project directory before retrying"), Session: session}
+	}
+	s = view
 	config := pipeline.DefaultExecutorConfig(session)
 	config.ProjectDir = s.pipelineProjectDir()
 	config.RunID = pipeline.GenerateRunID()
@@ -908,6 +1006,12 @@ func (s *Server) executeOwnedPipeline(ctx context.Context, workflow *pipeline.Wo
 // resumePipelineWithResult resumes a pipeline from saved state
 func (s *Server) resumePipelineWithResult(ctx context.Context, runID, session string, variables map[string]interface{}, state *pipeline.ExecutionState) pipeline.PipelineRunOutput {
 	output := pipeline.PipelineRunOutput{RunID: runID, Session: session}
+	view, err := s.pipelineExecutionServer(ctx)
+	if err != nil {
+		output.RobotResponse = pipeline.NewErrorResponse(err, ErrCodeServiceUnavail, "restore the pipeline project directory before retrying")
+		return output
+	}
+	s = view
 	control, err := pipeline.AcquireRunControl(ctx, s.pipelineProjectDir(), runID)
 	if err != nil {
 		output.RobotResponse = pipelineControlError(err)
@@ -1036,6 +1140,9 @@ func finishPipelineExecution(runID string, state *pipeline.ExecutionState, err e
 }
 
 func (s *Server) pipelineProjectDir() string {
+	if s.pipelineScope != nil {
+		return s.pipelineScope.projectDir
+	}
 	projectDir := s.projectDirSnapshot()
 	if strings.TrimSpace(projectDir) != "" {
 		return projectDir
@@ -1055,10 +1162,11 @@ type PipelineTemplate struct {
 }
 
 // discoverPipelineTemplates finds workflow templates in common locations
-func discoverPipelineTemplates() []PipelineTemplate {
+func discoverPipelineTemplates(projectDir string) []PipelineTemplate {
 	templates := []PipelineTemplate{}
 
-	// Look in current dir and .ntm/workflows
+	// Keep response paths relative to the admitted project so callers can use
+	// them directly with the workflow-file endpoints.
 	searchPaths := []string{
 		".",
 		".ntm/workflows",
@@ -1066,7 +1174,7 @@ func discoverPipelineTemplates() []PipelineTemplate {
 	}
 
 	for _, dir := range searchPaths {
-		entries, err := os.ReadDir(dir)
+		entries, err := os.ReadDir(filepath.Join(projectDir, dir))
 		if err != nil {
 			continue
 		}

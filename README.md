@@ -771,10 +771,18 @@ Acceptance records the same durable decision as the CLI. Continue with
 `POST /api/v1/pipelines/{id}/resume`, or submit a `pipeline_resume` job for
 pollable execution. Inspection and acceptance expose receipt metadata without
 prompt or transcript contents. Recovery requests cannot select another project
-or replace the saved session. The server freezes the configured project for the
-request and its HTTP idempotency key; changing server configuration cannot replay
-an acceptance from a different project. Stale receipts, conflicting observations,
-and a live run owner produce a conflict response without changing the checkpoint.
+or replace the saved session. Stale receipts, conflicting observations, and a live
+run owner produce a conflict response without changing the checkpoint.
+
+Each REST pipeline request retains the project selected when it was admitted.
+Changing `project_dir` through the configuration API affects subsequent requests;
+it cannot redirect an admitted request's workflow lookup, run ownership,
+execution, or cancellation. HTTP idempotency keys use that same project scope,
+so retrying a key after switching projects cannot replay the previous project's
+success. Clearing the configured project also cannot replay a cached file-based
+operation that required it. File-based run, validation, and resume still require
+a configured project; recovery additionally requires an accessible absolute
+project directory.
 
 Foreground command steps in the main workflow have a separate CLI recovery path
 for the case where the command finished but its final checkpoint was lost. `pipeline recover`

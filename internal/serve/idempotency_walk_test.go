@@ -145,7 +145,7 @@ func TestIdempotencyRouterCoverage(t *testing.T) {
 		// through both production middlewares so the probe has the same scope
 		// as the real request below.
 		var scoped string
-		srv.mailProjectScopeMiddleware(srv.pipelineRecoveryProjectScopeMiddleware(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		srv.mailProjectScopeMiddleware(srv.pipelineProjectScopeMiddleware(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 			scoped = scopedIdempotencyKey(r)
 		}))).ServeHTTP(httptest.NewRecorder(), probe)
 		if scoped == "" {
