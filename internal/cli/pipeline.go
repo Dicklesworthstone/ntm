@@ -33,7 +33,7 @@ Subcommands:
   run      Run a workflow from a YAML/TOML file
   lint     Parse, normalize, and validate a workflow file
   resume   Resume a workflow from saved state
-  recover  Inspect and accept an uncertain agent delivery
+  recover  Inspect and reconcile interrupted pipeline work
   status   Check the status of a running pipeline
   list     List all tracked pipelines
   cancel   Cancel a running pipeline
@@ -939,16 +939,16 @@ Examples:
 	return cmd
 }
 
-// newPipelineRecoverCmd reconciles an uncertain prompt delivery without running
-// the workflow. The canonical resume path remains responsible for observing the
-// saved response, parsing outputs, and executing dependent steps.
+// newPipelineRecoverCmd records explicit recovery decisions without running the
+// workflow. Ordinary resume interprets the original outcome and runs dependents.
 func newPipelineRecoverCmd() *cobra.Command {
-	var stepID, receipt, reason string
-	var acceptDelivery bool
+	var stepID, receipt, reason, outputFile string
+	var acceptDelivery, acceptCommand bool
+	var exitCode int
 	cmd := &cobra.Command{
 		Use:   "recover <run-id>",
-		Short: "Inspect or accept an uncertain pipeline agent delivery",
-		Long: `Inspect durable agent-delivery receipts after a pipeline interruption.
+		Short: "Inspect and reconcile interrupted pipeline deliveries and commands",
+		Long: `Inspect durable delivery and command receipts after a pipeline interruption.
 
 With no flags, shows delivery identities and receipt tokens without changing the
 run. After verifying that the original agent received its prompt, use
@@ -964,6 +964,27 @@ stale receipt prevents recovery. Repeating the same receipt and reason returns
 the existing decision. For an intentional resend, inspect the agent first and
 use 'pipeline resume --mode=restart-failed', which may repeat side effects.
 
+For an unresolved foreground command in the main workflow, first independently
+verify that the original command AND all its descendants have finished. --accept-command records
+your explicit attestation of that fact and the observed result. A saved PID is
+diagnostic evidence only; recovery never assumes that a missing or reused PID
+proves completion, and never signals a saved process ID.
+
+Use the exact --step-id and --receipt, a non-empty --reason, an explicit
+--exit-code (0 to 255), and --output-file containing the complete captured output
+as UTF-8 text.
+An empty regular file explicitly records no output. For a command with
+output_parse, supply stdout; otherwise supply its captured combined stdout and
+stderr. Output is bounded by the recovery limit and the frozen workflow's limit.
+Acceptance does not launch the command, parse its output, or run dependent work.
+Ordinary resume applies the original command's exit-code and output parsing
+rules. A nonzero exit code uses normal failure handling without rerunning the
+command.
+Background commands, cleanup and post-pipeline commands, and commands whose
+enclosing work already finished cannot use this recovery path.
+The same receipt, reason, exit code, and exact output
+replay the saved decision; changing any part is refused.
+
 Run from the project containing the saved pipeline state.
 
 Examples:
@@ -971,6 +992,10 @@ Examples:
   ntm pipeline recover run-20241230-123456-abcd --step-id review \
     --receipt <token-from-inspection> --accept-delivery \
     --reason "The original agent is working on the submitted review"
+  ntm pipeline recover run-20241230-123456-abcd --step-id migrate \
+    --receipt <token-from-inspection> --accept-command --exit-code 0 \
+    --output-file migration-output.txt \
+    --reason "Verified the migration and all child processes finished successfully"
   ntm pipeline resume run-20241230-123456-abcd --mode=continue`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -987,15 +1012,81 @@ Examples:
 					"success": false, "run_id": runID, "error": err.Error(), "error_code": code,
 				}, err)
 			}
-			if !acceptDelivery && (cmd.Flags().Changed("step-id") || cmd.Flags().Changed("receipt") || cmd.Flags().Changed("reason")) {
-				return fail(errors.New("--step-id, --receipt, and --reason require --accept-delivery"))
+			if acceptDelivery && acceptCommand {
+				return fail(errors.New("--accept-delivery and --accept-command are mutually exclusive"))
 			}
-			if acceptDelivery && (strings.TrimSpace(stepID) == "" || strings.TrimSpace(receipt) == "" || strings.TrimSpace(reason) == "") {
-				return fail(errors.New("--accept-delivery requires --step-id, --receipt, and a non-empty --reason"))
+			commandFields := cmd.Flags().Changed("exit-code") || cmd.Flags().Changed("output-file")
+			if !acceptDelivery && !acceptCommand && (cmd.Flags().Changed("step-id") || cmd.Flags().Changed("receipt") || cmd.Flags().Changed("reason") || commandFields) {
+				return fail(errors.New("recovery decision fields require --accept-delivery or --accept-command"))
+			}
+			if !acceptCommand && commandFields {
+				return fail(errors.New("--exit-code and --output-file require --accept-command"))
+			}
+			if (acceptDelivery || acceptCommand) && (strings.TrimSpace(stepID) == "" || strings.TrimSpace(receipt) == "" || strings.TrimSpace(reason) == "") {
+				return fail(errors.New("acceptance requires --step-id, --receipt, and a non-empty --reason"))
+			}
+			if acceptCommand && (!cmd.Flags().Changed("exit-code") || !cmd.Flags().Changed("output-file") || strings.TrimSpace(outputFile) == "" || exitCode < 0 || exitCode > 255) {
+				return fail(errors.New("--accept-command requires an explicit --exit-code from 0 to 255 and --output-file"))
 			}
 			projectDir, err := resolvePipelineProjectDirForSession(cmd.Context(), "")
 			if err != nil {
 				return fail(err)
+			}
+			if acceptCommand {
+				if err := cmd.Context().Err(); err != nil {
+					return fail(err)
+				}
+				info, err := os.Stat(outputFile)
+				if err != nil {
+					return fail(fmt.Errorf("inspect captured command output: %w", err))
+				}
+				if !info.Mode().IsRegular() {
+					return fail(errors.New("--output-file must name a regular file; use an empty file to explicitly record no output"))
+				}
+				file, err := os.Open(outputFile)
+				if err != nil {
+					return fail(fmt.Errorf("open captured command output: %w", err))
+				}
+				defer file.Close()
+				info, err = file.Stat()
+				if err != nil {
+					return fail(fmt.Errorf("inspect captured command output: %w", err))
+				}
+				if !info.Mode().IsRegular() {
+					return fail(errors.New("--output-file must name a regular file; use an empty file to explicitly record no output"))
+				}
+				if info.Size() > pipeline.CommandRecoveryMaxOutputBytes {
+					return fail(fmt.Errorf("captured command output exceeds %d bytes", pipeline.CommandRecoveryMaxOutputBytes))
+				}
+				captured, err := io.ReadAll(io.LimitReader(file, pipeline.CommandRecoveryMaxOutputBytes+1))
+				if err != nil {
+					return fail(fmt.Errorf("read captured command output: %w", err))
+				}
+				if len(captured) > pipeline.CommandRecoveryMaxOutputBytes {
+					return fail(fmt.Errorf("captured command output exceeds %d bytes", pipeline.CommandRecoveryMaxOutputBytes))
+				}
+				if err := cmd.Context().Err(); err != nil {
+					return fail(err)
+				}
+				result, err := pipeline.AcceptCommandExecutionContext(cmd.Context(), projectDir, runID, stepID, receipt, reason, exitCode, string(captured))
+				if err != nil {
+					return fail(err)
+				}
+				if jsonOutput {
+					return json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]interface{}{
+						"success": true, "run_id": result.RunID, "workflow": result.WorkflowID,
+						"session": result.Session, "command": result.Command, "replayed": result.Replayed,
+						"resume_command": []string{"ntm", "pipeline", "resume", result.RunID, "--mode=continue"},
+					})
+				}
+				verb := "Accepted"
+				if result.Replayed {
+					verb = "Previously accepted"
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "%s command result for step %s in run %s.\n", verb,
+					pipeline.SanitizeDescriptionForTerminal(result.Command.StepID), pipeline.SanitizeDescriptionForTerminal(result.RunID))
+				fmt.Fprintln(cmd.OutOrStdout(), "Resume this run with 'ntm pipeline resume' to interpret the recorded result and continue.")
+				return nil
 			}
 			if acceptDelivery {
 				result, err := pipeline.AcceptAgentDeliveryContext(cmd.Context(), projectDir, runID, stepID, receipt, reason)
@@ -1022,16 +1113,19 @@ Examples:
 			if err != nil {
 				return fail(err)
 			}
+			commands, err := pipeline.InspectCommandExecutionRecovery(cmd.Context(), projectDir, runID)
+			if err != nil {
+				return fail(err)
+			}
 			if jsonOutput {
 				return json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]interface{}{
 					"success": true, "run_id": inspection.RunID, "workflow": inspection.WorkflowID,
-					"session": inspection.Session, "deliveries": inspection.Deliveries,
+					"session": inspection.Session, "deliveries": inspection.Deliveries, "commands": commands.Commands,
 				})
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "Pipeline %s (%s)\n", pipeline.SanitizeDescriptionForTerminal(inspection.RunID), pipeline.SanitizeDescriptionForTerminal(inspection.Session))
 			if len(inspection.Deliveries) == 0 {
 				fmt.Fprintln(cmd.OutOrStdout(), "No agent-delivery receipts are available for recovery.")
-				return nil
 			}
 			for _, delivery := range inspection.Deliveries {
 				fmt.Fprintf(cmd.OutOrStdout(), "\nStep: %s  Status: %s\n  Target: %s / %s (PID %d)\n  Receipt: %s\n",
@@ -1044,14 +1138,35 @@ Examples:
 						pipeline.SanitizeDescriptionForTerminal(delivery.ResolutionReason))
 				}
 			}
-			fmt.Fprintln(cmd.OutOrStdout(), "\nFor an uncertain 'sending' receipt, verify that the original agent received it, then repeat with --step-id, --receipt, --accept-delivery, and --reason. Confirmed deliveries can resume normally.")
+			if len(inspection.Deliveries) > 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "\nFor an uncertain 'sending' receipt, verify that the original agent received it, then repeat with --step-id, --receipt, --accept-delivery, and --reason. Confirmed deliveries can resume normally.")
+			}
+			for _, command := range commands.Commands {
+				fmt.Fprintf(cmd.OutOrStdout(), "\nCommand step: %s  Status: %s\n  Recorded PID: %d  Background: %t\n  Receipt: %s\n  Can accept: %t\n",
+					pipeline.SanitizeDescriptionForTerminal(command.StepID), pipeline.SanitizeDescriptionForTerminal(command.Status),
+					command.ProcessID, command.Background, command.ReceiptToken, command.CanAccept)
+				if command.RefusalReason != "" {
+					fmt.Fprintf(cmd.OutOrStdout(), "  Recovery unavailable: %s\n", pipeline.SanitizeDescriptionForTerminal(command.RefusalReason))
+				}
+				if command.ResolutionAction != "" {
+					fmt.Fprintf(cmd.OutOrStdout(), "  Decision: %s at %s\n  Reason: %s\n",
+						pipeline.SanitizeDescriptionForTerminal(command.ResolutionAction), command.ResolvedAt.Format(time.RFC3339),
+						pipeline.SanitizeDescriptionForTerminal(command.ResolutionReason))
+				}
+			}
+			if len(commands.Commands) > 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "\nTo accept an unresolved foreground command, verify the original command and all descendants have finished, then supply --accept-command, --step-id, --receipt, --reason, --exit-code, and --output-file. Acceptance never runs the command.")
+			}
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&stepID, "step-id", "", "Exact runtime step ID from recovery inspection")
-	cmd.Flags().StringVar(&receipt, "receipt", "", "Exact delivery receipt token from recovery inspection")
+	cmd.Flags().StringVar(&receipt, "receipt", "", "Exact receipt token from recovery inspection")
 	cmd.Flags().BoolVar(&acceptDelivery, "accept-delivery", false, "Record that the original agent received the uncertain delivery")
-	cmd.Flags().StringVar(&reason, "reason", "", "Observation confirming receipt by the original agent")
+	cmd.Flags().BoolVar(&acceptCommand, "accept-command", false, "Attest that the original command and all descendants finished, and record their observed result")
+	cmd.Flags().IntVar(&exitCode, "exit-code", 0, "Observed command exit code (0 to 255); explicitly required with --accept-command")
+	cmd.Flags().StringVar(&outputFile, "output-file", "", "Regular file containing complete captured command output; explicitly required with --accept-command")
+	cmd.Flags().StringVar(&reason, "reason", "", "Observation confirming the original delivery or completed command outcome")
 	return cmd
 }
 

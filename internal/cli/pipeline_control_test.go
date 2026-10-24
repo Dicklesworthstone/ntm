@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -509,4 +510,394 @@ func TestPipelineResumeRejectsReplacedAgentProcessWithoutResending(t *testing.T)
 			t.Fatalf("replaced process received %s: %s", transport, calls)
 		}
 	}
+}
+
+// Capture a genuine running command journal, then prevent its settlement write
+// after the command has produced its observable effect. The owned executor must
+// finish and report a storage failure before the earlier checkpoint is restored.
+// No command hash, PID, status, or outcome is invented by the recovery fixture.
+func interruptedPipelineCommandOutcome(t *testing.T, root, output string, exitCode int, parse bool) *pipeline.ExecutionState {
+	t.Helper()
+	pipelineRecoveryTmux(t, root, "2718", "")
+	if err := os.WriteFile(filepath.Join(root, "fixture-command-output"), []byte(output), 0600); err != nil {
+		t.Fatal(err)
+	}
+	step := pipeline.Step{
+		ID: "command", OutputVar: "recovered", OnError: pipeline.ErrorActionRetry,
+		RetryCount: 3, RetryDelay: pipeline.Duration{Duration: time.Hour},
+		Timeout: pipeline.Duration{Duration: 10 * time.Second},
+		Command: "printf 'once\\n' >> command-effects\n" +
+			"cat fixture-command-output > observed-command-output\n" +
+			"cat observed-command-output\n" +
+			"printf ready > command-ready\n" +
+			"while [ ! -f command-release ]; do sleep 0.01; done\n" + fmt.Sprintf("exit %d", exitCode),
+	}
+	stdin := "${steps.command.output}"
+	if parse {
+		step.OutputParse = pipeline.OutputParse{Type: "json"}
+		stdin = "${steps.command.data.answer}|${vars.recovered_parsed.answer}"
+	}
+	workflow := &pipeline.Workflow{
+		SchemaVersion: pipeline.SchemaVersion, Name: "command-recovery-cli",
+		Settings: pipeline.WorkflowSettings{OnError: pipeline.ErrorActionFail},
+		Steps:    []pipeline.Step{step, {ID: "consume", DependsOn: []string{"command"}, Command: "printf ran > command-dependent; cat", Stdin: stdin}},
+	}
+	cfg := pipeline.DefaultExecutorConfig("delivery-session")
+	cfg.ProjectDir, cfg.RunID = root, pipeline.GenerateRunID()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	done := make(chan struct{})
+	var final *pipeline.ExecutionState
+	var runErr error
+	go func() {
+		defer close(done)
+		final, runErr = pipeline.RunControlledPipeline(ctx, workflow, nil, cfg, nil)
+	}()
+	defer func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			t.Error("original command owner did not finish cleanup")
+		}
+	}()
+	statePath := filepath.Join(root, ".ntm", "pipelines", cfg.RunID+".json")
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		prior, err := pipeline.LoadState(root, cfg.RunID)
+		_, readyErr := os.Stat(filepath.Join(root, "command-ready"))
+		if err == nil && readyErr == nil && prior.CommandExecutions["command"].Status == "running" {
+			break
+		}
+		select {
+		case <-done:
+			t.Fatalf("original command finished before its running checkpoint: %+v %v", final, runErr)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("original command never persisted its running checkpoint")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	before, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	savedPath := statePath + ".before-settlement"
+	if err := os.Rename(statePath, savedPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(statePath, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "command-release"), []byte("finish"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("original command did not finish after releasing its gate")
+	}
+	if !errors.Is(runErr, pipeline.ErrCheckpointFailed) || final == nil || final.Status != pipeline.StatusFailed {
+		t.Fatalf("fixture did not lose settlement at the real storage boundary: %+v %v", final, runErr)
+	}
+	if _, err := os.Stat(filepath.Join(root, "command-dependent")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("dependent work ran after settlement storage failed: %v", err)
+	}
+	if err := os.Rename(statePath, statePath+".blocked-directory"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(savedPath, statePath); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := os.ReadFile(statePath); err != nil || !bytes.Equal(data, before) {
+		t.Fatalf("fixture did not restore its actual pre-settlement checkpoint: %v", err)
+	}
+	if data, err := os.ReadFile(filepath.Join(root, "command-effects")); err != nil || string(data) != "once\n" {
+		t.Fatalf("initial command ran more than once: %q %v", data, err)
+	}
+	if data, err := os.ReadFile(filepath.Join(root, "observed-command-output")); err != nil || string(data) != output {
+		t.Fatalf("original command did not publish the observed output: %q %v", data, err)
+	}
+	prior, err := pipeline.LoadState(root, cfg.RunID)
+	if err != nil || prior.CommandExecutions["command"].Status != "running" {
+		t.Fatalf("lost settlement is not resumable evidence: %+v %v", prior, err)
+	}
+	return prior
+}
+
+type pipelineCommandRecoveryResponse struct {
+	Success   bool                                     `json:"success"`
+	ErrorCode string                                   `json:"error_code"`
+	Commands  []pipeline.CommandExecutionRecoveryEntry `json:"commands"`
+	Command   pipeline.CommandExecutionRecoveryEntry   `json:"command"`
+	Replayed  bool                                     `json:"replayed"`
+}
+
+func inspectPipelineCommandRecovery(t *testing.T, runID string) pipeline.CommandExecutionRecoveryEntry {
+	t.Helper()
+	raw, err := executePipelineRecoveryCommand(t, runID)
+	var out pipelineCommandRecoveryResponse
+	if err != nil || json.Unmarshal([]byte(raw), &out) != nil || !out.Success || len(out.Commands) != 1 {
+		t.Fatalf("command recovery inspection failed: %s %v", raw, err)
+	}
+	entry := out.Commands[0]
+	if entry.StepID != "command" || entry.Status != "running" || !entry.CanAccept || entry.ProcessID <= 0 || len(entry.ReceiptToken) != 64 {
+		t.Fatalf("inspection lost the command's exact launch identity: %+v", entry)
+	}
+	for _, private := range []string{"fixture-command-output", "command-effects", "PRIVATE-COMMAND-OUTPUT", "answer"} {
+		if strings.Contains(raw, private) {
+			t.Fatalf("command inspection exposed execution contents %q: %s", private, raw)
+		}
+	}
+	return entry
+}
+
+func TestPipelineRecoverCommandThenResumeWithoutRerun(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		output string
+		code   int
+		parse  bool
+	}{
+		{"parsed output", "{\"answer\":42}\n", 0, true},
+		{"explicit empty output", "", 0, false},
+		{"accepted exit failure", "PRIVATE-COMMAND-OUTPUT\n", 7, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := inPipelineControlProject(t)
+			prior := interruptedPipelineCommandOutcome(t, root, tc.output, tc.code, tc.parse)
+			oldJSON := jsonOutput
+			jsonOutput = true
+			t.Cleanup(func() { jsonOutput = oldJSON })
+			statePath := filepath.Join(root, ".ntm", "pipelines", prior.RunID+".json")
+			before, err := os.ReadFile(statePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			entry := inspectPipelineCommandRecovery(t, prior.RunID)
+			if after, err := os.ReadFile(statePath); err != nil || !bytes.Equal(after, before) {
+				t.Fatal("inspection changed the command checkpoint")
+			}
+			const reason = "Verified the original command and all descendants finished; retained their final output"
+			outputFile := filepath.Join(root, "observed-command-output")
+			args := []string{prior.RunID, "--accept-command", "--step-id", "command", "--receipt", entry.ReceiptToken,
+				"--reason", reason, "--exit-code", fmt.Sprint(tc.code), "--output-file", outputFile}
+			raw, err := executePipelineRecoveryCommand(t, args...)
+			var accepted pipelineCommandRecoveryResponse
+			if err != nil || json.Unmarshal([]byte(raw), &accepted) != nil || !accepted.Success || accepted.Replayed || accepted.Command.ResolutionAction != pipeline.CommandExecutionResolutionAccept || accepted.Command.ResolutionReason != reason || accepted.Command.ResolvedAt.IsZero() || accepted.Command.ExitCode == nil || *accepted.Command.ExitCode != tc.code || accepted.Command.OutputBytes != len(tc.output) {
+				t.Fatalf("command acceptance failed: %s %v", raw, err)
+			}
+			saved, err := pipeline.LoadState(root, prior.RunID)
+			if err != nil || saved.Status != prior.Status || saved.Steps["command"].Status == pipeline.StatusCompleted || saved.Steps["consume"].Status == pipeline.StatusCompleted {
+				t.Fatalf("acceptance executed or completed pipeline work: %+v %v", saved, err)
+			}
+			for _, name := range []string{"steps.command.output", "steps.command.data", "recovered", "recovered_parsed"} {
+				if _, exists := saved.Variables[name]; exists {
+					t.Fatalf("acceptance published dependent output %q before ordinary resume", name)
+				}
+			}
+			if record := saved.CommandExecutions["command"]; record.Result.Output != tc.output || record.Result.ParsedData != nil || record.Result.Error != nil || record.ProcessID != prior.CommandExecutions["command"].ProcessID {
+				t.Fatalf("acceptance replaced original identity or prematurely interpreted output: %+v", record)
+			}
+			acceptedBytes, err := os.ReadFile(statePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, err = executePipelineRecoveryCommand(t, args...)
+			var replay pipelineCommandRecoveryResponse
+			if err != nil || json.Unmarshal([]byte(raw), &replay) != nil || !replay.Replayed || replay.Command.ReceiptToken != entry.ReceiptToken || replay.Command.ResolvedAt != accepted.Command.ResolvedAt {
+				t.Fatalf("same command decision did not replay: %s %v", raw, err)
+			}
+			if after, err := os.ReadFile(statePath); err != nil || !bytes.Equal(after, acceptedBytes) {
+				t.Fatal("command decision replay rewrote the checkpoint")
+			}
+			changedOutput := filepath.Join(root, "different-command-output")
+			if err := os.WriteFile(changedOutput, []byte(tc.output+"different"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			for _, change := range []struct{ flag, value string }{
+				{"--receipt", strings.Repeat("0", 64)}, {"--reason", "A different observation"},
+				{"--exit-code", fmt.Sprint((tc.code + 1) % 256)}, {"--output-file", changedOutput},
+			} {
+				conflict := append([]string(nil), args...)
+				for i := range conflict {
+					if conflict[i] == change.flag {
+						conflict[i+1] = change.value
+						break
+					}
+				}
+				raw, err := executePipelineRecoveryCommand(t, conflict...)
+				var refused pipelineCommandRecoveryResponse
+				if !errors.Is(err, errJSONFailure) || json.Unmarshal([]byte(raw), &refused) != nil || refused.Success || refused.ErrorCode != "RECOVERY_REFUSED" {
+					t.Fatalf("conflicting command decision %s was accepted: %s %v", change.flag, raw, err)
+				}
+				if after, err := os.ReadFile(statePath); err != nil || !bytes.Equal(after, acceptedBytes) {
+					t.Fatalf("conflicting %s changed the saved decision", change.flag)
+				}
+			}
+			cmd := newPipelineResumeCmd()
+			cmd.SetArgs([]string{prior.RunID})
+			cmd.SetOut(io.Discard)
+			cmd.SetErr(io.Discard)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			raw, resumeErr := captureStdout(t, func() error { return cmd.ExecuteContext(ctx) })
+			final, err := pipeline.LoadState(root, prior.RunID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.code == 0 {
+				if resumeErr != nil || final.Status != pipeline.StatusCompleted || final.Steps["consume"].Status != pipeline.StatusCompleted {
+					t.Fatalf("accepted command did not continue its workflow: %+v %s %v", final, raw, resumeErr)
+				}
+				want := ""
+				if tc.parse {
+					want = "42|42"
+				}
+				if final.Steps["consume"].Output != want || final.Variables["recovered"] != strings.TrimSpace(tc.output) {
+					t.Fatalf("resume lost parsed/named/empty command output: result=%+v variables=%#v", final.Steps["consume"], final.Variables)
+				}
+			} else {
+				result := final.Steps["command"]
+				if resumeErr == nil || final.Status != pipeline.StatusFailed || result.Status != pipeline.StatusFailed || result.Attempts != 1 || result.Error == nil || result.Error.Type != "exit" || !strings.Contains(result.Error.Details, "exit_code=7") {
+					t.Fatalf("accepted failure was retried, discarded or treated as success: %+v %s %v", final, raw, resumeErr)
+				}
+				if _, err := os.Stat(filepath.Join(root, "command-dependent")); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("dependent ran despite accepted command failure: %v", err)
+				}
+			}
+			if data, err := os.ReadFile(filepath.Join(root, "command-effects")); err != nil || string(data) != "once\n" {
+				t.Fatalf("ordinary resume repeated original command side effects: %q %v", data, err)
+			}
+			settledBytes, err := os.ReadFile(statePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, err = executePipelineRecoveryCommand(t, args...)
+			if err != nil || json.Unmarshal([]byte(raw), &replay) != nil || !replay.Replayed || replay.Command.ResolvedAt != accepted.Command.ResolvedAt {
+				t.Fatalf("settled command decision did not replay: %s %v", raw, err)
+			}
+			if after, err := os.ReadFile(statePath); err != nil || !bytes.Equal(after, settledBytes) {
+				t.Fatal("settled command replay rewrote execution state")
+			}
+		})
+	}
+}
+
+func TestPipelineRecoverCommandRejectsInvalidInputs(t *testing.T) {
+	root := inPipelineControlProject(t)
+	prior := interruptedPipelineCommandOutcome(t, root, "observed", 0, false)
+	oldJSON := jsonOutput
+	jsonOutput = true
+	t.Cleanup(func() { jsonOutput = oldJSON })
+	entry := inspectPipelineCommandRecovery(t, prior.RunID)
+	outputFile := filepath.Join(root, "observed-command-output")
+	base := []string{prior.RunID, "--accept-command", "--step-id", "command", "--receipt", entry.ReceiptToken, "--reason", "Verified completion"}
+	withOutput := func(file string) []string {
+		return append(append([]string(nil), base...), "--exit-code", "0", "--output-file", file)
+	}
+	oversized := filepath.Join(root, "oversized-command-output")
+	file, err := os.Create(oversized)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Truncate(pipeline.CommandRecoveryMaxOutputBytes + 1); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	invalidUTF8 := filepath.Join(root, "invalid-utf8-command-output")
+	if err := os.WriteFile(invalidUTF8, []byte{0xff, 0xfe}, 0600); err != nil {
+		t.Fatal(err)
+	}
+	cases := map[string][]string{
+		"missing explicit exit":            append(append([]string(nil), base...), "--output-file", outputFile),
+		"missing output file":              append(append([]string(nil), base...), "--exit-code", "0"),
+		"both acceptance modes":            append(withOutput(outputFile), "--accept-delivery"),
+		"command flags without acceptance": {prior.RunID, "--exit-code", "0", "--output-file", outputFile},
+		"negative exit":                    append(withOutput(outputFile), "--exit-code", "-1"),
+		"invalid exit":                     append(withOutput(outputFile), "--exit-code", "256"),
+		"blank reason":                     append(withOutput(outputFile), "--reason", "  "),
+		"missing file":                     withOutput(filepath.Join(root, "missing-output")),
+		"directory":                        withOutput(root),
+		"oversized":                        withOutput(oversized),
+		"invalid UTF-8":                    withOutput(invalidUTF8),
+	}
+	statePath := filepath.Join(root, ".ntm", "pipelines", prior.RunID+".json")
+	before, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, args := range cases {
+		t.Run(name, func(t *testing.T) {
+			raw, err := executePipelineRecoveryCommand(t, args...)
+			var out pipelineCommandRecoveryResponse
+			if !errors.Is(err, errJSONFailure) || json.Unmarshal([]byte(raw), &out) != nil || out.Success || out.ErrorCode != "RECOVERY_REFUSED" {
+				t.Fatalf("invalid command decision was accepted: %s %v", raw, err)
+			}
+			if after, err := os.ReadFile(statePath); err != nil || !bytes.Equal(after, before) {
+				t.Fatal("invalid input changed command launch evidence")
+			}
+		})
+	}
+}
+
+func TestPipelineRecoverCommandOwnershipAndCancellation(t *testing.T) {
+	root := inPipelineControlProject(t)
+	prior := interruptedPipelineCommandOutcome(t, root, "", 0, false)
+	oldJSON := jsonOutput
+	jsonOutput = true
+	t.Cleanup(func() { jsonOutput = oldJSON })
+	entry := inspectPipelineCommandRecovery(t, prior.RunID)
+	args := []string{prior.RunID, "--accept-command", "--step-id", "command", "--receipt", entry.ReceiptToken,
+		"--reason", "Verified completion", "--exit-code", "0", "--output-file", filepath.Join(root, "observed-command-output")}
+	statePath := filepath.Join(root, ".ntm", "pipelines", prior.RunID+".json")
+	before, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner, err := pipeline.AcquireRunControl(context.Background(), root, prior.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(owner.Close)
+	const invalidState = "live owner must be checked before reading this invalid checkpoint"
+	if err := os.WriteFile(statePath, []byte(invalidState), 0600); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := executePipelineRecoveryCommand(t, args...)
+	var out pipelineCommandRecoveryResponse
+	if !errors.Is(err, pipeline.ErrRunAlreadyOwned) || json.Unmarshal([]byte(raw), &out) != nil || out.Success || out.ErrorCode != "PIPELINE_RUNNING" {
+		t.Fatalf("command acceptance read state before ownership: %s %v", raw, err)
+	}
+	if after, err := os.ReadFile(statePath); err != nil || string(after) != invalidState {
+		t.Fatal("live-owner refusal changed the checkpoint")
+	}
+	owner.Close()
+	if err := os.WriteFile(statePath, before, 0600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := newPipelineCmd()
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	cmd.SetArgs(append([]string{"recover"}, args...))
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	cmd.SetErr(io.Discard)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err = cmd.ExecuteContext(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled command acceptance did not preserve cancellation: %s %v", output.String(), err)
+	}
+	if after, err := os.ReadFile(statePath); err != nil || !bytes.Equal(after, before) {
+		t.Fatal("canceled acceptance persisted a command decision")
+	}
+	owner, err = pipeline.AcquireRunControl(context.Background(), root, prior.RunID)
+	if err != nil {
+		t.Fatalf("canceled recovery retained run ownership: %v", err)
+	}
+	owner.Close()
 }

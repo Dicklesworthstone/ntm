@@ -776,15 +776,51 @@ request and its HTTP idempotency key; changing server configuration cannot repla
 an acceptance from a different project. Stale receipts, conflicting observations,
 and a live run owner produce a conflict response without changing the checkpoint.
 
+Foreground command steps in the main workflow have a separate CLI recovery path
+for the case where the command finished but its final checkpoint was lost. `pipeline recover`
+includes these command receipts in its `commands` JSON array, with eligibility
+and refusal information. Before accepting one, independently verify that the
+original command **and all its descendants have finished**, then supply its
+observed exit code and complete captured output:
+
+```bash
+ntm pipeline recover run-20241230-123456-abcd --json
+
+ntm pipeline recover run-20241230-123456-abcd --step-id migrate \
+  --receipt <command-receipt-from-inspection> --accept-command \
+  --exit-code 0 --output-file migration-output.txt \
+  --reason "Verified the migration and all child processes finished successfully"
+
+ntm pipeline resume run-20241230-123456-abcd --mode=continue
+```
+
+Both `--exit-code` and `--output-file` must be supplied explicitly; an empty
+regular file records an observed empty output. Use complete UTF-8 stdout for a
+step with `output_parse`, or captured combined stdout and stderr otherwise.
+Recovery enforces a 16 MiB bound and the frozen workflow's stdout limit.
+Inspection and acceptance responses contain identities and output fingerprints,
+without command text, environment values, or captured output.
+
+Command acceptance records an immutable observation without starting a process,
+parsing output, or executing dependent work. Ordinary resume checks the exact
+materialized command definition and applies the existing output parser and
+failure policy, including parsed output and named variables used by dependents.
+A nonzero exit code does not authorize an automatic rerun. Repeating the same
+receipt, reason, exit code, and exact output returns the saved decision, including
+after completion; a conflicting observation is refused. A live run owner,
+background command, cleanup or post-pipeline command, or command whose enclosing
+work already completed prevents acceptance. Recorded PIDs are diagnostic only: recovery neither infers completion
+from PID disappearance nor signals a saved process ID.
+
 If you instead intend to repeat failed or interrupted agent work, inspect the
 original pane before using `--mode=restart-failed`; that mode still preserves
 completed delivery receipts. Use
 `--keep-state=false` or `--mode=force-iter --step-id=<id> --iteration=<n>` for an
-intentional reset or iteration replay. Commands with a durable settled outcome
-retain ordinary retry behavior. A command interrupted by a worker crash is not
-automatically repeated: inspect its side effects and stop any surviving command
-processes before explicitly restarting it. These restart choices can repeat
-side effects.
+intentional reset or iteration replay. Commands with a normally settled outcome
+retain ordinary retry behavior; operator-accepted outcomes require an explicit
+reset before repeating them. An unresolved command is never automatically
+repeated. Before deliberately restarting one, inspect its side effects and stop
+any surviving command processes. These restart choices can repeat side effects.
 
 ### 7. Durable State, Audit, and Recovery
 

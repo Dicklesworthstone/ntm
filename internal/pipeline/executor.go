@@ -1001,9 +1001,10 @@ func (e *Executor) executeStep(ctx context.Context, step *Step, workflow *Workfl
 			// cannot resolve this uncertainty by submitting the request again.
 			break
 		}
-		if command, ok := e.loadCommandExecution(step.ID); ok && command.Status != commandExecutionSettled {
+		if command, ok := e.loadCommandExecution(step.ID); ok && (command.Status != commandExecutionSettled || command.ResolutionAction != "") {
 			// No retry may start another process while the original command
-			// group has an unresolved outcome.
+			// group has an unresolved outcome, or replace an operator's explicit
+			// final outcome. Normal failure policy still handles that result.
 			break
 		}
 
@@ -1246,6 +1247,26 @@ func (e *Executor) executeCommand(ctx context.Context, step *Step, workflow *Wor
 			result.Status, result.FinishedAt = StatusFailed, time.Now()
 			result.Error = stepRuntimeError(step, StepKindCommand, "execution_unknown", uncertainCommandExecutionError(step.ID, prior.ProcessID).Error(), "inspect the saved command execution before deliberately replaying it", "")
 			return result
+		}
+		if prior.ResolutionAction != "" {
+			// The journal retains the operator's exact unparsed bytes. Interpret
+			// them only after the canonical materialized StepHash check above;
+			// never let an accepted nonzero exit fall through to command launch.
+			e.stateMu.RLock()
+			_, identityErr := commandExecutionRecoveryEntry(e.state, prior)
+			e.stateMu.RUnlock()
+			if identityErr != nil {
+				result.Status, result.FinishedAt = StatusFailed, time.Now()
+				result.Error = stepRuntimeError(step, StepKindCommand, "recovery", identityErr.Error(), "inspect the immutable command decision", "")
+				return result
+			}
+			result = prior.Result
+			result.Output = strings.TrimSpace(result.Output)
+			if prior.ResolutionExitCode != 0 {
+				result.Error = commandExitStepError(step, prior.ResolutionExitCode)
+				return result
+			}
+			return e.completeCommandResult(step, result)
 		}
 		if prior.Result.Status == StatusCompleted && !prior.Result.RerunOnResume {
 			return prior.Result
@@ -1631,10 +1652,7 @@ func (e *Executor) executeCommand(ctx context.Context, step *Step, workflow *Wor
 		var exitErr *exec.ExitError
 		if errors.As(waitErr, &exitErr) {
 			result.Status = StatusFailed
-			result.Error = stepRuntimeError(step, "command", "exit",
-				fmt.Sprintf("exit_code=%d", exitErr.ExitCode()),
-				"inspect stdout/stderr and command arguments",
-				fmt.Sprintf("exit_code=%d", exitErr.ExitCode()))
+			result.Error = commandExitStepError(step, exitErr.ExitCode())
 			slog.Warn("command step exited non-zero",
 				"run_id", e.state.RunID,
 				"step_id", step.ID,
@@ -1656,8 +1674,26 @@ func (e *Executor) executeCommand(ctx context.Context, step *Step, workflow *Wor
 		return result
 	}
 
+	result = e.completeCommandResult(step, result)
+	result.FinishedAt = time.Now()
+	slog.Info("command step completed",
+		"run_id", e.state.RunID,
+		"step_id", step.ID,
+	)
+	return result
+}
+
+func commandExitStepError(step *Step, exitCode int) *StepError {
+	return stepRuntimeError(step, StepKindCommand, "exit", fmt.Sprintf("exit_code=%d", exitCode),
+		"inspect stdout/stderr and command arguments", fmt.Sprintf("exit_code=%d", exitCode))
+}
+
+// Live execution and operator recovery use the same output parser and warning
+// policy. The caller retains its original execution or observation timestamps;
+// the scheduler remains responsible for publishing named and dependent outputs.
+func (e *Executor) completeCommandResult(step *Step, result StepResult) StepResult {
 	if step.OutputParse.Type != "" && step.OutputParse.Type != "none" {
-		parsed, err := e.parseOutput(output, step.OutputParse)
+		parsed, err := e.parseOutput(result.Output, step.OutputParse)
 		if err != nil {
 			e.stateMu.Lock()
 			e.state.Errors = append(e.state.Errors, ExecutionError{
@@ -1674,11 +1710,6 @@ func (e *Executor) executeCommand(ctx context.Context, step *Step, workflow *Wor
 	}
 
 	result.Status = StatusCompleted
-	result.FinishedAt = time.Now()
-	slog.Info("command step completed",
-		"run_id", e.state.RunID,
-		"step_id", step.ID,
-	)
 	return result
 }
 
