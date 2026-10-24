@@ -11,6 +11,7 @@
 package agentsession
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -123,6 +124,8 @@ func ResumeProvider(agentType string) string {
 		return "antigravity"
 	case "omp", "oh-my-pi", "oh_my_pi", "ohmypi":
 		return "omp"
+	case "pi", "pi-coding-agent", "pi-cli":
+		return "pi"
 	default:
 		return ""
 	}
@@ -221,8 +224,17 @@ func (d *Discoverer) DiscoverContext(ctx context.Context, agentType, workDir str
 			if info.Source == "" {
 				info.Source = DiscoverySourceProcessTree
 			}
+			if provider == "pi" && info.Source == DiscoverySourceNativeStore && d.isClaimed(provider, info.SessionID) {
+				return nil
+			}
 			d.claim(info)
 			return info
+		}
+		// A pi process can select another store or an explicit session.
+		// Never replace a failed process-aware lookup with an unrelated
+		// newest transcript from NTM's own environment.
+		if provider == "pi" {
+			return nil
 		}
 	}
 	if ctx.Err() != nil {
@@ -272,7 +284,7 @@ func (d *Discoverer) DiscoverContext(ctx context.Context, agentType, workDir str
 		d.fallbackCache[cacheKey] = cloneInfo(info)
 		return info
 	}
-	if home == "" {
+	if home == "" && provider != "pi" {
 		d.fallbackCache[cacheKey] = nil
 		return nil
 	}
@@ -291,6 +303,8 @@ func (d *Discoverer) DiscoverContext(ctx context.Context, agentType, workDir str
 		info = discoverAntigravityContext(ctx, home, cleanWorkDir)
 	case "omp":
 		info = discoverOmpContext(ctx, home, cleanWorkDir, d.claimedSessions)
+	case "pi":
+		info = newestPiSession(ctx, piSessionRoots(home, cleanWorkDir, os.Getenv, ""), cleanWorkDir, d.claimedSessions)
 	}
 	if ctx.Err() != nil {
 		return nil
@@ -512,6 +526,8 @@ func canonicalAgentType(agentType, provider string) string {
 		return "agy"
 	case "omp":
 		return "omp"
+	case "pi":
+		return "pi"
 	default:
 		return strings.ToLower(strings.TrimSpace(agentType))
 	}
@@ -537,12 +553,17 @@ func providerCommandMarkers(provider string) []string {
 		return []string{"agy", "antigravity"}
 	case "omp":
 		return []string{"omp"}
+	case "pi":
+		return []string{"pi"}
 	default:
 		return nil
 	}
 }
 
 func argvMatchesProvider(provider string, argv []string) bool {
+	if provider == "pi" {
+		return piExecutableIndex(argv) >= 0
+	}
 	if provider == "omp" {
 		// "omp" is a substring of unrelated commands (compiler, libomp,
 		// component): only the exact executable basename identifies it.
@@ -705,6 +726,12 @@ func DiscoverProcessSession(ctx context.Context, agentType string, panePID int) 
 	if ctx.Err() != nil {
 		return nil
 	}
+	// Pi's process-aware discovery can also return a startup-window
+	// correlation for best-effort capture. Exact-only consumers, such as
+	// per-pane context accounting, must never promote that weaker evidence.
+	if info != nil && info.Source == DiscoverySourceNativeStore {
+		return nil
+	}
 	if info != nil && info.Source == "" {
 		info.Source = DiscoverySourceProcessTree
 	}
@@ -729,6 +756,9 @@ func discoverProcessSession(ctx context.Context, agentType, provider, home strin
 		node := queue[0]
 		queue = queue[1:]
 		argv := processutil.GetCmdlineContext(ctx, node.pid)
+		if provider == "pi" && argvMatchesProvider(provider, argv) {
+			return discoverPiProcess(ctx, agentType, home, node.pid, argv)
+		}
 		// Claude Code's own session record names the session the process is
 		// writing now, which outlives a --resume argument after /clear.
 		if provider == "claude" && argvMatchesProvider(provider, argv) {
@@ -758,6 +788,19 @@ func discoverProcessSession(ctx context.Context, agentType, provider, home strin
 func processNodeSession(agentType, provider string, argv []string, openFiles func() []string) *Info {
 	if !argvMatchesProvider(provider, argv) {
 		return nil
+	}
+	if provider == "pi" {
+		selection, ok := piProcessSelection(argv)
+		if !ok {
+			return nil
+		}
+		if selection.selector != "" {
+			// Prefixes and relative paths require the process cwd and store.
+			if !selection.exact && filepath.IsAbs(selection.selector) {
+				return infoFromSessionFile(agentType, provider, selection.selector)
+			}
+			return nil
+		}
 	}
 	if id := resumedSessionID(provider, argv); id != "" {
 		return &Info{
@@ -794,6 +837,20 @@ func resumedSessionID(provider string, argv []string) string {
 			return ""
 		}
 		return ompResumedSessionID(argv)
+	case "pi":
+		selection, ok := piProcessSelection(argv)
+		if !ok || selection.selector == "" {
+			return ""
+		}
+		if selection.exact && piSessionIDPattern.MatchString(selection.selector) {
+			return selection.selector
+		}
+		if filepath.IsAbs(selection.selector) {
+			if header, ok := readPiSessionHeader(selection.selector); ok {
+				return header.ID
+			}
+		}
+		return ""
 	default:
 		return ""
 	}
@@ -939,6 +996,9 @@ func isProviderSessionFile(provider, path string) bool {
 		// omp holds its main transcript open for append; sub-agent
 		// transcripts (<AgentName>.jsonl) are open too but never match.
 		return OmpSessionID(path) != ""
+	case "pi":
+		_, ok := readPiSessionHeader(path)
+		return ok
 	default:
 		return false
 	}
@@ -971,6 +1031,10 @@ func infoFromSessionFile(agentType, provider, path string) *Info {
 		id = strings.TrimSuffix(filepath.Base(path), ".db")
 	case "omp":
 		id = OmpSessionID(path)
+	case "pi":
+		if header, ok := readPiSessionHeader(path); ok {
+			id = header.ID
+		}
 	}
 	if id == "" {
 		return nil
@@ -1649,4 +1713,418 @@ func fileContainsCwdContext(ctx context.Context, path, workDir string) bool {
 			return false
 		}
 	}
+}
+
+// Pi's transcript header, not its timestamped filename or encoded directory,
+// owns session identity. Custom stores can contain several working directories,
+// and old sessions can be resumed after hundreds of newer ones were created.
+var piSessionIDPattern = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$`)
+
+const piSessionHeaderLimit = 1024 * 1024
+
+type piSessionHeader struct {
+	Type      string `json:"type"`
+	ID        string `json:"id"`
+	Cwd       string `json:"cwd"`
+	Timestamp string `json:"timestamp"`
+}
+
+func readPiSessionHeader(path string) (piSessionHeader, bool) {
+	var header piSessionHeader
+	if !strings.HasSuffix(path, ".jsonl") {
+		return header, false
+	}
+	st, err := os.Lstat(path)
+	if err != nil || !st.Mode().IsRegular() {
+		return header, false
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return header, false
+	}
+	defer file.Close()
+	opened, err := file.Stat()
+	if err != nil || !opened.Mode().IsRegular() || !os.SameFile(st, opened) {
+		return header, false
+	}
+	reader := bufio.NewReader(io.LimitReader(file, piSessionHeaderLimit+1))
+	scanned := 0
+	for {
+		line, err := reader.ReadBytes('\n')
+		scanned += len(line)
+		if scanned > piSessionHeaderLimit || (err != nil && err != io.EOF) {
+			return header, false
+		}
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 && err == nil {
+			continue
+		}
+		if json.Unmarshal(line, &header) != nil || header.Type != "session" ||
+			!piSessionIDPattern.MatchString(header.ID) || !filepath.IsAbs(header.Cwd) {
+			return piSessionHeader{}, false
+		}
+		header.Cwd = filepath.Clean(header.Cwd)
+		return header, true
+	}
+}
+
+func piResolvePath(home, cwd, path string) string {
+	if path == "" {
+		return ""
+	}
+	switch {
+	case path == "~":
+		if home == "" {
+			return ""
+		}
+		path = home
+	case strings.HasPrefix(path, "~/"):
+		if home == "" {
+			return ""
+		}
+		path = filepath.Join(home, strings.TrimPrefix(path, "~/"))
+	}
+	if !filepath.IsAbs(path) {
+		if !filepath.IsAbs(cwd) {
+			return ""
+		}
+		path = filepath.Join(cwd, path)
+	}
+	return filepath.Clean(path)
+}
+
+// An explicit store overrides the default, as it does in pi itself. Searching
+// both could silently bind a default-store session when the selected store is
+// absent, empty or contains a malformed transcript.
+func piSessionRoots(home, cwd string, getenv func(string) string, sessionDir string) []string {
+	if getenv == nil {
+		getenv = func(string) string { return "" }
+	}
+	if sessionDir == "" {
+		sessionDir = getenv("PI_CODING_AGENT_SESSION_DIR")
+	}
+	if sessionDir != "" {
+		if path := piResolvePath(home, cwd, sessionDir); path != "" {
+			return []string{path}
+		}
+		return nil
+	}
+	agentDir := getenv("PI_CODING_AGENT_DIR")
+	if agentDir == "" && home != "" {
+		agentDir = filepath.Join(home, ".pi", "agent")
+	}
+	if path := piResolvePath(home, cwd, agentDir); path != "" {
+		return []string{filepath.Join(path, "sessions")}
+	}
+	return nil
+}
+
+// visitPiSessions reads only the root and its direct project directories.
+// Header reads are bounded, directory batches check cancellation, and neither
+// symlink traversal nor transcript-body parsing is needed for discovery.
+func visitPiSessions(ctx context.Context, roots []string, visit func(piSessionHeader, *Info)) {
+	seen := make(map[string]bool)
+	var scan func(string, bool)
+	scan = func(dir string, projects bool) {
+		if ctx.Err() != nil || seen[dir] {
+			return
+		}
+		seen[dir] = true
+		file, err := os.Open(dir)
+		if err != nil {
+			return
+		}
+		defer file.Close()
+		for {
+			entries, err := file.ReadDir(128)
+			for _, entry := range entries {
+				if ctx.Err() != nil {
+					return
+				}
+				path := filepath.Join(dir, entry.Name())
+				if projects && entry.IsDir() {
+					scan(path, false)
+					continue
+				}
+				if entry.Type()&os.ModeSymlink != 0 || entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") {
+					continue
+				}
+				header, ok := readPiSessionHeader(path)
+				if !ok || ctx.Err() != nil {
+					continue
+				}
+				st, statErr := entry.Info()
+				if statErr != nil || !st.Mode().IsRegular() {
+					continue
+				}
+				visit(header, &Info{
+					AgentType: "pi", Provider: "pi", SessionID: header.ID,
+					SourcePath: path, UpdatedAt: st.ModTime(), Source: DiscoverySourceNativeStore,
+				})
+			}
+			if err != nil {
+				return
+			}
+		}
+	}
+	for _, root := range roots {
+		if root != "" {
+			scan(filepath.Clean(root), true)
+		}
+	}
+}
+
+func newestPiSession(ctx context.Context, roots []string, cwd string, claimed map[string]bool) *Info {
+	if !filepath.IsAbs(cwd) {
+		return nil
+	}
+	cwd = filepath.Clean(cwd)
+	var newest *Info
+	visitPiSessions(ctx, roots, func(header piSessionHeader, info *Info) {
+		if header.Cwd != cwd || claimed[sessionClaimKey("pi", header.ID)] {
+			return
+		}
+		if newest == nil || info.UpdatedAt.After(newest.UpdatedAt) ||
+			(info.UpdatedAt.Equal(newest.UpdatedAt) && info.SourcePath < newest.SourcePath) {
+			newest = info
+		}
+	})
+	if ctx.Err() != nil {
+		return nil
+	}
+	return newest
+}
+
+func piExecutableIndex(argv []string) int {
+	if len(argv) == 0 {
+		return -1
+	}
+	if filepath.Base(argv[0]) == "pi" {
+		return 0
+	}
+	if len(argv) < 2 {
+		return -1
+	}
+	switch filepath.Base(argv[0]) {
+	case "node", "nodejs", "bun":
+		path := filepath.ToSlash(argv[1])
+		if filepath.Base(path) == "pi" ||
+			strings.HasSuffix(path, "/@mariozechner/pi-coding-agent/dist/cli.js") ||
+			strings.HasSuffix(path, "/@earendil-works/pi-coding-agent/dist/cli.js") ||
+			strings.HasSuffix(path, "/@mariozechner/pi-coding-agent/dist/bundle/cli.js") ||
+			strings.HasSuffix(path, "/@earendil-works/pi-coding-agent/dist/bundle/cli.js") {
+			return 1
+		}
+	}
+	return -1
+}
+
+type piSelection struct {
+	selector   string
+	exact      bool
+	sessionDir string
+	picker     bool
+}
+
+// Parse option boundaries rather than searching for flag-shaped prompt text.
+// Unknown separated options cannot prove their arity, so they fail closed.
+func piProcessSelection(argv []string) (piSelection, bool) {
+	var selection piSelection
+	executable := piExecutableIndex(argv)
+	if executable < 0 {
+		return selection, false
+	}
+	modeSeen := false
+	for i := executable + 1; i < len(argv); i++ {
+		flag, value, inline := strings.Cut(argv[i], "=")
+		if flag == "--" {
+			break
+		}
+		if !strings.HasPrefix(flag, "-") {
+			continue // Initial messages do not establish session identity.
+		}
+		switch flag {
+		case "--session", "--session-id", "--session-dir":
+			if !inline {
+				if i+1 == len(argv) {
+					return selection, false
+				}
+				i++
+				value = argv[i]
+			}
+			if value == "" || strings.HasPrefix(value, "-") {
+				return selection, false
+			}
+			if flag == "--session-dir" {
+				if selection.sessionDir != "" {
+					return selection, false
+				}
+				selection.sessionDir = value
+			} else {
+				if selection.selector != "" || modeSeen {
+					return selection, false
+				}
+				selection.selector, selection.exact = value, flag == "--session-id"
+				if selection.exact && !piSessionIDPattern.MatchString(value) {
+					return selection, false
+				}
+			}
+		case "--resume", "-r", "--continue", "-c":
+			if inline || modeSeen || selection.selector != "" {
+				return selection, false
+			}
+			modeSeen, selection.picker = true, true
+		default:
+			switch resumeOption("pi", flag) {
+			case resumeForbidden:
+				return selection, false
+			case resumeBoolean:
+				if inline {
+					return selection, false
+				}
+			case resumeValue:
+				if !inline {
+					if i+1 == len(argv) {
+						return selection, false
+					}
+					i++
+				}
+			case resumeUnknown:
+				if !inline || value == "" {
+					return selection, false
+				}
+			}
+		}
+	}
+	return selection, true
+}
+
+func resolvePiSelector(ctx context.Context, roots []string, home, cwd string, selection piSelection) *Info {
+	if selection.selector == "" || ctx.Err() != nil {
+		return nil
+	}
+	if !selection.exact && (strings.ContainsAny(selection.selector, `/\`) || strings.HasSuffix(selection.selector, ".jsonl")) {
+		path := piResolvePath(home, cwd, selection.selector)
+		header, ok := readPiSessionHeader(path)
+		// Pi can run a session from another workspace without changing its
+		// process cwd. NTM cannot replay that binding using the saved pane
+		// directory, so do not present it as a fresh restorable identity.
+		if !ok || header.Cwd != filepath.Clean(cwd) || ctx.Err() != nil {
+			return nil
+		}
+		st, err := os.Stat(path)
+		if err != nil || !st.Mode().IsRegular() {
+			return nil
+		}
+		return &Info{AgentType: "pi", Provider: "pi", SessionID: header.ID, SourcePath: path, UpdatedAt: st.ModTime()}
+	}
+	if !piSessionIDPattern.MatchString(selection.selector) {
+		return nil
+	}
+	var exact, prefix *Info
+	exactCount, prefixCount := 0, 0
+	visitPiSessions(ctx, roots, func(header piSessionHeader, info *Info) {
+		if header.Cwd != filepath.Clean(cwd) {
+			return
+		}
+		if header.ID == selection.selector {
+			exact, exactCount = info, exactCount+1
+		} else if !selection.exact && strings.HasPrefix(header.ID, selection.selector) {
+			prefix, prefixCount = info, prefixCount+1
+		}
+	})
+	if ctx.Err() != nil || exactCount > 1 {
+		return nil
+	}
+	if exactCount == 1 {
+		return exact
+	}
+	if prefixCount == 1 {
+		return prefix
+	}
+	return nil
+}
+
+func discoverPiProcess(ctx context.Context, agentType, home string, pid int, argv []string) *Info {
+	selection, ok := piProcessSelection(argv)
+	if !ok {
+		return nil
+	}
+	proc, err := gopsprocess.NewProcess(int32(pid))
+	if err != nil {
+		return nil
+	}
+	cwd, err := proc.CwdWithContext(ctx)
+	if err != nil || !filepath.IsAbs(cwd) {
+		return nil
+	}
+	environment, err := proc.EnvironWithContext(ctx)
+	if err != nil {
+		return nil
+	}
+	env := make(map[string]string)
+	for _, assignment := range environment {
+		name, value, ok := strings.Cut(assignment, "=")
+		if ok && (name == "HOME" || name == "PI_CODING_AGENT_DIR" || name == "PI_CODING_AGENT_SESSION_DIR") {
+			env[name] = value
+		}
+	}
+	if env["HOME"] != "" {
+		home = env["HOME"]
+	}
+	roots := piSessionRoots(home, cwd, func(name string) string { return env[name] }, selection.sessionDir)
+	if selection.selector != "" {
+		info := resolvePiSelector(ctx, roots, home, cwd, selection)
+		if info != nil {
+			info.AgentType, info.Source = canonicalAgentType(agentType, "pi"), DiscoverySourceProcessTree
+		}
+		return info
+	}
+	var opened *Info
+	for _, path := range openSessionFiles(ctx, pid, "pi") {
+		header, ok := readPiSessionHeader(path)
+		if !ok || header.Cwd != filepath.Clean(cwd) {
+			continue
+		}
+		info := infoFromSessionFile(agentType, "pi", path)
+		if info == nil {
+			continue
+		}
+		if opened != nil && opened.SourcePath != info.SourcePath {
+			return nil
+		}
+		opened = info
+	}
+	if opened != nil || selection.picker || ctx.Err() != nil {
+		return opened
+	}
+	started, err := proc.CreateTimeWithContext(ctx)
+	if err != nil {
+		return nil
+	}
+	return piSessionNearProcessStart(ctx, roots, cwd, started)
+}
+
+// A fresh process normally closes its transcript between appends. A single
+// header created in its startup window is weaker native-store evidence, never
+// the exact proof supplied by an explicit selector or file descriptor.
+func piSessionNearProcessStart(ctx context.Context, roots []string, cwd string, started int64) *Info {
+	var candidate *Info
+	matches := 0
+	visitPiSessions(ctx, roots, func(header piSessionHeader, info *Info) {
+		if header.Cwd != filepath.Clean(cwd) {
+			return
+		}
+		created, err := time.Parse(time.RFC3339Nano, header.Timestamp)
+		if err != nil {
+			return
+		}
+		if _, ok := processStartDelta(started, created.UnixMilli()); ok {
+			candidate, matches = info, matches+1
+		}
+	})
+	if ctx.Err() != nil || matches != 1 {
+		return nil
+	}
+	return candidate
 }

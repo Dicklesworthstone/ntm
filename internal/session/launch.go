@@ -87,14 +87,24 @@ func preflightSavedLaunches(ctx context.Context, state *SessionState, cmds Agent
 				return nil, fmt.Errorf("saved pane %d.%d resume provider %q does not match agent %q", pane.WindowIndex, pane.Index, pane.SessionProvider, pane.AgentType)
 			}
 			if provider != "" {
+				selector := pane.SessionID
+				if provider == "pi" {
+					// Pi can create a new session for a missing explicit path.
+					// Resolve the saved header ID in the original store before
+					// replacing topology or dispatching a resume command.
+					selector, err = agentsession.ResolvePiResumeSession(ctx, pane.SessionID, command, launch.directory)
+					if err != nil {
+						return nil, fmt.Errorf("saved pane %d.%d pi session: %w", pane.WindowIndex, pane.Index, err)
+					}
+				}
 				if pane.LaunchSpec == nil && pane.Command == "" {
-					command = agentsession.ResumeCommand(provider, pane.SessionID, resume.PreferCASR)
+					command = agentsession.ResumeCommand(provider, selector, resume.PreferCASR)
 				} else {
 					resumeOpts := agentsession.ResumeLaunchOptions{}
 					if launch.spec != nil {
 						resumeOpts.SystemPromptFile = launch.spec.SystemPromptFile
 					}
-					command, err = agentsession.ResumeLaunchCommand(provider, pane.SessionID, command, resumeOpts)
+					command, err = agentsession.ResumeLaunchCommand(provider, selector, command, resumeOpts)
 					if err != nil {
 						return nil, fmt.Errorf("saved pane %d.%d native resume: %w", pane.WindowIndex, pane.Index, err)
 					}

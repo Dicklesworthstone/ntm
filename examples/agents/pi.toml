@@ -1,0 +1,12 @@
+# Install beside the selected NTM config as agents/pi.toml.
+# Authenticate pi and configure its project trust before automated launches.
+[agent]
+name = "pi"
+command = "pi{{if .Model}} --model {{shellQuote .Model}}{{end}}{{if .ReasoningEffort}} --thinking {{shellQuote .ReasoningEffort}}{{end}}{{if .SystemPromptFile}} --append-system-prompt {{shellQuote .SystemPromptFile}}{{end}}"
+description = "pi coding agent (N[:model[:effort]])"
+
+[agent.readiness]
+# Pi's bottom composer rule remains visible while working. The live spinner
+# pattern must therefore veto that idle rule through shared plugin readiness.
+idle_patterns = ['^\s*─{4,}\s*$']
+working_patterns = ['^\s*─+\s*[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏].*─+\s*$']

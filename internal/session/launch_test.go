@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	agentpkg "github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/agentsession"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
@@ -219,6 +220,116 @@ func TestSavedNativeResumePreservesSettingsAndReplacesPriorID(t *testing.T) {
 	calls, _ := os.ReadFile(logPath)
 	if !strings.Contains(string(calls), "cd "+tmux.ShellQuote(directory)+" && "+expected) || strings.Contains(string(calls), "wrong-default") {
 		t.Fatalf("resume used the wrong command or directory: %s", calls)
+	}
+}
+
+func TestSavedPiNativeResumeUsesExistingHeaderIdentity(t *testing.T) {
+	logPath := savedSessionRestoreFixture(t)
+	if err := agentpkg.RegisterPlugin("pi", nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	directory := t.TempDir()
+	store := filepath.Join(t.TempDir(), "pi sessions")
+	if err := os.MkdirAll(store, 0700); err != nil {
+		t.Fatal(err)
+	}
+	// Renamed transcripts must resume by the header identity, not the filename.
+	transcript := filepath.Join(store, "2026-10-23T12-00-00-000Z_wrong-filename-id.jsonl")
+	header, err := json.Marshal(map[string]any{"type": "session", "version": 3, "id": "saved-pi-id", "cwd": directory, "timestamp": "2026-10-23T12:00:00.000Z"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(transcript, append(header, '\n'), 0600); err != nil {
+		t.Fatal(err)
+	}
+	spec := &tmux.AgentLaunchSpec{Version: tmux.AgentLaunchSpecVersion, AgentType: tmux.AgentType("pi"),
+		Command: "PI_CODING_AGENT_SESSION_DIR=" + tmux.ShellQuote(store) + " pi --session-id=prior-id --model 'provider/custom' --thinking high --approve",
+		Model:   "provider/custom", ReasoningEffort: "high", Persona: "reviewer"}
+	state := &SessionState{Name: "saved_pi", WorkDir: directory, Version: StateVersion, Panes: []PaneState{{
+		Index: 0, AgentType: "pi", WorkDir: directory, LaunchSpec: spec,
+		SessionID: "saved-pi-id", SessionProvider: "pi", SessionFreshness: agentsession.BindingFresh, SessionConfidence: 1,
+	}}}
+	if _, err := Save(state, SaveOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(state.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, _ := json.Marshal(loaded)
+	result, err := ResumeContext(t.Context(), loaded, AgentCommands{}, ResumeOptions{Name: "resumed_pi", Force: true, PreferCASR: true})
+	if err != nil || result == nil || result.Resumed != 1 {
+		t.Fatalf("pi resume failed: result=%+v error=%v", result, err)
+	}
+	if result.Panes[0].SessionID != "saved-pi-id" || result.Panes[0].Provider != "pi" {
+		t.Fatalf("resume reported a filename or wrong provider: %+v", result.Panes[0])
+	}
+	recorded, err := tmux.ReadPaneLaunchSpecContext(t.Context(), "%0")
+	if err != nil || recorded == nil {
+		t.Fatalf("read restored launch: %v", err)
+	}
+	for _, retained := range []string{"PI_CODING_AGENT_SESSION_DIR=" + tmux.ShellQuote(store), "--session " + tmux.ShellQuote(transcript), "--model 'provider/custom'", "--thinking high", "--approve"} {
+		if !strings.Contains(recorded.Command, retained) {
+			t.Fatalf("pi resume lost %q: %s", retained, recorded.Command)
+		}
+	}
+	if strings.Contains(recorded.Command, "prior-id") || strings.Contains(recorded.Command, "--session-id") || recorded.Model != spec.Model || recorded.Persona != spec.Persona {
+		t.Fatalf("pi resume changed settings or retained a conflicting selector: %+v", recorded)
+	}
+	after, _ := json.Marshal(loaded)
+	if string(before) != string(after) {
+		t.Fatal("pi resume mutated the saved snapshot")
+	}
+	calls, _ := os.ReadFile(logPath)
+	if !strings.Contains(string(calls), "send-keys -t %0") || !strings.Contains(string(calls), "cd "+tmux.ShellQuote(directory)+" && "+recorded.Command) {
+		t.Fatalf("pi launch did not cross the tmux dispatch surface: %s", calls)
+	}
+}
+
+func TestSavedPiResumeRejectsUnverifiableTranscriptBeforeReplacingSession(t *testing.T) {
+	for _, scenario := range []string{"missing", "wrong cwd", "wrong header id", "corrupt", "duplicate id"} {
+		t.Run(scenario, func(t *testing.T) {
+			logPath := savedSessionRestoreFixture(t)
+			if err := agentpkg.RegisterPlugin("pi", nil, nil, nil); err != nil {
+				t.Fatal(err)
+			}
+			directory, store := t.TempDir(), t.TempDir()
+			id, cwd := "saved-pi-id", directory
+			if scenario == "wrong cwd" {
+				cwd = t.TempDir()
+			}
+			if scenario == "wrong header id" {
+				id = "other-pi-id"
+			}
+			header, err := json.Marshal(map[string]any{"type": "session", "version": 3, "id": id, "cwd": cwd})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if scenario == "corrupt" {
+				header = []byte("{invalid")
+			}
+			if scenario != "missing" {
+				if err := os.WriteFile(filepath.Join(store, "saved-pi-id.jsonl"), append(header, '\n'), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if scenario == "duplicate id" {
+				if err := os.WriteFile(filepath.Join(store, "another-name.jsonl"), append(header, '\n'), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			state := &SessionState{Name: "protect_pi", WorkDir: directory, Panes: []PaneState{{
+				AgentType: "pi", Command: "pi --session-dir " + tmux.ShellQuote(store), SessionID: "saved-pi-id",
+				SessionProvider: "pi", SessionFreshness: agentsession.BindingFresh, SessionConfidence: 1,
+			}}}
+			if _, err := ResumeContext(t.Context(), state, AgentCommands{}, ResumeOptions{Force: true}); err == nil {
+				t.Fatal("unverifiable pi transcript passed launch preflight")
+			}
+			calls, _ := os.ReadFile(logPath)
+			if len(calls) != 0 {
+				t.Fatalf("pi preflight failure touched existing tmux session: %s", calls)
+			}
+		})
 	}
 }
 

@@ -18,6 +18,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	dispatchsvc "github.com/Dicklesworthstone/ntm/internal/dispatch"
 	"github.com/Dicklesworthstone/ntm/internal/handoff"
+	"github.com/Dicklesworthstone/ntm/internal/plugins"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 )
 
@@ -126,6 +127,78 @@ func TestResumeGlobalJSONSelectsComposableSpawnLifecycle(t *testing.T) {
 	}
 	if stdout != "" {
 		t.Fatalf("global-JSON resume spawn lifecycle claimed stdout: %q", stdout)
+	}
+}
+
+func TestResumePiPluginSelectorsAndOmpRemainDistinct(t *testing.T) {
+	configDir := t.TempDir()
+	agentsDir := filepath.Join(configDir, "agents")
+	if err := os.MkdirAll(agentsDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	const plugin = `[agent]
+name = "pi"
+alias = "picoding"
+command = "pi{{if .Model}} --model {{shellQuote .Model}}{{end}}"
+description = "pi coding agent"
+`
+	if err := os.WriteFile(filepath.Join(agentsDir, "pi.toml"), []byte(plugin), 0600); err != nil {
+		t.Fatal(err)
+	}
+	oldArgs := os.Args
+	os.Args = []string{"ntm", "--config", filepath.Join(configDir, "config.toml")}
+	t.Cleanup(func() { os.Args = oldArgs })
+	writer := handoff.NewWriter(t.TempDir())
+	h := handoff.New("resume-pi")
+	h.Goal, h.Now = "Continue pi work", "Read the handoff"
+	path, err := writer.Write(h, "pi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, selector := range []string{"--pi=2:provider/model:high", "--picoding=1"} {
+		cmd := newResumeCmd()
+		cmd.SetOut(io.Discard)
+		cmd.SetErr(io.Discard)
+		cmd.SetArgs([]string{"--from", path, "--spawn", "--dry-run", selector, "--omp=1"})
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("resume rejected plugin selector %s: %v", selector, err)
+		}
+		if flag := cmd.Flags().Lookup("omp"); flag == nil || !strings.Contains(flag.Usage, "Oh My Pi") {
+			t.Fatal("pi registration replaced the built-in omp selector")
+		}
+	}
+}
+
+func TestResumeSpawnOptionsPreservePluginModelsAndBuiltinCounts(t *testing.T) {
+	var specs AgentSpecs
+	for _, value := range []string{"2:provider/model:high", "1:other/model:low"} {
+		if err := NewAgentSpecsValue(AgentType("pi"), &specs).Set(value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	plugin := plugins.AgentPlugin{Name: "pi", Command: "pi --model {{shellQuote .Model}}"}
+	counts := resumeSpawnCounts{CC: 1, Omp: 1, Plugins: specs, PluginMap: map[string]plugins.AgentPlugin{"pi": plugin}}
+	opts := counts.spawnOptions("resume-pi", "/work/project")
+	if counts.total() != 5 || len(opts.Agents) != 5 || opts.Session != "resume-pi" || opts.ProjectDirOverride != "/work/project" {
+		t.Fatalf("handoff spawn lost agents or project scope: %+v", opts)
+	}
+	if err := validateSpawnAgentTypes(opts.Agents, opts.PluginMap, nil); err != nil {
+		t.Fatalf("plugin handoff does not reach the normal spawn lifecycle: %v", err)
+	}
+	if opts.Agents[0].Type != AgentTypeClaude || opts.Agents[1].Type != AgentTypeOmp {
+		t.Fatalf("plugin specs displaced built-in counts: %+v", opts.Agents)
+	}
+	for i, a := range opts.Agents[2:] {
+		if a.Type != AgentType("pi") || a.Index != i+1 || a.Model == "" || a.ReasoningEffort == "" {
+			t.Fatalf("pi launch lost type, model, effort or per-type index: %+v", a)
+		}
+	}
+	template, _, err := spawnAgentCommandTemplate(AgentType("pi"), opts.PluginMap, "")
+	if err != nil || template != plugin.Command {
+		t.Fatalf("resume selected the wrong plugin command: %q, %v", template, err)
+	}
+	if opts.Agents[2].Model != "provider/model" || opts.Agents[2].ReasoningEffort != "high" || opts.Agents[4].Model != "other/model" || opts.Agents[4].ReasoningEffort != "low" {
+		t.Fatalf("pi selectors were flattened with incorrect settings: %+v", opts.Agents)
 	}
 }
 

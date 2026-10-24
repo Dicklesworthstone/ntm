@@ -1,8 +1,10 @@
 package agentsession
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -42,7 +44,7 @@ func ResumeLaunchCommand(provider, sessionID, command string, opts ResumeLaunchO
 		}
 	}
 	switch provider {
-	case "claude", "codex", "gemini", "antigravity", "omp":
+	case "claude", "codex", "gemini", "antigravity", "omp", "pi":
 	default:
 		return "", fmt.Errorf("provider %q does not support settings-preserving native resume", provider)
 	}
@@ -111,7 +113,9 @@ func ResumeLaunchCommand(provider, sessionID, command string, opts ResumeLaunchO
 		if flag == "--" {
 			return "", errors.New("saved launch ends provider option parsing")
 		}
-		if provider != "codex" && (provider != "antigravity" && (flag == "--resume" || flag == "-r") || flag == "--conversation" && provider == "antigravity") {
+		piSelector := provider == "pi" && (flag == "--session" || flag == "--session-id")
+		nativeSelector := provider != "codex" && provider != "pi" && (provider != "antigravity" && (flag == "--resume" || flag == "-r") || flag == "--conversation" && provider == "antigravity")
+		if piSelector || nativeSelector {
 			if selectorStart >= 0 {
 				return "", errors.New("saved launch has multiple resume selectors")
 			}
@@ -171,6 +175,11 @@ func ResumeLaunchCommand(provider, sessionID, command string, opts ResumeLaunchO
 	selector := "--resume " + shellQuote(sessionID)
 	if provider == "antigravity" {
 		selector = "--conversation " + shellQuote(sessionID)
+	}
+	if provider == "pi" {
+		// --session-id creates a new session when absent. Native resume
+		// must use --session with the validated transcript selection.
+		selector = "--session " + shellQuote(sessionID)
 	}
 	if provider == "codex" {
 		if codexResume {
@@ -259,6 +268,12 @@ func resumeOption(provider, flag string) resumeOptionKind {
 		}
 		booleans = "--auto-approve --no-tools --no-extensions --no-skills --no-prompt-templates --no-themes --offline"
 		values = "--model --provider --thinking --system-prompt --append-system-prompt --session-dir --tools --extension -e --skill --prompt-template --theme --smol --slow --plan"
+	case "pi":
+		if flag == "-c" || flag == "-r" || flag == "-p" || flag == "--export" || flag == "--list-models" {
+			return resumeForbidden
+		}
+		booleans = "--approve -a --no-approve -na --offline --verbose --no-tools -nt --no-builtin-tools -nbt --no-extensions -ne --no-mcp --no-skills -ns --no-prompt-templates -np --no-themes --no-context-files -nc"
+		values = "--provider --model --api-key --system-prompt --append-system-prompt --session-dir --name -n --models --thinking --tools -t --exclude-tools -xt --extension -e --skill --prompt-template --theme --use-theme --tui-mode"
 	}
 	for _, known := range strings.Fields(booleans) {
 		if known == flag {
@@ -329,6 +344,8 @@ func ResumeCommand(provider, sessionID string, preferCASR bool) string {
 		// approval flag matches ntm's fresh omp launch so a resumed pane
 		// does not stall on tool approvals. casr has no omp provider.
 		return "omp --auto-approve --resume " + shellQuote(sessionID)
+	case "pi":
+		return "pi --session " + shellQuote(sessionID)
 	}
 	return ""
 }
@@ -350,4 +367,81 @@ func shellQuote(s string) string {
 		return "''"
 	}
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// ResolvePiResumeSession resolves a saved exact pi identity before any pane is
+// replaced. Pi can create a fresh session for a nonexistent --session path, so
+// a resume launch must point to an existing transcript with the saved header ID
+// and workspace. The returned absolute path is process-private launch input;
+// callers should continue reporting the original saved session ID.
+func ResolvePiResumeSession(ctx context.Context, sessionID, command, workDir string) (string, error) {
+	if ctx == nil {
+		return "", errors.New("pi resume requires a context")
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if !piSessionIDPattern.MatchString(sessionID) || !filepath.IsAbs(workDir) {
+		return "", errors.New("pi resume requires an exact session ID and absolute working directory")
+	}
+	workDir = filepath.Clean(workDir)
+	if strings.TrimSpace(command) == "" {
+		command = "pi"
+	}
+	if _, err := ResumeLaunchCommand("pi", sessionID, command, ResumeLaunchOptions{}); err != nil {
+		return "", err
+	}
+	words, err := shellword.Literal(command)
+	if err != nil {
+		return "", err
+	}
+	environment := make(map[string]string)
+	executable := 0
+	for executable < len(words) && resumeEnvironmentAssignment(command[words[executable].Start:words[executable].End]) {
+		name, value, _ := strings.Cut(words[executable].Value, "=")
+		environment[name] = value
+		executable++
+	}
+	getenv := func(name string) string {
+		if value, ok := environment[name]; ok {
+			return value
+		}
+		return os.Getenv(name)
+	}
+	home := getenv("HOME")
+	if home == "" {
+		home, _ = os.UserHomeDir()
+	}
+	argv := make([]string, 0, len(words)-executable)
+	for _, word := range words[executable:] {
+		argv = append(argv, word.Value)
+	}
+	selection, ok := piProcessSelection(argv)
+	if !ok {
+		return "", errors.New("saved pi launch has an ambiguous session selection")
+	}
+	roots := piSessionRoots(home, workDir, getenv, selection.sessionDir)
+	if !selection.exact && selection.selector != "" &&
+		(strings.ContainsAny(selection.selector, `/\`) || strings.HasSuffix(selection.selector, ".jsonl")) {
+		path := piResolvePath(home, workDir, selection.selector)
+		if header, ok := readPiSessionHeader(path); ok && header.ID == sessionID && header.Cwd == workDir {
+			if err := ctx.Err(); err != nil {
+				return "", err
+			}
+			return path, nil
+		}
+		// Pi derives the session directory from an explicit file path when
+		// there is no override. A later /new session can share that directory.
+		if path != "" && selection.sessionDir == "" && getenv("PI_CODING_AGENT_SESSION_DIR") == "" {
+			roots = []string{filepath.Dir(path)}
+		}
+	}
+	info := resolvePiSelector(ctx, roots, home, workDir, piSelection{selector: sessionID, exact: true})
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if info == nil {
+		return "", fmt.Errorf("pi session %q has no unique valid transcript in the saved workspace and store", sessionID)
+	}
+	return info.SourcePath, nil
 }
