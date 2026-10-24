@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"math/rand/v2"
 	"os"
@@ -1028,10 +1029,10 @@ func recoverCorruptBeadsDatabase(ctx context.Context, normalizedDir string) erro
 	if !isBeadsPreservationRefusal(err) {
 		return err
 	}
-	slog.Warn("Beads rebuild could not establish preservation; attempting doctor repair",
+	slog.Warn("Beads rebuild could not enumerate tombstones; checking preservation before doctor repair",
 		"dir", normalizedDir, "error", err)
 	if repairErr := repairBeadsDatabaseWithDoctor(ctx, normalizedDir); repairErr != nil {
-		return fmt.Errorf("rebuild refused preservation (%v); doctor repair failed: %w", err, repairErr)
+		return errors.Join(err, fmt.Errorf("doctor repair failed: %w", repairErr))
 	}
 	return nil
 }
@@ -1040,7 +1041,8 @@ func recoverCorruptBeadsDatabase(ctx context.Context, normalizedDir string) erro
 // state. Only this specific structured refusal permits the repair fallback.
 func isBeadsPreservationRefusal(err error) bool {
 	var commandErr *beadsCommandError
-	if !errors.As(err, &commandErr) {
+	var exitErr *exec.ExitError
+	if !errors.As(err, &commandErr) || !errors.As(err, &exitErr) || exitErr.ExitCode() != 6 {
 		return false
 	}
 	for _, output := range []string{commandErr.stdout, commandErr.stderr} {
@@ -1050,15 +1052,281 @@ func isBeadsPreservationRefusal(err error) bool {
 				Message string `json:"message"`
 			} `json:"error"`
 		}
-		if json.Unmarshal([]byte(output), &result) == nil && result.Error.Code == "SYNC_CONFLICT" &&
-			strings.Contains(result.Error.Message, "Automatic database recovery refused because unflushed-state preservation could not be established:") {
+		if json.Unmarshal([]byte(output), &result) != nil || result.Error.Code != "SYNC_CONFLICT" {
+			continue
+		}
+		const prefix = "Sync conflict: Automatic database recovery refused because unflushed-state preservation could not be established:\n- "
+		message, ok := strings.CutPrefix(result.Error.Message, prefix)
+		if !ok {
+			continue
+		}
+		warning, _, ok := strings.Cut(message, "\nThe database was not replaced.")
+		if ok && isBeadsTombstoneEnumerationWarning(warning) {
 			return true
 		}
 	}
 	return false
 }
 
+// Only corruption while enumerating tombstones is eligible for the independent
+// preservation check below. Unreadable dirty rows, relationships, or history
+// are not permission to invoke a destructive best-effort repair.
+func isBeadsTombstoneEnumerationWarning(warning string) bool {
+	return strings.HasPrefix(warning, "the tombstone issue IDs could not be read before the rebuild (") &&
+		strings.HasSuffix(warning, "); preservation of unflushed local state could not be established") &&
+		!strings.ContainsAny(warning, "\r\n") && isBeadsDBCorruptionError(errors.New(warning))
+}
+
+type beadsDoctorRepairResult struct {
+	ExitCode                    *int     `json:"exit_code"`
+	Code                        string   `json:"code"`
+	OK                          *bool    `json:"ok"`
+	Repaired                    *bool    `json:"repaired"`
+	DatabaseVerified            *bool    `json:"database_verified"`
+	Verified                    *bool    `json:"verified"`
+	PreservationVerified        *bool    `json:"preservation_verified"`
+	Skipped                     *int     `json:"skipped"`
+	FKViolationsCleaned         *int     `json:"fk_violations_cleaned"`
+	DirtyPreservationWarnings   []string `json:"dirty_preservation_warnings"`
+	HistoryPreservationWarnings []string `json:"history_preservation_warnings"`
+	PreservedHistory            []struct {
+		Skipped *int `json:"skipped"`
+	} `json:"preserved_history"`
+	VerifiedBackups []struct {
+		Backup string `json:"backup"`
+	} `json:"verified_backups"`
+	RecoveryFailureMarker      string  `json:"recovery_failure_marker"`
+	RecoveryFailureMarkerError *string `json:"recovery_failure_marker_error"`
+}
+
+// Exit 2 alone also covers failed database verification and lost local data.
+// Validate the JSONL-rebuild evidence, while retaining the distinct verified
+// local-repair/healthy-no-op contract that omits rebuild-specific fields.
+func validateBeadsDoctorRepair(output string, exitCode int) (beadsDoctorRepairResult, error) {
+	var result beadsDoctorRepairResult
+	if err := json.Unmarshal([]byte(output), &result); err != nil {
+		return result, fmt.Errorf("parse br doctor repair result: %w", err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(output), &fields); err != nil {
+		return result, fmt.Errorf("parse br doctor repair evidence: %w", err)
+	}
+	rebuildReport := false
+	for _, field := range []string{
+		"database_verified", "preservation_verified", "imported", "skipped", "fk_violations_cleaned",
+		"preserved_tombstones", "preserved_dirty_issues", "preserved_dirty_issue_ids", "preserved_history",
+		"history_preservation_warnings", "dirty_preservation_warnings", "verified_backups",
+		"recovery_failure_marker", "recovery_failure_marker_error",
+	} {
+		if _, present := fields[field]; present {
+			rebuildReport = true
+			break
+		}
+	}
+	if !rebuildReport && exitCode == 0 && result.Verified != nil && *result.Verified &&
+		(result.OK == nil || *result.OK) && (result.ExitCode == nil || *result.ExitCode == 0) &&
+		(result.Code == "" || result.Code == "healthy") {
+		return result, nil
+	}
+	if result.ExitCode == nil || *result.ExitCode != exitCode ||
+		result.OK == nil || result.Verified == nil || result.PreservationVerified == nil ||
+		result.Repaired == nil || !*result.Repaired || result.DatabaseVerified == nil || !*result.DatabaseVerified {
+		return result, errors.New("br doctor repair did not verify the repaired database and exit status")
+	}
+	if result.Skipped == nil || *result.Skipped != 0 || result.FKViolationsCleaned == nil || *result.FKViolationsCleaned != 0 ||
+		result.HistoryPreservationWarnings == nil || len(result.HistoryPreservationWarnings) != 0 ||
+		result.DirtyPreservationWarnings == nil || result.PreservedHistory == nil {
+		return result, errors.New("br doctor repair has missing or unsuccessful preservation evidence")
+	}
+	for _, history := range result.PreservedHistory {
+		if history.Skipped == nil || *history.Skipped != 0 {
+			return result, errors.New("br doctor repair skipped local history")
+		}
+	}
+	if len(result.VerifiedBackups) == 0 || result.RecoveryFailureMarkerError != nil {
+		return result, errors.New("br doctor repair did not retain verified recovery evidence")
+	}
+	for _, backup := range result.VerifiedBackups {
+		if strings.TrimSpace(backup.Backup) == "" {
+			return result, errors.New("br doctor repair omitted a verified backup path")
+		}
+	}
+	if exitCode == 0 && result.Code == "healthy" && *result.OK && *result.Verified && *result.PreservationVerified &&
+		len(result.DirtyPreservationWarnings) == 0 && strings.TrimSpace(result.RecoveryFailureMarker) == "" {
+		return result, nil
+	}
+	if exitCode == 2 && result.Code == "fix_partial" && !*result.OK && !*result.Verified && !*result.PreservationVerified &&
+		len(result.DirtyPreservationWarnings) == 1 && isBeadsTombstoneEnumerationWarning(result.DirtyPreservationWarnings[0]) &&
+		strings.TrimSpace(result.RecoveryFailureMarker) != "" {
+		return result, nil
+	}
+	return result, errors.New("br doctor repair was not a verified recovery with an allowed preservation warning")
+}
+
+type beadsRepairTombstones struct {
+	databasePath string
+	ids          []string
+}
+
+// The covering indexes can be read even when the issues table root cannot.
+// Both status indexes must agree, and every known tombstone must be in JSONL:
+// clean tombstones may have been deliberately omitted from the export. An
+// unknown schema or unreadable index fails closed without replacing files.
+func verifyBeadsTombstonesForRepair(ctx context.Context, dir string) (beadsRepairTombstones, error) {
+	var snapshot beadsRepairTombstones
+	output, err := runBdContext(ctx, dir, false, "info", "--json", "--no-auto-import", "--no-auto-flush")
+	if err != nil {
+		return snapshot, err
+	}
+	var info beadsWorkspaceInfo
+	if err := json.Unmarshal([]byte(output), &info); err != nil {
+		return snapshot, fmt.Errorf("parse Beads repair workspace info: %w", err)
+	}
+	snapshot.databasePath = strings.TrimSpace(info.DatabasePath)
+	if snapshot.databasePath == "" {
+		return snapshot, errors.New("tombstone preservation requires a SQLite Beads database")
+	}
+	mu := workspaceBDMutex(dir)
+	if err := mu.LockContext(ctx); err != nil {
+		return snapshot, err
+	}
+	defer mu.Unlock()
+	database, err := sql.Open(sqliteutil.DriverName, sqliteutil.FileDSN(snapshot.databasePath, "busy_timeout(5000)")+"&mode=ro")
+	if err != nil {
+		return snapshot, err
+	}
+	defer database.Close()
+	tx, err := database.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return snapshot, err
+	}
+	defer tx.Rollback()
+	var disagree bool
+	err = tx.QueryRowContext(ctx, `SELECT EXISTS (
+		SELECT rowid FROM issues INDEXED BY idx_issues_status WHERE status = 'tombstone'
+		EXCEPT SELECT rowid FROM issues INDEXED BY idx_issues_tombstone WHERE status = 'tombstone'
+	) OR EXISTS (
+		SELECT rowid FROM issues INDEXED BY idx_issues_tombstone WHERE status = 'tombstone'
+		EXCEPT SELECT rowid FROM issues INDEXED BY idx_issues_status WHERE status = 'tombstone'
+	)`).Scan(&disagree)
+	if err != nil {
+		return snapshot, fmt.Errorf("verify tombstone indexes before repair: %w", err)
+	}
+	if disagree {
+		return snapshot, errors.New("tombstone indexes disagree; preservation cannot be established")
+	}
+	var expected int
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM issues INDEXED BY idx_issues_tombstone WHERE status = 'tombstone'`).Scan(&expected); err != nil {
+		return snapshot, fmt.Errorf("count tombstones before repair: %w", err)
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT id FROM issues INDEXED BY sqlite_autoindex_issues_1
+		WHERE rowid IN (SELECT rowid FROM issues INDEXED BY idx_issues_tombstone WHERE status = 'tombstone')`)
+	if err != nil {
+		return snapshot, fmt.Errorf("read tombstone IDs before repair: %w", err)
+	}
+	defer rows.Close()
+	tombstones := make(map[string]bool, expected)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return snapshot, err
+		}
+		if _, duplicate := tombstones[id]; duplicate || strings.TrimSpace(id) == "" {
+			return snapshot, errors.New("invalid tombstone IDs before repair")
+		}
+		tombstones[id] = false
+	}
+	if err := rows.Err(); err != nil {
+		return snapshot, fmt.Errorf("read tombstone IDs before repair: %w", err)
+	}
+	if len(tombstones) != expected {
+		return snapshot, errors.New("tombstone count disagrees with readable IDs before repair")
+	}
+	if len(tombstones) == 0 {
+		return snapshot, ctx.Err()
+	}
+	if strings.TrimSpace(info.JSONLPath) == "" {
+		return snapshot, errors.New("tombstone preservation requires the Beads JSONL path")
+	}
+	jsonl, err := os.Open(info.JSONLPath)
+	if err != nil {
+		return snapshot, fmt.Errorf("read tombstone preservation source: %w", err)
+	}
+	defer jsonl.Close()
+	decoder := json.NewDecoder(jsonl)
+	seen := make(map[string]bool)
+	for {
+		if err := ctx.Err(); err != nil {
+			return snapshot, err
+		}
+		var issue struct {
+			ID     string `json:"id"`
+			Status string `json:"status"`
+		}
+		if err := decoder.Decode(&issue); err == io.EOF {
+			break
+		} else if err != nil {
+			return snapshot, fmt.Errorf("parse tombstone preservation source: %w", err)
+		}
+		if issue.ID == "" || issue.Status == "" || seen[issue.ID] {
+			return snapshot, errors.New("invalid or duplicate issue in tombstone preservation source")
+		}
+		seen[issue.ID] = true
+		if _, needed := tombstones[issue.ID]; needed {
+			if issue.Status != "tombstone" {
+				return snapshot, fmt.Errorf("JSONL would resurrect tombstone %s", issue.ID)
+			}
+			tombstones[issue.ID] = true
+		}
+	}
+	for id, preserved := range tombstones {
+		if !preserved {
+			return snapshot, fmt.Errorf("JSONL does not preserve tombstone %s", id)
+		}
+		snapshot.ids = append(snapshot.ids, id)
+	}
+	sort.Strings(snapshot.ids)
+	return snapshot, nil
+}
+
+// Doctor takes its own later snapshot. Verify known IDs in the repaired DB so
+// JSONL changes between the preflight and repair cannot silently drop them.
+func verifyBeadsTombstonesAfterRepair(ctx context.Context, dir string, snapshot beadsRepairTombstones) error {
+	if len(snapshot.ids) == 0 {
+		return ctx.Err()
+	}
+	mu := workspaceBDMutex(dir)
+	if err := mu.LockContext(ctx); err != nil {
+		return err
+	}
+	defer mu.Unlock()
+	database, err := sql.Open(sqliteutil.DriverName, sqliteutil.FileDSN(snapshot.databasePath, "busy_timeout(5000)")+"&mode=ro")
+	if err != nil {
+		return err
+	}
+	defer database.Close()
+	tx, err := database.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, id := range snapshot.ids {
+		var status string
+		if err := tx.QueryRowContext(ctx, "SELECT status FROM issues WHERE id = ?", id).Scan(&status); err != nil {
+			return fmt.Errorf("br doctor repair lost tombstone %s: %w", id, err)
+		}
+		if status != "tombstone" {
+			return fmt.Errorf("br doctor repair resurrected tombstone %s", id)
+		}
+	}
+	return ctx.Err()
+}
+
 func repairBeadsDatabaseWithDoctor(ctx context.Context, normalizedDir string) error {
+	snapshot, err := verifyBeadsTombstonesForRepair(ctx, normalizedDir)
+	if err != nil {
+		return fmt.Errorf("refuse br doctor repair without tombstone preservation: %w", err)
+	}
 	// Do not retry doctor on diagnostic substrings: a completed partial repair
 	// may mention locks in its preservation warnings. Never bypass its repeated
 	// repair guard or remove the backups/verification-failure marker it retains.
@@ -1076,43 +1344,21 @@ func repairBeadsDatabaseWithDoctor(ctx context.Context, normalizedDir string) er
 		exitCode = exitErr.ExitCode()
 		output = commandErr.stdout
 	}
-	var result struct {
-		Code                        string   `json:"code"`
-		ExitCode                    *int     `json:"exit_code"`
-		Repaired                    bool     `json:"repaired"`
-		Verified                    bool     `json:"verified"`
-		DatabaseVerified            *bool    `json:"database_verified"`
-		DirtyPreservationWarnings   []string `json:"dirty_preservation_warnings"`
-		HistoryPreservationWarnings []string `json:"history_preservation_warnings"`
-		RecoveryFailureMarker       string   `json:"recovery_failure_marker"`
-		RecoveryFailureMarkerError  string   `json:"recovery_failure_marker_error"`
+	result, validationErr := validateBeadsDoctorRepair(output, exitCode)
+	if validationErr != nil {
+		return errors.Join(err, validationErr)
 	}
-	if err := json.Unmarshal([]byte(output), &result); err != nil {
-		return fmt.Errorf("parse br doctor repair result: %w", err)
+	if verifyErr := verifyBeadsTombstonesAfterRepair(ctx, normalizedDir, snapshot); verifyErr != nil {
+		return errors.Join(err, verifyErr)
 	}
-	if exitCode == 0 && result.Verified &&
-		(result.DatabaseVerified == nil || *result.DatabaseVerified) &&
-		(result.ExitCode == nil || *result.ExitCode == 0) &&
-		(result.Code == "" || result.Code == "healthy") {
-		// Local repairs (e.g. REINDEX) report verified but omit the fields
-		// specific to a JSONL rebuild. A verified healthy no-op is also safe.
-		return nil
-	}
-	if exitCode == 2 && result.Code == "fix_partial" && result.ExitCode != nil && *result.ExitCode == 2 &&
-		result.Repaired && result.DatabaseVerified != nil && *result.DatabaseVerified {
-		// Overall verified/ok may be false because corruption made some old
-		// DB-only state unreadable. Database verification is the prerequisite
-		// for the caller's single retry, which still enforces all claim guards.
-		slog.Warn("Beads doctor verified the repaired database but preservation remains unverified",
+	if exitCode == 2 {
+		slog.Warn("Beads doctor verified the database after the independent tombstone check; retaining recovery evidence",
 			"dir", normalizedDir,
 			"dirty_preservation_warnings", result.DirtyPreservationWarnings,
-			"history_preservation_warnings", result.HistoryPreservationWarnings,
 			"recovery_failure_marker", result.RecoveryFailureMarker,
-			"recovery_failure_marker_error", result.RecoveryFailureMarkerError)
-		return nil
+			"verified_backups", result.VerifiedBackups)
 	}
-	return fmt.Errorf("br doctor repair did not verify a usable database (exit %d, code %q): %s",
-		exitCode, result.Code, strings.TrimSpace(output))
+	return nil
 }
 
 // withBeadsCorruptionRecovery executes op and, when it fails with a
@@ -1123,6 +1369,10 @@ func repairBeadsDatabaseWithDoctor(ctx context.Context, normalizedDir string) er
 // and keeps a transient index corruption from becoming a persistent
 // assignment-factory stall (#227).
 func withBeadsCorruptionRecovery[T any](ctx context.Context, normalizedDir string, op func() (T, error)) (T, error) {
+	if err := requireBeadsMutationContext(ctx); err != nil {
+		var zero T
+		return zero, err
+	}
 	result, err := op()
 	if err == nil || !isBeadsDBCorruptionError(err) {
 		return result, err
@@ -1136,6 +1386,10 @@ func withBeadsCorruptionRecovery[T any](ctx context.Context, normalizedDir strin
 	}
 	slog.Info("beads database rebuilt from JSONL after corruption; retrying guarded mutation once",
 		"dir", normalizedDir)
+	if err := ctx.Err(); err != nil {
+		var zero T
+		return zero, err
+	}
 	return op()
 }
 
@@ -1558,6 +1812,7 @@ func ClaimBead(ctx context.Context, dir, beadID, actor string) (BeadClaimResult,
 
 type beadsWorkspaceInfo struct {
 	DatabasePath string `json:"database_path"`
+	JSONLPath    string `json:"jsonl_path"`
 }
 
 type guardedClaimIssue struct {
