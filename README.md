@@ -1189,7 +1189,7 @@ Custom agent types load from the `agents/` directory that sits next to the
 selected config file: `~/.config/ntm/agents/*.toml` by default,
 `$XDG_CONFIG_HOME/ntm/agents/` under an XDG override, or
 `<dir-of-config>/agents/` with an explicit `--config`. Each TOML declares a
-name/alias (which become `--<name>`/`--<alias>` spawn and `send` selectors), a
+name/alias (which become `--<name>`/`--<alias>` spawn, `resume --spawn`, and `send` selectors), a
 command template, and optional `[agent.readiness]` regexes that drive
 idle/working/error classification for `status`, `activity`, `--robot-tail`,
 `--robot-activity`, `--robot-is-working`, `--robot-health`, and `--verify-boot`
@@ -1200,6 +1200,43 @@ Oh My Pi is now a built-in agent type (see [Oh My Pi](#oh-my-pi-omp)), so the
 former `examples/agents/omp.toml` plugin preset is no longer needed. A leftover
 `~/.config/ntm/agents/omp.toml` is harmless: built-in flags and the built-in
 omp detectors take precedence over a plugin of the same name.
+
+#### Pi coding agent (`pi`)
+
+Install the [pi preset](examples/agents/pi.toml) as `agents/pi.toml` beside
+your selected NTM configuration. Authenticate pi and configure its project
+trust before automated launches. The preset preserves pi's own defaults;
+model, thinking level, and persona system prompts are supplied when requested.
+
+```bash
+ntm spawn swarm --pi=2
+ntm spawn swarm --pi=1:MODEL:high
+ntm send swarm --pi "Review the changes and run the tests"
+ntm sessions save swarm
+ntm sessions resume swarm --name recovered --native
+ntm resume next-session --from path/to/handoff --spawn --pi=2 --omp=1
+```
+
+Pi has its own session provider and terminal parser. Its JSONL header supplies
+the session ID and working directory, including when a transcript was renamed.
+Discovery honors `--session-dir`, `PI_CODING_AGENT_SESSION_DIR`, and
+`PI_CODING_AGENT_DIR`, with `~/.pi/agent/sessions/<encoded-cwd>/` as the default.
+Files in a shared store are matched by their header's working directory;
+malformed headers and ambiguous ID prefixes are not promoted to exact bindings.
+Explicit `--session` and `--session-id` selectors are recognized during
+discovery. Saved-session resume resolves the exact saved ID to an existing
+transcript before launching `pi --session <path>`, retaining the original
+model, thinking, prompt, and environment settings. A missing or ambiguous
+transcript stops resume before an existing tmux session can be replaced.
+
+For pipelines and workflows, pi's standard composer, unsent draft, cwd, and
+usage rows are excluded from response evidence. Blank redraws retain the last
+trusted boundary. A complete repaint can recover through a unique echo of the
+current delivered prompt; an idle pane alone cannot establish that a
+replacement screen answers the current turn. Unknown custom chrome, lost
+prompt boundaries, and unrelated replacement screens remain conservative
+refusals. Oh My Pi continues to use its separate `omp` session and terminal
+behavior.
 
 ## Design Principles
 

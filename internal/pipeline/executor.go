@@ -1976,13 +1976,21 @@ func (e *Executor) executeAgentDelivery(ctx context.Context, step *Step, workflo
 			agentType = "unknown"
 		}
 		sum := sha256.Sum256([]byte(prompt))
-		echoSum := sha256.Sum256([]byte(normalizeAgentEcho(prompt)))
+		normalizedPrompt := status.NormalizeAgentEcho(prompt)
+		echoSum := sha256.Sum256([]byte(normalizedPrompt))
+		echoLength := len(normalizedPrompt)
+		if echoLength > agentDeliveryMaxCaptureBytes {
+			// A prompt larger than the capture window cannot provide a
+			// complete repaint anchor, but retains ordinary delivery behavior.
+			echoLength = 0
+		}
 		record = AgentDeliveryState{
 			Version: agentDeliveryVersion, StepID: step.ID, Kind: kind,
 			Session: e.config.Session, Endpoint: endpoint, PaneID: paneID, PanePID: pane.PID,
 			AgentType: agentType, StepHash: stepHash, PromptHash: hex.EncodeToString(sum[:]),
-			PromptEchoHash: hex.EncodeToString(echoSum[:]),
-			Status:         agentDeliveryNotSent, StartedAt: time.Now(),
+			PromptEchoHash:   hex.EncodeToString(echoSum[:]),
+			PromptEchoLength: echoLength,
+			Status:           agentDeliveryNotSent, StartedAt: time.Now(),
 		}
 		// Preserve positive non-delivery evidence before the preflight. An
 		// unfinished step with no receipt is intentionally unsafe to replay,
@@ -2068,26 +2076,24 @@ func (e *Executor) executeAgentDelivery(ctx context.Context, step *Step, workflo
 	result.PaneUsed, result.AgentType, result.StartedAt = record.PaneID, record.AgentType, record.StartedAt
 	collect := func() (bool, error) {
 		current, err := e.captureAgentDelivery(ctx, record)
+		if errors.Is(err, errIncompleteAgentCapture) {
+			return false, nil
+		}
 		if err != nil {
 			return false, err
 		}
-		delta, err := agentDeliveryNewOutput(record.BeforeOutput, current)
+		next, ready, err := observeAgentDelivery(record, current)
 		if err != nil {
 			return false, err
 		}
-		if len(record.Output)+len(delta) > agentDeliveryMaxOutputBytes {
-			return false, fmt.Errorf("agent response exceeds the %d-byte recovery evidence limit", agentDeliveryMaxOutputBytes)
-		}
-		if current != record.BeforeOutput {
-			record.BeforeOutput, record.Output = current, record.Output+delta
-			if err := e.saveAgentDelivery(record); err != nil {
+		if next.BeforeOutput != record.BeforeOutput || next.Output != record.Output {
+			if err := e.saveAgentDelivery(next); err != nil {
 				return false, err
 			}
 		}
+		record = next
 		result.Output = record.Output
-		response := normalizeAgentEcho(record.Output)
-		echo := sha256.Sum256([]byte(response))
-		return response != "" && hex.EncodeToString(echo[:]) != record.PromptEchoHash, nil
+		return ready, nil
 	}
 	wait := step.Wait
 	if wait == "" {
@@ -2116,15 +2122,34 @@ func (e *Executor) executeAgentDelivery(ctx context.Context, step *Step, workflo
 			return fail("capture", err)
 		}
 	case WaitCompletion, WaitIdle:
-		if err := e.waitForIdle(ctx, paneID, timeout, collect); err != nil {
-			// Preserve partial output even when the deadline precedes the first
-			// idle poll. Cancellation never starts a new uncancelled capture.
-			if ctx.Err() == nil && e.checkpointFailure() == nil {
-				if _, captureErr := collect(); captureErr != nil {
-					err = errors.Join(err, captureErr)
+		deadline := time.Now().Add(timeout)
+		remaining := timeout
+		for {
+			if err := e.waitForIdle(ctx, paneID, remaining, collect); err != nil {
+				// Preserve partial output even when the deadline precedes the first
+				// idle poll. Cancellation never starts a new uncancelled capture.
+				if ctx.Err() == nil && e.checkpointFailure() == nil {
+					if _, captureErr := collect(); captureErr != nil {
+						err = errors.Join(err, captureErr)
+					}
 				}
+				return fail("timeout", fmt.Errorf("waiting for the original agent delivery: %w", err))
 			}
-			return fail("timeout", fmt.Errorf("waiting for the original agent delivery: %w", err))
+			if !strings.EqualFold(strings.TrimSpace(record.AgentType), "pi") {
+				break
+			}
+			// The last idle observation can itself race a pi redraw. Require
+			// one more complete, attributed frame before persisting success;
+			// a partial frame must earn another idle streak within the same
+			// original deadline, rather than extending the caller's timeout.
+			ready, err := collect()
+			if err != nil {
+				return fail("capture", err)
+			}
+			if ready {
+				break
+			}
+			remaining = time.Until(deadline)
 		}
 	}
 	// Preserve completion before releasing pane ownership or returning to the
@@ -2199,6 +2224,8 @@ func (e *Executor) agentDeliveryPane(ctx context.Context, paneID string, expecte
 	return *found, nil
 }
 
+var errIncompleteAgentCapture = errors.New("pi composer is incomplete or unrecognized; a complete response frame is required")
+
 func (e *Executor) captureAgentDelivery(ctx context.Context, record AgentDeliveryState) (string, error) {
 	if _, err := e.agentDeliveryPane(ctx, record.PaneID, record.PanePID, record.Endpoint); err != nil {
 		return "", err
@@ -2221,24 +2248,64 @@ func (e *Executor) captureAgentDelivery(ctx context.Context, record AgentDeliver
 	if _, err := e.agentDeliveryPane(ctx, record.PaneID, record.PanePID, record.Endpoint); err != nil {
 		return "", err
 	}
-	return strings.TrimRight(status.AgentTranscript(output, record.AgentType), "\n"), nil
+	transcript, complete := status.AgentResponseTranscript(output, record.AgentType)
+	if !complete {
+		return "", errIncompleteAgentCapture
+	}
+	return strings.TrimRight(transcript, "\n"), nil
 }
 
-// A submitted prompt may be echoed with the agent's input-row marker. Ignore
-// that decoration only for the echo comparison; saved output remains intact.
-func normalizeAgentEcho(output string) string {
-	lines := strings.Split(status.StripANSI(output), "\n")
-	for i, line := range lines {
-		line = strings.TrimSpace(line)
-		for _, marker := range []string{"❯", "›", "»", ">"} {
-			if strings.HasPrefix(line, marker) {
-				line = strings.TrimSpace(strings.TrimPrefix(line, marker))
-				break
+// observeAgentDelivery keeps evidence collection identical for durable and
+// shorthand pipelines. A pi redraw may temporarily hide an old boundary, but
+// it is never itself a response and never authorizes replacing partial output.
+func observeAgentDelivery(record AgentDeliveryState, current string) (AgentDeliveryState, bool, error) {
+	isPi := strings.EqualFold(strings.TrimSpace(record.AgentType), "pi")
+	if isPi && (strings.TrimSpace(current) == "" || (len(current) < len(record.BeforeOutput) && strings.HasPrefix(record.BeforeOutput, current))) {
+		// A blank or partly redrawn old frame cannot erase the durable
+		// boundary or make prior output eligible for idle completion.
+		return record, false, nil
+	}
+	delta, err := agentDeliveryNewOutput(record.BeforeOutput, current)
+	output := record.Output
+	if isPi && record.BeforeOutput == "" && output == "" {
+		// A chrome-only initial capture has no transcript boundary. Startup
+		// text appearing on the next frame is not itself an answer; wait for
+		// the confirmed request's echo before attributing that new screen.
+		recovered, ok := status.RecoverPiRepaint("", current, record.PromptEchoHash, record.PromptEchoLength)
+		if !ok {
+			return record, false, nil
+		}
+		delta = recovered
+	}
+	if err != nil && isPi {
+		previous := status.NormalizeAgentEcho(output)
+		echo := sha256.Sum256([]byte(previous))
+		if previous == "" || hex.EncodeToString(echo[:]) == record.PromptEchoHash {
+			before := record.BeforeOutput
+			if output != "" {
+				// The echo may have appeared before pi cleared its old
+				// history. Remove only our already-attributed suffix when
+				// checking that this prompt was absent before submission.
+				if !strings.HasSuffix(before, output) {
+					return record, false, err
+				}
+				before = strings.TrimSuffix(before, output)
+			}
+			if recovered, ok := status.RecoverPiRepaint(before, current, record.PromptEchoHash, record.PromptEchoLength); ok {
+				delta, output, err = recovered, "", nil
 			}
 		}
-		lines[i] = line
 	}
-	return strings.Join(strings.Fields(strings.Join(lines, "\n")), " ")
+	if err != nil {
+		return record, false, err
+	}
+	if len(output)+len(delta) > agentDeliveryMaxOutputBytes {
+		return record, false, fmt.Errorf("agent response exceeds the %d-byte recovery evidence limit", agentDeliveryMaxOutputBytes)
+	}
+	record.BeforeOutput, record.Output = current, output+delta
+	response := status.NormalizeAgentEcho(record.Output)
+	echo := sha256.Sum256([]byte(response))
+	return record, response != "" && hex.EncodeToString(echo[:]) != record.PromptEchoHash, nil
 }
 
 // A retained complete-line overlap supports normal scrollback rollover.

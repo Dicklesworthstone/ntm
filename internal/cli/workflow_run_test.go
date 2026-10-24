@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	agentpkg "github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/health"
 	"github.com/Dicklesworthstone/ntm/internal/process"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
@@ -117,6 +118,260 @@ func TestWorkflowRunnerPingPongAlternates(t *testing.T) {
 	wantPanes := []string{"%1", "%2", "%1"}
 	if got := fake.dispatchedPanes(); strings.Join(got, ",") != strings.Join(wantPanes, ",") {
 		t.Fatalf("dispatch order = %v, want %v", got, wantPanes)
+	}
+}
+
+// A realistic pi capture: transcript above a full-width composer, followed
+// by cwd and usage/model rows. Draft text must never become workflow evidence.
+func piWorkflowCapture(transcript, draft string, working bool) string {
+	rule := strings.Repeat("─", 40)
+	top := rule
+	if working {
+		prefix := "── ⠹ Working "
+		top = prefix + strings.Repeat("─", 40-len([]rune(prefix)))
+	}
+	return transcript + "\n\n" + top + "\n" + draft + "\n" + rule + "\n~/projects/demo (main)\n0.0%/1.0M (auto)  model\n"
+}
+
+func TestWorkflowRunnerPiRepaintAdvancesDurableStages(t *testing.T) {
+	for _, scenario := range []string{"answer in first repaint", "blank then restored history", "echo then repaint", "partial composer with verdict draft"} {
+		t.Run(scenario, func(t *testing.T) {
+			fake := newFakeWorkflowSession()
+			history := map[string]string{"%1": "previous red work\nRED-HANDOFF", "%2": "previous green work\nGREEN-HANDOFF"}
+			pending := make(map[string][]string)
+			for pane, transcript := range history {
+				fake.outputs[pane] = piWorkflowCapture(transcript, "", false)
+			}
+			firstRed := true
+			fake.onDispatch = func(pane, prompt string) {
+				if pane == "%2" && len(pending["%1"]) != 0 {
+					t.Fatal("workflow advanced from blank repaint, prompt echo or restored old verdict")
+				}
+				verdict := "RED-HANDOFF"
+				if pane == "%2" {
+					verdict = "GREEN-HANDOFF"
+				}
+				transcript := "Pi v1.3.0\n" + prompt + "\nReviewed this turn.\n" + verdict
+				frame := piWorkflowCapture(transcript, "unsent draft", false)
+				if pane == "%1" && firstRed {
+					switch scenario {
+					case "blank then restored history":
+						pending[pane] = []string{"", piWorkflowCapture(history[pane], "", false), frame}
+					case "echo then repaint":
+						pending[pane] = []string{piWorkflowCapture(history[pane]+"\n"+prompt, "", true), frame}
+					case "partial composer with verdict draft":
+						partial := piWorkflowCapture("Pi v1.3.0\n"+prompt, verdict, false)
+						partial = strings.TrimSuffix(partial, "\n~/projects/demo (main)\n0.0%/1.0M (auto)  model\n")
+						pending[pane] = []string{partial, frame}
+					}
+					firstRed = false
+				}
+				fake.mu.Lock()
+				fake.outputs[pane] = frame
+				fake.mu.Unlock()
+				history[pane] = transcript
+			}
+			ports := fake.ports()
+			originalCapture := ports.capture
+			ports.capture = func(ctx context.Context, pane string, lines int) (string, error) {
+				if frames := pending[pane]; len(frames) > 0 {
+					pending[pane] = frames[1:]
+					return frames[0], nil
+				}
+				return originalCapture(ctx, pane, lines)
+			}
+			agents := []workflow.CoordinatorAgent{{ID: "%1", Role: "red"}, {ID: "%2", Role: "green"}}
+			runner, err := newWorkflowRunner(pingPongTemplate(), agents, workflowRunOptions{
+				Session: "pi-repaint", ProjectRoot: t.TempDir(), StateDir: filepath.Join(t.TempDir(), "state"),
+				PanePIDs: map[string]int{"%1": 101, "%2": 202}, PaneTypes: map[string]string{"%1": "pi", "%2": "pi"},
+				MaxTransitions: 2, Interval: time.Millisecond,
+			}, ports)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+			defer cancel()
+			result, err := runner.Run(ctx)
+			if err != nil || result.Transitions != 2 || strings.Join(fake.dispatchedPanes(), ",") != "%1,%2,%1" {
+				t.Fatalf("pi repaint failed progression: result=%+v dispatches=%v error=%v", result, fake.dispatchedPanes(), err)
+			}
+			for _, pane := range runner.state.Evidence.Panes {
+				if pane.AgentType != "pi" || len(pane.ScreenHash) != 64 || strings.Contains(pane.Capture, "unsent draft") || strings.Contains(pane.Capture, "0.0%/") {
+					t.Fatalf("checkpoint retained pi chrome or lost its normalization contract: %+v", pane)
+				}
+			}
+		})
+	}
+}
+
+func TestWorkflowRunnerPiIncompleteComposerBlocksInitialDelivery(t *testing.T) {
+	fake := newFakeWorkflowSession()
+	fake.outputs["%1"] = "old history\n" + strings.Repeat("─", 40) + "\nunsent draft"
+	fake.outputs["%2"] = piWorkflowCapture("other history", "", false)
+	runner := mustResumeWorkflowRunner(t, pingPongTemplate(), []workflow.CoordinatorAgent{{ID: "%1", Role: "red"}, {ID: "%2", Role: "green"}},
+		workflowRunOptions{Session: "pi-incomplete", PaneTypes: map[string]string{"%1": "pi", "%2": "pi"}}, fake.ports())
+	result, err := runner.Run(t.Context())
+	if err == nil || !strings.Contains(err.Error(), "incomplete or unsupported composer") || result.Transitions != 0 || len(fake.dispatchedPanes()) != 0 {
+		t.Fatalf("initial partial frame authorized a send: result=%+v sends=%v error=%v", result, fake.dispatchedPanes(), err)
+	}
+}
+
+func TestWorkflowRunnerPiComposerVerdictCannotAdvance(t *testing.T) {
+	fake := newFakeWorkflowSession()
+	fake.outputs["%1"] = piWorkflowCapture("old transcript", "", false)
+	fake.outputs["%2"] = piWorkflowCapture("other history", "", false)
+	fake.onDispatch = func(pane, prompt string) {
+		fake.mu.Lock()
+		defer fake.mu.Unlock()
+		fake.outputs[pane] = piWorkflowCapture("Pi v1.3.0\n"+prompt, "RED-HANDOFF", false)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	ports := fake.ports()
+	polls := 0
+	ports.sleep = func(context.Context, time.Duration) {
+		polls++
+		if polls == 3 {
+			cancel()
+		}
+	}
+	runner, err := newWorkflowRunner(pingPongTemplate(), []workflow.CoordinatorAgent{{ID: "%1", Role: "red"}, {ID: "%2", Role: "green"}},
+		workflowRunOptions{Session: "pi-draft", PaneTypes: map[string]string{"%1": "pi", "%2": "pi"}}, ports)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := runner.Run(ctx)
+	if result.Transitions != 0 || len(fake.dispatchedPanes()) != 1 || (err != nil && !errors.Is(err, context.Canceled)) {
+		t.Fatalf("composer draft became workflow evidence: result=%+v error=%v", result, err)
+	}
+}
+
+func TestWorkflowRunnerPiResumeUsesPreparedPromptReceipt(t *testing.T) {
+	template := pingPongTemplate()
+	template.Description = "Review private source context"
+	fake := newFakeWorkflowSession()
+	fake.outputs["%1"] = piWorkflowCapture("old red history", "", false)
+	fake.outputs["%2"] = piWorkflowCapture("old green history", "", false)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	prepared := make(map[string]string)
+	firstDispatch := true
+	fake.onDispatch = func(pane, prompt string) {
+		prepared[pane] = prompt
+		if firstDispatch {
+			firstDispatch = false
+			cancel() // Pause after delivery, before the first response frame.
+		}
+	}
+	ports := fake.ports()
+	originalDispatch := ports.dispatch
+	var runner *workflowRunner
+	ports.dispatch = func(ctx context.Context, session, pane, prompt string) error {
+		// Model the production before-dispatch hook after redaction and
+		// enrichment. The template text will not appear on the pi screen.
+		message := "Prepared delivery\n" + strings.ReplaceAll(prompt, "private source context", "[redacted]")
+		if err := runner.pinPiDispatchPrompt(runner.state.CurrentStage, pane, message); err != nil {
+			return err
+		}
+		return originalDispatch(ctx, session, pane, message)
+	}
+	opts := workflowRunOptions{
+		Session: "pi-resume-repaint", ProjectRoot: t.TempDir(), StateDir: t.TempDir(),
+		PanePIDs: map[string]int{"%1": 101, "%2": 202}, PaneTypes: map[string]string{"%1": "pi", "%2": "pi"},
+		Interval: time.Millisecond, MaxTransitions: 1,
+	}
+	agents := []workflow.CoordinatorAgent{{ID: "%1", Role: "red"}, {ID: "%2", Role: "green"}}
+	runner = mustResumeWorkflowRunner(t, template, agents, opts, ports)
+	if result, err := runner.Run(ctx); result.Transitions != 0 || (err != nil && !errors.Is(err, context.Canceled)) {
+		t.Fatalf("could not pause delivered pi turn: result=%+v error=%v", result, err)
+	}
+	saved := mustLoadWorkflowCheckpoint(t, opts)
+	if len(saved.Dispatches) != 1 || saved.Dispatches[0].Status != "delivered" || len(saved.Dispatches[0].PromptEchoHash) != 64 || saved.Dispatches[0].PromptEchoLength == 0 {
+		t.Fatalf("prepared prompt receipt was not persisted: %+v", saved.Dispatches)
+	}
+	fake.outputs["%1"] = piWorkflowCapture("Pi v1.3.0\n"+prepared["%1"]+"\nReviewed the current turn.\nRED-HANDOFF", "", false)
+	opts.Resume = true
+	runner = mustResumeWorkflowRunner(t, template, agents, opts, ports)
+	resumeCtx, resumeCancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer resumeCancel()
+	result, err := runner.Run(resumeCtx)
+	if err != nil || !result.Resumed || result.Transitions != 1 || strings.Join(fake.dispatchedPanes(), ",") != "%1,%2" {
+		t.Fatalf("resume reconstructed a different prompt or repeated delivery: result=%+v sends=%v error=%v", result, fake.dispatchedPanes(), err)
+	}
+}
+
+func TestWorkflowRunnerPiRejectsReplacementAfterPartialResponse(t *testing.T) {
+	for _, agentType := range []string{"pi", "omp", "cod"} {
+		t.Run(agentType, func(t *testing.T) {
+			fake := newFakeWorkflowSession()
+			capture := func(transcript string) string {
+				if agentType == "pi" {
+					return piWorkflowCapture(transcript, "", false)
+				}
+				return transcript
+			}
+			fake.outputs["%1"], fake.outputs["%2"] = capture("old red history"), capture("old green history")
+			fake.onDispatch = func(pane, prompt string) {
+				fake.mu.Lock()
+				defer fake.mu.Unlock()
+				fake.outputs[pane] = capture("old red history\n" + prompt + "\nPartial inspection, no verdict yet.")
+			}
+			ports := fake.ports()
+			ports.sleep = func(context.Context, time.Duration) {
+				fake.mu.Lock()
+				defer fake.mu.Unlock()
+				fake.outputs["%1"] = capture("unrelated replacement screen\nRED-HANDOFF")
+			}
+			runner, err := newWorkflowRunner(pingPongTemplate(), []workflow.CoordinatorAgent{{ID: "%1", Role: "red"}, {ID: "%2", Role: "green"}},
+				workflowRunOptions{Session: "untrusted-repaint", PaneTypes: map[string]string{"%1": agentType, "%2": agentType}}, ports)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+			defer cancel()
+			result, err := runner.Run(ctx)
+			if err == nil || !strings.Contains(err.Error(), "saved output boundary") || result.Transitions != 0 || len(fake.dispatchedPanes()) != 1 {
+				t.Fatalf("unattributed %s replacement was trusted: result=%+v error=%v", agentType, result, err)
+			}
+		})
+	}
+}
+
+func TestWorkflowRunnerPiWorkingChromeRetainsActivity(t *testing.T) {
+	if err := agentpkg.RegisterPlugin("pi", []string{`^─+$`}, []string{`^─+ .*Working .*─+$`}, nil); err != nil {
+		t.Fatal(err)
+	}
+	template := pingPongTemplate()
+	template.Flow.Transitions[0].Trigger = workflow.Trigger{Type: workflow.TriggerAllAgentsIdle, IdleMinutes: 1}
+	fake := newFakeWorkflowSession()
+	fake.outputs["%1"] = piWorkflowCapture("old history", "", false)
+	fake.outputs["%2"] = piWorkflowCapture("other history", "", false)
+	fake.onDispatch = func(pane, prompt string) {
+		fake.mu.Lock()
+		defer fake.mu.Unlock()
+		fake.outputs[pane] = piWorkflowCapture(prompt, "", true)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	ports := fake.ports()
+	now := time.Now()
+	ports.now = func() time.Time { return now }
+	polls := 0
+	ports.sleep = func(context.Context, time.Duration) {
+		now = now.Add(2 * time.Minute)
+		polls++
+		if polls == 3 {
+			cancel()
+		}
+	}
+	runner, err := newWorkflowRunner(template, []workflow.CoordinatorAgent{{ID: "%1", Role: "red"}, {ID: "%2", Role: "green"}},
+		workflowRunOptions{Session: "pi-working", PaneTypes: map[string]string{"%1": "pi", "%2": "pi"}}, ports)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := runner.Run(ctx)
+	if result.Transitions != 0 || (err != nil && !errors.Is(err, context.Canceled)) {
+		t.Fatalf("stripping a working composer made pi idle: result=%+v error=%v", result, err)
 	}
 }
 

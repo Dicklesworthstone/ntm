@@ -586,7 +586,7 @@ func (c *cancelAgentObservation) CapturePaneOutput(target string, lines int) (st
 	return output, err
 }
 
-func interruptedAgentDelivery(t *testing.T, template bool) (ExecutorConfig, *Workflow, *MockTmuxClient, *ExecutionState) {
+func interruptedAgentDelivery(t *testing.T, template bool, agentTypes ...tmux.AgentType) (ExecutorConfig, *Workflow, *MockTmuxClient, *ExecutionState) {
 	t.Helper()
 	cfg := DefaultExecutorConfig("recover-agent")
 	cfg.ProjectDir = t.TempDir()
@@ -600,8 +600,16 @@ func interruptedAgentDelivery(t *testing.T, template bool) (ExecutorConfig, *Wor
 		step.Prompt, step.Template = "", path
 	}
 	workflow := singleStepWorkflow("agent-recovery", step)
-	mock := NewMockTmuxClient(tmux.Pane{ID: "%1", Index: 1, PID: 3131, Type: tmux.AgentCodex, Width: 100})
-	if err := mock.SetPaneOutput("%1", "OLD-ANSWER\n"); err != nil {
+	agentType := tmux.AgentCodex
+	if len(agentTypes) > 0 {
+		agentType = agentTypes[0]
+	}
+	mock := NewMockTmuxClient(tmux.Pane{ID: "%1", Index: 1, PID: 3131, Type: agentType, Width: 100})
+	initialOutput := "OLD-ANSWER\n"
+	if agentType == tmux.AgentType("pi") {
+		initialOutput = piStagePane(initialOutput, "")
+	}
+	if err := mock.SetPaneOutput("%1", initialOutput); err != nil {
 		t.Fatal(err)
 	}
 	executor := NewExecutor(cfg)
@@ -646,6 +654,88 @@ func TestAgentDeliveryResumeContinuesPromptAndTemplateWithoutSending(t *testing.
 			}
 		})
 	}
+}
+
+func TestPiAgentDeliveryResumeUsesSavedPromptIdentity(t *testing.T) {
+	for _, template := range []bool{false, true} {
+		t.Run(map[bool]string{false: "prompt", true: "template"}[template], func(t *testing.T) {
+			cfg, workflow, mock, prior := interruptedAgentDelivery(t, template, tmux.AgentType("pi"))
+			if prior.AgentDeliveries["work"].PromptEchoLength != len("do this task") {
+				t.Fatalf("receipt did not preserve bounded prompt identity: %+v", prior.AgentDeliveries["work"])
+			}
+			if err := mock.SetPaneOutput("%1", piStagePane("Pi v1.3.0\n\ndo this task\nNEW-ANSWER after repaint", "unsent draft")); err != nil {
+				t.Fatal(err)
+			}
+			if template {
+				// The original request's hash/length is authoritative. Resume
+				// must not rerender this changed template to guess its echo.
+				if err := os.WriteFile(workflow.Steps[0].Template, []byte("A different request"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			resumed := NewExecutor(cfg)
+			resumed.SetTmuxClient(mock)
+			state, err := resumed.Resume(context.Background(), workflow, prior, nil)
+			if err != nil || state.Status != StatusCompleted {
+				t.Fatalf("pi resume lost the delivered turn: state=%+v err=%v", state, err)
+			}
+			output := state.Steps["work"].Output
+			if !strings.Contains(output, "NEW-ANSWER after repaint") || strings.Contains(output, "OLD-ANSWER") || strings.Contains(output, "unsent draft") || strings.Contains(output, "DeepSeek") {
+				t.Fatalf("pi resume misattributed transcript/chrome: %q", output)
+			}
+			assertNotResent(t, mock)
+			persisted, err := LoadState(cfg.ProjectDir, state.RunID)
+			if err != nil || persisted.AgentDeliveries["work"].Status != agentDeliveryCompleted || persisted.AgentDeliveries["work"].Output != output {
+				t.Fatalf("accepted repaint was not durable: state=%+v err=%v", persisted, err)
+			}
+		})
+	}
+}
+
+func TestPiAgentDeliveryRechecksFrameAfterFinalIdle(t *testing.T) {
+	executor, mock := submittingExecutor(t, "pi-final-idle")
+	executor.config.ProjectDir = t.TempDir()
+	mock.AddPane("", tmux.Pane{ID: "%1", Index: 1, PID: 4141, Type: tmux.AgentType("pi"), Width: 100})
+	if err := mock.SetPaneOutput("%1", piStagePane("Previous turn", "")); err != nil {
+		t.Fatal(err)
+	}
+	const prompt = "Review the inventory."
+	complete := piStagePane(prompt+"\nThe inventory review is complete.", "")
+	mock.SetSubmissionVerifier(func(target, _, _ string) error {
+		return mock.SetPaneOutput(target, complete)
+	})
+	detector := &stageIdleDetector{}
+	detector.onIdle = func(call int) {
+		switch call {
+		case idleStablePolls:
+			// The screenshot after the final idle reading is incomplete.
+			// Its draft must not use the previously accumulated answer to
+			// publish success without a new trustworthy frame.
+			if err := mock.SetPaneOutput("%1", prompt+"\n"+strings.Repeat("─", 48)+"\nA draft verdict"); err != nil {
+				t.Fatal(err)
+			}
+		case idleStablePolls + 1:
+			receipt, ok := executor.loadAgentDelivery("work")
+			if !ok || receipt.Status != agentDeliveryDelivered {
+				t.Fatalf("incomplete final frame published completion: %+v", receipt)
+			}
+			if err := mock.SetPaneOutput("%1", complete); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	executor.SetDetector(detector)
+	workflow := singleStepWorkflow("pi-final-idle", Step{ID: "work", Pane: PaneSpec{Index: 1}, Prompt: prompt, Wait: WaitCompletion})
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+	defer cancel()
+	state, err := executor.Run(ctx, workflow, nil, nil)
+	if err != nil || state.Status != StatusCompleted || detector.calls <= idleStablePolls {
+		t.Fatalf("final pi frame did not earn a new idle streak: state=%+v calls=%d err=%v", state, detector.calls, err)
+	}
+	if output := state.Steps["work"].Output; !strings.Contains(output, "inventory review is complete") || strings.Contains(output, "draft verdict") {
+		t.Fatalf("final frame polluted response evidence: %q", output)
+	}
+	assertNotResent(t, mock)
 }
 
 func TestAgentDeliveryUnknownOutcomeRequiresExplicitRestart(t *testing.T) {

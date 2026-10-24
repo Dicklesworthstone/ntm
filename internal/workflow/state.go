@@ -66,6 +66,14 @@ type StagePaneEvidence struct {
 	Capture      string    `json:"capture"`
 	Fresh        string    `json:"fresh,omitempty"`
 	LastActivity time.Time `json:"last_activity"`
+	// AgentType pins an agent-specific transcript normalization contract.
+	// Empty retains the original raw-capture contract for other agents.
+	AgentType  string `json:"agent_type,omitempty"`
+	ScreenHash string `json:"screen_hash,omitempty"`
+	// Working is a live readiness signal, never restored from a checkpoint.
+	Working bool `json:"-"`
+	// Incomplete marks a transient or unsupported TUI frame, never evidence.
+	Incomplete bool `json:"-"`
 }
 
 // StageDispatch records one pane's prompt delivery in the current stage.
@@ -73,13 +81,17 @@ type StagePaneEvidence struct {
 // a crash; delivered proves the dispatch port returned success. The sending
 // record is persisted BEFORE calling that port, and delivered afterward.
 type StageDispatch struct {
-	Pane            string     `json:"pane"`
-	Role            string     `json:"role"`
-	Turn            int        `json:"turn"`
-	Status          string     `json:"status"`
-	Resolution      string     `json:"resolution,omitempty"`
-	ResolvedAt      *time.Time `json:"resolved_at,omitempty"`
-	ResolutionToken string     `json:"resolution_token,omitempty"`
+	Pane   string `json:"pane"`
+	Role   string `json:"role"`
+	Turn   int    `json:"turn"`
+	Status string `json:"status"`
+	// Pi repaint recovery uses the final prepared prompt, including any
+	// redaction or enrichment, without persisting its potentially private text.
+	PromptEchoHash   string     `json:"prompt_echo_hash,omitempty"`
+	PromptEchoLength int        `json:"prompt_echo_length,omitempty"`
+	Resolution       string     `json:"resolution,omitempty"`
+	ResolvedAt       *time.Time `json:"resolved_at,omitempty"`
+	ResolutionToken  string     `json:"resolution_token,omitempty"`
 }
 type StageRecord struct {
 	Stage       string    `json:"stage"`

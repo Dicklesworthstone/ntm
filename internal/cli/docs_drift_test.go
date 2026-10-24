@@ -73,9 +73,10 @@ func TestReadmeNtmFlagsExist(t *testing.T) {
 			// Agent-plugin flags are registered dynamically before command
 			// execution, so they are absent from the package-global Cobra tree.
 			// Accept only names declared by versioned shipped manifests, and only
-			// on the three commands that expose plugin selectors/counts.
+			// on commands that expose plugin selectors/counts. Resume uses
+			// the same registered selectors for its --spawn action.
 			switch cmd.Name() {
-			case "spawn", "add", "send":
+			case "spawn", "add", "send", "resume":
 				_, found = pluginFlags[name]
 			}
 		}

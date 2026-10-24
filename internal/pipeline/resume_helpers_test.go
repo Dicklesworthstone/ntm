@@ -353,6 +353,8 @@ func TestResumeRejectsInvalidAgentDeliveriesBeforeReset(t *testing.T) {
 		{"missing agent", func(r *AgentDeliveryState) { r.AgentType = "" }},
 		{"invalid step hash", func(r *AgentDeliveryState) { r.StepHash = "broken" }},
 		{"invalid prompt hash", func(r *AgentDeliveryState) { r.PromptHash = strings.Repeat("z", 64) }},
+		{"negative prompt echo length", func(r *AgentDeliveryState) { r.PromptEchoLength = -1 }},
+		{"oversized prompt echo length", func(r *AgentDeliveryState) { r.PromptEchoLength = agentDeliveryMaxCaptureBytes + 1 }},
 		{"oversized baseline", func(r *AgentDeliveryState) { r.BeforeOutput = strings.Repeat("x", agentDeliveryMaxCaptureBytes+1) }},
 		{"oversized result", func(r *AgentDeliveryState) { r.Output = strings.Repeat("x", agentDeliveryMaxOutputBytes+1) }},
 		{"missing start", func(r *AgentDeliveryState) { r.StartedAt = time.Time{} }},

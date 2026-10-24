@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 	"unicode/utf8"
+
+	"github.com/Dicklesworthstone/ntm/internal/agent"
 )
 
 func TestAgentTranscriptPreservesTextAndExcludesChromeOnlyCapture(t *testing.T) {
@@ -302,5 +304,201 @@ func TestLastMeaningfulOutputCodexComposer(t *testing.T) {
 		if strings.Contains(got, "context left") {
 			t.Errorf("marker %q: status line below the composer survived:\n%s", marker, got)
 		}
+	}
+}
+
+// These fixtures reproduce the default pi 1.3 composer/footer shape from
+// ntm#361 and pi's Editor, CustomEditor and FooterComponent renderers. Unlike
+// omp, pi has no vertical box edges or prompt glyph in its input area.
+const piPaneRule = "────────────────────────────────────────────────────────────────"
+const piPaneFooter = "~/projects/demo (main)\n↑4.4k ↓380 R2.1k $0.013 2.6%/1.0M (auto)  claude-sonnet-4"
+const piIdleComposer = piPaneRule + "\n \n" + piPaneRule + "\n" + piPaneFooter
+
+func TestPiTranscriptExcludesComposerAndFooter(t *testing.T) {
+	const transcript = " Review the retry path.\n\n The refresh runs once.\n  Cancellation is preserved."
+	workingRule := "── ⠹ Working " + strings.Repeat("─", 51)
+	scrolledTop := strings.Repeat("─", 27) + " ↑ 2 more " + strings.Repeat("─", 27)
+	scrolledBottom := strings.Repeat("─", 27) + " ↓ 3 more " + strings.Repeat("─", 27)
+	for _, tc := range []struct {
+		name     string
+		composer string
+	}{
+		{"idle", piIdleComposer},
+		{"working", workingRule + "\n \n" + piPaneRule + "\n" + piPaneFooter},
+		{"multiline draft", piPaneRule + "\n SHIP-VERDICT\n this has not been submitted\n third draft line\n" + piPaneRule + "\n" + piPaneFooter},
+		{"draft contains a rule", piPaneRule + "\n DRAFT-MUST-NOT-LEAK\n " + strings.Repeat("─", 62) + " \n more draft text\n" + piPaneRule + "\n" + piPaneFooter},
+		{"tall draft", piPaneRule + "\n" + strings.Repeat(" draft row\n", 50) + piPaneRule + "\n" + piPaneFooter},
+		{"scrolled draft", scrolledTop + "\n visible middle draft\n" + scrolledBottom + "\n" + piPaneFooter},
+		{"autocomplete", piPaneRule + "\n /mod\n" + piPaneRule + "\n → /model    Select a model\n   /models   Configure available models\n   (1/2)\n" + piPaneFooter},
+		{"empty autocomplete", piPaneRule + "\n /does-not-exist\n" + piPaneRule + "\n  No matching commands\n" + piPaneFooter},
+		{"extension status", piIdleComposer + "\nchecks: SHIP-VERDICT (extension status)"},
+		{"terminal padding", piIdleComposer + strings.Repeat("\n ", 40)},
+		{"Windows cwd", piPaneRule + "\n \n" + piPaneRule + "\nC:\\work\\demo (main)\n0.0%/200k (auto)  no-model"},
+		{"UNC cwd", piPaneRule + "\n \n" + piPaneRule + "\n\\\\server\\share\\demo\n0.0%/200k (auto)  no-model"},
+		{"home cwd", piPaneRule + "\n \n" + piPaneRule + "\n~\n?/200k (auto)  no-model"},
+		{"subscription usage", piPaneRule + "\n \n" + piPaneRule + "\n~/demo\n↑3.2k ↓143 $0.000 (sub) 1.2%/200k (auto)  kimi"},
+		{"narrow truncated usage", strings.Repeat("─", 26) + "\n \n" + strings.Repeat("─", 26) + "\n~/demo (main)\n↑444k ↓36k R377k CH99..."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, kind := range []string{"pi", " PI "} {
+				got := AgentTranscript(transcript+"\n"+tc.composer, kind)
+				if got != transcript {
+					t.Fatalf("AgentTranscript(%s) = %q, want %q", kind, got, transcript)
+				}
+				if got, complete := AgentResponseTranscript(transcript+"\n"+tc.composer, kind); !complete || got != transcript {
+					t.Fatalf("complete pi frame was not usable: got %q, %v", got, complete)
+				}
+			}
+		})
+	}
+	if got := AgentTranscript(piIdleComposer, "pi"); got != "" {
+		t.Fatalf("chrome-only pane became response evidence: %q", got)
+	}
+	if got, complete := AgentResponseTranscript(piIdleComposer, "pi"); !complete || got != "" {
+		t.Fatalf("complete chrome-only frame = %q, %v; want empty, true", got, complete)
+	}
+	colored := "\x1b[2m" + strings.ReplaceAll(piIdleComposer, "\n", "\x1b[0m\n\x1b[2m") + "\x1b[0m"
+	if got := AgentTranscript(transcript+"\n"+colored, "pi"); got != transcript {
+		t.Fatalf("ANSI chrome leaked into the transcript: %q", got)
+	}
+}
+
+func TestPiTranscriptRequiresCompleteRecognizableChrome(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		pane string
+	}{
+		{"empty", ""},
+		{"plain output", "first line\nsecond line"},
+		{"transcript horizontal rules", "tool output\n" + piPaneRule + "\nresult between rules\n" + piPaneRule},
+		{"missing cwd", "answer\n" + piPaneRule + "\n \n" + piPaneRule + "\n0.0%/1.0M (auto)"},
+		{"unknown custom footer", "answer\n" + piPaneRule + "\n \n" + piPaneRule + "\ncustom footer\nready"},
+		{"prose below cwd", "answer\n" + piPaneRule + "\n \n" + piPaneRule + "\n~/demo\nA sentence mentioning 0.0%/1.0M"},
+		{"mismatched rule widths", "answer\n────\n \n" + piPaneRule + "\n" + piPaneFooter},
+		{"arbitrary top rule text", "answer\n── an ordinary output heading " + strings.Repeat("─", 34) + "\n \n" + piPaneRule + "\n" + piPaneFooter},
+		{"unknown top after transcript rule", "answer\n" + piPaneRule + "\nkeep this result\n── arbitrary heading " + strings.Repeat("─", 43) + "\n \n" + piPaneRule + "\n" + piPaneFooter},
+		{"missing top border", "answer\n draft\n" + piPaneRule + "\n" + piPaneFooter},
+		{"missing input row", "answer\n" + piPaneRule + "\n" + piPaneRule + "\n" + piPaneFooter},
+		{"incomplete redraw", "answer\n" + piPaneRule + "\n draft"},
+		{"unexpected row before footer", "answer\n" + piPaneRule + "\n \n" + piPaneRule + "\nThis is transcript output\n" + piPaneFooter},
+		{"exited to shell", "answer\n" + piIdleComposer + "\nuser@host:~/demo$"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := AgentTranscript(tc.pane, "pi"); got != tc.pane {
+				t.Fatalf("unrecognized/incomplete pane was trimmed: got %q, want %q", got, tc.pane)
+			}
+			if got, complete := AgentResponseTranscript(tc.pane, "pi"); complete || got != "" {
+				t.Fatalf("unrecognized/incomplete frame became response evidence: %q, %v", got, complete)
+			}
+		})
+	}
+	transcript := "First section\n" + piPaneRule + "\nSecond section"
+	if got := AgentTranscript(transcript+"\n"+piIdleComposer, "pi"); got != transcript {
+		t.Fatalf("real transcript rule was lost: %q", got)
+	}
+}
+
+func TestPiResponseTranscriptRejectsDraftsDuringRepaint(t *testing.T) {
+	const prompt = "Review the retry path and return SHIP-VERDICT."
+	// The unique prompt can be present in the transcript while a following
+	// unsubmitted draft contains the expected completion marker. Neither a
+	// prompt hash match nor a stale idle observation makes that draft a reply.
+	prefix := "Pi v1.3.0\nescape interrupt\n\n " + prompt + "\n" + piPaneRule + "\n SHIP-VERDICT"
+	for _, tc := range []struct{ name, pane string }{
+		{"cleared frame", "\n \n"},
+		{"dangling top border", prefix},
+		{"missing footer", prefix + "\n" + piPaneRule},
+		{"cwd only", prefix + "\n" + piPaneRule + "\n~/projects/demo (main)"},
+		{"half painted stats", prefix + "\n" + piPaneRule + "\n~/projects/demo (main)\n↑4.4k ↓"},
+		{"custom footer", prefix + "\n" + piPaneRule + "\nWorkspace: demo\nReady"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got, complete := AgentResponseTranscript(tc.pane, "pi"); complete || got != "" {
+				t.Fatalf("partial repaint exposed draft evidence: %q, %v", got, complete)
+			}
+		})
+	}
+	full := prefix + "\n" + piPaneRule + "\n" + piPaneFooter
+	want := "Pi v1.3.0\nescape interrupt\n\n " + prompt
+	if got, complete := AgentResponseTranscript(full, "pi"); !complete || got != want {
+		t.Fatalf("complete repaint retained draft or lost prompt: %q, %v", got, complete)
+	}
+}
+
+func TestPiTranscriptPreservesStartupBoundary(t *testing.T) {
+	for _, header := range []string{
+		" ▀▀█  v1.3.0\n █▀ █ escape interrupt · ctrl+c/ctrl+d clear/exit",
+		"Pi v1.3.0\nescape interrupt · ctrl+c/ctrl+d clear/exit",
+	} {
+		want := header + "\n\nThe startup transcript."
+		before := "[user@host demo]$ cd '/home/user/projects/demo' && pi --model x\n\n" + want + "\n" + piIdleComposer
+		after := "\n" + want + "\n" + piIdleComposer
+		if got := AgentTranscript(before, "pi"); got != want {
+			t.Fatalf("launch preamble remained: %q", got)
+		}
+		if got := AgentTranscript(after, "pi"); got != want {
+			t.Fatalf("repaint changed the startup boundary: %q", got)
+		}
+		quoted := "Keep this answer before the quoted banner.\n" + want
+		if got := AgentTranscript(quoted+"\n"+piIdleComposer, "pi"); got != quoted {
+			t.Fatalf("a later quoted banner erased transcript text: %q", got)
+		}
+	}
+	plain := "Header disabled; this is real output."
+	if got := AgentTranscript(plain+"\n"+piIdleComposer, "pi"); got != plain {
+		t.Fatalf("bannerless transcript changed: %q", got)
+	}
+}
+
+func TestPiChromeDoesNotChangeOtherAgents(t *testing.T) {
+	pi := "pi answer\n" + piIdleComposer
+	for _, kind := range []string{"omp", "oh-my-pi", "cc", "cod", "unknown"} {
+		if got := AgentTranscript(pi, kind); got != pi {
+			t.Fatalf("pi chrome recognized for %s: %q", kind, got)
+		}
+		if got, complete := AgentResponseTranscript(pi, kind); !complete || got != pi {
+			t.Fatalf("pi evidence restrictions changed %s: %q, %v", kind, got, complete)
+		}
+	}
+	for _, fixture := range []string{"omp_nerd_idle_done.txt", "omp_unicode_working.txt", "omp_ascii_idle_done.txt"} {
+		pane := loadOmpFixture(t, fixture)
+		if got := AgentTranscript(pane, "pi"); got != StripANSI(pane) {
+			t.Fatalf("omp fixture %s was treated as pi: %q", fixture, got)
+		}
+	}
+}
+
+func TestPiPaneReadinessAndPreviewUseRegisteredPlugin(t *testing.T) {
+	// #362 already supplies plugin readiness to the shared classifiers. Pin
+	// pi's real idle/working frames through that path rather than creating a
+	// second pi-only readiness implementation.
+	if err := agent.RegisterPlugin("pi", []string{`^─{4,}$`}, []string{`^─{2,}\s*[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]`}, nil); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	working := " Reading the retry implementation.\n── ⠹ Working " + strings.Repeat("─", 51) + "\n \n" + piPaneRule + "\n" + piPaneFooter
+	idle := "The retry preserves cancellation.\n" + piIdleComposer
+	for _, tc := range []struct {
+		name string
+		pane string
+		last time.Time
+		want AgentState
+	}{
+		{"idle despite busy sibling", idle, now, StateIdle},
+		{"working despite low velocity", working, now.Add(-time.Hour), StateWorking},
+		{"historical spinner is not current work", "── ⠹ Working ──\n" + strings.Repeat("historical output\n", 30) + idle, now, StateIdle},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := NewDetector().AnalyzeAt("%71", "demo__pi_1", "pi", tc.pane, tc.last, now)
+			if got.State != tc.want {
+				t.Fatalf("pi state = %s, want %s", got.State, tc.want)
+			}
+			if idle := DetectIdleFromOutput(tc.pane, "pi"); idle != (tc.want == StateIdle) {
+				t.Fatalf("pi idle = %v, want %v", idle, tc.want == StateIdle)
+			}
+			if strings.Contains(got.LastOutput, "~/projects/demo") || strings.Contains(got.LastOutput, "2.6%/1.0M") {
+				t.Fatalf("preview included pinned footer: %q", got.LastOutput)
+			}
+		})
 	}
 }

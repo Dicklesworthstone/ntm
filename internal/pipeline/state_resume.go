@@ -595,23 +595,26 @@ const AgentDeliveryResolutionAccept = "accept"
 // A sending record is deliberately ambiguous: recovery must not assume that
 // absence of a delivered timestamp means no send.
 type AgentDeliveryState struct {
-	Version        int       `json:"version"`
-	StepID         string    `json:"step_id"`
-	Kind           string    `json:"kind"`
-	Session        string    `json:"session"`
-	Endpoint       string    `json:"endpoint"`
-	PaneID         string    `json:"pane_id"`
-	PanePID        int       `json:"pane_pid"`
-	AgentType      string    `json:"agent_type"`
-	StepHash       string    `json:"step_hash"`
-	PromptHash     string    `json:"prompt_hash"`
-	PromptEchoHash string    `json:"prompt_echo_hash"`
-	Status         string    `json:"status"`
-	BeforeOutput   string    `json:"before_output,omitempty"`
-	Output         string    `json:"output,omitempty"`
-	StartedAt      time.Time `json:"started_at"`
-	DeliveredAt    time.Time `json:"delivered_at,omitempty"`
-	CompletedAt    time.Time `json:"completed_at,omitempty"`
+	Version        int    `json:"version"`
+	StepID         string `json:"step_id"`
+	Kind           string `json:"kind"`
+	Session        string `json:"session"`
+	Endpoint       string `json:"endpoint"`
+	PaneID         string `json:"pane_id"`
+	PanePID        int    `json:"pane_pid"`
+	AgentType      string `json:"agent_type"`
+	StepHash       string `json:"step_hash"`
+	PromptHash     string `json:"prompt_hash"`
+	PromptEchoHash string `json:"prompt_echo_hash"`
+	// PromptEchoLength bounds pi's hash-based repaint recovery without saving
+	// prompt text. Older receipts leave it zero and retain strict boundaries.
+	PromptEchoLength int       `json:"prompt_echo_length,omitempty"`
+	Status           string    `json:"status"`
+	BeforeOutput     string    `json:"before_output,omitempty"`
+	Output           string    `json:"output,omitempty"`
+	StartedAt        time.Time `json:"started_at"`
+	DeliveredAt      time.Time `json:"delivered_at,omitempty"`
+	CompletedAt      time.Time `json:"completed_at,omitempty"`
 	// Resolution fields remain values so snapshots cannot share mutable audit
 	// data. The boundary hash keeps the accepted receipt identity stable after
 	// ordinary resume advances or clears BeforeOutput.
@@ -765,6 +768,9 @@ func validateAgentDelivery(key string, record AgentDeliveryState, session string
 	}
 	if len(record.BeforeOutput) > agentDeliveryMaxCaptureBytes || len(record.Output) > agentDeliveryMaxOutputBytes {
 		return invalid("captured output exceeds the agent delivery size limit")
+	}
+	if record.PromptEchoLength < 0 || record.PromptEchoLength > agentDeliveryMaxCaptureBytes {
+		return invalid("prompt echo length exceeds the agent delivery size limit")
 	}
 	if record.StartedAt.IsZero() {
 		return invalid("start timestamp is missing")

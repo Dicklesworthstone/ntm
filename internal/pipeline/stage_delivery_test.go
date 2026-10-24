@@ -2,6 +2,8 @@ package pipeline
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"strings"
 	"testing"
@@ -31,6 +33,7 @@ type stageDeliveryClient struct {
 	pasteErr    error
 	verifyErr   error
 	echoOnly    bool
+	onPaste     func(int, string)
 }
 
 func (c *stageDeliveryClient) Endpoint() string { return c.endpoint }
@@ -82,6 +85,9 @@ func (c *stageDeliveryClient) PasteKeysContext(ctx context.Context, target, prom
 	}
 	c.pastes++
 	c.prompt = prompt
+	if c.onPaste != nil {
+		c.onPaste(c.pastes, prompt)
+	}
 	return c.pasteErr
 }
 func (c *stageDeliveryClient) VerifySubmission(ctx context.Context, target, prompt, _ string, width int) error {
@@ -260,6 +266,147 @@ func TestAdHocStageRejectsReplacedResponse(t *testing.T) {
 	_, err := executor.executeAdHocStage(ctx, Stage{AgentType: "cc", Prompt: "Original task"}, client.pane.ID, "", AgentDeliveryState{})
 	if err == nil || !strings.Contains(err.Error(), "changed process lifetime") || client.pastes != 1 {
 		t.Fatalf("adopted a replacement agent's reply: err=%v sends=%d", err, client.pastes)
+	}
+}
+
+// pi uses an inline transcript and a bottom-pinned rule pair with a cwd and
+// model/usage footer. Drafts between the rules are never response evidence.
+func piStagePane(transcript, draft string) string {
+	rule := strings.Repeat("─", 48)
+	return transcript + "\n\n" + rule + "\n" + draft + "\n" + rule + "\n~/projects/demo (main)\n0.0%/1.0M (auto)  DeepSeek-V4.1-Flash"
+}
+
+func TestPiAdHocStagesProgressAcrossFullRepaints(t *testing.T) {
+	executor, client, _ := newStageDeliveryFixture(t)
+	client.pane.Type, client.pane.Command = tmux.AgentType("pi"), "pi"
+	client.before = piStagePane("Pi v1.3.0\nAn unrelated earlier turn.", "")
+	client.onPaste = func(call int, prompt string) {
+		answer := "First response: review the inventory."
+		if call == 2 {
+			answer = "Second response: inventory review is complete."
+		}
+		client.after = piStagePane("Pi v1.3.0\n\n"+prompt+"\n\n"+answer, "draft text is not an answer")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	first, err := executor.executeAdHocStage(ctx, Stage{AgentType: "pi", Prompt: "Inspect the inventory."}, client.pane.ID, "", AgentDeliveryState{})
+	if err != nil {
+		t.Fatalf("first repainted stage failed: %v", err)
+	}
+	second, err := executor.executeAdHocStage(ctx, Stage{AgentType: "pi", Prompt: "Verify the preceding inventory review."}, client.pane.ID, first.Output, first)
+	if err != nil {
+		t.Fatalf("second repainted stage failed: %v", err)
+	}
+	if client.pastes != 2 || client.verifies != 2 || !strings.Contains(client.prompt, "See previous output above") {
+		t.Fatalf("pipeline did not progress exactly once per stage: %+v", client)
+	}
+	if !strings.Contains(first.Output, "First response:") || !strings.Contains(second.Output, "Second response:") {
+		t.Fatalf("same-frame answers lost: first=%q second=%q", first.Output, second.Output)
+	}
+	for _, output := range []string{first.Output, second.Output} {
+		if strings.Contains(output, "An unrelated earlier turn") || strings.Contains(output, "draft text") || strings.Contains(output, "DeepSeek") {
+			t.Fatalf("history or composer reached downstream output: %q", output)
+		}
+	}
+	if strings.Contains(second.Output, "First response:") {
+		t.Fatalf("second stage misattributed prior response: %q", second.Output)
+	}
+}
+
+func TestPiAdHocRepaintRequiresMoreThanIdleEcho(t *testing.T) {
+	for _, incomplete := range []bool{false, true} {
+		t.Run(map[bool]string{false: "complete composer", true: "incomplete footer"}[incomplete], func(t *testing.T) {
+			executor, client, detector := newStageDeliveryFixture(t)
+			client.pane.Type, client.pane.Command = tmux.AgentType("pi"), "pi"
+			client.before = piStagePane("Old conversation", "")
+			client.onPaste = func(_ int, prompt string) {
+				client.after = piStagePane(prompt, "A plausible answer still in the composer")
+				if incomplete {
+					client.after = strings.TrimSuffix(client.after, "0.0%/1.0M (auto)  DeepSeek-V4.1-Flash")
+				}
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+			defer cancel()
+			_, err := executor.executeAdHocStage(ctx, Stage{AgentType: "pi", Prompt: "Review the intake."}, client.pane.ID, "", AgentDeliveryState{})
+			if !errors.Is(err, context.DeadlineExceeded) || client.pastes != 1 || detector.calls < idleStablePolls {
+				t.Fatalf("idle echo/draft fabricated progress: err=%v sends=%d idle=%d", err, client.pastes, detector.calls)
+			}
+		})
+	}
+}
+
+func TestPiAdHocStageRefusesIncompleteInitialBoundary(t *testing.T) {
+	executor, client, _ := newStageDeliveryFixture(t)
+	client.pane.Type, client.pane.Command = tmux.AgentType("pi"), "pi"
+	client.before = "old transcript\n" + strings.Repeat("─", 48) + "\nunsent draft"
+	_, err := executor.executeAdHocStage(context.Background(), Stage{AgentType: "pi", Prompt: "Review the intake."}, client.pane.ID, "", AgentDeliveryState{})
+	if !errors.Is(err, errIncompleteAgentCapture) || client.pastes != 0 {
+		t.Fatalf("incomplete initial boundary authorized delivery: err=%v sends=%d", err, client.pastes)
+	}
+}
+
+func TestAgentDeliveryPiRepaintKeepsEvidenceBoundaries(t *testing.T) {
+	const prompt = "Review the intake."
+	digest := sha256.Sum256([]byte(status.NormalizeAgentEcho(prompt)))
+	base := AgentDeliveryState{AgentType: "pi", BeforeOutput: "Old conversation", PromptEchoHash: hex.EncodeToString(digest[:]), PromptEchoLength: len(prompt)}
+	for _, tc := range []struct {
+		name, before, output, current string
+		ready, refuse, unchanged      bool
+	}{
+		{"blank repaint", base.BeforeOutput, "", "\n", false, false, true},
+		{"partial old frame", base.BeforeOutput, "", "Old", false, false, true},
+		{"startup only after empty boundary", "", "", "Pi v1.3.0", false, false, true},
+		{"startup and echo after empty boundary", "", "", "Pi v1.3.0\n" + prompt, false, false, false},
+		{"same-frame response", base.BeforeOutput, "", prompt + "\nCurrent response", true, false, false},
+		{"prompt first then repaint", base.BeforeOutput + "\n" + prompt, "\n" + prompt, prompt + "\nCurrent response", true, false, false},
+		{"echo only repaint", base.BeforeOutput, "", prompt, false, false, false},
+		{"old prompt ambiguous", prompt + "\nOld conversation", "", prompt + "\nWrong turn", false, true, true},
+		{"duplicate prompt", base.BeforeOutput, "", prompt + "\nA\n" + prompt + "\nB", false, true, true},
+		{"unknown replacement", base.BeforeOutput, "", "Another task\nAnother response", false, true, true},
+		{"blank after partial answer", prompt + "\nPartial answer", prompt + "\nPartial answer", "", false, false, true},
+		{"replacement after partial answer", prompt + "\nPartial answer", prompt + "\nPartial answer", prompt + "\nUnrelated replacement", false, true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			record := base
+			record.BeforeOutput, record.Output = tc.before, tc.output
+			got, ready, err := observeAgentDelivery(record, tc.current)
+			if (err != nil) != tc.refuse || ready != tc.ready {
+				t.Fatalf("observation: record=%+v ready=%v err=%v", got, ready, err)
+			}
+			if tc.unchanged && (got.BeforeOutput != record.BeforeOutput || got.Output != record.Output) {
+				t.Fatalf("unattributed frame changed evidence: before=%+v after=%+v", record, got)
+			}
+			if !tc.unchanged && strings.Count(got.Output, prompt) != 1 {
+				t.Fatalf("repaint dropped or duplicated prompt attribution: %q", got.Output)
+			}
+		})
+	}
+	// A blank repaint followed by restoration of the original screen never
+	// promotes its old text to a fresh response.
+	record, _, err := observeAgentDelivery(base, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored, ready, err := observeAgentDelivery(record, base.BeforeOutput)
+	if err != nil || ready || restored.Output != "" {
+		t.Fatalf("restored old history became a response: %+v, %v, %v", restored, ready, err)
+	}
+	for _, agentType := range []string{"cc", "cod", "omp"} {
+		record := base
+		record.AgentType = agentType
+		if _, _, err := observeAgentDelivery(record, prompt+"\nCurrent response"); err == nil {
+			t.Fatalf("%s acquired pi's repaint exception", agentType)
+		}
+	}
+	legacy := base
+	legacy.PromptEchoLength = 0
+	if _, _, err := observeAgentDelivery(legacy, prompt+"\nCurrent response"); err == nil {
+		t.Fatal("legacy receipt without complete echo identity recovered a replacement")
+	}
+	legacy.BeforeOutput = ""
+	observed, ready, err := observeAgentDelivery(legacy, "Pi v1.3.0\n"+prompt)
+	if err != nil || ready || observed.BeforeOutput != "" || observed.Output != "" {
+		t.Fatalf("legacy empty boundary trusted startup text: %+v, %v, %v", observed, ready, err)
 	}
 }
 

@@ -12,6 +12,7 @@ package cli
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,6 +26,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	agentpkg "github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	dispatchsvc "github.com/Dicklesworthstone/ntm/internal/dispatch"
 	"github.com/Dicklesworthstone/ntm/internal/health"
@@ -145,7 +147,8 @@ type workflowRunOptions struct {
 	Session        string
 	ProjectRoot    string
 	Vars           map[string]string
-	PanePIDs       map[string]int // Live pane lifetimes, supplied by the tmux adapter.
+	PanePIDs       map[string]int    // Live pane lifetimes, supplied by the tmux adapter.
+	PaneTypes      map[string]string // Agent types captured alongside those lifetimes.
 	MaxTransitions int
 	Interval       time.Duration
 	FireManual     bool
@@ -516,6 +519,9 @@ func (r *workflowRunner) dispatchStageLocked(ctx context.Context, stage string, 
 		}
 		agent := workflow.CoordinatorAgent{ID: delivery.Pane, Role: delivery.Role}
 		prompt := r.stagePrompt(stage, agent, delivery.Turn)
+		if err := r.pinPiDispatchPrompt(stage, agent.ID, prompt); err != nil {
+			return err
+		}
 		r.ports.notify("workflow %s: stage %s → %s (%s), turn %d", r.template.Name, stageLabel(stage), agent.ID, agent.Role, delivery.Turn)
 		if err := r.ports.dispatch(ctx, r.opts.Session, agent.ID, prompt); err != nil {
 			// The port may have typed part or all of the prompt. Leave sending
@@ -531,6 +537,37 @@ func (r *workflowRunner) dispatchStageLocked(ctx context.Context, stage string, 
 		}
 	}
 	return nil
+}
+
+// pinPiDispatchPrompt runs before sending. The production preparation hook
+// replaces the initial fingerprint with the exact final message after all
+// enrichment and redaction, while the delivery is still durably "sending".
+func (r *workflowRunner) pinPiDispatchPrompt(stage, pane, prompt string) error {
+	if r.workflowTranscriptType(pane) != "pi" {
+		return nil
+	}
+	echo := status.NormalizeAgentEcho(prompt)
+	if len(echo) == 0 || len(echo) > workflowCaptureMaxBytes {
+		return fmt.Errorf("workflow pi prompt for pane %s exceeds the observable echo bounds", pane)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.state == nil || r.state.CurrentStage != stage {
+		return errors.New("workflow stage changed before its pi prompt could be recorded")
+	}
+	for i := range r.state.Dispatches {
+		delivery := &r.state.Dispatches[i]
+		if delivery.Pane != pane {
+			continue
+		}
+		if delivery.Status != "sending" {
+			return fmt.Errorf("workflow pi delivery for pane %s is not in progress", pane)
+		}
+		delivery.PromptEchoHash = fmt.Sprintf("%x", sha256.Sum256([]byte(echo)))
+		delivery.PromptEchoLength = len(echo)
+		return r.saveCheckpointLocked()
+	}
+	return fmt.Errorf("workflow pi pane %s has no current delivery intent", pane)
 }
 
 // checkpointTargets reuses the saved plan rather than consuming another
@@ -617,6 +654,12 @@ func (r *workflowRunner) loadCheckpoint() error {
 			return errors.New("workflow checkpoint has an invalid stage delivery plan")
 		}
 		seen[delivery.Pane] = true
+		if delivery.PromptEchoHash != "" || delivery.PromptEchoLength != 0 {
+			digest, err := hex.DecodeString(delivery.PromptEchoHash)
+			if err != nil || len(digest) != sha256.Size || delivery.PromptEchoLength <= 0 || delivery.PromptEchoLength > workflowCaptureMaxBytes {
+				return errors.New("workflow checkpoint has invalid delivered prompt evidence")
+			}
+		}
 		switch delivery.Status {
 		case "pending", "delivered":
 		case "sending":
@@ -664,6 +707,9 @@ func (r *workflowRunner) validateSavedEvidence(state *workflow.WorkflowState) er
 		pane, ok := e.Panes[agent.ID]
 		if !ok || pane.PID != state.PanePIDs[agent.ID] || len(pane.Capture) > workflowCaptureMaxBytes || len(pane.Fresh) > workflowEvidenceMaxBytes || pane.LastActivity.IsZero() || pane.LastActivity.After(r.ports.now()) {
 			return fmt.Errorf("workflow checkpoint has invalid output evidence for pane %s", agent.ID)
+		}
+		if pane.AgentType != r.workflowTranscriptType(agent.ID) {
+			return fmt.Errorf("workflow pane %s transcript normalization changed; inspect the stage before a deliberate --restart", agent.ID)
 		}
 	}
 	for index, panes := range e.Matches {
@@ -736,6 +782,13 @@ func (r *workflowRunner) captureStageBoundary(ctx context.Context) (map[string]w
 	return panes, nil
 }
 
+func (r *workflowRunner) workflowTranscriptType(pane string) string {
+	if strings.EqualFold(strings.TrimSpace(r.opts.PaneTypes[pane]), "pi") {
+		return "pi"
+	}
+	return ""
+}
+
 func (r *workflowRunner) captureWorkflowPane(ctx context.Context, pane string) (workflow.StagePaneEvidence, error) {
 	if err := r.validatePanes(ctx); err != nil {
 		return workflow.StagePaneEvidence{}, err
@@ -750,9 +803,20 @@ func (r *workflowRunner) captureWorkflowPane(ctx context.Context, pane string) (
 	if err := r.validatePanes(ctx); err != nil {
 		return workflow.StagePaneEvidence{}, err
 	}
-	return workflow.StagePaneEvidence{
+	captured := workflow.StagePaneEvidence{
 		PID: r.opts.PanePIDs[pane], Capture: strings.TrimRight(text, "\n"), LastActivity: r.ports.now(),
-	}, nil
+	}
+	if r.workflowTranscriptType(pane) == "pi" {
+		captured.AgentType = "pi"
+		transcript, complete := status.AgentResponseTranscript(text, "pi")
+		captured.Incomplete = !complete
+		captured.Capture = strings.TrimRight(transcript, "\n")
+		// Chrome is not verdict evidence, but its changes and working signal
+		// still count as activity for all_agents_idle. Reuse plugin readiness.
+		captured.ScreenHash = fmt.Sprintf("%x", sha256.Sum256([]byte(text)))
+		captured.Working = agentpkg.PluginActivelyWorking(status.StripANSI(text), agentpkg.AgentType("pi"), 0)
+	}
+	return captured, nil
 }
 
 // A pending recipient may finish unrelated work while earlier recipients are
@@ -762,6 +826,9 @@ func (r *workflowRunner) refreshDeliveryBoundary(ctx context.Context, pane strin
 	captured, err := r.captureWorkflowPane(ctx, pane)
 	if err != nil {
 		return err
+	}
+	if captured.Incomplete {
+		return fmt.Errorf("workflow pi pane %s has an incomplete or unsupported composer; no prompt sent", pane)
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -816,6 +883,30 @@ func workflowNewEvidence(before, after string) (string, error) {
 		}
 	}
 	return "", errors.New("the saved output boundary is no longer visible (scrollback loss or screen redraw); inspect the stage before a deliberate --restart")
+}
+
+// recoverPiWorkflowEvidence is called under r.mu. A repaint can only adopt
+// this stage's delivered prompt, never an arbitrary idle replacement screen.
+// The fingerprint comes from the final prepared delivery, never a newly
+// rendered template. Legacy receipts without a fingerprint remain strict.
+func (r *workflowRunner) recoverPiWorkflowEvidence(agent workflow.CoordinatorAgent, prior workflow.StagePaneEvidence, after string) (string, bool) {
+	for _, delivery := range r.state.Dispatches {
+		if delivery.Pane != agent.ID || delivery.Role != agent.Role || delivery.Status != "delivered" {
+			continue
+		}
+		before := prior.Capture
+		if strings.TrimSpace(prior.Fresh) != "" {
+			// An already attributed answer cannot be replaced. An echo alone
+			// may be redrawn, provided its exact suffix is still accounted for.
+			fresh := status.NormalizeAgentEcho(prior.Fresh)
+			if len(fresh) != delivery.PromptEchoLength || fmt.Sprintf("%x", sha256.Sum256([]byte(fresh))) != delivery.PromptEchoHash || !strings.HasSuffix(before, prior.Fresh) {
+				return "", false
+			}
+			before = strings.TrimSuffix(before, prior.Fresh)
+		}
+		return status.RecoverPiRepaint(before, after, delivery.PromptEchoHash, delivery.PromptEchoLength)
+	}
+	return "", false
 }
 
 // validateVerdictPrompt refuses ambiguous templates before they can echo their
@@ -883,24 +974,51 @@ func (r *workflowRunner) observe(ctx context.Context) (*workflowObservation, err
 	changed := false
 	for _, agent := range r.agents {
 		prior, ok := r.state.Evidence.Panes[agent.ID]
-		if !ok || prior.PID != current[agent.ID].PID {
+		frame := current[agent.ID]
+		if !ok || prior.PID != frame.PID || prior.AgentType != frame.AgentType {
 			r.mu.Unlock()
 			return nil, fmt.Errorf("workflow pane %s lost its stage identity", agent.ID)
+		}
+		isPi := frame.AgentType == "pi"
+		if isPi && (frame.Incomplete || (prior.Capture != "" && (strings.TrimSpace(frame.Capture) == "" || (len(frame.Capture) < len(prior.Capture) && strings.HasPrefix(prior.Capture, frame.Capture))))) {
+			// Keep the last complete boundary through a blank or partially
+			// restored screen. Restored history must not become fresh output.
+			prior.LastActivity = r.ports.now()
+			prior.ScreenHash = frame.ScreenHash
+			evidence.Panes[agent.ID] = prior
+			tctx.Activities = append(tctx.Activities, workflow.AgentActivity{Role: agent.Role, LastActivity: prior.LastActivity})
+			changed = true
+			continue
 		}
 		delta := ""
 		if r.stageHasVerdict(r.state.CurrentStage) {
 			var err error
-			delta, err = workflowNewEvidence(prior.Capture, current[agent.ID].Capture)
+			delta, err = workflowNewEvidence(prior.Capture, frame.Capture)
+			if isPi && (err != nil || prior.Capture == "") {
+				if recovered, trusted := r.recoverPiWorkflowEvidence(agent, prior, frame.Capture); trusted {
+					delta, err, prior.Fresh = recovered, nil, ""
+				} else if prior.Capture == "" {
+					// A capture taken mid-repaint has no transcript boundary.
+					// Wait for a verifiable prompt rather than trusting a banner
+					// or restored history as an answer to the current turn.
+					prior.LastActivity = r.ports.now()
+					prior.ScreenHash = frame.ScreenHash
+					evidence.Panes[agent.ID] = prior
+					tctx.Activities = append(tctx.Activities, workflow.AgentActivity{Role: agent.Role, LastActivity: prior.LastActivity})
+					changed = true
+					continue
+				}
+			}
 			if err != nil {
 				r.mu.Unlock()
 				return nil, fmt.Errorf("workflow pane %s: %w", agent.ID, err)
 			}
 		}
-		if prior.Capture != current[agent.ID].Capture {
+		if prior.Capture != frame.Capture || prior.ScreenHash != frame.ScreenHash || frame.Working {
 			prior.LastActivity = r.ports.now()
 			changed = true
 		}
-		prior.Capture = current[agent.ID].Capture
+		prior.Capture, prior.ScreenHash = frame.Capture, frame.ScreenHash
 		// Keep the exact response prefix until its applicable verdicts have
 		// been recorded. Trimming changes regexp anchors and can manufacture
 		// an approval at the beginning of a retained suffix.
@@ -2167,10 +2285,12 @@ func runWorkflowRun(ctx context.Context, ref string, flags workflowRunCLIFlags) 
 		return failEarly(err)
 	}
 	panePIDs := make(map[string]int, len(agents))
+	paneTypes := make(map[string]string, len(agents))
 	for _, agent := range agents {
 		for _, pane := range panes {
 			if pane.ID == agent.ID {
 				panePIDs[pane.ID] = pane.PID
+				paneTypes[pane.ID] = string(pane.Type)
 				break
 			}
 		}
@@ -2198,6 +2318,7 @@ func runWorkflowRun(ctx context.Context, ref string, flags workflowRunCLIFlags) 
 		ProjectRoot:      projectRoot,
 		Vars:             vars,
 		PanePIDs:         panePIDs,
+		PaneTypes:        paneTypes,
 		MaxAgentRestarts: resilienceCfg.MaxRestarts,
 		AgentFaultPolls:  resilienceCfg.CrashThreshold,
 		MaxTransitions:   flags.MaxTransitions,
@@ -2250,6 +2371,9 @@ func runWorkflowRun(ctx context.Context, ref string, flags workflowRunCLIFlags) 
 				return err
 			}
 			if err := runner.refreshDeliveryBoundary(ctx, pane.ID); err != nil {
+				return err
+			}
+			if err := runner.pinPiDispatchPrompt(stage, pane.ID, delivery.Message); err != nil {
 				return err
 			}
 		}

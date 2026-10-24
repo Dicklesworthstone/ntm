@@ -2,6 +2,9 @@ package pipeline
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -107,6 +110,9 @@ func (e *Executor) executeAdHocStage(ctx context.Context, stage Stage, paneID, p
 			prompt += "\n\nResult from previous stage:\n" + previousOutput
 		}
 	}
+	normalizedPrompt := status.NormalizeAgentEcho(prompt)
+	echoSum := sha256.Sum256([]byte(normalizedPrompt))
+	record.BeforeOutput, record.PromptEchoHash, record.PromptEchoLength = before, hex.EncodeToString(echoSum[:]), len(normalizedPrompt)
 	// Capture can block or race an interactive UI transition. Refresh the
 	// shared composer gate and process identity immediately before transport.
 	if err := e.tmuxClient().PrepareDelivery(ctx, pane, agentType); err != nil {
@@ -140,19 +146,18 @@ func (e *Executor) executeAdHocStage(ctx context.Context, stage Stage, paneID, p
 	}
 	collect := func() (bool, error) {
 		current, err := e.captureAgentDelivery(ctx, record)
+		if errors.Is(err, errIncompleteAgentCapture) {
+			return false, nil
+		}
 		if err != nil {
 			return false, err
 		}
-		delta, err := agentDeliveryNewOutput(before, current)
+		next, ready, err := observeAgentDelivery(record, current)
 		if err != nil {
 			return false, err
 		}
-		if len(record.Output)+len(delta) > agentDeliveryMaxOutputBytes {
-			return false, fmt.Errorf("stage response exceeds the %d-byte evidence limit", agentDeliveryMaxOutputBytes)
-		}
-		before, record.Output = current, record.Output+delta
-		response := normalizeAgentEcho(record.Output)
-		return response != "" && response != normalizeAgentEcho(prompt), nil
+		record = next
+		return ready, nil
 	}
 	timer := time.NewTimer(2 * time.Second)
 	defer timer.Stop()
@@ -161,13 +166,20 @@ func (e *Executor) executeAdHocStage(ctx context.Context, stage Stage, paneID, p
 		return record, ctx.Err()
 	case <-timer.C:
 	}
-	if err := waitForIdle(ctx, e.detector, paneID, collect); err != nil {
-		return record, fmt.Errorf("waiting for stage completion: %w", err)
-	}
-	// The last detector call may have outlived cancellation or pane respawn.
-	// Require one more validated capture before exposing output downstream.
-	if _, err := collect(); err != nil {
-		return record, err
+	for {
+		if err := waitForIdle(ctx, e.detector, paneID, collect); err != nil {
+			return record, fmt.Errorf("waiting for stage completion: %w", err)
+		}
+		// The last detector call may have outlived cancellation, pane
+		// respawn or a repaint. A temporarily hidden boundary must earn
+		// another stable idle streak before output reaches the next stage.
+		ready, err := collect()
+		if err != nil {
+			return record, err
+		}
+		if ready {
+			break
+		}
 	}
 	return record, ctx.Err()
 }

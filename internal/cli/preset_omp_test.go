@@ -2,12 +2,16 @@ package cli
 
 import (
 	"path/filepath"
+	"reflect"
 	"regexp"
+	"sort"
 	"strings"
 	"testing"
 
 	agentpkg "github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/config"
+	"github.com/Dicklesworthstone/ntm/internal/plugins"
+	"github.com/Dicklesworthstone/ntm/internal/shellword"
 )
 
 // shippedOmpPresetDir points at the canonical Oh My Pi preset versioned in
@@ -22,6 +26,22 @@ func shippedOmpPresetDir(t *testing.T) string {
 	return dir
 }
 
+func shippedAgentPresets(t *testing.T) map[string]plugins.AgentPlugin {
+	t.Helper()
+	loaded := registerAgentPluginTypes(shippedOmpPresetDir(t))
+	names := make([]string, 0, len(loaded))
+	presets := make(map[string]plugins.AgentPlugin, len(loaded))
+	for _, preset := range loaded {
+		names = append(names, preset.Name)
+		presets[preset.Name] = preset
+	}
+	sort.Strings(names)
+	if want := []string{"omp", "pi"}; !reflect.DeepEqual(names, want) {
+		t.Fatalf("examples/agents loaded presets = %v, want exactly %v", names, want)
+	}
+	return presets
+}
+
 // Captured omp v18 chrome (same fixtures the status package pins): in flight
 // omp renders a spinner + `Working… ⟨esc⟩` above the composer; at idle the
 // composer's bottom border is the last line.
@@ -31,11 +51,7 @@ const (
 )
 
 func TestShippedOmpPresetLoadsThroughProductionLoader(t *testing.T) {
-	loaded := registerAgentPluginTypes(shippedOmpPresetDir(t))
-	if len(loaded) != 1 {
-		t.Fatalf("examples/agents must hold exactly the omp preset, got %d plugins", len(loaded))
-	}
-	p := loaded[0]
+	p := shippedAgentPresets(t)["omp"]
 	if p.Name != "omp" || p.Alias != "om" {
 		t.Fatalf("preset identity = %q/%q, want omp/om", p.Name, p.Alias)
 	}
@@ -95,11 +111,7 @@ func TestShippedOmpPresetReadinessMatchesCapturedChrome(t *testing.T) {
 // The preset's command template must render model and thinking overrides
 // through the production renderer, and stay a bare `omp` without them.
 func TestShippedOmpPresetCommandTemplate(t *testing.T) {
-	loaded := registerAgentPluginTypes(shippedOmpPresetDir(t))
-	if len(loaded) != 1 {
-		t.Fatalf("expected the omp preset, got %d plugins", len(loaded))
-	}
-	tmpl := loaded[0].Command
+	tmpl := shippedAgentPresets(t)["omp"].Command
 
 	bare, err := config.GenerateAgentCommand(tmpl, config.AgentTemplateVars{AgentType: "omp"})
 	if err != nil {
@@ -120,5 +132,97 @@ func TestShippedOmpPresetCommandTemplate(t *testing.T) {
 	}
 	if !strings.Contains(full, "--model 'gpt-6'") || !strings.Contains(full, "--thinking 'high'") {
 		t.Fatalf("override render = %q, want --model 'gpt-6' and --thinking 'high'", full)
+	}
+}
+
+func TestShippedPiPresetLoadsThroughProductionLoader(t *testing.T) {
+	p := shippedAgentPresets(t)["pi"]
+	if p.Name != "pi" || p.Alias != "" {
+		t.Fatalf("pi preset identity = %q/%q, want pi with no alias", p.Name, p.Alias)
+	}
+	if got := p.ProbeCommand(); got != "pi" {
+		t.Fatalf("pi dependency probe = %q, want pi", got)
+	}
+	if p.Defaults.Model != "" {
+		t.Fatalf("pi preset must preserve pi's configured model, got default %q", p.Defaults.Model)
+	}
+	if !agentpkg.IsPluginType("pi") {
+		t.Fatal("shipped pi preset did not register its agent type")
+	}
+}
+
+func TestShippedPiPresetCommandTemplate(t *testing.T) {
+	tmpl := shippedAgentPresets(t)["pi"].Command
+	const model = "anthropic/claude-sonnet-4-5"
+	const prompt = "/work/persona's files/reviewer.md"
+	for _, tc := range []struct {
+		name string
+		vars config.AgentTemplateVars
+		want []string
+	}{
+		{"bare", config.AgentTemplateVars{}, []string{"pi"}},
+		{"model", config.AgentTemplateVars{Model: model, ModelRequested: true}, []string{"pi", "--model", model}},
+		{"effort", config.AgentTemplateVars{ReasoningEffort: "high"}, []string{"pi", "--thinking", "high"}},
+		{"persona", config.AgentTemplateVars{PersonaName: "reviewer", SystemPromptFile: prompt}, []string{"pi", "--append-system-prompt", prompt}},
+		{"all", config.AgentTemplateVars{Model: model, ModelRequested: true, ReasoningEffort: "high", PersonaName: "reviewer", SystemPromptFile: prompt},
+			[]string{"pi", "--model", model, "--thinking", "high", "--append-system-prompt", prompt}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.vars.AgentType = "pi"
+			command, err := config.GenerateAgentCommand(tmpl, tc.vars)
+			if err != nil {
+				t.Fatalf("render pi preset: %v", err)
+			}
+			if tc.name == "bare" && command != "pi" {
+				t.Fatalf("bare pi render = %q, want pi", command)
+			}
+			words, err := shellword.Literal(command)
+			if err != nil {
+				t.Fatalf("pi preset produced nonliteral shell syntax: %q: %v", command, err)
+			}
+			argv := make([]string, 0, len(words))
+			for _, word := range words {
+				argv = append(argv, word.Value)
+			}
+			if !reflect.DeepEqual(argv, tc.want) {
+				t.Fatalf("pi preset arguments = %q, want %q", argv, tc.want)
+			}
+		})
+	}
+}
+
+func TestShippedPiPresetWorkingChromeVetoesIdleComposer(t *testing.T) {
+	shippedAgentPresets(t)
+	const rule = "────────────────────────────────────────────────"
+	const footer = "/work/project\n↑1.2k ↓450 $0.004 (0.3%) · claude-sonnet-4-5"
+	idle := " ▀▀█  v1.3.0\nThe requested change is complete.\n\n" + rule + "\n\n" + rule + "\n" + footer
+	working := " ▀▀█  v1.3.0\nInspecting the source.\n\n── ⠙ Working (esc to interrupt) ────────────────\n\n" + rule + "\n" + footer
+	match, declared := agentpkg.MatchPluginReadiness(working, "pi")
+	if !declared || !match.Working || !match.Idle {
+		t.Fatalf("working pi fixture must contain both live work and persistent idle-border matches: %+v, declared=%v", match, declared)
+	}
+	parser := agentpkg.NewParser()
+	for _, tc := range []struct {
+		name, frame string
+		working     bool
+		idle        bool
+	}{
+		{"idle", idle, false, true},
+		{"working with idle border", working, true, false},
+		{"old working chrome", working + "\n" + strings.Repeat("historical output\n", 24) + idle, false, true},
+		{"plain prose", "The word Working and a rule ───── are mentioned in prose.", false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			state, err := parser.ParseWithHint(tc.frame, "pi")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if state.Type != "pi" || state.IsWorking != tc.working || state.IsIdle != tc.idle {
+				t.Fatalf("pi preset readiness = %+v; want working=%v idle=%v", state, tc.working, tc.idle)
+			}
+		})
+	}
+	if match, declared := agentpkg.MatchPluginReadiness(ompPresetWorkLine+"\n"+ompPresetIdleLine, "pi"); !declared || match.Working || match.Idle {
+		t.Fatalf("pi preset classified omp-specific composer chrome: %+v, declared=%v", match, declared)
 	}
 }
