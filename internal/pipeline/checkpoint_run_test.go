@@ -20,6 +20,17 @@ func checkpointRunConfig(t *testing.T) ExecutorConfig {
 	return cfg
 }
 
+// awaitOwnLaunchJournal returns a shell fragment that blocks until the run's
+// state file durably records this command shell ($$, the process group
+// leader) as a running launch. A command that damages pipeline storage only
+// after this point makes the fault land on its settlement checkpoint. Without
+// the wait the fault races the post-start launch journal save, which either
+// fails first (and stops the command) or recreates the state file between the
+// fixture's mv and mkdir (and heals the fault).
+func awaitOwnLaunchJournal(runID string) string {
+	return fmt.Sprintf(`until grep -Fq "\"process_id\": $$," .ntm/pipelines/%s.json 2>/dev/null; do sleep 0.01; done`, runID)
+}
+
 func TestCheckpointAdmissionFailureStartsNoWork(t *testing.T) {
 	for _, resume := range []bool{false, true} {
 		t.Run(fmt.Sprintf("resume=%v", resume), func(t *testing.T) {
@@ -57,12 +68,15 @@ func TestControlledPipelineCheckpointFailureStopsDependents(t *testing.T) {
 		OnError:  ErrorActionContinue,
 		OnCancel: []Step{{ID: "release", Command: "printf released > cleanup"}},
 	}, Steps: []Step{
-		{ID: "break-storage", Command: "mv .ntm/pipelines/run-checkpoint.json .ntm/pipelines/previous.json.saved; mkdir .ntm/pipelines/run-checkpoint.json; printf done > first", OnError: ErrorActionContinue},
+		{ID: "break-storage", Command: awaitOwnLaunchJournal(cfg.RunID) + "; mv .ntm/pipelines/run-checkpoint.json .ntm/pipelines/previous.json.saved && mkdir .ntm/pipelines/run-checkpoint.json && printf done > first", OnError: ErrorActionContinue},
 		{ID: "forbidden", DependsOn: []string{"break-storage"}, Command: "printf unsafe > downstream"},
 	}, PostPipelineSteps: []Step{{ID: "post", Command: "printf unsafe > post"}}}
 	events := make(chan ProgressEvent, 100)
 	state, err := RunControlledPipeline(context.Background(), workflow, nil, cfg, events)
 	assertCheckpointFailure(t, state, err)
+	if data, err := os.ReadFile(filepath.Join(cfg.ProjectDir, "first")); err != nil || string(data) != "done" {
+		t.Fatalf("fixture did not install the storage fault and finish its work: %q %v", data, err)
+	}
 	if state.Steps["break-storage"].Status != StatusCompleted {
 		t.Fatal("lost the outcome of work that really completed before the save failed")
 	}

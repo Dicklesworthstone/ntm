@@ -1001,16 +1001,19 @@ func TestSessionObserverAppliesPaneLocalActivityBound(t *testing.T) {
 	second := first.Add(time.Minute)
 	nowValues := []time.Time{first, second}
 	nowIndex := 0
-	// A Gemini pane at its prompt: no agent-specific short-circuit, so its
-	// verdict is decided purely by the velocity gate.
-	const capture = "Analysis complete.\ngemini>"
+	// A Cursor pane at its prompt: Cursor has no pane-local live-frame arm, so
+	// its verdict is decided purely by the velocity gate. (Gemini, Claude,
+	// Codex, Antigravity, Grok, OpenCode and Oh My Pi frames now outrank window
+	// activity on the first observation; TestGeminiTurnSharedObservation
+	// covers the Gemini frame through this observer.)
+	const capture = "Analysis complete.\ncursor>"
 
 	observer := NewSessionObserverWithDependencies(NewDetector(), DefaultSessionObserverConfig(DefaultConfig()), SessionObserverDependencies{
 		ListPanes: func(context.Context, string) ([]tmux.PaneActivity, error) {
 			// The window-scoped timestamp is always "now": the sibling pane in
 			// this window is chatty.
 			return []tmux.PaneActivity{{
-				Pane:         tmux.Pane{ID: "%7", WindowIndex: 0, Index: 1, Title: "s__gmi_1", Type: tmux.AgentGemini},
+				Pane:         tmux.Pane{ID: "%7", WindowIndex: 0, Index: 1, Title: "s__cursor_1", Type: tmux.AgentCursor},
 				LastActivity: nowValues[min(nowIndex, len(nowValues)-1)],
 			}}, nil
 		},

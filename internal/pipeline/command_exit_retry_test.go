@@ -59,16 +59,30 @@ func TestExecuteCommandContextCancellationReturnsCancelled(t *testing.T) {
 
 	step := &Step{
 		ID:      "cancel_command",
-		Command: "sleep 60",
+		Command: "printf started > started; sleep 60",
 		Timeout: Duration{Duration: 30 * time.Second},
 	}
 
+	// Cancel only once the command is really running. A fixed delay raced the
+	// durable launch journal on loaded hosts: a cancel that lands before
+	// dispatch takes the separate skip-before-start path, which never starts
+	// the command and so carries no cancelled step error.
+	started := filepath.Join(executor.config.ProjectDir, "started")
 	go func() {
-		time.Sleep(50 * time.Millisecond)
-		cancel()
+		defer cancel()
+		deadline := time.Now().Add(10 * time.Second)
+		for time.Now().Before(deadline) {
+			if _, err := os.Stat(started); err == nil {
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
 	}()
 
 	result := executor.executeCommand(ctx, step, &Workflow{Name: "command-cancel"})
+	if _, err := os.Stat(started); err != nil {
+		t.Fatalf("command never started before cancellation: %v", err)
+	}
 	if result.Status != StatusCancelled {
 		t.Fatalf("status = %q, want %q; error = %#v", result.Status, StatusCancelled, result.Error)
 	}

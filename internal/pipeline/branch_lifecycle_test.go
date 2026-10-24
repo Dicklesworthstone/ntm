@@ -180,8 +180,10 @@ func TestBranchLifecycleCheckpointsBeforeChildDispatch(t *testing.T) {
 
 func TestBranchLifecycleCheckpointFailureStopsNextChild(t *testing.T) {
 	cfg := branchLifecycleConfig(t)
+	// Damage storage only after this child's launch journal is durable, so the
+	// fault deterministically hits the completion checkpoint.
 	workflow := branchLifecycleWorkflow(
-		Step{ID: "damage", Command: "mv .ntm/pipelines/run-branch-lifecycle.json saved-checkpoint; mkdir .ntm/pipelines/run-branch-lifecycle.json; printf retained"},
+		Step{ID: "damage", Command: awaitOwnLaunchJournal(cfg.RunID) + "; mv .ntm/pipelines/run-branch-lifecycle.json saved-checkpoint && mkdir .ntm/pipelines/run-branch-lifecycle.json && printf retained"},
 		Step{ID: "never", Command: "printf forbidden > forbidden"},
 	)
 	workflow.Settings.OnError = ErrorActionContinue
@@ -190,8 +192,8 @@ func TestBranchLifecycleCheckpointFailureStopsNextChild(t *testing.T) {
 		t.Fatalf("completion checkpoint failure was hidden: %+v %v", state, err)
 	}
 	assertBranchFileAbsent(t, cfg.ProjectDir, "forbidden")
-	if state.Steps["route_damage"].Output != "retained" {
-		t.Fatal("completed work lost its in-memory result on storage failure")
+	if got := state.Steps["route_damage"]; got.Status != StatusCompleted || got.Output != "retained" {
+		t.Fatalf("completed work lost its in-memory result on storage failure: %+v", got)
 	}
 }
 
