@@ -1111,8 +1111,9 @@ func TestReleaseBeadClaimLeavesDifferentOwnerAndPreservesTerminalStatus(t *testi
 // corruptRealBRIssuesRootPage overwrites the issues table's b-tree root page
 // with a bogus interior-page header so the next UPDATE against issues fails
 // with SQLITE_CORRUPT ("database disk image is malformed (11)") — the exact
-// live signature from #227 — while leaving the file header readable.
-func corruptRealBRIssuesRootPage(t *testing.T, databasePath string) {
+// live signature from #227 — while leaving the file header readable. It
+// returns the offset and length of the damaged page for preservation checks.
+func corruptRealBRIssuesRootPage(t *testing.T, databasePath string) (int64, int64) {
 	t.Helper()
 	database, err := sql.Open(sqliteutil.DriverName, sqliteutil.FileDSN(databasePath, "busy_timeout(5000)"))
 	if err != nil {
@@ -1137,16 +1138,19 @@ func corruptRealBRIssuesRootPage(t *testing.T, databasePath string) {
 	}
 	defer file.Close()
 	garbage := append([]byte{0x05}, bytes.Repeat([]byte{0xFF}, 100)...)
-	if _, err := file.WriteAt(garbage, (rootPage-1)*pageSize); err != nil {
+	offset := (rootPage - 1) * pageSize
+	if _, err := file.WriteAt(garbage, offset); err != nil {
 		t.Fatalf("corrupt issues root page: %v", err)
 	}
+	return offset, pageSize
 }
 
 // TestGuardedClaimRebuildsAndRetriesOnCorruption is the #227 regression
 // guard: a corrupted beads SQLite index used to surface from the guarded
 // CAS-claim as a permanent "database disk image is malformed (11)" assignment
 // failure, stalling the self-feeder until a human ran `br sync --rebuild`.
-// The claim paths now trigger that rebuild themselves and retry once.
+// The claim paths now trigger recovery themselves and retry once, including
+// the verified doctor fallback when br refuses a preservation check (#365).
 func TestGuardedClaimRebuildsAndRetriesOnCorruption(t *testing.T) {
 	requireRealBR(t)
 
@@ -1163,6 +1167,20 @@ func TestGuardedClaimRebuildsAndRetriesOnCorruption(t *testing.T) {
 		}
 		if claim.ID != beadID || claim.Status != "in_progress" || claim.Actor != "RecoveryActor" {
 			t.Fatalf("claim=%+v, want %s in_progress by RecoveryActor", claim, beadID)
+		}
+		assertRealBRStatusAndAssignee(t, dir, beadID, "in_progress", "RecoveryActor")
+	})
+
+	t.Run("nonterminal claim recovers", func(t *testing.T) {
+		dir := t.TempDir()
+		runRealBR(t, dir, "init", "--quiet")
+		beadID := createRealBRBead(t, dir, "nonterminal claim across corruption")
+		corruptRealBRIssuesRootPage(t, realBRDatabasePath(t, dir))
+
+		ctx := assignmentstore.WithNonTerminalClaimGuard(t.Context())
+		claim, err := ClaimBead(ctx, dir, beadID, "RecoveryActor")
+		if err != nil || claim.ID != beadID || claim.Status != "in_progress" || claim.Actor != "RecoveryActor" {
+			t.Fatalf("nonterminal claim=%+v error=%v", claim, err)
 		}
 		assertRealBRStatusAndAssignee(t, dir, beadID, "in_progress", "RecoveryActor")
 	})
@@ -1186,6 +1204,102 @@ func TestGuardedClaimRebuildsAndRetriesOnCorruption(t *testing.T) {
 		}
 		assertRealBRStatusAndAssignee(t, dir, beadID, "open", "")
 	})
+}
+
+func TestGuardedClaimCorruptionRecoveryPreservesJSONLAndGuards(t *testing.T) {
+	requireRealBR(t)
+	dir := t.TempDir()
+	runRealBR(t, dir, "init", "--quiet")
+	gatedID := createRealBRBead(t, dir, "operator approval survives corruption")
+	runRealBR(t, dir, "update", gatedID, "--add-label", "operator-gated", "--json")
+	closedID := createRealBRBead(t, dir, "closed work survives corruption")
+	runRealBR(t, dir, "close", closedID, "--reason", "completed before corruption", "--json")
+	deletedID := createRealBRBead(t, dir, "tombstone survives corruption")
+	runRealBR(t, dir, "delete", deletedID, "--reason", "deleted before corruption", "--json")
+	ownedID := createRealBRBead(t, dir, "ownership survives corruption")
+	if _, err := ClaimBeadForAssignment(t.Context(), dir, ownedID, "OriginalOwner"); err != nil {
+		t.Fatalf("claim original owner: %v", err)
+	}
+	blockedID := createRealBRBead(t, dir, "dependency survives corruption")
+	blockerID := createRealBRBead(t, dir, "unresolved prerequisite")
+	runRealBR(t, dir, "dep", "add", blockedID, blockerID, "--type", "blocks", "--json")
+
+	jsonlPath := filepath.Join(dir, ".beads", "issues.jsonl")
+	before, err := os.ReadFile(jsonlPath)
+	if err != nil {
+		t.Fatalf("read authoritative JSONL before corruption: %v", err)
+	}
+	databasePath := realBRDatabasePath(t, dir)
+	corruptRealBRIssuesRootPage(t, databasePath)
+
+	// A real guarded claim triggers repair, then must reevaluate the operator
+	// gate. No legitimate mutation or export should occur on this path.
+	if _, err := ClaimBeadForAssignment(t.Context(), dir, gatedID, "RecoveryActor"); !errors.Is(err, ErrBeadAssignmentIneligible) {
+		t.Fatalf("claim after recovery error=%v, want operator-gate refusal", err)
+	}
+	for _, test := range []struct {
+		name     string
+		id       string
+		status   string
+		assignee string
+		wantErr  error
+	}{
+		{name: "operator gate", id: gatedID, status: "open", wantErr: ErrBeadAssignmentIneligible},
+		{name: "closed", id: closedID, status: "closed", wantErr: ErrBeadAssignmentIneligible},
+		{name: "tombstone", id: deletedID, status: "tombstone", wantErr: ErrBeadAssignmentIneligible},
+		{name: "different owner", id: ownedID, status: "in_progress", assignee: "OriginalOwner", wantErr: ErrBeadAlreadyClaimed},
+		{name: "unresolved dependency", id: blockedID, status: "open", wantErr: ErrBeadAssignmentIneligible},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := ClaimBeadForAssignment(t.Context(), dir, test.id, "RecoveryActor"); !errors.Is(err, test.wantErr) {
+				t.Fatalf("claim after recovery error=%v, want %v", err, test.wantErr)
+			}
+			assertAssignmentClaimDatabaseState(t, databasePath, test.id, test.status, test.assignee)
+		})
+	}
+	if released, err := ReleaseBeadClaim(t.Context(), dir, ownedID, "RecoveryActor"); err != nil || released {
+		t.Fatalf("different-owner release after recovery=%v error=%v", released, err)
+	}
+	assertAssignmentClaimDatabaseState(t, databasePath, ownedID, "in_progress", "OriginalOwner")
+	after, err := os.ReadFile(jsonlPath)
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatalf("recovery or refused claims changed authoritative JSONL: error=%v", err)
+	}
+}
+
+func TestGuardedClaimCorruptionRecoveryRejectsInvalidJSONL(t *testing.T) {
+	requireRealBR(t)
+	dir := t.TempDir()
+	runRealBR(t, dir, "init", "--quiet")
+	beadID := createRealBRBead(t, dir, "invalid source must not become an empty index")
+	databasePath := realBRDatabasePath(t, dir)
+	jsonlPath := filepath.Join(dir, ".beads", "issues.jsonl")
+	invalidJSONL := []byte("{invalid authoritative JSONL}\n")
+	if err := os.WriteFile(jsonlPath, invalidJSONL, 0o600); err != nil {
+		t.Fatalf("write invalid JSONL fixture: %v", err)
+	}
+	pageOffset, pageSize := corruptRealBRIssuesRootPage(t, databasePath)
+	damagedDatabase, err := os.ReadFile(databasePath)
+	if err != nil {
+		t.Fatalf("read damaged database before recovery: %v", err)
+	}
+
+	if claim, err := ClaimBeadForAssignment(t.Context(), dir, beadID, "RecoveryActor"); err == nil {
+		t.Fatalf("claim=%+v, want recovery to refuse invalid authoritative JSONL", claim)
+	}
+	after, err := os.ReadFile(jsonlPath)
+	if err != nil || !bytes.Equal(invalidJSONL, after) {
+		t.Fatalf("failed recovery changed authoritative JSONL: error=%v", err)
+	}
+	afterDatabase, err := os.ReadFile(databasePath)
+	pageEnd := pageOffset + pageSize
+	// Opening the database and running doctor may update SQLite bookkeeping.
+	// The damaged issues page itself must survive a refused import; replacing
+	// the file with an empty database would discard the remaining evidence.
+	if err != nil || int64(len(afterDatabase)) < pageEnd ||
+		!bytes.Equal(damagedDatabase[pageOffset:pageEnd], afterDatabase[pageOffset:pageEnd]) {
+		t.Fatalf("failed recovery changed damaged issues-page evidence: error=%v", err)
+	}
 }
 
 func TestIsBeadsDBCorruptionError(t *testing.T) {

@@ -840,6 +840,37 @@ func RunBdContext(ctx context.Context, dir string, args ...string) (string, erro
 // used by RunBd. allowNoDB must be false for compare-and-set mutations such as
 // claims because JSONL-only fallback cannot provide the SQLite transaction.
 func runBdContext(parent context.Context, dir string, allowNoDB bool, args ...string) (string, error) {
+	return runBdCommandContext(parent, dir, beadsCommandOptions{
+		allowNoDB: allowNoDB, retryTransient: true,
+	}, args...)
+}
+
+type beadsCommandOptions struct {
+	allowNoDB      bool
+	retryTransient bool
+}
+
+// beadsCommandError retains machine-readable output without changing the
+// diagnostics or error chain exposed by RunBd. In particular, doctor can
+// report a verified partial repair on stdout while exiting nonzero.
+type beadsCommandError struct {
+	args   []string
+	err    error
+	stdout string
+	stderr string
+}
+
+func (e *beadsCommandError) Error() string {
+	diagnostics := e.stderr
+	if strings.TrimSpace(diagnostics) == "" {
+		diagnostics = e.stdout
+	}
+	return fmt.Sprintf("br %s: %v: %s", strings.Join(e.args, " "), e.err, diagnostics)
+}
+
+func (e *beadsCommandError) Unwrap() error { return e.err }
+
+func runBdCommandContext(parent context.Context, dir string, options beadsCommandOptions, args ...string) (string, error) {
 	if parent == nil {
 		return "", errors.New("br command context is required")
 	}
@@ -863,7 +894,7 @@ func runBdContext(parent context.Context, dir string, allowNoDB bool, args ...st
 	defer mu.Unlock()
 
 	// Check cache for this specific directory
-	if allowNoDB && getNoDBState(dir) && !containsString(args, "--no-db") {
+	if options.allowNoDB && getNoDBState(dir) && !containsString(args, "--no-db") {
 		args = append([]string{"--no-db"}, args...)
 	}
 	if !containsString(args, "--no-db") && !containsString(args, "--lock-timeout") {
@@ -901,13 +932,13 @@ func runBdContext(parent context.Context, dir string, allowNoDB bool, args ...st
 			diagnostics = stdoutStr
 		}
 		// If we haven't already forced no-db, check if we should
-		if allowNoDB && !getNoDBState(dir) && !containsString(args, "--no-db") && isNoBeadsDBError(stderrStr, stdoutStr) {
+		if options.allowNoDB && !getNoDBState(dir) && !containsString(args, "--no-db") && isNoBeadsDBError(stderrStr, stdoutStr) {
 			setNoDBState(dir, true)
 			args = append([]string{"--no-db"}, stripFlagWithValue(args, "--lock-timeout")...)
 			attempt = 0
 			continue
 		}
-		if isTransientBeadsDBError(stderrStr, stdoutStr) {
+		if options.retryTransient && isTransientBeadsDBError(stderrStr, stdoutStr) {
 			delay, retry := transientBeadsRetryDelay(attempt, maxAttempts, retryDeadline)
 			if !retry {
 				return "", fmt.Errorf(
@@ -920,7 +951,7 @@ func runBdContext(parent context.Context, dir string, allowNoDB bool, args ...st
 			}
 			continue
 		}
-		return "", fmt.Errorf("br %s: %w: %s", strings.Join(args, " "), err, diagnostics)
+		return "", &beadsCommandError{args: args, err: err, stdout: stdoutStr, stderr: stderrStr}
 	}
 
 	return "", fmt.Errorf("br %s: exceeded retry budget", strings.Join(args, " "))
@@ -989,10 +1020,99 @@ func isBeadsDBCorruptionError(err error) bool {
 // recoverCorruptBeadsDatabase runs br's supported JSONL-authoritative repair
 // (`br sync --import-only --rebuild`), which recreates the SQLite index from
 // JSONL and removes orphaned DB entries. br >= 0.2.19 requires an explicit
-// sync mode flag; --rebuild alone fails validation.
+// sync mode flag; --rebuild alone fails validation. If corruption prevents
+// br >= 0.7 from establishing preservation guarantees, its explicit doctor
+// repair can still restore a verified index while retaining recovery evidence.
 func recoverCorruptBeadsDatabase(ctx context.Context, normalizedDir string) error {
 	_, err := runBdContext(ctx, normalizedDir, false, "sync", "--import-only", "--rebuild", "--json")
-	return err
+	if !isBeadsPreservationRefusal(err) {
+		return err
+	}
+	slog.Warn("Beads rebuild could not establish preservation; attempting doctor repair",
+		"dir", normalizedDir, "error", err)
+	if repairErr := repairBeadsDatabaseWithDoctor(ctx, normalizedDir); repairErr != nil {
+		return fmt.Errorf("rebuild refused preservation (%v); doctor repair failed: %w", err, repairErr)
+	}
+	return nil
+}
+
+// Other SYNC_CONFLICT errors protect changed JSONL, write authority, and merge
+// state. Only this specific structured refusal permits the repair fallback.
+func isBeadsPreservationRefusal(err error) bool {
+	var commandErr *beadsCommandError
+	if !errors.As(err, &commandErr) {
+		return false
+	}
+	for _, output := range []string{commandErr.stdout, commandErr.stderr} {
+		var result struct {
+			Error struct {
+				Code    string `json:"code"`
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if json.Unmarshal([]byte(output), &result) == nil && result.Error.Code == "SYNC_CONFLICT" &&
+			strings.Contains(result.Error.Message, "Automatic database recovery refused because unflushed-state preservation could not be established:") {
+			return true
+		}
+	}
+	return false
+}
+
+func repairBeadsDatabaseWithDoctor(ctx context.Context, normalizedDir string) error {
+	// Do not retry doctor on diagnostic substrings: a completed partial repair
+	// may mention locks in its preservation warnings. Never bypass its repeated
+	// repair guard or remove the backups/verification-failure marker it retains.
+	output, err := runBdCommandContext(ctx, normalizedDir, beadsCommandOptions{}, "doctor", "--repair", "--json")
+	if ctx != nil && ctx.Err() != nil {
+		return ctx.Err()
+	}
+	exitCode := 0
+	if err != nil {
+		var commandErr *beadsCommandError
+		var exitErr *exec.ExitError
+		if !errors.As(err, &commandErr) || !errors.As(err, &exitErr) || exitErr.ExitCode() != 2 {
+			return err
+		}
+		exitCode = exitErr.ExitCode()
+		output = commandErr.stdout
+	}
+	var result struct {
+		Code                        string   `json:"code"`
+		ExitCode                    *int     `json:"exit_code"`
+		Repaired                    bool     `json:"repaired"`
+		Verified                    bool     `json:"verified"`
+		DatabaseVerified            *bool    `json:"database_verified"`
+		DirtyPreservationWarnings   []string `json:"dirty_preservation_warnings"`
+		HistoryPreservationWarnings []string `json:"history_preservation_warnings"`
+		RecoveryFailureMarker       string   `json:"recovery_failure_marker"`
+		RecoveryFailureMarkerError  string   `json:"recovery_failure_marker_error"`
+	}
+	if err := json.Unmarshal([]byte(output), &result); err != nil {
+		return fmt.Errorf("parse br doctor repair result: %w", err)
+	}
+	if exitCode == 0 && result.Verified &&
+		(result.DatabaseVerified == nil || *result.DatabaseVerified) &&
+		(result.ExitCode == nil || *result.ExitCode == 0) &&
+		(result.Code == "" || result.Code == "healthy") {
+		// Local repairs (e.g. REINDEX) report verified but omit the fields
+		// specific to a JSONL rebuild. A verified healthy no-op is also safe.
+		return nil
+	}
+	if exitCode == 2 && result.Code == "fix_partial" && result.ExitCode != nil && *result.ExitCode == 2 &&
+		result.Repaired && result.DatabaseVerified != nil && *result.DatabaseVerified {
+		// Overall verified/ok may be false because corruption made some old
+		// DB-only state unreadable. Database verification is the prerequisite
+		// for the caller's single retry, which still enforces all claim guards.
+		slog.Warn("Beads doctor verified the repaired database but preservation remains unverified",
+			"dir", normalizedDir,
+			"dirty_preservation_warnings", result.DirtyPreservationWarnings,
+			"history_preservation_warnings", result.HistoryPreservationWarnings,
+			"recovery_failure_marker", result.RecoveryFailureMarker,
+			"recovery_failure_marker_error", result.RecoveryFailureMarkerError)
+		return nil
+	}
+	return fmt.Errorf("br doctor repair did not verify a usable database (exit %d, code %q): %s",
+		exitCode, result.Code, strings.TrimSpace(output))
 }
 
 // withBeadsCorruptionRecovery executes op and, when it fails with a
