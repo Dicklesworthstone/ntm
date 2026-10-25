@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -18,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/agentsession"
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/persona"
@@ -25,6 +27,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/privacy"
 	"github.com/Dicklesworthstone/ntm/internal/resilience"
 	"github.com/Dicklesworthstone/ntm/internal/session"
+	"github.com/Dicklesworthstone/ntm/internal/shellword"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/tests/testutil"
 )
@@ -2005,5 +2008,178 @@ func TestWizardLaunchAgentSpecs_RecipeAndTemplateSelectionsDeferCounts(t *testin
 	}
 	if wizardDeferredSelection(SpawnWizardResult{CCCount: 1}) {
 		t.Fatal("wizardDeferredSelection(manual) = true, want false")
+	}
+}
+
+// runPiPaneFixture runs in a copy of this test executable named pi. It accepts
+// real launch arguments and closes the JSONL file after writing, as pi does
+// between appends. Discovery therefore must identify each process by its
+// pinned selector rather than an open descriptor or newest-file guess.
+func runPiPaneFixture() int {
+	id, path := "", ""
+	for i := 1; i+1 < len(os.Args); i++ {
+		switch os.Args[i] {
+		case "--session-id":
+			i++
+			id = os.Args[i]
+		case "--session":
+			i++
+			path = os.Args[i]
+		}
+	}
+	cwd, err := os.Getwd()
+	if err != nil || id == "" && path == "" {
+		return 1
+	}
+	if path == "" {
+		path = filepath.Join(os.Getenv("PI_CODING_AGENT_SESSION_DIR"), id+".jsonl")
+	}
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		header, marshalErr := json.Marshal(map[string]any{
+			"type": "session", "version": 3, "id": id, "cwd": cwd,
+			"timestamp": time.Now().UTC().Format(time.RFC3339Nano),
+		})
+		if marshalErr != nil || os.WriteFile(path, append(header, '\n'), 0600) != nil {
+			return 1
+		}
+	} else if err != nil {
+		return 1
+	}
+	fmt.Printf("Ready for work.\n────────────────────────────────────────────────\n\n────────────────────────────────────────────────\n%s\n↑0 ↓0 $0.00 (0.0%%) · test-model\n", cwd)
+	_, err = io.Copy(io.Discard, os.Stdin)
+	if err != nil {
+		return 1
+	}
+	return 0
+}
+
+func TestPiManagedSpawnAndAddPreserveDistinctSessionBindings(t *testing.T) {
+	testutil.RequireTmuxThrottled(t)
+	root := t.TempDir()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(root, "data"))
+	t.Setenv("NTM_PI_PANE_FIXTURE", "1")
+	store := filepath.Join(root, "sessions")
+	t.Setenv("PI_CODING_AGENT_SESSION_DIR", store)
+	t.Setenv("PI_CODING_AGENT_DIR", "")
+	pluginDir := filepath.Join(root, "config", "ntm", "agents")
+	for _, dir := range []string{store, pluginDir} {
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	binary, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pi := filepath.Join(root, "pi")
+	if err := os.Symlink(binary, pi); err != nil {
+		t.Fatal(err)
+	}
+	baseCommand := pi + " --model provider/test --thinking high"
+	preset := fmt.Sprintf("[agent]\nname = 'pi'\ncommand = %q\n[agent.readiness]\nidle_patterns = ['^\\s*─{4,}\\s*$']\n", baseCommand)
+	if err := os.WriteFile(filepath.Join(pluginDir, "pi.toml"), []byte(preset), 0600); err != nil {
+		t.Fatal(err)
+	}
+	registerAgentPluginTypes(pluginDir)
+	oldCfg, oldJSON := cfg, jsonOutput
+	t.Cleanup(func() { cfg, jsonOutput = oldCfg, oldJSON })
+	cfg = newTmuxIntegrationTestConfig(root)
+	cfg.Agents.Omp = "/bin/cat"
+	cfg.Checkpoints.Enabled = false
+	jsonOutput = true
+	for _, source := range []string{"flags", "workflow"} {
+		t.Run(source, func(t *testing.T) {
+			name := fmt.Sprintf("ntm-pi-%s-%d", source, time.Now().UnixNano())
+			project := filepath.Join(root, name)
+			if err := os.MkdirAll(filepath.Join(project, ".ntm", "workflows"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			t.Chdir(project)
+			t.Cleanup(func() { _ = tmux.KillSession(name) })
+			args := []string{name, "--pi=2", "--omp=1", "--no-hooks", "--no-cass-context", "--no-recovery"}
+			if source == "workflow" {
+				workflow := "name = 'pi-team'\ncoordination = 'parallel'\n[[agents]]\nprofile = 'pi'\nrole = 'worker'\ncount = 2\n[[agents]]\nprofile = 'omp'\nrole = 'reviewer'\ncount = 1\n"
+				if err := os.WriteFile(filepath.Join(project, ".ntm", "workflows", "pi-team.toml"), []byte(workflow), 0600); err != nil {
+					t.Fatal(err)
+				}
+				args = []string{name, "--template=pi-team", "--no-hooks", "--no-cass-context", "--no-recovery"}
+			}
+			cmd := newSpawnCmd()
+			cmd.SetArgs(args)
+			cmd.SetContext(t.Context())
+			if err := cmd.Execute(); err != nil {
+				t.Fatalf("spawn pi panes: %v", err)
+			}
+			add := newAddCmd()
+			add.SetArgs([]string{name, "--pi=1", "--no-cass-context"})
+			add.SetContext(t.Context())
+			if err := add.Execute(); err != nil {
+				t.Fatalf("add pi pane: %v", err)
+			}
+			var captured *session.SessionState
+			deadline := time.Now().Add(5 * time.Second)
+			for time.Now().Before(deadline) {
+				captured, err = session.Capture(name)
+				if err != nil {
+					t.Fatal(err)
+				}
+				bound := 0
+				for _, pane := range captured.Panes {
+					if pane.AgentType == "pi" && pane.HasFreshSessionBinding() {
+						bound++
+					}
+				}
+				if bound == 3 {
+					break
+				}
+				time.Sleep(25 * time.Millisecond)
+			}
+			seen := make(map[string]bool)
+			ompCount := 0
+			for _, pane := range captured.Panes {
+				if pane.AgentType == "omp" {
+					ompCount++
+					if pane.LaunchSpec == nil || pane.LaunchSpec.Command != "/bin/cat" {
+						t.Fatalf("omp launch was changed: %+v", pane.LaunchSpec)
+					}
+					continue
+				}
+				if pane.AgentType == "user" {
+					continue
+				}
+				if pane.AgentType != "pi" || !pane.HasFreshSessionBinding() || pane.SessionSource != agentsession.DiscoverySourceProcessTree {
+					t.Fatalf("spawned pane lacks exact live pi binding: %+v", pane)
+				}
+				if seen[pane.SessionID] || pane.LaunchSpec == nil || !strings.HasPrefix(pane.LaunchSpec.Command, baseCommand+" --session-id ") {
+					t.Fatalf("pi identity is duplicated or absent from launch metadata: %+v", pane)
+				}
+				seen[pane.SessionID] = true
+				words, err := shellword.Literal(pane.LaunchSpec.Command)
+				if err != nil || words[len(words)-1].Value != pane.SessionID {
+					t.Fatalf("live pi header differs from recorded launch: %+v, %v", pane, err)
+				}
+				path, err := agentsession.ResolvePiResumeSession(t.Context(), pane.SessionID, pane.LaunchSpec.Command, project)
+				if err != nil || path != filepath.Join(store, pane.SessionID+".jsonl") {
+					t.Fatalf("pi binding cannot resume its own transcript: %q, %v", path, err)
+				}
+			}
+			if len(seen) != 3 || ompCount != 1 {
+				t.Fatalf("spawn/add produced pi=%d omp=%d, want pi=3 omp=1", len(seen), ompCount)
+			}
+			if _, err := session.Save(captured, session.SaveOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			loaded, err := session.Load(name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, pane := range loaded.Panes {
+				if pane.AgentType == "pi" && (!seen[pane.SessionID] || !pane.HasFreshSessionBinding() || pane.LaunchSpec == nil) {
+					t.Fatalf("saved pi pane lost its exact binding: %+v", pane)
+				}
+			}
+		})
 	}
 }

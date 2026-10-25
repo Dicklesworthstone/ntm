@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Dicklesworthstone/ntm/internal/agent"
 )
 
 func TestNewLoader(t *testing.T) {
@@ -447,6 +449,30 @@ func TestProfileToAgentType(t *testing.T) {
 				t.Errorf("ProfileToAgentType(%q) = %q, want %q", tt.profile, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestWorkflowTemplate_PiPluginCounts(t *testing.T) {
+	if err := agent.RegisterPlugin("pi", nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.RegisterPlugin("omp", nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	for profile, want := range map[string]string{"pi": "pi", " PI ": "pi", "oh-my-pi": "omp", "reviewer": "cc"} {
+		if got := ProfileToAgentType(profile); got != want {
+			t.Errorf("profile %q mapped to %q, want %q", profile, got, want)
+		}
+	}
+	template := &WorkflowTemplate{Agents: []WorkflowAgent{
+		{Profile: "pi", Role: "builder", Count: 2},
+		{Profile: " PI ", Role: "reviewer"},
+		{Profile: "oh-my-pi", Role: "verifier"},
+		{Profile: "architect", Role: "planner"},
+	}}
+	counts := template.AgentCounts()
+	if len(counts) != 3 || counts["pi"] != 3 || counts["omp"] != 1 || counts["cc"] != 1 {
+		t.Fatalf("template counts = %v, want pi=3, omp=1, cc=1", counts)
 	}
 }
 

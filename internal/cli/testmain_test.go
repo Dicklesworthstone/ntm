@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/Dicklesworthstone/ntm/internal/config"
@@ -36,6 +37,9 @@ func newTmuxIntegrationTestConfig(projectsBase string) *config.Config {
 }
 
 func TestMain(m *testing.M) {
+	if os.Getenv("NTM_PI_PANE_FIXTURE") == "1" && filepath.Base(os.Args[0]) == "pi" {
+		os.Exit(runPiPaneFixture())
+	}
 	cleanupTmux, err := testutil.IsolateTmuxTestProcess()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "isolate CLI tmux tests: %v\n", err)

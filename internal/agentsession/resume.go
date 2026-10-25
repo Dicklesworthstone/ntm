@@ -2,6 +2,7 @@ package agentsession
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"os"
@@ -25,6 +26,38 @@ type ResumeLaunchOptions struct {
 	// TrustedClaudeSettings must be independently generated from the effective
 	// NTM policy, never copied from a saved command or live process arguments.
 	TrustedClaudeSettings string
+}
+
+// PinPiLaunchSession gives an ordinary managed pi launch an exact, per-pane
+// identity before the process starts. Pi closes its transcript between writes,
+// so simultaneous panes cannot be distinguished by open files or creation time.
+// The caller must record the returned command in launch metadata: --session-id
+// opens the same session on restart and creates it only when it is absent.
+// Explicit selectors, noninteractive modes and custom shell wrappers retain
+// their original meaning and are not rewritten.
+func PinPiLaunchSession(command string) string {
+	words, err := shellword.Literal(command)
+	if err != nil {
+		return command
+	}
+	executable := 0
+	for executable < len(words) && resumeEnvironmentAssignment(command[words[executable].Start:words[executable].End]) {
+		executable++
+	}
+	argv := make([]string, 0, len(words)-executable)
+	for _, word := range words[executable:] {
+		argv = append(argv, word.Value)
+	}
+	selection, ok := piProcessSelection(argv)
+	if !ok || selection.selector != "" || selection.picker {
+		return command
+	}
+	// Reuse the native launch validator to avoid appending after a positional
+	// prompt, option terminator or an unrecognized argument boundary.
+	if _, err := ResumeLaunchCommand("pi", "ntm-launch", command, ResumeLaunchOptions{}); err != nil {
+		return command
+	}
+	return strings.TrimRight(command, " \t") + " --session-id " + shellQuote("ntm-"+rand.Text())
 }
 
 // ResumeLaunchCommand resumes a session using its recorded launch command,

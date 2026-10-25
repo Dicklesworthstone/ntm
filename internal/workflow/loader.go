@@ -251,6 +251,7 @@ func SourceDescription(source string) string {
 //   - "claude", "cc", "claude-code" → "cc"
 //   - "codex", "cod", "codex-cli" → "cod"
 //   - "gemini", "gmi", "gemini-cli" → "gmi"
+//   - Registered plugin names retain their own agent type
 //   - Other profiles default to "cc" (Claude Code)
 func ProfileToAgentType(profile string) string {
 	switch agent.AgentType(strings.TrimSpace(profile)).Canonical() {
@@ -273,6 +274,9 @@ func ProfileToAgentType(profile string) string {
 	case agent.AgentTypeOllama:
 		return string(agent.AgentTypeOllama)
 	default:
+		if agent.IsPluginType(agent.AgentType(profile)) {
+			return strings.ToLower(strings.TrimSpace(profile))
+		}
 		// Default to Claude for unknown profiles (most capable agent)
 		return string(agent.AgentTypeClaudeCode)
 	}

@@ -1917,6 +1917,45 @@ func TestPiResumePreservesSettingsAndRejectsOtherModes(t *testing.T) {
 	}
 }
 
+func TestPinPiLaunchSessionPreservesSelectionsAndAllocatesDistinctIdentities(t *testing.T) {
+	for _, command := range []string{
+		"pi --session chosen", "pi --session-id already-pinned", "pi --session-id=already-pinned",
+		"pi --resume", "pi -r", "pi --continue", "pi -c", "pi --no-session", "pi --fork original",
+		"pi --mode rpc", "pi --print", "pi --export session.jsonl", "pi --session",
+		"pi -- initial-message", "pi 'initial message'", "pi --unknown option",
+		"env CUSTOM=value pi", "pi | tee capture.log", "exec pi", "omp --auto-approve",
+		"node /usr/lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js",
+	} {
+		if got := PinPiLaunchSession(command); got != command {
+			t.Errorf("launch %q changed to %q", command, got)
+		}
+	}
+	command := `PI_CODING_AGENT_SESSION_DIR='/work/sessions' /usr/bin/pi --no-approve --model 'provider/model' --thinking high --append-system-prompt '/work/persona.md'`
+	seen := make(map[string]bool)
+	for i := 0; i < 2; i++ {
+		pinned := PinPiLaunchSession(command)
+		if !strings.HasPrefix(pinned, command+" --session-id ") {
+			t.Fatalf("launch settings changed: %q", pinned)
+		}
+		words, err := shellword.Literal(pinned)
+		if err != nil {
+			t.Fatal(err)
+		}
+		id := words[len(words)-1].Value
+		if !piSessionIDPattern.MatchString(id) || !strings.HasPrefix(id, "ntm-") || seen[id] {
+			t.Fatalf("invalid or repeated per-pane session ID %q", id)
+		}
+		seen[id] = true
+		if replay := PinPiLaunchSession(pinned); replay != pinned {
+			t.Fatalf("replaying a launch replaced its identity: %q", replay)
+		}
+		resumed, err := ResumeLaunchCommand("pi", "/work/existing.jsonl", pinned, ResumeLaunchOptions{})
+		if err != nil || resumed != command+" --session '/work/existing.jsonl'" {
+			t.Fatalf("native resume did not replace the pinned selector: %q, %v", resumed, err)
+		}
+	}
+}
+
 func TestResolvePiResumeSessionValidatesExactBindingAndLaunchStore(t *testing.T) {
 	clearPiSessionEnvironment(t)
 	home, cwd, store := t.TempDir(), t.TempDir(), t.TempDir()

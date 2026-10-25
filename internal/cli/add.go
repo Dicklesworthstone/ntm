@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
+	"github.com/Dicklesworthstone/ntm/internal/agentsession"
 	"github.com/Dicklesworthstone/ntm/internal/checkpoint"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/events"
@@ -884,6 +885,9 @@ func executeAdd(ctx context.Context, opts AddOptions, emitResult bool) error {
 		})
 		if err != nil {
 			return outputError(fmt.Errorf("generating command for %s agent: %w", agent.Type, err))
+		}
+		if agentsession.ResumeProvider(agentTypeStr) == "pi" {
+			finalCmd = agentsession.PinPiLaunchSession(finalCmd)
 		}
 		if warning := policy.LogClaudeHooksNotApplied("add", finalCmd, claudeLaunch.Settings); warning != "" {
 			if !IsJSONOutput() {

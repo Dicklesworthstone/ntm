@@ -25,6 +25,7 @@ import (
 	agentpkg "github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/agent/ollama"
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
+	"github.com/Dicklesworthstone/ntm/internal/agentsession"
 	"github.com/Dicklesworthstone/ntm/internal/audit"
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/checkpoint"
@@ -359,6 +360,9 @@ func canonicalSpawnAgentType(raw string) (AgentType, bool) {
 	case agentpkg.AgentTypeOllama:
 		return AgentTypeOllama, true
 	default:
+		if agentpkg.IsPluginType(agentpkg.AgentType(raw)) {
+			return AgentType(strings.ToLower(strings.TrimSpace(raw))), true
+		}
 		return "", false
 	}
 }
@@ -402,10 +406,28 @@ func canonicalSpawnCountTotals(counts map[string]int) map[AgentType]int {
 	return totals
 }
 
+// Keep the established built-in pane order, then append registered plugin
+// types deterministically. Template counts must not silently drop pi panes.
+func orderedSpawnCountTypes(totals map[AgentType]int) []AgentType {
+	ordered := orderedSpawnAgentTypes()
+	seen := make(map[AgentType]bool, len(ordered))
+	for _, agentType := range ordered {
+		seen[agentType] = true
+	}
+	var extra []AgentType
+	for agentType := range totals {
+		if !seen[agentType] {
+			extra = append(extra, agentType)
+		}
+	}
+	sort.Slice(extra, func(i, j int) bool { return extra[i] < extra[j] })
+	return append(ordered, extra...)
+}
+
 func formatSpawnCountSummary(counts map[string]int) string {
 	totals := canonicalSpawnCountTotals(counts)
 	parts := make([]string, 0, len(totals))
-	for _, agentType := range orderedSpawnAgentTypes() {
+	for _, agentType := range orderedSpawnCountTypes(totals) {
 		count := totals[agentType]
 		if count <= 0 {
 			continue
@@ -422,7 +444,7 @@ func appendMissingCountMapAgentSpecs(agentSpecs *AgentSpecs, counts map[string]i
 
 	existing := existingSpawnAgentTypes(*agentSpecs)
 	totals := canonicalSpawnCountTotals(counts)
-	for _, agentType := range orderedSpawnAgentTypes() {
+	for _, agentType := range orderedSpawnCountTypes(totals) {
 		count := totals[agentType]
 		if count <= 0 || existing[agentType] {
 			continue
@@ -3224,6 +3246,9 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 		})
 		if err != nil {
 			return outputError(fmt.Errorf("generating command for %s agent: %w", agent.Type, err))
+		}
+		if agentsession.ResumeProvider(string(agent.Type)) == "pi" {
+			agentCmd = agentsession.PinPiLaunchSession(agentCmd)
 		}
 		if warning := policy.LogClaudeHooksNotApplied("spawn", agentCmd, claudeLaunch.Settings); warning != "" {
 			if !IsJSONOutput() {

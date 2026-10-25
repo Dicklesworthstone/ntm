@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/config"
 	hookspkg "github.com/Dicklesworthstone/ntm/internal/hooks"
 	"github.com/Dicklesworthstone/ntm/internal/output"
 	"github.com/Dicklesworthstone/ntm/internal/persona"
@@ -18,6 +19,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
+	"github.com/Dicklesworthstone/ntm/internal/workflow"
 )
 
 func decodeSingleTerminalJSONMap(t *testing.T, raw string) map[string]interface{} {
@@ -562,6 +564,52 @@ func TestAppendMissingCountMapAgentSpecs_CanonicalizesModernTypes(t *testing.T) 
 	}
 	if got := specs.ByType(AgentTypeOllama).TotalCount(); got != 1 {
 		t.Fatalf("ollama count = %d, want 1", got)
+	}
+}
+
+func TestPiWorkflowTemplatePreservesPluginPaneCounts(t *testing.T) {
+	oldCfg := cfg
+	cfg = config.Default()
+	t.Cleanup(func() { cfg = oldCfg })
+	presets := shippedAgentPresets(t)
+	template, err := workflow.ParseAndValidateWorkflow(`name = "pi-team"
+coordination = "parallel"
+[[agents]]
+profile = "pi"
+role = "builder"
+count = 2
+[[agents]]
+profile = "omp"
+role = "reviewer"
+count = 1
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	counts := template.AgentCounts()
+	if got := formatSpawnCountSummary(counts); got != "1 omp, 2 pi" {
+		t.Fatalf("template summary = %q, want both distinct agent types", got)
+	}
+	var specs AgentSpecs
+	appendMissingCountMapAgentSpecs(&specs, counts)
+	agents := specs.Flatten()
+	if len(agents) != 3 || agents[0].Type != AgentTypeOmp || agents[1].Type != "pi" || agents[2].Type != "pi" {
+		t.Fatalf("template created wrong agents: %+v", agents)
+	}
+	if err := validateSpawnAgentTypes(agents, presets, nil); err != nil {
+		t.Fatalf("template agents failed production spawn validation: %v", err)
+	}
+	for _, agent := range agents {
+		command, _, err := spawnAgentCommandTemplate(agent.Type, presets, "")
+		if err != nil || (agent.Type == "pi" && !strings.HasPrefix(command, "pi")) {
+			t.Fatalf("template agent %s has wrong command %q: %v", agent.Type, command, err)
+		}
+	}
+	specs = AgentSpecs{{Type: "pi", Count: 1, Model: "chosen-model", ReasoningEffort: "high"}}
+	appendMissingCountMapAgentSpecs(&specs, counts)
+	pi := specs.ByType("pi")
+	if len(pi) != 1 || pi[0].Count != 1 || pi[0].Model != "chosen-model" || pi[0].ReasoningEffort != "high" || specs.ByType(AgentTypeOmp).TotalCount() != 1 {
+		t.Fatalf("template replaced explicit pi selection or lost omp: %+v", specs)
 	}
 }
 

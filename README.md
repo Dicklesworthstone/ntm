@@ -1243,6 +1243,11 @@ discovery. Saved-session resume resolves the exact saved ID to an existing
 transcript before launching `pi --session <path>`, retaining the original
 model, thinking, prompt, and environment settings. A missing or ambiguous
 transcript stops resume before an existing tmux session can be replaced.
+Managed `spawn` and `add` launches assign each fresh pi pane a distinct
+`--session-id` and record it with the launch command. Simultaneous panes in the
+same working directory can therefore be saved and resumed without guessing
+from transcript timestamps. Explicit pi session selectors remain authoritative.
+Workflow template profiles named `pi` also retain their plugin type and count.
 
 For pipelines and workflows, pi's standard composer, unsent draft, cwd, and
 usage rows are excluded from response evidence. Blank redraws retain the last
