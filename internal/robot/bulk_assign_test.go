@@ -3,6 +3,7 @@ package robot
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -25,10 +26,197 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	dispatchsvc "github.com/Dicklesworthstone/ntm/internal/dispatch"
 	"github.com/Dicklesworthstone/ntm/internal/redaction"
+	"github.com/Dicklesworthstone/ntm/internal/sqliteutil"
 	statuspkg "github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/worksource"
 )
+
+// robotRecoveryWorkspace exercises the real br subprocess/error path while
+// keeping the corruption report deterministic. A real indexed SQLite database
+// and authoritative JSONL participate in the independent preservation check.
+type robotRecoveryWorkspace struct {
+	dir, calls, repaired, jsonl string
+	source                      []byte
+}
+
+func newRobotRecoveryWorkspace(t *testing.T, verified bool) robotRecoveryWorkspace {
+	t.Helper()
+	dir := t.TempDir()
+	beadsDir := filepath.Join(dir, ".beads")
+	if err := os.Mkdir(beadsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"init", "-b", "main", dir},
+		{"-C", dir, "-c", "user.name=Recovery Test", "-c", "user.email=recovery@example.invalid", "commit", "--allow-empty", "-m", "recovery fixture"},
+	} {
+		if output, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("initialize source identity: %v: %s", err, output)
+		}
+	}
+	databasePath := filepath.Join(beadsDir, "beads.db")
+	database, err := sql.Open(sqliteutil.DriverName, sqliteutil.FileDSN(databasePath, "busy_timeout(5000)"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`CREATE TABLE issues(id TEXT PRIMARY KEY, status TEXT NOT NULL);
+CREATE INDEX idx_issues_status ON issues(status);
+CREATE INDEX idx_issues_tombstone ON issues(status) WHERE status = 'tombstone';
+INSERT INTO issues VALUES ('bd-preserved', 'tombstone');`); err != nil {
+		database.Close()
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+	w := robotRecoveryWorkspace{
+		dir: dir, calls: filepath.Join(dir, "br-calls"), repaired: filepath.Join(dir, "repair-completed"),
+		jsonl:  filepath.Join(beadsDir, "issues.jsonl"),
+		source: []byte("{\"id\":\"bd-ctx\",\"title\":\"Add rate limiting middleware\",\"status\":\"open\",\"issue_type\":\"task\",\"priority\":1}\n{\"id\":\"bd-preserved\",\"status\":\"tombstone\"}\n"),
+	}
+	if err := os.WriteFile(w.jsonl, w.source, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	const warning = "the tombstone issue IDs could not be read before the rebuild (Database error: database disk image is malformed); preservation of unflushed local state could not be established"
+	marshal := func(value any) string {
+		data, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(data)
+	}
+	report := map[string]any{
+		"ok": false, "exit_code": 2, "code": "fix_partial", "repaired": true,
+		"database_verified": verified, "preservation_verified": false, "verified": false,
+		"skipped": 0, "fk_violations_cleaned": 0,
+		"history_preservation_warnings": []string{}, "dirty_preservation_warnings": []string{warning},
+		"preserved_history":             []any{map[string]any{"table": "events", "restored": 0, "skipped": 0}},
+		"verified_backups":              []any{map[string]any{"backup": filepath.Join(beadsDir, "beads.db.bak")}},
+		"recovery_failure_marker":       filepath.Join(beadsDir, "beads.db.verification-failed.json"),
+		"recovery_failure_marker_error": nil,
+	}
+	for key, value := range map[string]string{
+		"NTM_ROBOT_RECOVERY_CALLS": w.calls, "NTM_ROBOT_RECOVERY_REPAIRED": w.repaired,
+		"NTM_ROBOT_RECOVERY_INFO":   marshal(map[string]string{"database_path": databasePath, "jsonl_path": w.jsonl}),
+		"NTM_ROBOT_RECOVERY_DOCTOR": marshal(report),
+		"NTM_ROBOT_RECOVERY_CONFLICT": marshal(map[string]any{"error": map[string]string{
+			"code": "SYNC_CONFLICT", "message": "Sync conflict: Automatic database recovery refused because unflushed-state preservation could not be established:\n- " + warning + "\nThe database was not replaced. Run br doctor --repair to inspect retained evidence.",
+		}}),
+	} {
+		t.Setenv(key, value)
+	}
+	binDir := t.TempDir()
+	script := `#!/bin/sh
+printf '%s\n' "$*" >> "$NTM_ROBOT_RECOVERY_CALLS"
+case "$*" in
+  '--lock-timeout 5000 info --json --no-auto-import --no-auto-flush')
+    printf '%s' "$NTM_ROBOT_RECOVERY_INFO" ;;
+  '--lock-timeout 5000 sync --import-only --rebuild --json')
+    printf '%s' "$NTM_ROBOT_RECOVERY_CONFLICT" >&2
+    exit 6 ;;
+  '--lock-timeout 5000 doctor --repair --json')
+    : > "$NTM_ROBOT_RECOVERY_REPAIRED"
+    printf '%s' "$NTM_ROBOT_RECOVERY_DOCTOR"
+    exit 2 ;;
+  '--lock-timeout 5000 show bd-ctx --json')
+    if [ ! -f "$NTM_ROBOT_RECOVERY_REPAIRED" ]; then
+      printf '%s' '{"error":{"code":"DATABASE_ERROR","message":"Database error: database disk image is malformed"}}'
+      exit 2
+    fi
+    printf '%s' '[{"id":"bd-ctx","title":"Add rate limiting middleware","status":"open","issue_type":"task","priority":1,"labels":[]}]' ;;
+  *) printf 'unexpected br command: %s\n' "$*" >&2; exit 99 ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(binDir, "br"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return w
+}
+
+func (w robotRecoveryWorkspace) actionable(ctx context.Context, dir string, _ int) ([]bv.TriageRecommendation, error) {
+	details, err := bv.GetBeadAssignmentDetailsContext(ctx, dir, "bd-ctx")
+	if err != nil {
+		return nil, err
+	}
+	return []bv.TriageRecommendation{{ID: details.ID, Title: details.Title, Status: details.Status, Priority: 1}}, nil
+}
+
+func (w robotRecoveryWorkspace) assertPreserved(t *testing.T, repairs int) {
+	t.Helper()
+	data, err := os.ReadFile(w.jsonl)
+	if err != nil || string(data) != string(w.source) {
+		t.Fatalf("authoritative JSONL changed: %s (%v)", data, err)
+	}
+	calls, err := os.ReadFile(w.calls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, command := range []string{"sync --import-only --rebuild --json", "doctor --repair --json"} {
+		if got := strings.Count(string(calls), command); got != repairs {
+			t.Fatalf("%s calls = %d, want %d:\n%s", command, got, repairs, calls)
+		}
+	}
+}
+
+func TestBulkAssignCorruptPreflight(t *testing.T) {
+	for _, allocation := range []bool{false, true} {
+		for _, test := range []struct {
+			name     string
+			dryRun   bool
+			verified bool
+		}{
+			{name: "verified partial repair", verified: true},
+			{name: "dry run", dryRun: true, verified: true},
+			{name: "unverified repair"},
+		} {
+			t.Run(fmt.Sprintf("allocation=%t/%s", allocation, test.name), func(t *testing.T) {
+				f := newBulkContextFixture(t, "bulk-corrupt-preflight")
+				w := newRobotRecoveryWorkspace(t, test.verified)
+				f.deps.ResolveProject = func(context.Context, string, []tmux.Pane) (string, error) { return w.dir, nil }
+				f.deps.FetchBeadTitle = fetchBeadTitle
+				f.deps.FetchActionable = w.actionable
+				f.deps.FetchTriage = func(context.Context, string) (*bv.TriageResponse, error) {
+					return mockTriage([]bv.TriageRecommendation{{ID: "bd-ctx", Title: "Add rate limiting middleware", Status: "open", Priority: 1}}, nil), nil
+				}
+				f.deps.FetchInProgress = func(context.Context, string, int) ([]bv.BeadInProgress, error) { return nil, nil }
+				claims := 0
+				claim := f.deps.ClaimBead
+				f.deps.ClaimBead = func(ctx context.Context, dir, id, actor string) (bv.BeadClaimResult, error) {
+					claims++
+					return claim(ctx, dir, id, actor)
+				}
+				opts := BulkAssignOptions{Session: f.session, FromBV: !allocation, Strategy: "ready", DryRun: test.dryRun, Deps: &f.deps}
+				if allocation {
+					opts.AllocationJSON = `{"1":"bd-ctx"}`
+				}
+				output, err := GetBulkAssign(t.Context(), opts)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !test.dryRun && test.verified {
+					if !output.Success || claims != 1 || len(f.deliveries()) != 1 || len(output.Assignments) != 1 || !output.Assignments[0].PromptSent {
+						t.Fatalf("recovered output=%+v claims=%d deliveries=%v", output, claims, f.deliveries())
+					}
+					if allocation {
+						replayed, err := GetBulkAssign(t.Context(), opts)
+						if err != nil || !replayed.Success || claims != 1 || len(f.deliveries()) != 1 {
+							t.Fatalf("durable replay repeated effects: %+v err=%v claims=%d deliveries=%v", replayed, err, claims, f.deliveries())
+						}
+					}
+				} else if claims != 0 || len(f.deliveries()) != 0 || output.Success {
+					t.Fatalf("unsafe preflight crossed effects: %+v claims=%d deliveries=%v", output, claims, f.deliveries())
+				}
+				repairs := 1
+				if test.dryRun {
+					repairs = 0
+				}
+				w.assertPreserved(t, repairs)
+			})
+		}
+	}
+}
 
 func TestGetBulkAssignRejectsInvalidStrategyBeforeExternalWork(t *testing.T) {
 	output, err := GetBulkAssign(t.Context(), BulkAssignOptions{Session: "proj", FromBV: true, Strategy: "fastest"})

@@ -26,6 +26,57 @@ import (
 	"github.com/Dicklesworthstone/ntm/tests/testutil"
 )
 
+func TestSpawnAssignmentCorruptionRecovery(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		dryRun   bool
+		verified bool
+	}{
+		{name: "repair before session creation", verified: true},
+		{name: "dry run is read only", dryRun: true, verified: true},
+		{name: "failed verification stops creation"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			w := newRobotRecoveryWorkspace(t, test.verified)
+			creates := 0
+			lifecycle := testSpawnLifecycleDependencies(nil)
+			lifecycle.SessionExists = func(context.Context, string) (bool, error) { return false, nil }
+			lifecycle.CreateSession = func(context.Context, string, string, int) error {
+				creates++
+				if _, err := os.Stat(w.repaired); err != nil {
+					t.Fatalf("session creation preceded recovery: %v", err)
+				}
+				return errors.New("stop after verified assignment preflight")
+			}
+			out, err := GetSpawn(t.Context(), SpawnOptions{
+				Session: "spawn-corrupt-preflight", CCCount: 1, NoUserPane: true,
+				WorkingDir: w.dir, DryRun: test.dryRun, AssignWork: true, AssignStrategy: "top-n",
+				LifecycleDeps: lifecycle,
+				AssignmentDeps: &SpawnAssignmentDependencies{
+					LoadAssignmentPolicy: func(string, string, bool) (*config.Config, error) { return testSpawnConfig(), nil },
+					FetchActionable:      w.actionable,
+				},
+			}, testSpawnConfig())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !test.dryRun && test.verified {
+				if creates != 1 || !strings.Contains(out.Error, "stop after verified assignment preflight") {
+					t.Fatalf("recovered spawn did not reach creation: %+v creates=%d", out, creates)
+				}
+			} else if creates != 0 || out.Success {
+				t.Fatalf("unsafe preflight created a session: %+v creates=%d", out, creates)
+			}
+			repairs := 1
+			if test.dryRun {
+				repairs = 0
+			}
+			w.assertPreserved(t, repairs)
+		})
+	}
+}
+
 func TestGetSpawnRejectsProjectNameWithLabelSeparator(t *testing.T) {
 	opts := SpawnOptions{
 		Session: "my--project",

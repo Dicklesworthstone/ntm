@@ -929,7 +929,9 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 			return output, nil
 		}
 
-		actionable, actionableErr := assignmentDeps.FetchActionable(ctx, dir, 0)
+		actionable, actionableErr := readRobotAssignmentPreflight(ctx, dir, opts.DryRun, func() ([]bv.TriageRecommendation, error) {
+			return assignmentDeps.FetchActionable(ctx, dir, 0)
+		})
 		if actionableErr != nil {
 			if cancelErr := spawnCancellationError(ctx, actionableErr); cancelErr != nil {
 				setSpawnCancellation(output, cancelErr)

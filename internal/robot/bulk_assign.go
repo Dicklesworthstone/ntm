@@ -372,7 +372,9 @@ func GetBulkAssign(ctx context.Context, opts BulkAssignOptions) (*BulkAssignOutp
 		return output, nil
 	}
 
-	actionable, err := deps.FetchActionable(ctx, opts.projectDir, 0)
+	actionable, err := readRobotAssignmentPreflight(ctx, opts.projectDir, opts.DryRun, func() ([]bv.TriageRecommendation, error) {
+		return deps.FetchActionable(ctx, opts.projectDir, 0)
+	})
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			setBulkAssignCancellation(output, err)
@@ -433,7 +435,9 @@ func GetBulkAssign(ctx context.Context, opts BulkAssignOptions) (*BulkAssignOutp
 	}
 	triage = restrictTriageToAssignable(triage, actionable)
 
-	inProgress, err := deps.FetchInProgress(ctx, opts.projectDir, 200)
+	inProgress, err := readRobotAssignmentPreflight(ctx, opts.projectDir, opts.DryRun, func() ([]bv.BeadInProgress, error) {
+		return deps.FetchInProgress(ctx, opts.projectDir, 200)
+	})
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			setBulkAssignCancellation(output, err)
@@ -480,6 +484,17 @@ func GetBulkAssign(ctx context.Context, opts BulkAssignOptions) (*BulkAssignOutp
 		setBulkAssignCancellation(output, err)
 	}
 	return output, nil
+}
+
+// readRobotAssignmentPreflight permits index repair only while preparing an
+// actual assignment. Retrying this read must never replay a claim, reservation,
+// or dispatch; the atomic authorization ports still perform ordinary fresh
+// reads after preflight. Preview commands retain their read-only behavior.
+func readRobotAssignmentPreflight[T any](ctx context.Context, projectDir string, dryRun bool, read func() (T, error)) (T, error) {
+	if dryRun {
+		return read()
+	}
+	return bv.ReadForMutationContext(ctx, projectDir, read)
 }
 
 func assignmentDependencyMissing(err error) bool {
@@ -1236,7 +1251,9 @@ func planBulkAssignFromAllocation(ctx context.Context, opts BulkAssignOptions, d
 		assignmentByBead[beadID] = len(plan.Assignments)
 		selectorByBead[beadID] = selector
 
-		title, err := deps.FetchBeadTitle(ctx, opts.projectDir, beadID)
+		title, err := readRobotAssignmentPreflight(ctx, opts.projectDir, opts.DryRun, func() (string, error) {
+			return deps.FetchBeadTitle(ctx, opts.projectDir, beadID)
+		})
 		if err != nil {
 			failBulkAssignment(&assignment, err, "")
 		} else {
@@ -1724,7 +1741,9 @@ func applyBulkAssignPlan(ctx context.Context, opts BulkAssignOptions, deps BulkA
 			}
 			continue
 		}
-		prompt, err := buildBulkAssignPrompt(ctx, template, deps, planned, output.Session, opts.projectDir, needsDetails)
+		prompt, err := readRobotAssignmentPreflight(ctx, opts.projectDir, opts.DryRun, func() (string, error) {
+			return buildBulkAssignPrompt(ctx, template, deps, planned, output.Session, opts.projectDir, needsDetails)
+		})
 		if err != nil {
 			failBulkAssignment(planned, err, "")
 			continue
@@ -1848,7 +1867,9 @@ func resolveBulkAssignReservation(ctx context.Context, opts BulkAssignOptions, d
 		failBulkReservation(planned, errors.New("bead reader for reservation discovery is unavailable"), ErrCodeInternalError)
 		return
 	}
-	details, err := deps.GetBeadAssignmentDetails(ctx, opts.projectDir, planned.Bead)
+	details, err := readRobotAssignmentPreflight(ctx, opts.projectDir, opts.DryRun, func() (*bv.BeadAssignmentDetails, error) {
+		return deps.GetBeadAssignmentDetails(ctx, opts.projectDir, planned.Bead)
+	})
 	if err == nil && details == nil {
 		err = errors.New("live work-item details are missing")
 	}
@@ -3152,9 +3173,9 @@ func fetchBeadDetails(ctx context.Context, dir, beadID string) (BeadDetails, err
 	if ctx == nil {
 		return BeadDetails{}, errors.New("bead details context is required")
 	}
-	cmd := exec.CommandContext(ctx, "br", "show", beadID, "--json")
-	cmd.Dir = dir
-	output, err := cmd.Output()
+	// Keep the structured command failure intact so a mutating assignment's
+	// preflight can recover corruption without teaching preview reads to repair.
+	output, err := bv.RunBdContext(ctx, dir, "show", beadID, "--json")
 	if err != nil {
 		return BeadDetails{}, fmt.Errorf("br show %s failed: %w", beadID, err)
 	}
@@ -3167,7 +3188,7 @@ func fetchBeadDetails(ctx context.Context, dir, beadID string) (BeadDetails, err
 			DepType string `json:"dep_type"`
 		} `json:"dependencies"`
 	}
-	if err := json.Unmarshal(output, &issues); err != nil {
+	if err := json.Unmarshal([]byte(output), &issues); err != nil {
 		return BeadDetails{}, fmt.Errorf("parse br show output: %w", err)
 	}
 	if len(issues) == 0 || issues[0].Title == "" {

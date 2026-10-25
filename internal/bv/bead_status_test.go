@@ -1321,6 +1321,80 @@ func TestGuardedClaimCorruptionRecoveryRejectsInvalidJSONL(t *testing.T) {
 	}
 }
 
+func TestReadForMutationContextRecoversRealCorruptedRead(t *testing.T) {
+	requireRealBR(t)
+	t.Run("ordinary read remains read only and executing preflight repairs", func(t *testing.T) {
+		dir := t.TempDir()
+		runRealBR(t, dir, "init", "--quiet")
+		beadID := createRealBRBead(t, dir, "operator approval required after read recovery")
+		runRealBR(t, dir, "update", beadID, "--add-label", "operator-gated", "--json")
+		databasePath := realBRDatabasePath(t, dir)
+		jsonlPath := filepath.Join(dir, ".beads", "issues.jsonl")
+		beforeJSONL := realBRRecoveryBytes(t, jsonlPath)
+		offset, size := corruptRealBRIssuesRootPage(t, databasePath)
+		damaged := realBRRecoveryBytes(t, databasePath)
+		calls := traceRealBRRecovery(t, "")
+
+		if _, err := GetBeadAssignmentDetailsContext(t.Context(), dir, beadID); err == nil || !isBeadsReadCorruptionError(err) {
+			t.Fatalf("ordinary details error=%v, want structured database corruption", err)
+		}
+		unchanged := realBRRecoveryBytes(t, databasePath)
+		if int64(len(unchanged)) < offset+size || !bytes.Equal(damaged[offset:offset+size], unchanged[offset:offset+size]) {
+			t.Fatal("ordinary details read repaired the damaged issues page")
+		}
+		if commands := readRealBRRecoveryCalls(t, calls); strings.Contains(commands, "sync") || strings.Contains(commands, "doctor") {
+			t.Fatalf("ordinary read invoked recovery: %s", commands)
+		}
+
+		reads := 0
+		details, err := ReadForMutationContext(t.Context(), dir, func() (*BeadAssignmentDetails, error) {
+			reads++
+			return GetBeadAssignmentDetailsContext(t.Context(), dir, beadID)
+		})
+		if err != nil || details == nil || details.Status != "open" || reads != 2 {
+			t.Fatalf("details=%+v error=%v reads=%d, want fresh open evidence after one retry", details, err, reads)
+		}
+		if _, err := ClaimBeadForAssignment(t.Context(), dir, beadID, "ReadRecoveryActor"); !errors.Is(err, ErrBeadAssignmentIneligible) {
+			t.Fatalf("claim after read recovery error=%v, want preserved operator gate", err)
+		}
+		commands := readRealBRRecoveryCalls(t, calls)
+		if strings.Count(commands, "sync --import-only --rebuild --json") != 1 || strings.Count(commands, "doctor --repair --json") != 1 {
+			t.Fatalf("expected exactly one rebuild and doctor repair: %s", commands)
+		}
+		if !bytes.Equal(beforeJSONL, realBRRecoveryBytes(t, jsonlPath)) {
+			t.Fatal("read recovery or refused claim changed authoritative JSONL")
+		}
+	})
+	t.Run("invalid JSONL stops before rereading", func(t *testing.T) {
+		dir := t.TempDir()
+		runRealBR(t, dir, "init", "--quiet")
+		beadID := createRealBRBead(t, dir, "invalid source must preserve failed index evidence")
+		databasePath := realBRDatabasePath(t, dir)
+		jsonlPath := filepath.Join(dir, ".beads", "issues.jsonl")
+		invalid := []byte("{invalid authoritative JSONL}\n")
+		if err := os.WriteFile(jsonlPath, invalid, 0600); err != nil {
+			t.Fatal(err)
+		}
+		offset, size := corruptRealBRIssuesRootPage(t, databasePath)
+		damaged := realBRRecoveryBytes(t, databasePath)
+		reads := 0
+		_, err := ReadForMutationContext(t.Context(), dir, func() (*BeadAssignmentDetails, error) {
+			reads++
+			return GetBeadAssignmentDetailsContext(t.Context(), dir, beadID)
+		})
+		if err == nil || reads != 1 {
+			t.Fatalf("error=%v reads=%d, want invalid source refused before retry", err, reads)
+		}
+		if !bytes.Equal(invalid, realBRRecoveryBytes(t, jsonlPath)) {
+			t.Fatal("failed read recovery changed invalid authoritative JSONL")
+		}
+		after := realBRRecoveryBytes(t, databasePath)
+		if int64(len(after)) < offset+size || !bytes.Equal(damaged[offset:offset+size], after[offset:offset+size]) {
+			t.Fatal("failed read recovery discarded damaged issues-page evidence")
+		}
+	})
+}
+
 // traceRealBRRecovery delegates to the installed br, except for an optional
 // doctor interception used to test failures at that process boundary.
 func traceRealBRRecovery(t *testing.T, doctorScript string) string {

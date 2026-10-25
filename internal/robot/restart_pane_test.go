@@ -17,6 +17,59 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
+func TestRestartBeadCorruptionRecovery(t *testing.T) {
+	for _, corruptRead := range []string{"plan", "details"} {
+		for _, test := range []struct {
+			name     string
+			dryRun   bool
+			verified bool
+		}{
+			{name: "verified repair", verified: true},
+			{name: "dry run", dryRun: true, verified: true},
+			{name: "failed verification"},
+		} {
+			t.Run(corruptRead+"/"+test.name, func(t *testing.T) {
+				t.Setenv("HOME", t.TempDir())
+				w := newRobotRecoveryWorkspace(t, test.verified)
+				pane := tmux.Pane{ID: "%7", Index: 1, Title: "restart-corrupt__cod_1", Type: tmux.AgentCodex}
+				stores := 0
+				deps := restartPaneDeps(&RestartPaneDependencies{
+					LoadAssignmentPolicy:   func(string, string, bool) (*config.Config, error) { return config.Default(), nil },
+					FetchActionable:        w.actionable,
+					FetchBeadDetails:       bv.GetBeadAssignmentDetailsContext,
+					AssignmentLedgerExists: func(string) (bool, error) { return false, nil },
+					LoadStore: func(session string) (*assignment.AssignmentStore, error) {
+						stores++
+						return assignment.NewStore(session), nil
+					},
+					NewIdempotencyKey: func() (string, error) { return "restart-corruption-key", nil },
+					ListPanes:         func(context.Context, string) ([]tmux.Pane, error) { return []tmux.Pane{pane}, nil },
+				})
+				if corruptRead == "details" {
+					deps.FetchActionable = func(context.Context, string, int) ([]bv.TriageRecommendation, error) {
+						return []bv.TriageRecommendation{{ID: "bd-ctx", Title: "Add rate limiting middleware", Status: "open", Priority: 1}}, nil
+					}
+				}
+				preflight, err := preflightRestartBead(t.Context(), RestartPaneOptions{
+					Session: "restart-corrupt", Bead: "bd-ctx", ProjectDir: w.dir, DryRun: test.dryRun,
+				}, pane, deps)
+				if !test.dryRun && test.verified {
+					if err != nil || preflight == nil || preflight.Coordinator == nil || stores != 1 {
+						t.Fatalf("recovery did not prepare guarded assignment: %+v err=%v stores=%d", preflight, err, stores)
+					}
+				} else if err == nil || preflight != nil || stores != 0 {
+					t.Fatalf("unsafe preflight reached mutation preparation: %+v err=%v stores=%d", preflight, err, stores)
+				}
+				repairs := 1
+				if test.dryRun {
+					repairs = 0
+				}
+				w.assertPreserved(t, repairs)
+			})
+		}
+	}
+}
+
 func TestRestartPaneBeadPromptTemplate(t *testing.T) {
 	// Verify the template contains the expected placeholders
 	if !strings.Contains(restartPaneBeadPromptTemplate, "{bead_id}") {

@@ -57,7 +57,7 @@ var (
 	assignVerbose      bool
 	assignQuiet        bool
 	assignTimeout      time.Duration
-	assignDryRun       bool // Alias for no --auto
+	assignDryRun       bool // Preview recommendations or watch mode
 	assignReserveFiles bool // Enable Agent Mail file reservations
 
 	// Direct pane assignment flags
@@ -403,7 +403,7 @@ Examples:
 	cmd.Flags().BoolVarP(&assignVerbose, "verbose", "v", false, "Show detailed scoring/decision logs")
 	cmd.Flags().BoolVarP(&assignQuiet, "quiet", "q", false, "Suppress non-essential output")
 	cmd.Flags().DurationVar(&assignTimeout, "timeout", 30*time.Second, "Timeout for tmux observation and external calls (bv, br, Agent Mail)")
-	cmd.Flags().BoolVar(&assignDryRun, "dry-run", false, "Preview mode (alias for no --auto)")
+	cmd.Flags().BoolVar(&assignDryRun, "dry-run", false, "Preview recommendations or watch mode without executing")
 	cmd.Flags().BoolVar(&assignReserveFiles, "reserve-files", true, "Reserve file paths via Agent Mail before assignment")
 
 	// Direct pane assignment flags
@@ -560,6 +560,14 @@ func prepareResolvedAssignCommand(cmd *cobra.Command, session, projectDir string
 }
 
 func runAssign(cmd *cobra.Command, args []string) error {
+	// Execution-only routes bypass the normal recommendation preview. Reject
+	// incompatible dry runs before session discovery, repair, or other effects.
+	if assignDryRun && (strings.TrimSpace(assignPane) != "" || assignReassign != "" ||
+		assignRetry != "" || assignRetryFailed || assignClear != "" ||
+		strings.TrimSpace(assignClearPane) != "" || assignClearFailed) {
+		return markCLIInvalidInput(errors.New("--dry-run supports assignment recommendations and --watch; it cannot be combined with direct, retry, reassign, or clear operations"))
+	}
+
 	var session string
 	if len(args) > 0 {
 		session = args[0]
@@ -813,6 +821,7 @@ func runWatchMode(cmd *cobra.Command, session, projectDir, policyProject string)
 		TemplateFile:    assignTemplateFile,
 		Verbose:         assignVerbose,
 		Quiet:           true, // Suppress normal output during initial pass
+		Auto:            !assignDryRun,
 		Timeout:         assignTimeout,
 		ReserveFiles:    assignReserveFiles,
 		WithCASS:        assignWithCASS,
@@ -1058,8 +1067,34 @@ func classifyTriageRecForAssignmentWithGate(rec bv.TriageRecommendation, activeA
 	return nil
 }
 
-func loadActionableRecommendationsForAssignment(ctx context.Context, projectDir string) ([]bv.TriageRecommendation, error) {
-	return getActionableRecommendationsForAssign(ctx, projectDir, 0)
+// readAssignmentPreflight may repair a corrupt index only after the caller has
+// selected an executing assignment mode. Preview and dry-run readers retain
+// their read-only behavior. The callback must contain reads only: reservation,
+// ledger, and dispatch operations are never retried here.
+func readAssignmentPreflight[T any](ctx context.Context, projectDir string, execute bool, read func() (T, error)) (T, error) {
+	if execute {
+		return bv.ReadForMutationContext(ctx, projectDir, read)
+	}
+	return read()
+}
+
+func loadActionableRecommendationsForAssignment(ctx context.Context, projectDir string, execute bool) ([]bv.TriageRecommendation, error) {
+	return readAssignmentPreflight(ctx, projectDir, execute, func() ([]bv.TriageRecommendation, error) {
+		return getActionableRecommendationsForAssign(ctx, projectDir, 0)
+	})
+}
+
+func readBeadAssignmentDetailsForMutation(ctx context.Context, projectDir, beadID string) (*bv.BeadAssignmentDetails, error) {
+	return bv.ReadForMutationContext(ctx, projectDir, func() (*bv.BeadAssignmentDetails, error) {
+		details, err := getBeadAssignmentDetailsForAssignment(ctx, projectDir, beadID)
+		if err != nil {
+			return nil, err
+		}
+		if details == nil {
+			return nil, errors.New("live work-item details are missing")
+		}
+		return details, nil
+	})
 }
 
 func partitionActionableRecommendationsForAssignment(
@@ -1773,7 +1808,7 @@ func getAssignOutputEnhanced(ctx context.Context, opts *AssignCommandOptions) (*
 	if opts.actionablePreflightVerified {
 		allRecs = cloneSpawnActionableRecommendations(opts.verifiedActionable)
 	} else {
-		allRecs, err = loadActionableRecommendationsForAssignment(ctx, projectDir)
+		allRecs, err = loadActionableRecommendationsForAssignment(ctx, projectDir, opts.Auto)
 	}
 
 	if err != nil {
@@ -2749,7 +2784,7 @@ func executeAssignmentsEnhanced(ctx context.Context, session string, out *Assign
 		}
 		item := &out.Assignments[i]
 		detailsCtx, detailsCancel := context.WithTimeout(ctx, resolveAssignTimeout(opts.Timeout))
-		liveDetails, detailsErr := getBeadAssignmentDetailsForAssignment(detailsCtx, projectDir, item.BeadID)
+		liveDetails, detailsErr := readBeadAssignmentDetailsForMutation(detailsCtx, projectDir, item.BeadID)
 		detailsCancel()
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("assignment execution canceled while validating %s: %w", item.BeadID, err)
@@ -3828,12 +3863,22 @@ func runRetryAssignments(ctx context.Context, session string) error {
 			continue
 		}
 
-		// Get bead title if not stored
+		// Restore a readable tracker before the atomic coordinator's read-only
+		// authorization gates. Never replay the whole claim/reserve/send flow.
+		liveDetails, detailsErr := readBeadAssignmentDetailsForMutation(ctx, projectDir, failed.BeadID)
+		if detailsErr != nil {
+			if errors.Is(detailsErr, context.Canceled) || errors.Is(detailsErr, context.DeadlineExceeded) {
+				return emitRetryFailure(session, robot.ErrCodeTimeout, detailsErr)
+			}
+			skippedItems = append(skippedItems, RetrySkippedItem{BeadID: failed.BeadID, Reason: fmt.Sprintf("read bead before retry: %v", detailsErr)})
+			continue
+		}
+		// Get bead title if not stored.
 		beadTitle := failed.BeadTitle
 		if beadTitle == "" && !recoverAtomic {
-			beadTitle, err = getBeadTitle(ctx, projectDir, failed.BeadID)
-			if err != nil {
-				skippedItems = append(skippedItems, RetrySkippedItem{BeadID: failed.BeadID, Reason: fmt.Sprintf("look up bead title: %v", err)})
+			beadTitle = liveDetails.Title
+			if strings.TrimSpace(beadTitle) == "" {
+				skippedItems = append(skippedItems, RetrySkippedItem{BeadID: failed.BeadID, Reason: "live bead title is empty"})
 				continue
 			}
 		}
@@ -4715,11 +4760,15 @@ func runReassignment(ctx context.Context, session string) error {
 		return emitReassignFailure(session, "TARGET_BUSY", fmt.Sprintf("pane %s is busy (state: %s), use --force to override", assignmentPaneTarget(*targetPane), state), map[string]interface{}{"pane_state": state})
 	}
 
+	liveDetails, detailsErr := readBeadAssignmentDetailsForMutation(ctx, projectDir, beadID)
+	if detailsErr != nil {
+		return emitContextAwareReassignFailure(ctx, session, "BEAD_LOOKUP_FAILED", detailsErr, nil)
+	}
 	beadTitle := currentAssignment.BeadTitle
 	if beadTitle == "" {
-		beadTitle, err = getBeadTitle(ctx, projectDir, beadID)
-		if err != nil {
-			return emitContextAwareReassignFailure(ctx, session, "BEAD_LOOKUP_FAILED", err, nil)
+		beadTitle = liveDetails.Title
+		if strings.TrimSpace(beadTitle) == "" {
+			return emitReassignFailure(session, "BEAD_LOOKUP_FAILED", fmt.Sprintf("br show returned an empty title for %s", beadID), nil)
 		}
 	}
 	prompt := assignPrompt
@@ -5838,7 +5887,9 @@ func runDirectPaneAssignment(ctx context.Context, opts *AssignCommandOptions) er
 		assignItem.PaneWasBusy = !paneObservation.SafeToDispatch()
 
 		if !opts.IgnoreDeps {
-			blockers, blockersErr := getBeadBlockers(ctx, projectDir, beadID)
+			blockers, blockersErr := bv.ReadForMutationContext(ctx, projectDir, func() ([]string, error) {
+				return getBeadBlockers(ctx, projectDir, beadID)
+			})
 			if blockersErr != nil {
 				errMsg := fmt.Sprintf("could not verify dependencies for %s: %v; use --ignore-deps to override", beadID, blockersErr)
 				if IsJSONOutput() {
@@ -5859,7 +5910,9 @@ func runDirectPaneAssignment(ctx context.Context, opts *AssignCommandOptions) er
 		}
 
 		if opts.Prompt == "" || opts.ReserveFiles {
-			beadTitle, err = getBeadTitle(ctx, projectDir, beadID)
+			beadTitle, err = bv.ReadForMutationContext(ctx, projectDir, func() (string, error) {
+				return getBeadTitle(ctx, projectDir, beadID)
+			})
 			if err != nil {
 				errMsg := fmt.Sprintf("look up bead %s title: %v", beadID, err)
 				if IsJSONOutput() {
@@ -5937,6 +5990,18 @@ func runDirectPaneAssignment(ctx context.Context, opts *AssignCommandOptions) er
 	var reservationMgr *assign.FileReservationManager
 	needsReservationPort := !executeBeforePreflight || (sameIntent && prior.DispatchState != assignment.DispatchSent && prior.DispatchState != assignment.DispatchSending)
 	if needsReservationPort {
+		// This also covers a custom prompt with dependency lookup disabled and
+		// a known-unsent replay. Completed or uncertain sends remain ledger-only.
+		if _, readErr := readBeadAssignmentDetailsForMutation(ctx, projectDir, beadID); readErr != nil {
+			if IsJSONOutput() {
+				code := "BEAD_LOOKUP_FAILED"
+				if errors.Is(readErr, context.Canceled) || errors.Is(readErr, context.DeadlineExceeded) {
+					code = robot.ErrCodeTimeout
+				}
+				return emitTypedAssignmentFailure(readErr, makeDirectAssignEnvelope(opts.Session, false, &DirectAssignData{Assignment: assignItem}, code, readErr.Error(), warnings))
+			}
+			return readErr
+		}
 		reservationMgr, err = directAssignmentReservationManager(opts, projectDir)
 	}
 	if err != nil {
@@ -6183,7 +6248,9 @@ func PerformAutoReassignment(ctx context.Context, completedBeadID string, opts *
 		return nil, err
 	}
 	// Step 1: Get newly unblocked beads
-	depResult, err := GetNewlyUnblockedBeads(ctx, projectDir, completedBeadID, opts.Verbose)
+	depResult, err := readAssignmentPreflight(ctx, projectDir, !opts.DryRun, func() (*DependencyAwareResult, error) {
+		return GetNewlyUnblockedBeads(ctx, projectDir, completedBeadID, opts.Verbose)
+	})
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return result, fmt.Errorf("auto-reassignment canceled while checking newly unblocked work: %w", ctxErr)
 	}
@@ -6206,7 +6273,9 @@ func PerformAutoReassignment(ctx context.Context, completedBeadID string, opts *
 		return result, nil
 	}
 
-	verifiedActionable, err := getActionableRecommendationsForWatch(ctx, projectDir, 0)
+	verifiedActionable, err := readAssignmentPreflight(ctx, projectDir, !opts.DryRun, func() ([]bv.TriageRecommendation, error) {
+		return getActionableRecommendationsForWatch(ctx, projectDir, 0)
+	})
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return result, fmt.Errorf("auto-reassignment canceled while verifying actionable work: %w", ctxErr)
@@ -6692,6 +6761,7 @@ func NewWatchLoop(session string, store *assignment.AssignmentStore, opts *AutoR
 			TemplateFile:    opts.TemplateFile,
 			Verbose:         opts.Verbose,
 			Quiet:           opts.Quiet,
+			Auto:            !opts.DryRun,
 			Timeout:         opts.Timeout,
 			ReserveFiles:    opts.ReserveFiles,
 			WithCASS:        opts.WithCASS,
@@ -7310,7 +7380,9 @@ func (w *WatchLoop) shouldStop(ctx context.Context) (bool, error) {
 	if err := ensureAuthoritativeAssignmentPolicy(projectDir, policyProject); err != nil {
 		return false, err
 	}
-	actionable, err := getActionableRecommendationsForWatch(ctx, projectDir, 0)
+	actionable, err := readAssignmentPreflight(ctx, projectDir, w.opts != nil && !w.opts.DryRun, func() ([]bv.TriageRecommendation, error) {
+		return getActionableRecommendationsForWatch(ctx, projectDir, 0)
+	})
 	if err != nil {
 		if isAutomatedAssignmentSafetyError(err) {
 			return false, fmt.Errorf("automated assignment stopped because actionable work could not be verified: %w", err)

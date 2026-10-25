@@ -125,7 +125,9 @@ func (c *SessionCoordinator) AssignWork(ctx context.Context) ([]AssignmentResult
 	if c.actionableRecommendationsFn != nil {
 		getActionableRecommendations = c.actionableRecommendationsFn
 	}
-	recommendations, err := getActionableRecommendations(ctx, c.projectKey, 0)
+	recommendations, err := bv.ReadForMutationContext(ctx, c.projectKey, func() ([]bv.TriageRecommendation, error) {
+		return getActionableRecommendations(ctx, c.projectKey, 0)
+	})
 	if err != nil {
 		return nil, fmt.Errorf("getting verified actionable recommendations: %w", err)
 	}
@@ -270,7 +272,9 @@ func (c *SessionCoordinator) refreshAssignmentReservation(ctx context.Context, c
 			return bv.GetBeadAssignmentDetailsContext(ctx, c.projectKey, beadID)
 		}
 	}
-	details, err := lookup(ctx, current.BeadID)
+	details, err := bv.ReadForMutationContext(ctx, c.projectKey, func() (*bv.BeadAssignmentDetails, error) {
+		return lookup(ctx, current.BeadID)
+	})
 	if err != nil {
 		return time.Time{}, fmt.Errorf("read live claim before renewal: %w", err)
 	}
@@ -566,7 +570,9 @@ func (c *SessionCoordinator) filterActionableRecommendations(ctx context.Context
 		switch {
 		case c.workItemDetailsFn != nil:
 			var details *bv.BeadAssignmentDetails
-			details, err = c.workItemDetailsFn(ctx, recommendation.ID)
+			details, err = bv.ReadForMutationContext(ctx, c.projectKey, func() (*bv.BeadAssignmentDetails, error) {
+				return c.workItemDetailsFn(ctx, recommendation.ID)
+			})
 			if details != nil {
 				trackerStatus = details.Status
 				live.Title = details.Title
@@ -576,11 +582,15 @@ func (c *SessionCoordinator) filterActionableRecommendations(ctx context.Context
 				live.Type = liveIssueType(details.IssueType, recommendation.Type)
 			}
 		case c.workItemStatusFn != nil:
-			trackerStatus, err = c.workItemStatusFn(ctx, recommendation.ID)
+			trackerStatus, err = bv.ReadForMutationContext(ctx, c.projectKey, func() (string, error) {
+				return c.workItemStatusFn(ctx, recommendation.ID)
+			})
 			live.Status = trackerStatus
 		default:
 			var details *bv.BeadAssignmentDetails
-			details, err = bv.GetBeadAssignmentDetailsContext(ctx, c.projectKey, recommendation.ID)
+			details, err = bv.ReadForMutationContext(ctx, c.projectKey, func() (*bv.BeadAssignmentDetails, error) {
+				return bv.GetBeadAssignmentDetailsContext(ctx, c.projectKey, recommendation.ID)
+			})
 			if details != nil {
 				trackerStatus = details.Status
 				live.Title = details.Title
@@ -843,7 +853,9 @@ func (c *SessionCoordinator) reconcileTerminalAssignments(ctx context.Context, s
 		terminalStatus := active.PendingTerminalStatus
 		terminalReason := active.PendingTerminalReason
 		if terminalStatus != assignmentstore.StatusCompleted && terminalStatus != assignmentstore.StatusFailed {
-			trackerStatus, err := lookup(ctx, active.BeadID)
+			trackerStatus, err := bv.ReadForMutationContext(ctx, c.projectKey, func() (string, error) {
+				return lookup(ctx, active.BeadID)
+			})
 			if err != nil {
 				reconcileErrors = append(reconcileErrors, fmt.Errorf("read %s status: %w", active.BeadID, err))
 				continue

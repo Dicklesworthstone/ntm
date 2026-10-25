@@ -2,6 +2,8 @@ package coordinator
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -20,6 +22,7 @@ import (
 	ctxmon "github.com/Dicklesworthstone/ntm/internal/context"
 	"github.com/Dicklesworthstone/ntm/internal/persona"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
+	"github.com/Dicklesworthstone/ntm/internal/sqliteutil"
 	"github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
@@ -2050,6 +2053,189 @@ func addEligibleCoordinatorAgent(c *SessionCoordinator, paneID, agentName string
 	}
 	c.workItemStatusFn = func(context.Context, string) (string, error) { return "in_progress", nil }
 	c.actionableRecommendationsFn = func(context.Context, string, int) ([]bv.TriageRecommendation, error) { return nil, nil }
+}
+
+func TestAssignWorkRepairsCorruptPreclaimReadsBeforeDispatch(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		planning   bool
+		verified   bool
+		gated      bool
+		unrelated  bool
+		wantError  bool
+		wantAssign bool
+	}{
+		{name: "planning read", planning: true, verified: true, wantAssign: true},
+		{name: "live eligibility read", verified: true, wantAssign: true},
+		{name: "unverified repair", planning: true, wantError: true},
+		{name: "operator gate survives", verified: true, gated: true},
+		{name: "unrelated error", planning: true, unrelated: true, wantError: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			projectDir := t.TempDir()
+			beadsDir := filepath.Join(projectDir, ".beads")
+			if err := os.Mkdir(beadsDir, 0755); err != nil {
+				t.Fatal(err)
+			}
+			dbPath := filepath.Join(beadsDir, "index.db")
+			database, err := sql.Open(sqliteutil.DriverName, sqliteutil.FileDSN(dbPath))
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = database.Exec(`CREATE TABLE issues (id TEXT PRIMARY KEY, status TEXT NOT NULL);
+CREATE INDEX idx_issues_status ON issues(status);
+CREATE INDEX idx_issues_tombstone ON issues(status) WHERE status = 'tombstone';
+INSERT INTO issues VALUES ('ntm-deleted', 'tombstone');`)
+			closeErr := database.Close()
+			if err != nil || closeErr != nil {
+				t.Fatalf("create preservation indexes: %v, close: %v", err, closeErr)
+			}
+			jsonlPath := filepath.Join(beadsDir, "issues.jsonl")
+			source := []byte("{\"id\":\"ntm-deleted\",\"status\":\"tombstone\"}\n")
+			if err := os.WriteFile(jsonlPath, source, 0600); err != nil {
+				t.Fatal(err)
+			}
+			binDir := t.TempDir()
+			writeJSON := func(name string, value any) {
+				t.Helper()
+				data, err := json.Marshal(value)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(binDir, name+".json"), data, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			writeJSON("info", map[string]any{"database_path": dbPath, "jsonl_path": jsonlPath})
+			code := "DATABASE_ERROR"
+			if test.unrelated {
+				code = "VALIDATION_ERROR"
+			}
+			writeJSON("read-error", map[string]any{"error": map[string]any{"code": code, "message": "Database error: database disk image is malformed"}})
+			warning := "the tombstone issue IDs could not be read before the rebuild (Database error: database disk image is malformed); preservation of unflushed local state could not be established"
+			writeJSON("sync", map[string]any{"error": map[string]any{
+				"code": "SYNC_CONFLICT", "message": "Sync conflict: Automatic database recovery refused because unflushed-state preservation could not be established:\n- " + warning + "\nThe database was not replaced.",
+			}})
+			writeJSON("doctor", map[string]any{
+				"exit_code": 2, "code": "fix_partial", "ok": false, "repaired": true,
+				"database_verified": test.verified, "verified": false, "preservation_verified": false,
+				"skipped": 0, "fk_violations_cleaned": 0, "preserved_history": []any{},
+				"history_preservation_warnings": []string{}, "dirty_preservation_warnings": []string{warning},
+				"verified_backups":        []any{map[string]any{"backup": filepath.Join(beadsDir, "index.db.backup")}},
+				"recovery_failure_marker": filepath.Join(beadsDir, "recovery-marker"), "recovery_failure_marker_error": nil,
+			})
+			labels := []string{}
+			if test.gated {
+				labels = append(labels, "operator-only")
+			}
+			writeJSON("details", []any{map[string]any{"id": "ntm-recover-read", "title": "Recovered work", "status": "open", "issue_type": "task", "labels": labels}})
+			script := `#!/bin/sh
+set -eu
+[ "$1" = "--lock-timeout" ] && [ "$2" = "5000" ] || exit 97
+shift 2
+printf '%s\n' "$*" >> "$NTM_COORD_RECOVERY_FIXTURE/calls"
+case "$1" in
+info)
+  [ "$*" = "info --json --no-auto-import --no-auto-flush" ] || exit 98
+  cat "$NTM_COORD_RECOVERY_FIXTURE/info.json" ;;
+sync)
+  [ "$*" = "sync --import-only --rebuild --json" ] || exit 98
+  cat "$NTM_COORD_RECOVERY_FIXTURE/sync.json"
+  exit 6 ;;
+doctor)
+  [ "$*" = "doctor --repair --json" ] || exit 98
+  cat "$NTM_COORD_RECOVERY_FIXTURE/doctor.json"
+  : > "$NTM_COORD_RECOVERY_FIXTURE/repaired"
+  exit 2 ;;
+ready|show)
+  if [ ! -f "$NTM_COORD_RECOVERY_FIXTURE/repaired" ]; then
+    cat "$NTM_COORD_RECOVERY_FIXTURE/read-error.json"
+    exit 2
+  fi
+  cat "$NTM_COORD_RECOVERY_FIXTURE/details.json" ;;
+*) exit 99 ;;
+esac
+`
+			if err := os.WriteFile(filepath.Join(binDir, "br"), []byte(script), 0755); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("NTM_COORD_RECOVERY_FIXTURE", binDir)
+			t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+			if err := bv.ConfigureProjectOperatorGatedLabels(projectDir, []string{"operator-only"}); err != nil {
+				t.Fatal(err)
+			}
+			c := New("coordinator-preclaim-recovery", projectDir, &agentmail.Client{}, "CoordinatorAgent")
+			addEligibleCoordinatorAgent(c, "%85", "BlueLake")
+			c.workItemStatusFn = nil // Exercise real live details instead of the fixture's status stub.
+			planningCalls := 0
+			c.actionableRecommendationsFn = func(ctx context.Context, dir string, _ int) ([]bv.TriageRecommendation, error) {
+				planningCalls++
+				if test.planning {
+					if _, err := bv.RunBdContext(ctx, dir, "ready", "--json"); err != nil {
+						return nil, err
+					}
+				}
+				return []bv.TriageRecommendation{{ID: "ntm-recover-read", Title: "Recovered work", Status: "open", Type: "task", Priority: 1, Score: 1}}, nil
+			}
+			claims, dispatches := 0, 0
+			c.atomicCoordinatorFactory = func(store *assignmentstore.AssignmentStore) *assignmentstore.AtomicCoordinator {
+				claim := assignmentstore.ClaimFunc(func(_ context.Context, id, actor string) (assignmentstore.ClaimReceipt, error) {
+					claims++
+					return assignmentstore.ClaimReceipt{BeadID: id, Actor: actor, Status: "in_progress", ClaimedAt: time.Now().UTC()}, nil
+				})
+				dispatch := assignmentstore.DispatchFunc(func(context.Context, assignmentstore.DispatchRequest) (assignmentstore.DispatchReceipt, error) {
+					dispatches++
+					return assignmentstore.DispatchReceipt{DeliveryID: "recovered-read-delivery"}, nil
+				})
+				preflight := assignmentstore.PromptPreflightFunc(func(_ context.Context, request assignmentstore.DispatchRequest) (assignmentstore.PromptPreflightResult, error) {
+					return assignmentstore.PromptPreflightResult{DispatchPrompt: request.Prompt, DurablePrompt: request.Prompt}, nil
+				})
+				return assignmentstore.NewAtomicCoordinator(store, claim, nil, dispatch, preflight).
+					WithAssignmentEligibilityAuthorizationPort(assignmentstore.AssignmentEligibilityAuthorizationFunc(func(ctx context.Context, request assignmentstore.AssignmentEligibilityAuthorizationRequest) error {
+						// This authorization remains a plain read, even after preflight repair.
+						_, err := bv.GetBeadAssignmentDetailsContext(ctx, projectDir, request.BeadID)
+						return err
+					}))
+			}
+			results, err := c.AssignWork(t.Context())
+			if (err != nil) != test.wantError {
+				t.Fatalf("AssignWork results=%+v error=%v", results, err)
+			}
+			wantEffects := 0
+			if test.wantAssign {
+				wantEffects = 1
+				if len(results) != 1 || !results[0].Success {
+					t.Fatalf("repaired assignment results=%+v", results)
+				}
+			}
+			if claims != wantEffects || dispatches != wantEffects {
+				t.Fatalf("claims=%d dispatches=%d, want %d each", claims, dispatches, wantEffects)
+			}
+			calls, err := os.ReadFile(filepath.Join(binDir, "calls"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantRepairs := 1
+			if test.unrelated {
+				wantRepairs = 0
+			}
+			if strings.Count(string(calls), "sync --import-only --rebuild --json\n") != wantRepairs || strings.Count(string(calls), "doctor --repair --json\n") != wantRepairs {
+				t.Fatalf("repair calls=%s", calls)
+			}
+			wantPlanning := 1
+			if test.planning && test.verified {
+				wantPlanning = 2
+			}
+			if planningCalls != wantPlanning {
+				t.Fatalf("planning reads=%d, want %d", planningCalls, wantPlanning)
+			}
+			after, err := os.ReadFile(jsonlPath)
+			if err != nil || string(after) != string(source) {
+				t.Fatalf("authoritative JSONL changed: %q, %v", after, err)
+			}
+		})
+	}
 }
 
 func TestAssignWorkFailsClosedBeforePendingRecoveryWhenActionableVerificationFails(t *testing.T) {

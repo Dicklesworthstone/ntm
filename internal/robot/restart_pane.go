@@ -1008,7 +1008,9 @@ func preflightRestartBead(
 	if policy != nil {
 		operatorGatedLabels = append(operatorGatedLabels, policy.Assign.OperatorGatedLabels...)
 	}
-	actionable, err := deps.FetchActionable(ctx, projectDir, 0)
+	actionable, err := readRobotAssignmentPreflight(ctx, projectDir, opts.DryRun, func() ([]bv.TriageRecommendation, error) {
+		return deps.FetchActionable(ctx, projectDir, 0)
+	})
 	if err != nil {
 		return nil, fmt.Errorf("verify actionable bv plan: %w", err)
 	}
@@ -1016,7 +1018,9 @@ func preflightRestartBead(
 		return nil, err
 	}
 
-	details, err := deps.FetchBeadDetails(ctx, projectDir, beadID)
+	details, err := readRobotAssignmentPreflight(ctx, projectDir, opts.DryRun, func() (*bv.BeadAssignmentDetails, error) {
+		return deps.FetchBeadDetails(ctx, projectDir, beadID)
+	})
 	if err != nil {
 		return nil, fmt.Errorf("read live Beads eligibility: %w", err)
 	}

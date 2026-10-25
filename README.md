@@ -471,6 +471,21 @@ every candidate's labels from both `br ready` and `br list --status open` so
 epics are covered. Any plan command, parse, structure, ID, label lookup, or
 coverage failure stops automated assignment before dispatch.
 
+Executing assignment paths can recover a corrupt local Beads SQLite index
+before reading the evidence needed to claim work. This includes automatic and
+watch assignment, coordinator assignment, and robot assignment preparation.
+NTM retries the failed read once after rebuilding from authoritative JSONL. If
+`br` refuses that rebuild because corruption prevents tombstone enumeration,
+NTM independently checks that the tombstone indexes agree and JSONL preserves
+every known tombstone before running `br doctor --repair --json`. It requires a
+verified database, validates the structured preservation evidence, and checks
+the known tombstones again after repair. An accepted partial repair retains
+its warnings, verified backups, and recovery marker. Unreadable indexes,
+missing tombstones, invalid JSONL, or failed verification stop assignment.
+Preview and dry-run commands do not request this repair. Recovery never replays
+a claim, reservation, or dispatch, and the normal eligibility and ownership
+checks still run against freshly read evidence.
+
 When `br` and `bv` report that no ready work exists, use the queue-dry flow to
 distinguish a genuinely empty queue from stale coordination state:
 

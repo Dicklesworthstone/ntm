@@ -155,6 +155,11 @@ func setupBeadsRecoveryCommands(t *testing.T, rebuild, doctor beadsRecoveryTestC
 	script := `#!/bin/sh
 printf '%s\t%s\n' "$PWD" "$*" >> "$NTM_TEST_BR_CALLS"
 case "$*" in
+  '--lock-timeout 5000 show task-1 --json')
+    printf '%s' "$NTM_TEST_READ_STDOUT"
+    printf '%s' "$NTM_TEST_READ_STDERR" >&2
+    exit "${NTM_TEST_READ_EXIT:-0}"
+    ;;
   '--lock-timeout 5000 info --json --no-auto-import --no-auto-flush')
     printf '%s' "$NTM_TEST_BR_INFO"
     ;;
@@ -202,6 +207,243 @@ func (w beadsRecoveryTestWorkspace) assertCommands(t *testing.T, commands ...str
 	if err != nil || string(jsonl) != w.jsonlContents {
 		t.Fatalf("authoritative JSONL changed: contents=%q error=%v", jsonl, err)
 	}
+}
+
+// The read-recovery boundary requires both files to resolve inside .beads.
+// Retain the shared claim fixture and copy its committed SQLite contents into
+// a configured local filename so this also exercises non-default DB names.
+func setupBeadsReadRecoveryCommands(t *testing.T, doctor beadsRecoveryTestCommand) beadsRecoveryTestWorkspace {
+	t.Helper()
+	w := setupBeadsRecoveryCommands(t,
+		beadsRecoveryTestCommand{stderr: beadsRebuildPreservationConflict, exitCode: 6}, doctor)
+	var info beadsWorkspaceInfo
+	if err := json.Unmarshal([]byte(os.Getenv("NTM_TEST_BR_INFO")), &info); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(info.DatabasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info.DatabasePath = filepath.Join(w.dir, ".beads", "configured-index.db")
+	if err := os.WriteFile(info.DatabasePath, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NTM_TEST_BR_INFO", beadsRecoveryJSON(t, info))
+	t.Setenv("NTM_TEST_READ_STDOUT", `{"error":{"code":"DATABASE_ERROR","message":"database disk image is malformed"}}`)
+	t.Setenv("NTM_TEST_READ_STDERR", "")
+	t.Setenv("NTM_TEST_READ_EXIT", "2")
+	setNoDBState(w.dir, false)
+	return w
+}
+
+func TestReadForMutationContextRepairsOnlyFailedBeadsReads(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		preservation bool
+		unverified   bool
+		persistent   bool
+	}{
+		{name: "verified partial repair with configured database filename"},
+		{name: "preservation refusal from initial read", preservation: true},
+		{name: "unverified repair stops before retry", unverified: true},
+		{name: "persistent corruption gets only one repair", persistent: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			report := beadsRecoveryDoctorReport()
+			if test.unverified {
+				report["database_verified"] = false
+			}
+			w := setupBeadsReadRecoveryCommands(t, beadsRecoveryTestCommand{stdout: beadsRecoveryJSON(t, report), exitCode: 2})
+			if test.preservation {
+				t.Setenv("NTM_TEST_READ_STDOUT", beadsRebuildPreservationConflict)
+				t.Setenv("NTM_TEST_READ_EXIT", "6")
+			}
+			reads := 0
+			result, err := ReadForMutationContext(t.Context(), w.dir, func() (string, error) {
+				reads++
+				if reads == 1 || test.persistent {
+					return RunBdContext(t.Context(), w.dir, "show", "task-1", "--json")
+				}
+				return "fresh evidence", nil
+			})
+			wantReads := 2
+			if test.unverified {
+				wantReads = 1
+			}
+			if reads != wantReads || (err != nil) != (test.unverified || test.persistent) {
+				t.Fatalf("result=%q error=%v reads=%d, want reads=%d", result, err, reads, wantReads)
+			}
+			if err == nil && result != "fresh evidence" {
+				t.Fatalf("result=%q, want newly collected evidence", result)
+			}
+			commands := []string{"show task-1 --json", "info --json --no-auto-import --no-auto-flush", "sync --import-only --rebuild --json", "info --json --no-auto-import --no-auto-flush", "doctor --repair --json"}
+			if test.persistent {
+				commands = append(commands, "show task-1 --json")
+			}
+			w.assertCommands(t, commands...)
+		})
+	}
+}
+
+func TestReadForMutationContextLeavesUnrelatedErrorsUntouched(t *testing.T) {
+	for _, output := range []string{
+		`{"error":{"code":"CONFIG_ERROR","message":"database disk image is malformed"}}`,
+		`{"error":{"code":"DATABASE_ERROR","message":"permission denied"}}`,
+		`{"error":{"code":"SYNC_CONFLICT","message":"JSONL changed concurrently"}}`,
+		`database disk image is malformed`,
+		`{"error":{"code":"DATABASE_ERROR","message":"database disk image is malformed"}} trailing task text`,
+	} {
+		t.Run(output, func(t *testing.T) {
+			w := setupBeadsReadRecoveryCommands(t, beadsRecoveryTestCommand{})
+			t.Setenv("NTM_TEST_READ_STDOUT", output)
+			reads := 0
+			var originalErr error
+			_, err := ReadForMutationContext(t.Context(), w.dir, func() (string, error) {
+				reads++
+				result, readErr := RunBdContext(t.Context(), w.dir, "show", "task-1", "--json")
+				originalErr = readErr
+				return result, readErr
+			})
+			if err == nil || err != originalErr || reads != 1 {
+				t.Fatalf("error=%v original=%v reads=%d, want unchanged read failure", err, originalErr, reads)
+			}
+			w.assertCommands(t, "show task-1 --json")
+		})
+	}
+	for name, originalErr := range map[string]error{
+		"healthy read":        nil,
+		"parser diagnostic":   errors.New("task title contains database disk image is malformed"),
+		"eligibility refusal": fmt.Errorf("database corruption: %w", ErrBeadAssignmentIneligible),
+		"ownership refusal":   fmt.Errorf("database disk image is malformed: %w", ErrBeadAlreadyClaimed),
+		"terminal refusal":    fmt.Errorf("file is not a database: %w", ErrBeadTerminal),
+	} {
+		t.Run(name, func(t *testing.T) {
+			w := setupBeadsReadRecoveryCommands(t, beadsRecoveryTestCommand{})
+			reads := 0
+			result, err := ReadForMutationContext(t.Context(), w.dir, func() (string, error) {
+				reads++
+				return "original evidence", originalErr
+			})
+			if err != originalErr || result != "original evidence" || reads != 1 {
+				t.Fatalf("result=%q error=%v reads=%d", result, err, reads)
+			}
+			w.assertCommands(t)
+		})
+	}
+}
+
+func TestReadForMutationContextDoesNotRepairInheritedOrRedirectedDatabase(t *testing.T) {
+	for _, kind := range []string{"parent workspace", "symlinked beads directory", "external database", "external JSONL"} {
+		t.Run(kind, func(t *testing.T) {
+			w := setupBeadsReadRecoveryCommands(t, beadsRecoveryTestCommand{})
+			readDir := w.dir
+			commands := []string{"show task-1 --json"}
+			switch kind {
+			case "parent workspace":
+				readDir = filepath.Join(w.dir, "child")
+				if err := os.Mkdir(readDir, 0755); err != nil {
+					t.Fatal(err)
+				}
+			case "symlinked beads directory":
+				readDir = t.TempDir()
+				if err := os.Mkdir(filepath.Join(readDir, ".git"), 0755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(filepath.Join(w.dir, ".beads"), filepath.Join(readDir, ".beads")); err != nil {
+					t.Fatal(err)
+				}
+				w.dir = readDir
+			default:
+				var info beadsWorkspaceInfo
+				if err := json.Unmarshal([]byte(os.Getenv("NTM_TEST_BR_INFO")), &info); err != nil {
+					t.Fatal(err)
+				}
+				external := filepath.Join(t.TempDir(), "outside")
+				if err := os.WriteFile(external, []byte("unrelated workspace evidence"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				redirect := filepath.Join(w.dir, ".beads", "redirect")
+				if err := os.Symlink(external, redirect); err != nil {
+					t.Fatal(err)
+				}
+				if kind == "external database" {
+					info.DatabasePath = redirect
+				} else {
+					info.JSONLPath = redirect
+				}
+				t.Setenv("NTM_TEST_BR_INFO", beadsRecoveryJSON(t, info))
+				commands = append(commands, "info --json --no-auto-import --no-auto-flush")
+			}
+			reads := 0
+			_, err := ReadForMutationContext(t.Context(), readDir, func() (string, error) {
+				reads++
+				return RunBdContext(t.Context(), readDir, "show", "task-1", "--json")
+			})
+			if err == nil || !strings.Contains(err.Error(), "refusing database recovery") || reads != 1 {
+				t.Fatalf("error=%v reads=%d, want unsafe recovery refused", err, reads)
+			}
+			w.assertCommands(t, commands...)
+		})
+	}
+}
+
+func TestReadForMutationContextCancellationPreventsReadAndRetry(t *testing.T) {
+	t.Run("inactive context and missing callback", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		for _, ctx := range []context.Context{nil, ctx} {
+			_, err := ReadForMutationContext(ctx, t.TempDir(), func() (bool, error) {
+				t.Fatal("read called for an inactive context")
+				return false, nil
+			})
+			if err == nil {
+				t.Fatal("inactive context accepted")
+			}
+		}
+		if _, err := ReadForMutationContext[bool](t.Context(), t.TempDir(), nil); err == nil {
+			t.Fatal("nil reader accepted")
+		}
+	})
+	t.Run("canceled after initial read", func(t *testing.T) {
+		w := setupBeadsReadRecoveryCommands(t, beadsRecoveryTestCommand{})
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		_, err := ReadForMutationContext(ctx, w.dir, func() (string, error) {
+			result, err := RunBdContext(ctx, w.dir, "show", "task-1", "--json")
+			cancel()
+			return result, err
+		})
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("error=%v, want canceled read", err)
+		}
+		w.assertCommands(t, "show task-1 --json")
+	})
+	t.Run("canceled during doctor", func(t *testing.T) {
+		w := setupBeadsReadRecoveryCommands(t, beadsRecoveryTestCommand{stdout: beadsRecoveryJSON(t, beadsRecoveryDoctorReport()), exitCode: 2})
+		t.Setenv("NTM_TEST_DOCTOR_BLOCK", "true")
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		reads := 0
+		done := make(chan error, 1)
+		go func() {
+			_, err := ReadForMutationContext(ctx, w.dir, func() (string, error) {
+				reads++
+				return RunBdContext(ctx, w.dir, "show", "task-1", "--json")
+			})
+			done <- err
+		}()
+		waitForTestFile(t, w.doctorStarted, "read recovery doctor")
+		cancel()
+		select {
+		case err := <-done:
+			if !errors.Is(err, context.Canceled) || reads != 1 {
+				t.Fatalf("error=%v reads=%d, want canceled recovery without reread", err, reads)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("read recovery ignored cancellation")
+		}
+		w.assertCommands(t, "show task-1 --json", "info --json --no-auto-import --no-auto-flush", "sync --import-only --rebuild --json", "info --json --no-auto-import --no-auto-flush", "doctor --repair --json")
+	})
 }
 
 func TestBeadsCorruptionRecoveryRequiresPreservationConflict(t *testing.T) {

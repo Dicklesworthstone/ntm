@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,6 +30,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/persona"
 	"github.com/Dicklesworthstone/ntm/internal/redaction"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
+	"github.com/Dicklesworthstone/ntm/internal/sqliteutil"
 	statuspkg "github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/tests/testutil"
@@ -2036,6 +2038,258 @@ func TestWatchLoopShouldStopUsesFilteredActionableCandidates(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestAssignDryRunRejectsExecutionOnlyRoutesBeforeExternalWork(t *testing.T) {
+	previousDryRun, previousPane := assignDryRun, assignPane
+	previousReassign, previousRetry, previousRetryFailed := assignReassign, assignRetry, assignRetryFailed
+	previousClear, previousClearPane, previousClearFailed := assignClear, assignClearPane, assignClearFailed
+	t.Cleanup(func() {
+		assignDryRun, assignPane = previousDryRun, previousPane
+		assignReassign, assignRetry, assignRetryFailed = previousReassign, previousRetry, previousRetryFailed
+		assignClear, assignClearPane, assignClearFailed = previousClear, previousClearPane, previousClearFailed
+	})
+	bin := t.TempDir()
+	calls := filepath.Join(bin, "external-calls")
+	t.Setenv("NTM_TEST_DRY_RUN_CALLS", calls)
+	for _, name := range []string{"tmux", "br", "bv", "git"} {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\nprintf '%s %s\\n' \"$0\" \"$*\" >> \"$NTM_TEST_DRY_RUN_CALLS\"\nexit 91\n"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", bin)
+	for _, test := range []struct {
+		name                     string
+		pane, reassign, retry    string
+		clear, clearPane         string
+		retryFailed, clearFailed bool
+	}{
+		{name: "pane", pane: "1"},
+		{name: "retry", retry: "ntm-recovery"},
+		{name: "retry-failed", retryFailed: true},
+		{name: "reassign", reassign: "ntm-recovery"},
+		{name: "clear", clear: "ntm-recovery"},
+		{name: "clear-pane", clearPane: "1"},
+		{name: "clear-failed", clearFailed: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			assignDryRun, assignPane = true, test.pane
+			assignReassign, assignRetry, assignRetryFailed = test.reassign, test.retry, test.retryFailed
+			assignClear, assignClearPane, assignClearFailed = test.clear, test.clearPane, test.clearFailed
+			cmd := &cobra.Command{}
+			cmd.SetContext(t.Context())
+			err := runAssign(cmd, []string{"recovery-preview"})
+			if !errors.Is(err, errCLIInvalidInput) || !strings.Contains(err.Error(), "--dry-run") {
+				t.Fatalf("dry-run --%s error=%v, want invalid input before command routing", test.name, err)
+			}
+			if contents, err := os.ReadFile(calls); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("dry-run --%s reached external work: %q, error=%v", test.name, contents, err)
+			}
+		})
+	}
+}
+
+// Assignment planning and watch completion both read Beads before the guarded
+// claim can repair it. Exercise those callers through real br subprocesses,
+// while proving that the corresponding preview paths never request repair.
+func TestAssignmentPlanningRepairsCorruptionOnlyForExecution(t *testing.T) {
+	previousAssign := getActionableRecommendationsForAssign
+	previousWatch := getActionableRecommendationsForWatch
+	previousIdle := getIdleAgentsForWatchStop
+	t.Cleanup(func() {
+		getActionableRecommendationsForAssign = previousAssign
+		getActionableRecommendationsForWatch = previousWatch
+		getIdleAgentsForWatchStop = previousIdle
+	})
+	read := func(ctx context.Context, dir string, _ int) ([]bv.TriageRecommendation, error) {
+		output, err := bv.RunBdContext(ctx, dir, "ready", "--json")
+		if err != nil {
+			return nil, err
+		}
+		var rows []bv.TriageRecommendation
+		err = json.Unmarshal([]byte(output), &rows)
+		return rows, err
+	}
+	getActionableRecommendationsForAssign = read
+	getActionableRecommendationsForWatch = read
+	getIdleAgentsForWatchStop = func(context.Context, string, string, bool) ([]assignAgentInfo, error) {
+		return nil, nil
+	}
+
+	for _, tc := range []struct {
+		name    string
+		watch   bool
+		execute bool
+	}{
+		{name: "automatic assignment", execute: true},
+		{name: "assignment preview"},
+		{name: "executing watch", watch: true, execute: true},
+		{name: "dry-run watch", watch: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			isolateSessionAgentStorage(t)
+			projectDir, logPath := writeAssignmentRecoveryBR(t, true)
+			var err error
+			if tc.watch {
+				loop := NewWatchLoop("recovery-watch", assignment.NewStore("recovery-watch"), &AutoReassignOptions{
+					Session: "recovery-watch", ProjectDir: projectDir, DryRun: !tc.execute,
+					Quiet: true, policyProject: projectDir,
+				})
+				if loop.scanOpts.Auto != tc.execute {
+					t.Fatalf("watch scan execution=%v, want %v", loop.scanOpts.Auto, tc.execute)
+				}
+				_, err = loop.shouldStop(t.Context())
+			} else {
+				_, err = loadActionableRecommendationsForAssignment(t.Context(), projectDir, tc.execute)
+			}
+			if tc.execute && err != nil {
+				t.Fatalf("executing preflight failed to recover: %v", err)
+			}
+			if !tc.execute && err == nil {
+				t.Fatal("preview hid corruption instead of returning the read failure")
+			}
+			calls, readErr := os.ReadFile(logPath)
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			wantReads, wantRepairs := 1, 0
+			if tc.execute {
+				wantReads, wantRepairs = 2, 1
+			}
+			if strings.Count(string(calls), "ready --json\n") != wantReads ||
+				strings.Count(string(calls), "sync --import-only --rebuild --json\n") != wantRepairs ||
+				strings.Count(string(calls), "doctor --repair --json\n") != wantRepairs {
+				t.Fatalf("unexpected preflight calls:\n%s", calls)
+			}
+		})
+	}
+}
+
+func TestAssignmentMutationPreflightRejectsUnverifiedRepair(t *testing.T) {
+	projectDir, logPath := writeAssignmentRecoveryBR(t, false)
+	_, err := readBeadAssignmentDetailsForMutation(t.Context(), projectDir, "ntm-recovery")
+	if err == nil || !strings.Contains(err.Error(), "did not verify the repaired database") {
+		t.Fatalf("preflight error=%v, want failed database verification", err)
+	}
+	calls, readErr := os.ReadFile(logPath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if strings.Count(string(calls), "show ntm-recovery --json\n") != 1 ||
+		strings.Count(string(calls), "doctor --repair --json\n") != 1 {
+		t.Fatalf("unverified repair retried the eligibility read:\n%s", calls)
+	}
+}
+
+func TestAutoReassignmentDryRunDoesNotRepairDependencyRead(t *testing.T) {
+	projectDir, logPath := writeAssignmentRecoveryBR(t, true)
+	result, err := PerformAutoReassignment(t.Context(), "ntm-recovery", &AutoReassignOptions{
+		Session: "dry-dependency-read", ProjectDir: projectDir,
+		DryRun: true, Quiet: true, policyProject: projectDir,
+	})
+	if err != nil {
+		t.Fatalf("dry dependency preflight: %v", err)
+	}
+	if result == nil || len(result.Errors) != 1 || !strings.Contains(result.Errors[0], "database disk image is malformed") || len(result.Assignments) != 0 {
+		t.Fatalf("dry dependency read=%+v, want corruption reported without assignments", result)
+	}
+	calls, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(calls); got != "--lock-timeout 5000 show ntm-recovery --json\n" {
+		t.Fatalf("dry dependency read requested extra operations:\n%s", got)
+	}
+}
+
+func writeAssignmentRecoveryBR(t *testing.T, verified bool) (string, string) {
+	t.Helper()
+	projectDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(projectDir, ".beads"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const authoritative = "{\"id\":\"ntm-recovery\",\"status\":\"open\"}\n{\"id\":\"ntm-preserved\",\"status\":\"tombstone\"}\n"
+	jsonlPath := filepath.Join(projectDir, ".beads", "issues.jsonl")
+	if err := os.WriteFile(jsonlPath, []byte(authoritative), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Preserve a real indexed tombstone while br's read command simulates
+	// corruption, so the independent before/after preservation checks run.
+	databasePath := filepath.Join(projectDir, ".beads", "beads.db")
+	database, err := sql.Open(sqliteutil.DriverName, sqliteutil.FileDSN(databasePath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range []string{
+		`CREATE TABLE issues (id TEXT PRIMARY KEY, status TEXT NOT NULL)`,
+		`CREATE INDEX idx_issues_status ON issues(status)`,
+		`CREATE INDEX idx_issues_tombstone ON issues(status) WHERE status = 'tombstone'`,
+		`INSERT INTO issues VALUES ('ntm-recovery', 'open'), ('ntm-preserved', 'tombstone')`,
+	} {
+		if _, err := database.ExecContext(t.Context(), statement); err != nil {
+			database.Close()
+			t.Fatal(err)
+		}
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+	binDir := t.TempDir()
+	logPath := filepath.Join(binDir, "calls")
+	t.Setenv("NTM_TEST_REPAIR_CALLS", logPath)
+	t.Setenv("NTM_TEST_REPAIRED", filepath.Join(binDir, "repaired"))
+	t.Setenv("NTM_TEST_DATABASE_VERIFIED", fmt.Sprint(verified))
+	doctorJSON, err := json.Marshal(map[string]any{
+		"ok": false, "exit_code": 2, "code": "fix_partial", "repaired": true,
+		"database_verified": verified, "preservation_verified": false, "verified": false,
+		"skipped": 0, "fk_violations_cleaned": 0,
+		"history_preservation_warnings": []string{}, "preserved_history": []any{},
+		"dirty_preservation_warnings": []string{"the tombstone issue IDs could not be read before the rebuild (Database error: database disk image is malformed); preservation of unflushed local state could not be established"},
+		"verified_backups":            []any{map[string]any{"backup": databasePath + ".bak"}},
+		"recovery_failure_marker":     databasePath + ".verification-failed.json", "recovery_failure_marker_error": nil,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NTM_TEST_REPAIR_DOCTOR", string(doctorJSON))
+	script := `#!/bin/sh
+printf '%s\n' "$*" >> "$NTM_TEST_REPAIR_CALLS"
+case "$*" in
+  '--lock-timeout 5000 ready --json'|'--lock-timeout 5000 show ntm-recovery --json')
+    if [ ! -f "$NTM_TEST_REPAIRED" ]; then
+      printf '%s\n' '{"error":{"code":"DATABASE_ERROR","message":"database disk image is malformed"}}'
+      exit 2
+    fi
+    printf '%s\n' '[]'
+    ;;
+  '--lock-timeout 5000 info --json --no-auto-import --no-auto-flush')
+    printf '{"database_path":"%s/.beads/beads.db","jsonl_path":"%s/.beads/issues.jsonl"}\n' "$PWD" "$PWD"
+    ;;
+  '--lock-timeout 5000 sync --import-only --rebuild --json')
+    printf '%s\n' '{"error":{"code":"SYNC_CONFLICT","message":"Sync conflict: Automatic database recovery refused because unflushed-state preservation could not be established:\n- the tombstone issue IDs could not be read before the rebuild (Database error: database disk image is malformed); preservation of unflushed local state could not be established\nThe database was not replaced. Run br doctor --repair to inspect retained evidence."}}'
+    exit 6
+    ;;
+  '--lock-timeout 5000 doctor --repair --json')
+    if [ "$NTM_TEST_DATABASE_VERIFIED" = true ]; then
+      : > "$NTM_TEST_REPAIRED"
+    fi
+    printf '%s\n' "$NTM_TEST_REPAIR_DOCTOR"
+    exit 2
+    ;;
+  *) exit 64 ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(binDir, "br"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Cleanup(func() {
+		contents, err := os.ReadFile(jsonlPath)
+		if err != nil || string(contents) != authoritative {
+			t.Errorf("authoritative JSONL changed: %q, error=%v", contents, err)
+		}
+	})
+	return projectDir, logPath
 }
 
 func TestWatchLoopRunStopsOnAutomatedAssignmentSafetyErrors(t *testing.T) {

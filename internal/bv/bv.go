@@ -1018,6 +1018,127 @@ func isBeadsDBCorruptionError(err error) bool {
 	return false
 }
 
+// ReadForMutationContext reads the Beads evidence needed to prepare an actual
+// mutation. If a failed br command proves index corruption, it repairs the local
+// workspace and repeats the read once. The callback must only read: never pass a
+// claim, reservation, dispatch, or an entire assignment operation here. Ordinary
+// read and preview APIs deliberately do not opt into this recovery.
+//
+// Planning callers must repeat the whole evidence collection, not just one
+// nested command, so the retry verifies source identity and eligibility anew.
+func ReadForMutationContext[T any](ctx context.Context, dir string, read func() (T, error)) (T, error) {
+	var zero T
+	if err := requireBeadsMutationContext(ctx); err != nil {
+		return zero, err
+	}
+	if read == nil {
+		return zero, errors.New("Beads mutation preparation requires a read callback")
+	}
+	result, err := read()
+	if ctx.Err() != nil {
+		return zero, ctx.Err()
+	}
+	if err == nil || !isBeadsReadCorruptionError(err) {
+		return result, err
+	}
+	recoveryDir, workspaceErr := localBeadsRecoveryDir(ctx, dir)
+	if workspaceErr != nil {
+		return zero, fmt.Errorf("Beads read failed (%v); refusing database recovery: %w", err, workspaceErr)
+	}
+	slog.Warn("Beads database corruption detected while preparing a mutation; repairing before rereading",
+		"dir", recoveryDir, "error", err)
+	if recoveryErr := recoverCorruptBeadsDatabase(ctx, recoveryDir); recoveryErr != nil {
+		return zero, fmt.Errorf("Beads read failed (%v); database recovery failed: %w", err, recoveryErr)
+	}
+	InvalidateTriageCache()
+	if err := ctx.Err(); err != nil {
+		return zero, err
+	}
+	result, err = read()
+	if ctx.Err() != nil {
+		return zero, ctx.Err()
+	}
+	return result, err
+}
+
+// Read errors can include untrusted task text and parser diagnostics. Require
+// a failed br command's structured database error, not just matching prose.
+func isBeadsReadCorruptionError(err error) bool {
+	if errors.Is(err, ErrBeadAssignmentIneligible) || errors.Is(err, ErrBeadAlreadyClaimed) || errors.Is(err, ErrBeadTerminal) {
+		return false
+	}
+	if isBeadsPreservationRefusal(err) {
+		return true
+	}
+	var commandErr *beadsCommandError
+	if !errors.As(err, &commandErr) {
+		return false
+	}
+	for _, output := range []string{commandErr.stdout, commandErr.stderr} {
+		var result struct {
+			Error struct {
+				Code    string `json:"code"`
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if json.Unmarshal([]byte(output), &result) == nil && result.Error.Code == "DATABASE_ERROR" &&
+			isBeadsDBCorruptionError(errors.New(result.Error.Message)) {
+			return true
+		}
+	}
+	return false
+}
+
+// Recovery must not follow br's normal walk-up discovery or a database/source
+// redirected into another workspace. A symlink alias of the project itself is
+// fine; the .beads directory and the resolved files must belong to that project.
+func localBeadsRecoveryDir(ctx context.Context, dir string) (string, error) {
+	if !HasLocalBeadsDB(dir) {
+		return "", errors.New("the requested directory has no local Beads workspace")
+	}
+	localDir, err := filepath.Abs(strings.TrimSpace(dir))
+	if err != nil {
+		return "", err
+	}
+	localDir, err = filepath.EvalSymlinks(localDir)
+	if err != nil {
+		return "", err
+	}
+	beadsDir := filepath.Join(localDir, ".beads")
+	beadsInfo, err := os.Lstat(beadsDir)
+	if err != nil || !beadsInfo.IsDir() {
+		return "", errors.New("database recovery requires a local .beads directory, not a symlink")
+	}
+	output, err := runBdContext(ctx, localDir, false, "info", "--json", "--no-auto-import", "--no-auto-flush")
+	if err != nil {
+		return "", fmt.Errorf("resolve Beads recovery workspace: %w", err)
+	}
+	var info struct {
+		DatabasePath string `json:"database_path"`
+		JSONLPath    string `json:"jsonl_path"`
+	}
+	if err := json.Unmarshal([]byte(output), &info); err != nil {
+		return "", fmt.Errorf("parse Beads recovery workspace: %w", err)
+	}
+	for _, path := range []string{info.DatabasePath, info.JSONLPath} {
+		if strings.TrimSpace(path) == "" {
+			return "", errors.New("database recovery requires identified SQLite and JSONL files")
+		}
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(localDir, path)
+		}
+		resolved, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			return "", fmt.Errorf("resolve Beads recovery file: %w", err)
+		}
+		relative, err := filepath.Rel(beadsDir, resolved)
+		if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || filepath.IsAbs(relative) {
+			return "", errors.New("database recovery files must remain inside the local .beads directory")
+		}
+	}
+	return localDir, nil
+}
+
 // recoverCorruptBeadsDatabase runs br's supported JSONL-authoritative repair
 // (`br sync --import-only --rebuild`), which recreates the SQLite index from
 // JSONL and removes orphaned DB entries. br >= 0.2.19 requires an explicit
