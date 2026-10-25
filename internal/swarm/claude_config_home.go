@@ -96,22 +96,24 @@ func NewClaudeConfigProvisioner(baseDir string) *ClaudeConfigProvisioner {
 }
 
 func (p *ClaudeConfigProvisioner) sourceDir() (string, error) {
-	if source := strings.TrimSpace(p.SourceDir); source != "" {
-		// Symlink targets are interpreted relative to the link's parent, not
-		// the caller's working directory. A relative source here would therefore
-		// point into each pane-private config dir and leave every inherited entry
-		// broken. Normalize it before using it as a symlink target.
-		absolute, err := filepath.Abs(source)
+	source := strings.TrimSpace(p.SourceDir)
+	if source == "" {
+		home, err := os.UserHomeDir()
 		if err != nil {
-			return "", fmt.Errorf("resolve claude source config dir %s: %w", source, err)
+			return "", fmt.Errorf("resolve home directory: %w", err)
 		}
-		return filepath.Clean(absolute), nil
+		source = filepath.Join(home, ".claude")
 	}
-	home, err := os.UserHomeDir()
+	// Symlink targets are interpreted relative to the link's parent, not the
+	// caller's working directory. A relative source here (an explicit one, or
+	// one derived from a relative HOME) would therefore point into each
+	// pane-private config dir and leave every inherited entry broken.
+	// Normalize it before using it as a symlink target.
+	absolute, err := filepath.Abs(source)
 	if err != nil {
-		return "", fmt.Errorf("resolve home directory: %w", err)
+		return "", fmt.Errorf("resolve claude source config dir %s: %w", source, err)
 	}
-	return filepath.Join(home, ".claude"), nil
+	return filepath.Clean(absolute), nil
 }
 
 // ConfigPath returns the isolated CLAUDE_CONFIG_DIR for a (session, pane) pair

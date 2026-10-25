@@ -783,3 +783,34 @@ func TestProvisionPaneConfig_RefusesAPaneDirThatIsHomeByIdentityAlone(t *testing
 		t.Errorf("provisioning deleted %s: %v", gitCredentials, err)
 	}
 }
+
+// HOME may be relative (a service unit or a test harness can set it so).
+// Symlink targets resolve against the link's own directory, so a source dir
+// derived from a relative HOME must be made absolute like an explicit one, or
+// every inherited entry in the pane dir is a broken link.
+func TestProvisionPaneConfig_LinksAbsoluteTargetsWithARelativeHome(t *testing.T) {
+	useFileCredentialStore(t)
+	cwd := t.TempDir()
+	t.Chdir(cwd)
+	if err := os.MkdirAll(filepath.Join("home", ".claude"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join("home", ".claude", "settings.json"), `{"theme":"dark"}`)
+	t.Setenv("HOME", "home")
+
+	p := NewClaudeConfigProvisioner(t.TempDir())
+	target, err := p.ProvisionPaneConfig("proj", "1")
+	if err != nil {
+		t.Fatalf("ProvisionPaneConfig: %v", err)
+	}
+	dest, err := os.Readlink(filepath.Join(target, "settings.json"))
+	if err != nil {
+		t.Fatalf("settings.json was not linked: %v", err)
+	}
+	if !filepath.IsAbs(dest) {
+		t.Errorf("settings.json -> %q, want an absolute target", dest)
+	}
+	if data, err := os.ReadFile(filepath.Join(target, "settings.json")); err != nil || string(data) != `{"theme":"dark"}` {
+		t.Errorf("settings.json does not resolve to the operator's file: data=%q err=%v", data, err)
+	}
+}
