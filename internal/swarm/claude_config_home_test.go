@@ -325,3 +325,136 @@ func TestProvisionClaudeIsolation_KeepsCredentialCopiesOutOfThePane(t *testing.T
 		t.Errorf("secret assignments = %v, want the setup-token assignment", env.SecretAssignments)
 	}
 }
+
+// operatorClaudeHome builds a temp HOME whose ~/.claude holds the rotating
+// credential, a backup of it, and an entry that is itself a symlink into the
+// operator's dotfiles, plus a credential file directly in HOME. It returns the
+// paths that provisioning must never touch.
+func operatorClaudeHome(t *testing.T) (home, source string, mustSurvive []string, dotfileLink string) {
+	t.Helper()
+	home, source, credentials := claudeHomeWithCredentialCopies(t)
+	for _, name := range credentials {
+		mustSurvive = append(mustSurvive, filepath.Join(source, name))
+	}
+	gitCredentials := filepath.Join(home, ".git-credentials")
+	writeFile(t, gitCredentials, "https://user:token@example.com")
+	mustSurvive = append(mustSurvive, gitCredentials)
+
+	dotfiles := filepath.Join(home, "dotfiles")
+	if err := os.MkdirAll(dotfiles, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(dotfiles, "keybindings.json"), "[]")
+	dotfileLink = filepath.Join(source, "keybindings.json")
+	if err := os.Symlink(filepath.Join(dotfiles, "keybindings.json"), dotfileLink); err != nil {
+		t.Fatal(err)
+	}
+	return home, source, mustSurvive, dotfileLink
+}
+
+func assertOperatorConfigUntouched(t *testing.T, mustSurvive []string, dotfileLink string) {
+	t.Helper()
+	for _, path := range mustSurvive {
+		if _, err := os.Lstat(path); err != nil {
+			t.Errorf("provisioning deleted the operator's %s: %v", path, err)
+		}
+	}
+	dest, err := os.Readlink(dotfileLink)
+	if err != nil || filepath.Base(filepath.Dir(dest)) != "dotfiles" {
+		t.Errorf("provisioning rewrote the operator's own link %s (now -> %q, err=%v)", dotfileLink, dest, err)
+	}
+}
+
+// Provisioning deletes credential entries inside the pane dir and replaces
+// symlinks there. If the pane dir is a symlink, those deletions land wherever
+// it points: pointed at ~/.claude (say, to let one pane share the login) it
+// would delete the operator's real credential and its backups and replace the
+// operator's own config links with self-referential ones. Pointed at HOME it
+// would delete ~/.git-credentials. A symlinked pane dir is refused untouched.
+func TestProvisionPaneConfig_RefusesASymlinkedPaneDir(t *testing.T) {
+	useFileCredentialStore(t)
+	for _, pointAt := range []string{"claude-config", "home"} {
+		t.Run(pointAt, func(t *testing.T) {
+			home, source, mustSurvive, dotfileLink := operatorClaudeHome(t)
+			dest := source
+			if pointAt == "home" {
+				dest = home
+			}
+
+			p := NewClaudeConfigProvisioner(t.TempDir())
+			target := p.ConfigPath("proj", "1")
+			if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(dest, target); err != nil {
+				t.Fatal(err)
+			}
+
+			_, err := p.ProvisionPaneConfig("proj", "1")
+			if err == nil || !strings.Contains(err.Error(), "symlink") {
+				t.Errorf("ProvisionPaneConfig error = %v, want a refusal of the symlinked pane dir", err)
+			}
+			assertOperatorConfigUntouched(t, mustSurvive, dotfileLink)
+
+			_, err = ProvisionClaudeIsolation(&config.Config{Agents: config.AgentConfig{ClaudeIsolateCredentials: true}}, p.BaseDir, "proj", 1)
+			if err == nil {
+				t.Error("ProvisionClaudeIsolation accepted a pane dir symlinked to operator files")
+			}
+			assertOperatorConfigUntouched(t, mustSurvive, dotfileLink)
+		})
+	}
+}
+
+// The same holds when the pane dir is a real directory but the operator's
+// config dir resolves to it (here ~/.claude is a symlink to the pane dir):
+// the pane dir's entries are then the operator's own files.
+func TestProvisionPaneConfig_RefusesAPaneDirThatIsTheOperatorConfig(t *testing.T) {
+	useFileCredentialStore(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	p := NewClaudeConfigProvisioner(t.TempDir())
+	target := p.ConfigPath("proj", "1")
+	if err := os.MkdirAll(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	credential := filepath.Join(target, ".credentials.json")
+	writeFile(t, credential, `{"claudeAiOauth":{"refreshToken":"rt-secret"}}`)
+	if err := os.Symlink(target, filepath.Join(home, ".claude")); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := p.ProvisionPaneConfig("proj", "1"); err == nil {
+		t.Error("ProvisionPaneConfig accepted a pane dir that is the operator's config dir")
+	}
+	if _, err := os.Lstat(credential); err != nil {
+		t.Errorf("provisioning deleted the operator's credential: %v", err)
+	}
+}
+
+// A symlink higher up (a project whose .ntm is linked to shared storage) is
+// ordinary and must keep working: only the pane dir itself, or a pane dir that
+// resolves onto the operator's config, is refused.
+func TestProvisionPaneConfig_AllowsASymlinkedNtmDir(t *testing.T) {
+	useFileCredentialStore(t)
+	_, _, credentials := claudeHomeWithCredentialCopies(t)
+
+	project := t.TempDir()
+	shared := t.TempDir()
+	if err := os.Symlink(shared, filepath.Join(project, ".ntm")); err != nil {
+		t.Fatal(err)
+	}
+	p := NewClaudeConfigProvisioner(project)
+	target, err := p.ProvisionPaneConfig("proj", "1")
+	if err != nil {
+		t.Fatalf("ProvisionPaneConfig through a symlinked .ntm: %v", err)
+	}
+	if _, err := os.Readlink(filepath.Join(shared, "claude-homes", "proj", "1", "settings.json")); err != nil {
+		t.Errorf("settings.json was not linked into the pane dir under the shared .ntm: %v", err)
+	}
+	for _, name := range credentials {
+		if _, err := os.Lstat(filepath.Join(target, name)); !os.IsNotExist(err) {
+			t.Errorf("credential copy %q is reachable from the pane config dir (lstat err=%v)", name, err)
+		}
+	}
+}

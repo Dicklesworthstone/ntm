@@ -145,6 +145,9 @@ func (p *ClaudeConfigProvisioner) ProvisionPaneConfig(session, pane string) (str
 	if err := os.MkdirAll(target, 0o700); err != nil {
 		return "", fmt.Errorf("create claude config dir %s: %w", target, err)
 	}
+	if err := guardPaneConfigDir(target, source); err != nil {
+		return "", err
+	}
 
 	// A credential inside the isolated dir would defeat the whole point: it
 	// makes Claude Code prefer the file over the static token and rejoins the
@@ -250,6 +253,54 @@ func pruneDanglingLinks(target, source string, linked map[string]struct{}) error
 		}
 	}
 	return nil
+}
+
+// guardPaneConfigDir refuses a pane config dir that is not ntm's own.
+//
+// Provisioning deletes credential entries directly inside the pane dir and
+// replaces symlinks there, and both act wherever a symlinked pane dir points.
+// A pane dir linked to ~/.claude (to let one pane share the login, say) would
+// lose the operator's real credential and every backup of it, and the
+// operator's own symlinked config entries would be replaced by links to
+// themselves; one linked to HOME would lose ~/.git-credentials. So the pane
+// dir must be a real directory, and it must not resolve to the operator's
+// config dir or to a directory that contains it.
+func guardPaneConfigDir(target, source string) error {
+	info, err := os.Lstat(target)
+	if err != nil {
+		return fmt.Errorf("inspect claude config dir %s: %w", target, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("claude config dir %s is a symlink; ntm provisions only directories it creates and will not delete or relink files through it (remove the link and retry)", target)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("claude config dir %s is not a directory", target)
+	}
+	resolvedTarget, err := resolvePath(target)
+	if err != nil {
+		return fmt.Errorf("resolve claude config dir %s: %w", target, err)
+	}
+	resolvedSource, err := resolvePath(source)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil // no operator config dir for the pane dir to overlap
+		}
+		return fmt.Errorf("resolve claude source config dir %s: %w", source, err)
+	}
+	if rel, err := filepath.Rel(resolvedTarget, resolvedSource); err == nil &&
+		rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("claude config dir %s resolves to %s, which is or contains the operator's config dir %s; refusing to provision it", target, resolvedTarget, source)
+	}
+	return nil
+}
+
+// resolvePath returns the absolute, symlink-free form of path.
+func resolvePath(path string) (string, error) {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Abs(resolved)
 }
 
 // removeIsolatedCredentials deletes every credential entry
