@@ -40,6 +40,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -79,6 +80,67 @@ func docsRepoRoot(t *testing.T) string {
 		t.Fatalf("resolving repo root: %v", err)
 	}
 	return root
+}
+
+// docsWithShippedAgents starts the same test in an isolated configuration with
+// the documented presets installed. The command constructors register plugin
+// flags during package initialization, so changing the environment after cli
+// has been imported cannot exercise that production path. Re-execution lets
+// the real constructors load the real manifests before the gate reads the tree;
+// the checker never invents flags or executes the documented commands.
+func docsWithShippedAgents(t *testing.T) bool {
+	t.Helper()
+	const childConfigEnv = "NTM_DOCS_TEST_CONFIG"
+	if childConfig := os.Getenv(childConfigEnv); childConfig != "" {
+		if os.Getenv("NTM_CONFIG") != childConfig {
+			t.Fatal("docs child did not select its isolated plugin configuration")
+		}
+		return true
+	}
+
+	configDir := t.TempDir()
+	configPath := filepath.Join(configDir, "config.toml")
+	if err := os.WriteFile(configPath, []byte("# Isolated configuration for documented agent presets.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	agentsDir := filepath.Join(configDir, "agents")
+	if err := os.MkdirAll(agentsDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manifests, err := filepath.Glob(filepath.Join(docsRepoRoot(t), "examples", "agents", "*.toml"))
+	if err != nil || len(manifests) == 0 {
+		t.Fatalf("locate shipped agent manifests: files=%v error=%v", manifests, err)
+	}
+	for _, path := range manifests {
+		contents, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(agentsDir, filepath.Base(path)), contents, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := []string{"-test.run=^" + regexp.QuoteMeta(t.Name()) + "$", "-test.count=1", "-test.timeout=2m"}
+	if testing.Short() {
+		args = append(args, "-test.short")
+	}
+	child := exec.CommandContext(t.Context(), executable, args...)
+	for _, entry := range os.Environ() {
+		key, _, _ := strings.Cut(entry, "=")
+		if key != "NTM_CONFIG" && key != childConfigEnv {
+			child.Env = append(child.Env, entry)
+		}
+	}
+	child.Env = append(child.Env, "NTM_CONFIG="+configPath, childConfigEnv+"="+configPath)
+	output, err := child.CombinedOutput()
+	if err != nil {
+		t.Fatalf("docs gate with installed shipped presets failed: %v\n%s", err, output)
+	}
+	return false // The child ran this complete test against the initialized tree.
 }
 
 // docExample is one extracted `ntm ...` line from a fenced code block.
@@ -263,7 +325,7 @@ func shellTokens(s string) ([]string, error) {
 
 // checkExample resolves argv against the real cobra tree and parses its flags
 // without executing anything. Returns a non-nil error describing the drift.
-func checkExample(root *cobra.Command, argv []string, agentPlugins []plugins.AgentPlugin) error {
+func checkExample(root *cobra.Command, argv []string) error {
 	cmd, rest, err := root.Find(argv)
 	if err != nil {
 		return fmt.Errorf("unknown command: %v", err)
@@ -274,25 +336,6 @@ func checkExample(root *cobra.Command, argv []string, agentPlugins []plugins.Age
 	fs.SetOutput(io.Discard)
 	fs.AddFlagSet(cmd.Flags())
 	fs.AddFlagSet(cmd.InheritedFlags())
-	// Agent plugins add flags dynamically when ntm starts, so they are absent
-	// from the package-global Cobra tree used by this non-executing gate. Mirror
-	// only the flags declared by versioned shipped presets; production loader
-	// and registration behavior has its own tests in internal/cli.
-	for _, plugin := range agentPlugins {
-		for _, name := range []string{plugin.Name, plugin.Alias} {
-			name = strings.TrimSpace(name)
-			if name == "" || fs.Lookup(name) != nil {
-				continue
-			}
-			switch cmd.Name() {
-			case "spawn", "add":
-				fs.String(name, "", "shipped agent plugin")
-			case "send":
-				fs.String(name, "", "shipped agent plugin selector")
-				fs.Lookup(name).NoOptDefVal = "true"
-			}
-		}
-	}
 	if err := fs.Parse(rest); err != nil {
 		return fmt.Errorf("flag parse failed for %q: %v", cmd.CommandPath(), err)
 	}
@@ -409,6 +452,9 @@ func runDocsCheck(t *testing.T, root string, files []string) (violations []strin
 // must FIRE on the fixture doc's bogus flag and bogus subcommand, or the gate
 // is a placebo and this test fails hard.
 func TestDocsExamplesCanary(t *testing.T) {
+	if !docsWithShippedAgents(t) {
+		return
+	}
 	root := docsRepoRoot(t)
 	data, err := os.ReadFile(filepath.Join(root, docsCanaryRel))
 	if err != nil {
@@ -432,27 +478,59 @@ func TestDocsExamplesCanary(t *testing.T) {
 	}
 }
 
-func TestCheckExampleShippedPluginSendFlagShape(t *testing.T) {
-	agentPlugins := []plugins.AgentPlugin{{Name: "omp", Alias: "om"}}
-	for _, argv := range [][]string{
-		{"send", "demo", "--omp", "prompt"},
-		{"send", "demo", "--omp=reviewer", "prompt"},
-		{"send", "demo", "--om=reviewer", "prompt"},
-	} {
-		if err := checkExample(cli.RootCommand(), argv, agentPlugins); err != nil {
-			t.Errorf("checkExample(%q) rejected valid shipped-plugin send syntax: %v", argv, err)
+func TestCheckExampleShippedPluginsUseProductionFlags(t *testing.T) {
+	if !docsWithShippedAgents(t) {
+		return
+	}
+	agentPlugins, err := plugins.LoadAgentPlugins(filepath.Join(docsRepoRoot(t), "examples", "agents"))
+	if err != nil || len(agentPlugins) == 0 {
+		t.Fatalf("load shipped presets: plugins=%v error=%v", agentPlugins, err)
+	}
+	var valid, invalid strings.Builder
+	valid.WriteString("```bash\n")
+	invalid.WriteString("```bash\n")
+	wantInvalid := 0
+	for _, plugin := range agentPlugins {
+		for _, name := range []string{plugin.Name, plugin.Alias} {
+			if name == "" {
+				continue
+			}
+			for _, command := range []string{"spawn", "add", "resume"} {
+				cmd, _, err := cli.RootCommand().Find([]string{command})
+				if err != nil || cmd.Flags().Lookup(name) == nil {
+					t.Fatalf("production %s constructor did not register --%s: %v", command, name, err)
+				}
+				if command == "resume" {
+					fmt.Fprintf(&valid, "ntm resume demo --spawn --%s=1\n", name)
+				} else {
+					fmt.Fprintf(&valid, "ntm %s demo --%s=1\n", command, name)
+				}
+				// Real count/spec flag validators must run; a synthetic string
+				// flag would incorrectly accept this malformed agent count.
+				fmt.Fprintf(&invalid, "ntm %s demo --%s=not-a-count\n", command, name)
+				wantInvalid++
+			}
+			fmt.Fprintf(&valid, "ntm send demo --%s 'review the change'\n", name)
+			fmt.Fprintf(&valid, "ntm send demo --%s=reviewer 'review the change'\n", name)
+			fmt.Fprintf(&invalid, "ntm status demo --%s\n", name)
+			wantInvalid++
 		}
+	}
+	valid.WriteString("```\n")
+	invalid.WriteString("ntm resume demo --spawn --no-such-agent-plugin=1\n```\n")
+	wantInvalid++
+	if violations, skips := runDocsCheckOn(t, "shipped-plugin-examples.md", valid.String()); len(violations) != 0 || len(skips) != 0 {
+		t.Fatalf("real shipped-plugin examples failed: violations=%v skips=%v", violations, skips)
+	}
+	violations, skips := runDocsCheckOn(t, "invalid-plugin-examples.md", invalid.String())
+	if len(violations) != wantInvalid || len(skips) != 0 || !strings.Contains(strings.Join(violations, "\n"), "--no-such-agent-plugin") {
+		t.Fatalf("plugin typo/unsupported-command/count canaries: got %d violations, want %d; violations=%v skips=%v", len(violations), wantInvalid, violations, skips)
 	}
 }
 
 func runDocsCheckOn(t *testing.T, rel, content string) (violations []string, skips []docExample) {
 	t.Helper()
 	cobraRoot := cli.RootCommand()
-	root := docsRepoRoot(t)
-	agentPlugins, err := plugins.LoadAgentPlugins(filepath.Join(root, "examples", "agents"))
-	if err != nil {
-		t.Fatalf("loading shipped agent plugins for docs conformance: %v", err)
-	}
 	for _, ex := range extractExamples(rel, content) {
 		if ex.skipped {
 			skips = append(skips, ex)
@@ -463,7 +541,7 @@ func runDocsCheckOn(t *testing.T, rel, content string) (violations []string, ski
 			violations = append(violations, fmt.Sprintf("%s:%d: %v (line: %s)", ex.file, ex.line, err, ex.raw))
 			continue
 		}
-		if err := checkExample(cobraRoot, argv, agentPlugins); err != nil {
+		if err := checkExample(cobraRoot, argv); err != nil {
 			violations = append(violations, fmt.Sprintf("%s:%d: %v (line: %s)", ex.file, ex.line, err, ex.raw))
 		}
 	}
@@ -474,6 +552,9 @@ func runDocsCheckOn(t *testing.T, rel, content string) (violations []string, ski
 // docs against the real cobra tree, and ratchets the skip budget in both
 // directions against ci/allowlists/docs.txt.
 func TestDocsExamplesConform(t *testing.T) {
+	if !docsWithShippedAgents(t) {
+		return
+	}
 	root := docsRepoRoot(t)
 	al := loadDocsAllowlist(t, root)
 	files := docsFileSet(t, root)
