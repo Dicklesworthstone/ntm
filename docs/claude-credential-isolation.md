@@ -98,9 +98,21 @@ ls -la <project>/.ntm/claude-homes/<session>/<pane>/
 # linked config entries appear as symlinks; .credentials.json is absent
 ```
 
-A `.credentials.json` that later appears inside an isolated dir defeats the
-mechanism (Claude Code would prefer it over the static token). Re-provisioning
-— which happens on every spawn — removes it.
+Any entry whose name contains `credential` (in any case) counts, not only
+`.credentials.json`: backups such as `.credentials.json.bak-<date>` carry the
+same refresh token. Re-provisioning, which happens on every spawn and restart,
+removes credential **symlinks** from the pane dir, such as the links to
+backups that older ntm versions created. Removing a link never touches the
+file it points to.
+
+ntm never deletes a credential-named **regular file or directory** there. It
+only ever creates links, so such a file came from somewhere else: usually a
+login inside the pane (Claude Code writes `.credentials.json` into
+`CLAUDE_CONFIG_DIR`, with that login's own refresh token), sometimes a copy of
+your credential. Deleting the first would log the pane out. Claude Code would
+still prefer the file over the setup token, so the pane does not launch:
+spawn, add and restart stop with an error that names each such entry and its
+kind. Move or delete it yourself, then retry.
 
 If a normally linked file appears as a regular file, it has diverged after an
 atomic replacement. ntm reports that condition during re-provisioning and
