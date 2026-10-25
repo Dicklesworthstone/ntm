@@ -3,6 +3,7 @@ package swarm
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -145,14 +146,22 @@ func (p *ClaudeConfigProvisioner) ProvisionPaneConfig(session, pane string) (str
 	if err := os.MkdirAll(target, 0o700); err != nil {
 		return "", fmt.Errorf("create claude config dir %s: %w", target, err)
 	}
-	if err := guardPaneConfigDir(target, source); err != nil {
+	// Every deletion and relink below goes through this handle on the checked
+	// directory, never through the path, so a pane dir swapped for a link
+	// after the check cannot redirect them.
+	paneDir, err := openPaneConfigDir(target, source)
+	if err != nil {
 		return "", err
+	}
+	defer paneDir.Close()
+	if testHookPaneConfigDirOpened != nil {
+		testHookPaneConfigDirOpened(target)
 	}
 
 	// A credential inside the isolated dir would defeat the whole point: it
 	// makes Claude Code prefer the file over the static token and rejoins the
 	// rotation race.
-	if err := removeIsolatedCredentials(target); err != nil {
+	if err := removeIsolatedCredentials(paneDir, target); err != nil {
 		return "", err
 	}
 
@@ -178,7 +187,7 @@ func (p *ClaudeConfigProvisioner) ProvisionPaneConfig(session, pane string) (str
 
 		// Replace a stale link so a re-provision picks up a moved target,
 		// but never clobber a real file the pane created itself.
-		if info, err := os.Lstat(linkPath); err == nil {
+		if info, err := paneDir.Lstat(name); err == nil {
 			if info.Mode()&os.ModeSymlink == 0 {
 				// The link was replaced by a real file or directory. The usual
 				// cause is a tool that writes atomically (tmp file + rename
@@ -197,25 +206,29 @@ func (p *ClaudeConfigProvisioner) ProvisionPaneConfig(session, pane string) (str
 				)
 				continue
 			}
-			if err := os.Remove(linkPath); err != nil {
+			if err := paneDir.Remove(name); err != nil {
 				// A concurrent provision of the same pane may have removed it
 				// first; that is the state we wanted, not a failure.
-				if !os.IsNotExist(err) {
+				if !errors.Is(err, fs.ErrNotExist) {
 					return "", fmt.Errorf("replace stale link %s: %w", linkPath, err)
 				}
 			}
 		}
-		if err := os.Symlink(sourcePath, linkPath); err != nil && !os.IsExist(err) {
+		if err := paneDir.Symlink(sourcePath, name); err != nil && !errors.Is(err, fs.ErrExist) {
 			return "", fmt.Errorf("link %s -> %s: %w", linkPath, sourcePath, err)
 		}
 	}
 
-	if err := pruneDanglingLinks(target, source, linked); err != nil {
+	if err := pruneDanglingLinks(paneDir, target, source, linked); err != nil {
 		return "", err
 	}
 
 	return target, nil
 }
+
+// testHookPaneConfigDirOpened, when set by a test, runs after the pane dir has
+// been checked and opened and before anything in it is deleted or relinked.
+var testHookPaneConfigDirOpened func(target string)
 
 // pruneDanglingLinks removes symlinks in the isolated dir that point back into
 // the source config dir but no longer correspond to an entry there.
@@ -225,8 +238,8 @@ func (p *ClaudeConfigProvisioner) ProvisionPaneConfig(session, pane string) (str
 // Code sees a name that resolves to nothing rather than a name that is absent.
 // Only links into the source are pruned — anything the pane created itself is
 // left strictly alone.
-func pruneDanglingLinks(target, source string, linked map[string]struct{}) error {
-	existing, err := os.ReadDir(target)
+func pruneDanglingLinks(paneDir *os.Root, target, source string, linked map[string]struct{}) error {
+	existing, err := readRootDir(paneDir)
 	if err != nil {
 		return fmt.Errorf("read isolated config dir %s: %w", target, err)
 	}
@@ -236,11 +249,11 @@ func pruneDanglingLinks(target, source string, linked map[string]struct{}) error
 			continue
 		}
 		linkPath := filepath.Join(target, name)
-		info, err := os.Lstat(linkPath)
+		info, err := paneDir.Lstat(name)
 		if err != nil || info.Mode()&os.ModeSymlink == 0 {
 			continue // not ours to remove
 		}
-		dest, err := os.Readlink(linkPath)
+		dest, err := paneDir.Readlink(name)
 		if err != nil {
 			continue
 		}
@@ -248,77 +261,135 @@ func pruneDanglingLinks(target, source string, linked map[string]struct{}) error
 		if filepath.Dir(dest) != filepath.Clean(source) {
 			continue
 		}
-		if err := os.Remove(linkPath); err != nil && !os.IsNotExist(err) {
+		if err := paneDir.Remove(name); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("prune stale link %s: %w", linkPath, err)
 		}
 	}
 	return nil
 }
 
-// guardPaneConfigDir refuses a pane config dir that is not ntm's own.
+// openPaneConfigDir opens the pane config dir for provisioning, refusing one
+// that is not ntm's own.
 //
 // Provisioning deletes credential entries directly inside the pane dir and
-// replaces symlinks there, and both act wherever a symlinked pane dir points.
-// A pane dir linked to ~/.claude (to let one pane share the login, say) would
-// lose the operator's real credential and every backup of it, and the
+// replaces symlinks there. Done through a path, both act wherever the path
+// leads. A pane dir linked to ~/.claude (to let one pane share the login, say)
+// would lose the operator's real credential and every backup of it, and the
 // operator's own symlinked config entries would be replaced by links to
-// themselves; one linked to HOME would lose ~/.git-credentials. So the pane
-// dir must be a real directory, and it must not resolve to the operator's
-// config dir or to a directory that contains it.
-func guardPaneConfigDir(target, source string) error {
+// themselves; one that leads to HOME would lose ~/.git-credentials. So:
+//
+//   - the pane dir itself must be a real directory, not a symlink (links
+//     higher up, such as a .ntm kept on shared storage, are fine);
+//   - the directory opened must be the one that was checked, so swapping the
+//     path for a link in between is caught, and everything after works on
+//     the open handle (os.Root), which never follows a link out of it;
+//   - it must not be the operator's config dir, HOME, or any directory above
+//     either. This compares the directories themselves (device and inode),
+//     not their names, so a bind mount, a differently cased spelling on a
+//     case-insensitive filesystem, or a missing ~/.claude does not hide the
+//     overlap.
+func openPaneConfigDir(target, source string) (*os.Root, error) {
 	info, err := os.Lstat(target)
 	if err != nil {
-		return fmt.Errorf("inspect claude config dir %s: %w", target, err)
+		return nil, fmt.Errorf("inspect claude config dir %s: %w", target, err)
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("claude config dir %s is a symlink; ntm provisions only directories it creates and will not delete or relink files through it (remove the link and retry)", target)
+		return nil, fmt.Errorf("claude config dir %s is a symlink; ntm provisions only directories it creates and will not delete or relink files through it (remove the link and retry)", target)
 	}
 	if !info.IsDir() {
-		return fmt.Errorf("claude config dir %s is not a directory", target)
+		return nil, fmt.Errorf("claude config dir %s is not a directory", target)
 	}
-	resolvedTarget, err := resolvePath(target)
+	paneDir, err := os.OpenRoot(target)
 	if err != nil {
-		return fmt.Errorf("resolve claude config dir %s: %w", target, err)
+		return nil, fmt.Errorf("open claude config dir %s: %w", target, err)
 	}
-	resolvedSource, err := resolvePath(source)
+	opened, err := paneDir.Stat(".")
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil // no operator config dir for the pane dir to overlap
+		paneDir.Close()
+		return nil, fmt.Errorf("inspect claude config dir %s: %w", target, err)
+	}
+	if !os.SameFile(info, opened) {
+		paneDir.Close()
+		return nil, fmt.Errorf("claude config dir %s was replaced while it was being opened; refusing to provision it", target)
+	}
+	for _, protected := range operatorDirs(source) {
+		if protectedInfo, err := os.Stat(protected); err == nil && os.SameFile(opened, protectedInfo) {
+			paneDir.Close()
+			return nil, fmt.Errorf("claude config dir %s is %s, which is or contains the operator's config dir %s or home directory; refusing to provision it", target, protected, source)
 		}
-		return fmt.Errorf("resolve claude source config dir %s: %w", source, err)
 	}
-	if rel, err := filepath.Rel(resolvedTarget, resolvedSource); err == nil &&
-		rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return fmt.Errorf("claude config dir %s resolves to %s, which is or contains the operator's config dir %s; refusing to provision it", target, resolvedTarget, source)
-	}
-	return nil
+	return paneDir, nil
 }
 
-// resolvePath returns the absolute, symlink-free form of path.
-func resolvePath(path string) (string, error) {
-	resolved, err := filepath.EvalSymlinks(path)
-	if err != nil {
-		return "", err
+// operatorDirs lists the directories a pane config dir must never be: the
+// operator's config dir, HOME, and every directory above either, each both as
+// written and with symlinks resolved (from the deepest part that exists).
+func operatorDirs(source string) []string {
+	var dirs []string
+	addWithParents := func(dir string) {
+		for {
+			dirs = append(dirs, dir)
+			parent := filepath.Dir(dir)
+			if parent == dir {
+				return
+			}
+			dir = parent
+		}
 	}
-	return filepath.Abs(resolved)
+	addResolved := func(dir string) {
+		for {
+			if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+				addWithParents(resolved)
+				return
+			}
+			parent := filepath.Dir(dir)
+			if parent == dir {
+				return
+			}
+			dir = parent
+		}
+	}
+	roots := []string{source}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		roots = append(roots, home)
+	}
+	for _, root := range roots {
+		absolute, err := filepath.Abs(root)
+		if err != nil {
+			continue
+		}
+		addWithParents(absolute)
+		addResolved(absolute)
+	}
+	return dirs
+}
+
+// readRootDir lists the entries of the directory paneDir is open on.
+func readRootDir(paneDir *os.Root) ([]os.DirEntry, error) {
+	dir, err := paneDir.Open(".")
+	if err != nil {
+		return nil, err
+	}
+	defer dir.Close()
+	return dir.ReadDir(-1)
 }
 
 // removeIsolatedCredentials deletes every credential entry
 // (isClaudeCredentialEntry) inside the isolated config dir, whether it is a
-// real file the pane wrote or a symlink to the operator's copy. A
-// credential-named directory is refused rather than deleted recursively: this
-// provisioner never creates one, and isolation cannot be claimed while it is
-// there.
-func removeIsolatedCredentials(target string) error {
-	names, err := credentialEntriesIn(target)
+// real file the pane wrote or a symlink to the operator's copy. A symlink is
+// removed itself; what it points to is never touched. A credential-named
+// directory is refused rather than deleted recursively: this provisioner never
+// creates one, and isolation cannot be claimed while it is there.
+func removeIsolatedCredentials(paneDir *os.Root, target string) error {
+	entries, err := readRootDir(paneDir)
 	if err != nil {
-		return err
+		return fmt.Errorf("read isolated config dir %s: %w", target, err)
 	}
-	for _, name := range names {
+	for _, name := range credentialNames(entries) {
 		credential := filepath.Join(target, name)
-		info, err := os.Lstat(credential)
+		info, err := paneDir.Lstat(name)
 		if err != nil {
-			if os.IsNotExist(err) {
+			if errors.Is(err, fs.ErrNotExist) {
 				continue
 			}
 			return fmt.Errorf("inspect %s: %w", credential, err)
@@ -326,7 +397,7 @@ func removeIsolatedCredentials(target string) error {
 		if !info.Mode().IsRegular() && info.Mode()&os.ModeSymlink == 0 {
 			return fmt.Errorf("isolated claude config dir holds credential entry %s that is not a file or symlink; remove it by hand", credential)
 		}
-		if err := os.Remove(credential); err != nil && !os.IsNotExist(err) {
+		if err := paneDir.Remove(name); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("remove reachable credential %s: %w", credential, err)
 		}
 	}
@@ -343,13 +414,19 @@ func credentialEntriesIn(dir string) ([]string, error) {
 		}
 		return nil, fmt.Errorf("read isolated config dir %s: %w", dir, err)
 	}
+	return credentialNames(entries), nil
+}
+
+// credentialNames returns the names of the credential entries
+// (isClaudeCredentialEntry) among entries, in order.
+func credentialNames(entries []os.DirEntry) []string {
 	var names []string
 	for _, entry := range entries {
 		if isClaudeCredentialEntry(entry.Name()) {
 			names = append(names, entry.Name())
 		}
 	}
-	return names, nil
+	return names
 }
 
 // ProvisionClaudeIsolation builds a pane-private CLAUDE_CONFIG_DIR and returns

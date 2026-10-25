@@ -458,3 +458,144 @@ func TestProvisionPaneConfig_AllowsASymlinkedNtmDir(t *testing.T) {
 		}
 	}
 }
+
+// projectWhosePaneDirIsHome builds a temp HOME named like a pane index and a
+// project whose claude-homes/<session> is a symlink to HOME's parent, so the
+// pane dir is HOME itself while not being a symlink. HOME holds a
+// .git-credentials file, and ~/.claude exists only if withClaudeDir is set.
+func projectWhosePaneDirIsHome(t *testing.T, withClaudeDir bool) (p *ClaudeConfigProvisioner, homeParent, gitCredentials string) {
+	t.Helper()
+	homeParent = t.TempDir()
+	home := filepath.Join(homeParent, "1")
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	gitCredentials = filepath.Join(home, ".git-credentials")
+	writeFile(t, gitCredentials, "https://user:token@example.com")
+	if withClaudeDir {
+		if err := os.MkdirAll(filepath.Join(home, ".claude"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, filepath.Join(home, ".claude", ".credentials.json"), `{"claudeAiOauth":{"refreshToken":"rt-secret"}}`)
+	}
+	p = NewClaudeConfigProvisioner(t.TempDir())
+	sessionDir := filepath.Dir(p.ConfigPath("proj", "1"))
+	if err := os.MkdirAll(filepath.Dir(sessionDir), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(homeParent, sessionDir); err != nil {
+		t.Fatal(err)
+	}
+	return p, homeParent, gitCredentials
+}
+
+// The overlap check used to compare resolved path names and skipped itself
+// when ~/.claude did not exist, so a pane dir that led to HOME through a
+// symlinked parent lost ~/.git-credentials whenever ~/.claude was missing.
+func TestProvisionPaneConfig_RefusesAPaneDirThatIsHomeWithoutAClaudeDir(t *testing.T) {
+	useFileCredentialStore(t)
+	p, _, gitCredentials := projectWhosePaneDirIsHome(t, false)
+
+	if _, err := p.ProvisionPaneConfig("proj", "1"); err == nil {
+		t.Error("ProvisionPaneConfig accepted a pane dir that is HOME")
+	}
+	if _, err := os.Lstat(gitCredentials); err != nil {
+		t.Errorf("provisioning deleted %s: %v", gitCredentials, err)
+	}
+}
+
+// On a case-insensitive filesystem HOME may be spelled in another case than
+// the path the pane dir resolves to. Names then differ while the directories
+// are the same, so the check must compare the directories themselves.
+func TestProvisionPaneConfig_RefusesAPaneDirThatIsHomeSpelledInAnotherCase(t *testing.T) {
+	useFileCredentialStore(t)
+	p, homeParent, gitCredentials := projectWhosePaneDirIsHome(t, true)
+	upper := strings.ToUpper(homeParent)
+	if upper == homeParent {
+		t.Skip("temp dir has no letters to recase")
+	}
+	if _, err := os.Stat(upper); err != nil {
+		t.Skip("filesystem is case-sensitive")
+	}
+	t.Setenv("HOME", filepath.Join(upper, "1"))
+	credential := filepath.Join(homeParent, "1", ".claude", ".credentials.json")
+
+	if _, err := p.ProvisionPaneConfig("proj", "1"); err == nil {
+		t.Error("ProvisionPaneConfig accepted a pane dir that is HOME spelled in another case")
+	}
+	for _, path := range []string{gitCredentials, credential} {
+		if _, err := os.Lstat(path); err != nil {
+			t.Errorf("provisioning deleted %s: %v", path, err)
+		}
+	}
+}
+
+// Once the pane dir has been checked, swapping its path for a link to the
+// operator's config must not redirect a single deletion or relink: they all
+// act on the directory that was checked.
+func TestProvisionPaneConfig_ActsOnTheCheckedDirEvenIfThePathIsSwapped(t *testing.T) {
+	useFileCredentialStore(t)
+	_, source, mustSurvive, dotfileLink := operatorClaudeHome(t)
+
+	p := NewClaudeConfigProvisioner(t.TempDir())
+	target := p.ConfigPath("proj", "1")
+	if err := os.MkdirAll(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(target, ".credentials.json"), `{"claudeAiOauth":{"refreshToken":"pane-login"}}`)
+	moved := target + ".checked"
+
+	testHookPaneConfigDirOpened = func(string) {
+		if err := os.Rename(target, moved); err != nil {
+			t.Errorf("move pane dir: %v", err)
+			return
+		}
+		if err := os.Symlink(source, target); err != nil {
+			t.Errorf("swap in link: %v", err)
+		}
+	}
+	t.Cleanup(func() { testHookPaneConfigDirOpened = nil })
+
+	if _, err := p.ProvisionPaneConfig("proj", "1"); err != nil {
+		t.Fatalf("ProvisionPaneConfig: %v", err)
+	}
+	assertOperatorConfigUntouched(t, mustSurvive, dotfileLink)
+	if _, err := os.Lstat(filepath.Join(moved, ".credentials.json")); !os.IsNotExist(err) {
+		t.Errorf("the checked pane dir still holds its credential (lstat err=%v)", err)
+	}
+	if dest, err := os.Readlink(filepath.Join(moved, "settings.json")); err != nil || dest != filepath.Join(source, "settings.json") {
+		t.Errorf("the checked pane dir was not provisioned: settings.json -> %q, err=%v", dest, err)
+	}
+}
+
+// A credential hard-linked into the pane dir is the operator's file under a
+// second name. Removing the pane's name must leave the operator's file whole.
+func TestProvisionPaneConfig_UnlinksOnlyThePaneNameOfAHardLinkedCredential(t *testing.T) {
+	useFileCredentialStore(t)
+	_, source, _ := claudeHomeWithCredentialCopies(t)
+	credential := filepath.Join(source, ".credentials.json")
+	want, err := os.ReadFile(credential)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	p := NewClaudeConfigProvisioner(t.TempDir())
+	target := p.ConfigPath("proj", "1")
+	if err := os.MkdirAll(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(credential, filepath.Join(target, ".credentials.json")); err != nil {
+		t.Skipf("hard links unsupported here: %v", err)
+	}
+
+	if _, err := p.ProvisionPaneConfig("proj", "1"); err != nil {
+		t.Fatalf("ProvisionPaneConfig: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(target, ".credentials.json")); !os.IsNotExist(err) {
+		t.Errorf("the hard-linked credential is still reachable from the pane dir (lstat err=%v)", err)
+	}
+	if got, err := os.ReadFile(credential); err != nil || string(got) != string(want) {
+		t.Errorf("the operator's credential changed: %q, err=%v", got, err)
+	}
+}
