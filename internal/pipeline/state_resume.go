@@ -608,13 +608,17 @@ type AgentDeliveryState struct {
 	PromptEchoHash string `json:"prompt_echo_hash"`
 	// PromptEchoLength bounds pi's hash-based repaint recovery without saving
 	// prompt text. Older receipts leave it zero and retain strict boundaries.
-	PromptEchoLength int       `json:"prompt_echo_length,omitempty"`
-	Status           string    `json:"status"`
-	BeforeOutput     string    `json:"before_output,omitempty"`
-	Output           string    `json:"output,omitempty"`
-	StartedAt        time.Time `json:"started_at"`
-	DeliveredAt      time.Time `json:"delivered_at,omitempty"`
-	CompletedAt      time.Time `json:"completed_at,omitempty"`
+	PromptEchoLength int `json:"prompt_echo_length,omitempty"`
+	// PiPromptEcho binds pi's rendered Markdown form. Raw text alone cannot
+	// distinguish a formatted prompt echo from a response after repainting.
+	PiPromptEchoHash   string    `json:"pi_prompt_echo_hash,omitempty"`
+	PiPromptEchoLength int       `json:"pi_prompt_echo_length,omitempty"`
+	Status             string    `json:"status"`
+	BeforeOutput       string    `json:"before_output,omitempty"`
+	Output             string    `json:"output,omitempty"`
+	StartedAt          time.Time `json:"started_at"`
+	DeliveredAt        time.Time `json:"delivered_at,omitempty"`
+	CompletedAt        time.Time `json:"completed_at,omitempty"`
 	// Resolution fields remain values so snapshots cannot share mutable audit
 	// data. The boundary hash keeps the accepted receipt identity stable after
 	// ordinary resume advances or clears BeforeOutput.
@@ -771,6 +775,12 @@ func validateAgentDelivery(key string, record AgentDeliveryState, session string
 	}
 	if record.PromptEchoLength < 0 || record.PromptEchoLength > agentDeliveryMaxCaptureBytes {
 		return invalid("prompt echo length exceeds the agent delivery size limit")
+	}
+	if record.PiPromptEchoHash != "" || record.PiPromptEchoLength != 0 {
+		digest, err := hex.DecodeString(record.PiPromptEchoHash)
+		if !strings.EqualFold(strings.TrimSpace(record.AgentType), "pi") || err != nil || len(digest) != sha256.Size || record.PiPromptEchoLength <= 0 || record.PiPromptEchoLength > agentDeliveryMaxCaptureBytes {
+			return invalid("pi rendered prompt identity requires a SHA-256 digest and bounded positive length")
+		}
 	}
 	if record.StartedAt.IsZero() {
 		return invalid("start timestamp is missing")
@@ -1002,7 +1012,8 @@ func (e *Executor) acceptAgentDeliveryContext(ctx context.Context, stepID, recei
 	if prior := state.Steps[stepID]; prior.Status == StatusCompleted || prior.Status == StatusSkipped {
 		return nil, fmt.Errorf("step %q already has a terminal outcome; refusing to replace it with an operator acceptance", stepID)
 	}
-	if err := validateAgentRecoveryWorkflow(e.config.ProjectDir, state, record); err != nil {
+	fireAndForget, err := validateAgentRecoveryWorkflow(e.config.ProjectDir, state, record)
+	if err != nil {
 		return nil, err
 	}
 	e.config.Session = state.Session
@@ -1018,12 +1029,27 @@ func (e *Executor) acceptAgentDeliveryContext(ctx context.Context, stepID, recei
 	if pane.IsServicePane() || normalizeAgentType(string(pane.Type)) != normalizeAgentType(record.AgentType) {
 		return nil, fmt.Errorf("original agent pane %s changed agent identity", record.PaneID)
 	}
-	current, err := e.captureAgentDelivery(ctx, record)
-	if err != nil {
-		return nil, fmt.Errorf("inspect original agent delivery: %w", err)
-	}
-	if _, err := agentDeliveryNewOutput(record.BeforeOutput, current); err != nil {
-		return nil, err
+	isPi := strings.EqualFold(strings.TrimSpace(record.AgentType), "pi")
+	if !isPi || !fireAndForget {
+		current, err := e.captureAgentDelivery(ctx, record)
+		if err != nil {
+			return nil, fmt.Errorf("inspect original agent delivery: %w", err)
+		}
+		if isPi {
+			// Pi can erase the original boundary immediately after the one
+			// uncertain send. Apply the observer's unique-prompt and partial-
+			// response safeguards here too, but leave collection to resume:
+			// acceptance changes only the operator decision, not its evidence.
+			observed, _, repaintErr := observeAgentDelivery(record, current)
+			if repaintErr != nil {
+				return nil, repaintErr
+			}
+			if observed.BeforeOutput != current {
+				return nil, fmt.Errorf("saved pi output boundary is not visible; wait for a complete attributed frame before accepting delivery")
+			}
+		} else if _, err := agentDeliveryNewOutput(record.BeforeOutput, current); err != nil {
+			return nil, err
+		}
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -1075,12 +1101,28 @@ func recoveryWorkflowStep(workflow *Workflow, stepID string) (*Step, error) {
 	return found, nil
 }
 
-func validateAgentRecoveryWorkflow(projectDir string, state *ExecutionState, record AgentDeliveryState) error {
+func validateAgentRecoveryWorkflow(projectDir string, state *ExecutionState, record AgentDeliveryState) (bool, error) {
 	workflow, err := loadRecoveryWorkflow(projectDir, state)
 	if err != nil {
-		return err
+		return false, err
 	}
-	return validateRecoveryWorkflowStep(workflow, state, record.StepID, record.Kind, record.StepHash, agentStepHash)
+	if err := validateRecoveryWorkflowStep(workflow, state, record.StepID, record.Kind, record.StepHash, agentStepHash); err != nil {
+		return false, err
+	}
+	step, err := recoveryWorkflowStep(workflow, record.StepID)
+	if err != nil {
+		return false, err
+	}
+	definition := cloneStep(*step)
+	definition.ID = record.StepID
+	hash, err := agentStepHash(&definition)
+	if err != nil {
+		return false, err
+	}
+	// Scoped ownership validation can defer the materialized definition to
+	// resume. Only an exact frozen match may bypass response observation:
+	// another branch with the same child ID cannot grant wait:none behavior.
+	return hash == record.StepHash && definition.Wait == WaitNone, nil
 }
 
 func loadRecoveryWorkflow(projectDir string, state *ExecutionState) (*Workflow, error) {

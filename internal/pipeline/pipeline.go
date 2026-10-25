@@ -113,6 +113,13 @@ func (e *Executor) executeAdHocStage(ctx context.Context, stage Stage, paneID, p
 	normalizedPrompt := status.NormalizeAgentEcho(prompt)
 	echoSum := sha256.Sum256([]byte(normalizedPrompt))
 	record.BeforeOutput, record.PromptEchoHash, record.PromptEchoLength = before, hex.EncodeToString(echoSum[:]), len(normalizedPrompt)
+	if agentType == "pi" {
+		piEcho, _, supported := status.PiPromptEcho(prompt)
+		if !supported {
+			return record, errors.New("stage not dispatched: pi prompt contains Markdown whose rendered echo cannot be attributed safely; simplify the prompt before retrying")
+		}
+		record.PiPromptEchoHash, record.PiPromptEchoLength = piEcho.Hash, piEcho.Length
+	}
 	// Capture can block or race an interactive UI transition. Refresh the
 	// shared composer gate and process identity immediately before transport.
 	if err := e.tmuxClient().PrepareDelivery(ctx, pane, agentType); err != nil {

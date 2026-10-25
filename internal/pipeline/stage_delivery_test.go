@@ -348,7 +348,7 @@ func TestPiAdHocStageRefusesIncompleteInitialBoundary(t *testing.T) {
 func TestAgentDeliveryPiRepaintKeepsEvidenceBoundaries(t *testing.T) {
 	const prompt = "Review the intake."
 	digest := sha256.Sum256([]byte(status.NormalizeAgentEcho(prompt)))
-	base := AgentDeliveryState{AgentType: "pi", BeforeOutput: "Old conversation", PromptEchoHash: hex.EncodeToString(digest[:]), PromptEchoLength: len(prompt)}
+	base := AgentDeliveryState{AgentType: "pi", BeforeOutput: "Old conversation", PromptEchoHash: hex.EncodeToString(digest[:]), PromptEchoLength: len(prompt), PiPromptEchoHash: hex.EncodeToString(digest[:]), PiPromptEchoLength: len(prompt)}
 	for _, tc := range []struct {
 		name, before, output, current string
 		ready, refuse, unchanged      bool
@@ -400,13 +400,53 @@ func TestAgentDeliveryPiRepaintKeepsEvidenceBoundaries(t *testing.T) {
 	}
 	legacy := base
 	legacy.PromptEchoLength = 0
+	legacy.PiPromptEchoHash, legacy.PiPromptEchoLength = "", 0
 	if _, _, err := observeAgentDelivery(legacy, prompt+"\nCurrent response"); err == nil {
 		t.Fatal("legacy receipt without complete echo identity recovered a replacement")
 	}
 	legacy.BeforeOutput = ""
 	observed, ready, err := observeAgentDelivery(legacy, "Pi v1.3.0\n"+prompt)
-	if err != nil || ready || observed.BeforeOutput != "" || observed.Output != "" {
+	if err == nil || ready || observed.BeforeOutput != "" || observed.Output != "" {
 		t.Fatalf("legacy empty boundary trusted startup text: %+v, %v, %v", observed, ready, err)
+	}
+}
+
+func TestPiDeliveryDistinguishesRenderedPromptFromResponse(t *testing.T) {
+	const prompt, rendered = "Review **changes**", "Review changes"
+	rawHash := sha256.Sum256([]byte(prompt))
+	renderedHash := sha256.Sum256([]byte(rendered))
+	base := AgentDeliveryState{
+		AgentType: "pi", BeforeOutput: "Old conversation",
+		PromptEchoHash: hex.EncodeToString(rawHash[:]), PromptEchoLength: len(prompt),
+		PiPromptEchoHash: hex.EncodeToString(renderedHash[:]), PiPromptEchoLength: len(rendered),
+	}
+	for _, tc := range []struct {
+		name, before, current string
+		ready, refuse         bool
+	}{
+		{"rendered append is only an echo", base.BeforeOutput, base.BeforeOutput + "\n" + rendered, false, false},
+		{"rendered repaint is only an echo", base.BeforeOutput, rendered, false, false},
+		{"raw repaint is only an echo", base.BeforeOutput, prompt, false, false},
+		{"rendered repaint with answer", base.BeforeOutput, rendered + "\nThe changes are correct.", true, false},
+		{"mid-word wrapping is not an answer", base.BeforeOutput, base.BeforeOutput + "\nReview cha\nnges", false, false},
+		{"transformed echo with unrelated text has no anchor", base.BeforeOutput, base.BeforeOutput + "\nReview cha\nnges\nThe changes are correct.", false, false},
+		{"startup before an echo is not an answer", base.BeforeOutput, base.BeforeOutput + "\nStarting the review\n" + rendered, false, false},
+		{"both renderings are ambiguous", base.BeforeOutput, prompt + "\nA\n" + rendered + "\nB", false, true},
+		{"prior rendered echo is stale", rendered + "\nOld answer", prompt + "\nA different answer", false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			record := base
+			record.BeforeOutput = tc.before
+			observed, ready, err := observeAgentDelivery(record, tc.current)
+			if ready != tc.ready || (err != nil) != tc.refuse {
+				t.Fatalf("rendered echo attribution: output=%q ready=%v err=%v", observed.Output, ready, err)
+			}
+		})
+	}
+	legacy := base
+	legacy.PiPromptEchoHash, legacy.PiPromptEchoLength = "", 0
+	if _, ready, err := observeAgentDelivery(legacy, base.BeforeOutput+"\n"+rendered); err == nil || ready {
+		t.Fatalf("legacy receipt classified a transformed echo as response: ready=%v err=%v", ready, err)
 	}
 }
 

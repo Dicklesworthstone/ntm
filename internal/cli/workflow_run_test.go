@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"os"
@@ -134,7 +135,7 @@ func piWorkflowCapture(transcript, draft string, working bool) string {
 }
 
 func TestWorkflowRunnerPiRepaintAdvancesDurableStages(t *testing.T) {
-	for _, scenario := range []string{"answer in first repaint", "blank then restored history", "echo then repaint", "partial composer with verdict draft"} {
+	for _, scenario := range []string{"answer in first repaint", "blank then restored history", "echo then repaint", "Markdown echo then repaint", "partial composer with verdict draft"} {
 		t.Run(scenario, func(t *testing.T) {
 			fake := newFakeWorkflowSession()
 			history := map[string]string{"%1": "previous red work\nRED-HANDOFF", "%2": "previous green work\nGREEN-HANDOFF"}
@@ -151,14 +152,21 @@ func TestWorkflowRunnerPiRepaintAdvancesDurableStages(t *testing.T) {
 				if pane == "%2" {
 					verdict = "GREEN-HANDOFF"
 				}
-				transcript := "Pi v1.3.0\n" + prompt + "\nReviewed this turn.\n" + verdict
+				visible := prompt
+				if scenario == "Markdown echo then repaint" {
+					// Pi applies style-only formatting to these known fixture
+					// tokens. Do not generate the expected echo with its matcher.
+					visible = strings.ReplaceAll(visible, "**changes**", "changes")
+					visible = strings.ReplaceAll(visible, "`tests`", "tests")
+				}
+				transcript := "Pi v1.3.0\n" + visible + "\nReviewed this turn.\n" + verdict
 				frame := piWorkflowCapture(transcript, "unsent draft", false)
 				if pane == "%1" && firstRed {
 					switch scenario {
 					case "blank then restored history":
 						pending[pane] = []string{"", piWorkflowCapture(history[pane], "", false), frame}
-					case "echo then repaint":
-						pending[pane] = []string{piWorkflowCapture(history[pane]+"\n"+prompt, "", true), frame}
+					case "echo then repaint", "Markdown echo then repaint":
+						pending[pane] = []string{piWorkflowCapture(history[pane]+"\n"+visible, "", true), frame}
 					case "partial composer with verdict draft":
 						partial := piWorkflowCapture("Pi v1.3.0\n"+prompt, verdict, false)
 						partial = strings.TrimSuffix(partial, "\n~/projects/demo (main)\n0.0%/1.0M (auto)  model\n")
@@ -181,7 +189,11 @@ func TestWorkflowRunnerPiRepaintAdvancesDurableStages(t *testing.T) {
 				return originalCapture(ctx, pane, lines)
 			}
 			agents := []workflow.CoordinatorAgent{{ID: "%1", Role: "red"}, {ID: "%2", Role: "green"}}
-			runner, err := newWorkflowRunner(pingPongTemplate(), agents, workflowRunOptions{
+			template := pingPongTemplate()
+			if scenario == "Markdown echo then repaint" {
+				template.Description = "Review **changes** and run `tests`"
+			}
+			runner, err := newWorkflowRunner(template, agents, workflowRunOptions{
 				Session: "pi-repaint", ProjectRoot: t.TempDir(), StateDir: filepath.Join(t.TempDir(), "state"),
 				PanePIDs: map[string]int{"%1": 101, "%2": 202}, PaneTypes: map[string]string{"%1": "pi", "%2": "pi"},
 				MaxTransitions: 2, Interval: time.Millisecond,
@@ -248,7 +260,7 @@ func TestWorkflowRunnerPiComposerVerdictCannotAdvance(t *testing.T) {
 
 func TestWorkflowRunnerPiResumeUsesPreparedPromptReceipt(t *testing.T) {
 	template := pingPongTemplate()
-	template.Description = "Review private source context"
+	template.Description = "Review **private source context** and run `tests`"
 	fake := newFakeWorkflowSession()
 	fake.outputs["%1"] = piWorkflowCapture("old red history", "", false)
 	fake.outputs["%2"] = piWorkflowCapture("old green history", "", false)
@@ -286,10 +298,16 @@ func TestWorkflowRunnerPiResumeUsesPreparedPromptReceipt(t *testing.T) {
 		t.Fatalf("could not pause delivered pi turn: result=%+v error=%v", result, err)
 	}
 	saved := mustLoadWorkflowCheckpoint(t, opts)
-	if len(saved.Dispatches) != 1 || saved.Dispatches[0].Status != "delivered" || len(saved.Dispatches[0].PromptEchoHash) != 64 || saved.Dispatches[0].PromptEchoLength == 0 {
+	if len(saved.Dispatches) != 1 || saved.Dispatches[0].Status != "delivered" || len(saved.Dispatches[0].PromptEchoHash) != 64 || saved.Dispatches[0].PromptEchoLength == 0 || len(saved.Dispatches[0].PiPromptEchoHash) != 64 || saved.Dispatches[0].PiPromptEchoLength == 0 {
 		t.Fatalf("prepared prompt receipt was not persisted: %+v", saved.Dispatches)
 	}
-	fake.outputs["%1"] = piWorkflowCapture("Pi v1.3.0\n"+prepared["%1"]+"\nReviewed the current turn.\nRED-HANDOFF", "", false)
+	visible := strings.ReplaceAll(prepared["%1"], "**[redacted]**", "[redacted]")
+	visible = strings.ReplaceAll(visible, "`tests`", "tests")
+	normalized := status.NormalizeAgentEcho(visible)
+	if saved.Dispatches[0].PiPromptEchoHash != fmt.Sprintf("%x", sha256.Sum256([]byte(normalized))) || saved.Dispatches[0].PiPromptEchoLength != len(normalized) || saved.Dispatches[0].PiPromptEchoHash == saved.Dispatches[0].PromptEchoHash {
+		t.Fatalf("receipt did not pin the final redacted Markdown echo: %+v", saved.Dispatches[0])
+	}
+	fake.outputs["%1"] = piWorkflowCapture("Pi v1.3.0\n"+visible+"\nReviewed the current turn.\nRED-HANDOFF", "", false)
 	opts.Resume = true
 	runner = mustResumeWorkflowRunner(t, template, agents, opts, ports)
 	resumeCtx, resumeCancel := context.WithTimeout(t.Context(), 3*time.Second)
@@ -1718,5 +1736,148 @@ func TestHealthTreatsAgentRootPaneAsRunning(t *testing.T) {
 	}
 	if fault, ok := faults[agentPane.ID]; ok {
 		t.Fatalf("working agent-root pane classified as faulted: %+v", fault)
+	}
+}
+
+func TestPiWorkflowVerdictExcludesEchoWithoutMovingRegexAnchors(t *testing.T) {
+	const prompt = "Inspect **this result** and report."
+	const visible = " Inspect this result\n and report."
+	raw := status.NormalizeAgentEcho(prompt)
+	rendered, _, supported := status.PiPromptEcho(prompt)
+	if !supported {
+		t.Fatal("supported formatted prompt failed")
+	}
+	delivery := workflow.StageDispatch{
+		Pane: "%71", Role: "reviewer", Status: "delivered",
+		PromptEchoHash: fmt.Sprintf("%x", sha256.Sum256([]byte(raw))), PromptEchoLength: len(raw),
+		PiPromptEchoHash: rendered.Hash, PiPromptEchoLength: rendered.Length,
+	}
+	for _, tc := range []struct {
+		name, pattern, output string
+		want                  bool
+	}{
+		{"wrapped echo only", `(?m)^ and report\.$`, visible, false},
+		{"wrapped echo with unrelated answer", `(?m)^ and report\.$`, visible + "\nStill processing.", false},
+		{"wrapped echo then actual matching reply", `(?m)^ and report\.$`, visible + "\nStill processing.\n and report.", true},
+		{"answer after echo", `(?m)^SHIP-VERDICT$`, visible + "\n\nSHIP-VERDICT", true},
+		{"whole string anchor unchanged", `^SHIP-VERDICT`, visible + "\n\nSHIP-VERDICT", false},
+		{"match crossing echo boundary", `(?s)and report\..*SHIP-VERDICT`, visible + "\n\nSHIP-VERDICT", false},
+		{"rendered echo repeated", `SHIP-VERDICT`, visible + "\nEarlier reply\n" + visible + "\nSHIP-VERDICT", false},
+		{"raw and rendered echo", `SHIP-VERDICT`, prompt + "\nEarlier reply\n" + visible + "\nSHIP-VERDICT", false},
+		{"verdict before echo", `SHIP-VERDICT`, "SHIP-VERDICT\n" + visible + "\nStill processing.", false},
+		{"no echo", `SHIP-VERDICT`, "Unrelated transcript\nSHIP-VERDICT", false},
+		{"partial echo", `SHIP-VERDICT`, "Inspect this result\nSHIP-VERDICT", false},
+		{"empty suffix", `.*`, visible + "\n\n ", false},
+		{"raw echo followed by reply", `(?m)^SHIP-VERDICT$`, prompt + "\nSHIP-VERDICT", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fired, err := piWorkflowVerdict(tc.pattern, tc.output, delivery)
+			if err != nil || fired != tc.want {
+				t.Fatalf("verdict = %v, %v; want %v", fired, err, tc.want)
+			}
+		})
+	}
+	if fired, err := piWorkflowVerdict("[", visible+"\nAnswer", delivery); fired || err == nil {
+		t.Fatalf("invalid trigger regex = %v, %v", fired, err)
+	}
+	delivery.PiPromptEchoHash, delivery.PiPromptEchoLength = "", 0
+	if fired, err := piWorkflowVerdict("SHIP-VERDICT", visible+"\nSHIP-VERDICT", delivery); fired || err == nil {
+		t.Fatalf("legacy receipt could authorize a verdict: %v, %v", fired, err)
+	}
+}
+
+func TestWorkflowRunnerPiRefusesRenderedVerdictBeforeDispatch(t *testing.T) {
+	for _, prepared := range []bool{false, true} {
+		name := "initial goal"
+		if prepared {
+			name = "final prepared hook"
+		}
+		t.Run(name, func(t *testing.T) {
+			template := pingPongTemplate()
+			template.Description = "Review the requested change."
+			template.Flow.Transitions[0].Trigger.Pattern = `(?m)^APPROVE$`
+			if !prepared {
+				template.Description = "Review the requested change.\n\n**APPROVE**"
+			}
+			fake := newFakeWorkflowSession()
+			fake.outputs["%1"] = piWorkflowCapture("red history", "", false)
+			fake.outputs["%2"] = piWorkflowCapture("green history", "", false)
+			ports := fake.ports()
+			var runner *workflowRunner
+			if prepared {
+				originalDispatch := ports.dispatch
+				ports.dispatch = func(ctx context.Context, session, pane, prompt string) error {
+					// Mirror the production final preparation hook, before the
+					// transport is allowed to type the enriched prompt.
+					message := prompt + "\n\n**APPROVE**"
+					if err := runner.pinPiDispatchPrompt(runner.state.CurrentStage, pane, message); err != nil {
+						return err
+					}
+					return originalDispatch(ctx, session, pane, message)
+				}
+			}
+			runner = mustResumeWorkflowRunner(t, template,
+				[]workflow.CoordinatorAgent{{ID: "%1", Role: "red"}, {ID: "%2", Role: "green"}},
+				workflowRunOptions{Session: "pi-formatted-verdict", PaneTypes: map[string]string{"%1": "pi", "%2": "pi"}}, ports)
+			result, err := runner.Run(t.Context())
+			if err == nil || !strings.Contains(err.Error(), "rendered pi prompt") || result.Transitions != 0 || len(fake.dispatchedPanes()) != 0 {
+				t.Fatalf("formatted prompt authorized its own verdict: result=%+v sends=%v error=%v", result, fake.dispatchedPanes(), err)
+			}
+		})
+	}
+}
+
+func TestWorkflowRunnerPiUnsupportedPromptDoesNotSend(t *testing.T) {
+	template := pingPongTemplate()
+	template.Description = "Inspect the requested change.\n\n> Preserve quoted requirements."
+	fake := newFakeWorkflowSession()
+	fake.outputs["%1"] = piWorkflowCapture("red history", "", false)
+	fake.outputs["%2"] = piWorkflowCapture("green history", "", false)
+	runner := mustResumeWorkflowRunner(t, template,
+		[]workflow.CoordinatorAgent{{ID: "%1", Role: "red"}, {ID: "%2", Role: "green"}},
+		workflowRunOptions{Session: "pi-unsupported-prompt", PaneTypes: map[string]string{"%1": "pi", "%2": "pi"}}, fake.ports())
+	result, err := runner.Run(t.Context())
+	if err == nil || !strings.Contains(err.Error(), "unsupported display formatting") || result.Transitions != 0 || len(fake.dispatchedPanes()) != 0 {
+		t.Fatalf("unsupported prompt reached pi: result=%+v sends=%v error=%v", result, fake.dispatchedPanes(), err)
+	}
+}
+
+func TestWorkflowRunnerPiLegacyReceiptRefusesResume(t *testing.T) {
+	template := pingPongTemplate()
+	template.Description = "Review **changes** and run `tests`"
+	fake := newFakeWorkflowSession()
+	fake.outputs["%1"] = piWorkflowCapture("red history", "", false)
+	fake.outputs["%2"] = piWorkflowCapture("green history", "", false)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	fake.onDispatch = func(pane, prompt string) {
+		visible := strings.ReplaceAll(prompt, "**changes**", "changes")
+		visible = strings.ReplaceAll(visible, "`tests`", "tests")
+		fake.outputs[pane] = piWorkflowCapture("Pi v1.3.0\n"+visible+"\nReviewed the change.\nRED-HANDOFF", "", false)
+		cancel()
+	}
+	opts := workflowRunOptions{
+		Session: "pi-legacy-receipt", ProjectRoot: t.TempDir(), StateDir: t.TempDir(),
+		PanePIDs: map[string]int{"%1": 101, "%2": 202}, PaneTypes: map[string]string{"%1": "pi", "%2": "pi"},
+		Interval: time.Millisecond, MaxTransitions: 1,
+	}
+	agents := []workflow.CoordinatorAgent{{ID: "%1", Role: "red"}, {ID: "%2", Role: "green"}}
+	runner := mustResumeWorkflowRunner(t, template, agents, opts, fake.ports())
+	if result, err := runner.Run(ctx); result.Transitions != 0 || (err != nil && !errors.Is(err, context.Canceled)) {
+		t.Fatalf("could not pause pi delivery: result=%+v error=%v", result, err)
+	}
+	saved := mustLoadWorkflowCheckpoint(t, opts)
+	if len(saved.Dispatches) != 1 || saved.Dispatches[0].Status != "delivered" || saved.Dispatches[0].PiPromptEchoHash == "" {
+		t.Fatalf("missing initial rendered receipt: %+v", saved.Dispatches)
+	}
+	saved.Dispatches[0].PiPromptEchoHash, saved.Dispatches[0].PiPromptEchoLength = "", 0
+	if err := (&workflow.StateStore{Dir: opts.StateDir}).Save(saved); err != nil {
+		t.Fatal(err)
+	}
+	opts.Resume = true
+	runner = mustResumeWorkflowRunner(t, template, agents, opts, fake.ports())
+	result, err := runner.Run(t.Context())
+	if err == nil || !strings.Contains(err.Error(), "lacks rendered pi prompt evidence") || result.Transitions != 0 || len(fake.dispatchedPanes()) != 1 {
+		t.Fatalf("legacy receipt authorized resume: result=%+v sends=%v error=%v", result, fake.dispatchedPanes(), err)
 	}
 }

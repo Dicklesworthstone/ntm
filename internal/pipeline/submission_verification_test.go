@@ -16,6 +16,8 @@ package pipeline
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"os"
@@ -689,6 +691,106 @@ func TestPiAgentDeliveryResumeUsesSavedPromptIdentity(t *testing.T) {
 				t.Fatalf("accepted repaint was not durable: state=%+v err=%v", persisted, err)
 			}
 		})
+	}
+}
+
+func TestPiRenderedPromptEchoWaitsForActualAnswer(t *testing.T) {
+	executor, mock := submittingExecutor(t, "pi-rendered-echo")
+	executor.config.ProjectDir = t.TempDir()
+	mock.AddPane("", tmux.Pane{ID: "%1", Index: 1, PID: 4141, Type: tmux.AgentType("pi"), Width: 100})
+	if err := mock.SetPaneOutput("%1", piStagePane("Previous turn", "")); err != nil {
+		t.Fatal(err)
+	}
+	const prompt, rendered = "Review **changes**", "Review changes"
+	mock.SetSubmissionVerifier(func(target, _, _ string) error {
+		return mock.SetPaneOutput(target, piStagePane(rendered, "A verdict still in the composer"))
+	})
+	detector := &stageIdleDetector{}
+	detector.onIdle = func(call int) {
+		if call == idleStablePolls+1 {
+			if err := mock.SetPaneOutput("%1", piStagePane(rendered+"\nThe changes are correct.", "A verdict still in the composer")); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	executor.SetDetector(detector)
+	workflow := singleStepWorkflow("pi-rendered-echo", Step{ID: "work", Pane: PaneSpec{Index: 1}, Prompt: prompt, Wait: WaitCompletion})
+	state, err := executor.Run(context.Background(), workflow, nil, nil)
+	if err != nil || state.Status != StatusCompleted || detector.calls <= idleStablePolls+1 {
+		t.Fatalf("rendered prompt echo advanced without a fresh answer: %+v calls=%d err=%v", state, detector.calls, err)
+	}
+	if output := state.Steps["work"].Output; output != rendered+"\nThe changes are correct." {
+		t.Fatalf("rendered prompt response included draft text or lost the answer: %q", output)
+	}
+	assertNotResent(t, mock)
+}
+
+func TestPiRenderedPromptIdentitySurvivesTemplateResume(t *testing.T) {
+	executor, mock := submittingExecutor(t, "pi-rendered-resume")
+	executor.config.ProjectDir = t.TempDir()
+	mock.AddPane("", tmux.Pane{ID: "%1", Index: 1, PID: 4141, Type: tmux.AgentType("pi"), Width: 100})
+	if err := mock.SetPaneOutput("%1", piStagePane("Previous turn", "")); err != nil {
+		t.Fatal(err)
+	}
+	const prompt, rendered = "Review **changes**", "Review changes"
+	path := filepath.Join(executor.config.ProjectDir, "task.md")
+	if err := os.WriteFile(path, []byte(prompt), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	executor.SetTmuxClient(&cancelAgentObservation{MockTmuxClient: mock, executor: executor, cancel: cancel})
+	workflow := singleStepWorkflow("pi-rendered-resume", Step{ID: "work", Pane: PaneSpec{Index: 1}, Template: path, Wait: WaitTime, Timeout: Duration{Duration: time.Millisecond}})
+	state, err := executor.Run(ctx, workflow, nil, nil)
+	if !errors.Is(err, context.Canceled) || state.AgentDeliveries["work"].Status != agentDeliveryDelivered {
+		t.Fatalf("fixture did not stop after confirmed delivery: %+v %v", state, err)
+	}
+	prior, err := LoadState(executor.config.ProjectDir, state.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := sha256.Sum256([]byte(rendered))
+	receipt := prior.AgentDeliveries["work"]
+	if receipt.PiPromptEchoHash != hex.EncodeToString(expected[:]) || receipt.PiPromptEchoLength != len(rendered) || receipt.PiPromptEchoHash == receipt.PromptEchoHash {
+		t.Fatalf("rendered identity was not persisted separately from raw prompt: %+v", receipt)
+	}
+	if err := os.WriteFile(path, []byte("A different **request**"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := mock.SetPaneOutput("%1", piStagePane(rendered+"\nThe changes are correct.", "UNSENT-DRAFT")); err != nil {
+		t.Fatal(err)
+	}
+	resumed := NewExecutor(executor.config)
+	resumed.SetTmuxClient(mock)
+	final, err := resumed.Resume(context.Background(), workflow, prior, nil)
+	if err != nil || final.Status != StatusCompleted || final.Steps["work"].Output != rendered+"\nThe changes are correct." {
+		t.Fatalf("resume lost the delivered rendered identity: %+v %v", final, err)
+	}
+	assertNotResent(t, mock)
+	if len(mock.VerificationHistory()) != 1 {
+		t.Fatalf("resume verified a new submission: %+v", mock.VerificationHistory())
+	}
+}
+
+func TestPiUnsupportedPromptRefusesBeforeDispatch(t *testing.T) {
+	executor, mock := submittingExecutor(t, "pi-unsupported-prompt")
+	executor.config.ProjectDir = t.TempDir()
+	mock.AddPane("", tmux.Pane{ID: "%1", Index: 1, PID: 4141, Type: tmux.AgentType("pi"), Width: 100})
+	if err := mock.SetPaneOutput("%1", piStagePane("Previous turn", "")); err != nil {
+		t.Fatal(err)
+	}
+	workflow := singleStepWorkflow("pi-unsupported-prompt", Step{ID: "work", Pane: PaneSpec{Index: 1}, Prompt: "Review [the changes](https://example.com/changes)", Wait: WaitCompletion})
+	state, err := executor.Run(context.Background(), workflow, nil, nil)
+	if err == nil || state.Status != StatusFailed || state.AgentDeliveries["work"].Status != agentDeliveryNotSent || state.Steps["work"].Error.Type != "not_dispatched" {
+		t.Fatalf("unsupported pi echo did not retain proven non-delivery: %+v %v", state, err)
+	}
+	pastes, err := mock.PasteHistory("%1")
+	if err != nil || len(pastes) != 0 || len(mock.VerificationHistory()) != 0 {
+		t.Fatalf("unsupported pi echo was sent: %+v %v", pastes, err)
+	}
+	persisted, err := LoadState(executor.config.ProjectDir, state.RunID)
+	if err != nil || persisted.AgentDeliveries["work"].Status != agentDeliveryNotSent {
+		t.Fatalf("unsupported prompt lost durable non-delivery evidence: %+v %v", persisted, err)
 	}
 }
 

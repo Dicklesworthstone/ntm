@@ -17,7 +17,7 @@ import (
 // Produce an actual uncertain delivery through the executor. The verifier
 // fails after the one paste, so recovery cannot confuse a synthetic journal
 // row with work that never crossed the transport boundary.
-func uncertainRecoveryFixture(t *testing.T, shape string) (ExecutorConfig, *Workflow, *ExecutionState, *MockTmuxClient, string, string) {
+func uncertainRecoveryFixture(t *testing.T, shape string, agentTypes ...tmux.AgentType) (ExecutorConfig, *Workflow, *ExecutionState, *MockTmuxClient, string, string) {
 	t.Helper()
 	cfg := DefaultExecutorConfig("operator-recovery")
 	cfg.ProjectDir, cfg.RunID = t.TempDir(), GenerateRunID()
@@ -25,6 +25,8 @@ func uncertainRecoveryFixture(t *testing.T, shape string) (ExecutorConfig, *Work
 	leaf := Step{ID: "agent", Pane: PaneSpec{Index: 1}, Prompt: "SECRET-TASK ${vars.subject}", Wait: WaitTime, Timeout: Duration{Duration: time.Millisecond}}
 	root := leaf
 	switch shape {
+	case "fire-and-forget":
+		root.Wait, root.Prompt = WaitNone, "Review [the changes](https://example.com/changes)"
 	case "foreach":
 		root = Step{ID: "outer", Foreach: &ForeachConfig{Items: `["outer"]`, Steps: []Step{
 			{ID: "inner", Foreach: &ForeachConfig{Items: `["inner"]`, Steps: []Step{leaf}}},
@@ -42,9 +44,17 @@ func uncertainRecoveryFixture(t *testing.T, shape string) (ExecutorConfig, *Work
 		t.Fatal(err)
 	}
 	cfg.WorkflowFile = path
-	client := NewMockTmuxClient(tmux.Pane{ID: "%17", PID: 2718, Index: 1, NTMIndex: 1, Type: tmux.AgentClaude, Command: "claude", Width: 120})
+	agentType, command := tmux.AgentClaude, "claude"
+	if len(agentTypes) > 0 {
+		agentType, command = agentTypes[0], string(agentTypes[0])
+	}
+	client := NewMockTmuxClient(tmux.Pane{ID: "%17", PID: 2718, Index: 1, NTMIndex: 1, Type: agentType, Command: command, Width: 120})
 	t.Cleanup(client.Reset)
-	if err := client.SetPaneOutput("%17", "OLD-BOUNDARY\n"); err != nil {
+	initial := "OLD-BOUNDARY\n"
+	if agentType == tmux.AgentType("pi") {
+		initial = piStagePane(initial, "")
+	}
+	if err := client.SetPaneOutput("%17", initial); err != nil {
 		t.Fatal(err)
 	}
 	client.SetSubmissionVerifier(func(string, string, string) error { return errors.New("submission observation was interrupted") })
@@ -64,7 +74,11 @@ func uncertainRecoveryFixture(t *testing.T, shape string) (ExecutorConfig, *Work
 		if record.Status != agentDeliverySending {
 			t.Fatalf("fixture receipt is not uncertain: %+v", record)
 		}
-		if err := client.SetPaneOutput("%17", record.BeforeOutput+"\nFRESH-RESPONSE\n"); err != nil {
+		current := record.BeforeOutput + "\nFRESH-RESPONSE\n"
+		if agentType == tmux.AgentType("pi") {
+			current = piStagePane(current, "")
+		}
+		if err := client.SetPaneOutput("%17", current); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -85,6 +99,143 @@ func uncertainRecoveryFixture(t *testing.T, shape string) (ExecutorConfig, *Work
 		t.Fatalf("inspection changed the checkpoint: %v", err)
 	}
 	return cfg, frozen, state, client, stepID, inspection.Deliveries[0].ReceiptToken
+}
+
+func TestPiAgentDeliveryRecoveryAfterRepaint(t *testing.T) {
+	cfg, workflow, prior, client, stepID, token := uncertainRecoveryFixture(t, "plain", tmux.AgentType("pi"))
+	original := prior.AgentDeliveries[stepID]
+	const response = "SECRET-TASK original\nFRESH-RESPONSE after the pane repaint"
+	if err := client.SetPaneOutput("%17", piStagePane(response, "UNSENT-DRAFT is not the response")); err != nil {
+		t.Fatal(err)
+	}
+	resolver := NewExecutor(cfg)
+	resolver.SetTmuxClient(client)
+	const reason = "Confirmed the original submitted task in the repainted pi pane"
+	accepted, err := resolver.acceptAgentDeliveryContext(context.Background(), stepID, token, reason)
+	if err != nil || accepted.Replayed || accepted.Delivery.Status != agentDeliveryDelivered || accepted.Delivery.ReceiptToken != token {
+		t.Fatalf("accept original pi delivery after repaint: %+v %v", accepted, err)
+	}
+	acceptedState, err := LoadState(cfg.ProjectDir, cfg.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt := acceptedState.AgentDeliveries[stepID]
+	if receipt.BeforeOutput != original.BeforeOutput || receipt.Output != original.Output || acceptedState.Steps["after"].Status == StatusCompleted {
+		t.Fatalf("operator acceptance collected output or ran downstream work: %+v", acceptedState)
+	}
+	pastes, err := client.PasteHistory("%17")
+	if err != nil || len(pastes) != 1 || len(client.VerificationHistory()) != 1 {
+		t.Fatalf("pi acceptance repeated the uncertain send: %+v %v", pastes, err)
+	}
+	resumed := NewExecutor(cfg)
+	resumed.SetTmuxClient(client)
+	final, err := resumed.Resume(context.Background(), workflow, acceptedState, nil)
+	if err != nil || final.Status != StatusCompleted || final.Steps["after"].Output != "resumed" {
+		t.Fatalf("accepted pi turn did not progress through the pipeline: %+v %v", final, err)
+	}
+	if output := final.Steps[stepID].Output; output != response || strings.Contains(output, "UNSENT-DRAFT") {
+		t.Fatalf("pi recovery lost the response or included composer text: %q", output)
+	}
+	pastes, err = client.PasteHistory("%17")
+	if err != nil || len(pastes) != 1 || len(client.VerificationHistory()) != 1 {
+		t.Fatalf("pi resume repeated the accepted delivery: %+v %v", pastes, err)
+	}
+	completed := final.AgentDeliveries[stepID]
+	if completed.Status != agentDeliveryCompleted || completed.ResolutionToken != token || completed.ResolutionBoundaryHash != receipt.ResolutionBoundaryHash {
+		t.Fatalf("pi completion lost the original accepted receipt: %+v", completed)
+	}
+	replay, err := resolver.acceptAgentDeliveryContext(context.Background(), stepID, token, reason)
+	if err != nil || !replay.Replayed || replay.Delivery.Status != agentDeliveryCompleted {
+		t.Fatalf("completed pi acceptance is not idempotent: %+v %v", replay, err)
+	}
+}
+
+func TestPiFireAndForgetRecoveryDoesNotRequireResponseEvidence(t *testing.T) {
+	cfg, workflow, _, client, stepID, token := uncertainRecoveryFixture(t, "fire-and-forget", tmux.AgentType("pi"))
+	// This prompt's link rendering is unsupported for response attribution.
+	// Its explicit wait:none contract only requires confirmed delivery.
+	if err := client.SetPaneOutput("%17", "Pi is redrawing; no response frame is available"); err != nil {
+		t.Fatal(err)
+	}
+	resolver := NewExecutor(cfg)
+	resolver.SetTmuxClient(client)
+	accepted, err := resolver.acceptAgentDeliveryContext(context.Background(), stepID, token, "Observed the submitted task before the repaint")
+	if err != nil || accepted.Delivery.Status != agentDeliveryDelivered {
+		t.Fatalf("fire-and-forget acceptance required a response: %+v %v", accepted, err)
+	}
+	prior, err := LoadState(cfg.ProjectDir, cfg.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumed := NewExecutor(cfg)
+	resumed.SetTmuxClient(client)
+	final, err := resumed.Resume(context.Background(), workflow, prior, nil)
+	if err != nil || final.Status != StatusCompleted || final.Steps["after"].Output != "resumed" || final.Steps[stepID].Output != "" {
+		t.Fatalf("fire-and-forget resume inferred a response or failed to continue: %+v %v", final, err)
+	}
+	pastes, err := client.PasteHistory("%17")
+	if err != nil || len(pastes) != 1 || len(client.VerificationHistory()) != 1 {
+		t.Fatalf("fire-and-forget recovery repeated delivery: %+v %v", pastes, err)
+	}
+}
+
+func TestPiAgentDeliveryRecoveryRejectsUnattributedRepaints(t *testing.T) {
+	const prompt = "SECRET-TASK original"
+	for _, tc := range []struct {
+		name, transcript, draft string
+		mutate                  func(*AgentDeliveryState)
+		incomplete              bool
+	}{
+		{name: "unrelated turn", transcript: "Another request\nAnother answer"},
+		{name: "duplicate current echo", transcript: prompt + "\nFirst answer\n" + prompt + "\nSecond answer"},
+		{name: "echo and answer only in composer", transcript: "Another turn", draft: prompt + "\nFRESH-RESPONSE"},
+		{name: "blank redraw"},
+		{name: "partial original frame", transcript: "OLD"},
+		{name: "incomplete composer", transcript: prompt + "\nFRESH-RESPONSE", draft: "UNSENT-DRAFT", incomplete: true},
+		{name: "legacy receipt without echo length", transcript: prompt + "\nFRESH-RESPONSE", mutate: func(r *AgentDeliveryState) { r.PromptEchoLength = 0 }},
+		{name: "legacy receipt without rendered identity", transcript: prompt + "\nFRESH-RESPONSE", mutate: func(r *AgentDeliveryState) { r.PiPromptEchoHash, r.PiPromptEchoLength = "", 0 }},
+		{name: "echo already in old transcript", transcript: prompt + "\nFRESH-RESPONSE", mutate: func(r *AgentDeliveryState) { r.BeforeOutput = prompt + "\nOLD-BOUNDARY" }},
+		{name: "replacement after partial response", transcript: prompt + "\nReplacement answer", mutate: func(r *AgentDeliveryState) {
+			r.BeforeOutput, r.Output = prompt+"\nPartial original response", prompt+"\nPartial original response"
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, _, prior, client, stepID, token := uncertainRecoveryFixture(t, "plain", tmux.AgentType("pi"))
+			if tc.mutate != nil {
+				record := prior.AgentDeliveries[stepID]
+				tc.mutate(&record)
+				prior.AgentDeliveries[stepID] = record
+				if err := SaveState(cfg.ProjectDir, prior); err != nil {
+					t.Fatal(err)
+				}
+				inspection, err := InspectAgentDeliveryRecovery(context.Background(), cfg.ProjectDir, cfg.RunID)
+				if err != nil || len(inspection.Deliveries) != 1 {
+					t.Fatalf("inspect fixture receipt: %+v %v", inspection, err)
+				}
+				token = inspection.Deliveries[0].ReceiptToken
+			}
+			frame := piStagePane(tc.transcript, tc.draft)
+			if tc.incomplete {
+				frame = strings.TrimSuffix(frame, "0.0%/1.0M (auto)  DeepSeek-V4.1-Flash")
+			}
+			if err := client.SetPaneOutput("%17", frame); err != nil {
+				t.Fatal(err)
+			}
+			before, err := os.ReadFile(pipelineStatePath(cfg.ProjectDir, cfg.RunID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			resolver := NewExecutor(cfg)
+			resolver.SetTmuxClient(client)
+			if result, err := resolver.acceptAgentDeliveryContext(context.Background(), stepID, token, "Confirmed original delivery"); err == nil || result != nil {
+				t.Fatalf("unattributed pi repaint authorized acceptance: %+v %v", result, err)
+			}
+			after, err := os.ReadFile(pipelineStatePath(cfg.ProjectDir, cfg.RunID))
+			if err != nil || string(after) != string(before) || len(client.VerificationHistory()) != 1 {
+				t.Fatalf("refused pi recovery changed its receipt or repeated transport: %v", err)
+			}
+		})
+	}
 }
 
 func TestAgentDeliveryRecoveryScopedContinuation(t *testing.T) {
@@ -355,6 +506,15 @@ func TestResumeRejectsInvalidAgentDeliveriesBeforeReset(t *testing.T) {
 		{"invalid prompt hash", func(r *AgentDeliveryState) { r.PromptHash = strings.Repeat("z", 64) }},
 		{"negative prompt echo length", func(r *AgentDeliveryState) { r.PromptEchoLength = -1 }},
 		{"oversized prompt echo length", func(r *AgentDeliveryState) { r.PromptEchoLength = agentDeliveryMaxCaptureBytes + 1 }},
+		{"pi hash without length", func(r *AgentDeliveryState) { r.AgentType, r.PiPromptEchoHash = "pi", strings.Repeat("a", 64) }},
+		{"pi length without hash", func(r *AgentDeliveryState) { r.AgentType, r.PiPromptEchoLength = "pi", 12 }},
+		{"pi malformed rendered hash", func(r *AgentDeliveryState) {
+			r.AgentType, r.PiPromptEchoHash, r.PiPromptEchoLength = "pi", "broken", 12
+		}},
+		{"pi oversized rendered length", func(r *AgentDeliveryState) {
+			r.AgentType, r.PiPromptEchoHash, r.PiPromptEchoLength = "pi", strings.Repeat("a", 64), agentDeliveryMaxCaptureBytes+1
+		}},
+		{"pi identity on another agent", func(r *AgentDeliveryState) { r.PiPromptEchoHash, r.PiPromptEchoLength = strings.Repeat("a", 64), 12 }},
 		{"oversized baseline", func(r *AgentDeliveryState) { r.BeforeOutput = strings.Repeat("x", agentDeliveryMaxCaptureBytes+1) }},
 		{"oversized result", func(r *AgentDeliveryState) { r.Output = strings.Repeat("x", agentDeliveryMaxOutputBytes+1) }},
 		{"missing start", func(r *AgentDeliveryState) { r.StartedAt = time.Time{} }},

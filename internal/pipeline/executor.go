@@ -1984,19 +1984,28 @@ func (e *Executor) executeAgentDelivery(ctx context.Context, step *Step, workflo
 			// complete repaint anchor, but retains ordinary delivery behavior.
 			echoLength = 0
 		}
+		var piEcho status.PromptEchoFingerprint
+		piEchoSupported := true
+		if strings.EqualFold(strings.TrimSpace(agentType), "pi") && step.Wait != WaitNone {
+			piEcho, _, piEchoSupported = status.PiPromptEcho(prompt)
+		}
 		record = AgentDeliveryState{
 			Version: agentDeliveryVersion, StepID: step.ID, Kind: kind,
 			Session: e.config.Session, Endpoint: endpoint, PaneID: paneID, PanePID: pane.PID,
 			AgentType: agentType, StepHash: stepHash, PromptHash: hex.EncodeToString(sum[:]),
 			PromptEchoHash:   hex.EncodeToString(echoSum[:]),
 			PromptEchoLength: echoLength,
-			Status:           agentDeliveryNotSent, StartedAt: time.Now(),
+			PiPromptEchoHash: piEcho.Hash, PiPromptEchoLength: piEcho.Length,
+			Status: agentDeliveryNotSent, StartedAt: time.Now(),
 		}
 		// Preserve positive non-delivery evidence before the preflight. An
 		// unfinished step with no receipt is intentionally unsafe to replay,
 		// while this phase can be retried or resumed after a pane recovers.
 		if err := e.saveAgentDelivery(record); err != nil {
 			return fail("checkpoint", err)
+		}
+		if !piEchoSupported {
+			return fail("not_dispatched", errors.New("pi prompt contains Markdown whose rendered echo cannot be attributed safely; simplify the prompt before retrying"))
 		}
 		if err := e.tmuxClient().PrepareDelivery(ctx, pane, agentType); err != nil {
 			return fail("not_dispatched", err)
@@ -2260,6 +2269,10 @@ func (e *Executor) captureAgentDelivery(ctx context.Context, record AgentDeliver
 // it is never itself a response and never authorizes replacing partial output.
 func observeAgentDelivery(record AgentDeliveryState, current string) (AgentDeliveryState, bool, error) {
 	isPi := strings.EqualFold(strings.TrimSpace(record.AgentType), "pi")
+	piEcho := status.PromptEchoFingerprint{Hash: record.PiPromptEchoHash, Length: record.PiPromptEchoLength}
+	if isPi && (piEcho.Hash == "" || piEcho.Length <= 0) {
+		return record, false, errors.New("saved pi delivery lacks rendered prompt identity; inspect the original pane before an intentional restart")
+	}
 	if isPi && (strings.TrimSpace(current) == "" || (len(current) < len(record.BeforeOutput) && strings.HasPrefix(record.BeforeOutput, current))) {
 		// A blank or partly redrawn old frame cannot erase the durable
 		// boundary or make prior output eligible for idle completion.
@@ -2271,7 +2284,7 @@ func observeAgentDelivery(record AgentDeliveryState, current string) (AgentDeliv
 		// A chrome-only initial capture has no transcript boundary. Startup
 		// text appearing on the next frame is not itself an answer; wait for
 		// the confirmed request's echo before attributing that new screen.
-		recovered, ok := status.RecoverPiRepaint("", current, record.PromptEchoHash, record.PromptEchoLength)
+		recovered, ok := status.RecoverPiRepaint("", current, record.PromptEchoHash, record.PromptEchoLength, piEcho)
 		if !ok {
 			return record, false, nil
 		}
@@ -2279,8 +2292,7 @@ func observeAgentDelivery(record AgentDeliveryState, current string) (AgentDeliv
 	}
 	if err != nil && isPi {
 		previous := status.NormalizeAgentEcho(output)
-		echo := sha256.Sum256([]byte(previous))
-		if previous == "" || hex.EncodeToString(echo[:]) == record.PromptEchoHash {
+		if previous == "" || status.MatchesAgentEcho(output, record.PromptEchoHash, record.PromptEchoLength, piEcho) {
 			before := record.BeforeOutput
 			if output != "" {
 				// The echo may have appeared before pi cleared its old
@@ -2291,7 +2303,7 @@ func observeAgentDelivery(record AgentDeliveryState, current string) (AgentDeliv
 				}
 				before = strings.TrimSuffix(before, output)
 			}
-			if recovered, ok := status.RecoverPiRepaint(before, current, record.PromptEchoHash, record.PromptEchoLength); ok {
+			if recovered, ok := status.RecoverPiRepaint(before, current, record.PromptEchoHash, record.PromptEchoLength, piEcho); ok {
 				delta, output, err = recovered, "", nil
 			}
 		}
@@ -2305,7 +2317,15 @@ func observeAgentDelivery(record AgentDeliveryState, current string) (AgentDeliv
 	record.BeforeOutput, record.Output = current, output+delta
 	response := status.NormalizeAgentEcho(record.Output)
 	echo := sha256.Sum256([]byte(response))
-	return record, response != "" && hex.EncodeToString(echo[:]) != record.PromptEchoHash, nil
+	echoOnly := hex.EncodeToString(echo[:]) == record.PromptEchoHash
+	if isPi {
+		// Even an append can contain a transformed or partly wrapped prompt.
+		// A different whole-screen hash is not evidence of an answer. Require
+		// one complete current echo and actual text after its last line.
+		_, end, anchored := status.UniqueAgentEchoSpan(record.Output, record.PromptEchoHash, record.PromptEchoLength, piEcho)
+		return record, anchored && strings.TrimSpace(record.Output[end:]) != "", nil
+	}
+	return record, response != "" && !echoOnly, nil
 }
 
 // A retained complete-line overlap supports normal scrollback rollover.

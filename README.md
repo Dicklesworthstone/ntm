@@ -1258,6 +1258,18 @@ prompt boundaries, and unrelated replacement screens remain conservative
 refusals. Oh My Pi continues to use its separate `omp` session and terminal
 behavior.
 
+Response detection also accounts for pi rendering submitted Markdown. A
+waiting pipeline step requires a unique echo of its current delivered prompt
+and response text after that echo; workflow verdict matches must start after
+the echo without changing the original regular-expression anchors. Supported
+headings, emphasis, lists, and code retain their expected visible identity.
+Prompts with unsupported or terminal-dependent rendering are refused before
+automated response-waiting delivery; use plain text for those prompts. Explicit
+pipeline `wait: none` remains fire-and-forget. Operator acceptance of an
+uncertain pi delivery uses the same repaint checks, and normal resume collects
+the response without sending the prompt again. Old in-flight pi receipts that
+lack the rendered prompt identity require inspection and a deliberate restart.
+
 ## Design Principles
 
 ### No Silent Data Loss

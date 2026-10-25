@@ -471,7 +471,12 @@ func (r *workflowRunner) dispatchStageLocked(ctx context.Context, stage string, 
 		r.state.Dispatches = make([]workflow.StageDispatch, 0, len(targets))
 		for _, agent := range targets {
 			r.turn++
-			if err := r.validateVerdictPrompt(stage, agent.Role, r.stagePrompt(stage, agent, r.turn)); err != nil {
+			prompt := r.stagePrompt(stage, agent, r.turn)
+			if err := r.validateVerdictPrompt(stage, agent.Role, prompt); err != nil {
+				r.mu.Unlock()
+				return err
+			}
+			if _, err := r.piDispatchEcho(stage, agent.ID, agent.Role, prompt); err != nil {
 				r.mu.Unlock()
 				return err
 			}
@@ -563,11 +568,33 @@ func (r *workflowRunner) pinPiDispatchPrompt(stage, pane, prompt string) error {
 		if delivery.Status != "sending" {
 			return fmt.Errorf("workflow pi delivery for pane %s is not in progress", pane)
 		}
+		rendered, err := r.piDispatchEcho(stage, pane, delivery.Role, prompt)
+		if err != nil {
+			return err
+		}
 		delivery.PromptEchoHash = fmt.Sprintf("%x", sha256.Sum256([]byte(echo)))
 		delivery.PromptEchoLength = len(echo)
+		delivery.PiPromptEchoHash = rendered.Hash
+		delivery.PiPromptEchoLength = rendered.Length
 		return r.saveCheckpointLocked()
 	}
 	return fmt.Errorf("workflow pi pane %s has no current delivery intent", pane)
+}
+
+// Validate pi's rendered prompt before sending: formatting can make a verdict
+// phrase visible even when the raw Markdown does not match its trigger.
+func (r *workflowRunner) piDispatchEcho(stage, pane, role, prompt string) (status.PromptEchoFingerprint, error) {
+	if r.workflowTranscriptType(pane) != "pi" {
+		return status.PromptEchoFingerprint{}, nil
+	}
+	fingerprint, rendered, ok := status.PiPromptEcho(prompt)
+	if !ok || fingerprint.Length == 0 || fingerprint.Length > workflowCaptureMaxBytes {
+		return status.PromptEchoFingerprint{}, fmt.Errorf("workflow pi prompt for pane %s uses unsupported display formatting; use plain text or supported Markdown before dispatch", pane)
+	}
+	if err := r.validateVerdictPrompt(stage, role, rendered); err != nil {
+		return status.PromptEchoFingerprint{}, fmt.Errorf("rendered pi prompt: %w", err)
+	}
+	return fingerprint, nil
 }
 
 // checkpointTargets reuses the saved plan rather than consuming another
@@ -659,6 +686,15 @@ func (r *workflowRunner) loadCheckpoint() error {
 			if err != nil || len(digest) != sha256.Size || delivery.PromptEchoLength <= 0 || delivery.PromptEchoLength > workflowCaptureMaxBytes {
 				return errors.New("workflow checkpoint has invalid delivered prompt evidence")
 			}
+		}
+		if delivery.PiPromptEchoHash != "" || delivery.PiPromptEchoLength != 0 {
+			digest, err := hex.DecodeString(delivery.PiPromptEchoHash)
+			if err != nil || len(digest) != sha256.Size || delivery.PiPromptEchoLength <= 0 || delivery.PiPromptEchoLength > workflowCaptureMaxBytes || delivery.PromptEchoHash == "" {
+				return errors.New("workflow checkpoint has invalid rendered pi prompt evidence")
+			}
+		}
+		if !prior.Completed && r.workflowTranscriptType(delivery.Pane) == "pi" && delivery.Status == "delivered" && delivery.PiPromptEchoHash == "" {
+			return errors.New("workflow checkpoint lacks rendered pi prompt evidence; inspect the stage before a deliberate --restart")
 		}
 		switch delivery.Status {
 		case "pending", "delivered":
@@ -894,17 +930,20 @@ func (r *workflowRunner) recoverPiWorkflowEvidence(agent workflow.CoordinatorAge
 		if delivery.Pane != agent.ID || delivery.Role != agent.Role || delivery.Status != "delivered" {
 			continue
 		}
+		if delivery.PiPromptEchoHash == "" || delivery.PiPromptEchoLength <= 0 {
+			return "", false
+		}
+		rendered := status.PromptEchoFingerprint{Hash: delivery.PiPromptEchoHash, Length: delivery.PiPromptEchoLength}
 		before := prior.Capture
 		if strings.TrimSpace(prior.Fresh) != "" {
 			// An already attributed answer cannot be replaced. An echo alone
 			// may be redrawn, provided its exact suffix is still accounted for.
-			fresh := status.NormalizeAgentEcho(prior.Fresh)
-			if len(fresh) != delivery.PromptEchoLength || fmt.Sprintf("%x", sha256.Sum256([]byte(fresh))) != delivery.PromptEchoHash || !strings.HasSuffix(before, prior.Fresh) {
+			if !status.MatchesAgentEcho(prior.Fresh, delivery.PromptEchoHash, delivery.PromptEchoLength, rendered) || !strings.HasSuffix(before, prior.Fresh) {
 				return "", false
 			}
 			before = strings.TrimSuffix(before, prior.Fresh)
 		}
-		return status.RecoverPiRepaint(before, after, delivery.PromptEchoHash, delivery.PromptEchoLength)
+		return status.RecoverPiRepaint(before, after, delivery.PromptEchoHash, delivery.PromptEchoLength, rendered)
 	}
 	return "", false
 }
@@ -929,6 +968,32 @@ func (r *workflowRunner) validateVerdictPrompt(stage, role, prompt string) error
 		}
 	}
 	return nil
+}
+
+// Match the complete evidence string so regex anchors retain their meaning.
+// A pi verdict must follow the current prompt's unique visible echo, including
+// when terminal wrapping makes text inside that echo match the trigger.
+func piWorkflowVerdict(pattern, output string, delivery workflow.StageDispatch) (bool, error) {
+	if delivery.PiPromptEchoHash == "" || delivery.PiPromptEchoLength <= 0 {
+		return false, errors.New("workflow pi delivery lacks rendered prompt evidence")
+	}
+	_, end, found := status.UniqueAgentEchoSpan(output, delivery.PromptEchoHash, delivery.PromptEchoLength,
+		status.PromptEchoFingerprint{Hash: delivery.PiPromptEchoHash, Length: delivery.PiPromptEchoLength})
+	if !found || strings.TrimSpace(output[end:]) == "" {
+		return false, nil
+	}
+	compiled, err := regexp.Compile(pattern)
+	if err != nil {
+		return false, err
+	}
+	// Bound pathological regex matches like the prompt scan. Exhaustion
+	// retains evidence and waits rather than dropping the original prefix.
+	for _, match := range compiled.FindAllStringIndex(output, 4096) {
+		if match[0] >= end {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 type workflowObservation struct {
@@ -1027,6 +1092,7 @@ func (r *workflowRunner) observe(ctx context.Context) (*workflowObservation, err
 		tctx.Activities = append(tctx.Activities, workflow.AgentActivity{Role: agent.Role, LastActivity: prior.LastActivity})
 	}
 	stage := r.state.CurrentStage
+	dispatches := append([]workflow.StageDispatch(nil), r.state.Dispatches...)
 	r.mu.Unlock()
 
 	registry := workflow.NewTriggerRegistry()
@@ -1050,7 +1116,16 @@ func (r *workflowRunner) observe(ctx context.Context) (*workflowObservation, err
 				text := evidence.Panes[agent.ID].Fresh
 				fired := false
 				if text != "" {
-					fired, err = probe.Check(&workflow.TriggerContext{Outputs: []workflow.AgentOutput{{Role: agent.Role, Text: text}}})
+					if evidence.Panes[agent.ID].AgentType == "pi" {
+						for _, delivery := range dispatches {
+							if delivery.Pane == agent.ID && delivery.Role == agent.Role && delivery.Status == "delivered" {
+								fired, err = piWorkflowVerdict(tr.Trigger.Pattern, text, delivery)
+								break
+							}
+						}
+					} else {
+						fired, err = probe.Check(&workflow.TriggerContext{Outputs: []workflow.AgentOutput{{Role: agent.Role, Text: text}}})
+					}
 					if err != nil {
 						return nil, err
 					}

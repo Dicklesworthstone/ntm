@@ -87,11 +87,15 @@ type StageDispatch struct {
 	Status string `json:"status"`
 	// Pi repaint recovery uses the final prepared prompt, including any
 	// redaction or enrichment, without persisting its potentially private text.
-	PromptEchoHash   string     `json:"prompt_echo_hash,omitempty"`
-	PromptEchoLength int        `json:"prompt_echo_length,omitempty"`
-	Resolution       string     `json:"resolution,omitempty"`
-	ResolvedAt       *time.Time `json:"resolved_at,omitempty"`
-	ResolutionToken  string     `json:"resolution_token,omitempty"`
+	PromptEchoHash   string `json:"prompt_echo_hash,omitempty"`
+	PromptEchoLength int    `json:"prompt_echo_length,omitempty"`
+	// Pi renders submitted Markdown before echoing it. Retain the expected
+	// rendered identity without storing either prompt representation.
+	PiPromptEchoHash   string     `json:"pi_prompt_echo_hash,omitempty"`
+	PiPromptEchoLength int        `json:"pi_prompt_echo_length,omitempty"`
+	Resolution         string     `json:"resolution,omitempty"`
+	ResolvedAt         *time.Time `json:"resolved_at,omitempty"`
+	ResolutionToken    string     `json:"resolution_token,omitempty"`
 }
 type StageRecord struct {
 	Stage       string    `json:"stage"`
