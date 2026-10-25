@@ -599,3 +599,98 @@ func TestProvisionPaneConfig_UnlinksOnlyThePaneNameOfAHardLinkedCredential(t *te
 		t.Errorf("the operator's credential changed: %q, err=%v", got, err)
 	}
 }
+
+// A claude-homes/<session> link to a directory outside claude-homes makes that
+// directory's numbered subdirectories pane dirs. With numbered Claude profile
+// dirs there (one real login each, one of them the shell's CLAUDE_CONFIG_DIR),
+// provisioning deleted the profile's real credential: the profile dir is not
+// HOME, ~/.claude or above either, so the identity check let it through.
+func TestProvisionPaneConfig_RefusesASessionLinkOutOfClaudeHomes(t *testing.T) {
+	useFileCredentialStore(t)
+	claudeHomeWithCredentialCopies(t)
+	profiles := t.TempDir()
+	profile := filepath.Join(profiles, "1")
+	if err := os.MkdirAll(profile, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	credential := filepath.Join(profile, ".credentials.json")
+	writeFile(t, credential, `{"claudeAiOauth":{"refreshToken":"profile-1"}}`)
+	t.Setenv(ClaudeConfigDirEnvVar, profile)
+
+	p := NewClaudeConfigProvisioner(t.TempDir())
+	sessionDir := filepath.Dir(p.ConfigPath("proj", "1"))
+	if err := os.MkdirAll(filepath.Dir(sessionDir), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(profiles, sessionDir); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := p.ProvisionPaneConfig("proj", "1"); err == nil {
+		t.Error("ProvisionPaneConfig accepted a pane dir reached through a link out of claude-homes")
+	}
+	if _, err := os.Lstat(credential); err != nil {
+		t.Errorf("provisioning deleted the profile's credential: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(profiles, "2")); !os.IsNotExist(err) {
+		t.Errorf("provisioning created directories through the link (lstat err=%v)", err)
+	}
+	if _, err := p.ProvisionPaneConfig("proj", "2"); err == nil {
+		t.Error("ProvisionPaneConfig created a pane dir through a link out of claude-homes")
+	}
+	if _, err := os.Lstat(filepath.Join(profiles, "2")); !os.IsNotExist(err) {
+		t.Errorf("provisioning created %s through the link (lstat err=%v)", filepath.Join(profiles, "2"), err)
+	}
+}
+
+// A link that stays inside claude-homes (one session name aliased to another)
+// leads only to ntm's own pane dirs and keeps working.
+func TestProvisionPaneConfig_AllowsASessionLinkInsideClaudeHomes(t *testing.T) {
+	useFileCredentialStore(t)
+	claudeHomeWithCredentialCopies(t)
+
+	p := NewClaudeConfigProvisioner(t.TempDir())
+	if _, err := p.ProvisionPaneConfig("proj", "1"); err != nil {
+		t.Fatalf("ProvisionPaneConfig: %v", err)
+	}
+	if err := os.Symlink("proj", filepath.Dir(p.ConfigPath("alias", "1"))); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.ProvisionPaneConfig("alias", "1"); err != nil {
+		t.Fatalf("ProvisionPaneConfig through a session link inside claude-homes: %v", err)
+	}
+	if _, err := os.Readlink(filepath.Join(p.ConfigPath("proj", "1"), "settings.json")); err != nil {
+		t.Errorf("settings.json is not linked in the aliased pane dir: %v", err)
+	}
+}
+
+// The two HOME tests above reach HOME through a session link, which the
+// claude-homes confinement now refuses before the identity check runs. This
+// keeps the identity check itself covered: HOME is the pane dir, reached with
+// no link at all and spelled in another case, so only comparing the
+// directories themselves (not their names) catches it.
+func TestProvisionPaneConfig_RefusesAPaneDirThatIsHomeByIdentityAlone(t *testing.T) {
+	useFileCredentialStore(t)
+	p := NewClaudeConfigProvisioner(t.TempDir())
+	target := p.ConfigPath("proj", "1")
+	if err := os.MkdirAll(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	gitCredentials := filepath.Join(target, ".git-credentials")
+	writeFile(t, gitCredentials, "https://user:token@example.com")
+	upper := strings.ToUpper(target)
+	if upper == target {
+		t.Skip("temp dir has no letters to recase")
+	}
+	if _, err := os.Stat(upper); err != nil {
+		t.Skip("filesystem is case-sensitive")
+	}
+	t.Setenv("HOME", upper)
+
+	if _, err := p.ProvisionPaneConfig("proj", "1"); err == nil {
+		t.Error("ProvisionPaneConfig accepted a pane dir that is HOME spelled in another case")
+	}
+	if _, err := os.Lstat(gitCredentials); err != nil {
+		t.Errorf("provisioning deleted %s: %v", gitCredentials, err)
+	}
+}

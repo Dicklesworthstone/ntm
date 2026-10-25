@@ -125,7 +125,17 @@ func (p *ClaudeConfigProvisioner) sourceDir() (string, error) {
 // state is tracked separately (bd-ox0su) because it changes what `--resume`
 // sees and is the operator's call, not a silent one.
 func (p *ClaudeConfigProvisioner) ConfigPath(session, pane string) string {
-	return filepath.Join(p.BaseDir, ".ntm", "claude-homes", sanitizeSegment(session), sanitizeSegment(pane))
+	return filepath.Join(p.claudeHomesDir(), paneConfigRel(session, pane))
+}
+
+// claudeHomesDir is the directory that holds every pane config dir.
+func (p *ClaudeConfigProvisioner) claudeHomesDir() string {
+	return filepath.Join(p.BaseDir, ".ntm", "claude-homes")
+}
+
+// paneConfigRel is a pane's config dir relative to claudeHomesDir.
+func paneConfigRel(session, pane string) string {
+	return filepath.Join(sanitizeSegment(session), sanitizeSegment(pane))
 }
 
 // ProvisionPaneConfig creates the pane's isolated config dir, linking every
@@ -142,14 +152,15 @@ func (p *ClaudeConfigProvisioner) ProvisionPaneConfig(session, pane string) (str
 	if err != nil {
 		return "", err
 	}
-	target := p.ConfigPath(session, pane)
-	if err := os.MkdirAll(target, 0o700); err != nil {
-		return "", fmt.Errorf("create claude config dir %s: %w", target, err)
+	homes := p.claudeHomesDir()
+	if err := os.MkdirAll(homes, 0o700); err != nil {
+		return "", fmt.Errorf("create claude config dir %s: %w", homes, err)
 	}
+	target := p.ConfigPath(session, pane)
 	// Every deletion and relink below goes through this handle on the checked
 	// directory, never through the path, so a pane dir swapped for a link
 	// after the check cannot redirect them.
-	paneDir, err := openPaneConfigDir(target, source)
+	paneDir, err := openPaneConfigDir(homes, paneConfigRel(session, pane), target, source)
 	if err != nil {
 		return "", err
 	}
@@ -278,8 +289,14 @@ func pruneDanglingLinks(paneDir *os.Root, target, source string, linked map[stri
 // operator's own symlinked config entries would be replaced by links to
 // themselves; one that leads to HOME would lose ~/.git-credentials. So:
 //
-//   - the pane dir itself must be a real directory, not a symlink (links
-//     higher up, such as a .ntm kept on shared storage, are fine);
+//   - the pane dir must lie inside the claude-homes dir: it is created and
+//     opened through a handle on claude-homes (os.Root), which refuses a
+//     session or pane component that is a link leading out of it. Links
+//     above claude-homes, such as a .ntm kept on shared storage, are fine.
+//     A claude-homes/<session> link to any other directory would otherwise
+//     make that directory's numbered subdirectories pane dirs, and a set of
+//     numbered Claude profile dirs would lose their real credentials;
+//   - the pane dir itself must be a real directory, not a symlink;
 //   - the directory opened must be the one that was checked, so swapping the
 //     path for a link in between is caught, and everything after works on
 //     the open handle (os.Root), which never follows a link out of it;
@@ -288,10 +305,20 @@ func pruneDanglingLinks(paneDir *os.Root, target, source string, linked map[stri
 //     not their names, so a bind mount, a differently cased spelling on a
 //     case-insensitive filesystem, or a missing ~/.claude does not hide the
 //     overlap.
-func openPaneConfigDir(target, source string) (*os.Root, error) {
-	info, err := os.Lstat(target)
+func openPaneConfigDir(homesDir, rel, target, source string) (*os.Root, error) {
+	homes, err := os.OpenRoot(homesDir)
 	if err != nil {
-		return nil, fmt.Errorf("inspect claude config dir %s: %w", target, err)
+		return nil, fmt.Errorf("open claude config dir %s: %w", homesDir, err)
+	}
+	defer homes.Close()
+	info, err := homes.Lstat(rel)
+	if errors.Is(err, fs.ErrNotExist) {
+		if err = homes.MkdirAll(rel, 0o700); err == nil {
+			info, err = homes.Lstat(rel)
+		}
+	}
+	if err != nil {
+		return nil, fmt.Errorf("claude config dir %s cannot be used inside %s: %w; ntm provisions only directories it creates there and will not delete or relink files through a link that leads out of it (remove the link and retry)", target, homesDir, err)
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
 		return nil, fmt.Errorf("claude config dir %s is a symlink; ntm provisions only directories it creates and will not delete or relink files through it (remove the link and retry)", target)
@@ -299,7 +326,7 @@ func openPaneConfigDir(target, source string) (*os.Root, error) {
 	if !info.IsDir() {
 		return nil, fmt.Errorf("claude config dir %s is not a directory", target)
 	}
-	paneDir, err := os.OpenRoot(target)
+	paneDir, err := homes.OpenRoot(rel)
 	if err != nil {
 		return nil, fmt.Errorf("open claude config dir %s: %w", target, err)
 	}
