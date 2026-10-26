@@ -76,6 +76,11 @@ type InterruptOptions struct {
 	CorrelationID  string   // Correlation identifier for tracing request/outcome/verification
 	IdempotencyKey string   // Durable operation ID (--op-id / REST Idempotency-Key), claimed before any pane is touched
 	Redaction      redaction.Config
+	// MessageGuard checks a follow-up against the resolved physical targets
+	// before any interrupt key or durable operation claim. Control-only
+	// interrupts do not dispatch a message and do not invoke this guard. The
+	// ready subset is checked again immediately before follow-up delivery.
+	MessageGuard func(context.Context, string, []tmux.Pane) error `json:"-"`
 }
 
 // GetInterrupt sends Ctrl+C to panes and optionally a follow-up message, returning the result.
@@ -196,6 +201,11 @@ func GetInterrupt(opts InterruptOptions) (*InterruptOutput, error) {
 		for i, pane := range targetPanes {
 			guardPanes[i] = pane
 			guardPanes[i].Type = interruptPaneTMUXAgentType(pane)
+		}
+		if opts.MessageGuard != nil {
+			if err := opts.MessageGuard(context.Background(), opts.Message, append([]tmux.Pane(nil), guardPanes...)); err != nil {
+				return nil, fmt.Errorf("message policy check: %w", err)
+			}
 		}
 		if resp, _, err := checkSendCommandGuard(context.Background(), opts.Message, opts.Session, guardPanes); err != nil {
 			output.RobotResponse = resp
@@ -405,7 +415,7 @@ func GetInterrupt(opts InterruptOptions) (*InterruptOutput, error) {
 				dispatchPanes[i].Tags = append([]string(nil), pane.Tags...)
 				dispatchPanes[i].Type = interruptPaneTMUXAgentType(pane)
 			}
-			service, _, serviceErr := newRobotDispatchService(opts.Redaction, nil, nil)
+			service, _, serviceErr := newRobotDispatchService(opts.Redaction, guardedRobotMessageDeliverer(opts.MessageGuard), nil)
 			if serviceErr != nil {
 				output.Failed = append(output.Failed, InterruptError{Pane: "dispatch", Reason: fmt.Sprintf("failed to initialize message dispatch: %v", serviceErr)})
 			} else {

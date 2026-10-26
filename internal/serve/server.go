@@ -4104,30 +4104,13 @@ func (s *Server) handlePaneInputV1(w http.ResponseWriter, r *http.Request) {
 		}, reqID)
 		return
 	}
-	// Resolve policy from the target's actual project, never the server's cwd.
-	path, err := tmux.DefaultClient.RunContext(ctx, "display-message", "-p", "-t", tmux.ExactTarget(pane.ID), "#{pane_current_path}")
+	p, err := loadPaneProjectPolicy(ctx, pane)
 	if err != nil {
-		fail(http.StatusServiceUnavailable, ErrCodeServiceUnavail, fmt.Errorf("resolve pane project: %w", err))
-		return
-	}
-	path = strings.TrimSpace(path)
-	if !filepath.IsAbs(path) {
-		fail(http.StatusServiceUnavailable, ErrCodeServiceUnavail, errors.New("pane did not report an absolute local project path"))
-		return
-	}
-	info, err := os.Stat(path)
-	if err != nil || !info.IsDir() {
-		fail(http.StatusServiceUnavailable, ErrCodeServiceUnavail, errors.New("pane project path is not an accessible local directory"))
-		return
-	}
-	projectDir, err := util.ResolveProjectDirContext(ctx, path)
-	if err != nil {
-		fail(http.StatusServiceUnavailable, ErrCodeServiceUnavail, fmt.Errorf("resolve pane project root: %w", err))
-		return
-	}
-	p, err := policy.LoadForProject(projectDir)
-	if err != nil {
-		fail(http.StatusServiceUnavailable, ErrCodeServiceUnavail, fmt.Errorf("load pane project safety policy: %w", err))
+		if errors.Is(err, errPaneProjectIdentityChanged) {
+			fail(http.StatusConflict, ErrCodeConflict, err)
+		} else {
+			fail(http.StatusServiceUnavailable, ErrCodeServiceUnavail, err)
+		}
 		return
 	}
 	if match := p.Check(req.Text); match != nil && match.Action == policy.ActionBlock {
@@ -4804,6 +4787,130 @@ type AgentSendRequest struct {
 	All        bool     `json:"all,omitempty"`
 }
 
+var errPaneProjectIdentityChanged = errors.New("pane identity changed while checking project safety policy")
+
+// loadPaneProjectPolicy resolves the actual target pane, including a project
+// root above its current subdirectory. Server selection and daemon cwd cannot
+// authorize input into another project's agent.
+func loadPaneProjectPolicy(ctx context.Context, pane tmux.Pane) (*policy.Policy, error) {
+	if tmux.DefaultClient.Remote != "" {
+		return nil, errors.New("cannot verify project safety policy for a remote tmux pane")
+	}
+	selector, err := tmux.ParsePaneSelector(pane.ID)
+	if err != nil || selector.Kind != tmux.PaneSelectorID || pane.PID <= 0 || pane.Dead || pane.IsServicePane() {
+		return nil, errors.New("cannot verify project safety policy for a pane without a live physical identity")
+	}
+	// Read lifetime and project in one tmux observation. A path by itself
+	// could belong to a replacement process under the same physical pane ID.
+	format := strings.Join([]string{"#{pane_id}", "#{pane_pid}", "#{pane_dead}", "#{pane_current_command}", "#{@ntm_agent_type}", "#{@acfs_service}", "#{@ntm_service}", "#{pane_current_path}"}, tmux.FieldSeparator)
+	observation, err := tmux.DefaultClient.RunContext(ctx, "display-message", "-p", "-t", tmux.ExactTarget(pane.ID), format)
+	if err != nil {
+		return nil, fmt.Errorf("resolve pane project: %w", err)
+	}
+	parts := strings.SplitN(strings.TrimSpace(observation), tmux.FieldSeparator, 8)
+	if len(parts) != 8 {
+		return nil, errors.New("pane did not report a complete project and lifetime observation")
+	}
+	pid, err := strconv.Atoi(parts[1])
+	recordedType := tmux.ParsePaneAgentTypeOption(parts[4])
+	if err != nil || parts[0] != pane.ID || pid != pane.PID || parts[2] != "0" || parts[3] != pane.Command ||
+		recordedType != tmux.AgentUnknown && recordedType.Canonical() != pane.Type.Canonical() ||
+		recordedType == tmux.AgentUnknown && (tmux.ParsePaneServiceOption(parts[5]) != "" || tmux.ParsePaneServiceOption(parts[6]) != "") {
+		return nil, errPaneProjectIdentityChanged
+	}
+	path := parts[7]
+	if !filepath.IsAbs(path) {
+		return nil, errors.New("pane did not report an absolute local project path")
+	}
+	info, err := os.Stat(path)
+	if err != nil || !info.IsDir() {
+		return nil, errors.New("pane project path is not an accessible local directory")
+	}
+	projectDir, err := util.ResolveProjectDirContext(ctx, path)
+	if err != nil {
+		return nil, fmt.Errorf("resolve pane project root: %w", err)
+	}
+	p, err := policy.LoadForProject(projectDir)
+	if err != nil {
+		return nil, fmt.Errorf("load pane project safety policy: %w", err)
+	}
+	return p, nil
+}
+
+type agentMessagePolicyError struct {
+	status int
+	code   string
+	err    error
+}
+
+func (e *agentMessagePolicyError) Error() string { return e.err.Error() }
+func (e *agentMessagePolicyError) Unwrap() error { return e.err }
+
+// agentMessageGuard runs inside the robot's canonical target selection, so
+// every affected pane is checked before the first send or interrupt. Keeping
+// this per request avoids global policy races between concurrently served
+// projects, while leaving durable selector bindings unchanged.
+func (s *Server) agentMessageGuard(requestCtx context.Context, refusal *error) func(context.Context, string, []tmux.Pane) error {
+	return func(_ context.Context, message string, panes []tmux.Pane) error {
+		fail := func(status int, code string, err error) error {
+			failure := &agentMessagePolicyError{status, code, err}
+			if *refusal == nil {
+				*refusal = failure
+			}
+			return failure
+		}
+		budget := s.paneInputTimeout
+		if budget <= 0 {
+			budget = defaultPaneInputTimeout
+		}
+		ctx, cancel := context.WithTimeout(requestCtx, budget)
+		defer cancel()
+		for _, pane := range panes {
+			p, err := loadPaneProjectPolicy(ctx, pane)
+			if err != nil {
+				if ctx.Err() != nil {
+					return fail(http.StatusGatewayTimeout, ErrCodeTimeout, ctx.Err())
+				}
+				if errors.Is(err, errPaneProjectIdentityChanged) {
+					return fail(http.StatusConflict, ErrCodeConflict, err)
+				}
+				return fail(http.StatusServiceUnavailable, ErrCodeServiceUnavail, err)
+			}
+			if match := p.Check(message); match != nil && match.Action == policy.ActionBlock {
+				return fail(http.StatusForbidden, ErrCodeForbidden,
+					fmt.Errorf("blocked by safety policy for pane %s: %s", pane.ID, match.Reason))
+			}
+		}
+		return nil
+	}
+}
+
+func writeAgentMessagePolicyError(w http.ResponseWriter, reqID string, err error, result interface{}) bool {
+	var refusal *agentMessagePolicyError
+	if !errors.As(err, &refusal) {
+		return false
+	}
+	var details map[string]interface{}
+	switch output := result.(type) {
+	case *robot.SendOutput:
+		if output != nil {
+			details = map[string]interface{}{"actuation": output}
+			if output.Operation != nil {
+				details["operation"] = output.Operation
+			}
+		}
+	case *robot.InterruptOutput:
+		if output != nil {
+			details = map[string]interface{}{"actuation": output}
+			if output.Operation != nil {
+				details["operation"] = output.Operation
+			}
+		}
+	}
+	writeErrorResponse(w, refusal.status, refusal.code, refusal.Error(), details, reqID)
+	return true
+}
+
 // handleAgentSendV1 handles POST /api/v1/sessions/{sessionId}/agents/send.
 func (s *Server) handleAgentSendV1(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
@@ -4824,19 +4931,9 @@ func (s *Server) handleAgentSendV1(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Policy check: reject messages that match a blocked safety pattern.
-	if p, policyErr := policy.LoadOrDefault(); policyErr != nil {
-		slog.Warn("agent send policy check skipped: failed to load policy",
-			"error", policyErr, "request_id", reqID)
-	} else if match := p.Check(req.Message); match != nil && match.Action == policy.ActionBlock {
-		slog.Warn("agent send blocked by policy",
-			"session", sessionID, "pattern", match.Pattern, "request_id", reqID)
-		writeErrorResponse(w, http.StatusForbidden, ErrCodeForbidden,
-			fmt.Sprintf("blocked by safety policy: %s", match.Reason), nil, reqID)
-		return
-	}
-
+	var policyRefusal error
 	opts := robot.SendOptions{
+		Context:        r.Context(),
 		Session:        sessionID,
 		Message:        req.Message,
 		Panes:          req.Panes,
@@ -4845,6 +4942,7 @@ func (s *Server) handleAgentSendV1(w http.ResponseWriter, r *http.Request) {
 		RequestID:      reqID,
 		CorrelationID:  reqID,
 		IdempotencyKey: r.Header.Get("Idempotency-Key"),
+		MessageGuard:   s.agentMessageGuard(r.Context(), &policyRefusal),
 	}
 
 	sendAgents := robot.GetSend
@@ -4852,7 +4950,13 @@ func (s *Server) handleAgentSendV1(w http.ResponseWriter, r *http.Request) {
 		sendAgents = s.sendAgents
 	}
 	result, err := sendAgents(opts)
+	if writeAgentMessagePolicyError(w, reqID, policyRefusal, result) {
+		return
+	}
 	if err != nil {
+		if writeAgentMessagePolicyError(w, reqID, err, result) {
+			return
+		}
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
 		return
 	}
@@ -4908,20 +5012,7 @@ func (s *Server) handleAgentInterruptV1(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Policy check on the follow-up message (if any).
-	if req.Message != "" {
-		if p, policyErr := policy.LoadOrDefault(); policyErr != nil {
-			slog.Warn("agent interrupt policy check skipped: failed to load policy",
-				"error", policyErr, "request_id", reqID)
-		} else if match := p.Check(req.Message); match != nil && match.Action == policy.ActionBlock {
-			slog.Warn("agent interrupt message blocked by policy",
-				"session", sessionID, "pattern", match.Pattern, "request_id", reqID)
-			writeErrorResponse(w, http.StatusForbidden, ErrCodeForbidden,
-				fmt.Sprintf("blocked by safety policy: %s", match.Reason), nil, reqID)
-			return
-		}
-	}
-
+	var policyRefusal error
 	opts := robot.InterruptOptions{
 		Session:        sessionID,
 		Panes:          req.Panes,
@@ -4932,6 +5023,7 @@ func (s *Server) handleAgentInterruptV1(w http.ResponseWriter, r *http.Request) 
 		RequestID:      reqID,
 		CorrelationID:  reqID,
 		IdempotencyKey: r.Header.Get("Idempotency-Key"),
+		MessageGuard:   s.agentMessageGuard(r.Context(), &policyRefusal),
 	}
 
 	interruptAgents := robot.GetInterrupt
@@ -4939,7 +5031,13 @@ func (s *Server) handleAgentInterruptV1(w http.ResponseWriter, r *http.Request) 
 		interruptAgents = s.interruptAgents
 	}
 	result, err := interruptAgents(opts)
+	if writeAgentMessagePolicyError(w, reqID, policyRefusal, result) {
+		return
+	}
 	if err != nil {
+		if writeAgentMessagePolicyError(w, reqID, err, result) {
+			return
+		}
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
 		return
 	}

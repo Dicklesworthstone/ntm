@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/redaction"
 	"github.com/Dicklesworthstone/ntm/internal/state"
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 func TestSendOperationBindingHashCanonicalizesSelectors(t *testing.T) {
@@ -223,7 +225,7 @@ func TestOperationCrashRecoveryTransport(t *testing.T) {
 		t.Skip("recording tmux transport requires a POSIX shell")
 	}
 	for _, kind := range []string{state.OperationKindSend, state.OperationKindInterrupt} {
-		for _, scenario := range []string{"stale-started", "fresh-started", "stale-unstarted", "start-failure", "completion-failure"} {
+		for _, scenario := range []string{"stale-started", "fresh-started", "stale-unstarted", "start-failure", "completion-failure", "message-guard"} {
 			t.Run(kind+"/"+scenario, func(t *testing.T) {
 				root := t.TempDir()
 				const transport = `#!/bin/sh
@@ -237,7 +239,12 @@ case "$1" in
     case "$*" in *'#{window_activity}'*) activity=0_NTM_SEP_ ;; esac
     printf '%s_NTM_SEP_%s_NTM_SEP_proj__aider_1_NTM_SEP_aider_NTM_SEP_120_NTM_SEP_40_NTM_SEP_1_NTM_SEP_%s%s_NTM_SEP_0_NTM_SEP_aider_NTM_SEP__NTM_SEP__NTM_SEP_0\n' "$NTM_OPERATION_PANE_ID" "$NTM_OPERATION_PANE_INDEX" "$activity" "$NTM_OPERATION_TEST_PID"
     ;;
-  display-message) printf '%s\n' "$NTM_OPERATION_TEST_ROOT" ;;
+  display-message)
+    case "$*" in
+      *'@ntm_rotation_token'*) printf '[]\n' ;;
+      *) printf '%s\n' "$NTM_OPERATION_TEST_ROOT" ;;
+    esac
+    ;;
   capture-pane) printf 'Ready for work\n' ;;
   load-buffer)
     printf '%s\n' "$*" >> "$NTM_OPERATION_TEST_ROOT/mutations"
@@ -434,6 +441,69 @@ func TestOperationCrashRecoveryTransportHelper(t *testing.T) {
 	}
 
 	switch scenario {
+	case "message-guard":
+		refused := errors.New("selected project's message policy refuses delivery")
+		calls := 0
+		guard := func(_ context.Context, payload string, panes []tmux.Pane) error {
+			calls++
+			if len(panes) != 1 || panes[0].ID != "%7" || panes[0].PID != os.Getpid() {
+				t.Fatalf("request guard did not receive the resolved physical targets: %+v", panes)
+			}
+			if !strings.Contains(payload, "prefix ") || !strings.Contains(payload, " suffix") {
+				t.Fatalf("request guard did not receive the prepared message: %q", payload)
+			}
+			if strings.Contains(payload, "hunter2hunter2") {
+				t.Fatalf("request guard received input before final redaction: %q", payload)
+			}
+			return refused
+		}
+		var guardErr error
+		if kind == state.OperationKindSend {
+			binding := sendOperationBindingHash(sendOptions)
+			before, err := json.Marshal(sendOptions)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sendOptions.MessageGuard = guard
+			after, err := json.Marshal(sendOptions)
+			if err != nil || !bytes.Equal(before, after) || binding != sendOperationBindingHash(sendOptions) {
+				t.Fatalf("request guard changed serialized options or durable identity: %v", err)
+			}
+			_, guardErr = GetSend(sendOptions)
+		} else {
+			binding := interruptOperationBindingHash(interruptOptions)
+			before, err := json.Marshal(interruptOptions)
+			if err != nil {
+				t.Fatal(err)
+			}
+			interruptOptions.MessageGuard = guard
+			after, err := json.Marshal(interruptOptions)
+			if err != nil || !bytes.Equal(before, after) || binding != interruptOperationBindingHash(interruptOptions) {
+				t.Fatalf("request guard changed serialized options or durable identity: %v", err)
+			}
+			_, guardErr = GetInterrupt(interruptOptions)
+		}
+		if !errors.Is(guardErr, refused) || calls != 1 || len(readLog("mutations")) != 0 {
+			t.Fatalf("guard refusal did not stop actuation: calls=%d err=%v mutations=%s", calls, guardErr, readLog("mutations"))
+		}
+		if op, err := store.GetSendOperation(operationID, session); err != nil || op != nil {
+			t.Fatalf("guard refusal claimed its operation ID: (%+v, %v)", op, err)
+		}
+		// The request-local refusal cannot poison another request or consume
+		// its retry identity. A fresh allowed request can dispatch normally.
+		var checkedPayloads []string
+		allow := func(_ context.Context, payload string, panes []tmux.Pane) error {
+			if len(panes) != 1 || panes[0].ID != "%7" || panes[0].PID != os.Getpid() {
+				t.Fatalf("delivery guard changed the resolved physical target: %+v", panes)
+			}
+			checkedPayloads = append(checkedPayloads, payload)
+			return nil
+		}
+		sendOptions.MessageGuard, interruptOptions.MessageGuard = allow, allow
+		assertDelivered(invoke(), state.SendOperationCompleted)
+		if len(checkedPayloads) != 2 || checkedPayloads[0] != string(readLog("payload")) || checkedPayloads[1] != checkedPayloads[0] {
+			t.Fatalf("preflight and delivery guards did not check the exact transported bytes: checks=%q payload=%q", checkedPayloads, readLog("payload"))
+		}
 	case "stale-started", "fresh-started":
 		assertDelivered(invoke(), state.SendOperationCompleted)
 		mutations := readLog("mutations")

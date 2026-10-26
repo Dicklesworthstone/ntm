@@ -10,6 +10,7 @@ package robot
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -67,6 +68,29 @@ esac
 	opts = SendOptions{Context: t.Context(), Session: "capacity", Pane: "%71", Message: "Investigate database transaction contention",
 		WithCASS: true, CASSConfig: &query, FilterConfig: &filter, InjectConfig: &inject}
 	return root, opts
+}
+
+func TestGetSendRequestGuardChecksInjectedPayload(t *testing.T) {
+	root, opts := cassCapacitySendFixture(t, false)
+	refused := errors.New("project policy rejects retrieved context")
+	opts.IdempotencyKey = "guard-before-operation-claim"
+	calls := 0
+	opts.MessageGuard = func(_ context.Context, message string, panes []tmux.Pane) error {
+		calls++
+		if !strings.Contains(message, opts.Message) || !strings.Contains(message, cassFixtureMarker) {
+			t.Fatalf("guard checked the unprepared message: %q", message)
+		}
+		if len(panes) != 1 || panes[0].ID != "%71" {
+			t.Fatalf("guard did not receive the selected pane: %+v", panes)
+		}
+		return refused
+	}
+	if _, err := GetSend(opts); !errors.Is(err, refused) || calls != 1 {
+		t.Fatalf("injected payload bypassed request guard: calls=%d err=%v", calls, err)
+	}
+	if payload, err := os.ReadFile(filepath.Join(root, "payload")); !os.IsNotExist(err) {
+		t.Fatalf("guard refusal reached tmux input: %q, %v", payload, err)
+	}
 }
 
 func TestGetSendCASSSelectedPaneCapacity(t *testing.T) {

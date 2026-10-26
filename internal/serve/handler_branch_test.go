@@ -962,15 +962,31 @@ case "$1" in
   list-panes)
     if [ "${NTM_TEST_INPUT_HANG:-}" = list ]; then exec sleep 30; fi
     if [ -f "$NTM_TEST_INPUT_LISTED" ] && [ -s "$NTM_TEST_INPUT_NEXT_PANES" ]; then
-      cat "$NTM_TEST_INPUT_NEXT_PANES"
+      pane_file=$NTM_TEST_INPUT_NEXT_PANES
     else
-      cat "$NTM_TEST_INPUT_PANES"
+      pane_file=$NTM_TEST_INPUT_PANES
     fi
+    case "$*" in *'#{window_activity}'*) pane_file=$pane_file.activity ;; esac
+    cat "$pane_file"
     : > "$NTM_TEST_INPUT_LISTED"
     ;;
   display-message)
     case "$*" in
       *"@ntm_rotation_token"*) printf '[%s]\n' "${NTM_TEST_INPUT_ROTATION:-}" ;;
+      *'#{pane_id}'*'pane_current_path'*)
+        pane_file=$NTM_TEST_INPUT_PANES
+        project=$NTM_TEST_INPUT_PROJECT
+        if [ "$4" = %8 ]; then project=${NTM_TEST_INPUT_SECOND_PROJECT:-$project}; fi
+        if [ -n "${NTM_TEST_INPUT_LATE_CHANGE:-}" ] && [ -f "$NTM_TEST_INPUT_POLICY_CHECKED" ]; then
+          if [ -s "$NTM_TEST_INPUT_NEXT_PANES" ]; then pane_file=$NTM_TEST_INPUT_NEXT_PANES; fi
+          project=${NTM_TEST_INPUT_LATE_PROJECT:-$project}
+        fi
+        while IFS= read -r pane; do
+          case "$pane" in "$4"_NTM_SEP_*) printf '%s_NTM_SEP_%s\n' "$pane" "$project" ;; esac
+        done < "$pane_file.policy"
+        : > "$NTM_TEST_INPUT_POLICY_CHECKED"
+        ;;
+      *"%8"*"pane_current_path"*) printf '%s\n' "${NTM_TEST_INPUT_SECOND_PROJECT:-$NTM_TEST_INPUT_PROJECT}" ;;
       *"pane_current_path"*) printf '%s\n' "$NTM_TEST_INPUT_PROJECT" ;;
     esac
     ;;
@@ -992,6 +1008,9 @@ esac
 		"NTM_TEST_INPUT_LISTED": filepath.Join(dir, "listed"), "NTM_TEST_INPUT_SCREEN": f.screen,
 		"NTM_TEST_INPUT_LOG": f.log, "NTM_TEST_INPUT_PAYLOAD": f.payload,
 		"NTM_TEST_INPUT_ROTATION": "", "NTM_TEST_INPUT_HANG": "", "NTM_TEST_INPUT_FAIL": "",
+		"NTM_TEST_INPUT_SECOND_PROJECT": "",
+		"NTM_TEST_INPUT_LATE_CHANGE":    "", "NTM_TEST_INPUT_LATE_PROJECT": "",
+		"NTM_TEST_INPUT_POLICY_CHECKED": filepath.Join(dir, "policy-checked"),
 	} {
 		t.Setenv(key, value)
 	}
@@ -1004,18 +1023,32 @@ esac
 func (f paneInputTMUXFixture) writePanes(t *testing.T, path string, panes ...tmux.Pane) {
 	t.Helper()
 	lines := make([]string, 0, len(panes))
+	activityLines := make([]string, 0, len(panes))
+	policyLines := make([]string, 0, len(panes))
 	for _, pane := range panes {
 		dead := "0"
 		if pane.Dead {
 			dead = "1"
 		}
-		lines = append(lines, strings.Join([]string{
+		fields := []string{
 			pane.ID, strconv.Itoa(pane.Index), pane.Title, pane.Command, "120", "30", "1",
 			strconv.Itoa(pane.PID), strconv.Itoa(pane.WindowIndex), string(pane.Type), "", pane.Service,
 			dead, "[" + pane.RotationToken + "]",
+		}
+		lines = append(lines, strings.Join(fields, tmux.FieldSeparator))
+		withActivity := append(append(append([]string{}, fields[:7]...), "0"), fields[7:]...)
+		activityLines = append(activityLines, strings.Join(withActivity, tmux.FieldSeparator))
+		policyLines = append(policyLines, strings.Join([]string{
+			pane.ID, strconv.Itoa(pane.PID), dead, pane.Command, string(pane.Type), "", pane.Service,
 		}, tmux.FieldSeparator))
 	}
 	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path+".activity", []byte(strings.Join(activityLines, "\n")+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path+".policy", []byte(strings.Join(policyLines, "\n")+"\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -1320,6 +1353,235 @@ func TestHandlePaneInputV1CancellationAndOwnership(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestAgentMessagePolicyUsesTargetProjectBeforeInput(t *testing.T) {
+	for _, action := range []string{"send", "interrupt"} {
+		for _, mode := range []string{"blocked", "malformed", "invalid-path"} {
+			t.Run(action+"/"+mode, func(t *testing.T) {
+				f := installPaneInputTMUX(t, tmux.Pane{ID: "%7", Index: 2, PID: os.Getpid(), Type: tmux.AgentType("aider"), Command: "aider"})
+				policyDir := filepath.Join(f.project, ".ntm")
+				if err := os.MkdirAll(policyDir, 0700); err != nil {
+					t.Fatal(err)
+				}
+				contents := "version: 1\nblocked:\n  - pattern: 'review this'\n    reason: 'target project restriction'\n"
+				wantStatus, wantCode := http.StatusForbidden, ErrCodeForbidden
+				if mode != "blocked" {
+					wantStatus, wantCode = http.StatusServiceUnavailable, ErrCodeServiceUnavail
+					contents = "blocked: [invalid YAML"
+				}
+				if err := os.WriteFile(filepath.Join(policyDir, "policy.yaml"), []byte(contents), 0600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(policyDir, "config.toml"), []byte("# project root\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				workingDir := filepath.Join(f.project, "components", "worker")
+				if err := os.MkdirAll(workingDir, 0700); err != nil {
+					t.Fatal(err)
+				}
+				if mode == "invalid-path" {
+					workingDir = "relative/unverifiable/project"
+				}
+				t.Setenv("NTM_TEST_INPUT_PROJECT", workingDir)
+				t.Chdir(t.TempDir())
+				srv, store := setupTestServer(t)
+				body := `{"message":"review this","panes":["%7"]}`
+				if action == "interrupt" {
+					body = `{"message":"review this","panes":["%7"],"force":true,"no_wait":true}`
+				}
+				req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/input-session/agents/"+action, strings.NewReader(body))
+				req.Header.Set("Idempotency-Key", "policy-before-input")
+				rec := httptest.NewRecorder()
+				srv.Router().ServeHTTP(rec, req)
+				if rec.Code != wantStatus || !strings.Contains(rec.Body.String(), wantCode) {
+					t.Fatalf("target policy gate: %d %s; want %d %s", rec.Code, rec.Body, wantStatus, wantCode)
+				}
+				f.assertNoInput(t)
+				if op, err := store.GetSendOperation("policy-before-input", "input-session"); err != nil || op != nil {
+					t.Fatalf("policy refusal claimed an operation: %+v, %v", op, err)
+				}
+			})
+		}
+	}
+}
+
+func TestAgentMessagePolicyChecksEverySelectedProject(t *testing.T) {
+	for _, action := range []string{"send", "interrupt"} {
+		t.Run(action, func(t *testing.T) {
+			f := installPaneInputTMUX(t,
+				tmux.Pane{ID: "%7", Index: 1, PID: os.Getpid(), Type: tmux.AgentType("aider"), Command: "aider"},
+				tmux.Pane{ID: "%8", Index: 2, PID: os.Getpid(), Type: tmux.AgentType("aider"), Command: "aider"})
+			blockedProject, daemonProject := t.TempDir(), t.TempDir()
+			for _, project := range []string{blockedProject, daemonProject} {
+				if err := os.MkdirAll(filepath.Join(project, ".ntm"), 0700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(project, ".ntm", "policy.yaml"), []byte("version: 1\nblocked:\n  - pattern: 'review this'\n    reason: 'this project forbids the task'\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			t.Setenv("NTM_TEST_INPUT_SECOND_PROJECT", blockedProject)
+			if err := os.WriteFile(f.screen, []byte("Ready for work\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			t.Chdir(daemonProject)
+			srv, _ := setupTestServer(t)
+			post := func(panes []string) *httptest.ResponseRecorder {
+				t.Helper()
+				body := map[string]interface{}{"message": "review this", "panes": panes, "agent_types": []string{"aider"}}
+				if action == "interrupt" {
+					body["force"], body["no_wait"] = true, true
+				}
+				data, err := json.Marshal(body)
+				if err != nil {
+					t.Fatal(err)
+				}
+				rec := httptest.NewRecorder()
+				srv.Router().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/v1/sessions/input-session/agents/"+action, bytes.NewReader(data)))
+				return rec
+			}
+			rec := post(nil)
+			if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "pane %8") {
+				t.Fatalf("batch did not check the second target's policy: %d %s", rec.Code, rec.Body)
+			}
+			f.assertNoInput(t)
+			// Restricting the command to the first project must succeed even
+			// though the daemon cwd and excluded pane both forbid the task.
+			rec = post([]string{"%7"})
+			if rec.Code != http.StatusOK {
+				t.Fatalf("unselected project policy blocked the allowed target: %d %s", rec.Code, rec.Body)
+			}
+			payload, err := os.ReadFile(f.payload)
+			if err != nil || string(payload) != "review this" {
+				t.Fatalf("allowed selected message did not reach tmux: %q, %v", payload, err)
+			}
+			if strings.Contains(f.commands(t), "send-keys -t %8") {
+				t.Fatal("filtered action actuated the excluded project's pane")
+			}
+		})
+	}
+}
+
+func TestAgentMessagePolicyRechecksBeforeDeliveryAndPreservesReceipts(t *testing.T) {
+	for _, action := range []string{"send", "interrupt"} {
+		for _, change := range []string{"respawn", "project policy"} {
+			t.Run(action+"/"+change, func(t *testing.T) {
+				pane := tmux.Pane{ID: "%7", Index: 2, PID: os.Getpid(), Type: tmux.AgentType("aider"), Command: "aider"}
+				f := installPaneInputTMUX(t, pane)
+				if err := os.WriteFile(f.screen, []byte("Ready for work\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				t.Setenv("NTM_TEST_INPUT_LATE_CHANGE", "1")
+				wantStatus, wantCode := http.StatusConflict, ErrCodeConflict
+				if change == "respawn" {
+					replacement := pane
+					replacement.PID++
+					f.writePanes(t, f.nextPanes, replacement)
+				} else {
+					project := t.TempDir()
+					if err := os.MkdirAll(filepath.Join(project, ".ntm"), 0700); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(filepath.Join(project, ".ntm", "policy.yaml"), []byte("version: 1\nblocked:\n  - pattern: 'review this'\n    reason: 'new project refuses the message'\n"), 0600); err != nil {
+						t.Fatal(err)
+					}
+					t.Setenv("NTM_TEST_INPUT_LATE_PROJECT", project)
+					wantStatus, wantCode = http.StatusForbidden, ErrCodeForbidden
+				}
+				srv, store := setupTestServer(t)
+				robot.SetProjectionStore(store)
+				t.Cleanup(func() { robot.SetProjectionStore(nil) })
+				const key = "policy-changed-after-admission"
+				post := func() *httptest.ResponseRecorder {
+					t.Helper()
+					body := `{"message":"review this","panes":["%7"]}`
+					if action == "interrupt" {
+						body = `{"message":"review this","panes":["%7"],"force":true,"no_wait":true}`
+					}
+					req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/input-session/agents/"+action, strings.NewReader(body))
+					req.Header.Set("Idempotency-Key", key)
+					rec := httptest.NewRecorder()
+					srv.Router().ServeHTTP(rec, req)
+					return rec
+				}
+				rec := post()
+				var response struct {
+					ErrorCode string `json:"error_code"`
+					Details   struct {
+						Operation *robot.OperationInfo `json:"operation"`
+						Actuation json.RawMessage      `json:"actuation"`
+					} `json:"details"`
+				}
+				if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+					t.Fatal(err)
+				}
+				if rec.Code != wantStatus || response.ErrorCode != wantCode {
+					t.Fatalf("late policy change was not refused: %d %s; want %d %s", rec.Code, rec.Body, wantStatus, wantCode)
+				}
+				operation := response.Details.Operation
+				if operation == nil || operation.OperationID != key || operation.Status != state.SendOperationCompleted || operation.DispatchStartedAt == nil || operation.CompletedAt == nil {
+					t.Fatalf("late refusal lost its terminal operation receipt: %s", rec.Body)
+				}
+				if len(operation.Admissions) != 1 || operation.Admissions[0].State != robot.AdmissionRejected {
+					t.Fatalf("late refusal lost the rejected target admission: %+v", operation)
+				}
+				if action == "interrupt" {
+					var output robot.InterruptOutput
+					if err := json.Unmarshal(response.Details.Actuation, &output); err != nil || len(output.Interrupted) != 1 || output.MessageSent || len(output.Failed) != 1 {
+						t.Fatalf("late refusal lost the prior interruption: %s, %v", rec.Body, err)
+					}
+					if strings.Count(f.commands(t), "send-keys -t %7 C-c\n") != 1 {
+						t.Fatalf("fixture did not change after the initial interrupt: %s", f.commands(t))
+					}
+					if payload, err := os.ReadFile(f.payload); !os.IsNotExist(err) {
+						t.Fatalf("refused follow-up reached the replacement target: %q, %v", payload, err)
+					}
+				} else {
+					f.assertNoInput(t)
+				}
+				receipt, err := robot.GetSendReceipt(key)
+				if err != nil || receipt == nil || !receipt.Success || receipt.Operation == nil || receipt.Operation.Status != state.SendOperationCompleted {
+					t.Fatalf("late refusal was not durably queryable: %+v, %v", receipt, err)
+				}
+				if action == "interrupt" && (receipt.InterruptOutcome == nil || len(receipt.InterruptOutcome.Interrupted) != 1 || receipt.InterruptOutcome.MessageSent) {
+					t.Fatalf("durable receipt lost partial interrupt actions: %+v", receipt)
+				}
+				if action == "send" && (receipt.Outcome == nil || receipt.Outcome.Success || len(receipt.Outcome.Successful) != 0) {
+					t.Fatalf("durable receipt falsely reported delivered input: %+v", receipt)
+				}
+				// Make the target safe again and discard the HTTP cache. A
+				// retry must replay the terminal refusal, never re-interrupt
+				// or deliver a message that the first attempt did not send.
+				t.Setenv("NTM_TEST_INPUT_LATE_CHANGE", "")
+				f.writePanes(t, f.nextPanes, pane)
+				previousCache := srv.idempotencyStore
+				srv.idempotencyStore = NewIdempotencyStore(24 * time.Hour)
+				previousCache.Stop()
+				retry := post()
+				if err := json.Unmarshal(retry.Body.Bytes(), &response); err != nil || response.Details.Operation == nil || !response.Details.Operation.Replayed {
+					t.Fatalf("retry did not replay the terminal refusal: %d %s, %v", retry.Code, retry.Body, err)
+				}
+				if action == "interrupt" && strings.Count(f.commands(t), "send-keys -t %7 C-c\n") != 1 {
+					t.Fatalf("retry repeated the interrupt: %s", f.commands(t))
+				}
+				if payload, err := os.ReadFile(f.payload); !os.IsNotExist(err) {
+					t.Fatalf("retry sent a previously refused message: %q, %v", payload, err)
+				}
+			})
+		}
+	}
+}
+
+func TestAgentInterruptWithoutMessageDoesNotRequireProjectPolicy(t *testing.T) {
+	f := installPaneInputTMUX(t, tmux.Pane{ID: "%7", Index: 1, PID: os.Getpid(), Type: tmux.AgentType("aider"), Command: "aider"})
+	t.Setenv("NTM_TEST_INPUT_PROJECT", "unavailable/project")
+	srv, _ := setupTestServer(t)
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/v1/sessions/input-session/agents/interrupt", strings.NewReader(`{"panes":["%7"],"force":true,"no_wait":true}`)))
+	if rec.Code != http.StatusOK || strings.Count(f.commands(t), "send-keys -t %7 C-c\n") != 1 {
+		t.Fatalf("control-only interruption was blocked by message policy: %d %s; calls=%s", rec.Code, rec.Body, f.commands(t))
 	}
 }
 

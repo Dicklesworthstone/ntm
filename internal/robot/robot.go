@@ -6240,6 +6240,11 @@ type SendOptions struct {
 	RequestID      string   // External request identifier for REST parity
 	CorrelationID  string   // Correlation identifier for tracing request/outcome/verification
 	IdempotencyKey string   // Idempotency key when provided by an upstream caller
+	// MessageGuard checks the final payload against all resolved physical
+	// targets before operation admission, then each target immediately before
+	// its input. It is request-local policy,
+	// never part of the caller's durable command identity or serialized options.
+	MessageGuard func(context.Context, string, []tmux.Pane) error `json:"-"`
 
 	// CASS injection options
 	WithCASS     bool          // Enable CASS context injection
@@ -6967,6 +6972,21 @@ func newRobotDispatchService(redactCfg redaction.Config, deliverer dispatchsvc.D
 	return service, redactor, err
 }
 
+// A successful preflight is not authority to send into a replacement pane
+// after pacing or an interrupt's readiness wait. Recheck request-local policy
+// on the original physical target and exact prepared bytes at delivery time.
+func guardedRobotMessageDeliverer(guard func(context.Context, string, []tmux.Pane) error) dispatchsvc.Deliverer {
+	if guard == nil {
+		return nil
+	}
+	return dispatchsvc.DelivererFunc(func(ctx context.Context, delivery dispatchsvc.Delivery) error {
+		if err := guard(ctx, delivery.Message, []tmux.Pane{delivery.Target.Pane}); err != nil {
+			return dispatchsvc.GuaranteeNoDeliveryActuation(err)
+		}
+		return (dispatchsvc.TMUXDeliverer{}).Deliver(ctx, delivery)
+	})
+}
+
 func robotDispatchPrepareErrorResponse(err error) RobotResponse {
 	errorCode := ErrCodeInternalError
 	hint := "Inspect the dispatch target and message policy"
@@ -7302,6 +7322,15 @@ func GetSend(opts SendOptions) (*SendOutput, error) {
 		return finalizeTerminalSendActuation(trace, opts, &output), nil
 	}
 
+	if opts.MessageGuard != nil {
+		finalMessage, _, _, _, blocked := applySendMessageRedaction(messageToSend, redactCfg)
+		if !blocked {
+			if err := opts.MessageGuard(ctx, finalMessage, append([]tmux.Pane(nil), targetPanes...)); err != nil {
+				return nil, fmt.Errorf("message policy check: %w", err)
+			}
+		}
+	}
+
 	// Destructive-command guard on the exact post-injection payload, before an
 	// operation ID is claimed or any keystroke is injected.
 	if !guardSendCommand(ctx, &output, messageToSend, opts.Session, targetPanes, opts.DryRun) {
@@ -7355,7 +7384,7 @@ func GetSend(opts SendOptions) (*SendOutput, error) {
 		}()
 	}
 
-	service, finalRedactor, err := newRobotDispatchService(redactCfg, nil, nil)
+	service, finalRedactor, err := newRobotDispatchService(redactCfg, guardedRobotMessageDeliverer(opts.MessageGuard), nil)
 	if err != nil {
 		output.RobotResponse = NewErrorResponse(err, ErrCodeInternalError, "Dispatch service initialization failed")
 		return finalizeTerminalSendActuation(trace, opts, &output), nil
