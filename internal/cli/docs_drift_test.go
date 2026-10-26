@@ -33,6 +33,12 @@ func TestReadmeNtmFlagsExist(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load shipped agent plugins: %v", err)
 	}
+	// Robot plugin flags are built at process initialization from the selected
+	// config. Exercise their actual registration against the built-in root
+	// flags without mutating the package-global command or inventing flags.
+	documentedRobotRoot := &cobra.Command{Use: "ntm"}
+	documentedRobotRoot.Flags().AddFlagSet(rootCmd.Flags())
+	registerRobotPluginSpawnFlags(documentedRobotRoot, shippedPlugins)
 	pluginFlags := make(map[string]struct{})
 	for _, plugin := range shippedPlugins {
 		for _, name := range []string{plugin.Name, plugin.Alias} {
@@ -68,6 +74,9 @@ func TestReadmeNtmFlagsExist(t *testing.T) {
 		for c := cmd; c != nil; c = c.Parent() {
 			check(c.Flags())
 			check(c.PersistentFlags())
+		}
+		if cmd == rootCmd {
+			check(documentedRobotRoot.Flags())
 		}
 		if !found {
 			// Agent-plugin flags are registered dynamically before command

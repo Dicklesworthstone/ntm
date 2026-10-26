@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	agentpkg "github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/assignment"
 	"github.com/Dicklesworthstone/ntm/internal/bv"
@@ -25,6 +26,40 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/worksource"
 	"github.com/Dicklesworthstone/ntm/tests/testutil"
 )
+
+func TestPiSpawnAndRestartReadinessUsesSharedPluginPatterns(t *testing.T) {
+	if err := agentpkg.RegisterPlugin("pi", []string{`^\s*─{4,}\s*$`}, []string{`^\s*─+\s*[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏].*─+\s*$`}, nil); err != nil {
+		t.Fatal(err)
+	}
+	const idle = "Completed the requested change.\n────────────────────────────────\n\n────────────────────────────────\n/work/project\n↑12 ↓34 $0.02 (0.1%) · claude-sonnet"
+	const working = "Implementing the change.\n──── ⠋ Working ──────────────────\n\n────────────────────────────────\n/work/project\n↑12 ↓34 $0.02 (0.1%) · claude-sonnet"
+	if !isAgentReady(idle, "pi") || isAgentReady(working, "pi") {
+		t.Fatal("pi readiness must recognize its idle composer and veto live work")
+	}
+	captures := 0
+	ready, err := waitForPaneAgentReadyWithContext(t.Context(), "%71", 42, "pi", time.Second, time.Millisecond,
+		func(context.Context, string) (string, error) {
+			captures++
+			if captures == 1 {
+				return working, nil
+			}
+			return idle, nil
+		}, func(_ context.Context, _ string, pid int) (int, error) {
+			if pid == 42 {
+				return 43, nil
+			}
+			return 0, nil
+		})
+	if err != nil || !ready || captures != 3 {
+		t.Fatalf("pi restart readiness did not wait for work then accept idle: ready=%t captures=%d error=%v", ready, captures, err)
+	}
+	ready, err = waitForPaneAgentReadyWithContext(t.Context(), "%71", 42, "pi", 0, time.Millisecond,
+		func(context.Context, string) (string, error) { return idle, nil },
+		func(context.Context, string, int) (int, error) { return 0, nil })
+	if err != nil || ready {
+		t.Fatalf("stale pi composer without an agent process was accepted: ready=%t error=%v", ready, err)
+	}
+}
 
 func TestSpawnAssignmentCorruptionRecovery(t *testing.T) {
 	for _, test := range []struct {

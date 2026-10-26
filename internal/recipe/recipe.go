@@ -333,6 +333,9 @@ func normalizeRecipeAgentType(raw string) (string, error) {
 	case agentpkg.AgentTypeOllama:
 		return string(agentpkg.AgentTypeOllama), nil
 	default:
+		if kind := agentpkg.AgentType(raw).Canonical(); agentpkg.IsPluginType(kind) {
+			return string(kind), nil
+		}
 		return "", fmt.Errorf("unsupported recipe agent type %q", strings.TrimSpace(raw))
 	}
 }

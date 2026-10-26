@@ -1278,6 +1278,7 @@ model, thinking level, and persona system prompts are supplied when requested.
 ```bash
 ntm spawn swarm --pi=2
 ntm spawn swarm --pi=1:MODEL:high
+ntm --robot-spawn=automated --spawn-pi=2:MODEL:high --spawn-wait
 ntm send swarm --pi "Review the changes and run the tests"
 ntm sessions save swarm
 ntm sessions resume swarm --name recovered --native
@@ -1295,11 +1296,25 @@ discovery. Saved-session resume resolves the exact saved ID to an existing
 transcript before launching `pi --session <path>`, retaining the original
 model, thinking, prompt, and environment settings. A missing or ambiguous
 transcript stops resume before an existing tmux session can be replaced.
+Saved sessions retain the exact discovered pi transcript path in their private
+save file, so resume still selects the original transcript when the caller's
+session directory, agent directory, or home environment changes. A missing or
+changed original transcript is an error even if another store contains the same
+session ID. This additional stored reference is omitted from public state
+fields; native resume commands still contain the selected transcript path.
 Managed `spawn` and `add` launches assign each fresh pi pane a distinct
 `--session-id` and record it with the launch command. Simultaneous panes in the
 same working directory can therefore be saved and resumed without guessing
 from transcript timestamps. Explicit pi session selectors remain authoritative.
 Workflow template profiles named `pi` also retain their plugin type and count.
+Robot spawning loads registered agents from the selected configuration and
+accepts the same count, model, and thinking-level grammar through
+`--spawn-<agent>` flags, including registered aliases. Recipes can mix pi with
+built-in agents and retain each instance's model and thinking level. Plugin
+readiness is shared by initial startup and pane restart, and the detached
+monitor retains the selected configuration. Plugin environment values travel
+through the private launch transport; saved launch metadata records their
+names rather than their values.
 
 For pipelines and workflows, pi's standard composer, unsent draft, cwd, and
 usage rows are excluded from response evidence. Blank redraws retain the last
@@ -1315,6 +1330,10 @@ waiting pipeline step requires a unique echo of its current delivered prompt
 and response text after that echo; workflow verdict matches must start after
 the echo without changing the original regular-expression anchors. Supported
 headings, emphasis, lists, and code retain their expected visible identity.
+Bare URLs, angle-delimited URLs and email addresses also work, as do Markdown
+links whose plain label exactly matches the destination. Named or formatted
+links remain unsupported when their visible text depends on terminal hyperlink
+support.
 Prompts with unsupported or terminal-dependent rendering are refused before
 automated response-waiting delivery; use plain text for those prompts. Explicit
 pipeline `wait: none` remains fire-and-forget. Operator acceptance of an

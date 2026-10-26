@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -15,6 +16,7 @@ import (
 
 	agentpkg "github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
+	"github.com/Dicklesworthstone/ntm/internal/agentsession"
 	"github.com/Dicklesworthstone/ntm/internal/assign"
 	"github.com/Dicklesworthstone/ntm/internal/assignment"
 	"github.com/Dicklesworthstone/ntm/internal/audit"
@@ -23,6 +25,7 @@ import (
 	dispatchsvc "github.com/Dicklesworthstone/ntm/internal/dispatch"
 	"github.com/Dicklesworthstone/ntm/internal/handoff"
 	"github.com/Dicklesworthstone/ntm/internal/models"
+	"github.com/Dicklesworthstone/ntm/internal/plugins"
 	"github.com/Dicklesworthstone/ntm/internal/policy"
 	"github.com/Dicklesworthstone/ntm/internal/pressure"
 	"github.com/Dicklesworthstone/ntm/internal/process"
@@ -53,19 +56,31 @@ var promptPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?m)^>\s*$`),  // Simple prompt on its own line
 }
 
+// PluginSpawnSpec selects a registered agent plugin through the same spawn
+// lifecycle, admission, readiness, and prompt-delivery path as built-in agents.
+type PluginSpawnSpec struct {
+	Count           int    `json:"count"`
+	Model           string `json:"model,omitempty"`
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+}
+
 // SpawnOptions configures the robot-spawn operation.
 type SpawnOptions struct {
 	Session       string
-	Label         string // Session label — constructs "{Session}--{Label}" if set
-	ConfigPath    string // Selected global config used for authoritative assignment policy
-	RequireConfig bool   // ConfigPath was explicitly selected and must exist
-	CCCount       int    // Claude agents
-	CodCount      int    // Codex agents
-	GmiCount      int    // Gemini agents
-	AgyCount      int    // Antigravity agents
-	GrokCount     int    // Grok Build agents
-	OmpCount      int    // Oh My Pi (omp) agents
-	OcCount       int    // OpenCode (oc) agents
+	Label         string                     // Session label — constructs "{Session}--{Label}" if set
+	ConfigPath    string                     // Selected global config used for authoritative assignment policy
+	RequireConfig bool                       // ConfigPath was explicitly selected and must exist
+	CCCount       int                        // Claude agents
+	CodCount      int                        // Codex agents
+	GmiCount      int                        // Gemini agents
+	AgyCount      int                        // Antigravity agents
+	GrokCount     int                        // Grok Build agents
+	OmpCount      int                        // Oh My Pi (omp) agents
+	OcCount       int                        // OpenCode (oc) agents
+	PluginAgents  map[string]PluginSpawnSpec // Registered plugin name or alias -> request
+	// Definitions are frozen from the selected config before any pane mutation.
+	pluginDefinitions map[string]plugins.AgentPlugin
+	pluginErrors      map[string]error
 	// Per-type model/effort overrides parsed from the CLI's
 	// `count[:model[:effort]]` spawn flag grammar (bd-rr8gn). Empty means the
 	// configured default. Efforts exist only for the agent types whose launch
@@ -265,34 +280,22 @@ func newSpawnOutput(startTime time.Time, opts SpawnOptions) *SpawnOutput {
 }
 
 func validateSpawnRequest(opts SpawnOptions) (string, error) {
-	counts := []struct {
-		flag  string
-		value int
-	}{
-		{flag: "--spawn-cc", value: opts.CCCount},
-		{flag: "--spawn-cod", value: opts.CodCount},
-		{flag: "--spawn-gmi", value: opts.GmiCount},
-		{flag: "--spawn-agy", value: opts.AgyCount},
-		{flag: "--spawn-grok", value: opts.GrokCount},
-		{flag: "--spawn-omp", value: opts.OmpCount},
-		{flag: "--spawn-oc", value: opts.OcCount},
-	}
 	maxAgents := int(^uint(0) >> 1)
 	if !opts.NoUserPane {
 		maxAgents-- // Leave room for the user pane in totalPanes.
 	}
 	total := 0
-	for _, count := range counts {
-		if count.value < 0 {
-			return "", fmt.Errorf("%s must be zero or greater, got %d", count.flag, count.value)
+	for _, spec := range opts.agentCounts() {
+		if spec.count < 0 {
+			return "", fmt.Errorf("--spawn-%s must be zero or greater, got %d", agentTypeShort(spec.agentType), spec.count)
 		}
-		if count.value > maxAgents-total {
+		if spec.count > maxAgents-total {
 			return "", errors.New("requested agent count exceeds supported pane capacity")
 		}
-		total += count.value
+		total += spec.count
 	}
 	if total == 0 {
-		return "", errors.New("no agents specified (use cc, cod, gmi, agy, grok, omp, or oc counts)")
+		return "", errors.New("no agents specified (use built-in or registered plugin spawn counts)")
 	}
 	if !opts.AssignWork {
 		return "", nil
@@ -350,7 +353,35 @@ func spawnAgentPaneRange(opts SpawnOptions) (start, count int) {
 // totalAgentCount is the number of agent panes a robot spawn requests across
 // every supported type.
 func (opts SpawnOptions) totalAgentCount() int {
-	return opts.CCCount + opts.CodCount + opts.GmiCount + opts.AgyCount + opts.GrokCount + opts.OmpCount + opts.OcCount
+	total := 0
+	for _, spec := range opts.agentCounts() {
+		total += spec.count
+	}
+	return total
+}
+
+type spawnAgentCount struct {
+	agentType string
+	count     int
+}
+
+// agentCounts preserves built-in pane ordering and appends plugin names in a
+// stable order. Admission, preview, and execution consume the same inventory.
+func (opts SpawnOptions) agentCounts() []spawnAgentCount {
+	counts := []spawnAgentCount{
+		{"claude", opts.CCCount}, {"codex", opts.CodCount},
+		{"gemini", opts.GmiCount}, {"antigravity", opts.AgyCount},
+		{"grok", opts.GrokCount}, {"omp", opts.OmpCount}, {"oc", opts.OcCount},
+	}
+	names := make([]string, 0, len(opts.PluginAgents))
+	for name := range opts.PluginAgents {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		counts = append(counts, spawnAgentCount{name, opts.PluginAgents[name].Count})
+	}
+	return counts
 }
 
 // validateSpawnPaneBaselines preflights every agent pane of the final
@@ -534,6 +565,10 @@ func collectSpawnAdmissionInputWithPanes(
 			"grok": opts.GrokCount, "omp": opts.OmpCount, "opencode": opts.OcCount,
 		},
 		RunningByType: make(map[string]int),
+	}
+
+	for name, spec := range opts.PluginAgents {
+		input.RequestedByType[name] = spec.Count
 	}
 
 	if cfg == nil || cfg.SpawnPacing.Enabled {
@@ -726,6 +761,15 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 		output.Error = err.Error()
 		return output, nil
 	}
+	if opts.ConfigPath != "" {
+		path, err := filepath.Abs(opts.ConfigPath)
+		if err != nil {
+			output.Error = "cannot resolve selected spawn configuration"
+			output.RobotResponse = NewErrorResponse(err, ErrCodeInvalidFlag, "Use an absolute configuration path")
+			return output, nil
+		}
+		opts.ConfigPath = path
+	}
 
 	// Apply goal label to session name (bd-1933u)
 	if opts.Label != "" {
@@ -739,6 +783,13 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 		output.Session = opts.Session
 	}
 
+	prepared, pluginErr := prepareSpawnPlugins(opts)
+	if pluginErr != nil {
+		output.Error = pluginErr.Error()
+		output.RobotResponse = NewErrorResponse(pluginErr, ErrCodeInvalidFlag, "Install a valid agent preset beside the selected NTM config")
+		return output, nil
+	}
+	opts = prepared
 	expanded, selectedRecipe, recipeErr := loadSpawnRecipe(opts, cfg)
 	if recipeErr != nil {
 		output.Error = recipeErr.Error()
@@ -1011,6 +1062,17 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 		output.RobotResponse = NewErrorResponse(fmt.Errorf("%s", output.Error), ErrCodeResourceBusy, hint)
 		return output, nil
 	}
+	// Plugin requests can have per-pane template variables. Freeze every
+	// selected slot after resource admission but before creating or splitting
+	// panes, so a later invalid template cannot leave a partially launched team.
+	if selectedRecipe == nil {
+		recipeLaunches, recipeErr = renderSpawnPluginRequests(opts, cfg, dir)
+		if recipeErr != nil {
+			output.Error = recipeErr.Error()
+			output.RobotResponse = NewErrorResponse(recipeErr, ErrCodeInvalidFlag, "Fix the selected agent plugin command, environment, or model/effort override")
+			return output, nil
+		}
+	}
 
 	// Dry-run mode: show what would happen without executing
 	if opts.DryRun {
@@ -1039,81 +1101,17 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 			paneIdx++
 		}
 
-		for i := 0; i < opts.CCCount; i++ {
-			ccPane := fmt.Sprintf("0.%d", paneIdx)
-			output.WouldCreate = append(output.WouldCreate, SpawnedAgent{
-				Pane:  ccPane,
-				Name:  dryRunNameMap.AssignNew("claude", ccPane),
-				Type:  "claude",
-				Title: fmt.Sprintf("%s__cc_%d", opts.Session, i+1),
-			})
-			paneIdx++
-		}
-
-		for i := 0; i < opts.CodCount; i++ {
-			codPane := fmt.Sprintf("0.%d", paneIdx)
-			output.WouldCreate = append(output.WouldCreate, SpawnedAgent{
-				Pane:  codPane,
-				Name:  dryRunNameMap.AssignNew("codex", codPane),
-				Type:  "codex",
-				Title: fmt.Sprintf("%s__cod_%d", opts.Session, i+1),
-			})
-			paneIdx++
-		}
-
-		for i := 0; i < opts.GmiCount; i++ {
-			gmiPane := fmt.Sprintf("0.%d", paneIdx)
-			output.WouldCreate = append(output.WouldCreate, SpawnedAgent{
-				Pane:  gmiPane,
-				Name:  dryRunNameMap.AssignNew("gemini", gmiPane),
-				Type:  "gemini",
-				Title: fmt.Sprintf("%s__gmi_%d", opts.Session, i+1),
-			})
-			paneIdx++
-		}
-
-		for i := 0; i < opts.AgyCount; i++ {
-			agyPane := fmt.Sprintf("0.%d", paneIdx)
-			output.WouldCreate = append(output.WouldCreate, SpawnedAgent{
-				Pane:  agyPane,
-				Name:  dryRunNameMap.AssignNew("antigravity", agyPane),
-				Type:  "antigravity",
-				Title: fmt.Sprintf("%s__agy_%d", opts.Session, i+1),
-			})
-			paneIdx++
-		}
-
-		for i := 0; i < opts.GrokCount; i++ {
-			grokPane := fmt.Sprintf("0.%d", paneIdx)
-			output.WouldCreate = append(output.WouldCreate, SpawnedAgent{
-				Pane:  grokPane,
-				Name:  dryRunNameMap.AssignNew("grok", grokPane),
-				Type:  "grok",
-				Title: fmt.Sprintf("%s__grok_%d", opts.Session, i+1),
-			})
-			paneIdx++
-		}
-
-		for i := 0; i < opts.OmpCount; i++ {
-			ompPane := fmt.Sprintf("0.%d", paneIdx)
-			output.WouldCreate = append(output.WouldCreate, SpawnedAgent{
-				Pane:  ompPane,
-				Name:  dryRunNameMap.AssignNew("omp", ompPane),
-				Type:  "omp",
-				Title: fmt.Sprintf("%s__omp_%d", opts.Session, i+1),
-			})
-			paneIdx++
-		}
-
-		for i := 0; i < opts.OcCount; i++ {
-			ocPane := fmt.Sprintf("0.%d", paneIdx)
-			output.WouldCreate = append(output.WouldCreate, SpawnedAgent{
-				Pane:  ocPane,
-				Name:  dryRunNameMap.AssignNew(string(tmux.AgentOpencode), ocPane),
-				Type:  string(tmux.AgentOpencode),
-				Title: fmt.Sprintf("%s__oc_%d", opts.Session, i+1),
-			})
-			paneIdx++
+		for _, spec := range opts.agentCounts() {
+			for i := 0; i < spec.count; i++ {
+				pane := fmt.Sprintf("0.%d", paneIdx)
+				output.WouldCreate = append(output.WouldCreate, SpawnedAgent{
+					Pane:  pane,
+					Name:  dryRunNameMap.AssignNew(spec.agentType, pane),
+					Type:  spec.agentType,
+					Title: fmt.Sprintf("%s__%s_%d", opts.Session, agentTypeShort(spec.agentType), i+1),
+				})
+				paneIdx++
+			}
 		}
 
 		applySpawnRecipePreview(output.WouldCreate, recipeLaunches)
@@ -1298,18 +1296,7 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 		number    int
 	}
 	launchRequests := make([]launchRequest, 0, totalAgents)
-	for _, spec := range []struct {
-		agentType string
-		count     int
-	}{
-		{agentType: "claude", count: opts.CCCount},
-		{agentType: "codex", count: opts.CodCount},
-		{agentType: "gemini", count: opts.GmiCount},
-		{agentType: "antigravity", count: opts.AgyCount},
-		{agentType: "grok", count: opts.GrokCount},
-		{agentType: "omp", count: opts.OmpCount},
-		{agentType: string(tmux.AgentOpencode), count: opts.OcCount},
-	} {
+	for _, spec := range opts.agentCounts() {
 		for i := 0; i < spec.count; i++ {
 			launchRequests = append(launchRequests, launchRequest{agentType: spec.agentType, number: i + 1})
 		}
@@ -1339,8 +1326,12 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 		}
 		pane := panes[startIdx+i]
 		command, model := agentCommands[request.agentType], launchModels[request.agentType]
+		var environment map[string]string
 		if spec, ok := recipeLaunches[spawnRecipeKey(request)]; ok {
-			command, model = spec.command, spec.model
+			command, model, environment = spec.command, spec.model, spec.environment
+		}
+		if agentsession.ResumeProvider(request.agentType) == "pi" {
+			command = agentsession.PinPiLaunchSession(command)
 		}
 		title := fmt.Sprintf("%s__%s_%d", opts.Session, agentTypeShort(request.agentType), request.number)
 		// Publish this pane's Agent Mail identity BEFORE its agent command is
@@ -1361,6 +1352,9 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 			output.AgentMail = identity.Status()
 		}
 		launchCtx := context.WithValue(ctx, spawnLaunchModelContextKey{}, model)
+		if len(environment) > 0 {
+			launchCtx = context.WithValue(launchCtx, spawnPluginEnvironmentContextKey{}, environment)
+		}
 		agent, launchErr := launch(
 			launchCtx, pane, opts.Session, request.agentType, request.number, dir, command,
 		)
@@ -1559,6 +1553,7 @@ func startSpawnSessionMonitor(
 	result, err := deps.StartSessionMonitor(ctx, resilience.SpawnMonitorRequest{
 		Session:     opts.Session,
 		ProjectDir:  dir,
+		ConfigPath:  opts.ConfigPath,
 		AutoRestart: autoRestart,
 		Agents:      agents,
 	})
@@ -1661,6 +1656,17 @@ func launchAgentWithModel(ctx context.Context, pane tmux.Pane, session, agentTyp
 		agent.Error = fmt.Sprintf("launch canceled: %v", err)
 		return agent, fmt.Errorf("launch canceled: %w", err)
 	}
+	environment, _ := ctx.Value(spawnPluginEnvironmentContextKey{}).(map[string]string)
+	var privateEnvironment *tmux.LaunchEnvironment
+	if len(environment) > 0 {
+		var err error
+		privateEnvironment, err = tmux.NewLaunchEnvironment(ctx, environment)
+		if err != nil {
+			agent.Error = fmt.Sprintf("preparing plugin environment: %v", err)
+			return agent, err
+		}
+		defer privateEnvironment.Close()
+	}
 	// Every agent type launches by typing into the pane, so every launch
 	// must prove the target is an idle shell: first from the snapshot the
 	// caller planned with (settle-aware, so a pane created moments ago is not
@@ -1712,6 +1718,10 @@ func launchAgentWithModel(ctx context.Context, pane tmux.Pane, session, agentTyp
 		ModelAlias:      model.ModelAlias,
 		ReasoningEffort: model.ReasoningEffort,
 	}
+	for name := range environment {
+		launchSpec.OmittedEnv = append(launchSpec.OmittedEnv, name)
+	}
+	sort.Strings(launchSpec.OmittedEnv)
 	if binding := resilience.CaptureLaunchBinding(agentType); binding != nil {
 		launchSpec.CAAMProfile = binding.Identifier
 	}
@@ -1722,10 +1732,16 @@ func launchAgentWithModel(ctx context.Context, pane tmux.Pane, session, agentTyp
 	}
 
 	// Use the agent-aware context path so cancellation covers staging and Enter.
-	if err := tmux.SendKeysForAgentContext(ctx, pane.ID, cmd, true, tmux.AgentType(agentTypeShort(agentType))); err != nil {
-		agent.Error = fmt.Sprintf("launching: %v", err)
+	var sendErr error
+	if privateEnvironment != nil {
+		sendErr = privateEnvironment.SendIfCurrent(ctx, pane.ID, cmd, true, tmux.AgentType(agentTypeShort(agentType)), pane.PID)
+	} else {
+		sendErr = tmux.SendKeysForAgentContext(ctx, pane.ID, cmd, true, tmux.AgentType(agentTypeShort(agentType)))
+	}
+	if sendErr != nil {
+		agent.Error = fmt.Sprintf("launching: %v", sendErr)
 		agent.StartupMs = time.Since(startTime).Milliseconds()
-		return agent, fmt.Errorf("launching: %w", err)
+		return agent, fmt.Errorf("launching: %w", sendErr)
 	}
 	// Every agent type: the launch only counts once a stable non-shell process
 	// owns the pane, because the prompt that follows is refused while the
@@ -1875,6 +1891,13 @@ func isAgentReady(output, agentType string) bool {
 		// indicators below would also fire on the launching shell's prompt
 		// or on the "OpenCode" splash, before the composer exists.
 		return tmux.OpencodeComposerVisible(output) || strings.Contains(strings.ToLower(output), "ask anything")
+	}
+	// Registered plugin composers need the same live-work veto and idle
+	// patterns used by status and dispatch. Pi has no generic prompt glyph;
+	// falling through below made a successfully restarted pi pane time out.
+	kind := agentpkg.AgentType(agentType).Canonical()
+	if patterns, registered := agentpkg.LookupPluginPatterns(kind); !kind.IsValid() && registered && patterns.Declared() {
+		return statuspkg.DetectIdleFromOutput(output, string(kind))
 	}
 	lower := strings.ToLower(output)
 

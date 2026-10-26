@@ -37,6 +37,9 @@ type AgentTemplateVars struct {
 	// model_reasoning_effort=...`). Empty falls back to the
 	// template-level default. See ntm#140.
 	ReasoningEffort string
+	// ReasoningEffortRequested requires a plugin template to honor an explicit
+	// effort request even when its type has no built-in effort policy.
+	ReasoningEffortRequested bool
 	// ClaudeSettings is the --settings JSON carrying ntm's PreToolUse hooks
 	// for a Claude launch (policy.ClaudeAgentLaunchSettings). A template that
 	// references it places it itself; otherwise GenerateAgentCommand appends
@@ -342,7 +345,7 @@ func GenerateAgentCommand(tmpl string, vars AgentTemplateVars) (string, error) {
 		if strings.TrimSpace(vars.SystemPromptFile) != "" {
 			return "", personaDropError(vars.AgentType, tmpl)
 		}
-		if !vars.ModelRequested && (strings.TrimSpace(vars.ReasoningEffort) == "" || !agentTypeConsumesReasoningEffort(vars.AgentType)) {
+		if !vars.ModelRequested && (strings.TrimSpace(vars.ReasoningEffort) == "" || (!vars.ReasoningEffortRequested && !agentTypeConsumesReasoningEffort(vars.AgentType))) {
 			return attachClaudeSettings(tmpl, vars.ClaudeSettings)
 		}
 		if vars.ModelRequested {
@@ -389,7 +392,7 @@ func GenerateAgentCommand(tmpl string, vars AgentTemplateVars) (string, error) {
 	// the default reasoning budget — and a swarm's cost and quality changed
 	// with nothing to notice (bd-ywwam).
 	if strings.TrimSpace(vars.ReasoningEffort) != "" &&
-		agentTypeConsumesReasoningEffort(vars.AgentType) &&
+		(vars.ReasoningEffortRequested || agentTypeConsumesReasoningEffort(vars.AgentType)) &&
 		!templateReferencesAnyField(t, "ReasoningEffort") {
 		return "", fmt.Errorf(
 			"reasoning effort %q was specified but agent command template does not reference .ReasoningEffort; "+

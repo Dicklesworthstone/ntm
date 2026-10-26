@@ -15,8 +15,199 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/pressure"
 	"github.com/Dicklesworthstone/ntm/internal/recipe"
 	"github.com/Dicklesworthstone/ntm/internal/resilience"
+	"github.com/Dicklesworthstone/ntm/internal/shellword"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
+
+func writeRobotSpawnPlugin(t *testing.T, command, extra string) string {
+	t.Helper()
+	dir := t.TempDir()
+	agents := filepath.Join(dir, "agents")
+	if err := os.MkdirAll(agents, 0700); err != nil {
+		t.Fatal(err)
+	}
+	manifest := fmt.Sprintf("[agent]\nname = 'pi'\nalias = 'pine'\ncommand = %q\n%s\n[agent.readiness]\nidle_patterns = ['^\\s*─{4,}\\s*$']\nworking_patterns = ['^\\s*─+\\s*[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏].*─+\\s*$']\n", command, extra)
+	if err := os.WriteFile(filepath.Join(agents, "pi.toml"), []byte(manifest), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return filepath.Join(dir, "config.toml")
+}
+
+func TestGetSpawnRegisteredPluginsUseSharedLifecycle(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	project := t.TempDir()
+	configPath := writeRobotSpawnPlugin(t,
+		`pi --model {{shellQuote .Model}}{{if .ReasoningEffort}} --thinking {{shellQuote .ReasoningEffort}}{{end}} --system-prompt {{shellQuote (printf "%s/%s/%d" .ProjectDir .SessionName .PaneIndex)}}`,
+		"[agent.defaults]\nmodel = 'provider/default'\n[agent.env]\nPI_CODING_AGENT_SESSION_DIR = '/private/pi-store'\n")
+	for _, dryRun := range []bool{true, false} {
+		t.Run(fmt.Sprintf("dry_run=%t", dryRun), func(t *testing.T) {
+			panes := []tmux.Pane{{ID: "%1", Index: 0}, {ID: "%2", Index: 1}, {ID: "%3", Index: 2}}
+			deps := testSpawnLifecycleDependencies(panes)
+			var commands []string
+			var kinds []string
+			var models []spawnLaunchModel
+			var manifest resilience.SpawnMonitorRequest
+			deps.LaunchAgent = func(ctx context.Context, pane tmux.Pane, session, kind string, n int, dir, command string) (SpawnedAgent, error) {
+				commands, kinds = append(commands, command), append(kinds, kind)
+				models = append(models, spawnLaunchModelFromContext(ctx))
+				if kind == "pi" {
+					env, _ := ctx.Value(spawnPluginEnvironmentContextKey{}).(map[string]string)
+					if env["PI_CODING_AGENT_SESSION_DIR"] != "/private/pi-store" || strings.Contains(command, "/private/pi-store") {
+						t.Fatal("plugin environment was omitted or embedded in the durable command")
+					}
+					if !strings.Contains(command, fmt.Sprintf("plugin-team/%d", n)) || !strings.Contains(command, project) {
+						t.Fatalf("per-pane template variables were lost: %s", command)
+					}
+				}
+				return SpawnedAgent{Pane: pane.Ref().Physical(), Type: kind}, nil
+			}
+			deps.WaitForReady = func(_ context.Context, out *SpawnOutput, _ time.Duration) error {
+				for i := range out.Agents {
+					out.Agents[i].Ready = true
+				}
+				return nil
+			}
+			deps.StartSessionMonitor = func(_ context.Context, req resilience.SpawnMonitorRequest) (*resilience.SpawnMonitorResult, error) {
+				manifest = req
+				return &resilience.SpawnMonitorResult{}, resilience.ErrInternalMonitorDisabled
+			}
+			opts := SpawnOptions{Session: "plugin-team", ConfigPath: configPath, WorkingDir: project, NoUserPane: true,
+				OmpCount: 1, PluginAgents: map[string]PluginSpawnSpec{"pine": {Count: 2, Model: "provider/requested", ReasoningEffort: "high"}},
+				DryRun: dryRun, WaitReady: true, LifecycleDeps: deps}
+			out, err := GetSpawn(t.Context(), opts, testSpawnConfig())
+			if err != nil || out == nil || !out.Success || out.Admission == nil || out.Admission.RequestedAgents != 3 {
+				t.Fatalf("registered plugin spawn failed: %+v %v", out, err)
+			}
+			agents := out.Agents
+			if dryRun {
+				agents = out.WouldCreate
+				if len(commands) != 0 {
+					t.Fatal("dry run launched a plugin")
+				}
+			}
+			if len(agents) != 3 || agents[0].Type != "omp" || agents[1].Type != "pi" || agents[2].Type != "pi" ||
+				agents[1].Variant != "provider/requested" || agents[2].Title != "plugin-team__pi_2" {
+				t.Fatalf("preview/execution lost plugin identity, models, or ordering: %+v", agents)
+			}
+			if _, canonicalizedCaller := opts.PluginAgents["pi"]; canonicalizedCaller {
+				t.Fatal("spawn mutated the caller's alias request")
+			}
+			if dryRun {
+				return
+			}
+			if !reflect.DeepEqual(kinds, []string{"omp", "pi", "pi"}) || len(manifest.Agents) != 3 || manifest.ConfigPath != configPath {
+				t.Fatalf("plugin slots skipped shared launch/monitor path: %v %+v", kinds, manifest)
+			}
+			ids := make(map[string]bool)
+			for i := 1; i <= 2; i++ {
+				words, err := shellword.Literal(commands[i])
+				if err != nil || len(words) < 2 || words[len(words)-2].Value != "--session-id" || ids[words[len(words)-1].Value] {
+					t.Fatalf("managed pi launch has no distinct native identity: %s %v", commands[i], err)
+				}
+				ids[words[len(words)-1].Value] = true
+				if models[i].Model != "provider/requested" || models[i].ReasoningEffort != "high" || manifest.Agents[i].Command != commands[i] || !agents[i].Ready {
+					t.Fatalf("launch context/recovery metadata differs from selected plugin: %+v %+v", models[i], manifest.Agents[i])
+				}
+			}
+			if strings.Contains(commands[0], "--session-id") {
+				t.Fatal("pi identity pinning changed the omp launch")
+			}
+		})
+	}
+}
+
+func TestGetSpawnPluginPreflightRejectsInvalidIntentBeforeMutation(t *testing.T) {
+	for _, tc := range []struct {
+		name, command, extra string
+		requests             map[string]PluginSpawnSpec
+		want                 string
+	}{
+		{"unknown", "pi", "", map[string]PluginSpawnSpec{"missing": {Count: 1}}, "not installed"},
+		{"negative", "pi", "", map[string]PluginSpawnSpec{"pi": {Count: -1}}, "zero or greater"},
+		{"alias duplicate", "pi", "", map[string]PluginSpawnSpec{"pi": {Count: 1}, "pine": {Count: 1}}, "more than once"},
+		{"model omitted", "pi", "", map[string]PluginSpawnSpec{"pi": {Count: 1, Model: "requested"}}, "model override"},
+		{"effort omitted", "pi --model {{shellQuote .Model}}", "", map[string]PluginSpawnSpec{"pi": {Count: 1, Model: "requested", ReasoningEffort: "high"}}, "reasoning effort"},
+		{"environment invalid", "pi", "[agent.env]\n'BAD-KEY' = 'secret'", map[string]PluginSpawnSpec{"pi": {Count: 1}}, "environment"},
+		{"later slot invalid", `pi {{if eq .PaneIndex 2}}{{index .Model 999}}{{end}}`, "", map[string]PluginSpawnSpec{"pi": {Count: 2}}, "rendering pi"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			configPath := writeRobotSpawnPlugin(t, tc.command, tc.extra)
+			mutations := 0
+			deps := testSpawnLifecycleDependencies(nil)
+			deps.SessionExists = func(context.Context, string) (bool, error) { return false, nil }
+			deps.CreateSession = func(context.Context, string, string, int) error {
+				mutations++
+				return errors.New("unexpected mutation")
+			}
+			out, err := GetSpawn(t.Context(), SpawnOptions{Session: "invalid-plugin", ConfigPath: configPath, WorkingDir: t.TempDir(),
+				PluginAgents: tc.requests, LifecycleDeps: deps}, testSpawnConfig())
+			if err != nil || out == nil || out.Success || out.ErrorCode != ErrCodeInvalidFlag || !strings.Contains(out.Error, tc.want) || mutations != 0 {
+				t.Fatalf("invalid plugin request mutated state or was not rejected: out=%+v error=%v mutations=%d", out, err, mutations)
+			}
+		})
+	}
+}
+
+func TestGetSpawnPluginRecipePreservesInstanceModelsAndDefaults(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	project := t.TempDir()
+	configPath := writeRobotSpawnPlugin(t, `pi --model {{shellQuote .Model}}{{if .ReasoningEffort}} --thinking {{shellQuote .ReasoningEffort}}{{end}}`, "[agent.defaults]\nmodel = 'provider/default'")
+	writeRobotSpawnRecipe(t, project, `[[recipes]]
+name = "pi-models"
+[[recipes.agents]]
+type = "pine"
+count = 1
+[[recipes.agents]]
+type = "pi"
+count = 1
+model = "provider/reviewer"
+reasoning_effort = "high"
+[[recipes.agents]]
+type = "omp"
+count = 1
+`)
+	deps := testSpawnLifecycleDependencies([]tmux.Pane{{ID: "%1", Index: 0}, {ID: "%2", Index: 1}, {ID: "%3", Index: 2}})
+	var models []spawnLaunchModel
+	deps.LaunchAgent = func(ctx context.Context, pane tmux.Pane, session, kind string, n int, dir, command string) (SpawnedAgent, error) {
+		models = append(models, spawnLaunchModelFromContext(ctx))
+		return SpawnedAgent{Pane: pane.Ref().Physical(), Type: kind}, nil
+	}
+	deps.StartSessionMonitor = func(context.Context, resilience.SpawnMonitorRequest) (*resilience.SpawnMonitorResult, error) {
+		return nil, resilience.ErrInternalMonitorDisabled
+	}
+	out, err := GetSpawn(t.Context(), SpawnOptions{Session: "plugin-recipe", ConfigPath: configPath, WorkingDir: project,
+		Preset: "pi-models", NoUserPane: true, LifecycleDeps: deps}, testSpawnConfig())
+	if err != nil || out == nil || !out.Success || len(models) != 3 || models[1].Model != "provider/default" ||
+		models[2].Model != "provider/reviewer" || models[2].ReasoningEffort != "high" || out.Agents[0].Type != "omp" || out.Agents[2].Type != "pi" {
+		t.Fatalf("pi recipe lost defaults, per-instance overrides, or builtin identity: out=%+v error=%v models=%+v", out, err, models)
+	}
+}
+
+func TestGetSpawnBuiltinRecipeIgnoresInvalidUnusedPlugins(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	project := t.TempDir()
+	configPath := writeRobotSpawnPlugin(t, "pi", "")
+	invalid := "[agent]\nname = 'unused-broken'\ncommand = 'unused-agent'\n[agent.readiness]\nidle_patterns = ['[']\n"
+	if err := os.WriteFile(filepath.Join(filepath.Dir(configPath), "agents", "unused.toml"), []byte(invalid), 0600); err != nil {
+		t.Fatal(err)
+	}
+	writeRobotSpawnRecipe(t, project, "[[recipes]]\nname = 'only-omp'\n[[recipes.agents]]\ntype = 'omp'\ncount = 1\n")
+	opts := SpawnOptions{Session: "builtin-recipe", ConfigPath: configPath, WorkingDir: project, Preset: "only-omp",
+		NoUserPane: true, DryRun: true, LifecycleDeps: testSpawnLifecycleDependencies(nil)}
+	out, err := GetSpawn(t.Context(), opts, testSpawnConfig())
+	if err != nil || out == nil || !out.Success || len(out.WouldCreate) != 1 || out.WouldCreate[0].Type != "omp" {
+		t.Fatalf("an unused malformed plugin broke a builtin recipe: %+v %v", out, err)
+	}
+	opts.Preset = ""
+	opts.PluginAgents = map[string]PluginSpawnSpec{"unused-broken": {Count: 1}}
+	out, err = GetSpawn(t.Context(), opts, testSpawnConfig())
+	if err != nil || out == nil || out.Success || out.ErrorCode != ErrCodeInvalidFlag || !strings.Contains(out.Error, "invalid idle pattern") {
+		t.Fatalf("selecting the invalid plugin was not refused: %+v %v", out, err)
+	}
+}
 
 func TestSpawnRecipeExpansionPreservesControlsAndRepeatedTypes(t *testing.T) {
 	r := &recipe.Recipe{Name: "mixed", Agents: []recipe.AgentSpec{

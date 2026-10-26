@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -14,9 +15,145 @@ import (
 	"github.com/spf13/pflag"
 
 	"github.com/Dicklesworthstone/ntm/internal/config"
+	"github.com/Dicklesworthstone/ntm/internal/plugins"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
+	"github.com/Dicklesworthstone/ntm/internal/session"
 	"github.com/Dicklesworthstone/ntm/internal/startup"
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
+	"github.com/Dicklesworthstone/ntm/tests/testutil"
 )
+
+func TestRobotPluginSpawnFlagsPreserveBuiltinControls(t *testing.T) {
+	cmd := &cobra.Command{Use: "ntm"}
+	var omp, timeout string
+	cmd.Flags().StringVar(&omp, "spawn-omp", "", "")
+	cmd.Flags().StringVar(&timeout, "spawn-timeout", "30s", "")
+	values := registerRobotPluginSpawnFlags(cmd, []plugins.AgentPlugin{
+		{Name: "pi", Alias: "pine"}, {Name: "omp", Alias: "om"}, {Name: "timeout", Alias: "pi-timeout"},
+	})
+	if err := cmd.ParseFlags([]string{"--spawn-pine=2:provider/test:high", "--spawn-omp=1", "--spawn-timeout=45s"}); err != nil {
+		t.Fatal(err)
+	}
+	if values["pi"] == nil || *values["pi"] != "2:provider/test:high" || omp != "1" || timeout != "45s" || values["omp"] != nil || cmd.Flags().Lookup("spawn-om") != nil {
+		t.Fatalf("plugin flags replaced a built-in or lost the canonical alias: values=%v omp=%q timeout=%q", values, omp, timeout)
+	}
+	old := robotSpawnPlugins
+	robotSpawnPlugins = values
+	t.Cleanup(func() { robotSpawnPlugins = old })
+	specs, err := parseRobotSpawnAgentSpecs()
+	if err != nil || specs[AgentType("pi")].Count != 2 || specs[AgentType("pi")].Model != "provider/test" || specs[AgentType("pi")].ReasoningEffort != "high" {
+		t.Fatalf("dynamic flags did not use the shared model/effort grammar: %+v %v", specs, err)
+	}
+	*values["pi"] = "two:model"
+	if _, err := parseRobotSpawnAgentSpecs(); err == nil || !strings.Contains(err.Error(), "--spawn-pi") {
+		t.Fatalf("malformed plugin count was accepted: %v", err)
+	}
+}
+
+// Re-execution installs the manifest before package initialization, so this
+// drives the real root constructor, option parsing, robot engine, tmux launch,
+// and native session binding together.
+func TestRobotPiSpawnThroughRootCommand(t *testing.T) {
+	const childEnv = "NTM_ROBOT_PI_ROOT_FIXTURE"
+	if os.Getenv(childEnv) == "" {
+		testutil.RequireTmuxThrottled(t)
+		root := t.TempDir()
+		for _, name := range []string{"agents", "sessions", "project", "home", "data"} {
+			if err := os.MkdirAll(filepath.Join(root, name), 0700); err != nil {
+				t.Fatal(err)
+			}
+		}
+		binary, err := os.Executable()
+		if err != nil {
+			t.Fatal(err)
+		}
+		pi := filepath.Join(root, "pi")
+		if err := os.Symlink(binary, pi); err != nil {
+			t.Fatal(err)
+		}
+		command := tmux.ShellQuote(pi) + `{{if .Model}} --model {{shellQuote .Model}}{{end}}{{if .ReasoningEffort}} --thinking {{shellQuote .ReasoningEffort}}{{end}}`
+		manifest := "[agent]\nname = 'pi'\nalias = 'pine'\ncommand = " + strconv.Quote(command) +
+			"\n[agent.env]\nPI_CODING_AGENT_SESSION_DIR = " + strconv.Quote(filepath.Join(root, "sessions")) +
+			"\n[agent.readiness]\nidle_patterns = ['^\\s*─{4,}\\s*$']\nworking_patterns = ['^\\s*─+\\s*[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏].*─+\\s*$']\n"
+		if err := os.WriteFile(filepath.Join(root, "agents", "pi.toml"), []byte(manifest), 0600); err != nil {
+			t.Fatal(err)
+		}
+		configPath := filepath.Join(root, "config.toml")
+		if err := os.WriteFile(configPath, []byte("[agent_mail]\nenabled = false\nauto_register = false\n[spawn_pacing]\nenabled = false\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv(childEnv, root)
+		t.Setenv("NTM_CONFIG", configPath)
+		t.Setenv("HOME", filepath.Join(root, "home"))
+		t.Setenv("XDG_DATA_HOME", filepath.Join(root, "data"))
+		t.Setenv("NTM_PI_PANE_FIXTURE", "1")
+		t.Setenv("PI_CODING_AGENT_SESSION_DIR", "")
+		child := exec.CommandContext(t.Context(), binary, "-test.run=^TestRobotPiSpawnThroughRootCommand$", "-test.count=1", "-test.timeout=2m")
+		child.Env = os.Environ()
+		output, err := child.CombinedOutput()
+		if err != nil {
+			t.Fatalf("real root pi spawn failed: %v\n%s", err, output)
+		}
+		return
+	}
+	root := os.Getenv(childEnv)
+	name := "ntm-robot-pi-" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	t.Cleanup(func() { _ = tmux.KillSession(name) })
+	run := func(args ...string) robot.SpawnOutput {
+		resetFlags()
+		rootCmd.Flags().VisitAll(func(f *pflag.Flag) {
+			if slice, ok := f.Value.(pflag.SliceValue); ok {
+				_ = slice.Replace(nil)
+			} else {
+				_ = f.Value.Set(f.DefValue)
+			}
+			f.Changed = false
+		})
+		cfg, cfgFile, robotProcessExit = nil, "", nil
+		startup.ResetConfig()
+		argv := append([]string{"--robot-spawn=" + name, "--spawn-dir=" + filepath.Join(root, "project"), "--spawn-no-user"}, args...)
+		stdout, err := captureStdout(t, func() error {
+			rootCmd.SetArgs(argv)
+			rootCmd.SetContext(t.Context())
+			return rootCmd.Execute()
+		})
+		if err != nil {
+			t.Fatalf("root invocation failed: %v\n%s", err, stdout)
+		}
+		var output robot.SpawnOutput
+		if err := json.Unmarshal([]byte(stdout), &output); err != nil || !output.Success {
+			t.Fatalf("root spawn response failed: %v\n%s", err, stdout)
+		}
+		return output
+	}
+	preview := run("--spawn-pine=2:provider/reviewer:high", "--spawn-omp=1", "--dry-run")
+	if len(preview.WouldCreate) != 3 || preview.WouldCreate[0].Type != "omp" || preview.WouldCreate[1].Type != "pi" || preview.WouldCreate[2].Variant != "provider/reviewer" {
+		t.Fatalf("root dynamic alias did not produce the real mixed-agent plan: %+v", preview)
+	}
+	output := run("--spawn-pi=2:provider/reviewer:high", "--spawn-wait", "--spawn-timeout=20s")
+	if len(output.Agents) != 2 || !output.Agents[0].Ready || !output.Agents[1].Ready {
+		t.Fatalf("root spawn did not launch two ready pi agents: %+v", output)
+	}
+	captured, err := session.Capture(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := make(map[string]bool)
+	for _, pane := range captured.Panes {
+		if pane.AgentType != "pi" || !pane.HasFreshSessionBinding() || pane.LaunchSpec == nil || ids[pane.SessionID] {
+			t.Fatalf("robot pi pane has no distinct native transcript: %+v", pane)
+		}
+		ids[pane.SessionID] = true
+		if pane.LaunchSpec.Model != "provider/reviewer" || pane.LaunchSpec.ReasoningEffort != "high" ||
+			!strings.Contains(pane.LaunchSpec.Command, "--session-id ") || strings.Contains(pane.LaunchSpec.Command, filepath.Join(root, "sessions")) ||
+			!reflect.DeepEqual(pane.LaunchSpec.OmittedEnv, []string{"PI_CODING_AGENT_SESSION_DIR"}) {
+			t.Fatalf("robot launch lost settings or persisted plugin environment values: %+v", pane.LaunchSpec)
+		}
+	}
+	if len(ids) != 2 {
+		t.Fatalf("native pi binding count = %d, want 2", len(ids))
+	}
+}
 
 // TestParseRobotSpawnAgentFlag covers the count[:model[:effort]] grammar the
 // robot spawn flags share with `ntm spawn --cc/--cod/...` (bd-rr8gn).

@@ -5,9 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 
+	agentpkg "github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/config"
+	"github.com/Dicklesworthstone/ntm/internal/plugins"
 	"github.com/Dicklesworthstone/ntm/internal/recipe"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
@@ -21,8 +25,143 @@ type spawnRecipeKey struct {
 }
 
 type spawnRecipeLaunch struct {
-	command string
-	model   spawnLaunchModel
+	command     string
+	model       spawnLaunchModel
+	environment map[string]string
+}
+
+// prepareSpawnPlugins resolves aliases and freezes installed manifests before
+// recipe loading or pane mutation. A registered name alone is insufficient:
+// the selected config must actually supply its launch definition.
+func prepareSpawnPlugins(opts SpawnOptions) (SpawnOptions, error) {
+	if len(opts.PluginAgents) == 0 && opts.Preset == "" {
+		return opts, nil
+	}
+	path := opts.ConfigPath
+	if path == "" {
+		path = config.DefaultPath()
+	}
+	loaded, err := plugins.LoadAgentPlugins(filepath.Join(filepath.Dir(path), "agents"))
+	if err != nil {
+		if len(opts.PluginAgents) == 0 {
+			return opts, nil // Built-in recipes do not depend on plugin files.
+		}
+		return opts, fmt.Errorf("load spawn agent plugins: %w", err)
+	}
+	definitions := make(map[string]plugins.AgentPlugin)
+	definitionErrors := make(map[string]error)
+	for _, plugin := range loaded {
+		plugin.Name = strings.ToLower(strings.TrimSpace(plugin.Name))
+		if agentpkg.AgentType(plugin.Name).IsValid() || plugin.Name == "unknown" {
+			continue // Shipped compatibility presets never override built-ins.
+		}
+		if _, duplicate := definitions[plugin.Name]; duplicate {
+			definitionErrors[plugin.Name] = fmt.Errorf("agent plugin name %q is ambiguous", plugin.Name)
+			continue
+		}
+		for _, raw := range []string{plugin.Name, plugin.Alias} {
+			name := strings.ToLower(strings.TrimSpace(raw))
+			if name == "" || name == "unknown" || agentpkg.AgentType(name).IsValid() {
+				continue
+			}
+			if previous, exists := definitions[name]; exists && previous.Name != plugin.Name {
+				definitionErrors[name] = fmt.Errorf("agent plugin name or alias %q is ambiguous", name)
+				continue
+			}
+			if err := agentpkg.RegisterPlugin(name, plugin.Readiness.IdlePatterns, plugin.Readiness.WorkingPatterns, plugin.Readiness.ErrorPatterns); err != nil {
+				definitionErrors[name] = err
+				// Keep the type available to recipe decoding, matching the CLI's
+				// fallback. Selecting this definition still fails before launch.
+				_ = agentpkg.RegisterPlugin(name, nil, nil, nil)
+			}
+			definitions[name] = plugin
+		}
+	}
+	var requested map[string]PluginSpawnSpec
+	if len(opts.PluginAgents) > 0 {
+		requested = make(map[string]PluginSpawnSpec, len(opts.PluginAgents))
+	}
+	for raw, spec := range opts.PluginAgents {
+		name := strings.ToLower(strings.TrimSpace(raw))
+		if err := definitionErrors[name]; err != nil {
+			return opts, err
+		}
+		plugin, ok := definitions[name]
+		if !ok {
+			return opts, fmt.Errorf("spawn agent plugin %q is not installed in the selected config", raw)
+		}
+		if err := definitionErrors[plugin.Name]; err != nil {
+			return opts, err
+		}
+		if _, duplicate := requested[plugin.Name]; duplicate {
+			return opts, fmt.Errorf("spawn agent plugin %q was selected more than once by name or alias", plugin.Name)
+		}
+		requested[plugin.Name] = spec
+	}
+	opts.PluginAgents = requested
+	opts.pluginDefinitions = definitions
+	opts.pluginErrors = definitionErrors
+	return opts, nil
+}
+
+// renderSpawnPlugin prepares each slot, including variables that differ by
+// pane. Commands and metadata exclude environment values; the launcher sends
+// those through the existing private environment transport.
+func renderSpawnPlugin(opts SpawnOptions, cfg *config.Config, name string, spec PluginSpawnSpec, number int, dir string) (spawnRecipeLaunch, error) {
+	if err := opts.pluginErrors[name]; err != nil {
+		return spawnRecipeLaunch{}, err
+	}
+	plugin, ok := opts.pluginDefinitions[name]
+	if !ok {
+		return spawnRecipeLaunch{}, fmt.Errorf("spawn agent plugin %q has no frozen launch definition", name)
+	}
+	if err := tmux.ValidateLaunchEnvironment(plugin.Env); err != nil {
+		return spawnRecipeLaunch{}, fmt.Errorf("plugin %s environment: %w", name, err)
+	}
+	model := spawnLaunchModel{ModelAlias: spec.Model, Model: spec.Model, ReasoningEffort: spec.ReasoningEffort}
+	if cfg != nil {
+		model.Model = cfg.Models.GetModelName(name, spec.Model)
+	}
+	if model.Model == "" {
+		model.Model = strings.TrimSpace(plugin.Defaults.Model)
+	}
+	command, err := config.GenerateAgentCommand(plugin.Command, config.AgentTemplateVars{
+		AgentType: name, Model: model.Model, ModelAlias: model.ModelAlias,
+		ModelRequested: spec.Model != "", ReasoningEffort: spec.ReasoningEffort,
+		ReasoningEffortRequested: spec.ReasoningEffort != "",
+		SessionName:              opts.Session, PaneIndex: number, ProjectDir: dir,
+	})
+	if err != nil {
+		return spawnRecipeLaunch{}, fmt.Errorf("rendering %s launch command: %w", name, err)
+	}
+	command, err = tmux.SanitizePaneCommand(command)
+	if err != nil || strings.TrimSpace(command) == "" {
+		return spawnRecipeLaunch{}, fmt.Errorf("plugin %s rendered an empty or invalid launch command", name)
+	}
+	return spawnRecipeLaunch{command: command, model: model, environment: plugin.Env}, nil
+}
+
+func renderSpawnPluginRequests(opts SpawnOptions, cfg *config.Config, dir string) (map[spawnRecipeKey]spawnRecipeLaunch, error) {
+	var launches map[spawnRecipeKey]spawnRecipeLaunch
+	if len(opts.PluginAgents) > 0 {
+		launches = make(map[spawnRecipeKey]spawnRecipeLaunch)
+	}
+	names := make([]string, 0, len(opts.PluginAgents))
+	for name := range opts.PluginAgents {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		spec := opts.PluginAgents[name]
+		for number := 1; number <= spec.Count; number++ {
+			launch, err := renderSpawnPlugin(opts, cfg, name, spec, number, dir)
+			if err != nil {
+				return nil, err
+			}
+			launches[spawnRecipeKey{agentType: name, number: number}] = launch
+		}
+	}
+	return launches, nil
 }
 
 func spawnWorkingDirectory(opts SpawnOptions, cfg *config.Config) (string, error) {
@@ -50,8 +189,8 @@ func loadSpawnRecipe(opts SpawnOptions, cfg *config.Config) (SpawnOptions, *reci
 	}
 	// Adding counts to a preset is ambiguous (replace, add, or multiply).
 	// Refuse rather than silently ignoring either explicit request.
-	for _, count := range []int{opts.CCCount, opts.CodCount, opts.GmiCount, opts.AgyCount, opts.GrokCount, opts.OmpCount, opts.OcCount} {
-		if count != 0 {
+	for _, spec := range opts.agentCounts() {
+		if spec.count != 0 {
 			return opts, nil, errors.New("spawn preset cannot be combined with explicit agent counts")
 		}
 	}
@@ -87,6 +226,7 @@ func expandSpawnRecipe(opts SpawnOptions, selected *recipe.Recipe) (SpawnOptions
 	expanded := opts
 	expanded.CCCount, expanded.CodCount, expanded.GmiCount, expanded.AgyCount = 0, 0, 0, 0
 	expanded.GrokCount, expanded.OmpCount, expanded.OcCount = 0, 0, 0
+	expanded.PluginAgents = nil
 	total := 0
 	for i, spec := range selected.Agents {
 		if strings.TrimSpace(spec.Persona) != "" {
@@ -114,7 +254,20 @@ func expandSpawnRecipe(opts SpawnOptions, selected *recipe.Recipe) (SpawnOptions
 		case tmux.AgentOpencode:
 			expanded.OcCount += spec.Count
 		default:
-			return opts, fmt.Errorf("spawn preset %q agent[%d]: robot spawning does not support agent type %q", selected.Name, i, spec.Type)
+			name := strings.ToLower(strings.TrimSpace(spec.Type))
+			if err := opts.pluginErrors[name]; err != nil {
+				return opts, fmt.Errorf("spawn preset %q agent[%d]: %w", selected.Name, i, err)
+			}
+			plugin, ok := opts.pluginDefinitions[name]
+			if !ok {
+				return opts, fmt.Errorf("spawn preset %q agent[%d]: robot spawning does not support agent type %q", selected.Name, i, spec.Type)
+			}
+			if expanded.PluginAgents == nil {
+				expanded.PluginAgents = make(map[string]PluginSpawnSpec)
+			}
+			request := expanded.PluginAgents[plugin.Name]
+			request.Count += spec.Count
+			expanded.PluginAgents[plugin.Name] = request
 		}
 	}
 	expanded.Preset = selected.Name
@@ -138,6 +291,18 @@ func renderSpawnRecipe(opts SpawnOptions, selected *recipe.Recipe, cfg *config.C
 	launches := make(map[spawnRecipeKey]spawnRecipeLaunch)
 	ordinals := make(map[string]int)
 	for i, spec := range selected.Agents {
+		if plugin, ok := opts.pluginDefinitions[strings.ToLower(strings.TrimSpace(spec.Type))]; ok {
+			for n := 0; n < spec.Count; n++ {
+				ordinals[plugin.Name]++
+				request := PluginSpawnSpec{Count: 1, Model: strings.TrimSpace(spec.Model), ReasoningEffort: strings.TrimSpace(spec.ReasoningEffort)}
+				launch, err := renderSpawnPlugin(opts, cfg, plugin.Name, request, ordinals[plugin.Name], opts.WorkingDir)
+				if err != nil {
+					return nil, fmt.Errorf("spawn preset %q agent[%d]: %w", selected.Name, i, err)
+				}
+				launches[spawnRecipeKey{agentType: plugin.Name, number: ordinals[plugin.Name]}] = launch
+			}
+			continue
+		}
 		perType := opts
 		model, effort := strings.TrimSpace(spec.Model), strings.TrimSpace(spec.ReasoningEffort)
 		var modelOverride, effortOverride *string
@@ -201,6 +366,8 @@ func applySpawnRecipePreview(agents []SpawnedAgent, launches map[spawnRecipeKey]
 // replace a model-aware launcher with an unconfigured launcher. Cancellation,
 // deadlines and durable job reporters are inherited from the same parent.
 type spawnLaunchModelContextKey struct{}
+
+type spawnPluginEnvironmentContextKey struct{}
 
 func spawnLaunchModelFromContext(ctx context.Context) spawnLaunchModel {
 	if ctx == nil {

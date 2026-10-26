@@ -4108,24 +4108,25 @@ var (
 	robotAckTrack   bool   // combined send+ack mode
 
 	// Robot-spawn flags for structured session creation
-	robotSpawn           string // session name for spawn
-	robotSpawnCC         string // Claude agents: count[:model[:effort]]
-	robotSpawnCod        string // Codex agents: count[:model[:effort]]
-	robotSpawnGmi        string // Gemini agents: count[:model]
-	robotSpawnAgy        string // Antigravity agents: count (model pinned)
-	robotSpawnGrok       string // Grok Build agents: count[:model[:effort]]
-	robotSpawnOmp        string // Oh My Pi (omp) agents: count[:model[:effort]]
-	robotSpawnOc         string // OpenCode (oc) agents: count[:model]
-	robotSpawnPreset     string // recipe/preset name
-	robotSpawnNoUser     bool   // don't create user pane
-	robotSpawnWait       bool   // wait for agents to be ready
-	robotSpawnTimeout    string // timeout for ready detection (e.g., "30s", "1m")
-	robotSpawnSafety     bool   // fail if session already exists
-	robotSpawnDir        string // working directory override
-	robotSpawnAssignWork bool   // enable orchestrator work assignment mode
-	robotSpawnStrategy   string // assignment strategy: top-n, diverse, dependency-aware, skill-matched
-	robotSpawnNames      string // custom agent names (comma-separated)
-	robotSpawnLabel      string // goal label for multi-session support
+	robotSpawn           string             // session name for spawn
+	robotSpawnCC         string             // Claude agents: count[:model[:effort]]
+	robotSpawnCod        string             // Codex agents: count[:model[:effort]]
+	robotSpawnGmi        string             // Gemini agents: count[:model]
+	robotSpawnAgy        string             // Antigravity agents: count (model pinned)
+	robotSpawnGrok       string             // Grok Build agents: count[:model[:effort]]
+	robotSpawnOmp        string             // Oh My Pi (omp) agents: count[:model[:effort]]
+	robotSpawnOc         string             // OpenCode (oc) agents: count[:model]
+	robotSpawnPlugins    map[string]*string // Canonical registered plugin -> dynamic flag value
+	robotSpawnPreset     string             // recipe/preset name
+	robotSpawnNoUser     bool               // don't create user pane
+	robotSpawnWait       bool               // wait for agents to be ready
+	robotSpawnTimeout    string             // timeout for ready detection (e.g., "30s", "1m")
+	robotSpawnSafety     bool               // fail if session already exists
+	robotSpawnDir        string             // working directory override
+	robotSpawnAssignWork bool               // enable orchestrator work assignment mode
+	robotSpawnStrategy   string             // assignment strategy: top-n, diverse, dependency-aware, skill-matched
+	robotSpawnNames      string             // custom agent names (comma-separated)
+	robotSpawnLabel      string             // goal label for multi-session support
 	// Initial prompt + thundering-herd pacing for --robot-spawn
 	robotSpawnPrompt       string // initial prompt delivered to every agent after readiness
 	robotSpawnPromptFile   string // file (or '-' for stdin) holding the initial prompt
@@ -5590,6 +5591,41 @@ func init() {
 		}
 		rootCmd.AddCommand(cmd)
 	}
+	// Register after every built-in root flag so presets cannot replace a
+	// robot control flag such as --spawn-timeout or --spawn-omp.
+	loadedAgents, _ := plugins.LoadAgentPlugins(pluginAgentsDirForArgs(os.Args[1:]))
+	robotSpawnPlugins = registerRobotPluginSpawnFlags(rootCmd, loadedAgents)
+}
+
+func registerRobotPluginSpawnFlags(cmd *cobra.Command, loaded []plugins.AgentPlugin) map[string]*string {
+	values := make(map[string]*string)
+	for _, plugin := range loaded {
+		name := strings.ToLower(strings.TrimSpace(plugin.Name))
+		if agent.AgentType(name).IsValid() || name == "unknown" {
+			continue
+		}
+		if _, duplicate := values[name]; duplicate {
+			continue
+		}
+		value := new(string)
+		registered := false
+		for _, raw := range []string{name, plugin.Alias} {
+			alias := strings.ToLower(strings.TrimSpace(raw))
+			if alias == "" || agent.AgentType(alias).IsValid() || alias == "unknown" {
+				continue
+			}
+			flag := "spawn-" + alias
+			if cmd.Flags().Lookup(flag) != nil {
+				continue
+			}
+			cmd.Flags().StringVar(value, flag, "", "Registered "+name+" agents to spawn: count[:model[:effort]]. Use with --robot-spawn")
+			registered = true
+		}
+		if registered {
+			values[name] = value
+		}
+	}
+	return values
 }
 
 func resolveRobotSharedFlag(cmd *cobra.Command, specificFlagName string, specificValue string, sharedFlagName string, sharedValue string) string {
@@ -5782,6 +5818,20 @@ func parseRobotSpawnAgentSpecs() (map[AgentType]AgentSpec, error) {
 		{name: "--spawn-omp", value: robotSpawnOmp, agentType: AgentTypeOmp},
 		{name: "--spawn-oc", value: robotSpawnOc, agentType: AgentTypeOpencode},
 	}
+	names := make([]string, 0, len(robotSpawnPlugins))
+	for name := range robotSpawnPlugins {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if value := robotSpawnPlugins[name]; value != nil {
+			flags = append(flags, struct {
+				name      string
+				value     string
+				agentType AgentType
+			}{"--spawn-" + name, *value, AgentType(name)})
+		}
+	}
 	specs := make(map[AgentType]AgentSpec, len(flags))
 	for _, flag := range flags {
 		spec, err := parseRobotSpawnAgentFlag(flag.name, flag.value, flag.agentType)
@@ -5798,7 +5848,7 @@ func robotSpawnOptionsFromFlags(cmd *cobra.Command, readyTimeout time.Duration, 
 	if err != nil {
 		return robot.SpawnOptions{}, err
 	}
-	return robot.SpawnOptions{
+	opts := robot.SpawnOptions{
 		Session:       robotSpawn,
 		Label:         robotSpawnLabel,
 		ConfigPath:    selectedConfigPath(),
@@ -5838,7 +5888,18 @@ func robotSpawnOptionsFromFlags(cmd *cobra.Command, readyTimeout time.Duration, 
 		CustomNames:         robot.ParseCustomNames(robotSpawnNames),
 		RequireReservation:  robotRequireReservation,
 		ReservationPaths:    append([]string(nil), reservationPaths...),
-	}, nil
+	}
+	for name, raw := range robotSpawnPlugins {
+		if raw == nil || strings.TrimSpace(*raw) == "" {
+			continue
+		}
+		if opts.PluginAgents == nil {
+			opts.PluginAgents = make(map[string]robot.PluginSpawnSpec)
+		}
+		spec := specs[AgentType(name)]
+		opts.PluginAgents[name] = robot.PluginSpawnSpec{Count: spec.Count, Model: spec.Model, ReasoningEffort: spec.ReasoningEffort}
+	}
+	return opts, nil
 }
 
 // applyRobotSpawnPromptFlags resolves the initial prompt (--spawn-prompt or
