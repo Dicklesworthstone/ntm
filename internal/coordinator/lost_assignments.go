@@ -80,11 +80,25 @@ func (c *SessionCoordinator) assignmentOwnerTopology() (map[string]bool, time.Ti
 }
 
 func (c *SessionCoordinator) verifyLostAssignmentOwner(ctx context.Context, current *assignmentstore.Assignment) error {
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
 	if current.DispatchState != assignmentstore.DispatchSent || strings.TrimSpace(current.DispatchReceiptID) == "" ||
 		strings.TrimSpace(current.IdempotencyKey) == "" || strings.TrimSpace(current.ClaimActor) == "" || strings.TrimSpace(current.AgentName) == "" {
 		return errors.New("lost owner recovery requires a durable delivery receipt, generation, recipient, and claim actor")
+	}
+	return c.verifyAssignmentOwnerLoss(ctx, current)
+}
+
+// verifyAssignmentOwnerLoss is shared by delivered-owner recovery and a
+// stranded dispatch whose mailbox probe found no delivery. Neither path may
+// release ownership based only on a missing pane in this session: tmux moves
+// retain physical pane identities, and an Agent Mail name can be rebound.
+// Callers hold the assignment's external cleanup lock while obtaining this
+// fresh proof and persisting the terminal barrier.
+func (c *SessionCoordinator) verifyAssignmentOwnerLoss(ctx context.Context, current *assignmentstore.Assignment) error {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if current == nil || strings.TrimSpace(current.IdempotencyKey) == "" ||
+		strings.TrimSpace(current.ClaimActor) == "" || strings.TrimSpace(current.AgentName) == "" {
+		return errors.New("owner recovery requires a durable generation, recipient, and claim actor")
 	}
 	target, err := assignmentstore.CanonicalPaneIdentity(current)
 	if err != nil {

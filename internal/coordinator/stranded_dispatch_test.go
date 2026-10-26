@@ -56,6 +56,7 @@ func strandedDispatchLedger(t *testing.T, session, beadID, target, agentName str
 
 func newStrandedDispatchCoordinator(t *testing.T, session string) *SessionCoordinator {
 	t.Helper()
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	c := New(session, t.TempDir(), &agentmail.Client{}, "CoordinatorAgent")
 	c.config.AutoAssign = true
 	c.config.AssignOnlyIdle = true
@@ -66,6 +67,47 @@ func newStrandedDispatchCoordinator(t *testing.T, session string) *SessionCoordi
 	c.atomicCoordinatorFactory = func(*assignmentstore.AssignmentStore) *assignmentstore.AtomicCoordinator {
 		t.Fatal("a stranded dispatch must never reach an atomic dispatch")
 		return nil
+	}
+	store, err := assignmentstore.LoadStoreStrict(session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry := agentmail.NewSessionAgentRegistry(session, c.projectKey)
+	for _, current := range store.ListActive() {
+		registry.AddAgent(session+"__cod_6", current.OccupancyKey, current.AgentName)
+	}
+	if err := agentmail.SaveSessionAgentRegistry(registry); err != nil {
+		t.Fatal(err)
+	}
+	c.workItemDetailsFn = func(_ context.Context, beadID string) (*bv.BeadAssignmentDetails, error) {
+		current := store.Get(beadID)
+		if current == nil {
+			return nil, errors.New("test tracker has no such assignment")
+		}
+		return &bv.BeadAssignmentDetails{ID: beadID, Status: "in_progress", Assignee: current.ClaimActor}, nil
+	}
+	c.monitor = NewAgentMonitor(session, nil, c.projectKey)
+	setLostAssignmentObservation(c, func(context.Context, string) ([]tmux.PaneActivity, error) {
+		panes, observedAt, ok := c.assignmentOwnerTopology()
+		if !ok || !status.DispatchObservationIsCurrent(observedAt, time.Now()) {
+			return nil, errors.New("test topology is unavailable")
+		}
+		result := make([]tmux.PaneActivity, 0, len(panes))
+		for id := range panes {
+			result = append(result, tmux.PaneActivity{Pane: tmux.Pane{ID: id, Type: tmux.AgentUser}})
+		}
+		return result, nil
+	}, nil)
+	c.allPanesForRecoveryFn = func(context.Context) (map[string][]tmux.Pane, error) {
+		panes, _, ok := c.assignmentOwnerTopology()
+		if !ok {
+			return nil, errors.New("test topology is unavailable")
+		}
+		result := make([]tmux.Pane, 0, len(panes))
+		for id, dead := range panes {
+			result = append(result, tmux.Pane{ID: id, Dead: dead})
+		}
+		return map[string][]tmux.Pane{session: result}, nil
 	}
 	return c
 }
@@ -136,8 +178,8 @@ func TestStrandedDispatchTerminalizesWhenPaneIsGoneAndNothingLanded(t *testing.T
 
 // TestStrandedDispatchStaysFailClosedForALiveTarget covers the predicate that
 // PR #296 got wrong: eligibility is not existence. A pane that is alive but
-// busy, unhealthy, or simply not a candidate must never be terminalized, and
-// the probe must not even be consulted.
+// busy, unhealthy, or simply not a candidate must never be terminalized on a
+// negative mailbox probe.
 func TestStrandedDispatchStaysFailClosedForALiveTarget(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -172,7 +214,6 @@ func TestStrandedDispatchStaysFailClosedForALiveTarget(t *testing.T) {
 			test.prepare(c)
 			setCoordinatorLivePanes(c, "%993", "%77")
 			c.dispatchDeliveryProbeFn = func(context.Context, *assignmentstore.Assignment) (assignmentstore.DispatchReceipt, bool, error) {
-				t.Fatal("a live target must never be probed for non-delivery")
 				return assignmentstore.DispatchReceipt{}, false, nil
 			}
 
@@ -200,7 +241,7 @@ func TestStrandedDispatchStaysFailClosedWithoutUsableEvidence(t *testing.T) {
 		{
 			name:    "no topology observation yet",
 			prepare: func(*testing.T, *SessionCoordinator) {},
-			want:    "live pane topology is unavailable",
+			want:    "no fresh complete pane topology",
 		},
 		{
 			name: "topology observation is stale",
@@ -210,11 +251,11 @@ func TestStrandedDispatchStaysFailClosedWithoutUsableEvidence(t *testing.T) {
 				c.livePaneTopologyAt = time.Now().Add(-24 * time.Hour)
 				c.mu.Unlock()
 			},
-			want: "not current",
+			want: "no fresh complete pane topology",
 		},
 		{
 			name: "recipient is live on another pane",
-			prepare: func(_ *testing.T, c *SessionCoordinator) {
+			prepare: func(t *testing.T, c *SessionCoordinator) {
 				setCoordinatorLivePanes(c, "%77")
 				now := time.Now().UTC()
 				// The pane the row named is gone, but the agent it addressed
@@ -224,8 +265,16 @@ func TestStrandedDispatchStaysFailClosedWithoutUsableEvidence(t *testing.T) {
 					Status: robot.StateWaiting, Healthy: true, SafeToDispatch: true,
 					LastActivity: now.Add(-time.Minute), ObservedAt: now, ObservationFreshness: status.FreshnessFresh,
 				}
+				registry, err := agentmail.LoadSessionAgentRegistry(c.session, c.projectKey)
+				if err != nil {
+					t.Fatal(err)
+				}
+				registry.AddAgent("rebound", "%77", "BlueLake")
+				if err := agentmail.SaveSessionAgentRegistry(registry); err != nil {
+					t.Fatal(err)
+				}
 			},
-			want: "is live on pane %77",
+			want: "no longer has its recorded Agent Mail owner BlueLake",
 		},
 		{
 			name: "delivery probe failed",
@@ -247,7 +296,6 @@ func TestStrandedDispatchStaysFailClosedWithoutUsableEvidence(t *testing.T) {
 
 			c := newStrandedDispatchCoordinator(t, session)
 			c.dispatchDeliveryProbeFn = func(context.Context, *assignmentstore.Assignment) (assignmentstore.DispatchReceipt, bool, error) {
-				t.Fatal("the probe must not run before the topology gates are satisfied")
 				return assignmentstore.DispatchReceipt{}, false, nil
 			}
 			test.prepare(t, c)
@@ -357,6 +405,9 @@ func TestStrandedDispatchLetsAReadyBeadThroughInTheSameCycle(t *testing.T) {
 		}}, nil
 	}
 	c.workItemDetailsFn = func(_ context.Context, beadID string) (*bv.BeadAssignmentDetails, error) {
+		if beadID == request.BeadID {
+			return &bv.BeadAssignmentDetails{ID: beadID, Status: "in_progress", Assignee: assignmentstore.StableClaimActor(request.Actor, request.IdempotencyKey)}, nil
+		}
 		return &bv.BeadAssignmentDetails{ID: beadID, Title: "Ready work", IssueType: "task", Status: "open"}, nil
 	}
 
@@ -389,6 +440,220 @@ func TestStrandedDispatchLetsAReadyBeadThroughInTheSameCycle(t *testing.T) {
 	}
 }
 
+func TestStrandedDispatchRequiresFreshServerWideOwnershipProof(t *testing.T) {
+	for _, failure := range []string{
+		"pane moved to another session", "recipient rebound in another session",
+		"owner returned during probe", "recipient rebound during probe", "topology failed during probe",
+		"topology aged during probe", "recipient rebound during server query",
+		"registry changed during server query", "server topology unavailable", "claim owner changed",
+	} {
+		t.Run(failure, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			const session = "stranded-owner-proof"
+			store, request := strandedDispatchLedger(t, session, "ntm-stranded-owner", "%993", "BlueLake")
+			c := newStrandedDispatchCoordinator(t, session)
+			setCoordinatorLivePanes(c, "%77")
+			claims := 0
+			c.releaseWorkItemClaimFn = func(context.Context, string, string, string) (bool, error) {
+				claims++
+				return true, nil
+			}
+			rebind := func(paneID string) {
+				registry, err := agentmail.LoadSessionAgentRegistry(session, c.projectKey)
+				if err != nil {
+					t.Fatal(err)
+				}
+				registry.PaneIDMap[paneID] = request.AgentName
+				if err := agentmail.SaveSessionAgentRegistry(registry); err != nil {
+					t.Fatal(err)
+				}
+			}
+			c.dispatchDeliveryProbeFn = func(context.Context, *assignmentstore.Assignment) (assignmentstore.DispatchReceipt, bool, error) {
+				switch failure {
+				case "owner returned during probe":
+					setCoordinatorLivePanes(c, "%77", request.Target)
+				case "recipient rebound during probe":
+					rebind("%77")
+				case "topology failed during probe":
+					c.mu.Lock()
+					c.livePaneTopologyValid = false
+					c.mu.Unlock()
+				case "topology aged during probe":
+					c.mu.Lock()
+					c.livePaneTopologyAt = time.Now().Add(-time.Minute)
+					c.mu.Unlock()
+				}
+				return assignmentstore.DispatchReceipt{}, false, nil
+			}
+			switch failure {
+			case "pane moved to another session":
+				c.allPanesForRecoveryFn = func(context.Context) (map[string][]tmux.Pane, error) {
+					return map[string][]tmux.Pane{session: {{ID: "%77"}}, "destination": {{ID: request.Target}}}, nil
+				}
+			case "recipient rebound in another session":
+				registry := agentmail.NewSessionAgentRegistry("destination", c.projectKey)
+				registry.AddAgent("shell", "%88", request.AgentName)
+				if err := agentmail.SaveSessionAgentRegistry(registry); err != nil {
+					t.Fatal(err)
+				}
+				c.allPanesForRecoveryFn = func(context.Context) (map[string][]tmux.Pane, error) {
+					return map[string][]tmux.Pane{session: {{ID: "%77"}}, "destination": {{ID: "%88", Type: tmux.AgentUser}}}, nil
+				}
+			case "recipient rebound during server query":
+				c.allPanesForRecoveryFn = func(context.Context) (map[string][]tmux.Pane, error) {
+					rebind("%77")
+					return map[string][]tmux.Pane{session: {{ID: "%77"}}}, nil
+				}
+			case "registry changed during server query":
+				c.allPanesForRecoveryFn = func(context.Context) (map[string][]tmux.Pane, error) {
+					registry, err := agentmail.LoadSessionAgentRegistry(session, c.projectKey)
+					if err != nil {
+						t.Fatal(err)
+					}
+					registry.PaneIDMap[request.Target] = "OtherOwner"
+					if err := agentmail.SaveSessionAgentRegistry(registry); err != nil {
+						t.Fatal(err)
+					}
+					return map[string][]tmux.Pane{session: {{ID: "%77"}}}, nil
+				}
+			case "server topology unavailable":
+				c.allPanesForRecoveryFn = func(context.Context) (map[string][]tmux.Pane, error) {
+					return nil, errors.New("tmux server query failed")
+				}
+			case "claim owner changed":
+				c.workItemDetailsFn = func(context.Context, string) (*bv.BeadAssignmentDetails, error) {
+					return &bv.BeadAssignmentDetails{ID: request.BeadID, Status: "in_progress", Assignee: "other-generation"}, nil
+				}
+			}
+			results, err := c.AssignWork(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(results) != 1 || results[0].Success || !strings.Contains(results[0].Error, "owner loss is unproven") {
+				t.Fatalf("unproven owner loss results = %+v", results)
+			}
+			if claims != 0 {
+				t.Fatalf("released %d claims despite unproven owner loss", claims)
+			}
+			assertStrandedRowUnchanged(t, store, session, request)
+		})
+	}
+}
+
+func TestStrandedDispatchRecoversDeliveredMessageAcrossCoordinatorRestart(t *testing.T) {
+	for _, topology := range []string{"live owner", "moved owner", "unavailable"} {
+		t.Run(topology, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			const session = "stranded-delivered-restart"
+			store, request := strandedDispatchLedger(t, session, "ntm-delivered-restart", "%993", "BlueLake")
+			c := newStrandedDispatchCoordinator(t, session)
+			c.agentName = "NewCoordinator"
+			if topology == "live owner" {
+				setCoordinatorLivePanes(c, request.Target)
+			} else if topology == "moved owner" {
+				setCoordinatorLivePanes(c, "%77")
+				registry := agentmail.NewSessionAgentRegistry("destination", c.projectKey)
+				registry.AddAgent("worker", request.Target, request.AgentName)
+				if err := agentmail.SaveSessionAgentRegistry(registry); err != nil {
+					t.Fatal(err)
+				}
+			}
+			server := newMailInboxServer(t, map[string][]map[string]interface{}{
+				request.AgentName: {{
+					"id": 4242, "subject": coordinatorAssignmentSubject(request.BeadID),
+					"from": "OriginalCoordinator", "created_ts": time.Now().UTC().Format(time.RFC3339Nano),
+				}},
+			})
+			defer server.Close()
+			c.mailClient = agentmail.NewClient(agentmail.WithBaseURL(server.URL + "/"))
+			c.workItemDetailsFn = func(context.Context, string) (*bv.BeadAssignmentDetails, error) {
+				t.Fatal("positive delivery evidence does not require owner loss")
+				return nil, nil
+			}
+			c.releaseWorkItemClaimFn = func(context.Context, string, string, string) (bool, error) {
+				t.Fatal("a delivered assignment must retain its claim")
+				return false, nil
+			}
+			results, err := c.AssignWork(t.Context())
+			if err != nil || len(results) != 1 || !results[0].Success || !results[0].MessageSent {
+				t.Fatalf("recovered delivery results=%+v err=%v", results, err)
+			}
+			if err := store.LoadStrict(); err != nil {
+				t.Fatal(err)
+			}
+			current := store.Get(request.BeadID)
+			if current.DispatchState != assignmentstore.DispatchSent || current.DispatchReceiptID != "agent-mail-message-4242" ||
+				current.ClearState != assignmentstore.ClearStateNone || current.Status != assignmentstore.StatusAssigned {
+				t.Fatalf("delivered assignment was not recovered forward: %+v", current)
+			}
+		})
+	}
+}
+
+func TestStrandedDispatchDoesNotInferNonDeliveryFromMalformedOrSaturatedInbox(t *testing.T) {
+	for _, shape := range []string{"null row", "empty row", "invalid ID", "missing subject", "full page"} {
+		t.Run(shape, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			const session = "stranded-mailbox-proof"
+			store, request := strandedDispatchLedger(t, session, "ntm-mailbox-proof", "%993", "BlueLake")
+			c := newStrandedDispatchCoordinator(t, session)
+			setCoordinatorLivePanes(c, "%77")
+			var messages []map[string]interface{}
+			switch shape {
+			case "null row":
+				messages = []map[string]interface{}{nil}
+			case "empty row":
+				messages = []map[string]interface{}{{}}
+			case "invalid ID":
+				messages = []map[string]interface{}{{"id": 0, "subject": coordinatorAssignmentSubject(request.BeadID)}}
+			case "missing subject":
+				messages = []map[string]interface{}{{"id": 44}}
+			case "full page":
+				for i := 1; i <= coordinatorDispatchProbeLimit; i++ {
+					messages = append(messages, map[string]interface{}{"id": i, "subject": "unrelated"})
+				}
+			}
+			server := newMailInboxServer(t, map[string][]map[string]interface{}{request.AgentName: messages})
+			defer server.Close()
+			c.mailClient = agentmail.NewClient(agentmail.WithBaseURL(server.URL + "/"))
+			c.releaseWorkItemClaimFn = func(context.Context, string, string, string) (bool, error) {
+				t.Fatal("an inconclusive inbox cannot authorize claim release")
+				return false, nil
+			}
+			results, err := c.AssignWork(t.Context())
+			if err != nil || len(results) != 1 || results[0].Success || !strings.Contains(results[0].Error, "could not be verified") {
+				t.Fatalf("inconclusive inbox results=%+v err=%v", results, err)
+			}
+			assertStrandedRowUnchanged(t, store, session, request)
+		})
+	}
+}
+
+func TestStrandedDispatchWaitsForActiveSenderBeforeProbing(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	const session = "stranded-active-sender"
+	store, request := strandedDispatchLedger(t, session, "ntm-active-sender", "%993", "BlueLake")
+	current := store.Get(request.BeadID)
+	c := newStrandedDispatchCoordinator(t, session)
+	setCoordinatorLivePanes(c, "%77")
+	unlock, err := store.AcquireExternalCleanupLock(t.Context(), request.BeadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+	c.dispatchDeliveryProbeFn = func(context.Context, *assignmentstore.Assignment) (assignmentstore.DispatchReceipt, bool, error) {
+		t.Fatal("mailbox must not be probed while the original dispatch can still finish")
+		return assignmentstore.DispatchReceipt{}, false, nil
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+	defer cancel()
+	result := c.resolveStrandedDispatch(ctx, store, current, coordinatorWorkAssignmentFromRecord(current))
+	if result.Success || !strings.Contains(result.Error, "lock stranded assignment recovery") {
+		t.Fatalf("active sender did not block recovery: %+v", result)
+	}
+	assertStrandedRowUnchanged(t, store, session, request)
+}
+
 // TestUpdateAgentStatesRecordsEveryPhysicalPane pins the topology snapshot to
 // the raw pane listing rather than to the tracked-agent map: a pane holding a
 // plain shell is still a pane, and reading it as "gone" would license a second
@@ -415,7 +680,7 @@ func TestUpdateAgentStatesRecordsEveryPhysicalPane(t *testing.T) {
 	c.monitor = NewAgentMonitor(c.session, nil, c.projectKey)
 	_ = c.updateAgentStatesContext(context.Background())
 
-	topology, observedAt, ok := c.livePaneTopology()
+	topology, observedAt, ok := c.assignmentOwnerTopology()
 	if !ok {
 		t.Fatal("a successful observation left no topology snapshot")
 	}
@@ -435,7 +700,7 @@ func TestUpdateAgentStatesRecordsEveryPhysicalPane(t *testing.T) {
 	// answer "does this pane exist?".
 	getPanesWithActivity = func(context.Context, string) ([]tmux.PaneActivity, error) { return nil, errors.New("topology failed") }
 	_ = c.updateAgentStatesContext(context.Background())
-	if _, _, ok := c.livePaneTopology(); ok {
+	if _, _, ok := c.assignmentOwnerTopology(); ok {
 		t.Fatal("a failed observation left the previous topology snapshot usable")
 	}
 }

@@ -10,7 +10,6 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	assignmentstore "github.com/Dicklesworthstone/ntm/internal/assignment"
 	"github.com/Dicklesworthstone/ntm/internal/bv"
-	"github.com/Dicklesworthstone/ntm/internal/status"
 )
 
 // Resolution of a stranded dispatch_state="sending" row (ntm#304).
@@ -26,12 +25,11 @@ import (
 // bead — which is strictly worse than the stall. So the assertion is only made
 // when two independent facts both hold:
 //
-//  1. Live topology. The pane named by the row's occupancy_key (or, failing
-//     that, its dispatch_target) is absent from the most recent *successful*
-//     whole-session pane listing, which includes panes carrying no recognized
-//     agent. Absence is never inferred from an observation that failed, from a
-//     stale one, or from the eligible-candidate set — candidates exclude busy
-//     and unhealthy panes, which are very much still alive.
+//  1. Live ownership. After the mailbox probe, the same proof used for
+//     delivered-owner recovery refreshes local topology and verifies every
+//     tmux session, Agent Mail binding, and exact tracker claim. A moved pane
+//     or a rebound recipient still owns the work. This proof is obtained under
+//     the external cleanup lock, before persisting the terminal barrier.
 //
 //  2. Non-delivery. NTM dispatches an assignment as an Agent Mail message
 //     addressed to an agent *name*, not to a pane, so a dead pane alone does
@@ -40,16 +38,10 @@ import (
 //     the message this exact generation was sending, and the row is only
 //     declared undelivered when the probe completes and finds nothing.
 //
-// A third check falls out of the second: if the row's recipient is registered
-// to some *other* live pane, the recipient is alive and the dead pane proves
-// nothing, so the row stays fail-closed without probing at all.
-//
-// Anything else — an unavailable or stale topology, a pane that still exists, a
-// probe that fails or comes back saturated, a row with nothing to probe with —
-// leaves the barrier exactly as it was. And when the probe *finds* the message, the row is
-// repaired forward to "sent" instead: that is the race where the dispatch
-// really did land and only the bookkeeping was lost, and it must not be
-// mistaken for a non-delivery.
+// A positive mailbox receipt repairs the row forward to "sent" even if the
+// owner is still live: delivery proof does not require owner loss. Anything
+// else — unavailable or stale ownership evidence, a live owner, or a failed,
+// malformed, or saturated negative mailbox probe — leaves the barrier intact.
 
 const (
 	// coordinatorDispatchProbeSkew tolerates clock skew between this host and
@@ -80,30 +72,14 @@ func strandedDispatchTarget(recorded *assignmentstore.Assignment) string {
 	return target
 }
 
-// livePaneTopology returns a copy of the physical pane set from the most recent
-// successful whole-session observation, plus the time it was taken. ok is false
-// when no such observation exists.
-func (c *SessionCoordinator) livePaneTopology() (map[string]struct{}, time.Time, bool) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	if !c.livePaneTopologyValid {
-		return nil, time.Time{}, false
-	}
-	snapshot := make(map[string]struct{}, len(c.livePaneIDs))
-	for paneID := range c.livePaneIDs {
-		snapshot[paneID] = struct{}{}
-	}
-	return snapshot, c.livePaneTopologyAt, true
-}
-
 // probeDispatchDelivery answers "did the message this generation was sending
 // actually land?" against the recipient's Agent Mail inbox.
 //
-// The match is deliberately liberal — subject, sender, and a creation time at
-// or after the recorded dispatch start — because the two errors are not
-// symmetric. A false "landed" only leaves the existing stall in place, which an
-// operator can already clear by hand. A false "not landed" authorizes a second
-// dispatch of work that is already out. When in doubt, say it landed.
+// The match is deliberately liberal — subject and a creation time at or after
+// the recorded dispatch start — because a false "not landed" authorizes a
+// second dispatch of work that is already out. The sending coordinator's name
+// is not persisted on old assignments and can change after a restart; the
+// current name therefore cannot exclude a message from recovery evidence.
 func (c *SessionCoordinator) probeDispatchDelivery(ctx context.Context, recorded *assignmentstore.Assignment) (assignmentstore.DispatchReceipt, bool, error) {
 	if c.dispatchDeliveryProbeFn != nil {
 		return c.dispatchDeliveryProbeFn(ctx, recorded)
@@ -133,12 +109,15 @@ func (c *SessionCoordinator) probeDispatchDelivery(ctx context.Context, recorded
 		return assignmentstore.DispatchReceipt{}, false, fmt.Errorf("probe %s inbox: %w", recipient, err)
 	}
 	subject := coordinatorAssignmentSubject(recorded.BeadID)
-	sender := strings.TrimSpace(c.agentName)
+	var malformed error
 	for _, message := range messages {
-		if strings.TrimSpace(message.Subject) != subject {
+		if message.ID <= 0 || strings.TrimSpace(message.Subject) == "" {
+			// A zero-value row (including a JSON null) is not an inspected
+			// unrelated message. It may be the delivery we are looking for.
+			malformed = errors.New("mailbox response contains a message without a valid ID or subject")
 			continue
 		}
-		if sender != "" && strings.TrimSpace(message.From) != sender {
+		if strings.TrimSpace(message.Subject) != subject {
 			continue
 		}
 		if !coordinatorProbeMessageIsRecentEnough(recorded, message) {
@@ -147,6 +126,9 @@ func (c *SessionCoordinator) probeDispatchDelivery(ctx context.Context, recorded
 		return assignmentstore.DispatchReceipt{
 			DeliveryID: fmt.Sprintf("agent-mail-message-%d", message.ID),
 		}, true, nil
+	}
+	if malformed != nil {
+		return assignmentstore.DispatchReceipt{}, false, fmt.Errorf("probe %s inbox: %w", recipient, malformed)
 	}
 	// A full page is not an exhaustive answer. Reporting "nothing landed" from
 	// a truncated listing would be exactly the false negative that authorizes a
@@ -157,28 +139,6 @@ func (c *SessionCoordinator) probeDispatchDelivery(ctx context.Context, recorded
 			recipient, len(messages))
 	}
 	return assignmentstore.DispatchReceipt{}, false, nil
-}
-
-// recipientLivesOnAnotherPane reports whether the row's Agent Mail recipient is
-// currently registered to some other live pane. Dispatch is addressed to a
-// name, not to a pane, so a recipient that is alive elsewhere can still act on
-// a message that landed — which makes the dead pane no evidence at all.
-func (c *SessionCoordinator) recipientLivesOnAnotherPane(recipient string) (string, bool) {
-	recipient = strings.TrimSpace(recipient)
-	if recipient == "" {
-		return "", false
-	}
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	for paneID, agent := range c.agents {
-		if agent == nil {
-			continue
-		}
-		if strings.EqualFold(strings.TrimSpace(agent.AgentMailName), recipient) {
-			return paneID, true
-		}
-	}
-	return "", false
 }
 
 // coordinatorProbeMessageIsRecentEnough keeps an older generation's message for
@@ -217,62 +177,24 @@ func (c *SessionCoordinator) resolveStrandedDispatch(
 		return result
 	}
 
-	target := strandedDispatchTarget(recorded)
-	if target == "" {
-		return outcomeUnknown("assignment records no dispatch target to evaluate")
-	}
-	topology, observedAt, ok := c.livePaneTopology()
-	if !ok {
-		return outcomeUnknown("live pane topology is unavailable")
-	}
-	if !status.DispatchObservationIsCurrent(observedAt, time.Now()) {
-		return outcomeUnknown("live pane topology observation is not current")
-	}
-	if _, alive := topology[target]; alive {
-		// The pane still exists. Whether it is idle, busy, or unrecognized is
-		// beside the point: an agent there may already hold this assignment.
-		return outcomeUnknown("")
-	}
-
-	if paneID, alive := c.recipientLivesOnAnotherPane(recorded.AgentName); alive {
-		return outcomeUnknown(fmt.Sprintf(
-			"dispatch target %s is gone but its Agent Mail recipient %s is live on pane %s",
-			target, strings.TrimSpace(recorded.AgentName), paneID))
-	}
-
-	receipt, landed, err := c.probeDispatchDelivery(ctx, recorded)
+	resolved, landed, err := c.recoverStrandedDispatchEvidence(ctx, store, recorded)
 	if err != nil {
-		return outcomeUnknown(fmt.Sprintf("dispatch target %s is gone but delivery to %s could not be verified: %v",
-			target, strings.TrimSpace(recorded.AgentName), err))
+		if resolved != nil && resolved.DispatchState != assignmentstore.DispatchSending {
+			result := base
+			result.Error = err.Error()
+			return result
+		}
+		return outcomeUnknown(err.Error())
 	}
 	if landed {
-		evidence := fmt.Sprintf(
-			"dispatch outcome recovered: assignment message %s was delivered to %s before the recording process stopped",
-			receipt.DeliveryID, strings.TrimSpace(recorded.AgentName))
-		adopted, applied, adoptErr := store.AdoptStrandedDispatchReceiptIfCurrent(ctx, recorded, receipt, evidence)
-		if adoptErr != nil {
-			return outcomeUnknown(fmt.Sprintf("recording recovered delivery %s failed: %v", receipt.DeliveryID, adoptErr))
-		}
-		if !applied {
-			return outcomeUnknown("recovered delivery no longer matches the observed assignment generation")
-		}
 		result := base
-		result.Assignment = coordinatorWorkAssignmentFromRecord(adopted)
+		result.Assignment = coordinatorWorkAssignmentFromRecord(resolved)
 		result.MessageSent = true
 		result.Success = true
 		return result
 	}
 
-	evidence := fmt.Sprintf(
-		"dispatch target %s is absent from the live tmux topology observed at %s, and no assignment message for this generation reached %s",
-		target, observedAt.UTC().Format(time.RFC3339), strings.TrimSpace(recorded.AgentName))
-	resolved, applied, err := store.ResolveStrandedDispatchIfCurrent(ctx, recorded, evidence)
-	if err != nil {
-		return outcomeUnknown(fmt.Sprintf("resolving the stranded dispatch failed: %v", err))
-	}
-	if !applied {
-		return outcomeUnknown("the stranded dispatch no longer matches the observed assignment generation")
-	}
+	evidence := resolved.StrandedDispatchReason
 	completed, err := c.reconcileTerminalAssignment(ctx, store, resolved, assignmentstore.StatusFailed, evidence)
 	if err != nil {
 		result := base
@@ -292,4 +214,79 @@ func (c *SessionCoordinator) resolveStrandedDispatch(
 	result := base
 	result.Error = evidence
 	return result
+}
+
+// recoverStrandedDispatchEvidence serializes observation with active dispatch,
+// replacement, and cleanup. Waiting for an active sender must happen before
+// probing: a mailbox read taken before that wait could otherwise become false
+// non-delivery evidence while the sender finishes its request.
+func (c *SessionCoordinator) recoverStrandedDispatchEvidence(ctx context.Context, store *assignmentstore.AssignmentStore, recorded *assignmentstore.Assignment) (*assignmentstore.Assignment, bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	unlock, err := store.AcquireExternalCleanupLock(ctx, recorded.BeadID)
+	if err != nil {
+		return nil, false, fmt.Errorf("lock stranded assignment recovery: %w", err)
+	}
+	defer unlock()
+	if err := store.LoadStrict(); err != nil {
+		return nil, false, fmt.Errorf("refresh stranded assignment: %w", err)
+	}
+	current := store.Get(recorded.BeadID)
+	if !assignmentstore.SameAssignmentGeneration(recorded, current) || current.ClearState != assignmentstore.ClearStateNone {
+		return nil, false, errors.New("stranded assignment generation or cleanup state changed")
+	}
+	if current.DispatchState == assignmentstore.DispatchSent && current.DispatchReceiptID != "" {
+		return current, true, nil
+	}
+	if current.DispatchState != assignmentstore.DispatchSending {
+		return nil, false, errors.New("assignment no longer has an outcome-unknown dispatch")
+	}
+	receipt, landed, err := c.probeDispatchDelivery(ctx, current)
+	if err != nil {
+		return nil, false, fmt.Errorf("delivery to %s could not be verified: %w", strings.TrimSpace(current.AgentName), err)
+	}
+	if landed {
+		evidence := fmt.Sprintf(
+			"dispatch outcome recovered: assignment message %s was delivered to %s before the recording process stopped",
+			receipt.DeliveryID, strings.TrimSpace(current.AgentName))
+		adopted, applied, err := store.AdoptStrandedDispatchReceiptIfCurrent(ctx, current, receipt, evidence)
+		if err != nil {
+			return nil, false, fmt.Errorf("record recovered delivery: %w", err)
+		}
+		if !applied {
+			return nil, false, errors.New("recovered delivery no longer matches the observed assignment generation")
+		}
+		return adopted, true, nil
+	}
+	// A negative probe may be slow. Re-observe ownership after it, including
+	// global tmux topology and registries, rather than reusing a local snapshot
+	// taken before an owner moved or its recipient was rebound.
+	if err := c.verifyAssignmentOwnerLoss(ctx, current); err != nil {
+		return nil, false, fmt.Errorf("stranded assignment owner loss is unproven: %w", err)
+	}
+	evidence := fmt.Sprintf(
+		"dispatch target %s has no live owner in verified server-wide tmux topology, its exact claim and recipient bindings are unchanged, and no assignment message for this generation reached %s",
+		strandedDispatchTarget(current), strings.TrimSpace(current.AgentName))
+	resolved, applied, err := store.ResolveStrandedDispatchIfCurrent(ctx, current, evidence)
+	if err != nil {
+		return nil, false, fmt.Errorf("resolve stranded dispatch: %w", err)
+	}
+	if !applied {
+		return nil, false, errors.New("stranded dispatch no longer matches the observed assignment generation")
+	}
+	// Persist retirement before releasing the cleanup lock so another
+	// coordinator cannot send this now-pending generation between resolution
+	// and the external lease/claim cleanup.
+	begin := store.BeginTerminalReconciliationIfCurrent
+	if c.completionEvents {
+		begin = store.BeginTerminalReconciliationWithCompletionEventIfCurrent
+	}
+	barrier, applied, err := begin(ctx, resolved, assignmentstore.StatusFailed, evidence)
+	if err != nil {
+		return resolved, false, fmt.Errorf("persist stranded assignment retirement: %w", err)
+	}
+	if !applied {
+		return resolved, false, errors.New("resolved assignment changed before its retirement barrier")
+	}
+	return barrier, false, nil
 }

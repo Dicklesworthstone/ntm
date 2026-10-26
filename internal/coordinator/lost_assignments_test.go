@@ -107,7 +107,7 @@ func TestRunCycleRecoversDeliveredAssignmentFromRetainedDeadOwner(t *testing.T) 
 			if _, tracked := c.GetAgents()["%94"]; tracked {
 				t.Fatal("retained dead pane remained an assignment candidate")
 			}
-			if topology, _, ok := c.livePaneTopology(); !ok {
+			if topology, _, ok := c.assignmentOwnerTopology(); !ok {
 				t.Fatal("dead owner recovery invalidated successful physical topology")
 			} else if _, present := topology["%94"]; !present {
 				t.Fatal("retained dead pane disappeared from physical topology")

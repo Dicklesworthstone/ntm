@@ -2518,6 +2518,9 @@ func TestAssignWorkKeepsUnknownDispatchFailClosed(t *testing.T) {
 	}
 
 	c := New(session, t.TempDir(), &agentmail.Client{}, "CoordinatorAgent")
+	c.dispatchDeliveryProbeFn = func(context.Context, *assignmentstore.Assignment) (assignmentstore.DispatchReceipt, bool, error) {
+		return assignmentstore.DispatchReceipt{}, false, errors.New("delivery evidence unavailable")
+	}
 	addEligibleCoordinatorAgent(c, request.Target, request.AgentName)
 	c.atomicCoordinatorFactory = func(*assignmentstore.AssignmentStore) *assignmentstore.AtomicCoordinator {
 		t.Fatal("unknown dispatch must not reach an atomic retry")
