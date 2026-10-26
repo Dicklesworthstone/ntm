@@ -22,6 +22,61 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
+func TestRestartPaneWorkingDirectoryPreservesExactPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("recording tmux executable requires a POSIX shell")
+	}
+	binary := filepath.Join(t.TempDir(), "tmux")
+	const script = `#!/bin/sh
+set -eu
+[ "$1" = display-message ] && [ "$4" = '%7' ] || exit 51
+if [ "$NTM_RESTART_CWD_RAW" = true ]; then
+  printf '%s\n' "$NTM_RESTART_CWD_VALUE"
+  exit 0
+fi
+case "$5" in
+  '[#{pane_current_path}]') printf '[%s]\n' "$NTM_RESTART_CWD_VALUE" ;;
+  '#{pane_current_path}') printf '%s\n' "$NTM_RESTART_CWD_VALUE" ;;
+  *) exit 52 ;;
+esac
+`
+	if err := os.WriteFile(binary, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NTM_TMUX_BINARY", binary)
+	original := tmux.DefaultClient
+	tmux.DefaultClient = tmux.NewClient("")
+	t.Cleanup(func() { tmux.DefaultClient = original })
+	for _, test := range []struct {
+		name, value string
+		malformed   bool
+	}{
+		{name: "ordinary", value: "/tmp/project"},
+		{name: "trailing-space", value: "/tmp/project "},
+		{name: "trailing-unicode-space", value: "/tmp/project\u00a0"},
+		{name: "literal-brackets", value: "/tmp/[project] "},
+		{name: "tab-reaches-preflight", value: "/tmp/project\t"},
+		{name: "newline-reaches-preflight", value: "/tmp/project\n"},
+		{name: "no-output", malformed: true},
+		{name: "empty-path", value: "[]", malformed: true},
+		{name: "missing-open", value: "/private-observed-path]", malformed: true},
+		{name: "missing-close", value: "[/private-observed-path", malformed: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("NTM_RESTART_CWD_VALUE", test.value)
+			t.Setenv("NTM_RESTART_CWD_RAW", strconv.FormatBool(test.malformed))
+			got, err := restartPaneWorkingDirectory(t.Context(), "%7")
+			if test.malformed {
+				if err == nil || got != "" || strings.Contains(err.Error(), "private-observed-path") {
+					t.Fatalf("malformed cwd observation was not refused safely: path=%q error=%v", got, err)
+				}
+			} else if err != nil || got != test.value {
+				t.Fatalf("cwd observation=%q error=%v, want exact %q", got, err, test.value)
+			}
+		})
+	}
+}
+
 func TestRestartPanePreflightRejectsChangedEvidence(t *testing.T) {
 	for _, change := range []string{"stable", "missing", "duplicate", "physical-id", "pid", "window", "index", "type", "foreground", "dead", "service", "rotation", "spec", "cwd", "list-error", "spec-error", "cwd-error", "display-title"} {
 		t.Run(change, func(t *testing.T) {
@@ -731,6 +786,7 @@ func TestGetRestartPaneExplicitEnvironmentRecovery(t *testing.T) {
 		"non-agent", "missing-spec", "invalid-directory", "delivery-failure",
 		"stale-before-respawn", "stale-after-respawn", "stale-after-identity", "stale-after-metadata", "stale-spec-after-metadata", "stale-after-readiness",
 		"long-command", "long-managed-command",
+		"cwd-whitespace", "cwd-whitespace-ordinary", "cwd-trailing-control", "cwd-empty",
 	} {
 		for _, dryRun := range []bool{false, true} {
 			t.Run(mode+"/dry-run="+strconv.FormatBool(dryRun), func(t *testing.T) {
@@ -752,13 +808,24 @@ case "$1" in
     ;;
   display-message)
     case "$*" in *'@ntm_agent_type'*) printf '[cod]\n'; exit 0 ;; esac
+    case "$5" in
+      '[#{pane_current_path}]') printf '[%s]\n' "$NTM_RESTART_ENV_TEST_CWD"; exit 0 ;;
+      '#{pane_current_path}') printf '%s\n' "$NTM_RESTART_ENV_TEST_CWD"; exit 0 ;;
+    esac
     if [ -f "$root/respawned" ]; then
       if [ -f "$root/foreign-pid" ]; then printf '%s\n' "$((NTM_RESTART_ENV_TEST_NEW_PID + 1))"; else printf '%s\n' "$NTM_RESTART_ENV_TEST_NEW_PID"; fi
     else
       printf '2000000001\n'
     fi
     ;;
-  respawn-pane) : > "$root/respawned" ;;
+  respawn-pane)
+    shift
+    while [ "$#" -gt 0 ]; do
+      if [ "$1" = -c ]; then printf '%s' "$2" > "$root/respawn-working-directory"; break; fi
+      shift
+    done
+    : > "$root/respawned"
+    ;;
   set-option) ;;
   send-keys)
     [ -f "$root/recorded" ] || exit 51
@@ -818,12 +885,32 @@ func TestRestartPaneEnvironmentRecoveryTransportHelper(t *testing.T) {
 	mode := os.Getenv("NTM_RESTART_ENV_TEST_MODE")
 	dryRun := os.Getenv("NTM_RESTART_ENV_TEST_DRY_RUN") == "true"
 	t.Setenv("NTM_RESTART_ENV_TEST_NEW_PID", strconv.Itoa(os.Getpid()))
+	workingDir := root
+	exactDirectoryCase := mode == "cwd-whitespace" || mode == "cwd-whitespace-ordinary"
+	if exactDirectoryCase {
+		// Both directories exist: trimming the observed cwd would successfully
+		// launch in the wrong project instead of merely failing to cd.
+		for _, suffix := range []string{"", " \u00a0"} {
+			if err := os.Mkdir(filepath.Join(root, "project[saved]"+suffix), 0700); err != nil {
+				t.Fatal(err)
+			}
+		}
+		workingDir = filepath.Join(root, "project[saved] \u00a0")
+	} else if mode == "invalid-directory" {
+		workingDir = filepath.Join(root, "invalid\ndirectory")
+	} else if mode == "cwd-trailing-control" {
+		workingDir = root + "\t"
+	} else if mode == "cwd-empty" {
+		workingDir = ""
+	}
+	t.Setenv("NTM_RESTART_ENV_TEST_CWD", workingDir)
 	const agentScript = `#!/bin/sh
 set -eu
 root="$NTM_RESTART_ENV_TEST_ROOT"
 printf '%s\000' "${AGENT_MAIL_AGENT-}" "${BEADS_DIR-}" "${BV_ROBOT_NOT_READY_LABELS-}" "${PATH-}" "${ZAI_SEAT_ROLE-}" > "$root/agent-environment"
 printf '%s\000' "$@" > "$root/agent-argv"
 printf '%s' "${AGENT_MAIL_PROJECT-}" > "$root/agent-mail-project"
+pwd -P > "$root/agent-working-directory"
 : > "$root/agent-launched"
 `
 	agentPath := filepath.Join(root, "codex")
@@ -856,8 +943,8 @@ printf '%s' "${AGENT_MAIL_PROJECT-}" > "$root/agent-mail-project"
 		Model:   "saved/model", ReasoningEffort: "high", Persona: "reviewer", OmittedEnv: keys}
 	opts := RestartPaneOptions{Session: "session", Panes: []string{"%7"}, DryRun: dryRun,
 		Config: config.Default(), ProjectDir: root, Environment: environment}
-	ordinary := mode == "ordinary" || mode == "long-command" || mode == "long-managed-command"
-	wantPreflight := mode == "reported" || mode == "empty-value" || mode == "model-override" || ordinary || mode == "delivery-failure" || strings.HasPrefix(mode, "stale-after-") || mode == "stale-spec-after-metadata"
+	ordinary := mode == "ordinary" || mode == "long-command" || mode == "long-managed-command" || mode == "cwd-whitespace-ordinary"
+	wantPreflight := mode == "reported" || mode == "empty-value" || mode == "model-override" || ordinary || exactDirectoryCase || mode == "delivery-failure" || strings.HasPrefix(mode, "stale-after-") || mode == "stale-spec-after-metadata"
 	panes := []tmux.Pane{pane}
 	switch mode {
 	case "empty-value":
@@ -865,7 +952,7 @@ printf '%s' "${AGENT_MAIL_PROJECT-}" > "$root/agent-mail-project"
 		wantEnvironment[4] = ""
 	case "model-override":
 		opts.Model = "replacement/model@low"
-	case "ordinary", "long-command", "long-managed-command":
+	case "ordinary", "long-command", "long-managed-command", "cwd-whitespace-ordinary":
 		saved.OmittedEnv = nil
 		opts.Environment = nil
 		if mode == "long-command" {
@@ -968,12 +1055,6 @@ printf '%s' "${AGENT_MAIL_PROJECT-}" > "$root/agent-mail-project"
 			copy := saved
 			return &copy, nil
 		},
-		PaneWorkingDir: func(context.Context, string) (string, error) {
-			if mode == "invalid-directory" {
-				return filepath.Join(root, "invalid\ndirectory"), nil
-			}
-			return root, nil
-		},
 		SetLaunchSpec: func(_ context.Context, target string, expectedPID int, spec tmux.AgentLaunchSpec) error {
 			if target != "%7" {
 				t.Fatalf("metadata target = %q", target)
@@ -996,6 +1077,22 @@ printf '%s' "${AGENT_MAIL_PROJECT-}" > "$root/agent-mail-project"
 			}
 			return os.WriteFile(filepath.Join(root, "recorded"), data, 0600)
 		},
+	}
+	if exactDirectoryCase {
+		plan, err := prepareRestartLaunchPlan(t.Context(), opts.Session, panes, false, opts.Config, restartLaunchOverride{}, restartPaneDeps(opts.Deps), opts.Environment)
+		defer plan.close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if plan.Directories["2"] != workingDir || plan.Preflight.targets[0].workingDir != workingDir {
+			t.Fatal("launch preflight changed the observed working directory")
+		}
+		if err := plan.prepareDelivery(t.Context(), opts.Session, opts.Environment); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.HasPrefix(plan.DeliveryCommands["2"], "cd "+tmux.ShellQuote(workingDir)+" && ") {
+			t.Fatal("launch preview changed the observed working directory")
+		}
 	}
 	out, err := GetRestartPaneContext(t.Context(), opts)
 	if err != nil || out == nil {
@@ -1080,6 +1177,15 @@ printf '%s' "${AGENT_MAIL_PROJECT-}" > "$root/agent-mail-project"
 	}
 	if !out.Success || !out.AgentRelaunched["2"] || !out.ProcessAlive["2"] || len(out.Restarted) != 1 {
 		t.Fatalf("replacement agent was not relaunched: %+v", out)
+	}
+	if exactDirectoryCase {
+		physicalDir, err := filepath.EvalSymlinks(workingDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(read("respawn-working-directory")) != workingDir || string(read("agent-working-directory")) != physicalDir+"\n" {
+			t.Fatal("respawn or prepared launch entered the whitespace-trimmed project")
+		}
 	}
 	if !ordinary {
 		got := strings.Split(string(read("agent-environment")), "\x00")

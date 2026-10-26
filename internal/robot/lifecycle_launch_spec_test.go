@@ -66,8 +66,8 @@ case "$1" in
     cat "$root/original"
     ;;
   display-message)
-    [ "$4" = '%7' ] && [ "$5" = '#{pane_current_path}' ] || exit 53
-    printf '%s\n' "$root"
+    [ "$4" = '%7' ] && [ "$5" = '[#{pane_current_path}]' ] || exit 53
+    printf '[%s]\n' "$root"
     ;;
   set-option)
     [ "$4" = '%7' ] && [ "$5" = '@ntm_agent_launch' ] || exit 54

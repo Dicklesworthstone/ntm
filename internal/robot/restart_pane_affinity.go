@@ -418,11 +418,16 @@ func prepareRestartLaunchPlan(
 }
 
 func restartPaneWorkingDirectory(ctx context.Context, paneID string) (string, error) {
-	out, err := tmux.DefaultClient.RunContext(ctx, "display-message", "-p", "-t", tmux.ExactTarget(paneID), "#{pane_current_path}")
+	// RunContext trims transport whitespace. Enclose the path so whitespace
+	// belonging to a directory name survives that trimming unchanged.
+	out, err := tmux.DefaultClient.RunContext(ctx, "display-message", "-p", "-t", tmux.ExactTarget(paneID), "[#{pane_current_path}]")
 	if err != nil {
 		return "", err
 	}
-	return strings.TrimSpace(out), nil
+	if len(out) < 3 || out[0] != '[' || out[len(out)-1] != ']' {
+		return "", errors.New("cannot observe exact restart working directory")
+	}
+	return out[1 : len(out)-1], nil
 }
 
 // restartSavedLaunchSpec preserves the actual creation-time command. Explicit

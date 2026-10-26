@@ -246,7 +246,8 @@ case "$1" in
     case "$*" in
       *@ntm_agent_type*) printf '[cod]\n' ;;
       *pane_pid*) printf '222\n' ;;
-      *) printf '%s\n' "$NTM_RESTART_CLI_ROOT" ;;
+      *pane_current_path*) printf '[%s]\n' "$NTM_RESTART_CLI_ROOT" ;;
+      *) exit 73 ;;
     esac
     ;;
   show-options)
@@ -376,7 +377,7 @@ func TestRespawnRevalidatesConfirmedRecovery(t *testing.T) {
 	}
 	const secret = "ntm-confirmed-recovery-secret-marker"
 	for _, withEnvironment := range []bool{false, true} {
-		for _, change := range []string{"unchanged", "pane-replaced", "pane-moved", "process-changed", "launch-changed", "directory-changed"} {
+		for _, change := range []string{"unchanged", "pane-replaced", "pane-moved", "process-changed", "launch-changed", "directory-changed", "directory-trailing-space"} {
 			t.Run(fmt.Sprintf("environment=%t/%s", withEnvironment, change), func(t *testing.T) {
 				root := t.TempDir()
 				binary := filepath.Join(root, "tmux")
@@ -417,13 +418,21 @@ case "$1" in
         esac
         ;;
       *pane_current_command*) printf 'zsh\n' ;;
-      *)
+      *pane_current_path*)
+        dir="$root"
         if [ "$change" = directory-changed ]; then
-          printf '%s\n' "$root/moved"
-        else
-          printf '%s\n' "$root"
+          dir="$root/moved"
+        elif [ "$NTM_RESPAWN_CONFIRM_CHANGE" = directory-trailing-space ]; then
+          dir="$root/project "
+          if [ "$change" = directory-trailing-space ]; then dir="$root/project"; fi
         fi
+        case "$5" in
+          '[#{pane_current_path}]') printf '[%s]\n' "$dir" ;;
+          '#{pane_current_path}') printf '%s\n' "$dir" ;;
+          *) exit 73 ;;
+        esac
         ;;
+      *) exit 74 ;;
     esac
     ;;
   show-options)
@@ -456,6 +465,13 @@ esac
 				}
 				if err := os.Mkdir(filepath.Join(root, "moved"), 0700); err != nil {
 					t.Fatal(err)
+				}
+				if change == "directory-trailing-space" {
+					for _, name := range []string{"project", "project "} {
+						if err := os.Mkdir(filepath.Join(root, name), 0700); err != nil {
+							t.Fatal(err)
+						}
+					}
 				}
 				spec := tmux.AgentLaunchSpec{Version: tmux.AgentLaunchSpecVersion, AgentType: tmux.AgentCodex, Command: "codex --model saved/model", Model: "saved/model"}
 				if withEnvironment {
