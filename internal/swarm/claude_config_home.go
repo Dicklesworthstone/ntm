@@ -27,6 +27,10 @@ const ClaudeConfigDirEnvVar = "CLAUDE_CONFIG_DIR"
 // interactive Claude Code prefers the file credential and keeps racing.
 const ClaudeOAuthTokenEnvVar = "CLAUDE_CODE_OAUTH_TOKEN"
 
+// Keep the token reader independent of a pane's explicitly restored PATH.
+// ResolveClaudeSetupTokenFile verifies it before a token-bearing launch.
+const claudeSetupTokenReader = "/bin/cat"
+
 // claudeCredentialsFile is the rotating credential that must NOT be reachable
 // from an isolated config dir.
 const claudeCredentialsFile = ".credentials.json"
@@ -590,6 +594,10 @@ func ResolveClaudeSetupTokenFile(path string) (string, error) {
 	if path == "" {
 		return "", nil
 	}
+	reader, err := os.Stat(claudeSetupTokenReader)
+	if err != nil || !reader.Mode().IsRegular() || reader.Mode().Perm()&0111 == 0 {
+		return "", errors.New("Claude setup token launch requires an executable /bin/cat")
+	}
 	if strings.HasPrefix(path, "~/") {
 		home, err := os.UserHomeDir()
 		if err != nil {
@@ -681,17 +689,18 @@ type ClaudeLaunchEnv struct {
 //   - runLocalContext's error strings, which embed the full argv and flow into
 //     logs and JSON output on a failed send.
 //
-// Emitting `VAR="$(cat <path>)"` instead means the shell expands the file at
+// Emitting `VAR="$(/bin/cat <path>)"` instead means the shell expands the file at
 // launch: the command text, and therefore all three sinks above, carry only the
 // path. The value reaches the process environment, which is where Claude Code
-// reads it from and is the same exposure any exported credential has.
+// reads it from and is the same exposure any exported credential has. The
+// absolute reader keeps a restored PATH from selecting a different executable.
 func (p *ClaudeConfigProvisioner) EnvForPane(session, pane, tokenFile string) ClaudeLaunchEnv {
 	env := ClaudeLaunchEnv{
 		Vars: map[string]string{ClaudeConfigDirEnvVar: p.ConfigPath(session, pane)},
 	}
 	if path := strings.TrimSpace(tokenFile); path != "" {
 		env.SecretAssignments = append(env.SecretAssignments,
-			fmt.Sprintf(`%s="$(cat %s)"`, ClaudeOAuthTokenEnvVar, tmux.ShellQuote(path)))
+			fmt.Sprintf(`%s="$(%s %s)"`, ClaudeOAuthTokenEnvVar, claudeSetupTokenReader, tmux.ShellQuote(path)))
 	}
 	return env
 }

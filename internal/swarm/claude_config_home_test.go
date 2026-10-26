@@ -2,11 +2,14 @@ package swarm
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/Dicklesworthstone/ntm/internal/config"
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 // requireIsolableCredentialStore skips assertions about the file-based
@@ -86,8 +89,8 @@ func TestEnvForPane_NeverPutsTheTokenValueInTheCommandText(t *testing.T) {
 		t.Fatalf("the command text does not reference the token file: %q", rendered)
 	}
 	// It must be a shell command substitution, or the pane receives the
-	// literal text "$(cat ...)" as its token.
-	want := ClaudeOAuthTokenEnvVar + `="$(cat '` + tokenFile + `')"`
+	// literal text "$(/bin/cat ...)" as its token.
+	want := ClaudeOAuthTokenEnvVar + `="$(/bin/cat '` + tokenFile + `')"`
 	if env.SecretAssignments[0] != want {
 		t.Fatalf("assignment = %q, want %q", env.SecretAssignments[0], want)
 	}
@@ -101,7 +104,7 @@ func TestEnvForPane_QuotesAdversarialTokenPaths(t *testing.T) {
 	if strings.Contains(got, "touch /tmp/pwned;") && !strings.Contains(got, `'\''`) {
 		t.Fatalf("token path was not shell-quoted: %q", got)
 	}
-	if !strings.HasPrefix(got, ClaudeOAuthTokenEnvVar+`="$(cat '`) {
+	if !strings.HasPrefix(got, ClaudeOAuthTokenEnvVar+`="$(/bin/cat '`) {
 		t.Fatalf("assignment lost its quoting: %q", got)
 	}
 }
@@ -812,5 +815,61 @@ func TestProvisionPaneConfig_LinksAbsoluteTargetsWithARelativeHome(t *testing.T)
 	}
 	if data, err := os.ReadFile(filepath.Join(target, "settings.json")); err != nil || string(data) != `{"theme":"dark"}` {
 		t.Errorf("settings.json does not resolve to the operator's file: data=%q err=%v", data, err)
+	}
+}
+
+func TestEnvForPane_TokenReaderIgnoresRecoveryPATH(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Claude token launch requires a POSIX shell")
+	}
+	const token = "test-setup-token-not-for-command-text"
+	root := t.TempDir()
+	tokenFile := filepath.Join(root, "setup token's file")
+	writeFile(t, tokenFile, token+"\n")
+
+	t.Setenv("NTM_EXPECTED_SETUP_TOKEN", token)
+	p := NewClaudeConfigProvisioner(root)
+
+	for _, hostileReader := range []bool{false, true} {
+		name := "reader absent from PATH"
+		if hostileReader {
+			name = "different reader in PATH"
+		}
+		t.Run(name, func(t *testing.T) {
+			replacement := t.TempDir()
+			marker := filepath.Join(t.TempDir(), "replacement-reader-used")
+			t.Setenv("NTM_TOKEN_READER_MARKER", marker)
+			if hostileReader {
+				const script = "#!/bin/sh\nprintf used > \"$NTM_TOKEN_READER_MARKER\"\nprintf wrong-token\n"
+				if err := os.WriteFile(filepath.Join(replacement, "cat"), []byte(script), 0700); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			// The replacement PATH is deliberately the only search directory.
+			// Both preflight and execution must use the pinned reader.
+			t.Setenv("PATH", replacement)
+			resolved, err := ResolveClaudeSetupTokenFile(tokenFile)
+			if err != nil {
+				t.Fatalf("token preflight depended on recovery PATH: %v", err)
+			}
+			env := p.EnvForPane("recovered", "2", resolved)
+			const verify = `[ "$CLAUDE_CODE_OAUTH_TOKEN" = "$NTM_EXPECTED_SETUP_TOKEN" ] || exit 41; printf token-ok`
+			command := env.ApplyToCommand("/bin/sh -c " + tmux.ShellQuote(verify))
+			if strings.Contains(command, token) {
+				t.Fatal("token value leaked into launch command")
+			}
+
+			output, err := exec.CommandContext(t.Context(), "/bin/sh", "-c", command).CombinedOutput()
+			if err != nil {
+				t.Fatalf("token launch failed under recovery PATH: %v", err)
+			}
+			if string(output) != "token-ok" {
+				t.Fatal("agent did not receive the saved setup token")
+			}
+			if _, err := os.Stat(marker); !os.IsNotExist(err) {
+				t.Fatal("recovery PATH selected a different token reader")
+			}
+		})
 	}
 }
