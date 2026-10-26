@@ -56,6 +56,8 @@ type RestartPaneOutput struct {
 	PromptSent          bool                                   `json:"prompt_sent,omitempty"`   // True only when every attempted ordinary prompt or the atomic bead prompt has confirmed delivery
 	PromptError         string                                 `json:"prompt_error,omitempty"`  // Prompt delivery error details
 	PromptDelivery      map[string]RestartPromptDeliveryStatus `json:"prompt_delivery,omitempty"`
+	Redaction           *RedactionSummary                      `json:"redaction,omitempty"`
+	Warnings            []string                               `json:"warnings,omitempty"`
 	ProcessAlive        map[string]bool                        `json:"process_alive,omitempty"` // Running foreground process evidence; readiness is reported separately, including when an agent execs over the pane root shell.
 	ClaimActor          string                                 `json:"claim_actor,omitempty"`
 	IdempotencyKey      string                                 `json:"idempotency_key,omitempty"`
@@ -660,9 +662,29 @@ func GetRestartPaneContext(ctx context.Context, opts RestartPaneOptions) (*Resta
 	}
 	if restartCfg == nil {
 		var cfgErr error
-		restartCfg, cfgErr = config.LoadMerged(mustGetwd(), config.DefaultPath())
+		loadConfig := config.LoadMerged
+		if beadPreflight == nil && promptToSend != "" {
+			// Dropping a broken project policy could turn block/redact into
+			// a permissive default before the destructive restart.
+			loadConfig = config.LoadMergedStrict
+		}
+		restartCfg, cfgErr = loadConfig(mustGetwd(), config.DefaultPath())
 		if cfgErr != nil {
+			if beadPreflight == nil && promptToSend != "" {
+				output.RobotResponse = NewErrorResponse(
+					errors.New("restart prompt policy configuration could not be loaded"), ErrCodeInternalError,
+					"Fix the global or project configuration before retrying; no pane was respawned",
+				)
+				return output, nil
+			}
 			restartCfg = config.Default()
+		}
+	}
+	if beadPreflight == nil && promptToSend != "" {
+		promptToSend, output.Redaction, output.Warnings, err = prepareRestartPrompt(ctx, opts.Session, targetPanes, promptToSend, restartCfg)
+		if err != nil {
+			output.RobotResponse = robotDispatchPrepareErrorResponse(err)
+			return output, nil
 		}
 	}
 	launchPlan, err := prepareRestartLaunchPlan(ctx, opts.Session, targetPanes, multiWindow, restartCfg, launchOverride, deps, opts.Environment)
@@ -1086,6 +1108,47 @@ func GetRestartPaneContext(ctx context.Context, opts RestartPaneOptions) (*Resta
 	}
 
 	return output, nil
+}
+
+// prepareRestartPrompt applies the shared outgoing-message policy before a
+// preview or destructive restart. Prepare checks only the selected topology,
+// message, and protocol; an old agent being dead or at a shell is expected here.
+// Delivery remains best-effort and replacement-fenced after relaunch, using
+// these exact prepared bytes for both sending and submission verification.
+func prepareRestartPrompt(ctx context.Context, session string, panes []tmux.Pane, prompt string, cfg *config.Config) (string, *RedactionSummary, []string, error) {
+	service, redactor, err := newRobotDispatchService(cfg.Redaction.ToRedactionLibConfig(), nil, nil)
+	if err != nil {
+		return "", nil, nil, err
+	}
+	var finalPrompt string
+	var summary RedactionSummary
+	var warnings []string
+	for i, pane := range panes {
+		pane.Type = restartCanonicalAgentType(restartPaneAgentType(pane))
+		prepared, err := service.Prepare(ctx, dispatchsvc.Request{
+			Session: session, Panes: []tmux.Pane{pane}, Selectors: []string{pane.Ref().Physical()},
+			RequireSingleSelector: true, IncludeUser: true, Message: prompt,
+			Submit: true, StopOnFailure: true,
+		})
+		// The shared redactor's preview can contain raw text in warn/off mode.
+		// Restart exposes only counts, categories, and content-free warnings.
+		_, summary, warnings = redactor.outputView()
+		if err != nil {
+			return "", &summary, warnings, err
+		}
+		message, err := prepared.FinalMessageForSingleTarget()
+		if err != nil {
+			return "", &summary, warnings, err
+		}
+		if i > 0 && message != finalPrompt {
+			return "", &summary, warnings, &dispatchsvc.Error{
+				Code: dispatchsvc.ErrMessageBuild,
+				Err:  errors.New("restart prompt preparation produced inconsistent final messages"),
+			}
+		}
+		finalPrompt = message
+	}
+	return finalPrompt, &summary, warnings, nil
 }
 
 func setRestartPanePromptFailure(output *RestartPaneOutput, promptErrors []string) {

@@ -360,6 +360,313 @@ func TestGetRestartPaneNativeRecoveryTransportHelper(t *testing.T) {
 	}
 }
 
+// Exercise prompt policy through the public robot envelope and the production
+// guarded sender. The recording transport deliberately holds the staged prompt
+// until submission verification rescues it, proving that verification uses the
+// same prepared bytes as delivery.
+func TestPrintRestartPaneOrdinaryPromptPolicyPreflight(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("recording tmux executable requires a POSIX shell")
+	}
+	const secret = "hunter2hunter2"
+	for _, test := range []struct {
+		name, mode, badConfig                                    string
+		plain, noPrompt, batch, legacy, dead, missingEnvironment bool
+	}{
+		{name: "block", mode: "block"},
+		{name: "redact", mode: "redact"},
+		{name: "warn", mode: "warn"},
+		{name: "off", mode: "off"},
+		{name: "safe-block", mode: "block", plain: true},
+		{name: "blocked-batch", mode: "block", batch: true},
+		{name: "legacy-title", mode: "redact", legacy: true},
+		{name: "dead-pane", mode: "redact", dead: true},
+		{name: "missing-environment", mode: "redact", missingEnvironment: true},
+		{name: "invalid-global-policy", mode: "off", badConfig: "global"},
+		{name: "invalid-project-policy", mode: "off", badConfig: "project"},
+		{name: "no-prompt-keeps-config-fallback", mode: "off", badConfig: "global", noPrompt: true},
+	} {
+		for _, dryRun := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/dry-run=%t", test.name, dryRun), func(t *testing.T) {
+				root := t.TempDir()
+				t.Setenv("HOME", root)
+				t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
+				t.Setenv("NTM_RESTART_PROMPT_POLICY_ROOT", root)
+				binary := filepath.Join(root, "tmux")
+				const script = `#!/bin/sh
+set -eu
+root="$NTM_RESTART_PROMPT_POLICY_ROOT"
+printf '%s\n' "$1" >> "$root/operations"
+if [ "$1" != if-shell ]; then printf '%s\n' "$*" >> "$root/calls"; fi
+case "$1" in
+  has-session) ;;
+  if-shell)
+    pid=2000000001
+    if [ -f "$root/respawned" ]; then pid=2000000002; fi
+    case "$5" in *"#{pane_pid},$pid}"*) ;; *) printf 'ntm_pane_identity_changed\n'; exit 0 ;; esac
+    eval "set -- $6"
+    exec "$0" "$@"
+    ;;
+  display-message)
+    case "$*" in
+      *@ntm_agent_type*) printf '[codex]\n' ;;
+      *pane_current_command*)
+        if [ -f "$root/launched" ]; then printf 'codex\n'; else printf 'sh\n'; fi
+        ;;
+      *pane_pid*)
+        if [ -f "$root/respawned" ]; then printf '2000000002\n'; else printf '2000000001\n'; fi
+        ;;
+      *) exit 51 ;;
+    esac
+    ;;
+  respawn-pane) : > "$root/respawned" ;;
+  set-option) ;;
+  send-keys)
+    [ -f "$root/recorded" ] || exit 52
+    case "$4" in
+      -l)
+        if [ -f "$root/launched" ]; then
+          printf '%s' "$6" > "$root/prompt"
+        else
+          printf '%s' "$6" > "$root/launch-command"
+        fi
+        ;;
+      Enter)
+        if [ -f "$root/launched" ]; then
+          [ -f "$root/prompt" ] || exit 53
+          count=0
+          if [ -f "$root/prompt-enters" ]; then count=$(cat "$root/prompt-enters"); fi
+          printf '%s' "$((count + 1))" > "$root/prompt-enters"
+        else
+          : > "$root/launched"
+        fi
+        ;;
+      *) exit 54 ;;
+    esac
+    ;;
+  load-buffer)
+    [ -f "$root/recorded" ] || exit 55
+    if [ -f "$root/launched" ]; then cat > "$root/prompt"; else cat > "$root/launch-command"; fi
+    ;;
+  paste-buffer|delete-buffer) ;;
+  capture-pane)
+    [ -f "$root/launched" ] || exit 0
+    count=0
+    if [ -f "$root/prompt-enters" ]; then count=$(cat "$root/prompt-enters"); fi
+    if [ -f "$root/prompt" ] && [ "$count" -lt 3 ]; then
+      printf 'OpenAI Codex\n› '
+      cat "$root/prompt"
+      printf '\n'
+    else
+      printf 'OpenAI Codex\n› Ask Codex to do anything\n100%% context left\n'
+    fi
+    ;;
+  *) exit 56 ;;
+esac
+`
+				if err := os.WriteFile(binary, []byte(script), 0700); err != nil {
+					t.Fatal(err)
+				}
+				t.Setenv("NTM_TMUX_BINARY", binary)
+				originalClient := tmux.DefaultClient
+				tmux.DefaultClient = tmux.NewClient("")
+				t.Cleanup(func() { tmux.DefaultClient = originalClient })
+				policy := config.Default()
+				policy.Redaction.Mode = test.mode
+				if test.badConfig != "" {
+					t.Chdir(root)
+					path := config.DefaultPath()
+					if test.badConfig == "project" {
+						path = filepath.Join(root, ".ntm", "config.toml")
+					}
+					if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(path, []byte("[redaction]\nmode = \""+secret), 0600); err != nil {
+						t.Fatal(err)
+					}
+					policy = nil
+				}
+				pane := tmux.Pane{ID: "%7", Index: 2, PID: 2000000001, Type: tmux.AgentCodex,
+					Title: "restart-policy__cod_2", Command: "sh", Width: 100, Height: 30}
+				if test.legacy {
+					pane.Type = tmux.AgentUnknown
+				}
+				if test.dead {
+					pane.Dead, pane.Command = true, "codex"
+				}
+				panes := []tmux.Pane{pane}
+				selectors := []string{pane.ID}
+				if test.batch {
+					second := pane
+					second.ID, second.WindowIndex, second.Index = "%8", 1, 0
+					panes = append(panes, second)
+					selectors = append(selectors, second.ID)
+				}
+				saved := tmux.AgentLaunchSpec{Version: tmux.AgentLaunchSpecVersion, AgentType: tmux.AgentCodex, Command: "codex"}
+				if test.missingEnvironment {
+					saved.OmittedEnv = []string{"REQUIRED_API_TOKEN"}
+					t.Setenv("REQUIRED_API_TOKEN", "ambient-must-not-authorize-recovery")
+				}
+				prompt := "password=" + secret
+				if test.plain {
+					prompt = "Continue safe work"
+				}
+				if test.noPrompt {
+					prompt = ""
+				}
+				exists := func(name string) bool {
+					t.Helper()
+					_, err := os.Stat(filepath.Join(root, name))
+					if err != nil && !errors.Is(err, os.ErrNotExist) {
+						t.Fatal(err)
+					}
+					return err == nil
+				}
+				read := func(name string) string {
+					t.Helper()
+					data, err := os.ReadFile(filepath.Join(root, name))
+					if err != nil && !errors.Is(err, os.ErrNotExist) {
+						t.Fatal(err)
+					}
+					return string(data)
+				}
+				var recorded *tmux.AgentLaunchSpec
+				var launchReads, identityCalls int
+				SetRestartPaneIdentityHook(func(context.Context, string, []RestartedAgentPane) { identityCalls++ })
+				t.Cleanup(func() { SetRestartPaneIdentityHook(nil) })
+				deps := RestartPaneDependencies{
+					ListPanes: func(context.Context, string) ([]tmux.Pane, error) {
+						current := append([]tmux.Pane(nil), panes...)
+						if exists("respawned") {
+							current[0].PID, current[0].Command, current[0].Dead = 2000000002, "sh", false
+						}
+						if exists("launched") {
+							current[0].Type, current[0].Command = tmux.AgentCodex, "codex"
+						}
+						return current, nil
+					},
+					LoadManifest: func(string) (*resilience.SpawnManifest, error) { return nil, os.ErrNotExist },
+					ReadLaunchSpec: func(context.Context, string) (*tmux.AgentLaunchSpec, error) {
+						launchReads++
+						if recorded != nil {
+							return cloneRestartLaunchSpec(recorded), nil
+						}
+						return cloneRestartLaunchSpec(&saved), nil
+					},
+					PaneWorkingDir: func(context.Context, string) (string, error) { return root, nil },
+					SetLaunchSpec: func(_ context.Context, target string, pid int, spec tmux.AgentLaunchSpec) error {
+						if target != pane.ID || pid != 2000000002 || !exists("respawned") {
+							t.Fatal("launch metadata was published outside the verified replacement")
+						}
+						recorded = cloneRestartLaunchSpec(&spec)
+						return os.WriteFile(filepath.Join(root, "recorded"), []byte("recorded"), 0600)
+					},
+					ObserveAgentProcess: func(ctx context.Context, target string, pid int) (int, error) {
+						if ctx.Err() != nil {
+							return 0, ctx.Err()
+						}
+						if target != pane.ID || pid != 2000000002 {
+							t.Fatal("readiness lost the recorded replacement identity")
+						}
+						if exists("launched") {
+							return 2000000003, nil
+						}
+						return 0, nil
+					},
+				}
+				ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
+				defer cancel()
+				encoded, terminalErr := captureStdout(t, func() error {
+					return PrintRestartPaneContext(ctx, RestartPaneOptions{
+						Session: "restart-policy", Panes: selectors, DryRun: dryRun,
+						Prompt: prompt, Config: policy, Deps: &deps,
+					})
+				})
+				var out RestartPaneOutput
+				if err := json.Unmarshal([]byte(encoded), &out); err != nil {
+					t.Fatalf("restart did not emit a valid robot envelope: %v", err)
+				}
+				if strings.Contains(encoded+fmt.Sprint(terminalErr), secret) {
+					t.Fatal("restart prompt or malformed policy leaked into diagnostics")
+				}
+				if (test.mode == "block" || test.mode == "redact") && strings.Contains(read("calls")+read("prompt"), secret) {
+					t.Fatal("blocked or redacted prompt reached the transport unfiltered")
+				}
+				blocked := test.mode == "block" && !test.plain && !test.noPrompt
+				badPolicy := test.badConfig != "" && !test.noPrompt
+				refused := blocked || badPolicy || test.missingEnvironment
+				if out.DryRun != dryRun {
+					t.Fatal("restart lost the requested preview mode")
+				}
+				if prompt != "" && !badPolicy {
+					if out.Redaction == nil || out.Redaction.Mode != test.mode {
+						t.Fatal("restart omitted the effective outgoing-message policy")
+					}
+					if test.mode != "off" && !test.plain && out.Redaction.Findings == 0 {
+						t.Fatal("restart prompt policy did not scan the requested content")
+					}
+					if (test.mode == "warn" || test.mode == "redact") && len(out.Warnings) == 0 {
+						t.Fatal("restart discarded the safe policy warning")
+					}
+				}
+				if dryRun || refused {
+					if exists("respawned") || exists("launched") || exists("prompt") || recorded != nil ||
+						identityCalls != 0 || len(out.Restarted) != 0 || out.PromptSent {
+						t.Fatal("preview or refused prompt crossed the restart mutation boundary")
+					}
+					for _, operation := range []string{"respawn-pane", "set-option", "send-keys", "load-buffer", "paste-buffer"} {
+						if strings.Contains(read("operations"), operation+"\n") {
+							t.Fatalf("preview or refusal reached %s", operation)
+						}
+					}
+					if refused {
+						if out.Success || terminalErr == nil || len(out.WouldAffect) != 0 {
+							t.Fatal("refused restart advertised success or affected panes")
+						}
+						if blocked && !strings.Contains(out.Error, "redaction_blocked") {
+							t.Fatal("blocked prompt did not return the shared dispatch-policy refusal")
+						}
+						if badPolicy && !strings.Contains(out.Error, "configuration") {
+							t.Fatal("broken policy was not refused explicitly")
+						}
+						if test.missingEnvironment && !strings.Contains(out.Error, "REQUIRED_API_TOKEN") {
+							t.Fatal("prompt policy bypassed the missing recovery-environment refusal")
+						}
+						if (blocked || badPolicy) && launchReads != 0 {
+							t.Fatal("prompt policy refusal happened after launch preparation")
+						}
+					} else if !out.Success || terminalErr != nil || !reflect.DeepEqual(out.WouldAffect, []string{"2"}) {
+						t.Fatal("allowed prompt preview did not succeed without mutation")
+					}
+					return
+				}
+				if !out.Success || terminalErr != nil || !out.AgentRelaunched["2"] || !out.ProcessAlive["2"] ||
+					identityCalls != 1 || !reflect.DeepEqual(out.Restarted, []string{"2"}) {
+					t.Fatalf("allowed restart did not complete: success=%t code=%s error=%s", out.Success, out.ErrorCode, out.Error)
+				}
+				if test.noPrompt {
+					if out.PromptSent || exists("prompt") || out.Redaction != nil {
+						t.Fatal("prompt-free restart unexpectedly prepared or delivered a message")
+					}
+					return
+				}
+				delivered := read("prompt")
+				if test.mode == "redact" {
+					if delivered == prompt || !strings.Contains(delivered, "[REDACTED:") {
+						t.Fatal("redact mode did not deliver the prepared sanitized message")
+					}
+				} else if delivered != prompt {
+					t.Fatal("allowed prompt bytes changed unexpectedly")
+				}
+				if !out.PromptSent || out.PromptDelivery["2"] != RestartPromptDelivered || read("prompt-enters") != "3" {
+					t.Fatal("submission verification did not rescue and confirm the exact prepared prompt")
+				}
+			})
+		}
+	}
+}
+
 func TestRestartReadinessRequiresStableForegroundEvidence(t *testing.T) {
 	for _, tc := range []struct {
 		name             string
