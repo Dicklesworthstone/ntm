@@ -787,7 +787,7 @@ case "$1" in
   paste-buffer|delete-buffer) ;;
   capture-pane)
     if [ -f "$root/agent-launched" ]; then
-      printf 'OpenAI Codex\nCodex>\n100%% context left\n'
+      printf 'OpenAI Codex\n› Ask Codex to do anything\n100%% context left\n'
     fi
     ;;
   *) exit 56 ;;
@@ -911,6 +911,23 @@ printf '%s' "${AGENT_MAIL_PROJECT-}" > "$root/agent-mail-project"
 	t.Cleanup(func() { SetRestartPaneIdentityHook(nil) })
 	listCalls := 0
 	opts.Deps = &RestartPaneDependencies{
+		ObserveAgentProcess: func(observeCtx context.Context, target string, rootPID int) (int, error) {
+			if observeCtx.Err() != nil {
+				return 0, observeCtx.Err()
+			}
+			if target != "%7" || rootPID != os.Getpid() {
+				t.Fatalf("readiness lost the recorded replacement: target=%s pid=%d", target, rootPID)
+			}
+			// The recording transport has no tty or real foreground group.
+			// Its launch marker is the explicit simulated process observation.
+			if _, err := os.Stat(filepath.Join(root, "agent-launched")); err != nil {
+				if errors.Is(err, os.ErrNotExist) {
+					return 0, nil
+				}
+				return 0, err
+			}
+			return rootPID + 1, nil
+		},
 		ListPanes: func(context.Context, string) ([]tmux.Pane, error) {
 			listCalls++
 			current := append([]tmux.Pane(nil), panes...)
@@ -979,18 +996,6 @@ printf '%s' "${AGENT_MAIL_PROJECT-}" > "$root/agent-mail-project"
 			}
 			return os.WriteFile(filepath.Join(root, "recorded"), data, 0600)
 		},
-	}
-	if wantPreflight && !dryRun && mode != "delivery-failure" {
-		// The real readiness gate needs a live child, independently of the
-		// captured Codex banner. Keep one owned process until the test ends.
-		child := exec.CommandContext(t.Context(), "sleep", "30")
-		if err := child.Start(); err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() {
-			_ = child.Process.Kill()
-			_ = child.Wait()
-		})
 	}
 	out, err := GetRestartPaneContext(t.Context(), opts)
 	if err != nil || out == nil {

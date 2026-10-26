@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -13,6 +16,8 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/assignment"
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/config"
+	dispatchsvc "github.com/Dicklesworthstone/ntm/internal/dispatch"
+	"github.com/Dicklesworthstone/ntm/internal/resilience"
 	statuspkg "github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
@@ -196,9 +201,9 @@ func TestPreflightRestartBeadOrdersPolicyPlanAndLiveEligibilityBeforeMutationPor
 		"plan:/authoritative/project",
 		"live:/authoritative/project:" + beadID,
 		"ledger-probe:" + session,
+		"pane-preflight:" + session,
 		"store:" + session,
 		"key",
-		"pane-preflight:" + session,
 	}
 	if fmt.Sprint(calls) != fmt.Sprint(wantCalls) {
 		t.Fatalf("preflight call order = %v, want %v", calls, wantCalls)
@@ -211,6 +216,152 @@ func TestPreflightRestartBeadOrdersPolicyPlanAndLiveEligibilityBeforeMutationPor
 	}
 	if !strings.Contains(preflight.Prompt, beadID) || !strings.Contains(preflight.Prompt, "Restart safely") {
 		t.Fatalf("restart prompt = %q", preflight.Prompt)
+	}
+}
+
+// The public robot envelope must make the same dispatch-policy decision for
+// preview and execution. A valid actual request reaches a deliberately refused
+// respawn boundary; no real pane or assignment is mutated by this fixture.
+func TestPrintRestartPaneBeadPreflightParity(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("recording tmux executable requires a POSIX shell")
+	}
+	secret := "gh" + "p_" + strings.Repeat("q", 40)
+	for _, test := range []struct {
+		name    string
+		title   string
+		prompt  string
+		blocked bool
+	}{
+		{name: "allowed", title: "Restart safely", prompt: "Continue the assigned work"},
+		{name: "blocked title", title: "Restart token=" + secret, blocked: true},
+		{name: "blocked prompt", title: "Restart safely", prompt: "Continue token=" + secret, blocked: true},
+	} {
+		for _, ledgerExists := range []bool{false, true} {
+			for _, dryRun := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/ledger=%t/dry-run=%t", test.name, ledgerExists, dryRun), func(t *testing.T) {
+					root := t.TempDir()
+					t.Setenv("HOME", root)
+					t.Setenv("NTM_RESTART_BEAD_PREFLIGHT_ROOT", root)
+					binary := filepath.Join(root, "tmux")
+					const script = `#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "$NTM_RESTART_BEAD_PREFLIGHT_ROOT/calls"
+case "$1" in
+  has-session) ;;
+  display-message)
+    case "$*" in
+      *@ntm_agent_type*) printf '[codex]\n' ;;
+      *pane_pid*) printf '2000000001\n' ;;
+      *) exit 74 ;;
+    esac
+    ;;
+  if-shell)
+    case "${6:-}" in
+      *respawn-pane*) : > "$NTM_RESTART_BEAD_PREFLIGHT_ROOT/mutation-boundary"; exit 71 ;;
+      *) exit 75 ;;
+    esac
+    ;;
+  *) exit 76 ;;
+esac
+`
+					if err := os.WriteFile(binary, []byte(script), 0700); err != nil {
+						t.Fatal(err)
+					}
+					t.Setenv("NTM_TMUX_BINARY", binary)
+					originalClient := tmux.DefaultClient
+					tmux.DefaultClient = tmux.NewClient("")
+					t.Cleanup(func() { tmux.DefaultClient = originalClient })
+					const session, beadID = "restart-policy", "ntm-restart-policy"
+					pane := tmux.Pane{ID: "%7", Index: 2, PID: 2000000001, Title: session + "__cod_1", Type: tmux.AgentCodex, Command: "bash"}
+					policy := config.Default()
+					policy.Redaction.Mode = "block"
+					store := assignment.NewStore(session)
+					var storeCalls, readOnlyStoreCalls, keyCalls, claimCalls, deliveryCalls int
+					deps := RestartPaneDependencies{
+						LoadAssignmentPolicy: func(string, string, bool) (*config.Config, error) { return policy, nil },
+						FetchActionable: func(context.Context, string, int) ([]bv.TriageRecommendation, error) {
+							return []bv.TriageRecommendation{{ID: beadID, Title: test.title, Status: "open"}}, nil
+						},
+						FetchBeadDetails: func(context.Context, string, string) (*bv.BeadAssignmentDetails, error) {
+							return &bv.BeadAssignmentDetails{ID: beadID, Title: test.title, Status: "open"}, nil
+						},
+						AssignmentLedgerExists: func(string) (bool, error) { return ledgerExists, nil },
+						LoadStore: func(string) (*assignment.AssignmentStore, error) {
+							storeCalls++
+							return store, nil
+						},
+						LoadStoreReadOnly: func(string) (*assignment.AssignmentStore, error) {
+							readOnlyStoreCalls++
+							return store, nil
+						},
+						NewIdempotencyKey: func() (string, error) { keyCalls++; return "restart-policy-key", nil },
+						ClaimBead: func(context.Context, string, string, string) (bv.BeadClaimResult, error) {
+							claimCalls++
+							return bv.BeadClaimResult{}, errors.New("unexpected claim")
+						},
+						DispatchDeliverer: dispatchsvc.DelivererFunc(func(context.Context, dispatchsvc.Delivery) error {
+							deliveryCalls++
+							return errors.New("unexpected delivery")
+						}),
+						ListPanes:      func(context.Context, string) ([]tmux.Pane, error) { return []tmux.Pane{pane}, nil },
+						LoadManifest:   func(string) (*resilience.SpawnManifest, error) { return nil, os.ErrNotExist },
+						ReadLaunchSpec: func(context.Context, string) (*tmux.AgentLaunchSpec, error) { return nil, nil },
+					}
+					encoded, terminalErr := captureStdout(t, func() error {
+						return PrintRestartPaneContext(t.Context(), RestartPaneOptions{
+							Session: session, Panes: []string{pane.ID}, Bead: beadID, Prompt: test.prompt,
+							ProjectDir: root, DryRun: dryRun, Config: policy, Deps: &deps,
+						})
+					})
+					var out RestartPaneOutput
+					if err := json.Unmarshal([]byte(encoded), &out); err != nil {
+						t.Fatalf("restart did not emit a valid robot envelope: %v", err)
+					}
+					calls, err := os.ReadFile(filepath.Join(root, "calls"))
+					if err != nil {
+						t.Fatal(err)
+					}
+					if strings.Contains(encoded+fmt.Sprint(terminalErr)+string(calls), secret) {
+						t.Fatal("blocked assignment content leaked into robot output, diagnostics, or tmux arguments")
+					}
+					_, boundaryErr := os.Stat(filepath.Join(root, "mutation-boundary"))
+					if boundaryErr != nil && !errors.Is(boundaryErr, os.ErrNotExist) {
+						t.Fatal(boundaryErr)
+					}
+					if test.blocked {
+						if out.Success || terminalErr == nil || out.ErrorCode != ErrCodeInvalidFlag || !strings.Contains(out.Error, "redaction") {
+							t.Fatalf("blocked assignment was not refused by dispatch preflight: success=%t code=%q error=%q", out.Success, out.ErrorCode, out.Error)
+						}
+						if len(out.WouldAffect) != 0 || !errors.Is(boundaryErr, os.ErrNotExist) {
+							t.Fatal("blocked assignment advertised recovery or reached respawn")
+						}
+					} else if dryRun {
+						if !out.Success || terminalErr != nil || !slices.Equal(out.WouldAffect, []string{"2"}) || !errors.Is(boundaryErr, os.ErrNotExist) {
+							t.Fatalf("allowed preview did not succeed without mutation: success=%t code=%q error=%q", out.Success, out.ErrorCode, out.Error)
+						}
+					} else if boundaryErr != nil || out.Success || terminalErr == nil {
+						t.Fatal("allowed actual restart did not reach the deliberately refused respawn boundary")
+					}
+					if out.DryRun != dryRun || len(out.Restarted) != 0 || out.PromptSent || claimCalls != 0 || deliveryCalls != 0 {
+						t.Fatal("preflight changed a pane, claimed work, or delivered a prompt")
+					}
+					wantStore, wantReadOnly, wantKey := 0, 0, 0
+					if dryRun && ledgerExists {
+						wantReadOnly = 1
+					}
+					if !dryRun && (ledgerExists || !test.blocked) {
+						wantStore = 1
+					}
+					if !dryRun && !test.blocked {
+						wantKey = 1
+					}
+					if storeCalls != wantStore || readOnlyStoreCalls != wantReadOnly || keyCalls != wantKey {
+						t.Fatalf("assignment side effects: store=%d read-only=%d key=%d, want %d/%d/%d", storeCalls, readOnlyStoreCalls, keyCalls, wantStore, wantReadOnly, wantKey)
+					}
+				})
+			}
+		}
 	}
 }
 
@@ -922,17 +1073,23 @@ func TestRestartPaneReadinessAndDelayHonorCancellation(t *testing.T) {
 		var captureCalls, childCalls int
 		ready, err := waitForPaneAgentReadyWithContext(
 			ctx, "%7", 1234, "codex", time.Minute, time.Second,
-			func(gotCtx context.Context, target string, lines int) (string, error) {
+			func(gotCtx context.Context, target string) (string, error) {
 				captureCalls++
-				if gotCtx != ctx || target != "%7" || lines != 50 {
-					t.Fatalf("capture context=%v target=%q lines=%d", gotCtx, target, lines)
+				if gotCtx != ctx || target != "%7" {
+					t.Fatalf("capture context=%v target=%q", gotCtx, target)
 				}
 				cancel()
 				return "", nil
 			},
-			func(int) bool { childCalls++; return true },
+			func(gotCtx context.Context, target string, shellPID int) (int, error) {
+				childCalls++
+				if gotCtx != ctx || target != "%7" || shellPID != 1234 {
+					t.Fatalf("foreground context=%v target=%q shellPID=%d", gotCtx, target, shellPID)
+				}
+				return 1235, nil
+			},
 		)
-		if ready || !errors.Is(err, context.Canceled) || captureCalls != 1 || childCalls != 0 {
+		if ready || !errors.Is(err, context.Canceled) || captureCalls != 1 || childCalls != 1 {
 			t.Fatalf("readiness ready=%t err=%v captureCalls=%d childCalls=%d", ready, err, captureCalls, childCalls)
 		}
 	})
@@ -1219,7 +1376,15 @@ func TestRelaunchRestartPaneAgentContextObservesReadyAgentAfterSenderReturnsCanc
 			}
 			return true, nil
 		},
-		func(pid int) bool { return mutated && pid == 100 },
+		func(gotCtx context.Context, target string, shellPID int) (int, error) {
+			if gotCtx.Err() != nil {
+				t.Fatalf("post-cancellation foreground context is canceled: %v", gotCtx.Err())
+			}
+			if mutated && target == "%1" && shellPID == 100 {
+				return 101, nil
+			}
+			return 0, nil
+		},
 	)
 	if !identitySet || !errors.Is(err, context.Canceled) || phase != "launch" || pidCalls != 2 {
 		t.Fatalf("relaunch error=%v phase=%q pidCalls=%d", err, phase, pidCalls)

@@ -1064,7 +1064,7 @@ func executeRestart(ctx context.Context, session string, win, pane int, agentTyp
 			observeSmartRestartLaunchAfterCancellation(ctx, session, win, pane, agentType, target, executor, seq)
 			return seq, cancelErr
 		}
-		shellPID = 0 // ready-gate falls back to content-only detection
+		shellPID = 0 // the ready gate refuses readiness without a verified pane root
 	} else if shellPID > 0 {
 		seq.ShellPID = shellPID
 		processAlive := executor.hasChildAlive(shellPID)
@@ -1105,13 +1105,7 @@ func executeRestart(ctx context.Context, session string, win, pane int, agentTyp
 	// Step 6: Send the optional prompt through the shared dispatch application
 	// service. PromptSent is only true after the service returns one delivered
 	// receipt for this exact physical pane.
-	seq.AgentLaunched = true
-	seq.AgentLaunchStatus = SmartRestartLaunchReady
-	if shellPID > 0 {
-		seq.ShellPID = shellPID
-		processAlive := executor.hasChildAlive(shellPID)
-		seq.ProcessAlive = &processAlive
-	}
+	updateSmartRestartLaunchObservation(seq, executor, shellPID, true)
 	if opts.Prompt != "" {
 		attemptedActions = append(attemptedActions, "send-prompt")
 		promptOutcome, promptErr := dispatchSmartRestartPrompt(
@@ -1199,7 +1193,9 @@ func updateSmartRestartLaunchObservation(
 		return
 	}
 	seq.ShellPID = shellPID
-	processAlive := executor.hasChildAlive(shellPID)
+	// Readiness already proves a running foreground process, including an
+	// agent that execs over the pane root and therefore has no child process.
+	processAlive := ready || executor.hasChildAlive(shellPID)
 	seq.ProcessAlive = &processAlive
 	if !ready && !processAlive {
 		seq.AgentLaunchStatus = SmartRestartLaunchNotReady

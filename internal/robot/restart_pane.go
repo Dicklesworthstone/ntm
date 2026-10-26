@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -55,7 +56,7 @@ type RestartPaneOutput struct {
 	PromptSent          bool                                   `json:"prompt_sent,omitempty"`   // True only when every attempted ordinary prompt or the atomic bead prompt has confirmed delivery
 	PromptError         string                                 `json:"prompt_error,omitempty"`  // Prompt delivery error details
 	PromptDelivery      map[string]RestartPromptDeliveryStatus `json:"prompt_delivery,omitempty"`
-	ProcessAlive        map[string]bool                        `json:"process_alive,omitempty"` // Post-restart liveness per pane (agent panes require a live agent child, not just the shell)
+	ProcessAlive        map[string]bool                        `json:"process_alive,omitempty"` // Running foreground process evidence; readiness is reported separately, including when an agent execs over the pane root shell.
 	ClaimActor          string                                 `json:"claim_actor,omitempty"`
 	IdempotencyKey      string                                 `json:"idempotency_key,omitempty"`
 	DispatchReceiptID   string                                 `json:"dispatch_receipt_id,omitempty"`
@@ -283,6 +284,9 @@ type RestartPaneDependencies struct {
 	ReadLaunchSpec         func(context.Context, string) (*tmux.AgentLaunchSpec, error)
 	SetLaunchSpec          func(context.Context, string, int, tmux.AgentLaunchSpec) error
 	PaneWorkingDir         func(context.Context, string) (string, error)
+	// ObserveAgentProcess returns a running foreground process belonging to
+	// the expected pane root, or zero while launch is still incomplete.
+	ObserveAgentProcess func(context.Context, string, int) (int, error)
 }
 
 type restartBeadPreflight struct {
@@ -877,8 +881,11 @@ func GetRestartPaneContext(ctx context.Context, opts RestartPaneOptions) (*Resta
 				setAgentType,
 				sendLaunch,
 				paneShellPIDContext,
-				waitForPaneAgentReadyContext,
-				process.HasChildAlive,
+				func(readyCtx context.Context, target string, rootPID int, kind string, timeout time.Duration) (bool, error) {
+					return waitForPaneAgentReadyWithContext(readyCtx, target, rootPID, kind, timeout,
+						restartPaneReadyPollInterval, tmux.CapturePaneVisibleContext, deps.ObserveAgentProcess)
+				},
+				deps.ObserveAgentProcess,
 			)
 			if lifecycleErr == nil && outcome.Ready {
 				spec := launchPlan.Specs[paneKey]
@@ -1115,6 +1122,7 @@ func restartPaneDeps(custom *RestartPaneDependencies) RestartPaneDependencies {
 		ReadLaunchSpec:         tmux.ReadPaneLaunchSpecContext,
 		SetLaunchSpec:          tmux.DefaultClient.SetPaneLaunchSpecIfCurrentContext,
 		PaneWorkingDir:         restartPaneWorkingDirectory,
+		ObserveAgentProcess:    observeRestartForegroundProcess,
 	}
 	if custom == nil {
 		return deps
@@ -1176,6 +1184,9 @@ func restartPaneDeps(custom *RestartPaneDependencies) RestartPaneDependencies {
 	}
 	if custom.PaneWorkingDir != nil {
 		deps.PaneWorkingDir = custom.PaneWorkingDir
+	}
+	if custom.ObserveAgentProcess != nil {
+		deps.ObserveAgentProcess = custom.ObserveAgentProcess
 	}
 	return deps
 }
@@ -1317,6 +1328,25 @@ func preflightRestartBead(
 		return nil, freshDetailsErr
 	}
 
+	// The same read-only dispatch checks must authorize both preview and
+	// execution. In particular, a blocked title or prompt must not make a
+	// dry run promise a restart that execution refuses. These checks need no
+	// durable assignment identity, ledger creation, claim, or delivery.
+	redactionConfig := config.Default().Redaction.ToRedactionLibConfig()
+	if policy != nil {
+		redactionConfig = policy.Redaction.ToRedactionLibConfig()
+	}
+	fence := &restartAssignmentFence{deps: deps}
+	dispatchPort := newRobotAtomicPaneDispatchPort(
+		opts.Session, fence.listPanes, fence.observeSession, redactionConfig, fence, deps.DispatchPacer,
+	)
+	if _, err := dispatchPort.Preflight(ctx, assignment.DispatchRequest{
+		BeadID: beadID, BeadTitle: details.Title, Target: target, Pane: pane.Index,
+		AgentType: agentType, AgentName: agentName, Prompt: prompt,
+	}); err != nil {
+		return nil, fmt.Errorf("preflight restart assignment prompt: %w", err)
+	}
+
 	if opts.DryRun {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -1355,20 +1385,6 @@ func preflightRestartBead(
 		if request.RecoveredIntentSHA256 == "" {
 			request.RecoveredIntentSHA256 = strings.TrimSpace(recovery.PromptSHA256)
 		}
-	}
-	redactionConfig := config.Default().Redaction.ToRedactionLibConfig()
-	if policy != nil {
-		redactionConfig = policy.Redaction.ToRedactionLibConfig()
-	}
-	fence := &restartAssignmentFence{deps: deps}
-	dispatchPort := newRobotAtomicPaneDispatchPort(
-		opts.Session, fence.listPanes, fence.observeSession, redactionConfig, fence, deps.DispatchPacer,
-	)
-	if _, err := dispatchPort.Preflight(ctx, assignment.DispatchRequest{
-		BeadID: request.BeadID, BeadTitle: request.BeadTitle, Target: request.Target, Pane: request.Pane,
-		AgentType: request.AgentType, AgentName: request.AgentName, Prompt: request.Prompt, IdempotencyKey: request.IdempotencyKey,
-	}); err != nil {
-		return nil, fmt.Errorf("preflight restart assignment prompt: %w", err)
 	}
 	claimBead := deps.ClaimBead
 	if deps.ClaimBeadWithPolicy != nil {
@@ -1845,13 +1861,13 @@ func relaunchRestartPaneAgentContext(
 	send func(context.Context, string, string, bool, tmux.AgentType) error,
 	panePID func(context.Context, string) (int, error),
 	waitReady func(context.Context, string, int, string, time.Duration) (bool, error),
-	hasChildAlive func(int) bool,
+	observeProcess func(context.Context, string, int) (int, error),
 ) (restartAgentRelaunchOutcome, string, error) {
 	failed := restartAgentRelaunchOutcome{Status: RestartAgentRelaunchFailed}
 	if ctx == nil {
 		return failed, "preflight", errors.New("agent relaunch context is required")
 	}
-	if setAgentType == nil || send == nil || panePID == nil || waitReady == nil || hasChildAlive == nil {
+	if setAgentType == nil || send == nil || panePID == nil || waitReady == nil || observeProcess == nil {
 		return failed, "preflight", errors.New("agent relaunch dependencies are required")
 	}
 
@@ -1870,23 +1886,28 @@ func relaunchRestartPaneAgentContext(
 	}
 	if err := send(ctx, info.Target, launchCommand, true, info.AgentType); err != nil {
 		if restartPaneCancellationError(ctx, err) != nil {
-			return observeRestartPaneAgentAfterCancellation(ctx, info, panePID, waitReady, hasChildAlive), "launch", err
+			return observeRestartPaneAgentAfterCancellation(ctx, info, panePID, waitReady, observeProcess), "launch", err
 		}
 		return failed, "launch", err
 	}
 
 	ready, err := waitReady(ctx, info.Target, shellPID, info.ResolvedType, readyTimeout)
+	agentPID, processErr := observeProcess(ctx, info.Target, shellPID)
+	if err == nil {
+		err = processErr
+	}
+	ready = ready && processErr == nil && agentPID > 0
 	outcome := restartAgentRelaunchOutcome{
 		Status:       RestartAgentRelaunchNotReady,
 		Ready:        ready,
-		ProcessAlive: shellPID > 0 && hasChildAlive(shellPID),
+		ProcessAlive: processErr == nil && agentPID > 0,
 		ShellPID:     shellPID,
 	}
 	if ready {
 		outcome.Status = RestartAgentRelaunchReady
 	}
 	if err != nil && restartPaneCancellationError(ctx, err) != nil {
-		return observeRestartPaneAgentAfterCancellation(ctx, info, panePID, waitReady, hasChildAlive), "readiness", err
+		return observeRestartPaneAgentAfterCancellation(ctx, info, panePID, waitReady, observeProcess), "readiness", err
 	}
 	return outcome, "readiness", err
 }
@@ -1896,7 +1917,7 @@ func observeRestartPaneAgentAfterCancellation(
 	info restartPromptTarget,
 	panePID func(context.Context, string) (int, error),
 	waitReady func(context.Context, string, int, string, time.Duration) (bool, error),
-	hasChildAlive func(int) bool,
+	observeProcess func(context.Context, string, int) (int, error),
 ) restartAgentRelaunchOutcome {
 	outcome := restartAgentRelaunchOutcome{Status: RestartAgentRelaunchUnknown}
 	observationCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), restartPaneMutationObservationTimeout)
@@ -1911,15 +1932,26 @@ func observeRestartPaneAgentAfterCancellation(
 		return outcome
 	}
 	outcome.ShellPID = shellPID
+	if info.ExpectedPID > 0 && shellPID != info.ExpectedPID {
+		outcome.ObservationError = fmt.Errorf("replacement pane process changed: %w", tmux.ErrPaneIdentityChanged)
+		return outcome
+	}
 	ready, readyErr := waitReady(observationCtx, info.Target, shellPID, info.ResolvedType, restartPaneMutationObservationTimeout)
-	outcome.Ready = ready
-	outcome.ProcessAlive = hasChildAlive(shellPID)
+	agentPID, processErr := observeProcess(observationCtx, info.Target, shellPID)
+	outcome.ProcessAlive = processErr == nil && agentPID > 0
+	outcome.Ready = ready && outcome.ProcessAlive
+
 	switch {
-	case ready:
+	case outcome.Ready:
 		outcome.Status = RestartAgentRelaunchReady
-	case readyErr != nil && !errors.Is(readyErr, context.Canceled) && !errors.Is(readyErr, context.DeadlineExceeded):
+	case readyErr != nil || processErr != nil:
 		outcome.Status = RestartAgentRelaunchUnknown
-		outcome.ObservationError = readyErr
+		for _, err := range []error{readyErr, processErr} {
+			if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+				outcome.ObservationError = err
+				break
+			}
+		}
 	case outcome.ProcessAlive:
 		outcome.Status = RestartAgentRelaunchUnknown
 	default:
@@ -2205,8 +2237,9 @@ func paneShellPIDContext(ctx context.Context, target string) (int, error) {
 	return pid, nil
 }
 
-// waitForPaneAgentReadyContext polls until the agent TUI is ready and the pane
-// shell has a live agent child. A shellPID <= 0 skips the process check.
+// waitForPaneAgentReadyContext requires fresh visible readiness text and a
+// stable running foreground process belonging to the expected pane root.
+// A stopped launch shell or an unrelated background child is not agent boot.
 func waitForPaneAgentReadyContext(ctx context.Context, target string, shellPID int, agentType string, timeout time.Duration) (bool, error) {
 	return waitForPaneAgentReadyWithContext(
 		ctx,
@@ -2215,9 +2248,136 @@ func waitForPaneAgentReadyContext(ctx context.Context, target string, shellPID i
 		agentType,
 		timeout,
 		restartPaneReadyPollInterval,
-		tmux.CapturePaneOutputContext,
-		process.HasChildAlive,
+		tmux.CapturePaneVisibleContext,
+		observeRestartForegroundProcess,
 	)
+}
+
+// observeRestartForegroundProcess binds process evidence to tmux's current
+// physical pane/root PID before looking under that root. Shell wrappers remain
+// valid when a running non-shell descendant owns their terminal. The bounded
+// walk does not require a particular executable name: custom launch commands
+// and provider runtime wrappers are supported.
+func observeRestartForegroundProcess(ctx context.Context, target string, expectedPID int) (int, error) {
+	if ctx == nil {
+		return 0, errors.New("restart process observation requires a context")
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	if expectedPID <= 0 {
+		return 0, errors.New("restart readiness requires a positive pane root PID")
+	}
+	ctx, cancel := context.WithTimeout(ctx, restartPaneMutationObservationTimeout)
+	defer cancel()
+	snapshot, err := tmux.DefaultClient.RunContext(ctx, "display-message", "-t", tmux.ExactTarget(target), "-p",
+		"#{pane_pid}\t#{pane_dead}\t#{pane_current_command}")
+	if err != nil {
+		if ctx.Err() != nil {
+			return 0, ctx.Err()
+		}
+		return 0, errors.New("cannot observe restart pane process")
+	}
+	fields := strings.Split(strings.TrimRight(snapshot, "\r\n"), "\t")
+	if len(fields) != 3 {
+		return 0, errors.New("restart pane process observation is incomplete")
+	}
+	rootPID, err := strconv.Atoi(fields[0])
+	if err != nil || rootPID != expectedPID {
+		return 0, fmt.Errorf("replacement pane process changed: %w", tmux.ErrPaneIdentityChanged)
+	}
+	command := strings.TrimSpace(fields[2])
+	if fields[1] != "0" || command == "" || tmux.PaneCommandIsStarting(command) {
+		return 0, nil
+	}
+	if tmux.DefaultClient.Remote != "" {
+		// Remote PIDs belong to another host. Tmux's live non-shell
+		// foreground observation is the available evidence; local /proc
+		// must never be consulted to strengthen that remote claim.
+		if tmux.PaneCommandIsShell(command) {
+			return 0, nil
+		}
+		return rootPID, nil
+	}
+
+	type candidate struct {
+		pid   int
+		depth int
+	}
+	queue := []candidate{{pid: rootPID}}
+	seen := map[int]bool{rootPID: true}
+	for checked := 0; len(queue) > 0 && checked < 32; checked++ {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
+		current := queue[0]
+		queue = queue[1:]
+		argv := process.GetCmdlineContext(ctx, current.pid)
+		state, _, stateErr := process.GetProcessState(current.pid)
+		if len(argv) > 0 && stateErr == nil && state != "" &&
+			state != "T" && state != "t" && state != "Z" && state != "X" && state != "x" &&
+			!tmux.PaneCommandIsShell(strings.TrimPrefix(filepath.Base(argv[0]), "-")) &&
+			!tmux.PaneCommandIsStarting(argv[0]) &&
+			restartProcessIsForeground(ctx, rootPID, current.pid) {
+			return current.pid, nil
+		}
+		if current.depth >= 4 {
+			continue
+		}
+		for _, child := range process.GetChildPIDsContext(ctx, current.pid, 8) {
+			if child <= 0 || seen[child] {
+				continue
+			}
+			seen[child] = true
+			queue = append(queue, candidate{pid: child, depth: current.depth + 1})
+		}
+	}
+	return 0, ctx.Err()
+}
+
+func restartProcessIsForeground(ctx context.Context, rootPID, pid int) bool {
+	rootForeground, _, rootOK := process.TerminalForeground(rootPID)
+	foregroundGroup, group, processOK := process.TerminalForeground(pid)
+	if rootOK && processOK {
+		return rootForeground > 0 && foregroundGroup == rootForeground && group == rootForeground
+	}
+	// Darwin's process library has a foreground check but no terminal-name
+	// implementation. One bounded ps snapshot supplies both tty ownership
+	// and the '+' foreground flag without reading command arguments.
+	probeCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	defer cancel()
+	probe := exec.CommandContext(probeCtx, "ps", "-o", "pid=,tty=,stat=", "-p", strconv.Itoa(rootPID)+","+strconv.Itoa(pid))
+	probe.WaitDelay = 100 * time.Millisecond
+	snapshot, err := probe.Output()
+	return err == nil && restartPSForegroundMatches(string(snapshot), rootPID, pid)
+}
+
+func restartPSForegroundMatches(snapshot string, rootPID, pid int) bool {
+	var rootTTY, candidateTTY, candidateState string
+	for _, line := range strings.Split(snapshot, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 3 {
+			continue
+		}
+		observedPID, err := strconv.Atoi(fields[0])
+		if err != nil {
+			continue
+		}
+		if observedPID == rootPID {
+			rootTTY = fields[1]
+		}
+		if observedPID == pid {
+			candidateTTY, candidateState = fields[1], fields[2]
+		}
+	}
+	if rootTTY == "" || rootTTY == "?" || rootTTY == "??" || rootTTY == "-" || candidateTTY != rootTTY || candidateState == "" {
+		return false
+	}
+	switch candidateState[0] {
+	case 'T', 't', 'Z', 'X', 'x':
+		return false
+	}
+	return strings.Contains(candidateState, "+")
 }
 
 func executeRestartBeadAfterSafeObservation(
@@ -2299,14 +2459,17 @@ func waitForPaneAgentReadyWithContext(
 	agentType string,
 	timeout time.Duration,
 	pollInterval time.Duration,
-	capture func(context.Context, string, int) (string, error),
-	hasChildAlive func(int) bool,
+	capture func(context.Context, string) (string, error),
+	observeProcess func(context.Context, string, int) (int, error),
 ) (bool, error) {
 	if ctx == nil {
 		return false, errors.New("restart readiness context is required")
 	}
-	if capture == nil || hasChildAlive == nil {
+	if capture == nil || observeProcess == nil {
 		return false, errors.New("restart readiness dependencies are required")
+	}
+	if shellPID <= 0 {
+		return false, errors.New("restart readiness requires a positive pane root PID")
 	}
 	if err := ctx.Err(); err != nil {
 		return false, err
@@ -2315,22 +2478,39 @@ func waitForPaneAgentReadyWithContext(
 		pollInterval = restartPaneReadyPollInterval
 	}
 	deadline := time.Now().Add(timeout)
+	var previousPID, stableObservations int
 	for {
-		ready := false
-		captured, captureErr := capture(ctx, target, 50)
+		beforePID, observeErr := observeProcess(ctx, target, shellPID)
+		if observeErr != nil {
+			return false, observeErr
+		}
+		captured, captureErr := capture(ctx, target)
 		if cancelErr := restartPaneCancellationError(ctx, captureErr); cancelErr != nil {
 			return false, cancelErr
 		}
-		if captureErr == nil && isAgentReady(captured, agentType) {
-			ready = true
+		afterPID, observeErr := observeProcess(ctx, target, shellPID)
+		if observeErr != nil {
+			return false, observeErr
 		}
-		if ready && shellPID > 0 && !hasChildAlive(shellPID) {
-			// Content looks ready but nothing is running under the shell —
-			// a bare-prompt false positive. Keep polling.
-			ready = false
+		outputReady := isAgentReady(captured, agentType)
+		if tmux.AgentType(agentType).Canonical() == tmux.AgentCodex {
+			// A Codex startup banner can be printed before a wrapper finishes
+			// initialization. Require the current composer or live working
+			// chrome while the same foreground process surrounds the capture.
+			outputReady = tmux.InspectComposer(captured, tmux.AgentCodex).MarkerVisible || agent.CodexActivelyWorking(captured, 0)
 		}
+		ready := captureErr == nil && outputReady && beforePID > 0 && beforePID == afterPID
 		if ready {
-			return true, nil
+			if previousPID == afterPID {
+				stableObservations++
+			} else {
+				previousPID, stableObservations = afterPID, 1
+			}
+			if stableObservations >= 2 {
+				return true, nil
+			}
+		} else {
+			previousPID, stableObservations = 0, 0
 		}
 		remaining := time.Until(deadline)
 		if remaining <= 0 {

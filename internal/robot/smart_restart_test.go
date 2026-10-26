@@ -152,6 +152,27 @@ func TestExecuteRestartRelaunchesGrokWithGrokCommand(t *testing.T) {
 	}
 }
 
+func TestExecuteRestartReportsReadyRootExecAsAlive(t *testing.T) {
+	for _, kind := range []string{"codex", "cc"} {
+		t.Run(kind, func(t *testing.T) {
+			executor := &deterministicSmartRestartExecutor{
+				shellPID:        321,
+				ready:           true,
+				readyConfigured: true,
+				childAlive:      false,
+			}
+			seq, err := executeRestart(t.Context(), "proj", 0, 1, kind, SmartRestartOptions{executor: executor})
+			if err != nil {
+				t.Fatalf("executeRestart() error=%v", err)
+			}
+			if seq == nil || !seq.AgentLaunched || seq.AgentLaunchStatus != SmartRestartLaunchReady ||
+				seq.ShellPID != 321 || seq.ProcessAlive == nil || !*seq.ProcessAlive {
+				t.Fatalf("ready childless agent lost foreground liveness: %+v", seq)
+			}
+		})
+	}
+}
+
 func TestExecuteRestartReturnsCallerCancellationAfterLaunch(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
@@ -196,6 +217,18 @@ func TestObserveSmartRestartLaunchAfterCancellationReportsStrongestKnownState(t 
 				ready:           true,
 				readyConfigured: true,
 				childAlive:      true,
+			},
+			wantStatus:       SmartRestartLaunchReady,
+			wantLaunched:     true,
+			wantProcessAlive: pointerToBool(true),
+		},
+		{
+			name: "ready agent execs over root",
+			executor: &deterministicSmartRestartExecutor{
+				shellPID:        104,
+				ready:           true,
+				readyConfigured: true,
+				childAlive:      false,
 			},
 			wantStatus:       SmartRestartLaunchReady,
 			wantLaunched:     true,

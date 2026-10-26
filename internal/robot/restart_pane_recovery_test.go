@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,8 +16,10 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/config"
+	"github.com/Dicklesworthstone/ntm/internal/process"
 	"github.com/Dicklesworthstone/ntm/internal/resilience"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
+	"github.com/Dicklesworthstone/ntm/tests/testutil"
 )
 
 // Run the public restart surface against a recording tmux executable in an
@@ -96,7 +99,7 @@ case "$1" in
     [ "$NTM_NATIVE_RECOVERY_MODE" != 'delivery-failure' ] || exit 54
     ;;
   paste-buffer|delete-buffer) ;;
-  capture-pane) printf 'OpenAI Codex\nCodex>\n100%% context left\n' ;;
+  capture-pane) printf 'OpenAI Codex\n› Ask Codex to do anything\n100%% context left\n' ;;
   *) exit 56 ;;
 esac
 `
@@ -124,19 +127,6 @@ func TestGetRestartPaneNativeRecoveryTransportHelper(t *testing.T) {
 	t.Setenv("NTM_NATIVE_RECOVERY_NEW_PID", strconv.Itoa(os.Getpid()))
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	if mode == "success" {
-		// The production readiness gate also requires a live child. Give the
-		// recording pane a real child, and join it even if an assertion fails.
-		child := exec.CommandContext(ctx, "sleep", "30")
-		if err := child.Start(); err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() {
-			_ = child.Process.Kill()
-			_ = child.Wait()
-		})
-	}
-
 	pane := tmux.Pane{ID: "%7", Index: 1, NTMIndex: 2, PID: 111, Type: tmux.AgentCodex,
 		Title: "recovery__cod_2_reviewer", Command: "codex", Width: 100, Height: 30}
 	saved := tmux.AgentLaunchSpec{Version: tmux.AgentLaunchSpecVersion, AgentType: tmux.AgentCodex,
@@ -215,6 +205,23 @@ func TestGetRestartPaneNativeRecoveryTransportHelper(t *testing.T) {
 			return &copy, nil
 		},
 		PaneWorkingDir: func(context.Context, string) (string, error) { return liveDir, nil },
+		ObserveAgentProcess: func(observeCtx context.Context, target string, rootPID int) (int, error) {
+			if observeCtx.Err() != nil {
+				return 0, observeCtx.Err()
+			}
+			if target != pane.ID || rootPID != os.Getpid() {
+				t.Fatalf("readiness lost the recorded replacement: target=%s pid=%d", target, rootPID)
+			}
+			// This transport has no real tty. Supply its simulated foreground
+			// observation explicitly; real-tmux tests exercise the live observer.
+			if _, err := os.Stat(filepath.Join(root, "launched")); err != nil {
+				if errors.Is(err, os.ErrNotExist) {
+					return 0, nil
+				}
+				return 0, err
+			}
+			return rootPID + 1, nil
+		},
 		SetLaunchSpec: func(_ context.Context, target string, expectedPID int, spec tmux.AgentLaunchSpec) error {
 			if target != pane.ID {
 				t.Fatalf("recovery metadata retargeted from %s to %s", pane.ID, target)
@@ -350,5 +357,284 @@ func TestGetRestartPaneNativeRecoveryTransportHelper(t *testing.T) {
 		if strings.Contains(log, "respawn-pane") {
 			t.Fatalf("native recovery killed a pane after refusal: mode=%s output=%+v calls=%s", mode, out, log)
 		}
+	}
+}
+
+func TestRestartReadinessRequiresStableForegroundEvidence(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		observations     []int
+		captureFailureAt int
+		wantReady        bool
+		wantCaptures     int
+	}{
+		{name: "stable agent", observations: []int{71, 71, 71, 71}, wantReady: true, wantCaptures: 2},
+		{name: "launch wrapper only", observations: []int{0}, wantReady: false},
+		{name: "wrapper starts agent", observations: []int{0, 0, 71, 71, 71, 71}, wantReady: true, wantCaptures: 3},
+		{name: "process changes during capture", observations: []int{71, 72, 72, 72, 72, 72}, wantReady: true, wantCaptures: 3},
+		{name: "process changes between captures", observations: []int{71, 71, 72, 72, 72, 72}, wantReady: true, wantCaptures: 3},
+		{name: "agent stops after one observation", observations: []int{71, 71, 0}, wantReady: false},
+		{name: "capture failure resets evidence", observations: []int{71}, captureFailureAt: 2, wantReady: true, wantCaptures: 4},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var observations, captures int
+			ready, err := waitForPaneAgentReadyWithContext(t.Context(), "%7", 100, "codex",
+				100*time.Millisecond, time.Millisecond,
+				func(ctx context.Context, target string) (string, error) {
+					if ctx.Err() != nil || target != "%7" {
+						t.Fatalf("capture lost pane/context: target=%s err=%v", target, ctx.Err())
+					}
+					captures++
+					if captures == tc.captureFailureAt {
+						return "", errors.New("capture unavailable")
+					}
+					return "OpenAI Codex\n› Ask Codex to do anything\n", nil
+				},
+				func(ctx context.Context, target string, rootPID int) (int, error) {
+					if ctx.Err() != nil || target != "%7" || rootPID != 100 {
+						t.Fatalf("observation lost expected root: target=%s pid=%d err=%v", target, rootPID, ctx.Err())
+					}
+					pid := tc.observations[min(observations, len(tc.observations)-1)]
+					observations++
+					return pid, nil
+				})
+			if err != nil || ready != tc.wantReady {
+				t.Fatalf("readiness=%v err=%v, want %v", ready, err, tc.wantReady)
+			}
+			if tc.wantCaptures > 0 && captures != tc.wantCaptures {
+				t.Fatalf("captured %d frames, want %d stable-evidence frames", captures, tc.wantCaptures)
+			}
+		})
+	}
+
+	t.Run("replacement during capture refuses readiness", func(t *testing.T) {
+		var observations, captures int
+		ready, err := waitForPaneAgentReadyWithContext(t.Context(), "%7", 100, "codex",
+			time.Second, time.Millisecond,
+			func(context.Context, string) (string, error) {
+				captures++
+				return "OpenAI Codex\n›\n", nil
+			},
+			func(context.Context, string, int) (int, error) {
+				observations++
+				if observations == 2 {
+					return 0, tmux.ErrPaneIdentityChanged
+				}
+				return 71, nil
+			})
+		if ready || !errors.Is(err, tmux.ErrPaneIdentityChanged) || captures != 1 {
+			t.Fatalf("changed pane ready=%v err=%v captures=%d", ready, err, captures)
+		}
+	})
+
+	t.Run("unknown root is not optional", func(t *testing.T) {
+		ready, err := waitForPaneAgentReadyWithContext(t.Context(), "%7", 0, "codex",
+			time.Second, time.Millisecond,
+			func(context.Context, string) (string, error) {
+				t.Fatal("unknown root reached capture")
+				return "", nil
+			},
+			func(context.Context, string, int) (int, error) {
+				t.Fatal("unknown root reached process observation")
+				return 71, nil
+			})
+		if ready || err == nil {
+			t.Fatalf("unknown root readiness=%v err=%v", ready, err)
+		}
+	})
+}
+
+func TestRestartReadinessRequiresCurrentCodexUI(t *testing.T) {
+	for _, tc := range []struct {
+		name, kind, output string
+		want               bool
+	}{
+		{"banner only", "codex", "OpenAI Codex starting\n", false},
+		{"shell prompt", "codex", "$\n", false},
+		{"composer", "cod", "OpenAI Codex\n› Ask Codex to do anything\n", true},
+		{"ultra composer", "codex-cli", "» Ask Codex to do anything\n", true},
+		{"working", "codex", "• Working (12s • esc to interrupt)\n", true},
+		{"other provider unchanged", "claude", "Claude Code v1.2.3\n", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ready, err := waitForPaneAgentReadyWithContext(t.Context(), "%7", 100, tc.kind,
+				50*time.Millisecond, time.Millisecond,
+				func(context.Context, string) (string, error) { return tc.output, nil },
+				func(context.Context, string, int) (int, error) { return 101, nil })
+			if err != nil || ready != tc.want {
+				t.Fatalf("readiness=%v err=%v, want %v", ready, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestRestartPSForegroundRequiresMatchingTerminalAndRunningState(t *testing.T) {
+	for _, tc := range []struct {
+		name, snapshot string
+		candidate      int
+		want           bool
+	}{
+		{"running wrapper child", "10 pts/3 Ss\n20 pts/3 S+\n", 20, true},
+		{"exec over root", "10 ttys001 S+\n", 10, true},
+		{"another terminal", "10 pts/3 Ss\n20 pts/4 S+\n", 20, false},
+		{"background process", "10 pts/3 Ss+\n20 pts/3 S\n", 20, false},
+		{"stopped", "10 ttys001 Ss\n20 ttys001 T+\n", 20, false},
+		{"tracing stop", "10 pts/3 Ss\n20 pts/3 t+\n", 20, false},
+		{"zombie", "10 pts/3 Ss\n20 pts/3 Z+\n", 20, false},
+		{"no terminal", "10 ?? S\n20 ?? S+\n", 20, false},
+		{"missing root", "20 pts/3 S+\n", 20, false},
+		{"missing candidate", "10 pts/3 Ss\n", 20, false},
+		{"malformed", "unavailable\n", 20, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := restartPSForegroundMatches(tc.snapshot, 10, tc.candidate); got != tc.want {
+				t.Fatalf("foreground=%v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// Exercise the production observer through the public restart operation.
+// The stopped case is the real failure: the private FIFO shell has printed
+// the Codex startup banner but stops before any provider is launched.
+func TestRealRestartReadinessRequiresRunningForegroundProcess(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("real tmux fixture requires POSIX process control")
+	}
+	testutil.RequireTmuxThrottled(t)
+	for _, mode := range []string{"direct-agent", "exec-agent", "fifo-wrapper", "stopped-fifo", "stopped-fifo-with-prompt", "banner-helper"} {
+		t.Run(mode, func(t *testing.T) {
+			root := t.TempDir()
+			session := fmt.Sprintf("ntm-restart-readiness-%d", time.Now().UnixNano())
+			if _, err := tmux.DefaultClient.RunContext(t.Context(), "new-session", "-d", "-s", session,
+				"-c", root, "/bin/sh", "-p", "-i"); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = tmux.KillSession(session) })
+
+			var pane tmux.Pane
+			deadline := time.Now().Add(5 * time.Second)
+			for {
+				panes, err := tmux.GetPanesContext(t.Context(), session)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(panes) == 1 && panes[0].PID > 0 && panes[0].RunsBareShell() {
+					pane = panes[0]
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("fixture never reached its initial shell: %+v", panes)
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+			if err := tmux.DefaultClient.SetPaneAgentTypeContext(t.Context(), pane.ID, tmux.AgentCodex); err != nil {
+				t.Fatal(err)
+			}
+
+			command := "printf 'OpenAI Codex\\n› Ask Codex to do anything\\n'; /bin/cat"
+			if mode == "exec-agent" {
+				command = "printf 'OpenAI Codex\\n› Ask Codex to do anything\\n'; exec /bin/cat"
+			}
+			stopped := strings.HasPrefix(mode, "stopped-fifo")
+			unready := stopped || mode == "banner-helper"
+			stoppedPath := filepath.Join(root, "stopped.pid")
+			neverStarted := filepath.Join(root, "must-not-start")
+			if mode == "fifo-wrapper" {
+				// The extra command keeps the wrapper shell alive while cat,
+				// our accepting provider stand-in, owns the same foreground tty.
+				command = "/bin/sh -c " + tmux.ShellQuote(command+"; :")
+			}
+			if mode == "banner-helper" {
+				command = "printf 'OpenAI Codex starting\\n'; /bin/sleep 30; printf unexpected > " + tmux.ShellQuote(neverStarted)
+			}
+			if stopped {
+				command = "printf 'OpenAI Codex starting\\n'; printf '%s\\n' \"$$\" > " + tmux.ShellQuote(stoppedPath) +
+					"; kill -STOP $$; printf unexpected > " + tmux.ShellQuote(neverStarted)
+				t.Cleanup(func() {
+					raw, err := os.ReadFile(stoppedPath)
+					if err != nil {
+						return
+					}
+					pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+					if err != nil || pid <= 0 {
+						return
+					}
+					if state, _, err := process.GetProcessState(pid); err == nil && state == "T" {
+						if child, err := os.FindProcess(pid); err == nil {
+							_ = child.Kill()
+						}
+					}
+				})
+			}
+			spec := tmux.AgentLaunchSpec{Version: tmux.AgentLaunchSpecVersion, AgentType: tmux.AgentCodex, Command: command}
+			var environment map[string]string
+			if mode != "direct-agent" && mode != "exec-agent" {
+				spec.OmittedEnv = []string{"RECOVERY_FIXTURE"}
+				environment = map[string]string{"RECOVERY_FIXTURE": "private-readiness-fixture"}
+			}
+			if err := tmux.DefaultClient.SetPaneLaunchSpecContext(t.Context(), pane.ID, spec); err != nil {
+				t.Fatal(err)
+			}
+			opts := RestartPaneOptions{Session: session, Panes: []string{pane.ID}, Config: config.Default(), Environment: environment}
+			if mode == "stopped-fifo-with-prompt" || mode == "banner-helper" {
+				opts.Prompt = "UNEXPECTED_RESTART_PROMPT"
+			}
+			ctx := t.Context()
+			if unready {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(ctx, 4*time.Second)
+				defer cancel()
+			}
+			out, err := GetRestartPaneContext(ctx, opts)
+			if err != nil || out == nil {
+				t.Fatalf("restart result=%+v err=%v", out, err)
+			}
+			key := strconv.Itoa(pane.Index)
+			replacement := out.PaneShellPIDs[key].After
+			if replacement <= 0 || replacement == pane.PID {
+				t.Fatalf("fixture did not replace its shell: %+v", out)
+			}
+			if unready {
+				if out.Success || out.AgentRelaunched[key] || out.PromptSent || len(out.Failed) == 0 || (stopped && out.ProcessAlive[key]) {
+					t.Fatalf("incomplete launch was reported as a recovered agent: %+v", out)
+				}
+				if stopped {
+					raw, err := os.ReadFile(stoppedPath)
+					if err != nil {
+						t.Fatal(err)
+					}
+					pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+					if err != nil {
+						t.Fatal(err)
+					}
+					if state, _, err := process.GetProcessState(pid); err != nil || state != "T" {
+						t.Fatalf("launch wrapper is not stopped: state=%s err=%v", state, err)
+					}
+				} else if candidate, err := observeRestartForegroundProcess(t.Context(), pane.ID, replacement); err != nil || candidate <= 0 {
+					t.Fatalf("fixture helper stopped before banner refusal was exercised: candidate=%d err=%v", candidate, err)
+				}
+				if _, err := os.Stat(neverStarted); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("stopped launch continued unexpectedly: %v", err)
+				}
+				capture, err := tmux.CapturePaneVisibleContext(t.Context(), pane.ID)
+				if err != nil || !strings.Contains(capture, "OpenAI Codex starting") ||
+					strings.Contains(capture, "UNEXPECTED_RESTART_PROMPT") {
+					t.Fatalf("stopped fixture lost banner or received prompt: capture=%q err=%v", capture, err)
+				}
+				return
+			}
+			if !out.Success || !out.AgentRelaunched[key] || !out.ProcessAlive[key] || len(out.Failed) != 0 {
+				t.Fatalf("running foreground provider was not recovered: %+v", out)
+			}
+			if candidate, err := observeRestartForegroundProcess(t.Context(), pane.ID, replacement); err != nil || candidate <= 0 {
+				t.Fatalf("running provider disappeared: candidate=%d err=%v", candidate, err)
+			} else if mode == "exec-agent" && candidate != replacement {
+				t.Fatalf("exec launch was not recognized at its childless root: candidate=%d root=%d", candidate, replacement)
+			}
+			if _, err := observeRestartForegroundProcess(t.Context(), pane.ID, pane.PID); !errors.Is(err, tmux.ErrPaneIdentityChanged) {
+				t.Fatalf("observer adopted a different pane generation: %v", err)
+			}
+		})
 	}
 }
