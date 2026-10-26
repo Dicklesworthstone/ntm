@@ -48,10 +48,12 @@ var piListMarker = regexp.MustCompile(`^(?:[0-9]{1,9}[.)]|[-+*])(?:[ \t]+|\r?\n|
 //
 // Pi preserves list markers and backslash escapes, removes inline style
 // delimiters and level-one/two heading markers, and retains deeper heading
-// markers and code fences. Width-dependent tables, rules and quotes,
-// terminal-dependent links, math, images and unsupported extensions refuse a
-// fingerprint. Response-waiting callers must refuse those prompts before
-// sending so an unknown transformed echo cannot be mistaken for an answer.
+// markers and code fences. URLs and email links whose labels equal their
+// destinations retain the same text with or without terminal hyperlinks.
+// Width-dependent tables, rules and quotes, other links, math, images and
+// unsupported extensions refuse a fingerprint. Response-waiting callers must
+// refuse those prompts before sending so an unknown transformed echo cannot
+// be mistaken for an answer.
 // The returned text is transient and is not stored in delivery receipts.
 func PiPromptEcho(prompt string) (PromptEchoFingerprint, string, bool) {
 	const maxPromptBytes = 1 << 20
@@ -137,11 +139,32 @@ func renderPiPromptNode(node ast.Node, source []byte, out *strings.Builder, dept
 		return true
 	case *ast.Emphasis:
 		return children()
+	case *ast.AutoLink:
+		label := value.Label(source)
+		// Pi's inline math extension runs before its autolink tokenizer.
+		// Goldmark can classify $x$@example.com as one email, while pi
+		// renders the leading math separately. Keep the literal guard here.
+		if piHasMathMarker(label) || !piLinkHasStableLabel(label, value.URL(source)) {
+			return false
+		}
+		out.Write(label)
+		return true
+	case *ast.Link:
+		// Pi compares the raw link label, before inline rendering, with its
+		// destination. Only a single literal label can prove that both the
+		// OSC 8 and plain-terminal paths display exactly the same text.
+		// Comparing a rendered label would incorrectly accept e.g. a bold
+		// URL whose fallback also prints the destination in parentheses.
+		literal, ok := value.FirstChild().(*ast.Text)
+		if !ok || literal.NextSibling() != nil || !piLinkHasStableLabel(literal.Value(source), value.Destination) {
+			return false
+		}
+		return renderPiPromptNode(literal, source, out, depth+1, budget)
 	case *ast.Text:
 		literal := value.Value(source)
 		// Pi recognizes LaTeX separately from CommonMark. Refuse unknown
 		// transformations outside code rather than discard their meaning.
-		if bytes.ContainsAny(literal, "$") || bytes.Contains(literal, []byte(`\(`)) || bytes.Contains(literal, []byte(`\[`)) {
+		if piHasMathMarker(literal) {
 			return false
 		}
 		out.Write(literal)
@@ -159,6 +182,18 @@ func renderPiPromptNode(node ast.Node, source []byte, out *strings.Builder, dept
 	default:
 		return false
 	}
+}
+
+func piHasMathMarker(literal []byte) bool {
+	return bytes.ContainsAny(literal, "$") || bytes.Contains(literal, []byte(`\(`)) || bytes.Contains(literal, []byte(`\[`))
+}
+
+// Pi's non-hyperlink renderer adds a parenthesized destination only when the
+// raw label differs from it (ignoring mailto: for an email). A bare www link
+// has an inferred http:// destination and therefore is not stable here.
+func piLinkHasStableLabel(label, destination []byte) bool {
+	return len(label) > 0 && (bytes.Equal(label, destination) ||
+		(bytes.HasPrefix(destination, []byte("mailto:")) && bytes.Equal(label, bytes.TrimPrefix(destination, []byte("mailto:")))))
 }
 
 // MatchesAgentEcho recognizes an echo-only capture across a delivery's raw

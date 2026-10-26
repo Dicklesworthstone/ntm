@@ -25,6 +25,13 @@ func TestPiPromptEchoRenderingFixtures(t *testing.T) {
 		{"tilde fence", "~~~sh\nprintf '**literal**'\n~~~", "```sh printf '**literal**' ```"},
 		{"inline literal", "Use `**literal** $HOME` here.", "Use **literal** $HOME here."},
 		{"escaped punctuation", `Keep \*literal\* and \#heading.`, `Keep \*literal\* and \#heading.`},
+		{"bare URL", "Review https://github.com/Dicklesworthstone/ntm/issues/361 and report.", "Review https://github.com/Dicklesworthstone/ntm/issues/361 and report."},
+		{"URL punctuation", "Review (https://example.com/a?x=1&y=2#result).", "Review (https://example.com/a?x=1&y=2#result)."},
+		{"angle URL", "Review <https://example.com/issue>.", "Review https://example.com/issue."},
+		{"bare email", "Contact reviewer@example.com for details.", "Contact reviewer@example.com for details."},
+		{"angle email", "Contact <reviewer@example.com>.", "Contact reviewer@example.com."},
+		{"literal URL label", "Review [https://example.com/issue](https://example.com/issue).", "Review https://example.com/issue."},
+		{"literal email label", "Contact [reviewer@example.com](mailto:reviewer@example.com).", "Contact reviewer@example.com."},
 		{"single verdict", "**VERDICT**", "VERDICT"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -47,6 +54,10 @@ func TestPiPromptEchoRefusesUnsupportedRendering(t *testing.T) {
 	for _, prompt := range []string{
 		"", "\n\t ", strings.Repeat("a", (1<<20)+1),
 		"Review [the source](https://example.com).", "![diagram](diagram.png)",
+		"Visit www.example.com.", "Contact [the reviewer](mailto:reviewer@example.com).",
+		"Review [**https://example.com**](https://example.com).",
+		"Review [https://example.com](https://elsewhere.example.com).", "Review [](https://example.com).",
+		"Contact $x$@example.com.", "Review https://example.com/$x$.", `Review https://example.com/\(x\).`,
 		"| Name | Value |\n| --- | --- |\n| A | B |", "> Quoted task", "---", "Compute $x^2$.",
 		`Compute \(x^2\).`, `Compute \[x^2\].`, "<div>custom markup</div>",
 	} {

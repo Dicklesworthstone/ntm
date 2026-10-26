@@ -695,34 +695,41 @@ func TestPiAgentDeliveryResumeUsesSavedPromptIdentity(t *testing.T) {
 }
 
 func TestPiRenderedPromptEchoWaitsForActualAnswer(t *testing.T) {
-	executor, mock := submittingExecutor(t, "pi-rendered-echo")
-	executor.config.ProjectDir = t.TempDir()
-	mock.AddPane("", tmux.Pane{ID: "%1", Index: 1, PID: 4141, Type: tmux.AgentType("pi"), Width: 100})
-	if err := mock.SetPaneOutput("%1", piStagePane("Previous turn", "")); err != nil {
-		t.Fatal(err)
-	}
-	const prompt, rendered = "Review **changes**", "Review changes"
-	mock.SetSubmissionVerifier(func(target, _, _ string) error {
-		return mock.SetPaneOutput(target, piStagePane(rendered, "A verdict still in the composer"))
-	})
-	detector := &stageIdleDetector{}
-	detector.onIdle = func(call int) {
-		if call == idleStablePolls+1 {
-			if err := mock.SetPaneOutput("%1", piStagePane(rendered+"\nThe changes are correct.", "A verdict still in the composer")); err != nil {
+	for _, tc := range []struct{ name, prompt, rendered string }{
+		{"formatting", "Review **changes**", "Review changes"},
+		{"bare references", "Review https://example.com/issue and contact reviewer@example.com.", "Review https://example.com/issue and contact reviewer@example.com."},
+		{"rendered references", "Review <https://example.com/issue> and contact [reviewer@example.com](mailto:reviewer@example.com).", "Review https://example.com/issue and contact reviewer@example.com."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			executor, mock := submittingExecutor(t, "pi-rendered-echo")
+			executor.config.ProjectDir = t.TempDir()
+			mock.AddPane("", tmux.Pane{ID: "%1", Index: 1, PID: 4141, Type: tmux.AgentType("pi"), Width: 100})
+			if err := mock.SetPaneOutput("%1", piStagePane("Previous turn", "")); err != nil {
 				t.Fatal(err)
 			}
-		}
+			mock.SetSubmissionVerifier(func(target, _, _ string) error {
+				return mock.SetPaneOutput(target, piStagePane(tc.rendered, "A verdict still in the composer"))
+			})
+			detector := &stageIdleDetector{}
+			detector.onIdle = func(call int) {
+				if call == idleStablePolls+1 {
+					if err := mock.SetPaneOutput("%1", piStagePane(tc.rendered+"\nThe changes are correct.", "A verdict still in the composer")); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			executor.SetDetector(detector)
+			workflow := singleStepWorkflow("pi-rendered-echo", Step{ID: "work", Pane: PaneSpec{Index: 1}, Prompt: tc.prompt, Wait: WaitCompletion})
+			state, err := executor.Run(context.Background(), workflow, nil, nil)
+			if err != nil || state.Status != StatusCompleted || detector.calls <= idleStablePolls+1 {
+				t.Fatalf("rendered prompt echo advanced without a fresh answer: %+v calls=%d err=%v", state, detector.calls, err)
+			}
+			if output := state.Steps["work"].Output; output != tc.rendered+"\nThe changes are correct." {
+				t.Fatalf("rendered prompt response included draft text or lost the answer: %q", output)
+			}
+			assertNotResent(t, mock)
+		})
 	}
-	executor.SetDetector(detector)
-	workflow := singleStepWorkflow("pi-rendered-echo", Step{ID: "work", Pane: PaneSpec{Index: 1}, Prompt: prompt, Wait: WaitCompletion})
-	state, err := executor.Run(context.Background(), workflow, nil, nil)
-	if err != nil || state.Status != StatusCompleted || detector.calls <= idleStablePolls+1 {
-		t.Fatalf("rendered prompt echo advanced without a fresh answer: %+v calls=%d err=%v", state, detector.calls, err)
-	}
-	if output := state.Steps["work"].Output; output != rendered+"\nThe changes are correct." {
-		t.Fatalf("rendered prompt response included draft text or lost the answer: %q", output)
-	}
-	assertNotResent(t, mock)
 }
 
 func TestPiRenderedPromptIdentitySurvivesTemplateResume(t *testing.T) {
